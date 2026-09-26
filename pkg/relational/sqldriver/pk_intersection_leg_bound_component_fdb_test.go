@@ -53,7 +53,7 @@ func TestFDB_PkIntersectionLegBoundComponent(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_pkilbc")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE pkilbc "+ddl)
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_pkilbc/s WITH TEMPLATE pkilbc")
-	dsn := fmt.Sprintf("fdbsql:///testdb_pkilbc?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_PKILBC?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

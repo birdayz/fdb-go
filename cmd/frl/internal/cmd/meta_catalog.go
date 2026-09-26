@@ -9,6 +9,8 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"fdb.dev/pkg/relational/core/functions"
+
 	"buf.build/go/protoyaml"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -134,7 +136,8 @@ func newMetaCatalogSchemasCmd() *cobra.Command {
 						listErr error
 					)
 					if databaseID != "" {
-						rs, listErr = cat.ListSchemasInDatabase(txn, databaseID, nil)
+						// The path as DDL reads it: unquoted folds, whole.
+						rs, listErr = cat.ListSchemasInDatabase(txn, functions.NormalizeIdentifier(databaseID), nil)
 					} else {
 						rs, listErr = cat.ListSchemas(txn, nil)
 					}

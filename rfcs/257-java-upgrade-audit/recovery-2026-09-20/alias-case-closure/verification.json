@@ -1,0 +1,2830 @@
+{
+  "scope": "WS-A/E1 ORDER alias-ownership correction; not WS-B\u2013K completion or publication/merge authorization",
+  "head": "71ccd8cf8b3fd0dbafe283e91171818e36af555e",
+  "prior_rejected_tree": "15c853e0f15c1daed5214da4998308e30c577ed7",
+  "verified_code_tree": "0dedbe1b1083358fb9568a31178084c043fa31e0",
+  "source_files": 6478,
+  "source_changes_during_runs": 0,
+  "java_commit": "fdacd162a9c8acfadc49082b89185c823ab8ae4a",
+  "suites": {
+    "full": {
+      "targets": 93,
+      "uncached": 93,
+      "counts": {
+        "run": 40781,
+        "pass": 40776,
+        "skip": 5,
+        "fail": 0
+      },
+      "tests": [
+        {
+          "label": "//pkg/linters/typeimmutable:typeimmutable_test",
+          "sha256": "e1e6f46fdf24022c1551ddd7b6a16477e3acc28e0640640a31e122e85437b564",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__linters__typeimmutable__typeimmutable_test.log",
+          "counts": {
+            "run": 19,
+            "pass": 19,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//cmd/vulnscan:vulnscan_test",
+          "sha256": "dbbc3eaa44d8748f253313291dc6b8434e011f395ea1ed4fe99da68ad89600a4",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__vulnscan__vulnscan_test.log",
+          "counts": {
+            "run": 67,
+            "pass": 67,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/fdbgo:fdbgo_test",
+          "sha256": "88ac6bf55bc0c58131b508f44009a9d7aba2ac5b50aeaab7d626b521645ce536",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__fdbgo__fdbgo_test.log",
+          "counts": {
+            "run": 1,
+            "pass": 1,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/linters/gofmt:gofmt_test",
+          "sha256": "6d91fa3283c9fcd660cd17006e98f508f3d586b97c6cd59c75f6a6e039e49f5f",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__linters__gofmt__gofmt_test.log",
+          "counts": {
+            "run": 5,
+            "pass": 5,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/linters/gofumpt:gofumpt_test",
+          "sha256": "ce8a99a9ec413dd8756f7f82a6897cf44cbe69be8bcfdd1fde552b0cce075a1f",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__linters__gofumpt__gofumpt_test.log",
+          "counts": {
+            "run": 6,
+            "pass": 6,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/core/query/ddl:ddl_test",
+          "sha256": "01a4af167287cb66865b659014402c69474236bf1ce831a0182059bf60cb67db",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__query__ddl__ddl_test.log",
+          "counts": {
+            "run": 2,
+            "pass": 2,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/recordlayer/rlmetrics:rlmetrics_test",
+          "sha256": "5a7476e741d7888d7c9b34fc5fb0c8cd407154251a38dbc6c94da461f8543b36",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__rlmetrics__rlmetrics_test.log",
+          "counts": {
+            "run": 15,
+            "pass": 15,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//cmd/test-budget:test-budget_test",
+          "sha256": "588486eff7192a0da1fb4eec6e4e0c4fcb2efd6973b63ea1fe8890f07a82324d",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__test-budget__test-budget_test.log",
+          "counts": {
+            "run": 6,
+            "pass": 6,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/recordlayer/query/plan/cascades/properties:properties_test",
+          "sha256": "797abc3c88dbb6bfff4c723c4a4f9121ddbf374f0158e0898942a5a10e0b3c1f",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__query__plan__cascades__properties__properties_test.log",
+          "counts": {
+            "run": 391,
+            "pass": 391,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/core/functions:functions_test",
+          "sha256": "c848264892424076d1e514bd32b987c1b544517ffefa3c4bfb334bf3e5dc7a74",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__functions__functions_test.log",
+          "counts": {
+            "run": 342,
+            "pass": 342,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/linters/norecover:norecover_test",
+          "sha256": "8077f334d21d1acb28be289e421fc6bb6492fb5928d56332c4da13a22c8f7a3f",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__linters__norecover__norecover_test.log",
+          "counts": {
+            "run": 5,
+            "pass": 5,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/recordlayer/query/plan/cascades/expressions:expressions_test",
+          "sha256": "b94dda54fc47287f2111719838e6c0629a7473d101c96d6b37cd2ccc5b1f4409",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__query__plan__cascades__expressions__expressions_test.log",
+          "counts": {
+            "run": 366,
+            "pass": 366,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/fdbgo/wire:wire_test",
+          "sha256": "475a379100d51047a39d08e5ac48627ac5bca49dd9bce0dc326f48368b306861",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__fdbgo__wire__wire_test.log",
+          "counts": {
+            "run": 29,
+            "pass": 29,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/core/query/semantic:semantic_test",
+          "sha256": "5781207df74b154c839b4a3b38c9255bbb21fe00d320337d55552b45ad91b043",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__query__semantic__semantic_test.log",
+          "counts": {
+            "run": 157,
+            "pass": 157,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/recordlayer/query/plan/cascades/predicates:predicates_test",
+          "sha256": "860fdc641ec5ffeb5f1a856c13c8f852b5a56916ee2ccb60ce684738a30f6ffc",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__query__plan__cascades__predicates__predicates_test.log",
+          "counts": {
+            "run": 570,
+            "pass": 570,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/recordlayer/protoname:protoname_test",
+          "sha256": "626a093efcd5a6b0c49670fa90a3ea8e24365ed78430b9b5755ea47d032c1e4a",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__protoname__protoname_test.log",
+          "counts": {
+            "run": 8,
+            "pass": 8,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/recordlayer/vectorcodec:vectorcodec_test",
+          "sha256": "55a510db44d1c002de900d03320e0828fb4c61082fc01da7562ee356a09fcf94",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__vectorcodec__vectorcodec_test.log",
+          "counts": {
+            "run": 12,
+            "pass": 12,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/internal/fdbclient:fdbclient_test",
+          "sha256": "2d47c5f895f79aeb409b104ce3ff37ec24355d462520f0d0f2993e46ecc74e09",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__internal__fdbclient__fdbclient_test.log",
+          "counts": {
+            "run": 1,
+            "pass": 1,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/api:api_test",
+          "sha256": "ed78ce35b8a14f37713a8583d833f51e23f5d70478103317909d1ef96d9fc3d8",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__api__api_test.log",
+          "counts": {
+            "run": 104,
+            "pass": 104,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/simfdb/hunt/rangeconflict:rangeconflict_test",
+          "sha256": "1803699e0aaf923cdd78580029a5054e1d1dd5aa6f24c8c6e93da3bb033177bc",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__simfdb__hunt__rangeconflict__rangeconflict_test.log",
+          "counts": {
+            "run": 10,
+            "pass": 10,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/txbudgetcensus:txbudgetcensus_test",
+          "sha256": "85fe5ed444f43283a9288285f8201d4f12664ed9532df5f139b9011c8edf8a38",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__txbudgetcensus__txbudgetcensus_test.log",
+          "counts": {
+            "run": 14,
+            "pass": 14,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/simfdb/hunt/interleave:interleave_test",
+          "sha256": "8fc8aa49f2d531ab2026e06747a661b8bddfa7b52a0c7b366cbd77c2bbd7df12",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__simfdb__hunt__interleave__interleave_test.log",
+          "counts": {
+            "run": 14,
+            "pass": 14,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/recordlayer/query/plan/cascades/internal/fuzzfloor:fuzzfloor_test",
+          "sha256": "1bd383168e175c568cb347aa09dfc827a4bdac071a6b16e95d011f7c5369bdb7",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__query__plan__cascades__internal__fuzzfloor__fuzzfloor_test.log",
+          "counts": {
+            "run": 12,
+            "pass": 12,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/core/session:session_test",
+          "sha256": "c7a660b2adcb877c95ff9dec9bd198415a311c43b94ce8b13f430a2fb0e53415",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__session__session_test.log",
+          "counts": {
+            "run": 12,
+            "pass": 12,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/core/metadata:metadata_test",
+          "sha256": "b921421e9956b11cae93167cf249791d26647271ff6b64e84b79356f6047b646",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__metadata__metadata_test.log",
+          "counts": {
+            "run": 61,
+            "pass": 61,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/recordlayer/query/plan/cascades/combinatorics:combinatorics_test",
+          "sha256": "d3ec97dbb60ae4a00a27392ef7bf239b5da27138da0308d31a4717cbb9828e04",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__query__plan__cascades__combinatorics__combinatorics_test.log",
+          "counts": {
+            "run": 47,
+            "pass": 47,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/core/query/semantic/rlcatalog:rlcatalog_test",
+          "sha256": "4bf4694aca107939a6bede01fd637aa669a941ee5b1b322e01463e009af70459",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__query__semantic__rlcatalog__rlcatalog_test.log",
+          "counts": {
+            "run": 13,
+            "pass": 13,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/testutil/allocs:allocs_test",
+          "sha256": "02bc32c5fec17a97390c62e2b092bbd9fbbe4998eadc74ce715690def1160299",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__testutil__allocs__allocs_test.log",
+          "counts": {
+            "run": 30,
+            "pass": 30,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/core/query/logical:logical_test",
+          "sha256": "9d4453f0e2934ff47f2e11cb324e61233d524e41f88c6185828bb7b6f1651cfb",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__query__logical__logical_test.log",
+          "counts": {
+            "run": 62,
+            "pass": 62,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/dst:dst_test",
+          "sha256": "3813c9f7527a9f6f8423a69b6457bba21bf1788d29211491f379f84629cddf99",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__dst__dst_test.log",
+          "counts": {
+            "run": 21,
+            "pass": 21,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/fdbgo/fdbmetrics:fdbmetrics_test",
+          "sha256": "b9bc93161b0ba9caa947e36f0407180e35bc1204e66c970966f6b5d547670c1d",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__fdbgo__fdbmetrics__fdbmetrics_test.log",
+          "counts": {
+            "run": 4,
+            "pass": 4,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/simfdb/hunt/atomicops:atomicops_test",
+          "sha256": "bfcd4a8c8fb7e2f4629aa7fd228915d8fb4b9d468cd0af98e65114bcbe762d22",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__simfdb__hunt__atomicops__atomicops_test.log",
+          "counts": {
+            "run": 27,
+            "pass": 27,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/core/fleet:fleet_test",
+          "sha256": "70f4be5233f6df131e0d368d9b6666c61e47a354d88602b42f25eb1c4c1845e1",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__fleet__fleet_test.log",
+          "counts": {
+            "run": 14,
+            "pass": 14,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/rabitq:rabitq_test",
+          "sha256": "b6a42420499684dff1bf0beede180155fe5bee9d1bfe29c341ef83368940be22",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__rabitq__rabitq_test.log",
+          "counts": {
+            "run": 273,
+            "pass": 273,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/core/query:query_test",
+          "sha256": "86bd6dcd98922816d123f433f5991d99e8b9324f2503497a4796ced733ddb963",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__query__query_test.log",
+          "counts": {
+            "run": 517,
+            "pass": 517,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//cmd/verify-pr-checks:verify-pr-checks_test",
+          "sha256": "0ad8921f45d70ffef3c5dd08e37c7c9c8d66e498a968ef9edbc42ea5e2ff8bf3",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__verify-pr-checks__verify-pr-checks_test.log",
+          "counts": {
+            "run": 17,
+            "pass": 17,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/simfdb/hunt/golden:golden_test",
+          "sha256": "c54f779c47d5200f57ea5fafb5154f5446a6c7752b1ad2682702cf6cd9dfafb0",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__simfdb__hunt__golden__golden_test.log",
+          "counts": {
+            "run": 18,
+            "pass": 18,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/simfdb/hunt:hunt_test",
+          "sha256": "9979fbff345348e0a09f891ffa6acc58c0ce14c0cc0ab3e926941d460634c181",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__simfdb__hunt__hunt_test.log",
+          "counts": {
+            "run": 26,
+            "pass": 26,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//cmd/fuzzrun:fuzzrun_test",
+          "sha256": "5f7f48fb773574864a1ef596e5a28f03a07719cfa736d321c556a95039c43990",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__fuzzrun__fuzzrun_test.log",
+          "counts": {
+            "run": 22,
+            "pass": 22,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/fdbgo/wire/types:types_test",
+          "sha256": "1f308eb18f1ac59a549e02ed9b2ac498f1022b6104dbb0545b6e42604e3c2e09",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__fdbgo__wire__types__types_test.log",
+          "counts": {
+            "run": 109,
+            "pass": 109,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/recordlayer/query/plan/plans:plans_test",
+          "sha256": "9a2c2d1e25b78d00ae9624e1b117242f7bfeb2c891eeec16d307ce4b8adc70b3",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__query__plan__plans__plans_test.log",
+          "counts": {
+            "run": 780,
+            "pass": 780,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/fdbgo/fdb/tuple:tuple_test",
+          "sha256": "0b9ced7c3a2d631e43503786acebef1389bf3ef8d54430201a72fa5d2201c87f",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__fdbgo__fdb__tuple__tuple_test.log",
+          "counts": {
+            "run": 73,
+            "pass": 73,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/simfdb/hunt/continuation:continuation_test",
+          "sha256": "b0e7c6aa46ec8a640a8183955ef2ed4a8215082aa824f63553d0ec964dba358f",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__simfdb__hunt__continuation__continuation_test.log",
+          "counts": {
+            "run": 7,
+            "pass": 7,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/core/parser:parser_test",
+          "sha256": "8f4183957f6bb9f7bd5d72406642479b2bdb46f40aa4e9ac89095e5d3b0afa44",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__parser__parser_test.log",
+          "counts": {
+            "run": 80,
+            "pass": 80,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/fdbgo/transport:transport_test",
+          "sha256": "c559d58e86bc998de0affaec98882e20e472fd356d9000d0d5e9752d431e3bc3",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__fdbgo__transport__transport_test.log",
+          "counts": {
+            "run": 70,
+            "pass": 70,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//cmd/factory-rebless:factory-rebless_test",
+          "sha256": "b5aa2a4f1a9815bde07cd8ecc87360ae57b2d67081b459c6142b8bfbdb4f7041",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__factory-rebless__factory-rebless_test.log",
+          "counts": {
+            "run": 11,
+            "pass": 11,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/conformance/javayamsql:javayamsql_test",
+          "sha256": "990bdb143d1b78a6256ef3a4ddccc8064d84a22f2d203568a32fc6c111c09150",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__conformance__javayamsql__javayamsql_test.log",
+          "counts": {
+            "run": 23,
+            "pass": 23,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/recordlayer/query/plan/cascades/matching:matching_test",
+          "sha256": "a4ea92a77e1b33e2a1bab17a76f9fa8079f88478c4f9dd76d8e0740a05f73378",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__query__plan__cascades__matching__matching_test.log",
+          "counts": {
+            "run": 97,
+            "pass": 97,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/recordlayer/query/plan/cascades:cascades_test",
+          "sha256": "f984b0d92a8ff9ecd173fe65b561aa9362efca0d5fd484d3ced772f0d168a83d",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__query__plan__cascades__cascades_test.log",
+          "counts": {
+            "run": 3682,
+            "pass": 3682,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/core/ddl:ddl_test",
+          "sha256": "166420689ea84905bb01ea01edc5d9f25740c5de2bb1d02a6f1cfe632837c2ed",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__ddl__ddl_test.log",
+          "counts": {
+            "run": 26,
+            "pass": 26,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/recordlayer/query/executor:executor_test",
+          "sha256": "1f2dab5b6790f736bb1587c02f7890c407c5d152ee1fa53c7073bfdcd647be99",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__query__executor__executor_test.log",
+          "counts": {
+            "run": 1945,
+            "pass": 1945,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//infra:infra_test",
+          "sha256": "9ee9998d8b078924b944b1451c0a1784c468c88748c0549a38ad7fb1a92d06d6",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/infra__infra_test.log",
+          "counts": {
+            "run": 39,
+            "pass": 39,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//cmd/factory-plan-census:factory-plan-census_test",
+          "sha256": "58de5bde888f6e4c56032e184b4af35acc680228d471fdcf90f2628bab32fae0",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__factory-plan-census__factory-plan-census_test.log",
+          "counts": {
+            "run": 24,
+            "pass": 24,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/conformance/explaindiff:explaindiff_test",
+          "sha256": "caba63a45924db7dc47f99cc82b4e406bf9672db1c99b2b87d23678703f2e559",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__conformance__explaindiff__explaindiff_test.log",
+          "counts": {
+            "run": 53,
+            "pass": 53,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//cmd/dst-hunt:dst-hunt_test",
+          "sha256": "dde8ad0c3e21fdf5737840c2250b8cf3294128193c9d15867a01b65d587a0d48",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__dst-hunt__dst-hunt_test.log",
+          "counts": {
+            "run": 2,
+            "pass": 2,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//cmd/factory-run:factory-run_test",
+          "sha256": "aac1036c1c0aabd4c276137925c6cb264e98810a0059387ef56e6bb1629d7275",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__factory-run__factory-run_test.log",
+          "counts": {
+            "run": 23,
+            "pass": 23,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/conformance/factorycorpus:factorycorpus_test",
+          "sha256": "d114dcedd5139b04de566b8496b94e4783a628f5fa2f7707b548c901c387a161",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__conformance__factorycorpus__factorycorpus_test.log",
+          "counts": {
+            "run": 74,
+            "pass": 74,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/core/embedded:embedded_test",
+          "sha256": "81a4dc921e05f953a0a16cbb2167520602b9f29712513dfc496a0ad24501b4cd",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__embedded__embedded_test.log",
+          "counts": {
+            "run": 2306,
+            "pass": 2306,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/core/catalog:catalog_test",
+          "sha256": "ce09f933b818dd77d839285ada04ac59ab689b9060a226116a389b52b2c2fbb8",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__catalog__catalog_test.log",
+          "counts": {
+            "run": 93,
+            "pass": 93,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/conformance/javacorpus:javacorpus_test",
+          "sha256": "acbf3c5acbbf3b72c8089e392622493c2ba8f6544623a0861a329a9e5256fbbc",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__conformance__javacorpus__javacorpus_test.log",
+          "counts": {
+            "run": 386,
+            "pass": 386,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/simfdb/hunt/sqlpage:sqlpage_test",
+          "sha256": "09ed2bd0e1cd1b89a65aef0d073133746eee9a469e0f983d00f9897b04eec44e",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__simfdb__hunt__sqlpage__sqlpage_test.log",
+          "counts": {
+            "run": 12,
+            "pass": 12,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/simfdb/hunt/sqlhunt:sqlhunt_test",
+          "sha256": "a77cd61c412302baf00340d7e008c834cd5631c9b2d48644f0e3b3c82ad8bf8b",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__simfdb__hunt__sqlhunt__sqlhunt_test.log",
+          "counts": {
+            "run": 55,
+            "pass": 55,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/conformance/plandiff:plandiff_test",
+          "sha256": "14a7deddbc093c2d4df6f5a1fb9986f7c4c17f97f7379e97ef5db0bfe29c538a",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__conformance__plandiff__plandiff_test.log",
+          "counts": {
+            "run": 1787,
+            "pass": 1787,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/simfdb/hunt/metamorphic:metamorphic_test",
+          "sha256": "1b2b97dd71c9e12b88917925700d595f2f06590c67a6509ee4eb002a70183d01",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__simfdb__hunt__metamorphic__metamorphic_test.log",
+          "counts": {
+            "run": 12,
+            "pass": 12,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/docscheck:docscheck_test",
+          "sha256": "2d54b118182d51d48bbb08003067280e996c323e4c84d0d62146b0baaf6fdc51",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__docscheck__docscheck_test.log",
+          "counts": {
+            "run": 917,
+            "pass": 917,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/simfdb:simfdb_test",
+          "sha256": "55fa9db9ad9de459ea3ab414e14984a8fdd9db063e1651ea31b06a40e1dacb71",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__simfdb__simfdb_test.log",
+          "counts": {
+            "run": 296,
+            "pass": 296,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//cmd/factory-rebless-plan-shapes:factory-rebless-plan-shapes_test",
+          "sha256": "38f42d8f68a57343fd4994c48a24c15dbb92b3fe8652f46054c0c0ed305eae98",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__factory-rebless-plan-shapes__factory-rebless-plan-shapes_test.log",
+          "counts": {
+            "run": 3,
+            "pass": 3,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//cmd/frl/internal/meta:meta_test",
+          "sha256": "f30667b5cc7c25735a3bb6d2c4cd83854f8cd241c5ee448ad061b9594b88c09d",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__frl__internal__meta__meta_test.log",
+          "counts": {
+            "run": 9,
+            "pass": 9,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/core/keyspace:keyspace_test",
+          "sha256": "65e85d7ebc2287b80b0391288793c12951709a5bf41a5feb8e9f30a03269e6d3",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__keyspace__keyspace_test.log",
+          "counts": {
+            "run": 6,
+            "pass": 6,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//cmd/verify-corpus-retirement-history:verify-corpus-retirement-history_test",
+          "sha256": "f4776c6b66e64de1b5ace7fa3130cb21362756c3564c4b30ac815d9049448039",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__verify-corpus-retirement-history__verify-corpus-retirement-history_test.log",
+          "counts": {
+            "run": 28,
+            "pass": 28,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/conformance/memoinvariant:memoinvariant_test",
+          "sha256": "dbb3cbcc2de57af6a41b3b6805b78186440c09a94beef129b9e9487f151f2c29",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__conformance__memoinvariant__memoinvariant_test.log",
+          "counts": {
+            "run": 4,
+            "pass": 4,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//cmd/frl/internal/cmd:cmd_test",
+          "sha256": "50f67627ad1342fd950b990875b634e5552448430d36091142e84e645615012b",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__frl__internal__cmd__cmd_test.log",
+          "counts": {
+            "run": 373,
+            "pass": 373,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/fdbgo/fdb/subspace:subspace_test",
+          "sha256": "e480d8b1171fffc310abc4ae30d932dd1da8de8d6bca8372f80c859045d5672b",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__fdbgo__fdb__subspace__subspace_test.log",
+          "counts": {
+            "run": 17,
+            "pass": 17,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//cmd/frl/internal/config:config_test",
+          "sha256": "7655d7d072ddf9f2be0526c2f70272f44b2ec3caeedaed205f86f527954aba75",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__frl__internal__config__config_test.log",
+          "counts": {
+            "run": 12,
+            "pass": 12,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//conformance:rabitq_architecture_test",
+          "sha256": "a0ac061f5aad0eeee0711ea97a0bb62191a5ea767aec01d0cc3b1b9f2b07221b",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/conformance__rabitq_architecture_test.log",
+          "counts": {
+            "run": 0,
+            "pass": 0,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/recordlayer/chaos:chaos_test",
+          "sha256": "4c6e047591db90301deff596282cbedb397e55853b65406ceb94c2c35b81a6f4",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__chaos__chaos_test.log",
+          "counts": {
+            "run": 230,
+            "pass": 230,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/conformance/yamsql:yamsql_test",
+          "sha256": "fc5423f3faaec0ab0703629f13ec2ac28dbd6487a0f986926b4425099c10d891",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__conformance__yamsql__yamsql_test.log",
+          "counts": {
+            "run": 590,
+            "pass": 590,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//cmd/bench-report:bench-report_test",
+          "sha256": "6e618446aa29df00d0ef9f8c67f8086a09cc7c84fcde5e05462806c7bbec584c",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__bench-report__bench-report_test.log",
+          "counts": {
+            "run": 13,
+            "pass": 13,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/recordlayer/query/plan/cascades/values:values_test",
+          "sha256": "e32b0283ef076fd315a3aa68f105dfb66e7e3dd6466143c2dfeb06885ae204f0",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__query__plan__cascades__values__values_test.log",
+          "counts": {
+            "run": 2445,
+            "pass": 2445,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/core/query/expr:expr_test",
+          "sha256": "07abc97d8a9b15e9bbbe20d95823f9db9c9145216e12186a481e8f7cac7c8675",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__query__expr__expr_test.log",
+          "counts": {
+            "run": 322,
+            "pass": 322,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/conformance/rowdiff:rowdiff_test",
+          "sha256": "4de1aa865fe4c3882f5c90a14def78a9a1e60c23bf7fac501ffa6692f7b511b0",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__conformance__rowdiff__rowdiff_test.log",
+          "counts": {
+            "run": 202,
+            "pass": 202,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/sqldriver:sqldriver_test",
+          "sha256": "1f74e298eeff5cf227ddf8cc6b47e02b428ef36cb78dd33f3db52bf3d49f9d76",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__sqldriver__sqldriver_test.log",
+          "counts": {
+            "run": 6873,
+            "pass": 6873,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/testcontainers/foundationdb:foundationdb_test",
+          "sha256": "b501f7c3589e07eacf92c256325275fb012950305d878c91ba6f5d41da458f35",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__testcontainers__foundationdb__foundationdb_test.log",
+          "counts": {
+            "run": 56,
+            "pass": 56,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/fdbgo/bench:bench_test",
+          "sha256": "f914a734fdc2d526e23dc15e02cd04a9dafdf8e15df593467aeae56ce14392d4",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__fdbgo__bench__bench_test.log",
+          "counts": {
+            "run": 775,
+            "pass": 775,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/fdbgo/fdb:fdb_test",
+          "sha256": "1f1aa0d0c60914be3cea5dc22bf54e895be701d5241b45427bb1096f803e27bc",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__fdbgo__fdb__fdb_test.log",
+          "counts": {
+            "run": 243,
+            "pass": 243,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//cmd/fdb-binding-stress:fdb-binding-stress_test",
+          "sha256": "daf7ac18902792ad95f89934b4e93240e025a1d267e5a392566e1e97aef19cd1",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__fdb-binding-stress__fdb-binding-stress_test.log",
+          "counts": {
+            "run": 7,
+            "pass": 7,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/recordlayer:recordlayer_test",
+          "sha256": "e32e40252b5b89eacae7a6e36a4ca6f76477a69677a2ab1337133bd836ffbe03",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__recordlayer_test.log",
+          "counts": {
+            "run": 2083,
+            "pass": 2083,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/recordlayer/keyspace:keyspace_test",
+          "sha256": "43a28402688b6c9634d6dbe29ab6f7fa79c10264061fa036d51c230a8d233b24",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__keyspace__keyspace_test.log",
+          "counts": {
+            "run": 39,
+            "pass": 39,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/fdbgo/conformance:conformance_test",
+          "sha256": "293eb9121a7ff9aff986c6ce9adb41c85dd676510eb5fc132e907eb6a0116886",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__fdbgo__conformance__conformance_test.log",
+          "counts": {
+            "run": 2,
+            "pass": 2,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//conformance:conformance_test",
+          "sha256": "923b8e1b78404c9ab64177fa685e3f4d79460b354f2b1bd6849c0ea3776ddea4",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/conformance__conformance_test.log",
+          "counts": {
+            "run": 70,
+            "pass": 70,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/fdbgo/client:client_test",
+          "sha256": "5d00308b7655cd0238e74aeef0d955f31ab89400714849b3f65d4706896329db",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__fdbgo__client__client_test.log",
+          "counts": {
+            "run": 1824,
+            "pass": 1824,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/conformance/factory:factory_test",
+          "sha256": "379f7914cf6793c61ee665b374bfa2ff3c90fc6e550a3557e728ab437f1eb694",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__conformance__factory__factory_test.log",
+          "counts": {
+            "run": 102,
+            "pass": 97,
+            "skip": 5,
+            "fail": 0
+          },
+          "skips": {
+            "TestFDB_PlanDiversityHunt": 1,
+            "TestFDB_NestedShapeHunt": 1,
+            "TestFDB_FullShapeHunt": 1,
+            "TestFDB_ExcludedShapeHunt": 1,
+            "TestFDB_PredicateEquivalenceHunt": 1
+          }
+        },
+        {
+          "label": "//pkg/relational/conformance/factorycorpus/full:full_test",
+          "sha256": "167bba701ae2e8b82c039d898cf85e1486524c3e0ac7c6f36323ff8b63870fcb",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__conformance__factorycorpus__full__full_test.log",
+          "counts": {
+            "run": 8151,
+            "pass": 8151,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        }
+      ]
+    },
+    "race": {
+      "targets": 15,
+      "uncached": 15,
+      "counts": {
+        "run": 21391,
+        "pass": 21391,
+        "skip": 0,
+        "fail": 0
+      },
+      "tests": [
+        {
+          "label": "//pkg/rabitq:rabitq_test",
+          "sha256": "9ab2e6334ad2a47bbaf5c734dcc4ef9a0b3970ab7762883151bae193f8ba2f19",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/pkg__rabitq__rabitq_test.log",
+          "counts": {
+            "run": 273,
+            "pass": 273,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/recordlayer/query/plan/cascades/values:values_test",
+          "sha256": "7c81074fd3e70108fbfc362d91c758f07ae707357a927e32998543609b6fefbe",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/pkg__recordlayer__query__plan__cascades__values__values_test.log",
+          "counts": {
+            "run": 2445,
+            "pass": 2445,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/recordlayer/query/plan/cascades:cascades_test",
+          "sha256": "c512b2abc0cefb0d8f0007c75e17267863a38a96413bd14058147427300ab246",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/pkg__recordlayer__query__plan__cascades__cascades_test.log",
+          "counts": {
+            "run": 3682,
+            "pass": 3682,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/recordlayer/query/executor:executor_test",
+          "sha256": "1fc235e595ae5de6cfbe63589ba17afe5068d6e301225772e4fd8c78fee546c4",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/pkg__recordlayer__query__executor__executor_test.log",
+          "counts": {
+            "run": 1945,
+            "pass": 1945,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/core/query/logical:logical_test",
+          "sha256": "cb3679b19c4b509915897ed7a973bafb6682e8741b8c8444594a42f7f11d2e38",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/pkg__relational__core__query__logical__logical_test.log",
+          "counts": {
+            "run": 62,
+            "pass": 62,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/core/query/semantic:semantic_test",
+          "sha256": "91ffd739b7da0795e31abfc2efaf28ec735ed45388568cfa16190636315f8101",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/pkg__relational__core__query__semantic__semantic_test.log",
+          "counts": {
+            "run": 157,
+            "pass": 157,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/core/query:query_test",
+          "sha256": "761bfdfd8e1d4f9fa76cf9fee0800df778e1cefe50b1efebb7ba06821b474ec4",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/pkg__relational__core__query__query_test.log",
+          "counts": {
+            "run": 517,
+            "pass": 517,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/core/query/expr:expr_test",
+          "sha256": "ee6e6ac11edc20cd232ae52481a75991305d5f27b6066c7989b5d55fd22d7d6e",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/pkg__relational__core__query__expr__expr_test.log",
+          "counts": {
+            "run": 322,
+            "pass": 322,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//cmd/frl/internal/cmd:cmd_test",
+          "sha256": "a71941d602a3c4356464bf2e78eea1cd8abcc8d8ae73ca2ee4550c101ea3c19f",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/cmd__frl__internal__cmd__cmd_test.log",
+          "counts": {
+            "run": 373,
+            "pass": 373,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/conformance/explaindiff:explaindiff_test",
+          "sha256": "664083fee0d26dde124f0a0993ec75634b96ba77bdbf312b8b74d2394949b39e",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/pkg__relational__conformance__explaindiff__explaindiff_test.log",
+          "counts": {
+            "run": 53,
+            "pass": 53,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/core/embedded:embedded_test",
+          "sha256": "1c51bcfd246a1a0048bc9de4e6d2fd521d32768dfda313bab2f31d39adbfe1f9",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/pkg__relational__core__embedded__embedded_test.log",
+          "counts": {
+            "run": 2306,
+            "pass": 2306,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/recordlayer:recordlayer_test",
+          "sha256": "84481b516653574d820b19030dc0695106eb329dd7437e1a8cc140433ea801cf",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/pkg__recordlayer__recordlayer_test.log",
+          "counts": {
+            "run": 2083,
+            "pass": 2083,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/recordlayer/chaos:chaos_test",
+          "sha256": "4d7427ed481b13e8d0920fdaa547982913560b1fef900a7eb087ade853ba6ff6",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/pkg__recordlayer__chaos__chaos_test.log",
+          "counts": {
+            "run": 230,
+            "pass": 230,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//conformance:conformance_test",
+          "sha256": "6d0169b7b077d4b73bcfefd8e362e751c8d8c8144953da4669393ba0b502eeb2",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/conformance__conformance_test.log",
+          "counts": {
+            "run": 70,
+            "pass": 70,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        },
+        {
+          "label": "//pkg/relational/sqldriver:sqldriver_test",
+          "sha256": "b42be824445b854297dd85d18129c8967ac79b523bf44468bc4eabfb8f2fda79",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/pkg__relational__sqldriver__sqldriver_test.log",
+          "counts": {
+            "run": 6873,
+            "pass": 6873,
+            "skip": 0,
+            "fail": 0
+          },
+          "skips": {}
+        }
+      ]
+    }
+  },
+  "java_alias_probes": 56,
+  "mutations": [
+    {
+      "name": "quoted-union-identity",
+      "file": "pkg/relational/core/embedded/logical_predicate.go",
+      "old": "key := label\n\t\tmatches[key]++",
+      "new": "key := strings.ToUpper(label)\n\t\tmatches[key]++",
+      "mutation_sha256": "cf3724e979dc036e62f13df055c30bd5856bdeedc5f188e89e36a8c14960f2b7",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/core/embedded:embedded_test",
+        "//pkg/relational/sqldriver:sqldriver_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestUnionExactOutputContract_|^TestFDB_NoFromSelectProbe$"
+      ],
+      "exit": 3,
+      "failures": [
+        "TestOrderByExactMetadata_QuotedAliasIdentity (0.04s)",
+        "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_UNION_ALL_SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"x\" (0.01s)",
+        "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_UNION_ALL_SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_x (0.00s)",
+        "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_UNION_ALL_SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"X\",_x (0.01s)",
+        "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_UNION_ALL_SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"x\",_\"X\" (0.01s)",
+        "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_UNION_ALL_SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"X\",_\"x\" (0.02s)",
+        "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_UNION_ALL_SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"X\" (0.01s)",
+        "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_UNION_ALL_SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"x\",_\"x\" (0.01s)",
+        "TestFDB_NoFromSelectProbe (0.06s)",
+        "TestFDB_NoFromSelectProbe/union_quoted_lower (0.02s)",
+        "TestFDB_NoFromSelectProbe/union_quoted_upper (0.00s)",
+        "TestFDB_NoFromSelectProbe/union_quoted_mixed (0.00s)"
+      ],
+      "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-mutant-quoted-union-identity.log",
+      "sha256": "b0e18ea1e0fae6a3e38d5769a46d3e5c0092d36e8616f246f1420bd2dd64b0ec"
+    },
+    {
+      "name": "quoted-select-identity",
+      "file": "pkg/relational/core/embedded/logical_builder.go",
+      "old": "if alias != \"\" && alias == name {",
+      "new": "if alias != \"\" && strings.EqualFold(alias, name) {",
+      "mutation_sha256": "1ad13e2b9f6915e48899bbeb87991fc6daa1e8496d0ee16f8007158da374cbd4",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/core/embedded:embedded_test",
+        "//pkg/relational/sqldriver:sqldriver_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestUnionExactOutputContract_|^TestFDB_NoFromSelectProbe$"
+      ],
+      "exit": 3,
+      "failures": [
+        "TestOrderByExactMetadata_QuotedAliasIdentity (0.03s)",
+        "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"x\" (0.03s)",
+        "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"x\",_\"x\" (0.00s)",
+        "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"x\",_\"X\" (0.00s)",
+        "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"X\",_\"x\" (0.00s)",
+        "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"X\" (0.00s)",
+        "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_x (0.00s)",
+        "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"X\",_x (0.01s)"
+      ],
+      "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-mutant-quoted-select-identity.log",
+      "sha256": "81ffc3a5551b8f1805bd8905530c3553edb0f11b81083ddef58cca0d33b618c1"
+    },
+    {
+      "name": "quoted-duplicate-identity",
+      "file": "pkg/relational/core/embedded/logical_predicate.go",
+      "old": "if err == nil && previousName == name &&\n\t\t\t\tslices.Equal(previousSegments, segments) {",
+      "new": "if err == nil && strings.EqualFold(previousName, name) &&\n\t\t\t\tslices.EqualFunc(previousSegments, segments, strings.EqualFold) {",
+      "mutation_sha256": "acf9d2c20748e85b8f6c33589a8d5ebc576e7e753f6823721fab0c6ed7058774",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/core/embedded:embedded_test",
+        "//pkg/relational/sqldriver:sqldriver_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestUnionExactOutputContract_|^TestFDB_NoFromSelectProbe$"
+      ],
+      "exit": 3,
+      "failures": [
+        "TestOrderByExactMetadata_QuotedAliasIdentity (0.04s)",
+        "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_UNION_ALL_SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"X\",_\"x\" (0.00s)",
+        "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_UNION_ALL_SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"x\",_\"X\" (0.00s)",
+        "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"x\",_\"X\" (0.00s)",
+        "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"X\",_\"x\" (0.00s)",
+        "TestFDB_NoFromSelectProbe (0.06s)",
+        "TestFDB_NoFromSelectProbe/union_quoted_mixed (0.00s)"
+      ],
+      "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-mutant-quoted-duplicate-identity.log",
+      "sha256": "c099cd2efcb253aca169619119d17ad54fbbe636476c9587e7440bead18cdcfa"
+    },
+    {
+      "name": "resolved-attribute-qualification",
+      "file": "pkg/relational/core/embedded/logical_predicate.go",
+      "old": "if len(segments) == 0 || resolver == nil || resolver.Scope() == nil {",
+      "new": "if len(segments) != 1 || resolver == nil || resolver.Scope() == nil {",
+      "mutation_sha256": "409e699c84825fb2c40a26a0e196d9f0de7292eb696ad6dd4119efa4c574eaf3",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/core/embedded:embedded_test",
+        "//pkg/relational/sqldriver:sqldriver_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestUnionExactOutputContract_|^TestFDB_NoFromSelectProbe$"
+      ],
+      "exit": 3,
+      "failures": [
+        "TestOrderByExactMetadata_UnnamedSourceAlias (0.03s)",
+        "TestOrderByExactMetadata_UnnamedSourceAlias/SELECT_x.x,_99_AS_x_FROM_items_t,_items_t.items_AS_x_ORDER_BY_x,_x (0.02s)",
+        "TestFDB_NoFromSelectProbe (0.06s)",
+        "TestFDB_NoFromSelectProbe/qualified_whole_object_alias_precedence (0.15s)"
+      ],
+      "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-mutant-resolved-attribute-qualification.log",
+      "sha256": "60505ffd0f04d9abbdd5e3f67cd02c6dde21a41801bb41f19b7d4c2ab05cbc0e"
+    },
+    {
+      "name": "record-qov-projection",
+      "file": "pkg/relational/core/embedded/plan_visitor.go",
+      "old": "if qov, ok := values.AsQuantifiedObjectValue(rv); ok {",
+      "new": "if qov, ok := values.AsQuantifiedObjectValue(rv); ok && qov.FlowedType().Code() != values.TypeCodeRecord {",
+      "mutation_sha256": "b3e81ef42dca501eb7dd2e29b520321132352ba88b8dd92faabf5ff6eaf05a27",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/core/embedded:embedded_test",
+        "//pkg/relational/sqldriver:sqldriver_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestUnionExactOutputContract_|^TestFDB_NoFromSelectProbe$"
+      ],
+      "exit": 3,
+      "failures": [
+        "TestOrderByExactMetadata_UnnamedSourceAlias (0.03s)",
+        "TestOrderByExactMetadata_UnnamedSourceAlias/SELECT_x.x,_99_AS_x_FROM_items_t,_items_t.items_AS_x_ORDER_BY_x,_x (0.02s)",
+        "TestFDB_NoFromSelectProbe (0.06s)",
+        "TestFDB_NoFromSelectProbe/qualified_whole_object_alias_precedence (0.00s)",
+        "TestFDB_NoFromSelectProbe/qualified_whole_object_value (0.00s)"
+      ],
+      "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-mutant-record-qov-projection.log",
+      "sha256": "0b41209b9d5dc1c3656900e7426e5b0bd9d5ad63d23cf085df002b6c6e76775c"
+    },
+    {
+      "name": "union-cardinality",
+      "file": "pkg/relational/core/embedded/logical_predicate.go",
+      "old": "if count > 1 {",
+      "new": "if count > 2 {",
+      "mutation_sha256": "77ef1c22e03ee204f112e803fdce62a368f2d66678b4e1d8a616333bcbcb05bd",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/core/embedded:embedded_test",
+        "//pkg/relational/sqldriver:sqldriver_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestUnionExactOutputContract_|^TestFDB_NoFromSelectProbe$"
+      ],
+      "exit": 3,
+      "failures": [
+        "TestOrderByExactMetadata_UnionNamedDuplicates (0.03s)",
+        "TestOrderByExactMetadata_UnionNamedDuplicates/SELECT_*_FROM_t_p,_t_q_UNION_ALL_SELECT_*_FROM_t_p,_t_q_ORDER_BY_id (0.01s)",
+        "TestOrderByExactMetadata_UnionNamedDuplicates/SELECT_*_FROM_t_p,_t_q_UNION_ALL_SELECT_*_FROM_t_p,_t_q_ORDER_BY_id,_id (0.01s)",
+        "TestFDB_NoFromSelectProbe (0.06s)",
+        "TestFDB_NoFromSelectProbe/union_joined_star_ambiguity_before_duplicate (0.00s)",
+        "TestFDB_NoFromSelectProbe/union_joined_star_ambiguous (0.00s)"
+      ],
+      "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-mutant-union-cardinality.log",
+      "sha256": "6604281ad2888739fa1a7dcee4ea57a72870942f793a0fb032ab7acac7c17a23"
+    },
+    {
+      "name": "lifted-star-width",
+      "file": "pkg/relational/core/embedded/logical_predicate.go",
+      "old": "if simpleTable.GroupByClause() != nil || hasPositionalOrderBy(simpleTable) || hasMixedSelectStar(simpleTable) {",
+      "new": "if simpleTable.GroupByClause() != nil || hasMixedSelectStar(simpleTable) {",
+      "mutation_sha256": "5ee24d1e8f2b734a8fd2a3a7e86c2996b20e2c9c92314ab2235a495c6ad5824f",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/core/embedded:embedded_test",
+        "//pkg/relational/sqldriver:sqldriver_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestUnionExactOutputContract_|^TestFDB_NoFromSelectProbe$"
+      ],
+      "exit": 3,
+      "failures": [
+        "TestUnionExactOutputContract_DuplicateSQLLabelsKeepDistinctPhysicalSlots (0.00s)",
+        "TestUnionExactOutputContract_DuplicateSQLLabelsKeepDistinctPhysicalSlots/SELECT_*_FROM_a_p,_a_q_UNION_ALL_SELECT_*_FROM_a_p,_a_q_ORDER_BY_1,_3 (0.02s)",
+        "TestOrderByExactMetadata_UnionDuplicateLabelsRemainLegal (0.04s)",
+        "TestOrderByExactMetadata_UnionDuplicateLabelsRemainLegal/SELECT_*_FROM_t_p,_t_q_UNION_ALL_SELECT_*_FROM_t_p,_t_q_ORDER_BY_1,_3 (0.01s)",
+        "TestFDB_NoFromSelectProbe (0.06s)",
+        "TestFDB_NoFromSelectProbe/union_duplicate_labels_positions (0.00s)"
+      ],
+      "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-mutant-lifted-star-width.log",
+      "sha256": "f9f53217f84b52a0b016ade26d6c76332684c677f927c020c0d2796d92eaf5c8"
+    },
+    {
+      "name": "normalization-row-names",
+      "file": "pkg/relational/core/query/cascades_translator.go",
+      "old": "for i, name := range values.DedupFieldNames(names) {\n\t\tfields[i].Name = name\n\t}\n\treturn commonRow, true, nil",
+      "new": "for i, name := range names {\n\t\tfields[i].Name = name\n\t}\n\treturn commonRow, true, nil",
+      "mutation_sha256": "31fb52e23b1d1c5635efae58218911d4060154a582d70f60bd9e454b021a414d",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/core/embedded:embedded_test",
+        "//pkg/relational/sqldriver:sqldriver_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestUnionExactOutputContract_|^TestFDB_NoFromSelectProbe$"
+      ],
+      "exit": 3,
+      "failures": [
+        "TestUnionExactOutputContract_DuplicateSQLLabelsKeepDistinctPhysicalSlots (0.00s)",
+        "TestUnionExactOutputContract_DuplicateSQLLabelsKeepDistinctPhysicalSlots/SELECT_*_FROM_a_p,_a_q_UNION_ALL_SELECT_*_FROM_a_p,_a_q_ORDER_BY_1,_3 (0.04s)",
+        "TestUnionExactOutputContract_DuplicateSQLLabelsKeepDistinctPhysicalSlots/SELECT_*_FROM_a_p,_a_q_UNION_ALL_SELECT_p.id,_p.v,_q.id,_q.v_FROM_a_p,_a_q (0.04s)",
+        "TestFDB_NoFromSelectProbe (0.06s)",
+        "TestFDB_NoFromSelectProbe/union_duplicate_labels_positions (0.00s)"
+      ],
+      "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-mutant-normalization-row-names.log",
+      "sha256": "807544be71f55c39a5987a5611877be79e0ad2a4ba3577801aa1fa1af13136ed"
+    },
+    {
+      "name": "aligned-row-preservation",
+      "file": "pkg/relational/core/query/cascades_translator.go",
+      "old": "if aligned {",
+      "new": "if aligned && false {",
+      "mutation_sha256": "07f43084afec55120ab2e0e70f1b0a44bcf2f480362849f6ba88a3413611ba74",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/core/embedded:embedded_test",
+        "//pkg/relational/sqldriver:sqldriver_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestUnionExactOutputContract_|^TestFDB_NoFromSelectProbe$"
+      ],
+      "exit": 3,
+      "failures": [
+        "TestUnionExactOutputContract_DuplicateSQLLabelsKeepDistinctPhysicalSlots (0.00s)",
+        "TestUnionExactOutputContract_DuplicateSQLLabelsKeepDistinctPhysicalSlots/SELECT_*_FROM_a_p,_a_q_UNION_ALL_SELECT_*_FROM_a_p,_a_q (0.06s)"
+      ],
+      "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-mutant-aligned-row-preservation.log",
+      "sha256": "b2641746799575f031298475fb67068184ab94d436d2eadf414a5441b94e28bb"
+    }
+  ],
+  "stress": {
+    "baseline_commit": "e48f5b4965543cd4d99b5578356059e12d969c7c",
+    "current_tree": "0dedbe1b1083358fb9568a31178084c043fa31e0",
+    "samples": [
+      {
+        "name": "baseline-1",
+        "command": [
+          "bazelisk",
+          "test",
+          "//pkg/relational/sqldriver/stress:stress_test",
+          "--nocache_test_results",
+          "--test_output=all",
+          "--test_arg=--test.run=^TestFDB_Stress_1M$",
+          "--build_event_json_file=/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/baseline-1-bep.jsonl"
+        ],
+        "exit": 0,
+        "elapsed": 185.50192642211914,
+        "started": 1789989766.5892117,
+        "load_start": [
+          0.619140625,
+          8.2431640625,
+          10.48876953125
+        ],
+        "load_end": [
+          2.2099609375,
+          5.9892578125,
+          9.24755859375
+        ],
+        "runs": {
+          "TestFDB_Stress_1M": 1,
+          "TestFDB_Stress_1M/pk_lookup_first": 1,
+          "TestFDB_Stress_1M/pk_lookup_middle": 1,
+          "TestFDB_Stress_1M/pk_lookup_last": 1,
+          "TestFDB_Stress_1M/index_customer_eq": 1,
+          "TestFDB_Stress_1M/index_amount_range": 1,
+          "TestFDB_Stress_1M/index_status_count": 1,
+          "TestFDB_Stress_1M/full_scan_count": 1,
+          "TestFDB_Stress_1M/full_scan_filter": 1,
+          "TestFDB_Stress_1M/group_by_status": 1,
+          "TestFDB_Stress_1M/group_by_status_count_only": 1,
+          "TestFDB_Stress_1M/sum_by_status": 1,
+          "TestFDB_Stress_1M/group_by_customer_having": 1,
+          "TestFDB_Stress_1M/join_10_outer": 1,
+          "TestFDB_Stress_1M/order_by_pk_full": 1,
+          "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+          "TestFDB_Stress_1M/scan_all_narrow": 1,
+          "TestFDB_Stress_1M/scan_all_wide": 1,
+          "TestFDB_Stress_1M/in_list": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+          "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+          "TestFDB_Stress_1M/update_by_index": 1,
+          "TestFDB_Stress_1M/delete_single_row": 1
+        },
+        "passes": {
+          "TestFDB_Stress_1M": 1,
+          "TestFDB_Stress_1M/pk_lookup_first": 1,
+          "TestFDB_Stress_1M/pk_lookup_middle": 1,
+          "TestFDB_Stress_1M/pk_lookup_last": 1,
+          "TestFDB_Stress_1M/index_customer_eq": 1,
+          "TestFDB_Stress_1M/index_amount_range": 1,
+          "TestFDB_Stress_1M/index_status_count": 1,
+          "TestFDB_Stress_1M/full_scan_count": 1,
+          "TestFDB_Stress_1M/full_scan_filter": 1,
+          "TestFDB_Stress_1M/group_by_status": 1,
+          "TestFDB_Stress_1M/group_by_status_count_only": 1,
+          "TestFDB_Stress_1M/sum_by_status": 1,
+          "TestFDB_Stress_1M/group_by_customer_having": 1,
+          "TestFDB_Stress_1M/join_10_outer": 1,
+          "TestFDB_Stress_1M/order_by_pk_full": 1,
+          "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+          "TestFDB_Stress_1M/scan_all_narrow": 1,
+          "TestFDB_Stress_1M/scan_all_wide": 1,
+          "TestFDB_Stress_1M/in_list": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+          "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+          "TestFDB_Stress_1M/update_by_index": 1,
+          "TestFDB_Stress_1M/delete_single_row": 1
+        },
+        "skips": {},
+        "sha256": "6e8a089144e1224654135a370a03f6badab5c0d1e35658af836b4b427e261550",
+        "side": "baseline",
+        "sample": 1,
+        "tree": "600a5fa8517be7c6911cb6e68e8c93a39c81c823",
+        "commit": "e48f5b4965543cd4d99b5578356059e12d969c7c",
+        "explain": [
+          "Scan(ORDERS, [=])",
+          "Project([_current.ID#0, _current.AMOUNT#2], IndexScan(IDX_CUSTOMER, [=]))",
+          "Project([_current.ID#0], IndexScan(IDX_AMOUNT, [<>] COVERING))",
+          "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_STATUS, [=] COVERING)))",
+          "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_AMOUNT, [<>] COVERING)))",
+          "Project([_current.STATUS#0, _current.COUNT(*)#1, _current.SUM(AMOUNT)#2], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+          "Project([_current.STATUS#0, _current.COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only))",
+          "Project([_current.STATUS#0, _current.SUM(AMOUNT)#1], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+          "Project([_current.CUSTOMER_ID#0, _current.SUM(AMOUNT)#1], PredicatesFilter(GroupExistenceMerge(AggregateIndex(COUNT, SUM_AMOUNT_BY_CUSTOMER__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_CUSTOMER, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), [1 preds]))",
+          "Project([_current.ID#0, _current.NAME#5], FlatMap(outer=Scan(ORDERS, [<>]), inner=Scan(CUSTOMERS, [=])))",
+          "Project([_current.ID#0], PredicatesFilter(Scan(ORDERS), [1 preds]))"
+        ]
+      },
+      {
+        "name": "current-1",
+        "command": [
+          "bazelisk",
+          "test",
+          "//pkg/relational/sqldriver/stress:stress_test",
+          "--nocache_test_results",
+          "--test_output=all",
+          "--test_arg=--test.run=^TestFDB_Stress_1M$",
+          "--build_event_json_file=/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/current-1-bep.jsonl"
+        ],
+        "exit": 0,
+        "elapsed": 178.9902482032776,
+        "started": 1789989953.0160284,
+        "load_start": [
+          2.2099609375,
+          5.9892578125,
+          9.24755859375
+        ],
+        "load_end": [
+          2.56005859375,
+          4.5390625,
+          8.107421875
+        ],
+        "runs": {
+          "TestFDB_Stress_1M": 1,
+          "TestFDB_Stress_1M/pk_lookup_first": 1,
+          "TestFDB_Stress_1M/pk_lookup_middle": 1,
+          "TestFDB_Stress_1M/pk_lookup_last": 1,
+          "TestFDB_Stress_1M/index_customer_eq": 1,
+          "TestFDB_Stress_1M/index_amount_range": 1,
+          "TestFDB_Stress_1M/index_status_count": 1,
+          "TestFDB_Stress_1M/full_scan_count": 1,
+          "TestFDB_Stress_1M/full_scan_filter": 1,
+          "TestFDB_Stress_1M/group_by_status": 1,
+          "TestFDB_Stress_1M/group_by_status_count_only": 1,
+          "TestFDB_Stress_1M/sum_by_status": 1,
+          "TestFDB_Stress_1M/group_by_customer_having": 1,
+          "TestFDB_Stress_1M/join_10_outer": 1,
+          "TestFDB_Stress_1M/order_by_pk_full": 1,
+          "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+          "TestFDB_Stress_1M/scan_all_narrow": 1,
+          "TestFDB_Stress_1M/scan_all_wide": 1,
+          "TestFDB_Stress_1M/in_list": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+          "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+          "TestFDB_Stress_1M/update_by_index": 1,
+          "TestFDB_Stress_1M/delete_single_row": 1
+        },
+        "passes": {
+          "TestFDB_Stress_1M": 1,
+          "TestFDB_Stress_1M/pk_lookup_first": 1,
+          "TestFDB_Stress_1M/pk_lookup_middle": 1,
+          "TestFDB_Stress_1M/pk_lookup_last": 1,
+          "TestFDB_Stress_1M/index_customer_eq": 1,
+          "TestFDB_Stress_1M/index_amount_range": 1,
+          "TestFDB_Stress_1M/index_status_count": 1,
+          "TestFDB_Stress_1M/full_scan_count": 1,
+          "TestFDB_Stress_1M/full_scan_filter": 1,
+          "TestFDB_Stress_1M/group_by_status": 1,
+          "TestFDB_Stress_1M/group_by_status_count_only": 1,
+          "TestFDB_Stress_1M/sum_by_status": 1,
+          "TestFDB_Stress_1M/group_by_customer_having": 1,
+          "TestFDB_Stress_1M/join_10_outer": 1,
+          "TestFDB_Stress_1M/order_by_pk_full": 1,
+          "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+          "TestFDB_Stress_1M/scan_all_narrow": 1,
+          "TestFDB_Stress_1M/scan_all_wide": 1,
+          "TestFDB_Stress_1M/in_list": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+          "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+          "TestFDB_Stress_1M/update_by_index": 1,
+          "TestFDB_Stress_1M/delete_single_row": 1
+        },
+        "skips": {},
+        "sha256": "40e19ff29e22d7c405bbb0ae6897e070b0cee03d09f28f29531ddd028ce2326a",
+        "side": "current",
+        "sample": 1,
+        "tree": "0dedbe1b1083358fb9568a31178084c043fa31e0",
+        "commit": "71ccd8cf8b3fd0dbafe283e91171818e36af555e",
+        "explain": [
+          "Scan(ORDERS, [=])",
+          "Project([_current.ID#0, _current.AMOUNT#2], IndexScan(IDX_CUSTOMER, [=]))",
+          "Project([_current.ID#0], IndexScan(IDX_AMOUNT, [<>] COVERING))",
+          "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_STATUS, [=] COVERING)))",
+          "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_AMOUNT, [<>] COVERING)))",
+          "Project([_current.STATUS#0, _current.COUNT(*)#1, _current.SUM(AMOUNT)#2], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+          "Project([_current.STATUS#0, _current.COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only))",
+          "Project([_current.STATUS#0, _current.SUM(AMOUNT)#1], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+          "Project([_current.CUSTOMER_ID#0, _current.SUM(AMOUNT)#1], PredicatesFilter(GroupExistenceMerge(AggregateIndex(COUNT, SUM_AMOUNT_BY_CUSTOMER__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_CUSTOMER, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), [1 preds]))",
+          "Project([_current.ID#0, _current.NAME#5], FlatMap(outer=Scan(ORDERS, [<>]), inner=Scan(CUSTOMERS, [=])))",
+          "Project([_current.ID#0], PredicatesFilter(Scan(ORDERS), [1 preds]))"
+        ]
+      },
+      {
+        "name": "current-2",
+        "command": [
+          "bazelisk",
+          "test",
+          "//pkg/relational/sqldriver/stress:stress_test",
+          "--nocache_test_results",
+          "--test_output=all",
+          "--test_arg=--test.run=^TestFDB_Stress_1M$",
+          "--build_event_json_file=/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/current-2-bep.jsonl"
+        ],
+        "exit": 0,
+        "elapsed": 177.49515962600708,
+        "started": 1789990132.9328752,
+        "load_start": [
+          2.56005859375,
+          4.5390625,
+          8.107421875
+        ],
+        "load_end": [
+          2.03564453125,
+          3.46240234375,
+          7.056640625
+        ],
+        "runs": {
+          "TestFDB_Stress_1M": 1,
+          "TestFDB_Stress_1M/pk_lookup_first": 1,
+          "TestFDB_Stress_1M/pk_lookup_middle": 1,
+          "TestFDB_Stress_1M/pk_lookup_last": 1,
+          "TestFDB_Stress_1M/index_customer_eq": 1,
+          "TestFDB_Stress_1M/index_amount_range": 1,
+          "TestFDB_Stress_1M/index_status_count": 1,
+          "TestFDB_Stress_1M/full_scan_count": 1,
+          "TestFDB_Stress_1M/full_scan_filter": 1,
+          "TestFDB_Stress_1M/group_by_status": 1,
+          "TestFDB_Stress_1M/group_by_status_count_only": 1,
+          "TestFDB_Stress_1M/sum_by_status": 1,
+          "TestFDB_Stress_1M/group_by_customer_having": 1,
+          "TestFDB_Stress_1M/join_10_outer": 1,
+          "TestFDB_Stress_1M/order_by_pk_full": 1,
+          "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+          "TestFDB_Stress_1M/scan_all_narrow": 1,
+          "TestFDB_Stress_1M/scan_all_wide": 1,
+          "TestFDB_Stress_1M/in_list": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+          "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+          "TestFDB_Stress_1M/update_by_index": 1,
+          "TestFDB_Stress_1M/delete_single_row": 1
+        },
+        "passes": {
+          "TestFDB_Stress_1M": 1,
+          "TestFDB_Stress_1M/pk_lookup_first": 1,
+          "TestFDB_Stress_1M/pk_lookup_middle": 1,
+          "TestFDB_Stress_1M/pk_lookup_last": 1,
+          "TestFDB_Stress_1M/index_customer_eq": 1,
+          "TestFDB_Stress_1M/index_amount_range": 1,
+          "TestFDB_Stress_1M/index_status_count": 1,
+          "TestFDB_Stress_1M/full_scan_count": 1,
+          "TestFDB_Stress_1M/full_scan_filter": 1,
+          "TestFDB_Stress_1M/group_by_status": 1,
+          "TestFDB_Stress_1M/group_by_status_count_only": 1,
+          "TestFDB_Stress_1M/sum_by_status": 1,
+          "TestFDB_Stress_1M/group_by_customer_having": 1,
+          "TestFDB_Stress_1M/join_10_outer": 1,
+          "TestFDB_Stress_1M/order_by_pk_full": 1,
+          "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+          "TestFDB_Stress_1M/scan_all_narrow": 1,
+          "TestFDB_Stress_1M/scan_all_wide": 1,
+          "TestFDB_Stress_1M/in_list": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+          "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+          "TestFDB_Stress_1M/update_by_index": 1,
+          "TestFDB_Stress_1M/delete_single_row": 1
+        },
+        "skips": {},
+        "sha256": "0d0861c0e9ebfba91f2abdd4a417ed1995afd73d1e7be313b6e4d4e161fd597e",
+        "side": "current",
+        "sample": 2,
+        "tree": "0dedbe1b1083358fb9568a31178084c043fa31e0",
+        "commit": "71ccd8cf8b3fd0dbafe283e91171818e36af555e",
+        "explain": [
+          "Scan(ORDERS, [=])",
+          "Project([_current.ID#0, _current.AMOUNT#2], IndexScan(IDX_CUSTOMER, [=]))",
+          "Project([_current.ID#0], IndexScan(IDX_AMOUNT, [<>] COVERING))",
+          "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_STATUS, [=] COVERING)))",
+          "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_AMOUNT, [<>] COVERING)))",
+          "Project([_current.STATUS#0, _current.COUNT(*)#1, _current.SUM(AMOUNT)#2], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+          "Project([_current.STATUS#0, _current.COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only))",
+          "Project([_current.STATUS#0, _current.SUM(AMOUNT)#1], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+          "Project([_current.CUSTOMER_ID#0, _current.SUM(AMOUNT)#1], PredicatesFilter(GroupExistenceMerge(AggregateIndex(COUNT, SUM_AMOUNT_BY_CUSTOMER__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_CUSTOMER, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), [1 preds]))",
+          "Project([_current.ID#0, _current.NAME#5], FlatMap(outer=Scan(ORDERS, [<>]), inner=Scan(CUSTOMERS, [=])))",
+          "Project([_current.ID#0], PredicatesFilter(Scan(ORDERS), [1 preds]))"
+        ]
+      },
+      {
+        "name": "baseline-2",
+        "command": [
+          "bazelisk",
+          "test",
+          "//pkg/relational/sqldriver/stress:stress_test",
+          "--nocache_test_results",
+          "--test_output=all",
+          "--test_arg=--test.run=^TestFDB_Stress_1M$",
+          "--build_event_json_file=/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/baseline-2-bep.jsonl"
+        ],
+        "exit": 0,
+        "elapsed": 176.94017267227173,
+        "started": 1789990311.350038,
+        "load_start": [
+          2.03564453125,
+          3.46240234375,
+          7.056640625
+        ],
+        "load_end": [
+          2.38623046875,
+          3.12646484375,
+          6.30859375
+        ],
+        "runs": {
+          "TestFDB_Stress_1M": 1,
+          "TestFDB_Stress_1M/pk_lookup_first": 1,
+          "TestFDB_Stress_1M/pk_lookup_middle": 1,
+          "TestFDB_Stress_1M/pk_lookup_last": 1,
+          "TestFDB_Stress_1M/index_customer_eq": 1,
+          "TestFDB_Stress_1M/index_amount_range": 1,
+          "TestFDB_Stress_1M/index_status_count": 1,
+          "TestFDB_Stress_1M/full_scan_count": 1,
+          "TestFDB_Stress_1M/full_scan_filter": 1,
+          "TestFDB_Stress_1M/group_by_status": 1,
+          "TestFDB_Stress_1M/group_by_status_count_only": 1,
+          "TestFDB_Stress_1M/sum_by_status": 1,
+          "TestFDB_Stress_1M/group_by_customer_having": 1,
+          "TestFDB_Stress_1M/join_10_outer": 1,
+          "TestFDB_Stress_1M/order_by_pk_full": 1,
+          "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+          "TestFDB_Stress_1M/scan_all_narrow": 1,
+          "TestFDB_Stress_1M/scan_all_wide": 1,
+          "TestFDB_Stress_1M/in_list": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+          "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+          "TestFDB_Stress_1M/update_by_index": 1,
+          "TestFDB_Stress_1M/delete_single_row": 1
+        },
+        "passes": {
+          "TestFDB_Stress_1M": 1,
+          "TestFDB_Stress_1M/pk_lookup_first": 1,
+          "TestFDB_Stress_1M/pk_lookup_middle": 1,
+          "TestFDB_Stress_1M/pk_lookup_last": 1,
+          "TestFDB_Stress_1M/index_customer_eq": 1,
+          "TestFDB_Stress_1M/index_amount_range": 1,
+          "TestFDB_Stress_1M/index_status_count": 1,
+          "TestFDB_Stress_1M/full_scan_count": 1,
+          "TestFDB_Stress_1M/full_scan_filter": 1,
+          "TestFDB_Stress_1M/group_by_status": 1,
+          "TestFDB_Stress_1M/group_by_status_count_only": 1,
+          "TestFDB_Stress_1M/sum_by_status": 1,
+          "TestFDB_Stress_1M/group_by_customer_having": 1,
+          "TestFDB_Stress_1M/join_10_outer": 1,
+          "TestFDB_Stress_1M/order_by_pk_full": 1,
+          "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+          "TestFDB_Stress_1M/scan_all_narrow": 1,
+          "TestFDB_Stress_1M/scan_all_wide": 1,
+          "TestFDB_Stress_1M/in_list": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+          "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+          "TestFDB_Stress_1M/update_by_index": 1,
+          "TestFDB_Stress_1M/delete_single_row": 1
+        },
+        "skips": {},
+        "sha256": "559793181632e4dd41c87c4544feef2088533d9d52633f70a1d2cee56f92a9c5",
+        "side": "baseline",
+        "sample": 2,
+        "tree": "600a5fa8517be7c6911cb6e68e8c93a39c81c823",
+        "commit": "e48f5b4965543cd4d99b5578356059e12d969c7c",
+        "explain": [
+          "Scan(ORDERS, [=])",
+          "Project([_current.ID#0, _current.AMOUNT#2], IndexScan(IDX_CUSTOMER, [=]))",
+          "Project([_current.ID#0], IndexScan(IDX_AMOUNT, [<>] COVERING))",
+          "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_STATUS, [=] COVERING)))",
+          "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_AMOUNT, [<>] COVERING)))",
+          "Project([_current.STATUS#0, _current.COUNT(*)#1, _current.SUM(AMOUNT)#2], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+          "Project([_current.STATUS#0, _current.COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only))",
+          "Project([_current.STATUS#0, _current.SUM(AMOUNT)#1], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+          "Project([_current.CUSTOMER_ID#0, _current.SUM(AMOUNT)#1], PredicatesFilter(GroupExistenceMerge(AggregateIndex(COUNT, SUM_AMOUNT_BY_CUSTOMER__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_CUSTOMER, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), [1 preds]))",
+          "Project([_current.ID#0, _current.NAME#5], FlatMap(outer=Scan(ORDERS, [<>]), inner=Scan(CUSTOMERS, [=])))",
+          "Project([_current.ID#0], PredicatesFilter(Scan(ORDERS), [1 preds]))"
+        ]
+      }
+    ],
+    "rows": {
+      "PK lookup id=0": {
+        "rows": 1,
+        "baseline_ms": [
+          8.507149,
+          15.894977
+        ],
+        "current_ms": [
+          14.099134,
+          8.287564
+        ],
+        "median_ratio": 0.9174076881661867
+      },
+      "PK lookup id=N/2": {
+        "rows": 1,
+        "baseline_ms": [
+          7.484541,
+          14.81908
+        ],
+        "current_ms": [
+          25.273417,
+          8.136877
+        ],
+        "median_ratio": 1.4979762254747784
+      },
+      "PK lookup id=N-1": {
+        "rows": 1,
+        "baseline_ms": [
+          5.271809,
+          23.57536
+        ],
+        "current_ms": [
+          20.252774,
+          6.248169
+        ],
+        "median_ratio": 0.9186670276032979
+      },
+      "idx_customer eq": {
+        "rows": 8,
+        "baseline_ms": [
+          7.222024,
+          38.11496
+        ],
+        "current_ms": [
+          20.02922,
+          6.620244
+        ],
+        "median_ratio": 0.5878084876576704
+      },
+      "idx_amount range >9000": {
+        "rows": 100017,
+        "baseline_ms": [
+          190.504014,
+          244.852892
+        ],
+        "current_ms": [
+          278.725345,
+          241.077616
+        ],
+        "median_ratio": 1.1939697150457056
+      },
+      "idx_status count pending": {
+        "rows": 1,
+        "baseline_ms": [
+          416.609632,
+          310.405471
+        ],
+        "current_ms": [
+          309.419845,
+          399.725137
+        ],
+        "median_ratio": 0.9754198765249036
+      },
+      "full scan filter amount>5000": {
+        "rows": 1,
+        "baseline_ms": [
+          724.757679,
+          726.458
+        ],
+        "current_ms": [
+          766.107575,
+          799.202545
+        ],
+        "median_ratio": 1.0786199065039181
+      },
+      "GROUP BY status": {
+        "rows": 4,
+        "baseline_ms": [
+          20.526051,
+          13.628863
+        ],
+        "current_ms": [
+          5.793087,
+          6.02144
+        ],
+        "median_ratio": 0.3459100204439104
+      },
+      "GROUP BY status COUNT only": {
+        "rows": 4,
+        "baseline_ms": [
+          18.809559,
+          10.251104
+        ],
+        "current_ms": [
+          5.405753,
+          5.373411
+        ],
+        "median_ratio": 0.37091941088887065
+      },
+      "SUM by status (aggregate index)": {
+        "rows": 4,
+        "baseline_ms": [
+          12.921624,
+          19.598044
+        ],
+        "current_ms": [
+          5.695942,
+          5.663491
+        ],
+        "median_ratio": 0.3493096239481903
+      },
+      "GROUP BY customer HAVING": {
+        "rows": 47271,
+        "baseline_ms": [
+          623.195787,
+          660.688632
+        ],
+        "current_ms": [
+          576.845971,
+          576.403492
+        ],
+        "median_ratio": 0.8982502209180561
+      },
+      "JOIN 10 orders x customers": {
+        "rows": 10,
+        "baseline_ms": [
+          22.946488,
+          20.111306
+        ],
+        "current_ms": [
+          22.009513,
+          20.358965
+        ],
+        "median_ratio": 0.9839909123073048
+      },
+      "ORDER BY PK (full)": {
+        "rows": 1000000,
+        "baseline_ms": [
+          7582.7580530000005,
+          3950.862825
+        ],
+        "current_ms": [
+          3906.571171,
+          3929.861286
+        ],
+        "median_ratio": 0.6794425219878464
+      },
+      "ORDER BY PK + index filter": {
+        "rows": 8,
+        "baseline_ms": [
+          9.176658,
+          8.915232
+        ],
+        "current_ms": [
+          9.517874,
+          9.179683
+        ],
+        "median_ratio": 1.0334772652276796
+      },
+      "scan all rows ordered": {
+        "rows": 1000000,
+        "baseline_ms": [
+          3780.156256,
+          3785.507634
+        ],
+        "current_ms": [
+          3683.191582,
+          3685.5449839999997
+        ],
+        "median_ratio": 0.9739709129478655
+      },
+      "scan all rows wide": {
+        "rows": 1000000,
+        "baseline_ms": [
+          4000.9705809999996,
+          3986.386978
+        ],
+        "current_ms": [
+          3929.240687,
+          3956.270017
+        ],
+        "median_ratio": 0.9872489926427244
+      },
+      "IN-list 5 values": {
+        "rows": 46,
+        "baseline_ms": [
+          22.390404,
+          19.110821
+        ],
+        "current_ms": [
+          20.386547,
+          20.351471
+        ],
+        "median_ratio": 0.981610012716492
+      },
+      "PK needle id=999999": {
+        "rows": 1,
+        "baseline_ms": [
+          5.343845,
+          8.186892
+        ],
+        "current_ms": [
+          5.865665,
+          5.670314
+        ],
+        "median_ratio": 0.8525758057377067
+      },
+      "PK+filter needle id=500000": {
+        "rows": 1,
+        "baseline_ms": [
+          7.524477,
+          8.118162
+        ],
+        "current_ms": [
+          7.488519,
+          7.363322
+        ],
+        "median_ratio": 0.9494459982104043
+      },
+      "full scan sparse filter": {
+        "rows": 97,
+        "baseline_ms": [
+          3448.3454779999997,
+          3442.787786
+        ],
+        "current_ms": [
+          3357.8765829999998,
+          3375.552882
+        ],
+        "median_ratio": 0.9771149689088351
+      },
+      "UPDATE by index": {
+        "rows": 8,
+        "baseline_ms": [
+          10.314423,
+          9.753331
+        ],
+        "current_ms": [
+          10.76679,
+          10.185941
+        ],
+        "median_ratio": 1.0440994542787398
+      },
+      "DELETE single row": {
+        "rows": 1,
+        "baseline_ms": [
+          7.049988,
+          7.080827
+        ],
+        "current_ms": [
+          6.170442,
+          7.126543
+        ],
+        "median_ratio": 0.9409920800746453
+      }
+    },
+    "explain": [
+      "Scan(ORDERS, [=])",
+      "Project([_current.ID#0, _current.AMOUNT#2], IndexScan(IDX_CUSTOMER, [=]))",
+      "Project([_current.ID#0], IndexScan(IDX_AMOUNT, [<>] COVERING))",
+      "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_STATUS, [=] COVERING)))",
+      "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_AMOUNT, [<>] COVERING)))",
+      "Project([_current.STATUS#0, _current.COUNT(*)#1, _current.SUM(AMOUNT)#2], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+      "Project([_current.STATUS#0, _current.COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only))",
+      "Project([_current.STATUS#0, _current.SUM(AMOUNT)#1], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+      "Project([_current.CUSTOMER_ID#0, _current.SUM(AMOUNT)#1], PredicatesFilter(GroupExistenceMerge(AggregateIndex(COUNT, SUM_AMOUNT_BY_CUSTOMER__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_CUSTOMER, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), [1 preds]))",
+      "Project([_current.ID#0, _current.NAME#5], FlatMap(outer=Scan(ORDERS, [<>]), inner=Scan(CUSTOMERS, [=])))",
+      "Project([_current.ID#0], PredicatesFilter(Scan(ORDERS), [1 preds]))"
+    ],
+    "compilers": {
+      "baseline": "/home/birdy/projects/fdb-java-upgrade-baseline/bazel-bin/pkg/relational/sqldriver/stress/stress_test_/stress_test: go1.26.6",
+      "current": "/home/birdy/projects/fdb-go/bazel-bin/pkg/relational/sqldriver/stress/stress_test_/stress_test: go1.26.6"
+    }
+  },
+  "artifacts": [
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/baseline-1-bep.jsonl",
+      "sha256": "c27fffc2249852fa0e1a861b60b60c39bcb466a14c8ee92609dbd2956d3cc525"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/baseline-1-logs/pkg__relational__sqldriver__stress__stress_test.log",
+      "sha256": "e6f34a7e20451c32c164260c209915a8eb8c62ff0add42b40047d6ddef558e85"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/baseline-1-population.json",
+      "sha256": "910e167ac4ef3ab5316c53beffd966448349d0f8f747fddfcb4379d594d9c6a5"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/baseline-1.log",
+      "sha256": "6e8a089144e1224654135a370a03f6badab5c0d1e35658af836b4b427e261550"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/baseline-2-bep.jsonl",
+      "sha256": "2404b5dd37306f857ba913a7324a873220074e1603b88b70548bc9d2929f54e4"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/baseline-2-logs/pkg__relational__sqldriver__stress__stress_test.log",
+      "sha256": "0f62d8a66f22854e4733c5392c68c66342fee4e79f6b07e986dcdfa0b47a2f84"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/baseline-2-population.json",
+      "sha256": "c7942e518f90762dedd24bc542a05e7f28fe72dd2fa49a88511b39cfee00df83"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/baseline-2.log",
+      "sha256": "559793181632e4dd41c87c4544feef2088533d9d52633f70a1d2cee56f92a9c5"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/current-1-bep.jsonl",
+      "sha256": "fd038c020124f61d6f7624cf5ad63ee8982ef720c0bd0de7955a11fccfec6cb0"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/current-1-logs/pkg__relational__sqldriver__stress__stress_test.log",
+      "sha256": "d27180c2a59c42e96809814462c1212963ceef5831fbf60c1cb47ec13f093e39"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/current-1-population.json",
+      "sha256": "477e64c756ad6e9afcf1b7fa2b5516392415853387b9127a86709a747c3e73eb"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/current-1.log",
+      "sha256": "40e19ff29e22d7c405bbb0ae6897e070b0cee03d09f28f29531ddd028ce2326a"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/current-2-bep.jsonl",
+      "sha256": "ac952eb2b3620deb6a428b342249fbf5e9d6acb46c9e0d3d52b9a9d251566555"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/current-2-logs/pkg__relational__sqldriver__stress__stress_test.log",
+      "sha256": "f6250b653c3038d5f70aa78df2e1eb419e291072376240374ed52469ff0e60f4"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/current-2-population.json",
+      "sha256": "294d5325430e96cb58717459a2d5ae5800263fe4931471f374c985eca26fb5a2"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/current-2.log",
+      "sha256": "0d0861c0e9ebfba91f2abdd4a417ed1995afd73d1e7be313b6e4d4e161fd597e"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/freeze.json",
+      "sha256": "e32679f8898e91e180ee509f9f10f4de0c281b1bcf960f8b0d3abe2dc2419854"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-bep.jsonl",
+      "sha256": "593f786a5aa466ce66b6662a078798eaad88b9418144d44b30aebfda75e6f4f5"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__bench-report__bench-report_test.log",
+      "sha256": "6e618446aa29df00d0ef9f8c67f8086a09cc7c84fcde5e05462806c7bbec584c"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__dst-hunt__dst-hunt_test.log",
+      "sha256": "dde8ad0c3e21fdf5737840c2250b8cf3294128193c9d15867a01b65d587a0d48"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__factory-plan-census__factory-plan-census_test.log",
+      "sha256": "58de5bde888f6e4c56032e184b4af35acc680228d471fdcf90f2628bab32fae0"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__factory-rebless-plan-shapes__factory-rebless-plan-shapes_test.log",
+      "sha256": "38f42d8f68a57343fd4994c48a24c15dbb92b3fe8652f46054c0c0ed305eae98"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__factory-rebless__factory-rebless_test.log",
+      "sha256": "b5aa2a4f1a9815bde07cd8ecc87360ae57b2d67081b459c6142b8bfbdb4f7041"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__factory-run__factory-run_test.log",
+      "sha256": "aac1036c1c0aabd4c276137925c6cb264e98810a0059387ef56e6bb1629d7275"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__fdb-binding-stress__fdb-binding-stress_test.log",
+      "sha256": "daf7ac18902792ad95f89934b4e93240e025a1d267e5a392566e1e97aef19cd1"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__frl__internal__cmd__cmd_test.log",
+      "sha256": "50f67627ad1342fd950b990875b634e5552448430d36091142e84e645615012b"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__frl__internal__config__config_test.log",
+      "sha256": "7655d7d072ddf9f2be0526c2f70272f44b2ec3caeedaed205f86f527954aba75"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__frl__internal__meta__meta_test.log",
+      "sha256": "f30667b5cc7c25735a3bb6d2c4cd83854f8cd241c5ee448ad061b9594b88c09d"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__fuzzrun__fuzzrun_test.log",
+      "sha256": "5f7f48fb773574864a1ef596e5a28f03a07719cfa736d321c556a95039c43990"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__test-budget__test-budget_test.log",
+      "sha256": "588486eff7192a0da1fb4eec6e4e0c4fcb2efd6973b63ea1fe8890f07a82324d"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__verify-corpus-retirement-history__verify-corpus-retirement-history_test.log",
+      "sha256": "f4776c6b66e64de1b5ace7fa3130cb21362756c3564c4b30ac815d9049448039"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__verify-pr-checks__verify-pr-checks_test.log",
+      "sha256": "0ad8921f45d70ffef3c5dd08e37c7c9c8d66e498a968ef9edbc42ea5e2ff8bf3"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/cmd__vulnscan__vulnscan_test.log",
+      "sha256": "dbbc3eaa44d8748f253313291dc6b8434e011f395ea1ed4fe99da68ad89600a4"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/conformance__conformance_test.log",
+      "sha256": "923b8e1b78404c9ab64177fa685e3f4d79460b354f2b1bd6849c0ea3776ddea4"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/conformance__rabitq_architecture_test.log",
+      "sha256": "a0ac061f5aad0eeee0711ea97a0bb62191a5ea767aec01d0cc3b1b9f2b07221b"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/infra__infra_test.log",
+      "sha256": "9ee9998d8b078924b944b1451c0a1784c468c88748c0549a38ad7fb1a92d06d6"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__docscheck__docscheck_test.log",
+      "sha256": "2d54b118182d51d48bbb08003067280e996c323e4c84d0d62146b0baaf6fdc51"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__dst__dst_test.log",
+      "sha256": "3813c9f7527a9f6f8423a69b6457bba21bf1788d29211491f379f84629cddf99"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__fdbgo__bench__bench_test.log",
+      "sha256": "f914a734fdc2d526e23dc15e02cd04a9dafdf8e15df593467aeae56ce14392d4"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__fdbgo__client__client_test.log",
+      "sha256": "5d00308b7655cd0238e74aeef0d955f31ab89400714849b3f65d4706896329db"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__fdbgo__conformance__conformance_test.log",
+      "sha256": "293eb9121a7ff9aff986c6ce9adb41c85dd676510eb5fc132e907eb6a0116886"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__fdbgo__fdb__fdb_test.log",
+      "sha256": "1f1aa0d0c60914be3cea5dc22bf54e895be701d5241b45427bb1096f803e27bc"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__fdbgo__fdb__subspace__subspace_test.log",
+      "sha256": "e480d8b1171fffc310abc4ae30d932dd1da8de8d6bca8372f80c859045d5672b"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__fdbgo__fdb__tuple__tuple_test.log",
+      "sha256": "0b9ced7c3a2d631e43503786acebef1389bf3ef8d54430201a72fa5d2201c87f"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__fdbgo__fdbgo_test.log",
+      "sha256": "88ac6bf55bc0c58131b508f44009a9d7aba2ac5b50aeaab7d626b521645ce536"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__fdbgo__fdbmetrics__fdbmetrics_test.log",
+      "sha256": "b9bc93161b0ba9caa947e36f0407180e35bc1204e66c970966f6b5d547670c1d"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__fdbgo__transport__transport_test.log",
+      "sha256": "c559d58e86bc998de0affaec98882e20e472fd356d9000d0d5e9752d431e3bc3"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__fdbgo__wire__types__types_test.log",
+      "sha256": "1f308eb18f1ac59a549e02ed9b2ac498f1022b6104dbb0545b6e42604e3c2e09"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__fdbgo__wire__wire_test.log",
+      "sha256": "475a379100d51047a39d08e5ac48627ac5bca49dd9bce0dc326f48368b306861"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__internal__fdbclient__fdbclient_test.log",
+      "sha256": "2d47c5f895f79aeb409b104ce3ff37ec24355d462520f0d0f2993e46ecc74e09"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__linters__gofmt__gofmt_test.log",
+      "sha256": "6d91fa3283c9fcd660cd17006e98f508f3d586b97c6cd59c75f6a6e039e49f5f"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__linters__gofumpt__gofumpt_test.log",
+      "sha256": "ce8a99a9ec413dd8756f7f82a6897cf44cbe69be8bcfdd1fde552b0cce075a1f"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__linters__norecover__norecover_test.log",
+      "sha256": "8077f334d21d1acb28be289e421fc6bb6492fb5928d56332c4da13a22c8f7a3f"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__linters__typeimmutable__typeimmutable_test.log",
+      "sha256": "e1e6f46fdf24022c1551ddd7b6a16477e3acc28e0640640a31e122e85437b564"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__rabitq__rabitq_test.log",
+      "sha256": "b6a42420499684dff1bf0beede180155fe5bee9d1bfe29c341ef83368940be22"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__chaos__chaos_test.log",
+      "sha256": "4c6e047591db90301deff596282cbedb397e55853b65406ceb94c2c35b81a6f4"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__keyspace__keyspace_test.log",
+      "sha256": "43a28402688b6c9634d6dbe29ab6f7fa79c10264061fa036d51c230a8d233b24"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__protoname__protoname_test.log",
+      "sha256": "626a093efcd5a6b0c49670fa90a3ea8e24365ed78430b9b5755ea47d032c1e4a"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__query__executor__executor_test.log",
+      "sha256": "1f2dab5b6790f736bb1587c02f7890c407c5d152ee1fa53c7073bfdcd647be99"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__query__plan__cascades__cascades_test.log",
+      "sha256": "f984b0d92a8ff9ecd173fe65b561aa9362efca0d5fd484d3ced772f0d168a83d"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__query__plan__cascades__combinatorics__combinatorics_test.log",
+      "sha256": "d3ec97dbb60ae4a00a27392ef7bf239b5da27138da0308d31a4717cbb9828e04"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__query__plan__cascades__expressions__expressions_test.log",
+      "sha256": "b94dda54fc47287f2111719838e6c0629a7473d101c96d6b37cd2ccc5b1f4409"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__query__plan__cascades__internal__fuzzfloor__fuzzfloor_test.log",
+      "sha256": "1bd383168e175c568cb347aa09dfc827a4bdac071a6b16e95d011f7c5369bdb7"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__query__plan__cascades__matching__matching_test.log",
+      "sha256": "a4ea92a77e1b33e2a1bab17a76f9fa8079f88478c4f9dd76d8e0740a05f73378"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__query__plan__cascades__predicates__predicates_test.log",
+      "sha256": "860fdc641ec5ffeb5f1a856c13c8f852b5a56916ee2ccb60ce684738a30f6ffc"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__query__plan__cascades__properties__properties_test.log",
+      "sha256": "797abc3c88dbb6bfff4c723c4a4f9121ddbf374f0158e0898942a5a10e0b3c1f"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__query__plan__cascades__values__values_test.log",
+      "sha256": "e32b0283ef076fd315a3aa68f105dfb66e7e3dd6466143c2dfeb06885ae204f0"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__query__plan__plans__plans_test.log",
+      "sha256": "9a2c2d1e25b78d00ae9624e1b117242f7bfeb2c891eeec16d307ce4b8adc70b3"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__recordlayer_test.log",
+      "sha256": "e32e40252b5b89eacae7a6e36a4ca6f76477a69677a2ab1337133bd836ffbe03"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__rlmetrics__rlmetrics_test.log",
+      "sha256": "5a7476e741d7888d7c9b34fc5fb0c8cd407154251a38dbc6c94da461f8543b36"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__recordlayer__vectorcodec__vectorcodec_test.log",
+      "sha256": "55a510db44d1c002de900d03320e0828fb4c61082fc01da7562ee356a09fcf94"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__api__api_test.log",
+      "sha256": "ed78ce35b8a14f37713a8583d833f51e23f5d70478103317909d1ef96d9fc3d8"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__conformance__explaindiff__explaindiff_test.log",
+      "sha256": "caba63a45924db7dc47f99cc82b4e406bf9672db1c99b2b87d23678703f2e559"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__conformance__factory__factory_test.log",
+      "sha256": "379f7914cf6793c61ee665b374bfa2ff3c90fc6e550a3557e728ab437f1eb694"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__conformance__factorycorpus__factorycorpus_test.log",
+      "sha256": "d114dcedd5139b04de566b8496b94e4783a628f5fa2f7707b548c901c387a161"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__conformance__factorycorpus__full__full_test.log",
+      "sha256": "167bba701ae2e8b82c039d898cf85e1486524c3e0ac7c6f36323ff8b63870fcb"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__conformance__javacorpus__javacorpus_test.log",
+      "sha256": "acbf3c5acbbf3b72c8089e392622493c2ba8f6544623a0861a329a9e5256fbbc"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__conformance__javayamsql__javayamsql_test.log",
+      "sha256": "990bdb143d1b78a6256ef3a4ddccc8064d84a22f2d203568a32fc6c111c09150"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__conformance__memoinvariant__memoinvariant_test.log",
+      "sha256": "dbb3cbcc2de57af6a41b3b6805b78186440c09a94beef129b9e9487f151f2c29"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__conformance__plandiff__plandiff_test.log",
+      "sha256": "14a7deddbc093c2d4df6f5a1fb9986f7c4c17f97f7379e97ef5db0bfe29c538a"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__conformance__rowdiff__rowdiff_test.log",
+      "sha256": "4de1aa865fe4c3882f5c90a14def78a9a1e60c23bf7fac501ffa6692f7b511b0"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__conformance__yamsql__yamsql_test.log",
+      "sha256": "fc5423f3faaec0ab0703629f13ec2ac28dbd6487a0f986926b4425099c10d891"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__catalog__catalog_test.log",
+      "sha256": "ce09f933b818dd77d839285ada04ac59ab689b9060a226116a389b52b2c2fbb8"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__ddl__ddl_test.log",
+      "sha256": "166420689ea84905bb01ea01edc5d9f25740c5de2bb1d02a6f1cfe632837c2ed"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__embedded__embedded_test.log",
+      "sha256": "81a4dc921e05f953a0a16cbb2167520602b9f29712513dfc496a0ad24501b4cd"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__fleet__fleet_test.log",
+      "sha256": "70f4be5233f6df131e0d368d9b6666c61e47a354d88602b42f25eb1c4c1845e1"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__functions__functions_test.log",
+      "sha256": "c848264892424076d1e514bd32b987c1b544517ffefa3c4bfb334bf3e5dc7a74"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__keyspace__keyspace_test.log",
+      "sha256": "65e85d7ebc2287b80b0391288793c12951709a5bf41a5feb8e9f30a03269e6d3"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__metadata__metadata_test.log",
+      "sha256": "b921421e9956b11cae93167cf249791d26647271ff6b64e84b79356f6047b646"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__parser__parser_test.log",
+      "sha256": "8f4183957f6bb9f7bd5d72406642479b2bdb46f40aa4e9ac89095e5d3b0afa44"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__query__ddl__ddl_test.log",
+      "sha256": "01a4af167287cb66865b659014402c69474236bf1ce831a0182059bf60cb67db"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__query__expr__expr_test.log",
+      "sha256": "07abc97d8a9b15e9bbbe20d95823f9db9c9145216e12186a481e8f7cac7c8675"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__query__logical__logical_test.log",
+      "sha256": "9d4453f0e2934ff47f2e11cb324e61233d524e41f88c6185828bb7b6f1651cfb"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__query__query_test.log",
+      "sha256": "86bd6dcd98922816d123f433f5991d99e8b9324f2503497a4796ced733ddb963"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__query__semantic__rlcatalog__rlcatalog_test.log",
+      "sha256": "4bf4694aca107939a6bede01fd637aa669a941ee5b1b322e01463e009af70459"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__query__semantic__semantic_test.log",
+      "sha256": "5781207df74b154c839b4a3b38c9255bbb21fe00d320337d55552b45ad91b043"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__core__session__session_test.log",
+      "sha256": "c7a660b2adcb877c95ff9dec9bd198415a311c43b94ce8b13f430a2fb0e53415"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__sqldriver__sqldriver_test.log",
+      "sha256": "1f74e298eeff5cf227ddf8cc6b47e02b428ef36cb78dd33f3db52bf3d49f9d76"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__relational__txbudgetcensus__txbudgetcensus_test.log",
+      "sha256": "85fe5ed444f43283a9288285f8201d4f12664ed9532df5f139b9011c8edf8a38"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__simfdb__hunt__atomicops__atomicops_test.log",
+      "sha256": "bfcd4a8c8fb7e2f4629aa7fd228915d8fb4b9d468cd0af98e65114bcbe762d22"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__simfdb__hunt__continuation__continuation_test.log",
+      "sha256": "b0e7c6aa46ec8a640a8183955ef2ed4a8215082aa824f63553d0ec964dba358f"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__simfdb__hunt__golden__golden_test.log",
+      "sha256": "c54f779c47d5200f57ea5fafb5154f5446a6c7752b1ad2682702cf6cd9dfafb0"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__simfdb__hunt__hunt_test.log",
+      "sha256": "9979fbff345348e0a09f891ffa6acc58c0ce14c0cc0ab3e926941d460634c181"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__simfdb__hunt__interleave__interleave_test.log",
+      "sha256": "8fc8aa49f2d531ab2026e06747a661b8bddfa7b52a0c7b366cbd77c2bbd7df12"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__simfdb__hunt__metamorphic__metamorphic_test.log",
+      "sha256": "1b2b97dd71c9e12b88917925700d595f2f06590c67a6509ee4eb002a70183d01"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__simfdb__hunt__rangeconflict__rangeconflict_test.log",
+      "sha256": "1803699e0aaf923cdd78580029a5054e1d1dd5aa6f24c8c6e93da3bb033177bc"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__simfdb__hunt__sqlhunt__sqlhunt_test.log",
+      "sha256": "a77cd61c412302baf00340d7e008c834cd5631c9b2d48644f0e3b3c82ad8bf8b"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__simfdb__hunt__sqlpage__sqlpage_test.log",
+      "sha256": "09ed2bd0e1cd1b89a65aef0d073133746eee9a469e0f983d00f9897b04eec44e"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__simfdb__simfdb_test.log",
+      "sha256": "55fa9db9ad9de459ea3ab414e14984a8fdd9db063e1651ea31b06a40e1dacb71"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__testcontainers__foundationdb__foundationdb_test.log",
+      "sha256": "b501f7c3589e07eacf92c256325275fb012950305d878c91ba6f5d41da458f35"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-logs/pkg__testutil__allocs__allocs_test.log",
+      "sha256": "02bc32c5fec17a97390c62e2b092bbd9fbbe4998eadc74ce715690def1160299"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full-population.json",
+      "sha256": "07362759b2a95b926f0472c05a30ecfde7549ee7209fa27d9882f7c4d45f5a62"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/full.log",
+      "sha256": "91cbacf22b6d6b1c3e520e59e401ed87238d70429a01838a394e281ed841e047"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/fuzz.log",
+      "sha256": "77434905d3b51cb2b534852b32ed86592cdbe8fa0841031d6c0db82cbd2f175c"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/just-test.log",
+      "sha256": "af57351eb3f939b5a7adbdf66e1d1ad2b4408775e2e4d0da986f0a20b4131cf8"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-bep.jsonl",
+      "sha256": "f5e28ca67c9c54f8a5abcaae1d7986eedc449e1b9f1e1efc0d3f3bbe71d24f7d"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/cmd__frl__internal__cmd__cmd_test.log",
+      "sha256": "a71941d602a3c4356464bf2e78eea1cd8abcc8d8ae73ca2ee4550c101ea3c19f"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/conformance__conformance_test.log",
+      "sha256": "6d0169b7b077d4b73bcfefd8e362e751c8d8c8144953da4669393ba0b502eeb2"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/pkg__rabitq__rabitq_test.log",
+      "sha256": "9ab2e6334ad2a47bbaf5c734dcc4ef9a0b3970ab7762883151bae193f8ba2f19"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/pkg__recordlayer__chaos__chaos_test.log",
+      "sha256": "4d7427ed481b13e8d0920fdaa547982913560b1fef900a7eb087ade853ba6ff6"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/pkg__recordlayer__query__executor__executor_test.log",
+      "sha256": "1fc235e595ae5de6cfbe63589ba17afe5068d6e301225772e4fd8c78fee546c4"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/pkg__recordlayer__query__plan__cascades__cascades_test.log",
+      "sha256": "c512b2abc0cefb0d8f0007c75e17267863a38a96413bd14058147427300ab246"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/pkg__recordlayer__query__plan__cascades__values__values_test.log",
+      "sha256": "7c81074fd3e70108fbfc362d91c758f07ae707357a927e32998543609b6fefbe"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/pkg__recordlayer__recordlayer_test.log",
+      "sha256": "84481b516653574d820b19030dc0695106eb329dd7437e1a8cc140433ea801cf"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/pkg__relational__conformance__explaindiff__explaindiff_test.log",
+      "sha256": "664083fee0d26dde124f0a0993ec75634b96ba77bdbf312b8b74d2394949b39e"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/pkg__relational__core__embedded__embedded_test.log",
+      "sha256": "1c51bcfd246a1a0048bc9de4e6d2fd521d32768dfda313bab2f31d39adbfe1f9"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/pkg__relational__core__query__expr__expr_test.log",
+      "sha256": "ee6e6ac11edc20cd232ae52481a75991305d5f27b6066c7989b5d55fd22d7d6e"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/pkg__relational__core__query__logical__logical_test.log",
+      "sha256": "cb3679b19c4b509915897ed7a973bafb6682e8741b8c8444594a42f7f11d2e38"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/pkg__relational__core__query__query_test.log",
+      "sha256": "761bfdfd8e1d4f9fa76cf9fee0800df778e1cefe50b1efebb7ba06821b474ec4"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/pkg__relational__core__query__semantic__semantic_test.log",
+      "sha256": "91ffd739b7da0795e31abfc2efaf28ec735ed45388568cfa16190636315f8101"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-logs/pkg__relational__sqldriver__sqldriver_test.log",
+      "sha256": "b42be824445b854297dd85d18129c8967ac79b523bf44468bc4eabfb8f2fda79"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race-population.json",
+      "sha256": "6f5edae1467fa9bbafc75a183b4a917cd8bdf8ef4d42fd38f82f44ff5944003e"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/race.log",
+      "sha256": "d09cbcb03e90e0acbc31463bfcb4056c620d041970ef5d47307a5f7da4ea7a3f"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/results.json",
+      "sha256": "e92daaa731c5db383cd610af0cc5dfb12d36f692add34f609a6e2bbc13deab49"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/stress-samples.json",
+      "sha256": "7c7e51fc8642e79fa9a24bfd1a2023b0b653d8cdb8691428bb05125359957967"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-verification/tree.txt",
+      "sha256": "a3352e9c4cfda98e1f156a3894822685f0f50ba1363b1c27a4411ad8e257e9ae"
+    }
+  ],
+  "superseded_mutation": "Prior inherited-names mutation killed only an incorrect oracle; INVALID as correctness evidence. Nine current identity/resolved-attribute/output-cardinality/normalization mutations compiled/killed/restored.",
+  "reviews": {
+    "graefe": {
+      "verdict": "ACK implementation code",
+      "tree": "0dedbe1b1083358fb9568a31178084c043fa31e0",
+      "model": "gpt-6-astra",
+      "reasoning": "xhigh",
+      "sandbox": "read-only",
+      "report": "rfcs/257-java-upgrade-audit/recovery-2026-09-20/alias-case-reviews/graefe.txt"
+    },
+    "torvalds": {
+      "verdict": "ACK implementation code",
+      "tree": "0dedbe1b1083358fb9568a31178084c043fa31e0",
+      "model": "gpt-6-astra",
+      "reasoning": "xhigh",
+      "sandbox": "read-only",
+      "report": "rfcs/257-java-upgrade-audit/recovery-2026-09-20/alias-case-reviews/torvalds.txt"
+    },
+    "independent": {
+      "verdict": "ACK implementation code",
+      "tree": "0dedbe1b1083358fb9568a31178084c043fa31e0",
+      "model": "gpt-6-astra",
+      "reasoning": "xhigh",
+      "sandbox": "read-only",
+      "report": "rfcs/257-java-upgrade-audit/recovery-2026-09-20/alias-case-reviews/independent.txt"
+    }
+  }
+}

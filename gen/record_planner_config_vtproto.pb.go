@@ -91,6 +91,11 @@ func (m *PlannerConfiguration) MarshalToSizedBufferVT(dAtA []byte) (int, error) 
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if m.VectorIndexEnginePreference != nil {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(*m.VectorIndexEnginePreference))
+		i--
+		dAtA[i] = 0x78
+	}
 	if m.MaxNumReplansForInUnion != nil {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(*m.MaxNumReplansForInUnion))
 		i--
@@ -292,6 +297,9 @@ func (m *PlannerConfiguration) SizeVT() (n int) {
 	}
 	if m.MaxNumReplansForInUnion != nil {
 		n += 1 + protohelpers.SizeOfVarint(uint64(*m.MaxNumReplansForInUnion))
+	}
+	if m.VectorIndexEnginePreference != nil {
+		n += 1 + protohelpers.SizeOfVarint(uint64(*m.VectorIndexEnginePreference))
 	}
 	n += len(m.unknownFields)
 	return n
@@ -718,6 +726,26 @@ func (m *PlannerConfiguration) UnmarshalVT(dAtA []byte) error {
 				}
 			}
 			m.MaxNumReplansForInUnion = &v
+		case 15:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field VectorIndexEnginePreference", wireType)
+			}
+			var v PlannerConfiguration_VectorIndexEnginePreference
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= PlannerConfiguration_VectorIndexEnginePreference(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.VectorIndexEnginePreference = &v
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])

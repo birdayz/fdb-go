@@ -124,7 +124,7 @@ func TestFDB_NestedMergeLegProjectedExistsFold(t *testing.T) {
 			"CREATE TABLE tc (cid BIGINT, k BIGINT, cv BIGINT, cw BIGINT, PRIMARY KEY (cid)) "+
 			"CREATE TABLE tp (pid BIGINT, owner BIGINT, PRIMARY KEY (pid))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nested_merge_leg/s WITH TEMPLATE nested_merge_leg")
-	dsn := fmt.Sprintf("fdbsql:///testdb_nested_merge_leg?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_NESTED_MERGE_LEG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -271,7 +271,7 @@ func TestFDB_PredicateFreeCommaJoinProjectedExists(t *testing.T) {
 			"CREATE TABLE tc (cid BIGINT, k BIGINT, cv BIGINT, cw BIGINT, PRIMARY KEY (cid)) "+
 			"CREATE TABLE tp (pid BIGINT, owner BIGINT, PRIMARY KEY (pid))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nested_merge_nopred/s WITH TEMPLATE nested_merge_nopred")
-	dsn := fmt.Sprintf("fdbsql:///testdb_nested_merge_nopred?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_NESTED_MERGE_NOPRED?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

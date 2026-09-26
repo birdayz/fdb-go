@@ -62,7 +62,7 @@ func TestFDB_NonNullableArrayEmptyReadsBack(t *testing.T) {
 			"CREATE TABLE t (pk BIGINT, tag BIGINT, arr INTEGER ARRAY, arr_nn INTEGER ARRAY NOT NULL, PRIMARY KEY (pk)) "+
 			"CREATE INDEX t_tag AS SELECT tag FROM t")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nnarr/s WITH TEMPLATE nnarr")
-	dsn := fmt.Sprintf("fdbsql:///testdb_nnarr?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_NNARR?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

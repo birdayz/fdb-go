@@ -48,7 +48,7 @@ func TestFDB_UnnestMemberPredicateServesRows(t *testing.T) {
 			"CREATE TYPE AS STRUCT item (sku STRING, qty BIGINT) "+
 			"CREATE TABLE orders (order_id BIGINT, items item ARRAY, PRIMARY KEY (order_id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_umpr/s WITH TEMPLATE umpr")
-	dsn := fmt.Sprintf("fdbsql:///testdb_umpr?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_UMPR?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

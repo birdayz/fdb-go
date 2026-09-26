@@ -1,0 +1,24 @@
+**NAK — WS-A + WS-E1 implementation code** at tree `a8940de29c3726e44d5e14779f321b732e11be88`, relative to base `71ccd8cf8b3fd0dbafe283e91171818e36af555e`. Java reference: `fdacd162a9c8acfadc49082b89185c823ab8ae4a`.
+
+Two implementation fixes are required:
+
+1. **[P2] Mixed-star expansion leaves sorting and grouping with inconsistent output positions.** Early expansion is restricted to queries containing aggregates at [select_parser.go:1159](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:1159). Consequently, on `t(id,v)`, `SELECT *, 8 AS x FROM t ORDER BY 3` reaches positional validation with two parser entries rather than three output columns and returns an out-of-range error. Grouping without aggregates also encounters the blanket star rejection at [select_parser.go:1522](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:1522), even when every expanded column is grouped.
+
+   There is another mismatch after aggregate-star expansion: [select_parser.go:1382](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:1382) indexes the original parser elements using an expanded output position. For `SELECT *, 8 AS x, COUNT(*) FROM t GROUP BY 1,2`, position 2 can select the literal `8` instead of `v`.
+
+   **Fix:** establish one expanded output-slot mapping before positional resolution and grouping validation, and carry it through the visitor. Preserve each slot’s bound column/expression. Add zero-, one-, and multi-column star cases, including grouping without aggregates. Java’s corresponding validation checks expanded expressions individually at [LogicalOperator.java:437](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/LogicalOperator.java:437); the measured primary-key ordering boundary does not justify these earlier classification failures.
+
+2. **[P2] Checked array reconstruction now panics where the base returned a typed error.** [value_array_constructor.go:121](/home/birdy/projects/fdb-go/pkg/recordlayer/query/plan/cascades/values/value_array_constructor.go:121) calls `child.Type().Equals(...)` after checking only that the child itself is nonnil. A nonnil replacement such as `&DerivedValue{}` has a nil result type and panics through `WithChildrenChecked`, before evaluation. The diff explicitly removes the previous `isNilBinding(childType)` / `TypeNil` guard.
+
+   **Fix:** capture and validate each replacement’s type before calling `Equals`; retain the typed diagnostic. Cover nil and typed-nil result types.
+
+These are static source findings; I ran no tests or builds and changed no files or Git state. The review covered the milestone diff and corresponding Java implementation, including generated schema changes; all 16 canonical protos match the specified Java commit. The supplied uncached log records 92/92 passing targets, and the changed candidate blobs match the supplied freeze manifest. Those passes do not close the gaps above.
+
+Unmet verification/publication gates remain separate:
+
+- Complete and reconcile the six-target runtime race run; no pass is credited here.
+- Complete the required new-machine baseline/current 1M comparison.
+- The original executor startup timeout remains undiagnosed. The repaired host/container coordinator mismatch is a separate failure.
+- Obtain implementation approval after fixes and retain current evidence for required gates; unrecovered historical reports cannot substitute. Legacy RaBitQ disable/rebuild remains mandatory before deployment.
+
+This verdict neither completes WS-B–WS-K nor approves publication or merge. Design ACKs and the recovery security ACK remain scoped to their original purposes.

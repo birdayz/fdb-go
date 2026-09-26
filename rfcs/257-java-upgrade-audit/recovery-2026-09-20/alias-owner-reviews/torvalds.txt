@@ -1,0 +1,27 @@
+**ACK — WS-A/WS-E1 IMPLEMENTATION CODE** at frozen tree `36a716b31e3f6e0596377fd76167da46e143a549`.
+
+I reviewed all four reports, the complete 15-file tree-to-tree delta, frozen test contents, necessary downstream interactions, and Java source at `fdacd162a9c8acfadc49082b89185c823ab8ae4a`. **No remaining implementation defect identified; no further code fix required.**
+
+The prior NAK is closed:
+
+- [plan_visitor.go:1669](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/plan_visitor.go:1669) carries the selected output position and native aggregate ordinal across construction. [logical_builder.go:697](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_builder.go:697) preserves the same ownership while modifying a local ORDER-clause copy.
+- [logical_predicate.go:6156](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:6156) copies the exact selected projection Value. The guard at line 6176 protects both that binding and surviving slot references from subsequent name lookup. Authored numeric classification remains separate at line 6148, preserving mixed numeric/name duplicate rejection without changing named-only semantics.
+- [logical_builder.go:1016](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_builder.go:1016), [logical_predicate.go:6189](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:6189), and [logical_predicate.go:3154](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:3154) resolve aliases from authored identifier segments. This closes the classifier, GROUP-source collision, and ambiguity-validation holes. Qualified/computed expressions cannot alias-bind; the redundant private walker is removed.
+- [cascades_translator.go:6502](/home/birdy/projects/fdb-go/pkg/relational/core/query/cascades_translator.go:6502) consumes native ordinals against the actual aggregate-row owner; line 6520 binds structural drafts. The corrected SortKey comment matches that contract.
+
+Regression coverage discriminates ownership:
+
+- [order_by_exact_metadata_test.go:713](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/order_by_exact_metadata_test.go:713) checks exact projection pointers and explicit P ownership. Line 736 actually invokes the uncatalogued visitor constructor; line 746 checks selected/native positions and the qualified secondary key. Line 782 distinguishes Q/P owners.
+- [no_from_select_probe_test.go:72](/home/birdy/projects/fdb-go/pkg/relational/sqldriver/no_from_select_probe_test.go:72) pins the original reproducer’s labels `Z,P.ID` and rows `(1,2),(1,1),(2,2),(2,1)`, alongside fourteen related cases. Full rows, labels, iteration errors, and negative SQLSTATEs are asserted.
+- All seven recorded mutation-source hashes, log hashes, and failure lists reconcile. The completed Java probe’s **22 records exactly match candidate expectations**. Java retains the matched expression at [QueryVisitor.java:955](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/visitors/QueryVisitor.java:955); its ephemeral-scope removal explains the GROUP-only **42703**. Java refusals remain distinct from independently asserted Go extensions.
+
+All **6,391 frozen file hashes** match the candidate tree.
+
+Separate unmet verification/publication gates:
+
+- At **10:17 CEST**, the final-verification directory contained no completed `results.json` or population JSON. Full93, race14, 30-second/four-worker fuzz, `just test`, and nominal1M ABBA remain **uncredited**, without a failure/success inference or polling. Earlier-tree greens and the zero-test failed fuzz invocation do not validate this candidate; focused evidence predates the constructor-test correction.
+- The <5ms aspiration remains unmet; no universal performance parity is established. Historical executor startup-timeout causation still requires unavailable original artifacts.
+- Legacy RaBitQ disable/rebuild remains a deployment prerequisite. WS-B–K and whole-upgrade completion remain open.
+- Commit/push/merge remain forbidden; PR786 stays draft/unchanged.
+
+Accepted storage/RaBitQ/array/descriptor/fixture scope and approved extensions remain accepted. FDB C++ remains **7.3.77**. Review was read-only; no builds/tests, agents, Git-state changes, or GitHub contact occurred.

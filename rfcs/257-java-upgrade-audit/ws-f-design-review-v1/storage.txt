@@ -1,0 +1,77 @@
+**NAK.** I reviewed tree `5e7c222e40d0557ef65133a8d7da0d88472b7ac4`; the design's SHA256 re-computes to `6151d5873435054f6f34367102ef80cc01391c9931df82850dc42fa52dcc25de`. Nothing was run or edited.
+
+### High
+
+**H1. The ported InUnion size check would break Go-built IN-unions (4.2).** Java throws when the IN list is longer than the configured size (`RecordQueryInUnionPlan.java:151-154`), and its rule always passes the configured size (`ImplementInUnionRule.java:171-212`).
+- Go has its own unordered arm that hard-codes size 0: `rule_implement_in_union.go:395-397`. The ordered arm also falls back to 0 when there is no context (`:371-374`).
+- Once the check is ported, every plan from that arm fails at execution, even under SQL's 24. So the design's "the SQL path's 24 then bounds SQL IN-unions" is false for these plans.
+- Order also matters. Go picks InUnion where the target picks SCAN plus FILTER (oracle row `w8_in_union_explain`). If the check lands before 4.3, Go queries with more than 24 IN values that Java answers start failing.
+- Required:
+  - decide whether the Go-only arm is deleted or gets the configured size;
+  - land the check with or after 4.3;
+  - pin a list of more than 24 literals and a bound array of more than 24 values, with rows from both engines;
+  - update `in_union.go:23-37`, because the size now changes execution, not just planning.
+
+**H2. "The rung itself does not change" (4.2) is wrong.**
+- Java prefers the index only for one pair: a lone primary scan against a single index scan with a fetch. Every other pair is left to later rungs (`PlanningCostModel.java:465-501`).
+- Go's PREFER_INDEX arm penalises the lone primary scan against *every* plan (`planning_cost_model.go:1263-1271`), including covering scans that don't fetch and multi-access plans.
+- That arm has never been reachable from SQL (`plan_context.go:87-89`), so it was never checked against Java.
+- Under PREFER_INDEX, Java's rung is also not a total preorder. The design handles that problem for the vector rung (4.1 item 7) but not here.
+- Before F-7: measure the affected pairs on the JVM and derive Go's ranking from them. F-7's blast radius is larger than "ties flip to the index".
+
+### Medium
+
+**M1. The oracle hides Go setup failures, so one MEASURED claim is wrong.**
+- `runEphemeral` wraps a setup failure in `FixtureError` (`go_runner.go:228-231`). The oracle's `render` unwraps it to `*api.Error` and prints the setup error as the probe's own answer.
+- In the dotted-name group, the setup INSERT fails (`cascades_generator.go:7104` re-splits the name). So Go's SELECT and EXPLAIN-SELECT probes never ran.
+- Go's scan path already carries typed segments (`operators.go:82-85`, `cascades_generator.go:7081-7082`).
+- The claims in 0.1, 0.2 and 9.2 that Go fails SELECT and EXPLAIN are therefore unmeasured. Render `FixtureError` with its phase, re-run, and correct them. The INSERT/UPDATE/DELETE, predicate and parser sites in 9.2 still stand.
+
+**M2. Two steps are labelled "no plan change" but change plans.**
+- In step 5 (F-3), D7 makes aggregate plans report distinct records. W12 (F-2) adds the same for EXPLODE with ordinality.
+- Both let DISTINCT removal fire. Today `plan_properties.go:74-157` has neither arm and answers false by default.
+- Section 3.4 says steps 1–6 change no plan shape, and section 12 lists only F-1/F-5/F-6/F-7 as plan-changing.
+- A wrong "true" here drops a DISTINCT and returns duplicate rows. Each Go aggregate mode (permuted MIN/MAX repair, vacated-group drop, `liveGroupsOnly`) needs a distinctness proof, and those steps need the golden diff.
+
+**M3. Plan changes invalidate in-flight continuations, which D9 doesn't say.**
+- D9 says "no Go continuation change", but F-1, F-5, F-6 and F-7 change the leaf scan: primary to index, fetch to covering, covering to fetch.
+- That changes the continuation salt's domain or covering flag (`scan_range_execution_identity.go:346-453`), so continuations minted before the upgrade are rejected (`scan_range_set_cursor.go:150-154`).
+- Rejection is the safe outcome, but it should be stated and pinned: for each plan flip, one pre-flip continuation must be rejected with the typed error, never resumed.
+
+**M4. The W6 plannability gate may never close.**
+- Step 7 requires an empty census, with each entry re-derived by a Java PLANNING mechanism that produces the lost plan.
+- Where Go's current plan is not the target's, no such mechanism exists. The gate then cannot close unless it is loosened.
+- Split the exit rule:
+  - a query that loses its plan: zero allowed, no exceptions;
+  - a shape change: closes only with a JVM-measured "target-equal" or "target-closer" classification;
+  - re-derivation: only where the target keeps the old plan.
+
+### Low
+
+- **W11 error message.** "Only set fields render, so the rank-scan message is unchanged" is false.
+  - `rank_scan.go:26` always renders both fields. The sites at `rank_scan.go:37/49/83` set one field; `pending_writes_queue.go:122,134` and `split_helper.go:47` set neither. All of those messages change.
+  - Java attaches the plan's class name (`QueryPlanUtils.java:55-56`), so the new field should be a string.
+  - The grep for zero-valued isolation must also catch partial struct literals such as `ExecuteProperties{ReturnedRowLimit: 5}`.
+- **Nil options in 4.2.** `plannerOptionsFrom(nil)` returns the record-layer default early (`planner_options.go:75-78`). Java's no-options path still builds PREFER_INDEX and 24. The test-harness paths use nil, and `planner_options_test.go:344-356` pins the old default.
+- **D7 continuation salt.** Leaving the reader out matches Java's continuation hash (`RecordQueryCoveringIndexValuePlan.java:313-318`). It contradicts Go's own rule for the old covering plan, whose salt includes the covering columns because they change how rows are built (`scan_range_execution_identity.go:359-362`). Justify the difference or include it. Also add a tie-break hash arm; without one, ties are decided by map order (`planning_cost_model.go:3167-3181`).
+- **9.2 cross-engine pin.** Add a write/read pin for the quoted dotted table: Go INSERT then Java SELECT, and the reverse. That is the check that stored record-type names match.
+- **Dependency pointer.** The umbrella's WS-G section lists fields 7/8, 41, 3 and 15, but not the leaf `TupleSource` mapping that D9 says is "listed there".
+
+### Verified
+- **Java source:**
+  - InUnion check and record-layer default 0;
+  - relational configuration (`PlannerConfiguration.java:158-169`) and the cache key carrying it (`QueryCacheKey.java:127,142`);
+  - cost-rung order (`:182-207`);
+  - covering-Value equality and hashes;
+  - EXPLODE hash term only when zero-based, and its distinct arm;
+  - `enforceSerializable`.
+- **Go source:**
+  - W9 cause (`match_max_match_map.go:76-90`);
+  - the eight `ResolveQualifiedTableName` call sites;
+  - isolation zero value is SNAPSHOT;
+  - `PlanHash` is not embedded in continuations, and the tie-break hash uses stored names, so decoding display names in explain is safe.
+- **Other workstreams:** WS-E 6.6 exists as cited (`ws-e-design.md:885-889`).
+- **Oracle:** 36 probes with pins; the wsf-5 log shows 1 spec passed; the mutation run reddened.
+
+### Not covered
+I did not check W6 D1–D12 line by line against `CascadesPlanner`, and I did not read `scheduling.txt` in full.

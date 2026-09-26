@@ -1,0 +1,12 @@
+[
+  {
+    "name": "omit-state-conflict",
+    "exit": 3,
+    "compiled_and_killed": true
+  },
+  {
+    "name": "isolate-state-handles",
+    "exit": 1,
+    "compiled_and_killed": false
+  }
+]

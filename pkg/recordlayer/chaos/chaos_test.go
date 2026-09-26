@@ -492,7 +492,7 @@ func TestRandomWithCountUpdatesIndex(t *testing.T) {
 // --- MULTIDIMENSIONAL index chaos tests ---
 
 // buildMultidimensionalMetadata creates metadata with a MULTIDIMENSIONAL index
-// on Order's price and quantity fields as 2D spatial coordinates.
+// on Order's coord_x and coord_y fields, int64 as Java's dimensions must be.
 func buildMultidimensionalMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
 	builder.SetRecords(gen.File_record_layer_demo_proto)
@@ -501,9 +501,9 @@ func buildMultidimensionalMetadata() *recordlayer.RecordMetaData {
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 	builder.SetRecordCountKey(recordlayer.EmptyKey())
 	builder.AddIndex("Order", recordlayer.NewMultidimensionalIndex(
-		"order_price_qty_md",
+		"order_coords_md",
 		recordlayer.Dimensions(
-			recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")),
+			recordlayer.Concat(recordlayer.Field("coord_x"), recordlayer.Field("coord_y")),
 			0, // prefix size
 			2, // dimensions
 		),
@@ -523,23 +523,23 @@ func TestMultidimensionalBasicSave(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	s.SaveRecord(&gen.Order{
-		OrderId:  proto.Int64(1),
-		Price:    proto.Int32(100),
-		Quantity: proto.Int32(10),
+		OrderId: proto.Int64(1),
+		CoordX:  proto.Int64(100),
+		CoordY:  proto.Int64(10),
 	})
 	s.Verify()
 
 	s.SaveRecord(&gen.Order{
-		OrderId:  proto.Int64(2),
-		Price:    proto.Int32(200),
-		Quantity: proto.Int32(20),
+		OrderId: proto.Int64(2),
+		CoordX:  proto.Int64(200),
+		CoordY:  proto.Int64(20),
 	})
 	s.Verify()
 
 	s.SaveRecord(&gen.Order{
-		OrderId:  proto.Int64(3),
-		Price:    proto.Int32(300),
-		Quantity: proto.Int32(30),
+		OrderId: proto.Int64(3),
+		CoordX:  proto.Int64(300),
+		CoordY:  proto.Int64(30),
 	})
 	s.Verify()
 }
@@ -553,9 +553,9 @@ func TestMultidimensionalCommitUnknownInsert(t *testing.T) {
 
 	s.InjectOnce(FaultCommitUnknown)
 	s.SaveRecord(&gen.Order{
-		OrderId:  proto.Int64(1),
-		Price:    proto.Int32(100),
-		Quantity: proto.Int32(10),
+		OrderId: proto.Int64(1),
+		CoordX:  proto.Int64(100),
+		CoordY:  proto.Int64(10),
 	})
 	s.Verify() // R-tree must have exactly 1 entry, not 2
 }
@@ -569,18 +569,18 @@ func TestMultidimensionalCommitUnknownOverwrite(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	s.SaveRecord(&gen.Order{
-		OrderId:  proto.Int64(1),
-		Price:    proto.Int32(100),
-		Quantity: proto.Int32(10),
+		OrderId: proto.Int64(1),
+		CoordX:  proto.Int64(100),
+		CoordY:  proto.Int64(10),
 	})
 	s.Verify()
 
 	// Overwrite with different coordinates under commit-unknown.
 	s.InjectOnce(FaultCommitUnknown)
 	s.SaveRecord(&gen.Order{
-		OrderId:  proto.Int64(1),
-		Price:    proto.Int32(999),
-		Quantity: proto.Int32(99),
+		OrderId: proto.Int64(1),
+		CoordX:  proto.Int64(999),
+		CoordY:  proto.Int64(99),
 	})
 	s.Verify() // Old (100,10) gone, new (999,99) present, exactly 1 entry
 }
@@ -593,14 +593,14 @@ func TestMultidimensionalCommitUnknownDelete(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	s.SaveRecord(&gen.Order{
-		OrderId:  proto.Int64(1),
-		Price:    proto.Int32(100),
-		Quantity: proto.Int32(10),
+		OrderId: proto.Int64(1),
+		CoordX:  proto.Int64(100),
+		CoordY:  proto.Int64(10),
 	})
 	s.SaveRecord(&gen.Order{
-		OrderId:  proto.Int64(2),
-		Price:    proto.Int32(200),
-		Quantity: proto.Int32(20),
+		OrderId: proto.Int64(2),
+		CoordX:  proto.Int64(200),
+		CoordY:  proto.Int64(20),
 	})
 	s.Verify()
 
@@ -625,9 +625,9 @@ func TestMultidimensionalRandomStress(t *testing.T) {
 		if s.Rng.Float64() < 0.7 {
 			// 70% saves with random coordinates.
 			s.SaveRecord(&gen.Order{
-				OrderId:  proto.Int64(pk),
-				Price:    proto.Int32(s.Rng.Int32N(1000)),
-				Quantity: proto.Int32(s.Rng.Int32N(500)),
+				OrderId: proto.Int64(pk),
+				CoordX:  proto.Int64(s.Rng.Int64N(1000)),
+				CoordY:  proto.Int64(s.Rng.Int64N(500)),
 			})
 		} else {
 			// 30% deletes.
@@ -703,7 +703,9 @@ func TestVectorBasicSave(t *testing.T) {
 }
 
 // TestVectorCommitUnknownInsert injects commit-unknown on an insert.
-// VECTOR/HNSW insert is idempotent (same PK replaces), so retry is safe.
+// A retry after a commit that landed finds the record stored and its vector
+// entry unchanged, which the maintainer skips (as Java's
+// StandardIndexMaintainer.update does), so retry is safe.
 func TestVectorCommitUnknownInsert(t *testing.T) {
 	t.Parallel()
 	md := buildVectorMetadata()
@@ -719,8 +721,9 @@ func TestVectorCommitUnknownInsert(t *testing.T) {
 }
 
 // TestVectorCommitUnknownOverwrite injects commit-unknown on an overwrite.
-// First save inserts; second save with same PK + commit-unknown does delete+insert
-// which commits, then retry does delete+insert again — idempotent.
+// First save inserts; the second save of the same PK with a new vector deletes
+// the old node and inserts the new one, and commits; the retry then finds the
+// new vector stored, an unchanged entry, and makes no graph call.
 func TestVectorCommitUnknownOverwrite(t *testing.T) {
 	t.Parallel()
 	md := buildVectorMetadata()
@@ -829,13 +832,13 @@ func buildVectorHighDimRaBitQMetadata() *recordlayer.RecordMetaData {
 		128,
 	)
 	vecIdx.Options["hnswUseRaBitQ"] = "true"
-	// Establish the RaBitQ centroid after a few inserts so the small chaos dataset
+	// Establish the RaBitQ centroid at the minimum valid threshold so this dataset
 	// actually exercises the quantization regime (and the mid-stream plain→RaBitQ
 	// transition) under faults. Without this, Java parity stores everything plain
 	// (noOp quantizer until StatsThreshold=1000), bypassing RaBitQ entirely.
 	vecIdx.Options["hnswSampleVectorStatsProbability"] = "1.0"
 	vecIdx.Options["hnswMaintainStatsProbability"] = "1.0"
-	vecIdx.Options["hnswStatsThreshold"] = "3"
+	vecIdx.Options["hnswStatsThreshold"] = "11"
 	builder.AddIndex("Order", vecIdx)
 
 	md, err := builder.Build()
@@ -846,7 +849,7 @@ func buildVectorHighDimRaBitQMetadata() *recordlayer.RecordMetaData {
 }
 
 // TestVectorHighDimRaBitQBasic validates that 128D RaBitQ vector indexing works
-// end-to-end: insert 10 records with random 128D vectors, then verify search
+// end-to-end: insert 16 records with random 128D vectors, then verify search
 // returns correct nearest neighbors. No fault injection — validates the
 // RaBitQ pipeline (quantization + encoding + distance estimation) works.
 func TestVectorHighDimRaBitQBasic(t *testing.T) {
@@ -858,7 +861,7 @@ func TestVectorHighDimRaBitQBasic(t *testing.T) {
 	ctx, cancelCtx := chaosRunContext(0)
 	defer cancelCtx()
 
-	const numVectors = 10
+	const numVectors = 16
 	const dims = 128
 
 	// Deterministic PRNG for reproducible vectors.
@@ -874,7 +877,7 @@ func TestVectorHighDimRaBitQBasic(t *testing.T) {
 		vectors[i] = vec
 	}
 
-	// Insert all 10 records in a single transaction.
+	// Insert enough records to cross the minimum valid stats threshold (11).
 	_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).
@@ -900,6 +903,8 @@ func TestVectorHighDimRaBitQBasic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert records: %v", err)
 	}
+
+	assertChaosRaBitQActive(t, db, md, sub, "order_vec_128d_rabitq")
 
 	// Search for k=5 nearest to vectors[0]. Self should be closest.
 	_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -1328,7 +1333,7 @@ func TestVectorHighDimRaBitQCommitUnknown(t *testing.T) {
 	// pipeline + the plain→RaBitQ transition under commit_unknown faults.
 	vecIdx.Options["hnswSampleVectorStatsProbability"] = "1.0"
 	vecIdx.Options["hnswMaintainStatsProbability"] = "1.0"
-	vecIdx.Options["hnswStatsThreshold"] = "3"
+	vecIdx.Options["hnswStatsThreshold"] = "11"
 	builder.AddIndex("Order", vecIdx)
 
 	md, err := builder.Build()
@@ -1337,6 +1342,13 @@ func TestVectorHighDimRaBitQCommitUnknown(t *testing.T) {
 	}
 
 	s := NewScenario(t, testRealDB, md, WithSeed(99887), WithFaults(FaultsRetryHeavy))
+
+	// Commit enough distinct authoritative records to establish the centroid
+	// and then write a quantized node, even if every subsequent update repeats.
+	for pk := int64(1); pk <= 13; pk++ {
+		s.SaveRecord(&gen.Order{OrderId: proto.Int64(pk), Price: proto.Int32(int32(pk * 7)), Quantity: proto.Int32(int32(pk * 11))})
+	}
+	assertChaosRaBitQActive(t, s.cleanDB, md, s.sub, "order_vec_rabitq_chaos")
 
 	const numOps = 20
 	for i := 0; i < numOps; i++ {
@@ -1358,8 +1370,9 @@ func TestVectorHighDimRaBitQCommitUnknown(t *testing.T) {
 
 // --- COUNT_NOT_NULL chaos tests ---
 
-// buildCountNotNullMetadata creates metadata with a COUNT_NOT_NULL index.
-// Groups by price — only counts records where price is actually set (non-nil).
+// buildCountNotNullMetadata creates metadata with a COUNT_NOT_NULL index: per
+// quantity, the records whose price is set (non-nil). Java's validator needs
+// the counted field grouped (validateGrouping(1)).
 func buildCountNotNullMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
 	builder.SetRecords(gen.File_record_layer_demo_proto)
@@ -1368,7 +1381,7 @@ func buildCountNotNullMetadata() *recordlayer.RecordMetaData {
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 	builder.SetRecordCountKey(recordlayer.EmptyKey())
 	builder.AddIndex("Order", recordlayer.NewCountNotNullIndex("order_count_not_null_by_price",
-		recordlayer.GroupAll(recordlayer.Field("price"))))
+		recordlayer.GroupBy(recordlayer.Field("price"), recordlayer.Field("quantity"))))
 	md, err := builder.Build()
 	if err != nil {
 		panic("chaos: failed to build count_not_null metadata: " + err.Error())
@@ -1453,4 +1466,61 @@ func TestRandomWithCountNotNullIndex(t *testing.T) {
 	}
 	s.Verify()
 	t.Logf("completed %d ops, %d faults injected", numOps, len(s.FaultLog()))
+}
+
+// assertChaosRaBitQActive witnesses the committed bootstrap and quantized-write
+// routes independently of approximate search results. Java's access tuple puts
+// the centroid at slot 4; node slot 1 holds a vector tuple with type byte 3.
+func assertChaosRaBitQActive(t *testing.T, db *recordlayer.FDBDatabase, md *recordlayer.RecordMetaData, sub subspace.Subspace, name string) {
+	t.Helper()
+	ctx, cancel := chaosRunContext(0)
+	defer cancel()
+	_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(sub).Open()
+		if err != nil {
+			return nil, err
+		}
+		indexSub := store.IndexSubspace(md.GetIndex(name))
+		data, err := rtx.Transaction().Get(indexSub.Sub(int64(1)).Pack(nil)).Get()
+		if err != nil {
+			return nil, err
+		}
+		access, err := tuple.Unpack(data)
+		if err != nil {
+			return nil, err
+		}
+		if len(access) != 5 || access[4] == nil {
+			return nil, fmt.Errorf("%s: committed centroid missing: %v", name, access)
+		}
+		nodes, err := rtx.Transaction().GetRange(indexSub.Sub(int64(0)), fdb.RangeOptions{}).GetSliceWithError()
+		if err != nil {
+			return nil, err
+		}
+		quantized := 0
+		for _, kv := range nodes {
+			node, err := tuple.Unpack(kv.Value)
+			if err != nil {
+				return nil, err
+			}
+			if len(node) < 2 {
+				return nil, fmt.Errorf("%s: malformed node %v", name, node)
+			}
+			vector, ok := node[1].(tuple.Tuple)
+			if !ok || len(vector) != 1 {
+				return nil, fmt.Errorf("%s: malformed vector %v", name, node[1])
+			}
+			encoded, ok := vector[0].([]byte)
+			if ok && len(encoded) > 0 && encoded[0] == 3 {
+				quantized++
+			}
+		}
+		if quantized == 0 {
+			return nil, fmt.Errorf("%s: %d nodes but no committed RaBitQ vector; chaos never reached quantized writes", name, len(nodes))
+		}
+		t.Logf("RABITQ-ACTIVE %s: committed centroid and %d quantized node layers", name, quantized)
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 }

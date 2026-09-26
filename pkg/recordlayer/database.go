@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -606,6 +607,13 @@ type versionMutation struct {
 	value        []byte
 }
 
+// commitCheckRegistration keeps a canceled check distinguishable from a new
+// registration with the same name, including during a pre-commit snapshot.
+type commitCheckRegistration struct {
+	check  CommitCheckFunc
+	active bool // protected by FDBRecordContext.commitMu
+}
+
 // FDBRecordContext represents a transactional context for record operations.
 // It wraps an FDB transaction and provides additional record layer functionality.
 // Goroutine-safe: all mutable fields are protected by atomics, mutexes, or the
@@ -641,9 +649,10 @@ type FDBRecordContext struct {
 
 	// Commit hooks — matches Java's CommitCheckAsync / PostCommit.
 	// Java uses synchronized blocks on all access.
-	commitMu     sync.Mutex
-	commitChecks []CommitCheckFunc
-	postCommits  []PostCommitFunc
+	commitMu          sync.Mutex
+	commitChecks      []*commitCheckRegistration
+	namedCommitChecks map[string]*commitCheckRegistration
+	postCommits       []PostCommitFunc
 
 	// Diagnostic: tracked read conflict ranges for debugging
 	conflictMu     sync.Mutex
@@ -672,6 +681,11 @@ type FDBRecordContext struct {
 	// stores.
 	sessionMu sync.Mutex
 	session   map[string]any
+
+	pendingWriteQueueOptions atomic.Pointer[PendingWriteQueueOptions]
+
+	indexStateMu    sync.Mutex
+	indexStateViews map[string]*transactionIndexStateView
 }
 
 // Env returns the DST environment for this context (Clock + Randomness + Buggify),
@@ -847,42 +861,17 @@ func (e *TransactionSizeWarningError) Error() string {
 	return fmt.Sprintf("transaction size %d bytes exceeds warning threshold %d bytes", e.CurrentBytes, e.LimitBytes)
 }
 
-// Commit commits the transaction.
-//
-// Records EventCommit, as every commit path must. Java has ONE commit method
-// (FDBRecordContext.commitAsync) and it records the event unconditionally
-// (FDBRecordContext.java:513-533); Go splits that method three ways — here,
-// CommitWithHooks and CommitWithVersionstamp — and a split where only one arm
-// records turns the metric into a function of which API the caller happened to
-// pick. Only CommitWithVersionstamp recorded, which is why explicit SQL
-// transactions committed on every COMMIT statement and reported none.
+// Commit runs pre-commit checks, flushes pending version mutations, commits the
+// transaction, and runs post-commit callbacks. All explicit commit APIs share
+// this lifecycle, matching Java's FDBRecordContext.commitAsync().
 func (rc *FDBRecordContext) Commit() error {
-	commitStart := time.Now()
-	err := rc.tx.Commit().Get()
-	rc.Timer().RecordSince(EventCommit, commitStart)
+	_, err := rc.CommitWithVersionstamp()
 	return err
 }
 
-// CommitWithHooks runs pre-commit checks, flushes pending version mutations,
-// commits the FDB transaction, and runs post-commit callbacks.
-// Use this instead of Commit() when the context was created manually (not via Run()).
-//
-// The EventCommit span starts before the pre-commit checks and ends when the
-// commit resolves, which is Java's interval — its startTimeNanos is taken at the
-// first line of commitAsync, ahead of runCommitChecks, and the post-commit hooks
-// are chained after the event is recorded (FDBRecordContext.java:478, :513-533).
+// CommitWithHooks is an alias for Commit; checks and hooks always run.
 func (rc *FDBRecordContext) CommitWithHooks() error {
-	commitStart := time.Now()
-	if err := rc.runCommitChecks(); err != nil {
-		return err
-	}
-	rc.flushVersionMutations()
-	if err := rc.tx.Commit().Get(); err != nil {
-		return err
-	}
-	rc.Timer().RecordSince(EventCommit, commitStart)
-	rc.runPostCommits()
-	return nil
+	return rc.Commit()
 }
 
 // Cancel cancels the transaction
@@ -930,17 +919,23 @@ func (rc *FDBRecordContext) RemoveLocalVersion(versionKey []byte) {
 // mutationType selects SET_VERSIONSTAMPED_KEY or SET_VERSIONSTAMPED_VALUE.
 // The key or value (depending on type) must include the versionstamp placeholder bytes.
 // Goroutine-safe via versionMu.
-// Matches Java's FDBRecordContext.addVersionMutation(MutationType, key, value).
-func (rc *FDBRecordContext) AddVersionMutation(mutationType VersionMutationType, versionKey []byte, value []byte) {
+// Returns the previous value for this key, or nil if absent, matching Java's
+// FDBRecordContext.addVersionMutation(MutationType, key, value).
+func (rc *FDBRecordContext) AddVersionMutation(mutationType VersionMutationType, versionKey []byte, value []byte) []byte {
 	rc.versionMu.Lock()
 	defer rc.versionMu.Unlock()
 	if rc.versionMutations == nil {
 		rc.versionMutations = make(map[string]versionMutation)
 	}
+	previous, existed := rc.versionMutations[string(versionKey)]
+	if existed && previous.value == nil {
+		previous.value = []byte{}
+	}
 	rc.versionMutations[string(versionKey)] = versionMutation{
 		mutationType: mutationType,
 		value:        value,
 	}
+	return previous.value
 }
 
 // UpdateVersionMutation queues or updates a versionstamp mutation with a merge function.
@@ -990,6 +985,19 @@ func (rc *FDBRecordContext) RemoveVersionMutationsInRange(begin, end fdb.Key) {
 	}
 }
 
+// HasVersionMutationsInRange checks surviving buffered mutations in [begin, end).
+// It shares the registry and mutex used by context-aware clears.
+func (rc *FDBRecordContext) HasVersionMutationsInRange(begin, end fdb.Key) bool {
+	rc.versionMu.Lock()
+	defer rc.versionMu.Unlock()
+	for key := range rc.versionMutations {
+		if bytes.Compare([]byte(key), begin) >= 0 && bytes.Compare([]byte(key), end) < 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // RemoveLocalVersionsInRange removes all cached local versions whose key
 // falls in [begin, end). Goroutine-safe via versionMu.
 // Matches Java's FDBRecordContext.removeLocalVersionRange().
@@ -1002,6 +1010,22 @@ func (rc *FDBRecordContext) RemoveLocalVersionsInRange(begin, end fdb.Key) {
 			delete(rc.localVersionCache, k)
 		}
 	}
+}
+
+// ClearRange clears transactional data and pending version state together, so
+// flushing version mutations at commit cannot restore keys inside the range.
+// Matches Java's FDBRecordContext.clear(Range).
+func (rc *FDBRecordContext) ClearRange(keyRange fdb.ExactRange) {
+	rc.clearRange(keyRange, true)
+}
+
+// clearRange permits store-aware callers to supply an already-applied metadata
+// invalidation policy, while preserving state projections and version cleanup.
+func (rc *FDBRecordContext) clearRange(keyRange fdb.ExactRange, invalidateState bool) {
+	begin, end := keyRange.FDBRangeKeys()
+	rc.clearRangeWithIndexStateViews(keyRange, invalidateState)
+	rc.RemoveVersionMutationsInRange(begin.FDBKey(), end.FDBKey())
+	rc.RemoveLocalVersionsInRange(begin.FDBKey(), end.FDBKey())
 }
 
 // flushVersionMutations applies all queued versionstamp mutations
@@ -1029,7 +1053,62 @@ func (rc *FDBRecordContext) flushVersionMutations() {
 func (rc *FDBRecordContext) AddCommitCheck(check CommitCheckFunc) {
 	rc.commitMu.Lock()
 	defer rc.commitMu.Unlock()
-	rc.commitChecks = append(rc.commitChecks, check)
+	rc.commitChecks = append(rc.commitChecks, &commitCheckRegistration{check: check, active: true})
+}
+
+// getOrCreateCommitCheck returns the named check, invoking ifNotExists only when
+// absent. The supplier runs under the registration lock and must not call back
+// into context hook registration. The supplied check runs outside that lock.
+// Matches Java's FDBRecordContext.getOrCreateCommitCheck().
+func (rc *FDBRecordContext) getOrCreateCommitCheck(name string, ifNotExists func(string) CommitCheckFunc) CommitCheckFunc {
+	rc.commitMu.Lock()
+	defer rc.commitMu.Unlock()
+	if entry := rc.namedCommitChecks[name]; entry != nil {
+		return entry.check
+	}
+	entry := &commitCheckRegistration{check: ifNotExists(name), active: true}
+	if rc.namedCommitChecks == nil {
+		rc.namedCommitChecks = make(map[string]*commitCheckRegistration)
+	}
+	rc.namedCommitChecks[name] = entry
+	rc.commitChecks = append(rc.commitChecks, entry)
+	return entry.check
+}
+
+// getCommitCheck returns a previously registered named check, or nil.
+// Matches Java's FDBRecordContext.getCommitCheck().
+func (rc *FDBRecordContext) getCommitCheck(name string) CommitCheckFunc {
+	rc.commitMu.Lock()
+	defer rc.commitMu.Unlock()
+	if entry := rc.namedCommitChecks[name]; entry != nil {
+		return entry.check
+	}
+	return nil
+}
+
+// removeCommitCheck cancels a named check that has not started, including one
+// in the current run's snapshot. It does not stop an already executing check.
+// Store deletion uses this before clearing data to prevent deferred retirement
+// from recreating deleted index-state keys.
+func (rc *FDBRecordContext) removeCommitCheck(name string) {
+	rc.commitMu.Lock()
+	defer rc.commitMu.Unlock()
+	if entry := rc.namedCommitChecks[name]; entry != nil {
+		entry.active = false
+		delete(rc.namedCommitChecks, name)
+	}
+}
+
+// removeCommitChecksWithPrefix cancels pending store-scoped callback families.
+func (rc *FDBRecordContext) removeCommitChecksWithPrefix(prefix string) {
+	rc.commitMu.Lock()
+	defer rc.commitMu.Unlock()
+	for name, entry := range rc.namedCommitChecks {
+		if strings.HasPrefix(name, prefix) {
+			entry.active = false
+			delete(rc.namedCommitChecks, name)
+		}
+	}
 }
 
 // AddPostCommit registers a post-commit callback.
@@ -1044,15 +1123,21 @@ func (rc *FDBRecordContext) AddPostCommit(hook PostCommitFunc) {
 
 // runCommitChecks runs all registered pre-commit checks.
 // Returns the first error encountered, or nil if all pass.
-// Called at commit time when all goroutines should be done; holds commitMu
-// for race-detector cleanliness.
+// Called at commit time when all goroutines should be done. Registration state
+// is locked, but checks run without the lock so they can cancel pending checks.
 func (rc *FDBRecordContext) runCommitChecks() error {
 	rc.commitMu.Lock()
-	checks := make([]CommitCheckFunc, len(rc.commitChecks))
+	checks := make([]*commitCheckRegistration, len(rc.commitChecks))
 	copy(checks, rc.commitChecks)
 	rc.commitMu.Unlock()
-	for _, check := range checks {
-		if err := check(); err != nil {
+	for _, entry := range checks {
+		rc.commitMu.Lock()
+		active := entry.active
+		rc.commitMu.Unlock()
+		if !active {
+			continue
+		}
+		if err := entry.check(); err != nil {
 			return err
 		}
 	}
@@ -1229,8 +1314,10 @@ func (rc *FDBRecordContext) GetMetaDataVersionStamp() ([]byte, error) {
 // Runs post-commit hooks after successful commit.
 // Matches Java's FDBRecordContext.commitAsync() which always runs checks and hooks.
 func (rc *FDBRecordContext) CommitWithVersionstamp() ([]byte, error) {
-	// Run pre-commit checks before committing
+	// Include pre-commit checks in the commit span, but not post-commit hooks.
+	commitStart := time.Now()
 	if err := rc.runCommitChecks(); err != nil {
+		rc.Timer().RecordSince(EventCommit, commitStart)
 		return nil, err
 	}
 
@@ -1244,28 +1331,24 @@ func (rc *FDBRecordContext) CommitWithVersionstamp() ([]byte, error) {
 		vsFuture = rc.tx.GetVersionstamp()
 	}
 
-	// Commit the transaction — timed as EventCommit
-	commitStart := time.Now()
 	if err := rc.tx.Commit().Get(); err != nil {
 		rc.Timer().RecordSince(EventCommit, commitStart)
 		return nil, err
 	}
-	rc.Timer().RecordSince(EventCommit, commitStart)
 
-	// Run post-commit callbacks after successful commit
-	rc.runPostCommits()
-
-	// Retrieve the committed versionstamp only if mutations were queued.
+	// Java resolves the committed versionstamp before running post-commit hooks.
+	var versionstamp []byte
 	if hasVersionMutations && vsFuture != nil {
 		vs, err := vsFuture.Get()
 		if err != nil {
+			rc.Timer().RecordSince(EventCommit, commitStart)
 			return nil, fmt.Errorf("get versionstamp after commit: %w", err)
 		}
-		return []byte(vs), nil
+		versionstamp = []byte(vs)
 	}
-
-	// No versionstamp mutations — read-only or no versioned writes.
-	return nil, nil
+	rc.Timer().RecordSince(EventCommit, commitStart)
+	rc.runPostCommits()
+	return versionstamp, nil
 }
 
 // buildVersionstampedValue builds the value for SET_VERSIONSTAMPED_VALUE mutation.

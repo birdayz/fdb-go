@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	// Registers the "fdbsql" driver with database/sql.
 	_ "fdb.dev/pkg/relational/sqldriver"
@@ -116,14 +117,14 @@ func main() {
 // dsn builds an fdbsql DSN. An empty clusterFile uses FDB's default file; an
 // empty schema omits the default-schema binding (used for the setup handle).
 func dsn(dbPath, clusterFile, schema string) string {
-	d := "fdbsql://" + dbPath
+	d := "fdbsql://" + strings.ToUpper(dbPath)
 	sep := "?"
 	if clusterFile != "" {
 		d += sep + "cluster_file=" + clusterFile
 		sep = "&"
 	}
 	if schema != "" {
-		d += sep + "schema=" + schema
+		d += sep + "schema=" + strings.ToUpper(schema)
 	}
 	return d
 }

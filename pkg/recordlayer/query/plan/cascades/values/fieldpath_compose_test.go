@@ -387,3 +387,111 @@ func TestJoinSeed_DupBareNameMemoIdentity(t *testing.T) {
 		t.Fatal("baked and lazy refs to the same column must be distinct by contract")
 	}
 }
+
+func TestOrdinalJoinSeedDeclaredEmptyLegs(t *testing.T) {
+	t.Parallel()
+	empty := mustQOV(t, NamedCorrelationIdentifier("empty"), &RecordType{Fields: []Field{}})
+	empty2 := mustQOV(t, NamedCorrelationIdentifier("empty2"), &RecordType{Fields: []Field{}})
+	full := mustQOV(t, NamedCorrelationIdentifier("full"), &RecordType{Fields: []Field{
+		{Name: "A", Ordinal: 0, FieldType: NotNullLong},
+		{Name: "B", Ordinal: 1, FieldType: NotNullLong},
+	}})
+	foreign := mustQOV(t, NamedCorrelationIdentifier("foreign"), full.Type())
+	drifted := mustQOV(t, full.Correlation(), &RecordType{Nullable: true, Fields: full.Type().(*RecordType).Fields})
+	field := func(owner QuantifiedObjectValue, ordinal int) RecordConstructorField {
+		v, err := ResolveOrdinalSeedField(owner, ordinal)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return RecordConstructorField{Value: v}
+	}
+	a, b := field(full, 0), field(full, 1)
+	rc := NewRawRecordConstructorValue(a, b)
+	for _, legs := range [][]QuantifiedObjectValue{{empty, full}, {full, empty}, {empty, full, empty2}} {
+		if err := ValidateOrdinalJoinSeedForLegs(rc, legs); err != nil {
+			t.Fatalf("valid empty-leg concat: %v", err)
+		}
+	}
+	if err := ValidateOrdinalJoinSeedForLegs(NewRawRecordConstructorValue(), []QuantifiedObjectValue{empty, empty2}); err != nil {
+		t.Fatalf("two empty legs must retain their one empty result tuple: %v", err)
+	}
+	unpinned, err := ResolveFieldOrdinals(full, []int{0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nested, outer := bakedChain(t)
+	fused := SimplifyValue(outer)
+	if fused == nil || nested == nil {
+		t.Fatal("fused negative control was not constructed")
+	}
+	for _, tc := range []struct {
+		name string
+		row  *RecordConstructorValue
+		legs []QuantifiedObjectValue
+		want string
+	}{
+		{"nil_record", nil, []QuantifiedObjectValue{empty, full}, "requires a record"},
+		{"missing_population", rc, nil, "at least two"},
+		{"one_leg", rc, []QuantifiedObjectValue{full}, "at least two"},
+		{"nil_leg", rc, []QuantifiedObjectValue{nil, full}, "nil declared leg"},
+		{"duplicate", rc, []QuantifiedObjectValue{empty, empty}, "repeats declared leg"},
+		{"scalar", rc, []QuantifiedObjectValue{empty, mustQOV(t, NamedCorrelationIdentifier("scalar"), NotNullLong)}, "not a record"},
+		{"omission", NewRawRecordConstructorValue(a), []QuantifiedObjectValue{empty, full}, "omits leg"},
+		{"extra", NewRawRecordConstructorValue(a, b, b), []QuantifiedObjectValue{empty, full}, "declared legs cover"},
+		{"not_a_field", NewRawRecordConstructorValue(RecordConstructorField{Value: &ConstantValue{Value: int64(1), Typ: NotNullLong}}, b), []QuantifiedObjectValue{empty, full}, "not a frontier-pinned"},
+		{"unpinned", NewRawRecordConstructorValue(RecordConstructorField{Value: unpinned}, b), []QuantifiedObjectValue{empty, full}, "not a frontier-pinned"},
+		{"reordered", NewRawRecordConstructorValue(b, a), []QuantifiedObjectValue{empty, full}, "does not read declared leg"},
+		{"foreign", NewRawRecordConstructorValue(field(foreign, 0), b), []QuantifiedObjectValue{empty, full}, "does not read declared leg"},
+		{"type_drift", NewRawRecordConstructorValue(field(drifted, 0), b), []QuantifiedObjectValue{empty, full}, "does not read declared leg"},
+		{"fused", NewRawRecordConstructorValue(RecordConstructorField{Value: fused}, b), []QuantifiedObjectValue{empty, full}, "does not read declared leg"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if err := ValidateOrdinalJoinSeedForLegs(tc.row, tc.legs); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("invalid declared-leg concat = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func FuzzOrdinalJoinSeedDeclaredLegs(f *testing.F) {
+	f.Add(uint8(0), uint8(0))
+	f.Add(uint8(0), uint8(2))
+	f.Add(uint8(2), uint8(0))
+	f.Add(uint8(2), uint8(3))
+	f.Fuzz(func(t *testing.T, left, right uint8) {
+		legs := make([]QuantifiedObjectValue, 0, 2)
+		fields := make([]RecordConstructorField, 0)
+		for i, width := range []uint8{left % 4, right % 4} {
+			row := &RecordType{Fields: make([]Field, int(width))}
+			for ordinal := range row.Fields {
+				row.Fields[ordinal] = Field{Name: string(rune('A' + ordinal)), Ordinal: ordinal, FieldType: NotNullLong}
+			}
+			leg, err := NewQuantifiedObjectValue(NamedCorrelationIdentifier(string(rune('a'+i))), row)
+			if err != nil {
+				t.Fatal(err)
+			}
+			legs = append(legs, leg)
+			for ordinal := range row.Fields {
+				v, err := ResolveOrdinalSeedField(leg, ordinal)
+				if err != nil {
+					t.Fatal(err)
+				}
+				fields = append(fields, RecordConstructorField{Value: v})
+			}
+		}
+		rc := NewRawRecordConstructorValue(fields...)
+		if err := ValidateOrdinalJoinSeedForLegs(rc, legs); err != nil {
+			t.Fatal(err)
+		}
+		if err := ValidateOrdinalJoinSeedForLegs(rc, legs[:1]); err == nil {
+			t.Fatal("one declared input was accepted as a join")
+		}
+		if len(fields) > 0 {
+			truncated := NewRawRecordConstructorValue(fields[:len(fields)-1]...)
+			if err := ValidateOrdinalJoinSeedForLegs(truncated, legs); err == nil {
+				t.Fatal("omitted source ordinal was accepted")
+			}
+		}
+	})
+}

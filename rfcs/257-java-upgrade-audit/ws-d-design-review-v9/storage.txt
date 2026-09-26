@@ -1,0 +1,82 @@
+**NAK.** The design itself is now close. One new P2 remains: the peel's transaction-time budget interacts with the new `ClusterUnsplittableError`, and the design doesn't handle it.
+
+- **Tree:** `59a5b3c3c6301392da4cc03508e8b24cad73c5cd`
+- **Design:** `ws-d-design.md` (1241 lines), SHA256 `da5d56e6fb9508be1eb7d9626263472f7319608df3c135e4105af42e9f281e8d`. I recomputed it from the tree and it matches.
+- **Java:** `fdacd162` (from `fdb-record-layer/.git/HEAD`).
+- **Read:** all four v8 verdicts; the full v9 design and its diff from v8; the oracle README, evidence files and probe/spec diffs; the item-18, mutation and `just test` logs; the heartbeat delta; the cited Java and Go.
+- **Nothing run or changed.**
+
+## P2 — The time budget can produce the "unsplittable" terminal error for a cluster that can be split (design 1054-1068, 1094-1111)
+
+1. **The design's claim is false.** It says a budget cut leads to either a selected partition or a reconciled clear, so time "never produces a new state" (1103-1104). But the reconcile fails whenever the reconciled count is above the hard cap (1054-1058), and the design itself says that happens in inline mode and in deferred mode.
+   - So cut + count above the hard cap raises `ClusterUnsplittableError`. That error poisons, is terminal for the build-range and queue-replay owners (1064-1068), and ends merge sessions.
+   - The cluster is only unsplit *within the budget*, not unsplittable. At large d the cut happens on every run, even in a fresh merge transaction.
+   - The design's own d=4096 fixture reaches this: one insert past hardMax, and the partition is permanently stuck on a Go error whose name is false.
+   - The list at 1019-1025 ("the population that reaches it is exactly") leaves out budget exhaustion.
+   - **Needed:** a budget-cut outcome and retry classification separate from structural exhaustion, stated for inline and deferred mode, plus proof that it cannot livelock or starve the queue.
+2. **"The transaction's elapsed time" has no source in Go.** `FDBRecordContext` has no start-time field (`database.go:626-689`). Java has `getTransactionAge()`, taken at context creation (`FDBRecordContext.java:146, 189, 674-676`). The design also needs to address:
+   - an explicit `SetReadVersion` (`database.go:1171`), which makes a context-age clock *underestimate* the time left before FDB's 5 s limit;
+   - the per-context FDB timeout (`runner.go:299`). Error 1031 is not retried, and a fixed 3 s budget ignores the timeout;
+   - the DST environment. The budget decides persisted bytes, so both of its clocks must go through `rc.Env()` (`database.go:631-635`).
+3. **The budget covers refits only.** Two costs run after it unbudgeted:
+   - the reconcile read, which the design says no cap bounds;
+   - materialisation of a selected partition.
+
+   The reconcile also reads per-PK metadata for replicas, which Java's cleanup never does (`Primitives.java:1544, 1552-1560`). So "the reconcile's read is the target's own" (1106) is inexact, and the extra reads add read conflicts on replica PKs.
+4. **The acceptance fixture depends on machine speed.** "Completes in under 2 s" (1108) is a wall-clock assertion on real FDB. That contradicts "no pinned outcome depends on machine speed" (1105-1106) and will flake under load. Use an injected clock.
+
+## P3
+
+1. **The heartbeat-admin rewrite introduced an undeclared divergence** (`indexing_heartbeat_admin.go:103-117`).
+   - The new code never parses the heartbeat KEY.
+   - Java's `getIndexingHeartbeats` throws on a non-UUID key: `getUUID(0)` sits outside the try (`IndexingHeartbeat.java:148`).
+   - v8's Go matched Java through `heartbeatIndexerID` (`indexing_heartbeat_admin.go:44-47`).
+   - Go admission fails closed on such keys (`indexing_heartbeat.go:128-131`). So "ongoing means exactly a new session would be refused" is false for legacy string-keyed heartbeats, which the code comments say exist.
+   - "Exactly three populations" (in DIVERGENCES.md and the function comment) is really four. Parse the key, or declare this case and pin it.
+2. **`consumerOutcome` order contradicts Java.** Java builds the quantizer *before* the phase-1 re-enqueue:
+   - split: `SplitMergeTask.java:227` before `:232`;
+   - merge: `:430` before `:435`.
+
+   The design places the quantizer check after phase-1 (314-321). Taken literally, a phase-1 split under trained bits-9 is predicted "runs", which contradicts the "bits9Live head task is skipped" fixture. State the order explicitly.
+3. **Delete-skip isolation.**
+   - Java's inline fetch is a *serializable* range read of the queue head (`Primitives.java:984`, then `:1053`).
+   - So "conflicts there only because it removes the task" (331-332) is inaccurate: that range read also conflicts with concurrent higher-priority enqueues.
+   - For a delete that does *not* skip, require a serializable re-read of the head (or an equivalent conflict range). The prologue re-read alone does not restore Java's conflict footprint.
+4. **Evidence provenance.**
+   - `evidence-run.txt:4-7` still records v8's source hashes. The tree's files are `9a8fa3c4…` (`.java`) and `f3917cd6…` (`_test.go`), so they no longer match.
+   - The design still says "13 specs" and points to that file for hashes (163, 881). The Describe has 14.
+   - Line 771 cites README item 18; the `just test` record is item 19.
+   - The item-18 runs and the floor mutation exist only under `/var/tmp`. `evidence-mutations.txt` was not updated, and `wsd-hd-peel-7.log` goes unmentioned.
+   - README item 19 says the 90 cached results came from `just-test-v9`, but that run executed only 41 of 94. Neither cited log contains the quoted Ginkgo summaries.
+   - The quoted 0.34-0.36 s matches only run `-6`. Run `-5` logged 0.363 and 0.398 s, and run `-7` logged a 137 ms refit.
+
+## v8 findings, verified closed
+
+- **Distinct error type:** `ClusterUnsplittableError` is not converted and its classification is stated. This matches `GuardiannVectorIndexEngine.java:140-164`.
+- **Poisoning:** decided once in the wrapper, for any error after the removal is buffered (`Primitives.java:1025-1026`), with a cancellation fixture.
+- **n<k:** labelled as a Go rule. `KMeans.java:136` comes before `:137`, and the candidate lambda at `:352-368` has no size check.
+- **Reachability:** now includes deferred mode.
+- **Relief threshold:** declared as ≤ hard max for Go, versus ≤ max in Java (`:180-181`).
+- **Isolation:** now a parameter.
+- **Bounce:** the list and pick are consumed, with the follow-up quantizer declared (`BounceTask.java:161, 190, 285-309`).
+- **Claim-race wait:** the cap is injectable.
+- **Leftovers:** the fragment and the "halves" wording are gone (grep, with `guardiann` as the positive control).
+- **Floor bound:** floor(log2(n−1)) is correct for the stated sequence. The probe implements the design's tie and removal-counting rules.
+- **Heartbeat populations:** stale, invalid-only and hour-ahead are pinned against the JVM.
+
+## Measured vs still hypothesis
+
+- **Measured (rows pinned in the spec):**
+  - with the floor: 4/5/6/6 refits on the tight shapes;
+  - with v8's rule: m=13 → 6-11, m=20 → 12-18, m=50 → 18-33, rising radii → 36-50;
+  - at n=2000, d=768: 6 refits versus 23-30;
+  - the floor matches v8's rounds on the item-11/17 shapes, except one seed at 10√d.
+  - The floor mutation kills the spec, and `rfc257_oracle_test` executed in `just-test-v9b`.
+- **Unpinned:** all timings.
+- **Still hypothesis:**
+  - the budget's behaviour and cost at d=4096;
+  - reconcile cost;
+  - every `consumerOutcome` arm;
+  - `ClusterUnsplittableError` reachability;
+  - the REMAINING list;
+  - every Go-only mechanism.

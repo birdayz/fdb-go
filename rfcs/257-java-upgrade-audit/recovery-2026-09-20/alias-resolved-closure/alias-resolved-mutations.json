@@ -1,0 +1,156 @@
+[
+  {
+    "name": "resolved-attribute-qualification",
+    "file": "pkg/relational/core/embedded/logical_predicate.go",
+    "old": "if len(segments) == 0 || resolver == nil || resolver.Scope() == nil {",
+    "new": "if len(segments) != 1 || resolver == nil || resolver.Scope() == nil {",
+    "mutation_sha256": "ea4504655062bd17ae790c1cd6423faf50526bfc29bbe0a2b6d32000a6f7edfd",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/core/embedded:embedded_test",
+      "//pkg/relational/sqldriver:sqldriver_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestUnionExactOutputContract_|^TestFDB_NoFromSelectProbe$"
+    ],
+    "exit": 3,
+    "failures": [
+      "TestOrderByExactMetadata_UnnamedSourceAlias (0.06s)",
+      "TestOrderByExactMetadata_UnnamedSourceAlias/SELECT_x.x,_99_AS_x_FROM_items_t,_items_t.items_AS_x_ORDER_BY_x,_x (0.04s)",
+      "TestFDB_NoFromSelectProbe (0.07s)",
+      "TestFDB_NoFromSelectProbe/qualified_whole_object_alias_precedence (0.07s)"
+    ],
+    "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-resolved-mutant3-resolved-attribute-qualification.log",
+    "sha256": "7d5b6622ec92f4cd2dd3e7f40c8f62dee295667e152360edd65e10e9d96a00c6"
+  },
+  {
+    "name": "record-qov-projection",
+    "file": "pkg/relational/core/embedded/plan_visitor.go",
+    "old": "if qov, ok := values.AsQuantifiedObjectValue(rv); ok {",
+    "new": "if qov, ok := values.AsQuantifiedObjectValue(rv); ok && qov.FlowedType().Code() != values.TypeCodeRecord {",
+    "mutation_sha256": "b3e81ef42dca501eb7dd2e29b520321132352ba88b8dd92faabf5ff6eaf05a27",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/core/embedded:embedded_test",
+      "//pkg/relational/sqldriver:sqldriver_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestUnionExactOutputContract_|^TestFDB_NoFromSelectProbe$"
+    ],
+    "exit": 3,
+    "failures": [
+      "TestOrderByExactMetadata_UnnamedSourceAlias (0.08s)",
+      "TestOrderByExactMetadata_UnnamedSourceAlias/SELECT_x.x,_99_AS_x_FROM_items_t,_items_t.items_AS_x_ORDER_BY_x,_x (0.01s)",
+      "TestFDB_NoFromSelectProbe (0.07s)",
+      "TestFDB_NoFromSelectProbe/qualified_whole_object_alias_precedence (0.01s)",
+      "TestFDB_NoFromSelectProbe/qualified_whole_object_value (0.17s)"
+    ],
+    "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-resolved-mutant3-record-qov-projection.log",
+    "sha256": "d8905408a60459e16b9a5ae9825cc3c4a7499b7da6eebb8ec697dbbeb0a96b52"
+  },
+  {
+    "name": "union-cardinality",
+    "file": "pkg/relational/core/embedded/logical_predicate.go",
+    "old": "if matches[bareName] > 1 {",
+    "new": "if matches[bareName] > 2 {",
+    "mutation_sha256": "ab8f5719147f5cebbe0ea96ebfcfad3f2c8a1edceb7b58cbb43819306b4dc09b",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/core/embedded:embedded_test",
+      "//pkg/relational/sqldriver:sqldriver_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestUnionExactOutputContract_|^TestFDB_NoFromSelectProbe$"
+    ],
+    "exit": 3,
+    "failures": [
+      "TestOrderByExactMetadata_UnionNamedDuplicates (0.04s)",
+      "TestOrderByExactMetadata_UnionNamedDuplicates/SELECT_*_FROM_t_p,_t_q_UNION_ALL_SELECT_*_FROM_t_p,_t_q_ORDER_BY_id (0.00s)",
+      "TestOrderByExactMetadata_UnionNamedDuplicates/SELECT_*_FROM_t_p,_t_q_UNION_ALL_SELECT_*_FROM_t_p,_t_q_ORDER_BY_id,_id (0.01s)",
+      "TestFDB_NoFromSelectProbe (0.06s)",
+      "TestFDB_NoFromSelectProbe/union_joined_star_ambiguity_before_duplicate (0.01s)",
+      "TestFDB_NoFromSelectProbe/union_joined_star_ambiguous (0.01s)"
+    ],
+    "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-resolved-mutant3-union-cardinality.log",
+    "sha256": "db10191ad4254920717f3f8754346d8d4b7f85751e7c2e5703dabb5e1be2c209"
+  },
+  {
+    "name": "lifted-star-width",
+    "file": "pkg/relational/core/embedded/logical_predicate.go",
+    "old": "if simpleTable.GroupByClause() != nil || hasPositionalOrderBy(simpleTable) || hasMixedSelectStar(simpleTable) {",
+    "new": "if simpleTable.GroupByClause() != nil || hasMixedSelectStar(simpleTable) {",
+    "mutation_sha256": "5151384bb627d32e764bee84341f48a4a139e20857d901cc4f17198f1f60703c",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/core/embedded:embedded_test",
+      "//pkg/relational/sqldriver:sqldriver_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestUnionExactOutputContract_|^TestFDB_NoFromSelectProbe$"
+    ],
+    "exit": 3,
+    "failures": [
+      "TestUnionExactOutputContract_DuplicateSQLLabelsKeepDistinctPhysicalSlots (0.00s)",
+      "TestUnionExactOutputContract_DuplicateSQLLabelsKeepDistinctPhysicalSlots/SELECT_*_FROM_a_p,_a_q_UNION_ALL_SELECT_*_FROM_a_p,_a_q_ORDER_BY_1,_3 (0.04s)",
+      "TestOrderByExactMetadata_UnionDuplicateLabelsRemainLegal (0.04s)",
+      "TestOrderByExactMetadata_UnionDuplicateLabelsRemainLegal/SELECT_*_FROM_t_p,_t_q_UNION_ALL_SELECT_*_FROM_t_p,_t_q_ORDER_BY_1,_3 (0.00s)",
+      "TestFDB_NoFromSelectProbe (0.07s)",
+      "TestFDB_NoFromSelectProbe/union_duplicate_labels_positions (0.00s)"
+    ],
+    "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-resolved-mutant3-lifted-star-width.log",
+    "sha256": "822b0afd8925bee3e5a13afe046d317ee637dfb58f5f9f98c5f2c21711d30d58"
+  },
+  {
+    "name": "normalization-row-names",
+    "file": "pkg/relational/core/query/cascades_translator.go",
+    "old": "for i, name := range values.DedupFieldNames(names) {\n\t\tfields[i].Name = name\n\t}\n\treturn commonRow, true, nil",
+    "new": "for i, name := range names {\n\t\tfields[i].Name = name\n\t}\n\treturn commonRow, true, nil",
+    "mutation_sha256": "31fb52e23b1d1c5635efae58218911d4060154a582d70f60bd9e454b021a414d",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/core/embedded:embedded_test",
+      "//pkg/relational/sqldriver:sqldriver_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestUnionExactOutputContract_|^TestFDB_NoFromSelectProbe$"
+    ],
+    "exit": 3,
+    "failures": [
+      "TestUnionExactOutputContract_DuplicateSQLLabelsKeepDistinctPhysicalSlots (0.00s)",
+      "TestUnionExactOutputContract_DuplicateSQLLabelsKeepDistinctPhysicalSlots/SELECT_*_FROM_a_p,_a_q_UNION_ALL_SELECT_*_FROM_a_p,_a_q_ORDER_BY_1,_3 (0.06s)",
+      "TestUnionExactOutputContract_DuplicateSQLLabelsKeepDistinctPhysicalSlots/SELECT_*_FROM_a_p,_a_q_UNION_ALL_SELECT_p.id,_p.v,_q.id,_q.v_FROM_a_p,_a_q (0.04s)",
+      "TestFDB_NoFromSelectProbe (0.08s)",
+      "TestFDB_NoFromSelectProbe/union_duplicate_labels_positions (0.00s)"
+    ],
+    "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-resolved-mutant3-normalization-row-names.log",
+    "sha256": "b3ec454f97469e9a4cdf99690c73b48264e8454bc5673ffe1bb1c1052b94f984"
+  },
+  {
+    "name": "aligned-row-preservation",
+    "file": "pkg/relational/core/query/cascades_translator.go",
+    "old": "if aligned {",
+    "new": "if aligned && false {",
+    "mutation_sha256": "07f43084afec55120ab2e0e70f1b0a44bcf2f480362849f6ba88a3413611ba74",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/core/embedded:embedded_test",
+      "//pkg/relational/sqldriver:sqldriver_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestUnionExactOutputContract_|^TestFDB_NoFromSelectProbe$"
+    ],
+    "exit": 3,
+    "failures": [
+      "TestUnionExactOutputContract_DuplicateSQLLabelsKeepDistinctPhysicalSlots (0.00s)",
+      "TestUnionExactOutputContract_DuplicateSQLLabelsKeepDistinctPhysicalSlots/SELECT_*_FROM_a_p,_a_q_UNION_ALL_SELECT_*_FROM_a_p,_a_q (0.04s)"
+    ],
+    "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-resolved-mutant3-aligned-row-preservation.log",
+    "sha256": "0628e84edb616a1d55ccd960ebe64429931c80d8fc31e719e0e5dd921a3110ef"
+  }
+]

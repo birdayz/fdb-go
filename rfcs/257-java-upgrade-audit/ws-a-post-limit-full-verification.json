@@ -1,0 +1,480 @@
+{
+  "scope": "just test after lazy LIMIT fix and preserved startup error causes; before FROM-less implementation",
+  "published_head": "71ccd8cf8b3fd0dbafe283e91171818e36af555e",
+  "exit_code": 3,
+  "target_count": 92,
+  "status_counts": {
+    "PASSED": 91,
+    "FAILED": 1
+  },
+  "cached_results": 35,
+  "log": "/var/tmp/query-grind-cast/java-upgrade/post-limit-full-suite.log",
+  "source_inventory": "/var/tmp/query-grind-cast/java-upgrade/post-limit-full-source.sha256",
+  "source_inventory_checked": true,
+  "failures": [
+    "fromless_in_cte_base_rejected: Java succeeded but Go errored: 0AF00: query is not supported",
+    "fromless_standalone_rejected: Java succeeded but Go errored: 0AF00: query is not supported"
+  ],
+  "targets": [
+    {
+      "label": "//pkg/linters/typeimmutable:typeimmutable_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/fdbgo/wire:wire_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/fdbgo:fdbgo_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/linters/norecover:norecover_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/relational/core/keyspace:keyspace_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//cmd/test-budget:test-budget_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/fdbgo/fdb/subspace:subspace_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/linters/gofumpt:gofumpt_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/recordlayer/vectorcodec:vectorcodec_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//cmd/bench-report:bench-report_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//cmd/vulnscan:vulnscan_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/recordlayer/query/plan/cascades/combinatorics:combinatorics_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/fdbgo/transport:transport_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/fdbgo/wire/types:types_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/relational/core/parser:parser_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/relational/conformance/javayamsql:javayamsql_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/relational/core/query/logical:logical_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/relational/core/session:session_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/recordlayer/protoname:protoname_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/recordlayer/query/plan/cascades/properties:properties_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/fdbgo/fdb/tuple:tuple_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/testutil/allocs:allocs_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/recordlayer/rlmetrics:rlmetrics_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/relational/core/functions:functions_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/dst:dst_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//infra:infra_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/internal/fdbclient:fdbclient_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/relational/core/query/semantic:semantic_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//cmd/verify-pr-checks:verify-pr-checks_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/relational/txbudgetcensus:txbudgetcensus_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/recordlayer/query/plan/cascades/matching:matching_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/simfdb/hunt/continuation:continuation_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/linters/gofmt:gofmt_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/fdbgo/fdbmetrics:fdbmetrics_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/relational/conformance/factorycorpus:factorycorpus_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//cmd/verify-corpus-retirement-history:verify-corpus-retirement-history_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/relational/core/metadata:metadata_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/rabitq:rabitq_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/recordlayer/keyspace:keyspace_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//cmd/fuzzrun:fuzzrun_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/recordlayer/query/plan/cascades/internal/fuzzfloor:fuzzfloor_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/simfdb/hunt:hunt_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/simfdb/hunt/atomicops:atomicops_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/simfdb/hunt/interleave:interleave_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//cmd/fdb-binding-stress:fdb-binding-stress_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/simfdb/hunt/rangeconflict:rangeconflict_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//cmd/frl/internal/config:config_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/relational/core/catalog:catalog_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/relational/api:api_test",
+      "status": "PASSED",
+      "cached": 1
+    },
+    {
+      "label": "//pkg/relational/core/query/expr:expr_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/relational/core/query/semantic/rlcatalog:rlcatalog_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/relational/core/fleet:fleet_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/simfdb:simfdb_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/relational/core/query:query_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/recordlayer/query/plan/plans:plans_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//cmd/frl/internal/meta:meta_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/fdbgo/bench:bench_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/recordlayer/query/plan/cascades/values:values_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/testcontainers/foundationdb:foundationdb_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/relational/core/ddl:ddl_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/fdbgo/conformance:conformance_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/recordlayer/query/executor:executor_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/relational/conformance/explaindiff:explaindiff_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/recordlayer/query/plan/cascades:cascades_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/fdbgo/fdb:fdb_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/relational/core/embedded:embedded_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/recordlayer/query/plan/cascades/predicates:predicates_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/recordlayer/query/plan/cascades/expressions:expressions_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/relational/core/query/ddl:ddl_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/simfdb/hunt/metamorphic:metamorphic_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/relational/conformance/javacorpus:javacorpus_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/relational/conformance/plandiff:plandiff_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//cmd/dst-hunt:dst-hunt_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/recordlayer/chaos:chaos_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//cmd/factory-rebless:factory-rebless_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//cmd/factory-rebless-plan-shapes:factory-rebless-plan-shapes_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//cmd/factory-plan-census:factory-plan-census_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/simfdb/hunt/sqlhunt:sqlhunt_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//cmd/frl/internal/cmd:cmd_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/relational/conformance/memoinvariant:memoinvariant_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/relational/conformance/yamsql:yamsql_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/docscheck:docscheck_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//cmd/factory-run:factory-run_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/simfdb/hunt/golden:golden_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/simfdb/hunt/sqlpage:sqlpage_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/recordlayer:recordlayer_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/relational/conformance/rowdiff:rowdiff_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/relational/sqldriver:sqldriver_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//conformance:conformance_test",
+      "status": "FAILED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/relational/conformance/factorycorpus/full:full_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/relational/conformance/factory:factory_test",
+      "status": "PASSED",
+      "cached": 0
+    },
+    {
+      "label": "//pkg/fdbgo/client:client_test",
+      "status": "PASSED",
+      "cached": 0
+    }
+  ]
+}

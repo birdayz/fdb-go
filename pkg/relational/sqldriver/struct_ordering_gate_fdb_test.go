@@ -47,7 +47,7 @@ func TestFDB_StructOrderingGate(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /structordergate/s WITH TEMPLATE sog_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	dsn := fmt.Sprintf("fdbsql:///structordergate?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///STRUCTORDERGATE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)

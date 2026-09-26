@@ -1,0 +1,76 @@
+**NAK.** I reviewed tree `9b7856e7c5d5563eb53c8b03b92a5953dac823a1` with design SHA256 `226f24320b6c5d92f75b2de01d3fe2a6989e910655479d02db4adcbdfbc7b0a9`, 2152 lines. I recomputed both and they match. The review was read-only. A finding is from reading the source unless it is marked **measured**.
+
+Almost every revision-10 finding is resolved, and nothing revision 11 changed undoes a revision-10 fix. The NAK rests on four Low findings. They are the same kind as before: a claim wider than the code, plus one v10 finding only partly resolved.
+
+## Findings, most severe first
+
+**1. Low: the TEXT validator's tokenizer texts are not Java's, yet 7.11 and `CHANGELOG.md:344-349` say they are.**
+- Java's messages have no log info (`LoggableException` does not override `getMessage`): "unrecognized text tokenizer" (`TextTokenizerRegistryImpl.java:100`), "tokenizer version could not be parsed as int" (`TextIndexMaintainer.java:185`), "unknown tokenizer version" (`TextTokenizer.java:210`).
+- Go's `validateTextIndex` (`index_validator.go:208-235`) returns texts with Go suffixes: `text_tokenizer.go:325` ("…: X"), `text_index_maintainer.go:87` ("(index=…, …)") and `text_tokenizer.go:72` ("tokenizer=… version=… min=… max=…").
+- So one Java text has two Go forms. `index_validator.go:223` special-cases an empty name to the bare text; any other unknown name gets the suffix.
+- Revision 11 knew this: its edit at `text_index_metadata_validation_test.go:173-193` says "Go appends it" and switches the check to `HavePrefix`. Nothing declares it.
+- The sliding-window decorator runs in the same per-index sequence and appends "(index %s)" (`sliding_window_index_validation.go:49`, `:62`).
+- 7.11 says the 30-shape spec has "a shape per check above". It does not: there is no JVM shape for the TEXT version, value, tokenizer-version or text-field checks, VERSION's version count or uniqueness, MULTIDIMENSIONAL's cover and width checks, or MAX_EVER_VERSION's grouped-key version checks.
+- **Fix:** use Java's bare texts and add JVM shapes for them, or declare the difference and narrow the sentence.
+
+**2. Low: the Then arity fault is read from the builder's final state, not in program order.**
+- `firstFault` walks only the current primary keys and the current count key (`metadata.go:2252-2262`). `SetPrimaryKey` and `SetRecordCountKey` just assign (`:1339-1341`, `:463-468`).
+- Example: `SetPrimaryKey(Concat(Field("a")))` followed by `SetPrimaryKey(Field("id"))` builds in Go. Java throws at the first `concat` (`ThenKeyExpression.java:63-65`).
+- A key set on the placeholder that `GetRecordType("Nope")` returns is never walked either. If the Then was built before that call, Go reports "Unknown record type" where Java reports the Then.
+- 7.11's "each primary key, the record count key" is wider than the code.
+- **Fix:** record the fault when the key is handed over, as `addedIndexes` already does for indexes, and pin the replaced-key case.
+
+**3. Low: v10 storage finding 2 is only half resolved.**
+- `CHANGELOG.md:298-301` still says a bad `rankNLevels` index "refuses every write until its option is corrected".
+- Both engines' evolution validators refuse that correction, which is what v10 found. The owner's ruling also rules out remedies for such data.
+- 7.11 says both lists' findings are answered. The grep for the superseded wording missed this copy.
+
+**4. Low: "`GetSnapshotRecordCountForRecordType` … refuses a nested count key, as Java's does."**
+- Java's per-type count never reads the record count key. It uses a COUNT index on the type, or a universal COUNT index grouped by record type; otherwise it throws "Require a COUNT index on X" (`FDBRecordStore.java:2431-2453`).
+- Go's version reads only the record count key and never looks at a COUNT index (`record_count.go:338-352`).
+- That is an undeclared Go-only path, whatever happens in the nested case.
+
+## Nits
+- **Dangling reference.** `index_validator.go:31` cites a DIVERGENCES entry called "A vector index's root is not checked at build". No such title exists in DIVERGENCES, CHANGELOG or the RFCs (0 hits). `:446` cites the right entry.
+- **Plain VECTOR scope.** A VECTOR index without a window runs no validator half at `Build`: `validateIndexType` has no VECTOR case, and the option check runs only for windowed indexes (`:445-449`). So 7.11's "structural half is not ported" and DIVERGENCES `:3207-3213`'s "every type Go maintains" are both too wide. The VECTOR entry at `:2114-2121` states it correctly.
+- **Stale test assertion.** `primary_key_translation_test.go:74-80` says a nested `RecordTypeKey` "must abstain". It now passes only because field "x" is not in `rowType`; `Nest(Field("ID"))` translates to two values. r1's red for this test comes from that vacuous assertion.
+- **r22 label.** r22 refuses every non-unique MAX_EVER_VERSION index, whatever the record-version setting. Only "builds without SetStoreRecordVersions" tells the two behaviours apart, so the row's "the maintenance specs" overstates it.
+- **Evidence gaps.**
+  - `groupalias10.log` ran with `--test_output=errors`. It proves ten executions, but not the spec count. That the focus hits `GroupAliasIdentityJavaProbe` (`fromless_select_java_probe_test.go:264`) is from source, not measured.
+  - ev2 has no tree-after record.
+  - The gate tree differs from `98dd04f5` by the design *and* the 13 v10 review files, not "this document only".
+- **Compatibility note.** The bullet says "pre-release Go builds", but `CHANGELOG.md:13-14` records the tagged v0.1.0. Name it, since the ruling covers "old releases".
+
+## Revision-10 findings, checked
+- **Resolved:**
+  - `Nest` now builds a flat Then, and `keyExpressionEquals` on the record type key is no longer vacuous.
+  - A one-child Then is refused (apart from finding 2), and both loader texts are bare.
+  - Map fields count as repeated, and the Go-only map fan-out refusal is declared.
+  - Nesting into a scalar returns `UnsupportedOperationError` with the measured text.
+  - The `Concat` comment, the permuted validator's place, and the per-case class assertions (all three files).
+  - `bitmapValueEntrySize` is ported and its Go-only refusal declared.
+  - `AddMultiTypeIndex` and `GetRecordType` are in program order.
+  - The third evolution message, the `errors.go` comment, the stale comment, both union sweeps with their reasons, n3/r20, n7, n17 with its recover, and the oracle wording and shape check.
+- **Per-index order checked against Java:** each validator's per-record-type hook, then added vs last-modified version, then the type's checks, then the subspace key, meta-data versions and replacements; former indexes next; the shared-key check last. This matches `MetaDataValidator.java:103-155`, `IndexValidator.java:48-54`, and each factory's validator: Value, AtomicMutation (incl. `AtomicMutation.java:306-367`), Rank, TimeWindowLeaderboard, PermutedMinMax, BitmapValue, Text, Version, Multidimensional and SlidingWindow.
+
+## Measured
+- **JVM key validation** (`wsc-r11-keyval-4.log`): "Ran 42", 42 passed. All 30 INDEX and 6 KEY lines agree on class and whole text, or show Java valid beside Go's declared refusal.
+- **Mutations r1–r22:** each has marker count ≥1, bazel exit 3 and "restored"; `run.out` reads ALL-DONE. Baselines: 3712 of 3713, and 36 of 1678.
+- **ev (tree `d3615120`):** 1868 files hashed OK, 0 not OK, index tree unchanged. Conformance 1559 of 1559. Oracle 63 of 64 (the WS-J COUNT case). `just test`: 45 targets executed, 93 of 94 pass.
+- **ev2 (tree `98dd04f5`):** 2 of 2 pass.
+- **Trees:** `git diff d3615120..gate` touches no WS-C Go source.
+- **Not verified:** the bytes of the `good/` copies.
+
+## Graefe lens
+- **Aligned with Java:**
+  - `Build`'s per-index sequence and the atomic mutation table.
+  - The key-expression model: `Nest` as a Then, and flattening before the arity check.
+- **Declared rather than ported:**
+  - HashMap order, noted at the call site.
+  - Unknown index types are loaded, not refused.
+  - VECTOR validation (owned by WS-D).
+  - The map fan-out refusal.
+  - The empty primary key.
+  - A bitmap entry size of zero or below.
+- **Still undeclared Go-only behaviour:** findings 1 and 4, and the program-order gap in finding 2.
+- **Unaffected:** the preserved boundaries.

@@ -19,7 +19,7 @@ func baseValidConfig() *config {
 		jobStartTimeout:   5 * time.Minute,
 		appClientID:       "Iv1.deadbeef",
 		appInstallationID: 12345,
-		appPrivateKey:     "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----",
+		appPrivateKey:     "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----", // secretscan:allow: a placeholder, not a key
 	}
 }
 

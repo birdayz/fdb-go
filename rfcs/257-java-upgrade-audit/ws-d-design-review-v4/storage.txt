@@ -1,0 +1,78 @@
+**NAK** — the v4 design, reviewed through the storage/wire lens.
+
+- **Tree:** `4b8b8c15a3b65ce74c1856f8175ff2d3e7883c8d`
+- **`ws-d-design.md` SHA256:** `81fdd5f9c7a4d15222c0ad47c7056494f108e7e6bc3f689b788adbe2126809a8` (`git show TREE:path | sha256sum` matched)
+
+The review is complete and read-only. I read all prior verdicts (v1 ×4, v2 Graefe, v3 ×4), the full v4 design and its diff from v3, and the research README. I checked claims against Java and Go (source and tree objects).
+- **Source delta:** `git diff --stat f0cb2957 4b8b8c15` outside `rfcs/` and `TODO.md` is empty.
+- **Caveat:** `fdb-record-layer/` has no `.git`, so I could not confirm it is at `fdacd162`.
+- **Not done:** no tests, probes or edits.
+
+### Checked and correct
+- **Search hold span:** the materialization claim holds. The engine's `search` returns a finished list (`VectorIndexEngine.java:73`, `VectorIndexMaintainer.java:225-259`).
+- **Hard-cap reorder:** safe.
+  - The primary is the first candidate processed, so Java's throw comes before any reference write. The only residue is tag-5 (`Insert.java:289-338`).
+  - Only reads come between those points, so bytes on the success path do not change.
+- **All-minted cause set:** harmless on the wire. Cause IDs are only used in `contains` checks (`ReassignTask.java:571`).
+- **Split throw site and collapse exit:** as the design describes (`SplitMergeTask.java:386-397`, `:392-393`).
+- **`VectorId` hash:** it is a record with no `hashCode` override (`VectorId.java:64`).
+- **Retry owners and the consumed count:**
+  - The iterator counts an entry as scanned before handling it (`throttled_retrying_iterator.go:183-184`), so consumed = scanned − 1.
+  - `buildRange` returns the count of records processed even on error (`online_indexer.go:1478,1522`).
+  - Mutual builds honour the limit (`indexing_mutual.go:382,398`).
+- **Lease owner:** the lease owner is the indexing session's ID (`indexing_merger.go:37-38`, `IndexingMerger.java:97`).
+
+## Findings
+
+**P2 — The sliding-window whole-effect gate cannot be built as written (design 174-191).**
+1. **It runs after the record is written.**
+   - Go writes the record first and only then calls index maintenance (`store.go:698-762`, maintenance at `:759`). The window maintainer runs inside that call.
+   - So a window refusal happens after the record put or clear is already buffered.
+   - If the caller catches the error and commits, the record is deleted while the window and its delegate still hold the vector.
+   - **Needed:** the window's reads, the load of any re-elected or evicted record, and the admission decision must all move into the admission pass that runs before the record write (design 121).
+2. **Update and queued old+new effects depend on read-your-writes.**
+   - The insert step reads the count and boundary that the delete step just rewrote (`sliding_window_index_maintainer.go:280-297`, delete writes `:517`, `:713`, `:756-757`, insert reads `:440-449`). The queued path does the same (`index_maintainer_queue.go:181-188`).
+   - A single read pass taken before any write gets the effect wrong. Concrete case, a MIN window that is full with no overflow:
+     - Updating the boundary record so it moves outward shrinks the window, so the new record is inserted into the delegate.
+     - A read of the state before the writes predicts overflow, so the update is admitted.
+     - The delegate's own gate then refuses after the window writes, leaving partial state the caller can commit.
+   - **Needed:**
+     - Derive the effect against an in-memory overlay of the window's metadata and entries.
+     - Add a backstop: any capability refusal after the first buffered write must block the commit (a commit check that returns the error).
+     - Add update and queued-compound fixtures; the current list is delete-only.
+
+**P3 — Capacity-recovery progress predicate (design 419-441).**
+- **A live lease held by another owner ends the phase at once.** With two or more mutual builders on the same hot prefix, only the lease holder makes progress and the others fail. The same happens when a Java background merger is actively draining.
+- **Relief from others is not counted.** Only tasks this session executes count as progress. Capacity freed by a `deleteWhere`, by user deletes or by a foreign split still ends the phase with the typed error.
+- **Fix:**
+  - Treat a live foreign lease as a bounded backoff charged to the retry budget.
+  - Also count as progress a point read showing the blocked cluster shrank or no longer exists.
+- **State the isolation.** The count and lease point reads must be snapshot reads, as in Java (`VectorIndexMaintainer.java:553-554,654`, `VectorIndexMergeLock.java:94-96`). Otherwise every claim conflicts with each concurrent insert's count ADD.
+- **Negative count.** A negative count read by the targeted merge must follow Java's keyed disable-and-commit path (`VectorIndexMaintainer.java:605-616`), and the resulting session error must be stated.
+
+**P3 — The join rule's "cancels" has no portable mechanism (design 43-48).**
+- **The two backends differ.**
+  - Pure-Go `Future.Cancel` does nothing (`pkg/fdbgo/fdb/future.go:39-43`).
+  - The cgo backend calls `fdb_future_cancel` (`libfdbc/backend.go:694`), and transaction cancel is its only way to abort a stuck read (`:346-349`).
+- **Pending futures are single-goroutine** (`future.go:102-107`).
+- **Specify:**
+  - A cooperative stop flag, checked before each new read and each mutation.
+  - Never cancel a future or the transaction; wait for in-flight reads to finish.
+  - Each future is created and resolved on the same goroutine.
+  - Children's mutations commute (disjoint keys or ADD), so persisted bytes do not depend on scheduling.
+  - The surfaced error is the lowest-index child's.
+
+**P3 — Pass 2 of the zero-primary handling must rebuild the statistics map from scratch (design 537-542).**
+- `computeNearestClusters` feeds per-cluster stat updates into `standardDeviationsMap` (`SplitMergeTask.java:615-624`).
+- If pass 1's updates are merged and pass 2 then merges its own, every primary's distance is counted twice in the persisted `RunningStats`.
+- Rebuild from the metadata as it was before pass 1.
+
+**P3 — The lock-ordering claim is too broad (design 78-80).**
+- Java readers wait for every earlier write (`AsyncLock.java:77-81`).
+- Go's `RWMutex` releases all parked readers when a writer unlocks. A reader that arrived after a second queued writer therefore runs before that writer.
+- Exclusion still holds, but "matches Java's FIFO rule" is false once two writers are queued. Narrow the claim to exclusion.
+
+The v3 findings are otherwise answered:
+- **v3 storage:** P2-1..4 and P3-1..4.
+- **v3 Torvalds P1s:** the lock is no longer held across caller code, and there is a rule at the throw site.
+- **v3 SPFresh P1s:** addressed, apart from the gate problem in P2 above.

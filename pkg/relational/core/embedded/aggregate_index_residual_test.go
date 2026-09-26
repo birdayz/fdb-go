@@ -10,7 +10,6 @@ package embedded
 // (TestFDB_AggregateIndexResidual).
 
 import (
-	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -144,24 +143,78 @@ CREATE TABLE CUST (id BIGINT, b STRING, region STRING, PRIMARY KEY (id))`
 // is ordinal i of the candidate's groupCols, whereas the GroupBy row's ordinals
 // differ when a grouping key is RECORD-typed (MatchesGroupBy expands such a
 // key to its primitive leaves, so the GroupBy row carries fewer, wider
-// columns than the candidate). That shape cannot reach the rule today: an
-// aggregate index over nested struct fields is rejected at DDL validation, so
-// no candidate ever has a leaf-expanded grouping column. If this DDL is ever
-// accepted, the residual's ordinal rewrite over a record-typed grouping key
-// becomes live and needs its own rows pin; this arm is what says so.
+// columns than the candidate). That rewrite has no rows pin over such a shape,
+// so it must stay unreachable until it gets one.
+//
+// What keeps it unreachable CHANGED. It used to be DDL validation: a grouping
+// run mixing nested and top-level columns (`home.city, home.zip, cat`) built a
+// wrong key expression (the field-path trie dropped HOME's children) that
+// metadata validation refused with "is a message type". That was a Go bug —
+// Java 4.14.2.0 stores this index (WS-J oracle, TestIndexDDLFieldTrie*) — and
+// with it fixed the DDL is accepted. Two populations now follow:
+//
+//   - RECORD-typed grouping keys (`GROUP BY home, cat`): the shape the ordinal
+//     argument is about. Java cannot plan it at all (UnableToPlanException,
+//     measured by the "WS-J nested-grouping aggregate index plan oracle"); Go
+//     answers it through Scan + Aggregate, a read extension, and it must stay
+//     OFF the aggregate index permanently unless it gets its own rows pin.
+//   - nested LEAF grouping columns (`GROUP BY home.city, home.zip, cat`): the
+//     candidate's grouping columns and the GroupBy row's are the same leaves,
+//     one to one, so the ordinal argument is not at stake. Java SERVES these from
+//     the aggregate index (same oracle: AISCAN(CNT_HOME_CAT ...) with the
+//     grouping-key residual as a FILTER on the leaf ordinal); Go does not yet.
+//     That missing plan is RFC-257 WS-J F9, which lands it together with an
+//     indexed/unindexed twin rows pin (sqldriver/aggregate_index_residual_fdb_test.go);
+//     this arm pins today's absence so that landing it is a deliberate flip.
 func TestAggregateIndexResidual_RecordTypedGroupingKeyIsUnreachable(t *testing.T) {
 	t.Parallel()
 	const schema = `
 CREATE TYPE AS STRUCT ADDR (city STRING, zip BIGINT)
-CREATE TABLE T_S (id BIGINT, home ADDR, cat STRING, PRIMARY KEY (id))
-CREATE INDEX cnt_home_cat AS SELECT COUNT(*) FROM T_S GROUP BY home.city, home.zip, cat`
-	_, err := PlanPhysicalForTest("SELECT home, cat, COUNT(*) FROM T_S WHERE cat = 'x' GROUP BY home, cat", schema, nil)
-	if err == nil {
-		t.Fatal("an aggregate index over nested struct fields was accepted: a record-typed grouping key can now " +
-			"reach AggregateDataAccessRule, and RFC-248's residual rewrite (grouping column i = leaf-row ordinal i, " +
-			"below the projection) needs a rows pin over that shape before this arm is removed")
+CREATE TABLE T_S (id BIGINT, home ADDR, cat STRING, v BIGINT, PRIMARY KEY (id))
+CREATE INDEX cnt_home_cat AS SELECT COUNT(*) FROM T_S GROUP BY home.city, home.zip, cat
+CREATE INDEX sum_home_cat AS SELECT SUM(v) FROM T_S GROUP BY home.city, home.zip, cat
+CREATE INDEX cnt_cat AS SELECT COUNT(*) FROM T_S GROUP BY cat`
+	// Positive control, same schema: a flat grouping IS served by its aggregate
+	// index, so a zero below is the planner declining the nested shapes, not a
+	// detector that never recognizes an aggregate index plan.
+	control, err := PlanPhysicalForTest("SELECT cat, COUNT(*) FROM T_S GROUP BY cat", schema, nil)
+	if err != nil {
+		t.Fatalf("control: %v", err)
 	}
-	if !strings.Contains(err.Error(), "is a message type") {
-		t.Fatalf("the DDL was refused for a different reason than the nested-field limitation this arm rests on: %v", err)
+	if aggs, _, _ := aggregateResidualShape(control); aggs == 0 {
+		t.Fatalf("control: a flat GROUP BY cat was not served by cnt_cat, so the check below cannot see an "+
+			"aggregate index plan at all\n  plan: %s", control.Explain())
+	}
+	served := func(q string) bool {
+		t.Helper()
+		plan, err := PlanPhysicalForTest(q, schema, nil)
+		if err != nil {
+			t.Fatalf("the schema (accepted by Java 4.14.2.0) or the read must plan: %v\n  sql: %s", err, q)
+		}
+		aggs, _, _ := aggregateResidualShape(plan)
+		return aggs > 0
+	}
+	for _, q := range []string{
+		"SELECT home, cat, COUNT(*) FROM T_S WHERE cat = 'x' GROUP BY home, cat",
+		"SELECT home, cat, SUM(v) FROM T_S WHERE cat = 'x' GROUP BY home, cat",
+		"SELECT home, cat, COUNT(*) FROM T_S GROUP BY home, cat",
+	} {
+		if served(q) {
+			t.Fatalf("a RECORD-typed grouping key is served by an aggregate index over nested struct fields: "+
+				"it reaches AggregateDataAccessRule leaf-expanded, and RFC-248's residual rewrite (grouping "+
+				"column i = leaf-row ordinal i, below the projection) needs a rows pin over this shape before "+
+				"this arm is removed (Java cannot plan this query at all)\n  sql: %s", q)
+		}
+	}
+	for _, q := range []string{
+		"SELECT home.city, home.zip, cat, COUNT(*) FROM T_S GROUP BY home.city, home.zip, cat",
+		"SELECT home.city, home.zip, cat, COUNT(*) FROM T_S WHERE cat = 'x' GROUP BY home.city, home.zip, cat",
+		"SELECT home.city, home.zip, cat, SUM(v) FROM T_S WHERE home.city = 'a' GROUP BY home.city, home.zip, cat",
+	} {
+		if served(q) {
+			t.Fatalf("a GROUP BY over nested LEAF fields is now served by its aggregate index. That is the "+
+				"plan Java 4.14.2.0 chooses (RFC-257 WS-J F9) — flip this arm to require it, and land the "+
+				"indexed/unindexed twin rows pin over these reads in the same change\n  sql: %s", q)
+		}
 	}
 }

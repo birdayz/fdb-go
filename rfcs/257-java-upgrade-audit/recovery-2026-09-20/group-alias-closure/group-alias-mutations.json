@@ -1,0 +1,98 @@
+[
+  {
+    "name": "bound-owner",
+    "file": "pkg/relational/core/embedded/select_parser.go",
+    "original_sha256": "9eb229408b13a7977d7399e89bbafc8ebd1d269c6078434fed284033e5070636",
+    "mutated_sha256": "ca364478c478034b00c554dce3a6096724db0c2035124aa33e6c1a2d309dbdb1",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/core/embedded:embedded_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestGroupAliasPreservesBareBoundStar$"
+    ],
+    "exit": 3,
+    "log_sha256": "fd8e79e18bc206f76f1cd3b61c4f00e8a67d2c9ec5f14139f28783eafd03058a"
+  },
+  {
+    "name": "qualified-output",
+    "file": "pkg/relational/core/embedded/select_parser.go",
+    "original_sha256": "9eb229408b13a7977d7399e89bbafc8ebd1d269c6078434fed284033e5070636",
+    "mutated_sha256": "edeb5e1c106d10dc37239d287158378de1ccf34aa971524d58c1090c85610513",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/sqldriver:sqldriver_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestFDB_NoFromSelectProbe$/^group_alias_unqualified_name$"
+    ],
+    "exit": 3,
+    "log_sha256": "d6d3dedbfb317a106c4ae4b3677b342d58ad83b739f9e5e32022a53c1463701c"
+  },
+  {
+    "name": "qualified-argument",
+    "file": "pkg/relational/core/embedded/select_parser.go",
+    "original_sha256": "9eb229408b13a7977d7399e89bbafc8ebd1d269c6078434fed284033e5070636",
+    "mutated_sha256": "baecfe0dddd37cf1d7114978c9bfca5d6776923d90b1c0ef66e07df081c35fe2",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/sqldriver:sqldriver_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestFDB_NoFromSelectProbe$/^group_alias_qualified_argument$"
+    ],
+    "exit": 3,
+    "log_sha256": "af15081b7258973f7ad6f8b55d698795e746be538b300af25aa9c4bfeebc299a"
+  },
+  {
+    "name": "qualified-sort",
+    "file": "pkg/relational/core/embedded/plan_visitor.go",
+    "original_sha256": "74a3682db2325d20806bc5ce30ae937dcf2058e1e8c35884ae00934b851aaea2",
+    "mutated_sha256": "a75aa1005af123fc6a156a294a176d8d047ac5c2d80e55eff1b6cefb52eb1aa5",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/sqldriver:sqldriver_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestFDB_NoFromSelectProbe$/^group_alias_qualified_order$"
+    ],
+    "exit": 3,
+    "log_sha256": "e74152933bb8dc1c87bbf8394c0332166d89c4b2ecc0925006b4a0cf247ba77f"
+  },
+  {
+    "name": "select-alias-sort",
+    "file": "pkg/relational/core/embedded/plan_visitor.go",
+    "original_sha256": "74a3682db2325d20806bc5ce30ae937dcf2058e1e8c35884ae00934b851aaea2",
+    "mutated_sha256": "46b933a38272e643534d9921d58cf6221694d60ac029f4031d9acf1ff7ea3ce5",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/sqldriver:sqldriver_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestFDB_NoFromSelectProbe$/^group_alias_select_alias_order$"
+    ],
+    "exit": 3,
+    "log_sha256": "11a0ea4ec2bc2af48640448b7c7f1af85ac19c5287ac0a7d1f100e8beed1ac57"
+  },
+  {
+    "name": "identifier-segments",
+    "file": "pkg/relational/core/embedded/select_parser.go",
+    "original_sha256": "9eb229408b13a7977d7399e89bbafc8ebd1d269c6078434fed284033e5070636",
+    "mutated_sha256": "5b26ab9660c53ab491fd481ccfa08c0bedcf7af8c78f95251a41be4d3c3558b0",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/sqldriver:sqldriver_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestFDB_NoFromSelectProbe$/^group_alias_quoted_order$"
+    ],
+    "exit": 3,
+    "log_sha256": "e3155c66a251e438558f4cfba7cc023b50dd18dce237fa43ff088ac13843540a"
+  }
+]

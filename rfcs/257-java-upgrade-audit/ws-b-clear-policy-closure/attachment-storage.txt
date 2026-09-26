@@ -1,0 +1,52 @@
+**NAK — two regressions remain.**
+
+Reviewed Git **tree `dd0956b11e901609edcd5f19d36ef64f04482b8a`**, against tree `6ffe8d3b5b541bdd1c668c6e13e45ebe475292a3`.
+
+I completed the correction review: all four prior NAKs, approved design, complete production/test delta, surrounding callers, tagged Java `fdacd162a9c8acfadc49082b89185c823ab8ae4a`, and retained evidence. Findings below are source-derived; I executed no reproducer.
+
+1. **P1 — Reload can deadlock with unique-index maintenance.**
+
+   [ReloadRecordStoreState](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:1896) now acquires `indexStateMu` before `stateMu`. An existing maintenance path acquires them in the opposite order:
+
+   - `DeleteRecord` holds `stateMu.RLock()` through [updateSecondaryIndexes](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:1012).
+   - For a unique WRITE_ONLY or READABLE_UNIQUE_PENDING index, deleting one of two duplicates reaches [removeUniquenessViolations](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:1352).
+   - Pause after its real range read returns the remaining violation. Concurrent reload on the same handle acquires `indexStateMu` and waits for `stateMu.Lock()`.
+   - Cleanup then calls `context.ClearRange` at line 1361 and waits for `indexStateMu`.
+
+   Neither goroutine can release its held lock. Cancellation cannot break this mutex cycle, and reload holds the registry for the entire context.
+
+   **Required correction:** establish a consistent lock order across reload and maintenance-triggered context clears while preserving atomic reload publication. Add a deterministic real-FDB duplicate-deletion/reload interleaving asserting both operations complete and persisted/shared state remains coherent.
+
+2. **P2 — Clear invalidation overrides the approved noncacheable deletion policy.**
+
+   [clearRangeWithIndexStateViews](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:340) unconditionally bumps the global metadata stamp whenever a registered state region overlaps the clear, even when its state map is empty.
+
+   Reproduction: commit a valid noncacheable store; in a fresh context, open it with unchanged metadata, then call `DeleteStore`. Open now registers its view. DeleteStore correctly decides the header requires no stamp bump, but its [context clear](/home/birdy/projects/fdb-go/pkg/recordlayer/store_api.go:185) subsequently bumps it anyway.
+
+   This contradicts [approved design §2](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-b-design.md:50) and tagged Java’s [deleteStoreAsync](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/FDBRecordStore.java:1886). It unnecessarily invalidates caches across the cluster. Existing header-policy tests delete without first opening, so they miss this composition. [Clear-history preparation](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:311) also unconditionally bumps the stamp during a subsequent load.
+
+   **Required correction:** preserve the validated header-based invalidation decision through deletion and retained-clear processing, while retaining shared-view updates and necessary cache invalidation. Add opened-noncacheable deletion and delete/recreate stamp controls alongside the warmed-cache regressions.
+
+**Previous-finding dispositions:**
+
+- **Initialization blocker: resolved.** Open and lazy initialization hold the registry across reading and binding, including cache access; Open attaches before return. The explicit assume-readable path remains intact.
+- **Reload DFS: publication defect resolved, concurrency correction incomplete.** Reload updates the shared authority, preserves established conflicts, and serializes reading/publication against clears. Finding 1 blocks acceptance.
+- **Cache DFS: reported warmed-cache cases resolved.** Registered overlaps invalidate caches; retained ranges protect subsequent first loads. Ordinary record-range negative controls remain valid. Finding 2 identifies excessive invalidation.
+- Earlier former-index cleanup and mutation/publication-order fixes remain intact. Initialization errors propagate before public state transitions mutate state; reload read failures leave the existing projection unpublished.
+
+All **6,812 frozen source hashes** match `21c07c49f28fd0be9acf54fa5eee56fb3384f963`, and all **34 evidence hashes** reconcile. Source-to-reviewed-tree changes are documentation/evidence booking. Retained logs substantiate **93/93 uncached targets**, **14/14 race targets**, recordlayer **3409/3410**, conformance **1391/1510**, ten focused passes, actual initialization/reload/cache failures, and three compiled mutation kills. This is the stated race subset, not the complete PR relational race set or actual CI; it does not cover the two findings above.
+
+The scoped SPFresh review found no algorithm delta. Shared-state decisions govern maintenance and search eligibility; snapshot data reads, generation fences, encoding and budgets remain unchanged. Against RFC094, [SPANN §§3.2.1–3.2.3](/home/birdy/projects/fdb-go/.claude/skills/spfresh-reviewer/spann-paper.pdf) and [SPFresh §§3.2, 4.2.2](/home/birdy/projects/fdb-go/.claude/skills/spfresh-reviewer/spfresh-paper.pdf), finding 1 is a category **(b)** failure of the transactional adaptation’s concurrency guarantee when a vector store also maintains a unique index. It is not a LIRE algorithm change.
+
+The latest stress residual does **not independently block** this milestone:
+
+| Population | Baseline seconds, n=2 | Source seconds, n=2 | Mean ratio |
+|---|---|---|---|
+| Orders | 147.014639 / 146.930949 | 151.014568 / 151.468437 | **1.0290×** |
+| Customers | 6.629920 / 6.667944 | 7.017619 / 6.954991 | **1.0507×** |
+
+All four runs have 24 RUN/PASS, 26 identical row-count outputs and zero reported retries. The approximately **+2.90% / +5.07%** residual establishes neither parity nor causation.
+
+Approved extensions and the intentional Java deletion-callback correction remain preserved. WS-C–K remain outside this milestone; queue/state4/format15 remain disabled.
+
+No edits, tests/builds, Git mutations, GitHub requests, publication or delegation occurred. HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`. Runtime model/effort identity is not independently exposed to me.

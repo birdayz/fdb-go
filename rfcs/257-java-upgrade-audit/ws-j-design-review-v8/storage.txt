@@ -1,0 +1,73 @@
+**NAK.** I reviewed tree `936a4aba27681bdd9a5e2938021f54d7b803e2a1`. The design's SHA256 `ff925afc915653a557fae1daef0be2419749e8d0d270eb776dcab14224f1d28c` and its 2029 lines match what I recomputed from the tree. Java is at `fdacd162a`. This was a read-only review: I ran no tests, probes or mutations.
+
+**Checked and correct**
+- **Evidence:**
+  - 12 of the 66 hashes in `evidence-v8` match the tree's blobs.
+  - The `just test` tree `9f1cd709` differs from the candidate only in `ws-c-design.md` and `evidence-v8.txt`.
+  - `wsj-vr-jvm.log` has 35 lines: 8 load in both, 22 are refused in both, 5 are refused by Go only.
+  - I read four mutation logs (wm8-7, -8, -10, -13). Each carries its marker and turns tests red.
+- **The replay is sound in the dangerous direction:**
+  - It refuses only if every record type the loop made is in `md.recordTypes`, and no index covers a type the loop did not make.
+  - Both conditions match the pre-upgrade loader: its `Build` refuses a type with no primary key (`e48f5b496:metadata.go:772`), and its step 4 refuses an unknown index type (`metadata_proto.go:283-297`).
+  - Where the replay errs (universal indexes, nested-name collisions), it refuses more, never less.
+  - The pre-upgrade `serializeUnion` frames through any union field number (`store.go:2051-2075`), so treating a scalar `_T` as framed is correct.
+- **The loader's readings:** the `value_expression` fold, with Then flattening, and the absent-`added_version` = 1 default both match `Index.java:194-251`.
+- **The catalog's refusals:** the store refusal (`fdb_template_catalog.go:258`) and the load refusal (`:291`) are there. Every metadata-store write goes through the loader (`metadata_store.go:79`).
+- **v7 findings:** everything else is resolved: the reachability rule, the value/added readings, the write-path table, the lane scope, the IN refusals, the named-(d) save, the (j)/(o)/(t) entries, and the RecordTypeUnion arm.
+
+## MEDIUM
+
+**1. The version guard trusts a `v′ = latest + 1` that nothing enforces (design :388-399).**
+- `SaveSchemaTemplateConstantAction` refuses only `Version() <= latest` (`save_schema_template.go:33-36`). `fleet.SaveTemplate` passes the caller's version (`migrate.go:50-54`).
+- **Sequence:**
+  1. Bindings at (t,3) dangle.
+  2. `Restore(t,1)`.
+  3. Save v5, carried from v1. It is admitted, because the range from (t,5) up is empty.
+  4. `Restore(t,3)`.
+- That puts two histories under one name, which is v7 Graefe #2 again. Its predicate consequence follows: equal last-modified versions, no rebuild, wrong rows.
+- **Fix:** read from `(t, latest+1)`, as v7 prescribed, or refuse a carried save at `v′ ≠ latest+1`. Add the skip sequence as an FDB test.
+
+**2. The EQUIVALENT carrier has no route to storage (:1231-1240).**
+- The only store API is `CreateTemplate(api.SchemaTemplate)`. Its `serializeTemplate` marshals `rl.Underlying().ToProto()` (`fdb_template_catalog.go:251-280`), which rebuilds every `gen.Index` through `indexToProto` (`metadata_proto.go:596`). Nothing is preserved at the index level.
+- So a carried `gen.MetaData`, wrapped back into a template, loses its splice at the store:
+  - `index_type` becomes `type` plus a `unique` option;
+  - `value_expression` becomes a KeyWithValue root;
+  - unknown fields and extensions are dropped.
+- "Stores that same `gen.MetaData`" therefore has no mechanism behind it.
+- **Fix:** specify a bytes path (store the validated `gen.MetaData` verbatim, with the (d) and lane checks run over its load), and say what the in-memory catalog does.
+
+## LOW
+
+**3. The restore's keyspace claim (:446-452).**
+- `RecordLayerStoreCatalog` has no schema opener; it opens only its own store (`fdb_store_catalog.go:166-175`).
+- `SchemaSubspace` is `root.Sub(dbPath, schema)` (`keyspace.go:56-64`): F11's Go-only layout, over a root the caller supplies.
+- On the Java-compatible catalog, every schema Java created reads "no header", so the restore refuses it. That fails closed, but it leaves the restore unusable there, and this is undeclared.
+- **Fix:** name the keyspace parameter, correct the text, and declare the limit in (s).
+
+**4. The interim lane divergence (v7 Graefe #4) is still open.**
+- (t) (:2018) and DIVERGENCES say "both engines refuse it at the clause … measured on ten shapes". But the WSJLANE lines show `go=OK` for the eight primitive-operand shapes.
+- The clause-time refusal is section 6, which is step 6 and outside the unit. Step 3's build-path check will refuse those shared DDL shapes with 42F59 and a Go-only message, where the target raises XX000.
+- Section 8 contradicts itself: "each merges after the unit" against "THE TREE MERGES AS ONE" (:1931).
+- **Fix:** bring the DDL-origin XX000 into step 3, or declare the interim.
+
+**5. The SQL-family scope sentence is narrower than the code (:1629, :1689-1690; also (r), DIVERGENCES, CHANGELOG).**
+- The name-first arm also frames a scalar column quoted `"_A"` when A is a table. `ProtoUtils.java:45-76` keeps a single leading underscore.
+- It also skips a table-typed column named `_x` when x names no top-level message.
+- The code is right. State the family by the replay rule, or pin a `"_A"` column on the target.
+
+**6. "A legacy union that holds itself is removed" (:1735-1736) cannot happen for stored input under v8.**
+- A stored self-holder is refused only when UnionDescriptor is a record type of the found union (`preUpgradeLoaderLoads`, `metadata_proto.go:501-512`). A field of that union then refers to it, so the arm toward the target's choice refuses.
+- The planned unit case "beside a union that holds it as a record type" is therefore a refusal. Fix the text and the expected outcome.
+
+**7. Test gaps:**
+- The WSJIX spec (`ws_j_index_fidelity_conformance_test.go`, near :2626-2665) captures `out.Options` but never asserts it, although its comment says `index_type` "supplies the type and options". It also compares roots, not entries (v7 storage #2).
+- `TestAmbiguousLegacyUnionRefusalComesAfterTheTargetsFaults` still stops at the first `t.Fatalf`, so wm8-7 shows only one arm discriminating (v7 Torvalds #8, third point). Use `t.Errorf` for each arm.
+
+## Measured vs. hypothesis
+- **Measured:**
+  - the 35 descriptor shapes on both engines;
+  - the five WSJTT DDL shapes through Go's catalog and driver;
+  - the ten WSJLANE target outcomes, with Go storing eight;
+  - the five WSJIX readings;
+  - the v8 mutations (four logs read).
+- **From source, not run:** findings 1–6, and everything still unbuilt in steps 1–3: the guard, the restore, the carry and its carrier, the lane check and the migration.

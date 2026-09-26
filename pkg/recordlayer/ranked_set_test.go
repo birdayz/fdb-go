@@ -60,7 +60,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 
 		It("uses custom hash function when provided", func() {
 			sub := specSubspace().Sub("cfg-crc")
-			rs := newRankedSet(sub, rankedSetConfig{HashFunction: crcHash})
+			rs := newRankedSet(sub, rankedSetConfig{HashFunction: pureHash(crcHash)})
 			Expect(rs.config.HashFunction([]byte("test"))).To(Equal(crcHash([]byte("test"))))
 		})
 	})
@@ -1071,14 +1071,14 @@ var _ = Describe("rankedSet (skip-list)", func() {
 			runInTx(func(tx fdb.WritableTransaction) {
 				subJDK := specSubspace().Sub("hash-jdk")
 				rsJDK := newRankedSet(subJDK, rankedSetConfig{
-					HashFunction: jdkArrayHash,
+					HashFunction: pureHash(jdkArrayHash),
 					NLevels:      rankedSetDefaultLevels,
 				})
 				Expect(rsJDK.Init(tx)).To(Succeed())
 
 				subCRC := specSubspace().Sub("hash-crc")
 				rsCRC := newRankedSet(subCRC, rankedSetConfig{
-					HashFunction: crcHash,
+					HashFunction: pureHash(crcHash),
 					NLevels:      rankedSetDefaultLevels,
 				})
 				Expect(rsCRC.Init(tx)).To(Succeed())

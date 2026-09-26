@@ -38,14 +38,22 @@ func SearchSPFreshIndex(store *FDBRecordStore, indexName string, queryVector []f
 	if idx.Type != IndexTypeVectorSPFresh {
 		return nil, fmt.Errorf("spfresh search: index %q has type %q, not %q", indexName, idx.Type, IndexTypeVectorSPFresh)
 	}
-	if !store.IsIndexScannable(indexName) {
-		return nil, &IndexNotReadableError{IndexName: indexName, CurrentState: store.GetIndexState(indexName)}
+	state, err := store.readIndexState(indexName)
+	if err != nil {
+		return nil, err
+	}
+	if !state.IsScannable() {
+		return nil, &IndexNotReadableError{IndexName: indexName, CurrentState: state}
 	}
 	// Validate the query dimension before searching — searchCurrentGeneration's
 	// distance kernel slices centroid vectors to len(queryVector) and would
 	// panic on a longer query. ScanByDistance and the HNSW direct API both
 	// guard this; this wrapper must too.
-	if cfg := parseSPFreshConfig(idx); len(queryVector) != cfg.NumDimensions {
+	cfg, err := readSPFreshConfig(idx)
+	if err != nil {
+		return nil, err
+	}
+	if len(queryVector) != cfg.NumDimensions {
 		return nil, fmt.Errorf("spfresh search: index %q expects %d dimensions, query has %d", indexName, cfg.NumDimensions, len(queryVector))
 	}
 	maintainer, err := store.getIndexMaintainer(idx)
@@ -157,7 +165,10 @@ func SPFreshCheckIntegrity(rtx *FDBRecordContext, store *FDBRecordStore, indexNa
 		return report, fmt.Errorf("spfresh integrity: index %q has type %q, not %q", indexName, idx.Type, IndexTypeVectorSPFresh)
 	}
 
-	config := parseSPFreshConfig(idx)
+	config, err := readSPFreshConfig(idx)
+	if err != nil {
+		return report, err
+	}
 	tx := rtx.Transaction()
 	metaStorage := newSPFreshStorage(store.indexSubspace(idx), 0)
 	gen, err := spfreshReadGenerationSnapshot(tx, metaStorage)

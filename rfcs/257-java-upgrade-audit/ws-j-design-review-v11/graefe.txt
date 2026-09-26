@@ -1,0 +1,92 @@
+**NAK.** Tree `aa29308afd7637d7e98a42ef1d108335013ead8c`; the design's SHA256 `33a8fc1e35d537978db7e69ad40a140870911b3829df9d6a108e6bc7abdbf608` (2532 lines) matches that tree. Java is at `fdacd162a`. This was a read-only review: I ran no tests, probes or mutations.
+
+## What holds
+- **Option order:** the loader now reads options with the type, before the root and the key, as Java does (`metadata_proto.go:843-856`, `Index.java:198-221`).
+- **Former index:** its read and write match `FormerIndex.java:51-68` and `:119-133`.
+- **Remedy marking:** `LegacyUnionTemplateError` marks the loader's own error in place and keeps every wrapper (`builder.go:761`).
+- **R1 and retypes:** a removed field must have its number reserved, and a retype goes through the ordinary check. That matches `MetaDataEvolutionValidator.java:259-266` and `:322-327`.
+- **Smaller fixes:** the limit-1 conflict scope (`:609-613`) and the covering-spec wording are now correct.
+- **Subspace-key specs:** they decode through `proto.Unmarshal`, which is the production decoder (`fdb_template_catalog.go:286`).
+- **Pool census:** zero hits for the three pooled types, with the positive control at two.
+- **Graefe lens, unchanged sections:** sections 3.3, 3.4, 3.5 and 6 are unchanged since v10 (every hunk of the design diff lies elsewhere), and I found nothing new in them.
+
+## MEDIUM
+1. **R1's reach bound is false for two of the four readers it names** (`:2157-2160`; v10 Torvalds #3 is still open).
+   - `Build` validates only primary keys and index roots (`metadata.go:834`, `:849`; Java's `MetaDataValidator.java:96`, `:118`).
+   - Predicates resolve their fields only when evaluated, and read a missing field as unset (`index_predicate.go:303-312`).
+   - Neither validator reads the record count key.
+   - So removing a holding field that a predicate or the count key reads through still loads, and silently changes index membership or count grouping.
+   - **Fix:** refuse R1 in both cases, and test both.
+
+2. **The restore's two-history check compares only record-type keys and union numbers** (`:622-626`).
+   - The hazard the design itself names, an index difference in predicate only with matching versions (`:556-559`), passes that check.
+   - So do differing index subspace keys and definitions, and FormerIndexes.
+   - **Fix:** compare indexes by name (subspace key, and EQUIVALENT or a later last-modified version) and FormerIndex keys; test the predicate-only case.
+
+3. **"The save action calls `CreateTemplate` and nothing else"** (`:959`, `:1537`) leaves two checks unplaced.
+   - `Execute` today refuses `v′ <= latest` and runs the relational validator (`save_schema_template.go:33-44`).
+   - Section 2 (`:493-494`) and section 4's "latest suffices" argument (`:1617-1620`) depend on both.
+   - A direct `CreateTemplate(t, v′ < latest)` is refused only as an exact duplicate (`template_catalog.go:99-101`), and the guard reads from latest + 1. So a version carried from the latest can be stored below it.
+   - **Fix:** run both checks inside `CreateTemplate`, and add them to the write-path table.
+
+4. **The edited-file route's framing does not survive step (ii).**
+   - The validator pairs union fields by each field's own message type and builds its renames from those pairs (`metadata_evolution_validator.go:238-243`, `:331`).
+   - It also refuses any old union field that is not a message (`:321-323`).
+   - So step (i)'s name-first framing is overridden exactly where it differs from type-first:
+     - a scalar `_T`, whose rule step (i) "suspends", is refused again;
+     - a `_X` field of type Y becomes "record type X removed" (`:347-353`).
+   - So `:2139-2141` overclaims, and the test at `:2182-2183` either cannot tell the framings apart or fails.
+   - The direction rule (`:2113-2118`) is undefined for shape (b), and for the case where both choices are the same message (for example (c) in a usage=UNION file).
+   - The envelope tests "R1 … without it refused" (`:2184-2186`) contradict `:2142-2145`: the validator never compares an envelope.
+
+5. **Section 9 (p) still states v10's route** (`:2480-2484`). It says `SaveMigratedLegacyMetaData` admits edited files, "relaxed only for the holding fields of type UnionDescriptor". That is two specs again, which is what v10 asked to remove.
+
+6. **The lane check over WIDENED contradicts (m)** (`:1003-1009`, `:1531-1534`, `:2467-2474`).
+   - Real tenants holding the eight lane-less shapes were stored by pre-F2 builds, with `long_value` literals (`:1666-1667`).
+   - A hand-built version at this build's width is therefore WIDENED (`:846-849`), still has no lane, and is refused.
+   - So "carries it as EQUIVALENT and is admitted" (`:1008`, `:2472`) and the pin at `:1011-1014` hold only if the builder repeats `long_value`.
+   - **Fix:** scope the claim to that case, or exempt a WIDENED key whose widened form still has no lane.
+
+## LOW
+7. **The in-memory lock-order premise is false.**
+   - `SaveSchema` checks the template before it takes the store mutex (`store_catalog.go:85-101`), and `RepairSchema` releases it before `LoadSchemaTemplate` (`:140-151`).
+   - So the guard and the `DeleteTemplateVersion` refusal are not atomic against a concurrent bind.
+   - **Fix:** make both hold the store mutex across their template reads, and pin it with a `-race` interleaving test.
+
+8. **`HeldBy`.**
+   - `legacyUnionHolder` (`metadata_proto.go:495`) checks only the union and the record types. A STRUCT named UnionDescriptor nested in another STRUCT therefore gets the records-file remedy.
+   - Its value is unpinned: WSJTT asserts only that it is non-empty (`:2993`), and `metadata_validate_records_test.go:515` compares only Legacy and Found.
+
+9. **An absent root is loaded where Java refuses it.**
+   - Java refuses it with "Exactly one root must be specified for an index" (`KeyExpression.java:404-405`).
+   - Go skips the root (`metadata_proto.go:858`) and then drops `value_expression` (`:871`).
+   - That contradicts ":1434 each read as Java's `new Index(proto)` reads it". This predates v11.
+
+10. **Citations left stale by WS-C 7.7.**
+    - `:1609-1612` and `:2408` say Go lacks the "former index key used for new index" arm. It is now at `metadata_evolution_validator.go:508`.
+    - The comment `:1608` points to is gone; the check is now at `metadata.go:1226-1235`.
+    - Other validator citations have moved: the added-version check (`:833`) is now at `:678`, the widening arm (`:834`) at `:732`, the rebuild admission (`:865`) near `:698`, the last-modified check (`:1632`) at `:688-690`, and "index missing" (`:1599`) at `:525`.
+
+11. **Evidence gap.** `TestLegacyUnionTemplateErrorRemedies` is in a new test file, and no ev11 log names it. `final-targets.log` shows only "4 of 4" with no per-test output.
+
+## v10 findings
+- **Resolved:**
+  - Graefe 2, 3, 4, 5, 6, 8 and 9;
+  - storage 2, 3, 5 and 6;
+  - Torvalds 2, 4, 5, 6, 8 and 9.
+- **Partly resolved:**
+  - Graefe 1, storage 1 and Torvalds 1: see findings 4 and 5;
+  - storage 4: see finding 2;
+  - Graefe 7 and Torvalds 7: see finding 7.
+- **Not resolved:** Torvalds 3 (finding 1).
+
+## Measured vs. source-only
+- **Measured:**
+  - five blob hashes in the candidate tree match `src2.sha`;
+  - `wsj-ev2.log`: "Ran 31 of 57", all passing, with the four WSJIXK lines;
+  - `final-recordlayer-test.log` runs `TestReusedIndexMessageKeepsAnEmptySubspaceKey` and the new repeated-option subtest;
+  - `final-targets.log`: 4 of 4 targets pass;
+  - the pool census and its control.
+- **Source-only:**
+  - findings 1 to 10;
+  - everything still unbuilt in steps 1 to 3.

@@ -37,7 +37,7 @@ func TestFDB_IntersectionOrderingGate(t *testing.T) {
 			"CREATE INDEX idx_desc_a_sort ON t_desc (a, sort_key) "+
 			"CREATE INDEX idx_desc_b_sort ON t_desc (b, sort_key)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ixgate/s WITH TEMPLATE ixgate")
-	dsn := fmt.Sprintf("fdbsql:///testdb_ixgate?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_IXGATE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

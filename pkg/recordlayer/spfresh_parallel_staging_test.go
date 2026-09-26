@@ -98,7 +98,9 @@ var _ = Describe("SPFresh parallel staging scan (RFC-103)", func() {
 				return nil, serr
 			}
 			index = store.GetMetaData().GetIndex("spf_det")
-			config = parseSPFreshConfig(index)
+			var cerr error
+			config, cerr = readSPFreshConfig(index)
+			Expect(cerr).NotTo(HaveOccurred())
 			indexSubspace = store.indexSubspace(index)
 			return nil, nil
 		})

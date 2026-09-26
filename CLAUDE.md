@@ -133,7 +133,7 @@ If you're tempted to add a 5-line note explaining a divergence, write it as a co
 **A GREEN FROM AN EMPTY SET IS THE DOMINANT FALSE POSITIVE — AND IT WEARS AT LEAST FIFTEEN FACES.** The narrowed-filter case above is one instance of a general failure: a reporting layer that cannot distinguish *passed* from *never ran* renders both as success, so the absence of a result reads as the absence of a problem. Fifteen confirmed here:
 
 - a `--test.run` pattern matching no function (`TestFieldNameDecision` for a test actually named `TestFieldNameNeverDecides` — `PASS`, zero `=== RUN` lines);
-- Bazel serving a cached result, printing `Executed 0 out of 1 test: 1 test passes` — a green that ran nothing this invocation. Re-run with `--nocache_test_results` before banking it;
+- Bazel serving a cached result, printing `Executed 0 out of 1 test: 1 test passes` — a green that ran nothing this invocation. That green is REAL (owner ruling: the Bazel cache is correct, keep it on, never force an uncached run to verify): a cached pass is the pass of those exact inputs. The trap is only in the CLAIM — say "cached pass", and when you need proof the test covers your change, confirm your edit is among its inputs (a changed input re-executes it) rather than forcing a rerun. If you suspect the cache itself is wrong, that is a cache bug: root-cause and fix it, never route around it with `--nocache_test_results`. (Timing measurements such as the stress workflow below are different: the run IS the measurement.);
 - CI runs held at `action_required` awaiting approval, which `gh pr checks` reports as *"no checks reported"* — indistinguishable from never triggered. All 3 bot-authored PRs in this repo's history ran zero checks and **one of them merged that way**, because `mergeStateStatus` was `UNSTABLE`, not blocked;
 - a `gh` JSON query whose `statusCheckRollup` is empty, so a filter for failing checks returns nothing and reads as "all green";
 - a PR whose `mergeStateStatus` is `DIRTY`, also reported by `gh pr checks` as *"no checks reported"*. GitHub cannot compute `refs/pull/N/merge` on a conflict, so `pull_request` workflows never fire **at all** — and that is rendered identically to "queued" and to "never triggered". Actions status, workflow triggers and repo permissions all read healthy while nothing runs. Check `mergeStateStatus` before diagnosing a missing check; merging the base fires every workflow within seconds;
@@ -184,7 +184,7 @@ Vollkonti continuous 24/7 shifts via `/vollkonti`. Handovers in `shifts/`. One b
 
 `TODO.md` is the authoritative execution order — numbered items in 6 sequential phases, items inside a phase run in parallel unless gated. **At shift start, pick the lowest-numbered unchecked item whose gates are satisfied.** Handover follow-ups are suggestions, not the priority list. Finish what you start before moving on.
 
-**Working rhythm:** one thing at a time. Implement → `just test` → commit → push → next. One logical change per commit; don't batch unrelated features. Don't push unless asked.
+**Working rhythm:** one thing at a time. Implement → `just test` → commit → push → next. One logical change per commit; don't batch unrelated features.
 
 **High-output patterns (proven in swingshift-70, 11k+ LOC/shift):**
 - **Commit constantly.** Every green test = commit + push. Small commits (5-50 LOC each) maintain momentum and make rollback trivial. 80+ commits/shift is normal when you're flowing.
@@ -341,7 +341,7 @@ Wire-level compatibility is the whole point. These match Java exactly: subspace 
 
 FDB constraints: 5s tx limit, 100KB value limit, 10MB tx limit, ~10KB key limit. Cursors need `TimeScanLimiter` + continuations; values use split records.
 
-Java source at `fdb-record-layer/` (gitignored, tag **4.12.11.0**, matches MODULE.bazel pins).
+Java source at `fdb-record-layer/` (gitignored, tag **4.14.2.0**, matches MODULE.bazel pins).
 
 ## Design principles
 

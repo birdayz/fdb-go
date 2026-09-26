@@ -1,0 +1,100 @@
+**NAK** on RFC-257 WS-D design v9.
+
+- **Tree:** `59a5b3c3c6301392da4cc03508e8b24cad73c5cd`
+- **Design:** `ws-d-design.md`, SHA256 `da5d56e6fb9508be1eb7d9626263472f7319608df3c135e4105af42e9f281e8d`. I recomputed it from the tree and it matches.
+- **Java:** `fdacd162` (read from `.git/HEAD`).
+
+**What I read:** all four v8 verdicts, the full v9 design and its diff from v8, the oracle README and both evidence files, the probe source (Java and Go), the item-18 logs and both `just test` logs. I checked the claims against Java and the current Go.
+
+**Limitation:** poppler and pdftotext are both absent, so I could not render the PDFs. Paper citations below go through RFC-094 and the skill's mapping, as in v8.
+
+## P2-1: The peel's time budget (design:1096-1111) is under-specified, and it undoes the (h) recovery for splittable clusters
+
+This budget is v9's only new answer to v8's cost finding. It has three problems.
+
+**(a) The set of outcomes is wrong.**
+- The budget sends a *splittable* cluster to the reconcile. But the reconcile's population is declared "exactly" three unsplittable shapes (1019-1025).
+- Lines 1102-1105 say the budget "never produces a new state". That omits a third outcome: if the count is above hardMax, the reconcile raises ClusterUnsplittableError (1054-1058), which is terminal and poisons the transaction.
+- The design's own d=4096 acceptance fixture expects the peel to be cut short at n≈2000. So at high dimension this is the normal path, not an edge case.
+- In inline mode (no insert cap), a cluster that could be split then wedges permanently, with an error that says "unsplittable".
+- The same happens to a task that runs late in a long inline transaction. Every retry reaches the same point.
+- **Needed:**
+  - Declare the budget-cut population under (h).
+  - Record the cause on the error (budget cut vs. structurally unsplittable).
+  - State how each retry owner handles it.
+  - Either bound the cost of a refit independently of d (for example, fit on a bounded sample of M and assign all of P), or pin the wedge with a fixture.
+
+**(b) The clock and its anchor are unspecified.**
+- The budget decides persisted topology. This project routes such decisions through `dst.Env` (dst_seam_gate_test.go:14-27; precedent at scan_limiter_state.go:124-137).
+- It also anchors FDB's 5 s window at the read version, not at context creation (scan_limiter_state.go:140-151).
+- State both. Under a seeded clock the budget never binds, so the fall-through arm also needs its 1 ns fixture in simulation.
+
+**(c) The reserve after the peel is unbounded.**
+- Only refits are gated. After the budget expires, two things still run with no measured reserve:
+  - materialising a split that was selected late, at n=2000;
+  - the reconcile's serializable reads of every reference and its metadata.
+- The budget is a user setting with no ceiling below 5 s.
+- The "completes in under 2 s" acceptance fixture is a wall-clock assertion, which contradicts 1105-1107 ("no pinned outcome depends on machine speed").
+- Whether the d=4096 fixture's peel is actually "cut short" depends on machine speed.
+
+## P3
+
+1. **The merge-side n<k case is not declared.**
+   - (h) is scoped "for an over-max cluster" (478-485), and the population sentence names only the stale-inflated split and the empty merge core (945-947).
+   - Java also throws at KMeans.java:136 in two more shapes:
+     - A 3→2 merge candidate with fewer than 2 cleaned primaries (SplitMergeTask.java:508-529; the guard at :514-516 checks only the number of clusters). Go's n<k rule turns this into the 2→1 fallback at :550.
+     - A 1→2 split with n<2 beside a viable 2→3 candidate. Go then selects 2→3.
+   - Declare both, and add them to the list of JVM fixtures still owed (899).
+2. **The in-tree evidence is stale.**
+   - The hashes at evidence-run.txt:4-7 match neither v9 probe file (Java is now `9a8fa3c4…`, Go `f3917cd6…`).
+   - Design:163 and :881 still say "13 specs"; the Describe block now has 14. Both lines cite evidence-run.txt for the count and hashes.
+   - The floor mutation is not recorded in evidence-mutations.txt.
+   - Design:771 cites README "item 18" for the `just test` record; it is item 19.
+   - The item-18 runs used a 17-spec target (wsd-hd-peel-5.log:221), so they predate the frozen tree. The real frozen-tree evidence is `rfc257_oracle_test` executing uncached in just-test-v9b.log:15-28. Only 4 of 94 targets executed there; the rest came from the Bazel cache.
+   - "The target's own fit 36 to 43 ms" (1092) holds only for the tight shape. The spread d=768 shape's own fit took 100-118 ms (wsd-hd-peel-6.log:77,181).
+3. **consumerOutcome's order does not match Java.**
+   - Java builds the quantizer at SplitMergeTask.java:227 and :430, before the phase-1 exit at :232 and :435. So under trained bits-9 a phase-1 task is refused; item 15's live task is exactly that case.
+   - Lines 316-321 read as if phase 1 returns "runs" first.
+   - The bounce hand-back (338-343) must also carry the RNG state after `nextInt`, because :149, :190 and :200 draw from it.
+4. **"Classification by every retry owner" (1064-1069) omits the two owners that actually see the error.**
+   - The merger aborts on non-FDB, non-timeout errors (indexing_merger.go:93-105), matching IndexingMerger.java:189-203.
+   - `db.Run` retries only retryable FDB codes.
+   - Name both.
+5. **Nit:** "ongoing means exactly a new session would be refused" (indexing_heartbeat_admin.go, DIVERGENCES.md) is true only for exclusive sessions. Mutual admission checks nothing (IndexingHeartbeat.java:90-93).
+
+## Verified closed from v8
+
+- **Poisoning:** keyed on where the error is returned, for any error (206-226). This matches Java, where GuardiANN never catches a task exception (Primitives.java:1016-1033).
+- **KMeans.java:136:** confirmed at :136-138. The RNG split is consumed even for a skipped candidate (RandomHelpers.java:213-214).
+- **Distinct error type:** Java converts only the insert cap's capacity error (GuardiannVectorIndexEngine.java:152-164), so ClusterUnsplittableError staying separate is right.
+- **Serializable prologue:** confirmed at SplitMergeTask.java:169 and Primitives.java:1019.
+- **Relief threshold:** declared (SplitMergeTask.java:180-181).
+- **Wait cap:** now injectable.
+- **Floor bound:** if 2^(r+1)-1 members have left M by round r, there are at most floor(log2(n-1)) refits. The probe implements this (guardiann_probe_conformance.java:866-877), and the 78 pinned rows passed on the frozen tree.
+- **Heartbeat admin:** matches IndexingHeartbeat.java:101-125 and OnlineIndexer.java:458-463.
+- **v8 nits:** the stray fragment and the "halves M per round" claim are gone.
+
+## Paper lens
+
+- **SPFresh is untouched since the accepted WS-C tree.**
+  - Between `f0cb295` and this tree, 15 files changed under `pkg/`. None is `spfresh_*`, `rabitq`, `index_maintainer_queue.go` or `index_deferred_maintenance.go`. The positive control, `indexing_heartbeat.go`, does appear.
+  - SPFresh embeds `standardIndexMaintainer` (spfresh_index_maintainer.go:31). It therefore inherits the queue refusal (index_maintainer_queue.go:12-20) and the no-op MergeIndex (index_deferred_maintenance.go:246-248).
+  - There are 0 heartbeat references in `spfresh_*.go`, against 78 matching lines in `indexing_heartbeat.go`.
+  - LIRE split, NPA reassign and merge (SPFresh §3, RFC-094 §6) are unaltered. The salt bytes and the SPANN §3.2.3 probe budget are preserved (design:555-563).
+- **GuardiANN by analogy:**
+  - The floor keeps nearest-centroid final ownership (the SPFresh §3 NPA analogue).
+  - It keeps the minChildFraction balance (SPANN §3.2.1).
+  - The one exception is P2-1(a): an above-threshold posting can persist with a terminal error.
+
+## Measured vs. still hypothesis
+
+- **Measured:**
+  - item-18 refit counts (pure algorithm, pinned);
+  - timings (samples, not pinned);
+  - the heartbeat populations (JVM spec);
+  - items 1-17.
+- **Still hypothesis:**
+  - the budget's behaviour and cost on FDB;
+  - reconcile and materialisation time at n=2000;
+  - the merge-side n<k case;
+  - every Go mechanism, none of which is implemented yet.

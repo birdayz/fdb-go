@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -26,7 +27,7 @@ func FuzzSQL_QueryContext(f *testing.F) {
 	ctx := context.Background()
 	const dbPath = "/fuzz_qctx"
 
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", dbPath, clusterFilePath))
+	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), clusterFilePath))
 	if err != nil {
 		f.Fatalf("open setup conn: %v", err)
 	}
@@ -39,7 +40,7 @@ func FuzzSQL_QueryContext(f *testing.F) {
 		"CREATE TABLE t (id BIGINT, name STRING, amount BIGINT, PRIMARY KEY (id))")
 	_, _ = setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE fuzz_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
 	if err != nil {
 		f.Fatalf("open query conn: %v", err)
 	}

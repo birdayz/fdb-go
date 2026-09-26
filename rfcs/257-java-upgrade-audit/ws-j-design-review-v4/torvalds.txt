@@ -1,0 +1,56 @@
+**NAK.** This covers tree `eb79c50e127ebbed64612a10811d9020bc723b18` and design `ws-j-design.md`. I re-hashed the design: SHA256 `508e5cd5fe89179d448aa44a9f14b36f8ed000362a69bb588fab910aff5b3ffe`, 1310 lines, both match. Java is at `fdacd162a`. This was a read-only review; I ran no tests, probes or mutations.
+
+**Checked and correct**
+- **Evidence hashes:** all 43 sha256 values in `evidence-v4.txt` match the blobs in this tree. I re-hashed every one with `git show TREE:path | sha256sum`.
+- **Tally:** `wsj_go_classes.json` has 475 runs: 166/4/180/4/20/101. Each Go digest on the five new equal shapes equals the Java pin's digest. `WSJ-GO-BUILT-TWICE 354`.
+- **Signed reads/writes:** complete. The only direct `.Uint()` reads in non-test `pkg/` and `cmd/` code (excluding `pkg/fdbgo`) are the six converted sites. The only `ValueOfUint32/64` writers are `executor.go:4413-4423` and `proto_value.go:260-265`. The mapping matches `Type.java:909-914`.
+- **Records validation:** `fetchUnionDescriptor`/`validateRecordUnion` match `RecordMetaDataBuilder.java:322-358` and `:687-747`. The 18 shapes give identical messages on both engines (`wsj4-vr-jvm.log`).
+- **Plan cache:** the plan-cache coupling is sound today, because `?` lowers to a `ParameterValue` (`walk.go:343`).
+- **Measured on the target:** every T1 read fails over `long_value` (`wsj4-ev2.log:1783-1798`). Also measured: the INT_MAX lane, the F2b raw hex (the target's own reader reads the entries written by both engines), and both duplicate-option messages.
+
+**Measured vs. not yet built.** The items above are measured. Still source-only and not built: the carry rule, the stored-key decline, the 4c migration, and the guard's concurrency argument. "A store stops opening" is pinned only through `RecordMetaDataFromProto`; no test opens a store.
+
+### HIGH
+1. **§4 undoes the widening path it is meant to enable.**
+   - The rule: EQUIVALENT includes "equal under 3.2's one-way literal-carrier arm" (:863). An EQUIVALENT index's "rebuilt proto is replaced by the stored one field for field" (:873).
+   - Effect: a width-only v2 keeps the stored `long_value` root. The validator's arm (`metadata_evolution_validator.go:565`) is then never reached on the only path §3.2 says reaches it (:478).
+   - Test 5's "target plans the bitmap reads over v2" (:951) would get XX000, the measured result over `long_value`.
+   - Four other places assert the opposite, the move to `int_value`: §3.5 :764, DIVERGENCES.md:2766 (exit of (m)), TODO.md:14676, and CHANGELOG.
+   - The same replacement also silently drops any change to a validator-ignored option (Java `getChangedOptions`, :776-795).
+   - **Fix:**
+     - Add a WIDENED outcome: keep the versions and subspace key, and take the rebuilt root.
+     - Decide it with the same `literalCarriersEquivalent` function, not a second implementation.
+     - Test 5 must assert that the stored v2 root is `int_value`.
+     - Grep all five sites.
+
+### MEDIUM
+2. **The single-merge claim has no mechanism and covers too much** (:3-10, :1248).
+   - This tree also holds WS-D, WS-E and WS-F under their own gates, and they share files with WS-J: `executor.go`, `values.go`, `sql_plan_steps.java`, CHANGELOG, DIVERGENCES and TODO.
+   - The hazards the design cites (F1 without the carry rule, a re-issued version, F13 without migration) close at step 3.
+   - Steps 4–9 add no interim hazard. Four of them are query-engine work, yet they hold the F2 interop fix off master.
+   - **Fix:** define the merge unit as the landed fixes plus steps 1–3, or justify each later step. State how the landed fixes stay out of any earlier merge from this tree.
+   - Related: CHANGELOG already documents `MigrateLegacyRecordsFile`, `SaveMigratedLegacyMetaData` and `frl meta migrate-legacy`. None exists: 0 `.go` hits in the tree, against a control of 1.
+
+### LOW
+3. **"Build returns the FIRST fault, as Java throws it" (:1043) is false on the load path.**
+   - `RecordMetaDataFromProto` (`metadata_proto.go:250-285`) buffers the records fault and keeps going. It then returns `indexFromProto`, "unknown record type" and subspace-setting errors directly, so any of those can hide the records fault.
+   - Java's order is subspace settings, then the union, then the records checks (`RecordMetaDataBuilder.java:276-278`).
+   - None of the 18 shapes has an index.
+   - **Fix:** return `buildErrors[0]` right after `setRecordsWithUnionName`, run the subspace settings first, and add a shape that has an index.
+4. **The duplicate-option JVM spec never runs Go.** The "tie" is two copies of one string constant (`ws_j_index_fidelity_conformance_test.go:2276` and `index_option_order_test.go:141`). The spec should feed the same proto to `recordlayer.RecordMetaDataFromProto` and compare the two messages.
+5. **`just test` evidence does not show what ran.**
+   - `wsj4-justtest-executed.txt` is 0 bytes, and the log has only the summary line. The claim "executed this invocation, read from each target's test.log" therefore cannot be checked.
+   - The run records no tree ID, so the non-WS-J remainder of the tree is unbound.
+6. **`literalKeyCarrier` falls through on unknown pairs** (`generator.go:916-946`). Any (type, Go kind) pair it does not recognise returns `c.Value`. A FLOAT or DOUBLE constant held in an integer kind would reach the wire with the Go kind's carrier, which is the class of bug v4 fixed for INT. Return XX000 instead.
+7. **Two scope sentences describe the arm as symmetric; the code is one-way.** They are the `SetAllowLiteralCarrierWidening` doc (`metadata_evolution_validator.go:80-91`) and design :493 ("equivalent anywhere").
+8. **Stale counts in the design:**
+   - :199 says "16 literal shapes"; the tree has 21.
+   - :407 says "11 reads"; the spec now runs 15.
+   - :467 says "Go's 13 answers"; there are 19, as :150 says.
+9. **Plan-cache coupling comments:**
+   - `value_equivalence.go` says Go matches function-key literals today, but §3.5 says Go declines every such key.
+   - Neither site says that 3.5 must never match a `ParameterValue` against a stored literal. `?` text is one cache key for every binding.
+   - In `query_hash.go`, the new paragraph runs straight into the `plannerOpts` paragraph with no break.
+10. **Orphaned javadoc:** `wsjDuplicateIndexOptionJava` was inserted between `ephemeralTeardownProbe`'s javadoc and its method (`sql_plan_steps.java:1198-1233`), so that javadoc no longer attaches to anything.
+11. **The go-digest mutation edits the pin file, not Go code.** It proves the comparator works, not that the digest catches a change inside a class. Reverting F12 and reporting how many digests move versus how many classes move would show that.
+12. **`SetRecordsWithUnionName` is now `SetRecords` plus a name assertion.** The "Records already set." check exists three times (`metadata.go:272-310`, `:344`); collapse it.

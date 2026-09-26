@@ -947,22 +947,12 @@ func TestDefaultArrayConstructorAcrossEmptyRecord(t *testing.T) {
 							!array.ElementType.Equals(elementType) || array.Elements[0] != field {
 							t.Fatal("array translation mutated its source field, descriptor or constructor")
 						}
-						if !nullableElement {
-							if err == nil || projection != nil {
-								t.Fatalf("accepted ARRAY<LONG NOT NULL> around a nullable default-record read: plan=%v error=%v", projection, err)
-							}
-							var resolutionErr *values.ResolutionError
-							if !errors.As(err, &resolutionErr) || resolutionErr.ErrorCode != values.ReanchorResultTypeMismatch {
-								t.Fatalf("array reconstruction lost its typed mismatch error: %v", err)
-							}
-							return
-						}
 						if err != nil {
 							t.Fatal(err)
 						}
 						outputType := projection.GetResultType().(*values.RecordType)
-						if len(outputType.Fields) != 1 || !outputType.Fields[0].FieldType.Equals(values.NewArrayType(false, values.NullableLong)) {
-							t.Fatalf("constructed array metadata = %v, want nonnull ARRAY<nullable LONG>", outputType)
+						if len(outputType.Fields) != 1 || !outputType.Fields[0].FieldType.Equals(values.NewArrayType(false, elementType)) {
+							t.Fatalf("constructed array metadata = %v, want retained ARRAY<%s>", outputType, elementType)
 						}
 						ctx := context.Background()
 						cur, err := ExecutePlan(ctx, projection, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())

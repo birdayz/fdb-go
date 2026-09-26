@@ -1,0 +1,62 @@
+{
+  "scope": "Lazy LIMIT snapshot verification in the Java-upgrade development tree, before startup-error-context helper edits; no full upgrade or performance comparison claim.",
+  "go_parent": "62ea473554fc3c2afdf3c69c8ceaf7a8500e7cf0",
+  "limit_sources": {
+    "pkg/recordlayer/query/executor/executor.go": "3b6669aee530927c0ddf63de9c66ca753d87d60a949a331279f473c174cfe1db",
+    "pkg/recordlayer/query/executor/limit_envelope_test.go": "8bc2bf6fe6d0b05fdbd50630366b6c8b25c048a622480e960a7f887007fd17d9",
+    "pkg/relational/sqldriver/metamorphic_sweep_paging_fdb_test.go": "5754f7a2fcfebf0b29f9716ca58f1eb49af9c98098a4367cc4cc9bd23cf6a9e4"
+  },
+  "runs": [
+    {
+      "log": "/var/tmp/query-grind-cast/java-upgrade/limit-executor-restored-green.log",
+      "sha256": "c77a48bce9216591e82dfc4237fa11679e4e7b544f01b8af56657bc0884aca77",
+      "targets": [
+        {
+          "label": "//pkg/recordlayer/query/executor:executor_test",
+          "counts": {
+            "run": 1944,
+            "pass": 1944
+          }
+        }
+      ]
+    },
+    {
+      "log": "/var/tmp/query-grind-cast/java-upgrade/limit-paging-race-green.log",
+      "sha256": "6065cd296edb2d6e7f39690aeaecd8b4f7b0865798c1d99919fb2d429ead1b1c",
+      "targets": [
+        {
+          "label": "//pkg/relational/sqldriver:sqldriver_test",
+          "counts": {
+            "run": 1,
+            "pass": 1
+          }
+        }
+      ]
+    },
+    {
+      "log": "/var/tmp/query-grind-cast/java-upgrade/limit-full-race-green.log",
+      "sha256": "14853425561a1f61f5a2912b1b9f3b50a9ae2c878f8de64023895f8821e5a8fb",
+      "targets": [
+        {
+          "label": "//pkg/recordlayer/query/executor:executor_test",
+          "counts": {
+            "run": 1944,
+            "pass": 1944
+          }
+        },
+        {
+          "label": "//pkg/relational/sqldriver:sqldriver_test",
+          "counts": {
+            "run": 6744,
+            "pass": 6744
+          }
+        }
+      ]
+    }
+  ],
+  "mutations": {
+    "emission": "Reinstating eager encoding at emission fails the real-sort regression at emission.",
+    "boundary": "Reinstating eager encoding at the no-next boundary fails the same test at the boundary.",
+    "restored_source_sha256": "3b6669aee530927c0ddf63de9c66ca753d87d60a949a331279f473c174cfe1db"
+  }
+}

@@ -9,7 +9,7 @@
 > its prose is left as the record of what was decided when.
 >
 > Target versions: Java
-> `fdb-record-layer-core` **4.12.11.0**, FDB C++ client **7.3.77**, Go **1.26.x** (the pins in
+> `fdb-record-layer-core` **4.14.2.0**, FDB C++ client **7.3.77**, Go **1.26.x** (the pins in
 > `MODULE.bazel` are the source of truth). The executable truth is the test suites
 > (`//conformance:conformance_test`, the cross-engine differential, binding-stress); `README.md` and
 > `DIVERGENCES.md` are the other living docs. Point-in-time audit snapshots live under
@@ -17,6 +17,10 @@
 > guard fails CI if a living doc cites a Java record-layer / FDB C++ / Go version other than the
 > `MODULE.bazel` / `go.mod` pins, reintroduces the README escape-hatch contradiction, or leaves a
 > stale report under `reports/`.
+
+**Upgrade gate:** the initial run against the new Java target is red. RFC-257 owns
+the complete-range audit and required ports; updating pins is not parity or release
+approval. Historical verification in this checklist does not certify the new target.
 
 This document collects the work needed to make `fdb-record-layer-go` credible as
 a production-grade project that users can rely on, and as a near-term public HN
@@ -55,7 +59,7 @@ first.
 
 Earlier drift between README, TODO, and the `reports/` audits — some docs called outer
 joins / subqueries unsupported while they were implemented; older reports referenced an
-earlier Java target than the README's current 4.12.11.0 — is fixed by **RFC-131**:
+earlier Java target than the README's then-current baseline — was fixed by **RFC-131**:
 
 - the six 2026-03-09 `reports/*.md` were archived under `docs/archive/reports-2026-03-09/`,
   headered as superseded point-in-time snapshots;

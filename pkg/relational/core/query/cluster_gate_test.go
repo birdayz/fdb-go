@@ -464,7 +464,7 @@ func TestWalkArmParity(t *testing.T) {
 		{"sort", logical.NewSort(scan("Order", "o"), nil), true, 1},
 		{"limit", logical.NewLimit(scan("Order", "o"), 5, 0), true, 1},
 		{"union", logical.NewUnion([]logical.LogicalOperator{scan("Order", "o"), scan("Customer", "c")}, false), true, 1},
-		{"values_default_arm", logical.NewValues([]string{"(1)"}, []string{"a"}), true, arityPoison}, // the documented default divergence
+		{"singleton", logical.NewSingleton(), true, 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -684,7 +684,7 @@ func TestGatedJoinLegTypes_BuriedConsistency(t *testing.T) {
 		t.Fatalf("buried S window = {corr %q offset %d leaf %v concat %v} — want a box-corr window into the cluster concat", s.bakeCorr, s.leafOffset, s.leafTyp, s.typ)
 	}
 	// And it must AGREE with the seed map's entry bit-for-bit.
-	_, seedTypes := tr.ordinalJoinSeedFields(tr.legsOfGatedJoin(j))
+	_, seedTypes, _ := tr.ordinalJoinSeedFields(tr.legsOfGatedJoin(j))
 	seedS, ok := seedTypes["S"]
 	if !ok {
 		t.Fatal("seed legTypes lacks buried S — fixture invalid")

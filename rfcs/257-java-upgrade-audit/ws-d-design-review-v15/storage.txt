@@ -1,0 +1,71 @@
+**NAK**
+
+- **Tree:** `9aee2d3d3c3347375454d8cc44f91af4e486f291`.
+- **Design:** `ws-d-design.md`, SHA256 `f4298f2fa5719546a0dc16e1a2ea42bf1c5b2d342897193ea624828c349c19fe`, recomputed from the blob.
+- **Java:** `fdacd162`, read from `.git/HEAD`.
+- **Read:** all four v14 verdicts, the full v15 design and its diff from v14, RFC-094 §2, README items 29–32, the rates script output, and the SimFDB pin record.
+- Nothing was run, edited or staged.
+
+v14's P1 is closed. The pure-Go strip is real: `fdb/database.go:384-434`, `transaction.go:537-561` and both `tenant.go` paths. The Apple binding rule is at `bindings/go/src/fdb/database.go:163-191`, and libfdb_c's `runLoop` follows it (`backend.go:241-251`). The record-layer rule (1033-1039) works on any transactor. The mutation record shows the SimFDB pin fires: the mutant reddens only the chain test, at `:131` and `:142`, and the file was restored to blob `a129771b`.
+
+## P2
+
+**1. The raw-commit path does not behave "as the target's does" on the default backend or on SimFDB (962-973).**
+- **C++:** a second commit fails with `used_during_commit` (2017), because `commitStarted` is set (`ReadYourWrites.actor.cpp:2502-2507, 2781-2786`). That is the "route's own commit then fails" the design describes.
+- **Pure-Go:** a committed handle is reset to active+empty and commits again (`client/transaction.go:3485-3498`; its comment admits C++ ≥410 does not do this). SimFDB copies this (`txn.go:1338-1356`).
+- **Run:** Run's closure runs the commit checks and flushes version mutations after `fn` returns (`database.go:305-310`).
+- **Consequence:** on those two backends, a body that raw-commits lands its writes. The route then commits the versionstamp mutations as a separate second transaction and reports success. Records and their versions are split across two commits, and nothing reports it.
+- The census holds this at 0 sites today, but the design claims the rule is structural.
+- **Needed:** one of these two, plus a corrected parity sentence:
+  - a refusal that works on every backend: the route checks that the backend transaction was not already committed before it commits, and refuses with `RecordContextNotActiveError`; or
+  - C++'s re-commit refusal as a third client prerequisite, with SimFDB copying it.
+
+**2. The resolver's attempt bound lands on a Go-only hot key (1247-1254).**
+- Every allocation reads and rewrites the single counter key `{"c"}` serializably (`keyspace/fdb_resolver.go:62-104`). So concurrent first resolves of different names all conflict on that one key.
+- The target allocates through `HighContentionAllocator` (`StringInterningLayer.java:177-190`), which avoids such a key. Its runner bound sits on top of an allocator built for contention.
+- Ten attempts on Go's footprint turn today's unbounded retrying into user-visible failures under concurrent first use.
+- The design's own rule calls this a conflict-footprint bug, "fixed in D-0, not retried" (1309-1315).
+- The resolver is also missing from (5)'s contention census (1423-1435).
+- **Needed:** fix the footprint before bounding it, or measure and declare it, with a (5) entry and a concurrent-allocation fixture.
+
+## P3
+
+1. **"At most once per maximum delay" is false** (1136-1138, and the same sentence in RFC-094 §2). The delay is drawn uniformly from [0, current) (`ExponentialDelay.java:62-72`), so the mean is about 500 ms and a draw can be close to 0.
+2. **The route interface has no read method** (1182-1199). `RunRead`'s attempts (1204-1205, 1409-1411, and the RunRead fixture at 1439-1440) cannot pass `Owner`/`CallID`. So the RunRead arm of that fixture (`FaultTransactionTooOld` on reads) cannot target an owner. Add a read counterpart.
+3. **The client prerequisite leaves out two paths** (1045-1047):
+   - `Tenant.ReadTransactCtx`, which also strips the chain;
+   - `panicToError`'s unconvert (`transaction.go:520-530`).
+4. **The recorded body error must reset on every call of `fn`, and a nil return must clear it.** Otherwise a stale split-window signal left from an earlier run of `fn` inside a transactor that re-invokes it turns a real commit 1020 into an uncounted, unbounded retry.
+5. **The reconcile classes key on the literal code 1021** (1275-1283). The design itself lists 1021 and 1039 together (1068). Classify with the ported maybe-committed and retryable-not-committed predicates instead.
+   - The fixtures run chaos on SimFDB (1436-1437). `LastCommitUnknownApplied` reports SimDB's last 1021 (`simfdb.go:56-80`), which is stale when the 1021 came from a chaos arm.
+   - A chaos arm must mark its own 1021, and must return the inner error when its own commit fails.
+6. **The `ensureActive` scope is narrower than Java's** (959-961). Java closes the transaction after ANY commit outcome and then refuses every operation (`FDBRecordContext.java:515-535, 548-551`). State what Go refuses.
+7. **The simulated delay draws from the shared `env.Read` stream** (1166-1167; `dst/env.go:61-66`). Retry counts then shift every later seeded persisted draw, such as heartbeat UUIDs and the mutual-build seed. That is the same objection v15 raises against moving the clock. Use a dedicated sub-stream.
+8. **DST liveness is a policy, not a mechanism** (1143-1148). In simulation an uncounted retry neither waits nor advances time. So a stall nobody scheduled, for example a background split exhausting SimFDB's cap of 100 retries, spins until the test times out.
+   - Add a simulation-only bound that fails with a typed error.
+   - This is latent today: `pkg/simfdb` has no SPFresh hits (control: `SimDB` hits).
+9. **`attemptLoop` is unexported, so `keyspace` cannot call it.** Name the exported entry point.
+10. **The preset wording needs numbers.**
+    - `FaultsRetryHeavy` injects only `FaultCommitUnknown` (`fault.go:69-71`), so the redefinition does not affect it.
+    - For `FaultsAll`, "keeps its total" (1401-1402) and "CommitUnknown carries at least the replay share it had" (0.08) together leave no rollback share. State the numbers.
+
+## Verified
+
+- **Java runner:** the any-cause walk is at `FDBDatabaseRunnerImpl.java:191-207`, and weak reads apply on attempt 1 only (`currAttempt != 0`).
+- **Refusal:** `RecordContextNotActiveException` extends `RecordCoreStorageException`. Every commit path goes through `CommitWithVersionstamp` (including catalog `FDBTransaction.Commit`), so refusing before `tx.Commit` is sound. Hooks run after the transactor call.
+- **C++ 1200 path:** `Never()`, then `onProxiesChanged`, then the fence, then 1021 (`NativeAPI:6637-6649, 6730-6773`).
+- **Censuses reproduce:**
+  - 26 direct-backend lines: 13 stack tester, 10 route, 3 remaining.
+  - 154 `.Transaction()` lines.
+  - 57 chaos lines in 15 files.
+  - No non-test `RunWithRetry` callers.
+- **Catalog:** step 3 always writes (`fdb_store_catalog.go:133-141`, `:294`).
+- **Timing extraction:** the 13 logs are every `.log` with timing lines (the other two matching files are the script and the v14 output). The 0.81 / 1.46 / 3.43 s figures reproduce, and 9.82e-8 is the load-recorded peak.
+- **Runs:** the oracle passed 61 of 61 (`ev2/oracle.log:6271-6272`). gate10 passed 2 of 2 targets, with 9aee2d3d recorded before and after.
+- **Superseded text:** `BodyCommittedError` has 0 hits across TODO.md, RFC-094, the design, DIVERGENCES.md, pkg and conformance; the positive control (`isRetriable`) does hit.
+
+## Measured vs hypothesis
+
+- **Measured:** the JVM timings (estimates), the oracle pins, the SimFDB chain pin and its mutation run.
+- **Checked against source only:** the C++ re-commit and 1200 behaviour, the pure-Go auto-reset and chain strip, the Java runner and context, and the HCA footprint.
+- **Still hypothesis:** every D-0 mechanism (loop, route, observer, reconcile, arms, refusal); the two client prerequisites; Go's peel time; the page, catalog and resolver fixtures.

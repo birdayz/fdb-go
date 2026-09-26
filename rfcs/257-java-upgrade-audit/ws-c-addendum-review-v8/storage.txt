@@ -1,0 +1,77 @@
+**NAK.** I reviewed tree `97d0b9181d02696345e166b12d9ba09b18141c49`. I recomputed the design's SHA256 as `2e97dd6796b4740432364e8d63ab16e4ecb1dcf84aacf1e3fc340bb3bea92400`, 1477 lines, which matches. I ran no tests, probes or edits. Findings not marked **measured** come from reading source.
+
+All of revision 7's findings are resolved (list at the end). The NAK is for two Medium wire findings. Revision 8 sends its "effective value, as Java's" option checks through Go's config parsers, and two of those parsers are not Java's.
+
+## Findings, most severe first
+
+**1. Medium: RANK hash function.**
+- Java knows four hash functions, `JDK`, `CRC`, `RANDOM` and `MURMUR3`, and refuses an unknown name (`RankedSetHashFunctions.java:37-58`).
+- Go maps every name except `"CRC"` to JDK, in the maintainer (`rank_index_maintainer.go:61-68`) and in `rankHashFunctionName` (`metadata_evolution_validator.go:969-975`).
+- So Go admits a change from unset to `MURMUR3` or `RANDOM`, which Java refuses with "rank hash function changed" (`RankIndexMaintainerFactory.java:86-91`). That is the unsafe direction: a Java store then maintains a JDK-built ranked set with another hash.
+- The maintainer also writes a `MURMUR3` index's ranked set with the JDK hash, which is a wire divergence.
+- Revision 8 treated the vector metric's lenient parse (m79) but not this one. Neither DIVERGENCES.md nor TODO.md tracks it (grep: 0 hits, with a positive control).
+- **Fix:** port the four hashes and the refusal of an unknown name, compare the parsed function, and pin both engines.
+
+**2. Medium: R-tree `rtreeStoreHilbertValues`.**
+- Java reads this option only when `rtreeStorage` is set, and then with `parseBoolean`, so an absent option means false (`MultiDimensionalIndexHelper.java:58-65`).
+- Go reads it on its own, and only the exact string `"false"` turns it off (`multidimensional_index_maintainer.go:78-82`).
+- The verdict flips in both directions (`:1132`):
+  - `{}` → `{storeHV:false}`: Java admits, Go refuses.
+  - `{storage:BY_NODE}` → `{storage:BY_NODE, storeHV:true}`: Java refuses, Go admits.
+- The written bytes differ too. For `{storage:BY_NODE}`, Go writes the Hilbert value into leaf slots where Java writes null (`rtree_storage.go:196-205` against `ItemSlot.java:112-113`). Both engines can read either form (`ItemSlot.java:153-157`).
+- Smaller differences: an unparsable minM, maxM or splitS is silently defaulted in Go, where Java throws; and `useNodeSlotIndex` is compared case-sensitively.
+- Nothing tracks this either.
+
+**3. Low: some walks still follow map order.** Design 7.8 and the CHANGELOG say violations are "walked by name … not depend[ing] on Go's map order". These still follow Go's map order:
+- the "adds record type" loop (`:824`), over `RecordTypesForIndex`, which ranges over a map (`metadata.go:2082,2090`);
+- `getTypeRenames` over `pairs` (`:238`), where Java walks the union's fields in order;
+- `validateTextIndexOptions` (`:900`);
+- Build's index-version, added-after-last-modified and replacement loops (`metadata.go:1259,1270,1471`).
+
+Only the old-types walk is pinned and mutated (m80). The sorted base-option walk has neither a pin nor a mutation.
+
+**4. Low: 7.8's title says "every message of the validators Java's".** Build still has Go's text for:
+- `index %q has addedVersion (%d) > lastModifiedVersion (%d)` (`metadata.go:1261`); Java says "Index X has added version N which is greater than the last modified version M" (`IndexValidator.java:50-52`);
+- the two replacement messages (`:1476,:1479`, against `MetaDataValidator.java:147-151`);
+- "no record types defined…" (`:803`), whose comment at `:801` claims Java's capitalised text.
+
+The message census covered only the evolution validator. Convert these or scope the title.
+
+**5. Low: revision 8 regressed one path.** It removed the refusal collection from `addIndexCommon` (compare aa29308 `metadata.go:617-619`). Build now asks only the current `b.indexes` (`:790-794`). So `SetSubspaceKey(nil); AddIndex; RemoveIndex; Build` now builds, where revision 7 refused it. **Fix:** keep both, and pin the removal order.
+
+**6. Low (docs): an upgrade hazard for struct-literal indexes.**
+- On master, a struct-literal index's entries sit under the null item (`store.go:1203`).
+- It is now keyed by its name. That is correct, and is Java's behaviour.
+- But after the upgrade the index is still READABLE (its state is keyed by name) while it reads an empty subspace. The old range under the null item is orphaned and is never cleared.
+- Production constructors are not affected. The CHANGELOG needs a rebuild note.
+
+**7. Nits.**
+- `tupleEquivalentValue`'s doc comment now sits on `isNilSubspaceKey` (`subspace_key_identity.go:80-98`), and it still says "Only nil maps to nil". The same misplacement is at `metadata.go:2270-2281`.
+- A nil pointer to a protobuf enum panics at `k.Number()` (`:160-161`).
+- The vector claim holds only for the `hnsw*` names. Java also takes the `vector*` names and `vectorEngine` (`VectorIndexOptionKeys.java:48-73`, `VectorIndexEngine.java:248-253`). That is WS-D's charter (RFC-257 `:396-398`), and 7.8 should say so.
+- "Java fails the BY_INDEX resume" is inferred from source, not measured. It is consistent with the source: a `MetaDataException` is not a `ValidationException`, so the catcher at `OnlineIndexer.java:228` does not rebuild.
+
+## Revision 7's findings: all resolved
+- **Evolution messages.** Every `Message:` literal starts with Java's text except the three declared ones, checked against `MetaDataEvolutionValidator.java:153-757`.
+- **Order.** `validateField`'s order and label rule match Java's `:283-328`.
+- **Comparisons.** Roots and primary keys use `keyExpressionEquals` (`:449`, `:743`).
+- **Nil keys.** All five paths are handled (`index.go:505-517`, `metadata.go:617-622,790-799`, `subspace_key_identity.go:128-153`), with Java's former-index and index version text.
+- **Merge wording.** Corrected in all three documents.
+- **Count, stale comments, the m56 scope and the declared parts of Build's messages.** All fixed.
+- **Storage.** The session files are not in the diff, so what each attempt and each catcher retry writes and clears is unchanged since v6.
+
+## Measured
+- **Mutations.** m61 to m80 each show marker count 1, the diff applied at the candidate's own line, bazel exit 3, the reds as tabled, and "restored". The baseline ran 462 of 3709, all passed, with every new plain test passing.
+- **`.good` copies.** Their line counts match the candidate; the files were not hashed because hashing was denied.
+- **JVM specs.**
+  - `jvm-subspace2`: 36 of 36, with a line printed for each new shape.
+  - WSJIXK: all five shapes.
+  - `jvm-md`: 71 of 71.
+- **Merge spec.** It passed in the baseline and in `wsc-focus`; `wsc-focus` ran 603 of 603.
+- **ev12.**
+  - `check.txt`: ok 1135, notok 0.
+  - Two candidate blobs match `src.sha`.
+  - `just test` ran on tree `79499fef`, which differs from the candidate in documents only: "Executed 43 out of 94 tests: 94 tests pass".
+  - `final-targets`: 3 of 3.
+
+The preserved boundaries are unaffected.

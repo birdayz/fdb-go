@@ -329,7 +329,8 @@ scalar/record element column instead of copying a subset of its type.
 The original computed-NULL-element positive expectation is superseded, not
 credited: SQL ARRAY target lookup forces non-nullable elements (Java
 SemanticAnalyzer.lookupType and expr.walkSpecificFunction). Java CastValue retains
-the NULL but the live derived query throws NPE; Go's exact layout rejects that
+the NULL but the pre-upgrade live derived query threw NPE (superseded in RFC-257
+by target Java's explicit 0A000 NULL-element rejection); Go's exact layout rejects that
 invalid element without a panic. `live-array-bound.log` pins that negative outcome
 independently in both engines for DOUBLE→LONG. `TestNumericCastArrayFDB` retains
 all four original NULL-element queries as Go typed LayoutNullabilityMismatch
@@ -5147,8 +5148,11 @@ On 2026-09-18 the owner explicitly requested merging PR #785. This supersedes
 all earlier publication-only/no-merge authorization checkpoints in this RFC and
 TODO; it is not a claim that unrun tests passed. The accepted pinned-parent
 structured-promotion limitation and immediate full-parity Java successor remain.
-The common 4.14.2.0 candidate still needs the requested version confirmation;
-there are no upgrade-pin, Java-checkout, golden or upstream-PR changes here.
+The owner subsequently confirmed 4.14.2.0 and authorized the full-range upgrade
+and parity audit in RFC-257. The parent PR did not change upgrade pins, Java
+checkout, goldens or upstream PRs; the successor now changes pins/checkout and
+restores the structured-promotion success tests. Its red results and remaining
+ports are tracked in RFC-257, not accepted as the parent's permanent behavior.
 
 Graefe, Torvalds, C++ and independent Codex ACKed the complete 17-path follow-up
 at `285739a5f8d1837cee2523d57aa4426f03f51d82`, retaining prior full-PR coverage.

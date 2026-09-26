@@ -1,8 +1,11 @@
 package metadata
 
 import (
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/descriptorpb"
 
+	"fdb.dev/gen"
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -57,6 +60,17 @@ func isFieldNullable(fd protoreflect.FieldDescriptor) bool {
 // UnresolvedType placeholder so a recursive message like `Tree` maps
 // to a well-typed fixed-point rather than infinite recursion.
 func protoScalarToDataTypeWithNullabilityVisited(fd protoreflect.FieldDescriptor, nullable bool, visited map[string]bool) (api.DataType, error) {
+	// A field carrying vector options is a VECTOR of their precision and
+	// dimensions (their proto defaults, 16 and 768, when unset), as Java's
+	// Type.fromProtoType reads it: TypeCode.fromProtobufFieldDescriptor makes a
+	// BYTES field with vector options VECTOR, and any primitive type code with
+	// them is Type.Vector.of(nullable, precision, dimensions). Without this a
+	// VECTOR column the catalog loads was BYTES, and a change of its dimensions
+	// or precision passed the relational validator.
+	if vo, ok := vectorOptions(fd); ok && fd.Kind() != protoreflect.EnumKind &&
+		fd.Kind() != protoreflect.MessageKind && fd.Kind() != protoreflect.GroupKind {
+		return api.NewVectorType(int(vo.GetPrecision()), int(vo.GetDimensions()), nullable), nil
+	}
 	switch fd.Kind() {
 	case protoreflect.BoolKind:
 		return api.NewBooleanType(nullable), nil
@@ -217,4 +231,18 @@ func enumTypeFromDescriptor(ed protoreflect.EnumDescriptor, nullable bool) *api.
 // opinion on nullability, wrapper unwrapping and UUID recognition.
 func StructTypeFromDescriptor(md protoreflect.MessageDescriptor, nullable bool) (*api.StructType, error) {
 	return messageTypeFromDescriptor(md, nullable)
+}
+
+// vectorOptions is the field's vector options, when its options carry the
+// record-layer field extension with them.
+func vectorOptions(fd protoreflect.FieldDescriptor) (*gen.FieldOptions_VectorOptions, bool) {
+	opts, ok := fd.Options().(*descriptorpb.FieldOptions)
+	if !ok || opts == nil || !proto.HasExtension(opts, gen.E_Field) {
+		return nil, false
+	}
+	field, ok := proto.GetExtension(opts, gen.E_Field).(*gen.FieldOptions)
+	if !ok || field.GetVectorOptions() == nil {
+		return nil, false
+	}
+	return field.GetVectorOptions(), true
 }

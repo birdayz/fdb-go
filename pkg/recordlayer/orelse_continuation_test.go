@@ -2,12 +2,16 @@ package recordlayer
 
 // Regression tests for OrElseWithContinuation continuation deserialization.
 // A continuation token is external wire input: any byte sequence must produce
-// either a working cursor or an explicit error — never a panic and never a
-// silent restart. Matches Java's OrElseCursor constructor (OrElseCursor.java):
-// parse failure → RecordCoreException("error parsing continuation"), unknown
-// state → UnknownOrElseCursorStateException. Found by FuzzOrElseContinuation:
-// an out-of-range State enum value left the cursor with a nil active cursor
-// and OnNext panicked in advanceActive.
+// either a working cursor or an explicit error — never a panic. Matches Java's
+// OrElseCursor constructor (OrElseCursor.java:69-92): a parse failure is
+// RecordCoreException("error parsing continuation"). A state number the
+// closed (proto2) State enum does not declare is parsed by protobuf-java into
+// the unknown fields, so getState() is the default, UNDECIDED, and the cursor
+// resumes its inner cursor with the stored continuation; Java's
+// UnknownOrElseCursorStateException arm is not reachable from bytes, and Go
+// decodes the same way (proto_closed_enums.go). Found by
+// FuzzOrElseContinuation: an out-of-range State left the cursor with a nil
+// active cursor and OnNext panicked in advanceActive.
 
 import (
 	"context"
@@ -50,32 +54,6 @@ func TestOrElseContinuationInvalid(t *testing.T) {
 				}
 				if parseErr.Unwrap() == nil {
 					t.Error("Unwrap() = nil, want wrapped unmarshal error")
-				}
-			},
-		},
-		{
-			name: "unknown state 3 (first out-of-range) fails with UnknownOrElseCursorStateError",
-			continuation: func() []byte {
-				return []byte{0x08, 0x03} // field 1 varint = 3
-			}(),
-			checkErr: func(t *testing.T, err error) {
-				var stateErr *UnknownOrElseCursorStateError
-				if !errors.As(err, &stateErr) {
-					t.Fatalf("want *UnknownOrElseCursorStateError, got %T: %v", err, err)
-				}
-				if got, want := stateErr.Error(), "unknown state for OrElseCursor"; got != want {
-					t.Errorf("Error() = %q, want %q (Java's UnknownOrElseCursorStateException message)", got, want)
-				}
-			},
-		},
-		{
-			name: "unknown state 99 with inner continuation fails with UnknownOrElseCursorStateError",
-			// The FuzzOrElseContinuation crasher: state=99, continuation=[0,0,0,1].
-			continuation: []byte{0x08, 0x63, 0x12, 0x04, 0x00, 0x00, 0x00, 0x01},
-			checkErr: func(t *testing.T, err error) {
-				var stateErr *UnknownOrElseCursorStateError
-				if !errors.As(err, &stateErr) {
-					t.Fatalf("want *UnknownOrElseCursorStateError, got %T: %v", err, err)
 				}
 			},
 		},
@@ -314,6 +292,54 @@ func TestOrElseContinuationStateRoundTrips(t *testing.T) {
 			}
 			if alternativeCalled != tt.wantAlt {
 				t.Errorf("alternative factory called = %v, want %v", alternativeCalled, tt.wantAlt)
+			}
+		})
+	}
+}
+
+// A state number the enum does not declare reads as UNDECIDED, as Java reads
+// it (protobuf-java parses it into the unknown fields and getState() is the
+// default): the inner cursor resumes from the stored continuation, and nothing
+// is refused.
+func TestOrElseContinuationUnknownStateIsUndecided(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name         string
+		continuation []byte
+		inner        []byte
+	}{
+		{"state 3", []byte{0x08, 0x03}, nil},
+		// The FuzzOrElseContinuation crasher: state=99, continuation=[0,0,0,1].
+		{"state 99 with an inner continuation", []byte{0x08, 0x63, 0x12, 0x04, 0x00, 0x00, 0x00, 0x01}, []byte{0, 0, 0, 1}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			var gotInner []byte
+			primaryCalled, alternativeCalled := false, false
+			primary := func(cont []byte) RecordCursor[int] {
+				primaryCalled, gotInner = true, cont
+				return FromList([]int{1, 2, 3})
+			}
+			alt := func(_ []byte) RecordCursor[int] {
+				alternativeCalled = true
+				return FromList([]int{4, 5})
+			}
+			cursor := OrElseWithContinuation(primary, alt, c.continuation)
+			r, err := cursor.OnNext(context.Background())
+			if err != nil {
+				t.Fatalf("OnNext: %v", err)
+			}
+			if !r.HasNext() || r.GetValue() != 1 {
+				t.Fatalf("first result %v, want the inner cursor's 1", r)
+			}
+			if !primaryCalled || alternativeCalled {
+				t.Errorf("primary=%v alternative=%v, want the inner cursor only", primaryCalled, alternativeCalled)
+			}
+			if string(gotInner) != string(c.inner) {
+				t.Errorf("inner continuation %x, want %x", gotInner, c.inner)
+			}
+			if err := cursor.Close(); err != nil {
+				t.Errorf("Close: %v", err)
 			}
 		})
 	}

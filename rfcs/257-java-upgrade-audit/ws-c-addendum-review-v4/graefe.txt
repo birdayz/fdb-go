@@ -1,0 +1,73 @@
+**NAK.** Tree `936a4aba27681bdd9a5e2938021f54d7b803e2a1` is a tree object. The design's SHA256 is `4249af27134885d20973c635fb920084f25000211419c08fcb04410d46c00786` and it has 943 lines; I checked both. The Java checkout's `.git/HEAD` is `fdacd162`.
+
+The late-clear fix is correct, and every v3 finding is resolved or reasonably answered. The NAK is for one wire-relevant builder gap next to storage v3 #5, one Go-only behaviour that is still undeclared, and a false statement about Java that repeats the pattern of Graefe v3 #1. Findings come from reading source unless marked **measured**.
+
+## Findings, most severe first
+
+**1. Medium-low (wire): `Build` checks that a target exists but not that it is the metadata's own object.**
+- Java's `validateIndexSetting` ends with `index != metaData.getIndex(name)`, which throws a `MetaDataException` (`OnlineIndexer.java:880-883`).
+- Go checks the name only (`online_indexer.go:801`, a plain `fmt.Errorf`). It also returns a plain `fmt.Errorf` where Java throws `MetaDataException("index must be set")` (`:862-864`).
+- Go then never replaces the targets with the metadata's objects. So a hand-built target with the right name and a different subspace key would build its entries and ranges under the caller's key, while the state and publication go by name.
+- That is the source-index problem 7.4 fixed, on the write side. It is also the one check of the method 7.4 says `Build` now follows that is missing.
+- Fix: refuse a target that is not the metadata's object, with Java's class and message. Pin it.
+
+**2. Low: standalone `MergeIndexes` has Go-only behaviour that is not declared.**
+- Java creates a heartbeat only in the build session's stamp step (`IndexingBase.java:457`). Its standalone merge (`OnlineIndexer.java:409-410` → `:1085-1096`) therefore passes `updateHeartbeat` with `heartbeat == null` (`:969-972`): it writes no heartbeat and checks no state.
+- Go gives the merge a heartbeat (`indexing_merger.go:169`). Through `refreshFollowupHeartbeats` (`online_indexer_queue.go:443-481`), that has two effects:
+  - Over a WRITE_ONLY target it runs exclusive admission and writes a live "explicit index merge" key, which locks out a Java builder.
+  - Over a DISABLED target it returns `RecordCoreStorageError`.
+- The new DIVERGENCES.md bullet covers only a build session, and the section still ends "No wire bytes differ".
+- That bullet also leaves out one Java case: with `SetMarkReadable(false)`, Java's session succeeds after the last range and leaves the target DISABLED.
+
+**3. Low: a false statement about Java, and a missed `INDEXER_ID` site.**
+- `online_indexer.go:1240-1242` and `ws-c-design.md:889-890` say the heartbeat's `info` "is what a peer's lock error reports".
+  - Java's `SynchronizedSessionLockedException` carries `INDEXER_ID`, `EXISTING_INDEXER_ID`, the age and the lease, but no `info` (`indexing/IndexingHeartbeat.java:111-115`). Go's `ExistingInfo` is a Go extension.
+  - The code change is right; the stated reason is not.
+- Java sets `INDEXER_ID` on exactly these exceptions: `PartlyBuiltException` (`IndexingBase.java:1295`), `validateOrThrowEx` (`:1174`), IndexingByIndex's "no source index" (`:105`, which Go cannot reach), and the lock exception.
+  - Go's `SynchronizedSessionLockedError` (`indexing_heartbeat.go:201-206`) has no field for its own ID.
+
+**4. Low: test population.**
+- **The source-index spec's scan check can never fail.** Go always read the source by name (`online_indexer.go:2031`, `:2085`).
+  - **Measured:** under m26 the spec fails at `online_indexer_test.go:4113`, the subspace key. So `total == 5` at `:4110` passed with no resolution at all.
+  - The spec's title, its failure message, the CHANGELOG ("stamps and scans"), the code comment and 7.4 all claim more than it tests.
+  - What resolution really changes: the stamp (pinned) and `validateSourceAndTargetIndexes`' reads of the object (not pinned).
+- **The case Torvalds v3 #1 described is not driven.** That case is a retry whose successful attempt then leaves the READABLE index alone.
+  - The earlier-attempt spec only goes through the catcher's "done" arm.
+  - m24 turns off the shared flag, so it cannot tell the two arms apart.
+  - Hypothesis: changing `outcomeOfCall(outcome)` to `outcome` at `:1086-1089` stays green.
+- **Nits:**
+  - The late-clear spec accepts only 1020. A late commit more than 5 s after its read gets 1007, which the design counts as correct, so a slow container would turn a correct result red.
+  - The fleet arm "left to peers, records counted" (n>0, not built) can no longer happen after this revision's own outcome change.
+
+## What checks out (source)
+
+- **Late clear:**
+  - `.Cleanup(` has one call site in non-test code (`online_indexer_queue.go:369`); both callers go through `cleanupHeartbeatWithin`.
+  - Each key is read at version R before the clear. The next write commits after the cleanup returns, so above R, and any late commit then conflicts or is too old. This holds for both backends.
+  - Only the final attempt can be left detached.
+  - `holdDispatch` is a faithful model: it fixes the read version and conflict ranges, skips the timeout, and makes cancellation a no-op. The spec asserts the commit was dispatched, the deadline error, 1020, and that the key survives. It is not vacuous: under m23 its only failure is "the late clear committed: <nil>".
+- **The rest of v3:**
+  - The reconcile-on-open statement is corrected in all three places, and it matches `FDBRecordStore.java:6015`, `:2689`.
+  - The retry-cost rule matches `OnlineIndexer.java:188-225` and `:1139-1177` (a null takeover set allows nothing).
+  - The precedence rule is right.
+  - The attempt limit is pinned end to end.
+  - `INDEXER_ID` is set on `PartlyBuiltError` and the source validations, and not on the state checks (`:203-207`, `:237-241`).
+  - The call-level outcome, reset included; heartbeat `info` = the stamp's method (`:457`); `newIndexingHeartbeatWithID`.
+  - The builder's count comes before the dedup, and the mutual refusal comes before the record types.
+  - The advice text, `buildPending`, and `total += n` after the error check.
+  - The nil-session branches are kept with a reason: 17 method-call lines, which I confirmed once the same-named `markWriteOnly(name)` test helper is excluded.
+- **Superseded wording:** a grep over `*.go`/`*.md` (review and research directories excluded) finds "not reconcile on open", "new UUID" and `"online index build"` only in correction notes. The positive control, `explicit index merge` at `indexing_merger.go:169`, is found.
+
+## Measured
+
+- The evidence tree `9f1cd709` differs from the candidate only in `ws-c-design.md` and `evidence-v8.txt`.
+- I computed the sha256 of 10 WS-C blobs from the candidate tree (the two indexer sources, errors, heartbeat, both indexer test files, fleet build and its test, DIVERGENCES, CHANGELOG). All match `ev8/src.sha`.
+- Mutation logs m23–m29 and m31–m33 each show:
+  - the perl expression, marker count 1, and an applied diff whose line matches the candidate (`:366`, `:1092`, `:1070`, `:1237`, `:1243`, `:1702`, `:778`, `:155`, `:1037`, `:895`);
+  - "Ran 372 of 3698", bazel exit 3, the named spec red (m33: 3 red), and "restored".
+- `mut-m30.log` is a `go test` run with its diff; `a_failure_part_way` goes red.
+- `focus1.log`: 372 of 372 passed. `wsc-focus.log`: "Ran 385 of 3698", SUCCESS, with all 3 new specs present.
+- `wsc-loop40.log`: 40 "SUCCESS! -- 2 Passed | 0 Failed", 0 FAIL, "Executed 1 out of 1".
+- `justtest.log`: "Executed 43 out of 94 tests: 94 tests pass", and `fleet_test` and `cmd_test` are among the 43 executed.
+
+The approved Go extensions, C++ 7.3.77, format max 15 / default 14, and the single query pipeline are all unaffected.

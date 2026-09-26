@@ -1008,7 +1008,7 @@ func TestBoxBoxBindingDeclinesAndStillFilesTheLeaf(t *testing.T) {
 
 	// And now the consequence: build the pristine seed this producer actually emits
 	// and check the leaf window survives the decline.
-	fields, _ := tr.ordinalJoinSeedFields(legs)
+	fields, _, _ := tr.ordinalJoinSeedFields(legs)
 	if fields == nil {
 		t.Fatalf("ordinalJoinSeedFields declined the box+plain cluster (translateErr=%v) "+
 			"— without a seed this arm measures nothing", tr.translateErr)

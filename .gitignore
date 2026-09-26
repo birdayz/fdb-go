@@ -14,9 +14,6 @@
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
-# Go workspace files are intentionally committed — the cmd/frl multi-module
-# setup relies on go.work, so every contributor and CI sees the same workspace.
-
 
 # IDE files
 .idea/
@@ -34,6 +31,26 @@
 *.pfx
 credentials.json
 service-account*.json
+*.jks
+*.keystore
+.netrc
+.pgpass
+kubeconfig
+*api_key*
+*api-key*
+# SSH keys, public halves included: neither belongs in the repository.
+id_rsa*
+id_dsa*
+id_ecdsa*
+id_ed25519*
+# OpenTofu state, plans and variables hold server addresses, tokens and
+# volume ids; infra/ keeps its state outside the repository.
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+*.tfvars.json
+.terraform/
 
 # OS files
 .DS_Store

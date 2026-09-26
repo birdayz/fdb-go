@@ -728,7 +728,7 @@ func TestWithChildren_PromoteValue(t *testing.T) {
 	if p.Child != newChild {
 		t.Fatal("child should be replaced")
 	}
-	if p.Target != NullableDouble {
+	if !p.Target.Equals(NullableDouble) {
 		t.Fatal("target should be preserved")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/pkg/recordlayer/protoname"
+	"fdb.dev/pkg/recordlayer/protoscope"
 )
 
 // FieldTypeForProtoField maps a proto field descriptor to the logical column
@@ -52,6 +53,15 @@ func FieldTypeForProtoField(fd protoreflect.FieldDescriptor) Type {
 }
 
 func fieldTypeForProtoField(fd protoreflect.FieldDescriptor, active map[protoreflect.FullName]struct{}) Type {
+	// A map field has no type here, so an index that fans a map's entries out
+	// is left out of matching (index_expansion.go, the FAN_OUT arm). Java types
+	// a map field as the array of its entry records it is on the wire
+	// (Type.java:453-455), so a RecordQuery's QueryComponent reaches such an
+	// index (Query.field(..).mapMatches, or oneOfThem over the entries). Go has
+	// no QueryComponent: its query surface is SQL alone, which has no map type
+	// in either engine (the relational DataType.Code has none), so no Go query
+	// reaches that match. The index is maintained as Java maintains it
+	// (record_wire_map_order.go).
 	if fd == nil || fd.IsMap() {
 		return UnknownType
 	}
@@ -121,8 +131,11 @@ func ScalarCodeForProtoKind(fd protoreflect.FieldDescriptor) (TypeCode, bool) {
 		return TypeCodeString, true
 	case protoreflect.BytesKind:
 		return TypeCodeBytes, true
-	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
-		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		// Type.TypeCode.fromProtobufFieldDescriptor (Type.java:909-914): INT, the
+		// value read as protobuf-java's signed Integer (ProtoScalarKindToRowValue).
+		return TypeCodeInt, true
+	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
 		return TypeCodeLong, true
 	case protoreflect.EnumKind:
 		if protoEnumHasNumberAlias(fd.Enum()) {
@@ -231,7 +244,9 @@ func enumTypeForProto(ed protoreflect.EnumDescriptor) Type {
 		// string promotion compares that spelling, not protobuf escaping.
 		values = append(values, EnumValue{Name: protoname.ToUserIdentifier(string(value.Name())), Number: int32(value.Number())})
 	}
-	return NewEnumType(string(ed.FullName()), true, values)
+	// The enum's name as Java reads it, whatever scope the in-memory
+	// descriptor gave it (protoscope).
+	return NewEnumType(string(protoscope.JavaFullName(ed)), true, values)
 }
 
 // FieldNameForProtoField is THE single authority for the NAME a stored

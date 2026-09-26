@@ -1,0 +1,72 @@
+**NAK.** Tree `9aee2d3d3c3347375454d8cc44f91af4e486f291`. I recomputed the design hash: `e80e84bfbcfacbceeae1b6e73baa56249251ae1cd19f4a2d25b1b499fc85869c`, 1915 lines, which matches. The review was read-only. A statement is from reading source unless marked **measured**.
+
+Every revision-9 finding is resolved in the code, except the second half of one nit (nit b). Nothing revision 10 changed breaks what revision 9 fixed. The NAK is for two new Low findings of the class all three v9 gates raised: a claim wider than the code.
+
+## Findings, most severe first
+
+**1. Low (wire): the new heading "Index options other than the vector index's are parsed as Java parses them" (`CHANGELOG.md:318`) is false for `bitmapValueEntrySize`.**
+- Go reads it with `strconv.ParseInt` and silently falls back to 10000 on a parse error, on a value ≤0, or on one above 250000 (`bitmap_value_index_maintainer.go:48-52`; the chaos model does the same at `chaos/verify_bitmap.go:55`).
+- Java uses `Integer.parseInt` and refuses a value above 250000 with `RecordCoreArgumentException` "entry size option is too large" (`BitmapValueIndexMaintainer.java:100-104`).
+- The entry size decides each bitmap key's offset and the value's length (`:198-203`). So "٢" is maintained at size 2 by Java and at 10000 by Go, and a size Java refuses is written by Go.
+- It is untracked: `git grep -i "bitmapValueEntrySize\|entry size option"` over TODO, DIVERGENCES, CHANGELOG and the RFC-257 `.md` files finds 0 hits; the control `permutedSize` finds hits in CHANGELOG and ws-c/f/j.
+- This is the same gap as v9 Torvalds finding 3.
+- **Fix:** convert it to `javaParseInt` plus Java's refusal, or scope the heading and record the divergence.
+
+**2. Low (operational docs): the UPGRADE list (`CHANGELOG.md:336-348`, design `:1798`) leaves out meta-data that no longer builds, and one of its instructions cannot work.**
+- `Build` now refuses these PERMUTED_MIN/MAX indexes, all of which an earlier Go built:
+  - an absent `permutedSize`, which an earlier Go maintained at size 0;
+  - a negative size, or one past the grouping count;
+  - no grouped column, or a version column.
+- `RecordMetaDataFromProto` goes through `Build` (`metadata_proto.go:374`). So stored meta-data holding such an index no longer loads, and stores on it do not open.
+- Adding the missing size in place is refused by both engines' evolution check: "permuted size changed" (`metadata_evolution_validator.go:974-980`; `PermutedMinMaxIndexMaintainerFactory.java:84-86`).
+- The instruction "rankNLevels outside [2, 8], after correcting the option" (`:343`, also `:295`) fails the same way. Both evolution checks parse the old config first (`:942-946`; `RankIndexMaintainerFactory.java:78`), and the old value is refused with "levels must be between 2 and 8".
+- **Fix:** list these indexes, and say they must be removed and re-added, not corrected in place.
+
+**Nits**
+- a. **`QueryInvalidExpressionError`'s doc comment** (`errors.go:293-296`) calls Java's class "a RecordCoreException". It extends `IllegalStateException` (`Query.java:273`). SQL output is unaffected today, because the relational builder wraps every `Build` error as XX000 (`core/metadata/builder.go:698-699`). That was true before and after this revision, and it is a pre-existing difference from Java's `ExceptionUtil`.
+- b. **Unprefixed-message claim, second half of v9 Torvalds' nit, unresolved.** Design `:1730-1731` still names only "meta-data has no union descriptor" and SPFresh's message. "message descriptor presence changed" (`metadata_evolution_validator.go:1193`) is a third.
+- c. **Class assertion in `TestBuildRecordTypeChecksAreJavasInNameOrder`** (design `:1733`). It asserts "exactly one of two classes", not which one. **Measured:** n6 wrapped the primary key's `KeyExpressionError` as a `MetaDataError` with the same text, and the shape "a primary key validated before its fan-out" stayed green. Only `TestBuild_PrimaryKeyReferencingNonExistentField` failed. Assert the expected class for each shape.
+- d. **Mutation labels.**
+  - n3 (design `:1882`) mutates only the `validateRecordType` loop (`metadata.go:871`). The new must-have-a-primary-key loop (`:827`) has no mutation.
+  - n7's table row leaves out `TestKeyValidationTextsAreJavas`, which its log shows red.
+- e. **JVM oracle wording** (design `:1793-1795`).
+  - It says levels are computed "from the root". The code computes them upward from the leaves, through each node's first child.
+  - It says the spec requires "exactly one child slot per node". The code checks the total (`entries == nodes-1`) plus set equality, so a node named twice beside an orphan node would pass.
+- f. **"Every builder fault in program order" misses `AddMultiTypeIndex`.** With several names (`metadata.go:655-676`), it records "already defined" before "Unknown record type". A Java program resolves each type first (`getIndexableRecordType`, `RecordMetaDataBuilder.java:1074-1083`), then calls `addMultiTypeIndex` (`:1177`). This predates revision 10.
+- g. **The flake sweep covered SQL "UNION ALL" text (seven files, verified), not the plan operator.** The defect class is a Java plan containing `⊎` whose rows are pinned in order. `⊎` appears in three test files: fromless (fixed), ws_e (pins at most one row), and ws_f (WS-F's gate).
+- h. **The 10/10 focused rerun of the probe has no artifact** under `wsc-v10/`. I have not verified it.
+
+## Revision-9 findings, checked
+- **Builder faults (all three lenses).**
+  - `AddIndex` with an unknown record type now appends to `addedIndexes` before recording its fault.
+  - `RemoveIndex` of an unknown name records "No index named X defined", as `RecordMetaDataBuilder.java:1199-1203` does.
+  - Both are pinned in both orders.
+- **`Build`'s record-type checks** match Java's order and texts:
+  - the primary-key check (`:1480-1491`);
+  - the union oneof checks, then "No record types defined";
+  - then per record type, in `validateRecordType`'s order (`MetaDataValidator.java:80-101`), including the collision's name order;
+  - declared as walking names instead of Java's HashMap.
+- **Key-validation texts** are Java's (`FieldKeyExpression.java:145-172`, `SplitKeyExpression`, `KeyWithValueExpression`), and the errors are unwrapped.
+- **`permutedSize`.** `PermutedSizeOption` is `getPermutedSize`. The validator follows Java's order (`:66-80`). The query side reads it as `getPermutedCount` does (absent is 0).
+- **Flat Then.** `Concat` flattens as `ThenKeyExpression.add` does (`:264-271`). `thenFromProto` flattens before counting (`:77-86`). The three flatteners are gone, and a nested Then round-trips flat. Index entry bytes do not change.
+- **RANDOM.** A failed read now fails the write, and the comments about deletes are corrected.
+- **R-tree.**
+  - The root is split and promoted in place, so its fetch state is kept.
+  - Tree code never calls `deleteNode` directly now.
+  - The unit spec builds each key by hand; only the subspace is production's.
+  - The JVM decode matches `ChildSlot.getSlotKey`/`getSlotValue` and `createIndexKeyTuple`.
+- **Upgrade list.** It now covers the node slot index (whichever engine created it), booleans in other cases, TIME_WINDOW_LEADERBOARD, and `rankNLevels`.
+- **Other v9 nits.** The heading and vector sentence are scoped, the doc comment is moved, m84/c2 are relabelled with n21/c7 added, and the typo is fixed.
+
+## Measured
+- **Source hashes.** `metadata.go`, `rtree.go`, the multidimensional options spec and the fromless probe at `512ae248` match `ev2/src.sha`. `ev2/check.txt` has 1833 OK lines.
+- **Mutation tree.** At `b3b0581c`, the mutated files' blob ids equal the gate tree's. `b3b0581c` → `512ae248` touches no mutated file, and `512ae248` → gate changes only comments in three Go files.
+- **Mutations n1–n21 and c6–c8.** Each shows marker count 1, the applied diff, bazel exit 3, the tabled red set, and "restored". `run.out` reads ALL-DONE, with no "NOT RESTORED".
+- **Baselines.** Unit: 3715 of 3716. Plain: 2 of 2. JVM: 46 of 1642.
+- **Independent oracle.** The Java-written step "Java wrote 120" (48 nodes, 47 entries) passes it. c6 and c8 fail first at "Go deleted the even ids", `multidimensional_options_conformance_test.go:264`.
+- **Flake.** In ev, Java returned `[[1,9],[1,9],[2,3],[2,3]]` where the probe pinned `[[1,9],[2,3],[1,9],[2,3]]`. `UnorderedUnionCursor`'s class comment confirms its order is not defined. In ev2 the plan pin passes: 1523 of 1642.
+- **ev2 other runs.** Oracle: 61 of 61. `just test`: "Executed 7 out of 94 tests: 94 tests pass".
+- **gate10.** Build exit 0; tests 2 of 2; tree before and after is `9aee2d3d`.
+- **Not verified.** I could not byte-check the `good/` copies, because `hash-object` was denied.
+
+The preserved boundaries and the session code are unaffected.

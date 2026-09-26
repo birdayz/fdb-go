@@ -1,0 +1,71 @@
+**NAK.** The review is complete and covers the whole design. Nothing was run or edited.
+
+- **Tree:** `3a934039479f337069d5b483269ecfaffc47817e`.
+- **Design:** `ws-d-design.md`, SHA256 `87bfa1569cf9f133d14f6578f11063ae7dc293a7143449f21a72d84416d8355b`. I recomputed the hash from the blob; the file is 1791 lines.
+- **Java:** `fdacd162`.
+- **Checked:** the census reproduces at 75 lines, 53 once non-FDBDatabase receivers and comments are removed, and it classifies exactly as the design says.
+
+## P1: the value of B contradicts the evidence bound to this tree (design 1393-1417)
+
+- **The claim.** The design says B comes from "the worst OBSERVED refit … over every run": 1.02e-7 s per n·d, which gives B = 1.96e7. In the admitted corner it gives a worst single refit of 170.6 ms and refit totals of at most 0.91 s.
+- **What the v13 runs show.** `evidence-run.txt` is regenerated from `rfc257-v13-1.log`, and that run measured:
+  - 437.6 ms at n=2000, d=1250, which is **1.75e-7** (`rfc257-v13-1.log:2126`);
+  - 265.0 ms at n=2000, d=980, which is **1.35e-7** and lies *inside* the admitted corner (`:2134`);
+  - a refit total of 918.0 ms (`:2120`);
+  - and the isolated `wsd-corner-v13-1.log:44` has a 177.0 ms refit, above the claimed 170.6 ms.
+- **The design's own rule refutes its constant.** Applying the rule at 1398-1399 gives B ≈ 1.14e7, or 1.48e7 if only admitted shapes count. Either value refuses **both** acceptance fixtures (W = 1.54e7 and 1.85e7).
+- **B does not converge.** It went from 2.5e7 to 1.96e7, and would now go to ≈1.14e7. The run fits are inflated by about 1.4x as well, so the maximum is tracking load on the shared host. B decides persisted topology (peel or reconcile), so it needs a reproducible derivation. Either state the protocol (the corner spec run alone, load average recorded, n≥2, a declared statistic) or anchor B to something that does not depend on timing. Then restate B, the admitted corner, the volumes and the fixtures, and correct 1404-1406 and README items 29/30.
+
+## P2
+
+1. **The "do not commit" chaos arms cannot hold on the DDL or catalog-bootstrap routes** (design 1050-1052 and 1097-1099).
+   - `runDDL` and `ensureCatalogInit` commit *inside* `fn` (`ddl.go:862`, `:890` → `FDBRecordContext.Commit` → `tx.Commit().Get()`, `database.go:1334`). SimFDB already documents this double commit (`txn.go:1342-1348`).
+   - So `FaultConflict` lands the DDL and its post-commit hooks, then reports 1020. The fixture then pins 40001 for a DDL that committed, a state production cannot reach.
+   - **Needed:** either the arm wraps the transaction so an in-`fn` Commit returns the injected code without committing (`runInner(wrap)` already exists in `fault.go`), or the in-closure Commit is dropped (the transactor owns commit on this path, `database.go:298-301`). The fixture must assert the DDL did not land.
+2. **"None of them retries" (design 881) is false, and the census misses a GuardiANN retry owner.**
+   - Three of the named paths retry:
+     - The queue drain runs on `OpenContext` through `throttledRetryingIterator` (`online_indexer_queue.go:143`, `throttled_retrying_iterator.go:73-91`). It retries *any* error up to 100 times, as Java does (`ThrottledRetryingIterator.java:70`, `:268-280`, used from `IndexingPendingWriteQueue.java:83-91`). The design's own line 262 says the same.
+     - `AutoContinuingCursor` retries through `isRetryableError` (`cursor_combinators.go:939-984`). D-0 deletes that function (912-913) without giving this caller a replacement.
+     - `cleanupHeartbeatWithin` is itself a retry loop.
+   - **Consequences:**
+     - GuardiANN's queued replay has no policy row in D-0.
+     - The 1007 owner list (1586-1607) leaves it out. That owner costs up to 100 × ~5 s per failing head entry, a Go-only cost where Java's throw fails fast.
+     - The chaos transactor never sees these attempts.
+   - **Needed:** a census class for owners built on `OpenContext`, stating each one's Java bound and predicate, plus a declared statement that chaos cannot see them.
+3. **1200 is misdescribed** (design 913-917).
+   - `commitpath.go:59-62` raises 1200 before any commit is sent, and libfdb_c waits this condition out inside commit.
+   - Under D-0 each 1200 uses up an attempt. A DDL (one attempt) fails on the first one. `Run` fails after 10 attempts, about 1.6 s expected (at most 3.3 s) of delay, during a recovery that Java simply waits through.
+   - "As the target's client would have waited" is therefore wrong: this is a new Go-only failure where the target succeeds.
+   - **Needed:** a commit that was never sent should not count as an attempt (bounded by ctx), or the client should wait inside commit as the C++ client does.
+
+## P3
+
+1. `TODO.md:6995` and `:14701` still claim every attempt of every owner goes through `d.transactor` and is seen by the chaos transactor. The design withdrew that claim; grep for it and scope both copies.
+2. "Far inside ten attempts" (1027) was never measured. Label it a hypothesis, and state the production rule for when the D-0 histogram shows SPFresh foreground writers at the bound. Letting a test "state its own MaxAttempts" (1081) would hide a liveness change users can see.
+3. RFC-094:198 and :473 still describe foreground retries with no owner bound. Point both at §2.
+4. The attempt-route mark (1046) is a context value. `runClientLoop` and any owner nested under a marked ctx must reset it, and a test should pin that.
+5. At 983, cite today's check-then-create idempotency (`fdb_store_catalog.go:104-143`) instead of WS-J, which is still in review.
+6. "One at n = 2000 fits" (1620) is unmeasured. The 9.0 MB is vector and replica bytes only, against a 10,000,000-byte limit before keys, clears and conflict ranges.
+7. The one-attempt DDL policy applies to every parallel suite's setup DDL on the shared catalog. Either show from source that those DDLs cannot conflict, or add those suites to census (5).
+
+## Verified
+
+- **SimFDB:** `OnError` limit check, persistence, and reset on user Reset (`txn.go`). `ReadTransact` behaves the same while unlimited, and nothing sets a limit today.
+- **SQL routes:** the classification is correct, and autocommit DML makes a single commit (`cascades_generator.go:1450-1523`).
+- **Lessen-work codes:** 6 = 6 (`IndexingThrottle.java:65-71`).
+- **Heartbeat:** matches `IndexingHeartbeat.java:135-163`. The new rows sit inside the spec that ran (1/1 Go, 1/1 JVM).
+- **Admission arithmetic:** 980, 2175, and the volumes for half and single precision.
+- **Corner pins:** 12 entries, 0.286-0.480.
+- **Runs:** 29/29 ×2, and `just test` 94/94 (40 executed).
+- **Superseded phrasing:** a grep over the tree finds only withdrawn or historical hits.
+
+## Measured vs hypothesis
+
+- **Measured:** the JVM corner pins and heartbeat pairs, SimFDB's retry limit, and the JVM timings. The timings contradict B.
+- **Checked against source only:** the Java owners, the SQL route map, the throttled iterator, and 1200 happening before the send.
+- **Still hypothesis:**
+  - every D-0 mechanism, including the chaos arms, attempt histograms, DST reclassification and SPFresh foreground liveness;
+  - Go's peel rate and any stable B;
+  - the 2101 headroom;
+  - the reconcile's cost;
+  - every Go GuardiANN mechanism.

@@ -19,6 +19,7 @@ var storeTimerEventSources = []string{
 	"pkg/recordlayer/store_timer.go",
 	"pkg/recordlayer/spfresh_metrics.go",
 	"pkg/recordlayer/sliding_window_index_maintainer.go",
+	"pkg/recordlayer/pending_writes_queue.go",
 }
 
 // promMetricName is the character set Prometheus accepts for a metric name.

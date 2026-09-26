@@ -1,0 +1,65 @@
+**NAK.** Tree `e7f2e4d540c5ae85d402160d2ef21fba7a0ee221`. Design `rfcs/257-java-upgrade-audit/ws-c-design.md`: I checked the SHA256 (`57a3347303862f7c880a499b36def6ea3284db613321e047507a0d30cfdf7dbf`) and the line count (643) myself.
+
+The catcher port is correct arm by arm. Two new storage-side problems block it, and one v1 finding is still open. Findings 1, 2 and 6 come from reading source; I ran nothing.
+
+## Findings, most severe first
+
+**1. Medium: `frl index build` now gets around the open-time quiescence check.** `cmd/frl/internal/cmd/index_write.go:300-314` is new. It opens the store through the ordinary `Open()` in its own committed transaction before `BuildIndex`.
+- That transaction runs the metadata reconciliation (`checkPossiblyRebuild`) and the format upgrade without `checkOpenHeartbeats`. §7.2 says a pending reconciliation "demands quiescence".
+- The indexer's own open then sees a current metadata version and only checks the heartbeat keys. So when a live peer exists, the quiescence rule never runs for this command.
+- The `before` state is also read in a separate transaction. If a peer disables or publishes the index in between, the command prints the wrong line, for example "already readable; nothing built" after an empty build from DISABLED.
+- Fix: let `BuildIndex` report its session outcome (skip, publish or build) instead of pre-reading. That also settles v1 Torvalds 7 at the library level: `(0, nil)` is still ambiguous there, and fleet still reports `OutcomeBuilt` for a skip.
+
+**2. Medium-low: every attempt gets a new heartbeat identity.** `buildIndexAttempt` (`online_indexer.go:1139`) mints a new UUID on each attempt.
+- In Java the identity is `IndexingCommon.indexerId` (`IndexingCommon.java:53`), shared by every indexer the catcher builds (`IndexingBase.java:457`). Only the heartbeat object is new per attempt.
+- Go's cleanup is best-effort: `_ = oi.cleanupHeartbeatWithin` (`online_indexer_queue.go:283-287`).
+- Every records fallback and every REBUILD retry admits exclusively (`buildsMutually() && continued` is false, `online_indexer_queue.go:167`). So a failed cleanup makes attempt N's own key block attempt N+1 as a live peer for one lease. The resulting `SynchronizedSessionLockedError` goes unhandled; Java would simply overwrite its own key.
+- §7.2's reason, "as each Java attempt builds a new indexer", is true of the object but not of the identity.
+- Fix: mint the ID once per `OnlineIndexer` and vary only the method and `allowMutual`. That also gives the validation errors Java's `INDEXER_ID` (`IndexingBase.java:1171-1174`). Nothing tests this.
+
+**3. Low: Graefe v1 finding 6, second bullet, is unresolved.** `ws-c-design.md:341-343` still says the reproducer "reproduced the exact message before the fix". The committed spec (`online_indexer_test.go:4899-4955`) checks `markWriteOnly == indexingSessionSkip` first, so before the fix it fails at that check. The exact message came from an earlier version of the spec.
+
+**4. Low: a refusal after a committed write is neither documented nor tested.** Source validation now runs after the state transaction has committed, as in Java.
+- So a `ForbidRecordScan` refusal, or a failure at the attempt limit, leaves the target WRITE_ONLY under a BY_INDEX stamp. If its action was REBUILD it is also cleared: that is the default for DISABLED, and applies to READABLE under `IfReadable: REBUILD`. The old builder-time refusal wrote nothing.
+- The specs at `online_indexer_test.go:1351` and `:4015` check only the error. Add a check of the state left behind, and a CHANGELOG sentence.
+- The CHANGELOG also lists "not scannable" among checks `Build` used to refuse. `Build` never refused that one.
+
+**5. Low: the CHANGELOG claims more than the code does.**
+- "Partly built by records continues it by a records scan": a MULTI_TARGET partial with records already scanned continues only under `TakeoverMultiTargetToSingle`. Otherwise it runs six attempts and returns `PartlyBuiltError`, as Java does. §7.2 states this correctly.
+- "No longer stopped by another session's live heartbeat" is true only when no reconciliation is pending. Legacy and malformed keys still refuse the session.
+- Not mentioned:
+  - disabling a target mid-build now gives `RecordCoreStorageError`;
+  - a blocked stamp now costs six state transactions before the error comes back.
+
+**6. Low: two Go-only validation errors reach the BY_INDEX fallback arm.** "index state changed during build" and "…during follow-up" (`online_indexer_queue.go:498` and `:427`) are `IndexingValidationError`s with no Java `ValidationException` counterpart. A BY_INDEX target that flips between WRITE_ONLY and WRITE_ONLY_WITH_QUEUE therefore falls back to a records scan where Java would not. Give them their own type, or document it at the arm.
+
+**7. Nits.**
+- `DIVERGENCES.md` has none of the four declared divergences: 0 hits for `indexingCatcher`, `IfMismatchPrevious` or "heartbeat admission", against 9 lines matching "OnlineIndexer".
+- The `SetSourceIndex` doc (`online_indexer.go:592-597`) still reads as if the builder enforces its preconditions.
+- The mutation logs record only "marker count 1", not the perl expression, so the table's description of each mutation is the author's statement and can't be checked from the logs.
+
+## What checks out (source)
+
+- **Catcher (`online_indexer.go:1035-1108`) against Java `OnlineIndexer.java:150-275`:**
+  - the arm order, including falling through from the validation arm to the mutual arm;
+  - BY_RECORDS and MULTI_TARGET fallback;
+  - BY_INDEX with the source resolved through `decodeSubspaceKey` and `getIndexFromSubspaceKey`, keeping the requested method only for the next catch;
+  - REBUILD applied to a copy of the policy;
+  - validation handling: restore with REBUILD, otherwise fall back unless `ForbidRecordScan` or already fallen back;
+  - mutual all-readable counts as done.
+- **Attempt limit:** at most six runs. **Method choice:** `getIndexer`'s order, with `policy.isMutual()` kept wherever Java reads it.
+- **Forced overwrite:** applied only at step 1 and step 8. A blocked stamp is still refused before step 8.
+- **`expectedIndexStatesOrThrow`:** matches `IndexingThrottle.java:410-440`.
+- **Validation:** the six messages in Java's order, at Java's timing.
+- **Admission:** in `prepareIndexingState` it comes after the action and the follower check, and before any write. The direct-mode cells commit the refused transaction, which proves nothing destructive happens first.
+- **Queue:** the early refusal is removed, and MARK_READABLE over a queued index fails at once.
+- **Rest of v1:** every other Graefe, Torvalds and storage finding is resolved. The false `ifMismatchPrevious` claim is gone from the tree outside the review directories (0 hits; the same grep found the design's lines 343 and 354).
+
+## Measured
+
+- The evidence tree `067b01f2` differs from the candidate only in the design file and the reviewer settings (`git diff --stat`). The md5 of each of the five listed files, computed from the candidate tree, matches `evidence-md5.txt`.
+- `justtest.log`: "Executed 43 out of 94 tests: 94 tests pass."
+- All 16 mutation logs show marker count 1, "Ran 363 of 3688" and "restored". Their red counts match the table exactly.
+- Censuses: skip 9 recordlayer specs + 1 frl test, markreadable 5, catch 16 specs + `TestIndexBlockLeaseReadsTheEnvClock`. Every target ran: chaos 230 and frl 374 `=== RUN`; conformance "Ran 12 of 1554".
+- `loop40.log`: 40 of 40 runs "SUCCESS! -- 2 Passed | 0 Failed".
+- There are exactly two non-test `BuildIndex` callers (frl and fleet). No non-test code relied on the builder's source refusal.

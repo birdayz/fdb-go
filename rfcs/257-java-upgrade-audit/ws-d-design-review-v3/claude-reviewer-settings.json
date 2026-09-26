@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "defaultMode": "dontAsk",
+    "allow": [
+      "Read", "Grep", "Glob",
+      "Bash(git show:*)", "Bash(git diff:*)", "Bash(git cat-file:*)", "Bash(git ls-tree:*)",
+      "Bash(git log:*)", "Bash(git rev-parse:*)", "Bash(git grep:*)",
+      "Bash(sha256sum:*)", "Bash(pdftotext:*)", "Bash(wc:*)", "Bash(rg:*)", "Bash(grep:*)",
+      "Bash(sed -n:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(ls:*)", "Bash(find:*)", "Bash(cat:*)"
+    ],
+    "deny": ["Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"]
+  }
+}

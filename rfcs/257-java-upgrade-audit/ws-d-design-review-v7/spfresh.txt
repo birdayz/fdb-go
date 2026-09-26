@@ -1,0 +1,119 @@
+**NAK.** Tree `65d33289a2d6a410884ef98945557d3ff6a6ff21`. The `ws-d-design.md` SHA256 `21279344492055e04a6c81caef2c6ed3c7c0692df635050b98999420bf253a48` matches when recomputed with `git show TREE:path | sha256sum`. Java is `fdacd162` (from `.git/HEAD`).
+
+**What I read and checked:**
+- **Reviews and design:** all four v6 verdicts, the full v7 design (1033 lines) and its diff from v6.
+- **Oracle:** the README, both evidence files, the Java peel and access sources, and the Go spec.
+- **Code:** the Go lease change, then Java SplitMergeTask, CollapseTask, ReassignTask, BounceTask, AbstractDeferredTask, Primitives, Insert, Delete, ClusterMetadata, Config, the GuardiANN engine and VectorIndexMergeLock.
+- **Oracle evidence:** all four source hashes match `evidence-run.txt`. The Go test declares 13 `It` specs, matching "Ran 13 of 1536".
+- **Source delta:** from `f0cb2957`, the changes outside rfcs/ and TODO.md are the oracle files, the watcher deletion and the lease change only.
+- **Nothing run or changed:** no tests or edits.
+- **Limitation:** `pdftoppm` and `pdftotext` are not installed, so I could not open the papers. Paper sections are cited as the in-tree RFC and v6 verdicts use them.
+
+## P2 — The inline bound fires on states the target itself produces; "a state only the Go terminal reconcile produces" is false (design:498, 883-915)
+
+**Why the flag key is not unique to Go's reconcile.** Four Java facts combine:
+- **REASSIGN is added while COLLAPSE is set.** `updateClusterMetadataAndEnqueueReassignTaskMaybe` arms REASSIGN without checking COLLAPSE (`Primitives.java:1222-1226`), and `withAdditionalVectorsAndStates` adds states rather than replacing them (`ClusterMetadata.java:185-190`). Two ordinary triggers while a collapse is pending:
+  - a neighbour's split passes its new cluster ids as the cause set (`SplitMergeTask.java:911`);
+  - an insert over the underreplication threshold (`Insert.java:366`).
+- **The collapse keeps REASSIGN.** CollapseTask removes only COLLAPSE (`CollapseTask.java:415-416`).
+- **The bounce does not re-arm.** It skips the re-arm whenever REASSIGN is present (`BounceTask.java:295-300`), so SPLIT_MERGE is never set again.
+- **The reassign clears everything.** ReassignTask rewrites its target with no states, whatever its size (`ReassignTask.java:730-735`).
+
+**What each engine does then:**
+- The result is a Java-made cluster above max, with no flags and no pending task.
+- Java's next insert re-arms the split (`Primitives.java:1161-1163`).
+- Go's bound refuses exactly that insert once count+1 > hardMax, so Go refuses permanently (until deletes) where Java is healthy.
+
+**The enumerated window also fails its own claim (:903 "succeeds on retry once the bounce has run"):**
+- The collapse and bounce ids are both random high-priority ids (`AbstractDeferredTask.java:275-281`), so the collapse can sort first.
+- An inline insert routed to that cluster then runs the collapse as its own head task, is refused, and rolls the collapse back.
+- Every insert routed there repeats this, so the bounce never runs through them.
+
+**Reachability:**
+- hardMax = max+1 is the configuration the design itself calls healthy (oracle items 8 and 14).
+- hardMax is mutable (engine `:84-97`).
+
+**Evidence gap.** "It fires in no measured healthy inline scenario" is a prediction: the goldens record only final cluster states, not the state at each insert.
+
+**Needed:**
+- Either key the bound so neither Java shape can fire it, or declare both under (h).
+- Add JVM and Go fixtures for:
+  - a collapse that gains REASSIGN while pending, followed by its reassign;
+  - a collapse that sorts ahead of its bounce, with the cluster at or above hardMax.
+- Correct :498, :896 ("one exception") and :903.
+
+## P3
+
+1. **(d) reads only the head task's kind (:271-274).** A bounce at the head of the queue runs its dependency in the same transaction (`BounceTask.java:161-169`). Two cases where Go's inline delete then fails:
+   - collapseConcurrency 0 with a live collapse dependency;
+   - splitMergeConcurrency evolved to 0 with a dependent split. Here the target's delete succeeds, so the difference is undeclared.
+
+   "Removal always remains possible" is therefore false for inline deletes. Extend the config-only reading to the bounce's outstanding dependencies (point reads of their task keys, visible within the transaction), or declare the gap.
+2. **The Go-only inline capacity error does not poison.**
+   - "Rolls back that reconcile" (:911) holds only when the caller does not commit.
+   - "In both engines" (:523) does not hold in inline mode, where Java has no cap.
+   - State the poisoning choice explicitly.
+3. **The lease default change has no recorded suite run on this tree.**
+   - Only `TestOnlineIndexerLeaseLengthDefault` is recorded. The change alters takeover timing for every default-configured Go session.
+   - Record a recordlayer suite run on this tree.
+   - I found no Go test at this tree that depends on the old 30 s default. The 20-30 s bounds in `online_indexer_session_test.go:606-607` come from the fixed 30 s cleanup budget (`online_indexer_queue.go:194`), not the lease.
+4. **Measured labels overreach in two places:**
+   - The "throws" halves of rows :226-227 (a task with precomputed neighbours) are source-only: the knob golden never produces such a task, yet the column header says "(measured)".
+   - "Through the record layer alike" (:799) was measured on the 10+1 shape only (item 14).
+
+## Closed from v6 (verified)
+
+- **Consumer-point raise.** Every no-op exit comes before its consumer: `SplitMergeTask.java:169-187, 227/430, 232-236, 435-437, 1108`; `CollapseTask.java:144-158, 171, 182`; `ReassignTask.java:199-210, 241, 256-257`. Bounce uses its knob first (`BounceTask.java:130`). The task is removed, then run (`Primitives.java:1016-1033`). The KMeans `shrink=ok drain=1` golden and the obsolete-task goldens agree with this.
+- **Livelock rows.** The empty-list mechanism is at `SplitMergeTask.java:261-275` and `ReassignTask.java:313-327`. The immutable neighbour knobs are declared permanent.
+- **Admission and poisoning:**
+  - insert refusal withdrawn except insertMaxCandidateClusters < 1 (golden `found=0`);
+  - enqueue is in the poison list;
+  - RaBitQ is refused where the quantizer is constructed (`Primitives.java:352-360`; task writes at `:135/:112/:158`).
+- **Lease and heartbeat wait:**
+  - wait slices of min(own lease, 10 s)/3;
+  - the cited `online_indexer_queue.go:297/321/337/362/385` lines match this tree;
+  - the claim-race loser waits (`VectorIndexMergeLock.java:111-134`);
+  - the relieved read is a post-commit snapshot;
+  - the lease row is carved out of the byte-for-byte comparison.
+- **Wording and algorithm:**
+  - tag-5 move wording, with the identity UUID coming from `RandomHelpers.java:174-176`;
+  - replay versus the engine-identity guard reconciled;
+  - the iterated peel (the probe at `guardiann_probe_conformance.java:765-860` implements the stated rule);
+  - the step-2 population restated.
+- **TODO.md and RFC-242 watcher claims:** corrected in place. The only remaining watcher mentions are historical: the removal entry and tree-freeze hash records.
+
+## Paper lens (SPANN/SPFresh)
+
+- **Inherited behaviour does not touch LIRE:**
+  - `spfresh_index_maintainer.go:31` embeds `standardIndexMaintainer`;
+  - it inherits the queue refusal (`index_maintainer_queue.go:12`) and the no-op `MergeIndex` (`index_deferred_maintenance.go:248`);
+  - there are zero queue, merge, commit-check or salt hits in the non-test `spfresh_*.go` files, while the positive control (`standardIndexMaintainer`) hits;
+  - the SPFresh build path takes no indexer heartbeat, so the lease change cannot reach it.
+- **No SPFresh text changed:** the v6→v7 diff touches no SPFresh, salt or LIRE text. The single SPANN mention added is the GuardiANN inline bound.
+- **Posting balance and assignment:**
+  - The peel keeps each vector with its nearest centroid, preserving SPFresh §3 (nearest-posting assignment).
+  - The bound is the right kind of mechanism for SPANN §3.2.1 Eq. 1 (bounded posting length), but the P2 key collision must be fixed.
+
+## Measured vs still hypothesis
+
+**Measured (13 specs):**
+- the hash formula;
+- both split stalls;
+- queue stranding and deferred backpressure;
+- the 22-variant knob map;
+- 14 inline scenarios, including deletes;
+- 3 record-layer auto-merge rows;
+- the λ sweep;
+- the peel on 7 shapes × 8 seeds (pure algorithm);
+- the target on those shapes in both modes;
+- obsolete collapse, reassign and merge consumption (staged).
+
+**Still hypothesis:**
+- the "throws" halves of the precomputed-neighbour rows;
+- reassignNumNeighboringClusters < 0;
+- obsolete tasks, delete-enqueued tasks and merges under trained 9 extra bits;
+- the P2 flagless shapes;
+- that the bound never fires in healthy scenarios;
+- the peel's labels and its materialisation through the real split path;
+- stale-inflated clusters, empty merge core, vanished neighbours, n<k, rollback, build-range stranding;
+- every Go-only mechanism: hand-off, poison, lease wait, claim race.

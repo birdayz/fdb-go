@@ -141,8 +141,10 @@ func PendingIndexes(
 	for name, idx := range md.GetAllIndexes() {
 		// DISABLED and WRITE_ONLY only. READABLE_UNIQUE_PENDING is
 		// deliberately NOT pending work: that index is fully built and is
-		// waiting on uniqueness violations being resolved, which a rebuild
-		// does not fix and would only redo.
+		// waiting on its uniqueness violations being resolved. A build
+		// session over it only tries to publish it (Java's MARK_READABLE),
+		// which fails for as long as the violations remain, so a fleet pass
+		// would report every such tenant as failed without doing anything.
 		if st, ok := states[name]; ok && (st.IsDisabled() || st.IsWriteOnly()) {
 			pending = append(pending, idx)
 		}
@@ -179,31 +181,48 @@ func BuildIndexes(
 		if err != nil {
 			return Event{}, err
 		}
-		pending = selectIndexes(pending, opts.IndexNames)
-		if len(pending) == 0 {
-			return Event{Outcome: OutcomeNoWork}, nil
-		}
-		var (
-			names []string
-			total int64
-		)
-		for _, idx := range pending {
-			n, buildErr := buildOne(ctx, db, md, ss, idx, opts)
-			if buildErr != nil {
-				// Report what DID get built before the failure — a
-				// half-finished tenant is the state an operator has to
-				// reason about on the next run.
-				return Event{Indexes: names, Records: total},
-					fmt.Errorf("build index %q: %w", idx.Name, buildErr)
-			}
-			names = append(names, idx.Name)
-			total += n
-		}
-		return Event{Outcome: OutcomeBuilt, Indexes: names, Records: total}, nil
+		return buildPending(selectIndexes(pending, opts.IndexNames), func(idx *recordlayer.Index) (int64, bool, error) {
+			return buildOne(ctx, db, md, ss, idx, opts)
+		})
 	})
 }
 
-// buildOne drives a single index to READABLE.
+// buildPending builds a tenant's pending indexes in order with build, which
+// reports the records it indexed and whether its session built or published
+// the index, and turns the results into the tenant's event.
+func buildPending(pending []*recordlayer.Index, build func(*recordlayer.Index) (int64, bool, error)) (Event, error) {
+	if len(pending) == 0 {
+		return Event{Outcome: OutcomeNoWork}, nil
+	}
+	var (
+		names []string
+		total int64
+	)
+	for _, idx := range pending {
+		n, built, buildErr := build(idx)
+		if buildErr != nil {
+			// Report what DID get built before the failure — a
+			// half-finished tenant is the state an operator has to
+			// reason about on the next run.
+			return Event{Indexes: names, Records: total},
+				fmt.Errorf("build index %q: %w", idx.Name, buildErr)
+		}
+		total += n
+		if built {
+			names = append(names, idx.Name)
+		}
+	}
+	if len(names) == 0 {
+		// Every pending index was published by someone else between the
+		// listing and its session, which then left it alone.
+		return Event{Outcome: OutcomeNoWork, Records: total}, nil
+	}
+	return Event{Outcome: OutcomeBuilt, Indexes: names, Records: total}, nil
+}
+
+// buildOne drives a single index to READABLE, reporting whether this session
+// built or published it (the indexer's LastBuildOutcome) rather than finding it
+// already published by a peer.
 func buildOne(
 	ctx context.Context,
 	db *recordlayer.FDBDatabase,
@@ -211,7 +230,7 @@ func buildOne(
 	ss subspace.Subspace,
 	idx *recordlayer.Index,
 	opts BuildOptions,
-) (int64, error) {
+) (int64, bool, error) {
 	b := recordlayer.NewOnlineIndexerBuilder().
 		SetDatabase(db).
 		SetMetaData(md).
@@ -235,20 +254,47 @@ func buildOne(
 	}
 	oi, err := b.Build()
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	n, err := oi.BuildIndex(ctx)
 	if err != nil {
 		var partly *recordlayer.PartlyBuiltError
 		if errors.As(err, &partly) {
-			return n, fmt.Errorf("index %q has a partial build with DIFFERENT settings — "+
-				"saved stamp %q, this invocation would stamp %q; rerun with the same settings "+
-				"to take the build over, or start from scratch with `frl index rebuild`",
-				partly.IndexName, partly.SavedStamp, partly.ExpectedStamp)
+			return n, false, partlyBuiltAdvice(partly)
 		}
-		return n, err
+		return n, false, err
 	}
-	return n, nil
+	return n, builtBySession(oi.LastBuildOutcome()), nil
+}
+
+// partlyBuiltAdvice renders a PartlyBuiltError with the ways out an operator
+// has. The indexer already continues a partial build of another method where it
+// can, so one that reaches here is blocked, or was begun by a mutual or
+// multi-target build, which the fleet (one target per session, never mutual)
+// cannot continue.
+func partlyBuiltAdvice(partly *recordlayer.PartlyBuiltError) error {
+	reason := ""
+	if partly.Message != "" {
+		reason = " (" + partly.Message + ")"
+	}
+	return fmt.Errorf("index %q has a partial build this pass cannot continue%s — saved stamp %q, this "+
+		"invocation would stamp %q; a partial build of another method is continued automatically where it "+
+		"can be, so this one is blocked (unblock it first) or was begun by a mutual or multi-target build, "+
+		"which the fleet cannot continue (finish it with the builder that began it); or start from scratch "+
+		"with `frl index rebuild`",
+		partly.IndexName, reason, partly.SavedStamp, partly.ExpectedStamp)
+}
+
+// builtBySession reports whether a session with this outcome drove the index
+// to READABLE itself: it built or published it. A session that found it
+// already READABLE (a peer published it after PendingIndexes listed it) or
+// found every target published by mutual peers did not.
+func builtBySession(outcome recordlayer.IndexBuildOutcome) bool {
+	switch outcome {
+	case recordlayer.IndexBuildOutcomeBuilt, recordlayer.IndexBuildOutcomePublished:
+		return true
+	}
+	return false
 }
 
 // BuildAll is the whole index fan-out in one call: enumerate the schemas of

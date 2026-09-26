@@ -219,7 +219,7 @@ func TestFDB_FloatOrderingClaim_Aggregate_Differential(t *testing.T) {
 		"CREATE INDEX ai_da ON ai (d, a) "+
 		"CREATE INDEX sum_by_d AS SELECT SUM(a) FROM ag GROUP BY d")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_focagg/s WITH TEMPLATE focagg")
-	dsn := fmt.Sprintf("fdbsql:///testdb_focagg?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_FOCAGG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

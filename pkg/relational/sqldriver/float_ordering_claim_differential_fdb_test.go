@@ -249,7 +249,7 @@ func TestFDB_FloatOrderingClaim_Differential(t *testing.T) {
 		"CREATE TABLE fo (id BIGINT, e DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX fi_ae ON fi (a, e)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_focd/s WITH TEMPLATE focd")
-	dsn := fmt.Sprintf("fdbsql:///testdb_focd?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_FOCD?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -402,7 +402,7 @@ func TestFDB_FloatOrderingClaim_Differential_Float32(t *testing.T) {
 		"CREATE TABLE go_ (id BIGINT, g FLOAT, h DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX gi_ag ON gi (a, g)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_focd32/s WITH TEMPLATE focd32")
-	dsn := fmt.Sprintf("fdbsql:///testdb_focd32?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_FOCD32?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -503,7 +503,7 @@ func TestFDB_FloatOrderingClaim_EqualityBoundFloat(t *testing.T) {
 		"CREATE TABLE fq (id BIGINT, e DOUBLE, PRIMARY KEY (id)) "+
 		"CREATE INDEX fq_e ON fq (e)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_foceq/s WITH TEMPLATE foceq")
-	dsn := fmt.Sprintf("fdbsql:///testdb_foceq?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_FOCEQ?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

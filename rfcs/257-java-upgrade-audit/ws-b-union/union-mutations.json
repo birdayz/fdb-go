@@ -1,0 +1,58 @@
+[
+  {
+    "name": "smallest-key",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "union-mutant-smallest-key.log"
+  },
+  {
+    "name": "canonical-tag",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "union-mutant-canonical-tag.log"
+  },
+  {
+    "name": "alias-map",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "union-mutant-alias-map.log"
+  },
+  {
+    "name": "factory",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "union-mutant-factory.log"
+  },
+  {
+    "name": "known-alias",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "union-mutant-known-alias.log"
+  },
+  {
+    "name": "pair-memo",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "union-mutant-pair-memo.log"
+  },
+  {
+    "name": "name-identity",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "union-mutant-name-identity.log"
+  },
+  {
+    "name": "since-waiver",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "union-mutant-since-waiver.log"
+  }
+]

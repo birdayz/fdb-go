@@ -1,0 +1,79 @@
+**NAK**
+
+- **Tree:** `0a7977fc48e0e10f8ee52f4c04deabf4d94ac73c`
+- **Design:** `ws-d-design.md` SHA256 `1f0fd83139e31f2efb4943711398f7ca9046fd695bd626424e6d247f30fff1f2`. I recomputed it with `git show TREE:path | sha256sum` and it matches.
+- **Java:** `fdb-record-layer/.git/HEAD` is `fdacd162…`.
+
+**What I read:** all four v5 verdicts, the full v6 design and its v5→v6 diff, the oracle README and both evidence files, the Go spec and the Java probe. The four oracle source hashes match `evidence-run.txt:4-7`. The run shows 9 of 1532 specs, 9 passed, uncached. I ran no tests or probes and made no edits.
+
+### P1 — The task-kind refusal fires before Java's no-op exits, which contradicts the golden it cites (design 185-206, 252-254)
+- **What the design says.** The check is config-only and runs "before a fetched task is removed". It then claims "This is the point where the target itself throws" (190-191).
+- **What Java does.** Every refusable kind except bounce returns early as a successful no-op before it uses the knob, KMeans or the quantizer:
+  - Split/merge: `SplitMergeTask.java:169-187` (missing cluster, no SPLIT_MERGE, COLLAPSE, false alarm). The phase-1 re-enqueue (`:232-236`) also runs before KMeans.
+  - Collapse: `CollapseTask.java:144-158`, where Java calls it a "benign no-op".
+  - Reassign: `ReassignTask.java:199-210`.
+  - Only bounce throws unconditionally (`BounceTask.java:130`).
+- **The golden already shows the mismatch** (`evidence-run.txt:75-110`):
+  - KMeans and metric rows show `drain=[1,exception…]`: phase 1 succeeds, then KMeans throws.
+  - They also show `shrink=ok drain=[1,0]`: once the cluster shrinks, the stalled split is consumed.
+  - Go's pre-removal refusal would refuse both steps. The design's own sentence "after its neighbour-persistence phase" (195-196) cannot come out of its check point. This is the first bullet of v5 Torvalds P2-1, still open.
+- **Consequence for mutable knobs.** Take a stale collapse task under collapseConcurrency 0. Java consumes it and keeps draining. Go wedges that prefix's key-ordered queue:
+  - deferred mode: merges fail and inserts pile up against the hard cap;
+  - inline mode: every insert fails.
+  So the "parity" label is false.
+- **RaBitQ.** "Every GuardiANN task kind constructs the quantizer" (252) is false for the same no-op paths: the quantizer is built at `SplitMergeTask:227/430`, `CollapseTask:171` and `ReassignTask:241`, all after the exits. The pre-claim snapshot refusal (253-254) is a second copy of the same predicate, and it refuses merges Java completes.
+- **Needed:**
+  - One predicate per kind, evaluated at the consumer site inside the task, after the no-op exits. The abort then rolls back the removal, which is real parity.
+  - Delete both the pre-removal and pre-claim copies.
+  - Keep a config-only pre-check only to decide inline-delete suppression (declared divergence (d)).
+  - Fixtures: a stale collapse task under collapseConcurrency 0, and Go reproducing the KMeans `shrink` golden.
+
+### P2 — Step 2 is reachable by more than the design says, and its cost is not bounded (design 692-758)
+- **Reachability.** 750-754 says step 2 needs coordinate-identical vectors. That is unmeasured and false, because step 1 refits only once. Example: 30 tight vectors, 2 at medium distance on one side, 1 far vector on the other side:
+  - The 1→2 KMeans gives {32, 1}.
+  - The refit on the mass gives {30, 2}.
+  - Re-homing everything gives {31, 2}, and 2/33 < 0.1, so the candidate is INVALID and step 2 runs.
+  - Oracle item 9 measured only 10+1, 20+1 and an identical-coordinate 10+1.
+- **Cost in inline mode.** Inline mode deliberately has no cap (433-438, 749-750), so a step-2 cluster grows without limit.
+  - Every insert re-arms a split (`Primitives.java:1161-1168`). Each round costs a phase-1 execution, then a full evaluation plus a serializable read of every reference and every PK's metadata (721-724), roughly every third insert.
+  - So "bounded cost … at most the cluster's primaries" (747-748) is circular.
+  - The full-posting serializable read conflicts with every concurrent inline insert into that cluster. It eventually crosses FDB's 5 s / 10 MB limits and fails as a retryable 1007 at the head of the queue.
+- **Needed:**
+  - Either iterate the outlier peel (the mass strictly shrinks each round, so it terminates; bound the rounds and pin the RNG with a golden), or state the step-2 population honestly.
+  - Give inline step-2 residue an explicit bound on posting length and per-insert work, and declare it.
+  - Add a nested-outlier fixture.
+
+### P3
+1. **mergeNumNearestClusters cannot be repaired.** It is immutable (`GuardiannVectorIndexEngine.java:84-97`), so "repairable by evolving the mutable knobs" (235-237) is false for it. After the first delete-driven merge, Go permanently wedges that prefix. Declare this under (c).
+2. **The poison list misses queue enqueue.** The enumerated list (158-161) does not include the enqueue-time refusal (274-276). Without poisoning, a caller that catches the error and commits keeps the record with no queue entry, so it is silently missing from the index once it becomes READABLE. Name it and add a fixture.
+3. **Dangling cross-reference.** "Section-5 follow-up refresh/checks" (558, 568) does not exist in WS-D §5. The mechanism is `refreshFollowupHeartbeats` (`online_indexer_queue.go:325`, WS-C §4); cite that.
+4. **Self-contradictions.**
+   - 438 says "Operation order in Go is the target's", then lists a different order (tag-5 after the cap check).
+   - 124 puts scan continuation under the engine guard, while 173-175 says replay is "never refused". Reconcile the identity guard with the capability rule.
+5. **The byte-for-byte claim needs a carve-out.** "Byte-for-byte unchanged after … task execution" (314-316) is false for merges: the claim-only lease commits before any task refusal, as it does in Java. Exclude the lease bytes.
+6. **Oracle item 9 only transfers the usable/INVALID bit.** It scores against `current = vectors.get(0)` (`guardiann_probe_conformance.java:411-413`), not the cluster centroid. So the KEEP_CURRENT label and its reasons are not production verdicts. Say so.
+7. **Rowdiff deletion.**
+   - References are clean: the window/dispatch rationale that `nightly-factory.yml` and `nightly-oracles.yml` point to survives at `nightly-rowdiff.yml:68-110`; only the watcher's trace-rotation comments were removed.
+   - But no post-deletion `//pkg/docscheck:docscheck_test` run is recorded, even though `rowdiff_sweep_budget_test.go` and `nightly_window_landing_test.go` still parse that workflow.
+
+### Verified correct
+- **Inline mode:**
+  - no cap and task-before-routing match Java (`Insert.java:206-215, 334-338`);
+  - "the target accepts" in inline mode is measured (items 5-6 and 8).
+- **deleteConcurrency at the consumer** matches `Delete.java:110-135, 170-176`.
+- **Metric rule:** KMeans supports only Euclidean and cosine (`KMeans.java:654-656`).
+- **Collapse bound:** `collapseMinDuplicates < primaryClusterMax` is enforced (`Config.java:198`).
+- **Livelock framing:** re-enqueued tasks are high priority (`AbstractDeferredTask.java:313-334`), so the target also starves normal-priority splits. The "(c) livelock" framing holds.
+- **Wait and retry plumbing:**
+  - iterator `Close` is concurrency-safe and cancels through the context cause (`throttled_retrying_iterator.go:44-51`);
+  - the merger returns non-FDB errors immediately (`indexing_merger.go:93-105`).
+- **v5 items now closed:** the poison scope and key, the progress baseline, the foreign-lease wait slices and cap, the bounded drain, the join-error declaration, the empty-cluster qualification, and `DeferCleanup` in the oracle loops.
+
+### Measured vs. hypothesis
+- **Measured by the oracle:**
+  - items 1-8;
+  - item 9 at algorithm level only, on synthetic 2-D data.
+- **Still hypotheses:**
+  - which vector sets reach step 2 beyond identical coordinates;
+  - Go's no-op-task handling (confirmed from Java source, and in the golden only for the KMeans and metric rows);
+  - the design's listed remaining shapes (stale-inflated, empty merge core, vanished neighbour, n<k, rollback, bits-9 task and merge, build-range stranding).

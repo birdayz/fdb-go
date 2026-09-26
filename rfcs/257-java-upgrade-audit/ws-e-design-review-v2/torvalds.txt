@@ -1,0 +1,81 @@
+**NAK** on RFC-257 WS-E design v2.
+
+- **Tree:** `cec59465947ae903c45373d8935f91aab96628e0`
+- **Design:** `rfcs/257-java-upgrade-audit/ws-e-design.md`, SHA-256 `a1649fa04ee44a68b45fc3133b7749fc9abb11ee18a519ea4acb97a62fb30baf` (checked)
+
+The review was read-only: I ran no tests, probes or mutations and made no edits.
+
+**What v2 fixed, checked against Java and Go:**
+- A bound NULL is untyped, as the target makes it.
+- The cache key folds tokens the way `AstNormalizer.java:190-219` does, and statement options stay out of the key text (`:282-312`).
+- LIKE errors are raised per evaluated row (measured).
+- B64 literals keep their case in the key.
+- The variadic port matches Java: `encapsulate`, arity, operator map, per-argument nullability and `INCOMPATIBLE_TYPE` (`VariadicFunctionValue.java:239-272`).
+- COALESCE folding matches the Java rule's `cannotFold` (`EvaluateConstantCoalesceRule.java:105-108`).
+- The record fetch after an index scan stays serializable (`FDBRecordStoreBase.java:1417`); Java's load-by-keys is serializable too (`RecordQueryLoadByKeysPlan.java:100`).
+- Keeping DRY RUN out of the key is safe, because Go never caches DML plans (`cascades_generator.go:1198`).
+- The three oracle Describes run with their pins: the v2 extended Describe passed in both `ws-e3` logs, and a mutated v2 pin reddened its row.
+
+## HIGH
+
+1. **Removing the blanket nullability override has no per-function census (§5.3, lines 543-551).**
+   - Go's own scalar functions return NULL from non-NULL arguments: POWER (NaN/Inf, `values.go:2902-2913`), EXP (overflow, `:3145`), LN and LOG (out of domain, `:3160-3186`) and NULLIF (`:2927-2937`). The rule "nullable iff an argument is" would declare them NOT NULL.
+   - Every catalog entry already declares a nullable type (`TypeString = NullableString`, `values.go:93`; `scalar_function_catalog.go:336-429`). So "unless its catalog entry declares otherwise" has no representation to distinguish.
+   - The rebuild sites copy `Typ` verbatim: `replace.go:313`, `map_field_values.go:83`, `simplifier_value.go:158,391`, `logical_predicate.go:4558`, `rule_aggregate_data_access.go:506`. Once nullability matters, those types go stale.
+   - Code that reads nullability includes `value_andor.go:101`, `physical_equality_shape.go:166-303`, `rule_in_to_explode.go:346` and `value_oftype.go:89`. The design names only `coalesceReplacementFor` and `sameDeclaredType`.
+
+2. **A snapshot connection's rejection of DDL and admin statements is missing (§6.3).**
+   - Java merges the connection options and then admits only a SELECT or EXECUTE CONTINUATION (`PlanGenerator.java:170-171,507-517`).
+   - The design rejects only INSERT, UPDATE and DELETE. The umbrella requires "Reject snapshot mutation/DDL" (line 484), and v1 finding T#2 named this exact case.
+   - No oracle row covers DDL, SHOW, DESCRIBE or transaction statements on a snapshot connection.
+
+3. **The §8 acceptance comparison cannot pass as written, and §0 misstates the harness.**
+   - The first Describe still binds kind "int" as int64 (`ws_e_probe_conformance_test.go:235-236`), contradicting design lines 48-50.
+   - After the port, `prepared_int_overflow` in Go would return 2147483648 while Java raises an overflow. That is a difference in result class, not the declared SQLSTATE difference.
+   - `like_enum_operand` cannot run in Go (enum DDL is rejected) and is not declared.
+   - The first Describe renders no type names or nullability, so the per-row type/nullability comparison has no target values for 74 rows.
+
+4. **Typing parameters from their Go values creates undeclared breaks (§4.3).**
+   - A plain Go `int` reaches `CheckNamedValue`'s ErrSkip path and becomes int64 (`connection.go:958-972`), so it binds as LONG. Under the design's strict LONG-into-INTEGER rule, `Exec("INSERT INTO I VALUES (?,?)", 9, 7)` into an INTEGER column fails with 22000, where it works today.
+   - The type table (lines 409-415) omits `int`, `int8`, `int16` and the unsigned types.
+   - "Always TIMESTAMP" removes today's DATE rendering (`utilities.go:256-263`) and states no contract for DATE columns.
+   - "No plan shape, sargability or cost changes" (lines 469-471) holds only when the bound type equals the old literal's type. A LONG parameter compared with an indexed INTEGER column puts a promotion on the column side, and nothing measures index use there (`prepared_long_vs_int_column` has no index and no EXPLAIN).
+
+## MEDIUM
+
+5. **The nullable-array extension is widened past its approved pins (lines 365-368).**
+   - The approved pins are literals only (`array_comparison_java_probe_test.go:53-55`). One of them expects Go's 42804 for `[1,NULL] = [1,2]`.
+   - Go's array comparison checks element nullability (`walk.go:477-485`). So admitting column-valued elements plausibly keeps `WHERE arr = [n]` at 42804, where the target promotes `n` and returns rows. That would be an undeclared divergence on queries both engines accept (source hypothesis, unmeasured).
+   - The element type under the extension is unspecified, and the design doesn't say whether a parenthesised operand counts as a comparison operand.
+   - Fix: restrict the extension to the approved literal shapes, or declare and probe each widened class.
+
+6. **"At planning for constants" for array and IN NULL elements (lines 347-348) is neither measured nor supported by Java.** The SemanticException form is raised only during evaluation (`AbstractArrayConstructorValue.java:205-213`, `MessageHelpers.java:508`). There are no empty-table probes for `[CAST(NULL AS BIGINT)]` or `IN (CAST(NULL AS BIGINT))`. v1 finding G#7 is still open.
+
+7. **Option scopes rest on Javadoc (`Options.java:213,220`).** `PlanGenerator.java:170` merges options with `withChild`, and nothing visible there filters by scope. Go already reads PLAN_RIGHT_DEEP as a connection option (`planner_options.go:106`) and puts it in the cache key. The design doesn't say whether that path is kept or removed.
+
+8. **Parameter-count and named-binding errors are unspecified.** This covers too few or too many positional arguments and missing or unused named ones (v1 finding T#13). Today's 22023 comes from `substituteParams`, which the design deletes. "Named parameters don't consume ordinals" differs from database/sql's `NamedValue.Ordinal`, and no planned test passes a named argument before positional ones.
+
+9. **A second canonicaliser with the fail-open fold remains.** `aggOperandCanonicalText` (`logical_builder.go:839-872`) upper-cases everything except `DOUBLE_QUOTE_ID` and `STRING_LITERAL`, and aggregate result slots are keyed by that name. Two `COUNT(CASE WHEN b = B64'…' …)` aggregates differing only in the literal's case would plausibly collide (source hypothesis). Use one fold predicate for both.
+
+10. **The evidence doesn't bind the tree's bytes.**
+    - No evidence line records the tree's hashes for the oracle file (`cc44db4d…`) or `sql_plan_steps.java` (`faff4a46…`). The v2 hashes are truncated and describe earlier bytes.
+    - The v2 extended round has no hashes and no mutation run, and the claimed "Ran 20 of 20 Specs" has no log; `ws-e3-1` and `ws-e3-2` each ran 1 of 20.
+    - The first Describe lacks the key-set equality check the later two have, so deleting a probe would leave its pin unchecked.
+
+## LOW
+
+11. **Backstops no statement can reach have no tests.** The DML snapshot guard (§6.6) and the NULL-element write guards (`proto_value.go:198-205`, `executor.go:4363`) need direct unit tests.
+12. **Value copying and key rendering are incomplete.** Only `[]byte` is deep-copied; array parameters need a recursive copy. A time zone's name doesn't identify it: two unnamed fixed-offset zones with different offsets render the same key.
+13. **Citations and wording.**
+    - `FDBRecordStore.java:1256` is `recordExistsAsync`, not a record range scan.
+    - `executor_new_plans.go:921` is load-by-keys, not an index fetch; the conclusion still holds.
+    - The Escape consumer list misses `rule_match_intermediate.go:1232` and the field registries at `comparison_identity.go:27` and `plans/semantic_identity.go:114`.
+    - "GREATEST/LEAST admit every type" is false today (`greatest_bytes` already fails with 22F00 in Go).
+    - `runPreparedExtended` duplicates `runPreparedWithSetup`'s binding switch; the old step should call `bindExtended`.
+14. **The parameter-ordinal divergence was measured on one SELECT-vs-WHERE shape only.** Name that population; ordering across GROUP BY, HAVING, ORDER BY, subqueries and IN lists is unmeasured.
+
+**Are the declared divergences necessary?**
+- Necessary: the arity message and the Go-only scalar functions.
+- Approved extension: LIMIT.
+- Defensible: ordering by a constant and the parameter ordinals.
+- Not necessary as scoped: the widened nullable-array admission (finding 5).

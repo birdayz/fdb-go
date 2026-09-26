@@ -34,12 +34,25 @@ func (o *txnOptions) SetBypassUnreadable() error {
 	return nil
 }
 
+// SetRetryLimit sets the retry_limit option: OnError stops granting retries once it has granted
+// this many (0: the first error escapes; negative: unlimited, the default). The record layer's
+// attempt loop sets 0 so each attempt is one backend attempt; a no-op here made every attempt up to
+// maxRetries backend attempts on the simulator alone.
+func (o *txnOptions) SetRetryLimit(retries int64) error {
+	if retries < 0 {
+		o.tx.hasRetryLimit = false
+		return nil
+	}
+	o.tx.retryLimit = int(retries)
+	o.tx.hasRetryLimit = true
+	return nil
+}
+
 // --- accepted-and-ignored options ---
 
 func (o *txnOptions) EnsureMutationCapacity(n int) {}
 
 func (o *txnOptions) SetTimeout(int64) error                          { return nil }
-func (o *txnOptions) SetRetryLimit(int64) error                       { return nil }
 func (o *txnOptions) SetPriorityBatch() error                         { return nil }
 func (o *txnOptions) SetPrioritySystemImmediate() error               { return nil }
 func (o *txnOptions) SetDebugTransactionIdentifier(string) error      { return nil }

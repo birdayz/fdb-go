@@ -1,0 +1,43 @@
+**NAK — IMPLEMENTATION CODE** at tree `e83b606c1d79a24a1bf08a5c35c9302f0777b77a`.
+
+The original four duplicate-alias reproducers are repaired, but closure is incomplete. Two source-derived findings remain; neither was executed during this read-only review.
+
+1. **P2 — The new cardinality check counts qualified inherited names as bare aliases.**  
+   [logical_predicate.go:3143](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:3143) uses `projectionOutputNames`, whose line 569 reduces column references to their bare leaf.
+
+   Using the existing `ts` fixture:
+
+   ```sql
+   SELECT ts.n.sk, ts.id AS sk FROM ts ORDER BY sk
+   ```
+
+   Go counts two `SK` outputs and returns `42702`. Java preserves the nested expression’s qualified identifier at [SemanticAnalyzer.java:723](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/SemanticAnalyzer.java:723); [QueryVisitor.java:943](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/visitors/QueryVisitor.java:943) excludes that qualified name from alias lookup. The explicit `SK` alias therefore uniquely owns ORDER BY.
+
+   **Required fix:** count eligible resolved SQL identifiers, preserving qualification separately from result labels. Do not simply exclude every authored qualified reference: ordinary table columns can inherit unqualified names. Add both-constructor coverage for nested-name collisions and verify the selected Value belongs to `ts.id`.
+
+2. **P2 — Early duplicate-key rejection still overrides alias ambiguity.**  
+   For:
+
+   ```sql
+   SELECT id AS z, v AS z FROM wide_t ORDER BY z, z
+   ```
+
+   [select_parser.go:1350](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:1350) returns `42701` during classification, before either new alias-validation path runs. The grouped variant has the same problem.
+
+   Java invokes `lookupAlias` for the first key at [QueryVisitor.java:955](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/visitors/QueryVisitor.java:955), producing **`42702 / Ambiguous alias Z`** before duplicate ORDER validation at line 966.
+
+   **Required fix:** defer named-key duplicate rejection until ORDER expressions have undergone semantic resolution. Preserve authored numeric classification and existing valid-name duplicate behavior. Add grouped/plain precedence regressions through both constructors.
+
+I read all three prior reviews/prompts, the complete 12-file delta, frozen untracked delta content, and corresponding Java source. All **6,397 frozen hashes** match the candidate and worktree. The completed evidence supports **134 focused RUN/PASS entries, 28 Java records, four discriminating mutations, and the 30-second/four-worker fuzz pass**. The earlier seven mutations remain evidence for their earlier tree only.
+
+Outstanding verification/publication gates:
+
+- The completed results inspected credit fuzz; full93, race14, `just test`, and nominal1M ABBA remain uncredited. Missing/in-flight evidence establishes neither success nor failure. Subsequent fixes require verification against their resulting tree.
+- The cancelled predecessor’s **89/93 is not a full green**.
+- Accepted bounded latency conclusions remain unchanged; universal parity is unestablished.
+- Historical executor startup-timeout causation still requires unavailable original artifacts. LegacyRaBitQ disable/rebuild remains prerequisite.
+- Published HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`. Commit/push/merge remain forbidden; PR786 remains draft/unchanged.
+
+Unchanged storage acceptance and approved nullable-array/raw/scalar/sorting extensions stand. WS-B–K remain open; FDB C++ remains **7.3.77**.
+
+No edits, builds/tests, agents, worktrees, Git mutations, or GitHub contact occurred. The session does not expose model-setting attestation, so I cannot certify `gpt-6-astra/xhigh`.

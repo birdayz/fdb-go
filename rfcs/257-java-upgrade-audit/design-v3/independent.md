@@ -1,0 +1,13 @@
+**ACK — WS-A DESIGN ONLY**, exact virtual Git tree `84844bdb679dacefde59a61efe67969f7bc9be11`.
+
+I read the full frozen delta, revised RFC, retained second-round reports/prompts, and relevant Go and Java target source. Both remaining design blockers are addressed.
+
+- **Descriptor lifetime:** [RFC:203](/home/birdy/projects/fdb-record-layer-go/rfcs/257-java-4.14.2.0-upgrade.md:203) specifies collect/register/seal/bind, transactional rollback, disposable validation descriptors, and standalone sealing. This addresses stale descriptor memoization at [proto_type.go:316](/home/birdy/projects/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values/proto_type.go:316) and matches Java’s publication boundary at [QueryPlan.java:648](/home/birdy/projects/fdb-record-layer-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/QueryPlan.java:648). Required pointer-identity, discovery-order, wrapper/enum, reconstruction, late-registration, rollback and concurrency proofs are explicit. Raw fallbacks, DML constructor exclusion and strict foreign copying survive.
+
+- **Encoder prerequisites:** [RFC:244](/home/birdy/projects/fdb-record-layer-go/rfcs/257-java-4.14.2.0-upgrade.md:244) assigns exact encoding and relevant reconstruction to WS-A. Target [RaBitQuantizer.java:170](/home/birdy/projects/fdb-record-layer-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/rabitq/RaBitQuantizer.java:170) confirms norm-then-square and unclamped calibration. Nonzero asymmetric goldens, boundary cases, serialization, sweep ties, packing, and committed compact/inline cold-reopen bytes remain mandatory. The legacy zero fixture is correctly excluded as encoder proof; GuardiANN integration remains WS-D.
+
+- **Compatibility:** [RFC:278](/home/birdy/projects/fdb-record-layer-go/rfcs/257-java-4.14.2.0-upgrade.md:278) retains mandatory operator-directed disable/rebuild for prior-Go or unknown histories, without claiming automatic detection or transparent rolling upgrades.
+
+Inventory independently reconciles **1,189 net + 84 history-only paths across 228 commits**; this does not establish independent intermediate-commit review. Report and fixture writer/patch hashes match. Parent baselines establish no current ratio. Approved extensions, C++ **7.3.77**, and review gates remain intact.
+
+**No implementation or later-workstream approval.** No edits, builds/tests, worktrees, branches or agents.

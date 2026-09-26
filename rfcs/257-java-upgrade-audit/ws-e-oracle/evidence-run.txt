@@ -1,0 +1,1966 @@
+# WS-E oracle, all fourteen Describes ("WS-E target oracle", "... v2", "... v2 extended", "... v3", "... v4", "... v5", "... v6", "... v8",
+# "... v9", "... v10", "... v11", "... v12", "... v12 planning cost", "... v12 cross-engine NaN") in //conformance:rfc257_oracle_test,
+# regenerated 2026-09-24 for design v12. Driver /var/tmp/fdb-upgrade-recovery/wse12ev/run.sh, records in wse12ev/: base HEAD 71ccd8cf8b3fd0dbafe283e91171818e36af555e,
+# working tree; the sha256 of the oracle's 9 source files (wse12ev/files.txt, src.sha) taken before the first run and verified after the last
+# step: check.txt, 9 ": OK", 0 other.
+#   run 1: Ran 14 of 64 Specs in 106.550 seconds / SUCCESS! -- 14 Passed | 0 Failed | 0 Pending | 50 Skipped (load in all1.uptime)
+#   run 2: Ran 14 of 64 Specs in 106.318 seconds / SUCCESS! -- 14 Passed | 0 Failed | 0 Pending | 50 Skipped (load in all2.uptime)
+# Ginkgo randomizes the order of top-level Describes, so the runs are compared per block, as sorted sets (wse12ev/extract.py): each run gives
+# 458 "WS-E<n>" lines (457 probe blocks with their JAVA, GO and SQL lines, and ONE teardown line, "WS-E5 dry-run template after its drop",
+# which v11 counted as a probe block) and 117 pin lines (10 "WS-E11-PIN"; 98 "WS-E12-PIN": 92 of round v12 and 6 "x_" of its cross-engine
+# round; 9 "WS-E12-COST"); 1946 lines in all, equal between the runs (cmp). The 479 printed, unpinned lines (WS-E12-SPELLING and the per-rule
+# WS-E12-COST-KIND breakdown) are left out of the comparison.
+# JAVA lines of rounds 1 to 10 are pinned in the spec (457 pins); GO lines of those rounds are the pre-port Go behaviour, recorded, not pinned.
+# Rounds v11 and v12 pin both engines (wsE11Pins, wsE12Pins, wsE12CrossPins; wsE12CostPins is the target's alone), and fail on an architecture
+# other than amd64 (wseRequireNaNPinArch), since a division's NaN is the hardware's.
+# The same run: "Conformance server ephemeral schema teardown" 1 of 1 (teardown.log); plandiff + docscheck uncached, 2 of 2 (plandiff-docscheck.log).
+# Mutations: M11 (ev13/M11.log, v11): java_t_d_id1 -> 7ff8000000000001, reddens exactly the v11 spec on that row. M12 (wse12-mut.log): java_u_d_id10
+# fff8000000000000 -> 7ff8000000000001 (marker 1), "Ran 1 of 62", 1 failed, "[FAILED] java_u_d_id10"; restored. Its first attempt placed the marker
+# before the comma, did not build (bazel exit 1, wse12-mut-nobuild.log) and is not a result.
+# The v11 regeneration of this file is at /var/tmp/fdb-upgrade-recovery/ws-e-evidence-run.v11.txt.
+GO   ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+GO   ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+GO   ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+GO   ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+GO   ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+GO   ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+GO   ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+GO   ERROR 0AF00 "Cascades planner could not plan query"
+GO   ERROR 0AF00 "Cascades planner could not plan query"
+GO   ERROR 0AF00 "Cascades planner could not plan query"
+GO   ERROR 0AF00 "Cascades planner could not plan query"
+GO   ERROR 0AF00 "Cascades planner could not plan query"
+GO   ERROR 0AF00 "Cascades planner could not plan query"
+GO   ERROR 0AF00 "Cascades planner could not plan query"
+GO   ERROR 0AF00 "Cascades planner could not plan query"
+GO   ERROR 0AF00 "Cascades planner could not plan query"
+GO   ERROR 0AF00 "Cascades planner could not plan query"
+GO   ERROR 0AF00 "Cascades planner could not plan query"
+GO   ERROR 0AF00 "Cascades planner could not plan query"
+GO   ERROR 0AF00 "Cascades planner could not plan query"
+GO   ERROR 0AF00 "Cascades planner could not plan query"
+GO   ERROR 0AF00 "Cascades planner could not plan query"
+GO   ERROR 0AF00 "Cascades planner could not plan query"
+GO   ERROR 0AF00 "Cascades planner could not plan query"
+GO   ERROR 0AF00 "Cascades planner could not plan query"
+GO   ERROR 0AF00 "Cascades planner could not plan query"
+GO   ERROR 0AF00 "Cascades planner could not plan query"
+GO   ERROR 0AF00 "Cascades planner could not plan query"
+GO   ERROR 0AF00 "Cascades planner could not plan query"
+GO   ERROR 0AF00 "Cascades planner could not plan query"
+GO   ERROR 0AF00 "projection has no exact result row: LogicalProjectionExpression result type: resolution error 4 at type.field[0]: placeholder type is not exact"
+GO   ERROR 0AF00 "projection slot 0 has no resolved Value"
+GO   ERROR 0AF00 "projection slot 0 has no resolved Value"
+GO   ERROR 0AF00 "projection slot 0 has no resolved Value"
+GO   ERROR 22000 "arithmetic type mismatch: int64 + bool"
+GO   ERROR 22000 "arithmetic type mismatch: string - int64"
+GO   ERROR 22000 "A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable."
+GO   ERROR 22000 "A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable."
+GO   ERROR 22003 "integer overflow"
+GO   ERROR 22003 "integer overflow"
+GO   ERROR 22003 "numeric literal out of range: 1e309"
+GO   ERROR 22003 "value 3000000000 out of range for int32 column \"I\""
+GO   ERROR 22003 "value 3000000000 out of range for int32 column \"I\""
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22012 "/ by zero"
+GO   ERROR 22023 "fewer '?' placeholders than bound parameters (0 placeholders, 1 args)"
+GO   ERROR 22023 "fewer '?' placeholders than bound parameters (1 placeholders, 2 args)"
+GO   ERROR 22023 "more '?' placeholders than bound parameters (placeholder 2, have 1 args)"
+GO   ERROR 22023 "more '?' placeholders than bound parameters (placeholder 2, have 1 args)"
+GO   ERROR 22F00 "function GREATEST is not defined for argument type BYTES NULL"
+GO   ERROR 22F3H "cannot CAST \"+1-2-3-4-5\" to UUID: invalid UUID length: 10"
+GO   ERROR 22F3H "cannot CAST \"+1-2-3-4-5\" to UUID: invalid UUID length: 10"
+GO   ERROR 22F3H "cannot CAST \"1-2-3-4-5\" to UUID: invalid UUID length: 9"
+GO   ERROR 22F3H "cannot CAST \"1-2-3-4-5\" to UUID: invalid UUID length: 9"
+GO   ERROR 22F3H "cannot CAST \" 123e4567-e89b-12d3-a456-426614174000\" to UUID: invalid UUID length: 37"
+GO   ERROR 22F3H "cannot CAST \" 123e4567-e89b-12d3-a456-426614174000\" to UUID: invalid UUID length: 37"
+GO   ERROR 22F3H "cannot CAST \"not-a-uuid\" to UUID: invalid UUID length: 10"
+GO   ERROR 22F3H "Cannot cast string '2024-02-30' to DATE: parsing time \"2024-02-30\": day out of range"
+GO   ERROR 22F3H "Cannot cast string 'x' to LONG: For input string: \"x\""
+GO   ERROR 22F3H "Cannot cast string 'x' to LONG: For input string: \"x\""
+GO   ERROR 22F3H "Invalid UUID value for the UUID type 1-2-3-4-10000000000000000"
+GO   ERROR 22F3H "Invalid UUID value for the UUID type 1-2-3-4--5"
+GO   ERROR 22F3H "Invalid UUID value for the UUID type 1-2-3-4-5"
+GO   ERROR 22F3H "Invalid UUID value for the UUID type ١-2-3-4-5"
+GO   ERROR 22F3H "Invalid UUID value for the UUID type 123456789-1-1-1-1"
+GO   ERROR 22F3H "Invalid UUID value for the UUID type 1-2-3-4-7fffffffffffffff"
+GO   ERROR 22F3H "Invalid UUID value for the UUID type 1-2-3-4-8000000000000000"
+GO   ERROR 22F3H "Invalid UUID value for the UUID type  123e4567-e89b-12d3-a456-426614174000"
+GO   ERROR 22F3H "Invalid UUID value for the UUID type 123e4567-e89b-12d3-a456-4266141740000"
+GO   ERROR 22F3H "Invalid UUID value for the UUID type 1--3-4-5"
+GO   ERROR 22F3H "Invalid UUID value for the UUID type Ａ-2-3-4-5"
+GO   ERROR 23505 "unique index \"UF_F\" violated: value (NaN) already exists"
+GO   ERROR 42601 "syntax error:\nEXPLAIN SELECT id FROM T WHERE id = 1 OPTIONS (ISOLATION LEVEL SNAPSHOT)\n                                      ^^^^^^^"
+GO   ERROR 42601 "syntax error:\nSELECT id FROM T /* a /* b */ c */ WHERE id = 1\n                                ^"
+GO   ERROR 42601 "syntax error:\nSELECT id FROM T -- c\rWHERE id = 1\n                    ^"
+GO   ERROR 42601 "syntax error:\nSELECT id FROM T WHERE id = 1 /* open\n                               ^"
+GO   ERROR 42601 "syntax error:\nSELECT id FROM T WHERE id = 1 OPTIONS (ISOLATION LEVEL SNAPSHOT)\n                              ^^^^^^^"
+GO   ERROR 42601 "syntax error:\nSELECT id FROM T WHERE id = 1 OR id = 3x ORDER BY id\n                                       ^"
+GO   ERROR 42601 "syntax error:\nSELECT id FROM T WHERE id = 1x\n                             ^"
+GO   ERROR 42601 "syntax error:\nSELECT id FROM T WHERE s LIKE 1 ORDER BY id\n                              ^"
+GO   ERROR 42601 "syntax error:\nSELECT id FROM T WHERE s LIKE 'a' '%' ORDER BY id\n                                  ^^^"
+GO   ERROR 42601 "syntax error:\nSELECT id FROM T WHERE s LIKE NULL ESCAPE 'ab' ORDER BY id\n                              ^^^^"
+GO   ERROR 42601 "syntax error:\nSELECT id FROM T WHERE s LIKE NULL ORDER BY id\n                              ^^^^"
+GO   ERROR 42601 "syntax error:\nSELECT id FROM T WHERE s LIKE NULL ORDER BY id\n                              ^^^^"
+GO   ERROR 42804 "The operands of a comparison operator are not compatible."
+GO   ERROR 42804 "The operands of a comparison operator are not compatible."
+GO   ERROR 42804 "The operands of a comparison operator are not compatible."
+GO   ERROR 42804 "The operands of a comparison operator are not compatible."
+GO   ERROR 42804 "The operands of a comparison operator are not compatible."
+GO   ERROR 42804 "The operands of a comparison operator are not compatible."
+GO   ERROR 42809 "NULL values are not allowed in the IN list"
+GO   ERROR 42809 "NULL values are not allowed in the IN list"
+GO   ERROR 42809 "NULL values are not allowed in the IN list"
+GO   ERROR 42809 "NULL values are not allowed in the IN list"
+GO   ERROR 42809 "NULL values are not allowed in the IN list"
+GO   ERROR 42809 "NULL values are not allowed in the IN list"
+GO   ERROR 42809 "NULL values are not allowed in the IN list"
+GO   ERROR plandiff/go: exec: sql: converting argument $1 type: unsupported type []int64, a slice of int64
+GO   ERROR plandiff/go: exec: sql: converting argument $2 type: unsupported type []int64, a slice of int64
+GO   ERROR plandiff/go: exec: sql: converting argument $2 type: unsupported type []int64, a slice of int64
+GO   ERROR plandiff/go: query: executor: building scan ranges for "F_F": scan comparison 0 (0, physical DOUBLE) evaluates to NaN; exact indexed NaN equivalence is unsupported
+GO   ERROR plandiff/go: query: sql: converting argument $1 type: unsupported type []int64, a slice of int64
+GO   NO-GO-CONNECTION-OPTION
+GO   NO-GO-CONNECTION-OPTION
+GO   NO-GO-CONNECTION-OPTION
+GO   NO-GO-CONNECTION-OPTION
+GO   NO-GO-CONNECTION-OPTION
+GO   NO-GO-CONNECTION-OPTION
+GO   NO-GO-CONNECTION-OPTION
+GO   NO-GO-CONNECTION-OPTION
+GO   NO-GO-CONNECTION-OPTION
+GO   NO-GO-CONNECTION-OPTION
+GO   NO-GO-CONNECTION-OPTION
+GO   NO-GO-CONNECTION-OPTION
+GO   NO-GO-CONNECTION-OPTION
+GO   NO-GO-CONNECTION-OPTION
+GO   NO-GO-CONNECTION-OPTION
+GO   NO-GO-CONNECTION-OPTION
+GO   NO-GO-CONNECTION-OPTION
+GO   NO-GO-CONNECTION-OPTION
+GO   NO-GO-CONNECTION-OPTION
+GO   NO-GO-CONNECTION-OPTION
+GO   NO-GO-INSTRUMENT
+GO   NO-GO-INSTRUMENT
+GO   NO-GO-INSTRUMENT
+GO   NO-GO-INSTRUMENT
+GO   NO-GO-INSTRUMENT
+GO   NO-GO-INSTRUMENT
+GO   NO-GO-INSTRUMENT
+GO   NO-GO-INSTRUMENT
+GO   NO-GO-INSTRUMENT
+GO   NO-GO-INSTRUMENT
+GO   NO-GO-INSTRUMENT
+GO   NO-GO (section 6.4, Go FDB tests)
+GO   NO-GO (section 6.4, Go FDB tests)
+GO   NO-GO (section 6.4, Go FDB tests)
+GO   NO-GO (section 6.4, Go FDB tests)
+GO   NO-GO (section 6.4, Go FDB tests)
+GO   NO-GO-SNAPSHOT (section 6 ports the option)
+GO   NO-GO-SNAPSHOT (section 6 ports the option)
+GO   NO-GO-SNAPSHOT (section 6 ports the option)
+GO   NO-GO-SNAPSHOT (section 6 ports the option)
+GO   NO-GO-SNAPSHOT (section 6 ports the option)
+GO   NO-GO-SNAPSHOT (section 6 ports the option)
+GO   NO-GO-SNAPSHOT (section 6 ports the option)
+GO   NO-GO-SNAPSHOT (section 6 ports the option)
+GO   NO-GO-SNAPSHOT (section 6 ports the option)
+GO   NO-GO-SNAPSHOT (section 6 ports the option)
+GO   NO-GO-SNAPSHOT (section 6 ports the option)
+GO   NO-GO-SNAPSHOT (section 6 ports the option)
+GO   NO-GO-SNAPSHOT (section 6 ports the option)
+GO   OK [BIGINT BIGINT] [NULL NOT NULL] [[1 [<nil>]] [2 [5]] [3 [7]] [4 [1]] [5 [2]] [6 [3]] [7 [4]]]
+GO   OK [BIGINT BIGINT] [NULL NULL] [[1 0] [2 5] [3 7] [4 1] [5 2] [6 3] [7 4]]
+GO   OK [BIGINT BIGINT] [NULL NULL] [[1 100]] COUNT 1
+GO   OK [BIGINT BIGINT] [NULL NULL] [[1 10] [101 5]] COUNT 1
+GO   OK [BIGINT BIGINT] [NULL NULL] [[1 10] [20 7]] COUNT 1
+GO   OK [BIGINT BIGINT] [NULL NULL] [[1 10] [3 7]] COUNT 1
+GO   OK [BIGINT BIGINT] [NULL NULL] [[1 10] [7 NULL]] COUNT 1
+GO   OK [BIGINT BIGINT] [NULL NULL] [[1 [3e+09]]] COUNT 1
+GO   OK [BIGINT BIGINT] [NULL NULL] [[1 [5]] [5 NULL]] COUNT 1
+GO   OK [BIGINT BIGINT] [NULL NULL] [[1 NULL] [2 3] [3 3] [4 1] [5 2] [6 3] [7 3]]
+GO   OK [BIGINT BIGINT] [NULL NULL] [[2 15]]
+GO   OK [BIGINT BOOLEAN] [NULL NULL] [[1 true] [2 false] [3 false] [4 true] [5 true] [6 true] [7 true]]
+GO   OK [BIGINT DOUBLE] [NULL NULL] [[1 0] [2 0] [3 1.5] [4 NaN]]
+GO   OK [BIGINT DOUBLE] [NULL NULL] [[1 1.5] [7 1]] COUNT 1
+GO   OK [BIGINT DOUBLE] [NULL NULL] [[1 1.5] [8 1.5]] COUNT 1
+GO   OK [BIGINT FLOAT] [NULL NULL] [[1 [1.5]]] COUNT 1
+GO   OK [BIGINT FLOAT] [NULL NULL] [[1 1.5]] COUNT 1
+GO   OK [BIGINT FLOAT] [NULL NULL] [[1 2.5] [101 1.5]] COUNT 1
+GO   OK [BIGINT FLOAT] [NULL NULL] [[1 2.5] [10 1]] COUNT 1
+GO   OK [BIGINT FLOAT] [NULL NULL] [[1 2.5] [5 1.5]] COUNT 1
+GO   OK [BIGINT FLOAT] [NULL NULL] [[1 2.5] [6 1]] COUNT 1
+GO   OK [BIGINT FLOAT] [NULL NULL] [[1 3]] COUNT 1
+GO   OK [BIGINT FLOAT] [NULL NULL] [[1 3]] COUNT 1
+GO   OK [BIGINT FLOAT] [NULL NULL] [[2 [1.5]]] COUNT 1
+GO   OK [BIGINT FLOAT] [NULL NULL] [[2 1.5]] COUNT 1
+GO   OK [BIGINT FLOAT] [NULL NULL] [[3 1.5]] COUNT 1
+GO   OK [BIGINT FLOAT] [NULL NULL] [[3 [1]]] COUNT 1
+GO   OK [BIGINT FLOAT] [NULL NULL] [[4 1.5]] COUNT 1
+GO   OK [BIGINT FLOAT] [NULL NULL] [[4 []]] COUNT 1
+GO   OK [BIGINT INTEGER] [NULL NULL] [[1 1]] COUNT 1
+GO   OK [BIGINT INTEGER] [NULL NULL] [[1 5] [101 10]] COUNT 1
+GO   OK [BIGINT INTEGER] [NULL NULL] [[1 5] [20 3]] COUNT 1
+GO   OK [BIGINT INTEGER] [NULL NULL] [[1 5] [21 1]] COUNT 1
+GO   OK [BIGINT INTEGER] [NULL NULL] [[1 6]] COUNT 1
+GO   OK [BIGINT] [NOT NULL] []
+GO   OK [BIGINT] [NOT NULL] [[[<nil>]]]
+GO   OK [BIGINT] [NOT NULL] [[[<nil>]]]
+GO   OK [BIGINT] [NULL] []
+GO   OK [BIGINT] [NULL] []
+GO   OK [BIGINT] [NULL] []
+GO   OK [BIGINT] [NULL] []
+GO   OK [BIGINT] [NULL] []
+GO   OK [BIGINT] [NULL] []
+GO   OK [BIGINT] [NULL] []
+GO   OK [BIGINT] [NULL] []
+GO   OK [BIGINT] [NULL] []
+GO   OK [BIGINT] [NULL] []
+GO   OK [BIGINT] [NULL] []
+GO   OK [BIGINT] [NULL] []
+GO   OK [BIGINT] [NULL] []
+GO   OK [BIGINT] [NULL] []
+GO   OK [BIGINT] [NULL] []
+GO   OK [BIGINT] [NULL] []
+GO   OK [BIGINT] [NULL] []
+GO   OK [BIGINT] [NULL] []
+GO   OK [BIGINT] [NULL] []
+GO   OK [BIGINT] [NULL] []
+GO   OK [BIGINT] [NULL] []
+GO   OK [BIGINT] [NULL] []
+GO   OK [BIGINT] [NULL] []
+GO   OK [BIGINT] [NULL] []
+GO   OK [BIGINT] [NULL] []
+GO   OK [BIGINT] [NULL] [[0]]
+GO   OK [BIGINT] [NULL] [[1]]
+GO   OK [BIGINT] [NULL] [[1]]
+GO   OK [BIGINT] [NULL] [[1]]
+GO   OK [BIGINT] [NULL] [[1]]
+GO   OK [BIGINT] [NULL] [[1]]
+GO   OK [BIGINT] [NULL] [[1]]
+GO   OK [BIGINT] [NULL] [[1]]
+GO   OK [BIGINT] [NULL] [[1]]
+GO   OK [BIGINT] [NULL] [[1]]
+GO   OK [BIGINT] [NULL] [[1]]
+GO   OK [BIGINT] [NULL] [[1]]
+GO   OK [BIGINT] [NULL] [[1]]
+GO   OK [BIGINT] [NULL] [[1]]
+GO   OK [BIGINT] [NULL] [[1]]
+GO   OK [BIGINT] [NULL] [[1]]
+GO   OK [BIGINT] [NULL] [[1]]
+GO   OK [BIGINT] [NULL] [[1]]
+GO   OK [BIGINT] [NULL] [[1]]
+GO   OK [BIGINT] [NULL] [[1]]
+GO   OK [BIGINT] [NULL] [[1] [2]]
+GO   OK [BIGINT] [NULL] [[1] [2]]
+GO   OK [BIGINT] [NULL] [[1] [2]]
+GO   OK [BIGINT] [NULL] [[1] [2]]
+GO   OK [BIGINT] [NULL] [[1] [2]]
+GO   OK [BIGINT] [NULL] [[1] [2]]
+GO   OK [BIGINT] [NULL] [[1] [2]]
+GO   OK [BIGINT] [NULL] [[1] [2]]
+GO   OK [BIGINT] [NULL] [[1] [2]]
+GO   OK [BIGINT] [NULL] [[1] [2] [3]]
+GO   OK [BIGINT] [NULL] [[1] [2] [3]]
+GO   OK [BIGINT] [NULL] [[1] [2] [3]]
+GO   OK [BIGINT] [NULL] [[1] [2] [3]]
+GO   OK [BIGINT] [NULL] [[1] [2] [3]]
+GO   OK [BIGINT] [NULL] [[1] [2] [3]]
+GO   OK [BIGINT] [NULL] [[1] [2] [3]]
+GO   OK [BIGINT] [NULL] [[1] [2] [3]]
+GO   OK [BIGINT] [NULL] [[1] [2] [3] [4] [5] [6] [7]]
+GO   OK [BIGINT] [NULL] [[1] [2] [3] [4] [5] [6] [7]]
+GO   OK [BIGINT] [NULL] [[1] [2] [3] [4] [5] [6] [7]]
+GO   OK [BIGINT] [NULL] [[1] [2] [3] [6]]
+GO   OK [BIGINT] [NULL] [[1] [3]]
+GO   OK [BIGINT] [NULL] [[1] [4] [5] [6] [7]]
+GO   OK [BIGINT] [NULL] [[1] [4] [5] [6] [7]]
+GO   OK [BIGINT] [NULL] [[1] [4] [5] [6] [7]]
+GO   OK [BIGINT] [NULL] [[1] [4] [5] [6] [7]]
+GO   OK [BIGINT] [NULL] [[2]]
+GO   OK [BIGINT] [NULL] [[2]]
+GO   OK [BIGINT] [NULL] [[2]]
+GO   OK [BIGINT] [NULL] [[2]]
+GO   OK [BIGINT] [NULL] [[2]]
+GO   OK [BIGINT] [NULL] [[2]]
+GO   OK [BIGINT] [NULL] [[2]]
+GO   OK [BIGINT] [NULL] [[2] [1] [4]]
+GO   OK [BIGINT] [NULL] [[2] [3]]
+GO   OK [BIGINT] [NULL] [[2] [3]]
+GO   OK [BIGINT] [NULL] [[2] [4] [6]]
+GO   OK [BIGINT] [NULL] [[3]]
+GO   OK [BIGINT] [NULL] [[3]]
+GO   OK [BIGINT] [NULL] [[3]]
+GO   OK [BIGINT] [NULL] [[-3000000000]]
+GO   OK [BIGINT] [NULL] [[3000000000]]
+GO   OK [BIGINT] [NULL] [[4]]
+GO   OK [BIGINT] [NULL] [[4]]
+GO   OK [BIGINT] [NULL] [[4]]
+GO   OK [BIGINT] [NULL] [[4]]
+GO   OK [BIGINT] [NULL] [[4]]
+GO   OK [BIGINT] [NULL] [[4] [5] [6] [7]]
+GO   OK [BIGINT] [NULL] [[4] [5] [7]]
+GO   OK [BIGINT] [NULL] [[5]]
+GO   OK [BIGINT] [NULL] [[5]]
+GO   OK [BIGINT] [NULL] [[5]]
+GO   OK [BIGINT] [NULL] [[5]]
+GO   OK [BIGINT] [NULL] [[5]]
+GO   OK [BIGINT] [NULL] [[6]]
+GO   OK [BIGINT] [NULL] [[7]]
+GO   OK [BIGINT] [NULL] [[7]]
+GO   OK [BIGINT] [NULL] [[7]]
+GO   OK [BIGINT] [NULL] [[-95]]
+GO   OK [BIGINT] [NULL] [[a3000000000]]
+GO   OK [BIGINT] [NULL] [[NULL]]
+GO   OK [BIGINT] [NULL] [[NULL]]
+GO   OK [BIGINT] [NULL] [[NULL]]
+GO   OK [BIGINT] [NULL] [[NULL]]
+GO   OK [BIGINT] [NULL] [[NULL] [5] [7]]
+GO   OK [BIGINT OTHER] [NULL NULL] [[1 123e4567-e89b-12d3-a456-426614174000]] COUNT 1
+GO   OK [BIGINT OTHER] [NULL NULL] [[2 123e4567-e89b-12d3-a456-426614174000]] COUNT 1
+GO   OK [BIGINT OTHER] [NULL NULL] [[2 123e4567-e89b-12d3-a456-426614174000]] COUNT 1
+GO   OK [BIGINT OTHER] [NULL NULL] [[2 123e4567-e89b-12d3-a456-426614174001]] COUNT 1
+GO   OK [BIGINT OTHER] [NULL NULL] [[3 123e4567-e89b-12d3-a456-426614174000]] COUNT 1
+GO   OK [BIGINT OTHER] [NULL NULL] [[3 123e4567-e89b-12d3-a456-426614174000]] COUNT 1
+GO   OK [BIGINT OTHER] [NULL NULL] [[4 123e4567-e89b-12d3-a456-426614174000]] COUNT 1
+GO   OK [BIGINT OTHER] [NULL NULL] [[4 123e4567-e89b-12d3-a456-426614174000]] COUNT 1
+GO   OK [BIGINT OTHER] [NULL NULL] [[5 123e4567-e89b-12d3-a456-426614174000]] COUNT 1
+GO   OK [BIGINT OTHER] [NULL NULL] [[5 123e4567-e89b-12d3-a456-426614174000]] COUNT 1
+GO   OK [BIGINT STRING] [NULL NULL] [[1 2024-01-01 10:00:00]]
+GO   OK [BIGINT STRUCT] [NULL NULL] [[1 map[F:1.5]]] COUNT 1
+GO   OK [BIGINT STRUCT] [NULL NULL] [[2 map[F:1]]] COUNT 1
+GO   OK [BINARY] [NOT NULL] [[ywjj]]
+GO   OK [BINARY] [NOT NULL] [[YWJj]]
+GO   OK [BINARY] [NULL] [[AP8=] [AA==]]
+GO   OK [BOOLEAN] [NOT NULL] [[true]]
+GO   OK [BOOLEAN] [NULL] []
+GO   OK [BOOLEAN] [NULL] [[false]]
+GO   OK [BOOLEAN] [NULL] [[NULL]]
+GO   OK [BOOLEAN] [NULL] [[true]]
+GO   OK [BOOLEAN] [NULL] [[true]]
+GO   OK [DATE] [NULL] [[2024-01-01]]
+GO   OK [DOUBLE] [NOT NULL] [[1.5]]
+GO   OK [DOUBLE] [NULL] [[0]]
+GO   OK [DOUBLE] [NULL] [[-1.5]]
+GO   OK [DOUBLE] [NULL] [[1.5a]]
+GO   OK [DOUBLE] [NULL] [[-2.5]]
+GO   OK [DOUBLE] [NULL] [[2.5]]
+GO   OK [DOUBLE] [NULL] [[a1.0E10]]
+GO   OK [DOUBLE] [NULL] [[a1.0E-4]]
+GO   OK [DOUBLE] [NULL] [[a1.5]]
+GO   OK [DOUBLE] [NULL] [[Infinity]]
+GO   OK [DOUBLE] [NULL] [[NaN]]
+GO   OK [DOUBLE] [NULL] [[NaN]]
+GO   OK EXPLAIN "Project([((1 / 0) + CAST(NULL AS INT))], Scan(T, [=]))"
+GO   OK EXPLAIN "Project([_current.ID#0, _current.V#1, _current.W#2], Scan(X, [<>]))"
+GO   OK EXPLAIN "Project([_current.ID#0, _current.W#1], Scan(P))"
+GO   OK EXPLAIN "Project([_current.ID#0, _current.W#2], IndexScan(S_V, [<>]))"
+GO   OK EXPLAIN "Project([_current.ID#0], IndexScan(F_F, [=] COVERING))"
+GO   OK EXPLAIN "Project([_current.ID#0], InJoin(IndexScan(F_F, [=] COVERING), binding))"
+GO   OK EXPLAIN "Project([_current.ID#0], InJoin(InJoin(IndexScan(IDX_AB, [=, =] COVERING), binding ASC), binding))"
+GO   OK EXPLAIN "Project([_current.ID#0], InJoin(PredicatesFilter(Scan(T, [=]), [1 preds]), binding ASC))"
+GO   OK EXPLAIN "Project([_current.ID#0], InJoin(PredicatesFilter(Scan(T, [=]), [2 preds]), binding ASC))"
+GO   OK EXPLAIN "Project([_current.ID#0], InJoin(Scan(T, [=]), binding ASC))"
+GO   OK EXPLAIN "Project([_current.ID#0], InMemorySort([_current.G#2 ASC], PredicatesFilter(Scan(FG), [1 preds])))"
+GO   OK EXPLAIN "Project([_current.ID#0], InUnion(PredicatesFilter(IndexScan(IDX_VAL, [=]), [1 preds]), bindings=1, ASC))"
+GO   OK EXPLAIN "Project([_current.ID#0], NestedLoopJoin(INNER, Scan(T), PredicatesFilter(Scan(E), [1 preds])))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(IndexScan(T_N, [<>] COVERING), [1 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(IndexScan(T_N, [=] COVERING), [1 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(IndexScan(T_N, [=] COVERING), [1 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(IndexScan(T_N, [=] COVERING), [1 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(IndexScan(T_N, [<>] COVERING), [2 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(IndexScan(T_N, [=] COVERING), [2 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(IndexScan(T_UN, [=] COVERING), [1 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(Scan(FG), [2 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(Scan(FG), [2 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(Scan(T, [<>]), [1 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(Scan(T, [<>]), [1 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(Scan(T, [=]), [1 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(Scan(T, [=]), [1 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(Scan(T, [=]), [1 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(Scan(T, [=]), [1 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(Scan(T), [2 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(Scan(T), [2 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], PredicatesFilter(Scan(T, [=]), [2 preds]))"
+GO   OK EXPLAIN "Project([_current.ID#0], Scan(L, [=]))"
+GO   OK EXPLAIN "Project([_current.ID#0], Scan(S))"
+GO   OK EXPLAIN "Project([_current.ID#0], Scan(T, [<>]))"
+GO   OK EXPLAIN "Project([_current.ID#0], Scan(T, [=]))"
+GO   OK EXPLAIN "Project([_current.ID#0], Scan(T, [=]))"
+GO   OK EXPLAIN "Project([_current.V#1], IndexScan(X_V, [<>] COVERING))"
+GO   OK EXPLAIN "Project([_current.X#1], PredicatesFilter(Scan(E), [1 preds]))"
+GO   OK EXPLAIN "UnorderedUnion(Project([_current.ID#0], PredicatesFilter(Scan(T, [=]), [1 preds])), Project([_current.ID#0], Scan(T, [=])))"
+GO   OK [FLOAT] [NULL] [[0]]
+GO   OK [FLOAT] [NULL] [[-1.5]]
+GO   OK [FLOAT] [NULL] [[a1.5]]
+GO   OK [INTEGER] [NOT NULL] [[100]]
+GO   OK [INTEGER] [NOT NULL] [[[1 <nil>]]]
+GO   OK [INTEGER] [NOT NULL] [[5]]
+GO   OK [INTEGER] [NOT NULL] [[7]]
+GO   OK [INTEGER] [NULL] [[0]]
+GO   OK [INTEGER] [NULL] [[0]]
+GO   OK [INTEGER] [NULL] [[-1]]
+GO   OK [INTEGER] [NULL] [[1]]
+GO   OK [INTEGER] [NULL] [[1]]
+GO   OK [INTEGER] [NULL] [[1]]
+GO   OK [INTEGER] [NULL] [[1]]
+GO   OK [INTEGER] [NULL] [[1]]
+GO   OK [INTEGER] [NULL] [[1]]
+GO   OK [INTEGER] [NULL] [[1]]
+GO   OK [INTEGER] [NULL] [[1]]
+GO   OK [INTEGER] [NULL] [[2]]
+GO   OK [INTEGER] [NULL] [[3]]
+GO   OK [INTEGER] [NULL] [[5]]
+GO   OK [INTEGER] [NULL] [[5]]
+GO   OK [INTEGER] [NULL] [[7]] COUNT 1
+GO   OK [INTEGER] [NULL] [[7]] COUNT 1
+GO   OK [INTEGER] [NULL] [[a1]]
+GO   OK [INTEGER] [NULL] [[NULL]]
+GO   OK [INTEGER] [NULL] [[NULL]]
+GO   OK [INTEGER] [NULL] [[NULL]]
+GO   OK [OTHER] [NULL] [[123e4567-e89b-12d3-a456-426614174000]]
+GO   OK [STRING] [NOT NULL] [[123e4567-e89b-12d3-a456-426614174000]]
+GO   OK [STRING] [NOT NULL] [[a''b]]
+GO   OK [STRING] [NOT NULL] [[a'b]]
+GO   OK [STRING] [NOT NULL] [[a'b]]
+GO   OK [STRING] [NOT NULL] [['abc'COLLATEutf8_bin]]
+GO   OK [STRING] [NOT NULL] [[N'abc']]
+GO   OK [STRING] [NOT NULL] [[_utf8'abc']]
+GO   OK [STRING] [NULL] [[2024-01-01]]
+GO   OK [STRING] [NULL] [[2024-01-01 10:00:00]]
+GO   OK [STRING] [NULL] [[ABC]]
+GO   OK [STRING] [NULL] [[abcabc]]
+GO   OK [TIMESTAMP] [NULL] [[2024-01-01 10:00:00]]
+GO   OK [UNKNOWN] [NOT NULL] [[[<nil>]]]
+GO   OK [UNKNOWN] [NULL] [[NULL]]
+GO   OK [UNKNOWN] [NULL] [[NULL]]
+GO   OK [UNKNOWN] [NULL] [[NULL]]
+JAVA ERROR 0A000 RelationalException "An ARRAY value cannot have NULL elements"
+JAVA ERROR 0A000 RelationalException "An ARRAY value cannot have NULL elements"
+JAVA ERROR 0A000 RelationalException "An ARRAY value cannot have NULL elements"
+JAVA ERROR 0A000 RelationalException "An ARRAY value cannot have NULL elements"
+JAVA ERROR 0A000 RelationalException "An ARRAY value cannot have NULL elements"
+JAVA ERROR 0A000 RelationalException "An ARRAY value cannot have NULL elements"
+JAVA ERROR 0A000 RelationalException "OPTIONS (ISOLATION LEVEL SNAPSHOT) is only supported on SELECT queries"
+JAVA ERROR 0A000 RelationalException "OPTIONS (ISOLATION LEVEL SNAPSHOT) is only supported on SELECT queries"
+JAVA ERROR 0A000 RelationalException "OPTIONS (ISOLATION LEVEL SNAPSHOT) is only supported on SELECT queries"
+JAVA ERROR 0A000 RelationalException "OPTIONS (ISOLATION LEVEL SNAPSHOT) is only supported on SELECT queries"
+JAVA ERROR 0A000 RelationalException "OPTIONS (ISOLATION LEVEL SNAPSHOT) is only supported on SELECT queries"
+JAVA ERROR 0A000 RelationalException "OPTIONS (ISOLATION LEVEL SNAPSHOT) is only supported on SELECT queries"
+JAVA ERROR 0A000 RelationalException "OPTIONS (ISOLATION LEVEL SNAPSHOT) is only supported on SELECT queries"
+JAVA ERROR 0A000 RelationalException "OPTIONS (ISOLATION LEVEL SNAPSHOT) is only supported on SELECT queries"
+JAVA ERROR 0A000 RelationalException "OPTIONS (ISOLATION LEVEL SNAPSHOT) is only supported on SELECT queries"
+JAVA ERROR 0A000 RelationalException "OPTIONS (ISOLATION LEVEL SNAPSHOT) is only supported on SELECT queries"
+JAVA ERROR 0A000 RelationalException "OPTIONS (ISOLATION LEVEL SNAPSHOT) is only supported on SELECT queries"
+JAVA ERROR 0A000 SemanticException "The action is currently unsupported An ARRAY value cannot have NULL elements"
+JAVA ERROR 0A000 SemanticException "The action is currently unsupported An ARRAY value cannot have NULL elements"
+JAVA ERROR 0A000 SemanticException "The action is currently unsupported An ARRAY value cannot have NULL elements"
+JAVA ERROR 0A000 SemanticException "The action is currently unsupported An ARRAY value cannot have NULL elements"
+JAVA ERROR 0A000 SemanticException "The action is currently unsupported An ARRAY value cannot have NULL elements"
+JAVA ERROR 0A000 SemanticException "The action is currently unsupported An ARRAY value cannot have NULL elements"
+JAVA ERROR 0A000 SemanticException "The action is currently unsupported An ARRAY value cannot have NULL elements"
+JAVA ERROR 0A000 SemanticException "The action is currently unsupported An ARRAY value cannot have NULL elements"
+JAVA ERROR 0A000 SemanticException "The action is currently unsupported An ARRAY value cannot have NULL elements"
+JAVA ERROR 0A000 SemanticException "The action is currently unsupported An ARRAY value cannot have NULL elements"
+JAVA ERROR 0A000 SemanticException "The action is currently unsupported An ARRAY value cannot have NULL elements"
+JAVA ERROR 0A000 SemanticException "The action is currently unsupported An ARRAY value cannot have NULL elements"
+JAVA ERROR 0A000 SemanticException "The action is currently unsupported An ARRAY value cannot have NULL elements"
+JAVA ERROR 0A000 SemanticException "The action is currently unsupported An ARRAY value cannot have NULL elements"
+JAVA ERROR 0A000 SemanticException "The action is currently unsupported An ARRAY value cannot have NULL elements"
+JAVA ERROR 0A000 SemanticException "The action is currently unsupported An ARRAY value cannot have NULL elements"
+JAVA ERROR 0A000 SemanticException "The action is currently unsupported An ARRAY value cannot have NULL elements"
+JAVA ERROR 0A000 SemanticException "The action is currently unsupported An ARRAY value cannot have NULL elements"
+JAVA ERROR 0AF00 RelationalException "charset not is supported"
+JAVA ERROR 0AF00 RelationalException "collation is not supported"
+JAVA ERROR 0AF00 RelationalException "IN predicate does not support nested SELECT"
+JAVA ERROR 0AF00 RelationalException "LIMIT clause is not supported."
+JAVA ERROR 0AF00 RelationalException "national string literal is not supported"
+JAVA ERROR 0AF00 RelationalException "Unsupported operator UPPER"
+JAVA ERROR 0AF00 UnableToPlanException "Cascades planner could not plan query"
+JAVA ERROR 0AF00 UnableToPlanException "Cascades planner could not plan query"
+JAVA ERROR 0AF00 UnableToPlanException "Cascades planner could not plan query"
+JAVA ERROR 0AF00 UnableToPlanException "Cascades planner could not plan query"
+JAVA ERROR 0AF00 UnableToPlanException "Cascades planner could not plan query"
+JAVA ERROR 0AF00 UnableToPlanException "Cascades planner could not plan query"
+JAVA ERROR 22000 SemanticException "A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable."
+JAVA ERROR 22000 SemanticException "A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable."
+JAVA ERROR 22000 SemanticException "A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable."
+JAVA ERROR 22000 SemanticException "A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable."
+JAVA ERROR 22000 SemanticException "A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable."
+JAVA ERROR 22000 SemanticException "A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable."
+JAVA ERROR 22000 SemanticException "A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable."
+JAVA ERROR 22000 SemanticException "A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable."
+JAVA ERROR 22000 SemanticException "A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable."
+JAVA ERROR 22000 SemanticException "A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable."
+JAVA ERROR 22000 SemanticException "A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable."
+JAVA ERROR 22000 SemanticException "A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable."
+JAVA ERROR 22000 SemanticException "A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable."
+JAVA ERROR 22000 SemanticException "A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable."
+JAVA ERROR 22000 SemanticException "A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable."
+JAVA ERROR 22000 SemanticException "A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable."
+JAVA ERROR 22000 SemanticException "A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable."
+JAVA ERROR 22000 SemanticException "A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable."
+JAVA ERROR 2200B SemanticException "The like operator rejects wildcards as the escape character."
+JAVA ERROR 2200B SemanticException "The like operator rejects wildcards as the escape character."
+JAVA ERROR 22019 SemanticException "The like operator expects an escape character of length 1."
+JAVA ERROR 22019 SemanticException "The like operator expects an escape character of length 1."
+JAVA ERROR 22019 SemanticException "The like operator expects an escape character of length 1."
+JAVA ERROR 22019 SemanticException "The like operator expects an escape character of length 1."
+JAVA ERROR 22019 SemanticException "The like operator expects an escape character of length 1."
+JAVA ERROR 22025 SemanticException "The like operator pattern requires all escape characters to be followed by a special character."
+JAVA ERROR 22025 SemanticException "The like operator pattern requires all escape characters to be followed by a special character."
+JAVA ERROR 22F00 SemanticException "The function is not defined for the given argument types"
+JAVA ERROR 22F00 SemanticException "The function is not defined for the given argument types"
+JAVA ERROR 22F00 SemanticException "The function is not defined for the given argument types"
+JAVA ERROR 22F00 SemanticException "The function is not defined for the given argument types"
+JAVA ERROR 22F00 SemanticException "The like operator expects string operands but was invoked with an operand of another type."
+JAVA ERROR 22F00 SemanticException "The like operator expects string operands but was invoked with an operand of another type."
+JAVA ERROR 22F00 SemanticException "The like operator expects string operands but was invoked with an operand of another type."
+JAVA ERROR 22F3H SemanticException "Invalid cast operation Cannot cast string 'x' to LONG: For input string: \"x\""
+JAVA ERROR 23505 RecordIndexUniquenessViolation "Duplicate entry for unique index"
+JAVA ERROR 42601 RelationalException "syntax error:\nline 1:30 token recognition error at: '# '"
+JAVA ERROR 42601 RelationalException "syntax error:\nline 1:36 token recognition error at: 'n'"
+JAVA ERROR 42601 RelationalException "syntax error:\nline 1:40 token recognition error at: '*/'"
+JAVA ERROR 42601 RelationalException "syntax error:\nSELECT CAST('2024-01-01 10:00:00' AS TIMESTAMP) FROM P WHERE id = 1\n                                     ^^^^^^^^^"
+JAVA ERROR 42601 RelationalException "syntax error:\nSELECT CAST('2024-01-01' AS DATE) FROM P WHERE id = 1\n                            ^^^^"
+JAVA ERROR 42601 RelationalException "syntax error:\nSELECT id FROM P WHERE CAST(s AS DATE) < CAST('2025-01-01' AS DATE) ORDER BY id\n                                 ^^^^"
+JAVA ERROR 42601 RelationalException "syntax error:\nSELECT id FROM (SELECT id FROM T OPTIONS (NOCACHE)) AS X WHERE id = 1\n                                 ^^^^^^^"
+JAVA ERROR 42601 RelationalException "syntax error:\nSELECT id FROM T WHERE id = 1 OPTIONS (EF_SEARCH 10)\n                                       ^^^^^^^^^"
+JAVA ERROR 42601 RelationalException "syntax error:\nSELECT id FROM T WHERE s LIKE ? ORDER BY id\n                              ^"
+JAVA ERROR 42601 RelationalException "syntax error:\nSELECT id FROM T WHERE s LIKE ? ORDER BY id\n                              ^"
+JAVA ERROR 42804 SemanticException "The operands of a comparison operator are not compatible."
+JAVA ERROR 42804 SemanticException "The operands of a comparison operator are not compatible."
+JAVA ERROR 42809 RelationalException "NULL values are not allowed in the IN list"
+JAVA ERROR 42809 RelationalException "NULL values are not allowed in the IN list"
+JAVA ERROR 42809 RelationalException "NULL values are not allowed in the IN list"
+JAVA ERROR 42F02 RelationalException "No value found for parameter 2"
+JAVA ERROR 42F18 RelationalException "could not find type 'DATE'"
+JAVA ERROR 42F18 RelationalException "could not find type 'DATE'"
+JAVA ERROR 42F18 RelationalException "could not find type 'DATE'"
+JAVA ERROR 42F18 RelationalException "could not find type 'DATE'"
+JAVA ERROR 42F18 RelationalException "could not find type 'DATE'"
+JAVA ERROR 42F18 RelationalException "could not find type 'TIMESTAMP'"
+JAVA ERROR XX000 SemanticException "Invalid enum value for the enum type BLUE"
+JAVA ERROR XX000 SemanticException "Invalid enum value for the enum type green"
+JAVA ERROR XX000 SemanticException "Invalid enum value for the enum type red"
+JAVA ERROR XX000 SemanticException "Invalid enum value for the enum type RED "
+JAVA ERROR XX000 SemanticException "Invalid UUID value for the UUID type 1-2-3-4-10000000000000000"
+JAVA ERROR XX000 SemanticException "Invalid UUID value for the UUID type 1-2-3-4--5"
+JAVA ERROR XX000 SemanticException "Invalid UUID value for the UUID type 1-2-3-4-8000000000000000"
+JAVA ERROR XX000 SemanticException "Invalid UUID value for the UUID type  123e4567-e89b-12d3-a456-426614174000"
+JAVA ERROR XX000 SemanticException "Invalid UUID value for the UUID type  123e4567-e89b-12d3-a456-426614174000"
+JAVA ERROR XX000 SemanticException "Invalid UUID value for the UUID type  123e4567-e89b-12d3-a456-426614174000"
+JAVA ERROR XX000 SemanticException "Invalid UUID value for the UUID type {123e4567-e89b-12d3-a456-426614174000}"
+JAVA ERROR XX000 SemanticException "Invalid UUID value for the UUID type {123e4567-e89b-12d3-a456-426614174000}"
+JAVA ERROR XX000 SemanticException "Invalid UUID value for the UUID type {123e4567-e89b-12d3-a456-426614174000}"
+JAVA ERROR XX000 SemanticException "Invalid UUID value for the UUID type 123e4567e89b12d3a456426614174000"
+JAVA ERROR XX000 SemanticException "Invalid UUID value for the UUID type 123e4567e89b12d3a456426614174000"
+JAVA ERROR XX000 SemanticException "Invalid UUID value for the UUID type 123e4567-e89b-12d3-a456-4266141740000"
+JAVA ERROR XX000 SemanticException "Invalid UUID value for the UUID type 1--3-4-5"
+JAVA ERROR XX000 SemanticException "Invalid UUID value for the UUID type not-a-uuid"
+JAVA ERROR XX000 SemanticException "Invalid UUID value for the UUID type urn:uuid:123e4567-e89b-12d3-a456-426614174000"
+JAVA ERROR XX000 SemanticException "Invalid UUID value for the UUID type urn:uuid:123e4567-e89b-12d3-a456-426614174000"
+JAVA ERROR XX000 VerifyException "com.google.common.base.VerifyException"
+JAVA ERROR XX000 VerifyException "com.google.common.base.VerifyException"
+JAVA ERROR XX000 VerifyException "com.google.common.base.VerifyException"
+JAVA ERROR XX000 VerifyException "com.google.common.base.VerifyException"
+JAVA ERROR XX000 VerifyException "com.google.common.base.VerifyException"
+JAVA ERROR XX000 VerifyException "com.google.common.base.VerifyException"
+JAVA ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)"
+JAVA ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)"
+JAVA ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)"
+JAVA ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)"
+JAVA ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)"
+JAVA ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)"
+JAVA ERROR XXXXX ArithmeticException "/ by zero"
+JAVA ERROR XXXXX ArithmeticException "/ by zero"
+JAVA ERROR XXXXX ArithmeticException "/ by zero"
+JAVA ERROR XXXXX ArithmeticException "/ by zero"
+JAVA ERROR XXXXX ArithmeticException "/ by zero"
+JAVA ERROR XXXXX ArithmeticException "/ by zero"
+JAVA ERROR XXXXX ArithmeticException "/ by zero"
+JAVA ERROR XXXXX ArithmeticException "/ by zero"
+JAVA ERROR XXXXX ArithmeticException "/ by zero"
+JAVA ERROR XXXXX ArithmeticException "/ by zero"
+JAVA ERROR XXXXX ArithmeticException "/ by zero"
+JAVA ERROR XXXXX ArithmeticException "/ by zero"
+JAVA ERROR XXXXX ArithmeticException "/ by zero"
+JAVA ERROR XXXXX ArithmeticException "/ by zero"
+JAVA ERROR XXXXX ArithmeticException "/ by zero"
+JAVA ERROR XXXXX ArithmeticException "/ by zero"
+JAVA ERROR XXXXX ArithmeticException "/ by zero"
+JAVA ERROR XXXXX ArithmeticException "/ by zero"
+JAVA ERROR XXXXX ArithmeticException "/ by zero"
+JAVA ERROR XXXXX ArithmeticException "/ by zero"
+JAVA ERROR XXXXX ArithmeticException "/ by zero"
+JAVA ERROR XXXXX ArithmeticException "integer overflow"
+JAVA ERROR XXXXX NumberFormatException "For input string: \"1e309\""
+JAVA ERROR XXXXX RecordCoreException "should not be called"
+JAVA ERROR XXXXX VerifyException "com.google.common.base.VerifyException"
+JAVA OK [ARRAY] [NOT NULL] []
+JAVA OK [BIGINT ARRAY] [NULL NULL] [[1 [3e+09]]] COUNT 1
+JAVA OK [BIGINT ARRAY] [NULL NULL] [[1 [5]] [3 [7 8]]] COUNT 1
+JAVA OK [BIGINT ARRAY] [NULL NULL] [[1 [5]] [4 []]] COUNT 1
+JAVA OK [BIGINT ARRAY] [NULL NULL] [[1 [5]] [5 NULL]] COUNT 1
+JAVA OK [BIGINT ARRAY] [NULL NULL] [[1 [9]]] COUNT 1
+JAVA OK [BIGINT ARRAY] [NULL NULL] [[3 [1]]] COUNT 1
+JAVA OK [BIGINT ARRAY] [NULL NULL] [[4 []]] COUNT 1
+JAVA OK [BIGINT BIGINT] [NULL NOT NULL] [[1 0] [2 5] [3 7] [4 1] [5 2] [6 3] [7 4]]
+JAVA OK [BIGINT BIGINT] [NULL NULL] []
+JAVA OK [BIGINT BIGINT] [NULL NULL] [[1 10] [101 5]] COUNT 1
+JAVA OK [BIGINT BIGINT] [NULL NULL] [[1 10] [3 7]] COUNT 1
+JAVA OK [BIGINT BIGINT] [NULL NULL] [[1 10] [7 NULL]] COUNT 1
+JAVA OK [BIGINT BIGINT] [NULL NULL] [[1 10]] COUNT 0
+JAVA OK [BIGINT BIGINT] [NULL NULL] [[1 10]] COUNT 0
+JAVA OK [BIGINT BIGINT] [NULL NULL] [[1 10]] COUNT 1
+JAVA OK [BIGINT BIGINT] [NULL NULL] [[1 10]] COUNT 1
+JAVA OK [BIGINT BIGINT] [NULL NULL] [[1 10]] COUNT 1
+JAVA OK [BIGINT BIGINT] [NULL NULL] [[1 NULL] [2 3] [3 3] [4 1] [5 2] [6 3] [7 3]]
+JAVA OK [BIGINT BOOLEAN] [NULL NULL] [[1 true] [2 true] [3 false] [4 true] [5 true] [6 true] [7 true]]
+JAVA OK [BIGINT DOUBLE] [NULL NULL] [[1 0] [2 0] [3 1.5] [4 NaN]]
+JAVA OK [BIGINT DOUBLE] [NULL NULL] [[1 1.5] [7 1]] COUNT 1
+JAVA OK [BIGINT DOUBLE] [NULL NULL] [[1 1.5] [8 1.5]] COUNT 1
+JAVA OK [BIGINT FLOAT] [NULL NULL] [[1 2.5] [10 1]] COUNT 1
+JAVA OK [BIGINT FLOAT] [NULL NULL] [[1 2.5] [6 1]] COUNT 1
+JAVA OK [BIGINT FLOAT] [NULL NULL] [[1 3]] COUNT 1
+JAVA OK [BIGINT FLOAT] [NULL NULL] [[2 1.5]] COUNT 1
+JAVA OK [BIGINT FLOAT] [NULL NULL] [[4 1.5]] COUNT 1
+JAVA OK [BIGINT INTEGER] [NULL NULL] [[1 5] [20 3]] COUNT 1
+JAVA OK [BIGINT INTEGER] [NULL NULL] [[1 6]] COUNT 1
+JAVA OK [BIGINT] [NOT NULL] []
+JAVA OK [BIGINT] [NOT NULL] [[0]]
+JAVA OK [BIGINT] [NOT NULL] [[1]]
+JAVA OK [BIGINT] [NOT NULL] [[-3000000000]]
+JAVA OK [BIGINT] [NOT NULL] [[3000000000]]
+JAVA OK [BIGINT] [NOT NULL] [[5]]
+JAVA OK [BIGINT] [NULL] []
+JAVA OK [BIGINT] [NULL] []
+JAVA OK [BIGINT] [NULL] []
+JAVA OK [BIGINT] [NULL] []
+JAVA OK [BIGINT] [NULL] []
+JAVA OK [BIGINT] [NULL] []
+JAVA OK [BIGINT] [NULL] []
+JAVA OK [BIGINT] [NULL] []
+JAVA OK [BIGINT] [NULL] []
+JAVA OK [BIGINT] [NULL] []
+JAVA OK [BIGINT] [NULL] []
+JAVA OK [BIGINT] [NULL] []
+JAVA OK [BIGINT] [NULL] []
+JAVA OK [BIGINT] [NULL] []
+JAVA OK [BIGINT] [NULL] []
+JAVA OK [BIGINT] [NULL] []
+JAVA OK [BIGINT] [NULL] []
+JAVA OK [BIGINT] [NULL] []
+JAVA OK [BIGINT] [NULL] []
+JAVA OK [BIGINT] [NULL] []
+JAVA OK [BIGINT] [NULL] []
+JAVA OK [BIGINT] [NULL] []
+JAVA OK [BIGINT] [NULL] []
+JAVA OK [BIGINT] [NULL] []
+JAVA OK [BIGINT] [NULL] []
+JAVA OK [BIGINT] [NULL] []
+JAVA OK [BIGINT] [NULL] []
+JAVA OK [BIGINT] [NULL] [[1]]
+JAVA OK [BIGINT] [NULL] [[1]]
+JAVA OK [BIGINT] [NULL] [[1]]
+JAVA OK [BIGINT] [NULL] [[1]]
+JAVA OK [BIGINT] [NULL] [[1]]
+JAVA OK [BIGINT] [NULL] [[1]]
+JAVA OK [BIGINT] [NULL] [[1]]
+JAVA OK [BIGINT] [NULL] [[1]]
+JAVA OK [BIGINT] [NULL] [[1]]
+JAVA OK [BIGINT] [NULL] [[1]]
+JAVA OK [BIGINT] [NULL] [[1]]
+JAVA OK [BIGINT] [NULL] [[1]]
+JAVA OK [BIGINT] [NULL] [[1]]
+JAVA OK [BIGINT] [NULL] [[1]]
+JAVA OK [BIGINT] [NULL] [[1]]
+JAVA OK [BIGINT] [NULL] [[1]]
+JAVA OK [BIGINT] [NULL] [[1]]
+JAVA OK [BIGINT] [NULL] [[1]]
+JAVA OK [BIGINT] [NULL] [[1]]
+JAVA OK [BIGINT] [NULL] [[1]]
+JAVA OK [BIGINT] [NULL] [[1]]
+JAVA OK [BIGINT] [NULL] [[1]]
+JAVA OK [BIGINT] [NULL] [[1]]
+JAVA OK [BIGINT] [NULL] [[1]]
+JAVA OK [BIGINT] [NULL] [[1]]
+JAVA OK [BIGINT] [NULL] [[1]]
+JAVA OK [BIGINT] [NULL] [[1] [2]]
+JAVA OK [BIGINT] [NULL] [[1] [2]]
+JAVA OK [BIGINT] [NULL] [[1] [2]]
+JAVA OK [BIGINT] [NULL] [[1] [2] [3]]
+JAVA OK [BIGINT] [NULL] [[1] [2] [3]]
+JAVA OK [BIGINT] [NULL] [[1] [2] [3]]
+JAVA OK [BIGINT] [NULL] [[1] [2] [3]]
+JAVA OK [BIGINT] [NULL] [[1] [2] [3]]
+JAVA OK [BIGINT] [NULL] [[1] [2] [3]]
+JAVA OK [BIGINT] [NULL] [[1] [2] [3]]
+JAVA OK [BIGINT] [NULL] [[1] [2] [3]]
+JAVA OK [BIGINT] [NULL] [[1] [2] [3]]
+JAVA OK [BIGINT] [NULL] [[1] [2] [3]]
+JAVA OK [BIGINT] [NULL] [[1] [2] [3] [4] [5] [6] [7]]
+JAVA OK [BIGINT] [NULL] [[1] [2] [3] [4] [5] [6] [7]]
+JAVA OK [BIGINT] [NULL] [[1] [2] [3] [6]]
+JAVA OK [BIGINT] [NULL] [[1] [2] [4] [5] [6] [7]]
+JAVA OK [BIGINT] [NULL] [[1] [3]]
+JAVA OK [BIGINT] [NULL] [[1] [3]]
+JAVA OK [BIGINT] [NULL] [[1] [3]]
+JAVA OK [BIGINT] [NULL] [[1] [3]]
+JAVA OK [BIGINT] [NULL] [[2]]
+JAVA OK [BIGINT] [NULL] [[2]]
+JAVA OK [BIGINT] [NULL] [[2]]
+JAVA OK [BIGINT] [NULL] [[2]]
+JAVA OK [BIGINT] [NULL] [[2]]
+JAVA OK [BIGINT] [NULL] [[2]]
+JAVA OK [BIGINT] [NULL] [[2]]
+JAVA OK [BIGINT] [NULL] [[2]]
+JAVA OK [BIGINT] [NULL] [[2]]
+JAVA OK [BIGINT] [NULL] [[2] [1] [4]]
+JAVA OK [BIGINT] [NULL] [[2147483648]]
+JAVA OK [BIGINT] [NULL] [[2] [3]]
+JAVA OK [BIGINT] [NULL] [[2] [3]]
+JAVA OK [BIGINT] [NULL] [[2] [4] [5] [7]]
+JAVA OK [BIGINT] [NULL] [[2] [4] [5] [7]]
+JAVA OK [BIGINT] [NULL] [[2] [4] [6]]
+JAVA OK [BIGINT] [NULL] [[3]]
+JAVA OK [BIGINT] [NULL] [[3]]
+JAVA OK [BIGINT] [NULL] [[3]]
+JAVA OK [BIGINT] [NULL] [[3]]
+JAVA OK [BIGINT] [NULL] [[4]]
+JAVA OK [BIGINT] [NULL] [[4]]
+JAVA OK [BIGINT] [NULL] [[4]]
+JAVA OK [BIGINT] [NULL] [[4]]
+JAVA OK [BIGINT] [NULL] [[4]]
+JAVA OK [BIGINT] [NULL] [[5]]
+JAVA OK [BIGINT] [NULL] [[5]]
+JAVA OK [BIGINT] [NULL] [[5]]
+JAVA OK [BIGINT] [NULL] [[5]]
+JAVA OK [BIGINT] [NULL] [[5]]
+JAVA OK [BIGINT] [NULL] [[5]]
+JAVA OK [BIGINT] [NULL] [[7]]
+JAVA OK [BIGINT] [NULL] [[-95]]
+JAVA OK [BIGINT] [NULL] [[NULL]]
+JAVA OK [BIGINT] [NULL] [[NULL]]
+JAVA OK [BIGINT] [NULL] [[NULL]]
+JAVA OK [BIGINT] [NULL] [[NULL]]
+JAVA OK [BIGINT OTHER] [NULL NULL] [[1 00000001-0002-0003-0004-000000000005]] COUNT 1
+JAVA OK [BIGINT OTHER] [NULL NULL] [[1 00000001-0002-0003-0004-000000000005]] COUNT 1
+JAVA OK [BIGINT OTHER] [NULL NULL] [[1 123e4567-e89b-12d3-a456-426614174000]] COUNT 1
+JAVA OK [BIGINT OTHER] [NULL NULL] [[1 RED]] COUNT 1
+JAVA OK [BIGINT OTHER] [NULL NULL] [[2 123e4567-e89b-12d3-a456-426614174000]] COUNT 1
+JAVA OK [BIGINT OTHER] [NULL NULL] [[2 123e4567-e89b-12d3-a456-426614174000]] COUNT 1
+JAVA OK [BIGINT OTHER] [NULL NULL] [[2 123e4567-e89b-12d3-a456-426614174001]] COUNT 1
+JAVA OK [BIGINT OTHER] [NULL NULL] [[2 GREEN]] COUNT 1
+JAVA OK [BIGINT OTHER] [NULL NULL] [[6 00000001-0002-0003-0004-000000000005]] COUNT 1
+JAVA OK [BIGINT OTHER] [NULL NULL] [[6 00000001-0002-0003-0004-000000000005]] COUNT 1
+JAVA OK [BIGINT STRUCT] [NULL NULL] [[2 map[F:1]]] COUNT 1
+JAVA OK [BINARY] [NOT NULL] [[ywjj]]
+JAVA OK [BINARY] [NOT NULL] [[YWJj]]
+JAVA OK [BOOLEAN] [NOT NULL] [[true]]
+JAVA OK [BOOLEAN] [NULL] []
+JAVA OK [BOOLEAN] [NULL] [[false]]
+JAVA OK [BOOLEAN] [NULL] [[true]]
+JAVA OK [BOOLEAN] [NULL] [[true]]
+JAVA OK [DOUBLE] [NOT NULL] [[1.5]]
+JAVA OK [DOUBLE] [NOT NULL] [[-2.5]]
+JAVA OK [DOUBLE] [NOT NULL] [[2.5]]
+JAVA OK [DOUBLE] [NOT NULL] [[5e-324]]
+JAVA OK [DOUBLE] [NOT NULL] [[5e-324]]
+JAVA OK [DOUBLE] [NULL] [[1]]
+JAVA OK [DOUBLE] [NULL] [[1.7976931348623157e+308]]
+JAVA OK [DOUBLE] [NULL] [[5e-324]]
+JAVA OK EXPLAIN "COVERING(FG_FG [EQUALS CAST(@c9 AS DOUBLE), EQUALS promote(@c16 AS LONG)] -> [F: KEY:[0], G: KEY:[1], ID: KEY:[3]]) | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "COVERING(FG_FG [EQUALS CAST(@c9 AS DOUBLE)] -> [F: KEY:[0], G: KEY:[1], ID: KEY:[3]]) | MAP (_.ID AS ID, _.G AS G) | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "COVERING(S_V <,> -> [ID: KEY:[2], V: KEY:[0]]) | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "COVERING(T_N [EQUALS promote(@c7 AS LONG)] -> [ID: KEY:[2], N: KEY:[0]]) | FILTER promote(@c9 AS INT) EQUALS @c9 / @c11 AND @c17 EQUALS @c9 | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "COVERING(T_N [EQUALS promote(@c7 AS LONG)] -> [ID: KEY:[2], N: KEY:[0]]) | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "COVERING(T_N [[GREATER_THAN promote(@c7 AS LONG)]] -> [ID: KEY:[2], N: KEY:[0]]) | FILTER promote(@c9 AS INT) EQUALS @c9 / @c7 AND @c17 EQUALS @c9 | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "COVERING(T_N <,> -> [ID: KEY:[2], N: KEY:[0]]) | FILTER false | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "COVERING(T_N <,> -> [ID: KEY:[2], N: KEY:[0]]) | FILTER false | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "COVERING(T_N <,> -> [ID: KEY:[2], N: KEY:[0]]) | FILTER false | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "COVERING(T_N <,> -> [ID: KEY:[2], N: KEY:[0]]) | FILTER false | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "COVERING(T_N <,> -> [ID: KEY:[2], N: KEY:[0]]) | FILTER _.N EQUALS promote(@c7 AS LONG) OR _.N EQUALS promote(@c7 AS LONG) | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "COVERING(T_N <,> -> [ID: KEY:[2], N: KEY:[0]]) | FILTER NOT _.N GREATER_THAN promote(@c9 AS LONG) | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "COVERING(T_UN <,> -> [ID: KEY:[2], N: KEY:[0]]) | FILTER false | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "COVERING(T_UN <,> -> [ID: KEY:[2], N: KEY:[0]]) | FILTER false | MAP (_.ID AS ID) ⊎ SCAN([IS T, EQUALS promote(@c11 AS LONG)]) | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "COVERING(X_V [[GREATER_THAN promote(@c7 AS LONG)]] -> [ID: KEY:[2], V: KEY:[0]]) | MAP (_.V AS V)"
+JAVA OK EXPLAIN "EXPLODE arrayDistinct(array(NULL)) | FLATMAP q0 -> { SCAN([IS E]) | FILTER _.X EQUALS q0 AS q1 RETURN (q1.X AS X) }"
+JAVA OK EXPLAIN "[IN arrayDistinct(array(CAST(@c10 AS DOUBLE), CAST(@c10 AS DOUBLE)))] | INJOIN q0 -> { COVERING(F_F [EQUALS q0] -> [F: KEY:[0], ID: KEY:[2]]) | MAP (_.ID AS ID) }"
+JAVA OK EXPLAIN "[IN arrayDistinct(array(CAST(@c10 AS DOUBLE)))] | INJOIN q0 -> { [IN arrayDistinct(promote(@c18 AS ARRAY(LONG)))] | INJOIN q1 -> { COVERING(FG_FG [EQUALS q0, EQUALS q1] -> [F: KEY:[0], G: KEY:[1], ID: KEY:[3]]) | MAP (_.ID AS ID) } }"
+JAVA OK EXPLAIN "[IN arrayDistinct(array(NULL)) SORTED] | INJOIN q0 -> { SCAN([IS T, EQUALS q0]) } ∪ SCAN([IS T, [GREATER_THAN promote(@c18 AS LONG)]]) COMPARE BY (_.ID) | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "[IN arrayDistinct(array(promote(@c8 AS LONG), NULL))] | INJOIN q0 -> { SCAN([IS T, EQUALS q0]) | MAP (_.ID AS ID) }"
+JAVA OK EXPLAIN "[IN arrayDistinct(@c7)] | INJOIN q0 -> { COVERING(F_F [EQUALS q0] -> [F: KEY:[0], ID: KEY:[2]]) | MAP (_.ID AS ID) }"
+JAVA OK EXPLAIN "[IN arrayDistinct(promote(@c7 AS ARRAY(LONG))) ⋈ IN arrayDistinct(promote(@c17 AS ARRAY(LONG)))] INUNION q0, q1 -> { ISCAN(IDX_VAL [EQUALS q0]) | FILTER _.CAT EQUALS q1 | MAP (_.ID AS ID, _.VAL AS VAL) } COMPARE BY (_.VAL, _.ID) | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "[IN arrayDistinct(promote(@c7 AS ARRAY(LONG)))] | INJOIN q0 -> { [IN arrayDistinct(promote(@c15 AS ARRAY(LONG)))] | INJOIN q1 -> { COVERING(IDX_AB [EQUALS q0, EQUALS q1] -> [A: KEY:[0], B: KEY:[1], ID: KEY:[3]]) | MAP (_.ID AS ID) } }"
+JAVA OK EXPLAIN "[IN arrayDistinct(promote(@c7 AS ARRAY(LONG)))] | INJOIN q0 -> { SCAN([IS T, EQUALS q0]) | FILTER @c8 EQUALS @c8 / @c15 AND @c10 EQUALS @c8 | MAP (_.ID AS ID) }"
+JAVA OK EXPLAIN "[IN arrayDistinct(promote(@c7 AS ARRAY(LONG)))] | INJOIN q0 -> { SCAN([IS T, EQUALS q0]) | MAP (_.ID AS ID) }"
+JAVA OK EXPLAIN "ISCAN(S_V [[GREATER_THAN promote(@c9 AS LONG)]]) | MAP (_.ID AS ID, _.W AS W)"
+JAVA OK EXPLAIN "SCAN([IS E]) | FLATMAP q0 -> { EXPLODE arrayDistinct(array(NULL)) | FLATMAP q1 -> { SCAN([IS T]) | FILTER q0.X EQUALS q1 AS q2 RETURN q2 } AS q3 RETURN (q3.ID AS ID) }"
+JAVA OK EXPLAIN "SCAN([IS L, EQUALS promote(@c7 AS LONG)]) | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "SCAN([IS L, EQUALS promote(@c7 AS LONG)]) | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "SCAN([IS L, EQUALS promote(@c7 AS LONG)]) | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "SCAN([IS P])"
+JAVA OK EXPLAIN "SCAN([IS T, EQUALS promote(@c18 AS LONG)]) | MAP (NULL AS _0)"
+JAVA OK EXPLAIN "SCAN([IS T, EQUALS promote(@c7 AS LONG)]) | FILTER @c10 EQUALS @c10 OR promote(@c10 AS INT) EQUALS @c10 / @c16 | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "SCAN([IS T, EQUALS promote(@c7 AS LONG)]) | FILTER _.N LESS_THAN_OR_EQUALS promote(@c13 AS LONG) | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "SCAN([IS T, EQUALS promote(@c7 AS LONG)]) | FILTER promote(@c9 AS INT) EQUALS @c9 / @c11 AND @c17 EQUALS @c9 | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "SCAN([IS T, EQUALS promote(@c7 AS LONG)]) | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "SCAN([IS T, EQUALS promote(@c7 AS LONG)]) | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "SCAN([IS T, EQUALS promote(@c7 AS LONG)]) | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "SCAN([IS T, EQUALS promote(@c7 + @c9 AS LONG)]) | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "SCAN([IS T]) | FILTER coalesce_boolean(NOT 'false', @c10 / @c12 equals @c10) EQUALS true | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "SCAN([IS T]) | FILTER false | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "SCAN([IS T]) | FILTER false | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "SCAN([IS T]) | FILTER _.N GREATER_THAN promote(@c7 AS LONG) | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "SCAN([IS T]) | FILTER _.N + NULL EQUALS promote(@c14 AS LONG) | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "SCAN([IS T]) | FILTER NOT _.ID IN array(NULL) | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "SCAN([IS T]) | FILTER null | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "SCAN([IS T]) | FILTER promote(@c6 AS INT) EQUALS @c6 / @c8 + NULL | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "SCAN([IS T]) | FILTER promote(@c6 AS INT) EQUALS @c6 / @c8 + NULL | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "SCAN([IS T]) | FILTER promote(@c6 AS INT) EQUALS @c6 / @c8 OR promote(@c19 AS BOOLEAN) EQUALS NOT @c16 | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "SCAN([IS T]) | FILTER _.S LIKE @c7 ESCAPE 'ab' | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "SCAN([IS T]) | FLATMAP q0 -> { EXPLODE arrayDistinct(array(q0.ID + @c10, promote(@c12 AS LONG))) | FILTER q0.N EQUALS _ AS q1 RETURN (q0.ID AS ID) }"
+JAVA OK EXPLAIN "SCAN([IS T, [GREATER_THAN_OR_EQUALS promote(@c8 AS LONG)]]) | FILTER null | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "SCAN([IS T, [GREATER_THAN promote(@c7 - @c9 AS LONG)]]) | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "SCAN([IS T, [GREATER_THAN promote(@c8 AS LONG)]]) | FILTER null | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "SCAN([IS T, [LESS_THAN_OR_EQUALS promote(@c13 AS LONG)]]) | FILTER _.N EQUALS promote(@c7 AS LONG) | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "SCAN([IS T]) | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "SCAN([IS T]) | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "SCAN([IS T]) | MAP (_.ID AS ID)"
+JAVA OK EXPLAIN "SCAN([IS X, [GREATER_THAN promote(@c11 AS LONG)]])"
+JAVA OK [FLOAT] [NOT NULL] [[1.4e-45]]
+JAVA OK [FLOAT] [NOT NULL] [[1.4e-45]]
+JAVA OK [INTEGER] [NOT NULL] [[0]]
+JAVA OK [INTEGER] [NOT NULL] [[-1]]
+JAVA OK [INTEGER] [NOT NULL] [[1]]
+JAVA OK [INTEGER] [NOT NULL] [[5]]
+JAVA OK [INTEGER] [NOT NULL] [[7]]
+JAVA OK [INTEGER] [NULL] [[1]]
+JAVA OK [INTEGER] [NULL] [[1]]
+JAVA OK [INTEGER] [NULL] [[1]]
+JAVA OK [INTEGER] [NULL] [[1]]
+JAVA OK [INTEGER] [NULL] [[3]]
+JAVA OK [INTEGER] [NULL] [[5]]
+JAVA OK [INTEGER] [NULL] [[7]] COUNT 1
+JAVA OK [INTEGER] [NULL] [[NULL]]
+JAVA OK [INTEGER] [NULL] [[NULL]]
+JAVA OK [OTHER] [NOT NULL] [[00000001-0002-0003-0004-000000000005]]
+JAVA OK [OTHER] [NOT NULL] [[00000001-0002-0003-0004-000000000005]]
+JAVA OK [OTHER] [NOT NULL] [[00000001-0002-0003-0004-ffffffffffff]]
+JAVA OK [OTHER] [NOT NULL] [[0000000a-0002-0003-0004-000000000005]]
+JAVA OK [OTHER] [NOT NULL] [[123e4567-e89b-12d3-a456-426614174000]]
+JAVA OK [OTHER] [NOT NULL] [[23456789-0001-0001-0001-000000000001]]
+JAVA OK [STRING ARRAY] [NOT NULL NULL] [[WSE5_DRYRUN_TPL [map[COLUMNS:[map[COLUMN_NAME:ID COLUMN_TYPE:-5]] TABLE_NAME:X]]]] COUNT 0
+JAVA OK [STRING] [NOT NULL] [[a'b]]
+JAVA OK [STRING] [NOT NULL] [[a'b]]
+JAVA OK [STRING] [NOT NULL] [[ab]]
+JAVA OK [STRING] [NULL] [[1.5a]]
+JAVA OK [STRING] [NULL] [[a1]]
+JAVA OK [STRING] [NULL] [[a1.0E10]]
+JAVA OK [STRING] [NULL] [[a1.0E-4]]
+JAVA OK [STRING] [NULL] [[a1.5]]
+JAVA OK [STRING] [NULL] [[a1.5]]
+JAVA OK [STRING] [NULL] [[a3000000000]]
+JAVA OK [STRING] [NULL] [[abcabc]]
+JAVA READ OK [BIGINT BIGINT BIGINT] [NULL NULL NULL] [[1 10 100] [2 20 200]] COMMIT OK
+JAVA READ OK [BIGINT BIGINT] [NULL NULL] [[1 100] [2 200] [3 300]] COMMIT ERROR 40001 ContextualSQLException Transaction not committed due to conflict with another transaction
+JAVA READ OK [BIGINT BIGINT] [NULL NULL] [[1 100] [2 200] [3 300]] COMMIT ERROR 40001 ContextualSQLException Transaction not committed due to conflict with another transaction
+JAVA READ OK [BIGINT BIGINT] [NULL NULL] [[1 100] [2 200] [3 300]] COMMIT OK
+JAVA READ OK [BIGINT BIGINT] [NULL NULL] [[1 100] [2 200] [3 300]] COMMIT OK
+JAVA READ OK [BIGINT BIGINT] [NULL NULL] [[2 200] [3 300]] COMMIT ERROR 40001 ContextualSQLException Transaction not committed due to conflict with another transaction
+JAVA READ OK [BIGINT BIGINT] [NULL NULL] [[2 200] [3 300]] COMMIT ERROR 40001 ContextualSQLException Transaction not committed due to conflict with another transaction
+JAVA READ OK [BIGINT BIGINT] [NULL NULL] [[2 200] [3 300]] COMMIT ERROR 40001 ContextualSQLException Transaction not committed due to conflict with another transaction
+JAVA READ OK [BIGINT BIGINT] [NULL NULL] [[2 200] [3 300]] COMMIT OK
+JAVA READ OK [BIGINT] [NULL] [[10] [20]] COMMIT ERROR 40001 ContextualSQLException Transaction not committed due to conflict with another transaction
+JAVA READ OK [BIGINT] [NULL] [[10] [20]] COMMIT ERROR 40001 ContextualSQLException Transaction not committed due to conflict with another transaction
+JAVA READ OK [BIGINT] [NULL] [[10] [20]] COMMIT OK
+JAVA READ OK [BIGINT] [NULL] [[10] [20]] COMMIT OK
+JAVA READ OK [BIGINT] [NULL] [[1] [2] [3]] COMMIT ERROR 40001 ContextualSQLException Transaction not committed due to conflict with another transaction
+JAVA READ OK [BIGINT] [NULL] [[1] [2] [3]] COMMIT ERROR 40001 ContextualSQLException Transaction not committed due to conflict with another transaction
+JAVA READ OK [BIGINT] [NULL] [[1] [2] [3]] COMMIT OK
+JAVA READ OK [BIGINT] [NULL] [[1] [2] [3]] COMMIT OK
+JAVA READ OK [BIGINT] [NULL] [[1] [2] [3]] COMMIT OK
+JAVA TRACE EXPLAIN "SCAN([IS T, EQUALS promote(@c7 + @c9 AS LONG)]) | MAP (_.ID AS ID)"; QueryPredicateSimplificationRule calls=1 finals=0 exploratory=0
+JAVA TRACE EXPLAIN "SCAN([IS T]) | FILTER coalesce_boolean(NOT 'false', @c10 / @c12 equals @c10) EQUALS true | MAP (_.ID AS ID)"; QueryPredicateSimplificationRule calls=2 finals=0 exploratory=1; ranking: REWRITING-PRUNE members: 2 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[coalesce_boolean(NOT 'false', @c10 / @c12 equals @c10) [EQUALS true]] semanticHash=-1317608110 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[coalesce_boolean(NOT @c8, @c10 / @c12 equals @c10) [EQUALS true]] semanticHash=33718888 | REWRITING-COMPARE 0 vs 1 = -1
+JAVA TRACE EXPLAIN "SCAN([IS T]) | FILTER false | MAP (_.ID AS ID)"; QueryPredicateSimplificationRule calls=2 finals=0 exploratory=1; ranking: REWRITING-PRUNE members: 2 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[coalesce_int(@c7 / @c9, @c11) [IS_NULL]] semanticHash=1104627478 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[false] semanticHash=-816198362 | REWRITING-COMPARE 0 vs 1 = 1
+JAVA TRACE EXPLAIN "SCAN([IS T]) | FILTER false | MAP (_.ID AS ID)"; QueryPredicateSimplificationRule calls=2 finals=0 exploratory=1; ranking: REWRITING-PRUNE members: 2 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[false] semanticHash=1503357515 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=2 predicates=[q#.N [GREATER_THAN promote(@c7 AS LONG)], coalesce_int(@c11 / @c7, @c15) [IS_NULL]] semanticHash=1174156789 | REWRITING-COMPARE 0 vs 1 = -1
+JAVA TRACE EXPLAIN "SCAN([IS T]) | FILTER _.N GREATER_THAN promote(@c7 AS LONG) | MAP (_.ID AS ID)"; QueryPredicateSimplificationRule calls=2 finals=0 exploratory=1; ranking: REWRITING-PRUNE members: 2 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[q#.N [GREATER_THAN promote(@c7 AS LONG)]] semanticHash=1569283107 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=2 predicates=[q#.N [GREATER_THAN promote(@c7 AS LONG)], @c10 / @c7 + NULL [IS_NULL]] semanticHash=941872657 | REWRITING-COMPARE 0 vs 1 = -1
+JAVA TRACE EXPLAIN "SCAN([IS T]) | FILTER null | MAP (_.ID AS ID)"; QueryPredicateSimplificationRule calls=2 finals=0 exploratory=1; ranking: REWRITING-PRUNE members: 2 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[null] semanticHash=-816236709 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[promote(@c6 AS INT) [ AND EQUALS @c6 / @c8 + NULL]] semanticHash=2035668005 | REWRITING-COMPARE 0 vs 1 = -1
+JAVA TRACE EXPLAIN "SCAN([IS T]) | FILTER null | MAP (_.ID AS ID)"; QueryPredicateSimplificationRule calls=2 finals=0 exploratory=1; ranking: REWRITING-PRUNE members: 2 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[null] semanticHash=-816236709 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[q#.N + NULL [EQUALS promote(@c14 AS LONG)]] semanticHash=1244780087 | REWRITING-COMPARE 0 vs 1 = -1
+JAVA TRACE EXPLAIN "SCAN([IS T]) | FILTER promote(@c6 AS INT) EQUALS @c6 / @c8 + NULL | MAP (_.ID AS ID)"; QueryPredicateSimplificationRule calls=2 finals=0 exploratory=1; ranking: REWRITING-PRUNE members: 2 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[null] semanticHash=671289851 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[promote(@c6 AS INT) [ AND EQUALS @c6 / @c8 + NULL]] semanticHash=-771772731 | REWRITING-COMPARE 0 vs 1 = 1
+JAVA TRACE EXPLAIN "SCAN([IS T]) | FILTER promote(@c6 AS INT) EQUALS @c6 / @c8 OR promote(@c19 AS BOOLEAN) EQUALS NOT @c16 | MAP (_.ID AS ID)"; QueryPredicateSimplificationRule calls=2 finals=0 exploratory=1; ranking: REWRITING-PRUNE members: 2 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[@c6 EQUALS @c6 / @c8 OR 'true' EQUALS NOT 'false'] semanticHash=1145130613 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[promote(@c6 AS INT) EQUALS @c6 / @c8 OR promote(@c19 AS BOOLEAN) EQUALS NOT @c16] semanticHash=245992012 | REWRITING-COMPARE 0 vs 1 = 1
+JAVA TRACE EXPLAIN "SCAN([IS T]) | MAP (_.ID AS ID)"; QueryPredicateSimplificationRule calls=2 finals=0 exploratory=1; ranking: REWRITING-PRUNE members: 2 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=0 predicates=[true] semanticHash=-816198548 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[@c6 / @c8 + NULL [IS_NULL]] semanticHash=872343346 | REWRITING-COMPARE 0 vs 1 = -1
+JAVA TRACE EXPLAIN "SCAN([IS T]) | MAP (_.ID AS ID)"; QueryPredicateSimplificationRule calls=2 finals=0 exploratory=1; ranking: REWRITING-PRUNE members: 2 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=0 predicates=[true] semanticHash=-816198548 | REWRITING-MEMBER SelectExpression selects=1 conjuncts=1 predicates=[coalesce_boolean(@c7, @c9 / @c11 equals @c9) [EQUALS true]] semanticHash=41870026 | REWRITING-COMPARE 0 vs 1 = -1
+SQL  CREATE DATABASE /WSE4_SNAPSHOT_DDL
+SQL  CREATE SCHEMA TEMPLATE WSE5_DRYRUN_TPL CREATE TABLE X (id BIGINT, PRIMARY KEY (id))
+SQL  DELETE FROM L WHERE id = ?
+SQL  DELETE FROM L WHERE id = ?
+SQL  DESCRIBE SCHEMA TEMPLATE WSE5_ABSENT
+SQL  DESCRIBE SCHEMA WSE5_ABSENT
+SQL  DESCRIBE SELECT id FROM L WHERE id = 1
+SQL  DESCRIBE SELECT id FROM L WHERE id = 1
+SQL  DESC SELECT id FROM L WHERE id = 1
+SQL  DROP DATABASE IF EXISTS /WSE4_SNAPSHOT_ABSENT
+SQL  EXPLAIN INSERT INTO L VALUES (5, 50)
+SQL  EXPLAIN SELECT (1 / 0) + CAST(NULL AS INTEGER) FROM T WHERE id = 1
+SQL  EXPLAIN SELECT id FROM FG WHERE f = CAST('NaN' AS DOUBLE) AND g = 1
+SQL  EXPLAIN SELECT id FROM FG WHERE f = CAST('NaN' AS DOUBLE) ORDER BY g
+SQL  EXPLAIN SELECT id FROM FG WHERE f IN (CAST('NaN' AS DOUBLE)) AND g IN (1, 2)
+SQL  EXPLAIN SELECT id FROM F WHERE f IN (-0.0, 0.0)
+SQL  EXPLAIN SELECT id FROM F WHERE f IN (CAST('NaN' AS DOUBLE), CAST('NaN' AS DOUBLE))
+SQL  EXPLAIN SELECT id FROM S
+SQL  EXPLAIN SELECT id FROM T WHERE (1 / 0 = 1) OR ((NOT FALSE) = TRUE)
+SQL  EXPLAIN SELECT id FROM T WHERE (1 / 0) + CAST(NULL AS INTEGER) = 1
+SQL  EXPLAIN SELECT id FROM T WHERE (1 / 0) + CAST(NULL AS INTEGER) = 1
+SQL  EXPLAIN SELECT id FROM T WHERE (1 / 0) + CAST(NULL AS INTEGER) = 1
+SQL  EXPLAIN SELECT id FROM T WHERE (1 / 0) + CAST(NULL AS INTEGER) IS NULL
+SQL  EXPLAIN SELECT id FROM T WHERE (3 / 0) + CAST(NULL AS INTEGER) = 3 AND id > 0 ORDER BY id
+SQL  EXPLAIN SELECT id FROM T WHERE (4 / 0) + CAST(NULL AS INTEGER) = 4 AND id >= 0 ORDER BY id
+SQL  EXPLAIN SELECT id FROM T WHERE a IN (1, 2) AND b IN (5, 4)
+SQL  EXPLAIN SELECT id FROM T WHERE COALESCE(1 / 0, 5) IS NULL
+SQL  EXPLAIN SELECT id FROM T WHERE COALESCE(NOT CAST(NULL AS BOOLEAN), TRUE, 1 / 0 = 1)
+SQL  EXPLAIN SELECT id FROM T WHERE COALESCE(NOT FALSE, 1 / 0 = 1)
+SQL  EXPLAIN SELECT id FROM T WHERE COALESCE(TRUE, 1 / 0 = 1)
+SQL  EXPLAIN SELECT id FROM T WHERE COALESCE(TRUE, 1 / 0 = 1) AND n > 0
+SQL  EXPLAIN SELECT id FROM T WHERE id = ?
+SQL  EXPLAIN SELECT id FROM T WHERE id = 1 + 2
+SQL  EXPLAIN SELECT id FROM T WHERE id = 1 OPTIONS (ISOLATION LEVEL SNAPSHOT)
+SQL  EXPLAIN SELECT id FROM T WHERE id > 3 - 2
+SQL  EXPLAIN SELECT id FROM T WHERE id = 5 AND 1 / 0 = 1 AND 1 = 2
+SQL  EXPLAIN SELECT id FROM T WHERE id = 5 AND (1 / 0) + CAST(NULL AS INTEGER) IS NULL
+SQL  EXPLAIN SELECT id FROM T WHERE id = 5 AND (1 = 1 OR 1 / 0 = 1)
+SQL  EXPLAIN SELECT id FROM T WHERE id = 5 AND COALESCE(1 / 0, 5) IS NULL
+SQL  EXPLAIN SELECT id FROM T WHERE id = 5 AND COALESCE(1 / 0, 5) IS NULL UNION ALL SELECT id FROM T WHERE id = 1
+SQL  EXPLAIN SELECT id FROM T WHERE id = 5 AND NOT (n > 3)
+SQL  EXPLAIN SELECT id FROM T WHERE id IN (1)
+SQL  EXPLAIN SELECT id FROM T WHERE id IN (1, 2) AND 1 / 0 = 1 AND 1 = 2
+SQL  EXPLAIN SELECT id FROM T WHERE id IN (1, 2) AND COALESCE(1 / 0, 5) IS NULL
+SQL  EXPLAIN SELECT id FROM T WHERE id IN (1, CAST(NULL AS BIGINT))
+SQL  EXPLAIN SELECT id FROM T WHERE id IN (CAST(NULL AS BIGINT)) OR id > 0
+SQL  EXPLAIN SELECT id FROM T WHERE id NOT IN (CAST(NULL AS BIGINT))
+SQL  EXPLAIN SELECT id FROM T WHERE n > 0 AND 1 / 0 = 1 AND 1 = 2
+SQL  EXPLAIN SELECT id FROM T WHERE n > 0 AND (1 / 0) + CAST(NULL AS INTEGER) IS NULL
+SQL  EXPLAIN SELECT id FROM T WHERE n > 0 AND COALESCE(1 / 0, 5) IS NULL
+SQL  EXPLAIN SELECT id FROM T WHERE n > 0 AND COALESCE(1 / 0, 5) IS NULL
+SQL  EXPLAIN SELECT id FROM T WHERE n = 5 AND 1 / 0 = 1 AND 1 = 2
+SQL  EXPLAIN SELECT id FROM T WHERE n = 5 AND (1 / 0) + CAST(NULL AS INTEGER) IS NULL
+SQL  EXPLAIN SELECT id FROM T WHERE n = 5 AND COALESCE(1 / 0, 5) IS NULL
+SQL  EXPLAIN SELECT id FROM T WHERE n = 5 AND COALESCE(1 / 0, 5) IS NULL
+SQL  EXPLAIN SELECT id FROM T WHERE n = 5 AND NOT (id > 3)
+SQL  EXPLAIN SELECT id FROM T WHERE n = 5 OR n = 5
+SQL  EXPLAIN SELECT id FROM T WHERE n + CAST(NULL AS BIGINT) = 1
+SQL  EXPLAIN SELECT id FROM T WHERE n IN (id + 4, 999)
+SQL  EXPLAIN SELECT id FROM T WHERE NOT COALESCE(FALSE, 1 / 0 = 1)
+SQL  EXPLAIN SELECT id FROM T WHERE NOT (n > 3)
+SQL  EXPLAIN SELECT id FROM T WHERE s LIKE 'a%' ESCAPE 'ab'
+SQL  EXPLAIN SELECT id FROM T WHERE val IN (200, 400, 600) AND cat IN (20, 40) ORDER BY val
+SQL  EXPLAIN SELECT id, v, w FROM X WHERE id > 0
+SQL  EXPLAIN SELECT id, w FROM P
+SQL  EXPLAIN SELECT id, w FROM S WHERE v > 15
+SQL  EXPLAIN SELECT T.id FROM T, E WHERE E.x IN (CAST(NULL AS BIGINT))
+SQL  EXPLAIN SELECT v FROM X WHERE v > 0
+SQL  EXPLAIN SELECT x FROM E WHERE x IN (CAST(NULL AS BIGINT))
+SQL  HELP 'x'
+SQL  INSERT INTO AF VALUES (1, [1.5])
+SQL  INSERT INTO AF VALUES (2, [1.5 + 0.0])
+SQL  INSERT INTO AF VALUES (3, [1])
+SQL  INSERT INTO AF VALUES (4, [])
+SQL  INSERT INTO AL VALUES (1, [3000000000])
+SQL  INSERT INTO AL VALUES (2, [1.5])
+SQL  INSERT INTO A VALUES (?, ?, ?)
+SQL  INSERT INTO A VALUES (?, ?, ?)
+SQL  INSERT INTO A VALUES (?, ?, ?)
+SQL  INSERT INTO D VALUES (7, 1)
+SQL  INSERT INTO D VALUES (8, 1.5f)
+SQL  INSERT INTO EN VALUES (1, 'red')
+SQL  INSERT INTO EN VALUES (1, 'RED')
+SQL  INSERT INTO EN VALUES (2, ?)
+SQL  INSERT INTO EN VALUES (2, 'RED ')
+SQL  INSERT INTO EN VALUES (3, ?)
+SQL  INSERT INTO EN VALUES (3, 'BLUE')
+SQL  INSERT INTO F SELECT id + 100, d FROM D
+SQL  INSERT INTO F VALUES (?, ?)
+SQL  INSERT INTO F VALUES (?, ?)
+SQL  INSERT INTO F VALUES (?, ?)
+SQL  INSERT INTO F VALUES (3, 1.5)
+SQL  INSERT INTO F VALUES (4, 1.5f)
+SQL  INSERT INTO F VALUES (5, 1.5 + 0.0)
+SQL  INSERT INTO F VALUES (6, 1)
+SQL  INSERT INTO I SELECT id + 100, v FROM L
+SQL  INSERT INTO I VALUES (?, ?)
+SQL  INSERT INTO I VALUES (?, ?)
+SQL  INSERT INTO I VALUES (?, ?)
+SQL  INSERT INTO I VALUES (20, 1 + 2)
+SQL  INSERT INTO I VALUES (21, 3000000000 - 2999999999)
+SQL  INSERT INTO I VALUES (22, 3000000000)
+SQL  INSERT INTO L SELECT ?, ? FROM T WHERE id = ?
+SQL  INSERT INTO L SELECT id + 100, i FROM I
+SQL  INSERT INTO L VALUES (?, ?)
+SQL  INSERT INTO L VALUES (?, ?)
+SQL  INSERT INTO L VALUES (?, 20)
+SQL  INSERT INTO L VALUES (9, 1.5)
+SQL  INSERT INTO SR VALUES (1, (1.5))
+SQL  INSERT INTO SR VALUES (2, (1))
+SQL  INSERT INTO T VALUES (?, 'z', NULL)
+SQL  INSERT INTO UF VALUES (2, CAST('NaN' AS DOUBLE))
+SQL  INSERT INTO U VALUES (1, ?)
+SQL  INSERT INTO U VALUES (1, '1-2-3-4-5')
+SQL  INSERT INTO U VALUES (1, '123e4567-e89b-12d3-a456-426614174000')
+SQL  INSERT INTO U VALUES (2, ?)
+SQL  INSERT INTO U VALUES (2, ?)
+SQL  INSERT INTO U VALUES (2, '123E4567-E89B-12D3-A456-426614174000')
+SQL  INSERT INTO U VALUES (3, ?)
+SQL  INSERT INTO U VALUES (3, '{123e4567-e89b-12d3-a456-426614174000}')
+SQL  INSERT INTO U VALUES (3, 'not-a-uuid')
+SQL  INSERT INTO U VALUES (4, ?)
+SQL  INSERT INTO U VALUES (4, 'urn:uuid:123e4567-e89b-12d3-a456-426614174000')
+SQL  INSERT INTO U VALUES (5, ?)
+SQL  INSERT INTO U VALUES (5, '123e4567e89b12d3a456426614174000')
+SQL  INSERT INTO U VALUES (6, ?)
+SQL  INSERT INTO U VALUES (6, '+1-2-3-4-5')
+SQL  INSERT INTO U VALUES (7, ?)
+SQL  INSERT INTO U VALUES (7, ' 123e4567-e89b-12d3-a456-426614174000')
+SQL  SELECT (1 / 0) + CAST(NULL AS INTEGER) FROM T WHERE id = 1
+SQL  SELECT (1 / 0) + NULL FROM T WHERE id = 1
+SQL  SELECT 1 + 2 FROM T WHERE id = 1
+SQL  SELECT 1.5 + 'a' FROM T WHERE id = 1
+SQL  SELECT ? + 1 FROM T WHERE id = 1
+SQL  SELECT [1, NULL] FROM T WHERE id = 1
+SQL  SELECT 1 + TRUE FROM T WHERE id = 1
+SQL  SELECT ? + 2147483647 FROM T WHERE id = 1
+SQL  SELECT ? + 2147483647 FROM T WHERE id = 1
+SQL  SELECT 5 % 2 FROM T WHERE id = 1
+SQL  SELECT 5 & 3 FROM T WHERE id = 1
+SQL  SELECT 7 FROM T WHERE id = 1
+SQL  SELECT 'a' + 0.0001 FROM T WHERE id = 1
+SQL  SELECT 'a' + 10000000000.0 FROM T WHERE id = 1
+SQL  SELECT 'a' + 1.5f FROM T WHERE id = 1
+SQL  SELECT 'a' + 1.5 FROM T WHERE id = 1
+SQL  SELECT 'a' + 1 FROM T WHERE id = 1
+SQL  SELECT 'a' - 1 FROM T WHERE id = 1
+SQL  SELECT 'a' + 3000000000 FROM T WHERE id = 1
+SQL  SELECT 'abc' COLLATE utf8_bin FROM T WHERE id = 1
+SQL  SELECT 'a' 'b' FROM T WHERE id = 1
+SQL  SELECT 'a''' 'b' FROM T WHERE id = 1
+SQL  SELECT 'a''b' FROM T WHERE id = 1
+SQL  SELECT B64'ywjj' FROM T WHERE id = 1
+SQL  SELECT B64'YWJj' FROM T WHERE id = 1
+SQL  SELECT CARDINALITY([1, NULL]) FROM T WHERE id = 1
+SQL  SELECT CASE WHEN id > 0 THEN 1 ELSE 1 / 0 END FROM T WHERE id = 1
+SQL  SELECT CASE WHEN id > 0 THEN 1 ELSE 2 END FROM T WHERE id = 1
+SQL  SELECT CASE WHEN id IN (CAST(NULL AS BIGINT)) THEN 1 ELSE 0 END FROM T WHERE id = 1
+SQL  SELECT CAST('1-2-3-4-10000000000000000' AS UUID) FROM T WHERE id = 1
+SQL  SELECT CAST('123456789-1-1-1-1' AS UUID) FROM T WHERE id = 1
+SQL  SELECT CAST('1-2-3-4--5' AS UUID) FROM T WHERE id = 1
+SQL  SELECT CAST('1-2-3-4-5' AS UUID) FROM T WHERE id = 1
+SQL  SELECT CAST('١-2-3-4-5' AS UUID) FROM T WHERE id = 1
+SQL  SELECT CAST('1-2-3-4-7fffffffffffffff' AS UUID) FROM T WHERE id = 1
+SQL  SELECT CAST('1-2-3-4-8000000000000000' AS UUID) FROM T WHERE id = 1
+SQL  SELECT CAST('123e4567-e89b-12d3-a456-4266141740000' AS UUID) FROM T WHERE id = 1
+SQL  SELECT CAST(' 123e4567-e89b-12d3-a456-426614174000' AS UUID) FROM T WHERE id = 1
+SQL  SELECT CAST('{123e4567-e89b-12d3-a456-426614174000}' AS UUID) FROM T WHERE id = 1
+SQL  SELECT CAST('1--3-4-5' AS UUID) FROM T WHERE id = 1
+SQL  SELECT CAST(1 AS BIGINT) FROM T WHERE id = 1
+SQL  SELECT CAST('2024-01-01 10:00:00' AS TIMESTAMP) FROM P WHERE id = 1
+SQL  SELECT CAST('2024-01-01' AS DATE) FROM P WHERE id = 1
+SQL  SELECT CAST('Ａ-2-3-4-5' AS UUID) FROM T WHERE id = 1
+SQL  SELECT CAST(n AS INTEGER) FROM T WHERE id = 2
+SQL  SELECT CAST(NULL AS BIGINT) + 1 FROM T WHERE id = 1
+SQL  SELECT [CAST(NULL AS BIGINT)] FROM E
+SQL  SELECT [CAST(NULL AS BIGINT)] FROM T WHERE id = 1
+SQL  SELECT [CAST(NULL AS BIGINT)] FROM T WHERE id = 1
+SQL  SELECT CAST('x' AS BIGINT) FROM T WHERE id = 1
+SQL  SELECT COALESCE(?, 0) FROM T WHERE id = 1
+SQL  SELECT COALESCE(?, 1 / 0 = 1) FROM T WHERE id = 1
+SQL  SELECT COALESCE(1, 1 / 0) FROM T WHERE id = 1
+SQL  SELECT COALESCE(1, 1 / 0) FROM T WHERE id = 1
+SQL  SELECT COALESCE(1, 2) FROM T WHERE id = 1
+SQL  SELECT COALESCE(1) FROM T WHERE id = 1
+SQL  SELECT COALESCE(b, X'00') FROM W ORDER BY id
+SQL  SELECT COALESCE(id, 1 / 0) FROM T WHERE id = 1
+SQL  SELECT COALESCE(id, n) FROM T WHERE id = 1
+SQL  SELECT COALESCE(n, 0) FROM T WHERE id = 1
+SQL  SELECT COALESCE(n, 'a') FROM T WHERE id = 1
+SQL  SELECT COALESCE(n, n) FROM T WHERE id = 1
+SQL  SELECT COALESCE(NOT FALSE, 1 / 0 = 1) FROM T WHERE id = 1
+SQL  SELECT COALESCE(NULL, NULL) FROM T WHERE id = 1
+SQL  SELECT COALESCE(TRUE, 1 / 0 = 1) FROM T WHERE id = 1
+SQL  SELECT ? FROM T WHERE id = ?
+SQL  SELECT ? FROM T WHERE id = 1
+SQL  SELECT ? FROM T WHERE id = 1
+SQL  SELECT ? FROM T WHERE id = 1
+SQL  SELECT ? FROM T WHERE id = 1
+SQL  SELECT ? FROM T WHERE id = 1
+SQL  SELECT [?] FROM T WHERE id = 1
+SQL  SELECT GREATEST(0.0 / 0.0, -1.0) FROM T WHERE id = 1
+SQL  SELECT GREATEST(0.0, 0.0) FROM T WHERE id = 1
+SQL  SELECT GREATEST(0.0f, 0.0f) FROM T WHERE id = 1
+SQL  SELECT GREATEST(1, 2.5) FROM T WHERE id = 1
+SQL  SELECT GREATEST(-1, -2) FROM T WHERE id = 1
+SQL  SELECT GREATEST(-1.5, -2.5) FROM T WHERE id = 1
+SQL  SELECT GREATEST(-1.5f, -2.5f) FROM T WHERE id = 1
+SQL  SELECT GREATEST(1, 5) FROM T WHERE id = 1
+SQL  SELECT GREATEST(1) FROM T WHERE id = 1
+SQL  SELECT GREATEST(1, NULL) FROM T WHERE id = 1
+SQL  SELECT GREATEST(-3000000000, -4000000000) FROM T WHERE id = 1
+SQL  SELECT GREATEST(b, b) FROM W WHERE id = 1
+SQL  SELECT GREATEST(d, t) FROM D WHERE id = 1
+SQL  SELECT GREATEST(id, 5) FROM T WHERE id = 1
+SQL  SELECT GREATEST(n - 100, n - 200) FROM T WHERE id = 2
+SQL  SELECT GREATEST(n, 5) FROM T WHERE id = 1
+SQL  SELECT GREATEST(NULL, NULL) FROM T WHERE id = 1
+SQL  SELECT id + 1 FROM T WHERE id = 1
+SQL  SELECT id + 1 FROM T WHERE id = 1
+SQL  SELECT id, COALESCE(n, 0) FROM T ORDER BY id
+SQL  SELECT id, f FROM F ORDER BY id
+SQL  SELECT id FROM A WHERE (arr) = [5] ORDER BY id
+SQL  SELECT id FROM A WHERE arr = [5] ORDER BY id
+SQL  SELECT id FROM A WHERE arr = [m, NULL]
+SQL  SELECT id FROM A WHERE arr = [m] ORDER BY id
+SQL  SELECT id FROM D WHERE d < CAST(NULL AS TIMESTAMP) ORDER BY id
+SQL  SELECT id FROM D WHERE d < ? ORDER BY id
+SQL  SELECT id FROM D WHERE NOT (d < CAST(NULL AS TIMESTAMP)) ORDER BY id
+SQL  SELECT id FROM E WHERE (1 / 0) + CAST(NULL AS INTEGER) = 1
+SQL  SELECT id FROM E WHERE c LIKE 'R%' ORDER BY id
+SQL  SELECT id FROM FG WHERE f = CAST('NaN' AS DOUBLE) AND g = 1 ORDER BY id
+SQL  SELECT id FROM FG WHERE f = CAST('NaN' AS DOUBLE) ORDER BY g
+SQL  SELECT id FROM FG WHERE f IN (CAST('NaN' AS DOUBLE)) AND g IN (1, 2) ORDER BY id
+SQL  SELECT id FROM F WHERE f = -0.0 ORDER BY id
+SQL  SELECT id FROM F WHERE f = 0.0 ORDER BY id
+SQL  SELECT id FROM F WHERE f = CAST('NaN' AS DOUBLE) ORDER BY id
+SQL  SELECT id FROM F WHERE f IN (-0.0, 0.0) ORDER BY id
+SQL  SELECT id FROM F WHERE f IN (0.0, 0.0) ORDER BY id
+SQL  SELECT id FROM F WHERE f IN (CAST('NaN' AS DOUBLE), CAST('NaN' AS DOUBLE)) ORDER BY id
+SQL  SELECT id FROM G WHERE f = -0.0 ORDER BY id
+SQL  SELECT id FROM G WHERE f = 0.0 ORDER BY id
+SQL  SELECT id FROM G WHERE f = CAST('NaN' AS DOUBLE) ORDER BY id
+SQL  SELECT id FROM G WHERE f IN (-0.0, 0.0) ORDER BY id
+SQL  SELECT id FROM G WHERE f IN (CAST('NaN' AS DOUBLE), CAST('NaN' AS DOUBLE)) ORDER BY id
+SQL  SELECT id FROM I WHERE i = ?
+SQL  SELECT id FROM I WHERE i = ?
+SQL  SELECT id FROM I WHERE i = 5
+SQL  SELECT id FROM L WHERE id = ?
+SQL  SELECT id FROM P WHERE CAST(s AS DATE) < CAST('2025-01-01' AS DATE) ORDER BY id
+SQL  SELECT id FROM (SELECT id FROM T OPTIONS (NOCACHE)) AS X WHERE id = 1
+SQL  SELECT id FROM S | INSERT INTO S VALUES (5, 25, 250)
+SQL  SELECT id FROM S OPTIONS (ISOLATION LEVEL SNAPSHOT) | INSERT INTO S VALUES (5, 25, 250)
+SQL  SELECT id FROM S OPTIONS (ISOLATION LEVEL SNAPSHOT) | UPDATE S SET v = 21 WHERE id = 2
+SQL  SELECT id FROM S OPTIONS (ISOLATION LEVEL SNAPSHOT) | UPDATE S SET w = 201 WHERE id = 2
+SQL  SELECT id FROM S | UPDATE S SET v = 21 WHERE id = 2
+SQL  SELECT id FROM T /* a /* b */ c */ WHERE id = 1
+SQL  SELECT id FROM T -- c
+SQL  SELECT id FROM T -- c
+SQL  SELECT id FROM T ORDER BY ?
+SQL  SELECT id FROM T ORDER BY 1 + 1
+SQL  SELECT id FROM T ORDER BY id LIMIT ?
+SQL  SELECT id FROM T ORDER BY id OPTIONS (NOCACHE)
+SQL  SELECT id FROM T ORDER BY 'x'
+SQL  SELECT id FROM T WHERE (1 / 0 = 1 OR 1 = 2) AND 1 = 2
+SQL  SELECT id FROM T WHERE (1 / 0 = 1) OR ((NOT FALSE) = TRUE)
+SQL  SELECT id FROM T WHERE (1 / 0 = 1) OR ((NOT FALSE) = TRUE) ORDER BY id
+SQL  SELECT id FROM T WHERE (1 / 0) + CAST(NULL AS INTEGER) = 1
+SQL  SELECT id FROM T WHERE (1 / 0) + CAST(NULL AS INTEGER) = 1
+SQL  SELECT id FROM T WHERE (1 / 0) + CAST(NULL AS INTEGER) = 1
+SQL  SELECT id FROM T WHERE (1 / 0) + CAST(NULL AS INTEGER) = 1
+SQL  SELECT id FROM T WHERE (1 / 0) + CAST(NULL AS INTEGER) = 1
+SQL  SELECT id FROM T WHERE (1 / 0) + CAST(NULL AS INTEGER) IS NULL
+SQL  SELECT id FROM T WHERE (1 / 0) + CAST(NULL AS INTEGER) IS NULL ORDER BY id
+SQL  SELECT id FROM T WHERE 1 IN (n) ORDER BY id
+SQL  SELECT id FROM T WHERE [1, NULL] = [1, 2] AND id = 1
+SQL  SELECT id FROM T WHERE [1, NULL] = [1, NULL] AND id = 1
+SQL  SELECT id FROM T WHERE (3 / 0) + CAST(NULL AS INTEGER) = 3 AND id > 0 ORDER BY id
+SQL  SELECT id FROM T WHERE (4 / 0) + CAST(NULL AS INTEGER) = 4 AND id >= 0 ORDER BY id
+SQL  SELECT id FROM T WHERE (5 / 0) + CAST(NULL AS INTEGER) = 5
+SQL  SELECT id FROM T WHERE a IN (1, 2) AND b IN (5, 4) ORDER BY id
+SQL  SELECT id FROM T WHERE CASE WHEN 1 / 0 = 1 THEN 1 ELSE 2 END IS NULL ORDER BY id
+SQL  SELECT id FROM T WHERE CASE WHEN id > 0 THEN 1 + 0 ELSE 1 / 0 END IS NULL ORDER BY id
+SQL  SELECT id FROM T WHERE CASE WHEN id > 0 THEN 1 ELSE 1 / 0 END IS NULL ORDER BY id
+SQL  SELECT id FROM T WHERE CASE WHEN id > 0 THEN 1 ELSE 2 END IS NULL ORDER BY id
+SQL  SELECT id FROM T WHERE CAST(1 / 0 AS BIGINT) IS NULL ORDER BY id
+SQL  SELECT id FROM T WHERE CAST(NULL AS STRING) LIKE 'a%' ESCAPE 'ab'
+SQL  SELECT id FROM T WHERE CAST('x' AS BIGINT) IS NULL ORDER BY id
+SQL  SELECT id FROM T WHERE COALESCE(?, 1 / 0 = 1) ORDER BY id
+SQL  SELECT id FROM T WHERE COALESCE(1 / 0, 5) IS NOT NULL ORDER BY id
+SQL  SELECT id FROM T WHERE COALESCE(1 / 0, 5) IS NULL
+SQL  SELECT id FROM T WHERE COALESCE(1 / 0, 5) IS NULL ORDER BY id
+SQL  SELECT id FROM T WHERE COALESCE(1, 1 / 0) = 1 ORDER BY id
+SQL  SELECT id FROM T WHERE COALESCE(1 + 1, 1 / 0) = 2 ORDER BY id
+SQL  SELECT id FROM T WHERE COALESCE(CAST(NULL AS BOOLEAN), TRUE, 1 / 0 = 1) ORDER BY id
+SQL  SELECT id FROM T WHERE COALESCE(CAST(NULL AS BOOLEAN), TRUE) ORDER BY id
+SQL  SELECT id FROM T WHERE COALESCE(FALSE OR TRUE, 1 / 0 = 1) ORDER BY id
+SQL  SELECT id FROM T WHERE COALESCE(NOT CAST(NULL AS BOOLEAN), TRUE, 1 / 0 = 1) ORDER BY id
+SQL  SELECT id FROM T WHERE COALESCE(NOT FALSE, 1 / 0 = 1)
+SQL  SELECT id FROM T WHERE COALESCE(NOT FALSE, 1 / 0 = 1) ORDER BY id
+SQL  SELECT id FROM T WHERE COALESCE(NULL, TRUE, 1 / 0 = 1) ORDER BY id
+SQL  SELECT id FROM T WHERE COALESCE(NULL, TRUE) ORDER BY id
+SQL  SELECT id FROM T WHERE COALESCE(TRUE, 1 / 0 = 1)
+SQL  SELECT id FROM T WHERE COALESCE(TRUE, 1 / 0 = 1) AND n > 0 ORDER BY id
+SQL  SELECT id FROM T WHERE COALESCE(?, TRUE, 1 / 0 = 1) ORDER BY id
+SQL  SELECT id FROM T WHERE COALESCE(TRUE, 1 / 0 = 1) ORDER BY id
+SQL  SELECT id FROM T WHERE COALESCE(TRUE AND TRUE, 1 / 0 = 1) ORDER BY id
+SQL  SELECT id FROM T WHERE GREATEST(1, 1 / 0) IS NULL ORDER BY id
+SQL  SELECT id FROM T WHERE id = ?
+SQL  SELECT id FROM T WHERE id = ?
+SQL  SELECT id FROM T WHERE id = $x
+SQL  SELECT id FROM T WHERE id < 0 AND id IN (CAST(NULL AS BIGINT))
+SQL  SELECT id FROM T WHERE id < 0 AND s LIKE 'a%' ESCAPE 'ab'
+SQL  SELECT id FROM T WHERE id = 1--1
+SQL  SELECT id FROM T WHERE id = 1 + 2
+SQL  SELECT id FROM T WHERE id = 1 + 2
+SQL  SELECT id FROM T WHERE id = 1 /* a /* b */
+SQL  SELECT id FROM T WHERE id = 1 # no
+SQL  SELECT id FROM T WHERE id = 1 /* open
+SQL  SELECT id FROM T WHERE id = 1 OPTIONS (EF_SEARCH 10)
+SQL  SELECT id FROM T WHERE id = 1 OPTIONS (ISOLATION LEVEL SNAPSHOT)
+SQL  SELECT id FROM T WHERE id = 1 OPTIONS (LOG QUERY)
+SQL  SELECT id FROM T /*! WHERE id = 2 */ WHERE id = 1
+SQL  SELECT id FROM T WHERE id = 5 AND 1 / 0 = 1 AND 1 = 2
+SQL  SELECT id FROM T WHERE id = 5 AND (1 / 0) + CAST(NULL AS INTEGER) IS NULL
+SQL  SELECT id FROM T WHERE id = 5 AND (1 = 1 OR 1 / 0 = 1)
+SQL  SELECT id FROM T WHERE id = 5 AND COALESCE(1 / 0, 5) IS NULL
+SQL  SELECT id FROM T WHERE id = 5 AND COALESCE(1 / 0, 5) IS NULL UNION ALL SELECT id FROM T WHERE id = 1
+SQL  SELECT id FROM T WHERE id = 5 AND NOT (n > 3)
+SQL  SELECT id FROM T WHERE id > ? AND s <> ? ORDER BY id
+SQL  SELECT id FROM T WHERE id IN (?)
+SQL  SELECT id FROM T WHERE id IN (?)
+SQL  SELECT id FROM T WHERE id IN (1, ?)
+SQL  SELECT id FROM T WHERE id IN (1, 2) AND 1 / 0 = 1 AND 1 = 2
+SQL  SELECT id FROM T WHERE id IN (1, 2) AND COALESCE(1 / 0, 5) IS NULL
+SQL  SELECT id FROM T WHERE id IN (1, NULL)
+SQL  SELECT id FROM T WHERE id IN (?, ?) AND n > ? ORDER BY id
+SQL  SELECT id FROM T WHERE id IN (CAST(NULL AS BIGINT))
+SQL  SELECT id FROM T WHERE id IN (CAST(NULL AS BIGINT))
+SQL  SELECT id FROM T WHERE id IN (CAST(NULL AS BIGINT), id)
+SQL  SELECT id FROM T WHERE id IN (CAST(NULL AS BIGINT)) OR id > 0 ORDER BY id
+SQL  SELECT id FROM T WHERE id IN ((NULL))
+SQL  SELECT id FROM T WHERE id IN (NULL)
+SQL  SELECT id FROM T WHERE id IN (?) ORDER BY id
+SQL  SELECT id FROM T WHERE id IN (?, ?) ORDER BY id
+SQL  SELECT id FROM T WHERE id IN ? ORDER BY id
+SQL  SELECT id FROM T WHERE id NOT IN (CAST(NULL AS BIGINT)) ORDER BY id
+SQL  SELECT id FROM T WHERE id NOT IN (NULL)
+SQL  SELECT id FROM T WHERE id = ? OR id = ?
+SQL  SELECT id FROM T WHERE id = ? OR id IN (SELECT id FROM T WHERE n = ?) ORDER BY id
+SQL  SELECT id FROM T WHERE id = ? OR id = ?x ORDER BY id
+SQL  SELECT id FROM T WHERE id = ?x
+SQL  SELECT id FROM T WHERE id = ?x OR id = ?x + 2 ORDER BY id
+SQL  SELECT id FROM T WHERE ? IS NULL ORDER BY id
+SQL  SELECT id FROM T WHERE n > 0 AND 1 / 0 = 1 AND 1 = 2
+SQL  SELECT id FROM T WHERE n > 0 AND (1 / 0) + CAST(NULL AS INTEGER) IS NULL
+SQL  SELECT id FROM T WHERE n > 0 AND (1 / 0) + CAST(NULL AS INTEGER) IS NULL ORDER BY id
+SQL  SELECT id FROM T WHERE n > 0 AND COALESCE(1 / 0, 5) IS NULL
+SQL  SELECT id FROM T WHERE n > 0 AND COALESCE(1 / 0, 5) IS NULL
+SQL  SELECT id FROM T WHERE n > 0 AND COALESCE(1 / 0, 5) IS NULL ORDER BY id
+SQL  SELECT id FROM T WHERE n = 5 AND 1 / 0 = 1 AND 1 = 2
+SQL  SELECT id FROM T WHERE n = 5 AND (1 / 0) + CAST(NULL AS INTEGER) IS NULL
+SQL  SELECT id FROM T WHERE n = 5 AND COALESCE(1 / 0, 5) IS NULL
+SQL  SELECT id FROM T WHERE n = 5 AND COALESCE(1 / 0, 5) IS NULL
+SQL  SELECT id FROM T WHERE n = 5 AND NOT (id > 3)
+SQL  SELECT id FROM T WHERE n = 5 OR n = 5
+SQL  SELECT id FROM T WHERE n + CAST(NULL AS BIGINT) = 1
+SQL  SELECT id FROM T WHERE n IN (id + 4, 999) ORDER BY id
+SQL  SELECT id FROM T WHERE n LIKE '1' ORDER BY id
+SQL  SELECT id FROM T WHERE n = ? ORDER BY id
+SQL  SELECT id FROM T WHERE NOT COALESCE(FALSE, 1 / 0 = 1) ORDER BY id
+SQL  SELECT id FROM T WHERE NOT (id IN (CAST(NULL AS BIGINT))) ORDER BY id
+SQL  SELECT id FROM T WHERE NOT (n > 3) ORDER BY id
+SQL  SELECT id FROM T WHERE NULL + 1 = 2
+SQL  SELECT id FROM T WHERE s = 'a' 'bc'
+SQL  SELECT id FROM T WHERE s LIKE 1 ORDER BY id
+SQL  SELECT id FROM T WHERE s LIKE 'a\%b' ESCAPE '\' ORDER BY id
+SQL  SELECT id FROM T WHERE s LIKE 'a\\b' ESCAPE '\' ORDER BY id
+SQL  SELECT id FROM T WHERE s LIKE 'a\_b' ESCAPE '\' ORDER BY id
+SQL  SELECT id FROM T WHERE s LIKE 'a\b' ESCAPE '\' ORDER BY id
+SQL  SELECT id FROM T WHERE s LIKE 'a%b' ORDER BY id
+SQL  SELECT id FROM T WHERE s LIKE 'a_b' ORDER BY id
+SQL  SELECT id FROM T WHERE s LIKE 'ab' ORDER BY id
+SQL  SELECT id FROM T WHERE s LIKE 'a%' ESCAPE 'ab' ORDER BY id
+SQL  SELECT id FROM T WHERE s LIKE 'a%' ESCAPE '%' ORDER BY id
+SQL  SELECT id FROM T WHERE s LIKE 'a%' ESCAPE '' ORDER BY id
+SQL  SELECT id FROM T WHERE s LIKE 'a%' ESCAPE '_' ORDER BY id
+SQL  SELECT id FROM T WHERE s LIKE 'a%' ESCAPE '𝄞' ORDER BY id
+SQL  SELECT id FROM T WHERE s LIKE 'a\' ESCAPE '\' ORDER BY id
+SQL  SELECT id FROM T WHERE s LIKE 'a' '%' ORDER BY id
+SQL  SELECT id FROM T WHERE s LIKE NULL ESCAPE 'ab' ORDER BY id
+SQL  SELECT id FROM T WHERE s LIKE NULL ORDER BY id
+SQL  SELECT id FROM T WHERE s LIKE '' ORDER BY id
+SQL  SELECT id FROM T WHERE s LIKE ? ORDER BY id
+SQL  SELECT id FROM T WHERE s LIKE ? ORDER BY id
+SQL  SELECT id FROM T WHERE s LIKE '_x' ORDER BY id
+SQL  SELECT id FROM T WHERE s NOT LIKE 'a%' ORDER BY id
+SQL  SELECT id FROM T WHERE s = ? ORDER BY id
+SQL  SELECT id FROM T WHERE s = '--x' OR id = 1
+SQL  SELECT id FROM T WHERE val IN (200, 400, 600) AND cat IN (20, 40) ORDER BY val
+SQL  SELECT id FROM UF WHERE f = CAST('NaN' AS DOUBLE)
+SQL  SELECT id FROM U WHERE s LIKE 'a\' ESCAPE '\'
+SQL  SELECT id FROM U WHERE s LIKE 'a%' ESCAPE 'ab'
+SQL  SELECT id IN (CAST(NULL AS BIGINT)) FROM T WHERE id = 1
+SQL  SELECT id, LEAST(n, 3) FROM T ORDER BY id
+SQL  SELECT id, n + ? AS k FROM T WHERE id = ?
+SQL  SELECT id, [n] FROM T ORDER BY id
+SQL  SELECT id, s LIKE 'a%' FROM T ORDER BY id
+SQL  SELECT id, t FROM TS ORDER BY id
+SQL  SELECT id, v, w FROM X WHERE id > 0 | X_V -> DISABLED
+SQL  SELECT id, w FROM P | INSERT INTO P VALUES (5, 250)
+SQL  SELECT id, w FROM P OPTIONS (ISOLATION LEVEL SNAPSHOT) | INSERT INTO P VALUES (5, 250)
+SQL  SELECT id, w FROM P OPTIONS (ISOLATION LEVEL SNAPSHOT) | UPDATE P SET w = 201 WHERE id = 2
+SQL  SELECT id, w FROM P | UPDATE P SET w = 201 WHERE id = 2
+SQL  SELECT id, w FROM S WHERE v > 15 | INSERT INTO S VALUES (5, 25, 250)
+SQL  SELECT id, w FROM S WHERE v > 15 OPTIONS (ISOLATION LEVEL SNAPSHOT) | INSERT INTO S VALUES (5, 25, 250)
+SQL  SELECT id, w FROM S WHERE v > 15 OPTIONS (ISOLATION LEVEL SNAPSHOT) | UPDATE S SET w = 201 WHERE id = 2
+SQL  SELECT id, w FROM S WHERE v > 15 | UPDATE S SET w = 201 WHERE id = 2
+SQL  SELECT LEAST(0.0 / 0.0, 1.0) FROM T WHERE id = 1
+SQL  SELECT LEAST(1.0 / 0.0, 1.0 / 0.0) FROM T WHERE id = 1
+SQL  SELECT LEAST(-1.5, -2.5) FROM T WHERE id = 1
+SQL  SELECT LEAST(1e309, 1e309) FROM T WHERE id = 1
+SQL  SELECT LEAST(3000000000, 4000000000) FROM T WHERE id = 1
+SQL  SELECT LEAST(d, t) FROM D WHERE id = 1
+SQL  SELECT LEAST(id, n) FROM T WHERE id = 1
+SQL  SELECT N'abc' FROM T WHERE id = 1
+SQL  SELECT n FROM T WHERE id > 0 GROUP BY n
+SQL  SELECT n FROM T WHERE id > 0 GROUP BY n HAVING n > 5
+SQL  SELECT n FROM T WHERE id > ? GROUP BY n HAVING n > ?
+SQL  SELECT NOT FALSE FROM T WHERE id = 1
+SQL  SELECT NOT (n > 1) FROM T WHERE id = 2
+SQL  SELECT NULL + 1 FROM T WHERE id = 1
+SQL  SELECT s + s FROM T WHERE id = 1
+SQL  SELECT T.id FROM T, E WHERE E.x IN (CAST(NULL AS BIGINT))
+SQL  SELECT TRUE AND TRUE FROM T WHERE id = 1
+SQL  SELECT UPPER(s) FROM T WHERE id = 1
+SQL  SELECT _utf8'abc' FROM T WHERE id = 1
+SQL  SELECT v FROM X WHERE v > 0 OPTIONS (ISOLATION LEVEL SNAPSHOT) | X_V -> DISABLED
+SQL  SELECT v FROM X WHERE v > 0 OPTIONS (ISOLATION LEVEL SNAPSHOT) | X_W -> DISABLED
+SQL  SELECT v FROM X WHERE v > 0 | X_V -> DISABLED
+SQL  SELECT v FROM X WHERE v > 0 | X_W -> DISABLED
+SQL  SELECT x FROM E WHERE NOT (x IN (CAST(NULL AS BIGINT)))
+SQL  SELECT x FROM E WHERE x IN (CAST(NULL AS BIGINT))
+SQL  SELECT x FROM E WHERE x IN (CAST(NULL AS BIGINT)) OR id > 0
+SQL  SELECT x FROM E WHERE x IN (CAST(NULL AS BIGINT), x)
+SQL  SELECT x FROM E WHERE x NOT IN (CAST(NULL AS BIGINT))
+SQL  SELECT x IN (CAST(NULL AS BIGINT)) FROM E
+SQL  SHOW DATABASES
+SQL  SHOW SCHEMA TEMPLATES
+SQL  UPDATE A SET arr = ? WHERE id = 1
+SQL  UPDATE F SET f = f + 0.5f WHERE id = 1
+SQL  UPDATE F SET f = f + 0.5 WHERE id = 1
+SQL  UPDATE I SET i = i + 1 WHERE id = 1
+SQL  UPDATE I SET i = id WHERE id = 1
+SQL  UPDATE L SET v = 99 WHERE id = ?
+SQL  UPDATE L SET v = 99 WHERE id = ?
+SQL  UPDATE L SET v = ? WHERE id = ?
+WS-E10 cast_column_to_date_where
+WS-E10 cast_date_value_select
+WS-E10 cast_timestamp_value_select
+WS-E10 nan_in_then_in_explain
+WS-E10 nan_in_then_in_where
+WS-E10 nan_order_by_suffix_explain
+WS-E10 nan_order_by_suffix_where
+WS-E10 nan_then_eq_explain
+WS-E10 nan_then_eq_where
+WS-E10 timestamp_column_rows
+WS-E10 unique_nan_eq_where
+WS-E10 unique_nan_second_insert
+WS-E11-PIN "go_insert_cast_nan": "7ff8000000000001 7ff8000000000000",
+WS-E11-PIN "go_insert_div_nan": "fff8000000000000 fff8000000000000",
+WS-E11-PIN "go_insert_float_div_nan": "fff8000000000000 fff8000000000000",
+WS-E11-PIN "java_insert_cast_nan": "OK 1",
+WS-E11-PIN "java_insert_div_nan": "ERROR 22000 SemanticException A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.",
+WS-E11-PIN "java_insert_float_div_nan": "OK 1",
+WS-E11-PIN "java_t_d_id1": "7ff8000000000000",
+WS-E11-PIN "java_t_d_id3": "fff8000000000000",
+WS-E11-PIN "java_t_f_id1": "7fc00000",
+WS-E11-PIN "java_t_f_id3": "ffc00000",
+WS-E12-COST "in2_conjunct": "ERROR java RelationalException: expected boolean expression but got BOOLEAN AS _0",
+WS-E12-COST "in2_conjunct_thrice": "ERROR java VerifyException: com.google.common.base.VerifyException",
+WS-E12-COST "in2_conjunct_twice": "ERROR java VerifyException: com.google.common.base.VerifyException",
+WS-E12-COST "in2": "tasks=3835 PLANNING=3793 REWRITING=42 explain=\"[IN arrayDistinct(promote(@c7 AS ARRAY(LONG))) SORTED] | INJOIN q0 -> { [IN arrayDistinct(promote(@c18 AS ARRAY(LONG)))] | INJOIN q1 -> { SCAN([IS T, EQUALS q0]) | FILTER _.A EQUALS q1 | MAP (_.ID AS ID) } }\"",
+WS-E12-COST "in3": "tasks=19366 PLANNING=19324 REWRITING=42 explain=\"[IN arrayDistinct(promote(@c7 AS ARRAY(LONG))) SORTED] | INJOIN q0 -> { [IN arrayDistinct(promote(@c18 AS ARRAY(LONG)))] | INJOIN q1 -> { [IN arrayDistinct(promote(@c29 AS ARRAY(LONG)))] | INJOIN q2 -> { SCAN([IS T, EQUALS q0]) | FILTER _.A EQUALS q1 AND _.B EQUALS q2 | MAP (_.ID AS ID) } } }\"",
+WS-E12-COST "in4": "tasks=117131 PLANNING=117089 REWRITING=42 explain=\"[IN arrayDistinct(promote(@c7 AS ARRAY(LONG))) SORTED] | INJOIN q0 -> { [IN arrayDistinct(promote(@c18 AS ARRAY(LONG)))] | INJOIN q1 -> { [IN arrayDistinct(promote(@c29 AS ARRAY(LONG)))] | INJOIN q2 -> { [IN arrayDistinct(@c37)] | INJOIN q3 -> { COVERING(T_AB [EQUALS q1, EQUALS q2] -> [A: KEY:[0], B: KEY:[1], ID: KEY:[3]]) ∩ COVERING(T_S [EQUALS q3] -> [ID: KEY:[2], S: KEY:[0]]) COMPARE BY (_.ID) | FILTER _.ID EQUALS q0 | MAP (_.ID AS ID) } } } }\"",
+WS-E12-COST "in7_two_lists": "tasks=2912 PLANNING=2855 REWRITING=57 explain=\"[IN arrayDistinct(promote(@c7 AS ARRAY(LONG))) ⋈ IN arrayDistinct(promote(@c17 AS ARRAY(LONG)))] INUNION q0, q1 -> { ISCAN(IDX_VAL [EQUALS q0]) | FILTER _.CAT EQUALS q1 | MAP (_.ID AS ID, _.VAL AS VAL) } COMPARE BY (_.VAL, _.ID) | MAP (_.ID AS ID)\"",
+WS-E12-COST "in_a_twice": "tasks=641 PLANNING=599 REWRITING=42 explain=\"SCAN([IS T]) | FLATMAP q0 -> { EXPLODE arrayDistinct(promote(@c7 AS ARRAY(LONG))) | FILTER q0.A EQUALS _ AS q1 RETURN (q0.ID AS ID) }\"",
+WS-E12-COST "in_id_twice": "tasks=1443 PLANNING=1401 REWRITING=42 explain=\"[IN arrayDistinct(promote(@c7 AS ARRAY(LONG))) SORTED] | INJOIN q0 -> { SCAN([IS T, EQUALS q0]) | MAP (_.ID AS ID) }\"",
+WS-E12-PIN "go_cast_00": "OK 1",
+WS-E12-PIN "go_cast_01": "ERROR 22F3H: Cannot cast string '-NaN' to DOUBLE: strconv.ParseFloat: parsing \"-NaN\": invalid syntax",
+WS-E12-PIN "go_cast_02": "ERROR 22F3H: Cannot cast string '+NaN' to DOUBLE: strconv.ParseFloat: parsing \"+NaN\": invalid syntax",
+WS-E12-PIN "go_cast_03": "OK 1",
+WS-E12-PIN "go_cast_04": "OK 1",
+WS-E12-PIN "go_cast_05": "OK 1",
+WS-E12-PIN "go_cast_06": "OK 1",
+WS-E12-PIN "go_cast_07": "OK 1",
+WS-E12-PIN "go_cast_08": "OK 1",
+WS-E12-PIN "go_cast_09": "OK 1",
+WS-E12-PIN "go_cast_10": "ERROR 22F3H: Cannot cast string '1.5d' to DOUBLE: strconv.ParseFloat: parsing \"1.5d\": invalid syntax",
+WS-E12-PIN "go_cast_11": "ERROR 22F3H: Cannot cast string '1.5D' to DOUBLE: strconv.ParseFloat: parsing \"1.5D\": invalid syntax",
+WS-E12-PIN "go_cast_12": "ERROR 22F3H: Cannot cast string '1.5f' to DOUBLE: strconv.ParseFloat: parsing \"1.5f\": invalid syntax",
+WS-E12-PIN "go_cast_13": "ERROR 22F3H: Cannot cast string '1.5F' to DOUBLE: strconv.ParseFloat: parsing \"1.5F\": invalid syntax",
+WS-E12-PIN "go_cast_14": "OK 1",
+WS-E12-PIN "go_cast_15": "OK 1",
+WS-E12-PIN "go_cast_16": "OK 1",
+WS-E12-PIN "go_cast_17": "OK 1",
+WS-E12-PIN "go_cast_18": "ERROR 22F3H: Cannot cast string '1e400' to DOUBLE: strconv.ParseFloat: parsing \"1e400\": value out of range",
+WS-E12-PIN "go_cast_19": "OK 1",
+WS-E12-PIN "go_cast_20": "OK 1",
+WS-E12-PIN "go_cast_21": "OK 1",
+WS-E12-PIN "go_insert_div_nan": "OK 1",
+WS-E12-PIN "go_insert_max": "OK 1",
+WS-E12-PIN "go_insert_min": "OK 1",
+WS-E12-PIN "go_insert_one": "OK 1",
+WS-E12-PIN "go_t_id100": "7ff8000000000001",
+WS-E12-PIN "go_t_id103": "7ff8000000000001",
+WS-E12-PIN "go_t_id104": "7ff8000000000001",
+WS-E12-PIN "go_t_id105": "7ff0000000000000",
+WS-E12-PIN "go_t_id106": "fff0000000000000",
+WS-E12-PIN "go_t_id107": "7ff0000000000000",
+WS-E12-PIN "go_t_id108": "7ff0000000000000",
+WS-E12-PIN "go_t_id109": "7ff0000000000000",
+WS-E12-PIN "go_t_id114": "3ff8000000000000",
+WS-E12-PIN "go_t_id115": "4020000000000000",
+WS-E12-PIN "go_t_id116": "4008000000000000",
+WS-E12-PIN "go_t_id117": "408f400000000000",
+WS-E12-PIN "go_t_id119": "0000000000000000",
+WS-E12-PIN "go_t_id120": "3fe0000000000000",
+WS-E12-PIN "go_t_id121": "4014000000000000",
+WS-E12-PIN "go_t_id1": "fff8000000000000",
+WS-E12-PIN "go_t_id2": "3ff0000000000000",
+WS-E12-PIN "go_u_id10": "7ff8000000000001",
+WS-E12-PIN "go_u_id11": "7ff8000000000001",
+WS-E12-PIN "java_cast_00": "OK 1",
+WS-E12-PIN "java_cast_01": "OK 1",
+WS-E12-PIN "java_cast_02": "OK 1",
+WS-E12-PIN "java_cast_03": "ERROR 22F3H SemanticException Invalid cast operation Cannot cast string 'nan' to DOUBLE: For input string: \"nan\"",
+WS-E12-PIN "java_cast_04": "ERROR 22F3H SemanticException Invalid cast operation Cannot cast string 'NAN' to DOUBLE: For input string: \"NAN\"",
+WS-E12-PIN "java_cast_05": "OK 1",
+WS-E12-PIN "java_cast_06": "OK 1",
+WS-E12-PIN "java_cast_07": "OK 1",
+WS-E12-PIN "java_cast_08": "ERROR 22F3H SemanticException Invalid cast operation Cannot cast string 'inf' to DOUBLE: For input string: \"inf\"",
+WS-E12-PIN "java_cast_09": "ERROR 22F3H SemanticException Invalid cast operation Cannot cast string 'infinity' to DOUBLE: For input string: \"infinity\"",
+WS-E12-PIN "java_cast_10": "OK 1",
+WS-E12-PIN "java_cast_11": "OK 1",
+WS-E12-PIN "java_cast_12": "OK 1",
+WS-E12-PIN "java_cast_13": "OK 1",
+WS-E12-PIN "java_cast_14": "OK 1",
+WS-E12-PIN "java_cast_15": "OK 1",
+WS-E12-PIN "java_cast_16": "OK 1",
+WS-E12-PIN "java_cast_17": "ERROR 22F3H SemanticException Invalid cast operation Cannot cast string '1_000' to DOUBLE: For input string: \"1_000\"",
+WS-E12-PIN "java_cast_18": "OK 1",
+WS-E12-PIN "java_cast_19": "OK 1",
+WS-E12-PIN "java_cast_20": "OK 1",
+WS-E12-PIN "java_cast_21": "OK 1",
+WS-E12-PIN "java_insert_div_nan": "OK 1",
+WS-E12-PIN "java_insert_max": "OK 1",
+WS-E12-PIN "java_insert_min": "OK 1",
+WS-E12-PIN "java_insert_one": "OK 1",
+WS-E12-PIN "java_t_d_id100": "7ff8000000000000",
+WS-E12-PIN "java_t_d_id101": "7ff8000000000000",
+WS-E12-PIN "java_t_d_id102": "7ff8000000000000",
+WS-E12-PIN "java_t_d_id105": "7ff0000000000000",
+WS-E12-PIN "java_t_d_id106": "fff0000000000000",
+WS-E12-PIN "java_t_d_id107": "7ff0000000000000",
+WS-E12-PIN "java_t_d_id110": "3ff8000000000000",
+WS-E12-PIN "java_t_d_id111": "3ff8000000000000",
+WS-E12-PIN "java_t_d_id112": "3ff8000000000000",
+WS-E12-PIN "java_t_d_id113": "3ff8000000000000",
+WS-E12-PIN "java_t_d_id114": "3ff8000000000000",
+WS-E12-PIN "java_t_d_id115": "4020000000000000",
+WS-E12-PIN "java_t_d_id116": "4008000000000000",
+WS-E12-PIN "java_t_d_id118": "7ff0000000000000",
+WS-E12-PIN "java_t_d_id119": "0000000000000000",
+WS-E12-PIN "java_t_d_id120": "3fe0000000000000",
+WS-E12-PIN "java_t_d_id121": "4014000000000000",
+WS-E12-PIN "java_t_d_id1": "fff8000000000000",
+WS-E12-PIN "java_t_d_id2": "3ff0000000000000",
+WS-E12-PIN "java_u_d_id10": "fff8000000000000",
+WS-E12-PIN "java_u_d_id11": "fff8000000000000",
+WS-E12-PIN "x_go_cast_nan_bits": "7ff8000000000001",
+WS-E12-PIN "x_java_insert_nan_beside_go_row": "OK 1",
+WS-E12-PIN "x_java_probe_explain": "COVERING(T_D [EQUALS CAST(@c9 AS DOUBLE)] -> [D: KEY:[0], ID: KEY:[2]]) | MAP (_.ID AS ID)",
+WS-E12-PIN "x_java_probe_rows": "[]",
+WS-E12-PIN "x_t_d_id1": "7ff8000000000000",
+WS-E12-PIN "x_t_d_id2": "7ff8000000000001",
+WS-E2 b64_literal_lower
+WS-E2 b64_literal_upper
+WS-E2 coalesce_bytes
+WS-E2 coalesce_eager_div0_column
+WS-E2 coalesce_eager_div0_literal
+WS-E2 coalesce_incompatible
+WS-E2 explain_snapshot
+WS-E2 greatest_bytes
+WS-E2 int_column_eq_literal
+WS-E2 like_bad_escape_empty_table
+WS-E2 like_bad_escape_explain
+WS-E2 like_bad_escape_filtered_out
+WS-E2 like_bad_escape_null_operand
+WS-E2 like_dangling_escape_empty_table
+WS-E2 literal_charset_prefix
+WS-E2 literal_collate
+WS-E2 literal_national
+WS-E2 nullability_arith
+WS-E2 nullability_coalesce_notnull_nullable
+WS-E2 nullability_coalesce_nullable_literal
+WS-E2 nullability_coalesce_nullable_nullable
+WS-E2 nullability_greatest_notnull
+WS-E2 nullability_greatest_nullable
+WS-E2 nullability_least_mixed
+WS-E2 nullability_scalar_function
+WS-E2 null_array_comparison_operand
+WS-E2 null_array_function_argument
+WS-E2 prepared_boolean
+WS-E2 prepared_double
+WS-E2 prepared_int_vs_int_column
+WS-E2 prepared_in_two
+WS-E2 prepared_like_null_pattern
+WS-E2 prepared_long_vs_int_column
+WS-E2 prepared_named
+WS-E2 prepared_named_dollar
+WS-E2 prepared_select_then_where
+WS-E2 prepared_two_where
+WS-E3 in_array_parameter
+WS-E3 insert_int_into_int_column
+WS-E3 insert_long_into_int_column
+WS-E3 insert_long_overflow_into_int_column
+WS-E3 mixed_named_and_positional
+WS-E3 named_parameter_twice
+WS-E3 order_by_constant_expression
+WS-E3 order_by_string_literal
+WS-E3 snapshot_connection_explain
+WS-E3 snapshot_connection_insert
+WS-E3 snapshot_connection_select
+WS-E3 uuid_parameter
+WS-E4 arith_untyped_null_param
+WS-E4 array_cast_null_empty_table
+WS-E4 array_cast_null_nonempty_table
+WS-E4 array_eq_column_element
+WS-E4 array_eq_literal
+WS-E4 array_eq_parenthesised_operand
+WS-E4 coalesce_true_erroring_tail_select
+WS-E4 coalesce_true_erroring_tail_where
+WS-E4 dry_run_connection_insert
+WS-E4 dry_run_connection_select
+WS-E4 dry_run_connection_update
+WS-E4 greatest_negative_doubles
+WS-E4 greatest_negative_floats
+WS-E4 greatest_negative_longs
+WS-E4 in_cast_null_empty_table
+WS-E4 in_cast_null_nonempty_table
+WS-E4 in_list_order
+WS-E4 insert_double_into_float_column
+WS-E4 insert_double_literal_into_float_column
+WS-E4 insert_float_into_float_column
+WS-E4 insert_float_literal_into_float_column
+WS-E4 insert_int_into_bigint_column
+WS-E4 insert_select_then_where_order
+WS-E4 insert_untyped_null_param
+WS-E4 least_negative_doubles
+WS-E4 nn_add_literals
+WS-E4 nn_bitand_literals
+WS-E4 nn_coalesce_literals
+WS-E4 nn_greatest_literals
+WS-E4 nn_literal
+WS-E4 nn_mod_literals
+WS-E4 nn_pk_plus_literal
+WS-E4 select_expr_then_where_order
+WS-E4 select_untyped_null_param
+WS-E4 snapshot_connection_create_database
+WS-E4 snapshot_connection_delete
+WS-E4 snapshot_connection_drop_database
+WS-E4 snapshot_connection_explain_insert
+WS-E4 snapshot_connection_show_databases
+WS-E4 snapshot_connection_show_templates
+WS-E4 snapshot_connection_update
+WS-E4 subquery_order
+WS-E4 too_few_parameters
+WS-E4 too_many_parameters
+WS-E4 update_set_then_where_order
+WS-E4 where_then_having_order
+WS-E5 add_int_boolean_select
+WS-E5 add_string_int_select
+WS-E5 add_string_string_select
+WS-E5 array_column_eq_column_and_null
+WS-E5 array_null_element_eq_literal
+WS-E5 cast_null_plus_one_select
+WS-E5 coalesce_and_head_where
+WS-E5 coalesce_arith_head_where
+WS-E5 coalesce_bound_null_head_where
+WS-E5 coalesce_bound_true_head_select
+WS-E5 coalesce_bound_true_head_where
+WS-E5 coalesce_cast_null_head_erroring_tail_where
+WS-E5 coalesce_cast_null_head_where
+WS-E5 coalesce_int_literal_head_where
+WS-E5 coalesce_not_head_select
+WS-E5 coalesce_not_head_where
+WS-E5 coalesce_not_head_where_explain
+WS-E5 coalesce_null_head_erroring_tail_where
+WS-E5 coalesce_null_head_where
+WS-E5 coalesce_or_head_where
+WS-E5 coalesce_true_head_where_explain
+WS-E5 describe_select
+WS-E5 dry_run_connection_create_template
+WS-E5 dry_run_connection_delete
+WS-E5 dry-run template after its drop: 42F55 RelationalException "SchemaTemplate 'WSE5_DRYRUN_TPL' is not in catalog"
+WS-E5 greatest_nan_double
+WS-E5 greatest_negative_long_columns
+WS-E5 greatest_negative_long_literals
+WS-E5 greatest_zero_doubles
+WS-E5 greatest_zero_floats
+WS-E5 group_by_literal_control
+WS-E5 having_literal_control
+WS-E5 in_cast_null_explain
+WS-E5 in_cast_null_filtered_out
+WS-E5 in_cast_null_mixed_empty_table
+WS-E5 in_cast_null_mixed_nonempty_table
+WS-E5 inline_null_plus_one_select
+WS-E5 inline_null_plus_one_where
+WS-E5 in_literal_and_cast_null_explain
+WS-E5 insert_array_parameter
+WS-E5 insert_double_expr_into_float_column
+WS-E5 insert_double_literal_into_bigint_column
+WS-E5 insert_empty_array_parameter
+WS-E5 insert_float_literal_into_double_column
+WS-E5 insert_int_expr_into_int_column
+WS-E5 insert_int_literal_into_double_column
+WS-E5 insert_int_literal_into_float_column
+WS-E5 insert_int_param_into_float_column
+WS-E5 insert_long_expr_into_int_column
+WS-E5 insert_long_literal_into_int_column
+WS-E5 insert_null_array_parameter
+WS-E5 insert_select_bigint_column_into_int
+WS-E5 insert_select_double_column_into_float
+WS-E5 insert_select_int_column_into_bigint
+WS-E5 in_single_literal_explain
+WS-E5 least_infinite_doubles
+WS-E5 least_long_literals
+WS-E5 least_nan_double
+WS-E5 least_overflowing_literal
+WS-E5 null_strict_cast_null_beside_div0_select
+WS-E5 null_strict_cast_null_beside_div0_select_explain
+WS-E5 null_strict_cast_null_beside_div0_where
+WS-E5 null_strict_cast_null_beside_div0_where_empty_table
+WS-E5 null_strict_cast_null_beside_div0_where_explain
+WS-E5 null_strict_column_beside_cast_null_where_explain
+WS-E5 null_strict_null_beside_div0_select
+WS-E5 read_scope_covering_explain
+WS-E5 read_scope_covering_serializable_insert
+WS-E5 read_scope_covering_snapshot_insert
+WS-E5 read_scope_covering_snapshot_update
+WS-E5 read_scope_fetch_explain
+WS-E5 read_scope_fetch_serializable_insert
+WS-E5 read_scope_fetch_serializable_update_fetched
+WS-E5 read_scope_fetch_snapshot_insert
+WS-E5 read_scope_fetch_snapshot_update_fetched
+WS-E5 read_scope_scan_explain
+WS-E5 read_scope_scan_serializable_insert
+WS-E5 read_scope_scan_snapshot_insert
+WS-E5 read_scope_scan_snapshot_update
+WS-E5 snapshot_connection_describe_schema
+WS-E5 snapshot_connection_describe_select
+WS-E5 snapshot_connection_describe_template
+WS-E5 snapshot_connection_desc_select
+WS-E5 snapshot_connection_help
+WS-E5 sub_string_int_select
+WS-E5 update_array_parameter
+WS-E5 update_float_column_plus_double
+WS-E5 update_float_column_plus_float
+WS-E5 update_int_column_from_bigint_column
+WS-E5 update_int_column_plus_literal
+WS-E6 add_double_string_select
+WS-E6 add_string_double_select
+WS-E6 add_string_float_select
+WS-E6 add_string_large_double_select
+WS-E6 add_string_long_select
+WS-E6 add_string_small_double_select
+WS-E6 coalesce_div0_five_is_null_where
+WS-E6 coalesce_div0_five_is_null_where_explain
+WS-E6 coalesce_not_cast_null_head_where
+WS-E6 coalesce_not_cast_null_head_where_explain
+WS-E6 coalesce_true_div0_and_column_where
+WS-E6 coalesce_true_div0_and_column_where_explain
+WS-E6 first_planning_a_exec
+WS-E6 first_planning_a_explain
+WS-E6 first_planning_b_exec
+WS-E6 first_planning_b_explain
+WS-E6 fold_div0_or_not_false_where
+WS-E6 fold_div0_or_not_false_where_explain
+WS-E6 in_cast_null_case_nonempty_table
+WS-E6 in_cast_null_join_inner_empty
+WS-E6 in_cast_null_join_inner_explain
+WS-E6 in_cast_null_or_empty_table
+WS-E6 in_cast_null_or_explain
+WS-E6 in_cast_null_or_nonempty_table
+WS-E6 in_cast_null_projection_empty_table
+WS-E6 in_cast_null_projection_nonempty_table
+WS-E6 index_state_index_read_explain
+WS-E6 index_state_record_read_explain
+WS-E6 index_state_record_scan_serializable
+WS-E6 index_state_scanned_serializable
+WS-E6 index_state_scanned_snapshot
+WS-E6 index_state_unused_serializable
+WS-E6 index_state_unused_snapshot
+WS-E6 insert_bad_string_into_enum
+WS-E6 insert_bad_string_into_uuid
+WS-E6 insert_bound_string_into_enum
+WS-E6 insert_bound_string_into_uuid
+WS-E6 insert_double_array_into_bigint_array
+WS-E6 insert_double_array_into_float_array
+WS-E6 insert_double_expr_array_into_float_array
+WS-E6 insert_double_struct_field_into_float
+WS-E6 insert_empty_array_into_float_array
+WS-E6 insert_int_array_into_float_array
+WS-E6 insert_int_struct_field_into_float
+WS-E6 insert_long_array_into_bigint_array
+WS-E6 insert_string_literal_into_enum
+WS-E6 insert_string_literal_into_uuid
+WS-E6 not_coalesce_false_div0_where
+WS-E6 not_coalesce_false_div0_where_explain
+WS-E6 not_column_comparison_select
+WS-E6 not_false_select
+WS-E6 not_in_cast_null_empty_table
+WS-E6 not_in_cast_null_explain
+WS-E6 not_in_cast_null_nonempty_table
+WS-E6 not_in_paren_cast_null_empty_table
+WS-E6 not_in_paren_cast_null_nonempty_table
+WS-E6 null_strict_div0_cast_null_eq_one_explain
+WS-E6 null_strict_div0_cast_null_eq_one_where
+WS-E6 null_strict_div0_cast_null_is_null_where
+WS-E6 null_strict_div0_cast_null_is_null_where_explain
+WS-E6 read_scope_covering_serializable_update_indexed
+WS-E6 read_scope_covering_snapshot_update_indexed
+WS-E6 read_scope_scan_serializable_update
+WS-E6 trace_coalesce_div0_five_is_null
+WS-E6 trace_coalesce_not_head
+WS-E6 trace_coalesce_true_div0
+WS-E6 trace_fold_div0_or_not_false
+WS-E6 trace_null_strict_column_cast_null_eq_one
+WS-E6 trace_null_strict_div0_cast_null_eq_one
+WS-E6 trace_null_strict_div0_cast_null_is_null
+WS-E6 trace_v4_schema_div0_cast_null_eq_one
+WS-E6 true_and_true_select
+WS-E6 v4_schema_div0_cast_null_eq_one_explain
+WS-E6 v4_schema_div0_cast_null_eq_one_where
+WS-E6 v5_schema_div0_cast_null_eq_one_where_first
+WS-E7 case_div0_branch_select
+WS-E7 case_literals_select
+WS-E7 cast_column_nullability_select
+WS-E7 cast_literal_nullability_select
+WS-E7 cast_string_to_bigint_select
+WS-E7 cast_uuid_braces
+WS-E7 cast_uuid_component_2_pow_63
+WS-E7 cast_uuid_component_long_max
+WS-E7 cast_uuid_component_past_64_bits
+WS-E7 cast_uuid_empty_component
+WS-E7 cast_uuid_fifth_dash
+WS-E7 cast_uuid_fullwidth_hex
+WS-E7 cast_uuid_short_components
+WS-E7 cast_uuid_surrounding_space
+WS-E7 cast_uuid_thirty_seven_chars
+WS-E7 cast_uuid_unicode_digit
+WS-E7 cast_uuid_wide_first_component
+WS-E7 conj_false_explain
+WS-E7 conj_false_where
+WS-E7 conj_true_explain
+WS-E7 conj_true_where
+WS-E7 constant_expression_comparand_explain
+WS-E7 constant_expression_comparand_where
+WS-E7 constant_expression_range_explain
+WS-E7 enum_lowercase_bound
+WS-E7 enum_lowercase_literal
+WS-E7 enum_padded_literal
+WS-E7 in_own_column_item_explain
+WS-E7 in_own_column_item_where
+WS-E7 is_not_null_coalesce_div0_where
+WS-E7 is_null_case_both_arithmetic_where
+WS-E7 is_null_case_div0_branch_where
+WS-E7 is_null_case_div0_condition_where
+WS-E7 is_null_case_literals_where
+WS-E7 is_null_cast_div0_where
+WS-E7 is_null_cast_string_to_bigint_where
+WS-E7 is_null_greatest_div0_where
+WS-E7 trace_conj_false
+WS-E7 trace_conj_true
+WS-E7 trace_constant_expression_comparand
+WS-E7 uuid_bound_braces
+WS-E7 uuid_bound_no_dashes
+WS-E7 uuid_bound_plus_sign_component
+WS-E7 uuid_bound_short_components
+WS-E7 uuid_bound_surrounding_space
+WS-E7 uuid_bound_uppercase
+WS-E7 uuid_bound_urn
+WS-E7 uuid_literal_braces
+WS-E7 uuid_literal_no_dashes
+WS-E7 uuid_literal_plus_sign_component
+WS-E7 uuid_literal_short_components
+WS-E7 uuid_literal_surrounding_space
+WS-E7 uuid_literal_uppercase
+WS-E7 uuid_literal_urn
+WS-E8 index_beside_tie_fold_explain
+WS-E8 index_beside_tie_fold_where
+WS-E8 index_eq_annulling_fold_explain
+WS-E8 index_eq_annulling_fold_where
+WS-E8 index_eq_type_annulling_fold_explain
+WS-E8 index_eq_type_annulling_fold_where
+WS-E8 index_eq_type_reducing_fold_explain
+WS-E8 index_eq_type_reducing_fold_where
+WS-E8 index_range_annulling_fold_explain
+WS-E8 index_range_annulling_fold_where
+WS-E8 index_range_type_annulling_fold_explain
+WS-E8 index_range_type_annulling_fold_where
+WS-E8 index_tie_duplicate_or_explain
+WS-E8 index_tie_duplicate_or_where
+WS-E8 index_tie_not_over_comparison_explain
+WS-E8 index_tie_not_over_comparison_where
+WS-E8 or_annulling_fold_where
+WS-E8 pk_annulling_fold_explain
+WS-E8 pk_annulling_fold_where
+WS-E8 pk_beside_tie_fold_explain
+WS-E8 pk_beside_tie_fold_where
+WS-E8 pk_in_annulling_fold_explain
+WS-E8 pk_in_annulling_fold_where
+WS-E8 pk_in_type_annulling_fold_explain
+WS-E8 pk_in_type_annulling_fold_where
+WS-E8 pk_reducing_fold_explain
+WS-E8 pk_reducing_fold_where
+WS-E8 pk_type_annulling_fold_explain
+WS-E8 pk_type_annulling_fold_where
+WS-E8 pk_type_reducing_fold_explain
+WS-E8 pk_type_reducing_fold_where
+WS-E9 date_lt_bound_null_timestamp
+WS-E9 date_lt_null_timestamp_where
+WS-E9 date_not_lt_null_timestamp_where
+WS-E9 f_eq_nan_index_where
+WS-E9 f_eq_nan_rows_where
+WS-E9 f_eq_negative_zero_index_where
+WS-E9 f_eq_negative_zero_rows_where
+WS-E9 f_eq_zero_index_where
+WS-E9 f_eq_zero_rows_where
+WS-E9 f_in_nan_twice_index_explain
+WS-E9 f_in_nan_twice_index_where
+WS-E9 f_in_nan_twice_rows_where
+WS-E9 f_in_signed_zeros_index_explain
+WS-E9 f_in_signed_zeros_index_where
+WS-E9 f_in_signed_zeros_rows_where
+WS-E9 f_in_zero_twice_index_where
+WS-E9 f_rows
+WS-E9 greatest_date_timestamp_select
+WS-E9 least_date_timestamp_select
+WS-E9 nested_ins_explain
+WS-E9 nested_ins_where
+WS-E9 two_in_ordered_explain
+WS-E9 two_in_ordered_where
+WS-E9 union_leg_type_annulling_fold_explain
+WS-E9 union_leg_type_annulling_fold_where
+WS-E9 unique_eq_type_annulling_fold_explain
+WS-E9 unique_eq_type_annulling_fold_where
+WS-E array_bare_null_element
+WS-E array_nullable_column_element
+WS-E array_typed_null_element
+WS-E coalesce_all_null
+WS-E coalesce_evaluates_every_argument
+WS-E coalesce_nullable_column
+WS-E coalesce_single_argument
+WS-E comment_crlf_terminates
+WS-E comment_cr_terminates
+WS-E comment_dash_no_space
+WS-E comment_hash_not_comment
+WS-E comment_marker_in_string
+WS-E comment_mysql_executable_form
+WS-E comment_nested_block
+WS-E comment_unterminated_block
+WS-E comment_unterminated_nested
+WS-E greatest_all_null
+WS-E greatest_mixed_numeric
+WS-E greatest_one_null
+WS-E greatest_single_argument
+WS-E in_bare_null
+WS-E in_bare_null_beside_literal
+WS-E in_column_value_null
+WS-E in_typed_null
+WS-E in_wrapped_null
+WS-E least_nullable_column
+WS-E like_adjacent_literal_pattern
+WS-E like_dangling_escape
+WS-E like_empty_pattern
+WS-E like_enum_operand
+WS-E like_escape_before_ordinary
+WS-E like_escaped_escape
+WS-E like_escape_empty
+WS-E like_escape_is_percent
+WS-E like_escape_is_underscore
+WS-E like_escape_percent
+WS-E like_escape_supplementary
+WS-E like_escape_two_chars
+WS-E like_escape_underscore
+WS-E like_not
+WS-E like_no_trailing_newline_tolerance
+WS-E like_null_pattern
+WS-E like_null_pattern_bad_escape
+WS-E like_numeric_operand
+WS-E like_numeric_pattern
+WS-E like_percent_crosses_newline
+WS-E like_projection
+WS-E like_underscore_matches_newline
+WS-E like_underscore_surrogate_pair
+WS-E literal_adjacent
+WS-E literal_adjacent_predicate
+WS-E literal_adjacent_with_doubled
+WS-E literal_doubled_quote
+WS-E not_in_bare_null
+WS-E options_after_order_by
+WS-E options_ef_search_statement
+WS-E options_inside_subquery
+WS-E options_log_query
+WS-E options_snapshot_select
+WS-E prepared_array_typed_null_element
+WS-E prepared_coalesce_typed_null
+WS-E prepared_eq_typed_null
+WS-E prepared_in_literal_and_typed_null
+WS-E prepared_in_long
+WS-E prepared_in_object_null
+WS-E prepared_int_overflow
+WS-E prepared_in_typed_null
+WS-E prepared_is_null_param
+WS-E prepared_like_param_pattern
+WS-E prepared_limit_param
+WS-E prepared_long_no_overflow
+WS-E prepared_order_by_param
+WS-E prepared_select_long
+WS-E prepared_string_eq

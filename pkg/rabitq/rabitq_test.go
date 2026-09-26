@@ -1,8 +1,12 @@
 package rabitq
 
 import (
+	"bytes"
+	"encoding/binary"
+	"encoding/hex"
 	"math"
 	"math/rand"
+	"runtime"
 	"testing"
 )
 
@@ -604,12 +608,28 @@ func TestQuantizerInterface(t *testing.T) {
 	}
 }
 
+// TestNewQuantizerKeepsItsCount pins that a quantizer carries the extra-bit
+// count it was made with, whatever it is: an unsupported count used to be
+// replaced by 4, so an index configured for 0 or 9 bits stored 4-bit codes.
+// ValidNumExBits is the encoder's range, Java's RaBitQuantizer's 1 to 8.
+func TestNewQuantizerKeepsItsCount(t *testing.T) {
+	t.Parallel()
+	for _, bits := range []int{-1, 0, 1, 4, 8, 9, 15} {
+		if got := NewQuantizer(MetricEuclidean, bits).NumExBits(); got != bits {
+			t.Errorf("NewQuantizer(%d).NumExBits() = %d", bits, got)
+		}
+		if got, want := ValidNumExBits(bits), bits >= 1 && bits <= 8; got != want {
+			t.Errorf("ValidNumExBits(%d) = %t, want %t", bits, got, want)
+		}
+	}
+}
+
 // Scorer must be bit-identical to Distance — it exists only to hoist
 // allocations out of the per-code loop (RFC-094 094.4).
 func TestScorerMatchesDistance(t *testing.T) {
 	t.Parallel()
 	rng := rand.New(rand.NewSource(7))
-	for _, exBits := range []int{0, 1, 2} {
+	for _, exBits := range []int{1, 2, 4} {
 		q := NewQuantizer(MetricEuclidean, exBits)
 		for trial := 0; trial < 200; trial++ {
 			dims := 2 + rng.Intn(64)
@@ -728,5 +748,198 @@ func TestScorerFusedPathMatchesDistance(t *testing.T) {
 				t.Fatalf("dims=%d trial=%d: fused Score=%v Distance=%v", dims, trial, got, want)
 			}
 		}
+	}
+}
+
+// These literal bytes come from the live Java RaBitQuantizer at target
+// fdacd162a9c8acfadc49082b89185c823ab8ae4a. The conformance encoder test
+// independently compares the current Java oracle to Go, including every header.
+func TestRaBitQJavaEncodingGoldens(t *testing.T) {
+	t.Parallel()
+	// Java Math.sqrt retains a native NaN sign, and EncodedRealVector writes
+	// its raw bits. These are independently measured ARM64 Java 4.14.2.0
+	// bytes, not an allowance for either NaN: each architecture has one exact
+	// expected encoding. All finite headers and all decoded bits share the
+	// original AMD64 oracle below. RaBitQArchitectureContract pins the Java side.
+	arm64NaN := map[string]string{
+		"zero_four_1":   "03000000000000000080000000000000007ff8000000000000aa",
+		"zero_four_4":   "03000000000000000080000000000000007ff8000000000000842100",
+		"zero_four_8":   "03000000000000000080000000000000007ff80000000000008040201000",
+		"signed_zero_1": "03000000000000000080000000000000007ff8000000000000a8",
+		"signed_zero_4": "03000000000000000080000000000000007ff80000000000008420",
+		"signed_zero_8": "03000000000000000080000000000000007ff800000000000080402000",
+		"equal_three_8": "034008000000000000bf80182436517a377ff8000000000000ff7fbfc0",
+	}
+
+	for _, tc := range []struct {
+		name       string
+		vector     []float64
+		bits       int
+		hex        string
+		decodedHex string
+	}{
+		{"fma_rounding_boundary_1", []float64{math.Ldexp(9, -29), 1 + math.Ldexp(1, -27)}, 1, "033ff0000004000001bff55555560000003ff4444433ccccd0b0", "023fd43d1364cfeb7c3fee5b9d1737e13a"},
+		{"fma_rounding_boundary_4", []float64{math.Ldexp(9, -29), 1 + math.Ldexp(1, -27)}, 4, "033ff0000004000001bfc084210a2c38793fbf6170e820cff087c0", "023fa081ee50c76d733feffbbdbc82640f"},
+		{"fma_rounding_boundary_8", []float64{math.Ldexp(9, -29), 1 + math.Ldexp(1, -27)}, 8, "033ff0000004000001bf80080403ffbebf3f7e75902131b8e3807fc0", "023f60080200ff5f303feffffbfffdbf01"},
+		{"quantization_seven_1", []float64{1, -2, 3, -4, 5, -6, 7}, 1, "034061800000000000c01cb7cb7cb7cb7d4014f6d59069a9589ccc", "023ffb9d471196c4f4bffb9d471196c4f44014b5f54d3113b7c014b5f54d3113b74014b5f54d3113b7c014b5f54d3113b74014b5f54d3113b7"},
+		{"quantization_seven_4", []float64{1, -2, 3, -4, 5, -6, 7}, 4, "034061800000000000bfecb7cb7cb7cb7d3fdd686479602f4492ec7d8be0", "023ff1f16ecbd15537c0002616eaa2ccb2400753766f5ceec8c00e80d5f41710de4014a2729d9721ffc01839225ff4330a401bcfd222514415"},
+		{"quantization_seven_8", []float64{1, -2, 3, -4, 5, -6, 7}, 8, "034061800000000000bfac5d9b4d4be0cc3f9a089c0e09b496922ded86fda09ff8", "023ff02d618dc15c66c0001103f43c879a40080b5721986100c01002d5277a1d344013fffebe2809e7c017fd2854d5f69a401bfa51eb83e34e"},
+		{"asymmetric_four_1", []float64{-3.0, 8.0, 2.0, 6.0}, 1, "03405c400000000000c0233bea3677d46d400c595f2ee831d77b", "02c003040a596e6555401c860f862598004003040a596e6555401c860f86259800"},
+		{"asymmetric_four_4", []float64{-3.0, 8.0, 2.0, 6.0}, 4, "03405c400000000000bff0b3bb6b02f4c43fe0710ee86e1c9957e7b0", "02c006f5b4957b29e140202d1c520b23533ffd38b749e29264401800dfb38c65f7"},
+		{"asymmetric_four_8", []float64{-3.0, 8.0, 2.0, 6.0}, 8, "03405c400000000000bfb01acb293941cf3f97bc98cf24394a507fa7fbe0", "02c00807fa605cee07402002a273cd53863ffff52a1cf6e4144017f7df95b92b0f"},
+		{"axis_four_1", []float64{0.0, -7.0, 0.0, 0.0}, 1, "034048800000000000c022aaaaaaaaaaaa4021bbbbbbbbbbb98a", "0240002a725cde2cb9c0183fab8b4d431640002a725cde2cb940002a725cde2cb9"},
+		{"axis_four_4", []float64{0.0, -7.0, 0.0, 0.0}, 4, "034048800000000000bfece739ce739ce73feb7543b7543ca8802100", "023fccdbb419ae6b01c01bf4d678e0f7a93fccdbb419ae6b013fccdbb419ae6b01"},
+		{"axis_four_8", []float64{0.0, -7.0, 0.0, 0.0}, 8, "034048800000000000bfac0e070381c0e03faaa6ed1021eeba8000201000", "023f8c0dfc73b7ea8dc01bfff5757e0e983f8c0dfc73b7ea8d3f8c0dfc73b7ea8d"},
+		{"equal_three_1", []float64{1.0, 1.0, 1.0}, 1, "034008000000000000bff55555555555530000000000000000fc", "023ff00000000000003ff00000000000003ff0000000000000"},
+		{"equal_three_4", []float64{1.0, 1.0, 1.0}, 4, "034008000000000000bfc08421084210840000000000000000fffe", "023ff00000000000003ff00000000000003ff0000000000000"},
+		{"equal_three_8", []float64{1.0, 1.0, 1.0}, 8, "034008000000000000bf80182436517a37fff8000000000000ff7fbfc0", "023fefffffffffffff3fefffffffffffff3fefffffffffffff"},
+		{"fractional_five_1", []float64{0.1, -1.7, 0.003, 11.5, -0.25}, 1, "034060e6ccdfaca362c02d97b7cbf09dfb4028d27be6b0afb69b40", "024009cce836294ed5c009cce836294ed54009cce836294ed5402359ae289efb20c009cce836294ed5"},
+		{"fractional_five_4", []float64{0.1, -1.7, 0.003, 11.5, -0.25}, 4, "034060e6ccdfaca362bff7af82af5d95293fee1fff7392959d8361f780", "023fd7aa036de29587bffd9484495b3ae93fd7aa036de295874026ecb3527380dbbfd7aa036de29587"},
+		{"fractional_five_8", []float64{0.1, -1.7, 0.003, 11.5, -0.25}, 8, "034060e6ccdfaca362bfb739ec24c3cdae3fa7338723e84bd98136a01fd7d0", "023fbd08632d652f50bffb37dcfa8edc5b3f9739e8f11dbf734026ffd82ac2f514bfcfefa04b88e73e"},
+		{"scalar_1", []float64{3.0}, 1, "034022000000000000c0100000000000000000000000000000c0", "024008000000000000"},
+		{"scalar_4", []float64{3.0}, 4, "034022000000000000bfd8c6318c6318c60000000000000000f8", "024008000000000000"},
+		{"scalar_8", []float64{3.0}, 8, "034022000000000000bf9c82ac402603900000000000000000eb80", "024008000000000000"},
+		{"signed_zero_1", []float64{math.Copysign(0, -1), 0.0, math.Copysign(0, -1)}, 1, "0300000000000000008000000000000000fff8000000000000a8", "02000000000000000000000000000000000000000000000000"},
+		{"signed_zero_4", []float64{math.Copysign(0, -1), 0.0, math.Copysign(0, -1)}, 4, "0300000000000000008000000000000000fff80000000000008420", "02000000000000000000000000000000000000000000000000"},
+		{"signed_zero_8", []float64{math.Copysign(0, -1), 0.0, math.Copysign(0, -1)}, 8, "0300000000000000008000000000000000fff800000000000080402000", "02000000000000000000000000000000000000000000000000"},
+		{"zero_four_1", []float64{0.0, 0.0, 0.0, 0.0}, 1, "0300000000000000008000000000000000fff8000000000000aa", "020000000000000000000000000000000000000000000000000000000000000000"},
+		{"zero_four_4", []float64{0.0, 0.0, 0.0, 0.0}, 4, "0300000000000000008000000000000000fff8000000000000842100", "020000000000000000000000000000000000000000000000000000000000000000"},
+		{"zero_four_8", []float64{0.0, 0.0, 0.0, 0.0}, 8, "0300000000000000008000000000000000fff80000000000008040201000", "020000000000000000000000000000000000000000000000000000000000000000"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if runtime.GOARCH == "arm64" {
+				if armHex, ok := arm64NaN[tc.name]; ok {
+					tc.hex = armHex
+				}
+			}
+			want, err := hex.DecodeString(tc.hex)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := NewRaBitQuantizer(MetricEuclidean, tc.bits).Encode(tc.vector).ToBytes()
+			if !bytes.Equal(got, want) {
+				t.Fatalf("encoded bytes = %x, Java wants %x", got, want)
+			}
+			wantDecoded, err := hex.DecodeString(tc.decodedHex)
+			if err != nil {
+				t.Fatal(err)
+			}
+			components, err := NewQuantizer(MetricEuclidean, tc.bits).Decode(want, len(tc.vector))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(wantDecoded) != 1+8*len(components) {
+				t.Fatal("invalid decoded golden length")
+			}
+			for i, component := range components {
+				wantBits := binary.BigEndian.Uint64(wantDecoded[1+8*i:])
+				if gotBits := math.Float64bits(component); gotBits != wantBits {
+					t.Errorf("decoded component %d bits = %016x, Java wants %016x", i, gotBits, wantBits)
+				}
+			}
+			decoded, err := EncodedVectorFromBytes(want, len(tc.vector), tc.bits)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := decoded.ToBytes(); !bytes.Equal(got, want) {
+				t.Fatalf("round-trip changed Java header or components: %x, want %x", got, want)
+			}
+		})
+	}
+}
+
+func TestRaBitQDecodeNonpositiveOrNaNNorm(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		norm float64
+	}{
+		{"zero", 0}, {"negative_zero", math.Copysign(0, -1)}, {"negative", -1}, {"nan", math.NaN()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			e := &EncodedVector{Encoded: []int{1, 8, 15, 20}, NumExBits: 4, FAddEx: tc.norm}
+			got, err := NewQuantizer(MetricEuclidean, 4).Decode(e.ToBytes(), 4)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i, v := range got {
+				if math.Float64bits(v) != 0 {
+					t.Errorf("component %d = %v, want positive zero", i, v)
+				}
+			}
+		})
+	}
+}
+
+// This checks codec invariants over finite dyadic inputs, not Java parity;
+// TestRaBitQJavaEncodingGoldens and the live conformance test supply that oracle.
+func FuzzRaBitQEncoding(f *testing.F) {
+	f.Add([]byte{0, 0, 0, 0}, uint8(4))
+	f.Add([]byte{3, 128, 2, 96, 255}, uint8(8))
+	f.Fuzz(func(t *testing.T, input []byte, bitsRaw uint8) {
+		t.Parallel()
+		if len(input) == 0 || len(input) > 128 {
+			return
+		}
+		bits := int(bitsRaw)%8 + 1
+		vector := make([]float64, len(input))
+		var sumSquares int64
+		for i, v := range input {
+			n := int64(v) - 128
+			sumSquares += n * n
+			vector[i] = float64(n) / 16
+		}
+		encoded := NewRaBitQuantizer(MetricEuclidean, bits).Encode(vector)
+		if encoded.FAddEx != float64(sumSquares)/256 {
+			t.Fatalf("stored norm = %v, want exact dyadic norm %v", encoded.FAddEx, float64(sumSquares)/256)
+		}
+		for i, code := range encoded.Encoded {
+			if code < 0 || code >= 1<<(bits+1) {
+				t.Fatalf("component %d code %d outside %d-bit storage", i, code, bits+1)
+			}
+			if vector[i] != float64(int64(input[i])-128)/16 {
+				t.Fatalf("encoder mutated input component %d", i)
+			}
+		}
+		data := encoded.ToBytes()
+		if len(data) != 25+(len(vector)*(bits+1)+7)/8 {
+			t.Fatal("incorrect packed length")
+		}
+		decoded, err := EncodedVectorFromBytes(data, len(vector), bits)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(decoded.ToBytes(), data) {
+			t.Fatal("round-trip changed calibration bits or packed components")
+		}
+		reconstructed, err := NewQuantizer(MetricEuclidean, bits).Decode(data, len(vector))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, component := range reconstructed {
+			if math.IsNaN(component) || math.IsInf(component, 0) {
+				t.Fatalf("finite input reconstructed as %v", component)
+			}
+			if sumSquares == 0 && math.Float64bits(component) != 0 {
+				t.Fatalf("zero residual reconstructed as %v", component)
+			}
+		}
+	})
+}
+
+func TestDotRoundsProductsBeforeAccumulation(t *testing.T) {
+	t.Parallel()
+	v := []float64{math.Ldexp(9, -29), 1 + math.Ldexp(1, -27)}
+	const want uint64 = 0x3ff0000004000001
+	if got := math.Float64bits(dot(v, v)); got != want {
+		t.Fatalf("dot bits = %016x, Java scalar reduction wants %016x", got, want)
+	}
+	// This vector must discriminate fusion, not merely compare two paths
+	// which a compiler could change in the same way.
+	fused := math.FMA(v[1], v[1], float64(v[0]*v[0]))
+	if math.Float64bits(fused) != want+1 {
+		t.Fatalf("counterexample no longer discriminates FMA: %016x", math.Float64bits(fused))
 	}
 }

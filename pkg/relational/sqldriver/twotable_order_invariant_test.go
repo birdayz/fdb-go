@@ -31,7 +31,7 @@ func TestFDB_TwoTableOrderInvariantIndexJoin(t *testing.T) {
 			"CREATE TABLE t2 (id BIGINT, t1_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t2_by_t1 ON t2 (t1_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_2t/s WITH TEMPLATE t2t")
-	dsn := fmt.Sprintf("fdbsql:///testdb_2t?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_2T?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -1,0 +1,70 @@
+**NAK** on commit `826d8ce93`. I recomputed from the commit blob: the design is SHA256 `9bd13fb5626210c0395367a7fa9791b27176c0e325fad264227401b5e128f678`, 2720 lines, and the tree is `a30849866` (both measured). The review was read-only. `git diff`/`git grep` were refused, so I used `git show` and Grep. Anything not marked **measured** comes from reading source.
+
+## Findings, most severe first
+
+**1. Medium (measured): revision 16 deletes the JVM spec "A windowed VECTOR index is validated as Java validates it".**
+- **Lost arms:** the unique windowed index, a window under an OR alone, a window beside one under an OR (Java's `RecordCoreException`, revision 14's class fix), a window under an AND, and two record types. Only the missing-count arm survives (`key_validation_conformance_test.go:1418`).
+- **Evidence:** the v15 green log (`:32-52`) has those five `WINDOWED` lines; the v16 green log has none. No file under `conformance/` contains "does not support unique indexes", "delegate has multiple types" or "must not appear under a disjunction". Positive control: `expectWindowedVerdictAsJava` has 3 hits.
+- **Not declared:** 7.16 doesn't mention the deletion. DIVERGENCES.md:2124 and design 7.14 (`:2493-2499`) still cite the spec. The `RecordCoreException` arm of the helper (`:1518-1521`) is now reached by no spec.
+- **Fix:** restore the five arms and show them green.
+
+**2. Low (measured): Torvalds v15 finding 5 is still open, and the new spec's raw arm tests nothing new.**
+- The P3 raw records (`:705-707`, every `intEntry` writing its value, `:683-687`) are byte-equal to Java's first save. The green console `:152-153` logs identical `java=` bytes for `raw=false` and `raw=true`. So `rewriteRaw` rewrites what is already stored.
+- The wire-order spec re-saves only `javaSS` (`:437-502`). Its `raw` subspace, which holds the valueless `k` (`:362`), is only built by Go (`:429`).
+- So these claims are unmeasured: 7.16 `:2698-2700` ("from the raw bytes … an entry stored without a value") and DIVERGENCES `:3225` ("raw bytes with an entry missing its value").
+- **Fix:** give the raw records bytes Java's first save rewrites (a valueless entry, the oneof member after the maps), and have both engines re-save the wire-order `raw` subspace.
+
+**3. Low (source): RaBitQ with 9–15 extra bits is refused earlier than Java refuses it.**
+- **Go:** `parseHNSWConfig` (`hnsw_options.go:218-229`) runs in `newVectorIndexMaintainer`. Every save, delete and search therefore fails, including `SearchVectorIndexWithPrefix` → `getIndexMaintainer` (`vector_index_maintainer.go:1239`).
+- **Java:** it constructs `RaBitQuantizer` lazily:
+  - in `firstInsert`, only for metrics not preserved under translation (`Insert.java:274-285`);
+  - otherwise only once `canUseRaBitQ()` holds (`Primitives.java:174-182`).
+- **Result:** with EUCLIDEAN(_SQUARE), Java saves and scans until the centroid exists; Go refuses at once. Java-written stores are the hard line under ruling 9.
+- **Claims that overreach:** "in both engines" (`hnsw_options.go:211-216`) and DIVERGENCES `:2129-2131`. The refusal's text is also Go's own; Java's `checkArgument` gives none.
+- **Fix:** refuse where Go's HNSW first encodes with RaBitQ (it already mirrors the lazy bootstrap, `hnsw.go:573,650`), or declare the earlier refusal.
+
+**4. Low (source): `canonicalEntry` drops a map entry's own unknown fields.**
+- It now writes only the key and the value (`record_wire_map_order.go:700-728`). Revision 15 marshalled the parsed entry, which keeps unknown fields (`:304-311`).
+- This is reached for an earlier entry of an unchanged key written twice.
+- Java's DynamicMessage writes an entry's unknown fields after its known fields (source hypothesis). DIVERGENCES `:3226`, "FIELD ORDER only", therefore claims too much.
+- **Fix:** append `entry.GetUnknown()` and add a unit pin.
+
+**5. Low: two fixes have no regression test.**
+- **Torvalds v15 finding 1:** the evolution check's RaBitQ bit count. The new evolution rows (`metadata_evolution_validator_test.go:2876-2877`) cover metric aliases only. Nothing uses a Java-only spelling of the bit count or its alias.
+- **The dry run over the stored record** (`store_api.go:390-393`): no test calls it on a map type. `DryRunSaveRecord` has 0 hits in `record_wire_map_order*_test.go`, against 20 in 5 test files revision 16 did not change.
+
+**6. Low: superseded text left in place.**
+- DIVERGENCES `:2100-2106` still says `parseHNSWConfig` is "permissive … fall through to a DEFAULT. The index builds, writes, and serves queries". Its own `:2128-2129` contradicts that.
+- A conformance comment (`:1498-1502`) says any other IllegalArgumentException's text is "Go's own". `:1511` now compares that text with Java's.
+
+## Nits
+- 7.14 `:2475` ("pins each case in Go", a Graefe v15 nit) is not marked superseded. The storage v15 nit on `wsc15-red-first/TREE` is unanswered.
+- When only an alias changed, the evolution refusal names the canonical option (`metadata_evolution_validator.go:1035`). Java names the key found in `changedOptions` (`VectorIndexOptionsHelper.java:165-166`).
+- DIVERGENCES `:3224` says "both indexes are unchanged", but the P3 spec has no index.
+- `windowedEdited` lost its doc comment (`:1455`).
+- The `maxLCSCells` fallback is not declared.
+
+## v15 findings checked
+- **Graefe 1 (ranges):** resolved. Measured: the 13 Config rows match Java, texts included; 11 of them red on `8e515423b`. The m-150 row is red on the old tree and green now.
+- **Graefe 2 / storage 2 / Torvalds 3a, 3c:** resolved by scoping the claims. The oneof field order is measured in `RESAVE_P3`, record 2.
+- **Graefe 3 / storage 1 / Torvalds 3b:** resolved. Measured: red writes `1a030a0162` (the zero value dropped); green equals Java.
+- **Torvalds 2 / storage 3:** resolved. I traced both examples through the LCS by hand, and both subtests are red on the old tree and green now.
+- **Torvalds 4 / storage 4:** resolved. The booleans and aliases rows are red on the old tree and green now.
+- **Torvalds 1 and 6:** the code is fixed but has no pin (finding 5).
+- **Torvalds 5:** still open (finding 2).
+- **Nits resolved:**
+  - the 7.14 memo and "last switch" sentences, and `:1528-1531`, are marked superseded;
+  - reach is computed once per walk;
+  - the preset comment is corrected;
+  - the phrase in `vector_index_validation.go` is gone;
+  - the mutation README records the mutated lines.
+- **Revisions 12–15:** the MAPWIRE checks are still green (measured): the byte-equal re-save, the six index pairs, and Java's rebuild. The only thing revision 16 undoes is finding 1's evidence.
+
+## Measured
+- **Green:** TREE shows HEAD `826d8ce93`, index tree `a30849866` = `826d8ce93^{tree}`, clean.
+  - Conformance: ran 46 of 1827 specs, all passed.
+  - Record layer: ran 73 of 3724 specs; the new unit tests show `PASS` by name.
+- **Hook:** "Executed 39 out of 94 tests: 94 tests pass" (the rest cached, as the owner directed).
+- **Red** (`1672d135b` = `8e515423b^{tree}`, plus the named adapters): the 15 JVM failures 7.16 lists, and 3 failing unit tests.
+
+The preserved boundaries are untouched.

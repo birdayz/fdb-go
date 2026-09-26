@@ -24,7 +24,7 @@ func TestFDB_ColumnMetadataProbe(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE colmetap "+
 			"CREATE TABLE t (id BIGINT, d DOUBLE, s STRING, flag BOOLEAN, bin BYTES, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_colmetap/s WITH TEMPLATE colmetap")
-	dsn := fmt.Sprintf("fdbsql:///testdb_colmetap?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_COLMETAP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -1,0 +1,25 @@
+{
+  "scope": "Only six existing FROM-less scenarios, the recursive counter, scalar COUNT subquery and early recursive-width diagnostic; original SQL text and all other stanzas unchanged. Not a blanket golden refresh.",
+  "changed_stanzas": [
+    "quoted_identifier_labels.yaml#30",
+    "recursive_cte.yaml#15",
+    "scalar_subquery_java.yaml#2",
+    "select_no_from.yaml#0",
+    "select_no_from.yaml#1",
+    "select_no_from.yaml#2",
+    "select_no_from.yaml#3",
+    "select_no_from.yaml#4",
+    "select_no_from.yaml#5"
+  ],
+  "total_stanzas": 2995,
+  "unchanged_stanzas": 2986,
+  "old_sha256": "0f90bfdb7d94ba653795ddb586ee9388f61578758634ca58b3240da5816bfe9e",
+  "new_sha256": "ac7e8f5e9796ffb569b0ffe82f3467cddd6f0dc70e82d72eb25a6085149f630c",
+  "header_delta": "plan_errors=312 -> plan_errors=304; other fields unchanged",
+  "reason": {
+    "select_no_from.yaml#0..5": "Ordinary projections over zero-column singleton Explode; no table scan.",
+    "recursive_cte.yaml#15": "Existing Go recursive-sort extension uses singleton seed and promoted common row.",
+    "scalar_subquery_java.yaml#2": "Scalar-subquery projection uses singleton outer input.",
+    "quoted_identifier_labels.yaml#30": "Completed recursive schema publication detects differing leg widths earlier; preserves outer 0AF00 and surfaces 42F64 cause."
+  }
+}

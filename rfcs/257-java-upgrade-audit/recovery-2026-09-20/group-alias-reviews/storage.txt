@@ -1,0 +1,29 @@
+**ACK — WS-A + WS-E1 implementation code** at candidate tree `61b00938a369bc94d683c44d172dbb2cbaffbd41`.
+
+I read all four prior reports, the complete 95-file tree-to-tree delta from `664b241c57b71829cb40687a1e26cc3dc3e145e6`, necessary frozen source, and the structured evidence populations. Milestone base remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`. **No remaining implementation defect identified; no further code fix required.**
+
+The prior GROUP/output-identity defects are closed:
+
+- [select_parser.go:1633](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:1633) preserves already-bound star attributes and excludes qualified outputs from alias substitution. The aggregate-argument guard at line 1646 likewise preserves qualified source arguments. Existing native-slot matching and ungrouped-source validation consequently receive the original semantic owners.
+- [select_parser.go:1665](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:1665) excludes positional and qualified ORDER keys from GROUP-alias rewriting. [plan_visitor.go:1683](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/plan_visitor.go:1683) permits GROUP redirection only for authored bare references that SELECT-alias rebasing has not already claimed.
+- [select_parser.go:1347](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:1347) compares captured identifier segments, distinguishing `"P.ID"` from `P.ID` while retaining genuine duplicate rejection.
+- The diagnostic namespace fix at [latency_attribution_stress_test.go:170](/home/birdy/projects/fdb-go/pkg/relational/sqldriver/stress/latency_attribution_stress_test.go:170) includes TempDir’s randomized parent and sequence. Its private client handle isolates telemetry; the nominal fixture/query sequence remains unchanged.
+
+**Accepted storage scope remains intact.** There is no delta in RaBitQ, record-layer storage, generated/proto files, FDB client/wire code or dependency versions. Persisted formats and the accepted architecture/rounding/NaN-native encoder contract remain unchanged. Array guards, descriptor closure and fixture fixes retain acceptance, as do nullable-array/raw/scalar/sorting extensions. FDB remains **7.3.77**.
+
+I independently reconciled the [verification evidence](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/recovery-2026-09-20/group-alias-closure/verification.json):
+
+- **93 uncached targets:** 40,665 RUN = 40,660 PASS + five existing skips. **14 uncached race targets:** 21,118 RUN = PASS. Per-target name multisets reconcile; both Java populations are 1,358/1,477.
+- All **187 listed artifact hashes** and the **6,305/6,306/6,383-file** freezes match. Only the three manual-stress files changed after full verification; candidate additions after final code are documentation/evidence.
+- Fourteen retained SQL cases, the bound-owner unit and six compiled mutation kills discriminate the repair. Java’s fourteen measured cases preserve both positional-star **42803 refusals** alongside independently asserted Go positives.
+- Final stress race: **40 RUN/PASS**, twenty telemetry samples, exact 1M. Validator mutation/restoration and isolation repetitions reconcile. Both later 93-target checks remain **one executed/92 cached**; the cancelled run receives no green credit.
+- All eighty instrumented samples and eighty-eight nominal timings reconcile. Thirty-two profiles and ten event extracts reproduce the three critical waits, excluding preceding EXPLAIN. Current index GRV wait is **16.580ms**, including **15.478ms awaiting reply**, with **1.027ms before flusher execution**. These quantities do not justify attributing the total to batching; callback/store spans overlap.
+
+Separate unmet verification/publication gates:
+
+- The **<5ms aspiration remains unmet**. Fresh nominal early-read deterioration did not repeat, but other current medians worsened. No universal parity or speedup is established. Client traces cannot separate server from network/kernel delay or explain historical untraced 52/41ms outliers.
+- Historical executor startup-timeout causation still requires unavailable original artifacts; CLI networking fixes and greens do not establish it.
+- Legacy RaBitQ deployment still requires disable/rebuild.
+- Restored `birdayz` authentication does not remove the owner’s no-commit/no-push constraint. PR786 remains draft/unchanged; publication and merge remain unauthorized.
+
+This ACK excludes WS-B–K and whole-upgrade completion. No edits, builds/tests, agents/worktrees, Git-state changes or GitHub contact occurred.

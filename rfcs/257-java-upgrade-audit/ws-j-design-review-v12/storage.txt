@@ -1,0 +1,88 @@
+**NAK.** I reviewed tree `97d0b9181d02696345e166b12d9ba09b18141c49`. The design's SHA256 is `08b7a4e968f2908a700744c1a438fd17f0eaafc1d8886d97803a951eae61ef9c` (2721 lines), recomputed from the tree. Java is at `fdacd162a`. This was read-only: I ran no tests, probes or mutations. One HIGH and two MEDIUM findings block the ACK.
+
+## What holds (measured)
+- **The evidence matches the tree.** Four landed files hash to their `src.sha` entries, and `check.txt` has 1135 "OK" lines. The `just test` tree `79499fef` differs from this one only in review directories and the evidence file.
+- **Absent root.** `indexFromProto` now refuses it before the key is read (`metadata_proto.go:886`). The WSJIXK fifth shape agrees on both engines (`wsj-ev2.log:2166`), and the unit subtest passes (`final-targets.log:7832`).
+- **`HeldBy`** is now found breadth-first from the union (`metadata_proto.go:503`). Its value is asserted per shape, including W for the nested STRUCT (`wsj-ev2.log:2279`) and the unit's nested shape.
+- **The rest reproduces:**
+  - the tally is unchanged across both passes;
+  - there are 180 `md-canonical-differ` lines, and BUILT-TWICE reports 354;
+  - `TestLegacyUnionTemplateErrorRemedies` has its PASS line (`metadata-test-v.log:164`).
+
+## The v11 findings
+- **Resolved:**
+  - R1 is now refused beside an index predicate or the record count key.
+  - `CreateTemplate` now holds the `v′ <= latest` and relational-validator checks.
+  - §9 (p) is corrected.
+  - The lock design is specified.
+  - `HeldBy` is found by reachability.
+  - The absent root is refused.
+  - The evidence gap is closed.
+  - R2's rebuild admission is scoped.
+  - The carried route marks (d) as a template being stored.
+  - The guard reads the whole `(t)` prefix for a fresh name.
+  - The restore refuses renames.
+- **Only partly resolved:**
+  - the restore check (finding 1);
+  - the framing (finding 3);
+  - "no later version can reuse it" (finding 2);
+  - the lane rule for WIDENED (finding 5);
+  - the stale citations (finding 8).
+
+## HIGH
+**1. The restore's check (iii) admits a foreign index change that no store rebuilds** (design `:663-668`, test `:686-687`).
+- Under `allowIndexRebuilds`, the validator returns early once H's last-modified version exceeds L's (Java `MetaDataEvolutionValidator.java:657-662`, Go `metadata_evolution_validator.go:707`). Nothing requires that version to exceed L's *metadata* version.
+- A store rebuilds only the indexes whose last-modified version is above its header. Within one history a raised version always clears that bar; across two histories it need not.
+- Example:
+  - L is a fresh v1 at metadata version 10, whose index i has last-modified version 2.
+  - H is the old v3 at metadata version 12, whose i has last-modified version 4 and a changed predicate.
+  - The restore admits it.
+  - A later `RepairSchema` rebinds stores bound to L (header 10), which keep L's entries under H's predicate.
+  - That is exactly the hazard the restore exists to prevent. Storage v11 #3 asked for "above the lower version's metadata version", and v12 did not adopt it.
+- Check (i) also cites today's options (`:658`, `fdb_store_catalog.go:352-353`), which lack `allowIndexRebuilds`. Under those options the planned test "raised and changed, admitted" fails instead.
+- **Fix:**
+  - State that (i) runs with `allowIndexRebuilds`.
+  - Require every shared index that is not EQUIVALENT to have H's last-modified version above L's metadata version.
+  - Test a raise to at most L's metadata version, and expect a refusal.
+  - Apply the same floor to R2 (`:2318`) and test it there.
+
+## MEDIUM
+**2. R1's reservation can be released** (`:2296-2303`, and the DIVERGENCES PENDING entry).
+- The check compares only against the previous version's reservations. Save n+1 can drop `reserved 5`, and save n+2 can then add field 5. Both pass, and the removed holder's bytes are re-read as the new field.
+- It also matches messages by name. The validator pairs messages by descriptor and allows type renames (Java `:355-378`; `:252-253` says a descriptor's name "isn't checked"), so renaming the message escapes the check in a single save.
+- **Fix:** pair messages as the validator pairs them, refuse a dropped reservation (or check against every archived version), and test both paths.
+
+**3. The direction rule misses the pre-upgrade loader's framing.**
+- The pre-upgrade loader framed *every* union it found name-first (`e48f5b496:metadata_proto.go:249-250` → `metadata.go:346-350`). The last union field of a type also won that type's implicit record-type key (`:366-374`).
+- v12 treats only a usage=UNION message named UnionDescriptor as both builds' choice (`:2231-2232`). A usage=UNION or RecordTypeUnion union with no UnionDescriptor is therefore framed type-first. A scalar `_T` in it is dropped from the as-framed side, so an edit that removes or retypes it is admitted over T's stored records.
+- The four shapes of 4c (`:1970`) omit three more cases:
+  - a found union with a scalar `_T` stops loading, and no migration arm covers it;
+  - `_X` typed Y (or `Outer.X`), where both framings build, loads under the wrong descriptor silently;
+  - two union fields of the same type with implicit keys move the key from the last field to the smallest, silently.
+- **Fix:** define the pre-upgrade choice as `findUnionDescriptorName`'s result, and treat a union both loaders choose as both builds' choice. List these shapes, refuse or declare each, and pin them.
+
+## LOW
+4. **The new `CreateTemplate` refusals are an undeclared divergence.** Java's `createTemplate` refuses only an exact duplicate, with DUPLICATE_SCHEMA_TEMPLATE (`RecordLayerStoreSchemaTemplateCatalog.java:229-245`).
+   - Nothing in §9 or DIVERGENCES records the divergence.
+   - The precedence between the duplicate refusal and the new refusals is unspecified.
+   - The comment at `fdb_template_catalog.go:120-128` still says the opposite.
+5. **The WIDENED lane refusal can never fire.** No long→int or double→float move removes a row of the 107-row table: the bitmap functions have `_LI` and `_II`, and every other family is a full cross product. So the unit test at `:1088` cannot be built from a real key. Pin that no move removes a row, over the whole table, instead.
+6. **Check (iii) is stricter than the carry rule.** At an equal last-modified version it requires EQUIVALENT, so it refuses a WIDENED index that carry compatibility admits. This fails closed, for example for a Java-created fresh t beside a Go-stored `long_value` version.
+7. **The absent-root error is an untyped `fmt.Errorf`.** Java raises `KeyExpression$DeserializationException`, and its loader wraps it. Both specs pin the Go class only negatively.
+8. **Stale text:**
+   - The validator citations said to be "re-taken in v12" (`:880-882`) are about nine lines off on this tree:
+     - 676-680 → 684-690;
+     - 734-735 → 743-744;
+     - 698-700 → 707;
+     - 688-692 → 697-701;
+     - 525 → 534;
+     - 505-510 → 514-519;
+     - 399 → 407.
+   - "the one write entry" survives at `:2697-2698` and at `DIVERGENCES.md:3027`.
+9. **The array-element holder** that `HeldBy` claims to cover (`:2064`) is not pinned by any test.
+10. **The lock design assumes reentrant locks.** Go's mutexes are not reentrant, so the design should name the unlocked internal paths for `RepairSchema`→`SaveSchema` and for `CreateTemplate`→its own `LoadSchemaTemplate` and validator.
+11. **No mutation was run** for either v12 code change.
+
+## Measured vs. source-only
+- **Measured:** everything under "What holds".
+- **Source-only:** findings 1-11, and everything in steps 1-3 that is not yet built.

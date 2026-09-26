@@ -182,7 +182,7 @@ func TestFDB_DistinctUniqueElisionNotCachedAcrossReadVersionScope(t *testing.T) 
 			"CREATE UNIQUE INDEX by_email1 ON t1 (email)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dusrvc/s WITH TEMPLATE dusrvc")
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_dusrvc?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_DUSRVC?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

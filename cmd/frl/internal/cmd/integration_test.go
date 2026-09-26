@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -169,95 +170,134 @@ func seedStore(ctx context.Context, db *recordlayer.FDBDatabase, md *recordlayer
 	return err
 }
 
-// countFixture is a second fixture with record counting enabled. Built
-// lazily on first access so tests that don't need it pay nothing.
+// Count fixtures: stores with record counting set up, one per shape, each built
+// lazily on first access so tests that don't need one pay nothing.
 var (
-	countFixtureOnce sync.Once
-	countFixture     *integrationFixture
-	countFixtureErr  error
+	countFixturesMu sync.Mutex
+	countFixtures   = map[string]*integrationFixture{}
 )
+
+// countMetaData is the demo metadata with configure applied.
+func countMetaData(configure func(*recordlayer.RecordMetaDataBuilder)) (*recordlayer.RecordMetaData, error) {
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	configure(b)
+	return b.Build()
+}
 
 // setupCountFixture builds a store under /frl/integration-count with
 // ungrouped record counting enabled (record_count_key = EmptyKeyExpression)
-// and one seeded Order so record count returns a non-zero number.
+// and three seeded Orders so record count returns a non-zero number.
 func setupCountFixture(t *testing.T) *integrationFixture {
 	t.Helper()
-	requireFixture(t)
-	countFixtureOnce.Do(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-
-		// Reuse the cluster the primary fixture already started.
-		db, err := fdb.OpenDatabase(fixture.clusterFilePath)
-		if err != nil {
-			countFixtureErr = fmt.Errorf("open FDB: %w", err)
-			return
-		}
-		recDB := recordlayer.NewFDBDatabase(db)
-
-		// Count-enabled metadata.
-		b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
-		b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
-		b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
-		b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	return setupCountFixtureFor(t, "count", func(b *recordlayer.RecordMetaDataBuilder) {
 		b.SetRecordCountKey(&recordlayer.EmptyKeyExpression{})
-		md, err := b.Build()
-		if err != nil {
-			countFixtureErr = fmt.Errorf("build count metadata: %w", err)
-			return
-		}
+	}, seedStore)
+}
 
-		tmp, err := os.MkdirTemp("", "frl-integration-count-*")
+// seedOrdersAndCustomers saves three Orders (seedStore) and two Customers, so a
+// per-type count differs from the total. The Customers take ids no Order has:
+// neither primary key has a record-type prefix, so a Customer with an Order's id
+// would replace that Order.
+func seedOrdersAndCustomers(ctx context.Context, db *recordlayer.FDBDatabase, md *recordlayer.RecordMetaData, ss subspace.Subspace) error {
+	if err := seedStore(ctx, db, md, ss); err != nil {
+		return err
+	}
+	_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 		if err != nil {
-			countFixtureErr = fmt.Errorf("tmpdir: %w", err)
-			return
+			return nil, err
 		}
-		metaFile := filepath.Join(tmp, "meta.pb")
-		mf, err := os.Create(metaFile)
-		if err != nil {
-			countFixtureErr = fmt.Errorf("create meta.pb: %w", err)
-			return
+		for i := int64(101); i <= 102; i++ {
+			if _, err := store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(i)}); err != nil {
+				return nil, err
+			}
 		}
-		if err := recordlayer.WriteRecordMetaData(md, mf); err != nil {
-			mf.Close()
-			countFixtureErr = fmt.Errorf("write meta.pb: %w", err)
-			return
-		}
+		return nil, nil
+	})
+	return err
+}
+
+// setupCountFixtureFor builds (once per name) a store under
+// /frl/integration-<name> over the demo metadata with configure applied, seeded
+// by seed, and a config whose current context addresses it.
+func setupCountFixtureFor(t *testing.T, name string, configure func(*recordlayer.RecordMetaDataBuilder),
+	seed func(context.Context, *recordlayer.FDBDatabase, *recordlayer.RecordMetaData, subspace.Subspace) error,
+) *integrationFixture {
+	t.Helper()
+	requireFixture(t)
+	countFixturesMu.Lock()
+	defer countFixturesMu.Unlock()
+	if f, ok := countFixtures[name]; ok {
+		return f
+	}
+	f, err := buildCountFixture(name, configure, seed)
+	if err != nil {
+		t.Fatalf("count fixture %s: %v", name, err)
+	}
+	countFixtures[name] = f
+	return f
+}
+
+func buildCountFixture(name string, configure func(*recordlayer.RecordMetaDataBuilder),
+	seed func(context.Context, *recordlayer.FDBDatabase, *recordlayer.RecordMetaData, subspace.Subspace) error,
+) (*integrationFixture, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	// Reuse the cluster the primary fixture already started.
+	db, err := fdb.OpenDatabase(fixture.clusterFilePath)
+	if err != nil {
+		return nil, fmt.Errorf("open FDB: %w", err)
+	}
+	recDB := recordlayer.NewFDBDatabase(db)
+	md, err := countMetaData(configure)
+	if err != nil {
+		return nil, fmt.Errorf("build metadata: %w", err)
+	}
+
+	tmp, err := os.MkdirTemp("", "frl-integration-"+name+"-*")
+	if err != nil {
+		return nil, fmt.Errorf("tmpdir: %w", err)
+	}
+	metaFile := filepath.Join(tmp, "meta.pb")
+	mf, err := os.Create(metaFile)
+	if err != nil {
+		return nil, fmt.Errorf("create meta.pb: %w", err)
+	}
+	if err := recordlayer.WriteRecordMetaData(md, mf); err != nil {
 		mf.Close()
+		return nil, fmt.Errorf("write meta.pb: %w", err)
+	}
+	mf.Close()
 
-		keyspacePath := "/frl/integration-count"
-		ss := subspace.Sub("frl", "integration-count")
-		if err := seedStore(ctx, recDB, md, ss); err != nil {
-			countFixtureErr = fmt.Errorf("seed count store: %w", err)
-			return
-		}
+	keyspacePath := "/frl/integration-" + name
+	ss := subspace.Sub("frl", "integration-"+name)
+	if err := seed(ctx, recDB, md, ss); err != nil {
+		return nil, fmt.Errorf("seed store: %w", err)
+	}
 
-		configFile := filepath.Join(tmp, "config.yaml")
-		cfgYAML := fmt.Sprintf(`current_context: count
+	configFile := filepath.Join(tmp, "config.yaml")
+	cfgYAML := fmt.Sprintf(`current_context: %s
 contexts:
-  - name: count
+  - name: %s
     cluster_file: %s
     keyspace_path: %s
     metadata:
       meta_file: %s
-`, fixture.clusterFilePath, keyspacePath, metaFile)
-		if err := os.WriteFile(configFile, []byte(cfgYAML), 0o600); err != nil {
-			countFixtureErr = fmt.Errorf("write count config: %w", err)
-			return
-		}
-
-		countFixture = &integrationFixture{
-			clusterFilePath: fixture.clusterFilePath,
-			metaFilePath:    metaFile,
-			configFilePath:  configFile,
-			keyspacePath:    keyspacePath,
-			cleanupDir:      tmp,
-		}
-	})
-	if countFixtureErr != nil {
-		t.Fatalf("setupCountFixture: %v", countFixtureErr)
+`, name, name, fixture.clusterFilePath, keyspacePath, metaFile)
+	if err := os.WriteFile(configFile, []byte(cfgYAML), 0o600); err != nil {
+		return nil, fmt.Errorf("write config: %w", err)
 	}
-	return countFixture
+	return &integrationFixture{
+		clusterFilePath: fixture.clusterFilePath,
+		metaFilePath:    metaFile,
+		configFilePath:  configFile,
+		keyspacePath:    keyspacePath,
+		cleanupDir:      tmp,
+	}, nil
 }
 
 // runCmd drives one cobra command through NewRoot() with captured IO.
@@ -775,6 +815,66 @@ func TestIntegration_RecordCount_UnknownTypeLists(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "Order") {
 		t.Errorf("error = %v; should list the real types", err)
+	}
+}
+
+// A per-type count reads the record count key when it is the record type key,
+// one counter per type, as Java's getSnapshotRecordCount(recordType(), value).
+func TestIntegration_RecordCount_TypeFromRecordTypeCountKey(t *testing.T) {
+	f := setupCountFixtureFor(t, "count-by-type-key", func(b *recordlayer.RecordMetaDataBuilder) {
+		b.SetRecordCountKey(recordlayer.RecordTypeKey())
+	}, seedOrdersAndCustomers)
+	t.Setenv("FRL_CONFIG", f.configFilePath)
+	for recordType, want := range map[string]string{"Order": "3", "Customer": "2", "TypedRecord": "0"} {
+		out, err := runCmd(t, "record", "count", "--type", recordType)
+		if err != nil {
+			t.Fatalf("record count --type %s: %v\nout:\n%s", recordType, err, out)
+		}
+		if got := strings.TrimSpace(out); got != want {
+			t.Errorf("record count --type %s = %q, want %s", recordType, got, want)
+		}
+	}
+}
+
+// Otherwise a per-type count comes from a COUNT index on the type, as Java's
+// getSnapshotRecordCountForRecordType takes it, and a type no COUNT index
+// answers is refused with Java's RecordCoreException, wrapped in advice.
+func TestIntegration_RecordCount_TypeFromCountIndex(t *testing.T) {
+	f := setupCountFixtureFor(t, "count-index", func(b *recordlayer.RecordMetaDataBuilder) {
+		b.AddIndex("Order", recordlayer.NewCountIndex("Order$count", recordlayer.GroupAll(recordlayer.EmptyKey())))
+	}, seedOrdersAndCustomers)
+	t.Setenv("FRL_CONFIG", f.configFilePath)
+
+	out, err := runCmd(t, "record", "count", "--type", "Order")
+	if err != nil {
+		t.Fatalf("record count --type Order: %v\nout:\n%s", err, out)
+	}
+	if got := strings.TrimSpace(out); got != "3" {
+		t.Errorf("record count --type Order = %q, want 3", got)
+	}
+
+	_, err = runCmd(t, "record", "count", "--type", "Customer")
+	if err == nil {
+		t.Fatal("record count --type Customer with no COUNT index on Customer should error")
+	}
+	var rce *recordlayer.RecordCoreError
+	if !errors.As(err, &rce) || rce.Message != "Require a COUNT index on Customer" {
+		t.Errorf("error = %v; want the wrapped RecordCoreError \"Require a COUNT index on Customer\"", err)
+	}
+	if !strings.Contains(err.Error(), "counting Customer records needs a COUNT index on Customer") {
+		t.Errorf("error = %v; want the advice naming the type", err)
+	}
+}
+
+// An ungrouped record count key counts the store, not a type: a per-type count
+// over it needs a COUNT index, as in Java.
+func TestIntegration_RecordCount_TypeNotFromUngroupedCountKey(t *testing.T) {
+	f := setupCountFixture(t)
+	t.Setenv("FRL_CONFIG", f.configFilePath)
+	_, err := runCmd(t, "record", "count", "--type", "Order")
+	var rce *recordlayer.RecordCoreError
+	if !errors.As(err, &rce) || rce.Message != "Require a COUNT index on Order" {
+		t.Errorf("error = %v; want the wrapped RecordCoreError \"Require a COUNT index on Order\"", err)
 	}
 }
 

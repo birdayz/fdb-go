@@ -1,0 +1,77 @@
+**NAK: RFC-257 WS-E design v10 (storage/wire lens)**
+
+- **Tree:** `4d41fb8144ee269e1f5cd5e145f9f54ab0e0e99d`
+- **Design:** `rfcs/257-java-upgrade-audit/ws-e-design.md`, SHA-256 `df8dfdc91782423462b8ef3855db836c72406decb7408098199b8033b55938a6`, 3294 lines. I recomputed both from `git show`.
+- **Java:** 4.14.2.0, `fdacd162a9`.
+- **Method:** read-only; I ran nothing. I read the three v9 verdicts, the full v10 design and its diff from v9, the v10 oracle, the evidence and the prototype, and the Java and Go sources cited below.
+
+## HIGH
+
+**H1. A NaN that only appears at run time has no mechanism for its "residual" (design :1036-1039). v9 storage M1 is only partly resolved. (SOURCE)**
+- **What the design says:** "every later comparison is a residual filter over the scan."
+- **Why that only covers constants:** a plan-time NaN constant can do this. An IN-join binding or a correlated join probe cannot: it is non-constant and does not pin (plans/ordering.go:491-493), so the plan keeps `[EQUALS q0, EQUALS q1]`.
+- **The binder has no residual to fall back on:** it builds only alternatives and tails (scan_range_binding.go:410-460). `git grep` finds no residual or key-filter in the non-test scan sources.
+- **Consequence:** `nan_in_then_in` is the target's nested shape, which 4.1(b)'s partition arm now builds. It would return every stored NaN row once per `q1`: ids 1, 2 and 4 twice, where the answer is `[[1] [2]]`.
+- **Fix, either of:**
+  - Specify the executor half: evaluate the later comparisons and tails against each index entry, inside the scan. The continuation is the last key read, filtered entries count toward scan limits, and the fingerprint folds in the residual comparands while ignoring the NaN payload. Test it with a run-time NaN, resuming inside each block, and in reverse.
+  - Or keep the correct-or-loud refusal for that case and declare it.
+
+**H2. The claim that SQL can produce only one NaN bit pattern is false across the two engines. This is a write divergence. (SOURCE)**
+- **Go's bits:** `CAST('NaN' AS DOUBLE)` parses with `strconv.ParseFloat` (values.go CAST DOUBLE string arm), which returns `math.NaN()`, `0x7ff8000000000001`. The tree says so itself (streaming_cursors.go:275-276). Neither the write converter (proto_value.go:305-309) nor tuple packing canonicalizes it.
+- **Java's bits:** `Double.parseDouble` gives `0x7ff8000000000000`.
+- **Consequence:** the same INSERT writes different record bytes and index keys in the two engines.
+  - Java's index probe misses NaN rows that Go wrote.
+  - A UNIQUE index admits one NaN from each engine.
+  - "For every NaN a statement can write the rows are the same" (:1026-1028, :1051) is therefore false.
+- **Fix:**
+  - Add an oracle row: Go inserts a NaN, then Java probes it and inserts a second one under UNIQUE.
+  - Make Go's SQL-produced NaN carry Java's bits (`0x7ff8000000000000` for DOUBLE, `0x7fc00000` for FLOAT), or declare the divergence.
+  - Rewrite the extension sentence.
+
+## MEDIUM
+
+**M1. Storing `FormatTimestamp` for a bound time.Time has undeclared consequences for DATE-spelled columns (:1389-1400).** Only `WHERE d = ?` is declared. Undeclared:
+- **Day ranges shift by one day.** Over date text, `d >= ? AND d < ?` with midnight values drops the first day and adds the next, because `'2024-01-01' < '2024-01-01 00:00:00'`.
+- **UNIQUE and grouping split a day.** A UNIQUE index admits a second row for the same day, and GROUP BY or DISTINCT splits one day into two groups (old date text beside new timestamp text).
+- **No repair is stated.** `SET d = d` was withdrawn, but `SET d = CAST(d AS DATE)` exists.
+- **Fix:** add the CHANGELOG entries with that repair, and tests for ranges and UNIQUE over mixed rows.
+
+**M2. The multi-binding IN-union conflicts with WS-F 4.3 and has no size bound (:802-807).**
+- **WS-F already removes the concat arm:** WS-F F-7 deletes Go's unordered in-union arm and ports "too many IN values" (ws-f-design.md:124, :729-736).
+- **v10 extends that arm and cites Java for it:** it extends "concatenated without them" to many bindings and plans tests with and without keys. It cites RecordQueryInUnionPlan.java:150-175, but that method always calls `UnionCursor.create` and never concatenates.
+- **Java's bound is on the product:** it checks the product of the sources (`getValuesSize`, :331-338) against 24 (PlannerConfiguration.java:161).
+- **Until then the product is unbounded:** N concurrent children run in one transaction, with a UnionContinuation of N states.
+- **Section 8 leaves the pieces out:** its (5) does not name the partition arm, the multi-binding executor or the NaN binder change.
+- **Fix:**
+  - Drop the concat arm, or label it Go-only and transitional.
+  - State that the check applies to the product, and land the executor with or after F-7's check.
+  - Pin the product at 24 and at 25.
+  - List these pieces in (5), with the executor before the arm.
+
+## LOW
+
+- **L1. Unrecorded task counts.** The seed-17 counts 42,723, 382,371 and 43,919 appear in no `wse11-*` record: a search for each, with and without commas, finds nothing. Control: seed 17's 54F02 is found at wse11-explode-E-suites.log:23342. The planned pin depends on these numbers; name their log.
+- **L2. WS-F D12's wording does not match WS-E's.** D12 says "the second DecorrelateValuesRule registration" (ws-f-design.md:318-319) and names neither :400 nor the standalone simplification rule at :398. WS-E attributes both registrations and :398 to D12. Align the two texts; WS-F v2 is itself NAK'd.
+- **L3. Stale text.**
+  - :1721 says "the time.Time rendering is kept", which contradicts 4.3.
+  - :1395 cites values.go:4536-4537, the time.Time arm, which becomes unreachable. The string arm (:4538-4546) is the one that runs.
+  - "ordering.go:534-537" is `plans/ordering.go`; the tree has three files named ordering.go.
+- **L4. One census is not tied to the tree.** The system_rows census is a working-tree `grep`.
+
+## Verified
+
+- **v9 findings:** H1, M2-M6 and L1-L3 are resolved (by narrowing, by withdrawal, or through WS-F D1-D12). M1 is only partly resolved (H1 above).
+- **Parser deletions:** `CastValue` has no non-test caller besides its definition (cast.go:28). `ParseTimestamp` is called only at comparisons.go:645/687/701, cast.go:204/216 and compare.go:95/103. `CompareValues` has one caller, select_parser.go:338.
+- **Temporal producers:**
+  - The statement clock is UTC (values.go:2755-2759, evaluation_context.go:87).
+  - promotionMap has DATE→STRING and TIMESTAMP→STRING.
+  - castPairs has TIMESTAMP→DATE.
+  - `coerce` currently sends every non-ENUM STRING target to `uuid.Parse` (promote_prepared.go:379-391).
+- **Oracle:**
+  - 12 pins, and the GO lines are as stated.
+  - M10 reddens only `nan_then_eq_where` ("Ran 1 of 58", "0 Passed | 1 Failed", "Executed 1 out of 1 test").
+  - I checked 6 of the 10 source hashes against the tree blobs; all 6 match.
+  - The evidence prints "ok 10 notok 0" after both checks.
+- **Unchanged since v9:** section 6 (isolation, read scope, DRY_RUN and SNAPSHOT, the pool reset), UTF-8 at bind and save, and the assignment lattice have no diff hunk.
+
+**Measured vs SOURCE:** only the oracle and evidence checks and the zero-hit searches are measured. Everything else above is SOURCE.

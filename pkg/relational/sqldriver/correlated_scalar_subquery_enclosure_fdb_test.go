@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/relational/api"
@@ -47,7 +48,7 @@ func TestFDB_CorrelatedScalarSubqueryEnclosure(t *testing.T) {
 		"CREATE TABLE c (cid BIGINT, ck BIGINT, cv BIGINT, PRIMARY KEY (cid)) "+
 		"CREATE TABLE e (eid BIGINT, eref BIGINT, PRIMARY KEY (eid))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cl4051_tmpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

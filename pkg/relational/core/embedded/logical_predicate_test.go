@@ -1822,6 +1822,11 @@ func enumHomonymMetaData(t *testing.T) *recordlayer.RecordMetaData {
 					TypeName: proto.String(".enumhomonymtest.T.Paint"),
 				},
 			}},
+			// Java requires a union (RecordMetaDataBuilder.fetchUnionDescriptor).
+			{Name: proto.String("RecordTypeUnion"), Field: []*descriptorpb.FieldDescriptorProto{{
+				Name: proto.String("_T"), Number: proto.Int32(1), Label: &label, Type: &messageKind,
+				TypeName: proto.String(".enumhomonymtest.T"),
+			}}},
 		},
 	}, nil)
 	if err != nil {

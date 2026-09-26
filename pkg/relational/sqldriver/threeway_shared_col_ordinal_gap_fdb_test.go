@@ -46,7 +46,7 @@ func TestFDB_ThreeWaySharedColOrdinal_Regression(t *testing.T) {
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, PRIMARY KEY (id)) "+
 		"CREATE INDEX idx_c ON t (c) CREATE INDEX idx_a ON t (a) CREATE INDEX idx_s ON t (s)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_3wc/s WITH TEMPLATE t3wc")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_3wc?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_3WC?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

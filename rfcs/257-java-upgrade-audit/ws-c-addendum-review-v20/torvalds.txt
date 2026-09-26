@@ -1,0 +1,56 @@
+**NAK.** Commit `2e318b99b`. Design SHA256 `431f99e2871e6994e1763fe1df50938068c5f67295608149d68af2042784c353`, 3004 lines; I measured both from the committed blob. I did not re-verify the patch and working-diff hashes (the policy blocked `sha256sum` on files outside git).
+
+The code in revision 20 is sound, and most of the r19 findings are closed. The NAK is for one evidence claim wider than what was measured, plus one scope sentence.
+
+### r19 findings (Torvalds lens)
+
+| # | Status |
+|---|---|
+| 1 Strict parse never red | **Resolved (measured).** All six parse arms, plus :296, :304 and :309, are red on `d2e47b8bd` (`wsc20-red/recordlayer/console.txt:122-132`). |
+| 2 7.17 marker unscoped | **Resolved** (design :2756-2759). |
+| 3 "Typed refusals" too wide | **Resolved** in 7.19, the CHANGELOG and TODO; one CHANGELOG nit below. |
+| 4 Table missing entry points | **Rows added; the claim is still too wide** (new finding B). |
+| 5 Agreement pin compares a function with itself | **Resolved.** The test now compares against `parseSPFreshConfig(idx).Metric` for five inputs, and the `want` values do the checking. |
+| 6 Part 1 of `wsc18-red` withdrawn | **Re-run hashed.** The queue and conf reds are measured as claimed. The embedded red is not (finding A). |
+| Nits | Samples count, queue scope, mutation README, `wsj19-red` HEAD note, doc comment, conformance comment, DIVERGENCES label: **all resolved.** |
+
+### New findings
+
+**A. Low–Medium (measured): the planner half of `TestVectorPlan_MetricIsTheMaintainers` has still never been red.**
+- In `wsc20-red/embedded/console.txt:25-27`, both subtests fail at `vector_plan_test.go:675`. That is the `t.Fatalf` after `recordlayer.VectorIndexMetric(idx)` returns nil.
+- On the red tree, that function is the stand-in `zz_redrun_adapter.go:16-21`. `d2e47b8bd` has no `VectorIndexMetric` (git grep finds only `VectorIndexMetricOption`).
+- `Fatalf` ends the subtest there, so the planner assertion (:677-681), which is the actual fix, never ran against `d2e47b8bd`'s planner.
+- The stand-in is also not faithful. `d2e47b8bd` read the raw option through `vectorMetricOperator` (`cascades_generator.go:3858-3869`), which read "cosine" as cosine. The adapter returns the old maintainer parse (Euclidean), so its comment contradicts the CHANGELOG.
+- The same applies to the recordlayer arms at :338 and :344. The non-vector arm is red only because the function did not exist.
+- Design :2992 and README :13-17 overstate this.
+- **Fix:** make the adapter's `VectorIndexMetric` return an error so :680 runs, then re-run. Otherwise, label these as adapter reds.
+
+**B. Low (source + measured): "a row for each exported entry point that reads the configuration" (:2986) is wider than the table.**
+- Measured: 8 non-test `readSPFreshConfig` call sites at `2e318b99b`, so the maintainer plus 7 rows covers **every read site**.
+- But more exported entry points reach those sites through shared resolvers, and they have no rows:
+  - `RefineSPFreshIndex` (the production refine; the "refine" row drives the validation entry `RefineSPFreshIndexAll`, `spfresh_refine.go:425/441`);
+  - `RefineSPFreshIndexes`;
+  - `SweepSPFreshIndexes` (`spfresh_sweeper.go:86`);
+  - `RunSPFreshMaintenance` (`spfresh_worker.go:83,89`).
+- **Fix:** scope the sentence to "one row per read site" and name the function each row drives.
+
+**C. Low (measured absence): the new SQL pin has never been seen running under Bazel.**
+- `wsc20-hook` shows `sqldriver_test` passing with the file in its sources.
+- A search of `/var/tmp/fdb-upgrade-recovery` for `SPFREFUSED|SPFreshRefusedConfiguration` finds no files. The control, "Executed" in `wsc20-hook`, is found.
+- The test's `t.Logf` marker (:49) only prints under `-test.v`. CLAUDE.md requires seeing a line that only this test emits.
+
+**D. Low (measured): the new TODO's "measured" 22000 and 0A000 rest on a probe that was not committed.**
+- git grep over `pkg/**/*_test.go` finds neither string. The control, `TODO.md:15215`, is found in the same invocation.
+- Either commit the probe as a pin, or close the gap now; CLAUDE.md forbids deferring it.
+
+### Nits
+- `wsc20-red` README: the TREE also lists `M pkg/recordlayer/BUILD.bazel` (TREE:8), which the README does not name.
+- :2996 says "the mutations are its `samples.patch`…", but the README says the patches were regenerated afterwards. Call them reconstructions.
+- CHANGELOG: the topology dump is listed among the entry points refused "as a `MetaDataError`", but it returns a `config err=` string. The table checks only the message substring for every row (:116), so no row pins the class.
+- :2950 "the other class does not reach SQL": this holds for DDL-created indexes (`ddl.go:504-520`). A template built through the metadata API could still carry "cosine", so scope it.
+- The layout test's check after the loop relies on the outer `idx` being shadowed inside the loop. Name it.
+
+**Verified by source reading:**
+- The topology row can fail (`config err=` prefix, `spfresh_write.go:627`).
+- The SQL pin's substring check ties the 42000 to `ValidateSPFreshConfig`.
+- The mutation patches match the reds they describe.

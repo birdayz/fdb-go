@@ -1,0 +1,3 @@
+# WS-E design gate v6
+
+TREE `66663d5d8d1946a4891985e75c682cb98a18609f`; design SHA256 `a0703c84462f9a6dc3e47ceee69f64b2ea5c54a9c597b1b95c1fa54b1b79b853` (2154 lines). Answers the three v5 NAKs. Oracle: seven Describes, 384 pins, two uncached runs equal (ws-e-oracle/evidence-run.txt), the v6 mutations and the teardown/wiring mutations (evidence-mutations.txt). Go-side measurements: translator folds removed (tree 3e7ea9aa4b29a2d3f9c41e1e860be337bbc0ca47, 90/92), REWRITING variants (tree 34c824e272259d45f538d459dbddfc8b1170bc42: tautology filter alone 92/92, with the dense level map 89/92 and six corpus flips). `just test` of this tree: 8 of 94 executed, 94/94 pass, the executed targets listed with their logs. Lenses: Graefe, Torvalds, storage/wire.

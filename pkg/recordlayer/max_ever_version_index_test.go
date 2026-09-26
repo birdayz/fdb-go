@@ -660,17 +660,18 @@ var _ = Describe("MaxEverVersionIndex", func() {
 	// =========================================================================
 	// 11. Metadata validation: requires storeRecordVersions
 	// =========================================================================
-	It("metadata validation: requires SetStoreRecordVersions(true)", func() {
+	It("metadata validation: builds without SetStoreRecordVersions, as Java does", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		// NOT calling SetStoreRecordVersions(true)
+		// Java's MAX_EVER_VERSION validator does not require record versions
+		// (AtomicMutationIndexMaintainerFactory.java:94-121); measured by the
+		// conformance spec "Index validation at build, as Java builds".
 		builder.AddIndex("Order", NewMaxEverVersionIndex("bad", Ungrouped(VersionKey())))
 		_, err := builder.Build()
-		var mdErr *MetaDataError
-		Expect(errors.As(err, &mdErr)).To(BeTrue())
-		Expect(mdErr.Message).To(ContainSubstring("SetStoreRecordVersions(true)"))
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	// =========================================================================
@@ -685,9 +686,9 @@ var _ = Describe("MaxEverVersionIndex", func() {
 		// Using raw VersionKey() without GroupBy/Ungrouped wrapper
 		builder.AddIndex("Order", NewMaxEverVersionIndex("bad", VersionKey()))
 		_, err := builder.Build()
-		var mdErr *MetaDataError
-		Expect(errors.As(err, &mdErr)).To(BeTrue())
-		Expect(mdErr.Message).To(ContainSubstring("GroupingKeyExpression"))
+		var keyErr *KeyExpressionError
+		Expect(errors.As(err, &keyErr)).To(BeTrue(), "%T: %v", err, err)
+		Expect(keyErr.Message).To(Equal("index type requires grouping"))
 	})
 
 	// =========================================================================
@@ -703,9 +704,9 @@ var _ = Describe("MaxEverVersionIndex", func() {
 		// VersionKey is 1 column; GroupAll → groupedCount=0 → "at least 1 grouped column" error
 		builder.AddIndex("Order", NewMaxEverVersionIndex("bad", GroupAll(VersionKey())))
 		_, err := builder.Build()
-		var mdErr *MetaDataError
-		Expect(errors.As(err, &mdErr)).To(BeTrue())
-		Expect(mdErr.Message).To(ContainSubstring("at least 1 grouped column"))
+		var keyErr *KeyExpressionError
+		Expect(errors.As(err, &keyErr)).To(BeTrue(), "%T: %v", err, err)
+		Expect(keyErr.Message).To(Equal("index type requires grouping at least 1 fields"))
 	})
 
 	It("metadata validation: version in grouping portion with field in grouped rejected", func() {
@@ -721,12 +722,9 @@ var _ = Describe("MaxEverVersionIndex", func() {
 		builder.AddIndex("Order", NewMaxEverVersionIndex("bad",
 			GroupBy(Field("price"), VersionKey())))
 		_, err := builder.Build()
-		var mdErr *MetaDataError
-		Expect(errors.As(err, &mdErr)).To(BeTrue())
-		Expect(mdErr.Message).To(SatisfyAny(
-			ContainSubstring("no version entries in grouping key"),
-			ContainSubstring("exactly 1 version entry in grouped key"),
-		))
+		var keyErr *KeyExpressionError
+		Expect(errors.As(err, &keyErr)).To(BeTrue(), "%T: %v", err, err)
+		Expect(keyErr.Message).To(Equal("there must be no version entries in grouping key in index"))
 	})
 
 	// =========================================================================
@@ -743,9 +741,9 @@ var _ = Describe("MaxEverVersionIndex", func() {
 		builder.AddIndex("Order", NewMaxEverVersionIndex("bad",
 			GroupBy(Field("price"), Field("order_id"))))
 		_, err := builder.Build()
-		var mdErr *MetaDataError
-		Expect(errors.As(err, &mdErr)).To(BeTrue())
-		Expect(mdErr.Message).To(ContainSubstring("exactly 1 version entry in grouped key"))
+		var keyErr *KeyExpressionError
+		Expect(errors.As(err, &keyErr)).To(BeTrue(), "%T: %v", err, err)
+		Expect(keyErr.Message).To(Equal("there must be exactly 1 version entry in grouped key in index"))
 	})
 
 	It("metadata validation: 2 version columns in grouped rejected", func() {
@@ -759,9 +757,9 @@ var _ = Describe("MaxEverVersionIndex", func() {
 		builder.AddIndex("Order", NewMaxEverVersionIndex("bad",
 			GroupBy(Concat(VersionKey(), VersionKey()), Field("price"))))
 		_, err := builder.Build()
-		var mdErr2 *MetaDataError
-		Expect(errors.As(err, &mdErr2)).To(BeTrue())
-		Expect(mdErr2.Message).To(ContainSubstring("exactly 1 version entry in grouped key"))
+		var keyErr *KeyExpressionError
+		Expect(errors.As(err, &keyErr)).To(BeTrue(), "%T: %v", err, err)
+		Expect(keyErr.Message).To(Equal("there must be exactly 1 version entry in grouped key in index"))
 	})
 
 	// =========================================================================

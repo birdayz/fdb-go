@@ -629,10 +629,11 @@ var _ = Describe("Edge case hardening", func() {
 			badIdx := NewIndex("bad_idx", Field("nonexistent_field"))
 			builder.AddIndex("Order", badIdx)
 
+			// Java's KeyExpression.InvalidExpressionException, unwrapped.
 			_, err := builder.Build()
-			Expect(err).To(HaveOccurred())
-			var mdErr *MetaDataError
-			Expect(errors.As(err, &mdErr)).To(BeTrue())
+			var keyErr *KeyExpressionError
+			Expect(errors.As(err, &keyErr)).To(BeTrue())
+			Expect(keyErr.Message).To(Equal("Descriptor Order does not have field: nonexistent_field"))
 		})
 	})
 

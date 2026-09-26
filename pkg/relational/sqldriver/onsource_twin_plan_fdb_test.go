@@ -32,7 +32,7 @@ func TestFDB_OnSourceIndexPlans_TwinOfAsSelect(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ostw/s_as WITH TEMPLATE ostw_as")
 
 	open := func(schema string) *sql.DB {
-		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_ostw?cluster_file=%s&schema=%s", clusterFilePath, schema))
+		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_OSTW?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema)))
 		if err != nil {
 			t.Fatalf("sql.Open(%s): %v", schema, err)
 		}

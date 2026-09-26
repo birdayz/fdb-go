@@ -1,0 +1,66 @@
+**NAK: RFC-257 WS-E design v7**
+
+- **Tree:** `9265beef3e5c9dd9ec86caaade526c8137552976`
+- **Design:** `ws-e-design.md`, SHA-256 `ffcf4f2edb9e0063d1711250d81b90aa7199c66a96fc1187fc1964a9a8f19dac`, 2495 lines. I recomputed both and they match.
+- **Method:** read-only. I read the three v6 verdicts, all of v7 and its diff from v6, the oracle evidence, both prototypes' logs, Java and Go.
+
+**What holds**
+- **Evidence:** the nine source hashes match the tree. Both oracle runs show "Ran 7 of 32", 7 passed. The teardown, inherit-cancel and M7 mutations each fail on the row claimed.
+- **Counts at the tree:** the UUID (6), `EvaluateConstant` (17) and readIndexState (36 calls in 15 files) counts all match.
+- **Whole suite:** its 7 red targets and their failing tests are exactly the design's list.
+- **InUnion variant C:** 14 plan changes, 0 regressions.
+
+## HIGH
+
+**H1. When a fold removes a sargable conjunct, PLANNING does not reach the decision the target's REWRITING makes (§5.4(c) "who decides").**
+- **Rung order.** PLANNING ranks by max data-access cardinality (planning_cost_model.go:193-219) before it counts residual predicates (:221-225). EstimateCost, where FilterCost sits, comes later still (:397-410). So FilterCost is not what decides the conjunct-count rows, as the design says; the residual count does.
+- **What the rung sees.** A PredicatesFilter takes its child's max (cardinality_bounds.go:131-136). A full-key primary scan proves max 1; a full scan is unknown (:167-181).
+- **Counterexample (SOURCE):** `SELECT id FROM T WHERE id = 5 AND 1/0 = 1 AND 1 = 2`, where `id` is T's primary key.
+  - The folded member, `[FALSE]` over `Scan(T)`, loses on the cardinality rung to the unfolded `Scan(T,[=])` with its residual `[1/0=1, 1=2]`. Go raises 22012.
+  - The target prunes the unfolded select in REWRITING, before data access, and returns no rows.
+- **Why the measurement missed it:** every prototype row uses the unindexed `n` (wse8-proto-run.txt:5-10).
+- **Which phase decides is not fixed.** unified_tasks.go:187-199 calls the REWRITING prune "TIMING-DEPENDENT": finals promoted in a group's last round cross into PLANNING unpruned. So "Go does not prune child groups in REWRITING" is a simplification.
+- **Fix:**
+  - Decide filter-group folds before data access, or show a rung that makes `[FALSE]` win.
+  - Measure with a primary-key or unique-index conjunct, and with an `id IN (1,2)` variant.
+
+## MEDIUM
+
+- **M1. The partition guard is deleted without running the 0-row case it names (§4.1(b)).**
+  - The guard (rule_partition_binary_select.go:90-106) names the `region IN (...) GROUP BY` case (plan_shape_conformance_test.go:9414).
+  - "Stale" rests on one probe of `id IN (100,200,300)`, with no GROUP BY (findings:12-13).
+  - The explode prototype ran plan dumps only, no rows. `in_with_join.yaml#2` (IN plus GROUP BY) changed shape unchecked (A2.diff:62-81).
+- **M2. The IN-union conversion is incomplete.**
+  - rule_implement_in_union.go:217-235 still extracts the sources at planning with `Evaluate(nil)`. `executeInUnion` iterates only those (executor_new_plans.go:1845-1890). This contradicts §4.1(c)'s "evaluated at open", and neither site is named.
+  - The constant fork emits `ConstantValue{list, TypeUnknown}` (expr.go:1790-1793). The design never says which Java arm that takes: the deduplicated value arm or the non-deduplicated list arm (InComparisonToExplodeRule.java:162-178).
+  - The prototype deduplicates at planning (`distinctInListValues`), which the design deletes. Under the new semi-join shapes (A2.diff:19, 65), a duplicate list item duplicates rows.
+- **M3. The whole-suite accounting covers a stand-in, not the port.**
+  - **Golden:** "16800 line(s) differ" (explaindiff log:210), neither counted nor Java-verified. The explode change, by contrast, gets 29 named plan changes.
+  - **Stand-in rule:** it runs the Go-only driver the design deletes (wse8-proto.diff:73). It folds `COALESCE(1, 1/0) = 2`, which the target keeps [coalesce_int_literal_head_where]. So the two measured "ties" are not target folds.
+  - **rejectsNull:** Graefe's v6 M1 corpus dump is still deferred (text unchanged).
+- **M4. The temporal lane (§4.3(2)) is underspecified.**
+  - **NULL:** "FALSE otherwise" and "TRUE (full range)" drop three-valued logic for a NULL D, which breaks under NOT and in projections. A full-range scan must also exclude NULL entries.
+  - **Unparseable comparand:** a column comparand whose stored text does not parse has no failure arm. The design itself says old rows hold such text.
+  - **Error code:** the CAST parser raises InvalidCastError, 22F3H (values.go:4534-4560), while the write path is to raise 22007. State the mapping.
+- **M5. The census tests are underspecified.**
+  - The time.Time census (line 942) tests a property that cannot be checked as stated.
+  - "EVERY PLACE GO EVALUATES A CONSTANT" covers `EvaluateConstant` callers only. It misses simplifier_value.go:136 and :277, rule_implement_in_union.go:228 and comparisons.go:382.
+  - State how each census gets its population under Bazel, and give each a positive control.
+
+## LOW
+
+- **UUID wording:** the design says v6 missed promote_prepared.go:388 because git does not track it. That is false: the file is in both trees.
+- **Censuses bind to the working tree:** the `git grep --untracked` censuses read the working tree, not the tree; `git grep … TREE` reads the tree itself.
+- **Plan count:** "29 corpus plans" are 26 distinct entries. `in_list_index_plan#1` and `in_list_pushdown#37`/`#38` are in both B and C.
+- **Termination:**
+  - The test says the explode members "reach PLANNING", but the rule only runs in PLANNING.
+  - Termination was measured only under constant-list admission.
+- **Own-row tie:** "a tie in the target" was read from source, not measured; label it SOURCE.
+- **Teardown tests:**
+  - Cleanup is not in `t.Cleanup`, so it leaks on the Fatalf path.
+  - The strict re-drop accepts any error; assert the not-found code, as is done for 42F55.
+- **Line and name:** NoOpFilterRule is at default_rules.go:70, not 63. The filter rule's name, and what disabling rewriting by the Java name turns off, are not stated.
+
+**Measured vs SOURCE**
+- **Read directly from code and logs:** M1 and M3.
+- **SOURCE:** the H1 counterexample, M2, M4 and M5.

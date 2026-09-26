@@ -1,0 +1,44 @@
+**NAK — Torvalds correctness/code-quality correction confirmation.**
+
+Reviewed Git **tree**: `6ffe8d3b5b541bdd1c668c6e13e45ebe475292a3`, against `c59322c012c53500679e7f345360fac6706468b9`.
+
+I completed the production/test delta review, read the previous actual verdicts and approved design, traced surrounding initialization, mutation, clearing and publication paths, consulted tagged Java `fdacd162a9c8acfadc49082b89185c823ab8ae4a`, and reconciled retained evidence. **The two reported reproductions are resolved. One remaining attachment composition blocks acceptance.**
+
+**[P2] Clearing before the first view attachment can suppress a required state write.**
+
+[clearRangeWithIndexStateViews at index_state.go:316](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:316) protects and updates only registered views. However, an unchanged-metadata [Open at store_builder.go:1412](/home/birdy/projects/fdb-go/pkg/recordlayer/store_builder.go:1412) loads `indexStates` without attaching a view. Later, [store.go:178](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:178) can register that old map through [index_state.go:303](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:303).
+
+A sequential reproduction using public APIs:
+
+1. Start with a populated, noncacheable store containing DISABLED index `I`.
+2. Open it in a fresh context with unchanged metadata/format. Do not call a state getter or perform another operation that attaches the view.
+3. Call `rtx.ClearRange(store.IndexStateSubspace())`. The persisted state disappears; no registered view exists to update.
+4. Call `store.MarkIndexDisabled("I")`. Initialization attaches the pre-clear map containing DISABLED. The [unchanged-state return at index_state.go:254](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:254) returns `false, nil`, bypassing the corrected setter.
+5. Commit and cold reopen. The absent state key means READABLE, although the disabled index’s data was never rebuilt.
+
+This leaves transaction bytes and operational state inconsistent. Subsequent record maintenance can skip the index, and cold queries can use incomplete data. State-key conflicts do not repair divergence within the same transaction.
+
+**Required correction:** order initial state loading/registration against context clearing, or invalidate and reload snapshots that predate a clear. Merely attaching at the end of `Open()` would still require protection against a clear between loading and registration. Add a real-FDB regression for the sequence above and a deterministic load/clear/attachment interleaving, checking raw state, both handles, maintenance decisions and cold reopen.
+
+The new ordering tests explicitly [attach both handles before clearing at index_state_test.go:2588](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state_test.go:2588), so they do not cover this case. This finding is **source-derived**; I executed no reproducer.
+
+The prior findings have these dispositions:
+
+- **P1 former-index cleanup:** resolved for the reported v1→v2→v3 sequence. The setter attaches the reconciliation handle before mutation; the regression checks shared state, persisted bytes and cold-open scan rejection.
+- **P2 mutation/publication inversion:** resolved for attached handles. The common mutex spans the actual point mutation and publication. Range clearing acquires registry/view locks before mutation. Registry serialization prevents competing multi-view acquisition orders; inspected point writers do not acquire the registry while holding a view lock.
+- **Lazy/error paths:** current public transitions propagate initialization failures before reaching the setter; former-index reconciliation follows successful state loading. I found no additional nil-view regression in those callers.
+
+The retained evidence reconciles: all **6781 frozen files** match source tree `a50bfc93d1d3d43a46949eba84b8a7a8ec05b626`; source-to-reviewed-tree changes are documentation/evidence booking. Evidence hashes match. Logs substantiate **93/93 uncached targets**, **14/14 race targets**, recordlayer **3402/3403 plus 2110 Go RUN/PASS**, conformance **1391/1510 plus 70**, and executor **1952**, with existing exclusions. The two reported cases failed as executed tests; all three coherence cases passed afterward. The range-clear mutant compiled and failed its test. The initial build failure was correctly excluded as red-test evidence.
+
+The **new performance residual** is:
+
+| Population | Baseline seconds, n=2 | Final-source seconds, n=2 | Mean ratio |
+|---|---|---|---|
+| Orders | 146.224801 / 146.527169 | 151.286793 / 151.849443 | **1.0355×** |
+| Customers | 6.506822 / 6.626023 | 6.960202 / 6.998901 | **1.0629×** |
+
+These represent approximately **+3.55%** and **+6.29%**. Every run has 24 matching RUN/PASS cases, identical row results and zero retries. I do **not independently block** this correctness milestone on those measurements. Two sequential samples per tree establish neither causation nor parity; the earlier lower ratios do not characterize this source.
+
+Approved extensions and the intentional Java deletion-callback correction remain preserved. SPFresh algorithms are unchanged. WS-C–K remain outside this verdict; queue/state4/format15 remain disabled.
+
+No edits, tests/builds, Git mutations, GitHub requests, publication or delegation occurred. HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`. Runtime model/effort identity is not exposed to me, so I cannot independently attest `gpt-6-astra/xhigh`.

@@ -1,0 +1,23 @@
+**ACK — WS-C design authorization only.** No new actionable design defect found; required design corrections: **none**.
+
+Exact `sha256sum` of [current ws-c-design.md](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-c-design.md):
+
+`302335e70765e7ab84674aeb88233348fc5f53be7336f8a006bd8a9652aab5dc`
+
+I read the complete current design, compared the frozen v1/v2 designs and Graefe verdicts, and checked parent WS-C and relevant Java/Go source through the architecture, lifecycle, state, and transaction-boundary lens. The only change from v2 SHA `9d7c8e3f60c8c21169782b03ab654e7828aa6a5b30585442234491511c755454` is the maintenance-lock section.
+
+The new protocol is sound at design level:
+
+- **Atomicity spans decision through publication.** The existing [context-shared state view](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:287) provides the correct synchronization scope. Holding its maintenance read lock from authoritative dispatch through enqueue prevents readability from interleaving between state selection and [buffered mutation registration](/home/birdy/projects/fdb-go/pkg/recordlayer/database.go:920). The setter’s exclusive section includes current-state read, both emptiness checks, uniqueness, publication, and cleanup.
+- **Lock order accommodates existing reentry.** [Maintainer state reads](/home/birdy/projects/fdb-go/pkg/recordlayer/index_maintainer.go:632) reenter the short-lived view mutex. Keeping that mutex separate from the maintenance gate avoids enclosing callbacks in it. Already-locked setter helpers, nonrecursive batch/DELETE_WHERE dispatch, and lower-level context clears avoid reacquiring outer locks. [Reload](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:1890) can acquire maintenance immediately after `stateMu`, before registry/view locks. [Commit checks](/home/birdy/projects/fdb-go/pkg/recordlayer/database.go:1094) execute outside registration locks; deferred overflow therefore introduces no required lock upgrade during dispatch.
+- **Barrier obligations test the actual race.** Writer-first must block the setter, then reject readability because buffered work survives. Setter-first must force ordinary maintenance. One/two handles, batch, DELETE_WHERE, and both readable states are explicitly covered. These remain implementation obligations.
+
+All five v1 corrections remain resolved at design level: buffered writes participate in the guard; heartbeat migration requires quiescence and rejects legacy keys; direct queued setters enforce eligibility; split counters/reasons/failures are precise; and closeout/retry ownership is explicit. These match the inspected incompatibilities and executable contracts: [legacy Go heartbeat decoding](/home/birdy/projects/fdb-go/pkg/recordlayer/indexing_heartbeat.go:113), [Java’s bare queued setter](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/FDBRecordStore.java:3780), [split accounting](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/SplitHelper.java:1005), and [101 consecutive failed drain attempts](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/runners/throttled/ThrottledRetryingIterator.java:268).
+
+The other dispositions also stand: bounded terminal cleanup preserves the original result; snapshot builds require record conflicts; ownership loss aborts; continuations publish after commit; mixed resumed states retain Java’s rejection; sliding predicate preservation is limited to direct queued callbacks; deletion cancels buffered writes and captured hooks. SPFresh remains queue-unsupported, GuardiANN belongs to WS-D, and Lucene remains unresolved. Mandatory vector callback consumption remains an explicit safety deviation.
+
+The retained [oracle log](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-c-research/queue-oracles-split.log:43) establishes eight split cases, 15 envelope cases, and three skip values across three selected specs. Retained full-suite output reports 93/93, with three executed and 90 cached. I checked the oracle source hashes; I ran no tests.
+
+Java remains at `fdacd162a9c8acfadc49082b89185c823ab8ae4a`; inspected Go integration files match accepted tree `48b50548b11a53bd1452a627689c440535a3d093`. Published HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`.
+
+This ACK accepts neither implementation nor the whole upgrade. No edits, git mutations, publication, or delegation occurred. Available session metadata does not let me attest `gpt-6-astra/xhigh`; I made no model substitution.

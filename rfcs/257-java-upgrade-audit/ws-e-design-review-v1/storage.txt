@@ -1,0 +1,81 @@
+**NAK.** The review is complete: it covers the full design, the oracle spec, both run logs and the evidence files, checked against Java 4.14.2.0 (`fdacd162a9`) and the Go code in the candidate tree.
+
+- **Tree:** `cc94face9f554e277346f6061becf84c658abc3b`
+- **Design:** `rfcs/257-java-upgrade-audit/ws-e-design.md`, sha256 `8647e12bbf6082d75b6341baf04166b7b8310564e90675fd57b6eb0ef2b0569e` (matches)
+
+The oracle rows I checked agree with the log lines in `-6.log`. There are 74 probes (58 + 1 enum + 15 prepared).
+
+## High
+
+**1. §6 designs around a resume path Go does not have.**
+- Go has no SQL `EXECUTE CONTINUATION` and no COPY. The planner rejects caller continuations (`cascades_generator.go:1344-1354`), and `planOne` sends the statement to 0A000 (`:197`).
+- Even so, §6.2 admits snapshot on `EXECUTE CONTINUATION` and specifies the COPY-continuation 0A000. §6.4 tests "apply on resume only when passed again".
+- This contradicts the design's own §1.7 ("Go continuations carry no plan"). The umbrella gives `EXECUTE CONTINUATION` no other owner (its only mention is line 477).
+- The design must either port Java's compiled-statement continuation (a wire surface) or stop and ask the owner.
+- It must also specify the path Go really has: internal paging. Auto-commit pages are separate `DB.Run` transactions (`:2200-2206`). So "one read version across pages" holds only inside an explicit transaction, and the snapshot flag must be re-applied to every page from `paginatingRows`, the way `dryRun` is.
+
+**2. Snapshot isolation (and every statement option) can also be set on the connection; the design misses this.**
+- In Java, `PlanGenerator.java:170` merges the connection options with the statement options before `validateIsolationLevelSnapshotOption`.
+- `OptionScopeTest.java:104-178`: a SELECT on a snapshot connection runs at snapshot, and DML on that connection is 0A000.
+- This is the only way the umbrella's "reject DDL" arm can be reached, because DDL accepts no `statementOptions`.
+- Go defines `OptDryRun` and `OptLogQuery` (`api/options.go:119,127`), but nothing outside `options.go` reads them (grep over `pkg/`, non-test).
+- Statement-level `PLAN RIGHT DEEP` has no semantics or cache-key wiring in the design.
+- The "does not leak through a cached plan" test is empty as written: the token key already separates the two SQL texts. The meaningful test is Java's shape: toggle the connection option between runs of identical SQL.
+
+**3. The snapshot read scope is wrong for records fetched through an index.**
+- §6.2 says the option applies to "every read". In Java, the record fetch after an index scan stays serializable: `FDBRecordStoreBase.java:1413-1417` calls `loadRecordInternal(pk, state, false)`. Only record range scans (`FDBRecordStore.java:1256`) and index scans follow the option.
+- Go's fetch uses `LoadRecord` (`executor.go:1417,2143`, `executor_new_plans.go:921`), which matches Java today. The design should pin that.
+- Add a real-FDB case: an index-backed snapshot SELECT, a concurrent UPDATE of a fetched record → the reader's commit fails; a concurrent insert into the index range → it commits. Java's `SnapshotIsolationConcurrencyTest` does not cover this, so it is unmeasured on both engines.
+- Hazard: `IsolationLevelSnapshot` is the zero value (`scan_properties.go:63`). Any new field of that type defaults to snapshot. Carry a bool, and keep the serializable control test.
+
+**4. `api.NullOf(sqlType)` contradicts the target.**
+- `EmbeddedRelationalPreparedStatement.java:207-216`: `setNull` throws the SQL type away and stores `null`, exactly like `setObject(null)`.
+- The measured row [prepared_array_typed_null_element] is the *RelationalException* (bare-NULL) form.
+- A BIGINT-typed NULL would instead be promoted as a nullable element and give the SemanticException form. `COALESCE(?,?)` would come back BIGINT instead of 22F00.
+- Bind nil only. The real contract is "parameter channel vs bare NULL token", not a SQL type.
+
+**5. Typed binding opens new write-path hazards.**
+- **Invalid UTF-8:** today bound text passes through `antlr.NewInputStream` (`parser.go:191` → `case_insensitive.go:22`, a `[]rune` conversion), which turns invalid UTF-8 into U+FFFD before it is stored. With direct binding, raw bytes reach proto2 string fields and tuple/index keys. Java cannot produce those bytes and reads them back as U+FFFD, so a Java update or delete computes different index keys and leaves orphaned entries. The design must choose reject or replace, and pin it with an FDB test plus a Java read.
+- **`[]byte` aliasing:** database/sql callers may reuse their buffers, and the bound constants live in the shared plan cache. Deep-copy at bind time.
+- **Cache-key rendering:** "exact rendering" must be bit-exact for floats (`Float64bits`/`Float32bits`). Otherwise NaN payloads collide in the key, and a warm hit stores the first payload's bits.
+
+## Medium
+
+**6. The nullable-array extension boundary is undefined.**
+- The approved pins include `[1,NULL]=[1,NULL]` and `[NULL]=[NULL]` (`array_comparison_java_probe_test.go:53-55`). These are constant arrays, and §4.1/4.2 rejects NULL elements "at planning for constants".
+- Define the rule by consumer (projection, IN, DML, function argument vs comparison operand).
+- Keep both serialization guards as unconditional write backstops, retargeted to Java's 0A000: `proto_value.go:198-205` and `executor.go:4363` (the design mentions only the first, and replaces it).
+- §4.2 has no test list. Relational W2's cases are missing: empty array, one-field record array, record containing an array vs nested array, NULL array vs NULL element, static vs runtime, cold and warm.
+
+**7. The typed-binding contract has gaps.**
+- A plain Go `int` becomes int64, so LONG. The target's INSERT/UPDATE behaviour for LONG into an INTEGER column is unmeasured (Java's `PromoteValue` has only `INT_TO_LONG`, `:76`), and it decides the stored int32 bytes or an error.
+- Parameters in DDL/views are not addressed, although `DIVERGENCES.md:1575` names them as a consequence.
+- Ordinals across a multi-statement batch are unspecified.
+- Named parameters are unsupported today (`utilities.go`), so name matching and mixing rules need stating.
+- "LIMIT unchanged" is unproven now that its parameter becomes LONG.
+- No Go mechanism is named for reaching Java's 0AF00 on `ORDER BY ?`.
+
+**8. §5 omits `values.go:2516`.** `ScalarFunctionValue.Type()` forces every scalar result nullable. The umbrella requires removing that override, and cascades W2 names both places. The design also omits Java's `INCOMPATIBLE_TYPE` when no maximum type exists (`VariadicFunctionValue.java:247`).
+
+**9. §0 overclaims what is measured.** These §6 outcomes are source hypotheses with no oracle row:
+- the 0A000 messages;
+- EXPLAIN with SNAPSHOT: Java rejects it, because `IS_UTILITY_STATEMENT` is set before `visitQuery` could add `IS_DQL_STATEMENT` (`AstNormalizer.java:271-274,345-347`);
+- the DML refusal and the conflict behaviour;
+- the DML backstop, which needs a typed Go error for `RecordCoreArgumentException("Cannot execute plan at SNAPSHOT isolation level")` (`QueryPlanUtils.java:55`).
+
+## Low
+
+**10. Lexer and cache-key details.**
+- "The only Go-only text in the lexer grammar" is inaccurate: the `ERROR_RECONGNIGION` action is already removed (Go `RelationalLexer.g4:1382-1389`).
+- `notifyListeners` is unexported in antlr4-go, so name the exported `GetErrorListenerDispatch()`. Reset the depth counter on `Reset`/`SetInputStream`.
+- The key's case fold must be the analyzer's fold (`semantic.NormalizeString`) so that only names the analyzer already merges collide.
+- `StripStringLiteralQuotes` has no *non-test* caller; two test files still use it.
+
+## Verified correct
+- The LIKE and PatternForLikeValue evaluation order, the UTF-16 rules, the four SQLSTATEs and the matcher claims.
+- The adjacent-literal decoder.
+- Java's comment and nesting rules.
+- The IN bare-NULL walk.
+- Variadic nullability and eager evaluation.
+- DML refusal happens before the child runs, dry runs included.
+- Go does not write PValue protos.

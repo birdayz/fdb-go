@@ -1,0 +1,68 @@
+**NAK: revision 3, tree `72fe965617516b0b9d9ebef01d28a19e5ef21007`.** Design `ws-c-design.md`: SHA256 `a1993f1579acdaa5e59f9adc75c7ac7a751dc7a030dcbdc4ffccbf4b0f25524f`, 787 lines. I checked the tree type, the hash and the line count myself.
+
+The main v2 items are fixed and pinned by mutations. The NAK is for a set of small gaps, one of them a new false statement in the CHANGELOG, and two v2 findings that are only partly resolved. Findings come from reading source unless marked as measured. I ran nothing.
+
+## Findings, most severe first
+
+1. **Low-medium: `LastBuildOutcome` reports the last attempt, not the call.**
+   - `BuildIndex` (`online_indexer.go:1064-1086`) keeps only the final attempt's outcome.
+   - If attempt 1 scans ranges and then fails with a PartlyBuiltError or some-readable error the catcher retries, and a peer publishes before attempt 2, attempt 2 skips the READABLE index.
+     - The call then returns `n > 0` with `LeftAlone` (`:1234`).
+     - frl prints "already readable; nothing built", and fleet returns `OutcomeNoWork` with `Records > 0` (`fleet/build.go:194-211`).
+   - Fix: report `Built` if any attempt built, or document the value as the last attempt's.
+   - The reset at `:1065` is not pinned. "A failed call reports nothing" (`online_indexer_test.go:4010-4017`) uses a fresh indexer, which is `None` anyway. Reuse an indexer that has already succeeded.
+
+2. **Low: the CHANGELOG has a new false claim.**
+   - It says a MUTUAL build "relaunches up to Java's attempt limit (six sessions)". Java throws at the first catch (`OnlineIndexer.java:212-213`), and so does Go (`online_indexer.go:1144`).
+   - The takeover set is null by default (`OnlineIndexer.java:1255`), so MUTUAL continues only under `MUTUAL_TO_SINGLE` (`:1149-1150`). The CHANGELOG names the MULTI_TARGET takeover but not this one.
+   - §7.3's "one that is not costs six sessions" has the same error.
+
+3. **Low: storage v2 #4 is only partly resolved.**
+   - The spec that finding named (then `:4015`, now `online_indexer_test.go:4206-4217`) still asserts only the error.
+   - It is the one spec whose target starts DISABLED, so it is the only one that exercises the REBUILD clear.
+   - So the CHANGELOG's "(and cleared, if its action was REBUILD)" is still unpinned.
+
+4. **Low: DIVERGENCES.md lists one of the "two Go-only state checks".**
+   - At the follow-up site (`online_indexer_queue.go:433-440`), Go fails the drain or merge commit when a target is no longer write-only.
+   - Java's follow-up skips that target (`IndexingBase.java:969-972`), commits, and fails only at the next build transaction.
+   - The new section (`DIVERGENCES.md:2725-2761`) declares only the queue-flag check.
+
+5. **Low: a new error path has no test.**
+   - The unknown-action error in `GetIfMismatchPrevious` (`online_indexer.go:147-156`) and the catcher arm that returns it (`:1116-1119`) are untested.
+   - Measured: `git grep 'mismatched previous build'` over the test files finds 0 hits. The control `'bad indexing desired action'` finds `:3600`. The arm table has no row for it.
+
+6. **Low: the fleet's aggregate result is not pinned.**
+   - No test reaches `len(names)==0 → OutcomeNoWork` (`build.go:207-211`). `TestBuiltBySessionCountsOnlyWhatTheSessionDid` pins only the outcome-to-bool mapping.
+   - `total += n` now runs before the error check (`:194`), so a failed tenant's `Records` includes the failed index's scan. That change is undeclared.
+
+7. **Nits.**
+   - `online_indexer.go:1205-1208` still gives "as each Java attempt builds a new indexer" as the reason, with no mention of the shared ID.
+   - `newHeartbeat` (`:474-481`) builds through `NewIndexingHeartbeat`, which draws a UUID from `env` (`indexing_heartbeat.go:50`) only for it to be overwritten. Java passes the ID into the constructor (`IndexingHeartbeat.java:66`); do the same.
+   - The PartlyBuiltError advice in frl and fleet (`index_write.go:~333-339`, `build.go:~255-259`) suggests a mutual or same-targets rerun, which neither tool can perform. `formatPartlyBuilt`'s doc still says "two ways out". An empty `Message` renders as "()". The test checks only "same settings".
+   - `Build` (`online_indexer.go:811-833`): Java tests `size() > 1` before removing duplicates and runs `validateIndexSetting` before `validateTypes` (`OnlineIndexer.java:866-878`). So a duplicated target plus a source builds in Go but is refused in Java.
+   - Now that the ID is stable, the errors could carry Java's `INDEXER_ID` (`IndexingBase.java:604`, `:1174`), which was the aside in storage v2 #2.
+   - The branches for a nil session heartbeat (`online_indexer_queue.go:78-80`, `indexing_mutual.go:51-54`) are reachable only from tests that build the indexer as a struct literal.
+
+## What holds (source)
+
+- **The frl pre-read is gone** (all three v2 #1). The summary comes from the session outcome.
+- **One identity per `OnlineIndexer`,** matching `IndexingCommon.java:53`, `IndexingBase.java:457` and `IndexingMerger.java:97`. Pinned by m18.
+- **Both Go-only state checks now raise `RecordCoreStorageError` "Unexpected index state(s)",** Java's class and message (`IndexingThrottle.java:437`). The five remaining `IndexingValidationError` construction sites in non-test recordlayer code each match a Java `ValidationException`.
+- **An undefined source is a `MetaDataError` "Index X not defined"** (`RecordMetaData.java:308`), raised before admission, as Java resolves the stamp before any heartbeat (`IndexingBase.java:452-460`). Nothing is written.
+- **Smaller fixes:**
+  - the builder refusals have Java's class and messages (`OnlineIndexer.java:869`, `:877`);
+  - the 7.1 sentence is fixed;
+  - the `SetSourceIndex` doc and the count doc are updated;
+  - the precedence divergence is declared.
+- **The setup numbering** affects only revision 3's specs that set up several stores; DescribeTable entries already get distinct subspaces.
+
+## Measured
+
+- **Java checkout:** `fdb-record-layer/.git/HEAD` is `fdacd162`. I read the file; I did not check the working tree for local changes.
+- **md5s:** all 12 in `evidence-md5.txt` match the candidate's blobs.
+- **Evidence tree:** `git diff --stat 2b0de4e8 72fe9656` shows only the design file, the reviewer settings and two WS-J review outputs.
+- **Mutation logs:** each shows marker count 1, its perl expression, the applied diff, "Ran 369 of 3694" and "restored". Red counts: m17 2, m18 1, m19a 3, m19b 1, m20 1, m21 1, m22 1, m71a 20, m71b 1, m71c 3. All match §7.3.
+- **Censuses:** skip 10 recordlayer specs plus one frl test; MARK_READABLE 6; catch 17 plus `TestIndexBlockLeaseReadsTheEnvClock`. Run counts 2231, 230, 16, 12 specs, 375 and 15.
+- **`justtest.log`:** "Executed 19 out of 94 tests: 94 tests pass".
+- **`loop40.log`:** 40 × "Ran 2 of" and 40 × "SUCCESS! -- 2 Passed | 0 Failed".
+- **First runs:** `focus1.log` failed the outcome spec at `:4012`, the store-reuse bug §7.3 describes; `focus2.log` then passed 369 of 369.

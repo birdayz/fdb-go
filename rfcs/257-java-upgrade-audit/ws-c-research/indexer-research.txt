@@ -1,0 +1,110 @@
+WS-C requires a persistent queue layer, maintainer-specific replay, and a session coordinator spanning build, drain, merge, and closeout. **State 4 and format 15 should become available only when that entire path exists.**
+
+I read [RFC257 WS-C](/home/birdy/projects/fdb-go/rfcs/257-java-4.14.2.0-upgrade.md:351) and [record-storage W1–W2](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/record-storage.md:44). The Java tag resolves to `fdacd162a9c8acfadc49082b89185c823ab8ae4a`; the inspected core Go integration files match accepted tree `48b50548b11a53bd1452a627689c440535a3d093`.
+
+Below, `G/` means `pkg/recordlayer/`; `J/` means `fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/`.
+
+1. **Implement queue storage independently of indexing policy.**
+
+   Port `J/queue/PendingWritesQueue.java`: enqueue `:171`, cursor `:196`, clear `:238`, serializable emptiness `:269`, envelope/key construction `:296`, capacity `:319`, validation `:340`.
+
+   Store entries under `(9,indexKey,8,incarnation,versionstamp,splitSuffix)` and the little-endian atomic counter at `(9,indexKey,9)`. Produce envelope version 1, Java-compatible `Any` identities, timestamp, and transaction/local-operation ordering. Reject malformed envelopes, future versions, wrong payload types, and invalid operations explicitly.
+
+   Reuse `G/store.go:1704 GetIncarnation`, `G/database.go:881 ClaimLocalVersion`, `:920 AddVersionMutation`, and `pkg/fdbgo/fdb/tuple/tuple.go:608 PackWithVersionstamp`. **Existing split storage is insufficient:** [saveWithSplit](/home/birdy/projects/fdb-go/pkg/recordlayer/split_helper.go:26) uses ordinary sets at `:62/:97`; queue chunks require versionstamped-key mutations. Add a context-aware split writer and raw unsplitting cursor. `G/key_value_cursor.go:346` deserializes records and cannot directly serve arbitrary queue payloads.
+
+   Apply row/byte limits at complete-entry boundaries; continuations must never skip unfinished split entries. Capacity and traversal use snapshots. Clearing adds a read conflict over the entire entry, clears all chunks, and decrements once. Actual emptiness uses a serializable range read, never the counter.
+
+2. **Extend state classification, then establish persisted session state.**
+
+   Add state 4 through [index_state.go](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:19), including decoder `:65`, family predicate `:39`, and a distinct queued predicate. Update classification consumers: `:111`, `G/store_api.go:459`, `G/online_indexer.go:166`, uniqueness `G/index_maintainer.go:319/:609`, bitmap `G/bitmap_value_index_maintainer.go:139`, and rank `G/rank_index_maintainer.go:131/:268/:289`. Preserve explicit state-1 setter semantics.
+
+   Add requested queue targets and closeout-attempt count to `G/online_indexer.go:40 IndexingPolicy`; defaults are no requested targets and 100 attempts (`J/OnlineIndexer.java:1216/:1228/:1262/:1547/:1561`).
+
+   In `G/online_indexer.go:1114 markWriteOnly`, select queues **only for fresh builds**, per target: requested, capable maintainer, zero version columns, persisted format ≥15, non-mutual. Reuse `G/metadata.go:2304 countVersionColumns`. Otherwise select ordinary write-only. Continued builds retain each target’s persisted state and derive the queued-target set from that state, not current policy (`J/IndexingBase.java:263/:272/:286/:314`).
+
+   Current Go decides continuation from only the primary and never validates follower states. Validate every target and stamp. Allow coherent mixed ordinary/queued write-only targets without converting them; reject disabled/scannable followers during continuation. Tagged Java’s exact follower-enum comparison at `IndexingBase.java:234` rejects such mixed resumes despite per-target eligibility—an upstream edge case requiring this explicit disposition.
+
+   Refuse mutual continuation of any queued target **before** force-overwrite or matching-stamp shortcuts in `G/online_indexer.go:1162`, matching `J/IndexingBase.java:465`.
+
+3. **Introduce maintainer capability, serialization, and replay at existing dispatch points.**
+
+   Extend [IndexMaintainer](/home/birdy/projects/fdb-go/pkg/recordlayer/index_maintainer.go:30) with default-unsupported queue capability and explicit serialize/replay operations. In `G/store.go:1156 updateOneIndex`, branch on queued state before ordinary write-only dispatch. Keep index-building calls to `maintainer.Update(nil,rec)` direct; routing them through store enqueue dispatch would enqueue the build itself.
+
+   Production standard/value indexes remain unsupported. Java’s `maintainers/StandardIndexMaintainerWithQueue.java:58/:75/:92` is a separate implementation; its existence does not enable every value index.
+
+   For vector maintenance, extract an entry-application helper from `G/vector_index_maintainer.go:314 Update`. Serialize evaluated old/new entries with packed key/value and **full primary keys**, then replay deletions before insertions; trim primary keys only when applying entries. Java references: `maintainers/VectorIndexMaintainer.java:426/:432/:453/:470`.
+
+   For sliding windows, preserve enqueue-time filtering and separately serialized delegated delete/insert payloads (`J/maintainers/SlidingWindowIndexMaintainer.java:429/:460`). Refactor `G/sliding_window_index_maintainer.go:275 updateLocked` around key/callback operations, reusing `shouldMaintain :310`, entry-key construction `:395`, insertion `:409`, and deletion `:503`. Capability follows the delegate. WS-B already contains the existing-entry/boundary fix; retain it.
+
+   In `G/store_delete_where.go:23 DeleteRecordsWhere`, retain all validation before mutation. At action execution `:265`, queue `DELETE_WHERE` using the **computed per-index prefix** assembled at `:112/:132/:142`, preserving ordering with UPDATE entries.
+
+4. **Make build transactions produce committed follow-up work.**
+
+   Refactor [BuildIndex](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer.go:827) into:
+
+   `build transaction → drain discovered targets → merge requested targets → done/throttle`.
+
+   Move the current `!hasMore` exit at `:866` after drain/merge. Java deliberately performs follow-up work even after the final build range (`J/IndexingBase.java:1055`). Discover queues from snapshot counter reads before scanning, as `J/IndexingThrottle.java:332/:450` does; counters are scheduling hints only.
+
+   Add shared transaction preparation to `buildRange :1318`, `buildRangeByIndex :1494`, and range-preset transactions `:776`: validate all participating states, expected method/stamp and block status, maintain session ownership, and reset attempt-local counters/work sets. Publish continuation and follow-up work only after successful commit.
+
+   **Existing defect:** ordinary Go builds neither maintain exclusive heartbeats nor revalidate state/stamps each batch. Consequently, ongoing builds do not observe `BlockIndex :1739` through this path. Port the checks in `J/IndexingBase.java:955` and `J/IndexingThrottle.java:410`.
+
+   **Existing snapshot defect:** Go’s snapshot build scan lacks Java’s explicit record read conflict (`IndexingBase.java:912`). Reuse `G/store.go:812 AddRecordReadConflict` before indexing snapshot-read records; otherwise a writer can commit first and the builder subsequently restore stale index entries.
+
+5. **Port a dedicated drain iterator with commit-bound continuation and heartbeat checks.**
+
+   I read the entire 571-line `J/runners/throttled/ThrottledRetryingIterator.java`, including its builder and quota manager. Its relevant contract is:
+
+   - Fresh transaction/store/cursor per attempt (`:175`); advance continuation only after commit (`:140/:147`).
+   - Apply UPDATE or DELETE_WHERE completely, then clear/decrement (`J/IndexingPendingWriteQueue.java:116`).
+   - Register heartbeat checks in transaction/cursor setup, including every retry and the final source-exhausted transaction (`:102`).
+   - Commit even when exhaustion produced no items; `runners/TransactionalRunner.java:118` supplies that boundary.
+
+   Reuse `G/runner.go:348 OpenContext` plus `G/database.go:864 Commit` and `:875 Cancel`; let the new iterator own retries explicitly. Existing commit paths already execute checks before flushing version mutations. Register named checks through [getOrCreateCommitCheck](/home/birdy/projects/fdb-go/pkg/recordlayer/database.go:1041), scoped by store subspace and index. Register before commit-check execution: `runCommitChecks :1094` snapshots registrations and does not execute newly appended checks in that pass.
+
+   Allocate one stable session UUID outside transactions, shared across build/drainers/mergers and retries (`J/IndexingCommon.java:53`, `IndexingBase.java:450`). Extend the heartbeat constructor to accept it.
+
+   **Existing interoperability defect:** `G/indexing_heartbeat.go:78` writes UUID strings, and `:113/:214` reads strings; Java uses tuple UUIDs (`J/IndexingSubspaces.java:109`). Correct encoding/decoding before relying on cross-language exclusion. Current mutual heartbeat calls also cover only the primary (`G/indexing_mutual.go:252`); shared preparation must cover every target.
+
+6. **Port deferred-maintenance control and a separate merger driver.**
+
+   Go has no equivalent maintenance-control/merger machinery. Add transaction-local merge requests and per-target session merger state, modeled on `J/IndexDeferredMaintenanceControl.java:78/:242/:295` and `J/IndexingMerger.java:77`. Carry merge limits, time quota, last-step feedback, stable session identity, and a precommit heartbeat callback.
+
+   Preserve adaptive merging: successful runs grow limits; failures reduce merge count or time quota according to the failed step (`IndexingMerger.java:134/:155/:238/:246`).
+
+   Register the callback in **every actual backend write transaction**, including retried and exhausted transactions. Merely storing it in control is insufficient: tagged Java’s production callback consumer is Lucene’s `FDBDirectoryWrapper.java:602/:615`; vector merge receives control but does not consume that callback. Current Go HNSW can explicitly report no deferred work; future GuardiANN/Lucene adapters must implement this transaction contract.
+
+7. **Keep closeout independent per target and make emptiness atomic with readability.**
+
+   Extend [markReadable](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer.go:1272), which already uses separate transactions and continues after individual failures. For each target, perform up to 100 configured attempts:
+
+   `drain → transaction: verify actual queue empty, transition readable/unique-pending, clear heartbeat and bookkeeping`.
+
+   A nonempty queue or transaction conflict restarts that target’s drain/check attempt; other errors remain target failures (`J/IndexingBase.java:357/:379/:404`).
+
+   Both commit orders are covered: a writer committing first conflicts with the serializable empty-range read; closeout committing first conflicts with the writer’s state-key read. WS-B already supplies that second edge in `G/index_state.go:397/:401`; preserve authoritative `readIndexState` dispatch.
+
+   Put the queued-empty guard in the shared readable-state validation around `G/index_state.go:804 checkIndexBuilt`, covering both readable setters and `G/online_indexer.go:1810 MarkReadableIfBuilt`. Tagged Java’s helper at `IndexingBase.java:333` and low-level store transition at `FDBRecordStore.java:3963` lack that guard. Do not reproduce this bypass.
+
+8. **Complete overflow, deletion, and format lifecycle.**
+
+   Match Java’s executable defaults: capacity 100,000; nonpositive capacity unlimited; overflow-disable **true**, despite its contradictory comment (`J/FDBRecordStoreProperties.java:77/:90`). Capacity remains soft under concurrent snapshot checks.
+
+   Overflow either returns the queue-full error or registers a commit check calling `G/index_state.go:245 MarkIndexDisabled`; defer disabling because dispatch holds state read locks (`J/IndexingPendingWriteQueue.java:187/:212`).
+
+   Reuse WS-B’s [eraseAllIndexingDataButTheLockAndRangeSet](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:833): it already clears queue/counter subkeys 8/9 through context-aware clears. `clearIndexData :711` already reaches it.
+
+   **Latent integration defect:** `G/store.go:924 DeleteAllRecords` clears build space but its deferred-version cleanup list `:970` omits build space 9. An enqueue followed by delete-all could therefore flush orphan queue chunks afterward. Use context-aware clearing for that prefix. Extend `G/store_api.go:165 DeleteStore` to cancel new scoped overflow/heartbeat checks, following its existing retirement-hook cancellation; captured callbacks must not recreate deleted data. Preserve the intentional former-index lock/build-space retention at `G/index_state.go:755/:787`.
+
+   Finally set maximum format 15 while pinning default creation to 14 (`G/store.go:65/:76`). Disable/rebuild incompatible experimental queues.
+
+9. **Keep limits and cancellation explicit across phases.**
+
+   Preserve build throttling separately from drain quotas. Java’s drain iterator defaults to 4,000 ms per transaction and 100 retries; queue draining limits deletes to 10,000/s. It shrinks row limits to 90% of attempted scans after failures and grows after 40 successful transactions (`ThrottledRetryingIterator.java:227/:268/:334/:439`). Its retry policy is broader than Go’s build-specific lessen-work whitelist.
+
+   Add transaction age/write-size stopping after completed items, using `G/database.go:813 GetApproximateTransactionSize`, matching `J/IndexingBase.java:930`. Check cancellation before each attempt/item/phase; cancel active contexts and propagate cancellation from waits. Currently `G/indexing_throttle.go:53 sleepMillis` silently returns on cancellation, and build time limits run only between nonfinal ranges (`G/online_indexer.go:1015`). Do not describe those as an end-to-end deadline.
+
+   Abort transactions when range insertion reports lost ownership; current ordinary paths discard the boolean (`:1429/:1625`), while mutual `G/indexing_mutual.go:449` can return success after maintainer mutations.
+
+Scope: requested core Go paths, relevant tagged Java methods, and the full throttled iterator were read. I did not exhaustively read unchanged Java API methods, the full test suites, Lucene/GuardiANN internals, or WS-D. No files were edited; no builds, tests, git mutations, delegation, or publication occurred.

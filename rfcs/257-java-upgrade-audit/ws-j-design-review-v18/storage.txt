@@ -1,0 +1,92 @@
+# WS-J design v18 review: **NAK**
+
+I reviewed commit `d2e47b8bd`. `ws-j-design.md` at that commit hashes to SHA256 `5f6990f66f23f4a12f56766a016217d0adf8edfd77a826bfc3eaf8e05ea9643f` over 2950 lines; I recomputed both. The review was read-only: commit objects, Java 4.14.2.0, protobuf-go v1.36.11, protobuf-java source from the Bazel cache (I have not confirmed it is the JVM's exact version), and the evidence logs.
+
+The sweep, the operand and the reader pins are sound. The NAK is for the first finding below: a closed enum's move to the unknown fields happens after protobuf-go has already checked required fields.
+
+## HIGH
+
+**H1. A required closed enum with an undeclared number: Java's full parse refuses it, Go's does not.**
+- **Where Go goes wrong.** `UnmarshalAsJava` and `unmarshalVTAsJava` (`proto_closed_enums.go:97-125`) and both record decoders (`store.go:2281-2284`, `:2385-2388`) decode first, then move the number.
+  - The decode passes the required-field check because the undeclared number counts as set.
+  - The move then leaves the required field unset, and nothing checks again.
+- **What Java does.** protobuf-java moves the number while parsing (`MessageReflection.java:1223-1232`), then `buildParsed` checks required fields (`DynamicMessage.java:93-96, 364-373`; generated `parseFrom` checks the same way).
+- **Fields affected.** `Field.fan_type` (`record_key_expression.proto:37`), `RowNumberWindowPredicate.direction` (`record_metadata.proto:334`), and any required enum in a user's record type.
+- **Consequences** (from reading source; none of this was run):
+  - **Stored template with fan type 7.** Java's `MetaData.parseFrom` (`RecordLayerStoreSchemaTemplateCatalog.java:221`) fails, so Java reports XXXXX. That is the same post-parse state as the measured "a root field without its fan type" row. Go parses it, then refuses with `MetaDataProtoDeserializationError`, so `deserializeTemplate` (`fdb_template_catalog.go:375-381`) reports **42000**.
+  - **`FDBMetaDataStore`.** Both engines refuse, but with a different error class.
+  - **Records.** Java refuses the record ("Error reading from byte array", `DynamicMessageRecordSerializer.java:150-153`). Go reads it, indexes the field as null, and then fails its own re-save in `Marshal`'s required check.
+- **Why the pins miss it.** This is the same simpler-cousin pattern as v17 H1:
+  - The fan-type-7 JVM rows parse partially on both sides (`keyExpressionFromPartialProtoJava` and `buildPartialMetaDataAnyVerdict` for Java, `AllowPartial` for Go).
+  - The stored-template spec has no fan-type-7 row.
+  - The record spec's enums are only optional and repeated.
+- **The repo already has the correct shape.** `unmarshalPendingQueuePayload` (`pending_writes_queue.go:~228-271`) strips undeclared `operation` numbers *before* decoding. So the required check sees Java's reading, and "the last KNOWN occurrence wins", which is Java's rule for a repeated singular field. The general helper does neither; the Go-reads-last divergence and the oneof-member divergence come from the same root.
+- **Fix.** Strip before decoding, or run `CheckInitialized` after the move on every full-parse route.
+- **Pin, Java versus Go:**
+  - fan type 7 through the catalog and through `FDBMetaDataStore`;
+  - a record whose required closed enum holds an undeclared number.
+
+## MEDIUM
+
+**M1. The recursion limit is off by one on top-level decodes, and the claims about it are wider than the code.**
+- **Go.** protobuf-go counts the top-level message against the limit (`internal/impl/decode.go:105`, `proto/decode.go:124`). `RecursionLimit: 100` therefore admits 99 nested levels.
+- **Java.** protobuf-java checks the limit only on nested messages (`CodedInputStream.java:186-190`, `:994-997`), so it admits 100.
+- **Why the spec can't see it.** Its 49 and 50 shapes reach a maximum depth of 99 and 101, which straddle the boundary.
+- **A shape that splits the engines.** A `record_count_key` (a KeyExpression at depth 1) that nests 50 KeyExpressions puts its leaf `Field` at exactly depth 100. Java parses it; Go refuses it.
+- **Records happen to be right.** Go decodes a record's inner bytes one level below Java's union parse, so the limit of 100 matches there.
+- **False scope sentences:**
+  - `DIVERGENCES.md:3276`: "this never differs from Java";
+  - `CHANGELOG.md:505` and `DIVERGENCES.md:3301`: headers, stamps and continuations are "parsed with protobuf-java's recursion limit". They go through `UnmarshalVT`, which has no limit at all. That is harmless for those non-recursive schemas, but the sentences are false.
+- **Fix.** Use 101 in `UnmarshalAsJava`, keep 100 for records, pin a depth-100 meta-data proto, and narrow the sentences.
+
+**M2. Go's own marshal→unmarshal round trips undo the move.**
+- **Continuations.** The continuation value codec decodes buffered STRUCT values with plain `proto.Unmarshal` (`query/executor/continuation.go:488`, `:509`). protobuf-go puts the unknown varint back into the field.
+  - So a STRUCT enum that read NULL before a sort or recursive continuation reads the raw number after resume.
+- **INSERT…SELECT.** `rematerializeProtoScalar` (`executor.go:4162`), which copies a composite value on INSERT…SELECT, does the same.
+  - The saved row then holds the number in the field, so Go writes an index entry of 7 where Java writes null.
+- v18 introduced this inconsistency; before it, Go read the number consistently everywhere.
+- **Fix.** Apply `closedEnumsAsJava` at both sites and pin a resume across that shape.
+
+## LOW
+1. **Map-valued closed enum re-save is unmeasured.** The JVM spec has no map. `TestClosedEnumsAsJava` asserts only the read.
+2. **Storage v17 L4, partly done.** Four test comments still say Java compares "the value object": `index_carry_class_test.go:201`, `metadata_evolution_validator_test.go:165`, `template_restore_fdb_test.go:411`, `fdb_catalog_test.go:846`.
+3. **Storage v17 L6, half done.** Section 9 still lacks the untyped load refusals (now five), and `:2351` still names only 9 (u) as the exception.
+4. **Error-code classification.** `deserializeTemplate` classifies by `errors.As` over the whole error chain. Java checks the top exception with `instanceof`, after its RelationalException-cause and `RecordDeserializationException` arms (`ExceptionUtil.java:59-74`). The mapping is measured on four shapes only.
+5. **Test 7 and the section 4 test bodies.**
+   - Test 7 predicts "record type key changed" for the re-based test 1 (`:1995`). That is unmeasured; label it a prediction.
+   - Tests 1, 3 and 10 (`:1975`, `:2002`) still describe the pre-port fixture in their bodies, marked only at the paragraph head, while tests 5 and 7 were rewritten in place.
+6. **Evidence gaps.**
+   - The hook ran 95 targets (`commit.log:214`, "Executed 39 out of 95"), and none is `//conformance:rfc257_parity_test`. So the green half of the 10 JVM reds is not in the evidence I was given.
+   - `8e515423b`'s fixes still have no red run (a Torvalds v17 Low, unanswered).
+7. **Unpriced cost.** A per-record reflective walk now runs on the hottest read path (`store.go:2284`, `:2388`) with no cost measurement.
+
+## v17 findings
+- **Graefe**
+  - M1: resolved. Hits for `WIDENED`, `Widening` and "Go-only API" remain only in status history or in withdrawal text. The one gap is Low 5's test bodies.
+  - M2, L1, L2, L3 and L7: resolved.
+  - L4: answered by measurement; M1 above remains.
+  - L5: resolved for the four measured shapes; H1 above breaks it for fan type 7.
+  - L6: moved to step 3 (the "3.2" citation is fixed).
+  - v15 "limit 1": resolved.
+- **Torvalds**
+  - H1: partly resolved; H1 above remains.
+  - M1: resolved; it matches `IndexComparison.java:175` and `LiteralKeyExpression.java:134-173`.
+  - M2 and M3: resolved.
+  - M4: resolved in the text; owed by step 3.
+  - Lows: the READABLE pin, `firstBindingHeld`, the XX000 hazard, the readers (MessageTuple measured) and `RegisterNonUniqueNullFunction` are resolved. The executed-template claims move to step 3. The red run for `8e515423b` is open (Low 6).
+- **Storage**
+  - H1, M1, L1, L2, L3, L5 and L9: resolved.
+  - M2: same outcome as Torvalds H1.
+  - L4 and L6: partly resolved (Lows 2 and 3).
+  - L7 and L8: moved to step 3.
+
+## Checked and sound
+- The closed-enum placement, the unknown-field order, and the OrElse default (UNDECIDED = 0, `OrElseCursor.java:76-91`).
+- The store-lock arm matches `FDBRecordStore.java:2926-2931`.
+- The operand ports.
+- The restore's unreadable-index refusal.
+- `latestTemplateVersion`'s limit and its conflict range.
+
+## Measured versus source reading
+- **Measured by me:** the hashes, the design greps, and the evidence logs (the red log's 10 `[FAIL]` lines against 21 passes; the hook's 95/95).
+- **Source readings, not run:** H1, M1 and M2.

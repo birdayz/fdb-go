@@ -1,0 +1,51 @@
+**NAK** for reviewed tree **`bcf0946edd1f5d591542fee4f07481d7826c046d`**, compared with base tree `0dedbe1b1083358fb9568a31178084c043fa31e0`. Published HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`.
+
+I read the complete code/build/test diff, including additions and removals; the design, three design ACKs and parent WS-B scope; relevant Go implementations and evidence READMEs; and corresponding local Java sources at `fdacd162a9c8acfadc49082b89185c823ab8ae4a`. The following are source-derived findings; I ran no tests or builds.
+
+1. **[P1] The transaction-visible index-state conversion misses execution paths.**
+
+   [aggregate_function.go:219](/home/birdy/projects/fdb-go/pkg/recordlayer/aggregate_function.go:219) and line 233 still select indexes through cached `IsIndexReadable`. So do [record_function.go:71](/home/birdy/projects/fdb-go/pkg/recordlayer/record_function.go:71) and line 84. The direct vector APIs retain cached checks at [vector_index_maintainer.go:1338](/home/birdy/projects/fdb-go/pkg/recordlayer/vector_index_maintainer.go:1338) and line 1381.
+
+   Open two store objects in one context, then disable an index through the first. The second still considers it readable. A COUNT aggregate can scan the cleared index and return zero while the records remain; direct vector scans likewise proceed instead of reporting `IndexNotReadableError`. Cached negative decisions also omit the required state read conflict.
+
+   This violates the explicit error-capable-path conversion in the accepted design. The retained matrix at [index_state_test.go:1121](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state_test.go:1121) enumerates only value, typed and time-window scans.
+
+   **Fix:** use `readIndexState` in these execution paths, preserving each API’s selection/error behavior and propagating read failures. Extend the same-context, cancellation and concurrent-enable conflict tests to direct vector APIs and explicit/automatic function selection.
+
+2. **[P1] Deferred retirement can apply obsolete replacement metadata after a same-context metadata upgrade.**
+
+   [index_state.go:307](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:307) captures the first store’s `removeReplacedIndexes` method. [database.go:1035](/home/birdy/projects/fdb-go/pkg/recordlayer/database.go:1035) permanently retains that registration for the subspace. Reconciliation at [store_builder.go:472](/home/birdy/projects/fdb-go/pkg/recordlayer/store_builder.go:472) neither cancels nor refreshes it.
+
+   Concrete sequence: start with a readable original and two write-only replacements. In one context, complete replacement 1 using metadata v1, thereby registering retirement. Open metadata v2 that removes the original’s replacement options without changing its modified version. Complete replacement 2 through that store. At commit, the captured v1 callback sees both replacements readable and disables and clears the original, although v2 explicitly canceled its replacement relationship.
+
+   The existing relationship-removal test at [index_state_test.go:1207](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state_test.go:1207) puts the metadata change in a separate transaction, avoiding this composition.
+
+   **Fix:** make retirement use the authoritative metadata for the subspace in that context, or reject incompatible mixed-version use before retirement can mutate data. Add the sequence above and assert both original state and entries after commit. Preserve the approved deletion cancellation.
+
+3. **[P2] New TEXT body validation completely skips multi-type indexes.**
+
+   [metadata.go:796](/home/birdy/projects/fdb-go/pkg/recordlayer/metadata.go:796) collects descriptors only from `rt.indexes`; the other collection loop handles universal indexes. `AddMultiTypeIndex` stores its associations in `rt.multiTypeIndexes`, so [metadata.go:1302](/home/birdy/projects/fdb-go/pkg/recordlayer/metadata.go:1302) performs zero body checks for those indexes.
+
+   A multi-type TEXT index whose body is a string in one covered type and numeric in another therefore builds successfully. The numeric records are silently omitted by the non-string return at [text_index_maintainer.go:308](/home/birdy/projects/fdb-go/pkg/recordlayer/text_index_maintainer.go:308). Tagged Java validates every covered record type through `MetaDataValidator.validateIndexForRecordTypes`.
+
+   **Fix:** validate every index/type association, including multi-type associations. Add mixed-descriptor negative coverage and a valid multi-type positive control. The current single-type/universal mutation campaign cannot detect this omission.
+
+4. **[P2, inherited—not a WS-B regression] Shared cache entries contain a Go data race.**
+
+   [store_state_cache.go:504](/home/birdy/projects/fdb-go/pkg/recordlayer/store_state_cache.go:504) writes `existing.shared` outside the cache mutex on every hit. Concurrent opens write the same field and read it at [store.go:1910](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:1910). Line 540 can also rewrite an already-published entry. Writing the same boolean value remains a race.
+
+   These writes exist in the accepted base, so I am distinguishing this from the milestone regressions. **Fix:** initialize `shared` before publication and never rewrite published entries; retain a concurrent warmed-cache opening test under the race detector.
+
+All five sections were evaluated:
+
+- **Sliding replay/delegate routing:** the exact-entry read precedes mutation; tracked replay, delegate selection and overflow handling are coherent. The size-one correction survives. Obsolete preemptive deletion and its counter are removed.
+- **Header-aware deletion/cache:** header decisions, tuple-range boundaries, queued-version cleanup, cache admission/eviction and cacheability error propagation follow the intended contract. The inherited race above remains.
+- **Replacement retirement/commit lifecycle:** initialization, build eligibility, exact-READABLE gating, lock-preserving cleanup and explicit commit unification are covered, but findings 1 and 2 prevent acceptance.
+- **Ignored options/union identity:** copied configuration, supplied-option-set handling, tag correspondence, descriptor-pair validation, alias handling and current-descriptor factories are consistent with the intended conversion. The supporting TEXT validation is incomplete as described above.
+- **Rank-valued bounds:** declared-score slicing, absolute ranks, singleton null values, continuation handling and instrumentation are coherent. I verified all seven preload callers use snapshots while actual rank reads remain serializable. The terminal replay and preload fixes have discriminating retained evidence.
+
+The other source changes are accounted for: full-PK uniqueness violation encoding, survivor cleanup and `ExistingKey` reporting support retirement; TEXT fixture corrections and dynamic-message decoding support metadata validation; Bazel enrollment and removal of obsolete clock allowances follow the implementation changes. The dead union lookup helper is replaced by the selected descriptor. The additional WS-A/E1 material consists of closure documentation, verification scripts and evidence; it does not change the accepted SQL implementation.
+
+Retained final logs report **93/93 uncached targets**, recordlayer race **3342/3343**, and conformance race **1387/1506**, with the stated exclusions. The 6678-file freeze matches current source/build content; only subsequent TODO/README bookings differ. Those greens and mutation kills do not exercise the three blocking compositions above.
+
+Approved extensions and the intentional Java deletion correction remain preserved. Queue/state4/format15 and WS-C–K remain outside this verdict. No edits, Git mutations, external requests, publication actions or agents were used.

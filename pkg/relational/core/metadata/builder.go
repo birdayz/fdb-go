@@ -16,6 +16,7 @@ import (
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/protoscope"
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -26,11 +27,15 @@ import (
 // for CREATE SCHEMA TEMPLATE DDL: name, version, tables with typed
 // columns and primary keys, and store-level flags.
 type Builder struct {
-	name             string
-	version          int
-	tables           []tableSpec
-	auxTypes         []api.Named // CREATE TYPE AS STRUCT registrations (aux_types.go)
-	errs             []error     // deferred errors from AddIndex
+	name     string
+	version  int
+	tables   []tableSpec
+	auxTypes []api.Named // CREATE TYPE AS STRUCT registrations (aux_types.go)
+	errs     []error     // deferred errors from AddIndex
+	// indexedTables is the table of each index added, in the order added: the
+	// order of a DDL statement's index clauses, which MoveIndexedTablesToEnd
+	// replays as Java's DdlVisitor does.
+	indexedTables    []string
 	intermingleTbls  bool
 	enableLongRows   bool
 	storeRowVersions bool
@@ -198,6 +203,7 @@ func (b *Builder) AddIndex(tableName, indexName string, columns []string, unique
 				return b
 			}
 		}
+		b.indexedTables = append(b.indexedTables, tableName)
 		b.tables[i].indexes = append(b.tables[i].indexes, indexSpec{
 			name:    indexName,
 			columns: columns,
@@ -230,6 +236,7 @@ func (b *Builder) AddGeneratedIndex(tableName, indexName string, rootExpression 
 		if b.tables[i].name != tableName {
 			continue
 		}
+		b.indexedTables = append(b.indexedTables, tableName)
 		b.tables[i].indexes = append(b.tables[i].indexes, indexSpec{
 			name:           indexName,
 			unique:         unique,
@@ -272,6 +279,7 @@ func (b *Builder) AddAggregateIndex(tableName, indexName string, groupColumns []
 				indexName, tableName, aggColumn))
 			return b
 		}
+		b.indexedTables = append(b.indexedTables, tableName)
 		b.tables[i].indexes = append(b.tables[i].indexes, indexSpec{
 			name:      indexName,
 			columns:   groupColumns,
@@ -316,6 +324,7 @@ func (b *Builder) AddCardinalityIndex(tableName, indexName, cardColumn string) *
 				indexName, tableName, head))
 			return b
 		}
+		b.indexedTables = append(b.indexedTables, tableName)
 		b.tables[i].indexes = append(b.tables[i].indexes, indexSpec{
 			name:              indexName,
 			cardinalityColumn: cardColumn,
@@ -357,6 +366,7 @@ func (b *Builder) AddFanOutIndex(tableName, indexName, column string) *Builder {
 				indexName, tableName, column))
 			return b
 		}
+		b.indexedTables = append(b.indexedTables, tableName)
 		b.tables[i].indexes = append(b.tables[i].indexes, indexSpec{
 			name:         indexName,
 			fanOutColumn: column,
@@ -432,6 +442,7 @@ func (b *Builder) AddVectorIndexUsing(method, tableName, indexName, vectorColumn
 				return b
 			}
 		}
+		b.indexedTables = append(b.indexedTables, tableName)
 		b.tables[i].indexes = append(b.tables[i].indexes, indexSpec{
 			name:             indexName,
 			vector:           true,
@@ -445,6 +456,31 @@ func (b *Builder) AddVectorIndexUsing(method, tableName, indexName, vectorColumn
 	}
 	b.errs = append(b.errs, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 		"vector index %q references unknown table %q", indexName, tableName))
+	return b
+}
+
+// MoveIndexedTablesToEnd is Java's DdlVisitor.visitCreateSchemaTemplateStatement
+// after it has generated every index (:559-564): for each index clause, in
+// clause order, the index's table is extracted and added back
+// (RecordLayerSchemaTemplate.Builder.extractTable then addTable), which MOVES it
+// to the end of the builder's table order. Build numbers union fields, record
+// type keys and descriptor messages in table order and registers each table's
+// indexes in insertion order, so their versions follow: a table no index names
+// keeps its declaration slot ahead of the indexed ones, which end in the order of
+// each one's last index clause. Only the DDL front end calls it; a template
+// built in code keeps the order its caller gave (RFC-257 WS-J section 4, F3).
+func (b *Builder) MoveIndexedTablesToEnd() *Builder {
+	for _, name := range b.indexedTables {
+		for i := range b.tables {
+			if b.tables[i].name != name {
+				continue
+			}
+			tbl := b.tables[i]
+			b.tables = append(append(b.tables[:i:i], b.tables[i+1:]...), tbl)
+			break
+		}
+	}
+	b.indexedTables = nil
 	return b
 }
 
@@ -493,6 +529,7 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 	// it; the COUNT-index + CardinalitiesProperty replacement is booked in
 	// TODO.md.
 
+	var laterCompanions []func() error
 	for tableIdx, tbl := range b.tables {
 		// Record type names are STORAGE names (Java: the Type.Record storage
 		// name, ProtoUtils.toProtoBufCompliantName of the user name — they
@@ -514,11 +551,12 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 				"record type %q not found after SetRecords", storageName)
 		}
 		rt := mdBuilder.GetRecordType(storageName)
-		// Explicit record type key = 0-based declaration index, exactly
-		// Java's RecordMetadataSerializer visit(Table):
-		// setRecordTypeKey(recordTypeCounter++). Stored metadata (and the
-		// record-store key prefix for non-intermingled tables), so it must
-		// match byte-for-byte.
+		// Explicit record type key = the table's 0-based position in the
+		// builder's table order, exactly Java's RecordMetadataSerializer
+		// visit(Table): setRecordTypeKey(recordTypeCounter++). For DDL that
+		// order is Java's (MoveIndexedTablesToEnd), not declaration order.
+		// Stored metadata (and the record-store key prefix for
+		// non-intermingled tables), so it must match byte-for-byte.
 		rt.SetRecordTypeKey(int64(tableIdx))
 		// Index key expressions must match the stored descriptor shape: with
 		// the NullableArrayWrapper emitted, any field path through a nullable
@@ -562,18 +600,19 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 				if idx.indexType != "" {
 					rl.Type = idx.indexType
 				}
-				for k, v := range idx.options {
-					rl.Options[k] = v
-				}
 				// Java's generator builder ALWAYS writes the unique option —
 				// setUnique(isUnique) stores "true"/"false" alike
 				// (RecordLayerIndex.java:216-218, called unconditionally by
-				// both generators, MaterializedViewIndexGenerator.java:157 /
-				// OnSourceIndexGenerator's builder). An omitted-when-false
-				// option is a stored-metadata divergence the D11 cross-engine
-				// comparison catches: Java's index carries unique=false where
-				// Go's carried nothing.
-				rl.Options[recordlayer.IndexOptionUnique] = strconv.FormatBool(idx.unique)
+				// both generators through MaterializedViewIndexGenerator.java:107).
+				// An omitted-when-false option is a stored-metadata divergence
+				// the D11 cross-engine comparison catches: Java's index carries
+				// unique=false where Go's carried nothing. It is written FIRST:
+				// the options are stored in insertion order, and the generator
+				// calls setUnique before the type-specific options (the permuted
+				// size, :174), so a permuted min/max index stores
+				// [unique, permutedSize].
+				rl.SetOption(recordlayer.IndexOptionUnique, strconv.FormatBool(idx.unique))
+				setOptionsSorted(rl, idx.options)
 				if idx.predicate != nil {
 					if perr := rl.SetPredicateProto(idx.predicate); perr != nil {
 						return nil, api.WrapErrorf(perr, api.ErrCodeInvalidSchemaTemplate,
@@ -685,10 +724,22 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 				companions = append(companions, companion)
 			}
 		}
-		for _, rl := range append(tableIndexes, companions...) {
+		for _, rl := range tableIndexes {
 			if rerr := registerIndex(rl); rerr != nil {
 				return nil, rerr
 			}
+		}
+		for _, rl := range companions {
+			laterCompanions = append(laterCompanions, func() error { return registerIndex(rl) })
+		}
+	}
+	// The companions are registered after every declared index of every table,
+	// so each declared index takes the version Java gives it; they take the top
+	// slots and raise only the metadata version, by their count
+	// (DIVERGENCES.md, "RFC-209 group-existence companions").
+	for _, register := range laterCompanions {
+		if rerr := register(); rerr != nil {
+			return nil, rerr
 		}
 	}
 
@@ -806,6 +857,7 @@ func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, *descripto
 
 	em := &fileEmitter{
 		seen:        map[string]bool{},
+		seenEnums:   map[string]bool{},
 		structTypes: map[string]*api.StructType{},
 	}
 	for i, tbl := range b.tables {
@@ -827,6 +879,7 @@ func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, *descripto
 		})
 	}
 	fdp.MessageType = append(em.messages, unionMsg)
+	fdp.EnumType = em.enums
 
 	// Build a resolver that includes the two dependency files.
 	// RegisterFile returns an error on duplicate registration; ignore it since
@@ -843,6 +896,10 @@ func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, *descripto
 	// Java-authored files (recordlayer.AbsolutizeFieldTypeNames).
 	buildable := proto.Clone(fdp).(*descriptorpb.FileDescriptorProto)
 	recordlayer.AbsolutizeFieldTypeNames(buildable)
+	// Two enums of the template may share a value name, as Java's DDL
+	// allows (protobuf-java scopes a value under its enum); the in-memory
+	// descriptor scopes them, the stored proto (fdp) does not change.
+	protoscope.ScopeEnumValuesAsJava(buildable)
 	fd, err := protodesc.NewFile(buildable, resolver)
 	if err != nil {
 		return nil, nil, false, api.WrapErrorf(err, api.ErrCodeInternalError, "protodesc.NewFile")
@@ -856,6 +913,12 @@ func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, *descripto
 type fileEmitter struct {
 	messages []*descriptorpb.DescriptorProto
 	seen     map[string]bool
+	// enums and seenEnums are the enum half of the same rule
+	// (registerTypeDescriptors' enumNames set): per table, the enums its
+	// closure reaches, in name order, each emitted once, under the FIRST
+	// table that reaches it. An enum no table reaches is never stored.
+	enums     []*descriptorpb.EnumDescriptorProto
+	seenEnums map[string]bool
 	// structTypes enforces one-storage-name-one-shape template-wide. The
 	// comparison normalizes the struct's OWN nullability away: a struct
 	// column's nullability lives on the referencing column, not the shared
@@ -889,6 +952,7 @@ func (em *fileEmitter) emitTableClosure(tbl tableSpec) (string, error) {
 		em:        em,
 		tableName: storageName,
 		msgs:      map[string]*descriptorpb.DescriptorProto{},
+		enums:     map[string]*descriptorpb.EnumDescriptorProto{},
 		wrappers:  map[string]string{},
 	}
 	msg := &descriptorpb.DescriptorProto{Name: proto.String(storageName)}
@@ -915,6 +979,20 @@ func (em *fileEmitter) emitTableClosure(tbl tableSpec) (string, error) {
 		em.seen[n] = true
 		em.messages = append(em.messages, r.msgs[n])
 	}
+	// The table's enums, the same way (TypeRepository.getEnumTypes is a
+	// TreeSet too).
+	enumNames := make([]string, 0, len(r.enums))
+	for n := range r.enums {
+		enumNames = append(enumNames, n)
+	}
+	sort.Strings(enumNames)
+	for _, n := range enumNames {
+		if em.seenEnums[n] {
+			continue
+		}
+		em.seenEnums[n] = true
+		em.enums = append(em.enums, r.enums[n])
+	}
 	return storageName, nil
 }
 
@@ -926,6 +1004,7 @@ type tableTypeRepo struct {
 	em        *fileEmitter
 	tableName string // wrapper-name derivation input (per-table wrapper identity)
 	msgs      map[string]*descriptorpb.DescriptorProto
+	enums     map[string]*descriptorpb.EnumDescriptorProto
 	wrappers  map[string]string // element-type signature -> wrapper message name
 }
 
@@ -1017,6 +1096,15 @@ func (r *tableTypeRepo) setFieldType(f *descriptorpb.FieldDescriptorProto, dt ap
 			return err
 		}
 		f.TypeName = proto.String(name)
+	case api.CodeEnum:
+		// Type.Enum.addProtoField sets the proto type AND the type name
+		// (unlike a message field, which carries only the type name).
+		name, err := r.defineEnum(dt.(*api.EnumType))
+		if err != nil {
+			return err
+		}
+		setScalar(descriptorpb.FieldDescriptorProto_TYPE_ENUM)
+		f.TypeName = proto.String(name)
 	case api.CodeArray:
 		// An array element that is itself an array — inexpressible in the
 		// SQL grammar (columnDefinition has a single ARRAY suffix).
@@ -1066,6 +1154,34 @@ func (r *tableTypeRepo) defineStruct(st *api.StructType) (string, error) {
 				"struct %q field %q", st.Name(), fld.Name())
 		}
 	}
+	return storage, nil
+}
+
+// defineEnum registers the enum's descriptor in the per-table namespace,
+// returning its storage name: Type.Enum.defineProtoType over
+// DataTypeUtils.toRecordLayerType's Type.Enum.fromValuesWithName, so the
+// enum's name and each value's go through toProtoBufCompliantName, and the
+// numbers are the declared ones (0..n-1 from DDL).
+func (r *tableTypeRepo) defineEnum(et *api.EnumType) (string, error) {
+	storage, err := recordlayer.ToProtoBufCompliantName(et.Name())
+	if err != nil {
+		return "", api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate, "enum name %q", et.Name())
+	}
+	if _, ok := r.enums[storage]; ok {
+		return storage, nil
+	}
+	ed := &descriptorpb.EnumDescriptorProto{Name: proto.String(storage)}
+	for _, v := range et.Values() {
+		valueName, verr := recordlayer.ToProtoBufCompliantName(v.Name())
+		if verr != nil {
+			return "", api.WrapErrorf(verr, api.ErrCodeInvalidSchemaTemplate, "enum %q value %q", et.Name(), v.Name())
+		}
+		ed.Value = append(ed.Value, &descriptorpb.EnumValueDescriptorProto{
+			Name:   proto.String(valueName),
+			Number: proto.Int32(int32(v.Number())), //nolint:gosec
+		})
+	}
+	r.enums[storage] = ed
 	return storage, nil
 }
 
@@ -1149,19 +1265,29 @@ func buildVectorIndex(idx indexSpec) (*recordlayer.Index, error) {
 	if idx.vectorMethod == "SPFRESH" {
 		rl := recordlayer.NewIndex(idx.name, root)
 		rl.Type = recordlayer.IndexTypeVectorSPFresh
-		rl.Options = map[string]string{
-			recordlayer.IndexOptionSPFreshNumDimensions: fmt.Sprintf("%d", idx.numDimensions),
-		}
-		for k, v := range idx.options {
-			rl.Options[k] = v
-		}
+		rl.SetOption(recordlayer.IndexOptionSPFreshNumDimensions, fmt.Sprintf("%d", idx.numDimensions))
+		setOptionsSorted(rl, idx.options)
 		return rl, nil
 	}
 	rl := recordlayer.NewVectorIndex(idx.name, root, idx.numDimensions)
-	for k, v := range idx.options {
-		rl.Options[k] = v
-	}
+	setOptionsSorted(rl, idx.options)
 	return rl, nil
+}
+
+// setOptionsSorted sets a DDL option map on an index in key order, so the stored
+// option list is a function of the DDL. The vector clause options' own order
+// (Java's OnSourceIndexGenerator collects them into a HashMap, so the target
+// stores its iteration order after unique) belongs to the vector DDL port,
+// WS-D/WS-K of RFC-257.
+func setOptionsSorted(rl *recordlayer.Index, options map[string]string) {
+	keys := make([]string, 0, len(options))
+	for k := range options {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		rl.SetOption(k, options[k])
+	}
 }
 
 func buildAggregateIndex(idx indexSpec) (*recordlayer.Index, error) {

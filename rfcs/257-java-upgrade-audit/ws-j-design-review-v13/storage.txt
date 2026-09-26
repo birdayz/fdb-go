@@ -1,0 +1,87 @@
+**NAK** on tree `d6ad3e9c2c5bc3a32c42cf0399c97afade52e098`. The design `rfcs/257-java-upgrade-audit/ws-j-design.md` has SHA256 `bc8b6436980df50daf559f037a45d02397e28fd06f9948719a0683b69cb8ca11` and 2875 lines, recomputed from the tree. Java is at `fdacd162a`. This was read-only: I ran no tests, probes or mutations.
+
+## What holds
+**Measured:**
+- **Evidence matches the gate tree.** The design hash and four WS-J blobs I re-hashed match `ev13/src.sha`. `check.txt` has 1039 "OK" lines and 0 other lines. The WS-J design file does not change between the evidence tree `3b1587fa` and the gate tree.
+- **Absent root, both engines.** WSJIXK shows Java's `KeyExpression$DeserializationException` in both passes (`oracle-1.log:208`, `oracle-2.log:4866`), and the tally line is identical in both.
+- **New unit tests pass under Bazel.** `TestKeyExpressionDeserializationErrorsAreJavas`, the array-element `HeldBy` subtest and the absent-root subtest (`recordlayer-v.log:19434`, `:22042`, `:22347`).
+- **v13 code is mutation-covered.** m97, m98 and m103 each go red and are restored. They are recorded under WS-C's run, not WS-J's.
+
+**Read from source:**
+- **Check (iii)'s floor is sound.** A store rebuilds exactly the indexes above its header, and its header is at most L's metadata version.
+- **Check (i) covers the rest of the history.** A cross-history FormerIndex is refused (Java `:518-523`), as are a changed primary key and record-type key (`:411-424`).
+- **`CreateTemplate` order matches Java.** Java refuses only an exact duplicate (`RecordLayerStoreSchemaTemplateCatalog.java:241-243`), and v13 refuses it first.
+- **The lane-table property holds.** `ArithmeticValue.java:406-522` has 107 rows; every LONG operand has an INT twin, every DOUBLE a FLOAT twin, and the bitmap functions have `_LI` and `_II`.
+- **Also resolved as designed:**
+  - the as-framed union is a new message nothing references;
+  - R1 and R2 go through one hook;
+  - the locks are handled by unlocked helpers;
+  - validator citations now name the function and message.
+
+## HIGH
+**H1. Shape (g) compares against the wrong Java quantity** (design `:2334-2341`).
+- **What the design says:** today's key is "Java's preferred field (`_T` by name, else the larger number, `RecordMetaDataBuilder.java:878-887`)".
+- **What Java and current Go do:**
+  - That preferred field is the field records are written under.
+  - The implicit record-type key is the SMALLEST matching union field number: `RecordType.java:171-179`, Go `metadata.go:413-415`.
+  - The pre-upgrade key was the last field the name-first loop framed (e48f5b496 `metadata.go:331-376`, `:1837`).
+- **As specified, the refusal misses real misreads:**
+  - `T _T_old = 1; T _T = 5`: the pre-upgrade loop skips `_T_old`, since no top-level `T_old` exists, so its key was 5. The preferred field is also 5, so the file loads. Today's key is 1, so pre-upgrade keys prefixed 5 are read under 1. This is Java's deprecate-a-union-field pattern.
+  - `T a = 1; T b = 2` fails the same way.
+- **It also refuses a file whose keys agree:** `T _T = 5; T b = 3` has key 3 in both builds.
+- **The remedy is unsafe or unreachable:**
+  - "Explicit key = pre-upgrade number" re-keys rows that a type-first build (Java, or any build after the upgrade) wrote.
+  - It needs a save, and the ordinary save's load of the stored side refuses. The edited-file route would work only if its as-framed load reproduces the last-field key, which the design never states.
+- **Fix:**
+  - compare the last framed field with the smallest one;
+  - route the explicit-key remedy through the edited-file route, stating the key that route's load of the stored side produces;
+  - scope the remedy to stores only pre-upgrade Go wrote;
+  - pin both examples above.
+
+## MEDIUM
+**M1. Shapes (e) and (f) have no way out.**
+- **The contradiction:**
+  - The ordinary load names "this route" as the remedy (`:2324-2327`), and so does (y) (`:2871-2875`).
+  - (e) says the route "edits it to `T _T`" (`:2330-2331`).
+  - But the route refuses a union both builds choose wherever its framings disagree, "a `_X` of another type, a scalar `_T`" (`:2317-2323`), and it tests exactly that refusal (`:2476-2477`).
+- **Consequences:**
+  - Storage v12 #3's case, a found union holding a scalar `_T`, is still stranded. Only pre-upgrade Go could have written its records, so its framing is not actually ambiguous.
+  - (f) newly refuses files that pre-upgrade Go, this tree and Java all load, including stores only Java ever wrote. Go can then never open them.
+- **Fix:** let the route take the writer as a parameter (for a scalar `_T` only pre-upgrade Go qualifies), or declare (f) a residual and say what the operator does.
+
+**M2. Check (iii)'s "either order" for WIDENED cannot be reached at an equal last-modified version** (`:695-700`, test `:729-731`).
+- Check (i) runs `validateIndex` from L to H, and its widening arm is one-way: stored `long_value` to rebuilt `int_value` only (`metadata_evolution_validator.go:725`, `literalValuesEquivalent`).
+- So in the design's own case (an `int_value` fresh v1 as L, a pre-F2 `long_value` H), check (i) refuses with "index key expression changed" before check (iii) runs. Storage v12 #6's case is unchanged.
+- Both directions store the same tuple bytes, so this fails closed and strands the bound schemas.
+- **Fix:** make the restore's widening arm symmetric, or state the refusal and test it.
+
+## LOW
+1. **`KeyExpressionDeserializationError` is only partly Java's class** (`errors.go:303-315`).
+   - It has no link to `RecordCoreError`. The package spells inheritance through `Unwrap` elsewhere (`UnknownIndexTypeError`, `FoundSplitOutOfOrderError`), yet the conformance spec (`:2779`) and `metadata_proto_test.go:717` assert `!errors.As(&RecordCoreError)`, the opposite of Java.
+   - Java's loader wraps it as `MetaDataProtoDeserializationException`, a MetaDataException (`RecordMetaDataBuilder.java:210-227`). Go wraps it with `fmt.Errorf` (`metadata_proto.go:292-294`).
+   - Java's oracle step measures `new Index(proto)`, not the loader, so the spec compares two different layers.
+   - Java also refuses an unknown or wrong-arity function at load (`FunctionKeyExpression.java:117-131`, `:235-240`). Go loads it and fails only on evaluation (`key_expression.go:1546`).
+2. **Superseded text still in place:**
+   - §8 step 3 still has the WIDENED lane check and `v′ <= latest` "first" (`:2716-2719`), and the name-matched reservation (`:2735-2736`). It does not mention `LegacyFramingError`.
+   - 9 (p) (`:2801-2805`) and `DIVERGENCES.md:3053-3064` still describe v12's name-matched, previous-version reservation rule. The new refusal to drop a reservation is Go-only and undeclared.
+   - (w), (x) and (y) have no DIVERGENCES PENDING entry.
+3. **(x)'s remedy (`:2865-2866`) cannot reach the schemas the restore exists for.** They bind the dropped version, and step 1's gone-version refusal blocks their `RepairSchema`.
+4. **FDB `CreateTemplate`'s conflict behaviour is unstated.**
+   - Two concurrent new versions carried from one latest, or a new version racing a restore, serialize only if `LoadSchemaTemplate`'s reverse scan (`fdb_template_catalog.go:68-78`) holds a conflict range over every higher version. I expect it does, but the design says nothing and no FDB test covers it.
+   - `deserializeTemplate` would report `LegacyFramingError` as XX000 (`:275-283`).
+5. **R2's floor has no interval test.** It is stated, but no test raises an index to exactly the stored metadata version (storage v12 #1).
+6. **Graefe v12 F6 is unanswered.** Check (ii) still re-implements `SetDisallowTypeRenames`, which Go already has (`metadata_evolution_validator.go:110-111`, `:244`).
+7. **Helper naming.** `loadSchemaTemplateLocked` takes the lock itself, while `saveSchemaLocked` expects it held. Go's `…Locked` convention invites a re-lock.
+
+## v12 findings
+- **Resolved:**
+  - Graefe F1, F3–F5, F7–F10;
+  - storage 1, 2, 4, 5 and 7–11;
+  - Torvalds 1 and 3–10.
+- **Partly resolved:** Graefe F2, storage 3 and Torvalds 2 (H1, M1); storage 1's R2 test (L5).
+- **Not resolved:** storage 6 (M2); Graefe F6 (L6).
+
+## Measured vs source-only
+- **Measured:** everything under "What holds (measured)".
+- **Source-read facts:** the Java and Go lines cited throughout.
+- **Source hypotheses (unbuilt):** H1, M1, M2, L3 and L4, and everything in steps 1–3.

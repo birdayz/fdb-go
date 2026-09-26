@@ -78,15 +78,6 @@ func translateKeyComponent(ke KeyExpression, base values.Value, normalizeName fu
 		}
 		return resolved
 	case *RecordTypeKeyExpression:
-		// A RecordTypeKey with a NESTED key (RecordTypeKey().Nest(Field("id")))
-		// carries the nested field as part of its identity (Evaluate/ColumnSize
-		// include it). Translating to a bare RecordTypeValue would drop the nested
-		// field, so two structurally-DIFFERENT nested PKs would translate
-		// identically → wrong dedup → dropped rows. Fail-safe: abstain (nil) for
-		// the nested shape rather than risk a wrong common-PK match.
-		if e.nested != nil {
-			return nil
-		}
 		return values.NewRecordTypeValue(base)
 	case *NestingKeyExpression:
 		if e.fanType != FanTypeNone {

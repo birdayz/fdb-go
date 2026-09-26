@@ -72,7 +72,7 @@ func TestFDB_EnumTransport(t *testing.T) {
 				{Name: proto.String("COLOR"), Number: proto.Int32(5), Label: opt, Type: str},
 				{Name: proto.String("ALIAS"), Number: proto.Int32(6), Label: opt, Type: enum, TypeName: typeName("AliasState")},
 			}},
-			{Name: proto.String("UnionDescriptor"), Field: []*descriptorpb.FieldDescriptorProto{
+			{Name: proto.String("RecordTypeUnion"), Field: []*descriptorpb.FieldDescriptorProto{
 				{Name: proto.String("_TASK"), Number: proto.Int32(1), Label: opt, Type: msg, TypeName: typeName("TASK")},
 			}},
 		},

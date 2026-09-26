@@ -66,7 +66,7 @@ func TestFDB_NegativeZeroIndexSargProbe(t *testing.T) {
 		"CREATE TABLE f (id BIGINT, v FLOAT, PRIMARY KEY (id)) "+
 		"CREATE INDEX f_v ON f (v)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nzsarg/s WITH TEMPLATE nzsarg")
-	dsn := fmt.Sprintf("fdbsql:///testdb_nzsarg?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_NZSARG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

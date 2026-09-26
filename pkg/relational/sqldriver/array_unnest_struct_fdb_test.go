@@ -28,7 +28,7 @@ import (
 // (datatypeToProtoFieldType has no message/struct case). The proto is built
 // dynamically exactly as metadata.Builder.buildFileDescriptor does (descriptorpb
 // + protodesc.NewFile), so the record type, its nested struct element, and the
-// UnionDescriptor are all real proto descriptors; records are written as genuine
+// RecordTypeUnion are all real proto descriptors; records are written as genuine
 // dynamicpb messages and the unnest SQL runs the full Cascades path.
 func buildStructArrayMetadata(t *testing.T) *recordlayer.RecordMetaData {
 	t.Helper()
@@ -76,7 +76,7 @@ func buildStructArrayMetadata(t *testing.T) *recordlayer.RecordMetaData {
 		},
 	}
 	union := &descriptorpb.DescriptorProto{
-		Name: proto.String("UnionDescriptor"),
+		Name: proto.String("RecordTypeUnion"),
 		Field: []*descriptorpb.FieldDescriptorProto{
 			{
 				Name: proto.String("_TS"), Number: proto.Int32(1),

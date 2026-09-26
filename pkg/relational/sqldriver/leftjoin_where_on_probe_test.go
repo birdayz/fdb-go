@@ -26,7 +26,7 @@ func TestFDB_LeftJoinWhereOnProbe(t *testing.T) {
 		"CREATE TABLE b (id BIGINT, a_id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX b_aid ON b (a_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ljwo/s WITH TEMPLATE ljwo")
-	dsn := fmt.Sprintf("fdbsql:///testdb_ljwo?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_LJWO?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

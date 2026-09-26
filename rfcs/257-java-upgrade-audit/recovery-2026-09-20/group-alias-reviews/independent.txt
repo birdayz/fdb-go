@@ -1,0 +1,49 @@
+**NAK — WS-A + WS-E1 IMPLEMENTATION CODE** at tree `61b00938a369bc94d683c44d172dbb2cbaffbd41`.
+
+I reviewed all four prior reports, the complete tree delta from `664b241c57b71829cb40687a1e26cc3dc3e145e6`, necessary surrounding source and the structured evidence populations. Milestone base remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`.
+
+**P2 — SELECT-alias ownership still gets overwritten across the ORDER binding phases.**
+
+Using the existing `pair_t(id)` fixture containing `1,2`:
+
+```sql
+SELECT p.id AS z, q.id AS "P.ID"
+FROM pair_t p, pair_t q
+GROUP BY p.id, q.id AS "P.ID"
+ORDER BY z, q.id DESC
+```
+
+Expected rows are `(1,2),(1,1),(2,2),(2,1)`, labelled `Z,P.ID`.
+
+The candidate constructs a different ordering:
+
+- [plan_visitor.go:1675](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/plan_visitor.go:1675) correctly rebases `z` to `P.ID`, and the new guard prevents another GROUP-alias substitution.
+- However, [plan_visitor.go:1688](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/plan_visitor.go:1688) emits that rendering with `BareRef=true`; the resolved SELECT-output identity is not retained.
+- The downstream alias maps contain `"P.ID" → Q.ID` and `"P.ID" → projection slot 1`. [logical_predicate.go:6198](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:6198) interprets the already-rebased spelling as another SELECT alias; line 6203 installs the second output’s value.
+- Consequently, the keys become `Q.ID ASC, Q.ID DESC`. The intended primary ordering by `P.ID` is lost. The exact-value flag then prevents structural resolution from correcting it.
+
+This is a **frozen-source finding**, not an executed new reproducer. It extends the retained SELECT-alias-priority regression by giving its second output the colliding quoted alias.
+
+**Required fix:** carry the selected output’s slot/value identity through the visitor and sort upgrader, and prevent further alias lookup after that binding. Retain this combined collision as an exact row/order/label regression. The six mutations exercise individual guards but do not cover this downstream rebinding.
+
+The reported bound-star corruption and ungrouped-source concealment are repaired. Qualified output/argument guards and segment-aware named ORDER duplication also address their recorded cases.
+
+Evidence integrity reconciles:
+
+- All **187 artifact hashes** and the **6,305/6,306/6,383-file** freezes match.
+- **93 uncached targets:** 40,665 RUN = 40,660 PASS + five existing skips. **14 uncached race targets:** 21,118 RUN = PASS. Per-target name multisets reconcile.
+- Both Java suites report **1,358/1,477**, with 119 existing filtered cases. The fourteen-case probe distinguishes Java’s two positional-star **42803** refusals from independently asserted Go positives.
+- Final manual stress race: **40 RUN/PASS**, twenty telemetry samples, exact 1M. Cancelled evidence is excluded; cached documentation follow-ups remain separate.
+- Both ABBA populations, all nominal timings/counts, region budgets, binary profiles and retained flow events reconcile. The measured GRV waits include substantial RPC-reply waits; they are not simply batch-timer delays. Overlapping telemetry spans cannot be summed.
+
+Separate unmet verification/publication gates:
+
+- Verify the remaining ORDER ownership repair with the combined regression and affected checks.
+- The **<5ms aspiration remains unmet**. Current attribution satisfies the bounded investigation, but establishes neither universal parity nor server-versus-network causation and cannot explain the old untraced 52/41ms outliers retrospectively.
+- Historical executor startup-timeout causation still requires unavailable original artifacts; CLI networking fixes and greens do not establish it.
+- Legacy RaBitQ disable/rebuild remains a deployment prerequisite.
+- Restored `birdayz` authentication does not override no-commit/no-push. PR786 remains draft/unchanged; publication and merge remain unauthorized.
+
+Previously accepted RaBitQ, array-guard, descriptor and fixture scope remains intact, including approved nullable-array/raw/scalar/sorting extensions. FDB stays **7.3.77**. This does not approve WS-B–K or whole-upgrade completion.
+
+No edits, builds/tests, agents, worktrees, Git-state changes or GitHub contact occurred.

@@ -1,0 +1,78 @@
+**NAK.** One High finding remains: the design says a bound time.Time is the same value as the index key, but the index path has no way to turn a time.Time into that key.
+
+- **Tree:** `c9fd46b8655f19cb0b897f5d272f311121626463`
+- **Design:** `ws-e-design.md`, SHA-256 `478dc077b98af12d13987f7e9d95cf93798d7276ebd6e46f3d91d35f96267358`, 1726 lines. I recomputed both and they match.
+- **Java:** `fdacd162a9`, read from `.git/HEAD`.
+- **Method:** read-only. I read the three v4 verdicts, the full v5 design, the storage parts of the v4→v5 diff, the oracle evidence and the Java steps. I verified four of the eight evidence source hashes, the all-Describes run log and the just-test log. **SOURCE** marks a conclusion I drew from reading code; I did not run it.
+
+## HIGH
+
+**H1. A bound time.Time cannot reach an index key (lines 686-705).** (SOURCE, read directly from the Go code)
+- **The claim:** the canonical constant, the stored text and the index key are "ONE value", so `time.Now()` "matches through an index and through a residual filter alike".
+- **The Go code says otherwise:**
+  - `coerceTupleElementForKey` (executor.go:1151-1178) passes a time.Time through unchanged.
+  - `validatePhysicalComparandCarrier` (scan_range_binding.go:586-591) accepts only a string for STRING, DATE and TIMESTAMP keys. Anything else gets `IncompatiblePhysicalComparandError`. Its comment says the error stays loud "until an explicit canonical temporal projection exists".
+  - scan_range_binding_test.go:834-838 pins that rejection.
+- **Why this is a regression:** today the text channel binds a string literal, so an indexed `WHERE ts = ?` works. Under v5 the comparand is a time.Time. The statement then either fails at execution or, if the planner declines the scan, loses the index.
+- **DATE needs more than a format:**
+  - Equality against a non-midnight constant has to be an empty range.
+  - `d < c` and `d >= c` need rounding to the day, the way `projectRuntimeFloatComparisonToIntegerDomain` handles floats against integer keys.
+  - Without that, the index and the residual filter answer differently. That is the plan-dependent failure from v4 H2, now on DATE columns.
+- **Fix:**
+  - Specify the projection in `projectScanComparandToKey`: a TIMESTAMP key gets `FormatTimestamp(c)`; a DATE key gets `FormatDate`, with an empty range or a rounded bound per operator.
+  - Cover time.Time items in IN lists and IN-join value sources.
+  - Revise the carrier pin.
+  - Tests: `=`, `<`, `<=`, `>`, `>=` and IN over indexed DATE and TIMESTAMP columns, with midnight and non-midnight constants. The index plan and the residual plan must give the same answer.
+
+## MEDIUM
+
+**M1. The STRING_TO_UUID lane has no specified parser (lines 876, 897).** (SOURCE: JDK semantics)
+- **Java:** the lane calls `UUID.fromString` (PromoteValue.java:163-170).
+- **Go:** every string-to-UUID site uses google/uuid's `uuid.Parse`: proto_value.go:42, values.go:4655, promote_prepared.go:388, executor.go:4488, and cast.go:172, which also trims whitespace.
+- **The accepted inputs differ in both directions:**
+  - The JDK accepts short components, for example `1-2-3-4-5`, and stores `00000001-0002-0003-0004-000000000005`. Go refuses it.
+  - Go accepts `{…}`, `urn:uuid:…` and 32 hex digits without dashes. The JDK refuses all three.
+- Only canonical strings were measured (insert_*_into_uuid).
+- **ENUM:** say that the match is exact and case-sensitive against `ToUserIdentifier(name)` (PromoteValue.java:151-160; Go has `protoname.ToUserIdentifier`).
+- **Fix:** port the JDK's `fromString`. Probe the short form, braces, urn, no-dash and uppercase.
+
+**M2. The UTF-8 save refusal misses a writer (lines 792-793).**
+- The design calls the save path "the one place every Go writer passes through". It is not: on stores with the standard layout, `SaveRecordBatch` (store_batch.go:26) serializes through `serializeUnion` and writes with `tx.SetBytes` or `saveWithSplit` itself, never calling `saveRecordInternal`.
+- A Go library caller can therefore still store invalid UTF-8, whose index keys Java recomputes differently.
+- **Fix:** put the check at the serialization step both paths share, and add a batch-path test.
+
+## LOW
+
+- **L1. The per-scanned-index conflict key is attributed to the wrong site (lines 1558-1559).**
+  - SQL index plans take it in `requireReadableQueryIndex` (executor.go:436 and 626, executor_new_plans.go:40), not in `ScanIndex`. The value and covering scan then calls `maintainer.Scan` directly (executor.go:471).
+  - BY_GROUP scans take it in `scanIndexByType` (index_scan.go:339).
+  - Name these sites, forbid routing `PeekIndexStates` into `requireReadableQueryIndex`, and add a test that every executor path that opens an index plan takes the key.
+- **L2. The probe description is wrong (line 1534).**
+  - The Java step writes the state key directly (sql_plan_steps.java, `ctx.ensureActive().set(stateKey, …)`); it does not call `markIndexDisabled`.
+  - Go's `MarkIndexDisabled` also clears the index data. A Go SERIALIZABLE scanned-index test built on it would conflict on the data range, so it could not show whether the state key conflicts.
+  - Specify the direct key write for the Go FDB tests.
+- **L3. Year domain.** For years outside 0000–9999, `FormatTimestamp` produces text that `ParseTimestamp` (a four-digit year layout) cannot parse and that does not sort by instant. Refuse such values at bind, or state the domain.
+- **L4. DATE round trip.** INSERT with a non-midnight time.Time and then `WHERE d = ?` with the same value now finds nothing. Today it does, because the text channel stores timestamp text. Declare this in CHANGELOG next to the stored-text table.
+
+## Checked and correct
+
+- **Evidence:**
+  - These four source hashes match the tree blobs: the oracle spec, sql_plan_steps.java, go_runner.go and go_runner_test.go.
+  - `wse6-all2.log`: "Ran 6 of 30", 6 passed.
+  - `wse6-justtest.log`: "Executed 2 out of 94 tests: 94 tests pass."
+  - M1–M4 and the two teardown mutations are recorded, each with its presence check.
+- **Index-state conflicts (v4 H1 closed):**
+  - Java adds one key per index in `getIndexState` (FDBRecordStore.java:4187-4199, 4241-4243). The subspace range appears only in `addStoreStateReadConflict` (:4205-4213). Save-time keys come from `sanitizeIndexes` (:4519-4531).
+  - Go today does add every metadata index's key, via `GetIndexState` → `view.read` (index_state.go:84-99, 478-487). The save path is per record type (store.go:1020-1062).
+  - The SNAPSHOT scanned-index row isolates the state key.
+- **Store open:** the index states load at snapshot (index_state.go:688-696). The header read is a serializable range read with limit 1 (store_builder.go:1050-1056). The Go default store-state cache is pass-through (database.go:183), and fdb-relational-core configures none.
+- **Other v4 findings closed:**
+  - Read-scope serializable controls.
+  - Valuer before each dereference.
+  - Static element typing, `[N]byte`, and the nested lattice rows.
+  - Legacy invalid-UTF-8 repairs declared.
+  - IN lists evaluated at run time.
+  - DRY_RUN, SetOption, the pool reset and the DSN error.
+  - Go runner: the `update` flag, the checked `RowsAffected`, and `withTeardown` over named returns.
+
+**Measured vs SOURCE:** H1 and L1 come from reading code, without a run. M1 rests on JDK `UUID.fromString` semantics and was not measured. M2 and L2 are direct code reads.

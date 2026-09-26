@@ -10,7 +10,6 @@ go_library(
         "//gen",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/recordlayer",
-        "@org_golang_google_protobuf//proto",
     ],
 )
 

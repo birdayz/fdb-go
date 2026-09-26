@@ -36,7 +36,7 @@ func TestFDB_AggIndexResidualDrop(t *testing.T) {
 			"CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, f BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX sum_by_g AS SELECT SUM(v) FROM ga GROUP BY g")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggresid/s WITH TEMPLATE aggresid")
-	dsn := fmt.Sprintf("fdbsql:///testdb_aggresid?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGRESID?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -146,7 +146,7 @@ func TestFDB_AggIndexResidualDrop_NonLeadingKey(t *testing.T) {
 			"CREATE TABLE ga2 (id BIGINT, g1 BIGINT, g2 STRING, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX sum_by_g1g2 AS SELECT SUM(v) FROM ga2 GROUP BY g1, g2")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggresid2/s WITH TEMPLATE aggresid2")
-	dsn := fmt.Sprintf("fdbsql:///testdb_aggresid2?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGRESID2?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -193,7 +193,7 @@ func TestFDB_CountColumnNonZero(t *testing.T) {
 			"CREATE TABLE orders (id BIGINT, status STRING, amount BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_amount ON orders(amount)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_countcol/s WITH TEMPLATE countcol")
-	dsn := fmt.Sprintf("fdbsql:///testdb_countcol?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_COUNTCOL?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -4,7 +4,6 @@ import (
 	"container/heap"
 	"context"
 	"fmt"
-	"strconv"
 
 	"google.golang.org/protobuf/proto"
 
@@ -255,9 +254,14 @@ func permutedAggregateGroupingLayout(idx *recordlayer.Index) (groupingCount, phy
 		)
 	}
 	groupingCount = gke.GetGroupingCount()
+	// Read as Java's query side reads it (AggregateIndexMatchCandidate.
+	// getPermutedCount: absent is 0, present is Integer.parseInt), so the
+	// scan splits the key where the maintainer, which parses the same way,
+	// wrote the entries. The range is Build's check, repeated for an index
+	// changed after Build.
 	permutedSize := 0
 	if raw, exists := idx.Options[recordlayer.IndexOptionPermutedSize]; exists {
-		parsed, parseErr := strconv.Atoi(raw)
+		parsed, parseErr := recordlayer.PermutedSizeOption(idx)
 		if parseErr != nil || parsed < 0 || parsed > groupingCount {
 			return 0, 0, fmt.Errorf(
 				"executor: permuted index %q has invalid %s=%q for grouping count %d",
@@ -2161,7 +2165,7 @@ func decodeUnionContinuation(data []byte, n int) ([]unionChildResume, error) {
 		return out, nil // all children fresh (START)
 	}
 	msg := &gen.UnionContinuation{}
-	if err := msg.UnmarshalVT(data); err != nil {
+	if err := recordlayer.UnmarshalVTAsJava(msg, data); err != nil {
 		return nil, &recordlayer.ContinuationParseError{Message: "invalid continuation", RawBytes: data, Cause: err}
 	}
 	// Java UnionCursorContinuation.from(parsed, n) always reads first + second

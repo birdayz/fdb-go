@@ -1,0 +1,78 @@
+**NAK.** Tree `10a2023678daaa361c9d5cad4826ae1609c51324`. Design SHA256 `8e62bbd0aaecdc2c1fe9ccfc4f40582d986c35e00845df848eea4ce8a4fc85aa`, 1650 lines; I recomputed both and they match. Java is at `fdacd162a`. This was a read-only review: I ran no tests, probes or mutations.
+
+The blocking problem is in landed code. Shape (d) is refused only when stored metadata is loaded, but the same silent misread happens on the ordinary path where a program builds its metadata in code.
+
+## Checked and correct
+- **Evidence hashes:** 12 of the 49 hashes in `evidence-v6.txt` match the tree's blobs (the metadata, loader and generator code, both specs, the unit tests, TODO, CHANGELOG, DIVERGENCES, the umbrella RFC and the Go class pins). The `just test` tree `38730525` differs from the candidate only in review outputs and WS-J docs.
+- **Tally:** 479 runs reconcile by row and by column, and the 101 Go rejections add up.
+- **JVM records spec:** `wsj6-vr-jvm.log` has 29 `VALIDATE_RECORDS` lines, (d2) measured included. `wsj6-ud.log` shows 2 of 2 passed.
+- **Per-index load order:** matches Java (`RecordMetaDataBuilder.java:187-219`), and a RecordType entry naming no type is refused (`:221`, `:986-996`).
+- **v5 small fixes, all confirmed:**
+  - the `legacyUnionName` constant;
+  - the orphaned doc comment is fixed;
+  - `SetRecordsWithUnionName("")` is refused;
+  - `literalKeyCarrier` refuses an untyped value and keeps STRING and NULL;
+  - the validator cites `:513-517`, `:535-537` and `:567-569` are correct.
+- **LIMIT/OFFSET source reading:** `AstNormalizer.java:254-262` and `:315-318` confirm it.
+
+## HIGH
+**1. In-code builds of a shape-(d) file switch unions silently** (landed, found by reading source).
+- **Before the upgrade:** `SetRecords(fd)` took the message named `UnionDescriptor` unconditionally (`e48f5b496:metadata.go:276-277`, `:330`), so records were framed by its field numbers.
+- **Now:** `SetRecords` (`metadata.go:284` → `setRecords`, `:336`) takes the usage=UNION message or the one named `RecordTypeUnion`. `AmbiguousLegacyUnionError` exists only in `RecordMetaDataFromProto` (`metadata_proto.go:376`).
+- **Consequence:** a library user who builds metadata from a compiled descriptor holding both messages now reads existing rows under the other union's field numbers. The design's own reason for the refusal ("refusing is the only answer that cannot misread them") applies here unchanged. §4c scopes only stored metadata, and the CHANGELOG does not warn about this case.
+- **Fix:**
+  - Run the (d) check at the end of `Build()`, which covers both paths and still comes after the target's checks.
+  - Exempt an explicitly named union.
+  - Pin it with a unit test and a mutation.
+
+## MEDIUM
+**2. The (d) exemption is broader than the SQL shapes need, and it opens a misread with no way out.**
+- `messageUsedAsFieldType` (`:436`) exempts `UnionDescriptor` when it is the type of a field in *any* message.
+- SQL DDL emits only the messages reachable from each table (`builder.go:749-756`), so a table or STRUCT named `UnionDescriptor` is always reachable from the union.
+- The unit case "UnionDescriptor as a nested field's type" (`metadata_validate_records_test.go:401`) pins a `Holder` that is *not* reachable from the union. That is a shape SQL cannot produce, and it is exactly the shape of an envelope message wrapping a legacy union.
+- Such a file loads under the target's union, and the migration then refuses it as "nothing to migrate" (design `:1400`).
+- Design `:1335` ("A legacy union is never a field's type") is an assertion, not a measurement.
+- **Fix:**
+  - Exempt only messages reachable from the found union through message-typed fields.
+  - Flip the `Holder` case to refused.
+  - Make the migration's target-choice arm handle a referenced `UnionDescriptor`.
+
+**3. Section 4 promises byte-for-byte re-emission of EQUIVALENT indexes, but no write path can do it.**
+- `CreateTemplate` → `serializeTemplate` (`fdb_template_catalog.go:250`) marshals `ToProto()`, and `indexToProto` (`metadata_proto.go:533`) builds a fresh `gen.Index`. Nothing carries a per-index raw proto.
+- "Byte for byte, unknown fields and extensions included" (design `:1024-1027`) therefore has no carrier.
+- **Fix:** name the carrier (for example, a source proto on `Index`, re-emitted for EQUIVALENT indexes and dropped on any setter), or narrow the claim.
+
+**4. The single-write-path claim (`:602-612`) contradicts writes the design itself requires.**
+- **`RestoreTemplateVersion`:** it must bypass the guard. If it runs the no-lane check, restoring a pre-F2 tenant's saved bytes (a `long_value` bitmap key) is refused. That blocks the only way out for exactly those tenants.
+- **Other writes outside `CreateTemplate`:**
+  - the F11 migration's byte-for-byte copy, which `serializeTemplate` cannot perform;
+  - the oracle fixture's raw write;
+  - a second `CreateTemplate` implementation (`template_catalog.go:87`).
+- **Fix:** enumerate every write path and state which checks each one runs (guard, lane check, header check).
+
+**5. The fresh-name guard is keyed per version, but the text says per name.**
+- §4 (`:988-989`) and §9(j) say a *name* with dangling bindings is refused. The guard (§2) is keyed on (name, version).
+- So `CREATE SCHEMA TEMPLATE t` at v1 is admitted while schemas bind (t, 3).
+- A later `Restore(t, 3)` then puts two numbering histories under one name. That breaks the premise at `:1086-1088` that every stored version agrees with the latest. It fails closed, but it strands the new schemas at rebind.
+- **Fix:** make the fresh-name check cover the whole name, or have Restore refuse when versions of t were stored after the drop.
+
+## LOW
+6. **"(d) runs after every target check" is unpinned.** No unit test or JVM shape combines (d) with a fault the target reports, and no mutation moves the check back before `Build`.
+7. **Test 5's fixture is undefined and self-contradictory.** It claims the "pre-F12 option order", which the current builder does not emit, and also needs the `wsjWidenIntLiterals` rewrite, which is a no-op on `e48f5b496` bytes because they are already `long_value`. Name the commit the fixture bytes come from.
+8. **F2b's FLOAT saturated value is never stored.** Every row where the FLOAT column saturates also overflows `f + f`, so the saturated value never lands in an entry. The status line overclaims. The `double_value` → `float_value` equivalence is still arithmetic only (sound by source).
+9. **LIMIT/OFFSET order.** "OFFSET, then LIMIT" holds within one limit clause. Across clauses the parse-tree order decides (`AstNormalizer.java:183-186`). Add a shape with an earlier LIMIT and a later OFFSET.
+10. **Stale text:**
+    - `:181` and `:553` say 21 pins; `wsjNonIntGoPins` has 27.
+    - The F13 row (`:248`) says 18 shapes; there are 29.
+    - `TODO.md:14799` still carries "unless … taken out"; it was amended by a later block, not corrected.
+
+## Measured vs. hypothesis
+- **Measured:**
+  - the 29 descriptor shapes, including (d1) and (d2);
+  - the SQL table and STRUCT named `UnionDescriptor`, loaded by both engines;
+  - the per-index load order;
+  - the coverage plans;
+  - the FLOAT rows that overflow.
+- **Source only:**
+  - findings 1–5;
+  - the carry classes, the guard, delete and restore, the lane check and the migration, all still unbuilt.

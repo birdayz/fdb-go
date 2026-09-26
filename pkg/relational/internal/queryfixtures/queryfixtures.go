@@ -13,13 +13,9 @@ package queryfixtures
 // DuplicateNameJoinQuery is a FULL OUTER JOIN whose ordinal row names `ID`
 // twice, once from each id leg.
 //
-// Such a row's synthesised descriptor cannot validate, and the repository keeps
-// the bad message, so every type asked for AFTER it fails the same way. The
-// scope is therefore walk order, not the whole plan: as measured on this query
-// THREE of the FOUR record constructors end up unstamped, and the fourth —
-// resolved before the bad message was appended — keeps its descriptor. That
-// survivor is not a detail to round off; a run where nothing survived would
-// mean something other than this defect, and the census fatals on it.
+// Such a row's synthesized descriptor cannot validate. Registration must roll
+// back that root, leaving other constructors stampable. The embedded plan census
+// checks this containment; the FDB test checks both distinct ordinal ID slots.
 //
 // What this text does NOT carry is the struct claim. It selects `a.id, c.id,
 // d.foo` and has no struct column, computed or stored, so nothing about raw

@@ -64,7 +64,7 @@ func TestFDB_CrossWidthFloatSortKeys(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cwfsort "+
 		"CREATE TABLE t (id BIGINT, d DOUBLE, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_cwfsort/s WITH TEMPLATE cwfsort")
-	dsn := fmt.Sprintf("fdbsql:///testdb_cwfsort?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_CWFSORT?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -152,7 +152,7 @@ func TestFDB_CrossWidthFloatSargProbe(t *testing.T) {
 		"CREATE INDEX t_d ON t (d) "+
 		"CREATE INDEX t_f ON t (f)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_cwfsarg/s WITH TEMPLATE cwfsarg")
-	dsn := fmt.Sprintf("fdbsql:///testdb_cwfsarg?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_CWFSARG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -11,7 +11,6 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
-	"fdb.dev/pkg/rabitq"
 )
 
 // IndexOptionVectorNumDimensions specifies the number of vector dimensions.
@@ -119,12 +118,12 @@ func newVectorIndexMaintainer(
 	tx fdb.WritableTransaction,
 	store indexStoreContext,
 ) (*vectorIndexMaintainer, error) {
-	config := parseHNSWConfig(index)
-	// Validate the config (ranges + cross-field invariants), matching Java's Config
-	// constructor which throws on an invalid config. Without this Go would silently build
-	// a graph from a config Java rejects — e.g. m > mMax (new node selects more than the
-	// pruning cap → churn) or efRepair < m.
-	if err := ValidateHNSWConfig(config); err != nil {
+	// The configuration as Java's parseConfig reads it, Config's checks
+	// included: a configuration Java refuses is refused here rather than built
+	// with Go's own reading (for example m > mMax, a new node selecting more
+	// neighbours than the pruning cap, or efRepair < m).
+	config, err := parseHNSWConfig(index)
+	if err != nil {
 		return nil, fmt.Errorf("vector index %q: %w", index.Name, err)
 	}
 	return &vectorIndexMaintainer{
@@ -135,120 +134,10 @@ func newVectorIndexMaintainer(
 	}, nil
 }
 
-// parseHNSWConfig reads HNSW configuration from index options.
-func parseHNSWConfig(index *Index) HNSWConfig {
-	numDims := 128 // default
-	if v, ok := index.Options[IndexOptionVectorNumDimensions]; ok {
-		if n, _ := fmt.Sscanf(v, "%d", &numDims); n != 1 {
-			numDims = 128
-		}
-	}
-	config := DefaultHNSWConfig(numDims)
-	if v, ok := index.Options[IndexOptionVectorMetric]; ok {
-		switch v {
-		case "COSINE_METRIC", "cosine":
-			config.Metric = VectorMetricCosine
-		case "DOT_PRODUCT_METRIC", "inner_product":
-			config.Metric = VectorMetricInnerProduct
-		case "EUCLIDEAN_SQUARE_METRIC":
-			// Squared L2 (no sqrt), not a true metric — matches Java's
-			// EUCLIDEAN_SQUARE_METRIC (MetricDefinition.EuclideanSquareMetric).
-			config.Metric = VectorMetricEuclideanSquare
-		default:
-			// EUCLIDEAN_METRIC (true L2, sqrt) and any other value default to Euclidean.
-			config.Metric = VectorMetricEuclidean
-		}
-	}
-	if v, ok := index.Options[IndexOptionVectorExtendCandidates]; ok {
-		config.ExtendCandidates = v == "true"
-	}
-	if v, ok := index.Options[IndexOptionVectorKeepPrunedConnections]; ok {
-		config.KeepPrunedConnections = v == "true"
-	}
-	if v, ok := index.Options["hnswEfRepair"]; ok {
-		var efRepair int
-		if n, _ := fmt.Sscanf(v, "%d", &efRepair); n == 1 && efRepair >= 0 {
-			config.EfRepair = efRepair
-		}
-	}
-	if v, ok := index.Options["hnswUseInlining"]; ok {
-		config.UseInlining = v == "true"
-	}
-	if v, ok := index.Options[IndexOptionHNSWSampleVectorStatsProbability]; ok {
-		var p float64
-		if n, _ := fmt.Sscanf(v, "%g", &p); n == 1 && p > 0 && p <= 1 {
-			config.SampleVectorStatsProbability = p
-		}
-	}
-	if v, ok := index.Options[IndexOptionHNSWMaintainStatsProbability]; ok {
-		var p float64
-		if n, _ := fmt.Sscanf(v, "%g", &p); n == 1 && p > 0 && p <= 1 {
-			config.MaintainStatsProbability = p
-		}
-	}
-	if v, ok := index.Options[IndexOptionHNSWStatsThreshold]; ok {
-		var t int
-		if n, _ := fmt.Sscanf(v, "%d", &t); n == 1 && t > 0 {
-			config.StatsThreshold = t
-		}
-	}
-	if v, ok := index.Options["hnswUseRaBitQ"]; ok && v == "true" {
-		numExBits := 4
-		if v, ok := index.Options["hnswRaBitQNumExBits"]; ok {
-			var n int
-			if cnt, _ := fmt.Sscanf(v, "%d", &n); cnt == 1 && n >= 1 && n <= 8 {
-				numExBits = n
-			}
-		}
-		config.Quantizer = rabitq.NewQuantizer(rabitq.Metric(config.Metric), numExBits)
-	}
-	if v, ok := index.Options[IndexOptionHNSWM]; ok {
-		var m int
-		if n, _ := fmt.Sscanf(v, "%d", &m); n == 1 && m >= 2 && m <= 128 {
-			config.M = m
-		}
-	}
-	if v, ok := index.Options[IndexOptionHNSWMMax]; ok {
-		var mMax int
-		if n, _ := fmt.Sscanf(v, "%d", &mMax); n == 1 && mMax >= 2 && mMax <= 256 {
-			config.MMax = mMax
-		}
-	}
-	if v, ok := index.Options[IndexOptionHNSWMMax0]; ok {
-		var mMax0 int
-		if n, _ := fmt.Sscanf(v, "%d", &mMax0); n == 1 && mMax0 >= 2 && mMax0 <= 512 {
-			config.MMax0 = mMax0
-		}
-	}
-	if v, ok := index.Options[IndexOptionHNSWEfConstruction]; ok {
-		var efConstruction int
-		if n, _ := fmt.Sscanf(v, "%d", &efConstruction); n == 1 && efConstruction >= 1 && efConstruction <= 2000 {
-			config.EfConstruction = efConstruction
-		}
-	}
-	// Concurrency limits — stored for Java round-trip compatibility.
-	// Go's synchronous FDB model doesn't use these for concurrency control.
-	// Matches Java's IndexOptions.HNSW_MAX_NUM_CONCURRENT_NODE_FETCHES etc.
-	if v, ok := index.Options[IndexOptionHNSWMaxNumConcurrentNodeFetches]; ok {
-		var n int
-		if cnt, _ := fmt.Sscanf(v, "%d", &n); cnt == 1 && n > 0 && n <= 64 {
-			config.MaxNumConcurrentNodeFetches = n
-		}
-	}
-	if v, ok := index.Options[IndexOptionHNSWMaxNumConcurrentNeighborhoodFetches]; ok {
-		var n int
-		if cnt, _ := fmt.Sscanf(v, "%d", &n); cnt == 1 && n > 0 && n <= 20 {
-			config.MaxNumConcurrentNeighborhoodFetches = n
-		}
-	}
-	if v, ok := index.Options[IndexOptionHNSWMaxNumConcurrentDeleteFromLayer]; ok {
-		var n int
-		if cnt, _ := fmt.Sscanf(v, "%d", &n); cnt == 1 && n > 0 && n <= 10 {
-			config.MaxNumConcurrentDeleteFromLayer = n
-		}
-	}
-	return config
-}
+// HNSWConfigOf is the HNSW configuration a VECTOR index's options declare, as
+// the maintainer reads it (parseHNSWConfig): Java's
+// HnswVectorIndexEngine.parseConfig, with Go's forms for a plain VECTOR index.
+func HNSWConfigOf(index *Index) (HNSWConfig, error) { return parseHNSWConfig(index) }
 
 // getSubspaceForPrefix returns the HNSW subspace scoped to the given prefix.
 // If the prefix is empty (no grouping), returns the base hnswSubspace.
@@ -311,67 +200,49 @@ func (m *vectorIndexMaintainer) splitPrefixAndVector(entry indexEntry) (prefix t
 // Primary keys are trimmed via Index.TrimPrimaryKey() before storing in the HNSW
 // graph, matching Java's VectorIndexMaintainer.updateIndexKeys() which calls
 // state.index.trimPrimaryKey(primaryKeyParts) at line 343.
+//
+// An entry the old and the new record both have (key and value equal, Java's
+// IndexEntry.equals) is not applied: Java's VectorIndexMaintainer inherits
+// StandardIndexMaintainer.update, which removes those common entries before
+// updating (StandardIndexMaintainer.java:215-228, skipUpdateForUnchangedKeys),
+// so a save that leaves the vector unchanged makes no graph call. Deleting and
+// re-inserting such a node rewired its edges, could move the entry point and
+// re-sampled the statistics, where Java's graph is untouched. That holds for a
+// save this method applies with both records; two paths still delete and
+// re-insert an unchanged node, in both engines: a save queued for a
+// WRITE_ONLY_WITH_QUEUE index (SerializePendingWriteQueue sends both entries,
+// and the replay deletes then inserts) and a windowed index's delegate, which
+// the sliding window calls once with the old record and once with the new.
 func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
-	// Each entry mutates exactly one per-prefix HNSW graph; serialize only that
-	// graph, matching Java, which takes doWithWriteLock(LockIdentifier(rtSubspace))
-	// where rtSubspace = indexSubspace.subspace(prefixKey) — a PER-PREFIX lock, not
-	// a whole-index one. (The lock lives on the per-transaction context, so it only
-	// orders mutations within a transaction; distinct prefix graphs never contend,
-	// and neither do distinct transactions.) Locking the whole index here was a
-	// Go-only over-serialization that blocked concurrent per-prefix builds.
-	if oldRecord != nil {
-		entries, err := m.evaluateIndex(oldRecord)
-		if err != nil {
-			return fmt.Errorf("evaluate vector index %q for old record: %w", m.index.Name, err)
+	var entries [2][]indexEntry
+	for i, record := range []*FDBStoredRecord[proto.Message]{oldRecord, newRecord} {
+		if record == nil {
+			continue
 		}
-		for _, entry := range entries {
-			// Java's remove branch never decodes the vector — it removes by primary key
-			// (graph.Delete keys on the PK) and only skips a null vectorBytes. So on
-			// delete: skip a truly absent/null vector, but for a PRESENT vector —
-			// decodable OR not — proceed to remove by PK. Decode-and-error belongs to
-			// the insert path alone; erroring here would make a record saved-unindexed
-			// by an older binary un-deletable, a Go-only divergence.
-			prefix, vector, verr := m.splitPrefixAndVector(entry)
-			if verr == nil && vector == nil {
-				continue // absent/null vector — nothing was indexed, nothing to remove
+		evaluated, err := m.filteredIndexEntries(record)
+		if err != nil {
+			which := "old"
+			if i == 1 {
+				which = "new"
 			}
-			trimmedPK, err := m.index.TrimPrimaryKey(entry.primaryKey)
-			if err != nil {
-				return fmt.Errorf("trim primary key for vector index %q delete: %w", m.index.Name, err)
-			}
-			if err := m.withPrefixWriteLock(prefix, func(graph *hnswGraph) error {
-				return graph.Delete(m.tx, trimmedPK)
-			}); err != nil {
+			return fmt.Errorf("evaluate vector index %q for %s record: %w", m.index.Name, which, err)
+		}
+		entries[i] = evaluated
+	}
+	if oldRecord != nil && newRecord != nil {
+		oldEntries, newEntries, err := removeCommonEntries(m.index, entries[0], entries[1])
+		if err != nil {
+			return err
+		}
+		entries[0], entries[1] = oldEntries, newEntries
+	}
+	for i, list := range entries {
+		for _, entry := range list {
+			if err := m.applyIndexEntry(entry, i == 0); err != nil {
 				return err
 			}
 		}
 	}
-
-	if newRecord != nil {
-		entries, err := m.evaluateIndex(newRecord)
-		if err != nil {
-			return fmt.Errorf("evaluate vector index %q for new record: %w", m.index.Name, err)
-		}
-		for _, entry := range entries {
-			prefix, vector, verr := m.splitPrefixAndVector(entry)
-			if verr != nil {
-				return fmt.Errorf("vector index %q: decode vector for new record: %w", m.index.Name, verr)
-			}
-			if vector == nil {
-				continue
-			}
-			trimmedPK, err := m.index.TrimPrimaryKey(entry.primaryKey)
-			if err != nil {
-				return fmt.Errorf("trim primary key for vector index %q insert: %w", m.index.Name, err)
-			}
-			if err := m.withPrefixWriteLock(prefix, func(graph *hnswGraph) error {
-				return graph.Insert(m.tx, trimmedPK, vector)
-			}); err != nil {
-				return err
-			}
-		}
-	}
-
 	return nil
 }
 
@@ -443,8 +314,10 @@ func tupleToVector(t tuple.Tuple) ([]float64, error) {
 	return vec, nil
 }
 
-// UpdateWhileWriteOnly handles updates during WRITE_ONLY state.
-// VECTOR insert is idempotent (same PK replaces).
+// UpdateWhileWriteOnly handles updates during WRITE_ONLY state as Update does:
+// Java's vector index is idempotent (StandardIndexMaintainer.isIdempotent), so
+// a write-only save updates the graph directly, and a build that later meets
+// the indexed record finds its node present and leaves it (hnswGraph.Insert).
 func (m *vectorIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	return m.Update(oldRecord, newRecord)
 }
@@ -762,7 +635,7 @@ func encodeVectorScanContinuation(entries []*IndexEntry, innerPos int) []byte {
 // would fetch the wrong record / skip the remaining nearest rows).
 func (m *vectorIndexMaintainer) parseVectorScanContinuation(data []byte, prefix tuple.Tuple) ([]*IndexEntry, int, error) {
 	var contProto gen.VectorIndexScanContinuation
-	if err := contProto.UnmarshalVT(data); err != nil {
+	if err := UnmarshalVTAsJava(&contProto, data); err != nil {
 		return nil, 0, &ContinuationParseError{RawBytes: data, Cause: err}
 	}
 
@@ -907,7 +780,7 @@ func (m *vectorIndexMaintainer) newVectorMultiPartitionCursor(
 	// a silent restart would re-emit rows the caller already consumed.
 	if len(continuation) > 0 {
 		var fm gen.FlatMapContinuation
-		if uerr := fm.UnmarshalVT(continuation); uerr != nil {
+		if uerr := UnmarshalVTAsJava(&fm, continuation); uerr != nil {
 			return &errorCursor[*IndexEntry]{err: &ContinuationParseError{RawBytes: continuation, Cause: uerr}}
 		}
 		// OuterContinuation absent is a well-formed shape (Java flatMapPipelined:
@@ -1335,9 +1208,13 @@ func (store *FDBRecordStore) ScanVectorIndexWithPrefix(
 	continuation []byte,
 	scanProperties ScanProperties,
 ) RecordCursor[*IndexEntry] {
-	if !store.IsIndexScannable(index.Name) {
+	state, err := store.readIndexState(index.Name)
+	if err != nil {
+		return &errorCursor[*IndexEntry]{err: err}
+	}
+	if !state.IsScannable() {
 		return &errorCursor[*IndexEntry]{
-			err: &IndexNotReadableError{IndexName: index.Name, CurrentState: store.GetIndexState(index.Name)},
+			err: &IndexNotReadableError{IndexName: index.Name, CurrentState: state},
 		}
 	}
 	maintainer, err := store.getIndexMaintainer(index)
@@ -1378,8 +1255,12 @@ func (store *FDBRecordStore) SearchVectorIndexWithPrefix(
 	k int,
 	efSearch int,
 ) ([]VectorSearchResult, error) {
-	if !store.IsIndexScannable(index.Name) {
-		return nil, &IndexNotReadableError{IndexName: index.Name, CurrentState: store.GetIndexState(index.Name)}
+	state, err := store.readIndexState(index.Name)
+	if err != nil {
+		return nil, err
+	}
+	if !state.IsScannable() {
+		return nil, &IndexNotReadableError{IndexName: index.Name, CurrentState: state}
 	}
 	maintainer, err := store.getIndexMaintainer(index)
 	if err != nil {

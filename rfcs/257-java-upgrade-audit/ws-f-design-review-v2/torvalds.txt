@@ -1,0 +1,82 @@
+**NAK.** Tree `d40cc865737fe57df9f3a0880684608f1a793de0`. `ws-f-design.md` sha256 `afbbf93dd308db399f98723e2523b12c1a314171167424aa14941484dce92c5e`, 1084 lines, recomputed from the tree blob and matching. This was a read-only review: nothing was run and nothing edited.
+
+**What I verified:**
+- **Oracle pins:** 70 probes, and the probe and pin key sets are asserted equal on both engines.
+- **Evidence hashes:** the three hashes in the evidence file match the tree blobs. Runs 9 and 10 each ran 1 of 25 specs; both mutation logs are red.
+- **Go counts:**
+  - `FullIdToName`: 26 lines in 7 files.
+  - `RecordCoreArgumentError{` construction sites: 7.
+  - `MemoizeFinalExpressionsFromOther(` non-test callers: 9.
+- **Java facts:**
+  - seven `RangeMatchableValue` implementers;
+  - the in-union "too many IN values" check (`RecordQueryInUnionPlan.java:151-153`), and Cascades never gating on size 0;
+  - both distinct-records arms (`DistinctRecordsProperty.java:157,240`);
+  - `enforceSerializable`.
+- **Tests cited in 2.3 and 2.5:** all exist.
+
+## High
+
+1. **Section 4.3's Go-side cause is wrong, so its decision changes nothing.**
+   - Go already computes the union ordering the way the design wants to port it: `adjustBindingsForInUnion` promotes to `ChooseBinding()`, then `EnumerateSatisfyingComparisonKeyValues` runs (`rule_implement_in_union.go:279-285, 412-492`). Its comment already says it keeps "the provider's existing ordering set" as Java does.
+   - The design also misreads Java: for ORDER BY id, col1 is not in the request, so it becomes `Binding.choose()`, not SORTED (`ImplementInUnionRule.java:272-274`).
+   - The unported difference that is actually visible in the source: Java memoizes the whole partition (`memoizeMemberPlansFromOther(innerReference, planPartition.getPlans())`, `:205`). Go instead pre-selects one member with the rule-level cost model and pins it (`memberSatisfiesOrdering` / `pinOrderedSpine` / `FinalOf(pinned)`, `:350-383`).
+   - The trace cannot tell these apart:
+     - `describe()` goes through `Reference.get()`, which throws unless the reference has exactly one member (`Reference.java:252-258`). So it prints the survivor after pruning.
+     - It counts only yields the memo admitted (`CascadesRuleCall.java:224-225`).
+   - So "never builds an index in-union ordered by the primary key" is an inference, not a measurement. The trace needs to record the inner reference's members at yield time, then the real divergence needs locating.
+
+2. **Two claims labelled MEASURED contradict the pins.**
+   - **In-union, ORDER BY col1** (0.1 "rule trace" row; 4.3): the design says the rule's in-union over COVERING(I1) wins. The pin at `ws_f_probe_conformance_test.go:496` shows:
+     - its only final is `INUNION{ISCAN(I1 [EQUALS q])}`;
+     - it scores `compare = +1` (it loses) against `FETCH(INUNION{COVERING(I1 [EQUALS])})` and against `INJOIN … SORTED`.
+     - The winner comes from pushing the fetch through an in-union whose memoized partition held `FETCH(COVERING)`. Go's `PushInUnionThroughFetchRule` (`rule_push_set_operation_through_fetch.go:179-238`) only fires when the pinned member is a fetch.
+     - Nothing in 4.3 reaches the target plan for `w8_in_order_by_col1`.
+   - **Quoted dotted table** (0.1 table; 9.2): the design says Go's EXPLAIN INSERT fails. The pin at `:532` is `OK EXPLAIN "Insert(foo.table$nested)"`.
+     - EXPLAIN and execution therefore resolve the name differently; INSERT fails at `cascades_generator.go:7104`.
+     - That explain-versus-execution split is unexplained, and 9.2's site list and its test plan rest on the wrong claim.
+
+3. **4.2 item 2 still doesn't answer v1's metadata question.**
+   - `costModelDiagnosticsOnlyContext` strips metadata as well as configuration (`planning_cost_model.go:1882-1895`).
+   - A non-nil context switches on metadata-based criteria: `:1971`, `:2594`, `:2850` (unique index via match candidates), `:3004`.
+   - "Keeps the full configuration and drops only … the diagnostics sink" is backwards: the sink is the part it keeps. It also says nothing about metadata.
+   - The third caller, `planner.go:253`, isn't named.
+   - If metadata switches on at rule level too, F-7's plan flips have two causes, which defeats "one cause per flip".
+
+4. **The rung argument in 4.2 item 3 compares the wrong things.**
+   - Java rules only when the other plan is `isSingularIndexScanWithFetch` (`PlanningCostModel.java:465-468, 563-567`).
+   - Three of the five measured classes (`w8_covering_all`, `_neq`, `_id_neq`) are covering scans without a fetch. For those, Java's rung abstains and lower rungs decide.
+   - Pinning `primaryVsIndexRankOf` to a measured *final plan* therefore cannot detect a disagreement. No reason is given for keeping Go's rank instead of porting Java's abstaining arm. Either port Java's rung, or show that the lower rungs agree for every pair class, including a covering scan carrying more residuals than the primary scan.
+
+## Medium
+
+5. **The W6 census classes can't be applied as written.**
+   - "Comparator-caused" needs the target's REWRITING survivor. Neither EXPLAIN nor `planRuleTrace` exposes it.
+   - The preserved `outerJoinCount` omission (2.3) makes survivors differ on purpose for SQL the target accepts. The exit rule would send those to "fixed in the comparator", which 2.3 forbids. That case needs its own arm.
+
+6. **The oracle's comparator gates nothing.**
+   - SAME/DIFF is only printed (`:180-184`), so section 13's acceptance is checked by eye. The expected-SAME and declared-DIFF sets should live in code and be asserted.
+   - Section 13 says "four trace rows"; there are three (`:327-331`).
+   - "Same access path" is undefined when COVERING and FETCH are placed differently (`INJOIN{ISCAN}` against `Fetch(InJoin(COVERING))`).
+   - "Compare rule by rule" is unattainable across different memo structures.
+   - The `w8_in25_param_*` rows depend on WS-E section 4, which section 13 doesn't declare.
+
+7. **The sparse-index rule has a wrong-rows gap.**
+   - The target uses I4 for `FROM 3`, whose comparand is `promote(@c10)`. Java makes that safe by capturing the candidate predicate as a plan constraint (`PredicateWithValueAndRanges.java:355,378,532ff`).
+   - The design's "non-null literal / parameter implies nothing" rule doesn't classify `@cN`.
+   - Not probed: the target's EXPLAIN for a prepared `?` bound to 3, and reusing one statement bound to 3 then NULL.
+
+8. **The IN-subquery extension's "keeps its in-join plan" has no mechanism.** The rule admits correlated sources, as Java does (`:148-150`). It needs either a Go-only refusal or a size exemption, decided now.
+
+9. **Section 12's continuation coverage is too thin.** It pins one query per step, but F-7 changes at least four leaf transitions (primary to ISCAN, primary to COVERING, primary to union, in-union to SCAN|FILTER), and in-union continuations are composite. Pin each transition and name the typed error.
+
+## Low
+
+10. **The 2.8 closure grep misses the "designation" wording.** Uncaught copies: `rewriting_final_invariant.go:10,12` (the instrument being deleted), `abstract_data_access_rule.go:895`, `tie_break_hash.go:14`, and 2 of the 4 hits in `planning_cost_model.go`.
+11. **4.2's stale-text list is short, and the fetch-method sentence is wrong.**
+    - Missing from the stale list: `planner_options.go:62-69` ("…plans exactly as before") and `:25-32`.
+    - The relational fetch default is USE_REMOTE_FETCH_WITH_FALLBACK (`api/options.go:232`). Go accepts that option but ignores it, so "no other value is reachable" is false.
+    - 4.2 has no closure grep.
+12. **The evidence binds only three files.** The Go pins also depend on engine code and the `plandiff` runners, and this tree carries the metadata-validation change as well. Record HEAD with a clean `git status` at run time, or re-run at this tree. The mutations exercise pin equality only, not the renderer, the comparator or the trace step.
+13. **Size 0 breaks record-layer callers.** Record-layer API in-unions under size 0 will fail in production callers, not just tests. That belongs in the CHANGELOG.
+
+**Not checked:** W6 D1–D11 line by line against `CascadesPlanner`, and W7 D3/D8 internals.

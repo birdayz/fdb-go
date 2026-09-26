@@ -31,7 +31,7 @@ func TestFDB_SortKeyLabelCollision_ImmediateStrip(t *testing.T) {
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE sklc CREATE TABLE scores (id BIGINT, player STRING, score BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_sklc/s WITH TEMPLATE sklc")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_sklc?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_SKLC?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

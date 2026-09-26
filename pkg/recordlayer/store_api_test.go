@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -406,6 +408,291 @@ var _ = Describe("FDBRecordStore API", func() {
 	})
 
 	Describe("DeleteStore", func() {
+		for _, tc := range []struct {
+			operation string
+			warm      bool
+		}{
+			{"create", false},
+			{"enable-cache", false},
+			{"enable-cache", true},
+			{"disable-cache", false},
+			{"disable-cache", true},
+		} {
+			for _, deleteFirst := range []bool{false, true} {
+				It(fmt.Sprintf("conflicts with %s warm=%v deleteFirst=%v", tc.operation, tc.warm, deleteFirst), func() {
+					ks := specSubspace()
+					md, err := baseMetaData().Build()
+					Expect(err).NotTo(HaveOccurred())
+					cache := NewMetaDataVersionStampStoreStateCache()
+					if tc.operation != "create" {
+						_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+							store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Create()
+							Expect(err).NotTo(HaveOccurred())
+							_, err = store.SetStateCacheability(tc.operation == "disable-cache")
+							return nil, err
+						})
+						Expect(err).NotTo(HaveOccurred())
+					}
+					if tc.warm {
+						_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+							_, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).SetStoreStateCache(cache).Open()
+							return nil, err
+						})
+						Expect(err).NotTo(HaveOccurred())
+					}
+					writer, err := sharedDB.CreateTransaction()
+					Expect(err).NotTo(HaveOccurred())
+					defer writer.Cancel()
+					deleter, err := sharedDB.CreateTransaction()
+					Expect(err).NotTo(HaveOccurred())
+					defer deleter.Cancel()
+					version, err := writer.GetReadVersion().Get()
+					Expect(err).NotTo(HaveOccurred())
+					deleter.SetReadVersion(version)
+					writeContext := NewFDBRecordContext(writer, nil)
+					deleteContext := NewFDBRecordContext(deleter, nil)
+					builder := NewStoreBuilder().SetContext(writeContext).SetMetaDataProvider(md).SetSubspace(ks).SetStoreStateCache(cache)
+					if tc.operation == "create" {
+						_, err = builder.Create()
+					} else {
+						store, openErr := builder.Open()
+						Expect(openErr).NotTo(HaveOccurred())
+						changed, changeErr := store.SetStateCacheability(tc.operation == "enable-cache")
+						Expect(changed).To(BeTrue())
+						err = changeErr
+					}
+					Expect(err).NotTo(HaveOccurred())
+					Expect(DeleteStore(deleteContext, ks)).To(Succeed())
+					first, second := writeContext, deleteContext
+					if deleteFirst {
+						first, second = second, first
+					}
+					Expect(first.CommitWithHooks()).To(Succeed())
+					var conflict fdb.Error
+					Expect(errors.As(second.CommitWithHooks(), &conflict)).To(BeTrue())
+					Expect(conflict.Code).To(Equal(1020))
+					for _, reopenCache := range []FDBRecordStoreStateCache{NewMetaDataVersionStampStoreStateCache(), cache} {
+						_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+							store, openErr := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).SetStoreStateCache(reopenCache).Open()
+							if deleteFirst {
+								var absent *RecordStoreDoesNotExistError
+								Expect(errors.As(openErr, &absent)).To(BeTrue())
+								rows, readErr := rtx.Transaction().GetRange(ks, fdb.RangeOptions{}).GetSliceWithError()
+								Expect(readErr).NotTo(HaveOccurred())
+								Expect(rows).To(BeEmpty())
+							} else {
+								Expect(openErr).NotTo(HaveOccurred())
+								Expect(store.IsCacheable()).To(Equal(tc.operation == "enable-cache"))
+							}
+							return nil, nil
+						})
+						Expect(err).NotTo(HaveOccurred())
+					}
+				})
+			}
+		}
+		for _, format := range []int32{5, 14} {
+			It(fmt.Sprintf("does not resurrect a versioned SaveRecord after deletion format=%d", format), func() {
+				ks := specSubspace()
+				builder := baseMetaData().SetStoreRecordVersions(true)
+				md, err := builder.Build()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).SetFormatVersion(format).Create()
+					Expect(err).NotTo(HaveOccurred())
+					record, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)})
+					Expect(err).NotTo(HaveOccurred())
+					Expect(record.Version).NotTo(BeNil())
+					Expect(record.Version.IsComplete()).To(BeFalse())
+					Expect(rtx.HasVersionMutations()).To(BeTrue())
+					Expect(rtx.localVersionCache).NotTo(BeEmpty())
+					Expect(DeleteStore(rtx, ks)).To(Succeed())
+					Expect(rtx.HasVersionMutations()).To(BeFalse())
+					Expect(rtx.localVersionCache).To(BeEmpty())
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					rows, err := rtx.Transaction().GetRange(ks, fdb.RangeOptions{}).GetSliceWithError()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(rows).To(BeEmpty(), "commit must not recreate inline or legacy version keys")
+					_, err = NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+					var absent *RecordStoreDoesNotExistError
+					Expect(errors.As(err, &absent)).To(BeTrue())
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+			})
+		}
+		for _, cacheable := range []bool{false, true} {
+			for _, warm := range []bool{false, true} {
+				for _, headerUpdate := range []bool{false, true} {
+					for _, deleteFirst := range []bool{false, true} {
+						It(fmt.Sprintf("enforces delete conflicts cacheable=%v warm=%v headerUpdate=%v deleteFirst=%v", cacheable, warm, headerUpdate, deleteFirst), func() {
+							ks := specSubspace()
+							md, err := baseMetaData().Build()
+							Expect(err).NotTo(HaveOccurred())
+							cache := NewMetaDataVersionStampStoreStateCache()
+							_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+								store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+								if err != nil {
+									return nil, err
+								}
+								_, err = store.SetStateCacheability(cacheable)
+								return nil, err
+							})
+							Expect(err).NotTo(HaveOccurred())
+							if warm {
+								_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+									_, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).SetStoreStateCache(cache).Open()
+									return nil, err
+								})
+								Expect(err).NotTo(HaveOccurred())
+							}
+							writer, err := sharedDB.CreateTransaction()
+							Expect(err).NotTo(HaveOccurred())
+							defer writer.Cancel()
+							deleter, err := sharedDB.CreateTransaction()
+							Expect(err).NotTo(HaveOccurred())
+							defer deleter.Cancel()
+							version, err := writer.GetReadVersion().Get()
+							Expect(err).NotTo(HaveOccurred())
+							deleter.SetReadVersion(version)
+							writeContext := NewFDBRecordContext(writer, nil)
+							deleteContext := NewFDBRecordContext(deleter, nil)
+							store, err := NewStoreBuilder().SetContext(writeContext).SetMetaDataProvider(md).SetSubspace(ks).SetStoreStateCache(cache).Open()
+							Expect(err).NotTo(HaveOccurred())
+							if headerUpdate {
+								Expect(store.SetHeaderUserField("changed", []byte("new"))).To(Succeed())
+							} else {
+								_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)})
+								Expect(err).NotTo(HaveOccurred())
+							}
+							Expect(DeleteStore(deleteContext, ks)).To(Succeed())
+							if deleteFirst {
+								Expect(deleteContext.CommitWithHooks()).To(Succeed())
+								var conflict fdb.Error
+								Expect(errors.As(writeContext.CommitWithHooks(), &conflict)).To(BeTrue())
+								Expect(conflict.Code).To(Equal(1020))
+							} else {
+								Expect(writeContext.CommitWithHooks()).To(Succeed())
+								err = deleteContext.CommitWithHooks()
+								if headerUpdate {
+									var conflict fdb.Error
+									Expect(errors.As(err, &conflict)).To(BeTrue())
+									Expect(conflict.Code).To(Equal(1020))
+									_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) { return nil, DeleteStore(rtx, ks) })
+									Expect(err).NotTo(HaveOccurred())
+								} else {
+									Expect(err).NotTo(HaveOccurred(), "record-only write must not conflict with header-only deletion read")
+								}
+							}
+							_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+								_, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).SetStoreStateCache(cache).Open()
+								return nil, err
+							})
+							var absent *RecordStoreDoesNotExistError
+							Expect(errors.As(err, &absent)).To(BeTrue())
+						})
+					}
+				}
+			}
+		}
+		for _, tc := range []struct {
+			name   string
+			header []byte
+			bump   bool
+		}{
+			{"absent", nil, false},
+			{"empty", []byte{}, false},
+			{"noncacheable", []byte{0x30, 0}, false},
+			{"unknown-field-noncacheable", []byte{0xa0, 0x06, 1}, false},
+			{"unknown-field-cacheable", []byte{0x38, 1, 0xa0, 0x06, 1}, true},
+			{"malformed-varint", []byte{0x80}, true},
+			{"malformed-tag", []byte{0}, true},
+		} {
+			It("deletes with header policy "+tc.name, func() {
+				ks := specSubspace()
+				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					tx := rtx.Transaction()
+					if tc.header != nil {
+						tx.Set(ks.Pack(tuple.Tuple{StoreInfoKey}), tc.header)
+					}
+					tx.Set(ks.Pack(tuple.Tuple{"residual"}), []byte("data"))
+					Expect(DeleteStore(rtx, ks)).To(Succeed())
+					Expect(rtx.HasDirtyStoreState()).To(BeTrue())
+					Expect(rtx.dirtyMetaDataVersionStamp.Load()).To(Equal(tc.bump))
+					rows, err := tx.GetRange(ks, fdb.RangeOptions{}).GetSliceWithError()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(rows).To(BeEmpty())
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+			})
+		}
+
+		It("invalidates cacheable headers even with an unsupported format", func() {
+			ks := specSubspace()
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				header := &gen.DataStoreInfo{FormatVersion: proto.Int32(999), Cacheable: proto.Bool(true)}
+				raw, err := proto.Marshal(header)
+				Expect(err).NotTo(HaveOccurred())
+				rtx.Transaction().Set(ks.Pack(tuple.Tuple{StoreInfoKey}), raw)
+				Expect(DeleteStore(rtx, ks)).To(Succeed())
+				Expect(rtx.dirtyMetaDataVersionStamp.Load()).To(BeTrue())
+				Expect(rtx.HasDirtyStoreState()).To(BeTrue())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("preserves range boundaries and removes delayed version writes", func() {
+			ks := specSubspace()
+			begin, end := ks.FDBRangeKeys()
+			key := ks.Pack(tuple.Tuple{"pending-version"})
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				tx := rtx.Transaction()
+				tx.Set(fdb.Key(ks.Bytes()), []byte("bare"))
+				tx.Set(end.FDBKey(), []byte("end"))
+				tx.Set(begin.FDBKey(), []byte("begin"))
+				rtx.AddVersionMutation(MutationTypeSetVersionstampedValue, key, make([]byte, 14))
+				rtx.AddToLocalVersionCache(key, 7)
+				Expect(DeleteStore(rtx, ks)).To(Succeed())
+				Expect(rtx.HasVersionMutations()).To(BeFalse())
+				_, found := rtx.GetLocalVersion(key)
+				Expect(found).To(BeFalse())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				tx := rtx.Transaction()
+				rows, err := tx.GetRange(ks, fdb.RangeOptions{}).GetSliceWithError()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(rows).To(BeEmpty())
+				bare, err := tx.Get(fdb.Key(ks.Bytes())).Get()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(bare).To(Equal([]byte("bare")))
+				last, err := tx.Get(end.FDBKey()).Get()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(last).To(Equal([]byte("end")))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("propagates header read errors before dirtying the context", func() {
+			tx, err := sharedDB.CreateTransaction()
+			Expect(err).NotTo(HaveOccurred())
+			defer tx.Cancel()
+			rtx := NewFDBRecordContext(tx, nil)
+			rtx.Cancel()
+			err = DeleteStore(rtx, specSubspace())
+			var cause fdb.Error
+			Expect(errors.As(err, &cause)).To(BeTrue())
+			Expect(cause.Code).To(Equal(1025))
+			Expect(rtx.HasDirtyStoreState()).To(BeFalse())
+			Expect(rtx.dirtyMetaDataVersionStamp.Load()).To(BeFalse())
+		})
 		It("removes all store data so Open fails", func() {
 			ks := specSubspace()
 

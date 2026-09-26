@@ -1,12 +1,15 @@
 package recordlayer
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/internal/protovalue"
+	"fdb.dev/pkg/recordlayer/protoscope"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -38,9 +41,10 @@ import (
 //
 //	12  joined_record_types      14  user_defined_functions
 //	13  unnested_record_types    15  views
+//	16  stored_queries
 //
 // Carried is not supported. The port does not model synthetic record types,
-// user-defined functions or views; it declines to DELETE them from metadata it
+// user-defined functions, views or stored queries; it declines to DELETE them from metadata it
 // did not author. Anything whose behaviour would depend on interpreting them
 // must refuse rather than proceed on the partial view — see
 // RecordMetaData.DeclaresSyntheticRecordTypes.
@@ -169,9 +173,9 @@ func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 		md.UsesSubspaceKeyCounter = proto.Bool(true)
 	}
 
-	// 9. The fields this port carries but does not model (12-15). Re-emitted
+	// 9. The fields this port carries but does not model (12-16). Re-emitted
 	// verbatim so a Go round-trip is not a silent deletion of another
-	// application's joined types, functions or views. See
+	// application's joined types, functions, views or stored queries. See
 	// preservedMetaDataFields.
 	//
 	// Cloned rather than aliased: ToProto's result is the caller's to mutate,
@@ -189,6 +193,9 @@ func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 	for _, vw := range m.preserved.views {
 		md.Views = append(md.Views, proto.Clone(vw).(*gen.PView))
 	}
+	for _, query := range m.preserved.storedQueries {
+		md.StoredQueries = append(md.StoredQueries, proto.Clone(query).(*gen.PStoredQuery))
+	}
 
 	// 10. Whatever the generated type has no field for — the extension range
 	// above all. Copied, for the same reason the messages above are cloned.
@@ -205,6 +212,15 @@ func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 func RecordMetaDataFromProto(md *gen.MetaData) (*RecordMetaData, error) {
 	if md == nil {
 		return nil, &MetaDataError{Message: "nil metadata proto"}
+	}
+	// Java's reading of the bytes: a closed enum's undeclared number is an
+	// unknown field (proto_closed_enums.go), so a fan type Java cannot read is a
+	// missing one here too. Stored bytes were decoded with that reading
+	// already (UnmarshalAsJava); a proto built in memory that holds such a
+	// number is read from a clone, so the caller's proto is not changed.
+	if x := generatedReach(md.ProtoReflect().Descriptor()); holdsUndeclared(md.ProtoReflect(), x) {
+		md = proto.Clone(md).(*gen.MetaData)
+		closedEnumsAsJava(md.ProtoReflect(), x, true)
 	}
 
 	// Retain the stored records proto VERBATIM: a re-save must emit the same
@@ -240,61 +256,65 @@ func RecordMetaDataFromProto(md *gen.MetaData) (*RecordMetaData, error) {
 		return nil, fmt.Errorf("rebuild file descriptor: %w", err)
 	}
 
-	// 2. Create builder and set records. Detect the union descriptor by name
-	// ("UnionDescriptor") OR by the usage=UNION proto annotation so that
-	// files like catalog_data.proto (which uses "CatalogUnion") round-trip
-	// correctly. Mirrors Java's RecordMetaData.build() which calls
-	// RecordMetaDataBuilder.setRecordsWithUnionDescriptor using whichever
-	// message is annotated with usage=UNION.
-	unionName := findUnionDescriptorName(fd)
-	builder := NewRecordMetaDataBuilder().setRecordsWithUnionName(fd, unionName)
-	builder.SetRecordsSourceProto(recordsSource)
-
-	// 2a. Subspace-key settings, BEFORE any index is added. Ordering is
-	// behavioural, not cosmetic: addIndexCommon consults the scheme to decide
-	// whether an index gets a counter-assigned key, so loading the settings
-	// afterwards would apply them to nothing.
+	// 2. Java's loadFromProto order (RecordMetaDataBuilder.java:272-278): the
+	// subspace-key settings, then the records and their union, then everything
+	// else. Each step's first fault is the one Java throws, so a records fault is
+	// returned before any index is read: an index naming an unknown record type
+	// must not hide it. The settings also precede every index for a behavioural
+	// reason: addIndexCommon consults the scheme to decide whether an index gets a
+	// counter-assigned key, so loading them afterwards would apply them to nothing.
+	builder := NewRecordMetaDataBuilder()
 	if err := builder.loadSubspaceKeySettingsFromProto(md); err != nil {
 		return nil, err
 	}
+	// The union is found as Java finds it (fetchUnionDescriptor: the usage=UNION
+	// message, else RecordTypeUnion), so files like catalog_data.proto (whose
+	// union is "CatalogUnion") round-trip.
+	builder.setRecords(fd, "", false)
+	if len(builder.buildErrors) > 0 {
+		return nil, builder.buildErrors[0]
+	}
+	builder.SetRecordsSourceProto(recordsSource)
 
 	// 2b. The unmodelled fields, carried verbatim for re-emission.
 	builder.preserved = preservedMetaDataFieldsFromProto(md)
 
-	// 3. Load indexes first (need them before record type association)
-	indexMap := make(map[string]*Index)
+	// 3. Indexes, one at a time in Java's order (loadProtoExceptRecords,
+	// RecordMetaDataBuilder.java:187-219): the index's record types are resolved
+	// BEFORE the index itself is read, so an unknown record type is the fault
+	// Java throws even when the same index (or a later one) also carries a
+	// malformed option or key expression, and each index is added before the next
+	// is read, so a duplicate name is refused where Java refuses it. Java also
+	// looks a name up among the synthetic (joined and unnested) record types; Go
+	// carries those verbatim without modelling them, so an index over one is
+	// refused here as an unknown record type, the out-of-scope synthetic-type gap
+	// recorded in DIVERGENCES.md.
 	for _, idxProto := range md.Indexes {
+		rtNames := idxProto.RecordType
+		rts := make([]*RecordType, 0, len(rtNames))
+		for _, name := range rtNames {
+			rt := builder.recordTypes[name]
+			if rt == nil {
+				// RecordMetaDataBuilder.throwUnknownRecordType (:994-996).
+				return nil, &MetaDataError{Message: "Unknown record type " + name}
+			}
+			rts = append(rts, rt)
+		}
 		idx, err := indexFromProto(idxProto)
 		if err != nil {
-			return nil, fmt.Errorf("index %s: %w", idxProto.GetName(), err)
+			return nil, protoDeserializationError(fmt.Errorf("index %s: %w", idxProto.GetName(), err))
 		}
-		indexMap[idx.Name] = idx
-	}
-
-	// 4. Associate indexes with record types
-	for _, idxProto := range md.Indexes {
-		idx := indexMap[idxProto.GetName()]
-		rtNames := idxProto.RecordType
-		if len(rtNames) == 0 {
-			// Universal index
-			builder.addIndexCommon(idx)
+		builder.addIndexCommon(idx)
+		if len(builder.buildErrors) > 0 {
+			return nil, builder.buildErrors[0]
+		}
+		switch len(rts) {
+		case 0:
 			builder.universalIndexes = append(builder.universalIndexes, idx)
-		} else if len(rtNames) == 1 {
-			// Single-type index
-			rt := builder.recordTypes[rtNames[0]]
-			if rt == nil {
-				return nil, &MetaDataError{Message: fmt.Sprintf("unknown record type %q referenced by index %q", rtNames[0], idxProto.GetName())}
-			}
-			builder.addIndexCommon(idx)
-			rt.indexes = append(rt.indexes, idx)
-		} else {
-			// Multi-type index
-			builder.addIndexCommon(idx)
-			for _, name := range rtNames {
-				rt := builder.recordTypes[name]
-				if rt == nil {
-					return nil, &MetaDataError{Message: fmt.Sprintf("unknown record type %q referenced by index %q", name, idxProto.GetName())}
-				}
+		case 1:
+			rts[0].indexes = append(rts[0].indexes, idx)
+		default:
+			for _, rt := range rts {
 				rt.multiTypeIndexes = append(rt.multiTypeIndexes, idx)
 			}
 		}
@@ -304,12 +324,13 @@ func RecordMetaDataFromProto(md *gen.MetaData) (*RecordMetaData, error) {
 	for _, rtProto := range md.RecordTypes {
 		rt := builder.recordTypes[rtProto.GetName()]
 		if rt == nil {
-			continue
+			// Java's getRecordType (RecordMetaDataBuilder.java:221, :986-990).
+			return nil, &MetaDataError{Message: "Unknown record type " + rtProto.GetName()}
 		}
 		if rtProto.PrimaryKey != nil {
 			pk, err := KeyExpressionFromProto(rtProto.PrimaryKey)
 			if err != nil {
-				return nil, fmt.Errorf("record type %s primary key: %w", rtProto.GetName(), err)
+				return nil, protoDeserializationError(fmt.Errorf("record type %s primary key: %w", rtProto.GetName(), err))
 			}
 			rt.PrimaryKey = pk
 		}
@@ -323,7 +344,11 @@ func RecordMetaDataFromProto(md *gen.MetaData) (*RecordMetaData, error) {
 			// The proto carries an int32 for a key written as one, so without
 			// this a round-tripped metadata would compare unequal to the
 			// metadata it came from while encoding to identical bytes.
-			canonical, keyErr := canonicalRecordTypeKey(valueFromProto(rtProto.ExplicitKey))
+			key, keyErr := valueFromProto(rtProto.ExplicitKey)
+			if keyErr != nil {
+				return nil, keyErr
+			}
+			canonical, keyErr := canonicalRecordTypeKey(key)
 			if keyErr != nil {
 				return nil, fmt.Errorf("record type %q: %w", rt.Name, keyErr)
 			}
@@ -353,7 +378,7 @@ func RecordMetaDataFromProto(md *gen.MetaData) (*RecordMetaData, error) {
 	if md.RecordCountKey != nil {
 		ck, err := KeyExpressionFromProto(md.RecordCountKey)
 		if err != nil {
-			return nil, fmt.Errorf("record count key: %w", err)
+			return nil, protoDeserializationError(fmt.Errorf("record count key: %w", err))
 		}
 		builder.recordCountKey = ck
 	}
@@ -380,14 +405,14 @@ func (b *RecordMetaDataBuilder) loadSubspaceKeySettingsFromProto(md *gen.MetaDat
 	hasCounter := md.SubspaceKeyCounter != nil
 	usesCounter := md.GetUsesSubspaceKeyCounter()
 	if hasCounter && !usesCounter {
-		return &MetaDataError{
+		return &MetaDataProtoDeserializationError{Cause: &MetaDataError{
 			Message: "subspaceKeyCounter is set but usesSubspaceKeyCounter is not set in the meta-data proto",
-		}
+		}}
 	}
 	if usesCounter && !hasCounter {
-		return &MetaDataError{
+		return &MetaDataProtoDeserializationError{Cause: &MetaDataError{
 			Message: "usesSubspaceKeyCounter is set but subspaceKeyCounter is not set in the meta-data proto",
-		}
+		}}
 	}
 	if !b.counterBasedSubspaceKeys {
 		// Only read from the proto if the caller has not already enabled it.
@@ -415,6 +440,9 @@ func preservedMetaDataFieldsFromProto(md *gen.MetaData) preservedMetaDataFields 
 	}
 	for _, vw := range md.Views {
 		p.views = append(p.views, proto.Clone(vw).(*gen.PView))
+	}
+	for _, query := range md.StoredQueries {
+		p.storedQueries = append(p.storedQueries, proto.Clone(query).(*gen.PStoredQuery))
 	}
 	if u := md.ProtoReflect().GetUnknown(); len(u) > 0 {
 		p.unknown = append([]byte(nil), u...)
@@ -444,9 +472,13 @@ func indexToProto(idx *Index) (*gen.Index, error) {
 		Name: proto.String(idx.Name),
 		Type: proto.String(idx.Type),
 	}
-	if idx.RootExpression != nil {
-		p.RootExpression = idx.RootExpression.ToKeyExpression()
+	// An index with no root is never written: every reader refuses it
+	// ("Exactly one root must be specified for an index"), and Build refuses
+	// to build one.
+	if idx.RootExpression == nil {
+		return nil, &MetaDataError{Message: fmt.Sprintf("Index %s has no root expression", idx.Name)}
 	}
+	p.RootExpression = idx.RootExpression.ToKeyExpression()
 
 	// SubspaceKey → tuple-packed bytes
 	subKey := idx.SubspaceTupleKey()
@@ -461,11 +493,11 @@ func indexToProto(idx *Index) (*gen.Index, error) {
 		p.AddedVersion = proto.Int32(int32(idx.AddedVersion))
 	}
 
-	// Options
-	for k, v := range idx.Options {
+	// Options, in stored order (Index.toProto, Index.java:661-663).
+	for _, k := range idx.OptionKeys() {
 		p.Options = append(p.Options, &gen.Index_Option{
 			Key:   proto.String(k),
-			Value: proto.String(v),
+			Value: proto.String(idx.Options[k]),
 		})
 	}
 
@@ -610,32 +642,77 @@ func indexFromProto(p *gen.Index) (*Index, error) {
 	if legacyIndexType {
 		idx.Type = legacyIndexTypeToType(p.GetIndexType())
 		if legacyIndexTypeIsUnique(p.GetIndexType()) {
-			idx.Options[IndexOptionUnique] = "true"
+			idx.SetOption(IndexOptionUnique, "true")
 		}
 	} else if p.Type != nil {
 		idx.Type = p.GetType()
 	}
-
-	if p.RootExpression != nil {
-		expr, err := KeyExpressionFromProto(p.RootExpression)
-		if err != nil {
-			return nil, fmt.Errorf("root expression: %w", err)
+	if !legacyIndexType {
+		// Index.buildOptions (Index.java:253-266) puts every option into an
+		// ImmutableMap.Builder, so the stored order is kept and a key stored
+		// twice fails the build with Guava's IllegalArgumentException. Read
+		// here, with the type, as Java's constructor reads both (Index.java:
+		// 198-204) before the root and the subspace key, so a repeated option
+		// beside a malformed root or key is reported as Java reports it.
+		for _, opt := range p.Options {
+			if prev, dup := idx.Options[opt.GetKey()]; dup {
+				return nil, &DuplicateIndexOptionError{Key: opt.GetKey(), First: prev, Second: opt.GetValue()}
+			}
+			idx.SetOption(opt.GetKey(), opt.GetValue())
 		}
-		idx.RootExpression = groupingFixupForOldMetaData(idx.Type, expr)
 	}
 
-	// SubspaceKey: decode tuple-packed bytes
-	if len(p.SubspaceKey) > 0 {
+	// The root, as Index(proto) reads it (Index.java:205): KeyExpression.fromProto
+	// of the stored root, where an ABSENT root is the empty message and is
+	// refused with "Exactly one root must be specified for an index"
+	// (KeyExpression.java:404-405). Go used to skip an absent root and load an
+	// index Java refuses, reporting a malformed key beside it first.
+	rootProto := p.RootExpression
+	if rootProto == nil {
+		rootProto = &gen.KeyExpression{}
+	}
+	expr, err := KeyExpressionFromProto(rootProto)
+	if err != nil {
+		return nil, fmt.Errorf("root expression: %w", err)
+	}
+	idx.RootExpression = groupingFixupForOldMetaData(idx.Type, expr)
+	// The DEPRECATED `value_expression` is folded into the root as Java folds
+	// it (Index.java:215-218, toKeyWithValueExpression :245-251): a value of
+	// no columns leaves the root alone, and otherwise the root becomes
+	// keyWithValue(concat(root, value), root's column size). Ignoring it would
+	// maintain the index under the bare root, writing no value columns where
+	// Java writes them.
+	if p.ValueExpression != nil {
+		value, err := KeyExpressionFromProto(p.ValueExpression)
+		if err != nil {
+			return nil, fmt.Errorf("value expression: %w", err)
+		}
+		if value.ColumnSize() > 0 {
+			idx.RootExpression = KeyWithValue(Concat(idx.RootExpression, value), idx.RootExpression.ColumnSize())
+		}
+	}
+
+	// The subspace key, as Java's Index(proto) reads it (Index.java:221-225): a
+	// stored key, present even when empty, must pack exactly one item
+	// (decodeSubspaceKey, :80-86, RecordCoreException) and that item must not be
+	// null (normalizeSubspaceKey, :88-97, RecordCoreArgumentException); an
+	// absent key is the index's name. Go fell back to the name for an empty key,
+	// a key of several items and a null item, so it loaded metadata Java refuses
+	// and maintained the index under a subspace Java never reads.
+	if p.SubspaceKey != nil {
 		t, err := fastUnpack(p.SubspaceKey)
 		if err != nil {
 			return nil, fmt.Errorf("subspace key: %w", err)
 		}
-		if len(t) == 1 {
-			idx.subspaceKey = t[0]
+		if len(t) != 1 {
+			return nil, &RecordCoreError{Message: "subspace key must encode a single item tuple"}
 		}
-	}
-	if idx.subspaceKey == nil {
-		idx.subspaceKey = idx.Name // Default
+		if t[0] == nil {
+			return nil, &RecordCoreArgumentError{Message: "Index subspace key cannot be null", IndexName: idx.Name, HasSubspaceKey: true}
+		}
+		idx.subspaceKey = t[0]
+	} else {
+		idx.subspaceKey = idx.Name
 	}
 	// EVERY index loaded from proto has an explicit subspace key, whether the
 	// proto carried one or the name was defaulted in just above. Java sets the
@@ -652,12 +729,11 @@ func indexFromProto(p *gen.Index) (*Index, error) {
 	}
 	if p.AddedVersion != nil {
 		idx.AddedVersion = int(p.GetAddedVersion())
-	}
-
-	if !legacyIndexType {
-		for _, opt := range p.Options {
-			idx.Options[opt.GetKey()] = opt.GetValue()
-		}
+	} else {
+		// Java (Index.java:227-233): an index stored before the field existed
+		// must appear old, so its added version is the first valid version, not
+		// the last-modified version the builder would otherwise default it to.
+		idx.AddedVersion = 1
 	}
 
 	// Predicate: store proto and build evaluator
@@ -670,13 +746,15 @@ func indexFromProto(p *gen.Index) (*Index, error) {
 	return idx, nil
 }
 
-// formerIndexToProto serializes a FormerIndex to protobuf.
+// formerIndexToProto serializes a FormerIndex to protobuf as Java's
+// FormerIndex.toProto does (FormerIndex.java:119-133): the key always, the
+// versions when positive, and the name only when there is one. Go spells
+// Java's null name as "", so an empty name is not written; Java would read a
+// written empty name as a name.
 func formerIndexToProto(fi *FormerIndex) (*gen.FormerIndex, error) {
-	p := &gen.FormerIndex{
-		FormerName: proto.String(fi.FormerName),
-	}
-	if fi.SubspaceKey != nil {
-		p.SubspaceKey = tuple.Tuple{fi.SubspaceKey}.Pack()
+	p := &gen.FormerIndex{SubspaceKey: tuple.Tuple{fi.SubspaceKey}.Pack()}
+	if fi.FormerName != "" {
+		p.FormerName = proto.String(fi.FormerName)
 	}
 	if fi.RemovedVersion > 0 {
 		p.RemovedVersion = proto.Int32(int32(fi.RemovedVersion))
@@ -687,22 +765,30 @@ func formerIndexToProto(fi *FormerIndex) (*gen.FormerIndex, error) {
 	return p, nil
 }
 
-// formerIndexFromProto deserializes a FormerIndex from protobuf.
+// formerIndexFromProto deserializes a FormerIndex from protobuf as Java's
+// FormerIndex(proto) does (FormerIndex.java:51-68): the stored key, absent or
+// present, must pack exactly one item (decodeSubspaceKey, Index.java:80-86,
+// RecordCoreException; an absent key is the empty tuple), and that item must
+// not be null (RecordCoreArgumentException). Go read all four as a nil key, so
+// it loaded meta-data Java refuses and, on a store's upgrade, cleared the null
+// item's index subspace instead of the dropped index's.
 func formerIndexFromProto(p *gen.FormerIndex) (*FormerIndex, error) {
 	fi := &FormerIndex{
 		FormerName:     p.GetFormerName(),
 		RemovedVersion: int(p.GetRemovedVersion()),
 		AddedVersion:   int(p.GetAddedVersion()),
 	}
-	if len(p.SubspaceKey) > 0 {
-		t, err := fastUnpack(p.SubspaceKey)
-		if err != nil {
-			return nil, fmt.Errorf("subspace key: %w", err)
-		}
-		if len(t) == 1 {
-			fi.SubspaceKey = t[0]
-		}
+	t, err := fastUnpack(p.SubspaceKey)
+	if err != nil {
+		return nil, fmt.Errorf("subspace key: %w", err)
 	}
+	if len(t) != 1 {
+		return nil, &RecordCoreError{Message: "subspace key must encode a single item tuple"}
+	}
+	if t[0] == nil {
+		return nil, &RecordCoreArgumentError{Message: "FormerIndex initialized with null subspace key", IndexName: fi.FormerName, HasSubspaceKey: true}
+	}
+	fi.SubspaceKey = t[0]
 	return fi, nil
 }
 
@@ -745,34 +831,29 @@ func valueToProto(v any) (*gen.Value, error) {
 	return p, nil
 }
 
-// valueFromProto deserializes a Value proto to a Go value.
-// Matches Java's LiteralKeyExpression.fromProtoValue().
-func valueFromProto(p *gen.Value) any {
-	if p == nil {
-		return nil
+// protoDeserializationError is err as RecordMetaData.build(proto) throws it:
+// a KeyExpressionDeserializationError wrapped in Java's
+// MetaDataProtoDeserializationException, which loadProtoExceptRecords catches
+// around every key expression it reads (RecordMetaDataBuilder.java:210-227,
+// :261-265); any other failure as it is.
+func protoDeserializationError(err error) error {
+	var de *KeyExpressionDeserializationError
+	if errors.As(err, &de) {
+		return &MetaDataProtoDeserializationError{Cause: err}
 	}
-	if p.LongValue != nil {
-		return p.GetLongValue()
+	return err
+}
+
+// valueFromProto deserializes a Value proto to a Go value, as Java's
+// LiteralKeyExpression.fromProtoValue does (protovalue.FromProto): the one
+// field set, nil when none is, and a RecordCoreError "More than one value
+// encoded in value" when several are.
+func valueFromProto(p *gen.Value) (any, error) {
+	v, err := protovalue.FromProto(p)
+	if err != nil {
+		return nil, &RecordCoreError{Message: err.Error()}
 	}
-	if p.IntValue != nil {
-		return p.GetIntValue()
-	}
-	if p.DoubleValue != nil {
-		return p.GetDoubleValue()
-	}
-	if p.FloatValue != nil {
-		return p.GetFloatValue()
-	}
-	if p.BoolValue != nil {
-		return p.GetBoolValue()
-	}
-	if p.StringValue != nil {
-		return p.GetStringValue()
-	}
-	if p.BytesValue != nil {
-		return p.BytesValue
-	}
-	return nil
+	return v, nil
 }
 
 // defaultExcludedDependencies matches Java's RecordMetaData.defaultExcludedDependencies.
@@ -782,35 +863,6 @@ var defaultExcludedDependencies = map[string]bool{
 	"record_metadata.proto":         true,
 	"record_metadata_options.proto": true,
 	"tuple_fields.proto":            true,
-}
-
-// findUnionDescriptorName returns the union message name. Tries
-// "UnionDescriptor" (record-layer-core), "RecordTypeUnion" (fdb-relational),
-// then scans for a usage=UNION annotation (e.g. "CatalogUnion").
-func findUnionDescriptorName(fd protoreflect.FileDescriptor) string {
-	const defaultName = "UnionDescriptor"
-	const fdbRelationalName = "RecordTypeUnion"
-	if fd.Messages().ByName(protoreflect.Name(defaultName)) != nil {
-		return defaultName
-	}
-	if fd.Messages().ByName(protoreflect.Name(fdbRelationalName)) != nil {
-		return fdbRelationalName
-	}
-	msgs := fd.Messages()
-	for i := 0; i < msgs.Len(); i++ {
-		msg := msgs.Get(i)
-		opts, ok := msg.Options().(*descriptorpb.MessageOptions)
-		if !ok || opts == nil {
-			continue
-		}
-		ext := proto.GetExtension(opts, gen.E_Record)
-		if rto, ok := ext.(*gen.RecordTypeOptions); ok && rto != nil {
-			if rto.GetUsage() == gen.RecordTypeOptions_UNION {
-				return string(msg.Name())
-			}
-		}
-	}
-	return defaultName // Fall back; setRecordsWithUnionName handles missing gracefully.
 }
 
 // collectDependencies returns all transitive file descriptor dependencies,
@@ -1349,6 +1401,11 @@ func rebuildFileDescriptor(
 	// because the descriptor then stops loading rather than merely binding
 	// oddly.
 	absolutizeFieldTypeNames(recordsProto, depsProto...)
+	// Java's relational DDL stores records files whose enums share a value
+	// name; protobuf-go needs them scoped to build the descriptor (the
+	// retained source proto, not this clone, is what ToProto emits). A
+	// dependency is protoc-compiled and cannot carry the collision.
+	protoscope.ScopeEnumValuesAsJava(recordsProto)
 	for _, dp := range depsProto {
 		// Each dependency is resolved against the whole set too: dependencies
 		// import one another, and `tuple_fields.proto` referencing a type from a

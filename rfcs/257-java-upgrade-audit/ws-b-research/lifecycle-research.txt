@@ -1,0 +1,93 @@
+W6 and W11 remain valid, but their outlines omit prerequisites needed for correct cache invalidation and retirement. **This is a source-verified design, not an implementation ACK.** Java HEAD and tag `4.14.2.0` both resolve to `fdacd162a9c8acfadc49082b89185c823ab8ae4a`; the inspected production paths match that revision. Go references below describe the current tree, whose HEAD is `71ccd8cf8b3fd0dbafe283e91171818e36af555e`.
+
+I read the complete relevant lifecycle methods and corresponding regression methods. No files were changed; no tests, builds, agents, Git mutations, or GitHub operations were used.
+
+The governing outlines are [RFC257:332](/home/birdy/projects/fdb-go/rfcs/257-java-4.14.2.0-upgrade.md:332), [W6:213](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/record-storage.md:213), and [W11:313](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/record-storage.md:313). Other workstreams are excluded.
+
+For compact mappings, `J/` means `fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/`; `F/` means `J/provider/foundationdb/`; `G/` means `pkg/recordlayer/`. All paths are under `/home/birdy/projects/fdb-go`.
+
+| Contract | Exact Java location | Current Go location and finding |
+|---|---|---|
+| Header-aware deletion | `F/FDBRecordStore.java:1886`; deprecated unconditional variant `:1842` | [store_api.go:145](/home/birdy/projects/fdb-go/pkg/recordlayer/store_api.go:145): prefix clear only; no header read, dirty flag, or stamp mutation |
+| Cache eligibility and invalidation | `F/storestate/MetaDataVersionStampStoreStateCache.java:105`; merge `:80`; invalidation `:91` | [store_state_cache.go:451](/home/birdy/projects/fdb-go/pkg/recordlayer/store_state_cache.go:451): initial admission checks header presence instead of cacheability; mismatch handling also differs |
+| Cached-open conflict | `F/storestate/FDBRecordStoreStateCacheEntry.java:89` | `G/store_state_cache.go:71`: exact header read conflict already exists; cold load reads header serializably at `:273` |
+| Stamp and transactional clearing | `F/FDBRecordContext.java:1180,1229,1465` | [database.go:1193](/home/birdy/projects/fdb-go/pkg/recordlayer/database.go:1193): stamp primitives exist; queued/local version range removal at `:982,996` |
+| Cacheability transition | `F/FDBRecordStore.java:3071` | [store.go:1902](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:1902), `G/store_builder.go:1082`: setter overwrites old cacheability before invalidation decides whether to bump |
+| Changed-index initialization | `J/RecordMetaData.java:410,467`; `F/FDBRecordStore.java:4973,5195` | [metadata.go:2041](/home/birdy/projects/fdb-go/pkg/recordlayer/metadata.go:2041) already enumerates all modified indexes; `G/store_builder.go:427` lacks DISABLED override |
+| Fresh-store initialization | `F/FDBRecordStore.java:4849,4930,5195` | `G/store_builder.go:1343,1416`: fresh branches initialize an empty state map, implicitly making every index READABLE |
+| Retirement and scheduling | `F/FDBRecordStore.java:2696,2949,2972,2981,3914,4038` | [index_state.go:122](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:122), `:166,226`: transitions exist; retirement and scheduling are absent |
+| State conflicts | `F/FDBRecordStore.java:3691,4187,4241,4519` | `G/index_state.go:74,266,545`; `G/store.go:1007`: cached state decisions lack Java’s index-state read conflicts |
+| Commit execution | `F/FDBRecordContext.java:479,875,898` | `G/database.go:1029,1049`: unnamed checks exist; plain `Commit()` at `:859` bypasses them |
+| Rebuild/cleanup | `F/FDBRecordStore.java:3139,3163,4796,5281` | `G/store_api.go:113`; `G/store_builder.go:31`; `G/index_state.go:456,589`; online closeout `G/online_indexer.go:1265` |
+
+The additional source findings materially affect the design:
+
+- **Noncacheable cache entries are currently admitted.** The test named “non-cacheable store is not cached” explicitly expects one entry at [store_state_cache_test.go:402](/home/birdy/projects/fdb-go/pkg/recordlayer/store_state_cache_test.go:402). With an existing non-null stamp, a later open can reuse that entry after a noncacheable deletion.
+- **Disabling cacheability can leave an old cache entry valid.** `SetStateCacheability(false)` mutates `storeHeader` before `writeStoreHeader` captures `oldCacheable`. Its test manually clears the cache at [store_state_cache_test.go:521](/home/birdy/projects/fdb-go/pkg/recordlayer/store_state_cache_test.go:521), masking cross-transaction coherence.
+- **Direct clears miss pending version mutations.** Java’s context clear also removes queued mutations and local versions. Go’s later commit flush can otherwise restore version keys beneath a deleted store or retired index.
+- **The initialization override alone is insufficient.** Fresh creation bypasses reconciliation, build-all includes replaced indexes, and plain context commits skip retirement hooks.
+
+The implementable design is:
+
+1. **Keep `DeleteStore(ctx, ss) error` synchronous.** Read precisely `ss.Pack({StoreInfoKey})` through `Transaction().Get(...).Get()`, never snapshot or cached state. Propagate FDB read errors with `%w` before scheduling deletion.
+
+   Decode present bytes as `DataStoreInfo`. Missing header means no bump; successfully parsed header uses `GetCacheable()`; protobuf decoding failure means bump. Do not invoke normal store-open validation: deletion must work with malformed headers, unsupported format numbers, locks, or missing headers with residual data. Empty protobuf bytes are valid and default noncacheable.
+
+   Then conditionally call `SetMetaDataVersionStamp()`, always call `SetDirtyStoreState(true)`, and clear transactionally. Use Java’s subspace bounds, `ss.FDBRangeKeys()`; current Go `PrefixRange` additionally clears the bare prefix and other boundary keys. Pin that boundary difference explicitly in regression expectations.
+
+2. **Complete the cache prerequisites in the same change.** On initial miss, admit only cacheable headers. On stamp mismatch, add cacheable state; otherwise call the existing `invalidateOlderEntry`, including when the header disappeared. Preserve Java’s newer-entry comparison and dirty-context bypass.
+
+   Clone the proposed header before changing cacheability. `writeStoreHeader` must observe the actual old flag, propagate stamp-read errors, and publish the new in-memory header after success. Old cacheable state always invalidates; false→true only initializes an absent stamp. No global serializable stamp read is needed: snapshot stamp comparison handles subsequent transactions; header/index read conflicts protect overlapping transactions.
+
+3. **Separate changed-index enumeration from build eligibility.** Add `RecordMetaData.GetIndexesSince(version)` with the current unfiltered implementation. Make `GetIndexesToBuildSince` exclude indexes whose `GetReplacedByIndexNames()` is nonempty; migrate reconciliation to `GetIndexesSince`. Document this existing API’s semantic correction and update the store convenience method consistently. Add `store.GetIndexesToBuild()` for eligible, non-READABLE indexes.
+
+   In reconciliation, choose DISABLED for every candidate declaring replacements **before invoking `IndexRebuildPolicy`**. The callback must not run for that original index. Ordinary replacements still follow policy.
+
+   Apply the same initialization to `Create` and fresh `CreateOrOpen`, treating every index as new. For ordinary indexes on a new, empty store, preserve Java’s no-record shortcut: non-DISABLED requested states become READABLE. Persist explicit DISABLED entries for replaced originals before returning.
+
+   Do not disable an established original merely because an option-only metadata update adds `replacedBy`: if its `LastModifiedVersion` did not advance, retirement governs its lifetime.
+
+4. **Implement retirement as an atomic state transition.** For each index with replacements, require every named replacement to exist and equal `IndexStateReadable`. `IsScannable()` is wrong because it accepts `READABLE_UNIQUE_PENDING`. Java considers originals in every state, not only READABLE.
+
+   Collect eligible originals, release the state read lock, then disable them through the state mutation path. Never hold `stateMu.RLock()` while calling a method requiring its write lock. Disable only on an actual transition, clearing data and updating persisted/in-memory state, dirty state, and cacheable stamp together.
+
+   Add an internal error-returning state/conflict helper. Retirement must read replacement states from the effective transaction, including its own writes; transition methods must serializably inspect prior state. Scan and maintenance decisions need index-state read conflicts too, including decisions to skip disabled indexes. Preserve public getter compatibility while routing error-capable lifecycle paths through the helper.
+
+5. **Integrate both retirement triggers.** After successful version/header reconciliation, retire immediately, before open returns. After a changed `MarkIndexReadable` or `MarkIndexReadableOrUniquePending`, register one named precommit check per context/subspace. A pending transition schedules a check but cannot satisfy readiness itself. Unchanged marks do not schedule new checks.
+
+   Add context-level named-check deduplication under `commitMu`; a per-store-object boolean is insufficient. Evaluate transaction-visible state when the callback runs rather than freezing readiness at registration. Errors abort commit. Disabling originals must not recursively register retirement.
+
+   Make plain `FDBRecordContext.Commit()` execute the same checks→version-flush→commit→postcommit sequence as `CommitWithHooks`. Existing `Run`, `RunWithWeakReads`, `RunWithVersionstamp`, and `CommitWithVersionstamp` already execute checks; retain exactly one execution per attempt. Retirement is precommit work.
+
+6. **Preserve explicit rebuild semantics and cleanup.** Build-all excludes replaced originals before attempting rebuild. Explicit `RebuildIndex(original)` and explicitly targeted online builds remain allowed; the original survives when any replacement is unready, and otherwise retires at commit.
+
+   Reuse `MarkIndexDisabled`, `clearIndexData`, range-set cleanup, and `eraseAllIndexingDataButTheLockAndRangeSet`, correcting context-aware clearing and preserving Java’s index-build lock subspace. Introduce a small context range-clear helper combining transaction clear with existing queued/local version removal. This requires no asynchronous framework, wire changes, new index-state values, or queue implementation.
+
+The real-FDB regression matrix should use explicit contexts and pinned read versions to expose the first commit result, followed by a separate retry assertion. Run cacheable/noncacheable and cold/warm variants with independent cache instances. A cached-open-only conflict test needs an unrelated sentinel write so it actually exercises commit conflict checking. Stamp equality tests require an isolated cluster or serialized stamp-mutating fixtures.
+
+| Scenario | Required result |
+|---|---|
+| Missing header, with/without residual store keys | Delete succeeds; store range empty; dirty flag true; stamp unchanged |
+| Parsed noncacheable header, including empty protobuf | Same; warm-up must not admit a cache entry |
+| Cacheable header | Stamp advances; existing cache instances reload; fresh `Open` reports nonexistent |
+| Malformed header: truncated varint, illegal tag, malformed embedded message | Conservative bump and successful clear; no normal-open validation |
+| Valid unknown fields or unsupported format | Parsing succeeds; bump follows cacheable flag only |
+| Header read fails | Error retains FDB cause; no clear or stamp mutation scheduled |
+| **Operation commits first:** cacheability toggle or header-field update | Deleter pinned before operation fails with conflict/1020; retry reads current header |
+| **Operation commits first:** record-only write | Deleter succeeds and removes the committed record; header read does not create a whole-store read conflict |
+| **Delete commits first:** previously opened writer, cold or cached | Writer conflicts on header; no resurrection; fresh open fails |
+| Missing-header delete versus concurrent create | Creator-first: stale deleter conflicts. Deleter-first: creator whose existence read predates deletion conflicts |
+| Delete→recreate, same context and separate contexts | New header/state and only new records survive; previous disabled states, header fields, and records disappear; test with populated caches |
+| Save versioned record→delete before commit | No delayed record-version or version-index keys survive |
+| New/changed replaced original; one/two replacements; all policy choices | Original explicitly DISABLED; policy never called for original; replacement policy respected |
+| Existing readable original, partial replacement readiness | Original remains populated and maintained; disable/re-enable replacements in different orders |
+| Unique replacement reaches pending | Original remains; replacement range-set retained. Resolve violations and mark READABLE: original retires in that commit |
+| Inline and online final replacement build | Original readable before deferred check, DISABLED after commit; reopen with identical metadata version |
+| Two replacement builders overlap, both commit orders | State-read conflicts prevent both committing decisions based on the other’s stale unready state; retry retires when all are ready |
+| Retirement versus stale original-index writer | Retirement-first: writer conflicts. Writer-first: retirement clears its original-index entries |
+| Hook deduplication, multiple stores, failed check, retry, each context commit API | One callback per subspace/attempt; atomic rollback on failure; independent store outcomes |
+| Build-all versus explicit original build; remove relationship before readiness | Build-all never attempts original; explicit build remains usable while replacement unready; aborted migration preserves original |
+
+Java regression anchors are `F`’s corresponding test-tree files: `storestate/DeleteStoreTest.java:126,188,271,368,435` and `FDBRecordStoreReplaceIndexTest.java:422,445,468,526,576,609,720,836,871`.
+
+One **source-derived specification edge** needs explicit disposition: Java’s `deleteStoreAsync` does not cancel an already registered retirement callback. A readable-mark→delete sequence can leave the captured callback able to write DISABLED state keys after the clear (`:1886`, `:2951`, `:2981`, `:3705`). Characterize that composition against the pinned oracle before claiming parity. Cancelling or guarding the callback would be an intentional correction beyond the pinned implementation.

@@ -1,0 +1,96 @@
+**NAK.** Commit `d2e47b8bd`. `ws-j-design.md` SHA256 `5f6990f66f23f4a12f56766a016217d0adf8edfd77a826bfc3eaf8e05ea9643f`, 2950 lines; I recomputed both. I read commit objects, Java 4.14.2.0, the protobuf-go v1.36.11 source and the evidence logs. I ran nothing.
+
+## HIGH
+
+**H1. The Java reading is applied only when Go decodes. The save path and Go's own re-parses put the number back into the field, which corrupts indexes.** This comes from reading source; I did not run it.
+- The move is called only in the decoders (`store.go:2284`, `:2388`), `RecordMetaDataFromProto` and the map-entry parse.
+- `saveRecordInternal` (`store.go:563-675`) maintains indexes from the caller's `record` as given. The old record it replaces is read through `deserializeAndDiscover`, with the move (`:643`).
+- So a message holding `E(7)` in its field is indexed as `(7, pk)`. A later update or delete computes the old entries as null, and `(7, pk)` is orphaned. Java's, or Go's own, online build over the same bytes writes null.
+- Before v18 both paths read 7 and agreed. v18 introduced the split.
+- Two in-process round trips reintroduce the number the same way:
+  - `continuation.go:488,509` re-parses buffered row messages with plain `proto.Unmarshal`, so a nested enum reads null before a continuation and 7 after it.
+  - `executor.go:4157-4162`: the INSERT…SELECT composite copy marshals the value and re-parses it with plain `proto.Unmarshal`.
+- Nothing probes this. The JVM spec only saves records that Go itself loaded.
+- Fix: make the reader treat an undeclared closed-enum number as absent (key evaluation, FieldValue, rowstruct). Alternatively, normalise in `saveRecordInternal` and at both round-trip sites. Pin it with a Go save of a message holding `E(7)`, followed by a delete, and assert no index entry is left.
+
+**H2. The required-field check runs before the move, so the stored fan type 7 — the route v17 named — is still not refused as Java refuses it (v17 Torvalds H1 and storage M2 are only partly resolved).**
+- `UnmarshalAsJava` (`proto_closed_enums.go:97-103`) parses with `AllowPartial: false`. At that point the field holds 7, so the required check passes. The move then clears the field.
+- Java runs `MetaData.parseFrom(...)` (`RecordLayerStoreSchemaTemplateCatalog.java:221`) and fails that parse. The measured analogue is in `wsj18-red/console.txt:186`: "Message missing required fields…", XXXXX.
+- Go instead reaches `fieldFromProto`, raises `MetaDataProtoDeserializationError` and reports **42000** (`fdb_template_catalog.go:365-379`).
+- The same gap affects `RowNumberWindowPredicate.direction`, and any record type with a required closed enum: Go loads a record that Java's `DynamicMessage.parseFrom` refuses.
+- The pins are the simpler cousin again. Both engines use a partial parse (`key_expression_absent_child_conformance_test.go:128-146`, `:199-213`; `keyExpressionFromPartialProtoJava` and `buildPartialMetaDataAnyVerdict`).
+- Fix: after the move, run `proto.CheckInitialized` (and the equivalent after VT decodes). Add a "stored template: fan type 7" row, XXXXX on both engines.
+
+## MEDIUM
+
+**M1. The recursion limit is off by one, and the claim is wider than the code.**
+- protobuf-go counts the top-level message (`proto/decode.go:124`, `internal/impl/decode.go:105`), so `RecursionLimit: 100` admits 99 nested messages.
+- protobuf-java admits 100, checking `recursionDepth >= limit` before incrementing. This is from protobuf-java source; it is not in this tree and I did not measure it.
+- The 49/50 spec agrees only by parity: its deepest message sits at nested depth 99 or 101.
+- Even-depth shapes diverge. Examples: `MetaData.record_count_key` nested 49 deep, and an index predicate's operand at depth 2k+6.
+- Records happen to match, because Go skips the union level.
+- `unmarshalVTAsJava` has no limit at all. That covers store headers at `store_builder.go:1014`, `index_state.go:443` and `store_state_cache.go:293`, while `store_api.go:174` limits. So the same header bytes get two verdicts inside Go. It also covers stamps, heartbeats and continuations.
+- These sites therefore over-claim:
+  - 4f.2 (`:2526-2532`), "the same boundary";
+  - `CHANGELOG.md:505`, "store headers, index-build stamps … continuations";
+  - `DIVERGENCES.md:3276-3279` and `:3301-3302`, "every stored proto of the store".
+- Fix: set the limit to 101 for top-level stored protos, and put a limit on the VT decodes. Add a JVM row whose deepest message is at an even depth.
+
+**M2. "Every decode of shared bytes" is wider than the code.**
+- Measured: 17 non-test sites under `pkg/recordlayer`, `pkg/relational` and `cmd` still use plain `proto.Unmarshal`, `UnmarshalVT` or `UnmarshalOptions`:
+  - 15 in `query/executor`;
+  - `cmd/frl/internal/cmd/store.go:189`, which reads DataStoreInfo;
+  - `cmd/frl/internal/meta/meta.go:158`.
+- The positive control, `UnmarshalAsJava`, hit in the same grep.
+- Java's own continuation protos have no closed enum other than OrElse, which is converted. So most of these sites are moot, except H1's round trips and `frl`.
+- Either state the scope or convert the sites.
+
+## LOW
+- `RecordMetaDataFromProto` now mutates its input (`metadata_proto.go:214-217`). That breaks the pinned contract in `from_proto_input_immutability_test.go:14-16`. The test stays green only because its fixture holds no undeclared enum. Concurrent callers sharing one proto would race.
+- The map-value arm ("reads the default, as Java's DynamicMessage") has no JVM row. The unit test pins Go's own belief, and re-save bytes with a closed-enum map value are unmeasured.
+- Evidence gaps:
+  - The JVM greens on `d2e47b8bd` are not in the supplied logs: the hook excludes `conformance_java` (0 "parity" hits in `commit.log`; the `rfc257_oracle_test` control is present).
+  - 56 of the hook's 95 targets were cached.
+  - v17 Torvalds' Low (no red run for `8e515423b`'s fixes) is unanswered.
+- Stale text:
+  - `:2426`, "at its three read sites";
+  - `:2429`, "Four key-expression shapes": DIVERGENCES has been retitled, and its fifth refusal is typed;
+  - storage L6's §9 entry was not added.
+- The readers are pinned at the helper level. Which Java reader serves a top-level SELECT column is not measured at the SQL surface; that is a hypothesis.
+
+## v17 findings
+- **Torvalds:**
+  - H1 partly resolved (H2 above).
+  - M1 resolved (both copies; the JVM spec went red to green).
+  - M2 resolved.
+  - M3 resolved (grep below).
+  - M4 answered as owed (step 3; the restore already sets it, `template_restore.go:430`).
+  - Lows:
+    - Resolved: the restore fail-closed pin (a pin of existing behaviour), `firstBindingHeld`, the XX000 hazard, getFieldOnMessage, `NullStandin`.
+    - Carried to step 3: the ExecutedTemplate claims.
+    - Open: the red run for `8e515423b`.
+- **Graefe:**
+  - M1, M2, L1, L2, L3 and L7 resolved.
+  - L4 answered, but see M1.
+  - L5 answered, but see H2.
+  - L6 carried to step 3.
+- **Storage:**
+  - H1, M1, L1-L5 and L9 resolved.
+  - M2 partly resolved (H2).
+  - L6 partly resolved.
+  - L7 and L8 carried to step 3.
+
+## Sweep (measured, with controls)
+- In the design, `WIDENED`, `Widening`, `EitherWay`, `literalCarriersEquivalent` and `allow-literal-carrier` appear only in the pre-v17 history paragraphs (`:94-333`) or in withdrawal statements. "Go-only API" appears only in 4f.5 itself. The control "Step 3, restated" hit at `:2477`.
+- In `pkg`, `cmd`, CHANGELOG, TODO and DIVERGENCES, the removed flag, the removed arm and `RegisterNonUniqueNullFunction` have 0 hits, apart from one withdrawal line at `TODO.md:15098`. The control "at or below the latest" hit 3 times.
+
+## Checked and sound
+- The operand fix matches `IndexComparison.java:174-175`, and the cascades copy refuses two values too.
+- The store-lock check is now equivalent to `FDBRecordStore.java:2926-2931`.
+- OrElse resuming as UNDECIDED is correct.
+- The reach plans are immutable after construction; the sync.Map holds only generated descriptors.
+- `CreateTemplate`'s comment is accurate.
+
+## Measured versus hypothesis
+- **Measured:** the hashes, the greps, the red log (10 FAIL lines), the TREE identity, protobuf-go's depth accounting, and the Java source.
+- **Source hypotheses, not run:** H1's orphaned entries and resumed-row change; H2's 42000 against XXXXX; protobuf-java's side of M1.

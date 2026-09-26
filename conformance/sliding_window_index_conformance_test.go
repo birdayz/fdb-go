@@ -4,14 +4,17 @@ package conformance_test
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -432,3 +435,124 @@ func (s *SlidingWindowConformanceStore) SearchJava(ctx context.Context, query []
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	return ids, nil
 }
+
+var _ = Describe("Sliding pending replay conformance", func() {
+	for _, replayJava := range []bool{false, true} {
+		It(fmt.Sprintf("matches captured bytes eviction duplicate and missing promotion with replayJava=%t", replayJava), func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			env, err := SetupTenantEnvironment(ctx, sharedContainer, "sw_queue_"+uuid.New().String())
+			Expect(err).NotTo(HaveOccurred())
+			defer func() { Expect(env.Cleanup(ctx)).To(Succeed()) }()
+			fixture, err := NewSlidingWindowConformanceStore(env.RecordDB, env.Keyspace, env.ClusterFile, env.TenantName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fixture.SaveOrdersJava(ctx, []swOrder{
+				{ID: 1, Price: 10, Vector: []float64{1, 0, 0}},
+				{ID: 2, Price: 20, Vector: []float64{2, 0, 0}},
+				{ID: 3, Price: 30, Vector: []float64{3, 0, 0}},
+				{ID: 4, Price: 40, Vector: []float64{4, 0, 0}},
+			})).To(Succeed())
+			// This record stays in overflow until queued deletions re-elect it.
+			Expect(fixture.SaveOrderGo(ctx, 3, 30, []float64{99, 0, 0})).To(Succeed())
+			for _, step := range []struct {
+				oldID, newID int64
+				price        int32
+				ids          []int64
+				boundary     tuple.Tuple
+			}{
+				{newID: 5, price: 5, ids: []int64{1, 5}, boundary: tuple.Tuple{int64(10), int64(1)}},
+				{newID: 5, price: 5, ids: []int64{1, 5}, boundary: tuple.Tuple{int64(10), int64(1)}},
+				{oldID: 5, price: 5, ids: []int64{1, 2}, boundary: tuple.Tuple{int64(20), int64(2)}},
+				{newID: 6, price: 20, ids: []int64{1, 2}, boundary: tuple.Tuple{int64(20), int64(2)}},
+				// Re-election consults the current record, not the captured insertion.
+				// Missing record 6 moves the boundary/count but adds no graph node in Java.
+				{oldID: 1, price: 10, ids: []int64{2}, boundary: tuple.Tuple{int64(20), int64(6)}},
+				{oldID: 6, price: 20, ids: []int64{2, 3}, boundary: tuple.Tuple{int64(30), int64(3)}},
+			} {
+				makeRecord := func(id int64) *recordlayer.FDBStoredRecord[proto.Message] {
+					if id == 0 {
+						return nil
+					}
+					return &recordlayer.FDBStoredRecord[proto.Message]{Record: &gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(step.price), VectorData: conformanceSerializeVector([]float64{float64(id), 0, 0})}, PrimaryKey: tuple.Tuple{id}, RecordType: fixture.MetaData.GetRecordType("Order")}
+				}
+				var payload []byte
+				_, err = env.RecordDB.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+					store, err := recordlayer.NewStoreBuilder().SetContext(rc).SetMetaDataProvider(fixture.MetaData).SetSubspace(fixture.Keyspace).Open()
+					Expect(err).NotTo(HaveOccurred())
+					maintainer, err := store.GetIndexMaintainer(fixture.Index)
+					Expect(err).NotTo(HaveOccurred())
+					data, err := maintainer.SerializePendingWriteQueue(makeRecord(step.oldID), makeRecord(step.newID))
+					Expect(err).NotTo(HaveOccurred())
+					payload, err = proto.Marshal(data)
+					return nil, err
+				})
+				Expect(err).NotTo(HaveOccurred())
+				jsonRecord := func(id int64) string {
+					if id == 0 {
+						return ""
+					}
+					return fmt.Sprintf(`{"id":%d,"price":%d}`, id, step.price)
+				}
+				params := fixture.buildJavaParams()
+				params["oldJson"], params["newJson"] = jsonRecord(step.oldID), jsonRecord(step.newID)
+				params["payloadHex"] = ""
+				if replayJava {
+					params["payloadHex"] = hex.EncodeToString(payload)
+				}
+				var javaPayload string
+				Expect(NewJavaInvoker().InvokeAs(ctx, "captureSlidingPendingEntry", params, &javaPayload)).To(Succeed())
+				Expect(javaPayload).To(Equal(hex.EncodeToString(payload)))
+				if !replayJava {
+					data, err := hex.DecodeString(javaPayload)
+					Expect(err).NotTo(HaveOccurred())
+					_, err = env.RecordDB.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+						store, err := recordlayer.NewStoreBuilder().SetContext(rc).SetMetaDataProvider(fixture.MetaData).SetSubspace(fixture.Keyspace).Open()
+						Expect(err).NotTo(HaveOccurred())
+						maintainer, err := store.GetIndexMaintainer(fixture.Index)
+						Expect(err).NotTo(HaveOccurred())
+						var entry anypb.Any
+						Expect(proto.Unmarshal(data, &entry)).To(Succeed())
+						return nil, maintainer.UpdateFromQueue(&entry)
+					})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				goIDs, err := fixture.SearchGo(ctx, []float64{0, 0, 0}, 100)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(goIDs).To(Equal(step.ids))
+				javaIDs, err := fixture.SearchJava(ctx, []float64{0, 0, 0}, 100)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(javaIDs).To(Equal(step.ids))
+				count, err := fixture.ReadWindowMetaRawGo(ctx, swCountMetaKey)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(count).To(Equal(tuple.Tuple{int64(2)}.Pack()))
+				boundary, err := fixture.ReadWindowMetaRawGo(ctx, swBoundaryMetaKey)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(boundary).To(Equal(step.boundary.Pack()))
+				if step.oldID == 6 {
+					params := fixture.buildJavaParams()
+					params["vectorJson"], params["k"] = "[99,0,0]", 1
+					var nearest []struct {
+						ID     int64  `json:"orderId"`
+						Vector string `json:"vector"`
+					}
+					Expect(NewJavaInvoker().InvokeAs(ctx, "searchSlidingWindowIndex", params, &nearest)).To(Succeed())
+					Expect(nearest).To(HaveLen(1))
+					Expect(nearest[0].ID).To(Equal(int64(3)))
+					Expect(nearest[0].Vector).To(Equal(hex.EncodeToString(conformanceSerializeVector([]float64{99, 0, 0}))), "indirect promotion must use the current source vector")
+					_, err = env.RecordDB.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+						store, err := recordlayer.NewStoreBuilder().SetContext(rc).SetMetaDataProvider(fixture.MetaData).SetSubspace(fixture.Keyspace).Open()
+						Expect(err).NotTo(HaveOccurred())
+						found, err := store.SearchVectorIndex(fixture.Index, []float64{99, 0, 0}, 1, 100)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(HaveLen(1))
+						Expect(found[0].PrimaryKey).To(Equal(tuple.Tuple{int64(3)}))
+						Expect(found[0].Distance).To(BeZero())
+						return nil, nil
+					})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				fmt.Fprintf(GinkgoWriter, "SLIDING-QUEUE java=%t old=%d new=%d ids=%v boundary=%v\n", replayJava, step.oldID, step.newID, step.ids, step.boundary)
+			}
+		})
+	}
+})

@@ -1,0 +1,22 @@
+**ACK — IMPLEMENTATION CODE** at tree `e83b606c1d79a24a1bf08a5c35c9302f0777b77a`. No remaining defect identified in this delta or its necessary interactions; **no further code fix required**.
+
+I read all three prior reviews and prompts, the complete 12-file tree delta, frozen untracked content through `git show`, and corresponding Java source at `fdacd162a9c8acfadc49082b89185c823ab8ae4a`. All **6,397 frozen hashes** match the candidate and workspace. Published HEAD remains unchanged. The session’s launch header confirms **gpt-6-astra / xhigh / read-only**.
+
+The duplicate-alias finding is closed:
+
+- [logical_builder.go:1017](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_builder.go:1017) counts every matching output name and returns position zero unless exactly one matches. Both constructors consume that result; neither selects an arbitrary owner.
+- [plan_visitor.go:763](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/plan_visitor.go:763) and [logical_predicate.go:2414](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:2414) reject multiple matches **before source lookup**, with `42702` and `Ambiguous alias NAME`. This matches Java’s [lookupAlias:655](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/SemanticAnalyzer.java:655) and [ORDER resolution:955](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/visitors/QueryVisitor.java:955).
+- [logical_predicate.go:3136](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:3136) uses SQL output names, including inherited names, while authored segments control alias eligibility. The obsolete presence-only sets and error-dependent bypasses are removed. Existing exact-Value ownership, native ordinals, and authored numeric classification remain intact.
+- [order_by_exact_metadata_test.go:789](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/order_by_exact_metadata_test.go:789) exercises eight queries through both catalog constructors and checks the exact diagnostic. Line 820 covers all seven cardinality arms. FDB controls preserve legal duplicate labels without ambiguous references.
+
+Completed evidence reconciles: **134 RUN/PASS**, all **28 Java probe records** exactly matching frozen expectations, and four new mutations with matching changed-source/log hashes, compilation, discriminating failures, and restored sources. The prior seven mutation proofs retain their earlier-tree scope; they were not rerun here. No assertions were weakened.
+
+Outstanding verification and publication gates remain separate:
+
+- Completed candidate evidence credits the **30-second, four-worker fuzz run**: 3,891,720 executions. Full **93 uncached**, race **14 uncached**, `just test`, and nominal **1M ABBA** remain uncredited from the inspected snapshot. No inference is made from ongoing work.
+- The preceding candidate’s interrupted **89/93** run is not a full green.
+- The accepted bounded latency investigation stands; neither universal parity nor the `<5ms` aspiration is established. Historical executor startup-timeout causation still requires unavailable original artifacts; CLI repair and greens do not explain it.
+- Legacy RaBitQ disable/rebuild remains a deployment prerequisite. Commit/push/merge remain forbidden; PR786 stays draft/unchanged.
+- WS-B–K remain open. Unchanged storage scope retains its ACK, FDB C++ remains **7.3.77**, and approved nullable-array/raw/scalar/sorting extensions remain accepted.
+
+No edits, builds/tests, agents, worktrees, Git-state changes, or GitHub contact occurred.

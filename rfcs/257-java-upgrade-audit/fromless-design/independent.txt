@@ -1,0 +1,17 @@
+**ACK — design only. No implementation approval or merge authorization.**
+
+Reviewed the complete final subsection, RFC-257:1000–1079, at exact Go tree `bf080555be86aa00fff2ba100be2b22781a7ef7a`, against Java commit `fdacd162a9c8acfadc49082b89185c823ab8ae4a`.
+
+The proposed boundary is semantically faithful: Java creates `Explode([true])` with empty visible expressions ([QueryVisitor.java:265](/home/birdy/projects/fdb-rl-patch/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/visitors/QueryVisitor.java:265)). Java’s star machinery itself substitutes a record constructor when the visible expansion differs from the underlying type ([Star.java:151](/home/birdy/projects/fdb-rl-patch/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/Star.java:151)). Go’s empty projection therefore preserves cardinality while hiding the BOOLEAN; its existing executor constructs an explicit positional output even with zero slots ([executor.go:2738](/home/birdy/projects/fdb-record-layer-go/pkg/recordlayer/query/executor/executor.go:2738)).
+
+The adversarial pressure points are concrete:
+
+- Empty output currently becomes an error in star expansion ([logical_predicate.go:7118](/home/birdy/projects/fdb-record-layer-go/pkg/relational/core/embedded/logical_predicate.go:7118)); an empty aggregate projection is omitted ([logical_builder.go:639](/home/birdy/projects/fdb-record-layer-go/pkg/relational/core/embedded/logical_builder.go:639)). A singleton source alone cannot establish zero-column composition.
+- Derived-column discovery returns unavailable output for empty projections ([cascades_translator.go:917](/home/birdy/projects/fdb-record-layer-go/pkg/relational/core/query/cascades_translator.go:917)); scalar composition rejects zero-field outer rows ([scalar_subquery_seed.go:51](/home/birdy/projects/fdb-record-layer-go/pkg/relational/core/query/scalar_subquery_seed.go:51)).
+- Enclosing scope preservation is supported by the actual empty-source path ([logical_predicate.go:2944](/home/birdy/projects/fdb-record-layer-go/pkg/relational/core/embedded/logical_predicate.go:2944)); dependency walking still needs the declared replacement.
+
+These are covered by the draft’s explicit empty-versus-unavailable distinction and consumer-repair mandate, including aggregation, CTE/derived/UNION, scalar/EXISTS and INSERT SELECT ([RFC:1040](/home/birdy/projects/fdb-record-layer-go/rfcs/257-java-4.14.2.0-upgrade.md:1040)).
+
+The Java metadata/error/star probes and cardinality/gate/BOOLEAN-leak mutation witnesses remain required evidence, not established results. No-scan witnesses must isolate the synthetic source; enclosing queries can legitimately scan other inputs.
+
+No edits, builds or tests performed.

@@ -1,0 +1,66 @@
+**NAK.** Tree `1390a2feec185fc510f4b17c679bd1ae307951af`; design SHA256 `2686aaeba1ad9eac4a4959ab771abaec6b7dea48f3a86ffc2d0651bee205b349` (checked with `git show … | sha256sum`).
+
+The review is complete and read-only. I read all five prior verdicts (v1 ×4 and v2 Graefe), the full v3 design, the v2→v3 diff, the research README and all three reports, then checked the claims against Java at `fdacd162` and current Go. `git diff --stat f0cb2957 1390a2fe` outside `rfcs/` and `TODO.md` is empty, so there is no source delta since WS-C. I ran no tests, probes or edits.
+
+**Checked and correct**
+- **Lock model:**
+  - Keys, scan-lock lifetime and continuation-without-lock match Java (`VectorIndexMaintainer.java:208-234,390`).
+  - Java's `deleteWhere` and `mergeIndex` take no lock (`VectorIndexMaintainer.java:496-618`).
+  - Java's FIFO lock order (`LockRegistry.java:51-53`) agrees with RWMutex writer preference.
+- **Liveness divergence citations are accurate:** `IndexingBase.java:1069-1071`, `IndexDeferredMaintenanceControl.java:40` and `IndexingThrottle.java:65-71,150`.
+- **Zero-primary premise holds:** `SplitMergeTask.java:585-651,909`. `classifyClusters` never filters empty neighbours (`AbstractDeferredTask.java:590-636`).
+- **KMeans order:** `fromEstimator` runs before the k=1 shortcut (`KMeans.java:135-152`).
+- **RNG split:** there is one lazy split per item, null items included (`RandomHelpers.java:213-218`).
+- **Selection:** the tie rule matches `SplitMergeTask.java:1223-1256`.
+- **Oracle pins:** JDK is `remotejdk_21` (`.bazelrc:11`); fdb-java is 7.1.26 (`classpath.json:27`, `libs.versions.toml:33`).
+- **Preserved:** merger-supplied transactions, SPFresh/LIRE, the approved extensions, C++ 7.3.77, format 15/14, and Lucene as separate work.
+
+**P1: a split with no usable candidate still has no terminal transition**
+- **Where Java throws:** when every split candidate is INVALID and no collapse applies, Java calls `orElseThrow` (`SplitMergeTask.java:386-397`).
+- **Why any candidate can be INVALID:** a candidate is INVALID whenever its smallest child is under 0.1 of the vectors (`PartitionEvaluator.java:124`).
+- **Why the v3 fix misses it:** v3 reconciles only when no candidate is feasible (n<k, design:412-421). This case has feasible candidates and still throws.
+- **Reachable shapes:**
+  - A first split with only one cluster, so only 1→2 exists, where about 5% of vectors sit far away.
+  - Stale inflation that leaves two or more identical survivors. k-means then leaves one child empty, which is INVALID, not infeasible.
+- **The consequence:** the task fails the same way every time, so the prefix's key-ordered drain stalls (design:256-262).
+- **It also breaks §5 recovery:** step 2 (design:321-323) runs a merger whose first task throws, so the build fails.
+- **Needed:** key the contract to the throw site rather than to n<k. Give it a terminal rule with count/state/peak effects and a JVM fixture exposing the target exception. State how capacity recovery ends when the blocked cluster cannot be split.
+
+**P2: build-range recovery step 1 does not exist in Go**
+- Design:317 relies on "the existing adaptive throttle".
+- `buildRangeWithRetries` (`online_indexer.go:1038`) returns non-FDB errors immediately, because `indexing_throttle.go:69-73` retries only when `shouldLessenWork` is true.
+- `shouldLessenWork` is pinned 1:1 to Java's codes (`online_indexer.go:993-1008`; tests at `online_indexer_idempotent_test.go:71-113`). There is also a `maxRetries<=0` short-circuit.
+- **Needed:**
+  - A separate typed-capacity classification, without widening `shouldLessenWork`.
+  - Its limit schedule and retry budget.
+  - Coverage in the by-records, by-index and mutual paths. Mutual has no pending drain (`online_indexer.go:948-956`).
+
+**P2: holding the scan lock for the cursor's lifetime adds a new self-wait in Go**
+- **Today:** executor scans take no lock (`vector_index_maintainer.go:517-544`). Only writes (`:340-343`) and `SearchKNN` (`:1139-1141`) lock.
+- **What v3 changes:** every executor vector cursor would hold its partition read lock until close. Go's locks are not reentrant, so any same-context, same-prefix write made while such a cursor is open waits.
+- **Shapes that currently work and would wait (source hypotheses, not measured):**
+  - A LIMIT that stops without exhausting or closing the inner vector cursor.
+  - INSERT…SELECT, or UPDATE/DELETE … IN (vector subquery), if the source cursor is not closed before the writes.
+  - Open rows followed by Exec in the same transaction.
+- **The promised cancellation cannot be built on the current registry:** it is `sync.RWMutex` (`database.go:1370-1409`), which cannot honour a context, and it is shared with R-tree.
+- **Needed:** the registry change and its scope, the executor's close/exhaust obligations before DML writes, and SQL-level regressions for these shapes.
+
+**P2: the RaBitQ 9–15 admission rows contradict Java's state machine**
+- **Java's sequence:**
+  - The training insert commits a centroid without ever constructing the quantizer (`hnsw/Insert.java:355-385`).
+  - After that, every Java insert, search and delete fails when it constructs `RaBitQuantizer` (`hnsw/Primitives.java:174-183`, `guardiann/Primitives.java:352-361`), because it accepts only 1–8 extra bits (`RaBitQuantizer.java:76`).
+  - A metric that is not translation-preserving fails on the first insert (`hnsw/Insert.java:274-285`).
+- **Design:130 cannot be checked in time:** "insert once RaBitQ training would activate" depends on data (RNG sample/maintenance draws plus the aggregate count). It cannot be evaluated before buffering, as design:90 promises, unless a pre-read is specified.
+- **"Admit every other operation" / "Search admitted" is undefined once trained:** an already-trained index then needs an estimator. Java fails there, and Go has no codec to build one (design:112).
+- **Needed:** separate untrained and trained rows, and a predicate that can be evaluated before buffering.
+
+**P3**
+- **The admission table is too coarse:**
+  - Java never reaches the engine for NULL or unchanged vector entries (`VectorIndexMaintainer.java:357-363`). A record-level "update" refusal makes every column of a Java-created index read-only; gate on the index entry instead.
+  - Mixed old/new queue entries (`:453-468`) are unspecified: refuse the whole entry, or apply part of it?
+  - Suppressing inline maintenance on delete is also a divergence, but the DIVERGENCES entry covers only the refusal rows.
+- **Dropped cluster and replicas:** the cluster is dropped after replica selection, so it can still occlude other replica candidates (`SplitMergeTask.java:727-736`). Those primaries silently lose replicas while keeping PRIMARY. Either drop it before replica selection or mark those primaries underreplicated.
+- **Reconcile statistics:**
+  - Name the distance estimator used to rebuild RunningStats.
+  - Say whether `maxDistanceEver` is rebuilt or preserved.
+  - Note that cleanup on this path discards replicas (`SplitMergeTask.java:363`, `Primitives.java:1544`), so only stale *primaries* are identified.

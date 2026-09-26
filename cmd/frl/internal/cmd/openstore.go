@@ -101,7 +101,11 @@ func (f *storeAddressFlags) resolve() (*storeTarget, error) {
 	target := &storeTarget{
 		cfgCtx:   cfgCtx,
 		metaFile: f.metaFile,
-		database: f.database,
+		// The database path and the schema are SQL identifiers, as DDL reads
+		// them: unquoted names fold to upper case, a path whole (CREATE
+		// DATABASE /db creates /DB), so `--database /db --schema main` finds
+		// what `create schema /db/main` created (/DB, MAIN).
+		database: functions.NormalizeIdentifier(f.database),
 		// The schema is an SQL identifier: unquoted names fold to upper
 		// case (the same rule CREATE SCHEMA applies), so `--schema main`
 		// finds the schema `create schema /db/main` created (MAIN).

@@ -1,0 +1,80 @@
+**NAK.** Tree `e23ae6f5589da822c878fb9ab436db9a09095ef2`. Design SHA256 `3308f31a9674a12f79514a357d59694900289454f235ef12e1733fb7dab47254`, 3178 lines; I recomputed both. Java is at `fdacd162a`. The review was read-only: I ran no tests, probes or mutations.
+
+## Measured, and it holds
+- **Oracle run:** `oracle.log:6271-6272` shows 61 of 61 passed. `WSJ-TALLY` is unchanged (`:2676`), BUILT-TWICE is 354, and the absent-root WSJIXK row is at `:796`.
+- **No WS-J code between the oracle tree and the candidate:** `git diff --stat 512ae248 e23ae6f5` touches no WS-J Go file.
+- **Mutations m97, m98 and m103:** each log has marker 1, a diff, exit 3 and a named failing test. They ran on `3b1587fa`, and the guards they mutate are still present (`metadata.go:922`, `metadata_proto.go:674`).
+- **`HeldBy` mutant:** exit 3, and exactly the array-element subtest goes red.
+- **Everything v14 adds is unbuilt,** so every finding below comes from reading source.
+
+## v13 findings
+- **Resolved:**
+  - (g) now compares the last declared field with the smallest (`RecordType.java:171-179`; `e48f5b496` loop, and `GetRecordTypeKey` returns `RecordTypeIndex`).
+  - (e) and (f) have an exit (the writer argument).
+  - "Either order" works (the symmetric carrier arm is sound: equal tuple bytes, and the float condition is symmetric).
+  - `SetDisallowTypeRenames` exists (`validator:110`).
+  - The relational check (iv) holds: `EnumValue` compares name and number.
+  - R2's stored + 1 interval is sound.
+  - Reservations run on all three writers, and the drop refusal is declared.
+  - (x) and (z) are declared, the lock helpers are renamed, and the stale text is swept.
+- **Partly resolved:** Graefe H1 (M2 below) and storage L8 / Torvalds L8 (H2, M1).
+
+## HIGH
+**H1. The store-open probe refuses Java stores Java opens** (`:2520-2533`).
+- The probe reads the range `(records, N_pre)` with limit 1 and treats any hit as a legacy T row.
+- Java allows mixed primary-key shapes: `primaryKeyHasRecordTypePrefix` requires *every* type to carry the prefix (`RecordMetaData.java:511-512`).
+- So if U's primary key is `field(id)`, a U record with id = N_pre sits in that range. Take `{T _T_old=1; T _T=5}` plus U: any U with id 5 fails the open.
+- That is the lock-out that `LegacyFramingError` was withdrawn to avoid. The skip condition covers only an explicit-key collision.
+- **Fix:** run the probe only when every type's primary key begins with `recordType()`, or decode the hit and confirm it holds a T union field. Pin a mixed-shape Java store with a colliding id that opens.
+
+**H2. 3.6's "Function not defined" refusal at load would lock Go out of stores whose Java writer had Lucene or spatial on its classpath.**
+- Java's registry depends on the classpath: `LuceneFunctionKeyExpressionFactory.java:42-52` and `GeophileSpatialFunctionKeyExpressionFactory.java:42-45` register their own function names.
+- Go registers neither. Today Go loads such metadata (`functionFromProto` builds any name) and fails closed only when it maintains the index (`UnknownIndexTypeError`, `store.go:1346`).
+- After 3.6 the whole store is unopenable.
+- The design never mentions this: a search for `lucene|geophile|spatial|classpath|registry` finds 0 hits; control: "Function not defined" is at `:1615`.
+- Arity is also unplaced. Go's registry is `map[string]FunctionEvaluator`, with no bounds (`key_expression.go:1530-1545`), and exported `RegisterFunction` has no bounds parameter either.
+- **Fix:** either register Java's optional-module names with their arities as load-only entries (load succeeds, evaluation fails), or declare the lock-out. State where the bounds live and the API change.
+
+## MEDIUM
+**M1. 3.6 is not "whole".**
+- **Absent nested children:** Java reads an absent nested child as the default instance, so it throws "Exactly one root must be specified for an index" (`NestingKeyExpression.java:72`, `GroupingKeyExpression:56`, `KeyWithValueExpression:64`, `DimensionsKeyExpression:66`, `SplitKeyExpression:59`, `FunctionKeyExpression:237`). Go returns an untyped "nil key expression proto" (`key_expression_proto.go:137-139`) or "dimensions expression missing whole_key" (`:241-243`).
+- **`NOT_NULL` null interpretation:**
+  - `fieldFromProto` collapses it to `NOT_UNIQUE` (`:251-258`), and the Go comment at `key_expression.go:317-325` says "Go does not model NullStandin".
+  - Java substitutes the type's default value (`Key.java:397`, `FieldKeyExpression.java:205, :234`), so index bytes differ for missing fields.
+  - A Go `ToProto` rewrites `NOT_NULL` as `NOT_UNIQUE`.
+  - This is untracked in TODO.md and DIVERGENCES.md.
+- **Loader wrapping:** Java also wraps the record count key (`RecordMetaDataBuilder.java:260-266`); the design names only indexes and primary keys.
+
+**M2. The key rule for unions only the pre-upgrade build chose is unstated.**
+- "Implicit key = last field" appears only in the both-chose writer bullets (`:2471-2474`).
+- (iii) compares against "the key step (i) gave", so an (a), (b) or (d)-toward-UnionDescriptor file with `{T a=1; T b=2}` and a `recordType()` primary key could be keyed by the smallest field and misread.
+- **Fix:** state the rule for every pre-upgrade framing, and pin an (a) shape through the route.
+
+**M3. `checkReservedNumbers(storedProto, newProto)` cannot pair "as the validator pairs"** on the two legacy routes (`:2635`).
+- Pairing there needs `union` and the writer's framing, which are not parameters.
+- "Every reserved number of every message" (`:2637`) over-claims: messages that are never paired are never checked.
+
+**M4. (y)'s trade-off silently misreads pre-upgrade-Go-only stores.** An owner "report item" (`:3160-3162`) must gate the merge, not follow it.
+
+## LOW
+1. **The residual over-claims:**
+   - "No bounded read can tell" (`:2534-2535`) is false for a count key, or an index root, that begins with `recordType()`. The same limit-1 prefix read works there.
+   - Extend the probe to those, or reword the residual as a choice.
+2. **Probe details:**
+   - Say whether `StoreBuilder.Build()` (unchecked, `store_builder.go:1508-1513`) runs the probe.
+   - Give in-code metadata a remedy (`SetRecordTypeKey`), since the route covers only `FDBMetaDataStore`.
+   - "`{T _T=5; T b=3}` opens with no probe" is vacuous without a row planted under 5.
+   - The explicit-key skip arm is unpinned.
+3. **`saveSchemaHeld`:** Java's order puts the template check between the database check and the row load. So the shared helper must take `tc.mu` itself (`…TakingTC`) or receive the check's result. Say which.
+4. **(x) and (iv):**
+   - (x)'s "no exit" is too broad. `DeleteTemplateVersion` of an unbound inverted version is an exit.
+   - (iv) refuses any enum-value addition (`EnumType.Equal` compares lengths), which strands one-history restores built through the library. Declare it.
+5. **Wording and test hygiene:**
+   - (z) says "limit 1", but `LoadSchemaTemplate` is an unbounded reverse scan consumed once (`fdb_template_catalog.go:72-77`). The conclusion still holds.
+   - `key_expression.go:1546` is now `RegisterFunction`; the evaluation error is at `:1570`.
+   - Once `KeyExpressionDeserializationError` unwraps to `RecordCoreError`, the WSJIXK "core" rows (`conformance :2783-2785`) must also assert it is not a deserialization error, or the class check stops discriminating.
+
+## Source hypotheses
+- H1: the collision is read from Java's shape rules, not run.
+- H2: the lock-out assumes a Lucene index's root carries these function names.
+- The unbuilt behaviour of every v14 step 1 and step 3 item.

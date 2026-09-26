@@ -1,0 +1,76 @@
+**NAK.** I reviewed commit `644d6980e` (tree `2b1554135`); the revision-17 delta is `c1bc5a177..8a483e73b`. The design file is SHA256 `b9ec569478a5459a5feee4c8bb236d144b6e455e9ad9dbd82057a29ce423b7ca`, 2816 lines. I hashed the working-tree file, which `git status` shows unchanged from HEAD. The review was read-only. `git diff` and `git grep` with `../..` paths were refused, so I read the delta with `git show`. The working tree has since changed `record_wire_map_order.go`, `vector_index_maintainer.go` and `metadata_evolution_validator.go`; I read those from the commit.
+
+## Findings, most severe first
+
+**1. Medium (source): an SPFresh index stored with 0 extra bits now crashes the process instead of being refused.**
+- Revision 17 removed the clamp in `NewQuantizer`, so a count of 0 reaches `NewRaBitQuantizer`, which panics with a string.
+- Only two places run `ValidateSPFreshConfig`: the maintainer (`spfresh_index_maintainer.go:57`) and the build (`:1124`).
+- Two public paths parse the config without checking it:
+  - the rebalancer (`spfresh_rebalancer.go:369`);
+  - refine (`spfresh_refine.go:543`).
+- Both hand that config to split, merge, GC, refine and NPA. Those build a quantizer (`newSPFreshQuantizer`) and call `Encode` (`spfresh_split.go:275,462`, `spfresh_merge.go:179`, `spfresh_gc.go:287`, `spfresh_refine.go:146`, `spfresh_npa.go:267`).
+- `panicToError` (`fdb/transaction.go:523-532`) re-throws any panic that is not an error, so the host process dies.
+- Before revision 17, 0 was accepted, built and stored with 4-bit codes. So this is reachable from data the previous code wrote. Ruling 9 lets Go refuse pre-release data; it does not cover crashing on it.
+- **Fix:**
+  - one function that parses and validates, used by every SPFresh entry point (including verify at `spfresh_verify_api.go:164` and recall at `spfresh_recall.go:77`);
+  - no path from a `Quantizer` to that panic;
+  - a regression test: a stored 0-bit index with a queued split, where rebalance and refine return an error.
+- The CHANGELOG should also tell operators what to do: the option cannot be changed under evolution (`metadata_evolution_validator.go:973`), so the index has to be dropped and added again.
+
+**2. Low: two unknown-field claims go further than the measurement.**
+- **Within-field order is from source, not measured.** 7.17 says "measured … within a field, by wire type", but the raw bytes in the P3 spec already put the varint before the fixed32 in both fields 10 and 12. That part is therefore unmeasured. I believe it is true from protobuf-java's `UnknownFieldSet.Field.writeTo`, but I did not read that source here.
+- **"Differ in field order only" is too strong for raw bytes.** DIVERGENCES says the bytes "differ in FIELD ORDER only". From protobuf-java source (not read locally): Java re-encodes unknown fields, writing varints, tags and lengths in minimal form, and sorts the contents of an unknown group recursively. Go keeps those bytes exactly as stored, so crafted bytes can differ in other ways.
+- **What does hold:** "the orders agree over any bytes Java wrote" is correct. Java's output is already sorted and minimal, and Go keeps what it read.
+  - Measured at the record and entry level (RESAVE_P3, `raw=false`, byte-equal).
+  - Nested messages use the same mechanism (from source).
+
+**3. Low: a superseded claim was not grepped out.** "VECTOR insert is idempotent (same PK replaces)" is still at `vector_index_maintainer.go:294` and `chaos/chaos_test.go:706`. A search of the repo (excluding `fdb-record-layer/`) found only those two copies in code; the other matches were review files and the design's statement of the fix.
+
+## Nits
+- The present-node pin (`vector_index_test.go`, "leaves a node already in the graph as it is") snapshots only `dataSubspace`. Include the access info and the samples: Go returns before sampling, as Java does (`Insert.java:196-197`), but nothing pins that.
+- The v16 nit from Graefe and Torvalds about `wsc15-mutation/README` is still unanswered.
+- The JVM row "vector metric changed under its alias" checks only the class and message prefix. That the refusal names the alias is pinned by the Go unit test alone.
+
+## Storage questions
+- **Present-node insert:** Go reads both keys, then returns without writing, as Java does (`Insert.java:184-197`).
+  - **Builds and write-only saves:** Java's vector maintainer is idempotent (`StandardIndexMaintainer.java:256-258,736`), so both engines apply a write-only save immediately. The build's later insert then finds the node, and both now leave it alone.
+  - **Queue replay:** deletes the old entry, then inserts the new one (`index_maintainer_queue.go:51-70`, matching `VectorIndexMaintainer.java:453-467`).
+  - **Sliding window:** an update is a delete then an insert (`SlidingWindowIndexMaintainer.java:381-388`), and an already-tracked reinsert calls the delegate's insert (`:556-566`).
+  - The 32 "replays tracked inserts" rows are green (measured).
+- **Refusal points:** Go refuses at `hnsw.go:391, 596, 888, 1211`, each before its operation writes anything. These match `Insert.java:209,284`, `Delete.java:205-213` and `Search.java:226-236`; `OutwardTraversalIterator` goes through `search`.
+  - `nodeVectorBytes` encodes only when a transform is set, and that happens only after the check, so no HNSW path reaches the unclamped encoder.
+  - A refused save aborts its transaction and leaves nothing behind.
+  - Measured: EXTRA_BITS gives the same outcome for every operation at Euclidean 9 and 15, cosine 9, and 8 bits.
+- **Entry unknown fields:**
+  - `canonicalEntry` appends them after the key and value, and "unchanged" compares key and value only (`record_wire_map_order.go:656-681,735,755`).
+  - Measured: the raw re-save of MAPWIRE is byte-equal between the engines and the index is unchanged; RESAVE_P3 differs only in the declared places.
+- **`elementPriorsWithin` limits:** the declaration matches the code (`:557,588-607`), and both cases are pinned. The bound's red comes from the adapter; the equal-insertion case is only declared (the behaviour did not change).
+- **`cmd/frl` pin:**
+  - Measured: the pseudo-version's timestamp `20260925164801` matches `3ab3675c2`'s commit time in UTC, and its hash prefix `3ab3675c2c17` matches.
+  - The last 8 merges into master are merge commits, so the pinned commit will be reachable from master after the merge.
+  - A squash or rebase merge would leave it reachable only through `refs/pull/786` or the module proxy cache.
+  - If a later PR commit changes a `pkg/` API that `cmd/frl` uses, the `GOWORK=off` lane fails loudly.
+
+## v16 findings
+- **Resolved, measured red→green:**
+  - the RaBitQ refusal points (EXTRA_BITS);
+  - an entry's unknown fields;
+  - the raw re-save by both engines;
+  - the present-node insert;
+  - the alias named in an evolution refusal;
+  - the planner reading the metric under its alias (`TestVectorPlan_MetricUnderItsAlias` checks the EXPLAIN output).
+- **Restored, green:** the windowed Describe, including its unique row, both disjunction rows and the `RecordCoreException` row (green log `:312-337`).
+- **Pins added, green:** the dry run over a map, every Config-check text, the fullwidth bit counts, and all 57 `appendEntryField` cases.
+- **Superseded text marked:** the design's `:2475`, `:2697` and `:2704`, and the DIVERGENCES paragraphs.
+- **Revisions 12–16 are intact:** MAPWIRE is green, and RESAVE_P3 `raw=false` is byte-equal apart from the declared oneof position.
+
+## Evidence
+- **Green** (`wsc17-green-commit`): HEAD `644d6980e`, index tree = `2b1554135`, 0 files differing.
+  - Conformance: 89 of 1840 specs ran, all passed.
+  - Record layer: 199 of 3762 ran, all passed, and the new unit tests pass by name.
+- **Hook:** the index tree written before the commit equals `8a483e73b`'s tree (`5c9c7580e`). 2 of 94 targets ran; the rest were served from Bazel's cache, as the owner directed.
+- **Red** (`wsc17-red`): 5 Ginkgo specs failed, plus these unit tests:
+  - Go unit tests: `TestVectorOptionsComparedByEffectiveValue`, `TestValidateSPFreshConfig`, `TestSerializeUnionOverKeepsAMapEntrysUnknownFields`, `TestElementPriorsMatching`, `TestNewQuantizerKeepsItsCount`, `TestVectorPlan_MetricUnderItsAlias`;
+  - JVM specs: 4 failed (three EXTRA_BITS rows and RESAVE_P3).
+
+The preserved boundaries are untouched.

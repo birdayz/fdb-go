@@ -1,0 +1,76 @@
+**NAK: RFC-257 WS-E design v6 (storage/wire review)**
+
+- **Tree:** `66663d5d8d1946a4891985e75c682cb98a18609f`
+- **Design:** `ws-e-design.md`, SHA-256 `a0703c84462f9a6dc3e47ceee69f64b2ea5c54a9c597b1b95c1fa54b1b79b853`, 2154 lines. I recomputed both and they match.
+- **Java:** `fdacd162a9`. JDK source: `UUID.java` at `/tmp/jdksrc`.
+- **Method:** read-only. I read the three v5 verdicts, all of v6, the v6 oracle rows and evidence, and the Go and Java sources at the tree. `diff` against v5 was denied, so I compared the time.Time section by reading v5 directly.
+
+## HIGH
+
+**H1. DATE and TIMESTAMP columns can hold non-canonical text, and the new lane and DATE-key projection only agree on canonical text (design ~786-829).**
+- **The claimed lane does not exist.** DATE and TIMESTAMP are storage aliases of STRING (`field_value.go:1065-1069`). Both write converters store any string verbatim:
+  - `proto_value.go:317-322`: the StringKind arm, which also writes a time.Time as `FormatTimestamp` whatever the column type;
+  - `executor.go:4459-4463`.
+- `FormatDate` has no non-test caller on a write path; its callers are CAST, CURRENT_DATE and the text channel (`values.go:2746, 4537-4547`, `cast.go:202-209`, `utilities.go:259`). So the "TIMESTAMP-to-DATE assignment lane, which truncates" (line ~802) is not in the code.
+- **Consequence:** under v6 a bound time.Time is a TIMESTAMP string. A non-midnight time.Time inserted into a DATE column therefore stores `FormatTimestamp(I)`. That contradicts the table's DATE row and the declared DATE round trip.
+- **Strings stay verbatim.** A STRING into DATE or TIMESTAMP keeps its current rule ("keep their own rules"; string literals are stored this way at `embedded_fdb_test.go:9065`). So does `CAST(… AS TIMESTAMP)` into a DATE column.
+- **Plan-dependent answers (SOURCE).** Take a D row holding `'2024-01-01 10:00:00'` and the query `D > CAST('2024-01-01 05:00:00' AS TIMESTAMP)`:
+  - the residual lane compares `'2024-01-01 10:00:00 00:00:00'` with the TIMESTAMP text and returns true;
+  - the index probes `D >= '2024-01-02'` and returns false.
+- So "answer alike by construction" is false for `<`, `<=`, `>` and `>=`, and "found by neither" is false for old-channel rows under ranges.
+- **Fix:**
+  - Specify and build an assignment keyed on the declared column type for every source (VALUES, SET, INSERT…SELECT, bound values, array and struct elements): TIMESTAMP→DATE truncation, and STRING→DATE/TIMESTAMP either canonicalized through the CAST parser or refused.
+  - Specify how the index and residual paths agree on existing non-canonical rows.
+  - Test a non-canonical row with all five operators, through the index and through the residual.
+
+## MEDIUM
+
+**M1. The DATE-key projection has no way to know the comparand is a TIMESTAMP (~788-797).**
+- The design says it works "exactly as" `projectRuntimeFloatComparisonToIntegerDomain`. That function chooses by the runtime carrier (`scan_range_binding.go:622-627`).
+- A STRING, DATE and TIMESTAMP comparand all evaluate to `string` (`:586-591`).
+- **Required:** the binder must take the comparand's static type (the lane) from the comparison, carried through matching, rebase, identity and the cache, and must never sniff the text.
+- Otherwise `D >= '2024-01-01 00:00:00'`, a STRING that compares as text through DATE→STRING (`type.go:1411`), gets the instant projection on the index: plan-dependent at midnight.
+- IN-join and IN-union probes need the explode's element type for the same reason.
+
+**M2. The projection overflows at the top of the year domain.**
+- For c on 9999-12-31 with a time other than midnight, `ceil(c)` and `floor(c)+1 day` are 10000-01-01. Go formats that as `"10000-01-01"`, which sorts before `"2024-…"` as text.
+- So `D > CAST('9999-12-31 10:00:00' AS TIMESTAMP)` returns almost every row through the index and none through the residual.
+- **Fix:** saturate (`>=`/`>` become empty, `<`/`<=` become full), as the float projection bounds its domain, and add a test.
+
+**M3. The UUID parser census misses the PromoteValue port (line 1036, "exactly the five").**
+- The design's own grep returns six sites at this tree. The sixth is `promote_prepared.go:388`: `uuid.Parse` in `promotionNode.coerce`'s STRING arm.
+- That arm is the port of `PromoteValue.java:163-170`, i.e. the lane itself. It is reached by nested record and array promotions and by every PromoteValue the lattice injects.
+- The v5 storage review named this site.
+- **Fix:** add it, and state which site each literal, bound and CAST row goes through.
+
+## LOW
+
+- **L1. The dash rule is misstated (line 1030).** The design says "a sixth dash refused". The JDK refuses a fifth (`UUID.java:273, 281`: `dash5 >= 0`).
+  - Read literally, `'1-2-3-4--5'` would parse `-5` through parseLong and be accepted, storing a UUID Java refuses.
+  - Add a five-dash row.
+- **L2. UTF-8 map keys.** The check names "repeated and map values" but not map keys, which are string fields too.
+- **L3. Partial batches.** `SaveRecordBatch` writes record i before it serializes record i+1 (`store_batch.go:187-205`). So "nothing written" holds only for a bad first record, or when the transaction aborts.
+  - Validate the whole batch before the first write, as the design already does for binding errors.
+  - Test a bad record in a later position.
+- **L4. The residual plan is unpinned.** `TestFDB_TemporalComparandDateColumn` checks the EXPLAIN of D only (`:100-104`). Also assert that R's plan is a residual filter.
+
+## Checked and correct
+
+- **Evidence:**
+  - Five source hashes match the tree blobs: the spec, `sql_plan_steps.java`, `go_runner.go`, `go_runner_test.go` and `java_invoker_test.go`.
+  - `evidence-run.txt` has 384 blocks, and both runs report "Ran 7 of 32".
+  - The v6 mutations and the teardown and wiring mutations are recorded with presence checks.
+  - `wse7-justtest.log` reads "Executed 8 out of 94 tests: 94 tests pass." The tree record after the run is `66663d5d`.
+  - Both new Go tests show `=== RUN` and `--- PASS` in the copied logs.
+- **UTF-8 save refusal (v5 M2 closed):** the only non-test callers of `serializeUnion` are `store.go:658`, `store_api.go:391` and `store_batch.go:188`.
+- **Index-state key sites (v5 L1 and L2 closed):**
+  - `requireReadableQueryIndex` is called at `executor.go:436, 626` and `executor_new_plans.go:40`.
+  - The direct `maintainer.Scan` calls (`executor.go:471`, `executor_new_plans.go:195`) come after those checks.
+  - The `ScanIndexByType` calls (`executor.go:790`, `executor_new_plans.go:300`) go through `scanIndexByType`'s `readIndexState`.
+  - The non-test callers of `GetAllIndexStates` are `cascades_generator.go:2246, 2757` and `fleet/build.go:134`.
+  - The isolation enum's zero value is Snapshot (`scan_properties.go:63`).
+- **Temporal values:** CURRENT_TIMESTAMP evaluates to text (`values.go:2743-2746`), so no time.Time reaches a key. The year domain at bind (v5 L3) and the DATE round trip (v5 L4) are declared.
+- **UUID port:** apart from L1 it matches `UUID.java:238-295`: masks of 32, 16, 16, 16 and 48 bits, the length limit, and parseLong.
+- **Unchanged:** DRY_RUN, SNAPSHOT, SetOption, the pool reset and the DSN error remain as v5 had them.
+
+**Measured vs SOURCE:** the code facts behind H1, M1, M3 and L1-L3 were read directly at the tree. The H1 counterexample and M2 are derived consequences; I did not run them.

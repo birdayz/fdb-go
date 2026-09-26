@@ -1,0 +1,89 @@
+**NAK** on the RFC-257 WS-D design v8.
+
+- **Tree:** `cc94face9f554e277346f6061becf84c658abc3b`
+- **Design:** `ws-d-design.md`, SHA256 `e8a870a4739015a2c9d3e5e83831c08424ac64e1a64e2443e014ae6c6f889814`. I recomputed it with `git show TREE:path | sha256sum` and it matches.
+- **Java:** `fdb-record-layer/.git/HEAD` is `fdacd162…`. `rev-parse` was denied, so I read that file instead.
+- **Oracle:** all four source hashes match `evidence-run.txt:4-7`, and the target ran 14 of 14 specs (13 GuardiANN plus 1 WS-E).
+
+I read the four v7 verdicts, the full v8 design and its diff from v7, the oracle README and both evidence files, the new probe and spec code, and the heartbeat-admin port. I checked the claims against the Java and Go source. I ran nothing and changed nothing.
+
+## P2-1 — The terminal reconcile reuses the insert back-pressure error type (design 197-206, 413-417, 756-760, 962-967)
+
+- **What Java does with that type:**
+  - Java raises `ClusterCapacityExceededException` only at the insert cap (`Insert.java:335`).
+  - The record layer converts any such exception coming out of `guardiann.insert` (including the insert's inline task) into `VectorIndexClusterTooLargeException`. The message tells the caller to run a background merge (`GuardiannVectorIndexEngine.java:142-143, 152-164`).
+  - Where Go's reconcile fails, the target throws `NoSuchElementException` (`SplitMergeTask.java:397`), and it passes through unconverted.
+- **What goes wrong in Go:**
+  - An inline insert whose head task fails in the reconcile would surface as that back-pressure signal. Its prescribed remedy, a merge, is exactly the operation that fails.
+  - Inline deletes and merges would raise a capacity type that Java never raises there.
+  - The design tells the two failures apart only by where they are raised (756-760), and it poisons the same type in one place (197-199) but not the other (204-206).
+  - Anything that classifies with `errors.As` cannot tell them apart. That includes the build-range capacity branch, the hand-off trigger, and a user's back-pressure loop.
+- **Needed:**
+  - Give the reconcile failure its own Go-only error type, carrying index, prefix, cluster, count and limit. It must never match the capacity type and never be converted to the too-large error.
+  - State how each retry owner classifies it.
+  - Add fixtures for an inline insert, an inline delete and a merge that hit it.
+
+## P2-2 — The population after the conformance target split does not reconcile
+
+- **The numbers:**
+  - At v7, `conformance_test` held 1536 specs (`evidence-mutations.txt:25`). Moving 13 GuardiANN specs out and adding 1 JVM spec for the heartbeat admin should leave about 1524.
+  - `TODO.md:14575` records "1405/1405 in 273 s": 119 fewer.
+  - The runtime fell from 805 s to 273 s, although the moved specs take about 54 s.
+  - No Ginkgo summary for `conformance_test` is in the tree. This is the same target that just dropped specs silently under sharding.
+- **The recorded full run is not green:** the only full `just test` recorded (`TODO.md:14565-14567`) failed twice (docscheck and the timeout), and only those two targets were rerun. So "recorded with a full `just test` run" (design 702-703) is not a green run of this tree.
+- **Needed:**
+  - Full Ginkgo summaries (Ran/Passed/Skipped/Pending) for both targets at `cc94face`.
+  - Per-spec reconciliation against v7.
+  - A full `just test` on a frozen tree.
+
+## P3
+
+1. **The reconcile's reachability and read bound are false (design 971-983).**
+   - The hard cap exists only at `Insert.java:335`. Split re-homing into neighbours (`SplitMergeTask.java:621-651`), merges and reassigns add primaries without checking it.
+   - So deferred mode also reaches a reconciled count above hardMax. "Exceeds hardMax only by inserts routed … no reconcile reads more" does not hold.
+   - The outcome is still parity (the target throws at :397). Restate the claim, and add a deferred fixture: a merge pushes a neighbour over hardMax, and the neighbour then cannot be split.
+2. **`consumerOutcome` does not cover everything the design says it does (290-312).**
+   - Go's corrective paths skip KMeans for n<k candidates (870-873) and for empty merge cores (1029-1049). `KMeans.fit` checks the size before the knobs (`KMeans.java:136-138`). So whether Go refuses under the KMeans knobs depends on the cleaned population. Either the shared function must read the cleaned population (posting plus per-PK metadata), or the design must say the skip is conservative there.
+   - A bounce with at most one outstanding dependency writes follow-up tasks (`BounceTask.java:147-150, 199-200, 309`). That write constructs the quantizer, and the bounce's outcome leaves it out.
+   - The population sentence (309-312) leaves out the quantizer consumer. Under trained bits 9 (the `bits9Live` row), Go skips the head task while the target's inline delete fails. Declare this under (d).
+   - No (d) fixture is named. Needed:
+     - a bounce whose dependency is a live collapse under collapseConcurrency 0;
+     - a bounce whose dependency is obsolete;
+     - a `bits9Live` task at the head;
+     - a snapshot-isolation fixture where a concurrent drain commits the head task and the skipping delete still commits.
+3. **The heartbeat-admin divergence is broader than stated** (the new final entry in `DIVERGENCES.md`; `indexing_heartbeat_admin.go:100-111`). "Agree whenever no stale heartbeat exists" is false in two cases:
+   - **Invalid-only heartbeat:** Java reports ongoing (its parsed time is 0), Go does not.
+   - **Heartbeat dated more than the lease in the future:** Java reports not ongoing, Go reports ongoing. Admission treats a heartbeat more than a day in the future as bad data (`IndexingHeartbeat.java:107`).
+   - The Go test covers only a heartbeat 5 s in the future. Consider using admission's own predicate (−1 day < age < lease), and pin both cases in the JVM spec.
+4. **Nits:**
+   - "At least halves M per round" (893-894, and the Go test comment) is false for the measured rounds (1000→600, 15→9). Present the bound as empirical.
+   - Line 913 is a leftover fragment: "child holds no member of M."
+
+## Confirmed
+
+- **v7 findings closed:**
+  - the inline insert bound is withdrawn and the insert path is unchanged;
+  - the bounce pick is deterministic (`BounceTask.java:123, 161`, `ImmutableSet` order at `StorageAdapter.java:331-333`);
+  - the skip decision's reads are snapshot reads;
+  - the claim race has both arms;
+  - the labels are corrected;
+  - the livelock refusal is keyed on the knob value;
+  - the cost statement is correct (a lone cluster has a null 2→3 candidate, `SplitMergeTask.java:339-344`);
+  - poisoning on task errors closes catch-and-commit (`Primitives.java:1016-1033`);
+  - the lease-wait claim now carries its qualifier.
+- **Verified:** the re-arm and REASSIGN paths (`Primitives.java:1160-1174, 1222-1249`); the inline task runs before the delete's own writes (`Delete.java:110-133`).
+- **Heartbeat admin:** reads, the maxCount limit, invalid info and the clear rule match `IndexingHeartbeat.java:135-195`. All `IndexBuildHeartbeat` fields are optional, so there is no required-field divergence.
+- **Oracle target:** it runs under `//...` (`justfile:113`, `ci.yml:128`), and its literal srcs are visible to `build_membership_test`.
+
+## Measured vs still hypothesis
+
+- **Measured:** oracle items 1-17. New in v8:
+  - bits-9 live and obsolete (`evidence-run.txt:204-205`);
+  - the reassignNumNeighboringClusters −1 livelock (`:71-74`);
+  - the peel at n=1000 (`:189-192`, samples within the bounds).
+- **Still hypothesis:**
+  - every Go mechanism: `consumerOutcome`, the reconcile bound, poisoning, the hand-off and the lease wait;
+  - the REMAINING list;
+  - the deferred overshoot above hardMax;
+  - n<k and empty cores under the KMeans knobs;
+  - the two heartbeat-admin disagreements in P3-3 (future-dated and invalid-only).

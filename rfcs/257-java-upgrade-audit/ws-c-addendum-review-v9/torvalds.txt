@@ -1,0 +1,68 @@
+**NAK.** Tree `d6ad3e9c2c5bc3a32c42cf0399c97afade52e098`. I recomputed the design hash: `ws-c-design.md` is SHA256 `3d3898502df800e95c35f86d54c7da360fe19e879338b2b56c92b9d647b472c6`, 1668 lines, which matches. The review was read-only. A finding is from reading source unless marked **measured**.
+
+Every revision-8 finding is resolved (checked at the end). The NAK is for four new Low findings, the class v7 was NAKed on: a claim that goes further than the code. The first has consequences on a shared store.
+
+## Findings, most severe first
+
+**1. Low: the upgrade guidance leaves out indexes whose bytes revision 9 changes.**
+- The rebuild lists (`CHANGELOG.md:275`, `:290`; design `:1589-1592`) leave out Go-created indexes with `rtreeUseNodeSlotIndex`. Go never wrote their node slot index. After the upgrade it keeps only the entries of nodes it touches.
+- On the delete path, Java's `scanIndexForNodeId` returns null when an entry is missing (`NodeSlotIndexAdapter.java`, `!isInsertUpdate` branch), so the delete does nothing. Stale R-tree entries then stay on a shared store.
+- Also missing: `rankCountDuplicates`, `unique` and `textOmitPositions` spelled in another case (e.g. "TRUE"). Go wrote them as false before this revision and Java as true.
+- **Fix:** add these to both rebuild lists.
+
+**2. Low: "`Build`'s … record-type checks are in a fixed order" (design `:1557-1563`, `CHANGELOG.md:248`) is not true of the code.**
+- `metadata.go:834` (primary key), `:1034` (record-type key collision) and `:1319` (since version) still range over the `b.recordTypes` map and return at the first violation.
+- With two violating types, which one the message names changes from run to run.
+- No 32-run test covers these three loops.
+
+**3. Low: the `Integer.parseInt` conversion is incomplete.**
+- `permutedSize` is still read with `strconv.Atoi` (`permuted_min_max_index_maintainer.go:45-48`), and an error silently becomes 0.
+- Java's `getPermutedSize` throws on an absent or unparsable value (`PermutedMinMaxIndexMaintainer.java:107-112`). Its build-time validator also refuses a negative size or one larger than the grouping count (`PermutedMinMaxIndexMaintainerFactory.java:70-78`). Go's `Build` has neither check.
+- So a value Java accepts, such as "٢", is maintained by Go at size 0, which writes other entry bytes.
+- It is not tracked anywhere: "permutedSize" or "permuted size" has 0 hits in TODO, DIVERGENCES and CHANGELOG, against a control of 4 lines for "node slot index".
+- The CHANGELOG heading "parsed as Java parses them everywhere" (`:293`) is also wider than the code: the vector booleans still compare `v == "true"` (`vector_index_maintainer.go:163,166,175,195`). Scope it to WS-D, as 7.9 does.
+
+**4. Low: "the entries stored are the ones Java stores" (DIVERGENCES) is inferred from source beyond the child ids.**
+- The unit oracle derives the expected keys through the production `nodeSlotIndexEntries` (`rtree_layout_test.go:77` calls `rtree_storage.go:333`). A mutation of the key layout there moves both sides, so the test cannot catch it.
+- The JVM raw check reads only the last tuple element (`multidimensional_options_conformance_test.go:209`).
+- m86 and c4 mutate the call site, not the layout.
+- A Java-written index has never been compared with Go's derivation for level, Hilbert value and key.
+- **Fix:** decode the entries independently against their parents' slots, and run the same check on the Java-written trees in the JVM spec.
+
+**Nits.**
+- **RANDOM comments.** `ranked_set.go:114` and `rank_index_conformance_test.go:1008` say a delete "re-tosses" RANDOM levels. It does not: neither Java's `remove` (see its comment at `RankedSet.java:487-491`) nor Go's `Remove` (`:289`) calls the hash.
+- **Message claim.** Design `:1568-1569` says SPFresh's is the only evolution message without a Java prefix. But its own "meta-data has no union descriptor" (`metadata_evolution_validator.go:295`) and `:1193` have none either. The CHANGELOG states this correctly.
+- **`thenFromProto`** (`key_expression_proto.go:287`) checks the child count before decoding the children. Java decodes and flattens first (`ThenKeyExpression.java:77-84`, `:264-270`). So `Then[Then(a,b)]` is accepted by Java and refused by Go.
+- **`RemoveIndex`.** Removing an unknown name returns silently (`metadata.go:682`), where Java throws "No index named X defined" (`RecordMetaDataBuilder.java:1199-1203`). That fault is therefore missing from Go's program order. This predates revision 9.
+- **RANDOM read error.** `randomHashFrom` turns an `env.Read` error into hash 0 (`ranked_set.go:122`), which puts the key on every level.
+- **Maintainability.** `orig`, `origHeight` and `fetched` are copied by hand into the new root structs (`rtree.go:790`, `:937`). And `deleteNode` (`rtree_storage.go:296`) on an intermediate node silently skips the index. Recording `orig` in the per-operation map at first fetch would remove both hazards.
+- **Typo.** The stray "(`bazel exit 0`)" in design `:1665`.
+
+## Measured
+- **Source hashes.** Six candidate blobs match `ev13/src.sha`. `run.out` shows "ok 1039 notok 0".
+- **Mutations m81–m104 and c1–c5.** Each shows marker count 1, bazel exit 3, the red set as tabled (I read m86, m89, m91 and c4 in full), and "restored"; `run.out` reads ALL-DONE.
+- **Baselines.** Unit: exit 0, 3715 of 3716. JVM: 46 of 46.
+- **Preliminary run.** Its logs confirm m81 exited 0 and m89 and m91 did not build.
+- **`good/` copies.** Not byte-verified, because hashing was denied to me. They are tied to the candidate only through `run.sh`'s `cmp` gate.
+- **ev13.**
+  - JVM: 185 of 185.
+  - `recordlayer_test`: 3715 of 3716.
+  - `just test`: 94 of 94.
+  - Oracle: 60 of 60, twice.
+  - Final targets: 3 of 3.
+  - The `MD_OPTIONS` lines show 48 nodes and 47 entries at 120 records, so the tree has levels above 0.
+  - RANK level-1 populations: JDK 8, CRC 9, MURMUR3 7.
+
+## Checked from source: all revision-8 findings resolved
+- **RANK parser.** `parseRankedSetConfig` follows `getConfig`'s order. The four-name registry is exact, and an unknown name is refused. Murmur3 matches Guava's `hashBytes`, and the test vectors match the published MurmurHash3 values.
+- **Integers and booleans.** `javaParseInt` matches `Integer.parseInt`, including `MinInt32`, digits from other scripts in the Basic Multilingual Plane, and surrogate pairs. The booleans all go through `EqualFold`.
+- **R-tree parser.** `parseRTreeConfig` matches `getConfig`, including the Hilbert quirk and `valueOf`'s message.
+- **Bytes.**
+  - The BY_SLOT pairs match `BySlotStorageAdapter`.
+  - The entries match `createIndexKeyTuple`, in the secondary subspace under indicator 0, then the prefix.
+  - `deleteWhere` clears the node slot index from `pack(prefix)` to its `strinc`.
+  - I traced the node slot index difference through root split, leaf and intermediate promotion, fuse, overflow and re-fetch. Keying each node's original entries by id at its first write is sound.
+- **Validators and Build.** The RANK and R-tree checks read both configs, old one first. The text check goes through `getTextTokenizerVersion`. The rename messages, Build's messages, `firstFault`'s program order, `RemoveIndex` and the typed-nil enum all match Java.
+- **Earlier findings.** The doc comments are back on their functions, and the stale 7.7 claims (including `ws-j-design.md:1622`) are annotated.
+- **Readers.** The RANK and R-tree option names are read in only four files, all converted.
+- **Unchanged.** The session code and the preserved boundaries are unaffected.

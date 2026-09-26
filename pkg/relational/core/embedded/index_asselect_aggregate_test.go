@@ -136,8 +136,8 @@ func TestAsSelectAggregateIndex_KeyExpressionGoldens(t *testing.T) {
 			"complex_grouping_expressions",
 			"CREATE INDEX gidx AS SELECT a1 & 2, b + 3, MAX(b) FROM t1 GROUP BY a1 & 2, b + 3",
 			recordlayer.GroupBy(f("B"),
-				fn("bitand", concat(f("A1"), lit(int64(2)))),
-				fn("add", concat(f("B"), lit(int64(3))))),
+				fn("bitand", concat(f("A1"), lit(int32(2)))),
+				fn("add", concat(f("B"), lit(int32(3))))),
 			recordlayer.IndexTypePermutedMax,
 			map[string]string{recordlayer.IndexOptionPermutedSize: "0"},
 		},
@@ -190,11 +190,14 @@ func TestAsSelectAggregateIndex_KeyExpressionGoldens(t *testing.T) {
 		// corpus bitmap-aggregate-index.yamsql agg_index_2: bitmap_bucket_offset
 		// as a plain VALUE-index projection — an ArithmeticValue leaf
 		// (MaterializedViewIndexGenerator.java:567-575) with the
-		// walker-injected 10000 entry-size literal as its second argument.
+		// walker-injected 10000 entry-size literal as its second argument. The
+		// literal is an int32 (int_value): Java's is a LiteralValue<Integer>
+		// (SemanticAnalyzer.java:1115), and a long_value literal makes every Java
+		// query on the table fail to encapsulate the function.
 		{
 			"bitmap_bucket_offset_value_index",
 			"CREATE INDEX gidx AS SELECT a1, bitmap_bucket_offset(a2) FROM t1 ORDER BY a1, bitmap_bucket_offset(a2)",
-			concat(f("A1"), fn("bitmap_bucket_offset", concat(f("A2"), lit(int64(10000))))),
+			concat(f("A1"), fn("bitmap_bucket_offset", concat(f("A2"), lit(int32(10000))))),
 			recordlayer.IndexTypeValue, nil,
 		},
 		// GROUP BY with no aggregate at all: Java's aggregateValues comes out

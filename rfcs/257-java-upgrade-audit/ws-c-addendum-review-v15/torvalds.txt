@@ -1,0 +1,90 @@
+**NAK.** Revision 15 fixes almost everything the v14 gate raised, but it adds one regression (finding 1, Medium) and five Lows, three of them claims wider than the code.
+
+- **Commit:** `1c6059b91` (tree `18961bd19`).
+- **Design:** SHA256 `34ebbcb27e016c0abfab1fff7e18294b3170c70ba91c8201049e222fc2b181c2`, 2643 lines. I recomputed both from the commit object and they match.
+- **How I reviewed:** read-only. `git diff` was refused, so I read the delta with `git show`. "Measured" means I read it in the evidence logs; anything else comes from reading source.
+
+## v14 findings
+- **Torvalds:**
+  - 1: fixed in `parseHNSWConfig`; the VECTOR_CONFIG rows go red→green. The evolution check still reads one option the old way (finding 1).
+  - 2–6 and the nits: fixed. Java's rebuild over Go's re-saved bytes equals Go's index (measured, green log :25).
+- **Graefe:**
+  - 1: fixed. Go's re-saved records equal Java's re-save byte for byte (measured, green log :23–24).
+  - 2 and 3: fixed and measured.
+  - Nits: fixed.
+- **Storage:**
+  - 1: fixed for integer and double options only (findings 1 and 4).
+  - 2 and 5: fixed.
+  - 3: fixed, with one hole in the claiming order (finding 2).
+  - 4: fixed. Two mutation runs make the FDB spec fire.
+- **Checked and correct:**
+  - `rewriteMaps`/`mergeMapEntries`: the unchanged test by canonical bytes, a changed key at its first position, stored entries that are not contiguous, groups, oneofs (`wireTypeFits`), and unparseable stored bytes falling back to key order for the whole record.
+  - `newMapReach`: the fixpoint and the read-only sharing.
+  - `storedRecordInner` finds the record as `deserializeAndDiscover` does.
+  - `javaParseDouble` matches FloatingDecimal (from JDK source; the JVM row measures "multiple points").
+- **Revisions 12–14 intact:** the raw-bytes build, the preset and the disjunction class are still green in the verbose run.
+
+## Findings (most severe first)
+
+**1. Medium, a regression: the evolution check and the maintainer now read `hnswRaBitQNumExBits` differently.**
+- `hnswRaBitQNumExBits()` (`metadata_evolution_validator.go:1069-1079`, used at `:1017`, file unchanged since `51c3f90eb`) still uses `fmt.Sscanf`. Its comment says it gives "the count parseHNSWConfig gives".
+- `parseHNSWConfig` now uses `javaParseInt` (`vector_index_maintainer.go:209`). Before this revision both used `Sscanf`, so they agreed.
+- Example: a windowed index with `"８"` passes the validator (`vector_index_validation.go:73`). The maintainer reads 8 and the evolution helper reads 4. Evolving to `"4"` passes as unchanged while the quantizer over existing data goes from 8 bits to 4.
+- A plain VECTOR index going from `"8x"` to `"8"` has the same problem in reverse.
+- This reopens v14 Torvalds 1's evolution bullet for this option.
+- **Fix:** read the count through `parseHNSWConfig`, and add a unit pin and a JVM evolution row.
+
+**2. Low: `elementPriors` lets an earlier element take a later unchanged element's stored match.**
+- The same-position check runs inside the per-element loop (`record_wire_map_order.go:527`), so an earlier element's content search can claim a later element's own stored element.
+- Example: stored `h=[A,B]`, saved `[X,B]` where X's content equals B's. X takes B's stored order, and the unchanged B is written in key order. Java keeps B's own order.
+- DIVERGENCES ("an unchanged element keeps its own order wherever the list moved it") and 7.15 therefore claim too much.
+- **Fix:** run the same-position pass over all elements first, add a subtest, and declare the case no pass can fix (an inserted element equal to a later unchanged one).
+
+**3. Low: "byte for byte" is claimed without scope.**
+- The claims are at `DIVERGENCES.md:3214`, `CHANGELOG.md:433` and `record_wire_map_order.go:44`. They were measured only on a proto2 `MapRec` with no oneof and no unknown fields.
+- **(a) Oneof order.** protobuf-go writes oneof members last (`internal/impl/codec_message.go:177-184`; `proto/encode.go:247-253` for dynamicpb). Java writes fields by number (source hypothesis).
+- **(b) A defect, proto3 only.** `canonicalEntry` (`:642-643`) marshals a standalone dynamicpb entry, which drops a zero key or value (`dynamicpb/dynamic.go:502-518`). protobuf-go's own map codec always writes both (`codec_map.go:242-259`, `encode.go:313-325`).
+  - So Go's unchanged re-save of its own `{"a":0}` rewrites the bytes.
+  - Within one map, the unchanged, changed and new-key arms encode entries differently.
+- **(c) Unknown fields** stay in Go's order (Java's order is a hypothesis).
+- **Fix:** write the key and value unconditionally with `protowire`, and state what is not covered.
+
+**4. Low: the boolean HNSW options still use `== "true"`.**
+- Where: `vector_index_maintainer.go:187,190,196,207`. Java uses `Boolean::parseBoolean` (`VectorOptionKey.java:227`, `HnswVectorIndexEngine.java:193-205`).
+- With `hnswUseInlining="TRUE"`, Java writes the inlined layout and Go does not. That is storage 1's class.
+- Design `:1528-1530` assigns booleans to WS-D, but DIVERGENCES' VECTOR entry does not declare it. The spec "options are read as Java reads them" compares no boolean.
+
+**5. Low (evidence, deduced from measured output): no re-save met an entry stored without a value.**
+- Both re-saves start from Java's first save. That save is `DynamicMessage.parseFrom` plus `saveRecord` (`metadata_store_conformance.java:1107-1112`), the same parse-then-write as the re-save.
+- Java's re-save holds `…6b1000…` (log :23), so the first save already wrote `k=0`.
+- So 7.15's "the entry stored without a value" was measured of Java's first save. Go's path for such an entry is pinned only by `record_wire_map_order_test.go:429-444`.
+- **Fix:** have both engines re-save the `raw` subspace (`:408-428`) and compare.
+
+**6. Low: an incomplete conversion in the dry run.**
+- `DryRunSaveRecord` (`store_api.go:391`) still calls `serializeUnion` with no stored record.
+- Its `ValueSize`/`Split` preview can differ from the save it previews (a twice-written key kept, defaults filled). Java's dry run serializes exactly what its save writes.
+
+## Nits
+- **Unmarked superseded sentences:**
+  - 7.14 `:2450-2451` ("memoizes nested types for that walk only").
+  - `:1528-1530`: windowed metric names are now handled in WS-C.
+- **Reach misses are never cached** (`:287-291`).
+  - A caller's generated message under meta-data loaded from proto bytes walks by its own descriptors.
+  - For those, every reach lookup recomputes the closure, both in `rewriteMaps` and in the new record's index evaluation.
+  - Revision 14's per-walk memo cached them, so "no longer re-derives it" is too broad.
+- **Preset comment** (`key_validation_conformance_test.go:1298`): "before any build" is wrong. A BY_INDEX single-target build does not preset (`OnlineIndexer.java:306-308`); it should say "before any records-scan build".
+- **Mutation consoles** have no TREE file and do not show the mutated line. Only the effect is recorded (red with `z`, `batch=false` and `batch=true`).
+
+## Measured
+- **Green, after the commit:**
+  - TREE shows HEAD `1c6059b91`, index tree = the commit's tree, clean working tree. "Executed 2 out of 2."
+  - Conformance: 35 of 1801 ran, all passed; the MAPWIRE, VECTOR_CONFIG, WINDOWED and PRESET lines are present.
+  - `recordlayer`: 14 of 3727 specs passed, and the new unit tests pass by name.
+- **Red** (`5d95cd27c`'s tree plus the changed test files and the named adapters):
+  - Conformance: 8 of 35 failed. These are the three metric aliases, `"COSINE_METRIC "`, `"1.2.3"`, two config rows, and the wire-order spec, where record 2's bytes differ.
+  - Unit tests red: the oneof wrong-wire-type test, `TestJavaParseDouble`, the twice-written key, the unquoted paths, the entries' values, the three moved-element subtests, and the metric spec.
+  - Green on both, as 7.15 says: the singular-message and map-value re-save tests.
+- **Red-first:** the record under the older union field, `{1:[a b],3:[j k]}`.
+- **Pre-commit hook:** "Executed 44 out of 94 tests: 94 tests pass" (the other 50 were cached).
+
+The preserved boundaries are untouched.

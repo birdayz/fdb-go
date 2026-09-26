@@ -1,0 +1,19 @@
+**ACK — exact reviewed TREE `f0cb29576cde624e0f1c6e22ca18a5180d1b298f`.**
+
+No actionable correctness findings remain in this delta or its reviewed interactions.
+
+Reviewed the full source delta from `5dc2a9cf465ff439ac75d1e5eb5682eecd0ca38b`, the preceding five-fix delta, all four previous verdicts, relevant initial NAKs, retirement scope, accepted design, and relevant Java 4.14.2.0 source at `fdacd162a9c8acfadc49082b89185c823ab8ae4a`. Accepted base: `ba06f34ff8998f61040a491e4f3a3e8b8de7ccf9`. Comparisons used exact tree objects.
+
+The previous retirement finding is closed:
+
+- Own publication releases ownership only after successful `Run`; later closeout skips released targets. This preserves Java’s independent target completion across disablement, replacement retirement, and a newly admitted rebuild. [online_indexer.go:1359](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer.go:1359)
+- Peer completion uses a serializable state observation and post-commit hook. Aborted observations cannot retire targets; committed observations prevent subsequent renewal or validation of released ownership. The original target list remains intact for stamp identity. [online_indexer_queue.go:325](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer_queue.go:325)
+- Drain and merge entry points skip retired targets. Fresh preparation resets retirement, and standalone explicit merge starts fresh. [online_indexer_queue.go:139](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer_queue.go:139), [indexing_merger.go:145](/home/birdy/projects/fdb-go/pkg/recordlayer/indexing_merger.go:145), [online_indexer.go:1152](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer.go:1152)
+
+The original fixes remain coherent: all-target admission precedes destructive preparation; committed mutual admission permits own-UUID renewal without peer-range contention; remaining targets retain state/stamp fencing during follow-up; nested Any validation precedes replay removal. Cleanup still polls `IsReady` within its independent deadline and calls `Get` only after readiness—no abandoned blocking-`Get` goroutine. Late detached cleanup clears only the old session’s UUID keys. [online_indexer_queue.go:231](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer_queue.go:231)
+
+Inspected all six regressions and retained red/mutation evidence. Local logs report **93/93, 6 executed/87 cached**; uncached race **189/3610** plus ordinary Go tests/seeds; JVM race **9/1523**. All **35 frozen hashes match this candidate tree**. The predecessor’s 93-executed run remains historical.
+
+Maximum format15/default14, approved extensions, C++7.3.77, SPFresh queue exclusion and unchanged algorithms/LIRE, and synchronous HNSW remain preserved. No future child-backend proof is established; GuardiANN WS-D and absent Lucene remain upgrade-wide work.
+
+Read-only review: no tests, mutations, edits, publication, CI, or operational changes performed. This ACK is limited to the reviewed WS-C delta.

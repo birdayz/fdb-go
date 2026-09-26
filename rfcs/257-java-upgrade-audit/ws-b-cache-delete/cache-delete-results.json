@@ -1,0 +1,58 @@
+[
+  {
+    "name": "full-recordlayer",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/recordlayer:recordlayer_test",
+      "--nocache_test_results",
+      "--test_output=all"
+    ],
+    "exit": 0,
+    "elapsed": 56.69946503639221,
+    "log": "/var/tmp/fdb-upgrade-recovery/ws-b/cache-delete-full-recordlayer.log",
+    "sha256": "ff1023f7759ba0c6198cdf10fddfac66eccf764d9467c03657e032bfada737ae",
+    "runs": 2082,
+    "passes": 939,
+    "ginkgo": [
+      "Ran 3251 of 3252 Specs in 38.684 seconds",
+      "SUCCESS! -- 3251 Passed | 0 Failed | 0 Pending | 1 Skipped"
+    ]
+  },
+  {
+    "name": "race-recordlayer",
+    "command": [
+      "bazelisk",
+      "--output_base=/home/birdy/.cache/bazel/_race_output_base",
+      "test",
+      "//pkg/recordlayer:recordlayer_test",
+      "--@rules_go//go/config:race",
+      "--nocache_test_results",
+      "--test_output=all"
+    ],
+    "exit": 0,
+    "elapsed": 122.56053066253662,
+    "log": "/var/tmp/fdb-upgrade-recovery/ws-b/cache-delete-race-recordlayer.log",
+    "sha256": "131a20b62709305f1fc79e02fd25ca23566c18a80e78a93240246ef0e93c719f",
+    "runs": 2082,
+    "passes": 939,
+    "ginkgo": [
+      "Ran 3251 of 3252 Specs in 82.091 seconds",
+      "SUCCESS! -- 3251 Passed | 0 Failed | 0 Pending | 1 Skipped"
+    ]
+  },
+  {
+    "name": "just-test",
+    "command": [
+      "just",
+      "test"
+    ],
+    "exit": 0,
+    "elapsed": 719.7556428909302,
+    "log": "/var/tmp/fdb-upgrade-recovery/ws-b/cache-delete-just-test.log",
+    "sha256": "862405cf34178987363423893d008a62b62bb480b6d3ac87437ac817346e53fb",
+    "runs": 0,
+    "passes": 0,
+    "ginkgo": []
+  }
+]

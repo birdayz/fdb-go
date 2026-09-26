@@ -1,0 +1,91 @@
+**NAK.**
+
+- **Tree:** `f90241712769c8d5f92498c51c2183a4320ed9b0`
+- **Design:** `ws-d-design.md` SHA256 `b097a37ba40dd4adb0fe741b98d77282c8c2826be94cd8ebcffa1ab7f4daf096`. I recomputed it from the tree blob and it matches (1365 lines).
+- **Java:** `fdacd162` (from `.git/HEAD`).
+- **Read:** all four v9 verdicts, the full v10 design and its diff from v9, the oracle README and evidence, the probe and spec diffs, the heartbeat fix, and `just-test-v10b.log`. I checked the claims against the Java and Go sources.
+- **Not done:** the PDFs could not be rendered (pdftoppm/poppler is absent), so paper citations go through RFC‑094 and the spfresh-reviewer skill's map. I ran and changed nothing.
+
+## P2 — Sampled refits are not measured where they are meant to work, and the balance loss they do show is not reported (design 1190‑1236)
+
+The design (1206) checks sampling only by whether the peel ends the same way and after how many refits. That comparison cannot see what the pinned rows show about the chosen partitions:
+
+| Shape (tight core) | Unsampled floor | S = 256 (adopted) | S = 64 |
+|---|---|---|---|
+| n=2000, d=768 | [1001 999], [1074 926] (spec :1023) | [445 1555], [579 1421]; seed 1 needs 7 refits instead of 6 (:1049) | [201 1799] (:1075) |
+| n=1000, d=128 | [457 543] | [192 808] (hdTight13, :1042) | [876 124] (hdTight50, :1070) |
+
+- **The trend points at INVALID.** The smaller child gets closer to the minChildFraction limit as d/S rises. At d/S = 12 (the S = 64 row) the smaller child is 201 against an INVALID limit of 200. The d = 4096 acceptance fixture (1234) runs at d/S = 16.
+- **How it fails there.** Every refit can come out INVALID, the peel then shrinks M below two, and the cluster goes to the reconcile. Above the hard cap that is a permanent ClusterUnsplittableError, for a cluster the unsampled floor splits.
+- **An unsupported claim.** Line 1218 says a larger sample "keeps the fit closer to the unsampled one". No measurement compares the partitions, and the rows above show they diverge.
+- **Paper lens.** Balanced partitions are the core invariant of SPANN §3.2 (balanced clustering) and of the SPFresh §3 LIRE split. Nothing measures sampling at d > 768, the dimension range it was added for.
+- **Needed:**
+  - Pin tight and spread cores at d ∈ {1536, 3072, 4096}, eight seeds each, and record the smaller-child fraction next to the exit.
+  - Then either adopt a rule that stays comparable at high d (for example, a bounded number of Lloyd steps over all of M, starting from the sampled centroids), or declare the balance cost with its measured spread.
+  - Also restate line 1106: with sampling, that exit population is "a mass whose *stride sample* KMeans cannot separate".
+
+## P3
+
+1. **The merger does not abort on 1007 (design 1220‑1226).**
+   - Java's `shouldAbort` (IndexingMerger.java:189‑203) and Go's `handleFailure` (indexing_merger.go:93‑128) abort only on 1051, 1213 and 1515. Any other FDB error halves the time quota and retries.
+   - Because "time does not preempt an individual task", halving the quota cannot help. A task that runs past 5 s is retried roughly log2(4000) times by the merger, each attempt going through `db.Run`'s retries.
+   - In the band where Java's own fit stays under 5 s but Go's fit plus peel does not, Java aborts at once on `:397` (a non-FDB error) while Go keeps retrying.
+   - "The bounded factor above" (1.28) leaves out the two passes over P. Measured, the peel costs 89‑107 ms against a 36‑46 ms target fit, about 2‑3×.
+2. **The step‑2 population contradicts itself.** Line 1111 says "whatever the 2->3 candidate is". Lines 552 and 1039 say Go selects a viable 2->3 candidate. The list is declared "exactly", so line 1111 should read "absent, n<k or INVALID".
+3. **The heartbeat spec has no "after" case** (indexing_heartbeat_admin_test.go:203‑204).
+   - Byte strings (0x01) and strings (0x02) both sort before UUIDs (0x30) (tuple.go:167‑177), so neither bad key sorts after the live heartbeat. The comment "is last" is wrong.
+   - An implementation that checks keys lazily and returns on the first live heartbeat would pass.
+   - Add a key that sorts after a UUID, such as a versionstamp (0x33) or a (UUID, extra) tuple.
+4. **Evidence provenance.**
+   - Item 20 says "eight seeds per shape", but the three n = 2000 shapes, which supply every d = 768 row and every timing, run only seeds {42, 1} (spec :1089).
+   - Design 836‑840 points to README item 22 for the Ginkgo summaries. Item 22 defers to a gate SCOPE.md that is not in the tree.
+   - `bazel-testlogs/.../rfc257_oracle_test/test.log` now holds a later 24‑spec WS‑F run, so the 22/22 result can no longer be checked where it was cited.
+   - The `ws_j_index_fidelity` hash in evidence-run.txt (`244de237…`) no longer matches the tree (`0c3e3e98…`). Your note discloses this; nothing in the tree does.
+5. **A source fact is labelled as measured (design 341).** Item 15 records only the leaf frame `Primitives.quantizer:359` (evidence-run.txt:476). The phase‑1 re-enqueue's `valueTuple:135` reaches the same frame. So "before any neighbour work" is a source fact (SplitMergeTask.java:227 comes before :232). The persisted outcome is the same either way.
+6. **Nits.**
+   - The RNG is at `:223`, not `:222` (design 340).
+   - fetchCoreClusters is at `:505` for a merge and `:349` for a split, not `:500` (348).
+   - The skip's snapshot reads (380‑381) leave out the neighbour metadata that the merge's CONSUMED arm needs.
+   - "At most n vectors" (1100) is stale now that the fit is capped at 256 samples.
+
+## Paper and lifecycle lens (verified)
+
+- **SPFresh is untouched since the accepted WS-C tree.** Between `f0cb295` and this tree, no changed line under `pkg/` mentions SPFresh, vector, RaBitQ, LIRE or GuardiANN. As a positive control, 146 changed lines mention the heartbeat.
+- **SPFresh inherits the queue refusal and the no-op merge.** It embeds `standardIndexMaintainer` and overrides none of those methods: the queue refusal is at index_maintainer_queue.go:12 and the no-op MergeIndex at index_deferred_maintenance.go:248.
+- **LIRE and the SPFresh algorithms are unaltered.** RFC‑094 §6's split still runs full 2‑means, and the GuardiANN peel is not shared with it.
+- **The peel keeps nearest-centroid ownership,** the analogue of SPFresh §3 NPA.
+
+## Closed from v9 (verified)
+
+- **Clock gone:**
+  - no clock and no wall-clock assertion;
+  - the RNG split is taken once at peel entry.
+- **consumerOutcome follows Java's order:**
+  - the quantizer at :227/:430 comes before phase 1 at :232/:435;
+  - the fetch at :239/:442 comes before the merge's no-neighbour clear at :483;
+  - the KMeans knobs and metric sit after the :136 size check (KMeans.java:136‑141), so REFUSED_UNLESS_ALL_NK is correct.
+- **Bounce hand-off:** the bounce now hands over its positioned RNG.
+- **Fixtures added:** serializable-side, and a non-skipping delete racing a concurrent enqueue.
+- **Poison keys:** checks run in registration order (database.go:1128‑1145), and neither key is cleared by the pending-write prefix removal (store_api.go:182).
+- **n<k populations** on the merge side and beside a viable candidate are declared.
+- **Retry owners:** the merger and `db.Run` are named for ClusterUnsplittableError.
+- **Heartbeat key parse** is restored, matching Java's `getUUID(0)` outside the try (IndexingHeartbeat.java:148).
+- **Oracle numbers check out:**
+  - the GuardiANN source hashes match the tree;
+  - "9 of 26" shapes with a different refit count, and 1‑7 refits against 1‑6: I recounted both from the pinned rows;
+  - both mutations are recorded.
+
+## Measured vs still hypothesis
+
+- **Measured:**
+  - items 1‑20 and 22;
+  - sampled exit and refit-count equivalence at d ≤ 768;
+  - the balance divergence above;
+  - Java's ClassCastException on a non-UUID heartbeat key.
+- **Still hypothesis:**
+  - the sampled peel at d > 768, including the d = 4096 fixture;
+  - the massBelowTwo exit;
+  - item 21;
+  - the REMAINING list;
+  - reconcile cost;
+  - every Go mechanism (none is implemented yet).

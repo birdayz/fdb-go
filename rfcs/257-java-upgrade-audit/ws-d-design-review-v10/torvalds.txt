@@ -1,0 +1,94 @@
+**NAK.** One P2 finding is open, and several P3s.
+
+- **Tree:** `f90241712769c8d5f92498c51c2183a4320ed9b0`.
+- **Design:** `ws-d-design.md`, SHA256 `b097a37ba40dd4adb0fe741b98d77282c8c2826be94cd8ebcffa1ab7f4daf096`. I recomputed it from the blob and it matches (1365 lines).
+- **Java:** `fdacd162`.
+- **Read:** all four v9 verdicts, the full v10 design and its diff from v9, the oracle README and evidence files, the probe `.java`/`_test.go` diffs, the heartbeat fix and its specs, the v10/v10b logs and manifests, the `bazel-testlogs` output, and the cited Java and Go.
+- **Nothing run or edited.**
+
+## P2 — Sampling bounds the peel's cost, but it is unmeasured at high d, and the d = 4096 fixture probably cannot commit (design 1189-1235)
+
+**Sampling changes the result once d > S.** The pinned rows already show it on `hdTight50N2000D768`:
+
+| Refit mode | Selected partition |
+|---|---|
+| unsampled | [1001 999] / [1074 926] |
+| S = 256 | [445 1555] / [579 1421] |
+| S = 64 | [201 1799] |
+
+- The S = 64 row sits two vectors from INVALID: fewer than 200 of 2000 is INVALID (`PartitionEvaluator.java:124`).
+- The design reports only "same exit" and round counts (1204-1209), not child sizes.
+- Child sizes decide whether the larger child is still over primaryClusterMax (1000, `Config.java:144`) and re-arms another peel.
+
+**The case that motivated v10 is not measured.**
+- d = 4096 at S = 256 is d/S = 16. That is a worse ratio than the S = 64, d = 768 row that nearly went INVALID, and the probe stops at d = 768.
+- Once the rule samples, "ClusterUnsplittableError always means no usable partition under the rule" (1113-1115) is true by definition and proves nothing.
+- Whether a splittable cluster stays splittable at d = 4096 is still a hypothesis.
+
+**The d = 4096 acceptance fixture (1233-1234) is probably infeasible as written.**
+- A split dissolves the core and rewrites every reference with its quantizer-encoded bytes (`SplitMergeTask.java:819-864`, `StorageAdapter.java:405-419`).
+- 2000 unencoded vectors at d = 4096 are at least 16 MB (half precision) or 32 MB (float). That exceeds FDB's 10 MB transaction limit, so both engines fail with 2101.
+- The fixture must specify a trained RaBitQ configuration. That also changes the estimator, so the probe's measurements no longer describe it.
+
+**Needed:**
+- Add d = 1536 and d = 4096 shapes at S = 256 to the pure-algorithm probe, and pin the final child sizes.
+- Choose S from that data, for example by scaling it with d if balance collapses.
+- Specify the fixture's encoding.
+- Name 2101 among the failure modes past the bound.
+
+## P3
+
+1. **The merger's handling of 1007 is misstated (1224-1225).**
+   - `IndexingMerger.shouldAbort` aborts only on 1051, 1213 and 1515 among FDB errors (`:189-203`; Go `indexing_merger.go:96-100`).
+   - 1007 and 2101 are retried about 12 times with a halving time quota (`:246-258`). Each attempt runs inside `db.Run`, which retries 1007 up to 10 times.
+   - So a stuck task re-runs its evaluation and peel up to roughly 120 times. That matches Java, but the design should say it instead of "aborts".
+2. **The cost ratio uses the wrong number (1226).** "The bounded factor above" is the KMeans-only ratio of 1.28. Yet the design itself says the passes over P dominate (1213-1214). Measured on the tight shape, sampled refits take 89-107 ms against a target fit of 36-46 ms, about 2.4×.
+3. **The heartbeat spec has no "bad key after a live UUID" case.**
+   - Both bad keys sort before the UUID heartbeat: byte string is type code 0x01 and string is 0x02, both below UUID 0x30 (`tuple.go:167-177`). The test comment "0xff… is last" is wrong.
+   - The claimed "before and after" coverage therefore does not exist, and "wherever it sits in the range" (DIVERGENCES.md and the code comment) is not pinned.
+   - A regression that parses keys lazily and returns early on the first live heartbeat would stay green.
+   - Fix: add a versionstamp-typed key (0x33) after a live UUID, in both the Go spec and the JVM spec.
+4. **Step 2's "exactly" population is inconsistent (1110-1111).** "Whatever the 2->3 candidate is" contradicts 1027 and 1036-1040, where a usable 2->3 candidate is selected. It should read "absent, n<k or INVALID".
+5. **The peel's RNG split is described two ways:** "after candidate enumeration" (1100-1101) and "ONCE, at peel entry" (1228). State that no split is drawn on any path where Java completes. An unconditional split on the ordinary path would shift the materialisation and task-id bytes relative to Java.
+6. **Evidence:**
+   - Design 838-840 cites README item 22 for the frozen-tree `just test`. Item 22 defers to a gate SCOPE.md that is not in this tree.
+   - `bazel-testlogs/conformance/rfc257_oracle_test` was overwritten at 13:35Z by a focused 4-of-23 run (`test.log:9`, `:707`). The quoted 22/22 can no longer be inspected.
+   - `just-test-v10` executed 45 targets (`log:33912`). It cannot be the source of the 87 cached results in v10b.
+   - The `ws_j` hash in `evidence-run.txt` (`244de237…`) does not match the tree (`0c3e3e98…`). The three GuardiANN hashes do match.
+   - The spread shape's target fit reached 100.4 ms (`wsd-sample-2.log:234`), not the quoted "105 to 132" (design 1212, README item 20).
+7. **Nits:**
+   - The split's RNG is at `:223`, not `:222`; the merge's `fetchCoreClusters` is at `:505`, not `:500` (design 341, 349).
+   - The pinned "bound=" column still prints v8's retired bound (12/13), not floor(log2(n−1)).
+   - A `__pycache__/*.pyc` is committed under `ws-j-oracle` (WS-J, not WS-D).
+
+## Closed from v9 (verified)
+- **Time budget:** withdrawn, and no clock remains. The peel's RNG is split once, at peel entry.
+- **consumerOutcome order matches Java:**
+  - RNG and quantizer before phase 1: `:223`/`:227` before `:232` for splits, `:426`/`:430` before `:435` for merges.
+  - The neighbour fetch `:442` before the no-mergeable-neighbour clear `:483`.
+  - REFUSED_UNLESS_ALL_NK correctly covers `KMeans.java:136` coming before `:137` and `:141`.
+- **Bounce hand-off:** list, pick and positioned RNG are handed over (`:123, :149, :161, :190, :200, :285`).
+- **Poison keys:** two named keys; the first registered error wins (`database.go:1063-1076, 1128-1145`); both keys sit outside the `pendingIndexWrite:` prefix.
+- **Delete skip:** the non-skipping delete re-reads the queue head serializably (`Primitives.java:984, 1053`); the serializable-side and 1020 fixtures are specified.
+- **Other v9 items:**
+  - Merge-side n<k, beside-a-viable-candidate n<k, and the extra replica metadata reads are declared.
+  - The merger aborting on ClusterUnsplittableError is correct.
+- **Heartbeat fix:** the key parse is restored and matches `IndexingHeartbeat.java:148`; Java's ClassCastException is pinned; "exclusive" wording is in.
+- **Item 20:** 26 × 5 = 130 rows. I recounted 9 of 26 shapes with different round counts, at both S = 256 and S = 64; refits run 1-7. The sampling-off mutation reproduced the unsampled rows (`maxFitted=1999`) and reddened the spec.
+- **Frozen tree:** the before/after manifests match the tree blobs for the design, probe and heartbeat files.
+
+## Measured vs hypothesis
+- **Measured:**
+  - item 20 (pure algorithm, two identical runs);
+  - Java's ClassCastException on a non-UUID heartbeat key;
+  - Go's key error for bad keys that sort before a UUID;
+  - conformance 1405/1524 and recordlayer 3615/3616 in `bazel-testlogs` at 13:16-13:21Z.
+- **Checked against source only:** the consumerOutcome order, the bounce RNG positions, the merger's retry behaviour.
+- **Still hypothesis:**
+  - the sampled peel above d = 768;
+  - the d = 4096 fixture;
+  - every Go consumerOutcome arm and conflict fixture;
+  - item 21;
+  - the REMAINING list;
+  - every Go mechanism;
+  - the frozen tree's 22/22 oracle run.

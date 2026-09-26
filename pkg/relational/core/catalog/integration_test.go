@@ -26,7 +26,7 @@ func TestIntegration_ParseAndResolveTable(t *testing.T) {
 
 	// Build an in-memory catalog seeded with the demo template.
 	c, tx, tmpl := newSeededCatalog(t, "integration")
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "public"), true); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "public"), true, api.SchemaExistsError); err != nil {
 		t.Fatalf("SaveSchema: %v", err)
 	}
 
@@ -68,7 +68,7 @@ func TestIntegration_ParseAndResolveTable(t *testing.T) {
 func TestIntegration_ResolveColumnsForParsedQuery(t *testing.T) {
 	t.Parallel()
 	c, tx, tmpl := newSeededCatalog(t, "integration-cols")
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "public"), true); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "public"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 
@@ -119,7 +119,7 @@ func TestIntegration_ResolveColumnsForParsedQuery(t *testing.T) {
 func TestIntegration_UnknownTableNotInCatalog(t *testing.T) {
 	t.Parallel()
 	c, tx, tmpl := newSeededCatalog(t, "integration-missing")
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "public"), true); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "public"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 
@@ -163,7 +163,7 @@ func newIntegrationCatalogWithIndexes(t *testing.T) (*InMemoryStoreCatalog, api.
 	if err := c.SchemaTemplateCatalog().CreateTemplate(tx, tmpl); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "public"), true); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "public"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 	return c, tx

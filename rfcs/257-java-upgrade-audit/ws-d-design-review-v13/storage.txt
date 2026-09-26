@@ -1,0 +1,67 @@
+**NAK.** This review is complete. Nothing was run, edited or staged.
+
+- **Tree:** `3a934039479f337069d5b483269ecfaffc47817e`
+- **Design:** SHA256 `87bfa1569cf9f133d14f6578f11063ae7dc293a7143449f21a72d84416d8355b`, 1791 lines, both recomputed from the blob.
+- **Java:** `fdacd162`.
+
+## P1: The v13 evidence run contradicts the calibration of B
+Design lines 24 and 1394-1406, and README item 29, make three claims: 1.02e-7 s per n·d is the worst refit rate "over every run"; in the admitted corner a peel's refits total at most 0.91 s; and the worst single refit is 170.6 ms. The v13 evidence run `rfc257-v13-1.log` contradicts all three:
+- **Line 2126:** a 437.6 ms refit at n=2000, d=1250. That is **1.75e-7**, 72% above B's rate.
+- **Line 2134:** a 265.0 ms refit at n=2000, d=980, inside the admitted corner. That is **1.35e-7**.
+- **Line 2120:** refits total 918.0 ms at n=1001, d=2048.
+- **Line 2128:** the target's own fit took 307.6 ms. Line 1403 says 0.05–0.23 s.
+
+**Consequences:**
+- The design's own rule (1397-1399) gives B = 2.0/1.75e-7 ≈ 1.14e7, or about 1.48e7 using admitted rows only. Both are below both acceptance fixtures' W (1.85e7 and 1.54e7).
+- At B = 1.96e7, a peel at the bound spends about 3.4 s on refits, plus the fit. That is not 2.0 s, and it leaves little of FDB's 5 s before the Go-only 1007.
+- This repeats v12's defect: the maximum was taken over the v12 logs, not over the runs v13 produced itself.
+- The same rows ran 1.5–2x slower in v13-1 than in v13-2, so "worst observed" is not a stable number.
+
+**Needed:** a method that holds up to that variance (several runs, load recorded, stated headroom); B and the fixtures re-derived from it; README 29 corrected.
+
+## P2
+1. **The chaos attempt-route arms break existing routes.**
+   - **(a) The paged-DISTINCT pin will fail, not hold.** `TestPagedDistinctUnderAmbiguousCommitsHoldsSteady` sets `FaultCommitUnknown` at rate 1.0 (distinct_scratch_retry_charge_test.go:130). The transactor draws a fault on every `TransactCtx` call (fault.go:180-181). On the attempt route, every attempt therefore returns 1021, every page runs out after 10 attempts, and the query fails. The claim that the test "holds" (997-1000) is false; today it passes only because the re-run at fault.go:210 is not faulted. Decide either that an arm fires once per `attemptLoop`, or that the pin uses a per-page `InjectOnce`, or a rate below 1 with a floor.
+   - **(b) DDL and the catalog bootstrap commit inside the `Run` body.** The path is ddl.go:862 and :890 → `FDBRecordContext.CommitWithVersionstamp` (database.go:1316-1350). `Run` then commits again as a no-op and runs the post-commit hooks again (:321; `runPostCommits` does not clear them, :1150-1158).
+     - "`FaultConflict` runs fn, does NOT commit" (1050-1052) cannot hold on these routes.
+     - The DDL fixture (1097-1098) would pass with the DDL already durable, reported as not committed — an outcome no backend produces.
+     - "Hooks run once" (934-936) is false on these routes.
+     - **Needed:** move the commit to the route, or name these owners and pin DDL's one attempt with a real conflict between two concurrent DDLs, plus an assertion that the losing DDL was not applied.
+   - **(c) The SELECT-page fixture uses outcomes a page cannot have.** Pages are read-only, so they never see 1020 or 1021, yet fixture line 1099 injects both. Use `FaultTransactionTooOld` instead.
+2. **1200 is handled in the wrong layer.**
+   - The pure-Go client returns 1200 immediately when the proxy list is empty (client/database.go:444-448, commitpath.go:60-63). libfdb_c waits inside the commit instead.
+   - Under D-0, a DDL (one attempt) fails at once during any recovery. Owners with 10 attempts give up after about 1.6 s of ExponentialDelay on average (3.3 s at most). In both cases, Java on libfdb_c completes.
+   - D-0 turns this client divergence into a user-visible failure. Following "C++ is the spec", the pure-Go commit should wait (bounded by ctx and the transaction timeout), and 1200 should stay out of the record-layer predicate.
+   - The 1200 fixture (1088-1089) names no way to inject the error.
+3. **The EXHAUSTED class does not say what happens to the hunt's model.**
+   - The hunt updates its model only after a success (hunt.go:267, :282, :296).
+   - SimFDB's 1021 has an APPLIED branch, where the commit lands (conflict.go:236-289).
+   - An exhausted save, delete or deleteAll whose earlier attempt landed therefore leaves store ≠ model, and `verify` (hunt.go:303) reports it. The result is either a spurious DST red or, with a blind resync, a masked bug.
+   - **Needed:** treat EXHAUSTED as an unknown outcome, reconcile that operation's keys from `cleanDB`, and add a fixture where an applied 1021 is followed by exhaustion.
+
+## P3
+- **Codes dropped by the route:** the list at 895-904 omits 1079. `IsOnErrorRetryable` includes it and `IsRetryable` does not (fdb/error.go:436-466). Dropping it matches Java. It should also say that 1039, like 1021, is retried without the self-conflict copy.
+- **Landed SimFDB change:** at the limit, `Transact` and `ReadTransact` return the bare extracted `fdb.Error` (simfdb.go:200, :221) and drop the body's error chain. Pure-Go OnError returns its input error (transaction.go:2503-2506). Pin the returned error's identity on both backends.
+- **Line 881:** "none of them retries" is false for `cleanupHeartbeatWithin`, which retries through `attemptLoop` (931-932), invisible to chaos.
+- **The route mark is a ctx value, and derived ctxs inherit it** (`recordCtx.ctx = ctx`, database.go:280). State that `runClientLoop` overrides it; otherwise an attempt-route arm under the unbounded inner loop spins until the deadline.
+- **SPFresh "far inside ten attempts" (1026-1028; RFC-094 §2) is still a hypothesis.**
+  - The split transaction itself loses to foreground updates and deletes, and retries without bound.
+  - An oversized posting takes three transactions (spfresh_split.go:171-186, 414-421).
+  - Each delay is drawn uniformly from [0, current), so the total delay can be far below its average.
+  - The synthetic 1020 fires in the cold-start corner (spfresh_write.go:410-418).
+  - Add a cold-start fill with concurrent inserts through `Run` to the census.
+- **Wording:** line 1394 says "three evidence runs", but README 29 lists a capture run and two evidence runs. Line 1000 says the re-execution happens in "the client's loop"; today it happens in the chaos transactor (fault.go:210).
+
+## Verified closed
+- **SimFDB `retry_limit`:** it persists across OnError, a user Reset clears it, and it is checked before the error is classified. `ReadTransact` now retries through OnError.
+- **Census:** 75 raw lines on the tree object. The heartbeat and merger line numbers are correct.
+- **TODO.md:** the superseded recipe is gone. The only non-review hit is the withdrawal note at design:1063; TODO.md:6995 and :14691 served as positive controls.
+- **Java:** FDBDatabaseRunnerImpl.java:191-207, ExponentialDelay.java:62-72 (3.27 s at most over 9 delays), OnlineIndexer.java:461-462.
+- **Heartbeat:** the texts are corrected, and the (U) + unparseable (U,x) pair is declared and pinned in both engines (1 of 1 each).
+- **Admission arithmetic:** d ≤ 980 and d ≤ 2175 (19,594,575), 3.07e7 at I=16, 8.2e7 at I=1/R=0, and the float64 exactness argument.
+- **Evidence:** 29/29 specs passed in both uncached oracle runs; `just test` executed 40 of 94 targets and all 94 passed.
+
+## Measured vs hypothesis
+- **Measured:** the corner balance pins, the heartbeat pair in both engines, SimFDB's `retry_limit`, and the JVM timings (which falsify B).
+- **Checked against source only:** Java's runner, delay and predicate, and libfdb_c's `retry_limit`.
+- **Still hypothesis:** every D-0 mechanism and policy, the chaos arms, the reclassified hunt errors, SPFresh foreground liveness, the Go peel rate, and B.

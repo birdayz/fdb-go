@@ -10,6 +10,10 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
+	"google.golang.org/protobuf/types/descriptorpb"
 )
 
 var _ = Describe("FDBMetaDataStore", func() {
@@ -167,6 +171,36 @@ var _ = Describe("FDBMetaDataStore", func() {
 		Expect(loadCurrent(store).GetVersion()).To(Equal(int32(2)))
 	})
 
+	It("persists ignored index options with history and rejects unrelated changes atomically", func() {
+		ss := specSubspace()
+		store := NewFDBMetaDataStore(ss)
+		v1 := buildMDProto(1, func(b *RecordMetaDataBuilder) {
+			b.AddIndex("Order", NewIndex("price", Field("price")))
+		})
+		Expect(saveMD(store, v1)).To(Succeed())
+		v2 := proto.Clone(v1).(*gen.MetaData)
+		v2.Version = proto.Int32(2)
+		v2.Indexes[0].Options = append(v2.Indexes[0].Options, &gen.Index_Option{
+			Key: proto.String("applicationTag"), Value: proto.String("new"),
+		})
+		Expect(saveMD(store, v2)).To(MatchError(ContainSubstring("applicationTag")))
+		Expect(proto.Equal(loadCurrent(store), v1)).To(BeTrue())
+		Expect(loadAtVersion(store, 1)).To(BeNil())
+		store.SetEvolutionValidator(NewMetaDataEvolutionValidator().SetIgnoredIndexOptions([]string{"applicationTag"}).Build())
+		Expect(saveMD(store, v2)).To(Succeed())
+		reopened := NewFDBMetaDataStore(ss)
+		Expect(proto.Equal(loadCurrent(reopened), v2)).To(BeTrue())
+		Expect(proto.Equal(loadAtVersion(reopened, 1), v1)).To(BeTrue())
+		v3 := proto.Clone(v2).(*gen.MetaData)
+		v3.Version = proto.Int32(3)
+		v3.Indexes[0].Options = append(v3.Indexes[0].Options, &gen.Index_Option{
+			Key: proto.String(IndexOptionUnique), Value: proto.String("true"),
+		})
+		Expect(saveMD(store, v3)).To(MatchError(ContainSubstring("index adds uniqueness constraint")))
+		Expect(proto.Equal(loadCurrent(reopened), v2)).To(BeTrue())
+		Expect(loadAtVersion(reopened, 2)).To(BeNil())
+	})
+
 	It("rejects new metadata that does not build", func() {
 		ss := specSubspace()
 		store := NewFDBMetaDataStore(ss)
@@ -175,6 +209,60 @@ var _ = Describe("FDBMetaDataStore", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("new metadata does not build"))
 		Expect(loadCurrent(store)).To(BeNil())
+	})
+
+	// A records file with a message named UnionDescriptor beside the usage=UNION
+	// union: the target's union is the usage=UNION message, and the store saves
+	// and reloads the metadata so (ws-j-design.md 4d; data a pre-release Go build
+	// framed by the message named UnionDescriptor is not supported, RFC-257 item 9).
+	It("stores metadata over a records file with a message named UnionDescriptor beside the union, as the target does", func() {
+		store := NewFDBMetaDataStore(specSubspace())
+		records := func() protoreflect.FileDescriptor {
+			usage := func(on bool) *descriptorpb.MessageOptions {
+				if !on {
+					return nil
+				}
+				o := &descriptorpb.MessageOptions{}
+				proto.SetExtension(o, gen.E_Record, &gen.RecordTypeOptions{Usage: gen.RecordTypeOptions_UNION.Enum()})
+				return o
+			}
+			holdsT := func(name string, union bool) *descriptorpb.DescriptorProto {
+				return &descriptorpb.DescriptorProto{Name: proto.String(name), Options: usage(union), Field: []*descriptorpb.FieldDescriptorProto{{
+					Name: proto.String("_T"), Number: proto.Int32(1), Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+					Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(), TypeName: proto.String(".sd.T"),
+				}}}
+			}
+			fd, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
+				Name: proto.String("store_shape_d.proto"), Package: proto.String("sd"), Syntax: proto.String("proto2"),
+				Dependency: []string{"record_metadata_options.proto"},
+				MessageType: []*descriptorpb.DescriptorProto{
+					{Name: proto.String("T"), Field: []*descriptorpb.FieldDescriptorProto{{
+						Name: proto.String("id"), Number: proto.Int32(1), Type: descriptorpb.FieldDescriptorProto_TYPE_INT64.Enum(),
+						Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+					}}},
+					holdsT("Envelope", true),
+					holdsT("UnionDescriptor", false),
+				},
+			}, protoregistry.GlobalFiles)
+			Expect(err).NotTo(HaveOccurred())
+			return fd
+		}
+		build := func(b *RecordMetaDataBuilder) *gen.MetaData {
+			b.GetRecordType("T").SetPrimaryKey(Field("id"))
+			b.SetVersion(1)
+			md, err := b.Build()
+			Expect(err).NotTo(HaveOccurred())
+			mdProto, err := md.ToProto()
+			Expect(err).NotTo(HaveOccurred())
+			return mdProto
+		}
+
+		named := build(NewRecordMetaDataBuilder().SetRecordsWithUnionName(records(), "Envelope"))
+		Expect(saveMD(store, named)).To(Succeed())
+		Expect(proto.Equal(loadCurrent(store), named)).To(BeTrue())
+		loaded, err := RecordMetaDataFromProto(loadCurrent(store))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(loaded.GetUnionDescriptor().Name())).To(Equal("Envelope"))
 	})
 
 	It("refuses to overwrite corrupt current metadata", func() {

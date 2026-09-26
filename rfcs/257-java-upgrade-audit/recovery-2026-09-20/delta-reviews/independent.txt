@@ -1,0 +1,38 @@
+**NAK — IMPLEMENTATION CODE, WS-A + WS-E1**, at tree `9f8d0f63cc15aa364dd237a62650a4bf73e5babe`.
+
+I reviewed all four prior reports, the complete delta from `a8940de29c3726e44d5e14779f321b732e11be88`, surrounding frozen source, and the specified Java reference. One blocking defect remains.
+
+**P2 — Positional ORDER BY still confuses output labels with slot identity.**
+
+For `t(id BIGINT PRIMARY KEY)` containing `1,2`:
+
+```sql
+SELECT a.*, b.id AS id
+FROM t a, t b
+ORDER BY 1, 2 DESC
+```
+
+The two positions select different source values. Expected rows are `(1,2), (1,1), (2,2), (2,1)`, with duplicate output labels `ID,ID`.
+
+The new expansion assigns the star column the synthetic alias `ID` at [select_parser.go:945](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:945). Positional resolution prefers that alias at [select_helpers.go:100](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_helpers.go:100). Both positions consequently resolve to the label `ID`, and [select_parser.go:1325](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:1325) rejects the query with `42701: duplicate column "ID" in ORDER BY`. The visitor repeats the same label-based deduplication at [plan_visitor.go:1640](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/plan_visitor.go:1640).
+
+Thus the authoritative slots do not survive every positional consumer: validation rejects distinct slots before ordinal binding can use them. This is a source-derived finding; I did not execute the query.
+
+**Required fix:** carry positional slot identity through duplicate validation and visitor construction. Distinct selected values sharing a label must remain distinguishable. Retain multirow regressions for both two-source stars and a star plus an explicitly aliased column, alongside the existing repeated-key diagnostic.
+
+The other fixes withstand this delta review: explicit RaBitQ rounding barriers, checked nil/typed-nil array result types, transactional wrapper registration and descriptor preservation, and narrowly bounded fixture subdivision/deadlines. Matching Java’s measured native NaN sign separately on AMD64 and ARM64 is appropriate; universal NaN-byte identity is not required.
+
+The supplied verification is credible within its stated scope:
+
+- All artifact hashes checked match. All **6,286 verified-tree** and **6,288 final-tree** regular-file hashes match their manifests; the intervening changes are exactly the four stated documentation/evidence files.
+- Raw evidence reconciles **93 uncached passing targets**, **40,605 RUN = 40,600 PASS + 5 skips**, and **14 uncached race targets with 21,059 RUN/PASS**.
+- ARM64 records **273 passes, 27 exact goldens**, the discriminating mutation failure, and **19 FMULD / zero fused instructions** in the specified symbols.
+- All **176 stress-table timing samples** match raw logs; eight runs each pass 24 cases and count exactly 1M rows. Eleven EXPLAIN lines match. No broad performance-parity conclusion follows.
+
+Separate unmet verification/publication gates:
+
+- The remaining positional defect needs correction and retained regression evidence before implementation ACK.
+- The historical executor startup-timeout cause remains unavailable; the CLI networking repair does not establish it.
+- Fresh GitHub authentication and owner publication authorization remain absent.
+
+Approved nullable-array/raw/scalar/sorting extensions remain preserved requirements; FDB C++ remains **7.3.77**. This verdict does not approve WS-B–K, overall upgrade completion, publication or merge. No edits, tests/builds, agents, worktrees, Git-state changes or GitHub contact were performed.

@@ -11,7 +11,6 @@ import (
 	"math"
 	"reflect"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -2412,9 +2411,38 @@ func materializePageRow(
 		if err != nil {
 			return nil, err
 		}
-		row[i] = materializeDriverValue(v)
+		row[i] = materializeDriverValue(enumValuesAsNames(v, rs.ColumnType(i+1)))
 	}
 	return row, nil
+}
+
+// enumValuesAsNames hands an enum column to the client as its value's name, as
+// Java's RowStruct.getString does (ProtoUtils.toUserIdentifier of the value
+// descriptor's name, RowStruct.java:214-215): in the value layer an enum
+// carries its declared number, an int64 only its type tells apart from a
+// BIGINT. An array of enums is the same per element. A number the enum does
+// not declare is left as it is (a closed enum's undeclared number reads unset,
+// so none reaches here).
+func enumValuesAsNames(v any, t values.Type) any {
+	switch typed := t.(type) {
+	case *values.EnumType:
+		if n, ok := v.(int64); ok {
+			if member, found := typed.LookupValueByNumber(int32(n)); found { //nolint:gosec
+				return member.Name
+			}
+		}
+	case *values.ArrayType:
+		if elems, ok := v.([]any); ok && typed.ElementType != nil {
+			if _, isEnum := typed.ElementType.(*values.EnumType); isEnum {
+				out := make([]any, len(elems))
+				for i, e := range elems {
+					out[i] = enumValuesAsNames(e, typed.ElementType)
+				}
+				return out
+			}
+		}
+	}
+	return v
 }
 
 // preflightTxBudget enforces the whole-transaction time budget before a page
@@ -3761,8 +3789,10 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 	}
 	permutedSize := 0
 	if idx.Type == recordlayer.IndexTypePermutedMax || idx.Type == recordlayer.IndexTypePermutedMin {
-		if raw, ok := idx.Options[recordlayer.IndexOptionPermutedSize]; ok {
-			parsed, err := strconv.Atoi(raw)
+		// Absent is 0 and present is Integer.parseInt, as Java's
+		// AggregateIndexMatchCandidate.getPermutedCount reads it.
+		if _, ok := idx.Options[recordlayer.IndexOptionPermutedSize]; ok {
+			parsed, err := recordlayer.PermutedSizeOption(idx)
 			if err != nil || parsed < 0 || parsed > groupingCount {
 				return nil
 			}
@@ -3854,25 +3884,23 @@ func tryVectorIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaD
 	if kwv, ok := idx.RootExpression.(*recordlayer.KeyWithValueExpression); ok {
 		partitionCount = kwv.SplitPoint()
 	}
-	metricOption := idx.Options[recordlayer.IndexOptionVectorMetric]
-	if idx.Type == recordlayer.IndexTypeVectorSPFresh {
-		metricOption = idx.Options[recordlayer.IndexOptionSPFreshMetric]
+	if idx.Type == recordlayer.IndexTypeVectorSPFresh && partitionCount > 0 {
 		// The SPFresh maintainer rejects prefixed (grouped) scans; a
 		// partitioned candidate would plan queries the executor cannot run.
 		// The DDL already rejects PARTITION BY USING SPFRESH — this guards
 		// directly-constructed metadata.
-		if partitionCount > 0 {
-			return nil
-		}
-	}
-	metric, ok := vectorMetricOperator(metricOption)
-	if !ok {
-		// Unrecognized metric (corrupt or newer-version metadata). Don't build
-		// a candidate with a wrong default metric; without the candidate the
-		// QUALIFY distance predicate stays uncompensatable and the query fails
-		// to plan rather than returning wrong-metric results.
 		return nil
 	}
+	parsed, err := recordlayer.VectorIndexMetric(idx)
+	if err != nil {
+		// A metric the maintainer refuses (corrupt or newer-version metadata):
+		// no candidate, so the QUALIFY distance predicate stays
+		// uncompensatable and the query fails to plan rather than returning
+		// wrong-metric results. Java's expansion throws there; the index's
+		// writes fail in both engines.
+		return nil
+	}
+	metric := vectorDistanceOperator(parsed)
 
 	rts := md.RecordTypesForIndex(idx)
 	rtNames := make([]string, len(rts))
@@ -3902,26 +3930,18 @@ func tryVectorIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaD
 	).WithPartitionKeyComponentTypes(partitionTypes)
 }
 
-// vectorMetricOperator maps the stored HNSW metric option (Java Metric enum
-// name) to the cascades DistanceOperator used by the distance placeholder. An
-// absent option defaults to Euclidean, matching Java's
-// VectorIndexExpansionVisitor (`getOrDefault(HNSW_METRIC, Config.DEFAULT_METRIC)`
-// where DEFAULT_METRIC == EUCLIDEAN_METRIC). It returns ok=false for an
-// unrecognized non-empty metric: Java throws there; we instead skip the
-// candidate so a corrupt or newer-version metric never silently maps to
-// Euclidean and serves the wrong distance.
-func vectorMetricOperator(name string) (values.DistanceOperator, bool) {
-	switch name {
-	case "", "EUCLIDEAN_METRIC", "euclidean":
-		return values.DistanceEuclidean, true
-	case "EUCLIDEAN_SQUARE_METRIC":
-		return values.DistanceEuclideanSquare, true
-	case "COSINE_METRIC", "cosine":
-		return values.DistanceCosine, true
-	case "DOT_PRODUCT_METRIC", "inner_product":
-		return values.DistanceDotProduct, true
+// vectorDistanceOperator is the distance placeholder's operator for the metric
+// the index is maintained with (recordlayer.VectorIndexMetric).
+func vectorDistanceOperator(m recordlayer.VectorMetric) values.DistanceOperator {
+	switch m {
+	case recordlayer.VectorMetricEuclideanSquare:
+		return values.DistanceEuclideanSquare
+	case recordlayer.VectorMetricCosine:
+		return values.DistanceCosine
+	case recordlayer.VectorMetricInnerProduct:
+		return values.DistanceDotProduct
 	default:
-		return values.DistanceEuclidean, false
+		return values.DistanceEuclidean
 	}
 }
 
@@ -7537,7 +7557,8 @@ func BuildSchemaTemplateFromDDLNamed(schemaDDL, name string) (*metadata.RecordLa
 
 // buildSchemaTemplateFromDDL parses schemaDDL as a single
 // CREATE SCHEMA TEMPLATE statement and builds a
-// RecordLayerSchemaTemplate without performing any catalog write.
+// RecordLayerSchemaTemplate without performing any catalog write, through
+// buildSchemaTemplate, the front end CREATE SCHEMA TEMPLATE executes.
 func buildSchemaTemplateFromDDL(schemaDDL string) (*metadata.RecordLayerSchemaTemplate, error) {
 	wrapped := schemaDDL
 	if !startsWithCreateSchemaTemplate(schemaDDL) {
@@ -7567,60 +7588,8 @@ func buildSchemaTemplateFromDDL(schemaDDL string) (*metadata.RecordLayerSchemaTe
 	if !ok {
 		return nil, fmt.Errorf("schema DDL must be a CREATE SCHEMA TEMPLATE statement, got %T", cs)
 	}
-
-	templateID := trimIdentifierQuotes(stCtx.SchemaTemplateId().GetText())
-	b := metadata.NewSchemaTemplateBuilder().SetName(templateID)
-	// WITH OPTIONS(...) — the same three options execCreateSchemaTemplate
-	// applies, parsed BEFORE the table/index passes because they change how
-	// Build() compiles primary keys (intermingle) and whether the
-	// __ROW_VERSION pseudo-column exists for index planning
-	// (store_row_versions). Silently dropping them here built metadata that
-	// DIVERGED from what the production DDL path builds for the same text.
-	if oc := stCtx.OptionsClause(); oc != nil {
-		for _, opt := range oc.AllOption() {
-			switch {
-			case opt.ENABLE_LONG_ROWS() != nil:
-				b.SetEnableLongRows(opt.BooleanLiteral().TRUE() != nil)
-			case opt.INTERMINGLE_TABLES() != nil:
-				b.SetIntermingleTables(opt.BooleanLiteral().TRUE() != nil)
-			case opt.STORE_ROW_VERSIONS() != nil:
-				b.SetStoreRowVersions(opt.BooleanLiteral().TRUE() != nil)
-			default:
-				return nil, fmt.Errorf("unknown option in schema template creation: %s", opt.GetText())
-			}
-		}
-	}
-	if rejErr := rejectUnsupportedTemplateClauses(stCtx.AllTemplateClause()); rejErr != nil {
-		return nil, rejErr
-	}
-	if serr := registerStructDefinitions(stCtx.AllTemplateClause(), b); serr != nil {
-		return nil, serr
-	}
-	for _, clause := range stCtx.AllTemplateClause() {
-		td := clause.TableDefinition()
-		if td == nil {
-			continue
-		}
-		// Normalize the table name the same way execCreateSchemaTemplate and
-		// the column/index parsers do (NormalizeIdentifier upper-cases
-		// unquoted identifiers), so index lookups by table name match.
-		tableName := functions.NormalizeIdentifier(td.Uid().GetText())
-		cols, pkCols, tdErr := parseTableDefinition(td, b)
-		if tdErr != nil {
-			return nil, fmt.Errorf("table %q: %w", tableName, tdErr)
-		}
-		b.AddTablePrimaryKeyPaths(tableName, cols, pkCols)
-	}
-	for _, clause := range stCtx.AllTemplateClause() {
-		idxDef := clause.IndexDefinition()
-		if idxDef == nil {
-			continue
-		}
-		if idxErr := parseIndexDefinition(idxDef, b); idxErr != nil {
-			return nil, fmt.Errorf("index: %w", idxErr)
-		}
-	}
-	return b.Build()
+	// The production front end, the one CREATE SCHEMA TEMPLATE executes.
+	return buildSchemaTemplate(stCtx)
 }
 
 // explainStatement returns a trivial textual description of a parsed

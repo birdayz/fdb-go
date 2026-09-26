@@ -1,0 +1,79 @@
+**ACK.** This covers the WS-D design v15 only, not an implementation. I found no P1 and no P2. I ran nothing and edited, staged or committed nothing.
+
+- **Tree:** `9aee2d3d3c3347375454d8cc44f91af4e486f291` (a tree object).
+- **Design:** blob `52cab5bd`, SHA256 `f4298f2fa5719546a0dc16e1a2ea42bf1c5b2d342897193ea624828c349c19fe`, 2226 lines. I recomputed both.
+- **References:** Java `fdacd162` (from `.git/HEAD`); the vendored C++ 7.3.77 source.
+- **Read:** all four v14 verdicts; the full v15 design and its diff from v14; RFC-094 §2 and its diff; README items 26–32; the rates script and its output; the SimFDB comment and mutation record; the gate10 logs; the TODO.md D-0 block.
+
+**The v14 findings are closed.**
+- **Error chain (v14 P1):** closed on every transactor. The attempt closure records the body's error and the loop prefers it when the transactor's error has the same code.
+- **Retry predicate:** it is now the runner's any-cause rule, which matches Java.
+- **Self-committing body:** the refusal now comes before anything commits. It is the first statement of `CommitWithVersionstamp`, and every `Commit` path goes through that function.
+- **Reconcile, pages, cost of an owned 1007:** each answer is sufficient.
+- **Pricing:** the merger figure holds. That is 12 halvings × 10 attempts × ~5 s ≈ 10 minutes (IndexingMerger.java:189-203, 246-258).
+
+The P3s below should be folded in; a delta re-confirmation of the folded text is enough.
+
+## P3, most important first
+
+1. **The raw-path claim holds only on libfdb_c (962-967).**
+   - libfdb_c rejects a second commit with `used_during_commit` (ReadYourWrites.actor.cpp:2502-2510, 2781-2786).
+   - The pure-Go client auto-resets instead: `postCommitReset`, whose own comment says C++ RYW at API ≥410 does not reset (client/transaction.go:3487-3490).
+   - SimFDB makes the second commit a no-op (txn.go:1339-1348). Its comment says "real FDB resets", which C++ contradicts, and the design cites it at 942 and 961.
+   - So on the default backend a raw commit inside a body goes unnoticed. Under a chaos arm that does not commit, it would replay a commit that already landed.
+   - The census still holds. Correct the parenthetical.
+   - Source-only inference: under `-tags libfdbc`, today's in-body DDL commits return 2017. D-0's removal of those commits fixes this.
+2. **The route interface has no read method (1184-1186).** RunRead attempts go through `ReadTransactCtx` (1205), and both the read arm (1409-1410) and the `FaultEveryAttempt`-through-RunRead fixture need a CallID and Owner. Add a read method or a discriminator, and state its adapter rule.
+3. **The uncounted-retry claims are false (1137-1138, and the same sentence in RFC-094 §2).**
+   - The delay is drawn uniformly from [0, current) (ExponentialDelay.java:63-71). So retries come on average every ~500 ms, with no minimum per retry — not "at most once per maximum delay".
+   - Under simulation the delay does not wait (1167), so "never in a hot loop" is false there.
+   - In a single-goroutine driver, *every* split window livelocks unless the observer advances the split, not only a stalled seal (1145).
+   - State that invariant. Have a simulated-env uncounted retry that sees no commit from another actor fail loudly past a stated bound, instead of hanging.
+4. **The recorded body error must be per attempt (1033).** Say it is cleared at the start of each attempt and is nil when the body succeeds. Pin it with a split-window error on attempt 1 followed by a real 1020 at commit on attempt 2, which must be counted. A stale record would make real conflicts uncounted and unbounded.
+5. **The error returned at exhaustion does not match Java (1203).** On its final branch, Java's `RunRetriable.handle` maps the error through `mapAsyncToSyncException` → `wrapException` (FDBDatabaseRunnerImpl.java:230; FDBExceptions.java:179-213). A bare 1020 becomes `FDBStoreTransactionConflictException`, and 1007 becomes `FDBStoreTransactionIsTooOldException`. Go has none of these types, and "returned unchanged" is an undeclared divergence. Either port the mapping, wrapped so that `errors.As(fdb.Error)` still matches, or declare it.
+6. **The `ensureActive` claim is broader than the port (959-961).** Java refuses every access after *any* commit outcome (closeTransaction in finally, FDBRecordContext.java:529-531); v15 ports only a second commit after a successful one. Narrow the sentence. Also census the contexts committed twice, tests included; they pass today because of pure-Go auto-reuse.
+7. **The chaos-preset text is wrong (1393, 1401).**
+   - `FaultsRetryHeavy` is `FaultCommitUnknown` only (fault.go:67-70), so it is not "among them".
+   - In `FaultsAll`, every arm replays today (0.08 in total). "Keeps its total rate" plus "`FaultCommitUnknown` ≥ the replay share" therefore leaves the rollback arms at 0. State the new numbers.
+8. **The reconcile classes have gaps (1278-1298).**
+   - UNKNOWN keys on 1021 only, but 1039 is maybe-committed too; the route text already treats the two alike.
+   - The chaos "discarded 1021" fixture needs an arm that does not exist, because `FaultCommitUnknown` always commits. Name a new arm, or limit the fixture to SimFDB's `CommitUnknownDiscarded`.
+9. **The resolver's bound has no stated home (1247-1254).** `FDBResolver` holds a raw `fdb.Database`, so there is no FDBDatabase default to inherit, and `attemptLoop` is unexported in recordlayer. Say where the bound lives. Java's `LocatableResolver` holds an `FDBDatabase`, and an import from keyspace to recordlayer creates no cycle today.
+10. **Two gaps in the performance criterion.**
+    - The timed interval: "the candidate fit … from the rule's entry" (1808-1811) contradicts itself, because the fit runs before entry. Define the interval so it includes the fit.
+    - The one-attempt assertion (2055-2061) is only stable if the 2.5 s maximum is measured under the fixtures' own conditions — their Bazel target under `just test` parallelism — or if the fixtures run exclusive. Say which; otherwise it is a flake source.
+11. **The Transact census is scoped wider than stated (1242).** `':!pkg/simfdb/*'` also drops four hunt call sites: atomicops.go:607, interleave.go:466 and :480, rangeconflict.go:499. They call `SimDB.ReadTransact` and D-0 does not affect them. Say so; with them included, the same command gives 30.
+12. **Nit (1341):** the RunRead is at cascades_generator.go:2645 at `512ae248`, which is what 1411 already says; 1341 still says :2646.
+
+## Verified
+
+- **Censuses at `512ae248`:**
+  - Run owners: 75.
+  - Transact owners: 26, split 10 (the route) + 13 (the stack tester) + 3 (the resolver and CLI dump).
+  - Raw `.Transaction().Commit(`: 0, with 154 lines as the positive control.
+  - Chaos arms: 57 lines in 15 files.
+  - Between `512ae248` and the gate tree, the Go files differ in comments only.
+- **Error-chain handling:** the Apple binding's `retryable` (database.go:163-191), the libfdb_c `runLoop` rule, and the pure-Go stripping in `unconvertError`/`convertError`.
+- **Java:**
+  - The runner's any-cause walk (FDBDatabaseRunnerImpl.java:191-207) and the cursor's first-cause rule (FDBExceptions.java:236-247).
+  - `RecordContextNotActiveException` extends `RecordCoreStorageException`.
+  - `commitAsync` calls `ensureActive` first.
+- **Go commit ownership:** `Run` commits inside the transactor, so the route's own commit is untouched by the refusal.
+- **C++:** NativeAPI.actor.cpp:6637-6650.
+- **Rates:**
+  - Exactly 13 `.log` files under /var/tmp/fdb-upgrade-recovery carry timing lines, matching the 13 hashed inputs.
+  - The arithmetic reproduces: 0.81, 1.46 and 3.43 s.
+- **SimFDB mutation record:** the baseline passes 4 tests; the mutant fails at :131 and :142, and the file was restored.
+- **gate10:** 2 of 2 test targets executed; the recorded tree was identical before and after the run.
+- **Superseded phrasings:** `BodyCommittedError` and "A page is read-only" have 0 hits outside the review directories, against a positive control that hits. The one "worst OBSERVED" hit (README item 29) is marked superseded.
+
+## Measured vs hypothesis
+
+- **Measured, from records I read:** the JVM timings, the SimFDB pin and its mutation, the gate10 run.
+- **Checked against source only:** everything under Verified, plus the libfdb_c `used_during_commit` behaviour.
+- **Still hypothesis:**
+  - every D-0 mechanism;
+  - both client prerequisites;
+  - Go's peel time;
+  - whether an n = 2000 single-precision split fits;
+  - my inference that DDL fails under libfdb_c today.

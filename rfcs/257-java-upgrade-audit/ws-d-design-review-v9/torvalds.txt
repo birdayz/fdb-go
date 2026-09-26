@@ -1,0 +1,81 @@
+**NAK.** Two P2 findings remain open.
+
+- **Tree:** `59a5b3c3c6301392da4cc03508e8b24cad73c5cd`.
+- **Design:** `ws-d-design.md`, SHA256 `da5d56e6fb9508be1eb7d9626263472f7319608df3c135e4105af42e9f281e8d`. I recomputed it from the tree blob and it matches.
+- **Java:** `fdacd162`.
+- **Read:** all four v8 verdicts, the full v9 design and the v8→v9 diff, the oracle README and evidence, the probe and spec diffs, the heartbeat delta, the logs you named, and the cited Java and Go.
+- **Nothing run or changed.**
+
+## P2-1 — The peel's time budget turns a slow transaction into a terminal error (design 1097-1110)
+- **The claim at 1101-1104 is false.** It says time only chooses between a selected partition and a re-armed reconcile. Above hardMax, though, a budget cut reaches `ClusterUnsplittableError` (1054-1068).
+  - That error poisons the context, and build ranges, queue replay and the hand-off all treat it as terminal (830, 1064-1067).
+  - So a cluster the peel could split fails a build or a user insert because one transaction was slow; a fresh transaction would have split it.
+  - This hits exactly where n is largest and refits are slowest.
+- **At or below hardMax, a cut clears SPLIT_MERGE on a cluster that could be split.**
+  - In deferred mode with no later insert, the cluster stays over max indefinitely.
+  - In inline mode at large d, every insert pays up to 3 s, the cluster never splits, and the count climbs until the terminal error.
+  - The budget is measured on the transaction's elapsed time, so the user's own earlier work also decides the topology.
+- **The clock is undefined.**
+  - Go's `FDBRecordContext` has no `transactionCreateTime`; only `ScanLimiterState` anchors one (`scan_limiter_state.go:123-142`).
+  - `pkg/docscheck/dst_seam_gate_test.go` fails any raw `time.Now`/`time.Since` in production code. This call decides persisted topology, so it is not an exemptible metric.
+- **The d = 4096 acceptance fixture depends on machine speed.** At the JVM's measured rates the tight 50-outlier shape needs about 2 s of refits at d = 4096, so whether the 3 s budget cuts it depends on the machine. That contradicts "no pinned outcome depends on machine speed" (1104-1106). The "< 2 s" assertion is also a wall-clock test run under `--local_test_jobs=4`.
+- **Needed:**
+  - A budget cut must never be terminal and never look like structural unsplittability: keep SPLIT_MERGE and leave the task retryable. Specify this on both sides of hardMax.
+  - Anchor the clock on `dst.Env` via a `transactionCreateTime` port.
+  - Take the peel's RNG split unconditionally at peel entry, so later draws don't depend on time.
+  - Drive the fixtures with an injected clock.
+
+## P2-2 — `consumerOutcome` is specified out of Java's statement order, and the skip and `runTask` share it (design 230-238, 312-321, 374)
+- **What Java does:**
+  - Quantizer before phase 1: SplitMergeTask.java:227 before :232, merge :430 before :435 (and before the no-mergeable-neighbour exit :483-493), ReassignTask.java:241 before :248.
+  - With precomputed neighbours, `fetchClusterMetadataForReferences(splitMergeConcurrency)` at :239-240/:442-443 runs before `classifyClusters` (:472-475) and the :483 exit.
+- **What the design says:** no-op exits, then phase 1, then mergeable-neighbour, then "the knob or quantizer check at the consumer that follows".
+- **Consequences:**
+  - Item 15's live task is an insert-armed split with no precomputed neighbours. Under the written order the prediction is "runs", so Go's delete runs it and fails. That contradicts the fixture "a bits9Live head task is skipped".
+  - Because `runTask` uses the same function, a merge whose neighbours have vanished would be consumed and committed in two cases where Java throws: under a trained bits-9 index, and under splitMergeConcurrency 0 with precomputed neighbours. That is an undeclared persisted-state divergence.
+- **Needed:**
+  - Write the per-kind order as Java's: exits, split/merge decision, quantizer, phase 1 and livelock, the neighbour fetch, the merge's mergeable-neighbour check, `fetchCoreClusters`, KMeans.
+  - Add fixtures for those vanished-neighbour arms.
+
+## P3
+1. **The peel has no start point in one case (955-956, 1019-1025).** If the 1→2 candidate is n<k and the 2→3 candidate is KMeans-INVALID, there is no 1→2 assignment to start from, and the "exactly" reconcile population omits this case. Also, "all n<k" does not mean "fewer than two live primaries": the 2→3 candidate also needs fewer than three.
+2. **The bounce needs its RNG handed over, not just the pick (335-342).**
+   - The RNG left after `nextInt` (:161) also feeds `randomUuid` (:190), the `enqueueFollowUpTasks` splits (:149, :200, :227) and `randomNormalPriorityTaskId` (:285).
+   - `consumerOutcome` must hand over the positioned RNG, not just the pick; otherwise task-id bytes shift.
+3. **Two poisoning mechanisms.** Lines 180-182 register the capability commit check at task execution; lines 206-212 say task poisoning happens in exactly one place. Pick one, name the task-poison key, and say which error a commit returns if both register.
+4. **An unmeasured claim is stated as fact.** "Both engines throw there" for the bits-9 bounce follow-up (347-351), and the "(JVM row)" fixture at 375, rest on source only (`valueTuple`:135). No oracle item measures it and it is missing from REMAINING (895-903).
+5. **The evidence is not bound to this tree.**
+   - `evidence-run.txt` still records the v8 hashes (`4be40342…`, `8aa87105…`); the tree's oracle sources hash to `9a8fa3c4…` and `f3917cd6…`.
+   - `evidence-mutations.txt` has no item-18 row. The item-18 runs and the floor mutation exist only in `/var/tmp`, and they ran "1 of 17 Specs"; the target now has 18.
+   - Lines 163 and 881 still say "13 specs"; `git grep -c 'It('` gives 14.
+   - Lines 769-771 cite README "item 18" for the `just test`; it is item 19.
+   - `just-test-v9.log` executed only 41 of 94 targets, not the 90 claimed. `v9b` contains no Ginkgo summary, and `conformance_test` was served from cache.
+   - Timing is understated: floor refits took 0.345–0.398 s and the target fit 35.9–46.2 ms across runs 5 and 6, not 0.34–0.36 s and 36–43 ms.
+6. **Heartbeat-admin regression.**
+   - v9's `CheckAnyOngoingOnlineIndexBuilds` no longer parses the key. v8 raised `IndexingHeartbeatKeyError` here, documented as matching Java's `getUUID` throw, and admission still fails closed on such keys (`indexing_heartbeat.go:127-130, 218-225`).
+   - So a stale heartbeat under a legacy string key now reads "not ongoing" while admission refuses every session. That is the drift the comment says cannot happen.
+   - DIVERGENCES' "three populations" misses this case, and no Go or JVM spec pins it.
+   - The comment should also say "a new exclusive session".
+
+## Closed from v8 (verified)
+- **n<k site:** `KMeans.java:136` precedes :137, and the n<k rule is now labelled as Go's.
+- **Reconcile error:** a distinct type with a classification per retry owner.
+- **Poisoning:** decided in the wrapper for any error after the removal is buffered (`Primitives.java:1016-1033`). The bounce runs its dependency through that same wrapper (:169).
+- **Isolation:** now a parameter.
+- **Phase-1 exit:** included in `consumerOutcome`.
+- **Claim-race wait cap:** injectable.
+- **Relief threshold:** the difference is declared.
+- **Stray fragment:** fixed.
+- **Structural bound:** 9 refits at n = 1000 and 10 at n = 2000.
+- **Floor goldens:** match (4/5/6/6; 6 at n = 2000, d = 768 against 23–30 for the v8 peel).
+- **Floor mutation:** it moved that row from 6 to 7.
+- **Reconciliation:** 1538→1524 is consistent with the 14+1+3 specs now in `rfc257_oracle_test`.
+
+## Measured vs hypothesis
+- **Measured:** items 1-18. Item 18 is JVM pure-algorithm; two runs were identical.
+- **Hypothesis:**
+  - the `massBelowTwo` exit under the floor (no shape reaches it);
+  - all budget behaviour;
+  - the bits-9 bounce follow-up;
+  - REMAINING;
+  - every Go-only mechanism.

@@ -1,0 +1,47 @@
+**NAK — WS-A + WS-E1 IMPLEMENTATION CODE** at candidate tree `61b00938a369bc94d683c44d172dbb2cbaffbd41`.
+
+I read all four prior reports, the complete tree-to-tree delta, structured evidence populations, necessary surrounding source, and relevant Java source at `fdacd162a9c8acfadc49082b89185c823ab8ae4a`. Milestone base remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`.
+
+**P2 — SELECT-alias ownership still disappears across the ORDER binding boundary.**
+
+Using the retained `pair_t` fixture containing IDs `1,2`:
+
+```sql
+SELECT p.id AS z, q.id AS "P.ID"
+FROM pair_t p, pair_t q
+GROUP BY p.id, q.id AS "P.ID"
+ORDER BY z, q.id DESC
+```
+
+Expected labels are `Z,P.ID`, with rows `(1,2),(1,1),(2,2),(2,1)`.
+
+The frozen source instead binds the primary sort key to `q.id`:
+
+- [plan_visitor.go:1675](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/plan_visitor.go:1675) correctly rebases `z` to `P.ID` and records SELECT-alias ownership locally. The new guard prevents GROUP-alias redirection.
+- [plan_visitor.go:1688](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/plan_visitor.go:1688) then constructs a `SortKey` retaining `BareRef=true` without carrying that ownership.
+- [logical_predicate.go:6198](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:6198) interprets the rebased `P.ID` as another SELECT alias. The following lookup copies the second projection’s `q.id` value and marks it exact. [Line 6280](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:6280) consequently skips structural resolution of the authored key.
+
+Both sort keys therefore target `q.id`; the requested primary ordering by `p.id` is lost. This is a **source-derived finding**, not an executed reproducer.
+
+**Required fix:** carry the selected output slot/value or durable resolution provenance across this boundary. Subsequent alias lookup must apply only to unresolved authored references. Retain the query above with complete rows/labels and a regression distinguishing the original alias from a second alias matching its rebased spelling. Java’s [ORDER alias resolution](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/visitors/QueryVisitor.java:955) retains the matched expression; the Go conversion must preserve equivalent ownership.
+
+The reported bound-star overwrite, qualified-reference redirection and named ORDER segment collision are otherwise repaired. The six mutations discriminate their intended guards but do not cover this subsequent rebinding.
+
+Evidence independently reconciles:
+
+- **93 uncached targets:** 40,665 RUN = 40,660 PASS + five existing skips. **14 uncached race targets:** 21,118 RUN/PASS. Both Java suites: 1,358/1,477.
+- All **187 artifact hashes** and **6,305/6,306/6,383-file** manifests match. Post-suite implementation changes are confined to the three manual-stress files.
+- Final stress race: **40 RUN/PASS**, twenty telemetry samples, exact 1M count. Both later 93-target runs remain **one executed/92 cached**.
+- All eighty instrumented samples, 88 nominal timings, eight region tables, 32 profiles and ten event extracts reconcile. The three critical chains support the documented GRV/RPC waits, separately from pre-flusher delay. They establish neither server-versus-network causation nor retrospective causes for the old untraced outliers.
+- Java’s fourteen cases preserve both positional-star refusals as **42803**, alongside independent Go-positive extensions.
+
+Separate unmet verification/publication gates:
+
+- Regression and affected-suite verification after the remaining ownership repair.
+- The **<5ms aspiration** remains unmet; universal performance parity is unestablished.
+- Historical executor startup-timeout causation requires unavailable original artifacts. CLI networking fixes and greens do not establish it.
+- Owner no-commit/no-push restrictions remain despite restored `birdayz` authentication; PR786 remains draft/unchanged. Legacy RaBitQ disable/rebuild remains a deployment prerequisite.
+
+Previously accepted RaBitQ, array, descriptor and fixture scope remains intact, including approved nullable-array/raw/scalar/sorting extensions. FDB remains **7.3.77**. This approves neither WS-B–K, whole-upgrade completion, publication nor merge.
+
+No edits, builds/tests, agents, worktrees, Git-state changes or GitHub contact occurred.

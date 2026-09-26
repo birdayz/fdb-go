@@ -1,0 +1,34 @@
+**NAK — IMPLEMENTATION CODE** at tree `8d3544bffc4d5b322626616a3051b39fb8b2584a`.
+
+**P2 — UNION duplicate validation still disappears when the left projection is elided.**
+
+For an ordinary table `t(id, v)` without stored row versions:
+
+```sql
+SELECT * FROM t
+UNION ALL SELECT * FROM t
+ORDER BY id, id
+```
+
+Both constructors can legitimately omit the left `LogicalProject`: [visitor projection elision:2070](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/plan_visitor.go:2070), [shell projection elision:779](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_builder.go:779). [Star expansion:7063](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:7063) preserves that elision when visible attributes match the physical row.
+
+Consequently, [validateUnionOrderByColumns:7326](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:7326) returns before the newly added duplicate check at line 7395. Both catalog constructors return a logical plan without the required `42701` rejection. This remains part of the preceding UNION NAK; the repair covers explicit projections only. Java’s [validateOrderByColumns:347](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/SemanticAnalyzer.java:347) checks repeated resolved names.
+
+**Required fix:** resolve lifted keys against the actual UNION output contract even when its left branch has no projection, then validate authored duplicates. Preserve undefined-name precedence. Add both-constructor regressions for bare-star left branches: repeated valid names → `42701`, repeated missing names → `42703`, and distinct valid keys → success. The [new tests:1017](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/order_by_exact_metadata_test.go:1017) all use explicit projections and miss this branch.
+
+This finding is source-derived; I executed no queries or tests.
+
+The unnamed-source qualification and unique alias-owner repairs otherwise address the prior findings. Cardinality and binding now share eligibility, the competing alias maps are removed, and the alias-before-star regression discriminates the wrong ordering. The single golden correction is supported by retained exact Java/Go message assertions.
+
+I reviewed the complete delta, frozen additions, prior reviews/prompts, corresponding Java source, and retained evidence. All **6,426 frozen hashes** match the tree and workspace. Four mutation source/log hashes reconcile with compiled assertion failures and restored source. Launch metadata confirms **gpt-6-astra / xhigh / read-only**.
+
+Separate verification gates:
+
+- Completed evidence supports **four uncached affected targets, 9,342 RUN/PASS entries, zero skips**, 43 asserted Java probe records, and current-tree fuzz **30 seconds/four workers/3,573,069 executions** without coverage guidance.
+- At the inspected snapshot, current-tree full93, race15, `just test`, and nominal1M ABBA lacked completed results and remain uncredited. Repairs require a new freeze and verification. Earlier full results do not verify this tree.
+- Java’s `0AF00` refusals remain separate from approved Go extensions. Invalid historical mutations and build-only failures receive no test credit.
+- Bounded GRV/RPC attribution stands; universal parity and historical startup-timeout causation remain unestablished. Original timeout artifacts remain unavailable.
+
+WS-B–K remain open; legacy RaBitQ disable/rebuild remains prerequisite. Storage scope ACK, FDB C++ **7.3.77**, and approved nullable-array/raw/scalar/sorting extensions stand. HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`; PR786 remains draft under unchanged publication restrictions.
+
+No edits, builds/tests, agents/worktrees, Git mutations, or GitHub contact occurred.

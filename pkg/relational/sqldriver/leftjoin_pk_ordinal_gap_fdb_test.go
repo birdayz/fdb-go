@@ -44,7 +44,7 @@ func TestFDB_LeftJoinPkOrdinal_InJoinSortRegression(t *testing.T) {
 		"CREATE INDEX idx_b ON t (b) "+
 		"CREATE INDEX idx_a ON t (a)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ljpk/s WITH TEMPLATE ljpk")
-	dsn := fmt.Sprintf("fdbsql:///testdb_ljpk?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_LJPK?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -128,7 +128,8 @@ var _ = Describe("SPFresh concurrency: same-pk writers + multi-rebalancer", func
 			pkPool       = 40 // writers contend on this shared pk set
 		)
 		idx, storeBuilder, indexSubspace := newConcurrencyIndex("spf_samepk")
-		config := parseSPFreshConfig(idx)
+		config, cerr := readSPFreshConfig(idx)
+		Expect(cerr).NotTo(HaveOccurred())
 
 		var wgW, wgR sync.WaitGroup
 		var done atomic.Bool
@@ -253,7 +254,8 @@ var _ = Describe("SPFresh concurrency: same-pk writers + multi-rebalancer", func
 			opsPerWriter = 70
 		)
 		idx, storeBuilder, indexSubspace := newConcurrencyIndex("spf_2reb")
-		config := parseSPFreshConfig(idx)
+		config, cerr := readSPFreshConfig(idx)
+		Expect(cerr).NotTo(HaveOccurred())
 
 		// Short leases force mid-lifecycle takeover between the two executors —
 		// the exact "two executors interleave multi-tx lifecycles" scenario the
@@ -379,7 +381,8 @@ var _ = Describe("SPFresh concurrency: same-pk writers + multi-rebalancer", func
 		// errSPFreshLeaseHeld deterministically. The rebalancer must treat that
 		// as a benign skip (the new owner finishes the split) — NOT a failure.
 		idx, storeBuilder, indexSubspace := newConcurrencyIndex("spf_splitleasegap")
-		config := parseSPFreshConfig(idx)
+		config, cerr := readSPFreshConfig(idx)
+		Expect(cerr).NotTo(HaveOccurred())
 		storage := newSPFreshStorage(indexSubspace, 1)
 
 		// Overfill one centroid: a tight (4..6, 4..6) cluster lands on one

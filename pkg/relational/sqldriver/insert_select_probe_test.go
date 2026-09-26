@@ -32,7 +32,7 @@ func TestFDB_InsertSelectProbe(t *testing.T) {
 			"CREATE INDEX dst_x ON dst (x) "+
 			"CREATE TABLE lk (id BIGINT, label BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_inssel/s WITH TEMPLATE inssel")
-	dsn := fmt.Sprintf("fdbsql:///testdb_inssel?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_INSSEL?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

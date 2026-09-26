@@ -1,0 +1,32 @@
+**ACK — WS-C design authorization only.** No required design corrections or new actionable design defect found. Implementation and upgrade-wide acceptance remain outstanding.
+
+Exact current design SHA256, verified with `sha256sum`:
+
+```text
+302335e70765e7ab84674aeb88233348fc5f53be7336f8a006bd8a9652aab5dc
+```
+
+Read the complete current design, frozen v1/v2 designs and verdicts, parent WS-C, and relevant Go and Java sources. Java resolves to `fdacd162a9c8acfadc49082b89185c823ab8ae4a`; inspected Go integration files match accepted tree `48b50548b11a53bd1452a627689c440535a3d093`. Published HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`. Current session metadata confirms **gpt-6-astra / xhigh**.
+
+The diff against frozen v2 contains only the stated atomicity addition. It closes the preceding NAK:
+
+- **Writer first:** the shared read gate remains held from authoritative state selection through enqueue registration. Checked readability waits, then rejects the surviving buffered mutation.
+- **Setter first:** validation and publication retain the exclusive gate; subsequent dispatch sees readable state and performs ordinary maintenance.
+- **Across handles:** the gate belongs to the existing [context-shared state view](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:284), whose identity is reused by store subspace. A second registry or handle-local accounting mechanism is unnecessary.
+
+The specified lock order is coherent: `stateMu → maintenance → lower-level locks`. Initialization precedes entry; setter helpers avoid recursive acquisition; reload acquires the gate before its existing registry/view locks. Maintainer callbacks can retain their [lower-level state reads](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:417), while [context clears](/home/birdy/projects/fdb-go/pkg/recordlayer/database.go:1002) remain below the gate. Keeping `view.mu` short-lived avoids callback reentry deadlocks. Overflow registers its transition for later execution, and [commit checks execute outside registration locks](/home/birdy/projects/fdb-go/pkg/recordlayer/database.go:1094).
+
+The [deterministic barrier obligations](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-c-design.md:278) exercise both orderings, one/two handles, batch and DELETE_WHERE dispatch, with both readable states covered. These are implementation obligations, not evidence already delivered.
+
+Previous findings remain properly resolved at design level:
+
+- **Buffered mutations and direct setters:** inspect the actual shared mutation registry, preserve cancellation through clears, and validate queue eligibility before mutation.
+- **Heartbeat migration:** operational quiescence, restart fencing, and rejection of every legacy/malformed key address the incompatible [Go string reader](/home/birdy/projects/fdb-go/pkg/recordlayer/indexing_heartbeat.go:113) and Java UUID decoder. Age-based conversion would not.
+- **Sliding replay:** the predicate guarantee correctly covers direct queued callbacks; [promotion still loads current records](/home/birdy/projects/fdb-go/pkg/recordlayer/sliding_window_index_maintainer.go:760). Window→delegate ordering remains required.
+- **Cursor semantics:** physical scan charging, repeated lookahead-byte charging, time anchoring, reason precedence, fail mode and exact row limits agree with [tagged unsplitting](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/SplitHelper.java:1005).
+- **Retries and cleanup:** 101 consecutive failing attempts, permanent-error retries, immediate cancellation, one retry owner, pre-snapshot registration and bounded independent terminal cleanup are concrete.
+- **Backends and remaining DFS findings:** SPFresh refusal, synchronous HNSW, WS-D GuardiANN ownership, unresolved Lucene requirements and the vector callback safety departure remain explicit. Fresh/resumed mixed-state rules, snapshot conflicts, stamp/block revalidation, ownership-loss aborts, scoped deletion hooks and the corrected parent closeout contract remain sound.
+
+Retained evidence confirms eight split cases, 15 envelope cases and three skips across three executed specs. Oracle source hashes match. The retained full-suite log reports **93/93 passing, three executed and 90 cached**; it does not establish WS-C implementation acceptance.
+
+No edits, tests, git mutations, publication or delegation occurred.

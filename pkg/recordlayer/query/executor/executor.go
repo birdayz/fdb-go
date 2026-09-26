@@ -28,6 +28,7 @@ import (
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/protoscope"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -821,7 +822,10 @@ func executeVectorIndexScan(
 // presence of a predicate field would kill, at execution, plans the planner is
 // entitled to build and no query can route around.
 func requireReadableQueryIndex(store *recordlayer.FDBRecordStore, idx *recordlayer.Index) error {
-	state := store.GetIndexState(idx.Name)
+	state, err := store.ReadIndexState(idx.Name)
+	if err != nil {
+		return err
+	}
 	if state == recordlayer.IndexStateReadable {
 		if idx.HasFilteringPredicate() {
 			return &FilteredIndexPlanError{IndexName: idx.Name}
@@ -1877,12 +1881,8 @@ func (c *limitEnvelopeCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 			// cursor from this continuation). Cached in terminal so a
 			// contract-violating re-call on THIS instance replays it verbatim
 			// (Java's cached no-next result) instead of re-pulling the inner.
-			contBytes, encErr := encodeLimitContinuation(result.GetContinuation(), c.remOffset, c.remLimit)
-			if encErr != nil {
-				return recordlayer.RecordCursorResult[QueryResult]{}, encErr
-			}
 			res := recordlayer.NewResultNoNext[QueryResult](
-				reason, recordlayer.NewBytesContinuation(contBytes),
+				reason, &limitEnvelopeContinuation{inner: result.GetContinuation(), remOffset: c.remOffset, remLimit: c.remLimit},
 			)
 			c.terminal = &res
 			return res, nil
@@ -1901,11 +1901,9 @@ func (c *limitEnvelopeCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 		if !c.unbounded {
 			c.remLimit--
 		}
-		contBytes, encErr := encodeLimitContinuation(result.GetContinuation(), 0, c.remLimit)
-		if encErr != nil {
-			return recordlayer.RecordCursorResult[QueryResult]{}, encErr
-		}
-		return recordlayer.NewResultWithValue(result.GetValue(), recordlayer.NewBytesContinuation(contBytes)), nil
+		return recordlayer.NewResultWithValue(result.GetValue(), &limitEnvelopeContinuation{
+			inner: result.GetContinuation(), remOffset: 0, remLimit: c.remLimit,
+		}), nil
 	}
 }
 
@@ -1947,6 +1945,23 @@ const limitContVersion byte = 1
 // limitContNilInner marks an absent inner continuation (start-from-begin),
 // distinct from a present-but-empty inner continuation (length 0).
 const limitContNilInner uint32 = 0xFFFFFFFF
+
+// limitEnvelopeContinuation snapshots the window without serializing its child.
+// In particular, a sort's continuation owns the remaining rows: encoding it on
+// every emission would repeatedly serialize the same tail. Like Java's
+// RowLimitedCursor and SkipCursor, retain the immutable continuation object
+// until a consumer requests bytes, independently of cursor advancement/closure.
+type limitEnvelopeContinuation struct {
+	inner     recordlayer.RecordCursorContinuation
+	remOffset int
+	remLimit  int
+}
+
+func (c *limitEnvelopeContinuation) ToBytes() ([]byte, error) {
+	return encodeLimitContinuation(c.inner, c.remOffset, c.remLimit)
+}
+
+func (c *limitEnvelopeContinuation) IsEnd() bool { return false }
 
 func encodeLimitContinuation(innerCont recordlayer.RecordCursorContinuation, remOffset, remLimit int) ([]byte, error) {
 	var innerBytes []byte
@@ -2171,7 +2186,7 @@ func executeDistinct(
 		var hasLast bool
 		if len(continuation) > 0 {
 			var dc gen.DedupContinuation
-			if uerr := dc.UnmarshalVT(continuation); uerr != nil {
+			if uerr := recordlayer.UnmarshalVTAsJava(&dc, continuation); uerr != nil {
 				return nil, fmt.Errorf("invalid streaming-distinct continuation: %w", uerr)
 			}
 			innerCont = dc.GetInnerContinuation()
@@ -2301,7 +2316,7 @@ func executeHashDistinct(
 	innerCont := continuation
 	if len(continuation) > 0 {
 		var dc gen.DistinctHashContinuation
-		if uerr := dc.UnmarshalVT(continuation); uerr != nil {
+		if uerr := recordlayer.UnmarshalVTAsJava(&dc, continuation); uerr != nil {
 			return nil, fmt.Errorf("invalid distinct-hash continuation: %w", uerr)
 		}
 		innerCont = dc.GetInnerContinuation()
@@ -3246,7 +3261,7 @@ func executeFlatMap(
 	var outerCont, innerCont, checkValue []byte
 	if len(continuation) > 0 {
 		var fmc gen.FlatMapContinuation
-		if err := proto.Unmarshal(continuation, &fmc); err != nil {
+		if err := recordlayer.UnmarshalAsJava(continuation, &fmc); err != nil {
 			// Java: RecordCursor.flatMapPipelined —
 			//   throw new RecordCoreException("error parsing continuation", ex).
 			// A corrupt continuation must fail, not silently restart from
@@ -4145,7 +4160,10 @@ func rematerializeProtoScalar(fd protoreflect.FieldDescriptor, value protoreflec
 		return protoreflect.Value{}, fmt.Errorf("executor: copying composite insert value: %w", err)
 	}
 	target := dynamicpb.NewMessage(fd.Message())
-	if err := (proto.UnmarshalOptions{AllowPartial: true}).Unmarshal(wireBytes, target); err != nil {
+	// Read as the target type's record value is read (proto_closed_enums.go): a
+	// closed enum's undeclared number the source held as an unknown field is
+	// not taken back into the field by the re-parse.
+	if err := recordlayer.UnmarshalRecordAsJava(wireBytes, target, true); err != nil {
 		return protoreflect.Value{}, fmt.Errorf("executor: copying composite insert value: %w", err)
 	}
 	return protoreflect.ValueOfMessage(target), nil
@@ -4389,21 +4407,21 @@ func goToProtoScalarValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.
 			return protoreflect.ValueOfInt64(int64(n)), nil
 		}
 	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		// An INT column holding a signed Integer in the target (see
+		// functions.ConvertToProtoValue): the INT range, stored as its 32 bits.
 		switch n := v.(type) {
 		case int64:
-			if n < 0 || n > math.MaxUint32 {
+			if n < math.MinInt32 || n > math.MaxInt32 {
 				return protoreflect.Value{}, &NumericRangeOverflowError{Value: n, Column: string(fd.Name()), TypeName: fd.Kind().String()}
 			}
-			return protoreflect.ValueOfUint32(uint32(n)), nil
+			return protoreflect.ValueOfUint32(uint32(int32(n))), nil
 		case uint32:
 			return protoreflect.ValueOfUint32(n), nil
 		}
 	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		// A signed Long in the target: every int64 is stored as its 64 bits.
 		switch n := v.(type) {
 		case int64:
-			if n < 0 {
-				return protoreflect.Value{}, &NumericRangeOverflowError{Value: n, Column: string(fd.Name()), TypeName: fd.Kind().String()}
-			}
 			return protoreflect.ValueOfUint64(uint64(n)), nil
 		case uint64:
 			return protoreflect.ValueOfUint64(n), nil
@@ -4455,7 +4473,16 @@ func goToProtoScalarValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.
 	case protoreflect.EnumKind:
 		switch n := v.(type) {
 		case int64:
+			// The enum carrier: an enum-typed value holds its declared number.
 			return protoreflect.ValueOfEnum(protoreflect.EnumNumber(n)), nil
+		case string:
+			// A string assigned to an enum column is promoted as Java's
+			// STRING_TO_ENUM does (the INSERT … VALUES converter's rule).
+			num, err := values.StringToEnumNumber(fd.Enum(), n)
+			if err != nil {
+				return protoreflect.Value{}, api.NewError(api.ErrCodeInternalError, err.Error())
+			}
+			return protoreflect.ValueOfEnum(protoreflect.EnumNumber(num)), nil
 		}
 	case protoreflect.MessageKind:
 		// A UUID column is the tuple_fields.UUID message. UPDATE SET uuid_col =
@@ -6145,7 +6172,7 @@ func copyElement(tfd, sfd protoreflect.FieldDescriptor, v protoreflect.Value) (p
 		tgtVal := tfd.Enum().Values().ByName(srcVal.Name())
 		if tgtVal == nil {
 			return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
-				"enum value %s is not declared by %s", srcVal.Name(), tfd.Enum().FullName())
+				"enum value %s is not declared by %s", srcVal.Name(), protoscope.JavaFullName(tfd.Enum()))
 		}
 		return protoreflect.ValueOfEnum(tgtVal.Number()), nil
 	default:

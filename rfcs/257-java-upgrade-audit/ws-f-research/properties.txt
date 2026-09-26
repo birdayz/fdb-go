@@ -1,0 +1,198 @@
+I've finished the research for W8–W15. Git was blocked in this session, so no upstream diff was read; everything below comes from full reads of the target (4.14.2.0) Java classes plus the current uncommitted Go files. Nothing was run, edited or staged.
+
+# RFC-257 WS-F (W8–W15): implementation design research
+
+## Before you use this
+
+- **Version base.** Your prompt says the previous pin was 4.11.1.0. The RFC (`257-java-4.14.2.0-upgrade.md:22`) and the audit (`cascades.md:10`) use 4.12.11.0, and `pkg/docscheck/plan_proto_schema_test.go:21` ("…Matches412") confirms Go was at 4.12. The "what changed upstream" claims below rely on that audit, not on a diff I read.
+- **Query-engine gate.** W8, W9, W12 and W13 touch the planner, cost model, plans and executor. Under CLAUDE.md they need the WS-F design doc Graefe/Torvalds-ACKed before implementation, then one joint review lap at the end of the workstream.
+- **Missing prerequisite.** GuardiANN does not exist in Go: 0 matches under `pkg`, and the grammar accepts only `USING (HNSW | SPFRESH)` (`RelationalParser.g4:174`). The SQL-level proof for W8 therefore needs WS-D first.
+
+## W8 — Vector-engine preference
+
+**Java behaviour**
+- The enum is NO_PREFERENCE / PREFER_HNSW / PREFER_GUARDIANN (`VectorIndexEnginePreference.java:51-55`). It is proto field 15, default 0 (`record_planner_config.proto:39-43,63`), with a getter and setter at `RecordQueryPlannerConfiguration.java:100,342,767`.
+- **Priority.** The comparison runs after the IN rung and before primary-vs-index (`PlanningCostModel.java:188-193`).
+- **Applicability** (`:354-390`, `:400-419`):
+  - It abstains when the preference is NONE.
+  - It abstains unless both sides have exactly one vector index access.
+  - It abstains when both engines are the same, or when neither is the preferred one.
+  - Otherwise it returns −1 or +1.
+- An access's engine comes from the plan's own match candidate, not a lookup (`VectorIndexScanMatchCandidate.java:180,393-396`, `:420`).
+- `kindFromIndex` treats a missing option as HNSW and matches names case-insensitively (`VectorIndexEngine.java:186-188`, `VectorIndexEngineKind.java:50-58`).
+- The metric is read through a typed key: canonical `hnswMetric`, alias `vectorMetric`, default Euclidean (`VectorIndexOptionKeys.java:58-59`, `VectorIndexEngine.java:230-232`).
+- **Relational layer.** `VECTOR_INDEX_ENGINE_PREFERENCE` is a connection-scoped option (`Options.java:161-176`). Its default NO_PREFERENCE is in the default-values map (`:321`). It is part of the planner configuration's equality and hash, i.e. the plan-cache key (`PlannerConfiguration.java:144,149,168`).
+
+**Go today**
+- `PlannerConfiguration` has no preference field (`plan_context.go:43-110`).
+- The vector candidate has no engine identity (`vector_index_match_candidate.go:25-66`), and the vector plan type doesn't carry its candidate (`plans/vector_index_scan.go:28-86`).
+- The metric is read from `hnswMetric` only (`cascades_generator.go:3857`, `:3913-3926`).
+- The cost-model rung order is at `planning_cost_model.go:230-270`.
+
+**Design decisions**
+1. **Where the preference lives.** Add a preference enum (proto numbering) to `PlannerConfiguration`, defaulting to NONE.
+2. **Relational plumbing.** Add a Go option `OptVectorIndexEnginePreference = "VECTOR_INDEX_ENGINE_PREFERENCE"` with its NO_PREFERENCE default in `defaultOptionValues` (`api/options.go:230`), so Go's default map matches Java's. Wire it in three places:
+   - `plannerOptionsFrom` (`planner_options.go:74-109`);
+   - `cacheKeyPart` (`:142-212`). It must be in both the early-return check and the rendered key; the letter tokens `rd`/`stat`/`srv`/`vh`/`vg` remain prefix-free, so the key stays unambiguous;
+   - a DSN parameter `vector_index_engine_preference` (`dsn.go:99-123`), strict enum names, invalid value is an error.
+
+   WS-F should own all of this: a preference that isn't part of the cache key serves the wrong plan.
+3. **Engine identity on the candidate.** Stamp the engine kind in `tryVectorIndexCandidate` using WS-D's engine parser. SPFresh gets its own Go-only kind, never preferred. Without it, a SPFresh index (no engine option) would read as HNSW, and PREFER_HNSW would pick it over GuardiANN.
+4. **Engine identity on the plan.** `ToScanPlan` copies it onto the vector plan with a `WithIndexEngineKind` setter. It stays out of the plan's identity and hash (Java's `planHash` ignores the candidate), so no hashes or goldens move.
+5. **Metric lookup.** Read the metric through WS-D's typed option catalog (canonical plus alias). Keep Go's existing convenience spellings as a separate adapter, as the WS-D design says (`ws-d-design.md:140-147`).
+6. **Cost-model rung.** Record the vector access count and its single engine in both cost walks (`planning_cost_model.go:663-665` and `:2484-2487`). Insert the rung right after `compareInPlan` (`:264`), Java-exact.
+7. **Go's total-preorder rule.** Java's rung is not a total preorder. If `a` uses the preferred engine, `b` the other engine and `c` has no vector access, the rung ties `a~c` and `c~b` yet ranks `a<b`.
+   - Any per-plan ranking that fixed this would break Java's own guard `preferenceDoesNotSeparateAVectorPlanFromANonVectorPlan` (`PlanningCostModelVectorEngineTest.java:216-224`).
+   - So keep the Java form, and add a DIVERGENCES.md entry next to criteria 6/7 (`DIVERGENCES.md:390-391`) explaining why.
+   - Pin the reason it's safe with a test. A mixed group can't reach this rung: the data-access-count rung (#4) runs first, and a distance-rank predicate can only be satisfied by a vector index (the distance placeholder is index-only; `vector_index_match_candidate.go:113,340-352`). The test's failure message should name the hazard it would re-open.
+8. **Bug to fix alongside.** `costModelDiagnosticsOnlyContext` swaps in an empty configuration (`planning_cost_model.go:1886-1895`). Every comparator built with `Stats == nil` uses it:
+   - the planner's default comparator (`planner.go:253`);
+   - rule-level `CostModel()` (`expression_rule_call.go:102-110`, `implementation_rule.go:110-118`).
+
+   The planner's comparator keeps the full context once `WithStatistics` is called (`planner.go:365`). So when `stats == nil` (the harness and non-statistics production paths), the preference would reach OptimizeGroup but not rule-level choices. That wrapper must carry the preference through. Because NONE is the default, this changes nothing unless a user sets it.
+9. **Config serialization.** Go never serializes the planner configuration (no non-generated use of `gen.PlannerConfiguration`). Add only a proto-schema guard for field 15, in the style of `plan_proto_schema_test.go`; no speculative `ToProto`.
+
+**Tests**
+- Port all nine cases of `PlanningCostModelVectorEngineTest` (`:156-277`) against a Go criterion function that takes the two sides' counts. Also port `RecordQueryPlannerConfigurationTest:179-201` (default and setter parts only).
+- Add a rung-order test in the style of `planning_cost_model_rungs_test.go:154+`.
+- Extend the total-preorder and fold-stability sweeps (`cost_model_total_preorder_test.go:813-823`) with a vector-only corpus.
+- Test that rule-level `CostModel()` honours the preference when `Stats == nil`.
+- Planner-level proof before WS-D: a PlanContext with HNSW and GuardiANN candidates built directly (as Java's test does), showing the preference flips the chosen index.
+- SQL end-to-end after WS-D: yamsql has no connection options, so use a sqldriver FDB test with the DSN parameter and assert `VectorIndexScan(DOCUMENTSHNSWINDEX` versus `…GUARDIANNINDEX`. Port the negative fixtures `hnswOnly`, `guardiannOnly`, `mixedMetrics` and the non-vector covering scan (`vector-engine-preference.yamsql:40-59,173-256`), plus the union where each leg switches independently.
+- The NO_PREFERENCE block can't be copied from Java: Go's tie-break hash is FNV, not Java's `planHash` (`DIVERGENCES.md:404`). Pin that the chosen plan is stable across replans instead.
+- Add a test that the vector plan's cost stays independent of engine, so the join-ordering and scalar-cost rungs can't pre-empt the preference.
+
+**Plan-shape risk:** none at the NONE default. Confirm by regenerating all plan-shape goldens and getting a byte-identical result, plus a cache-key injectivity test.
+
+## W9 — Null-safe equality scans and the range builder
+
+**Java behaviour**
+- NOT_DISTINCT_FROM is now an equality scan comparison (`ScanComparisons.java:150-156`) and compiles to a single-point range (`RangeConstraints.java:660-663`, `:734`).
+- The builder admits IS DISTINCT FROM (`:767`) but, because it isn't in the allowed-types list, puts it in the *deferred* bucket (`:751-754`, `:793-797`). Its merge always leaves it as a residual (`MergeComparisonRangesTest.java:110-135`).
+- Deferred comparisons are listed before compilable ones (`:119-126`).
+
+**Go today**
+- The executor already handles null-safe scans (`comparison_range.go:270-277`, `null_rejecting_scan_range.go:16-20`).
+- The gap is the builder: it splits compilable versus deferred by correlation only (`range_constraints.go:154-165`). So an uncorrelated IS DISTINCT FROM, STARTS_WITH or DISTANCE_RANK comparison lands in the *compilable* bucket, which claims "this forms one contiguous range".
+- This is latent today: the builder's only production callers are `replace_values.go:345` and `generator_predicate.go:285`, and Go has no port of `encloses`.
+
+**Change**
+- Classify as compilable only when the comparison is uncorrelated **and** its type is one of Java's eight allowed types; everything else is deferred.
+- Correct the stale "Java has no such case" claim in all three places it appears, measured by a repo-wide search:
+  - `comparison_range.go:266-269`
+  - `scan_range_classification_test.go:38`
+  - `scan_range_classification_test.go:161`
+- Update `TODO.md:3567-3576` (CQ-35): it says `Merge` doesn't treat NOT DISTINCT FROM as equality, which is no longer true.
+
+**Tests**
+- Port all `MergeComparisonRangesTest` cases, and add builder bucket tests.
+- Add `plan_contains` pins to `distinct_from_java.yaml`, following Java's `distinct-from.yamsql:80-102`:
+  - an index scan for `IS NOT DISTINCT FROM NULL` and `IS NOT DISTINCT FROM 20`;
+  - a residual filter for IS DISTINCT FROM.
+
+  The exact Go token must be measured.
+- Port the `scoped-keyset-pagination.yamsql` shape (unbound NOT DISTINCT FROM parameter on the leading key plus an OR range on trailing keys), written without CREATE FUNCTION and with bound parameters.
+
+**Risk:** reordering only affects filtered-index predicates, which the planner currently excludes (`executor.go:85-92`).
+
+## W10 — Enum comparisons
+
+- **Java change.** An enum comparison now keeps its operand as a value instead of folding it to a constant (`RelOpValue.java:232-245`). Go already keeps the operand as a value (`comparisons.go:268-270`), so there is no workaround to import.
+- **Pins to add.** Most of Java's regression test goes through CREATE FUNCTION, which Go rejects (`ddl.go:303-305`). Pin the direct-table rows (`enum-distinct-from-function.yamsql:106-113`): IS [NOT] DISTINCT FROM, `=` and `<>` against an enum literal and a bound parameter, with the unset-enum row (ID 5) present or absent, and `plan_contains` index versus covering-scan-plus-filter.
+- **Open measurement: enum in `CREATE INDEX … WHERE`.** Java's post-fix behaviour here is unmeasured. Source reading suggests it now fails with a clean error instead of an NPE:
+  - `IndexComparison.isSupported` accepts the promote/literal operand (`IndexComparison.java:86-93`);
+  - but `fromComparison` throws on a value comparison (`:70-77`).
+
+  That needs a JVM conformance probe before the Go expectation is written.
+
+## W11 — DML refuses snapshot isolation
+
+**Java behaviour**
+- `enforceSerializable` throws `RecordCoreArgumentException("Cannot execute plan at SNAPSHOT isolation level")`, with the plan class name attached (`QueryPlanUtils.java:52-58`).
+- It runs before the child plan is opened, dry run included (`RecordQueryAbstractDataModificationPlan.java:195`, `RecordQueryDeletePlan.java:99`).
+- The relational layer maps that exception to UNKNOWN (`ExceptionUtil.java:59-63`); the SQL-level 0A000 refusal is WS-E's.
+
+**Go change**
+- Add the guard as the first statement of `executeDelete`, `executeInsert` and `executeUpdate` (`executor.go:3873`, `:3942`, `:4189`). Do not guard temp-table inserts; Java doesn't.
+- For the error type: extend `RecordCoreArgumentError` (`rank_scan.go:19-27`) with a `Plan` field and render only the fields that are set, so the existing rank-scan message doesn't change.
+- **Hazard.** Go's `IsolationLevel` zero value is *Snapshot* (`scan_properties.go:63`). Compare exactly against Serializable, as Java does. The 80 zero-value test literals in 31 files would then refuse DML, but the executor files I sampled don't run DML; the implementer must confirm that across all 31 files.
+
+**Tests:** port `FDBModificationQueryTest:293-371` for insert, update and delete, with and without dry run. Prove the child was never opened by giving the DML an unexecutable child: the error must be the isolation error, not "unsupported plan". Add a real-FDB check that stored records are unchanged.
+
+## W12 — EXPLODE zero-based ordinality
+
+**Java behaviour**
+- A zero-based flag that requires ordinality (constructor check, `ExplodeExpression.java:88-96`). It is part of equality and translation, and a hash term is added only when the flag is set, preserving existing hashes (`:176-195`, `:207-208`).
+- The plan numbers elements `firstOrdinal + i` over the full list *before* resume and skip/limit (`RecordQueryExplodePlan.java:171-185`).
+- Explain output does not show the base (`ExplodePlanTest.java:425-437`). Proto field 3 is set only when true (`:362-386`).
+- Distinct-records is true exactly when ordinality is on (`DistinctRecordsProperty.java:240-242`).
+- Java has no SQL surface for zero-based ordinality: SQL `AT` stays one-based, and no production code constructs a zero-based explode.
+
+**Go today**
+- Go already numbers before resume (`executor.go:4772-4790`); only the base is hard-coded (`:4763` for the scalar case, `:4781` for `i+1`).
+- Distinct-records falls through to `default: false` (`plan_properties.go:155`).
+
+**Change**
+- Add checked constructors that return an error rather than panicking (design principle 4).
+- Carry the flag through every rebuild site:
+  - `rule_implement_explode.go:30`
+  - `rule_implement_nested_loop_join.go:1572`
+  - `rule_select_merge.go:592`
+- Hash and equality: add the component only when the flag is true, in both `explode.go:180` and the plan's structural key (`plans/explode.go:120-121`).
+- Leave explain unchanged.
+- Add `case *plans.RecordQueryExplodePlan: return p.IsWithOrdinality()` to distinct-records.
+- Extend the proto-schema guard to field 3.
+
+**Tests:** port the ExplodePlanTest cases (`:305-317`, `:341-473`) as they apply to Go (no Go plan serialization per RFC-135). Add an FDB integration test that plans a hand-built zero-based explode correlated to a record's array and resumes it page by page, checking ordinals don't renumber. Add a plan pin that an identity-wrapped ordinality explode lets DISTINCT be removed.
+
+**Risk:** low. FlatMap and nested-loop joins stay non-distinct in both engines (`DistinctRecordsProperty.java:366-368`).
+
+## W13 — Explain and display names
+
+**Java change.** Explain now shows *user* identifiers for record-type comparisons, type filters and DML targets (`RecordTypeKeyComparison.java:262-263`; `ExplainPlanVisitor.java:476,632,702`; expression `toString` and planner-graph labels). Target `valid-identifiers.yamsql:171,356` now prints `SCAN([IS foo.table$nested…])`. The subscript explain closes with `]` (`SubscriptValue.java:77-80`).
+
+**Go change**
+- Decode display names in these `Explain()` methods:
+  - `Scan` (`scan.go:215-220`), the Go counterpart of Java's record-type comparison;
+  - `TypeFilter` (`typefilter.go:110`);
+  - `Insert`, `Update`, `Delete` (`insert.go:141`, `update.go:173`, `delete.go:111`).
+- Use `protoname.DecodeOnceIfReversible` for single names and `SafeDecoderOver` for name lists (`protoname.go:199,228`). Never change stored identities.
+
+**Stale claim to correct:** `intermingle_escaped_table_name.yaml:57-62` says Java prints storage spellings and tells a future editor to switch the pins to `MY__1TABLE`. After this upgrade the correct post-RFC-238 pins are the decoded `MY$TABLE`.
+
+**Subscript risk:** the explain renderer's fallback (`values.go:2165`) is shared with `ColumnNameValue` (`:1910-1920`), which derives output column names. Before adding a subscript case, measure Java's column name for an unaliased `arr[1]`, and scope the change to the explain form if the name form must stay as it is.
+
+The covering-Value-plan explain belongs to the W7 readers research.
+
+## W14 — Bottom-up Value fold
+
+**Java contract** (`SimpleValueVisitor.java:54-115`, `Value.java:798-803`):
+- evaluation is post-order;
+- a pruned child is omitted from the parent's child results, not replaced with a placeholder;
+- a shared subtree is visited once per occurrence (no memoization);
+- the plain visit entry point skips the pruning check for the root, while the accept entry point returns null for a pruned root.
+
+The actual consumers are the relational index generator (`QuantifierValues.java:84-106`, `ValueToKeyExpressionVisitor.java:131-135`), which is WS-J's port target (`ws-j-design.md:159-195`). Neither consumer prunes.
+
+**Decision:** keep `WalkValue` as it is (`values.go:1482`). Add a small generic `FoldValue` helper using `Children()`, in the same change as the first WS-J consumer that uses it (the dereferencer and the value-to-key-expression translation), so there's no speculative framework. Port `ValueVisitorTest:147-216`: order, pruning, repeated subtrees, and a type-specific override that still recurses.
+
+## W15 — "No execution port needed"
+
+- Only partly verified: without git I couldn't diff the 25 files the audit calls "mechanical".
+- The two spot checks match the audit: `TempTable` construction is private (`TempTable.java:64,68,179`), and `SyntheticRecordPlanner.java:231` uses `getIndexState(...).isDisabled()`.
+- Also note `PlanningCostModel.java:24` still imports `SpotBugsSuppressWarnings`, so the SpotBugs removal was not total. It doesn't matter for Go.
+
+## Implementation order (one item at a time, each finished before the next)
+
+1. W11
+2. W9
+3. W12
+4. W13
+5. W10 (after the JVM probe for enum sparse-index DDL)
+6. W14 (together with WS-J's generator work)
+7. W8 core (config, option, cache key, candidate and plan engine identity, rung, diagnostics-context fix, planner-level test), then W8's SQL end-to-end once WS-D has landed GuardiANN DDL and execution. W8's checkbox stays open until then.
+
+## What I did not read
+
+- **Java:** the upstream diffs; the whole of `RecordQueryPlannerConfigurationTest`, `InsertExpressionTest`, `UpdateExpressionTest`, `LogicalTypeFilterExpression`, the Insert/Update/TypeFilter plan classes (only their changed lines), `ValueToKeyExpressionVisitor` (only its entry points), the gRPC `TypeConversion`, and 23 of the 25 W15 files.
+- **Go:** I didn't audit the existing test bodies in depth beyond the ones cited.

@@ -1,0 +1,62 @@
+**NAK.** Tree `9265beef3e5c9dd9ec86caaade526c8137552976` (confirmed to be a tree object). Design file `rfcs/257-java-upgrade-audit/ws-c-design.md`, SHA256 `7b32e4008a889f98a9b801831a2f51a66dceb72b0ef56f0d6eeb9f49d83a996c`, 387 lines (both confirmed).
+
+I checked the port line by line against `IndexingBase.java:184-261`. These all match Java:
+- how the primary's action is resolved, ERROR, and MARK_READABLE (including when publication is off);
+- the skip rule and the continued-build rule;
+- both follower rules, the list of indexes to clear, and how write-only marking combines with the pending-write queue.
+
+Go does not port `enforceStampOverwrite` (`:227`). That is harmless, because `clearIndexData` already erases the stamp (`index_state.go:853`).
+
+Every finding below comes from reading source. Under the read-only policy I ran no tests or probes.
+
+### Findings, most severe first
+
+1. **High: the design's claim about `ifMismatchPrevious` is false.** Design line 352 and `online_indexer.go:62-64` both say "no indexing code reads it".
+   - `OnlineIndexer.java:173-225` (`indexingCatcher`) reads it on every `PartlyBuiltException`.
+   - Under the default CONTINUE, Java reruns with the saved method: a records-scan fallback for BY_RECORDS / MULTI_TARGET, or the saved source index for BY_INDEX. REBUILD relaunches with ifWriteOnly REBUILD, and ERROR rethrows.
+   - Go has no equivalent. Grepping the tree's `*.go` and `*.md` for `fallbackToRecordsScan|indexingCatcher|IfMismatchPrevious` finds only these two false claims. So Go returns `PartlyBuiltError` where Java's default recovers.
+   - The gap existed before the addendum, but the addendum wrote down a reason not to port it that the Java source refutes. Correct both copies and port it. The REBUILD arm is now trivial on top of `IfWriteOnly`.
+
+2. **Medium: a mutual REBUILD lets live peers through while it clears the index.**
+   - `online_indexer_queue.go:52` still derives `allowMutual` from `state.IsWriteOnly()`. That was only correct while WRITE_ONLY always meant a continued build.
+   - Under `IfWriteOnly: DesiredActionRebuild`, the session is fresh and clears the index (`:104-108`, `:139`). Yet both the open-time preflight (`online_indexer.go:1254`) and `:86` admit live mutual peers, and `:175` renews the heartbeat without checking peers.
+   - This breaks the stated invariant at `:41-43`: mutual peers may share a continued build, "never a destructive reset".
+   - Fix: resolve the action first, then set `allowMutual = mutual && continued`. No spec covers this case.
+
+3. **Medium: a mutual REBUILD of a WRITE_ONLY_WITH_QUEUE target is refused before the clear.**
+   - `online_indexer_queue.go:118-119` returns "cannot continue…" before anything is cleared.
+   - Java checks after `clearAndMarkIndexWriteOnly` (`IndexingBase.java:250`, then `:465`). So a REBUILD of the primary, or of a differing follower whose own action is REBUILD, clears it to WRITE_ONLY. Java then declines the queue with reason MUTUAL_INDEXING (`:317-318`) and builds.
+   - `online_indexer.go:1293` already makes Java's post-clear check, so the early check should be deleted. This is the same incomplete conversion as finding 2.
+
+4. **Low: heartbeat admission runs before the action is resolved** (`:86` and the preflight). If another exclusive builder has a live heartbeat, Java's ERROR ("Index state is not as expected"), skip, and MARK_READABLE outcomes all become `SynchronizedSessionLockedError` in Go. Java only creates and checks heartbeats on the build path (`IndexingBase.java:457`). Either reorder, or document the deviation at the call site.
+
+5. **Low: MARK_READABLE over a WRITE_ONLY_WITH_QUEUE index spins.** No queued indexes are recorded on this path (`:101-102`); Java doesn't record them here either (`:253`). Go's queue-empty guard then makes `markReadable` (`online_indexer.go:1411-1459`) retry 100 times without ever draining. It should fail fast or drain. Untested.
+
+6. **Low: stale comments and test text.**
+   - `online_indexer.go:935-937` and `:1238-1248` still describe "marks WRITE_ONLY" and cite `handleIndexingState`.
+   - The `IndexMaintenanceFilter.NONE` note is wrong: Java only sets a filter if the caller asks (`OnlineIndexOperationBaseBuilder.java:604-608`). Its contrast that Go does not skip READABLE indexes is also no longer true.
+   - `bug_bounty3_indexer_test.go:724-740` describes the old behaviour. Its spec titled "start as READABLE" passes only because the indexes are not READABLE.
+
+7. **Low: CLI and changelog.**
+   - A skip and a MARK_READABLE session both return `(0, nil)`, which looks the same as building an empty store.
+   - `frl index build` on a READABLE index used to rebuild it. It now does nothing but still prints "built … (0 records scanned)" (`index_write.go:297-305`). The CHANGELOG entry doesn't mention this CLI change.
+   - The fleet builder only builds DISABLED or WRITE_ONLY indexes (`PendingIndexes`), so it is safe, apart from misreporting when a peer publishes first.
+
+8. **Low: tests that can't catch a regression, and gaps.**
+   - `online_indexer_test.go:3487` (MARK_READABLE on a READABLE index) looks exactly like a skip, so changing MARK_READABLE into a skip would stay green. Seed a stamp and assert that Java's erase happens (`IndexingBase.java:393`).
+   - `:3541-3563` never exercises the "it alone is cleared" arm, because the primary is cleared anyway under default REBUILD. Drive it with IfDisabled CONTINUE and IfReadable REBUILD.
+   - `:2183` "resumes … from partial progress" is now a full build followed by a skip. The title is false, and the spec duplicates `:3477`.
+   - Nothing pins findings 2 or 3.
+   - The census only mutated the skip outcome. The READABLE_UNIQUE_PENDING change (from clear-and-rebuild to MARK_READABLE) was never censused. A grep of `BuildIndex` callers finds no spec that rebuilds such an index, but that is a hypothesis, not a measurement.
+
+### Evidence
+**Measured, from the logs:**
+- `desired-red.log:1398` shows the exact failure message (1 of 3622 specs run).
+- The mutation runs failed 3, 1 and 3 specs as claimed. `mut23` hides `mut2` because making the DISABLED default CONTINUE already refuses that follower; this is consistent.
+- `skip-census.log` ran 6 of 6 targets, and its failures match the conversion list. `skip-census2.log` shows the 5 failures described.
+- `wse8-justtest2.log`: 94 of 94 targets pass, 3 executed and the rest cache hits on identical inputs.
+
+**Not evidence for this tree:**
+- `desired-green.log` and `desired-loop-logs/run_40.log` cite spec lines `:4335` and `:1585`; this tree has them at `:4339` and `:1588`. Both ran an earlier revision of the test file.
+- `desired-fixed.log` contains no spec counts, so "3635 of 3636" can't be checked from it.
+- The 40-run loop ran the two specs in isolation, which is weak evidence against a race that appeared once in a full-suite run. The deterministic reproducer is what actually proves the fix.

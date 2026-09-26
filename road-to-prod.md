@@ -1,5 +1,11 @@
 # Road to production
 
+**Current upgrade gate:** Java **4.14.2.0** is now the target, but RFC-257's initial
+full suite is red and required parity ports remain open. Do not deploy the upgrade
+branch or treat the historical measurements below as new-target verification.
+[RFC-257](rfcs/257-java-4.14.2.0-upgrade.md) records the exact baseline, target,
+source audit and failures; its unchecked TODO block owns completion.
+
 **Revision 2026-08-05.** Amends the 2026-08-04 revision in place: adds the MT-SaaS section
 (`#624`, `#625`, `#626`, `#620`, measured at `2e4b9f930`) and **retires four watch-list claims that
 verification refuted** — entry 13 (inverted), entry 14 (fixed, and it was the page's "one OPEN
@@ -104,7 +110,7 @@ because an unguarded count in a status doc is a claim with a shelf life:
 |---|---|---|
 | Byte-identity differential vs `libfdb_c`, `pkg/fdbgo/bench/` | **80** (75 `TestDifferential_*` + 5 `FuzzDifferential*`) | **No** |
 | Chaos with model verification, `pkg/recordlayer/chaos/` | **228** test funcs | **No** |
-| Java conformance vs a real 4.12.11.0 server | **1363** Ginkgo specs | **No** |
+| Java conformance at the pre-upgrade baseline (RFC-257 identifies the revision; not new-target verification) | **1363** Ginkgo specs | **No** |
 | SQL corpus coverage | **342 scenarios · 2740 cases · 2401 supported (87.6%)**, 109 unsupported-feature pins, 230 error-path pins | **Yes** — `TestSQLCoverageUpToDate` regenerates `SQL_COVERAGE.md`; `FEATURE_MATRIX.md` carries the same generated totals |
 | Java yamsql corpus (RFC-201, NEW since the audit) | **238** files vendored · **32** pass · **0** fail · **206** on the skip ledger · **487** asserted queries | **Yes** — `pinnedLedger` + `pinnedFileTotal` + `pinnedAssignmentDigest` in `pkg/relational/conformance/javacorpus/pinned_ledger_test.go` |
 | Generation factory corpus (NEW, #555) | **5000** scenarios · **20000** tests · **4952** feature vectors; blessings **4469 `metamorphic` + 531 `metamorphic-tlp-only`**, labeled in every header | **Yes** — componentwise census ratchet over scenario/test totals and each feature vector, plus per-scenario authority keyed by dedup key; `ByBlessing` is report-only (`factorycorpus/census_baseline.json`) |
@@ -827,7 +833,8 @@ stop. Three green runs are on record and they do not settle it.
   built it; everywhere else `import fdb` bound to an empty implicit namespace package. 100/100 api and
   30/30 directory seeds pass after the fix. The 07-17 stress failure is root-caused (Tier 1).
 - Repo SETTING (owner action, not code): Actions cannot create PRs, so `frl-pin-bump` has failed
-  27/27 — flip "Workflow permissions → allow PR creation".
+  27/27 — flip "Workflow permissions → allow PR creation". Moot once PR #786 merges: `cmd/frl` joins
+  the root module and the pin-bump bot is deleted.
 
 Booked by THIS revision, from defects the verification pass found:
 

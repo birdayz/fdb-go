@@ -1,0 +1,342 @@
+File: stress_test
+Build ID: 498919aff001d8366249403a2544fba2d833084f
+Type: cpu
+Time: 2026-09-22 01:13:11 CEST
+Duration: 184.29s, Total samples = 294.71s (159.91%)
+Showing nodes accounting for 190.96s, 64.80% of 294.71s total
+Dropped 1742 nodes (cum <= 1.47s)
+      flat  flat%   sum%        cum   cum%
+    32.70s 11.10% 11.10%     32.70s 11.10%  internal/runtime/syscall/linux.Syscall6
+    19.62s  6.66% 17.75%     19.62s  6.66%  runtime.futex
+     7.80s  2.65% 20.40%     16.76s  5.69%  runtime.tryDeferToSpanScan
+     6.83s  2.32% 22.72%     25.64s  8.70%  runtime.scanObject
+     6.09s  2.07% 24.78%     15.30s  5.19%  runtime.scanObjectsSmall
+     5.30s  1.80% 26.58%      5.30s  1.80%  runtime.nextFreeFast (inline)
+     5.25s  1.78% 28.36%      5.25s  1.78%  runtime.spanClass.sizeclass (inline)
+     4.58s  1.55% 29.92%      6.19s  2.10%  runtime.typePointers.next
+     3.84s  1.30% 31.22%      3.84s  1.30%  runtime.memclrNoHeapPointers
+     3.67s  1.25% 32.47%      3.67s  1.25%  runtime.memmove
+     3.57s  1.21% 33.68%      9.98s  3.39%  runtime.stealWork
+     3.45s  1.17% 34.85%      3.45s  1.17%  cmpbody
+     3.37s  1.14% 35.99%     19.62s  6.66%  runtime.mallocgcSmallScanNoHeader
+     3.15s  1.07% 37.06%      3.61s  1.22%  runtime.(*mspan).writeHeapBitsSmall
+     2.91s  0.99% 38.05%      3.11s  1.06%  runtime.heapArenaOf (inline)
+     2.73s  0.93% 38.97%     30.15s 10.23%  runtime.mallocgc
+     2.42s  0.82% 39.80%      2.61s  0.89%  internal/sync.(*Mutex).Lock (inline)
+     2.07s   0.7% 40.50%      4.43s  1.50%  runtime.findObject
+     2.04s  0.69% 41.19%      6.17s  2.09%  runtime.selectgo
+     1.97s  0.67% 41.86%      1.97s  0.67%  github.com/antlr4-go/antlr/v4.(*BaseParserRuleContext).GetChildCount
+     1.97s  0.67% 42.53%      2.25s  0.76%  runtime.spanOf (inline)
+     1.94s  0.66% 43.18%      1.94s  0.66%  runtime.typePointers.nextFast (inline)
+     1.92s  0.65% 43.84%     18.25s  6.19%  runtime.newobject
+     1.87s  0.63% 44.47%      1.87s  0.63%  aeshashbody
+     1.60s  0.54% 45.01%      1.60s  0.54%  runtime.pMask.read (inline)
+     1.59s  0.54% 45.55%      1.59s  0.54%  runtime.usleep
+     1.54s  0.52% 46.08%      1.54s  0.52%  internal/sync.(*Mutex).Unlock (inline)
+     1.54s  0.52% 46.60%     36.77s 12.48%  runtime.findRunnable
+     1.54s  0.52% 47.12%      1.54s  0.52%  sync/atomic.(*Int32).Add (inline)
+     1.39s  0.47% 47.59%      1.54s  0.52%  runtime.unlock2
+     1.36s  0.46% 48.05%      2.21s  0.75%  runtime.lock2
+     1.26s  0.43% 48.48%      2.89s  0.98%  runtime.runqgrab
+     1.18s   0.4% 48.88%     48.23s 16.37%  runtime.gcDrain
+     1.10s  0.37% 49.26%      2.14s  0.73%  runtime.mallocgcTiny
+     1.04s  0.35% 49.61%      3.81s  1.29%  runtime.mallocgcSmallNoscan
+     0.97s  0.33% 49.94%      2.23s  0.76%  runtime.chanrecv
+     0.96s  0.33% 50.26%      2.70s  0.92%  runtime.scanObjectSmall
+     0.82s  0.28% 50.54%     19.78s  6.71%  runtime.scanSpan
+     0.82s  0.28% 50.82%     41.61s 14.12%  runtime.schedule
+     0.77s  0.26% 51.08%      3.08s  1.05%  fdb.dev/pkg/recordlayer/query/plan/cascades/values.WalkValue
+     0.77s  0.26% 51.34%      5.42s  1.84%  fmt.(*pp).doPrintf
+     0.73s  0.25% 51.59%      2.53s  0.86%  runtime.mapaccess2_faststr
+     0.70s  0.24% 51.83%      3.08s  1.05%  context.(*cancelCtx).cancel
+     0.68s  0.23% 52.06%      2.05s   0.7%  runtime.(*sweepLocked).sweep
+     0.64s  0.22% 52.28%      1.62s  0.55%  runtime.casgstatus
+     0.64s  0.22% 52.49%      4.28s  1.45%  sort.partition_func
+     0.58s   0.2% 52.69%      1.94s  0.66%  fdb.dev/pkg/fdbgo/client.coalesceWriteConflicts.func1
+     0.58s   0.2% 52.89%      9.43s  3.20%  fdb.dev/pkg/recordlayer/query/plan/cascades/values.writeSemanticHash
+     0.58s   0.2% 53.08%     63.78s 21.64%  runtime.systemstack
+     0.58s   0.2% 53.28%      1.97s  0.67%  runtime.typedmemmove
+     0.55s  0.19% 53.47%      2.42s  0.82%  fdb.dev/pkg/recordlayer/query/plan/cascades/values.valueChildren
+     0.54s  0.18% 53.65%      2.34s  0.79%  context.(*cancelCtx).propagateCancel
+     0.53s  0.18% 53.83%     17.49s  5.93%  fdb.dev/pkg/recordlayer.(*mapErrCursor[go.shape.struct { Positional *fdb.dev/pkg/recordlayer/query/executor.PositionalRow; Record *fdb.dev/pkg/recordlayer.FDBStoredRecord[google.golang.org/protobuf/reflect/protoreflect.ProtoMessage]; PrimaryKey fdb.dev/pkg/fdbgo/fdb/tuple.Tuple },go.shape.struct { Positional *fdb.dev/pkg/recordlayer/query/executor.PositionalRow; Record *fdb.dev/pkg/recordlayer.FDBStoredRecord[google.golang.org/protobuf/reflect/protoreflect.ProtoMessage]; PrimaryKey fdb.dev/pkg/fdbgo/fdb/tuple.Tuple }]).OnNext
+     0.53s  0.18% 54.01%      1.79s  0.61%  fdb.dev/pkg/recordlayer/query/plan/cascades/values.(*RecordConstructorValue).Children
+     0.52s  0.18% 54.19%     11.75s  3.99%  fdb.dev/pkg/fdbgo/client.(*Transaction).opContext
+     0.52s  0.18% 54.36%      4.09s  1.39%  runtime.growslice
+     0.51s  0.17% 54.53%      4.94s  1.68%  runtime.netpoll
+     0.49s  0.17% 54.70%      1.48s   0.5%  runtime.mapaccess1_faststr
+     0.46s  0.16% 54.86%      3.40s  1.15%  fmt.(*pp).handleMethods
+     0.44s  0.15% 55.01%     13.72s  4.66%  fdb.dev/pkg/fdbgo/client.(*Transaction).GetPipelined
+     0.44s  0.15% 55.16%      2.33s  0.79%  internal/reflectlite.Swapper.func9
+     0.44s  0.15% 55.31%      1.74s  0.59%  runtime.(*timers).check
+     0.43s  0.15% 55.45%      1.70s  0.58%  fdb.dev/pkg/relational/core/embedded.dmlHasDryRunOption
+     0.43s  0.15% 55.60%      2.63s  0.89%  runtime.mapassign_faststr
+     0.42s  0.14% 55.74%      2.88s  0.98%  github.com/antlr4-go/antlr/v4.(*DefaultErrorStrategy).Sync
+     0.42s  0.14% 55.88%      2.89s  0.98%  runtime.sweepone
+     0.40s  0.14% 56.02%     61.31s 20.80%  fdb.dev/pkg/recordlayer.(*FDBRecordStore).saveRecordInternal
+     0.40s  0.14% 56.15%      2.22s  0.75%  runtime.(*mcentral).cacheSpan
+     0.39s  0.13% 56.29%      2.26s  0.77%  runtime.newproc1
+     0.38s  0.13% 56.41%     25.47s  8.64%  fdb.dev/pkg/fdbgo/transport.(*Conn).writeLoop
+     0.37s  0.13% 56.54%     12.42s  4.21%  runtime.notesleep
+     0.36s  0.12% 56.66%     11.72s  3.98%  fdb.dev/pkg/recordlayer.(*FDBRecordStore).readIndexState
+     0.36s  0.12% 56.78%      4.29s  1.46%  fmt.(*pp).printArg
+     0.34s  0.12% 56.90%      3.10s  1.05%  fdb.dev/pkg/fdbgo/client.(*Transaction).readVersionForOperation
+     0.34s  0.12% 57.02%     25.91s  8.79%  fdb.dev/pkg/recordlayer.(*FDBRecordStore).updateSecondaryIndexesLocked
+     0.34s  0.12% 57.13%      7.82s  2.65%  fdb.dev/pkg/recordlayer.(*atomicMutationIndexMaintainer).updateInsertOnly
+     0.34s  0.12% 57.25%      5.52s  1.87%  github.com/antlr4-go/antlr/v4.(*BaseParser).Consume
+     0.33s  0.11% 57.36%     20.77s  7.05%  fdb.dev/pkg/fdbgo/fdb.newFutureInt64.func1
+     0.33s  0.11% 57.47%      2.43s  0.82%  fdb.dev/pkg/recordlayer.(*atomicMutationIndexMaintainer).updateInsertOnlyGrouped
+     0.33s  0.11% 57.58%      3.86s  1.31%  github.com/antlr4-go/antlr/v4.(*BaseLexer).NextToken
+     0.33s  0.11% 57.69%     44.14s 14.98%  runtime.mcall
+     0.32s  0.11% 57.80%     11.61s  3.94%  fdb.dev/pkg/fdbgo/client.(*PendingGet).Resolve
+     0.32s  0.11% 57.91%      3.93s  1.33%  runtime.heapSetTypeNoHeader (inline)
+     0.31s  0.11% 58.02%     12.57s  4.27%  fdb.dev/pkg/recordlayer.(*mapResultCursor[go.shape.*uint8,go.shape.struct { Positional *fdb.dev/pkg/recordlayer/query/executor.PositionalRow; Record *fdb.dev/pkg/recordlayer.FDBStoredRecord[google.golang.org/protobuf/reflect/protoreflect.ProtoMessage]; PrimaryKey fdb.dev/pkg/fdbgo/fdb/tuple.Tuple }]).OnNext
+     0.31s  0.11% 58.12%      4.67s  1.58%  fdb.dev/pkg/recordlayer.(*standardIndexMaintainer).Update
+     0.31s  0.11% 58.23%     40.95s 13.90%  runtime.park_m
+     0.30s   0.1% 58.33%      8.24s  2.80%  fdb.dev/pkg/recordlayer.(*atomicMutationIndexMaintainer).Update
+     0.30s   0.1% 58.43%     27.18s  9.22%  fdb.dev/pkg/recordlayer.loadWithSplit
+     0.30s   0.1% 58.53%      1.89s  0.64%  internal/reflectlite.typedmemmove
+     0.29s 0.098% 58.63%      3.51s  1.19%  runtime.closechan
+     0.29s 0.098% 58.73%      1.90s  0.64%  runtime.convT64
+     0.29s 0.098% 58.83%      4.30s  1.46%  runtime.makeslice
+     0.28s 0.095% 58.92%      3.40s  1.15%  fdb.dev/pkg/fdbgo/client.(*rywCache).atomic
+     0.28s 0.095% 59.02%      1.75s  0.59%  github.com/antlr4-go/antlr/v4.(*LexerATNSimulator).execATN
+     0.28s 0.095% 59.11%      3.34s  1.13%  runtime.(*mcache).refill
+     0.28s 0.095% 59.21%      1.49s  0.51%  sort.insertionSort_func
+     0.27s 0.092% 59.30%      6.03s  2.05%  fdb.dev/pkg/relational/core/embedded.(*EmbeddedConnection).buildInsertValuesArray
+     0.27s 0.092% 59.39%      3.16s  1.07%  runtime.runqsteal
+     0.26s 0.088% 59.48%      1.56s  0.53%  github.com/antlr4-go/antlr/v4.(*ParserATNSimulator).AdaptivePredict
+     0.26s 0.088% 59.57%      2.18s  0.74%  google.golang.org/protobuf/types/dynamicpb.(*Message).Range
+     0.26s 0.088% 59.66%         2s  0.68%  internal/runtime/maps.(*Map).Delete
+     0.26s 0.088% 59.74%     12.07s  4.10%  runtime.futexsleep
+     0.25s 0.085% 59.83%      7.38s  2.50%  fdb.dev/pkg/fdbgo/client.(*PendingGet).resolve
+     0.25s 0.085% 59.91%      6.62s  2.25%  fdb.dev/pkg/fdbgo/client.(*Transaction).opContext.func4
+     0.22s 0.075% 59.99%     18.36s  6.23%  fdb.dev/pkg/recordlayer.(*FDBRecordStore).updateOneIndex
+     0.22s 0.075% 60.06%      4.72s  1.60%  fdb.dev/pkg/recordlayer/query/executor.protoToPositional
+     0.22s 0.075% 60.14%      3.89s  1.32%  runtime.(*mcache).nextFree
+     0.22s 0.075% 60.21%      1.63s  0.55%  runtime.isSystemGoroutine
+     0.22s 0.075% 60.29%      9.48s  3.22%  runtime.wakep
+     0.22s 0.075% 60.36%     14.61s  4.96%  sync.(*Once).doSlow
+     0.21s 0.071% 60.43%      4.73s  1.60%  context.AfterFunc.func1
+     0.21s 0.071% 60.50%      2.86s  0.97%  fdb.dev/pkg/fdbgo/client.(*rywCache).set
+     0.21s 0.071% 60.57%     10.09s  3.42%  internal/poll.(*FD).Read
+     0.21s 0.071% 60.65%     10.53s  3.57%  io.ReadAtLeast
+     0.20s 0.068% 60.71%      2.63s  0.89%  fdb.dev/pkg/fdbgo/client.(*PendingGet).readReply
+     0.20s 0.068% 60.78%     16.69s  5.66%  fdb.dev/pkg/fdbgo/client.(*Transaction).GetReadVersion
+     0.20s 0.068% 60.85%      2.79s  0.95%  google.golang.org/protobuf/proto.UnmarshalOptions.unmarshalSingular
+     0.20s 0.068% 60.92%     28.70s  9.74%  syscall.RawSyscall6
+     0.19s 0.064% 60.98%      7.55s  2.56%  fdb.dev/pkg/fdbgo/fdb.newFutureInt64
+     0.19s 0.064% 61.05%     13.71s  4.65%  fdb.dev/pkg/fdbgo/transport.(*Conn).readLoop
+     0.19s 0.064% 61.11%      7.06s  2.40%  fdb.dev/pkg/relational/core/parser/gen.(*RelationalParser).expressionAtom
+     0.18s 0.061% 61.17%      1.90s  0.64%  fdb.dev/pkg/fdbgo/fdb.(*futureInt64).Get
+     0.18s 0.061% 61.23%      2.69s  0.91%  fdb.dev/pkg/fdbgo/transport.(*Conn).writeContext
+     0.18s 0.061% 61.29%      6.53s  2.22%  fdb.dev/pkg/recordlayer.(*FDBRecordStore).deserializeAndDiscover
+     0.18s 0.061% 61.36%      8.95s  3.04%  fdb.dev/pkg/recordlayer.(*keyValueCursor).OnNext
+     0.18s 0.061% 61.42%     16.18s  5.49%  fdb.dev/pkg/recordlayer.(*mapResultCursor[go.shape.struct { Positional *fdb.dev/pkg/recordlayer/query/executor.PositionalRow; Record *fdb.dev/pkg/recordlayer.FDBStoredRecord[google.golang.org/protobuf/reflect/protoreflect.ProtoMessage]; PrimaryKey fdb.dev/pkg/fdbgo/fdb/tuple.Tuple },go.shape.struct { Positional *fdb.dev/pkg/recordlayer/query/executor.PositionalRow; Record *fdb.dev/pkg/recordlayer.FDBStoredRecord[google.golang.org/protobuf/reflect/protoreflect.ProtoMessage]; PrimaryKey fdb.dev/pkg/fdbgo/fdb/tuple.Tuple }]).OnNext
+     0.18s 0.061% 61.48%     17.40s  5.90%  fdb.dev/pkg/recordlayer/query/executor.(*RecordLayerResultSet).Next
+     0.18s 0.061% 61.54%      3.43s  1.16%  google.golang.org/protobuf/proto.UnmarshalOptions.unmarshalMessageSlow
+     0.17s 0.058% 61.60%      2.41s  0.82%  context.removeChild
+     0.17s 0.058% 61.65%      2.87s  0.97%  fdb.dev/pkg/fdbgo/transport.(*Conn).enqueueOwned
+     0.17s 0.058% 61.71%     10.01s  3.40%  fdb.dev/pkg/relational/core/parser/gen.(*RelationalParser).expression
+     0.16s 0.054% 61.77%      2.88s  0.98%  fdb.dev/pkg/fdbgo/client.buildGetValueRequest
+     0.16s 0.054% 61.82%      8.45s  2.87%  fdb.dev/pkg/fdbgo/fdb.Transaction.GetReadVersion
+     0.16s 0.054% 61.87%      1.59s  0.54%  fdb.dev/pkg/recordlayer.(*GroupingKeyExpression).EvaluateFlat
+     0.16s 0.054% 61.93%      2.81s  0.95%  google.golang.org/protobuf/types/dynamicpb.(*Message).Set
+     0.16s 0.054% 61.98%      3.11s  1.06%  runtime.chansend
+     0.16s 0.054% 62.04%      8.04s  2.73%  runtime.notewakeup
+     0.15s 0.051% 62.09%      2.85s  0.97%  fdb.dev/pkg/fdbgo/client.(*Transaction).stateSet
+     0.15s 0.051% 62.14%      4.35s  1.48%  internal/runtime/syscall/linux.EpollWait
+     0.14s 0.048% 62.19%      2.18s  0.74%  fdb.dev/pkg/fdbgo/fdb.Transaction.Set
+     0.14s 0.048% 62.23%      4.22s  1.43%  github.com/antlr4-go/antlr/v4.(*CommonTokenStream).Sync
+     0.14s 0.048% 62.28%      3.09s  1.05%  google.golang.org/protobuf/internal/order.RangeFields
+     0.14s 0.048% 62.33%      5.14s  1.74%  runtime.newproc
+     0.14s 0.048% 62.38%     13.73s  4.66%  runtime.stopm
+     0.14s 0.048% 62.42%      9.13s  3.10%  syscall.Read (inline)
+     0.14s 0.048% 62.47%     29.92s 10.15%  syscall.Syscall
+     0.13s 0.044% 62.52%      3.34s  1.13%  fdb.dev/pkg/fdbgo/client.(*PendingGet).completeLocked
+     0.13s 0.044% 62.56%     11.76s  3.99%  fdb.dev/pkg/fdbgo/fdb.(*pendingFutureByteSlice).resolve
+     0.13s 0.044% 62.60%     14.08s  4.78%  fdb.dev/pkg/fdbgo/fdb.Transaction.Get
+     0.13s 0.044% 62.65%      4.43s  1.50%  fdb.dev/pkg/relational/core/parser/gen.(*RelationalParser).Constant
+     0.13s 0.044% 62.69%      2.17s  0.74%  google.golang.org/protobuf/reflect/protoreflect.Value.String
+     0.13s 0.044% 62.74%      1.72s  0.58%  runtime.chanrecv1
+     0.12s 0.041% 62.78%      1.79s  0.61%  fdb.dev/pkg/fdbgo/client.(*rywCache).materializeCommit
+     0.12s 0.041% 62.82%      2.73s  0.93%  fdb.dev/pkg/fdbgo/transport.(*Conn).SendFrameDeferredContext
+     0.12s 0.041% 62.86%      7.97s  2.70%  fdb.dev/pkg/recordlayer.(*keyValueCursor).readNextRecord
+     0.12s 0.041% 62.90%      3.18s  1.08%  fdb.dev/pkg/recordlayer/query/executor.(*aggregateCursor).OnNext
+     0.12s 0.041% 62.94%     16.40s  5.56%  fdb.dev/pkg/recordlayer/query/executor.(*errCheckCursor).OnNext
+     0.12s 0.041% 62.98%     15.55s  5.28%  fdb.dev/pkg/relational/core/parser/gen.(*RelationalParser).RecordConstructorForInsert
+     0.12s 0.041% 63.02%      4.08s  1.38%  github.com/antlr4-go/antlr/v4.(*CommonTokenStream).fetch
+     0.12s 0.041% 63.06%      2.16s  0.73%  google.golang.org/protobuf/proto.checkInitializedSlow
+     0.11s 0.037% 63.10%      2.83s  0.96%  fdb.dev/pkg/fdbgo/client.(*Transaction).stateAtomic
+     0.11s 0.037% 63.14%      3.81s  1.29%  fdb.dev/pkg/fdbgo/client.coalesceCommitMutations
+     0.11s 0.037% 63.17%      4.61s  1.56%  fdb.dev/pkg/recordlayer.serializeUnion
+     0.11s 0.037% 63.21%      1.72s  0.58%  fdb.dev/pkg/recordlayer/query/executor.buildInsertRecord
+     0.11s 0.037% 63.25%      7.92s  2.69%  runtime.futexwakeup
+     0.11s 0.037% 63.29%      3.54s  1.20%  runtime.send
+     0.10s 0.034% 63.32%      3.86s  1.31%  context.AfterFunc
+     0.10s 0.034% 63.35%      2.30s  0.78%  context.WithCancelCause
+     0.10s 0.034% 63.39%      1.50s  0.51%  fdb.dev/pkg/fdbgo/wire/types.(*GetValueRequest).writeToBuffer
+     0.10s 0.034% 63.42%      1.85s  0.63%  fdb.dev/pkg/recordlayer.saveWithSplit
+     0.10s 0.034% 63.46%      1.61s  0.55%  fmt.Sprint
+     0.10s 0.034% 63.49%      2.14s  0.73%  github.com/antlr4-go/antlr/v4.(*LexerATNSimulator).Match
+     0.10s 0.034% 63.52%      3.64s  1.24%  google.golang.org/protobuf/proto.MarshalOptions.marshalMessageSlow
+     0.10s 0.034% 63.56%      2.71s  0.92%  sync.(*Mutex).Lock (inline)
+     0.09s 0.031% 63.59%      2.59s  0.88%  fdb.dev/pkg/fdbgo/wire/types.(*GetValueRequest).MarshalFDBPooled
+     0.09s 0.031% 63.62%     65.54s 22.24%  fdb.dev/pkg/recordlayer/query/executor.executeInsert
+     0.09s 0.031% 63.65%      3.29s  1.12%  fdb.dev/pkg/recordlayer/query/executor.executeScanWithRowLayout.storedRecordToQueryResult.func3
+     0.09s 0.031% 63.68%     11.22s  3.81%  fdb.dev/pkg/relational/core/parser/gen.(*RelationalParser).ExpressionWithOptionalName
+     0.09s 0.031% 63.71%      2.32s  0.79%  github.com/antlr4-go/antlr/v4.(*BaseLexer).safeMatch
+     0.09s 0.031% 63.74%      2.72s  0.92%  runtime.closechan.goready.func1
+     0.08s 0.027% 63.77%     21.40s  7.26%  bufio.(*Writer).Flush
+     0.08s 0.027% 63.79%      2.93s  0.99%  bytes.Compare (inline)
+     0.08s 0.027% 63.82%      4.07s  1.38%  context.(*afterFuncCtx).cancel
+     0.08s 0.027% 63.85%     13.68s  4.64%  fdb.dev/pkg/fdbgo/client.(*Transaction).commitAdmitted
+     0.08s 0.027% 63.88%      1.99s  0.68%  fdb.dev/pkg/fdbgo/client.buildCommitInputRequest
+     0.08s 0.027% 63.90%      1.79s  0.61%  fdb.dev/pkg/fdbgo/transport.(*writeCompletion).complete (inline)
+     0.08s 0.027% 63.93%      2.38s  0.81%  fdb.dev/pkg/recordlayer.(*standardIndexMaintainer).insertInt64Entry
+     0.08s 0.027% 63.96%      5.66s  1.92%  google.golang.org/protobuf/proto.UnmarshalOptions.unmarshal
+     0.08s 0.027% 63.98%     21.39s  7.26%  internal/poll.(*FD).Write
+     0.08s 0.027% 64.01%      5.67s  1.92%  runtime.ready
+     0.07s 0.024% 64.04%      3.26s  1.11%  fdb.dev/pkg/fdbgo/client.(*Transaction).Atomic
+     0.07s 0.024% 64.06%      3.44s  1.17%  fdb.dev/pkg/fdbgo/client.(*Transaction).Set
+     0.07s 0.024% 64.08%      4.10s  1.39%  fdb.dev/pkg/fdbgo/client.coalesceWriteConflicts
+     0.07s 0.024% 64.11%      3.53s  1.20%  fdb.dev/pkg/recordlayer/query/executor.(*filterResultCursor).OnNext
+     0.07s 0.024% 64.13%      1.76s   0.6%  fdb.dev/pkg/relational/core/parser/gen.(*RelationalParser).DecimalLiteral
+     0.07s 0.024% 64.15%      4.55s  1.54%  github.com/antlr4-go/antlr/v4.(*BaseParser).Match
+     0.07s 0.024% 64.18%     10.30s  3.49%  net.(*conn).Read
+     0.07s 0.024% 64.20%     21.52s  7.30%  net.(*netFD).Write
+     0.06s  0.02% 64.22%      3.32s  1.13%  fdb.dev/pkg/fdbgo/fdb.Transaction.AddBytes
+     0.06s  0.02% 64.24%      2.70s  0.92%  fdb.dev/pkg/fdbgo/transport.(*Conn).FlushContext
+     0.06s  0.02% 64.26%     11.23s  3.81%  fdb.dev/pkg/fdbgo/transport.(*FrameReader).Read
+     0.06s  0.02% 64.28%     83.33s 28.28%  fdb.dev/pkg/relational/core/embedded.(*paginatingRows).fetchPage.func1
+     0.06s  0.02% 64.30%     10.23s  3.47%  net.(*netFD).Read
+     0.06s  0.02% 64.32%      3.10s  1.05%  runtime.send.goready.func1
+     0.06s  0.02% 64.34%      6.77s  2.30%  sort.pdqsort_func
+     0.06s  0.02% 64.36%      8.99s  3.05%  syscall.read
+     0.05s 0.017% 64.38%     11.81s  4.01%  fdb.dev/pkg/fdbgo/fdb.(*pendingFutureByteSlice).Get
+     0.05s 0.017% 64.40%     16.83s  5.71%  fdb.dev/pkg/fdbgo/fdb.Transaction.GetReadVersion.func1
+     0.05s 0.017% 64.42%     25.96s  8.81%  fdb.dev/pkg/recordlayer.(*FDBRecordStore).updateSecondaryIndexes
+     0.05s 0.017% 64.43%      4.81s  1.63%  fdb.dev/pkg/recordlayer/query/executor.FromStoredRecord
+     0.05s 0.017% 64.45%      6.26s  2.12%  fmt.Fprintf
+     0.05s 0.017% 64.47%     21.57s  7.32%  net.(*conn).Write
+     0.05s 0.017% 64.48%      3.16s  1.07%  runtime.chansend1
+     0.05s 0.017% 64.50%     12.47s  4.23%  runtime.mPark (inline)
+     0.05s 0.017% 64.52%      4.95s  1.68%  runtime.newproc.func1
+     0.05s 0.017% 64.53%      7.26s  2.46%  sort.Slice
+     0.05s 0.017% 64.55%      1.59s  0.54%  sync.(*Mutex).Unlock (partial-inline)
+     0.05s 0.017% 64.57%     21.04s  7.14%  syscall.write
+     0.04s 0.014% 64.58%      4.35s  1.48%  google.golang.org/protobuf/proto.MarshalOptions.marshal
+     0.03s  0.01% 64.59%      2.66s   0.9%  fdb.dev/pkg/fdbgo/client.(*PendingGet).resolveReply
+     0.03s  0.01% 64.60%      1.75s  0.59%  fdb.dev/pkg/recordlayer.(*countMutation).applyMutation
+     0.03s  0.01% 64.61%      1.55s  0.53%  fdb.dev/pkg/relational/core/query/expr.(*Resolver).walkAtomInner
+     0.03s  0.01% 64.62%      1.50s  0.51%  fdb.dev/pkg/relational/core/query/expr.(*Resolver).walkConstant
+     0.03s  0.01% 64.63%      1.94s  0.66%  fdb.dev/pkg/relational/core/query/expr.(*Resolver).walkExpressionInner
+     0.03s  0.01% 64.64%      4.29s  1.46%  github.com/antlr4-go/antlr/v4.(*CommonTokenStream).Consume
+     0.03s  0.01% 64.65%      2.20s  0.75%  google.golang.org/protobuf/proto.checkInitialized
+     0.03s  0.01% 64.66%     10.56s  3.58%  io.ReadFull (inline)
+     0.03s  0.01% 64.67%    106.20s 36.04%  pkg/relational/sqldriver/stress/stress_test_test.(*stressHarness).bulkInsert.func1.1 (inline)
+     0.03s  0.01% 64.68%      1.85s  0.63%  runtime.mapdelete
+     0.03s  0.01% 64.69%      2.45s  0.83%  runtime.resetspinning
+     0.03s  0.01% 64.70%      8.34s  2.83%  runtime.startm
+     0.03s  0.01% 64.71%      1.58s  0.54%  runtime.unlock (inline)
+     0.02s 0.0068% 64.72%      7.09s  2.41%  fdb.dev/pkg/recordlayer.(*FDBRecordStore).shouldMaintainIndex (inline)
+     0.02s 0.0068% 64.73%     23.13s  7.85%  fdb.dev/pkg/relational/core/embedded.(*cascadesGenerator).planDML
+     0.02s 0.0068% 64.73%      4.40s  1.49%  google.golang.org/protobuf/proto.MarshalOptions.Marshal
+     0.02s 0.0068% 64.74%      5.68s  1.93%  google.golang.org/protobuf/proto.Unmarshal
+     0.02s 0.0068% 64.75%      1.59s  0.54%  reflect.typedmemmove (inline)
+     0.02s 0.0068% 64.76%      2.85s  0.97%  runtime.goexit0
+     0.02s 0.0068% 64.76%      5.91s  2.01%  runtime.goready (inline)
+     0.02s 0.0068% 64.77%      2.23s  0.76%  runtime.lock (inline)
+     0.02s 0.0068% 64.78%     21.06s  7.15%  syscall.Write (inline)
+     0.01s 0.0034% 64.78%    123.19s 41.80%  database/sql.withLock
+     0.01s 0.0034% 64.78%      3.61s  1.22%  fdb.dev/pkg/recordlayer/query/plan/cascades.(*MatchLeafRule).OnMatch
+     0.01s 0.0034% 64.79%      7.10s  2.41%  fdb.dev/pkg/recordlayer/query/plan/cascades.prepareReferenceMemberBatch
+     0.01s 0.0034% 64.79%      2.10s  0.71%  fdb.dev/pkg/relational/core/embedded.parseRecordField
+     0.01s 0.0034% 64.79%     30.37s 10.31%  internal/poll.ignoringEINTRIO (inline)
+     0.01s 0.0034% 64.80%      1.55s  0.53%  runtime.unlockWithRank (inline)
+         0     0% 64.80%     17.28s  5.86%  database/sql.(*DB).QueryContext
+         0     0% 64.80%     17.28s  5.86%  database/sql.(*DB).QueryContext.func1
+         0     0% 64.80%      2.57s  0.87%  database/sql.(*DB).QueryRowContext (inline)
+         0     0% 64.80%    105.73s 35.88%  database/sql.(*DB).execDC
+         0     0% 64.80%    105.73s 35.88%  database/sql.(*DB).execDC.func2
+         0     0% 64.80%     17.28s  5.86%  database/sql.(*DB).query
+         0     0% 64.80%     17.28s  5.86%  database/sql.(*DB).queryDC
+         0     0% 64.80%     17.28s  5.86%  database/sql.(*DB).queryDC.func1
+         0     0% 64.80%     17.31s  5.87%  database/sql.(*DB).retry
+         0     0% 64.80%    105.71s 35.87%  database/sql.(*Tx).ExecContext
+         0     0% 64.80%    105.73s 35.88%  database/sql.ctxDriverExec
+         0     0% 64.80%     17.28s  5.86%  database/sql.ctxDriverQuery
+         0     0% 64.80%     17.19s  5.83%  fdb.dev/pkg/fdbgo/client.(*Database).Transact
+         0     0% 64.80%     13.68s  4.64%  fdb.dev/pkg/fdbgo/client.(*PendingCommit).Resolve
+         0     0% 64.80%     13.68s  4.64%  fdb.dev/pkg/fdbgo/client.(*PendingCommit).Resolve.func1
+         0     0% 64.80%      2.69s  0.91%  fdb.dev/pkg/fdbgo/client.(*Transaction).maybeMakeSelfConflicting
+         0     0% 64.80%      2.02s  0.69%  fdb.dev/pkg/fdbgo/client.(*commitInput).commit
+         0     0% 64.80%      2.01s  0.68%  fdb.dev/pkg/fdbgo/client.(*commitInput).commitNative
+         0     0% 64.80%      5.95s  2.02%  fdb.dev/pkg/fdbgo/client.coalesceCommitVectors
+         0     0% 64.80%      2.69s  0.91%  fdb.dev/pkg/fdbgo/client.conflictRangesIntersect (inline)
+         0     0% 64.80%      1.96s  0.67%  fdb.dev/pkg/fdbgo/client.finalizeShipConflicts
+         0     0% 64.80%      2.69s  0.91%  fdb.dev/pkg/fdbgo/client.intersectRanges
+         0     0% 64.80%      1.72s  0.58%  fdb.dev/pkg/fdbgo/fdb.(*futureBase).BlockUntilReady (inline)
+         0     0% 64.80%     17.19s  5.83%  fdb.dev/pkg/fdbgo/fdb.Database.TransactCtx
+         0     0% 64.80%     17.19s  5.83%  fdb.dev/pkg/fdbgo/fdb.Database.TransactCtx.func1
+         0     0% 64.80%     13.68s  4.64%  fdb.dev/pkg/fdbgo/fdb.Transaction.Commit.func1
+         0     0% 64.80%     13.68s  4.64%  fdb.dev/pkg/fdbgo/fdb.newFutureNil.func1
+         0     0% 64.80%      1.70s  0.58%  fdb.dev/pkg/fdbgo/wire/types.(*CommitTransactionRequest).MarshalFDBPooled
+         0     0% 64.80%     17.19s  5.83%  fdb.dev/pkg/recordlayer.(*FDBDatabase).Run
+         0     0% 64.80%     17.19s  5.83%  fdb.dev/pkg/recordlayer.(*FDBDatabase).Run.func1
+         0     0% 64.80%     61.31s 20.80%  fdb.dev/pkg/recordlayer.(*FDBRecordStore).SaveRecordWithOptions (inline)
+         0     0% 64.80%      3.18s  1.08%  fdb.dev/pkg/recordlayer.(*orElseCursor[go.shape.struct { Positional *fdb.dev/pkg/recordlayer/query/executor.PositionalRow; Record *fdb.dev/pkg/recordlayer.FDBStoredRecord[google.golang.org/protobuf/reflect/protoreflect.ProtoMessage]; PrimaryKey fdb.dev/pkg/fdbgo/fdb/tuple.Tuple }]).OnNext
+         0     0% 64.80%     17.19s  5.83%  fdb.dev/pkg/recordlayer.runTransactCtx
+         0     0% 64.80%     65.55s 22.24%  fdb.dev/pkg/recordlayer/query/executor.ExecutePlan
+         0     0% 64.80%     65.55s 22.24%  fdb.dev/pkg/recordlayer/query/executor.executePlanUnwrapped
+         0     0% 64.80%      2.41s  0.82%  fdb.dev/pkg/recordlayer/query/plan/cascades.(*ExpressionRuleCall).MemoizeExpression
+         0     0% 64.80%      2.43s  0.82%  fdb.dev/pkg/recordlayer/query/plan/cascades.(*ImplementInsertRule).OnMatch
+         0     0% 64.80%      2.41s  0.82%  fdb.dev/pkg/recordlayer/query/plan/cascades.(*Memo).MemoizeExpression
+         0     0% 64.80%      2.57s  0.87%  fdb.dev/pkg/recordlayer/query/plan/cascades.(*Memo).admitTrackedReference (inline)
+         0     0% 64.80%      2.56s  0.87%  fdb.dev/pkg/recordlayer/query/plan/cascades.(*Memo).indexReference
+         0     0% 64.80%      2.41s  0.82%  fdb.dev/pkg/recordlayer/query/plan/cascades.(*Memo).memoizeLeaf
+         0     0% 64.80%      2.57s  0.87%  fdb.dev/pkg/recordlayer/query/plan/cascades.(*Memo).track
+         0     0% 64.80%     13.48s  4.57%  fdb.dev/pkg/recordlayer/query/plan/cascades.(*Planner).PlanWithContext (inline)
+         0     0% 64.80%     13.48s  4.57%  fdb.dev/pkg/recordlayer/query/plan/cascades.(*Planner).plan
+         0     0% 64.80%      6.15s  2.09%  fdb.dev/pkg/recordlayer/query/plan/cascades.(*TransformExprTask).Run
+         0     0% 64.80%      6.15s  2.09%  fdb.dev/pkg/recordlayer/query/plan/cascades.(*TransformExprTask).Run.func1
+         0     0% 64.80%      4.51s  1.53%  fdb.dev/pkg/recordlayer/query/plan/cascades.(*TransformImplTask).Run
+         0     0% 64.80%      2.56s  0.87%  fdb.dev/pkg/recordlayer/query/plan/cascades.NewMemo
+         0     0% 64.80%      3.12s  1.06%  fdb.dev/pkg/recordlayer/query/plan/cascades.enumerateLeafCorrelationAliasMaps
+         0     0% 64.80%      3.12s  1.06%  fdb.dev/pkg/recordlayer/query/plan/cascades.matchLeafWithCandidate
+         0     0% 64.80%      9.42s  3.20%  fdb.dev/pkg/recordlayer/query/plan/cascades/expressions.(*ExplodeExpression).HashCodeWithoutChildren
+         0     0% 64.80%      2.53s  0.86%  fdb.dev/pkg/recordlayer/query/plan/cascades/expressions.(*Reference).MemberHashes
+         0     0% 64.80%      3.07s  1.04%  fdb.dev/pkg/recordlayer/query/plan/cascades/expressions.GetCorrelatedToOfExpression
+         0     0% 64.80%      2.45s  0.83%  fdb.dev/pkg/recordlayer/query/plan/cascades/expressions.PreparedMemberDuplicateWithHashes
+         0     0% 64.80%      3.07s  1.04%  fdb.dev/pkg/recordlayer/query/plan/cascades/values.GetCorrelatedToOfValue
+         0     0% 64.80%      9.43s  3.20%  fdb.dev/pkg/recordlayer/query/plan/cascades/values.SemanticHashCode (inline)
+         0     0% 64.80%      2.09s  0.71%  fdb.dev/pkg/recordlayer/query/plan/plans.(*RecordQueryExplodePlan).GetCorrelatedToWithoutChildren
+         0     0% 64.80%    105.74s 35.88%  fdb.dev/pkg/relational/core/embedded.(*EmbeddedConnection).ExecContext
+         0     0% 64.80%     17.28s  5.86%  fdb.dev/pkg/relational/core/embedded.(*EmbeddedConnection).QueryContext
+         0     0% 64.80%     83.90s 28.47%  fdb.dev/pkg/relational/core/embedded.(*EmbeddedConnection).runInCapturedTx
+         0     0% 64.80%     39.67s 13.46%  fdb.dev/pkg/relational/core/embedded.(*cascadesGenerator).Plan
+         0     0% 64.80%     23.24s  7.89%  fdb.dev/pkg/relational/core/embedded.(*cascadesGenerator).planOne
+         0     0% 64.80%     83.34s 28.28%  fdb.dev/pkg/relational/core/embedded.(*cascadesPlan).Execute
+         0     0% 64.80%     83.33s 28.28%  fdb.dev/pkg/relational/core/embedded.(*paginatingRows).fetchPage
+         0     0% 64.80%     16.43s  5.57%  fdb.dev/pkg/relational/core/parser.Parse
+         0     0% 64.80%     16.28s  5.52%  fdb.dev/pkg/relational/core/parser/gen.(*RelationalParser).DmlStatement
+         0     0% 64.80%     16.28s  5.52%  fdb.dev/pkg/relational/core/parser/gen.(*RelationalParser).InsertStatement
+         0     0% 64.80%     16.25s  5.51%  fdb.dev/pkg/relational/core/parser/gen.(*RelationalParser).InsertStatementValue
+         0     0% 64.80%     16.29s  5.53%  fdb.dev/pkg/relational/core/parser/gen.(*RelationalParser).Root
+         0     0% 64.80%     16.28s  5.52%  fdb.dev/pkg/relational/core/parser/gen.(*RelationalParser).Statement
+         0     0% 64.80%     16.28s  5.52%  fdb.dev/pkg/relational/core/parser/gen.(*RelationalParser).Statements
+         0     0% 64.80%      1.94s  0.66%  fdb.dev/pkg/relational/core/query/expr.(*Resolver).WalkExpressionForProjection (inline)
+         0     0% 64.80%    106.20s 36.04%  pkg/relational/sqldriver/stress/stress_test_test.(*stressHarness).bulkInsert.func1
+         0     0% 64.80%     14.82s  5.03%  pkg/relational/sqldriver/stress/stress_test_test.(*stressHarness).timeQuery
+         0     0% 64.80%      3.48s  1.18%  pkg/relational/sqldriver/stress/stress_test_test.runStressHarness.func18
+         0     0% 64.80%      3.43s  1.16%  pkg/relational/sqldriver/stress/stress_test_test.runStressHarness.func20
+         0     0% 64.80%      3.55s  1.20%  pkg/relational/sqldriver/stress/stress_test_test.runStressHarness.func21
+         0     0% 64.80%      3.12s  1.06%  pkg/relational/sqldriver/stress/stress_test_test.runStressHarness.func26
+         0     0% 64.80%      2.57s  0.87%  pkg/relational/sqldriver/stress/stress_test_test.runStressHarness.func9
+         0     0% 64.80%      2.89s  0.98%  runtime.bgsweep
+         0     0% 64.80%     48.51s 16.46%  runtime.gcBgMarkWorker
+         0     0% 64.80%     48.23s 16.37%  runtime.gcBgMarkWorker.func2
+         0     0% 64.80%     20.02s  6.79%  runtime.gcDrainMarkWorkerDedicated (inline)
+         0     0% 64.80%     28.21s  9.57%  runtime.gcDrainMarkWorkerIdle (inline)
+         0     0% 64.80%      2.21s  0.75%  runtime.lockWithRank (inline)
+         0     0% 64.80%     14.66s  4.97%  sync.(*Once).Do (inline)
+         0     0% 64.80%     17.49s  5.93%  testing.tRunner

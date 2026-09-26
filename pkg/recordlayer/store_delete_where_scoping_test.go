@@ -196,13 +196,14 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 	It("refuses a prefix that reaches past an aggregate index's grouping columns", func() {
 		ks := specSubspace()
 
-		// A COUNT is physically keyed by its GROUPING columns alone — the
+		// A SUM is physically keyed by its GROUPING columns alone — the
 		// grouped column is what is being aggregated, not part of the key —
 		// while the store's alignment check normalises a GroupingKeyExpression
 		// to its WHOLE key. So a prefix reaching into the grouped column aligns
 		// positionally, the clear addresses a subspace no entry lives in, the
-		// records go, and the count keeps counting them.
-		countIdx := NewCountIndex("order$count_by_qty", GroupBy(Field("price"), Field("quantity")))
+		// records go, and the sum keeps adding them. (A COUNT has no grouped
+		// column: Java's validator refuses one.)
+		countIdx := NewSumIndex("order$sum_by_qty", GroupBy(Field("price"), Field("quantity")))
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(
 			Concat(Field("quantity"), Field("price"), Field("order_id")))
@@ -230,7 +231,7 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 			// Two reaches into the grouped column.
 			derr := store.DeleteRecordsWhere(tuple.Tuple{int64(7), int64(10)})
 			Expect(derr).To(HaveOccurred())
-			Expect(derr.Error()).To(ContainSubstring("order$count_by_qty"))
+			Expect(derr.Error()).To(ContainSubstring("order$sum_by_qty"))
 
 			rec, rerr := store.LoadRecord(tuple.Tuple{int64(7), int64(10), int64(1)})
 			Expect(rerr).NotTo(HaveOccurred())

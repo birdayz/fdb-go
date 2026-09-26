@@ -1,0 +1,88 @@
+**NAK: RFC-257 WS-E design v8 (Graefe lens)**
+
+- **Tree:** `612fd91e5f07c78c54789633e87ada47899d75c3`
+- **Design:** `rfcs/257-java-upgrade-audit/ws-e-design.md`, SHA-256 `7a3b7ca963ddde5ef98ee653b9d55d6c82657f3fa13447fce0826b9fecfc1e14`. I recomputed it from `git show` and it matches.
+- **Java:** `fdacd162a9c8`.
+- **Method:** read-only. I read the three v7 verdicts, the full v8 design and its diff from v7, the oracle and its evidence, both prototypes and their logs, and the Java and Go sources cited below. I ran no tests.
+
+**v7 findings I verified as resolved**
+- **Partition guard, on rows:** GroupByWithWherePush passes 5/5. The nine scenarios hold 112 tests, and their 6 failures are plan pins only. The other three reds are shape pins.
+- **IN handling:** the IN-union sources, the ArrayDistinct arm and the rebased keys are addressed, and the plan-change count is now 26 distinct entries.
+- **Temporal lane:** the half-open complements, `<>`, the NULL-strict arms, the coercer restricted by target type, and 22007 vs 22F3H.
+- **Citations and counts at the tree:**
+  - NoOpFilterRule at default_rules.go:70.
+  - store_state_cache.go:71-80 and 263-275.
+  - `readIndexState`: 38 lines in 14 files, 35 calls.
+  - UUID parser sites: 6. `EvaluateConstant`: 18 lines.
+  - `.Evaluate(nil)`: 16 code lines.
+- **Harness:** `t.Cleanup` at go_runner_test.go:372 and :421, and 42F63/42F55 (errcode.go:119, 127).
+- **Oracle evidence:** the oracle source SHA-256 `7a8783…` matches, both runs show "Ran 8 of 52", and the M8-annul mutation is recorded.
+- **Prune mechanism, measured:** 5/5 with the prune against 2/5 without. The whole suite executed 94 targets, 89 passed, and the 5 reds are the ones named.
+
+## HIGH
+
+**H1. The boundary prune's class does not depend on which rule made the members, so its safety argument is false (§5.4(c), lines 2065-2079, 2332-2334). SOURCE.**
+- **What the prototype prunes:** any finals with the same operator class, quantifiers, join type and result value (boundary_predicate_prune.go:60-88). The design says the prune acts on "exactly the members this rule creates"; the class definition does not do that.
+- **The rule it misses:** Go runs `NormalizePredicatesRule` in REWRITING (default_rules.go:148). Java runs it only in PLANNING (PlanningRuleSet.java:106-113; it is absent from RewritingRuleSet.java:55-58).
+- **How the original is lost:**
+  - Its CNF yield keeps the select's result value, quantifiers and join type (rule_normalize_predicates.go:98-110), so it falls in the same class as the original.
+  - For `a OR (b AND c)`, both members have a CNF size of 2 (normal_form.go:196-217).
+  - The level rung then prefers the member with more predicates (designated_final.go:164-169), so the CNF member wins and the original is pruned.
+  - PLANNING's normalize rule yields only CNF, so it can never re-derive the original.
+- **Consequences:**
+  - In the target, the original is the REWRITING survivor and PLANNING has both forms.
+  - "Removes only what the target's own REWRITING would never have let reach PLANNING" (2078) is false.
+  - This is RFC-186's objection in predicate form: an alternative PLANNING cannot re-derive.
+- **What the measurement shows:** only 2 corpus entries moved. That shows the corpus is small here, not that the argument holds.
+- **Fix:**
+  - Scope the prune by provenance (a member and its simplification-rule yield), or move `NormalizePredicatesRule` to PLANNING only, as Java does.
+  - Enumerate every REWRITING producer of predicate variants. FilterDropTrue and FilterDedup yield equal forms.
+  - Add a CNF variant to the class-partition test.
+
+**H2. A measured sargability regression is accepted by moving its pin (§4.1(b), lines 654-663).**
+- **What changed:** TestFDB_ConjunctionBinding `nested_ins` (`a IN (1,2) AND b IN (5,4)` over `idx_ab(a,b)`, conjunction_binding_fdb_test.go:77, 120).
+  - Before: two IN-joins, two index comparisons.
+  - Now: `FlatMap(outer=Fetch(InJoin(IndexScan(IDX_A,[=]))), inner=PredicatesFilter(Explode…))` (wse8-explode-suites.log:15018-15020).
+- **What the design does:** calls the pin one that "predates the change" and moves it. It does not measure what the target plans.
+- **Java evidence:** the target nests IN operators over two lists (aggregate-index-tests.yamsql:556: `[IN …] INUNION q0 -> { [IN …] INUNION q1 -> …`).
+- **Fix:**
+  - Add an oracle row for this shape.
+  - Make the second explode an IN source nested over the first, which likely involves the NestedLoopJoin sibling guard, and keep the pin.
+  - Or record the target's measured plan if it really plans the FlatMap.
+  - Treat `in_plan_winner_stability#7` the same way.
+
+## MEDIUM
+
+**M1. The constant-evaluation census still misses a no-context evaluation (lines 1844-1861).**
+- **The site:** `cp.Eval(nil)` at pkg/relational/core/embedded/logical_predicate.go:8072. It evaluates two constant Values with no context at translation, inside the EXISTS Case-1 guard.
+- **Why the census misses it:** the census matches only `EvaluateConstant` and `.Evaluate(nil)`, and "a helper under another name" is excluded. Yet the text says the population is "every … evaluation with no context" and "every other site is assigned."
+- **Fix:** assign this site (analysis only: it declines on error). Either make the matcher cover predicate `Eval(nil)` / `EvalAgainst` with nil, or name this site in the not-covered list.
+
+**M2. The lane admission contradicts itself (lines 1062-1076, 1101-1106).**
+- **The converse lane:** admission requires "the TIMESTAMP comparand" to be uncorrelated, and the not-covered list excludes "any comparison whose TIMESTAMP side is correlated." A TIMESTAMP key against a DATE comparand has a correlated TIMESTAMP side (the key), so both sentences exclude the converse lane that 1101 asserts.
+- **The IN rule:** it decides the lane "from D and the list's element type" and never checks correlation. So `D IN (o.ts)` takes the lane while `D = o.ts` stays textual.
+- **Fix:** state admission by role: the comparand, after Commute, is uncorrelated. For IN, every item must be uncorrelated. Test `D IN (o.ts)` against `D = o.ts`.
+
+**M3. The conditional rule wrapper is not ported (lines 2016-2030).**
+- **What Java does:** it schedules `QueryPredicateSimplificationRule` only when `DecorrelateValuesRule` yields nothing on the same select (RewritingRuleSet.java:50-53; ConditionalCascadesRule.java:42-47).
+- **What Go has:** no conditional wrapper (git grep of the cascades package at the tree: zero hits; the same pathspec finds `DecorrelateValuesRule`).
+- **Consequence:** Go builds `simplify(original)`, which the target never builds. Under a per-class prune, two class winners then cross into PLANNING.
+- **Fix:** port the conditional wrapper, or declare the divergence and state why answers cannot differ.
+
+## LOW
+- **Error timing (lines 1098-1100):** "no plan answers where another fails" over-claims. The scan-range binder evaluates c when the scan opens; the residual evaluates it per row. So over empty input the two plans differ. Restate the claim, or show every uncorrelated TIMESTAMP producer yields canonical text.
+- **Stale label (line 1875):** "(H1 above)" is a leftover review-finding label; the reference dangles.
+- **Rule indexing:** the one-rule `AnyOf` matcher has no `RootOperator` (combinators.go:91-109), so the rule index offers it to every expression (rule_index.go:38-44). This works, but say so or index both roots.
+
+**Measured vs SOURCE**
+- **Measured, read from logs:**
+  - The target's fold rows.
+  - The prune mechanism on the stand-in.
+  - The suite tallies.
+  - The explode rows.
+  - The `nested_ins` shape loss.
+- **SOURCE:**
+  - H1's CNF-over-original pick, which I derived from the rung code.
+  - The target's plan for `nested_ins`, inferred from its nested IN-union plans.
+  - M2 and M3.
+  - The port's own folds, which are not built yet.

@@ -51,7 +51,7 @@ func TestFDB_ThreeSegmentNestedPathResolvesInEveryClause(t *testing.T) {
 		"CREATE TABLE t(id BIGINT, n gst, PRIMARY KEY(id))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_3seg/s WITH TEMPLATE seg3_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_3seg?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_3SEG?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestFDB_ThreeSegmentPathsOfTwoSourcesDoNotCollapse(t *testing.T) {
 		"CREATE TABLE t2(id BIGINT, n gst, PRIMARY KEY(id))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_3seg_amb/s WITH TEMPLATE seg3amb_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_3seg_amb?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_3SEG_AMB?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -273,7 +273,7 @@ func TestFDB_ThreeSegmentNestedPathPlanShape(t *testing.T) {
 		"CREATE TABLE t(id BIGINT, n gst, PRIMARY KEY(id))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_3seg_plan/s WITH TEMPLATE seg3plan_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_3seg_plan?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_3SEG_PLAN?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -341,7 +341,7 @@ func TestFDB_ThreeSegmentGroupKeyGroupsLikeItsTwoSegmentTwin(t *testing.T) {
 		"CREATE TABLE t(id BIGINT, n gst, PRIMARY KEY(id))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_3seg_gb/s WITH TEMPLATE seg3gb_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_3seg_gb?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_3SEG_GB?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

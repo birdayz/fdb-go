@@ -1,0 +1,73 @@
+**NAK: RFC-257 WS-E design v7**
+
+- **Tree:** `9265beef3e5c9dd9ec86caaade526c8137552976`
+- **Design:** `rfcs/257-java-upgrade-audit/ws-e-design.md`, SHA-256 `ffcf4f2edb9e0063d1711250d81b90aa7199c66a96fc1187fc1964a9a8f19dac`, 2495 lines. I recomputed both from `git show` and they match.
+- **Java:** `fdacd162a9c8…`, read from `.git/HEAD`.
+- **Method:** read-only. I read the three v6 verdicts, the full v7 design and its diff from v6, the oracle and harness diffs, the prototype logs, and the Java and Go sources cited below. No tests or probes were run. SOURCE marks a conclusion I drew from reading code, not from a run.
+
+**Checked and correct**
+- **Counts at the tree:** 17 non-test `EvaluateConstant` sites; six UUID parser sites; 36 `readIndexState` calls in 15 files.
+- **Sargability test:** `amount` is BIGINT (plan_harness_test.go:20), so the claim holds.
+- **Prototype suite:** "Executed 94 out of 94 tests: 87 tests pass and 7 fail" (wse8-proto-full.log:56856), and the seven red targets are the ones the design names.
+- **Explode prototype:** matches wse8-explode-findings.txt, and there is no idempotency scan.
+- **Java references:** `ImplementInUnionRule.java:205` and `RecordQueryInUnionOnValuesPlan.java:97-103` are as cited, and the own-row tie holds: no Java rung before planHash separates the two plans.
+- **Harness and oracle:** the `WithoutCancel` seam, the three new UUID pins, and the v7 mutation blocks with their presence checks.
+
+## HIGH
+
+**H1. Deciding in PLANNING is not the same as the target deciding in REWRITING (§5.4(c) "WHO DECIDES", ~1770-1795).**
+- **What the target does:** it prunes the unfolded member in REWRITING on conjunct count, before any access path exists.
+- **What Go does:** both members reach PLANNING, where `planningCostModelCompareWith` ranks max data-access cardinality first (planning_cost_model.go ~198-221), then residual count (~223), then access-path rungs. Only after those come `EstimateCost` and the hash.
+- **The measured population cannot show the difference:** every prototype query scans T in full (wse8-proto-test.go:34-47), so both members always have the same access path.
+- **Counterexample (SOURCE):** `id = 1 AND COALESCE(1 / 0, 5) IS NULL`.
+  - Target: `[false]` wins on count, so no rows.
+  - Go: the unfolded member is a primary-key probe with known max cardinality 1. It beats `PredicatesFilter(Scan(T), [FALSE])` at the cardinality rung (the filter's cardinality is its child's, plan_properties.go:668-673), and Go raises 22012.
+  - An indexed `n > 0` beside an annulling fold reaches the same result through the access-path rungs.
+- **The design also names the wrong rung.** It says `FilterCost`/`EstimateCost` then the hash decide. For the measured deterministic rows the residual-count rung decides. The pins must name the real rung.
+- **Fix:**
+  - Make the target's REWRITING decision for the groups the ported rule rewrites before they cross into PLANNING, for example a scoped `RewritingCostModelLess` prune of predicate-simplification alternatives at the boundary. RFC-186's universal-prune objection does not apply to members that differ only in their predicates.
+  - Or give measured proof that no access path can separate the members.
+  - Add oracle rows plus Go tests for primary-key and secondary-index conjuncts beside an annulling fold, and beside a tie fold.
+
+## MEDIUM
+
+**M1. The temporal lane is not closed under the ported rules or NULL (§4.3(2), ~912-935). (SOURCE)**
+- **Complements break on non-canonical text.**
+  - The mappings are `D > c → D >= floor(c)+1d` and `D <= c → D <= floor(c)`. On canonical text these are complements; on a DATE column holding `'2024-01-01 10:00:00'`, with c at 05:00, both are FALSE.
+  - The ported NOT-over-comparison rule turns `NOT (D > c)` into the sargable `D <= c` in the same memo group, so the residual keeps the row and the index drops it. That is exactly the plan dependence the design says is removed "on EVERY stored text".
+  - Fix: use half-open bounds that are exact text complements: `D <= c ⇔ D < floor(c)+1d`, `D >= c ⇔ D >= ceil(c)`, `D < c ⇔ D < ceil(c)`.
+- **`<>` is missing.** State `<>`/`!=`: `<> FormatDate(c)` at midnight, TRUE for a non-NULL D otherwise.
+- **NULL in the constant arms.**
+  - "FALSE" for a non-midnight `=` and a saturated "TRUE (the full range)" must stay NULL-strict: under NOT, a NULL-D row is otherwise kept.
+  - A literal full index range also returns NULL entries the residual rejects.
+  - Test a NULL D row under each operator and under NOT.
+- **IN and the explode must share one lane.** A per-row IN and its exploded `D = QOV(e)` are members of one group, so the explode's equality must inherit the IN's lane rather than re-derive it from the element type.
+  - As written, a homogeneous TIMESTAMP list compared per row is unspecified.
+  - A "mixed list" is textual per row but takes the lane through the IN-join. That is plan-dependent.
+- **Column-to-column contradiction.** "Lane from static types" contradicts "join equality stays textual". State which constructor admits the lane.
+
+**M2. The guard deletion leaves out the regression the guard was written for (§4.1(b), ~604-622).**
+- Evidence that the guard's reason is stale: one debug print of the IN operand's correlation. The guarded predicate is the post-explode equality.
+- The named wrong-answer case, `TestFDB_GroupByWithWherePush`, was not run on the prototype that existed. The 29 changed plans are shape dumps only, with no rows.
+- Run that test and the scenarios of the 29 plans on the prototype before declaring the guard stale.
+
+## LOW
+
+- **UUID wording (~1196).** The parenthetical is false: `promote_prepared.go` is tracked in `9265beef` (`git grep <tree>` returns line 388), and `--untracked` cannot be run against a tree object. The census count itself is right; state the command that reproduces it at the tree.
+- **Explode deduplication.**
+  - §4.1(b) explodes a Go list comparison "over the literal list". Java's `ListComparison` does not deduplicate.
+  - An explode can land as a FlatMap inner (`in_plan_winner_stability#7`), where duplicate items multiply rows.
+  - The prototype deduplicated through `Evaluate(nil)` plus `distinctInListValues` (rule_in_to_explode.go:145-155), which the design deletes.
+  - Route Go's SQL lists through the ArrayDistinct arm and test a duplicate item.
+- **InUnion rebase:** Java also simplifies the rebased keys (`RecordQueryInUnionOnValuesPlan.java:98-101`). Say whether Go's `TranslatePhaseRoot` path needs that.
+- **Citations:**
+  - `NoOpFilterRule` is at default_rules.go:70, not :63.
+  - `NewPickValue` takes any type (value_pick.go:32-43). The CASE is nullable because `CommonValueType` widens (scalar_function_catalog.go:543), not because of the constructor.
+
+**Measured vs SOURCE**
+- **Measured:** the prototype plan shapes and suite tally; the counts; the evidence records.
+- **SOURCE:**
+  - H1's counterexample, derived from the Go cost ladder.
+  - All of M1.
+  - The rows behind the 29 plan changes and the 0-row case.
+  - The ported set's own red census: the suite ran against a stand-in that uses Go's current simplifier.

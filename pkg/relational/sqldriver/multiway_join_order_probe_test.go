@@ -44,7 +44,7 @@ func TestFDB_MultiwayJoinOrder_Probe(t *testing.T) {
 			"CREATE INDEX t3_by_t2 ON t3 (t2_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_mwjo/s WITH TEMPLATE mwjo_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_mwjo?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_MWJO?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -167,7 +167,7 @@ func TestFDB_NestedJoinUnqualifiedProjection(t *testing.T) {
 			"CREATE INDEX t3_by_t2 ON t3 (t2_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nestproj/s WITH TEMPLATE nestproj_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_nestproj?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_NESTPROJ?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

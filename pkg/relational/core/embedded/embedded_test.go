@@ -256,6 +256,15 @@ func TestTranslateFDBError(t *testing.T) {
 		{"metadata error", &recordlayer.MetaDataError{Message: "bad schema"}, api.ErrCodeSyntaxOrAccessViolation, false},
 		{"record exists", &recordlayer.RecordAlreadyExistsError{PrimaryKey: tuple.Tuple{int64(1)}}, api.ErrCodeUniqueConstraintViolation, false},
 		{"deserialization", &recordlayer.RecordDeserializationError{PrimaryKey: tuple.Tuple{int64(1)}, Cause: fmt.Errorf("bad proto")}, api.ErrCodeDeserializationFailure, false},
+		// Java's order (ExceptionUtil.recordCoreToRelationalException): a
+		// MetaDataException is tested on the exception thrown, not its causes,
+		// and after a deserialization failure, which is tested on the thrown
+		// exception and its cause.
+		{"metadata error under a wrapper", fmt.Errorf("ctx: %w", &recordlayer.MetaDataError{Message: "bad schema"}), api.ErrCodeSyntaxOrAccessViolation, false},
+		{"metadata error only as a cause", &recordlayer.RecordCoreError{Message: "outer", Cause: &recordlayer.MetaDataError{Message: "bad schema"}}, "", true},
+		{"deserialization as a metadata error's cause", &recordlayer.MetaDataError{Message: "m", Cause: &recordlayer.RecordDeserializationError{PrimaryKey: tuple.Tuple{int64(1)}, Cause: fmt.Errorf("bad proto")}}, api.ErrCodeDeserializationFailure, false},
+		// ProtoUtils.InvalidNameException extends MetaDataException.
+		{"invalid name", &recordlayer.InvalidNameError{Message: "name cannot be empty string"}, api.ErrCodeSyntaxOrAccessViolation, false},
 		{"unknown error", fmt.Errorf("something else"), "", true},
 	}
 	for _, tt := range tests {

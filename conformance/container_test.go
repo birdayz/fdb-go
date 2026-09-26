@@ -5,6 +5,7 @@ package conformance_test
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"fdb.dev/gen"
 	gofdb "fdb.dev/pkg/fdbgo/fdb"
@@ -12,6 +13,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
+	. "github.com/onsi/gomega"
 )
 
 // TestEnvironment encapsulates everything needed for a conformance test
@@ -202,4 +204,18 @@ func createOrderMetaData() (*recordlayer.RecordMetaData, error) {
 		return nil, err
 	}
 	return metaData, nil
+}
+
+// writeClusterFileToTemp materialises the cluster file string contents
+// (env.ClusterFile) to a temp file on disk and returns its path. The
+// Go embedded SQL driver's DSN takes a `cluster_file=<path>` option,
+// not the file contents — so the conformance test writes once per It
+// block and removes it on cleanup.
+func writeClusterFileToTemp(contents string) string {
+	f, err := os.CreateTemp("", "fdb-conformance-*.cluster")
+	Expect(err).NotTo(HaveOccurred())
+	_, err = f.WriteString(contents)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(f.Close()).To(Succeed())
+	return f.Name()
 }

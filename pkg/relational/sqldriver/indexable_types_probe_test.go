@@ -52,7 +52,7 @@ func TestFDB_IndexableTypesProbe(t *testing.T) {
 		mwjoMustExec(t, db, ctx,
 			"CREATE SCHEMA TEMPLATE idxty_uuid CREATE TABLE t (id BIGINT, v UUID, PRIMARY KEY (id)) CREATE INDEX t_v ON t (v)")
 		mwjoMustExec(t, db, ctx, "CREATE SCHEMA /testdb_idxty/suuid WITH TEMPLATE idxty_uuid")
-		udb, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_idxty?cluster_file=%s&schema=suuid", clusterFilePath))
+		udb, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_IDXTY?cluster_file=%s&schema=SUUID", clusterFilePath))
 		if err != nil {
 			t.Fatalf("sql.Open: %v", err)
 		}

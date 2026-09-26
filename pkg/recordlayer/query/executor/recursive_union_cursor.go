@@ -182,7 +182,7 @@ func newTempTableInsertCursor(
 	var childCont []byte
 	if len(continuation) > 0 {
 		var cont gen.TempTableInsertContinuation
-		if err := cont.UnmarshalVT(continuation); err != nil {
+		if err := recordlayer.UnmarshalVTAsJava(&cont, continuation); err != nil {
 			return nil, &recordlayer.ContinuationParseError{RawBytes: continuation, Cause: err}
 		}
 		if cont.GetTempTable() != nil {
@@ -423,7 +423,7 @@ func newRecursiveUnionCursor(
 	}
 
 	var cont gen.RecursiveCursorContinuation
-	if err := cont.UnmarshalVT(continuation); err != nil {
+	if err := recordlayer.UnmarshalVTAsJava(&cont, continuation); err != nil {
 		return nil, &recordlayer.ContinuationParseError{RawBytes: continuation, Cause: err}
 	}
 	c.isInitialState = cont.GetIsInitialState()

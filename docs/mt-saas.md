@@ -12,9 +12,11 @@ is the authority. This page is scoped to the multi-tenant question and carries a
 citation for every claim, because an operator guide is worthless unless every sentence in it is
 checkable.
 
-**Verified against:** Java `fdb-record-layer-core` **4.12.11.0** (the wire-compat spec), the
-FoundationDB **7.3.77** client protocol, Go **1.26.x**. These are drift-guarded — this page is on
-`pkg/docscheck`'s `livingDocs` list, so a version bump that leaves it behind fails the build.
+**Current target:** Java `fdb-record-layer-core` **4.14.2.0**, FoundationDB **7.3.77**
+client protocol, Go **1.26.x**. The Java upgrade is incomplete and red (RFC-257);
+this guide's earlier verification belongs to the pre-upgrade baseline identified
+there, not the new target. These target citations are drift-guarded by
+`pkg/docscheck`'s `livingDocs` list.
 
 **Read this first.** Three properties of this deployment shape are not negotiable and are not
 enforced by the engine:
@@ -38,10 +40,12 @@ A tenant is a SQL database path. The DSN is the ordinary one from
 [`operations.md` §1](operations.md#1-connecting-to-a-cluster):
 
 ```
-fdbsql:///t/<tenant-id>?cluster_file=/etc/foundationdb/fdb.cluster&schema=MAIN
+fdbsql:///T/<TENANT-ID>?cluster_file=/etc/foundationdb/fdb.cluster&schema=MAIN
 ```
 
-`/t/<tenant-id>` is **a convention this guide recommends, not a driver feature.** `ParseDSN`
+`/T/<TENANT-ID>` is **a convention this guide recommends, not a driver feature**, and it is written
+in upper case because the DSN takes the path exactly as written while `CREATE DATABASE /t/abc` stores
+`/T/ABC` (DDL folds an unquoted path whole, as Java's does). `ParseDSN`
 accepts any non-empty path and attaches no meaning to any segment
 (`pkg/relational/sqldriver/dsn.go:120`). An empty path or a bare `/` is rejected at
 `sql.Open` time (`pkg/relational/sqldriver/dsn.go:136`), which matters because several fail-closed
@@ -208,7 +212,7 @@ const RestrictDDLToSessionDatabaseParam = "restrict_ddl_to_session_database"
 
 ```go
 db, err := sql.Open("fdbsql",
-    "fdbsql:///t/"+tenantID+
+    "fdbsql:///T/"+tenantID+
         "?cluster_file=/etc/foundationdb/fdb.cluster"+
         "&schema=MAIN"+
         "&restrict_ddl_to_session_database=true")
@@ -263,7 +267,7 @@ catalog's own keyspace.
 
 `RESTRICT_DDL_TO_SESSION_DATABASE` is defense-in-depth. It is not an authorization system: it has
 one subject (the session's database path), no principals, no verbs, and it governs DDL only. DML
-and SELECT are unaffected — a connection opened against `/t/a` reads and writes `/t/a` because that
+and SELECT are unaffected — a connection opened against `/T/A` reads and writes `/T/A` because that
 is the path it was opened with, not because anything checked a permission. Untrusted SQL reaching
 the driver is still a full compromise of that tenant's data. Keep the option on anyway; it turns a
 class of application bugs from cross-tenant destruction into a 42501.
@@ -474,7 +478,7 @@ client metrics at all.** The driver opens the handle itself
 (`pkg/relational/sqldriver/driver.go:211`, `:215`) and stashes it in a package-private cache
 (`driver.go:73`) with no getter. The one inversion is `sqldriver.RegisterBackend`
 (`pkg/relational/sqldriver/driver.go:84`): build the `*client.Database` yourself, register the
-wrapped record-layer database under a key, and open `fdbsql:///t/<id>?cluster_file=<key>`. Note its
+wrapped record-layer database under a key, and open `fdbsql:///T/<ID>?cluster_file=<key>`. Note its
 doc frames it as a deterministic-simulation seam, not a metrics API — it works, but you are using
 it off-label.
 
@@ -495,7 +499,7 @@ handle, so it works before the lazy `Connect` that opens the database:
 timer := sqldriver.EnableStoreTimer("/etc/foundationdb/fdb.cluster")
 http.Handle("/metrics/recordlayer", rlmetrics.Handler(timer))
 
-db, _ := sql.Open("fdbsql", "fdbsql:///t/42?cluster_file=/etc/foundationdb/fdb.cluster")
+db, _ := sql.Open("fdbsql", "fdbsql:///T/42?cluster_file=/etc/foundationdb/fdb.cluster")
 ```
 
 Order does not matter — arming before or after the first connection both work, and repeat calls
@@ -902,7 +906,7 @@ the new template version — because no SQL DDL reaches it.
 ### No online index scrubber — a detection API, not a fleet tool
 
 Java has `OnlineIndexScrubber` with `scrubDanglingIndexEntries()` and `scrubMissingIndexEntries()`
-(Java source at tag 4.12.11.0,
+(Java source at the pre-upgrade baseline identified in RFC-257,
 `fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/OnlineIndexScrubber.java:43`,
 `:92`, `:103`) — chunked, throttled, resumable, and repairing. **Go has no equivalent**, and says so
 at `pkg/recordlayer/index_state.go:567` ("the scrubbing subspaces (Go has no index scrubbing)").

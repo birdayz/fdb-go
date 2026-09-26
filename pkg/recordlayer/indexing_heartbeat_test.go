@@ -5,8 +5,12 @@ import (
 	"errors"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/dst"
+	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"google.golang.org/protobuf/proto"
 )
 
 var _ = Describe("IndexingHeartbeat", func() {
@@ -28,6 +32,123 @@ var _ = Describe("IndexingHeartbeat", func() {
 		Expect(err).NotTo(HaveOccurred())
 		idx = md.GetIndex("test_idx")
 		Expect(idx).NotTo(BeNil())
+	})
+
+	It("writes UUID tuple heartbeat keys compatible with Java", func() {
+		ss := specSubspace()
+		hb := NewIndexingHeartbeat("WIRE_UUID", 60_000, true, nil)
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			if err := hb.CheckAndUpdate(rtx.Transaction(), ss, idx); err != nil {
+				return nil, err
+			}
+			rows, err := rtx.Transaction().GetRange(heartbeatSubspace(ss, idx), fdb.RangeOptions{}).GetSliceWithError()
+			if err != nil {
+				return nil, err
+			}
+			Expect(rows).To(HaveLen(1))
+			key, err := heartbeatSubspace(ss, idx).Unpack(rows[0].Key)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(key).To(Equal(tuple.Tuple{tuple.UUID(hb.indexerID)}))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("recognizes a Java UUID heartbeat and the exact future skew boundary", func() {
+		for _, age := range []int64{-86_400_001, -86_400_000, -86_399_999, 0, 59_999, 60_000} {
+			ss := specSubspace().Sub(age)
+			env := &dst.Env{Clock: dst.NewSimClock(dst.Epoch), Random: dst.NewSeededRandomness(19)}
+			peer := NewIndexingHeartbeat("JAVA_PEER", 60_000, false, env)
+			self := NewIndexingHeartbeat("GO_SELF", 60_000, false, env)
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				data, err := proto.Marshal(&gen.IndexBuildHeartbeat{
+					Info: proto.String("JAVA_PEER"), HeartbeatTimeMilliseconds: proto.Int64(dst.Epoch.UnixMilli() - age),
+				})
+				if err != nil {
+					return nil, err
+				}
+				rtx.Transaction().Set(heartbeatSubspace(ss, idx).Pack(tuple.Tuple{tuple.UUID(peer.indexerID)}), data)
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				return nil, self.CheckAndUpdate(rtx.Transaction(), ss, idx)
+			})
+			if age > -86_400_000 && age < 60_000 {
+				var locked *SynchronizedSessionLockedError
+				Expect(errors.As(err, &locked)).To(BeTrue(), "age=%d", age)
+				Expect(locked.ExistingIndexerID).To(Equal(peer.indexerID.String()))
+			} else {
+				Expect(err).NotTo(HaveOccurred(), "age=%d", age)
+			}
+		}
+	})
+
+	It("refuses legacy and malformed heartbeat keys even in mutual mode", func() {
+		for _, mutual := range []bool{false, true} {
+			for _, key := range []tuple.Tuple{{"legacy-id"}, {int64(7)}} {
+				ss := specSubspace().Sub(mutual, key.Pack())
+				hb := NewIndexingHeartbeat("NEW", 60_000, mutual, nil)
+				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					rtx.Transaction().Set(heartbeatSubspace(ss, idx).Pack(key), []byte{})
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					return nil, hb.CheckAndUpdate(rtx.Transaction(), ss, idx)
+				})
+				var keyErr *IndexingHeartbeatKeyError
+				Expect(errors.As(err, &keyErr)).To(BeTrue(), "mutual=%v key=%v", mutual, key)
+				Expect(keyErr.IndexName).To(Equal(idx.Name))
+				Expect(keyErr.Key).To(Equal([]byte(heartbeatSubspace(ss, idx).Pack(key))))
+			}
+			// Java reads only element 0 of a heartbeat key (getUUID(0),
+			// IndexingHeartbeat.java:201-203), so a (UUID, x) key is that UUID's
+			// heartbeat, not a malformed one: with an empty value it parses as a
+			// heartbeat at time 0, which is stale and blocks no session.
+			key := tuple.Tuple{tuple.UUID{}, int64(1)}
+			ss := specSubspace().Sub(mutual, key.Pack())
+			hb := NewIndexingHeartbeat("NEW", 60_000, mutual, nil)
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				rtx.Transaction().Set(heartbeatSubspace(ss, idx).Pack(key), []byte{})
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				return nil, hb.CheckAndUpdate(rtx.Transaction(), ss, idx)
+			})
+			Expect(err).NotTo(HaveOccurred(), "mutual=%v: a (UUID, x) key is that UUID's stale heartbeat", mutual)
+		}
+	})
+
+	It("reports malformed UUID heartbeat values in diagnostics without blocking builders", func() {
+		ss := specSubspace()
+		peer := NewIndexingHeartbeat("BROKEN", 60_000, true, nil)
+		self := NewIndexingHeartbeat("HEALTHY", 60_000, false, nil)
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			rtx.Transaction().Set(heartbeatSubspace(ss, idx).Pack(tuple.Tuple{tuple.UUID(peer.indexerID)}), []byte{0xff})
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			values, ids, err := ReadHeartbeats(rtx.Transaction(), ss, idx)
+			if err != nil {
+				return nil, err
+			}
+			Expect(ids).To(Equal([]string{peer.indexerID.String()}))
+			Expect(values).To(HaveLen(1))
+			Expect(values[0].GetInfo()).To(Equal("<< Invalid Heartbeat >>"))
+			Expect(values[0].GetCreateTimeMilliseconds()).To(BeZero())
+			Expect(values[0].GetHeartbeatTimeMilliseconds()).To(BeZero())
+			if err := self.CheckAndUpdate(rtx.Transaction(), ss, idx); err != nil {
+				return nil, err
+			}
+			self.Cleanup(rtx.Transaction(), ss, idx)
+			_, ids, err = ReadHeartbeats(rtx.Transaction(), ss, idx)
+			Expect(ids).To(Equal([]string{peer.indexerID.String()}))
+			return nil, err
+		})
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	Describe("CheckAndUpdate in mutual mode", func() {
@@ -100,6 +221,9 @@ var _ = Describe("IndexingHeartbeat", func() {
 			var lockErr *SynchronizedSessionLockedError
 			Expect(errors.As(err, &lockErr)).To(BeTrue())
 			Expect(lockErr.ExistingInfo).To(Equal("EXCLUSIVE_A"))
+			// Java's INDEXER_ID (the refused indexer) and EXISTING_INDEXER_ID.
+			Expect(lockErr.IndexerID).To(Equal(hbB.indexerID))
+			Expect(lockErr.ExistingIndexerID).To(Equal(hbA.indexerID.String()))
 			Expect(lockErr.HeartbeatAgeMs).To(BeNumerically("<", 5000)) // should be very recent
 			Expect(lockErr.LeaseLengthMs).To(Equal(int64(60_000)))
 		})

@@ -79,7 +79,7 @@ func newChainedSpineTranslator(t *testing.T) *cascadesTranslator {
 				{Name: proto.String("ID"), Number: proto.Int32(1), Label: opt, Type: i64},
 				{Name: proto.String("A"), Number: proto.Int32(2), Label: rep, Type: msg, TypeName: tn("AElem")},
 			}},
-			{Name: proto.String("UnionDescriptor"), Field: []*descriptorpb.FieldDescriptorProto{
+			{Name: proto.String("RecordTypeUnion"), Field: []*descriptorpb.FieldDescriptorProto{
 				{Name: proto.String("_T4"), Number: proto.Int32(1), Label: opt, Type: msg, TypeName: tn("T4")},
 				{Name: proto.String("_T"), Number: proto.Int32(2), Label: opt, Type: msg, TypeName: tn("T")},
 			}},

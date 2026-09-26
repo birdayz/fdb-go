@@ -1,0 +1,71 @@
+**Verdict: NAK.** Tree `cec59465947ae903c45373d8935f91aab96628e0`, `rfcs/257-java-upgrade-audit/ws-e-design.md` SHA256 `a1649fa04ee44a68b45fc3133b7749fc9abb11ee18a519ea4acb97a62fb30baf` (hash re-verified). Java was checked at `fdacd162a9`. The findings need more than 900 words.
+
+**What holds:**
+- **Oracle populations:** `ws-e2-4.log` has 37 WS-E2 lines; `ws-e3-2.log` has 12 WS-E3 lines and "1 Passed".
+- **v1 answers:** the untyped bound NULL, the declared ordinal defect, the UTF-8 refusal, the bool snapshot flag and both backstops.
+- **Cache key:** it is injective. Both engines keep doubled quotes inside quoted identifiers. Go already has a planner-options key component, and Java's key carries the whole `PlannerConfiguration` (`AstNormalizer.java:696`).
+
+### High
+
+1. **Constants versus ConstantObjectValues, and where folding happens (§5.4, §1.5, §4.1).**
+   - Java's default value rule set never folds a ConstantObjectValue (`DefaultValueSimplificationRuleSet.java:50-54`). Only predicate simplification runs `DereferenceConstantObjectValueRuleSet` (`ValuePredicateSimplificationRule.java:62-71`).
+   - That rule set turns a NULL COV into `NullValue` and a BOOLEAN COV into a non-null `LiteralValue` (`DereferenceConstantObjectValueRule.java:70-83`). Then it runs `EvaluateConstantPromotionRule` and `EvaluateConstantCoalesceRule` (`DereferenceConstantObjectValueRuleSet.java:50-56`).
+   - Consequence: `WHERE COALESCE(TRUE, 1/0 = 1)` folds in Java. Under "simplifyCoalesce stops folding them", Go raises.
+   - In projections Java never runs the coalesce rule, but Go's `SimplifyValue` does (`simplifier_value.go:43`).
+   - The same predicate-only placement decides IN/array NULL timing. "At planning for constants" (§4.1) is still unmeasured, which leaves v1's timing finding half-open.
+   - §1.5's "never folds a PatternForLikeValue *whose evaluation fails*" implies a valid pattern does fold. That contradicts the target's EXPLAIN (`LIKE @c7 ESCAPE 'ab'`).
+   - Fix: state the mapping between Go's ConstantValue/BooleanValue/NullValue and Java's COV/LiteralValue/NullValue. Port both folding regimes, and keep PatternForLikeValue unfoldable.
+   - Probes needed: a boolean-first COALESCE with an erroring tail, in WHERE and in SELECT; `IN (CAST(NULL AS BIGINT))` and `[CAST(NULL AS BIGINT)]` over an empty table.
+
+2. **"Nullable iff any argument is" for every scalar function is unsound and not Java's rule (§5.3).**
+   - Java's MOD, BITAND/BITOR/BITXOR and BITMAP_* are `ArithmeticValue`s, which are always nullable (`ArithmeticValue.java:126-127`, `Type.java:404-405`). Go implements them as scalar functions (`scalar_function_catalog.go:359,397-410`), so `MOD(5,2)` would become NOT NULL in Go.
+   - Several Go functions return NULL on non-NULL input: LN and LOG out of domain (`values.go:3160-3190`), SQRT on Inf/NaN, NULLIF, and type-mismatch declines. The new rule would type all of them NOT NULL.
+   - Go consumes that nullability in uniqueness enforcement (`physical_equality_shape.go:166`) and in promotion (`promote_prepared.go:341` raises `NonNullableFieldError`). So a wrong NOT NULL can change results, not just metadata.
+   - The oracle cannot catch this: every nullability probe has a nullable argument, `id` included. "Any" is never told apart from "always", even for GREATEST.
+   - Fix: derive nullability per catalog entry from the Java class it ports, list the NULL-introducing entries, and test every entry. Add all-NOT-NULL probes: `GREATEST(1,5)`, `COALESCE(1,2)`, `MOD(5,2)`, `BITAND(5,3)`.
+
+3. **A Go `int` binds as LONG, and the strict lattice rejects it for INTEGER columns (§4.3).**
+   - The idiomatic `db.Exec("INSERT INTO I VALUES (?, ?)", 1, 7)` passes an `int`, which is int64, and §4.3 types int64 as LONG.
+   - `PromoteValue` has no LONG→INT and no DOUBLE→FLOAT (`PromoteValue.java:76-83`). So a typical INSERT or UPDATE of an `int` into an INTEGER column changes from success to 22000, and a `float64` into a FLOAT column does the same.
+   - This is the section's largest user-visible break, and it is neither declared nor tested (v1 storage #7).
+   - Decide explicitly: either type an `int` as literals are typed (INT when it fits), or declare the break. Measure DOUBLE→FLOAT and UPDATE.
+
+### Medium
+
+4. **The snapshot read census is incomplete (§6.4).**
+   - Java's rank, text and vector reads also follow isolation (`RankIndexMaintainer.java:318`, `TextIndexMaintainer.java:539`, `VectorIndexMaintainer.java:225`).
+   - Go has its own isolation-bearing paths: `ranked_set.go`, `hnsw.go`, `spfresh_*.go`, `bitmap_value_index_maintainer.go`, `aggregate_function.go` and `permuted_min_max_index_maintainer.go`. "Mapped at the scan boundary" does not cover them. List each site and pin each on real FDB.
+   - Citation fix: `FDBRecordStore.java:1256` is `recordExistsAsync`, not a range scan.
+
+5. **Snapshot admission has gaps (§6.3).**
+   - DDL on a snapshot connection is 0A000 in Java (`PlanGenerator.java:171,507-517`), and the umbrella requires it. The design says nothing about it.
+   - "EXPLAIN admitted" is too broad. Java classifies the explained statement, so `EXPLAIN INSERT` counts as an insert and is rejected. Both cases are unmeasured.
+
+6. **Target defect in GREATEST over doubles and floats (§5).** `GREATEST_DOUBLE` and `GREATEST_FLOAT` start from `Double.MIN_VALUE` and `Float.MIN_VALUE` (`VariadicFunctionValue.java:417-432`). So GREATEST over all-negative values returns 4.9E-324. Measure it and declare it, as the ordinal defect was. Also, the operator map the design cites (`:483-490`) is COALESCE's only; GREATEST and LEAST have no RECORD or ARRAY entries.
+
+7. **Section 0's labelling promise is broken.** Line 28 promises SOURCE labels, but no claim carries one. These are unlabelled source-only claims:
+   - the read scope;
+   - the DML refusal before the child is touched;
+   - IN/array NULL timing;
+   - the LONG-literal change from 22003 to 22000;
+   - UPDATE assignment;
+   - EXPLAIN admission;
+   - the GREATEST/LEAST "any" rule.
+
+8. **Acceptance can't pass as defined (lines 48-50, §8).**
+   - The first Describe still binds "int" as int64 (`ws_e_probe_conformance_test.go:235-236`), so Go never takes the INT lane.
+   - That Describe still pins the JSON float `2.147483648e+09` (`:160`) and renders no type or nullability, while §8 compares both.
+   - `like_enum_operand` has no Go SQL route before WS-J F6, and the design does not declare it.
+
+9. **Parameter-count errors are unspecified** (v1 finding still open). Java raises 42F02 "No value found for parameter …" for a missing parameter and ignores extra ones (`PreparedParams.java:71-82`, `ErrorCode.java:129`). Go returns 22023 for both today.
+
+10. **The nullable-array rule keyed on the "parent parse node" is not structural.** Parentheses, CAST or CASE around an operand would flip the outcome of `([1,NULL]) = [1,NULL]`. Define the rule on the consuming comparison Value, list the transparent wrappers, and write the not-covered list first.
+
+### Low
+
+11. `cascades.md:60` still says constant-pattern-only admission is a pre-existing Go gap. §4.3 (lines 454-455) says both audits are corrected, but only `relational.md` was.
+12. DRY RUN leaving the key text is safe only because DML plans are never cached (`cascades_generator.go:1198`). Pin that invariant.
+13. The LIKE differential should run against a UTF-16 transliteration of `matchLike`, so the rune-equivalence claim is tested rather than assumed. "Every string is valid UTF-8" holds for the pattern and escape, not for stored operands.
+14. Only `[]byte` copying is specified; the slices bound to `IN ?` alias the caller's memory too. An untyped NULL in a projection, arithmetic or INSERT (`SELECT ?` bound to nil) is unmeasured.
+15. The v2-extended Describe has no mutation evidence.
+16. Java runs the IN bare-NULL check before the cache lookup (`AstNormalizer.java:497-503`). State where Go runs it.

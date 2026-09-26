@@ -1,0 +1,56 @@
+**NAK.** Tree `f041bee2e4f12ba0ee362732fe5393761ceb6d34`; design SHA256 `a0596896a4b4c5ec5efc577759369eafe0009f09cbb51415c3bc175a892e9446`, which I recomputed and which matches. Java is at `fdacd162a`. This was a read-only review: I ran no tests, probes or mutations. "Measured" below means a run record exists; "source" means I only read the code.
+
+The blocking problem is in landed code: the new shape-(d) refusal also rejects valid SQL templates that Java loads.
+
+## Checked and correct
+- **Hashes and tallies.** 14 of the 48 evidence-v5 hashes match the tree's blobs, and I checked no more. The tally 166+4+180+4+24+101 = 479 reconciles. `wsj5-vr-jvm.log` has 23 `VALIDATE_RECORDS` lines, and the executed-set file lists 4 targets.
+- **Records loading.** One `setRecords` now holds the guard, the union search and the name check. The loader's order matches Java's `loadFromProto` (RecordMetaDataBuilder.java:272-278). "Unknown record type" is measured on both engines.
+- **`literalKeyCarrier`.** It refuses every pair it does not recognise, and a mutation reddens it.
+- **Duplicate option.** The spec now runs Go's own loader beside the JVM.
+- **WIDENED is reachable.** The template-save validator checks tables and columns only, so it cannot refuse a WIDENED index first. At rebind, the root check (`metadata_evolution_validator.go:569`) runs because WIDENED keeps the last-modified version (`:535`).
+- **CHANGED leaves no stale entries.** `MarkIndexDisabled` clears the index data (`index_state.go:320-323`).
+- **Guard index.** `TEMPLATES_VALUE_INDEX` has existed since the catalog was created (`94b714ff5`), so existing catalogs have it built.
+- **Measured:** the four `top_*` shapes (the LIMIT refusal loses no Go capability, because Go rejects LIMIT in an index definition today), the INT-edge ordered projection, and the F2b FLOAT entries Go writes compared byte for byte with the target's.
+- **Gate records:** the plan-cache comments are correct, and the merge gate is recorded in umbrella gate 8 and in TODO.md.
+
+## HIGH
+**1. Shape (d)'s refusal rejects Java-valid SQL templates (source, not probed).**
+- `refuseAmbiguousLegacyUnion` (`metadata_proto.go:415`, called at `:265`) refuses any file that has a top-level message named `UnionDescriptor` other than the union it found.
+- A quoted table or struct named `"UnionDescriptor"` produces exactly that message. `ToProtoBufCompliantName` leaves the name unchanged (`protoname.go:68-87`, `builder.go:500`), and no name is reserved. It sits beside `RecordTypeUnion`, which carries the UNION usage option.
+- Java's `fetchUnionDescriptor` gives that name no special meaning (RecordMetaDataBuilder.java:322-358), so the target creates and loads the template.
+- Go's own DDL also builds and saves it (`builder.go:483` never calls the refusal), and then the catalog cannot load it (`fdb_template_catalog.go:280`).
+- The pre-upgrade loader would have taken the table message for the union, so Go never wrote records under it. There is nothing for the refusal to protect.
+- **The planned migration makes it worse.** Its default for (d) is the pre-upgrade choice (design :1249). That would move the UNION usage onto the table message and remove it from `RecordTypeUnion`, corrupting a template Java wrote. `SaveMigratedLegacyMetaData` also writes to `FDBMetaDataStore`, not the catalog.
+- **False claims:** design :1219 ("framed by the OTHER message") and :1228 ("SQL DDL produces none of them"), plus the matching CHANGELOG and DIVERGENCES text.
+- **Fix:**
+  - Do not refuse when the legacy-named message is itself the type of one of the found union's fields.
+  - Never default the migration in that case.
+  - Add JVM shapes: a target-created `CREATE TABLE "UnionDescriptor"` and a `CREATE TYPE AS STRUCT "UnionDescriptor"`, each loaded through Go's catalog.
+  - Correct the three population claims.
+
+## MEDIUM
+**2. Section 4's EQUIVALENT and field-by-field claims go beyond what Go can do (source).**
+- Template save loads the latest version through `LoadSchemaTemplate` → `RecordMetaDataFromProto` (`save_schema_template.go:32-35`).
+- On that path, `indexFromProto` folds the deprecated `index_type` into `type` plus a `unique` option (`:666`). `indexToProto` builds a fresh `gen.Index` (`:499`) and drops `value_expression`, extensions and per-index unknown fields.
+- So the comparison "unknown fields and extensions included" (:940-941) is vacuous, and "kept whole … byte for byte" (:951) is false.
+- **Fix:** specify that `carryNumbering` reads the raw catalog bytes and that the save re-emits EQUIVALENT Index protos verbatim, or narrow the claim and declare the rest. Add a unit case with a stored index carrying an extension or `index_type`.
+
+**3. The merge unit leaves two pieces unplaced (source).**
+- **(a) Delete and restore.** §8 step 1 (:1423), gate 8 and the TODO block name only "the guard and the gone-version refusal". That refusal is what strands a schema after `DeleteTemplateVersion`; today `validateSchemaRebind` returns nil there (`fdb_store_catalog.go:311-313`) and repair proceeds. The `DeleteTemplateVersion` refusal and `RestoreTemplateVersion` (:354) must be in step 1 and in both gate records.
+- **(b) The lane refusal at template save.** 3.2's refusal (:562) depends on §6's lane table (step 6), outside the unit. The path it closes, a lane-less or reverse-moved key admitted as CHANGED under `allowIndexRebuilds`, opens in step 3. Either port Java's lane table (ArithmeticValue.java:500-522, a small data table) into step 3, or record the window. Also declare the refusal in §9: Java's programmatic API stores such keys.
+
+## LOW
+4. **Restore has no integrity check.** `RestoreTemplateVersion` bypasses the guard and relies on documentation. If the restored metadata's version is above a bound store's header version, the next open rebuilds or clears indexes under the wrong metadata; if it is equal, rows are misread. At minimum, refuse unless the version equals the bound stores' header versions (the bound schemas can be listed from `TEMPLATES_VALUE_INDEX`).
+5. **Index-level load precedence still differs.** Java checks each index's record types before `new Index`, one index at a time (RecordMetaDataBuilder.java:187-219). Go runs `indexFromProto` over all indexes first (`metadata_proto.go:273-281`). So an unknown record type combined with a repeated option gives Go's `DuplicateIndexOptionError` where Java says "Unknown record type". 4c's "then the rest" claims more than this; add a JVM shape.
+6. **:504 is ambiguous.** "Coverage surface exposes the key's operand fields" can be read as letting the index cover `d`, but the entry holds `d + d`. Reword: a function-key column is never covered, and its operands come from the fetched record.
+7. **FLOAT saturation is unmeasured.** The ±∞ and 2^63 rows fail on ARITH_D first (`arith_f=-` in the log), so the FLOAT arm's saturation never runs on either engine. Add rows where only the FLOAT column saturates or overflows.
+8. **Stale text.**
+   - §0 :69-74 and :193-197 still say 59 shapes, 475 runs and evidence-v4; the tree has 63, 479 and evidence-v5.
+   - "F12 moves three runs" (:100, §4b) predates v5's measurement of 19 class moves plus 1 digest-only move.
+   - The v5 mutation header says "restored=True for all eight" but lists nine mutations.
+   - §9 omits the (d) refusal, the `DeleteTemplateVersion` refusal and the lane refusal.
+9. **Migration tests are Go-only.** The JVM should also load each migrated file, including a legacy file that does not import `record_metadata_options.proto`.
+
+## Measured vs. hypothesis
+- **Measured:** the load order, the 23 descriptor shapes, the top-node precedence, the INT edge, the F2b DOUBLE and finite/NaN FLOAT bytes, and the duplicate-option message on both engines.
+- **Source-only:** findings 1, 2, 3 and 5. The carry rule, the guard, the restore, the lane refusal and the 4c migration are still unbuilt.

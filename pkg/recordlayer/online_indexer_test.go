@@ -3,12 +3,14 @@ package recordlayer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -222,11 +224,14 @@ var _ = Describe("OnlineIndexer", func() {
 			mdWithIndex, err := builder.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			// Create the store first.
+			// Create the store first, the index DISABLED so the build below runs.
 			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-				_, err := NewStoreBuilder().
+				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).CreateOrOpen()
-				return nil, err
+				if err != nil {
+					return nil, err
+				}
+				return nil, disableIndexes(store, priceIndex)
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -536,8 +541,9 @@ var _ = Describe("OnlineIndexer", func() {
 			ks := specSubspace()
 
 			// Record-type-prefix PKs so each type's records live in a contiguous
-			// record-type-keyed sub-range. Two Order indexes → a multi-target build (the
-			// preset fires only for multi-target/mutual).
+			// record-type-keyed sub-range. Two Order indexes → a multi-target build (a
+			// single-target records scan presets too, as Java's does: conformance "The
+			// online build presets a string-keyed record type's range as Java does").
 			typedBuilder := func() *RecordMetaDataBuilder {
 				b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 				b.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
@@ -586,7 +592,7 @@ var _ = Describe("OnlineIndexer", func() {
 			// markWriteOnly + preset, then verify the out-of-range gaps are marked built:
 			// only [begin, end) (Order's records range) remains missing. Without the preset,
 			// the whole space would be missing (revert-proof).
-			Expect(indexer.markWriteOnly(ctx)).To(Succeed())
+			Expect(indexer.markWriteOnly(ctx)).Error().To(Succeed())
 			Expect(indexer.maybePresetRecordsRange(ctx)).To(Succeed())
 			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
@@ -1227,72 +1233,156 @@ var _ = Describe("OnlineIndexer", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("rejects source index that is not VALUE type", func() {
-			ks := specSubspace()
-
-			countIndex := NewCountIndex("Order$count", GroupBy(Field("price")))
-			qtyIndex := NewIndex("Order$qty", Field("quantity"))
-			_, builder := baseMetaData()
-			builder.AddIndex("Order", countIndex)
-			builder.AddIndex("Order", qtyIndex)
-			md, err := builder.Build()
+		// Java validates the source index at session time
+		// (IndexingByIndex.validateSourceAndTargetIndexes), so the builder accepts
+		// these indexers and the build catcher answers the failure: a records
+		// scan by default, the validation error under ForbidRecordScan.
+		type sourceMismatch struct {
+			name    string
+			message string
+			// indexes returns the source, the target, and the source-only
+			// metadata the records are written under.
+			indexes func() (source, target *Index, mdSrc, mdBoth *RecordMetaData)
+		}
+		sourceMismatches := []sourceMismatch{
+			{
+				name:    "the source index is not a VALUE index",
+				message: "source index is not a VALUE index",
+				indexes: func() (*Index, *Index, *RecordMetaData, *RecordMetaData) {
+					countIndex := NewCountIndex("Order$count", GroupAll(Field("price")))
+					qtyIndex := NewIndex("Order$qty", Field("quantity"))
+					_, b1 := baseMetaData()
+					b1.AddIndex("Order", countIndex)
+					mdSrc, err := b1.Build()
+					Expect(err).NotTo(HaveOccurred())
+					_, b2 := baseMetaData()
+					b2.AddIndex("Order", countIndex)
+					b2.AddIndex("Order", qtyIndex)
+					mdBoth, err := b2.Build()
+					Expect(err).NotTo(HaveOccurred())
+					return countIndex, qtyIndex, mdSrc, mdBoth
+				},
+			},
+			{
+				name:    "the source index creates duplicates",
+				message: "source index creates duplicates",
+				indexes: func() (*Index, *Index, *RecordMetaData, *RecordMetaData) {
+					fanOutIndex := NewIndex("Order$tags", FanOut("tags"))
+					qtyIndex := NewIndex("Order$qty", Field("quantity"))
+					_, b1 := baseMetaData()
+					b1.AddIndex("Order", fanOutIndex)
+					mdSrc, err := b1.Build()
+					Expect(err).NotTo(HaveOccurred())
+					_, b2 := baseMetaData()
+					b2.AddIndex("Order", fanOutIndex)
+					b2.AddIndex("Order", qtyIndex)
+					mdBoth, err := b2.Build()
+					Expect(err).NotTo(HaveOccurred())
+					return fanOutIndex, qtyIndex, mdSrc, mdBoth
+				},
+			},
+			{
+				name:    "the source and target index different record types",
+				message: "source index's type is not equal to target index's",
+				indexes: func() (*Index, *Index, *RecordMetaData, *RecordMetaData) {
+					nameIndex := NewIndex("Customer$name", Field("name"))
+					qtyIndex := NewIndex("Order$qty", Field("quantity"))
+					_, b1 := baseMetaData()
+					b1.AddIndex("Customer", nameIndex)
+					mdSrc, err := b1.Build()
+					Expect(err).NotTo(HaveOccurred())
+					_, b2 := baseMetaData()
+					b2.AddIndex("Customer", nameIndex)
+					b2.AddIndex("Order", qtyIndex)
+					mdBoth, err := b2.Build()
+					Expect(err).NotTo(HaveOccurred())
+					return nameIndex, qtyIndex, mdSrc, mdBoth
+				},
+			},
+		}
+		seedOrders := func(ks subspace.Subspace, md *RecordMetaData) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				for i := int64(1); i <= 3; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i)), Tags: []string{"a", "b"}})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
 			Expect(err).NotTo(HaveOccurred())
+		}
+		for _, tc := range sourceMismatches {
+			It("falls back to a records scan when "+tc.name, func() {
+				ks := specSubspace()
+				source, target, mdSrc, mdBoth := tc.indexes()
+				seedOrders(ks, mdSrc)
 
-			_, err = NewOnlineIndexerBuilder().
-				SetDatabase(sharedDB).
-				SetMetaData(md).
-				SetIndex(qtyIndex).
-				SetSourceIndex(countIndex).
-				SetSubspace(ks).
-				Build()
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("must be a VALUE index"))
-		})
+				indexer, err := NewOnlineIndexerBuilder().
+					SetDatabase(sharedDB).SetMetaData(mdBoth).SetIndex(target).
+					SetSourceIndex(source).SetSubspace(ks).
+					SetMarkReadable(false). // keep the stamp for inspection
+					Build()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = indexer.BuildIndex(ctx)
+				Expect(err).NotTo(HaveOccurred())
 
-		It("rejects source index whose root expression creates duplicates", func() {
-			ks := specSubspace()
+				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(mdBoth).SetSubspace(ks).Open()
+					Expect(err).NotTo(HaveOccurred())
+					stamp, err := store.LoadIndexingTypeStamp(target)
+					Expect(err).NotTo(HaveOccurred())
+					// The first attempt stamped BY_INDEX before validating the
+					// source; the records scan overwrote it.
+					Expect(stamp.GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_BY_RECORDS))
+					missing, err := NewIndexingRangeSet(store.subspace, target).FirstMissingRange(rtx.Transaction())
+					Expect(err).NotTo(HaveOccurred())
+					Expect(missing).To(BeNil())
+					// WRITE_ONLY is not scannable; count the entries raw.
+					begin, end := store.IndexSubspace(target).FDBRangeKeys()
+					entries, err := rtx.Transaction().GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(entries).To(HaveLen(3))
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+			})
 
-			fanOutIndex := NewIndex("Order$tags", FanOut("tags"))
-			qtyIndex := NewIndex("Order$qty", Field("quantity"))
-			_, builder := baseMetaData()
-			builder.AddIndex("Order", fanOutIndex)
-			builder.AddIndex("Order", qtyIndex)
-			md, err := builder.Build()
-			Expect(err).NotTo(HaveOccurred())
+			It("returns the validation error under ForbidRecordScan when "+tc.name, func() {
+				ks := specSubspace()
+				source, target, mdSrc, mdBoth := tc.indexes()
+				seedOrders(ks, mdSrc)
 
-			_, err = NewOnlineIndexerBuilder().
-				SetDatabase(sharedDB).
-				SetMetaData(md).
-				SetIndex(qtyIndex).
-				SetSourceIndex(fanOutIndex).
-				SetSubspace(ks).
-				Build()
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("creates duplicates"))
-		})
-
-		It("rejects source and target on different record types", func() {
-			ks := specSubspace()
-
-			// Source on Customer, target on Order.
-			nameIndex := NewIndex("Customer$name", Field("name"))
-			priceIndex := NewIndex("Order$price", Field("price"))
-			_, builder := baseMetaData()
-			builder.AddIndex("Customer", nameIndex)
-			builder.AddIndex("Order", priceIndex)
-			md, err := builder.Build()
-			Expect(err).NotTo(HaveOccurred())
-
-			_, err = NewOnlineIndexerBuilder().
-				SetDatabase(sharedDB).
-				SetMetaData(md).
-				SetIndex(priceIndex).
-				SetSourceIndex(nameIndex).
-				SetSubspace(ks).
-				Build()
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("does not cover source index type"))
-		})
+				indexer, err := NewOnlineIndexerBuilder().
+					SetDatabase(sharedDB).SetMetaData(mdBoth).SetIndex(target).
+					SetSourceIndex(source).SetSubspace(ks).
+					SetPolicy(&IndexingPolicy{ForbidRecordScan: true}).
+					Build()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = indexer.BuildIndex(ctx)
+				var validation *IndexingValidationError
+				Expect(errors.As(err, &validation)).To(BeTrue(), "got %v", err)
+				Expect(validation.Message).To(Equal(tc.message))
+				Expect(validation.IndexName).To(Equal(target.Name))
+				Expect(validation.SourceIndexName).To(Equal(source.Name))
+				Expect(validation.IndexerID).To(Equal(indexer.indexerID), "Java's INDEXER_ID")
+				Expect(validation.IndexerID.String()).NotTo(Equal("00000000-0000-0000-0000-000000000000"))
+				// Java validates the source after the state transaction has
+				// committed, so the refused session leaves the target WRITE_ONLY
+				// under a BY_INDEX stamp; the next session continues or rebuilds it.
+				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(mdBoth).SetSubspace(ks).Open()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(store.GetIndexState(target.Name)).To(Equal(IndexStateWriteOnly))
+					stamp, err := store.LoadIndexingTypeStamp(target)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(stamp.GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_BY_INDEX))
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+			})
+		}
 
 		It("maintains target index after BY_INDEX build when new records are inserted", func() {
 			ks := specSubspace()
@@ -1388,9 +1478,11 @@ var _ = Describe("OnlineIndexer", func() {
 					Expect(err).NotTo(HaveOccurred())
 				}
 
-				// Mark WRITE_ONLY manually + save BY_RECORDS stamp.
+				// Retain the existing entries but inject unfinished range tracking
+				// to model a builder that wrote entries before recording progress.
 				_, err = store.MarkIndexWriteOnly("Order$price")
 				Expect(err).NotTo(HaveOccurred())
+				NewIndexingRangeSet(ks, priceIndex).Clear(rtx.Transaction())
 
 				stamp := &gen.IndexBuildIndexingStamp{
 					Method: gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
@@ -1452,7 +1544,7 @@ var _ = Describe("OnlineIndexer", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("rejects stamp mismatch without ForceStampOverwrite policy", func() {
+		It("rejects a stamp mismatch under IfMismatchPrevious ERROR, and a BY_INDEX stamp naming no source under CONTINUE", func() {
 			ks := specSubspace()
 
 			priceIndex := NewIndex("Order$price", Field("price"))
@@ -1485,12 +1577,13 @@ var _ = Describe("OnlineIndexer", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Phase 2: BY_RECORDS build without policy → PartlyBuiltError.
+			// Phase 2: a BY_RECORDS build under ERROR returns the mismatch.
 			indexer, err := NewOnlineIndexerBuilder().
 				SetDatabase(sharedDB).
 				SetMetaData(md).
 				SetIndex(priceIndex).
 				SetSubspace(ks).
+				SetPolicy(&IndexingPolicy{IfMismatchPrevious: DesiredActionError}).
 				Build()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1498,6 +1591,21 @@ var _ = Describe("OnlineIndexer", func() {
 			var pbe *PartlyBuiltError
 			Expect(errors.As(err, &pbe)).To(BeTrue(), "expected PartlyBuiltError, got %v", err)
 			Expect(pbe.IndexName).To(Equal("Order$price"))
+
+			// Phase 3: under the default CONTINUE the build resumes the saved
+			// BY_INDEX method from its source index, which this stamp does not
+			// name; Java's Index.decodeSubspaceKey refuses the empty key.
+			indexer, err = NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(md).
+				SetIndex(priceIndex).
+				SetSubspace(ks).
+				Build()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = indexer.BuildIndex(ctx)
+			var core *RecordCoreError
+			Expect(errors.As(err, &core)).To(BeTrue(), "error: %v", err)
+			Expect(core.Message).To(Equal("subspace key must encode a single item tuple"))
 		})
 
 		It("clears and restarts on stamp mismatch with ForceStampOverwrite", func() {
@@ -1509,7 +1617,7 @@ var _ = Describe("OnlineIndexer", func() {
 			md, err := builder.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			// Phase 1: Create store, insert records, mark WRITE_ONLY with BY_INDEX stamp.
+			// Phase 1: Start an unbuilt index with a BY_INDEX stamp.
 			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
@@ -1520,7 +1628,7 @@ var _ = Describe("OnlineIndexer", func() {
 					Expect(err).NotTo(HaveOccurred())
 				}
 
-				_, err = store.MarkIndexWriteOnly("Order$price")
+				_, err = store.ClearAndMarkIndexWriteOnly("Order$price")
 				Expect(err).NotTo(HaveOccurred())
 
 				stamp := &gen.IndexBuildIndexingStamp{
@@ -1588,7 +1696,8 @@ var _ = Describe("OnlineIndexer", func() {
 			md, err := builder.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			// Phase 1: Create store with records and build index normally.
+			// Phase 1: Create store with records and build index normally (from
+			// DISABLED, so the build runs).
 			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
@@ -1598,7 +1707,7 @@ var _ = Describe("OnlineIndexer", func() {
 					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
-				return nil, nil
+				return nil, disableIndexes(store, priceIndex)
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1636,13 +1745,16 @@ var _ = Describe("OnlineIndexer", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Phase 3: Run OnlineIndexer again. Since index is READABLE (not
-			// WRITE_ONLY), markWriteOnly does ClearAndMarkIndexWriteOnly → full rebuild.
+			// Phase 3: Run OnlineIndexer again with ifReadable REBUILD, Java's way of
+			// asking for a fresh build over a READABLE index: it clears and rebuilds.
+			// (The default ifReadable is CONTINUE, which leaves the index alone; see
+			// "leaves a READABLE index alone under the default policy".)
 			indexer2, err := NewOnlineIndexerBuilder().
 				SetDatabase(sharedDB).
 				SetMetaData(md).
 				SetIndex(priceIndex).
 				SetSubspace(ks).
+				SetPolicy(&IndexingPolicy{IfReadable: DesiredActionRebuild}).
 				Build()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -2017,7 +2129,7 @@ var _ = Describe("OnlineIndexer", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("rejects SetIndex combined with AddTargetIndex", func() {
+		It("combines SetIndex and AddTargetIndex as Java's builder does", func() {
 			priceIdx := NewIndex("Order$price", Field("price"))
 			qtyIdx := NewIndex("Order$qty", Field("quantity"))
 			_, builder := baseMetaData()
@@ -2026,15 +2138,47 @@ var _ = Describe("OnlineIndexer", func() {
 			md, err := builder.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = NewOnlineIndexerBuilder().
+			// setIndex then addTargetIndex: Java's addTargetIndex checks nothing, so
+			// both are targets (OnlineIndexer.java:668-676, :719-722).
+			oi, err := NewOnlineIndexerBuilder().
 				SetDatabase(sharedDB).
 				SetMetaData(md).
 				SetIndex(priceIdx).
 				AddTargetIndex(qtyIdx).
 				SetSubspace(specSubspace()).
 				Build()
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("SetIndex"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(oi.targetIndexes).To(Equal([]*Index{priceIdx, qtyIdx}))
+
+			// addTargetIndex then setIndex: Java's setIndex throws a
+			// ValidationException, even for a null index.
+			for _, second := range []*Index{priceIdx, nil} {
+				_, err = NewOnlineIndexerBuilder().
+					SetDatabase(sharedDB).
+					SetMetaData(md).
+					AddTargetIndex(qtyIdx).
+					SetIndex(second).
+					SetSubspace(specSubspace()).
+					Build()
+				var ve *IndexingValidationError
+				Expect(errors.As(err, &ve)).To(BeTrue(), "error: %v", err)
+				Expect(ve.Message).To(Equal("setIndex may not be used when other target indexes are already set"))
+			}
+
+			// setIndex(null) on an empty list is skipped, so Build reports the
+			// missing index as Java's validateIndexSetting does, not a panic; a nil
+			// passed to AddTargetIndex (Java's is @Nonnull, and a null fails there
+			// with a NullPointerException) gets the same error, not a panic.
+			for _, b := range []*OnlineIndexerBuilder{
+				NewOnlineIndexerBuilder().SetIndex(nil),
+				NewOnlineIndexerBuilder().AddTargetIndex(nil),
+				NewOnlineIndexerBuilder().AddTargetIndex(priceIdx).AddTargetIndex(nil),
+			} {
+				_, err = b.SetDatabase(sharedDB).SetMetaData(md).SetSubspace(specSubspace()).Build()
+				var mdErr *MetaDataError
+				Expect(errors.As(err, &mdErr)).To(BeTrue(), "error: %v", err)
+				Expect(mdErr.Message).To(Equal("index must be set"))
+			}
 		})
 
 		It("rejects SetRecordTypes with multi-target", func() {
@@ -2077,8 +2221,47 @@ var _ = Describe("OnlineIndexer", func() {
 				SetSourceIndex(srcIdx).
 				SetSubspace(specSubspace()).
 				Build()
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("source index"))
+			var invalid *IndexingValidationError
+			Expect(errors.As(err, &invalid)).To(BeTrue(), "error: %v", err)
+			Expect(invalid.Message).To(Equal("Indexing multi targets by a source index is not supported (yet)"))
+
+			// Java refuses a mutual policy with a source index the same way.
+			_, err = NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(md).
+				SetIndex(priceIdx).
+				SetSourceIndex(srcIdx).
+				SetMutualIndexing().
+				SetSubspace(specSubspace()).
+				Build()
+			Expect(errors.As(err, &invalid)).To(BeTrue(), "error: %v", err)
+			Expect(invalid.Message).To(Equal("Indexing mutually by a source index is not supported (yet)"))
+
+			// Java counts the targets before it removes duplicates, so one target
+			// added twice is several targets to a source index.
+			_, err = NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(md).
+				AddTargetIndex(priceIdx).
+				AddTargetIndex(priceIdx).
+				SetSourceIndex(srcIdx).
+				SetSubspace(specSubspace()).
+				Build()
+			Expect(errors.As(err, &invalid)).To(BeTrue(), "error: %v", err)
+			Expect(invalid.Message).To(Equal("Indexing multi targets by a source index is not supported (yet)"))
+
+			// And checks the index settings before the record types.
+			_, err = NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(md).
+				SetIndex(priceIdx).
+				SetSourceIndex(srcIdx).
+				SetMutualIndexing().
+				SetRecordTypes("NoSuchType").
+				SetSubspace(specSubspace()).
+				Build()
+			Expect(errors.As(err, &invalid)).To(BeTrue(), "error: %v", err)
+			Expect(invalid.Message).To(Equal("Indexing mutually by a source index is not supported (yet)"))
 		})
 
 		It("rejects empty target indexes", func() {
@@ -2092,8 +2275,156 @@ var _ = Describe("OnlineIndexer", func() {
 				SetTargetIndexes(nil).
 				SetSubspace(specSubspace()).
 				Build()
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("at least one target index"))
+			var md2 *MetaDataError
+			Expect(errors.As(err, &md2)).To(BeTrue(), "error: %v", err)
+			Expect(md2.Message).To(Equal("index must be set"))
+		})
+
+		It("rejects a target that is not the metadata's own index object, as Java does", func() {
+			priceIndex := NewIndex("Order$price", Field("price"))
+			_, builder := baseMetaData()
+			builder.AddIndex("Order", priceIndex)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(md.GetIndex(priceIndex.Name)).To(BeIdenticalTo(priceIndex), "the metadata keeps the object it was given")
+			// Same name, a subspace key the metadata does not name.
+			impostor := NewIndex("Order$price", Field("price")).SetSubspaceKey("elsewhere")
+			for _, target := range []*Index{impostor, NewIndex("Order$nope", Field("price"))} {
+				_, err = NewOnlineIndexerBuilder().
+					SetDatabase(sharedDB).
+					SetMetaData(md).
+					SetIndex(target).
+					SetSubspace(specSubspace()).
+					Build()
+				var mdErr *MetaDataError
+				Expect(errors.As(err, &mdErr)).To(BeTrue(), "error: %v", err)
+				Expect(mdErr.Message).To(Equal("Index " + target.Name + " not contained within specified metadata"))
+			}
+
+			// Duplicates are removed by Java's Index.equals, the first of equal
+			// objects kept (a HashSet, OnlineIndexer.java:871-874), so the impostor
+			// survives beside the metadata's own object in either order and is
+			// refused; an equal copy after the metadata's own is dropped, and one
+			// before it is kept and refused.
+			ownCopy := *priceIndex
+			equalCopy := &ownCopy
+			Expect(equalCopy.equalsJava(priceIndex)).To(BeTrue())
+			Expect(impostor.equalsJava(priceIndex)).To(BeFalse())
+			for _, c := range []struct {
+				name    string
+				targets []*Index
+				refused bool
+			}{
+				{"own then impostor", []*Index{priceIndex, impostor}, true},
+				{"impostor then own", []*Index{impostor, priceIndex}, true},
+				{"own then an equal copy", []*Index{priceIndex, equalCopy}, false},
+				{"an equal copy then own", []*Index{equalCopy, priceIndex}, true},
+			} {
+				oi, err := NewOnlineIndexerBuilder().
+					SetDatabase(sharedDB).
+					SetMetaData(md).
+					SetTargetIndexes(c.targets).
+					SetSubspace(specSubspace()).
+					Build()
+				if !c.refused {
+					Expect(err).NotTo(HaveOccurred(), c.name)
+					Expect(oi.targetIndexes).To(HaveLen(1), c.name)
+					Expect(oi.targetIndexes[0]).To(BeIdenticalTo(priceIndex), c.name)
+					continue
+				}
+				var mdErr *MetaDataError
+				Expect(errors.As(err, &mdErr)).To(BeTrue(), "%s: error: %v", c.name, err)
+				Expect(mdErr.Message).To(Equal("Index Order$price not contained within specified metadata"), c.name)
+			}
+
+			// The targets are sorted by name before the check, so the refusal names
+			// the alphabetically first foreign target, as Java's does.
+			_, err = NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(md).
+				SetTargetIndexes([]*Index{NewIndex("Order$zzz", Field("price")), NewIndex("Order$aaa", Field("price"))}).
+				SetSubspace(specSubspace()).
+				Build()
+			var mdErr *MetaDataError
+			Expect(errors.As(err, &mdErr)).To(BeTrue(), "error: %v", err)
+			Expect(mdErr.Message).To(Equal("Index Order$aaa not contained within specified metadata"))
+		})
+
+		It("keeps or refuses a target copy as Java's Index.equals does, over normalized keys, every root class and the raw type", func() {
+			bytesIndex := NewIndex("Order$bytes", Field("price")).SetSubspaceKey([]byte("ob"))
+			longIndex := NewIndex("Order$long", Field("quantity")).SetSubspaceKey(int64(41))
+			dimsIndex := NewMultidimensionalIndex("Order$dims", Dimensions(Concat(Field("coord_x"), Field("coord_y")), 0, 2))
+			minIndex := NewMinEverLongIndex("Order$min", Ungrouped(Field("price")))
+			_, builder := baseMetaData()
+			for _, idx := range []*Index{bytesIndex, longIndex, dimsIndex, minIndex} {
+				builder.AddIndex("Order", idx)
+			}
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			copyOf := func(own *Index, change func(*Index)) *Index {
+				c := *own
+				change(&c)
+				return &c
+			}
+			for _, c := range []struct {
+				name    string
+				own     *Index
+				copy    *Index
+				refused bool
+			}{
+				// Java normalizes a byte[] key to a ByteString, equal by content.
+				{"a bytes key in a fresh array", bytesIndex, copyOf(bytesIndex, func(i *Index) { i.SetSubspaceKey([]byte("ob")) }), false},
+				// Java normalizes an Integer key to a Long.
+				{"an int key against the int64", longIndex, copyOf(longIndex, func(i *Index) { i.SetSubspaceKey(int(41)) }), false},
+				// DimensionsKeyExpression.equals is structural.
+				{"a Dimensions root", dimsIndex, copyOf(dimsIndex, func(i *Index) {
+					i.RootExpression = Dimensions(Concat(Field("coord_x"), Field("coord_y")), 0, 2)
+				}), false},
+				// Java compares the type as spelled.
+				{"the min_ever alias of min_ever_long", minIndex, copyOf(minIndex, func(i *Index) { i.Type = IndexTypeMinEver }), true},
+			} {
+				oi, err := NewOnlineIndexerBuilder().
+					SetDatabase(sharedDB).
+					SetMetaData(md).
+					SetTargetIndexes([]*Index{c.own, c.copy}).
+					SetSubspace(specSubspace()).
+					Build()
+				if !c.refused {
+					Expect(err).NotTo(HaveOccurred(), c.name)
+					Expect(oi.targetIndexes).To(HaveLen(1), c.name)
+					Expect(oi.targetIndexes[0]).To(BeIdenticalTo(c.own), c.name)
+					continue
+				}
+				var mdErr *MetaDataError
+				Expect(errors.As(err, &mdErr)).To(BeTrue(), "%s: error: %v", c.name, err)
+				Expect(mdErr.Message).To(Equal("Index "+c.own.Name+" not contained within specified metadata"), c.name)
+			}
+		})
+
+		It("copies the list SetTargetIndexes is given, as Java does", func() {
+			priceIndex := NewIndex("Order$price", Field("price"))
+			quantityIndex := NewIndex("Order$quantity", Field("quantity"))
+			_, builder := baseMetaData()
+			builder.AddIndex("Order", priceIndex)
+			builder.AddIndex("Order", quantityIndex)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Room for one more in the caller's array: an append that shared it
+			// would write the added target there.
+			given := make([]*Index, 1, 2)
+			given[0] = priceIndex
+			oi, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(md).
+				SetTargetIndexes(given).
+				AddTargetIndex(quantityIndex).
+				SetSubspace(specSubspace()).
+				Build()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(oi.targetIndexes).To(HaveLen(2))
+			Expect(given[:2][1]).To(BeNil(), "the builder wrote into the caller's array")
 		})
 
 		It("saves MULTI_TARGET_BY_RECORDS stamp with sorted target names", func() {
@@ -2204,8 +2535,8 @@ var _ = Describe("OnlineIndexer", func() {
 			mdWithIdx, err := builder2.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			// Phase 2: First build with limit=3 — does partial work, then we
-			// manually simulate an interruption by building again with a fresh indexer.
+			// Phase 2: a build with limit=3 and an impossible time limit commits
+			// its first range (3 records) and stops between ranges.
 			indexer1, err := NewOnlineIndexerBuilder().
 				SetDatabase(sharedDB).
 				SetMetaData(mdWithIdx).
@@ -2213,16 +2544,30 @@ var _ = Describe("OnlineIndexer", func() {
 				AddTargetIndex(qtyIdx).
 				SetSubspace(ks).
 				SetLimit(3).
+				SetTimeLimit(time.Nanosecond).
 				Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			// First full build completes all chunks.
 			total1, err := indexer1.BuildIndex(ctx)
+			var timeLimit *TimeLimitExceededError
+			Expect(errors.As(err, &timeLimit)).To(BeTrue(), "error: %v", err)
+			Expect(total1).To(Equal(int64(3)))
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdWithIdx).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				for _, idx := range []*Index{priceIdx, qtyIdx} {
+					Expect(store.GetIndexState(idx.Name)).To(Equal(IndexStateWriteOnly), idx.Name)
+					missing, err := NewIndexingRangeSet(ks, idx).FirstMissingRange(rtx.Transaction())
+					Expect(err).NotTo(HaveOccurred())
+					Expect(missing).NotTo(BeNil(), idx.Name)
+				}
+				return nil, nil
+			})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(total1).To(BeNumerically(">=", 10))
 
-			// Phase 3: Run AGAIN with same stamp — should resume (no-op since
-			// already READABLE) or rebuild cleanly.
+			// Phase 3: a fresh indexer continues the WRITE_ONLY build under the
+			// same MULTI_TARGET stamp and scans only the 7 records left.
 			indexer2, err := NewOnlineIndexerBuilder().
 				SetDatabase(sharedDB).
 				SetMetaData(mdWithIdx).
@@ -2235,8 +2580,7 @@ var _ = Describe("OnlineIndexer", func() {
 
 			total2, err := indexer2.BuildIndex(ctx)
 			Expect(err).NotTo(HaveOccurred())
-			// Rebuild processes all records again (clears + rebuilds from READABLE).
-			Expect(total2).To(BeNumerically(">=", 10))
+			Expect(total2).To(Equal(int64(7)))
 
 			// Verify both indexes are READABLE with correct entries.
 			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
@@ -2757,12 +3101,16 @@ var _ = Describe("OnlineIndexer", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Build without policy -> PartlyBuiltError.
+			// Build without policy -> PartlyBuiltError. The default CONTINUE
+			// relaunches a blocked BY_RECORDS stamp, which refuses every session,
+			// up to Java's attempt limit: six sessions, the sixth failure returned.
+			h := &captureHandler{level: slog.LevelInfo}
 			indexer, err := NewOnlineIndexerBuilder().
 				SetDatabase(sharedDB).
 				SetMetaData(md).
 				SetIndex(priceIndex).
 				SetSubspace(ks).
+				SetLogger(slog.New(h)).
 				Build()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -2770,6 +3118,22 @@ var _ = Describe("OnlineIndexer", func() {
 			var pbe *PartlyBuiltError
 			Expect(errors.As(err, &pbe)).To(BeTrue(), "expected PartlyBuiltError, got %v", err)
 			Expect(pbe.IndexName).To(Equal("Order$price"))
+			Expect(pbe.Saved.GetBlock()).To(BeTrue())
+			Expect(pbe.IndexerID).To(Equal(indexer.indexerID), "Java's INDEXER_ID is the refusing indexer's identity")
+			Expect(pbe.IndexVersion).To(Equal(priceIndex.LastModifiedVersion), "Java's INDEX_VERSION")
+			Expect(pbe.IndexerID.String()).NotTo(Equal("00000000-0000-0000-0000-000000000000"))
+			var caught, tooMany []int64
+			for _, r := range h.snapshot() {
+				switch r.Message {
+				case "conflicting indexing type stamp":
+					caught = append(caught, attrMap(r)["attempt"].(int64))
+				case "Too many indexing attempts":
+					tooMany = append(tooMany, attrMap(r)["attempt"].(int64))
+				}
+			}
+			Expect(caught).To(Equal([]int64{1, 2, 3, 4, 5}), "each of the first five sessions is caught and relaunched")
+			Expect(tooMany).To(Equal([]int64{6}), "the sixth session's refusal is returned")
+			Expect(indexer.LastBuildOutcome()).To(Equal(IndexBuildOutcomeNone))
 		})
 
 		It("blocked stamp with AllowUnblock policy succeeds", func() {
@@ -3329,6 +3693,1060 @@ var _ = Describe("OnlineIndexer", func() {
 			_, err = indexer2.BuildIndex(ctx)
 			var pbe *PartlyBuiltError
 			Expect(errors.As(err, &pbe)).To(BeTrue(), "expected PartlyBuiltError, got %v", err)
+		})
+	})
+
+	// Java IndexingBase.handleStateAndDoBuildIndexAsync resolves a session against
+	// the primary index's state through IndexingPolicy.getStateDesiredAction. An
+	// orphan entry written straight into an index subspace is the witness for a
+	// clear: no record produces it, so it survives exactly when the session did not
+	// clear that index.
+	Describe("index state desired action", func() {
+		priceIndex := NewIndex("Order$price", Field("price"))
+		qtyIndex := NewIndex("order_qty_idx", Field("quantity"))
+		orphanKey := func(store *FDBRecordStore, index *Index) fdb.Key {
+			return store.IndexSubspace(index).Pack(tuple.Tuple{int64(-1), int64(-1)})
+		}
+		// setup saves five orders under metadata carrying both indexes, then applies
+		// arrange (inside the same transaction) to put the indexes into the state
+		// under test, and writes an orphan entry into every index it names.
+		// setups numbers each store: specSubspace is one subspace per spec, and a
+		// spec that sets up several stores must not reopen its previous one.
+		setups := int64(0)
+		setup := func(arrange func(store *FDBRecordStore), orphans ...*Index) subspaceAndMeta {
+			setups++
+			ks := specSubspace().Sub(setups)
+			_, builder := baseMetaData()
+			builder.AddIndex("Order", priceIndex)
+			builder.AddIndex("Order", qtyIndex)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				for i := int64(1); i <= 5; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				arrange(store)
+				for _, index := range orphans {
+					rtx.Transaction().Set(orphanKey(store, index), []byte{})
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			return subspaceAndMeta{ks: ks, md: md}
+		}
+		type observed struct {
+			state  map[string]IndexState
+			orphan map[string]bool
+		}
+		observe := func(sm subspaceAndMeta) observed {
+			o := observed{state: map[string]IndexState{}, orphan: map[string]bool{}}
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(sm.md).SetSubspace(sm.ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				for _, index := range []*Index{priceIndex, qtyIndex} {
+					o.state[index.Name] = store.GetIndexState(index.Name)
+					v, err := rtx.Transaction().Get(orphanKey(store, index)).Get()
+					Expect(err).NotTo(HaveOccurred())
+					o.orphan[index.Name] = v != nil
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			return o
+		}
+		build := func(sm subspaceAndMeta, policy *IndexingPolicy, targets ...*Index) (int64, error) {
+			b := NewOnlineIndexerBuilder().SetDatabase(sharedDB).SetMetaData(sm.md).SetSubspace(sm.ks).SetPolicy(policy)
+			for _, index := range targets {
+				b = b.AddTargetIndex(index)
+			}
+			oi, err := b.Build()
+			Expect(err).NotTo(HaveOccurred())
+			return oi.BuildIndex(ctx)
+		}
+		markDisabled := func(names ...string) func(*FDBRecordStore) {
+			return func(store *FDBRecordStore) {
+				for _, name := range names {
+					_, err := store.MarkIndexDisabled(name)
+					Expect(err).NotTo(HaveOccurred())
+				}
+			}
+		}
+		markWriteOnly := func(names ...string) func(*FDBRecordStore) {
+			return func(store *FDBRecordStore) {
+				for _, name := range names {
+					_, err := store.MarkIndexWriteOnly(name)
+					Expect(err).NotTo(HaveOccurred())
+				}
+			}
+		}
+		// unfinished leaves a WRITE_ONLY index with nothing built. Marking a READABLE
+		// index WRITE_ONLY without a clear would not do: it restores full range
+		// coverage (Java markIndexNotReadable), so a continued build has no work.
+		unfinished := func(names ...string) func(*FDBRecordStore) {
+			return func(store *FDBRecordStore) {
+				for _, name := range names {
+					_, err := store.ClearAndMarkIndexWriteOnly(name)
+					Expect(err).NotTo(HaveOccurred())
+				}
+			}
+		}
+		readable := func(*FDBRecordStore) {}
+
+		It("resolves each state to Java's builder default and honours an explicit action", func() {
+			var nilPolicy *IndexingPolicy
+			defaults := map[IndexState]IndexingDesiredAction{
+				IndexStateDisabled:              DesiredActionRebuild,
+				IndexStateWriteOnly:             DesiredActionContinue,
+				IndexStateWriteOnlyWithQueue:    DesiredActionContinue,
+				IndexStateReadable:              DesiredActionContinue,
+				IndexStateReadableUniquePending: DesiredActionMarkReadable,
+			}
+			for state, want := range defaults {
+				for _, policy := range []*IndexingPolicy{nilPolicy, {}} {
+					got, err := policy.GetStateDesiredAction(state)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(got).To(Equal(want), "state %s", state)
+				}
+			}
+			explicit := &IndexingPolicy{IfDisabled: DesiredActionError, IfWriteOnly: DesiredActionRebuild, IfReadable: DesiredActionMarkReadable}
+			for state, want := range map[IndexState]IndexingDesiredAction{
+				IndexStateDisabled:              DesiredActionError,
+				IndexStateWriteOnly:             DesiredActionRebuild,
+				IndexStateWriteOnlyWithQueue:    DesiredActionRebuild,
+				IndexStateReadable:              DesiredActionMarkReadable,
+				IndexStateReadableUniquePending: DesiredActionMarkReadable,
+			} {
+				got, err := explicit.GetStateDesiredAction(state)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(got).To(Equal(want), "state %s", state)
+			}
+			var core *RecordCoreError
+			_, err := (&IndexingPolicy{IfReadable: IndexingDesiredAction(99)}).GetStateDesiredAction(IndexStateReadable)
+			Expect(errors.As(err, &core)).To(BeTrue())
+			Expect(core.Message).To(Equal("bad indexing desired action 99 for index state READABLE"))
+			_, err = nilPolicy.GetStateDesiredAction(IndexState(42))
+			Expect(errors.As(err, &core)).To(BeTrue())
+			Expect(core.Message).To(Equal("bad index state: UNKNOWN(42)"))
+		})
+
+		It("leaves a READABLE index alone under the default policy", func() {
+			sm := setup(readable, priceIndex)
+			total, err := build(sm, nil, priceIndex)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(BeZero())
+			o := observe(sm)
+			Expect(o.state[priceIndex.Name]).To(Equal(IndexStateReadable))
+			Expect(o.orphan[priceIndex.Name]).To(BeTrue(), "the session cleared a READABLE index")
+		})
+
+		It("publishes nothing and clears nothing for a READABLE index under MARK_READABLE", func() {
+			sm := setup(readable, priceIndex)
+			total, err := build(sm, &IndexingPolicy{IfReadable: DesiredActionMarkReadable}, priceIndex)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(BeZero())
+			o := observe(sm)
+			Expect(o.state[priceIndex.Name]).To(Equal(IndexStateReadable))
+			Expect(o.orphan[priceIndex.Name]).To(BeTrue())
+		})
+
+		It("clears and rebuilds a READABLE index under REBUILD", func() {
+			sm := setup(readable, priceIndex)
+			total, err := build(sm, &IndexingPolicy{IfReadable: DesiredActionRebuild}, priceIndex)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(Equal(int64(5)))
+			o := observe(sm)
+			Expect(o.state[priceIndex.Name]).To(Equal(IndexStateReadable))
+			Expect(o.orphan[priceIndex.Name]).To(BeFalse())
+		})
+
+		DescribeTable("refuses a state whose action is ERROR, before any write",
+			func(arrange func(*FDBRecordStore), policy *IndexingPolicy, want IndexState) {
+				sm := setup(arrange, priceIndex)
+				_, err := build(sm, policy, priceIndex)
+				var invalid *IndexingValidationError
+				Expect(errors.As(err, &invalid)).To(BeTrue(), "error: %v", err)
+				Expect(invalid.Message).To(Equal("Index state is not as expected"))
+				Expect(invalid.IndexName).To(Equal(priceIndex.Name))
+				Expect(invalid.IndexState).To(Equal(want))
+				o := observe(sm)
+				Expect(o.state[priceIndex.Name]).To(Equal(want))
+				Expect(o.orphan[priceIndex.Name]).To(BeTrue())
+			},
+			Entry("READABLE", readable, &IndexingPolicy{IfReadable: DesiredActionError}, IndexStateReadable),
+			Entry("WRITE_ONLY", markWriteOnly(priceIndex.Name), &IndexingPolicy{IfWriteOnly: DesiredActionError}, IndexStateWriteOnly),
+			Entry("DISABLED", markDisabled(priceIndex.Name), &IndexingPolicy{IfDisabled: DesiredActionError}, IndexStateDisabled),
+		)
+
+		DescribeTable("builds a WRITE_ONLY or DISABLED index, clearing it only under REBUILD",
+			func(arrange func(*FDBRecordStore), policy *IndexingPolicy, cleared bool) {
+				sm := setup(arrange, priceIndex)
+				total, err := build(sm, policy, priceIndex)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(total).To(Equal(int64(5)))
+				o := observe(sm)
+				Expect(o.state[priceIndex.Name]).To(Equal(IndexStateReadable))
+				Expect(o.orphan[priceIndex.Name]).To(Equal(!cleared))
+			},
+			Entry("WRITE_ONLY, default CONTINUE", unfinished(priceIndex.Name), nil, false),
+			Entry("WRITE_ONLY, REBUILD", unfinished(priceIndex.Name), &IndexingPolicy{IfWriteOnly: DesiredActionRebuild}, true),
+			Entry("DISABLED, default REBUILD", markDisabled(priceIndex.Name), nil, true),
+			Entry("DISABLED, CONTINUE", markDisabled(priceIndex.Name), &IndexingPolicy{IfDisabled: DesiredActionContinue}, false),
+		)
+
+		It("refuses a follower whose state differs unless its own action is REBUILD on a fresh session", func() {
+			sm := setup(markDisabled(priceIndex.Name), priceIndex, qtyIndex)
+			_, err := build(sm, nil, priceIndex, qtyIndex)
+			var invalid *IndexingValidationError
+			Expect(errors.As(err, &invalid)).To(BeTrue(), "error: %v", err)
+			Expect(invalid.Message).To(Equal("A target index state doesn't match the primary index state"))
+			Expect(invalid.IndexName).To(Equal(priceIndex.Name))
+			Expect(invalid.IndexState).To(Equal(IndexStateDisabled))
+			Expect(invalid.TargetIndexName).To(Equal(qtyIndex.Name))
+			Expect(invalid.TargetIndexState).To(Equal(IndexStateReadable))
+			o := observe(sm)
+			Expect(o.orphan[priceIndex.Name]).To(BeTrue())
+			Expect(o.orphan[qtyIndex.Name]).To(BeTrue())
+
+			total, err := build(sm, &IndexingPolicy{IfReadable: DesiredActionRebuild}, priceIndex, qtyIndex)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(Equal(int64(5)))
+			o = observe(sm)
+			Expect(o.state[priceIndex.Name]).To(Equal(IndexStateReadable))
+			Expect(o.state[qtyIndex.Name]).To(Equal(IndexStateReadable))
+			Expect(o.orphan[priceIndex.Name]).To(BeFalse())
+			Expect(o.orphan[qtyIndex.Name]).To(BeFalse())
+		})
+
+		It("refuses a differing follower on a continued session even when its action is REBUILD", func() {
+			sm := setup(func(store *FDBRecordStore) {
+				markWriteOnly(priceIndex.Name)(store)
+				markDisabled(qtyIndex.Name)(store)
+			}, priceIndex, qtyIndex)
+			_, err := build(sm, nil, priceIndex, qtyIndex)
+			var invalid *IndexingValidationError
+			Expect(errors.As(err, &invalid)).To(BeTrue(), "error: %v", err)
+			Expect(invalid.Message).To(Equal("A target index state doesn't match the primary index state"))
+			Expect(invalid.TargetIndexState).To(Equal(IndexStateDisabled))
+			o := observe(sm)
+			Expect(o.state[priceIndex.Name]).To(Equal(IndexStateWriteOnly))
+			Expect(o.state[qtyIndex.Name]).To(Equal(IndexStateDisabled))
+			Expect(o.orphan[qtyIndex.Name]).To(BeTrue())
+		})
+
+		It("publishes a READABLE_UNIQUE_PENDING index without building it", func() {
+			ks := specSubspace()
+			uniqueIdx := NewIndex("Order$unique_price", Field("price"))
+			uniqueIdx.SetUnique()
+			_, builder := baseMetaData()
+			builder.AddIndex("Order", uniqueIdx)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			_, noIndex := baseMetaData()
+			mdNoIndex, err := noIndex.Build()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				for i := int64(1); i <= 3; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			newIndexer := func(markReadable, allowPending bool) *OnlineIndexer {
+				oi, err := NewOnlineIndexerBuilder().SetDatabase(sharedDB).SetMetaData(md).SetSubspace(ks).
+					SetIndex(uniqueIdx).SetMarkReadable(markReadable).SetAllowUniquePendingState(allowPending).Build()
+				Expect(err).NotTo(HaveOccurred())
+				return oi
+			}
+			stateOf := func() IndexState {
+				var state IndexState
+				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+					Expect(err).NotTo(HaveOccurred())
+					state = store.GetIndexState(uniqueIdx.Name)
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+				return state
+			}
+			_, err = newIndexer(true, true).BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(stateOf()).To(Equal(IndexStateReadableUniquePending))
+
+			// With publication disabled the session does nothing at all.
+			total, err := newIndexer(false, false).BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(BeZero())
+			Expect(stateOf()).To(Equal(IndexStateReadableUniquePending))
+
+			// With the violations still present, publication fails as Java's
+			// markIndexReadable does, and nothing was rebuilt to find that out.
+			total, err = newIndexer(true, false).BuildIndex(ctx)
+			var violation *RecordIndexUniquenessViolationError
+			Expect(errors.As(err, &violation)).To(BeTrue(), "error: %v", err)
+			Expect(total).To(BeZero())
+			Expect(stateOf()).To(Equal(IndexStateReadableUniquePending))
+
+			// Resolve the duplicates; the next session publishes without building.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				for _, pk := range []int64{2, 3} {
+					_, err = store.DeleteRecord(tuple.Tuple{pk})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			total, err = newIndexer(true, false).BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(BeZero())
+			Expect(stateOf()).To(Equal(IndexStateReadable))
+		})
+
+		It("clears only a disagreeing follower whose own action is REBUILD", func() {
+			sm := setup(markDisabled(priceIndex.Name), priceIndex, qtyIndex)
+			total, err := build(sm, &IndexingPolicy{IfDisabled: DesiredActionContinue, IfReadable: DesiredActionRebuild}, priceIndex, qtyIndex)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(Equal(int64(5)))
+			o := observe(sm)
+			Expect(o.state[priceIndex.Name]).To(Equal(IndexStateReadable))
+			Expect(o.state[qtyIndex.Name]).To(Equal(IndexStateReadable))
+			Expect(o.orphan[priceIndex.Name]).To(BeTrue(), "the DISABLED primary under CONTINUE was cleared")
+			Expect(o.orphan[qtyIndex.Name]).To(BeFalse(), "the READABLE follower under REBUILD was not cleared")
+		})
+
+		It("skips a READABLE primary without checking its followers", func() {
+			sm := setup(markDisabled(qtyIndex.Name), priceIndex, qtyIndex)
+			total, err := build(sm, nil, priceIndex, qtyIndex)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(BeZero())
+			o := observe(sm)
+			Expect(o.state[priceIndex.Name]).To(Equal(IndexStateReadable))
+			Expect(o.state[qtyIndex.Name]).To(Equal(IndexStateDisabled))
+			Expect(o.orphan[priceIndex.Name]).To(BeTrue())
+			Expect(o.orphan[qtyIndex.Name]).To(BeTrue())
+		})
+
+		stamped := &gen.IndexBuildIndexingStamp{Method: gen.IndexBuildIndexingStamp_BY_RECORDS.Enum()}
+		saveStamps := func(store *FDBRecordStore, indexes ...*Index) {
+			for _, index := range indexes {
+				Expect(store.SaveIndexingTypeStamp(index, stamped)).To(Succeed())
+			}
+		}
+		stampOf := func(sm subspaceAndMeta, index *Index) *gen.IndexBuildIndexingStamp {
+			var stamp *gen.IndexBuildIndexingStamp
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(sm.md).SetSubspace(sm.ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				stamp, err = store.LoadIndexingTypeStamp(index)
+				return nil, err
+			})
+			Expect(err).NotTo(HaveOccurred())
+			return stamp
+		}
+
+		It("publishes under MARK_READABLE without building, erasing the build stamp only when publication is enabled", func() {
+			// markWriteOnly over READABLE keeps full range coverage, so the
+			// index is publishable without a build.
+			sm := setup(func(store *FDBRecordStore) {
+				markWriteOnly(priceIndex.Name)(store)
+				saveStamps(store, priceIndex)
+			}, priceIndex)
+			policy := &IndexingPolicy{IfWriteOnly: DesiredActionMarkReadable}
+
+			oi, err := NewOnlineIndexerBuilder().SetDatabase(sharedDB).SetMetaData(sm.md).SetSubspace(sm.ks).
+				SetIndex(priceIndex).SetPolicy(policy).SetMarkReadable(false).Build()
+			Expect(err).NotTo(HaveOccurred())
+			total, err := oi.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(BeZero())
+			Expect(observe(sm).state[priceIndex.Name]).To(Equal(IndexStateWriteOnly), "publication disabled, yet published")
+			Expect(stampOf(sm, priceIndex)).NotTo(BeNil())
+
+			total, err = build(sm, policy, priceIndex)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(BeZero())
+			o := observe(sm)
+			Expect(o.state[priceIndex.Name]).To(Equal(IndexStateReadable))
+			Expect(o.orphan[priceIndex.Name]).To(BeTrue(), "MARK_READABLE cleared the index")
+			Expect(stampOf(sm, priceIndex)).To(BeNil(), "publication keeps the build stamp")
+
+			// A skip over the READABLE index touches nothing, the stamp included.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(sm.md).SetSubspace(sm.ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				saveStamps(store, priceIndex)
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			total, err = build(sm, nil, priceIndex)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(BeZero())
+			Expect(stampOf(sm, priceIndex)).NotTo(BeNil(), "the skip erased the build stamp")
+		})
+
+		It("publishes every target under MARK_READABLE", func() {
+			sm := setup(func(store *FDBRecordStore) {
+				markWriteOnly(priceIndex.Name, qtyIndex.Name)(store)
+				saveStamps(store, priceIndex, qtyIndex)
+			}, priceIndex, qtyIndex)
+			total, err := build(sm, &IndexingPolicy{IfWriteOnly: DesiredActionMarkReadable}, priceIndex, qtyIndex)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(BeZero())
+			o := observe(sm)
+			for _, index := range []*Index{priceIndex, qtyIndex} {
+				Expect(o.state[index.Name]).To(Equal(IndexStateReadable), index.Name)
+				Expect(o.orphan[index.Name]).To(BeTrue(), index.Name)
+				Expect(stampOf(sm, index)).To(BeNil(), index.Name)
+			}
+		})
+
+		// A live peer's heartbeat, written the way a running builder writes it.
+		livePeer := func(mutual bool, indexes ...*Index) func(*FDBRecordStore) {
+			return func(store *FDBRecordStore) {
+				peer := NewIndexingHeartbeat("peer", 10*60*1000, mutual, sharedDB.Env())
+				for _, index := range indexes {
+					peer.update(store.context.Transaction(), store.subspace, index)
+				}
+			}
+		}
+
+		It("leaves a READABLE index alone and refuses under ERROR despite a live peer, but will not clear under one", func() {
+			sm := setup(livePeer(false, priceIndex), priceIndex)
+			total, err := build(sm, nil, priceIndex)
+			Expect(err).NotTo(HaveOccurred(), "a skipping session was stopped by a live peer")
+			Expect(total).To(BeZero())
+
+			_, err = build(sm, &IndexingPolicy{IfReadable: DesiredActionError}, priceIndex)
+			var invalid *IndexingValidationError
+			Expect(errors.As(err, &invalid)).To(BeTrue(), "error: %v", err)
+			Expect(invalid.Message).To(Equal("Index state is not as expected"))
+			Expect(invalid.IndexName).To(Equal(priceIndex.Name))
+			Expect(invalid.IndexVersion).To(Equal(priceIndex.LastModifiedVersion))
+			Expect(invalid.IndexState).To(Equal(IndexStateReadable))
+
+			_, err = build(sm, &IndexingPolicy{IfReadable: DesiredActionRebuild}, priceIndex)
+			var locked *SynchronizedSessionLockedError
+			Expect(errors.As(err, &locked)).To(BeTrue(), "error: %v", err)
+			Expect(observe(sm).orphan[priceIndex.Name]).To(BeTrue(), "the refused session cleared the index")
+		})
+
+		It("skips when a publisher has marked the primary READABLE and still holds a follower", func() {
+			// markReadable publishes one target at a time, primary first; until it
+			// reaches the follower, the follower is WRITE_ONLY and carries the
+			// publisher's live heartbeat. A late session over the same targets,
+			// exclusive or mutual, skips instead of failing on that heartbeat.
+			sm := setup(func(store *FDBRecordStore) {
+				markWriteOnly(qtyIndex.Name)(store)
+				livePeer(false, qtyIndex)(store)
+			}, priceIndex, qtyIndex)
+			total, err := build(sm, nil, priceIndex, qtyIndex)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(BeZero())
+			oi, err := NewOnlineIndexerBuilder().SetDatabase(sharedDB).SetMetaData(sm.md).SetSubspace(sm.ks).
+				AddTargetIndex(priceIndex).AddTargetIndex(qtyIndex).SetMutualIndexing().Build()
+			Expect(err).NotTo(HaveOccurred())
+			total, err = oi.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(BeZero())
+			o := observe(sm)
+			Expect(o.state[priceIndex.Name]).To(Equal(IndexStateReadable))
+			Expect(o.state[qtyIndex.Name]).To(Equal(IndexStateWriteOnly))
+			Expect(o.orphan[qtyIndex.Name]).To(BeTrue())
+		})
+
+		It("admits a live mutual peer to a continued mutual build but not to a mutual REBUILD", func() {
+			sm := setup(func(store *FDBRecordStore) {
+				unfinished(priceIndex.Name)(store)
+				livePeer(true, priceIndex)(store)
+			}, priceIndex)
+			mutual := func(policy *IndexingPolicy) (int64, error) {
+				oi, err := NewOnlineIndexerBuilder().SetDatabase(sharedDB).SetMetaData(sm.md).SetSubspace(sm.ks).
+					SetIndex(priceIndex).SetPolicy(policy).SetMutualIndexing().Build()
+				Expect(err).NotTo(HaveOccurred())
+				return oi.BuildIndex(ctx)
+			}
+			_, err := mutual(&IndexingPolicy{IfWriteOnly: DesiredActionRebuild})
+			var locked *SynchronizedSessionLockedError
+			Expect(errors.As(err, &locked)).To(BeTrue(), "error: %v", err)
+			o := observe(sm)
+			Expect(o.state[priceIndex.Name]).To(Equal(IndexStateWriteOnly))
+			Expect(o.orphan[priceIndex.Name]).To(BeTrue(), "the refused REBUILD cleared the index")
+
+			total, err := mutual(nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(Equal(int64(5)))
+			Expect(observe(sm).state[priceIndex.Name]).To(Equal(IndexStateReadable))
+		})
+
+		Describe("session outcome, identity and mid-build state changes", func() {
+			// hookBefore runs hook, in its own committed transaction, just before
+			// the nth transaction the indexer's database runs (counting from 1),
+			// so a state change lands between two of the build's transactions.
+			hookBefore := func(n int, hook func(store *FDBRecordStore)) (*FDBDatabase, *nthTransactHook) {
+				h := &nthTransactHook{Transactor: sharedDB.transactor, n: n}
+				db := NewFDBDatabaseWithTransactor(h, sharedDB.db)
+				h.hook = func(sm subspaceAndMeta) func() error {
+					return func() error {
+						_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+							store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(sm.md).SetSubspace(sm.ks).Open()
+							if err != nil {
+								return nil, err
+							}
+							hook(store)
+							return nil, nil
+						})
+						return err
+					}
+				}
+				return db, h
+			}
+			indexer := func(db *FDBDatabase, sm subspaceAndMeta, configure func(*OnlineIndexerBuilder) *OnlineIndexerBuilder) *OnlineIndexer {
+				b := NewOnlineIndexerBuilder().SetDatabase(db).SetMetaData(sm.md).SetSubspace(sm.ks).SetIndex(priceIndex).SetLimit(1)
+				if configure != nil {
+					b = configure(b)
+				}
+				oi, err := b.Build()
+				Expect(err).NotTo(HaveOccurred())
+				return oi
+			}
+
+			It("reports what each session did", func() {
+				check := func(arrange func(*FDBRecordStore), configure func(*OnlineIndexerBuilder) *OnlineIndexerBuilder, want IndexBuildOutcome) {
+					sm := setup(arrange, priceIndex)
+					oi := indexer(sharedDB, sm, configure)
+					Expect(oi.LastBuildOutcome()).To(Equal(IndexBuildOutcomeNone))
+					_, err := oi.BuildIndex(ctx)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(oi.LastBuildOutcome()).To(Equal(want))
+				}
+				check(markDisabled(priceIndex.Name), nil, IndexBuildOutcomeBuilt)
+				check(readable, nil, IndexBuildOutcomeLeftAlone)
+				markReadableOnly := func(b *OnlineIndexerBuilder) *OnlineIndexerBuilder {
+					return b.SetPolicy(&IndexingPolicy{IfWriteOnly: DesiredActionMarkReadable})
+				}
+				check(markWriteOnly(priceIndex.Name), markReadableOnly, IndexBuildOutcomePublished)
+				check(markWriteOnly(priceIndex.Name), func(b *OnlineIndexerBuilder) *OnlineIndexerBuilder {
+					return markReadableOnly(b).SetMarkReadable(false)
+				}, IndexBuildOutcomeLeftAlone)
+
+				// A failed call reports nothing, even on an indexer whose previous
+				// call built: the first call builds the disabled index, the second
+				// finds it READABLE under ERROR.
+				sm := setup(markDisabled(priceIndex.Name), priceIndex)
+				oi := indexer(sharedDB, sm, func(b *OnlineIndexerBuilder) *OnlineIndexerBuilder {
+					return b.SetPolicy(&IndexingPolicy{IfReadable: DesiredActionError})
+				})
+				_, err := oi.BuildIndex(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(oi.LastBuildOutcome()).To(Equal(IndexBuildOutcomeBuilt))
+				_, err = oi.BuildIndex(ctx)
+				Expect(err).To(HaveOccurred())
+				Expect(oi.LastBuildOutcome()).To(Equal(IndexBuildOutcomeNone))
+			})
+
+			It("reports a call whose one attempt built before the peers published, ending through the done arm, as built", func() {
+				// Limit 1: the state transaction, then one transaction per record.
+				// The peers publish before the fourth, after this session has
+				// indexed records, so the attempt that ends the call finds every
+				// target readable.
+				sm := setup(unfinished(priceIndex.Name), priceIndex)
+				db, h := hookBefore(4, func(store *FDBRecordStore) { store.setIndexState(priceIndex.Name, IndexStateReadable) })
+				h.run = h.hook(sm)
+				oi := indexer(db, sm, func(b *OnlineIndexerBuilder) *OnlineIndexerBuilder { return b.SetMutualIndexing() })
+				total, err := oi.BuildIndex(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(h.fired).To(BeTrue(), "the hook never ran")
+				Expect(total).To(BeNumerically(">", 0), "the session indexed nothing before the peers published")
+				Expect(oi.LastBuildOutcome()).To(Equal(IndexBuildOutcomeBuilt))
+			})
+
+			It("reports a call as built when a retried attempt then finds the index published and leaves it alone", func() {
+				// Attempt 1 (BY_RECORDS, limit 1) indexes a record in its second
+				// transaction; before its third, the stamp becomes a BY_INDEX
+				// stamp, so that transaction fails with a PartlyBuiltError, which
+				// CONTINUE answers with a retry. Before the retry's state
+				// transaction a peer publishes the index, so the attempt that ends
+				// the call leaves the READABLE index alone: the call's success
+				// return, not the catcher's completed-by-peers arm.
+				sm := setup(markDisabled(priceIndex.Name), priceIndex)
+				source := sm.md.GetIndex(qtyIndex.Name)
+				stamp := &gen.IndexBuildIndexingStamp{
+					Method:                         gen.IndexBuildIndexingStamp_BY_INDEX.Enum(),
+					SourceIndexSubspaceKey:         tuple.Tuple{source.SubspaceTupleKey()}.Pack(),
+					SourceIndexLastModifiedVersion: proto.Int32(int32(source.LastModifiedVersion)),
+				}
+				hooks := map[int]func(store *FDBRecordStore){
+					3: func(store *FDBRecordStore) {
+						Expect(store.SaveIndexingTypeStamp(priceIndex, stamp)).To(Succeed())
+					},
+					4: func(store *FDBRecordStore) { store.setIndexState(priceIndex.Name, IndexStateReadable) },
+				}
+				fired := map[int]bool{}
+				h := &multiTransactHook{Transactor: sharedDB.transactor, run: func(n int) error {
+					hook, ok := hooks[n]
+					if !ok {
+						return nil
+					}
+					fired[n] = true
+					_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+						store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(sm.md).SetSubspace(sm.ks).Open()
+						if err != nil {
+							return nil, err
+						}
+						hook(store)
+						return nil, nil
+					})
+					return err
+				}}
+				oi := indexer(NewFDBDatabaseWithTransactor(h, sharedDB.db), sm, nil)
+				total, err := oi.BuildIndex(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(fired).To(Equal(map[int]bool{3: true, 4: true}), "the hooks did not both run")
+				Expect(total).To(BeNumerically(">", 0), "the first attempt indexed nothing")
+				Expect(observe(sm).state[priceIndex.Name]).To(Equal(IndexStateReadable))
+				Expect(oi.LastBuildOutcome()).To(Equal(IndexBuildOutcomeBuilt))
+			})
+
+			It("stamps and validates the metadata's source index, not the caller's object, and names its heartbeat by the method", func() {
+				sm := setup(markDisabled(qtyIndex.Name), qtyIndex)
+				real := sm.md.GetIndex(priceIndex.Name)
+				// The caller's object shares only the name: another subspace key,
+				// another version, and a type the source validation refuses ("source
+				// index is not a VALUE index"), so a build that read the object
+				// instead of the metadata's index would fail under ForbidRecordScan.
+				stale := NewIndex(priceIndex.Name, Field("price")).SetSubspaceKey("not the metadata's")
+				stale.LastModifiedVersion = real.LastModifiedVersion + 100
+				stale.Type = IndexTypeRank
+				var info string
+				db, h := hookBefore(2, func(store *FDBRecordStore) {
+					beats, err := GetIndexingHeartbeats(store.context.Transaction(), store.subspace, qtyIndex, 0)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(beats).To(HaveLen(1))
+					for _, beat := range beats {
+						info = beat.GetInfo()
+					}
+				})
+				h.run = h.hook(sm)
+				oi, err := NewOnlineIndexerBuilder().SetDatabase(db).SetMetaData(sm.md).SetSubspace(sm.ks).
+					SetIndex(qtyIndex).SetSourceIndex(stale).SetMarkReadable(false).
+					SetPolicy(&IndexingPolicy{ForbidRecordScan: true}).Build()
+				Expect(err).NotTo(HaveOccurred())
+				total, err := oi.BuildIndex(ctx)
+				Expect(err).NotTo(HaveOccurred(), "the source validation read the caller's object")
+				Expect(h.fired).To(BeTrue(), "the hook never ran")
+				Expect(info).To(Equal("BY_INDEX"), "Java names the heartbeat by the stamp's method")
+				Expect(total).To(Equal(int64(5)))
+				stamp := stampOf(sm, qtyIndex)
+				Expect(stamp.GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_BY_INDEX))
+				Expect(stamp.GetSourceIndexSubspaceKey()).To(Equal(tuple.Tuple{real.SubspaceTupleKey()}.Pack()))
+				Expect(stamp.GetSourceIndexLastModifiedVersion()).To(Equal(int32(real.LastModifiedVersion)))
+			})
+
+			It("ends a mutual build its peers finished as completed by peers", func() {
+				sm := setup(unfinished(priceIndex.Name), priceIndex)
+				db, h := hookBefore(2, func(store *FDBRecordStore) { store.setIndexState(priceIndex.Name, IndexStateReadable) })
+				h.run = h.hook(sm)
+				oi := indexer(db, sm, func(b *OnlineIndexerBuilder) *OnlineIndexerBuilder { return b.SetMutualIndexing() })
+				_, err := oi.BuildIndex(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(h.fired).To(BeTrue(), "the hook never ran")
+				Expect(oi.LastBuildOutcome()).To(Equal(IndexBuildOutcomeCompletedByPeers))
+			})
+
+			It("fails a non-mutual build whose target is published or disabled mid-build with Java's errors", func() {
+				for _, tc := range []struct {
+					state IndexState
+					check func(error)
+				}{
+					{IndexStateReadable, func(err error) {
+						var unexpected *UnexpectedReadableError
+						Expect(errors.As(err, &unexpected)).To(BeTrue(), "error: %v", err)
+						Expect(unexpected.AllReadable).To(BeTrue())
+					}},
+					{IndexStateDisabled, func(err error) {
+						var storage *RecordCoreStorageError
+						Expect(errors.As(err, &storage)).To(BeTrue(), "error: %v", err)
+						Expect(storage.Message).To(Equal("Unexpected index state(s)"))
+					}},
+				} {
+					sm := setup(markDisabled(priceIndex.Name), priceIndex)
+					state := tc.state
+					db, h := hookBefore(2, func(store *FDBRecordStore) { store.setIndexState(priceIndex.Name, state) })
+					h.run = h.hook(sm)
+					_, err := indexer(db, sm, nil).BuildIndex(ctx)
+					Expect(h.fired).To(BeTrue(), "the hook never ran")
+					tc.check(err)
+				}
+			})
+
+			It("does not fall back from a BY_INDEX build whose target's queue state changed mid-build", func() {
+				sm := setup(markDisabled(qtyIndex.Name), qtyIndex)
+				db, h := hookBefore(2, func(store *FDBRecordStore) { store.setIndexState(qtyIndex.Name, IndexStateWriteOnlyWithQueue) })
+				h.run = h.hook(sm)
+				oi, err := NewOnlineIndexerBuilder().SetDatabase(db).SetMetaData(sm.md).SetSubspace(sm.ks).
+					SetIndex(qtyIndex).SetSourceIndex(priceIndex).SetLimit(1).Build()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = oi.BuildIndex(ctx)
+				Expect(h.fired).To(BeTrue(), "the hook never ran")
+				var storage *RecordCoreStorageError
+				Expect(errors.As(err, &storage)).To(BeTrue(), "error: %v", err)
+				Expect(oi.fallbackToRecordsScan).To(BeFalse(), "a Go-only state check sent the build to the records-scan fallback")
+				Expect(stampOf(sm, qtyIndex).GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_BY_INDEX))
+			})
+
+			It("refuses a source index the metadata does not define before writing anything", func() {
+				sm := setup(markDisabled(qtyIndex.Name), qtyIndex)
+				ghost := NewIndex("Order$ghost", Field("price"))
+				oi, err := NewOnlineIndexerBuilder().SetDatabase(sharedDB).SetMetaData(sm.md).SetSubspace(sm.ks).
+					SetIndex(qtyIndex).SetSourceIndex(ghost).Build()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = oi.BuildIndex(ctx)
+				var md *MetaDataError
+				Expect(errors.As(err, &md)).To(BeTrue(), "error: %v", err)
+				Expect(md.Message).To(Equal("Index Order$ghost not defined"))
+				o := observe(sm)
+				Expect(o.state[qtyIndex.Name]).To(Equal(IndexStateDisabled))
+				Expect(o.orphan[qtyIndex.Name]).To(BeTrue())
+				Expect(stampOf(sm, qtyIndex)).To(BeNil())
+			})
+
+			It("keeps one heartbeat identity across attempts, so a leftover heartbeat of its own is not a live peer", func() {
+				sm := setup(readable, priceIndex)
+				oi := indexer(sharedDB, sm, func(b *OnlineIndexerBuilder) *OnlineIndexerBuilder {
+					return b.SetPolicy(&IndexingPolicy{IfReadable: DesiredActionRebuild})
+				})
+				// An earlier attempt's heartbeat whose cleanup failed.
+				leftover := oi.newHeartbeat("earlier attempt", false, sharedDB.Env())
+				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					leftover.update(rtx.Transaction(), sm.ks, priceIndex)
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+				total, err := oi.BuildIndex(ctx)
+				Expect(err).NotTo(HaveOccurred(), "the indexer's own heartbeat locked it out")
+				Expect(total).To(Equal(int64(5)))
+				Expect(oi.newHeartbeat("next", false, sharedDB.Env()).indexerID).To(Equal(leftover.indexerID))
+
+				// Another indexer's live heartbeat still refuses the clear.
+				other := indexer(sharedDB, sm, func(b *OnlineIndexerBuilder) *OnlineIndexerBuilder {
+					return b.SetPolicy(&IndexingPolicy{IfReadable: DesiredActionRebuild})
+				})
+				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					leftover.update(rtx.Transaction(), sm.ks, priceIndex)
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+				_, err = other.BuildIndex(ctx)
+				var locked *SynchronizedSessionLockedError
+				Expect(errors.As(err, &locked)).To(BeTrue(), "error: %v", err)
+			})
+		})
+
+		Describe("build catcher", func() {
+			byIndexStamp := func(source *Index) *gen.IndexBuildIndexingStamp {
+				return &gen.IndexBuildIndexingStamp{
+					Method:                         gen.IndexBuildIndexingStamp_BY_INDEX.Enum(),
+					SourceIndexSubspaceKey:         tuple.Tuple{source.SubspaceTupleKey()}.Pack(),
+					SourceIndexLastModifiedVersion: proto.Int32(int32(source.LastModifiedVersion)),
+				}
+			}
+			stampAs := func(stamp *gen.IndexBuildIndexingStamp, indexes ...*Index) func(*FDBRecordStore) {
+				return func(store *FDBRecordStore) {
+					for _, index := range indexes {
+						Expect(store.SaveIndexingTypeStamp(index, stamp)).To(Succeed())
+					}
+				}
+			}
+			all := func(arrange ...func(*FDBRecordStore)) func(*FDBRecordStore) {
+				return func(store *FDBRecordStore) {
+					for _, a := range arrange {
+						a(store)
+					}
+				}
+			}
+			buildQty := func(sm subspaceAndMeta, source *Index, policy *IndexingPolicy, markReadable bool) (int64, error) {
+				b := NewOnlineIndexerBuilder().SetDatabase(sharedDB).SetMetaData(sm.md).SetSubspace(sm.ks).
+					SetIndex(qtyIndex).SetPolicy(policy).SetMarkReadable(markReadable)
+				if source != nil {
+					b = b.SetSourceIndex(source)
+				}
+				oi, err := b.Build()
+				Expect(err).NotTo(HaveOccurred())
+				return oi.BuildIndex(ctx)
+			}
+			complete := func(sm subspaceAndMeta, index *Index) bool {
+				var done bool
+				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					missing, err := NewIndexingRangeSet(sm.ks, index).FirstMissingRange(rtx.Transaction())
+					done = missing == nil
+					return nil, err
+				})
+				Expect(err).NotTo(HaveOccurred())
+				return done
+			}
+			byRecords := gen.IndexBuildIndexingStamp_BY_RECORDS.Enum()
+
+			It("continues a BY_RECORDS build that a BY_INDEX request finds, by scanning records", func() {
+				sm := setup(all(unfinished(qtyIndex.Name), stampAs(stamped, qtyIndex)), qtyIndex)
+				total, err := buildQty(sm, priceIndex, nil, false)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(total).To(Equal(int64(5)))
+				Expect(stampOf(sm, qtyIndex).GetMethod()).To(Equal(*byRecords))
+				Expect(complete(sm, qtyIndex)).To(BeTrue())
+				Expect(observe(sm).orphan[qtyIndex.Name]).To(BeTrue(), "the continuation cleared the index")
+			})
+
+			It("continues a MULTI_TARGET_BY_RECORDS build as a single target when the policy allows the takeover", func() {
+				multi := &gen.IndexBuildIndexingStamp{Method: gen.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS.Enum(), TargetIndex: []string{priceIndex.Name, qtyIndex.Name}}
+				sm := setup(all(unfinished(qtyIndex.Name), stampAs(multi, qtyIndex)), qtyIndex)
+				_, err := buildQty(sm, priceIndex, &IndexingPolicy{AllowedTakeovers: map[TakeoverType]bool{TakeoverMultiTargetToSingle: true}}, false)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(stampOf(sm, qtyIndex).GetMethod()).To(Equal(*byRecords))
+				Expect(complete(sm, qtyIndex)).To(BeTrue())
+				Expect(observe(sm).orphan[qtyIndex.Name]).To(BeTrue())
+			})
+
+			It("continues a BY_INDEX build from its saved source index", func() {
+				sm := setup(all(unfinished(qtyIndex.Name), stampAs(byIndexStamp(priceIndex), qtyIndex)), qtyIndex)
+				total, err := buildQty(sm, nil, nil, false)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(total).To(Equal(int64(5)))
+				stamp := stampOf(sm, qtyIndex)
+				Expect(stamp.GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_BY_INDEX))
+				Expect(stamp.GetSourceIndexSubspaceKey()).To(Equal(byIndexStamp(priceIndex).GetSourceIndexSubspaceKey()))
+				Expect(complete(sm, qtyIndex)).To(BeTrue())
+				Expect(observe(sm).orphan[qtyIndex.Name]).To(BeTrue())
+			})
+
+			It("rebuilds by the requested method when the saved source index is unusable", func() {
+				sm := setup(all(unfinished(qtyIndex.Name), stampAs(byIndexStamp(priceIndex), qtyIndex), markDisabled(priceIndex.Name)), qtyIndex)
+				total, err := buildQty(sm, nil, nil, false)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(total).To(Equal(int64(5)))
+				Expect(stampOf(sm, qtyIndex).GetMethod()).To(Equal(*byRecords))
+				Expect(complete(sm, qtyIndex)).To(BeTrue())
+				Expect(observe(sm).orphan[qtyIndex.Name]).To(BeFalse(), "the requested method was not rebuilt")
+			})
+
+			It("falls back to a records scan from a source index that is not scannable, unless ForbidRecordScan", func() {
+				sm := setup(markDisabled(priceIndex.Name, qtyIndex.Name), qtyIndex)
+				_, err := buildQty(sm, priceIndex, &IndexingPolicy{ForbidRecordScan: true}, true)
+				var invalid *IndexingValidationError
+				Expect(errors.As(err, &invalid)).To(BeTrue(), "error: %v", err)
+				Expect(invalid.Message).To(Equal("source index is not scannable"))
+				Expect(invalid.SourceIndexName).To(Equal(priceIndex.Name))
+				// Java validates the source after the state transaction has
+				// committed: the DISABLED target's action was REBUILD, so the refused
+				// session left it cleared and WRITE_ONLY under a BY_INDEX stamp.
+				o := observe(sm)
+				Expect(o.state[qtyIndex.Name]).To(Equal(IndexStateWriteOnly))
+				Expect(o.orphan[qtyIndex.Name]).To(BeFalse(), "the REBUILD did not clear the target")
+				Expect(stampOf(sm, qtyIndex).GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_BY_INDEX))
+
+				total, err := buildQty(sm, priceIndex, nil, true)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(total).To(Equal(int64(5)))
+				Expect(observe(sm).state[qtyIndex.Name]).To(Equal(IndexStateReadable))
+			})
+
+			It("follows IfMismatchPrevious: REBUILD rebuilds, ERROR and MARK_READABLE return the mismatch", func() {
+				sm := setup(all(unfinished(qtyIndex.Name), stampAs(byIndexStamp(priceIndex), qtyIndex)), qtyIndex)
+				for _, action := range []IndexingDesiredAction{DesiredActionError, DesiredActionMarkReadable} {
+					_, err := buildQty(sm, nil, &IndexingPolicy{IfMismatchPrevious: action}, false)
+					var partly *PartlyBuiltError
+					Expect(errors.As(err, &partly)).To(BeTrue(), "action %d: %v", action, err)
+					Expect(partly.Saved.GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_BY_INDEX))
+					Expect(partly.Expected.GetMethod()).To(Equal(*byRecords))
+					Expect(stampOf(sm, qtyIndex).GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_BY_INDEX))
+					Expect(observe(sm).orphan[qtyIndex.Name]).To(BeTrue())
+				}
+				policy := &IndexingPolicy{IfMismatchPrevious: DesiredActionRebuild}
+				total, err := buildQty(sm, nil, policy, false)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(total).To(Equal(int64(5)))
+				Expect(stampOf(sm, qtyIndex).GetMethod()).To(Equal(*byRecords))
+				Expect(observe(sm).orphan[qtyIndex.Name]).To(BeFalse())
+				Expect(policy.IfWriteOnly).To(Equal(DesiredActionDefault), "the retry wrote through the caller's policy")
+			})
+
+			It("returns a multi-target build's stamp mismatch without retrying", func() {
+				sm := setup(all(unfinished(priceIndex.Name, qtyIndex.Name), stampAs(stamped, priceIndex, qtyIndex)), priceIndex, qtyIndex)
+				_, err := build(sm, nil, priceIndex, qtyIndex)
+				var partly *PartlyBuiltError
+				Expect(errors.As(err, &partly)).To(BeTrue(), "error: %v", err)
+				Expect(partly.Saved.GetMethod()).To(Equal(*byRecords))
+				Expect(partly.Expected.GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS))
+			})
+
+			It("classifies every build transaction's target states as Java's expectedIndexStatesOrThrow does", func() {
+				sm := setup(func(*FDBRecordStore) {})
+				check := func(price, qty IndexState) error {
+					var checked error
+					_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+						store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(sm.md).SetSubspace(sm.ks).Open()
+						Expect(err).NotTo(HaveOccurred())
+						store.setIndexState(priceIndex.Name, price)
+						store.setIndexState(qtyIndex.Name, qty)
+						oi := &OnlineIndexer{targetIndexes: []*Index{priceIndex, qtyIndex}}
+						checked = oi.expectedIndexStatesOrThrow(store)
+						return nil, nil
+					})
+					Expect(err).NotTo(HaveOccurred())
+					return checked
+				}
+				Expect(check(IndexStateWriteOnly, IndexStateWriteOnlyWithQueue)).To(Succeed())
+				var unexpected *UnexpectedReadableError
+				Expect(errors.As(check(IndexStateReadable, IndexStateReadableUniquePending), &unexpected)).To(BeTrue())
+				Expect(unexpected.AllReadable).To(BeTrue())
+				Expect(unexpected.Message).To(Equal("All indexes are built"))
+				Expect(errors.As(check(IndexStateWriteOnly, IndexStateReadable), &unexpected)).To(BeTrue())
+				Expect(unexpected.AllReadable).To(BeFalse())
+				Expect(unexpected.Message).To(Equal("Some indexes are built"))
+				Expect(unexpected.IndexNames).To(Equal([]string{priceIndex.Name, qtyIndex.Name}))
+				Expect(unexpected.IndexStates).To(Equal([]IndexState{IndexStateWriteOnly, IndexStateReadable}))
+				var storage *RecordCoreStorageError
+				Expect(errors.As(check(IndexStateReadable, IndexStateDisabled), &storage)).To(BeTrue())
+				Expect(storage.Message).To(Equal("Unexpected index state(s)"))
+			})
+
+			It("answers each failure the way Java's indexingCatcher does", func() {
+				sm := setup(func(*FDBRecordStore) {})
+				partly := func(saved gen.IndexBuildIndexingStamp_Method, key []byte) error {
+					return fmt.Errorf("attempt: %w", &PartlyBuiltError{IndexName: qtyIndex.Name, Saved: &gen.IndexBuildIndexingStamp{Method: saved.Enum(), SourceIndexSubspaceKey: key}})
+				}
+				priceKey := byIndexStamp(priceIndex).GetSourceIndexSubspaceKey()
+				invalid := fmt.Errorf("attempt: %w", &IndexingValidationError{Message: "source index is not scannable"})
+				someReadable := fmt.Errorf("attempt: %w", &UnexpectedReadableError{Message: "Some indexes are built"})
+				allReadable := fmt.Errorf("attempt: %w", &UnexpectedReadableError{AllReadable: true, Message: "All indexes are built"})
+				requestedPolicy := &IndexingPolicy{IfDisabled: DesiredActionContinue}
+				requested := &requestedIndexingMethod{policy: requestedPolicy}
+				type arm struct {
+					name      string
+					indexer   func() *OnlineIndexer
+					err       error
+					attempt   int
+					requested *requestedIndexingMethod
+					catch     indexingCatch
+					// sameErr: a failing arm returns the failure it was handed.
+					sameErr bool
+					check   func(oi *OnlineIndexer, next *requestedIndexingMethod, err error)
+				}
+				single := func(policy *IndexingPolicy, source *Index) func() *OnlineIndexer {
+					return func() *OnlineIndexer {
+						return &OnlineIndexer{metaData: sm.md, targetIndexes: []*Index{qtyIndex}, policy: policy, sourceIndex: source}
+					}
+				}
+				multi := func() *OnlineIndexer {
+					return &OnlineIndexer{metaData: sm.md, targetIndexes: []*Index{priceIndex, qtyIndex}}
+				}
+				mutual := func() *OnlineIndexer {
+					return &OnlineIndexer{metaData: sm.md, targetIndexes: []*Index{qtyIndex}, mutual: true}
+				}
+				fellBack := func(oi *OnlineIndexer, next *requestedIndexingMethod, _ error) {
+					Expect(oi.fallbackToRecordsScan).To(BeTrue())
+					Expect(oi.enforcedStampOverwrite).To(BeTrue())
+					Expect(oi.buildsByIndex()).To(BeFalse())
+					Expect(oi.buildsMutually()).To(BeFalse())
+					Expect(next).To(BeNil())
+				}
+				unchanged := func(oi *OnlineIndexer, _ *requestedIndexingMethod, _ error) {
+					Expect(oi.fallbackToRecordsScan).To(BeFalse())
+				}
+				arms := []arm{
+					{name: "past the attempt limit", indexer: single(nil, nil), err: partly(gen.IndexBuildIndexingStamp_BY_RECORDS, nil), attempt: indexingAttemptsLimit + 1, catch: indexingCatchFail, sameErr: true, check: unchanged},
+					{name: "CONTINUE over BY_RECORDS", indexer: single(nil, priceIndex), err: partly(gen.IndexBuildIndexingStamp_BY_RECORDS, nil), attempt: indexingAttemptsLimit, catch: indexingCatchRetry, check: fellBack},
+					{name: "CONTINUE over MULTI_TARGET_BY_RECORDS", indexer: single(nil, nil), err: partly(gen.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS, nil), attempt: 1, catch: indexingCatchRetry, check: fellBack},
+					{
+						name: "CONTINUE over BY_INDEX", indexer: single(requestedPolicy, nil), err: partly(gen.IndexBuildIndexingStamp_BY_INDEX, priceKey), attempt: 1, catch: indexingCatchRetry,
+						check: func(oi *OnlineIndexer, next *requestedIndexingMethod, _ error) {
+							Expect(oi.sourceIndex).To(Equal(priceIndex))
+							Expect(oi.buildsByIndex()).To(BeTrue())
+							Expect(next).To(Equal(&requestedIndexingMethod{policy: requestedPolicy}))
+						},
+					},
+					{
+						name: "CONTINUE over BY_INDEX with an unknown source", indexer: single(nil, nil), err: partly(gen.IndexBuildIndexingStamp_BY_INDEX, tuple.Tuple{int64(999)}.Pack()), attempt: 1, catch: indexingCatchFail,
+						check: func(_ *OnlineIndexer, _ *requestedIndexingMethod, err error) {
+							var md *MetaDataError
+							Expect(errors.As(err, &md)).To(BeTrue(), "error: %v", err)
+							Expect(md.Message).To(Equal("Unknown index subspace key 999"))
+						},
+					},
+					{
+						name: "CONTINUE over BY_INDEX with a malformed source key", indexer: single(nil, nil), err: partly(gen.IndexBuildIndexingStamp_BY_INDEX, tuple.Tuple{int64(1), int64(2)}.Pack()), attempt: 1, catch: indexingCatchFail,
+						check: func(_ *OnlineIndexer, _ *requestedIndexingMethod, err error) {
+							var core *RecordCoreError
+							Expect(errors.As(err, &core)).To(BeTrue(), "error: %v", err)
+							Expect(core.Message).To(Equal("subspace key must encode a single item tuple"))
+						},
+					},
+					{name: "CONTINUE over MUTUAL_BY_RECORDS", indexer: single(nil, nil), err: partly(gen.IndexBuildIndexingStamp_MUTUAL_BY_RECORDS, nil), attempt: 1, catch: indexingCatchFail, sameErr: true, check: unchanged},
+					{name: "CONTINUE on a multi-target build", indexer: multi, err: partly(gen.IndexBuildIndexingStamp_BY_RECORDS, nil), attempt: 1, catch: indexingCatchFail, sameErr: true, check: unchanged},
+					{
+						name: "REBUILD", indexer: single(&IndexingPolicy{IfMismatchPrevious: DesiredActionRebuild}, nil), err: partly(gen.IndexBuildIndexingStamp_BY_INDEX, priceKey), attempt: 1, catch: indexingCatchRetry,
+						check: func(oi *OnlineIndexer, next *requestedIndexingMethod, _ error) {
+							Expect(oi.policy.IfWriteOnly).To(Equal(DesiredActionRebuild))
+							Expect(oi.policy.IfMismatchPrevious).To(Equal(DesiredActionRebuild))
+							Expect(oi.sourceIndex).To(BeNil())
+							Expect(oi.fallbackToRecordsScan).To(BeFalse())
+							Expect(next).To(BeNil())
+						},
+					},
+					{name: "ERROR", indexer: single(&IndexingPolicy{IfMismatchPrevious: DesiredActionError}, nil), err: partly(gen.IndexBuildIndexingStamp_BY_RECORDS, nil), attempt: 1, catch: indexingCatchFail, sameErr: true, check: unchanged},
+					{name: "MARK_READABLE", indexer: single(&IndexingPolicy{IfMismatchPrevious: DesiredActionMarkReadable}, nil), err: partly(gen.IndexBuildIndexingStamp_BY_RECORDS, nil), attempt: 1, catch: indexingCatchFail, sameErr: true, check: unchanged},
+					{
+						name: "an action outside the enum", indexer: single(&IndexingPolicy{IfMismatchPrevious: IndexingDesiredAction(99)}, nil), err: partly(gen.IndexBuildIndexingStamp_BY_RECORDS, nil), attempt: 1, catch: indexingCatchFail,
+						check: func(_ *OnlineIndexer, _ *requestedIndexingMethod, err error) {
+							var core *RecordCoreError
+							Expect(errors.As(err, &core)).To(BeTrue(), "error: %v", err)
+							Expect(core.Message).To(Equal("bad indexing desired action 99 for a mismatched previous build"))
+						},
+					},
+					{
+						name: "a continuation's unusable source restores the requested method", indexer: single(nil, priceIndex), err: invalid, attempt: 2, requested: requested, catch: indexingCatchRetry,
+						check: func(oi *OnlineIndexer, next *requestedIndexingMethod, _ error) {
+							Expect(oi.sourceIndex).To(BeNil())
+							Expect(oi.policy.IfWriteOnly).To(Equal(DesiredActionRebuild))
+							Expect(oi.policy.IfDisabled).To(Equal(DesiredActionContinue))
+							Expect(requestedPolicy.IfWriteOnly).To(Equal(DesiredActionDefault))
+							Expect(oi.fallbackToRecordsScan).To(BeFalse())
+							Expect(next).To(BeNil())
+						},
+					},
+					{name: "an unusable requested source falls back to a records scan", indexer: single(nil, priceIndex), err: invalid, attempt: 1, catch: indexingCatchRetry, check: fellBack},
+					{name: "ForbidRecordScan", indexer: single(&IndexingPolicy{ForbidRecordScan: true}, priceIndex), err: invalid, attempt: 1, catch: indexingCatchFail, sameErr: true, check: unchanged},
+					{name: "a failed records scan does not fall back again", indexer: func() *OnlineIndexer {
+						oi := single(nil, priceIndex)()
+						oi.fallBackToRecordsScan()
+						return oi
+					}, err: invalid, attempt: 2, catch: indexingCatchFail, sameErr: true},
+					{name: "a validation failure without a source index", indexer: single(nil, nil), err: invalid, attempt: 1, catch: indexingCatchFail, sameErr: true, check: unchanged},
+					{name: "mutual, all readable", indexer: mutual, err: allReadable, attempt: 1, catch: indexingCatchDone, check: unchanged},
+					{name: "mutual, some readable", indexer: mutual, err: someReadable, attempt: 1, catch: indexingCatchRetry, check: fellBack},
+					{name: "not mutual, all readable", indexer: single(nil, nil), err: allReadable, attempt: 1, catch: indexingCatchFail, sameErr: true, check: unchanged},
+				}
+				for _, a := range arms {
+					oi := a.indexer()
+					catch, next, err := oi.indexingCatcher(ctx, a.err, a.attempt, a.requested)
+					Expect(catch).To(Equal(a.catch), a.name)
+					if a.sameErr {
+						Expect(err).To(BeIdenticalTo(a.err), a.name)
+					}
+					if catch != indexingCatchFail {
+						Expect(err).NotTo(HaveOccurred(), a.name)
+					}
+					if a.check != nil {
+						a.check(oi, next, err)
+					}
+				}
+			})
 		})
 	})
 
@@ -4016,6 +5434,77 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 			})
 
+			It("a finished builder's publication survives a late peer's session start", func() {
+				// The four-builder spec above failed intermittently with
+				// `mark readable: index is not built: "Order$price" has unbuilt ranges`.
+				// This is that interleaving, in order: builder A has finished its
+				// fragments; builder B publishes the index READABLE, which clears the
+				// build ranges; builder C only now starts its session; then A publishes.
+				// A late session over a READABLE index must leave it alone (Java
+				// IndexingBase.handleStateAndDoBuildIndexAsync: the default ifReadable is
+				// CONTINUE, so it neither clears nor builds). Clearing it re-arms WRITE_ONLY
+				// over an empty range set, and A's publication then fails.
+				ks := specSubspace()
+				_, builder := baseMetaData()
+				mdNoIndex, err := builder.Build()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, err := NewStoreBuilder().
+						SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
+					Expect(err).NotTo(HaveOccurred())
+					for i := int64(1); i <= 20; i++ {
+						_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+						Expect(err).NotTo(HaveOccurred())
+					}
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				priceIndex := NewIndex("Order$price", Field("price"))
+				_, builder2 := baseMetaData()
+				builder2.AddIndex("Order", priceIndex)
+				mdWithIndex, err := builder2.Build()
+				Expect(err).NotTo(HaveOccurred())
+				newBuilder := func(markReadable bool) *OnlineIndexer {
+					oi, err := NewOnlineIndexerBuilder().
+						SetDatabase(sharedDB).
+						SetMetaData(mdWithIndex).
+						SetIndex(priceIndex).
+						SetSubspace(ks).
+						SetMutualIndexing().
+						SetLimit(5).
+						SetMarkReadable(markReadable).
+						Build()
+					Expect(err).NotTo(HaveOccurred())
+					return oi
+				}
+
+				a := newBuilder(false)
+				built, err := a.BuildIndex(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(built).To(Equal(int64(20)))
+
+				_, err = newBuilder(true).BuildIndex(ctx)
+				Expect(err).NotTo(HaveOccurred())
+
+				c := newBuilder(true)
+				Expect(c.markWriteOnly(ctx)).To(Equal(indexingSessionSkip), "a session over a READABLE index under the default policy neither clears nor builds")
+
+				Expect(a.markReadable(ctx)).To(Succeed())
+
+				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, err := NewStoreBuilder().
+						SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).Open()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(store.IsIndexReadable("Order$price")).To(BeTrue())
+					entries, err := AsList(ctx, store.ScanIndex(priceIndex, TupleRangeAll, nil, ForwardScan()))
+					Expect(err).NotTo(HaveOccurred())
+					Expect(entries).To(HaveLen(20))
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+			})
+
 			It("mutual builders with concurrent writes during build", func() {
 				ks := specSubspace()
 
@@ -4330,3 +5819,61 @@ var _ = Describe("OnlineIndexer", func() {
 		})
 	})
 })
+
+// subspaceAndMeta names one spec's store: its subspace and the metadata it was
+// created with.
+type subspaceAndMeta struct {
+	ks subspace.Subspace
+	md *RecordMetaData
+}
+
+// disableIndexes marks each index DISABLED, clearing its data, as Java's indexer
+// tests do before a build (OnlineIndexerPendingWriteQueueTest's disableAll): an index
+// on a new store is READABLE, and a session over a READABLE index under the default
+// policy neither clears nor builds (IndexingBase.handleStateAndDoBuildIndexAsync).
+func disableIndexes(store *FDBRecordStore, indexes ...*Index) error {
+	for _, index := range indexes {
+		if _, err := store.MarkIndexDisabled(index.Name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// multiTransactHook calls run with the ordinal (from 1) of each transaction the
+// database runs, before running it, so a test can change state between any two.
+type multiTransactHook struct {
+	fdb.Transactor
+	count int
+	run   func(n int) error
+}
+
+func (h *multiTransactHook) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
+	h.count++
+	if err := h.run(h.count); err != nil {
+		return nil, err
+	}
+	return h.Transactor.Transact(fn)
+}
+
+// nthTransactHook runs run, once, before the nth Transact call (counting from
+// 1) reaches its function: a committed change that lands between two of an
+// indexer's transactions.
+type nthTransactHook struct {
+	fdb.Transactor
+	n, count int
+	fired    bool
+	hook     func(subspaceAndMeta) func() error
+	run      func() error
+}
+
+func (h *nthTransactHook) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
+	h.count++
+	if h.count == h.n && !h.fired && h.run != nil {
+		h.fired = true
+		if err := h.run(); err != nil {
+			return nil, err
+		}
+	}
+	return h.Transactor.Transact(fn)
+}

@@ -1,0 +1,73 @@
+**NAK.** I reviewed tree `f8abe2d742df8c35b44fb0c6f854f86c3cd3a016`. I recomputed the design's hash from the tree and it matches `b285bfa37aace7554d0af471a642346bcad339688e7cd10df21d031cb8fa3f94`, with 2196 lines. Java is at `fdacd162a`. This was a read-only review: I ran no tests, probes or mutations.
+
+## What holds
+- **The evidence matches the bytes.**
+  - I re-hashed 10 of the files evidence-v9 lists; 9 match the tree's blobs. The tenth is `ws-c-design.md`, a WS-C file edited after the run.
+  - The `just test` tree `f2f272dc` differs from the candidate only in `ws-c-design.md`, the oracle README and `evidence-v9.txt`.
+  - `wsj-ev1.log` shows "Ran 27 of 51", all 27 passing. Pass 2 has 15 WSJIX/WSJLANE lines. The JVM log has 5 lines carrying the new message.
+- **The mutation logs are real.**
+  - wm9-7 reddens all six fault arms (`metadata_validate_records_test.go:579-602`); wm9-10, -17 and -18 each apply their marker once and go red.
+  - The baseline shows 18 subtests passing.
+  - The line numbers in the mutation diffs match the tree: `metadata.go:770`, `metadata_proto.go:788`, `generator.go:1074`.
+- **The (d) replay is sound in the dangerous direction.** I checked it again against `e48f5b496`: the loop at `metadata.go:345-373`, `findUnionDescriptorName`, and loader steps 4 and 5. Every omission errs toward refusing. The RecordTypeUnion claim matches Java's `fetchUnionDescriptor` (`RecordMetaDataBuilder.java:322-357`).
+- **The loader's two readings** match `Index.java:198-251`.
+- **The lane check's result types are right**, per the Java sources: order functions give BYTES (`OrderFunctionKeyExpression.java:100-101` → `ToOrderedBytesValue.java:100-101`), CARDINALITY gives INT (`CardinalityValue.java:84-86`), and collate gives BYTES (`CollateValue.java:124-125`).
+- **The IN walk and the grammar claim hold** (`AstNormalizer.java:446-463`, `:507-527`; `RelationalParser.g4:1245-1276`).
+- **Every v8 finding is addressed**, except the new holes and residuals below.
+
+## MEDIUM
+
+**1. The edited-file route skips the evolution validator (design :1865-1885, (p) :2158-2161).**
+- A normal save loads the old metadata and runs `s.evolutionValidator.Validate(oldMeta, newMeta)` (`metadata_store.go`, `SaveRecordMetaData`).
+- `SaveMigratedLegacyMetaData` cannot load the old side, so v9 admits an edited file on its framing alone: same full name at the same union field number, it loads, and its version is the stored one plus 1. The design calls that "the whole requirement" (:1877). It is not. The route would admit all of these:
+  - a changed primary key;
+  - an index root changed with no `last_modified_version` bump (no rebuild on open, so reads through that index return wrong rows);
+  - an index dropped without a FormerIndex;
+  - renumbered or retyped fields inside a framed message;
+  - a change to `split_long_records` or `store_record_versions`.
+- **Fix:**
+  - Load the stored bytes under `union` (an internal loader that names that union and skips (d); for UnionDescriptor, use the replay's framing).
+  - Validate old → edited with `MetaDataEvolutionValidator`.
+  - Pin two refusals: an index root edited with no version bump, and a framed field retyped.
+
+**2. The restore's "nothing binds (t, v)" check is not atomic (:491, :531-536).**
+- The listing runs in batch transactions. The final transaction re-checks only that (t, v) is not stored, and its conflict range covers only writes after its own read version.
+- The design justifies that window with "a DROP SCHEMA there only shrinks the set". That holds for the header check, but not for the new refusal, which fires exactly when the set shrinks to empty.
+- **Sequence:**
+  1. The restore lists S, the only schema bound to (t, 3).
+  2. DROP SCHEMA S.
+  3. A fresh CREATE SCHEMA TEMPLATE t is admitted, since nothing binds t any more.
+  4. The restore commits (t, 3) from the old history.
+- That is the two-history state of Torvalds v8 #2 again, reached by a race.
+- **Fix:** in the final transaction, read the (t, v) bindings with limit 1 (O(1)) and refuse if there are none. Also add a conflict range over t's template rows. Pin it with an FDB interleaving test.
+
+## LOW
+
+**3. Superseded text was not grepped out.**
+- Design :1799 still quotes "migrate it with the union…", which is not the message the code now emits (`metadata_proto.go`, `Error()`: "edit it so that…"). That line is the only live hit; the others are in the historical evidence-v8.
+- The title at `DIVERGENCES.md:2948` keeps v8's rule ("that version or a later one").
+- (s) says the restore fails closed over Java-created schemas until F11, but the DIVERGENCES entry at :2914-2930 does not say so.
+- The TODO.md merge-unit blocks (around :14790 and :14831) do not list what v9 adds to step 3: `CreateTemplateFromProto`, the XX000 at the clause, and the edited-file route.
+
+**4. The in-memory catalog's carried route contradicts itself.**
+- Line :1333 has that catalog load `md`. The only loader is `RecordMetaDataFromProto`, so the (d) refusal fires there. That contradicts the table (:839, "in-memory: no") and :1795 ("runs no check").
+- The error class is unspecified: wrapped as 0A000, as `deserializeTemplate` does, or left bare.
+- The read side of `carryNumbering` ("from the catalog row itself", :1308) names no catalog API, and the in-memory catalog has no rows. Name the read, and say that the in-memory catalog uses `ToProto`.
+
+**5. Overclaim at :1756:** "The target creates each SQL shape, and each is pinned on both engines."
+- Two shapes the design itself names are not among the five WSJTT shapes and were never measured on the target: a column of any type named `_X`, and a table named "UUID" beside a UnionDescriptor table with a UUID column.
+- Pin them, or scope the sentence.
+
+**6. WSJLANE and the clause-time refusal.**
+- Go's outcome is rendered as `ERROR <code> %q`, with no exception class, so `goNow` cannot literally "become" `c.want` (:824). Say what will be compared.
+- No shape pins the precedence of the clause-time XX000. Java registers every table before it generates any index (section 4), so a later table fault must beat an earlier lane-less index. Add a shape with both faults.
+
+## Measured vs. source
+- **Measured:**
+  - the v9 pins (WSJIX options, WSJLANE `goNow`, the new message on the JVM);
+  - wm9-1 to wm9-12 and wm9-17 to wm9-19 under Bazel;
+  - the unchanged tally;
+  - `just test` green on `f2f272dc`.
+- **Source only:**
+  - findings 1-6;
+  - everything unbuilt in steps 1-3: `CreateTemplateFromProto`, the guard from latest + 1, the restore, the lane check and its XX000 at the clause, the IN walk, the migration and the edited-file route, and test 5.

@@ -99,8 +99,18 @@ variable "runner_ephemeral" {
 locals {
   versions = {
     # GitHub Actions runner (was releases/latest — now pinned). SHA from the release body.
-    runner_version = "2.335.1"
-    runner_sha256  = "4ef2f25285f0ae4477f1fe1e346db76d2f3ebf03824e2ddd1973a2819bf6c8cf"
+    # The pin has a shelf life: config.sh runs with --disableupdate, and GitHub refuses a
+    # runner that falls too far behind the current release. The listener then connects,
+    # logs "Runner version vX is deprecated and cannot receive messages", and exits with a
+    # terminal code, so svc.sh does not retry and the watchdog's restart every 10 minutes
+    # fails the same way; the runner shows offline and every job queues. That took the
+    # whole fleet down on 2026-09-24 at 2.335.1 (2.337.0 had been out since 2026-08-26).
+    # Bump this pair when a new runner release lands. A live box is upgraded in place by
+    # stopping the watchdog timer and the runner unit, extracting the verified tarball over
+    # /home/runner/actions-runner as the runner user (.runner and .credentials survive),
+    # and starting both again.
+    runner_version = "2.337.0"
+    runner_sha256  = "70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613"
     # Go toolchain. MUST match go.mod's `go` directive: the workflows that do not go
     # through Bazel run the system `go` directly (the libfdbc cgo build hardcodes
     # GO_BIN="go", and the Bazel-SDK resolver falls back to it), so a box without Go on

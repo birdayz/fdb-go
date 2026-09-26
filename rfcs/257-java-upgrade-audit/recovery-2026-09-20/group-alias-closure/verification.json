@@ -1,0 +1,3075 @@
+{
+  "scope": "WS-A/E1 GROUP alias ownership repair, retained Java/FDB regressions and early-read latency attribution. Not whole-upgrade completion or publication/merge authorization.",
+  "head": "71ccd8cf8b3fd0dbafe283e91171818e36af555e",
+  "rejected_tree": "664b241c57b71829cb40687a1e26cc3dc3e145e6",
+  "verified_full_race_tree": "ffdcc1138421d53d3b22971a095f619173d87d49",
+  "verified_final_code_tree": "be28f57df14cf7edec617bf09216ab828698cd69",
+  "full_race_frozen_files": 6305,
+  "instrumented_frozen_files": 6306,
+  "post_suite_delta": [
+    "pkg/relational/sqldriver/stress/BUILD.bazel",
+    "pkg/relational/sqldriver/stress/latency_attribution_stress_test.go",
+    "pkg/relational/sqldriver/stress/stress_test.go"
+  ],
+  "source_changes_during_runs": 0,
+  "java_commit": "fdacd162a9c8acfadc49082b89185c823ab8ae4a",
+  "suites": {
+    "group-alias-full": {
+      "targets": 93,
+      "executed": 93,
+      "counts": {
+        "run": 40665,
+        "pass": 40660,
+        "skip": 5,
+        "fail": 0
+      },
+      "tests": [
+        {
+          "label": "//conformance:rabitq_architecture_test",
+          "counts": {
+            "run": 0,
+            "pass": 0,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "a0ac061f5aad0eeee0711ea97a0bb62191a5ea767aec01d0cc3b1b9f2b07221b",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/conformance__rabitq_architecture_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/txbudgetcensus:txbudgetcensus_test",
+          "counts": {
+            "run": 14,
+            "pass": 14,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "e424213368ccf1d30bb1b04b89766999eaa9b4ea47c07e55c3d54044ceb08bd8",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__txbudgetcensus__txbudgetcensus_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/fdbgo/fdbmetrics:fdbmetrics_test",
+          "counts": {
+            "run": 4,
+            "pass": 4,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "f769ece4fa2f92d37769f3ad126931ccce010990b902868feb21132348ff8c68",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__fdbgo__fdbmetrics__fdbmetrics_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/core/fleet:fleet_test",
+          "counts": {
+            "run": 14,
+            "pass": 14,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "33b6109bd81ae8bfb4d84f841b0fb4d719a2359a1d3f4d8a59cb235313c404d2",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__fleet__fleet_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/linters/typeimmutable:typeimmutable_test",
+          "counts": {
+            "run": 19,
+            "pass": 19,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "b1cbab8a5a8f22d3b48d563d6d33df045e38c2b33fcac9da08ad650fb424a071",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__linters__typeimmutable__typeimmutable_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/testutil/allocs:allocs_test",
+          "counts": {
+            "run": 30,
+            "pass": 30,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "d8ccbaa9ba740ef2ee3d25236f53d1f5c8acddfb3d9e2e9ba04f703c32e9883d",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__testutil__allocs__allocs_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/api:api_test",
+          "counts": {
+            "run": 104,
+            "pass": 104,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "44b44f950e837a1edbf8adb380f95eff554597e50801dda9696989b0aa8cf657",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__api__api_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/recordlayer/vectorcodec:vectorcodec_test",
+          "counts": {
+            "run": 12,
+            "pass": 12,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "d68303ced6c7aff4ef236746321d4d9d28ccc152805c8f6fcff9fb044d83fdbe",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__vectorcodec__vectorcodec_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/core/query/semantic/rlcatalog:rlcatalog_test",
+          "counts": {
+            "run": 13,
+            "pass": 13,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "054db26fe7946264a0ae063edfd08060bfad57c751f77dd8d6ee37eb39b7f3fa",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__query__semantic__rlcatalog__rlcatalog_test.log",
+          "skips": []
+        },
+        {
+          "label": "//cmd/fuzzrun:fuzzrun_test",
+          "counts": {
+            "run": 22,
+            "pass": 22,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "fabe9ba72c531ac2af565df8e9b212a00c50a6ab1bc97539a3888c27c26bc9a6",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__fuzzrun__fuzzrun_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/core/functions:functions_test",
+          "counts": {
+            "run": 342,
+            "pass": 342,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "a5cc3d1ec5242aa3c8ce25a8c50ba2486f91eb0321daad719e929207f4b6ad7a",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__functions__functions_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/core/ddl:ddl_test",
+          "counts": {
+            "run": 26,
+            "pass": 26,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "c5414aeabe995f8b9b66a8b33847fd71e1e939a0a122a58879cd41ea05f9cbfa",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__ddl__ddl_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/simfdb/hunt:hunt_test",
+          "counts": {
+            "run": 26,
+            "pass": 26,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "542ff93f77d1d98699135521f309afe65d0e0472bfb78b2362945c8e98a3752c",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__simfdb__hunt__hunt_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/recordlayer/query/plan/cascades/predicates:predicates_test",
+          "counts": {
+            "run": 570,
+            "pass": 570,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "6d87e8ed6b81c2be97d61f12c51ba186ee7752e8e4952c7a6426e6d102698670",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__query__plan__cascades__predicates__predicates_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/recordlayer/query/plan/plans:plans_test",
+          "counts": {
+            "run": 780,
+            "pass": 780,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "b8a45b84146da5de1bd0e1e26f56264a4f4f68d04c091a3e82702916b667b4e1",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__query__plan__plans__plans_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/recordlayer/query/plan/cascades:cascades_test",
+          "counts": {
+            "run": 3682,
+            "pass": 3682,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "3a39eb0db5e0e14314a635aa46e07f8c866dee61edff138541199d56fe8bf442",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__query__plan__cascades__cascades_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/core/catalog:catalog_test",
+          "counts": {
+            "run": 93,
+            "pass": 93,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "341587aec798b40234fea5b23e77a2a615d328f04b3208f0f1c44c338e1a1dd1",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__catalog__catalog_test.log",
+          "skips": []
+        },
+        {
+          "label": "//cmd/verify-corpus-retirement-history:verify-corpus-retirement-history_test",
+          "counts": {
+            "run": 28,
+            "pass": 28,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "97569c9f572de751049b19bd507089325a6c15d8a612d1e45967537a724acae6",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__verify-corpus-retirement-history__verify-corpus-retirement-history_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/core/session:session_test",
+          "counts": {
+            "run": 12,
+            "pass": 12,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "15679bf35fb59a4814e8e86e1799317fcecbeca1b340d14433e828d2f94b8960",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__session__session_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/conformance/javayamsql:javayamsql_test",
+          "counts": {
+            "run": 23,
+            "pass": 23,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "c568005dcd4e3ea3af83bbd919dd78c81ae5821884299bbda2d36864f079f0db",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__conformance__javayamsql__javayamsql_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/core/parser:parser_test",
+          "counts": {
+            "run": 80,
+            "pass": 80,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "96477669478ea4ce83bdcaa005853f12bc4ee5086f335d7c0e390910cf11df1f",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__parser__parser_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/linters/gofumpt:gofumpt_test",
+          "counts": {
+            "run": 6,
+            "pass": 6,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "ce8a99a9ec413dd8756f7f82a6897cf44cbe69be8bcfdd1fde552b0cce075a1f",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__linters__gofumpt__gofumpt_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/fdbgo/transport:transport_test",
+          "counts": {
+            "run": 70,
+            "pass": 70,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "60a41bf323d2c033c731e6cfdebe8fbf36d66188353ae37c433b2cae74251735",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__fdbgo__transport__transport_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/fdbgo/fdb/tuple:tuple_test",
+          "counts": {
+            "run": 73,
+            "pass": 73,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "21afa4a88d7efa4b0cffe12fffd3c8704bc6b27a0e134b38b61a9793c4f68606",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__fdbgo__fdb__tuple__tuple_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/simfdb/hunt/rangeconflict:rangeconflict_test",
+          "counts": {
+            "run": 10,
+            "pass": 10,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "28670653433701f9fc2d4ebbcae4df0a6124f3e36a9e6540ad7d7f51b61d5209",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__simfdb__hunt__rangeconflict__rangeconflict_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/simfdb:simfdb_test",
+          "counts": {
+            "run": 296,
+            "pass": 296,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "5a16b339d67c8d873aa8eda51fb0dedba1f4b00ab4a1bdd62c20a07cba876e07",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__simfdb__simfdb_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/recordlayer/query/plan/cascades/properties:properties_test",
+          "counts": {
+            "run": 391,
+            "pass": 391,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "68cee7d4dee0ebba4b8252247ff74c6d761e299a3e732641515e998c70ab7a1f",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__query__plan__cascades__properties__properties_test.log",
+          "skips": []
+        },
+        {
+          "label": "//cmd/factory-plan-census:factory-plan-census_test",
+          "counts": {
+            "run": 24,
+            "pass": 24,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "63674657ac3893cc8b7e53fb3d4705530f650948c2449e0ddc8d3a5e7c251de7",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__factory-plan-census__factory-plan-census_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/core/query/logical:logical_test",
+          "counts": {
+            "run": 62,
+            "pass": 62,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "55dc3a1986bc036ed1fbc9f15b864e95544e15d7e114d92290f207d425dee965",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__query__logical__logical_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/recordlayer/query/plan/cascades/values:values_test",
+          "counts": {
+            "run": 2445,
+            "pass": 2445,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "8fea737d46111161e198a492a78efa51019010a44e0044e9a83e3920852d50ae",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__query__plan__cascades__values__values_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/recordlayer/rlmetrics:rlmetrics_test",
+          "counts": {
+            "run": 15,
+            "pass": 15,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "18385b8d0cdae40e2a1494b5bef9a74d15840436a87197d6ea2ed3681c8d2bfd",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__rlmetrics__rlmetrics_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/simfdb/hunt/sqlpage:sqlpage_test",
+          "counts": {
+            "run": 12,
+            "pass": 12,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "dbf12ed36d39426f077144e721ae3b2969315cfb3f9c901a8c2f0f6d32307ce8",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__simfdb__hunt__sqlpage__sqlpage_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/internal/fdbclient:fdbclient_test",
+          "counts": {
+            "run": 1,
+            "pass": 1,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "2d47c5f895f79aeb409b104ce3ff37ec24355d462520f0d0f2993e46ecc74e09",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__internal__fdbclient__fdbclient_test.log",
+          "skips": []
+        },
+        {
+          "label": "//cmd/test-budget:test-budget_test",
+          "counts": {
+            "run": 6,
+            "pass": 6,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "6789adb85dc1372cf8af4293cdd5350892c2794ff5f7ff0630a52729a9c8889a",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__test-budget__test-budget_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/conformance/factorycorpus:factorycorpus_test",
+          "counts": {
+            "run": 74,
+            "pass": 74,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "b25b7b1c7d9a3f632c91daaf266f4957db65651cf1292082f31eb8e856791f76",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__conformance__factorycorpus__factorycorpus_test.log",
+          "skips": []
+        },
+        {
+          "label": "//cmd/frl/internal/cmd:cmd_test",
+          "counts": {
+            "run": 373,
+            "pass": 373,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "186327f4e77ef88d3187d9595995fe67a17b1cf78e3e9c61036897d924893d7a",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__frl__internal__cmd__cmd_test.log",
+          "skips": []
+        },
+        {
+          "label": "//cmd/factory-run:factory-run_test",
+          "counts": {
+            "run": 23,
+            "pass": 23,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "87861c5d56571f3a224bc9907c1f11dc1c8562578dff640326af10fb937777d0",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__factory-run__factory-run_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/recordlayer/query/plan/cascades/expressions:expressions_test",
+          "counts": {
+            "run": 366,
+            "pass": 366,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "b60e0bf2f9842d8b548173d07eb6eaddef914972393f2f9b5df5bea8cd6d30f3",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__query__plan__cascades__expressions__expressions_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/core/query/expr:expr_test",
+          "counts": {
+            "run": 322,
+            "pass": 322,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "fd99e50ee34767cd91aa94fecb079945ac27a1e2eb87d8e38a30e40ba2280407",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__query__expr__expr_test.log",
+          "skips": []
+        },
+        {
+          "label": "//cmd/vulnscan:vulnscan_test",
+          "counts": {
+            "run": 67,
+            "pass": 67,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "e3e31fe5ff63bca7b64b46d5a90a6ed767a08b7c72593df9fd35e7392f23da97",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__vulnscan__vulnscan_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/recordlayer/protoname:protoname_test",
+          "counts": {
+            "run": 8,
+            "pass": 8,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "19de2f796fa4a3b4e8c24f4dea59b7a5db043bf781b510df8b60643fdb17471c",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__protoname__protoname_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/fdbgo/wire/types:types_test",
+          "counts": {
+            "run": 109,
+            "pass": 109,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "af1219d566b25be8a1fadfb99cc2780b81f25f355740219c2cf632f33327daef",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__fdbgo__wire__types__types_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/linters/norecover:norecover_test",
+          "counts": {
+            "run": 5,
+            "pass": 5,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "ab020203c70eb28a99ecedce0b151bce4da7f6480b75cc754a3afd06206f0ca6",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__linters__norecover__norecover_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/conformance/memoinvariant:memoinvariant_test",
+          "counts": {
+            "run": 4,
+            "pass": 4,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "aa9f8d9deb263d5b51be345cbe85555fbde23353abaa065e421bde5d29f8ae85",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__conformance__memoinvariant__memoinvariant_test.log",
+          "skips": []
+        },
+        {
+          "label": "//cmd/fdb-binding-stress:fdb-binding-stress_test",
+          "counts": {
+            "run": 7,
+            "pass": 7,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "d92f743365860dfe8802b05a1e785eafc83f39fc54c6fe101fe2e932335b1e9f",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__fdb-binding-stress__fdb-binding-stress_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/docscheck:docscheck_test",
+          "counts": {
+            "run": 917,
+            "pass": 917,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "f7984aa23a6e4f932afdb0b13d1b1f821e20cb870501d3aa2241b686a36d0551",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__docscheck__docscheck_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/simfdb/hunt/golden:golden_test",
+          "counts": {
+            "run": 18,
+            "pass": 18,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "4ccd2b6b0b1c86e3f1f6f956ac186c62e4b8da6065c25882c0ad8ff866cd3774",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__simfdb__hunt__golden__golden_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/core/metadata:metadata_test",
+          "counts": {
+            "run": 61,
+            "pass": 61,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "0d281a268ba247e941166034c0c51140fa1d35c29e4fb8e4809bf63281cc31bf",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__metadata__metadata_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/core/embedded:embedded_test",
+          "counts": {
+            "run": 2230,
+            "pass": 2230,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "0a17835639d58fa4876b4a4b5da54473edcde7e1fa7bc7504f6fd9c40d79995d",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__embedded__embedded_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/recordlayer/query/executor:executor_test",
+          "counts": {
+            "run": 1945,
+            "pass": 1945,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "9f3153e827d68871285f967a31c44df94fe5ce1f5c5c87f973176181f214d46e",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__query__executor__executor_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/linters/gofmt:gofmt_test",
+          "counts": {
+            "run": 5,
+            "pass": 5,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "6d91fa3283c9fcd660cd17006e98f508f3d586b97c6cd59c75f6a6e039e49f5f",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__linters__gofmt__gofmt_test.log",
+          "skips": []
+        },
+        {
+          "label": "//cmd/dst-hunt:dst-hunt_test",
+          "counts": {
+            "run": 2,
+            "pass": 2,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "e10c4b8fd3ae591ce5f3bc4e7c948341747859b79a1f74ff9b3a97747c824a0d",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__dst-hunt__dst-hunt_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/conformance/javacorpus:javacorpus_test",
+          "counts": {
+            "run": 386,
+            "pass": 386,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "fbc534c297f27c09cde96b2ffa45cfe74dc3d898c1769598d131aaf8209f8e8d",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__conformance__javacorpus__javacorpus_test.log",
+          "skips": []
+        },
+        {
+          "label": "//cmd/verify-pr-checks:verify-pr-checks_test",
+          "counts": {
+            "run": 17,
+            "pass": 17,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "21306ad6d88a126be89e3a1a02bfbcb860a30f6319fece46353492134573eb55",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__verify-pr-checks__verify-pr-checks_test.log",
+          "skips": []
+        },
+        {
+          "label": "//cmd/bench-report:bench-report_test",
+          "counts": {
+            "run": 13,
+            "pass": 13,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "dcff5774935e758cbd90edfc2b7caf94c8432ab61907d517b2e51eae26ca3138",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__bench-report__bench-report_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/recordlayer/chaos:chaos_test",
+          "counts": {
+            "run": 230,
+            "pass": 230,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "bb48c041004cbbfbd509857cf7ba5344a7b82adf7140f2e68952bfb1a117ca7f",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__chaos__chaos_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/recordlayer/query/plan/cascades/internal/fuzzfloor:fuzzfloor_test",
+          "counts": {
+            "run": 12,
+            "pass": 12,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "1bd383168e175c568cb347aa09dfc827a4bdac071a6b16e95d011f7c5369bdb7",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__query__plan__cascades__internal__fuzzfloor__fuzzfloor_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/recordlayer/query/plan/cascades/combinatorics:combinatorics_test",
+          "counts": {
+            "run": 47,
+            "pass": 47,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "9a48cb1a893b817a80373f3da13012b8259ed3100b18d2086a9aa50a9f799ec8",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__query__plan__cascades__combinatorics__combinatorics_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/fdbgo:fdbgo_test",
+          "counts": {
+            "run": 1,
+            "pass": 1,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "88ac6bf55bc0c58131b508f44009a9d7aba2ac5b50aeaab7d626b521645ce536",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__fdbgo__fdbgo_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/rabitq:rabitq_test",
+          "counts": {
+            "run": 273,
+            "pass": 273,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "148960f98ff94e90eaabc31351f80ccffe8292a7d76e2a7313131859a386af8e",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__rabitq__rabitq_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/conformance/explaindiff:explaindiff_test",
+          "counts": {
+            "run": 53,
+            "pass": 53,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "34f163acfab36b25985bd609173e5a874bd550d65865434d8af36f91815382c2",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__conformance__explaindiff__explaindiff_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/recordlayer/keyspace:keyspace_test",
+          "counts": {
+            "run": 39,
+            "pass": 39,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "0e1c03fbf7945b9d60131e153ae876aa5bf9edbe1159c243ebbb5f8c8a3a7b6f",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__keyspace__keyspace_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/core/keyspace:keyspace_test",
+          "counts": {
+            "run": 6,
+            "pass": 6,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "3145e91210c7d89cd7c1016e9cc9eb830bac50c2151d3bf578a8fb243fcecd33",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__keyspace__keyspace_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/fdbgo/fdb/subspace:subspace_test",
+          "counts": {
+            "run": 17,
+            "pass": 17,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "d6bf98e9ee2f2bc1e12d2dd6282febb232b540d41dc312949a33913bceec554d",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__fdbgo__fdb__subspace__subspace_test.log",
+          "skips": []
+        },
+        {
+          "label": "//infra:infra_test",
+          "counts": {
+            "run": 39,
+            "pass": 39,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "b9d5fa5fe11a2cba9cb52a69bb3768d0095cabb459953c3497f94ec8c2f3bd4b",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/infra__infra_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/sqldriver:sqldriver_test",
+          "counts": {
+            "run": 6833,
+            "pass": 6833,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "0390a8c14468f3df4cd0c8ad170445e57df66069ba2e049f6b3caff2a18cee67",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__sqldriver__sqldriver_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/fdbgo/wire:wire_test",
+          "counts": {
+            "run": 29,
+            "pass": 29,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "6acbaed8cc255915e4344d3cba7f0b3ccf9f0daec0b4a9d42e252c644828dace",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__fdbgo__wire__wire_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/dst:dst_test",
+          "counts": {
+            "run": 21,
+            "pass": 21,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "5411825bf081cd575e873e12ca78ec56b937a05a950a49ce53cb601a68643120",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__dst__dst_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/fdbgo/bench:bench_test",
+          "counts": {
+            "run": 775,
+            "pass": 775,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "b6a5580039d224def3cc356bfb2a4c19ec1bbc5e3ade763f6173da211a84cbdd",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__fdbgo__bench__bench_test.log",
+          "skips": []
+        },
+        {
+          "label": "//cmd/frl/internal/config:config_test",
+          "counts": {
+            "run": 12,
+            "pass": 12,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "fc8a070f07078da3492020412e419c6ca42954e87180307a442786967e8dcf52",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__frl__internal__config__config_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/core/query/semantic:semantic_test",
+          "counts": {
+            "run": 157,
+            "pass": 157,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "9f91a3b804cea319b90372707c0f693ce320e4f98172ff95ce0f7aa8676bf8f9",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__query__semantic__semantic_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/recordlayer/query/plan/cascades/matching:matching_test",
+          "counts": {
+            "run": 97,
+            "pass": 97,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "cb4cbbad8b0454e8beff393d4e5a2cea1470cf4c11521465b596c2f8dc7c8b71",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__query__plan__cascades__matching__matching_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/simfdb/hunt/atomicops:atomicops_test",
+          "counts": {
+            "run": 27,
+            "pass": 27,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "89f1f38350603bc76b038b1d04b82b6d827468acd1d7b1a4b6a6290e66cce3a6",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__simfdb__hunt__atomicops__atomicops_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/core/query/ddl:ddl_test",
+          "counts": {
+            "run": 2,
+            "pass": 2,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "01a4af167287cb66865b659014402c69474236bf1ce831a0182059bf60cb67db",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__query__ddl__ddl_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/fdbgo/fdb:fdb_test",
+          "counts": {
+            "run": 243,
+            "pass": 243,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "af253c14bd84c95cfc12547a2db7150c1697794808ad1808b1c0981c00961a64",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__fdbgo__fdb__fdb_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/conformance/rowdiff:rowdiff_test",
+          "counts": {
+            "run": 202,
+            "pass": 202,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "ad458e015b86c3f9f55c61a7a438257f46ed3b91c512cf8f2ea0e5289eb25002",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__conformance__rowdiff__rowdiff_test.log",
+          "skips": []
+        },
+        {
+          "label": "//cmd/frl/internal/meta:meta_test",
+          "counts": {
+            "run": 9,
+            "pass": 9,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "c209c1d493e03515968df66eea9c6a74e921179647c30d6678ca939366c1ec0f",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__frl__internal__meta__meta_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/simfdb/hunt/interleave:interleave_test",
+          "counts": {
+            "run": 14,
+            "pass": 14,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "e63d2aa3355935a653731a197c16816afd167e5fd0a37568d230058b81fa3aeb",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__simfdb__hunt__interleave__interleave_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/simfdb/hunt/continuation:continuation_test",
+          "counts": {
+            "run": 7,
+            "pass": 7,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "58eaa2a833a257d84ffddc8665dec1958d41664132eedabf09a462a7506ea1c0",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__simfdb__hunt__continuation__continuation_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/core/query:query_test",
+          "counts": {
+            "run": 517,
+            "pass": 517,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "c3a6e4bacf7b376fff16937ff8eb44f78b455ea0e6eaa67875b5a7f1f2f85e3b",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__query__query_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/simfdb/hunt/metamorphic:metamorphic_test",
+          "counts": {
+            "run": 12,
+            "pass": 12,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "91aaff0d14cd16a28504e274555ee37a6a51fc436ff8e728a9b66c01d4800e23",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__simfdb__hunt__metamorphic__metamorphic_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/testcontainers/foundationdb:foundationdb_test",
+          "counts": {
+            "run": 56,
+            "pass": 56,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "373a9a3c6d6e062f1d9e0e83688730e053cb2ed4c5a8390a0bac0be5a77fc9b4",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__testcontainers__foundationdb__foundationdb_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/fdbgo/conformance:conformance_test",
+          "counts": {
+            "run": 2,
+            "pass": 2,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "7161742dc55568c30fb4456daefab56e4a42937040d678213c49e159b76a45a6",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__fdbgo__conformance__conformance_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/conformance/yamsql:yamsql_test",
+          "counts": {
+            "run": 590,
+            "pass": 590,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "4974f241f2294caa910f40717e439263247dcc0d080261fb54a33dd88d926fdf",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__conformance__yamsql__yamsql_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/simfdb/hunt/sqlhunt:sqlhunt_test",
+          "counts": {
+            "run": 55,
+            "pass": 55,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "2dddf83fd225708ac7f25d0883e73a648533a61dceb3383619395e7cd48905dc",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__simfdb__hunt__sqlhunt__sqlhunt_test.log",
+          "skips": []
+        },
+        {
+          "label": "//cmd/factory-rebless:factory-rebless_test",
+          "counts": {
+            "run": 11,
+            "pass": 11,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "113f4f0e199b57b646afba195bf944c3c80a249397fb789e36d98692d61ea485",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__factory-rebless__factory-rebless_test.log",
+          "skips": []
+        },
+        {
+          "label": "//cmd/factory-rebless-plan-shapes:factory-rebless-plan-shapes_test",
+          "counts": {
+            "run": 3,
+            "pass": 3,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "38f42d8f68a57343fd4994c48a24c15dbb92b3fe8652f46054c0c0ed305eae98",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__factory-rebless-plan-shapes__factory-rebless-plan-shapes_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/recordlayer:recordlayer_test",
+          "counts": {
+            "run": 2083,
+            "pass": 2083,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "a5972d86c991227817355abe93fcd180cdce234c57624648a63a173a10c6ed89",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__recordlayer_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/conformance/plandiff:plandiff_test",
+          "counts": {
+            "run": 1787,
+            "pass": 1787,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "bad0a0be0f456a3e7da21cb3d3421669b249ac80d2e4d809546a5eda927b7854",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__conformance__plandiff__plandiff_test.log",
+          "skips": []
+        },
+        {
+          "label": "//conformance:conformance_test",
+          "counts": {
+            "run": 70,
+            "pass": 70,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "168fa04aaccea56bf41217bc2839592f0cdbe32830caf2762bd4d6453d1c0154",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/conformance__conformance_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/fdbgo/client:client_test",
+          "counts": {
+            "run": 1824,
+            "pass": 1824,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "8ad9c93053b1c4dffc7abe83e0b93d2067143bc454661644918110d32dbb91ed",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__fdbgo__client__client_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/conformance/factory:factory_test",
+          "counts": {
+            "run": 102,
+            "pass": 97,
+            "skip": 5,
+            "fail": 0
+          },
+          "sha256": "668ea03448c113e41a4e5b3706809cb9b5a7edf7695e85618fac7b3972688f0d",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__conformance__factory__factory_test.log",
+          "skips": [
+            "--- SKIP: TestFDB_NestedShapeHunt (0.00s)",
+            "--- SKIP: TestFDB_PlanDiversityHunt (0.00s)",
+            "--- SKIP: TestFDB_FullShapeHunt (0.00s)",
+            "--- SKIP: TestFDB_ExcludedShapeHunt (0.00s)",
+            "--- SKIP: TestFDB_PredicateEquivalenceHunt (0.00s)"
+          ]
+        },
+        {
+          "label": "//pkg/relational/conformance/factorycorpus/full:full_test",
+          "counts": {
+            "run": 8151,
+            "pass": 8151,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "dbc1679b2d42e8de414619fc3a92c5f672c40a3b36f2985f88f935b7d4b5e284",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__conformance__factorycorpus__full__full_test.log",
+          "skips": []
+        }
+      ],
+      "count_scope": "Go verbose markers including indented subprocess test output; RUN and PASS/SKIP name multisets reconcile per target. Ginkgo population recorded separately."
+    },
+    "group-alias-race": {
+      "targets": 14,
+      "executed": 14,
+      "counts": {
+        "run": 21118,
+        "pass": 21118,
+        "skip": 0,
+        "fail": 0
+      },
+      "tests": [
+        {
+          "label": "//pkg/rabitq:rabitq_test",
+          "counts": {
+            "run": 273,
+            "pass": 273,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "dc568fc0dc349e583f34cb10c1c1e0f39790678891704c333fddf8f77f46ff93",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-logs/pkg__rabitq__rabitq_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/core/query/expr:expr_test",
+          "counts": {
+            "run": 322,
+            "pass": 322,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "a602a32e55a34889a46b1937c39bf0aa76fa191eb23c59bd58a5d0b17724d4e8",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-logs/pkg__relational__core__query__expr__expr_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/core/query/logical:logical_test",
+          "counts": {
+            "run": 62,
+            "pass": 62,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "14f99674df8fd00b92ac52894446b401fa21805bd1544125069de1cf63bf23c9",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-logs/pkg__relational__core__query__logical__logical_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/core/query:query_test",
+          "counts": {
+            "run": 517,
+            "pass": 517,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "997d9329e0868860d6e7d7aae69dd33b4870bff5bef371b037980a61c6284d06",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-logs/pkg__relational__core__query__query_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/recordlayer/query/plan/cascades/values:values_test",
+          "counts": {
+            "run": 2445,
+            "pass": 2445,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "3dd4a816cf0910b6b707dbb711abb861b458e79f29b8254e38dc8e94b3603546",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-logs/pkg__recordlayer__query__plan__cascades__values__values_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/recordlayer/query/plan/cascades:cascades_test",
+          "counts": {
+            "run": 3682,
+            "pass": 3682,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "0acf88448cd36e756200137207b1e440f40f14663ab12c5ade27a2cdce6b8d97",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-logs/pkg__recordlayer__query__plan__cascades__cascades_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/recordlayer/query/executor:executor_test",
+          "counts": {
+            "run": 1945,
+            "pass": 1945,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "e69b5b403093510896052b0f8caf9e99284a97a77e086eb2977bb36288c6b714",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-logs/pkg__recordlayer__query__executor__executor_test.log",
+          "skips": []
+        },
+        {
+          "label": "//cmd/frl/internal/cmd:cmd_test",
+          "counts": {
+            "run": 373,
+            "pass": 373,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "17d8a8c732de78c865335ee6b294701b733cd5c585f75c96e1b4bb5cd4e28e63",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-logs/cmd__frl__internal__cmd__cmd_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/conformance/explaindiff:explaindiff_test",
+          "counts": {
+            "run": 53,
+            "pass": 53,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "21d2dbdafe3c54879dbf21c6338820a191f2cb1e7ab38b066267190554c16ef9",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-logs/pkg__relational__conformance__explaindiff__explaindiff_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/core/embedded:embedded_test",
+          "counts": {
+            "run": 2230,
+            "pass": 2230,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "d4f67760757795fb02bde754f002080e324ac547f59c3703cd41a2459df8fbac",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-logs/pkg__relational__core__embedded__embedded_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/recordlayer:recordlayer_test",
+          "counts": {
+            "run": 2083,
+            "pass": 2083,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "300a82f683021b270b12e64138fd49526e4dc2ccb91dc9d0faec691366d1d0d2",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-logs/pkg__recordlayer__recordlayer_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/recordlayer/chaos:chaos_test",
+          "counts": {
+            "run": 230,
+            "pass": 230,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "c5b5cb0730563b41e43321e5d8e99e971215bb95c4bc81038ba30bd4505afde5",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-logs/pkg__recordlayer__chaos__chaos_test.log",
+          "skips": []
+        },
+        {
+          "label": "//conformance:conformance_test",
+          "counts": {
+            "run": 70,
+            "pass": 70,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "1728e459b118bd2d75755bc4a0398ba304a9d5efdbe8e69d362fb504b33c8788",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-logs/conformance__conformance_test.log",
+          "skips": []
+        },
+        {
+          "label": "//pkg/relational/sqldriver:sqldriver_test",
+          "counts": {
+            "run": 6833,
+            "pass": 6833,
+            "skip": 0,
+            "fail": 0
+          },
+          "sha256": "0e1da360ef136637f4fd9e796e4355e3b6317f4571457a7b405ce2e0d3c7cca0",
+          "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-logs/pkg__relational__sqldriver__sqldriver_test.log",
+          "skips": []
+        }
+      ],
+      "count_scope": "Go verbose markers including indented subprocess test output; RUN and PASS/SKIP name multisets reconcile per target. Ginkgo population recorded separately."
+    }
+  },
+  "ginkgo": {
+    "passed": 1358,
+    "population": 1477,
+    "existing_filtered": 119
+  },
+  "java_alias_cases": 14,
+  "mutations": [
+    {
+      "name": "bound-owner",
+      "file": "pkg/relational/core/embedded/select_parser.go",
+      "original_sha256": "9eb229408b13a7977d7399e89bbafc8ebd1d269c6078434fed284033e5070636",
+      "mutated_sha256": "ca364478c478034b00c554dce3a6096724db0c2035124aa33e6c1a2d309dbdb1",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/core/embedded:embedded_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=--test.run=^TestGroupAliasPreservesBareBoundStar$"
+      ],
+      "exit": 3,
+      "log_sha256": "fd8e79e18bc206f76f1cd3b61c4f00e8a67d2c9ec5f14139f28783eafd03058a"
+    },
+    {
+      "name": "qualified-output",
+      "file": "pkg/relational/core/embedded/select_parser.go",
+      "original_sha256": "9eb229408b13a7977d7399e89bbafc8ebd1d269c6078434fed284033e5070636",
+      "mutated_sha256": "edeb5e1c106d10dc37239d287158378de1ccf34aa971524d58c1090c85610513",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/sqldriver:sqldriver_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=--test.run=^TestFDB_NoFromSelectProbe$/^group_alias_unqualified_name$"
+      ],
+      "exit": 3,
+      "log_sha256": "d6d3dedbfb317a106c4ae4b3677b342d58ad83b739f9e5e32022a53c1463701c"
+    },
+    {
+      "name": "qualified-argument",
+      "file": "pkg/relational/core/embedded/select_parser.go",
+      "original_sha256": "9eb229408b13a7977d7399e89bbafc8ebd1d269c6078434fed284033e5070636",
+      "mutated_sha256": "baecfe0dddd37cf1d7114978c9bfca5d6776923d90b1c0ef66e07df081c35fe2",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/sqldriver:sqldriver_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=--test.run=^TestFDB_NoFromSelectProbe$/^group_alias_qualified_argument$"
+      ],
+      "exit": 3,
+      "log_sha256": "af15081b7258973f7ad6f8b55d698795e746be538b300af25aa9c4bfeebc299a"
+    },
+    {
+      "name": "qualified-sort",
+      "file": "pkg/relational/core/embedded/plan_visitor.go",
+      "original_sha256": "74a3682db2325d20806bc5ce30ae937dcf2058e1e8c35884ae00934b851aaea2",
+      "mutated_sha256": "a75aa1005af123fc6a156a294a176d8d047ac5c2d80e55eff1b6cefb52eb1aa5",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/sqldriver:sqldriver_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=--test.run=^TestFDB_NoFromSelectProbe$/^group_alias_qualified_order$"
+      ],
+      "exit": 3,
+      "log_sha256": "e74152933bb8dc1c87bbf8394c0332166d89c4b2ecc0925006b4a0cf247ba77f"
+    },
+    {
+      "name": "select-alias-sort",
+      "file": "pkg/relational/core/embedded/plan_visitor.go",
+      "original_sha256": "74a3682db2325d20806bc5ce30ae937dcf2058e1e8c35884ae00934b851aaea2",
+      "mutated_sha256": "46b933a38272e643534d9921d58cf6221694d60ac029f4031d9acf1ff7ea3ce5",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/sqldriver:sqldriver_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=--test.run=^TestFDB_NoFromSelectProbe$/^group_alias_select_alias_order$"
+      ],
+      "exit": 3,
+      "log_sha256": "11a0ea4ec2bc2af48640448b7c7f1af85ac19c5287ac0a7d1f100e8beed1ac57"
+    },
+    {
+      "name": "identifier-segments",
+      "file": "pkg/relational/core/embedded/select_parser.go",
+      "original_sha256": "9eb229408b13a7977d7399e89bbafc8ebd1d269c6078434fed284033e5070636",
+      "mutated_sha256": "5b26ab9660c53ab491fd481ccfa08c0bedcf7af8c78f95251a41be4d3c3558b0",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/sqldriver:sqldriver_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=--test.run=^TestFDB_NoFromSelectProbe$/^group_alias_quoted_order$"
+      ],
+      "exit": 3,
+      "log_sha256": "e3155c66a251e438558f4cfba7cc023b50dd18dce237fa43ff088ac13843540a"
+    }
+  ],
+  "telemetry_validation": [
+    {
+      "kind": "bypass-validation",
+      "exit": 3,
+      "failures": [
+        "TestLatencySampleValidation",
+        "TestLatencySampleValidation/execution_error",
+        "TestLatencySampleValidation/plan_error",
+        "TestLatencySampleValidation/missing_execution",
+        "TestLatencySampleValidation/extra_execution",
+        "TestLatencySampleValidation/no_planning_time",
+        "TestLatencySampleValidation/no_query_time",
+        "TestLatencySampleValidation/no_store_timers",
+        "TestLatencySampleValidation/extra_plan",
+        "TestLatencySampleValidation/no_execution_time",
+        "TestLatencySampleValidation/missing_plan",
+        "TestLatencySampleValidation/wrong_rows"
+      ],
+      "mutated_sha256": "e64e6d7246208939a8ce433f13219899d31dde1ab06f0722d22ecb9792cef660",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/sqldriver/stress:stress_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=--test.run=^TestLatencySampleValidation$"
+      ]
+    },
+    {
+      "kind": "restored",
+      "exit": 0,
+      "runs": {
+        "TestLatencySampleValidation": 1,
+        "TestLatencySampleValidation/valid": 1,
+        "TestLatencySampleValidation/missing_plan": 1,
+        "TestLatencySampleValidation/extra_plan": 1,
+        "TestLatencySampleValidation/missing_execution": 1,
+        "TestLatencySampleValidation/extra_execution": 1,
+        "TestLatencySampleValidation/plan_error": 1,
+        "TestLatencySampleValidation/execution_error": 1,
+        "TestLatencySampleValidation/wrong_rows": 1,
+        "TestLatencySampleValidation/no_planning_time": 1,
+        "TestLatencySampleValidation/no_execution_time": 1,
+        "TestLatencySampleValidation/no_query_time": 1,
+        "TestLatencySampleValidation/no_store_timers": 1
+      },
+      "passes": {
+        "TestLatencySampleValidation": 1,
+        "TestLatencySampleValidation/valid": 1,
+        "TestLatencySampleValidation/extra_plan": 1,
+        "TestLatencySampleValidation/execution_error": 1,
+        "TestLatencySampleValidation/missing_plan": 1,
+        "TestLatencySampleValidation/missing_execution": 1,
+        "TestLatencySampleValidation/wrong_rows": 1,
+        "TestLatencySampleValidation/extra_execution": 1,
+        "TestLatencySampleValidation/no_store_timers": 1,
+        "TestLatencySampleValidation/plan_error": 1,
+        "TestLatencySampleValidation/no_execution_time": 1,
+        "TestLatencySampleValidation/no_planning_time": 1,
+        "TestLatencySampleValidation/no_query_time": 1
+      },
+      "sha256": "8b814f343ae968396dcc345a721d4ff515f7bee1cd35792a59488d78c2d481e7",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/sqldriver/stress:stress_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=--test.run=^TestLatencySampleValidation$"
+      ]
+    }
+  ],
+  "stress_race": {
+    "name": "stress-race",
+    "command": [
+      "bazelisk",
+      "--output_base=/home/birdy/.cache/bazel/_race_output_base",
+      "test",
+      "//pkg/relational/sqldriver/stress:stress_test",
+      "--@rules_go//go/config:race",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^(TestLatencySampleValidation|TestFDB_LatencyHarnessIsolation|TestFDB_Stress_1M_LatencyAttribution)$",
+      "--build_event_json_file=/var/tmp/fdb-upgrade-recovery/runtime/group-alias-stress/stress-race-bep.jsonl"
+    ],
+    "exit": 0,
+    "started": 1789971097.650973,
+    "elapsed": 564.240373134613,
+    "load_start": [
+      4.21044921875,
+      6.18798828125,
+      5.150390625
+    ],
+    "load_end": [
+      4.6748046875,
+      6.97802734375,
+      6.4736328125
+    ],
+    "runs": {
+      "TestFDB_LatencyHarnessIsolation": 1,
+      "TestFDB_Stress_1M_LatencyAttribution": 1,
+      "TestLatencySampleValidation": 1,
+      "TestLatencySampleValidation/valid": 1,
+      "TestFDB_LatencyHarnessIsolation/11": 1,
+      "TestLatencySampleValidation/missing_plan": 1,
+      "TestFDB_LatencyHarnessIsolation/29": 1,
+      "TestLatencySampleValidation/extra_plan": 1,
+      "TestLatencySampleValidation/missing_execution": 1,
+      "TestLatencySampleValidation/extra_execution": 1,
+      "TestLatencySampleValidation/plan_error": 1,
+      "TestLatencySampleValidation/execution_error": 1,
+      "TestLatencySampleValidation/wrong_rows": 1,
+      "TestLatencySampleValidation/no_planning_time": 1,
+      "TestLatencySampleValidation/no_execution_time": 1,
+      "TestLatencySampleValidation/no_query_time": 1,
+      "TestLatencySampleValidation/no_store_timers": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_first": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_middle": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_last": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_customer_eq": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_amount_range": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_status_count": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_count": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_status": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_status_count_only": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/sum_by_status": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_customer_having": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/join_10_outer": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/order_by_pk_full": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/order_by_pk_index_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/scan_all_narrow": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/scan_all_wide": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/in_list": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/needle_in_haystack_pk": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/needle_in_haystack_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_sparse_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/update_by_index": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/delete_single_row": 1
+    },
+    "passes": {
+      "TestLatencySampleValidation": 1,
+      "TestLatencySampleValidation/missing_plan": 1,
+      "TestLatencySampleValidation/no_store_timers": 1,
+      "TestLatencySampleValidation/plan_error": 1,
+      "TestLatencySampleValidation/execution_error": 1,
+      "TestLatencySampleValidation/wrong_rows": 1,
+      "TestLatencySampleValidation/extra_plan": 1,
+      "TestLatencySampleValidation/no_planning_time": 1,
+      "TestLatencySampleValidation/no_query_time": 1,
+      "TestLatencySampleValidation/extra_execution": 1,
+      "TestLatencySampleValidation/valid": 1,
+      "TestLatencySampleValidation/missing_execution": 1,
+      "TestLatencySampleValidation/no_execution_time": 1,
+      "TestFDB_LatencyHarnessIsolation": 1,
+      "TestFDB_LatencyHarnessIsolation/11": 1,
+      "TestFDB_LatencyHarnessIsolation/29": 1,
+      "TestFDB_Stress_1M_LatencyAttribution": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_first": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_middle": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_last": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_customer_eq": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_amount_range": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_status_count": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_count": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_status": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_status_count_only": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/sum_by_status": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_customer_having": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/join_10_outer": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/order_by_pk_full": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/order_by_pk_index_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/scan_all_narrow": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/scan_all_wide": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/in_list": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/needle_in_haystack_pk": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/needle_in_haystack_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_sparse_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/update_by_index": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/delete_single_row": 1
+    },
+    "log_sha256": "630c1380bcf68ffe197719e0aeb91b591ad607dc270b8177bf5cb20d5f7fa03b"
+  },
+  "just_test": {
+    "name": "just-test",
+    "command": [
+      "just",
+      "test"
+    ],
+    "exit": 0,
+    "started": 1789971661.8916361,
+    "elapsed": 118.04553461074829,
+    "load_start": [
+      4.6748046875,
+      6.97802734375,
+      6.4736328125
+    ],
+    "load_end": [
+      3.4609375,
+      6.30029296875,
+      6.32421875
+    ],
+    "runs": {},
+    "passes": {},
+    "log_sha256": "107b456a9f1ef673e1f7c8efda16c1dba3a0d4b792cd38d3fbf780e643da4f96"
+  },
+  "nominal_stress": {
+    "baseline_commit": "e48f5b4965543cd4d99b5578356059e12d969c7c",
+    "current_tree": "be28f57df14cf7edec617bf09216ab828698cd69",
+    "order": "baseline1,current1,current2,baseline2",
+    "samples": [
+      {
+        "name": "baseline-1",
+        "command": [
+          "bazelisk",
+          "test",
+          "//pkg/relational/sqldriver/stress:stress_test",
+          "--nocache_test_results",
+          "--test_output=all",
+          "--test_arg=--test.run=^TestFDB_Stress_1M$",
+          "--build_event_json_file=/var/tmp/fdb-upgrade-recovery/runtime/group-alias-stress/baseline-1-bep.jsonl"
+        ],
+        "exit": 0,
+        "started": 1789971779.939994,
+        "elapsed": 215.44227576255798,
+        "load_start": [
+          3.4609375,
+          6.30029296875,
+          6.32421875
+        ],
+        "load_end": [
+          5.55908203125,
+          6.03759765625,
+          6.20556640625
+        ],
+        "runs": {
+          "TestFDB_Stress_1M": 1,
+          "TestFDB_Stress_1M/pk_lookup_first": 1,
+          "TestFDB_Stress_1M/pk_lookup_middle": 1,
+          "TestFDB_Stress_1M/pk_lookup_last": 1,
+          "TestFDB_Stress_1M/index_customer_eq": 1,
+          "TestFDB_Stress_1M/index_amount_range": 1,
+          "TestFDB_Stress_1M/index_status_count": 1,
+          "TestFDB_Stress_1M/full_scan_count": 1,
+          "TestFDB_Stress_1M/full_scan_filter": 1,
+          "TestFDB_Stress_1M/group_by_status": 1,
+          "TestFDB_Stress_1M/group_by_status_count_only": 1,
+          "TestFDB_Stress_1M/sum_by_status": 1,
+          "TestFDB_Stress_1M/group_by_customer_having": 1,
+          "TestFDB_Stress_1M/join_10_outer": 1,
+          "TestFDB_Stress_1M/order_by_pk_full": 1,
+          "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+          "TestFDB_Stress_1M/scan_all_narrow": 1,
+          "TestFDB_Stress_1M/scan_all_wide": 1,
+          "TestFDB_Stress_1M/in_list": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+          "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+          "TestFDB_Stress_1M/update_by_index": 1,
+          "TestFDB_Stress_1M/delete_single_row": 1
+        },
+        "passes": {
+          "TestFDB_Stress_1M": 1,
+          "TestFDB_Stress_1M/pk_lookup_first": 1,
+          "TestFDB_Stress_1M/pk_lookup_middle": 1,
+          "TestFDB_Stress_1M/pk_lookup_last": 1,
+          "TestFDB_Stress_1M/index_customer_eq": 1,
+          "TestFDB_Stress_1M/index_amount_range": 1,
+          "TestFDB_Stress_1M/index_status_count": 1,
+          "TestFDB_Stress_1M/full_scan_count": 1,
+          "TestFDB_Stress_1M/full_scan_filter": 1,
+          "TestFDB_Stress_1M/group_by_status": 1,
+          "TestFDB_Stress_1M/group_by_status_count_only": 1,
+          "TestFDB_Stress_1M/sum_by_status": 1,
+          "TestFDB_Stress_1M/group_by_customer_having": 1,
+          "TestFDB_Stress_1M/join_10_outer": 1,
+          "TestFDB_Stress_1M/order_by_pk_full": 1,
+          "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+          "TestFDB_Stress_1M/scan_all_narrow": 1,
+          "TestFDB_Stress_1M/scan_all_wide": 1,
+          "TestFDB_Stress_1M/in_list": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+          "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+          "TestFDB_Stress_1M/update_by_index": 1,
+          "TestFDB_Stress_1M/delete_single_row": 1
+        },
+        "log_sha256": "fa55717a3b1bcbab89387b4c7d6b5e36bce45138692987fe88d42ed483ede8b3",
+        "side": "baseline",
+        "sample": 1,
+        "tree": "600a5fa8517be7c6911cb6e68e8c93a39c81c823",
+        "commit": "e48f5b4965543cd4d99b5578356059e12d969c7c",
+        "compiler": "/home/birdy/projects/fdb-java-upgrade-baseline/bazel-bin/pkg/relational/sqldriver/stress/stress_test_/stress_test: go1.26.6",
+        "explain": [
+          "Scan(ORDERS, [=])",
+          "Project([_current.ID#0, _current.AMOUNT#2], IndexScan(IDX_CUSTOMER, [=]))",
+          "Project([_current.ID#0], IndexScan(IDX_AMOUNT, [<>] COVERING))",
+          "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_STATUS, [=] COVERING)))",
+          "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_AMOUNT, [<>] COVERING)))",
+          "Project([_current.STATUS#0, _current.COUNT(*)#1, _current.SUM(AMOUNT)#2], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+          "Project([_current.STATUS#0, _current.COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only))",
+          "Project([_current.STATUS#0, _current.SUM(AMOUNT)#1], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+          "Project([_current.CUSTOMER_ID#0, _current.SUM(AMOUNT)#1], PredicatesFilter(GroupExistenceMerge(AggregateIndex(COUNT, SUM_AMOUNT_BY_CUSTOMER__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_CUSTOMER, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), [1 preds]))",
+          "Project([_current.ID#0, _current.NAME#5], FlatMap(outer=Scan(ORDERS, [<>]), inner=Scan(CUSTOMERS, [=])))",
+          "Project([_current.ID#0], PredicatesFilter(Scan(ORDERS), [1 preds]))"
+        ]
+      },
+      {
+        "name": "current-1",
+        "command": [
+          "bazelisk",
+          "test",
+          "//pkg/relational/sqldriver/stress:stress_test",
+          "--nocache_test_results",
+          "--test_output=all",
+          "--test_arg=--test.run=^TestFDB_Stress_1M$",
+          "--build_event_json_file=/var/tmp/fdb-upgrade-recovery/runtime/group-alias-stress/current-1-bep.jsonl"
+        ],
+        "exit": 0,
+        "started": 1789971995.3893528,
+        "elapsed": 205.54622387886047,
+        "load_start": [
+          5.55908203125,
+          6.03759765625,
+          6.20556640625
+        ],
+        "load_end": [
+          7.478515625,
+          7.08203125,
+          6.603515625
+        ],
+        "runs": {
+          "TestFDB_Stress_1M": 1,
+          "TestFDB_Stress_1M/pk_lookup_first": 1,
+          "TestFDB_Stress_1M/pk_lookup_middle": 1,
+          "TestFDB_Stress_1M/pk_lookup_last": 1,
+          "TestFDB_Stress_1M/index_customer_eq": 1,
+          "TestFDB_Stress_1M/index_amount_range": 1,
+          "TestFDB_Stress_1M/index_status_count": 1,
+          "TestFDB_Stress_1M/full_scan_count": 1,
+          "TestFDB_Stress_1M/full_scan_filter": 1,
+          "TestFDB_Stress_1M/group_by_status": 1,
+          "TestFDB_Stress_1M/group_by_status_count_only": 1,
+          "TestFDB_Stress_1M/sum_by_status": 1,
+          "TestFDB_Stress_1M/group_by_customer_having": 1,
+          "TestFDB_Stress_1M/join_10_outer": 1,
+          "TestFDB_Stress_1M/order_by_pk_full": 1,
+          "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+          "TestFDB_Stress_1M/scan_all_narrow": 1,
+          "TestFDB_Stress_1M/scan_all_wide": 1,
+          "TestFDB_Stress_1M/in_list": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+          "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+          "TestFDB_Stress_1M/update_by_index": 1,
+          "TestFDB_Stress_1M/delete_single_row": 1
+        },
+        "passes": {
+          "TestFDB_Stress_1M": 1,
+          "TestFDB_Stress_1M/pk_lookup_first": 1,
+          "TestFDB_Stress_1M/pk_lookup_middle": 1,
+          "TestFDB_Stress_1M/pk_lookup_last": 1,
+          "TestFDB_Stress_1M/index_customer_eq": 1,
+          "TestFDB_Stress_1M/index_amount_range": 1,
+          "TestFDB_Stress_1M/index_status_count": 1,
+          "TestFDB_Stress_1M/full_scan_count": 1,
+          "TestFDB_Stress_1M/full_scan_filter": 1,
+          "TestFDB_Stress_1M/group_by_status": 1,
+          "TestFDB_Stress_1M/group_by_status_count_only": 1,
+          "TestFDB_Stress_1M/sum_by_status": 1,
+          "TestFDB_Stress_1M/group_by_customer_having": 1,
+          "TestFDB_Stress_1M/join_10_outer": 1,
+          "TestFDB_Stress_1M/order_by_pk_full": 1,
+          "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+          "TestFDB_Stress_1M/scan_all_narrow": 1,
+          "TestFDB_Stress_1M/scan_all_wide": 1,
+          "TestFDB_Stress_1M/in_list": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+          "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+          "TestFDB_Stress_1M/update_by_index": 1,
+          "TestFDB_Stress_1M/delete_single_row": 1
+        },
+        "log_sha256": "fb26a209fb30a6c415ab3c0e37bf57a5458d4dc74015394305a809c6fedfa274",
+        "side": "current",
+        "sample": 1,
+        "tree": "be28f57df14cf7edec617bf09216ab828698cd69",
+        "commit": "71ccd8cf8b3fd0dbafe283e91171818e36af555e",
+        "compiler": "/home/birdy/projects/fdb-go/bazel-bin/pkg/relational/sqldriver/stress/stress_test_/stress_test: go1.26.6",
+        "explain": [
+          "Scan(ORDERS, [=])",
+          "Project([_current.ID#0, _current.AMOUNT#2], IndexScan(IDX_CUSTOMER, [=]))",
+          "Project([_current.ID#0], IndexScan(IDX_AMOUNT, [<>] COVERING))",
+          "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_STATUS, [=] COVERING)))",
+          "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_AMOUNT, [<>] COVERING)))",
+          "Project([_current.STATUS#0, _current.COUNT(*)#1, _current.SUM(AMOUNT)#2], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+          "Project([_current.STATUS#0, _current.COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only))",
+          "Project([_current.STATUS#0, _current.SUM(AMOUNT)#1], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+          "Project([_current.CUSTOMER_ID#0, _current.SUM(AMOUNT)#1], PredicatesFilter(GroupExistenceMerge(AggregateIndex(COUNT, SUM_AMOUNT_BY_CUSTOMER__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_CUSTOMER, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), [1 preds]))",
+          "Project([_current.ID#0, _current.NAME#5], FlatMap(outer=Scan(ORDERS, [<>]), inner=Scan(CUSTOMERS, [=])))",
+          "Project([_current.ID#0], PredicatesFilter(Scan(ORDERS), [1 preds]))"
+        ]
+      },
+      {
+        "name": "current-2",
+        "command": [
+          "bazelisk",
+          "test",
+          "//pkg/relational/sqldriver/stress:stress_test",
+          "--nocache_test_results",
+          "--test_output=all",
+          "--test_arg=--test.run=^TestFDB_Stress_1M$",
+          "--build_event_json_file=/var/tmp/fdb-upgrade-recovery/runtime/group-alias-stress/current-2-bep.jsonl"
+        ],
+        "exit": 0,
+        "started": 1789972200.9414306,
+        "elapsed": 211.89605069160461,
+        "load_start": [
+          7.478515625,
+          7.08203125,
+          6.603515625
+        ],
+        "load_end": [
+          11.09716796875,
+          8.794921875,
+          7.3642578125
+        ],
+        "runs": {
+          "TestFDB_Stress_1M": 1,
+          "TestFDB_Stress_1M/pk_lookup_first": 1,
+          "TestFDB_Stress_1M/pk_lookup_middle": 1,
+          "TestFDB_Stress_1M/pk_lookup_last": 1,
+          "TestFDB_Stress_1M/index_customer_eq": 1,
+          "TestFDB_Stress_1M/index_amount_range": 1,
+          "TestFDB_Stress_1M/index_status_count": 1,
+          "TestFDB_Stress_1M/full_scan_count": 1,
+          "TestFDB_Stress_1M/full_scan_filter": 1,
+          "TestFDB_Stress_1M/group_by_status": 1,
+          "TestFDB_Stress_1M/group_by_status_count_only": 1,
+          "TestFDB_Stress_1M/sum_by_status": 1,
+          "TestFDB_Stress_1M/group_by_customer_having": 1,
+          "TestFDB_Stress_1M/join_10_outer": 1,
+          "TestFDB_Stress_1M/order_by_pk_full": 1,
+          "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+          "TestFDB_Stress_1M/scan_all_narrow": 1,
+          "TestFDB_Stress_1M/scan_all_wide": 1,
+          "TestFDB_Stress_1M/in_list": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+          "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+          "TestFDB_Stress_1M/update_by_index": 1,
+          "TestFDB_Stress_1M/delete_single_row": 1
+        },
+        "passes": {
+          "TestFDB_Stress_1M": 1,
+          "TestFDB_Stress_1M/pk_lookup_first": 1,
+          "TestFDB_Stress_1M/pk_lookup_middle": 1,
+          "TestFDB_Stress_1M/pk_lookup_last": 1,
+          "TestFDB_Stress_1M/index_customer_eq": 1,
+          "TestFDB_Stress_1M/index_amount_range": 1,
+          "TestFDB_Stress_1M/index_status_count": 1,
+          "TestFDB_Stress_1M/full_scan_count": 1,
+          "TestFDB_Stress_1M/full_scan_filter": 1,
+          "TestFDB_Stress_1M/group_by_status": 1,
+          "TestFDB_Stress_1M/group_by_status_count_only": 1,
+          "TestFDB_Stress_1M/sum_by_status": 1,
+          "TestFDB_Stress_1M/group_by_customer_having": 1,
+          "TestFDB_Stress_1M/join_10_outer": 1,
+          "TestFDB_Stress_1M/order_by_pk_full": 1,
+          "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+          "TestFDB_Stress_1M/scan_all_narrow": 1,
+          "TestFDB_Stress_1M/scan_all_wide": 1,
+          "TestFDB_Stress_1M/in_list": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+          "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+          "TestFDB_Stress_1M/update_by_index": 1,
+          "TestFDB_Stress_1M/delete_single_row": 1
+        },
+        "log_sha256": "9fd5db31ae6e9284beccc0f88148e19a70de09a8046d451f3d2c5db12b4a3bb0",
+        "side": "current",
+        "sample": 2,
+        "tree": "be28f57df14cf7edec617bf09216ab828698cd69",
+        "commit": "71ccd8cf8b3fd0dbafe283e91171818e36af555e",
+        "compiler": "/home/birdy/projects/fdb-go/bazel-bin/pkg/relational/sqldriver/stress/stress_test_/stress_test: go1.26.6",
+        "explain": [
+          "Scan(ORDERS, [=])",
+          "Project([_current.ID#0, _current.AMOUNT#2], IndexScan(IDX_CUSTOMER, [=]))",
+          "Project([_current.ID#0], IndexScan(IDX_AMOUNT, [<>] COVERING))",
+          "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_STATUS, [=] COVERING)))",
+          "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_AMOUNT, [<>] COVERING)))",
+          "Project([_current.STATUS#0, _current.COUNT(*)#1, _current.SUM(AMOUNT)#2], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+          "Project([_current.STATUS#0, _current.COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only))",
+          "Project([_current.STATUS#0, _current.SUM(AMOUNT)#1], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+          "Project([_current.CUSTOMER_ID#0, _current.SUM(AMOUNT)#1], PredicatesFilter(GroupExistenceMerge(AggregateIndex(COUNT, SUM_AMOUNT_BY_CUSTOMER__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_CUSTOMER, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), [1 preds]))",
+          "Project([_current.ID#0, _current.NAME#5], FlatMap(outer=Scan(ORDERS, [<>]), inner=Scan(CUSTOMERS, [=])))",
+          "Project([_current.ID#0], PredicatesFilter(Scan(ORDERS), [1 preds]))"
+        ]
+      },
+      {
+        "name": "baseline-2",
+        "command": [
+          "bazelisk",
+          "test",
+          "//pkg/relational/sqldriver/stress:stress_test",
+          "--nocache_test_results",
+          "--test_output=all",
+          "--test_arg=--test.run=^TestFDB_Stress_1M$",
+          "--build_event_json_file=/var/tmp/fdb-upgrade-recovery/runtime/group-alias-stress/baseline-2-bep.jsonl"
+        ],
+        "exit": 0,
+        "started": 1789972412.8430812,
+        "elapsed": 236.55148696899414,
+        "load_start": [
+          11.09716796875,
+          8.794921875,
+          7.3642578125
+        ],
+        "load_end": [
+          16.07666015625,
+          11.90771484375,
+          8.87939453125
+        ],
+        "runs": {
+          "TestFDB_Stress_1M": 1,
+          "TestFDB_Stress_1M/pk_lookup_first": 1,
+          "TestFDB_Stress_1M/pk_lookup_middle": 1,
+          "TestFDB_Stress_1M/pk_lookup_last": 1,
+          "TestFDB_Stress_1M/index_customer_eq": 1,
+          "TestFDB_Stress_1M/index_amount_range": 1,
+          "TestFDB_Stress_1M/index_status_count": 1,
+          "TestFDB_Stress_1M/full_scan_count": 1,
+          "TestFDB_Stress_1M/full_scan_filter": 1,
+          "TestFDB_Stress_1M/group_by_status": 1,
+          "TestFDB_Stress_1M/group_by_status_count_only": 1,
+          "TestFDB_Stress_1M/sum_by_status": 1,
+          "TestFDB_Stress_1M/group_by_customer_having": 1,
+          "TestFDB_Stress_1M/join_10_outer": 1,
+          "TestFDB_Stress_1M/order_by_pk_full": 1,
+          "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+          "TestFDB_Stress_1M/scan_all_narrow": 1,
+          "TestFDB_Stress_1M/scan_all_wide": 1,
+          "TestFDB_Stress_1M/in_list": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+          "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+          "TestFDB_Stress_1M/update_by_index": 1,
+          "TestFDB_Stress_1M/delete_single_row": 1
+        },
+        "passes": {
+          "TestFDB_Stress_1M": 1,
+          "TestFDB_Stress_1M/pk_lookup_first": 1,
+          "TestFDB_Stress_1M/pk_lookup_middle": 1,
+          "TestFDB_Stress_1M/pk_lookup_last": 1,
+          "TestFDB_Stress_1M/index_customer_eq": 1,
+          "TestFDB_Stress_1M/index_amount_range": 1,
+          "TestFDB_Stress_1M/index_status_count": 1,
+          "TestFDB_Stress_1M/full_scan_count": 1,
+          "TestFDB_Stress_1M/full_scan_filter": 1,
+          "TestFDB_Stress_1M/group_by_status": 1,
+          "TestFDB_Stress_1M/group_by_status_count_only": 1,
+          "TestFDB_Stress_1M/sum_by_status": 1,
+          "TestFDB_Stress_1M/group_by_customer_having": 1,
+          "TestFDB_Stress_1M/join_10_outer": 1,
+          "TestFDB_Stress_1M/order_by_pk_full": 1,
+          "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+          "TestFDB_Stress_1M/scan_all_narrow": 1,
+          "TestFDB_Stress_1M/scan_all_wide": 1,
+          "TestFDB_Stress_1M/in_list": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+          "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+          "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+          "TestFDB_Stress_1M/update_by_index": 1,
+          "TestFDB_Stress_1M/delete_single_row": 1
+        },
+        "log_sha256": "3fa52875f1f3204521452a6d434ec51036521d861a930e999403dd7b7b2ca420",
+        "side": "baseline",
+        "sample": 2,
+        "tree": "600a5fa8517be7c6911cb6e68e8c93a39c81c823",
+        "commit": "e48f5b4965543cd4d99b5578356059e12d969c7c",
+        "compiler": "/home/birdy/projects/fdb-java-upgrade-baseline/bazel-bin/pkg/relational/sqldriver/stress/stress_test_/stress_test: go1.26.6",
+        "explain": [
+          "Scan(ORDERS, [=])",
+          "Project([_current.ID#0, _current.AMOUNT#2], IndexScan(IDX_CUSTOMER, [=]))",
+          "Project([_current.ID#0], IndexScan(IDX_AMOUNT, [<>] COVERING))",
+          "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_STATUS, [=] COVERING)))",
+          "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_AMOUNT, [<>] COVERING)))",
+          "Project([_current.STATUS#0, _current.COUNT(*)#1, _current.SUM(AMOUNT)#2], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+          "Project([_current.STATUS#0, _current.COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only))",
+          "Project([_current.STATUS#0, _current.SUM(AMOUNT)#1], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+          "Project([_current.CUSTOMER_ID#0, _current.SUM(AMOUNT)#1], PredicatesFilter(GroupExistenceMerge(AggregateIndex(COUNT, SUM_AMOUNT_BY_CUSTOMER__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_CUSTOMER, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), [1 preds]))",
+          "Project([_current.ID#0, _current.NAME#5], FlatMap(outer=Scan(ORDERS, [<>]), inner=Scan(CUSTOMERS, [=])))",
+          "Project([_current.ID#0], PredicatesFilter(Scan(ORDERS), [1 preds]))"
+        ]
+      }
+    ],
+    "rows": {
+      "PK lookup id=0": {
+        "rows": 1,
+        "baseline_ms": [
+          38.324843,
+          11.306123
+        ],
+        "current_ms": [
+          9.879932,
+          11.073476
+        ],
+        "median_ratio": 0.42218416623202537
+      },
+      "PK lookup id=N/2": {
+        "rows": 1,
+        "baseline_ms": [
+          16.435397,
+          9.878456
+        ],
+        "current_ms": [
+          8.939761,
+          13.279882
+        ],
+        "median_ratio": 0.8444085706490799
+      },
+      "PK lookup id=N-1": {
+        "rows": 1,
+        "baseline_ms": [
+          14.783538,
+          9.489258
+        ],
+        "current_ms": [
+          7.643285,
+          9.8118
+        ],
+        "median_ratio": 0.7191213158961992
+      },
+      "idx_customer eq": {
+        "rows": 8,
+        "baseline_ms": [
+          26.724454,
+          7.134692
+        ],
+        "current_ms": [
+          8.103036,
+          7.303119
+        ],
+        "median_ratio": 0.4550071936250252
+      },
+      "idx_amount range >9000": {
+        "rows": 100017,
+        "baseline_ms": [
+          292.007932,
+          271.341708
+        ],
+        "current_ms": [
+          292.071644,
+          236.199302
+        ],
+        "median_ratio": 0.9377319314520198
+      },
+      "idx_status count pending": {
+        "rows": 1,
+        "baseline_ms": [
+          357.263809,
+          495.30226
+        ],
+        "current_ms": [
+          377.865486,
+          539.568226
+        ],
+        "median_ratio": 1.076085180209066
+      },
+      "full scan filter amount>5000": {
+        "rows": 1,
+        "baseline_ms": [
+          607.937709,
+          740.03181
+        ],
+        "current_ms": [
+          852.67479,
+          726.727647
+        ],
+        "median_ratio": 1.1716900232074166
+      },
+      "GROUP BY status": {
+        "rows": 4,
+        "baseline_ms": [
+          7.494434,
+          11.712434
+        ],
+        "current_ms": [
+          7.907326,
+          6.366723
+        ],
+        "median_ratio": 0.7431742124744128
+      },
+      "GROUP BY status COUNT only": {
+        "rows": 4,
+        "baseline_ms": [
+          5.616597,
+          11.875303
+        ],
+        "current_ms": [
+          6.117255,
+          6.105536
+        ],
+        "median_ratio": 0.6987686300516239
+      },
+      "SUM by status (aggregate index)": {
+        "rows": 4,
+        "baseline_ms": [
+          5.893302,
+          17.716352
+        ],
+        "current_ms": [
+          5.896467,
+          7.125442
+        ],
+        "median_ratio": 0.5515501836663935
+      },
+      "GROUP BY customer HAVING": {
+        "rows": 47271,
+        "baseline_ms": [
+          631.669495,
+          918.196608
+        ],
+        "current_ms": [
+          674.661859,
+          926.5497
+        ],
+        "median_ratio": 1.0331289624959301
+      },
+      "JOIN 10 orders x customers": {
+        "rows": 10,
+        "baseline_ms": [
+          21.576664,
+          29.625959
+        ],
+        "current_ms": [
+          22.79485,
+          29.631844
+        ],
+        "median_ratio": 1.023906411982058
+      },
+      "ORDER BY PK (full)": {
+        "rows": 1000000,
+        "baseline_ms": [
+          7284.463922999999,
+          4840.66683
+        ],
+        "current_ms": [
+          7451.633129,
+          4590.0099660000005
+        ],
+        "median_ratio": 0.9931144942103537
+      },
+      "ORDER BY PK + index filter": {
+        "rows": 8,
+        "baseline_ms": [
+          10.442387,
+          9.241898
+        ],
+        "current_ms": [
+          10.9935,
+          12.826411
+        ],
+        "median_ratio": 1.2100978521698906
+      },
+      "scan all rows ordered": {
+        "rows": 1000000,
+        "baseline_ms": [
+          7868.121578,
+          4773.991015
+        ],
+        "current_ms": [
+          3920.500121,
+          4469.152956
+        ],
+        "median_ratio": 0.6636274606227911
+      },
+      "scan all rows wide": {
+        "rows": 1000000,
+        "baseline_ms": [
+          4319.569622,
+          5105.722465999999
+        ],
+        "current_ms": [
+          4227.645941,
+          4757.774058
+        ],
+        "median_ratio": 0.9533306676447693
+      },
+      "IN-list 5 values": {
+        "rows": 46,
+        "baseline_ms": [
+          22.9158,
+          24.128
+        ],
+        "current_ms": [
+          21.278429,
+          23.789135
+        ],
+        "median_ratio": 0.9579915738099388
+      },
+      "PK needle id=999999": {
+        "rows": 1,
+        "baseline_ms": [
+          5.283727,
+          7.385718
+        ],
+        "current_ms": [
+          6.246059,
+          6.172474
+        ],
+        "median_ratio": 0.9801955018550537
+      },
+      "PK+filter needle id=500000": {
+        "rows": 1,
+        "baseline_ms": [
+          9.051573,
+          7.927475
+        ],
+        "current_ms": [
+          8.815866,
+          11.173373
+        ],
+        "median_ratio": 1.177288561761531
+      },
+      "full scan sparse filter": {
+        "rows": 97,
+        "baseline_ms": [
+          3719.7376520000003,
+          4405.584927999999
+        ],
+        "current_ms": [
+          3670.110784,
+          4158.929078
+        ],
+        "median_ratio": 0.9635358824116986
+      },
+      "UPDATE by index": {
+        "rows": 8,
+        "baseline_ms": [
+          10.131398,
+          12.899644
+        ],
+        "current_ms": [
+          10.164671,
+          11.473302
+        ],
+        "median_ratio": 0.9395134184549706
+      },
+      "DELETE single row": {
+        "rows": 1,
+        "baseline_ms": [
+          8.551756,
+          16.592158
+        ],
+        "current_ms": [
+          8.531177,
+          10.811747
+        ],
+        "median_ratio": 0.7692885045661546
+      }
+    },
+    "explain": [
+      "Scan(ORDERS, [=])",
+      "Project([_current.ID#0, _current.AMOUNT#2], IndexScan(IDX_CUSTOMER, [=]))",
+      "Project([_current.ID#0], IndexScan(IDX_AMOUNT, [<>] COVERING))",
+      "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_STATUS, [=] COVERING)))",
+      "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_AMOUNT, [<>] COVERING)))",
+      "Project([_current.STATUS#0, _current.COUNT(*)#1, _current.SUM(AMOUNT)#2], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+      "Project([_current.STATUS#0, _current.COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only))",
+      "Project([_current.STATUS#0, _current.SUM(AMOUNT)#1], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+      "Project([_current.CUSTOMER_ID#0, _current.SUM(AMOUNT)#1], PredicatesFilter(GroupExistenceMerge(AggregateIndex(COUNT, SUM_AMOUNT_BY_CUSTOMER__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_CUSTOMER, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), [1 preds]))",
+      "Project([_current.ID#0, _current.NAME#5], FlatMap(outer=Scan(ORDERS, [<>]), inner=Scan(CUSTOMERS, [=])))",
+      "Project([_current.ID#0], PredicatesFilter(Scan(ORDERS), [1 preds]))"
+    ]
+  },
+  "latency": {
+    "trees": {
+      "baseline": "893e4eb4760c1989c195b7be19484dc5961b0dcf",
+      "current": "97d67fd750c13b8399bdea82774aa26bc8c8f263"
+    },
+    "attribution": "latency/region-analysis.json",
+    "samples": "latency/samples.json",
+    "unchanged_client_subtree": "448b10552b6b6259671c44cfbc29e3f0ac0c8cd6",
+    "baseline_overlay_restored": true
+  },
+  "artifacts": [
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-bep.jsonl",
+      "sha256": "1755680ffb42b2b5c469756de31f0f990352356954ccb73365d4c9261755d5b0"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-0-g8900-events.json",
+      "sha256": "4313725b9f2261190f76c6469331364736c7c654bf2ec27c8b308e17d81c4d34"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-0-regionblock-raw.txt",
+      "sha256": "64d1ffd518ebf1a6ab5785a389012ef627392e5970fb9fbfa28301814ad826ed"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-0-regionblock-top.txt",
+      "sha256": "cb51070276620f5b80c60e312622f030802e99f7228a92b9f7ceb0b80b4228dd"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-0-regionblock-traces.txt",
+      "sha256": "260dcb1e310b6acab8ab03714d32d577ddaa1842888209a251d696700ed425fd"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-0-regionblock.pprof",
+      "sha256": "fa4d9926f3510b7c59ed1018ca93183cfcccc984a164086994ac255ba40e7dba"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-0-regionio-top.txt",
+      "sha256": "7156df474bdc3d6903e2d49692f9cd3013d3e6cbea3ede3bb08f3857ef37c1df"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-0-regionio-traces.txt",
+      "sha256": "987931e532fa22fd1696e81e8bde99b7c54d75274436199ce0c389e590e50445"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-0-regionio.pprof",
+      "sha256": "5178b6b6065be0de6fef5ca4e5ecebf96c6a8d239e25bb09a3dcc420eaa541d3"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-0-regionsched-top.txt",
+      "sha256": "387bd6ffe8673d3eeb9a8268037db62fe3f4dab6e00aeb3f4590ca9cc4da57db"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-0-regionsched-traces.txt",
+      "sha256": "930faf3941906f851ecae4adbe89bb23810fb47100a0e9cffcbcbb120faefcb8"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-0-regionsched.pprof",
+      "sha256": "b676d7d45285c5ea85f9c89d75dae43db5be25fb61e2ddfbda9d579820b73920"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-0-regionsyscall-top.txt",
+      "sha256": "7156df474bdc3d6903e2d49692f9cd3013d3e6cbea3ede3bb08f3857ef37c1df"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-0-regionsyscall-traces.txt",
+      "sha256": "987931e532fa22fd1696e81e8bde99b7c54d75274436199ce0c389e590e50445"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-0-regionsyscall.pprof",
+      "sha256": "5178b6b6065be0de6fef5ca4e5ecebf96c6a8d239e25bb09a3dcc420eaa541d3"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-0.html",
+      "sha256": "9391a9a3498a4b135651b622694619e40b32051d7cd1f38a3b325ea759ad3fab"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-0.txt",
+      "sha256": "20fdd5a567c4a021b7184d3046710ffab36f82f908620586db9e0ae1533d89d6"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-1-g8830-events.json",
+      "sha256": "bd731957e27833e5f589bf542a4186f6b4d894dc0e132b5693f4494d8d397248"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-1-g8913-events.json",
+      "sha256": "522cf7b95230c45966406f51a4903f31ec8b4f0dfe6f2dac6487513a9179924d"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-1-regionblock-raw.txt",
+      "sha256": "882348ca82a0647456fce4cd8b5059de132adb2d18498fbd1eed941615bc61ad"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-1-regionblock-top.txt",
+      "sha256": "1ed2262beaacb685143922c5b78962b3bee887039589703b723d7663371c0077"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-1-regionblock-traces.txt",
+      "sha256": "f3e9336aeedec839cff4cbe71eff4da482e028c1288a01fcaf3d03a4055fc629"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-1-regionblock.pprof",
+      "sha256": "af4693515814c6cf695072ac0b90edaead9e350bb143316111122cd0aae90d44"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-1-regionio-top.txt",
+      "sha256": "7156df474bdc3d6903e2d49692f9cd3013d3e6cbea3ede3bb08f3857ef37c1df"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-1-regionio-traces.txt",
+      "sha256": "987931e532fa22fd1696e81e8bde99b7c54d75274436199ce0c389e590e50445"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-1-regionio.pprof",
+      "sha256": "5178b6b6065be0de6fef5ca4e5ecebf96c6a8d239e25bb09a3dcc420eaa541d3"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-1-regionsched-top.txt",
+      "sha256": "f713fcead4bb96ef4be44d452ecaf61fd06877ecbf6060d16671f0a2494b93c9"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-1-regionsched-traces.txt",
+      "sha256": "0dbd9b950d382f74039762a367702d2847fae0498653b35457862df1e0f59875"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-1-regionsched.pprof",
+      "sha256": "ccc76b740f4c7c1dc200cd4e7d5e61fb12751afa7a59910307ad4ed761094f32"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-1-regionsyscall-top.txt",
+      "sha256": "7156df474bdc3d6903e2d49692f9cd3013d3e6cbea3ede3bb08f3857ef37c1df"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-1-regionsyscall-traces.txt",
+      "sha256": "987931e532fa22fd1696e81e8bde99b7c54d75274436199ce0c389e590e50445"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-1-regionsyscall.pprof",
+      "sha256": "5178b6b6065be0de6fef5ca4e5ecebf96c6a8d239e25bb09a3dcc420eaa541d3"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-1.html",
+      "sha256": "444e58e5a7759e1de1309e460777ffa29f2f1b8876eb1fec10aeeb6a58c141dc"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-1.txt",
+      "sha256": "93dc318d30bdab31c2b5479568cc9aa673d1b8e57480e57f22a9b4955085f288"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-2-g8917-events.json",
+      "sha256": "15f3dc5422781fc6330ca1b8a6fa8fc1e39c1e0588ab9591054f42d98cf371f8"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-2-regionblock-raw.txt",
+      "sha256": "7d286e4de6b2375096a8e2936d25f4f2092c2fc56e718b47b8dc13fe9a4c7b6d"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-2-regionblock-top.txt",
+      "sha256": "b4d62e271c7b4649f11c8452d4eef464efa3a471402d8482e456a4896b7b531d"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-2-regionblock-traces.txt",
+      "sha256": "91a6be1321aabe63d07d18bf50568f24a00895a849255929930ac8bf7ca254f0"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-2-regionblock.pprof",
+      "sha256": "8b8b66af589d2818bde5b26b01a8731dc132f9a53b7ff9fff0a149153de1364c"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-2-regionio-top.txt",
+      "sha256": "7156df474bdc3d6903e2d49692f9cd3013d3e6cbea3ede3bb08f3857ef37c1df"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-2-regionio-traces.txt",
+      "sha256": "987931e532fa22fd1696e81e8bde99b7c54d75274436199ce0c389e590e50445"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-2-regionio.pprof",
+      "sha256": "5178b6b6065be0de6fef5ca4e5ecebf96c6a8d239e25bb09a3dcc420eaa541d3"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-2-regionsched-top.txt",
+      "sha256": "dc956b1d7261213e5227f0dc8620cb540300e99e4dedc68a428b79f900c59896"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-2-regionsched-traces.txt",
+      "sha256": "e8bb3ece9772bd6e5fb2bd9cf5c08c83de178863ae296b47ad8594285373d187"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-2-regionsched.pprof",
+      "sha256": "55600ac133c8576fe0c4bed6f8e745a59db42dd93117f9271044cbf417a79cb3"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-2-regionsyscall-top.txt",
+      "sha256": "7156df474bdc3d6903e2d49692f9cd3013d3e6cbea3ede3bb08f3857ef37c1df"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-2-regionsyscall-traces.txt",
+      "sha256": "987931e532fa22fd1696e81e8bde99b7c54d75274436199ce0c389e590e50445"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-2-regionsyscall.pprof",
+      "sha256": "5178b6b6065be0de6fef5ca4e5ecebf96c6a8d239e25bb09a3dcc420eaa541d3"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-2.html",
+      "sha256": "61fce2af63ef2756b81437993bb3531a02ca2a964e4b35c56c5a3e8ec7af3152"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-2.txt",
+      "sha256": "1793649c0df0ba39ead7e9c0490523026cf558beef8f46a074c89de983446fd5"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-3-g9067-events.json",
+      "sha256": "5d4b0626097acefe5f185caee9d9bd19f31cac6db6d97fd6895ae50a10bbc04f"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-3-regionblock-raw.txt",
+      "sha256": "c52ee547f10eebc800ba5b1d46b76c46e4fd0e407e26065462ac5967415c9c82"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-3-regionblock-top.txt",
+      "sha256": "a283166cfcf6c9327ca6e8d5c1fca425d27e13e9f0c284793ab6580eb483b9d8"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-3-regionblock-traces.txt",
+      "sha256": "b63a42956715300789e4d86370f1107d5e38c2606672467421dfa0d01045ad0d"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-3-regionblock.pprof",
+      "sha256": "334dcb6cf47acc258a968614fab62a120cf20e04f7223f24b68f575db29b2c13"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-3-regionio-top.txt",
+      "sha256": "7156df474bdc3d6903e2d49692f9cd3013d3e6cbea3ede3bb08f3857ef37c1df"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-3-regionio-traces.txt",
+      "sha256": "987931e532fa22fd1696e81e8bde99b7c54d75274436199ce0c389e590e50445"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-3-regionio.pprof",
+      "sha256": "5178b6b6065be0de6fef5ca4e5ecebf96c6a8d239e25bb09a3dcc420eaa541d3"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-3-regionsched-top.txt",
+      "sha256": "97d38abddf0d0f3a7e53c364e284e549f2f4290cea8c0f8ccaeb5156f14bc534"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-3-regionsched-traces.txt",
+      "sha256": "5465a80e1cf88e31915f0e4126c76c5f5ea891d3a41140049bc651bd378c5261"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-3-regionsched.pprof",
+      "sha256": "17d99ebd9448d75ba010c1990b3442d80fd531dac3adbb47ae067d887257d469"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-3-regionsyscall-top.txt",
+      "sha256": "7156df474bdc3d6903e2d49692f9cd3013d3e6cbea3ede3bb08f3857ef37c1df"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-3-regionsyscall-traces.txt",
+      "sha256": "987931e532fa22fd1696e81e8bde99b7c54d75274436199ce0c389e590e50445"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-3-regionsyscall.pprof",
+      "sha256": "5178b6b6065be0de6fef5ca4e5ecebf96c6a8d239e25bb09a3dcc420eaa541d3"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-3.html",
+      "sha256": "1b611040a79eb437da48fbdd16ba3bf6a33ecb8f7b3343a02e3cb273b03e32fc"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-region-3.txt",
+      "sha256": "689c99bd31e142903328e39f87d1e6c882f62878af56e4632619f1d16de6a2b7"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-regions.html",
+      "sha256": "2e3a5d42c7db3a7ad02874fcbab1ea38d3b37a61a4c37a9a0483d58ba2093941"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1.log",
+      "sha256": "ef74ccb049150de5acb49b386a8bc95ad3f459ced01ad5e68e718c90f4c8156e"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1.trace",
+      "sha256": "ebba54d1f5b12b9b583dee447cfa558e2a512d450bdb4a2d2727d5bb117c14f9"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-2-bep.jsonl",
+      "sha256": "b423ae9b893685fa4f72c71b6bacc722ccd59c3f8c53ac4fcd163e85b39b0d33"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-2.log",
+      "sha256": "a2fdc258887dc3236cc5b24e0c542a235d59ab9c36482f2326b1873e918c9522"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-2.trace",
+      "sha256": "2b0a0bfb28b201d7a8d351baed64076182428a4bd11e130d4ae58c8763c8b002"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-1-bep.jsonl",
+      "sha256": "54d8d4949d4cefdd61d3fad6d5607449221f2038659a3bda5b99ad1c32de9c2c"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-1.log",
+      "sha256": "3789a246bfeee7f3bb53ab8e81b701d8d4d2d31af52863fa4d431d851dda1cff"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-1.trace",
+      "sha256": "5d7bb9b1404f01b127bcc5b3490ea80c5462627ca753ba3fed27197b672f6ab7"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-bep.jsonl",
+      "sha256": "9975fd140fa971a2230237e6b6edbfde831d5338e1ae581fadec2ce35367763e"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-index-events.json",
+      "sha256": "d6d2870d90838db4cab11e25092985eff211c3a2c065cfa8809c93a2202ee7da"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-0-g8868-events.json",
+      "sha256": "634330c34f3c16efbdf22caa21f5fea5bf7ecbd8b1f1802352ffc97659466a2b"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-0-regionblock-raw.txt",
+      "sha256": "f2498a90f633054714068b3bd6c20a9af90e33a7b661ccdd2041d689cd7cb41e"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-0-regionblock-top.txt",
+      "sha256": "1f808149fcdb71e65b8990c75383cf5a67a17e280c664aeece1492d8c219360c"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-0-regionblock-traces.txt",
+      "sha256": "9911232e267d664a696fa9f29e3da10cd6dbf28ab47d97c2b1b6d2e38161eed8"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-0-regionblock.pprof",
+      "sha256": "5fb19e89e3fa4904a323dbd9511497c27b9cdbb4e60a1794bc3ea635152cd635"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-0-regionio-top.txt",
+      "sha256": "7156df474bdc3d6903e2d49692f9cd3013d3e6cbea3ede3bb08f3857ef37c1df"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-0-regionio-traces.txt",
+      "sha256": "987931e532fa22fd1696e81e8bde99b7c54d75274436199ce0c389e590e50445"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-0-regionio.pprof",
+      "sha256": "5178b6b6065be0de6fef5ca4e5ecebf96c6a8d239e25bb09a3dcc420eaa541d3"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-0-regionsched-top.txt",
+      "sha256": "c65c7343a3c38be0267497be1aaddc33d370e7bc13ac06839aca524bca0627ad"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-0-regionsched-traces.txt",
+      "sha256": "c11387805b3faf78519a725e51378aa1b80bec152734cecef9fdb0cb5ad77292"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-0-regionsched.pprof",
+      "sha256": "8b4605e4241ab2355df02cfbca818b75cb86ab859468d6b6235d00dae085b3b5"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-0-regionsyscall-top.txt",
+      "sha256": "7156df474bdc3d6903e2d49692f9cd3013d3e6cbea3ede3bb08f3857ef37c1df"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-0-regionsyscall-traces.txt",
+      "sha256": "987931e532fa22fd1696e81e8bde99b7c54d75274436199ce0c389e590e50445"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-0-regionsyscall.pprof",
+      "sha256": "5178b6b6065be0de6fef5ca4e5ecebf96c6a8d239e25bb09a3dcc420eaa541d3"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-0.html",
+      "sha256": "21df1b5350ac92dac9bce306e9a94f789497843e879ca42ca59be4fee885af48"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-0.txt",
+      "sha256": "6c108b1321514c81cd3e9eab9f16b3fce62e9713d116963df3126baab2cea7fd"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-1-g8841-events.json",
+      "sha256": "ca491406d3a95e68aca559062c12bc20bd9c6aeada553a380a7f68981330ce28"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-1-g8877-events.json",
+      "sha256": "e40953b1d0d4410249598915aa75568db385074a34a951ea0348c1b2f6dec2b9"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-1-regionblock-raw.txt",
+      "sha256": "3a72f553c910625f50bbde8a82dec2e57fc51f9b45cfeec534ba9f842ef218cd"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-1-regionblock-top.txt",
+      "sha256": "047684c8f1eca621e2c27fb637979465adf882c21bffa8d74f79005c911a3c1a"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-1-regionblock-traces.txt",
+      "sha256": "dc701a6db5249f68292db4c4117f0e7ad1a8dab211140bc6b0267ee3639f037f"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-1-regionblock.pprof",
+      "sha256": "8c7052402cbfbbcbdf5ef95f4759bfc4f3ebdb0caae264da7bbfdec9e140cad5"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-1-regionio-top.txt",
+      "sha256": "7156df474bdc3d6903e2d49692f9cd3013d3e6cbea3ede3bb08f3857ef37c1df"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-1-regionio-traces.txt",
+      "sha256": "987931e532fa22fd1696e81e8bde99b7c54d75274436199ce0c389e590e50445"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-1-regionio.pprof",
+      "sha256": "5178b6b6065be0de6fef5ca4e5ecebf96c6a8d239e25bb09a3dcc420eaa541d3"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-1-regionsched-top.txt",
+      "sha256": "407647dc829cd452e8fb855d761841267f93ca90aa97dc55306deb85f78f7bf2"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-1-regionsched-traces.txt",
+      "sha256": "c58b8cabf047f17cee3d621fc4c5676f2d9975fe0985f6acff29c97b07e0863c"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-1-regionsched.pprof",
+      "sha256": "ed9bb37f4b970035a9203252dc96c12e99309e86df73fd2dee33d43a69386e0e"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-1-regionsyscall-top.txt",
+      "sha256": "7156df474bdc3d6903e2d49692f9cd3013d3e6cbea3ede3bb08f3857ef37c1df"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-1-regionsyscall-traces.txt",
+      "sha256": "987931e532fa22fd1696e81e8bde99b7c54d75274436199ce0c389e590e50445"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-1-regionsyscall.pprof",
+      "sha256": "5178b6b6065be0de6fef5ca4e5ecebf96c6a8d239e25bb09a3dcc420eaa541d3"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-1.html",
+      "sha256": "44451f25667c842a671dd614809274e68ca98e6a62f98ca68f5ed1f915ece234"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-1.txt",
+      "sha256": "6b3535cbd000601add7b33305605bd0f41f272c06e6a2142691d61a74e935896"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-2-g8857-events.json",
+      "sha256": "427870ada23ff7ca037e04ccea8712c930399a8a40d72b453eba1b446a33d47a"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-2-regionblock-raw.txt",
+      "sha256": "405831de6dfb79b9c5171b907a05487eb028bfd36fff8c155f08a39b228459dd"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-2-regionblock-top.txt",
+      "sha256": "50fa5e5a13060efe9107f8486b7e085a0401dea52354eba85ec5104b6ed4bcc3"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-2-regionblock-traces.txt",
+      "sha256": "765474fc29a1c3430c77252cfec192d1563573c29596a6d6d899e2ea80658ccf"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-2-regionblock.pprof",
+      "sha256": "5fbc5c2dab11b5346b822b7053fe6dbb1301a57e4a4b397fa6c4fe721a14a1bd"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-2-regionio-top.txt",
+      "sha256": "7156df474bdc3d6903e2d49692f9cd3013d3e6cbea3ede3bb08f3857ef37c1df"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-2-regionio-traces.txt",
+      "sha256": "987931e532fa22fd1696e81e8bde99b7c54d75274436199ce0c389e590e50445"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-2-regionio.pprof",
+      "sha256": "5178b6b6065be0de6fef5ca4e5ecebf96c6a8d239e25bb09a3dcc420eaa541d3"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-2-regionsched-top.txt",
+      "sha256": "60869c494d7cc49b287d66ac5543374364a3d0f946367b38f2d2161b0bc5292b"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-2-regionsched-traces.txt",
+      "sha256": "0f64f9156d4b847fbc2c894c16f818a4b7c593c6ca4a35967b45b9b30ee63f10"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-2-regionsched.pprof",
+      "sha256": "618c2df6031c66a6cf6b733fd38250003aecce9e705332ecf10302ccf5e9079b"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-2-regionsyscall-top.txt",
+      "sha256": "7156df474bdc3d6903e2d49692f9cd3013d3e6cbea3ede3bb08f3857ef37c1df"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-2-regionsyscall-traces.txt",
+      "sha256": "987931e532fa22fd1696e81e8bde99b7c54d75274436199ce0c389e590e50445"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-2-regionsyscall.pprof",
+      "sha256": "5178b6b6065be0de6fef5ca4e5ecebf96c6a8d239e25bb09a3dcc420eaa541d3"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-2.html",
+      "sha256": "563bff04f1f6fc1299ab74ce984571ab1493ea6874e8f0f2f2e32ee216059fe7"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-2.txt",
+      "sha256": "713bc71d32e1173589c2bf570a111d7847e9974852bd89a16275e06d621d21d3"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-3-g8190-events.json",
+      "sha256": "287e30fc195c03e4ab6a7f7aebb545e133efc462fa7923947c054176c44f38c3"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-3-regionblock-raw.txt",
+      "sha256": "cac039b0db900456aae8533b367fb19a7028362bb5251b96231fad4332f31735"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-3-regionblock-top.txt",
+      "sha256": "105ca55a932c09185df74f9d58c2c473a776f2eef9fd92c784e493626d241214"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-3-regionblock-traces.txt",
+      "sha256": "5f460a32978ce86c5c40848e350f43042855c9174db9d01800b1540ede344025"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-3-regionblock.pprof",
+      "sha256": "3b8faa209eff12bc1e71ea881aee8edf9204fb480a73b887cd1f50abd7c7a8f7"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-3-regionio-top.txt",
+      "sha256": "7156df474bdc3d6903e2d49692f9cd3013d3e6cbea3ede3bb08f3857ef37c1df"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-3-regionio-traces.txt",
+      "sha256": "987931e532fa22fd1696e81e8bde99b7c54d75274436199ce0c389e590e50445"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-3-regionio.pprof",
+      "sha256": "5178b6b6065be0de6fef5ca4e5ecebf96c6a8d239e25bb09a3dcc420eaa541d3"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-3-regionsched-top.txt",
+      "sha256": "3d310c7ac25ac8aec7cae9482861d9f13e13d76fbbe4fae7a16d3e0e0d1b5b0e"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-3-regionsched-traces.txt",
+      "sha256": "521627f45d642a16165408496eeb0c8096e2d030a85ec6f7af3c5cd61f97ae95"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-3-regionsched.pprof",
+      "sha256": "eff09497d1e69c354d3cfd3fd4bc78e1eb56821b286d24b178e51e5a5d3d3722"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-3-regionsyscall-top.txt",
+      "sha256": "7156df474bdc3d6903e2d49692f9cd3013d3e6cbea3ede3bb08f3857ef37c1df"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-3-regionsyscall-traces.txt",
+      "sha256": "987931e532fa22fd1696e81e8bde99b7c54d75274436199ce0c389e590e50445"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-3-regionsyscall.pprof",
+      "sha256": "5178b6b6065be0de6fef5ca4e5ecebf96c6a8d239e25bb09a3dcc420eaa541d3"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-3.html",
+      "sha256": "1e0cbdbde5894fd3cb464f34922486b507a4211764c24a4274006f76c7516add"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-region-3.txt",
+      "sha256": "afc937a6bce2031318cd25c6fa819bf1f0938f8ea1a6cbdd21af1a4083021eb0"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-regions.html",
+      "sha256": "d3ec56f11a6a6eccf906552a63225829a5bff23107acc31c38fc558425abb5b8"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2.log",
+      "sha256": "351ba8a6737550a08c55bfee8cd42b24d538c111e9bdb73eb230426193a70bbb"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2.trace",
+      "sha256": "d7b0e03b4d68a8c6cf560ef8a087bc6dbb8eb4497c21b3e554f44b1e972d3b86"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/extract-regions.py",
+      "sha256": "4b537d6c56f17656ab05e0d5621fcd9763dd96d1ebf516e9e143eb7e8abd0004"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/region-analysis.json",
+      "sha256": "c57cbd4d28f877226a5ff43ea4a7797995066c161a3582d2c0fb758c7174573c"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/run.py",
+      "sha256": "b3eec9166a7ceab0552becfa1e2d4ebc110a685684d5de2d3203c25ecb61b85c"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/samples.json",
+      "sha256": "c8ef026e28030cc5bc04822bc049e6ddbcfecdf5d75a78df680bb23a56be1cbb"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/summarize-regions.py",
+      "sha256": "5b82abe2c2ae28cbc3885f1143c673e88402bb2ebd1f9bbe29984746e6c9e006"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/trees.json",
+      "sha256": "28ecb91387061b728f6e93124fd94919d5b8f8f3aa0ed5fca519b3496f1c204b"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-stress/baseline-1-bep.jsonl",
+      "sha256": "4d191c78e6e6130d493c203e1c50f41b5e2d1785bbecb9074674f129e7dd7497"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-stress/baseline-1-result.json",
+      "sha256": "ca3aaf1aba0ef39a89bff053c4379dd260aee7406d8d9557a354caf2b886817f"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-stress/baseline-1.log",
+      "sha256": "fa55717a3b1bcbab89387b4c7d6b5e36bce45138692987fe88d42ed483ede8b3"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-stress/baseline-2-bep.jsonl",
+      "sha256": "5d738d8b41ff874b65545bffa04db3306edd331f49555e52d0225a7442b5e6e1"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-stress/baseline-2-result.json",
+      "sha256": "1857504db63561fb9539ce5b9f7542a45dbc69a85ee92963f35b9b14656fa70b"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-stress/baseline-2.log",
+      "sha256": "3fa52875f1f3204521452a6d434ec51036521d861a930e999403dd7b7b2ca420"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-stress/current-1-bep.jsonl",
+      "sha256": "95feddc0d8ec3b271876bd248fd4431ffe4cb27b09caaf1bfa322252d68cb4ef"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-stress/current-1-result.json",
+      "sha256": "e2422c956c57988d5b302d3639ad325022367a76561d54cc4a6b77b1f7cd3de1"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-stress/current-1.log",
+      "sha256": "fb26a209fb30a6c415ab3c0e37bf57a5458d4dc74015394305a809c6fedfa274"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-stress/current-2-bep.jsonl",
+      "sha256": "193f514413b7badc15f6501cabe02501302e0aca84489eefd329dffbc238ada6"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-stress/current-2-result.json",
+      "sha256": "f8bd7e8e5aebfeaefd43fb5baa20ace1cf0ebc1a8c5186c4a0086538e505577d"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-stress/current-2.log",
+      "sha256": "9fd5db31ae6e9284beccc0f88148e19a70de09a8046d451f3d2c5db12b4a3bb0"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-stress/just-test-result.json",
+      "sha256": "22e0766a5b1dd23e480c54918d6b12865028c24caf91cf6c7bc1b873acdf6045"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-stress/just-test.log",
+      "sha256": "107b456a9f1ef673e1f7c8efda16c1dba3a0d4b792cd38d3fbf780e643da4f96"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-stress/samples.json",
+      "sha256": "68e04107e777d5f607ef93836bd1a50b36c78de74dd9e9857d3e15c354cee99f"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-stress/stress-race-bep.jsonl",
+      "sha256": "1f31802e7b26eb2bbc7e91018e976757f71e05187807ca8d8630a2cfbf38ab5c"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-stress/stress-race-result.json",
+      "sha256": "1a7e33eb99cd1cb02edf74ffbf11b3694d7aa0fb2c9e77df1e100b79b2b3ff39"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-stress/stress-race.log",
+      "sha256": "630c1380bcf68ffe197719e0aeb91b591ad607dc270b8177bf5cb20d5f7fa03b"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-stress/table.md",
+      "sha256": "a662f8f4bce43508442592db11917cb50423d3d3d7b1797a8c686d2aa10feb05"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-stress-cancelled/cancellation.json",
+      "sha256": "0ce2cbd2c351a06c63ba627cc8a0a041d0d47fea90684999557baaf1e9ab6316"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-stress-cancelled/partial-test.log",
+      "sha256": "b58640521f34aa0f156f8a522f79d606631b0032b1d3a20b513b1acf7081da82"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-stress-cancelled/stress-race-bep.jsonl",
+      "sha256": "f219cc539aaebd93a02036f310775e51833cfa53bedbe6d454787e6cfbbfcede"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-stress-cancelled/stress-race.log",
+      "sha256": "3b6c6e904a163f16d1e389b7c09057ac3358e46f891dc79ef14dee1d4c7886fe"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-final-code-freeze.json",
+      "sha256": "05e282af6abd71b305d83d31e02d4d057d18c700fdd941ef14834506cdc75239"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-isolation-red.log",
+      "sha256": "7d2a428e416288e4f704a4e45cdddc2d9e73f70b405ce7ab875ded2e92e0bdbd"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-isolation-green.log",
+      "sha256": "4e3a224b59922f2dfab500e930cfc6ab947c3bbcab825417771f540455b40f40"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full.log",
+      "sha256": "9872253f72eff0889ea1d0da851c989f5829d87ceec8fd5e7d74ade079a97287"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race.log",
+      "sha256": "adcaafea685c3316194de827c01770cea11e1aea78b13aca62bfff0aa702c3ce"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-bep.jsonl",
+      "sha256": "1c504246346c526c23e7d0c899e26293773106a60519d585180f301b44ef2547"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-bep.jsonl",
+      "sha256": "041e678104e9f492503f583b33694def35f706326a273e414656f969a7a5ab6f"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-freeze.json",
+      "sha256": "789527cab7cceb83f5ba9df65ecc1af7a08fd79fd0d4fd6bbe54b1c462117403"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/latency-freeze.json",
+      "sha256": "0eed868fd405e3c51c51eb67103ff6101d21aeead372f179dac524082f26bdfd"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-red.log",
+      "sha256": "86467d04fca51d9ad69b3217665c1475b8269a051cc46dd8b2ed94cf584e4b95"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-parser.log",
+      "sha256": "694aa35881e41e7ec1c8a69fe7cb2940bb8361684b694337b1e901d853d711d6"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-order-red.log",
+      "sha256": "1496b48522c92291ba1af0f2a002421509555687aed6680b5473d800121b8b3d"
+    },
+    {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-java.log",
+      "sha256": "7b4e73ee06d2fd00fac161aea2b245d2a6dae93940e3cc155f3324e5dc534389"
+    }
+  ]
+}

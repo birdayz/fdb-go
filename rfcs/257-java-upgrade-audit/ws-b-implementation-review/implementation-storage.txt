@@ -1,0 +1,59 @@
+**NAK — WS-B needs three correctness fixes and completion of the required deletion coverage.**
+
+Reviewed tree: `bcf0946edd1f5d591542fee4f07481d7826c046d`, against base tree `0dedbe1b1083358fb9568a31178084c043fa31e0`. Published HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`. Java reference: 4.14.2.0 at `fdacd162a9c8acfadc49082b89185c823ab8ae4a`.
+
+This was an independent review of the complete code/build/test diff, including additions and removals, the full WS-B design and its three design ACKs, parent RFC257 WS-B, corresponding Java implementation, relevant Go call paths, and retained regression/evidence READMEs. Findings below are source-derived; I performed no edits, test/build executions, Git mutations, GitHub requests, or delegation.
+
+1. **P1 — State transitions on a lazily built store can bypass header initialization permanently.**
+
+   [`MarkIndexDisabled`](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:243) now uses `readIndexState`, replacing the getter that performed lazy initialization. The new helper reads only the index-state key. A store returned by [`Build()`](/home/birdy/projects/fdb-go/pkg/recordlayer/store_builder.go:1490) therefore still has no loaded header when `setIndexState` runs.
+
+   `setIndexState` creates a partial `indexStates` map and [conditionally invalidates the metadata stamp](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:380) using the still-nil header. Subsequent [lazy initialization](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:174) sees the non-nil map and permanently treats the store as loaded.
+
+   Concrete sequence: existing cacheable store → fresh `Build()` → `MarkIndexDisabled()` → commit. Index state/data change without the required cache-stamp invalidation. Reusing that store also leaves its header absent: [`validateRecordUpdateAllowedLocked`](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:250) permits record updates when the header is nil, so a persisted record-update lock can be bypassed.
+
+   Java explicitly [preloads store state before this transition](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/FDBRecordStore.java:3691).
+
+   **Fix:** ensure full, error-propagating header/state initialization before state mutations, while retaining transaction-visible serializable state reads. Add `Build()`-based transition regressions covering independently warmed cache invalidation, persisted record-update locks, and header-read failures.
+
+2. **P1 — Operational state checks remain stale in vector scans and aggregate selection.**
+
+   [`ScanVectorIndexWithPrefix`](/home/birdy/projects/fdb-go/pkg/recordlayer/vector_index_maintainer.go:1338), [`SearchVectorIndexWithPrefix`](/home/birdy/projects/fdb-go/pkg/recordlayer/vector_index_maintainer.go:1381), and [aggregate index selection](/home/birdy/projects/fdb-go/pkg/recordlayer/aggregate_function.go:219) still use `IsIndexScannable`/`IsIndexReadable`. Those reach the [cached getter](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:74), which neither refreshes transaction-visible state nor adds a state-key conflict.
+
+   Open two store objects in one context, disable an index through one, then query through the other: the second object can still select the cleared index; a COUNT aggregate can consequently return zero instead of rejecting the unavailable index.
+
+   Across transactions, a snapshot vector scan or snapshot COUNT aggregate on a noncacheable store can commit an unrelated sentinel after a concurrent disable commits, without the required index-state conflict. Initial state loading is snapshot, and disabling does not change the header. Java’s [state getter explicitly adds that conflict](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/FDBRecordStore.java:4241).
+
+   This is an uncovered WS-B integration dependency, including in unchanged callers: the [approved design requires transaction-visible state and serializable conflicts for operational scans and negative decisions](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-b-design.md:94).
+
+   **Fix:** route these error-capable paths, and corresponding record-function selection, through the new state-read helper; preserve requested data isolation. Add same-context two-store tests and pinned-version concurrent-transition tests with observable commit outcomes.
+
+3. **P2 — New TEXT body validation does not cover multi-type indexes.**
+
+   [`AddMultiTypeIndex`](/home/birdy/projects/fdb-go/pkg/recordlayer/metadata.go:603) stores indexes spanning two or more types in `rt.multiTypeIndexes`. The new [descriptor collection loop](/home/birdy/projects/fdb-go/pkg/recordlayer/metadata.go:796) visits only `rt.indexes`, with a separate universal-index loop. Consequently, the [TEXT body validator](/home/birdy/projects/fdb-go/pkg/recordlayer/metadata.go:1302) receives no field lists for multi-type indexes and silently skips validation.
+
+   A TEXT index associated with two record types can therefore build with an integer body field. Java [validates every covered record type](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/metadata/MetaDataValidator.java:182) and rejects that body. In Go, the [runtime TEXT maintainer silently ignores non-string values](/home/birdy/projects/fdb-go/pkg/recordlayer/text_index_maintainer.go:303), allowing successful saves without corresponding text entries.
+
+   **Fix:** validate every covered `(index, record type)` pair, including multi-type associations. Retain positive two-type string-body coverage and negative mixed-type, repeated-body, and missing-body cases, with Java comparison.
+
+4. **P2 — The deletion acceptance matrix is incomplete.**
+
+   The [approved requirements](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-b-design.md:70) include unknown-field headers, both commit orders against creation/cacheability changes, and actual versioned-save-then-delete behavior.
+
+   The retained [16-case matrix](/home/birdy/projects/fdb-go/pkg/recordlayer/store_api_test.go:411) varies cacheability, warmth, commit order, and **header-field update versus ordinary record write**. It does not exercise creation or cacheability-toggle races. The [header cases](/home/birdy/projects/fdb-go/pkg/recordlayer/store_api_test.go:485) omit valid unknown fields. The [deferred-version regression](/home/birdy/projects/fdb-go/pkg/recordlayer/store_api_test.go:531) directly injects queued mutations/local-version entries rather than exercising versioned `SaveRecord` followed by deletion.
+
+   **Fix:** complete those explicit acceptance cases, preserving pinned read versions, first-attempt commit assertions, cold reopen, and absence of resurrected version keys. Existing green populations do not establish these missing cases.
+
+All five sections were evaluated:
+
+- **Sliding replay/delegate routing:** the replay and callback separation, eviction behavior, and approved size-one correction are consistent with the intended behavior. Finding 2 remains relevant to vector entry points.
+- **Header-aware deletion/cache:** header-only conflicts, tuple-range boundaries, conditional invalidation, header cloning, and deferred-write cleanup are coherent. Findings 1 and 4 prevent acceptance.
+- **Replacement retirement/commit lifecycle:** initialization eligibility, exact-READABLE retirement, named checks, commit sequencing, and deletion cancellation are coherent apart from findings 1–2. Go’s intentional cancellation of Java’s post-deletion DISABLED resurrection should remain.
+- **Ignored options/union identity:** defensive option copying, exact option names, descriptor correspondence, union-tag identity, and current-descriptor construction are consistent with Java. The additional TEXT prerequisite has finding 3.
+- **Rank-valued bounds:** no additional defect found. Score-column slicing, absolute ranks, nullable values, terminal replay, seven snapshot preload callers, and serializable actual rank lookups align with the intended contract. Exact packed key/PK/value interop and persisted-byte invariance evidence address the important wire risks.
+
+I also accounted for the other source changes and removals: uniqueness-violation key/cleanup corrections, expression descriptor validation, dynamic-message conformance changes, cursor terminal retention, build enrollment, timer-gate removals, obsolete rename-helper removal, and replacement of stale tests/expectations.
+
+Retained evidence reports all 93 uncached targets green, recordlayer race **3342/3343**, conformance race **1387/1506**, and eight rank mutation kills. Changed code/build/test hashes reconcile with the frozen **6678-file** population. These are inspected retained results, not executions from this review.
+
+Approved raw, nullable-array, scalar, and sorting extensions remain preserved. Queue/state4/format15 and WS-C–K remain outside this verdict.

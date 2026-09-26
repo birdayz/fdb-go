@@ -1,0 +1,45 @@
+**NAK — WS-A + WS-E1 implementation code** at candidate tree `664b241c57b71829cb40687a1e26cc3dc3e145e6`.
+
+I read all four prior reports, the complete delta from rejected tree `9f8d0f63cc15aa364dd237a62650a4bf73e5babe`, necessary frozen surrounding source, and Java `fdacd162a9c8acfadc49082b89185c823ab8ae4a`. Milestone base remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`.
+
+**One P2 remains: GROUP alias rewriting can replace an already-bound star attribute.**
+
+For `wide_t(ID,V)` containing `(2,7)`:
+
+```sql
+SELECT *
+FROM wide_t x
+GROUP BY 2 AS "X.ID", 1
+```
+
+Expected output is `(2,7)`, labels `ID,V`. The frozen source instead constructs both output slots from `V`:
+
+- [select_parser.go:1634](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:1634) looks up the bound attribute’s rendered `X.ID` as a GROUP alias. The new assignment at line 1636 replaces its original bound `ID` value with position 2’s bound `V` value.
+- [logical_builder.go:181](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_builder.go:181) consequently matches both outputs to native grouping slot 0.
+- [logical_predicate.go:4347](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:4347) validates the substituted values successfully.
+
+Thus the constructed projection yields `(7,7)`. Removing `, 1` also conceals the ungrouped `ID`, defeating the intended **42803** rejection. These are source-derived findings; I did not execute these queries.
+
+This is the remaining bound-identity conversion defect: later name resolution overrides an established semantic owner. Java’s [star expansion:399](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/SemanticAnalyzer.java:399) excludes ephemeral grouping aliases instead of substituting them into existing star attributes.
+
+**Required fix:** restrict GROUP alias redirection to unresolved, structurally bare alias references. Preserve already-bound attributes and their provenance. Retain exact row/label regressions for the collision above, with/without aggregates, and the corresponding ungrouped-source 42803 control.
+
+The reviewed ORDER repair closes the prior label collision: parsing rejects repeated ordinals, the visitor retains all keys, and post-binding validation compares direct-column values while preserving computed slots. GROUP stripping, reclassification and semantic matching otherwise address the reported paths. The unchanged RaBitQ architecture/rounding contract, checked-array guards, transactional descriptor closure and fixture fixes retain their accepted scope.
+
+Evidence reconciles:
+
+- **93 uncached passing targets:** 40,650 RUN = 40,645 PASS + five existing skips; per-target name multisets agree.
+- **14 uncached race targets:** 21,103 RUN = PASS. Both Java suites report 1,357/1,476, with 119 existing filtered cases.
+- All recorded artifact hashes and both **6,296/6,297-file** freeze manifests match. Candidate changes from verified code are confined to three documentation/evidence files. The documentation follow-up executed two targets, with 91 cached.
+- Mutation failures, fuzz executions, 176 stress timings and 11 EXPLAIN lines reconcile. The retained Java probe covers 64 composition cases plus two controls; all four added cross-source ORDER shapes are Java refusals with independent Go-positive contracts.
+
+Separate unmet gates:
+
+- Regression verification for the remaining alias-binding repair.
+- Early point-read deterioration remains unexplained. Investigate controlled alternating samples with planning, transaction/read and execution timing separated; planner benchmarks and later needles do not explain it. The <5ms aspiration remains unmet.
+- Historical executor startup-timeout causation requires unavailable original evidence; CLI networking is separate.
+- Owner publication authorization remains withheld. Authentication is restored as `birdayz`; PR786 remains draft/unchanged. Legacy RaBitQ disable/rebuild remains a deployment prerequisite.
+
+Approved nullable-array/raw/scalar/sorting extensions remain required; FDB C++ stays **7.3.77**. This approves neither WS-B–K, whole-upgrade completion, publication nor merge. Historical design/security ACKs are not implementation ACKs.
+
+No edits, tests/builds, agents, worktrees, Git-state changes or GitHub contact occurred.

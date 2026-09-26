@@ -1,0 +1,54 @@
+**NAK — two correctness defects remain in the new shared index-state implementation.**
+
+Reviewed Git **tree**: `c59322c012c53500679e7f345360fac6706468b9`.
+
+I read the complete code/test/build/script delta from NAK tree `bcf0946edd1f5d591542fee4f07481d7826c046d`, the previous actual verdicts, approved design and parent WS-B scope, relevant Go and tagged Java sources at `fdacd162a9c8acfadc49082b89185c823ab8ae4a`, and milestone integration against base tree `0dedbe1b1083358fb9568a31178084c043fa31e0`. Findings are source-derived; I ran no tests or builds.
+
+1. **P1 — Former-index cleanup can leave the authoritative shared view stale, causing a newly added index to commit as READABLE without being built.**
+
+   [index_state.go:472](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:472) updates shared state only when that particular handle already has `indexStateView`. However, [loadStoreState](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:1901) installs only the handle’s header and local state map. Attachment happens later during lazy initialization.
+
+   Metadata reconciliation calls [removeFormerIndexData](/home/birdy/projects/fdb-go/pkg/recordlayer/store_builder.go:386), which [clears the former index’s state through setIndexState](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:724), before ensuring that attachment.
+
+   Concrete sequential sequence, all within one context:
+
+   - Open populated metadata v1 with index `I` DISABLED; read its state to establish the shared view.
+   - Open v2 dropping `I`. Former-index cleanup clears its persisted state key, but the existing shared view still says DISABLED.
+   - Open v3 reintroducing name `I` with a **different subspace key** and a DISABLED rebuild policy. Name reuse with a fresh subspace is permitted. The new handle attaches to the stale shared view, and [MarkIndexDisabled](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:254) returns without writing anything.
+
+   The state key remains absent, meaning READABLE on disk. The new index subspace is empty despite existing records, and the committed v3 header prevents automatic reconciliation on the next open. A cold reopen can therefore query an incomplete index.
+
+   **Required:** attach reconciliation handles to the authoritative context state before any state mutation, and ensure every mutation updates that authority. Add a real-FDB same-context drop/re-add regression with a distinct subspace, DISABLED policy, committed state inspection, and cold reopen.
+
+2. **P2 — Concurrent handles can publish shared state in the opposite order from their transaction mutations.**
+
+   [setIndexState](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:450) holds a **per-handle** `stateMu`. It writes the transaction at lines 455–460, then acquires the shared view’s mutex at line 473. Those two orders can diverge:
+
+   - Starting READABLE, handle A writes DISABLED and pauses before updating the shared view.
+   - Handle B still observes READABLE, writes WRITE_ONLY, publishes WRITE_ONLY, and returns.
+   - A publishes DISABLED and finishes.
+
+   The transaction now contains WRITE_ONLY, while every attached handle observes DISABLED. Subsequent maintenance can skip an index that requires WRITE_ONLY maintenance; another `MarkIndexDisabled` can incorrectly return “unchanged.” Explicit read conflicts cannot reconcile inconsistent state inside the same transaction.
+
+   The context expressly supports concurrent goroutines. This is a logical ordering defect protected from detection by ordinary memory-race instrumentation.
+
+   **Required:** serialize the transaction mutation and shared-state publication across handles using common synchronization and consistent lock ordering. Add a deterministic interleaving test comparing the raw transaction state with both handles’ operational decisions after both transitions finish.
+
+The previous NAK findings are **addressed for their reported cases**:
+
+- **Lazy initialization:** operational state reads now perform full, error-propagating initialization; the cache-stamp, malformed-header and persisted-lock regressions are covered. Finding 1 concerns the separate reconciliation path.
+- **Operational gates:** executor value/aggregate/vector routes, function selection, bulk deletion, direct vector APIs, online indexer and SPFresh now use error-capable state checks. Snapshot data isolation and stricter query READABLE/filter restrictions remain intact. Their shared authority still has the defects above.
+- **Retirement metadata:** deferred work selects the highest successfully opened metadata version; an older handle cannot restore a canceled relationship.
+- **Multi-type TEXT:** validation now visits all covered descriptors, with positive and numeric/repeated/missing-body Java comparison cases.
+- **Published cache entries:** the inherited writes to already-published `shared` flags are removed; the concurrent warmed-cache regression addresses that race.
+- **Deletion acceptance:** actual versioned saves in formats 5 and 14, unknown header fields, and creation/cacheability races in both commit orders complete the previously missing cases.
+
+All five WS-B sections remain assessed. I found no additional blocker in sliding replay/delegate behavior, ignored-option/union identity handling, or rank-valued bounds and their snapshot-preload/serializable-lookup separation. Header-aware deletion and deferred-write cleanup remain coherent in the inspected paths. Retirement’s metadata selection and deletion cancellation are correct, but integrated lifecycle acceptance is blocked by shared-state coherence.
+
+The approved raw, nullable-array, scalar and sorting extensions, sliding size-one correction, and intentional cancellation of Java’s retirement-after-delete resurrection should remain. Queue/state4/format15 stay disabled; WS-C–K are outside this verdict.
+
+The retained evidence supports **93/93 uncached targets**, **14/14 instrumented race targets**, recordlayer **3399/3400**, conformance **1391/1510**, executor coverage, and four compiled mutation kills. I reconciled the evidence hashes and frozen source population; the final booking adds no production/build/test-source changes beyond verified source tree `c7f9e5f9f14340d7452abc65ac8eb701493ca3ea`. These populations do not cover the two failing compositions above.
+
+Performance is substantially improved: fresh sequential samples show orders **144.129/144.355 → 146.944/147.171 seconds**, approximately **+1.95%**, and customers **6.442/6.498 → 6.835/6.815 seconds**, approximately **+5.48%**. All four runs retain 24 matching RUN/PASS cases, identical row counts and zero retries. I do **not** treat this measured residual as a separate performance blocker. Two sequential samples, with differing background load, establish neither parity nor a complete causal explanation.
+
+Published HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`. No edits, tests/builds, Git mutations, GitHub requests, delegation or publication actions were performed.

@@ -1,0 +1,68 @@
+**NAK.** Tree `9aee2d3d3c3347375454d8cc44f91af4e486f291`; `ws-f-design.md` SHA256 `15bcea3dd51a6440219b3233a3e8a02cce29054b2c15131e44cb1e146f09116d`, 1954 lines, both recomputed from the blob. Read-only: I ran no tests or probes and edited nothing.
+
+**Checked and holds**
+- **Evidence binding:** the 11 instrument blobs are identical in the run tree `9de3649b` and the gate tree. Outside the audit documents, the two trees differ only by the fromless probe fix plus comment-only edits in three files. The three test-file SHA256s match the evidence.
+- **Mutation logs:** I read m3, m7, m10, m11 and m13 (5 of 13). Each shows marker count 1, exit 3, the claimed red, and a restore.
+- **Counts:** the §2.8 grep reproduces (119 lines in 36 files; the added crossing spellings 11 in 9), and so does `getWinnerForOrdering` (14 call sites in 10 files).
+- **Java:** crossings verify exactly one final (`Reference.java:208-211`); `OptimizeGroup` picks sequentially (`CascadesPlanner.java:650-663`); the IN rule matches a select (`InComparisonToExplodeRule.java:130-131`).
+- **Go:** the stale memoizer comment is real (`expression_partition.go:211-217`).
+
+**WS-E's second crossing:** v4 states it (:347-379) and decides it: a crossing with no final is a checked error, `AdvanceStagePreservingMembers` is deleted when the prune becomes the default, and both queries are named census members. WS-E already orders its simplification rule after that flip (`ws-e-design.md:2616-2620`). **H3 shows the invariant as written also catches Go's own PLANNING mints**, so it does not close as stated.
+
+## High
+
+**H1. Eight SAME-PATH rows can never pass (SOURCE).**
+- The reducer turns the target's NOT_DISTINCT_FROM into `≡` (`ws_f_access_path_test.go:134-135`).
+- Go's EXPLAIN prints every equality range as `=` (`index_scan.go:444-451`), and Go classifies NOT_DISTINCT_FROM as an equality range (`comparison_range.go:272`). `wsfGoCmpKinds` has no `≡` arm (:232-248).
+- Affected: seven W9 rows owned by F-1, plus `w10_enum_not_distinct_explain` (target pins at `ws_f_probe_conformance_test.go:1429, 1555, 1557, 1559, 1562, 1566, 1571, 1572`).
+- F-1 cannot close without an EXPLAIN change that §5 never plans. No verdict-arm case exercises Go's side of this.
+- **Fix:** pick one of the two (Go prints NOT_DISTINCT_FROM, with the golden churn classified at F-1; or the reducer folds `≡` into `=`, with a stated reason) and pin it with a verdict-arm case.
+
+**H2. The oracle refutes the in-join fetch cause (§4.3 item 3, :1257-1270).**
+- **MEASURED:** in `w8_iup_no_order`, call 6, partition 0 holds `COVERING(I1 [EQUALS q#]) | FETCH` beside `ISCAN(I1 [EQUALS q#])`. So the target's data access does emit the covering-plus-fetch form. The design says it does not ("covering emission", owned by F-6).
+- **SOURCE:** the target's SQL IN list is a comparand (`InComparandSource.java:112-113`), and the push-through-fetch rule is registered only for the values and parameter in-joins (`PlanningRuleSet.java:151-152`). Go explodes a `ConstantValue` (`rule_in_to_explode.go:224-228`), classifies it as a values source (`rule_implement_in_join.go:575-577`), and so pushes the fetch (`rule_push_in_join_through_fetch.go:45`).
+- The `w8_rl_*` rows use a values source and do push (`INJOIN{COVERING} | FETCH`), which fits.
+- "None of the nine root members" at the last pass proves nothing, because `OptimizeGroup` prunes on every pass.
+- **Consequence:** F-6 cannot move `w8_in_no_order_explain`, and :1270's claim for the DESC row inherits the error. Re-derive the cause and the owner (the IN-source classification).
+
+**H3. The every-crossing invariant catches Go's PLANNING mints (SOURCE).**
+- Java's restricted reference takes its source's stage (`Reference.java:591`), so a reference minted in PLANNING never crosses.
+- Go mints `MemoizeFinalExpressionsFromOther` references at `StageCanonical`. `unified_tasks.go:87-92` documents that such mid-PLANNING mints do cross.
+- F-7b (the partition memoized whole) and F-8 (per-partition yields) create multi-member references of exactly this kind. Once the check is live, each fails as a lost plan.
+- The F-5 census comes before both steps, so it cannot see this. The design never mentions the mint stage.
+- **Fix:** port the stage inheritance together with D7's explored mark (they are the same Java line), and add a test with a PLANNING mint holding more than one final.
+
+## Medium
+
+**M1. SAME-RL's size check compares inputs, not plans.**
+- Both sides print the configured size (`wsf_record_layer_probe.java:104`, `ws_f_record_layer_go_test.go:201`). An in-union carrying size 0, the fallback §4.3 item 6 deletes, still compares SAME. m13 only proves the comparator reads the field.
+- **Fix:** render the plan's own size and add a relational in-union row.
+- Separately, `w8_rl_default_in2_no_sort` compares ids in cursor order ([1 2 5 3] against [1 2 3 5]), although §0.1 says open-order rows are compared sorted.
+
+**M2. The `pastRecordTypeHorizon` carrier is unspecified (:1172).**
+- `RichOrdering` has no per-part record to hold a mark (`rich_ordering.go:17-29`).
+- A plan's `PropRichOrdering` comes from a hint or is recomputed from the plan (`plan_properties.go:402-409`), not from `ComputeMatchedOrderingParts`.
+- The design must say where the plan stores the mark, whether the mark takes part in ordering equality (it is the §4.3 item 3 partition key), and how it merges through set-operation orderings.
+
+**M3. Some SAME-PATH rows are hash-decided or have no mechanism.**
+- For the same query shape the target picks two different plans: `FLATMAP{EXPLODE | FILTER}` over T5 (`w8_tie_in_order_by_id_explain`) and `SCAN | FILTER` over T1. §4.3 gives a mechanism only for `SCAN | FILTER`.
+- `w6_left_join_indexed_explain`'s outer I1-versus-I2 choice is the same hash tie as `w8_no_predicate`, which is asserted at class level, yet this row is SAME-PATH.
+- **Fix:** measure these with ROOT-PAIRS across name sets, or accept them as SAME-CLASS.
+
+**M4. The compound owner "WS-E section 4 and F-7b" is ambiguous (:1362, :1904).**
+- WS-E lands with or after F-7 (`ws-e-design.md:857-861`). The nested in-unions evade F-7b's product count, so the 5×5 rows fail if F-7b is read as their owner.
+- §13's close rule ("only entries owned outside WS-F") is ambiguous for such entries and is not coded.
+- **Fix:** split each row to one owner and assert the close rule in code.
+
+**M5. The new record-core error arm has an unstated position (§7, :1529).**
+- `errors.As` walks the whole chain, so a marked default placed before the FDB-code arms (`connection.go:1049-1056`) would take a wrapped FDB error's SQLSTATE.
+- Name the target's full arm list, not Go's four: timeout, context-inactive, semantic and unable-to-plan are also specific arms (`ExceptionUtil.java:63-81`).
+
+## Low
+
+- **L1.** §4.3 item 9's "REWRITING already folds a filter into a select" (:1348) is not measured. The F-5 census comes before F-7b's matcher change, so name F-7b's explain-diff as the measurement.
+- **L2.** The reducer drops scan direction (Go's `) REVERSE`, `binding ASC`, Java's `SORTED DESC`).
+  - A Java leaf prefix swallows the rest of its stage: a `COVERING(… ∩ …)` stage reduces to its first leg. That contradicts the promise that an unknown operator is rendered `?NAME`, and the no-`?` check exempts `RL` lines.
+- **L3.** The 49 target-only DIFF rows can never be owned by a phase, and the census's comparator-caused arm has no link in code to `w6_rewriting_*`.
+
+**Not covered:** W7 D1–D9, W6 D1–D6 against `CascadesPlanner`, W12, §9.1, and 8 of the 13 mutation logs.

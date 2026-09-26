@@ -1,0 +1,60 @@
+**NAK** on tree `256afd191053c0f4f5e47b88bdeddbe19597f8fc`, design SHA256 `cef3fdcccc59af0eed7d40447b2ff88e974b95cff431b4c738f757af057cd707` (974 lines). I re-hashed the design; the working-tree copy is identical. Java is at `fdacd162a`.
+
+This was a read-only review. I ran no tests. "MEASURED" below means the fact is in the committed evidence or the `/var/tmp` logs; everything else is SOURCE (read from code).
+
+**Checked and correct:**
+- Five of the sha256 values in `evidence-v3.txt` match this tree's files (oracle, class pins, generator, `sql_plan_steps.java`, `index.go`).
+- The tally reconciles: 470 runs = 161 equal / 4 companion / 180 metadata-diverge / 4 index-diverge / 20 both-reject / 101 Java-accepts-Go-rejects.
+- Option-order differences: 0 lines in v3, 18 lines in v2.
+- All 13 accepted literal shapes are `md-bytes-equal`.
+- `validateVersion` matches Java `:154`, and `nullableLong` matches `Key.java:579-582`.
+- The F2b measurement tells per-operand truncation apart: -1.5 → -2 and 2.9999 → 4.
+- The widening arm resets inside a nested non-arithmetic `Function`. Its only caller is `fdb_store_catalog.go:349`.
+- No production code writes `Options[...]` directly any more; everything goes through `SetOption`.
+- The `uint32` signed arms are correct.
+- The F11 block requires the migration to copy template bytes verbatim.
+
+### HIGH
+
+1. **The landed upgrade path for templates already stored with `long_value` literals cannot be reached today (SOURCE).**
+   - Every relational template seeds its metadata version from the template version (`builder.go:487`, default 1 at `:112`). `addIndexCommon` then bumps the version once per index (`metadata.go:586-588`). No relational path sets index versions: 0 hits in `core/{metadata,fleet,ddl}` and `embedded/ddl.go` (control: 6 hits for `SetVersion|AddIndex` in `builder.go`).
+   - So a v2 rebuilt from the same DDL moves every index's added version up by one. `RepairSchema` then refuses at `metadata_evolution_validator.go:511`, before the root comparison at `:563-568`, which is where the widening arm lives.
+   - `TestFDB_SchemaRebindAcceptsLiteralCarrierWidening` builds the index proto by hand with versions 1/1 and the same metadata version in v1, v2 and v3. It never opens a store, so it cannot see this. The existing gate test starts v1 with no index (`evolSetup`).
+   - Design §3.2 (:387-393), CHANGELOG ("Rebinding such a tenant … is accepted") and the TODO F11 block all state a path that only exists once the §4 carry rule lands. This is v2 Torvalds HIGH-1 still unanswered.
+   - Needed: pin it through a DDL-built v2 via `fleet.SaveTemplate` + `RepairSchema`, with rows written before and read after. Otherwise mark the path as gated on §4 everywhere it is claimed.
+
+2. **Landing F1 opens the drop-and-recreate hazard, but its guard is scheduled for step 2 (SOURCE).**
+   - `DROP SCHEMA TEMPLATE` followed by `CREATE` gives version 1 again with the same metadata version. The store's version check therefore does nothing.
+   - Every schema still bound to t@1 then reads its old truncated `nested_then_top` entries under the corrected root. The target serves reads from those entries, and Go's own maintenance leaves the old entries orphaned.
+   - `validateSchemaRebind` also returns nil when the bound version is gone (`fdb_store_catalog.go:311`), so the rebind is not validated either.
+   - §2 (:262-264) itself names F1 as a cause, yet §8 justifies the timing with "the new numbering". Land the guard and Java's gone-version refusal with 3.1, before merge.
+
+3. **The carry rule's "EQUIVALENT definition" (§4 :681-682) is wrong in both readings.**
+   - Neither validator compares index predicates: 0 lines in Java `MetaDataEvolutionValidator.java` or in Go's validator (controls: 13 and 9 lines of `LastModifiedVersion`).
+   - Reading 1, root-only equivalence: a changed `WHERE` keeps the index's versions, and the sparse index silently goes stale.
+   - Reading 2, whole-proto equivalence: every multi-option index stored before F12 (different order only) counts as changed. It would then be rebuilt, or left DISABLED above 200 records.
+   - Needed: define equivalence as type, record types, root (up to the carrier), predicate, the option map (order-insensitive, minus ignored options) and PK positions. Add FDB cases for a predicate-only change and an order-only change.
+
+### MEDIUM
+
+4. **Re-adding a dropped index name has no decided outcome.** A carried FormerIndex keeps subspace key = name. Go's builder then refuses the new index as reusing a former index's subspace key (`metadata.go:1161-1167`, matching Java `MetaDataValidator.java:103-112`). Go's evolution validator also lacks Java's "former index key used for new index" arm (Java `:487-491`; Go `:975-1007`). Decide the policy, port the missing arm, and add the case to §4's test list.
+
+5. **The fresh-template guard misses a single deleted version (SOURCE).**
+   - `DeleteTemplateVersion` (`fdb_template_catalog.go:232`, reachable through the public API) combined with `NextTemplateVersion` = latest + 1 (`migrate.go:31`) can re-issue a deleted version number. Its schemas are then silently rebound.
+   - Key the guard on the `(name, version)` prefix of `TEMPLATES_VALUE_INDEX` for the version being created; this also covers the fresh case.
+   - The concurrent-CREATE-SCHEMA conflict comes from the template-row read (`DoesSchemaTemplateExistAtVersion`), not from the guard's range read. Name the key.
+
+6. **The class ratchet cannot see inside the 180 metadata-diverge runs** (52% of the 349 both-accept runs).
+   - The statement "records,record_types = F3" is an inference. `WSJ-DETAIL` is not in the committed evidence, and the raw log's details also mix in anonymous-type diffs.
+   - Pin Go's canonical digest per run, or assert canonical equality after applying F3's permutation. The same applies to the 4 index-diverge runs: a new root difference would not change their class.
+
+### LOW
+
+7. **The F2b spec does not compare raw bytes.** It compares Java-decoded tuple strings; the `Hex` it fetches is never compared. Design §0 (:133-137), §3.2 (:365) and README item 10 all say "raw entries". Only DOUBLE operands are compared across engines; FLOAT columns are not.
+8. **Two cross-type literal cases have no shape:** a FLOAT literal over a DOUBLE column (`c + 1.5f`) and a LONG literal over an INTEGER column (`i + 3000000000`).
+9. **F13 also runs when stored metadata is loaded** (`RecordMetaDataFromProto`, `metadata.go:341-357`). Go-stored metadata with an unsigned field, or with an unannotated `UnionDescriptor`, will no longer open. CHANGELOG should say so and give the remedies.
+10. **Stale text:**
+    - `fdb_store_catalog.go:334` still says a v2 with fewer indexes "legitimately" carries a lower metadata version; the landed downgrade check now refuses that.
+    - README item 6 still says "11 reads over each", including the driver-stored copy, which gets one read.
+    - The TODO F11 block omits §4's carry dependency.
+11. **The evidence hashes miss files.** `evidence-v3` covers none of the validator, catalog or F13 files (`metadata_evolution_validator.go`, `fdb_store_catalog.go`, `key_expression.go`, `index_predicate.go`, `metadata.go`, `metadata_validate_records.go`). The `just test` 94/94 ran on a tree that is not the candidate (`pkg/simfdb` differed).

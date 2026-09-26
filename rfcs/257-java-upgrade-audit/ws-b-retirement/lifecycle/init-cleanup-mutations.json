@@ -1,0 +1,58 @@
+[
+  {
+    "name": "fresh-policy",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "init-cleanup-mutant-fresh-policy.log"
+  },
+  {
+    "name": "reconcile-enumeration",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "init-cleanup-mutant-reconcile-enumeration.log"
+  },
+  {
+    "name": "immediate-retirement",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "init-cleanup-mutant-immediate-retirement.log"
+  },
+  {
+    "name": "eligible-original",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "init-cleanup-mutant-eligible-original.log"
+  },
+  {
+    "name": "lock-preservation",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "init-cleanup-mutant-lock-preservation.log"
+  },
+  {
+    "name": "queue-cleanup",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "init-cleanup-mutant-queue-cleanup.log"
+  },
+  {
+    "name": "version-cleanup",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "init-cleanup-mutant-version-cleanup.log"
+  },
+  {
+    "name": "former-state-name",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "init-cleanup-mutant-former-state-name.log"
+  }
+]

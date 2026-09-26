@@ -42,7 +42,7 @@ func TestFDB_TypedNumericLiterals(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE typedlit "+
 			"CREATE TABLE b (b1 INTEGER, b2 STRING, b3 BIGINT, PRIMARY KEY (b1))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_typedlit/s WITH TEMPLATE typedlit")
-	dsn := fmt.Sprintf("fdbsql:///testdb_typedlit?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_TYPEDLIT?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

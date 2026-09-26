@@ -1,0 +1,101 @@
+**NAK**
+
+- **Tree:** `3a934039479f337069d5b483269ecfaffc47817e` (a tree object).
+- **Design:** `ws-d-design.md`, SHA256 `87bfa1569cf9f133d14f6578f11063ae7dc293a7143449f21a72d84416d8355b`, 1791 lines. I recomputed both from the blob.
+- **Java:** `fdacd162`.
+- **Read:** all four v12 verdicts, the full v13 design and its diff from v12, RFC-094 §2, the README, evidence and logs, and the Go and Java sources cited below.
+- Nothing was run or edited.
+
+## P1-1: B is refuted by this tree's own evidence run (design 1394-1405, README items 29/30)
+
+- **What the design claims.** B = 1.96e7 comes from "the worst refit OBSERVED … over every run", 1.02e-7 s per n·d. README item 29 says the worst refit in the admitted corner "over every run" is 170.6 ms, with refit totals up to 0.91 s.
+- **What `rfc257-v13-1.log` measured:**
+
+  | Line | Shape | Measured | Per n·d |
+  |---|---|---|---|
+  | :2126 | n=2000, d=1250 | 437.6 ms refit | 1.75e-7 |
+  | :2134 | n=2000, d=980 (admitted) | 265.0 ms refit | 1.35e-7 |
+  | :2120 | n=1001, d=2048 | 918.0 ms refit total | — |
+
+- **What the design's own rule then gives.**
+  - B ≈ 2.0 / 1.75e-7 = 1.14e7. That is below both acceptance fixtures (W = 1.845e7 and 1.536e7) and below all of item 29's corner.
+  - Even at the new corner, 10 refits × 265 ms is about 2.65 s.
+- **Why the evidence never caught it.** Item 30 compares the two runs "timing lines excluded".
+- **Why it will recur.** This is the second round with the same failure. A maximum over unpinned wall-clock samples, taken with no load recorded, can only ever go up.
+- **Needed:**
+  - a measurement protocol that is reproducible: isolated runs, n ≥ 2, load average recorded, a stated quantile and margin;
+  - an evidence step that mechanically takes the maximum over every log's TIMING lines;
+  - or declare B a work bound read from W, give the time as an estimate, and own the 1007 consequence.
+
+## P1-2: The v13 chaos arms are still not true of the tree (design 1046-1063, 997-1000, 1093-1098)
+
+- **(a) An existing test the design says "holds" would fail.** `TestPagedDistinctUnderAmbiguousCommitsHoldsSteady` sets `FaultCommitUnknown` to 1.0 (distinct_scratch_retry_charge_test.go:130).
+  - Today the re-execution happens inside one `TransactCtx` call and is never faulted (fault.go:199-211).
+  - Under v13, each attempt is a new call and draws the fault again. Every attempt commits and returns 1021, and the page exhausts its attempts, so the test hits its `t.Fatalf` at :150.
+  - The merger fixture has the same problem: at rate 1.0 the session's admission and heartbeat `Run` transactions are faulted too.
+  - v13 dropped v12's "every attempt or the next k attempts" arming and replaced it with nothing.
+- **(b) "Run `fn`, do NOT commit" is false for bodies that commit themselves.**
+  - `runDDL` and `ensureCatalogInit` call `txn.Commit()` (ddl.go:862, :890). That reaches `rc.tx.Commit().Get()` and the post-commit hooks INSIDE `fn` (database.go:1334, :1350).
+  - An arm that returns 1020 after `fn` has run reports "not committed" for a DDL that already landed.
+  - So the DDL fixture ("40001 after one attempt under FaultConflict") passes vacuously.
+- **Needed:**
+  - inject at the handed transaction's `Commit` (the `readErrorTransaction` pattern);
+  - name the self-committing bodies in the census;
+  - assert the catalog is unchanged after the fixture;
+  - restore per-call or next-k arming.
+
+## P2
+
+1. **The landed SimFDB change strips error chains.**
+   - Once the limit bites, `SimDB.Transact` and `ReadTransact` return `tx.OnError(fe).Get()`, which is the bare `fdb.Error` (simfdb.go:183-227; txn.go:1440-1442).
+   - The pure-Go client returns the caller's `err`, wrappers intact (transaction.go:2503-2506).
+   - That branch was unreachable before v13. Under D-0, every retryable error on SimFDB loses its typed record-layer or `%w` wrappers.
+   - `retry_limit_test.go` only uses bare `fdb.Error{1020}` bodies, so it cannot see this.
+   - **Needed:** return `err`, and pin it with a wrapped error on both backends.
+2. **The hunt's EXHAUSTED class corrupts the oracle (966-977).**
+   - The hunt driver updates its model only when an op succeeds (hunt.go:256-300).
+   - SimFDB's 1021 can take the applied branch (simfdb.go:41-46).
+   - So an EXHAUSTED op whose last attempt was a 1021 that applied has committed its write, but the model does not have it. The next verify then reports a false violation, or masks a real one.
+   - **Needed:** reconcile from `LastCommitUnknownApplied` (simfdb.go:56-80), or end the run.
+   - The SQL DST harnesses (sqlhunt, sqlpage, metamorphic, golden) reach `attemptLoop` through connection.go:416 and ddl.go, and their classification is not re-derived.
+
+## P3
+
+1. **Line 881's "none of them retries" is false for the heartbeat cleanup.** Lines 925-926 route it through `attemptLoop`. What needs declaring is that its attempts bypass the transactor, and its MaxAttempts is unstated.
+2. **1200 and 1079.**
+   - One-attempt DDL now fails on a proxy change that libfdb_c waits out.
+   - "What the route drops" (899-905) omits 1079, which `onErrorRetryable` retries and `fdb.IsRetryable` excludes.
+   - Since C++ is the spec for the client, the long-term fix is the client waiting for proxies, not the record layer knowing a client-internal code.
+3. **The delay is not seamed under DST.** Lines 918-921 seam only the delay's randomness; the wait itself is wall-clock. Hunts that never slept now sleep up to 1 s per retry.
+4. **The context mark is inherited.** Child contexts inherit the mark (1046), so `runClientLoop` must override it. A marked context on the unbounded client loop turns the no-commit arm into a loop that never ends. It is unreachable today; pin it.
+5. **SPFresh "far inside ten attempts" (1026-1028) is a hypothesis.**
+   - `ExponentialDelay` floors `current`, not the draw (Java :62-72), so the ten attempts can span almost no time.
+   - The chunked split is not two transactions (spfresh_split.go:392-440).
+6. **Pages are not "side-effect free" (995).** Per `cascades_generator.go:2162-2171`, a page can write the store header and rebuild indexes inline. The retry is safe because it is idempotent, not because nothing is written.
+7. **The census command counts the wrong population.**
+   - `--untracked` (939) counts the working directory, not the reviewed tree. `git grep … 3a934039` reproduces 75/53 exactly; pin that command instead.
+   - v12's miss was the 8 SimFDB lines and one misattributed line, not untracked files. The v12 reviewers got 53 without `--untracked`.
+8. **TODO.md's EOF block** still claims "every attempt of every record-layer owner" goes through the transactor, which the design narrowed at 875-881.
+
+## Verified
+
+- **Census:** 75 and 53 lines, reproduced from the tree object; the classes sum to 14 + 34 + 4 + 1.
+- **SimFDB limit semantics:** the limit persists across OnError and is cleared by Reset. Nothing outside the clients sets a limit, so "no behaviour change today" holds.
+- **Autocommit DML** commits once in its own transaction (cascades_generator.go:1450-1466).
+- **Catalog bootstrap** is idempotent today (fdb_store_catalog.go:104-131).
+- **Java:** `RunRetriable` (:191-207), `ExponentialDelay`, `OnlineIndexer.java:435`.
+- **Heartbeat pair:** pinned in both engines and both orders (`hb-v13-*`, 1 of 1 each).
+- **Superseded phrasing:** the grep finds only the withdrawal notes; the positive control (`attemptLoop`) hits.
+- **Oracle:** 29 of 29 in both runs; source hashes match the tree; `just test` executed 40 of 94 targets, 94 pass.
+- **Arithmetic:** 19,594,575; 1.96e7; 3.07e7; 8.19e7 versus 2.56e6.
+
+## Measured vs hypothesis
+
+- **Measured:**
+  - the heartbeat pair in both engines;
+  - the corner balance rows (pinned);
+  - JVM timings, which are unpinned and contradict B.
+- **Checked against source only:** the Java runner and delay, the SQL routes, and SimFDB's limit, which is pinned by a unit test.
+- **Still hypothesis:**
+  - every other D-0 mechanism, including the chaos arms, the hunt classification and SPFresh foreground liveness;
+  - Go's peel rate, and therefore B.

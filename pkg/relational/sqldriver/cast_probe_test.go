@@ -24,7 +24,7 @@ func TestFDB_CastProbe(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE casttbl "+
 			"CREATE TABLE t (id BIGINT, n BIGINT, d DOUBLE, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_cast/s WITH TEMPLATE casttbl")
-	dsn := fmt.Sprintf("fdbsql:///testdb_cast?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_CAST?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

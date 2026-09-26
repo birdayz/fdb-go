@@ -1,0 +1,92 @@
+**NAK.** I reviewed tree `9aee2d3d3c3347375454d8cc44f91af4e486f291`. I recomputed the design hash with `git show …:ws-c-design.md | sha256sum`: `e80e84bfbcfacbceeae1b6e73baa56249251ae1cd19f4a2d25b1b499fc85869c`, 1915 lines, which matches. The review was read-only. Findings come from reading the source unless marked **measured**.
+
+Every revision-9 finding is resolved except one Torvalds nit, which is only partly resolved. The NAK rests on three Low findings of the same kind that got v7–v9 NAKed: claims wider than the code.
+
+## Findings, most severe first
+
+**1. Low: "A Then is flat, as Java's is" is wider than the code.**
+- `key_expression.go:748-753` says "every Then Go writes has the flat shape Java writes". `CHANGELOG.md:331-335` says the same. Neither holds for Go's own `RecordTypeKeyExpression.Nest` (`key_expression.go:520-523`):
+  - Its `ToKeyExpression` writes `Then{RecordTypeKey, nested}` directly (`key_expression_proto.go:100-115`).
+  - `RecordTypeKey().Nest(Concat(a,b))` therefore writes `Then[RTK, Then[a,b]]`.
+  - `Concat(RecordTypeKey().Nest(x), y)` writes `Then[Then[RTK,x], y]`, because `Concat` flattens only `*CompositeKeyExpression`. That exact call is in `key_expression_fastpath_test.go:531`.
+  - Java never writes either shape. Go's own loader now flattens both, so a Go round trip changes the bytes and the Go type. This is not declared in DIVERGENCES.
+- The same comment says one-child composites are ones "which Build refuses as primary keys". Build refuses only `ColumnSize()==0` (`metadata.go:877`).
+  - So `Concat(Field("id"))` builds, and is written as a one-child Then.
+  - Java's reader refuses that (`ThenKeyExpression.java:83-85`), and so does Go's (`key_expression_proto.go:293-294`).
+  - The production DDL paths guard against a single child (`relational/core/metadata/builder.go:1151,1330`), so this is reachable only through the library API.
+- **Fix:** flatten `Nest` through `Concat` (or declare it), and refuse one-child composites at Build.
+- **Adjacent defect, pre-existing, from source:** `keyExpressionEquals` treats every `RecordTypeKeyExpression` as equal and ignores `nested` (`key_expression.go:1174-1176`).
+  - When both metadatas are built in memory, the primary-key comparison in `comparePrimaryKeys` (`metadata_evolution_validator.go:429`) cannot see `Nest(Field("a"))` change to `Nest(Field("b"))`.
+  - Against metadata loaded from the store (a Composite), it always reports "primary key changed".
+
+**2. Low: the upgrade list misses meta-data that will no longer load.**
+- `RecordMetaDataFromProto` ends in `Build()` (`metadata_proto.go:374`), and Build now runs `validatePermutedIndex` (`metadata.go:1370-1376`).
+- So meta-data an earlier Go stored with a PERMUTED_MIN/MAX index whose `permutedSize` is absent, negative, larger than the grouping count, or unparsable now fails to load. The store is unusable until the option is corrected.
+- `CHANGELOG.md:346` lists only "not a plain decimal", and as a rebuild. "-1" and a too-large "3" are plain decimals that `Atoi` accepted.
+- v9's `rankNLevels` finding got the "refused until corrected" wording. This case needs it too.
+
+**3. Low: key validation "its texts and its classes" does not hold for proto map fields.**
+- `key_expression_validate.go:78` uses `fd.IsList()`, which is false for a map field. Java's `isRepeated()` is true for one (`FieldKeyExpression.java:152,158`).
+- For a map field with `None`:
+  - Java throws the KeyExpression class: "m is repeated with FanType.None".
+  - Go throws the Query class: "m is a nested message, but accessed as a scalar".
+- `Nest("m", FanOut, …)` validates in Java and is refused by Go.
+- This predates revision 10 and matches Go's evaluator, which also uses `IsList` (`key_expression.go:174` and others). It is undeclared, and 7.10 says `TestKeyValidationTextsAreJavas` "pins every validation text and class".
+
+**4. Nits.**
+- **Program order, `AddMultiTypeIndex`.** With two or more names it runs `addIndexCommon` before resolving the names (`metadata.go:662-672`). A duplicate index name plus an unknown type in one call yields "Index X already defined". Java's caller resolves each `getRecordType` first (`RecordMetaDataBuilder.java:986-992`, `:1177-1178`), so Java throws "Unknown record type Y". Separately, `GetRecordType` panics with Go's text (`:742`).
+- **Unresolved v9 nit (Torvalds).** "message descriptor presence changed" (`metadata_evolution_validator.go:1193`) is a third evolution message with no Java prefix. 7.10 (design `:1730-1731`) says there are two.
+- **Error-type comment.** `errors.go:294-296` calls `Query.InvalidExpressionException` a RecordCoreException. It extends `IllegalStateException` (`Query.java:273`).
+- **Flake sweep scope.** 7.10 says no other UNION probe pins an order the target does not define. The same file's `"union"` probe (`fromless_select_java_probe_test.go:63`, pinned `[[1],[2]]` at `:169`, no ORDER BY) does.
+  - It is deterministic from source, not a flake: both legs are in memory, and `UnorderedUnionCursor` scans completed states in list order (`:76-87`).
+  - The sentence should name it and give that reason.
+- **Evidence gaps.**
+  - The 10-of-10 `--runs_per_test` run has no log in `wsc-v10/`.
+  - n7's red set omits `TestKeyValidationTextsAreJavas`, which the log shows red.
+  - n17's red is a nil-transaction panic that aborts the whole binary (`java_parse_test.go:339`).
+- **Stale comment.** `metadata.go:911-913` still says "Validate primary key and index expressions", but the primary-key validation has moved.
+
+## Revision-9 findings, checked
+
+- **AddIndex / RemoveIndex:** resolved.
+  - `AddIndex` with an unknown type now records the index first.
+  - `RemoveIndex` of an unknown name now records "No index named X defined" in program order.
+- **Build:** resolved.
+  - The record-type checks run in Java's order: missing primary key, union oneof, no record types, then per type validate, duplicates, type-key collision (later type named first), since version, all before any index.
+  - The texts match `MetaDataValidator.java:59-101` and `RecordMetaDataBuilder.java:1480-1491`, and the errors are unwrapped as `Index.validate` throws them.
+  - The Go-only refusals are declared.
+- **Permuted size:** resolved.
+  - `PermutedSizeOption` is `getPermutedSize`, and the validator follows the factory's order (`:66-80`).
+  - The query side reads absent as 0 and parses with `Integer.parseInt`, as `AggregateIndexMatchCandidate:185-188` does.
+  - All four readers are converted; `git grep` finds no other parser.
+- **Flat Then (Concat, `thenFromProto`):** correct for the Then shapes they handle, per `ThenKeyExpression.java:77-86`, `:264-271`; finding 1 is the exception.
+- **RANDOM:** resolved. A failed randomness read is returned, and every "re-toss" comment is gone (0 hits, with a positive control).
+- **R-tree:**
+  - Root split and root promotion now mutate the fetched struct, which keeps `orig` and `origHeight`.
+  - `deleteNode` is called only inside `rtree_storage.go`.
+  - Both oracles build the node slot index key without the production encoder, matching `NodeSlotIndexAdapter:194-205`.
+- **Documents:**
+  - The upgrade list is complete except finding 2.
+  - The CHANGELOG headings are scoped.
+  - The m84/c2 rows are relabelled, and n21/c7 are added.
+  - BY_SLOT is declared, the doc comment is restored, and the stray phrase is placed.
+
+## Measured
+
+- **Source bytes.** 13 gate blobs hash equal to `ev2/src.sha`, and the same values appear in `ev/src.sha`. So the mutation tree's sources equal the gate tree's.
+- **Evidence runs.**
+  - `ev2`: ok 1833, notok 0. Conformance 1523/1523 uncached, oracle 61/61, `just test` 94 of 94 passing (7 executed).
+  - `ev`: `just test` 93/94, failing with the pinned interleaving `[[1,9],[2,3],[1,9],[2,3]]` versus the actual `[[1,9],[1,9],[2,3],[2,3]]`.
+- **Mutations.** n1–n21 and c6–c8 each show marker count 1, bazel exit 3 and "restored", and `run.out` reads ALL-DONE. The line numbers match the gate blobs.
+- **Baselines.** Unit 3715/3716; all 11 named plain tests PASS; `TestBuildRecordTypeChecksAreJavasInNameOrder` shows 9 subtests. Plain targets 2/2; JVM 46/46.
+- **JVM oracle on Java-written trees.** The steps "Java wrote 120" (48 nodes, 47 entries) pass the independent decode. c6 and c8 redden at `:264` on "Go deleted the even ids".
+- **Gate tree.** `gate10`: tree before and after the run is `9aee2d3d`; build and test both exit 0.
+- **Evidence tree to gate tree.** The Go diff from `512ae248` is comment-only.
+- **Not verified:** the `good/` copies (`hash-object` was denied); their equality rests on the source-hash match above.
+
+## Graefe lens
+
+- **Aligned with Java:** the builder's program order (except the multi-type ordering in the nits), Build's validation order, the permuted count on both the query and maintainer sides, and Then as its constructor makes it.
+- **Phase boundaries hold:** options are read at Build, when the maintainer is made, and at candidate creation.
+- **Undeclared Go-only behaviour remains:** the Then writer on `RecordTypeKeyExpression.Nest` and its equality, and map-field repeatedness.
+- **Unaffected:** the preserved boundaries and the session files.

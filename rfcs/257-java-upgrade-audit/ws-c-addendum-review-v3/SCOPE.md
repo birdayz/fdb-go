@@ -1,0 +1,3 @@
+# WS-C addendum (section 7) gate v3
+
+TREE `72fe965617516b0b9d9ebef01d28a19e5ef21007`; ws-c-design.md SHA256 `a1993f1579acdaa5e59f9adc75c7ac7a751dc7a030dcbdc4ffccbf4b0f25524f` (787 lines). Revision 3 (section 7.3): one indexer identity per OnlineIndexer, OnlineIndexer.LastBuildOutcome replacing frl's pre-read (frl and the fleet use it), RecordCoreStorageError at the two Go-only state checks, the undefined source refused before stamping, Java's builder refusal messages, declared divergences in DIVERGENCES.md, CHANGELOG corrections, new specs and mutations. The v2 gate (ws-c-addendum-review-v2/) reviewed tree e7f2e4d540c5ae85d402160d2ef21fba7a0ee221; diff the two trees. Evidence ran on tree 2b0de4e86c101b28316f4d35b152845d1904a696. Lenses: Graefe, Torvalds, storage.

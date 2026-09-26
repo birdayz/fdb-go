@@ -1,0 +1,80 @@
+**NAK** on the RFC-257 WS-D design v12.
+
+- **Tree:** `5a28ecbc718291b8bad5510867c375acfcdff246` (a tree object).
+- **Design:** `ws-d-design.md`, SHA256 `1bd420cd5fedce7309fc766d40408a04f9ddcc7476d078d03b9ec6658993b018`, 1644 lines. I recomputed both from the blob and they match.
+- **Java:** `fdacd162`, read from `.git/HEAD`.
+- **Read:** all four v11 verdicts; the full v12 design and its diff from v11; RFC-094's new paragraph; the oracle README, evidence and spec; the logs; the Go and Java sources cited below.
+- **Paper PDFs:** they cannot be rendered here (no pdftoppm), so paper points go through RFC-094's mapping and the spfresh-reviewer skill.
+- Nothing was run or edited.
+
+## P1: The SPFresh exemption misses SPFresh's foreground writes
+
+- **RFC-094's new paragraph is wrong about the write path (094:107-120).** It says `spfreshRun` covers "the write path". It does not.
+  - All 39 `spfreshRun` call sites are background lifecycles or the build.
+  - `Update` and `UpdateWhileWriteOnly` run inside the caller's transaction (spfresh_index_maintainer.go:212-266, 287+).
+- **So D-0 changes exactly the foreground retries RFC-094 relies on:**
+  - the conflict table's "straggler insert aborts … re-routes" and "later one retries against truth" (094:101-104);
+  - the generation fence's "refresh and retry" (094:177-181);
+  - the build straggler's "retry routes live" (094:454-455; spfresh_index_maintainer.go:272-285);
+  - the deliberate synthetic `fdb.Error{Code: 1020}` raised "inside the caller's save transaction so the enclosing transaction re-runs" (spfresh_write.go:410-419).
+- **What changes for each owner:**
+  - **SQL autocommit:** now one attempt. An INSERT into an SPFRESH index (reachable through ddl.go:451-478) gets 40001 on its first fence abort. During a SEAL→SPLIT window it gets 40001 on every attempt, and in the lease-recovery case until the lease is taken over (094:536).
+  - **`Run`:** gives up after 10 attempts, about 3.3 s of worst-case ported delay (ExponentialDelay.java:62-72).
+- **Safety holds; liveness changes.** Aborts are atomic, but foreground availability during LIRE split/flip is now bounded or user-visible. In SPFresh §3 (LIRE, as mapped by RFC-094 §2/§6), background rebalancing does not reject foreground updates, and RFC-094 reproduces that by re-running the losing foreground transaction. Neither RFC declares this change.
+- **The census excludes the population that changes.** D-0 (5) lists "SPFresh-free scenarios" (design 965). Yet `spfresh_concurrency_test.go:145-160` and `chaos_vector_spfresh_test.go:273-283` drive foreground writers through `db.Run` against rebalancers and fail on any writer error.
+- **Needed:**
+  - Correct 094:107-120.
+  - Decide and declare the foreground policy for each owner, including the synthetic 1020.
+  - Fixtures: a SQL autocommit and a `Run` insert during a SEAL→SPLIT window, and during a stalled SEAL.
+  - Add the SPFresh foreground concurrency, chaos and SQL e2e tests to the `--runs_per_test` census with attempt histograms.
+  - Run the 094:533-545 interleavings and the SPFresh stress before and after D-0.
+
+## P2
+
+1. **The evidence runs contradict the admission cost claim.** The design says the worst refit rate is 8.0e-8 s per n·d, "worst measured anywhere" (19-20, 1260-1265, README item 26). That figure comes only from the capture run (`wsd-corner-1.log:41`, 200.9 ms). The two v12 evidence runs show:
+   - 254.8 ms at n=2000, d=1250 (`rfc257-v12-2.log:2088`), which is **1.02e-7**;
+   - 285.4 ms at d=1536 (`rfc257-v12-1.log:2902`), which is 9.3e-8.
+
+   So a peel at the bound takes about 2.55 s, not 2.0 s. By the design's own calibration rule (1272-1276), B must already drop to about 1.96e7 on JVM data, and "it can only go down if Go is slower" is wrong. Also: refit totals reach 0.91 s (v12-1:2952), not 0.85 s, and the spread-shape target fit reaches 0.67 s (v12-1:2912). The fixtures stay admitted (W = 1.54e7 and 1.85e7).
+2. **The route ignores the third backend, SimFDB.**
+   - Its `SetRetryLimit` is a no-op (simfdb/options.go:42), and `SimDB.Transact` retries up to 100 times itself (simfdb.go:183-205).
+   - Under D-0, "ONE attempt" becomes up to 101 attempts in every sim test (sim_sql_fault_test.go, sim_sql_page_commit_retry_test.go, chaos/sim_verify_test.go, …) and in the DST hunt.
+   - The design says "both client backends" (950-953).
+   - The census's 46 lines leave out the 8 FDBDatabase receivers in pkg/simfdb/hunt (hunt.go:258-332, continuation.go:368-512).
+   - **Needed:** SimFDB honours the retry limit as the pure-Go OnError does; classify those callers; run the attempt-count fixture on SimFDB.
+
+## P3
+
+1. **`RunRead` cannot be driven by `FaultRetryable` as written.** `ChaosTransactor.ReadTransactCtx` injects nothing (fault.go:216-229), yet the fixture at 970-972 includes RunRead.
+2. **`FaultRetryable` never reaches a retry on the exempt route.** The chaos transactor wraps the client loop from outside, so `FaultRetryable` on `spfreshRun` traffic surfaces with zero retries. State that it is never part of a random profile applied to SPFresh scenarios.
+3. **The `FaultCommitUnknown` fixture (973-975) doesn't test the new loop's 1021 path.** The existing arm commits and re-executes inside one `TransactCtx` call (fault.go:199-211), so the loop sees one successful attempt and the fixture passes on today's code. `FaultRetryable` never runs fn, so no hooks register. A fault that runs fn and then fails the commit without committing is needed to pin "hooks and versionstamp belong to the committing attempt".
+4. **Census attribution is off.**
+   - `indexing_heartbeat_admin.go:174, 192, 211` are unnamed.
+   - The merger's call is `indexing_merger.go:27`. `online_indexer.go` has exactly 9 calls without it (design 908).
+5. **Superseded copies were not grepped.**
+   - TODO.md:6995 still prescribes "INSTEAD OF delegating straight to `d.transactor.Transact`".
+   - The EOF block (TODO.md:14683-14693) still says "ONE attempt loop shared with RunWithRetry", with no per-owner policy and no SPFresh exemption.
+
+## Verified
+
+- **SPFresh code and `pkg/rabitq` are untouched since `f0cb295`** (the diff is empty; the positive control shows the heartbeat files).
+- **Inherited behaviour holds:** SPFresh inherits the queue refusal (index_maintainer_queue.go:12) and the no-op `MergeIndex` (index_deferred_maintenance.go:248). The peel stays nearest-centroid and is separate from LIRE.
+- **The background exemption is sound** for the rebalancer, build and sweeper.
+- **Arithmetic checks out:** 9·1001·2775 = 24,999,975; 10·2000·1250 = 2.5e7; the I=16 fixture's W = 3.07e7; replica volumes 0.75 MB and 1.7 MB; single precision 10.0 MB and 11.1 MB.
+- **The corner pins match the evidence** (evidence-run.txt:358-363), with balance 0.376 to 0.495.
+- **ExponentialDelay** is quoted correctly.
+- **Pure-Go OnError honours the retry limit** (transaction.go:2504).
+- **The heartbeat collapse matches Java's HashMap semantics.**
+
+## Measured vs hypothesis
+
+- **Measured:**
+  - item 26's pinned rows (JVM);
+  - item 27 in both engines, with the mutation;
+  - JVM timings, which exceed the claimed rate.
+- **Checked against source only:** D-0's route on pure-Go and libfdb_c; SPFresh's foreground dependence on caller retries.
+- **Still hypothesis:**
+  - all of D-0, including the SimFDB behaviour and the SPFresh foreground liveness under each owner;
+  - Go's peel cost;
+  - the reconcile's cost;
+  - item 21 and the REMAINING list.

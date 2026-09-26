@@ -46,7 +46,7 @@ func TestFDB_JoinMerge_OuterColumn_NotDropped(t *testing.T) {
 			"CREATE INDEX c_by_a ON c (c_aid)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_jm_outer/s WITH TEMPLATE jm_outer_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_jm_outer?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_JM_OUTER?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

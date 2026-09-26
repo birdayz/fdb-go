@@ -553,6 +553,7 @@ type Response struct {
 	Error              string          `json:"error,omitempty"`
 	ExceptionClass     string          `json:"exceptionClass,omitempty"`
 	ExceptionFullClass string          `json:"exceptionFullClass,omitempty"`
+	SQLState           string          `json:"sqlState,omitempty"`
 }
 
 // JavaError represents a structured error from the Java conformance server.
@@ -561,6 +562,7 @@ type JavaError struct {
 	Message            string
 	ExceptionClass     string // Simple class name, e.g. "RecordAlreadyExistsException"
 	ExceptionFullClass string // Fully qualified, e.g. "com.apple.foundationdb.record.provider.foundationdb.RecordAlreadyExistsException"
+	SQLState           string // SQLSTATE when the server extracted one, else ""
 }
 
 func (e *JavaError) Error() string {
@@ -613,6 +615,7 @@ func (j *JavaInvoker) Invoke(ctx context.Context, stepName string, params map[st
 				Message:            resp.Error,
 				ExceptionClass:     resp.ExceptionClass,
 				ExceptionFullClass: resp.ExceptionFullClass,
+				SQLState:           resp.SQLState,
 			}
 		}
 		return nil, fmt.Errorf("java error: %s", resp.Error)
@@ -651,4 +654,12 @@ func (j *JavaInvoker) InvokeAs(ctx context.Context, stepName string, params map[
 	}
 
 	return nil
+}
+
+// javaBaseURL extracts the conformance server URL from a JavaInvoker
+// for plandiff's HTTP engine. JavaInvoker.baseURL is package-private;
+// since this test file is in the same conformance_test package, the
+// access is direct.
+func javaBaseURL(j *JavaInvoker) string {
+	return j.baseURL
 }

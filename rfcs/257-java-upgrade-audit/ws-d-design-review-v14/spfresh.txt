@@ -1,0 +1,65 @@
+**NAK.** This is a complete design review. I ran nothing and changed nothing.
+
+- **Tree:** `8d721bd13b28b59be91f59a35b71acbd15d7131c`.
+- **Design:** SHA256 `c56a731bf5a10bd24c324123a8f410162ce6c9d8a20d4afdb213f7ca9eb4bcd4`, 1871 lines, recomputed from the blob.
+- **Java:** `fdacd162`.
+- **Read:** all four v13 verdicts, the full v14 design and its diff from v13, RFC-094 §2 and §6, oracle README items 26–31, the rates script and its output, the SimFDB change and its pin, and the Go and Java sources cited below.
+- **Paper PDFs:** `pdftoppm` isn't installed, so the paper points below rest on RFC-094's own citations.
+
+## P1: The split-window exemption can't work on the default backend
+
+- **The claim.** Design 924-934 says the pure-Go client "returns the caller's error" at the limit (client/transaction.go:2503-2504). It treats keeping the error chain as "a D-0 fixture".
+- **What the tree does.** The client does return the error it is handed, but that error has already been stripped:
+  - The `fdb` wrapper's `TransactCtx` runs the body's error through `unconvertError` (fdb/database.go:384-401; transaction.go:552-561). Any chain that carries an `fdb.Error` becomes a bare `&wire.FDBError{Code}`.
+  - On the way out, `convertError` (transaction.go:537-546) returns a bare `fdb.Error`.
+  - `ReadTransactCtx` does the same.
+- **Consequence.** The attempt loop receives a plain 1020, so `SPFreshSplitWindowError` is counted as an attempt. A stalled seal or a chunked drain then fails after 10 attempts on the production backend. That is v13's behaviour, which v14 says it withdrew (design 977-992; RFC-094:123-139).
+- **The backends now disagree.** libfdb_c keeps the chain (libfdbc/backend.go:241-251). SimFDB now keeps it too; its comment cites parity with pure-Go (simfdb.go:208-213), but pure-Go actually strips it. So DST would see typed errors that production never delivers.
+- **Needed:** make the pure-Go wrapper keep the chain, as libfdb_c's runLoop does. Land it under the client gate as a second D-0 prerequisite beside 1200, with the chain fixture on all three backends for Run and RunRead.
+
+## P2
+
+1. **Uncounted retries have no stated wait, and the clocks don't match.**
+   - The design says the retry is "bounded only by the caller's context" (981-984) but never says whether it waits.
+   - SPFresh leases run on wall-clock time (spfresh_util.go:18) and last 60 s (spfresh_build.go:848).
+   - Under a simulated environment, D-0's delay advances the SimClock and never sleeps (997-1000).
+   - So on SimFDB a stalled-seal writer spins full transactions for at least 60 s of wall time. "As today" is also false there: today SimFDB caps the loop at 100 retries (simfdb.go:14).
+   - **Needed:** say that the uncounted retry takes the ported delay, and whether it advances `current`. Say how the SimFDB stalled-seal fixture triggers the lease takeover (a lease override plus a takeover triggered from the attempt observer).
+2. **The capacity hand-off text is stale against this tree (1219-1243).**
+   - The design names `refreshFollowupHeartbeats` at `:321` and says a negative-count disable ends the session with `IndexingValidationError` (`:337`).
+   - At `8d721bd` the function is at `:443`. A disabled target now returns `RecordCoreStorageError "Unexpected index state(s)"` (`:458-472`, commented "Not an IndexingValidationError"). WS-C changed this; at v13 it did raise `IndexingValidationError`.
+   - The cross-references at `:362`, `:385` and `:297` are stale too.
+   - A GuardiANN fixture written from this text would assert the wrong error class.
+
+## P3
+
+1. **The page text contradicts itself.**
+   - 1081 says a page writes; 1117 says each page's first attempt "commits and returns 1021"; 1131 says "a page is read-only, so 1020 and 1021 are not page outcomes".
+   - SQL pages go through Run/TransactCtx (connection.go:418), not ReadTransactCtx. Only the `RunRead` callers reach ReadTransactCtx (statistics.go:799, cascades_generator.go:2646, hunt.go:332).
+2. **The throttled iterator line conflicts with sections 1 and 6.** 903-907 says it "retries ANY error except a closed runner … kept". Lines 268-270 and 1627-1628 make capability errors and `ClusterUnsplittableError` terminal for that same iterator. Today its code excludes only `RunnerClosedError` (throttled_retrying_iterator.go:84-92).
+3. **`BodyCommittedError` fires too late.** It trips only after the in-body commit has landed and its hooks have run (database.go:1334 and :1350), so the caller gets an error for a durable commit. Refuse inside `CommitWithVersionstamp` on a route-owned context, before `rc.tx.Commit()`.
+4. **The route has no interface to travel on.** It is now "a call argument", but `CtxTransactor.TransactCtx(ctx, fn)` has no route or call-id parameter (database.go:353-358). Name the new interface, and say what happens to custom transactors passed to `NewFDBDatabaseWithTransactor`.
+5. **The rates population doesn't cover every bound run.**
+   - README item 31 says the script is re-run over every new log. `wsdf14/oracle.log` (10 TIMING lines, load recorded) was left out, as were `ev13/oracle-{1,2}.log` and `wsc10-pre/oracle.log`.
+   - Their worst rates are about 9.8e-8 (245.4 ms at n=2000, d=1250), so the published min and max still hold; the counts and the median do not.
+   - Regenerate the output, or scope the "every run bound to this design" wording.
+6. **The superseded window claim survives in two places.**
+   - Code comment at spfresh_write.go:414: "The split commits within its two-tx window". A grep for the design's phrasing misses it.
+   - Line 991 says the divergence is "recorded in … DIVERGENCES.md". There is no such entry: `git grep -c -E 'SPFreshSplitWindowError|split-window'` on DIVERGENCES.md matches nothing, while the control `checkAnyOngoingOnlineIndexBuilds` gives 2.
+7. **Paper framing (RFC-094:138).** By RFC-094's own mapping, LIRE separates foreground updates from background rebalancing, which argues against a foreground write waiting on a split at all. The all-SEALED wait (spfresh_write.go:410-419) is an existing Go departure that D-0 keeps; it is not a LIRE property. Word it as "kept as today".
+8. **Census scope.** The header says the census was counted "on the reviewed tree", but section 5 pins it at v13. At `8d721bd` the command again gives 75 lines. Three line numbers moved: indexing_mutual.go:240→237, fleet.go:237→238, connection.go:416→418.
+
+## Verified
+
+- **Nothing SPFresh/LIRE changed since v13.** No `spfresh*`, `pkg/rabitq` or `pkg/fdbgo` file changed (the positive control shows 68 other recordlayer files did). The queue refusal holds: SPFresh embeds `standardIndexMaintainer` (spfresh_index_maintainer.go:31; index_maintainer_queue.go:12). `MergeIndex` is still a no-op (index_deferred_maintenance.go:246-248).
+- **`spfreshRun` has 39 non-test call lines, all in background or build paths**, none nested in `Update`.
+- **The SimFDB pin is sound for SimFDB**: `declinedRetryError` keeps the body's error only when OnError re-raised the same code.
+- **Java** `ExponentialDelay.java:62-72` matches the design's description.
+- **Admission arithmetic:** 10·2000·980 = 1.96e7 exactly; 981 → 1.962e7; 9·1001·2175 = 19,594,575; 2176 → 19,603,584. The estimates 0.81, 1.41 and 3.43 s follow from the stated rates. The rates script covers all 58 TIMING lines of the seven logs it names (116 timings).
+- **Balance in the admitted corner:** smaller child 0.286–0.480 of n, reproduced in wsdf14. The peel stays nearest-centroid and separate from LIRE. GuardiANN still runs only in transactions the merger supplies.
+
+## Measured vs hypothesis
+
+- **Measured:** the corner pins; JVM timings (estimates only); SimFDB's chain-keeping at the limit.
+- **Checked against source only:** that pure-Go strips the chain (P1), the libfdb_c and SimFDB paths, and the hand-off error class.
+- **Still hypothesis:** every D-0 mechanism; SPFresh foreground real-conflict counts under split churn (the pending fill histograms); the client's wait for commit proxies; Go's peel rate and its 1007 margin at W = B.

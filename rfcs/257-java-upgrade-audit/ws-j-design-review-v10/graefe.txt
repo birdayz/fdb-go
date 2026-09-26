@@ -1,0 +1,72 @@
+**NAK** — tree `c789832131f2e6206ee2ebad9b92a3ae463d6f6d`, `ws-j-design.md` SHA256 `bcccfc9e77a3c12ab751b2b09ffdf9ca76233e3b39058da0fd2d55e275bfe8b6`, 2356 lines (both recomputed from the tree). Java is at `fdacd162a`. Read-only review: I ran nothing.
+
+## What holds
+- **Restore race closed.** The limit-1 read of the bindings and the read of t's template rows answer v9's "only shrinks the set" race.
+- **Guard in both catalogs, and the carried route.** The in-memory catalog now gets the guard. `LoadTemplateProto` is named, and `deserializeTemplate`'s whole path runs on carried bytes.
+- **(t) and the WSJLANE shape.** (t) is correctly scoped. The two-fault WSJLANE precedence holds in Go today: `parseAsSelectIndexDefinition` calls `b.Build()` (`ddl.go:545`) before it generates any key.
+- **Superseded text.** Grepping the design, DIVERGENCES, TODO, CHANGELOG, the umbrella RFC and all `.go` files for v9's stale phrases leaves only two hits, both historical quotes (`:566`, `:1987`). Positive control: `RestoreTemplateVersion` in the same files gives 4/2/8.
+- **Index subspace key.** It matches `Index.java:80-97` and `:221-225`. Presence survives both unmarshallers (`record_metadata_vtproto.pb.go:4225-4228`). Go's writers only ever pack one item.
+
+## HIGH
+
+**1. The edited-file route's step (i) can't run for the migration's main arms** (`:1995-2015`, `:2054`).
+- **Direction toward the pre-upgrade choice.** Step (i) loads the stored bytes "with the union NAMED … the pre-upgrade choice or the target's; the `SetRecordsWithUnionName` path". But `setRecords` refuses any name other than the one `fetchUnionDescriptor` finds (`metadata.go:367-376`; the design itself says so at `:1694`). So loading (d1)/(d2) under UnionDescriptor, which is the migration's default direction, is refused.
+- **(a) and (b).** Their stored sides fail "Union descriptor is required".
+- **(c).** Its stored side fails the unsigned check (`metadata.go:380`). Its output would also fail Java's validator, which admits only int32→int64 and sint32→sint64 (`MetaDataEvolutionValidator.java:331-339`). That is not covered by the route's "ONE relaxation" (`:2007`).
+- **Contradiction.** Yet `:2015` says "the migration's own outputs take the same route", while `:2054` still says the route "reads the stored proto RAW (the refusing loader cannot)". That is two specs.
+- **Framing.** A current-rules load would also compare today's type-based framing with itself. The pre-upgrade loop framed by name first (`_X`).
+- **Fix:**
+  - Specify an internal stored-side builder: union by name, bypassing `fetchUnionDescriptor`, with record types from `legacyUnionRecordTypes`.
+  - List, arm by arm, which checks are suspended and which validator relaxations apply (same-width signed retype, the usage option, removal of RecordTypeUnion). Alternatively, validate migration outputs by re-applying the migration and keep the validator for edited files only.
+  - Keep one spec.
+  - Test (d1) toward UnionDescriptor, (a) and (c) through the route.
+
+## MEDIUM
+
+**2. The holding-field relaxation still admits a change in wire meaning** (`:2009-2011`; v9 Graefe #2 is not answered).
+- "Retyped to another message type" admits retyping an envelope's `repeated UnionDescriptor` to RecordTypeUnion.
+- In (d) their field numbers differ by definition. Every stored batch still parses, and is misread silently.
+- **Fix:** allow removal, or a retype to a message the validator's message comparison accepts against UnionDescriptor (a renamed copy). Add a refusal test for exactly this retype.
+
+**3. `CreateTemplateFromProto` is an unguarded public write path** (`:1425`).
+- It is a public `api.SchemaTemplateCatalog` method taking arbitrary bytes. Classification, the lane check and validation live in the save action (`:1436-1439`).
+- Yet `:2241`, (t) (`:2332`) and DIVERGENCES say `CreateTemplateFromProto` runs the lane check "over the indexes a save defines", which it cannot tell apart from bytes alone.
+- The write-path table (`:894-901`) has no library-caller → `CreateTemplateFromProto` row. Such a caller stores unvalidated, unchecked bytes.
+- **Fix:** make it internal to the save action, or pass it the stored latest and run all three checks inside it. Add the row and a test.
+
+## LOW
+
+4. **FormerIndex subspace key fails open.**
+   - `formerIndexFromProto` (`metadata_proto.go:910-925`) keeps the fallback. Java decodes via `decodeSubspaceKey`, which also refuses an absent key, and refuses null with "FormerIndex initialized with null subspace key" (`FormerIndex.java:51-68`).
+   - Go loads what Java refuses. `removeFormerIndexData` (`index_state.go:861-885`) then clears `(…, nil)`.
+   - This is v9 storage #7's sibling. Fix it with a JVM pin.
+5. **Precedence within one index.** Java builds options (the duplicate refusal) before the root and the subspace key (`Index.java:198-221`); Go reads options last. A duplicate option beside a malformed key gives different errors in the two engines. Pin it or reorder.
+6. **`RecordCoreArgumentError` rendering** (`rank_scan.go:29-36`).
+   - `rank_scan.go:93` now prints a spurious `subspace_key=<nil>`, and the scan errors print `index=""`.
+   - So "renders only its set fields" is false.
+7. **In-memory catalog gaps.**
+   - Its `DeleteTemplateVersion` (`template_catalog.go:158`) is not refused while a held schema names (t, v). Under the new guard, that freezes t, and there is no in-memory restore.
+   - Its `CreateTemplate` skips (d) (`:1906`) while `CreateTemplateFromProto` refuses it. So a (d) template is created, then every new version is refused.
+8. **SQL remedy on hand-built templates.** `LegacyUnionTemplateError` marks SQLTemplate unconditionally (`builder.go:751-760`). A hand-built (d1) template, made through the exported `NewRecordLayerSchemaTemplateWithVersion` (`schema_template.go:52`), is told to rename a table. Mark only the SQL family, or name both remedies.
+9. **Restore wording and a stale citation.**
+   - `:578-580` says every write to the bound set conflicts. But a limit-1 read's conflict range ends just past the first returned key, so dropping a later binding does not conflict. That is harmless, but scope the claim and have test (iii) drop the first binding.
+   - `:325` cites evidence-v9 for the tally v10 re-measured.
+
+## v9 findings
+- **Resolved:**
+  - Graefe 1, 3, 5, 6, 7;
+  - storage 2 to 6, and 7 for Index only;
+  - Torvalds 2 to 6.
+- **Not resolved:**
+  - the edited-file route, in all three verdicts (findings 1 and 2 above);
+  - Graefe 4 in part (finding 3).
+
+## Measured vs source-only
+- **Measured:**
+  - WS-J "Ran 31 of 56" on both passes, with the WSJIXK/WSJLANE/WSJTT lines;
+  - the JVM spec, 35 of 1560;
+  - wm10-1 to wm10-4: marker count 1, red, restored; the baseline's 6 subtests pass;
+  - the `just test` tree `6cef982` differs from the candidate only in docs and review files. Bazel executed 41 of 94 tests; the other 53, `catalog_test` included, passed from cache.
+- **Source-only:**
+  - findings 1 to 9;
+  - everything unbuilt in steps 1 to 3.

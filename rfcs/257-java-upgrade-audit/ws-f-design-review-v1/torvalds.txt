@@ -1,0 +1,73 @@
+**NAK** on the WS-F design v1 and the oracle it rests on.
+
+- Tree: `5e7c222e40d0557ef65133a8d7da0d88472b7ac4`
+- Design: `ws-f-design.md` sha256 `6151d587…dc25de`, 828 lines (re-hashed from the tree)
+- Spec sha256 `de215ddd…` matches the tree.
+
+This was a read-only review. I ran no tests or probes.
+
+**What checks out:**
+- 36 probes and 36 pins, one-to-one.
+- The oracle file is in the Bazel target's `srcs`, and wsf-4 and wsf-5 each ran 1 of 24 specs and passed. The earlier wsf-3 run went red on the missing pins and wsf-mut2 went red on the mutation.
+- Java line references match 4.14.2.0: `PlannerConfiguration:158-168`, `RecordQueryInUnionPlan:151-154`, `RangeConstraints:726-735/751-753/789-799`, `SubscriptValue`, `ExpressionVisitor:796-801`, `CascadesPlanner:1233-1248, 1371-1391`.
+- The eight `ResolveQualifiedTableName` call sites exist.
+- The W9 stale-claim grep terms find all three stale sites.
+
+## High severity
+
+1. **The W8 configuration never reaches the rule-level cost comparators.** `ExpressionRuleCall.CostModel` (`expression_rule_call.go:102-110`) and `implementation_rule.go:110-118` replace the context with `costModelDiagnosticsOnlyContext` (`planning_cost_model.go:1886-1895`, which returns nil with no diagnostics) whenever `Stats == nil`.
+   - Stats is nil in SQL whenever the metadata has no record-count key (`cascades_generator.go:2628-2639`), and in every `plannerOptionsFrom(nil)` test harness.
+   - Rule-internal winner selection (`getWinnerForOrdering` in ImplementFilter, Projection, TypeFilter, NestedLoopJoin, InUnion, Sort and others) would therefore still see PREFER_SCAN and a size of 0.
+   - Section 4.1 item 8 ("With NONE this changes nothing") is actually the half of 4.2 that does the work, and it changes plan shapes once PREFER_INDEX and 24 are in the configuration. Move it into 4.2, count its blast radius, and say whether metadata stays stripped.
+
+2. **"The rung itself does not change" is an unmeasured claim.** The PREFER_INDEX arm of `primaryVsIndexRankOf` has never run on any SQL path.
+   - Under index preference Go puts "everything else at tier 0" (DIVERGENCES.md:620-640). It therefore decides pairs Java abstains on, such as a lone primary scan versus a covering or multi-access plan (Java's guard is `PlanningCostModel.java:465-468`).
+   - Needed: unit pins that drive every tier against Java's verdicts, and the transitivity sweeps re-run under PREFER_INDEX.
+   - The golden classification (target-equal, target-closer, regression; sections 2.6 and 4.2) needs a Java plan for each moved query. None is named for Go-only goldens, so the classification cannot be checked as written.
+
+3. **The IN-list size check is sequenced before its root cause is known, and it touches preserved boundaries.**
+   - 4.2 ports the "too many IN values" check inside F-7 before 4.3 knows why Java does not choose the InUnion. Go picks InUnion today (evidence line 43), so an IN list longer than 24 with `ORDER BY id` would fail in Go while Java returns rows.
+   - Under the record-layer default size of 0, every Go record-layer API InUnion would fail at execution. The design treats this as a test fix-up, but it hits production callers too, and it rests on a SOURCE reading never measured on the JVM.
+   - `isSupportedExplodeValue` accepts correlated (`QuantifiedObjectValue`) collections (`rule_implement_in_join.go:627`). Whether the preserved Go-only IN-subquery extension can plan as an InUnion, and so hit a cap of 24, has to be measured.
+   - 4.3 defers a root cause the existing oracle harness can settle now.
+
+4. **W6 steps 8–11 have no stated relation to the plannability gate.**
+   - D9–D12 turn merge and pushdown into pruned-input rules on finals and remove SelectMerge from the default rule list. That presupposes the physical prune, which stays test-only until the census is empty. The design says neither that 8–11 wait nor how two merge/pushdown mechanisms would coexist.
+   - The census is taken with only D7/D8 enabled, not with the D7–D12 configuration that ships.
+   - It has no arm for Go-extension shapes (the materialized outer-join NLJ, IN-subquery, LIMIT). "Find the Java PLANNING mechanism" has no answer there, so an empty census may be unreachable.
+   - "Changes shape" lumps target-closer moves together with lost plans.
+   - The structural cause named at DIVERGENCES.md:282 ("per-phase rule-set parity") goes undecided: D12 keeps Go's REWRITING-placed normalization rules and says nothing about their PLANNING placement.
+
+5. **The W9 `isCompileTime` port leaves out `PromoteValue`.** Java has seven `RangeMatchableValue` implementers (grep `implements.*RangeMatchableValue`); section 5 item 3 lists six. Every SQL literal comparand is `promote(@cN AS …)`, as every oracle explain shows, so the port would defer all of them.
+   - It is latent today: `git grep 'IsCompileTime()'` finds only the definitions, with no production consumer. WS-J F10 (filtered indexes) is the consumer that will make it bite.
+   - The design should also say this item is not visible through SQL, so it can only be pinned by unit tests.
+
+## Medium severity
+
+6. **The oracle cannot deliver the section 13 acceptance.**
+   - Go answers are printed, never asserted, so a Go runner that fails completely still passes.
+   - `render` formats Java errors as `ERROR state Class "msg"` and Go errors as `ERROR state "msg"`, so no error row can ever match literally.
+   - `wsjTrim` cuts messages at 160 bytes, slicing bytes rather than characters. The non-array target message is literally `com.google.common.base.VerifyException`.
+   - Fix: pin the current Go answers now, list the declared differences explicitly, and compare with a normalized comparator.
+
+7. **The stale-claim sweeps miss copies.** The case-sensitive W6 terms in 2.8 miss DIVERGENCES.md:282, :1076, :1588 and :1594, `unified_tasks.go:80,84`, `planning_cost_model.go:400,561` and TODO.md:4627-4630. Verify with `git grep -i -E 'universal (forced |boundary )?prune|prune-to-1|DESIGNATED final|virtual prune'`. Also:
+   - `planner_options.go:53-56` claims the configuration is otherwise Java's defaults "exactly as Java's buildRecordQueryPlannerConfiguration leaves everything…". That is false and is in no sweep.
+   - 4.2 omits `setIndexFetchMethod` (Java :162).
+   - 4.2 misstates when `disableRewritingRules` applies: it is the DISABLE_PLANNER_REWRITING option (:164-166), not "every rule disabled".
+
+8. **The dotted-name decision covers fewer sites than it claims.** It enumerates only the `ResolveQualifiedTableName` callers, but names joined by `FullIdToName` are also compared as table references elsewhere:
+   - `subquery_walk.go:28` compares `strings.ToUpper(FullIdToName(...))`, which is both ambiguous about dots and case-folds quoted names.
+   - `plan_visitor.go:128-151`, `logical_predicate.go:1466/1618` and `select_parser.go:2221`.
+
+9. **W7 contradicts itself in two places.**
+   - D4 keeps the Go-only `__ROW_VERSION` covering, while D8 emits covering only under the target's gate. Java has no builder field for a version, and `isOfPushableTypesOrConstant` refuses it. Say how the extension passes the gate.
+   - D7 builds a never-emitted plan with registrations in about eight places, while section 10 says "no framework without a consumer". Pick one principle.
+
+## Low severity
+
+10. Section 9.3 reads as a present-tense fact, but no Explain renderer calls `DecodeOnceIfReversible`; the only non-test callers are `proto_names.go`, `protoname.go` and `fleet/statistics.go`. The field display (`_.x$y`) is measured but assigned to no step, and Go's `[1 preds]` explain cannot show it.
+11. **Evidence binding is loose.**
+    - The spec hash appears in no run log (grepping the wsf logs for sha256 or `de215ddd` finds nothing).
+    - The render helpers live in `ws_j_index_fidelity_conformance_test.go`, outside the hashed file.
+    - In 4.2, the zero count is taken over `pkg/relational` but its positive control is run on `pkg/recordlayer`.
+    - The probe context has no timeout.

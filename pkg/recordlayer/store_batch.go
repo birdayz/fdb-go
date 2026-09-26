@@ -57,6 +57,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 	// --- Phase 1: Extract PKs and issue all Get futures (non-blocking) ---
 	type pendingRecord struct {
 		record     proto.Message
+		write      proto.Message // what the save serializes (asJavaForSave)
 		recordType *RecordType
 		primaryKey tuple.Tuple
 		unsplitKey fdb.Key // pre-computed, reused for save
@@ -74,11 +75,15 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		recordTypeName := string(record.ProtoReflect().Descriptor().Name())
 		recordType := store.metaData.GetRecordType(recordTypeName)
 		if recordType == nil {
-			return nil, &MetaDataError{Message: fmt.Sprintf("unknown record type: %s", recordTypeName)}
+			return nil, unknownRecordTypeError(recordTypeName)
 		}
 		if recordType.PrimaryKey == nil {
 			return nil, &MetaDataError{Message: fmt.Sprintf("no primary key for: %s", recordTypeName)}
 		}
+		// As saveRecordInternal: the record as every later load reads it, and
+		// the message the save serializes.
+		var write proto.Message
+		record, write = recordType.asJavaForSave(record)
 
 		// Record type supplied so a record-type-prefixed primary key can read
 		// its leading component off the type, as Java's saveTypedRecord does.
@@ -110,6 +115,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 
 		pending[i] = pendingRecord{
 			record:     record,
+			write:      write,
 			recordType: recordType,
 			primaryKey: primaryKey,
 			unsplitKey: unsplitKey,
@@ -145,6 +151,8 @@ func (store *FDBRecordStore) SaveRecordBatch(
 	// Also validate update lock once (same for all records).
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
+	store.indexStateView.maintenance.RLock()
+	defer store.indexStateView.maintenance.RUnlock()
 	if err := store.validateRecordUpdateAllowedLocked(); err != nil {
 		return nil, err
 	}
@@ -183,7 +191,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		oldRecordExists := oldValue != nil
 
 		// Serialize
-		data, err := serializeUnion(p.record, p.recordType)
+		data, err := serializeUnionOver(p.write, p.recordType, store.storedRecordInner(oldValue, p.recordType))
 		if err != nil {
 			return nil, &RecordSerializationError{Cause: err}
 		}
@@ -201,7 +209,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			if oldRecordExists {
 				oldsizeInfoPtr = &oldsizeInfo
 			}
-			if err := saveWithSplit(tx, recordsSubspace, p.primaryKey, data,
+			if err := saveWithSplit(store.context, tx, recordsSubspace, p.primaryKey, data,
 				splitEnabled, false, oldsizeInfoPtr, &newsizeInfo); err != nil {
 				return nil, fmt.Errorf("record %d: save: %w", i, err)
 			}
@@ -227,12 +235,14 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			PrimaryKey: p.primaryKey,
 			RecordType: p.recordType,
 			Record:     p.record,
-			Version:    savedVersion,
-			Store:      store,
-			KeyCount:   newsizeInfo.KeyCount,
-			KeySize:    newsizeInfo.KeySize,
-			ValueSize:  newsizeInfo.ValueSize,
-			Split:      newsizeInfo.IsSplit,
+			// Its map entries are indexed in the order it was written in.
+			wire:      newRecordWire(p.recordType, unionInner(data, p.recordType.unionFieldNumber)),
+			Version:   savedVersion,
+			Store:     store,
+			KeyCount:  newsizeInfo.KeyCount,
+			KeySize:   newsizeInfo.KeySize,
+			ValueSize: newsizeInfo.ValueSize,
+			Split:     newsizeInfo.IsSplit,
 		}
 		if !oldRecordExists {
 			if countFDBKey != nil {
@@ -249,7 +259,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		// Secondary indexes
 		var oldRecord *FDBStoredRecord[proto.Message]
 		if oldRecordExists {
-			oldRT, oldMsg, err := store.deserializeAndDiscover(oldValue)
+			oldRT, oldMsg, oldWire, err := store.deserializeAndDiscover(oldValue)
 			if err != nil {
 				return nil, fmt.Errorf("record %d: deserialize old record: %w", i, err)
 			}
@@ -257,6 +267,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 				PrimaryKey: p.primaryKey,
 				RecordType: oldRT,
 				Record:     oldMsg,
+				wire:       oldWire,
 				Store:      store,
 			}
 			if store.metaData.IsStoreRecordVersions() && store.hasVersionIndex() {

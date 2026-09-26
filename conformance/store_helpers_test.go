@@ -355,3 +355,19 @@ func (c *ConformanceStore) RunRaw(ctx context.Context, fn func(st *recordlayer.F
 func stringPtr(s string) *string {
 	return &s
 }
+
+func bytesToInts(b []byte) []int {
+	ints := make([]int, len(b))
+	for i, v := range b {
+		ints[i] = int(v)
+	}
+	return ints
+}
+
+func intsToBytes(ints []int) []byte {
+	b := make([]byte, len(ints))
+	for i, v := range ints {
+		b[i] = byte(v)
+	}
+	return b
+}

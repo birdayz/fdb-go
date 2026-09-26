@@ -1,0 +1,86 @@
+**NAK.** Tree `c789832131f2e6206ee2ebad9b92a3ae463d6f6d`. The design hash `bcccfc9e77a3c12ab751b2b09ffdf9ca76233e3b39058da0fd2d55e275bfe8b6` (2356 lines) matches the tree. Java is at `fdacd162a`. This was a read-only review: I ran no tests, probes or mutations.
+
+## What holds
+- **Evidence matches the bytes.** In the candidate tree, the hashes of 13 of the 14 spot-check files in evidence-v10 match, the design included. The fourteenth is `ws-c-design.md`, which belongs to WS-C. The `just test` tree `6cef9824` differs from the candidate only in docs and the WS-E review logs.
+- **The runs are real.** `wsj-ev1.log` shows "Ran 31 of 56", all passing, with six WSJIX options lines. Each of wm10-1 to wm10-4 shows the marker count at 1, the named target failing, and the file restored. The baseline ran 6 subtests, all passing.
+- **Java claims checked:**
+  - `Index.java:80-97` and `:221-226` say what the fix says.
+  - Go registers every table before any index (`ddl.go:184-206`), so the two-fault shape's precedence claim holds.
+  - `unionCorrespondence` exists (`metadata_evolution_validator.go:313`).
+- **The restore's in-transaction reads are sound.** A binding of a version that is not stored can only disappear. So a non-empty limit-1 read means no fresh `t` came before it, and the read of t's template rows catches every later write of t.
+- **v9 findings:** each has an answer. Findings 1–4 below are holes in those answers or in their neighbours.
+
+## MEDIUM
+
+**1. The edited-file route's step (i) cannot load the stored side in its default direction (design :1995-2012).**
+- (i) loads the stored bytes "with the union NAMED … and the (d) refusal suspended". In the landed code:
+  - `setRecords` refuses any named union that is not the one `fetchUnionDescriptor` finds (`metadata.go:372-375`).
+  - Naming a union already skips (d) (`unionNamed`, `metadata.go:385`, `:1509`).
+- In shape (d), the pre-upgrade choice (UnionDescriptor) is by definition not the union found.
+  - Toward UnionDescriptor, which is the migration's default direction, step (i) fails with "union message UnionDescriptor is not the union descriptor…" before (d) is ever reached.
+  - Toward the target's union there is nothing left to suspend.
+- The current loader also makes record types from each union field's message type, not by the pre-upgrade loop's `_X`-by-name rule. So "as the pre-upgrade build read them" overclaims.
+- The design's own test, "each edited toward each union", would fail as specified.
+- **Fix:**
+  - Specify an internal loader that takes the named union as THE union.
+  - State which of `validateRecords`' union checks run, and against which union.
+  - Take the stored side's record types from `legacyUnionRecordTypes` in that direction.
+
+**2. The subspace-key conversion skipped FormerIndex.**
+- `formerIndexFromProto` (`metadata_proto.go:914-925`) still reads an absent, empty, multi-item or null key as `nil`.
+- Java decodes every FormerIndex through the same `decodeSubspaceKey`. It refuses an absent key too (`FormerIndex.java:64-68`), and a null one with "FormerIndex initialized with null subspace key" (`:51-57`).
+- Consequences in Go:
+  - It loads metadata Java refuses.
+  - `removeFormerIndexData` (`index_state.go:860-885`) then clears `(IndexKey, nil)`, never the dropped index's data.
+  - `formerIndexToProto` (`:893-899`) writes `nil` as absent, which Java refuses.
+  - The carry rule's re-added-name refusal compares against `nil`.
+- **Fix:** read it as Java does, with Java's classes and messages; add unit and JVM shapes and a CHANGELOG line.
+
+**3. The relaxation's reach is unbounded (:2007-2012).**
+- A holding field retyped to another message is admitted. Nothing refuses it when an index root or predicate, the primary key or the record count key reads through that field.
+- The validator then sees an unchanged root, so the old entries are served under the new decoding.
+- Section 4c's own (c) arm makes such an index CHANGED and refuses a primary key over the field. Apply the same rule here, and test it.
+
+**4. A direct `CreateTemplateFromProto` call has no defined lane-check scope.**
+- `CreateTemplateFromProto` is public on `api.SchemaTemplateCatalog`.
+- "The indexes the save DEFINES" is computed in `Execute` (:1435-1437). A library caller's direct call is therefore either unchecked, contradicting (t) at :2333, or has to re-derive the classes, which duplicates `carryNumbering`'s comparison.
+- The "Every template write path" table (:890-897) has no row for it.
+- :1404 ("loses nothing another engine wrote") is false for a library caller's bytes: the in-memory catalog stores the loaded object and drops unknown fields.
+- **Fix:** either `CreateTemplateFromProto` classifies against its own stored latest with the one shared comparison, or it becomes internal. Add the row.
+
+## LOW
+
+**5. `RecordCoreArgumentError.Error` (`rank_scan.go:29-37`).**
+- The middle branch keys on `IndexName`, so the unrelated `rank_scan.go:93` error now renders `subspace_key=<nil>`.
+- `SubspaceKey` is never set (`metadata_proto.go:842`), so "renders only its set fields" is false.
+- No test pins any of its three arms.
+
+**6. Test binding.**
+- The JVM spec "refuses each malformed stored subspace key" checks Go's `.Message` only. Its switch accepts either class for any shape.
+- Go loads the in-memory `[]byte{}` and never unmarshals `encoded`. So the nil-versus-empty presence that the fix turns on is never driven through Go's decoder: vtproto's `[]byte{}` fallback (`record_metadata_vtproto.pb.go:4225-4228`) is load-bearing and unpinned.
+
+**7. The in-memory guard has no wiring.**
+- `InMemorySchemaTemplateCatalog` (`template_catalog.go:11-16`) has its own mutex and no reference to `InMemoryStoreCatalog.schemas`.
+- A standalone `NewInMemorySchemaTemplateCatalog()` has no schemas to check.
+- :906 names the data source but not the reference or the lock order.
+
+**8. The SQL remedy.**
+- `LegacyUnionTemplateError` replaces the whole cause chain with a copy (`builder.go:752-757`), dropping any wrapping.
+- On load, "give the table or STRUCT another name" cannot be acted on for a stored template: the save loads the latest version and is refused. Scope the remedy to the store side, or say so.
+
+**9. Stale citations.**
+- Section 0 still cites `evidence-v9.txt` for the tally v10 re-measured (:325, :336).
+- evidence-v10 quotes the two WSJTT lines cut off mid-word ("go-dr", " g"), so the driver half is not quoted. The spec asserts it, and the log (`wsj-ev1.log:2270-2295`) has the full lines.
+
+## Measured vs. source
+- **Measured:**
+  - the subspace-key refusal on both engines, and its unit pin;
+  - WSJIX's option-list case;
+  - WSJTT's `_A` and "UUID" shapes, with the SQL remedy on both paths;
+  - WSJLANE's two-fault 42F18;
+  - wm10-1 to wm10-4;
+  - the unchanged tally;
+  - `just test` on `6cef9824`.
+- **Source only:**
+  - findings 1–5, 7 and 8;
+  - everything unbuilt in steps 1–3: the guard in both catalogs, the restore's reads and its interleaving tests, `LoadTemplateProto`, `CreateTemplateFromProto`, the lane check and its XX000 at the clause, the edited-file route with its validator, and the migration.

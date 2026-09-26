@@ -62,20 +62,19 @@ var _ = Describe("RecordMetaData coverage", func() {
 		})
 	})
 
-	Describe("setRecordsWithoutUnion", func() {
-		// Lines 219-238: fallback path when proto has no UnionDescriptor.
-		It("auto-discovers record types from all top-level messages", func() {
-			// Use a proto file that has no UnionDescriptor.
-			// record_metadata.proto contains MetaData, Index, RecordType, etc. — no union.
+	Describe("a records file without a union", func() {
+		// Java has no union-less mode: setRecords finds the union with
+		// fetchUnionDescriptor and raises "Union descriptor is required" when
+		// there is none (RecordMetaDataBuilder.java:354-356). Go used to treat
+		// every top-level message as a record type instead.
+		It("is refused as Java refuses it", func() {
+			// record_metadata.proto (MetaData, Index, RecordType, ...) has no union.
 			b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_metadata_proto)
-			rt := b.GetRecordTypes()
-			// Should have discovered multiple message types.
-			Expect(len(rt)).To(BeNumerically(">", 0))
-			// Record type indices should start from 0.
-			for _, r := range rt {
-				Expect(r.RecordTypeIndex).To(BeNumerically(">=", 0))
-				Expect(r.UnionFieldDescriptor).To(BeNil()) // No union field
-			}
+			Expect(b.GetRecordTypes()).To(BeEmpty())
+			_, err := b.Build()
+			var md *MetaDataError
+			Expect(errors.As(err, &md)).To(BeTrue(), "got %v", err)
+			Expect(md.Message).To(Equal("Union descriptor is required"))
 		})
 	})
 
@@ -102,11 +101,9 @@ var _ = Describe("RecordMetaData coverage", func() {
 			builder.AddIndex("Order", idx)
 
 			_, err := builder.Build()
-			Expect(err).To(HaveOccurred())
-			var mdErr *MetaDataError
-			Expect(errors.As(err, &mdErr)).To(BeTrue())
-			Expect(mdErr.Message).To(ContainSubstring("BITMAP_VALUE"))
-			Expect(mdErr.Message).To(ContainSubstring("GroupingKeyExpression"))
+			var keyErr *KeyExpressionError
+			Expect(errors.As(err, &keyErr)).To(BeTrue(), "%T: %v", err, err)
+			Expect(keyErr.Message).To(Equal("index type requires grouping"))
 		})
 
 		It("rejects BITMAP_VALUE with wrong grouped count", func() {
@@ -121,11 +118,11 @@ var _ = Describe("RecordMetaData coverage", func() {
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			builder.AddIndex("Order", idx)
 
+			// Java's validateGrouping(1) comes first (BitmapValueIndexMaintainerFactory.java:72).
 			_, err := builder.Build()
-			Expect(err).To(HaveOccurred())
-			var mdErr *MetaDataError
-			Expect(errors.As(err, &mdErr)).To(BeTrue())
-			Expect(mdErr.Message).To(ContainSubstring("exactly 1 grouped column"))
+			var keyErr *KeyExpressionError
+			Expect(errors.As(err, &keyErr)).To(BeTrue(), "%T: %v", err, err)
+			Expect(keyErr.Message).To(Equal("index type requires grouping at least 1 fields"))
 		})
 	})
 
@@ -337,16 +334,17 @@ var _ = Describe("RecordMetaData coverage", func() {
 		})
 	})
 
-	Describe("normalizeSubspaceKey", func() {
-		It("normalizes int types to int64", func() {
-			Expect(normalizeSubspaceKey(int(42))).To(Equal(int64(42)))
-			Expect(normalizeSubspaceKey(int32(42))).To(Equal(int64(42)))
-			Expect(normalizeSubspaceKey(int64(42))).To(Equal(int64(42)))
+	Describe("subspaceKeyIdentity", func() {
+		It("equates int types, as Java's normalization to Long does", func() {
+			Expect(subspaceKeyIdentity(int(42))).To(Equal(subspaceKeyIdentity(int64(42))))
+			Expect(subspaceKeyIdentity(int32(42))).To(Equal(subspaceKeyIdentity(int64(42))))
 		})
 
-		It("passes through non-int types", func() {
-			Expect(normalizeSubspaceKey("hello")).To(Equal("hello"))
-			Expect(normalizeSubspaceKey(3.14)).To(Equal(3.14))
+		It("keeps other types apart from integers and from each other", func() {
+			Expect(subspaceKeyIdentity("hello")).To(Equal(subspaceKeyIdentity("hello")))
+			Expect(subspaceKeyIdentity(3.14)).To(Equal(subspaceKeyIdentity(3.14)))
+			Expect(subspaceKeyIdentity("42")).NotTo(Equal(subspaceKeyIdentity(int64(42))))
+			Expect(subspaceKeyIdentity(float64(42))).NotTo(Equal(subspaceKeyIdentity(int64(42))))
 		})
 	})
 
@@ -358,12 +356,11 @@ var _ = Describe("RecordMetaData coverage", func() {
 			Expect(countVersionColumns(fn)).To(Equal(1))
 		})
 
-		It("counts through RecordTypeKeyExpression with nested", func() {
-			rtk := &RecordTypeKeyExpression{nested: VersionKey()}
-			Expect(countVersionColumns(rtk)).To(Equal(1))
+		It("counts through a record type key nested with a version", func() {
+			Expect(countVersionColumns(RecordTypeKey().Nest(VersionKey()))).To(Equal(1))
 		})
 
-		It("returns 0 for RecordTypeKeyExpression without nested", func() {
+		It("returns 0 for a bare RecordTypeKeyExpression", func() {
 			rtk := RecordTypeKey()
 			Expect(countVersionColumns(rtk)).To(Equal(0))
 		})
@@ -464,7 +461,7 @@ var _ = Describe("RecordMetaData coverage", func() {
 			Expect(err).To(HaveOccurred())
 			var mdErr *MetaDataError
 			Expect(errors.As(err, &mdErr)).To(BeTrue())
-			Expect(mdErr.Message).To(ContainSubstring("no record types"))
+			Expect(mdErr.Message).To(Equal("No record types defined in meta-data"))
 		})
 	})
 
@@ -479,7 +476,7 @@ var _ = Describe("RecordMetaData coverage", func() {
 			Expect(err).To(HaveOccurred())
 			var mdErr *MetaDataError
 			Expect(errors.As(err, &mdErr)).To(BeTrue())
-			Expect(mdErr.Message).To(ContainSubstring("duplicates"))
+			Expect(mdErr.Message).To(Equal("Primary key for Order can generate more than one entry"))
 		})
 	})
 
@@ -568,12 +565,12 @@ var _ = Describe("RecordMetaData coverage", func() {
 		})
 	})
 
-	Describe("GetRecordType panic on unknown type", func() {
-		It("panics with MetaDataError", func() {
+	Describe("GetRecordType of an unknown type", func() {
+		It("records Java's MetaDataException for Build", func() {
 			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
-			Expect(func() {
-				builder.GetRecordType("NonExistent")
-			}).To(PanicWith(&MetaDataError{Message: `unknown record type "NonExistent"`}))
+			builder.GetRecordType("NonExistent")
+			_, err := builder.Build()
+			Expect(err).To(Equal(&MetaDataError{Message: "Unknown record type NonExistent"}))
 		})
 	})
 
@@ -615,7 +612,7 @@ var _ = Describe("RecordMetaData coverage", func() {
 			Expect(err).To(HaveOccurred())
 			var mdErr *MetaDataError
 			Expect(errors.As(err, &mdErr)).To(BeTrue())
-			Expect(mdErr.Message).To(ContainSubstring("not in the metadata"))
+			Expect(mdErr.Message).To(HaveSuffix("that is not in the meta-data"))
 		})
 	})
 })

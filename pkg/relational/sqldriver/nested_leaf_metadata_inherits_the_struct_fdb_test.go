@@ -63,7 +63,7 @@ func TestFDB_NestedArrayLeafDoesNotInheritTheStructRootsMetadata(t *testing.T) {
 			"CREATE TABLE t (id BIGINT, s sarr, top BIGINT ARRAY, topbin BYTES, "+
 			"topstructs elt ARRAY, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nlmeta/s WITH TEMPLATE nlmeta")
-	dsn := fmt.Sprintf("fdbsql:///testdb_nlmeta?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_NLMETA?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

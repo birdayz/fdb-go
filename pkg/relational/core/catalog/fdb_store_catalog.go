@@ -1,8 +1,6 @@
 package catalog
 
 import (
-	"errors"
-
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
@@ -28,6 +26,11 @@ type RecordLayerStoreCatalog struct {
 	catalogSubspace subspace.Subspace
 	catalogMD       *recordlayer.RecordMetaData
 	templateCatalog api.SchemaTemplateCatalog
+	// catalogTemplate and catalogSchema are the catalog's own template and
+	// its /__SYS/CATALOG schema, built once, as Java's constructor builds
+	// catalogSchemaTemplate and catalogSchema.
+	catalogTemplate api.SchemaTemplate
+	catalogSchema   api.Schema
 }
 
 // NewRecordLayerStoreCatalog constructs the catalog rooted at the
@@ -38,9 +41,15 @@ func NewRecordLayerStoreCatalog(catalogSubspace subspace.Subspace) (*RecordLayer
 	if err != nil {
 		return nil, api.WrapErrorf(err, api.ErrCodeInternalError, "build catalog metadata")
 	}
+	catalogTmpl, err := buildCatalogTemplate()
+	if err != nil {
+		return nil, api.WrapErrorf(err, api.ErrCodeInternalError, "build catalog template")
+	}
 	c := &RecordLayerStoreCatalog{
 		catalogSubspace: catalogSubspace,
 		catalogMD:       md,
+		catalogTemplate: catalogTmpl,
+		catalogSchema:   catalogTmpl.GenerateSchema(SysDatabaseID, CatalogConstant),
 	}
 	c.templateCatalog = &RecordLayerStoreSchemaTemplateCatalog{parent: c}
 	return c, nil
@@ -63,7 +72,8 @@ func NewRecordLayerStoreCatalog(catalogSubspace subspace.Subspace) (*RecordLayer
 // NOTE: this is the Java-wire-compat subspace, which the Go sqldriver does
 // NOT yet use — pkg/relational/sqldriver/driver.go opens the catalog via
 // keyspace.RelationalKeyspace.CatalogSubspace() (three strings). Migration
-// to this function from the driver is tracked in TODO.md. Callers reading
+// to this function from the driver is tracked in TODO.md, "Go SQL driver
+// stores the relational catalog and user schemas on a Go-only keyspace". Callers reading
 // a Go-written catalog today (incl. frl's `meta catalog`) should use the
 // keyspace helper; readers of a Java-written catalog (or a future Go
 // driver) should use DefaultCatalogSubspace.
@@ -96,50 +106,32 @@ const SysDatabaseID = "/" + SysConstant
 // service startup. Matches Java's RecordLayerStoreCatalog.initialize(txn):
 //
 //  1. Ensures the catalog schema template ("CATALOG_TEMPLATE") exists.
-//  2. Ensures the /__SYS database row exists.
-//  3. Persists the catalog schema (/__SYS/CATALOG) into the store.
+//  2. Persists the catalog schema (/__SYS/CATALOG), creating the /__SYS
+//     database row if necessary, with ERROR_IF_DIFFERENT.
+//
+// Java's initialize, in its order: open the catalog store, create the
+// catalog's template when no version of it is stored, then saveSchema(txn,
+// catalogSchema, true, ERROR_IF_DIFFERENT), which writes nothing over an
+// identical stored row, so concurrent initializations of an initialized
+// catalog do not conflict, and refuses a row bound to a different template.
+// Errors propagate as Java's do, with their own codes.
 //
 // Idempotent: safe to call on every startup.
 func (c *RecordLayerStoreCatalog) Initialize(txn api.Transaction) error {
+	if _, err := c.openStore(txn); err != nil {
+		return err
+	}
 	tc := c.templateCatalog
-
-	// 1. Create/ensure the catalog's own schema template.
-	exists, err := tc.DoesSchemaTemplateExistAtVersion(txn, CatalogTemplateName, CatalogTemplateVersion)
+	exists, err := tc.DoesSchemaTemplateExist(txn, CatalogTemplateName)
 	if err != nil {
-		return api.WrapErrorf(err, api.ErrCodeInternalError, "initialize catalog: check template")
+		return err
 	}
 	if !exists {
-		catalogTmpl, buildErr := buildCatalogTemplate()
-		if buildErr != nil {
-			return api.WrapErrorf(buildErr, api.ErrCodeInternalError, "initialize catalog: build template")
-		}
-		if createErr := tc.CreateTemplate(txn, catalogTmpl); createErr != nil {
-			return api.WrapErrorf(createErr, api.ErrCodeInternalError, "initialize catalog: create template")
+		if err := tc.CreateTemplate(txn, c.catalogTemplate); err != nil {
+			return err
 		}
 	}
-
-	// 2. Ensure the /__SYS database row exists.
-	dbExists, err := c.DoesDatabaseExist(txn, SysDatabaseID)
-	if err != nil {
-		return api.WrapErrorf(err, api.ErrCodeInternalError, "initialize catalog: check sys database")
-	}
-	if !dbExists {
-		if err := c.CreateDatabase(txn, SysDatabaseID); err != nil {
-			return api.WrapErrorf(err, api.ErrCodeInternalError, "initialize catalog: create sys database")
-		}
-	}
-
-	// 3. Persist the /__SYS/CATALOG schema (create if missing). Java calls
-	// saveSchema(txn, this.catalogSchema, true) which silently overwrites.
-	catalogTmpl, err := tc.LoadSchemaTemplateAtVersion(txn, CatalogTemplateName, CatalogTemplateVersion)
-	if err != nil {
-		return api.WrapErrorf(err, api.ErrCodeInternalError, "initialize catalog: load template")
-	}
-	catalogSchema := catalogTmpl.GenerateSchema(SysDatabaseID, CatalogConstant)
-	if err := c.SaveSchema(txn, catalogSchema, false); err != nil {
-		return api.WrapErrorf(err, api.ErrCodeInternalError, "initialize catalog: save catalog schema")
-	}
-	return nil
+	return c.SaveSchema(txn, c.catalogSchema, true, api.SchemaExistsErrorIfDifferent)
 }
 
 // buildCatalogTemplate constructs the RecordLayerSchemaTemplate that
@@ -201,13 +193,28 @@ func (c *RecordLayerStoreCatalog) LoadSchema(txn api.Transaction, databaseID, sc
 	if err != nil {
 		return nil, err
 	}
+	s, err := c.loadSchemaIfExists(txn, store, databaseID, schemaName)
+	if err != nil {
+		return nil, err
+	}
+	if s == nil {
+		return nil, api.NewErrorf(api.ErrCodeUndefinedSchema,
+			"Schema <%s/%s> does not exist in the catalog!", databaseID, schemaName)
+	}
+	return s, nil
+}
+
+// loadSchemaIfExists is Java's loadSchemaIfExists: the stored row with its
+// template (parseSchemaTable), or nil when no row is stored. A row whose
+// template version is gone fails with Java's "SchemaTemplate=<n>,
+// version=<v> is not in catalog" (UNKNOWN_SCHEMA_TEMPLATE).
+func (c *RecordLayerStoreCatalog) loadSchemaIfExists(txn api.Transaction, store *recordlayer.FDBRecordStore, databaseID, schemaName string) (api.Schema, error) {
 	rec, err := store.LoadRecord(schemaKey(databaseID, schemaName))
 	if err != nil {
 		return nil, err
 	}
 	if rec == nil {
-		return nil, api.NewErrorf(api.ErrCodeUndefinedSchema,
-			"schema <%s/%s> does not exist in the catalog", databaseID, schemaName)
+		return nil, nil
 	}
 	msg, ok := rec.Record.(*gen.Schemas)
 	if !ok {
@@ -222,24 +229,19 @@ func (c *RecordLayerStoreCatalog) LoadSchema(txn api.Transaction, databaseID, sc
 	return tmpl.GenerateSchema(msg.GetDATABASE_ID(), msg.GetSCHEMA_NAME()), nil
 }
 
-// SaveSchema persists or updates a Schema. Validates the schema name
-// and verifies the owning database + template exist. If the database
-// is missing and createDatabaseIfNecessary is false, returns
-// ErrCodeUndefinedDatabase (matches Java).
-func (c *RecordLayerStoreCatalog) SaveSchema(txn api.Transaction, s api.Schema, createDatabaseIfNecessary bool) error {
-	if s == nil {
-		return api.NewError(api.ErrCodeInvalidParameter, "schema is nil")
-	}
-	if s.MetadataName() == "" {
-		return api.NewError(api.ErrCodeInvalidParameter, "schema name is empty")
-	}
-	tmpl := s.SchemaTemplate()
-	if tmpl == nil || tmpl.MetadataName() == "" {
-		return api.NewError(api.ErrCodeInvalidSchemaTemplate, "schema has no template")
-	}
-
+// SaveSchema persists a Schema, in Java's saveSchema order: validate the
+// schema; the database exists (created when createDatabaseIfNecessary,
+// else UNDEFINED_DATABASE); the template exists at the schema's version
+// (UNKNOWN_SCHEMA_TEMPLATE); load the stored row with its template, which
+// fails when that template version is gone; existsBehavior decides a save
+// over a stored row; write. A save that existsBehavior makes a no-op writes
+// nothing, so it adds no write conflict range.
+func (c *RecordLayerStoreCatalog) SaveSchema(txn api.Transaction, s api.Schema, createDatabaseIfNecessary bool, existsBehavior api.SchemaExistsBehavior) error {
 	store, err := c.openStore(txn)
 	if err != nil {
+		return err
+	}
+	if err := validateSchema(s); err != nil {
 		return err
 	}
 
@@ -250,7 +252,7 @@ func (c *RecordLayerStoreCatalog) SaveSchema(txn api.Transaction, s api.Schema, 
 	if !dbExists {
 		if !createDatabaseIfNecessary {
 			return api.NewErrorf(api.ErrCodeUndefinedDatabase,
-				"cannot create schema %s because database %s does not exist",
+				"Cannot create schema %s because database %s does not exist.",
 				s.MetadataName(), s.DatabaseName())
 		}
 		if err := createDatabaseOnStore(store, s.DatabaseName()); err != nil {
@@ -258,8 +260,7 @@ func (c *RecordLayerStoreCatalog) SaveSchema(txn api.Transaction, s api.Schema, 
 		}
 	}
 
-	// Template must exist at the exact version. Java uses
-	// ErrCodeUnknownSchemaTemplate for this case.
+	tmpl := s.SchemaTemplate()
 	tmplExists, err := c.templateCatalog.DoesSchemaTemplateExistAtVersion(txn,
 		tmpl.MetadataName(), tmpl.Version())
 	if err != nil {
@@ -267,20 +268,25 @@ func (c *RecordLayerStoreCatalog) SaveSchema(txn api.Transaction, s api.Schema, 
 	}
 	if !tmplExists {
 		return api.NewErrorf(api.ErrCodeUnknownSchemaTemplate,
-			"cannot create schema %s because schema template %s version %d does not exist",
+			"Cannot create schema %s because schema template %s version %d does not exist.",
 			s.MetadataName(), tmpl.MetadataName(), tmpl.Version())
 	}
 
-	// A REBIND (an existing schema row moving to different template
-	// metadata) must pass the metadata-evolution validator before the row
-	// flips: the record type key is the LEADING element of every stored
-	// record key, so a key-changing evolution makes the store read old type
-	// A's rows as new type B's — silent data corruption, not an error. This
-	// is the same guard the frl CLI applies (the faithful
-	// MetaDataEvolutionValidator.java:418 port); RepairSchema funnels
-	// through here too.
-	if err := c.validateSchemaRebind(txn, s); err != nil {
+	existing, err := c.loadSchemaIfExists(txn, store, s.DatabaseName(), s.MetadataName())
+	if err != nil {
 		return err
+	}
+	if existing != nil {
+		write, err := existsBehavior.ShouldWrite(s, existing)
+		if err != nil {
+			return err
+		}
+		if !write {
+			return nil
+		}
+		if err := validateSchemaRebind(existing, s); err != nil {
+			return err
+		}
 	}
 
 	rec := &gen.Schemas{
@@ -295,28 +301,29 @@ func (c *RecordLayerStoreCatalog) SaveSchema(txn api.Transaction, s api.Schema, 
 	return nil
 }
 
-// validateSchemaRebind runs the ported MetaDataEvolutionValidator over an
-// existing schema binding when SaveSchema would change which template
-// metadata the schema resolves to. A first-time save (no existing row) and a
-// no-op save (same template name + version) validate nothing. When the OLD
-// binding's template version no longer exists in the catalog, there is
-// nothing to diff against and the save proceeds — the guard protects live
-// data under a KNOWN old shape, it cannot resurrect a dropped one.
-func (c *RecordLayerStoreCatalog) validateSchemaRebind(txn api.Transaction, s api.Schema) error {
-	existing, err := c.LoadSchema(txn, s.DatabaseName(), s.MetadataName())
-	if err != nil {
-		var apiErr *api.Error
-		if errors.As(err, &apiErr) &&
-			(apiErr.Code == api.ErrCodeUndefinedSchema || apiErr.Code == api.ErrCodeUnknownSchemaTemplate) {
-			return nil
-		}
-		return err
-	}
-	oldTmpl := existing.SchemaTemplate()
-	newTmpl := s.SchemaTemplate()
-	if oldTmpl.MetadataName() == newTmpl.MetadataName() && oldTmpl.Version() == newTmpl.Version() {
-		return nil
-	}
+// validateSchemaRebind is Go's check on a save that overwrites a stored
+// schema row, a Go extension beside Java's saveSchema. existsBehavior has
+// already decided the save: only UPGRADE writes over a stored row, and only
+// onto a strictly greater version of the same template, so the names agree
+// and the version advances. What it adds is the ported
+// MetaDataEvolutionValidator between the bound metadata and the new one: the
+// record type key is the LEADING element of every stored record key, so a
+// key-changing evolution makes the store read old type A's rows as new type
+// B's, silent data corruption, not an error. This is the validator the frl
+// CLI's `meta evolve-check` runs (the MetaDataEvolutionValidator.java:418
+// port), with the options set here; `--allow-no-version-change` reproduces
+// them. Index rebuilds are allowed, as CreateTemplate's carry allows them:
+// the new version's CHANGED and NEW indexes sit above the stored metadata
+// version, and the store rebuilds exactly those when it next opens under
+// the rebound template (checkRebuildIndexes). The template VERSION advances
+// while the record-layer METADATA version may not (it is seeded from the
+// template version and bumped per index, RecordMetaDataBuilder
+// .addIndexCommon:1093-1097), and the validator refuses a lower metadata
+// version as Java's does (MetaDataEvolutionValidator.java:154): a store
+// opened under metadata older than its header cannot be opened at all.
+// Both catalogs run it.
+func validateSchemaRebind(existing, s api.Schema) error {
+	oldTmpl, newTmpl := existing.SchemaTemplate(), s.SchemaTemplate()
 	oldRL, oldOK := oldTmpl.(*metadata.RecordLayerSchemaTemplate)
 	newRL, newOK := newTmpl.(*metadata.RecordLayerSchemaTemplate)
 	if !oldOK || !newOK {
@@ -324,23 +331,7 @@ func (c *RecordLayerStoreCatalog) validateSchemaRebind(txn api.Transaction, s ap
 			"schema rebind of %s/%s cannot be validated: template types %T -> %T",
 			s.DatabaseName(), s.MetadataName(), oldTmpl, newTmpl)
 	}
-	// Version monotonicity is judged on the SQL-layer TEMPLATE VERSION — the
-	// axis this catalog itself stores (TEMPLATES.TEMPLATE_VERSION,
-	// fdb_template_catalog.go's Templates row) and the one the SQL layer
-	// advances per CREATE. The record-layer METADATA version is not a
-	// substitute: it is seeded from the template version and then bumped once
-	// per index (RecordMetaDataBuilder.addIndexCommon:1093-1097), so a v2
-	// template with fewer indexes than v1 legitimately carries a LOWER
-	// metadata version. Comparing versions ACROSS template names is
-	// meaningless, so a name-changing rebind is validated structurally only.
-	if oldTmpl.MetadataName() == newTmpl.MetadataName() && newTmpl.Version() <= oldTmpl.Version() {
-		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
-			"cannot rebind schema %s/%s to template %s@%d: version does not advance past the bound %s@%d",
-			s.DatabaseName(), s.MetadataName(),
-			newTmpl.MetadataName(), newTmpl.Version(),
-			oldTmpl.MetadataName(), oldTmpl.Version())
-	}
-	validator := recordlayer.NewMetaDataEvolutionValidator().SetAllowNoVersionChange(true).Build()
+	validator := recordlayer.NewMetaDataEvolutionValidator().SetAllowNoVersionChange(true).SetAllowIndexRebuilds(true).Build()
 	if verr := validator.Validate(oldRL.Underlying(), newRL.Underlying()); verr != nil {
 		return api.WrapErrorf(verr, api.ErrCodeInvalidSchemaTemplate,
 			"cannot rebind schema %s/%s from template %s@%d to %s@%d: metadata evolution rejected",
@@ -468,7 +459,10 @@ func (c *RecordLayerStoreCatalog) DeleteDatabase(txn api.Transaction, dbURI stri
 }
 
 // RepairSchema rebinds schemaName in dbURI to the latest version of
-// its owning template. Matches Java's repairSchema.
+// its owning template. Matches Java's repairSchema: load the schema with
+// its template (refused when the bound version is gone), load the latest
+// version, and save onto it with UPGRADE, a no-op when the schema is
+// already on the latest version.
 func (c *RecordLayerStoreCatalog) RepairSchema(txn api.Transaction, dbURI, schemaName string) error {
 	s, err := c.LoadSchema(txn, dbURI, schemaName)
 	if err != nil {
@@ -478,7 +472,7 @@ func (c *RecordLayerStoreCatalog) RepairSchema(txn api.Transaction, dbURI, schem
 	if err != nil {
 		return err
 	}
-	return c.SaveSchema(txn, tmpl.GenerateSchema(dbURI, schemaName), false)
+	return c.SaveSchema(txn, tmpl.GenerateSchema(dbURI, schemaName), false, api.SchemaExistsUpgrade)
 }
 
 // ListDatabases returns an api.ResultSet over every database. Materialises

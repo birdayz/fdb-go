@@ -114,33 +114,19 @@ func (v *ArrayConstructorValue) withChildrenChecked(newChildren []Value) (*Array
 		if isNilBinding(child) {
 			return nil, resolutionError(RewriteNilReplacement, "array.rebuild", "array child is nil")
 		}
+		if isNilBinding(child.Type()) {
+			return nil, resolutionError(TypeNil, "array.rebuild", "array child type is nil")
+		}
 	}
 	children := append([]Value(nil), newChildren...)
 	if !IsAny(v.ElementType) {
-		// Java resolves the common type BEFORE injecting promotions and requires
-		// exact equality, including nullability and nested element/field types.
-		var common Type
 		for i, child := range children {
-			childType := child.Type()
-			if isNilBinding(childType) {
-				return nil, resolutionError(TypeNil, "array.rebuild", "array child type is nil")
-			}
-			if i == 0 {
-				common = childType
-			} else {
-				common = MaximumType(common, childType)
-			}
-			if common == nil {
-				return nil, resolutionError(ReanchorResultTypeMismatch, "array.rebuild", "replacement children have no common element type")
-			}
-		}
-		if !common.Equals(v.ElementType) {
-			return nil, resolutionError(ReanchorResultTypeMismatch, "array.rebuild", "replacement children change the declared element type or nullability")
-		}
-		nullableElement := WithNullability(v.ElementType, true)
-		for i, child := range children {
-			if !WithNullability(child.Type(), true).Equals(nullableElement) {
-				children[i] = NewPromoteValue(child, v.ElementType)
+			if !child.Type().Equals(v.ElementType) {
+				promoted, err := NewPromoteValueChecked(child, v.ElementType)
+				if err != nil {
+					return nil, resolutionError(ReanchorResultTypeMismatch, "array.rebuild", err.Error())
+				}
+				children[i] = promoted
 			}
 		}
 	}

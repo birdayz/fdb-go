@@ -27,7 +27,7 @@ func TestFDB_ExistsSemanticsProbe(t *testing.T) {
 			"CREATE TABLE child (id BIGINT, pid BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX child_pid ON child (pid)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_exists/s WITH TEMPLATE existstpl")
-	dsn := fmt.Sprintf("fdbsql:///testdb_exists?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_EXISTS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

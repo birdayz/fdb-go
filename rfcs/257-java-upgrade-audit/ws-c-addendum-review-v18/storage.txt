@@ -1,0 +1,74 @@
+**ACK (storage lens), with three Low findings to fold before the final delta re-confirmation.**
+
+- **Candidate:** `6b4b7817d` (tree `f7dd54ee9`). Revision 18 is `d2e47b8bd..6b4b7817d`.
+- **Design:** SHA256 `dc1f380c06c5d67f47dd458a654013418eb074e94818dbdf240ba0ebbd47b344`, 2890 lines, both measured on the committed file.
+- **Method:** read-only. "Measured" means I read it in the evidence logs or in git objects; everything else is from source.
+- **Not visible to me:** CI on PR #786 (`gh` is not available). My searches ran on the working tree, which the snapshot shows unmodified for those files.
+
+## Findings, most severe first
+
+**1. Low: the samples check added to the present-node pin can never fail.**
+- `makeRaBitQGraph` (`vector_index_test.go:1472-1485`) never sets `SampleVectorStatsProbability`, so it is 0. `NewHHNSWGraph` fills in a default only for `EfRepair` (`hnsw.go:146-158`).
+- Sampling happens only when `nextDouble() < 0` (`hnsw.go:640`), which is never. The samples range is empty before and after, even if an insert went on to sample.
+- 7.18's "now snapshots … the samples" is therefore true only in form. The v17 nit (mine and Graefe's) is not resolved in substance.
+- The behaviour itself is right by source: `Insert` returns at `hnsw.go:373`, before sampling at `:563`.
+- The comment at `index_maintainer_queue_test.go:38-42` ("samples included") describes an index without RaBitQ, so that test has no samples either.
+- **Fix:** set the sample probability to 1 and the maintain probability to 0 (so samples are never rolled up), then assert that `before[2]` is not empty.
+
+**2. Low: a superseded sentence is not marked, though 7.18 says every one is.**
+- `ws-c-design.md:2740` (7.17) still says "The generator now reads `recordlayer.VectorIndexMetricOption`". Revision 18 deletes that function.
+- `vector_index_conformance_test.go:1501` still says "refuses every save … after it". The next sentence of the same comment contradicts it.
+
+**3. Low (source): "makes no graph call" is true of `Update` only.**
+- Two other paths still delete and re-insert a node whose vector is unchanged, in both engines:
+  - **Pending-write queue** (`WRITE_ONLY_WITH_QUEUE`): the save is queued without the skip (`store.go:1190-1195`, `index_maintainer_queue.go:24-47`; Java `FDBRecordStore.java:780-788`, `VectorIndexMaintainer.java:432-449`). Replay deletes, then inserts (`:49-73`; Java `:453-467`).
+  - **Sliding-window delegate:** the delete and the insert are split into separate calls (`sliding_window_index_maintainer.go:841,847`; Java `SlidingWindowIndexMaintainer.java:381-388`).
+- So after the centroid, with 9–15 extra bits, the queue drain and the windowed save are refused in both engines.
+- Parity holds. The claims are wider than the code:
+  - `DIVERGENCES.md:2135`;
+  - `TODO.md:15160`;
+  - `vector_index_maintainer.go:208`;
+  - the 7.17 marker "reaches none of them, in either engine".
+- **Fix:** name these two paths as the exceptions.
+
+## Nits
+- **Green run's tree:** the TREE file for `wsc18-green-commit` records "working files differing from index: 1", with the file unnamed, not the clean tree the brief says. Nothing depends on it: the hook ran on the commit's own tree (`f7dd54ee9` = `6b4b7817d^{tree}`), and 95 of 95 targets passed with 43 executed. Name the file.
+- **CHANGELOG drop guidance** names only the 0-bit case. An index stored with an option that does not parse, or with a lower-case metric, is now refused too and needs the same remedy (drop and add again).
+- **DIVERGENCES "each re-encoded minimally":** measured only for one varint value. That tags and lengths are also re-encoded minimally comes from source; say so.
+
+## Storage questions
+- **The direct update path matches Java:**
+  - `removeCommonEntries` (`index_maintainer.go:820`) compares key, primary key and value, which matches `IndexEntry.equals` (`:256-270`). Old and new records share their primary key, so including it changes nothing.
+  - Both records' entries are evaluated before anything is applied, then deletes run before inserts, as in `StandardIndexMaintainer.java:215-251`.
+  - Vector indexes cannot contain version columns (`VectorIndexMaintainerFactory.java:135`), so the packed comparison cannot hit an incomplete versionstamp.
+- **Write-only saves:** both engines go through `update` (`StandardIndexMaintainer.java:256-258` and `:736`), so both skip (source).
+- **Measured, unchanged vector:**
+  - The store-level pin is red on `d2e47b8bd` (the neighbour order moves) and green on HEAD.
+  - JVM EXTRA_BITS, "save leaving the vector unchanged": `ok` in both engines at Euclidean 9, 15 and 8 bits; `IllegalArgumentException` in both at cosine 9.
+  - On the old tree, Go refused at 9 and 15 bits where Java returned `ok`.
+- **SPFresh refusals:**
+  - All 8 non-test config reads go through `readSPFreshConfig`. The only non-test caller of `parseSPFreshConfig` is `spfresh_config.go:272`.
+  - The only exported function that takes an `SPFreshConfig` is `ValidateSPFreshConfig`. So no path inside the record layer passes an unvalidated count to the panicking encoder (source; the same search found the test call sites as a control).
+  - Measured: "every entry point refuses" was red on the old tree (the rebalancer returned nil) and is green on HEAD.
+- **Unknown fields (measured, `parity.log:22-23`):**
+  - Go keeps the stored order `62017a 61…04 65…03 6002 5801 688100`.
+  - Java writes `5801 6002 6503000000 610400… 62017a 6801`: by field number, then within field 12 varint, fixed32, fixed64, length-delimited, and the non-minimal `8100` re-encoded as `01`.
+  - `raw=false` is byte-equal between the engines. The MAPWIRE raw re-save is equal (`:33`).
+- **Revisions 12–17 hold:**
+  - the 32 sliding-window rows fail 32 of 32 on `c1bc5a177` and pass on HEAD (measured);
+  - MAPWIRE, RESAVE_P3 and EXTRA_BITS are green;
+  - the full hook suite on the commit tree is green.
+
+## v17 findings
+| Finding | Status |
+|---|---|
+| Storage 1, Graefe 3, Torvalds 2 (SPFresh 0-bit panic) | Resolved: red→green, plus source |
+| Storage 2, Graefe 4 (unknown-field order and encoding) | Resolved, measured (nit above) |
+| Storage 3 (stale "same PK replaces") | Resolved: 0 hits in code; the control hit the design at `:2876` |
+| Graefe 1, Torvalds 1 (unchanged vector entry) | Resolved, measured |
+| Graefe 2 (two metric parsers) | Resolved, red→green for both arms; the query-engine review is Graefe's |
+| Torvalds 3 (sliding-window red run) | Resolved, measured |
+| Present-node snapshot nit | Resolved in form only (finding 1) |
+| Other nits (7.16 marker, `wsc15-red-first` TREE line 11, mutation README, alias JVM row, message-valued entry) | Resolved or answered |
+
+The preserved boundaries are untouched.

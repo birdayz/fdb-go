@@ -50,7 +50,7 @@ func TestFDB_EscapedIdentifierSQLSurface(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /escapedident/s WITH TEMPLATE esc_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///escapedident?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///ESCAPEDIDENT?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

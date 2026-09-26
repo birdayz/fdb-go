@@ -1,0 +1,89 @@
+**NAK** on the RFC-257 WS-D design v10.
+
+- **Tree:** `f90241712769c8d5f92498c51c2183a4320ed9b0`.
+- **Design:** SHA256 `b097a37ba40dd4adb0fe741b98d77282c8c2826be94cd8ebcffa1ab7f4daf096`. I recomputed it from the tree blob and it matches (1365 lines).
+- **Java:** `fdacd162` (read from `fdb-record-layer/.git/HEAD`).
+- **What I read:** all four v9 NAKs; the full v10 design and its diff from v9; the oracle README, both evidence files, the probe source (Java and Go) and its diff; the heartbeat delta and its logs; `just-test-v10b.log` and the bazel-testlogs. I checked the claims against the Java and Go sources.
+- **Nothing run or changed.**
+
+## P2 — The 1007 argument that replaces the budget is wrong on all three points (design 1219–1227)
+
+The design argues it can go without a guard because a peel that runs past FDB's 5 s limit fails the same way the target would. Each supporting fact is incorrect:
+
+1. **`db.Run` has no 10-attempt limit.** `runner.go:199` sets `FDBDatabaseRunner.MaxAttempts`. The merger's `oi.db` is `*FDBDatabase` (`online_indexer.go:247`).
+   - `FDBDatabase.Run` goes through `runTransactCtx` (`database.go:272-275`) into `client.Database.Transact` (`client/database.go:930-942`).
+   - That loop retries through `OnError`, which stops only when a retry limit is set (`transaction.go:2504`). Nothing in `pkg/recordlayer` sets a limit or a timeout; the one search hit is `chaos/scenario.go:93`, a comment saying the default is unbounded.
+   - So a task that deterministically exceeds 5 s retries until the context is cancelled.
+2. **The merger does not abort on 1007.**
+   - Java aborts only on 1051, 1213 and 1515, or on a non-FDB, non-timeout error (`IndexingMerger.java:189-203`). For anything else it halves the time quota and retries (`:246-254`); Go does the same (`indexing_merger.go:98, 118-125`).
+   - Halving the quota cannot help here, because the first task always runs whatever the quota (`Primitives.java:991`).
+   - The citation at 1158 is correct for `ClusterUnsplittableError`, but not for 1007.
+3. **The "bounded factor" leaves out most of the peel's cost.**
+   - The 1.28 bound covers only the refits' KMeans. It excludes the per-refit assignment pass and evaluator pass over P.
+   - The design says those passes dominate, and the probe's `refitNanos` includes both (`guardiann_probe_conformance.java:904-922`).
+   - The design's own figures give 89–107 ms of peel against a 36–46 ms target fit: about 2.3×, not 1.28×.
+
+**Consequence:** a Go-only band remains in which the target's own work finishes under 5 s but that work plus the peel does not.
+- In that band the target throws `:397` once. Go repeats the same deterministic peel indefinitely: merge drains spin inside `db.Run`, and every inline insert into the partition spins in the caller's transaction.
+- This is the hazard v9's own text named ("the retry loop would repeat the same work forever where the target throws once"). It is neither bounded nor declared.
+- The input can be arbitrarily large: GuardiANN caps no dimension (`Config.java:197`), and inline clusters grow past hardMax.
+
+**Needed:**
+- State the complete per-refit cost: KMeans on at most S vectors, plus the assignment and evaluate passes over P.
+- Either bound it structurally against the target's own work, or make the band a clock-free rule outcome. For example, reconcile when n·d·floor(log2(n−1)) exceeds a constant, which keeps `ClusterUnsplittableError` meaning "no usable partition under the rule".
+- Correct both retry-owner sentences, and add fixtures for them.
+
+## P3
+
+1. **The d = 4096 acceptance fixture may exceed FDB's 10 MB transaction limit (1231-1235).**
+   - `useRaBitQ` defaults to false (`Config.java:167`), so references carry full vectors.
+   - Materialising a split at n = 2000, d = 4096 writes at least 2000 × 8 KB (half precision), about 16 MB. That fails with 2101 in both engines.
+   - At d = 768, double precision is 2000 × 6 KB, about 12 MB.
+   - State the fixtures' vector encoding and element type. The envelope discussion names only the 5 s limit, but the size limit binds first.
+2. **The Step 2 population needs updating for sampling (1106).** With sampling, `undersizedChildHoldsNoMass` fires when the *stride sample* cannot be separated, not the whole mass. Say so. The claim that the exits match (item 20, 26 shapes) is measured, not structural.
+3. **The heartbeat fixture does not cover the "after" position.**
+   - The test comment says the byte-string key sorts last (`indexing_heartbeat_admin_test.go` ~200-204). Byte strings (tuple code 0x01) sort before UUIDs (0x30), just as strings (0x02) do. Both bad keys therefore precede the live UUID.
+   - So "wherever it sits in the range" (DIVERGENCES.md, the function comment) is untested. A single-pass mutation that returns true at the first live heartbeat would stay green.
+   - Fix: use a key that sorts after a UUID, such as a versionstamp element (0x33).
+   - A related gap: Go also rejects `(UUID, x)` keys, which Java's `getUUID(0)` accepts. That is a fourth population among "UUID-keyed" heartbeats (pre-existing); declare it.
+4. **Evidence provenance.**
+   - Design 838-840 says the frozen-tree `just test` record is in README item 22. Item 22 defers to the gate's `SCOPE.md`, which is not in this tree.
+   - The `rfc257_oracle_test` testlog has since been overwritten by a later run (`Ran 5 of 23`), so "22 of 22" can no longer be checked.
+   - In `evidence-run.txt`, the WS-J file hash (`244de237…`) does not match the tree (`0c3e3e98…`). You disclosed this.
+   - The GuardiANN source hashes do match the tree. The conformance and recordlayer summaries (1405/119 and 3615/1) are confirmed in bazel-testlogs.
+
+## Verified closed
+
+- **Budget withdrawn:**
+  - No clock or DST exposure remains.
+  - The RNG split is taken once at peel entry. `enqueueCollapseIfNecessary` draws only when it enqueues (`AbstractDeferredTask.java:274-289`).
+  - `ClusterUnsplittableError` classification is correct: it is non-FDB, so the merger aborts, and it is not retryable.
+- **`consumerOutcome` order matches Java:**
+  - the RNG and quantizer at `:223/:227` and `:426/:430`, before phase 1 at `:232` and `:435`;
+  - the merge's neighbour fetch at `:442` before the `:483` clear;
+  - `KMeans.java:136` before `:137`.
+- **REFUSED_UNLESS_ALL_NK:** consistent between the two callers.
+- **Bounce hand-off:** the positioned RNG is handed over (`BounceTask.java:123, 149, 161, 190, 200, 285`).
+- **Non-skipping delete:** it re-reads the queue head serializably (`Primitives.java:984, 1053`), and the conflict fixtures are sound.
+- **Poison keys:** registration order and first-error-wins confirmed at `database.go:1063-1075, 1128-1145`. Neither key has a prefix that `DeleteStore` removes (`store_api.go:181-182`).
+- **Declarations:** the merge-side and beside-a-viable-candidate n<k populations and the replica metadata reads are declared.
+- **Heartbeat key parse:**
+  - Two passes, matching Java's `getUUID(0)` outside the try (`IndexingHeartbeat.java:148`).
+  - The JVM `ClassCastException` is measured (`hb-admin-jvm-2.log:31`).
+  - The mutation reddens the Go spec (`hb-admin-keyparse-mut.log:1386, 1417`).
+  - Only admin callers use the function.
+- **"9 of 26 shapes":** I recounted the pinned lines and it holds; exits are the same.
+
+## Measured vs still hypothesis
+
+- **Measured:**
+  - item 20 (130 pure-algorithm rows, identical across two runs);
+  - the sampling-off mutation;
+  - the heartbeat JVM pin and its mutation;
+  - timings, which are printed only and never pinned.
+- **Still hypothesis:**
+  - every Go mechanism;
+  - peel cost at large n·d, and the 1007 band;
+  - whether the d = 4096 and d = 768 fixtures fit in one transaction;
+  - the vanished-neighbour JVM rows and item 21, both owed;
+  - every `consumerOutcome` arm on FDB.

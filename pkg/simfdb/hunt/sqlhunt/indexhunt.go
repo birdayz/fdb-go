@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"sort"
+	"strings"
 	"sync/atomic"
 
 	"fdb.dev/pkg/dst"
@@ -180,7 +181,7 @@ func siNewHarness(seed uint64, faultProb float64) (*siHarness, error) {
 	h := &siHarness{env: env, faults: faults, simDB: simDB, backend: backend}
 	h.closes = append(h.closes, sqldriver.RegisterBackend(key, simDB))
 
-	setup, err := sql.Open("fdbsql", "fdbsql://"+siDBPath+"?cluster_file="+key)
+	setup, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(siDBPath)+"?cluster_file="+key)
 	if err != nil {
 		h.close()
 		return nil, fmt.Errorf("open setup: %w", err)
@@ -200,7 +201,7 @@ func siNewHarness(seed uint64, faultProb float64) (*siHarness, error) {
 		}
 	}
 
-	db, err := sql.Open("fdbsql", "fdbsql://"+siDBPath+"?cluster_file="+key+"&schema=s")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(siDBPath)+"?cluster_file="+key+"&schema=S")
 	if err != nil {
 		h.close()
 		return nil, fmt.Errorf("open db: %w", err)

@@ -25,7 +25,7 @@ func TestFDB_Nullif_Unsupported(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE nulliftpl "+
 		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nullif/s WITH TEMPLATE nulliftpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_nullif?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_NULLIF?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

@@ -1,0 +1,36 @@
+**NAK — IMPLEMENTATION CODE** at tree `e83b606c1d79a24a1bf08a5c35c9302f0777b77a`.
+
+Reviewed the complete 12-file delta, all three prior reviews/prompts, frozen untracked delta content, and Java at `fdacd162a9c8acfadc49082b89185c823ab8ae4a`. All 6,397 frozen hashes match the candidate. HEAD remains unchanged. Session metadata confirms **gpt-6-astra / xhigh / read-only**.
+
+**P2 — Ordinary SELECT loses the distinction between inherited qualified names and eligible output aliases.**
+
+Consider:
+
+```sql
+SELECT v, id AS v FROM wide_t ORDER BY v
+```
+
+The new [logical_predicate.go:3143](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:3143) obtains names through `projectionOutputNames`, which takes each inherited column’s **bare** name at [line 569](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:569). It therefore counts two `V` matches. Both [visitor validation:763](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/plan_visitor.go:763) and [shell validation:2414](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:2414) reject this with `Ambiguous alias V` / `42702`.
+
+Java’s ordinary-SELECT semantics differ:
+
+- [LogicalOperator.java:233](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/LogicalOperator.java:233) qualifies source attributes. The inherited expression remains `WIDE_T.V`; [ExpressionVisitor.java:186](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/visitors/ExpressionVisitor.java:186) replaces its name only for authored `AS`.
+- [QueryVisitor.java:942](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/visitors/QueryVisitor.java:942) excludes qualified expression names from alias candidates; [SemanticAnalyzer.java:647](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/SemanticAnalyzer.java:647) enforces the same restriction. Only the explicit `V` alias matches, retaining the `ID` expression.
+- Grouped SELECT **does** clear qualifiers after pull-up at [QueryVisitor.java:311](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/visitors/QueryVisitor.java:311). Its inherited names consequently participate in alias ambiguity.
+
+This is a **source-derived regression**, not an executed reproduction. Display labels cannot substitute for semantic identifiers before the appropriate phase boundary.
+
+The new ordinary inherited-collision expectation at [order_by_exact_metadata_test.go:798](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/order_by_exact_metadata_test.go:798) pins the incorrect behavior. The 28 Java probes omit that case; the `inherited-names` mutation is killed solely by this incorrect ordinary-SELECT expectation.
+
+**Required fix:** preserve qualification and phase-specific alias eligibility when counting candidates. Retain inherited-name ambiguity after grouped pull-up, output-first cardinality, and unique slot/Value ownership. Correct the ordinary inherited-collision test and add paired plain/grouped Java probes plus both-constructor ownership assertions.
+
+The original two-explicit-alias rejection is repaired. The completed 134 RUN/PASS evidence, 28 Java records, and four mutation hashes/failure lists reconcile, but do not resolve this regression. The prior seven mutation proofs remain earlier-tree evidence.
+
+Separate verification/publication gates:
+
+- Completed candidate fuzz is credited: **30 seconds, four workers, 3,891,720 executions**. At the single evidence snapshot, full93, race14, `just test`, and nominal1M ABBA lacked completed results and remain uncredited. No inference from in-flight work.
+- Fix, refreeze, and reconfirm implementation and execution gates. The cancelled preceding run’s **89/93** is not full green.
+- Bounded latency conclusions remain unchanged; no universal parity claim. Historical executor startup-timeout causation still requires unavailable original artifacts; CLI repair and greens do not explain it.
+- LegacyRaBitQ disable/rebuild remains prerequisite. Commit/push/merge remain forbidden; PR786 stays draft/unchanged.
+
+Storage scope remains accepted; FDB C++ stays **7.3.77**. Approved nullable-array/raw/scalar/sorting extensions remain. WS-B–K and whole-upgrade completion remain open. No edits, builds/tests, agents/worktrees, Git-state changes, or GitHub contact occurred.

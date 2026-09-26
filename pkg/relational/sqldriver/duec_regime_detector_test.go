@@ -19,6 +19,7 @@ package sqldriver_test
 // have caught the real one.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -567,6 +568,49 @@ func TestDuecWallClockOptIn(t *testing.T) {
 					"goes back to asserting a quiet-machine instrument. And an explicit 0/false "+
 					"must not arm either — an any-non-empty check would turn an operator's "+
 					"opt-OUT into an opt-in.", got, tc.want, name)
+			}
+		})
+	}
+}
+
+// Fixture retries must never reinterpret a conflict or an ambiguous commit as
+// permission to replay an INSERT. Only a lost transaction window subdivides an
+// atomic attempt, and subdivision must terminate at a single row.
+func TestDuecFixtureSplitPoint(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		lo, hi int
+		err    error
+		mid    int
+		split  bool
+	}{
+		{"success", 0, 250, nil, 0, false},
+		{"unrelated", 0, 250, errors.New("insert failed"), 0, false},
+		{"conflict", 0, 250, fdb.Error{Code: 1020}, 0, false},
+		{"ambiguous_commit", 0, 250, fdb.Error{Code: 1021}, 0, false},
+		{"wrapped_ambiguous_commit", 0, 250, fmt.Errorf("commit: %w", &wire.FDBError{Code: 1021}), 0, false},
+		{"canceled", 0, 250, context.Canceled, 0, false},
+		{"deadline", 0, 250, context.DeadlineExceeded, 0, false},
+		{"transaction_timeout", 0, 250, fdb.Error{Code: 1031}, 0, false},
+		{"raw_window", 0, 250, fdb.Error{Code: 1007}, 125, true},
+		{"wire_window", 0, 250, &wire.FDBError{Code: 1007}, 125, true},
+		{"wrapped_window", 1000, 1500, fmt.Errorf("insert: %w", fdb.Error{Code: 1007}), 1250, true},
+		{"typed_window", 65000, 65250, api.NewTransactionTimeLimitError(4100*time.Millisecond, 4*time.Second), 65125, true},
+		{"odd_range", 125, 250, fdb.Error{Code: 1007}, 187, true},
+		{"two_rows", 9, 11, fdb.Error{Code: 1007}, 10, true},
+		{"one_row", 9, 10, fdb.Error{Code: 1007}, 0, false},
+		{"empty_range", 10, 10, fdb.Error{Code: 1007}, 0, false},
+		{"reversed_range", 11, 10, fdb.Error{Code: 1007}, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			mid, split := duecFixtureSplitPoint(tc.lo, tc.hi, tc.err)
+			if mid != tc.mid || split != tc.split {
+				t.Fatalf("split [%d,%d) on %v = (%d,%v), want (%d,%v)", tc.lo, tc.hi, tc.err, mid, split, tc.mid, tc.split)
+			}
+			if split && (mid <= tc.lo || mid >= tc.hi) {
+				t.Fatalf("split %d must strictly shrink [%d,%d)", mid, tc.lo, tc.hi)
 			}
 		})
 	}

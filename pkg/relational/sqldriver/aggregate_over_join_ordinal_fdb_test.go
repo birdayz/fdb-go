@@ -34,7 +34,7 @@ func TestFDB_AggregateOverJoinOrdinal(t *testing.T) {
 			"CREATE TABLE dept (did BIGINT, dname STRING, PRIMARY KEY (did)) "+
 			"CREATE TABLE emp (eid BIGINT, did BIGINT, salary BIGINT, PRIMARY KEY (eid))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggjoin_ord/s WITH TEMPLATE aggjoin_ord")
-	dsn := fmt.Sprintf("fdbsql:///testdb_aggjoin_ord?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGJOIN_ORD?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

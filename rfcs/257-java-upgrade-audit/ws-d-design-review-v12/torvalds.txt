@@ -1,0 +1,91 @@
+**NAK**
+
+- **Tree:** `5a28ecbc718291b8bad5510867c375acfcdff246`
+- **Design:** `ws-d-design.md`, SHA256 `1bd420cd5fedce7309fc766d40408a04f9ddcc7476d078d03b9ec6658993b018`. I recomputed it from the blob and it matches; 1644 lines.
+- **Java:** `fdacd162` (read from `.git/HEAD`).
+- **Read:** all four v11 verdicts, the full v12 design and its diff from v11, RFC-094's new paragraph, the oracle README and evidence, and the logs. I checked the claims against the cited Java and Go.
+- **Not done:** nothing was run or edited.
+
+## P1-1: the chaos fault semantics were asserted, not re-derived, and the D-0 fixtures cannot be built on them (design 954-987)
+
+- **The existing arms retry below the new loop.** They re-execute inside `TransactCtx` (fault.go:200, :210) and return the second run's result. They never hand 1021 back to `attemptLoop`. Three consequences:
+  - The autocommit fixture, "returns the error without re-executing under `FaultCommitUnknown`" (981), cannot be built: the arm re-executes and succeeds whatever the owner's policy says.
+  - The fixture "hooks once, final versionstamp" (973-975) never reaches the loop's retry path. It pins today's behaviour, so it is vacuous for D-0.
+  - Single-attempt owners get a re-execution production never makes. The attempt histogram (963-969) does not count these retries.
+- **`FaultRetryable` returns before the body runs, which breaks the merger fixture (977-980).** `MergeIndex` never runs, so `control` stays nil and `merge` returns at indexing_merger.go:60 before `handleFailure`. `LastStep` is never set, so the halving never happens.
+- **No arm models the common real retry.** That is a body that ran, did not commit, and returned 1020 or 1007: the case that exercises attempt-local state.
+- **`ReadTransactCtx` injects nothing** (fault.go:216). The `RunRead` row of 970-972 cannot be built, and 1020 is not a read-only outcome anyway.
+- **On `spfreshRun`'s route, `FaultRetryable` wraps the whole unbounded client loop.** It turns an error the real loop would absorb into a failure. Its scope must be restricted.
+- **Needed:**
+  - per-attempt arms: "commit, then return 1021" and "run the body, do not commit, return the code";
+  - a declared scope for `FaultRetryable`;
+  - a read-side arm, or drop the `RunRead` row.
+
+## P1-2: the SQL page loop is misclassified, and ONE attempt lands on Go-only transactions (919-932)
+
+- **The census line points at the wrong code.** cascades_generator.go:2646 is `fetchTableStatistics`.
+- **Result pages go through the autocommit line.** The page loop calls `runInCapturedTx` (cascades_generator.go:2207) and then `DB.Run`; the comment there reads "each page runs in its own auto-commit transaction via DB.Run" (:2200-2206). That call is connection.go:416, which the design gives ONE attempt.
+- **Every page from the second on is a Go-only transaction, and it would get one attempt.** That contradicts the stated page policy (database default). A transient 1007, 1009 or 1037 on page N would now fail the statement mid-stream. System-table reads (`runInTx`) are affected the same way.
+- **An existing pin contradicts the new fixture.** `TestPagedDistinctUnderAmbiguousCommitsHoldsSteady` (distinct_scratch_retry_charge_test.go:130, :159-165) requires every autocommit page to re-execute under `FaultCommitUnknown`. The new fixture requires no re-execution through the same route. Both cannot hold.
+- **Needed:** split connection.go:416 into statement, continuation-page and system-read policies; fix the census line; reconcile the existing pin.
+
+## P2
+
+1. **The route does nothing on the third backend.**
+   - simfdb's `SetRetryLimit` is a no-op (pkg/simfdb/options.go:42), and its `Transact` retries up to 100 times internally (simfdb.go:14, :183-205).
+   - "Both client backends" (950-953) misses it, yet the embedded chaos harness and `pkg/simfdb/hunt` are built on it.
+   - On the simulator, `Run` becomes up to 10 × 100 attempts and autocommit up to 100.
+   - Needed: simfdb honours `retry_limit` as the C++ client does, pinned by a test.
+2. **D-0 does change SPFresh.**
+   - SPFresh record writes run in the caller's transaction (`Update`, spfresh_index_maintainer.go:212; no `spfreshRun`). They therefore get the caller's policy: 10 attempts under `Run`, 1 under autocommit.
+   - RFC-094's new paragraph says the write path uses `spfreshRun` and "the losing side … retries until it wins". That is false for the "update/delete vs split" row.
+   - Census step (5) excludes SPFresh ("SPFresh-free scenarios", 965).
+   - Needed: correct RFC-094 section 2 and design 933-941, and add SPFresh concurrent-writer specs and the SPFresh concurrency stress to the census.
+3. **B is not calibrated on the design's own evidence.**
+   - The quoted worst refit, 200.9 ms (8.0e-8 s per n·d; design 1261, README item 26), comes from the capture run only.
+   - The two v12 evidence runs are worse:
+     - 254.8 ms at n = 2000, d = 1250, which is 1.02e-7 (rfc257-v12-2.log:2088);
+     - 232.0 ms, which is 9.3e-8 (rfc257-v12-1.log:2958);
+     - total refit time up to 910.5 ms, against the stated 0.36-0.85 s.
+   - At 1.02e-7 the bound costs 2.55 s, not 2.0 s. The design's own rule (1273-1275) then gives B ≈ 1.96e7, which admits d ≤ 980 at n = 2000 and so excludes the measured corner.
+   - The rate is observed, not worst-case: KMeans can stop before I iterations.
+   - Needed: take the maximum over every run, restate B, and say "observed".
+
+## P3
+
+1. **The census count does not reproduce.** The design's command, minus the classes it excludes (containers, `exec.Cmd`, planner tasks, the plandiff runners) and the non-call matches (comments, strings, the stack tester, dst-hunt), gives 53 lines, not 46. Two groups are unclassified:
+   - `pkg/simfdb` (8 lines);
+   - indexing_heartbeat_admin.go:174, :192, :211.
+2. **The heartbeat cleanup contradicts D-0 (1).** `cleanupHeartbeatWithin` keeps `CreateWritableTransaction`, which contradicts "every attempt … never a transaction opened beside it". Declare the exception.
+3. **The heartbeat collapse left a stale contract.**
+   - The comment (indexing_heartbeat_admin.go:112-117), the DIVERGENCES entry ("So 'ongoing' means exactly …") and the Go spec's title ("reports an ongoing build exactly where admission would refuse") are now false. A live (U) beside a (U, x) a day ahead is refused by per-key admission but reported not ongoing.
+   - One case is unpinned: a live (U) plus an invalid (U, x). Go flipped from true to false in v12; Java says true.
+4. **TODO.md still carries the superseded recipe.** TODO.md:6995 still prescribes "INSTEAD OF delegating straight to `d.transactor.Transact`". The block at 14683-14693 still describes v11's single shared loop.
+5. **`attemptLoop` leaves context handling unstated:** the check before each attempt, the context-aware delay, and which error it returns.
+6. **"Measured with the Go implementation" (1271) is wrong: no Go implementation exists.** It is a hypothesis.
+7. **The non-zero fault guard needs a stated floor.** Name each scenario's seed and transaction count so it cannot redden spuriously once retries change how many draws are made.
+8. **The "twelve rows" balance claim includes two `initialUsable` rows.** Those two are the target's own fit, not peels.
+9. **The "applied twice" claim for autocommit is unmeasured.** Java parity alone justifies one attempt; pin the claim or drop it.
+
+## Verified
+- **Java citations:** TransactionalRunner:181-192, ExponentialDelay:62-72, RecordLayerTransactionManager:49, OnlineIndexOperationBaseBuilder:445-449, `lessenWorkCodes`, IndexingHeartbeat:135-163, OnlineIndexer:459-462.
+- **Go facts:** transaction.go:2504, the 12-code `IsRetryable` pin, runner.go:283, and 39 `spfreshRun` callers.
+- **Admission arithmetic:** 1250, 2775, 1.5e7, 1.8e7, 8.2e7, and 3.07e7 for I = 16.
+- **Corner pins:** identical across the capture run and both evidence runs.
+- **Evidence binding:**
+  - the source hashes match the tree;
+  - both uncached oracle runs passed 27 of 27;
+  - both heartbeat mutations redden their specs;
+  - `65d3ffba` differs from the candidate only in the README paragraph;
+  - `just test` executed 14 of 94 targets, and all 94 passed.
+
+## Measured vs still hypothesis
+- **Measured:** items 26 and 27 (balance, the heartbeat collapse in both engines, the mutations). Timings are printed, not pinned.
+- **Checked against source only:** the Java owner and retry facts, and the Go route facts cited above.
+- **Still hypothesis:**
+  - every D-0 mechanism, the chaos semantics, the page policy and the census results;
+  - simfdb's behaviour under D-0;
+  - the Go peel rate and B;
+  - the reconcile cost;
+  - whether the fixtures are feasible;
+  - every Go GuardiANN mechanism.

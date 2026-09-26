@@ -266,10 +266,11 @@ func loadRecordStoreState(store *FDBRecordStore, existenceCheck StoreExistenceCh
 	// Cache derived subspace keys globally — same for every Open() on the same subspace.
 	ks := getCachedSubspaceKeys(store.subspace)
 
-	// Point-read the store info key. Java uses getRange(subspace.range(), 1) which
-	// generates a conflict range over the full subspace. We use a point Get instead
-	// to generate a minimal conflict range [key, key\x00), avoiding conflicts with
-	// concurrent record writes to the same subspace.
+	// Point-read the store info key. Java reads getRange(subspace.range(), 1), a
+	// range read limited to one key, whose conflict range runs from the
+	// subspace's start through the first key returned, the info key: no
+	// record-layer key sorts before the info key's 0, so it covers the same
+	// written keys as this point Get's [key, key\x00).
 	storeInfoFuture := tx.Get(ks.expectedInfoKey)
 	// Index states use snapshot isolation (no conflict).
 	indexStatesFuture := tx.Snapshot().GetRange(fdb.KeyRange{Begin: ks.indexStateBegin, End: ks.indexStateEnd}, fdb.RangeOptions{})
@@ -289,7 +290,7 @@ func loadRecordStoreState(store *FDBRecordStore, existenceCheck StoreExistenceCh
 	var header *gen.DataStoreInfo
 	if storeInfoValue != nil {
 		header = &gen.DataStoreInfo{}
-		if err := header.UnmarshalVT(storeInfoValue); err != nil {
+		if err := UnmarshalVTAsJava(header, storeInfoValue); err != nil {
 			return nil, fmt.Errorf("failed to parse store header: %v", err)
 		}
 		exists = true
@@ -468,7 +469,7 @@ func (c *MetaDataVersionStampStoreStateCache) Get(store *FDBRecordStore, existen
 		if err != nil {
 			return nil, err
 		}
-		if entry.recordStoreState.StoreHeader != nil {
+		if entry.recordStoreState.StoreHeader.GetCacheable() {
 			c.addToCache(subKey, entry)
 		}
 		return entry, nil
@@ -487,8 +488,12 @@ func (c *MetaDataVersionStampStoreStateCache) Get(store *FDBRecordStore, existen
 		if err != nil {
 			return nil, err
 		}
-		if currentStamp != nil && entry.recordStoreState.StoreHeader != nil {
-			c.addToCache(subKey, entry)
+		if currentStamp != nil {
+			if entry.recordStoreState.StoreHeader.GetCacheable() {
+				c.addToCache(subKey, entry)
+			} else {
+				c.invalidateOlderEntry(subKey, currentStamp)
+			}
 		}
 		return entry, nil
 	}
@@ -497,7 +502,6 @@ func (c *MetaDataVersionStampStoreStateCache) Get(store *FDBRecordStore, existen
 	if err := existing.handleCachedState(ctx, existenceCheck); err != nil {
 		return nil, err
 	}
-	existing.shared = true // Shared via cache — must clone on use
 	return existing, nil
 }
 
@@ -528,12 +532,13 @@ func (c *MetaDataVersionStampStoreStateCache) addToCache(key string, entry *FDBR
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	entry.shared = true // Will be returned to multiple callers from cache
+	// Set before publication; cache hits and an older merge winner are already
+	// shared and must never be rewritten while another store clones them.
+	entry.shared = true
 
 	if existing, ok := c.entries[key]; ok {
 		newer := getNewerEntry(existing.entry, entry)
 		if newer.recordStoreState.StoreHeader != nil && newer.recordStoreState.StoreHeader.GetCacheable() {
-			newer.shared = true
 			c.entries[key] = &cacheItem{entry: newer, lastAccess: time.Now()}
 		} else {
 			delete(c.entries, key)

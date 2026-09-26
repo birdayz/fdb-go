@@ -1,0 +1,57 @@
+**NAK.** Tree `eb79c50e127ebbed64612a10811d9020bc723b18`. Design `ws-j-design.md`: I recomputed the SHA256, `508e5cd5fe89179d448aa44a9f14b36f8ed000362a69bb588fab910aff5b3ffe`, 1310 lines. Java `fdacd162a`.
+
+I only read, and ran nothing. "Measured" below means an artifact exists. I read the three v3 verdicts, the full design, the v3→v4 diff of every WS-J file, the oracle, the evidence and the logs.
+
+**Checked and correct**
+- **Evidence.** I checked 18 of the 43 hashes in `evidence-v4.txt` against the tree; all 18 match. The tally reconciles: 166+4+180+4+20+101 = 475. The 354 double-built runs are exactly the accepted runs. The logs agree: two identical oracle passes; `just test` executed 54 of 94 targets, 94 pass; `vr-jvm` passes 18 of 18. All twelve v4 mutations record their text and presence.
+- **`literalKeyCarrier`.** The static type decides the carrier, and an unsigned value above int64 is refused.
+- **Widening arm.** It is one-way (long→int; double→float only inside long arithmetic), with a spec for each direction.
+- **F13 order.** It matches Java: `fetchUnionDescriptor`, then `validateDataTypes`, then `validateUnion` (RecordMetaDataBuilder.java:316-358, 635-747). `Build` returns `buildErrors[0]`. `SetRecordsWithUnionName` refuses a name other than the union it finds.
+- **Signed readers and writers.** The unsigned 32-bit readers are converted (`values.go:1165`, `proto_value.go:110`, `proto_field_type.go:124`), and the writers take the INT range.
+- **F13 scope.** At tag `v0.1.0` the relational builder already wrote `RecordTypeUnion` with UNION usage, so SQL-built templates really are outside the load refusal.
+- **Plan-cache coupling.** It also holds for prepared statements: `substituteParams` writes `?` values into the SQL text before the cache key is built (`connection.go:636`, `utilities.go:91`).
+- **Guard concurrency.** The argument holds at source level: `DoesSchemaTemplateExistAtVersion` is a serializable `LoadRecord` (`fdb_template_catalog.go:51-61`).
+- **§3.3.** It now maps the Go shapes, and §8 puts §6 before §3.3.
+
+## HIGH
+
+**1. §4's carry rule throws away the carrier fix it is meant to carry.**
+- :863 counts an index as EQUIVALENT when its root is "equal under 3.2's one-way literal-carrier arm". :872-873 then replaces "the rebuilt proto … by the stored one field for field".
+- For the exact tenant §3.2 targets (stored `long_value`, rebuilt `int_value`), v2 therefore keeps `long_value`. Consequences:
+  - The rebind validator then compares roots that are proto-equal. The landed arm (`metadata_evolution_validator.go:565`) stays unreachable, which contradicts :484 ("which is what makes the arm reachable").
+  - The target keeps failing every query of T1. That is MEASURED: XX000 on all four non-bitmap reads.
+- These claims are therefore false as written:
+  - test 5's "the target plans the bitmap reads over v2" (:951);
+  - §3.5's "moves such a tenant to the `int_value` key" (:764);
+  - the new DIVERGENCES entry ("The tenant's key moves to `int_value` through the template-version carry rule");
+  - the TODO F11 block and the CHANGELOG.
+- Declared divergence (m) stops being a transition and becomes permanent.
+- **Fix:** an index equal only under the widening arm keeps the stored versions, subspace key and option list, but takes the REBUILT root. State which fields come from which side. Test 5 should assert that v2's stored root is `int_value` and that the arm fired, and a "replace-all-by-stored" mutation should redden it.
+
+## MEDIUM
+
+**2. Nothing outside this design records the one-merge rule.**
+- The only gates are the Status paragraph (:4-10) and §8 (:1248).
+- The umbrella RFC has no WS-J merge criterion (grep "merge": none), and neither does TODO.md. The branch also carries WS-D, WS-E and WS-F, each with its own gate.
+- Meanwhile the tree already refuses legacy metadata on load (F13) and has F1 without the guard or the carry rule.
+- The Unreleased CHANGELOG already documents `MigrateLegacyRecordsFile`, `SaveMigratedLegacyMetaData` and `frl meta migrate-legacy`. None of them exists yet: 0 hits in `pkg/` and `cmd/`, against a control of `SetAllowLiteralCarrierWidening` at 8 lines in 4 files.
+- **Fix:** record the gate where the person merging will read it (umbrella RFC merge criteria plus a TODO block at EOF), or mark those CHANGELOG lines as pending.
+
+**3. "Faithful match" at the INT lane edge (:462) is measured only for EQUALS comparands.**
+- The `int_max_plus_one` probe has no index-ordered projection of the function value (`SELECT i + 1 FROM T ORDER BY i + 1`).
+- For DOUBLE operands the target plans `ISCAN(ARITH_D <,>) | MAP (_.D + _.D …)` (pinned): it recomputes the value from the record, and for row 1 that recomputation overflows in the INT lane.
+- §3.5 types the expanded Value INT and derives coverage from the expanded Values. Go could therefore return 2147483648 as an INT read from the index entry, where the target raises the overflow.
+- **Fix:** add that read and its EXPLAIN to the probe, decide whether a function-key column may be covered, and pin the decision.
+
+## LOW
+
+4. **Top-node check precedence and unmapped Go tops.**
+   - Java asserts the top node (DdlVisitor.java:274) before `generate()` runs `IndexSpec.collect` (MaterializedViewIndexGenerator.java:95-97). No §3.3 test pins top-node-before-IndexSpec, for example a join whose ORDER BY key is not projected.
+   - Go tops outside the two mapped shapes are unmeasured: LIMIT hoisted above the Project, and the EXISTS fold's Sort(Select) (the RFC-141 comment in `translateProject`, `cascades_translator.go:6712` on). Add oracle shapes for them.
+5. **Predicate equality in EQUIVALENT is untested for old stores.** The "all of it" list (:832) omits predicates, which amounts to claiming that pre-port Go stored the same predicate bytes a rebuild produces. Nothing tests that. If it is false, every pre-port sparse index silently becomes CHANGED and is left DISABLED above 200 records. Put a sparse index into test 1's pre-port fixture.
+6. **Stale counts.** :407 says "11 reads" (now 15). :467 says "Go's 13 answers" (now 19; §0 :151 and the README say 19).
+7. **Duplicate-option messages are tied by copied strings.** The link is copied literals (conformance :2276 against `index_option_order_test.go:141,156`); the JVM spec never calls Go's `indexFromProto`. Drive Go's loader in the same spec so that a drift reddens.
+
+**Measured vs. hypothesis.**
+- Measured: the whole-table XX000 over `long_value`; the target serving `i + 1 = 6` from the index; the raw F2b bytes; the Guava messages; the 18 descriptor shapes; the per-run Go digests.
+- Still source-only, to be proven when built: §3.3's arms on real graphs, §3.5's decline and typing rule, the carry rule, the guard (sound as read), and the §4c migration.

@@ -37,7 +37,6 @@ jobs:
     runs-on: hetzner-fdb-vm
     timeout-minutes: 40
     env:
-      GOWORK: "off"
       CGO_ENABLED: "1"
     steps:
       - name: Checkout

@@ -1,0 +1,137 @@
+The current tree still needs the ignored-option API, identity-first evolution mapping, and rank-valued scans. The old-descriptor index-rewrite loop is already correct.
+
+I verified the local Java checkout at **4.14.2.0, `fdacd162a9c8acfadc49082b89185c823ab8ae4a`** and inspected the current Go working tree, whose HEAD is `71ccd8cf8b3fd0dbafe283e91171818e36af555e` with existing modifications. The findings below refine [RFC257 WS-B](/home/birdy/projects/fdb-go/rfcs/257-java-4.14.2.0-upgrade.md:340) and [audit W7/W8](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/record-storage.md:227). This was source research only; no edits, tests, builds, agents, Git mutations, or GitHub access.
+
+The implementation map is:
+
+| Contract | Pinned Java source | Current Go source |
+|---|---|---|
+| Copied ignored-option configuration | [MetaDataEvolutionValidator.java](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/metadata/MetaDataEvolutionValidator.java:142):142, 1021, 1089, 1366 | [metadata_evolution_validator.go](/home/birdy/projects/fdb-go/pkg/recordlayer/metadata_evolution_validator.go:19):19, 52, 124; configuration absent |
+| Filter changes, then validate supplied remainder | Same Java file:752, 775; [IndexValidator.java:194](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/metadata/IndexValidator.java:194) | Same Go file:591, 665, 691, 723, 757, 915 |
+| Union identity and recursive descriptor validation | Java validator:189, 240, 354 | Go validator:191, 256, 322, 1041, 1056 |
+| Resolve actual union member type | [RecordMetaDataBuilder.java:859](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/RecordMetaDataBuilder.java:859), :878 | [metadata.go:323](/home/birdy/projects/fdb-go/pkg/recordlayer/metadata.go:323), :348, :1392, :2054 |
+| Preserve record/index identity through renames | Java validator:382, 669, 698 | Go validator:330, 397, 444, 614 |
+| Bounds validation and scan dispatch | [RankScanBounds.java:48](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/RankScanBounds.java:48); [RankIndexMaintainer.java:140](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/RankIndexMaintainer.java:140), :159 | [index_scan.go:310](/home/birdy/projects/fdb-go/pkg/recordlayer/index_scan.go:310); [rank_index_maintainer.go:202](/home/birdy/projects/fdb-go/pkg/recordlayer/rank_index_maintainer.go:202), :208 |
+| Extract score, compute rank, replace value | Java rank maintainer:263; [RankedSetIndexHelper.java:235](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/RankedSetIndexHelper.java:235); [IndexEntry.java:201](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/IndexEntry.java:201) | Go rank maintainer:436; [index_scan.go:221](/home/birdy/projects/fdb-go/pkg/recordlayer/index_scan.go:221); [cursor_combinators.go:552](/home/birdy/projects/fdb-go/pkg/recordlayer/cursor_combinators.go:552) |
+
+For ignored options, add a private set to `MetaDataEvolutionValidator` and these public APIs:
+
+```go
+func (b *MetaDataEvolutionValidatorBuilder) SetIgnoredIndexOptions(
+    options []string,
+) *MetaDataEvolutionValidatorBuilder
+
+func (b *MetaDataEvolutionValidatorBuilder) GetIgnoredIndexOptions() []string
+func (v *MetaDataEvolutionValidator) GetIgnoredIndexOptions() []string
+func (v *MetaDataEvolutionValidator) AsBuilder() *MetaDataEvolutionValidatorBuilder
+```
+
+Use set semantics: exact, case-sensitive names; duplicates collapse; nil clears; default is empty. Copy on setter, `Build`, and `AsBuilder`; getters return independent, sorted slices. `AsBuilder` must preserve every existing flag. A built validator never mutates its set.
+
+Move changed-option computation into the evolution validator. Compute additions, removals, and value changes, subtract configured names, then dispatch only the remaining mutable set. Preserve the existing type-specific-handler-then-base sequence.
+
+Java now exposes validation of a caller-supplied changed set. Go has no `IndexValidator` object holding the new index, so the concrete equivalent should be:
+
+```go
+func ValidateChangedIndexOptions(
+    oldIndex, newIndex *Index,
+    changedOptions map[string]bool,
+) error
+```
+
+Document that this function consumes a mutable set and may remove handled names. It must not recompute differences. The evolution validator supplies a fresh set, preventing validators from mutating configuration or index options.
+
+**Explicitly ignored structural option names are permitted by Java.** Its tests allow ignoring `unique` and selected multidimensional options. Do not introduce an “unignorable structural options” list. Conversely, ignoring one option must not suppress another changed option, or bypass index type, expression, version, record-scope, or primary-key checks. See [Java option regressions:2263, 2417](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/metadata/MetaDataEvolutionValidatorTest.java:2263).
+
+For evolution, the authoritative identity is **the old union field number and its corresponding new union field**, followed by validation that record-type keys remain equal. A matching current name or explicit record-type key must not override that correspondence.
+
+Implement one correspondence pass:
+
+1. Read `RecordMetaData.GetUnionDescriptor()`. The current helper searches only for `"UnionDescriptor"` and misses Java’s `Union` fixture and other supported union names.
+2. For every old union field number, require a new message field. Build bidirectional old/new descriptor mappings; reject removal, splitting one old descriptor across multiple new descriptors, or merging old descriptors.
+3. Recursively validate each matched descriptor pair. Memoize **`(oldDescriptor, newDescriptor)`**, not just the old full name.
+4. Derive a complete old-name → new-name map, including unchanged names because existing Go consumers expect them. Apply `disallowTypeRenames` to actual identity-preserving name changes.
+5. Use that map consistently for record types, primary keys, index associations, and expression rewriting.
+
+Replace the final name-based `validateMessages` pass with validation through those matched pairs. Today it can skip a renamed descriptor or compare unrelated descriptors during a swap. Preserve the existing field-number, field-rename, deprecation, cardinality, type, and enum checks.
+
+For Go’s unionless extension, use a separate typed-key-first correspondence path only when both schemas lack a union; reject mixed union presence. Preserve the existing string-versus-bytes key distinction. This extension must never replace Java’s union-tag identity.
+
+The builder requires a related fix: resolve every union member using `field.Message()`. Currently an underscore-prefixed field name wins over its actual type reference, defeating Java swaps that retain `_TypeAlpha` while changing the referenced message.
+
+When multiple union fields target one descriptor, keep these concepts separate:
+
+- Default record-type key: smallest matching field number, as [Java RecordType.java:171](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/metadata/RecordType.java:171) requires.
+- Serialization field: canonical `_TypeName`, otherwise highest field number.
+- Deserialization: recognize every matching union tag.
+
+Go currently records only the selected tag at `metadata.go:1408`; [store.go:2177](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:2177) also accepts only that tag. Both lookup paths need the complete correspondence.
+
+There is another persistence prerequisite at `metadata.go:1398`: a global generated message factory is selected by full name alone. Reuse it only when its descriptor matches the current descriptor; otherwise instantiate `dynamicpb` from the current descriptor. Java’s [DynamicMessageRecordSerializer.java:108, 150](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/common/DynamicMessageRecordSerializer.java:108) decodes against current metadata. A same-name schema revision must not silently use an older generated shape.
+
+Preserve Go’s correct `expectedRenamedIndexExpression` loop at line 444: iterate **old** index record types, map each identity, and rewrite against its new descriptor. All participating types must produce the same replacement expression.
+
+Move index record-scope validation before expression comparison, matching Java’s staged failures. Also remove the `allowNoSinceVersion` waiver at Go lines 649–650: Java requires an added type on an existing index to have `sinceVersion > oldVersion`, even when new metadata types generally may omit it. The existing expectation at [metadata_evolution_validator_test.go:2052](/home/birdy/projects/fdb-go/pkg/recordlayer/metadata_evolution_validator_test.go:2052) conflicts with the pinned specification.
+
+For rank scans, add a focused Go API alongside the existing scan methods:
+
+```go
+type RankScanBounds struct {
+    ScanType           IndexScanType
+    RankRange          TupleRange
+    IncludeRankAsValue bool
+}
+
+func NewRankScanBounds(
+    scanType IndexScanType, rankRange TupleRange, includeRankAsValue bool,
+) (RankScanBounds, error)
+
+func (store *FDBRecordStore) ScanRankIndex(
+    index *Index, bounds RankScanBounds,
+    continuation []byte, props ScanProperties,
+) RecordCursor[*IndexEntry]
+```
+
+Validate both constructor input and struct literals at dispatch: only `BY_VALUE` and `BY_RANK`, including when the flag is false. Require a RANK maintainer and the normal readable-state checks. This follows Go’s existing specialized scan APIs without changing the general maintainer interface.
+
+Inside the rank maintainer:
+
+- `BY_VALUE` uses the existing ordinary scan.
+- `BY_RANK` uses the existing rank-to-score-range translation.
+- False returns the underlying cursor without additional per-entry rank lookups.
+- True maps each entry to a new entry with the same index/key and a singleton rank value.
+
+For extraction, let `g = GetGroupingCount()` and `s = GetGroupedCount()`:
+
+```text
+group = entry.Key[:g]
+score = entry.Key[g:g+s]
+```
+
+Validate the length before slicing. Never use `entry.Key[g:]`, and never remove “PK length” from the tail: primary-key components can overlap indexed columns. Existing `RankForScore` consumes its entire supplied suffix, so introduce a helper that extracts the declared columns before invoking the lookup.
+
+Lookup uses `nullIfMissing=true`. Encode a found rank as `tuple.Tuple{int64(rank)}` and a missing score as `tuple.Tuple{nil}`—not an empty tuple or a pointer. Rank is absolute within its group, including bounded/reverse scans. Keep aggregate insertion-rank behavior unchanged.
+
+Match Java’s snapshot preload and serializable actual rank lookup; scan snapshot settings do not convert the latter into snapshot reads. Use the existing fallible cursor mapping to preserve order, continuations, terminal reasons, close behavior, and errors. A synchronous mapping is sufficient for correctness; Java’s pipeline is an optimization. Instrument the completed scan cursor once.
+
+No update-path or stored-value change is required. Existing rank-index values remain empty.
+
+The regression matrix should be:
+
+| Layer | Cases | Required assertions |
+|---|---|---|
+| Unit: configuration | Empty/default, duplicate names, nil reset; mutate setter input, getter results, builder after build, `AsBuilder` | No aliasing; independent validators; all existing flags preserved |
+| Unit: changed options | Add/remove/change ignored option; ignored unknown option; explicit ignored `unique`; two forbidden changes with only one ignored | Only named changes disappear; strict default and remaining validation survive; supplied-set API never recomputes |
+| Unit: identity | Rename, isomorphic swap, incompatible swap, `A→A__Old` plus new `A`, explicit keys, custom `Union` | Match union tags first; incompatible shapes/key changes fail; reused name does not capture old identity |
+| Unit: descriptor traversal | Recursive descriptors, same old nested descriptor paired with different new descriptors, alias split/merge/removal | Pair memoization validates every correspondence; all old union tags retained |
+| Unit: index evolution | Stale associations; corrected associations but stale fields; fully corrected fields; multi-type rewrites disagree | Port Java’s staged failures; preserve old-descriptor loop; reject unjustified index-scope widening |
+| Unit: bounds/projection | Unsupported scan types with either flag; grouped/composite score; appended and overlapping PK; short key; missing rank | Correct errors and exact singleton integer/NULL values |
+| Real FDB: metadata | Save old records and metadata; commit; evolve; reopen with new descriptors | Correct type, field, PK, index association, and record-function behavior; include registered-name mismatch and historical alias tags |
+| Real FDB: metadata rejection | Invalid evolution through `FDBMetaDataStore` | Current metadata and history unchanged; configured validator reaches save gate at [metadata_store.go:115](/home/birdy/projects/fdb-go/pkg/recordlayer/metadata_store.go:115) |
+| Real FDB: rank semantics | Both scan types; grouped/ungrouped; ties; duplicate counting; bounded/reverse scans; empty/out-of-range bounds; BY_VALUE across groups | Scores `100,200,200,300,400` yield `0,1,1,2,3`; duplicate counting yields `0,1,1,3,4`; second group restarts at zero |
+| Real FDB: cursor/storage | Small pages and limits; continuation resume; cancellation/lookup failure; committed cold reopen | Same keys, PKs, continuations, terminal reasons; no skipped ties; false preserves empty values; all stored index/ranked-set bytes unchanged |
+| Cross-language FDB | Java writes→Go scans/evolves; Go writes→Java scans/evolves | Pinned Java agrees on acceptance, identities, rank values, and packed tuple bytes |
+
+Port the actual descriptor constructions from [Java evolution tests:1129, 1206](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/metadata/MetaDataEvolutionValidatorTest.java:1129), rather than Go’s existing map-only rename fixtures. Use [RankIndexEntryRankTest.java:114](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/indexes/RankIndexEntryRankTest.java:114) as the rank oracle, extending it with commit/reopen coverage.
+
+Finally, the current conformance harness would miss incorrect rank values: [Java rank adapter:100](/home/birdy/projects/fdb-go/conformance/rank_index_conformance.java:100) and [Go adapter:566](/home/birdy/projects/fdb-go/conformance/rank_index_conformance_test.go:566) omit them, while [entriesEqual:432](/home/birdy/projects/fdb-go/conformance/index_conformance_test.go:432) ignores `Value`. Add rank-specific value assertions and lossless packed-tuple output to both adapters. Comparing keys or row counts alone cannot establish W7 parity.

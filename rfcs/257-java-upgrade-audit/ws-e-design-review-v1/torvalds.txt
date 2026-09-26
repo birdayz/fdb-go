@@ -1,0 +1,91 @@
+**NAK.** I reviewed tree `cc94face9f554e277346f6061becf84c658abc3b`, design `ws-e-design.md` with SHA-256 `8647e12bbf6082d75b6341baf04166b7b8310564e90675fd57b6eb0ef2b0569e` (hash confirmed), against Java 4.14.2.0 and the oracle-6/7 logs. The review was read-only; I ran no tests or probes.
+
+Much of the design holds up against the source:
+- The LIKE semantics, the three new SQLSTATEs and the grammar citations are correct.
+- The lexer plan works for the Go ANTLR target. The runtime calls `PushMode`/`PopMode` through the `Lexer` interface (`lexer_action.go:168,213`), and `parser.go:300-306` passes it the generated lexer. A `NextToken` override is needed because `BaseLexer.NextToken` calls `EmitEOF` non-virtually (`lexer.go:197`). A fresh lexer is built per parse, so a comment-depth counter can't leak between statements.
+- Go has no writer of the LIKE or variadic value protos, so the wire claim stands.
+- The IN-list bare-NULL rule matches Java (`AstNormalizer.java:507-528`).
+- The DML guard matches Java (`QueryPlanUtils.java:52-57`).
+
+## HIGH
+
+1. **Bound-NULL typing contradicts both Java and the oracle (§4.3, lines 311-316).**
+   - Java's `setNull(p, sqlType)` throws the type away (`EmbeddedRelationalPreparedStatement.java:207-216`). The parameter becomes a NULL-typed constant (`Type.java:706-707`; `Expression.java:429-433`).
+   - The oracle agrees: `prepared_in_typed_null` and `prepared_in_object_null` give identical results. `prepared_array_typed_null_element` gives the RelationalException form, which comes from the `type.isNull()` check at `ExpressionVisitor.java:1196`.
+   - The design's `api.NullOf(sqlType)` would make `[?]` fail later, at run time, with the other message. Its "nil → unknown type" would miss the `isNull` check and fall into `CommonValueType`'s Unknown branch.
+   - Fix: every bound NULL becomes a NULL-typed constant, and `NullOf` is dropped.
+
+2. **The snapshot connection option is missing (§6).**
+   - Java has `Options.Name.ISOLATION_LEVEL_SNAPSHOT` (`Options.java:232,337,594`). It is merged at `PlanGenerator.java:170`, validated at `:509` and applied at `QueryPlan.java:504`. `OptionScopeTest.java:105-180` shows a snapshot connection running SELECTs at snapshot and rejecting DML.
+   - Go's `api/options.go` copies Java's option list one-for-one but has no such name.
+   - The umbrella's "reject DDL" can only be reached through this option, because DDL grammar takes no OPTIONS.
+   - Java's cache key leaves statement options out (`AstNormalizer.java:283-312`). The §3.2 token key keeps them in, so the §6.4 "no leak through a cached plan" test is vacuous for the SQL-clause path.
+
+3. **Several §6 and §4.3 contracts depend on routes Go doesn't have.**
+   - Go rejects statement continuations outright (`cascades_generator.go:1343-1354`: "no resume entry point").
+   - A search of `pkg/relational/*.go` (excluding generated parser code and tests) finds no ExecuteContinuation or COPY code at all.
+   - So EXECUTE CONTINUATION + SNAPSHOT, the COPY-continuation 0A000, "apply on resume only when passed again", and binding into `continuationAtom` / `COPY FROM` cannot be tested.
+   - Fix: state Go's actual outcome and the owning dependency (WS-K accounts for these routes), or build the routes.
+
+4. **The cache-key case folding misses a case-sensitive token (§3.2).**
+   - The design uppercases every token except string literals and quoted identifiers.
+   - `BASE64_LITERAL` (Go lexer :1306) is case-sensitive, so `B64'YWJj'` and `B64'ywjj'` would share a key. Go bakes literal values into cached plans, so a warm hit returns wrong rows.
+   - `START_NATIONAL_STRING_LITERAL` and the `DQUOTA_STRING` forms of `LOCAL_ID` / `STRING_USER_NAME` are also left out.
+   - Today's byte scanner keeps every `'…'` span intact, so this is a regression. The claim that "distinct token sequences render distinctly" is false once case folding applies.
+   - Fix: port Java's fail-closed rule: fold only keyword tokens and unquoted identifiers (`AstNormalizer.java:201-203,216-219`).
+
+5. **The timing of LIKE errors is an untested assumption, and the Java source contradicts it (§1.5).**
+   - Java's pattern is a ConstantObjectValue (`like.yamsql:228` shows `LIKE @c7`). It is validated inside `ValueComparison.eval` for each evaluated row (`Comparisons.java:1656-1662`).
+   - So an empty input, or an EXPLAIN, succeeds in Java. The design's planning-time error would fail both.
+   - Fix: add oracle probes for an empty table, EXPLAIN and an all-NULL operand, then validate lazily.
+
+6. **Bound values have lifetime and key-rendering gaps.**
+   - Typed constants live in cached plans and in lazily fetched pages that run after `QueryContext` returns. database/sql requires a driver to copy any `[]byte` it keeps; the current text rendering copies implicitly.
+   - Fix: copy at bind time. Render float keys by their bit pattern (NaN payloads, -0.0), and define the `time.Time` rendering.
+   - Tests: mutate the caller's slice after the call, then check a warm hit.
+
+## MEDIUM
+
+7. **"Applied to every read the execution issues" is broader than Java.**
+   - Java keeps index-fetch record loads serializable (`FDBRecordStoreBase.java:1417`). Only cursor ranges (`KeyValueCursorBase.java:358`) and version loads (`FDBRecordStore.java:1460`) follow the snapshot setting.
+   - Go's `LoadRecord` call sites (`executor.go:1417,2143`; `executor_new_plans.go:921`) must stay serializable. The design should list the read sites explicitly.
+   - Tests should port `SnapshotIsolationConcurrencyTest`: join, union, count index, MAX_EVER index, own writes, and other transactions' committed writes. Each needs a write on the reader side (the umbrella requires this).
+   - "One read version across pages" only holds inside an explicit transaction; auto-commit pages are separate transactions (`cascades_generator.go:2203-2230`).
+
+8. **Variadic functions (§5).**
+   - The umbrella's "remove the blanket nullable override" is not addressed. That override is `values.go:2516-2521`; the design wrongly calls `CommonValueType` the blanket override.
+   - Java's operator map (`VariadicFunctionValue.java:483-490`) would newly reject COALESCE over BYTES, UUID and ENUM, and over Go-only DATE/TIMESTAMP. The design doesn't say what happens to that extension.
+   - The INCOMPATIBLE_TYPE → CANNOT_CONVERT_TYPE mapping (`ExceptionUtil.java:92-93`) is missing.
+   - None of the oracle rows can observe result nullability, so swapping COALESCE's all/any rule would go undetected. Assert on result metadata instead.
+
+9. **The nullable-array extension has a boundary but no mechanism.** `[1, NULL] = [1, NULL]` must still return TRUE while `SELECT [1, NULL]` is rejected. Java's check is context-free (`ExpressionVisitor.java:1187-1203`). The design must name which positions skip the rejection, and whether a bound NULL in `[?] = [?]` counts.
+
+10. **Decorated literals.** Java rejects charset-prefixed, national and COLLATE literals in the value path with 0AF00 (`ExpressionVisitor.java:849-851`). §2 instead keeps the old decode. Go accepts them today and produces garbage values.
+
+11. **Statement options.** PLAN RIGHT DEEP is new and has explain assertions (`right-deep-plan-tests.yamsql:75`). Neither it nor NOCACHE has defined semantics; Go only acts on DRY RUN (`cascades_generator.go:800`). EXPLAIN combined with SNAPSHOT is also unspecified.
+
+12. **The §8 acceptance criterion cannot pass as written.**
+    - `like_enum_operand`: Go can't create the enum schema.
+    - `prepared_long_no_overflow`: the Java row renders as the JSON float `2.147483648e+09`.
+    - `prepared_order_by_param`: Go's target outcome isn't stated, and Go's positional ORDER BY extension plus in-memory sort would likely return rows.
+    - The oracle's Go side maps kind "int" to int64, so the INT path is never exercised.
+    - `LIKE ?` works in Go today; removing it is an undeclared user-visible break.
+
+## LOW
+
+13. **Parameter typing details.**
+    - `uuid.UUID` binds as STRING through `fmt.Stringer`, but Java binds it as UUID (`Type.java:734-736`).
+    - `IN ?` with array or struct parameters is not addressed (`AstNormalizer.java:398-414`).
+    - §4.3 both keeps the `time.Time` conversion "as today" and deletes the midnight-date rendering.
+    - Errors for too many or too few parameters, and how named parameters are ordered in the key, are unspecified.
+    - The Go error type for the DML backstop (Java's `RecordCoreArgumentException`) is not named.
+
+14. **Accuracy and wording.**
+    - The `Comparison.Escape` consumer list leaves out the identity and hash sites: `semantic_hash.go:42`, `semantic_equals.go:41`, `predicates.go:174`, `comparison_identity.go:58,104`, `plans/semantic_identity.go:167,216`, `planning_cost_model.go:1401`. Their escape-distinctness pins (`predicates_test.go:783`, `semantic_hash_invariant_test.go:22-23`) must be carried over to the new representation.
+    - The executor line numbers are stale; the DML functions are at 3865, 3934 and 4181.
+    - The ERROR_RECOGNITION action is already Go-only text in the lexer, so "the only Go-only text" is inaccurate.
+    - Replacing invalid UTF-8 with U+FFFD is not "lossless".
+    - Converting each row to `[]uint16` adds allocations on a hot path, even though rune-level matching gives the same results for valid UTF-8. That also departs from the umbrella's "use the existing matcher", which needs a justification.
+    - `CommonValueType`'s other callers are MOD, IF and CASE (and IFNULL), not NULLIF.
+
+**Measured versus assumed:** the NULL-typing and LIKE-timing claims are contradicted by the measurement and the source respectively (findings 1 and 5). The variadic nullability claims come from source only.

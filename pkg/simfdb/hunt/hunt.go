@@ -441,7 +441,7 @@ func KitchenSinkMetadata() *recordlayer.RecordMetaData {
 		recordlayer.GroupAll(recordlayer.Field("price"))))
 	b.AddIndex("Order", recordlayer.NewSumIndex("hunt_sum",
 		recordlayer.Ungrouped(recordlayer.Field("price"))))
-	b.AddIndex("Order", recordlayer.NewRankIndex("hunt_rank", recordlayer.Field("price")))
+	b.AddIndex("Order", recordlayer.NewRankIndex("hunt_rank", recordlayer.Ungrouped(recordlayer.Field("price"))))
 	b.AddIndex("Order", recordlayer.NewMaxEverLongIndex("hunt_maxever",
 		recordlayer.Ungrouped(recordlayer.Field("price"))))
 	b.AddIndex("Order", recordlayer.NewVersionIndex("hunt_version", recordlayer.VersionKey()))

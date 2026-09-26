@@ -1,0 +1,107 @@
+**NAK** on the WS-D design v12.
+
+- **Tree:** `5a28ecbc718291b8bad5510867c375acfcdff246`
+- **Design:** `ws-d-design.md`, SHA256 `1bd420cd5fedce7309fc766d40408a04f9ddcc7476d078d03b9ec6658993b018`, 1644 lines. I recomputed both from the tree blob.
+- **Java:** `fdacd162`.
+- **Read:** all four v11 verdicts, the full v12 design and its diff from v11, the new RFC-094 §2 paragraph, the oracle README, the v12 logs, and the Go and Java sources cited below.
+- Nothing was run or changed.
+
+The heartbeat fix and the admission arithmetic hold up. Phase D-0 sends every attempt through the transactor, which answers the v11 findings. But three parts of it rest on things that are not true of this tree.
+
+## P2-1: The SQL autocommit policy is built on a misread of the code (design 919-932)
+
+- **Autocommit DML never goes through `Run`.** It opens its own statement transaction with `beginTransaction` → `CreateWritableTransaction` (connection.go:783) and commits it once. The code says "ambiguity is reported, never replayed" (cascades_generator.go:1450-1460, 1650-1653).
+  - So the claim at 923-927 that `UPDATE t SET c = c + 1` can be applied twice is false here.
+  - So is "closes a divergence" (928-929, and the status at 14-15).
+- **Everything connection.go:416 actually carries is read-only:**
+  - every page of an autocommit SELECT (cascades_generator.go:2207);
+  - the planner's index-state read (:2732);
+  - catalog loads (connection.go:558);
+  - the six SHOW / system-table reads in system_tables.go.
+- **The cited page site is wrong.** Line 930 cites :2646 as the "per-page read-only transactions". That line is `fetchTableStatistics`.
+- **Consequence:** ONE attempt lands on Go-only page transactions, which the design's own rule (930-932) gives the database default. Page k of a SELECT then fails on its first 1007, 1009 or 1037, after earlier pages were already delivered. This change is not declared anywhere.
+- **The fixture at 980-983 cannot inject a fault.**
+  - DML's own transaction bypasses the chaos transactor: `CreateWritableTransaction` uses `d.db` directly.
+  - The read-only routes cannot conflict.
+  - Only DDL and catalog init (ddl.go:857, 884) write through `Run`.
+- **Needed:** classify each of these routes by what it actually does, declare the change for SELECT pages, and put the fixtures on DDL.
+
+## P2-2: Chaos fault semantics differ by route, but the design treats them as one (954-987)
+
+- **The existing faults re-run inside one call.** They commit and then re-run `fn` inside a single `TransactCtx` call (fault.go:199-211).
+  - Under D-0 that is one attempt with two commits. The attempt loop cannot see it: not in its count, its delay, or its weak-read clearing.
+  - On the one-attempt DDL route it re-runs the very statement D-0 says must not be re-run.
+  - "Stay valid per attempt" (954-956) is true only on SPFresh's `runClientLoop` route.
+- **No fault models "the commit landed, then 1021 came back to the owner."** That is the path where the new cross-attempt code can break: post-commit hooks, versionstamp and commit checks. The `FaultCommitUnknown` fixture (973-975) still exercises today's double run inside the transactor.
+- **`FaultRetryable` returns from outside the backend's loop and never runs `fn`.** As a result:
+  - the attempt-count fixture passes even when `SetRetryLimit(0)` does nothing (see P2-3);
+  - "weak reads observed on attempt 1 only" (972) can never be observed;
+  - the page loop's per-attempt staging (cascades_generator.go:2207-2222) is never exercised;
+  - on the SPFresh route it produces a 1020 that no real unbounded loop can return.
+- **Reads get no faults.** `ChaosTransactor.ReadTransact*` injects nothing ("No fault injection on reads"), so the `RunRead` fixture cannot fire. 1020 is not a read-path error in any case.
+- **Needed:**
+  - a fault that runs `fn` and then fails inside the backend loop, so that retry limit 0 is what stops it;
+  - a fault that commits and then returns 1021;
+  - faults keyed to the route;
+  - fault injection on reads.
+
+## P2-3: A third backend ignores the retry limit (950-953)
+
+- **What it is.** `simfdb.SimDB` is an `fdb.BackendDatabase` (simfdb.go:171). It backs the simulation-testing (DST) harnesses: hunt, sqlhunt, sqlpage, metamorphic and golden.
+  - Its `SetRetryLimit` is a no-op (options.go:42).
+  - Its `Transact` retries up to 100 times (simfdb.go:14, 183-205).
+- **Consequence under D-0:**
+  - the loops nest to 10 × 100 attempts;
+  - SQL's one attempt is not honored;
+  - DST never sees D-0.
+  - The census also leaves out its 8 `Run`/`RunRead` lines.
+- **Needed:**
+  - SimFDB honors the retry limit on both reads and writes;
+  - the attempt-count fixture runs on SimFDB;
+  - the DST hunts join census (5).
+
+## P3
+
+1. **The worst refit rate comes from the capture run only.** 8.0e-8 s (200.9 ms) is wsd-corner-1.log:41. The two evidence runs measured more:
+   - 232.0 ms (rfc257-v12-1.log:2958) and 254.8 ms (rfc257-v12-2.log:2088), which is 1.02e-7 s per n·d.
+   - At the bound that is 2.55 s, not 2.0 s.
+   - Refit totals reach 0.91 s (v12-1:2952), not 0.85 s (1267).
+   - README item 26's "worst anywhere in this oracle" is false.
+   - The design's own calibration rule (1272-1275), applied to this JVM evidence, gives B ≤ 1.96e7. That is only 6% above the d=2048 fixture's W of 1.85e7. State what happens to the fixtures if B falls below their W.
+2. **The caller census is incomplete.** The design's command gives me 53 `Run`/`RunRead` lines on an `FDBDatabase`, not 46. Two groups have no class:
+   - pkg/simfdb (8 lines);
+   - indexing_heartbeat_admin.go:174/192/211. Java runs these through the indexer's runner (OnlineIndexer.java:435).
+3. **"Every attempt through `d.transactor`" (860-863) has exceptions the design keeps.** Name them first:
+   - `cleanupHeartbeatAttempt` (`CreateWritableTransaction`);
+   - SQL's own DML transaction and explicit transactions;
+   - the runner's `OpenContext`.
+4. **One lessen-work code is missing.** Line 947 lists five codes and calls the port 1:1. Go and Java both have six, including 1004 (online_indexer.go:1016; IndexingThrottle.java:65-71).
+5. **RFC-094's new paragraph is wrong about the write path.** It says the write path uses `spfreshRun`. `Update` (spfresh_index_maintainer.go:212) runs in the caller's transaction, whose owner D-0 bounds; SQL writers already never retried. So the table's "later one retries" is false on the writer side.
+6. **TODO.md still prescribes the bypass.**
+   - TODO.md:6995 says "INSTEAD OF delegating straight to `d.transactor.Transact`".
+   - TODO.md:14691 describes v11's single shared loop.
+   - A grep for that wording finds only these two hits outside the review logs.
+
+## Verified
+
+- **The route works on the two real backends.**
+  - Pure-Go: `SetRetryLimit(0)` sets the limit (transaction.go:2680-2686), and `OnError` returns the input error at :2504, before any backoff. Both `fn` errors and commit errors reach `OnError` (client/database.go:930-975).
+  - libfdb_c: the backend passes `retry_limit` through (libfdbc/options.go:18).
+  - The commit-unknown barrier stays inside `Commit`.
+- **Java citations are correct:** ExponentialDelay.java:62-72, TransactionalRunner.java:181-192, FDBDatabaseRunnerImpl.java:195-207. Java's relational core has no runner, and Java's catalog init is a single attempt (RecordLayerStoreCatalogImplTest.java:375-380).
+- **Heartbeat collapse:** matches IndexingHeartbeat.java:135-163 and OnlineIndexer.java:458-463. Keeping the first key's value reddens both specs (hb-v12-mut.log:1366, hb-v12-jvm-mut.log:44).
+- **Admission arithmetic:**
+  - bounds d ≤ 1250 and d ≤ 2775;
+  - fixture W values; I=16 gives 3.07e7 and is refused;
+  - replica volumes of 0.75 and 1.7 MB;
+  - 12 corner rows with the smaller child at 0.376–0.495.
+- **Evidence:**
+  - the oracle passed 27 of 27 in both uncached runs (v12-1:3680, v12-2:3678);
+  - `just test` executed 14 of 94 targets, and all 94 pass;
+  - `65d3ffba` differs from the candidate only in the README.
+
+## Measured vs still hypothesis
+
+- **Measured:** item 26's balance rows (pinned, identical across three runs), item 27 in both engines with its mutations, and JVM timings (printed, not pinned).
+- **Checked against source only:** Java's runner and its single-attempt relational layer, and libfdb_c's `retry_limit` behavior.
+- **Still hypothesis:** every D-0 mechanism and policy, Go's peel rate, whether the fixtures fit on real FDB, and DST behavior after the SimFDB and chaos changes.

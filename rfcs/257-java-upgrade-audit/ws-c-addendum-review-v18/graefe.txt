@@ -1,0 +1,54 @@
+**NAK.** I reviewed commit `6b4b7817d`, a delta over `d2e47b8bd`. The design file hashes to SHA256 `dc1f380c06c5d67f47dd458a654013418eb074e94818dbdf240ba0ebbd47b344`, 2890 lines; I measured both from the committed blob. The review was read-only. `git diff`, `git grep` and `git status` were refused, so I read the committed files with `git show`. Cross-file searches ran on the working tree, where HEAD is `6b4b7817d`; a positive-control search found the new symbols. "Measured" means I read it in the evidence logs or git objects; everything else is from source.
+
+The code and the query-engine change are sound. The NAK is for text that claims more than the code does, and for one evidence gap. Both fixes are text or evidence only.
+
+## Graefe lens (query engine)
+- **Planner metric matches Java (source).**
+  - Java's planner reads only the metric: `VectorIndexExpansionVisitor:191` → `VectorIndexHelper.getMetric:62` → `VectorIndexEngine.metricFromIndex:230-231` → `VectorOptionKey.read:145-152` (canonical name, then alias).
+  - `VectorIndexMetric` (`hnsw_options.go:~54-74`) reads the same key and alias with the maintainer's own parser (`javaMetricName`, which `readHNSWOptions` also uses).
+  - With `vectorMetricOperator` deleted there is a single parser. `vectorDistanceOperator` maps each of the four `VectorMetric` values.
+- **Unplannable instead of Java's throw.** A refused metric makes the query unplannable where Java throws. This is noted at the code site. It is reachable only through meta-data that skips validation, which is WS-D's open item.
+- **Measured:** `TestVectorPlan_MetricIsTheMaintainers` is red on the old planner ("planned; err=nil", `scratch18-embedded-planner-only.log:14-19`) and green on the candidate.
+- **Unchanged-entry skip (source).** `Update` now evaluates both records, applies `removeCommonEntries` (key and value compared, as `IndexEntry.equals` does), then deletes before inserting. That is `StandardIndexMaintainer.java:215-251`.
+  - The queue path correctly does not skip, matching `VectorIndexMaintainer.java:432-467`.
+  - The sliding window still splits its delegate calls (`sliding_window_index_maintainer.go:275-305` ≙ `SlidingWindowIndexMaintainer.java:381-388`).
+- **Where 9–15 bits are refused (source).** `hnsw.go:391/596/888/1211` are unchanged.
+  - Measured: EXTRA_BITS "resaveUnchangedVector" is `ok` in both engines at Euclidean 9 and 15 and at 8 bits (green conf log :31/:38/:45). It is red on `d2e47b8bd` (red console :245, :269).
+- **Go-only SPFresh.** SPFresh is declared as Go-only (DIVERGENCES:3159). The stricter option parsing and the drop-and-re-add step are in the CHANGELOG. Nothing Go-only is left undeclared.
+
+## Findings, most severe first
+
+**1. Low (source): the "no graph call" claim is wider than the code.** These sentences say an unchanged save never deletes and re-inserts the node:
+- DIVERGENCES.md:2134-2138: "is served in both, as it makes no graph call";
+- CHANGELOG.md:518-521: "no longer deletes and re-inserts its graph node";
+- ws-c-design.md:2755-2756: "reaches none of them, in either engine";
+- the 7.18 heading at :2830.
+
+That holds only for an index maintained directly in the transaction. Two paths still delete and re-insert in both engines, and so still refuse with 9–15 bits after the centroid:
+- **Windowed VECTOR index:** the save is split into `update(old, null)` then `update(null, new)`.
+- **Pending-write queue (WS-C's own path):** `serializePendingWriteQueue` sends both entries and the replay deletes, then inserts (`index_maintainer_queue.go:24-78`).
+
+Behaviour equals Java; the text does not. **Fix:**
+- Scope all four sentences.
+- Consider a queue row with old equal to new, pinning that serialization keeps both entries as Java does. Nothing stops a future "skip" in the queue today.
+
+**2. Low (measured): the green run is not on a clean tree.** `wsc18-green-commit/TREE:4-5` records "working files differing from index: 1" (sha `52414a7b…`) and doesn't name the file. 7.18 and the gate prompt call it a clean-tree run; v17's green had 0 differing files. **Fix:** name the file, or re-run on a clean tree.
+
+**3. Nit: one superseded 7.17 sentence is unmarked.** ws-c-design.md:2740 still says "The generator now reads `recordlayer.VectorIndexMetricOption`", a function revision 18 deletes. A repo search finds that copy only in the design and review files. 7.18 says every superseded sentence is marked.
+
+**4. Nit: the samples part of the present-node pin can't fire.** `makeRaBitQGraph` (`vector_index_test.go:1472-1485`) leaves `SampleVectorStatsProbability` at 0, so `hnsw.go:640` never samples and both snapshots of the samples subspace are empty. Only the access info is asserted non-empty (:~2207). **Fix:** set the probability to 1 and assert `before[2]` is non-empty.
+
+**5. Nit: v17 storage 1's second fix item is unanswered.** It asked for "no path from a Quantizer to that panic". `rabitq.Quantizer.Encode` still panics for a caller's count outside 1–8 (`rabitq.go:64-67` → `:340-343`). Every path in the tree is now gated, which satisfies the "or" in Graefe's and Torvalds's version. 7.18 should say so explicitly.
+
+## v17 findings
+| Finding | Status |
+|---|---|
+| Graefe 1, Torvalds 1 (unchanged re-save) | Resolved, red→green on the JVM and Go sides (queue spec red at :68); scope is finding 1 |
+| Graefe 2 (two parsers) | Resolved, red→green |
+| Graefe 3, Torvalds 2, Storage 1 (0-bit panic) | Resolved: `readSPFreshConfig` is used at every entry point I found; "every entry point refuses" is red→green (:115); the CHANGELOG tells operators what to do; finding 5 remains |
+| Torvalds 3 (sliding-window red run) | Resolved, measured: 32 of 32 red on `c1bc5a177` at the stored-vector distance (140.7 vs 0) |
+| Graefe 4, Storage 2 (unknown-field order) | Resolved: the order within a field and the minimal varint are measured and asserted every run; groups are marked as from source |
+| Storage 3, stale "same PK replaces" comments | Resolved (0 hits in code) |
+| Nits | Resolved or answered, except finding 4 |
+
+**Revisions 12 to 17 are intact.** The hook ran with "Executed 43 out of 95 tests: 95 tests pass", and its index tree equals the commit's tree (`f7dd54ee9`). The windowed path still splits its delegate calls, and the queue replay is unchanged. The preserved boundaries are untouched.

@@ -1,0 +1,71 @@
+**NAK.** Tree `59a5b3c3c6301392da4cc03508e8b24cad73c5cd`. `ws-d-design.md` SHA256 `da5d56e6fb9508be1eb7d9626263472f7319608df3c135e4105af42e9f281e8d`, which I recomputed from the tree blob and which matches (1241 lines). Java is at `fdacd162` (from `.git/HEAD`).
+
+I read all four v8 verdicts, the full v9 design and its diff from v8, the oracle README and both evidence files, the Java probe and Go spec diffs, the item-18 logs (peel runs -5/-6 and the floor mutation run), `just-test-v9.log`/`-v9b.log`, and the heartbeat-admin delta. I checked claims against the Java and Go sources. I ran and edited nothing.
+
+## P2-1 — The peel's time budget has no defined clock (design 1098-1106)
+- **The clock it names does not exist in Go.** Go's `FDBRecordContext` has no transaction create-time or age (`database.go:626-689`). Java has `getTransactionCreateTime` (cited in `scan_limiter_state.go:124-126`).
+- **The budget decides what gets stored.** It chooses between splitting and reconciling, so it changes what topology gets written. The repo's DST gate (`pkg/docscheck/dst_seam_gate_test.go:17-27`) fails the build on a raw `time.Now` in `pkg/recordlayer`. Anything that affects persisted bytes must read time through `*dst.Env`. The design doesn't say whether it does (a design grep for dst/env/seam/GRV finds nothing; the same grep does find "wall-clock" at line 819).
+- **The anchor is undecided.** RFC-198 established that FDB's 5 s window opens at the read version (GRV), and that the context's creation time is a refuted proxy for it (`scan_limiter_state.go:144-150`). Anchored at creation time inside an explicit SQL transaction, the budget fires early, and clusters that could be split get reconciled instead.
+- **The 1 ns fall-through fixture would pass without testing anything.** Under a simulated clock that does not advance, elapsed time and fit duration are both 0, so the budget never trips.
+- **Decide:** the clock source (the env clock) for both the anchor and the fit timing, the anchor itself, how the budget interacts with explicit SQL transactions, and that the setting is not persisted. Add a DST fixture.
+
+## P2-2 — `consumerOutcome` does not follow Java's statement order, and its role inside `runTask` contradicts itself (design 243, 311-379)
+- **Wrong order (314-321).** The design lists the phase-1 re-enqueue ("runs") and the mergeable-neighbour check before "the knob or quantizer check at the consumer that follows". Java constructs the quantizer first:
+  - `SplitMergeTask.java:227/430`, before phase 1 at `:232/:435`;
+  - for a merge, before the `splitMergeConcurrency` fetch (`:442`) and the no-mergeable-neighbour exit (`:483-493`).
+- **This contradicts a measured case.** The measured bits9Live task is `SPLIT_MERGE/NORMAL/1` (`evidence-run.txt:204`). Inserts enqueue splits with an empty neighbour list (`Primitives.java:1414` → `SplitMergeTask.of`, `:1013-1016`), so that task is in phase 1. By the prose it "runs", while fixture 374 says it is skipped.
+- **Contradictory role in `runTask`.** `runTask` calls `consumerOutcome` (323), and the design says the skip decision is "the same code that makes the refusal" (311) with "no second copy of any predicate" (243). Yet 356-361 says the knob prediction, made without reading the posting, is one `runTask` "would not raise" when every candidate is n<k.
+  - If `runTask` raises on it, the refusal comes earlier than `KMeans.java:136-141`, and "the next drain reconciles it" (377) becomes false.
+  - If it ignores it, the single-predicate claim is false.
+  - **Needed:** an explicit outcome value, e.g. "refused unless every candidate is n<k". The skip treats it as skip; `runTask` proceeds to the real consumer.
+- **The serializable side has no fixture.** Lines 326-329 claim the false-alarm clear conflicts with a concurrent insert, which is the v8 race. Every listed fixture pins only the snapshot side, where no conflict is added. A mutation that makes the `runTask` prologue read at snapshot would stay green, although v8 asked for a conflict fixture.
+- **The bounce hand-off loses the RNG state.** It passes the list and the pick. `BounceTask.java` uses the same `splittableRandom` after `nextInt` (`:161`) at `:190` and `:200`, and undrawn at `:149`. Hand over the RNG state as well.
+
+## P3
+1. **In-tree evidence is out of date for the v9 oracle.**
+   - Design 163/881 still say "13 specs"; the Describe now has 14, and the target 18 (14+1+3).
+   - The source hashes at `evidence-run.txt:4-7` no longer match: the probe `.java` is now `9a8fa3c4…` and `_test.go` `f3917cd6…`.
+   - The item-18 runs report "1 of 17 specs", so they were not the frozen 18-spec tree.
+   - Timings and the floor mutation are recorded only under `/var/tmp`; `evidence-mutations.txt` is unchanged.
+   - Mitigation: v9b did execute `rfc257_oracle_test` green.
+2. **The frozen-tree `just test` claim overstates (design 769-771, README item 19).**
+   - The design cites "item 18"; the run is item 19.
+   - v9b executed 4 of 94 targets. `just-test-v9` itself executed only 41 of 94, so at least 49 cached results predate it, contrary to the README.
+   - No tree SHA is recorded.
+   - Neither log contains the quoted Ginkgo summaries. The 1405/1524 line comes from `conformance-full-2.log`, a pre-v9 run.
+3. **The reconcile's read is not "the target's own" (1074, 1106-1107).** The target's cleanup drops replicas before the metadata fetch (`Primitives.java:1544, 1552-1560`). The reconcile also reads replica metadata (1027); say so.
+4. **The target-fit cost is shape-specific (1092).** "36-43 ms" is the tight shape only. The spread n=2000, d=768 target fit took 100-119 ms (`wsd-hd-peel-6.log:77,181`).
+5. **The peel's start and the :136 population need tightening.**
+   - Step 1 starts from the 1→2 candidate's KMeans assignment (954-955), but an n<k candidate has none. State that the peel is skipped there.
+   - The :136 population (945-947) omits a 2→3 candidate with fewer than 3 vectors and a 3→2 merge with n=1. Java throws on those even when 1→2 or 2→1 is feasible. Go's rule already covers them; the sentence should say so.
+6. **The probe comment overstates (`guardiann_probe_conformance_test.go` ~799-805).** "Isolates ONE per fit" holds only for tight cores; the spread cores are usable at round 0 on 39 of 40 seeds.
+
+## Closed from v8 (verified)
+- **Floor bound:** a refit after round r needs n−(2^(r+1)−1) ≥ 2, so there are at most floor(log2(n−1)) refits.
+- **All 78 pinned rows reconcile** with the design's counts (4/5/6/6; 6–11, 12–18, 18–33, 36–50; 39/40).
+- **KEEP_CURRENT** is a usable candidate (`SplitMergeTask.java:1211-1229`).
+- **:136 before :137** is correct, and the n<k rule is labelled as Go's.
+- **ClusterUnsplittableError** is distinct and never translated (`GuardiannVectorIndexEngine.java:152-164`).
+- **Reachability and the relief threshold** are corrected, and the capacity-poison contradiction is gone.
+- **Poisoning is keyed on where the error is raised, not its type.** It is safe under `Run`, which creates a fresh context per attempt (`database.go:275-284`).
+- **Other items:** the fragment is fixed, the wait cap is injectable, and the bounce follow-up under bits 9 is declared.
+- **Heartbeat admin** matches `OnlineIndexer.java:458-463` and `IndexingHeartbeat.java:101-125`.
+
+## Measured vs still hypothesis
+- **Measured:** item 18, a pure Java KMeans/evaluator probe covering:
+  - the v8 peel's rounds scaling with m on tight high-dimensional cores;
+  - the floor's rounds, identical to the v8 peel on the 2-D shapes;
+  - the tail cut, rejected;
+  - the 2^r−1 mutation, which fails the spec as intended;
+  - timing, which is printed only, never pinned.
+
+  Also measured: the item-19 population arithmetic.
+- **Checked against source only, not measured:** the order of the quantizer versus phase 1; that inserts enqueue phase-1 splits.
+- **Still hypothesis:**
+  - Go's own peel draws;
+  - the budget and its d=4096 acceptance run;
+  - the reconcile's cost on FDB;
+  - every `consumerOutcome` arm;
+  - :136 on stale-inflated clusters and the empty merge core in the target (REMAINING);
+  - the bounce follow-up under bits 9;
+  - every Go-only mechanism.

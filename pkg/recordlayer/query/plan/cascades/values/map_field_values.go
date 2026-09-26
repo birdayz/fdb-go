@@ -72,7 +72,11 @@ func MapFieldValues(v Value, transform func(*fieldValue) Value) Value {
 	case *CastValue:
 		return &CastValue{Child: newChildren[0], Target: cv.Target}
 	case *PromoteValue:
-		return &PromoteValue{Child: newChildren[0], Target: cv.Target}
+		rebuilt, err := NewPromoteValueChecked(newChildren[0], cv.Target)
+		if err != nil {
+			return nil
+		}
+		return rebuilt
 	case *NotValue:
 		return &NotValue{Child: newChildren[0]}
 	case *ScalarFunctionValue:

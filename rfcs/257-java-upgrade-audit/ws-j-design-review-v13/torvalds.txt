@@ -1,0 +1,64 @@
+**NAK** on tree `d6ad3e9c2c5bc3a32c42cf0399c97afade52e098`. `ws-j-design.md` is SHA256 `bc8b6436980df50daf559f037a45d02397e28fd06f9948719a0683b69cb8ca11`, 2875 lines, recomputed from the tree. Java is at `fdacd162a`. This was a read-only review: I ran no tests, probes or mutations.
+
+## Measured, and it holds
+- **Evidence is bound to the tree.** Five landed blobs hash to their `ev13/src.sha` entries. `check.txt` has 1039 of 1039 lines "OK", and `run.out` says "ok 1039 notok 0". The evidence tree `3b1587fa` differs from the candidate only in the WS-C design, the WS-E evidence and `evidence-v13.txt`.
+- **Oracle:** 60 of 60 specs passed in each run. `WSJ-TALLY` is identical in both. The absent-root row shows Java's `KeyExpression$DeserializationException` on both passes (`oracle-1.log:208`, `oracle-2.log:4866`).
+- **Unit tests:** `TestKeyExpressionDeserializationErrorsAreJavas` passes (`recordlayer-v.log:19434`), as do the array-element `HeldBy` subtest (`:22042`) and the absent-root subtest (`:22347`).
+- **Landed code:** the error type, the refusals in `Build` and `indexToProto`, and the deletion of the dead `!= nil` check are correct. The tests assert the error class and the exact text.
+
+## HIGH
+**1. The restore's "one history" check leaves out the relational validator, which every carried version passes.**
+- Check (i) runs only the store's validator, and its `validateEnum` checks only that the old numbers still exist (Java `MetaDataEvolutionValidator.java:340-349`, Go `metadata_evolution_validator.go:1318-1332`). The validator never compares field options (design `:2396`).
+- `CreateTemplate` runs the relational validator (`:1692-1700`), and its `EnumType.Equal` compares the whole value list (`datatype_composite.go:189-203`). The restore does not run it.
+- So two histories with `ENUM('A','B')` and `ENUM('B','A')`, or with different `vectorOptions` on a VECTOR column, pass (i) to (iii). Stores bound to the lower version then read A as B.
+- Enum DDL (step 5) lands in the same merge, so Go itself will build such templates.
+- **Fix:** add the relational validator, lower to higher, as check (iv), and test a two-history pair that differs only in enum order.
+
+## MEDIUM
+**2. Shape (g) compares the wrong field numbers (`:2335-2338`).**
+- Today's implicit record-type key is the SMALLEST union field number (Java `RecordType.java:171-180`, Go `metadata.go:417-418`). The preferred field the design cites (`:420-423`) only decides which field a write uses.
+- Pre-upgrade Go keyed by the LAST declared field (`e48f5b496:metadata.go:330-358`, `:1837`).
+- Example `{T a=1; T b=2;}`: pre-upgrade key 2, today key 1. The design compares 2 with the preferred field's 2 and loads it, so rows are silently re-keyed.
+- Example `{T _T=2; T b=1;}`: the keys agree, but the design refuses it.
+- **Fix:** compare the last declared number with the minimum.
+
+**3. The scope of the new framing refusal is wrong in both directions.**
+- **Missing path:** it covers only `RecordMetaDataFromProto` and `SetRecords` (`:2326`, (y)). Pre-upgrade code that named its union with `SetRecordsWithUnionName` framed it name-first (`e48f5b496:metadata.go:270-272`), so in-process metadata is silently reframed.
+- **Wrong union for `SetRecords`:** pre-upgrade `SetRecords` framed only a message named UnionDescriptor, and went union-less otherwise (`:276-277`, `:330-334`). `findUnionDescriptorName` was the loader's rule, so applying it to `SetRecords` over-refuses.
+- **Imported types:** "an imported `pkg.X`" (`:2332`) is shape (f) only when the file also defines a top-level X. The pre-upgrade lookup was file-local (`:343-345`).
+  - Java's own `test_records_import.proto:31-34` (imported `_MySimpleRecord`, no local message of that name) was skipped by pre-upgrade Go, and loads in Java and in current Go.
+  - It must be pinned as LOADING, and the refusal bounded by `preUpgradeLoaderLoads` as (d) is.
+- **Unscheduled:** section 8 schedules `LegacyFramingError` in no step, while TODO.md puts it in step 3.
+
+**4. R2's version floor is still missing (v12 storage F1).**
+- The R2 text (`:2447-2455`) is unchanged apart from a citation, and the tests (`:2502-2504`) cover only an index left unchanged.
+- Under `allowIndexRebuilds`, a last-modified version raised but still at or below the stored metadata version is admitted. The store never rebuilds that index, so its entries written from unsigned values stay.
+- **Fix:** refuse unless the R2 index's last-modified version equals stored + 1, and test that interval.
+
+## LOW
+5. **(x)'s remedy cannot work (`:2865-2866`).** A `RepairSchema` of a schema bound to a gone version is refused (`:595-597`). An inverted history therefore has no exit; declare it that way.
+6. **Stale text:**
+   - Section 8 step 3 (`:2716-2718`) still lane-checks WIDENED indexes, puts `v′ <= latest` first, and omits the duplicate refusal.
+   - `:1700` says "9 (u)"; the declaration is (w).
+   - `:1784-1785` keeps a line citation (`metadata_evolution_validator.go:505-510`; the arm is at `:498`), contrary to Status `:27-28`.
+   - (e) (`:2330`) quotes the validator's message; the load says "Union field … is not a message" (`metadata_validate_records.go:81`).
+   - `DIVERGENCES.md:3053-3065` and (p) (`:2800-2806`) still match messages by name and do not state the drop refusal.
+   - The monotone rule applies to every `reserved` of every store, not only R1's, so a drop Java admits becomes a Go refusal. That needs declaring.
+7. **"Either order" for WIDENED (`:697-698`) contradicts check (i).** The carrier arm only accepts stored `long_value` against rebuilt `int_value`. With the lower version at `int_value` and the higher at `long_value`, at an equal last-modified version, (i) refuses. This fails closed.
+8. **The `DeserializationException` port is partial.** Java also throws it for a Field missing its name or fan type, and for an invalid fan type (`FieldKeyExpression.java:123-128`, `KeyExpression.java:197`, also reached through a Nesting's parent). Go's `fieldFromProto` has no error path and reads a missing fan type as SCALAR, so Go loads what Java refuses.
+9. **Two v12 findings are unanswered:** Graefe F6 (Go already has `SetDisallowTypeRenames`, `:110`), and storage #11 (no mutation run for the code changes).
+
+## v12 findings
+- **Resolved:**
+  - Torvalds 1, 5–9;
+  - Graefe F1, F3, F5, F7, F8, and the locks, R2 declaration and `HeldBy` items of F10;
+  - storage 2, 4–7, 9, 10, and storage 1's restore half.
+- **Partly resolved:**
+  - Torvalds 2 / Graefe F2 / storage 3: findings 2 and 3;
+  - storage 1's R2 half: finding 4;
+  - Graefe F10's inverted history: finding 5;
+  - Torvalds 3 and 4, Graefe F4, storage 8: finding 6;
+  - Torvalds 10 / Graefe F9: finding 6.
+- **Open:** Graefe F6 and storage 11.
+
+Every finding above comes from reading the source; I measured none of them. Steps 1–3 are unbuilt.

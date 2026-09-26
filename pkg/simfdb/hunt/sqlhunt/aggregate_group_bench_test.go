@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -44,7 +45,7 @@ func aggBenchHarness(b *testing.B) *sql.DB {
 	key := fmt.Sprintf("sim://aggbench/%d", aggKeyCounter.Add(1))
 	b.Cleanup(sqldriver.RegisterBackend(key, simDB))
 
-	setup, err := sql.Open("fdbsql", "fdbsql://"+qcDBPath+"?cluster_file="+key)
+	setup, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(qcDBPath)+"?cluster_file="+key)
 	if err != nil {
 		b.Fatalf("open setup: %v", err)
 	}
@@ -65,7 +66,7 @@ func aggBenchHarness(b *testing.B) *sql.DB {
 		}
 	}
 
-	db, err := sql.Open("fdbsql", "fdbsql://"+qcDBPath+"?cluster_file="+key+"&schema=s")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(qcDBPath)+"?cluster_file="+key+"&schema=S")
 	if err != nil {
 		b.Fatalf("open db: %v", err)
 	}

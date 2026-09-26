@@ -1,0 +1,99 @@
+**NAK**
+
+- **Tree:** `0a7977fc48e0e10f8ee52f4c04deabf4d94ac73c`
+- **Design:** `ws-d-design.md`, SHA256 `1f0fd83139e31f2efb4943711398f7ca9046fd695bd626424e6d247f30fff1f2`. I recomputed it with `git show TREE:path | sha256sum` and it matches.
+- **Java:** `fdacd162`, read from `fdb-record-layer/.git/HEAD`.
+
+**What I read.** All four v5 verdicts, the full v6 design and its diff from v5, the oracle README and both evidence files, the Java refit probe, and the cleanup in the Go spec. I checked claims against Java and Go at this tree.
+- All four oracle source hashes in `evidence-run.txt` match the tree.
+- Outside `rfcs/` and `TODO.md`, the change since `f0cb2957` is exactly the oracle files plus the rowdiff deletion.
+
+**Limitation.** I could not render the papers: `pdftoppm` fails and `/usr/bin/pdftotext` is absent. Paper sections below are cited as quoted in the in-tree v5 SPFresh verdict.
+
+### P1-1 — Capability check runs before task removal and refuses tasks Java completes (design:185-192, 200-201, 252-254)
+- **Where Java actually fails.** Java uses the knob only after its no-op returns:
+  - SplitMergeTask: stale-task and false-alarm returns (`SplitMergeTask.java:170-187`) and the neighbour-persistence re-enqueue (`:232-236`) both come before `kMeans` (`:1108`).
+  - CollapseTask: null-metadata and no-COLLAPSE returns (`CollapseTask.java:151-158`) come before `collapseConcurrency` (`:182`).
+  - ReassignTask: its early returns (`ReassignTask.java:201-210`) come before `:257`.
+  - The quantizer is also built only after those returns (`SplitMergeTask.java:227`, `CollapseTask.java:171`, `ReassignTask.java:241`).
+  - Only bounce uses its knob first (`BounceTask.java:130`).
+- **The golden contradicts the "parity" rows.** For `KMeansMaxIterations=0`, `KMeansMaxRestarts=-1`, DOT_PRODUCT and EUCLIDEAN_SQUARE it records `drain=1then…kMeans` and `shrink=ok drain=1 clusters=[{3 0 20}]` (`_test.go:375-376, 382-383`). Java runs the first phase, and it consumes the stalled split once the split becomes a false alarm.
+- **Go's behaviour.** Refusing before removal leaves that task at the queue head forever. So every merge fails on a Java-written store that Java drains. The same applies to obsolete collapse tasks and to the pre-claim refusal under trained bits 9 (:253-254). That pre-claim refusal is also still listed as unmeasured (:656).
+- **Line 190-192 is false except for bounce:** "This is the point where the target itself throws".
+- **Needed:**
+  - Raise the typed error at the point inside the task where the knob is used, after Java's no-op returns. The transaction then aborts and the removal rolls back, which is the parity :191-192 describes.
+  - Keep a conservative pre-check only for deciding inline-delete suppression (d).
+  - Add golden rows per throwing knob: a false-alarm split, an obsolete collapse, and a reassign on a SPLIT_MERGE cluster.
+
+### P1-2 — The split fallback refits only once, and in inline mode step 2 lets a cluster grow without bound (design:695-758)
+- **Step 2 is not limited to coordinate-identical vectors.** The claim at :750-754 is false.
+  - Only `minChildFraction` yields INVALID (`PartitionEvaluator.java:124`).
+  - Take 10 near vectors, one far outlier at −d and one at +d. 2-means isolates one outlier (SSE about 0.91d², against about 1.67d² for the balanced cut). The refit on the remaining mass isolates the other. Final sizes are 11/1, which is INVALID, so the task reaches step 2.
+  - Nested outliers reach step 2 the same way. Stale-inflated clusters do too, which the design already names (:686).
+  - Oracle item 9 measured only one co-located far group (the probe's `far(i)` points all sit at about (100,100)).
+- **Inline interaction.**
+  - Step 2 clears SPLIT_MERGE (:735), and Java re-arms a split on every insert that grows the cluster (`Primitives.java:1161-1163`).
+  - Each inline insert runs the head task (`Insert.java:211`) with no cap (:433).
+  - So in steady state every insert runs a full split evaluation plus step 2's serializable read of every reference and every PK's metadata (:721-724). The cluster being read has no size bound.
+  - "Bounded cost … at most the cluster's primaries" (:747-748) is therefore unbounded. Concurrent inline inserts conflict on the cluster range until the 5 s / 10 MB limits fail them.
+- **Paper (category c, a mechanism the design lacks).** SPANN §3.1 and §3.2.1 (Eq. 1) require bounded, balanced posting lengths. SPFresh §3.2 and §3.4 assume each split keeps postings bounded and adds a centroid. Nothing bounds a step-2 posting in inline mode.
+- **Needed:**
+  - Repeat the exclusion until the refit is non-INVALID or the remaining mass has fewer than 2 vectors (bounded by n). Measure scattered and nested outliers in the oracle.
+  - Restate when step 2 can be reached.
+  - Specify a wire-neutral bound for clusters that step 2 left oversized in inline mode. For example, return the capacity error once such a cluster reaches hardMax; that is never worse than Java, which fails every insert.
+
+### P2 — The config-only insert refusal ((b), and (a) the same way) rests on a false premise (design:226-235)
+- **The claim.** "The target accepts inserts only until the first split."
+- **Why it is false.** A partition that stays at or below `primaryClusterMax` (default 1000, `Config.java:144`) never runs KMeans, and a lone cluster never merges (MULTIPLE guard). The golden shows DOT_PRODUCT at `config=ok insert=ok search=ok`.
+- **Effect.** Java serves a grouped DOT_PRODUCT index with small prefixes indefinitely, and likewise untrained RaBitQ partitions under (a). Go refuses every save, so a mixed Java/Go fleet can no longer write those records.
+- **Needed.** Either drop this row (the refusal at the point of use plus the hard cap already give parity), or declare that Go refuses workloads Java serves indefinitely and get owner sign-off. That matters because WS-D is not supposed to complete with a refusal.
+
+### P3
+1. **Dangling cross-reference.** "Section-5 follow-up refresh" (:558, :568) points at something section 5 doesn't define. Name `refreshFollowupHeartbeats` (`online_indexer_queue.go:325`), which renews through `validateBuildTarget` → `renewSessionHeartbeat` (`:388-389`).
+2. **Refit probe baseline.** The refit probe's current partition uses `vectors.get(0)` as the centroid, not the cluster's centroid. INVALID is unaffected, but the KEEP_CURRENT/ACCEPT labels are not production-faithful.
+3. **TODO hygiene (outside the design).** `TODO.md:8289` and `:8321` still describe the deleted watcher and forensics as live. The new entry says they are superseded, but a grep still finds them.
+
+### Confirmed closed from v5
+- **Inline mode:**
+  - no cap and Java's operation order (:433-445 vs `Insert.java:206-215, 334`)
+  - measured inline goldens
+- **Refusal rules:**
+  - collapse, bounce and `mergeNumNearestClusters` handled per task kind
+  - `deleteConcurrency` checked at `Delete.java:112-123, 176`
+- **Poisoning:**
+  - poisoning only at entry points that mutate
+  - explicit poison key outside the pending-write prefix
+  - continuation replay never refused
+- **Capacity hand-off:**
+  - heartbeat slices, and the 60 s cap matches `VectorIndexMergeLock.java:103`
+  - baseline is the stored n
+  - drain bound of 100 plus the relief stop
+  - reconcile lowers n
+- **Other closed items:**
+  - the empty-cluster qualification
+  - the declared join error rule (:52-56)
+  - the completed hypothesis list
+  - `DeferCleanup` in the spec (`_test.go:415-418, 508-511`)
+  - `KEEP_CURRENT` counts as usable (`SplitMergeTask.java:1210-1236`)
+
+**SPFresh boundary holds:**
+- `spfresh_index_maintainer.go:31` embeds `standardIndexMaintainer`.
+- There are zero queue, merge, commit-check or salt hits in `spfresh_*.go`; the positive control (`standardIndexMaintainer`) hits.
+- The queue refusal (`index_maintainer_queue.go:12`) and the no-op `MergeIndex` (`index_deferred_maintenance.go:248`) are inherited.
+- Executor changes are scoped to `IndexTypeVector` (:373-380). LIRE is unaffected.
+
+### Measured vs still hypothesis
+- **Measured by the oracle:**
+  - the hash
+  - both split stalls
+  - queue stranding
+  - deferred backpressure
+  - the 22-variant knob golden
+  - 8 inline scenarios
+  - the λ sweep
+  - refit results for 10+1, 20+1 and the identical-coordinate mass
+- **Still hypotheses:**
+  - the REMAINING list (:652-657)
+  - scattered and nested outliers
+  - step-2 growth in inline mode
+  - false-alarm and obsolete-task behaviour under the collapse, reassign and trained-bits knobs

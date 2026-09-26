@@ -1,0 +1,65 @@
+**NAK.** Tree `72fe965617516b0b9d9ebef01d28a19e5ef21007`. Design SHA256 `a1993f1579acdaa5e59f9adc75c7ac7a751dc7a030dcbdc4ffccbf4b0f25524f`, which I checked against the tree. I read Java from the working checkout, whose `.git/HEAD` is `fdacd162`.
+
+The code is sound. The NAK is for one declared divergence whose stated reason about Java is false, one Go-only behaviour that is still undeclared, and a few smaller gaps. None of them needs a design change, so a narrow re-check of the changed lines is enough.
+
+## Findings, most severe first
+
+**1. Medium-low: false Java claim behind a declared divergence (from reading source).**
+- Three places say Java's indexer does not reconcile on open:
+  - `DIVERGENCES.md:2739-2740`
+  - `online_indexer_queue.go:67-68`
+  - `ws-c-design.md:480`
+- Java's indexer does reconcile:
+  - it opens the store with `copyBuilder().setContext(context).openAsync()` (`IndexingBase.java:129-130`);
+  - that calls `createOrOpenAsync`, then `checkVersion` (`FDBRecordStore.java:6015`), then `checkPossiblyRebuild` (`:2689`);
+  - on a metadata-version change, that removes former indexes and rebuilds or disables new ones (`:4841-4986`), without looking at heartbeats.
+- So the real divergence is "Java reconciles under a live peer; Go refuses until the lease expires". Keeping the check is fine, but the reason must be true.
+- None of the three v2 reviewers caught this. It is the same kind of problem as v1's `ifMismatchPrevious` finding: a false statement about Java used to justify a difference.
+- Fix all three copies, then grep until nothing is left. A grep (excluding review directories) found exactly those three hits; the positive control, `checkOpenHeartbeats`, is found in 5 files.
+
+**2. Low: the follow-up refusal is Go-only and undeclared (from reading source).**
+- `refreshFollowupHeartbeats` (`online_indexer_queue.go:433-440`) fails when a target is no longer write-only.
+- Java's merges and drains go through `updateHeartbeat`, which skips such a target (`IndexingBase.java:969-972`, `:1094`, `:1103`).
+- The comment says "its next build transaction's state check throws". That only holds if another build transaction follows. After the last range, Java goes straight to `markIndexReadable`, and `checkAndUpdateBuiltIndexState` then fails with a different error class.
+- The new DIVERGENCES section declares only the queue-flag case. Add this one, and correct the comment.
+
+**3. Low: the CHANGELOG overstates the retry cost.**
+- `CHANGELOG.md:103-106`, and `ws-c-design.md:726`, say a MUTUAL partial build "relaunches up to … six sessions".
+- Under CONTINUE, a saved MUTUAL_BY_RECORDS stamp fails at once: Java at `OnlineIndexer.java:212-213`, and Go's catcher falls through to `indexingCatchFail`.
+- Six sessions applies only to blocked or refused MULTI_TARGET stamps whose saved method the catcher can continue.
+
+**4. Low: storage v2 #2, second half, is still open.**
+- Java attaches `INDEXER_ID` to `ValidationException` (`IndexingBase.java:1171-1174`, `IndexingByIndex.java:102-105`) and to `PartlyBuiltException` (`:1011-1012`).
+- `IndexingValidationError` and `PartlyBuiltError` (`errors.go:428`) still have no such field.
+- `oi.indexerID` now exists, so adding it is trivial. CLAUDE.md requires the same context fields as Java.
+
+**5. Low: tests that cannot catch a regression (from reading source, not mutated).**
+- **Outcome reset.** `BuildIndex`'s reset to `IndexBuildOutcomeNone` (`online_indexer.go:1065`) is never exercised. The only failure case in "reports what each session did" uses a fresh indexer, so deleting the reset stays green. The documented "None after one failed" behaviour needs a success followed by a failure on the same indexer.
+- **Fleet.** `TestBuiltBySessionCountsOnlyWhatTheSessionDid` tests only the mapping. No test drives `BuildIndexes`' `if built` or `len(names)==0 → OutcomeNoWork` branches (`fleet/build.go:202-209`).
+- **Unscannable source.** The unscannable `ForbidRecordScan` spec (`online_indexer_test.go:4206`) still doesn't assert the WRITE_ONLY / BY_INDEX state it leaves behind. Storage v2 #4 named this spec as well as `:1351`.
+
+**6. Nits.**
+- `online_indexer.go:1206-1209` still says "as each Java attempt builds a new indexer" and doesn't mention that the identity is shared.
+- `newHeartbeat` goes through `NewIndexingHeartbeat`, which mints a UUID and throws it away (`indexing_heartbeat.go:50`). That costs an extra draw from the simulation's randomness.
+- `IndexBuildOutcomeLeftAlone` covers two cases: a READABLE index left alone, and MARK_READABLE with publication off. frl prints both as "already readable". The second can't happen in frl today, because it hardcodes `SetMarkReadable(true)`.
+- §7.3 says the preparation check "writes" under the identity; it only reads.
+
+## What checks out (from source)
+- **Every other v2 finding is resolved:**
+  - the frl pre-read is gone;
+  - one identity per `OnlineIndexer`, as `IndexingCommon.java:53` has it, used by every attempt, the mutual builder, preparation and `MergeIndexes`, matching Java's `setMergeSessionId(common.getIndexerId())` (`IndexingMerger.java:97`);
+  - the two Go-only checks now return `RecordCoreStorageError`, so the BY_INDEX fallback no longer fires on them;
+  - an undefined source is a `MetaDataError` raised before admission and before any write. Java also resolves the stamp before any heartbeat (`IndexingBase.java:452-460`), so the precedence matches;
+  - error precedence against a live peer is declared;
+  - the builder refusals use Java's class and messages, in Java's order (`OnlineIndexer.java:867-877`);
+  - `GetIfMismatchPrevious` rejects unknown actions; the count is documented; the `PartlyBuiltError` advice is corrected;
+  - the 7.1 reproducer sentence and v1 Torvalds #7 are fixed.
+- **Catcher and phase boundaries:** unchanged since v2 and still arm-for-arm with `OnlineIndexer.java:150-275`. The phases stay state transaction → build → publish.
+- **Other declared divergences:** true as stated, apart from finding 1's reason. That covers admission on a clear, precedence, throttle carry-over, MARK_READABLE over a queue, the queue flag, and `LastBuildOutcome`.
+
+## Measured
+- The md5s of all 12 files in `evidence-md5.txt` match the candidate tree; I computed them myself. The evidence tree `2b0de4e8` differs from the candidate only in the design, the reviewer settings and the WS-J review output.
+- `justtest.log`: "Executed 19 out of 94 tests: 94 tests pass", exit 0.
+- **Mutations:** each log for m17–m22 and m71a–c shows "marker count 1", the applied diff, bazel exit 3 (tests failed, build OK), "Ran 369 of 3694" and "restored". Their red specs match §7.3, including m71a's 20.
+- **Censuses:** skip is 10 recordlayer specs plus `TestIntegration_IndexSetState_ReadableRequiresBuilt`; MARK_READABLE is 6; catch is 17 plus `TestIndexBlockLeaseReadsTheEnvClock`. Every other target ran, with `=== RUN` counts of 230, 16, 375 and 15, and conformance "Ran 12 of 1556".
+- `loop40.log`: 40 "SUCCESS! -- 2 Passed | 0 Failed" lines, 0 FAIL lines, and "Executed 1 out of 1 test", so the result was not served from cache.

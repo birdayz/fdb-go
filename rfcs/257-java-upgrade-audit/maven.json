@@ -1,0 +1,20 @@
+{
+  "checked": "2026-09-18T20:52:56.294146+00:00",
+  "artifacts": [
+    {
+      "artifact": "fdb-record-layer-core",
+      "url": "https://repo1.maven.org/maven2/org/foundationdb/fdb-record-layer-core/4.14.2.0/fdb-record-layer-core-4.14.2.0.pom",
+      "version": "4.14.2.0"
+    },
+    {
+      "artifact": "fdb-relational-api",
+      "url": "https://repo1.maven.org/maven2/org/foundationdb/fdb-relational-api/4.14.2.0/fdb-relational-api-4.14.2.0.pom",
+      "version": "4.14.2.0"
+    },
+    {
+      "artifact": "fdb-relational-core",
+      "url": "https://repo1.maven.org/maven2/org/foundationdb/fdb-relational-core/4.14.2.0/fdb-relational-core-4.14.2.0.pom",
+      "version": "4.14.2.0"
+    }
+  ]
+}

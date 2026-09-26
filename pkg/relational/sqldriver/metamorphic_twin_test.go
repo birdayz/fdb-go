@@ -51,7 +51,7 @@ func mmNewTwin(t *testing.T, ctx context.Context, dbPath, templatePrefix, tableD
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/sn WITH TEMPLATE "+templatePrefix+"_plain")
 
 	open := func(schema string) *sql.DB {
-		dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, clusterFilePath, schema)
+		dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", strings.ToUpper(dbPath), clusterFilePath, strings.ToUpper(schema))
 		db, err := sql.Open("fdbsql", dsn)
 		if err != nil {
 			t.Fatalf("open %s/%s: %v", dbPath, schema, err)

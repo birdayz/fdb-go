@@ -38,7 +38,7 @@ func TestFDB_ConjunctiveTautologyIndexPredicateExecutes(t *testing.T) {
 			"CREATE TABLE t1 (id BIGINT, col1 BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX i_and AS SELECT col1 FROM t1 WHERE TRUE AND TRUE")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_taut_and/s WITH TEMPLATE taut_and")
-	dsn := fmt.Sprintf("fdbsql:///testdb_taut_and?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_TAUT_AND?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

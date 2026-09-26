@@ -45,11 +45,11 @@ tests:
       - ['Eve']
 
   # Scalar subquery as the sole projection of a FROM-less SELECT.
-  # TRACKED EXTENSION GAP (RFC-180): the Go scalar-subquery extension does
-  # not reach a FROM-less outer SELECT (the LogicalValues path carries no
-  # subquery plans); it declines typed. Restore rows [[5]] when it does.
+  # Go's existing scalar-subquery extension composes with the singleton
+  # source. All five employees contribute to its sole output row.
   - query: SELECT (SELECT COUNT(*) FROM employees) AS total
-    error_code: "0AF00"
+    rows:
+      - [5]
 
   # WHERE with comparison to scalar subquery
   - query: SELECT name FROM employees WHERE dept_id = (SELECT id FROM departments WHERE name = 'Sales') ORDER BY name

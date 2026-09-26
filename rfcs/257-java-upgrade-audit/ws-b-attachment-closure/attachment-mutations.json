@@ -1,0 +1,20 @@
+[
+  {
+    "name": "cache-history",
+    "compiled": true,
+    "killed": true,
+    "log": "/var/tmp/fdb-upgrade-recovery/ws-b/attachment-mutant-cache-history.log"
+  },
+  {
+    "name": "cache-stamp",
+    "compiled": true,
+    "killed": true,
+    "log": "/var/tmp/fdb-upgrade-recovery/ws-b/attachment-mutant-cache-stamp.log"
+  },
+  {
+    "name": "reload-publication",
+    "compiled": true,
+    "killed": true,
+    "log": "/var/tmp/fdb-upgrade-recovery/ws-b/attachment-mutant-reload-publication.log"
+  }
+]

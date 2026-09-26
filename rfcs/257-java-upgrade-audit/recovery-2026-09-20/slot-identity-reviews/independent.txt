@@ -1,0 +1,42 @@
+**NAK — WS-A + WS-E1 implementation code** at tree `664b241c57b71829cb40687a1e26cc3dc3e145e6`.
+
+I read all four prior reports, the complete tree-to-tree delta from `9f8d0f63cc15aa364dd237a62650a4bf73e5babe`, surrounding frozen source and relevant Java reference `fdacd162a9c8acfadc49082b89185c823ab8ae4a`. One bound-identity interaction remains.
+
+**P2 — GROUP alias substitution can overwrite an already-bound star attribute, producing wrong rows.**
+
+For `wide_t(id, v)` containing `(2,7)`:
+
+```sql
+SELECT w.*, COUNT(*) AS n
+FROM wide_t w
+GROUP BY 1, 2 AS "W.ID"
+```
+
+Expected output is `(2,7,1)`, labelled `ID,V,N`.
+
+Expansion correctly binds `W.ID` and `W.V`. However, [select_parser.go:1634](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:1634) looks up `ac.groupCol` as an alias without checking whether the output is already bound. The quoted alias `"W.ID"` matches the rendered source reference. Line 1636 consequently **replaces the first attribute’s bound value with `W.V`**.
+
+[logical_builder.go:181](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_builder.go:181) then trusts that replacement, assigning both visible columns native grouping slot 1. The resulting output mapping is `[1,1,2]`, yielding `(7,7,1)`. The guard at [logical_predicate.go:4341](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:4341) validates the overwritten identity and cannot catch the corruption. Removing the first grouping key similarly lets the alias rewrite conceal an ungrouped source attribute.
+
+This is a frozen-source finding; I did not execute these queries.
+
+**Required fix:** preserve already-bound outputs during GROUP alias substitution. Resolve aliases only for eligible unbound, structurally unqualified references; a rendered qualified name is not an alias reference. Retain regressions for the wrong-row example, its ungrouped-source `42803` counterpart, and legitimate explicit reads of the quoted GROUP alias.
+
+The new positive/negative tests discriminate the repaired source-label collisions, but do not exercise this alias-rebinding interaction. The three mutations independently fail their intended controls; they therefore do not establish coverage of this remaining path.
+
+The ORDER repair otherwise addresses the prior parser/visitor rejection. The unchanged RaBitQ architecture/rounding contract, checked-array guards, transactional descriptor closure and fixture fixes retain their previously accepted scope.
+
+Evidence integrity checks reconcile:
+
+- All **43 listed artifact hashes**, **6,296 verified-tree hashes** and **6,297 candidate-freeze hashes** match. Candidate changes after verification are confined to TODO, RFC and evidence JSON.
+- **93 uncached passing targets:** 40,650 RUN = 40,645 PASS + five existing skips. **14 uncached race targets:** 21,103 RUN/PASS. Per-target name multisets reconcile.
+- Both Java suites report 1,357/1,476; the focused probe records 64 composition cases plus two controls. All four added ORDER shapes are measured Java refusals, with independent exact Go positives.
+- All 176 stress timings, eight 24-case runs, exact 1M counts and 11 EXPLAIN lines reconcile. Planner benchmark rows match. The documentation follow-up remains **2 executed/91 cached**.
+
+Separate unmet verification/publication gates:
+
+- Investigate the worse early point-read population using controlled, interleaved measurements with client/executor/FDB timing attribution. The 52ms/41ms outliers remain unexplained; planner timings establish neither causation nor end-to-end parity. The <5ms target remains unmet.
+- Historical executor startup-timeout causation still requires unavailable original artifacts; CLI networking is separate.
+- Authentication is restored as `birdayz`, but owner no-commit/no-push restrictions remain. PR786 stays draft/unchanged; publication and merge are unauthorized. Legacy RaBitQ deployment prerequisites remain.
+
+Approved nullable-array/raw/scalar/sorting extensions remain required; FDB C++ stays **7.3.77**. This does not approve WS-B–K or whole-upgrade completion. No edits, tests/builds, agents, worktrees, Git-state changes or GitHub contact occurred.

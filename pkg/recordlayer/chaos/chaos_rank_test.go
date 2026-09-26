@@ -20,7 +20,7 @@ func buildRankIndexMetadata() *recordlayer.RecordMetaData {
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 	builder.SetRecordCountKey(recordlayer.EmptyKey())
 	builder.AddIndex("Order", recordlayer.NewRankIndex("order_price_rank",
-		recordlayer.Field("price")))
+		recordlayer.Ungrouped(recordlayer.Field("price"))))
 	md, err := builder.Build()
 	if err != nil {
 		panic("chaos: failed to build rank index metadata: " + err.Error())
@@ -243,7 +243,7 @@ func buildRankIndexCountDuplicatesMetadata() *recordlayer.RecordMetaData {
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 	builder.SetRecordCountKey(recordlayer.EmptyKey())
 	idx := recordlayer.NewRankIndex("order_price_rank_cd",
-		recordlayer.Field("price"))
+		recordlayer.Ungrouped(recordlayer.Field("price")))
 	idx.Options[recordlayer.IndexOptionRankCountDuplicates] = "true"
 	builder.AddIndex("Order", idx)
 	md, err := builder.Build()

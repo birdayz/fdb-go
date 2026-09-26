@@ -1,0 +1,167 @@
+{
+  "go_parent": "e48f5b4965543cd4d99b5578356059e12d969c7c",
+  "scope": "Historical promotion verification before the lazy LIMIT implementation; not a full upgrade or full race pass.",
+  "parser": "go tool test2json; nonempty per-target RUN/terminal multisets reconciled",
+  "runs": [
+    {
+      "log": "/var/tmp/query-grind-cast/java-upgrade/promotion-child-error-green-full.log",
+      "sha256": "ec8539cb52d60d2986b77096285d37a189fed8a05425209a043b3b744960a699",
+      "command_completed": true,
+      "completed_targets": [
+        {
+          "label": "//pkg/recordlayer/query/plan/cascades:cascades_test",
+          "counts": {
+            "run": 3682,
+            "pass": 3682
+          },
+          "package_result": "pass"
+        },
+        {
+          "label": "//pkg/recordlayer/query/plan/cascades/values:values_test",
+          "counts": {
+            "run": 2407,
+            "pass": 2407
+          },
+          "package_result": "pass"
+        }
+      ],
+      "interrupted_target": null
+    },
+    {
+      "log": "/var/tmp/query-grind-cast/java-upgrade/promotion-affected-full.log",
+      "sha256": "5038952f50b3184523faff201c66e57a7e2f6f855b6e68d3807573f23fe43138",
+      "command_completed": true,
+      "completed_targets": [
+        {
+          "label": "//pkg/relational/core/query/expr:expr_test",
+          "counts": {
+            "run": 322,
+            "pass": 322
+          },
+          "package_result": "pass"
+        },
+        {
+          "label": "//pkg/recordlayer/query/executor:executor_test",
+          "counts": {
+            "run": 1933,
+            "pass": 1933
+          },
+          "package_result": "pass"
+        },
+        {
+          "label": "//pkg/relational/conformance/yamsql:yamsql_test",
+          "counts": {
+            "run": 590,
+            "pass": 590
+          },
+          "package_result": "pass"
+        },
+        {
+          "label": "//pkg/relational/conformance/explaindiff:explaindiff_test",
+          "counts": {
+            "run": 53,
+            "pass": 53
+          },
+          "package_result": "pass"
+        },
+        {
+          "label": "//pkg/relational/core/embedded:embedded_test",
+          "counts": {
+            "run": 2212,
+            "pass": 2212
+          },
+          "package_result": "pass"
+        },
+        {
+          "label": "//pkg/recordlayer/chaos:chaos_test",
+          "counts": {
+            "run": 230,
+            "pass": 230
+          },
+          "package_result": "pass"
+        },
+        {
+          "label": "//pkg/relational/sqldriver:sqldriver_test",
+          "counts": {
+            "run": 6744,
+            "pass": 6744
+          },
+          "package_result": "pass"
+        }
+      ],
+      "interrupted_target": null
+    },
+    {
+      "log": "/var/tmp/query-grind-cast/java-upgrade/promotion-race-full.log",
+      "sha256": "88063063e74a3161f49798d671c1bcddd836a666c626a87bb35983df3a558619",
+      "command_completed": false,
+      "completed_targets": [
+        {
+          "label": "//pkg/rabitq:rabitq_test",
+          "counts": {
+            "run": 266,
+            "pass": 266
+          },
+          "package_result": "pass"
+        },
+        {
+          "label": "//pkg/recordlayer/query/plan/cascades/values:values_test",
+          "counts": {
+            "run": 2407,
+            "pass": 2407
+          },
+          "package_result": "pass"
+        },
+        {
+          "label": "//pkg/relational/core/query/expr:expr_test",
+          "counts": {
+            "run": 322,
+            "pass": 322
+          },
+          "package_result": "pass"
+        },
+        {
+          "label": "//pkg/relational/core/query:query_test",
+          "counts": {
+            "run": 517,
+            "pass": 517
+          },
+          "package_result": "pass"
+        },
+        {
+          "label": "//pkg/recordlayer/query/plan/cascades:cascades_test",
+          "counts": {
+            "run": 3682,
+            "pass": 3682
+          },
+          "package_result": "pass"
+        },
+        {
+          "label": "//pkg/recordlayer/query/executor:executor_test",
+          "counts": {
+            "run": 1933,
+            "pass": 1933
+          },
+          "package_result": "pass"
+        },
+        {
+          "label": "//pkg/relational/core/embedded:embedded_test",
+          "counts": {
+            "run": 2212,
+            "pass": 2212
+          },
+          "package_result": "pass"
+        },
+        {
+          "label": "//pkg/recordlayer/chaos:chaos_test",
+          "counts": {
+            "run": 230,
+            "pass": 230
+          },
+          "package_result": "pass"
+        }
+      ],
+      "interrupted_target": "//pkg/relational/sqldriver:sqldriver_test"
+    }
+  ]
+}

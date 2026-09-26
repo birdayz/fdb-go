@@ -33,7 +33,7 @@ func TestFDB_RowVersionIndexPlans(t *testing.T) {
 		WITH OPTIONS(store_row_versions=true)`)
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rvip/s1 WITH TEMPLATE rvip_tpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_rvip?cluster_file=%s&schema=s1", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_RVIP?cluster_file=%s&schema=S1", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

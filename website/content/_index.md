@@ -102,7 +102,7 @@ import (
 
 func main() {
 	db, err := sql.Open("fdbsql",
-		"fdbsql:///myapp?cluster_file=/etc/foundationdb/fdb.cluster&schema=main")
+		"fdbsql:///MYAPP?cluster_file=/etc/foundationdb/fdb.cluster&schema=MAIN")
 	if err != nil {
 		log.Fatal(err)
 	}

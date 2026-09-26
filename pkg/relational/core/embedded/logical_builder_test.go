@@ -547,38 +547,28 @@ func TestBuildLogicalPlan_ChainedJoins(t *testing.T) {
 	}
 }
 
-// SELECT without FROM is rejected at parse time. fdb-relational
-// 4.11.1.0's QueryVisitor.visitSimpleTable asserts a non-null FROM
-// clause with `Assert.notNullUnchecked(fromClause(), UNSUPPORTED_QUERY,
-// "query is not supported")`; Go's extractFromSimpleTable mirrors the
-// rejection. Per project conformance principle: doesn't work in Java
-// → doesn't work in Go. The LogicalValues builder shape stays in
-// place for future use (e.g., VALUES (...) AS t(...)) but is no
-// longer reachable from a bare SELECT.
-func TestBuildLogicalPlan_ValuesNoFromRejected(t *testing.T) {
+// FROM-less projection still uses the ordinary select shell over a singleton.
+func TestBuildLogicalPlan_SingletonNoFrom(t *testing.T) {
 	t.Parallel()
 	root, err := parser.Parse("SELECT 1 + 2")
 	if err != nil {
-		t.Fatalf("parse: %v", err)
+		t.Fatal(err)
 	}
-	stmt := root.Statements().AllStatement()[0]
-	sel := stmt.SelectStatement()
-	if sel == nil {
-		t.Fatal("expected SELECT statement")
+	sel := root.Statements().AllStatement()[0].SelectStatement()
+	sq, err := extractSelectParts(sel)
+	if err != nil {
+		t.Fatal(err)
 	}
-	_, err = extractSelectParts(sel)
-	if err == nil {
-		t.Fatal("expected error from extractSelectParts on FROM-less SELECT")
+	op := buildLogicalPlanForSelect(sq)
+	projection, ok := op.(*logical.LogicalProject)
+	if !ok {
+		t.Fatalf("plan=%T, want ordinary projection", op)
 	}
-	var apiErr *api.Error
-	if !errors.As(err, &apiErr) {
-		t.Fatalf("want *api.Error, got %T (%v)", err, err)
+	if _, ok := projection.Input.(*logical.LogicalSingleton); !ok {
+		t.Fatalf("projection input=%T, want singleton", projection.Input)
 	}
-	if apiErr.Code != api.ErrCodeUnsupportedQuery {
-		t.Fatalf("got code %s, want %s", apiErr.Code, api.ErrCodeUnsupportedQuery)
-	}
-	if apiErr.Message != "query is not supported" {
-		t.Fatalf("got message %q, want %q", apiErr.Message, "query is not supported")
+	if len(projection.Projections) != 1 {
+		t.Fatalf("projection=%#v", projection.Projections)
 	}
 }
 

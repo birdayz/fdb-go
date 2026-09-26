@@ -1,0 +1,88 @@
+**NAK.**
+
+- **Tree:** `01b0669d8d12e6eb84eebfa31f160cfed853e5d5`
+- **Design:** `ws-d-design.md`, SHA256 `6a1dd51dc89cef8f155caf924982f17cc2ba0b5346367668f4e253cbb79205ec`. I recomputed it from the blob; it matches, 1489 lines.
+- **Java:** `fdacd162`.
+- **Scope:** I read all four v10 verdicts, the full v11 design and its diff from v10, the oracle README and evidence, the probe source and spec, the heartbeat fix, the logs, and the cited Java and Go.
+- **Nothing was run or edited.**
+
+## P1: D-0's shared attempt loop bypasses the transactor seam, so fault injection silently stops (design 847-875)
+
+- **The mechanism the design shares skips the transactor.** Design 849 says Run shares one loop with `FDBDatabaseRunner.RunWithRetry`. That loop opens each attempt through `CreateWritableTransaction` (runner.go:283). For a chaos database, that call uses `d.db` directly (database.go:540-541) and never touches `d.transactor`.
+- **The chaos package has no path of its own there.** It has 0 hits for `CreateWritableTransaction` or `CreateTransaction`. As a positive control, `fault.go` defines 8 `ChaosTransactor` methods.
+- **The documented contract says the opposite.** `NewFDBDatabaseWithTransactor` promises "the transactor is used for Run()" (database.go:188-190).
+- **The TODO that D-0 closes asks for exactly this bypass:** "INSTEAD OF delegating straight to `d.transactor.Transact`" (TODO.md:6995).
+- **Consequence:** the chaos scenarios, and the other test files that build on `NewFDBDatabaseWithTransactor` (10 files under pkg/), would run with zero injected faults and still pass.
+- **The D-0 fixture has no fault to use.** The fixture at 872-875 asks for a chaos fault that fails every attempt with 1007. None exists: every `ChaosTransactor` arm commits and then re-executes; none returns an error (fault.go:151-214).
+- **Needed:**
+  - Say how each attempt goes through `d.transactor` (for example, a retry limit of 0 per attempt), or declare the seam change and move the injection point.
+  - Add a per-scenario count of injected faults, so an empty run is visible.
+
+## P2
+
+1. **The way D-0 finds tests that relied on unbounded retries does not work (866-867).**
+   - "Found by running the full suite with the bound" cannot find tests that only sometimes exceed 10 conflicts. It will create flakes instead.
+   - SQL autocommit runs through `DB.Run` (connection.go:416), so its contract changes from unbounded retries to 10 attempts.
+   - Java's relational layer does not retry at all: `RecordContextTransaction` uses no runner, and a search for `retry`/`isRetryable` under `relational/recordlayer` finds nothing.
+   - Declare this population, and count attempts in a stress run of contended workloads.
+2. **The merger's retry schedule needs `LastStep` = MERGE, and the design never requires it (1321-1326, 868-871).**
+   - Java sets it at VectorIndexMaintainer.java:536. The design has 0 hits for "lastStep" (positive control: "time quota" has 1).
+   - No production Go code sets it; the only assignment is inside the setter (index_deferred_maintenance.go:145).
+   - Without it, `handleFailure` falls to its default arm and returns immediately (indexing_merger.go:127-128). That contradicts the stated halving schedule.
+   - D-0 runs first, but its fixtures for "inline GuardiANN insert … 1007" and "halvings asserted" need GuardiANN from phases 3-4.
+3. **The balance claim is false, and the reason given for dropping sampling does not hold where the rule runs.**
+   - Design 1215-1217 says the smaller child is 0.33-0.49 "on every measured shape". The pinned row `genSpread50R3N2000D4096` seed 1, unsampled, selects [1726 274], which is 0.137 (spec want, evidence-run.txt:349).
+   - The spec comment at the want list says "at every d" and is wrong for the same reason. README:281 correctly limits the claim to the tight shapes.
+   - Sampling is rejected on the d = 4096 tight rows. But at n = 2000, d = 3072 and d = 4096 give W = 6.1e7 and 8.2e7, above B, so the rule refuses them anyway.
+   - Where the rule does run (d = 768 and 1536), sampled rows are 0.350-0.462 and unsampled 0.401-0.489. That does not tell the two rules apart.
+   - No measured shape is near W = B (the largest admitted W measured is 3.07e7). The n = 1001, d = 2048 fixture shape was never measured.
+4. **Admission bounds the peel's CPU, then sends the whole high-dimension population into Step 2, whose I/O has no bound.**
+   - The reconcile reads every reference plus each referenced PK's metadata (including replicas) serializably (1286-1293).
+   - For the d = 4096 fixture that is at least 16 MB of reference reads, on top of the target's own cleanup read of the same bytes. Nothing measures that it fits in 5 s.
+   - With D-0, a deterministic 1007 there costs up to 10 attempts of about 5 s each inside the user's inline transaction; the target fails at once. State this latency, or bound the reconcile.
+
+## P3
+
+1. **Arithmetic and timings.**
+   - n = 1001 is admitted up to d = 4440, not 4444 (1136): 9·1001·4441 = 40,008,969, which exceeds 4e7.
+   - The d = 768 refit total is 0.355-0.398 s (wsd-gen-1:316, wsd-gen-2:30), not 0.39-0.40 (1139).
+   - W leaves out kMeansMaxIterations and kMeansMaxRestarts, so "1.7 s at the bound" holds only at the defaults 8 and 3.
+   - The probe's timer excludes the floor's distance sort, whose comparator recomputes distances.
+   - Lines 1191-1193 quote a different shape's range beside 1139; label which shape each number describes.
+2. **"One mechanism" is not true yet.**
+   - `cleanupHeartbeatWithin` is a third attempt loop (online_indexer_queue.go:203-225).
+   - `calculateDelay` uses 0.5-1.5× jitter and can exceed MaxDelay (runner.go). Java's ExponentialDelay draws uniformly from [0, current) and never exceeds the maximum (ExponentialDelay.java:62-72).
+   - Say that the delay changes, and either fold in the cleanup loop or declare it.
+3. **Heartbeat: one undeclared population remains.**
+   - Java collapses heartbeats into a `Map<UUID,…>` (IndexingHeartbeat.java:136, 151) and decides "ongoing" over the map's values (OnlineIndexer.java:459-462). Go checks every key (indexing_heartbeat_admin.go).
+   - Now that (U, x) keys are accepted, a (U) key and a (U, x) key together can diverge. Example: (U) is live and (U, x) is dated past the lease. Java answers not ongoing, because (U, x) overwrote (U) in the map; Go answers ongoing.
+   - This is neither pinned nor counted in DIVERGENCES' "three populations".
+4. **Evidence.**
+   - Item 23 cites `wsd-gen-1.log` as one of two runs. It is a red capture run against an empty `want` (log:363-408); its lines do match the pin, but say so.
+   - I found only one manifest pair under `/var/tmp/fdb-upgrade-recovery` (`wsd-v11-manifest-before/after.txt`), and it matches the run-2 tree. Run 1's manifests are not there.
+   - Name the replica bound: at most 300 writes (Config.java:155), which adds 0.46 MB at d = 768 and 1.2 MB at d = 2048.
+
+## Verified closed
+
+- **Evidence hashes match the tree:** 8 of the 16 listed files, including all the GuardiANN files.
+- **Oracle runs:** 25 of 25 specs pass, uncached, in both runs (rfc257-v11-1:2860, -2:2856).
+- **Full test runs:** just-test-v11 executed 8 targets and was red only on recordlayer; v11b executed 2 and all 94 passed. The manifests match the tree blobs.
+- **Tree 1cf1b5e:** differs from this tree only by the README.
+- **Heartbeat parse:** matches `getUUID(0)` (IndexingHeartbeat.java:201-203). The versionstamp and (U, x) pins work in both engines, and both mutations redden their specs.
+- **Citations fixed:** :223, :349, :505-507, Primitives :991, and the runner and factory lines.
+- **Other items:** the peel RNG is split once, at the Go rule's entry; the Step 2 population is consistent; item 15 is now labelled SOURCE; W reproduces the fixture values.
+
+## Measured vs hypothesis
+
+- **Measured:**
+  - item 23's 16 rows (JVM, double-precision vectors);
+  - item 24 in both engines, plus the mutations;
+  - JVM timings, printed and never pinned.
+- **Checked against source only:** the target runner and the merger's schedule.
+- **Still hypothesis:**
+  - every D-0 mechanism and its blast radius;
+  - the Go peel's cost;
+  - the reconcile's cost;
+  - whether the d = 2048 and d = 4096 fixtures fit in a transaction;
+  - item 21 and the REMAINING list;
+  - every GuardiANN Go mechanism.

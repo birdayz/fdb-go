@@ -1,0 +1,53 @@
+**NAK — completed WS-B correctness/code-quality correction review.**
+
+Reviewed Git **tree `dd0956b11e901609edcd5f19d36ef64f04482b8a`**, against tree `6ffe8d3b5b541bdd1c668c6e13e45ebe475292a3`.
+
+I read the four actual NAK verdicts, approved design, complete production/test delta, surrounding callers, relevant tagged Java `fdacd162a9c8acfadc49082b89185c823ab8ae4a`, and retained evidence. **The reported initialization defect is fixed, but four findings remain.** These findings are source-derived; I executed no reproducers.
+
+1. **P1 — Reload introduces a reachable lock-order deadlock.**
+
+   [ReloadRecordStoreState, store.go:1896](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:1896) acquires the registry mutex before `stateMu`. Existing record maintenance takes the opposite order: [updateSecondaryIndexes, store.go:1012](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:1012) holds `stateMu.RLock`, and uniqueness-violation cleanup can call [context.ClearRange, store.go:1361](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:1361), which acquires the registry mutex.
+
+   Concrete interleaving: delete one of two duplicates from a unique WRITE_ONLY or READABLE_UNIQUE_PENDING index. Pause its violation-range read while maintenance holds `stateMu.RLock`. Concurrent reload acquires the registry mutex and waits for `stateMu`. Resume deletion: its one-survivor cleanup waits for the registry mutex. Neither operation can finish.
+
+   **Required:** establish one compatible lock order across reload and maintenance while preserving atomic read/publication. Add a deterministic regression using this uniqueness-cleanup path; reload-versus-clear alone misses the cycle.
+
+2. **P1 — Clearing state and committing without opening the store leaves warmed caches valid.**
+
+   [index_state.go:338](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:338) records clear history, but immediate invalidation considers only registered views. Otherwise, invalidation depends on a subsequent [prepareIndexStateLoadLocked call, index_state.go:311](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:311). Commit never processes that history.
+
+   Reproduction: warm a cache for an **empty cacheable store with DISABLED index I**. In a fresh context, call `ClearRange(ss.Sub(IndexStateSpaceKey))` and commit without opening that store. The registry is empty, so the metadata stamp remains unchanged. The next context’s cached Open still reports DISABLED. Saving a record skips maintenance and can commit successfully; uncached reopening observes READABLE with a missing index entry. The clear preceded this writer’s read version, so adding state-key conflicts cannot repair it.
+
+   Both new warm-cache tests open the store inside the clearing context and therefore miss this case.
+
+   **Required:** make supported state-clear invalidation effective without requiring a later Open. Retain the ordinary-record-clear negative control and add this separate-context sequence.
+
+3. **P2 — Exported state snapshots still read stale handle-local maps.**
+
+   [GetRecordStoreState, store.go:1836](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:1836) and [GetAllIndexStatesMap, store_api.go:224](/home/birdy/projects/fdb-go/pkg/recordlayer/store_api.go:224) copy `store.indexStates`, whereas operational getters use the shared view.
+
+   Open two handles, change a state through the transaction, and reload the first. The second handle’s `GetIndexState` reflects the reload, but its exported snapshots retain the old state. Context clearing likewise updates the shared view without updating these maps—even on the clearing handle.
+
+   **Required:** obtain exported index-state snapshots from the common authority under its mutex. Extend the reload and clear regressions to assert agreement across these public APIs.
+
+4. **P2 — Unconditional clear invalidation defeats header-aware deletion.**
+
+   [index_state.go:340](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:340) bumps the global metadata stamp whenever a clear overlaps a registered state subspace, regardless of cacheability.
+
+   Open an unchanged **noncacheable** store, then call [DeleteStore, store_api.go:165](/home/birdy/projects/fdb-go/pkg/recordlayer/store_api.go:165). Its header check correctly declines to bump the stamp, but its subsequent context clear bumps it anyway. This happens even when the registered state map is empty.
+
+   That contradicts approved design §2 and tagged Java’s header-aware `deleteStoreAsync`, restoring unnecessary database-wide cache invalidation.
+
+   **Required:** preserve deletion’s header-derived invalidation decision while maintaining view coherence. Add an opened-noncacheable-store negative control; the current header-policy fixtures have no registered view.
+
+**Previous finding dispositions:** The loaded-but-unbound Open and in-flight Open/lazy initialization cases are resolved: registry locking spans loading, including cache access, through binding. Open returns attached, and the explicit assume-readable path remains. Reload now publishes operational state across bound handles, retains established conflicts, and avoids publication on read failure. Its new lock order and stale snapshot APIs remain defective. The exercised warm-cache before/after-Open cases are corrected, but cache invalidation remains incomplete and overbroad in the cases above. Earlier former-index cleanup and point-mutation/publication corrections remain intact.
+
+**Scoped SPFresh disposition: NAK through common state handling.** Finding 2 can suppress SPFresh maintenance at the common admission gate. This is category **(b): failure of the transactional adaptation’s coherence guarantee**, relevant to [SPFresh §§3.2 and 4.2.2](/home/birdy/projects/fdb-go/.claude/skills/spfresh-reviewer/spfresh-paper.pdf) and [RFC094 §2.1](/home/birdy/projects/fdb-go/rfcs/094-spfresh-vector-index.md:107). The correction delta changes no SPFresh/RaBitQ algorithms, encodings, routing, or budgets. The prior algorithm assessment against [SPANN §§3.2.1–3.2.3](/home/birdy/projects/fdb-go/.claude/skills/spfresh-reviewer/spann-paper.pdf) therefore stands; this is a common lifecycle defect.
+
+The evidence reconciles: **6,812/6,812 frozen hashes** match source tree `21c07c49f28fd0be9acf54fa5eee56fb3384f963`, and **34/34 evidence hashes** match. Source-to-reviewed-tree changes are documentation/evidence only. Logs substantiate **93/93 uncached targets**, **14/14 actual race targets**, recordlayer **3409/3410**, conformance **1391/1510**, ten focused passes, and three compiled mutation kills. These are neither the full PR relational race set nor actual CI.
+
+The latest residual is **1.0290× orders (+2.90%)** and **1.0507× customers (+5.07%)**, with n=2 per side. All four runs have 24 matching RUN/PASS cases, 26 identical row-count outputs, and zero reported retries. **These measurements do not independently block this correctness milestone.** They establish neither parity nor causation.
+
+Approved extensions and the intentional Java deletion-callback correction remain preserved. WS-C–K remain excluded; queue/state4/format15 remain disabled.
+
+No edits, tests/builds, Git mutations, GitHub requests, publication, or delegation occurred. HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`. Runtime model/effort identity is not exposed for independent attestation.

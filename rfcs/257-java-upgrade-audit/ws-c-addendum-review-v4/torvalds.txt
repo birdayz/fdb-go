@@ -1,0 +1,72 @@
+**NAK.** Tree `936a4aba27681bdd9a5e2938021f54d7b803e2a1` (a tree object). Design SHA256 `4249af27134885d20973c635fb920084f25000211419c08fcb04410d46c00786`, 943 lines; I checked both myself. Java was read from the checkout, whose `.git/HEAD` is `fdacd162`.
+
+The late-clear fix is correct, and every v3 finding is addressed. The NAK is for three small gaps, the same size as the ones v3 was NAK'd for: one incomplete conversion, one half of the outcome fix with no test, and the sibling of storage 5 left open. A narrow re-check of the changed lines is enough.
+
+## Findings, most severe first
+
+**1. Low-medium: `INDEXER_ID` is only partly carried (from source).**
+- Java also attaches `INDEXER_ID` to `SynchronizedSessionLockedException` (`IndexingHeartbeat.java:111-115`). Its keys are INDEXER_ID, EXISTING_INDEXER_ID, AGE and TIME_LIMIT.
+- Go's `SynchronizedSessionLockedError` (`indexing_heartbeat.go:201-206`, built at `:155`) has no `IndexerID`.
+- That is the error Go's declared precedence divergence returns most often, so it is the one an operator most needs to trace.
+- §7.4 and the CHANGELOG list only `IndexingBase.java:604, :1011-1012, :1171-1174`. CLAUDE.md requires the same context fields as Java.
+- Fix: add the field, set it from `h.indexerID`, and pin it with a mutation.
+
+**2. Low: the call-level outcome is pinned on one of its two returns only (from source, not mutated).**
+- Every spec that asserts `LastBuildOutcome` has `built == false` on the success return (`online_indexer.go:1088`). The only spec with a failed attempt that has `n > 0` ("reports a call whose earlier attempt built…") ends through `indexingCatchDone` (`:1097`).
+- So reverting `:1088` to `oi.lastOutcome = outcome` stays green.
+- The case that return handles is exactly Torvalds v3 #1: a retry, a peer publishes, and the next attempt skips (`LeftAlone`). It has no test.
+- m24 reddens only because it disables the flag both returns share.
+- Fix: add a spec where a failed attempt indexes records, the index is then published, and the next attempt skips. Assert `Built`, and mutate `:1088`.
+
+**3. Low (wire-adjacent, pre-existing): the target-object sibling of storage 5.**
+- `Build` claims to follow `validateIndexSetting` (`OnlineIndexer.java:866-878`) but stops before `:880-883`. There Java refuses any target that is not the metadata's own object: `index != metaData.getIndex(name)` → `MetaDataException`.
+- Go checks only the name (`online_indexer.go:800`) and returns `fmt.Errorf` rather than a `MetaDataError`.
+- It then builds with the caller's object. The range set is keyed by that object's `SubspaceTupleKey()` (`indexing_range_set.go:18`), and the maintainers are built from it too.
+- So a hand-built target with a foreign subspace key writes keys Java never would. That is the hazard §7.4 closed for the source.
+- Fix: port Java's refusal, or resolve targets by name the way the source now is.
+
+**4. Nits.**
+- `online_indexer.go:1241-1242` and §7.4 say the method-named `info` is "what a peer's lock error reports". Only Go's `ExistingInfo` reports it; Java's exception has no info key. Reword so it doesn't read as a claim about Java.
+- The fleet arm "every index left to peers" (`fleet/build_test.go:109`) feeds `{n: 2, built: false}`. Revision 4 made that impossible: `n > 0` now implies `Built`. Use `n: 0`, or call it defensive.
+- Stale outcome docs:
+  - `IndexBuildOutcomeNone` still reads "no BuildIndex call has completed", but it is also the value after a failed call.
+  - `LeftAlone` and `Published` still say "the session" rather than "the call".
+- `mut-m30.log` is the only mutation log without its file and perl expression, and it ran under `go test`, not Bazel. The Bazel membership of `build_test.go` is shown only indirectly: `ev8-run1`'s nogo failure came from that file.
+
+## What holds
+
+**From source:**
+- **The late clear.**
+  - `cleanupHeartbeatAttempt` reads every target's key before clearing it, in the same transaction. The clear site is the only `Cleanup` in non-test code, and `MergeIndexes` goes through the same function.
+  - The cleanup is synchronous, so its read version always precedes the next attempt's write. A late commit therefore conflicts, or is rejected as too old.
+  - The new read is bounded by the transaction timeout, which the pure-Go client enforces on reads (see `settimeout_test.go`).
+  - Java awaits the clear (`IndexingBase.java:174`).
+- **`holdDispatch`** models what it claims. The commit is withheld, the timeout and cancellation are skipped, and the real transaction is committed afterwards by `landLate`.
+- **The late-clear spec cannot pass vacuously.** It asserts:
+  - that the clear was dispatched;
+  - `DeadlineExceeded`;
+  - code 1020 exactly (a cancelled or too-old transaction would fail it);
+  - that the key survives.
+
+  It runs on the pure-Go client (`recordlayer_suite_test.go` imports `fdbgo/fdb`).
+- **Catcher and CHANGELOG.** The retry-cost text matches `OnlineIndexer.java:188-225` arm by arm, and the precedence rule is true for each path.
+- **Source index.** Resolving it by name matches `IndexingByIndex.java:68-71, :95-101`; a continuation resolves by subspace key, then by name to the same index.
+- **Heartbeat info.** It matches `IndexingBase.java:457`.
+- **Builder order.** It matches `:866-878`.
+- **The follow-up divergence** is declared and true: after disable, `clearIndexData` leads to `IndexNotBuiltException` at `FDBRecordStore.java:3983`.
+- **Callers.** frl and the fleet are the only non-test callers of `LastBuildOutcome`, and they are consistent. `buildPending` adds `total` after the error check.
+- **v3 findings.** Every one is addressed, except the partial gaps in findings 1 and 2.
+
+**Measured:**
+- The evidence tree `9f1cd709` differs from the candidate only in the design file and `evidence-v8.txt`.
+- The 12 WS-C files I recomputed match `ev8/src.sha`: both `online_indexer*` sources, three of the four indexer spec files (`online_indexer_test.go`, `online_indexer_session_test.go`, the fleet's `build_test.go`), `errors.go`, `indexing_heartbeat.go`, both fleet and frl files, CHANGELOG and DIVERGENCES.
+- `justtest.log`: "Executed 43 out of 94 tests: 94 tests pass". The recorded tree is `9f1cd709` both before and after the run. fleet, frl and recordlayer are among the 43 that executed.
+- `wsc-focus.log`: "Ran 385 of 3698", all passed.
+- `wsc-loop40.log`: 40 × "SUCCESS! -- 2 Passed | 0 Failed", 0 FAIL lines, "Executed 1 out of 1 test".
+- m23–m29 and m31–m33 each show:
+  - marker count 1 and the applied diff;
+  - bazel exit 3 and "Ran 372 of 3698";
+  - the red spec §7.4 names (m33 reddens 3);
+  - "restored".
+- m23's full log contains "the late clear committed: <nil>". m30 fails `a_failure_part_way`.
+- A grep for "new UUID", "not reconcile on open", "without index maintenance", the old attempt-identity reason and "preparation check writes" finds only the historical notes in the README and the design. The positive control is the README's own hit.

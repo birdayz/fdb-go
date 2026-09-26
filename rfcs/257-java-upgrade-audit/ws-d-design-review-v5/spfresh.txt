@@ -1,0 +1,90 @@
+**NAK**
+
+- **Tree:** `d0ce9ed51b2ffce11e96ae5db2a98cda56882e07`
+- **Design:** `rfcs/257-java-upgrade-audit/ws-d-design.md`, SHA256 `c3b80bc41e3d34e134410a089e420414bc793f5e7b8e7632e60038d2309379cb`. I recomputed the hash with `git show TREE:path | sha256sum` and it matches.
+
+**What I read and checked.** I read the four v4 verdicts, the full v5 design, the oracle README, both oracle Java files and the Go spec. I checked the design's claims against the Java source and against Go at `f0cb2957`. The only code difference between `f0cb2957` and this tree is the five `conformance/` files; nothing under `pkg`, `gen` or `proto` changed. I read the SPANN and SPFresh PDFs directly because `pdftotext` isn't installed. I ran no tests and made no edits.
+
+**What I could not check:**
+- The read-only policy blocked `git -C fdb-record-layer rev-parse`, so I read the Java working copy and could not confirm it is at `fdacd162`.
+- The oracle logs in `/var/tmp` are not in the tree. The spec code does match what the README says was measured.
+
+### Confirmed
+- **SPFresh and LIRE are untouched.**
+  - `spfreshIndexMaintainer` embeds `standardIndexMaintainer` (`spfresh_index_maintainer.go:30-31`). It therefore inherits the queue refusal (`index_maintainer_queue.go:12,18`) and the no-op `MergeIndex` (`index_deferred_maintenance.go:248`).
+  - A search of `spfresh*.go` for the lock, queue, merge and salt APIs finds only one comment. The same search finds hits in `vector_index_maintainer.go`, so the search works.
+  - The salt function already takes `indexType` (`scan_range_execution_identity.go:492-521`), so limiting the executor changes to `IndexTypeVector` can be done.
+- **These v5 claims match Java:**
+  - Java's actual mutable option set (`GuardiannVectorIndexEngine.java:84-97`).
+  - Only `minChildFraction` makes a candidate INVALID (`PartitionEvaluator.java:908`).
+  - `classifyClusters` does not filter clusters by state (`AbstractDeferredTask.java:590-636`).
+  - The commit-check machinery exists (`database.go:1063-1145`), and every commit path runs it (`:305`, `:1319`).
+  - Go's `Update` deletes and re-inserts unconditionally (`vector_index_maintainer.go:314-334`), as v5 says.
+- **Closed:** v4 Storage's P3s and join rule, v4 Torvalds's P3s, and the stats/states inputs to the Collapse helper.
+
+### P1 — Applying the hard cap in inline mode stalls indexes that are healthy in Java (design:647-658)
+- **The claim.** v5 says applying the cap in inline mode "only changes behaviour in states where the target is already failing".
+- **Why that is false.** Four Java facts combine:
+  - Inline mode runs one deferred task and then inserts (`Insert.java:206-215`), and it skips the cap check (`:334`).
+  - A split takes two executions: the first only persists the neighbours and re-enqueues the task (`SplitMergeTask.java:232-236`; oracle item 2).
+  - `primaryClusterHardMax = primaryClusterMax + 1` is legal (`Config.java:200`).
+  - In inline mode nothing signals a caller merge (`GuardiannVectorIndexEngine.java:198-201`), and v5's capacity recovery covers only builds and queue replay (design:529-531).
+- **Counterexample:** max 10, hardMax 11, a single cluster, `autoMergeDuringCommit=true`.
+  - In Java, insert #12 runs the split's first phase and commits; insert #13 splits the cluster.
+  - In Go, insert #12 runs the first phase and then hits the cap. The caller rolls back, and the first phase is rolled back with it. Every later insert repeats this, so the index is stuck permanently.
+  - The same thing happens with the default hardMax (2×max) whenever the split is queued behind other tasks.
+- **Ordering is also unspecified.** design:401 puts the cap check "before … every other engine write", which in inline mode includes the inline task. Java routes the insert after the task has run.
+- **Not measured.** Every oracle insert and delete passes `maintainInTransaction=false` (`guardiann_probe_conformance.java:90,97,462`), so all of v5's inline-mode statements are source hypotheses.
+- **Needed:**
+  - Specify the order: inline task, then routing, then cap check, then the tag-5 write.
+  - In inline mode, apply the cap only to clusters the reconcile left oversized with no split pending.
+  - Add an inline fixture with hardMax = max+1.
+
+### P2-1 — The admission table contradicts its own measured golden (design:175-194)
+- **Insert refusal for `mergeNumNearestClusters<1`.** The stated reason, "can never drain the backlog its inserts create" (:189-190), is contradicted by the golden. For this knob the drains after inserts complete (`drain=2`, `grow drain=8`); only merges driven by deletes loop forever (`guardiann_probe_conformance_test.go:372`).
+- **The "consumer throws … Parity" row.** Java completes merges until it reaches a collapse or bounce task. The golden shows `CollapseConcurrency=0` drains 2, 8 and 2, and `BounceConcurrency=0` and `ReassignConcurrency=0` both first drain 2 (`test.go:378-380`).
+  - Go refuses every merge up front, while inserts continue because these knobs are mutable.
+  - So Go hits hard-cap backpressure while Java is still splitting. The row is labelled parity, and the difference is not declared.
+  - Refusing at the consumer, which is the design's own rule at :165-166, would give real parity for the knobs where Java throws.
+- **Leftover from v4 SPFresh P2-1.** Inline maintenance is suppressed only for deletes (:236-238). For inserts on an index whose merges are blocked by a mutable knob, the inline task at `Insert.java:211` is a "task fetch" that gets refused (:175). That contradicts "inserts continue" (:193). State that inline maintenance is suppressed for inserts too.
+
+### P2-2 — Capacity hand-off may not terminate (design:526-547)
+- **The inner loop has no bound.** It runs "until the prefix count is 0 or a drain executes no task" (:526-527).
+  - With concurrent inserters in the hot prefix (the normal capacity case), every drain executes at least one task, so the loop never ends.
+  - The merger it reuses has no bound on the success path either (`indexing_merger.go:20-66,90`).
+- **The progress baseline is ambiguous.** "Fewer primaries than when it failed" can be read against the error's count. That count is Java's would-be count, primaries+1 (`Insert.java:336`), and it also includes the aborted attempt's own buffered inserts.
+  - A committed snapshot re-read is always lower than that, so every hand-off looks like progress.
+  - Only the 100-retry budget then stops it, with up to 60 s of backoff per foreign lease.
+- **Needed:**
+  - Use a committed snapshot count taken before the hand-off as the baseline.
+  - Leave the drain loop as soon as the blocked cluster has dissolved or dropped below the cap.
+  - Bound the number of drains per hand-off.
+
+### P2-3 — Paper: rejecting a balanced fallback split contradicts SPFresh (design:658-663)
+- **What the papers say.**
+  - SPFresh §3.2: "LIRE evenly splits the oversized posting."
+  - SPFresh §4.2.1: split uses balanced clustering to produce "balanced postings".
+  - SPFresh §3.4: the convergence proof assumes every split adds one centroid.
+  - SPANN §3.1 and §3.2.1 (Eq. 1, λ): posting length must be bounded and balanced.
+- **Why the stated reason fails.** v5 says a balanced fallback would "fight nearest-centroid ownership". But final ownership is re-homed to the nearest centroid anyway (design:666-667), and SPFresh §3.3's reassign only moves boundary vectors. Balancing moves centroids, not ownership.
+- **Effect.** A single cluster with an outlier group under 10% (oracle item 3) freezes at hardMax. For a one-cluster index, that means every insert fails.
+- **Needed.** Java's own KMeans exposes the balancing penalty; the split currently passes λ `0.00` (`SplitMergeTask.java:1111`).
+  - At the throw site, after the reconcile, evaluate a 1→2 split with a fixed λ>0 constant (pinned by a golden test).
+  - Keep the terminal path only for populations that cannot be separated.
+  - This is paper category (c), a mechanism the design lacks.
+
+### P3
+1. **`deleteConcurrency` refusal is placed too early.** design:177 refuses at engine entry. Java returns without error when there is no access info or no tag-5 row for the key (`Delete.java:112-123`), before it throws (`:170-176`). Go's own reorder of the cap check before the tag-5 write (:398-403) creates exactly those no-tag-5 keys after a capacity catch-and-commit, so Go would refuse deletes that Java completes. Move the check after the metadata read.
+2. **Poisoning also covers read-only refusals** (:151-157), even where the design says "matching the target" (:206-207). If a caller catches a failed vector search and then commits unrelated writes, Java commits and Go fails. Poison only after an operation that mutates.
+3. **Two statements are too strong:**
+   - "The reconcile never lowers its primary count" (:662) conflicts with the reconcile removing stale references (:626-630).
+   - "No empty cluster unless the whole index is empty" (:706-707) fails when `primaryClusterMin=0` or the kept cluster's peak is low. The merge threshold is then 0 (`SplitMergeTask.java:179-187`), and Java also keeps such a cluster (oracle item 4 shows `{0 0 2}`).
+4. **"Livelock" means ≥40 rounds without the queue emptying** (`test.go:340-353`). The design should word it that way.
+
+### Measured vs. still hypothesis
+- **Measured** (oracle items 1–7; deferred mode only): the VectorId hash, both split stalls, queue stranding at 12 committed / 18 left, ordinary-save backpressure, and the knob map.
+- **Still source hypotheses:**
+  - every inline-mode claim;
+  - whether a λ>0 fallback split is feasible;
+  - the four conditional corrective contracts;
+  - all claims about the Go-side mechanisms.

@@ -2,6 +2,8 @@ package recordlayer
 
 import (
 	"bytes"
+	"context"
+	"errors"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -66,11 +68,149 @@ var _ = Describe("SplitHelper", func() {
 	// ───────────────────────────────────────────────────────────────────
 
 	Describe("saveWithSplit", func() {
+		It("commits versionstamped split keys in local order and measures offset bytes", func() {
+			rs := recordSub()
+			for _, dataLen := range []int{0, 1, splitRecordSize, splitRecordSize + 1, 2*splitRecordSize + 17} {
+				ss := rs.Sub(dataLen)
+				data := makeTestBytes(dataLen)
+				_, err := sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
+					for local := range 2 {
+						pk := tuple.Tuple{int64(7), tuple.IncompleteVersionstamp(uint16(rtx.ClaimLocalVersion()))}
+						si := &sizeInfo{KeyCount: 99, KeySize: 99, ValueSize: 99, IsSplit: true, VersionedInline: true}
+						if err := saveWithSplit(rtx, rtx.Transaction(), ss, pk, data, true, false, nil, si); err != nil {
+							return nil, err
+						}
+						chunks := max(1, (dataLen+splitRecordSize-1)/splitRecordSize)
+						Expect(si.KeyCount).To(Equal(chunks))
+						Expect(si.ValueSize).To(Equal(dataLen))
+						Expect(si.IsSplit).To(Equal(dataLen > splitRecordSize))
+						Expect(si.VersionedInline).To(BeFalse())
+						var expectedKeySize int
+						for i := range chunks {
+							suffix := int64(0)
+							if chunks > 1 {
+								suffix = int64(i + 1)
+							}
+							packed, err := appendToTuple(pk, suffix).PackWithVersionstamp(ss.Bytes())
+							Expect(err).NotTo(HaveOccurred())
+							expectedKeySize += len(packed)
+						}
+						Expect(si.KeySize).To(Equal(expectedKeySize), "local=%d", local)
+					}
+					visible, err := rtx.Transaction().GetRange(ss, fdb.RangeOptions{}).GetSliceWithError()
+					Expect(visible).To(BeEmpty())
+					return nil, err
+				})
+				Expect(err).NotTo(HaveOccurred())
+				_, err = sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
+					rows, err := rtx.Transaction().GetRange(ss, fdb.RangeOptions{}).GetSliceWithError()
+					if err != nil {
+						return nil, err
+					}
+					chunks := max(1, (dataLen+splitRecordSize-1)/splitRecordSize)
+					Expect(rows).To(HaveLen(2 * chunks))
+					for local := range 2 {
+						var joined []byte
+						for i := range chunks {
+							row := rows[local*chunks+i]
+							key, err := ss.Unpack(row.Key)
+							Expect(err).NotTo(HaveOccurred())
+							Expect(key).To(HaveLen(3))
+							Expect(key[0]).To(Equal(int64(7)))
+							stamp, ok := key[1].(tuple.Versionstamp)
+							Expect(ok).To(BeTrue())
+							Expect(stamp.TransactionVersion).NotTo(Equal(tuple.IncompleteVersionstamp(0).TransactionVersion))
+							Expect(stamp.UserVersion).To(Equal(uint16(local)))
+							joined = append(joined, row.Value...)
+						}
+						Expect(bytes.Equal(joined, data)).To(BeTrue())
+					}
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+		})
+
+		It("rejects incomplete keys without context and multiple incomplete stamps before mutation", func() {
+			rs := recordSub()
+			_, err := sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
+				stamp := tuple.IncompleteVersionstamp(0)
+				err := saveWithSplit(nil, rtx.Transaction(), rs, tuple.Tuple{stamp}, nil, true, false, nil, nil)
+				var argument *RecordCoreArgumentError
+				Expect(errors.As(err, &argument)).To(BeTrue())
+				Expect(saveWithSplit(rtx, rtx.Transaction(), rs, tuple.Tuple{stamp, stamp}, nil, true, false, nil, nil)).NotTo(Succeed())
+				Expect(rtx.HasVersionMutations()).To(BeFalse())
+				rows, err := rtx.Transaction().GetRange(rs, fdb.RangeOptions{}).GetSliceWithError()
+				Expect(rows).To(BeEmpty())
+				return nil, err
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("reuses size metrics only after clearing the previous split", func() {
+			rs := recordSub()
+			_, err := sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
+				pk := tuple.Tuple{int64(1)}
+				si := &sizeInfo{}
+				if err := saveWithSplit(rtx, rtx.Transaction(), rs, pk, makeTestBytes(splitRecordSize+1), true, false, nil, si); err != nil {
+					return nil, err
+				}
+				if err := saveWithSplit(rtx, rtx.Transaction(), rs, pk, []byte("small"), true, false, si, si); err != nil {
+					return nil, err
+				}
+				Expect(si.KeyCount).To(Equal(1))
+				Expect(si.ValueSize).To(Equal(5))
+				Expect(si.IsSplit).To(BeFalse())
+				rows, err := rtx.Transaction().GetRange(rs, fdb.RangeOptions{}).GetSliceWithError()
+				Expect(rows).To(HaveLen(1))
+				Expect(rows[0].Value).To(Equal([]byte("small")))
+				return nil, err
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("rejects repeated versionstamped chunk keys including empty values", func() {
+			for _, dataLen := range []int{0, 1, splitRecordSize + 1} {
+				rs := recordSub().Sub(dataLen)
+				_, err := sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
+					pk := tuple.Tuple{int64(0), tuple.IncompleteVersionstamp(0)}
+					data := makeTestBytes(dataLen)
+					if err := saveWithSplit(rtx, rtx.Transaction(), rs, pk, data, true, false, nil, nil); err != nil {
+						return nil, err
+					}
+					return nil, saveWithSplit(rtx, rtx.Transaction(), rs, pk, data, true, false, nil, nil)
+				})
+				var internal *RecordCoreInternalError
+				Expect(errors.As(err, &internal)).To(BeTrue())
+				Expect(internal.Message).To(Equal("Key with version overwritten"))
+			}
+		})
+
+		It("cancels buffered split keys on context clear before commit", func() {
+			rs := recordSub()
+			_, err := sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
+				pk := tuple.Tuple{int64(0), tuple.IncompleteVersionstamp(0)}
+				if err := saveWithSplit(rtx, rtx.Transaction(), rs, pk, makeTestBytes(splitRecordSize+1), true, false, nil, nil); err != nil {
+					return nil, err
+				}
+				rtx.ClearRange(rs)
+				Expect(rtx.HasVersionMutations()).To(BeFalse())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
+				rows, err := rtx.Transaction().GetRange(rs, fdb.RangeOptions{}).GetSliceWithError()
+				Expect(rows).To(BeEmpty())
+				return nil, err
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
 		It("returns error for empty primary key", func() {
 			rs := recordSub()
 			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				si := &sizeInfo{}
-				err := saveWithSplit(tx, rs, tuple.Tuple{}, []byte("data"), true, false, nil, si)
+				err := saveWithSplit(nil, tx, rs, tuple.Tuple{}, []byte("data"), true, false, nil, si)
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("primary key must not be empty"))
 				return nil, nil
@@ -85,7 +225,7 @@ var _ = Describe("SplitHelper", func() {
 
 			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				si := &sizeInfo{}
-				err := saveWithSplit(tx, rs, pk, data, true, false, nil, si)
+				err := saveWithSplit(nil, tx, rs, pk, data, true, false, nil, si)
 				Expect(err).NotTo(HaveOccurred())
 
 				Expect(si.IsSplit).To(BeFalse())
@@ -110,7 +250,7 @@ var _ = Describe("SplitHelper", func() {
 
 			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				si := &sizeInfo{}
-				err := saveWithSplit(tx, rs, pk, data, true, false, nil, si)
+				err := saveWithSplit(nil, tx, rs, pk, data, true, false, nil, si)
 				Expect(err).NotTo(HaveOccurred())
 
 				// <= splitRecordSize → unsplit
@@ -140,7 +280,7 @@ var _ = Describe("SplitHelper", func() {
 
 			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				si := &sizeInfo{}
-				err := saveWithSplit(tx, rs, pk, data, true, false, nil, si)
+				err := saveWithSplit(nil, tx, rs, pk, data, true, false, nil, si)
 				Expect(err).NotTo(HaveOccurred())
 
 				Expect(si.IsSplit).To(BeTrue())
@@ -174,7 +314,7 @@ var _ = Describe("SplitHelper", func() {
 
 			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				si := &sizeInfo{}
-				err := saveWithSplit(tx, rs, pk, data, true, false, nil, si)
+				err := saveWithSplit(nil, tx, rs, pk, data, true, false, nil, si)
 				Expect(err).NotTo(HaveOccurred())
 
 				Expect(si.IsSplit).To(BeTrue())
@@ -206,7 +346,7 @@ var _ = Describe("SplitHelper", func() {
 
 			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				si := &sizeInfo{}
-				err := saveWithSplit(tx, rs, pk, data, true, false, nil, si)
+				err := saveWithSplit(nil, tx, rs, pk, data, true, false, nil, si)
 				Expect(err).NotTo(HaveOccurred())
 
 				Expect(si.IsSplit).To(BeTrue())
@@ -236,7 +376,7 @@ var _ = Describe("SplitHelper", func() {
 
 			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				si := &sizeInfo{}
-				err := saveWithSplit(tx, rs, pk, data, false, false, nil, si)
+				err := saveWithSplit(nil, tx, rs, pk, data, false, false, nil, si)
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("exceeds limit"))
 				Expect(err.Error()).To(ContainSubstring("splitLongRecords is not enabled"))
@@ -252,7 +392,7 @@ var _ = Describe("SplitHelper", func() {
 
 			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				si := &sizeInfo{}
-				err := saveWithSplit(tx, rs, pk, data, false, false, nil, si)
+				err := saveWithSplit(nil, tx, rs, pk, data, false, false, nil, si)
 				Expect(err).NotTo(HaveOccurred())
 
 				expectedKey := rs.Pack(appendToTuple(pk, unsplitRecord))
@@ -273,7 +413,7 @@ var _ = Describe("SplitHelper", func() {
 
 			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				si := &sizeInfo{}
-				err := saveWithSplit(tx, rs, pk, data, true, false, nil, si)
+				err := saveWithSplit(nil, tx, rs, pk, data, true, false, nil, si)
 				Expect(err).NotTo(HaveOccurred())
 
 				Expect(si.KeyCount).To(Equal(2))
@@ -402,7 +542,7 @@ var _ = Describe("SplitHelper", func() {
 
 			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				saveSI := &sizeInfo{}
-				err := saveWithSplit(tx, rs, pk, original, true, false, nil, saveSI)
+				err := saveWithSplit(nil, tx, rs, pk, original, true, false, nil, saveSI)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(saveSI.IsSplit).To(BeTrue())
 				Expect(saveSI.KeyCount).To(Equal(4))
@@ -905,14 +1045,14 @@ var _ = Describe("SplitHelper", func() {
 			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				// First save: 3 chunks
 				saveSI := &sizeInfo{}
-				err := saveWithSplit(tx, rs, pk, bigData, true, false, nil, saveSI)
+				err := saveWithSplit(nil, tx, rs, pk, bigData, true, false, nil, saveSI)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(saveSI.IsSplit).To(BeTrue())
 				Expect(saveSI.KeyCount).To(Equal(3))
 
 				// Second save: overwrite with small data, passing old sizeInfo
 				overwriteSI := &sizeInfo{}
-				err = saveWithSplit(tx, rs, pk, smallData, true, false, saveSI, overwriteSI)
+				err = saveWithSplit(nil, tx, rs, pk, smallData, true, false, saveSI, overwriteSI)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(overwriteSI.IsSplit).To(BeFalse())
 				Expect(overwriteSI.KeyCount).To(Equal(1))
@@ -943,13 +1083,13 @@ var _ = Describe("SplitHelper", func() {
 			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				// First save: unsplit
 				saveSI := &sizeInfo{}
-				err := saveWithSplit(tx, rs, pk, smallData, true, false, nil, saveSI)
+				err := saveWithSplit(nil, tx, rs, pk, smallData, true, false, nil, saveSI)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(saveSI.IsSplit).To(BeFalse())
 
 				// Second save: split, passing old sizeInfo
 				overwriteSI := &sizeInfo{}
-				err = saveWithSplit(tx, rs, pk, bigData, true, false, saveSI, overwriteSI)
+				err = saveWithSplit(nil, tx, rs, pk, bigData, true, false, saveSI, overwriteSI)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(overwriteSI.IsSplit).To(BeTrue())
 

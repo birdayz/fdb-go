@@ -94,7 +94,7 @@ func TestFDB_QOVBindingMinimalShape(t *testing.T) {
 			t.Fatalf("setup %q: %v", stmt, err)
 		}
 	}
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, clusterFilePath, schema))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", strings.ToUpper(dbPath), clusterFilePath, strings.ToUpper(schema)))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

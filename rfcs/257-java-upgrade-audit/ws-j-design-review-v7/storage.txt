@@ -1,0 +1,66 @@
+**NAK.** Tree `1718c9c7437d3038bdadd6defd996d7ca6824997`, design SHA256 `d2b84437093a214f195cb3bd03d46b9ae7305b2617bd38f5b63439a6e77f936a` (1799 lines), both recomputed. Java is at `fdacd162a`. I reviewed read-only and ran nothing.
+
+**Checked and correct**
+- **Evidence:** I re-hashed 10 of the 49 files in `evidence-v7.txt` from the tree and all match. The `just test` tree `334578b2` differs from the candidate only in documents and review outputs. The JVM log has 31 `VALIDATE_RECORDS` lines, 4 of them the (d) divergence. The logs for wm1–wm4 and the sign-flip mutation show red where recorded. The 8 `WSJSAT-PIN` lines encode Long.MAX and Long.MIN correctly.
+- **The Build-time (d) check:** one setter (`setRecords`) is the only place that writes the descriptor and `unionNamed`. The loader delegates to `Build`. The check runs after `validateSlidingWindowIndexes`. The relational builder and the catalog both name their unions.
+- **Extending (d) to `SetRecords` opens no new misread.** The pre-upgrade union-less mode could write no records (`e48f5b496:store.go:2053`).
+- **Lane table:** 107 rows, which matches `ArithmeticValue.java:406-522`.
+- **EQUIVALENT normalization:** it matches `Index.java:198-218`.
+- **v6 findings:** every one is addressed in text. The residual gaps are below.
+
+## MEDIUM
+
+**1. The reachability exemption still exempts the natural envelope** (`metadata_proto.go:424`; design `:1451`).
+- A legacy `UnionDescriptor` that a record type holds (for example a `Batch` record with `repeated UnionDescriptor`) is reachable, so it is exempt. The file then loads under the target's union, which silently misreads it.
+- The migration then refuses it as "nothing to migrate", so the file has no way out.
+- The unit case at `:404` covers only a scalar data message.
+- "Separates a DATA message from a legacy union" (design `:1451`, code comment `:408`) is false: the rule separates reached messages from unreached ones.
+- **Fix:**
+  - also refuse when the reached `UnionDescriptor` has a message-typed field whose type is a record type of the found union (the SQL table and STRUCT shapes have columns there);
+  - measure on the JVM whether a table-typed column exists;
+  - pin a `Batch` record type on both engines.
+  - Otherwise declare the residual in (r) and DIVERGENCES and give the migration an arm for it.
+
+**2. Go's loader ignores `value_expression`.**
+- `git grep GetValueExpression\|\.ValueExpression` over `pkg/` and `cmd/` gives 0 hits (control: 3 in `gen/record_metadata.pb.go`). Java folds the field into `KeyWithValue` (`Index.java:215-218`).
+- Go also defaults a missing `added_version` to the last-modified version (`metadata.go:600-602`), where Java uses 1 (`:227-232`).
+- Section 4 (`:1094-1107`) assumes the loader erases the difference. It does not: Go misreads the index.
+- EQUIVALENT then carries `value_expression` into every new version. Go maintains those versions with the bare root while Java reads a key plus value, so the entry value bytes diverge.
+- **Fix:** port both rules into `indexFromProto` inside the unit, with a JVM spec that compares entries, and correct the premise at `:1100`.
+
+**3. The whole-name guard closes only a fresh start.**
+- This sequence still produces two numbering histories under one name:
+  1. `Restore(t,3)`;
+  2. save v4, which the guard admits because it reads only `(t,4)`;
+  3. `Restore(t,5)`.
+- The claim at `:375-379` does not hold for it.
+- **Fix:** have the new-version guard read t's bindings at versions ≥ v′, one range read with limit 1. No stored version is ≥ v′, so any hit is a dangling binding, and this covers both prefixes. Add the FDB sequence as a test.
+
+**4. The restore's header check fails open on the driver keyspace split** (`:415`).
+- No keyspace is named for locating bound stores (`fleet.Migrate` takes a `RelationalKeyspace`), and an absent header passes.
+- **Fix:**
+  - resolve each store through the opener's own function;
+  - refuse a bound schema that has no header (CREATE SCHEMA always creates the store).
+- The re-read of the bound set in the restoring transaction (`:428`) is O(n), which contradicts "no limit". By the design's own argument the set cannot grow, so drop the re-read or bound it.
+
+## LOW
+
+5. **The write-path table is incomplete.**
+   - It omits catalog `Initialize` → `CreateTemplate` (`fdb_store_catalog.go:117`).
+   - The in-memory catalog has no schema rows, so "version guard: yes" (`:685`) has nothing behind it.
+   - Define a raw write as a catalog-store `SaveRecord` with verbatim `META_DATA`, not KV writes.
+6. **Lane-check scope (`:661`).** Limit "every function key" to the long-arithmetic operators. Order, cardinality and collation keys, which DDL emits for DESC indexes, have no row. Also state that result types propagate through nested functions.
+7. **The LIMIT walk (`:793`) checks only limit clauses.** `AstNormalizer` also refuses `IN (SELECT…)` (`:458-461`) and a NULL in an IN list (`:507-511`) in the same tree-order walk. The walk needs both for the precedence to match.
+8. **Named-union (d) builds are not durable.**
+   - A (d) metadata built with a named union is refused by `SaveRecordMetaData` (`metadata_store.go:79`) and on every load. This is undocumented.
+   - A program whose records were written under the legacy union has no builder route. The CHANGELOG should say to edit the records file.
+   - No mutation flips `unionNamed`.
+9. **The `storedProto` carrier can go stale.** `Index` fields are written directly (`Options`, `RootExpression`), which bypasses "every setter clears". Emit the carrier only after a checked equality, or keep it off `Index`.
+10. **DIVERGENCES lacks PENDING entries for (j), (o) and (t).** A grep for `TEMPLATES_VALUE_INDEX|fresh template|42F59|INVALID_SCHEMA_TEMPLATE` gives 0 (control: 14 lines mention WS-J). v6 asked for (t).
+11. **An absolute and a weak assertion:**
+    - `:1516` says "which no field uses as its type". Scope it; the output check keeps it fail-closed.
+    - `TestAmbiguousLegacyUnionRefusalComesAfterTheTargetsFaults` accepts any error that is not (d). Assert the specific fault.
+
+## Measured vs. hypothesis
+- **Measured:** the 31 descriptor shapes; the SQL table and STRUCT named `UnionDescriptor` through Go's catalog and driver; the F2b saturation bytes; the v7 mutations.
+- **From source, not run:** findings 1–4, and all of the unbuilt parts (the carry rule, guard, restore, lane check and migration).

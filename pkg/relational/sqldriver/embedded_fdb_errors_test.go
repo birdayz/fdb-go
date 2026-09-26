@@ -40,7 +40,7 @@ func setupErrorTestDB(t *testing.T, dbPath, schemaName, ddl string) *sql.DB {
 		fmt.Sprintf("CREATE SCHEMA %s/%s WITH TEMPLATE %s_tmpl", dbPath, schemaName, schemaName)); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, clusterFilePath, schemaName)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", strings.ToUpper(dbPath), clusterFilePath, strings.ToUpper(schemaName))
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

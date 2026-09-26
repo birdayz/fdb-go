@@ -10,6 +10,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -349,7 +350,7 @@ var _ = Describe("SaveRecord_ValidationErrors", func() {
 			_, err = store.SaveRecord(flower)
 			var mdErr *MetaDataError
 			Expect(errors.As(err, &mdErr)).To(BeTrue())
-			Expect(mdErr.Message).To(ContainSubstring("unknown record type"))
+			Expect(mdErr.Message).To(Equal("Unknown record type Flower"))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -899,7 +900,7 @@ var _ = Describe("Phase 2 error types", func() {
 
 		var metaErr *MetaDataError
 		Expect(errors.As(err, &metaErr)).To(BeTrue())
-		Expect(metaErr.Message).To(ContainSubstring("has no primary key"))
+		Expect(metaErr.Message).To(Equal("Record type Order must have a primary key"))
 	})
 
 	It("RecordStoreNoInfoButNotEmptyError on headerless store", func() {
@@ -995,9 +996,12 @@ var _ = Describe("Error type coverage gaps", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ss).Open()
 			Expect(err).To(HaveOccurred())
 
+			// Java's parse keeps the undeclared 999 in the unknown fields and
+			// reads UNSPECIFIED, which it refuses, reporting the unknown fields.
 			var unknownErr *UnknownStoreLockStateError
 			Expect(errors.As(err, &unknownErr)).To(BeTrue())
-			Expect(unknownErr.LockStateValue).To(Equal(int32(999)))
+			Expect(unknownErr.LockStateValue).To(Equal(int32(gen.DataStoreInfo_StoreLockState_UNSPECIFIED)))
+			Expect(unknownErr.UnknownFields).To(Equal([]byte(protowire.AppendVarint(protowire.AppendTag(nil, 1, protowire.VarintType), 999))))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -1101,8 +1105,8 @@ var _ = Describe("Error type coverage gaps", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			// Mark WRITE_ONLY (but do NOT build the range set).
-			_, err = store.MarkIndexWriteOnly("Order$price")
+			// Start an unbuilt index; a state-only transition preserves built coverage.
+			_, err = store.ClearAndMarkIndexWriteOnly("Order$price")
 			Expect(err).NotTo(HaveOccurred())
 
 			// Try to mark readable — should fail because range set is incomplete.

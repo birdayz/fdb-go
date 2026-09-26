@@ -6,9 +6,11 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -485,4 +487,72 @@ func FuzzMessageTypeFromDescriptor(f *testing.F) {
 			}
 		}
 	})
+}
+
+// A field carrying vector options is a VECTOR of their precision and
+// dimensions, as Java's Type.fromProtoType reads it, whether the template was
+// built from DDL or loaded from its stored bytes (the catalog's route); unset
+// options read their proto defaults (16, 768). Go read every such column as
+// BYTES, so a change of a vector's dimensions passed the relational validator.
+func TestVectorColumnIsAVectorOfItsOptions(t *testing.T) {
+	t.Parallel()
+	b := NewSchemaTemplateBuilder().SetName("vec")
+	b.AddTable("T", []ColumnSpec{
+		NewColumnSpec("ID", api.NewLongType(false), 1),
+		NewColumnSpec("V", api.NewVectorType(32, 3, true), 2),
+		NewColumnSpec("B", api.NewBytesType(true), 3),
+	}, []string{"ID"})
+	built, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := built.Underlying().ToProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+	loadedMD, err := recordlayer.RecordMetaDataFromProto(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := NewRecordLayerSchemaTemplateWithVersion("vec", loadedMD, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, tmpl := range map[string]*RecordLayerSchemaTemplate{"built": built, "loaded": loaded} {
+		tbl, err := tmpl.FindTable("T")
+		if err != nil || tbl == nil {
+			t.Fatalf("%s: table T: %v", name, err)
+		}
+		types := map[string]api.DataType{}
+		for _, c := range tbl.Columns() {
+			types[c.MetadataName()] = c.DataType()
+		}
+		if !types["V"].Equal(api.NewVectorType(32, 3, true)) {
+			t.Errorf("%s: V is %v, want vector(p=32, d=3)", name, types["V"])
+		}
+		if !types["B"].Equal(api.NewBytesType(true)) {
+			t.Errorf("%s: B is %v, want bytes", name, types["B"])
+		}
+	}
+
+	// Unset options read their defaults.
+	fdp := &descriptorpb.FileDescriptorProto{
+		Name: proto.String("vec_defaults.proto"), Syntax: proto.String("proto2"),
+		MessageType: []*descriptorpb.DescriptorProto{{Name: proto.String("R"), Field: []*descriptorpb.FieldDescriptorProto{{
+			Name: proto.String("v"), Number: proto.Int32(1), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+			Type: descriptorpb.FieldDescriptorProto_TYPE_BYTES.Enum(), Options: func() *descriptorpb.FieldOptions {
+				o := &descriptorpb.FieldOptions{}
+				proto.SetExtension(o, gen.E_Field, &gen.FieldOptions{VectorOptions: &gen.FieldOptions_VectorOptions{}})
+				return o
+			}(),
+		}}}},
+	}
+	fd, err := protodesc.NewFile(fdp, protoregistry.GlobalFiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := protoFieldToDataType(fd.Messages().ByName("R").Fields().ByName("v"))
+	if err != nil || !got.Equal(api.NewVectorType(16, 768, true)) {
+		t.Errorf("unset options: %v %v, want vector(p=16, d=768)", got, err)
+	}
 }

@@ -1,0 +1,354 @@
+WS-D requires a separate GuardiANN engine, its persisted task state machine, and several HNSW extensions. The current Go tree supplies substantial infrastructure, but it does not yet supply that engine. SPFresh’s clustering and maintenance algorithms cannot serve as its implementation.
+
+I read the complete 38-file Java `async/guardiann` production package, then `KMeans` and `PartitionEvaluator`, before inspecting the current Go counterparts directly. Java HEAD is `fdacd162a9c8acfadc49082b89185c823ab8ae4a`. I treated WS-C tree `f0cb29576cde624e0f1c6e22ca18a5180d1b298f` as the accepted dependency and inspected the current working files rather than `git show HEAD`.
+
+Everything below is **source-derived design research**. I ran no tests, JVM/FDB probes, or mutations. No implementation or runtime compatibility is claimed.
+
+The governing boundaries are [RFC257 WS-D, lines 390–432](/home/birdy/projects/fdb-go/rfcs/257-java-4.14.2.0-upgrade.md:390), the relevant [extensions/vector audit](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/extensions-vector.md:39), and [record-storage audit](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/record-storage.md:136). SPFresh/LIRE, approved raw/nullable-array/scalar/sort extensions, and C++ 7.3.77 remain outside this implementation change.
+
+**The useful Go boundary is the vector maintainer, with engine-specific operations beneath it.**
+
+Java deliberately keeps prefix handling, locking, cursors, continuations, and result conversion in `VectorIndexMaintainer`; the engine handles operations on a concrete partition subspace. Go currently stores `hnswConfig` and `hnswStorage` directly in its vector maintainer and constructs HNSW directly for writes and searches. Introduce the engine boundary there, preserving the existing cursor and prefix machinery. [Java engine contract](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexEngine.java:41), [current Go maintainer](/home/birdy/projects/fdb-go/pkg/recordlayer/vector_index_maintainer.go:109), [current search dispatch](/home/birdy/projects/fdb-go/pkg/recordlayer/vector_index_maintainer.go:553).
+
+| Area | Actual current Go reuse | Required work |
+|---|---|---|
+| Pending writes | VECTOR already serializes computed entries, preserves full PK, and replays old entries before new entries. | Route `applyIndexEntry` through the selected engine. GuardiANN delete must receive the old vector; current HNSW delete only needs PK. |
+| Maintenance driver | WS-C supplies control, stable session propagation, retry budgets, committed merge requests, and commit-check registration. | Real GuardiANN `MergeIndex`, task callbacks, counts, leases, and negative-count handling. |
+| Vector bytes | HALF/SINGLE/DOUBLE codec; WS-A RaBitQ encoder/decoder and coordinate provenance. | A GuardiANN vector representation preserving original bytes, encoding, and coordinate provenance through signatures and tasks. |
+| Randomness | SplitMix64, `nextLong`, `nextDouble`, `split`, and gamma mixing exist. | Packed-byte seed folding, Java bounded `nextInt`, UUID identities, and task-priority stamping. |
+| HNSW | Graph storage, insert/delete, repair, distance search, transforms and cache infrastructure. | Covering values, fetch, cardinality, ring/outward traversal, quick-start semantics and richer results. |
+| GuardiANN storage/statistics | Tuple and transaction primitives. | All eight root families, metadata, memberships, running statistics, lifetime peak, assignment and task lifecycle. |
+| Clustering | SPFresh has its own KMeans. | Separate Java-compatible KMeans and partition evaluator; leave SPFresh unchanged. |
+
+Exact Go anchors: [queue integration](/home/birdy/projects/fdb-go/pkg/recordlayer/index_maintainer_queue.go:22), [merge driver](/home/birdy/projects/fdb-go/pkg/recordlayer/indexing_merger.go:20), [commit callbacks and synchronous maintainers](/home/birdy/projects/fdb-go/pkg/recordlayer/index_deferred_maintenance.go:236), [vector codec](/home/birdy/projects/fdb-go/pkg/recordlayer/vectorcodec/vectorcodec.go:29), [WS-A provenance](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:211), [existing RNG](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:2708).
+
+The proposed engine interface should expose partition search, insert, delete-with-vector, deferred-task execution, optional task-count support, and whether writes signal caller-driven maintenance. HNSW remains synchronous. Preserve the direct-Go HNSW upsert convenience as an explicitly separate entry point; the shared Java insert contract must remain no-op for an existing PK. Current Go performs delete/reinsert in that case. [Go upsert](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:369), [RFC boundary](/home/birdy/projects/fdb-go/rfcs/257-java-4.14.2.0-upgrade.md:428).
+
+**Engine selection and options must be resolved before choosing a storage layout.**
+
+Missing engine means HNSW; `HNSW` and `GUARDIANN` are case-insensitive; unknown values fail. Persisted engine identity cannot change. Shared option concepts retain canonical `hnsw*` metadata names and accept `vector*` read aliases. Supplying both names is rejected even when their values agree. Evolution compares parsed, defaulted configurations, so an alias change or explicitly spelling a default is not automatically a structural change. [Engine selection](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexEngineKind.java:50), [canonical keys](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexOptionKeys.java:53), [alias/effective-value rules](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexOptionsHelper.java:70).
+
+Current Go validates legacy HNSW names and compares raw option strings during evolution. Replace that path with one typed catalog used by build validation, runtime construction, and evolution. Preserve approved Go metric spellings as explicit aliases; do not retain silent fallback for unknown engine/config values. [Current validation](/home/birdy/projects/fdb-go/pkg/recordlayer/vector_index_validation.go:31), [current evolution](/home/birdy/projects/fdb-go/pkg/recordlayer/metadata_evolution_validator.go:839).
+
+Final Java defaults are:
+
+| Group | Defaults |
+|---|---|
+| Geometry/capacity | Euclidean; primary min **100**, max **1000**, hard max **2000** |
+| Merge/split policy | Peak fraction **0.2**; minimum child fraction **0.1**; maximum relative imbalance **0.36**; split imbalance penalty **3** |
+| Replication | Underreplicated-primary limit **50**; replica write limit **300**; retained target **100** |
+| Replication scoring | Minimum priority **0.89**; distance-ratio weight **1**; z-score weight **0**; minimum statistics population **200** |
+| Statistics/encoding | Sample probability **0.5**; maintenance probability **0.05**; threshold **1000**; sample batch **50**; RaBitQ off; extra bits **4** |
+| Randomness | Deterministic mode off |
+| Neighborhoods | Insert/delete candidates **10/10**; split/merge neighbors **32/11**; reassign neighbors **31**, plus target |
+| KMeans/collapse | **8** iterations; **3** restarts after initial run; collapse threshold **100** |
+| Concurrency | Delete, split/merge, reassign, collapse, bounce: **10** |
+| Search | Pool factor **1.40**; maximum clusters **48**; pruning begins after **16**; distance-ratio cutoff **1.5**; ring/outward widths **100/400**; concurrency **10** |
+
+These are fixed builder defaults. Changing `primaryClusterMax` does **not** automatically recalculate min, hard max, collapse threshold, or replica targets. Constructor checks include dimensions ≥1, collapse threshold < primary max, hard max > primary max, peak fraction `[0,1)`, child fraction `[0,.5)`, relative imbalance `[0,1]`, and nonnegative split penalty. Port the actual validation rather than inventing additional constraints. [Config defaults/checks](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Config.java:143), [search defaults/checks](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/SearchConfig.java:69).
+
+Mutable GuardiANN index options are statistics knobs, sample batch size, task/delete concurrency, and hard max. Geometry, replication policy, deterministic mode, neighborhoods, KMeans settings, collapse threshold and construction search widths are immutable. Search options are per query. Return vectors defaults to `!useRaBitQ`, with explicit override. Current Go always emits a null vector value from its partition search and must change. [Mutable options](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/GuardiannVectorIndexEngine.java:84), [return-vector policy](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexOptionsHelper.java:195), [Go forced null](/home/birdy/projects/fdb-go/pkg/recordlayer/vector_index_maintainer.go:575).
+
+**The storage port must preserve these exact tuple shapes.**
+
+Below, `R` is the primary index’s concrete partition subspace; parentheses denote FDB tuples, including explicitly nested tuples. UUID fields use tuple UUID encoding, not strings or ordinary byte arrays.
+
+| Root tag | Key beneath `R` | Value |
+|---|---|---|
+| **0 — access** | `(0)` | `(rotatorSeed:int64, (negativeCentroidBytes) or null)` |
+| **1 — centroids** | Child HNSW rooted at `(1)` | Standard HNSW layout; centroid PK is `(clusterUUID)` |
+| **2 — cluster metadata** | `(2, clusterUUID)` | `(underreplicatedCount, replicaCount, (n:int64, mean:double, M2:double, maxDistanceEver:double), stateBits, lifetimePeakPrimaryCount)` |
+| **3 — references** | `(3, clusterUUID, PK:nested tuple)` | Primary: `(vectorUUID, role, collapsed:bool, vectorBytes)`; replica adds `priority:double` as field 5 |
+| **4 — collapsed members** | `(4, signatureUUID, realPK:nested tuple)` | `(memberVectorUUID)` |
+| **5 — current vector metadata** | `(5, …PK elements flattened…)` | `(currentVectorUUID, coveringTuple or null)` |
+| **6 — bootstrap samples** | `(6, partialCount, sampleUUID)` | `(DOUBLEvectorBytes)` |
+| **7 — deferred tasks** | `(7, taskUUID)` | Kind-specific tuples below |
+
+Tag definitions and codecs: [StorageAdapter.java:52–92](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/StorageAdapter.java:52), [access/vector metadata codecs](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/StorageAdapter.java:244), [cluster/reference codecs](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/StorageAdapter.java:340). Key construction: [metadata](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Primitives.java:426), [references](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Primitives.java:694), [memberships](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Primitives.java:832), [samples](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/common/StorageHelpers.java:130).
+
+Reference roles are **0 primary**, **1 underreplicated primary**, **2 replicated**. Collapsed is an independent boolean. A collapsed representative uses PK `(signatureUUID)` and an identity UUID; real records remain represented by tag-4 memberships and tag-5 metadata. Counts describe physical representatives, not expanded logical membership. Unknown role/state codes must fail. State bits are **1 split/merge**, **2 reassign**, **4 collapse**. [Roles](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/VectorReference.java:239), [state bits](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/ClusterMetadata.java:214).
+
+The fifth metadata field is mandatory in this checkout: Java reads field 4 unconditionally. **Design decision: reject intermediate four-field GuardiANN metadata with a specific rebuild/migration error.** Do not infer peak from current count: that loses lifetime information and changes future merge eligibility. A migration would need separately established peak semantics and evidence. Legacy three-field **HNSW nodes** are a different, supported compatibility case. [Decoder](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/StorageAdapter.java:340), [RFC anomaly](/home/birdy/projects/fdb-go/rfcs/257-java-4.14.2.0-upgrade.md:699).
+
+The centroid HNSW inherits metric/dimensions but uses compact storage, no inlining, no RaBitQ, repair width 64, no extend-candidates/keep-pruned, and `M/MMax/MMax0 = 16/24/32`. Centroids passed to it are in client coordinates; GuardiANN transforms fetched centroids into its own working coordinates. Its access information is independent of GuardiANN root tag 0. [Child configuration](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/StorageAdapter.java:228).
+
+**Identity and byte provenance are algorithmic dependencies.**
+
+The signature algorithm is SHA-256 over `RealVector.getRawData()`, taking the first 16 bytes, then stamping:
+
+```text
+signature[6] = (signature[6] & 0x0f) | 0x80
+signature[8] = (signature[8] & 0x3f) | 0x80
+```
+
+That is version 8 with the IETF variant. Hash stored representation bytes—including encoding/calibration—not decoded coordinates, JSON, tuple-wrapped bytes, or a requantized reconstruction. Preserve already encoded RaBitQ bytes through reads, task payloads and rewrites. [Signature implementation](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/StorageAdapter.java:540).
+
+Use a representation carrying raw bytes, encoding and coordinate provenance, with lazy decoded coordinates. WS-A’s `hnswVector` demonstrates why the encoding tag alone is insufficient: plain access-info bytes can already be transformed, while plain node bytes still require the current transform. Reuse that distinction, not HNSW’s entire mutable graph object. [Current provenance/write boundary](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:211).
+
+Other identity contracts:
+
+- `VectorId` is `(PK, UUID)`. Ordering compares PK, then Java UUID ordering; Java’s signed-long UUID comparison differs from unsigned tuple UUID key order.
+- Deterministic vector UUID is Java `UUID.nameUUIDFromBytes(PK.pack())`: MD5 version 3 with **no namespace prefix**. Reinserted identical PK therefore repeats this UUID in deterministic mode.
+- Operation RNG seed starts at zero and folds every unsigned packed-key byte through `splitMixLong(seed XOR byte)`. UUID seeds fold its 16 big-endian bytes.
+- Deterministic random UUID generation consumes two `nextLong` values and stamps version 4. Split child RNGs before asynchronous scheduling.
+- Task priority clears the UUID’s leading bit for high priority and sets it for normal priority, matching tuple key ordering. Bounce re-enqueue uses ordinary `randomUuid`, not priority restamping.
+
+Sources: [VectorId ordering](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/VectorId.java:71), [RandomHelpers](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/common/RandomHelpers.java:101), [task priority](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/AbstractDeferredTask.java:322).
+
+Change operation seeding without changing HNSW level assignment. Java still uses `primaryKey.hashCode()` for `topLayer`; current Go already separates that function from its stateful RNG constructor. [Java level assignment](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/Primitives.java:1110), [Go functions](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:2694).
+
+**Running statistics and lifetime peak must remain separate concepts.**
+
+Port `RunningStats` as an immutable value with identity `(0,0,0,-∞)`:
+
+- Add uses Welford’s two-delta update.
+- Remove uses inverse Welford; removing the final element returns identity. Otherwise the distance maximum remains stale.
+- Combine uses the parallel/Chan formula and maximum of both maxima.
+- Subtract uses inverse combination; larger population fails; equal population returns identity. Clamp only `-1e-12 < M2 < 0`; subtraction rejects a remaining negative M2.
+- Empty mean/population variance/max return NaN; sample variance requires at least two observations.
+
+Preserve expression order and IEEE values in the wire codec. Do not replace the stored maximum with a recomputed percentile or current maximum. [RunningStats.java:45–212](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/RunningStats.java:45).
+
+Cluster primary population is `stats.n`; `lifetimePeakPrimaryCount` is independently maintained as `max(oldPeak,newN)` and survives shrinkage, including emptying. Constructor invariants reject underreplicated count above population and peak below population.
+
+The final merge threshold is:
+
+```text
+max(primaryClusterMin, floor(mergeMaxEverFraction * lifetimePeakPrimaryCount))
+```
+
+Merge eligibility is **strictly below** that threshold, requires no split/merge or collapse flag, and requires centroid cardinality MULTIPLE. A final empty cluster remains; no impossible one-to-zero merge is queued. [Metadata/peak](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/ClusterMetadata.java:63), [threshold](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/ClusterMetadata.java:117), [merge scheduling](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Primitives.java:1324).
+
+**Insert, assignment, replication and delete need their own GuardiANN primitives.**
+
+Insert reads access information and current PK metadata. It bootstraps the first centroid/cluster when access information is absent. Otherwise, with in-transaction maintenance enabled, it attempts one deferred task **before** the existing-PK no-op decision. This sequencing matters for quiet writes and task accounting. [Insert.java:185–235](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Insert.java:185).
+
+The assignment path is:
+
+1. Transform the incoming vector and obtain the active quantizer.
+2. Traverse nearby centroids through outward HNSW search, bounded by the insert candidate count.
+3. The first centroid is home. Candidate collection stops at the first failed replication-priority predicate; it does not skip that candidate and continue.
+4. Write tag-5 identity/covering metadata.
+5. Add the primary reference and its centroid distance to running statistics.
+6. Select replicas using priority and relative-neighborhood occlusion, then write references and metadata deltas.
+7. Schedule split/reassign work through the shared metadata-update primitives.
+
+For candidate distance `d`, home distance `h`, candidate-cluster statistics `(n,μ,σ)`:
+
+```text
+r = h / (d + 1e-12)
+z = 0                                  if zWeight == 0 or n < statsMin
+    max(0, (h - μ) / (σ + 1e-12))       otherwise
+priority = ratioWeight*r + zWeight*z
+```
+
+The executable callers use the **candidate cluster’s statistics**. Occlusion rejects a candidate when its centroid is strictly closer to an already selected replica centroid than the vector is to that candidate. The home is not inserted into the selected-replica set. Insert has no independent “retain 100 replicas” truncation; its candidate bound controls work. Maintenance has its own truncation rules. [Insert assignment](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Insert.java:260), [priority/occlusion](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/StorageAdapter.java:477).
+
+Hard-cap backpressure applies when maintenance is disabled and the next primary would exceed hard max. The engine maps wrapped `ClusterCapacityExceededException` into the typed record-layer error; preserve causes so retry/backpressure handling recognizes it. [Insert hard cap](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Insert.java:329), [engine exception translation](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/GuardiannVectorIndexEngine.java:127).
+
+RaBitQ bootstrap samples live at tag 6. Consumption uses a reverse snapshot scan, bounded batch, explicit read conflicts on consumed keys and clears. Partial sums/counts are combined until threshold. The stored translation is the **rotated negative mean**, using the 10-round FHT-KAC rotator. Existing plain references are transformed when read after bootstrap; encoded references are already in working coordinates. [Sample consumption](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/common/StorageHelpers.java:69), [bootstrap transition](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Insert.java:455).
+
+Delete requires the old vector. Absent access/current metadata is a no-op. It optionally executes one task, traverses at most the configured centroid candidates, point-reads references by PK, deletes found references, removes primary distance statistics or decrements replica count, and schedules maintenance. If no primary was found it attempts collapsed-membership deletion; it then clears current metadata. This bounded algorithm permits stale references elsewhere, which search must filter. [Delete.java:103–234](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Delete.java:103).
+
+**Search semantics are deliberately bounded and can underfill.**
+
+KNN performs the following stages in order:
+
+1. Traverse at most 48 centroid candidates by default.
+2. After the first 16, stop the retained prefix when distance/nearest-distance exceeds 1.5. Preserve zero/NaN comparison behavior.
+3. Scan references in retained clusters and keep `max(k,ceil(1.4*k))` using the comparator `(Double.compare(distance), VectorId)`.
+4. Expand only collapsed references retained by that first pool; substitute member identities and apply the bounded pool again.
+5. Memoize current metadata reads by PK; retain only matching UUIDs.
+6. Take up to `k` surviving results, preserving candidate order.
+
+There is no refill after stale filtering. Do not scan additional clusters to “repair” underfill. Comparator-based distinctness is not equivalent to an early PK-only deduplication. The executable path also does not implement the centroid-ball pruning suggested by some higher-level prose. [KNN stages](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Search.java:189), [pool/expansion](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Search.java:338), [stale filtering](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Search.java:415).
+
+Ordered retrieval is a separate algorithm: bounded centroid traversal, collapsed expansion **before** vector cutoff, bounded almost-sorting, current-metadata filtering, PK deduplication, then limit. At equal distance, a null minimum PK retains the candidate; otherwise PK must be greater. The almost-sort window fills to its bound, emits the minimum, and refills on subsequent demand. It is not globally sorted: Java’s fixture `[2,3,4,1]` with window 2 yields `[2,3,1,4]`. Preserve cancellation and close propagation. [Ordered retrieval](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Search.java:468), [iterator](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/AlmostSortedAsyncIterator.java:79), [explicit test](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/AlmostSortedAsyncIteratorTest.java:72).
+
+The child HNSW dependency must implement ring zoom-in followed by outward traversal, including quick-start candidates re-keyed to actual query distance, visited/restriction behavior, quick-start duplicate suppression, and bounded frontier/output queues. A large ordinary KNN call is not equivalent. Fetch returns optional vector/covering values; cardinality reads at most two layer-zero rows. [Outward traversal](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/OutwardTraversalIterator.java:136), [ring setup](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/Search.java:631), [fetch/cardinality](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/Primitives.java:520).
+
+HNSW compact nodes gain optional fourth-field covering tuples. Preserve absent versus present-empty covering values through cache loads, neighbor rewrites and repair; upper layers receive null covering values. Current Go’s node type/parser/writer only carries vector and neighbors. [Java compact codec](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/CompactStorageAdapter.java:164), [Java optional write](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/CompactStorageAdapter.java:235), [Go node/cache codec](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:1612).
+
+**Persisted tasks require both exact serialization and exact consumption accounting.**
+
+| Kind | Tag-7 value |
+|---|---|
+| Split/merge **0** | `(0, targetUUID, centroidBytes, nearestClusters:nested tuple)` |
+| Reassign **1** | `(1, targetUUID, centroidBytes, causeUUIDs:nested tuple, nearestClusters:nested tuple)` |
+| Bounce **2** | `(2, targetUUIDs:nested tuple, dependencyUUIDs:nested tuple, finalKind:enum-name string)` |
+| Collapse **3** | `(3, targetUUID, centroidBytes)` |
+
+Each nearest-cluster element is `(clusterUUID, centroidBytes)`. Payload vectors pass through the active quantizer. Preserve collection iteration order where it affects serialization/random streams; do not sort every set merely for Go convenience. [Split codec](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/SplitMergeTask.java:134), [reassign codec](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/ReassignTask.java:157), [bounce codec](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/BounceTask.java:99), [collapse codec](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/CollapseTask.java:111).
+
+Access information is **not serialized in the task payload**. Tasks are decoded using access information supplied by the current execution path. Do not implement enqueue-time access pinning based on the abstract-task prose alone.
+
+Task execution fetches a bounded ordered batch, then re-reads each task key using read-your-writes. An absent row is skipped without callback. A present row is cleared **before** running its body; successful completion fires execution notification even if the body finds a missing target or obsolete state and does no topology work. Failure must abort the transaction. The first fetched task is attempted before deadline checks; later tasks obey the deadline. Bounce’s recursive dependency work is not included in the outer direct-task count. [Execution contract](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Primitives.java:940).
+
+Shared scheduling rules deserve one implementation:
+
+- Positive primary growth beyond max schedules split/merge unless split/merge or collapse is already pending.
+- Reassign requires no existing reassign, excludes a target that is itself a cause, and is triggered by nonempty causes, excess replica writes, or excess underreplicated primaries.
+- Delete and post-reassign merge use the same peak-relative predicate and MULTIPLE-cardinality guard.
+- Historical neighbor references are re-read and missing clusters dropped. Metadata missing for a centroid discovered within the current transaction is a different invariant failure.
+- Delta computation keys by PK, requires matching UUID for an existing key, and rewrites role/underreplication/priority changes; priority tolerance is `1e-12*(1+abs(oldPriority))`.
+
+Sources: [schedulers](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Primitives.java:1146), [reference refresh](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Primitives.java:542), [delta computation](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/AbstractDeferredTask.java:441).
+
+The complete task decomposition should be:
+
+1. **Collapse.** Require an existing target with COLLAPSE state. Fetch its physical references. Group primary references by byte signature; detect existing collapsed primary representatives. A new group collapses only when duplicate count is **strictly greater** than the threshold. Create one representative, preserve its primary/underreplicated role, write every swallowed member’s `(PK,UUID)` membership, and count the representative once in statistics. Existing representatives absorb later matching primaries without remeeting the threshold. Retain top-priority replicas separately. Persist reference deltas/memberships/recomputed counts, preserve lifetime peak, and clear only COLLAPSE. This path does not perform the same stale cleanup as split/reassign. [CollapseTask.java:136–424](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/CollapseTask.java:136).
+
+2. **Reassign.** Require REASSIGN and no split/merge/collapse. If neighbor references have not been persisted, fetch target plus 31 neighbors, enqueue a high-priority task carrying them, and return. On the later execution, refresh surviving neighbors, fetch target references, remove stale ordinary references, and retain eligible replicas. Recompute primary ownership against all bounded candidate centroids. Primaries moving to an outer cluster become underreplicated and receive no immediate replication pass. Primaries remaining home become ordinary primary copies; their replica eligibility depends on original underreplication or candidate membership in the cause set—an empty cause set does not mean “replicate everything.” Fold and truncate target replicas, persist target deltas and outer writes, update counts, clear target states, preserve peak, schedule outer work, then check target merge eligibility. [ReassignTask.java:191–434](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/ReassignTask.java:191), [persistence/follow-ups](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/ReassignTask.java:619).
+
+3. **Membership-aware replica folding.** Sort replicas descending by priority/identity and scan until the retained target is full. An existing collapsed reference claims its signature directly. For an ordinary replica, read `(signature,PK)` membership. No membership means keep it as a distinct record, even if that signature was already claimed. A matching membership UUID permits conversion to the collapsed representative; later members of that signature are dropped. Apply the replica cap **after folding**, and stop membership reads once full. [ReassignTask.java:471–533](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/ReassignTask.java:471).
+
+4. **Split/merge classification and candidates.** Require SPLIT_MERGE and no COLLAPSE. If population is back within `[mergeThreshold,max]`, clear only SPLIT_MERGE. Otherwise select split or merge. As with reassign, first persist nearest-neighbor references in a high-priority follow-up, then refresh them in a later execution. Split evaluates **1→2** and, if enough neighbors survive, **2→3**. Merge evaluates mandatory **2→1** and optional **3→2**. Fetch the largest core once, derive each candidate’s core/outer subsets, and clean/deduplicate primary inputs per candidate. Evaluate the current physical-primary partition against the cleaned candidate population; these populations can differ. [SplitMergeTask.java:160–397](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/SplitMergeTask.java:160).
+
+5. **Split/merge selection and fallback.** Exclude INVALID candidates; prefer ACCEPT over KEEP_CURRENT regardless of score; within a verdict prefer strictly higher score. KEEP_CURRENT is therefore still usable when no ACCEPT exists. If split has no usable candidate, try duplicate collapse plus a dependent bounce; absent that route, the source throws rather than inventing a partition. Merge falls back to 2→1 if no preferred candidate is usable. Fewer than two surviving merge cores clears the pending flag. [Selection](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/SplitMergeTask.java:1222), [merge branch](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/SplitMergeTask.java:405).
+
+6. **Split/merge materialization.** New centroid UUIDs start new cluster metadata. KMeans assignments are **not final ownership**: rank every primary against new centroids **and outer neighbors**. Outer-home vectors become underreplicated without immediate replicas; new-home vectors get primary plus eligible nonoccluded replicas. Cap replica retention for new destination clusters; outer writes have different accounting. Delete old child-HNSW centroids serially, then insert inverse-transformed new centroids serially. Clear old cluster references/metadata, persist assignments and statistics, schedule new/outer tasks with new IDs as causes, and enqueue bounce work on resulting dependencies. [Assignment](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/SplitMergeTask.java:570), [replacement/persistence](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/SplitMergeTask.java:755).
+
+7. **Bounce.** Fetch dependency rows and discard absent ones. If any remain, choose one using task-ID-seeded bounded randomness and execute it through the same guarded single-task executor. Re-enqueue a fresh bounce containing the remaining dependencies, or enqueue final work immediately when none remain. For each surviving idle target, fetch its centroid/metadata and enqueue a normal-priority split/merge or reassign task; skip missing or already busy targets. Do not turn bounce into passive polling. [BounceTask.java:120–308](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/BounceTask.java:120).
+
+**KMeans and the evaluator need direct numerical ports.**
+
+SPFresh currently clamps `k`, seeds using modulo of `nextLong`, performs chunked reductions, repairs an empty cluster by changing an assignment, and has an optional build convergence fraction. Those choices differ materially from this Java implementation. Keep [spfresh_kmeans.go:110–309](/home/birdy/projects/fdb-go/pkg/recordlayer/spfresh_kmeans.go:110) unchanged.
+
+The separate KMeans port must preserve:
+
+- Validation before the `k=1` fast path: nonempty compatible population, `k≥1`, `n≥k`, iterations ≥1, restarts ≥0 and nonnegative balancing weight.
+- Euclidean and cosine support; do not silently substitute squared-Euclidean or dot-product engines for unsupported clustering metrics.
+- `k=1`: ordered mean, cosine normalization or its near-zero fallback, no random draws.
+- Initial run plus `maxRestarts`; KMeans++ uses Java bounded integer selection, metric-specific objective weights, cumulative selection, and uniform fallback for zero total weight.
+- Lloyd assignment with strict `<` ties favoring earliest centroid.
+- Optional shuffled assignment/overflow-size penalty when balancing weight is positive. GuardiANN invokes it with weight **0**, but the helper should still port its complete contract.
+- Ordered coordinate accumulation; empty/meaningless cosine centroids reseed to the earliest worst-served vector against the old centroids.
+- Stop on zero changed assignments before recentering.
+- Always perform final assignment; do not perform a final recenter.
+- Select strictly lower objective across runs; preserve encoded-estimator versus ordinary-coordinate objective paths.
+
+[KMeans validation/main loop](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/kmeans/KMeans.java:124), [single cluster](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/kmeans/KMeans.java:309), [KMeans++ initialization](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/kmeans/KMeans.java:489), [metric objectives](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/kmeans/KMeans.java:652).
+
+The evaluator computes both partitions independently:
+
+- Sizes, SSE, smallest fraction and largest fraction.
+- Raw imbalance `Σ(size−n/k)²/n²`; relative imbalance multiplies by `k/(k−1)` for `k>1`, otherwise zero.
+- Per-child interpolated 95th-percentile radius; maximum of those radii.
+- Separation = minimum centroid separation divided by `max(maxRadius95,1e-12)`.
+- Euclidean margins from competing centroid distances; cosine margins from clamped raw dot products.
+- Median/p10 margin and low-margin rate.
+- The default Euclidean low-margin threshold uses an overall p95 selected through a top-tail heap, not the same interpolation used for per-child radii.
+
+Euclidean evaluator SSE uses direct squared coordinate distance, while KMeans’ optimized Euclidean objective can square an estimator distance. Preserve that difference. [Statistics/margins](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/kmeans/PartitionEvaluator.java:310), [SSE/percentiles](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/kmeans/PartitionEvaluator.java:681).
+
+Scoring is:
+
+```text
+gainSSE = (oldSSE − newSSE) / max(oldSSE, 1e-12)
+
+score = α*gainSSE
+      + β*(newSeparation − oldSeparation)
+      − γ*max(0, newRelativeImbalance − oldRelativeImbalance)
+      − δ*max(0, newLowMarginRate − oldLowMarginRate)
+```
+
+Undefined separation/margin terms are mapped as Java specifies. Gate order is minimum-child INVALID; excessive imbalance KEEP; for `k≥2`, separation and low-margin KEEP gates; then minimum SSE gain; then minimum score; otherwise ACCEPT. Single-child candidates skip separation/margin gates.
+
+Evaluator defaults are SSE gain `.1`, separation `.3`, maximum low-margin rate `.25`, child fraction `.015`, relative imbalance `1`, automatic low-margin threshold `-1`, weights `1/.5/1/.75`, and score `.05`. GuardiANN overrides child fraction `.1`, relative imbalance `.36`, and split γ `3`; merges retain γ `1`. [Scoring/gates](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/kmeans/PartitionEvaluator.java:87), [defaults](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/kmeans/PartitionEvaluator.java:929), [GuardiANN overrides](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/SplitMergeTask.java:1194).
+
+**WS-C integration needs real transactional evidence from GuardiANN.**
+
+The secondary index subspace is distinct from primary root tags:
+
+| Secondary tag | Contract |
+|---|---|
+| **0** | Per-prefix task count; prefix tuple flattened beneath tag; signed 64-bit little-endian atomic value |
+| **1** | Per-prefix lease, value `(ownerUUID, timestampMillis)` |
+| **2** | One index-level delete-guard key used for conflicts |
+
+Enqueue/execution callbacks adjust counts with atomic ADD followed by compare-and-clear zero in the **same transaction** as task insertion/removal. There is no global total counter. Outstanding-work detection scans one sparse count entry; count discovery rejects negative values and skips lingering zeros. [Counts](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexTaskCounts.java:95), [secondary tags](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexSecondarySubspaceKeys.java:38).
+
+Merge examines at most 16 outstanding prefixes, preferring one already owned; otherwise it randomly claims an available candidate and returns so the claim commits. A subsequent invocation rechecks ownership and drains. Leases expire after 60 seconds, including timestamps too far in the future. Claims use snapshot ownership reads and blind writes, so concurrent claims can both commit; the subsequent ownership check is essential. Claim adds a read conflict on the delete guard; delete-where clears matching counts/leases and adds a write conflict on that guard. Release checks owner before clearing. [Lease implementation](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexMergeLock.java:94), [claim/drain driver](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexMaintainer.java:529).
+
+Drain defaults to one direct task and a 4-second quota, guarantees the first attempt, refreshes the lease, checks read-your-writes remaining count, and releases only at zero. It always requests another pass after a drain. Negative counts schedule commit-check disable and allow that transaction to commit rather than endlessly retrying corrupt accounting. Writes that enqueue nothing must still restore the merge-required signal when committed backlog exists. [Drain/disable](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexMaintainer.java:627), [quiet-write signaling](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexMaintainer.java:408).
+
+The missing callback proof should exercise **real persisted GuardiANN work**:
+
+- Produce a real split/collapse/reassign backlog through ordinary writes and queue replay.
+- Drive it through `OnlineIndexer.MergeIndexes`, including claim-only, drain, retry and final exhausted transactions.
+- Assert the heartbeat/precommit callback is installed on each actual committing transaction and carries the same session UUID.
+- Fail a callback and verify task rows, counts, topology and lease mutations do not commit.
+- Force a retry and show the callback is installed again.
+- Put a bounce and its dependency in one fetched batch; verify the recursively consumed row is not executed/notified twice.
+- Verify HNSW still reports no deferred work.
+
+Current WS-C tests demonstrate generic callback registration and synchronous HNSW behavior, not this backend path. Java GuardiANN executes within the supplied transaction; no extra child transactions should be invented. If a future Go backend introduces them, each actual child commit needs registration. [Current callback test](/home/birdy/projects/fdb-go/pkg/recordlayer/indexing_merger_test.go:167), [driver callback wiring](/home/birdy/projects/fdb-go/pkg/recordlayer/indexing_merger.go:33), [GuardiANN listener forwarding](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/GuardiannVectorIndexEngine.java:528).
+
+**Several source edge cases need dedicated JVM fixtures before compatibility decisions.**
+
+These are source observations, not measured failures:
+
+- `mergeVectorReference` prefers an incoming primary, but its incoming-replica branch does not independently protect an existing primary. Exercise both encounter orders; the comment’s symmetric “prefer primary” wording is stronger than the code. [Primitives.java:1579](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Primitives.java:1579).
+- Collapsed deletion hashes the transformed input vector without an explicit quantizer call, while collapsed signatures can originate from read-back encoded references. Exercise quantized membership deletion through the JVM. [Delete.java:226](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Delete.java:226).
+- Primary deletion’s metadata helper passes zero underreplicated delta; underreplicated-primary deletion requires a fixture. Also test underreplication-only metadata updates, whose plain-write condition is narrower than the full set of deltas. [Delete helper](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Primitives.java:1291), [reassign scheduler](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Primitives.java:1205).
+- Deterministic PK UUIDs repeat after delete/reinsert; do not describe them as universally fresh generations.
+- Equal candidate scores retain the first encountered candidate; identity-map iteration is not a portable tie-order guarantee.
+- Existing Go cosine zero/clamping and sample UUID differences remain explicit compatibility work, not problems attributed to WS-A or newly introduced by this upgrade.
+
+Do not encode an upstream failure as a desired Go regression result. Keep the source fixture, observed JVM outcome, and any approved compatibility boundary separate.
+
+**The implementation order should follow dependencies depth first.**
+
+Proposed filenames below are decomposition suggestions, not files created during this research.
+
+| Order | Concrete port unit | Completion invariant before moving upward |
+|---|---|---|
+| 1 | `vector_options.go`, `vector_engine.go` | One engine resolver/catalog; aliases/defaults/evolution agree; GuardiANN cannot enter HNSW storage. |
+| 2 | `vector_identity.go`, GuardiANN vector representation, statistics/codecs | Exact UUID/RNG/signature bytes; tag-2/3/4/5 round trips; mandatory peak; encoded bytes preserved. |
+| 3 | HNSW covering/result changes, `hnsw_outward.go` | Legacy/new compact nodes survive cold-cache rewrites; fetch/cardinality/ring/outward match source. |
+| 4 | `guardiann_storage.go`, `guardiann_primitives.go` | Root tags 0–7, samples, listeners, RYW point/range operations, metadata scheduling and cleanup. |
+| 5 | `guardiann_kmeans.go`, `guardiann_partition_evaluator.go`, assignment helpers | Numerical fixtures cover final assignments, objectives, statistics, verdict and score; no SPFresh dependency. |
+| 6 | `guardiann_task.go` | Exact task tuples/priority; clear-before-run; absent-row skip; first-task deadline rule; transactional callbacks. |
+| 7 | `guardiann_collapse.go` | Membership preservation, representative counts, recollapse, role/state/peak preservation. |
+| 8 | `guardiann_reassign.go` | Two-phase neighbors, ownership movement, cause filtering, membership-aware fold, deltas/follow-ups. |
+| 9 | `guardiann_split_merge.go` | All four transitions, complete evaluator selection/fallback, centroid replacement and final ownership. |
+| 10 | `guardiann_bounce.go` and final task dispatch | Active dependency progress, fresh re-enqueue, idle-target follow-ups, no duplicate notification. |
+| 11 | `guardiann_insert.go`, `guardiann_delete.go`, bootstrap | Existing-PK no-op sequencing, hard cap, samples, replication and stale cleanup behavior. |
+| 12 | `guardiann_search.go`, almost-sort iterator | Expansion/filter ordering, intentional underfill, covering/vector results, bounded ordering. |
+| 13 | `guardiann_vector_engine.go`, task counts/lease integration | Ordinary writes and WS-C replay use one backend path; real merge/callback proof; grouped delete cleanup. |
+| 14 | Conformance/migration boundary | Bidirectional JVM state exchange, deterministic fixtures, four-field refusal, preserved extension regressions. |
+
+Use ordered slices plus indexed lookup maps where iteration affects random consumption or reductions. Keep caches transaction-scoped and invalidate them on prefix deletion/topology replacement. Distinguish absent state from I/O errors; never convert transaction errors into empty clusters or stale-reference skips.
+
+**The regression plan should port Java’s scenarios and add cross-language boundaries.**
+
+| Layer | Java shape to port / additional assertion |
+|---|---|
+| Metadata/statistics | Growth/shrink/replica-only changes preserve peak; threshold uses peak rather than current size; constructor rejects peak below count; inverse-statistics edge cases. |
+| KMeans/evaluator | Separated blobs, one blob, cosine normalized mean, zero/empty-centroid fallback, restart improvement, deterministic results; 1→2/2→3/2→1 verdicts; single-child gate exemptions; ACCEPT outranks higher-scoring KEEP. |
+| Split/merge | Oversized perturbed vectors actually split; deletion creates merge work; surviving metadata and primaries remain accounted for. |
+| Reassign | Inject underreplicated primaries below split threshold; prove reassign fires; two rounds separately improve ownership and underreplication. |
+| Collapse | Strict threshold; recollapse; multiple members collapse to one replica; already-collapsed/member dedup; fresh same-byte nonmember survives. |
+| Search | Stale UUID pool consumes slots and underfills; collapsed expansion before cutoff; duplicate PK handling; almost-sort window-one/window-two/full-window behavior. |
+| Tasks | Present no-op task still notifies once; removed task never notifies; bounce consumes fetched dependency once; rollback restores row/count/state; priority and payload bytes. |
+| Maintenance | Sparse zero removal; empty/grouped prefixes; concurrent increments/claims; lease refresh/expiry/delete races; quiet backlog signaling; negative-count disable; hard cap relieved by real merge. |
+| Compatibility | Every tag 0–7 and role 0/1/2; metadata covering null/empty; HALF/SINGLE/DOUBLE/RaBitQ signatures; HNSW 3/4-field nodes; sample transform transition; intermediate metadata refusal. |
+
+Specific inspected Java anchors: [peak tests](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/ClusterMetadataTest.java:44), [verdict precedence](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/SplitMergeTaskTest.java:42), [split scenario](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/SplitMergeSplitScenarioTest.java:134), [reassign injection](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/ReassignScenarioTest.java:175), [two-round convergence](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/ReassignConvergenceTest.java:137), [fresh nonmember preservation](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/CollapseScenarioTest.java:703), [consumed task skip](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/CollapseScenarioTest.java:791).
+
+Retain the deletion-replication scenario’s nondegeneracy: it inserts 150 perturbed 128-dimensional vectors, deletes 30, drains tasks, and requires both multiple surviving clusters and surviving replicas. Deterministic replay compares nonempty state and cluster assignments after both insertion and deletion; empty-to-empty equality is insufficient. [Deletion persistence](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/DeleteReplicationPersistenceTest.java:124), [deterministic replay](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/DeterministicReplayTest.java:150). Do not import upstream recall relaxations.
+
+The live-JVM oracle can extend the existing conformance machinery, which already exchanges RaBitQ bytes and computed VECTOR queue entries. Add narrowly scoped operations for:
+
+- Pure codec/signature/RNG/statistics/KMeans/evaluator input→output, returning integer/IEEE bit patterns and encoded bytes.
+- Root-relative KV dump/load for each tag and secondary accounting family.
+- One explicit task execution with before/after KV deltas, callback counts and evaluator diagnostics.
+- Identical operation sequences in isolated Java/Go prefixes, checking state at intermediate task boundaries.
+- Java-write/Go-read-and-mutate and Go-write/Java-read-and-mutate, including collapsed membership and pending tasks.
+- Record-layer queue replay followed by real GuardiANN maintenance, leases and callback failures.
+
+Package-private Java helpers should be exposed through a test adapter in the relevant Java package, calling the real production implementation. Do not recreate the algorithm in the oracle. Compare exact bytes for deterministic codecs and fixtures; separately record known nondeterministic UUID/time/order seams rather than normalizing them invisibly. Existing seams: [Java vector conformance](/home/birdy/projects/fdb-go/conformance/vector_index_conformance.java:47), [bidirectional queue-entry test](/home/birdy/projects/fdb-go/conformance/vector_index_conformance_test.go:1414).
+
+The read scope is complete for the requested GuardiANN production package and the two requested KMeans production classes. I also read the common storage/random/transform/top-K utilities and outward iterator, plus the relevant record-layer engine, accounting and maintenance code.
+
+Explicit remaining unread scope: the remainder of the HNSW package beyond the cited supporting sections; the full linear/RaBitQ implementation beyond the consumed WS-A interfaces; Java test files beyond the inspected methods and indexed test names; test-fixture/dataset-loader implementations; and unrelated record-layer, planner, relational, SPFresh/LIRE and C++ files. Current Go HNSW, maintainer, evolution and conformance files were inspected in relevant sections, not claimed as a whole-repository review. No SIFT data, audit execution logs, or prior test results were used as measured evidence for this report.

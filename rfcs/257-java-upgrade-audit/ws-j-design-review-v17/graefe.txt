@@ -1,0 +1,99 @@
+**Verdict: NAK.** I reviewed commit `d1ccff8c6` and `ws-j-design.md` at SHA256 `3e82c1059f9556b3f4cd5a67d5bc8f029d9ae1a578cd5498b015af5281260bde` (2907 lines); I recomputed both. The review was read-only and used commit objects only.
+
+The architecture is sound. The NAK is because the record is incomplete: v17 says the stale sites are marked, and many live-spec sites still contradict both 4e and the code that has landed. The mutation-evidence finding from v16 also got no answer.
+
+## v16 findings
+- **Graefe**
+  - **M1: resolved in code.** WIDENED, both carrier arms and the CLI flag are gone from the code. The tests now pin the refusal. The design text is still stale (M1 below).
+  - **M2: resolved.** Some residue remains in TODO (M1 below).
+  - **M3: resolved for 4c, `:2696` and DIVERGENCES.** No "ambiguous-legacy-union" or R2 text is left in DIVERGENCES, while the control "DeleteTemplateVersion" still hits.
+  - **L1:** answered; step 3 pins the sequence.
+  - **L2:** resolved. `wsj-step1-red` is on `9ba005539`, step 1's parent: 14 tests red and 2 controls green. Two of the reds fail on message text only.
+  - **L3–L6 and L5:** resolved.
+  - **v15 LOW "limit 1": unresolved.** The doc comment on `latestTemplateVersion` still says it, but the scan has no limit.
+- **Torvalds**
+  - **H-1: partly resolved.** The mutation plan is unanswered (M2 below).
+  - **M-1: resolved**, except section 2 (M1 below).
+  - **M-2, M-3, M-5: resolved.** A VECTOR row is owed by step 3.
+  - **M-4: two of the three pairs.**
+  - **The getFieldOnMessage LOW: unanswered.**
+- **Storage**
+  - **H1 and M1: resolved.** Some text is stale.
+  - **M2: resolved.**
+  - **M3: partly resolved.**
+  - **The Lows: answered.** Two were answered by deferring them to steps 3 and 4.
+
+## MEDIUM
+**M1. The stale-site sweep is incomplete, and 4e item 3's "corrected" claim is false.** None of these sites is marked:
+- **Section 2, `:709-710`:** "`DeleteTemplateVersion(t, v)`, the Go-only API".
+- **Section 2, the restore spec (`:812-825`) and its tests (`:865-866`):**
+  - They still specify the symmetric carrier arm, and a WIDENED pair "admitted in BOTH directions".
+  - The landed `TestFDB_Restore_RefusesALiteralCarrierChange` asserts the opposite.
+- **Section 3.2:**
+  - the table row "not over EQUIVALENT or WIDENED" (`:1181`);
+  - the lane paragraph (`:1266-1305`), with its WIDENED test and the lane-table property test;
+  - `--allow-literal-carrier-widening` and `TestMetaEvolveCheck_LiteralCarrierWidening` (`:1306-1308`).
+- **Section 4, the spec step 3 builds from:**
+  - the WIDENED class definition (`:1941-1951`, `:1894-1895`, `:1966`);
+  - the rebind options, which still list `SetAllowLiteralCarrierWidening(true)` as "(3.2, landed)" (`:2013`).
+- **Section 8 step 1:**
+  - "the symmetric carrier arm" (`:2717`);
+  - the STATUS text, which lists `SetAllowSymmetricLiteralCarrierWidening` (`:2741`) and "a literal carrier either way" (`:2752`) as landed.
+- **Section 7 item 5 (`:2678-2680`):** 4e says it is replaced, but the site is unmarked.
+- **TODO.md:**
+  - `:15031` still names `RegisterNonUniqueNullFunction`;
+  - `:15017-15022` still lists the landed 4d work as "Step 3 now carries".
+
+**Fix:** grep for WIDENED, the removed option names and "Go-only API" until only marked or history hits remain, and report that count.
+
+**M2. The evidence plan still contradicts the ruling.** The ruling allows mutation only 0–3 per milestone, where values could move together. The design still requires:
+- "A mutation per refusal is part of step 3's evidence" (`:1714`);
+- "mutation evidence for every new guard" (`:2686`);
+- test 7, "the carry disabled (a mutation)" (`:2075`).
+
+4e never addresses this, although Torvalds v16 H-1 raised it. Restate the evidence as red→green and Java-versus-Go.
+
+## LOW
+1. **A Java delete of the latest bound version has no Go exit.**
+   - After Java's `deleteTemplate(t, latest)` under a binding, the guard refuses every new version of t.
+   - Over schemas Java created, the restore fails closed until F11 (9 (s)).
+   - So Go has no exit. 4e item 3 treats only the below-latest case; state this case in (j) and (s).
+2. **Present-tense claims for step 3's unlanded work.** On this tree, a library `CreateTemplate(t, 2)` under a Java-deleted bound (t, 2) is still admitted.
+   - `DIVERGENCES.md:2929-2931` says `CreateTemplate` refuses re-issuing a version at or below the latest; that refusal is step 3's.
+   - `CHANGELOG.md:360` says a new version rebuilds a changed key through "the carry rule".
+3. **`CreateTemplate`'s doc comment is false now.** It says "Matches Java's createTemplate exactly … Adding validation in Go would diverge", directly above the guard that has already landed. This is the third round it has been noted; fix it now rather than in step 3.
+4. **The "four shapes Java loads" entry includes a doubtful depth arm** (`DIVERGENCES.md:3252-3253`). This is from reading the source, not measured.
+   - Java parses stored bytes with protobuf's default recursion limit of 100. Each key-expression level costs two message levels.
+   - So Java refuses a nesting deeper than about 49 at parse time, and cannot load one past Go's cap of 128.
+   - Go therefore admits depths of roughly 50 to 128 that Java refuses.
+5. **The relational error surface differs from Java's** (also from reading the source).
+   - `deserializeTemplate` maps a `MetaDataProtoDeserializationError` to XX000.
+   - Java's `loadSchemaTemplate(name, version)` maps that `MetaDataException` to 42000 (`RecordLayerStoreSchemaTemplateCatalog.java:207-208`, `ExceptionUtil.java:72-74`).
+   - `MetaDataError` does not unwrap to `RecordCoreError`. So `errors.As(…RecordCoreError)` fails for the subspace-counter case, and the Status line's "RecordCoreException hierarchy" holds only for `KeyExpressionDeserializationError`.
+6. **The hooked test covers two of the pairs 3.2 lists** (`:1236-1240`).
+   - `TestInMemory_VersionGuard_BindAndDeleteSerialize` hooks SaveSchema and RepairSchema against a delete.
+   - A fresh `CreateTemplate` after DROP against a bind is not hooked, and 4e does not say so.
+   - 4e item 4's "1.2's convention" should read 3.2.
+7. **The restated step 3 in 4e names only the index classes.** It omits the carry of record-type keys and union-field numbers, which is the unit's own rationale. Name it.
+
+## Checked and sound (from source)
+- **Carry classes.**
+  - Java's `LiteralKeyExpression.equals` compares protos (`:204-215`), and the validator refuses a changed key at `:717-722`. So withdrawing WIDENED is Java's behaviour.
+  - `ClassifyIndexCarry` reads both roots through `indexFromProto`, so an absent standin is normalised. Java always writes the standin (`FieldKeyExpression.java:257-262`).
+  - Making a standin-only change CHANGED is a sound Go-only carry decision, since the standin's readers differ.
+- **Deserialization.**
+  - Field refusals match `FieldKeyExpression.java:122-132`, and the nesting reads its parent first, as `:67-73` does.
+  - `valueFromProto` matches `LiteralKeyExpression.java:134-173`: the same field order, and null when no field is set.
+  - The wrapping sites match `RecordMetaDataBuilder.java:204-227, 260-265, 290-296`. The explicit key is left unwrapped, as at `:234`.
+  - The load order matches `:272-279`.
+- **Extension options.** They match `:891-908`. The since_version check at `:771` is on the update path only, so it is not owed.
+- **Catalog.**
+  - Java's texts are ported (`:243`, `:309`, `:323`).
+  - Java's `SaveSchemaTemplateConstantAction` only calls `createTemplate`, so `v′ <= latest` is Go-only and (w) declares it.
+  - Other checks: the guard fails closed; `storesExactly` runs before the listing; the lock order is store mutex, then template mutex, on every path.
+- **Step 2** is a clean unification.
+
+## Measured versus assumed
+- **Measured myself:** the hashes; reading Java 4.14.2.0 and Go at `d1ccff8c6`; the red logs.
+- **Recorded, not re-run:** the JVM spec results and the "94 targets passing" from the pre-commit hooks, of which no log is retained.
+- **Source hypotheses:** Lows 4 and 5.

@@ -1,0 +1,77 @@
+**NAK.** I reviewed tree `aa29308afd7637d7e98a42ef1d108335013ead8c`. I recomputed the design's SHA256 as `0ff22d05c138b986f4bf3e1291765023223db87bb58349c46f746ec58c61e6c9`, 1326 lines. The review was read-only: I ran no tests, probes or mutations. A finding not marked **measured** comes from reading source.
+
+In the code, every v6 finding from all three reviewers is resolved, and so are the four WS-J v10 inputs. What's left is three low findings. One is v6's merge-scoping finding coming back in its new wording. A narrow re-check will do.
+
+## Findings, most severe first
+
+**1. Low: the refusal of a nil key is lost unless the key is set before `AddIndex`.**
+- `subspaceKeyErr` is checked only in `addIndexCommon` (`metadata.go:617-619`), and a later valid set clears it (`index.go:506`).
+- Two cases differ from Java, whose setter throws at once (`Index.java:413-416`):
+  - `b.AddIndex(t, idx); idx.SetSubspaceKey(nil)` builds, with the old key.
+  - `SetSubspaceKey(nil).SetSubspaceKey("k")` is accepted.
+- `index.go:184-186` and §7.7 both say the refusal is "returned by the builder's Build".
+- The online-indexer builder already does this right: its `setIndexErr` is sticky and `Build` returns it first (`online_indexer.go:778`).
+- **Fix:** keep the error sticky, check every index's error in `Build`, and pin both orders.
+
+**2. Low: conversion to Java's messages is incomplete, and §7.7 claims it is complete.**
+- `ws-c-design.md:1210` says "Every check now runs in Java's order with Java's message first", and the code says `validateIndex` "is Java's". After the four version checks, though, the messages are still Go's, and none has Java's message as a prefix:
+  - `index %q type changed` (`metadata_evolution_validator.go:704`); Java says "index type changed".
+  - The key-expression messages (`:735`, `:739`).
+  - The position messages (`:749-768`).
+  - The record-type messages (`:813`, `:827`); Java says "new index removes record type…" and "new index adds record type that is not newer…".
+  - The field-renames message (`:479`).
+- `Build`'s former-index version messages have the same problem (`metadata.go:1217-1224`, against `MetaDataValidator.java:150-165`). The new comment presents that loop "as MetaDataValidator.validateFormerIndex checks them".
+- None of the 11 JVM evolution shapes reaches any of these checks.
+- **Fix:** port the messages and add a JVM shape, or narrow the sentence.
+
+**3. Low (docs): the merge's lock-out text says the wrong process is refused.**
+- These lines say the merge's next transaction "then refuses it", where "it" is the mutual builder:
+  - `CHANGELOG.md:176`
+  - `DIVERGENCES.md:2789`
+  - `ws-c-design.md:1258-1259`
+- From source, it is the other way round. The merge's heartbeat is non-mutual (`indexing_merger.go:162`), and every merge transaction runs a pre-commit refresh (`:37-40` → `online_indexer_queue.go:478`). That refresh fails the **merge** with `SynchronizedSessionLockedError`. The mutual builder carries on, because its check only writes its own key (`IndexingHeartbeat.java:90-93`).
+- **Fix:** say "the merge then fails".
+
+**4. Nits.**
+- **Count.** `ws-c-design.md:1220` says "ten on the verdict". **Measured:** `jvm-subspace-base.keep.log` shows nine verdict disagreements (four evolution, five build) and seven that differ only in the message.
+- **Mutation tree.** The mutation runs used a `metadata_proto.go.good` from before the WS-J fold: it reads options after the root (`.good:870`) and has no `HeldBy`. m56's diff is at `:928`, where the candidate's line is `:971`. The body of `formerIndexFromProto` is identical, so the result still holds, but §7.7 at `:1280-1286` should say which tree the mutations ran on.
+- **Conformance prefix.** The conformance spec asserts one fixed prefix per shape, not `HavePrefix(java.Error)`. For the NaN and two-former shapes that prefix stops before the index names, so a change in name order (Go sorts by name, Java uses HashMap order) would not fail the spec. The log agrees in full today.
+- **Key rendering.** The collision messages render the key with `%v` (`metadata.go:1202`, `:1213`, `:1233`). A `[]byte` or list key therefore prints differently from Java's `ByteString`/`List`, yet the CHANGELOG says "Java's message".
+- **Typed-nil keys.** `tupleEquivalentValue` passes a typed-nil `*big.Int` or `*FDBRecordVersion` through unchanged (`subspace_key_identity.go:121-123`, `:136-138`). So `SetSubspaceKey((*big.Int)(nil))` stores the key, where Java refuses a null.
+
+## What holds (source)
+- **`equalsJava`, field by field:**
+  - raw `Type`;
+  - `subspaceKeysEqual`;
+  - `keyExpressionEquals`;
+  - both versions;
+  - positions, with nil ≠ empty;
+  - options as a map;
+  - predicate by the identity of the stored proto, or by the fields of a `RowNumberWindowPredicate` taken in the order `fromProto` reads them (`IndexPredicate.java:105-121`, `:790-801`).
+- **Identity arms** match `TupleTypeUtil.java:98-124`:
+  - BigInteger bounds are strict;
+  - every NaN collapses to one, per `floatToIntBits`/`doubleToLongBits`, and ±0 stay distinct;
+  - Float ≠ Double;
+  - lists, enums and versionstamps are normalized;
+  - a `KeyConvertible` counts as bytes, as the encoder writes it (`tuple.go:387`).
+- **`keyExpressionEquals`:** all 14 main-source `KeyExpression` types have an arm, and each matches Java's `equals`, including Field ignoring its null standin, Literal comparing by proto, and Function matching by instanceof.
+- **Subspace-key comparisons:** every one in the non-test `pkg`/`cmd` sources goes through `subspaceKeyIdentity`. `normalizeSubspaceKey` and `subspaceKeyString` are gone; the only hits are in historical logs and quotes (positive control: 44 lines of the new names across 10 files).
+- **`Build`'s three checks** follow Java's order and messages. **Evolution:** the four loops and three helpers follow Java's order, and each message starts with Java's.
+- **Former-index reader and writer** match `FormerIndex.java:51-68`, `:119-133`.
+- **Other fixes:** the `SetTargetIndexes` copy, where the nil guard now sits, the `RecordCoreArgumentError` fields, and the `IndexBuildOutcomeBuilt` doc.
+
+## Measured
+- **Hashes.** Six candidate blobs match evidence-v11's hashes: `index.go`, `metadata.go`, `metadata_proto.go`, the evolution validator, `subspace_key_identity.go` and DIVERGENCES.
+- **Mutations m45–m60.** Each shows marker count 1, "Ran 459", bazel exit 3 and "restored". The red sets are as tabled, and the diffs land on the candidate's lines except in `metadata_proto.go` (nit above). `run-mutations.out` has no NOT RESTORED.
+- **JVM specs.**
+  - `jvm-subspace2`: 22 of 22, and in all 17 lines Java's message is a literal prefix of Go's.
+  - On revision 6's tree: 16 of 17 fail, and `jvm-former-base` fails 4 of 5.
+- **ev11 runs.**
+  - Focus: 600 of 600.
+  - JVM meta-data specs: 57 of 57.
+  - `just test`: "Executed 44 out of 94 tests: 94 tests pass".
+  - Final targets: 4 of 4.
+  - Uncached recordlayer: 3705 of 3706, with 1 skipped.
+  - `notok` is 0 after both runs.
+
+The preserved boundaries are unaffected.

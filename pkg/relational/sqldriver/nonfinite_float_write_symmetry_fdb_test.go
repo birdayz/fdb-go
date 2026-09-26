@@ -130,7 +130,7 @@ func TestFDB_NonFiniteFloatWrite_IsSyntaxIndependent(t *testing.T) {
 		// out of a column rather than a re-parsed literal.
 		"CREATE TABLE src (id BIGINT, d DOUBLE, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nffw/s WITH TEMPLATE nffw")
-	dsn := fmt.Sprintf("fdbsql:///testdb_nffw?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_NFFW?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

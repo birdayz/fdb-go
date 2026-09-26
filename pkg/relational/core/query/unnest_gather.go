@@ -107,7 +107,7 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	} else {
 		legs = t.legsOfGatedJoin(leftJoin)
 	}
-	fields, legTypes := t.ordinalJoinSeedFields(legs)
+	fields, legTypes, _ := t.ordinalJoinSeedFields(legs)
 	if fields == nil {
 		return nil // a leg untranslatable — same decline rule as the seed
 	}

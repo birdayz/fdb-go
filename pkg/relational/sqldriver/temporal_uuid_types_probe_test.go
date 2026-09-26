@@ -25,7 +25,7 @@ func TestFDB_TemporalUuidTypesProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE tut CREATE TABLE t (id BIGINT, ts TIMESTAMP, d DATE, u UUID, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_tut/s WITH TEMPLATE tut")
-	dsn := fmt.Sprintf("fdbsql:///testdb_tut?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_TUT?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

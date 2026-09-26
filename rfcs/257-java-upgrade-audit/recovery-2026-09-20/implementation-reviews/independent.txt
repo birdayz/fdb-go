@@ -1,0 +1,18 @@
+**NAK — IMPLEMENTATION CODE, WS-A + WS-E1**, at candidate tree `a8940de29c3726e44d5e14779f321b732e11be88`, against base `71ccd8cf8b3fd0dbafe283e91171818e36af555e` and Java `fdacd162a9c8acfadc49082b89185c823ab8ae4a`.
+
+The complete milestone review found two blocking defects:
+
+- **P1: RaBitQ persisted arithmetic remains architecture-dependent.** [rabitq.go:384](/home/birdy/projects/fdb-go/pkg/rabitq/rabitq.go:384) computes serialized calibration through [dot:600](/home/birdy/projects/fdb-go/pkg/rabitq/rabitq.go:600), whose `sum += a[i]*b[i]` permits fused multiply-add. Go’s [ARM64 compiler rule:1799](/usr/lib/go/src/cmd/compile/internal/ssa/_gen/ARM64.rules:1799) performs this fusion; Java’s [exact scalar calibration:166](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/rabitq/RaBitQuantizer.java:166) rounds multiplication separately. A source-derived counterexample is `[9*2^-29, 1+2^-27]`: fused versus separate accumulation differs by one ULP in `FAddEx`, changing persisted bytes. The quantization accumulations also permit fusion. **Fix:** enforce explicit floating-point rounding barriers throughout encoding arithmetic; temporary assignments alone are insufficient. Add adversarial byte-exact Java contracts executed on ARM64 as well as AMD64.
+
+- **P2: Mixed-star consumers bind before expansion, or use stale syntax positions.** Early expansion is conditional on aggregate functions at [select_parser.go:1159](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:1159). Consequently, `SELECT *, 8 AS x FROM t GROUP BY id`, with `t(id PRIMARY KEY)`, reaches the unconditional star refusal at [1522](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:1522), producing `42803` despite every expanded column being grouped. Positional ORDER BY uses unexpanded width at [1294](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:1294): `SELECT *, 8 AS x FROM wide_t ORDER BY 3` incorrectly sees two entries when `wide_t` has two columns. Even after aggregate expansion, positional GROUP BY indexes the original syntax list at [1382](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:1382), so zero-width or wider stars misalign expressions. **Fix:** resolve grouping and ordering through one authoritative expanded slot list. Add zero/one/multiple-column and repeated-star regressions, grouping without aggregates, and positional GROUP BY/ORDER BY.
+
+These findings are source-derived; I ran no tests or builds and changed nothing. The supplied [full-suite log](/var/tmp/fdb-upgrade-recovery/runtime/fixed-full-test.log) records 92/92 executed targets passing; all 140 changed paths match its freeze manifest.
+
+**Unmet verification/publication gates:**
+
+- Six-target runtime race completion remains pending; no pass credited.
+- Fresh-machine sequential 1M baseline/current comparison remains pending.
+- Fixes require regression evidence, verification of the corrected frozen candidate, and implementation ACKs.
+- The earlier executor startup timeout’s original cause remains unknown. The host/container networking repair does not establish that cause.
+
+Historical reports and design ACKs receive no current implementation-verification credit. This verdict neither completes WS-B–K nor approves publication or merge.

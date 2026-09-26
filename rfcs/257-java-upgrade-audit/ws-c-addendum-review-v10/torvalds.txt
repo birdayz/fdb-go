@@ -1,0 +1,84 @@
+**NAK.** Tree `9aee2d3d3c3347375454d8cc44f91af4e486f291`. Design SHA256 `e80e84bfbcfacbceeae1b6e73baa56249251ae1cd19f4a2d25b1b499fc85869c`, 1915 lines, which I recomputed and which matches. The review was read-only. A finding is from reading source unless it is marked **measured**.
+
+Every revision-9 finding is resolved, and nothing revision 9 fixed is undone. The NAK is for five Low findings. Three are the same kind as v9's: a claim wider than the code. One is an upgrade instruction that leaves stores unable to open. One is a new check placed out of Java's order.
+
+## Findings, most severe first
+
+**1. Low: the nest-into-scalar refusal rests on a false premise, and its class is wrong.**
+- Four places say Java's `UnsupportedOperationException` "has no Go type":
+  - `key_expression_validate.go:149-151`
+  - `DIVERGENCES.md:3121-3123`
+  - `CHANGELOG.md:266-267`
+  - design `:1727-1728`
+- It does have one: `UnsupportedOperationError` at `errors.go:329`.
+- The code returns `KeyExpressionError` instead, which is the Go form of Java's `InvalidExpressionException`. So `errors.As(err, &KeyExpressionError)` matches in Go where Java's catch would not.
+- The text "This field is not of message type." has not been measured. It is my hypothesis, not checked here, that protobuf-java 4.29.3 (the conformance server's version) appends the field's full name.
+- **Fix:** return `UnsupportedOperationError` with a JVM-measured text, pin its class and text, and delete the divergence entry.
+- **Related:** `errors.go:295` calls `Query.InvalidExpressionException` "a RecordCoreException". It extends `IllegalStateException` (`Query.java:273`). The SQL code is unaffected, because `ExceptionUtil` maps both to UNKNOWN.
+
+**2. Low: the new comment on `Concat` (`key_expression.go:752-753`) says `Build` refuses one-child composites as primary keys. It does not.**
+- `Build` refuses only a key with no columns (`metadata.go:877`).
+- So `Concat(Field("id"))` builds, and so does `Concat(Concat(), Field("id"))`, which flattening now produces.
+- `ToKeyExpression` (`key_expression_proto.go:60-70`) then writes a `Then` with one child. Both loaders refuse it: `key_expression_proto.go:293-294` and `ThenKeyExpression.java:83-85`.
+- Go therefore writes meta-data that neither engine can load again.
+- **Fix:** refuse at `Build` (or at `ToProto`) and pin it, or narrow the comment.
+
+**3. Low: the PERMUTED upgrade entry is unsafe (`CHANGELOG.md:346`).**
+- `RecordMetaDataFromProto` ends in `builder.Build()` (`metadata_proto.go:374`).
+- Stored meta-data that an earlier Go wrote now fails to load, so the store does not open, when a PERMUTED_MIN/MAX index has any of:
+  - an absent `permutedSize`;
+  - an unparsable one;
+  - a negative one;
+  - one larger than the grouping;
+  - a root that is not a grouping.
+- "Rebuild" cannot be done until the option is corrected. The `rankNLevels` entry says exactly that (`:343`); this one does not.
+- Only a size Java can parse that is not plain ASCII (for example "٢") needs just a rebuild.
+- The entry also over-includes "+2": `strconv.Atoi` already read it as 2.
+
+**4. Low: the new permuted validator runs in the wrong place relative to Java's per-index sequence.**
+- Java runs each index's validator before that index's subspace-key `put`, and runs all indexes before any former index (`MetaDataValidator.java:103-105`, `:117-119`).
+- Go runs these checks in a different order:
+  - subspace-key duplicates (`metadata.go:1284`);
+  - former-index checks (`:1295-1311`);
+  - added versus last-modified version (`:1320`);
+  - only then `validatePermutedIndex` (`:1370-1376`).
+- **Example:** a PERMUTED index with no size that shares its subspace key with another index. Java reports "permuted size not specified" in either iteration order. Go reports "Same subspace key…". The difference is deterministic and not declared.
+- The atomic and TEXT validators already sit in the same place (pre-existing).
+- **Fix:** move the per-index validators ahead of those checks, or declare the order.
+
+**5. Low (test vacuity, measured): three class checks assert a relation instead of a value.**
+- `TestBuildRecordTypeChecksAreJavasInNameOrder` (`subspace_key_identity_test.go:903-908`) only requires "exactly one of" the two classes.
+- `mut-n6` wraps the key-validation error in a `MetaDataError` with the same text. Every shape stays green, including "a primary key validated before its fan-out". Only `TestBuild_PrimaryKeyReferencingNonExistentField` turns red.
+- The same pattern is in `metadata_validate_records_test.go:597` and in `java_parse_test.go:239`, where `MetaDataError` and `NumberFormatError` are interchangeable.
+- **Fix:** give each case its expected class.
+
+**Nits**
+- **Then text.** `key_expression_proto.go:294` adds "(got N)" to Java's "Then must have at least 2 children". The test only checks the prefix. So 7.9's "with Java's texts" is still wider than the code.
+- **Flake census.** It is scoped to the SQL text "UNION ALL". The same file's `union` probe (line 63, pinned `[[1],[2]]`) is safe, but only because both legs are value cursors that are always ready and `UnorderedUnionCursor` takes the first ready child in list order (`UnorderedUnionCursor.java:76-87`). Say so. OR predicates reach the same cursor; the two OR-union probes I checked sort their rows (`or_union_dedup…:97`, `pk_intersection…:85`).
+- **Evidence not on file.**
+  - The probe's 10-of-10 run has no retained log under `wsc-v10/`.
+  - ev2's list of seven executed targets does not appear in `justtest.log`.
+- **n7's table row** leaves out `TestKeyValidationTextsAreJavas`, which the log shows turning red.
+
+## Revision-9 findings: all resolved (from source)
+- **`AddIndex` with an unknown type** records the index first (`metadata.go:585`).
+- **`RemoveIndex` of an unknown name** is refused with Java's text (`:692`), including a second removal of the same index.
+- **Build order and texts** match `RecordMetaDataBuilder.java:1480-1491` and `MetaDataValidator.java:60-101`. That covers the missing primary key before the validator, the union's oneof, the empty check, and per type: validate, then duplicates, then the key collision with the later type first, then the since version, all before any index.
+- **Field validation** texts and classes match `FieldKeyExpression.java:145-172`.
+- **Permuted-size readers** all go through `PermutedSizeOption`. My `git grep` of the gate tree finds no other reader. The factory validator's order matches `:66-80`.
+- **Flat Then:** the three flatteners are removed. `Concat` is the only place a `CompositeKeyExpression` is built (`git grep`: 2 struct literals, both in `Concat`).
+- **RANDOM hash:** the read error is returned. "re-toss" survives only in the design line that records its correction.
+- **R-tree:** the root is changed in place. `deleteNode` is called only inside `rtree_storage.go`.
+- **Upgrade and vector scoping, relabels, the BY_SLOT declaration, and the typo** are all done.
+
+## Measured
+- **Evidence tree.** Six `512ae248` blobs hash to their `ev2/src.sha` entries. `check.txt` has 1833 OK lines and no failures. The step from `512ae248` to the gate tree is comment-only in its three Go files. The mutation tree `b3b0581c` has the same WS-C Go blobs.
+- **Mutations.** n1–n21 and c6–c8 each show marker count 1, the applied diff, exit 3, the tabled red set, and "restored"; `run.out` reads ALL-DONE. The baselines are green, and all of the new tests pass in them.
+- **c6 and c8.** At "Java wrote 120", the independent raw-byte oracle passes on Java-written trees in both layouts (48 nodes, 47 entries). Both fail at "Go deleted the even ids" (`:264`). So Java's level, Hilbert value and key agree with the oracle, and the oracle is independent of the production encoder.
+- **gate10.** Build and test exit 0; the tree is `9aee2d3d` before and after.
+- **Not verified:**
+  - the bytes of the `good/` copies;
+  - the 10-run check;
+  - protobuf's `getMessageType` text.
+
+The preserved boundaries are unaffected.

@@ -9,9 +9,12 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"reflect"
 	"testing"
+
+	"fdb.dev/pkg/relational/api"
 )
 
 func TestFDB_GroupBySelectOrderProbe(t *testing.T) {
@@ -27,7 +30,7 @@ func TestFDB_GroupBySelectOrderProbe(t *testing.T) {
 			"CREATE TABLE t (id BIGINT, a BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE m (id BIGINT, a BIGINT, b BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_gso/s WITH TEMPLATE gso")
-	dsn := fmt.Sprintf("fdbsql:///testdb_gso?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_GSO?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -184,16 +187,34 @@ func TestFDB_GroupBySelectOrderProbe(t *testing.T) {
 			[][]any{{int64(35), int64(1)}, {int64(10), int64(2)}, {nil, int64(3)}})
 	})
 
-	t.Run("bare_order_alias_precedes_colliding_group_key", func(t *testing.T) {
+	t.Run("ambiguous_alias_requires_explicit_output_position", func(t *testing.T) {
+		t.Parallel()
+		rows, err := db.QueryContext(ctx, "SELECT SUM(v) AS a, a FROM m GROUP BY a ORDER BY a")
+		if rows != nil {
+			_ = rows.Close()
+		}
+		var diagnostic *api.Error
+		if !errors.As(err, &diagnostic) || diagnostic.Code != api.ErrCodeAmbiguousColumn || diagnostic.Message != "Ambiguous alias A" {
+			t.Fatalf("ambiguous grouped output name = %v, want 42702 / Ambiguous alias A", err)
+		}
 		assertRows(t,
-			"SELECT SUM(v) AS a, a FROM m GROUP BY a ORDER BY a",
+			"SELECT SUM(v) AS a, a FROM m GROUP BY a ORDER BY 1",
 			[]string{"A", "A"},
 			[][]any{{nil, int64(3)}, {int64(10), int64(2)}, {int64(35), int64(1)}})
 	})
 
 	t.Run("duplicate_visible_group_key_slots_share_native_identity", func(t *testing.T) {
+		t.Parallel()
+		rows, err := db.QueryContext(ctx, "SELECT a, a, COUNT(*) FROM m GROUP BY a ORDER BY a")
+		if rows != nil {
+			_ = rows.Close()
+		}
+		var diagnostic *api.Error
+		if !errors.As(err, &diagnostic) || diagnostic.Code != api.ErrCodeAmbiguousColumn || diagnostic.Message != "Ambiguous alias A" {
+			t.Fatalf("ambiguous repeated group output name = %v, want 42702 / Ambiguous alias A", err)
+		}
 		assertRows(t,
-			"SELECT a, a, COUNT(*) FROM m GROUP BY a ORDER BY a",
+			"SELECT a, a, COUNT(*) FROM m GROUP BY a ORDER BY m.a",
 			[]string{"A", "A", "_2"},
 			[][]any{
 				{int64(1), int64(1), int64(2)},

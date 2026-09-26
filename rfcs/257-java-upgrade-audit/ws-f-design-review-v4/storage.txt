@@ -1,0 +1,73 @@
+**NAK.**
+
+- **Tree:** `9aee2d3d3c3347375454d8cc44f91af4e486f291`
+- **Design:** `ws-f-design.md` sha256 `15bcea3dd51a6440219b3233a3e8a02cce29054b2c15131e44cb1e146f09116d`, 1954 lines. I recomputed both from the blob; they match.
+- **Scope:** read-only. Nothing was run or edited. The policy denied `git grep` and `git -C fdb-record-layer`, so I read the Java checkout (HEAD `fdacd162a`) with Read and Grep instead.
+
+**Verified**
+- **Evidence:** all 11 instrument hashes in `evidence-run.txt` equal this tree's blobs. The m3 and m13 logs show marker count 1, exit 3, the expected failure message, and the restore; `run.out` ends with ALL-DONE.
+- **Java (SOURCE):** the crossing (`CascadesPlanner.java:745-749`, `Reference.java:208-211`); the in-union size check runs first and counts the product (`RecordQueryInUnionPlan.java:151-162, 331-337`); `ExceptionUtil.java:59-84`.
+- **Go:** `MemoizeFinalExpressionsFromOther` copies the ordering constraint; the plan cache keys on literal text (`query_hash.go`); the primary-key upper-casing (`cascades_generator.go:2904-2907`); 14 `getWinnerForOrdering` sites in 10 files (working tree).
+- **v3 findings answered in the text:** the prefix plan is withdrawn; the product and the 5×5 pin; the fetch-method cache arm; the nil-options size; `CAST(NULL)`; the verdict vocabulary; the plan-cache relabel.
+
+**The WS-E question.** v4 states the RFC-182 second crossing (:347-375), and WS-E now cites it (`ws-e-design.md:2598-2607`). v4 does not close it (H1, M6).
+
+## High
+
+**H1. The crossing decision ignores that Go mints references at the wrong stage.**
+- **Java (SOURCE):** every reference is minted at the running phase's target stage (`CascadesRuleCall.java:320, 423, 460, 503, 572, 608`). A restricted copy inherits its source's stage (`Reference.java:591`). So nothing minted in PLANNING ever crosses.
+- **Go (SOURCE):** `InitialOf` mints at `StageCanonical` (`reference.go:180-183`), and the restricted references (`MemoizeFinalExpressionsFromOther`) do too, so PLANNING's ExploreGroupTask crosses them:
+  - Groups minted fresh in PLANNING take the no-finals arm. The Go doc at `AdvanceStagePreservingMembers` says so: "A group created fresh during a phase … takes this path too".
+  - Restricted copies take `AdvancePlannerStage`, which resets `explState` and `winner` (`reference.go:949-963`). That wipes D7's explored mark, which is the mark 4.3 item 3's "no rule re-runs on the copy" depends on.
+- **Consequences:**
+  - :364 ("a group REWRITING did not reach") is false.
+  - :369's "two queries" is an unmeasured population claim.
+  - With the option on, the checked error fires on ordinary PLANNING groups.
+  - `Verify(==1)` fails on F-7b's whole partition and F-8's per-partition copies, which carry more than one final.
+- **Required:**
+  - Port Java's minting stage as part of D7/D9, before the invariant; the pinned-final and `StagePlanned` interplay has to be decided along with it.
+  - Count the arm's hits over the corpus with the observer.
+
+**H2. F-7b item 9 contradicts WS-E 4.1(b) on the IN-to-explode matcher.**
+- **WS-F (:1332-1350):** a Select-only matcher is F-7b's first change, and "REWRITING already folds a filter into a select … not a second matcher".
+- **Go (SOURCE):**
+  - The translator emits a one-source WHERE as `LogicalFilterExpression` (`cascades_translator.go:283-293`, `exactFilter`).
+  - `ws-e-design.md:2466-2475` says no Go rule turns one into the other. D11 merges children into a select root; it does not convert a root filter.
+- **WS-E** ports the rule with two matcher instances in its step (5), after F-7 (`:684-714`, `:3380-3388`).
+- **Consequence:** as written, F-7b strips the IN plans from every single-table SQL IN query, and the port has two owners.
+- **Required:** one owner, WS-E's two-matcher form, and the sequencing of the SAME-RL rows restated to match.
+
+## Medium
+
+- **M1. The in-join fetch cause is inference labelled measured (:1255-1267).**
+  - ROOT-PAIRS observes root members, not what data access yields.
+  - Java's `toEquivalentPlan` returns `FETCH(COVERING)` whenever the builder succeeds (`ValueIndexScanMatchCandidate.java:229-282`). It succeeds for I1: the target explains `COVERING(I1 [EQUALS q0] …)` for the same `SELECT *`. The ISCAN comes from `MergeFetchIntoCoveringIndexRule`.
+  - `PushInJoinThroughFetchRule` matches any fetch member (`:86-97`).
+  - So F-6's target gate admits I1 and cannot move `w8_in_no_order_explain`. Measure the in-join inner reference, or relabel the cause a HYPOTHESIS and re-own the row.
+- **M2. The DESC tie row still has no located cause (:1273).** That is v3's finding carried unanswered for a row F-7b owns.
+- **M3. The `pastRecordTypeHorizon` carrier has no data source.**
+  - Go's match walk has no record-type placeholder. The record-type key is "unrepresented", and only the metadata adapter can prove that topology (`match_candidate_index.go:606-613`). The primary-key suffix is synthesized after the index key (`:958-1001`).
+  - Name where the candidate learns about the record-type prefix, and the default when the topology is unknown. Marking every row breaks the `w8_rl_*` in-union; marking none re-arms the size-check failure.
+  - :1190 still calls the intersection case a HYPOTHESIS; item 11 and 0.2 report it measured.
+- **M4. Section 12 omits transitions F-7b itself makes (:1855-1858).**
+  - Item 3: `InUnion(ISCAN)` → `Fetch(InUnion(COVERING))`.
+  - Item 9: record-layer graphs moving from covering-scan-plus-filter or `InMemorySort` to in-join or in-union. The `InMemorySort` continuation is Go-only.
+  - Item 10: nested `UnionContinuation`s → one two-source in-union.
+  - The "reach that caller" list (:1797-1799) omits F-8, although the table has an F-8 row.
+- **M5. The error arm's placement is unspecified (:1529).**
+  - In `translateFDBError` (`pkg/relational/core/embedded/connection.go`), the FDB-code arms come after the record-layer arms: 1020→40001, 1021→40003 (RFC-198: determine the outcome before retrying), 1031→timeout.
+  - Marked types unwrap (`RecordCoreError.Unwrap`, `errors.go:342`). If the default arm precedes the FDB-code arms, a wrapped 1021 becomes XXXXX and loses its "don't blindly retry" signal.
+  - Put the default last, and pin marked errors wrapping 1020 and 1021.
+  - Account for Java's TRANSACTION_TIMEOUT and TRANSACTION_INACTIVE arms (`ExceptionUtil.java:64-67`).
+- **M6. The census member "must cross as the one fold final" (:585, :375-379) can't be checked at F-5.** The fold rule is WS-E's and lands after F-5. At F-5 the row can assert only one final and no error; the fold assertion belongs to WS-E's re-run.
+
+## Low
+
+- **Acceptance text vs code:** section 13 (:1906) names "RFC-238 7c for the display rows", but `wsfOpenUntil` gives `w13_display_*` to F-1. Joint owners ("WS-E section 4 and F-7b") are ambiguous under the "outside WS-F" rule.
+- **Ordering:** state that F-7b follows F-5's default flip. The D7 mark and D11 are premises of items 3 and 9.
+- **Section 14:** it says "four are user-visible" and then lists eight.
+- **Legacy salt:** Go accepts a salt without the flowed type when parsing old continuations (`legacyIndexScanRangeFingerprintSaltFields`). So "every Go scan salt" (:766) holds only for emission; state that the covering-Value plan gets no legacy arm.
+- **Quoted primary key:** pin an unquoted SQL query over a lowercase physical primary key (a proto-defined template), so removing the upper-casing can't silently lose primary-key scans.
+- **Size count:** the count is of distinct values (`arrayDistinct`). Pin 25 copies of one value, which the target answers.
+
+**Not covered:** W7 D1–D9 internals, the 119-line closure count in 2.8 (`git grep` was denied), the W9 range builder, and 9.1.

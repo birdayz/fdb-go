@@ -27,7 +27,7 @@ func TestFDB_NonCorrelatedExistsEmptySubquery(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /diag_nce/main WITH TEMPLATE diag_nce_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql:///diag_nce?cluster_file="+clusterFilePath+"&schema=main")
+	db, err := sql.Open("fdbsql", "fdbsql:///DIAG_NCE?cluster_file="+clusterFilePath+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

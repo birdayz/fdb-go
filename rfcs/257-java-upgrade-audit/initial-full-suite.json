@@ -1,0 +1,1039 @@
+{
+  "go_parent_sha": "e48f5b4965543cd4d99b5578356059e12d969c7c",
+  "frozen_regular_files": 6189,
+  "source_drift": [],
+  "exit_status": 3,
+  "parser": "go tool test2json (not indentation-insensitive outcome grep)",
+  "targets": [
+    {
+      "label": "//cmd/verify-pr-checks:verify-pr-checks_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 17,
+        "run": 17
+      },
+      "log_sha256": "5fc57eba5d9c00f5f1367abf2b289dcc2588e6e42dd092e696d1427665cf4d6d",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/linters/gofmt:gofmt_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 5,
+        "run": 5
+      },
+      "log_sha256": "6d91fa3283c9fcd660cd17006e98f508f3d586b97c6cd59c75f6a6e039e49f5f",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/linters/norecover:norecover_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 5,
+        "run": 5
+      },
+      "log_sha256": "5b62dd7e8bce46bb56b7b2dbaa6a4d3b7137e89b8b3ce4dc70f9639c1e2049a8",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/fdbgo/wire/types:types_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 109,
+        "run": 109
+      },
+      "log_sha256": "a3f2c6fefa7edc4543989bfed804e9236afd79b3b523b038aec89ddd78e88fb9",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//cmd/fuzzrun:fuzzrun_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 22,
+        "run": 22
+      },
+      "log_sha256": "8774e2e5bae7fb76092b5292db30d7d644b116920072b325d9d1b7ff6e8e5906",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/relational/txbudgetcensus:txbudgetcensus_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 14,
+        "run": 14
+      },
+      "log_sha256": "a81192eebe033701c80ca275094dc5675b7b649edcb15d34625c67ff15c150f5",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/fdbgo/transport:transport_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 70,
+        "run": 70
+      },
+      "log_sha256": "fb018708e41ebc66b1f1b25e6c20e5e8d4349578d193d3798aab39e4d394e11c",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/recordlayer/query/plan/cascades/matching:matching_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 97,
+        "run": 97
+      },
+      "log_sha256": "c335b70472aa47b87287475232cf23605ef44d17a94bbc1429a9e14c6b131d0c",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/recordlayer/protoname:protoname_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 8,
+        "run": 8
+      },
+      "log_sha256": "730500bec052f64bb351d43575c3049d5d574e26f515dadede87661644807fd4",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/rabitq:rabitq_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 236,
+        "run": 236
+      },
+      "log_sha256": "729891984105e680612aa1b7ad779230ddfdb7ffe9d88256ecd0411b2bcc3139",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/recordlayer/vectorcodec:vectorcodec_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 12,
+        "run": 12
+      },
+      "log_sha256": "699be1a6a715bbdbce017b49b57b8d77752a7cf6b74715a9e4de444be9321e61",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/fdbgo/fdbmetrics:fdbmetrics_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 4,
+        "run": 4
+      },
+      "log_sha256": "f769ece4fa2f92d37769f3ad126931ccce010990b902868feb21132348ff8c68",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/fdbgo/fdb/subspace:subspace_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 17,
+        "run": 17
+      },
+      "log_sha256": "d6bf98e9ee2f2bc1e12d2dd6282febb232b540d41dc312949a33913bceec554d",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/recordlayer/query/plan/cascades/combinatorics:combinatorics_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 47,
+        "run": 47
+      },
+      "log_sha256": "009c98364d2ac6ab992074fbf17a017a68c7904b71d0f142c27122dc5ac421b3",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/fdbgo/fdb/tuple:tuple_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 73,
+        "run": 73
+      },
+      "log_sha256": "8232be4026173218c148c2a636b678ee98be205806c105df48e0c2dca73c2e28",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/dst:dst_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 21,
+        "run": 21
+      },
+      "log_sha256": "29317810d470a24c1d8aabd272a3edeb57661c0fda913dbc8f720672419dc795",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/internal/fdbclient:fdbclient_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 1,
+        "run": 1
+      },
+      "log_sha256": "2d47c5f895f79aeb409b104ce3ff37ec24355d462520f0d0f2993e46ecc74e09",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/fdbgo/wire:wire_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 29,
+        "run": 29
+      },
+      "log_sha256": "475a379100d51047a39d08e5ac48627ac5bca49dd9bce0dc326f48368b306861",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/fdbgo:fdbgo_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 1,
+        "run": 1
+      },
+      "log_sha256": "88ac6bf55bc0c58131b508f44009a9d7aba2ac5b50aeaab7d626b521645ce536",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/recordlayer/query/plan/cascades/internal/fuzzfloor:fuzzfloor_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 12,
+        "run": 12
+      },
+      "log_sha256": "1bd383168e175c568cb347aa09dfc827a4bdac071a6b16e95d011f7c5369bdb7",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//infra:infra_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 39,
+        "run": 39
+      },
+      "log_sha256": "de2b7c29784bb11538bff02055efaffa6c877e6f5488a0da74ebced01156ee8e",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//cmd/bench-report:bench-report_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 13,
+        "run": 13
+      },
+      "log_sha256": "577985e09bf267432d694a1286c297149121b8d89d1c2b3750b551e0abbe50f2",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/fdbgo/bench:bench_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 775,
+        "run": 775
+      },
+      "log_sha256": "18c0ec171fa75475a99bce968e297a00caea9e43d4fc797ede53d40381d66ac7",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/recordlayer/keyspace:keyspace_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 39,
+        "run": 39
+      },
+      "log_sha256": "dfb733f4b6500f4de577491d6170a317029a3f65b82a4efe905f37a8de333497",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//cmd/test-budget:test-budget_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 6,
+        "run": 6
+      },
+      "log_sha256": "69babef1c34725f57d6e18551ea2add23e46ab90de6516343c1ece6a44234107",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//cmd/fdb-binding-stress:fdb-binding-stress_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 7,
+        "run": 7
+      },
+      "log_sha256": "daf7ac18902792ad95f89934b4e93240e025a1d267e5a392566e1e97aef19cd1",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/linters/gofumpt:gofumpt_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 6,
+        "run": 6
+      },
+      "log_sha256": "ce8a99a9ec413dd8756f7f82a6897cf44cbe69be8bcfdd1fde552b0cce075a1f",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/linters/typeimmutable:typeimmutable_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 19,
+        "run": 19
+      },
+      "log_sha256": "5ba8ea90198f4cfc3eebaeb609fcdc989a767fc927366f2295b24c92d5ad0f49",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/relational/core/query/semantic:semantic_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 157,
+        "run": 157
+      },
+      "log_sha256": "aa3ae28ee284db60ae7c0ca015408f4dda2a120a72fe5fd43507309e8eb90207",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/relational/conformance/javayamsql:javayamsql_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 23,
+        "run": 23
+      },
+      "log_sha256": "2f8f6afe8872fa917434aee3e8246820f5110d22f3a75ad7c7476bbeb1d8089c",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/relational/core/query/expr:expr_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 322,
+        "run": 322
+      },
+      "log_sha256": "b041513f5d125564fc8aea150d0f9a22cf5a4c760800e859d9a6220a6232fc98",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/recordlayer/query/plan/cascades/values:values_test",
+      "status": "FAILED",
+      "cached": 0,
+      "counts": {
+        "pass": 2334,
+        "fail": 11,
+        "run": 2345
+      },
+      "log_sha256": "09379305f268b169dea2e99279f62eed78e3c9ba288798391e52d62a3c8b8572",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/testutil/allocs:allocs_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 29,
+        "run": 29
+      },
+      "log_sha256": "4edff0baf8d1c6bb087f0d857a098c51b12ec249f5ffff080043fffb940b5a8e",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/relational/core/query/ddl:ddl_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 2,
+        "run": 2
+      },
+      "log_sha256": "01a4af167287cb66865b659014402c69474236bf1ce831a0182059bf60cb67db",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//cmd/frl/internal/meta:meta_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 9,
+        "run": 9
+      },
+      "log_sha256": "8ff872a3c97578ab881ed168535c7ce32c30161a33bda3c8bcd174dd4d5c66b4",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//cmd/vulnscan:vulnscan_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 67,
+        "run": 67
+      },
+      "log_sha256": "2c98fa9dd4e4b8809e104d158a6f51e65fa4ebb16a0ce5ed1f965906acb05d22",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/relational/core/query/semantic/rlcatalog:rlcatalog_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 13,
+        "run": 13
+      },
+      "log_sha256": "26dba1ab084989b1957fedf6ded5cdcd53a357b8750125e8e2149bf15c07d4b8",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/relational/core/query:query_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 517,
+        "run": 517
+      },
+      "log_sha256": "019413585871ab42296e0e34bed64c68758518f602e34ff2357840ec0166d6b8",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/recordlayer/query/executor:executor_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 1933,
+        "run": 1933
+      },
+      "log_sha256": "0dd557ed84f388d84cd29d0909330d537afe24303b92ebf509a59853653d816e",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/relational/api:api_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 104,
+        "run": 104
+      },
+      "log_sha256": "fe30b2477ff18d7517a5f98b19e0f6a90f1daed10da5f218b04f0ebe6061ed43",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/relational/core/keyspace:keyspace_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 6,
+        "run": 6
+      },
+      "log_sha256": "7c7e1458cca6791cdd4bf19da2da7e105ce9e0a9e69ca60418e34600dd863d15",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/relational/core/functions:functions_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 342,
+        "run": 342
+      },
+      "log_sha256": "de02a7bb6f0f52b7a448a9490dd40d5c10ce26332bbf61ffeaf22cc8f6ad660b",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/relational/core/metadata:metadata_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 61,
+        "run": 61
+      },
+      "log_sha256": "f0a2a03c7a8a754cb732df807939b67963fc0cca6d7734127da2164355d7ee51",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/relational/core/catalog:catalog_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 93,
+        "run": 93
+      },
+      "log_sha256": "b9bb6ce258e54bfe9a1200a3ee0fded98fab6e20db6028576c7707dac1a0ac95",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/recordlayer/query/plan/cascades/predicates:predicates_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 570,
+        "run": 570
+      },
+      "log_sha256": "d9a3c57fa95de292a4d75e7ea1f7c2c83d7e184c5191d394ea5599ce5652e784",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/recordlayer/query/plan/cascades/expressions:expressions_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 366,
+        "run": 366
+      },
+      "log_sha256": "a5d48172c2648971cb19ed6184b2b566e3d68c7f07690878c04cfb6380ebe5da",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/relational/core/query/logical:logical_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 62,
+        "run": 62
+      },
+      "log_sha256": "1b6d557cd27eb9f8fbcebdf19c7ad8e9977732d7db1e5cec2a9e2aef04c20019",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/recordlayer/query/plan/cascades/properties:properties_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 391,
+        "run": 391
+      },
+      "log_sha256": "a884040d6988d3a3365d7488ecc8cfa1a1bee18cafff28242a5a305544eea8e9",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/relational/core/session:session_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 12,
+        "run": 12
+      },
+      "log_sha256": "c980c5a9d5f4ca9195b3bcec214d6144ce34c8430b3f17b72b56b21bde472712",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//cmd/frl/internal/config:config_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 12,
+        "run": 12
+      },
+      "log_sha256": "4f9a31aa0784a92ebd13af78a217e0c92bcbd10b0a0d9a0f3e7dfa6a55ba6c2a",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/relational/core/ddl:ddl_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 26,
+        "run": 26
+      },
+      "log_sha256": "af962ad51ad72b43a3186bfccf819485db2016f77c0294da31fdb05e7ea30840",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/testcontainers/foundationdb:foundationdb_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 54,
+        "run": 54
+      },
+      "log_sha256": "7afcfe1b1d64c4d0b699effa1251c16125a468e203d76b1c0bba77f053697730",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/fdbgo/fdb:fdb_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 243,
+        "run": 243
+      },
+      "log_sha256": "61b475b35b989ddff20891e4634ffd2c9039821605abb7976965de6aebeac1b0",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/recordlayer/query/plan/plans:plans_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 780,
+        "run": 780
+      },
+      "log_sha256": "e3e0e7211d27d2152b040fae9fd2471dacb9f6331341bacf2f9963aa1d954b4d",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/relational/core/fleet:fleet_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 14,
+        "run": 14
+      },
+      "log_sha256": "3dbdc7c4f2ebbefad6b851af9fe9237c1dee3c94c0a7bfed25236ae99d4b9690",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/relational/core/parser:parser_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 80,
+        "run": 80
+      },
+      "log_sha256": "56e4d3cc2034dd4cd93d79f83699f8f3e7b4172bbca62407a552bc5db4b68959",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/relational/conformance/factorycorpus:factorycorpus_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 74,
+        "run": 74
+      },
+      "log_sha256": "cacd00329bf2078397a49a29aeb6ed3591207d708da77b7a8d92790a0137f3d1",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/simfdb/hunt/rangeconflict:rangeconflict_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 10,
+        "run": 10
+      },
+      "log_sha256": "c0f5f8f017333bf8b87682e2abec20c8e5e45cb3ae1387413b0c0eb554a2d864",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/simfdb/hunt/continuation:continuation_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 7,
+        "run": 7
+      },
+      "log_sha256": "00a6c9a598222c9aa0b065a715f53d61c8c720b16deffc105214995d080496a5",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/fdbgo/conformance:conformance_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 2,
+        "run": 2
+      },
+      "log_sha256": "bee7eda86d01ef2ae45200e44f4c35edbf6ccc1c594529b8e1bf9aa98165b4c3",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//cmd/verify-corpus-retirement-history:verify-corpus-retirement-history_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 28,
+        "run": 28
+      },
+      "log_sha256": "632f58f3e92cf80f3d848fbcbccec570c4c0f2f3f84582fbd0441a1517233c68",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/recordlayer/rlmetrics:rlmetrics_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 15,
+        "run": 15
+      },
+      "log_sha256": "8fbe8506d55df295444b1adb52725d55479a1ea3f81cea083433154cb750a735",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//cmd/factory-rebless:factory-rebless_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 11,
+        "run": 11
+      },
+      "log_sha256": "3144f853a74afe18f0380d03dbc2173f8aeb8a9a6af3994985405cec2edc9dba",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/simfdb/hunt/interleave:interleave_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 14,
+        "run": 14
+      },
+      "log_sha256": "204785df02a9f17bceacb33973796b73fa4b3cfed2c7d79f416423bc168144e7",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/simfdb/hunt:hunt_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 26,
+        "run": 26
+      },
+      "log_sha256": "af49c9cce4abcf7a36adcb37a4ea4a2a005207bd597ed1b84970516575ae6d44",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/simfdb:simfdb_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 296,
+        "run": 296
+      },
+      "log_sha256": "97bd09a8396517cba053218e509cbfc803f5492b33a546a0f05d5bb1b69ac9e9",
+      "repeated_names_with_matching_run_and_end_counts": {
+        "TestCancelledTransactionReadEntryPoints": 2
+      }
+    },
+    {
+      "label": "//cmd/dst-hunt:dst-hunt_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 2,
+        "run": 2
+      },
+      "log_sha256": "18bcf4460a08850b17584e41113a6be5bfd7071c6e6da792aac2d88dd4c42913",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/simfdb/hunt/atomicops:atomicops_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 27,
+        "run": 27
+      },
+      "log_sha256": "ed3572c1e558f3c89c539976ecd8fe1f0cec918914bf12abfb34c4dd6d37eb25",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//cmd/factory-plan-census:factory-plan-census_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 24,
+        "run": 24
+      },
+      "log_sha256": "ed50b178495dc7b67893641afdbc49990cd93a87647c3535f4ccc32252662776",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/relational/conformance/memoinvariant:memoinvariant_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 4,
+        "run": 4
+      },
+      "log_sha256": "bc5c86f42aac0e24ede14bf686c40b23266f0b383d5ed86f9d72065fbd52cb4d",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/recordlayer/chaos:chaos_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 230,
+        "run": 230
+      },
+      "log_sha256": "ab53b50fe2688a1d4c3d2c6e9287a323d30b928cc31cceda7a722aa8a854cca3",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//cmd/factory-rebless-plan-shapes:factory-rebless-plan-shapes_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 3,
+        "run": 3
+      },
+      "log_sha256": "38f42d8f68a57343fd4994c48a24c15dbb92b3fe8652f46054c0c0ed305eae98",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/docscheck:docscheck_test",
+      "status": "FAILED",
+      "cached": 0,
+      "counts": {
+        "pass": 916,
+        "fail": 1,
+        "run": 917
+      },
+      "log_sha256": "e7cd191ea56d93953a4e524462ed51d8c74d2ebc8ff7fc9375c7ea95167b3ee5",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/relational/conformance/explaindiff:explaindiff_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 53,
+        "run": 53
+      },
+      "log_sha256": "c2526ee9fca783fb3a67f3b4329a45f8f4d81bd4bb895103f4e9829fcb016b0f",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/simfdb/hunt/metamorphic:metamorphic_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 12,
+        "run": 12
+      },
+      "log_sha256": "3d3f969bef36cd120105037e28bae06d17d34e34e3449567c2e4bc8fb50fc8f1",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/relational/core/embedded:embedded_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 2207,
+        "run": 2207
+      },
+      "log_sha256": "30a7c4810af39f3e1a9bf891f2ba835070820c945ee438211dbe38a87ec7a3e8",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/relational/conformance/plandiff:plandiff_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 1787,
+        "run": 1787
+      },
+      "log_sha256": "5d95056aafeb483d95d5f672cb49648b32c2fe7fb97f7e098e4165709ee7f76b",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//cmd/factory-run:factory-run_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 23,
+        "run": 23
+      },
+      "log_sha256": "c2e280664cbf421a8ae95b0e3965681b177f220594dc71648e467795b6122f8a",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/relational/conformance/yamsql:yamsql_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 590,
+        "run": 590
+      },
+      "log_sha256": "44453aadc2b4833309f6de9ac543ef6408392419de8bf02b7fb2fd46ca8b6c90",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/relational/conformance/javacorpus:javacorpus_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 386,
+        "run": 386
+      },
+      "log_sha256": "b629f26b8f07a15f2a2b5c7210d3b616f468ea63c9d91fd2997979b7ae2c7a7b",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/simfdb/hunt/sqlhunt:sqlhunt_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 55,
+        "run": 55
+      },
+      "log_sha256": "6ab3f10b0b44b639aa74deb38f01096d3e5e570bc1adc73988b59ddc75e9a815",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/simfdb/hunt/golden:golden_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 18,
+        "run": 18
+      },
+      "log_sha256": "3095440f6833ba8aea79b941ecfea9a46bc21165cc27bc82857fa6c711259620",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/simfdb/hunt/sqlpage:sqlpage_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 12,
+        "run": 12
+      },
+      "log_sha256": "987780782f575732f2f4c23e5af85dd15adc3d02de3b77548402a2829054917e",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/recordlayer/query/plan/cascades:cascades_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 3661,
+        "run": 3661
+      },
+      "log_sha256": "b772b5f133faf5a78302f8360d786f6aebcb201a06f4c0330a4c8471d37d607f",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//cmd/frl/internal/cmd:cmd_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 373,
+        "run": 373
+      },
+      "log_sha256": "9a9e13865ecbdc98171c60cf0ccd3dd4ea2f03dd8f122e2cb7aceed5836f2b8a",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/relational/conformance/rowdiff:rowdiff_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 202,
+        "run": 202
+      },
+      "log_sha256": "3d5eba12f1ecefe25247f6f2434a8259c4b12adc716e5aa90429adc910cb71e0",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/recordlayer:recordlayer_test",
+      "status": "FAILED",
+      "cached": 0,
+      "counts": {
+        "pass": 2076,
+        "fail": 1,
+        "run": 2077
+      },
+      "log_sha256": "91deec8a8b8610cb8acd6d4cfccecce67e8116956a872b6112258cf502ba4c6c",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/relational/sqldriver:sqldriver_test",
+      "status": "FAILED",
+      "cached": 0,
+      "counts": {
+        "pass": 6743,
+        "fail": 1,
+        "run": 6744
+      },
+      "log_sha256": "60eadf04d097c38f178ea7b076d8c388e8a5df34b90479ac9bf6c771070791d1",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//conformance:conformance_test",
+      "status": "FAILED",
+      "cached": 0,
+      "counts": {
+        "fail": 1,
+        "pass": 69,
+        "run": 70
+      },
+      "log_sha256": "698856d39222b86e31f5615a1a24229c23672de5300a3364c6370b8f2584ef5f",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/relational/conformance/factorycorpus/full:full_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 8151,
+        "run": 8151
+      },
+      "log_sha256": "ab49570a2041f880de88e3d60bbb2bfb6364834eeef76c5c993e1fbeca850d04",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/relational/conformance/factory:factory_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 97,
+        "skip": 5,
+        "run": 102
+      },
+      "log_sha256": "2131fbfdb957fc1d7332246ce565ad52b07cff4c7b4d6292a23487f50dcba99d",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    },
+    {
+      "label": "//pkg/fdbgo/client:client_test",
+      "status": "PASSED",
+      "cached": 0,
+      "counts": {
+        "pass": 1824,
+        "run": 1824
+      },
+      "log_sha256": "6168a332af712a3b31952ccc0aa259db2340a2d5ed7362c9b31300273887c19b",
+      "repeated_names_with_matching_run_and_end_counts": {}
+    }
+  ],
+  "go_test_totals": {
+    "pass": 40354,
+    "run": 40374,
+    "fail": 15,
+    "skip": 5
+  },
+  "target_totals": {
+    "PASSED": 87,
+    "FAILED": 5
+  }
+}

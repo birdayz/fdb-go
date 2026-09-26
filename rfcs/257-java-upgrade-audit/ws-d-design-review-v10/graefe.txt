@@ -1,0 +1,72 @@
+**NAK.** v10 closes most of the v9 findings, but its answer to the main v9 cost finding depends on a false claim about who retries a slow transaction. Nothing was run, edited or staged.
+
+- **Tree:** `f90241712769c8d5f92498c51c2183a4320ed9b0`
+- **Design:** `ws-d-design.md` SHA256 `b097a37ba40dd4adb0fe741b98d77282c8c2826be94cd8ebcffa1ab7f4daf096`. I recomputed it from the tree blob and it matches.
+- **Java:** `fdacd162` (from `.git/HEAD`).
+- **Read:** all four v9 verdicts, the full v10 design and its diff from v9, the oracle README, both evidence files, the probe source and spec diff, the heartbeat delta, `just-test-v10b.log`, and the Java and Go sources cited below.
+
+## P2-1: The peel's one remaining cost exit retries forever in Go (design 1219-1226)
+v10 removes the time budget and says a task past FDB's 5 s limit gets `transaction_too_old` (1007), which "every retry owner treats as it treats the target's own". Both halves of that claim are wrong in this tree:
+- **`db.Run` has no 10-attempt limit.** `runner.go:199` belongs to `FDBDatabaseRunner`, which `db.Run` does not use.
+  - `db.Run` goes through `runTransactCtx` → `TransactCtx` (`database.go:272-275, 353-356`), which defaults to unlimited retries. `pkg/fdbgo/fdb/unbounded_default_pin_test.go:7-11` and `chaos/scenario.go:92-93` both document this.
+  - `pkg/recordlayer` sets no retry limit or timeout on it.
+- **The merger does not abort on 1007.**
+  - `indexing_merger.go:96-100` aborts only on 1051, 1213 and 1515, as `IndexingMerger.java:189-199` does. On 1007 both engines halve the merge count or time quota and retry.
+  - In Go the merger never even sees 1007, because its own `db.Run` (`indexing_merger.go:27`) retries it first.
+  - Java's merger retries through `runner.runAsync`, which is bounded by `maxAttempts` (`IndexingMerger.java:85-86`), then by `failureCountLimit` (`:125-128`) and the quota halving.
+
+**Consequence:** the design itself says "a retry repeats exactly the same work with the same outcome" (1199-1200). So a task that exceeds 5 s retries forever in the merger and in any inline write run under `db.Run`, bounded only by the caller's context. Where the peel runs, the target instead fails at once with a non-retryable error (`:397` or `KMeans.java:136`). v9 asked for proof that this cannot livelock; v10 moves the unbounded behaviour from the budget into retry handling. The same gap applies to the target's own heavy splits at large d once GuardiANN work flows through the merger. The "remains single" statement at 772-773 does not cover it.
+
+**Needed:**
+- Run GuardiANN drain transactions through a bounded owner with Java's `maxAttempts` semantics (the runner Java's merger uses).
+- Or declare the livelock and pin it with a fixture using an injected retry limit.
+- Correct 1222-1226 either way.
+
+## P2-2: Acceptance fixtures are not checked against FDB's 10 MB transaction limit (1227, 1231-1235)
+- **Every rewritten reference carries full vector bytes** (`StorageAdapter.java:405-419`, `Primitives.java:760-770`).
+- **By default nothing shrinks them.** `useRaBitQ` is false by default (`Config.java:167`), so vectors are stored as the input type with an identity transform (`Primitives.java:312-315`).
+- **The d=4096 fixture cannot fit.** Materialising a split of 2000 primaries writes 2000 × 4096 × 2 B = 16 MB (half precision) or 32 MB (single) of references. That fails with `transaction_too_large` (2101) whatever the peel does.
+- **The d=768 fixture depends on the element type.** Single precision is about 6-7 MB with up to 300 replica writes; double precision is about 13 MB and fails.
+- **The analysis only covers time.** "Materialising … is not part of the bound" (1227) is true of the time bound, but the fixtures include materialisation.
+
+**Needed:**
+- State each fixture's vector type, RaBitQ setting and computed write volume. Enabling RaBitQ changes the estimator, and oracle item 20 measured only raw Euclidean vectors.
+- Classify 2101 for every retry owner: `db.Run` returns it; the merger halves its quota about 12 times, then gives up.
+- Declare that at the peel sites 2101 is Go-only, because the target never materialises there.
+
+## P3
+1. **The cost factor is understated (1200-1204, 1226).** 1.28× counts KMeans work only.
+   - The probe's refit timer covers the fit plus assignment plus evaluation; the target's fit timer excludes evaluation.
+   - Measured totals are 89-107 ms against 36-46 ms, about 2.3-2.5×.
+   - State the bound as total work, including the floor's distance sort.
+2. **Sampling makes the chosen split less balanced; the design doesn't say so.**
+   - Pinned n=2000, d=768 rows: sampled splits `[445 1555]`, `[579 1421]`, and `[201 1799]` at S=64 (right at the 200 floor), against `[1001 999]` and `[1074 926]` unsampled.
+   - The child above 1000 splits again and may peel again. "Same exit" hides this.
+   - State the cascade and that it terminates (each split shrinks the cluster).
+3. **Peel RNG split (1227-1230) is undefined for paths that skip Step 1:** a 1→2 candidate under the n<k rule, and the collapse route. Say whether the split is still taken, since the reconcile's pinned draws (1138-1139) depend on it.
+4. **Java line citations:** the split's RNG is `:223`, not `:222` (design 340). The merge's `fetchCoreClusters` is `:505-507`, not `:500` (348).
+5. **The heartbeat key parse is stricter than Java's.** `heartbeatIndexerID` requires exactly one tuple element (`indexing_heartbeat.go:220`); Java's `getUUID(0)` (`IndexingHeartbeat.java:201-203`) accepts a UUID key with trailing elements. Such a key errors only in Go, so "parsed … as Java's `getIndexingHeartbeats` does" overstates. Declare this population.
+6. **Evidence provenance.**
+   - Design 838-840 says the frozen-tree `just test` is recorded in README item 22; item 22 points to a gate-directory `SCOPE.md` that is not in the tree.
+   - `evidence-run.txt` still says 21 specs and records `ws_j_index_fidelity_conformance_test.go` as `244de237…`; the tree has `0c3e3e98…` and 22 specs. The WS-D sources match: `0ae20de7…`, `aa8278dd…`, `e619ec70…`.
+   - `bazel-testlogs/conformance/rfc257_oracle_test/test.log` has since been overwritten by a later 23-spec focused run (FAIL, 0 passed, 1 failed, 22 skipped). So the "22 of 22" summary can no longer be re-read. The `conformance_test` summary (1405 passed, 119 skipped) still can.
+
+## Closed from v9 (verified against source)
+- **Statement order:** `consumerOutcome` now follows Java's order for splits and merges. That covers the no-op exits, the false alarm and the split/merge decision (`:169-194`), then the quantizer before phase 1 (`:227` before `:232`, `:430` before `:435`). The neighbour fetch (`:239/:442`) comes before the no-mergeable-neighbour clear (`:483-493`).
+- **Outcome values:** the four values and each caller's action are consistent.
+- **Bounce RNG hand-off:** matches `BounceTask.java:123, 149, 161, 190, 200, 285`.
+- **Non-skipping delete:** its serializable read of the queue head matches `Primitives.java:984, 1052-1054` (limit 1: `Insert.java:211`, `Delete.java:130`).
+- **Poison keys:** commit checks run in registration order (`database.go:1063-1076, 1128-1145`).
+- **Time budget:** fully gone; a grep for budget/clock wording finds only unrelated uses.
+- **Heartbeat key:** a non-UUID key now errors in both engines (`OnlineIndexer.java:459`, `IndexingHeartbeat.java:148`).
+- **`ClusterUnsplittableError`:** its classification is correct, including `db.Run` returning a non-FDB error without retrying.
+- **Item 20 counts:** I recounted from the pinned rows: 9 of 26 shapes change round count at S=256, with at most 7 refits.
+
+## Measured vs still hypothesis
+- **Measured:** items 1-20 (item 20 is 130 pinned rows, two identical runs, and the sampling-off mutation reddens it); the JVM `ClassCastException` on a non-UUID heartbeat key.
+- **Checked against source only:** the `consumerOutcome` order and the bounce RNG positions.
+- **Still hypothesis:**
+  - every Go mechanism, including every `consumerOutcome` arm, the conflict fixtures, the peel and the reconcile;
+  - item 21;
+  - whether the d=4096 and d=768 fixtures are feasible;
+  - how the residual 1007 and 2101 exits behave in practice.

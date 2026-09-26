@@ -38,7 +38,7 @@ func TestFDB_BitmapScalarFunctions_ArityIsExactlyOne(t *testing.T) {
 		CREATE TABLE t(id BIGINT, g BIGINT, PRIMARY KEY(id))`)
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_bmarity/s1 WITH TEMPLATE bmarity_tpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_bmarity?cluster_file=%s&schema=s1", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_BMARITY?cluster_file=%s&schema=S1", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

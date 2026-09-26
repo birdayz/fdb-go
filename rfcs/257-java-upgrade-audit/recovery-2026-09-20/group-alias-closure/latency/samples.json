@@ -1,0 +1,4562 @@
+[
+  {
+    "side": "baseline",
+    "sample": 1,
+    "tree": "893e4eb4760c1989c195b7be19484dc5961b0dcf",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/sqldriver/stress:stress_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestFDB_Stress_1M_LatencyAttribution$",
+      "--test_arg=-test.trace=/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1.trace",
+      "--sandbox_writable_path=/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison",
+      "--build_event_json_file=/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-1-bep.jsonl"
+    ],
+    "started": 1789940888.1476266,
+    "elapsed": 211.88421416282654,
+    "load_start": [
+      6.7275390625,
+      9.83984375,
+      14.3056640625
+    ],
+    "load_end": [
+      4.81494140625,
+      7.89404296875,
+      12.6376953125
+    ],
+    "exit": 0,
+    "runs": {
+      "TestFDB_Stress_1M_LatencyAttribution": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_first": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_middle": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_last": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_customer_eq": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_amount_range": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_status_count": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_count": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_status": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_status_count_only": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/sum_by_status": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_customer_having": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/join_10_outer": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/order_by_pk_full": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/order_by_pk_index_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/scan_all_narrow": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/scan_all_wide": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/in_list": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/needle_in_haystack_pk": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/needle_in_haystack_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_sparse_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/update_by_index": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/delete_single_row": 1
+    },
+    "passes": {
+      "TestFDB_Stress_1M_LatencyAttribution": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_first": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_middle": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_last": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_customer_eq": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_amount_range": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_status_count": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_count": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_status": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_status_count_only": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/sum_by_status": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_customer_having": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/join_10_outer": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/order_by_pk_full": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/order_by_pk_index_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/scan_all_narrow": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/scan_all_wide": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/in_list": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/needle_in_haystack_pk": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/needle_in_haystack_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_sparse_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/update_by_index": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/delete_single_row": 1
+    },
+    "compiler": "/home/birdy/projects/fdb-java-upgrade-baseline/bazel-bin/pkg/relational/sqldriver/stress/stress_test_/stress_test: go1.26.6",
+    "attribution": [
+      {
+        "sql": "SELECT * FROM orders WHERE id = 0",
+        "started": "2026-09-20T21:51:14.393430958Z",
+        "connection_acquire_ns": 4879,
+        "query_ns": 17450749,
+        "rows": 1,
+        "plans": [
+          {
+            "SQL": "SELECT * FROM orders WHERE id = 0",
+            "PlanHash": 11157451244153423905,
+            "PlanExplain": "Scan(ORDERS, [=])",
+            "PlanningDuration": 5739857,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT * FROM orders WHERE id = 0",
+            "PlanHash": 11157451244153423905,
+            "ExecutionDuration": 5203421,
+            "RowsReturned": 1,
+            "RowsAffected": 0,
+            "RecordsScanned": 1,
+            "BytesScanned": 54,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 47621
+          },
+          "load_record": {
+            "count": 2,
+            "value": 1075007
+          },
+          "open_store": {
+            "count": 4,
+            "value": 14119205
+          },
+          "scan_records": {
+            "count": 2,
+            "value": 499317
+          }
+        }
+      },
+      {
+        "sql": "SELECT * FROM orders WHERE id = ?",
+        "started": "2026-09-20T21:51:14.411093669Z",
+        "connection_acquire_ns": 4508,
+        "query_ns": 14762253,
+        "rows": 1,
+        "plans": [
+          {
+            "SQL": "SELECT * FROM orders WHERE id = 500000",
+            "PlanHash": 14986928347945777420,
+            "PlanExplain": "Scan(ORDERS, [=])",
+            "PlanningDuration": 4798594,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT * FROM orders WHERE id = 500000",
+            "PlanHash": 14986928347945777420,
+            "ExecutionDuration": 4389338,
+            "RowsReturned": 1,
+            "RowsAffected": 0,
+            "RecordsScanned": 1,
+            "BytesScanned": 59,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 36429
+          },
+          "load_record": {
+            "count": 2,
+            "value": 1072382
+          },
+          "open_store": {
+            "count": 4,
+            "value": 11426654
+          },
+          "scan_records": {
+            "count": 2,
+            "value": 522600
+          }
+        }
+      },
+      {
+        "sql": "SELECT * FROM orders WHERE id = ?",
+        "started": "2026-09-20T21:51:14.425990658Z",
+        "connection_acquire_ns": 4588,
+        "query_ns": 25668972,
+        "rows": 1,
+        "plans": [
+          {
+            "SQL": "SELECT * FROM orders WHERE id = 999999",
+            "PlanHash": 14149301487018831995,
+            "PlanExplain": "Scan(ORDERS, [=])",
+            "PlanningDuration": 4922297,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT * FROM orders WHERE id = 999999",
+            "PlanHash": 14149301487018831995,
+            "ExecutionDuration": 14781531,
+            "RowsReturned": 1,
+            "RowsAffected": 0,
+            "RecordsScanned": 1,
+            "BytesScanned": 61,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 45907
+          },
+          "load_record": {
+            "count": 2,
+            "value": 1067944
+          },
+          "open_store": {
+            "count": 4,
+            "value": 22510617
+          },
+          "scan_records": {
+            "count": 2,
+            "value": 209187
+          }
+        }
+      },
+      {
+        "sql": "SELECT id, amount FROM orders WHERE customer_id = 0",
+        "started": "2026-09-20T21:51:14.462585164Z",
+        "connection_acquire_ns": 6692,
+        "query_ns": 23734517,
+        "rows": 8,
+        "plans": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE customer_id = 0",
+            "PlanHash": 8312299604218530111,
+            "PlanExplain": "Project([_current.ID#0, _current.AMOUNT#2], IndexScan(IDX_CUSTOMER, [=]))",
+            "PlanningDuration": 12695889,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE customer_id = 0",
+            "PlanHash": 8312299604218530111,
+            "ExecutionDuration": 5361360,
+            "RowsReturned": 8,
+            "RowsAffected": 0,
+            "RecordsScanned": 8,
+            "BytesScanned": 405,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 66476
+          },
+          "load_record": {
+            "count": 10,
+            "value": 3119593
+          },
+          "open_store": {
+            "count": 4,
+            "value": 17370858
+          },
+          "scan_index": {
+            "count": 9,
+            "value": 227842
+          }
+        }
+      },
+      {
+        "sql": "SELECT id FROM orders WHERE amount > 9000",
+        "started": "2026-09-20T21:51:14.512795502Z",
+        "connection_acquire_ns": 5520,
+        "query_ns": 291477154,
+        "rows": 100017,
+        "plans": [
+          {
+            "SQL": "SELECT id FROM orders WHERE amount > 9000",
+            "PlanHash": 10080126045617042494,
+            "PlanExplain": "Project([_current.ID#0], IndexScan(IDX_AMOUNT, [<>] COVERING))",
+            "PlanningDuration": 5922453,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id FROM orders WHERE amount > 9000",
+            "PlanHash": 10080126045617042494,
+            "ExecutionDuration": 280095166,
+            "RowsReturned": 100017,
+            "RowsAffected": 0,
+            "RecordsScanned": 100017,
+            "BytesScanned": 5094344,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 59042
+          },
+          "load_record": {
+            "count": 2,
+            "value": 1066622
+          },
+          "open_store": {
+            "count": 4,
+            "value": 11331813
+          },
+          "scan_index": {
+            "count": 100018,
+            "value": 140272089
+          }
+        }
+      },
+      {
+        "sql": "SELECT COUNT(*) FROM orders WHERE status = 'pending'",
+        "started": "2026-09-20T21:51:14.812663667Z",
+        "connection_acquire_ns": 4248,
+        "query_ns": 400494360,
+        "rows": 1,
+        "plans": [
+          {
+            "SQL": "SELECT COUNT(*) FROM orders WHERE status = 'pending'",
+            "PlanHash": 16897660118757728509,
+            "PlanExplain": "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_STATUS, [=] COVERING)))",
+            "PlanningDuration": 3318599,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT COUNT(*) FROM orders WHERE status = 'pending'",
+            "PlanHash": 16897660118757728509,
+            "ExecutionDuration": 395438991,
+            "RowsReturned": 1,
+            "RowsAffected": 0,
+            "RecordsScanned": 250000,
+            "BytesScanned": 14233551,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 55907
+          },
+          "load_record": {
+            "count": 2,
+            "value": 137851
+          },
+          "open_store": {
+            "count": 4,
+            "value": 3928173
+          },
+          "scan_index": {
+            "count": 250001,
+            "value": 244924531
+          }
+        }
+      },
+      {
+        "sql": "SELECT COUNT(*) FROM orders WHERE amount > 5000",
+        "started": "2026-09-20T21:51:18.77125434Z",
+        "connection_acquire_ns": 7845,
+        "query_ns": 845316361,
+        "rows": 1,
+        "plans": [
+          {
+            "SQL": "SELECT COUNT(*) FROM orders WHERE amount > 5000",
+            "PlanHash": 18311867206624719702,
+            "PlanExplain": "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_AMOUNT, [<>] COVERING)))",
+            "PlanningDuration": 5030242,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT COUNT(*) FROM orders WHERE amount > 5000",
+            "PlanHash": 18311867206624719702,
+            "ExecutionDuration": 835707652,
+            "RowsReturned": 1,
+            "RowsAffected": 0,
+            "RecordsScanned": 500275,
+            "BytesScanned": 25481140,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 57468
+          },
+          "load_record": {
+            "count": 2,
+            "value": 1071290
+          },
+          "open_store": {
+            "count": 4,
+            "value": 19267192
+          },
+          "scan_index": {
+            "count": 500276,
+            "value": 554383305
+          }
+        }
+      },
+      {
+        "sql": "SELECT status, COUNT(*), SUM(amount) FROM orders GROUP BY status ORDER BY status",
+        "started": "2026-09-20T21:51:19.623943682Z",
+        "connection_acquire_ns": 7935,
+        "query_ns": 6302183,
+        "rows": 4,
+        "plans": [
+          {
+            "SQL": "SELECT status, COUNT(*), SUM(amount) FROM orders GROUP BY status ORDER BY status",
+            "PlanHash": 9226060422181536080,
+            "PlanExplain": "Project([_current.STATUS#0, _current.COUNT(*)#1, _current.SUM(AMOUNT)#2], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+            "PlanningDuration": 2884626,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT status, COUNT(*), SUM(amount) FROM orders GROUP BY status ORDER BY status",
+            "PlanHash": 9226060422181536080,
+            "ExecutionDuration": 1578822,
+            "RowsReturned": 4,
+            "RowsAffected": 0,
+            "RecordsScanned": 8,
+            "BytesScanned": 548,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 24115
+          },
+          "load_record": {
+            "count": 2,
+            "value": 128002
+          },
+          "open_store": {
+            "count": 4,
+            "value": 3862880
+          },
+          "scan_index": {
+            "count": 10,
+            "value": 170683
+          }
+        }
+      },
+      {
+        "sql": "SELECT status, COUNT(*) FROM orders GROUP BY status",
+        "started": "2026-09-20T21:51:19.634438449Z",
+        "connection_acquire_ns": 2685,
+        "query_ns": 5420772,
+        "rows": 4,
+        "plans": [
+          {
+            "SQL": "SELECT status, COUNT(*) FROM orders GROUP BY status",
+            "PlanHash": 5759958556986800592,
+            "PlanExplain": "Project([_current.STATUS#0, _current.COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only))",
+            "PlanningDuration": 2341658,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT status, COUNT(*) FROM orders GROUP BY status",
+            "PlanHash": 5759958556986800592,
+            "ExecutionDuration": 1422316,
+            "RowsReturned": 4,
+            "RowsAffected": 0,
+            "RecordsScanned": 4,
+            "BytesScanned": 264,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 23655
+          },
+          "load_record": {
+            "count": 2,
+            "value": 150656
+          },
+          "open_store": {
+            "count": 4,
+            "value": 3831349
+          },
+          "scan_index": {
+            "count": 5,
+            "value": 97937
+          }
+        }
+      },
+      {
+        "sql": "SELECT status, SUM(amount) FROM orders GROUP BY status ORDER BY status",
+        "started": "2026-09-20T21:51:19.64460801Z",
+        "connection_acquire_ns": 4268,
+        "query_ns": 5945146,
+        "rows": 4,
+        "plans": [
+          {
+            "SQL": "SELECT status, SUM(amount) FROM orders GROUP BY status ORDER BY status",
+            "PlanHash": 17853326420117949289,
+            "PlanExplain": "Project([_current.STATUS#0, _current.SUM(AMOUNT)#1], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+            "PlanningDuration": 2629132,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT status, SUM(amount) FROM orders GROUP BY status ORDER BY status",
+            "PlanHash": 17853326420117949289,
+            "ExecutionDuration": 1539747,
+            "RowsReturned": 4,
+            "RowsAffected": 0,
+            "RecordsScanned": 8,
+            "BytesScanned": 548,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 24867
+          },
+          "load_record": {
+            "count": 2,
+            "value": 131671
+          },
+          "open_store": {
+            "count": 4,
+            "value": 3891094
+          },
+          "scan_index": {
+            "count": 10,
+            "value": 186693
+          }
+        }
+      },
+      {
+        "sql": "SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) > 50000 ORDER BY customer_id",
+        "started": "2026-09-20T21:51:19.656471351Z",
+        "connection_acquire_ns": 4629,
+        "query_ns": 660337408,
+        "rows": 47271,
+        "plans": [
+          {
+            "SQL": "SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) > 50000 ORDER BY customer_id",
+            "PlanHash": 2793323594087593035,
+            "PlanExplain": "Project([_current.CUSTOMER_ID#0, _current.SUM(AMOUNT)#1], PredicatesFilter(GroupExistenceMerge(AggregateIndex(COUNT, SUM_AMOUNT_BY_CUSTOMER__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_CUSTOMER, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), [1 preds]))",
+            "PlanningDuration": 3633355,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) > 50000 ORDER BY customer_id",
+            "PlanHash": 2793323594087593035,
+            "ExecutionDuration": 654934439,
+            "RowsReturned": 47271,
+            "RowsAffected": 0,
+            "RecordsScanned": 199996,
+            "BytesScanned": 14568122,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 34515
+          },
+          "load_record": {
+            "count": 2,
+            "value": 151828
+          },
+          "open_store": {
+            "count": 4,
+            "value": 3934395
+          },
+          "scan_index": {
+            "count": 199998,
+            "value": 208566025
+          }
+        }
+      },
+      {
+        "sql": "SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.id < 10 ORDER BY o.id",
+        "started": "2026-09-20T21:51:20.337153813Z",
+        "connection_acquire_ns": 4699,
+        "query_ns": 21709298,
+        "rows": 10,
+        "plans": [
+          {
+            "SQL": "SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.id < 10 ORDER BY o.id",
+            "PlanHash": 3417842950588140151,
+            "PlanExplain": "Project([_current.ID#0, _current.NAME#5], FlatMap(outer=Scan(ORDERS, [<>]), inner=Scan(CUSTOMERS, [=])))",
+            "PlanningDuration": 16666763,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.id < 10 ORDER BY o.id",
+            "PlanHash": 3417842950588140151,
+            "ExecutionDuration": 2874938,
+            "RowsReturned": 10,
+            "RowsAffected": 0,
+            "RecordsScanned": 20,
+            "BytesScanned": 1221,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 38543
+          },
+          "load_record": {
+            "count": 2,
+            "value": 197795
+          },
+          "open_store": {
+            "count": 4,
+            "value": 4264911
+          },
+          "scan_records": {
+            "count": 31,
+            "value": 1019758
+          }
+        }
+      },
+      {
+        "sql": "SELECT id FROM orders ORDER BY id",
+        "started": "2026-09-20T21:51:20.358976697Z",
+        "connection_acquire_ns": 5981,
+        "query_ns": 7645564798,
+        "rows": 1000000,
+        "plans": [
+          {
+            "SQL": "SELECT id FROM orders ORDER BY id",
+            "PlanHash": 11624487564147972017,
+            "PlanExplain": "Project([_current.ID#0], Scan(ORDERS))",
+            "PlanningDuration": 2259372,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id FROM orders ORDER BY id",
+            "PlanHash": 11624487564147972017,
+            "ExecutionDuration": 7641270550,
+            "RowsReturned": 1000000,
+            "RowsAffected": 0,
+            "RecordsScanned": 1887706,
+            "BytesScanned": 112761547,
+            "Pages": 1,
+            "Retries": 1,
+            "SlowQuery": true,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 42862
+          },
+          "load_record": {
+            "count": 2,
+            "value": 181463
+          },
+          "open_store": {
+            "count": 5,
+            "value": 7266560
+          },
+          "scan_records": {
+            "count": 1887708,
+            "value": 4344201975
+          }
+        }
+      },
+      {
+        "sql": "SELECT id, amount FROM orders WHERE customer_id = 0 ORDER BY id",
+        "started": "2026-09-20T21:51:28.004714583Z",
+        "connection_acquire_ns": 5350,
+        "query_ns": 9237314,
+        "rows": 8,
+        "plans": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE customer_id = 0 ORDER BY id",
+            "PlanHash": 2617504254450519549,
+            "PlanExplain": "Project([_current.ID#0, _current.AMOUNT#2], IndexScan(IDX_CUSTOMER, [=]))",
+            "PlanningDuration": 4837527,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE customer_id = 0 ORDER BY id",
+            "PlanHash": 2617504254450519549,
+            "ExecutionDuration": 2179981,
+            "RowsReturned": 8,
+            "RowsAffected": 0,
+            "RecordsScanned": 8,
+            "BytesScanned": 405,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 34285
+          },
+          "load_record": {
+            "count": 10,
+            "value": 833518
+          },
+          "open_store": {
+            "count": 4,
+            "value": 4169090
+          },
+          "scan_index": {
+            "count": 9,
+            "value": 143742
+          }
+        }
+      },
+      {
+        "sql": "SELECT id FROM orders ORDER BY id",
+        "started": "2026-09-20T21:51:28.014043051Z",
+        "connection_acquire_ns": 6121,
+        "query_ns": 3950388341,
+        "rows": 1000000,
+        "plans": [
+          {
+            "SQL": "SELECT id FROM orders ORDER BY id",
+            "PlanHash": 11624487564147972017,
+            "PlanExplain": "Project([_current.ID#0], Scan(ORDERS))",
+            "PlanningDuration": 2368408,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id FROM orders ORDER BY id",
+            "PlanHash": 11624487564147972017,
+            "ExecutionDuration": 3946212718,
+            "RowsReturned": 1000000,
+            "RowsAffected": 0,
+            "RecordsScanned": 1000000,
+            "BytesScanned": 59739562,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": true,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 40388
+          },
+          "load_record": {
+            "count": 2,
+            "value": 181463
+          },
+          "open_store": {
+            "count": 4,
+            "value": 3944784
+          },
+          "scan_records": {
+            "count": 1000001,
+            "value": 2181346417
+          }
+        }
+      },
+      {
+        "sql": "SELECT id, customer_id, amount, status FROM orders ORDER BY id",
+        "started": "2026-09-20T21:51:31.964601384Z",
+        "connection_acquire_ns": 5751,
+        "query_ns": 4281789341,
+        "rows": 1000000,
+        "plans": [
+          {
+            "SQL": "SELECT id, customer_id, amount, status FROM orders ORDER BY id",
+            "PlanHash": 6279743527251036498,
+            "PlanExplain": "Project([_current.ID#0, _current.CUSTOMER_ID#1, _current.AMOUNT#2, _current.STATUS#3], Scan(ORDERS))",
+            "PlanningDuration": 2485640,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id, customer_id, amount, status FROM orders ORDER BY id",
+            "PlanHash": 6279743527251036498,
+            "ExecutionDuration": 4277073494,
+            "RowsReturned": 1000000,
+            "RowsAffected": 0,
+            "RecordsScanned": 1000000,
+            "BytesScanned": 59739562,
+            "Pages": 2,
+            "Retries": 0,
+            "SlowQuery": true,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 4,
+            "value": 95870
+          },
+          "load_record": {
+            "count": 2,
+            "value": 162247
+          },
+          "open_store": {
+            "count": 5,
+            "value": 5730811
+          },
+          "scan_records": {
+            "count": 1000002,
+            "value": 2265964505
+          }
+        }
+      },
+      {
+        "sql": "SELECT id, amount FROM orders WHERE customer_id IN (0, 1, 2, 3, 4) ORDER BY id",
+        "started": "2026-09-20T21:51:36.246536711Z",
+        "connection_acquire_ns": 5150,
+        "query_ns": 21192549,
+        "rows": 46,
+        "plans": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE customer_id IN (0, 1, 2, 3, 4) ORDER BY id",
+            "PlanHash": 13701445708949119948,
+            "PlanExplain": "Project([_current.ID#0, _current.AMOUNT#2], InUnion(IndexScan(IDX_CUSTOMER, [=]), bindings=1, ASC))",
+            "PlanningDuration": 11522715,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE customer_id IN (0, 1, 2, 3, 4) ORDER BY id",
+            "PlanHash": 13701445708949119948,
+            "ExecutionDuration": 6391833,
+            "RowsReturned": 46,
+            "RowsAffected": 0,
+            "RecordsScanned": 46,
+            "BytesScanned": 2378,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 33111
+          },
+          "load_record": {
+            "count": 48,
+            "value": 3970635
+          },
+          "open_store": {
+            "count": 4,
+            "value": 4323082
+          },
+          "scan_index": {
+            "count": 51,
+            "value": 471872
+          }
+        }
+      },
+      {
+        "sql": "SELECT id, customer_id, amount, status FROM orders WHERE id = ?",
+        "started": "2026-09-20T21:51:36.267861882Z",
+        "connection_acquire_ns": 19988,
+        "query_ns": 6450353,
+        "rows": 1,
+        "plans": [
+          {
+            "SQL": "SELECT id, customer_id, amount, status FROM orders WHERE id = 999999",
+            "PlanHash": 3352163013474449500,
+            "PlanExplain": "Project([_current.ID#0, _current.CUSTOMER_ID#1, _current.AMOUNT#2, _current.STATUS#3], Scan(ORDERS, [=]))",
+            "PlanningDuration": 2696760,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id, customer_id, amount, status FROM orders WHERE id = 999999",
+            "PlanHash": 3352163013474449500,
+            "ExecutionDuration": 1787658,
+            "RowsReturned": 1,
+            "RowsAffected": 0,
+            "RecordsScanned": 1,
+            "BytesScanned": 61,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 37963
+          },
+          "load_record": {
+            "count": 2,
+            "value": 183608
+          },
+          "open_store": {
+            "count": 4,
+            "value": 4065585
+          },
+          "scan_records": {
+            "count": 2,
+            "value": 251818
+          }
+        }
+      },
+      {
+        "sql": "SELECT id, amount FROM orders WHERE id = ? AND status = 'pending'",
+        "started": "2026-09-20T21:51:36.274463833Z",
+        "connection_acquire_ns": 6432,
+        "query_ns": 9020885,
+        "rows": 1,
+        "plans": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE id = 500000 AND status = 'pending'",
+            "PlanHash": 11645745221745444647,
+            "PlanExplain": "Project([_current.ID#0, _current.AMOUNT#2], PredicatesFilter(Scan(ORDERS, [=]), [1 preds]))",
+            "PlanningDuration": 4787241,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE id = 500000 AND status = 'pending'",
+            "PlanHash": 11645745221745444647,
+            "ExecutionDuration": 1503719,
+            "RowsReturned": 1,
+            "RowsAffected": 0,
+            "RecordsScanned": 1,
+            "BytesScanned": 59,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 49062
+          },
+          "load_record": {
+            "count": 2,
+            "value": 268768
+          },
+          "open_store": {
+            "count": 4,
+            "value": 4620024
+          },
+          "scan_records": {
+            "count": 2,
+            "value": 103476
+          }
+        }
+      },
+      {
+        "sql": "SELECT id FROM orders WHERE amount + 0 = 9999 ORDER BY id",
+        "started": "2026-09-20T21:51:36.289320806Z",
+        "connection_acquire_ns": 3928,
+        "query_ns": 3650151879,
+        "rows": 97,
+        "plans": [
+          {
+            "SQL": "SELECT id FROM orders WHERE amount + 0 = 9999 ORDER BY id",
+            "PlanHash": 9419755788656575689,
+            "PlanExplain": "Project([_current.ID#0], PredicatesFilter(Scan(ORDERS), [1 preds]))",
+            "PlanningDuration": 3041954,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id FROM orders WHERE amount + 0 = 9999 ORDER BY id",
+            "PlanHash": 9419755788656575689,
+            "ExecutionDuration": 3645437605,
+            "RowsReturned": 97,
+            "RowsAffected": 0,
+            "RecordsScanned": 1000000,
+            "BytesScanned": 59739562,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": true,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 36047
+          },
+          "load_record": {
+            "count": 2,
+            "value": 121580
+          },
+          "open_store": {
+            "count": 4,
+            "value": 3893918
+          },
+          "scan_records": {
+            "count": 1000001,
+            "value": 2148140469
+          }
+        }
+      }
+    ],
+    "explain": [
+      "Scan(ORDERS, [=])",
+      "Project([_current.ID#0, _current.AMOUNT#2], IndexScan(IDX_CUSTOMER, [=]))",
+      "Project([_current.ID#0], IndexScan(IDX_AMOUNT, [<>] COVERING))",
+      "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_STATUS, [=] COVERING)))",
+      "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_AMOUNT, [<>] COVERING)))",
+      "Project([_current.STATUS#0, _current.COUNT(*)#1, _current.SUM(AMOUNT)#2], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+      "Project([_current.STATUS#0, _current.COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only))",
+      "Project([_current.STATUS#0, _current.SUM(AMOUNT)#1], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+      "Project([_current.CUSTOMER_ID#0, _current.SUM(AMOUNT)#1], PredicatesFilter(GroupExistenceMerge(AggregateIndex(COUNT, SUM_AMOUNT_BY_CUSTOMER__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_CUSTOMER, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), [1 preds]))",
+      "Project([_current.ID#0, _current.NAME#5], FlatMap(outer=Scan(ORDERS, [<>]), inner=Scan(CUSTOMERS, [=])))",
+      "Project([_current.ID#0], PredicatesFilter(Scan(ORDERS), [1 preds]))"
+    ],
+    "log_sha256": "ef74ccb049150de5acb49b386a8bc95ad3f459ced01ad5e68e718c90f4c8156e",
+    "trace_sha256": "ebba54d1f5b12b9b583dee447cfa558e2a512d450bdb4a2d2727d5bb117c14f9",
+    "trace_bytes": 270484387
+  },
+  {
+    "side": "current",
+    "sample": 1,
+    "tree": "97d67fd750c13b8399bdea82774aa26bc8c8f263",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/sqldriver/stress:stress_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestFDB_Stress_1M_LatencyAttribution$",
+      "--test_arg=-test.trace=/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-1.trace",
+      "--sandbox_writable_path=/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison",
+      "--build_event_json_file=/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-1-bep.jsonl"
+    ],
+    "started": 1789941100.4453108,
+    "elapsed": 205.54925966262817,
+    "load_start": [
+      4.81494140625,
+      7.89404296875,
+      12.6376953125
+    ],
+    "load_end": [
+      4.16845703125,
+      6.15478515625,
+      11.00244140625
+    ],
+    "exit": 0,
+    "runs": {
+      "TestFDB_Stress_1M_LatencyAttribution": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_first": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_middle": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_last": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_customer_eq": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_amount_range": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_status_count": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_count": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_status": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_status_count_only": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/sum_by_status": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_customer_having": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/join_10_outer": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/order_by_pk_full": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/order_by_pk_index_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/scan_all_narrow": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/scan_all_wide": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/in_list": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/needle_in_haystack_pk": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/needle_in_haystack_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_sparse_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/update_by_index": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/delete_single_row": 1
+    },
+    "passes": {
+      "TestFDB_Stress_1M_LatencyAttribution": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_first": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_middle": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_last": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_customer_eq": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_amount_range": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_status_count": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_count": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_status": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_status_count_only": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/sum_by_status": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_customer_having": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/join_10_outer": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/order_by_pk_full": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/order_by_pk_index_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/scan_all_narrow": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/scan_all_wide": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/in_list": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/needle_in_haystack_pk": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/needle_in_haystack_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_sparse_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/update_by_index": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/delete_single_row": 1
+    },
+    "compiler": "/home/birdy/projects/fdb-go/bazel-bin/pkg/relational/sqldriver/stress/stress_test_/stress_test: go1.26.6",
+    "attribution": [
+      {
+        "sql": "SELECT * FROM orders WHERE id = 0",
+        "started": "2026-09-20T21:54:36.870585178Z",
+        "connection_acquire_ns": 3517,
+        "query_ns": 9329189,
+        "rows": 1,
+        "plans": [
+          {
+            "SQL": "SELECT * FROM orders WHERE id = 0",
+            "PlanHash": 11157451244153423905,
+            "PlanExplain": "Scan(ORDERS, [=])",
+            "PlanningDuration": 4001864,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT * FROM orders WHERE id = 0",
+            "PlanHash": 11157451244153423905,
+            "ExecutionDuration": 2648289,
+            "RowsReturned": 1,
+            "RowsAffected": 0,
+            "RecordsScanned": 1,
+            "BytesScanned": 54,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 25599
+          },
+          "load_record": {
+            "count": 2,
+            "value": 135137
+          },
+          "open_store": {
+            "count": 4,
+            "value": 7122497
+          },
+          "scan_records": {
+            "count": 2,
+            "value": 92856
+          }
+        }
+      },
+      {
+        "sql": "SELECT * FROM orders WHERE id = ?",
+        "started": "2026-09-20T21:54:36.880100911Z",
+        "connection_acquire_ns": 4718,
+        "query_ns": 8705447,
+        "rows": 1,
+        "plans": [
+          {
+            "SQL": "SELECT * FROM orders WHERE id = 500000",
+            "PlanHash": 14986928347945777420,
+            "PlanExplain": "Scan(ORDERS, [=])",
+            "PlanningDuration": 3272952,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT * FROM orders WHERE id = 500000",
+            "PlanHash": 14986928347945777420,
+            "ExecutionDuration": 2594367,
+            "RowsReturned": 1,
+            "RowsAffected": 0,
+            "RecordsScanned": 1,
+            "BytesScanned": 59,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 67137
+          },
+          "load_record": {
+            "count": 2,
+            "value": 142741
+          },
+          "open_store": {
+            "count": 4,
+            "value": 7108631
+          },
+          "scan_records": {
+            "count": 2,
+            "value": 132281
+          }
+        }
+      },
+      {
+        "sql": "SELECT * FROM orders WHERE id = ?",
+        "started": "2026-09-20T21:54:36.888916396Z",
+        "connection_acquire_ns": 4058,
+        "query_ns": 7693229,
+        "rows": 1,
+        "plans": [
+          {
+            "SQL": "SELECT * FROM orders WHERE id = 999999",
+            "PlanHash": 14149301487018831995,
+            "PlanExplain": "Scan(ORDERS, [=])",
+            "PlanningDuration": 3294342,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT * FROM orders WHERE id = 999999",
+            "PlanHash": 14149301487018831995,
+            "ExecutionDuration": 1632474,
+            "RowsReturned": 1,
+            "RowsAffected": 0,
+            "RecordsScanned": 1,
+            "BytesScanned": 61,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 33995
+          },
+          "load_record": {
+            "count": 2,
+            "value": 139535
+          },
+          "open_store": {
+            "count": 4,
+            "value": 5941569
+          },
+          "scan_records": {
+            "count": 2,
+            "value": 142000
+          }
+        }
+      },
+      {
+        "sql": "SELECT id, amount FROM orders WHERE customer_id = 0",
+        "started": "2026-09-20T21:54:36.903279684Z",
+        "connection_acquire_ns": 5410,
+        "query_ns": 7385285,
+        "rows": 8,
+        "plans": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE customer_id = 0",
+            "PlanHash": 8312299604218530111,
+            "PlanExplain": "Project([_current.ID#0, _current.AMOUNT#2], IndexScan(IDX_CUSTOMER, [=]))",
+            "PlanningDuration": 3213219,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE customer_id = 0",
+            "PlanHash": 8312299604218530111,
+            "ExecutionDuration": 2339704,
+            "RowsReturned": 8,
+            "RowsAffected": 0,
+            "RecordsScanned": 8,
+            "BytesScanned": 405,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 29485
+          },
+          "load_record": {
+            "count": 10,
+            "value": 922577
+          },
+          "open_store": {
+            "count": 4,
+            "value": 4075972
+          },
+          "scan_index": {
+            "count": 9,
+            "value": 120296
+          }
+        }
+      },
+      {
+        "sql": "SELECT id FROM orders WHERE amount > 9000",
+        "started": "2026-09-20T21:54:36.916656914Z",
+        "connection_acquire_ns": 6793,
+        "query_ns": 238859836,
+        "rows": 100017,
+        "plans": [
+          {
+            "SQL": "SELECT id FROM orders WHERE amount > 9000",
+            "PlanHash": 10080126045617042494,
+            "PlanExplain": "Project([_current.ID#0], IndexScan(IDX_AMOUNT, [<>] COVERING))",
+            "PlanningDuration": 3219602,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id FROM orders WHERE amount > 9000",
+            "PlanHash": 10080126045617042494,
+            "ExecutionDuration": 233426309,
+            "RowsReturned": 100017,
+            "RowsAffected": 0,
+            "RecordsScanned": 100017,
+            "BytesScanned": 5094344,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 41579
+          },
+          "load_record": {
+            "count": 2,
+            "value": 166276
+          },
+          "open_store": {
+            "count": 4,
+            "value": 4396873
+          },
+          "scan_index": {
+            "count": 100018,
+            "value": 88990932
+          }
+        }
+      },
+      {
+        "sql": "SELECT COUNT(*) FROM orders WHERE status = 'pending'",
+        "started": "2026-09-20T21:54:37.162202449Z",
+        "connection_acquire_ns": 3958,
+        "query_ns": 454577950,
+        "rows": 1,
+        "plans": [
+          {
+            "SQL": "SELECT COUNT(*) FROM orders WHERE status = 'pending'",
+            "PlanHash": 16897660118757728509,
+            "PlanExplain": "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_STATUS, [=] COVERING)))",
+            "PlanningDuration": 3390575,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT COUNT(*) FROM orders WHERE status = 'pending'",
+            "PlanHash": 16897660118757728509,
+            "ExecutionDuration": 449420526,
+            "RowsReturned": 1,
+            "RowsAffected": 0,
+            "RecordsScanned": 250000,
+            "BytesScanned": 14233551,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 48612
+          },
+          "load_record": {
+            "count": 2,
+            "value": 143472
+          },
+          "open_store": {
+            "count": 4,
+            "value": 5528626
+          },
+          "scan_index": {
+            "count": 250001,
+            "value": 296827419
+          }
+        }
+      },
+      {
+        "sql": "SELECT COUNT(*) FROM orders WHERE amount > 5000",
+        "started": "2026-09-20T21:54:41.12865658Z",
+        "connection_acquire_ns": 5320,
+        "query_ns": 968833528,
+        "rows": 1,
+        "plans": [
+          {
+            "SQL": "SELECT COUNT(*) FROM orders WHERE amount > 5000",
+            "PlanHash": 18311867206624719702,
+            "PlanExplain": "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_AMOUNT, [<>] COVERING)))",
+            "PlanningDuration": 5260840,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT COUNT(*) FROM orders WHERE amount > 5000",
+            "PlanHash": 18311867206624719702,
+            "ExecutionDuration": 958827947,
+            "RowsReturned": 1,
+            "RowsAffected": 0,
+            "RecordsScanned": 500275,
+            "BytesScanned": 25481140,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 71696
+          },
+          "load_record": {
+            "count": 2,
+            "value": 1086549
+          },
+          "open_store": {
+            "count": 4,
+            "value": 8285533
+          },
+          "scan_index": {
+            "count": 500276,
+            "value": 682480632
+          }
+        }
+      },
+      {
+        "sql": "SELECT status, COUNT(*), SUM(amount) FROM orders GROUP BY status ORDER BY status",
+        "started": "2026-09-20T21:54:42.106645927Z",
+        "connection_acquire_ns": 4258,
+        "query_ns": 6218384,
+        "rows": 4,
+        "plans": [
+          {
+            "SQL": "SELECT status, COUNT(*), SUM(amount) FROM orders GROUP BY status ORDER BY status",
+            "PlanHash": 9226060422181536080,
+            "PlanExplain": "Project([_current.STATUS#0, _current.COUNT(*)#1, _current.SUM(AMOUNT)#2], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+            "PlanningDuration": 2804274,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT status, COUNT(*), SUM(amount) FROM orders GROUP BY status ORDER BY status",
+            "PlanHash": 9226060422181536080,
+            "ExecutionDuration": 1593711,
+            "RowsReturned": 4,
+            "RowsAffected": 0,
+            "RecordsScanned": 8,
+            "BytesScanned": 548,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 29356
+          },
+          "load_record": {
+            "count": 2,
+            "value": 150725
+          },
+          "open_store": {
+            "count": 4,
+            "value": 3923446
+          },
+          "scan_index": {
+            "count": 10,
+            "value": 168349
+          }
+        }
+      },
+      {
+        "sql": "SELECT status, COUNT(*) FROM orders GROUP BY status",
+        "started": "2026-09-20T21:54:42.117192443Z",
+        "connection_acquire_ns": 3988,
+        "query_ns": 5551590,
+        "rows": 4,
+        "plans": [
+          {
+            "SQL": "SELECT status, COUNT(*) FROM orders GROUP BY status",
+            "PlanHash": 5759958556986800592,
+            "PlanExplain": "Project([_current.STATUS#0, _current.COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only))",
+            "PlanningDuration": 2389698,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT status, COUNT(*) FROM orders GROUP BY status",
+            "PlanHash": 5759958556986800592,
+            "ExecutionDuration": 1534258,
+            "RowsReturned": 4,
+            "RowsAffected": 0,
+            "RecordsScanned": 4,
+            "BytesScanned": 264,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 25859
+          },
+          "load_record": {
+            "count": 2,
+            "value": 120880
+          },
+          "open_store": {
+            "count": 4,
+            "value": 3901695
+          },
+          "scan_index": {
+            "count": 5,
+            "value": 108596
+          }
+        }
+      },
+      {
+        "sql": "SELECT status, SUM(amount) FROM orders GROUP BY status ORDER BY status",
+        "started": "2026-09-20T21:54:42.127422619Z",
+        "connection_acquire_ns": 3196,
+        "query_ns": 5878840,
+        "rows": 4,
+        "plans": [
+          {
+            "SQL": "SELECT status, SUM(amount) FROM orders GROUP BY status ORDER BY status",
+            "PlanHash": 17853326420117949289,
+            "PlanExplain": "Project([_current.STATUS#0, _current.SUM(AMOUNT)#1], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+            "PlanningDuration": 2650332,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT status, SUM(amount) FROM orders GROUP BY status ORDER BY status",
+            "PlanHash": 17853326420117949289,
+            "ExecutionDuration": 1552742,
+            "RowsReturned": 4,
+            "RowsAffected": 0,
+            "RecordsScanned": 8,
+            "BytesScanned": 548,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 24015
+          },
+          "load_record": {
+            "count": 2,
+            "value": 130027
+          },
+          "open_store": {
+            "count": 4,
+            "value": 3881146
+          },
+          "scan_index": {
+            "count": 10,
+            "value": 159401
+          }
+        }
+      },
+      {
+        "sql": "SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) > 50000 ORDER BY customer_id",
+        "started": "2026-09-20T21:54:42.140137223Z",
+        "connection_acquire_ns": 4529,
+        "query_ns": 651794553,
+        "rows": 47271,
+        "plans": [
+          {
+            "SQL": "SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) > 50000 ORDER BY customer_id",
+            "PlanHash": 2793323594087593035,
+            "PlanExplain": "Project([_current.CUSTOMER_ID#0, _current.SUM(AMOUNT)#1], PredicatesFilter(GroupExistenceMerge(AggregateIndex(COUNT, SUM_AMOUNT_BY_CUSTOMER__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_CUSTOMER, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), [1 preds]))",
+            "PlanningDuration": 3712726,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) > 50000 ORDER BY customer_id",
+            "PlanHash": 2793323594087593035,
+            "ExecutionDuration": 645996194,
+            "RowsReturned": 47271,
+            "RowsAffected": 0,
+            "RecordsScanned": 199996,
+            "BytesScanned": 14568122,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 41428
+          },
+          "load_record": {
+            "count": 2,
+            "value": 152459
+          },
+          "open_store": {
+            "count": 4,
+            "value": 4050686
+          },
+          "scan_index": {
+            "count": 199998,
+            "value": 204329034
+          }
+        }
+      },
+      {
+        "sql": "SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.id < 10 ORDER BY o.id",
+        "started": "2026-09-20T21:54:42.813370632Z",
+        "connection_acquire_ns": 5210,
+        "query_ns": 23960685,
+        "rows": 10,
+        "plans": [
+          {
+            "SQL": "SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.id < 10 ORDER BY o.id",
+            "PlanHash": 3417842950588140151,
+            "PlanExplain": "Project([_current.ID#0, _current.NAME#5], FlatMap(outer=Scan(ORDERS, [<>]), inner=Scan(CUSTOMERS, [=])))",
+            "PlanningDuration": 18655282,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.id < 10 ORDER BY o.id",
+            "PlanHash": 3417842950588140151,
+            "ExecutionDuration": 3192279,
+            "RowsReturned": 10,
+            "RowsAffected": 0,
+            "RecordsScanned": 20,
+            "BytesScanned": 1221,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 35949
+          },
+          "load_record": {
+            "count": 2,
+            "value": 175633
+          },
+          "open_store": {
+            "count": 4,
+            "value": 4543029
+          },
+          "scan_records": {
+            "count": 31,
+            "value": 1029377
+          }
+        }
+      },
+      {
+        "sql": "SELECT id FROM orders ORDER BY id",
+        "started": "2026-09-20T21:54:42.837464099Z",
+        "connection_acquire_ns": 5460,
+        "query_ns": 7296070633,
+        "rows": 1000000,
+        "plans": [
+          {
+            "SQL": "SELECT id FROM orders ORDER BY id",
+            "PlanHash": 11624487564147972017,
+            "PlanExplain": "Project([_current.ID#0], Scan(ORDERS))",
+            "PlanningDuration": 2303916,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id FROM orders ORDER BY id",
+            "PlanHash": 11624487564147972017,
+            "ExecutionDuration": 7291569774,
+            "RowsReturned": 1000000,
+            "RowsAffected": 0,
+            "RecordsScanned": 1795072,
+            "BytesScanned": 107220076,
+            "Pages": 1,
+            "Retries": 1,
+            "SlowQuery": true,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 44293
+          },
+          "load_record": {
+            "count": 2,
+            "value": 168619
+          },
+          "open_store": {
+            "count": 5,
+            "value": 6774208
+          },
+          "scan_records": {
+            "count": 1795074,
+            "value": 4140455757
+          }
+        }
+      },
+      {
+        "sql": "SELECT id, amount FROM orders WHERE customer_id = 0 ORDER BY id",
+        "started": "2026-09-20T21:54:50.133744369Z",
+        "connection_acquire_ns": 14718,
+        "query_ns": 9528796,
+        "rows": 8,
+        "plans": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE customer_id = 0 ORDER BY id",
+            "PlanHash": 2617504254450519549,
+            "PlanExplain": "Project([_current.ID#0, _current.AMOUNT#2], IndexScan(IDX_CUSTOMER, [=]))",
+            "PlanningDuration": 5082942,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE customer_id = 0 ORDER BY id",
+            "PlanHash": 2617504254450519549,
+            "ExecutionDuration": 2186974,
+            "RowsReturned": 8,
+            "RowsAffected": 0,
+            "RecordsScanned": 8,
+            "BytesScanned": 405,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 42841
+          },
+          "load_record": {
+            "count": 10,
+            "value": 757496
+          },
+          "open_store": {
+            "count": 4,
+            "value": 4279569
+          },
+          "scan_index": {
+            "count": 9,
+            "value": 112585
+          }
+        }
+      },
+      {
+        "sql": "SELECT id FROM orders ORDER BY id",
+        "started": "2026-09-20T21:54:50.143384797Z",
+        "connection_acquire_ns": 4469,
+        "query_ns": 4072914953,
+        "rows": 1000000,
+        "plans": [
+          {
+            "SQL": "SELECT id FROM orders ORDER BY id",
+            "PlanHash": 11624487564147972017,
+            "PlanExplain": "Project([_current.ID#0], Scan(ORDERS))",
+            "PlanningDuration": 2392624,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id FROM orders ORDER BY id",
+            "PlanHash": 11624487564147972017,
+            "ExecutionDuration": 4068720745,
+            "RowsReturned": 1000000,
+            "RowsAffected": 0,
+            "RecordsScanned": 1000000,
+            "BytesScanned": 59739562,
+            "Pages": 2,
+            "Retries": 0,
+            "SlowQuery": true,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 4,
+            "value": 69493
+          },
+          "load_record": {
+            "count": 2,
+            "value": 138303
+          },
+          "open_store": {
+            "count": 5,
+            "value": 5588198
+          },
+          "scan_records": {
+            "count": 1000002,
+            "value": 2251955971
+          }
+        }
+      },
+      {
+        "sql": "SELECT id, customer_id, amount, status FROM orders ORDER BY id",
+        "started": "2026-09-20T21:54:54.216434205Z",
+        "connection_acquire_ns": 6262,
+        "query_ns": 7969766970,
+        "rows": 1000000,
+        "plans": [
+          {
+            "SQL": "SELECT id, customer_id, amount, status FROM orders ORDER BY id",
+            "PlanHash": 6279743527251036498,
+            "PlanExplain": "Project([_current.ID#0, _current.CUSTOMER_ID#1, _current.AMOUNT#2, _current.STATUS#3], Scan(ORDERS))",
+            "PlanningDuration": 2665681,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id, customer_id, amount, status FROM orders ORDER BY id",
+            "PlanHash": 6279743527251036498,
+            "ExecutionDuration": 7965113912,
+            "RowsReturned": 1000000,
+            "RowsAffected": 0,
+            "RecordsScanned": 1908716,
+            "BytesScanned": 114018357,
+            "Pages": 2,
+            "Retries": 1,
+            "SlowQuery": true,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 4,
+            "value": 67667
+          },
+          "load_record": {
+            "count": 2,
+            "value": 149863
+          },
+          "open_store": {
+            "count": 6,
+            "value": 7363162
+          },
+          "scan_records": {
+            "count": 1908719,
+            "value": 4249607640
+          }
+        }
+      },
+      {
+        "sql": "SELECT id, amount FROM orders WHERE customer_id IN (0, 1, 2, 3, 4) ORDER BY id",
+        "started": "2026-09-20T21:55:02.186334989Z",
+        "connection_acquire_ns": 6453,
+        "query_ns": 21448675,
+        "rows": 46,
+        "plans": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE customer_id IN (0, 1, 2, 3, 4) ORDER BY id",
+            "PlanHash": 13701445708949119948,
+            "PlanExplain": "Project([_current.ID#0, _current.AMOUNT#2], InUnion(IndexScan(IDX_CUSTOMER, [=]), bindings=1, ASC))",
+            "PlanningDuration": 12176314,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE customer_id IN (0, 1, 2, 3, 4) ORDER BY id",
+            "PlanHash": 13701445708949119948,
+            "ExecutionDuration": 5778219,
+            "RowsReturned": 46,
+            "RowsAffected": 0,
+            "RecordsScanned": 46,
+            "BytesScanned": 2378,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 40237
+          },
+          "load_record": {
+            "count": 48,
+            "value": 3771816
+          },
+          "open_store": {
+            "count": 4,
+            "value": 4227952
+          },
+          "scan_index": {
+            "count": 51,
+            "value": 441309
+          }
+        }
+      },
+      {
+        "sql": "SELECT id, customer_id, amount, status FROM orders WHERE id = ?",
+        "started": "2026-09-20T21:55:02.207900035Z",
+        "connection_acquire_ns": 4909,
+        "query_ns": 6154423,
+        "rows": 1,
+        "plans": [
+          {
+            "SQL": "SELECT id, customer_id, amount, status FROM orders WHERE id = 999999",
+            "PlanHash": 3352163013474449500,
+            "PlanExplain": "Project([_current.ID#0, _current.CUSTOMER_ID#1, _current.AMOUNT#2, _current.STATUS#3], Scan(ORDERS, [=]))",
+            "PlanningDuration": 2719483,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id, customer_id, amount, status FROM orders WHERE id = 999999",
+            "PlanHash": 3352163013474449500,
+            "ExecutionDuration": 1460758,
+            "RowsReturned": 1,
+            "RowsAffected": 0,
+            "RecordsScanned": 1,
+            "BytesScanned": 61,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 27952
+          },
+          "load_record": {
+            "count": 2,
+            "value": 156566
+          },
+          "open_store": {
+            "count": 4,
+            "value": 4060034
+          },
+          "scan_records": {
+            "count": 2,
+            "value": 96072
+          }
+        }
+      },
+      {
+        "sql": "SELECT id, amount FROM orders WHERE id = ? AND status = 'pending'",
+        "started": "2026-09-20T21:55:02.214133067Z",
+        "connection_acquire_ns": 4919,
+        "query_ns": 7930898,
+        "rows": 1,
+        "plans": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE id = 500000 AND status = 'pending'",
+            "PlanHash": 11645745221745444647,
+            "PlanExplain": "Project([_current.ID#0, _current.AMOUNT#2], PredicatesFilter(Scan(ORDERS, [=]), [1 preds]))",
+            "PlanningDuration": 4644552,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE id = 500000 AND status = 'pending'",
+            "PlanHash": 11645745221745444647,
+            "ExecutionDuration": 1435921,
+            "RowsReturned": 1,
+            "RowsAffected": 0,
+            "RecordsScanned": 1,
+            "BytesScanned": 59,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 23524
+          },
+          "load_record": {
+            "count": 2,
+            "value": 151828
+          },
+          "open_store": {
+            "count": 4,
+            "value": 3939795
+          },
+          "scan_records": {
+            "count": 2,
+            "value": 88157
+          }
+        }
+      },
+      {
+        "sql": "SELECT id FROM orders WHERE amount + 0 = 9999 ORDER BY id",
+        "started": "2026-09-20T21:55:02.228163714Z",
+        "connection_acquire_ns": 6042,
+        "query_ns": 3683650032,
+        "rows": 97,
+        "plans": [
+          {
+            "SQL": "SELECT id FROM orders WHERE amount + 0 = 9999 ORDER BY id",
+            "PlanHash": 9419755788656575689,
+            "PlanExplain": "Project([_current.ID#0], PredicatesFilter(Scan(ORDERS), [1 preds]))",
+            "PlanningDuration": 3399101,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id FROM orders WHERE amount + 0 = 9999 ORDER BY id",
+            "PlanHash": 9419755788656575689,
+            "ExecutionDuration": 3678283222,
+            "RowsReturned": 97,
+            "RowsAffected": 0,
+            "RecordsScanned": 1000000,
+            "BytesScanned": 59739562,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": true,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 44354
+          },
+          "load_record": {
+            "count": 2,
+            "value": 148931
+          },
+          "open_store": {
+            "count": 4,
+            "value": 3966287
+          },
+          "scan_records": {
+            "count": 1000001,
+            "value": 2169839302
+          }
+        }
+      }
+    ],
+    "explain": [
+      "Scan(ORDERS, [=])",
+      "Project([_current.ID#0, _current.AMOUNT#2], IndexScan(IDX_CUSTOMER, [=]))",
+      "Project([_current.ID#0], IndexScan(IDX_AMOUNT, [<>] COVERING))",
+      "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_STATUS, [=] COVERING)))",
+      "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_AMOUNT, [<>] COVERING)))",
+      "Project([_current.STATUS#0, _current.COUNT(*)#1, _current.SUM(AMOUNT)#2], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+      "Project([_current.STATUS#0, _current.COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only))",
+      "Project([_current.STATUS#0, _current.SUM(AMOUNT)#1], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+      "Project([_current.CUSTOMER_ID#0, _current.SUM(AMOUNT)#1], PredicatesFilter(GroupExistenceMerge(AggregateIndex(COUNT, SUM_AMOUNT_BY_CUSTOMER__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_CUSTOMER, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), [1 preds]))",
+      "Project([_current.ID#0, _current.NAME#5], FlatMap(outer=Scan(ORDERS, [<>]), inner=Scan(CUSTOMERS, [=])))",
+      "Project([_current.ID#0], PredicatesFilter(Scan(ORDERS), [1 preds]))"
+    ],
+    "log_sha256": "3789a246bfeee7f3bb53ab8e81b701d8d4d2d31af52863fa4d431d851dda1cff",
+    "trace_sha256": "5d7bb9b1404f01b127bcc5b3490ea80c5462627ca753ba3fed27197b672f6ab7",
+    "trace_bytes": 275114417
+  },
+  {
+    "side": "current",
+    "sample": 2,
+    "tree": "97d67fd750c13b8399bdea82774aa26bc8c8f263",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/sqldriver/stress:stress_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestFDB_Stress_1M_LatencyAttribution$",
+      "--test_arg=-test.trace=/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2.trace",
+      "--sandbox_writable_path=/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison",
+      "--build_event_json_file=/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/current-2-bep.jsonl"
+    ],
+    "started": 1789941306.4094636,
+    "elapsed": 222.50168776512146,
+    "load_start": [
+      4.16845703125,
+      6.15478515625,
+      11.00244140625
+    ],
+    "load_end": [
+      12.3349609375,
+      8.50634765625,
+      10.84326171875
+    ],
+    "exit": 0,
+    "runs": {
+      "TestFDB_Stress_1M_LatencyAttribution": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_first": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_middle": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_last": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_customer_eq": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_amount_range": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_status_count": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_count": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_status": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_status_count_only": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/sum_by_status": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_customer_having": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/join_10_outer": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/order_by_pk_full": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/order_by_pk_index_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/scan_all_narrow": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/scan_all_wide": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/in_list": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/needle_in_haystack_pk": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/needle_in_haystack_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_sparse_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/update_by_index": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/delete_single_row": 1
+    },
+    "passes": {
+      "TestFDB_Stress_1M_LatencyAttribution": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_first": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_middle": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_last": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_customer_eq": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_amount_range": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_status_count": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_count": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_status": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_status_count_only": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/sum_by_status": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_customer_having": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/join_10_outer": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/order_by_pk_full": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/order_by_pk_index_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/scan_all_narrow": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/scan_all_wide": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/in_list": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/needle_in_haystack_pk": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/needle_in_haystack_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_sparse_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/update_by_index": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/delete_single_row": 1
+    },
+    "compiler": "/home/birdy/projects/fdb-go/bazel-bin/pkg/relational/sqldriver/stress/stress_test_/stress_test: go1.26.6",
+    "attribution": [
+      {
+        "sql": "SELECT * FROM orders WHERE id = 0",
+        "started": "2026-09-20T21:58:23.170325829Z",
+        "connection_acquire_ns": 21100,
+        "query_ns": 12446310,
+        "rows": 1,
+        "plans": [
+          {
+            "SQL": "SELECT * FROM orders WHERE id = 0",
+            "PlanHash": 11157451244153423905,
+            "PlanExplain": "Scan(ORDERS, [=])",
+            "PlanningDuration": 4918718,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT * FROM orders WHERE id = 0",
+            "PlanHash": 11157451244153423905,
+            "ExecutionDuration": 4518300,
+            "RowsReturned": 1,
+            "RowsAffected": 0,
+            "RecordsScanned": 1,
+            "BytesScanned": 54,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 46137
+          },
+          "load_record": {
+            "count": 2,
+            "value": 169712
+          },
+          "open_store": {
+            "count": 4,
+            "value": 9814373
+          },
+          "scan_records": {
+            "count": 2,
+            "value": 476342
+          }
+        }
+      },
+      {
+        "sql": "SELECT * FROM orders WHERE id = ?",
+        "started": "2026-09-20T21:58:23.182970605Z",
+        "connection_acquire_ns": 6582,
+        "query_ns": 17931791,
+        "rows": 1,
+        "plans": [
+          {
+            "SQL": "SELECT * FROM orders WHERE id = 500000",
+            "PlanHash": 14986928347945777420,
+            "PlanExplain": "Scan(ORDERS, [=])",
+            "PlanningDuration": 8364888,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT * FROM orders WHERE id = 500000",
+            "PlanHash": 14986928347945777420,
+            "ExecutionDuration": 3905459,
+            "RowsReturned": 1,
+            "RowsAffected": 0,
+            "RecordsScanned": 1,
+            "BytesScanned": 59,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 61005
+          },
+          "load_record": {
+            "count": 2,
+            "value": 1067102
+          },
+          "open_store": {
+            "count": 4,
+            "value": 10957410
+          },
+          "scan_records": {
+            "count": 2,
+            "value": 494818
+          }
+        }
+      },
+      {
+        "sql": "SELECT * FROM orders WHERE id = ?",
+        "started": "2026-09-20T21:58:23.201065345Z",
+        "connection_acquire_ns": 7995,
+        "query_ns": 16636347,
+        "rows": 1,
+        "plans": [
+          {
+            "SQL": "SELECT * FROM orders WHERE id = 999999",
+            "PlanHash": 14149301487018831995,
+            "PlanExplain": "Scan(ORDERS, [=])",
+            "PlanningDuration": 6199906,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT * FROM orders WHERE id = 999999",
+            "PlanHash": 14149301487018831995,
+            "ExecutionDuration": 4795595,
+            "RowsReturned": 1,
+            "RowsAffected": 0,
+            "RecordsScanned": 1,
+            "BytesScanned": 61,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 78769
+          },
+          "load_record": {
+            "count": 2,
+            "value": 1062783
+          },
+          "open_store": {
+            "count": 4,
+            "value": 12090454
+          },
+          "scan_records": {
+            "count": 2,
+            "value": 873245
+          }
+        }
+      },
+      {
+        "sql": "SELECT id, amount FROM orders WHERE customer_id = 0",
+        "started": "2026-09-20T21:58:23.230132232Z",
+        "connection_acquire_ns": 5922,
+        "query_ns": 32857870,
+        "rows": 8,
+        "plans": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE customer_id = 0",
+            "PlanHash": 8312299604218530111,
+            "PlanExplain": "Project([_current.ID#0, _current.AMOUNT#2], IndexScan(IDX_CUSTOMER, [=]))",
+            "PlanningDuration": 19445640,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE customer_id = 0",
+            "PlanHash": 8312299604218530111,
+            "ExecutionDuration": 8804329,
+            "RowsReturned": 8,
+            "RowsAffected": 0,
+            "RecordsScanned": 8,
+            "BytesScanned": 405,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 81374
+          },
+          "load_record": {
+            "count": 10,
+            "value": 6533187
+          },
+          "open_store": {
+            "count": 4,
+            "value": 23317115
+          },
+          "scan_index": {
+            "count": 9,
+            "value": 203185
+          }
+        }
+      },
+      {
+        "sql": "SELECT id FROM orders WHERE amount > 9000",
+        "started": "2026-09-20T21:58:23.277249086Z",
+        "connection_acquire_ns": 11902,
+        "query_ns": 372395816,
+        "rows": 100017,
+        "plans": [
+          {
+            "SQL": "SELECT id FROM orders WHERE amount > 9000",
+            "PlanHash": 10080126045617042494,
+            "PlanExplain": "Project([_current.ID#0], IndexScan(IDX_AMOUNT, [<>] COVERING))",
+            "PlanningDuration": 5191085,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id FROM orders WHERE amount > 9000",
+            "PlanHash": 10080126045617042494,
+            "ExecutionDuration": 353734623,
+            "RowsReturned": 100017,
+            "RowsAffected": 0,
+            "RecordsScanned": 100017,
+            "BytesScanned": 5094344,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 61637
+          },
+          "load_record": {
+            "count": 2,
+            "value": 566382
+          },
+          "open_store": {
+            "count": 4,
+            "value": 39190457
+          },
+          "scan_index": {
+            "count": 100018,
+            "value": 170389786
+          }
+        }
+      },
+      {
+        "sql": "SELECT COUNT(*) FROM orders WHERE status = 'pending'",
+        "started": "2026-09-20T21:58:23.658324004Z",
+        "connection_acquire_ns": 4950,
+        "query_ns": 459530694,
+        "rows": 1,
+        "plans": [
+          {
+            "SQL": "SELECT COUNT(*) FROM orders WHERE status = 'pending'",
+            "PlanHash": 16897660118757728509,
+            "PlanExplain": "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_STATUS, [=] COVERING)))",
+            "PlanningDuration": 6833165,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT COUNT(*) FROM orders WHERE status = 'pending'",
+            "PlanHash": 16897660118757728509,
+            "ExecutionDuration": 449358142,
+            "RowsReturned": 1,
+            "RowsAffected": 0,
+            "RecordsScanned": 250000,
+            "BytesScanned": 14233551,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 47089
+          },
+          "load_record": {
+            "count": 2,
+            "value": 267117
+          },
+          "open_store": {
+            "count": 4,
+            "value": 7710358
+          },
+          "scan_index": {
+            "count": 250001,
+            "value": 291730225
+          }
+        }
+      },
+      {
+        "sql": "SELECT COUNT(*) FROM orders WHERE amount > 5000",
+        "started": "2026-09-20T21:58:28.313499292Z",
+        "connection_acquire_ns": 4348,
+        "query_ns": 809033984,
+        "rows": 1,
+        "plans": [
+          {
+            "SQL": "SELECT COUNT(*) FROM orders WHERE amount > 5000",
+            "PlanHash": 18311867206624719702,
+            "PlanExplain": "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_AMOUNT, [<>] COVERING)))",
+            "PlanningDuration": 4646994,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT COUNT(*) FROM orders WHERE amount > 5000",
+            "PlanHash": 18311867206624719702,
+            "ExecutionDuration": 802559076,
+            "RowsReturned": 1,
+            "RowsAffected": 0,
+            "RecordsScanned": 500275,
+            "BytesScanned": 25481140,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 52218
+          },
+          "load_record": {
+            "count": 2,
+            "value": 162969
+          },
+          "open_store": {
+            "count": 4,
+            "value": 4748606
+          },
+          "scan_index": {
+            "count": 500276,
+            "value": 502999513
+          }
+        }
+      },
+      {
+        "sql": "SELECT status, COUNT(*), SUM(amount) FROM orders GROUP BY status ORDER BY status",
+        "started": "2026-09-20T21:58:29.140163196Z",
+        "connection_acquire_ns": 4628,
+        "query_ns": 13058229,
+        "rows": 4,
+        "plans": [
+          {
+            "SQL": "SELECT status, COUNT(*), SUM(amount) FROM orders GROUP BY status ORDER BY status",
+            "PlanHash": 9226060422181536080,
+            "PlanExplain": "Project([_current.STATUS#0, _current.COUNT(*)#1, _current.SUM(AMOUNT)#2], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+            "PlanningDuration": 4190379,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT status, COUNT(*), SUM(amount) FROM orders GROUP BY status ORDER BY status",
+            "PlanHash": 9226060422181536080,
+            "ExecutionDuration": 4267765,
+            "RowsReturned": 4,
+            "RowsAffected": 0,
+            "RecordsScanned": 8,
+            "BytesScanned": 548,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 41268
+          },
+          "load_record": {
+            "count": 2,
+            "value": 1073764
+          },
+          "open_store": {
+            "count": 4,
+            "value": 8754626
+          },
+          "scan_index": {
+            "count": 10,
+            "value": 976702
+          }
+        }
+      },
+      {
+        "sql": "SELECT status, COUNT(*) FROM orders GROUP BY status",
+        "started": "2026-09-20T21:58:29.165334022Z",
+        "connection_acquire_ns": 8917,
+        "query_ns": 35059460,
+        "rows": 4,
+        "plans": [
+          {
+            "SQL": "SELECT status, COUNT(*) FROM orders GROUP BY status",
+            "PlanHash": 5759958556986800592,
+            "PlanExplain": "Project([_current.STATUS#0, _current.COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only))",
+            "PlanningDuration": 4838106,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT status, COUNT(*) FROM orders GROUP BY status",
+            "PlanHash": 5759958556986800592,
+            "ExecutionDuration": 24788842,
+            "RowsReturned": 4,
+            "RowsAffected": 0,
+            "RecordsScanned": 4,
+            "BytesScanned": 264,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 75614
+          },
+          "load_record": {
+            "count": 2,
+            "value": 1080918
+          },
+          "open_store": {
+            "count": 4,
+            "value": 9814514
+          },
+          "scan_index": {
+            "count": 5,
+            "value": 21306404
+          }
+        }
+      },
+      {
+        "sql": "SELECT status, SUM(amount) FROM orders GROUP BY status ORDER BY status",
+        "started": "2026-09-20T21:58:29.207018765Z",
+        "connection_acquire_ns": 6031,
+        "query_ns": 20672675,
+        "rows": 4,
+        "plans": [
+          {
+            "SQL": "SELECT status, SUM(amount) FROM orders GROUP BY status ORDER BY status",
+            "PlanHash": 17853326420117949289,
+            "PlanExplain": "Project([_current.STATUS#0, _current.SUM(AMOUNT)#1], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+            "PlanningDuration": 4519542,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT status, SUM(amount) FROM orders GROUP BY status ORDER BY status",
+            "PlanHash": 17853326420117949289,
+            "ExecutionDuration": 11511879,
+            "RowsReturned": 4,
+            "RowsAffected": 0,
+            "RecordsScanned": 8,
+            "BytesScanned": 548,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 67046
+          },
+          "load_record": {
+            "count": 2,
+            "value": 1074185
+          },
+          "open_store": {
+            "count": 4,
+            "value": 8306718
+          },
+          "scan_index": {
+            "count": 10,
+            "value": 8487519
+          }
+        }
+      },
+      {
+        "sql": "SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) > 50000 ORDER BY customer_id",
+        "started": "2026-09-20T21:58:29.240658185Z",
+        "connection_acquire_ns": 9097,
+        "query_ns": 896962154,
+        "rows": 47271,
+        "plans": [
+          {
+            "SQL": "SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) > 50000 ORDER BY customer_id",
+            "PlanHash": 2793323594087593035,
+            "PlanExplain": "Project([_current.CUSTOMER_ID#0, _current.SUM(AMOUNT)#1], PredicatesFilter(GroupExistenceMerge(AggregateIndex(COUNT, SUM_AMOUNT_BY_CUSTOMER__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_CUSTOMER, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), [1 preds]))",
+            "PlanningDuration": 5255918,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) > 50000 ORDER BY customer_id",
+            "PlanHash": 2793323594087593035,
+            "ExecutionDuration": 872447752,
+            "RowsReturned": 47271,
+            "RowsAffected": 0,
+            "RecordsScanned": 199996,
+            "BytesScanned": 14568122,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 77816
+          },
+          "load_record": {
+            "count": 2,
+            "value": 1171759
+          },
+          "open_store": {
+            "count": 4,
+            "value": 22446044
+          },
+          "scan_index": {
+            "count": 199998,
+            "value": 356541963
+          }
+        }
+      },
+      {
+        "sql": "SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.id < 10 ORDER BY o.id",
+        "started": "2026-09-20T21:58:30.164781386Z",
+        "connection_acquire_ns": 7354,
+        "query_ns": 21945025,
+        "rows": 10,
+        "plans": [
+          {
+            "SQL": "SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.id < 10 ORDER BY o.id",
+            "PlanHash": 3417842950588140151,
+            "PlanExplain": "Project([_current.ID#0, _current.NAME#5], FlatMap(outer=Scan(ORDERS, [<>]), inner=Scan(CUSTOMERS, [=])))",
+            "PlanningDuration": 16192838,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.id < 10 ORDER BY o.id",
+            "PlanHash": 3417842950588140151,
+            "ExecutionDuration": 2891258,
+            "RowsReturned": 10,
+            "RowsAffected": 0,
+            "RecordsScanned": 20,
+            "BytesScanned": 1221,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 34706
+          },
+          "load_record": {
+            "count": 2,
+            "value": 198015
+          },
+          "open_store": {
+            "count": 4,
+            "value": 4908600
+          },
+          "scan_records": {
+            "count": 31,
+            "value": 1013240
+          }
+        }
+      },
+      {
+        "sql": "SELECT id FROM orders ORDER BY id",
+        "started": "2026-09-20T21:58:30.18684173Z",
+        "connection_acquire_ns": 4930,
+        "query_ns": 4738465007,
+        "rows": 1000000,
+        "plans": [
+          {
+            "SQL": "SELECT id FROM orders ORDER BY id",
+            "PlanHash": 11624487564147972017,
+            "PlanExplain": "Project([_current.ID#0], Scan(ORDERS))",
+            "PlanningDuration": 2259632,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id FROM orders ORDER BY id",
+            "PlanHash": 11624487564147972017,
+            "ExecutionDuration": 4734133521,
+            "RowsReturned": 1000000,
+            "RowsAffected": 0,
+            "RecordsScanned": 1000000,
+            "BytesScanned": 59739562,
+            "Pages": 2,
+            "Retries": 0,
+            "SlowQuery": true,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 4,
+            "value": 69983
+          },
+          "load_record": {
+            "count": 2,
+            "value": 143401
+          },
+          "open_store": {
+            "count": 5,
+            "value": 6147235
+          },
+          "scan_records": {
+            "count": 1000002,
+            "value": 2742366015
+          }
+        }
+      },
+      {
+        "sql": "SELECT id, amount FROM orders WHERE customer_id = 0 ORDER BY id",
+        "started": "2026-09-20T21:58:34.925581097Z",
+        "connection_acquire_ns": 10850,
+        "query_ns": 10277981,
+        "rows": 8,
+        "plans": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE customer_id = 0 ORDER BY id",
+            "PlanHash": 2617504254450519549,
+            "PlanExplain": "Project([_current.ID#0, _current.AMOUNT#2], IndexScan(IDX_CUSTOMER, [=]))",
+            "PlanningDuration": 4987429,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE customer_id = 0 ORDER BY id",
+            "PlanHash": 2617504254450519549,
+            "ExecutionDuration": 2910964,
+            "RowsReturned": 8,
+            "RowsAffected": 0,
+            "RecordsScanned": 8,
+            "BytesScanned": 405,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 33203
+          },
+          "load_record": {
+            "count": 10,
+            "value": 1374303
+          },
+          "open_store": {
+            "count": 4,
+            "value": 4360851
+          },
+          "scan_index": {
+            "count": 9,
+            "value": 148910
+          }
+        }
+      },
+      {
+        "sql": "SELECT id FROM orders ORDER BY id",
+        "started": "2026-09-20T21:58:34.936022849Z",
+        "connection_acquire_ns": 7875,
+        "query_ns": 4595515025,
+        "rows": 1000000,
+        "plans": [
+          {
+            "SQL": "SELECT id FROM orders ORDER BY id",
+            "PlanHash": 11624487564147972017,
+            "PlanExplain": "Project([_current.ID#0], Scan(ORDERS))",
+            "PlanningDuration": 3597174,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id FROM orders ORDER BY id",
+            "PlanHash": 11624487564147972017,
+            "ExecutionDuration": 4590075028,
+            "RowsReturned": 1000000,
+            "RowsAffected": 0,
+            "RecordsScanned": 1000000,
+            "BytesScanned": 59739562,
+            "Pages": 2,
+            "Retries": 0,
+            "SlowQuery": true,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 4,
+            "value": 96644
+          },
+          "load_record": {
+            "count": 2,
+            "value": 220327
+          },
+          "open_store": {
+            "count": 5,
+            "value": 6470497
+          },
+          "scan_records": {
+            "count": 1000002,
+            "value": 2588952385
+          }
+        }
+      },
+      {
+        "sql": "SELECT id, customer_id, amount, status FROM orders ORDER BY id",
+        "started": "2026-09-20T21:58:39.531722122Z",
+        "connection_acquire_ns": 6643,
+        "query_ns": 4934937525,
+        "rows": 1000000,
+        "plans": [
+          {
+            "SQL": "SELECT id, customer_id, amount, status FROM orders ORDER BY id",
+            "PlanHash": 6279743527251036498,
+            "PlanExplain": "Project([_current.ID#0, _current.CUSTOMER_ID#1, _current.AMOUNT#2, _current.STATUS#3], Scan(ORDERS))",
+            "PlanningDuration": 4206910,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id, customer_id, amount, status FROM orders ORDER BY id",
+            "PlanHash": 6279743527251036498,
+            "ExecutionDuration": 4927924780,
+            "RowsReturned": 1000000,
+            "RowsAffected": 0,
+            "RecordsScanned": 1000000,
+            "BytesScanned": 59739562,
+            "Pages": 2,
+            "Retries": 0,
+            "SlowQuery": true,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 4,
+            "value": 88207
+          },
+          "load_record": {
+            "count": 2,
+            "value": 235736
+          },
+          "open_store": {
+            "count": 5,
+            "value": 7144836
+          },
+          "scan_records": {
+            "count": 1000002,
+            "value": 2660487476
+          }
+        }
+      },
+      {
+        "sql": "SELECT id, amount FROM orders WHERE customer_id IN (0, 1, 2, 3, 4) ORDER BY id",
+        "started": "2026-09-20T21:58:44.466904321Z",
+        "connection_acquire_ns": 9017,
+        "query_ns": 24340384,
+        "rows": 46,
+        "plans": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE customer_id IN (0, 1, 2, 3, 4) ORDER BY id",
+            "PlanHash": 13701445708949119948,
+            "PlanExplain": "Project([_current.ID#0, _current.AMOUNT#2], InUnion(IndexScan(IDX_CUSTOMER, [=]), bindings=1, ASC))",
+            "PlanningDuration": 13924330,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE customer_id IN (0, 1, 2, 3, 4) ORDER BY id",
+            "PlanHash": 13701445708949119948,
+            "ExecutionDuration": 6242187,
+            "RowsReturned": 46,
+            "RowsAffected": 0,
+            "RecordsScanned": 46,
+            "BytesScanned": 2378,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 97134
+          },
+          "load_record": {
+            "count": 48,
+            "value": 3615271
+          },
+          "open_store": {
+            "count": 4,
+            "value": 4617399
+          },
+          "scan_index": {
+            "count": 51,
+            "value": 545375
+          }
+        }
+      },
+      {
+        "sql": "SELECT id, customer_id, amount, status FROM orders WHERE id = ?",
+        "started": "2026-09-20T21:58:44.491393627Z",
+        "connection_acquire_ns": 5019,
+        "query_ns": 6362895,
+        "rows": 1,
+        "plans": [
+          {
+            "SQL": "SELECT id, customer_id, amount, status FROM orders WHERE id = 999999",
+            "PlanHash": 3352163013474449500,
+            "PlanExplain": "Project([_current.ID#0, _current.CUSTOMER_ID#1, _current.AMOUNT#2, _current.STATUS#3], Scan(ORDERS, [=]))",
+            "PlanningDuration": 2890636,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id, customer_id, amount, status FROM orders WHERE id = 999999",
+            "PlanHash": 3352163013474449500,
+            "ExecutionDuration": 1528485,
+            "RowsReturned": 1,
+            "RowsAffected": 0,
+            "RecordsScanned": 1,
+            "BytesScanned": 61,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 32701
+          },
+          "load_record": {
+            "count": 2,
+            "value": 140155
+          },
+          "open_store": {
+            "count": 4,
+            "value": 4072525
+          },
+          "scan_records": {
+            "count": 2,
+            "value": 92105
+          }
+        }
+      },
+      {
+        "sql": "SELECT id, amount FROM orders WHERE id = ? AND status = 'pending'",
+        "started": "2026-09-20T21:58:44.497901315Z",
+        "connection_acquire_ns": 9358,
+        "query_ns": 11676682,
+        "rows": 1,
+        "plans": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE id = 500000 AND status = 'pending'",
+            "PlanHash": 11645745221745444647,
+            "PlanExplain": "Project([_current.ID#0, _current.AMOUNT#2], PredicatesFilter(Scan(ORDERS, [=]), [1 preds]))",
+            "PlanningDuration": 7995317,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE id = 500000 AND status = 'pending'",
+            "PlanHash": 11645745221745444647,
+            "ExecutionDuration": 2057208,
+            "RowsReturned": 1,
+            "RowsAffected": 0,
+            "RecordsScanned": 1,
+            "BytesScanned": 59,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 43240
+          },
+          "load_record": {
+            "count": 2,
+            "value": 174180
+          },
+          "open_store": {
+            "count": 4,
+            "value": 4019576
+          },
+          "scan_records": {
+            "count": 2,
+            "value": 197415
+          }
+        }
+      },
+      {
+        "sql": "SELECT id FROM orders WHERE amount + 0 = 9999 ORDER BY id",
+        "started": "2026-09-20T21:58:44.517084338Z",
+        "connection_acquire_ns": 7484,
+        "query_ns": 4287231308,
+        "rows": 97,
+        "plans": [
+          {
+            "SQL": "SELECT id FROM orders WHERE amount + 0 = 9999 ORDER BY id",
+            "PlanHash": 9419755788656575689,
+            "PlanExplain": "Project([_current.ID#0], PredicatesFilter(Scan(ORDERS), [1 preds]))",
+            "PlanningDuration": 4385849,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id FROM orders WHERE amount + 0 = 9999 ORDER BY id",
+            "PlanHash": 9419755788656575689,
+            "ExecutionDuration": 4281222885,
+            "RowsReturned": 97,
+            "RowsAffected": 0,
+            "RecordsScanned": 1000000,
+            "BytesScanned": 59739562,
+            "Pages": 2,
+            "Retries": 0,
+            "SlowQuery": true,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 4,
+            "value": 78929
+          },
+          "load_record": {
+            "count": 2,
+            "value": 252768
+          },
+          "open_store": {
+            "count": 5,
+            "value": 5497336
+          },
+          "scan_records": {
+            "count": 1000002,
+            "value": 2594561378
+          }
+        }
+      }
+    ],
+    "explain": [
+      "Scan(ORDERS, [=])",
+      "Project([_current.ID#0, _current.AMOUNT#2], IndexScan(IDX_CUSTOMER, [=]))",
+      "Project([_current.ID#0], IndexScan(IDX_AMOUNT, [<>] COVERING))",
+      "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_STATUS, [=] COVERING)))",
+      "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_AMOUNT, [<>] COVERING)))",
+      "Project([_current.STATUS#0, _current.COUNT(*)#1, _current.SUM(AMOUNT)#2], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+      "Project([_current.STATUS#0, _current.COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only))",
+      "Project([_current.STATUS#0, _current.SUM(AMOUNT)#1], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+      "Project([_current.CUSTOMER_ID#0, _current.SUM(AMOUNT)#1], PredicatesFilter(GroupExistenceMerge(AggregateIndex(COUNT, SUM_AMOUNT_BY_CUSTOMER__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_CUSTOMER, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), [1 preds]))",
+      "Project([_current.ID#0, _current.NAME#5], FlatMap(outer=Scan(ORDERS, [<>]), inner=Scan(CUSTOMERS, [=])))",
+      "Project([_current.ID#0], PredicatesFilter(Scan(ORDERS), [1 preds]))"
+    ],
+    "log_sha256": "351ba8a6737550a08c55bfee8cd42b24d538c111e9bdb73eb230426193a70bbb",
+    "trace_sha256": "d7b0e03b4d68a8c6cf560ef8a087bc6dbb8eb4497c21b3e554f44b1e972d3b86",
+    "trace_bytes": 266789510
+  },
+  {
+    "side": "baseline",
+    "sample": 2,
+    "tree": "893e4eb4760c1989c195b7be19484dc5961b0dcf",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/sqldriver/stress:stress_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestFDB_Stress_1M_LatencyAttribution$",
+      "--test_arg=-test.trace=/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-2.trace",
+      "--sandbox_writable_path=/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison",
+      "--build_event_json_file=/var/tmp/fdb-upgrade-recovery/runtime/latency-comparison/baseline-2-bep.jsonl"
+    ],
+    "started": 1789941529.3499053,
+    "elapsed": 235.9923939704895,
+    "load_start": [
+      12.3349609375,
+      8.50634765625,
+      10.84326171875
+    ],
+    "load_end": [
+      10.14404296875,
+      9.89208984375,
+      10.94921875
+    ],
+    "exit": 0,
+    "runs": {
+      "TestFDB_Stress_1M_LatencyAttribution": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_first": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_middle": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_last": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_customer_eq": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_amount_range": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_status_count": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_count": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_status": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_status_count_only": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/sum_by_status": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_customer_having": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/join_10_outer": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/order_by_pk_full": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/order_by_pk_index_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/scan_all_narrow": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/scan_all_wide": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/in_list": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/needle_in_haystack_pk": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/needle_in_haystack_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_sparse_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/update_by_index": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/delete_single_row": 1
+    },
+    "passes": {
+      "TestFDB_Stress_1M_LatencyAttribution": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_first": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_middle": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/pk_lookup_last": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_customer_eq": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_amount_range": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/index_status_count": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_count": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_status": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_status_count_only": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/sum_by_status": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/group_by_customer_having": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/join_10_outer": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/order_by_pk_full": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/order_by_pk_index_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/scan_all_narrow": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/scan_all_wide": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/in_list": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/needle_in_haystack_pk": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/needle_in_haystack_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/full_scan_sparse_filter": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/update_by_index": 1,
+      "TestFDB_Stress_1M_LatencyAttribution/delete_single_row": 1
+    },
+    "compiler": "/home/birdy/projects/fdb-java-upgrade-baseline/bazel-bin/pkg/relational/sqldriver/stress/stress_test_/stress_test: go1.26.6",
+    "attribution": [
+      {
+        "sql": "SELECT * FROM orders WHERE id = 0",
+        "started": "2026-09-20T22:02:20.098914356Z",
+        "connection_acquire_ns": 4328,
+        "query_ns": 12578963,
+        "rows": 1,
+        "plans": [
+          {
+            "SQL": "SELECT * FROM orders WHERE id = 0",
+            "PlanHash": 11157451244153423905,
+            "PlanExplain": "Scan(ORDERS, [=])",
+            "PlanningDuration": 5661917,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT * FROM orders WHERE id = 0",
+            "PlanHash": 11157451244153423905,
+            "ExecutionDuration": 2660611,
+            "RowsReturned": 1,
+            "RowsAffected": 0,
+            "RecordsScanned": 1,
+            "BytesScanned": 54,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 51628
+          },
+          "load_record": {
+            "count": 2,
+            "value": 172617
+          },
+          "open_store": {
+            "count": 4,
+            "value": 10062434
+          },
+          "scan_records": {
+            "count": 2,
+            "value": 113495
+          }
+        }
+      },
+      {
+        "sql": "SELECT * FROM orders WHERE id = ?",
+        "started": "2026-09-20T22:02:20.111672709Z",
+        "connection_acquire_ns": 4919,
+        "query_ns": 9942388,
+        "rows": 1,
+        "plans": [
+          {
+            "SQL": "SELECT * FROM orders WHERE id = 500000",
+            "PlanHash": 14986928347945777420,
+            "PlanExplain": "Scan(ORDERS, [=])",
+            "PlanningDuration": 3507927,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT * FROM orders WHERE id = 500000",
+            "PlanHash": 14986928347945777420,
+            "ExecutionDuration": 3467500,
+            "RowsReturned": 1,
+            "RowsAffected": 0,
+            "RecordsScanned": 1,
+            "BytesScanned": 59,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 46206
+          },
+          "load_record": {
+            "count": 2,
+            "value": 181865
+          },
+          "open_store": {
+            "count": 4,
+            "value": 8044744
+          },
+          "scan_records": {
+            "count": 2,
+            "value": 148341
+          }
+        }
+      },
+      {
+        "sql": "SELECT * FROM orders WHERE id = ?",
+        "started": "2026-09-20T22:02:20.121845543Z",
+        "connection_acquire_ns": 22794,
+        "query_ns": 8689974,
+        "rows": 1,
+        "plans": [
+          {
+            "SQL": "SELECT * FROM orders WHERE id = 999999",
+            "PlanHash": 14149301487018831995,
+            "PlanExplain": "Scan(ORDERS, [=])",
+            "PlanningDuration": 3829285,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT * FROM orders WHERE id = 999999",
+            "PlanHash": 14149301487018831995,
+            "ExecutionDuration": 1580725,
+            "RowsReturned": 1,
+            "RowsAffected": 0,
+            "RecordsScanned": 1,
+            "BytesScanned": 61,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 43783
+          },
+          "load_record": {
+            "count": 2,
+            "value": 179520
+          },
+          "open_store": {
+            "count": 4,
+            "value": 6282563
+          },
+          "scan_records": {
+            "count": 2,
+            "value": 139535
+          }
+        }
+      },
+      {
+        "sql": "SELECT id, amount FROM orders WHERE customer_id = 0",
+        "started": "2026-09-20T22:02:20.141659373Z",
+        "connection_acquire_ns": 4499,
+        "query_ns": 8245383,
+        "rows": 8,
+        "plans": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE customer_id = 0",
+            "PlanHash": 8312299604218530111,
+            "PlanExplain": "Project([_current.ID#0, _current.AMOUNT#2], IndexScan(IDX_CUSTOMER, [=]))",
+            "PlanningDuration": 3359005,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE customer_id = 0",
+            "PlanHash": 8312299604218530111,
+            "ExecutionDuration": 2949217,
+            "RowsReturned": 8,
+            "RowsAffected": 0,
+            "RecordsScanned": 8,
+            "BytesScanned": 405,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 37350
+          },
+          "load_record": {
+            "count": 10,
+            "value": 914682
+          },
+          "open_store": {
+            "count": 4,
+            "value": 4570990
+          },
+          "scan_index": {
+            "count": 9,
+            "value": 214814
+          }
+        }
+      },
+      {
+        "sql": "SELECT id FROM orders WHERE amount > 9000",
+        "started": "2026-09-20T22:02:20.155810505Z",
+        "connection_acquire_ns": 5330,
+        "query_ns": 266078230,
+        "rows": 100017,
+        "plans": [
+          {
+            "SQL": "SELECT id FROM orders WHERE amount > 9000",
+            "PlanHash": 10080126045617042494,
+            "PlanExplain": "Project([_current.ID#0], IndexScan(IDX_AMOUNT, [<>] COVERING))",
+            "PlanningDuration": 3958860,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id FROM orders WHERE amount > 9000",
+            "PlanHash": 10080126045617042494,
+            "ExecutionDuration": 260347793,
+            "RowsReturned": 100017,
+            "RowsAffected": 0,
+            "RecordsScanned": 100017,
+            "BytesScanned": 5094344,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 47651
+          },
+          "load_record": {
+            "count": 2,
+            "value": 158710
+          },
+          "open_store": {
+            "count": 4,
+            "value": 4400838
+          },
+          "scan_index": {
+            "count": 100018,
+            "value": 112641283
+          }
+        }
+      },
+      {
+        "sql": "SELECT COUNT(*) FROM orders WHERE status = 'pending'",
+        "started": "2026-09-20T22:02:20.432561877Z",
+        "connection_acquire_ns": 5621,
+        "query_ns": 554159357,
+        "rows": 1,
+        "plans": [
+          {
+            "SQL": "SELECT COUNT(*) FROM orders WHERE status = 'pending'",
+            "PlanHash": 16897660118757728509,
+            "PlanExplain": "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_STATUS, [=] COVERING)))",
+            "PlanningDuration": 7429787,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT COUNT(*) FROM orders WHERE status = 'pending'",
+            "PlanHash": 16897660118757728509,
+            "ExecutionDuration": 542136808,
+            "RowsReturned": 1,
+            "RowsAffected": 0,
+            "RecordsScanned": 250000,
+            "BytesScanned": 14233551,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 75344
+          },
+          "load_record": {
+            "count": 2,
+            "value": 1084394
+          },
+          "open_store": {
+            "count": 4,
+            "value": 23928496
+          },
+          "scan_index": {
+            "count": 250001,
+            "value": 367167660
+          }
+        }
+      },
+      {
+        "sql": "SELECT COUNT(*) FROM orders WHERE amount > 5000",
+        "started": "2026-09-20T22:02:25.037215308Z",
+        "connection_acquire_ns": 3937,
+        "query_ns": 944030947,
+        "rows": 1,
+        "plans": [
+          {
+            "SQL": "SELECT COUNT(*) FROM orders WHERE amount > 5000",
+            "PlanHash": 18311867206624719702,
+            "PlanExplain": "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_AMOUNT, [<>] COVERING)))",
+            "PlanningDuration": 3094443,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT COUNT(*) FROM orders WHERE amount > 5000",
+            "PlanHash": 18311867206624719702,
+            "ExecutionDuration": 939250009,
+            "RowsReturned": 1,
+            "RowsAffected": 0,
+            "RecordsScanned": 500275,
+            "BytesScanned": 25481140,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 54663
+          },
+          "load_record": {
+            "count": 2,
+            "value": 111892
+          },
+          "open_store": {
+            "count": 4,
+            "value": 3921619
+          },
+          "scan_index": {
+            "count": 500276,
+            "value": 638397026
+          }
+        }
+      },
+      {
+        "sql": "SELECT status, COUNT(*), SUM(amount) FROM orders GROUP BY status ORDER BY status",
+        "started": "2026-09-20T22:02:25.989901443Z",
+        "connection_acquire_ns": 5259,
+        "query_ns": 8556602,
+        "rows": 4,
+        "plans": [
+          {
+            "SQL": "SELECT status, COUNT(*), SUM(amount) FROM orders GROUP BY status ORDER BY status",
+            "PlanHash": 9226060422181536080,
+            "PlanExplain": "Project([_current.STATUS#0, _current.COUNT(*)#1, _current.SUM(AMOUNT)#2], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+            "PlanningDuration": 3287959,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT status, COUNT(*), SUM(amount) FROM orders GROUP BY status ORDER BY status",
+            "PlanHash": 9226060422181536080,
+            "ExecutionDuration": 3280456,
+            "RowsReturned": 4,
+            "RowsAffected": 0,
+            "RecordsScanned": 8,
+            "BytesScanned": 548,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 48772
+          },
+          "load_record": {
+            "count": 2,
+            "value": 178297
+          },
+          "open_store": {
+            "count": 4,
+            "value": 5680052
+          },
+          "scan_index": {
+            "count": 10,
+            "value": 212835
+          }
+        }
+      },
+      {
+        "sql": "SELECT status, COUNT(*) FROM orders GROUP BY status",
+        "started": "2026-09-20T22:02:26.00412918Z",
+        "connection_acquire_ns": 8266,
+        "query_ns": 5670223,
+        "rows": 4,
+        "plans": [
+          {
+            "SQL": "SELECT status, COUNT(*) FROM orders GROUP BY status",
+            "PlanHash": 5759958556986800592,
+            "PlanExplain": "Project([_current.STATUS#0, _current.COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only))",
+            "PlanningDuration": 2403614,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT status, COUNT(*) FROM orders GROUP BY status",
+            "PlanHash": 5759958556986800592,
+            "ExecutionDuration": 1455738,
+            "RowsReturned": 4,
+            "RowsAffected": 0,
+            "RecordsScanned": 4,
+            "BytesScanned": 264,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 25689
+          },
+          "load_record": {
+            "count": 2,
+            "value": 159251
+          },
+          "open_store": {
+            "count": 4,
+            "value": 4002342
+          },
+          "scan_index": {
+            "count": 5,
+            "value": 95851
+          }
+        }
+      },
+      {
+        "sql": "SELECT status, SUM(amount) FROM orders GROUP BY status ORDER BY status",
+        "started": "2026-09-20T22:02:26.014642008Z",
+        "connection_acquire_ns": 3197,
+        "query_ns": 6806637,
+        "rows": 4,
+        "plans": [
+          {
+            "SQL": "SELECT status, SUM(amount) FROM orders GROUP BY status ORDER BY status",
+            "PlanHash": 17853326420117949289,
+            "PlanExplain": "Project([_current.STATUS#0, _current.SUM(AMOUNT)#1], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+            "PlanningDuration": 3180787,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT status, SUM(amount) FROM orders GROUP BY status ORDER BY status",
+            "PlanHash": 17853326420117949289,
+            "ExecutionDuration": 1855936,
+            "RowsReturned": 4,
+            "RowsAffected": 0,
+            "RecordsScanned": 8,
+            "BytesScanned": 548,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 36459
+          },
+          "load_record": {
+            "count": 2,
+            "value": 142680
+          },
+          "open_store": {
+            "count": 4,
+            "value": 4207653
+          },
+          "scan_index": {
+            "count": 10,
+            "value": 234765
+          }
+        }
+      },
+      {
+        "sql": "SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) > 50000 ORDER BY customer_id",
+        "started": "2026-09-20T22:02:26.027545276Z",
+        "connection_acquire_ns": 5100,
+        "query_ns": 758720014,
+        "rows": 47271,
+        "plans": [
+          {
+            "SQL": "SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) > 50000 ORDER BY customer_id",
+            "PlanHash": 2793323594087593035,
+            "PlanExplain": "Project([_current.CUSTOMER_ID#0, _current.SUM(AMOUNT)#1], PredicatesFilter(GroupExistenceMerge(AggregateIndex(COUNT, SUM_AMOUNT_BY_CUSTOMER__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_CUSTOMER, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), [1 preds]))",
+            "PlanningDuration": 7483860,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) > 50000 ORDER BY customer_id",
+            "PlanHash": 2793323594087593035,
+            "ExecutionDuration": 748569823,
+            "RowsReturned": 47271,
+            "RowsAffected": 0,
+            "RecordsScanned": 199996,
+            "BytesScanned": 14568122,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 72948
+          },
+          "load_record": {
+            "count": 2,
+            "value": 202543
+          },
+          "open_store": {
+            "count": 4,
+            "value": 7979890
+          },
+          "scan_index": {
+            "count": 199998,
+            "value": 258823290
+          }
+        }
+      },
+      {
+        "sql": "SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.id < 10 ORDER BY o.id",
+        "started": "2026-09-20T22:02:26.813373301Z",
+        "connection_acquire_ns": 16822,
+        "query_ns": 25732304,
+        "rows": 10,
+        "plans": [
+          {
+            "SQL": "SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.id < 10 ORDER BY o.id",
+            "PlanHash": 3417842950588140151,
+            "PlanExplain": "Project([_current.ID#0, _current.NAME#5], FlatMap(outer=Scan(ORDERS, [<>]), inner=Scan(CUSTOMERS, [=])))",
+            "PlanningDuration": 20170947,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.id < 10 ORDER BY o.id",
+            "PlanHash": 3417842950588140151,
+            "ExecutionDuration": 3217185,
+            "RowsReturned": 10,
+            "RowsAffected": 0,
+            "RecordsScanned": 20,
+            "BytesScanned": 1221,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 42480
+          },
+          "load_record": {
+            "count": 2,
+            "value": 163761
+          },
+          "open_store": {
+            "count": 4,
+            "value": 4618662
+          },
+          "scan_records": {
+            "count": 31,
+            "value": 1059317
+          }
+        }
+      },
+      {
+        "sql": "SELECT id FROM orders ORDER BY id",
+        "started": "2026-09-20T22:02:26.839277411Z",
+        "connection_acquire_ns": 21761,
+        "query_ns": 4658940933,
+        "rows": 1000000,
+        "plans": [
+          {
+            "SQL": "SELECT id FROM orders ORDER BY id",
+            "PlanHash": 11624487564147972017,
+            "PlanExplain": "Project([_current.ID#0], Scan(ORDERS))",
+            "PlanningDuration": 2702932,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id FROM orders ORDER BY id",
+            "PlanHash": 11624487564147972017,
+            "ExecutionDuration": 4648919225,
+            "RowsReturned": 1000000,
+            "RowsAffected": 0,
+            "RecordsScanned": 1000000,
+            "BytesScanned": 59739562,
+            "Pages": 2,
+            "Retries": 0,
+            "SlowQuery": true,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 4,
+            "value": 109527
+          },
+          "load_record": {
+            "count": 2,
+            "value": 851564
+          },
+          "open_store": {
+            "count": 5,
+            "value": 11705378
+          },
+          "scan_records": {
+            "count": 1000002,
+            "value": 2655623261
+          }
+        }
+      },
+      {
+        "sql": "SELECT id, amount FROM orders WHERE customer_id = 0 ORDER BY id",
+        "started": "2026-09-20T22:02:31.498467436Z",
+        "connection_acquire_ns": 12654,
+        "query_ns": 13547639,
+        "rows": 8,
+        "plans": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE customer_id = 0 ORDER BY id",
+            "PlanHash": 2617504254450519549,
+            "PlanExplain": "Project([_current.ID#0, _current.AMOUNT#2], IndexScan(IDX_CUSTOMER, [=]))",
+            "PlanningDuration": 7176888,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE customer_id = 0 ORDER BY id",
+            "PlanHash": 2617504254450519549,
+            "ExecutionDuration": 4013995,
+            "RowsReturned": 8,
+            "RowsAffected": 0,
+            "RecordsScanned": 8,
+            "BytesScanned": 405,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 46970
+          },
+          "load_record": {
+            "count": 10,
+            "value": 890698
+          },
+          "open_store": {
+            "count": 4,
+            "value": 5442120
+          },
+          "scan_index": {
+            "count": 9,
+            "value": 145186
+          }
+        }
+      },
+      {
+        "sql": "SELECT id FROM orders ORDER BY id",
+        "started": "2026-09-20T22:02:31.512154128Z",
+        "connection_acquire_ns": 13676,
+        "query_ns": 4586387449,
+        "rows": 1000000,
+        "plans": [
+          {
+            "SQL": "SELECT id FROM orders ORDER BY id",
+            "PlanHash": 11624487564147972017,
+            "PlanExplain": "Project([_current.ID#0], Scan(ORDERS))",
+            "PlanningDuration": 2703963,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id FROM orders ORDER BY id",
+            "PlanHash": 11624487564147972017,
+            "ExecutionDuration": 4581786662,
+            "RowsReturned": 1000000,
+            "RowsAffected": 0,
+            "RecordsScanned": 1000000,
+            "BytesScanned": 59739562,
+            "Pages": 2,
+            "Retries": 0,
+            "SlowQuery": true,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 4,
+            "value": 77928
+          },
+          "load_record": {
+            "count": 2,
+            "value": 154543
+          },
+          "open_store": {
+            "count": 5,
+            "value": 5745867
+          },
+          "scan_records": {
+            "count": 1000002,
+            "value": 2593236010
+          }
+        }
+      },
+      {
+        "sql": "SELECT id, customer_id, amount, status FROM orders ORDER BY id",
+        "started": "2026-09-20T22:02:36.098730225Z",
+        "connection_acquire_ns": 8075,
+        "query_ns": 4886243681,
+        "rows": 1000000,
+        "plans": [
+          {
+            "SQL": "SELECT id, customer_id, amount, status FROM orders ORDER BY id",
+            "PlanHash": 6279743527251036498,
+            "PlanExplain": "Project([_current.ID#0, _current.CUSTOMER_ID#1, _current.AMOUNT#2, _current.STATUS#3], Scan(ORDERS))",
+            "PlanningDuration": 2807660,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id, customer_id, amount, status FROM orders ORDER BY id",
+            "PlanHash": 6279743527251036498,
+            "ExecutionDuration": 4880145006,
+            "RowsReturned": 1000000,
+            "RowsAffected": 0,
+            "RecordsScanned": 1000000,
+            "BytesScanned": 59739562,
+            "Pages": 2,
+            "Retries": 0,
+            "SlowQuery": true,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 4,
+            "value": 80893
+          },
+          "load_record": {
+            "count": 2,
+            "value": 217522
+          },
+          "open_store": {
+            "count": 5,
+            "value": 7202366
+          },
+          "scan_records": {
+            "count": 1000002,
+            "value": 2629344250
+          }
+        }
+      },
+      {
+        "sql": "SELECT id, amount FROM orders WHERE customer_id IN (0, 1, 2, 3, 4) ORDER BY id",
+        "started": "2026-09-20T22:02:40.985303731Z",
+        "connection_acquire_ns": 9117,
+        "query_ns": 23877340,
+        "rows": 46,
+        "plans": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE customer_id IN (0, 1, 2, 3, 4) ORDER BY id",
+            "PlanHash": 13701445708949119948,
+            "PlanExplain": "Project([_current.ID#0, _current.AMOUNT#2], InUnion(IndexScan(IDX_CUSTOMER, [=]), bindings=1, ASC))",
+            "PlanningDuration": 13110360,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE customer_id IN (0, 1, 2, 3, 4) ORDER BY id",
+            "PlanHash": 13701445708949119948,
+            "ExecutionDuration": 6866379,
+            "RowsReturned": 46,
+            "RowsAffected": 0,
+            "RecordsScanned": 46,
+            "BytesScanned": 2378,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 38122
+          },
+          "load_record": {
+            "count": 48,
+            "value": 3680523
+          },
+          "open_store": {
+            "count": 4,
+            "value": 4566031
+          },
+          "scan_index": {
+            "count": 51,
+            "value": 1260739
+          }
+        }
+      },
+      {
+        "sql": "SELECT id, customer_id, amount, status FROM orders WHERE id = ?",
+        "started": "2026-09-20T22:02:41.009355852Z",
+        "connection_acquire_ns": 8185,
+        "query_ns": 8978913,
+        "rows": 1,
+        "plans": [
+          {
+            "SQL": "SELECT id, customer_id, amount, status FROM orders WHERE id = 999999",
+            "PlanHash": 3352163013474449500,
+            "PlanExplain": "Project([_current.ID#0, _current.CUSTOMER_ID#1, _current.AMOUNT#2, _current.STATUS#3], Scan(ORDERS, [=]))",
+            "PlanningDuration": 3790632,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id, customer_id, amount, status FROM orders WHERE id = 999999",
+            "PlanHash": 3352163013474449500,
+            "ExecutionDuration": 2012022,
+            "RowsReturned": 1,
+            "RowsAffected": 0,
+            "RecordsScanned": 1,
+            "BytesScanned": 61,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 54043
+          },
+          "load_record": {
+            "count": 2,
+            "value": 479388
+          },
+          "open_store": {
+            "count": 4,
+            "value": 5282710
+          },
+          "scan_records": {
+            "count": 2,
+            "value": 177466
+          }
+        }
+      },
+      {
+        "sql": "SELECT id, amount FROM orders WHERE id = ? AND status = 'pending'",
+        "started": "2026-09-20T22:02:41.018505878Z",
+        "connection_acquire_ns": 6723,
+        "query_ns": 8574927,
+        "rows": 1,
+        "plans": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE id = 500000 AND status = 'pending'",
+            "PlanHash": 11645745221745444647,
+            "PlanExplain": "Project([_current.ID#0, _current.AMOUNT#2], PredicatesFilter(Scan(ORDERS, [=]), [1 preds]))",
+            "PlanningDuration": 4892199,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id, amount FROM orders WHERE id = 500000 AND status = 'pending'",
+            "PlanHash": 11645745221745444647,
+            "ExecutionDuration": 1550938,
+            "RowsReturned": 1,
+            "RowsAffected": 0,
+            "RecordsScanned": 1,
+            "BytesScanned": 59,
+            "Pages": 1,
+            "Retries": 0,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 3,
+            "value": 28222
+          },
+          "load_record": {
+            "count": 2,
+            "value": 167818
+          },
+          "open_store": {
+            "count": 4,
+            "value": 4140624
+          },
+          "scan_records": {
+            "count": 2,
+            "value": 124505
+          }
+        }
+      },
+      {
+        "sql": "SELECT id FROM orders WHERE amount + 0 = 9999 ORDER BY id",
+        "started": "2026-09-20T22:02:41.032849274Z",
+        "connection_acquire_ns": 3447,
+        "query_ns": 4222429759,
+        "rows": 97,
+        "plans": [
+          {
+            "SQL": "SELECT id FROM orders WHERE amount + 0 = 9999 ORDER BY id",
+            "PlanHash": 9419755788656575689,
+            "PlanExplain": "Project([_current.ID#0], PredicatesFilter(Scan(ORDERS), [1 preds]))",
+            "PlanningDuration": 3655246,
+            "Cache": 3,
+            "CacheNumEntries": 1,
+            "SlowQuery": false,
+            "Err": null
+          }
+        ],
+        "executions": [
+          {
+            "SQL": "SELECT id FROM orders WHERE amount + 0 = 9999 ORDER BY id",
+            "PlanHash": 9419755788656575689,
+            "ExecutionDuration": 4216410274,
+            "RowsReturned": 97,
+            "RowsAffected": 0,
+            "RecordsScanned": 1000000,
+            "BytesScanned": 59739562,
+            "Pages": 2,
+            "Retries": 0,
+            "SlowQuery": true,
+            "Err": null
+          }
+        ],
+        "store_timers": {
+          "commit": {
+            "count": 4,
+            "value": 69391
+          },
+          "load_record": {
+            "count": 2,
+            "value": 229696
+          },
+          "open_store": {
+            "count": 5,
+            "value": 5287158
+          },
+          "scan_records": {
+            "count": 1000002,
+            "value": 2530696501
+          }
+        }
+      }
+    ],
+    "explain": [
+      "Scan(ORDERS, [=])",
+      "Project([_current.ID#0, _current.AMOUNT#2], IndexScan(IDX_CUSTOMER, [=]))",
+      "Project([_current.ID#0], IndexScan(IDX_AMOUNT, [<>] COVERING))",
+      "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_STATUS, [=] COVERING)))",
+      "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_AMOUNT, [<>] COVERING)))",
+      "Project([_current.STATUS#0, _current.COUNT(*)#1, _current.SUM(AMOUNT)#2], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+      "Project([_current.STATUS#0, _current.COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only))",
+      "Project([_current.STATUS#0, _current.SUM(AMOUNT)#1], GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS); keys=[STATUS#0], driving=0))",
+      "Project([_current.CUSTOMER_ID#0, _current.SUM(AMOUNT)#1], PredicatesFilter(GroupExistenceMerge(AggregateIndex(COUNT, SUM_AMOUNT_BY_CUSTOMER__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_CUSTOMER, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), [1 preds]))",
+      "Project([_current.ID#0, _current.NAME#5], FlatMap(outer=Scan(ORDERS, [<>]), inner=Scan(CUSTOMERS, [=])))",
+      "Project([_current.ID#0], PredicatesFilter(Scan(ORDERS), [1 preds]))"
+    ],
+    "log_sha256": "a2fdc258887dc3236cc5b24e0c542a235d59ab9c36482f2326b1873e918c9522",
+    "trace_sha256": "2b0a0bfb28b201d7a8d351baed64076182428a4bd11e130d4ae58c8763c8b002",
+    "trace_bytes": 264392852
+  }
+]

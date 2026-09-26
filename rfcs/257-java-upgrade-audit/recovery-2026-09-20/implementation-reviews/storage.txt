@@ -1,0 +1,21 @@
+**NAK — implementation code** at tree `a8940de29c3726e44d5e14779f321b732e11be88`, against base `71ccd8cf8b3fd0dbafe283e91171818e36af555e` and Java `fdacd162a9c8acfadc49082b89185c823ab8ae4a`.
+
+Three fixes are required:
+
+1. **P1: WS-A’s exact RaBitQ arithmetic prerequisite remains unmet on FMA architectures.** The serialized calibration calls `dot`, whose reduction remains `sum += a[i] * b[i]` ([rabitq.go:384](/home/birdy/projects/fdb-go/pkg/rabitq/rabitq.go:384), [rabitq.go:600](/home/birdy/projects/fdb-go/pkg/rabitq/rabitq.go:600)). Go permits fused multiplication/addition; its [ARM64 compiler rule:1799](/usr/lib/go/src/cmd/compile/internal/ssa/_gen/ARM64.rules:1799) implements that fusion. Java deliberately uses scalar, separately rounded reductions for persisted-byte stability ([RaBitQuantizer.java:166](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/rabitq/RaBitQuantizer.java:166)). The sweep and quantization accumulations also contain fusible expressions. **Fix:** enforce explicit binary64 rounding boundaries throughout arithmetic feeding encoded bytes, including `dot` and quantization; retain discriminating Java byte vectors and verify an FMA-capable architecture. The supplied amd64 passes do not cover this branch. This is a source/compiler finding, not a newly executed reproduction.
+
+2. **P2: Positional GROUP BY uses the wrong coordinate system after star expansion.** Expansion adjusts visible ordinals ([select_parser.go:1175](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:1175)), but positional grouping indexes the original, unexpanded syntax list ([select_parser.go:1382](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:1382)). For `SELECT *, 1 AS a, COUNT(*) AS n GROUP BY 1`, output position 1 is `a`, while syntax element 1 is the empty star. The constant-expression recovery is skipped, leaving `A` to resolve against the empty input scope. A multi-column star can instead select an unrelated following expression. **Fix:** resolve grouping through the expanded slot-to-expression mapping. Add zero-width and multi-column-star positional grouping contracts; the retained probes test these features separately.
+
+3. **P2: Checked array reconstruction lost its nil-type diagnostic.** [value_array_constructor.go:121](/home/birdy/projects/fdb-go/pkg/recordlayer/query/plan/cascades/values/value_array_constructor.go:121) dereferences `child.Type()` after removing the previous `isNilBinding(childType)` check. A nonnil child such as raw `&QuantifiedRecordValue{}` now panics instead of returning `TypeNil`; the checked dispatcher adds no intervening validation. **Fix:** restore the type guard and cover nil and typed-nil child types alongside the existing nil-child tests.
+
+The metadata field-16 preservation and HNSW provenance changes were reviewed through initialization, transform activation, entry replacement, compact/inline writes, caches, deletion repair and cold reopening, including the approved explicit legacy disable/refusal/rebuild contract. All 16 canonical protos match the exact Java target. All 140 changed paths match the supplied freeze manifest.
+
+Separately, the verification/publication gates remain:
+
+- The supplied [uncached full-suite log](/var/tmp/fdb-upgrade-recovery/runtime/fixed-full-test.log) establishes **92/92 targets passed**. The six-target runtime race run is **not credited as passed**.
+- The current-machine sequential baseline/current **1M comparison remains pending**.
+- Historical mutation reports and missing old raw artifacts are not fresh verification; design and recovery-security ACKs are not implementation ACKs.
+- The original executor startup-timeout cause remains unresolved, separately from the fixed Docker networking mismatch.
+- Fixes require verification and renewed milestone review. WS-B–WS-K completion and publication/merge approval remain outside this verdict.
+
+No files changed; no tests/builds, agents, worktrees or Git-state changes were performed.

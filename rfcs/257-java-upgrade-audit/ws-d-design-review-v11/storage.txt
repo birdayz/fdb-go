@@ -1,0 +1,96 @@
+**NAK** on the RFC-257 WS-D design v11. The heartbeat fix and the removal of sampling hold up. The new D-0 phase changes the retry contract of every record-layer transaction, but it never says which layer commits an attempt. The recipe it adopts (the TODO item's) silently switches off the chaos safety net.
+
+- **Tree:** `01b0669d8d12e6eb84eebfa31f160cfed853e5d5`.
+- **Design:** SHA256 `6a1dd51dc89cef8f155caf924982f17cc2ba0b5346367668f4e253cbb79205ec`, recomputed from the tree blob; 1489 lines.
+- **Java:** `fdacd162`.
+- **Read:** all four v10 verdicts; the full v11 design and its diff from v10; the oracle README and both evidence files; the item 23/24/25 logs; the heartbeat delta; the Go and Java sources cited below.
+- **Nothing run or changed.**
+
+## P2 — D-0 doesn't say what commits an attempt (design 847-875)
+
+**How Go commits today.** `Run` commits through `d.transactor`'s own loop (`database.go:272-316`). `NewFDBDatabaseWithTransactor` exists so that fault injection and tracing wrappers see `Run` traffic (`database.go:187-190`), and every chaos scenario runs `chaosDB.Run` through a `ChaosTransactor` (`chaos/scenario.go:68-72, 190-293`).
+
+**What D-0 adopts.** D-0 says it shares one mechanism with `RunWithRetry`. That function's `runOnce` builds the transaction with `CreateWritableTransaction` and commits it directly, never touching `d.transactor` (`runner.go`). The TODO recipe the design points to says the same: "INSTEAD OF delegating straight to `d.transactor.Transact`" (`TODO.md:6995`).
+
+**Consequence.** Built as written, the chaos suite injects nothing and stays green. This is exactly the "green from an empty set" failure CLAUDE.md warns about.
+
+**The design's own 1007 fixture cannot be built (873-875).** It needs "a chaos-transactor fault" that raises 1007 to the retry owner. `ChaosTransactor` never returns an FDB error that way (`fault.go:151-207`):
+- `FaultTransactionTooOld` commits and then re-executes the closure;
+- `FaultReadError` fails reads with a non-retryable error.
+
+**Needed:**
+1. **Commit route.** State that each attempt is one `d.transactor.TransactCtx` call, with the raw loop capped at one attempt. For example, set a retry limit of 0 on the transaction: pure-Go `OnError` then returns the input error (`transaction.go:~2504`), and libfdb_c's `retry_limit` behaves the same. Move `RunWithRetry` onto the same route.
+2. **What that route drops.**
+   - The raw client's handling of "may have committed" errors (1021, 1039): its retry copies the previous attempt's write conflicts into read conflicts (`transaction.go:2555-2579`). A fresh attempt loses this.
+   - A transaction timeout would apply per attempt rather than across all retries.
+   - The commit-unknown barrier is unaffected: it stays inside `Commit` (`transaction.go:1979-1980`).
+   - Fresh attempts match Java's runner, but say so.
+3. **Retry predicate.** `isRetryableError` is not `fdb_error_predicate(RETRYABLE)`: it adds 1235 and 1242 (`runner.go:410-440`). `fdb.IsRetryable` is the pinned 12-code predicate (`retry_predicate_pin_test.go:15-37`). Use that.
+4. **Backoff.** Java's delay is full jitter: a random fraction of a current delay that doubles from 10 ms, with a 2 ms floor (`ExponentialDelay.java:62-72`). `RunWithRetry` uses 0.5–1.5× jitter instead. Sharing one mechanism means changing the runner too; say so.
+5. **Weak reads.** Java clears weak-read semantics on every retry (`TransactionalRunner.java:181-192`, called with `currAttempt != 0`). `RunWithWeakReads` re-applies CausalReadRisky on every attempt (`database.go:391-395`).
+6. **`RunRead`.** It belongs to the stated `Run*` population but never commits. State how its loop is bounded.
+7. **Fixtures to add.**
+   - 1021 on attempt 1: post-commit hooks run exactly once, `RunWithVersionstamp` returns the final attempt's versionstamp, and `FaultCommitUnknown` is still observed through `Run`.
+   - A new chaos fault that returns a retryable code to the retry owner.
+
+## P3
+
+1. **The admission cost W leaves out the KMeans settings.**
+   - Each refit costs in proportion to `kMeansMaxIterations × (restarts + 1)`. Defaults are 8 and 3 (`Config.java:182-183`); both are per-index options fixed at creation (`GuardiannVectorIndexEngine.java:345-346, 435-438`).
+   - The "about 1.7 s" at the bound (1143-1145, 1320) holds only at default settings and on JVM timings.
+   - Fold the settings into W, which stays a pure function of the input, and require a Go-side measurement of cost per unit of W before fixing B.
+2. **The balance claim is too broad (1215-1217).** "0.33 to 0.49 on every measured shape at d = 768 to 4096" is false. On the spread shape at d = 4096, seed 1 selects [1726 274], a fraction of 0.137 (`wsd-gen-1.log:329`). README item 23 correctly limits the range to the tight shapes.
+3. **Two numbers are wrong.**
+   - At n = 1001 the limit is d ≤ 4440, not 4444: 9 × 1001 × 4441 exceeds 4 × 10^7.
+   - At d = 768 the refits took 0.355–0.398 s, not "0.39 to 0.40" (`wsd-gen-1.log:316`, `wsd-gen-2.log:30`).
+4. **Accepting (UUID, x) keys creates a heartbeat case "exactly three populations" does not cover.**
+   - Java's ongoing check reads a `Map<UUID,…>` built by `getIndexingHeartbeats`, where a later key for the same UUID overwrites an earlier one (`OnlineIndexer.java:459-462`, `IndexingHeartbeat.java:151`).
+   - Go's `CheckAnyOngoingOnlineIndexBuilds` checks every key-value pair on its own.
+   - A live (U) key next to a (U, x) key dated at least one lease ahead: Java says not ongoing, Go says ongoing.
+   - Declare and pin this case, or evaluate over the collapsed map.
+5. **D-0's blast radius is only partly covered.**
+   - SQL autocommit statements run through `DB.Run` (`pkg/relational/core/embedded/connection.go:416`). Their failure surface changes after 10 attempts; name it and pin it.
+   - Decision (3) finds affected tests with one suite run. That cannot catch tests that only occasionally exhaust 10 attempts under contention. Run the chaos-concurrent, mutual-indexing and sqldriver concurrency targets with `--runs_per_test`, before and after the change.
+6. **"Retry/commit ownership remains single" (797-798) is no longer true.** After D-0 there are two nested bounded loops: build `maxRetries` over `Run`'s attempt limit, as Java's `IndexingThrottle` runs over the runner. Restate it.
+7. **Admission for fewer than two primaries.** floor(log2(n − 1)) is undefined there. State that admission is evaluated only after Step 1's other preconditions pass, so the error's cause field is deterministic.
+8. **README item 25 overstates the reruns.** "The other 92 served from run 1" is not accurate: run 1 itself executed only 8 of 94 (`just-test-v11.log:8530`). Those cached results are valid because Bazel keys them by content, but say so.
+
+## Verified closed
+
+- **1007 claim:** v10's claim is withdrawn, and 1007 and 2101 are classified for each retry owner.
+- **Java citations in D-0 are correct:**
+  - `FDBDatabase.java:856-864`;
+  - `FDBDatabaseFactory.java:90-92`;
+  - `FDBDatabaseRunnerImpl.java:191-207`;
+  - `IndexingMerger.java:78, 82-86, 125-128, 189-258`;
+  - `VectorIndexMaintainer.java:536` sets the MERGE step, so the quota halving is reachable.
+- **Retriable-exception throwers:** there are four, and Go ports none of them.
+- **Sampling:** withdrawn on data that holds up. The sampled runs give 243 and 317 against the INVALID line of 200; the unsampled ones give 663 and 941.
+- **W arithmetic** for the fixtures: 1.5, 1.8 and 8.2 × 10^7.
+- **Fixture write volumes are consistent:**
+  - the d = 768 HALF fixture stays under 10 MB even with the 300 replica writes;
+  - the d = 2048 HALF fixture does too;
+  - the d = 4096 fixture is refused by admission.
+- **Peel RNG split:** taken once at entry on every Go-rule path and never on a path where the target completes.
+- **Citations:** `:223`, `:505-507/:349` and the item-15 label are corrected; the skip's snapshot reads now include the neighbour metadata.
+- **Heartbeat change:**
+  - it matches `getUUID(0)` (`IndexingHeartbeat.java:201-203`);
+  - the versionstamp key sorts after a live heartbeat;
+  - both mutations redden both specs (`evidence-mutations.txt`).
+- **Evidence:**
+  - the oracle source hashes match the tree;
+  - two uncached runs passed 25 of 25 each (`rfc257-v11-1.log:2860`, `rfc257-v11-2.log:2856`);
+  - the `just test` tree `1cf1b5e` differs from the candidate tree only in the README.
+
+## Measured vs still hypothesis
+
+- **Measured:**
+  - item 23: pure JVM algorithm, 16 pinned rows, identical across two runs, and the sampling mutation reddens it;
+  - item 24: heartbeat keys in Go and the JVM, with both mutations.
+- **Checked against source only:** Java's runner and merger retry semantics.
+- **Still hypothesis:**
+  - all of D-0 (no code exists);
+  - Go's peel cost per unit of W (B is calibrated on JVM timings);
+  - fixture feasibility on real FDB (write volumes are computed, not run);
+  - every Go mechanism;
+  - item 21.

@@ -99,6 +99,11 @@ type Column struct {
 	// ordinal binding (sourceRowType) keeps it.
 	Ephemeral bool
 
+	// UnqualifiedOutput preserves an attribute introduced without an SQL
+	// qualifier even inside a named operator, such as a whole-struct unnest
+	// alias. Visibility (Ephemeral) and qualification are independent.
+	UnqualifiedOutput bool
+
 	// StructFields is the DECLARED field list of a STRUCT column or an ARRAY's
 	// STRUCT element (Type "RECORD"), in declared order. IsArray distinguishes
 	// the container; its element metadata does not authorize field descent. It is

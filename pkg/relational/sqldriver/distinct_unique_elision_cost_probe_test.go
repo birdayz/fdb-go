@@ -483,7 +483,7 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 			"CREATE TABLE users50_s (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) "+
 			"CREATE UNIQUE INDEX by_email50_s ON users50_s (email)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_duec/s WITH TEMPLATE duec")
-	dsn := fmt.Sprintf("fdbsql:///testdb_duec?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_DUEC?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -1320,23 +1320,25 @@ func duecLoadN(t *testing.T, ctx context.Context, db *sql.DB, table string, null
 			defer wg.Done()
 			lo := w * per
 			for base := lo; base < lo+per; base += batch {
-				var sb strings.Builder
-				fmt.Fprintf(&sb, "INSERT INTO %s (id, email, email_plain, payload) VALUES ", table)
-				for i := 0; i < batch; i++ {
-					id := base + i
-					if i > 0 {
-						sb.WriteString(",")
+				err := duecInsertFixtureRange(t, ctx, db, base, base+batch, func(lo, hi int) string {
+					var sb strings.Builder
+					fmt.Fprintf(&sb, "INSERT INTO %s (id, email, email_plain, payload) VALUES ", table)
+					for id := lo; id < hi; id++ {
+						if id > lo {
+							sb.WriteString(",")
+						}
+						if nullEvery > 0 && id%nullEvery == 0 {
+							fmt.Fprintf(&sb, "(%d, NULL, NULL, 'pad-%07d-xxxxxxxxxxxxxxxxxxxx')", id, id)
+							continue
+						}
+						fmt.Fprintf(&sb,
+							"(%d, 'user%07d@example.com', 'user%07d@example.com', 'pad-%07d-xxxxxxxxxxxxxxxxxxxx')",
+							id, id, id, id)
 					}
-					if nullEvery > 0 && id%nullEvery == 0 {
-						fmt.Fprintf(&sb, "(%d, NULL, NULL, 'pad-%07d-xxxxxxxxxxxxxxxxxxxx')", id, id)
-						continue
-					}
-					fmt.Fprintf(&sb,
-						"(%d, 'user%07d@example.com', 'user%07d@example.com', 'pad-%07d-xxxxxxxxxxxxxxxxxxxx')",
-						id, id, id, id)
-				}
-				if _, e := db.ExecContext(ctx, sb.String()); e != nil {
-					errCh <- fmt.Errorf("insert %s at %d: %w", table, base, e)
+					return sb.String()
+				})
+				if err != nil {
+					errCh <- fmt.Errorf("insert %s at %d: %w", table, base, err)
 					return
 				}
 			}

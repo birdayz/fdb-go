@@ -1,0 +1,66 @@
+**NAK** on the RFC-257 WS-E design v3.
+
+- **Tree:** `204151ab1e3aafa12c1b0202bc6c76c5f45c6c09` (object type is tree)
+- **Design:** `rfcs/257-java-upgrade-audit/ws-e-design.md`, SHA-256 `cbb0316f31798de432948a57aef6379728854e31b3d9d3fe2f7a43a7e1eb65d1`, 963 lines. I recomputed the hash and it matches.
+- **Java:** `fdacd162a9…`, read from `fdb-record-layer/.git/HEAD`.
+
+The review was read-only: no tests, probes, mutations or edits.
+
+**What holds.** I read all three v2 verdicts, the full v3 design, the oracle's four Describes and the evidence.
+- The six evidence source hashes match this tree.
+- The first Describe's re-pin changes formatting only; I spot-checked `greatest_one_null` and `prepared_long_no_overflow`.
+- Most v2 findings are answered with measured rows: the snapshot/DDL/EXPLAIN INSERT refusals, DRY_RUN on a connection, 42F02, parameter order on DML, `int` binding as INT when it fits, DOUBLE→FLOAT, the GREATEST defect, and the untyped bound NULL.
+- The TODO.md CQ-78 block is appended at the end, with pointers both ways.
+- Go's cache key carries bound values and literal text, so value-dependent folding is safe. Java needs `EvaluatesToValue` plan constraints for the same thing (`MutablePlanGenerationContext.java:372-376`).
+
+## HIGH
+
+**1. The folding regimes are still not Java's (§5.4, lines 716-736; summary lines 11-12).** This is the v2 Graefe #1 area, half closed.
+- Go's `SimplifyValue` evaluates every whitelisted composite whose inputs are constant (`simplifier_value.go:50-72`, whitelist `:80-104`). The whitelist covers NOT, AND/OR, arithmetic, CAST, PROMOTE, scalar functions, CASE and PICK.
+- A folded boolean becomes a `BooleanValue` (`coercion.go:199-201`), and its type is always NOT NULL (`values.go:4194-4198`).
+- The design maps Go's `BooleanValue` to "a COV of BOOLEAN", which the predicate regime dereferences to a literal. So any folded boolean becomes a COALESCE head that can be folded away.
+- Java's predicate rule set has no rule that folds NOT or AND (`DereferenceConstantObjectValueRuleSet.java:50-56`, `DefaultValueSimplificationRuleSet.java:50-54`), so `cannotFold` holds and every argument is evaluated (`EvaluateConstantCoalesceRule.java:105-108`).
+- **SOURCE, unmeasured consequence:** `WHERE COALESCE(NOT FALSE, 1/0 = 1)` and `WHERE COALESCE(TRUE AND TRUE, 1/0 = 1)` would return rows in Go and raise the division error in the target. That is a difference in result class, not in wording.
+- **Two further mismatches:**
+  - An inline NULL is a `NullValue` in Java, not a COV (`ExpressionVisitor.java:890-891`). The design maps it to a COV.
+  - Java's projection regime also collapses a null-strict value that has a `NullValue` child, for arithmetic, CAST, NOT, PROMOTE, field access and subscript (`CollapseNullStrictValueOverNullValueRule.java:53-59`). The design never mentions this rule.
+- **No split mechanism is specified.** The design cites a "projection path (simplifier_value.go:43)", but predicates call the same function (`predicates/simplifier_predicate_values.go:27,30,47`). So do `pullup.go:83`, `folder.go:39` and `values_helpers.go:79`.
+- **Fix:**
+  - Assign each of those six call sites to a regime.
+  - Inventory Go's generic fold against Java's seven rules, and either confine it or tag its outputs so they are never treated as dereferenced literals.
+  - Correct the NULL mapping and port the null-strict collapse.
+  - Add probes for a NOT head and an AND head in WHERE, and for `(1/0) + CAST(NULL AS INTEGER)` in SELECT.
+
+## MEDIUM
+
+**2. The §8 acceptance cannot pass as written (lines 939-959).** Two rows stay different after the port and are neither declared nor given an owner:
+- `nn_bitand_literals`: Java INTEGER, Go BIGINT. The owner is WS-J F4 (`ws-j-design.md:57,304-322`).
+- `array_cast_null_empty_table`: Java ARRAY, Go BIGINT. Go reports an array column under its element type, the open CQ-74 truncation (`cascades_generator.go` ARRAY arm, `TODO.md:7018`).
+
+Declare both with their dependency, as `like_enum_operand` is declared against WS-J F6.
+
+**3. Nobody owns `? + 1` → XX000 (lines 459-465).**
+- The design delegates it to "the lane rule WS-J ports", but WS-J F4 covers only the bit and bitmap operators. ADD with a NullType operand is Go's existing lane code, which today returns NULL for an inline `NULL + 1` (the GO line of `arith_untyped_null_param`).
+- **SOURCE:** Java has no NULL lane (`ArithmeticValue.java:226-229`), so an inline `NULL + 1` presumably fails too.
+- The Java yamsql corpus has no such case. I checked with a grep that also found a positive control.
+- Name an owner, measure the inline form, and declare Go's behaviour change.
+
+**4. Snapshot admission over-rejects DESCRIBE (§6.3, lines 832-836).**
+- The target unwraps `fullDescribeStatement` (EXPLAIN, DESCRIBE or DESC over a query) and classifies the statement inside it (`ParseTreeInfoImpl.java:133-137`, `AstNormalizer.java:271-274`).
+- So `DESCRIBE SELECT …` is admitted (SOURCE); only `DESCRIBE SCHEMA` and `DESCRIBE SCHEMA TEMPLATE` are utility statements and rejected (`:345-347`).
+- Go's grammar has the same form (`RelationalParser.g4:716-737`). The design's "DESCRIBE … is 0A000" would reject a statement Java admits.
+
+## LOW
+
+- **Time rendering (lines 498-501).** "Midnight UTC" contradicts "exactly as the text channel renders them today". Today's check uses the value's own zone and the rendering converts to UTC (`utilities.go:256-263`, `functions/time.go:13-20`). The two readings store different strings for non-UTC times.
+- **Line 224 is wrong on the evidence.** It says "Go today fails all five" LIKE-timing probes, but `like_dangling_escape_empty_table`'s GO line is OK: four fail, not five.
+- **Lines 225-228 give the wrong reason.** Java does dereference LIKE's pattern: it simplifies the operand of every binary value comparison (`ValuePredicateSimplificationRule.java:62-74`). The pattern survives because a STRING COV dereferences to another COV. The conclusion holds; the stated reason does not.
+- **Claims still unlabelled SOURCE despite §0's promise:**
+  - an out-of-range LONG literal changing from 22003 to 22000 (lines 578-580);
+  - "the INT/LONG lanes are right" (line 743), measured on the INT lane only (`greatest_negative_longs` is INTEGER);
+  - "DML plans refuse … before touching their child" (lines 775-778).
+- **DRY_RUN and DDL (§6.2).** In Java, only `QueryPlan.java:503` reads DRY_RUN, so DDL ignores it. State that Go's DDL does too.
+- **Mutation evidence.** The first Describe's mutation predates the re-render ("Ran 1 of 14"). The re-rendered type/nullability pins and the new probe-set = pin-set check have no kill recorded.
+- **Run record.** `bazel-testlogs/conformance/rfc257_oracle_test/test.log` now holds a later WS-J-focused run ("Will run 1 of 23", `:9,19,1240`). `rfc257-wse3.log` shows only "Executed 2 out of 2". So "Ran 23 of 23" is not in the cited records. The WS-E-specific "Ran 4 of 23" twice in `evidence-run.txt` is unaffected.
+
+Finding 1 is a query-engine design gap in the lens's core area; findings 2-4 are sufficiency and admission gaps.

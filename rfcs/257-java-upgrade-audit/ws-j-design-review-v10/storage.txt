@@ -1,0 +1,75 @@
+**NAK** for tree `c789832131f2e6206ee2ebad9b92a3ae463d6f6d`, design `ws-j-design.md`. I recomputed its SHA256 from the tree: `bcccfc9e77a3c12ab751b2b09ffdf9ca76233e3b39058da0fd2d55e275bfe8b6`, 2356 lines. Java is at `fdacd162a`. The review was read-only: I ran no tests, probes or mutations.
+
+## What holds
+- **Evidence matches the tree.**
+  - I re-hashed five files that evidence-v10 lists; all five match the tree's blobs.
+  - The `just test` tree `6cef9824` differs from the candidate only in documents, so the code is the same. `recordlayer_test`, `sqldriver_test` and `rfc257_oracle_test` executed.
+  - `wsj-ev1.log`: "Ran 31 of 56", all 31 passing. It has the three WSJIXK lines, the two-fault WSJLANE line and both WSJTT shapes.
+  - wm10-1 and wm10-2 each applied their marker once and turned the named subtest red under Bazel.
+- **The index subspace-key reading now matches `Index.java:80-97`, `:221-225`.**
+  - Both Go unmarshallers keep an empty proto2 `bytes` field present (vtproto at `:4226-4228`).
+  - No Go writer, before the upgrade (`e48f5b496`) or now, emits an empty, multi-item or null key. So no template Go stored is newly refused.
+- **The restore's limit-1 read closes the v9 race.** If the read finds a binding, a DROP of that schema conflicts. If it finds none, the restore is refused. The read of t's template rows makes a concurrent create or restore of t conflict.
+- **Every v9 finding from all three reviewers has an answer.** The residuals are below.
+- **Superseded phrases are gone.** A grep for four of them over DIVERGENCES, TODO, CHANGELOG, the umbrella RFC, the design, `pkg` and `conformance` finds 0 lines. The positive control (the new SQL-remedy text) finds 3 files.
+
+## MEDIUM
+
+**1. The edited-file route cannot load its stored side as written (design :1995-2000).**
+- Step (i) loads the stored bytes "with the union NAMED … the pre-upgrade choice or the target's; the `SetRecordsWithUnionName` path". That path does not choose a union, it only checks one:
+  - `setRecords` runs Java's `fetchUnionDescriptor` (`metadata.go:367`);
+  - it then refuses when the union found is not the named one (`:372-374`).
+- In a (d) file the union found is always the other candidate. So naming UnionDescriptor fails with "union message UnionDescriptor is not the union descriptor of the records file (found RecordTypeUnion)". That is the side both holder shapes need when records were written under the pre-upgrade choice.
+- The loop after it frames each union field by its TYPE. The pre-upgrade loop framed `_X` by NAME (`e48f5b496:metadata.go:345-352`). So the old side would not be what wrote the records. Both v9 storage #1 and Torvalds #1 asked for the replay's framing.
+- `:1999` says "the replay already established that the pre-upgrade loader loaded these bytes". That contradicts 4c's own "ONLY IF" at `:1830`.
+- **Fix:**
+  - Specify a loader mode that makes the named message the union and frames it with `legacyUnionRecordTypes`.
+  - Correct the claim at `:1999`.
+  - Test the pre-upgrade-choice side of the envelope and the record-type holder, including a `_X` field.
+
+**2. The one relaxation adds only unsafe retypes (:2007-2011).**
+- The ordinary validator already follows a message-to-message retype field by field (`metadata_evolution_validator.go:1209`). It admits a compatible retype, such as UnionDescriptor renamed with the same fields.
+- So "retyped to another message type" only adds retypes that re-read stored holder bytes under different field numbers. The stored bytes "still parse", but they parse as the wrong fields. v9 Graefe #2 asked for a *wire-compatible* retype.
+- Removal is admitted without reserving the field number. The next version can then reuse that number with a length-delimited type, and the stored bytes are misread.
+- The relaxation covers UnionDescriptor holders only, but the pre-upgrade-choice arm also refuses RecordTypeUnion holders.
+- **Fix:**
+  - Relax removal only, require the number to be `reserved`, and cover both holder kinds the arms name.
+  - Let retypes go through the ordinary check.
+  - Test that an incompatible holder retype is refused.
+
+## LOW
+
+**3. The FormerIndex subspace key still fails open (`metadata_proto.go:910-925`).**
+- Java's `FormerIndex(proto)` decodes its key with the same `decodeSubspaceKey` (`FormerIndex.java:64-68`) and refuses an absent, empty, multi-item or null key.
+- Go loads all four as a nil key. `removeFormerIndexData` then clears the null item's subspace, not the dropped index's (`index_state.go:860-866`).
+- Go also accepts `SetSubspaceKey(nil)` (`index.go:491`), which Java refuses (`Index.java:413-416`). An index with a nil key is maintained under the null item and reloaded under its name.
+- It is reachable only through bytes no in-repo writer produces, or that library misuse. But the status line at `:27` ("reads a stored SUBSPACE KEY as Java does") claims more than the fix does. Fix both readers in the same change.
+
+**4. The restore can still create two histories (:571-590).**
+- A catalog can already hold a fresh t v1 beside schemas bound to an old dropped (t,3). Pre-upgrade Go and Java both write that state, since neither runs the guard. Restoring (t,3) there is admitted, and it produces the two-history state the refusal exists to prevent.
+- `:589` says a concurrent restore is "the only template write of t that can land while a binding of t dangles". Java's CREATE SCHEMA TEMPLATE at the shared subspace can land too.
+- **Fix:** declare it in (s), or check md against the stored versions of t with the carry invariant (record-type keys and union numbers).
+
+**5. `RecordCoreArgumentError` rendering (`rank_scan.go:29-37`).**
+- The new branch fires whenever `IndexName` is set without a `ScanType`. So `rank_scan.go:93` now prints a spurious "subspace_key=<nil>".
+- `pending_writes_queue.go:122` and `:134` and `split_helper.go:47` lose their old suffix.
+- **Fix:** render only the fields each caller sets.
+
+**6. Tests and text.**
+- `:1387` says the covering spec byte-compares entries. It actually compares decoded tuples, folded through `toInt64` (`covering_index_conformance_test.go:57-69`).
+- Both subspace-key tests give Go an in-memory `gen.Index{SubspaceKey: []byte{}}`, so Go's side never unmarshals stored bytes. Load the marshalled bytes instead.
+- vtproto's `ResetVT` keeps a non-nil `SubspaceKey[:0]` (`record_metadata_vtproto.pb.go:1993`, `:2002`). A pooled Index would now read an absent key as present and empty. Nothing pools MetaData today; pin that.
+- The lane check's scope names "new and CHANGED" (`:897`) but says nothing about WIDENED.
+- `LegacyUnionTemplateError` replaces the cause with a bare marked copy (`builder.go:751-757`). That drops any wrapper between the loader and `fdb_template_catalog.go:293`.
+
+## Measured vs. source only
+- **Measured:**
+  - the subspace-key refusals on both engines;
+  - the `index_type` beside a stored option list;
+  - WSJLANE's two-fault shape;
+  - the two WSJTT shapes with the SQL remedy;
+  - wm10-1 to wm10-4;
+  - the unchanged tally.
+- **Source only:**
+  - findings 1-6;
+  - everything unbuilt in steps 1-3: the edited-file route, the restore's reads, the guard in both catalogs, `LoadTemplateProto`, `CreateTemplateFromProto`, the lane check's scope and the eight stored no-lane shapes.

@@ -1,0 +1,64 @@
+**NAK**
+
+- **Tree:** `8d721bd13b28b59be91f59a35b71acbd15d7131c`, confirmed as a tree object.
+- **Design:** `ws-d-design.md`, SHA256 `c56a731bf5a10bd24c324123a8f410162ce6c9d8a20d4afdb213f7ca9eb4bcd4`, 1871 lines, both recomputed from the blob.
+- **Java:** `fdacd162`.
+- Nothing was run or edited.
+
+## P1: On the default backend the body's error chain is dropped, so the SPFresh split-window fix does not work in production
+
+- **What the code does.** `fdb.Database.TransactCtx` replaces the body's error with `unconvertError(e)` (`pkg/fdbgo/fdb/database.go:384-399`). That function returns a bare `&wire.FDBError{Code}` whenever the chain contains an `fdb.Error` (`transaction.go:552-561`). `ReadTransactCtx` (`:415-434`) and `Tenant.TransactCtx` (`tenant.go:28-41`) do the same. The client's OnError then hands that bare error back at the limit, and `convertError` turns it into a bare `fdb.Error{Code}`.
+- **This is the backend production uses.** `fdbclient.Open` in the default build is `fdb.OpenDatabase` (`pkg/internal/fdbclient/open_purego.go:29`).
+- **So design 926-927 is false** at the layer the record layer actually calls. The line says "the pure-Go client's OnError returns the caller's error". That is true of `client.Transaction.OnError`, but the adapter has already stripped the chain before OnError sees it.
+- **Consequences:**
+  - (a) `SPFreshSplitWindowError` (979-984) is invisible to `attemptLoop` on the pure-Go client. The signal arrives as a plain 1020, is counted, and the write fails after ten attempts. That is exactly v13's SPFresh liveness failure, now only on the production backend. The fixture would pass on SimFDB (fixed) and on libfdb_c, whose `runLoop` keeps `ee` when OnError re-raises the same code (`libfdbc/backend.go`, the comment block before the final return).
+  - (b) The justification for the landed SimFDB change (the `declinedRetryError` comment) cites a parity that does not exist. SimFDB now preserves the chain where pure-Go strips it.
+  - (c) Any typed error or marker wrapped around a retryable code reaches the caller stripped after exhaustion, on pure-Go only.
+- **Needed:** make chain preservation independent of the backend. The attempt closure should record the error it returned, and `attemptLoop` should prefer that recorded error whenever the transactor returns an error with the same FDB code. This also covers the chaos and tracing wrappers. Pin it on pure-Go, tenant, SimFDB and libfdb_c.
+
+## P2
+
+1. **The loop's retry predicate is ported from the wrong Java function.**
+   - Lines 952-957 port `FDBExceptions.isRetriable`, where the first `FDBException` in the chain decides (`FDBExceptions.java:236-247`). That is AutoContinuingCursor's predicate (`AutoContinuingCursor.java:140`).
+   - The runner that `Run` and the merger port, `RunRetriable.handle`, ORs `isRetryable` over every `FDBException` in the chain, plus any `RecordCoreRetriableTransactionException` (`FDBDatabaseRunnerImpl.java:195-205`). The design's own line 849 says this.
+   - Use the any-cause predicate for `attemptLoop` and the first-cause predicate for AutoContinuingCursor. In Go, the any-cause walk must also cover `errors.Join` trees.
+2. **The acceptance fixtures now depend on wall-clock time, with no rule for when Go is slower.**
+   - v14 dropped v13's rule that moved a fixture when Go was slower ("does not move B", 1491-1492).
+   - The d = 2048 fixture has W = 1.845e7, which is 0.94 B. At the JVM's measured maximum rate that is about 3.2 s of refits. Add the fit (up to 0.31 s) and roughly 4-5 MB of reads and writes, all inside FDB's 5 s window. Go's rate has not been measured.
+   - These fixtures (1706-1717) must commit a split. A 1007 there is an acceptance failure or a flake, not the "owned" production consequence.
+   - **Needed:** make Go's measured peel plus fit at both admitted fixture shapes an implementation-gate criterion, with a stated ceiling, at least two runs, and load recorded. If Go is over the ceiling, treat slow Go KMeans as a performance defect to fix, not a reason to move the fixture.
+
+## P3
+
+1. **The rates population leaves out this design's own run.** `wsdf14/oracle.log:1347-1365` carries 10 new TIMING lines, with load recorded (0.68→2.88), and none are in `corner-refit-rates.txt`. So "every run bound to this design" (1480) and README item 31's "re-run over every new log" are false. Its rates, computed by hand from the log (5.5e-8 to 9.8e-8), sit inside the stated range, so the numbers stand but the claim does not.
+2. **Superseded claims survive elsewhere:**
+   - `conformance/guardiann_probe_conformance_test.go:1218-1219` still derives B from "the worst OBSERVED refit rate".
+   - README:350 (item 26) still says "item 29 takes the maximum over every run", unmarked.
+   - `TODO.md:14706-14716` still says "D-0 (design v13)", "foreground writes take their caller's bound" and "keyed to the route".
+3. **`BodyCommittedError` has a Java counterpart.** In Java, a body that commits itself lands its commit, and the runner's second `commitAsync` then throws `RecordContextNotActiveException` (`FDBRecordContext.java:481, 531, 548-551`). Port that error type (Java exception = Go error struct) and cite the parity.
+4. **Retries that consume no attempt still need a delay.** State that uncounted split-window retries wait the ported delay, capped at its maximum. Otherwise a stalled seal becomes a hot transaction loop.
+5. **Line 904's "retries ANY error … kept" contradicts other sections.** Section 1 and section 6 make capability errors and `ClusterUnsplittableError` terminal in the iterator.
+6. **Line 1131's "A page is read-only" contradicts the design.** Line 1081 says pages write headers, and line 1117 puts `FaultCommitUnknown` on pages. The SQL read routes also go through `Run` (connection.go:416), not `ReadTransactCtx`.
+7. **The catalog bootstrap is not write-free.** Step 3 always calls `SaveRecord` on `/__SYS/CATALOG` (`fdb_store_catalog.go:140` → `:294`). So in production, a one-attempt DDL can lose to any other session's first `Ping`, not only in the test harnesses (1064-1068). Either declare this, or make step 3 check-then-create.
+8. **Stale "at this tree" line references:**
+   - `refreshFollowupHeartbeats` is at `:443` (the design says `:321`).
+   - `renewSessionHeartbeat` is at `:419` (the design says `:297`).
+   - `validateBuildTarget` is at `:530` (the design says `:362`).
+   - `shouldLessenWork` is at `online_indexer.go:1453` (the design says `1007-1022`).
+
+## Verified
+
+- **libfdb_c 7.3.77 and 1200.** On a commit with no proxies, libfdb_c waits (`basicLoadBalance` returns `Never()`, `LoadBalance.actor.h:760`), races `onProxiesChanged`, throws `request_maybe_delivered`, runs the fence, then throws 1021 (`NativeAPI.actor.cpp:6637-6649, 6730-6773`).
+- **Pure-Go 1200 source.** It comes only from `commitpath.go:60-62`; a missing GRV proxy waits instead (`grv.go:1249-1270`).
+- **The SimFDB pin** (`retry_limit_test.go:109-146`) is in `srcs` and would go red by construction if the fix were removed. The `wsdf14b` run shows 12 of 12 uncached, with no per-test line.
+- **Self-committing bodies.** Among non-test `.Commit()` calls, only `ddl.go:862` and `:890` commit inside a `Run` body.
+- **Census:** 75 lines at both trees.
+- **Queue-drain parity.** Java's drain makes one attempt per range through `TransactionalRunner` ("does not retry internally"), and Go's drain matches.
+- **Admission arithmetic:** 0.81, 1.41 and 3.43 s; the 2101 volumes.
+- **Oracle:** 61 of 61 specs.
+
+## Measured vs hypothesis
+
+- **Measured:** JVM timings, which are estimates only, and the SimFDB pin.
+- **Checked against source only:** the C++ and Go client semantics, the Java runner and cursor predicates, and the adapter chain loss.
+- **Still hypothesis:** every D-0 mechanism, including per-call chaos, reconcile after exhaustion, the SimClock delay, split-window liveness and the client's proxy wait, plus Go's peel time.

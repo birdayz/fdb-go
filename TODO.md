@@ -1,6 +1,12 @@
 # TODOs
 
-FoundationDB Record Layer — Go Port. Java version: **4.12.11.0**. FDB wire protocol: **7.3.77**.
+FoundationDB Record Layer — Go Port. Java target: **4.14.2.0**. FDB wire protocol: **7.3.77**.
+
+**Upgrade status:** RFC-257 is in progress and red, not a completed compatibility
+claim. Earlier entries' "pre-upgrade baseline" references identify the exact Java
+and Go revisions recorded in that RFC; their historical evidence has not been
+retagged as new-target verification. The unchecked RFC-257 block at this file's
+end owns the complete-range audit and ports.
 
 Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 508 cross-engine
 specs, 105 fuzz targets, ~65 Cascades rules, 41 plan types (36 executor-wired), 48 value types,
@@ -306,7 +312,7 @@ INSERT…SELECTs.
   this route is not a divergence at all. That inference is wrong, and only the
   live JVM could settle it. `conformance/duplicate_groupby_java_probe_test.go`
   (`paren_twin_aggonly`, `paren_twin_proj`, `paren_twin_having`, `cmp_twin`)
-  measures Java at tag 4.12.11.0 refusing all four:
+  measures Java at tag pre-upgrade baseline refusing all four:
 
       GROUP BY (amount+1), amount+1  ->  java: Ambiguous columns for
                                            q...._0.AMOUNT + @c12   | go: PLANS
@@ -546,7 +552,7 @@ producer, which deletes both the table and its validator.
 ## 2. Wire compatibility and the pure-Go FDB client
 
 The hard line: key encoding, record/index format, continuations, metadata, and everything
-`pkg/fdbgo` puts on the wire. C++ (libfdb_c 7.3.77) is the spec for the client; Java 4.12.11.0 is
+`pkg/fdbgo` puts on the wire. C++ (libfdb_c 7.3.77) is the spec for the client; Java 4.14.2.0 is
 the spec for the record layer. Client gate applies to every entry here.
 
 ### [ ] Replay DB transaction defaults as an ordered option list, with TIMEOUT applied last
@@ -1524,7 +1530,7 @@ full window); GRV `batchTime` floors at 100µs where C++ has no floor.
 ### The metadata builder diverges from Java in three places, found while closing RFC-238 §7f
 
 These are one subsystem and should land as one PR. All three were surfaced by
-review during PR #761 and verified against the Java source at tag 4.12.11.0;
+review during PR #761 and verified against the Java source at tag pre-upgrade baseline;
 none is caused by that PR, and none is blocked on anything.
 
 **1. `updateRecords()` is not ported, so a descriptor cannot be evolved at all.**
@@ -2564,7 +2570,7 @@ was not re-checked, so it is neither confirmed nor closed here.
       NARROWED admission to the direct shape (declined wrapped → name-model); superseded — see below, the
       wrapped case now ORDINALIZES. Multi-EXISTS-under-aggregate stays name-model + LOUD (pre-existing
       planner gap, confirmed at parent — agg_multiexists_loud sentinel).
-      🔬 **JAVA CONFORMANCE (6-reader workflow, HIGH confidence):** Java 4.12.11.0 FULLY supports GROUP
+      🔬 **JAVA CONFORMANCE (6-reader workflow, HIGH confidence):** Java at the pre-upgrade baseline FULLY supports GROUP
       BY (grouped+global COUNT/SUM/AVG/MIN/MAX via streaming aggregator, no index required — AstNormalizer
       rejects only OFFSET/LIMIT). The old translateAggregate comment claiming Java lacks GROUP BY was
       STALE/FALSE — corrected. Java ALSO plans GROUP BY over a multi-source-FROM derived table
@@ -3425,18 +3431,22 @@ hashes/reproducers. All experiments reverted; tree clean.
   (`scan_match_helpers.go:37`), and `ResolveStartsWith` (`expr.go:1437`), which
   builds the comparison the scan machinery does accept, has no production caller.
 
-  *Every Java claim in this item is against **Java 4.12.11.0** — the tree at
-  `fdb-record-layer/` in the REPO ROOT (gitignored, so it is absent from
-  `git ls-files` and from any worktree; the version is pinned in `MODULE.bazel:117`
-  as `org.foundationdb:fdb-record-layer-core:4.12.11.0`). That names exactly what
-  to check out to re-verify. The two backing `file:line` citations, both
+  **Upgrade qualification:** the following Java LIKE analysis describes the
+  pre-upgrade baseline identified in RFC-257, not the current checkout/pin.
+  Target Java replaces regex semantics: wildcards cross newlines, matching is
+  full-string, and escape validation is strict. Its semantic port and fresh
+  prefix/residual proofs belong to RFC-257; the old newline-tightness argument
+  is not a requirement for the upgraded matcher.
+
+  *Every historical Java claim below is against that pre-upgrade baseline.
+  Use its exact SHA from RFC-257 to re-verify, not the current Java checkout. The two backing `file:line` citations, both
   re-verified at that tag: `PatternForLikeValue.java:111-112` (the escape table's
   only two entries, `<esc>_` and `<esc>%`, layered over `REPLACE_MAP` at `:62-79`
   where `%` → `.*`), and `:116` (the `^…$` wrap) evaluated by
   `LikeOperatorValue.likeOperation` (`LikeOperatorValue.java:93-99`:
   `Pattern.compile(rhs)` with NO flags, then `.find()`).*
 
-  **Tightness — MEASURED; it constrains every possible design.** Java (4.12.11.0)
+  **Tightness — MEASURED; it constrains every possible design.** Java (pre-upgrade baseline)
   compiles `%` to `.*` inside a `^…$` wrap with no DOTALL, so a wildcard cannot
   cross a line terminator: a subject that starts with the literal prefix but
   then carries a terminator lies in the byte-prefix range and does NOT match the
@@ -3526,10 +3536,10 @@ hashes/reproducers. All experiments reverted; tree clean.
   zero rows and the code is gone" is exactly the lead the next attempt needs — so
   the material is kept here, explicitly labelled NOT REPRODUCIBLE (blockers (1)
   and (4)). Its Java citations are likewise kept: Java is this port's spec, the
-  tree is `fdb-record-layer/` at tag 4.12.11.0 pinned in `MODULE.bazel`, and
-  citing it is the repo's established practice (`DIVERGENCES.md` rests entirely
-  on such citations). Gitignored is not uncheckable when the pin says what to
-  check out.
+  original tree is the pre-upgrade baseline identified by exact SHA in RFC-257,
+  not the current `fdb-record-layer/` checkout or `MODULE.bazel` pin. Those frozen
+  citations remain checkable; the new LIKE contract supersedes the historical
+  newline/escape conclusions above.
 
 
 - [ ] **CQ-34 (MED) — the sargable gate and the range builder are kept in manual
@@ -3598,7 +3608,7 @@ hashes/reproducers. All experiments reverted; tree clean.
   Java marks covering through a residual, this is a divergence; if not, it is a
   shared gap and the fix is an extension. (INSPECTION, not re-checkable from this
   tree — the Java checkout is a gitignored sibling absent from `git ls-files`:
-  Java 4.12.11.0 appears to have no such failure mode, because coveringness is a
+  Java at the pre-upgrade baseline appears to have no such failure mode, because coveringness is a
   separate class there, `RecordQueryCoveringIndexPlan`, which HOLDS the index plan
   as a field rather than flagging it, and its `MergeProjectionAndFetchRule` yields
   the fetch plan's child with no shape check. Re-derive against the checkout
@@ -6519,7 +6529,7 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 0AF00s ("Cascades planner could not plan query") with NO aggregate involved, and WHERE-position
 `… WHERE p.id IN (SELECT COUNT(*) FROM e)` 0AF00s too. So IN-subquery is a general unsupported feature,
 NOT a scope-leak residual — the scope leak is closed (the IN case went from a misleading 42803
-to this honest 0AF00). **Correction (measured against Java 4.12.11.0 source):** the earlier
+to this honest 0AF00). **Correction (measured against Java at the pre-upgrade baseline source):** the earlier
 "(Java supports it)" parenthetical here was WRONG — Java rejects the same grammar alternative.
 `ExpressionVisitor.visitInPredicate` asserts `inList().queryExpressionBody() == null` with
 `UNSUPPORTED_QUERY` ("IN predicate does not support nested SELECT"), and the earlier
@@ -6633,7 +6643,7 @@ is tagged — never by hand-editing the doc.
 
 **RFC-165 follow-ups (tracked, non-blocking):**
 
-- [ ] **Verify the `Java?` roster facts against the live 4.12.11.0 server.** The `Java?` column in
+- [ ] **Verify the `Java?` roster facts against the live 4.14.2.0 server.** The `Java?` column in
       `ansi_roster.go` is currently a hand-authored frozen-version *assertion* (sourced from
       SQL_CONFORMANCE.md), structurally contained (it can't inflate the Go headline — see RFC-165 §4.6)
       but unverified. As A3 cross-engine coverage grows, diff each tagged feature's `Java?` against the
@@ -6758,17 +6768,14 @@ is tagged — never by hand-editing the doc.
     serialization-options.yamsql expects XXF01 on reads without the
     encryption key; Go's store layer has no encrypted serialization, so the
     read succeeds.
-  - **the enum matcher arm is not ported (0 files today, but unbooked until
-    now).** Java's `Matchers.matchField` has an arm comparing a String
-    expectation to a protobuf `EnumValueDescriptor` by NAME. Go omits it,
-    because whether it is needed depends on what the driver returns for an enum
-    column — if that is already the name as a string the existing String arm
-    covers it; if it is an ordinal or a typed value, the omission is a silent
-    mismatch. Unanswerable today: every corpus file with an enum column is
-    skipped before a row is compared. Answer it when `enum.yamsql` /
-    `insert-enum.yamsql` unblock, and delete the comment at the site or write
-    the arm. Stated rather than guessed — an untested arm written on a hunch is
-    worse than a named omission.
+  - [x] **the enum matcher arm is not ported — ANSWERED, not needed.** Java's
+    `Matchers.matchField` has an arm comparing a String expectation to a
+    protobuf `EnumValueDescriptor` by NAME. RFC-257 WS-J step 5 (enum DDL)
+    unblocked `enum.yamsql` and `insert-enum.yamsql`, and both pass: the Go
+    driver returns an enum cell as its name, a string, so the String arm is
+    Java's enum arm (`insert-enum.yamsql` compares `[{'OWNING', 42}]` against an
+    enum column). The comment at `match.go` states the measured answer, and
+    `pinned_ledger_test.go` pins the two passes.
 
   Order these by ledger count, not by list order: the array-literal five are
   worth more than the nine singletons combined, and the error-class one is
@@ -6982,7 +6989,7 @@ result-set metadata.
 ### ComparisonKeyFunc error channel (RFC-087 follow-up)
   - [ ] **Follow-up (RFC-087, Graefe): thread `ComparisonKeyFunc` error channel.** The 5 executor merge/sort comparison-key sites (`intersectionCompKeyFunc`, `multiIntersectionCompKeyFunc`, `mergeSortCursor.isBetter`/`extractKey`, executor.go:1391) `panic(err)` on a stray key-eval error — pre-existing behaviour (no recover before/after RFC-087), and keys are pre-projected field refs so the typed-error family is unreachable today. To make it airtight, give `ComparisonKeyFunc` an `error` return and thread it (ripples into wire-adjacent `merge_cursor.go`). Low priority — not reachable from current SQL.
 
-- [ ] **Port Java's `FDBDatabaseRunner` default `maxAttempts=10` (+ full-jitter exponential backoff) into `pkg/recordlayer.FDBDatabase.Run`.** See the executor cursor-continuation entries in the completed archive for the full citation trail (`FDBDatabase.java:856-864`, `FDBDatabaseFactory.java:90-92`, `FDBDatabaseRunnerImpl.java`'s `RunRetriable`, `TransactionalRunner.java`, `ExponentialDelay.java`). Today `FDBDatabase.Run` delegates entirely to `pkg/fdbgo/fdb`'s `Database.Transact`, which retries a retryable error INSIDE one call, unbounded by default (correct raw-client parity with libfdb_c — do not touch `pkg/fdbgo`). Java's Record Layer adds a SEPARATE, higher-level cap: `FDBDatabaseRunnerImpl` opens a fresh `FDBRecordContext` per attempt (via `TransactionalRunner.runAsync`, which does not retry on its own) and gives up after `maxAttempts` (default 10) retryable failures, surfacing the last error instead of continuing. Go currently has no Record-Layer-level attempt cap at all — a transaction that reliably fails the same way every attempt (for any reason, not just the scan/byte/time-limit gap fixed above) retries forever inside the client's own loop with no visibility or bound at the Record Layer. Port: add `MaxAttempts`/`InitialDelayMillis`/`MaxDelayMillis` fields (defaults 10/10/1000) to `FDBDatabaseFactory`/`FDBDatabase`; rewrite `Run`/`RunWithWeakReads`/`RunWithVersionstamp` to own their own attempt loop (create a transaction, run the closure, commit, classify the error as retryable via the existing `fdb.IsRetryable`-style predicate, full-jitter exponential delay between attempts, give up and return the last error past `maxAttempts`) INSTEAD OF delegating straight to `d.transactor.Transact`. This is a genuinely large, invasive change — it touches the commit/retry contract for every FDB transaction the Record Layer opens (virtually the whole codebase runs through `FDBDatabase.Run`) and needs its own design pass + review before landing, not a rushed addition alongside a leaf-cursor fix. Multi-shift effort; out of scope here.
+- [ ] **Port Java's `FDBDatabaseRunner` default `maxAttempts=10` (+ full-jitter exponential backoff) into `pkg/recordlayer.FDBDatabase.Run`.** See the executor cursor-continuation entries in the completed archive for the full citation trail (`FDBDatabase.java:856-864`, `FDBDatabaseFactory.java:90-92`, `FDBDatabaseRunnerImpl.java`'s `RunRetriable`, `TransactionalRunner.java`, `ExponentialDelay.java`). Today `FDBDatabase.Run` delegates entirely to `pkg/fdbgo/fdb`'s `Database.Transact`, which retries a retryable error INSIDE one call, unbounded by default (correct raw-client parity with libfdb_c — do not touch `pkg/fdbgo`). Java's Record Layer adds a SEPARATE, higher-level cap: `FDBDatabaseRunnerImpl` opens a fresh `FDBRecordContext` per attempt (via `TransactionalRunner.runAsync`, which does not retry on its own) and gives up after `maxAttempts` (default 10) retryable failures, surfacing the last error instead of continuing. Go currently has no Record-Layer-level attempt cap at all — a transaction that reliably fails the same way every attempt (for any reason, not just the scan/byte/time-limit gap fixed above) retries forever inside the client's own loop with no visibility or bound at the Record Layer. The port is designed as RFC-257 WS-D phase D-0 (`rfcs/257-java-upgrade-audit/ws-d-design.md` section 5, "Attempt bounds of the transaction owners"; the EOF block "FDBDatabase.Run attempt bound — now owned by RFC-257 WS-D phase D-0" points here). Its mechanism is NOT the one this item used to prescribe (an attempt loop that opens its own transactions beside `d.transactor`): every attempt of the owners that run through `Run`, its variants and the manual runner goes THROUGH `d.transactor` with the backend's retry limit set to 0, so the chaos transactor and any tracing wrapper see every attempt of THOSE owners (the owners that open their own transactions, `OpenContext` and `CreateWritableTransaction`, are named in the design as outside that claim); the ported ExponentialDelay (not full jitter over the whole range) runs between attempts; and each caller of `Run` takes the attempt policy of its target owner.
 
 
 ### SPFresh — tracked in RFC-094 (status)
@@ -7110,6 +7117,9 @@ Open work (detail + file:line in the RFC):
   DONE = `EXECUTE CONTINUATION` plans and executes end-to-end, plan transport
   under `GO_V0` round-trips, per-page `MAX_ROWS` is honoured, and a yamsql
   scenario exercises it (per "NO FAKE CHECKBOXES": the RFC existing is not done).
+  It also carries the target's ISOLATION LEVEL SNAPSHOT contract for continuations,
+  booked by RFC-257 WS-E in the block "CQ-78 / RFC-203 — the snapshot-isolation
+  contract for compiled-statement continuations" at the end of this file.
 
 
 - [ ] **CQ-91 (query-engine — needs its own RFC + Graefe ACK): Go has THREE
@@ -7726,7 +7736,7 @@ work; unrelated to any wire/query change.
   - [x] **69.0 — Phase 0: vendor + parse.** No execution. **MERGED.** What it
     carries, read off commits `f20c884a4` + `a076ba66c`: 238 `.yamsql`
     files vendored byte-for-byte under `third_party/` mirroring the upstream
-    path, `VERSION` pinned to 4.12.11.0, `.metrics.*` excluded (and with them
+    path, `VERSION` pinned to pre-upgrade baseline, `.metrics.*` excluded (and with them
     `metrics-diff/` entirely); the `javayamsql` parser plus `TestCorpusParses`
     over all 238, each file either parsing clean or refused for the exact reason
     upstream refuses it; block/command/config key and YAML tag as CLOSED
@@ -7942,7 +7952,7 @@ work; unrelated to any wire/query change.
     `TestOptContinuation_RejectsLoudly`
     (`pkg/relational/core/embedded/continuation_option_test.go:18`) against the
     0A000 at `cascades_generator.go:1215-1218`. Four pieces are absent, measured
-    against Java 4.12.11.0:
+    against Java at the pre-upgrade baseline:
 
     - **(A) a page terminated by a caller-chosen row count that MINTS a token.**
       Java sets MAX_ROWS as `ExecuteProperties.setReturnedRowLimit` per
@@ -8276,7 +8286,9 @@ work; unrelated to any wire/query change.
   drawn through it would have been a confident wrong answer. Only a summed slope
   above **~110 MB/min** could reach 7745 MB by t+33min; the measured leak is
   ~17 MB/min, an order of magnitude short.
-  IN FLIGHT: this change adds a "Capture FDB container forensics" step
+  ADDED, AND REMOVED 2026-09-22 with the watcher (see "Nightly RowDiff FDB watcher
+  and forensics steps removed" at the end of this file): a "Capture FDB container
+  forensics" step
   (`docker inspect` exit/OOM, `docker logs`, `Severity="40"` trace events, host
   `free`/`df`/kernel OOM lines) that runs on success or failure. Its three
   outcomes are mutually exclusive — exit 1 + io_error/1510 = tmpfs ENOSPC;
@@ -8306,9 +8318,13 @@ work; unrelated to any wire/query change.
   of this item. Two sweepers with the same job, one guarded and one not, and the
   guarded one is the one that does not run.
 
+  **REMOVED 2026-09-22 at the owner's request: the watcher and both forensics steps
+  described below are no longer in the workflow — see "Nightly RowDiff FDB watcher
+  and forensics steps removed" at the end of this file. The next two paragraphs are
+  the history of an instrument that no longer runs.**
   FIXED in the same change that records this, because a dump that cannot tell
   "nothing happened" from "the corpse was already removed" is worse than no dump:
-  a watcher step now starts BEFORE the sweeps, streams the container's stdout to a
+  a watcher step started BEFORE the sweeps (until its removal), streamed the container's stdout to a
   file from first sighting (where the fatal line appears) and keeps the LAST
   successful `docker inspect` — the one still carrying ExitCode and OOMKilled after
   removal — and an empty capture on a night the sweep FAILED is now an `::error::`
@@ -8327,10 +8343,9 @@ work; unrelated to any wire/query change.
   rather than decisive, copy the watcher to those two — the step is self-contained
   and the reason for a second and third sample would then be a real one rather than
   redundancy bought in advance.
-  So the NEXT run settles this; the previous sentence said that once already and
-  this one is only worth more because the instrument it rests on has now been shown
-  to fire.
-  DONE = mechanism confirmed from that artifact, the cause fixed rather than
+  The instrument never produced its decisive capture before it was removed.
+  DONE = re-provisioned runners completing the sweep past the old 30-34 minute band
+  (the forensics artifact this criterion first named no longer exists), the cause fixed rather than
   absorbed by the circuit breaker, and a pin that reds if the sweep's usable
   lifetime regresses below its budget again.
 
@@ -8774,6 +8789,10 @@ the ci.yml race-lane comment names both hosts.
 
 ### [ ] STOP (owner): the `hetzner-fdb-vm` runner service is being stopped under running jobs — Nightly Coverage has not completed in 33 days, Nightly Reconcile is red for that reason
 
+ROOT-CAUSED 2026-09-26: a job process OOM-killed under systemd's default `OOMPolicy=stop`, on
+boxes the committed fix never reached. See "The runner OOM-lifecycle fix never reached the
+live fleet" at the end of this file.
+
 MEASURED 2026-09-10: every `Nightly Coverage` run from 2026-08-30 through 2026-09-10 (12 of 12)
 ends with `##[error]The runner has received a shutdown signal. This can happen when the runner
 service is stopped, or a manually started runner is canceled.` followed by `The operation was
@@ -8810,8 +8829,10 @@ The reconcile job also lists four OPEN pull requests without their required chec
 
 ## 9. Java upstream — bugs to report, fixes to send, releases to wait for
 
-Defects in `fdb-record-layer` / `fdb-relational` itself, measured against the pinned Java
-**4.12.11.0** by the cross-engine probes. They live here because the repair belongs upstream, not
+Defects in `fdb-record-layer` / `fdb-relational` itself, originally measured against
+the **pre-upgrade Java baseline** identified in RFC-257 by the cross-engine probes.
+These entries are not automatically revalidated for the new target; RFC-257 owns
+reconciliation of changed outcomes. They live here because the repair belongs upstream, not
 because they are excused: CLAUDE.md's rule is that "it's an upstream bug" is never a deferral —
 fix it at the boundary, work around it deliberately with the divergence documented at the call
 site, AND report it upstream.
@@ -9284,6 +9305,9 @@ covered by the correctness suite and the golden plan diff, not by this table.
   `actions: write`, which the dispatch call needs), and `ci.yml` gained the `workflow_dispatch`
   trigger. If tomorrow's Reconcile still lists `#769` as ABSENT, the dispatched runs were held
   too and a token with a real actor is the remaining fix.
+  **Superseded by the frl fold (PR #786):** `cmd/frl` is a package of the root module, and the pin,
+  `frl-pin-bump.yml` and its dispatch are deleted, so the `#769` count has no cause once #786
+  merges; close #769 then (the bot keeps running on master until that merge).
   **Corrected while reviewing:** a draft blamed the coverage lane's `timeout-minutes: 150` and
   raised it; the six cancelled runs lasted 3, 55, 11, 67, 8 and 51 minutes with no
   maximum-execution-time annotation, so the cap never fired and the cancellations are the
@@ -9521,153 +9545,44 @@ covered by the correctness suite and the golden plan diff, not by this table.
   exact derivation beside a nested path (`@claude`'s r14 shape); out of that RFC's scope (the
   union-leg alignment and the CTE/derived row) and booked here with the reproducer.
 
-- [ ] **A join row that names one field twice leaves its plan's rows unstamped.**
-  `NewRawRecordConstructorValue` keeps field names VERBATIM — by design, for ordinal-join seeds,
-  where the two legs of `SELECT * FROM a JOIN b` legitimately both carry `ID` and positional
-  access makes the duplicate unambiguous. Such a row's synthesised descriptor cannot validate
-  (`proto: descriptor "__0type__2.ID" already declared`), `FinalizePlan` swallows that as it
-  swallows every non-clash descriptor failure, and the constructor is left with no descriptor.
-  What that costs is descriptor IDENTITY, not data, and it is USER-VISIBLE. A computed STRUCT
-  selected through such a plan comes back as a raw `map[string]any`, where the same statement
-  with the repeated name removed returns an `api.Struct` carrying the same values — measured
-  over FDB: same values, wrong type, because there is no descriptor to present it with.
-  Removing the repeat is not a one-token edit, and the booking must not pretend it is: the
-  dialect cannot rename a base column in place, so the control ALSO wraps `c_md` in a derived
-  table to rename through (`FULL OUTER JOIN (SELECT id AS cid FROM c_md)`), and derived-table
-  projections are themselves descriptor-relevant. The attribution therefore rests on THREE
-  reads, and it is each adjacent PAIR that isolates one factor: the witness (repeat, no
-  wrapper) against the third read (repeat, wrapper) holds the repeat fixed and shows the
-  wrapper changes nothing; the third read against the control (no repeat, wrapper) holds the
-  wrapper fixed and shows the repeat is what flips map to struct. The SET varies both factors
-  deliberately — that is how it proves one of them inert, and saying it varies one would be the
-  two-read claim again. The third read is written `SELECT id AS id` beside the control's
-  `SELECT id AS cid`, differing in the alias and the `c.id`/`c.cid` reference it forces,
-  nothing else, and comes back the SAME raw map `{X:1 Y:10}` the witness gives — asserted as a
-  map of exactly that size with those values, not merely as not-a-struct, which is what shows
-  the wrapper inert rather than just harmless. The CTE also names its struct `RR` so it cannot
-  collide with the stored column's `R`, leaving `ID` as the single repeated name. Dropping the
-  join, leaving a second repeat in place, or omitting the third read could not tell which
-  caused the raw map.
+- [x] **Contain duplicate-name descriptor registration without losing computed STRUCTs.**
+  Implemented in RFC-257 WS-A (uncommitted; milestone review remains pending).
+  The ordinal join row stays raw; failed descriptor registration rolls back its entire
+  closure instead of poisoning later valid roots. The previously proposed name-suffix
+  rewrite is superseded by the accepted collect/register/seal/bind design.
+  `TestFDB_ADuplicateNameJoinPreservesComputedStructs` retains the exact full-outer-join
+  reproducer and direct/wrapped/renamed controls: all return computed `api.Struct`
+  `{X:1,Y:10}`, stored `{P:7}`, and distinct positional outer-join rows.
+  `TestFinalizePlanContainsDuplicateNameRegistrationFailure` measures four constructors,
+  one duplicate-name row and one unstamped row in this specimen; its guards require both
+  valid and invalid populations and no unstamped valid constructor. Repository rollback,
+  sealed pointer identity and incremental cache invalidation have separate unit pins.
+  RFC-242 retains the historical three-of-four poisoned-descriptor measurement;
+  RFC-257's execution ledger supersedes it for the upgrade tree.
 
-  No DATA is lost: the emitting paths (executeProjection, the flat-map cursor's
-  record-constructor arm, evaluateOrdinalJoinRow) build dense positional rows the result set
-  reads by ORDINAL, so both `ID` slots arrive with their own values (measured with a predicate
-  that keeps them different; with both equal the check cannot discriminate). The scope is the
-  constructors resolved AFTER the bad message, in walk order — not every computed row: on the
-  pinned query the root projection was resolved first and keeps its descriptor. A STORED struct
-  column read through the same poisoned plan is unaffected — it carries its own stored
-  descriptor, not a constructor's — so the damage is confined to COMPUTED rows, pinned with the
-  rest. (Two different axes, and they are not the same word: WITHIN a plan the failure spreads
-  across the whole repository, and ACROSS row kinds it stops at computed ones.) Pinned in both
-  directions by `TestFDB_ADuplicateNameJoinRowLosesItsStructTypeNotItsValues` (the STRUCT comes
-  back a map through the duplicate, and an `api.Struct` once the repeat is removed — removed
-  through a derived-table rename, with the third read showing that wrapper inert; the exact
-  outer-join rows arrive; a stored struct column through the same plan keeps its type), which
-  reddens on the computed-struct half when this closes.
+- [x] **Promote raw record literals to the planned target instead of failing or returning
+  ragged arrays.** Implemented in RFC-257 WS-A (uncommitted; phase gates pending).
+  `SELECT ([(1 AS "$lead"), (2 AS A)] AS CH) FROM t` and its reversed, both-invalid
+  and leading-digit variants now return exact anonymous `_0` fields with values 1,2.
+  The bare-array variant requires two `api.Struct` elements, not a map/message mixture.
+  When both source names retain the same unrepresentable name the target remains raw,
+  preserving the approved fallback. `TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes`
+  pins these outcomes, and `TestFinalizePlanPromotesAnonymousRecordArray` checks target
+  descriptor identity before the parent copies the child. Structured promotions survive
+  simplification until finalization; the record and array-record regression
+  `TestFinalizePlanRetainsStructuredPromotionThroughSimplification` failed before that fix.
+  RFC-242's failure/ragged accounts are historical, superseded by RFC-257; its separately
+  owned UNION/CASE findings below are not closed by this array repair.
 
-  "Identity, not data" does NOT hold for one shape, and that shape is reachable from plain SQL:
-  a STAMPED parent constructor over an UNSTAMPED record-typed child. That pair has no map
-  fallback: the parent builds a message, the child hands it a map, and the map cannot be stored
-  in a message field, so the query FAILS instead of answering in a weaker type.
-  `TestAStampedParentWithAnUnstampedChildFailsTheQuery` pins that consequence over the values
-  API. Two facts keep a parent and its DIRECT field child in step — `WalkValue` visits a parent
-  immediately before its children, and the parent's type CONTAINS the child's, so a stamped
-  parent means the child's message was already compiled — and
-  `TestTheBakeStampsAParentAndItsChildTogetherOrNeither` asserts each directly rather than
-  reasoning from it. A type-changing WRAPPER between parent and child defeats the second, and
-  that is REACHABLE: it has its own booking below, with an SQL reproducer. An earlier round
-  concluded from these two facts that the pair could not occur at all; that was wrong, and the
-  retraction is recorded here rather than in a rewritten sentence.
-
-  Reproduced by `WITH d AS (SELECT id AS bid, EXISTS (…) AS foo FROM b_md) SELECT a.id, c.id,
-  d.foo FROM a_md AS a JOIN d ON a.id = d.bid FULL OUTER JOIN c_md AS c ON a.id + 1 = c.id` —
-  the text both pins run, its predicate chosen so the two `ID` slots differ — whose row is
-  `RECORD<ID, S, BID, FOO, ID>`. WITHIN one plan the failure spreads across the whole
-  REPOSITORY, not just that row: compilation is per-repository and the bad message stays in it,
-  so every type asked for afterwards fails the same way — THREE of the FOUR constructors in
-  that plan end up with no descriptor though only ONE repeats a name, and the fourth — resolved
-  before the bad message was appended — keeps its descriptor, so the damage is walk-order
-  dependent. That three-of-four is a MEASUREMENT, not an invariant, and six files quote it, so
-  the census pin asserts the exact shape beside its floors: if the specimen moves, it fails and
-  names all six to re-measure rather than letting the number rot behind a green floor. The query
-  answers today, and returns every field: the rows travel positionally and
-  are read by ordinal. Pinned as it stands:
-  `TestFinalizePlanLeavesTheDuplicateNameJoinRowUnstamped` (the query, with a no-repeat control
-  that must stamp) and `TestDuplicateFieldNameRowPoisonsTheWholeRepository` (the mechanism and
-  its order dependence). Java refuses the row outright (`Type.Record.normalizeFields`
-  disambiguates duplicate INDEXES, not names; two `ID` fields throw in
-  `computeFieldNameFieldMap`'s `ImmutableMap.toImmutableMap`), so the silence is Go's
-  divergence. Closure: give the ordinal row the name-addressability suffix this port already
-  uses elsewhere (`K`, `K_2`) at construction, so the descriptor validates and the row is a
-  struct with both values; the pin reddens then and must assert both survive.
-  Booked from RFC-242 r21 with the reproducer.
-
-- [ ] **A record literal that is not stamped reaches a stamped parent, and the query fails or
-  answers ragged.** `FinalizePlan` stamps each record constructor from its own type. A
-  constructor whose type protobuf cannot carry — `(1 AS "$lead")`, or `(1 AS "1x")`; Java's
-  `ProtoUtils` rule, correctly ported — never stamps and evaluates to a name-keyed map. A
-  stamped parent builds a message and cannot store a map in a message field. Whether that
-  happens turns on the promotion TARGET, because unifying elements of differing shape ANONYMISES
-  their fields and so ERASES an offending name from what the parent's type carries. Measured
-  over real SQL on a non-empty table: `SELECT ([(1 AS "$lead"), (2 AS A)] AS CH) FROM t` FAILS
-  with `cannot store map[string]interface {} in message field` — target anonymised, parent
-  stamps, child does not. The same array with the SAME bad name on both elements ANSWERS as a
-  uniform raw map with its values, because the target keeps the name and the parent cannot stamp
-  either. And with nothing stamped above the array — `SELECT [(1 AS "$lead"), (2 AS A)] FROM
-  t`, no outer record — it ANSWERS RAGGED: one element a `MessageStruct`, one a raw map, in
-  one array. That last is the worst of the three, because nothing reports it at all. PINNED by
-  `TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes`, a table of query texts and outcomes
-  covering all three of those plus the controls that make each attributable — the bad name
-  second, a leading digit instead of a dollar, a promotion with good names, and no promotion at
-  all. Answering rows assert the leaf field NAMES as well as the values, so the anonymisation is
-  visible end-to-end (`_0` where the element wrote `A`, and `A` surviving where no promotion
-  happens). Failing rows assert their error text. Docker-free companions:
-  `TestUnificationErasesAFieldNameOnlyWhenTheNamesDisagree` (the erasure, both directions plus
-  the both-disagree diagonal) and `TestWhichRecordTypesCanBeGivenADescriptor` (the stamping
-  predicate). Read the table, not a summary of it: four successive rounds each summarised it and
-  were refuted by a row nobody had run. PRE-EXISTING, measured: every outcome is identical at
-  the merge-base `36b97f1e9` (only the synthetic-name prefix differs, `__type__` there against
-  `__0type__` now). CLOSURE. Java never relies on the wrapped constructor being stamped.
-  `PromoteValue.java` carries a `promotionTrie` (`CoercionTrieNode`, `:207`, `:220`) built by
-  `computePromotionsTrie` (`:354`, record arm `:408-429`), and evaluation calls
-  `MessageHelpers.coerceObject` (`:269`) after fetching the target's descriptor from the type
-  repository, so the target's message is built AT EVALUATION, per field. The promote is injected
-  PER ELEMENT (`AbstractArrayConstructorValue:172-176`), so `promoteToType` is the element
-  RECORD — which is what makes `Verify.verify(promoteToType.isRecord())` at `:265` hold; read
-  as "the array is promoted", that assert fails and the port aims at the wrong node.
-  `MessageHelpers:466` casts `current` to `Message`, so Java's coercion CONSUMES a message the
-  child already built: the port unit is the trie AND the registration model, not the trie alone.
-  Go's cascades PromoteValue carries no trie — `git grep -lnE 'CoercionTrie|coercionTrie' --
-  '*.go'` returns only the two generated protobuf files and
-  `pkg/recordlayer/query/plan/plans/update.go`. Do NOT paper it over by making message fields
-  accept a map: Java coerces with a known target descriptor and a per-field plan, not by copying
-  a map by name. The RAGGED case may need its own answer, but not for the reason an earlier
-  draft gave: the promote is per ELEMENT, so no stamped parent is required to coerce it. What it
-  lacks is a `Message` for `MessageHelpers.coerceObject` to consume, which is the registration
-  half of the port unit already named above rather than a separate mechanism. A live lead the
-  table supplies: a TWO-FIELD CASE branch already coerces a record and anonymises the
-  disagreeing field to `_1`, so something on that path does what the array path does not. Find
-  out what before writing the port. Booked from RFC-242 r36 and re-characterised at r38, r39,
-  r40 and r41 as reviewers refuted each account. The measurements survived; the explanations did
-  not.
-
-- [ ] **Unifying two record literals of differing numeric width is refused at evaluation.**
-  `SELECT ([(1 AS A), (2.5 AS A)] AS CH) FROM t` over a NON-EMPTY table fails with `cannot
-  synthesise a protobuf descriptor for __0type__4: field number 1 is int32 in the source
-  (__0type__5.A) but double in the target (__0type__4.A)`. Every field name here is one protobuf
-  will carry, and it reproduces with differing names too (`[(1 AS A), (2.5 AS B)]`). WHERE IT
-  HAPPENS: NOT at descriptor synthesis. Both descriptors synthesise — the error names them
-  both, which it could not otherwise — and the refusal comes from `copyFieldsByNumber`'s
-  kind-mismatch guard in `record_constructor_message.go` at EVALUATION. The `cannot synthesise a
-  protobuf descriptor for` prefix is `ProtoTypeError`'s stock wording and it misled an earlier
-  draft of this entry. SAME SITE AND CAUSE as the booking above: a stamped parent is handed a
-  child the promotion never coerced — a raw map there, a wrong-KIND message here. Two work
-  items because the fixes may land separately; one cause, and the coercion trie closes both
-  arms. PRE-EXISTING, measured: identical at the merge-base `36b97f1e9`. PINNED as rows of
-  `TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes` asserting the width-mismatch text
-  specifically, in both the agreeing-name and differing-name spellings, so neither can be
-  satisfied by the other booking's failure. Booked from RFC-242 r39, found by a reviewer varying
-  the dimension the pin held fixed.
+- [x] **Recursively promote differing numeric widths inside record literals.**
+  RFC-257 WS-A restores successful shared behavior for
+  `SELECT ([(1 AS A), (2.5 AS A)] AS CH) FROM t` and differing-name variants.
+  Declared source/target coercions rebuild exact target carriers and descriptors by
+  ordinal, without weakening `copyFieldsByNumber` or accepting maps in protobuf fields.
+  Checked array reconstruction injects coercions to its retained element type.
+  The retained value/reconstruction, real-FDB SQL and four-case target-Java probes
+  require successful values and names rather than the old kind-mismatch failure.
+  Uncommitted; full phase verification/review remain required in RFC-257.
 
 - [ ] **A UNION is refused when a LEG still NAMES a field the common type anonymised, and Java
   accepts it.** `SELECT (1 AS A) AS C FROM t UNION ALL SELECT (2 AS B) AS C FROM t` fails with
@@ -9723,7 +9638,7 @@ covered by the correctness suite and the golden plan diff, not by this table.
 - [ ] **`TestSourceCommentHygiene` scans only `*.go`, and its subject is not Go-specific.**
   The rule it enforces — no reviewer or shift attribution in source comments — is about SOURCE
   COMMENTS, and this repo reasons at length in shell and YAML comments: `infra/cloud-init.yaml`,
-  `infra/orphan_fdb_sweep_test.sh`, `pkg/docscheck/rowdiff_watcher_suite.sh`, the nightly
+  `infra/orphan_fdb_sweep_test.sh`, the nightly
   workflows. The gate's file set is `gitDeliverableFiles(root, "*.go")`
   (`pkg/docscheck/source_hygiene_test.go`), so none of them are scanned.
 
@@ -10792,7 +10707,8 @@ results/empty results plus the rejected stored-NULL insert), and four original
 computed-NULL-element queries checked as typed nullability failures through the
 existing GoSQLSetupRunner. The original positive NULL-element expectation was
 invalid: SQL ARRAY targets declare non-nullable elements. `live-array-bound.log`
-pins Java's NPE and Go's checked layout violation for the DOUBLE→LONG NULL-element
+historically pinned Java's NPE (RFC-257 supersedes it with target Java's explicit
+0A000 rejection) and Go's checked layout violation for the DOUBLE→LONG NULL-element
 shape; the computed non-NULL array and empty-array live probes pass both engines.
 NULL containers are positive empty UNNEST inputs, not NULL-element support.
 
@@ -11618,7 +11534,7 @@ remains single-shot. No timestamp assertions, execution floors, paging options,
 row population or expected results are weakened.
 
 This is fixture reliability for a Go extension, not Java row parity. The pinned
-Java 4.12.11.0 BaseVisitor::visitCurrentTimestamp delegates to visitChildren
+Java at the pre-upgrade baseline BaseVisitor::visitCurrentTimestamp delegates to visitChildren
 (lines1376–1380); QueryExecutionContext:28–65 has no statement-clock contract.
 The unchanged Go tests require one timestamp within each statement, advancing
 instants across statements, stable predicate counts and stable paginated results.
@@ -11676,7 +11592,7 @@ body reads O.ID; (2) two distinct outer IDs7/9 through nested CTE/scalar SQL;
 (3) an enclosing CTE read by a scalar inside a derived body; (4) nested derived
 passthrough growth at depths1–4; (5) preserved exact types and duplicate output
 names through at least three levels. Existing embedded builder tests and real-
-FDB SQL-driver tests own the regressions. Java4.12.11.0 QueryVisitor:170–181 and
+FDB SQL-driver tests own the regressions. Java at the pre-upgrade baseline QueryVisitor:170–181 and
 688–691 retains the built operator then renames it; its relational expression
 correlation property derives free references from values/quantifiers
 (AbstractRelationalExpressionWithChildren:57–77). Nested scalar/CTE SQL is tested
@@ -12770,7 +12686,7 @@ unchanged (one Go RUN/PASS; plain-loop SQL cases). Its table explicitly requires
 leaves an INT message under DOUBLE target metadata. Completing the Go conversion
 would remove that failure; the three approved shape snapshots do not authorize
 changing these expectations. The subsequent live-Java verification below
-corrects the premise of the initial request: Java 4.12.11.0 also fails these
+corrects the premise of the initial request: Java at the pre-upgrade baseline also fails these
 exact queries, so successful rows would be a deliberate upstream-bug workaround,
 not measured Java SQL parity. Other admission/error/representation expectations
 remain unchanged.
@@ -12787,7 +12703,7 @@ authorizes finishing/publishing the parent, not merging it.
 
 ### RFC-256 live Java numeric record-array correction
 
-**Correction to the preceding owner-decision premise:** Java 4.12.11.0 also
+**Correction to the preceding owner-decision premise:** Java at the pre-upgrade baseline also
 fails BOTH exact mixed-width array-of-record queries with
 `IllegalArgumentException: ... field java type: DOUBLE, value type: java.lang.Integer`.
 Changing Go to return rows would therefore be an upstream-bug workaround, not
@@ -12817,7 +12733,7 @@ split recorded below; it does not authorize a changed SQL outcome in the parent.
 
 ### RFC-256 owner-ordered parent and Java-upgrade successor
 
-The owner resolved the preceding stop: finish/publish PR785 on Java **4.12.11.0**,
+The owner resolved the preceding stop: finish/publish PR785 on Java **pre-upgrade baseline**,
 accept the known broken promotion behavior here, then make the immediate stacked
 Java-upgrade PR including the required parity work. No upstream Java PR: #4171
 already fixed the SQL construction path; RFC-256 records its release history.
@@ -13015,7 +12931,7 @@ Published `6b833ba3c28b8266c00670e778f7497d07a188b7` has seven successful CI
 checks and four exact-published-SHA virtual reviewer confirmations. The published
 Claude review is **not LGTM** and discloses unread test/testdata/docs scope.
 
-- Fresh retained `NumericCastBoundaryConformance` against Java 4.12.11.0 confirms
+- Fresh retained `NumericCastBoundaryConformance` against Java at the pre-upgrade baseline confirms
   legal unused AS==AT, 42702 when referenced, separate element/ordinal values
   behind duplicate labels, and ordinary ambiguity for competing UNNEST columns.
   RFC-142/source prose was stale; the behavior already follows RFC-256's reviewed
@@ -13080,11 +12996,13 @@ pending. No merge or upgrade-pin change is authorized by these results.
 The owner explicitly requested merging PR #785 on 2026-09-18. That supersedes the
 publication-only/no-merge authorization statements in earlier checkpoints here
 and in RFC-256; it does not turn unrun coverage into passes or select an upgrade
-version. The accepted Java 4.12.11.0 structured-promotion/mixed-numeric-record-array
+version. The accepted Java at the pre-upgrade baseline structured-promotion/mixed-numeric-record-array
 split and mandatory immediate Java-upgrade/parity successor remain unchanged.
-The verified common-release candidate is recorded in RFC-256 and still awaits
-explicit version confirmation. No pin, Java checkout, golden, new hunt or upstream
-PR changed; this living document names only the current Java pin.
+The owner subsequently confirmed the upgrade target and authorized RFC-257's
+full-range audit and parity successor. The parent did not change pins, Java
+checkout, goldens, hunts or upstream PRs. The successor now changes pins/checkout
+and restores structured-promotion success tests; its red results and remaining
+ports are tracked in **RFC-257 Java upgrade and complete-range parity** below.
 
 All four existing read-only gpt-6-astra/xhigh reviewers ACKed the complete 17-path
 follow-up at virtual tree `285739a5f8d1837cee2523d57aa4426f03f51d82`, retaining
@@ -13158,3 +13076,2262 @@ and no performance repair was made. The five restricted factory hunts remain
 unapproved/unrun, not Docker skips or passing coverage. Prior paging140/eternal3600
 and transaction/watch/retry obligations are not newly executed by this follow-up.
 Companion: RFC-256 **Final follow-up verification and owner merge authorization**.
+
+
+### RFC-257 Java upgrade and complete-range parity
+
+- [ ] **Complete the owner-authorized Java 4.14.2.0 upgrade and full-range audit.**
+  Fresh branch `upgrade/java-4.14.2.0`, parent
+  `e48f5b4965543cd4d99b5578356059e12d969c7c`. Design, source SHAs, compatibility
+  decisions, owning workstreams and regression contracts are in
+  [RFC-257](rfcs/257-java-4.14.2.0-upgrade.md); exhaustive source/history ledgers
+  and runtime evidence are in its [audit directory](rfcs/257-java-upgrade-audit/README.md).
+  The owner has confirmed the target; earlier candidate-confirmation stops are
+  superseded. This is not a new hunt or arbitrary corpus-admission expansion.
+
+  Prepared, uncommitted: Maven pins, canonical protos/generated code, and restored
+  structured-promotion/mixed-width success tests. Target Java passes the four-case
+  record-array probe. Subsequent WS-A ports close the focused structured-promotion,
+  stored-query metadata and Java HNSW access-info regressions; see the execution
+  ledger for their bounded verification, not a full-upgrade green. Initial uncached full suite: 92 targets, 87 passed/five failed; frozen
+  source hashes verified. All five source reports are read and integrated: 1,189
+  disjoint net paths plus 84 history-only paths reconcile to the 1,273-path commit
+  union. The documentation target subsequently passed uncached; the full suite
+  remains red. Source-audit reports are not runtime passes or ACKs.
+
+  First WS-A design snapshot received Graefe/storage ACKs and
+  Torvalds/independent NAKs. Revised design now specifies coercion preparation and
+  mutation ownership, HNSW node/inline-edge encoding/cache invariants, and mandatory
+  disable/rebuild of RaBitQ indexes with legacy Go writer history. A retained
+  parent-written, committed/cold-reopened fixture reproduces raw access-info under
+  an active transform; the bytes cannot reliably identify their writer history.
+  Two uncached exact-parent 1M baselines passed; no current comparison is claimed.
+
+  **Not complete:** WS-A full verification and implementation review,
+  storage/queue/index lifecycles, changed SQL/planner/value
+  contracts, GuardiANN and its maintenance, dependent shared APIs, corpus/docs
+  reconciliation, final build/test/race/stress and milestone reviews. WS-A production
+  implementation has started; no commit, push or upgrade-completion claim yet. The five restricted
+  opt-in hunts remain unapproved. Exact current state lives in RFC-257's execution
+  ledger, not a private session tracker.
+
+### RFC-257 WS-A second-review closure
+
+Second design tree `822e4f49bb9f03d26659a7520835953c60998709` received
+Torvalds/storage ACKs and Graefe/independent NAKs. All verdicts are retained in
+`rfcs/257-java-upgrade-audit/design-v2/`. The revised RFC now requires transactional
+closure registration followed by sealed descriptor publication before binding,
+and owns exact RaBitQ encoder/norm fidelity in WS-A rather than WS-D. Final design
+tree `84844bdb679dacefde59a61efe67969f7bc9be11` received all four ACKs, retained in
+`rfcs/257-java-upgrade-audit/design-v3/`; WS-A implementation is now authorized. The owner
+explicitly requested finishing the port and obtaining an approved PR; publishing
+that PR is authorized, without waiving review or test gates.
+
+### RFC-257 WS-A metadata and HNSW implementation evidence
+
+Metadata field-16 preservation is implemented and real-FDB revert-proven. HNSW
+coordinate provenance now reaches candidate, access-info, compact/inline write
+and cache boundaries; retained Java byte goldens pin committed storage and cold
+reads. The legacy Go fixture is replayed through disable/read-refusal/rebuild and
+bidirectional Java/Go post-rebuild operations. Java rejected the fixture producer's
+accelerated stats threshold 1, so the fixture bytes remain unchanged while rebuild
+metadata uses valid threshold 11 with sufficient authoritative records. Go's missing
+threshold validation is fixed and revert-proven, including the parsed-option path.
+At the recorded population of 3194 record-layer and 1469 conformance specs, selected
+verification passes 143 vector specs under race and 42 live Java specs; this does
+not certify the whole upgrade. Full evidence and limitations are in RFC-257's
+execution ledger. Promotion/descriptor implementation has subsequently landed in
+the working tree; complete phase verification and milestone implementation reviews
+remain pending. That measurement preceded publication; draft PR #786 now carries
+the audit/design checkpoint, not the full upgrade implementation.
+
+### RFC-257 WS-A race verification: LIMIT eagerly serializes sort tails
+
+The full affected race command timed out after eight of nine targets completed.
+SIGQUIT captured the SQL-driver process in `TestFDB_MetamorphicPagingAtScale`:
+LIMIT eagerly calls the lazy sort continuation's encoder on every emitted row,
+serializing the entire remaining sorted buffer. This is quadratic work, not a
+proven deadlock or transaction retry loop. The old process has been terminated;
+full logs/stacks are under `java-upgrade/race-timeout/`. RFC-257's **WS-A
+verification finding: LIMIT must preserve lazy continuations** specifies the
+immutable deferred envelope, unchanged codec and deterministic regression.
+Design review precedes implementation; this finding is being closed as part of
+WS-A verification, not deferred to an unrelated performance campaign.
+
+### RFC-257 draft publication and lazy LIMIT verification
+
+Draft PR #786 (https://github.com/birdayz/fdb-go/pull/786) publishes the audit/design
+checkpoint at `62ea473554fc3c2afdf3c69c8ceaf7a8500e7cf0`, not the whole upgrade.
+The normal commit hook passed generation/lint/build and all 92 test targets in a
+clean worktree; adoption preserved 6,261 development-working-file hashes. No merge
+authorized. The LIMIT design has Graefe/Torvalds/independent ACKs at tree
+`7485a5d948bacc3cadc802499d3069acb3340eca`. Both eager sites now use immutable
+continuation snapshots with the unchanged codec. Full executor passes uncached;
+reintroducing either eager site separately makes the retained actual-sort test
+fail on that site. Both restored and full executor green again. The exact
+140-comparison race reproducer and complete executor/SQL-driver race runs are
+in progress. See RFC-257's LIMIT subsection and draft-publication checkpoint.
+
+A separate executor verification attempt failed in TestMain before any test ran:
+`failed to start FDB container: context deadline exceeded`. Docker responded to
+subsequent CLI/API checks; no container events were present in the initial
+capture. The first SIGQUIT captured Bazel's test wrapper, not its child, and does
+not diagnose the startup wait. The later child-capture attempt found no live child
+because the test had completed successfully. Subsequent executor/mutation runs
+passed, but a rerun is not a root cause or a fix: startup-timeout diagnosis remains
+open, with logs under `java-upgrade/limit-container-*` and
+`limit-executor-startup-timeout.log`. Do not claim the upgrade's full verification
+complete from the green scoped runs.
+
+### RFC-257 WS-E1 design approval and post-LIMIT verification
+
+- FROM-less SELECT design ACKed by all three read-only gpt-6-astra/xhigh reviewers
+  at `bf080555be86aa00fff2ba100be2b22781a7ef7a`; see RFC-257 final WS-E1 section and
+  `rfcs/257-java-upgrade-audit/fromless-design/`. Implementation approval remains open.
+- Post-LIMIT full `just test`: 91/92 targets passed, 57 executed/35 cached. The one
+  failed target reports the two old FROM-less rejection cases against Java's new
+  successful answers. Source hashes verified; no full-green claim. Reconciliation:
+  `rfcs/257-java-upgrade-audit/ws-a-post-limit-full-verification.json`.
+- Retained live Java singleton-source probe is the next executable oracle, followed
+  by the approved source/consumer conversion. Earlier startup timeout remains open;
+  preserved diagnostics fix loss of cause, not the original timeout. Scoped kernel
+  journal shows memory pressure, which is not enough to establish causation.
+
+### RFC-257 WS-E1 recursive consumer publication and full-run reconciliation
+
+First singleton full run: 88/92 targets passed (27 executed/65 cached), all 4,047
+recorded source hashes unchanged. Four failed targets are recorded in RFC-257's
+**WS-E1 singleton consumers** section; no full-green claim. The real recursive
+ORDER BY/SUM/group failure is fixed at semantic publication: main consumers now
+bind the completed producer row instead of its provisional seed. Exact unit/FDB
+regressions are red under the publication reversion and green after restoration.
+The retained live-Java probe asserts 46 singleton/composition cases plus two
+index-DDL cases, with independent Go contracts for Java-error extensions. A
+masked DDL assertion was corrected only after Java proved the grouping-only
+VALUE index and duplicate rows. Golden/document reconciliation, full/race/stress
+verification and WS-A/E implementation reviews remain open, along with the
+original startup-timeout diagnosis and remaining upgrade workstreams. Evidence
+and the concrete next actions are in RFC-257, not an implementation checkbox.
+
+
+### RFC-257 recovery and WS-E1 static verification — 2026-09-20
+
+Resumed in the fresh `~/projects/fdb-go` clone at published `71ccd8cf8`. Restored
+reviewed uncommitted upgrade sources from the read-only old disk; no old hooks,
+credentials or executables imported. Fresh generated Go bytes match; Java source
+and all 16 canonical protos match target `fdacd162a`. Mandatory-FROM revert is
+compiled/killed and restored. Golden reconciliation is limited to nine named
+stanzas, preserving 2,986 others and all SQL.
+
+Fresh non-FDB verification: 9/9 full planner/unit targets (10,461 test/subtest
+passes), 8/8 race targets (9,544 passes), five plan checks repeated ten times,
+20s ordinal-seed fuzz (10,207,807 executions), retry diagnostic pins, and complete
+258-target `just build` are green. Source hashes stayed frozen during verification.
+The first native-client build failures were repaired using official digest-checked
+7.3.77 headers/library; the client version remains unchanged.
+
+This does **not** complete the upgrade or its runtime gates. The Docker startup
+STOP was resolved by the subsequent sudo-tool request; Docker is active and the
+current user has socket access. `gh` still needs fresh authentication. The fresh
+focused Java oracle now passes 56 composition and two index cases; its previously
+unmeasured wide-star expectation required an ordering-aware Java refusal plus a
+retained composite-key positive control. No full FDB/Java suite or current-machine
+stress comparison is claimed. Historical raw logs/frozen review-tree objects were not
+recovered; retained old reports are historical data, not fresh verification.
+No milestone implementation ACK, commit, push or merge occurred. Continue the
+existing RFC-257 work; do not treat this recovery as a replacement workstream.
+Evidence and exact scope: [RFC-257 fresh-machine recovery](rfcs/257-java-4.14.2.0-upgrade.md#fresh-machine-recovery-2026-09-20),
+[recovery verification](rfcs/257-java-upgrade-audit/recovery-2026-09-20/verification.json).
+
+
+### RFC-257 runtime fixture closure and implementation reviews — 2026-09-20
+
+Supersedes the earlier recovery entry's pending full-suite/runtime-race status:
+the frozen pre-review candidate passed all 92 targets uncached. The subsequent
+six-target race run exposed expired shared fixture contexts and atomic fixture
+INSERT batches exceeding FDB's MVCC window. Each parallel NoFrom child now owns
+its deadline; DUEC fixture inserts subdivide only definite transaction-window
+aborts, reject conflicts/ambiguous commits, and assert complete affected-row
+counts. Measured queries, populations and result assertions are unchanged.
+Retained split-gate tests were mutation-killed and restored. Under the same
+six-target race load all six targets passed uncached; SQLdriver ran 6,790
+cases/subcases, all passed, with five real fixture splits. All 6,280 source
+hashes stayed fixed. Subsequent `just test`: 92 passed (3 executed, 89 cached).
+
+All four implementation reviews of tree `a8940de29` returned NAK. Fixes in
+progress: portable RaBitQ rounding, authoritative expanded SELECT slots,
+nil-result-type checked array reconstruction, and nonmutating sealed descriptor
+lookup. No approval is implied by the test greens. Fresh 1M comparison,
+original historical startup-timeout diagnosis, final review deltas, remaining
+WS-B–K and publication remain open. No commit/push/merge performed.
+Evidence: [fixture verification](rfcs/257-java-upgrade-audit/recovery-2026-09-20/fixture-verification.json)
+and [full review verdicts](rfcs/257-java-upgrade-audit/recovery-2026-09-20/implementation-reviews/).
+
+
+### RFC-257 WS-A/E1 review fixes and fresh verification — 2026-09-20
+
+The four findings against `a8940de29c3726e44d5e14779f321b732e11be88`
+are implemented and regression-tested; implementation ACKs are still pending.
+The verified source tree is `232ee085f61b4ad5b8568a87b74cd5e2db328b71`
+(a Git tree, not a commit). No commit, push or merge was performed.
+
+- Checked array reconstruction validates each child's result type before calling
+  methods on it; nil and typed-nil results return `TypeNil`, including AnyType
+  reconstruction. The retained nil-result reproducer panicked before the fix.
+- Descriptor registration validates the full array-wrapper closure transactionally.
+  `ARRAY<UNKNOWN>` fails without leaving a half-defined wrapper. Failed lookup
+  never defines a type after registration; sealed and unsealed regressions pin
+  compiled descriptor identity, counters and repository contents.
+- One expanded SELECT-slot list owns bound star columns and original expressions
+  before positional GROUP/ORDER resolution. Eleven real-FDB cases cover zero,
+  one, wide, repeated and qualified stars, aliased grouping, and grouping without
+  aggregates; nine failed before the fix. The Java oracle now retains 60 composition
+  cases plus two index cases. Java still refuses the measured zero-star positional
+  grouping and wide-star positional sorting cases; independent exact Go positives
+  preserve the approved extension. Only `qualified_star_more.yaml#3` changed its
+  42803 diagnostic from blanket star refusal to the actual ungrouped `A.A2`.
+  The existing `order_by_position_over_star` corpus entry now records measured
+  Java-refuses/Go-correct behavior. No new corpus admission or bulk refresh occurred.
+- RaBitQ encoding enforces binary64 product rounding in reductions, sweep and
+  quantization, and before doubling the error factor. The ARM64 finite boundary
+  vector is red before rounding; removing only the `ipNorm` barrier is killed by
+  `quantization_seven_1`. That mutation survived the older 24-golden population,
+  so the expanded 27-golden population is retained. The final doubling barrier
+  removes the last compiler-generated FMA; the byte tests already passed before
+  that conservative barrier. Go 1.26.6 ARM64 disassembly of `encodeInternal`,
+  `quantizeEx`, `bestRescaleFactor` and `absOfNormalized` contains 19 `FMULD`
+  instructions and no fused add/sub instructions. This is a compiler/symbol-scoped
+  observation, not a claim about all floating-point code.
+
+Java's native NaN sign is **not architecture-independent**: the retained actual
+4.14.2.0 Java oracle on AMD64 and emulated ARM64 writes `fff8…` and `7ff8…`
+respectively for the zero residual. Exact per-architecture goldens preserve this
+behavior; neither canonicalization nor an either-sign allowance was introduced.
+The standalone Java architecture contract is now a Bazel target. All 273 ARM64
+Go cases/subcases pass, including the 27 literal encoding/decoding goldens.
+`FuzzRaBitQEncoding` completed 16,839,465 executions over 20 seconds.
+
+On the frozen source tree, all **93 targets executed uncached and passed**:
+40,605 Go RUN events = 40,600 PASS + the five existing owner-restricted hunt skips;
+Java conformance ran 1,357 of its 1,476 cases (119 existing filtered cases).
+A subsequent `just test` also executed and passed all 93 targets. The refreshed
+**14-target race run passed uncached**, with 21,059 Go RUN = PASS and no Go skips
+or failures. All 6,286 recorded regular-file hashes remained unchanged through
+these runs and the stress/benchmark measurements below. The earlier 92-target
+passes predate the new standalone Java target and are not substituted for this run.
+
+Fresh sequential 1M comparison and planner profiles are recorded in the following
+stress section. None of these greens constitutes implementation approval or
+whole-upgrade completion. The original historical executor startup-timeout cause
+cannot be established from the recovered artifacts; the separate CLI networking
+repair does not explain it. WS-B–K and publication remain open, and fresh owner
+GitHub authentication is still needed. Evidence: [review-fix verification](rfcs/257-java-upgrade-audit/recovery-2026-09-20/review-fix-verification.json) and [stress verification](rfcs/257-java-upgrade-audit/recovery-2026-09-20/stress-verification.json).
+
+
+### Stress test 1M baseline — RFC-257 WS-A/E1 review-fixed source
+
+Baseline commit `e48f5b4965543cd4d99b5578356059e12d969c7c` is the merge-base
+on 2026-09-20; current source is Git tree
+`232ee085f61b4ad5b8568a87b74cd5e2db328b71` over HEAD `71ccd8cf8`.
+Both checkouts are on `/dev/nvme0n1p2` (7% used at the start), both use the
+Bazel Go 1.26.6 compiler, and both `go.mod` files are byte-identical. Four
+samples per tree ran sequentially: baseline 1–2, current 1–2, baseline 3–4,
+current 3–4. No other verification suite ran alongside these samples. Every
+sample ran/passed the same 24 tests/subtests (parent + 23 query cases), counted
+exactly 1,000,000 inserted orders, and reported zero fixture serialization retries.
+All row counts agree across all eight runs. No source hashes changed.
+
+One-minute load start/end, by sample: baseline 8.88/6.84, 6.84/5.83,
+5.29/6.82, 6.82/6.28; current 5.83/6.00, 6.00/5.88, 6.28/6.59,
+6.59/5.01. This was not a constant-load experiment. The table retains all
+four samples per side, including outliers; ratios are current/baseline medians.
+
+| Query | Rows | Baseline ms, median [min–max] | Current ms, median [min–max] | Median ratio |
+|---|---:|---:|---:|---:|
+| PK lookup id=0 | 1 | 9.053 [8.427–42.516] | 8.393 [8.152–8.746] | 0.927x |
+| PK lookup id=N/2 | 1 | 9.174 [8.374–15.477] | 8.541 [8.249–9.132] | 0.931x |
+| PK lookup id=N-1 | 1 | 6.964 [6.244–14.527] | 6.381 [5.575–6.460] | 0.916x |
+| idx_customer eq | 8 | 7.160 [6.963–29.361] | 7.165 [6.669–7.413] | 1.001x |
+| idx_amount range >9000 | 100,017 | 272.896 [208.837–295.349] | 231.720 [193.906–272.291] | 0.849x |
+| idx_status count pending | 1 | 390.276 [336.864–459.918] | 441.400 [362.784–451.860] | 1.131x |
+| full scan filter amount>5000 | 1 | 807.019 [625.983–895.229] | 847.469 [789.157–906.873] | 1.050x |
+| GROUP BY status | 4 | 6.172 [6.072–13.093] | 10.397 [6.352–20.230] | 1.684x |
+| GROUP BY status COUNT only | 4 | 6.117 [5.411–11.715] | 13.175 [5.662–22.206] | 2.154x |
+| SUM by status (aggregate index) | 4 | 6.372 [5.717–22.440] | 11.746 [5.671–21.864] | 1.843x |
+| GROUP BY customer HAVING | 47,271 | 600.348 [596.412–665.425] | 609.829 [608.478–670.713] | 1.016x |
+| JOIN 10 orders x customers | 10 | 22.040 [20.586–23.456] | 21.011 [20.711–40.258] | 0.953x |
+| ORDER BY PK (full) | 1,000,000 | 7384.900 [4032.537–7641.523] | 4014.848 [3971.482–4033.162] | 0.544x |
+| ORDER BY PK + index filter | 8 | 9.669 [9.194–10.905] | 9.685 [9.012–9.890] | 1.002x |
+| scan all rows ordered | 1,000,000 | 3822.214 [3812.736–3832.859] | 3810.155 [3771.584–7421.932] | 0.997x |
+| scan all rows wide | 1,000,000 | 4098.739 [4053.407–4121.398] | 4061.110 [4048.666–4096.273] | 0.991x |
+| IN-list 5 values | 46 | 23.252 [20.605–23.639] | 20.163 [19.141–20.532] | 0.867x |
+| PK needle id=999999 | 1 | 6.213 [5.894–6.354] | 6.126 [5.878–6.596] | 0.986x |
+| PK+filter needle id=500000 | 1 | 7.599 [6.877–8.280] | 8.070 [7.379–8.432] | 1.062x |
+| full scan sparse filter | 97 | 3553.116 [3522.353–3566.704] | 3500.512 [3490.783–3514.363] | 0.985x |
+| UPDATE by index | 8 | 10.119 [9.925–10.412] | 10.112 [9.403–10.869] | 0.999x |
+| DELETE single row | 1 | 7.379 [7.117–7.769] | 7.137 [7.114–8.076] | 0.967x |
+
+Initial GROUP/SUM increases prompted the second pair per tree and profiles,
+not a performance-parity claim. Samples 3–4 measure GROUP/SUM at roughly 5–7ms
+on both trees; the earlier 14–22ms current readings remain in the table. The
+first and second million-row ordered scans execute identical SQL, yet occasional
+7s readings occur on either tree among otherwise 4s scans. This observation does
+not identify their cause and is not treated as a proven optimization.
+
+All 11 logged EXPLAIN lines match. Existing `BenchmarkPlanStressShape_` benchmarks
+ran all six shapes, three observations of 200 iterations each per tree, with CPU
+and allocation profiles. Median current/baseline ns/op ratios are 1.0004 PK,
+0.9964 index equality, 0.9835 index range, 1.0051 grouped COUNT, 0.9887 grouped SUM,
+and 1.0033 IN-list. These isolate planner cost; they do not bound execution-time
+variation or establish a universal zero-regression claim. The timings also do not
+meet the aspirational <5ms point-read target on either tree. No expectations or
+performance thresholds were relaxed. Raw samples, loads, compiler identities,
+commands, profiles and artifact hashes are retained in [stress verification](rfcs/257-java-upgrade-audit/recovery-2026-09-20/stress-verification.json).
+
+
+### RFC-257 WS-A/E1 bound-slot identity closure — 2026-09-20
+
+The four [second implementation reviews](rfcs/257-java-upgrade-audit/recovery-2026-09-20/delta-reviews/) rejected tree
+`9f8d0f63cc15aa364dd237a62650a4bf73e5babe`. They accepted the RaBitQ, checked-array,
+descriptor and fixture repairs, but found remaining ORDER/GROUP identity loss.
+The repaired and verified code is tree `fd415c72fcd9bdd8323659a70e352deef48cce9f`
+over unchanged commit `71ccd8cf8b3fd0dbafe283e91171818e36af555e`.
+
+- Positional ORDER duplication is checked by repeated ordinal during parsing and
+  by bound direct-column identity after resolution. Named-only duplicate checking
+  remains parser-owned; repeated computed output slots are not direct-column
+  duplicates. The visitor preserves every parsed key rather than deduplicating
+  rebased labels. Typed output slots distinguish star columns from expressions.
+- GROUP identity survives leading-segment stripping, all projection-to-aggregate
+  reclassifications, source validation and native aggregate output-slot matching.
+  Already-bound keys compare semantically rather than by their labels. An ungrouped
+  bound output now raises 42803 instead of escaping into an invalid-native-ordinal
+  0AF00 failure.
+- Ten new positive real-FDB cases pin independently varying duplicate-label sources,
+  duplicate table aliases, stars before/between aggregates, repeated computed slots
+  and a heterogeneous INT/STRING grouped CTE. Eight negative controls retain genuine
+  duplicate ORDER/GROUP rejection and ungrouped-output rejection. Separate units
+  drive both strip branches and eight positional-sort decision cases.
+- Three compiled mutations each failed their intended tests: bypassing post-binding
+  ORDER validation, ignoring bound GROUP identity, and dropping the stripped key's
+  Value. Exact sources were restored and both focused targets passed. The later
+  comment clarification and fuzz addition are not claimed as mutation-tested code.
+  `FuzzPositionalSortColumnIdentity` passed 9,387,604 executions over 20 seconds.
+- The retained live-Java probe passed 64 composition cases plus two index controls.
+  Java refuses all four added cross-source ORDER shapes, including their named
+  equivalents, with UnableToPlan/0AF00. These are not Java-positive claims: complete
+  ordered Go cross products remain independently asserted as approved extensions.
+  An earlier zero-match filter and failed oracle assumptions are retained in raw
+  logs but are not credited as passing verification.
+
+Fresh verification on the 6,296-file frozen tree: **93/93 uncached targets passed**,
+with 40,650 Go RUN markers = 40,645 PASS + the five existing owner-restricted hunt
+skips. **14/14 affected race targets passed uncached**, with 21,103 RUN = PASS and
+no Go skips. Counts include indented subprocess test output; per-target RUN and
+PASS/SKIP name multisets reconcile, rather than mixing unindented RUN with all PASS
+lines. Both full and race Java conformance ran 1,357/1,476 specs, with 119 existing
+filtered cases. No source hashes changed through suites, stress or profiling.
+The preceding incremental `just test` passed 93 targets (23 executed, 70 cached);
+it is not substituted for this uncached run.
+
+#### Stress test 1M baseline — refreshed bound-slot identity tree
+
+Fresh baseline commit `e48f5b4965543cd4d99b5578356059e12d969c7c` (the recorded
+merge-base on 2026-09-20) versus current source tree
+`fd415c72fcd9bdd8323659a70e352deef48cce9f`. Both use Go 1.26.6 and identical
+go.mod bytes, on `/dev/nvme0n1p2` (9% used). Four observations per side ran
+sequentially: baseline 1–2, current 1–2, baseline 3–4, current 3–4. No verification
+suite or benchmark overlapped them. Each ran/passed the same 24 tests/subtests,
+counted 1,000,000 orders, matched every result-row count and recorded zero fixture
+serialization retries. All 11 logged EXPLAIN lines agree across all eight runs.
+
+One-minute load start/end: baseline 16.31/11.40, 11.40/8.35, 7.53/5.60, 5.60/4.09;
+current 8.35/6.97, 6.97/6.94, 4.00/5.87, 5.87/6.12. Background load was not constant.
+All samples are retained; ratios compare medians, not proven causal changes.
+
+| Query | Rows | Baseline ms, median [min–max] | Current ms, median [min–max] | Median ratio |
+|---|---:|---:|---:|---:|
+| PK lookup id=0 | 1 | 9.832 [8.747–10.204] | 13.011 [8.214–15.591] | 1.323x |
+| PK lookup id=N/2 | 1 | 8.909 [8.419–9.493] | 12.310 [8.470–24.688] | 1.382x |
+| PK lookup id=N-1 | 1 | 7.280 [6.607–8.265] | 17.597 [6.089–41.085] | 2.417x |
+| idx_customer eq | 8 | 7.933 [6.497–9.462] | 12.644 [6.339–52.078] | 1.594x |
+| idx_amount range >9000 | 100,017 | 218.372 [208.540–333.748] | 241.393 [225.864–259.494] | 1.105x |
+| idx_status count pending | 1 | 431.014 [372.110–479.945] | 381.372 [334.756–459.813] | 0.885x |
+| full scan filter amount>5000 | 1 | 714.511 [641.479–834.568] | 687.083 [603.748–757.818] | 0.962x |
+| GROUP BY status | 4 | 11.161 [6.925–26.607] | 7.895 [6.619–9.145] | 0.707x |
+| GROUP BY status COUNT only | 4 | 9.521 [5.821–13.799] | 5.755 [4.971–5.825] | 0.604x |
+| SUM by status (aggregate index) | 4 | 9.320 [6.017–13.422] | 6.234 [5.741–7.159] | 0.669x |
+| GROUP BY customer HAVING | 47,271 | 709.664 [611.816–842.704] | 691.290 [676.309–862.517] | 0.974x |
+| JOIN 10 orders x customers | 10 | 29.253 [20.659–43.726] | 33.151 [24.012–52.619] | 1.133x |
+| ORDER BY PK (full) | 1,000,000 | 4184.841 [3875.425–4408.024] | 4208.786 [3998.876–4420.314] | 1.006x |
+| ORDER BY PK + index filter | 8 | 9.391 [9.076–11.127] | 10.987 [8.982–14.665] | 1.170x |
+| scan all rows ordered | 1,000,000 | 3989.458 [3828.589–4145.551] | 4018.486 [3820.557–4224.098] | 1.007x |
+| scan all rows wide | 1,000,000 | 4304.076 [4105.157–4457.033] | 4316.502 [4107.868–7840.183] | 1.003x |
+| IN-list 5 values | 46 | 23.312 [18.935–25.361] | 20.565 [19.828–24.929] | 0.882x |
+| PK needle id=999999 | 1 | 6.372 [5.033–7.368] | 6.504 [5.970–7.004] | 1.021x |
+| PK+filter needle id=500000 | 1 | 7.964 [7.364–8.584] | 7.632 [7.567–8.668] | 0.958x |
+| full scan sparse filter | 97 | 3754.914 [3524.433–3913.403] | 3684.973 [3519.360–3869.136] | 0.981x |
+| UPDATE by index | 8 | 10.589 [9.546–12.454] | 10.136 [10.035–10.919] | 0.957x |
+| DELETE single row | 1 | 7.753 [7.100–8.713] | 7.849 [7.306–8.403] | 1.012x |
+
+The early point-read medians are worse in this population, including a 52ms index
+lookup and 41ms PK lookup in current samples. Their cause is not established;
+these are not dismissed by the later needle-query timings. Baseline grouped-query
+spikes and a current 7.84s wide scan also remain in the table. Neither universal
+performance parity nor a causal speedup is claimed. The earlier eight-run table
+remains evidence for its explicitly different source tree, not this repair.
+
+Fresh existing planner-only benchmarks ran all six `BenchmarkPlanStressShape_`
+shapes, three 200-iteration observations per side, with CPU/allocation profiles.
+Median current/baseline ns/op ratios are 0.9955 PK, 1.0197 index equality, 0.9992
+index range, 0.9957 grouped COUNT, 1.0085 grouped SUM and 1.0056 IN-list. These price
+planner work only; they neither explain nor bound end-to-end latency variation.
+The aspirational <5ms point-read target is not met on either tree. No threshold,
+assertion, retry policy or golden was relaxed for these results.
+
+Detailed commands, per-target outcomes, sample timings, loads, compiler/binary
+identities and artifact hashes: [slot identity verification](rfcs/257-java-upgrade-audit/recovery-2026-09-20/slot-identity-verification.json).
+Final implementation delta reconfirmation is pending; historical design/security
+ACKs do not substitute. The historical executor startup-timeout cause still needs
+the unavailable original logs; the CLI networking repair is separate. WS-B–K and
+whole-upgrade completion remain open. GitHub authentication was restored and
+verified as `birdayz`; draft PR #786 still points to `71ccd8cf8`. Authentication is
+no longer missing, but the no-commit/no-push constraint remains and no merge is
+authorized. No commit, push or merge was performed.
+
+### RFC-257 WS-A/E1: GROUP-alias ownership closure and latency attribution
+
+The preceding candidate `664b241c57b71829cb40687a1e26cc3dc3e145e6` received actual
+Torvalds/storage implementation ACKs and Graefe/independent NAKs. The latter
+identified a real wrong-row path: an ephemeral GROUP alias could overwrite the
+semantic owner of a bound star attribute. Those verdicts remain historical;
+they do not approve the repair below.
+
+The repair preserves bound star attributes and qualified source references.
+GROUP aliases resolve only eligible unresolved bare references, including in
+aggregate arguments and ORDER keys. The ORDER visitor retains whether a SELECT
+alias already owned a rebasing, preventing a second GROUP-alias substitution.
+Named ORDER duplication compares captured identifier segments as well as rendered
+spelling: the quoted alias `"P.ID"` is not the qualified source column `P.ID`.
+Genuine repeated quoted/qualified keys still reject with 42701.
+
+Fourteen added real-FDB SQL cases retain complete rows/labels for the exact
+reported positional-star reproducers, explicit source columns/aggregate arguments,
+quoted alias reads/arguments, qualified ORDER, SELECT-alias priority, ungrouped
+42803 errors and repeated ORDER 42701 errors. A typed synthetic star-expander
+unit separately pins the bound-owner guard even when the expanded name is bare.
+Six compiled mutations independently fail their intended controls. An earlier
+qualified-output mutant survived the old fixture; the retained unqualified-alias
+name collision case closes that missing dimension. Parser-only repair was
+insufficient for ORDER; both red intermediate logs are retained.
+
+The retained live-Java probe passes fourteen exact cases against Java 4.14.2.0
+`fdacd162a9c8acfadc49082b89185c823ab8ae4a`. Java refuses both positional-star
+positive reproducers with 42803; their Go positives are the approved positional
+extension, not claimed shared Java behavior. Named GROUP star/source/aggregate
+cases and quoted alias reads match exact Java rows/types. Ungrouped and repeated
+ORDER negatives match exact SQLStates. The initially assumed Java 0AF00 was
+refuted and corrected from the oracle, without weakening Go assertions.
+
+On frozen production/regression tree `ffdcc1138421d53d3b22971a095f619173d87d49`
+(6,305 files), **93/93 targets executed uncached and passed**: 40,665 Go RUN markers
+= 40,660 PASS + five existing owner-restricted hunt skips. **14/14 affected race
+targets executed uncached and passed**, 21,118 RUN = PASS, no Go skips. Per-target
+name multisets reconcile, including indented subprocess output. Both Java suites
+ran 1,358/1,477 specs, with 119 existing filtered cases. No source hashes changed.
+
+Subsequent source changes are confined to the manual stress target: the optional
+observer/cluster-file harness, its BUILD registration and the new diagnostic test.
+The observer retains the original fixture/query order, uses a private client handle
+and records connection acquisition, planning/execution callbacks, record-store
+timer deltas and trace regions. Its spans overlap and must not be added as disjoint
+phases. Twelve validation arms run under Bazel; a compiled validation bypass fails
+all eleven negative arms plus their parent, and restoration passes all thirteen
+RUN markers including the parent.
+
+A real isolation defect in this new diagnostic harness was also fixed: TempDir's
+last component is normally `001`, so naming the database from it collided across
+independent tests sharing an FDB catalog. The retained parallel real-FDB regression
+failed with 42F04 (`/stress_latency_001` already exists). Names now include the
+randomized parent and per-test sequence. Isolation plus telemetry validation ran
+three uncached repetitions: 48 RUN = PASS. The interrupted pre-fix race run is
+explicitly cancelled evidence, not a passing suite. Final code tree is
+`be28f57df14cf7edec617bf09216ab828698cd69` (6,306 files); production code is unchanged
+from the fully verified tree above.
+
+#### Early-read latency: measured wait attribution, not a parity assertion
+
+Four instrumented observations ran sequentially in ABBA order, two per side:
+baseline diagnostic tree `893e4eb4760c1989c195b7be19484dc5961b0dcf` over commit
+`e48f5b4965543cd4d99b5578356059e12d969c7c`, versus current diagnostic tree
+`97d67fd750c13b8399bdea82774aa26bc8c8f263`. Both shared byte-identical diagnostic
+harnesses and Go 1.26.6. Each ran/passed 24 tests/subtests, emitted twenty query
+samples and counted exactly one million orders. These are instrumented timings,
+not substitutes for the nominal comparison below. Background load was recorded,
+not held constant. The baseline overlay has been removed and its worktree is clean.
+
+Region-filtered profiles cover four region types / five query instances from each
+of baseline-1 and current-2. All nonoverlapping goroutine-time columns reconcile;
+profile synchronization waits reconcile with the region tables. Three scoped examples:
+
+| Trace / query | Query region | Blocked in select | Goroutine execution | Scheduler wait |
+|---|---:|---:|---:|---:|
+| baseline-1, last PK | 25.670ms | 23.346ms | 2.255ms | 0.069ms |
+| baseline-1, index equality | 23.736ms | 19.883ms | 3.729ms | 0.124ms |
+| current-2, index equality | 32.860ms | 29.120ms | 3.601ms | 0.139ms |
+
+Critical-path traces identify read-version waits during record-store opening, not
+an unexplained planner CPU charge. The baseline last-PK query spent 13.705ms in
+one GRV wait: 2.033ms before its flusher ran, then 11.586ms blocked for the RPC
+reply. Baseline index equality had a 9.582ms GRV wait with 7.397ms for the reply.
+Current index equality had a 16.580ms GRV wait: 1.027ms before the flusher ran,
+then 15.478ms for the reply. In each case the network reader resumed from
+`internal/poll.(*FD).Read` and delivered the reply; flusher/caller resume delays
+were microseconds. This is not evidence for blaming adaptive batching alone.
+The client subtree is byte-identical on both measured sides (`448b10552b6b6259671c44cfbc29e3f0ac0c8cd6`).
+
+Scope limits matter: these client traces cannot separate FDB-server execution from
+network/kernel delay, do not retroactively assign causes to the earlier untraced
+52ms/41ms outliers, and do not prove universal performance parity or a speedup.
+No warm-up, retry relaxation, cache-option change or timing threshold adjustment
+was introduced. No client/transport production change was made. Raw trace hashes,
+region profiles, compressed related-goroutine event extracts and exact critical
+flow events are retained with the executable diagnostic test.
+
+Final manual stress race verification executed uncached on the final code tree:
+**40 RUN = PASS**, comprising the 1M diagnostic's 24 tests/subtests, thirteen
+validation markers and three isolation markers. All twenty telemetry samples
+were present and the fixture count was exactly 1,000,000. Follow-up `just test`
+passed all 93 targets (one executed, 92 cached); this is not substituted for the
+preceding 93-target uncached production verification.
+
+#### Stress test 1M baseline — final GROUP-alias code, nominal harness
+
+Fresh baseline commit `e48f5b4965543cd4d99b5578356059e12d969c7c` (the recorded
+merge-base on 2026-09-20) versus final current source tree
+`be28f57df14cf7edec617bf09216ab828698cd69`. Four sequential observations ran
+baseline1/current1/current2/baseline2, without overlapping verification, trace
+servers or other benchmark runs. Both used Go 1.26.6 on the same filesystem
+(`/dev/nvme0n1p2`, 8% used before the runs). Source hashes remained unchanged.
+Each ran/passed 24 tests/subtests, counted exactly one million orders and agreed
+on all twenty-two result-row counts and eleven EXPLAIN lines.
+
+One-minute load start/end, in execution order: baseline-1 3.46/5.56; current-1 5.56/7.48; current-2 7.48/11.10; baseline-2 11.10/16.08. Background load was not constant.
+
+| Query | Rows | Baseline ms [sample 1, sample 2] | Current ms [sample 1, sample 2] | Median ratio |
+|---|---:|---:|---:|---:|
+| PK lookup id=0 | 1 | 38.325, 11.306 | 9.880, 11.073 | 0.422x |
+| PK lookup id=N/2 | 1 | 16.435, 9.878 | 8.940, 13.280 | 0.844x |
+| PK lookup id=N-1 | 1 | 14.784, 9.489 | 7.643, 9.812 | 0.719x |
+| idx_customer eq | 8 | 26.724, 7.135 | 8.103, 7.303 | 0.455x |
+| idx_amount range >9000 | 100,017 | 292.008, 271.342 | 292.072, 236.199 | 0.938x |
+| idx_status count pending | 1 | 357.264, 495.302 | 377.865, 539.568 | 1.076x |
+| full scan filter amount>5000 | 1 | 607.938, 740.032 | 852.675, 726.728 | 1.172x |
+| GROUP BY status | 4 | 7.494, 11.712 | 7.907, 6.367 | 0.743x |
+| GROUP BY status COUNT only | 4 | 5.617, 11.875 | 6.117, 6.106 | 0.699x |
+| SUM by status (aggregate index) | 4 | 5.893, 17.716 | 5.896, 7.125 | 0.552x |
+| GROUP BY customer HAVING | 47,271 | 631.669, 918.197 | 674.662, 926.550 | 1.033x |
+| JOIN 10 orders x customers | 10 | 21.577, 29.626 | 22.795, 29.632 | 1.024x |
+| ORDER BY PK (full) | 1,000,000 | 7284.464, 4840.667 | 7451.633, 4590.010 | 0.993x |
+| ORDER BY PK + index filter | 8 | 10.442, 9.242 | 10.993, 12.826 | 1.210x |
+| scan all rows ordered | 1,000,000 | 7868.122, 4773.991 | 3920.500, 4469.153 | 0.664x |
+| scan all rows wide | 1,000,000 | 4319.570, 5105.722 | 4227.646, 4757.774 | 0.953x |
+| IN-list 5 values | 46 | 22.916, 24.128 | 21.278, 23.789 | 0.958x |
+| PK needle id=999999 | 1 | 5.284, 7.386 | 6.246, 6.172 | 0.980x |
+| PK+filter needle id=500000 | 1 | 9.052, 7.927 | 8.816, 11.173 | 1.177x |
+| full scan sparse filter | 97 | 3719.738, 4405.585 | 3670.111, 4158.929 | 0.964x |
+| UPDATE by index | 8 | 10.131, 12.900 | 10.165, 11.473 | 0.940x |
+| DELETE single row | 1 | 8.552, 16.592 | 8.531, 10.812 | 0.769x |
+
+These are two observations per side, with all samples retained. The previous
+population's directional early-read deterioration did not recur in this ABBA
+population: the baseline itself contains a 38.325ms first PK and 26.724ms index
+lookup. Other current medians are worse, including the count filter and ordered
+index-filter query. Neither these ratios nor the trace attribution establishes
+universal parity or causal speedups/regressions. The <5ms point-read aspiration
+remains unmet on both sides. No expectation, threshold or retry policy changed.
+
+Final implementation delta reconfirmation is pending against the documented
+candidate; earlier ACKs do not cover these code changes. The historical executor
+startup-timeout cause remains unavailable from recovered evidence and is not
+explained by the CLI networking fix or these greens. WS-B–K and whole-upgrade
+completion remain open. GitHub authentication is restored, but the owner has not
+authorized commit/push this session. PR #786 remains draft at `71ccd8cf8`; no
+commit, push or merge was performed, and no automatic merge is authorized.
+
+Detailed retained evidence: [GROUP-alias closure](rfcs/257-java-upgrade-audit/recovery-2026-09-20/group-alias-closure/README.md).
+
+## 2026-09-21 — WS-A/E1 ORDER ownership closure (RFC-257)
+
+The alias qualification, UNION cardinality/normalization, and quoted-identifier
+DFS is closed at code tree `0dedbe1b1083358fb9568a31178084c043fa31e0`
+(published HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`). This supersedes
+the pending delta-reconfirmation statement in the preceding GROUP-alias booking,
+not the open later migration workstreams or historical timeout investigation.
+
+Actual read-only gpt-6-astra/xhigh Graefe, Torvalds and independent reviewers all
+ACK implementation code at this exact tree. Reports/prompts are retained in
+`rfcs/257-java-upgrade-audit/recovery-2026-09-20/alias-case-reviews/`.
+Repairs preserve exact projected/ordinal owners, resolved attribute qualification,
+true output-name cardinality and case-sensitive quoted identifiers. UNION keeps
+SQL labels separate from private physical normalization names and preserves its
+aligned no-projection path. Both constructors, exact row contracts and real FDB
+pin the exact reproducers. Existing approved sorting/nullable-array/raw/scalar
+extensions remain; no persisted-format or FDB C++7.3.77 change.
+
+Verification with 6,478 source hashes unchanged through every run:
+- full93 uncached targets:40,781 RUN,40,776 PASS,5 existing restricted skips;
+- race15 uncached targets:21,391 RUN/PASS,zero skips/failures;
+- `just test` PASS; focused Java56 probe records PASS (not full Java conformance);
+- five affected full targets:9,906 RUN/PASS,zero skips/failures;
+- fuzz30s/four workers:4,022,465 executions (no coverage guidance);
+- nine applied/compiled/killed/restored mutations, including exact quoted UNION,
+  SELECT and duplicate identities. Interrupted/build-only attempts uncredited.
+
+### Stress test 1M baseline — frozen candidate ABBA
+
+Baseline `e48f5b4965543cd4d99b5578356059e12d969c7c` (clean upgrade baseline at
+measurement) versus current tree `0dedbe1b1083358fb9568a31178084c043fa31e0`, both
+Bazel Go1.26.6, same filesystem, sequential baseline/current/current/baseline.
+Each run has24 RUN/PASS,confirmed1,000,000 rows and identical11 EXPLAIN strings.
+Both samples per side are shown; ratios describe this population, not universal
+parity or causal speedups/regressions. <5ms point reads remain unmet; previously
+accepted bounded GRV/RPC-wait attribution does not isolate server/network/kernel.
+Load-average start → end (1/5/15 minute): baseline-1: [0.619140625, 8.2431640625, 10.48876953125] → [2.2099609375, 5.9892578125, 9.24755859375]; current-1: [2.2099609375, 5.9892578125, 9.24755859375] → [2.56005859375, 4.5390625, 8.107421875]; current-2: [2.56005859375, 4.5390625, 8.107421875] → [2.03564453125, 3.46240234375, 7.056640625]; baseline-2: [2.03564453125, 3.46240234375, 7.056640625] → [2.38623046875, 3.12646484375, 6.30859375].
+
+| Query | Rows | Baseline ms [1, 2] | Current ms [1, 2] | Median ratio |
+|---|---:|---:|---:|---:|
+| PK lookup id=0 | 1 | 8.507, 15.895 | 14.099, 8.288 | 0.917x |
+| PK lookup id=N/2 | 1 | 7.485, 14.819 | 25.273, 8.137 | 1.498x |
+| PK lookup id=N-1 | 1 | 5.272, 23.575 | 20.253, 6.248 | 0.919x |
+| idx_customer eq | 8 | 7.222, 38.115 | 20.029, 6.620 | 0.588x |
+| idx_amount range >9000 | 100,017 | 190.504, 244.853 | 278.725, 241.078 | 1.194x |
+| idx_status count pending | 1 | 416.610, 310.405 | 309.420, 399.725 | 0.975x |
+| full scan filter amount>5000 | 1 | 724.758, 726.458 | 766.108, 799.203 | 1.079x |
+| GROUP BY status | 4 | 20.526, 13.629 | 5.793, 6.021 | 0.346x |
+| GROUP BY status COUNT only | 4 | 18.810, 10.251 | 5.406, 5.373 | 0.371x |
+| SUM by status (aggregate index) | 4 | 12.922, 19.598 | 5.696, 5.663 | 0.349x |
+| GROUP BY customer HAVING | 47,271 | 623.196, 660.689 | 576.846, 576.403 | 0.898x |
+| JOIN 10 orders x customers | 10 | 22.946, 20.111 | 22.010, 20.359 | 0.984x |
+| ORDER BY PK (full) | 1,000,000 | 7582.758, 3950.863 | 3906.571, 3929.861 | 0.679x |
+| ORDER BY PK + index filter | 8 | 9.177, 8.915 | 9.518, 9.180 | 1.033x |
+| scan all rows ordered | 1,000,000 | 3780.156, 3785.508 | 3683.192, 3685.545 | 0.974x |
+| scan all rows wide | 1,000,000 | 4000.971, 3986.387 | 3929.241, 3956.270 | 0.987x |
+| IN-list 5 values | 46 | 22.390, 19.111 | 20.387, 20.351 | 0.982x |
+| PK needle id=999999 | 1 | 5.344, 8.187 | 5.866, 5.670 | 0.853x |
+| PK+filter needle id=500000 | 1 | 7.524, 8.118 | 7.489, 7.363 | 0.949x |
+| full scan sparse filter | 97 | 3448.345, 3442.788 | 3357.877, 3375.553 | 0.977x |
+| UPDATE by index | 8 | 10.314, 9.753 | 10.767, 10.186 | 1.044x |
+| DELETE single row | 1 | 7.050, 7.081 | 6.170, 7.127 | 0.941x |
+
+Proof, commands, hashes, target populations, mutation logs, raw artifact paths,
+and Java results: `rfcs/257-java-upgrade-audit/recovery-2026-09-20/alias-case-closure/`.
+Previous cancelled suites remain explicitly uncredited. No golden refresh,
+corpus admission, new skip, assertion weakening or threshold change occurred.
+
+WS-B–K and whole-upgrade completion remain OPEN. Historical executor timeout
+artifacts remain unavailable; the CLI networking fix/later greens do not explain
+that timeout. No commit/push/merge performed or authorized; PR786 remains draft
+at the unchanged published HEAD, so local greens are not PR CI greens.
+
+### 2026-09-21 — WS-B execution started
+
+WS-A/E1 ORDER closure is recorded above; post-booking `just test` also passed.
+WS-B detailed design is at `rfcs/257-java-upgrade-audit/ws-b-design.md`, with
+source-derived prerequisite findings and exact mappings in `ws-b-research/`.
+The design includes cache admission/cacheability, commit checks/conflicts,
+context-aware clears, and UNION-tag metadata identity needed to make the audited
+features correct; these are active implementation obligations, not completed
+items. Design ACKs pending; no WS-B implementation yet. No publication authorized.
+
+### 2026-09-21 — WS-B design accepted; sliding-window repair implemented
+
+Three design ACKs retained in `rfcs/257-java-upgrade-audit/ws-b-design-review/`.
+Tracked-entry replay repair and33 retained real-FDB regressions implemented;
+68 focused sliding specs and just test pass; four compiled mutations killed.
+Evidence/scope: `rfcs/257-java-upgrade-audit/ws-b-sliding/README.md`.
+WS-B implementation/final verification/review remain OPEN; deletion/cache,
+replacement lifecycle, metadata evolution and rank-valued scans are next within
+the accepted design. No commit/push/merge authorized or performed.
+
+### 2026-09-21 — WS-B deletion/cache core implemented
+
+Header-aware DeleteStore, pending-version range cleanup, cache admission/eviction
+and old-cacheability/error propagation fixed with retained regressions. Six
+compiled mutations killed;73 focused cache/delete specs pass. Frozen full/race
+recordlayer targets pass (2083 Go RUN/PASS and3251 Ginkgo PASS; one existing
+opt-in million-record spec not enabled). just test93 targets pass,41 executed.
+Evidence and remaining acceptance scope: `rfcs/257-java-upgrade-audit/ws-b-cache-delete/README.md`.
+Replacement retirement/deletion composition, metadata evolution, rank values,
+Java interoperability and final milestone ACKs remain active WS-B obligations.
+No publication authorization or commit/push/merge.
+
+### 2026-09-21 — WS-B deferred retirement and explicit commit core implemented
+
+All explicit commit APIs now execute one common lifecycle. Named checks dedup by
+subspace; changed readable transitions schedule retirement against serializable
+transaction-visible replacement states. DeleteStore cancels pending retirement,
+including snapshotted checks, correcting a live-Java-confirmed resurrection bug.
+77 focused specs pass; six compiled mutations killed; just test93 targets pass
+(42 executed), full race recordlayer3273 Ginkgo specs pass (existing opt-in
+million-record case not enabled). Exact sources and evidence are retained in
+`rfcs/257-java-upgrade-audit/ws-b-retirement/README.md`; Java difference and draft
+upstream report are linked from DIVERGENCES.md. No publication occurred.
+Initialization/build eligibility, immediate reconciliation retirement, operational
+state-conflict coverage, lock-preserving cleanup and remaining lifecycle matrix
+are STILL ACTIVE within WS-B, followed by metadata/rank work and final ACKs.
+
+### 2026-09-21 — WS-B replacement lifecycle follow-on implemented
+
+Fresh/reconciled original initialization, eligible-build enumeration, immediate
+retirement, lock-preserving cleanup, transaction-visible maintenance/scan state,
+overlapping conflicts/retries and delete/recreate/online lifecycle coverage are
+implemented. Unique-pending lifecycle exposed and fixed full-PK violation wire
+keys, singleton cleanup and ExistingKey error context, with both-direction Java
+interop. Evidence: `rfcs/257-java-upgrade-audit/ws-b-retirement/lifecycle/README.md`.
+146 focused specs pass; uncached full recordlayer race passes 3319/3320 Ginkgo
+specs (existing opt-in million-record case not enabled). just test:93 PASS,
+2 executed/91 cached. All 4530 frozen source/build hashes remained unchanged.
+Eight cleanup and nine conflict/uniqueness mutations killed on intermediate
+populations; named-check fuzz6,208,485 executions without coverage guidance.
+Metadata evolution/rank values and final WS-B performance/interop/review remain
+OPEN. No implementation ACK, migration completion or published PR-green claim;
+no commit/push/merge/PR-state changes performed.
+
+### 2026-09-21 — WS-B ignored options and TEXT validation implemented
+
+Copied ignored-option configuration, AsBuilder and mutable supplied-option-set
+validation now follow Java. Explicit unique opt-out is allowed only when named;
+other structural checks remain strict. Resolved-tokenizer comparison fixes the
+implicit/explicit-default mismatch. Live Java also exposed missing TEXT body
+descriptor validation; the existing recursive expression validator now returns
+ordered leaves, and associated/universal TEXT indexes reject non-string/repeated
+bodies. Retained regressions cover nested/grouped strings and missing bodies.
+Evidence: `rfcs/257-java-upgrade-audit/ws-b-options/README.md`.
+Final just test:93 PASS (43 executed/50 cached); uncached full recordlayer race:
+3329/3330 Ginkgo PASS (existing opt-in million-record spec not enabled), including
+14 descriptor-result subtests. Eleven focused live-Java specs PASS with explicit
+interop records; ten compiled mutation kills on the3330-spec population. All4530
+frozen source/build hashes unchanged after verification. Failed saves preserve
+metadata current/history in real FDB. Union identity/tag/descriptor evolution,
+index scope/sinceVersion, rank values and final milestone verification/review
+remain OPEN. No final ACK or migration/PR-green claim; no publication performed.
+
+### Upstream Java follow-up — deferred retirement after store deletion
+
+- [ ] Send a Java fix for pending replacement retirement resurrecting deleted
+  store state. Confirmed against fdb-record-layer-core **4.14.2.0**
+  (`fdacd162a9c8acfadc49082b89185c823ab8ae4a`): mark the replacement readable,
+  delete the store in the same context, then commit. The deferred retirement
+  callback recreates the original index's DISABLED state key after the range
+  clear: **one remaining row, no store header, state=2**.
+  Cancel the subspace-specific pending retirement check during deletion, with
+  regression coverage for deletion from an earlier commit check and for
+  delete/recreate using different metadata. Go already prevents this resurrection;
+  this item tracks the **upstream Java contribution**, not an unfixed Go defect.
+  Reproducer: `probeDeleteWithPendingReplacementRetirement` in
+  `conformance/index_state_conformance.java`, exercised by
+  `conformance/store_lifecycle_conformance_test.go`.
+  Draft report, root cause and reproduction steps:
+  `rfcs/257-java-upgrade-audit/ws-b-retirement/upstream-report.md`.
+  Live-Java evidence: `rfcs/257-java-upgrade-audit/ws-b-retirement/lifecycle/retirement-final-java.log`.
+  No upstream issue or patch has been submitted; external publication requires
+  authorization.
+
+### 2026-09-21 — WS-B union identity and strict index scope implemented
+
+Tag-based union correspondence, descriptor-pair recursion, custom union names,
+actual member descriptors, separate default/preferred/all alias tags, and current
+message factories are implemented. Existing-index scope now precedes expression
+validation and requires newer sinceVersion even with allowNoSinceVersion enabled.
+Retained red→green regressions and real-FDB persistence tests cover name swaps,
+aliases and same-name descriptor revision. Three focused Java specs pass, including
+Go tag1 → Java name-swap/read/write tag9 → Go cold-read. Eight compiled mutations
+killed. Final just test93 PASS (19 executed/74 cached), uncached full recordlayer
+race3331/3332 Ginkgo PASS (existing opt-in million-record case not enabled), and
+4531 source/build hashes unchanged. First full-run failures were fixed normally:
+new fixture lookup, dead helper and dynamic-message-dropping conformance test.
+Evidence: `rfcs/257-java-upgrade-audit/ws-b-union/README.md`.
+Broader accepted metadata/Java/persistence acceptance cases, rank values and
+final milestone verification/reviewer ACKs remain OPEN. No publication performed.
+
+### 2026-09-21 — WS-B union metadata history atomicity pinned
+
+The custom union carries its real UNION descriptor extension. A real-FDB
+regression rejects an incompatible tag-paired evolution without changing current
+metadata/history, then persists a valid swap and cold-loads its archived prior
+version, type key1 and preferred alias9. Latest just test93 PASS (2 executed),
+uncached full recordlayer race3332/3333 Ginkgo PASS (existing opt-in million-record
+case not enabled),4531 frozen source/build hashes unchanged. Follow-on evidence:
+`rfcs/257-java-upgrade-audit/ws-b-union/README.md`, persisted-metadata-history section.
+Accepted metadata matrix completion, rank values and final milestone ACKs remain
+open. No commit/push/merge/PR-state changes.
+
+### 2026-09-21 — WS-B descriptor/index-association Java matrix expanded
+
+Nested enum descriptors/values and persisted index associations now ride the
+Go→Java→Go union swap. Exact index entries are asserted after Java writes. Added
+name reuse (Alpha→Beta, Beta→Gamma, new Alpha at tag3) and wrong-index-association
+rejection with explicit expectations in both engines. Five focused Java specs
+pass; just test93 PASS (2 executed), full conformance race1377/1496 Ginkgo PASS
+(119 existing target exclusions), metadata fuzz6,986,509 executions without
+coverage guidance. All4531 frozen source/build hashes unchanged. Evidence:
+`rfcs/257-java-upgrade-audit/ws-b-union/README.md`, latest follow-on section.
+Final WS-B verification/review and rank-valued scans remain open; no publication.
+
+### WS-B rank-valued scans — local intermediate acceptance
+
+Rank-scan error, missing-score and cancellation pins now run under Bazel, plus
+both-writer Java interoperability comparing exact packed keys/PKs/values across
+both scan types, directions and enrichment flags. `just test`: 93 targets pass
+(4 executed); uncached race: recordlayer 3338/3339 and conformance 1379/1498 pass,
+with existing exclusions unchanged. Four affected rank files hash-checked before
+and after verification; not a whole-tree freeze claim. Evidence and remaining
+acceptance gates: `rfcs/257-java-upgrade-audit/ws-b-rank/README.md`.
+WS-B remains OPEN; no implementation ACK, CI-green or migration-complete claim.
+
+### WS-B rank scan acceptance — terminal replay and frozen verification
+
+Fixed a retained real-FDB defect: indexCursor repeated row-limit lookahead could
+replace its terminal continuation/reason with exhaustion; it now caches the
+terminal result as Java KeyValueCursorBase does. The compiled replay-disabling
+mutation is killed by the retained rank test. Byte/row limits, enriched/plain
+continuation equivalence, terminal replay, timer counts, snapshot conflict/no
+secondary conflict-read control, and both-writer persisted-byte invariance now
+pass. All 93 targets executed uncached and passed on a 6666-file frozen nonignored
+population; full race recordlayer 3340/3341 and conformance 1379/1498 pass with
+existing exclusions. Evidence/remaining gates:
+`rfcs/257-java-upgrade-audit/ws-b-rank/README.md` (follow-on section).
+WS-B and the overall upgrade remain OPEN; no publication or final ACK performed.
+
+### WS-B implementation review checkpoint — complete rank matrix
+
+Both-writer grouped composite-score Java matrix now passes with duplicate-count
+and PK-overlap modes, both groups/directions/scan types, and missing-score tuple
+nulls. Mutation testing exposed serializable rank preloads masking the actual
+rank-read isolation probe; all seven rank/aggregate/time-window preload callers
+now use snapshot reads as Java does. A missing-score/unrelated-score conflict
+regression pins that fix; actual rank reads remain serializable. Eight compiled
+rank mutations are killed, including each isolation direction independently.
+Frozen 6678-file acceptance: all 93 uncached targets pass; full race recordlayer
+3342/3343 and conformance 1387/1506 pass, existing exclusions unchanged.
+Evidence: `rfcs/257-java-upgrade-audit/ws-b-rank/README.md` final checkpoint.
+Final milestone implementation reviews still required; WS-B not marked complete.
+
+### WS-B final implementation lap — NAKs and measured write regression
+
+All three actual gpt-6-astra/xhigh/read-only reviewers NAK tree
+`bcf0946edd1f5d591542fee4f07481d7826c046d` against accepted WS-A/E1 tree
+`0dedbe1b1083358fb9568a31178084c043fa31e0`. Full verdicts/prompts/logs:
+`rfcs/257-java-upgrade-audit/ws-b-implementation-review/`.
+Active DFS findings to fix before final-tree delta confirmation:
+- Transaction-visible state conversion misses bulk deletion, executor direct
+  scans, vector APIs and record/aggregate function selection.
+- Lazy Build() state mutations can skip header initialization/cache invalidation
+  and then bypass a persisted record-update lock.
+- Deferred retirement captures stale replacement metadata across same-context
+  metadata upgrades that cancel the replacement relationship.
+- Multi-type TEXT associations bypass the new body descriptor validation.
+- Warmed shared cache entries rewrite `shared` after publication (data race).
+- Deletion matrix needs actual versioned SaveRecord→delete, valid unknown fields,
+  create/delete and cacheability-toggle/delete conflicts in both commit orders.
+
+Stress test 1M baseline (two sequential samples each, same filesystem; logs in
+that review directory): merge-base `e48f5b4965543cd4d99b5578356059e12d969c7c`
+orders 145.084s/144.611s; reviewed tree above 480.747s/503.997s. Customers
+6.430s/6.462s versus 11.453s/11.466s. Both sides completed the same named 1M test;
+no claim of overall performance parity. Load averages are retained in each log.
+This repeatable bulk-write regression is active root-cause work, not accepted
+migration overhead. No WS-B ACK or publication/CI completion claimed.
+
+### WS-B implementation NAK follow-up — TEXT, deletion acceptance, build-state cancellation
+
+WS-B remains OPEN; all three implementation verdicts remain NAK pending final-tree
+confirmation. Evidence and remaining obligations are self-contained in
+`rfcs/257-java-upgrade-audit/ws-b-review-fixes/README.md` (links back here).
+Multi-type descriptor validation now rejects numeric/repeated/missing TEXT bodies;
+four live-Java cases pass. Three invalid PK-dedup fixtures now use shared fields,
+retaining PK overlap, single-type controls and exact stored-key assertions.
+Fourteen added deletion specs cover creation/cacheability-toggle conflicts in both
+commit orders, valid unknown fields, and real versioned SaveRecord→DeleteStore in
+formats 5 and 14; all 41 focused deletion specs pass. Six red→green cancellation
+cases pin error-returning build-state lookup for lazy/open handles and three index
+states; online-indexer operational state checks use the same helper (101 focused
+specs pass). Frozen 6712-file population checked unchanged after just test (93 pass,
+6 executed/87 cached) and actual instrumented race (147 focused Ginkgo specs pass).
+This is intermediate verification, not the final uncached/race gate. The initial
+--features=race run was uninstrumented and is explicitly not credited as race.
+Remaining state-path acceptance, performance work, mutations, final ACKs and
+WS-C–K are listed in that README; no completion checkbox or CI-green claim.
+No commits, pushes, merges or PR-state changes performed.
+
+### WS-B state-path closure and final delta review input
+
+Implementation/test follow-up is retained in
+`rfcs/257-java-upgrade-audit/ws-b-state-path-closure/README.md` (reciprocal link).
+Real executor value/aggregate/vector routes, refused explicit/automatic function
+selection, lazy cache invalidation/header errors and same-context bulk deletion
+now have passing real-FDB acceptance. SPFresh's direct search swallowed canceled
+state-read errors; fixed with a real-result/disable/1025 red→green regression.
+A further dispatch bug recreated index rows after another handle disabled the
+selected index; Java's DISABLED no-op is now mirrored and pinned red→green.
+Per-index GetReadVersion future allocation was priced with a CPU profile and
+replaced by one liveness validation per record-update boundary, retaining state
+conflicts and shared state. Four compiled/applied mutations killed and restored.
+
+Stress test 1M baseline: fresh n=2 sequential samples each at merge-base commit
+`e48f5b4965543cd4d99b5578356059e12d969c7c` versus verified Git tree
+`c7f9e5f9f14340d7452abc65ac8eb701493ca3ea`. Orders: baseline
+144.129140s/144.354861s, current146.944183s/147.170663s (1.0195x means);
+customers6.442271s/6.497939s versus6.834997s/6.814969s (1.0548x).
+All four runs:24 RUN/PASS, identical rows,zero40001 retries. Full logs/loads
+retained. Earlier ~8.7% orders cost belongs to the earlier tree, not this one;
+this is still not parity or proof every residual cost is required protection.
+
+Frozen6733-file set/hashes unchanged through stress/mutations and final runs:
+93/93 uncached targets PASS;14/14 instrumented race targets PASS (client,fdb,
+recordlayer,chaos,conformance,cascades,executor—not PR relational race scope).
+Recordlayer race3399/3400,conformance1391/1510; existing exclusions unchanged.
+Prior NAKs remain until actual final-tree delta confirmations; SPFresh review
+also required. No WS-B/upgrade completion or actual-CI claim. WS-C–K remain.
+No commit,push,merge or PR-state change performed.
+
+### WS-B shared-state coherence correction
+
+Actual final-delta verdicts on tree `c59322c012c53500679e7f345360fac6706468b9`:
+three WS-B NAKs, scoped SPFresh ACK, retained in
+`rfcs/257-java-upgrade-audit/ws-b-delta-review/`. Newly reported defects were
+reproduced and fixed: former-index cleanup now attaches the shared authority
+before state mutation; the common view lock covers FDB state writes and map
+publication. DFS applied the same ordering to context range clears. Three
+real-FDB regressions cover drop/re-add through three same-context metadata
+handles, point-write ordering and range-clear ordering; the latter also has a
+compiled mutation kill. Evidence/lock reasoning and reciprocal tracking link:
+`rfcs/257-java-upgrade-audit/ws-b-coherence-closure/README.md`.
+Frozen6781-file source tree `a50bfc93d1d3d43a46949eba84b8a7a8ec05b626`:
+93/93 uncached targets and14/14 instrumented race targets PASS.
+Fresh stress n=2 each versus true merge-base `e48f5b4965543cd4d99b5578356059e12d969c7c`:
+orders146.224801s/146.527169s vs151.286793s/151.849443s (1.0355x);
+customers6.506822s/6.626023s vs6.960202s/6.998901s (1.0629x).
+All four24RUN/PASS, identical query rows,zero retries; loads/full logs retained.
+These replace the earlier tree's ratios for current decisions, not a parity
+claim. Final correction confirmations still required; no milestone completion
+or actual-CI claim. No publication action authorized or performed.
+
+### WS-B initialization/publication correction
+
+All four actual correction reviews of tree
+`6ffe8d3b5b541bdd1c668c6e13e45ebe475292a3` returned NAK: an Open-loaded but
+unbound handle, or an in-flight load, could publish state predating a context
+clear. Three real-FDB reproductions failed before the correction. Open/lazy
+load now holds the registry lock through read and binding. DFS also reproduced
+and fixed explicit reload ignoring the common view and post-clear shared-cache
+staleness. Retained tests cover reload/clear ordering, warm-cache clears before
+and after Open, raw state, transition result, maintenance and cold scans.
+Evidence, actual verdicts, lock reasoning and reciprocal tracking link:
+`rfcs/257-java-upgrade-audit/ws-b-attachment-closure/README.md`.
+
+Frozen6812-file source tree `21c07c49f28fd0be9acf54fa5eee56fb3384f963`:
+93/93 uncached targets and14/14 instrumented race targets PASS;10 focused specs
+PASS;three compiled/restored mutation kills. New stress n=2 each versus true
+merge-base `e48f5b4965543cd4d99b5578356059e12d969c7c`: orders147.014639s/
+146.930949s vs151.014568s/151.468437s (1.0290x), customers6.629920s/6.667944s
+vs7.017619s/6.954991s (1.0507x). Four24RUN/PASS runs, matching26 row-count
+outputs,zero retries; full logs/loads retained. These supersede the preceding
+source's ratios for decisions about this correction, not a parity claim.
+Final actual ACKs remain required; no WS-B completion or CI claim. WS-C–K
+remain. No commit,push,merge or PR-state action authorized or performed.
+
+### WS-B clear policy and lock-order correction
+
+All four actual reviews of `dd0956b11e901609edcd5f19d36ef64f04482b8a`
+returned NAK. They accepted initialization binding but exposed a reachable
+reload/unique-cleanup lock inversion, clear-only transaction cache staleness,
+noncacheable deletion over-invalidation, and stale exported state snapshots.
+All reproduced with retained real-FDB tests. Reload now takes handle stateMu
+before registry; generic context clears invalidate unknown metadata ranges
+before commit, with validated record-data exclusions; DeleteStore supplies its
+already-applied header policy; exported maps copy the shared authority. The
+transaction-local deferred-clear-history mechanism was removed.
+Evidence, actual verdicts and reciprocal tracking link:
+`rfcs/257-java-upgrade-audit/ws-b-clear-policy-closure/README.md`.
+
+Frozen6848-file source tree `ba06f34ff8998f61040a491e4f3a3e8b8de7ccf9`:
+93/93 uncached targets and14/14 instrumented race targets PASS;recordlayer
+3426/3427Ginkgo,conformance1391/1510 with existing exclusions unchanged.
+Thirteen real-FDB range-classification cases pass;four compiled/restored
+mutation kills cover all four corrections. Fresh n=2 each versus true merge-base
+`e48f5b4965543cd4d99b5578356059e12d969c7c`: orders145.160568s/144.823070s
+vs147.368591s/147.232271s (1.0159x), customers6.491369s/6.591749s
+vs6.809350s/6.806064s (1.0407x). Four24RUN/PASS runs,26matching row-count
+outputs,zero retries; full logs/loads retained. Replaces preceding source's
+ratios for decisions about this correction, not a parity claim.
+Actual correction ACKs remain required. WS-C–K and upgrade-wide CI remain;
+no completion claim or publication action authorized/performed.
+
+### WS-B accepted final tree
+
+Actual Graefe, Torvalds, independent storage/Java and scoped SPFresh reviews
+all ACK Git tree `48b50548b11a53bd1452a627689c440535a3d093`.
+Complete prompts/verdicts/model logs: `rfcs/257-java-upgrade-audit/ws-b-final-review/README.md`.
+All four preceding findings closed with no new actionable finding in the delta.
+Verified source remains `ba06f34ff8998f61040a491e4f3a3e8b8de7ccf9`,93/93
+uncached targets and14/14 scoped race targets passing. Residual1.0159x orders/
+1.0407x customers explicitly non-independently-blocking to all four reviewers.
+WS-B accepted; WS-C–K and upgrade-wide CI remain unfinished. No publication
+change authorized/performed; HEAD71ccd8cf8b3fd0dbafe283e91171818e36af555e.
+
+### WS-C design accepted; heartbeat prerequisite implemented
+
+Detailed design `rfcs/257-java-upgrade-audit/ws-c-design.md` SHA256
+`302335e70765e7ab84674aeb88233348fc5f53be7336f8a006bd8a9652aab5dc`
+has actual Graefe, Torvalds, independent storage/Java and scoped SPFresh ACKs.
+Complete prompts/verdicts/model logs: `ws-c-design-review-v3/` beside the design;
+v1/v2 NAKs and frozen texts retained. This is design approval only.
+
+Retained JVM/FDB oracles ran three selected specs: eight split-limit cases,
+15 envelope/Any/proto2-enum cases, three skip values. They pin Java's ignored
+queue skip, double-charged lookahead bytes, exact row-limit stop, mid-split
+fail-mode exception, custom/slashless URLs and last-known closed enum semantics.
+Evidence: `rfcs/257-java-upgrade-audit/ws-c-research/`.
+
+Heartbeat prerequisite fixes Java UUID tuple interoperability, legacy/malformed
+key rejection, exact future-skew boundary and malformed-value diagnostics.
+Three original regressions red→green; 13 heartbeat specs and live two-way JVM
+exclusion/cleanup pass; compiled UUID→string mutation killed and restored.
+`just test`: 93/93,43 executed/50 cached. Selected actual race:2/2 targets,
+13 recordlayer +4 conformance specs. Source hashes unchanged through runs.
+Evidence and mandatory quiescent-worker migration runbook:
+`rfcs/257-java-upgrade-audit/ws-c-heartbeat/README.md`.
+
+WS-C remains OPEN: queue/shared maintenance gate/build/drain/merge/closeout and
+terminal-cleanup implementation, final milestone reviews, WS-D–K and upgrade-wide
+CI remain. State4/format15 stay disabled. No commit,push,merge,PR-state change or
+operational heartbeat cleanup authorized/performed. HEAD remains
+`71ccd8cf8b3fd0dbafe283e91171818e36af555e`.
+
+### WS-C versionstamped split writer
+
+Implemented the existing split writer's context-buffered incomplete-key path,
+replaced-value collision detection, nullable/reset size metrics, Java offset-byte
+accounting, and cancellation by context clears. Complete record keys retain the
+concatenated packing fast path; inline record versions remain with their existing
+caller. Evidence: `rfcs/257-java-upgrade-audit/ws-c-split/README.md`.
+Focused split/version-mutation run:54 specs. Final-source just test:93/93,
+42 executed/51 cached. Actual race selection:67 split/version/heartbeat specs.
+Compiled duplicate-key-rejection mutation killed and restored; eight source
+hashes unchanged through verification. This supersedes the earlier heartbeat
+full-suite result for the current source, not its retained historical evidence.
+WS-C remains open (queue/cursor/maintainer/session lifecycle and implementation
+review); state4/format15 remain disabled. WS-D–K and actual upgrade-wide CI remain.
+No publication or operational changes authorized/performed.
+
+### WS-C queue storage and version conversion
+
+Queue storage/raw-cursor implementation is in progress; WS-C is NOT complete.
+Evidence and remaining scope: `rfcs/257-java-upgrade-audit/ws-c-queue/README.md`.
+Fixed incomplete record-version conversions (both directions), malformed public
+entry clears, raw missing-start classification and reverse suffix handling, and
+context-local inline-version overlays. Retained real-FDB red-to-green regressions
+and JVM conversion/bidirectional queue checks pin these paths. Queue metrics are
+now registered with the taxonomy gate after its observed full-suite failure.
+Final frozen-source verification: 93/93 ordinary targets executed uncached and
+passed; actual race selected recordlayer11/conformance4 specs passed. Eleven
+source hashes remained unchanged. This supersedes the prior split prerequisite
+suite result for this source, without claiming completed queue/lifecycle coverage.
+Maintainer/state/session integration and WS-C implementation ACKs remain open;
+state4/format15 remain disabled. WS-D–K and actual upgrade CI remain. No publication
+or operational changes were performed.
+
+### WS-C queue error context and limit/enum boundary coverage
+
+Queue storage follow-up evidence:
+`rfcs/257-java-upgrade-audit/ws-c-queue/errors-time-enum/README.md`.
+Structured queue errors now retain queue-key/version/type diagnostics, with the
+expected type represented by its language-independent protobuf name. Retained JVM
+checks cover those fields. Six real-FDB/sim-clock cases pin cursor-local timing,
+split completion, exhaustion and limit precedence, and fail-mode interruption;
+a compiled clock-anchor mutation was killed and restored. Cancellation and close
+behavior are pinned. Expanded JVM enum-width cases exposed and fixed int32
+classification and unknown-enum normalization divergences (both observed red).
+The envelope matrix now has 19 cases and compares successful index payloads'
+reserialized bytes. Retained payload fuzz: 26,623,725 unguided executions in 15s,
+no failures; no coverage-guided claim. Final actual race:13 recordlayer/4
+conformance selected specs passed. Final just test:93/93, 2 executed/91 cached;
+six changed-source hashes unchanged through verification. Parent queue evidence
+remains historical; the follow-up supersedes it for current changed sources.
+WS-C remains open: maintenance gate/replay/state/policy/session lifecycle and
+implementation ACKs; WS-D–K and actual CI remain. No publication or operational
+changes performed.
+
+### WS-C readable-to-write-only coverage preservation
+
+During shared-maintenance-gate research, found and fixed an existing Java parity
+bug: MarkIndexWriteOnly must restore full build coverage when leaving READABLE
+with an empty range set, while preserving nonempty partial coverage. Java's
+markIndexNotReadable explicitly does this. Retained real-FDB red-to-green and
+bidirectional JVM state/range checks pin it. Four fixtures now explicitly create
+unfinished builds rather than relying on the old state-only transition defect;
+their assertions are unchanged. Evidence:
+`rfcs/257-java-upgrade-audit/ws-c-writeonly-coverage/README.md`.
+Full just test:93/93, 42 executed/51 cached. Actual race:9 selected recordlayer
+specs and 1 conformance spec passed, both targets uncached. Six source hashes
+unchanged through verification. WS-C gate/replay/state/policy/lifecycle work and
+implementation ACKs remain open; WS-D–K and actual CI remain. No publication or
+operational changes performed.
+
+### WS-C shared maintenance gate foundation
+
+Implemented the accepted context-shared maintenance RW gate on the existing
+transactionIndexStateView. Ordinary single-record, batch and DELETE_WHERE dispatch
+hold its read side; checked readability, other index-state transitions, low-level
+state publication and reload hold its exclusive side. Already-locked publication
+avoids recursion; initial handle-load ordering no longer waits for a handle lock
+under the context registry. Evidence:
+`rfcs/257-java-upgrade-audit/ws-c-maintenance-gate/README.md`.
+Ten deterministic real-FDB barrier cases cover writer-first single/batch/delete
+and setter-first READABLE/READABLE_UNIQUE_PENDING, one/two handles. A compiled
+setter-gate-removal mutation fails four publication cases and was restored.
+Full just test:93/93, 42 executed/51 cached. Actual race:57 selected state/lifecycle
+specs passed; five source hashes unchanged. This is foundation coverage, NOT
+queued-writer-before-buffering coverage: state4/format15 remain disabled, and
+queue readability checks, maintainer replay, policy/session/drain/cleanup plus
+completed WS-C implementation ACKs remain open. WS-D–K and actual CI remain.
+No publication or operational changes performed.
+
+### WS-C maintainer queue replay increment
+
+Maintainer queue capability/serialization/replay implemented; HNSW captures
+computed filtered entries and shares ordinary application with replay, sliding
+captures entry keys plus delegate payloads, and SPFresh remains unsupported.
+Evidence and exact remaining scope:
+`rfcs/257-java-upgrade-audit/ws-c-maintainer-queue/README.md`.
+Five focused real-FDB/default-method specs include empty proto2 key presence and
+full overlapping PK capture. Live JVM oracle pins exact Any bytes and bidirectional
+insert/update/delete replay without source records (three observed evidence lines).
+Actual race passed five recordlayer specs and one conformance spec. Final full
+just test:93/93, 3 executed/90 cached; seven source hashes unchanged. This is NOT
+completed WS-C: sliding replay interop/eviction depth, queued store dispatch/state/
+readability, policy/session/drain/cleanup and implementation ACKs remain open.
+WS-D–K and actual CI remain. No publication or operational changes performed.
+
+### WS-C sliding pending replay interoperability
+
+Added two live-JVM retained specs exchanging exact sliding/delegate Any bytes in
+both directions, six steps per spec. Pins eviction, duplicate insertion, tie/overflow,
+re-election, missing source promotion bookkeeping, and changed source-vector use
+on indirect promotion. Both engines check graph membership and raw count/boundary
+bytes; final vector bytes/distance are asserted independently. Scope: unpartitioned
+ASC size-two window, not partition/DESC coverage. Evidence:
+`rfcs/257-java-upgrade-audit/ws-c-sliding-queue/README.md`.
+Focused and actual race runs pass 2/1519 selected specs; twelve operation evidence
+lines observed. An oracle-only ClassCastException was traced to Java returning
+vector bytes rather than distance and corrected with retained vector assertions.
+Queued store/state/readability, policy/session/drain/cleanup and completed WS-C
+implementation ACKs remain open; WS-D–K and actual CI remain. No publication or
+operational changes performed.
+
+### WS-C index queue per-entry application
+
+Ported Java IndexingPendingWriteQueue.handleOneItem and canonical queue subspace
+factory. UPDATE and computed DELETE_WHERE apply before clear in the transaction;
+failed replay retains the queue entry/counter even if the transaction commits.
+Three real-FDB specs pass, including ordered mixed-operation replay and retained
+failure across transactions. A compiled premature-clear mutation killed the
+UPDATE retention arm; restored source hashes match. Actual race:3 selected specs
+pass. Full suite before mutation:93/93, 42 executed/51 cached. Evidence and
+post-restore verification logs:
+`rfcs/257-java-upgrade-audit/ws-c-index-queue-application/README.md`.
+This is the per-entry primitive, NOT the complete drain runner: queued writer/
+state/readability, eligibility/policy, retry/session/heartbeat/cleanup and completed
+WS-C gate ACKs remain. WS-D–K and actual CI remain. No publication performed.
+
+### WS-C checked readability queue guard
+
+Shared built-index validation now rejects surviving context-buffered queue
+mutations and serializable persisted entries, independently of the size counter.
+IndexNotBuiltError preserves prior range diagnostics and identifies pending writes.
+Seven real-FDB specs cover both checked setters through one/two handles, clear
+cancellation with another index still buffered, zero-counter persisted entries,
+and explicit conflict code1020 in both writer/closeout commit orders. Actual race
+passes all seven. A compiled inverted buffered-range mutation kills all four
+buffered refusal cases (seven-spec population); restored source hashes match.
+Full suite before mutation:93/93, 42 executed/51 cached. Evidence:
+`rfcs/257-java-upgrade-audit/ws-c-queue-readability/README.md`.
+These tests use internal enqueue plus explicit state reads; production state-4
+writer dispatch and queued-writer barriers remain, as do eligibility/overflow,
+drain/session/cleanup, completed WS-C implementation ACKs, WS-D–K and actual CI.
+No format enablement, publication or operational changes performed.
+
+### WS-C queued store dispatch and checked state setters
+
+State4 now decodes and belongs to the write-only family. Checked queued setters
+validate format15/capability/no-version-columns before mutations. Single/batch and
+DELETE_WHERE dispatch serialize entries under the shared maintenance gate;
+ordinary targets remain immediate. Context overflow policy defaults100000/disable,
+defers disable to commit, and records its timer event. DeleteAllRecords cancels
+build-space buffering; DeleteStore cancels store-scoped pending queue callbacks.
+Evidence: `rfcs/257-java-upgrade-audit/ws-c-queued-dispatch/README.md`.
+Thirteen real-FDB specs include six before-buffering concurrency barriers, mixed
+operations, format/capability/version/SPFresh refusals, both overflow policies and
+delete cleanup. Live JVM pins Java's unsafe format14/VALUE queued setter against
+Go's approved refusal. Actual race:13 recordlayer +1 conformance spec pass.
+Maximum/default format stays14; format15 fixtures use advanced Build, not ordinary
+Open. Indexer eligibility/resume/mutual policy, retrying drain/continuations,
+heartbeat/session/all-exit cleanup and completed implementation ACKs remain.
+WS-D–K and actual CI remain. No publication or operational changes performed.
+
+### WS-C fresh/resumed queue target policy
+
+Fresh selection now requires requested+capable+no-version-columns+format15+nonmutual;
+others fall back to ordinary write-only. Resume preserves states and reconstructs
+queue targets after commit, rejects unequal follower states, and checks every stamp.
+Mutual queued takeover rejects before force-overwrite shortcuts. Policy defaults
+are empty requested names and100 closeout attempts, with explicit zero preserved.
+Evidence: `rfcs/257-java-upgrade-audit/ws-c-queued-policy/README.md`.
+Seven added real-FDB specs; actual race passes all20 selected dispatch/policy specs
+and one JVM spec. Live Java OnlineIndexer confirms both mixed-primary orders and
+mutual takeover failures (three observed evidence lines). Full suite before oracle:
+93/93, 42 executed/51 cached. Final full/hash evidence at the linked location.
+Drain retry/continuations, heartbeat/session/all-exit cleanup, full format15 lifecycle,
+completed implementation gate ACKs, WS-D–K and actual CI remain. No publication.
+
+### RFC-257 WS-C drain iterator increment (uncommitted; milestone still open)
+
+Production queue draining now uses one explicit OpenContext/Commit retry owner,
+commit-bound continuations, adaptive limits, cancellation/close, and commit-time
+state/stamp/heartbeat validation. Build exits clean only their own target session
+keys with an independent bounded context. Eight focused real-FDB specs plus the
+delay unit test pass under actual race instrumentation; `just test` is 93/93
+(38 executed, 55 cached). The initially red unreferenced-function gate was fixed
+by production wiring, not an exemption. Evidence and remaining lifecycle scope:
+`rfcs/257-java-upgrade-audit/ws-c-drain-iterator/README.md`. This is not a WS-C
+completion checkbox or implementation ACK; the format ceiling remains 14.
+
+### RFC-257 WS-C session fencing and readable closeout (uncommitted; milestone open)
+
+Added stable non-mutual session admission, pre-batch state/stamp/block/ownership
+validation, explicit snapshot record conflicts, all-target own-session cleanup,
+and per-index readable re-drain retries (zero/one/two budgets pinned with real
+concurrent enqueues). Ongoing stamp validation now follows Java's method/block
+rule, including legacy missing BY_RECORDS; drain callbacks are store-scoped and
+named. Nine new real-FDB specs and six stamp subtests; 132 selected specs passed
+under actual race instrumentation. The compiled wrong-record conflict mutation
+reddened BY_RECORDS while BY_INDEX retained its existing serializable protection.
+Final `just test`: 93/93, 2 executed / 91 cached, source hashes stable.
+Evidence and remaining milestone work:
+`rfcs/257-java-upgrade-audit/ws-c-session-closeout/README.md`.
+
+### RFC-257 WS-C merger contracts and mutual fencing (uncommitted; milestone open)
+
+Ported deferred-maintenance control and the adaptive IndexingMerger driver;
+committed build/drain requests now feed follow-up merges. HNSW has no deferred
+work; this does not establish GuardiANN/Lucene child-transaction callback safety.
+DFS found and fixed staged writes committing after lost follower range claims,
+mutual fragment state advancing before commit, missing mutual/preset session
+validation, and non-Java single-target mutual stamps. Stable session identity
+and independent all-target cleanup now include mutual builds. Existing concurrent
+mutual tests caught a missing peer-publication boundary; fixed without weakening
+the assertions. Both lost-claim regressions kill the compiled guard mutation.
+Evidence: `rfcs/257-java-upgrade-audit/ws-c-merger-mutual/README.md`. Latest full
+verification before follow-up callback wiring: 93/93 (29 executed, 64 cached);
+142 selected specs passed with actual race instrumentation. Feedback fuzz:
+19,917,841 executions. Format remains 14; milestone reviews are not yet due.
+
+### RFC-257 WS-C normal format-15 opening and milestone review candidate (uncommitted)
+
+Normal opening now admits explicit format 15; default creation remains 14 and
+version 16 is rejected. Five new lifecycle specs went red at the former ceiling,
+then green: create/upgrade/reopen, mixed queued/ordinary targets with live writes,
+and cleanup/resume after unreadable success, cancellation, and blocking. A live
+JVM oracle proves both engines open/write the same format-15 store. Final local
+suite 93/93 (42 executed, 51 cached); actual race: 147 recordlayer specs plus
+format unit tests and one JVM spec. Hashes stable. Evidence:
+`rfcs/257-java-upgrade-audit/ws-c-format15/README.md`. Completed-implementation
+review scope: `rfcs/257-java-upgrade-audit/ws-c-implementation-review/SCOPE.md`.
+No gate ACK or CI-green claim yet; downstream backends/workstreams remain open.
+
+### RFC-257 WS-C implementation review fixes (uncommitted; delta ACKs outstanding)
+
+All four initial implementation gates returned NAK on tree
+`2a4d33046f8640673643ea989709665f425cbbc5`. Five findings now have fixes and
+real-FDB regression/mutation evidence: heartbeat admission before destructive
+open/preparation; bounded independent terminal cleanup; Java-compatible nested
+Any URL validation; non-conflicting admitted mutual renewal; all-target liveness
+and state/stamp validation during sequential drain/merge follow-up. Cleanup DFS
+also found that future cancellation can be ineffective after commit dispatch:
+the owned wait now polls readiness and honors its deadline without entering a
+blocked Get or abandoning a Get goroutine. The noncooperative-future mutation
+fails its regression.
+
+Final frozen-source verification: 93/93 targets executed uncached; scoped actual
+race 183/3604 record-layer specs plus ordinary Go tests/seeds (2143 RUN lines,
+including subtests), and 9/1523 live-JVM specs. Source hashes remained unchanged.
+Evidence: `rfcs/257-java-upgrade-audit/ws-c-followup-liveness/README.md`, with
+links to each finding's evidence. Final delta review scope:
+`rfcs/257-java-upgrade-audit/ws-c-final-delta-review/SCOPE.md`. WS-C remains open
+until actual final-tree gate verdicts; downstream WS-D–K, GuardiANN, and absent
+Lucene remain migration work. Local green is not CI green. No commit, push,
+publication, PR change, or merge is authorized or performed.
+
+### RFC-257 WS-C permanent follow-up retirement (uncommitted; delta review pending)
+
+Actual delta reviews of tree `5dc2a9cf465ff439ac75d1e5eb5682eecd0ca38b`
+returned storage/SPFresh ACK and Graefe/Torvalds NAK. DFS reproduced the remaining
+interaction: completed A later disabled/rebuilt (including replacement retirement
+when B publishes) could still abort B/C. Added commit-bound per-session target
+retirement, preserved original stamp identity, and reset ownership for new builds
+and standalone merges. Six added real-FDB specs cover all three reproductions,
+committed/aborted peer observations, and same-indexer reuse. Three original
+reproductions failed before the fix; premature-publication and stale-reset
+mutations fail their pins. Final local just test:93/93,6 executed/87cached;
+actual uncached race:189/3610 record-layer specs plus ordinary Go tests/seeds,
+and9/1523 JVM specs. Source hashes stable. Scope/evidence:
+`rfcs/257-java-upgrade-audit/ws-c-retirement-delta-review/SCOPE.md`.
+WS-C is not complete until actual final-tree reconfirmation; no publication.
+
+### RFC-257 WS-C accepted locally (uncommitted)
+
+All four actual gpt-6-astra/xhigh/read-only final delta reviews ACK tree
+`f0cb29576cde624e0f1c6e22ca18a5180d1b298f`: Graefe, Torvalds, independent
+storage/wire, and SPFresh. Verdicts and exact-tree prompts/logs:
+`rfcs/257-java-upgrade-audit/ws-c-retirement-delta-review/`. This supersedes the
+preceding WS-C open-gate status, not the historical NAK artifacts. No source
+changed after final verification/review. Final just test after scope/tracking
+updates passed93/93 (1 executed/92cached); the prior source-changing run passed
+93/93 (6 executed/87cached). Actual uncached race189/3610 plus ordinary Go tests
+and9/1523 live-JVM specs remain the final source evidence. WS-C is accepted;
+WS-D–K, actual GuardiANN/Lucene integration and upgrade-wide CI remain unfinished.
+No commit, push, PR change, publication or merge performed or authorized.
+
+### RFC-257 WS-D detailed design and research (uncommitted; implementation not started)
+
+WS-C's accepted source additionally passed93/93 targets executed uncached
+(`accepted-uncached-full.log`,942.258s); frozen hashes unchanged. Three actual
+read-only gpt-6-astra/xhigh research reports now map HNSW/options, full GuardiANN
+and KMeans/evaluator, and record-layer maintenance integration under
+`rfcs/257-java-upgrade-audit/ws-d-research/`. The concrete implementation design
+is `rfcs/257-java-upgrade-audit/ws-d-design.md`, awaiting actual design gates.
+It preserves independent SPFresh and approved extensions; ports a real GuardiANN
+backend, not an engine refusal or alias. Research clarified GuardiANN executes
+inside the merger-supplied transaction: prove callback consumption on actual
+claim/drain/retry/final attempts, not invented child commits. Lucene's genuine
+nested-child integration remains separate upgrade-wide work. Source hypotheses
+and the mandatory retained JVM fixtures are listed in the design, not asserted
+as runtime defects. No WS-D implementation, gate ACK, CI or completion claim.
+
+### RFC-257 WS-D first detailed-design review (uncommitted; four NAKs)
+
+All four actual design gates NAKed tree607dbcf313e0c7a1b75333ae48ca36027bf7428e
+(design hashd8eaa70dafc703fad8e948e3215b06433492fe493774f5e335aab9b015025519).
+Findings: signature provenance across training, queued hard-cap maintenance
+handoff, cache isolation/concurrent access, operational capability admission,
+continuation fingerprint option identity, Java HashMap KMeans input ordering,
+and concrete corrective contracts for source hypotheses/empty merge populations.
+Actual verdicts: `rfcs/257-java-upgrade-audit/ws-d-design-review-v1/`.
+The detailed design now resolves these boundaries; historical research corrections
+are in `ws-d-research/README.md`. No production implementation is authorized by
+the NAKs, and no runtime upstream defect is claimed solely from source review.
+Final revised-design gates remain required; WS-C source stays unchanged.
+
+### RFC-257 WS-D revised-design gate BLOCKED (Codex usage limit)
+
+Revised WS-D design (tree `236888f5b174f2e5d8894be7845992a8650bd8d9`, design
+SHA256 `91f08f59ce2325b10c8ec73b3f48180af7d8df23fda6cd018112611b1defd4c8`)
+addresses all v1 NAK findings. Its four mandatory gpt-6-astra/xhigh gate runs
+aborted on the Codex account usage limit (resets 2026-09-27 17:03 CEST); no
+verdicts exist, v1 NAKs stand. Prompts are unchanged and ready to relaunch:
+`rfcs/257-java-upgrade-audit/ws-d-design-review-v2/`. WS-D implementation and
+every later milestone gate depend on these reviewers. Docs-only `just test`
+after the revision: 93/93 (1 executed/92 cached); accepted WS-C source hashes
+unchanged. No commit, push, PR change, publication or CI performed.
+
+### Owner ruling 2026-09-22: RFC-257 gates run via `claude -p`
+
+The Codex account hit its usage limit, so the owner authorized `claude -p` in
+place of codex for the gpt-6-astra reviewer gates. Gates now run as
+`claude -p --model opus --effort xhigh` (claude-opus-5-5) under a read-only tool
+policy recorded in `ws-d-design-review-v2/claude-reviewer-settings.json` and
+`SCOPE.md`. Incomplete runs are still not ACKs. This supersedes the previous
+"WS-D revised-design gate BLOCKED" entry.
+
+### RFC-257 WS-D design v3 (uncommitted; gates pending)
+
+The v2 gate completed only for Graefe (NAK: zero-final-primary clusters after
+final ownership stall the drain; undeclared queue/build capacity divergence; lock
+scope; per-operation admission; RNG/tie/hash details). Torvalds/storage/SPFresh v2
+runs stopped on the Claude session limit (no verdicts). The design is revised to
+v3 accordingly; gates run sequentially in `ws-d-design-review-v3/` with retry on
+session limit. No WS-D implementation yet; no CI or completion claim.
+
+### RFC-257 WS-D design v4 (uncommitted; gates pending)
+
+All four v3 gates completed with NAK (`ws-d-design-review-v3/`). v4 adds the
+split throw-site terminal rule, a search-only lock hold, capacity recovery limited
+to cap-hitting sessions with prefix-targeted merge, two-pass zero-primary handling,
+config-only encoding capability, a merged per-operation admission matrix, the
+sliding-window whole-effect gate, and the VectorId hash formula. Gates:
+`ws-d-design-review-v4/`. No WS-D implementation yet; no CI or completion claim.
+
+### RFC-257 WS-D live-JVM oracle and design v5 (uncommitted; gates pending)
+
+All four v4 gates NAKed. A test-only live-JVM oracle now MEASURES target GuardiANN
+behaviour (`rfcs/257-java-upgrade-audit/ws-d-oracle/README.md`; Describe
+`GuardiANN target oracle`, 7 specs in //conformance:conformance_test, uncached
+green; two mutation checks killed): VectorId hash formula on JDK 21/fdb-java
+7.1.26; the split no-usable-candidate and split-beside-emptied-neighbour stalls
+(confirmed target defects); queue-replay capacity stranding (18 of 30 entries
+left); ordinary-save backpressure; a 22-variant degenerate-knob consumer golden
+including RaBitQ training with unsupported extra bits. Design v5 derives its
+admission matrix from that golden, poisons the record context on capability
+refusals, adopts common-entry filtering in vector Update, and fixes the v4
+capacity/lock/merge findings. Gates: `ws-d-design-review-v5/`. No production
+WS-D code yet; no CI or completion claim.
+
+### Nightly RowDiff FDB watcher and forensics steps removed (owner request, 2026-09-22)
+
+At the owner's request the FDB container watcher was deleted from
+`.github/workflows/nightly-rowdiff.yml` together with everything that existed only to
+serve it: the "Watch the FDB container while it is alive", "Stop the FDB watcher",
+"Capture FDB container forensics" and "Upload FDB container forensics" steps
+(805 workflow lines), and its gate tests (`pkg/docscheck/rowdiff_watcher_gate_test.go`
++ `rowdiff_watcher_suite.sh`). Trigger: the watcher behaviour test flaked in
+`just test` (arm `removal is logged`): it waited a fixed 3s for a line that arrives
+one main-loop pass plus a re-issue later, measured 2.25s idle and 3.98s at 0.6s per
+docker call. The instrument's purpose was diagnosing the ~34-minute FDB container
+death in the open item "The FDB testcontainer dies ~34 minutes into the rowdiff
+sweep"; that item already records the mechanism as established and fixed at source
+(`orphan-fdb-sweep.sh` force-removing live >30-min containers). That item's
+paragraphs that described the watcher and the forensics step as live, and its DONE
+criterion that named their artifact, were corrected in place: the DONE criterion
+now rests on re-provisioned runners completing the sweep past the old 30-34
+minute band. RFC-242's paragraph that called the watcher's test suite committed
+was corrected in place too. Verification after the removal:
+`bazelisk test //pkg/docscheck:all --nocache_test_results --test_arg=-test.v` passed
+with 904 `=== RUN` lines and 0 `--- FAIL` (docscheck still parses
+`nightly-rowdiff.yml` in `rowdiff_sweep_budget_test.go` and
+`nightly_window_landing_test.go`), the edited workflow parses as YAML with 10
+steps, and `just test` passed 93/93 targets.
+
+### RFC-257 WS-D design v6 (uncommitted; gates pending)
+
+All four v5 gates NAKed (`ws-d-design-review-v5/`). New oracle measurements
+(9 specs, record and mutation kills now in-tree under `ws-d-oracle/`): inline
+maintenance mode keeps the target healthy without a hard cap, an unsplittable
+cluster fails every later inline insert, per-kind task failures; a size-penalised
+KMeans cannot rescue the no-usable-candidate split at any lambda, while an
+outlier-excluded refit gives usable 5/6 and 11/10 partitions. Design v6 keeps
+Java's inline no-cap rule, moves capability refusal to the consuming task kind,
+narrows poisoning to mutation entry points, and adds the refit step at the split
+throw site. Gates: `ws-d-design-review-v6/`. No WS-D production code yet.
+
+### RFC-257 WS-D design v7 (uncommitted; gates pending)
+
+All four v6 gates NAKed (`ws-d-design-review-v6/`). Shared findings: the v6
+task-kind capability check ran before Java's no-op exits, so Go would wedge a
+queue Java drains; the split step-2 reconcile was reachable on ordinary data and
+unbounded in inline mode. New oracle measurements (13 specs, record and mutation
+kills in `ws-d-oracle/`): obsolete tasks are consumed as no-ops under the knob
+they would consume; inline deletes fail wherever inline inserts fail; inline mode
+through the record layer's autoMergeDuringCommit matches the engine goldens; an
+iterated outlier peel selects a usable split on every counterexample shape at
+eight seeds within 5 refits while the target throws forever on all of them.
+Design v7 raises capability errors at Java's consumer points, withdraws the
+config-only insert refusals except insertMaxCandidateClusters < 1, iterates the
+peel (bound 8), bounds the reconcile residue in inline mode, sizes the foreign
+lease wait by min(own lease, 10 s)/3, and makes a claim-race loser wait instead
+of failing. Found on the way and fixed: Go's online-indexer default heartbeat
+lease was 30 s against Java's 10 s (`OnlineIndexOperationConfig.java:61`); now
+`defaultLeaseLengthMs = 10_000`, pinned by `TestOnlineIndexerLeaseLengthDefault`
+(both mutations killed). Adjacent and pre-existing, found on the way and ported
+in the same change: Java's public `OnlineIndexer.checkAnyOngoingOnlineIndexBuilds`,
+`getIndexingHeartbeats` and `clearIndexingHeartbeats` (present at both the previous
+and the current pin) had no Go counterpart; they are now
+`pkg/recordlayer/indexing_heartbeat_admin.go` with FDB specs ("Indexing heartbeat
+administration", 6 specs, three mutations killed) and a JVM spec comparing both
+engines on the same heartbeats. Java's `checkAnyOngoingOnlineIndexBuilds` computes
+`heartbeatTime < now + lease`, so a crashed session's heartbeat reads as an ongoing
+build forever (measured); Go implements the documented contract and records the
+divergence in DIVERGENCES.md. Gates: `ws-d-design-review-v7/`. No WS-D production
+code yet.
+
+### RFC-257 WS-D design v8 and conformance sharding (uncommitted; gates pending)
+
+All four v7 gates NAKed (`ws-d-design-review-v7/`), converging on one finding: the
+v7 inline insert cap keyed on a state (above the hard cap with neither SPLIT_MERGE
+nor COLLAPSE) that the target's own collapse/REASSIGN/reassign flow also reaches,
+and it refused the very insert that re-arms the split. v8 withdraws it and bounds
+the terminal reconcile's residue inside the reconcile (a typed capacity failure
+when the reconciled count exceeds the hard cap, where the target throws anyway),
+decides the inline-delete skip with each task kind's own read-only prologue
+(`consumerOutcome`, bounce dependencies included), poisons every typed error
+raised inside task execution, and makes the peel bound ceil(log2 n) + 2 with new
+measurements at n = 1000. New oracle rows: an obsolete split under a trained
+bits-9 index, reassignNumNeighboringClusters -1, the peel at n = 1000.
+`just test` after the v7 changes found two real failures: a TODO.md wording that
+cited the old 4-part Java version (docscheck) and `//conformance:conformance_test`
+timing out at 900 s (805 s standalone in that run, the new oracle specs 108 s of
+it). A first fix sharded the target with `shard_count` and a Ginkgo spec partition;
+it was WRONG and is reverted: rules_go already shards a go_test by Go test
+FUNCTION (round-robin in the generated testmain), the whole Ginkgo tree is one
+function, so `TestConformance` ran in only one shard and the partition silently
+dropped the other shard's specs; only the timeout surfaced it. The RFC-257 oracles
+now run in their own hand-maintained target `//conformance:rfc257_oracle_test`
+(gazelle-excluded files, `# keep` rule, build_membership_test.go guards
+membership): 14/14 specs in 54 s, twice, identical probe lines; the remaining
+`//conformance:conformance_test` ran 1405/1405 in 273 s uncached. WS-E has a first
+design (`ws-e-design.md`) and a live oracle (`conformance/ws_e_probe_conformance_test.go`,
+74 pinned target outcomes, 15 of them prepared statements through Java's JDBC
+setters, run record in `ws-e-oracle/`). The prepared rows show Go's text parameter
+substitution diverging on the shared surface: a bound NULL in an IN list is 42809
+in Go and 0A000 in the target, a LONG-bound parameter overflows as an INT literal,
+`ORDER BY ?` becomes a position, `LIKE ?` is accepted where the target's grammar
+rejects it; the WS-E design replaces substitution with typed constants bound at the
+parameter tokens. Gates: `ws-d-design-review-v8/`, `ws-e-design-review-v1/`.
+
+### RFC-257 — `//conformance:conformance_test` skips 119 specs on master (found 2026-09-23)
+
+A population reconciliation of the RFC-257 conformance target split (the WS-D v8
+storage gate asked for it) came out exact (before the split 1538 total / 1419 run,
+after 1524 / 1405, the difference being the 14 specs moved to
+`//conformance:rfc257_oracle_test`), and it exposed 119 SKIPPED specs, all
+present on `origin/master` (`git show origin/master:conformance/<file> | grep -c
+'Skip('` = the same counts). This breaks the NO SKIPS prime directive. Breakdown,
+from the `--ginkgo.v` log of the post-split run
+(`/var/tmp/fdb-upgrade-recovery/conformance-full-2.log`, reason strings counted):
+
+- 81 `yamsql_cross_engine_conformance_test.go:237`: every cross-engine yamsql case
+  that expects an error code. The gate cites "fdb-relational planner stalls on error
+  paths under load" — a claim about the Java engine at an older pin, never
+  re-measured on 4.14.2.0.
+- 29 `yamsql_cross_engine_conformance_test.go:240`: DML cases ("need a different
+  harness — runWithSetup expects exactly one query").
+- 3 `java_facts_conformance_test.go:165`: DML facts (same harness gap).
+- 4 `java_planner_warmth_proof_test.go:111`: diagnostic proof behind
+  `CONFORMANCE_PROVE=1`.
+- 2 `benchmark_comparison_test.go:49`: load-sensitive perf comparison.
+
+Work: re-measure the 81 error-code cases against the 4.14.2.0 JVM (the stall claim
+is the only thing gating them); give DML cases a setup-then-statement harness
+(`plandiff.RunPreparedWithSetup` / a DML variant exists for WS-E) so the 32 DML
+specs run; move the env-gated proof and the perf comparison out of the test
+target into their own manual lanes rather than skipping inside it. Owner: RFC-257
+WS-K (yamsql harness), taken after the WS-D v9 design gate.
+
+### RFC-257 progress — WS-D v9, WS-J v1 findings, heartbeat predicate (2026-09-23)
+
+- WS-D design v9 (`rfcs/257-java-upgrade-audit/ws-d-design.md`, tree `59a5b3c3`,
+  gates in `ws-d-design-review-v9/`) answers the four v8 NAKs. The peel's empirical
+  cap is replaced by a geometric removal floor with a structural bound, measured in
+  oracle item 18: on tight high-dimensional cores the v8 peel ran one round per
+  outlier (m = 50: 18-33 refits), the floor needs 4-6. The KMeans.java:136 throw
+  site is named, the reconcile failure gets `ClusterUnsplittableError`, and poisoning
+  moves into the task-execution wrapper. `consumerOutcome` gains an isolation
+  parameter and one fixture per arm. The frozen-tree `just test` is 94/94 with
+  population reconciliation (ws-d-oracle item 19).
+- Heartbeat admin: `CheckAnyOngoingOnlineIndexBuilds` now answers with admission's
+  predicate (`heartbeatBlocksSession`). The JVM spec pins all three declared
+  populations; DIVERGENCES.md is rewritten.
+- WS-J: live oracle `conformance/ws_j_index_fidelity_conformance_test.go` (at v1: 118
+  index runs, 11 query probes, 5 plan pins; the current population and its evidence
+  are in `rfcs/257-java-upgrade-audit/ws-j-design.md` section 0 and `ws-j-oracle/`).
+  The field-path trie mis-port is fixed and pinned. That fix made the RFC-248
+  record-typed-grouping guard's DDL acceptable (it was the trie bug), so the guard is
+  split: record-typed keys stay off aggregate indexes permanently, and nested leaf
+  groupings are pinned "not served yet" (WS-J F9, Java serves them). The design's
+  review rounds are in `rfcs/257-java-upgrade-audit/ws-j-design-review-v*/`.
+- WS-E v1: Graefe, Torvalds and storage are all NAK. v2 needs new oracle probes
+  first (LIKE error timing on empty/EXPLAIN, B64 case in the cache key, multi,
+  named and typed parameters, nullability via metadata).
+
+### Go SQL driver stores the relational catalog and user schemas on a Go-only keyspace (found 2026-09-23, measured)
+
+`pkg/relational/sqldriver/driver.go` opens the catalog at
+`keyspace.RelationalKeyspace.CatalogSubspace()`, which is the three strings `(__SYS,
+__SYS, CATALOG)`. User schemas sit at `SchemaSubspace(dbPath, schemaName)`, the raw
+strings `(dbPath, schemaName)`. Java's `RelationalKeyspaceProvider` uses a typed
+system path for the catalog, `(NULL, NULL, int64(0))`
+(`getSystemDirectory`, :183-188), and puts user data under DirectoryLayerDirectory
+levels (domain -> dbName -> schema, directory-layer-interned, :203-210). A Go SQL
+application and a Java relational application on the same cluster therefore share
+no catalog, database, schema or row. MEASURED by the spec "WS-J Go-stored template
+planned by the target": a template created through the Go `fdbsql` driver is
+42F55 "SchemaTemplate '...' is not in catalog" to the target. The comment on
+`catalog.DefaultCatalogSubspace` said the driver's migration "is tracked in
+TODO.md". Before this entry it was not: grep over TODO.md for catalog/keyspace/Java
+wire terms, positive control 45 `catalog` lines, found none. That comment now points
+here. The core record layer (explicit subspaces) is not affected; the Go catalog
+LIBRARY at `DefaultCatalogSubspace` does read and write the Java layout. Work: port
+the relational keyspace (typed system path, DirectoryLayerDirectory domains,
+databases and schemas, the interning layer) into `keyspace.RelationalKeyspace`,
+switch the driver to it, and decide the migration of data Go drivers already wrote
+under the string layout. This is a wire-compat hard-line item that predates the
+RFC-257 upgrade delta; scope and priority have been put to the owner.
+
+The migration must COPY each template's stored MetaData bytes verbatim, never rebuild
+a template from its DDL: a rebuild on a post-RFC-257 node gives Java's record-type
+numbering and union field numbers (ws-j-design.md section 4, F3) and Java's literal
+widths (section 3.2, F2), so a rebuilt template no longer matches the rows its schemas
+already hold, and nothing on the read path notices (a rebuild of the same DDL keeps
+the metadata version, so the store's version check does nothing). Driver-stored templates written before
+RFC-257 carry `long_value` literals; the target cannot plan a bitmap query over them
+and serves arithmetic equalities by full index scan (measured, spec "WS-J Go-stored
+template planned by the target", long_value variant), so a migrated tenant is rebound
+to a NEW template version CARRIED from its migrated bytes (ws-j-design.md section 4:
+the carry rule keeps the stored record-type keys, union numbers and index versions, and
+only an index whose definition changed gets a new last-modified version), the literal
+carrier's move from `long_value` to `int_value` being admitted by the rebind
+validator's one-way literal-carrier arm (section 3.2). That path depends on section
+4's carry rule; without it a rebuild shifts every index's versions and the rebind is
+refused. Nothing is rewritten in place.
+
+### CQ-78 / RFC-203 — the snapshot-isolation contract for compiled-statement continuations (booked by RFC-257 WS-E, 2026-09-23)
+
+When Go gains EXECUTE CONTINUATION (compiled-statement continuations, CQ-78 / RFC-203),
+it must carry the target's ISOLATION LEVEL SNAPSHOT contract, measured and specified in
+`rfcs/257-java-upgrade-audit/ws-e-design.md` section 6.3: the option is an EXECUTION
+choice, never persisted in a continuation (Java QueryPlan.java:500-507), so a resume
+must supply it again; EXECUTE CONTINUATION is admitted under it
+(PlanGenerator.java:507-517); and a continuation that carries a COPY plan is rejected
+with 0A000 "... only supported when continuing a SELECT query" (PlanGenerator.java:
+295-305). WS-E ports everything else about the option; these three arms have no Go
+route until this item lands, which is why they are booked here rather than there.
+
+### FDBDatabase.Run attempt bound — now owned by RFC-257 WS-D phase D-0 (booked 2026-09-23)
+
+The open item "Port Java's `FDBDatabaseRunner` default `maxAttempts=10` (+ full-jitter
+exponential backoff) into `pkg/recordlayer.FDBDatabase.Run`" (search that title) is
+scheduled as phase D-0 of RFC-257 WS-D: `rfcs/257-java-upgrade-audit/ws-d-design.md`
+section 5, "Attempt bounds of the transaction owners". The WS-D review showed why it
+cannot wait: GuardiANN maintenance runs inside `FDBDatabase.Run` (inline mode) and inside
+the merger, which runs each attempt through `oi.db.Run` where Java's IndexingMerger runs
+it through the runner (IndexingMerger.java:85-86), so a deterministic retryable failure
+retries without bound in Go and is bounded by maxAttempts in the target. D-0 (design v15)
+sends every attempt of the owners that run through `Run`, its variants and the manual
+runner through `d.transactor`, which owns every commit of those attempts (the owners that
+open their own transactions, and the resolver and CLI reads that call a backend directly,
+are named in the design with their own policies). The backend retry limit is 0 on the
+pure-Go client, libfdb_c and SimFDB alike; SimFDB's retry_limit was a no-op and is now
+honoured, `pkg/simfdb/retry_limit_test.go`. It runs one attempt loop with the target
+runner's any-cause retry predicate and ExponentialDelay, and it keeps the body's error
+chain whatever the backend. It gives each caller the POLICY of its target owner:
+- the online indexer its own attempt bound;
+- SQL DDL statements one attempt;
+- SQL read routes (result pages, the planner's store open, catalog and system-table
+  reads, statistics) and the catalog bootstrap the database default;
+- autocommit DML keeps its own single-commit statement transaction;
+- SPFresh's background lifecycles keep the client's unbounded loop, and its foreground
+  writes take their caller's bound except the split-window signal, which consumes no
+  attempt.
+
+The chaos faults are keyed to the call, at most once per call, with an explicit
+every-attempt arm. Two client changes are D-0 prerequisites with their own gate: a commit
+with no commit proxy waits as libfdb_c's does instead of returning 1200, and the pure-Go
+`fdb` wrapper keeps the body's error chain as the Apple binding does. The original item
+stays open until D-0 lands; this block and the design section point at each other.
+
+### Conformance harness: `runWithEphemeralSchema` teardown leaked every ephemeral database and template — FIXED (found by RFC-257 WS-E oracle v4, 2026-09-23)
+
+`conformance/sql_plan_steps.java` `runWithEphemeralSchema` created its template, database
+and schema through `jdbc:embed:/__SYS?schema=CATALOG` but dropped them through
+`jdbc:embed:/__SYS`, which cannot run DDL ("No Schema specified", 42F51), and swallowed
+the exception. MEASURED: a DRY_RUN probe in the WS-E v4 oracle listed the databases
+mid-run and found 44 `/TEST/PLAN_DIFF_*` databases, one per earlier Java invocation of
+that single Describe. Fixed: the teardown drops through the same CATALOG connection
+(`SYS_CATALOG_URL`, `teardown`), and a failed drop is the step's error when the
+operation succeeded and a suppressed exception when it failed. Pinned by
+`conformance/fault_inject_retry_conformance_test.go` "Conformance server ephemeral
+schema teardown" (Java step `ephemeralTeardownProbe`); both mutations redden it (the
+old URL: the step fails with "No Schema specified"; the old URL with the error
+swallowed: "the harness left /TEST/PLAN_DIFF_... behind"). The redundant step
+`runPreparedWithSetup` was deleted in the same change (every caller uses
+`runPreparedExtended`).
+
+### RFC-257 WS-E design v5 — pointers for three findings it owns (booked 2026-09-23)
+
+- The entry "`IsConstantValue` is narrower than the property the explode rule wants"
+  is owned by `rfcs/257-java-upgrade-audit/ws-e-design.md` section 4.1 (b)-(c): the
+  explode rule takes the target's `ArrayDistinctValue(comparand)` for every comparand,
+  never evaluated at planning, and the comparand IN source is evaluated when the plan
+  opens. That entry closes when 4.1 lands; the design section names the entry.
+- The entry "An identifier-sensitive cost tie decides join nesting (RFC-235 §17)" has a
+  REWRITING-phase twin: the predicate-simplification alternatives tie on the target's
+  `semanticHashCode`, and the target's answer for the same statement changes with the
+  schema (MEASURED, `WS-E target oracle v5`, rows `trace_null_strict_div0_cast_null_eq_one`
+  and `trace_v4_schema_div0_cast_null_eq_one`). WS-E design section 5.4 (g) compares
+  those rows as a set and records them in DIVERGENCES.md; it names this entry.
+- Harness teardown, second half of the FIXED entry above: the Go runner's teardown
+  (`pkg/relational/conformance/plandiff/go_runner.go`, `withTeardown`) swallowed its
+  drop errors, the Java create path used a literal catalog URL, the teardown pin checked
+  only the database, and `dry_run_connection_create_template` left its template behind
+  (the target ignores DRY_RUN on DDL, so the template is real) behind a pre-probe drop
+  that could never fire in a fresh tenant. FIXED in the working tree: failed drops are
+  reported (as the run's error, or behind it), every catalog DDL of the harness uses
+  `SYS_CATALOG_URL`, `ephemeralTeardownProbe` reports the template and the listing sizes
+  and the spec asserts both absences over non-empty listings, and the dry-run template
+  is dropped after its probe with the drop and the absence asserted. Each of those
+  checks has a recorded mutation that reddens it
+  (`rfcs/257-java-upgrade-audit/ws-e-oracle/evidence-mutations.txt`: "Harness teardown,
+  v5" for the teardown pin and `withTeardown`, M4 for the dry-run template, and
+  "Harness teardown, v6" for the non-empty-listing guard and the Go runner's deferred
+  wiring, which the v5 records did not cover).
+
+### Finding 6-followup — measured again for RFC-257 WS-E design v6 (booked 2026-09-23)
+
+Measurement for the entry "Finding 6-followup — dense predicate-count producer for Java
+tiebreak parity" (and RFC-189 E2); the entry itself is unchanged. On a detached worktree of
+tree `34c824e272259d45f538d459dbddfc8b1170bc42`, making `predCountByLevel` dense (a 0 entry
+for every level, as the target's PredicateCountByLevelVisitor) changes six plans of the
+plan-shape corpus: cte_published_row_names.yaml#51, derived_star_visibility.yaml#4,
+limit_offset_bounds.yaml#3, quoted_identifier_labels.yaml#8, repeated_output_names.yaml#3
+and #4 (`/var/tmp/fdb-upgrade-recovery/wse7-golden-both.txt` against
+`testdata/plan_shape.golden`); the simfdb hunt golden `repnames` changes; and four cascades
+unit tests fail (rewriting_final_invariant_test.go:96, 151, 290;
+planning_cost_model_rungs_test.go:988). Those numbers were measured with the dense map
+AND the tautology filter applied together; the same tree with the tautology filter
+alone changes no corpus plan and passes the suite (92 of 92,
+`/var/tmp/fdb-upgrade-recovery/wse7-runTaut-bazel.log`), so the six flips, the golden and
+the four unit tests are attributed to the dense map by that subtraction. Every flip keeps a TALLER survivor (a redundant
+Project over a Project, or a Limit over a Limit), which IS the target's height tiebreak
+(PredicateCountByLevelProperty.java:183-194 ends on `compare(b.highest, a.highest)`); the
+target does not reach it for a redundant projection because its SQL projections are
+SelectExpressions, which its select-count rung counts earlier, while Go's
+LogicalProjectionExpression is not counted by Go's select count. So the dense port needs
+Go's select-count rung to count what the target's counts; the dense producer alone makes
+plans worse. RFC-257 WS-E does not depend on it (ws-e-design.md section 5.4 (g): the two
+members of a predicate simplification have identical trees) and takes only the tautology
+filter, which alone changes no corpus plan.
+
+### RFC-257 WS-J merge unit — a merge gate for this branch (booked 2026-09-23)
+
+The WS-J fixes that landed in this working tree ahead of their ACK (index generator
+3.1 and 3.2, index option order 4b, records-file validation 4c with its load order and
+the ambiguous-legacy-union refusal) must reach master ONLY together with WS-J design
+section 8 steps 1 to 3 (the (name, version) guard and gone-version refusal, the unified
+DDL front end, the metadata order with the three-class carry rule, and the
+legacy-records migration), after that unit's implementation ACK. No merge of this tree,
+for any workstream (WS-D, WS-E and WS-F share its files), may precede that ACK: no
+mechanism takes the WS-J hunks out of this tree, so the tree merges as one, after every
+workstream's ACK (corrected in place; the 2026-09-24 block below records the change). Why: each landed fix opens an interim
+hazard only those steps close (a DDL rebuild the rebind validator would refuse or
+mis-carry, a re-issued template version, a store whose legacy metadata now refuses to
+load with no migration). Recorded in `rfcs/257-java-upgrade-audit/ws-j-design.md`
+section 8 and the umbrella RFC's gate 8; the CHANGELOG entry for the migration APIs is
+marked PENDING until step 3 lands.
+
+### F11 driver-keyspace migration — two constraints from RFC-257 WS-J design v5 (booked 2026-09-23)
+
+Additions to the entry "RFC-257 progress — WS-D v9, WS-J v1 findings, heartbeat predicate"
+(its F11 driver-keyspace paragraphs), which is unchanged: (1) ORDER. The WS-J (name,
+version) guard refuses creating a template version while a schema row binds it and no
+template row is stored (ws-j-design.md section 2), so the migration copies every TEMPLATE
+row before any SCHEMA row that binds it; a schema row copied first makes the template's
+own copy trip the guard. (2) CARRY. [Superseded by ws-j-design.md 4e: WIDENED and
+`literalCarriersEquivalent` are withdrawn. A migrated tenant's width-only change is a
+CHANGED index under the carry, rebuilt above the stored metadata version.] A migrated tenant's width-only rebind is section 4's
+WIDENED class (the rebuilt root with the stored versions and subspace key, decided by
+`literalCarriersEquivalent`), not a stored-proto carry, so the moved `int_value` literal
+is what the new version stores.
+
+### RFC-257 WS-C addendum: session start against the index state
+
+- [ ] `OnlineIndexer` resolves a session against the primary index state as Java's
+  `IndexingBase.handleStateAndDoBuildIndexAsync` does (`IndexingPolicy` DesiredAction). Found through a
+  flake of the four-builder mutual spec; cause, design and tests in
+  `rfcs/257-java-upgrade-audit/ws-c-design.md` section 7. Implemented in the working tree
+  (`online_indexer.go`, `online_indexer_queue.go`), reproducer red before and green after; open until
+  the WS-C delta gate ACKs it and the full suite runs green on the final tree. Revision 2 (after the
+  v1 gate's three NAKs) ports Java's `OnlineIndexer.indexingCatcher` and `IfMismatchPrevious`, which
+  revision 1 had wrongly recorded as read by no Java code, and moves heartbeat admission after the
+  action is resolved (design section 7.2).
+
+### RFC-257 WS-J merge unit — revised by design v6 (booked 2026-09-24)
+
+Amends the block "RFC-257 WS-J merge unit — a merge gate for this branch (booked
+2026-09-23)" above, whose step list is now incomplete: step 1 also carries the
+`DeleteTemplateVersion` refusal and `fleet.RestoreTemplateVersion` (with its check that
+no bound store's header records a metadata version above the restored one; design v7
+replaced v6's equality, which refused a schema rebound and not opened since), without
+which the gone-version refusal strands a schema; step 3 also carries the no-lane refusal
+on the build path (both `CreateTemplate` implementations; design v7) with ArithmeticValue's
+lane table. The first block's "unless the landed WS-J fixes are first taken out of it"
+had no mechanism behind it and is corrected there: the tree merges as one, after every
+workstream's ACK. `rfcs/257-java-upgrade-audit/ws-j-design.md` section 8 and the
+umbrella RFC's gate 8 say the same.
+
+### RFC-257 WS-J merge unit — revised by design v10 (booked 2026-09-24)
+
+Amends the two blocks "RFC-257 WS-J merge unit" above (booked 2026-09-23, and revised by
+design v6), whose step lists are now incomplete. Step 1 also carries: the version guard in
+BOTH catalogs (the in-memory catalog applies it over its schema rows, since its
+`RepairSchema` rebinds by name), reading from (t, latest + 1); and
+`fleet.RestoreTemplateVersion(ks, t, v, md)` deciding that some schema still binds (t, v)
+inside its restoring transaction (a limit-1 read of the bindings, plus a read of t's
+template rows), so a DROP SCHEMA followed by a fresh CREATE SCHEMA TEMPLATE in the window
+cannot put two histories under one name. Step 3 also carries: `api.SchemaTemplateCatalog.
+CreateTemplateFromProto` (both catalogs, running `deserializeTemplate`'s whole path on the
+carried bytes) and `LoadTemplateProto` (the carry rule's reader), `fleet.SaveTemplate`
+returning the template as stored, the lane check over the indexes a save defines (never an
+index carried unchanged), the DDL-origin refusal at the clause with the target's XX000 (the
+key generator consulting the lane table), and `SaveMigratedLegacyMetaData`'s edited-file
+route under the ordinary save's evolution validation. `rfcs/257-java-upgrade-audit/
+ws-j-design.md` section 8 and the umbrella RFC's gate 8 say the same.
+
+### RFC-257 WS-J merge unit — revised by design v11 (booked 2026-09-24)
+
+Amends the block "RFC-257 WS-J merge unit — revised by design v10" above, whose step 3 is
+now wrong in two places. `api.SchemaTemplateCatalog` gains NO bytes writer: v10's
+`CreateTemplateFromProto` is dropped, and `CreateTemplate` is the one write entry of both
+catalogs, carrying a new version of a stored name itself (`LoadTemplateProto`,
+`carryNumbering`, the lane check over the indexes carried as rebuilt protos, NEW, CHANGED
+and WIDENED, the evolution validation) and writing the carried bytes through each
+catalog's unexported writer. The edited-file route is its own entry,
+`FDBMetaDataStore.SaveEditedLegacyMetaData`, which loads the stored side as its records
+were written (the named union taken by name, framed by the pre-upgrade loop's name-first
+rule toward the pre-upgrade choice, `validateRecords` and the (d) refusal suspended) and
+then validates with the two relaxations R1 (a holding field removed, its number reserved)
+and R2 (an unsigned field made signed, under arm (c)'s rules); a migration output is
+validated by `SaveMigratedLegacyMetaData`'s re-application alone. Step 1 also carries: the
+in-memory catalog's guard wiring (its template catalog holds the store catalog, whose
+mutex it takes first), `DeleteTemplateVersion` refused there too, and the restore's check
+of md against every stored version of t by the carry invariant.
+`rfcs/257-java-upgrade-audit/ws-j-design.md` sections 2, 3.2, 4, 4c and 8 say the same.
+
+### RFC-257 WS-J merge unit — revised by design v12 (booked 2026-09-24)
+
+Amends the block "RFC-257 WS-J merge unit — revised by design v11" above. Step 1: the
+restore checks CARRY COMPATIBILITY against every stored version of t (the evolution
+validator with the rebind options, no rename in either direction, and every index field
+EQUIVALENT at an equal last-modified version, the predicate included), where v11 compared
+record-type keys and union numbers only; the guard's range for a fresh t is the whole
+`(t)` prefix (a `(t, 0)` binding included); and the in-memory `SaveSchema` and
+`RepairSchema` hold the store mutex across their template reads, with `-race`
+interleaving tests. Step 3: `CreateTemplate` of both catalogs refuses `v′ <= latest` and
+runs the relational validator itself (moved from the save action); the lane check runs
+over NEW and CHANGED indexes and over a WIDENED one only for a lane its widening removes;
+a (d) refusal of carried bytes is marked as a template being stored; the edited-file route
+hands the validator the stored side AS-FRAMED (each framed union field retyped to its
+record type's message), compares the framing field number by field number at (iii) and in
+the migration's output check, scopes R1 to messages the validator compares and refuses it
+beside an index predicate or record count key through the removed field, runs R2 with
+`allowIndexRebuilds` scoped to its indexes, and `SaveRecordMetaData` refuses a field on a
+number the old message reserves. Code on this tree: an absent index root is refused as
+Java refuses it, and `AmbiguousLegacyUnionError.HeldBy` is found by reachability from the
+union. `rfcs/257-java-upgrade-audit/ws-j-design.md` sections 2, 3.2, 4, 4c, 8 and 9 say the
+same.
+
+### RFC-257 WS-J merge unit — revised by design v13 (booked 2026-09-24)
+
+Amends the block "RFC-257 WS-J merge unit — revised by design v12" above. Step 1: the
+restore's check (i) runs the evolution validator with its own stated options
+(`allowNoVersionChange`, the literal-carrier arm and `allowIndexRebuilds`), and check (iii)
+requires every index both versions define to be EQUIVALENT or WIDENED unless the higher
+version raised its last-modified version above the LOWER version's metadata version (v12's
+exemption of any raised index let a two-history restore read old entries under a new
+definition); the locked sections of the in-memory catalogs call unlocked helpers
+(`saveSchemaLocked`, `loadSchemaTemplateLocked`, `loadSchemaTemplateHeld`). Step 3:
+`CreateTemplate` refuses an exact duplicate first with DUPLICATE_SCHEMA_TEMPLATE, then
+`v′ <= latest`, then the relational validator; a WIDENED index is not lane-checked, and a
+unit test over the ported lane table pins that no LONG-to-INT or DOUBLE-to-FLOAT move
+removes a lane; the ordinary load and `SetRecords` refuse a union both builds choose
+(`findUnionDescriptorName`'s result) whose name-first and type-first framings differ
+visibly (`LegacyFramingError`: a `_X` typed by another message; two union fields of one
+type with an implicit record-type key); the edited-file route's as-framed union is a new
+message nothing references, a union both holding a record type's field and retyped by its
+framing is refused, R1 and R2 go through one `relaxations` hook, and R1's reservations are
+paired as the validator pairs messages and are monotone. Code on this tree: the absent-root
+refusal is `KeyExpressionDeserializationError`; `Build` and `indexToProto` refuse a
+rootless index; the `HeldBy` array-element arm is pinned. `rfcs/257-java-upgrade-audit/
+ws-j-design.md` sections 2, 3.2, 4c, 8 and 9 say the same.
+
+### RFC-257 WS-J merge unit — revised by design v14 (booked 2026-09-24)
+
+Amends the block "RFC-257 WS-J merge unit — revised by design v13" above. Step 1: the
+restore's carry compatibility is four checks. Check (i)'s options add `SetDisallowTypeRenames`,
+which replaces v13's separate no-rename check, and make the literal-carrier arm symmetric for
+the restore only (the rebind's stays one-way), so a WIDENED pair is admitted in either order.
+A new check (iv) runs the relational evolution validator from the lower version to the
+higher, so two histories that differ only in an enum's value order or a VECTOR column's
+options are refused. The helpers are renamed by what they do with the locks (`…Held`,
+`…TakingTC`), and `SaveSchema`'s template check goes through one. Step 3 changes these:
+- `LegacyFramingError` is WITHDRAWN. The ordinary load reads a union both builds choose as
+  the target reads it: type-first, with each implicit record-type key the smallest field.
+  A refusal would lock Go out of the stores Java wrote.
+- A store open detects the one legacy form one read can find, `LegacyRecordTypeKeyError`:
+  a type with several union fields and an implicit key, whose primary key begins with
+  `recordType()`, with a record under the pre-upgrade (last-field) number.
+- The edited-file route takes the records' writer (`PreUpgradeGo` or `Target`) and compares
+  record-type keys at (iii). Under `PreUpgradeGo` a type keyed by its last field needs an
+  explicit `record_type_key` equal to that number, and the migration writes that key toward
+  the pre-upgrade choice.
+- R2's indexes must be at last-modified stored + 1.
+- `checkReservedNumbers` runs on all three metadata writers, over every reservation, and
+  refuses a drop.
+- Key-expression deserialization becomes Java's whole: a Field missing its name or fan
+  type, an invalid fan type, and an unknown function or wrong arity are refused at load.
+  `KeyExpressionDeserializationError` unwraps to `RecordCoreError`, and the loader wraps it
+  as `MetaDataProtoDeserializationError`.
+- `CreateTemplate`'s concurrent writes of one t are pinned conflicting.
+
+Residuals for the owner: stores of those framing shapes that only pre-upgrade Go wrote,
+opened before the edited-file route; and an inverted template history, which has no exit.
+`rfcs/257-java-upgrade-audit/ws-j-design.md` sections 2, 3.6, 4c, 8 and 9 and DIVERGENCES.md
+say the same.
+
+### RFC-257 WS-J merge unit — revised by design v15 (booked 2026-09-24)
+
+Amends the block "RFC-257 WS-J merge unit — revised by design v14" above. Step 3 now also
+carries (ws-j-design.md section 4d):
+- one framing criterion for records-file shapes (d), (f) and (g): Go reads as the target
+  reads wherever the target loads, so the landed ordinary-load refusal of shape (d) moves
+  to the legacy routes and a new template's `CreateTemplate`. The owner confirms this
+  before the merge (umbrella RFC, "Verification and review gates" item 9);
+- `SetRecords` reading the `record_type_key` option as the target's in-code path does;
+  the route and migration writing `RecordType.explicit_key`;
+- the store-open probe only where every key is type-prefixed and no type's target key
+  equals the number, at snapshot isolation, cached per store and version, with a
+  conditional remedy, index-root and count-key arms, and `frl meta legacy-framing`;
+- `checkReservedNumbers(storedProto, newProto, union, writer)`;
+- deserialization: function names still loaded; arity checked for registered functions
+  (`RegisterFunctionWithArity`); absent nested children with Java's text; the count key's
+  wrapping; and `NullStandin` ported (a wire fix, booked PENDING in DIVERGENCES.md).
+
+### RFC-257 owner rulings, 2026-09-24 (booked 2026-09-24)
+
+Recorded in the umbrella RFC, "Verification and review gates" item 9. Every RFC-257 design
+applies them:
+- Pre-release Go data is not supported. Go reads everything as the target reads it; no
+  migration, detection, refusal or remedy is built for data only a pre-release Go build
+  wrote (WS-J 4c/4d legacy routes and store-open probe withdrawn; WS-C's upgrade list for
+  meta-data an earlier Go build wrote becomes one unsupported-data note; WS-B/D/F owner
+  items of the same kind close the same way).
+- Go answers every query the target answers. The target has no planner task cap by default,
+  so Go's 150k/250k task budgets stop refusing queries by default (WS-E section 4.1(b)
+  owns the change; the five-IN-list 54F02 is withdrawn as an accepted outcome).
+
+### RFC-257 WS-J merge unit — revised by design v16 (booked 2026-09-24)
+
+Supersedes the v14 and v15 blocks above for their legacy parts, under the owner's ruling that
+pre-release Go data is not supported (umbrella RFC item 9; ws-j-design.md section 4d):
+- LANDED on this tree: the shape (d) refusal is deleted (`refuseAmbiguousLegacyUnion` and its
+  helpers, the builder flags, the catalogs' store/load refusals, `LegacyUnionTemplateError`);
+  its tests and the JVM specs assert the target's outcome.
+- WITHDRAWN (never landed): `MigrateLegacyRecordsFile`, `SaveMigratedLegacyMetaData`,
+  `SaveEditedLegacyMetaData` with its writer argument, R1, R2, `checkReservedNumbers`, the
+  store-open probe `LegacyRecordTypeKeyError`, `frl meta legacy-framing`, the route's
+  `explicit_key` writes.
+- [Superseded: these landed before step 3, in `a33336527`, `9ba005539` and `8e515423b`
+  (ws-j-design.md 4e item 2); step 3's own work landed with design v19 (the block "RFC-257 WS-J
+  design v19 and step 3" at the end of this file).] Step 3 now carries: `SetRecords` processing the target's extension options (schema,
+  `(record)` since_version and record_type_key, `(field)` index/indexed/primary_key); the
+  deserialization port with `NullStandin` (three standins, the unique check, COUNT_NOT_NULL,
+  NO_NULLS, the null-message case), function-key arity by the argument's column size and each
+  function's own column size, `Build` refusing a key function the target's registry lacks
+  (`get_versionstamp_incarnation`), and Go's four untyped load refusals declared.
+
+### RFC-257 WS-J step 3: NullStandin ported (booked 2026-09-25)
+
+Landed on this tree (ws-j-design.md 4d, the `NullStandin` bullet, which also corrects v16):
+- `NullStandin` (NULL / NULL_UNIQUE / NOT_NULL) on fields and nesting parents, evaluated as the
+  target does, round-tripped, and not part of key-expression equality (as Java's `equals`).
+- `keyContainsNonUniqueNull` at the unique checks and COUNT_NOT_NULL's grouped columns: only
+  NullStandin.NULL is ignored; a `UNIQUE`/`NOT_NULL` field's null and the arithmetic functions'
+  plain null collide and are counted. `FunctionSpec.NullIsNonUnique` for a Go function whose Java
+  twin returns `Key.Evaluated.NULL` (`collate_*`, `cardinality` register with it).
+- A proto3 field at its default is absent to key evaluation and to a query's reads, and an unset
+  proto2 field's explicit default reads as the default in a query
+  (`values.ProtoFieldReadsValue`, Java's `MessageHelpers.getFieldOnMessage`).
+- Pins: conformance "RFC-257 NullStandin" and "RFC-257 a query reads a field as Java's
+  getFieldOnMessage" (live JVM), unit pins in `key_expression_null_standin_test.go`,
+  `index_maintainer_test.go` and `proto_field_reads_value_test.go`; red on the WS-C r11 tree.
+- `IndexMaintenanceFilter` (Java's third standin reader, `NO_NULLS`): the owner answered "port it"
+  (2026-09-25); ported with the BY_INDEX write-only dispatch and `isIndexIdempotent` found beside
+  it (ws-j-design.md 4d, the `NullStandin` bullet; booked below).
+
+### RFC-257 WS-J: IndexMaintenanceFilter ported (booked 2026-09-25)
+
+LANDED (ws-j-design.md 4d): the store option and its readers in every maintainer, the online
+indexer's and the store builders' copies of it; the BY_INDEX write-only dispatch of non-idempotent
+indexes (Java's `updateWhileWriteOnly`, :255-328); `isIndexIdempotent` as Java's maintainers answer
+it. Pinned against the JVM (NO_NULLS, maintainer by maintainer) and by Go specs red on `426da82a5`.
+
+### RFC-257 WS-J step 1: version guard and gone-version refusal (booked 2026-09-25)
+
+LANDED (ws-j-design.md section 8 step 1, STATUS): the (name, version) guard in both catalogs, the
+gone-version refusal with Java's text, the `DeleteTemplateVersion` refusal, and Java's catalog
+texts; FDB and in-memory tests red on `9ba005539`. `fleet.RestoreTemplateVersion` has landed since
+(its carry-compatibility check uses `ClassifyIndexCarry`); OPEN in this unit: step 3 of section 8
+(step 2 has landed). The DIVERGENCES entries for the guard and the delete refusal now say so.
+
+### RFC-257 WS-C revision 13 (booked 2026-09-25)
+
+LANDED (ws-c-design.md 7.13), folding the v12 gate's three NAKs (`ws-c-addendum-review-v12/`): map
+entries indexed in the record's wire order (Java's DynamicMessage order) and records holding a map
+written in key order; one port of the per-type count, with `frl record count --type` converted and
+non-integer record-type keys handled as Java's `Tuple.compareTo` orders them; the dimensions
+validator's negative position; Java's bare "incorrect index options" with its cause; index predicates
+through groups; CHANGELOG and design corrections; evidence saved with the tree it ran on. NEXT: the
+WS-C revision-13 delta gate (`ws-c-addendum-review-v13/`).
+
+### RFC-257 WS-J: fleet.RestoreTemplateVersion landed (booked 2026-09-25)
+
+LANDED (ws-j-design.md section 8 step 1, STATUS): the restore with its header batches, in-transaction
+reads, carry checks (i) to (iv) and retry, and a fix found on the way (an `int_value` literal key column
+panicked on save). Step 1 of section 8 is complete; NEXT is step 2 (the unified DDL front end), then
+step 3 (metadata order and the carry rule inside `CreateTemplate`).
+
+### RFC-257 WS-C revision 14 (booked 2026-09-25)
+
+LANDED (ws-c-design.md 7.14), folding the v13 gate (Graefe and Torvalds NAKs; storage incomplete):
+per-RecordType map reach (no global cache), a save keeping the stored map order, Java's option
+parsers for windowed VECTOR options, the window-under-OR class, the single-target preset (a range-set
+divergence for every key type, found by the new JVM spec), and nits. NEXT: the revision-14 gate
+(`ws-c-addendum-review-v14/`, storage over revisions 13 and 14).
+
+
+### RFC-257 WS-C revision 15 (booked 2026-09-25)
+
+LANDED (ws-c-design.md 7.15), folding the v14 gate's three NAKs (`ws-c-addendum-review-v14/`):
+a map is written as Java's load-then-save writes it, byte for byte (a key written twice keeps both
+entries; measured with a new Java re-save step), the stored record found under any of its type's
+union fields, repeated elements matched by content, no instance paths; the VECTOR maintainer reads
+its options with Java's parsers; "multiple points"; Java's four metric names for a windowed vector
+index; one map reach per meta-data; Java reads Go's re-saved bytes. NEXT: the revision-15 gate
+(`ws-c-addendum-review-v15/`).
+
+### RFC-257 WS-J design v17, code half (booked 2026-09-25)
+
+LANDED on the branch, folding the v16 gate's code findings (`ws-j-design-review-v16/`): the
+literal-carrier widening withdrawn under the pre-release ruling (WIDENED, the rebind's and the
+restore's arms, `frl meta evolve-check --allow-literal-carrier-widening`; a carrier change is a
+changed key, as Java reads it); the 3.6 debt (Field name and fan type refusals, the nesting's parent
+first, `KeyExpressionDeserializationError` a `RecordCoreError`, `MetaDataProtoDeserializationError`,
+"More than one value encoded in value"); Java's catalog texts; the guard failing closed over an
+unreadable `TEMPLATES_VALUE_INDEX`; the restore's commit_unknown_result retry reading its bytes
+before its listing; section 2's other two guard sequences; the in-memory lock helpers named as the
+design names them, with a hooked interleaving test; since_version, two same-named record types and a
+two-valued key pinned against the JVM. NEXT: design v17's text (4e: the ruling applied to the carry
+tests, landed versus owed, Java's `deleteTemplate`), then the v17 gate, then step 3.
+
+### RFC-257 WS-C revision 16 (booked 2026-09-25)
+
+LANDED (ws-c-design.md 7.16), folding the v15 gate's three NAKs (`ws-c-addendum-review-v15/`): the
+HNSW configuration read as Java's `parseConfig` whole (aliases, booleans, metric names, Config's
+checks and texts) by one reader the windowed validator, the maintainer and the evolution check share;
+map entries written whatever their value (proto3 zeros); "byte for byte" scoped to map entries, the
+oneof field order declared and pinned against the JVM; repeated elements matched along a longest
+common subsequence; the dry run over the stored record; a per-walk reach for foreign descriptors.
+NEXT: the revision-16 gate (`ws-c-addendum-review-v16/`).
+
+### RFC-257 WS-J merge unit — revised by design v17 (booked 2026-09-25)
+
+Amends every "RFC-257 WS-J merge unit" block above (booked 2026-09-23 through the v16 revision).
+Withdrawn from them, under the owner's pre-release ruling (ws-j-design.md 4e): the (d) refusal as
+landed (it was deleted in v16), the migration as step 3 and its PENDING CHANGELOG entry, the F11
+constraint that a migration re-frames pre-upgrade tenants, "F13's refusal without its migration" and
+the pre-F1/pre-F2 rebinding hazards as the unit's rationale, and the WIDENED carry class with both
+literal-carrier arms (removed in `8e515423b`). The unit still gates the tree's merge on steps 1 to 3:
+the landed fixes change what a template built from DDL stores, and without the carry rule a new
+version of an existing template renumbers its record types. Step 3 is restated in 4e ("Step 3,
+restated"); the design v17 gate is `ws-j-design-review-v17/`.
+
+### RFC-257 WS-C revision 17 (booked 2026-09-25)
+
+LANDED (ws-c-design.md 7.17), folding the v16 gate's three NAKs (`ws-c-addendum-review-v16/`): the
+windowed-validation JVM Describe restored; the planner's vector candidate reads the metric under its
+`vectorMetric` alias (a query-engine change, for the gate's Graefe lens); RaBitQ extra bits 9 to 15
+refused where Java constructs the quantizer (JVM spec per operation), with the HNSW insert of a
+present key left as Java leaves it and SPFresh's 0-bit count refused; raw bytes re-saved by both
+engines; a map entry's unknown fields kept, and unknown-field order measured and declared; the
+element matching's cell-bound fallback and equal-element insertion declared and pinned; the
+evolution, dry-run, Config-check and entry-field pins; the alias named in an evolution refusal.
+NEXT: the revision-17 gate (`ws-c-addendum-review-v17/`). The WS-J design v17 gate returned three
+NAKs (`ws-j-design-review-v17/`), folded next into design v18.
+
+### RFC-257 WS-J design v18 and its code (booked 2026-09-25)
+
+LANDED with design v18 (ws-j-design.md 4f), folding the v17 gate's three NAKs
+(`ws-j-design-review-v17/`): every decode of bytes a Java engine shares reads a closed enum's
+undeclared number as Java does (`proto_closed_enums.go`: records, map entries, stored meta-data,
+store headers, stamps, pending writes, continuations) and parses with protobuf-java's recursion
+limit; an index predicate's operand read as Java reads it; the three field readers pinned to Java's
+`getFieldOnMessage` and `MessageTuple`; a stored template's load failure reported with Java's code;
+the restore failing closed over an unreadable index; the normative design text swept of the
+withdrawn design. The RFC-257 parity JVM specs moved to `//conformance:rfc257_parity_test`
+(conformance_test used 95% of its CI budget). NEXT: the v18 gate (`ws-j-design-review-v18/`), then
+step 3 (4e "Step 3, restated", with 4f's additions).
+
+### RFC-257 WS-C revision 18 (booked 2026-09-25)
+
+LANDED (ws-c-design.md 7.18), folding the v17 gate's three NAKs (`ws-c-addendum-review-v17/`): the
+vector maintainer skips an entry the old and new record share, as Java's inherited update does (a
+save keeping the vector makes no graph call when the index is maintained in its own transaction, and
+is served under 9 to 15 RaBitQ bits after the centroid, JVM-measured; a queued save and a windowed
+index still delete and re-insert, in both engines, ws-c-design.md 7.19); SPFresh reads its configuration strictly through one function at every
+entry point (no path to the encoder's panic; an unknown metric refused); the planner takes a vector
+index's metric from the maintainer's parse (`recordlayer.VectorIndexMetric`; query-engine change,
+for the gate's Graefe lens); Java's unknown-field order within a field and its minimal re-encoding
+measured and declared. NEXT: the revision-18 gate (`ws-c-addendum-review-v18/`).
+
+### RFC-257 WS-J design v19 and step 3; WS-C revision 19 (booked 2026-09-26)
+
+LANDED on this tree, folding the WS-J v18 gate's three NAKs and the WS-C v18 gate's two NAKs and
+one ACK (`ws-j-design-review-v18/`, `ws-c-addendum-review-v18/`); ws-j-design.md 4g and
+ws-c-design.md 7.19 hold the decisions:
+- Stored bytes are decoded as protobuf-java parses them (`javaDecodeRule`): occurrence by
+  occurrence when they hold a closed enum's undeclared number, required fields checked after,
+  Java's recursion limit (101 for a root, 100 for a record), closedness per field; a record Go
+  holds in memory is saved as Java reads it; every plain decode under `pkg/recordlayer`,
+  `pkg/relational` and `cmd` goes through the rule. Cost: `BenchmarkJavaRecordDecode`.
+- A query reads an unset field with a declared default as NULL, measured through SQL on both
+  engines; a VECTOR column in a stored template is a VECTOR, so the relational validator compares
+  its options.
+- Step 3: `CreateTemplate` of both catalogs refuses `v′ <= latest`, runs the relational
+  validator, carries a new version (record-type keys, union fields, EQUIVALENT indexes spliced,
+  CHANGED rebuilt, dropped ones former indexes, a re-added name refused), runs the lane check
+  and the evolution validator with index rebuilds; the save action calls only `CreateTemplate`;
+  `fleet.SaveTemplate` returns the stored template; the rebind allows index rebuilds; the DDL key
+  generator refuses a lane-less key at its clause with the target's XX000. Section 4's tests:
+  `pkg/relational/sqldriver/carry_rule_fdb_test.go`, `pkg/relational/core/catalog/
+  template_carry_fdb_test.go`, JVM "WS-J a new version carried from the target's template".
+- WS-C: the "no graph call" claims scoped (a queued save and a windowed index still delete and
+  re-insert), the samples pin made able to fail, a queue pin, one metric reader per vector engine,
+  SPFresh range and parse refusals typed `MetaDataError` (a metric keeps Java's IllegalArgument class).
+NEXT: the v19 gates (`ws-j-design-review-v19/`, `ws-c-addendum-review-v19/`), then step 4 (the
+existence policies: CREATE SCHEMA over a gone version is 42F55 in the FDB catalog; the in-memory
+catalog's XX000).
+
+### The Go driver folds an unquoted `?schema=` connection value; Java takes it verbatim (found 2026-09-26, source)
+
+- [x] DONE 2026-09-26. Measured on the JVM (conformance "the DSN's schema option reaches the schema
+  Java's does", 18 arms, equal): the DSN's path and `?schema=` are taken verbatim, and DDL folds an
+  unquoted path whole (`create database /test/x` stores `/TEST/X`), which Go did not. Go now keeps the
+  DSN verbatim, folds every DDL path (`databasePathOf`: CREATE/DROP DATABASE and SCHEMA, SHOW
+  DATABASES WITH PREFIX), reports a missing database as Java's connect does (42F00), and
+  `SetSchema` refuses a missing schema as Java's `setSchema` does. Connect-then-CREATE DATABASE stays
+  a Go extension; that and the honoured SHOW prefix are in DIVERGENCES.md ("A connection to a
+  database that does not exist yet opens"). CHANGELOG has the migration note. Found alongside:
+  `CASE_SENSITIVE_IDENTIFIERS` is ignored (entry at the end of this file). The original finding:
+  `EmbeddedConnection.SetDefaultSchema` normalizes the DSN's `schema` value as an SQL identifier
+  (`functions.NormalizeIdentifier`: unquoted folds to upper case), where Java's
+  `RecordLayerStorageCluster.parseConnectionQueryString` upper-cases the option NAME and keeps the
+  value verbatim, and `loadSchema` looks it up as given (RecordLayerStorageCluster.java:76-124). So
+  `?schema=s_abc` finds schema `S_ABC` in Go and `s_abc` in Java: a lower-case schema name a Java
+  DDL created quoted is unreachable from Go's DSN, and an upper-case one Go created unquoted is
+  unreachable from Java's lower-case DSN. The comment at `SetDefaultSchema` cites yamsql files
+  whose connects and creates happen to agree under folding; the yamsql runner may normalize on its
+  own. Found reading both sources while writing the WS-J default-value spec (whose first draft
+  failed for another reason, the driver's Go-only keyspace); not measured. Measure both engines over a quoted mixed-case schema and a lower-case unquoted DSN, then port
+  Java's lookup (the yamsql corpus pins the spellings that must keep working).
+
+
+- [ ] **Go's `READ_LOCK_AWARE` does not make the transaction read-only, as C++'s does.** (Restated
+  2026-09-26: this entry first said the Go client lacks a `READ_ONLY` option; `libfdb_c` 7.3.77 has
+  none.) C++'s `options.readOnly` is internal: `READ_LOCK_AWARE` sets it with `lockAware` when the
+  transaction is not already lock-aware (`NativeAPI.actor.cpp:7082-7092`), `LOCK_AWARE` clears it
+  (`:7079`), and `commitMutations` answers a commit with mutations or write conflict ranges 2023
+  `transaction_read_only` after the read-only fast path (`:6810`). Go's `READ_LOCK_AWARE`
+  (`client/transaction.go:3163-3170`) sets a read flag only, so Go commits writes `libfdb_c`
+  refuses. In scope of RFC-258 v2 (section "`READ_LOCK_AWARE` is read-only in C++"), with a
+  differential arm; close this entry when RFC-258 lands.
+- [ ] **Go's INSERT VALUES does not take a vector.** `INSERT INTO DOCS VALUES (1, [1.0, 0.0, 0.0])`
+  into a `VECTOR(3, HALF)` column answers 22000 (type mismatch), and
+  `CAST([1.0, 0.0, 0.0] AS VECTOR(3, HALF))` answers 0A000 ("CAST target type not expressible by the
+  walker"), measured with `pkg/relational/sqldriver/spfresh_refused_config_fdb_test.go`'s schema.
+  Java's corpus inserts vectors with the yamsql `!! !v32 [...] !!` literal and notes CAST "doesn't work
+  with prepared statements" (`third_party/.../vector-documentation-queries.yamsql:35`); whether Java's
+  non-prepared INSERT takes the CAST is not measured. Measure Java, then give Go the same reach. Found
+  while pinning the SQLSTATE of a refused SPFresh configuration (RFC-257 WS-C revision 20), which uses
+  a k-NN query instead.
+
+- [ ] **The runner OOM-lifecycle fix never reached the live fleet; CI was down for a day
+  (found and applied in place 2026-09-26).** The checked RFC-250 item "Repair the classic
+  Actions runner's OOM lifecycle" changed `infra/cloud-init.yaml` only (`9cf43b52d`), and
+  `hcloud_server` pins `ignore_changes = [user_data]`, so neither live box
+  (`gh-runner-fdb`, `gh-runner-drain-0`) had the watchdog
+  (no `runner-watchdog.timer`, no `/etc/runner-watchdog.conf`) or the drop-in; both units
+  ran systemd's default `OOMPolicy=stop`. On 2026-09-26 a job process was OOM-killed on
+  each box (07:23:20 and 11:47:37 UTC), systemd stopped the whole runner unit, nothing
+  restarted it, and every self-hosted job queued unacquired until restarted by hand at
+  13:57. This is the cause of the owner STOP entry "the `hetzner-fdb-vm` runner service is
+  being stopped under running jobs": today's Nightly Coverage (run 36226107050) logged
+  "The runner has received a shutdown signal" at 07:23:20, the second of the OOM-kill, and
+  the journals since each box's last boot (09-13 / 09-11) hold 20 `Failed with result
+  'oom-kill'` unit failures (8 fdb, 12 drain-0), mostly 07:00–09:00 UTC.
+  APPLIED IN PLACE (ssh as root, with the key the servers were provisioned with): the watchdog
+  script, service and timer rendered verbatim from `cloud-init.yaml` (`$${` → `${`),
+  `/etc/runner-watchdog.conf` as the template writes it (`WATCH_DEFER_WHILE_WORKER=1`), and
+  a drop-in `oom-policy.conf` with the template's `[Service]` half only
+  (`OOMPolicy=continue`, `KillMode=process`): the `Requires=ci-docker-gate.service` half
+  would keep the listener from starting on a box with no gate unit. Verified on both boxes:
+  `systemctl show` reports `OOMPolicy=continue` from that drop-in, the timer is scheduled,
+  and the script's restart arm, pointed at a stopped dummy unit, restarted it.
+  STILL OPEN: (1) the OOM victims are single test processes at ~7.3 GB anon RSS on a
+  7.9 GB `cpx32` (`factorycorpus_test` ×6, `factory-run` ×5, `verify-corpus-rows` ×2,
+  `full_test` ×1, kernel log since the last boots); those jobs still fail, now with the
+  process's own exit instead of a runner shutdown. (2) No OpenTofu state exists for the
+  fleet: `main.tf` has no `backend`, `infra/` holds no state, and the only recovered
+  `terraform.tfstate` is empty, so the README's `tofu apply -replace` path needs a
+  `tofu import` of both servers, both volumes, the ssh key and the reports bucket and its
+  policy (MinIO credentials included) before it can run. (3) The live boxes still lack
+  `ci-docker-gate.service` and the fstab ordering (`infra/README.md`, "The boot path").
+
+- [ ] **Go ignores `CASE_SENSITIVE_IDENTIFIERS`; under it Java's DDL stores every unquoted name as
+  written.** `api.OptCaseSensitiveIdentifiers` is declared and defaulted (`pkg/relational/api/options.go:128`,
+  `:249`) and read nowhere (`git grep -n 'OptCaseSensitiveIdentifiers' -- '*.go'`: those 2 lines;
+  control: the same grep for `OptCaseSensitiveIdentifiers\|OptionName` finds the whole table). Java
+  reads it in `PlanContext.java:263` (`isCaseSensitive`), `PlanGenerator.java:158`, the structured-SQL
+  `ExpressionFactoryImpl.java:62,91` and `UpdateStatementImpl.java:120,235`, and
+  `SemanticAnalyzer.normalizeString(s, caseSensitive)` then keeps an unquoted identifier verbatim
+  instead of upper-casing it. So a Java connection with the option set runs `CREATE TABLE foo` into a
+  template whose table is `foo`, where Go, with the same option, stores `FOO`: every name a template
+  holds differs, a stored-meta-data (wire) divergence for any user who sets the option. Not the
+  resolution divergence in DIVERGENCES.md "Identifier resolution: Go over-resolves case", which is
+  about lookup and which this option does not close. Found closing the `?schema=` item (RFC-257,
+  2026-09-26), whose fix made DDL fold database paths with `NormalizeIdentifier`; that fold, too,
+  must follow the option. Measure Java's stored names and resolution under the option over DDL,
+  DML and the DSN, then thread the option through Go's normalization.
+
+- [ ] **A quoted identifier containing `.` breaks aggregate and GROUP BY queries (found 2026-09-26, measured).**
+  Over `CREATE TABLE "foo.tableA"("foo.tableA.A1" bigint, "foo.tableA.A2" bigint, ...)` (Java's
+  `valid-identifiers.yamsql`, whose queries Java answers), Go's plan harness answers
+  `SELECT SUM("foo.tableA.A1") FROM "foo.tableA" GROUP BY "foo.tableA.A2"` 0AF00 ("aggregate group key
+  \"A2\" has no resolved exact Value"), `SELECT "foo.tableA.A2", COUNT(*) ... GROUP BY "foo.tableA.A2"`
+  42703, and the alias form `SELECT t."foo.tableA.A2", SUM(t."foo.tableA.A1") FROM "foo.tableA" AS t
+  GROUP BY t."foo.tableA.A2"` 42703 ("T.foo.tableA.A2"); only ORDER BY plans. The index DDL
+  `create index ... as select sum("foo.tableA.A1") ... group by "foo.tableA.A2"` fails the same way
+  (WS-J oracle run `valid-identifiers.yamsql:23{index:"foo.tableA.idx2"}`). Cause: the single-source
+  qualifier strip (`buildSelectShell`'s and `visitSelectGroupBy`'s `strip`) tests the display TEXT for
+  the table's name plus a dot, so a single identifier whose text begins that way is "unqualified" to
+  its last dotted part; the same `strip` feeds the aggregate operands, projection names, output slots
+  and ORDER BY (`logical_builder.go:86,132,137,176,203,714,726,785`, `plan_visitor.go:1372,1617,1651`),
+  and later consumers re-split dotted display text. `stripGroupKeyLeadingSegment` is fixed (a key
+  with segments strips only by its segments, `TestGroupKeyStripDecidesBySegments`), which lets the index
+  DDL above build; the queries still fail, and the rest is the fix: decide every
+  strip from the reference's segments, never its text, and pin the four queries above plus
+  valid-identifiers.yamsql's aggregate queries (lines 341-347, 378, 402). Query-engine front end:
+  Graefe review. Reachable before RFC-257 (no enum is involved); surfaced when WS-J step 5 let the
+  valid-identifiers template build.
+
+- [ ] **The Go record layer cannot read a record Java wrote through TransformedRecordSerializer (found
+  2026-09-26, measured; wire-compat hard line).** Java's relational layer stores every record through
+  `StoreConfig.DEFAULT_RELATIONAL_SERIALIZER`, a `TransformedRecordSerializer` compressing by default
+  (`COMPRESS_WHEN_SERIALIZING`): a record behind a varint prefix whose low three bits are the type
+  (`PREFIX_CLEAR` 2, `PREFIX_COMPRESSED` 4, `PREFIX_ENCRYPTED` 1, both 5) and whose rest is the key
+  number (`TransformedRecordSerializerPrefix.java:68-110`), then a compressed or encrypted body
+  (`TransformedRecordSerializer.java:240-320`). MEASURED (conformance "WS-J enum columns written and
+  read by both engines", log `/var/tmp/fdb-upgrade-recovery/scratch-dsn/enum-rt3.log`): a four-byte
+  record Java's relational store wrote is `02` + the message. Go has no reader for the prefix
+  (`git grep -il 'TransformedRecordSerializer\|PREFIX_CLEAR' -- '*.go'`: no file; control: the same grep
+  for `RecordSerializer` finds the Java-named Go types), so the first byte parses as protobuf field 0 and
+  the record is unreadable; a Java core application that compresses or encrypts is equally unreadable to
+  Go. The other direction holds: Java's `decodePrefix` treats a bare message (its first byte a
+  length-delimited field, type bits 2 with a nonzero rest) as unprefixed (`:81-83`), so Java reads what
+  Go writes. Work: port the reader (clear, compressed: version byte, decompressed length, inflate;
+  encrypted: the `TransformedRecordSerializerJCE` key manager contract) into `pkg/recordlayer`'s
+  serializer, pinned against Java-written clear, compressed and encrypted records; the writer (so a Go
+  store configured like Java's compresses) with it, byte-identity of compressed bodies being out of reach
+  across deflate implementations and mutual readability the contract. The Go SQL driver adopting Java's
+  store configuration belongs with F11 ("Go SQL driver stores the relational catalog and user schemas on a
+  Go-only keyspace"), whose migration this reader is a precondition of. The enum spec above asserts the
+  prefix and compares messages; it reddens when this lands.

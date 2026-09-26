@@ -25,7 +25,7 @@ func TestFDB_SelfJoinChainProbe(t *testing.T) {
 			"CREATE TABLE emp (id BIGINT, mgr BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX emp_mgr ON emp (mgr)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_selfchain/s WITH TEMPLATE selfchain")
-	dsn := fmt.Sprintf("fdbsql:///testdb_selfchain?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_SELFCHAIN?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -1,0 +1,34 @@
+**ACK — WS-C design authorization only.** This does not accept an implementation or the whole upgrade.
+
+Exact current [design](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-c-design.md) SHA256, repeatedly verified with `sha256sum`:
+
+`302335e70765e7ab84674aeb88233348fc5f53be7336f8a006bd8a9652aab5dc`
+
+I read the complete current and frozen v2 designs, preceding storage verdicts, parent WS-C, retained oracle evidence, and relevant Java/Go source. Only the stated atomicity section changed from v2. Inspected Java sources match `fdacd162a9c8acfadc49082b89185c823ab8ae4a`; inspected Go integration files match accepted tree `48b50548b11a53bd1452a627689c440535a3d093`. HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`. This turn’s session metadata confirms **gpt-6-astra / xhigh**.
+
+**Required design corrections: none. No new actionable design defect found.**
+
+The [new protocol](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-c-design.md:253) closes v2’s in-flight enqueue race. The existing [transactionIndexStateView](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:287) supplies one store-scoped authority across handles. Holding its maintenance read lock from authoritative dispatch through enqueue, and its write lock from validation through publication, gives the necessary ordering: writer-first leaves buffered work that prevents readability; setter-first forces subsequent dispatch through ordinary maintenance.
+
+The lock discipline is implementable against the inspected call graph:
+
+- Handle `stateMu` precedes maintenance, then short-lived registry/view/version locks.
+- Maintainer callbacks retain lower-level state reads: [currentIndexState](/home/birdy/projects/fdb-go/pkg/recordlayer/index_maintainer.go:632) reenters the view, explaining why its mutex cannot span maintenance.
+- [Context clears](/home/birdy/projects/fdb-go/pkg/recordlayer/database.go:1002) retain lower-level locking without recursively entering maintenance; [reload](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:1890) takes maintenance before registry/view locks.
+- Already-locked transition helpers avoid recursive `stateMu`; deferred overflow executes after the read gate, consistent with [commit-check execution outside registration locks](/home/birdy/projects/fdb-go/pkg/recordlayer/database.go:1094).
+
+The deterministic barrier obligations cover both schedules, one/two handles, batch and DELETE_WHERE dispatch, and READABLE/READABLE_UNIQUE_PENDING. These remain implementation acceptance gates.
+
+Previous findings retain sound dispositions:
+
+- **Buffered mutations:** registry inspection plus the new atomic interval closes both completed and in-flight enqueue cases.
+- **Legacy heartbeat migration:** enforced operational quiescence, restart fencing, fail-closed legacy-key preflight and administrative cleanup address Java’s [UUID decoding before age checking](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexing/IndexingHeartbeat.java:101).
+- **Terminal cleanup:** independent bounded cleanup of this session on every exit, original-result preservation and lease fallback remain explicit.
+- **Split/wire contracts:** fetch-before-check, repeated lookahead-byte accounting, continuation boundaries, reason precedence, throwing limits, exact-row termination, Any validation and closed-enum duplicates remain consistent with inspected sources and retained oracles.
+- **Retry/session lifetime:** one retry owner, fresh attempt contexts, commit-bound continuation, final-empty commit, stable UUID and 100 retries/101 consecutive attempts match the [Java failure handler](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/runners/throttled/ThrottledRetryingIterator.java:268).
+
+Direct queued-setter guards, vector callback enforcement, scoped sliding predicates, mixed fresh eligibility/mixed-resume rejection, snapshot conflicts, ownership aborts, deletion cleanup and corrected parent closeout remain adequately dispositioned.
+
+Retained evidence confirms **three oracle specs: eight split cases, 15 envelope cases, three skips**, plus **93/93 targets passed, three executed/90 cached**. I ran no tests. Lucene remains unresolved; GuardiANN belongs to WS-D; SPFresh remains queue-unsupported, with paper correctness outside this review.
+
+No edits, git mutations, publication, or delegation performed.

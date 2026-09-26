@@ -1,0 +1,102 @@
+**NAK.** Tree `0a7977fc48e0e10f8ee52f4c04deabf4d94ac73c`; `ws-d-design.md` SHA256 `1f0fd83139e31f2efb4943711398f7ca9046fd695bd626424e6d247f30fff1f2`. I recomputed the hash with `git show TREE:path | sha256sum` and it matches.
+
+**What I checked:**
+- **Read in full:** all four v5 verdicts, the whole v6 design and the v5→v6 diff, the oracle README, both evidence files, the Java probe's inline and refit steps, and the Go spec's golden values.
+- **Evidence hashes:** I recomputed all four source hashes in `evidence-run.txt` and they match. The run shows 9 of 1532 specs, all passing.
+- **Java version:** `fdb-record-layer/.git/HEAD` is `fdacd162`.
+- **Source delta:** from `f0cb2957` to this tree, `-- pkg gen proto cmd .github conformance` shows only the oracle files and the watcher removal.
+- **Nothing run or changed:** no tests or edits.
+
+## P1 — Step 2 can be reached on ordinary data, and in inline mode it leaves an oversized cluster with no bound (design:743-755)
+
+**The design's claims:**
+- Step 2 needs "coordinate-identical vectors whose stored bytes differ" (:750-753).
+- Each re-armed task runs "at bounded cost" (:747-748).
+- Inline mode keeps no cap (:749-750).
+
+**Two counterexamples that reach step 2 with distinct vectors:**
+- **A legal knob.** Java allows `minChildFraction` up to 0.5 (`Config.java:207`) and does not let it change (`GuardiannVectorIndexEngine.java:403`).
+  - At 0.45, a cluster with a natural 60/40 structure fits 60/40. The 40% child is then the whole outlier set.
+  - The refit splits the 60% mass roughly 30/30. Re-homing the 40% gives about 70/30, which is INVALID, so step 2 runs.
+- **Two outliers on opposite sides.** 18 tight vectors at 0, B at +10, O at −100; n=20, so the child gate is 2.
+  - The 1→2 split isolates O (19/1). The refit on the remaining 19 isolates B.
+  - O re-homes to the core centroid (distance 100 against 110). The result is 19/1, INVALID, so step 2 runs.
+
+**What happens in inline mode:**
+- Step 2 clears SPLIT_MERGE while the cluster is still oversized. The next insert re-arms a split (`Primitives.java:1161-1165`).
+- The next inline head task repeats the full split evaluation, the refit, and step 2's serializable read of every reference and its PK metadata.
+- With no cap, the posting, the per-insert work and the conflict range all grow without bound.
+- It ends in retryable FDB errors (1007/2101) on every partition write that runs that task. Java fails that insert immediately with a non-retryable exception.
+- This breaks SPANN's bounded posting length. "Bounded cost" holds only in deferred mode.
+
+**Needed:**
+- Either make step 1 repeat the outlier exclusion (with a stated bound) until both refit children pass the gate or the mass is coordinate-identical, or measure the real residue and restate it.
+- Bound inline growth for clusters step 2 leaves oversized, for example keyed to that state (above max, SPLIT_MERGE and COLLAPSE both clear). Prove the bound cannot fire in the measured healthy inline scenarios.
+- Add oracle and Go fixtures for both shapes in both modes.
+
+## P2 — The task-kind check runs before the consumer, so the "parity" rows contradict the measured golden (design:187-202, 219-220, 252-254)
+
+- **The rule as written:** the capability predicate runs "before a fetched task is removed" and before the inline task. But Java commits real work before those consumers:
+  - split phase 1 re-enqueues the task with its neighbours (`SplitMergeTask.java:232-236`);
+  - the split/merge false alarm clears state (`:180-187`);
+  - collapse has benign no-ops (`CollapseTask.java:151-158`), and its consumer comes later (`:180-182`).
+- **What the golden shows:** `KMeansMaxIterations=0` gives `drain=1then…kMeans:1108` and `shrink=ok drain=1` (evidence-run:78; the restart and metric rows match). Design :195-196 even says the rules must reproduce this.
+  - A refusal before removal gives drain=0 and never consumes the false alarm.
+  - Go's insert admission refuses inserts under those settings, so this bites on Java-populated indexes, which is the shared-cluster case.
+- **Collapse is reachable in pure Go.** `collapseConcurrency` can be changed, so a stale collapse task blocks the head of the queue where Java consumes it as a no-op.
+- **RaBitQ claim is false for the same paths.** "Every task kind constructs the quantizer" (:252) misses the false-alarm and no-op exits, which run before `quantizer(...)` (`SplitMergeTask.java:227/430`, `CollapseTask.java:171`). Refusing before the claim blocks tasks Java completes, and that difference is not declared.
+- **Bounce is real parity:** its `forEach` is the first statement (`BounceTask.java:130`).
+- **Needed:**
+  - Check throwing kinds and RaBitQ at the consumer or quantizer site, as the deleteConcurrency row already does.
+  - Keep livelock kinds at classification.
+  - Qualify "byte-for-byte unchanged" (:314-316): with this fix a refused merge commits a lease claim, exactly as Java's does.
+
+## P3
+1. **mergeNumNearestClusters cannot be repaired.**
+   - It cannot be changed (engine :433), so "repairable by evolving the mutable knobs" (:236-237) is false for it.
+   - A refused merge task is never removed. It eventually reaches the head of the queue and blocks every later split, so only a rebuild or clear fixes the index.
+   - Declare this under (c).
+2. **"Operation order in Go is the target's" (:438-440) is not literal.** Java writes tag-5 (`Insert.java:293`) before the routing collect (:295); Go moves the write after routing in both modes. Bytes are unaffected, but say so, and state that the identity UUID draw keeps its order.
+3. **Dangling reference.** Section 5 never defines the "section-5 follow-up refresh" (:558-559). Name `refreshFollowupHeartbeats` (`online_indexer_queue.go:325`; merge precommit at `indexing_merger.go:39-41`).
+4. **Inline delete is unmeasured.** Oracle item 8 covers inserts only, yet (d) claims measured or fixture-pinned target behaviour. Add it to the list at :650-657.
+5. **The refit probe measures less than the design implies.** It scores against a stand-in current partition (`guardiann_probe_conformance.java:412-413`), not `scoreCandidate`'s real inner cluster, and it never materialises the split. Only "not INVALID" carries over; KEEP versus ACCEPT does not.
+6. **Replay wording conflicts.** :124 puts scan continuation under the engine guard; :173 says replay is "never refused". Limit :173 to capability rules.
+7. **Outside WS-D:**
+   - `TODO.md:8289` and `:8321` still describe the watcher as in flight, and `rfcs/242…:3096` still calls `rowdiff_watcher_suite.sh` a committed suite.
+   - The new entry calls them "superseded" instead of correcting them in place, which breaks the grep-to-zero rule for superseded claims.
+
+## Closed from v5
+- inline cap and operation order
+- admission refusal moved to the task kind (placement wrong only for throwing kinds, P2)
+- insert refusal limited to knobs that cannot change
+- deleteConcurrency checked at Java's point
+- poison scope and key
+- replay not refused
+- sliced heartbeat wait with a cap
+- progress baseline and drain stop
+- reconcile lowering the count
+- the empty-cluster qualification
+- the join error rule
+- the balanced-split finding, which the refit answers
+- evidence hashes in the tree
+
+Preserved boundaries hold.
+
+## Measured vs. still hypothesis
+- **Measured:**
+  - the hash formula;
+  - both split stalls;
+  - queue stranding;
+  - deferred backpressure;
+  - the knob map in deferred mode;
+  - inline insert behaviour: no cap, the unsplittable cluster, and each task kind;
+  - the λ-penalty KMeans failing;
+  - the refit being usable, for single-outlier 10+1 and 20+1 only.
+- **Still hypothesis:**
+  - the step-2 residue claim, which P1 argues is false;
+  - inline deletes;
+  - the refit materialised through `SplitMergeTask`;
+  - the stale-inflated cluster, empty core, vanished neighbours, n<k and rollback shapes;
+  - deletes and merges under trained 9 extra bits;
+  - build-range stranding;
+  - the four conditional corrective contracts.

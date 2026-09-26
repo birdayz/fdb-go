@@ -1,0 +1,80 @@
+**NAK.** Revision 14 fixes everything the v13 gate raised, but it leaves six Low findings: two are gaps in the save-path logic, and the other four are claims or evidence that say more than the code or the runs do.
+
+I reviewed commit `1bc97d6af`. The design file `ws-c-design.md` has SHA256 `d907dee2e0ae6ae832a0b38d92e24175d8010e432fbb9992a1e6c54bce4baed2` and 2530 lines; I recomputed both from the commit object and they match. The review was read-only. The policy refused `git diff` and `git grep`, so I read the delta with `git show`. For a few searches I used the working tree; its HEAD `f53cd6fc6` differs from the commit only in `CLAUDE.md` and the umbrella RFC. Anything not marked **measured** comes from reading source.
+
+## v13 findings: all resolved or answered, nothing from revisions 12–13 undone
+- **Graefe:**
+  - Medium 1 (global cache): fixed. `reachesMap` is computed once per record type at `Build` (`metadata.go:1246-1249`), and the reach memo lives for one walk only.
+  - Low 2 (re-save reordering a map): fixed by `marshalMapRecord`. The JVM spec is red on the old tree at `:486` with `{1:[a b], 3:[j k]}` (**measured**).
+  - Low 3 (required fields): fixed. A vtproto message is marshalled with `AllowPartial`, and map entries are parsed partially (`:268`).
+  - Low 4 (unmarked sentences): markers are now at `:2092`, `:2210` and `:2302`, and the substring checks were replaced by whole-text checks.
+  - Nits: fixed.
+- **Torvalds:**
+  - Finding 1 (VECTOR parse): fixed. 7 option rows are red on the old tree (**measured**).
+  - Findings 3–5: fixed.
+  - Finding 6 (red run crashed): fixed. The red run now completes: 3725 of 3726, 2 red, no panic (**measured**).
+  - Citations: correct at `FDBRecordStore.java` 5062, 5065, 5091, 5098 and 5137.
+  - Typed-store copies: all 4 carry the wire.
+  - Preset nit: its new JVM spec found a real bug.
+- **Checked against Java:**
+  - The preset condition matches `OnlineIndexer.java:302-314` and `IndexingMultiTargetByRecords.java:120`.
+  - `removeCommonEntries` removes shared entries as a set, as Java's `removeAll` does.
+  - The raw-bytes build assertion is still in place.
+
+## Findings (all Low, most severe first)
+
+**1. The validator and the VECTOR maintainer now read the same options differently.**
+- The validator uses Java's parsers (`vector_index_validation.go:53,77,90`).
+- `parseHNSWConfig` still uses `fmt.Sscanf("%d")`/`("%g")` and silently falls back to a default (`vector_index_maintainer.go:142,179,185,206`). The meta-data evolution check uses it too (`metadata_evolution_validator.go:1044`).
+- Revision 14 therefore turns inputs Go used to refuse into inputs it accepts but misreads:
+  - `hnswNumDimensions="３"` means 3 in Java; Go's maintainer uses 128.
+  - `hnswM="８"` means 8 in Java; Go uses 16.
+  - An evolution from `"８"` to `"16"` looks unchanged to Go.
+- The JVM rows cannot show this: every value they accept equals Go's default (M `16`/`１６`/`+16`; probability `0.5`/`0.5d`/` 0.5 `/`.5`; conformance `:975-987`).
+- 7.14's "parse as Java's `VectorOptionKey` parses them" is true of the validator only.
+- **Fix:** have `parseHNSWConfig` use `javaParseInt`/`javaParseDouble`, and add a row with a non-default spelling only Java accepts that checks the resulting config value.
+
+**2. The re-save looks for the old bytes only under the preferred union field.**
+- `store.go:2168` calls `unionInner(prior, recordType.unionFieldNumber)`.
+- `fnToRT` (`metadata.go:1263-1267`) decodes a record stored under any union field of its type.
+- So a record stored under an older union field of its type is re-saved in key order, and the stale covering value from v13 Graefe 2 can come back.
+- **Fix:** take the inner bytes of whichever union field the old record decoded from.
+
+**3. The path keys can collide, and a twice-written key merges its nested orders.**
+- `record_wire_map_order.go:374,457` format a string key with `%v`, unescaped.
+- In `google.protobuf.Struct` (the type 7.14's own FDB spec uses), the top-level key `a}/5/1{b` yields the same path as key `a` → `b` → nested map. The two maps' orders merge, and one is re-saved out of its stored order.
+- For a key written twice with a message value, the nested orders are merged, first seen first. Both decoders keep only the last value, so its map can be reordered.
+- **Fix:** quote string keys (`%q`), and reset the nested orders when a key repeats.
+
+**4. The tests pin less than the claims say.**
+- `TestSerializeUnionOverKeepsTheStoredMapOrder` (`:329` "nested maps too") and 7.14 ("pins each case") cover only the top-level map `m` and the repeated field `h`.
+- No re-save test covers a map inside a singular message or inside a map value (`:374/:386`, `:457/:471`). The Struct spec never re-saves, and the JVM re-save uses top-level maps only.
+
+**5. "Java's text" is not true for every refusal.**
+- For a second decimal point (`"1.2.3"`), JDK FloatingDecimal throws "multiple points" (from JDK source, not in the repo). `javaParseDouble` (`java_parse.go:170-175`) returns `For input string: "1.2.3"`.
+- 7.14, DIVERGENCES and the test comment all claim Java's text.
+- `expectWindowedVerdictAsJava` (`:1076`) compares only the top-level class and message, so the cause's text is never measured against Java.
+
+**6. Evidence (measured):**
+- **The green runs are the pre-commit hook's, not runs after the commit.**
+  - 7.14 says they were "run after the commit, on a clean tree", with TREE showing HEAD. They are the pre-commit hook's logs (`console.txt:1`).
+  - TREE records HEAD `f53cd6fc6`, whose tree `dd34eed9` is not `1bc97d6af`'s (`e0af812d`).
+  - The tie to the commit rests on the TREE note. It is plausible, since `f53cd6fc6` changes only `CLAUDE.md` and the umbrella RFC.
+- **The new JVM specs are green only by count.**
+  - The green conformance log has no MAPWIRE, PRESET or WINDOWED lines; the red log has them, which confirms the search works. They show only as "1669 Passed, 0 Failed". This is the same gap v13 flagged.
+- **Java never reads the re-saved bytes.**
+  - The spec compares Go's maintained index with a Go build (`:512`), so Java's index over those bytes is inferred, not measured.
+
+## Nits
+- `oneofSurvivors` (`:176-178`) treats an occurrence with the wrong wire type as a switch of member. Both decoders keep such an occurrence as an unknown field. Only raw bytes produce it, and the read falls back to key order.
+- The preset spec's name and comment (`:1109-1111`: "string-keyed", "Go gave up on a non-integer key") describe revision 13's defect, but both rows, including the integer key (`<nil>`), are red because of the single-target preset.
+
+## Measured
+- Green (hook): `recordlayer_test` ran 3725 of 3726, all passed; `conformance_test` ran 1669 of 1788, 0 failed; the rfc257 oracle ran 64 of 64. "Executed 53 out of 94 tests: 94 tests pass."
+- The new unit tests passed by name.
+- Red:
+  - On the Go side, the disjunction class spec and `TestGetTypedRecordStore_InvalidType`.
+  - On the JVM, 11 specs: the re-save, both preset rows, the disjunction row and 7 option rows. This matches 7.14.
+- The red TREE's index tree `705f3aee` is `529753bf6`'s tree.
+
+The preserved boundaries are untouched.

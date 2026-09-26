@@ -1,9 +1,7 @@
 // frl — operator and developer CLI for the Go Record Layer.
 //
-// Lives in its own Go module (separate `go.mod`) so library consumers of
-// fdb.dev do not inherit the CLI's deps
-// (cobra, fang, protoconfig). A root `go.work` at the repo root ties the
-// two modules together for local development.
+// A package of the root module fdb.dev, so `go install fdb.dev/cmd/frl@vX.Y.Z`
+// builds it at the project's release tag.
 package main
 
 import (

@@ -1,0 +1,41 @@
+**NAK — IMPLEMENTATION CODE** at tree `8d3544bffc4d5b322626616a3051b39fb8b2584a`.
+
+Two source-derived holes remain. Neither reproducer was executed during this read-only review.
+
+1. **P2 — Lifted UNION duplicate validation still disappears when the left projection is elided.**
+
+   With ordinary, non-version-storing `t(id, v)`:
+
+   ```sql
+   SELECT * FROM t
+   UNION ALL SELECT id, v FROM t
+   ORDER BY id, id
+   ```
+
+   Bare-star projection elision is intentional in [plan_visitor.go:2070](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/plan_visitor.go:2070) and [logical_builder.go:777](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_builder.go:777). Consequently, [logical_predicate.go:7326](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:7326) returns before the newly added duplicate validator at line 7395. Both catalog constructors bypass the required `42701`; downstream unresolved-sort rejection cannot substitute for that diagnostic. Java validates these repeated names in [SemanticAnalyzer.java:347](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/SemanticAnalyzer.java:347).
+
+   **Required fix:** resolve against the UNION’s complete output contract even without a `LogicalProject`, then validate duplicates. Add both-constructor bare-star cases for repeated valid names, missing-name precedence, and distinct-key success. Moving duplicate checking ahead of resolution would reintroduce the precedence defect.
+
+2. **P2 — Source-wide qualification misses an unqualified attribute inside a named operator.**
+
+   For `t.items` a struct array whose members exclude `X`:
+
+   ```sql
+   SELECT x, 99 AS x
+   FROM t, t.items AS x
+   ORDER BY x, x
+   ```
+
+   Java explicitly prepends an **unqualified whole-struct ephemeral expression** named `X` after qualifying the operator’s ordinary members: [LogicalOperator.java:346](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/LogicalOperator.java:346). Both selected outputs therefore participate in alias lookup, producing `42702 / Ambiguous alias X`.
+
+   Go already publishes that whole-object attribute at [logical_predicate.go:1862](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:1862), but [the new eligibility check:3179](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:3179) discards the resolved column and consults only `source.UnqualifiedOutput`. The named unnest source leaves that flag false. Go therefore counts only the constant alias and reaches `42701` instead.
+
+   **Required fix:** preserve qualification per resolved output attribute, including this whole-object alias, while retaining qualification on ordinary members. Add both-constructor collision/precedence tests and an exact Java probe with member controls.
+
+The unnamed-VALUES and alias-before-star repairs otherwise address the cited failures. I reviewed the complete delta, frozen additions, prior NAKs/prompts, and corresponding Java source. All **6,426 frozen hashes** match the candidate and workspace. The **43 Java records**, four reconstructed mutation hashes and compiled assertion failures, and **9,342 RUN/PASS entries across four uncached targets** reconcile. The single golden-line correction has exact-message evidence; Java refusals remain separate from approved Go extensions.
+
+**Outstanding verification gates:** the single inspected snapshot credits fuzz **30 seconds / four workers / 3,573,069 executions**. Full93, race15, `just test`, and nominal1M ABBA remain uncredited. Repairs require refreezing and verification; earlier full runs do not verify this tree.
+
+Launch metadata confirms **gpt-6-astra / xhigh / read-only**. HEAD remains unchanged. No edits, builds/tests, agents, worktrees, Git mutations, or GitHub contact occurred.
+
+WS-B–K remain open; storage scope ACK, FDB C++ **7.3.77**, and approved extensions stand. LegacyRaBitQ disable/rebuild remains prerequisite. Bounded GRV/RPC attribution stands; universal parity and historical startup-timeout causation remain unestablished. No commit/push/merge authorization; PR786 remains draft under unchanged publication restrictions.

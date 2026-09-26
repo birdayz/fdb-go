@@ -24,6 +24,7 @@ go_library(
         "parsetree.go",
         "resultset.go",
         "row.go",
+        "schema_exists_behavior.go",
         "sqltypes.go",
         "struct.go",
         "transaction.go",
@@ -31,7 +32,10 @@ go_library(
     ],
     importpath = "fdb.dev/pkg/relational/api",
     visibility = ["//visibility:public"],
-    deps = ["@org_uber_go_mock//gomock"],
+    deps = [
+        "//gen",
+        "@org_uber_go_mock//gomock",
+    ],
 )
 
 go_test(

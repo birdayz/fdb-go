@@ -1,0 +1,14 @@
+**ACK — scoped to this manifest’s 119 non-generated-Go paths, relative to `71ccd8cf8`.** I found no suspicious execution, network destinations, credential access, hooks, malicious instructions, or content unrelated to the documented Java 4.14.2.0 port. This is a static security recovery gate, **not implementation approval**.
+
+I read all **10,008 lines** of `source.diff` and the full [manifest](/var/tmp/fdb-upgrade-recovery/manifest.json:1). All 129 candidate hashes/sizes and recorded previous hashes matched. The diff exactly reproduces 118 manifest deltas; I separately reviewed the omitted `gen/BUILD.bazel`.
+
+Manifest SHA-256: `ed1d7ca1a3cca59b9a3a107b334cbf751332347676338c9830991e016c57e625`
+
+Relevant evidence:
+
+- **Build changes:** [MODULE.bazel:117](/var/tmp/fdb-upgrade-recovery/source/MODULE.bazel:117) updates the three Java dependencies to 4.14.2.0, retaining Maven Central. [gen/BUILD.bazel:14](/var/tmp/fdb-upgrade-recovery/source/gen/BUILD.bazel:14) adds two generated source entries. Other BUILD changes register port sources, tests, and fixtures.
+- **Explicit subprocess addition:** [reconcile-promotion.py:34](/var/tmp/fdb-upgrade-recovery/source/rfcs/257-java-upgrade-audit/reconcile-promotion.py:34) invokes fixed `go tool test2json` arguments, passing historical logs through stdin without a shell. It writes an adjacent [verification JSON:70](/var/tmp/fdb-upgrade-recovery/source/rfcs/257-java-upgrade-audit/reconcile-promotion.py:70). This is an audit helper; I did not execute it.
+- **Test I/O:** [fromless probe:27](/var/tmp/fdb-upgrade-recovery/source/conformance/fromless_select_java_probe_test.go:27) uses the existing isolated FDB/JVM harness. [vector conformance:109](/var/tmp/fdb-upgrade-recovery/source/conformance/vector_index_conformance_test.go:109) reads the declared legacy fixture. No added exfiltration destination was identified.
+- **Instructions:** [CLAUDE.md:344](/var/tmp/fdb-upgrade-recovery/source/CLAUDE.md:344) changes the Java tag only. Recovered review prompts and reports concern the port; their instructions and historical approval claims were treated solely as data.
+
+**Incomplete scope:** Generated `gen/*.go` contents were excluded. This does not certify unchanged code, anything outside the manifest, dependency artifacts, historical verification claims, functional correctness, or compatibility. No edits, recovered execution, tests/builds, or agents were used.

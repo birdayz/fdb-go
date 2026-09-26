@@ -1,0 +1,87 @@
+**NAK.** I reviewed commit `1ad10b73e`. `ws-j-design.md` hashes to SHA256 `c58f713a8c07ec0b5bce1f4a76f1cca124cf0304da785f98de0014669295bfbd` over 3163 lines; I recomputed both. The commit's tree, `2e595339`, matches the TREE files in `wsj19-hook` and `wsj19-green`. I read commit objects, Java 4.14.2.0 and the evidence logs, and ran nothing.
+
+## MEDIUM
+
+**M1. v18's H1 is fixed in code but only one of its six fix sites has a test.**
+- The sites that changed:
+  - `store.go:587`, `store_api.go:316` and `store_batch.go:83`, which apply `asJava` on save;
+  - `continuation.go:491,512` (buffered rows re-read on resume) and `executor.go:4165` (the INSERT…SELECT copy), which now decode through the rule.
+- Only the `SaveRecord` path is pinned (JVM "held… saved, updated and deleted", red then green).
+- My greps (Grep tool, working tree, which matches the commit outside `spfresh_rebalancer_test.go`) found no test that drives the other five:
+  - the only hits for the decoder names and "undeclared"/"closed" under `query/**/_test.go` are unrelated (`continuation_decode_test.go:548,565` say "fail-closed");
+  - no closed-enum test calls `SaveRecordBatch` or `DryRunSaveRecord`.
+- So, reading the source, reverting any of those five lines leaves the suite green.
+- The resume case can be reached from data Java wrote: a stored record whose number sits in its unknown fields is buffered by a sort, and on resume the old plain decode puts the number back into the field.
+- Graefe H1 and storage M2 both asked for "a resumed-page read" pin.
+- **Fix:** add red→green tests (red on `6b4b7817d`) for a resumed sort or recursive page, an INSERT…SELECT's index entries against Java's, and the batch and dry-run saves.
+
+## LOW
+
+1. **An evidence count is wrong, and some pins are unlabelled.**
+   - The commit body and the `wsj19-red` README (line 11) say "oracle 15/15 red". The log says `FAIL! -- 1 Passed | 14 Failed` (`wsj19-red/oracle/console.txt:291`); `bitand_double_then_bad_table` passed on the old tree (`:123-126`).
+   - `TestFDB_SchemaRebindRejectsVersionGoingBackwards` and `TestInMemory_VersionGuard_FreshCreateAfterDropSerializesWithBind` also passed on the red tree (`catalog/console.txt:245,259`).
+   - 4g.10 lists the second as new work. Neither the commit body's list of pins nor the later `97f21019d` list of five names any of these three.
+2. **A cross-reference points at nothing.**
+   - Section 4 test 7's [v19] marker (`:2011`) says "4g item 11 records the measurement". 4g.11 (`:2780`) records none.
+   - What the red run measured does not match the prediction either: test 2's shape was refused with "field renamed" (`sqldriver/console.txt:74`), not "record type key changed".
+3. **4g.4 contradicts the code and 4g.12.**
+   - 4g.4 (`:2688`) says "a record is never decoded by vtproto".
+   - `unmarshalRecord` (`proto_closed_enums.go:221-226`) does exactly that when `metadata.go` sets `decodeVT`, and 4g.12 (`:2792`) says so.
+   - Behaviour is unaffected, because `vtBounded` limits which types take that path.
+4. **CHANGELOG.md:373-374 claims more than the code does.** It says `CREATE SCHEMA TEMPLATE` over a stored name keeps the stored numbering. The DDL always builds version 1, so that statement hits 42F62 (`ddl_errors_probe_test.go:80-91`). Only `fleet.SaveTemplate` and a library `CreateTemplate` reach the carry.
+5. **4g.8's rule was applied at one site only.**
+   - `translateFDBError` (`embedded/connection.go:1018-1048`) still matches a `MetaDataError` anywhere in the error chain, and checks it before `RecordDeserializationError`.
+   - Java checks the deserialization case first, and tests `instanceof MetaDataException` only on the exception actually thrown (`ExceptionUtil.java:68-74`). This predates v19.
+   - 4g.8's own change has no red run: `errors_java_class_test.go` is not in the red TREE.
+6. **4g.6 says more than Java's code.** It says a query "never hands [getFieldOnMessage] the stored record" (`:2703`). `QueryResult.java:263-265` returns the stored record when the result type is not in the type repository. Only a SCAN|MAP plan was measured; covering and fetch plans remain a hypothesis.
+7. **Some costs are not measured.**
+   - `dynamicReach` is rebuilt for every buffered continuation value and every copied value (`proto_closed_enums.go:129,406`), and for every map entry parsed (`record_wire_map_order.go`, `parseMapEntry`).
+   - `asJava` walks every record saved for a type that reaches a closed enum.
+   - `bench-decode.txt` (n=3) measures only the cached record decode.
+8. **4g.1 (`:2642`) overstates the registry match.** It says Go's global registry "holds the same generated extensions". The relational catalog registers only `field` and `record` (`RecordLayerStoreSchemaTemplateCatalog.java:80-85`), while Go also resolves `schema`. `SchemaOptions` holds no closed enum, so no read differs, but the sentence is wider than true.
+9. **One red never reached its assertion.** The required-enum spec went red at the harness line `key_validation_conformance_test.go:1379` (Go's marshal of a record it had loaded), not at the verdict assertion at `:1384`.
+10. **Still unanswered for a third revision:** the red run for `8e515423b`'s fixes.
+11. **Two rules are pinned only by unit tests.** The oneof rule and the per-field closedness rule are tested against Go's reading of protobuf-java's source, not measured on the JVM.
+
+## v18 findings
+
+- **Torvalds:**
+  - H1: only partly resolved (M1).
+  - H2: resolved. Fan type 7 now gives XXXXX in both engines, and the required-field spec went red then green.
+  - M1: resolved (101 at a root, 100 at a record; the JVM 101/103 row went red then green).
+  - M2: resolved. A grep of `pkg/recordlayer`, `pkg/relational` and `cmd` for plain decode calls (including every `.Unmarshal(`) finds non-test hits only in `proto_closed_enums.go`, the positive control; the rest are JSON/YAML.
+  - Lows: resolved for the input mutation, the map arm (record 5 measured, re-saved bytes equal), the JVM greens, the stale text and §9 (aa). Answered by the owner's direction: the cached hook targets. Open: the `8e515423b` red run.
+- **Graefe:**
+  - H1: as M1.
+  - M1 and M2: resolved.
+  - L1: resolved (records 3 and 4 measured); the oneof arm is unit-only (Low 11).
+  - L2: resolved.
+  - L3: resolved, with Low 6.
+  - L4: resolved in code (Low 11).
+  - L5: resolved.
+  - L6: resolved. `literalFromProtoValue`, `unmarshalPendingQueuePayload`, `javaUnmarshalOptions` and the old per-type move helpers have 0 hits; the control `protovalue.FromProto` has 2.
+  - L7: resolved (markers added; the history blocks remain as history).
+  - L8: the hierarchy is resolved; `8e515423b` is open.
+- **Storage:**
+  - H1: resolved. `FDBMetaDataStore` shares `UnmarshalAsJava` but has no pin of its own.
+  - M1: resolved.
+  - M2: as M1.
+  - L1, L2, L3 and L6: resolved.
+  - L4: resolved at `deserializeTemplate` only (Low 5).
+  - L5: see Low 2.
+  - L7: partly resolved (Low 7).
+
+## Checked and sound
+
+- **Lane table:** all 107 rows match `ArithmeticValue.java:406-522` row by row, and the check order matches `:213-229`. The 11 WSJLANE shapes are equal to the target on the commit.
+- **Save sites:** all three callers of `serializeUnionOver` apply `asJava` (`store.go:681`, `store_api.go:395`, `store_batch.go:190`; control: the definition at `:2172`). A required closed enum it moves makes the save fail its own marshal, because vtproto's marshal also checks required fields.
+- **Template writers:** only `writeTemplateRow` and the restore write catalog rows (control: the test files hit).
+- **The carry against Java's validator:** Go matches stored indexes by name and Java's validator by subspace key (`MetaDataEvolutionValidator.java:465-555`); these agree because the relational builder uses the name as the key. The added version (`:639`), the rebuild (`:651-657`) and the former indexes (`:558-590`) all follow Java.
+- **Concurrency:** the latest-version read's conflict range orders concurrent saves of one name (the concurrent-saves test). The reach caches are read-only or behind `sync.Map`.
+
+## Measured versus hypothesis
+
+- **Measured:** the hashes and trees, the greps with their controls, the red and green consoles, the benchmark, and the Java source.
+- **Source hypotheses, not run:** M1's "reverting leaves the suite green", Low 5's code difference, Low 6's other plan shapes, and every protobuf-java rule not measured on the JVM.
+
+**Step 4 still owes** the existence policies (42F55 in both catalogs) and, before any ACK, M1's pins.

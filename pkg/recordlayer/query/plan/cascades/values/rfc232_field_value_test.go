@@ -738,7 +738,9 @@ func TestRFC232FieldValueProtoEvaluationUsesDeclarationOrdinalsAndCanonicalConve
 		want    any
 	}{
 		{0, int64(73)},
-		{1, int64(41)},
+		// Unset, with a declared default of 41: a query reads NULL, as Java's
+		// does (ProtoFieldReadsValue).
+		{1, nil},
 		{2, []any{"a", "b"}},
 		{3, int64(1)},
 	}

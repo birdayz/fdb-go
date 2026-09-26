@@ -55,7 +55,7 @@ func openFullJoinDB(t *testing.T) *sql.DB {
 		"CREATE TABLE b (id BIGINT, k BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_fulljoin_decomp/s WITH TEMPLATE fjd_t")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///testdb_fulljoin_decomp?cluster_file=%s&schema=s", clusterFilePath))
+		fmt.Sprintf("fdbsql:///TESTDB_FULLJOIN_DECOMP?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

@@ -38,7 +38,8 @@ var _ = Describe("KeyExprBugVerify", func() {
 
 	// Bug 2: FieldKeyExpression nil message must respect FanType.
 	// Java's getNullResult() for the default NullStandin.NULL (what
-	// Key.field(name, fanType) uses; Go does not model NullStandin):
+	// Key.field(name, fanType) uses; the other standins are pinned in
+	// key_expression_null_standin_test.go):
 	// FanOut → empty, Concatenate → [[null]] (scalar(nullStandin) → tuple
 	// null 0x00), None → [[null]]. The empty-NESTED-tuple form (0x05 0x00) is
 	// Java's NOT_NULL branch / the present-but-empty repeated case, NOT the

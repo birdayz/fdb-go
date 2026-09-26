@@ -60,7 +60,7 @@ func unwrapContinuation(rawBytes []byte) []byte {
 		return nil
 	}
 	msg := &gen.KeyValueCursorContinuation{}
-	if err := msg.UnmarshalVT(rawBytes); err != nil {
+	if err := UnmarshalVTAsJava(msg, rawBytes); err != nil {
 		// Parse failed — treat as old-format raw bytes. This restart-free
 		// tolerance is Java-verified, NOT the swallow-and-restart bug class:
 		// KeyValueCursorBase.Continuation.getInnerContinuation
@@ -343,7 +343,7 @@ func (c *keyValueCursor) readNextRecord(ctx context.Context) (*FDBStoredRecord[p
 			if pkErr != nil {
 				return nil, nil, fmt.Errorf("failed to unpack primary key: %w", pkErr)
 			}
-			recordType, protoMessage, deserErr := c.store.deserializeAndDiscover(kv.Value)
+			recordType, protoMessage, wire, deserErr := c.store.deserializeAndDiscover(kv.Value)
 			if deserErr != nil {
 				return nil, nil, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: deserErr}
 			}
@@ -358,6 +358,7 @@ func (c *keyValueCursor) readNextRecord(ctx context.Context) (*FDBStoredRecord[p
 				PrimaryKey: primaryKey,
 				RecordType: recordType,
 				Record:     protoMessage,
+				wire:       wire,
 				Version:    version,
 				Store:      c.store,
 				KeyCount:   1,
@@ -527,7 +528,7 @@ func (c *keyValueCursor) readNextBareRecord(ctx context.Context) (*FDBStoredReco
 	if pkErr != nil {
 		return nil, nil, fmt.Errorf("failed to unpack legacy primary key: %w", pkErr)
 	}
-	recordType, protoMessage, deserErr := c.store.deserializeAndDiscover(kv.Value)
+	recordType, protoMessage, wire, deserErr := c.store.deserializeAndDiscover(kv.Value)
 	if deserErr != nil {
 		return nil, nil, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: deserErr}
 	}
@@ -539,6 +540,7 @@ func (c *keyValueCursor) readNextBareRecord(ctx context.Context) (*FDBStoredReco
 		PrimaryKey: primaryKey,
 		RecordType: recordType,
 		Record:     protoMessage,
+		wire:       wire,
 		Version:    version,
 		Store:      c.store,
 		KeyCount:   1,
@@ -676,7 +678,7 @@ func (c *keyValueCursor) readSplitRecord(
 		data = append(data, chunk.value...)
 	}
 
-	recordType, protoMessage, err := c.store.deserializeAndDiscover(data)
+	recordType, protoMessage, wire, err := c.store.deserializeAndDiscover(data)
 	if err != nil {
 		return nil, nil, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: err}
 	}
@@ -692,6 +694,7 @@ func (c *keyValueCursor) readSplitRecord(
 		PrimaryKey: primaryKey,
 		RecordType: recordType,
 		Record:     protoMessage,
+		wire:       wire,
 		Version:    version,
 		Store:      c.store,
 		KeyCount:   len(chunks),

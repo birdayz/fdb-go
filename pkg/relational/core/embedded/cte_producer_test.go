@@ -118,6 +118,58 @@ func TestRetainedRecursiveCTEReusesPreparedSeed(t *testing.T) {
 	}
 }
 
+func TestRecursiveCTEMainScopePublishesCommonRow(t *testing.T) {
+	t.Parallel()
+	owner, _ := clauseTestOwner(t)
+	visitor, err := owner.newSubqueryVisitor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := parseQueryFromSelect(t, `WITH RECURSIVE counter(n) AS (
+		SELECT 1 AS n UNION ALL SELECT n + 1 FROM counter WHERE n < 5
+	) SELECT n, SUM(n) AS s FROM counter WHERE n > 1
+	GROUP BY n HAVING SUM(n) > 0 ORDER BY n DESC`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := visitor.VisitQuery(parsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	declaration := plan.(*logical.LogicalCTE)
+	var aggregates int
+	var walk func(logical.LogicalOperator)
+	walk = func(op logical.LogicalOperator) {
+		if agg, ok := op.(*logical.LogicalAggregate); ok {
+			aggregates++
+			for name, value := range map[string]values.Value{
+				"group key":   agg.GroupKeys[0].Value,
+				"sum operand": agg.AggregateOperands[0],
+			} {
+				if value == nil || !value.Type().Equals(values.NullableInt) {
+					t.Fatalf("%s = %v, want the completed recursive producer's nullable INT before translation", name, value)
+				}
+				field, ok := values.AsFieldValue(value)
+				if !ok {
+					t.Fatalf("%s is not a resolved field: %T", name, value)
+				}
+				qov, ok := values.AsQuantifiedObjectValue(field.ChildValue())
+				wantRow := &values.RecordType{Fields: []values.Field{{Name: "N", Ordinal: 0, FieldType: values.NullableInt}}}
+				if !ok || !values.FlowedTypeEquals(qov, wantRow) {
+					t.Fatalf("%s does not carry the completed recursive row: %v", name, field.ChildValue())
+				}
+			}
+		}
+		for _, child := range op.Children() {
+			walk(child)
+		}
+	}
+	walk(declaration.Main)
+	if aggregates != 1 {
+		t.Fatalf("main query contained %d aggregates, want 1", aggregates)
+	}
+}
+
 func TestRetainedCTEPhysicalValidationUnderShadow(t *testing.T) {
 	t.Parallel()
 	_, md := clauseTestOwner(t)

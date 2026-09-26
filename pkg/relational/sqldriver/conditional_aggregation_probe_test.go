@@ -24,7 +24,7 @@ func TestFDB_ConditionalAggregationProbe(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE condagg "+
 			"CREATE TABLE sales (id BIGINT, region STRING, product STRING, amount BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_condagg/s WITH TEMPLATE condagg")
-	dsn := fmt.Sprintf("fdbsql:///testdb_condagg?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_CONDAGG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

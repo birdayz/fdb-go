@@ -1,0 +1,28 @@
+**NAK — IMPLEMENTATION CODE** at tree `15c853e0f15c1daed5214da4998308e30c577ed7`.
+
+**P2 — The new UNION cardinality check conflates distinct quoted labels.**
+
+Using the existing `t(id, v)` schema:
+
+```sql
+SELECT id AS "x", v AS "X" FROM t
+UNION ALL
+SELECT id AS "x", v AS "X" FROM t
+ORDER BY "x";
+```
+
+The published labels are `x,X`, and `"x"` uniquely owns slot 1. However, [logical_predicate.go:7358](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:7358) uppercases both labels before counting them. The ORDER BY name is also uppercased, so the new [ambiguity gate:7386](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:7386) returns `42702`. The previous tree accepted this particular query and selected slot 1; the added cardinality check introduces a rejection.
+
+Pinned Java preserves quoted case in [SemanticAnalyzer.java:162](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/SemanticAnalyzer.java:162) and compares alias identifiers exactly at [line 650](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/SemanticAnalyzer.java:650). Thus these are distinct attributes, not ambiguous alternatives.
+
+**Required fix:** count and resolve labels using their normalized identifier identity without folding quoted case. Any retained relaxed lookup must follow an unsuccessful exact lookup. Add both-constructor regressions asserting `"x"` owns slot 1 and `"X"` owns slot 2, plus mixed ordering and Java/FDB controls. Mixed ordering must also survive the existing case-folded [duplicate checker:6360](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:6360). Retain genuine repeated-label `42702`, repeated-key `42701`, missing-name precedence, and quoted-dotted versus qualified ownership controls.
+
+This finding is source-derived; I executed no reproducer.
+
+The prior qualification/QOV blockers are addressed. Source-backed star classification uses the ordinary expansion gate, and UNION normalization preserves aligned rows while deduplicating only private normalization names. I found no additional blocker in those changes.
+
+I reviewed the complete 24-file delta, frozen additions, actual prior ACK/NAKs/prompts, and pinned Java source. All **6,457 frozen hashes** match tree and workspace. Completed evidence reconciles **9,886 RUN/PASS entries across five uncached targets**, **50 Java probe records**, and six compiled mutation kills with matching reconstructed source/log hashes and restored sources. Invalid, build-only, nonunique-pattern, and interrupted attempts receive no credit. Golden and corpus files are unchanged in this delta.
+
+**Execution gates:** the single inspected snapshot credits fuzz **30 seconds, four workers, 2,869,998 executions**, without coverage guidance. Full93, race15, `just test`, and nominal1M ABBA remain uncredited. Cancelled suites are not greens; repairs require refreezing and verification.
+
+**Publication gates:** launch metadata confirms **gpt-6-astra/xhigh/read-only**. HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`. No edits, builds/tests, agents/worktrees, Git mutations, polling/waiting, or GitHub contact occurred. Commit/push/merge remain unauthorized; PR786 stays draft. WS-B–K and the whole upgrade remain open. Storage unchanged-scope ACK, FDB C++7.3.77, approved extensions, and the legacyRaBitQ disable/rebuild prerequisite stand. Latency attribution remains bounded; historical startup-timeout causation remains unestablished.

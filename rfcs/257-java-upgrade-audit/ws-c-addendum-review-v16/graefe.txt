@@ -1,0 +1,74 @@
+**NAK.** Revision 16 does not pass as it stands: all five findings are Low, and one of them is a small regression.
+
+I reviewed commit `826d8ce93` (tree `a30849866`). I recomputed the design file from the committed blob: SHA256 `9bd13fb5626210c0395367a7fa9791b27176c0e325fad264227401b5e128f678`, 2720 lines, both matching. The review was read-only, and `git diff`/`git grep` were refused, so I read the delta with `git show`. "Measured" means I read it in the evidence logs or the git objects; everything else comes from reading source.
+
+**Graefe lens.**
+- **Option reading:** `readHNSWOptions` is a faithful port of `parseConfig`, and the windowed validator, the maintainer and the evolution check all use it. It matches Java's order, aliases, parsers (`EqualFold` equals `equalsIgnoreCase` for "true") and defaults, and all 15 Config texts in their order (Config.java:93-120). The exception is finding 1.
+- **Map bytes:** Go's re-save writes Java's bytes except for the declared field order (a oneof member last), apart from findings 2–4.
+
+## Findings, most severe first
+
+**1. Low: Go refuses RaBitQ with 9–15 extra bits earlier than Java, and the docs call it the same point (source only).**
+- `parseHNSWConfig` refuses when the maintainer is built (`hnsw_options.go:218-226`). Every save, delete and scan that touches the index then fails from the first record.
+- Java builds its `RaBitQuantizer` lazily:
+  - `Primitives.quantizer` returns a no-op quantizer until `canUseRaBitQ()` (Primitives.java:174-183).
+  - `firstInsert` builds one at once only for cosine and dot product (Insert.java:274-285).
+- So with the default Euclidean metric, Java maintains and searches the index until its centroid exists. Only then does it fail, with an `IllegalArgumentException` that has no message.
+- The equivalence is claimed in DIVERGENCES `:2129-2131` ("refused where Go's maintainer makes its quantizer"), the CHANGELOG, the `parseHNSWConfig` comment and 7.16. Nothing measures what Java does at 9 bits beyond the Config check.
+- **Fix:** refuse where Go's HNSW first encodes (`nodeVectorBytes` once `opXform` is set, and the cosine/dot first insert at `hnsw.go:573`), or declare the difference.
+
+**2. Low: v15 Torvalds 5 is still open, though 7.16 and DIVERGENCES say it is closed.**
+- **Measured from git:** revision 16 changes no line of the wire-order spec (the first hunk after the imports is at `:621`). That spec's raw subspace is only built, never re-saved.
+- The new spec's raw arm writes a value for every entry (`intEntry` and `msgEntry` always append field 2).
+- So no re-save in either engine starts from an entry stored without a value. DIVERGENCES `:3225` ("raw bytes with an entry missing its value") and 7.16 ("the raw path now meets…") claim otherwise.
+- **Fix:** add an entry with no value, and one with no key, to the new spec's `records`.
+
+**3. Low, a regression: a map entry's own unknown fields are dropped.**
+- `canonicalEntry` (`record_wire_map_order.go:700`) now writes only the key and the value.
+- Revision 15's `Marshal(entry)` kept the entry's unknown fields: a field other than 1 or 2, or field 1 or 2 with the wrong wire type.
+- Java's entry is a DynamicMessage that keeps them (DynamicMessage.java:392-397), and `writeTo` writes them back.
+- **Already there before revision 16:** a last entry that carries unknown fields makes its key read as changed (`:660`), which collapses a key written twice.
+- This only arises from foreign or crafted bytes.
+- **Fix:** append `entry.GetUnknown()` after the value, compare only key and value for "unchanged", and add a unit pin.
+
+**4. Low: `elementPriors`' declaration claims more than the code does.**
+- **Past `maxLCSCells`** (`:546`, `:602`), matching falls back to content in order. That reopens v15 Torvalds 2: `[A,B]` saved as `[X≡B, B]` makes the unchanged B lose its order. No test covers the bound, and DIVERGENCES `:3236` does not mention it.
+- **An inserted equal element:** stored `[B]`, saved `[B′≡B, B]`. The new element takes B's order and the unchanged B is written in key order. That is not "equal elements reordered among themselves", and Torvalds asked for this case to be declared.
+- **Fix:** use an unbounded linear-space diff (Myers or Hirschberg), or declare the bound and pin it; and name the insertion case.
+
+**5. Low: two v15 fixes have no regression test.**
+- **The dry run over the stored record** (`store_api.go:390-393`): no test file for it changed.
+- **The evolution check's RaBitQ bit count** (v15 Torvalds 1): its only row is `"4"` against an absent option (`metadata_evolution_validator_test.go:2878`), which the old `Sscanf` also passes. There is no row with a spelling only Java's parser reads (e.g. `"８"`), and no JVM evolution row, both of which Torvalds asked for.
+
+## Nits
+- **Design `:2475`:** "pins each case in Go" (a v15 Graefe nit) is neither marked nor answered.
+- **`hnswConfigChecks`:**
+  - No test reaches the two probability checks (`:198-199`): their texts have 0 hits in `*_test.go`, and a search of the same shape does find other text.
+  - The numDimensions, mMax-range and mMax ≤ mMax0 checks are asserted only as "some error", not by text.
+- **`appendEntryField`:** 15 kinds, but tests reach only string and int64. Every kind is correct by reading; pin them all against protobuf-go's own map marshal.
+- **Alias-only evolution refusal:** Go names the canonical key where Java names the alias (VectorIndexOptionsHelper.java:162-167).
+- **`wsc15-mutation/README`:** it records the mutation-presence counts in prose written afterwards; the consoles themselves don't show them.
+- **Verbose green run:** it doesn't list "parseHNSWConfig refuses an extra-bit count Java refuses", so that spec's pass rests on the hook's suite-level green.
+
+## v15 findings
+- **Resolved, measured red→green:**
+  - Graefe 1, storage 4 and Torvalds 4: the whole config, m 150, the aliases, the booleans, and 10 Config-check rows.
+  - Graefe 3, storage 1 and Torvalds 3b: the proto3 zero.
+  - Graefe 2, storage 2 and Torvalds 3a/3c: the claims are scoped, and the oneof difference is pinned against order computed from Java's bytes.
+  - Storage 3 and Torvalds 2: new subtests, except for finding 4.
+- **Code fixed, test missing:** Torvalds 1 and 6 (finding 5).
+- **Still open:** Torvalds 5 (finding 2).
+- **Nits:** all resolved except design `:2475`.
+- **Revisions 12–15:** intact except for finding 3. Measured in the green log (:142-145): Go's re-save equals Java's, and Java's rebuild over it keeps the six index pairs.
+
+## Measured
+- **Green** (`wsc16-green-commit`):
+  - TREE shows HEAD `826d8ce93`, with index tree `a30849866` = `826d8ce93^{tree}` and 0 differing files.
+  - Conformance: 46 of 1827 specs ran, all passed. Record layer: 73 of 3724, all passed. Bazel: "Executed 2 out of 2 tests: 2 tests pass".
+  - New re-save spec: record 1 is byte-equal to Java's in both arms; record 2 differs only in that field 2 (the oneof member) comes after field 3.
+- **Red** (`wsc16-red`, tree `1672d135b` = `8e515423b^{tree}`, plus 6 working files):
+  - 15 of 46 JVM specs failed.
+  - These unit tests failed: the proto3-zero test, the effective-value evolution test, and the two new element subtests.
+- **Hook:** "Executed 39 out of 94 tests: 94 tests pass".
+
+The preserved boundaries are not in the diff stat, so they are untouched.

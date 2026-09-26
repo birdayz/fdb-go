@@ -1,0 +1,101 @@
+**NAK.** Commit `826d8ce93` (tree `a30849866`). Design SHA256 `9bd13fb5626210c0395367a7fa9791b27176c0e325fad264227401b5e128f678`, 2720 lines. I hashed the working-tree file. HEAD is `826d8ce93`, and that file is unmodified since the commit. The review was read-only. `git diff`, `git grep` and `hash-object` were refused, so I read the delta with `git show`. "Measured" means I read it in the evidence logs; everything else comes from source.
+
+What holds up:
+- **`readHNSWOptions`** follows `parseConfig`'s order and `ConfigBuilder`'s defaults.
+- **`hnswConfigChecks`** equals `Config.java:93-120`: the same order, bounds and texts.
+- **The evolution check** removes both a key and its alias from the changed-options set.
+- **`appendEntryField`** writes every scalar kind correctly.
+- **The LCS** is correct: matching on equality is optimal, and I traced all three v15 examples to the stated results.
+
+The NAK rests on one regression, one incomplete conversion, and one v15 finding that 7.16 claims fixed but is not.
+
+## Findings, most severe first
+
+**1. Medium, a regression of revision 14's fix (graefe 4).**
+- **What was deleted.** Revision 16 removes the JVM Describe "A windowed VECTOR index is validated as Java validates it" (hunk `@@ -1110` of `key_validation_conformance_test.go`). The new Config Describe (`:1401`) keeps only its missing-dimension-count row.
+- **Rows lost:**
+  - a unique windowed index;
+  - two record types;
+  - a window under a conjunction;
+  - a window under an OR alone;
+  - a window beside one under an OR. This was the only JVM pin of the `RecordCoreError` fix. No `OrPredicate` is left anywhere in `conformance/`.
+- **Nothing records the deletion:**
+  - 7.16 does not mention it.
+  - `DIVERGENCES.md:2124` still cites the deleted spec.
+  - 7.14 `:2493-2499` still describes it, with no Superseded marker.
+  - The `RecordCoreException` arm of `expectWindowedVerdictAsJava` (`:1518-1521`) can no longer be reached.
+- **Measured:** the WINDOWED unique and disjunction lines are in `wsc15-green-commit` and absent from `wsc16-green-commit`, whose own WINDOWED lines are present.
+- **Fix:** restore the rows.
+
+**2. Medium, an incomplete conversion: the planner ignores the alias the maintainer now reads.**
+- **Go:** `tryVectorIndexCandidate` reads only `idx.Options["hnswMetric"]` (`cascades_generator.go:3858`).
+- **Java:** its planner reads the metric through `METRIC.read`, alias included (`VectorIndexExpansionVisitor.java:191` → `VectorIndexEngine.java:230-231`). `IndexOptions.java:244-248` tells users to create new indexes with the `vector*` names.
+- **Effect:** an index with only `vectorMetric=COSINE_METRIC` is now maintained as cosine, but the planner matches it as Euclidean. That is the wrong-metric candidate `:3871-3875` exists to prevent. Before revision 16, both sides read Euclidean.
+- This is from source, and it is a query-engine change, so it needs Graefe's review.
+- **Fix:** one exported metric accessor over `hnswOptionValue`, plus an EXPLAIN-pinned test using `vectorMetric`.
+
+**3. Low: v15 torvalds 5 is claimed resolved and is not.**
+- **The claim:** 7.16 says "the raw path now meets an entry stored without a value in the wire-order spec too".
+- **Why it is not so:**
+  - The wire-order spec has no hunk in this revision. Its raw subspace (`:408-429`) is built by Go but never re-saved by either engine.
+  - The new spec's builders always write field 2 (`:699-718`), so none of its records has an entry without a value.
+  - Its raw records are byte-identical to Java's first save. I derived this from the builders; it is also **measured**: the `RESAVE_P3 raw=false` and `raw=true` lines print the same Java hex. So the raw iteration only repeats the same input.
+- **Fix:** have both engines re-save MAPWIRE's raw subspace (record 3 has `k` without a value).
+
+**4. Low: the RaBitQ 9–15 bits claim is wider than the code.**
+- **The claims:**
+  - the commit message: "refused where Java's quantizer refuses it";
+  - `hnsw_options.go:213-216`: "in both engines";
+  - `CHANGELOG.md:483-484`;
+  - `DIVERGENCES.md:2129-2131`.
+- **What Java does:** it makes the quantizer lazily.
+  - `Primitives.java:174-182` makes it only once `canUseRaBitQ()` holds, which is after the stats threshold.
+  - `Insert.java:274-284` makes it on the first insert only for a metric that is not preserved under translation.
+- **The gap:** with a Euclidean metric, Java saves and searches unquantized until the centroid exists. Go refuses the first maintainer construction. Go's refusal text is also its own; Java's `checkArgument` has no message.
+- **Fix:** declare the difference, or refuse at the same point Java does.
+
+**5. Low: pins that were asked for or are owed are missing.**
+- **(a)** v15 torvalds 1 asked for a unit pin and a JVM evolution row for the bit count. Neither was added. The only RaBitQ evolution row ("set to their default") passes with `Sscanf` as well.
+- **(b)** `DryRunSaveRecord` over the stored record (`store_api.go:393`) has no test. None of the 7 `DryRunSaveRecord` calls in `pkg/recordlayer` tests uses a map.
+
+## Nits
+- **A stale comment:** `:1498-1502` ("any other IllegalArgumentException's text is Go's own") contradicts `:1511-1512`. `windowedEdited` also lost its doc comment.
+- **`ValidateHNSWConfig`** (`hnsw.go:96-105`) has no caller outside tests (every `.go` file in the repo searched). Its bits check can never fire, because `NumExBits` returns the clamped count (`rabitq.go:47-50`).
+- **`DIVERGENCES.md:3236`** says "however elements were inserted". With stored `[A,B]` saved as `[A,X,B]` and X's content equal to B's, the unchanged B is written in key order. Graefe v15 asked for this case to be declared.
+- **Unanswered v15 nits:**
+  - 7.14 `:2475` "pins each case in Go" is still unmarked (torvalds);
+  - `wsc15-red-first/TREE` (storage).
+- **Evidence gaps:**
+  - The verbose green run omits the "HNSW with RaBitQ" Describe (the extra-bit and statsThreshold specs); those appear only in the hook's totals.
+  - The hook's TREE file was written after the commit, so it cannot identify the tree the hook tested.
+  - The mutation README restates `grep -c` from session output that was not captured.
+
+## v15 findings
+- **Graefe:**
+  - 1 is resolved (the m 150, efConstruction 50 and m > mMax rows, measured).
+  - 2 is resolved (the claims are scoped, and the oneof order is pinned, measured).
+  - 3 (the proto3 zero) is resolved; measured with storage 1.
+  - Nits: resolved, except the requested declaration above.
+- **Torvalds:**
+  - 1 is fixed structurally, but the requested pins are missing (finding 5a).
+  - 2 is resolved (red→green, measured).
+  - 3a–c are resolved (the proto3 case red→green, measured).
+  - 4 is resolved (the upper-case booleans row, measured).
+  - 5 is unresolved (finding 3).
+  - 6 is fixed but unpinned (finding 5b).
+- **Storage:**
+  - 1–4 are resolved (the JVM rows go red→green, measured).
+  - One nit is unanswered.
+
+## Measured
+- **Green** (`wsc16-green-commit`: HEAD `826d8ce93`, tree `a30849866`, clean):
+  - conformance: 46 of 1827 specs passed;
+  - recordlayer: 73 of 3724 specs passed, and the new unit tests pass by name;
+  - "Executed 2 out of 2";
+  - RESAVE_P3: record 0 is equal byte for byte; record 1 equals `legacyOrder` of Java's bytes.
+- **Red** (`8e515423b`'s tree plus the adapters):
+  - 15 JVM specs failed: 4 VECTOR_CONFIG rows, the re-save, and 10 Config rows;
+  - 4 unit tests failed: the proto3 test, the evolution test, and two element subtests.
+- **Hook:** "Executed 39 out of 94 tests: 94 tests pass".
+
+The preserved boundaries are untouched.

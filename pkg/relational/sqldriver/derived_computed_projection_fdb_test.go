@@ -11,6 +11,7 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 )
 
@@ -31,7 +32,7 @@ func TestFDB_DerivedComputedProjectionColumnNames(t *testing.T) {
 	must("CREATE SCHEMA TEMPLATE derivedcomputed_tmpl" +
 		" CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
 	must("CREATE SCHEMA " + dbPath + "/main WITH TEMPLATE derivedcomputed_tmpl")
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

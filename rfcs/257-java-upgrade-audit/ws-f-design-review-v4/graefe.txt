@@ -1,0 +1,77 @@
+**NAK.** I reviewed tree `9aee2d3d3c3347375454d8cc44f91af4e486f291`, design sha256 `15bcea3dd51a6440219b3233a3e8a02cce29054b2c15131e44cb1e146f09116d`, 1954 lines; I recomputed both from the blob. This was read-only: nothing was run or edited.
+
+**What checks out**
+- **Evidence binding:** all 11 instrument sha256s in `evidence-run.txt:29-39` equal this tree's blobs. The 13 mutation logs each show marker count 1, `bazel exit 3` and the expected message.
+- **Sparse `?` cache events (MEASURED):** a different binding gives `cache=miss`, the same binding twice gives `cache=hit` (evidence `:462-481`).
+- **ROOT-PAIRS (MEASURED):** `w8_root_in_no_order` has 9 members, and its sequential winner is the plan the target explains.
+- **Oracle code:** EXPLAIN rows can only be accepted by access path (`ws_f_probe_conformance_test.go:866-871`), and `wsfRatchetGaps` works as the design says (`:881-902`).
+- **SOURCE claims that hold:**
+  - Java: `Reference.java:208-211, 587-594` and `CascadesPlanner.java:650-689, 745-749`.
+  - Go: `implementation_rule.go:187-223` copies the constraint.
+  - F-8's count, 14 call sites in 10 files, matches a Grep of the working tree, not the tree blob.
+
+**The WS-E question.** v4 **states** the RFC-182 second crossing (`:347-374`) but does **not close** it. The decision cannot be met as written (H1). Also, WS-E's fold rule lands after WS-F's step-7 default flip (`ws-e-design.md:36-38`). So at F-5 the census can only check that the leg crosses with exactly one final. "Must reach PLANNING as ONE final, the fold" (`:372`) can only be checked at WS-E's re-run of the census.
+
+## High
+
+**H1. Every "crossing" decision assumes that only REWRITING leftovers cross. In Go, groups minted during PLANNING cross too.**
+- **Java (SOURCE):** every reference is minted at the running phase's target stage (`CascadesRuleCall.java:320, 423, 460, 503, 572, 608`) or at its source's stage (`Reference.java:591`). Nothing minted inside a phase ever crosses.
+- **Go (SOURCE):** new references are stamped `StageCanonical`. This covers `InitialOf` (`reference.go:183-184`, used by `MemoizeExpression`), both `MemoizeFinalExpression`s, and `ImplementationRuleCall.MemoizeFinalExpressionsFromOther` (`implementation_rule.go:187-223`). So they cross in the middle of PLANNING, through both arms:
+  - the first arm's comment says so ("a mid-PLANNING MemoizeFinalExpression mint visited later", `unified_tasks.go:76-97`);
+  - `AdvanceStagePreservingMembers` says "a group created fresh during a phase … takes this path too" (`reference.go:975-990`).
+- **Consequences:**
+  - With the option on, every fresh PLANNING group raises the no-finals error.
+  - Every multi-plan restricted reference raises the ">1 final" error. That includes 4.3 item 3's whole partition and F-8's per-partition references. The census exit rule (`:590-600`) therefore cannot be met.
+  - `AdvancePlannerStage` resets the exploration state (`reference.go:949-963`), which erases D7's explored mark (`:488`). That breaks "no rule re-runs on the copy" and the extraction check's "by construction" (`:1250`).
+  - The claim that "two queries reach the arm today" (`:369`) was not measured, and the population is wrong.
+- Go already documents this failure. The in-union bakes its child over `FinalOf` at `StagePlanned` (`rule_implement_in_union.go:363-378`), and `MemoizeMemberPlansFromOther` gives the reason for `StagePlanned` (`expression_rule_call.go:310-318`). v4 swaps both for the canonical-stage memoizer.
+- **Required:**
+  - Port Java's stage stamping as a named step before step 7.
+  - Say what replaces the reasons the memoizer comments give for canonical stamping.
+  - Measure the no-finals population per arm with the step-1 observer.
+  - Restate the answer given to WS-E.
+
+**H2. The cause given for the no-ORDER-BY in-join row ("covering emission, F-6", `:1266-1267`) contradicts Java's source and the oracle's own measurement.**
+- **Java (SOURCE):** data access yields FETCH(COVERING) whenever the index-entry builder exists (`ValueIndexScanMatchCandidate.java:236-282`). ISCAN comes from `MergeFetchIntoCoveringIndexRule` (`:44-57`), which Go also has.
+- **MEASURED:** the target's partition in `w8_iup_order_by_col1` holds `COVERING(I1)|FETCH` beside `ISCAN(I1)` (`innerFinals=2`). F-6's gate admits single-type I1, so F-6 cannot move `w8_in_no_order_explain`.
+- **Likelier cause (HYPOTHESIS):** Java's OptimizeGroup prunes the in-join's inner to one member before `PushInJoinThroughFetchRule` can bind a fetch. Go's OptimizeGroup retains a member per (distinct, stored) class and per ordering (`unified_tasks.go:797-880`), and its own comment says that retention exists to keep `Fetch(Covering)` for push-through rules. That is a Go-only mechanism no phase owns.
+- **Required:** relabel the cause as a HYPOTHESIS, measure the in-join's inner reference, and give the row a new owner. The T5 ORDER BY col1 row (owned by F-7b and F-6) also has no stated mechanism, and the DESC row's second cause is admitted unlocated (`:1273`).
+
+## Medium
+
+**M1. The horizon mark cannot reach its consumer.**
+- `PropRichOrdering` for an index plan is re-derived from the plan by `RecordQueryIndexPlan.HintRichOrdering` (`plans/ordering.go:1585-1630`). It is not copied from `ComputeMatchedOrderingParts` (`match_candidate_index.go:807`).
+- So a mark set only there never "travels on the PropRichOrdering" (`:1172`).
+- **Required:** specify how the plan side knows the key begins with the record type (the plan's primary-key columns have no such position), how the mark survives rebuilds, and a test that both derivations mark alike.
+
+**M2. F-8 and 4.3 item 3 lean on "OptimizeGroup chooses", but Go's OptimizeGroup is not Java's.**
+- Go keeps several winners and resolves the one a parent uses at extraction time; Java prunes to one (`:650-689`).
+- 4.3 item 3 depends on two Go-only mechanisms: the per-ordering retention and the constraint copy ("implicit there", `implementation_rule.go`).
+- **Required:** decide whether both stay, with DIVERGENCES entries, or go with F-8.
+- F-8 also moves rules that use `MemoizeMemberPlansFromOther` at `StagePlanned` to the canonical-stage memoizer (`:982`).
+
+**M3. 4.3 item 9's safety net comes too early.**
+- The fallback "a W6 census finding" (`:1349`) cannot fire: the census runs at F-5 under the old `LogicalFilter` matcher.
+- **Required:** F-7b measures, before the switch, that no `LogicalFilter` holding an IN comparison reaches PLANNING. Otherwise SQL IN plans silently revert to scans.
+
+**M4. Item 10's decision is in no step.**
+- "Takes every explode source" (`:1359`) is missing from F-7b's list in section 12, and WS-F's acceptance excludes the 5×5 rows.
+- **Required:** name the step, and declare the interim: until then Go answers the 5×5 query where the target fails.
+
+**M5. `covering-rank` has no check on its cause.**
+- F-7c can move any row it failed to change into DIFF-PATH `covering-rank` (`:1041`).
+- **Required:** the per-class Go comparator test over the target's ROOT-PAIRS members must show that the rank picks another member. Otherwise the cause is membership, not the rank.
+- "Every class except `w8_no_predicate`" (`:1036`) over-claims: `eq_order_by_id` and the two in-join classes belong elsewhere.
+
+## Low
+
+**L1. Section 7's arm (`:1529`) is under-specified.**
+- Place it after the FDB-code arms (`connection.go:1047-1054`), so a marked error that wraps an FDB error keeps its code.
+- Port or declare Java's arms that come before UNKNOWN: a relational cause, timeout, inactive context, SemanticException, UnableToPlanException → 0AF00 (`ExceptionUtil.java:59-85`).
+- Sweep the existing pins that show these errors without a SQLSTATE.
+
+**Not verified**
+- W7 D3–D9 internals (only D1's facts were spot-checked).
+- The 2.8 and 4.2 closure grep counts: `git grep` was denied under this policy.
+- Section 12's proto field layouts beyond v3 storage's reading.
+- The run5/run6 logs beyond the in-tree extract.

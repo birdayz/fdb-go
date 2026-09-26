@@ -55,7 +55,7 @@ func TestFDB_CorrelatedZeroCompositeSentinel(t *testing.T) {
 		"CREATE TABLE t2 (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE o (id BIGINT, k DOUBLE, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_czs/s WITH TEMPLATE czs")
-	dsn := fmt.Sprintf("fdbsql:///testdb_czs?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_CZS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -206,7 +206,7 @@ func TestFDB_CorrelatedZeroRangeSetShapes(t *testing.T) {
 		"CREATE INDEX m_abw ON m (a, b, w) "+
 		"CREATE TABLE o (id BIGINT, k DOUBLE, k2 DOUBLE, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_czf/s WITH TEMPLATE czf")
-	dsn := fmt.Sprintf("fdbsql:///testdb_czf?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_CZF?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

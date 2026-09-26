@@ -22,18 +22,44 @@ jobs:
     name: Build + vet + pure unit tests (no Docker, no cgo)
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      # The repo builds under Bazel; for this hosted floor we use the Go toolchain
-      # directly. GOWORK=off so an inherited go.work can't break a plain `go` invocation.
-      GOWORK: off
+    # The repo builds under Bazel; for this hosted floor we use the Go toolchain
+    # directly.
     steps:
+      # Full history, blobless: the secret scan below reads every commit a change
+      # adds, and fetches only the blobs those commits touch.
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          filter: blob:none
 
       - name: Set up Go (pinned by go.mod)
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+
+      # This repository is public: every commit a change adds is read for
+      # credentials, private keys, OpenTofu state and public host addresses
+      # (cmd/secretscan). Per commit, not the net diff: a secret added and then
+      # deleted is still in the published history. The pre-commit hook is the
+      # prevention; this is the backstop for a commit that never ran it. The
+      # refs arrive through env, never inlined into the script: a fork's branch
+      # name is attacker-controlled.
+      - name: Secret scan (every commit this change adds)
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          case "$EVENT" in
+            pull_request) range="origin/$BASE_REF..HEAD^2" ;;
+            push) range="$BEFORE..HEAD" ;;
+            *) range="" ;;
+          esac
+          case "$range" in
+            ""|0000000*) go run ./cmd/secretscan -tree ;;
+            *) go run ./cmd/secretscan -commits "$range" ;;
+          esac
 
       # RFC-108 §1: the build's reproducibility anchors must be present in-repo, so a
       # checkout builds the same Bazel + deps anywhere. (bazelisk on the self-hosted box

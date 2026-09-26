@@ -1,0 +1,82 @@
+**NAK.** I reviewed commit `d1ccff8c6`. `ws-j-design.md` hashes to SHA256 `3e82c1059f9556b3f4cd5a67d5bc8f029d9ae1a578cd5498b015af5281260bde` (2907 lines); I recomputed both. The review was read-only: git objects, Java 4.14.2.0, the protobuf-go v1.36.11 source and the evidence logs. I ran nothing.
+
+## v16 findings
+- **Resolved**
+  - Graefe M1 and storage H1: both carrier arms and WIDENED are gone from the code.
+  - Graefe M2 and storage M1: 4e.2 records landed versus owed; `since_version`, the two-valued key and the duplicate type name are pinned.
+  - Graefe L2/L3/L5/L6.
+  - Torvalds M-4 (helpers renamed, hooked test) and M-5.
+  - The commit_unknown_result Low, the standin Low, the v15/v16 labels, and the unreadable-index Low.
+  - Storage M2: the evidence holds. Its index tree `c5ba86147` is `9ba005539^{tree}`, the parent of step 1. 14 tests are red and 2 controls green.
+- **Answered as owed:** Graefe L1 / Torvalds M-1 (4e.3, step 3).
+- **Moot:** 4c's (d) text (a header marker).
+- **Still open:**
+  - Torvalds H-1's evidence item (H1 below).
+  - Torvalds M-2's CHANGELOG entry (L1).
+  - `RegisterNonUniqueNullFunction` in the CHANGELOG (L1).
+  - The `CreateTemplate` comment (L3).
+  - The getFieldOnMessage Low (L9).
+  - Storage's XX000 Low: deferred to step 4, and nothing gates step 4 before the one merge.
+
+## HIGH
+**H1. Unmarked sites still state the withdrawn design, including the text step 3 implements.** The Status paragraph says 4e supersedes only the sentences marked [v17 → 4e]. There are 12 markers. None of these sites has one:
+- **§4, the carry rule:**
+  - the WIDENED class (`:1941-1951`) and "Declared: a WIDENED or CHANGED index" (`:1966`);
+  - "EQUIVALENT or WIDENED … not re-checked" (`:1894`);
+  - the rebind options, which still include `SetAllowLiteralCarrierWidening(true)` "(3.2, landed)" (`:2013`).
+- **§2, the restore:**
+  - the symmetric carrier arm (`:797-799`, `:816-825`);
+  - check (iii)'s "EQUIVALENT or WIDENED" (`:813`);
+  - a pair differing only in carrier "admitted in BOTH directions" (`:865-866`), which the code now refuses (`TestFDB_Restore_RefusesALiteralCarrierChange`);
+  - "`DeleteTemplateVersion` … the Go-only API" (`:709-710`). 4e.3 says §2 was corrected; it was not.
+- **§3.2:** the write-path table (`:1181`) and the WIDENED lane rule with `TestMetaEvolveCheck_LiteralCarrierWidening` (`:1269-1307`).
+- **§7:** item 5 (`:2678-2680`), which 4e says is replaced, and "mutation evidence for every new guard" (`:2686`). The ruling allows 0-3 mutations per milestone. This is Torvalds v16 H-1, and 4e does not answer it.
+- **§8 step 1 STATUS:** `SetAllowSymmetricLiteralCarrierWidening` and "a literal carrier either way" (`:2740-2741`, `:2752`).
+
+This is the third gate in a row to find withdrawn claims surviving. Fix each site, then report a grep count of zero for `WIDENED`, `SetAllow…Widening` and "Go-only API" in the normative text.
+
+## MEDIUM
+**M1. DIVERGENCES.md presents an owed refusal as landed (`:2929-2931`).** It says Go's `CreateTemplate` refuses re-issuing a Java-deleted version "at or below the latest, the next entry".
+- `CreateTemplate` (`fdb_template_catalog.go:150-189`) refuses only an exact duplicate and reads bindings from `latest+1` (`:182`). The next DIVERGENCES entry says nothing about this.
+- So today this sequence succeeds: Java `deleteTemplate(t,2)` while a schema binds (t,2), with (t,3) stored; then a library `CreateTemplate(t,2)`. It silently rebinds (t,2)'s schemas to the new metadata.
+- SQL and `fleet.SaveTemplate` are protected by the save action's check.
+- Say "owed by step 3", as 4e.3 does.
+
+**M2. Fan type 7 is false on Go's parse route.** 4e and the 3.6 marker (`:1675-1677`) say both engines parse it into unknown fields. Go's parser does not:
+- protobuf-go v1.36.11 decodes an optional proto2 enum with `coderEnumPtr = coderInt32Ptr` (`internal/impl/codec_unsafe.go:12`), and nothing in `internal/impl` consults `IsClosed`.
+- So stored bytes arrive with `FanType=7`. `fieldFromProto` accepts it (`key_expression_proto.go:272`), and `fanTypeFromProto` reads it as SCALAR (`:24-33`).
+- Java puts 7 into unknown fields, so the required `fan_type` is unset and `parseFrom` of the stored MetaData fails (`RecordLayerStoreSchemaTemplateCatalog.java:221`).
+- The JVM row builds Go's input in memory with `SetUnknown` (`key_expression_absent_child_conformance_test.go:97-101`), which skips the parser. It tests a simpler cousin, not the stored-bytes route.
+- **Fix:** refuse a fan type outside {1,2,3}, and pin it by `proto.Unmarshal` of bytes against the JVM's parse.
+- Null interpretation 7 gives the same result in both engines (NOT_UNIQUE).
+
+## LOW
+- **L1.** The CHANGELOG has no entry for `SetRecords` reading the records file's extension options. Those options move record keys. "extension" gets 0 hits; the control `SetRecordsWithUnionName` hits. `:404` tells users to call `RegisterNonUniqueNullFunction`, which does not exist.
+- **L2.** `fdb_store_catalog.go:282` tells operators to reproduce the rebind with `--allow-literal-carrier-widening`, a flag `8e515423b` removed.
+- **L3.** `fdb_template_catalog.go:141-149` still says "Matches Java's … exactly … would diverge", next to the landed guard. `TODO.md:15055` still says the restore "lands with step 3".
+- **L4.** Java's `LiteralKeyExpression.equals` compares protos (`proto.equals`, `LiteralKeyExpression.java:205-214`), not "the value object" as 4e.1 and two test comments say. The verdict is the same.
+- **L5.** The restated gate (4e.1) says a carry-less new version re-keys indexes "against rows stored under the old numbering". With step 1 landed, the rebind validator (without `allowIndexRebuilds`) refuses a changed record-type key or root, so the interim state fails closed. State that.
+- **L6.** The four untyped load refusals:
+  - They are missing from §9, and `:2429` still names only 9 (u) as the exception.
+  - "No index of either engine can maintain" is unmeasured. Under "Go answers every query the target answers", a store Java opens would be unopenable in Go.
+  - Measure each shape with the partial-parse step, or label the claim a hypothesis.
+- **L7.** `TestInMemory_VersionGuard_BindAndDeleteSerialize` has no red run; it was excluded from `wsj-step1-red`. One mutation (unlock between check and bind) fits the ruling's budget.
+- **L8.** The re-based tests omit F2's own population: a Java-DDL v1 with an `int_value` literal and a Go-DDL v2 should be EQUIVALENT, with no rebuild.
+- **L9.** The getFieldOnMessage spec still pins the helper, not the three readers.
+
+## Sound, checked against source
+- **Java texts:** the duplicate and delete messages match `RecordLayerStoreSchemaTemplateCatalog.java:243/309/323`. Java's `deleteTemplate(name, version)` reads no bindings, and Java only maintains `TEMPLATES_VALUE_INDEX`, never reads it.
+- **Delete versus bind:** `DeleteTemplateVersion` reads the row and a limit-1 `(t,v)` range, and the bind reads the row, so they conflict in either commit order. A refused write commits nothing.
+- **Guard and listing:** both fail closed on an index that is not READABLE.
+- **Guard read windows:** the `CreateTemplate` guard's reverse-scan and range reads cover a concurrent Java delete of the latest version and a concurrent create.
+- **Restore:**
+  - After 1021/1039 it checks for its own bytes in a write-free transaction before its listing (the afterCommit subtest asserts 1 attempt).
+  - It writes a raw `Templates` row that Java reads as its own (`:216-225`).
+- **Carry classifier:** two classes. Roots are compared by proto equality after `indexFromProto`. A standin change is CHANGED.
+- **Deserialization port:** it matches `FieldKeyExpression.java:122-128`, `NestingKeyExpression.java:67-73`, `LiteralKeyExpression.java:134-173` and `RecordMetaDataBuilder.java:210-227, 261-265, 290-296`. `explicit_key` is correctly left unwrapped.
+- **In-memory catalog:** the lock order is `c.mu` then `tc.mu` on every path.
+
+## Measured versus hypothesis
+- **Measured:** the hashes, the tree identity, the evidence logs, and the grep counts with controls.
+- **Source readings, not runs:** M1's re-issue sequence, M2's parse divergence and L5.
+- **Quoted, not re-run:** the JVM spec verdicts.

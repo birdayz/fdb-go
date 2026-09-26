@@ -564,7 +564,7 @@ func FuzzDeserializeAndDiscover(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		// Must not panic. Error is fine.
-		_, _, _ = store.deserializeAndDiscover(data)
+		_, _, _, _ = store.deserializeAndDiscover(data)
 	})
 }
 

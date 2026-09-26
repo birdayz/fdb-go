@@ -1,0 +1,61 @@
+# WS-J design v9 evidence (run together with WS-C addendum revision 5's)
+
+Two uncached passes of every WS-J spec, //conformance:rfc257_oracle_test --ginkgo.focus='WS-J', on the bytes hashed below
+(hashed before pass 1, verified with sha256sum -c after `just test`: 0 not OK). The hashed set is the WHOLE change set
+against HEAD (71ccd8cf8): every modified tracked file and every untracked non-ignored file, deleted files excluded, less
+the WS-E design and oracle directory (edited while this ran) and this file and the oracle README (written after):
+1602 files (/var/tmp/fdb-upgrade-recovery/ev9-files.txt, hashes in ev9/src.sha). Drivers
+/var/tmp/fdb-upgrade-recovery/ev9a.sh (the oracle, JVM and WS-C runs) and ev9b.sh (`just test` with its tree snapshots),
+outputs ev9a.out and ev9b.out; logs in /var/tmp/fdb-upgrade-recovery/ev9/. No file was edited while ev9b ran.
+
+## Results
+- WS-J pass 1: "Ran 27 of 51 Specs", SUCCESS 27 Passed (ev9/wsj-ev1.log); pass 2 identical (ev9/wsj-ev2.log).
+- JVM records-descriptor spec, //conformance:conformance_test "Java refuses the same records descriptors": "Ran 35 of
+  1560", 35 Passed (ev9/wsj-vr-jvm.log), 35 VALIDATE_RECORDS lines; the five Go-refused shapes now assert the v9
+  message ("edit it so that only the union its records were written with is a candidate").
+- WS-C revision 5 focus (OnlineIndexer|Queued store dispatch|BugBounty3Indexer|eartbeat|Mutual|pending queue|Pending|
+  follow-up|Follow|IndexingHeartbeat) with the FDBMetaDataStore Describe: "Ran 387 of 3700", 387 Passed (ev9/wsc-focus.log).
+- 40 uncached runs of the WS-C loop pair (ev9/wsc-loop40.log): 40 "SUCCESS! -- 2 Passed | 0 Failed", 0 FAIL!,
+  "Executed 1 out of 1 test".
+- `just test` on tree f2f272dc3dd1accdb3c5abc4185a16d930ced5fc (snapshot taken before and after the run: equal):
+  "Executed 43 out of 94 tests: 94 tests pass." (ev9/justtest.log; the 43 executed are
+  ev9/justtest-executed.txt).
+
+## The corpus tally, both passes (the design's section 0 quotes it)
+WSJ-TALLY map[both-accept-companion:4 both-accept-equal:166 both-accept-index-diverge:4 both-accept-metadata-diverge:180 both-reject:24 java-accept-go-reject:101]
+WSJ-TALLY map[both-accept-companion:4 both-accept-equal:166 both-accept-index-diverge:4 both-accept-metadata-diverge:180 both-reject:24 java-accept-go-reject:101]
+md-canonical-differ values over the WSJ lines, pass 1 then pass 2 (the 4 are the four index-diverge runs):
+      4 md-canonical-differ(records,indexes,record_types)
+    180 md-canonical-differ(records,record_types)
+      4 md-canonical-differ(records,indexes,record_types)
+    180 md-canonical-differ(records,record_types)
+
+## The v9 pins' lines (pass 1)
+WSJIX value expression over a field root, no added version options java={} go=map[]
+WSJIX value expression over a concatenated root options java={} go=map[]
+WSJIX a value expression of no columns options java={} go=map[]
+WSJIX index_type UNIQUE with a value expression options java={unique=true} go=map[unique:true]
+WSJIX a COUNT root that is not a grouping options java={} go=map[]
+WSJLANE bitand_boolean target=ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)" go=OK
+WSJLANE bitand_double target=ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)" go=OK
+WSJLANE bitand_float target=ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)" go=OK
+WSJLANE bitand_string target=ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)" go=OK
+WSJLANE bitand_struct target=ERROR XX000 SemanticException "The argument to an arithmetic operator expecting an argument of a primitive type, is invoked with an argument of a complex type, e.g. an array or a record." go=ERROR XX000 "build RecordMetaData"
+WSJLANE bucket_offset_boolean target=ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)" go=OK
+WSJLANE bucket_offset_double target=ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)" go=OK
+WSJLANE bucket_offset_float target=ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)" go=OK
+WSJLANE bucket_offset_string target=ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)" go=OK
+WSJLANE bucket_offset_struct target=ERROR XX000 SemanticException "The argument to an arithmetic operator expecting an argument of a primitive type, is invoked with an argument of a complex type, e.g. an array or a record." go=ERROR XX000 "build RecordMetaData"
+
+## Hashed-set spot checks (the v9 files among the 1602)
+9b7e1b0d6e40a9e13f92ac36501e02ff3729cf2c021901f6ed31786e763368bf  CHANGELOG.md
+3d80ff16bbbf848eb9525421c02741cf90d924d0a66fb79b7dcd07c75581e016  conformance/metadata_proto_conformance_test.go
+c8f71a9b59210250d1d638453edf76588f519ebdc6d4b6c2c19ad7e8338cc704  conformance/ws_j_index_fidelity_conformance_test.go
+58ae0490f69d610456a6d3dcc742ce9c9707252ad3953c4264789cc80491832c  DIVERGENCES.md
+86f3f3a914ca3d30ce963006a55f033fa9ec2334ebf8f6ca4e9214bd35909d22  pkg/recordlayer/metadata_proto.go
+a22013c8b5f3af905b4a5f6a029f937ff25b8c7c8d886e35822f133fd458b552  pkg/recordlayer/metadata_store_test.go
+61c3b19967975603be035987603790edd1f19d29b62bfbaf9dc0ff2aab7d687e  pkg/recordlayer/metadata_validate_records_test.go
+48b763d008f9d48a76515c61e5f8a8f6efb06f41a3c40d1b99b5f6734ffc99ab  pkg/relational/conformance/plandiff/go_runner_test.go
+807ea28b481edba179db4eac6dfbb40e9dbf9729f29fdd93e33b10803f64d705  pkg/relational/core/metadata/builder.go
+5b04e97352938146c1d9d7a7a65e29234f1691e6c480218f2b446bceab0ba637  rfcs/257-java-upgrade-audit/ws-c-design.md
+b285bfa37aace7554d0af471a642346bcad339688e7cd10df21d031cb8fa3f94  rfcs/257-java-upgrade-audit/ws-j-design.md

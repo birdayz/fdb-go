@@ -1,7 +1,7 @@
 load("@protobuf//bazel:java_proto_library.bzl", "java_proto_library")
 load("@protobuf//bazel:proto_library.bzl", "proto_library")
 load("@rules_go//go:def.bzl", "go_library", "go_test")
-load("@rules_java//java:defs.bzl", "java_binary", "java_library")
+load("@rules_java//java:defs.bzl", "java_binary", "java_library", "java_test")
 
 proto_library(
     name = "demo_proto",
@@ -22,6 +22,9 @@ java_library(
     deps = [
         ":demo_java_proto",
         "@maven//:com_google_code_gson_gson",
+        # Guava types appear in the target planner's public API (the ordering
+        # binding multimaps the WS-F rule trace replays).
+        "@maven//:com_google_guava_guava",
         "@maven//:com_google_protobuf_protobuf_java",
         "@maven//:com_google_protobuf_protobuf_java_util",
         "@maven//:org_foundationdb_fdb_extensions",
@@ -49,6 +52,180 @@ java_binary(
     main_class = "com.birdayz.conformance.ConformanceServer",
     visibility = ["//visibility:public"],
     runtime_deps = [":conformance_lib"],
+)
+
+java_test(
+    name = "rabitq_architecture_test",
+    main_class = "com.birdayz.conformance.RaBitQArchitectureContract",
+    use_testrunner = False,
+    runtime_deps = [":conformance_lib"],
+)
+
+# The RFC-257 live-JVM target oracles run in their own target, not in
+# conformance_test: they pin what the target Java release does (measurement
+# inputs to the upgrade designs), they are long (about 110s of JVM round trips),
+# and conformance_test alone measured 805s standalone with them, over its 900s
+# limit under `just test`'s concurrent jobs. rules_go shards a go_test by Go test
+# FUNCTION, and the whole Ginkgo tree is one function, so shard_count cannot split
+# it; a second target can. Gazelle must not add these files to conformance_test,
+# and the target below is hand-maintained (# keep): its srcs are the oracle specs
+# plus the shared helper files they compile against.
+# pkg/docscheck/build_membership_test.go fails if an excluded spec file is in no
+# target.
+# gazelle:exclude guardiann_probe_conformance_test.go
+# gazelle:exclude ws_e_probe_conformance_test.go
+# gazelle:exclude ws_f_access_path_test.go
+# gazelle:exclude ws_f_probe_conformance_test.go
+# gazelle:exclude ws_f_record_layer_go_test.go
+# gazelle:exclude ws_j_index_fidelity_conformance_test.go
+# gazelle:exclude count_per_type_conformance_test.go
+# gazelle:exclude extension_options_conformance_test.go
+# gazelle:exclude fromless_select_java_probe_test.go
+# gazelle:exclude function_registry_conformance_test.go
+# gazelle:exclude index_option_evolution_conformance_test.go
+# gazelle:exclude key_expression_absent_child_conformance_test.go
+# gazelle:exclude key_validation_conformance_test.go
+# gazelle:exclude null_standin_conformance_test.go
+# gazelle:exclude subspace_key_identity_conformance_test.go
+
+# keep
+go_test(
+    name = "rfc257_oracle_test",
+    size = "large",
+    srcs = [
+        "conformance_suite_test.go",
+        "container_test.go",
+        "guardiann_probe_conformance_test.go",
+        "index_shape_helpers_test.go",
+        "java_invoker_test.go",
+        "store_helpers_test.go",
+        "ws_e_probe_conformance_test.go",
+        "ws_f_access_path_test.go",
+        "ws_f_probe_conformance_test.go",
+        "ws_f_record_layer_go_test.go",
+        "ws_j_enum_conformance_test.go",
+        "ws_j_existence_policies_conformance_test.go",
+        "ws_j_index_fidelity_conformance_test.go",
+        "ws_j_schema_dsn_conformance_test.go",
+    ],
+    data = [
+        ":conformance_server",
+        # The WS-J oracle's harvested 4.14.2.0 index-template corpus and the
+        # measured target outcome of every run derived from it.
+        "testdata/rfc257/java_index_templates.json",
+        "testdata/rfc257/wsj_go_classes.json",
+        "testdata/rfc257/wsj_java_pins.json",
+    ],
+    tags = [
+        "conformance_java",
+        "resources:memory:500",
+    ],
+    deps = [
+        "//gen",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "//pkg/recordlayer/query/executor",
+        "//pkg/recordlayer/query/plan/cascades",
+        "//pkg/recordlayer/query/plan/cascades/expressions",
+        "//pkg/recordlayer/query/plan/cascades/predicates",
+        "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/recordlayer/query/plan/plans",
+        "//pkg/relational/api",
+        "//pkg/relational/conformance/plandiff",
+        "//pkg/relational/core/catalog",
+        "//pkg/relational/core/embedded",
+        "//pkg/relational/core/keyspace",
+        "//pkg/relational/core/metadata",
+        "//pkg/relational/core/parser",
+        "//pkg/relational/core/parser/gen",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_antlr4_go_antlr_v4//:antlr",
+        "@com_github_google_uuid//:uuid",
+        "@com_github_onsi_ginkgo_v2//:ginkgo",
+        "@com_github_onsi_ginkgo_v2//types",
+        "@com_github_onsi_gomega//:gomega",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/descriptorpb",
+        "@org_golang_google_protobuf//types/dynamicpb",
+        "@rules_go//go/runfiles",
+    ],
+)
+
+# The RFC-257 parity specs (the upgrade's JVM comparisons of what each engine
+# accepts, writes and reads) run in their own target for the reason
+# rfc257_oracle_test does: conformance_test measured 14m14s of its 900s on CI
+# with them, and a Ginkgo tree is one Go test function, which shard_count
+# cannot split. Hand-maintained (# keep), as the oracle target is: its srcs are
+# the parity specs plus the shared helper files they compile against.
+
+# keep
+go_test(
+    name = "rfc257_parity_test",
+    size = "large",
+    srcs = [
+        "conformance_suite_test.go",
+        "container_test.go",
+        "count_per_type_conformance_test.go",
+        "extension_options_conformance_test.go",
+        "fromless_select_java_probe_test.go",
+        "function_registry_conformance_test.go",
+        "index_option_evolution_conformance_test.go",
+        "java_invoker_test.go",
+        "key_expression_absent_child_conformance_test.go",
+        "key_validation_conformance_test.go",
+        "null_standin_conformance_test.go",
+        "store_helpers_test.go",
+        "subspace_key_identity_conformance_test.go",
+    ],
+    data = [
+        ":conformance_server",
+        "//pkg/recordlayer:testdata/hnsw_legacy_go_entry.json",
+    ],
+    tags = [
+        "conformance_java",
+        "resources:memory:500",
+    ],
+    deps = [
+        "//gen",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/fdbgo/transport",
+        "//pkg/fdbgo/wire",
+        "//pkg/rabitq",
+        "//pkg/recordlayer",
+        "//pkg/recordlayer/query/executor",
+        "//pkg/recordlayer/query/plan/cascades",
+        "//pkg/recordlayer/query/plan/cascades/expressions",
+        "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/recordlayer/query/plan/plans",
+        "//pkg/relational/api",
+        "//pkg/relational/conformance/plandiff",
+        "//pkg/relational/conformance/yamsql",
+        "//pkg/relational/core/catalog",
+        "//pkg/relational/core/embedded",
+        "//pkg/relational/core/rowstruct",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_google_uuid//:uuid",
+        "@com_github_onsi_ginkgo_v2//:ginkgo",
+        "@com_github_onsi_ginkgo_v2//types",
+        "@com_github_onsi_gomega//:gomega",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//encoding/prototext",
+        "@org_golang_google_protobuf//encoding/protowire",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protodesc",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//reflect/protoregistry",
+        "@org_golang_google_protobuf//types/descriptorpb",
+        "@org_golang_google_protobuf//types/dynamicpb",
+        "@org_golang_google_protobuf//types/known/anypb",
+        "@rules_go//go/runfiles",
+    ],
 )
 
 go_test(
@@ -104,6 +281,7 @@ go_test(
         "index_conformance_test.go",
         "index_continuation_conformance_test.go",
         "index_ddl_metadata_conformance_test.go",
+        "index_shape_helpers_test.go",
         "index_state_conformance_test.go",
         "isolation_conformance_test.go",
         "java_facts_conformance_test.go",
@@ -121,6 +299,7 @@ go_test(
         "mod_function_java_probe_test.go",
         "multi_type_index_conformance_test.go",
         "multidimensional_index_conformance_test.go",
+        "multidimensional_options_conformance_test.go",
         "nested_groupby_key_java_probe_test.go",
         "nesting_index_conformance_test.go",
         "numeric_cast_boundary_conformance_test.go",
@@ -166,10 +345,14 @@ go_test(
         "version_index_conformance_test.go",
         "whole_struct_comparison_java_probe_test.go",
         "window_in_where_java_probe_test.go",
+        "ws_j_enum_conformance_test.go",
+        "ws_j_existence_policies_conformance_test.go",
+        "ws_j_schema_dsn_conformance_test.go",
         "yamsql_cross_engine_conformance_test.go",
     ],
     data = [
         ":conformance_server",
+        "//pkg/recordlayer:testdata/hnsw_legacy_go_entry.json",  # keep: legacy writer migration replay
         # keep: the ANSI-tagged yamsql corpus, staged so
         # java_facts_conformance_test resolves it via runfiles and verifies each
         # tagged feature's roster Java? fact against the live Java server.
@@ -190,6 +373,7 @@ go_test(
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/fdbgo/transport",
         "//pkg/fdbgo/wire",
+        "//pkg/rabitq",
         "//pkg/recordlayer",
         "//pkg/recordlayer/query/executor",
         "//pkg/recordlayer/query/plan/cascades",
@@ -201,6 +385,8 @@ go_test(
         "//pkg/relational/conformance/yamsql",
         "//pkg/relational/core/catalog",
         "//pkg/relational/core/embedded",
+        "//pkg/relational/core/keyspace",
+        "//pkg/relational/core/metadata",
         "//pkg/testcontainers/foundationdb",
         "@com_github_google_uuid//:uuid",
         "@com_github_onsi_ginkgo_v2//:ginkgo",
@@ -209,9 +395,12 @@ go_test(
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//encoding/prototext",
         "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protodesc",
         "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//reflect/protoregistry",
         "@org_golang_google_protobuf//types/descriptorpb",
         "@org_golang_google_protobuf//types/dynamicpb",
+        "@org_golang_google_protobuf//types/known/anypb",
         "@rules_go//go/runfiles",
     ],
 )

@@ -1,0 +1,97 @@
+**Verdict: NAK.** Commit `f53cd6fc6`. `ws-j-design.md` at that commit hashes to SHA256 `4b2070eada96626795353a7f03435d0d6e8d8b2aca48e9aa48e36a580b9ca717`, which I recomputed. I read only commit objects: HEAD has since moved to `5d95cd27c` and its design differs. I ran no tests or probes, so every runtime claim below comes from the design or the logs, not from me.
+
+The Java ports in this delta mostly check out against Java. The NAK is for three things the design owes before step 3 is built: it applies the owner's ruling only half-way, it misstates what has landed, and withdrawn claims survive in the text.
+
+## v15 Graefe findings — what happened to each
+- **H1 (flipping the (d) refusal): made moot by the ruling.**
+  - `git grep` over `pkg/` finds none of the (d) symbols. As a control, `setRecords` does hit, at `metadata.go:359`.
+  - Some stale text remains (M3 below).
+- **H2 (`NullStandin`): resolved.**
+  - The meaning now matches `Key.java:109-111`.
+  - All three readers are ported: the unique checks, COUNT_NOT_NULL, and NO_NULLS through the `IndexMaintenanceFilter` port.
+  - Java issue #4141 is ported (`FieldKeyExpression.java:229-239`), and so is the proto3 `hasField` rule.
+  - The JVM conformance spec has 14 cases, covering an absent parent and COUNT_NOT_NULL.
+  - Leaving the standin out of equality is correct: Java's `FieldKeyExpression.java:406-410` leaves it out. The restore and carry still see it, because `ClassifyIndexCarry` compares roots with `proto.Equal`, and Go always writes `null_interpretation` (`key_expression_proto.go:45`).
+  - H2's "entries already written" is moot by the ruling, but the design never says so (L6).
+- **M1 (`SetRecords` options): resolved.** The port matches `RecordMetaDataBuilder.java:161-174` and `:890-957`. The explicit key is normalised as Java normalises it (`RecordTypeIndexesBuilder.java:91` against `canonicalRecordTypeKey`). A JVM spec compares the whole built MetaData. Gaps are in L5.
+- **M2 (store-open probe): moot**, since the probe is withdrawn.
+- **M3: resolved.**
+  - 9 (x) is corrected, and I checked it: `RecordLayerStoreCatalog.java:272-279` → `:489` → `RecordLayerStoreSchemaTemplateCatalog.java:202-204`.
+  - `get_versionstamp_incarnation` is no longer a key function (`key_function_registry_test.go:46`).
+  - Arity is counted from the argument's column size (`key_expression.go:1672-1680`, matching `FunctionKeyExpression.java:117-131`).
+  - Graefe L3 (the migration's writer) is moot.
+- **v15 LOWs: resolved**, except one code comment that still says "limit 1" (`fdb_template_catalog.go:308`).
+
+## MEDIUM
+**M1. The ruling is applied to framing only. The F1/F2 pre-release machinery remains, and part of it was built after the ruling.**
+- The design still justifies it with pre-release tenants:
+  - 3.2: the rebind arm reads "from the stored pre-F2 width" (`:1063-1066`);
+  - 3.2: WIDENED exists for "a pre-F2 tenant" (`:1244-1266`);
+  - 3.2: the rolling-upgrade note (`:1298-1300`);
+  - section 4: tests 1 and 3 use v1s from the pre-port builder and a pre-F1 root (`:2006`, `:2012`), and test 5 (`:1050`, `:2597`);
+  - 9 (e) (`:2642`).
+- The code does too:
+  - the rebind arm's comment (`fdb_store_catalog.go:349`);
+  - the restore's symmetric arm (`template_restore.go:392`), which landed on 2026-09-25, after the ruling.
+- The CHANGELOG contradicts itself. `:25-29` says nothing repairs data an earlier Go build wrote. `:346-356` advertises the rebind admission for "a template Go stored before this change".
+- Java reads a `long_value` literal against an `int_value` one as a changed key (`MetaDataEvolutionValidator.java:719`).
+- **Decision:**
+  - Withdraw WIDENED and both carrier-widening arms.
+  - Rebase tests 1, 3 and 5 on a v1 written by Java or by this build.
+  - Keep 9 (m) only as a read-side extension for `long_value` keys that Java library code wrote, and say so.
+  - Step 3 builds WIDENED next, so this has to be decided first.
+
+**M2. The design misstates what has landed.**
+- These are on the tree but scheduled as step-3 work (`:2290`, section 8 step 3 at `:2609-2614`):
+  - `SetRecords` extension options (`metadata_extension_options.go`, `extension_options_conformance_test.go`);
+  - the `FunctionSpec` registry with bounds, column size and `NullIsNonUnique`, and `get_versionstamp_incarnation` removed (`key_expression.go:1595-1680`).
+- The part of 3.6 that genuinely remains is never listed:
+  - the Field and Nesting-parent refusals for a missing name or fan type (`key_expression_proto.go:274-277` reads them unchecked);
+  - `KeyExpressionDeserializationError` gaining an `Unwrap` to `RecordCoreError` (`errors.go:336`);
+  - `MetaDataProtoDeserializationError`;
+  - wrapping the count key's failure.
+- Two APIs the design names do not exist:
+  - `RegisterNonUniqueNullFunction` (`:2339`); the code uses `FunctionSpec.NullIsNonUnique`;
+  - `SetAllowLiteralCarrierEitherWay` (`:1059`); the code uses `SetAllowSymmetricLiteralCarrierWidening`.
+- `:2304` says `Build` refuses a function Go registers that the target's registry lacks. The code instead refuses names nobody registered and admits functions an application registers, which is correct (Java's ServiceLoader). Fix the sentence.
+
+**M3. Withdrawn claims survive.** Control: in `DIVERGENCES.md`, "Function not defined" and `RestoreTemplateVersion` both hit.
+- `DIVERGENCES.md:3031`: `CreateTemplate` refuses "a version the ambiguous-legacy-union refusal refuses".
+- `DIVERGENCES.md:3048`: the edited-file route's R2.
+- Design:
+  - `:2173-2178`: the (d) refusal "runs LAST in `Build`";
+  - `:2211-2214`: "Five … refused by Go";
+  - `:2225-2226`: 0A000 wrapping the (d) error;
+  - `:2531`: "F13's refusal without its migration";
+  - `:2606`: "a (d) refusal of the carried bytes".
+- `:2313-2317` says the four untyped refusals are "each declared". `DIVERGENCES.md` has 0 hits for `maxKeyExpressionDepth`, `grouped_count`, `split_point` or "split size", and section 9 has no entry for them.
+
+## LOW
+- **L1 (from reading the source; not run).** The guard depends on step 3's `v′ <= latest` refusal. Sequence:
+  1. DROP SCHEMA TEMPLATE t;
+  2. `Restore(t,3)`;
+  3. a library call to `CreateTemplate(t,2)` while (t,2) is still bound.
+
+  The guard reads bindings only from version 4 up (`fdb_template_catalog.go:176-189`, and the in-memory catalog the same way), so it admits the silent rebind. Pin this sequence in step 3, and note the dependency in STATUS.
+- **L2.** STATUS says the guard tests were "red on the tree before it". `evidence/` holds only `wsj-literal-red` for WS-J; there is no red `catalog_test` log.
+- **L3.** `:667` says "v16 said 'conflicts once'"; it was v15.
+- **L4.** The guard's message in section 2 (`:627-629`) differs from `template_bindings.go:32`.
+- **L5.** The extension-option spec never sets `since_version`, and the "There is already a record type named" refusal (`metadata.go:399`) is unpinned.
+- **L6.** State that H2's ghost entries, and the metadata Go rewrote to NOT_UNIQUE, are pre-release data.
+
+## Architecture lens (Graefe)
+- The v15→v16 diff leaves 3.3–3.5, 4, 5 and 6 unchanged. The unified DDL front end (step 2) came after this commit and is not reviewed here.
+- The key-expression deserialization follows Java's class hierarchy, except that the `Unwrap` is still pending.
+- The `IndexMaintenanceFilter` port matches `StandardIndexMaintainer.java:255-347`:
+  - no stamp means a by-records build;
+  - a BY_INDEX source is read through its `filteredIndexEntries`;
+  - a record with zero entries is skipped.
+- Idempotency matches Java's maintainers (`TimeWindowLeaderboardIndexMaintainer.java:416`, `RankIndexMaintainer.java:222`).
+- The concurrency claims hold key by key:
+  - a delete racing a bind conflicts in either commit order;
+  - a refused guard commits nothing;
+  - the restore's reads of the binding and of the template rows cover the windows it claims.
+- `ClassifyIndexCarry` sees standin changes, which the evolution validator, like Java's, ignores.
+
+## Measured versus assumed
+What I established myself: the hashes, `git grep` results with positive controls, and reading Java 4.14.2.0, `e48f5b496` and the current Go. Every red→green result is quoted from the design and the logs, not reproduced. L1 comes from reading the source only.

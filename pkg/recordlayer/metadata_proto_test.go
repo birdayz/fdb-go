@@ -1,10 +1,17 @@
 package recordlayer
 
 import (
+	"errors"
+	"slices"
+	"strings"
 	"testing"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoregistry"
+	"google.golang.org/protobuf/types/descriptorpb"
 )
 
 func TestIndexToProtoRoundtrip(t *testing.T) {
@@ -156,13 +163,77 @@ func TestValueToProtoRoundtrip(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got := valueFromProto(p)
+			got, err := valueFromProto(p)
+			if err != nil {
+				t.Fatal(err)
+			}
 			// Types may differ (int→int64, float32→float32)
 			if got == nil && tt.val != nil {
 				t.Fatalf("got nil, want %v", tt.val)
 			}
 		})
 	}
+}
+
+// A Value with two fields set is Java's RecordCoreException "More than one value
+// encoded in value" (LiteralKeyExpression.fromProtoValue), wherever a literal is
+// read: a key expression's value, a record type's explicit key, and the
+// record_type_key option SetRecords reads.
+func TestValueFromProto_MoreThanOneValue(t *testing.T) {
+	t.Parallel()
+	two := &gen.Value{LongValue: proto.Int64(1), IntValue: proto.Int32(1)}
+	wantRCE := func(t *testing.T, err error) {
+		t.Helper()
+		var rce *RecordCoreError
+		if !errors.As(err, &rce) || rce.Message != "More than one value encoded in value" {
+			t.Fatalf("err = %T %v, want RecordCoreError \"More than one value encoded in value\"", err, err)
+		}
+	}
+	_, err := valueFromProto(two)
+	wantRCE(t, err)
+	_, err = KeyExpressionFromProto(&gen.KeyExpression{Value: two})
+	wantRCE(t, err)
+	if v, err := valueFromProto(&gen.Value{}); v != nil || err != nil {
+		t.Fatalf("an empty Value is (%v, %v), want (nil, nil)", v, err)
+	}
+	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+	built, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	md, err := built.ToProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+	md.RecordTypes[0].ExplicitKey = two
+	_, err = RecordMetaDataFromProto(md)
+	wantRCE(t, err)
+
+	// The record_type_key option of a message, which SetRecords reads.
+	opts := &descriptorpb.MessageOptions{}
+	proto.SetExtension(opts, gen.E_Record, &gen.RecordTypeOptions{RecordTypeKey: two})
+	fd, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
+		Name: proto.String("two_values.proto"), Package: proto.String("twovalues"), Syntax: proto.String("proto2"),
+		Dependency: []string{"record_metadata_options.proto"},
+		MessageType: []*descriptorpb.DescriptorProto{{
+			Name:    proto.String("T"),
+			Field:   []*descriptorpb.FieldDescriptorProto{{Name: proto.String("id"), Number: proto.Int32(1), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_INT64.Enum()}},
+			Options: opts,
+		}, {
+			Name:  proto.String("RecordTypeUnion"),
+			Field: []*descriptorpb.FieldDescriptorProto{{Name: proto.String("_T"), Number: proto.Int32(1), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String(".twovalues.T")}},
+		}},
+	}, protoregistry.GlobalFiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := NewRecordMetaDataBuilder().SetRecords(fd)
+	b.GetRecordType("T").SetPrimaryKey(Field("id"))
+	_, err = b.Build()
+	wantRCE(t, err)
 }
 
 func TestMetaDataToProtoRoundtrip(t *testing.T) {
@@ -625,5 +696,158 @@ func TestMetaDataProtoRoundtripMultiTypeIndex(t *testing.T) {
 	}
 	if !hasOrder || !hasCustomer {
 		t.Fatalf("shared_idx should be on both Order (%v) and Customer (%v)", hasOrder, hasCustomer)
+	}
+}
+
+// TestStoredIndexSubspaceKeyIsReadAsJavaReadsIt pins the loader's reading of a
+// stored index's subspace key against Java's Index(proto) (Index.java:80-97,
+// :221-225): a present key must pack exactly one non-null item, an absent key
+// is the index's name. Go used to fall back to the name for an empty key, a key
+// of two items and a null item, loading metadata Java refuses and maintaining
+// the index under a subspace Java never reads. The conformance spec "WS-J stored
+// index protos read as Java reads them" asks the JVM for the same protos.
+func TestStoredIndexSubspaceKeyIsReadAsJavaReadsIt(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name         string
+		key          []byte
+		want         any // the loaded key, when it loads
+		repeatOption bool
+		noRoot       bool
+		errType      string
+		errMsg       string
+	}{
+		{name: "absent: the index's name", key: nil, want: "SK_IDX"},
+		{name: "a single string item", key: tuple.Tuple{"elsewhere"}.Pack(), want: "elsewhere"},
+		{name: "a single integer item", key: tuple.Tuple{int64(7)}.Pack(), want: int64(7)},
+		{name: "present and empty", key: []byte{}, errType: "RecordCoreError", errMsg: "subspace key must encode a single item tuple"},
+		{name: "two items", key: tuple.Tuple{"a", "b"}.Pack(), errType: "RecordCoreError", errMsg: "subspace key must encode a single item tuple"},
+		{name: "a null item", key: tuple.Tuple{nil}.Pack(), errType: "RecordCoreArgumentError", errMsg: "Index subspace key cannot be null"},
+		// Java builds the options with the type, before the root and the key
+		// (Index.java:198-221), so a repeated option wins over an empty key.
+		{name: "a repeated option beside an empty key", key: []byte{}, repeatOption: true, errType: "DuplicateIndexOptionError", errMsg: "Multiple entries with same key: a=2 and a=1"},
+		// The root is read before the key (Index.java:205), and an absent root
+		// is refused (KeyExpression.java:404-405), where Go used to skip it.
+		{name: "an absent root beside an empty key", key: []byte{}, noRoot: true, errType: "root", errMsg: "Exactly one root must be specified for an index"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+			built, err := b.Build()
+			if err != nil {
+				t.Fatal(err)
+			}
+			md, err := built.ToProto()
+			if err != nil {
+				t.Fatal(err)
+			}
+			md.Version = proto.Int32(2)
+			idx := &gen.Index{
+				Name: proto.String("SK_IDX"), RecordType: []string{"Order"},
+				RootExpression: Field("price").ToKeyExpression(), Type: proto.String("value"),
+				AddedVersion: proto.Int32(1), LastModifiedVersion: proto.Int32(1), SubspaceKey: c.key,
+			}
+			if c.repeatOption {
+				idx.Options = []*gen.Index_Option{{Key: proto.String("a"), Value: proto.String("1")}, {Key: proto.String("a"), Value: proto.String("2")}}
+			}
+			if c.noRoot {
+				idx.RootExpression = nil
+			}
+			md.Indexes = append(md.Indexes, idx)
+			// Load the marshalled bytes, as a stored meta-data is loaded: the
+			// presence of an empty key is what the unmarshaller keeps.
+			stored, err := proto.Marshal(md)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded gen.MetaData
+			if err := proto.Unmarshal(stored, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := RecordMetaDataFromProto(&decoded)
+			if c.errMsg == "" {
+				if err != nil {
+					t.Fatalf("load: %v", err)
+				}
+				if got := loaded.GetIndex("SK_IDX").SubspaceTupleKey(); got != c.want {
+					t.Fatalf("subspace key = %#v, want %#v", got, c.want)
+				}
+				return
+			}
+			var core *RecordCoreError
+			var pde *MetaDataProtoDeserializationError
+			var rootErr *KeyExpressionDeserializationError
+			var arg *RecordCoreArgumentError
+			var dup *DuplicateIndexOptionError
+			switch {
+			case c.errType == "root" && errors.As(err, &pde) && errors.As(err, &rootErr) && strings.HasPrefix(rootErr.Message, c.errMsg) &&
+				slices.Equal(RecordCoreMessages(err), []string{pde.Error(), rootErr.Message}):
+				// The root's refusal, Java's DeserializationException, under its
+				// MetaDataProtoDeserializationException (a RecordCoreException
+				// too, as a MetaDataException), before the empty key is read:
+				// no other RecordCoreError in the chain.
+			case c.errType == "DuplicateIndexOptionError" && errors.As(err, &dup):
+				if dup.Error() != c.errMsg {
+					t.Fatalf("message = %q, want %q", dup.Error(), c.errMsg)
+				}
+			case c.errType == "RecordCoreError" && errors.As(err, &core):
+				if core.Message != c.errMsg {
+					t.Fatalf("message = %q, want %q", core.Message, c.errMsg)
+				}
+			case c.errType == "RecordCoreArgumentError" && errors.As(err, &arg):
+				if arg.Message != c.errMsg || arg.IndexName != "SK_IDX" {
+					t.Fatalf("error = %+v, want %q naming SK_IDX", arg, c.errMsg)
+				}
+			default:
+				t.Fatalf("load = %v (%T), want %s %q", err, err, c.errType, c.errMsg)
+			}
+		})
+	}
+}
+
+// TestReusedIndexMessageKeepsAnEmptySubspaceKey pins why a loader must be handed
+// a FRESH Index message. vtproto's ResetVT keeps a non-nil SubspaceKey[:0], so a
+// reused (pooled) message decoded from bytes without a subspace key reads the
+// key as present and empty, and the loader refuses it as Java refuses an empty
+// key. Nothing in this repository pools MetaData, Index or FormerIndex messages
+// (ws-j-design.md, the carry rule's stored side); this is what a loader handed
+// one would do: refuse loudly, never read another index's key.
+func TestReusedIndexMessageKeepsAnEmptySubspaceKey(t *testing.T) {
+	t.Parallel()
+	withoutKey, err := proto.Marshal(&gen.Index{
+		Name: proto.String("SK_IDX"), RecordType: []string{"Order"},
+		RootExpression: Field("price").ToKeyExpression(), Type: proto.String("value"),
+		AddedVersion: proto.Int32(1), LastModifiedVersion: proto.Int32(1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fresh gen.Index
+	if err := fresh.UnmarshalVT(withoutKey); err != nil {
+		t.Fatal(err)
+	}
+	if fresh.SubspaceKey != nil {
+		t.Fatalf("a fresh message read an absent key as %#v", fresh.SubspaceKey)
+	}
+
+	reused := &gen.Index{SubspaceKey: tuple.Tuple{"elsewhere"}.Pack()}
+	reused.ResetVT()
+	if err := reused.UnmarshalVT(withoutKey); err != nil {
+		t.Fatal(err)
+	}
+	if reused.SubspaceKey == nil || len(reused.SubspaceKey) != 0 {
+		t.Fatalf("a reused message's key = %#v; ResetVT no longer keeps an empty non-nil key, "+
+			"and the loader contract this test pins can be restated", reused.SubspaceKey)
+	}
+	if _, err := indexFromProto(reused); err == nil {
+		t.Fatal("the loader read a reused message's empty key as a key")
+	} else {
+		var core *RecordCoreError
+		if !errors.As(err, &core) || core.Message != "subspace key must encode a single item tuple" {
+			t.Fatalf("loading a reused message: %v, want the empty-key refusal", err)
+		}
 	}
 }

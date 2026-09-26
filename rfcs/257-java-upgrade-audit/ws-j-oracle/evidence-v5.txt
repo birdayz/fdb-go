@@ -1,0 +1,102 @@
+# WS-J design v5 evidence
+
+Two uncached passes of every WS-J spec, //conformance:rfc257_oracle_test --ginkgo.focus='WS-J',
+on the bytes hashed below (hashed before pass 1, verified with sha256sum -c after pass 2, after the JVM
+records-descriptor spec and after `just test`: 0 not OK). The hashed set is every file the WS-J work
+landed or changed, code, tests and the records it cites (48 files, /var/tmp/fdb-upgrade-recovery/wsj5-files.txt).
+Driver: /var/tmp/fdb-upgrade-recovery/wsj5-evidence.sh (output /var/tmp/fdb-upgrade-recovery/wsj5-evidence.out).
+
+## sha256 of every landed WS-J file and test (48 files)
+be80cffbb63cb5b6109dce5629cfdaacd6681e90924c3697804c3f27d49e4a30  CHANGELOG.md
+b983ebdf417fd65734f22ae8c7c5239512d6f477928c5a7c946eab4f982c15cf  cmd/frl/internal/cmd/meta.go
+cfe3e5dc3e6aecfe10c88048b14078771d9dfde9a0d4264c2b89b72042c57a2d  cmd/frl/internal/cmd/meta_test.go
+a43711d2a3ec4c793980fe725d07f80433eca4c002cef41eb27f4740762f4f89  conformance/BUILD.bazel
+1645b0e6a56a5f6b530d3b61c8092a3249fb61f27157acdc187203c310e33cbf  conformance/metadata_proto_conformance_test.go
+be0306fc531f8240babbe25df2de4192c76f05ef5b5c59683883aaafa51914b3  conformance/sql_plan_steps.java
+355ef016ad8184c8c0ab78b37f1d2f8502ccafdad22cc75c052f9cc4d6b7e2bb  conformance/testdata/rfc257/java_index_templates.json
+2ea95d3536149104e5191c1efabc0eccb8e3eba7d70706fe4f5fc5aa32dfe334  conformance/testdata/rfc257/wsj_go_classes.json
+1d3afc226a08a282778ee4753e475a7c2e83527534b60ff55de5b5673ec786ea  conformance/testdata/rfc257/wsj_java_pins.json
+79c20dbf4ad4ff9203b416b9e77d7c59f21b189d75fab8bfc24c923e02b5fca6  conformance/ws_j_index_fidelity_conformance_test.go
+fe65df0c1968badbb7c16ce3f9427ca7aae5879cf2908cd1fb30d939afc79de5  DIVERGENCES.md
+303f4710611675b48e3d346e8bac94adaab7df7ee8e8fc7328898c737750005e  pkg/recordlayer/BUILD.bazel
+f701d33489ccacc8022471e7381b71989f478e4b868d394dc52235356e72cdef  pkg/recordlayer/errors.go
+664b5252a6816bec8431958e97b028e4972f1a98ae28e39d5554bbce30d0f622  pkg/recordlayer/index.go
+bd105a2cb169ff157d05924b69f132f1a2b1dd124ce7cdedd1c57cd332e786fd  pkg/recordlayer/index_option_order_test.go
+47a06c42ce4a46fb73ec35e46ea9f7b233700b5b1edbc66cdd04e5bf1a2ea97e  pkg/recordlayer/index_predicate.go
+f6b996367d6db9e86a627dd0f7b2cfcb0ba51f36a7571abf2814938f49fb7af9  pkg/recordlayer/key_expression_fastpath_test.go
+84556da7f1f2ab06b0a2759cd1f721ebb4cee90af5ea08b40cb1f6c98464e9a2  pkg/recordlayer/key_expression.go
+6cd2b54c386f2b22cb88461f187d15d6ecfde1fba9e30ace70eaa92ab27d12a2  pkg/recordlayer/long_arithmetic_function.go
+4b5d4a31e36f644dd1cd3d4d05d70a6e587a180ceb6ce858a8483c0953b96530  pkg/recordlayer/long_arithmetic_function_test.go
+fb9c64bc0b4952d7cc5cf2a05191f4fad557f51dc90a6727a5ebd195f002dd77  pkg/recordlayer/metadata_evolution_validator.go
+349deeb9aae58138f7b729ef089e0f29d4c0572b42598a53f7254703555c751f  pkg/recordlayer/metadata_evolution_validator_test.go
+2d94f0234273fc16eb03ae76f2a0bc5fb3e8be96b62f66f7421ed411f54000bd  pkg/recordlayer/metadata.go
+fa6de05b3b931e738b3f02400584623f1e9a2941a0ace168d6f7e9e35e6c00b0  pkg/recordlayer/metadata_proto.go
+5ff7a95eb6a5caecb3dd81e1fda0233e6149bd5ea2004ff473b27345a9184c44  pkg/recordlayer/metadata_union_evolution_test.go
+3f869017ac236f9ea791f71330d7fbd5901a83e213686e39b5581886fadc3eef  pkg/recordlayer/metadata_user_identifier_lookup_test.go
+84cd6a1416a1a1baafc928fa978491743cfa39c1e4de16ebd16579a8277aa3b3  pkg/recordlayer/metadata_validate_records.go
+22f82a3d72026c3ccd6124c303cc3db23488754d2901e227784163204e0e14eb  pkg/recordlayer/metadata_validate_records_test.go
+13a5bcede6abbaaf10e2d888100d7cea0177adff62b7c326501b98858d7c85e1  pkg/recordlayer/query/executor/executor.go
+dcc0bce6fe04aad387e2129489e48695bcd9e481908762ff559e5557c30a19de  pkg/recordlayer/query/executor/executor_test.go
+c39833deff4517e98b59b01730163d9000cdf99e178037b26e0376a33bbfbfde  pkg/recordlayer/query/plan/cascades/value_equivalence.go
+574d53511d8b509b8b13a4cda408c5d346278f7248fe78c1e458dbff899c52cd  pkg/recordlayer/query/plan/cascades/values/proto_field_type.go
+c27b40d5525853108e1d77dc7eca81b3304342820da7502f95cd55cfa4a5b6cb  pkg/recordlayer/query/plan/cascades/values/proto_scalar_shape_test.go
+ddf2f587ce3f48be758ca9a059dece5c3d3b8e5610d12407dc89b4cfd5f2f2a7  pkg/recordlayer/query/plan/cascades/values/values.go
+a6f31c9533b8fa9064eaa160d346e2d05daf4e5dd40869836a0de9b3d1908445  pkg/recordlayer/sliding_window_index_validation.go
+e9f7a6369b1b53a01d5140f098e4665ff4c4c2464de46a06c1ee3e54af3e0038  pkg/relational/core/catalog/fdb_catalog_test.go
+370bd65d1ff888c86628f1f6ad76859cba65cb009937462a07ed8a2202439c09  pkg/relational/core/catalog/fdb_store_catalog.go
+c7eebe70fc55a2506a7f0c70ed9d0a7f804576a36e4d40ac8f7ae0e9b80ba070  pkg/relational/core/embedded/index_ddl_field_trie_test.go
+555aae7f780507842d40be20ff5193313518258e0b413509c03189d0f1050e33  pkg/relational/core/embedded/query_hash.go
+36275c248934663ae17b760096e8a7950073fe409feb2ec6b38ab3e1ef2f81e6  pkg/relational/core/functions/proto_value.go
+86421fb06671823d85dd265996ff18bf45d355c199a86889c4e29cea10aad06c  pkg/relational/core/functions/proto_value_test.go
+53193a635a9fb4839dd097b1478ed9bdb68d52cec9cf363c9b4fc46a481cbfe0  pkg/relational/core/metadata/builder.go
+078a2e98925d0607aa9df716eb9cab9e0f9e208a2a228b66ea9c93d659ae1c24  pkg/relational/core/query/ddl/generator.go
+42083ddc70befbec923a951fe64213e8427b2278925eaf9b5a9567b11dd92b3d  pkg/relational/core/query/ddl/literal_key_carrier_test.go
+c42a2336179cba38776f946c873ef45e63b791d19afb8eddc8ad244861d3194f  pkg/relational/core/query/semantic/rlcatalog/rlcatalog.go
+ea5b28cbc0f34de70773e815c699cf19cde6d2806f1b95324efd30e302d40f74  pkg/relational/sqldriver/arithmetic_index_operand_fdb_test.go
+8f2104e5fae9ebe034d88c1932d8a9fdbe6598389f6cb88ea437733eae6a9979  pkg/relational/sqldriver/index_definition_production_fdb_test.go
+51d2e5275a44393d4e0f5a0a1480cf948c16063b4ba2c2a55cf57c334546713e  rfcs/257-java-4.14.2.0-upgrade.md
+
+## pass 1 (/var/tmp/fdb-upgrade-recovery/wsj5-ev1.log)
+WSJ-TALLY map[both-accept-companion:4 both-accept-equal:166 both-accept-index-diverge:4 both-accept-metadata-diverge:180 both-reject:24 java-accept-go-reject:101]
+WSJ-GO-BUILT-TWICE 354
+WSJG long_value variant rewrote 3 literals
+WSJG discriminating=9 of 15
+Ran 8 of 32 Specs in 30.930 seconds
+SUCCESS! -- 8 Passed | 0 Failed | 0 Pending | 24 Skipped
+## pass 2 (/var/tmp/fdb-upgrade-recovery/wsj5-ev2.log)
+WSJ-TALLY map[both-accept-companion:4 both-accept-equal:166 both-accept-index-diverge:4 both-accept-metadata-diverge:180 both-reject:24 java-accept-go-reject:101]
+WSJ-GO-BUILT-TWICE 354
+WSJG long_value variant rewrote 3 literals
+WSJG discriminating=9 of 15
+Ran 8 of 32 Specs in 31.940 seconds
+SUCCESS! -- 8 Passed | 0 Failed | 0 Pending | 24 Skipped
+
+## pass 1 against pass 2
+WSJ and WSJ-CLASS lines: 479 and 479 each (v5 adds the four top_* shapes); WSJN and WSJN-GO lines: 21 and 21 each;
+WSJD: 3 and 3; WSJF2B lines: 13 and 13; each set equal as sorted sets. WSJG lines: 18 and 18, one differing, the random
+name of the driver-stored template ("SchemaTemplate 'WSJ_DRV_<8 hex>' is not in catalog"), as in v4.
+
+## the JVM records-descriptor spec (//conformance:conformance_test, "Java refuses the same records descriptors",
+## /var/tmp/fdb-upgrade-recovery/wsj5-vr-jvm.log)
+Ran 23 of 1548 Specs in 6.172 seconds
+SUCCESS! -- 23 Passed | 0 Failed | 0 Pending | 1525 Skipped
+23 records files: 3 load in both, 19 are refused with the same class and message in both, and one (shape (d), a
+message named UnionDescriptor beside the usage=UNION union) loads in the target and is refused by Go with
+AmbiguousLegacyUnionError, the declared divergence (ws-j-design.md section 4c).
+
+## the unit, JVM and FDB pins: `just test`
+Two runs, both green; the second is on the hashed bytes.
+- Run A, tree b50c89abdc0a2fcfb46e39d5ea57763c77006fdd: "Executed 46 out of 94 tests: 94 tests pass." (46 executed
+  targets; their logs are /var/tmp/fdb-upgrade-recovery/wsj5-justtest-<target>.log, listed in /var/tmp/fdb-upgrade-recovery/wsj5-justtest-logs.txt).
+- Run B, tree 010199ee954021518dea18ebd9371111d432af6f (the same tree before and after the run,
+  wsj5-justtest-tree.txt and wsj5-justtest-tree-after.txt), /var/tmp/fdb-upgrade-recovery/wsj5-justtest.log: "Executed 4 out of 94 tests: 94
+  tests pass." The four executed (wsj5-justtest-executed.txt) are the targets whose inputs changed between the two trees
+  (`git diff --stat b50c89ab 010199ee`: the WS-J oracle spec, sql_plan_steps.java and the two pin files, plus
+  documents and the WS-E review logs): //conformance:conformance_test (Ran 1429 of 1548 Specs in 314.519 seconds; SUCCESS! -- 1429 Passed | 0 Failed | 0 Pending | 119 Skipped),
+  //conformance:rfc257_oracle_test (Ran 32 of 32 Specs in 343.426 seconds; SUCCESS! -- 32 Passed | 0 Failed | 0 Pending | 0 Skipped), //conformance:rabitq_architecture_test and
+  //pkg/docscheck:docscheck_test. Every other target's result is Bazel's cache of run A, whose inputs are byte-identical.
+Read from the run-A logs ("--- PASS" lines, one each):
+  //pkg/recordlayer:recordlayer_test: TestStoredMetaDataLoadsInJavasOrder, TestStoredMetaDataWithAnAmbiguousLegacyUnionIsRefused,
+    TestPreviouslyStoredMetaDataIsRefusedOnLoad, TestSetRecordsWithUnionNameRefusesAnotherUnion, TestValidateRecordsMatchesJava
+  //pkg/relational/core/query/ddl:ddl_test: TestLiteralKeyCarrier, TestLiteralKeyCarrierRefusesOutOfRangeInt,
+    TestLiteralKeyCarrierRefusesUnknownPairs

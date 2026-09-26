@@ -34,7 +34,7 @@ func TestFDB_QuotedMachineShapedAliases(t *testing.T) {
 			" CREATE TABLE q (qid BIGINT, PRIMARY KEY (qid))"+
 			" CREATE TABLE sink (sid BIGINT, PRIMARY KEY (sid))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_qmsa/s WITH TEMPLATE qmsa")
-	dsn := fmt.Sprintf("fdbsql:///testdb_qmsa?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_QMSA?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

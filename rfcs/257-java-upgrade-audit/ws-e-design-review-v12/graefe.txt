@@ -1,0 +1,121 @@
+**NAK: RFC-257 WS-E design v12 (Graefe lens)**
+
+- **Tree:** `c59b32e13624a3bbf65545c594c051499d5633af`.
+- **Design:** `ws-e-design.md`, SHA-256 `7e04ea6f2b17e701f48af4981ee15862f0893b32ee799fa0b07ce1829f4095b0`, 3929 lines. I recomputed both from `git show`.
+- **Method:** read-only; I ran nothing. I read the three v11 verdicts, the full v12 design, the oracle source and evidence, the wse13/wse13b records and the prototype diff, and the Java and Go sources cited below. The policy blocked `git diff` and `git grep`, so I compared v12 against the v11 verdicts rather than against a v11 diff. I located code with Grep on the working tree and read every cited line from the tree with `git show`.
+
+## HIGH
+
+**H1. The design's own oracle shows a different IN-family plan from the target's, and the design never compares them.**
+- **The measurement (MEASURED, both sides):**
+  - `wsE12CostPins` (oracle v12) pins the target's plans:
+    - in2, in3 and in4 are nested IN-joins, the `id` source SORTED and outermost, with the other lists as residuals or intersected probes.
+    - in_id_twice is a single sorted IN-join.
+    - in_a_twice is a dependent explode.
+  - The design's configuration plans a k-binding `InUnion` for all five (`wse13b-inN.log`: 40, 53, 66, 92, 104). Only #7 matches the target.
+- **Where the design stops:** it reads counts only ("what compares is growth", :1039), and it proposes to pin Go's counts to ±5%. That pins the divergence.
+- **Likely cause (SOURCE):**
+  - Go's tree-wide `inPlanPenaltyRank` (`planning_cost_model.go:869-913`, a declared "DELIBERATE DIVERGENCE") penalizes the target's nested plan. Its inner IN-join's binding (`FILTER _.A EQUALS q1`) is not a scan argument.
+  - Java's `compareInOperator` reads the root only (`PlanningCostModel.java:180-186, 522-557`). It then prefers more in-join sources (`:263-274`).
+  - So a Go-only rung decides the port's plans.
+- **Consequence:**
+  - Java checks the product at execution (`RecordQueryInUnionPlan.java:151-153, 331-337`).
+  - in4's product is 3×3×2×2 = 36, above 24. After step (5), Go fails in4 with "too many IN values", while the target answers it with nested IN-joins.
+  - :918 ("as the target refuses it") and the CHANGELOG line are therefore false for this population. By the same mechanism, Go's single-binding IN-union for a PK list ordered by `id` risks a 25-value refusal where the target answers.
+- **Fix:**
+  - Root-cause which rung decides each of the five, and align it with Java.
+  - Assert the target's shapes as Go plan pins.
+  - Re-derive the size-cap regression population on the plans Go will actually choose.
+
+## MEDIUM
+
+**M1. The configuration v12 builds has no corpus or suite evidence, and the Preserve change is misdescribed.**
+- **Only planning probes were run:** v12's records are planning-only probes of about 14 statements (`wse13-proto2.sh:18-42`).
+- **The cited evidence is of other configurations:** the corpus diffs, suite runs and rows the design cites (wse8, wse11, wse12) all predate the in-join alignment and use the constant arm. That is the reason v12 gives for discarding v11's counts (:1033-1037).
+- **The Preserve change was measured on the wrong branch:**
+  - :1059 says Go adds Preserve "when the call carries none" and cites `:140-145`.
+  - At the tree, the none-case is `:133-134`, and `:140-145` is the append-when-absent branch.
+  - The prototype flag gates only the append (diff hunk at :140).
+  - A "line for line" port (:1069) also deletes the none→Preserve default (`ImplementInJoinRule.java:107-110`), and that is unmeasured.
+- **Fix:** run ARM2 and CS3b, with that default removed, over the plan-shape corpus and the three suites, before implementation.
+
+**M2. The guard decision rests on a confounded measurement and contradictory reasoning.**
+- **Confounded measurement:**
+  - The Java-shaped option, no correlation guard, is rejected on v11's NOGUARD 54F02 (:46-47).
+  - That NOGUARD lacks the in-join alignment (`wse12-proto-configs.txt:4`), and v12 attributes that configuration's blow-up to the in-join defect.
+  - Re-measure NOGUARD on ARM2. If a guard stays, the reason is RFC-150's owner-required defense-in-depth, not the budget.
+- **Stale reasoning:**
+  - :978-981 still argue that the hazard "needs a probe with NO correlation". That is v11's refuted premise.
+  - "The planner binds it through the IN-join or FlatMap" (:988-990) describes a table alias just as well. RFC-150 §8 places safety in the task-graph invariant.
+  - State the explode arm as a scope decision, exactly what #7 needs, and delete the superseded sentence.
+- **The three-table form is misdescribed (:1016):**
+  - Its DDL indexes `fk`, so the probe is O-correlated (`probeCorr=map[O]`), and only explode aliases are admitted. P never reaches the guard (`wse13b-guard.log:36-51`).
+  - So the analogue of PIN 1 is unexercised: an explode-fed probe with a residual on an unfed table alias.
+  - Add it (index on `k`) to the instrumented pins.
+
+**M3. The NaN producer census misses `math.Mod`, so "the census is complete" (:17) is false (SOURCE).**
+- **The missed producer:** `values.go:3827, 3854` evaluate DOUBLE/FLOAT MOD with `math.Mod`. For `x % 0`, `±Inf % y` and a NaN operand, it returns Go's `NaN()`, `7ff8000000000001`.
+- **Java:** MOD_DD/MOD_FF use `%` (`ArithmeticValue.java:490-498`), which gives the operand's NaN or the hardware NaN.
+- **Why the census missed it:** a literal `math.NaN()` grep cannot see a NaN returned inside a library call.
+- **Go-only functions:** `math.Log`, `Log10` and `Pow` (`values.go:2917, 3176, 3189, 3199`) write Go's NaN bits into shared stores too.
+- **Fix:** measure the target's bits for these MOD cases in a new round, port Java's `%`, and declare the Go-only functions' bits in section 8.
+
+**M4. The 54F02 population is extrapolated from one query.**
+- "Five or more IN lists over one table" (:1096) generalizes one measured statement.
+- The partition arm alone costs +88% on a one-IN three-way join (seed 17), and joins with two or three IN lists are unmeasured.
+- v11 M4's rowdiff-lane run (NONE against the guard) was not done. It matters more now, because the explode arm fires on exactly those joins.
+- **Fix:** run the lane counting 54F02s and declare the measured population.
+
+## LOW
+
+1. **Type-merging sites beyond the six named (:1758):** `MaximumType` also merges at:
+   - `walk.go:1576` (array elements);
+   - `cascades_translator.go:5759` and `:9293` (set-operation legs);
+   - `inline_values.go:215` (VALUES rows);
+   - `insert_cascades.go:263`.
+
+   For each, state whether a PromoteValue is injected, and extend the property test.
+2. **Counts claim:** :1006 says CS3b and GUARD2 give "the same task counts" on the four guard shapes. The RFC-150 shape counts 2,007 against 2,143.
+3. **Superseded record still cited:** :973 cites `wse12-7all-in2.log`, which `wse12-suites-README.txt:8` marks SUPERSEDED with "no v11 or v12 number rests on it".
+4. **Numbers that mix configurations or units:**
+   - Status :13 quotes ARM2's 44,099 as the aligned cost; the design's configuration costs 73,986.
+   - :1079's "63%" compares absolute counts that :1039 declares non-comparable.
+5. **Walltime traceability:** `wse13b-walltime.log` labels its configuration `cfg=[PROBE_DISTINCT]` only.
+
+## Verified
+
+- **Resolved from v11 Graefe:** H1, H2, M2, M5, M6 and L1-L10.
+  - M1 is resolved for MIN/MAX, measured; the rest of the census is M3 above.
+  - M3 is partly resolved (LOW 1).
+  - M4 is partly resolved (M2, M4 above).
+- **Resolved from Torvalds and storage, where they overlap:**
+  - The NaN arms for all four binder callers.
+  - The CAST grammar port (22 spellings).
+  - The saturating product.
+  - The resume refusal.
+  - ARRAY<RECORD> kept.
+  - `wseRequireNaNPinArch`.
+- **Java source checks:**
+  - The in-join source claims hold: no Preserve fallback, one memoization per partition, ordering and sources (`ImplementInJoinRule.java:107-165`).
+  - The in-union rule has no size check at planning (`ImplementInUnionRule.java:171-212`).
+- **Evidence:**
+  - The evidence run: 14 of 64 specs, two runs, 1946 lines equal as sets, 9 of 9 checksums OK.
+  - M12 reddens only `java_u_d_id10`.
+  - The prototype's 17 md5s are OK.
+  - Seed 17 (23,459 / 43,919 / 43,283 / 44,136), the in-join alignment counts, and PIN 1's 0 admissions all match the logs.
+  - WS-F v4 at the tree carries the "EVERY crossing" arm and names the WS-E probe.
+
+## Measured vs SOURCE
+
+- **Measured:**
+  - The plan divergence in H1, from both engines' logs.
+  - All task counts.
+  - The guard admissions and refusals.
+  - The NaN bits and spellings.
+- **SOURCE:**
+  - H1's cause and its in4 failure.
+  - M1's Preserve default.
+  - M3's MOD bits.
+  - The safety of the explode arm beyond #7, since no rows have been run.
+
+This review is complete, and the verdict is NAK.

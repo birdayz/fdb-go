@@ -28,7 +28,7 @@ func buildLeaderboardMetadata() (*recordlayer.RecordMetaData, *recordlayer.Index
 	builder.SetRecordCountKey(recordlayer.EmptyKey())
 
 	idx := recordlayer.NewTimeWindowLeaderboardIndex("order_score_leaderboard",
-		recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")))
+		recordlayer.Ungrouped(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity"))))
 	builder.AddIndex("Order", idx)
 
 	md, err := builder.Build()

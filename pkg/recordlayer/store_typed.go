@@ -16,7 +16,7 @@ import (
 func GetTypedRecordStore[T proto.Message](store *FDBRecordStore, recordTypeName string) (*TypedFDBRecordStore[T], error) {
 	recordType := store.metaData.GetRecordType(recordTypeName)
 	if recordType == nil {
-		return nil, &MetaDataError{Message: fmt.Sprintf("record type '%s' not found in metadata", recordTypeName)}
+		return nil, unknownRecordTypeError(recordTypeName)
 	}
 
 	// Use reflection to create the wrap/unwrap functions automatically
@@ -118,6 +118,7 @@ func (ts *TypedFDBRecordStore[T]) LoadRecord(primaryKey tuple.Tuple) (*FDBStored
 		PrimaryKey: storedRecord.PrimaryKey,
 		RecordType: storedRecord.RecordType,
 		Record:     typedRecord,
+		wire:       storedRecord.wire,
 		Version:    storedRecord.Version,
 		Store:      storedRecord.Store,
 		KeyCount:   storedRecord.KeyCount,
@@ -139,6 +140,7 @@ func (ts *TypedFDBRecordStore[T]) SaveRecord(record T) (*FDBStoredRecord[T], err
 		PrimaryKey: storedRecord.PrimaryKey,
 		RecordType: storedRecord.RecordType,
 		Record:     record, // Return the original typed record
+		wire:       storedRecord.wire,
 		Version:    storedRecord.Version,
 		Store:      storedRecord.Store,
 		KeyCount:   storedRecord.KeyCount,
@@ -174,6 +176,7 @@ func (ts *TypedFDBRecordStore[T]) SaveRecordWithOptions(
 		PrimaryKey: storedRecord.PrimaryKey,
 		RecordType: storedRecord.RecordType,
 		Record:     record, // Return the original typed record
+		wire:       storedRecord.wire,
 		Version:    storedRecord.Version,
 		Store:      storedRecord.Store,
 		KeyCount:   storedRecord.KeyCount,
@@ -241,6 +244,7 @@ func (ts *TypedFDBRecordStore[T]) ScanRecords(continuation []byte, scanPropertie
 			PrimaryKey: r.PrimaryKey,
 			RecordType: r.RecordType,
 			Record:     typed,
+			wire:       r.wire,
 			Version:    r.Version,
 			Store:      r.Store,
 			KeyCount:   r.KeyCount,

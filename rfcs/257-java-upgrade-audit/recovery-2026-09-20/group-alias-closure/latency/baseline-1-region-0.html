@@ -1,0 +1,250 @@
+
+<!DOCTYPE html>
+<title>Regions: &#34;stress-query: SELECT * FROM orders WHERE id = 0&#34; @ 0x587689</title>
+<style>
+ 
+body {
+  font-family:	-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji';
+  font-size:	1rem;
+  line-height:	normal;
+  max-width:	9in;
+  margin:	1em;
+}
+h1 { font-size: 1.5rem; }
+h2 { font-size: 1.375rem; }
+h1,h2 {
+  font-weight: 600;
+  line-height: 1.25em;
+  word-break: break-word;
+}
+p  { color: grey85; font-size:85%; }
+code,
+pre,
+textarea.code {
+  font-family: SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.875rem;
+  line-height: 1.5em;
+}
+
+pre,
+textarea.code {
+  background-color: var(--color-background-accented);
+  border: var(--border);
+  border-radius: var(--border-radius);
+  color: var(--color-text);
+  overflow-x: auto;
+  padding: 0.625rem;
+  tab-size: 4;
+  white-space: pre;
+}
+
+th {
+  background-color: #050505;
+  color: #fff;
+}
+th.link {
+  cursor: pointer;
+}
+table {
+  border-collapse: collapse;
+}
+td,
+th {
+  padding-left: 8px;
+  padding-right: 8px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+.details tr:hover {
+  background-color: #f2f2f2;
+}
+.details td {
+  text-align: right;
+  border: 1px solid #000;
+}
+.details td.id {
+  text-align: left;
+}
+.stacked-bar-graph {
+  width: 300px;
+  height: 10px;
+  color: #414042;
+  white-space: nowrap;
+  font-size: 5px;
+}
+.stacked-bar-graph span {
+  display: inline-block;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  float: left;
+  padding: 0;
+}
+</style>
+
+<script>
+function reloadTable(key, value) {
+  let params = new URLSearchParams(window.location.search);
+  params.set(key, value);
+  window.location.search = params.toString();
+}
+</script>
+
+<h1>Regions: &#34;stress-query: SELECT * FROM orders WHERE id = 0&#34; @ 0x587689</h1>
+
+Table of contents
+<ul>
+	<li><a href="#summary">Summary</a></li>
+	<li><a href="#breakdown">Breakdown</a></li>
+	<li><a href="#ranges">Special ranges</a></li>
+</ul>
+
+<h3 id="summary">Summary</h3>
+
+
+<table class="summary">
+	<tr>
+		<td>Network wait profile:</td>
+		<td> <a href="/regionio?pc=0x587689&amp;type=stress-query%3A&#43;SELECT&#43;%2A&#43;FROM&#43;orders&#43;WHERE&#43;id&#43;%3D&#43;0">graph</a> <a href="/regionio?pc=0x587689&amp;type=stress-query%3A&#43;SELECT&#43;%2A&#43;FROM&#43;orders&#43;WHERE&#43;id&#43;%3D&#43;0&raw=1" download="io.profile">(download)</a></td>
+	</tr>
+	<tr>
+		<td>Sync block profile:</td>
+		<td> <a href="/regionblock?pc=0x587689&amp;type=stress-query%3A&#43;SELECT&#43;%2A&#43;FROM&#43;orders&#43;WHERE&#43;id&#43;%3D&#43;0">graph</a> <a href="/regionblock?pc=0x587689&amp;type=stress-query%3A&#43;SELECT&#43;%2A&#43;FROM&#43;orders&#43;WHERE&#43;id&#43;%3D&#43;0&raw=1" download="block.profile">(download)</a></td>
+	</tr>
+	<tr>
+		<td>Syscall profile:</td>
+		<td> <a href="/regionsyscall?pc=0x587689&amp;type=stress-query%3A&#43;SELECT&#43;%2A&#43;FROM&#43;orders&#43;WHERE&#43;id&#43;%3D&#43;0">graph</a> <a href="/regionsyscall?pc=0x587689&amp;type=stress-query%3A&#43;SELECT&#43;%2A&#43;FROM&#43;orders&#43;WHERE&#43;id&#43;%3D&#43;0&raw=1" download="syscall.profile">(download)</a></td>
+	</tr>
+	<tr>
+		<td>Scheduler wait profile:</td>
+		<td> <a href="/regionsched?pc=0x587689&amp;type=stress-query%3A&#43;SELECT&#43;%2A&#43;FROM&#43;orders&#43;WHERE&#43;id&#43;%3D&#43;0">graph</a> <a href="/regionsched?pc=0x587689&amp;type=stress-query%3A&#43;SELECT&#43;%2A&#43;FROM&#43;orders&#43;WHERE&#43;id&#43;%3D&#43;0&raw=1" download="sched.profile">(download)</a></td>
+	</tr>
+</table>
+
+
+<h3 id="breakdown">Breakdown</h3>
+
+The table below breaks down where each goroutine is spent its time during the
+traced period.
+All of the columns except total time are non-overlapping.
+<br>
+<br>
+
+<table class="details">
+<tr>
+<th> Goroutine </th>
+<th> Task </th>
+<th class="link" onclick="reloadTable('sortby', 'Total time')"> Total</th>
+<th></th>
+
+<th class="link" onclick="reloadTable('sortby', 'Execution time')" style="background-color: #d7191c;"> Execution time</th>
+
+<th class="link" onclick="reloadTable('sortby', 'Block time (chan receive)')" style="background-color: #d01c8b;"> Block time (chan receive)</th>
+
+<th class="link" onclick="reloadTable('sortby', 'Block time (select)')" style="background-color: #d01c8b;"> Block time (select)</th>
+
+<th class="link" onclick="reloadTable('sortby', 'Block time (syscall)')" style="background-color: #d01c8b;"> Block time (syscall)</th>
+
+<th class="link" onclick="reloadTable('sortby', 'Sched wait time')" style="background-color: #2c7bb6;"> Sched wait time</th>
+
+<th class="link" onclick="reloadTable('sortby', 'Syscall execution time')" style="background-color: #7b3294;"> Syscall execution time</th>
+
+<th class="link" onclick="reloadTable('sortby', 'Unknown time')" style="background-color: #636363;"> Unknown time</th>
+
+</tr>
+
+	<tr>
+		<td> <a href="/trace?goid=8900">8900</a> </td>
+		<td>  </td>
+		<td> 17.452032ms </td>
+		<td>
+			<div class="stacked-bar-graph">
+			
+			
+				
+				
+					<span style="width: 12.37%; background-color: #d7191c;">&nbsp;</span>
+				
+			
+				
+				
+			
+				
+				
+					<span style="width: 87.25%; background-color: #d01c8b;">&nbsp;</span>
+				
+			
+				
+				
+			
+				
+				
+					<span style="width: 0.39%; background-color: #2c7bb6;">&nbsp;</span>
+				
+			
+				
+				
+			
+				
+				
+			
+			</div>
+		</td>
+		
+		
+			
+			<td> 2.158336ms</td>
+		
+			
+			<td> 0s</td>
+		
+			
+			<td> 15.22624ms</td>
+		
+			
+			<td> 0s</td>
+		
+			
+			<td> 67.456µs</td>
+		
+			
+			<td> 0s</td>
+		
+			
+			<td> 0s</td>
+		
+	</tr>
+
+</table>
+
+<h3 id="ranges">Special ranges</h3>
+
+The table below describes how much of the traced period each goroutine spent in
+certain special time ranges.
+If a goroutine has spent no time in any special time ranges, it is excluded from
+the table.
+For example, how much time it spent helping the GC. Note that these times do
+overlap with the times from the first table.
+In general the goroutine may not be executing in these special time ranges.
+For example, it may have blocked while trying to help the GC.
+This must be taken into account when interpreting the data.
+<br>
+<br>
+
+<table class="details">
+<tr>
+<th> Goroutine</th>
+<th> Task </th>
+<th> Total</th>
+
+<th style="background-color: #636363;"> GC incremental sweep</th>
+
+<th style="background-color: #636363;"> GC mark assist</th>
+
+<th style="background-color: #636363;"> stop-the-world (GC sweep termination)</th>
+
+</tr>
+
+	
+
+</table>

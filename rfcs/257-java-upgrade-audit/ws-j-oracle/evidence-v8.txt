@@ -1,0 +1,114 @@
+# WS-J design v8 evidence (run together with WS-C addendum revision 4's)
+
+Two uncached passes of every WS-J spec, //conformance:rfc257_oracle_test --ginkgo.focus='WS-J', on the bytes hashed below
+(hashed before pass 1, verified with sha256sum -c after `just test`: 0 not OK). The hashed set is v7's 49 files plus the
+WS-C revision 4 files and the three v8 additions to the WS-J population (pkg/recordlayer/metadata_store_test.go,
+pkg/relational/core/catalog/fdb_template_catalog.go, pkg/relational/core/metadata/builder.go): 66 files
+(/var/tmp/fdb-upgrade-recovery/ev8-files.txt). Driver /var/tmp/fdb-upgrade-recovery/ev8-evidence.sh, output
+ev8-evidence.out; logs in /var/tmp/fdb-upgrade-recovery/ev8/. A first run of the same driver (ev8-run1/) passed every
+step before `just test`, which failed to BUILD //pkg/relational/core/fleet:fleet_test (nogo deepequalerrors: a
+reflect.DeepEqual over fleet.Event, which holds an error); the comparison was rewritten field by field and the whole
+driver re-run on the new bytes. Only the second run is evidence.
+
+## Results
+- WS-J pass 1: "Ran 27 of 51 Specs", SUCCESS 27 Passed (ev8/wsj-ev1.log); pass 2 identical (ev8/wsj-ev2.log).
+- JVM records-descriptor spec, //conformance:conformance_test "Java refuses the same records descriptors": "Ran 35 of
+  1560", 35 Passed (ev8/wsj-vr-jvm.log); 35 VALIDATE_RECORDS lines: 8 load in both, 22 refused in both with the same
+  message, 5 loaded by the target and refused by Go (shape (d)).
+- WS-C revision 4 focus with the FDBMetaDataStore Describe: "Ran 385 of 3698", 385 Passed (ev8/wsc-focus.log).
+- 40 uncached runs of the WS-C loop pair (ev8/wsc-loop40.log): 40 "SUCCESS! -- 2 Passed | 0 Failed", 0 FAIL!,
+  "Executed 1 out of 1 test".
+- `just test` on tree 9f1cd7090c25c7379ba5fce4b71d38aa9bf1a73d (snapshot taken before and after the run: equal):
+  "Executed 43 out of 94 tests: 94 tests pass." (ev8/justtest.log; the 43 executed are ev8/justtest-executed.txt).
+
+## The new specs' lines (pass 1)
+WSJLANE bitand_boolean target=ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)" go=OK
+WSJLANE bitand_double target=ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)" go=OK
+WSJLANE bitand_float target=ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)" go=OK
+WSJLANE bitand_string target=ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)" go=OK
+WSJLANE bitand_struct target=ERROR XX000 SemanticException "The argument to an arithmetic operator expecting an argument of a primitive type, is invoked with an argument of a complex type, e.g. an array or a record." go=ERROR XX000 "build RecordMetaData"
+WSJLANE bucket_offset_boolean target=ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)" go=OK
+WSJLANE bucket_offset_double target=ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)" go=OK
+WSJLANE bucket_offset_float target=ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)" go=OK
+WSJLANE bucket_offset_string target=ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)" go=OK
+WSJLANE bucket_offset_struct target=ERROR XX000 SemanticException "The argument to an arithmetic operator expecting an argument of a primitive type, is invoked with an argument of a complex type, e.g. an array or a record." go=ERROR XX000 "build RecordMetaData"
+WSJTT struct target-stored=0A000: a table or STRUCT named UnionDescriptor that the pre-upgrade Go loader read as the union is not supported: records file names two union candidates: UnionDescriptor (the pre-upgrade Go choice) and RecordTypeUnion (the union the target uses); migrate it with the union its records were written with go-driver=0A000: a table or STRUCT named UnionDescriptor that the pre
+WSJTT table target-stored=0A000: a table or STRUCT named UnionDescriptor that the pre-upgrade Go loader read as the union is not supported: records file names two union candidates: UnionDescriptor (the pre-upgrade Go choice) and RecordTypeUnion (the union the target uses); migrate it with the union its records were written with go-driver=0A000: a table or STRUCT named UnionDescriptor that the pre-
+WSJTT table with a STRUCT column target-stored=<nil> go-driver=<nil>
+WSJTT table with a UUID column target-stored=<nil> go-driver=<nil>
+WSJTT table with a table-typed column and an index target-stored=<nil> go-driver=<nil>
+WSJUD struct target-stored=<nil> go-driver=<nil>
+WSJUD table target-stored=<nil> go-driver=<nil>
+WSJIX value expression over a field root, no added version java=key_with_value:{inner_key:{then:{child:{field:{field_name:"price" fan_type:SCALAR nullInterpretation:NOT_UNIQUE}} child:{field:{field_name:"quantity" fan_type:SCALAR nullInterpretation:NOT_UNIQUE}}}} split_point:1} go=key_with_value:{inner_key:{then:{child:{field:{field_name:"price" fan_type:SCALAR nullInterpretation:NOT_UNIQUE}} chil
+WSJIX value expression over a concatenated root java=key_with_value:{inner_key:{then:{child:{field:{field_name:"price" fan_type:SCALAR nullInterpretation:NOT_UNIQUE}} child:{field:{field_name:"order_id" fan_type:SCALAR nullInterpretation:NOT_UNIQUE}} child:{field:{field_name:"quantity" fan_type:SCALAR nullInterpretation:NOT_UNIQUE}} child:{field:{field_name:"price" fan_type:SCALAR nullInterpretati
+WSJIX a value expression of no columns java=field:{field_name:"price" fan_type:SCALAR nullInterpretation:NOT_UNIQUE} go=field:{field_name:"price" fan_type:SCALAR nullInterpretation:NOT_UNIQUE} added=1/1 type=value/value
+WSJIX index_type UNIQUE with a value expression java=key_with_value:{inner_key:{then:{child:{field:{field_name:"order_id" fan_type:SCALAR nullInterpretation:NOT_UNIQUE}} child:{field:{field_name:"price" fan_type:SCALAR nullInterpretation:NOT_UNIQUE}}}} split_point:1} go=key_with_value:{inner_key:{then:{child:{field:{field_name:"order_id" fan_type:SCALAR nullInterpretation:NOT_UNIQUE}} child:{field
+WSJIX a COUNT root that is not a grouping java=grouping:{whole_key:{field:{field_name:"price" fan_type:SCALAR nullInterpretation:NOT_UNIQUE}} grouped_count:1} go=grouping:{whole_key:{field:{field_name:"price" fan_type:SCALAR nullInterpretation:NOT_UNIQUE}} grouped_count:1} added=1/1 type=count/count
+
+## sha256 of the hashed files
+16622e3c03ecdd102b69a9234328926b0733ca0c5d350892523618cce9faefff  CHANGELOG.md
+61ce7704525df5ae6f095c61bd2a237cf877f444da772bdff2babd7efe5ba14c  cmd/frl/internal/cmd/index_test.go
+2c95067d3d3e3a543a5705792e5f463a1e0518401781c88d47edf92c17995c63  cmd/frl/internal/cmd/index_write.go
+b983ebdf417fd65734f22ae8c7c5239512d6f477928c5a7c946eab4f982c15cf  cmd/frl/internal/cmd/meta.go
+cfe3e5dc3e6aecfe10c88048b14078771d9dfde9a0d4264c2b89b72042c57a2d  cmd/frl/internal/cmd/meta_test.go
+a43711d2a3ec4c793980fe725d07f80433eca4c002cef41eb27f4740762f4f89  conformance/BUILD.bazel
+296af2d99ab3b11ca19a4f64d8ed362e9a66935229a39683fa93250ca0417d21  conformance/metadata_proto_conformance_test.go
+e6326299665079d64067095119475f66631e4da081f36c229d068d6b2a477ee8  conformance/sql_plan_steps.java
+355ef016ad8184c8c0ab78b37f1d2f8502ccafdad22cc75c052f9cc4d6b7e2bb  conformance/testdata/rfc257/java_index_templates.json
+2ea95d3536149104e5191c1efabc0eccb8e3eba7d70706fe4f5fc5aa32dfe334  conformance/testdata/rfc257/wsj_go_classes.json
+1d3afc226a08a282778ee4753e475a7c2e83527534b60ff55de5b5673ec786ea  conformance/testdata/rfc257/wsj_java_pins.json
+234f0e398b97ec778cc814da8e04366327d272e23d0d32373b23f35a1fe15e76  conformance/ws_j_index_fidelity_conformance_test.go
+e68f78c4a5980c5866868661092379f5167dda0758c8a925ebbb726935bfc11e  DIVERGENCES.md
+303f4710611675b48e3d346e8bac94adaab7df7ee8e8fc7328898c737750005e  pkg/recordlayer/BUILD.bazel
+108d6dd74da771388e7f6c69d6198c61677571910d07ebbdb8be3ea7db583cbc  pkg/recordlayer/errors.go
+664b5252a6816bec8431958e97b028e4972f1a98ae28e39d5554bbce30d0f622  pkg/recordlayer/index.go
+9d9d3420f236ef3f5abdade82f7cda552b757aed88e03cca18fae70b3cbf670b  pkg/recordlayer/indexing_heartbeat.go
+eaab49729d417e093829b3f5bcdb3fe7cb38e6bc67a73b7d01a14574597166ea  pkg/recordlayer/indexing_merger.go
+ee05263b35498c452ce965195584300401d6cafa34d4a2d8f84293530e769b69  pkg/recordlayer/indexing_mutual.go
+bd105a2cb169ff157d05924b69f132f1a2b1dd124ce7cdedd1c57cd332e786fd  pkg/recordlayer/index_option_order_test.go
+47a06c42ce4a46fb73ec35e46ea9f7b233700b5b1edbc66cdd04e5bf1a2ea97e  pkg/recordlayer/index_predicate.go
+8acd49333d1426f81238694bbdd47e2c34c08f65dfd5c1b95c24e91e12808602  pkg/recordlayer/index_queued_dispatch_test.go
+f6b996367d6db9e86a627dd0f7b2cfcb0ba51f36a7571abf2814938f49fb7af9  pkg/recordlayer/key_expression_fastpath_test.go
+84556da7f1f2ab06b0a2759cd1f721ebb4cee90af5ea08b40cb1f6c98464e9a2  pkg/recordlayer/key_expression.go
+6cd2b54c386f2b22cb88461f187d15d6ecfde1fba9e30ace70eaa92ab27d12a2  pkg/recordlayer/long_arithmetic_function.go
+4b5d4a31e36f644dd1cd3d4d05d70a6e587a180ceb6ce858a8483c0953b96530  pkg/recordlayer/long_arithmetic_function_test.go
+fb9c64bc0b4952d7cc5cf2a05191f4fad557f51dc90a6727a5ebd195f002dd77  pkg/recordlayer/metadata_evolution_validator.go
+349deeb9aae58138f7b729ef089e0f29d4c0572b42598a53f7254703555c751f  pkg/recordlayer/metadata_evolution_validator_test.go
+89369f9005e412dce8529f82a4f8df31c00e7c49b572376de5e4f55a09bf120e  pkg/recordlayer/metadata.go
+2470213bd2781f5ea25ce0da4a8dd95791bb94210def03dae423228346e779dd  pkg/recordlayer/metadata_proto.go
+86b9f00860569eb917af44e45beb5bebeff138f147a60b62bfecfba99641064d  pkg/recordlayer/metadata_store_test.go
+5ff7a95eb6a5caecb3dd81e1fda0233e6149bd5ea2004ff473b27345a9184c44  pkg/recordlayer/metadata_union_evolution_test.go
+3f869017ac236f9ea791f71330d7fbd5901a83e213686e39b5581886fadc3eef  pkg/recordlayer/metadata_user_identifier_lookup_test.go
+84cd6a1416a1a1baafc928fa978491743cfa39c1e4de16ebd16579a8277aa3b3  pkg/recordlayer/metadata_validate_records.go
+4ec41f98c47302691c88f138ba662a6ed11d19c896f7ca29340034c6a253a7ed  pkg/recordlayer/metadata_validate_records_test.go
+69742e99d238bb6e94d339dc9e828d9ef349b8e778e7525cbda47b854a8a117c  pkg/recordlayer/online_indexer_followup_test.go
+85dd72e751c1e012ed054cbaeb37d9500bc28f1e2fcdc1f702fe7710b73e1be8  pkg/recordlayer/online_indexer.go
+ce17a28b81997f85b1d8f50fe492f64976bf02b0ab92e4dbac157627eb271ec2  pkg/recordlayer/online_indexer_queue.go
+0412e2e8a8bf24d899b2d6c5992cf462562c78fe6568244e31e9d45c35c0d6eb  pkg/recordlayer/online_indexer_session_test.go
+02b3d90a1b1f6fc91b5b997fdbc620c8974611f409ad0f828567052c8b90006c  pkg/recordlayer/online_indexer_test.go
+13a5bcede6abbaaf10e2d888100d7cea0177adff62b7c326501b98858d7c85e1  pkg/recordlayer/query/executor/executor.go
+dcc0bce6fe04aad387e2129489e48695bcd9e481908762ff559e5557c30a19de  pkg/recordlayer/query/executor/executor_test.go
+c39833deff4517e98b59b01730163d9000cdf99e178037b26e0376a33bbfbfde  pkg/recordlayer/query/plan/cascades/value_equivalence.go
+574d53511d8b509b8b13a4cda408c5d346278f7248fe78c1e458dbff899c52cd  pkg/recordlayer/query/plan/cascades/values/proto_field_type.go
+c27b40d5525853108e1d77dc7eca81b3304342820da7502f95cd55cfa4a5b6cb  pkg/recordlayer/query/plan/cascades/values/proto_scalar_shape_test.go
+ddf2f587ce3f48be758ca9a059dece5c3d3b8e5610d12407dc89b4cfd5f2f2a7  pkg/recordlayer/query/plan/cascades/values/values.go
+a6f31c9533b8fa9064eaa160d346e2d05daf4e5dd40869836a0de9b3d1908445  pkg/recordlayer/sliding_window_index_validation.go
+e9f7a6369b1b53a01d5140f098e4665ff4c4c2464de46a06c1ee3e54af3e0038  pkg/relational/core/catalog/fdb_catalog_test.go
+370bd65d1ff888c86628f1f6ad76859cba65cb009937462a07ed8a2202439c09  pkg/relational/core/catalog/fdb_store_catalog.go
+73a9e027f77110fd4dbe1492bb2d3edb9e8d5936ccde5fff99c9a6843aa54b05  pkg/relational/core/catalog/fdb_template_catalog.go
+c7eebe70fc55a2506a7f0c70ed9d0a7f804576a36e4d40ac8f7ae0e9b80ba070  pkg/relational/core/embedded/index_ddl_field_trie_test.go
+555aae7f780507842d40be20ff5193313518258e0b413509c03189d0f1050e33  pkg/relational/core/embedded/query_hash.go
+f132378ed5b1155d2689c9f884693ce6438e312536cc40c33dde30e7dc46a561  pkg/relational/core/fleet/build.go
+25c0a3bb107c0c3ff7985de36561d9b6a81a449c4ef1496e23c8e0040938c9cb  pkg/relational/core/fleet/build_test.go
+e20cc3da4774b5e09e375c68d8f55a4560f2e477adf0a6a685c6509e57e69c46  pkg/relational/core/fleet/fleet.go
+36275c248934663ae17b760096e8a7950073fe409feb2ec6b38ab3e1ef2f81e6  pkg/relational/core/functions/proto_value.go
+86421fb06671823d85dd265996ff18bf45d355c199a86889c4e29cea10aad06c  pkg/relational/core/functions/proto_value_test.go
+3c87f2b1a3d6be854e7307b3bec4911b301267989bc219b6ea98dd0a22de234c  pkg/relational/core/metadata/builder.go
+a1d02cca9cff502cc3810902f6fea4f616e0933b8dc7e5a2e0ebc6620d97245a  pkg/relational/core/query/ddl/generator.go
+38482c9f83f195a6c9c98692ef05f3dfebd991dad93dc102a0846ce90b91f6e7  pkg/relational/core/query/ddl/literal_key_carrier_test.go
+c42a2336179cba38776f946c873ef45e63b791d19afb8eddc8ad244861d3194f  pkg/relational/core/query/semantic/rlcatalog/rlcatalog.go
+ea5b28cbc0f34de70773e815c699cf19cde6d2806f1b95324efd30e302d40f74  pkg/relational/sqldriver/arithmetic_index_operand_fdb_test.go
+8f2104e5fae9ebe034d88c1932d8a9fdbe6598389f6cb88ea437733eae6a9979  pkg/relational/sqldriver/index_definition_production_fdb_test.go
+100397683692bec5f394fc562ceb5fc775014b89894ab9dd3b3b66b1fdab0226  rfcs/257-java-4.14.2.0-upgrade.md
+b28f36412ab638a757114ba7a1f0fed5e541448ec97092a09a846b74ff79904b  rfcs/257-java-upgrade-audit/ws-c-cleanup/README.md
+491caa7ba730d1bf8eb070a62910d2fd0e012b30391a0ba07aa94ddafb87a3e1  TODO.md

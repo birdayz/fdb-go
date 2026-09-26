@@ -1,0 +1,95 @@
+**NAK.** Tree `d6ad3e9c2c5bc3a32c42cf0399c97afade52e098`; `ws-j-design.md` SHA256 `bc8b6436980df50daf559f037a45d02397e28fd06f9948719a0683b69cb8ca11`, 2875 lines (I recomputed both). Java is at `fdacd162a`. The review was read-only: I ran no tests, probes or mutations.
+
+## What holds (measured)
+- **Evidence binds the bytes.** Five WS-J blobs match `ev13/src.sha`: `metadata.go`, `key_expression_proto.go`, `metadata_proto.go`, `errors.go` and the WS-J spec. `check.txt` has 1039 ": OK" lines. The gate tree differs from `3b1587fa` only in `ws-c-design.md`, the WS-E evidence and `evidence-v13.txt`.
+- **The oracle ran.** `oracle-1.log` shows 60 of 60 passed, the tally unchanged and BUILT-TWICE 354. At `:208` the absent-root refusal is Java's `KeyExpression$DeserializationException` and Go's "Exactly one root… (found 0)". The spec now asserts the Go error type.
+- **The new unit tests ran.** `recordlayer-v.log` has PASS lines for `TestKeyExpressionDeserializationErrorsAreJavas` (`:19434`), the absent-root subtest (`:22347`) and the array-element holder (`:22042`). `just test` passed 94 of 94.
+- **Checked against source:**
+  - Go's refusal messages match Java's (`KeyExpression.java:405`, `NestingKeyExpression.java:69`, `ThenKeyExpression.java:84`).
+  - The lane-table property holds over all 107 rows (`ArithmeticValue.java:406-522`), so dropping the WIDENED arm is sound.
+
+## v12 findings
+- **Resolved:**
+  - the restore's floor and options;
+  - the as-framed holder;
+  - the reservation's pairing and monotonicity;
+  - the duplicate order;
+  - the absent root and the builder;
+  - the WIDENED arm;
+  - the single relaxations hook;
+  - `HeldBy`;
+  - the lock design;
+  - the citations.
+- **Partly resolved:**
+  - framing (Graefe F2, Torvalds 2, storage 3): see H1 and M1;
+  - the new declarations (Graefe F10): see M2;
+  - storage 6: see L1.
+- **Not answered:**
+  - Graefe F6: `SetDisallowTypeRenames` gets zero hits in the design;
+  - Torvalds 11: no WS-J mutation was run, see L3.
+
+## HIGH
+**H1. Shape (g) compares the wrong key, and only the ordinary load checks it** (`:2335-2341`).
+- **What each build uses as the key:**
+  - Java's implicit record-type key is the SMALLEST union field of the type (`RecordType.java:172-179`), and current Go matches it (`metadata.go:416-418`).
+  - The "preferred field" the design cites (`metadata.go:420-422`, Java `:878-887`) is the field records are WRITTEN under, not the key.
+  - Pre-upgrade Go let the last declared field win both (`e48f5b496:metadata.go` loop and `:1833-1837`).
+- **As written, (g) misses Java's deprecation shape** `{T old = 1; T _T = 5}`. Pre-upgrade gives 5 and the preferred field is 5, so nothing is refused, yet the real key is 1. Rows pre-upgrade Go keyed under 5 would be read under 1.
+- **Corrected to last-versus-smallest, it reaches Java stores.** It would refuse every Java-authored library file of that shape, which current Go reads exactly as Java does. The stated remedy, an explicit key equal to the pre-upgrade number, would re-key a Java-written store. SQL templates are immune, because Java sets explicit keys (`RecordMetadataSerializer.java:70`).
+- **The same shift is unchecked where the design rewrites files.** The route's step (iii) and the migration's output check compare only the record-type name and message per field number (`:2386-2390`, `:2508-2527`). The as-framed load keys by today's rule. So a migrated or edited (a), (c) or (d) file that has two union fields of one type and a `recordType()` key is re-keyed silently.
+- **Fix:**
+  - compare the last declared field with the smallest;
+  - carry the pre-upgrade key into the as-framed load, and compare keys at (iii) and in the migration's check;
+  - scope the load refusal to files where a key expression reads the record-type key;
+  - make the remedy "the number your rows were keyed with";
+  - put the Java-store trade-off to the owner, since it crosses the wire line.
+
+## MEDIUM
+**M1. Shapes (e) and (f) have no way out, though the design names one.**
+- Step (i) refuses a union both builds chose that has "a `_X` of another type, a scalar `_T`" (`:2317-2323`), and the tests pin that refusal (`:2476-2477`).
+- Yet three places point at that same route as the remedy: (e) says "this route edits it" (`:2330-2331`), `LegacyFramingError` names "this route" (`:2327`), and (y) repeats it (`:2875`).
+- **(e):** Java and current Go both refuse the file, so only pre-upgrade Go can have written it. Frame it name-first instead of refusing it; otherwise storage v12 #3 stays open.
+- **(f):** declare that Go has no route for it.
+- (e) also quotes the validator's message. The load's message is "Union field _T is not a message" (`RecordMetaDataBuilder.java:691-692`).
+
+**M2. Both remedies in section 9 (x) are unavailable.**
+- **Inverted history** (`:2862-2866`): the bound schemas bind a (t, v) that is not stored.
+  - `RepairSchema` therefore fails the gone-version refusal (`:594-597`).
+  - The version guard also blocks a new template version while that binding dangles above the latest.
+  - Declare that this case has no exit.
+- **R2** (`:2866-2870`): "the ordinary save" cannot load the stored side that R2 exists for (`:2455-2457`). The workable remedy is a later ordinary save, made after the edited one.
+
+## LOW
+**L1. Check (iii)'s "either order" (`:697-699`) never takes effect at an equal last-modified version.**
+- Check (i)'s literal-carrier arm is one-way (`literalValuesEquivalent`: old `long_value` to new `int_value` only).
+- So the design's own motivating case is refused by (i) before (iii) runs: L is a fresh v1 at `int_value` and H is the older `long_value` version. That is storage v12 #6's example.
+- The planned WIDENED test (`:730`) must name its direction.
+- `:937` still says the option is set by "`validateSchemaRebind` and nowhere else".
+
+**L2. Superseded text left in place:**
+- Section 8 step 3 keeps v12's WIDENED arm and "first the `v′ <= latest` refusal" (`:2716-2718`). It places neither `LegacyFramingError`, the lane-property test nor the reservation rules, although `TODO.md:14926` says section 8 agrees.
+- `:1700` points to "section 9 (u)"; the declaration is (w).
+- (p) (`:2801-2804`) omits the drop refusal and the pairing.
+- "RepairSchema … goes through SaveSchema" survives at `:510` and `:1105`.
+- "the one write entry" survives at `:1643`.
+- The planned CHANGELOG entry still "names the four shapes" (`:2529`), omitting (f) and (g).
+
+**L3. No mutation evidence for WS-J's guards.** `evidence-v13.txt` has none for the rootless `Build` and `indexToProto` refusals, the typed error or the array arm, and section 7 requires it.
+
+**L4. Lock wording.** "Never an exported method" (`:1077`) contradicts `SaveSchema`'s `DoesSchemaTemplateExistAtVersion` call under `c.mu` (`:1070`). It cannot deadlock, but name the helper.
+
+**L5. Reservation enforcement.** The check is stated for `SaveRecordMetaData` only. `SaveEditedLegacyMetaData` and `SaveMigratedLegacyMetaData` must run it, or refuse a stored side that already loads. Otherwise monotonicity has a bypass.
+
+## Holds on challenge (source)
+- **Check (iii) is otherwise sound across two histories.**
+  - The validator refuses a changed since-version, primary key or record-type key (Java `:397-424`; Go `:348`, `:366`, `:411`).
+  - It checks the added version before the early return (Java `:639`, then `:657-662`).
+  - A new former index must have a removed version above L's metadata version (Java `:520`).
+- **`CreateTemplate`'s order matches Java,** which builds first and then applies its only refusal, the duplicate (`:239-243`).
+- **R1's pairing is sound.**
+- **The lock order `c.mu` then `tc.mu` is deadlock-free.**
+- **Graefe lens:** sections 3.3–3.5, 4 and 6 have no v13 changes. The anchors I spot-checked hold: `DdlVisitor.java:497`, `:548` and `:561-563`, and the lane table.
+
+## Measured vs source-only
+- **Measured:** everything under "What holds".
+- **Source-only:** H1 to L5, and everything in steps 1 to 3 that is not yet built.

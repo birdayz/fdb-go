@@ -25,7 +25,6 @@ import (
 
 	apiddl "fdb.dev/pkg/relational/api/ddl"
 	"fdb.dev/pkg/relational/core/catalog"
-	"fdb.dev/pkg/relational/core/functions"
 	"fdb.dev/pkg/relational/core/keyspace"
 	"fdb.dev/pkg/relational/core/metadata"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
@@ -43,7 +42,9 @@ import (
 //
 // Transaction model:
 //
-//	Auto-commit: every statement runs in its own FDB transaction via fdbDB.Run().
+//	Auto-commit: every statement runs in its own FDB transaction. A DML
+//	statement's is opened by beginTransaction and committed once, never
+//	replayed; a DDL statement and each result page run through fdbDB.Run().
 //	Explicit transaction: BeginTx opens an FDB transaction; all statements in
 //	the transaction share it. Commit/Rollback close it.
 type EmbeddedConnection struct {
@@ -444,7 +445,7 @@ func (c *EmbeddedConnection) cachedLoadSchema(txn api.Transaction, dbPath, schem
 		_, err := c.runInTx(context.Background(), func(rctx *recordlayer.FDBRecordContext) (any, error) {
 			readTxn := catalog.NewFDBTransaction(rctx)
 			var loadErr error
-			s, loadErr = c.sess.Catalog.LoadSchema(readTxn, dbPath, schemaName)
+			s, loadErr = c.loadSchemaOfDatabase(readTxn, dbPath, schemaName)
 			return nil, loadErr
 		})
 		if err != nil {
@@ -459,12 +460,30 @@ func (c *EmbeddedConnection) cachedLoadSchema(txn api.Transaction, dbPath, schem
 	if s, ok := c.sess.SchemaCache[key]; ok {
 		return s, nil
 	}
-	s, err := c.sess.Catalog.LoadSchema(txn, dbPath, schemaName)
+	s, err := c.loadSchemaOfDatabase(txn, dbPath, schemaName)
 	if err != nil {
 		return nil, err
 	}
 	c.sess.SchemaCache[key] = s
 	return s, nil
+}
+
+// loadSchemaOfDatabase is the catalog's LoadSchema, with Java's report of a
+// missing database: Java's connect loads the connection's schema as given and,
+// when it is missing and so is the database, refuses the connection with
+// UNDEFINED_DATABASE "Database <path> does not exist"
+// (RecordLayerStorageCluster.loadDatabase, EmbeddedRelationalDriver.connect).
+// Go connects before the first statement reads the catalog (a connection may
+// create its own database), so the same answer is given here.
+func (c *EmbeddedConnection) loadSchemaOfDatabase(txn api.Transaction, dbPath, schemaName string) (api.Schema, error) {
+	s, err := c.sess.Catalog.LoadSchema(txn, dbPath, schemaName)
+	var ae *api.Error
+	if errors.As(err, &ae) && ae.Code == api.ErrCodeUndefinedSchema {
+		if ok, dbErr := c.sess.Catalog.DoesDatabaseExist(txn, dbPath); dbErr == nil && !ok {
+			return nil, api.NewErrorf(api.ErrCodeUndefinedDatabase, "Database <%s> does not exist", dbPath)
+		}
+	}
+	return s, err
 }
 
 func (c *EmbeddedConnection) invalidateSchemaCache(dbPath, schemaName string) {
@@ -811,16 +830,16 @@ func (c *EmbeddedConnection) beginTransaction() (*embeddedTx, error) {
 // SetDefaultSchema sets the initial schema that is restored by ResetSession.
 // Called by the driver when the DSN contains ?schema=.
 //
-// The value is an SQL identifier and normalizes like one: unquoted names
-// fold to upper case, quoted names stay verbatim — the same rule
-// execCreateSchema applies, so `?schema=test1` finds the schema
-// `create schema /db/test1` created (both sides normalize to TEST1,
-// Java's identifier model; the corpus pins both spellings:
-// setup-with-connection-options.yamsql connects lower-case to a lower-case
-// create, create-drop-create-template.yamsql upper-case to a lower-case
-// create).
+// The value is kept as given, as Java keeps it:
+// RecordLayerStorageCluster.parseConnectionQueryString upper-cases the
+// option's NAME and not its value, and loadSchema looks the value up
+// verbatim (RecordLayerStorageCluster.java:76-124). A schema created
+// unquoted is stored folded, in both engines, so ?schema=test1 does not
+// reach the schema `create schema /db/test1` stored as TEST1 (measured
+// against the JVM: conformance "the DSN's schema option reaches the schema
+// Java's does"). Go folded the value as an SQL identifier, which reached
+// schemas Java's connect refuses.
 func (c *EmbeddedConnection) SetDefaultSchema(s string) {
-	s = functions.NormalizeIdentifier(s)
 	c.sess.DefaultSchema = s
 	c.sess.Schema = s
 }
@@ -864,8 +883,42 @@ func (c *EmbeddedConnection) PrepareContext(_ context.Context, query string) (dr
 	return c.Prepare(query)
 }
 
-// SetSchema sets the current schema label used when no schema is specified in SQL.
-func (c *EmbeddedConnection) SetSchema(s string) { c.sess.Schema = s }
+// SetSchema switches the session's schema, as Java's
+// EmbeddedRelationalConnection.setSchema does (EmbeddedRelationalConnection
+// .java:245-268). The name is taken as given, like the DSN's schema option: a
+// schema created unquoted is named in upper case. A schema the connection's
+// database does not hold is refused with UNDEFINED_SCHEMA "Schema <s> does not
+// exist in <path>", leaving the session on the schema it had; the empty name
+// (Java's null) clears the schema without a check. The check reads the catalog
+// in the open transaction when there is one (Java's
+// runIsolatedInTransactionIfPossible), in its own otherwise.
+func (c *EmbeddedConnection) SetSchema(s string) error {
+	if c.closed.Load() {
+		// Java's checkOpen: "Connection is closed!", INTERNAL_ERROR.
+		return api.NewError(api.ErrCodeInternalError, "Connection is closed!")
+	}
+	if s == "" {
+		c.sess.Schema = ""
+		return nil
+	}
+	ctx := context.Background()
+	if err := c.ensureCatalogInit(ctx); err != nil {
+		return err
+	}
+	var exists bool
+	if _, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		var err error
+		exists, err = c.sess.Catalog.DoesSchemaExist(catalog.NewFDBTransaction(rctx), c.sess.DBPath, s)
+		return nil, err
+	}); err != nil {
+		return err
+	}
+	if !exists {
+		return api.NewErrorf(api.ErrCodeUndefinedSchema, "Schema %s does not exist in %s", s, c.sess.DBPath)
+	}
+	c.sess.Schema = s
+	return nil
+}
 
 // GetSchema returns the current schema label.
 func (c *EmbeddedConnection) GetSchema() string { return c.sess.Schema }
@@ -1013,9 +1066,14 @@ func translateFDBError(err error) error {
 	if errors.As(err, &apiErr) {
 		return err
 	}
-	var metaErr *recordlayer.MetaDataError
-	if errors.As(err, &metaErr) {
-		return api.WrapError(api.ErrCodeSyntaxOrAccessViolation, metaErr.Error(), err)
+	// Java's recordCoreToRelationalException (ExceptionUtil.java:58-80) in its
+	// order: a deserialization failure and a uniqueness violation before a
+	// MetaDataException, which it tests on the exception thrown and not on its
+	// causes (IsMetaDataException), so a MetaDataError that only caused
+	// another error is not a 42000.
+	var deserErr *recordlayer.RecordDeserializationError
+	if errors.As(err, &deserErr) {
+		return api.WrapError(api.ErrCodeDeserializationFailure, deserErr.Error(), err)
 	}
 	var existsErr *recordlayer.RecordAlreadyExistsError
 	if errors.As(err, &existsErr) {
@@ -1029,6 +1087,9 @@ func translateFDBError(err error) error {
 		return api.WrapErrorf(err, api.ErrCodeUniqueConstraintViolation,
 			"unique index %q violated: value %v already exists", uniqErr.IndexName, uniqErr.IndexKey)
 	}
+	if recordlayer.IsMetaDataException(err) {
+		return api.WrapError(api.ErrCodeSyntaxOrAccessViolation, recordlayer.OutermostJavaError(err).Error(), err)
+	}
 	// Execution-time "no record at this key" — most commonly UPDATE of a PK
 	// column, whose save targets the new (nonexistent) key. This is Java's
 	// exact path and code: Java has no plan-time PK guard; the in-place save
@@ -1039,10 +1100,6 @@ func translateFDBError(err error) error {
 	var notExistErr *recordlayer.RecordDoesNotExistError
 	if errors.As(err, &notExistErr) {
 		return api.WrapError(api.ErrCodeUnknown, "record does not exist", err)
-	}
-	var deserErr *recordlayer.RecordDeserializationError
-	if errors.As(err, &deserErr) {
-		return api.WrapError(api.ErrCodeDeserializationFailure, deserErr.Error(), err)
 	}
 	var fdbErr *wire.FDBError
 	if errors.As(err, &fdbErr) {

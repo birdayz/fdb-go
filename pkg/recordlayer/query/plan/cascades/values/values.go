@@ -1010,8 +1010,8 @@ func (f *fieldValue) descendResolvedPath(rootVal any) (any, error) {
 			// is what must be updated when the producers become ordinal-true —
 			// that edit is the signal these two debt entries are retirable.
 			//
-			// Unset singular field = NULL (proto3 presence rules ride
-			// protoreflect.Has).
+			// An unset singular field is NULL (ProtoFieldReadsValue), a
+			// declared default included.
 			v, found := protoFieldByName(rec.ProtoReflect(), acc.Field)
 			if !found {
 				if f.Resolved.FrontierPinned {
@@ -1036,17 +1036,30 @@ func (f *fieldValue) descendResolvedPath(rootVal any) (any, error) {
 // name (query_result.go); a mismatch is a lockstep break.
 const uuidProtoMessageName = "com.apple.foundationdb.record.UUID"
 
+// ProtoFieldReadsValue is the presence rule by which a query reads a record's
+// field: a repeated field is always read (as its list), a singular one only
+// when it is set, and is otherwise NULL. Set is protobuf-java's hasField for
+// either kind of presence, so an implicit-presence (proto3) field at its
+// default is NULL.
+//
+// An unset proto2 field that declares a default is NULL too, though Java's
+// field reader, MessageHelpers.getFieldOnMessage (MessageHelpers.java:124-142),
+// reads the default: a query never hands it the stored record.
+// QueryResult.fromQueriedRecord (QueryResult.java:256-281) first copies the
+// record into a message of the plan's type (MessageHelpers.deepCopyMessage,
+// which copies getAllFields, the set fields), whose descriptor, generated from
+// the type, declares no default. Measured through SQL on both engines
+// (conformance "WS-J an unset field with a declared default reads as the
+// target reads it"): SELECT *, a projection and a predicate all read NULL.
+func ProtoFieldReadsValue(m protoreflect.Message, fd protoreflect.FieldDescriptor) bool {
+	return fd.IsList() || fd.IsMap() || m.Has(fd)
+}
+
 // protoFieldByName reads one field of a proto message by SQL identifier,
 // converting to the engine's row-value domain exactly as the executor's
 // record→row layer (protoFieldToGo) does. found=false when the descriptor
-// has no such field; an unset field with proto2 presence returns (nil, true)
-// — SQL NULL.
-//
-// DIVERGENCE from Java (MessageHelpers.getFieldOnMessage): for a field UNSET
-// but carrying an explicit proto2 default, Java returns the declared default;
-// Go returns NULL (unset → nil). Unreachable through Go's own metadata
-// builder — it never emits explicit field defaults — but a Java-authored
-// descriptor read on the Go side would differ here.
+// has no such field; a field ProtoFieldReadsValue does not read returns
+// (nil, true), SQL NULL.
 func protoFieldByName(m protoreflect.Message, name string) (any, bool) {
 	fields := m.Descriptor().Fields()
 	// Builder-emitted descriptors carry UPPER field names, Java's stored
@@ -1091,7 +1104,7 @@ func protoFieldByName(m protoreflect.Message, name string) (any, bool) {
 	if fd == nil {
 		return nil, false
 	}
-	if !m.Has(fd) && fd.HasPresence() {
+	if !ProtoFieldReadsValue(m, fd) {
 		return nil, true
 	}
 	return ProtoFieldToRowValue(fd, m.Get(fd)), true
@@ -1162,7 +1175,13 @@ func ProtoScalarKindToRowValue(kind protoreflect.Kind, v protoreflect.Value) any
 	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
 		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
 		return v.Int()
-	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind, protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		// protobuf-java hands Java a SIGNED Integer for a 32-bit unsigned field,
+		// so a value >= 2^31 is negative in the target; the key evaluator reads it
+		// the same way (recordlayer key_expression.go), and so does every row.
+		return int64(int32(uint32(v.Uint()))) //nolint:gosec
+	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		// A signed Long in the target: the same 64 bits.
 		return int64(v.Uint()) //nolint:gosec
 	case protoreflect.FloatKind, protoreflect.DoubleKind:
 		return v.Float()
@@ -5094,10 +5113,10 @@ func (*RecordConstructorValue) Name() string { return "record" }
 // paths that emit a row — executeProjection, the record-constructor arm of the
 // flat-map cursor, evaluateOrdinalJoinRow — build a dense PositionalRow field
 // by field, and the result set reads those slots by ORDINAL, so an unstamped
-// row still delivers every field. Measured on the FULL OUTER JOIN of TODO.md's
-// "A join row that names one field twice leaves its plan's rows unstamped":
-// three of that plan's four constructors have no descriptor, and
-// `SELECT a.id, c.id, d.foo` still returns both `ID` values.
+// row still delivers every field. The duplicate-name join regression in
+// queryfixtures.DuplicateNameJoinQuery pins both ID slots under FDB. Failed
+// registration now rolls back, so unrelated computed constructors keep their
+// descriptors while the invalid ordinal row remains raw.
 func (r *RecordConstructorValue) Evaluate(evalCtx any) (any, error) {
 	if r.desc != nil {
 		return buildRecordMessage(r.desc, r.Fields, evalCtx)
@@ -5128,8 +5147,10 @@ func (r *RecordConstructorValue) Evaluate(evalCtx any) (any, error) {
 // STRING→UUID representation change. Other promotion families remain
 // representation-preserving.
 type PromoteValue struct {
-	Child  Value
-	Target Type
+	Child      Value
+	Target     Type
+	prepared   *preparedPromotion
+	prepareErr error
 }
 
 // NewPromoteValue constructs a PromoteValue. Rejects nil child and
@@ -5141,74 +5162,26 @@ func NewPromoteValue(child Value, target Type) *PromoteValue {
 	if target == nil || target.Code() == TypeCodeUnknown {
 		panic("NewPromoteValue: target is UnknownType; use CastValue if target is genuinely unknown")
 	}
-	return &PromoteValue{Child: child, Target: target}
+	p, err := NewPromoteValueChecked(child, target)
+	if err != nil {
+		return &PromoteValue{Child: child, Target: target, prepareErr: err}
+	}
+	return p
 }
 
 // Children returns the single child as a one-element slice.
 func (p *PromoteValue) Children() []Value { return []Value{p.Child} }
 
-// Type returns the promotion target. Nullability is inherited from
-// the child — promoting a NOT NULL value preserves NOT NULL.
+// Type returns the declared target including its nullability, as Java's
+// PromoteValue.getResultType does. Source nullability is not substituted.
 func (p *PromoteValue) Type() Type {
 	if p.Target == nil {
 		return UnknownType
 	}
-	childNullable := true
-	if p.Child != nil {
-		if ct := p.Child.Type(); ct != nil {
-			childNullable = ct.IsNullable()
-		}
-	}
-	return WithNullability(p.Target, childNullable)
+	return p.Target
 }
 
-// Name returns the debug-print kind.
 func (*PromoteValue) Name() string { return "promote" }
-
-// Evaluate applies numeric width conversion, STRING → ENUM, and STRING → UUID (Java's
-// PromoteValue.STRING_TO_UUID, `UUID.fromString`): a UUID column has
-// no native proto/SQL primitive, so `uuid_col = '<uuid>'` arrives as
-// a STRING comparand. Promoting it to UUID here parses the canonical
-// string into a neutral 16-byte value ([16]byte, matching Java's
-// java.util.UUID — no `tuple` import so `values` stays wire-agnostic).
-// The scan-range packer turns that [16]byte into a `tuple.UUID` at the
-// FDB wire boundary, so the equality probe hits the 0x30 index entry
-// instead of packing a 0x02 string that never matches.
-func (p *PromoteValue) Evaluate(evalCtx any) (any, error) {
-	childResult, err := p.Child.Evaluate(evalCtx)
-	if err != nil {
-		return nil, err
-	}
-	if enum, ok := p.Target.(*EnumType); ok {
-		if name, isString := childResult.(string); isString {
-			return stringToEnumValue(enum, name)
-		}
-		return childResult, nil
-	}
-	if !IsUuid(p.Target) {
-		// Apply the primitive promotion operators (including INT_TO_LONG),
-		// then normalize FLOAT's representation to the row-domain carrier.
-		return coerceNumericResult(promoteConstant(childResult, p.Target), p.Target), nil
-	}
-	switch v := childResult.(type) {
-	case nil:
-		// NULL promotes to NULL (SQL NULL propagation).
-		return nil, nil
-	case string:
-		u, perr := uuid.Parse(v)
-		if perr != nil {
-			// Java verbatim wording (SemanticException INVALID_UUID_VALUE).
-			return nil, fmt.Errorf("Invalid UUID value for the UUID type %s", v)
-		}
-		return [16]byte(u), nil
-	case [16]byte:
-		// Already a neutral UUID (e.g. an index-sourced INL join key);
-		// pass through unchanged — nothing to parse.
-		return v, nil
-	default:
-		return childResult, nil
-	}
-}
 
 // stringToEnumValue is shared by CastValue and PromoteValue, as in Java.
 func stringToEnumValue(enum *EnumType, name string) (any, error) {
@@ -5219,6 +5192,21 @@ func stringToEnumValue(enum *EnumType, name string) (any, error) {
 	// ProtoScalarKindToRowValue and the index tuple both carry an enum's
 	// declared number as int64, not its name or position in the declaration.
 	return int64(member.Number), nil
+}
+
+// StringToEnumNumber is Java's PromoteValue.stringToEnumValue over a stored
+// enum descriptor (PromoteValue.java:151-161): the first declared value whose
+// user identifier (ProtoUtils.toUserIdentifier of its name) equals name, else
+// INVALID_ENUM_VALUE. It is what writes a string into an enum column, where
+// Java's STRING_TO_ENUM promotion runs; no other type promotes to an enum.
+func StringToEnumNumber(ed protoreflect.EnumDescriptor, name string) (int64, error) {
+	vals := ed.Values()
+	for i := 0; i < vals.Len(); i++ {
+		if v := vals.Get(i); protoname.ToUserIdentifier(string(v.Name())) == name {
+			return int64(v.Number()), nil
+		}
+	}
+	return 0, &InvalidEnumValueError{Value: name}
 }
 
 // --- QuantifiedObjectValue -----------------------------------------

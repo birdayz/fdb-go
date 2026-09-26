@@ -1,0 +1,81 @@
+**NAK.** Tree `b6aaf7546ad0ae91305679c9454860ab18ca010e`. Design SHA256 `1455e2450393c5a507d808a2c7fa9e41bf2244b5104fe5ffeedaa1e09a49cf4a`: I re-hashed it (631 lines). Java checkout HEAD is `fdacd162a`.
+
+This was a read-only source review. I ran no tests or probes. Every MEASURED fact below comes from the tree's evidence files; everything else is a source reading.
+
+**Checked and correct**
+- **F2 (literal width), source:**
+  - It matches `visitLiteralValue`.
+  - Both DDL front ends reach `literalKeyCarrier`, through `parseIndexDefinition` (`ddl.go:215`, `cascades_generator.go:7619`).
+- **F2 (literal width), measured:** 12 literal shapes are byte-equal, and the Java roots are recorded at `evidence-v2.txt:750-793`.
+- **F2b (operand widening):** matches `Key.java:553-582` and `LongArithmethicFunctionKeyExpression.java:93-98`.
+  - Both operands are typed before the null check, and each is converted separately.
+  - NaN and saturation behave as Java's narrowing does.
+  - An enum operand gives a Number in both engines (`TupleTypeUtil.java:155-156`).
+- **§2:** matches `SchemaExistsBehavior.java:42-109`, `RecordLayerStoreCatalog.java:168-279` and `RecordLayerCreateSchemaConstantAction.java:80-104`.
+- **F12 (option order):** the source chain is right (`RecordLayerIndex.java:168-265`, `Index.java:131,661`).
+- **Tally:** 81/21/314/50, 168 and 101 all reconcile.
+
+### HIGH
+
+1. **A "fresh" template can be recreated underneath live schemas, with a new numbering.**
+   - §4:431 decides "fresh" from the template catalog alone.
+   - Neither engine checks for bound schemas when a template is deleted: Go `fdb_template_catalog.go:198-229`, Java `RecordLayerMetadataOperationsFactory.java:51-53`.
+   - Before the port, DROP followed by CREATE of the same DDL gave identical bytes. After the port it gives Java's numbering.
+   - The index count doesn't change, so the store-header metadata version stays equal and `checkVersion` does nothing.
+   - The existing rows are then read with changed union field numbers and record-type keys. No SaveSchema runs, so the rebind validator never sees it.
+   - The same thing happens if the F11 migration rebuilds templates from DDL, or if Java drops and recreates a template that Go stored before the port.
+   - Needed:
+     - a decided guard, for example CREATE SCHEMA TEMPLATE refusing a name that still has dangling bindings (declared as a Go divergence);
+     - a rule that the F11 migration copies the MetaData bytes verbatim, recorded in the TODO block;
+     - an FDB test.
+
+2. **The carry rule contradicts the validator it relies on.**
+   - The rebind validator is built with only `SetAllowNoVersionChange(true)` (`fdb_store_catalog.go:344`). Every other option defaults to false (`metadata_evolution_validator.go:20-28`).
+   - As configured, it refuses a Go-built v2 in three cases:
+     - **A changed index.** A new last-modified version is refused (Go `:488`, Java `:651`). This contradicts §4:435's "as Java's validator requires" and §3.2:287's "ordinary index change".
+     - **An added table.** A new record type without a since-version is refused (`:366-374`).
+     - **A dropped index.** No former index is recorded (`:461-470`), and neither DDL builder emits one.
+   - It also accepts a metadata version going *down* (Go `:251`), which Java refuses (`:154`). Every store open then fails with a stale-metadata error (`store_builder.go:308`), so a "successful" repair leaves the tenant unusable.
+   - §4:438's "never refuses a Go-built evolution" is therefore false. The planned FDB tests only add an index, so they can't catch any of this.
+   - Needed:
+     - a metadata-version rule: v2's version above v1's, and new or changed index versions above the stored MetaData version, not above the index maxima (Java `:549`, `:688`);
+     - a since-version for new tables;
+     - former indexes created for dropped indexes;
+     - a decision on `allowIndexRebuilds`, and Java's `:154` downgrade refusal restored;
+     - one FDB test per case.
+   - The design should also name where the carry rule runs. `fleet.SaveTemplate` goes through `save_schema_template.go:25-45`, whose validator checks only tables.
+
+### MEDIUM
+
+3. **The index entries under widening are a source claim, not a measurement.**
+   - §3.2:270-273 and the sqldriver test comment (`version_index_incomplete_versionstamp_fdb_test.go:163-169`) say the JVM showed the truncated sums.
+   - The 11 pins can't tell the encodings apart:
+     - a DOUBLE comparand never matches a LONG entry, so both equality reads return `[]` whatever the entries hold;
+     - the ORDER BY row order is the same whether each operand is truncated or the sum is.
+   - Label it SOURCE, or scan the raw keys of Java's index and compare them with Go's.
+
+4. **Go writing and Java reading is never tested across engines.**
+   - Every insert in both specs goes through the Java runner (`ws_j_index_fidelity_conformance_test.go:1428,1554`).
+   - What F2b actually fixes is Go maintaining indexes that carry Java's `int_value` literals. Before it, Go errored with "must be int64".
+   - Add a spec where Go writes into a template Java created, and Java reads and serves from the index.
+
+5. **Go's answers to the 11 non-integer reads are not recorded.**
+   - Go declines function-key matching (`cascades_generator.go:3372-3387`), so `d + d = 3` returns id 1 in Go and `[]` in Java.
+   - That is an undeclared divergence on a query both engines run. Declare it and pin Go's answers.
+
+### LOW
+
+6. `int32(v)` at `generator.go:905` is unchecked, so an out-of-range INT constant would wrap silently into the stored bytes. It should return an error instead.
+7. §3.2:257 says "eight" literal spellings but lists ten. The mutation claim at :276 ("removing the float arm reddens it") has no entry in either evidence file.
+8. §2 wording and one missing pin:
+   - §2:180-181 says UPGRADE refuses an equal version. It is a no-op instead (`SchemaExistsBehavior.java:100-107`).
+   - Java's CREATE SCHEMA checks the database first, with its own message (`:80-82`). Pin that order.
+9. A build artifact is committed: `ws-j-oracle/__pycache__/harvest.cpython-314.pyc`.
+10. Pre-port Go writers reject `int32` literals, so a template a post-port node creates breaks inserts on any pre-port node. This needs a rolling-upgrade note in CHANGELOG/RELEASE.
+11. v1 storage finding #6 is answered only by two shapes (`evidence-v2.txt:813-818`). The design never says so, and the extremum entry encoding itself is not compared.
+
+**Outside the delta, not gating, but it needs a durable home.**
+- Go evaluates `uint32`/`fixed32` fields as unsigned (`key_expression.go:260-262,288-290,389-391`).
+- Java uses protobuf-java's signed `Integer`, and its key expressions do no unsigned conversion. A search of `metadata/expressions` for `UINT32|FIXED32|toUnsigned` found nothing.
+- So for values ≥ 2³¹, Go's index and primary-key bytes differ from Java's.
+- The new `nullableLong` comment, "widens every integral proto field", rests on that evaluator.

@@ -1,0 +1,33 @@
+**NAK — the complete design still has four implementation-blocking gaps.**
+
+Reviewed tree: `607dbcf313e0c7a1b75333ae48ca36027bf7428e`  
+Design: `rfcs/257-java-upgrade-audit/ws-d-design.md`  
+Verified SHA256: `d8eaa70dafc703fad8e948e3215b06433492fe493774f5e335aab9b015025519`
+
+I read the entire design, all three research reports, RFC094, relevant paper sections, and corresponding Java/Go paths. Java was pinned to `fdacd162a9c8acfadc49082b89185c823ab8ae4a`. The tree-to-tree comparison against accepted WS-C shows no production source changes.
+
+1. **P1 — The universal signature rule contradicts Java after training.**  
+   [Design:126](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-d-design.md:126) requires hashing exactly persisted vector bytes. Java instead [transforms decoded references](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/StorageAdapter.java:395), explicitly [transforms pre-training plain vectors into the current coordinate system](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/common/StorageTransform.java:63), and [hashes that reference representation during collapse](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/CollapseTask.java:489). For those rows, the signature input differs from persisted bytes.
+
+   Specify the exact representation at each signature call site, distinguishing persisted plain, transformed plain, and encoded vectors. Require mixed-era training→collapse→reopen→search/delete JVM fixtures and both-direction interoperability. This is a demonstrated specification mismatch; whether related target behavior corrupts data remains a runtime hypothesis.
+
+2. **P1 — Queued replay cannot reach maintenance when it hits capacity.**  
+   The retained driver [drains pending writes before merging](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer.go:903). Replay [only accumulates merge requests until the entire drain finishes](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer_queue.go:186), while [automatic maintenance defaults to false](/home/birdy/projects/fdb-go/pkg/recordlayer/index_deferred_maintenance.go:19). Java GuardiANN [rejects an insertion above the hard cap in this mode](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Insert.java:330). Retrying or shrinking the replay batch cannot free capacity already consumed by committed records.
+
+   [Design:202](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-d-design.md:202) needs a concrete checkpointed merge/replay transition: preserve the blocked entry and build session, execute actual claim/drain attempts, then resume replay under the single retry owner. Require a queued build that reaches capacity and completes through its own merger, including callback failure/conflict rollback and exactly-once queue consumption.
+
+3. **P1 — Empty and undersized merge populations have no executable terminal transition.**  
+   [Design:131](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-d-design.md:131) promises one final empty cluster. However, Java [schedules undersized merges whenever multiple centroids remain](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Primitives.java:1332). Candidate construction [passes cleaned references into KMeans](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/SplitMergeTask.java:524), whose [population validation precedes the k=1 shortcut](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/kmeans/KMeans.java:135). Multiple empty clusters after deferred deletions therefore expose an unhandled source path; candidate populations smaller than their requested partition count do likewise.
+
+   Specify empty-core and `n<k` handling, terminal topology, task/count cleanup, and peak/statistics preservation. Add retained JVM and Go fixtures for multi-cluster delete-all→drain→reinsert and undersized candidates. The generic future source-hypothesis policy does not resolve this transition; this review did not execute a reproducer.
+
+4. **P1 — Operational metric admission remains incomplete.**  
+   [Design:54](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-d-design.md:54) accepts Java metric enum spellings. Java’s [GuardiANN parser reads the general metric option](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/GuardiannVectorIndexEngine.java:297), but [KMeans supports only Euclidean and cosine](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/kmeans/KMeans.java:652). Dot-product and squared-Euclidean configurations can consequently pass metadata parsing yet fail during required split/merge work.
+
+   Define a mutation-free GuardiANN capability check rejecting unsupported clustering metrics, separately from faithful metadata parsing and HNSW/scalar adapters. Require every metric to reach either pre-mutation refusal or successful forced maintenance. Do not silently substitute another objective.
+
+The paper-preservation check passes: SPANN §§3.2.1–3.2.3 and SPFresh §§3.2–3.4, §4.2 remain compatible with the unchanged algorithms and LIRE paths. SPFresh retains inherited [queue refusal](/home/birdy/projects/fdb-go/pkg/recordlayer/index_maintainer_queue.go:12), the shared [maintenance gate](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:1007), and [no-op MergeIndex](/home/birdy/projects/fdb-go/pkg/recordlayer/index_deferred_maintenance.go:246); its separate rebalance lifecycle remains intact.
+
+The supplied-merger-transaction clarification is correct: no invented GuardiANN child runner is needed. Actual claim/drain/retry/final-work callback evidence remains an implementation acceptance requirement. Approved extensions, C++7.3.77, format15/default14, and separate Lucene work remain preserved.
+
+No tests, probes, or mutations were performed. Existing WS-C results establish neither WS-D implementation nor CI/completion. This NAK supplies none of the four required design ACKs.

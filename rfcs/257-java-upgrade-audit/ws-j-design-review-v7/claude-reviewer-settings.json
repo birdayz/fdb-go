@@ -1,0 +1,47 @@
+{
+  "permissions": {
+    "defaultMode": "dontAsk",
+    "allow": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Bash(git show:*)",
+      "Bash(git diff:*)",
+      "Bash(git cat-file:*)",
+      "Bash(git ls-tree:*)",
+      "Bash(git log:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git grep:*)",
+      "Bash(sha256sum:*)",
+      "Bash(pdftotext:*)",
+      "Bash(wc:*)",
+      "Bash(rg:*)",
+      "Bash(grep:*)",
+      "Bash(sed -n:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(ls:*)",
+      "Bash(find:*)",
+      "Bash(cat:*)",
+      "Bash(git -C /home/birdy/projects/fdb-go show:*)",
+      "Bash(git -C /home/birdy/projects/fdb-go diff:*)",
+      "Bash(git -C /home/birdy/projects/fdb-go cat-file:*)",
+      "Bash(git -C /home/birdy/projects/fdb-go ls-tree:*)",
+      "Bash(git -C /home/birdy/projects/fdb-go log:*)",
+      "Bash(git -C /home/birdy/projects/fdb-go rev-parse:*)",
+      "Bash(git -C /home/birdy/projects/fdb-go grep:*)",
+      "Bash(cd /home/birdy/projects/fdb-go)",
+      "Bash(sort:*)",
+      "Bash(uniq:*)",
+      "Bash(awk:*)",
+      "Bash(nl:*)"
+    ],
+    "deny": [
+      "Edit",
+      "Write",
+      "NotebookEdit",
+      "WebFetch",
+      "WebSearch"
+    ]
+  }
+}

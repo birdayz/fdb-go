@@ -1,0 +1,93 @@
+**NAK.** I reviewed tree `936a4aba27681bdd9a5e2938021f54d7b803e2a1`. The design has SHA256 `ff925afc925653…`: I recomputed it from the tree as `ff925afc915653a557fae1daef0be2419749e8d0d270eb776dcab14224f1d28c`, and it has 2029 lines; both match. Java is at `fdacd162a`. This was a read-only review: I ran nothing.
+
+**Checked and correct**
+- **Evidence:**
+  - I re-hashed 11 of the 66 files in evidence-v8 from the tree, and all 11 match.
+  - The `just test` tree `9f1cd709` differs from the candidate only in `ws-c-design.md` and `evidence-v8.txt`. `recordlayer_test` and `catalog_test` are among the 43 targets it executed.
+  - `wsj-vr-jvm.log` has 35 `VALIDATE_RECORDS` lines: 8 load in both, 22 are refused in both, 5 are refused by Go only.
+  - `wsj-ev1.log` shows 27 of 27 specs passing.
+  - The wm8-8 and wm8-13 logs show the marker, the diff and the red specs recorded.
+- **The (d) replay matches the pre-upgrade build at e48f5b496:**
+  - the name-first loop (`metadata.go:314-327`);
+  - loader step 4, which refuses an index on an unframed type, and step 5, which skips an unknown RecordType (`metadata_proto.go:268-310`);
+  - the primary-key check in `Build` (`:772`).
+- **No fail-open path found.** The dangerous direction is the replay reporting "refused" while the old loader actually loaded the file. I found no way to reach it:
+  - Every pre-upgrade stored load went through `RecordMetaDataFromProto`. I grepped the non-test callers at e48f5b496: `meta_apply`, `meta.go`, `metadata_store` and the template catalog.
+  - The current loader refuses a RecordType it does not know, so framed ⊆ record types is exactly "has a stored primary key".
+- **The catalog:** `CreateTemplate` is its only writer of `META_DATA` (through `serializeTemplate`), and both loads go through `deserializeTemplate`. DROP and List never deserialize.
+- **The loader's two readings:** folding `value_expression` into the root and defaulting an absent `added_version` to 1 match `Index.java:215-233`, and the concat flattening matches `ThenKeyExpression.add` (`:264-271`).
+- **The template-statement walk:** the IN-over-SELECT and NULL-in-IN refusals match `AstNormalizer.java:446-528`.
+- **v7 findings:** every one is addressed at least in text. Two are only partly closed: Graefe #4 (finding 3 below) and Torvalds #2 (finding 8 below).
+
+## MEDIUM
+
+**1. The EQUIVALENT carrier has no route to storage (design :1232-1238).**
+- The design says the save "stores that same `gen.MetaData`". But the only template writer is:
+  - `CreateTemplate(txn, api.SchemaTemplate)` → `serializeTemplate` → `md.ToProto()` (`fdb_template_catalog.go:252-275`).
+  - `ToProto` rebuilds every index through `indexToProto` (`metadata_proto.go:596-635`), which drops `index_type`, `value_expression`, unknown fields and extensions. The design says this itself (:1176-1180).
+  - Nothing on `Index` keeps a stored proto (grep: none).
+- So the spliced Index is lost when it is stored, and the (d) check and the lane check run over `rl.Underlying()`, not over the carried bytes.
+- **Fix:**
+  - Name the mechanism: a bytes-carrying template, or a catalog write that takes a `gen.MetaData`, whose checks run on `RecordMetaDataFromProto` of exactly those bytes.
+  - Pin the result at the catalog layer: read the `Templates` row's `META_DATA` back and compare its Index message.
+
+**2. The lane check types exempt operands wrongly (:722-723, :759-760).**
+- The design says an order-wrapped operand "takes that column's type", and it plans a test that ACCEPTS one.
+- In Java, `OrderFunctionKeyExpression.toValue` is a `ToOrderedBytesValue` (`:100-101`), whose type is BYTES (`ToOrderedBytesValue.java:100-101`). CARDINALITY is INT (`CardinalityValue.java:84-86`).
+- So `bitand(order_desc(a), 1)` is (BYTES, INT), which has no lane:
+  - the target fails every query of the table (the stored no-lane case of section 3.5);
+  - Go's own `nullableLong` refuses every write.
+- **Fix:**
+  - type each exempt function by its Value's result type;
+  - refuse the order-wrapped case;
+  - flip the planned test.
+
+## LOW
+
+**3. Interim divergence for DDL (the residual of Graefe v7 #4).**
+- (t) (:2018) and DIVERGENCES say "From DDL there is no divergence".
+- But step 6 merges after the unit (:1923), so until it lands, DDL `v & 1` over DOUBLE gets 42F59 at `CreateTemplate`, where the target gives XX000.
+- **Fix:** either raise the target's two-step XX000 in step 3 from the same lane table, or declare the interim.
+
+**4. "Exactly when" is an overclaim (:1622, code comment `metadata_proto.go:~430`).**
+- The pre-upgrade `Build` (`e48f5b496:metadata.go:752-805`) also refused on:
+  - the union's oneof shape;
+  - primary-key and index validation against the LEGACY-framed descriptor. For a message-typed field that is `field.Message()`, which can be a different message with the same short name: tuple_fields `UUID` versus a table named "UUID", or a nested message;
+  - universal-index validation.
+- The replay omits all of these. Each omission only makes Go refuse more (fail-closed), but it contradicts "exactly".
+- It also falsifies "exactly one family" (:1689): a table named "UUID" beside a "UnionDescriptor" table with a UUID column would be refused, though the old loader could not load it.
+- **Fix:** rescope to "only if" and list the omissions, or replay descriptor identity as well.
+
+**5. The holder shapes are stranded.**
+- The arm toward the target's choice refuses the envelope and record-type holders, saying "retype or remove it first" (:1733). No API can store that edit:
+  - `SaveRecordMetaData` refuses when the CURRENT stored metadata does not build (`metadata_store.go:111-114`);
+  - `SaveMigratedLegacyMetaData` accepts only the migration's own output (:1765).
+- Toward the pre-upgrade choice, the record-type holder's output fails the loader ("Unknown record type Batch").
+- **Fix:** declare this in (p) and (r), or verify and admit an edited file whose framing matches the stored one.
+
+**6. The in-memory claim is wrong (:776).**
+- `InMemoryStoreCatalog` keeps schema rows bound to (t, v) (`store_catalog.go:23`, `:75-115`).
+- Its `RepairSchema` rebinds to the latest version unvalidated (`:136-168`).
+- **Fix:** state the real reason the guard is not needed there: a schema holds its template object, and step 4 routes repair through `SaveSchema`.
+
+**7. The restore's conflict range (:473)** covers only writes after the final transaction's read version. A bypass write between the listing and that read version goes uncaught. Scope the sentence.
+
+**8. Tests and text.**
+- The stored-index-protos spec fetches Java's `options` and never asserts them, so the `index_type` UNIQUE case's `{unique=true}` is unpinned.
+- `AmbiguousLegacyUnionError.Error()` still says only "migrate it". That does not apply to a `SetRecords` build, and the migration does not exist on this tree (CHANGELOG PENDING). Name the edit-the-file remedy (residual of Torvalds v7 #2).
+
+**9. IN-walk shapes to pin (:891).** Java checks an IN list at entry, before visiting its items. Pin:
+- `x IN (SELECT … LIMIT 1)`, which gets the nested-SELECT message;
+- `x IN ((SELECT … LIMIT 1), NULL)`, which gets the NULL message. This one applies only if the grammar admits a scalar subquery as an IN-list item.
+
+## Measured vs hypothesis
+- **Measured:**
+  - the 35 descriptor shapes on both engines;
+  - the five column-typed-by-table DDL shapes through Go's catalog and driver;
+  - the ten no-lane DDL shapes (the target's outcome asserted, Go's recorded);
+  - five stored index protos compared on root, versions and type;
+  - the 17 unit shapes on four paths;
+  - the wm8 mutations.
+- **Source only:**
+  - findings 1–9;
+  - every unbuilt part: the carry and its carrier, the guard, the restore, the lane check, the IN walk and the migration.

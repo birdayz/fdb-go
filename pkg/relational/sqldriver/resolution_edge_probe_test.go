@@ -24,7 +24,7 @@ func TestFDB_ResolutionEdgeProbe(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE resedgep "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_resedgep/s WITH TEMPLATE resedgep")
-	dsn := fmt.Sprintf("fdbsql:///testdb_resedgep?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_RESEDGEP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

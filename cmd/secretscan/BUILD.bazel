@@ -1,0 +1,26 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "secretscan_lib",
+    srcs = [
+        "main.go",
+        "scan.go",
+    ],
+    importpath = "fdb.dev/cmd/secretscan",
+    visibility = ["//visibility:private"],
+)
+
+go_binary(
+    name = "secretscan",
+    embed = [":secretscan_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "secretscan_test",
+    srcs = [
+        "main_test.go",
+        "scan_test.go",
+    ],
+    embed = [":secretscan_lib"],
+)

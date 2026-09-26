@@ -1,0 +1,74 @@
+**NAK** on commit `1bc97d6af28aceedebee1431eab3d59e6656d61f`. I recomputed the design hash from the commit blob: `d907dee2e0ae6ae832a0b38d92e24175d8010e432fbb9992a1e6c54bce4baed2`, 2530 lines, which matches. The review was read-only. `git diff` and `git grep` were refused, so I read the delta with `git show`. Anything not marked **measured** comes from reading source.
+
+Every v13 finding is resolved or answered, and revision 14 undoes no revision-12 or revision-13 fix. The NAK rests on the lens question itself: two Go-only behaviours are still undeclared. Both are Low and cheap to fix.
+
+## Findings, most severe first
+
+**1. Low: re-saving a Java record with a key written twice follows Java's generated-message serializer, not the default one that Go's read path models.**
+- **What Go does.** `collectMapOrders` keeps the first position (`record_wire_map_order.go:359-368`) and the Go map keeps the last value. The spec pins the result, `{2: [x y]}` (`key_validation_conformance_test.go:486`), and the index loses the `(1, 2)` entry.
+- **What Java does** (from source). Java's default serializer is `DynamicMessageRecordSerializer` (`FDBRecordStore.java:5668`). Its load-then-save writes the entry list verbatim, so both `x` entries and their index entries stay.
+- Go *reads* as that default serializer does (`record_wire_map_order.go:24-28`) but *writes* as the generated-message path does.
+- The index stays consistent with the bytes in both engines. But the stored bytes differ from what Java writes for the same operation, and that is the hard line.
+- **Not declared as a divergence.** The CHANGELOG (`:430`) says "a Go map holds it once" without saying that Java's default keeps both. DIVERGENCES has no map-order entry (**measured**: a grep of DIVERGENCES at the commit finds no map entry-order text; its only hit is line 332, on FlatMap).
+- The spec comment "(Java's load-then-save keeps it)" (`:431`) is from source. The spec never runs Java's re-save.
+- **Fix, either:**
+  - in `marshalMapRecord`, when a map equals prior's last-write-wins view, re-emit prior's entry bytes unchanged, duplicates included; or
+  - declare it in DIVERGENCES and add Java's re-save to the spec.
+
+**2. Low: the windowed VECTOR metric still accepts names Java refuses (pre-existing).**
+- `vector_index_validation.go:101-104` accepts `cosine`, `inner_product` and `euclidean`.
+- Java reads the metric with `Metric::valueOf` (`VectorOptionKey.java:236`, `HnswVectorIndexEngine.java:190`), whose only constants are `EUCLIDEAN_METRIC`, `EUCLIDEAN_SQUARE_METRIC`, `COSINE_METRIC` and `DOT_PRODUCT_METRIC`.
+- Java rethrows the refusal as "incorrect index options" (`VectorIndexMaintainerFactory.java:106-110`). So Go builds windowed meta-data that Java cannot open. That is the same class as v13 Torvalds 1, and revision 14 fixed only two of `VectorOptionKey`'s three parsers.
+- DIVERGENCES `:2120-2123` declares only the cause text for an unknown name, not this difference in whether the meta-data builds.
+- Go's DDL writes the enum names (`ddl.go:446-454`), so only record-layer API callers reach this.
+- **Fix:** accept only the four enum names in the validator, and add a JVM row (`hnswMetric=cosine`).
+
+**3. Low (from source, JDK-version dependent): one refusal text in `javaParseDouble` is not Java's.**
+- JDK 8–21's `FloatingDecimal.readJavaFormatString` throws `NumberFormatException("multiple points")` for inputs like `1.2.3` or `..5`.
+- Go returns `For input string: "1.2.3"` (`java_parse.go:153-154`).
+- The code comment and 7.14 say every refusal carries Java's text, but neither `TestJavaParseDouble` nor the 13 JVM rows include a second point.
+- **Fix:** add a JVM row and port the text.
+
+## Nits
+- **Test comment claims more than the test covers.** `TestSerializeUnionOverKeepsTheStoredMapOrder` says "nested maps too" (`record_wire_map_order_test.go:329`), but it covers only the top-level map and a map in a repeated element (`:390`). The `{key}` path arm of `collectMapOrders`/`orderMapEntries` (a map inside a map value's message) and the singular-message arm run in no re-save test.
+- **Nested order for a twice-written outer key.** `collectMapOrders` joins the nested map orders of both occurrences. The decoder keeps only the last value, so the nested order can come from the dropped occurrence.
+- **Instance paths can collide.** The paths use `%v` of the key, which is not injective for string keys containing `}`, `/` or `{`. These are edge cases.
+- **Per-record descriptor walk.** `mapReach{}` is fresh for every decoded record and every save, while `Build`'s memo (`metadata.go`, `reach := mapReach{}`) is thrown away. Keeping it for the meta-data's lifetime would be bounded and cheaper. This is a performance note only.
+
+## v13 findings checked
+- **Graefe 1 / Torvalds 2 (global cache): resolved.** `RecordType.reachesMap` is set at `Build`. Every metadata passes through `Build`, since the only assignment of `unionFieldNumber` is `metadata.go:1252`.
+- **Graefe 2 (reorder on re-save): resolved** apart from finding 1 above.
+- **Graefe 3 (required fields): answered.** `AllowPartial` is set for vtproto only, which matches the non-map paths, and the entry parse is partial.
+- **Graefe 4 (sentences not marked): resolved.**
+  - The `:2092`, `:2210` and `:2302` sentences are marked.
+  - `:1861` compares the whole text.
+- **Torvalds 1 (option parsers): resolved** apart from findings 2 and 3.
+- **Torvalds 3 and 4, Graefe's doc-split and "everywhere" nits: resolved.** `errors.go` is fixed and `store_typed.go:19` now uses Java's text.
+- **Torvalds 5 (test gaps): resolved.**
+  - The Struct spec decodes a generated type with a map through the store (protobuf-go's decoder, not vtproto's).
+  - The string-keyed rebuild specs now count their entries.
+- **Other nits: resolved.**
+  - The citations match 4.14.2.0: `FDBRecordStore.java:5137`, `:5098` and `:5065-5067`.
+  - `oneofSurvivors` matches the decoder's semantics.
+  - The planner comment names `oneOfThem`.
+  - The claim that the preset matches Java is now pinned against the JVM, and pinning it found a real bug.
+
+## Graefe lens
+- **Map order on read:** matches `DynamicMessage`. Re-verified: the first half of the wire-order spec is still green.
+- **Map order across a save:** matches Java for stored order and for a changed value. New keys go last in key order; Go has no insertion order, and this is declared. A key written twice follows Java's generated-message path rather than its default serializer (finding 1).
+- **Records-range preset:** matches `OnlineIndexer.getIndexer` (`:302-314`). `!buildsByIndex()` covers a single target, several targets under BY_INDEX, and a BY_INDEX build that fell back to a records scan. It matches `IndexingBase.maybePresetRecordsRangeAsync` (`:699-716`: `requireEmpty`, leading gap then trailing gap). **Measured:** the spec is red on `529753bf6` for both key types and green at the candidate.
+- **Sliding-window arms and classes:** the order matches `SlidingWindowIndexMaintainerFactory:212-238`. The OR arm is `RecordCoreException`, matching `IndexPredicate.java:243`. The window search goes through AND only (`:165-181`).
+- **Preserved boundaries:** untouched.
+
+## Measured
+- **Red runs.** Both used the index tree `705f3aee` (which is `529753bf6`'s tree) plus 9 changed files.
+  - `conformance_test`: 11 failures. These are the re-save spec, 7 option rows, the row with a window beside one under an OR, and both preset keys ("Ran 29 of 1788").
+  - `recordlayer_test`: 2 failures, the disjunction class spec and `TestGetTypedRecordStore_InvalidType`.
+- **Green: the pre-commit hook** (`bazelisk test //... --test_tag_filters=-stress`, "Executed 53 out of 94 tests: 94 tests pass").
+  - `recordlayer_test` "Ran 3725 of 3726", all passed.
+  - `conformance_test` "Ran 1669 of 1788", 0 failed, 119 skipped (the suite's own filters, as before).
+  - `rfc257_oracle_test` 64 of 64.
+  - The new unit tests show `--- PASS` lines.
+- **The green log shows the new specs by count only.** The run was not verbose (no `-v`), so no PRESET, WINDOWED or MAPWIRE lines appear. The total of 1788 equals the red run's.
+- **The hook's tree.** `f53cd6fc6` changes only `CLAUDE.md` and the umbrella RFC. The ident date of `1bc97d6af` (08:36:42) comes before the hook's logs (08:38–08:45), which is consistent with git taking the date before the hook runs.
+- **No mutations were run.**

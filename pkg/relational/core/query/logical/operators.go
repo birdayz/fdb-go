@@ -428,12 +428,12 @@ type SortKey struct {
 	Dir        SortDir
 	NullsFirst bool
 	Value      values.Value // resolved Value expression (nil = use text as FieldValue)
-	// Pos is the 1-based SELECT-list position for a positional key
-	// (`ORDER BY <n>`); 0 = not positional. A positional key IS an output
-	// ordinal by SQL definition, so the translator bakes it directly to the
-	// projection's output slot — no text-rendering round-trip, which
-	// diverges for computed items whose canonical source text differs from the
-	// baked output spelling.
+	// Pos is a selected output's 1-based position; 0 means no slot selected.
+	// ORDER BY <n>, a resolved SELECT alias, and a resolved UNION output name
+	// use the same slot-binding mechanism. Authored numeric syntax remains in
+	// the parser's orderByClause, independently of this semantic address.
+	// The translator bakes a surviving Pos directly to the output slot, without
+	// reinterpreting its rendered spelling as another alias or expression.
 	Pos int
 	// AggregateOutputOrdinal is an exact address into the grouped input's
 	// native [keys..., calls...] row. The bool distinguishes native slot zero
@@ -441,9 +441,10 @@ type SortKey struct {
 	// deliberately above ORDER BY.
 	AggregateOutputOrdinal    int
 	HasAggregateOutputOrdinal bool
-	// AggregateOutputValueExact marks Value as already structurally bound to
-	// the native aggregate row (including a computed tree whose leaves are
-	// native ordinals). Generic sort rebasing must not overwrite it by name.
+	// AggregateOutputValueExact marks Value as a validated structural draft
+	// over the aggregate's grouping keys and calls. The translator binds that
+	// draft to its real aggregate-row owner; generic sort rebasing must not
+	// overwrite it by name.
 	AggregateOutputValueExact bool
 	// Bare/Qualifier/Qualified: parse-tree segments of a plain column
 	// reference key; zero values for positional and expression keys (their
@@ -1015,40 +1016,20 @@ func (d *LogicalDelete) Explain(indent string) string {
 	return fmt.Sprintf("%s\n%s", header, d.Input.Explain(indent+"  "))
 }
 
-// --- LogicalValues (SELECT without FROM) ---------------------------
+// --- LogicalSingleton (SELECT without FROM) ------------------------
 
-// LogicalValues is a leaf operator that yields a single row of
-// constant/expression projections — the canonical target for a
-// SELECT without a FROM clause (`SELECT 1 + 2, 'hello'`). Rows is
-// a list of expression-texts per output column; Aliases is parallel
-// (empty string = no AS clause). The number of rows is always 1 in
-// this seed; a future VALUES (…), (…) literal table would extend to
-// multi-row. Java equivalent: a ConstantExpression flowing through
-// LogicalProjectionExpression.
-type LogicalValues struct {
-	Rows    []string
-	Aliases []string
-}
+// LogicalSingleton is a source containing one row with no public columns.
+// Java's FROM-less source uses Explode([true]) with empty visible expressions;
+// the translator hides that private BOOLEAN behind an empty-record projection.
+// SELECT expressions belong to the ordinary LogicalProject above this source.
+type LogicalSingleton struct{}
 
-// NewValues constructs a LogicalValues with per-column expression
-// text + parallel aliases.
-func NewValues(rows, aliases []string) *LogicalValues {
-	return &LogicalValues{Rows: rows, Aliases: aliases}
-}
+// NewSingleton constructs the one-row, zero-column FROM-less source.
+func NewSingleton() *LogicalSingleton { return &LogicalSingleton{} }
 
-func (*LogicalValues) Children() []LogicalOperator { return []LogicalOperator{} }
+func (*LogicalSingleton) Children() []LogicalOperator { return nil }
 
-func (v *LogicalValues) Explain(indent string) string {
-	parts := make([]string, len(v.Rows))
-	for i, r := range v.Rows {
-		if i < len(v.Aliases) && v.Aliases[i] != "" {
-			parts[i] = fmt.Sprintf("%s AS %s", r, v.Aliases[i])
-		} else {
-			parts[i] = r
-		}
-	}
-	return fmt.Sprintf("%sValues(%s)", indent, strings.Join(parts, ", "))
-}
+func (*LogicalSingleton) Explain(indent string) string { return indent + "Singleton()" }
 
 // --- CTE -----------------------------------------------------------
 

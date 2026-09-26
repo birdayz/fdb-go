@@ -47,7 +47,7 @@ func TestFDB_DMLPrimaryKeyDedupExecutes(t *testing.T) {
 			"CREATE INDEX t_a ON t (a) "+
 			"CREATE INDEX t_ab ON t (a, b)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dmldedup/s WITH TEMPLATE dmldedup")
-	dsn := fmt.Sprintf("fdbsql:///testdb_dmldedup?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_DMLDEDUP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

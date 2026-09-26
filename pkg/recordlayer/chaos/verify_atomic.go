@@ -54,6 +54,11 @@ func verifyCountIndex(ctx context.Context, store *recordlayer.FDBRecordStore, mo
 			continue
 		}
 		for _, values := range tuples {
+			// COUNT_NOT_NULL counts an entry only when its grouped part holds
+			// no null (AtomicMutation.java:165-171).
+			if idx.CanonicalType() == recordlayer.IndexTypeCountNotNull && groupedHasNull(values, groupingCount) {
+				continue
+			}
 			gk := extractGroupingKey(values, groupingCount)
 			expected[gk]++
 		}
@@ -190,4 +195,18 @@ func extractGroupingKey(values []any, groupingCount int) string {
 		t[i] = values[i]
 	}
 	return string(t.Pack())
+}
+
+// groupedHasNull reports whether the grouped part of an evaluated index key,
+// the columns after the grouping ones, holds a null. The chaos COUNT_NOT_NULL
+// index is over default fields (NullStandin.NULL), where every null is one
+// COUNT_NOT_NULL skips; a NULL_UNIQUE or NOT_NULL field's null, or a function's
+// plain null, is counted (recordlayer's keyContainsNonUniqueNull).
+func groupedHasNull(values []any, groupingCount int) bool {
+	for i := groupingCount; i < len(values); i++ {
+		if values[i] == nil {
+			return true
+		}
+	}
+	return false
 }

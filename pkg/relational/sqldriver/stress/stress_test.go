@@ -100,6 +100,8 @@ type stressHarness struct {
 	db           *sql.DB
 	dbPath       string
 	schema       string
+	clusterFile  string
+	observeQuery func(string, ...any) queryResult
 	batchSize    int
 	workers      int
 	batchesPerTx int
@@ -115,11 +117,16 @@ type stressHarness struct {
 
 func newStressHarness(t *testing.T, suffix string) *stressHarness {
 	t.Helper()
+	return newStressHarnessWithCluster(t, suffix, clusterFilePath)
+}
+
+func newStressHarnessWithCluster(t *testing.T, suffix, clusterFile string) *stressHarness {
+	t.Helper()
 	dbPath := "/stress_" + suffix
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	sysDSN := fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s", clusterFilePath)
+	sysDSN := fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s", clusterFile)
 	sysDB, err := sql.Open("fdbsql", sysDSN)
 	if err != nil {
 		t.Fatalf("sql.Open __SYS: %v", err)
@@ -130,7 +137,7 @@ func newStressHarness(t *testing.T, suffix string) *stressHarness {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=main", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=MAIN", strings.ToUpper(dbPath), clusterFile)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -140,21 +147,23 @@ func newStressHarness(t *testing.T, suffix string) *stressHarness {
 	t.Cleanup(func() { db.Close() })
 
 	return &stressHarness{
-		t:         t,
-		db:        db,
-		dbPath:    dbPath,
-		schema:    "main",
-		batchSize: 500,
-		workers:   4,
+		t:           t,
+		db:          db,
+		dbPath:      dbPath,
+		schema:      "main",
+		clusterFile: clusterFile,
+		batchSize:   500,
+		workers:     4,
 	}
 }
 
 func (h *stressHarness) createSchema(template string) {
 	h.t.Helper()
+	clusterFile := h.clusterFile
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	sysDSN := fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s", clusterFilePath)
+	sysDSN := fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s", clusterFile)
 	sysDB, err := sql.Open("fdbsql", sysDSN)
 	if err != nil {
 		h.t.Fatalf("sql.Open __SYS: %v", err)
@@ -296,6 +305,9 @@ type queryResult struct {
 }
 
 func (h *stressHarness) timeQuery(query string, args ...any) queryResult {
+	if h.observeQuery != nil {
+		return h.observeQuery(query, args...)
+	}
 	ctx := context.Background()
 	start := time.Now()
 
@@ -446,8 +458,10 @@ func TestFDB_Ingest_Parallelism(t *testing.T) {
 }
 
 func runStressSuite(t *testing.T, suffix string, n int) {
-	h := newStressHarness(t, suffix)
+	runStressHarness(t, newStressHarness(t, suffix), n)
+}
 
+func runStressHarness(t *testing.T, h *stressHarness, n int) {
 	h.createSchema(`
 		CREATE TABLE orders (
 			id BIGINT,

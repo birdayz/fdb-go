@@ -1,0 +1,47 @@
+**NAK — the two reported defects are fixed, but range clearing still has an attachment gap.**
+
+Reviewed Git **tree**: `6ffe8d3b5b541bdd1c668c6e13e45ebe475292a3`, against tree `c59322c012c53500679e7f345360fac6706468b9`.
+
+I completed the correction review: previous actual verdicts, approved design, complete production/test delta, surrounding initialization and mutation paths, tagged Java `fdacd162a9c8acfadc49082b89185c823ab8ae4a`, and retained closure evidence.
+
+**P2 — A handle can publish pre-clear state after the context range clear has completed.**
+
+[clearRangeWithIndexStateViews](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:316) protects only already-registered views. However, an unchanged-version [Open](/home/birdy/projects/fdb-go/pkg/recordlayer/store_builder.go:1412) loads `indexStates` without necessarily attaching a view. Its first subsequent state access [registers that previously loaded map](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:178), and [indexStateView](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:303) accepts it without checking whether a clear intervened.
+
+A sequential reproduction using the context-clear API:
+
+1. Commit an **empty, noncacheable store** with index `I` DISABLED.
+2. In a fresh context, `Open()` that store with unchanged metadata, without calling a state getter. The handle contains `I=DISABLED`; no shared view exists.
+3. Call `ctx.ClearRange(store.IndexStateSubspace())`. The persisted state key disappears, but there is no registered view to update.
+4. Call `store.MarkIndexDisabled("I")`. Initialization publishes the old DISABLED map, so the [unchanged-state branch](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:254) returns without restoring the state key.
+5. Save a record. Maintenance observes DISABLED and skips the index. Commit and cold-reopen: the absent state key means READABLE, although the saved record has no index entry.
+
+Starting empty means the clear itself does not expose an incomplete index; the subsequent stale decision causes the corruption. No concurrent goroutines or direct transaction mutations are needed.
+
+The new ordering regression [explicitly attaches both handles before clearing](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state_test.go:2588), so it cannot detect this case. Tagged Java’s [markIndexNotReadable](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/FDBRecordStore.java:3704) reads the transaction’s actual state key before deciding whether the transition is redundant.
+
+**Required correction:** coordinate initial state loading/publication with context clearing, including loaded-but-unattached handles and loads already in flight. Prevent a map predating a clear from becoming authoritative. Add a real-FDB clear-before-first-access regression asserting the transition result, raw state bytes, maintenance behavior, and cold-reopened state. This finding is source-derived; I did not execute it.
+
+The previous findings have these dispositions:
+
+- **P1, former-index cleanup:** resolved for the reported v1→v2→v3 sequence. `setIndexState` attaches the reconciliation handle before mutation, and the regression covers fresh subspace identity, raw bytes, committed DISABLED state, preserved records, and cold scan rejection.
+- **P2, reversed mutation/publication order:** resolved. The common view mutex spans the real transaction mutation and map publication.
+- **Registered-view range-clear ordering:** corrected. Registry locking serializes competing multi-view clears; point writers do not acquire the registry while holding a view mutex. I found no lock-order cycle in these paths.
+- **Initialization/errors:** public point transitions retain error-propagating initialization before mutation; former-index reconciliation follows successful store-state loading. The remaining defect concerns stale successful initialization.
+
+The retained evidence reconciles: all **6,781 frozen-file hashes** match source tree `a50bfc93d1d3d43a46949eba84b8a7a8ec05b626`, all **16 evidence hashes** match, and subsequent booking changes only documentation/evidence. Logs support **93/93 uncached targets**, **14/14 race targets**, recordlayer **3402/3403 plus 2110 Go RUN/PASS**, conformance **1391/1510 plus 70**, and executor **1952**. The two prior reproductions actually failed; three corrected specs pass; the range-clear mutant compiled and failed its test. These results do not cover late attachment.
+
+The **new** stress residual is:
+
+| Population | Baseline seconds, n=2 | Current seconds, n=2 | Mean ratio |
+|---|---:|---:|---:|
+| Orders | 146.224801 / 146.527169 | 151.286793 / 151.849443 | **1.0355×** |
+| Customers | 6.506822 / 6.626023 | 6.960202 / 6.998901 | **1.0629×** |
+
+I do **not independently block** this correctness milestone on these measurements. They show approximately **3.55%** and **6.29%** higher population times. Every run has 24 RUN/PASS cases, matching row counts and zero reported retries. Two sequential samples establish neither parity nor the cause of the residual.
+
+Approved extensions and the intentional Java deletion-callback correction remain preserved. WS-C–K remain outside this verdict; queue/state4/format15 remain disabled.
+
+No edits, tests/builds, Git mutations, GitHub requests, publication, or delegation were performed. HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`.
+
+Runtime model/effort identity is not independently exposed to me; I cannot attest the requested `gpt-6-astra/xhigh` setting.

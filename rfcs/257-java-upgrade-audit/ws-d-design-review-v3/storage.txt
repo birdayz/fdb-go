@@ -1,0 +1,64 @@
+**NAK.** This is a design gate for v3, reviewed under the storage/wire lens.
+
+- **Tree:** `1390a2feec185fc510f4b17c679bd1ae307951af`
+- **`ws-d-design.md` SHA256:** `2686aaeba1ad9eac4a4959ab771abaec6b7dea48f3a86ffc2d0651bee205b349` (verified with `git show TREE:path | sha256sum`)
+
+The review is complete and read-only. I read all four v1 verdicts, the v2 Graefe verdict, the full v3 design and its v2→v3 diff, the three research reports and the README. I checked their claims against Java and against Go via `git show TREE:path`. The v2→v3 diff touches only `TODO.md` and `rfcs/`. I ran no tests, probes or edits.
+
+One caveat: `fdb-record-layer/` has no `.git` directory, so I read its files without being able to confirm they are at `fdacd162`.
+
+**Checked and correct:**
+- **Leases and counts:** the lease, delete-guard and count protocol matches `VectorIndexMergeLock.java:94-188` and `VectorIndexMaintainer.java:496-618`.
+- **Declared liveness divergence:** accurate. Java's build store forces auto-merge off (`IndexingBase.java:1123`) and Java drains before merging (`:1069-1071`). Go's build retry reduces the batch only for FDB error codes (`online_indexer.go:993-1009`).
+- **Refused-merge row:** Go's merger returns non-FDB errors immediately (`indexing_merger.go:95-106`), so the refusal ends the merge.
+- **Commit-check order:** Go runs checks in registration order (`database.go:1128-1146`), so the heartbeat check runs before a negative-count disable.
+- **HNSW 9–15 extra bits:** Java's quantizer accepts only 1–8 bits (`RaBitQuantizer.java:57-76`), so no such encoded data exists and admitting search/delete is safe.
+- **Oracle pins:** `.bazelrc:11` pins remotejdk_21 and `classpath.json:27` pins fdb-java 7.1.26, as the design says.
+
+## Findings
+
+**P2-1: The lock-wait liveness guarantee is false as written (design 54-57).**
+- The design says a self-wait "surfaces as cancellation or deadline, never an uninterruptible hang." Go's lock registry is a plain `sync.RWMutex` (`database.go:1370-1410`), and a waiter cannot give up on it.
+- Store write APIs take no context (`store.go:373,381,1380-1382`). The only context available is `rc.ctx`, which is the caller's (`database.go:399,445,808`). `rc.Cancel()` only cancels the FDB transaction (`:878-880`).
+- So with a `context.Background()` caller, the cursor-lifetime self-wait never ends. The same is true for any goroutine still waiting after the record context closes.
+- **Required:**
+  - Lock waits observe the caller context, record-context cancel/close/commit, and the transaction timeout.
+  - A cancelled waiter is removed from the queue without letting later waiters jump Java's FIFO chain (`AsyncLock.java:77-95`).
+  - A regression test covers a Background-context self-wait.
+- **Unaddressed side effect:** holding the lock for the cursor's lifetime turns same-transaction "vector read, then write the same partition" into a self-wait. Today Go releases the lock when SearchKNN returns (`vector_index_maintainer.go:1136-1141`). Record-layer results are fully materialized before the first row (`VectorIndexMaintainer.java:226-259`), so the longer hold protects no read.
+- Decide that behaviour and pin a SQL-level fixture for it. `git grep` finds INSERT…SELECT in 1 yamsql file and vector-distance queries in 3, but none combining them.
+
+**P2-2: As worded, the in-place reconcile deletes live replicas or corrupts counters (design 412-420).**
+- Split cleanup runs with `discardReplicatedVectorReferences=true` (`SplitMergeTask.java:363`). It drops every replica before any staleness test (`Primitives.java:1544`), returns only survivors, and deletes nothing (`:1552-1571`). It never "identifies" stale references.
+- If "stale" is computed as loaded minus survivors, every live replica gets deleted. If counts come from cleanup's output, `numReplicatedVectors` becomes 0 while replicas still exist.
+- **Fix:** classify every physical reference in the target, primaries and replicas alike, with the `:1556-1560` test (collapsed, or UUID matches the serializably read VectorMetadata). Delete only the failures and recompute counts from what remains.
+
+**P2-3: When only some new clusters drop, replication stays computed against a cluster that never exists (design 394-397).**
+- Replica placement and occlusion were computed with the dropped cluster present (`SplitMergeTask.java:621-684`, occlusion at `:728`).
+- Discarding its replicas while the owners stay PRIMARY loses copies that occlusion had suppressed elsewhere. Nothing marks those owners UNDERREPLICATED, so no reassign ever repairs them.
+- The dropped cluster owns no primaries, so removing it changes no vector's home.
+- **Fix:** recompute replica selection and stats over the surviving clusters before `replaceCentroidsInHnsw`. This needs no RNG beyond the minting already done. Pin that the result equals the recompute.
+
+**P2-4: The "deterministic failure blocks the prefix" family is only partly closed (design 359-369, 386-431).**
+- `SplitMergeTask.java:386-397` calls `orElseThrow()` when every split candidate is INVALID and collapse does not apply. An outlier child below the 0.1 minimum child fraction triggers it. The engine report flags this at `guardiann-engine.txt:207`.
+- The failure rolls back the task's removal (design 258-260), so the task stays first in key order and fails again on every drain.
+- Go's merger stops on it, so every merge of that index fails. The cluster stays above max until the hard cap refuses all of its inserts. v3 capacity recovery then reports the merger's error.
+- **Fix:** add this shape to the JVM fixtures and decide Go's contract. Java's own non-split exits clear SPLIT_MERGE (`:182-186`, `:483-492`). Also state that recovery propagates the merger's typed error, not a capacity error.
+
+**P3-1: "Affected target" is undefined in the capacity recovery (design 321-330).**
+- Java's capacity exception carries only cluster, count and limit (`Insert.java:336-337`), but counts and leases are per grouping prefix. The typed error must also carry the index and prefix.
+- "Actionable" must use the merger's own predicate: at most 16 prefixes examined, owned or free lease (`VectorIndexMaintainer.java:553-604`).
+- Otherwise a prefix outside that window reads as actionable, the merger returns (0,0) without touching it, and recovery loops uselessly until the 100-failure budget runs out (`throttled_retrying_iterator.go:41`).
+
+**P3-2: A caller that catches a capacity error and commits loses the vector (design 238-240).**
+- Insert writes the VectorMetadata row (`Insert.java:293`) before the hard-cap throw (`:334-337`), and that row is what the existence check reads (`Primitives.java:412-414`).
+- Committing after catching the error leaves an identity with no references. Retrying the same PK is then a no-op (`:226-228`), so the vector is never searchable.
+- Add this as a source-hypothesis fixture next to the existing catch-and-commit tests for capability errors.
+
+**P3-3: The parallel-read model needs an explicit join rule (design 42, 103).**
+- Every bounded parallel collector must cancel and wait for all its children before the operation returns and before the partition write lock is released.
+- No Set, Clear or count ADD may be issued after the operation returns. Otherwise a late count ADD can miss the commit, the count drifts negative, and the index is auto-disabled.
+
+**P3-4: The preflight rules and the per-operation table conflict (design 103-106 vs 114-124).**
+- The concurrency and batch knobs are mutable (`guardiann-engine.txt:50`). A Java schema evolution can set them to values Go's preflight refuses, which would block deletes.
+- That contradicts the design's "Go must still be able to … REMOVE data." Merge the two tables into one per-operation matrix.

@@ -1,0 +1,86 @@
+**NAK**
+
+- **Tree:** `8d721bd13b28b59be91f59a35b71acbd15d7131c`. **Design:** `ws-d-design.md`, SHA256 `c56a731bf5a10bd24c324123a8f410162ce6c9d8a20d4afdb213f7ca9eb4bcd4`, 1871 lines. I recomputed both from the tree object.
+- **Java:** `fdacd162`.
+- **Read:** all four v13 verdicts, the full v14 design and its diff from v13, RFC-094 §2 and its diff, README items 29–31, the rates script and its output, the SimFDB change and pin, the `wsdf14`/`wsdf14b` records, and the Go and Java sources cited below.
+- Nothing was run or edited.
+
+## P1: B is a work bound, but whether the peel works still depends on time (1466-1492, 1671-1683, 1706-1734)
+
+- **Refusing is better than admitting a slow peel.** A refused peel goes to the reconcile, which clears the task when the count is at or below the hard cap (1466-1469, 1633). An admitted peel that runs past 5 s fails with 1007 on every attempt and leaves the task stuck at the head of its queue (1682).
+- **So B needs an upper limit, and v14 has none.** The coverage argument only sets a floor: covering n=1001 at d=2048 needs B ≥ 1.845e7. The value 1.96e7, with its edge at d=980, is left over from the withdrawn time derivation.
+- **v14 removed v13's rule for a slower Go** ("B goes down if Go is slower; the fixture moves") and put nothing in its place ("does not move B", 1492).
+- **The acceptance fixtures therefore depend on an unmeasured Go rate.** At the highest JVM rate, fixture 2 (W=1.845e7) already spends 3.23 s on refits. Add the target's fit (up to 0.31 s), the floor sort that is not timed, 4 MB of reads and a 5.3 MB commit.
+  - "No wall-clock assertion" (1706) is false in effect: the 5 s limit is one.
+  - The merger's retries would hide a flaky 1007.
+- **The owned 1007 is not priced.** In a merger session it costs about 12 quota halvings × 10 attempts × ~5 s, roughly 10 minutes (IndexingMerger.java:246-258). The target aborts at once on its non-FDB throw (:189-203).
+- **Needed:**
+  - a stated Go performance criterion at W=B and at every fixture (n≥2 runs, load recorded), where a miss is fixed in Go and never by raising B;
+  - fixtures that assert completion in exactly one attempt, through the observer;
+  - the price of the 1007, stated.
+
+## P2
+
+1. **The retry predicate follows the wrong Java source (950-958).**
+   - `RunRetriable` retries if ANY cause in the chain is a retryable FDBException or a `RecordCoreRetriableTransactionException` (FDBDatabaseRunnerImpl.java:195-207). The design's own 847-851 says the same.
+   - `FDBExceptions.isRetriable`, which stops at the first FDB error, is AutoContinuingCursor's predicate (:140).
+   - One shared predicate cannot port both. Run needs the any-cause rule.
+2. **The EXHAUSTED reconcile hides bugs, and its fixture cannot fail (1044-1061).**
+   - Copying store state into the model is the blind resync the v13 storage review warned about. After an exhausted `deleteAll` it resyncs everything.
+   - "Model and store equal after the reconcile" holds by construction.
+   - Ground truth exists: SimFDB's `LastCommitUnknownApplied` (simfdb.go:56-80), read on the committing goroutine, and the chaos arm knows whether it committed.
+   - Calls whose every attempt was 1020 or 1007 are known not-applied, so they are not unknown outcomes.
+3. **The throttled-iterator row contradicts the rest of the design (903-907).**
+   - It says the iterator retries "ANY error … exactly; kept".
+   - Sections 1 and 6 require capability errors and `ClusterUnsplittableError` to be terminal in that same iterator (268-270, 1627-1628).
+   - The code retries everything except `RunnerClosedError` (throttled_retrying_iterator.go:86-89). State the Go-only exceptions in the row.
+4. **Redefining the arms silently weakens existing tests (1120-1124).**
+   - `FaultConflict` and `FaultTransactionTooOld` are documented as a deliberate double-commit superset test (fault.go:24-34).
+   - `TestSPFreshChaos_WritePathFaults:125-129` targets "the path most exposed to a non-idempotent replay". Under v14 it stays green but no longer replays a landed commit, and the same applies to the `FaultsAll` presets.
+   - Needed: audit these tests and move the replay cases to `FaultCommitUnknown`.
+5. **Pages: the design contradicts itself and leaves a reachable path without a fixture.**
+   - 1131 says "A page is read-only, so 1020 and 1021 are not page outcomes". 1081-1084 says pages can write.
+   - cascades_generator.go:2162-2171 says a first-page `not_committed` "is REACHED".
+   - The fixture was narrowed to 1007 (1167-1168), which drops the reached path.
+6. **The uncounted split-window retry is underspecified (977-992, 1093-1100).**
+   - It does not say whether an uncounted retry waits the delay; without one it busy-loops.
+   - "As today on every backend" is false for SimFDB, which caps at 100 today (1089-1092). Under D-0 each attempt sets limit 0, so the retry becomes unbounded.
+   - In single-goroutine DST, a stalled seal whose takeover needs another actor to run would then hang.
+
+## P3
+
+- **The SimClock wait (998-999) breaks the clock's contract.**
+  - `Clock` has only `Now()`, and `Advance` is documented as driver-only (pkg/dst/clock.go:18-33, 41-45).
+  - Concurrent loops add their delays together where sleeping would overlap them, and the resulting timestamps depend on interleaving.
+- **The route has no interface.** `fdb.Transactor` carries no route argument (database.go:191). The "call filter" (1112) needs an owner identity, and the heartbeat cleanup's `attemptLoop` call (917-920) has no route at all.
+- **Line references are stale at this tree.** The census is pinned to `3a934039`, although the status says it is counted on the reviewed tree. The count is still 75, but:
+  - indexing_mutual.go :240 → :237, fleet.go :237 → :238, connection.go :416 → :418;
+  - `shouldLessenWork` :1007 → online_indexer.go:1453;
+  - "at this tree" at 1221 and 1243 is false: `refreshFollowupHeartbeats` is at :443 and `validateBuildTarget` at :530;
+  - the header at 844 still says "(v13)".
+- **Superseded copies remain.**
+  - `conformance/guardiann_probe_conformance_test.go:1219-1220` still derives B from the "worst OBSERVED refit rate".
+  - `TODO.md:14705-14716` still describes v13: foreground writes take their caller's bound, faults are "keyed to the route", and the 1200 client prerequisite is not mentioned.
+- **The rates extraction leaves out the v14 evidence run itself.** `wsdf14/oracle.log:1346-1365` has 10 timing lines, maximum about 9.8e-8, so the range is unaffected. Line 1480 ("every run bound to this design") is broader than the actual population, and the seven input logs are not bound by hash.
+- **The SimFDB pin's mutation has no record.** Nothing under `/var/tmp/fdb-upgrade-recovery/` names the test or the mutation, and the run used `--test_output=errors`.
+- **The C++ line references cannot be checked here.** The 7.3.77 source is not in the repo, and `pkg/fdbgo/client/transaction.go:2045` cites NativeAPI.actor.cpp:6645 as the `grvTime` capture, not the proxy race. Hand this to the client gate.
+
+## Verified
+
+- **Census:** 75 lines on both trees. The out-of-route production owners are complete (OpenContext and CreateWritableTransaction sites: cursor_combinators.go:1004, throttled_retrying_iterator.go:132, runner.go:283, online_indexer_queue.go:341, connection.go:785). The only self-committing bodies are ddl.go:862 and :890.
+- **SimFDB fix:** correct on both loops. SimDB has no `TransactCtx`, so Run reaches `Transact`. `wsdf14b` executed 12 of 12 targets uncached.
+- **1200:** raised only at commitpath.go:62. Dropping it also ends the clash with C++'s 1200 (`recruitment_failed`) on the libfdb_c path (fdb/error.go:137, :484).
+- **Java:** ExponentialDelay :62-72, TransactionalRunner :181-192 and IndexingMerger :78-129 match the design.
+- **Catalog:** bootstrap idempotency holds (fdb_store_catalog.go:104-143).
+- **Arithmetic:** 10·2000·980 = 1.96e7; 9·1001·2175 = 19,594,575; 0.81 / 1.41 / 3.43 s.
+- **Superseded phrasing:** "every attempt of every record-layer owner" has 0 hits; the grep's positive control does hit.
+
+## Measured vs hypothesis
+
+- **Measured:** the JVM corner pins; the JVM timings (not pinned, load now recorded); SimFDB's retry limit and error chain (unit pin).
+- **Checked against source only:** the Java runner, cursor, merger and delay; the Go routes; the 1200 raise site; pages that write.
+- **Still hypothesis:**
+  - every D-0 mechanism: the route argument, `BodyCommittedError`, the per-call arms, the observer, the reconcile, the SimClock wait and the uncounted split-window retry;
+  - the client's wait for proxies;
+  - Go's peel rate, and the fixtures completing within 5 s;
+  - whether a single-precision peel at n=2000 fits under 10 MB.

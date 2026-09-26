@@ -4,9 +4,11 @@ package conformance_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -41,6 +43,187 @@ var _ = Describe("RANK Index Conformance", func() {
 			_ = env.Cleanup(ctx)
 		}
 	})
+
+	for _, javaWriter := range []bool{false, true} {
+		for _, duplicates := range []bool{false, true} {
+			for _, overlap := range []bool{false, true} {
+				It(fmt.Sprintf("compares grouped rank values, Java writer=%t duplicates=%t overlap=%t", javaWriter, duplicates, overlap), func() {
+					index := recordlayer.NewRankIndex("rank_by_price", recordlayer.GroupBy(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), recordlayer.Field("coord_x")))
+					if duplicates {
+						index.Options[recordlayer.IndexOptionRankCountDuplicates] = "true"
+					}
+					builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+					pk := recordlayer.Field("order_id")
+					builder.GetRecordType("Order").SetPrimaryKey(pk)
+					if overlap {
+						builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Concat(recordlayer.Field("price"), pk))
+					}
+					builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+					builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+					builder.AddIndex("Order", index)
+					md, err := builder.Build()
+					Expect(err).NotTo(HaveOccurred())
+					store.MetaData, store.RankIndex = md, index
+					metadataProto, err := md.ToProto()
+					Expect(err).NotTo(HaveOccurred())
+					metadataBytes, err := proto.Marshal(metadataProto)
+					Expect(err).NotTo(HaveOccurred())
+					for i, score := range [][3]int64{{0, 100, 1}, {0, 100, 1}, {0, 100, 2}, {0, 200, 1}, {1, 300, 1}} {
+						order := &gen.Order{OrderId: proto.Int64(int64(i + 1)), CoordX: proto.Int64(score[0]), Price: proto.Int32(int32(score[1])), Quantity: proto.Int32(int32(score[2]))}
+						if javaWriter {
+							params := store.buildJavaParams()
+							params["protoBytes"], params["order"] = BytesToIntArray(metadataBytes), order
+							Expect(store.java.InvokeAs(ctx, "saveOrderWithRankMetadata", params, nil)).To(Succeed())
+						} else {
+							Expect(store.SaveOrderGo(ctx, order)).To(Succeed())
+						}
+					}
+					check := func(group int64, byRank, reverse, missing bool) {
+						params := store.buildJavaParams()
+						params["protoBytes"], params["group"] = BytesToIntArray(metadataBytes), group
+						params["byRank"], params["includeRank"], params["reverse"] = byRank, true, reverse
+						var javaRows []map[string][]int
+						Expect(store.java.InvokeAs(ctx, "scanRankIndexValues", params, &javaRows)).To(Succeed())
+						_, err := store.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+							rs, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(store.Keyspace).Open()
+							Expect(err).NotTo(HaveOccurred())
+							kind, scanRange := recordlayer.IndexScanByValue, recordlayer.TupleRangeAllOf(tuple.Tuple{group})
+							if byRank {
+								kind = recordlayer.IndexScanByRank
+								scanRange = recordlayer.TupleRange{Low: tuple.Tuple{group, int64(0)}, High: tuple.Tuple{group, int64(10)}, LowEndpoint: recordlayer.EndpointTypeRangeInclusive, HighEndpoint: recordlayer.EndpointTypeRangeExclusive}
+							}
+							props := recordlayer.ForwardScan()
+							props.Reverse = reverse
+							entries, err := recordlayer.AsList(ctx, rs.ScanRankIndex(index, recordlayer.RankScanBounds{ScanType: kind, RankRange: scanRange, IncludeRankAsValue: true}, nil, props))
+							Expect(err).NotTo(HaveOccurred())
+							wantRanks := []int64{0, 0, 1, 2}
+							if duplicates {
+								wantRanks = []int64{0, 0, 2, 3}
+							}
+							if group == 1 {
+								wantRanks = []int64{0}
+							}
+							Expect(entries).To(HaveLen(len(wantRanks)))
+							Expect(javaRows).To(HaveLen(len(wantRanks)))
+							for i, entry := range entries {
+								position := i
+								if reverse {
+									position = len(wantRanks) - 1 - i
+								}
+								want := tuple.Tuple{wantRanks[position]}
+								if missing {
+									want = tuple.Tuple{nil}
+								}
+								Expect(entry.Value).To(Equal(want))
+								Expect(javaRows[i]).To(Equal(map[string][]int{"key": BytesToIntArray(entry.Key.Pack()), "primaryKey": BytesToIntArray(entry.PrimaryKey().Pack()), "value": BytesToIntArray(want.Pack())}))
+							}
+							return nil, nil
+						})
+						Expect(err).NotTo(HaveOccurred())
+					}
+					for _, group := range []int64{0, 1} {
+						for _, byRank := range []bool{false, true} {
+							for _, reverse := range []bool{false, true} {
+								check(group, byRank, reverse, false)
+							}
+						}
+					}
+					// Deliberately remove only group zero's ranked-set bytes while
+					// retaining its B-tree entries, exercising Java's nullIfMissing.
+					_, err = store.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+						rtx.Transaction().ClearRange(store.Keyspace.Sub(int64(3), "rank_by_price", int64(0)))
+						return nil, nil
+					})
+					Expect(err).NotTo(HaveOccurred())
+					check(0, false, false, true)
+					check(0, false, true, true)
+					check(1, false, false, false)
+				})
+			}
+		}
+	}
+
+	for _, javaWriter := range []bool{false, true} {
+		It(fmt.Sprintf("compares rank-valued packed tuples, Java writer=%t", javaWriter), func() {
+			for i, price := range []int32{100, 100, 200, 300} {
+				order := &gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)}
+				var err error
+				if javaWriter {
+					err = store.SaveOrderJava(ctx, order)
+				} else {
+					err = store.SaveOrderGo(ctx, order)
+				}
+				Expect(err).NotTo(HaveOccurred())
+			}
+			snapshot := func() []fdb.KeyValue {
+				var rows []fdb.KeyValue
+				_, err := store.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+					var err error
+					rows, err = rtx.Transaction().GetRange(store.Keyspace, fdb.RangeOptions{}).GetSliceWithError()
+					return nil, err
+				})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(rows).NotTo(BeEmpty())
+				return rows
+			}
+			// Opening a Java-created format-7 store upgrades its header to Go's
+			// configured format. Establish that open before measuring scan writes.
+			_, err := store.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				_, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(store.MetaData).SetSubspace(store.Keyspace).Open()
+				return nil, err
+			})
+			Expect(err).NotTo(HaveOccurred())
+			before := snapshot()
+			for _, byRank := range []bool{false, true} {
+				for _, include := range []bool{false, true} {
+					for _, reverse := range []bool{false, true} {
+						params := store.buildJavaParams()
+						params["byRank"], params["includeRank"], params["reverse"] = byRank, include, reverse
+						params["protoBytes"], params["group"] = []int{}, -1
+						var javaRows []map[string][]int
+						Expect(store.java.InvokeAs(ctx, "scanRankIndexValues", params, &javaRows)).To(Succeed())
+						_, err := store.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+							rs, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(store.MetaData).SetSubspace(store.Keyspace).Open()
+							Expect(err).NotTo(HaveOccurred())
+							kind := recordlayer.IndexScanByValue
+							if byRank {
+								kind = recordlayer.IndexScanByRank
+							}
+							props := recordlayer.ForwardScan()
+							if reverse {
+								props = recordlayer.ReverseScan()
+							}
+							bounds, err := recordlayer.NewRankScanBounds(kind, recordlayer.TupleRangeAll, include)
+							Expect(err).NotTo(HaveOccurred())
+							entries, err := recordlayer.AsList(ctx, rs.ScanRankIndex(store.RankIndex, bounds, nil, props))
+							Expect(err).NotTo(HaveOccurred())
+							Expect(entries).To(HaveLen(4))
+							Expect(javaRows).To(HaveLen(4))
+							for i, entry := range entries {
+								position := i
+								if reverse {
+									position = 3 - i
+								}
+								var want tuple.Tuple
+								if include {
+									want = tuple.Tuple{[]int64{0, 0, 1, 2}[position]}
+								}
+								Expect(entry.Value).To(Equal(want))
+								Expect(javaRows[i]).To(Equal(map[string][]int{
+									"key":        BytesToIntArray(entry.Key.Pack()),
+									"primaryKey": BytesToIntArray(entry.PrimaryKey().Pack()),
+									"value":      BytesToIntArray(want.Pack()),
+								}))
+							}
+							return nil, nil
+						})
+						Expect(err).NotTo(HaveOccurred())
+						Expect(snapshot()).To(Equal(before), "rank reads must not change persisted store/index/ranked-set bytes")
+					}
+				}
+			}
+		})
+	}
 
 	Describe("Go writes, both scan BY_VALUE", func() {
 		It("should produce identical index entries visible to both Go and Java", func() {
@@ -708,3 +891,153 @@ func (s *RankIndexConformanceStore) ScanRankIndexByRankJava(ctx context.Context,
 	}
 	return results, nil
 }
+
+// A RANK index's ranked set puts each score on the levels its hash picks
+// (RankedSet.java: a key reaches level l when hash & LEVEL_FAN_VALUES[l] is
+// zero), so an engine hashing differently from Java writes other ranked-set
+// bytes, and a later delete by the other engine recomputes other levels. Java's
+// hash functions are JDK, CRC, RANDOM and MURMUR3 (RankedSetHashFunctions),
+// chosen by the rankHashFunction option. For each deterministic one, the same
+// records saved by Java and by Go leave byte-identical ranked sets.
+var _ = Describe("RANK ranked set per hash function", func() {
+	var (
+		ctx   context.Context
+		env   *TenantEnvironment
+		store *RankIndexConformanceStore
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		var err error
+		env, err = SetupTenantEnvironment(ctx, sharedContainer, fmt.Sprintf("rankhash_%s", uuid.New().String()))
+		Expect(err).NotTo(HaveOccurred())
+		store, err = NewRankIndexConformanceStore(env.RecordDB, env.Keyspace, env.ClusterFile, env.TenantName)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		if env != nil {
+			_ = env.Cleanup(ctx)
+		}
+	})
+
+	useHash := func(hash string) []byte {
+		index := recordlayer.NewRankIndex("rank_by_price", recordlayer.GroupBy(recordlayer.Field("price")))
+		if hash != "" {
+			index.Options[recordlayer.IndexOptionRankHashFunction] = hash
+		}
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+		builder.AddIndex("Order", index)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		store.MetaData, store.RankIndex = md, index
+		p, err := md.ToProto()
+		Expect(err).NotTo(HaveOccurred())
+		b, err := proto.Marshal(p)
+		Expect(err).NotTo(HaveOccurred())
+		return b
+	}
+	// 120 distinct scores: about seven reach level 1 under any of the hashes,
+	// so two hashes agreeing on every level by chance is negligible.
+	orders := func() []*gen.Order {
+		var out []*gen.Order
+		for i := 0; i < 120; i++ {
+			out = append(out, &gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(int32((i*37)%1000 + 1))})
+		}
+		return out
+	}
+	rankedSet := func() []fdb.KeyValue {
+		var rows []fdb.KeyValue
+		_, err := store.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			var err error
+			rows, err = rtx.Transaction().GetRange(store.Keyspace.Sub(int64(3), "rank_by_price"), fdb.RangeOptions{}).GetSliceWithError()
+			return nil, err
+		})
+		Expect(err).NotTo(HaveOccurred())
+		return rows
+	}
+	clearAll := func() {
+		_, err := store.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			rtx.Transaction().ClearRange(fdb.KeyRange{Begin: fdb.Key(store.Keyspace.Bytes()), End: fdb.Key(append(store.Keyspace.Bytes(), 0xff))})
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	for _, hash := range []string{"", "JDK", "CRC", "MURMUR3"} {
+		name := hash
+		if name == "" {
+			name = "unset (JDK)"
+		}
+		It("Java and Go write the same ranked set bytes, hash "+name, func() {
+			metadataBytes := useHash(hash)
+			for _, order := range orders() {
+				params := store.buildJavaParams()
+				params["protoBytes"], params["order"] = BytesToIntArray(metadataBytes), order
+				Expect(store.java.InvokeAs(ctx, "saveOrderWithRankMetadata", params, nil)).To(Succeed())
+			}
+			javaRows := rankedSet()
+			levels := map[int64]int{}
+			for _, kv := range javaRows {
+				t, err := store.Keyspace.Sub(int64(3), "rank_by_price").Unpack(kv.Key)
+				Expect(err).NotTo(HaveOccurred())
+				levels[t[0].(int64)]++
+			}
+			fmt.Fprintf(GinkgoWriter, "RANK_HASH_BYTES %q java rows=%d per level=%v\n", name, len(javaRows), levels)
+			// Level 0 holds every score plus the empty head; a level above it
+			// holding more than its head is what makes the hash visible.
+			Expect(levels[0]).To(Equal(121))
+			Expect(levels[1]).To(BeNumerically(">", 1))
+
+			clearAll()
+			for _, order := range orders() {
+				Expect(store.SaveOrderGo(ctx, order)).To(Succeed())
+			}
+			goRows := rankedSet()
+			Expect(goRows).To(HaveLen(len(javaRows)))
+			for i := range javaRows {
+				Expect(goRows[i].Key).To(Equal(javaRows[i].Key), "row %d", i)
+				Expect(goRows[i].Value).To(Equal(javaRows[i].Value), "row %d key %x", i, javaRows[i].Key)
+			}
+		})
+	}
+
+	// RANDOM draws a key's levels on every insert (a delete draws nothing and
+	// clears every level that holds the key), so bytes cannot be compared;
+	// what must hold is that each engine reads the ranks the other wrote.
+	It("Java reads the ranks Go wrote with RANDOM", func() {
+		metadataBytes := useHash("RANDOM")
+		for _, order := range orders() {
+			Expect(store.SaveOrderGo(ctx, order)).To(Succeed())
+		}
+		params := store.buildJavaParams()
+		params["protoBytes"], params["group"] = BytesToIntArray(metadataBytes), int64(-1)
+		params["byRank"], params["includeRank"], params["reverse"] = true, true, false
+		var javaRows []map[string][]int
+		Expect(store.java.InvokeAs(ctx, "scanRankIndexValues", params, &javaRows)).To(Succeed())
+		Expect(javaRows).To(HaveLen(120))
+		for i, row := range javaRows {
+			rank, err := tuple.Unpack(intsToBytes(row["value"]))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(rank).To(Equal(tuple.Tuple{int64(i)}), "row %d", i)
+		}
+	})
+
+	// Java's getHashFunction refuses a name outside its four
+	// ("hash function not found"), when a maintainer is made; so does Go.
+	It("an unknown hash function is refused by both writers", func() {
+		metadataBytes := useHash("jdk")
+		params := store.buildJavaParams()
+		params["protoBytes"], params["order"] = BytesToIntArray(metadataBytes), orders()[0]
+		javaErr := store.java.InvokeAs(ctx, "saveOrderWithRankMetadata", params, nil)
+		Expect(javaErr).To(HaveOccurred())
+		Expect(javaErr.Error()).To(ContainSubstring("hash function not found: jdk"))
+		goErr := store.SaveOrderGo(ctx, orders()[0])
+		var argErr *recordlayer.RecordCoreArgumentError
+		Expect(errors.As(goErr, &argErr)).To(BeTrue(), "Go error %T: %v", goErr, goErr)
+		Expect(argErr.Message).To(Equal("hash function not found: jdk"))
+	})
+})

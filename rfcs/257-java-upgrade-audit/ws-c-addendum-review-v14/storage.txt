@@ -1,0 +1,79 @@
+**NAK.** I reviewed commit `1bc97d6af` (tree `e0af812df`). I recomputed the design hash from the commit object: `d907dee2e0ae6ae832a0b38d92e24175d8010e432fbb9992a1e6c54bce4baed2`, 2530 lines, which matches. The review was read-only; `git diff` and `git grep` were refused, so I read the delta with `git show`. Findings come from reading source unless marked **measured**. The working tree has uncommitted edits after the candidate. They touch findings 1, 2 and 5, which corroborates them, but I did not review those edits.
+
+## Findings, most severe first
+
+**1. Medium (from source): the HNSW maintainer reads the options differently from the validator, so Go now writes index bytes Java would not.**
+- Revision 14 makes the windowed VECTOR validator accept Java's number formats (`vector_index_validation.go:53`, `javaParseInt`).
+- The maintainer still reads the same options with `fmt.Sscanf("%d")` and falls back to the default if that fails (`vector_index_maintainer.go:139-252`; dimensions at `:141-145`, M at `:205-209`).
+- Java's maintainer reads them with the same parser its validator uses (`HnswVectorIndexEngine.java:191-194`, `VectorOptionKey.java:213`).
+- Example: `hnswNumDimensions="３"` (a full-width digit). Java builds with 3 dimensions. Go now builds too, but maintains 128 dimensions. Likewise `hnswM="１２"`: Java uses 12, Go uses 16.
+- Before this revision Go refused these at build, which was loud. Now it writes different index bytes without saying so.
+- The JVM row `hnswM="１６"` cannot catch this, because 16 is already Go's default M (`hnsw.go:135`).
+- **Fix:** have the maintainer read through `javaParseInt`/`javaParseDouble`, and add a JVM row whose value differs from the default.
+
+**2. Low (from source): a record stored under an older union field loses its map order on a Go re-save.**
+- `serializeUnionOver` finds the old record's bytes only under the type's current union field (`store.go:2168`, `unionInner`).
+- But Go decodes a record under any union field of its type (`metadata.go:1263-1267`), and Java allows a type several union fields (`RecordMetaDataBuilder.java:866-887`).
+- So when Go re-saves a Java record stored under an older field, it writes the map in key order. That reopens v13 Graefe 2: a covering index whose key two entries share keeps a value that a rebuild would change.
+- The CHANGELOG ("a record Java wrote that Go loads and saves unchanged keeps its entries' order and its index entries") and `record_wire_map_order.go:40-42` claim more than the code does.
+
+**3. Low (from source): a map inside a repeated element is matched to the old record by the element's position.**
+- The instance path uses the element's index (`record_wire_map_order.go:379-384`, `:464-469`).
+- If a save inserts or removes an element, an unchanged element gets another element's stored order. When the entries are otherwise equal, the order-blind common-entry filter then leaves the covering index stale, the same failure as v13 Graefe 2.
+- Java keeps each element's own order.
+- 7.14 and the CHANGELOG say "by their instance path" and never say this means position.
+- **Fix:** declare it and pin that shape, or match elements on something other than position.
+
+**4. Low (coverage): nothing tests that a saved record is indexed in the order it was written.**
+- The JVM re-save check cannot detect it:
+  - Record 1's old and new entries are equal, so nothing is written in either order.
+  - Records 2 and 3 have distinct index keys.
+- The unit test evaluates a fresh decode of the written bytes (`record_wire_map_order_test.go:~370-381`), not the saved record.
+- A shape that separates the two:
+  - Stored `[z→1]`, then save `{z→5, a→5}` under `KeyWithValue(NestFanOut(m, Concat(value,key)),1)`.
+  - Go writes `[z, a]`, and the index must hold `(5,pk)→a`.
+  - If the saved record carried no wire, key order would insert `z` last and leave `z`.
+- **Fix:** pin that shape through `SaveRecord` and the batch save.
+
+**5. Low (text; a source hypothesis, since the JDK source is not in the tree):** For a second decimal point, JDK `FloatingDecimal` throws `NumberFormatException("multiple points")`. `javaParseDouble` returns `For input string: "1.2.3"` instead (`java_parse.go:128`, `:170-198`). DIVERGENCES and `vector_index_validation.go:32-37` say "with Java's text". The JVM spec compares only the top-level message, so it cannot catch this.
+
+## Nits
+- If a key is written twice, the nested orders of both entries merge under one `{key}` path, first one seen first, while the Go map holds the last entry's value (`:358-376`). Only raw bytes can produce this.
+- The path strings are ambiguous for string keys that contain `}`, `/` or `{`.
+- In the green conformance log the new specs appear only in the total ("Ran 1669 of 1788", **measured**), because Ginkgo is not verbose. Their names show only in the red log.
+
+## Revision-13 findings, checked
+- **Graefe 1 (cache): resolved.** `reachesMap` is computed at Build (`metadata.go:1246-1250`). `mapReach` is a value per walk, and no `sync.Map` is left.
+- **Graefe 2 (re-sort on re-save): resolved for records under the current union field.**
+  - **Measured:** red on `529753bf6` at `key_validation_conformance_test.go:486` (`{1:[a b],3:[j k]}`); green in the hook run.
+  - What remains is findings 2 to 4.
+- **Graefe 3 (required fields): answered** (`marshalMapRecord:486-488`; the entry parse is partial).
+- **Graefe 4 (unmarked sentences):** the markers are at `:2092` and `:2210`, and the "always" claim is narrowed.
+- **Graefe nits:** `errors.go`, `store_typed.go:19` and the planner comment are all fixed.
+- **Torvalds 1 (Java's parsers): resolved, apart from findings 1 and 5.**
+  - **Measured:** 7 option rows red on the old tree.
+  - The `IllegalArgumentError` text is now declared in DIVERGENCES.
+- **Torvalds 2-4: resolved.**
+- **Torvalds 5: resolved.** The Struct record-type spec was added, and the string-keyed rebuild now counts its entries (`rebuild_count_selection_test.go:293-297`).
+- **Torvalds 6 (evidence): answered.**
+  - **Measured:** the green TREE's `dd34eed91` is `f53cd6fc6`'s tree, and `f53cd6fc6` changes only `CLAUDE.md` and the umbrella RFC.
+  - The dimensions test now recovers a panic.
+  - The red logs match 7.14: 11 JVM specs, the disjunction spec, and `TestGetTypedRecordStore_InvalidType`.
+- **Torvalds nits: resolved.** I checked the citations `5062`, `5071` and `5137` by grep.
+
+## Storage lens (revisions 13 and 14)
+- **Map fan-out index entries:**
+  - Records Java wrote: Go reads them and builds online in wire order (**measured**).
+  - Records Go writes: evaluated as written (from source; untested, finding 4).
+- **Record bytes Go writes:**
+  - A new record's maps are in key order (unit test).
+  - A replaced record keeps its stored order when it is under the current union field (**measured**), apart from findings 2 and 3.
+  - A key written twice is kept once, which the CHANGELOG declares.
+- **Online indexer range sets:**
+  - A single-target build now writes Java's range set for both integer and string record-type keys (**measured**, red→green).
+  - Multi-target builds are unchanged.
+  - A BY_INDEX build presets in neither engine (`OnlineIndexer.java:302-315`), and a mutual build presets in both (`IndexingMutuallyByRecords.java:283`).
+  - The requireEmpty insert makes the preset idempotent when resuming a build Java started.
+- **Per-type count reads:** `record_count.go:366-389` reads the same snapshot ranges as `FDBRecordStore.java:2431-2453` (from source).
+- **Pre-release ruling:** the note is at `CHANGELOG.md:28`, and nothing in this revision depends on data only a pre-release Go build wrote.
+- **Preserved boundaries:** untouched.

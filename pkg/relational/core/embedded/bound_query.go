@@ -229,7 +229,7 @@ func boundDependencies(op logical.LogicalOperator, ctes map[*logical.CTEProducer
 			addPred(pred)
 		}
 		existential = node.OnExistsSubqueries
-	case *logical.LogicalValues:
+	case *logical.LogicalSingleton:
 	default:
 		return r, api.NewErrorf(api.ErrCodeUnsupportedQuery, "no bound dependency property for %T", op)
 	}

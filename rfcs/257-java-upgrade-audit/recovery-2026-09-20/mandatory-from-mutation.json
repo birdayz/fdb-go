@@ -1,0 +1,22 @@
+{
+  "scope": "Fresh-machine compiled mandatory-FROM-gate revert; both retained SQL planning positives must fail. No runtime/FDB claim.",
+  "path": "pkg/relational/core/embedded/select_parser.go",
+  "restored_sha256": "44bcc95961cacc5c55417607320b8eec3b2d77c8f5dd2639770e0a0b3512f5bb",
+  "old": "if fromClause == nil {\n\t\treturn &fromSource{}, nil\n\t}",
+  "mutant": "if fromClause == nil {\n\t\treturn nil, api.NewError(api.ErrCodeUnsupportedQuery, \"query is not supported\")\n\t}",
+  "command": [
+    "bazelisk",
+    "test",
+    "//pkg/relational/core/embedded:embedded_test",
+    "--nocache_test_results",
+    "--test_output=all",
+    "--test_arg=-test.run=^(TestBuildLogicalPlan_SingletonNoFrom|TestPlanHarness_GroupingOnlyIndexDDL)$"
+  ],
+  "exit": 3,
+  "log": "/var/tmp/fdb-upgrade-recovery/mandatory-from-mutant.log",
+  "log_sha256": "d9e09b99d05e5b22c67670e4348ed9caffba4ad289d0d866d45caed4b3c87991",
+  "failed_tests": [
+    "TestBuildLogicalPlan_SingletonNoFrom",
+    "TestPlanHarness_GroupingOnlyIndexDDL"
+  ]
+}

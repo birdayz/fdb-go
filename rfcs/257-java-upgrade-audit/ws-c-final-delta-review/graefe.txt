@@ -1,0 +1,17 @@
+**NAK — reviewed TREE `5dc2a9cf465ff439ac75d1e5eb5682eecd0ca38b`.**
+
+Read the complete 17-file source delta (1,148 additions, 65 deletions) against `2a4d33046f8640673643ea989709665f425cbbc5`, all four prior NAKs, accepted design, scope, linked evidence, and relevant Java at `fdacd162a9c8acfadc49082b89185c823ab8ae4a`.
+
+1. **P2 — Published targets are not permanently retired from the session.** [online_indexer_queue.go:312](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer_queue.go:312)
+
+   `refreshFollowupHeartbeats` traverses the original `targetIndexes` on every transaction; its scannable-state check only temporarily skips completed targets.
+
+   Concrete interaction: a multi-target build publishes A and clears its heartbeat/bookkeeping in [online_indexer.go:1342](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer.go:1342), then continues draining B. A new single-target builder can legitimately start rebuilding A. B’s next callback now sees A as write-only again and validates it against the **old** session’s expected state and multi-target stamp. That fails, aborting B’s work despite A already having completed its participation in the original build. The merger uses the same callback.
+
+   Track retirement as session state published **after successful closeout commit**, and restrict subsequent callbacks to remaining owned targets. Apply the same commit-bound rule when observing completion by a peer. Add a deterministic regression that admits a new build of A after A’s publication while B continues follow-up; B must finish without renewing or validating A’s new session. The existing retirement test disables competing builders before closeout ([online_indexer_followup_test.go:166](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer_followup_test.go:166)), so it misses this schedule.
+
+The admission, bounded-cleanup, nested-Any, and committed mutual-renewal fixes address their prior findings. Cleanup correctly polls `IsReady`, calls `Get` only after readiness, and introduces no abandoned blocking-`Get` goroutine. Detached backend completion remains limited to clearing the old session’s UUID keys. All-target follow-up renewal and validation work while ownership remains unchanged; durable retirement is the remaining interaction defect.
+
+Existing **local** logs confirm 93/93 uncached targets, 183/3604 recordlayer race specs plus ordinary tests/seeds (2,143 RUN lines), and 9/1523 JVM specs with 12 nested-Any verdicts. All 35 manifest hashes match the candidate tree. I inspected the noncooperative cleanup regression and failed mutation; I ran no tests or mutations and changed nothing.
+
+Format maximum15/default14, approved extensions, C++7.3.77, SPFresh queue exclusion and unchanged algorithms/LIRE, and synchronous HNSW remain preserved. This supplies no future deferred child-backend proof. GuardiANN remains WS-D; absent Lucene remains upgrade-wide work distinct from Go TEXT.

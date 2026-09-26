@@ -49,6 +49,7 @@ const (
 	formatVersionStoreLockState        = 12 // StoreLockState with FORBID_RECORD_UPDATE + FULL_STORE
 	formatVersionIncarnation           = 13 // Incarnation counter for cross-cluster migration
 	formatVersionFullStoreLock         = 14 // Unknown lock states prevent store opening
+	formatVersionPendingWrites         = 15 // Pending index write queues
 	// formatVersionMaxSupported is the highest format this binary can OPEN, and
 	// it is a different question from the version a new store is BORN at.
 	//
@@ -61,19 +62,16 @@ const (
 	// them is what makes it a free decision.
 	//
 	// Matches Java's MAX_SUPPORTED_VERSION, computed as the max enum value
-	// (FormatVersion.java:182), which is FULL_STORE_LOCK(14) at 4.12.11.0.
-	formatVersionMaxSupported = formatVersionFullStoreLock
+	// (FormatVersion.java:188), WRITE_ONLY_WITH_QUEUE(15) at 4.14.2.0.
+	formatVersionMaxSupported = formatVersionPendingWrites
 
 	// formatVersionDefault is the version a NEW store is created at, and the
 	// version an existing store is upgraded to, when the caller pins nothing.
 	//
-	// Java's default is CACHEABLE_STATE(7) and Go's is the maximum. See
-	// DIVERGENCES.md for the decision and the evidence behind it; the short form
-	// is that Java at 4.12.11.0 opens a Go store at 14 without error —
-	// validateFormatVersion admits anything <= MAX, and checkPossiblyRebuild
-	// takes Math.max of stored and requested — so the divergence is not an
-	// interop break at the pinned spec.
-	formatVersionDefault = formatVersionMaxSupported
+	// Java defaults to CACHEABLE_STATE(7); Go retains FULL_STORE_LOCK(14).
+	// Supporting explicit queued-write format 15 must not silently enable it for
+	// existing deployments. See RFC-257 and DIVERGENCES.md for this default policy.
+	formatVersionDefault = formatVersionFullStoreLock
 
 	formatVersionMinimum = formatVersionInfoAdded // Matches Java's FormatVersion.getMinimumVersion()
 )
@@ -107,7 +105,14 @@ func (e *StoreIsFullyLockedError) Error() string {
 // lock states added by newer versions that we don't understand.
 // Matches Java's com.apple.foundationdb.record.UnknownStoreLockStateException.
 type UnknownStoreLockStateError struct {
+	// LockStateValue is the state as read: UNSPECIFIED (0) for a stored
+	// number the enum does not declare, which Java's parse leaves in the
+	// unknown fields and reads as the default.
 	LockStateValue int32
+	// UnknownFields is the lock-state message's unknown fields, Java's
+	// LogMessageKeys.VALUE (UnknownStoreLockStateException.java:49): an
+	// undeclared state number is there.
+	UnknownFields []byte
 }
 
 func (e *UnknownStoreLockStateError) Error() string {
@@ -133,6 +138,10 @@ func (e *StaleMetaDataVersionError) Error() string {
 // FDBRecordStore provides record storage operations within a transaction context.
 // This is the main struct for storing and retrieving records.
 type FDBRecordStore struct {
+	deferredMaintenance IndexDeferredMaintenanceControl
+	// maintenanceFilter is Java's FDBRecordStore.indexMaintenanceFilter; nil
+	// is IndexMaintenanceFilterNormal.
+	maintenanceFilter  IndexMaintenanceFilter
 	context            *FDBRecordContext
 	metaData           *RecordMetaData
 	subspace           subspace.Subspace
@@ -156,8 +165,9 @@ type FDBRecordStore struct {
 	stateMu             sync.RWMutex             // protects storeHeader + indexStates
 	stateLoadOnce       sync.Once                // ensures lazy store state load happens exactly once (Build() path)
 	stateLoadErr        error                    // error from lazy load (nil if loaded successfully or not yet attempted)
-	versionChanged      bool                     // true if checkPossiblyRebuild detected a version change
-	maintainerCache     sync.Map                 // string → IndexMaintainer, cached per-transaction
+	indexStateView      *transactionIndexStateView
+	versionChanged      bool     // true if checkPossiblyRebuild detected a version change
+	maintainerCache     sync.Map // string → IndexMaintainer, cached per-transaction
 }
 
 // ensureStoreStateLoaded lazily loads store state (header + index states) from
@@ -173,8 +183,17 @@ type FDBRecordStore struct {
 // during the open call — stateLoadOnce.Do returns immediately.
 func (store *FDBRecordStore) ensureStoreStateLoaded() {
 	store.stateLoadOnce.Do(func() {
+		// Loading and publishing must be atomic with context range clears;
+		// otherwise a completed clear can be undone by an older snapshot.
+		store.context.indexStateMu.Lock()
+		defer store.context.indexStateMu.Unlock()
+		if store.indexStateView != nil {
+			return // already loaded and bound (Open/CreateOrOpen path)
+		}
 		if store.indexStates != nil {
-			return // already loaded (Open/CreateOrOpen path)
+			// Preserve the builder's explicit assume-all-readable fast path.
+			store.indexStateView = store.context.indexStateViewLocked(store.subspace, store.indexStates)
+			return
 		}
 		state, err := loadRecordStoreState(store, ExistenceCheckNone)
 		if err != nil {
@@ -187,6 +206,7 @@ func (store *FDBRecordStore) ensureStoreStateLoaded() {
 		}
 		store.storeHeader = state.StoreHeader
 		store.indexStates = state.IndexStates
+		store.indexStateView = store.context.indexStateViewLocked(store.subspace, store.indexStates)
 	})
 }
 
@@ -216,6 +236,7 @@ func (store *FDBRecordStore) AsBuilder() *StoreBuilder {
 		subspace:           store.subspace,
 		indexRebuildPolicy: store.indexRebuildPolicy,
 		storeStateCache:    store.storeStateCache,
+		maintenanceFilter:  store.maintenanceFilter,
 	}
 }
 
@@ -230,6 +251,7 @@ func (store *FDBRecordStore) CopyBuilder(newContext *FDBRecordContext) *StoreBui
 		subspace:           store.subspace,
 		indexRebuildPolicy: store.indexRebuildPolicy,
 		storeStateCache:    store.storeStateCache,
+		maintenanceFilter:  store.maintenanceFilter,
 	}
 }
 
@@ -295,7 +317,7 @@ func validateStoreLockState(storeHeader *gen.DataStoreInfo, bypassFullStoreLockR
 	// FORBID_RECORD_UPDATE is known and handled at mutation time, so skip it here.
 	if storeHeader.GetFormatVersion() >= formatVersionFullStoreLock {
 		if state != gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE {
-			return &UnknownStoreLockStateError{LockStateValue: int32(state)}
+			return &UnknownStoreLockStateError{LockStateValue: int32(state), UnknownFields: lockState.ProtoReflect().GetUnknown()}
 		}
 	}
 
@@ -326,7 +348,7 @@ func (store *FDBRecordStore) LoadRecord(primaryKey tuple.Tuple) (*FDBStoredRecor
 	}
 
 	// Discover which record type is stored by inspecting the UnionDescriptor
-	recordType, protoMessage, err := store.deserializeAndDiscover(value)
+	recordType, protoMessage, wire, err := store.deserializeAndDiscover(value)
 	if err != nil {
 		return nil, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: err}
 	}
@@ -335,6 +357,7 @@ func (store *FDBRecordStore) LoadRecord(primaryKey tuple.Tuple) (*FDBStoredRecor
 		PrimaryKey: primaryKey,
 		RecordType: recordType,
 		Record:     protoMessage,
+		wire:       wire,
 		Store:      store,
 		KeyCount:   sizeInfo.KeyCount,
 		ValueSize:  sizeInfo.ValueSize,
@@ -402,9 +425,10 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 	needDeserialize := store.metaData.GetRecordCountKey() != nil || store.metaData.HasIndexes()
 	var oldRecordType *RecordType
 	var oldMsg proto.Message
+	var oldWire *recordWire
 	if needDeserialize {
 		var deserErr error
-		oldRecordType, oldMsg, deserErr = store.deserializeAndDiscover(value)
+		oldRecordType, oldMsg, oldWire, deserErr = store.deserializeAndDiscover(value)
 		if deserErr != nil {
 			return false, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: deserErr}
 		}
@@ -472,6 +496,7 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 			PrimaryKey: primaryKey,
 			RecordType: oldRecordType,
 			Record:     oldMsg,
+			wire:       oldWire,
 			Version:    oldRecordVersion,
 			Store:      store,
 		}
@@ -548,12 +573,21 @@ func (store *FDBRecordStore) saveRecordInternal(
 	recordTypeName := string(record.ProtoReflect().Descriptor().Name())
 	recordType := store.metaData.GetRecordType(recordTypeName)
 	if recordType == nil {
-		return nil, &MetaDataError{Message: fmt.Sprintf("unknown record type: %s", recordTypeName)}
+		return nil, unknownRecordTypeError(recordTypeName)
 	}
 
 	if recordType.PrimaryKey == nil {
 		return nil, &MetaDataError{Message: fmt.Sprintf("no primary key defined for record type: %s", recordTypeName)}
 	}
+	// A closed enum field holding a number its enum does not declare is read by
+	// every later load, in both engines, as unset (proto_closed_enums.go), so
+	// the record is keyed, counted, indexed and written as that reading: an
+	// update or delete that loads it then removes exactly the entries this save
+	// writes. The caller's message is not changed. writeRecord is what the save
+	// serializes (asJavaForSave: a DynamicMessage map value keeps its number,
+	// which the map rewrite writes in Java's form).
+	var writeRecord proto.Message
+	record, writeRecord = recordType.asJavaForSave(record)
 
 	// Extract primary key values using the flat evaluator (avoids [][]any alloc).
 	// The record type is supplied to the evaluation because a record-type-prefixed
@@ -596,6 +630,7 @@ func (store *FDBRecordStore) saveRecordInternal(
 	// (avoids deserializing the same old record twice).
 	var cachedOldRT *RecordType
 	var cachedOldMsg proto.Message
+	var cachedOldWire *recordWire
 
 	// Perform existence checks
 	if existenceCheck != RecordExistenceCheckNone {
@@ -614,7 +649,7 @@ func (store *FDBRecordStore) saveRecordInternal(
 		}
 
 		if existenceCheck.ErrorIfTypeChanged() && oldRecordExists {
-			oldRT, oldMsg, deserErr := store.deserializeAndDiscover(oldValue)
+			oldRT, oldMsg, oldWire, deserErr := store.deserializeAndDiscover(oldValue)
 			if deserErr != nil {
 				// Propagate deserialization error. Java's loadExistingRecord()
 				// deserializes before the type check — if deser fails, error propagates.
@@ -632,6 +667,7 @@ func (store *FDBRecordStore) saveRecordInternal(
 			// Cache for index update reuse.
 			cachedOldRT = oldRT
 			cachedOldMsg = oldMsg
+			cachedOldWire = oldWire
 		}
 	}
 
@@ -645,7 +681,7 @@ func (store *FDBRecordStore) saveRecordInternal(
 	}
 
 	// Serialize directly into union wire format (no UnionDescriptor allocation)
-	data, err := serializeUnion(record, recordType)
+	data, err := serializeUnionOver(writeRecord, recordType, store.storedRecordInner(oldValue, recordType))
 	if err != nil {
 		return nil, &RecordSerializationError{Cause: err}
 	}
@@ -678,7 +714,7 @@ func (store *FDBRecordStore) saveRecordInternal(
 	}
 
 	var newsizeInfo sizeInfo
-	if err := saveWithSplit(
+	if err := saveWithSplit(store.context,
 		store.context.Transaction(),
 		recordsSubspace,
 		primaryKey,
@@ -717,23 +753,25 @@ func (store *FDBRecordStore) saveRecordInternal(
 		PrimaryKey: primaryKey,
 		RecordType: recordType,
 		Record:     record,
-		Version:    savedVersion,
-		Store:      store,
-		KeyCount:   newsizeInfo.KeyCount,
-		ValueSize:  newsizeInfo.ValueSize,
-		KeySize:    newsizeInfo.KeySize,
-		Split:      newsizeInfo.IsSplit,
+		// Its map entries are indexed in the order it was written in.
+		wire:      newRecordWire(recordType, unionInner(data, recordType.unionFieldNumber)),
+		Version:   savedVersion,
+		Store:     store,
+		KeyCount:  newsizeInfo.KeyCount,
+		ValueSize: newsizeInfo.ValueSize,
+		KeySize:   newsizeInfo.KeySize,
+		Split:     newsizeInfo.IsSplit,
 	}
 
 	// Update secondary indexes
 	if store.metaData.HasIndexes() {
 		var oldStoredRecord *FDBStoredRecord[proto.Message]
 		if oldRecordExists {
-			oldRT, oldMsg := cachedOldRT, cachedOldMsg
+			oldRT, oldMsg, oldWire := cachedOldRT, cachedOldMsg, cachedOldWire
 			if oldRT == nil {
 				// Not cached (type check didn't run) — deserialize now.
 				var deserErr error
-				oldRT, oldMsg, deserErr = store.deserializeAndDiscover(oldValue)
+				oldRT, oldMsg, oldWire, deserErr = store.deserializeAndDiscover(oldValue)
 				if deserErr != nil {
 					return nil, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: deserErr}
 				}
@@ -742,6 +780,7 @@ func (store *FDBRecordStore) saveRecordInternal(
 				PrimaryKey: primaryKey,
 				RecordType: oldRT,
 				Record:     oldMsg,
+				wire:       oldWire,
 				Version:    oldRecordVersion,
 				Store:      store,
 			}
@@ -961,6 +1000,7 @@ func (store *FDBRecordStore) DeleteAllRecords() error {
 		IndexKey,               // VERSION index entries live under index subspace
 		IndexSecondarySpaceKey, // secondary index data
 		RecordVersionKey,       // explicit record version subspace
+		IndexBuildSpaceKey,     // pending index queue entries
 	} {
 		sub := store.subspace.Sub(key)
 		pr, err := fdb.PrefixRange(sub.Bytes())
@@ -999,14 +1039,22 @@ func (store *FDBRecordStore) updateSecondaryIndexes(oldRecord, newRecord *FDBSto
 	}
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
+	store.indexStateView.maintenance.RLock()
+	defer store.indexStateView.maintenance.RUnlock()
 	return store.updateSecondaryIndexesLocked(oldRecord, newRecord)
 }
 
 // updateSecondaryIndexesLocked is the lock-free variant for use when the caller
-// already holds stateMu.RLock() (e.g. SaveRecordBatch which takes it once).
+// already holds stateMu.RLock and the shared maintenance read lock (e.g. SaveRecordBatch).
 func (store *FDBRecordStore) updateSecondaryIndexesLocked(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	if oldRecord == nil && newRecord == nil {
 		return nil
+	}
+	// Validate liveness once for this record update, including the all-disabled
+	// case. Per-index decisions below use cached transaction-visible state and
+	// explicit conflicts; they must not allocate a GRV future for each index.
+	if _, err := store.context.Transaction().GetReadVersion().Get(); err != nil {
+		return err
 	}
 
 	// Fast path: same type (or one side nil) — no three-way split needed.
@@ -1020,7 +1068,11 @@ func (store *FDBRecordStore) updateSecondaryIndexesLocked(oldRecord, newRecord *
 		}
 
 		for _, index := range store.metaData.GetIndexesForRecordType(recordType.Name) {
-			if !store.shouldMaintainIndex(index.Name) {
+			maintain, err := store.shouldMaintainIndex(index.Name)
+			if err != nil {
+				return err
+			}
+			if !maintain {
 				continue
 			}
 			if err := store.updateOneIndex(index, oldRecord, newRecord); err != nil {
@@ -1028,7 +1080,11 @@ func (store *FDBRecordStore) updateSecondaryIndexesLocked(oldRecord, newRecord *
 			}
 		}
 		for _, index := range store.metaData.GetUniversalIndexes() {
-			if !store.shouldMaintainIndex(index.Name) {
+			maintain, err := store.shouldMaintainIndex(index.Name)
+			if err != nil {
+				return err
+			}
+			if !maintain {
 				continue
 			}
 			if err := store.updateOneIndex(index, oldRecord, newRecord); err != nil {
@@ -1040,8 +1096,14 @@ func (store *FDBRecordStore) updateSecondaryIndexesLocked(oldRecord, newRecord *
 
 	// Slow path: cross-type overwrite. Partition indexes into old-only,
 	// new-only, and common sets. Matches Java's three-way split.
-	oldIndexes := store.enabledIndexesForRecord(oldRecord)
-	newIndexes := store.enabledIndexesForRecord(newRecord)
+	oldIndexes, err := store.enabledIndexesForRecord(oldRecord)
+	if err != nil {
+		return err
+	}
+	newIndexes, err := store.enabledIndexesForRecord(newRecord)
+	if err != nil {
+		return err
+	}
 
 	commonIndexes, oldOnly, newOnly := partitionIndexes(oldIndexes, newIndexes)
 
@@ -1069,19 +1131,27 @@ func (store *FDBRecordStore) updateSecondaryIndexesLocked(oldRecord, newRecord *
 
 // enabledIndexesForRecord returns all enabled indexes (type-specific + universal)
 // that apply to the given record.
-func (store *FDBRecordStore) enabledIndexesForRecord(rec *FDBStoredRecord[proto.Message]) []*Index {
+func (store *FDBRecordStore) enabledIndexesForRecord(rec *FDBStoredRecord[proto.Message]) ([]*Index, error) {
 	var result []*Index
 	for _, index := range store.metaData.GetIndexesForRecordType(rec.RecordType.Name) {
-		if store.shouldMaintainIndex(index.Name) {
+		maintain, err := store.shouldMaintainIndex(index.Name)
+		if err != nil {
+			return nil, err
+		}
+		if maintain {
 			result = append(result, index)
 		}
 	}
 	for _, index := range store.metaData.GetUniversalIndexes() {
-		if store.shouldMaintainIndex(index.Name) {
+		maintain, err := store.shouldMaintainIndex(index.Name)
+		if err != nil {
+			return nil, err
+		}
+		if maintain {
 			result = append(result, index)
 		}
 	}
-	return result
+	return result, nil
 }
 
 // partitionIndexes splits old and new index lists into three disjoint sets:
@@ -1119,7 +1189,21 @@ func (store *FDBRecordStore) updateOneIndex(index *Index, oldRecord, newRecord *
 	if err != nil {
 		return err
 	}
-	if store.getIndexStateLocked(index.Name) == IndexStateWriteOnly {
+	state, err := store.indexStateView.read(store.context.Transaction(), index.Name)
+	if err != nil {
+		return err
+	}
+	if state.IsDisabled() {
+		return nil
+	}
+	if state.IsWriteOnlyWithQueue() {
+		data, err := maintainer.SerializePendingWriteQueue(oldRecord, newRecord)
+		if err != nil {
+			return err
+		}
+		return store.enqueuePendingIndexWrite(index, &gen.PendingWritesQueueEntry{Operation: gen.PendingWritesQueueEntry_UPDATE.Enum(), Data: data})
+	}
+	if state.IsWriteOnlyNoQueue() {
 		return maintainer.UpdateWhileWriteOnly(oldRecord, newRecord)
 	}
 	return maintainer.Update(oldRecord, newRecord)
@@ -1222,31 +1306,31 @@ func (store *FDBRecordStore) createIndexMaintainer(index *Index) (IndexMaintaine
 		return newAtomicMutationIndexMaintainer(index, idxSubspace, tx, store, &minMaxEverTupleMutation{index: index, isMax: false}), nil
 	case IndexTypeRank:
 		secSubspace := store.indexSecondarySubspace(index)
-		return newRankIndexMaintainer(index, idxSubspace, secSubspace, tx, store), nil
+		return newRankIndexMaintainer(index, idxSubspace, secSubspace, tx, store)
 	case IndexTypeVersion:
 		return newVersionIndexMaintainer(index, idxSubspace, tx, store.context, store), nil
 	case IndexTypeMaxEverVersion:
 		return newMaxEverVersionIndexMaintainer(index, idxSubspace, tx, store.context, store), nil
 	case IndexTypePermutedMin:
 		secSubspace := store.indexSecondarySubspace(index)
-		return newPermutedMinMaxIndexMaintainer(index, idxSubspace, secSubspace, tx, store, false), nil
+		return newPermutedMinMaxIndexMaintainer(index, idxSubspace, secSubspace, tx, store, false)
 	case IndexTypePermutedMax:
 		secSubspace := store.indexSecondarySubspace(index)
-		return newPermutedMinMaxIndexMaintainer(index, idxSubspace, secSubspace, tx, store, true), nil
+		return newPermutedMinMaxIndexMaintainer(index, idxSubspace, secSubspace, tx, store, true)
 	case IndexTypeBitmapValue:
-		return newBitmapValueIndexMaintainer(index, idxSubspace, tx, store), nil
+		return newBitmapValueIndexMaintainer(index, idxSubspace, tx, store)
 	case IndexTypeText:
 		secSubspace := store.indexSecondarySubspace(index)
 		return newTextIndexMaintainerWithTimer(index, idxSubspace, secSubspace, tx, store, store.context.Timer())
 	case IndexTypeTimeWindowLeaderboard:
 		secSubspace := store.indexSecondarySubspace(index)
-		return newTimeWindowLeaderboardIndexMaintainer(index, idxSubspace, secSubspace, tx, store), nil
+		return newTimeWindowLeaderboardIndexMaintainer(index, idxSubspace, secSubspace, tx, store)
 	case IndexTypeMultidimensional:
 		numDims := 2 // default; extracted from DimensionsKeyExpression at runtime
 		if d := extractDimensionsExpression(index.RootExpression); d != nil {
 			numDims = d.DimensionsSize
 		}
-		return newMultidimensionalIndexMaintainer(index, idxSubspace, tx, store, numDims), nil
+		return newMultidimensionalIndexMaintainer(index, idxSubspace, store.indexSecondarySubspace(index), tx, store, numDims)
 	case IndexTypeVector:
 		// Java's VectorIndexMaintainer stores HNSW graph data under the primary index subspace
 		// (getIndexSubspace()), not the secondary subspace. Match Java's layout.
@@ -1292,23 +1376,28 @@ func (store *FDBRecordStore) createIndexMaintainer(index *Index) (IndexMaintaine
 	}
 }
 
-// indexStoreContext interface implementation for FDBRecordStore.
-// These are called from index maintainers during updateSecondaryIndexes,
-// which holds stateMu.RLock() — so they use getIndexStateLocked.
-func (store *FDBRecordStore) isIndexWriteOnly(index *Index) bool {
-	return store.getIndexStateLocked(index.Name) == IndexStateWriteOnly
-}
-
-func (store *FDBRecordStore) isIndexReadableUniquePending(index *Index) bool {
-	return store.getIndexStateLocked(index.Name) == IndexStateReadableUniquePending
-}
-
 func (store *FDBRecordStore) addUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple, existingKey tuple.Tuple) error {
 	return store.AddUniquenessViolationWithExisting(index, indexKey, primaryKey, existingKey)
 }
 
 func (store *FDBRecordStore) removeUniquenessViolations(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple) error {
-	return store.ResolveUniquenessViolation(index, indexKey, primaryKey)
+	valueSubspace := store.subspace.Sub(IndexUniquenessViolationsKey, index.SubspaceTupleKey()).Sub(indexKey...)
+	store.context.Transaction().Clear(valueSubspace.Pack(primaryKey))
+	// Java removes the survivor's violation when the second-last duplicate is
+	// deleted. Two rows suffice to distinguish unresolved groups from a single
+	// survivor; this serializable read also protects concurrent resolution.
+	rows, err := store.context.Transaction().GetRange(valueSubspace, fdb.RangeOptions{Limit: 2}).GetSliceWithError()
+	if err != nil {
+		return err
+	}
+	if len(rows) == 1 {
+		keyRange, err := fdb.PrefixRange(valueSubspace.Bytes())
+		if err != nil {
+			return err
+		}
+		store.context.ClearRange(keyRange)
+	}
+	return nil
 }
 
 // Env exposes the record context's DST environment to index maintainers.
@@ -1492,7 +1581,6 @@ type FDBStoredRecord[M proto.Message] struct {
 	Version *FDBRecordVersion
 
 	// Store is the record store this record belongs to.
-	// Used by FunctionKeyExpression (e.g. get_versionstamp_incarnation) to access store state.
 	// Matches Java's FDBRecord.getStore().
 	Store *FDBRecordStore
 
@@ -1503,6 +1591,10 @@ type FDBStoredRecord[M proto.Message] struct {
 
 	// Whether the record is split across multiple keys
 	Split bool
+
+	// wire is the stored bytes the record was decoded from, for a type that
+	// reaches a map field (record_wire_map_order.go); nil otherwise.
+	wire *recordWire
 }
 
 // HasVersion returns whether this stored record has a version.
@@ -1785,8 +1877,7 @@ func (store *FDBRecordStore) GetRecordStoreState() *RecordStoreState {
 	store.ensureStoreStateLoaded()
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
-	states := make(map[string]IndexState, len(store.indexStates))
-	maps.Copy(states, store.indexStates)
+	states := store.snapshotIndexStatesLocked()
 	return &RecordStoreState{
 		StoreHeader: store.storeHeader,
 		IndexStates: states,
@@ -1833,10 +1924,24 @@ func (store *FDBRecordStore) ClearStoreLockState() error {
 }
 
 // ReloadRecordStoreState forces a reload of the store state from FDB.
-// Useful when another transaction may have changed the state.
-// Goroutine-safe via stateMu (write lock).
+// Refreshes transaction-visible state, including explicit raw state mutations;
+// it does not advance the transaction's read version. The loaded state is shared
+// with other handles in this context.
 // Matches Java's FDBRecordStore.loadRecordStoreStateAsync() force reload path.
 func (store *FDBRecordStore) ReloadRecordStoreState() error {
+	if err := store.ensureStoreStateLoadedErr(); err != nil {
+		return err
+	}
+	// Reload excludes maintenance through other handles before taking the
+	// lower-level registry/view locks used to publish the refreshed state.
+	store.stateMu.Lock()
+	defer store.stateMu.Unlock()
+	store.indexStateView.maintenance.Lock()
+	defer store.indexStateView.maintenance.Unlock()
+	store.context.indexStateMu.Lock()
+	defer store.context.indexStateMu.Unlock()
+	store.indexStateView.mu.Lock()
+	defer store.indexStateView.mu.Unlock()
 	exists, header, err := store.checkStoreExists()
 	if err != nil {
 		return err
@@ -1844,10 +1949,20 @@ func (store *FDBRecordStore) ReloadRecordStoreState() error {
 	if !exists {
 		return &RecordStoreDoesNotExistError{}
 	}
-	store.stateMu.Lock()
+	states, err := readIndexStates(store.context.Transaction(), store.subspace)
+	if err != nil {
+		return err
+	}
+	if !maps.Equal(store.indexStateView.states, states) {
+		store.context.SetDirtyStoreState(true)
+		if header.GetCacheable() {
+			store.context.SetMetaDataVersionStamp()
+		}
+	}
 	store.storeHeader = header
-	store.stateMu.Unlock()
-	return store.loadIndexStates()
+	store.indexStates = states
+	store.indexStateView.states = maps.Clone(states)
+	return nil
 }
 
 // loadStoreState loads store state via the cache or directly from FDB.
@@ -1856,16 +1971,21 @@ func (store *FDBRecordStore) ReloadRecordStoreState() error {
 // Called during store Build() before concurrent access, but uses stateMu
 // for consistency.
 func (store *FDBRecordStore) loadStoreState(existenceCheck StoreExistenceCheck, bypassReason *string) error {
+	store.stateMu.Lock()
+	defer store.stateMu.Unlock()
+	// Register before returning the loaded handle, and exclude clears for the
+	// entire read-to-publication interval, including cache lookups.
+	store.context.indexStateMu.Lock()
+	defer store.context.indexStateMu.Unlock()
 	if bypassReason != nil {
 		// Bypass cache when using lock bypass — need fresh state to validate lock.
 		state, err := loadRecordStoreState(store, existenceCheck)
 		if err != nil {
 			return err
 		}
-		store.stateMu.Lock()
 		store.storeHeader = state.StoreHeader
 		store.indexStates = state.IndexStates
-		store.stateMu.Unlock()
+		store.indexStateView = store.context.indexStateViewLocked(store.subspace, store.indexStates)
 		return nil
 	}
 
@@ -1875,7 +1995,6 @@ func (store *FDBRecordStore) loadStoreState(existenceCheck StoreExistenceCheck, 
 	}
 
 	cachedState := entry.GetRecordStoreState()
-	store.stateMu.Lock()
 	if entry.shared {
 		// Clone cached state so store mutations don't corrupt the shared cache entry.
 		// Matches Java's RecordStoreState.toImmutable() which returns an unmodifiable copy.
@@ -1889,7 +2008,7 @@ func (store *FDBRecordStore) loadStoreState(existenceCheck StoreExistenceCheck, 
 		store.storeHeader = cachedState.StoreHeader
 		store.indexStates = cachedState.IndexStates
 	}
-	store.stateMu.Unlock()
+	store.indexStateView = store.context.indexStateViewLocked(store.subspace, store.indexStates)
 	return nil
 }
 
@@ -1912,10 +2031,12 @@ func (store *FDBRecordStore) SetStateCacheability(cacheable bool) (bool, error) 
 	if store.storeHeader.GetCacheable() == cacheable {
 		return false, nil
 	}
-	store.storeHeader.Cacheable = &cacheable
-	if err := store.writeStoreHeader(store.storeHeader); err != nil {
+	header := proto.Clone(store.storeHeader).(*gen.DataStoreInfo)
+	header.Cacheable = &cacheable
+	if err := store.writeStoreHeader(header); err != nil {
 		return false, err
 	}
+	store.storeHeader = header
 	return true, nil
 }
 
@@ -2000,17 +2121,14 @@ func (store *FDBRecordStore) ScanUniquenessViolations(index *Index) ([]Uniquenes
 
 // ResolveUniquenessViolation removes a single uniqueness violation entry.
 // Call this after manually resolving the conflict (e.g., deleting the duplicate record).
-// Matches Java's StandardIndexMaintainer.resolveUniquenessViolation().
+// This low-level utility removes only the named entry. Ordinary record deletion
+// uses Java's removeUniquenessViolationsAsync algorithm, including survivor cleanup.
 func (store *FDBRecordStore) ResolveUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple) error {
 	if index == nil {
 		return fmt.Errorf("index must not be nil")
 	}
 	violationSubspace := store.subspace.Sub(IndexUniquenessViolationsKey, index.SubspaceTupleKey())
-	entryKey, err := indexEntryKey(index, indexKey, primaryKey)
-	if err != nil {
-		return fmt.Errorf("resolve uniqueness violation for index %q: %w", index.Name, err)
-	}
-	store.context.Transaction().Clear(fdb.Key(violationSubspace.Pack(entryKey)))
+	store.context.Transaction().Clear(violationSubspace.Sub(indexKey...).Pack(primaryKey))
 	return nil
 }
 
@@ -2034,24 +2152,45 @@ func (store *FDBRecordStore) AddUniquenessViolationWithExisting(index *Index, in
 		return fmt.Errorf("index must not be nil")
 	}
 	violationSubspace := store.subspace.Sub(IndexUniquenessViolationsKey, index.SubspaceTupleKey())
-	entryKey, err := indexEntryKey(index, indexKey, primaryKey)
-	if err != nil {
-		return fmt.Errorf("add uniqueness violation for index %q: %w", index.Name, err)
-	}
+	// Unlike ordinary index entries, Java's uniquenessViolationKey appends the
+	// full primary key, including components already present in the value key.
+	key := violationSubspace.Sub(indexKey...).Pack(primaryKey)
 	var value []byte
 	if existingKey != nil {
 		value = existingKey.Pack()
 	}
-	store.context.Transaction().Set(fdb.Key(violationSubspace.Pack(entryKey)), value)
+	store.context.Transaction().Set(key, value)
 	return nil
 }
 
-// serializeUnion marshals a record into the UnionDescriptor wire format without
-// allocating a UnionDescriptor struct. Writes: tag(fieldNum, LEN) + varint(len) + innerBytes.
-// Wire-compatible with Java's UnionDescriptor serialization.
-func serializeUnion(record proto.Message, recordType *RecordType) ([]byte, error) {
+// serializeUnionOver marshals a record into the UnionDescriptor wire format
+// without allocating a UnionDescriptor struct: tag(fieldNum, LEN) + varint(len)
+// + innerBytes, wire-compatible with Java's UnionDescriptor serialization. The
+// record replaces a stored one whose record bytes (inside the union) are
+// priorInner, nil for a new record or one of another type (storedRecordInner):
+// a type that reaches a map field keeps
+// each map in the order priorInner stored it (marshalMapRecord,
+// record_wire_map_order.go), and is never written with vtproto's MarshalVT,
+// whose map order is Go's random iteration order.
+func serializeUnionOver(record proto.Message, recordType *RecordType, priorInner []byte) ([]byte, error) {
 	if recordType.unionFieldNumber == 0 {
 		return nil, fmt.Errorf("no union field number for record type: %s", recordType.Name)
+	}
+
+	if recordType.reachesMap {
+		if priorInner == nil && recordType.reachesClosedEnum && holdsUndeclared(record.ProtoReflect(), recordType.closedEnumReach) {
+			// A map value holding an undeclared closed-enum number (the only
+			// one asJavaForSave's write view keeps): a new record's maps go
+			// through the rewrite too, which writes that entry in Java's form.
+			priorInner = []byte{}
+		}
+		innerBytes, err := marshalMapRecord(record, priorInner, recordType.mapReach)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]byte, 0, 10+len(innerBytes))
+		out = protowire.AppendTag(out, recordType.unionFieldNumber, protowire.BytesType)
+		return protowire.AppendBytes(out, innerBytes), nil
 	}
 
 	// Fast path: if SizeVT is available, compute size first and allocate once.
@@ -2117,29 +2256,31 @@ func serializeUnion(record proto.Message, recordType *RecordType) ([]byte, error
 
 // deserializeAndDiscover reads the union wire format tag to discover the record type,
 // then unmarshals the inner bytes directly into the concrete message type.
-// Skips allocating/parsing a full UnionDescriptor.
-func (store *FDBRecordStore) deserializeAndDiscover(data []byte) (*RecordType, proto.Message, error) {
+// Skips allocating/parsing a full UnionDescriptor. The returned wire keeps the
+// inner bytes when the type reaches a map field (record_wire_map_order.go); a
+// FDBStoredRecord built from the message carries it.
+func (store *FDBRecordStore) deserializeAndDiscover(data []byte) (*RecordType, proto.Message, *recordWire, error) {
 	// Scan fields to find the one matching a known record type.
 	// Skips unknown fields for forward compatibility (e.g. newer proto versions).
 	remaining := data
 	for len(remaining) > 0 {
 		fieldNum, wireType, n := protowire.ConsumeTag(remaining)
 		if n < 0 {
-			return nil, nil, fmt.Errorf("failed to read union tag")
+			return nil, nil, nil, fmt.Errorf("failed to read union tag")
 		}
 		remaining = remaining[n:]
 		if wireType != protowire.BytesType {
 			// Skip non-length-delimited fields
 			skip := protowire.ConsumeFieldValue(fieldNum, wireType, remaining)
 			if skip < 0 {
-				return nil, nil, fmt.Errorf("failed to skip field %d", fieldNum)
+				return nil, nil, nil, fmt.Errorf("failed to skip field %d", fieldNum)
 			}
 			remaining = remaining[skip:]
 			continue
 		}
 		innerBytes, m := protowire.ConsumeBytes(remaining)
 		if m < 0 {
-			return nil, nil, fmt.Errorf("failed to read field %d bytes", fieldNum)
+			return nil, nil, nil, fmt.Errorf("failed to read field %d bytes", fieldNum)
 		}
 		rt := store.metaData.fieldNumberToRecordType[fieldNum]
 		if rt == nil {
@@ -2147,17 +2288,76 @@ func (store *FDBRecordStore) deserializeAndDiscover(data []byte) (*RecordType, p
 			remaining = remaining[m:]
 			continue
 		}
-		msg := rt.newMessage()
-		if vu, ok := msg.(interface{ UnmarshalVT([]byte) error }); ok {
-			if err := vu.UnmarshalVT(innerBytes); err != nil {
-				return nil, nil, fmt.Errorf("failed to unmarshal %s: %w", rt.Name, err)
-			}
-		} else if err := proto.Unmarshal(innerBytes, msg); err != nil {
-			return nil, nil, fmt.Errorf("failed to unmarshal %s: %w", rt.Name, err)
+		msg, err := rt.unmarshalRecord(innerBytes)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("failed to unmarshal %s: %w", rt.Name, err)
 		}
-		return rt, msg, nil
+		return rt, msg, newRecordWire(rt, innerBytes), nil
 	}
-	return nil, nil, fmt.Errorf("union descriptor does not contain any known record type")
+	return nil, nil, nil, fmt.Errorf("union descriptor does not contain any known record type")
+}
+
+// storedRecordInner is the record bytes inside a stored record's union value,
+// found as deserializeAndDiscover finds them (the first length-delimited union
+// field naming a record type, under any of that type's union fields), when the
+// record they hold is of type recordType and the type reaches a map field; nil
+// otherwise, for which a save writes its maps in key order.
+func (store *FDBRecordStore) storedRecordInner(data []byte, recordType *RecordType) []byte {
+	if data == nil || !recordType.reachesMap {
+		return nil
+	}
+	for len(data) > 0 {
+		num, typ, n := protowire.ConsumeTag(data)
+		if n < 0 {
+			return nil
+		}
+		data = data[n:]
+		if typ == protowire.BytesType {
+			inner, m := protowire.ConsumeBytes(data)
+			if m < 0 {
+				return nil
+			}
+			if rt := store.metaData.fieldNumberToRecordType[num]; rt != nil {
+				if rt != recordType {
+					return nil
+				}
+				return inner
+			}
+			data = data[m:]
+			continue
+		}
+		m := protowire.ConsumeFieldValue(num, typ, data)
+		if m < 0 {
+			return nil
+		}
+		data = data[m:]
+	}
+	return nil
+}
+
+// unionInner is the inner bytes of the union field numbered field in data, nil
+// when data is nil or holds no such field.
+func unionInner(data []byte, field protowire.Number) []byte {
+	for len(data) > 0 {
+		num, typ, n := protowire.ConsumeTag(data)
+		if n < 0 {
+			return nil
+		}
+		data = data[n:]
+		if num == field && typ == protowire.BytesType {
+			inner, m := protowire.ConsumeBytes(data)
+			if m < 0 {
+				return nil
+			}
+			return inner
+		}
+		m := protowire.ConsumeFieldValue(num, typ, data)
+		if m < 0 {
+			return nil
+		}
+		data = data[m:]
+	}
+	return nil
 }
 
 // deserializeRecord unmarshals the inner bytes of a union-wrapped record directly
@@ -2174,7 +2374,7 @@ func (store *FDBRecordStore) deserializeRecord(data []byte, recordType *RecordTy
 			return nil, fmt.Errorf("failed to read union tag")
 		}
 		remaining = remaining[n:]
-		if wireType != protowire.BytesType || fieldNum != recordType.unionFieldNumber {
+		if wireType != protowire.BytesType || store.metaData.fieldNumberToRecordType[fieldNum] != recordType {
 			skip := protowire.ConsumeFieldValue(fieldNum, wireType, remaining)
 			if skip < 0 {
 				return nil, fmt.Errorf("failed to skip field %d", fieldNum)
@@ -2187,15 +2387,23 @@ func (store *FDBRecordStore) deserializeRecord(data []byte, recordType *RecordTy
 			return nil, fmt.Errorf("failed to read field %d bytes", fieldNum)
 		}
 		_ = remaining[m:] // consume
-		msg := recordType.newMessage()
-		if vu, ok := msg.(interface{ UnmarshalVT([]byte) error }); ok {
-			if err := vu.UnmarshalVT(innerBytes); err != nil {
-				return nil, fmt.Errorf("failed to unmarshal %s: %w", recordType.Name, err)
-			}
-		} else if err := proto.Unmarshal(innerBytes, msg); err != nil {
+		msg, err := recordType.unmarshalRecord(innerBytes)
+		if err != nil {
 			return nil, fmt.Errorf("failed to unmarshal %s: %w", recordType.Name, err)
 		}
 		return msg, nil
 	}
 	return nil, fmt.Errorf("union descriptor does not contain %s record", recordType.Name)
+}
+
+// GetIndexMaintenanceFilter is Java's FDBRecordStore.getIndexMaintenanceFilter.
+func (store *FDBRecordStore) GetIndexMaintenanceFilter() IndexMaintenanceFilter {
+	return store.indexMaintenanceFilter()
+}
+
+func (store *FDBRecordStore) indexMaintenanceFilter() IndexMaintenanceFilter {
+	if store == nil || store.maintenanceFilter == nil {
+		return IndexMaintenanceFilterNormal
+	}
+	return store.maintenanceFilter
 }

@@ -190,6 +190,16 @@ func TestWalkExpression_NullLiteral(t *testing.T) {
 	if _, ok := v.(*values.NullValue); !ok {
 		t.Fatalf("expected *NullValue, got %T", v)
 	}
+	if !v.Type().Equals(values.NullType) {
+		t.Fatalf("NULL literal type = %s, want NULL, not unresolved UNKNOWN", v.Type())
+	}
+	promoted, err := values.NewPromoteValueChecked(v, values.NullableDouble)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := promoted.Evaluate(nil); err != nil || got != nil {
+		t.Fatalf("NULL promotion = %v, %v", got, err)
+	}
 }
 
 // Escaped single-quote within a string literal.

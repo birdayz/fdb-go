@@ -1,0 +1,62 @@
+**NAK.** I reviewed commit `644d6980e` (tree `2b1554135`); revision 17 is `8a483e73b` (tree `5c9c7580e`). The design file hashes to SHA256 `b9ec569478a5459a5feee4c8bb236d144b6e455e9ad9dbd82057a29ce423b7ca`, 2816 lines, both matching (measured on the working-tree file, which the working diff doesn't list). The review was read-only. `git diff`, `hash-object` and `git status` were refused, so I read the delta with `git show`. "Measured" means I read it in the evidence logs or git objects; everything else is from source.
+
+## Graefe lens
+- **Alias fix:** correct for the HNSW arm. `cascades_generator.go:3858` now reads `hnswMetric`, else `vectorMetric`, as Java's planner does (`VectorIndexExpansionVisitor:191` → `VectorIndexEngine:230-231` → `VectorOptionKey:145-152`).
+- **Harness:** `planPhysicalForMetaData` is a pure extract of the existing harness, so it is still one pipeline, not a second one.
+- **Measured:** `TestVectorPlan_MetricUnderItsAlias` is red on `c1bc5a177`'s tree and green on the candidate.
+- **Every spelling?** No, but not because of revision 17 (finding 2).
+
+## Findings, most severe first
+
+**1. Medium (source): a plain VECTOR index rewires its graph on an unchanged re-save, and revision 17 turns that into a refusal Java doesn't make.**
+- **Java:** `VectorIndexMaintainer` extends `StandardIndexMaintainer` without overriding `update`. `update` drops entries that are the same in old and new (`StandardIndexMaintainer.java:209-227`; `IndexEntry.equals` compares key and value, `:268-270`). Re-saving a record whose vector didn't change never touches the HNSW graph.
+- **Go:** `vectorIndexMaintainer.Update` (`vector_index_maintainer.go:203-223`) always deletes and re-inserts. That repairs neighbours, re-selects edges and can move the entry point: stored index bytes Java never writes. It is the same defect class 7.17 fixed for a present-node insert.
+- **Revision 17's part:** with 9–15 extra bits after the centroid exists, that delete reaches `raBitQuantizerAdmits` (`hnsw.go:888`). So Go refuses a save that changes only a non-vector field, where Java accepts it.
+- **Claims that overreach:** DIVERGENCES VECTOR (≈`:2131-2133`, "refuses every save") and CHANGELOG (≈`:491-493`). The gap is undeclared: 0 hits for `skipUpdateForUnchangedKeys`, `commonKeys` or delete-then-insert wording in DIVERGENCES.md (control: 3 `RaBitQ` lines).
+- **Fix:**
+  - Apply `removeCommonEntries` (`index_maintainer.go:820`, already Java's `commonKeys`) when both records are present.
+  - Add a JVM spec: re-save with a non-vector field changed, compare graph bytes, including the 9-bit case after the centroid.
+- The sliding window is not affected: Java splits its delegate calls too (`SlidingWindowIndexMaintainer:381-388`).
+
+**2. Low (source): the planner and the maintainer parse the metric with two different parsers.**
+- **The two parsers:** `VectorIndexMetricOption` returns the raw string, and the planner then applies its own `vectorMetricOperator` (`:3914-3927`). Java's planner gets the engine's parsed `Metric` instead.
+- **Empty value:** a present-but-empty `hnswMetric` or `vectorMetric` becomes a Euclidean candidate. Go's maintainer refuses it (`javaMetricName`, `hnsw_options.go:173-189`), and Java's planner throws on it. The `ok` result is discarded at `:3858`.
+- **SPFresh:** `spfreshMetric="cosine"` or `"inner_product"` plans as cosine or dot product. `parseSPFreshConfig` (`spfresh_config.go:277-293`) silently maintains the index as Euclidean, which gives wrong-metric results. This is reachable only through meta-data built directly, not through the DDL.
+- **Fix:** export the maintainer's parsed metric (return an error on a bad value) and map it to the planner's distance operator; have SPFresh refuse names it doesn't know.
+
+**3. Low (source): a panic path opened by removing the clamp.**
+- `rabitq.Quantizer.Encode` → `NewRaBitQuantizer` panics outside 1–8 (`rabitq.go:62-66, 340-343`).
+- The SPFresh rebalance, refine, recall and verify paths parse the config without `ValidateSPFreshConfig` (`spfresh_rebalancer.go:369`, `spfresh_refine.go:543`, `spfresh_recall.go:77`, `spfresh_verify_api.go:164`). A 0-bit SPFresh index bootstrapped before revision 17 now panics in the rebalancer instead of encoding with 4 bits.
+- **Fix:** validate on those paths, or make `Encode` return an error.
+
+**4. Low: superseded text left in place.**
+- `vector_index_maintainer.go:294` and `chaos/chaos_test.go:706` still say "VECTOR insert is idempotent (same PK replaces)".
+- `spfresh_config.go:266-267` says "matching parseHNSWConfig's tolerance"; the HNSW parser no longer tolerates bad values.
+- **Unknown-field order is over-claimed:**
+  - 7.17 says Java orders a field's unknown fields "by wire type". Java actually writes varints, fixed32s, fixed64s, length-delimited, groups, which is not numeric wire-type order. DIVERGENCES (≈`:3236-3239`) states that order correctly.
+  - DIVERGENCES presents all five kinds as what the spec pins. The spec measures only field-number order and varint before fixed32. The rest comes from protobuf-java source, which is not in this checkout; I'm relying on source knowledge for it.
+
+## Nits
+- **Unanswered v16 nit (Graefe nit, Torvalds evidence gap):** the `wsc15-mutation/README` counts were written up afterwards. 7.17 is silent on it.
+- **"Leaves a node already in the graph as it is"** snapshots only the data subspace, not the access info or the samples.
+- **No unit pin** for unknown fields on a message-valued entry (the JVM entry `u` is int-valued).
+- **The alias proof stops at the plan.** There is no execution test over an index that holds its metric only under the alias.
+
+## v16 findings
+- **Graefe:** 1 resolved, measured (EXTRA_BITS outcomes equal Java's at Euclidean 9 and 15, cosine 9 and the 8-bit control). 2, 3 and 5 resolved, measured. 4 declared and pinned (the cell-bound subtest is red only through the adapter, as `wsc17-red/TREE` states). Nits: all but the mutation README.
+- **Torvalds:** 1 resolved, measured (all six WINDOWED arms, including the `RecordCoreException` one). 2 resolved, red→green. 3 and 4 resolved. 5a resolved (fullwidth unit and JVM rows, alias row). 5b resolved (dry-run spec). Nits resolved; `ValidateHNSWConfig` deleted.
+- **Storage:** 1–6 resolved. The raw records now include bytes Java rewrites, and the RESAVE and MAPWIRE raw lines match.
+- **Revisions 12–16:** intact, measured. The MAPWIRE index pairs, the proto3 zero, the Config rows and the 32 sliding-window rows are all green. The sliding-window spec now asserts distance ≈0 to the *stored* vector, so it tells Java's outcome from Go's old overwrite.
+
+## Measured
+- **Green** (TREE: HEAD `644d6980e`, index tree = `644d6980e^{tree}`, 0 differing files):
+  - conformance: 89 of 1840 specs, all passed;
+  - recordlayer: 199 of 3762, all passed; the new specs and tests pass by name;
+  - rabitq and embedded: pass by name.
+- **Hook:** the index tree `5c9c7580e` equals `8a483e73b^{tree}`.
+- **Red** (`c1bc5a177^{tree}` = `9a6333b4f`, plus the adapters):
+  - 5 Ginkgo specs and 5 Go tests in recordlayer, `TestNewQuantizerKeepsItsCount`, `TestVectorPlan_MetricUnderItsAlias`;
+  - 4 JVM specs.
+- **Context commits:** `3ab3675c2` and `644d6980e` touch only `infra/`, `cmd/frl` and `ci.yml`.
+
+The preserved boundaries are untouched.

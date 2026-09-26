@@ -1,0 +1,78 @@
+**NAK.** Tree `e7f2e4d540c5ae85d402160d2ef21fba7a0ee221` (checked: it is a tree object). Design `ws-c-design.md`, SHA256 `57a3347303862f7c880a499b36def6ea3284db613321e047507a0d30cfdf7dbf`, 643 lines (checked).
+
+The catcher port matches Java. The NAK is for Go-only behaviour that revision 2 added or left undeclared. Findings 1–5 come from reading source; I ran nothing.
+
+### Findings, most severe first
+
+1. **Medium: the new `frl index build` pre-read bypasses the open-time quiescence check.**
+   - `index_write.go:304-314` opens the store with plain `Open()` in its own transaction, which commits. That path runs `checkPossiblyRebuild` (`store_builder.go:1441-1445`) with no preflight.
+   - So after `frl meta apply`, reconciliation (inline rebuilds, disables) runs before `checkOpenHeartbeats`. The indexer's own open then finds the metadata current, and the "reconciliation demands quiescence" rule declared in 7.2 never fires.
+   - The state it reads can also be stale by the time `BuildIndex` runs.
+   - The READABLE_UNIQUE_PENDING message (`:327`) is not tested. 7.2 says it is pinned in `TestIntegration_IndexSetState_ReadableRequiresBuilt`, but the MARK_READABLE census shows frl ran 374 tests with 0 failures, so no frl test publishes without a build.
+   - Fix: have the indexer report which session outcome it took (a Go-only API addition), not a separate open.
+
+2. **Medium: a new indexer ID per attempt, where Java keeps one.**
+   - `online_indexer.go:1139` creates a heartbeat each attempt, and `NewIndexingHeartbeat` draws a fresh UUID (`indexing_heartbeat.go:50`).
+   - Java creates `IndexingCommon.indexerId` once (`IndexingCommon.java:53`) and shares it across every catcher relaunch.
+   - Heartbeat cleanup is best-effort ("Expiry is the fallback", `online_indexer_queue.go:289-292`). If it fails, the next exclusive attempt finds its own previous heartbeat, still live, and refuses with `SynchronizedSessionLockedError` for a whole lease. Java recognises that heartbeat as its own.
+   - 7.2's reason, "as each Java attempt builds a new indexer", is wrong about identity: the indexer object is new, the ID is not.
+   - Fix: mint the ID once per `OnlineIndexer`.
+
+3. **Medium-low: Go-only `IndexingValidationError`s now trigger the catcher's BY_INDEX fallback.**
+   - Two sites Java has no equivalent for:
+     - `online_indexer_queue.go:427`, "index state changed during follow-up", reached from the merger's pre-commit (`indexing_merger.go:40`);
+     - `:498`, "index state changed during build", when a target switches between WRITE_ONLY and WRITE_ONLY_WITH_QUEUE.
+   - Java never raises a ValidationException in either place. Its follow-up heartbeat update skips a target that is not write-only (`IndexingBase.java:969-972`), and its state check throws `RecordCoreStorageException`.
+   - Consequence in a BY_INDEX build: an operator disables the target during a merge → records-scan fallback → the next attempt finds it DISABLED → the default REBUILD clears and rebuilds it. Java fails the build.
+   - 7.2 says the "index state changed during build" error was replaced; it was replaced only for the published case.
+   - Fix: return `RecordCoreStorageError` from both sites, and add a spec for each.
+
+4. **Medium-low: a source index missing from the metadata now falls back silently.**
+   - Revision 1's builder refused it, because it found 0 record types.
+   - Now `validateSourceAndTargetIndexes` (`:791`) sees no source types and reports "source index has multiple types". The catcher treats that as a validation failure and falls back to a records scan, after the state transaction has already committed a BY_INDEX stamp naming the missing index.
+   - Java resolves the source inside the state transaction (`IndexingByIndex.java:68-73`, `:94-106`) and throws `MetaDataException`, which the catcher does not handle (`OnlineIndexer.java:228`).
+   - Fix: check the source exists before stamping and return a `MetaDataError`; add a spec.
+
+5. **Low: an undeclared change in which error wins.**
+   - Go checks heartbeats (`online_indexer_queue.go:167`) before the queue refusal and the stamp check.
+   - Java checks the stamp for each index before touching its heartbeat (`IndexingBase.java:459-460`).
+   - With a live peer present, Java raises `PartlyBuiltException` for a blocked stamp, for a MUTUAL stamp under CONTINUE, or for any mismatch under ERROR. Go raises `SynchronizedSessionLockedError` instead.
+   - 7.2 declares only that a follower mismatch now wins over a live peer. Declare this too, or run the stamp check first for continued sessions.
+
+6. **Low: gaps in the test population.**
+   - m16 turned only two mutual specs red. Nothing tests end to end the behaviour change the CHANGELOG states for non-mutual builds: a target published mid-build now gives `UnexpectedReadableError`, and a disabled one gives `RecordCoreStorageError`. The classification spec calls `expectedIndexStatesOrThrow` directly.
+   - m6 checks only one direction (the open-time check made always exclusive). Nothing shows that the "reconciliation demands quiescence" rule is load-bearing.
+   - 7.1's three mutations were not re-run on revision 2's tree, so "7.2's runs supersede them" substitutes different mutations. The reproducer calls `markWriteOnly` directly, so none of the censuses reach it.
+
+7. **Low: v1 findings still open.**
+   - Graefe v1 #6: `ws-c-design.md:343` still says the reproducer "reproduced the exact message". The committed spec asserts the session outcome first.
+   - Torvalds v1 #7: the fleet still reports a target that a peer published first as `OutcomeBuilt` with 0 records (`fleet/build.go:190-205`, unchanged). 7.2 does not mention it.
+   - The library still returns `(0, nil)` for a skip, a publish-only session and an empty build. Only the CLI tells them apart, through finding 1's pre-read.
+
+8. **Low: text and declarations.**
+   - The CHANGELOG says a build "partly built by records continues it by a records scan". That is not true for MUTUAL_BY_RECORDS. MULTI_TARGET_BY_RECORDS continues only when `AllowedTakeovers` permits it; by default the build relaunches up to the limit and returns `PartlyBuiltError`. A blocked stamp now costs six sessions before the error returns.
+   - The CHANGELOG says a skipping or publishing session is "no longer stopped by … live heartbeat". That is false when reconciliation will run at open.
+   - 7.2 says `Build` refuses a source index with several targets or a mutual policy "as Java's builder does". Go returns a plain `fmt.Errorf`; Java throws `ValidationException` "Indexing multi targets by a source index is not supported (yet)" (`OnlineIndexer.java:869`, `:877`).
+   - DIVERGENCES.md records none of revision 2's declared divergences (admission on a clear or fresh mark, open-time quiescence, the throttle limit carrying over between attempts, MARK_READABLE over a queue).
+
+### What checks out (from source)
+- **The catcher matches `OnlineIndexer.java:150-275` arm for arm:**
+  - the attempt limit: counting from one, at most six runs;
+  - the requested method, restored only on the next attempt;
+  - the validation arm, taken on any validation error while a source index is set;
+  - fallback always paired with a forced stamp overwrite;
+  - `getIndexer`'s method order;
+  - the policy copied, never written through (m9);
+  - the mutual arm keyed on the policy's own mutual flag.
+- `expectedIndexStatesOrThrow` matches `IndexingThrottle.java:410-440`.
+- A mid-build `PartlyBuiltError` goes through the catcher, as Java's `validateTypeStamp` does (`IndexingBase.java:1003-1014`).
+- The messages match Java (`Index.java:83`, `RecordMetaData.java:335`, `IndexingByIndex.java:243-258`).
+- The early queue refusal is gone; the check after the clears remains (`:1499`).
+- The remaining v1 findings are resolved: the false `ifMismatchPrevious` claim is gone from every non-review file, `IndexVersion` is added, the stale comments are corrected, the follower-cleared-alone and skip specs exist, and MARK_READABLE is now observable.
+
+### Measured
+- The md5s of the five files in `evidence-md5.txt` match the gated tree (I computed them). The evidence tree `067b01f2` differs from the gated tree only in the design file and the reviewer settings.
+- `justtest.log`: "Executed 43 out of 94 tests: 94 tests pass". The log itself records no tree.
+- Mutation logs m1, m2, m4, m5, m6, m9, m11, m13, m15 and m16 each show "marker count 1", "restored", and the red specs the design lists.
+- Censuses: the per-target run counts match the design.
+- `loop40.log`: 80 matching lines, i.e. 40 × ("Ran 2 of" + "SUCCESS! -- 2 Passed | 0 Failed").

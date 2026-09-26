@@ -1,0 +1,66 @@
+**NAK: RFC-257 WS-E design v8 (storage/wire lens)**
+
+- **Tree:** `612fd91e5f07c78c54789633e87ada47899d75c3`
+- **Design:** `rfcs/257-java-upgrade-audit/ws-e-design.md`, SHA-256 `7a3b7ca963ddde5ef98ee653b9d55d6c82657f3fa13447fce0826b9fecfc1e14`, 2893 lines. I recomputed the hash from the tree blob and it matches.
+- **Java:** `fdacd162a9`.
+- **Method:** read-only, nothing run. I read all three v7 verdicts, the full v8 design and its diff from v7, the oracle diff and evidence, both prototypes' logs and the prune source, and the Java and Go sources cited below.
+
+**The v7 findings are all answered in the text:**
+- Storage H1 (complements, `<>`, NULL-strict arms, the property test), H2 (one lane per IN), M2 (rows now measured), L1 and L2.
+- Graefe/Torvalds H1 (the boundary prune and the v8 oracle), the IN-union sources, the rebased keys, the 26 entries, the own-row tie labelled SOURCE, the teardown test's `t.Cleanup` and its 42F63/42F55 codes, and the NoOpFilterRule and PickValue citations.
+- Parts of storage M1 and of H1 remain open, as M2 and M4 below.
+
+## MEDIUM
+
+**M1. Deduplication parity rests on an equality Go does not share with Java (design :741-792).**
+- v8 sends every SQL list through `ArrayDistinctValue` and deletes the plan-time dedup.
+- Java's version (ArrayDistinctValue.java:102) is `stream().distinct()`, which uses `Object.equals`: it keeps -0.0 and 0.0 apart and merges NaNs.
+- Go's version (value_array_distinct.go:61-106, and `inListValueEqual` at rule_in_to_explode.go:385-400) uses `==`: it merges the two zeros and keeps every NaN.
+- Go's row comparison treats NaN = NaN (comparisons.go:620-628). So `v IN (?, ?)` bound to (NaN, NaN) explodes to two elements, and the NaN row comes back twice through a FlatMap-inner explode or an IN-join. The target returns it once (SOURCE).
+- The zeros also change the IN-union's list of children, which changes its continuation positions.
+- The planned tests (:789-792) use integers only, so they cannot express either case.
+- **Fix:** port `Object.equals` semantics. Test NaN/NaN and -0.0/0.0 through the per-row IN, the IN-join, a resumed IN-union and a FlatMap inner.
+
+**M2. Same-type DATE and TIMESTAMP writes have no site that canonicalizes them (:1016-1053, :1160).**
+- (1) requires a DATE source to be stored as `FormatDate` of its instant, and the CHANGELOG repair for bad rows is `SET d = d`. v8's only runtime mechanism is `promotionNode.coerce`, with three cross-type edges.
+- A same-type assignment never reaches those edges:
+  - the target injects no promotion for equal types (PromoteValue.java:443-445);
+  - `coerce`'s same-type arm returns the text unchanged (promote_prepared.go:372-374), array elements included;
+  - both write converters store any string unchanged (proto_value.go:317-323, executor.go:4459-4463).
+- So `SET d = d` and an INSERT … SELECT from DATE to DATE rewrite the old bytes and index keys as they were.
+- **Fix:** name the site that canonicalizes by the column's type, recursing into arrays and structs, or withdraw the repair claim.
+
+**M3. The lane's admission rule contradicts itself (:1062-1066, :1101-1106).**
+- The lane is admitted only when "the TIMESTAMP comparand is UNCORRELATED", and any comparison "whose TIMESTAMP side is correlated" stays textual.
+- In `T <= CAST('2024-01-01' AS DATE)` the TIMESTAMP side is the key, a column. Read literally, the "converse lane" is never admitted.
+- The two readings answer differently on a canonical midnight row: `'2024-01-01 00:00:00' <= '2024-01-01'` is FALSE as text.
+- The design also says GREATEST and LEAST over a DATE and a TIMESTAMP "stay textual". But a promoted DATE now evaluates to midnight timestamp text (:1044), and the variadic port promotes its arguments to the common type, so they would not stay textual.
+- **Fix:** define admission by which side the lane maps, and state how GREATEST and LEAST compare after the change.
+
+**M4. The boundary prune covers only groups that promote finals (:2065-2070).**
+- `ExploreGroupTask.Run` has a second branch, `AdvanceStagePreservingMembers` (unified_tasks.go:98-109), for the RFC-182 unfinalized union leg. It carries exploratory members into PLANNING unpruned.
+- A fold class in that branch is still decided on PLANNING's cardinality rung, which is exactly the rescue v8 is meant to remove.
+- **Fix:** extend the prune to that branch or show it cannot hold a class, and test a union leg carrying `id = 5 AND COALESCE(1 / 0, 5) IS NULL`.
+
+## LOW
+
+- **L1. Stale code comment.** store_state_cache.go:269-272 still says Java's `getRange(subspace.range(), 1)` conflicts over the full subspace. The design (:2626-2630) says the limited read conflicts only up to the info key. Correct the comment in the same change.
+- **L2. Wrong justification for saturation (:1092-1093).** `'10000-01-01'` does not sort before every four-digit year: it sorts after the years 0000 to 1000. The constant arms themselves are still correct.
+- **L3. Over-broad claim (:1097-1100).** "No plan answers where another fails" is false over an empty or fully filtered table: the index binder evaluates c when the scan opens, while the residual evaluates it per row. The target has the same timing, so narrow the claim.
+- **L4. TIMESTAMP→DATE edge.** State that it is assignment-only. Added to `promotionMap` (type.go:1385-1412), it would reach `MaximumType` through `IsPromotable` (:1515-1523) and could change the mixed-list and CASE common types that (2) relies on.
+- **L5. "ONE named parser" is two.** The CAST-to-DATE parser (values.go:4533-4547) trims whitespace and reads two layouts. `ParseTemporalText` is listed with four layouts and no trimming rule. State both domains.
+- **L6. The cited GROUP BY log has no witness.** wse8-explode-groupby.log shows nothing proving the `os.Getenv` `PROBE_*` toggles reached the Bazel sandbox. The run that does show it is wse8-explode-suites.log: the flags are visible in the cq75 and nested_ins plan shapes, and TestFDB_GroupByWithWherePush passes in that run (:15550). Cite that log.
+
+## Checked and correct
+- **Censuses at the tree:**
+  - `Evaluate(nil)`: 16 code lines and 4 comment lines, every code line assigned.
+  - `EvaluateConstant`: 18 lines (the definition and 17 calls).
+  - UUID parser calls: 6.
+  - `readIndexState`: 38 lines in 14 files, which is 35 calls.
+  - `serializeUnion`: 3 callers.
+- **Census under Bazel:** the docscheck target is tagged `external`, so its census result is never served from cache.
+- **Oracle and mutations:** both runs read "Ran 8 of 52", with 418 blocks. The GO lines of the v8 rows are as the design describes, and the M8 and teardown mutations are recorded.
+- **Prune rows:** 5/5 pass with the prune; without it, 2 of 5 fail with 22012.
+- **Store open:** `loadRecordStoreState` and `handleCachedState` read as cited, and Java's `loadRecordStoreStateAsync` (:4116-4117) matches.
+
+**Measured vs SOURCE:** the code facts, counts and log readings above come from direct reads of the tree and the logs. M1's duplicated row, the two answers in M3 and the reachability in M4 are derived from source; I did not run them.

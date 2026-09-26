@@ -152,29 +152,26 @@ func (store *FDBRecordStore) RebuildIndex(index *Index) error {
 // singleRecordTypeWithPrefixKey answers a different question (do ALL the indexes being
 // built agree on one type) that only the shared record-count probe needs.
 func (store *FDBRecordStore) indexedRecordTypesRange(index *Index) (low, high tuple.Tuple, ok bool) {
-	var lowKey, highKey int64
-	found := false
+	var lowBytes, highBytes []byte
 	for _, recordType := range store.metaData.RecordTypesForIndex(index) {
 		if !recordType.PrimaryKeyHasRecordTypePrefix() || recordType.IsSynthetic() {
 			return nil, nil, false
 		}
-		typeKey, isInt := recordTypeKeyInt64(recordType)
-		if !isInt {
-			return nil, nil, false
+		// Java's Tuple.compareTo is the order of the packed bytes, for a type
+		// key of any tuple type.
+		prefix := tuple.Tuple{recordType.GetRecordTypeKey()}
+		packed := prefix.Pack()
+		if low == nil || bytes.Compare(packed, lowBytes) < 0 {
+			low, lowBytes = prefix, packed
 		}
-		switch {
-		case !found:
-			lowKey, highKey, found = typeKey, typeKey, true
-		case typeKey < lowKey:
-			lowKey = typeKey
-		case typeKey > highKey:
-			highKey = typeKey
+		if high == nil || bytes.Compare(packed, highBytes) > 0 {
+			high, highBytes = prefix, packed
 		}
 	}
-	if !found {
+	if low == nil {
 		return nil, nil, false
 	}
-	return tuple.Tuple{lowKey}, tuple.Tuple{highKey}, true
+	return low, high, true
 }
 
 // validateFormatVersion checks that the stored format version is supported.
@@ -392,7 +389,7 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 	}
 
 	// Find indexes added since the old version.
-	indexesToBuild := store.metaData.GetIndexesToBuildSince(oldMetaDataVersion)
+	indexesToBuild := store.metaData.GetIndexesSince(oldMetaDataVersion)
 	if len(indexesToBuild) > 0 {
 		// Empty-store unsplit-format upgrade: when a store that still omits the unsplit
 		// record suffix gains indexes at format >= SAVE_UNSPLIT_WITH_SUFFIX and is empty,
@@ -426,13 +423,20 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 
 		for _, index := range indexesToBuild {
 			indexOnNewRecordTypes := store.areAllRecordTypesSince(index, oldMetaDataVersion)
-			desiredState := store.indexRebuildPolicy(index, recordCount, indexOnNewRecordTypes)
+			desiredState := IndexStateDisabled
+			if len(index.GetReplacedByIndexNames()) == 0 {
+				desiredState = store.indexRebuildPolicy(index, recordCount, indexOnNewRecordTypes)
+			}
 
 			switch desiredState {
 			case IndexStateReadable:
 				if err := store.RebuildIndex(index); err != nil {
 					return fmt.Errorf("auto-rebuild index %q on metadata version change (%d -> %d): %w",
 						index.Name, oldMetaDataVersion, newMetaDataVersion, err)
+				}
+			case IndexStateWriteOnlyWithQueue:
+				if _, err := store.ClearAndMarkIndexWriteOnlyWithQueue(index.Name); err != nil {
+					return fmt.Errorf("mark index %q write-only with queue: %w", index.Name, err)
 				}
 			case IndexStateWriteOnly:
 				// Always clear and re-mark, matching Java's rebuildOrMarkIndex().
@@ -466,7 +470,7 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 		return fmt.Errorf("update store header after rebuild: %w", err)
 	}
 
-	return nil
+	return store.removeReplacedIndexes()
 }
 
 // areAllRecordTypesSince returns true if every record type associated with
@@ -673,14 +677,14 @@ func (store *FDBRecordStore) recordsSubspaceEmpty() (bool, error) {
 //
 //	records = scanRecords(TupleRange.allOf(singleRecordTypeWithPrefixKey.getRecordTypeKeyTuple()), null, scanProperties)
 //
-// (FDBRecordStore.java:4872): when every index being built is on one type whose
+// (FDBRecordStore.java:5098): when every index being built is on one type whose
 // records live in a contiguous sub-range, only that sub-range decides whether there
 // is anything to index. Probing the whole store instead reports "non-empty" for
 // records of types the new index will never touch, which routes an index over an
 // empty type to DISABLED where Java builds it inline.
 //
 // Uses a non-snapshot limited range read. This is a DELIBERATE DIVERGENCE, not
-// parity: Java's probe is a SNAPSHOT scan (FDBRecordStore.java:4864-4867 builds
+// parity: Java's probe is a SNAPSHOT scan (FDBRecordStore.java:5089-5092 builds
 // ExecuteProperties with IsolationLevel.SNAPSHOT) and adds no conflict range of its
 // own afterwards, so Java's "the store is empty, build the index inline" decision
 // RACES a concurrent insert — the insert commits, the index is marked READABLE, and
@@ -703,11 +707,7 @@ func (store *FDBRecordStore) recordsSubspaceEmpty() (bool, error) {
 func (store *FDBRecordStore) recordsRangeEmpty(recordType *RecordType) (bool, error) {
 	recSub := store.subspace.Sub(RecordKey)
 	if recordType != nil {
-		typeKey, ok := recordTypeKeyInt64(recordType)
-		if !ok {
-			return false, fmt.Errorf("record type %q has no integer record type key", recordType.Name)
-		}
-		recSub = recSub.Sub(typeKey)
+		recSub = recSub.Sub(recordType.GetRecordTypeKey())
 	}
 	begin, end := recSub.FDBRangeKeys()
 	kvs, err := store.context.Transaction().
@@ -719,37 +719,10 @@ func (store *FDBRecordStore) recordsRangeEmpty(recordType *RecordType) (bool, er
 	return len(kvs) == 0, nil
 }
 
-// recordTypeKeyInt64 returns the record type key as the int64 the tuple encoder
-// actually writes into primary keys, and ok=false when the type key is not an
-// integer.
-//
-// A non-integer key is not a wrongness, just a shape this bound cannot express:
-// the callers compare and order these as int64 to derive a contiguous range, so
-// every caller treats "not an integer" as "this type's records are not
-// addressable as a range" and falls back to the unscoped behaviour. That is
-// conservative in the safe direction — a wider scan, never a narrower one.
-// Same restriction, same reason, as OnlineIndexer.computeRecordsRange.
-//
-// String and bytes keys DO reach the key bytes (GetRecordTypeKey passes them
-// through, as Java's TupleTypeUtil does), so records under such a key really do
-// occupy a contiguous range; this simply declines to compute it.
-func recordTypeKeyInt64(recordType *RecordType) (int64, bool) {
-	switch k := recordType.GetRecordTypeKey().(type) {
-	case int:
-		return int64(k), true
-	case int32:
-		return int64(k), true
-	case int64:
-		return k, true
-	default:
-		return 0, false
-	}
-}
-
 // singleRecordTypeWithPrefixKey returns the one record type all the indexes being
 // built are on, when there is exactly one and its primary key is prefixed by the
 // record type key — otherwise nil. Port of Java's
-// FDBRecordStore.singleRecordTypeWithPrefixKey (FDBRecordStore.java:4909-4929):
+// FDBRecordStore.singleRecordTypeWithPrefixKey (FDBRecordStore.java:5137-5155):
 //
 //	RecordType recordType = null;
 //	for (List<RecordType> entry : indexes.values()) {
@@ -793,27 +766,22 @@ func (store *FDBRecordStore) singleRecordTypeWithPrefixKey(indexes []*Index) *Re
 			return nil
 		}
 	}
-	if recordType != nil {
-		if _, ok := recordTypeKeyInt64(recordType); !ok {
-			return nil
-		}
-	}
 	return recordType
 }
 
 // getRecordCountForRebuildPolicy returns the record count the IndexRebuildPolicy
 // decides on. Port of Java's getRecordCountForRebuildIndexes
-// (FDBRecordStore.java:4836-4898), whose selection chain is, in order:
+// (FDBRecordStore.java:5062-5124), whose selection chain is, in order:
 //
 //  1. If all the indexes being built are on ONE record type whose primary key is
 //     record-type-prefixed, a count for JUST that type — from a COUNT index on the
-//     type, or from a COUNT index grouped by record type (FDBRecordStore.java:4842-4849).
+//     type, or from a COUNT index grouped by record type (FDBRecordStore.java:5068-5075).
 //  2. Otherwise, unless the record counts are being rebuilt in this very
 //     transaction, the whole-store count — from the record-count key, or from an
-//     ungrouped/roll-uppable COUNT index (FDBRecordStore.java:4850-4861).
+//     ungrouped/roll-uppable COUNT index (FDBRecordStore.java:5076-5087).
 //  3. Only when neither yields a count: a scan limited to a SINGLE record, reporting
 //     Long.MAX_VALUE the moment the store turns out to be non-empty and 0 only when
-//     it is genuinely empty (FDBRecordStore.java:4862-4897). Scoped to the single
+//     it is genuinely empty (FDBRecordStore.java:5088-5123). Scoped to the single
 //     record type's range when there is one.
 //
 // Steps 1 and 2 are not an optimisation — they change the ANSWER. The probe cannot
@@ -834,7 +802,7 @@ func (store *FDBRecordStore) singleRecordTypeWithPrefixKey(indexes []*Index) *Re
 // The indexes being built are excluded from every count-index lookup: they hold no
 // entries yet and have no index state on disk, so an unbuilt COUNT index would answer
 // 0 for a full store. Java does this with an IndexQueryabilityFilter
-// (FDBRecordStore.java:4839-4841) — "Do this with the new indexes filtered out to
+// (FDBRecordStore.java:5065-5067) — "Do this with the new indexes filtered out to
 // avoid using one of them when evaluating the snapshot record count. At this point we
 // won't have written that any new indexes are disabled".
 //
@@ -852,7 +820,9 @@ func (store *FDBRecordStore) getRecordCountForRebuildPolicy(indexesToBuild []*In
 	}
 
 	if singleRecordType != nil {
-		count, ok, err := store.snapshotRecordCountForRecordType(singleRecordType, excluded)
+		count, ok, err := store.snapshotRecordCountForRecordType(singleRecordType.Name, func(index *Index) bool {
+			return !excluded[index.Name]
+		})
 		if err != nil {
 			return 0, err
 		}
@@ -905,33 +875,6 @@ func (store *FDBRecordStore) snapshotTotalRecordCount(excluded map[string]bool) 
 	return store.evaluateCountIndex(fn, nil, TupleRangeAll, excluded)
 }
 
-// snapshotRecordCountForRecordType is Java's
-// getSnapshotRecordCountForRecordType(name, filter) (FDBRecordStore.java:2326-2348):
-// a COUNT index on JUST that record type first, then a COUNT index grouped by record
-// type restricted to that type's key. ok=false is Java's terminal
-// "Require a COUNT index on <type>" throw, which the caller swallows.
-func (store *FDBRecordStore) snapshotRecordCountForRecordType(recordType *RecordType, excluded map[string]bool) (int64, bool, error) {
-	// A COUNT index on this record type. Java looks at
-	// getIndexableRecordType(name).getIndexes() — the type's OWN indexes, not the
-	// multi-type ones, which by definition also cover other types and so cannot count
-	// this type alone.
-	fn := NewCountAggregateFunction(GroupAll(EmptyKey()))
-	count, ok, err := store.evaluateCountIndex(fn, []string{recordType.Name}, TupleRangeAll, excluded)
-	if err != nil || ok {
-		return count, ok, err
-	}
-
-	// A universal COUNT index grouped by record type. In Java's words: "In fact, any
-	// COUNT index by record type that applied to this record type would work, no
-	// matter what other types it applied to."
-	typeKey, hasTypeKey := recordTypeKeyInt64(recordType)
-	if !hasTypeKey {
-		return 0, false, nil
-	}
-	fn = NewCountAggregateFunction(GroupAll(RecordTypeKey()))
-	return store.evaluateCountIndex(fn, nil, TupleRangeAllOf(tuple.Tuple{typeKey}), excluded)
-}
-
 // evaluateCountIndex evaluates fn over scanRange using the index that
 // findIndexForAggregateFunction picks for recordTypeNames, returning ok=false when no
 // index qualifies.
@@ -942,12 +885,12 @@ func (store *FDBRecordStore) snapshotRecordCountForRecordType(recordType *Record
 // EvaluateAggregateFunction uses; this wrapper only supplies the two things Java's
 // rebuild path supplies that the public entry point does not:
 //
-//   - Java's IndexQueryabilityFilter (FDBRecordStore.java:4841,
+//   - Java's IndexQueryabilityFilter (FDBRecordStore.java:5067,
 //     `index -> !indexes.containsKey(index)`), here `excluded` — the indexes being
 //     built hold no entries yet, so one of them answering the count would report 0
 //     for a full store.
 //   - Java's `catch (RecordCoreException ex)` around the count sources
-//     (FDBRecordStore.java:4845, 4858), here ok=false — "no appropriate index", which
+//     (FDBRecordStore.java:5072, 5084), here ok=false — "no appropriate index", which
 //     the caller swallows to fall through to the next source.
 //
 // A read error is NOT ok=false: only AggregateFunctionNotSupportedError is index
@@ -1068,7 +1011,7 @@ func (store *FDBRecordStore) checkStoreExists() (bool, *gen.DataStoreInfo, error
 
 	// Parse the store header
 	storeInfo := &gen.DataStoreInfo{}
-	if err := storeInfo.UnmarshalVT(firstKV.Value); err != nil {
+	if err := UnmarshalVTAsJava(storeInfo, firstKV.Value); err != nil {
 		return false, nil, fmt.Errorf("failed to parse store header: %v", err)
 	}
 
@@ -1081,6 +1024,14 @@ func (store *FDBRecordStore) checkStoreExists() (bool, *gen.DataStoreInfo, error
 // Caller must hold stateMu (write lock) or be in a builder path (pre-concurrent access).
 func (store *FDBRecordStore) writeStoreHeader(storeInfo *gen.DataStoreInfo) error {
 	oldCacheable := store.storeHeader != nil && store.storeHeader.GetCacheable()
+	initializeStamp := false
+	if !oldCacheable && storeInfo.GetCacheable() {
+		stamp, err := store.context.GetMetaDataVersionStamp()
+		if err != nil {
+			return fmt.Errorf("read metadata version stamp before header update: %w", err)
+		}
+		initializeStamp = stamp == nil
+	}
 
 	headerBytes, err := storeInfo.MarshalVT()
 	if err != nil {
@@ -1096,16 +1047,9 @@ func (store *FDBRecordStore) writeStoreHeader(storeInfo *gen.DataStoreInfo) erro
 
 	// Bump metadata version stamp when appropriate.
 	// Matches Java's updateStoreHeaderAsync() cache invalidation logic.
-	newCacheable := storeInfo.GetCacheable()
-	if oldCacheable {
-		// Old header was cacheable → always bump to invalidate cached entries.
+	if oldCacheable || initializeStamp {
+		// Invalidate old cacheable state, or initialize the first stamp.
 		store.context.SetMetaDataVersionStamp()
-	} else if newCacheable {
-		// Transitioning to cacheable → initialize stamp if not yet set.
-		stamp, _ := store.context.GetMetaDataVersionStamp()
-		if stamp == nil {
-			store.context.SetMetaDataVersionStamp()
-		}
 	}
 
 	return nil
@@ -1164,6 +1108,7 @@ type StoreBuilder struct {
 	cachedSSKeys              *storeSubspaceKeys       // cached from getCachedSubspaceKeys; avoids sync.Map lookup per Open
 	assumeAllIndexesReadable  bool                     // pre-populate empty indexStates so ensureStoreStateLoaded is a no-op
 	formatVersion             *int32                   // nil = not pinned; see SetFormatVersion
+	maintenanceFilter         IndexMaintenanceFilter   // nil = IndexMaintenanceFilterNormal
 }
 
 // NewStoreBuilder creates a new store builder
@@ -1254,10 +1199,25 @@ func (b *StoreBuilder) SetDatabase(db *FDBDatabase) *StoreBuilder {
 	return b
 }
 
+// SetIndexMaintenanceFilter sets the store's IndexMaintenanceFilter, Java's
+// FDBRecordStore.Builder.setIndexMaintenanceFilter: which index entries of each
+// record the store's indexes maintain. Nil is IndexMaintenanceFilterNormal.
+func (b *StoreBuilder) SetIndexMaintenanceFilter(filter IndexMaintenanceFilter) *StoreBuilder {
+	b.maintenanceFilter = filter
+	return b
+}
+
+// GetIndexMaintenanceFilter is Java's FDBRecordStore.Builder.getIndexMaintenanceFilter.
+func (b *StoreBuilder) GetIndexMaintenanceFilter() IndexMaintenanceFilter {
+	if b.maintenanceFilter == nil {
+		return IndexMaintenanceFilterNormal
+	}
+	return b.maintenanceFilter
+}
+
 // SetSkipPossiblyRebuild disables automatic index rebuild checks during Open/CreateOrOpen.
 // When set, the store will not call checkPossiblyRebuild even if the metadata version changed.
 // This is used by OnlineIndexer which manages index states independently.
-// Matches Java's IndexMaintenanceFilter.NONE behavior.
 func (b *StoreBuilder) SetSkipPossiblyRebuild(skip bool) *StoreBuilder {
 	b.skipPossiblyRebuild = skip
 	return b
@@ -1308,6 +1268,7 @@ func (b *StoreBuilder) newStore() *FDBRecordStore {
 		storeStateCache:    b.resolveCache(),
 
 		targetFormatVersion: b.effectiveFormatVersion(),
+		maintenanceFilter:   b.maintenanceFilter,
 	}
 	if b.assumeAllIndexesReadable {
 		store.indexStates = make(map[string]IndexState)
@@ -1339,6 +1300,25 @@ func (b *StoreBuilder) validateBuilder() error {
 	return nil
 }
 
+// initializeNewIndexStates applies Java's new-store rebuild policy: replaced
+// originals are disabled without consulting policy, while ordinary indexes
+// have no records to build and remain readable unless explicitly disabled.
+func (store *FDBRecordStore) initializeNewIndexStates() error {
+	store.indexStates = make(map[string]IndexState)
+	for _, index := range store.metaData.GetAllIndexes() {
+		desired := IndexStateDisabled
+		if len(index.GetReplacedByIndexNames()) == 0 {
+			desired = store.indexRebuildPolicy(index, 0, true)
+		}
+		if desired == IndexStateDisabled {
+			if _, err := store.MarkIndexDisabled(index.Name); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // Create creates a new record store, fails if store already exists
 func (b *StoreBuilder) Create() (*FDBRecordStore, error) {
 	startTime := time.Now()
@@ -1363,8 +1343,11 @@ func (b *StoreBuilder) Create() (*FDBRecordStore, error) {
 		return nil, err
 	}
 	store.storeHeader = storeHeader
-	store.indexStates = make(map[string]IndexState)
+	if err := store.initializeNewIndexStates(); err != nil {
+		return nil, err
+	}
 
+	store.rememberRetirementMetadata()
 	b.context.Timer().RecordSince(EventOpenStore, startTime)
 
 	return store, nil
@@ -1374,6 +1357,12 @@ func (b *StoreBuilder) Create() (*FDBRecordStore, error) {
 // When the current metadata version is higher than the stored version,
 // new indexes are automatically rebuilt inline (matching Java's checkVersion flow).
 func (b *StoreBuilder) Open() (*FDBRecordStore, error) {
+	return b.openWithPreflight(nil)
+}
+
+// openWithPreflight admits an indexing session against persisted state before
+// metadata reconciliation can erase the heartbeat evidence used for admission.
+func (b *StoreBuilder) openWithPreflight(preflight func(*FDBRecordStore) error) (*FDBRecordStore, error) {
 	startTime := time.Now()
 	if err := b.validateBuilder(); err != nil {
 		return nil, err
@@ -1396,6 +1385,11 @@ func (b *StoreBuilder) Open() (*FDBRecordStore, error) {
 	if err := validateStoreLockState(store.storeHeader, b.bypassFullStoreLockReason); err != nil {
 		return nil, err
 	}
+	if preflight != nil {
+		if err := preflight(store); err != nil {
+			return nil, err
+		}
+	}
 
 	// Check if metadata has evolved — rebuild new indexes if needed.
 	if !b.skipPossiblyRebuild {
@@ -1404,6 +1398,7 @@ func (b *StoreBuilder) Open() (*FDBRecordStore, error) {
 		}
 	}
 
+	store.rememberRetirementMetadata()
 	b.context.Timer().RecordSince(EventOpenStore, startTime)
 
 	return store, nil
@@ -1435,7 +1430,9 @@ func (b *StoreBuilder) CreateOrOpen() (*FDBRecordStore, error) {
 			return nil, err
 		}
 		store.storeHeader = storeHeader
-		store.indexStates = make(map[string]IndexState)
+		if err := store.initializeNewIndexStates(); err != nil {
+			return nil, err
+		}
 	} else {
 		// Validate format version is supported.
 		if err := store.validateFormatVersion(store.storeHeader); err != nil {
@@ -1454,6 +1451,7 @@ func (b *StoreBuilder) CreateOrOpen() (*FDBRecordStore, error) {
 		}
 	}
 
+	store.rememberRetirementMetadata()
 	b.context.Timer().RecordSince(EventOpenStore, startTime)
 
 	return store, nil

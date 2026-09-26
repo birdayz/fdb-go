@@ -23,7 +23,7 @@ import (
 
 func TestSQLOpenRegistered(t *testing.T) {
 	t.Parallel()
-	db, err := sql.Open("fdbsql", "fdbsql:///mydb")
+	db, err := sql.Open("fdbsql", "fdbsql:///MYDB")
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestSQLPingFailsWithoutFDB(t *testing.T) {
 	t.Parallel()
 	// Point at a nonexistent cluster file so this test reliably fails
 	// regardless of whether FDB is actually running on the host.
-	db, err := sql.Open("fdbsql", "fdbsql:///mydb?cluster_file=/nonexistent/fdb.cluster")
+	db, err := sql.Open("fdbsql", "fdbsql:///MYDB?cluster_file=/nonexistent/fdb.cluster")
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestSQLPingReturnsUnsupportedForRemote(t *testing.T) {
 
 func TestSQLContextDeadlineAtPing(t *testing.T) {
 	t.Parallel()
-	db, err := sql.Open("fdbsql", "fdbsql:///mydb")
+	db, err := sql.Open("fdbsql", "fdbsql:///MYDB")
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

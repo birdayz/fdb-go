@@ -41,7 +41,7 @@ func TestFDB_CrossTypeJoinProbe(t *testing.T) {
 			"CREATE TABLE bf (id BIGINT, yflt FLOAT, PRIMARY KEY (id)) "+
 			"CREATE INDEX bi_y ON bi (yint) CREATE INDEX bd_y ON bd (ydbl) CREATE INDEX bf_y ON bf (yflt)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_xtype/s WITH TEMPLATE xtype")
-	dsn := fmt.Sprintf("fdbsql:///testdb_xtype?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_XTYPE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

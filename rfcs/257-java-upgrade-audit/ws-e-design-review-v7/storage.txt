@@ -1,0 +1,78 @@
+**NAK: RFC-257 WS-E design v7 (storage/wire lens)**
+
+- **Tree:** `9265beef3e5c9dd9ec86caaade526c8137552976`
+- **Design:** `ws-e-design.md`, SHA-256 `ffcf4f2edb9e0063d1711250d81b90aa7199c66a96fc1187fc1964a9a8f19dac`, 2495 lines. I recomputed the hash from the tree blob and it matches.
+- **Java:** `fdacd162a9`.
+- **Method:** read-only. I read all three v6 verdicts, the full v7 design, the v6→v7 diff, the oracle rows and evidence, the prototype logs, and the Java, JDK and Go sources cited below.
+
+## HIGH
+
+**H1. Negation rewrites break the DATE–TIMESTAMP comparison rule (design lines 923-929).** Section 5.4 ports `NotOverComparisonRule` (Java NotOverComparisonRule.java:71-79; Go `NotComparisonRewriteRule`, rule_simplify.go:474-491, with `Negate` at comparisons.go:156-170). Section 5.4(c) says both filter members reach PLANNING. So the rule's mapping must give the same answer as its own negation on every stored text. It does not:
+- **`<>` is missing.** The rule covers "five operators" (:947). `NOT (D = c)` rewrites to `D <> c`, which stays a text comparison.
+  - Example: `D = '2024-01-01'` with `c` at midnight. `NOT(D = c)` is FALSE, but the text form `D <> c` is TRUE.
+  - This happens on canonical rows. Neither member can use the index, so Go's answer falls to PLANNING's hash rung.
+- **`D > c` maps to `D >= floor(c) + 1 day`, which is not the text complement of `D <= floor(c)`.**
+  - Example: the declared legacy row `'2024-01-01 10:00:00'` in D, with `c` = 05:00 the same day. `NOT(D <= c)` is TRUE and `D > c` is FALSE.
+  - The rewritten member can use the D index and wins there; on R the two members tie on hash.
+- **The constant outcomes use two-valued logic.** "FALSE" and "TRUE (the full range)" (:923, :928-931) must be UNKNOWN when D is NULL. Otherwise `NOT (D = c)` and a saturated `D < c` return NULL rows, and a "full" index range must still skip null entries.
+- **Fix:**
+  - Map `D > c` to `D > floor(c)`. It is equivalent on canonical text, it is the exact complement, and it can never reach year 10000.
+  - Add `<>` as the complement of `=`.
+  - Use SQL three-valued logic for the constant outcomes.
+  - Require the mapping to hold under `Negate` and `Commute`, with a property test over arbitrary stored text that includes the `NOT` forms, run through D and R.
+
+**H2. A per-row IN and the IN-join over the same list give different answers (lines 933-937).**
+- **The mismatch:** IN-join and IN-union probes use the `=` mapping "from the explode's ELEMENT type". A per-row IN compares each element as text (`cmpAny`, comparisons.go:445-470).
+- **Why both matter:** section 4.1(b) keeps the IN filter and the exploded select in the same group through PLANNING, so either can be chosen.
+- **Example:** `D IN (CAST('2024-01-01 00:00:00' AS TIMESTAMP))` finds the row through the IN-join on D and finds nothing through the residual on R.
+- **Mixed lists too:** the per-row IN over a mixed list, which the design explicitly leaves as text, is exploded as TIMESTAMP (the DATE→TIMESTAMP edge at type.go:1410). So its explode takes the new rule while its per-row form does not.
+- **Join equality:** the exclusion of join equality names no rule that separates `D = o.ts` from `D = c`. Static types alone, which is the stated rule, cannot, and the separation would have to survive the rewrite from join to correlated probe.
+- **Fix:** a per-row IN uses the same per-element mapping as the IN-join, or neither does. State the join criterion, and test D and R with a midnight list and with a mixed list.
+
+## MEDIUM
+
+**M1. The runtime half of the "ONE assignment function" is not specified (lines 902-909, 982).**
+- **The existing coercer works against the new writes:**
+  - `promotionNode.coerce` (promote_prepared.go:379-391) sends every non-ENUM STRING target to `uuid.Parse`. The design swaps in `ParseJavaUUID` there but does not restrict that branch to UUID targets, so the new STRING→DATE/TIMESTAMP writes would be parsed as UUIDs.
+  - DATE→TIMESTAMP, an existing edge, falls through to "invalid carrier" today.
+  - TIMESTAMP→DATE does not exist yet.
+- **Existing stored text has no rule:** "FormatDate of its instant" for a DATE or TIMESTAMP source holding non-canonical text needs a named parser and a failure outcome. Old-channel rows and Java-written rows are such sources, and the value layer's own layouts also accept date-only and RFC 3339 text (values.go:2733). The `SET d = d` repair and INSERT … SELECT copies depend on this.
+- **The comparison needs the same parser:** it applies to a TIMESTAMP column or correlated comparand `c` before floor/ceil, with one failure outcome shared by the index and the residual.
+- **Promoted values:** a promoted DATE (from a mixed list, CASE or COALESCE) must yield canonical midnight timestamp text, or TIMESTAMP-typed values will carry date-only text.
+
+**M2. Deleting the partition guard was measured on plans only (line 593; findings.txt:7-13).**
+- The guard at rule_partition_binary_select.go:89-105 exists for a 0-row execution bug.
+- The prototype produced plan dumps and printed one correlation for one shape (`id IN (100, 200, 300)`). It never ran TestFDB_GroupByWithWherePush or the IN-with-GROUP-BY cases.
+- So "stale" is a SOURCE hypothesis. Run those reproducers on the prototype before deleting the guard.
+
+## LOW
+
+- **L1. Section 6.4(iii)/(iv) cite the wrong store-open code (lines 2237, 2249).**
+  - `index_state.go:688-696` is `LoadIndexStates`. `checkStoreExists` serves only `ReloadRecordStoreState` (store.go:1913) and the builder's existence check (store_builder.go:1379).
+  - The open path is `loadRecordStoreState` (store_state_cache.go:263-275): a serializable point Get of the info key and a snapshot read of the state range. On a cache hit it is `handleCachedState`'s key conflict (:71-80).
+  - The behaviour matches Java. Correct the citations and make the header-conflict test cover the cached path.
+- **L2. The UUID census explanation is wrong (line 1198).** `promote_prepared.go` is in both tree objects; `git grep <tree>` returns six sites on 66663d5d and on 9265beef. `--untracked` searches the moving working tree. State the census against the tree.
+
+## Checked and correct
+
+- **Evidence:**
+  - evidence-run.txt has 387 blocks, with two "Ran 7 of 32" runs. The three UUID rows match JDK UUID.java:263-294.
+  - The M7 and v7 teardown mutations are recorded with presence checks.
+  - The fold-free suite log reads "94 out of 94: 87 pass, 7 fail", and the 7 failing targets are exactly the ones the design lists.
+- **Census claims that reproduce:**
+  - Six UUID parser sites.
+  - Three `serializeUnion` callers.
+  - `SaveRecordBatch` writes record i before it serializes record i+1 (store_batch.go:186-212).
+  - `readIndexState`: 39 lines in 15 files, less two definitions and the interface line, gives 36.
+- **Isolation and index state:**
+  - Java's per-index conflict key is taken once per index (FDBRecordStore.java:4187-4198), and the whole-subspace range comes only through `getAllIndexStates` (:4205-4213).
+  - The isolation enum's zero value is SNAPSHOT (scan_properties.go:63).
+- **Options:**
+  - `Options.With` is copy-on-write (options.go:302-315), so a merging `SetOption` cannot leak into the connector's shared set, which is installed at driver.go:228. `ResetSession` must remember that base set separately.
+  - The only DSN keys read by non-test code are `cluster_file` and `schema`, so the accepted-parameter list is complete.
+- **Temporal values:**
+  - CURRENT_TIMESTAMP is stamped once per statement and evaluates to text.
+  - No Go scalar is nondeterministic, so re-evaluating the IN comparand on resume is stable.
+- **Harness:** the `WithoutCancel` teardown and the R-residual assertion are in the tree.
+
+**Measured vs SOURCE:** the code facts above come from direct reads and greps of the tree. The counterexamples in H1 and H2, and the M2 risk, are consequences I derived; I did not run them.

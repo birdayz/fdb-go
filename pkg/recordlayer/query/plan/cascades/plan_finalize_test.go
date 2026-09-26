@@ -2,9 +2,12 @@ package cascades
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"sort"
 	"testing"
+
+	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -1136,146 +1139,127 @@ func TestTheCensusWalkPrunesWriteFedSubtreesAsTheBakeDoes(t *testing.T) {
 	}
 }
 
-// TestTheBakeStampsAParentAndItsChildTogetherOrNeither pins the two facts that
-// keep a stamped parent and its DIRECT record-typed child in step, so neither
-// can be changed silently.
-//
-// Read the scope exactly: this is about a child that is a constructor's own
-// field VALUE. It is NOT a claim that the bake never produces a stamped parent
-// over an unstamped child — it does, and the query then FAILS rather than
-// degrading to a raw map. A type-changing WRAPPER between the two breaks the
-// containment fact below, because the parent's type then contains the wrapper's
-// TARGET shape rather than the constructor underneath it.
-// TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes reproduces that from
-// plain SQL, and TODO.md carries its closure. An earlier round asserted the
-// general unreachability from these two facts alone; that was wrong, and this
-// comment is deliberately narrower than the reasoning it replaces.
-//
-// Each fact is asserted HERE rather than reasoned about, because an earlier
-// version stated both and drove neither: it asserted only that the mixed pair
-// does not appear, which a poisoned repository satisfies by stamping NOTHING.
-// Making WalkValue post-order — a direct violation of the first fact — left it
-// green.
-//
-//   - CONTAINMENT. A record constructor's type contains its children's, so
-//     synthesising the parent's descriptor registers the child's message in the
-//     same repository. The child's own lookup then resolves what is already
-//     there. Asserted by looking the child's type up in the parent's repository
-//     and requiring the parent's own field descriptor back.
-//   - ADJACENCY, for a FIRST-field child. WalkValue visits a parent
-//     immediately before its first child, so nothing touches the repository
-//     between those two lookups. Asserted on the visit ORDER itself. Read the
-//     scope: a child in a LATER field has the preceding fields' subtrees
-//     between it and its parent, so this says nothing about it, and a poisoning
-//     in one of those subtrees can leave that child unstamped under a stamped
-//     parent. The fixture here has one field, deliberately, because that is the
-//     case the assertion can decide.
-//
-// The two arms below are the states this FIXTURE reaches, and both are asserted
-// positively — both stamped, or both unstamped — so neither can pass by being
-// empty. They are not an enumeration of everything the bake can do: what they
-// exclude is the HARMFUL ordering, a stamped parent over an unstamped child.
-// The reverse pairing is out of reach here only because the repository's
-// poisoning is sticky, which nothing below asserts.
-func TestTheBakeStampsAParentAndItsChildTogetherOrNeither(t *testing.T) {
+// Registration order and failed roots must not affect the descriptor graph
+// published to a plan. Both directions include an intervening unrelated type.
+func TestFinalizePlanSealsBeforeBindingNestedConstructors(t *testing.T) {
 	t.Parallel()
-
-	build := func() (parent, child *values.RecordConstructorValue) {
-		child = values.NewRecordConstructorValue(values.RecordConstructorField{
-			Name: "X", Value: &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+	for _, childFirst := range []bool{true, false} {
+		t.Run(fmt.Sprint(childFirst), func(t *testing.T) {
+			t.Parallel()
+			child := values.NewRecordConstructorValue(values.RecordConstructorField{
+				Name: "X", Value: &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+			})
+			parent := values.NewRecordConstructorValue(values.RecordConstructorField{Name: "CH", Value: child})
+			bad := values.NewRawRecordConstructorValue(
+				values.RecordConstructorField{Name: "ID", Value: &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}},
+				values.RecordConstructorField{Name: "ID", Value: &values.ConstantValue{Value: int64(2), Typ: values.NullableLong}},
+			)
+			other := values.NewRecordConstructorValue(values.RecordConstructorField{
+				Name: "S", Value: &values.ConstantValue{Value: "other", Typ: values.NotNullString},
+			})
+			columns := []values.Value{parent, bad, other, child}
+			if childFirst {
+				columns = []values.Value{child, bad, other, parent}
+			}
+			plan := mustFinalizeConstruct(plans.NewRecordQueryValuesPlan(columns))
+			if err := FinalizePlan(plan); err != nil {
+				t.Fatal(err)
+			}
+			pd, cd := parent.MessageDescriptor(), child.MessageDescriptor()
+			if pd == nil || cd == nil || other.MessageDescriptor() == nil {
+				t.Fatal("failed root prevented valid constructors from binding")
+			}
+			if bad.MessageDescriptor() != nil {
+				t.Fatal("duplicate-name row must retain raw representation")
+			}
+			if pd.Fields().Get(0).Message() != cd {
+				t.Fatal("parent and child bound different descriptor instances")
+			}
+			for i := 0; i < 4; i++ {
+				t.Run(fmt.Sprint(i), func(t *testing.T) {
+					t.Parallel()
+					result, err := parent.Evaluate(nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					message, ok := result.(proto.Message)
+					if !ok {
+						t.Fatalf("parent carrier = %T, want proto.Message", result)
+					}
+					nested := message.ProtoReflect().Get(pd.Fields().Get(0)).Message()
+					if nested.Descriptor() != cd || nested.Get(cd.Fields().Get(0)).Int() != 1 {
+						t.Fatal("nested value lost descriptor identity or contents")
+					}
+				})
+			}
 		})
-		parent = values.NewRecordConstructorValue(values.RecordConstructorField{
-			Name: "CH", Value: child,
+	}
+}
+
+func TestFinalizePlanRetainsStructuredPromotionThroughSimplification(t *testing.T) {
+	t.Parallel()
+	for _, array := range []bool{false, true} {
+		t.Run(fmt.Sprintf("array=%t", array), func(t *testing.T) {
+			t.Parallel()
+			source := values.NewRecordType("", false, []values.Field{{Name: "OLD", FieldType: values.NotNullInt}})
+			target := values.NewRecordType("", false, []values.Field{{Name: "NEW", FieldType: values.NotNullDouble}})
+			var from, to values.Type = source, target
+			var input any = map[string]any{"OLD": int32(7)}
+			if array {
+				from, to = values.NewArrayType(false, from), values.NewArrayType(false, to)
+				input = []any{input}
+			}
+			original := values.NewPromoteValue(&values.ConstantValue{Value: input, Typ: from}, to)
+			rebuilt, err := values.WithChildrenChecked(original, []values.Value{&values.ConstantValue{Value: input, Typ: from}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			simplified := values.SimplifyValue(rebuilt)
+			if _, ok := simplified.(*values.PromoteValue); !ok {
+				t.Fatalf("structured promotion folded to %T before plan descriptor binding", simplified)
+			}
+			parent := values.NewRecordConstructorValue(values.RecordConstructorField{Name: "CHILD", Value: simplified})
+			plan := mustFinalizeConstruct(plans.NewRecordQueryValuesPlan([]values.Value{parent}))
+			if err := FinalizePlan(plan); err != nil {
+				t.Fatal(err)
+			}
+			for i := 0; i < 4; i++ {
+				t.Run(fmt.Sprintf("reader%d", i), func(t *testing.T) {
+					t.Parallel()
+					got, err := simplified.Evaluate(nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if array {
+						got = got.([]any)[0]
+					}
+					message, ok := got.(proto.Message)
+					if !ok {
+						t.Fatalf("promoted value = %T, want message", got)
+					}
+					md := message.ProtoReflect().Descriptor()
+					if md != parent.MessageDescriptor().Fields().Get(0).Message() {
+						t.Fatal("rebuilt promotion has foreign descriptor")
+					}
+					if field := md.Fields().Get(0); field.Name() != "NEW" || message.ProtoReflect().Get(field).Float() != 7 {
+						t.Fatal("target name or value lost")
+					}
+					if _, err := parent.Evaluate(nil); err != nil {
+						t.Fatal(err)
+					}
+					// Binding the rebuilt value cannot mutate the original's raw API lane.
+					raw, err := original.Evaluate(nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if array {
+						raw = raw.([]any)[0]
+					}
+					if record, ok := raw.(map[string]any); !ok || record["NEW"] != float64(7) {
+						t.Fatalf("original preparation changed: %#v", raw)
+					}
+				})
+			}
 		})
-		return parent, child
-	}
-
-	// CONTAINMENT, asserted directly and independently of any walk: stamping the
-	// parent alone is enough to make the child's own lookup succeed, and to make
-	// it resolve the very message the parent's descriptor references.
-	containment := values.NewTypeProtoRepository()
-	cParent, cChild := build()
-	parentDesc, err := containment.MessageDescriptorFor(cParent.Type())
-	if err != nil {
-		t.Fatalf("the parent's descriptor could not be synthesised over a clean repository: %v", err)
-	}
-	childDesc, err := containment.MessageDescriptorFor(cChild.Type())
-	if err != nil {
-		t.Fatalf("the child's type failed to resolve in the repository that had just synthesised "+
-			"its PARENT: %v. Containment is what makes a stamped parent imply a stamped child; "+
-			"without it the bake can leave the pair that fails a query", err)
-	}
-	field := parentDesc.Fields().ByName("CH")
-	if field == nil || field.Message() == nil {
-		t.Fatalf("the parent's descriptor has no message-typed CH field (%v), so this arm is not "+
-			"measuring containment at all", field)
-	}
-	if field.Message() != childDesc {
-		t.Fatalf("the child's own lookup returned %v (%p) where the parent's CH field references "+
-			"%v (%p): the child is being given a SECOND message rather than the one already "+
-			"registered, so containment does not hold and the two lookups can fail independently. "+
-			"The two names can READ the same — identity is the claim, not the name",
-			childDesc.FullName(), childDesc, field.Message().FullName(), field.Message())
-	}
-
-	// ADJACENCY, asserted on the walk order itself. Post-order, or any order that
-	// puts another node between a parent and its child, breaks the argument that
-	// nothing can poison the repository in between.
-	aParent, aChild := build()
-	var order []values.Value
-	values.WalkValue(aParent, func(node values.Value) bool {
-		order = append(order, node)
-		return true
-	})
-	parentAt, childAt := -1, -1
-	for i, node := range order {
-		switch node {
-		case values.Value(aParent):
-			parentAt = i
-		case values.Value(aChild):
-			childAt = i
-		}
-	}
-	if parentAt < 0 || childAt < 0 {
-		t.Fatalf("the walk visited parent at %d and child at %d over %d node(s): it no longer "+
-			"reaches both, so the adjacency claim cannot be checked", parentAt, childAt, len(order))
-	}
-	if childAt != parentAt+1 {
-		t.Fatalf("the walk visited the parent at %d and its child at %d, want the child "+
-			"IMMEDIATELY after: with anything in between, a poisoning can land between the two "+
-			"lookups and leave a stamped parent over an unstamped child — the pair that makes a "+
-			"query fail rather than degrade", parentAt, childAt)
-	}
-
-	// State one: a clean repository stamps BOTH.
-	cleanParent, cleanChild := build()
-	stampValueForTest(cleanParent, &planStamper{repo: values.NewTypeProtoRepository()})
-	if cleanParent.MessageDescriptor() == nil || cleanChild.MessageDescriptor() == nil {
-		t.Fatalf("over a clean repository parent stamped=%v child stamped=%v, want BOTH",
-			cleanParent.MessageDescriptor() != nil, cleanChild.MessageDescriptor() != nil)
-	}
-
-	// State two: a repository already poisoned by a row that names one field
-	// twice stamps NEITHER. Asserted as "neither", not as "not the mixed pair" —
-	// the mixed pair is absent from an empty result too, and that is how the
-	// first version of this test passed while proving nothing.
-	poisoned := values.NewTypeProtoRepository()
-	duplicate := values.NewRawRecordConstructorValue(
-		values.RecordConstructorField{Name: "ID", Value: &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}},
-		values.RecordConstructorField{Name: "ID", Value: &values.ConstantValue{Value: int64(2), Typ: values.NullableLong}},
-	)
-	if _, err := poisoned.MessageDescriptorFor(duplicate.Type()); err == nil {
-		t.Fatal("a row naming one field twice was given a descriptor, so this repository is not " +
-			"poisoned and the arm below proves nothing — the booking has closed, assert that instead")
-	}
-	poisonedParent, poisonedChild := build()
-	stampValueForTest(poisonedParent, &planStamper{repo: poisoned})
-	if poisonedParent.MessageDescriptor() != nil || poisonedChild.MessageDescriptor() != nil {
-		t.Fatalf("over a poisoned repository parent stamped=%v child stamped=%v, want NEITHER. A "+
-			"stamped parent beside an unstamped child is the pair that makes a query FAIL rather "+
-			"than degrade to a raw map. A wrapper between parent and child already reaches it "+
-			"(TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes); this arm is about the DIRECT "+
-			"child, and if it goes red that route is open too",
-			poisonedParent.MessageDescriptor() != nil, poisonedChild.MessageDescriptor() != nil)
 	}
 }

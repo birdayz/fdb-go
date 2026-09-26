@@ -24,6 +24,14 @@ func TestIsIndexIdempotent(t *testing.T) {
 		IndexTypeVersion,
 		IndexTypePermutedMin,
 		IndexTypePermutedMax,
+		// StandardIndexMaintainer.isIdempotent's true, not overridden.
+		IndexTypeText,
+		IndexTypeBitmapValue,
+		IndexTypeMultidimensional,
+		IndexTypeVector,
+		// TimeWindowLeaderboardIndexMaintainer.isIdempotent without
+		// duplicates counted.
+		IndexTypeTimeWindowLeaderboard,
 	}
 	for _, indexType := range idempotent {
 		if !isIndexIdempotent(idxOfType(indexType)) {
@@ -61,6 +69,14 @@ func TestIsIndexIdempotent(t *testing.T) {
 	}}
 	if isIndexIdempotent(rankWithDups) {
 		t.Error("RANK with CountDuplicates=true should NOT be idempotent")
+	}
+	// TimeWindowLeaderboardIndexMaintainer.isIdempotent = !config.isCountDuplicates(),
+	// the option read by Boolean.parseBoolean.
+	twlWithDups := &Index{Type: IndexTypeTimeWindowLeaderboard, Options: map[string]string{
+		IndexOptionRankCountDuplicates: "TRUE",
+	}}
+	if isIndexIdempotent(twlWithDups) {
+		t.Error("TIME_WINDOW_LEADERBOARD with CountDuplicates=TRUE should NOT be idempotent")
 	}
 }
 

@@ -28,7 +28,7 @@ func TestFDB_AvgBigintPrecisionAbove2p53(t *testing.T) {
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE avgbigprec CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_avgbigprec/s WITH TEMPLATE avgbigprec")
-	dsn := fmt.Sprintf("fdbsql:///testdb_avgbigprec?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_AVGBIGPREC?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

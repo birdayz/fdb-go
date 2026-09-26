@@ -1,0 +1,89 @@
+**NAK** for tree `f8abe2d742df8c35b44fb0c6f854f86c3cd3a016`, design `ws-j-design.md` SHA256 `b285bfa37aace7554d0af471a642346bcad339688e7cd10df21d031cb8fa3f94`, 2196 lines. I recomputed both from the tree and they match. Java is at `fdacd162a`. The review was read-only: I ran no tests, probes or mutations.
+
+## What checks out
+
+**Evidence.** I checked the evidence against the tree and the logs:
+- 4 of the hashes in `evidence-v9` match the tree: the design, `metadata_proto.go`, the WS-J conformance test and CHANGELOG.
+- The `just test` tree `f2f272dc` differs from the candidate only in `ws-c-design.md`, the oracle README and `evidence-v9.txt`.
+- `wsj-ev2.log`: 27 of 51 specs ran and passed, with 5 WSJIX lines and 10 WSJLANE lines. The UNIQUE case's options are `{unique=true}` on both engines.
+- `wm9-7`: all six fault arms turn red (`:579`–`:602`).
+- `wm9-17` and `wm9-18` show the mutation applied and the named specs turning red. The `wm9-0` baseline ran 2 tests with 17 subtests, all passing.
+
+**v8 findings.** All three reviewers' v8 findings are addressed, except the residuals below:
+- The version guard now starts at `latest+1`. From source it is sound: bindings of a version that is not stored can only shrink, and a restore adds none.
+- The Java cites the lane typing rests on are correct: `ToOrderedBytesValue.java:100-101`, `CardinalityValue.java:84-86`, `CollateValue.java:124-125`, `OrderFunctionKeyExpression.toValue` (`:100-101`).
+- The IN walk's entry order matches `AstNormalizer.java:446-463`.
+- The code comments and messages were rescoped as claimed.
+- `Templates` rows have one non-test writer: `git grep 'gen.Templates{'` over non-test `.go` files finds only `fdb_template_catalog.go:157`.
+
+## MEDIUM
+
+**1. The edited-file route admits changes that corrupt stored data (`:1864-1880`, (p) `:2158`).**
+- The only check is that the edited file frames the stored record types at the same union field numbers. The design calls that "the whole requirement".
+- It is not. The normal save path, `SaveRecordMetaData`, runs the evolution validator from the old metadata to the new (`metadata_store.go:111-117`). This route skips it, because the stored side cannot load.
+- An edited file that frames correctly can still:
+  - change a primary key, or an explicit record-type key;
+  - change an index's root, predicate, type, options or subspace key without moving its `last_modified_version`, so `GetIndexesSince` rebuilds nothing and old entries are read under the new definition;
+  - drop an index without a FormerIndex, so its data is never cleared;
+  - flip `split_long_records`, `store_record_versions` or the record count key;
+  - retype or remove a field of a framed message. That is the design's own "holding field retyped or removed" in the record-type-holder shape, where `Batch` is a record type with stored rows.
+- **Fix:**
+  - Build the stored side as the pre-upgrade loader read it: `union` named, the Go-only (d) refusal suspended, and the replay already reconstructs the loop's record types.
+  - Run `MetaDataEvolutionValidator` from that to the edited file, with only the union-numbering comparison replaced by the framing check.
+  - Archive the old bytes at the history key, as `SaveRecordMetaData` does.
+  - Tests, each refused: a root change with no version bump, a framed field retyped, a primary key changed.
+
+**2. The restore's "nothing binds" refusal is decided outside the restoring transaction (`:491`, `:528-536`).**
+- The listing is what establishes that something binds (t,v). The final transaction only re-checks that (t,v) is not stored, and adds a conflict range that covers only writes after its read version.
+- **Interleaving:**
+  1. The listing sees S bound to (t,3).
+  2. DROP SCHEMA S commits.
+  3. A fresh CREATE SCHEMA TEMPLATE t is admitted, because nothing binds t any more, and writes a new v1.
+  4. The restore reads (t,3) absent and commits.
+- The old v3 now sits beside the new v1: the two-history state from Torvalds v8 #2, now reached through a race.
+- ":534 only shrinks the set" misses the case where it shrinks to empty.
+- **Fix:**
+  - Inside the restoring transaction, do a limit-1 read of the (t,v) bindings (O(1)) and refuse if it is empty. That is sound because such bindings can only shrink, so a non-empty read means no fresh t was admitted before it.
+  - Add this interleaving as an FDB test.
+
+## LOW
+
+**3. Stored no-lane keys that cannot be widened (`:866`).**
+- The pre-upgrade generator builds bit and bitmap keys with no lane check (`e48f5b496:ddl/generator.go:861-873`, `:926-940`). On this tree the driver stores 8 such shapes (WSJLANE, measured).
+- ":866" covers only the pre-F2 `long_value` entry size.
+- For `v & 1` over DOUBLE, after step 3:
+  - a new version from DDL is refused at the clause;
+  - a new version built by hand carries the index as EQUIVALENT, and `CreateTemplateFromProto`'s lane check refuses those spliced stored bytes with 42F59.
+- So such a template gets no new version at all until the index is dropped.
+- **Fix:** decide whether the lane check applies to stored bytes carried unchanged (the raw-write routes are exempt for this very reason), declare the outcome in (t) and CHANGELOG, and test it.
+
+**4. The check before a carried write is too narrow (`:1330`).**
+- `CreateTemplateFromProto` checks only `RecordMetaDataFromProto`. But `deserializeTemplate` also builds tables (`schema_template.go:52-93`, where `newTable` can fail).
+- **Fix:** run `deserializeTemplate`'s path on the bytes in both writers. Then ":1785" and `serializeTemplate`'s comment ("Go never stores a template no Go session can load") become true by construction; today they hold only for (d).
+
+**5. The in-memory rationale is incomplete (`:846-857`).**
+- `RepairSchema` resolves the template by name (`store_catalog.go:139-150`).
+- After DROP t and a fresh t v1 (the in-memory catalog has no guard), a schema bound to the old (t,1) passes the by-number gone-version check. It is then rebound across histories, and the validator compares no predicates.
+- **Fix:** declare it, or compare the stored template's identity.
+
+**6. Tests and text.**
+- WSJIX's `index_type` case stores no options list, so the branch the carry rule relies on is unmeasured: Java ignores the list when `index_type` is present (`Index.java:198-204`). Add a stored list such as `{unique=false, x=1}`.
+- v8 storage #7's "roots, not entries" is still unanswered. Cite the KeyWithValue entry conformance (`covering_index_conformance`), or compare one entry.
+- The 0A000 wrapper passes on the "edit it" remedy, but the SQL family has no edit route.
+- `:485-486` still gives `RestoreTemplateVersion(t, v, md)`, while `:499` gives `(ks, t, v, md)`.
+
+**7. Pre-existing, outside the v9 delta: the loader's subspace-key read fails open.**
+- `indexFromProto` (`metadata_proto.go:818-829`) falls back to the index NAME for an empty subspace key, a multi-element tuple, or a null element.
+- Java refuses all three (`Index.java:80-96`, `:221-222`).
+- So Go loads metadata Java refuses, and maintains the index under a subspace Java never reads. Refuse with Java's messages.
+
+## Measured vs. source only
+- **Measured:**
+  - the five WSJIX readings, options included;
+  - the ten WSJLANE outcomes on both engines, with Go's pinned;
+  - the 35 descriptor shapes with the v9 message;
+  - the wm9 mutations and their baseline;
+  - the unchanged tally.
+- **Source only:**
+  - findings 1–5 and 7;
+  - every unbuilt part: `CreateTemplateFromProto`, the guard, the restore, the lane check, the DDL-origin XX000, the IN walk, the migration and the edited-file route, which don't exist on this tree (`git grep` finds 0 lines for all four API names; the control, `RefuseAmbiguousLegacyUnionAsStored`, finds 6).

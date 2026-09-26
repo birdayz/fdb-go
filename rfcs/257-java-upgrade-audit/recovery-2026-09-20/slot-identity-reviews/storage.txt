@@ -1,0 +1,28 @@
+**ACK — WS-A + WS-E1 IMPLEMENTATION CODE** at candidate tree `664b241c57b71829cb40687a1e26cc3dc3e145e6`.
+
+I read all four prior reports, the complete delta from rejected tree `9f8d0f63cc15aa364dd237a62650a4bf73e5babe`, necessary frozen Go source, and relevant Java source at `fdacd162a9c8acfadc49082b89185c823ab8ae4a`. Milestone base remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`. No remaining implementation defect was found in this delta; no code fix is requested.
+
+The previous findings are resolved:
+
+- **ORDER identity:** [select_parser.go:1325](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:1325) rejects repeated ordinals independently of labels; [plan_visitor.go:1600](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/plan_visitor.go:1600) preserves every parsed key. [logical_predicate.go:6349](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:6349) compares resolved direct-column values when either key is positional. Typed slots preserve the computed-expression exception, while named-only checking remains parser-owned.
+- **GROUP identity:** [plan_visitor.go:1496](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/plan_visitor.go:1496) gives bound values precedence over spelling. [select_parser.go:110](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:110) preserves `Value` through both stripping branches; all three aggregate reclassification sites retain it. Both validation paths avoid re-resolving bound names. [logical_builder.go:181](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_builder.go:181) matches native output slots by bound identity, and [logical_predicate.go:4341](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:4341) rejects ungrouped bound outputs with **42803** before invalid ordinals reach translation.
+
+These changes compose with the accepted storage/wire/proto/vector implementation. RaBitQ rounding and architecture-specific NaN contracts, checked-array guards, transactional descriptor closure, and fixture corrections are unchanged. Approved nullable-array/raw/scalar/sorting extensions remain intact; FDB C++ remains **7.3.77**.
+
+I independently reconciled the [verification evidence](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/recovery-2026-09-20/slot-identity-verification.json):
+
+- **93 uncached targets passed:** 40,650 RUN = 40,645 PASS + five existing skips.
+- **14 uncached race targets passed:** 21,103 RUN = PASS; no Go skips/failures. Per-target name multisets reconcile, including indented subprocess output.
+- Both Java conformance populations remain 1,357/1,476, with 119 existing filtered cases.
+- All artifact hashes and both 6,296/6,297-file freezes match. Candidate differs from verified code only in the stated documentation/evidence files. The later 2-executed/91-cached run is separate.
+- Mutation failures, restored focused passes, and fuzz evidence reconcile. The later comment/fuzz additions receive no mutation-testing credit.
+- Java refuses all four added cross-source ORDER cases, including named equivalents. Independent complete Go rows and labels establish the approved extension.
+
+Separate unmet verification/publication gates:
+
+- Early point-read medians worsened, including 52ms index and 41ms PK samples. Before claiming parity or meeting the unmet <5ms target, investigate end-to-end planning, transaction/network/storage time under controlled load and comparable warm-up conditions. Planner ratios **0.9955–1.0197** neither explain nor bound this variation.
+- Historical executor startup-timeout causation still requires unavailable original artifacts; the CLI networking fix is separate.
+- Legacy RaBitQ disable/rebuild remains a deployment prerequisite.
+- Authentication is restored as **birdayz**, but owner no-commit/no-push restrictions remain. PR786 stays draft/unchanged; publication and merge are not approved.
+
+This ACK excludes WS-B–K and whole-upgrade completion. Historical design/security ACKs retain their separate scope. No edits, agents, worktrees, tests/builds, Git-state changes, or GitHub contact occurred.

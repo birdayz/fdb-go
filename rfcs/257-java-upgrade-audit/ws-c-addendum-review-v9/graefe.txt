@@ -1,0 +1,71 @@
+**NAK.** Tree `d6ad3e9c2c5bc3a32c42cf0399c97afade52e098`. I recomputed the design hash: SHA256 `3d3898502df800e95c35f86d54c7da360fe19e879338b2b56c92b9d647b472c6`, 1668 lines, which matches. The review was read-only: no tests, probes or edits.
+
+Revision 8's shared medium finding is resolved, in the code and by measurement. The NAK rests on three Low findings of the class all three v8 gates raised: claims wider than the code. There are also a few nits.
+
+## Findings, most severe first
+
+**1. Low: the program-order claim misses two builder paths (from source).**
+- **AddIndex with an unknown record type.** `AddIndex` records "Unknown record type" and returns before `addIndexCommon` (`metadata.go:579-587`). So the index never reaches `addedIndexes` (`:621`).
+  - `idx.SetSubspaceKey(nil); b.AddIndex("NoSuchType", idx); b.Build()` returns "Unknown record type NoSuchType". Java throws at the set.
+  - This contradicts 7.9's "every index ever handed to its AddIndex" and the CHANGELOG's "every Build the index was handed to".
+  - No test covers it: `subspace_key_identity_test.go` has no unknown-type case.
+- **RemoveIndex of an unknown name.** It returns silently (`:682-686`). Java throws "No index named X defined" (`RecordMetaDataBuilder.java:1199-1203`).
+  - `git grep "No index named"` over `*.go` and `*.md` finds 0 hits. The control "already defined" finds 8 files.
+  - This is pre-existing, but it is now undeclared inside the program-order fault model that 7.9 claims is Java's.
+- **Fix:** append to `addedIndexes` before the type lookup, record the RemoveIndex refusal through `recordBuildError`, and pin both.
+
+**2. Low: 7.9's "Every message of the validators, and every walk", its "`Build`'s remaining Go texts are Java's", and the CHANGELOG's "so are `Build`'s index and record-type checks" are all wider than the code.** Three `Build` loops still range over `b.recordTypes` with Go's texts:
+- **Primary key, `:834-844`.** Go says "…can create duplicates (fan-out…)". Java says "Primary key for X can generate more than one entry" (`MetaDataValidator.java:98`).
+- **Duplicate record-type key, `:1034-1047`.** With two colliding types, which name comes first flips from run to run. Java says "Same record type key K used by both X and Y" (`:85`).
+- **Since version, `:1319-1324`.** Go says "has since version %d". Java says "has since version of N" (`:89`).
+- **Union message.** 7.9 also says "the only evolution message without a Java prefix left is the SPFresh option check's". "meta-data has no union descriptor" (`metadata_evolution_validator.go:295`) is a second one; the CHANGELOG lists both.
+
+**3. Low: the upgrade note is incomplete (7.9 "Upgrade note" and the CHANGELOG).** It misses several kinds of index that an earlier Go build wrote:
+- **Node slot index.** Earlier Go ignored `rtreeUseNodeSlotIndex`, so an index Go created with that option and no `rtreeStorage` has no entries. The per-operation difference (`flushNodeSlotIndex`) never back-fills them. Java then finds leaves through an incomplete index (`NodeSlotIndexAdapter.scanIndexForNodeId` falls back to the root or returns null): deletes are skipped or leaves are misplaced.
+- **Booleans in other cases.** `rankCountDuplicates: "TRUE"` was false to earlier Go, and `unique: "TRUE"` indexes were never enforced.
+- **TIME_WINDOW_LEADERBOARD with MURMUR3 or RANDOM.** The CHANGELOG heading names it, but the rebuild sentence names only RANK.
+- **`rankNLevels` of 1 or 9 and above.** v8 wrote one level or clamped to 8 (v8 `ranked_set.go:88-93`), not "kept the default" as the CHANGELOG says. Such indexes now refuse every write.
+
+**4. Nits.**
+- **m84/c2 label.** The applied diff (`multidimensional_index_maintainer.go:106`) keeps the read inside the storage branch and only makes an absent flag default to true. The arm the label names (the flag read without storage) has no mutation. Relabel it, and add that mutation.
+- **Shared derivation in the layout spec.** `rtree_layout_test.go:84` builds the expected node slot index keys with the implementation's own `nodeSlotIndexEntries`. Only the level is independent (m86). The tuple layout rests on source reading plus Java's deletes succeeding. Pin one key built by hand.
+- **CHANGELOG "everywhere".** The HNSW booleans still compare `== "true"` (`vector_index_maintainer.go:163,166,175,195`). That is WS-D's work (`ws-d-design.md:205`); scope the heading.
+- **Pre-existing misplaced doc comment.** `validateVectorIndexOptions`'s comment sits on `validateSPFreshIndexOptions` (`metadata_evolution_validator.go:982-993`).
+
+## Revision-8 findings, checked (from source)
+
+- **The medium finding (all three lenses): resolved.**
+  - **Parsers.** `javaParseInt` behaves as `Integer.parseInt`, including sign handling, BMP Nd digits, surrogates and int32 overflow. `javaParseBoolean` is `equalsIgnoreCase("true")`.
+  - **Hash registry.** It matches `RankedSetHashFunctions.java:46-58`. `murmur3Hash` matches Guava's murmur3_32 with seed 0, including the tail and fmix.
+  - **Config order and quirk.** `getConfig`'s order and its Hilbert quirk match `MultiDimensionalIndexHelper.java:44-72`. The evolution check reads the old config first, then the new (`RankIndexMaintainerFactory.java:78-79`, `MultidimensionalIndexMaintainerFactory.java:147-148`).
+  - **BY_SLOT bytes.** They are `(nodeId, kind, slotKey…)` → `slotValue`, per `BySlotStorageAdapter.java:58-63`, `ItemSlot:112-120` and `ChildSlot:102-110`.
+  - **Node slot index bytes.** Entries are `(level, largestHV, largestKey…, childId)` → empty (`NodeSlotIndexAdapter:199-207`), under secondary subspace + (0) + prefix (`MultidimensionalIndexMaintainer.java:319`). The child level is `height-1`, as Java's `level-1` change sets write it. `deleteWhere` clears the index as Java's does (`:306-316`).
+  - **Descent.** Go's descent rule is Java's.
+- **Rename-visitor messages and class, walk order, base-walk pin (m94), doc comments, double normalization, typed root errors, tokenizer version, typed-nil enum, RemoveIndex and duplicate carry, built meta-data declared, the four `Build` messages, stale 7.7 claims annotated, vector scope, BY_INDEX marked as from source, struct-literal note:** resolved, except as noted in findings 1 to 3.
+
+## Measured
+
+- **Source bytes.** Six gate blobs (`rtree_storage.go`, `rtree.go`, `metadata.go`, `ranked_set.go`, `java_parse.go`, the multidimensional options spec) equal `ev13/src.sha`. `check.txt` has 1039 OK lines, and `run.out` reads "ok 1039 notok 0".
+- **Mutations.** m81–m104 and c1–c5 each show marker count 1, the diff applied at the candidate's own line, bazel exit 3, the red set as tabled, and "restored". `run.out` reads ALL-DONE.
+- **Baselines.** Unit: "Ran 3715 of 3716", 3715 passed. JVM: 46 of 46.
+- **`good/` copies.** Only the driver's `cmp` checked them; I did not hash them.
+- **Combined run.**
+  - `jvm-wsc`: 185 of 185, with 50 probe lines (4 + 30 + 4 + 12, the expected count).
+  - Level-1 populations: JDK 8, CRC 9, MURMUR3 7.
+  - `recordlayer-v`: 3715 of 3716.
+  - Oracle: 60 of 60, twice.
+  - `just test`: 94 of 94 executed.
+  - Final targets: 3 of 3.
+
+## Graefe lens
+
+- **Configuration points.** Configuration is read where Java reads it, and only there:
+  - when the RANK, TIME_WINDOW_LEADERBOARD and MULTIDIMENSIONAL maintainers are made (lazily, as `getIndexMaintainer`);
+  - in the evolution check when the changed set is non-empty;
+  - at `Build`, for the text index's tokenizer version.
+  
+  `git grep` finds no other reader of these options.
+- **Undeclared Go-only behaviour.** Two remain undeclared: finding 1's RemoveIndex, and the BY_SLOT whole-node rewrite (`writeSlots`: a range clear, then every slot).
+  - The rewrite leaves the same bytes. The conflicts are effectively the same too, because every writer first reads the node's whole range.
+  - It is documented only in the comment at that call site.
+- **Session files and preserved boundaries.** No session file is in the diff, and the preserved boundaries are unaffected.

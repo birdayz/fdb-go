@@ -26,7 +26,7 @@ func TestFDB_SelfJoinHavingProbe(t *testing.T) {
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX c_a_id ON c (a_id) CREATE INDEX a_x ON a (x)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_selfjoin/s WITH TEMPLATE selfjoin")
-	dsn := fmt.Sprintf("fdbsql:///testdb_selfjoin?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_SELFJOIN?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

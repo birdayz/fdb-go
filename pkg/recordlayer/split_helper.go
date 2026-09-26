@@ -20,10 +20,12 @@ type sizeInfo struct {
 
 // saveWithSplit saves a serialized record, splitting it across multiple KV pairs
 // if it exceeds splitRecordSize and splitLongRecords is enabled.
-// Does NOT handle version saves — the store layer manages versions separately
-// because Go FDB bindings need context-level AddVersionMutation for versionstamps.
+// Incomplete primary keys require a context so chunk mutations can be buffered
+// until commit and canceled by context clears. A nil context supports complete
+// keys only. The store layer still manages inline record versions separately.
 // Matches Java's SplitHelper.saveWithSplit() (data portion only).
 func saveWithSplit(
+	recordContext *FDBRecordContext,
 	tx fdb.WritableTransaction,
 	recordSubspace subspace.Subspace,
 	primaryKey tuple.Tuple,
@@ -31,12 +33,19 @@ func saveWithSplit(
 	splitLongRecords bool,
 	omitUnsplitRecordSuffix bool,
 	oldsizeInfo *sizeInfo,
-	sizeInfo *sizeInfo,
+	sizes *sizeInfo,
 ) error {
 	if len(primaryKey) == 0 {
 		return fmt.Errorf("primary key must not be empty")
 	}
 
+	hasVersionInKey, err := primaryKey.HasIncompleteVersionstamp()
+	if err != nil {
+		return fmt.Errorf("split record primary key: %w", err)
+	}
+	if hasVersionInKey && recordContext == nil {
+		return &RecordCoreArgumentError{Message: "incomplete split record key requires a record context"}
+	}
 	dataLen := len(serialized)
 
 	if dataLen > splitRecordSize {
@@ -45,8 +54,13 @@ func saveWithSplit(
 		}
 
 		// Clear previous record data
-		clearPreviousRecord(tx, recordSubspace, primaryKey, splitLongRecords, oldsizeInfo)
+		if !hasVersionInKey {
+			clearPreviousRecord(tx, recordSubspace, primaryKey, splitLongRecords, oldsizeInfo)
+		}
 
+		if sizes != nil {
+			*sizes = sizeInfo{}
+		}
 		// Split the record into chunks
 		splitIndex := startSplitRecord
 		offset := 0
@@ -58,17 +72,22 @@ func saveWithSplit(
 			chunk := serialized[offset:end]
 
 			keyTuple := appendToTuple(primaryKey, splitIndex)
-			key := recordSubspace.Pack(keyTuple)
-			tx.SetBytes(key, chunk)
-
-			sizeInfo.KeyCount++
-			sizeInfo.KeySize += len(key)
-			sizeInfo.ValueSize += len(chunk)
+			key, err := writeSplitValue(recordContext, tx, recordSubspace, keyTuple, chunk, hasVersionInKey)
+			if err != nil {
+				return err
+			}
+			if sizes != nil {
+				sizes.KeyCount++
+				sizes.KeySize += len(key)
+				sizes.ValueSize += len(chunk)
+			}
 
 			splitIndex++
 			offset = end
 		}
-		sizeInfo.IsSplit = true
+		if sizes != nil {
+			sizes.IsSplit = true
+		}
 		return nil
 	}
 
@@ -80,28 +99,65 @@ func saveWithSplit(
 		// versions live in the separate subspace). The Set below overwrites the only
 		// key this record can occupy. Matches SplitHelper.saveWithSplit's
 		// `recordKey = key` branch.
-		key := recordSubspace.Pack(primaryKey)
-		tx.SetBytes(key, serialized)
-		sizeInfo.KeyCount = 1
-		sizeInfo.KeySize = len(key)
-		sizeInfo.ValueSize = dataLen
-		sizeInfo.IsSplit = false
+		key, err := writeSplitValue(recordContext, tx, recordSubspace, primaryKey, serialized, hasVersionInKey)
+		if err != nil {
+			return err
+		}
+		if sizes != nil {
+			sizes.KeyCount = 1
+			sizes.KeySize = len(key)
+			sizes.ValueSize = dataLen
+			sizes.IsSplit = false
+			sizes.VersionedInline = false
+		}
 		return nil
 	}
 
 	// Clear previous record data
-	clearPreviousRecord(tx, recordSubspace, primaryKey, splitLongRecords, oldsizeInfo)
+	if !hasVersionInKey {
+		clearPreviousRecord(tx, recordSubspace, primaryKey, splitLongRecords, oldsizeInfo)
+	}
 
-	// Unsplit: single KV pair at suffix 0
-	key := tuple.PackConcatWithPrefix(recordSubspace.Bytes(), primaryKey, unsplitSuffix)
-	tx.SetBytes(key, serialized)
-
-	sizeInfo.KeyCount = 1
-	sizeInfo.KeySize = len(key)
-	sizeInfo.ValueSize = dataLen
-	sizeInfo.IsSplit = false
+	// Unsplit: single KV pair at suffix 0. Keep the complete-key path's
+	// concatenated packing so ordinary record writes need no extra tuple slice.
+	var key []byte
+	if hasVersionInKey {
+		key, err = writeSplitValue(recordContext, tx, recordSubspace, appendToTuple(primaryKey, unsplitRecord), serialized, true)
+		if err != nil {
+			return err
+		}
+	} else {
+		key = tuple.PackConcatWithPrefix(recordSubspace.Bytes(), primaryKey, unsplitSuffix)
+		tx.SetBytes(key, serialized)
+	}
+	if sizes != nil {
+		sizes.KeyCount = 1
+		sizes.KeySize = len(key)
+		sizes.ValueSize = dataLen
+		sizes.IsSplit = false
+		sizes.VersionedInline = false
+	}
 
 	return nil
+}
+
+// writeSplitValue uses the same packed key for collision detection and deferred
+// mutation storage. The four-byte versionstamp offset is included in Java's key
+// size metric even though FDB does not persist it.
+func writeSplitValue(recordContext *FDBRecordContext, tx fdb.WritableTransaction, ss subspace.Subspace, key tuple.Tuple, value []byte, incomplete bool) ([]byte, error) {
+	if !incomplete {
+		packed := ss.Pack(key)
+		tx.SetBytes(packed, value)
+		return packed, nil
+	}
+	packed, err := key.PackWithVersionstamp(ss.Bytes())
+	if err != nil {
+		return nil, fmt.Errorf("pack split record versionstamp: %w", err)
+	}
+	if previous := recordContext.AddVersionMutation(MutationTypeSetVersionstampedKey, packed, value); previous != nil {
+		return nil, &RecordCoreInternalError{Message: "Key with version overwritten"}
+	}
+	return packed, nil
 }
 
 // clearPreviousRecord clears the old record's KV pairs before saving a new version.

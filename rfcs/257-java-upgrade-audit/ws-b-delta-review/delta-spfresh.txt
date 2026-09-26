@@ -1,0 +1,12 @@
+**ACK — WS-B SPFresh lifecycle integration.**
+
+Reviewed tree `c59322c012c53500679e7f345360fac6706468b9` against `bcf0946edd1f5d591542fee4f07481d7826c046d`, using the reviewer skill, supplied paper extractions, RFC094, implementation, and retained evidence. No blocking findings within this scope.
+
+- **Lifecycle correctness:** [SearchSPFreshIndex:41](/home/birdy/projects/fdb-go/pkg/recordlayer/spfresh_verify_api.go:41) propagates initialization and transaction errors before evaluating scannability. [index_state.go:344](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:344) performs full lazy initialization and liveness validation; the context-shared view adds per-index serializable conflicts, including refused decisions. This preserves SPFresh §4.2.2’s concurrency intent under RFC094’s transactional adaptation.
+- **Paper fidelity and isolation:** SPANN §§3.2.1–3.2.3 and SPFresh §§3.1–3.4 mechanisms remain unchanged. Search still uses [snapshot data reads:68](/home/birdy/projects/fdb-go/pkg/recordlayer/spfresh_verify_api.go:68). Routing, closure replication, pruning, LIRE, reranking, wire encoding, and budgets (`w=32`, `kc=64`, `C=200`, ε=7, `4×Lmax+1`) are unchanged.
+- **Broader integration:** Both distance scan modes pass through [index_scan.go:339](/home/birdy/projects/fdb-go/pkg/recordlayer/index_scan.go:339); executor admission uses the error-returning guard. Foreground dispatch uses shared state and skips disabled indexes at [store.go:1153](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:1153). I found no additional missing SPFresh integration required by this delta.
+- **Evidence:** [index_state_test.go:2460](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state_test.go:2460) asserts the actual returned primary key, second-handle disable refusal, and cancellation 1025. Retained red→green logs corroborate the fix. Checked source hashes match the frozen evidence; logs report 93/93 uncached and 14/14 race targets passing.
+
+No edits, builds, tests, Git mutations, GitHub requests, or delegation performed. WS-C–K are excluded.
+
+Runtime model/effort identity is not independently exposed to me; I cannot attest the requested `gpt-6-astra/xhigh` setting.

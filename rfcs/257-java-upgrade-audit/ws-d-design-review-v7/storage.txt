@@ -1,0 +1,83 @@
+**NAK.** I reviewed tree `65d33289a2d6a410884ef98945557d3ff6a6ff21` and `ws-d-design.md` SHA256 `21279344492055e04a6c81caef2c6ed3c7c0692df635050b98999420bf253a48`; I recomputed the hash with `git show TREE:path | sha256sum` and it matches.
+
+**What I checked** (nothing run, edited or staged):
+- **Reviews and design:** all four v6 verdicts; the full v7 design and the v6→v7 diff.
+- **Oracle:** README, both evidence files, the new Go specs, and the Java peel, obsolete-task and record-layer inline probes.
+- **Oracle integrity:** all four source SHA256s match `evidence-run.txt:4-7`, and the Go test has 13 `It` specs, matching "Ran 13 of 1536".
+- **Production code:** the delta outside `rfcs/` and `TODO.md` is only the oracle files and the lease-default change.
+- **Java:** `fdb-record-layer/.git/HEAD` was denied, so I did not independently confirm the checkout is at `fdacd162`. I read the source and cited line numbers from that working copy.
+
+## P2 — The inline-mode bound's firing window is incomplete; Go refuses writes permanently on a cluster Java re-arms (design:883-918)
+
+**What the design claims (894-903):** an over-max cluster in the target's inline flow lacks both SPLIT_MERGE and COLLAPSE only between CollapseTask clearing COLLAPSE and its bounce re-arming SPLIT_MERGE. A refusal there "succeeds on retry once the bounce has run".
+
+**Why that is false.** The bounce re-arm is conditional:
+1. **The collapse route replaces all states:** SplitMergeTask.java:389-394 sets the states to `{COLLAPSE}` only.
+2. **REASSIGN can be added while COLLAPSE is set:**
+   - The split branch excludes COLLAPSE clusters (Primitives.java:1161-1163), so updates fall through at :1177.
+   - The reassign tail then *adds* REASSIGN (:1222-1249; the add is cumulative per ClusterMetadata.java:189-190). Replica or underreplication thresholds are enough to trigger it, and so is a neighbour's split cause set.
+3. **CollapseTask keeps REASSIGN:** it removes only COLLAPSE (CollapseTask.java:415-416).
+4. **The bounce skips its re-arm** when REASSIGN is present (BounceTask.java:294-300).
+5. **The ReassignTask leaves the cluster with no flags:** it runs (ReassignTask.java:206-212), writes the target with no states (:730-735), and follows up only if the cluster is undersized (:772-774).
+
+**Result:** the cluster ends above max with no flags. In Java, only the next primary insert re-arms it (Primitives.java:1161-1165 via Insert.java:366).
+
+**What each engine does next:**
+- **Java:** the next inline insert re-arms the split, and after the collapse that split may simply succeed.
+- **Go:** the bound fires at the cap position, which comes *before* that metadata update. The refused insert is exactly the one that would re-arm, so nothing ever re-arms. Every insert into the cluster is refused until deletes lower the count.
+- **Scope:** this is reachable under the design's own precondition (count ≥ hardMax built up while COLLAPSE was pending).
+
+**Claims this falsifies:**
+- the one-exception enumeration;
+- "succeeds on retry once the bounce has run";
+- "the target is never more available than this" (915-918).
+
+**Why a flag predicate cannot fix it:** stored flags cannot tell this state apart from the reconcile residue.
+
+**Needed — one of:**
+- Make the refusal self-healing: before refusing a flagless over-cap cluster, apply Java's re-arm and attempt that split in the same transaction, and refuse only if the attempt ends in the terminal reconcile.
+- Or declare the state under (h) with a staged JVM fixture showing Java's next inline insert re-arming and succeeding, and correct the three claims. `GuardiannConformanceAccess.setStates` can stage `{REASSIGN}` on a collapsed over-cap cluster.
+
+## P3
+
+1. **"Refused, which also rolls back that reconcile" (910-911) is conditional.** Capacity errors do not poison (521-525). A caller that catches the error and commits therefore commits the inline task's reconcile, plus a record with no index entry. State that.
+2. **The claim-race fixture's "both sessions complete" (681-684) is conditional.**
+   - The winner's drain loop can hold and refresh the lease for up to 100 drain transactions (666-669), while the loser's wait is capped at 60 s (646-648).
+   - When the two sessions block on different clusters in one prefix, the loser ends with the typed capacity error.
+   - Add that arm to the fixture, and state the condition under which both complete.
+3. **Some "measured" labels are source-only:**
+   - The KMeans row says "every live split/merge" (223), but every KMeans golden ends in a lone cluster, so no live merge was measured.
+   - The "throws" arms for splitMergeConcurrency and reassignConcurrency (226-227) need precomputed neighbours; only the livelock arms and the obsolete tasks were measured.
+   - "An obsolete task is therefore consumed even under a trained bits-9 index, as in the target" (307-309) has no oracle row.
+   - Move these to REMAINING or measure them.
+4. **The isolation of the (d) head-task peek is unstated (271-275).** A skipped delete should read the queue head at snapshot isolation, so it adds no read conflict against concurrent drains. Java's inline delete conflicts there only because it removes the task.
+5. **The lease-default change has only its unit pin as evidence (641-645).** The new constant, the `Build()` resolution and `checkPreparationHeartbeats` are consistent with `OnlineIndexOperationConfig.java:61` and `IndexingHeartbeat.java:107`. But no run of `//pkg/recordlayer` after the change is recorded in the tree, and this default reaches every exclusive build. Record one before the implementation gate.
+
+## Confirmed
+- **Consumer-point raise points match Java:**
+  - SplitMergeTask.java:169-187, with the quantizer at :227/:430 before the phase-1 re-enqueue at :232/:435; `findNearestClustersMetadata` includes the target itself (Primitives.java:1481);
+  - CollapseTask.java:151-158, then :171/:182;
+  - ReassignTask.java:206-210, then :241;
+  - BounceTask.java:130.
+- **Quantizer and task serialization:** Primitives.java:352-360; SplitMergeTask.java:135; decoding builds no quantizer (:985-993).
+- **Operation order and identity UUID:** tag-5 is written at Insert.java:293, before routing (:295) and before the cap (:334-338); the identity UUID comes from `RandomHelpers.randomUuid(Tuple, boolean)` (:174-176) and draws nothing from the operation RNG.
+- **Replay vs identity guard:** continuation replay is engine-free (VectorIndexMaintainer.java:208-223), while engine resolution happens in the constructor (:123).
+- **Lease and merge mechanics:**
+  - `currentOwner` is a snapshot read with a 60 s window on either side of now (VectorIndexMergeLock.java:95-107);
+  - the claim is a blind write that read-conflicts the delete guard (:130-134);
+  - release is a serializable owner check (:144-151), done only when the snapshot count is ≤ 0 (VectorIndexMaintainer.java:654-657);
+  - merges use `whenAll` (IndexingBase.java:1093).
+- **Heartbeat path:** `refreshFollowupHeartbeats` and its helpers are at the cited lines (online_indexer_queue.go:297/321/337/362/385), and `IsWriteOnly` includes the queued state; the merger precommit renews heartbeats and returns non-FDB errors immediately.
+- **Futures:** pure-Go futures' `Cancel` is a no-op and pending futures are resolved lazily on one goroutine, matching section 1.
+- **Record-layer inline probe:** it goes through `saveRecord` with `setAutoMergeDuringCommit`.
+- **Stale watcher claims:** the "IN FLIGHT… forensics" line is gone from TODO.md, and rfcs/242:3096 now says "until 2026-09-22".
+
+## Measured vs still hypothesis
+- **Measured:**
+  - items 1-14 as recorded: inline deletes, record-layer inline mode, the peel at 8 sampled seeds per shape, the target's behaviour on those shapes in both modes, and obsolete collapse, reassign and merge tasks consumed as no-ops;
+  - item 11's seeds use `seed+1+r`, not the design's split-RNG derivation, so Go goldens must pin Go's actual peel outcomes.
+- **Still hypothesis:**
+  - that the inline bound never fires on healthy data (P2 above);
+  - the three unmeasured labels in P3-3;
+  - the REMAINING list (748-764);
+  - every Go-only mechanism: the hand-off, the claim-race wait, the Java admission-probe fixture, poisoning, the peel and reconcile as implemented, and the inline bound.

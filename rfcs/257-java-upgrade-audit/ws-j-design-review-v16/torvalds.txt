@@ -1,0 +1,80 @@
+**NAK.** I reviewed commit `f53cd6fc6` (`f53cd6fc65f281f70c7448605a7b9eb5b7ba62dd`) and `ws-j-design.md`, SHA256 `4b2070eada96626795353a7f03435d0d6e8d8b2aca48e9aa48e36a580b9ca717`, 2742 lines. I recomputed both. The review was read-only: I ran no tests, probes or mutations. Every finding comes from reading the source and `git grep` at that commit, plus reading the logs. The one failure scenario in M-1 is inferred from the source, not reproduced.
+
+## The v15 Graefe findings
+- **H1, flipping (d):** moot under the ruling. The deletion is verified: the removed symbols have no remaining hits apart from the renamed test. The sweep of stale text is incomplete (H-1).
+- **H2, `NullStandin`:** resolved.
+  - NULL_UNIQUE, issue #4141, COUNT_NOT_NULL and NO_NULLS all landed, each pinned byte-for-byte against the JVM.
+  - `ToProto` now writes NOT_NULL.
+  - The equality correction matches `FieldKeyExpression.java:406-410`.
+  - The ghost-entry concern is moot under the ruling.
+- **M1, `SetRecords` options:** the re-framing concern is moot. The port landed but is not recorded (M-2).
+- **M2, the probe:** moot.
+- **M3:**
+  - L1 is resolved (`RecordLayerStoreCatalog.java:272-279`).
+  - L3 is moot.
+  - M1 is resolved in code: incarnation unregistered, arity from `arguments.ColumnSize()`, column size from the function spec. The error wrapping is still owed.
+- **The LOWs:**
+  - Resolved: absent children; the `DdlVisitor` citation; the `LegacyRecordTypeKeyError` sentence; (z)'s "limit 1".
+  - Moot: the 9 (y) cross-reference.
+  - Only partly resolved: fan type 7, "Java's, whole" and "refuses only what the target refuses" (M-3).
+
+## HIGH
+**H-1. The spec for steps 2 and 3 contradicts section 4d and the ruling.**
+- **Withdrawn (d) refusal still specified:**
+  - Section 8 step 3 (`:2606`) still orders "a (d) refusal of the carried bytes".
+  - Section 3.2 (`:1227-1230`) says the in-memory `CreateTemplate` "runs the (d) refusal".
+  - `DIVERGENCES.md:3031` still lists the ambiguous-legacy-union refusal, and `:3048-3050` still cites R2. Section 4d (`:2260`) says both were removed.
+- **Stale section 4c text:** `:2173-2178` and `:2211-2215` still describe the Go-only (d) refusal, the old test name and "5 refused by Go only". No run record backs "now load in both".
+- **Stale hazard:** the section 8 intro (`:2531`) still lists "F13's refusal without its migration".
+- **Evidence plan contradicts the ruling:** section 7 (`:2521`), section 3.6 (`:1688`) and section 4 (`:2040-2047`) still require mutations. The ruling asks for red→green.
+- **Landed work listed as owed:** section 8 step 3 (`:2615-2618`) and TODO's v16 block list it. It includes the `SetRecords` options, `NullStandin`, arity and column size, and the incarnation removal.
+- **Owed work not isolated:** the design never separates what section 3.6 still owes:
+  - Field name and fan-type refusals: `fieldFromProto` has no error path (`key_expression_proto.go:256`), unlike `FieldKeyExpression.java:122-128`.
+  - `MetaDataProtoDeserializationError` and the `RecordCoreError` unwrap: `git grep` finds neither.
+
+## MEDIUM
+**M-1. A false fact about Java.** 9 (s) (`:2683`), section 2 (`:694`), `DIVERGENCES.md:2910` and `fdb_template_catalog.go:277` call `DeleteTemplateVersion` Go-only.
+- Java has the same API: `SchemaTemplateCatalog.java:112`, implemented at `RecordLayerStoreSchemaTemplateCatalog.java:317-325`. It deletes a bound version without checking bindings.
+- So Java writers can leave dangling bindings below the latest version. The landed guard reads only from latest+1.
+- As a result, a library `CreateTemplate(t, v)` with v below the latest silently re-issues a bound version that Java deleted. SQL and `fleet.SaveTemplate` are protected by the save action's `v′ <= latest` refusal.
+- Step 3 moves that refusal into `CreateTemplate`, so the guard depends on it. The design should say so, and a test should pin this case.
+
+**M-2. `SetRecords` extension options landed in `a33336527` but are unrecorded.**
+- 4d (`:2290`) still says "Step 3 ports all of them", and there is no STATUS entry.
+- The CHANGELOG has no entry: "extension option" and "record_type_key" get 0 hits, while the control term "IndexMaintenanceFilter" hits at `:403`.
+- The JVM spec never sets `since_version`, although its comment says it does. It also never sets an `int_value` key or two record types with the same name.
+- `valueFromProto` (`metadata_proto.go:820`) takes the first field that is set. Java refuses with "More than one value encoded in value" (`LiteralKeyExpression.java:165-171`).
+
+**M-3. Deserialization claims go beyond the code.**
+- Section 3.6 (`:1655-1665`, `:1683`) still refuses and pins fan type 7 and an unknown function.
+- 4d (`:2316`) says each of the four untyped refusals is declared. None of them is in `DIVERGENCES.md`: 0 hits, while the control "Function not defined" hits at `:3055`.
+- `:2249` repeats "refuses only what the target refuses" without 9 (u).
+- The "Build refuses …" claim (`:2304`) has no check behind it: `coreKeyFunctions` is read only by a test.
+- `RegisterNonUniqueNullFunction` (`:2339`, and TODO) does not exist. The code uses `FunctionSpec.NullIsNonUnique`.
+
+**M-4. In-memory lock discipline: correct, but not as the design specifies.**
+- The order is store before template on every path I traced.
+- Section 3.2 (`:1199-1216`) requires helpers named `…Held` and `…TakingTC`. None of them exist.
+- `boundTemplateLocked` (`store_catalog.go:78`) takes the template mutex itself. The design rejects exactly that `…Locked` naming. The calls at `:151` and `:202` are exported methods.
+- The hooked interleaving test (`:1219-1223`) was not built. `ConcurrentBindAndDelete` (`template_version_guard_test.go:159`) has no hook and no `DeleteTemplate`. A `SaveSchema` that checked before locking would pass it.
+
+**M-5. Evidence.**
+- `evidence/` holds only `wsj-literal-red` for WS-J. No red run is retained for the version guard or restore tests.
+- Section 2 (`:655-659`) claims three sequences. Only one is pinned.
+
+## LOW
+- `:667` says "v16 said 'conflicts once'", but the diff shows v15 said it. `:2365` "Correction to v16" refers to itself.
+- `ClassifyIndexCarry` compares roots by proto equality (`index_carry_class.go:105`). A change to the null interpretation alone is therefore CHANGED there, while the validator treats it as equal. The design should state this and a test should pin it.
+- The getFieldOnMessage spec pins the helper, not the three readers.
+- After a commit_unknown_result that actually landed, the restore re-runs `checkBoundStores` before checking whether the stored bytes are exactly md (`template_restore.go:~105-121`). It can then report a refusal although the restore landed.
+- `fdb_template_catalog.go:141` still says the catalog matches Java's `createTemplate` "exactly".
+- The TODO step-1 block's line "the restore lands with step 3" was superseded but not corrected.
+
+## Checked and sound (from source)
+- The guard's ranges and its conflicts in both commit orders.
+- The gone-version refusal's order and texts, against Java's `saveSchema`/`repairSchema` (`:232-279`, `:203-204`).
+- The restore's reads inside the transaction and its conflict ranges.
+- The extension-option logic, against Java `:890-957`.
+- `NullStandin` evaluation and `nonUniqueNullColumns`.
+- `IndexMaintenanceFilter` and the BY_INDEX dispatch, against Java `:255-388`.
+- The `int_value` literal fix: its red run is retained.

@@ -1,0 +1,89 @@
+**NAK.** I reviewed tree `10a2023678daaa361c9d5cad4826ae1609c51324`. The design `ws-j-design.md` has SHA256 `8e62bbd0aaecdc2c1fe9ccfc4f40582d986c35e00845df848eea4ce8a4fc85aa`, which I recomputed from the tree and which matches. Java is at `fdacd162a`. This was a read-only review: I ran no tests, probes or mutations.
+
+**Checked and correct**
+- **Evidence binds the bytes.** I re-hashed 11 of the 49 files in `evidence-v6` from the tree, and all 11 match.
+  - The `just test` tree `38730525` differs from the candidate only in review outputs, evidence cross-references in the design, the README, the mutations file and `evidence-v6`.
+  - `wsj6-evidence.out` reports `notok 0`.
+  - `wsj6-vr-jvm.log` has 29 `VALIDATE_RECORDS` lines, and `wsj6-ev2.log` has 2 `WSJUD` lines.
+- **Per-index load order is Java's.**
+  - Each index's record types are resolved before `new Index`, and the duplicate-name check runs before the next index (RecordMetaDataBuilder.java:187-219, :1100-1101).
+  - RecordType entries are refused as Java refuses them (:221, :986-990).
+  - The shape-(d) refusal now runs after `Build`.
+  - The three new unit cases each fail against the v5 order (mutation b2).
+- **Doc comment and legacy name.** The doc comment is back on `loadSubspaceKeySettingsFromProto`. Dropping `RecordTypeUnion` from the legacy names is right, because `fetchUnionDescriptor` takes that name itself (Java :346-351).
+- **Two landed arms.** The empty-name refusal and the untyped-literal arm of `literalKeyCarrier` both behave as stated, and STRING and NULL are now pinned as kept.
+- **(u) is not a regression.** The pre-upgrade loader already refused an index over a synthetic type (`e48f5b496:metadata_proto.go:285-296`).
+- **LIMIT/OFFSET source is right.** Java checks OFFSET before LIMIT (AstNormalizer.java:253-262), and `visitDdlStatement` visits the children (:315-318).
+
+## HIGH
+
+**1. Shape (d) is refused only by the proto loader. The builder path now switches unions silently, which is the misread the refusal exists to prevent.**
+- At `e48f5b496`, `SetRecords(fd)` meant `setRecordsWithUnionName(fd, "UnionDescriptor")` (metadata.go:276-277, the name lookup at :330). That is the same name-first choice the old loader made.
+- Today `SetRecords` (metadata.go:284) goes to `setRecords(fd, "")` (:336) and takes `fetchUnionDescriptor`'s choice.
+- `refuseAmbiguousLegacyUnion` has one caller, `metadata_proto.go:376`.
+- **Who is hit:** a library user who builds metadata from a compiled (d1) or (d2) descriptor at startup, which is the ordinary record-layer pattern. Every record written before the upgrade is read under the other union's field numbers, with no error.
+- **Why nothing warns them:** the design's scope sentences (:1313 "Go-stored metadata", :1344 "refused when it is loaded") and CHANGELOG :46 cover stored metadata only.
+- **Fix:**
+  - Run one check in `Build` whenever the union was found without a caller-supplied name. That covers both the loader and `SetRecords`, and it keeps "after every target check".
+  - Delete the loader-only call.
+  - Pin `SetRecords` over (d1) and (d2) as refused, and `SetRecordsWithUnionName(fd, <found>)` as accepted.
+  - Add a CHANGELOG line for code-built metadata.
+
+## MEDIUM
+
+**2. The restore's header check refuses correct restores (:385-389).**
+- `RepairSchema` writes only the catalog row (fdb_store_catalog.go:482-491). A store's header therefore keeps the older metadata version until the store is next opened.
+- Take a schema rebound to (t, v) and not reopened before DROP SCHEMA TEMPLATE. Its header version is below the version in the exact bytes of v, so equality refuses the one exit section 2 offers.
+- "Equality is necessary" is therefore false. The necessary condition is header ≤ md version: header > md version is the impossible state.
+- **Fix:** admit ≤, and pin the rebind → drop → restore sequence without an open in between.
+
+**3. The EQUIVALENT class contradicts its own test (:1004-1031).**
+- The comparison includes `index_type`, unknown fields and extensions.
+- A DDL rebuild never emits any of them, so a stored index carrying one is always CHANGED.
+- The test that asserts such an index is EQUIVALENT with its bytes unchanged cannot pass. "A deprecated `index_type` survives the rebind" cannot happen.
+- **Fix:** decide one of these:
+  - Compare `index_type` after Java's fold into type plus unique, and carry unknown fields and extensions without comparing them.
+  - Or keep comparing them, and make the test assert CHANGED.
+
+**4. The chokepoint claim (:603, "every template WRITE") is broader than the design.**
+- `RestoreTemplateVersion` must bypass the guard. If it goes through `CreateTemplate`, the no-lane check refuses restoring a pre-F2 `long_value` bitmap template, which is exactly a real tenant's bytes. If it does not, then "every write" is false.
+- The F11 migration's verbatim copy raises the same question.
+- There are two `CreateTemplate` implementations: `fdb_template_catalog.go:127` and the in-memory `template_catalog.go:87`.
+- "Long arithmetic … no integer pair lacks a lane" (:611) says nothing about the non-integer lanes. The ADD/MOD `_DD`, `_FF` and `_DF` rows exist (ArithmeticValue.java:406-498), and the F2b `d + d` and `f + 1.5f` templates are ones the target creates.
+- **Fix:**
+  - Enumerate the bypasses.
+  - Spell out every lane of the arithmetic arm.
+  - Make the F2b template a case the check must accept.
+  - Make section 6 extend this lane table rather than add a second one.
+
+**5. Test 5's "EXPLAIN of an index-served read naming it" (:1138) cannot be met inside the merge unit.**
+- Go's planner declines every function key until section 3.5 (step 8), and the fixture's widened literals live only in function keys.
+- **Fix:** state that the discriminating reads are the stored index state and the target's plan. Otherwise the implementer weakens the assertion.
+
+## LOW
+
+**6. "A legacy union is never a field's type" (metadata_proto.go:418, design :1335) is an unmeasured absolute.**
+- A legacy `UnionDescriptor` embedded as a field of a record (an envelope), or referring to itself, is exempted. The file then loads under the target's union and is misread.
+- Extension fields are not walked by `messageUsedAsFieldType` (:436), although the rule says "any field".
+- **Fix:** narrow the claim, declare the rest in (r), and pin the envelope shape.
+
+**7. Smaller items.**
+- **Coverage wording.** "Only the primary-key columns of such an index are covered" (:546) is too strong for an index that mixes a function key with a plain column.
+- **LIMIT scope.** The target refuses LIMIT in any limit clause of the statement, views and functions included, not only in index definitions (:710). The claim that the precedence holds against an earlier faulty clause is still source-only.
+- **The "UnionDescriptor" spec loads through `RecordMetaDataFromProto`,** not through Go's catalog path (`deserializeTemplate`).
+- **F2b rows.**
+  - The rows measure the overflow, not the saturated value.
+  - For −∞, a sign-flipped saturation would give the same row.
+- **Mutation note.** The v6 `wsj6-untyped-carried` note reads as an unconditional `return`, but the log shows only the untyped arm changed.
+
+## Measured vs hypothesis
+- **Measured:**
+  - the 29 descriptor files on both engines (load order, (d1), (d2) and the two data-message shapes);
+  - the SQL table and struct shapes loaded from the target and from Go's tooling build;
+  - the six coverage reads;
+  - the four F2b FLOAT rows;
+  - the unchanged 479-run tally over two passes.
+- **Source only:**
+  - finding 1 (the old and new code paths, read directly);
+  - the LIMIT precedence against earlier faults;
+  - everything in steps 1–3: the guard, the restore, the carry classes, the lane check and the (d) migration arms with their output check.

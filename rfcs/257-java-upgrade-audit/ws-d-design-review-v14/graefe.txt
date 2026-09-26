@@ -1,0 +1,89 @@
+**NAK.** I read the full design and all the named material, so the review is complete. I ran nothing and edited, staged or committed nothing.
+
+- **Tree:** `8d721bd13b28b59be91f59a35b71acbd15d7131c`.
+- **Design:** `ws-d-design.md`, SHA256 `c56a731bf5a10bd24c324123a8f410162ce6c9d8a20d4afdb213f7ca9eb4bcd4`, 1871 lines. I recomputed both from the blob.
+- **References:** Java `fdacd162` (from `.git/HEAD`). C++ read from the vendored 7.3 `foundationdb+` source.
+- **v13's P1 is closed.** B is now a work constant, so persisted topology is deterministic again.
+- **No P1 remains. Five P2s block.**
+
+## P2
+
+1. **The loop ports the wrong Java predicate (951-957 against 848-851).**
+   - `FDBDatabase.run` retries through `RunRetriable.handle`. That handle checks every FDBException in the chain and retries if any is retryable, and it accepts `RecordCoreRetriableTransactionException` at any depth (FDBDatabaseRunnerImpl.java:195-205).
+   - v14 ports `FDBExceptions.isRetriable` instead. That predicate stops at the first FDBException (FDBExceptions.java:236-247), and in Java only AutoContinuingCursor uses it (AutoContinuingCursor.java:140).
+   - Line 913 then merges the two predicates. The design's own Target paragraph (849, "some cause in the chain") contradicts line 956.
+   - **Needed:** two named predicates, plus a pin on a chain where they disagree: a non-retryable FDB error that wraps a retryable one.
+
+2. **`BodyCommittedError` fires after the commit is already durable (890-897).**
+   - `CommitWithVersionstamp` reaches `rc.tx.Commit().Get()` before any flag can be checked (database.go:1334).
+   - So a self-committing body lands its write and then reports failure. That is the false "not committed" report v13 was NAK'd for.
+   - A raw `rc.Transaction().Commit()` never sets the flag at all.
+   - **Needed:** on a route-owned context, `Commit` refuses before `tx.Commit` is called. The fixture should assert that nothing committed. The raw-transaction path also needs to be named.
+
+3. **The EXHAUSTED reconcile is a blind resync (1049-1060).**
+   - Copying the operation's keys from the store into the model hides a double apply or a partial apply. For `deleteAll` (hunt.go:284-297) it resyncs the entire model.
+   - **Needed:** assert that, for the operation's keys, the store equals either the model before the operation or the model after it, and that nothing else changed; only then adopt it. On SimFDB, cross-check with `LastCommitUnknownApplied`. Add a fixture where the store matches neither and the hunt goes red.
+
+4. **Page outcomes contradict each other and the source.**
+   - Line 1131 says a page is read-only, "so 1020 and 1021 are not page outcomes".
+   - Lines 1081-1084 and 1117 say the opposite, and so does cascades_generator.go:2162-2171: page 1 can write the store header "and can come back not_committed".
+   - Pages run through `DB.Run` → `TransactCtx` (connection.go:418), not `ReadTransactCtx`, so line 1130's "SQL read routes are fault-driven" through `ReadTransactCtx` is wrong for them.
+   - The fixture at 1167-1168 injects only `FaultTransactionTooOld`.
+   - **Needed:** a page-1 `FaultConflict` fixture that asserts no rows are lost, and line 1131 corrected.
+
+5. **Owning 1007 has no limit on what it costs (1471-1492, 1671-1683).**
+   - Line 1492 says Go's timing "does not move B", and v13's downward rule for the fixtures was dropped with nothing in its place.
+   - At W = B the JVM estimate is already 3.43 s for refits alone. The sentence "the timer covers KMeans only" was removed, so the sort and assignment passes are now untimed without saying so.
+   - If Go's peel is slower, every admitted edge peel fails with 1007 on every attempt. In inline mode the head task re-runs on every insert, so each insert stalls about 10 × 5 s under Run and then fails, where the target fails in about 0.3 s.
+   - The acceptance fixtures (W = 1.54e7 and 1.85e7) then 1007 or flake.
+   - **Needed:** at implementation, time Go's whole peel on the two edge shapes: n ≥ 2 runs, load recorded, a declared statistic, and a stated margin under 5 s. If it misses the margin, lower B once (never raise it) and move the fixtures in the same change. Restore the refits-only scope sentence.
+
+## P3
+
+1. **The census misses owners that call the backend's raw `Transact` directly:** keyspace/fdb_resolver.go:62 and :155, a public resolver whose Java counterpart is runner-bounded, and cmd/frl/internal/cmd/store_dump.go:136. Each needs a stated policy or a declaration.
+2. **The throttled-iterator entry (903-907) contradicts the rest of the design.** It says the iterator retries any error "exactly; kept", but lines 268-270 and 1627-1629 make capability errors and `ClusterUnsplittableError` terminal there. Also answer v13's point about the 1007 owners: the drain runs no task (`autoMergeDuringCommit` is false, line 826), so the peel cannot reach it.
+3. **`SPFreshSplitWindowError`:** state that uncounted retries still take the ported delay, and whether its state resets. State the DST case too: a single-goroutine driver facing a stalled seal cannot make progress.
+4. **SimClock:** the loop advancing the clock breaks clock.go:41-46 ("only moves when the driver advances it"), and persisted timestamps then depend on retry counts. Declare it.
+5. **`FaultEveryAttempt`'s call filter (1112)** needs an owner label on the route argument. Say that the route carries it.
+6. **The setup-DDL 40001 retry (1067)** is legitimate only when the conflicting key ranges exist in Java's catalog too. A Go-only hot key is a conflict-footprint bug.
+7. **A superseded derivation survives** at conformance/guardiann_probe_conformance_test.go:1219 ("2.0 s over the worst OBSERVED refit rate"). It is the only hit outside review directories and withdrawal notes.
+8. **`corner-refit-rates.txt` leaves out this tree's own run** (`wsdf14/oracle.log:1347-1365`: 20 timings, 17 nonzero, 4.68e-8 to 9.82e-8). The extremes do not change, but the counts and the median are stale, which breaks README item 31's promise.
+9. **Restate the census at the reviewed tree.** I get 75 on `8d721bd1` as well, but the line references have drifted (indexing_mutual.go:237, fleet.go:238, connection.go:418).
+10. **The SimFDB pin has no recorded mutation run.** Reading the source, it does discriminate: a bare `fdb.Error` fails `errors.As(&w)`. The wsdf14b log only reports whole targets.
+
+## Verified
+
+- **Census:** 75 lines on the v14 tree.
+- **SimFDB:** `declinedRetryError` is correct; `retry_limit_test.go` is in the Bazel `srcs`; wsdf14b ran 12 of 12 targets; 323 hashes OK.
+- **Oracle:** 61 of 61 specs, with uptime recorded.
+- **In-body commits and double hooks:** the in-body commits are at ddl.go:857-864 and :884-892. Run then commits again and runs the hooks a second time.
+- **C++ path:** `Never()` on an empty proxy set (LoadBalance.actor.h:760-761). Then `request_maybe_delivered` (NativeAPI :6647-6649), then the fence and `commit_unknown_result` (:6731-6773). Go raises 1200 before sending (commitpath.go:59-62).
+- **Java:**
+  - AutoContinuingCursor defaults to 0 retries.
+  - ThrottledRetryingIterator: 100 retries, with an exception only for a closed runner.
+  - ExponentialDelay :62-72.
+- **Autocommit DML** owns its own transaction and never uses Run.
+- **Arithmetic:**
+  - W = B exactly at n = 2000, d = 980.
+  - 19,594,575 at n = 1001, d = 2175.
+  - The script's figures reproduce (116/98 timings; 0.81, 1.41 and 3.43 s).
+- **Stale text:**
+  - TODO.md:6995 and :14706 are scoped.
+  - RFC-094 §2, :202 and :477 are updated.
+  - The connection.go comment is corrected.
+
+## Measured vs hypothesis
+
+- **Measured:**
+  - the JVM corner pins and timings;
+  - SimFDB's retry limit and chain behaviour (at target level).
+- **Checked against source only:**
+  - the Java runner and cursor predicates;
+  - ThrottledRetryingIterator;
+  - libfdb_c's commit wait.
+- **Still hypothesis:**
+  - every D-0 mechanism: the attempt loop, the route argument, once-per-call arms, `BodyCommittedError`, uncounted split-window retries, the reconcile, and the SimClock delay;
+  - the pure-Go client waiting for commit proxies;
+  - Go's peel rate;
+  - whether an n = 2000 single-precision peel fits in 10 MB;
+  - the reconcile's cost.

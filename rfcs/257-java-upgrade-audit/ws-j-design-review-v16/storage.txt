@@ -1,0 +1,89 @@
+**NAK.** Commit `f53cd6fc6`; `ws-j-design.md` SHA256 `4b2070eada96626795353a7f03435d0d6e8d8b2aca48e9aa48e36a580b9ca717` (2742 lines, recomputed). The review read commit objects and Java 4.14.2.0 only; I ran no tests.
+
+## HIGH
+
+**H1. The ruling is applied to records-file framing only.** Sections 3.2, 4, 7 and 8, and step 1's landed code, still build remedies whose only population is templates written by pre-release Go. The ruling (umbrella :765-772) says "nothing is built to migrate … remedy".
+- **Carry rule.** WIDENED exists to move "a pre-F2 tenant to the target's key" (:306, :1923). Carry tests 1, 3, 5 and 10 are built on `e48f5b496` pre-port fixtures (:2006-2055), and acceptance item 5 uses Go's old numbering (:2513-2515).
+- **Landed code.**
+  - The rebind's widening arm, whose comment names pre-F2 templates (`fdb_store_catalog.go:349-354`).
+  - The restore's symmetric carrier arm (`template_restore.go:392`, pinned by `TestFDB_Restore_LiteralCarrierEitherWay`).
+  - `DIVERGENCES.md:2873-2891` ("an upgraded tenant's table … moves to `int_value` through the carry rule").
+  - TODO.md's F11 constraint (2) (:14825-14828).
+- **Merge unit.** Its rationale rests on hazards that are now withdrawn or pre-release only (:2527-2535; umbrella :752-763; `TODO.md:14801-14816`): "F13's refusal without its migration", "a store whose legacy metadata now refuses to load with no migration", and F1 roots and carriers "rebound".
+
+Steps 2 and 3 are the next implementation work, so the design must now:
+- re-derive which carry arms serve supported data (Java-written templates, and this build's own under F3's table-move numbering);
+- re-base the tests on those;
+- drop or justify WIDENED and the two landed carrier arms;
+- restate what the merge unit still gates.
+
+## MEDIUM
+
+**M1. The landed record is wrong in both directions.**
+- **Landed, but described as future work.** a33336527 already carries:
+  - `metadata_extension_options.go`;
+  - FunctionSpec with Build's "Function not defined";
+  - NullStandin;
+  - the absent-child and arity load refusals.
+
+  Yet 4d says "Go reads none of them … Step 3 ports all of them" (:2288-2291), and step 3 lists them as remaining (:2612-2619).
+- **Described without being landed.** From 3.6, these are not in the tree:
+  - the missing field-name and fan-type refusals (`fieldFromProto` has no error path, `key_expression_proto.go:256-262`);
+  - `MetaDataProtoDeserializationError` (absent from `errors.go`);
+  - the `RecordCoreError` unwrap.
+- **Fix:** state landed versus owed, with the evidence for each.
+- **Pin gap.** `extension_options_conformance_test.go:21-24` claims `since_version` coverage, but the fixture sets only `record_type_key` (:36). `since_version` is written into stored RecordType messages and has no pin.
+
+**M2. Step 1's red evidence is not retained.** STATUS says the guard tests were "red on the tree before it" (:2575-2577). The only WS-J red artifact is `evidence/wsj-literal-red`, whose tree is `ba357754d` plus one file. The green is `wsc14-green-commit` (the 1bc97d6af tree, "Executed 53 out of 94"). No red log exists for the guard, the delete refusal or the gone-version refusal. Section 2's VECTOR case is also unpinned (:2588), while step 1 is recorded as landed.
+
+**M3. Superseded text is left unmarked.**
+- **Design, section 4c:**
+  - the heading still says "and the migration" (:2138);
+  - the (d) refusal is described as running last in `Build`, citing a renamed test (:2172-2178);
+  - "Five … refused by Go, the declared divergence" (:2211-2215);
+  - "0A000 wrapping the (d) error" (:2224-2227).
+- **Design, section 8:**
+  - the merge unit still names "F13's refusal without its migration" (:2531);
+  - step 3 still calls for "a (d) refusal of the carried bytes" (:2606).
+- **Design, 3.6:** it still pins fan type 7, an unknown-function refusal and `:1546` (:1654-1666, :1683). 4d withdraws them, but 3.6's marker does not cover the fan-type pin.
+- **TODO.md (:14801-14816):** still lists the (d) refusal as landed, the migration as step 3, and a migration CHANGELOG entry as PENDING.
+- **Self-references:** "v16 said 'conflicts once'" (:667) and "Correction to v16" (:2365) should say v15, or "draft".
+
+## LOW
+
+- **CREATE SCHEMA over a gone version returns XX000.** The pre-check wraps the now-propagated 42F55 as XX000 "checking schema existence" (`create_schema.go:47-54`). Java returns 42F55 "SchemaTemplate=…, version=… is not in catalog" from saveSchema's load (`RecordLayerStoreCatalog.java:257, :489`). On the in-memory catalog, step 1 turned the old 42F06 into this XX000. Step 4 fixes it but sits outside the merge unit.
+- **The guard trusts the index state.** The guard, the delete refusal and the restore read `TEMPLATES_VALUE_INDEX` without checking its state (`template_bindings.go:64-107`). If the index is not READABLE, the guard fails open (the restore fails closed).
+- **Stale doc comment.** `fdb_template_catalog.go:141-149` still says CreateTemplate "Matches Java's createTemplate exactly … adding validation … would diverge".
+
+## v15 Graefe findings
+- **H1:** moot by the ruling. The (d) symbols are gone: 0 hits in `metadata.go` and `fdb_template_catalog.go`, with `setRecords` found as the positive control. DIVERGENCES.md's (d) entry is gone too. Stale 4c sites remain (M3).
+- **H2:** resolved.
+  - NULL_UNIQUE is corrected (`Key.java`).
+  - COUNT_NOT_NULL and NO_NULLS are handled, with `IndexMaintenanceFilter` checked against `IndexMaintenanceFilter.java:45-56`, `IndexMaintenanceUtils.java:37-66` and `StandardIndexMaintainer.java:255-388`.
+  - Issue #4141 is ported, and `ToProto` now writes the standin (`key_expression_proto.go:39-60`).
+  - The equality correction holds (`FieldKeyExpression.java:406-410`).
+  - `ClassifyIndexCarry` compares roots as Java reads them, so a standin change is CHANGED. The design should say so.
+  - Ghost entries and rebuild guidance are moot.
+- **M1:** resolved in code (a whole-MetaData comparison against the JVM). Status text and the `since_version` pin are open (M1 above).
+- **M2:** moot; the probe is withdrawn.
+- **M3:**
+  - L1: resolved; verified that `repairSchema` → `parseSchemaTable` → `:203-204` refuses a gone version.
+  - L3: moot.
+  - M1: resolved (`get_versionstamp_incarnation` is out of the core registry, and arity is checked against FunctionSpec).
+- **LOW items:**
+  - resolved: absent children, "whole" narrowed, the (u) sentence (:2397), the CreateTemplate (d) refusal, the DdlVisitor citation (:263/:281/:319) and (z)'s wording;
+  - moot: the 9 (y) cross-reference;
+  - partly resolved: fan type (M3).
+
+## Storage and concurrency (sound as landed)
+- **Guard and delete refusal.** The delete-vs-bind pair conflicts in either commit order: the delete reads the binding range, and the bind reads the template row with a serializable `LoadRecord`. A refused write commits nothing. A fresh template reads the whole `(t)` prefix.
+- **Restore:**
+  - it writes the exact bytes back;
+  - it re-reads the version, a limit-1 binding and every row of t inside its own transaction;
+  - after commit_unknown_result, a retry that finds its bytes counts as done;
+  - a restore below latest does not conflict with a concurrent CreateTemplate, and that is still serializable.
+- **In-memory lock order.** It is store then template on every path, with no re-entry.
+- **Literal fix.** It matches Java's Integer packing. The explicit record-type key is normalized to Long in both engines (`RecordTypeIndexesBuilder.java:91`).
+- **Maintenance filter.** Java's relational layer sets none (0 hits), so NORMAL is the default in both engines.
+
+**Measured:** the source reads above, the evidence logs and hashes. **Not re-measured (recorded claims only):** the conformance pins' byte equality with the JVM (NullStandin, extension options, WSJTT).

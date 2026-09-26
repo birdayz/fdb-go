@@ -694,7 +694,7 @@ func TestFDB_FleetMigrateToLatestResolvesVersionPerTemplate(t *testing.T) {
 	defer cancel()
 
 	// Only the AHEAD template gets a v2.
-	if err := fleet.SaveTemplate(ctx, h.db, h.cat, fleetTemplate(t, tmplAhead, 2, true)); err != nil {
+	if _, err := fleet.SaveTemplate(ctx, h.db, h.cat, fleetTemplate(t, tmplAhead, 2, true)); err != nil {
 		t.Fatalf("save %s@2: %v", tmplAhead, err)
 	}
 

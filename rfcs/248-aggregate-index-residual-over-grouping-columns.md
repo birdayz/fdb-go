@@ -210,10 +210,17 @@ residual on the select-having row, decline on the input — and states that.
   and `TestBugHunt_AggregateIndexResidualNotDropped`'s leading-inequality arm
   becomes a range-bound control; its input-predicate arms still decline.
   `TestAggregateIndexResidual_RecordTypedGroupingKeyIsUnreachable` pins the
-  negative result behind the below-the-projection placement: an aggregate
-  index over nested struct fields is refused at DDL validation, so a
-  record-typed grouping key never reaches the rule with a candidate; the
-  arm's failure message names what re-arms.
+  negative result behind the below-the-projection placement: a record-typed
+  grouping key never reaches the rule with a candidate; the arm's failure
+  message names what re-arms. (Updated 2026-09-23, RFC-257 WS-J: the original
+  mechanism, DDL validation refusing an aggregate index over nested struct
+  fields, was a field-path trie bug; Java 4.14.2.0 stores that index and Go now
+  does too. Two populations now follow, both checked against a flat-grouping positive
+  control in the same schema: a RECORD-typed grouping key, the shape the ordinal
+  argument is about, stays off the aggregate index permanently (Java cannot plan
+  it at all); nested LEAF grouping columns, which Java serves from the aggregate
+  index, are pinned as not served yet until RFC-257 WS-J F9 lands that plan with
+  its twin rows pin.)
 * Unit (`plans/index_scan_ordering_test.go`):
   `RecordQueryPredicatesFilterPlan.HintRichOrdering` carries its source's
   FIXED bindings. The embedded ORDER BY arms stay green with the rich form

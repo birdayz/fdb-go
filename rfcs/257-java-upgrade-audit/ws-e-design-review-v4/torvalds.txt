@@ -1,0 +1,83 @@
+**NAK.** RFC-257 WS-E design v4
+- **Tree:** `0253cfe9f8e88ce044374b20e6d7ee3fba036cb7`
+- **Design:** `ws-e-design.md`, SHA-256 `22c3582f…9403337`, 1384 lines. I recomputed the hash and line count; both match.
+- **Java:** `fdacd162a9`, read from `.git/HEAD`.
+
+The review was read-only. SOURCE marks a claim that rests on reading Java, not on a measurement.
+
+**What holds**
+- The six evidence source hashes match this tree's blobs.
+- `wse5-d.log` and `wse5-e.log` each show "Ran 5 of 27, 5 Passed"; d has 258 JAVA lines.
+- M1 and M2 cover all five Describes.
+- The census of callers outside the simplifier (7 sites in non-test `pkg/*.go`) matches §5.4a.
+- These v3 findings are closed with measured rows: array promotion, DESCRIBE, GREATEST/LEAST lanes, update counts, the re-bound `in_list_order`, the HAVING controls, and the shared render.
+
+## HIGH
+
+**H1. The index-state conflict shape is ported from a Java path the target's SQL never takes (lines 1241-1249).** (SOURCE)
+- The target's SELECT never calls `getAllIndexStates`: fdb-relational-core main has no call to it. Planning reads the in-memory store state and adds no conflict (`PlanContext.java:237-260`).
+- The only index-state conflict it adds is one key per scanned index: `scanIndex` → `getIndexState` → `addIndexStateReadConflict` (`FDBRecordStore.java:1500, 4241-4242, 4187-4198`).
+- The whole-subspace range (`:4205-4213`) belongs to `vacuumReadableIndexesBuildData` (`:5332`).
+- **Consequence:** porting the range makes a Go reader abort with 1020 on a state change to an index it never scanned, where the target commits. The planned test "with an index the plan does not use" would pin that divergence.
+- **Fix:**
+  - Check the index states from the loaded state without adding conflicts.
+  - Add the per-index key where the index scan opens.
+  - Test: a concurrent state change to an unused index commits; a change to the scanned index gives 1020.
+
+**H2. A bound time.Time constant and its cache key disagree (lines 594-598, 696-699).**
+- The constant is the full `time.Time`, but the key is "the text it binds as", which is second-precision UTC (`functions/time.go:7,13-15`).
+- So two instants within the same second share a cached plan, and a warm hit compares against the first caller's sub-second value.
+- A bound value with nanoseconds also no longer equals the row it just wrote, since the stored text is truncated; the text channel round-trips this today.
+- "Binds as" is also undefined outside an assignment, e.g. `WHERE d = ?` on a DATE column.
+- **Fix:** normalize the value at bind (UTC, stored precision) so the constant equals the key text, or key the full instant. Add a sub-second round-trip test and a warm-hit test.
+
+**H3. The IN-list NULL timing goes beyond what was measured (lines 450-462).** (SOURCE)
+- "Evaluated before any row in both engines" holds only where the target explodes the list. `InComparisonToExplodeRule` matches only a top-level positive IN conjunct (`:87-97, 126-131`).
+- NOT IN, OR, CASE and projections keep a per-row `ValueComparison` (`InOpValue.java:125-127`).
+- So `x NOT IN (CAST(NULL AS BIGINT))`, `… OR x = 1`, and `SELECT x IN (CAST(NULL…)) FROM E` answer in the target over an empty table or filtered-out rows, but fail at planning in Go. Every measured row is a positive conjunct.
+- **Fix:** defer the constant fork's NULL error until the explode source or comparison is evaluated. This also removes the declared EXPLAIN divergence. Probe NOT IN, OR and a projection over an empty table.
+
+## MEDIUM
+
+**M1. Limiting the null-strict collapse to the DEFAULT set (lines 936-941, 976-978) contradicts line 9's "Java's two rule sets exactly".**
+- The predicate set includes the collapse rule (`DereferenceConstantObjectValueRuleSet.java:50-56`).
+- `QueryPredicateSimplificationRule` offers the simplified form as an exploratory alternative (`:113-130`). So the measured non-collapse may be a cost tie rather than the rule's absence.
+- Where collapsing is cheaper, the target would win it (SOURCE): `WHERE COALESCE(NOT CAST(NULL AS BOOLEAN), TRUE, 1/0=1)` collapses to a NULL head, then TRUE, and returns rows. Go's DEFAULT-only rule raises the division error.
+- **Fix:** settle the mechanism with the existing `planRuleTrace` step and that probe before choosing the split.
+
+**M2. The design does not say the rule set carries through recursion.**
+- `simplifyChildren` always calls `SimplifyValue` when it recurses (`simplifier_value.go:111-204`).
+- Two entry points alone would give a nested COALESCE in a predicate DEFAULT treatment, e.g. `WHERE NOT COALESCE(FALSE, 1/0=1)`.
+- The census test checks entry points only. Specify that the set is threaded through, and add that probe.
+
+**M3. The generic fold is observable, contrary to line 961.**
+- A folded boolean becomes a `BooleanValue`, which is NOT NULL (`coercion.go:190-201`, `values.go:4194-4198`).
+- Java's NOT/AND/OR are nullable BOOLEAN (`BooleanValue.java:40-41`, `Type.java:404-405`).
+- So `SELECT NOT FALSE` reports different nullability in Go. No row measures it, yet §8 compares nullability.
+- **Fix:** the fold must keep the folded node's type.
+
+**M4. The Go runner decides DML by SQL prefix; Java decides by the `update` flag.**
+- Go's check is `isDMLQuery` (`go_runner.go:236, 473-478`).
+- So the DDL cases built with `wseDML` never run their follow-up and never report COUNT: `dry_run_connection_create_template` and the snapshot create/drop database rows. §8's promise at lines 1335-1340 therefore cannot be met.
+- The runner also discards the `RowsAffected` error (`affected, _ :=`).
+- **Fix:** take the flag.
+
+## LOW
+
+- **L1. `read_scope_covering_snapshot_update` is vacuous (cited at lines 1196-1198).**
+  - The update changes only `w`, so the S_V entry is unchanged, and Java drops unchanged index entries (`StandardIndexMaintainer.java:217-226`). A SERIALIZABLE read commits too.
+  - Update `v` instead, or add the serializable control. The scan/update row also lacks its control.
+- **L2. Teardown gaps.**
+  - The pin checks only the database; the template drop is unpinned (`fault_inject_retry_conformance_test.go:198-222`).
+  - The create path still uses the literal URL instead of `SYS_CATALOG_URL`.
+  - The Go runner's teardown still swallows its drop errors (`go_runner.go:184-193`).
+  - The `after("DROP SCHEMA TEMPLATE IF EXISTS…")` setup can never fire in a fresh tenant.
+- **L3. Typing gaps.**
+  - `[32]byte` becomes ARRAY<INT>, because only a *slice* of bytes is BYTES.
+  - The element typing of `[]any` is undefined.
+  - The new error for an unknown DSN parameter must list what is accepted: `schema` and `cluster_file` sit in the same map (`dsn.go:205-226`, `driver.go:238`).
+- **L4.** The "Always nullable" census in §5.3 lists catalog entries (MOD, BIT*, BITMAP*) that §5.6 and WS-J F4 delete. State the census as it stands after the change.
+- **L5.** Section 5.4c's "a SQL literal or a bound parameter of BOOLEAN type" is ambiguous. Go literals are not constant objects, so say BOOLEAN applies to SQL literals too; `coalesce_int_literal_head_where` shows it must.
+- **L6.** No mutation shows that the probe-name uniqueness check can fail.
+
+**Measured vs SOURCE.** H1, H3 and M1 rest on source reading; each has a cheap probe to settle it. H2, M2, M3 and M4 are defects in the design or the harness as written.

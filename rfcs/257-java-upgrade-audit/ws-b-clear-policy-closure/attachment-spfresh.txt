@@ -1,0 +1,19 @@
+**NAK — scoped WS-B/SPFresh correction confirmation.**
+
+Reviewed Git **tree `dd0956b11e901609edcd5f19d36ef64f04482b8a`**, against tree `6ffe8d3b5b541bdd1c668c6e13e45ebe475292a3`. I completed the production/test delta and caller review, including all four prior verdicts, approved design, tagged Java `fdacd162a9c8acfadc49082b89185c823ab8ae4a`, RFC094, reviewer skill and relevant paper sections.
+
+1. **P1 — Reload introduces a lock inversion.** [Reload at store.go:1896](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:1896) acquires registry→`stateMu`. Maintenance [holds `stateMu.RLock`:1012](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:1012); deleting the second-last uniqueness violation reaches [context `ClearRange`:1361](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:1361), which acquires the registry. Concurrent reload and deletion can therefore deadlock, blocking the context, including SPFresh operations in mixed-index stores. **Establish a consistent lock hierarchy and add a deterministic regression while preserving atomic loading/publication.** Category (b): the transactional adaptation fails its concurrency guarantee ([SPFresh §4.2.2](/home/birdy/projects/fdb-go/.claude/skills/spfresh-reviewer/spfresh-paper.pdf)).
+
+2. **P2 — A clear-only transaction leaves warmed state caches valid.** [index_state.go:338](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:338) retains clear history only within that context; immediate invalidation visits registered views. Warm a cache for an empty, cacheable store with a DISABLED index. In a fresh context, clear its state range and commit **without opening the store**. The next cached Open accepts the unchanged stamp and DISABLED map. Saving a vector skips maintenance although persisted state is READABLE; cold reopening exposes the missing vector. Both new cache tests open before committing the clear. **Make state-clear invalidation independent of a subsequent load, and add this committed warm/cold regression.** Category (b): RFC094 §2.1’s freshness guarantee fails ([SPFresh §3.2](/home/birdy/projects/fdb-go/.claude/skills/spfresh-reviewer/spfresh-paper.pdf)).
+
+3. **P2 — Registered noncacheable deletion now invalidates global caches.** After Open registers a noncacheable store, `DeleteStore` reaches the [unconditional stamp write:344](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:344). This contradicts [approved WS-B §2:51](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-b-design.md:51) and tagged Java’s header-aware policy. **Preserve that policy after registration; cover noncacheable Open→DeleteStore explicitly.**
+
+**Previous initialization finding: resolved.** Open/cache and lazy loading now serialize through binding; the explicit assume-readable path remains. Reload’s shared publication and conflict preservation are corrected, but its locking remains blocked above. Cache DFS is only partially closed. Error paths do not publish partially loaded state.
+
+SPFresh algorithms, snapshot data reads, encoding and budgets remain unchanged, preserving the prior [SPANN §§3.2.1–3.2.3](/home/birdy/projects/fdb-go/.claude/skills/spfresh-reviewer/spann-paper.pdf) assessment.
+
+All **6,812 source hashes and 34 evidence hashes** reconcile. Retained evidence supports 93/93 uncached targets, 14/14 limited race targets, 10 focused specs and three compiled mutation kills—not full relational race coverage or actual CI.
+
+The latest residual, **1.0290× orders / 1.0507× customers**, does **not independently block** this milestone. Four runs retain 24 RUN/PASS, 26 identical row-count outputs and zero retries; n=2 establishes neither parity nor causation.
+
+Findings are source-derived; I ran no tests. No edits, Git mutations, GitHub requests, publication or delegation occurred. Approved extensions and deletion-callback correction remain preserved; WS-C–K remain excluded, with queue/state4/format15 disabled.

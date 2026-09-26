@@ -58,7 +58,7 @@ func TestFDB_CollectedStatisticsDriveJoinOrder(t *testing.T) {
 				" CREATE INDEX b_by_a ON b (a_id)")
 		mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE statsjoin_"+name)
 
-		dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath)
+		dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
 		if useStats {
 			dsn += "&planner_statistics=true"
 		}

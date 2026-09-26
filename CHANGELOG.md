@@ -5,26 +5,666 @@ All notable changes to `fdb-record-layer-go` are recorded here. Format:
 (pre-1.0 `v0.MINOR.PATCH`).
 
 **This project is pre-1.0.** The **Go API may change across minor versions**; the **FDB wire
-format stays compatible with Java `fdb-record-layer-core` 4.12.11.0 across every release** (the
+format must stay compatible with each release's declared Java `fdb-record-layer-core` target** (the
 shared-cluster hard line — see `RELEASE.md`). Every entry's **Compatibility** block answers the four
 questions a user upgrading between two refs needs: wire format, SQL behaviour, FDB client option
 semantics, and required dependency versions.
 
 This changelog starts **2026-06-20**; earlier history is in `git log`. The first tagged release is
-**v0.1.0** (2026-08-26). The `frl` CLI ships from a parallel nested-module tag, `cmd/frl/v0.1.0` —
-that form is what makes `go install fdb.dev/cmd/frl@vX.Y.Z` resolve the same build the release
-assets carry (`RELEASE.md` §Versioning).
+**v0.1.0** (2026-08-26). v0.1.0 shipped the `frl` CLI from a parallel nested-module tag,
+`cmd/frl/v0.1.0`; from the next release `frl` is a package of the root module and ships under the
+project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (`RELEASE.md`).
 
 ## [Unreleased]
 
 ### Compatibility
-- **Wire format:** unchanged since v0.1.0 — records, indexes, versions, continuations, and split
-  records remain byte-identical to Java `fdb-record-layer-core` 4.12.11.0.
-- **SQL behaviour:** unchanged since v0.1.0.
+- **Wire format:** the Java target is being upgraded under RFC-257. Pins/protos are updated,
+  but metadata/vector compatibility failures and required queue/format/plan ports remain open.
+  This unreleased upgrade is not certified compatible and must not be deployed.
+- **SQL behaviour:** target Java changes structured promotion and other shared contracts;
+  restored success regressions currently fail in Go. RFC-257 records the full audit and ports.
 - **FDB client option semantics:** unchanged since v0.1.0; the honored / `UnsupportedOptionError` /
   safe-no-op classification in `pkg/fdbgo/fdb/OPTIONS.md` still holds against `libfdb_c` 7.3.77.
-- **Required versions:** Java `fdb-record-layer-core` **4.12.11.0**, FDB C++ client **7.3.77**, Go
+- **Data written by v0.1.0 or any other earlier Go build is not supported.** This build reads every records file,
+  key expression, index option and stored template as Java 4.14.2.0 reads it. Meta-data or index
+  entries that only an earlier Go build wrote, under a meaning of its own, may be refused or read
+  differently, and nothing migrates, detects or repairs them: recreate such stores. Java-written
+  stores are the compatibility line (RFC-257, "Verification and review gates" item 9).
+- **Required versions:** Java `fdb-record-layer-core` **4.14.2.0**, FDB C++ client **7.3.77**, Go
   **1.26.x** (the `MODULE.bazel` / `go.mod` pins; the CI doc-guard enforces docs match them).
+
+### Changed
+- **`frl` is a package of the root module.** `cmd/frl` had its own `go.mod`, tied to the library by
+  a `go.work` for development and by an `fdb.dev` pin for `go install`; a change to both sides
+  needed a pin bump before `go install fdb.dev/cmd/frl@latest` compiled again, which a nightly bot
+  maintained. The workspace, the nested module, its pin and the bot are gone. `frl` releases under
+  the project's `vX.Y.Z` tag (the release workflow now triggers on it), `install.sh` installs those
+  releases and still the `cmd/frl/v0.1.0` one, and CI's go install lane builds `cmd/frl` from the
+  root module without cgo. Library consumers' requirement graph is unchanged: the root `go.mod`
+  already listed every `frl` dependency, which Bazel builds from.
+- **Database paths fold like every other unquoted identifier, and the DSN takes names as given**, as
+  in Java. `CREATE DATABASE /test/x` now stores `/TEST/X` (Go stored the path as written, a catalog
+  row Java's DDL never writes), `CREATE`/`DROP SCHEMA /test/x/s1` fold the path before splitting it,
+  and `SHOW DATABASES WITH PREFIX /test` folds its prefix the same way. The driver's
+  `fdbsql:///path?schema=s` no longer folds `s`: Java's `parseConnectionQueryString` upper-cases the
+  option's name and keeps its value, so `?schema=test1` does not reach the schema
+  `create schema /db/test1` stored as `TEST1`, in either engine. **Migration:** a DSN or
+  `embedded.New` path naming what unquoted DDL created must spell it in upper case
+  (`fdbsql:///MYAPP?schema=MAIN`); a database an earlier Go build created under a lower-case path is
+  not found by the folded spelling (earlier Go data is unsupported, see Compatibility). A schema that
+  is missing because its database is missing reports 42F00 `Database <path> does not exist`, as
+  Java's connect does. `EmbeddedConnection.SetSchema` now returns an error and refuses a schema the
+  database does not hold (42F51 `Schema <s> does not exist in <path>`, Java's `setSchema`), where it
+  set the label unchecked. The `frl` CLI folds `--database` as it folded `--schema`, and its `\c`
+  switches the connection's schema rather than only the label the meta-commands read. Pinned against
+  the JVM by the conformance spec "the DSN's schema option reaches the schema Java's does" (18 arms).
+- **A schema template declares enum types** (`CREATE TYPE AS ENUM`, RFC-257 WS-J step 5), which Go
+  refused with 0A000. The records file carries each enum as Java's DDL writes it: emitted
+  template-wide in name order under the first table that reaches it, names made protobuf-compliant
+  (`a.b$c` is `a__2b__1c`), a field typed by the enum's name. A string assigns an enum column by
+  value name (an unknown name is XX000 "Invalid enum value for the enum type <value>", which names
+  the value as Java's does; an integer is 22000); reads answer the name, arrays included. A non-null
+  comparison of an enum column in an index predicate is refused as Java refuses it (XXXXX). Two
+  enums of one template may share a value name, which protobuf-java allows and protobuf-go refuses:
+  Go builds such a file by scoping the colliding enums in memory only (`pkg/recordlayer/protoscope`),
+  so the stored descriptor stays Java's and a store Java created that way opens. Pinned against the
+  JVM by "WS-J enum columns written and read by both engines" (records' messages, index entries
+  byte-equal, reads, refusals); the Java corpus's `enum.yamsql` and `insert-enum.yamsql` now pass. A
+  record Java's relational layer wrote is still unreadable to Go (the `TransformedRecordSerializer`
+  prefix, TODO.md).
+- **Saving a schema follows Java's existence policies** (`SchemaExistsBehavior`, RFC-257 WS-J step 4).
+  `StoreCatalog.SaveSchema(txn, schema, createDatabaseIfNecessary, behavior)` takes Java's policy
+  (`ERROR`, `ERROR_IF_DIFFERENT`, `DO_NOTHING`, `UPGRADE`) and checks in Java's order: the schema, the
+  database (created or 42F00), the template at its version, the existing row, then the policy. A
+  no-op save writes nothing and adds no write conflict range; each refusal is 42F06 with Java's
+  message. CREATE SCHEMA saves with `ERROR`, so a schema that exists, or a record store left without
+  a catalog row, is 42F06 in Java's order; repair saves with `UPGRADE` onto the latest template
+  version; catalog initialisation saves with `ERROR_IF_DIFFERENT`. The Go rebind validator runs only
+  for a write over an existing row. **API:** `SaveSchema` gained two parameters. Pinned against the
+  JVM by the conformance spec "WS-J existence policies answer as the target" (29 arms).
+- **Records descriptors are validated as Java validates them** (`RecordMetaDataBuilder.validateRecords`
+  and `fetchUnionDescriptor`, ported in `pkg/recordlayer/metadata_validate_records.go`). A field of
+  unsigned type (`uint32`, `uint64`, `fixed32`, `fixed64`) anywhere in a record type's reachable
+  messages is refused with Java's `MetaDataException` message, so Go no longer writes index or
+  primary-key bytes for such fields (Go read `uint32` values unsigned where protobuf-java hands Java a
+  signed `Integer`, so the two engines' bytes differed for values >= 2^31). The union is found as Java
+  finds it: the one message with `(record).usage = UNION`, else the one named `RecordTypeUnion`; a
+  message merely named `UnionDescriptor` is no longer a union by name, two candidates are an error,
+  and a file with no union is refused ("Union descriptor is required") instead of turning every
+  top-level message into a record type. Repeated union fields, NESTED-usage union fields and
+  RECORD-usage messages missing from the union are refused as in Java, and the FIRST fault is the
+  error (Java throws it), no longer a join of every fault. `SetRecordsWithUnionName` finds the union
+  the same way and refuses a name that is not it. Each message is pinned against the JVM (conformance
+  spec "Java refuses the same records descriptors", precedence included).
+  **This is checked when stored metadata is LOADED too**, so stored metadata whose records file
+  Java refuses is refused: one that (a) finds its union only by the name `UnionDescriptor` (Go's
+  old default, no `(record).usage = UNION` option), (b) has no union (Go's
+  `SetRecordsWithUnionName` over an unannotated message of any other name), or (c) declares an
+  unsigned field. A records file with a message named `UnionDescriptor` beside the union the target
+  finds is read as the target reads it, on every path, SQL templates included: data an earlier Go
+  build framed by that message is pre-release data, which is not supported (Compatibility above).
+  SQL DDL never produces (a) to (c) (the relational layer names its union `RecordTypeUnion` and has
+  no unsigned types); record-layer library users with hand-written records files can, and Java
+  refuses them too. Loading also refuses, as Java does, an index or a record-type entry naming an unknown
+  record type before any other fault of that index, and `SetRecordsWithUnionName` refuses an empty
+  name.
+- **`OnlineIndexer.BuildIndex` resolves the session against the index state as Java does**
+  (`IndexingPolicy` `IfDisabled` / `IfWriteOnly` / `IfReadable`, Java's `DesiredAction`; zero values
+  are Java's defaults). By default a session over a **READABLE index now leaves it alone** and returns
+  0 records, where Go cleared and rebuilt it; set `IfReadable: DesiredActionRebuild` to rebuild. A
+  READABLE_UNIQUE_PENDING index is published without a build when publication is enabled (it used to
+  be rebuilt): the publication fails with the uniqueness violation while violations remain, and with
+  `SetMarkReadable(false)` the session does nothing at all. A follower whose state differs from the
+  primary's is refused unless its own action is REBUILD on a fresh session, and `DesiredActionError`
+  refuses the state before any write. A session that skips, publishes or refuses is no longer
+  stopped by another session's live heartbeat, unless the stored metadata is out of date (the
+  store's open then reconciles it, which still requires that no other session is live) or a
+  heartbeat key is in the legacy or a malformed form (still refused); a session that clears or
+  freshly marks the index is still stopped by one, mutual or not. `OnlineIndexer.LastBuildOutcome`
+  (Go-only) reports what the last `BuildIndex` call did over all of its attempts: built (including
+  a call whose earlier attempt indexed records before a peer published), left a READABLE index
+  alone, published without a build, or found a mutual build completed by its peers; after a failed
+  call it reports nothing, whatever an earlier call did. `frl index build` uses it and on
+  a READABLE index now says it is already readable and builds nothing (`frl index rebuild` rebuilds
+  it); a fleet build no longer reports a tenant whose pending index a peer published first as built.
+  The old behaviour also made concurrent mutual builders flaky: a builder starting after a peer
+  had published cleared the index under every builder still to publish, which then failed with
+  `IndexNotBuiltError` (RFC-257 WS-C design section 7).
+- **`OnlineIndexer.BuildIndex` recovers from a build begun by another method, as Java's
+  `indexingCatcher` does.** `IndexingPolicy.IfMismatchPrevious` (default CONTINUE) and
+  `ForbidRecordScan` are new. Under CONTINUE, a single-target build that finds the index partly
+  built by BY_RECORDS continues it by a records scan, one partly built MULTI_TARGET continues it as a
+  single target where the saved stamp allows (nothing scanned yet, or `TakeoverMultiTargetToSingle`),
+  and one partly built from a source index continues from that source; one partly built MUTUAL is
+  continued only where `TakeoverMutualToSingle` allows it (the takeover set is empty by default) and
+  otherwise returns the `PartlyBuiltError` at once, as Java does (`OnlineIndexer.java:212-213`), as
+  does a multi-target build. A blocked BY_RECORDS, MULTI_TARGET or BY_INDEX stamp, and a MULTI_TARGET
+  one the takeover rules refuse, are relaunched up to Java's attempt limit (six sessions), each
+  meeting the same refusal, and then return the `PartlyBuiltError`, as Java does. REBUILD
+  rebuilds by the requested method instead, and ERROR returns the `PartlyBuiltError` at once. The
+  error now carries the `Saved` and `Expected` stamps. A BY_INDEX source index that cannot be used
+  (not a VALUE index, creating duplicates, or on another record type) is no longer refused by
+  `OnlineIndexerBuilder.Build`: it is checked when the build runs, as Java checks it, after the
+  session's state transaction has committed, so the target is then WRITE_ONLY under a BY_INDEX stamp
+  (and cleared, if its action was REBUILD); the build falls back to a records scan, or returns an
+  `IndexingValidationError` with Java's message under `ForbidRecordScan`, leaving the target in that
+  state for the next session. A source index the metadata does not define is a `MetaDataError`
+  before anything is written, and `Build` refuses a source index with several targets (counted
+  before duplicates are removed, as Java counts them) or a mutual policy with Java's
+  `IndexingValidationError` messages, before it checks the targets and record types; `Build` also
+  refuses a target that is not the metadata's own index object (one that only shares its name), and
+  an empty target list, each with Java's `MetaDataError` ("Index <name> not contained within
+  specified metadata", "index must be set"), where it used to accept any object of a known name and
+  build under that object's subspace key. Duplicate targets are removed by Java's `Index.equals`,
+  the first kept: the name, the type as spelled (`min_ever` is not `min_ever_long`), the root by
+  `KeyExpression.equals` (a Dimensions or cardinality root included), the subspace key under Java's
+  normalization (an `int` key equals an `int64` one, and two byte arrays equal by content), both
+  versions, the primary-key component positions, the options, and the predicate (the same object,
+  or two row-number windows with equal fields). The targets are sorted by name before the check, so
+  a foreign object listed beside the metadata's own is refused in either order and the refusal names
+  the alphabetically first. `SetTargetIndexes` copies the list it is given, as Java's does.
+  `SetIndex` follows Java's `setIndex`: after a target is already set it is an
+  `IndexingValidationError` ("setIndex may not be used when other target indexes are already set",
+  returned by `Build`), `SetIndex(nil)` is skipped (so `Build` reports "index must be set" instead of
+  panicking, as does a nil `AddTargetIndex`, after the source-index checks, where Java's
+  NullPointerException falls), and `SetIndex` followed by `AddTargetIndex` builds both targets,
+  where Go refused that combination. A BY_INDEX session stamps and validates the metadata's
+  index of the source's name, as Java's policy (which holds a name) does, never the caller's `*Index`
+  object where the two differ. `PartlyBuiltError` (with Java's `INDEX_VERSION`, as `IndexVersion`),
+  the source-index `IndexingValidationError` and `SynchronizedSessionLockedError` carry Java's
+  `INDEXER_ID` as `IndexerID`: the indexer that raised the first two, and the indexer the third
+  refused. Every build transaction now classifies its
+  targets' states as Java does: a target published meanwhile is an `UnexpectedReadableError`, which
+  ends a mutual build successfully when every target is published and otherwise continues it as a
+  records scan, and fails any other build; a target disabled meanwhile (or moved between
+  WRITE_ONLY and WRITE_ONLY_WITH_QUEUE) is a `RecordCoreStorageError`, where it used to be an
+  `IndexingValidationError`. Every attempt of one `OnlineIndexer` writes its heartbeat under one
+  indexer ID, as Java's does, and names it by the build's stamp method (`BY_RECORDS`, `BY_INDEX`,
+  `MULTI_TARGET_BY_RECORDS`, `MUTUAL_BY_RECORDS`), the heartbeat `info` Java writes, where Go wrote
+  "online index build". Since the next attempt writes the same heartbeat key, the bounded cleanup
+  reads each key before clearing it, so a clear whose commit lands late conflicts with that write
+  instead of erasing a live heartbeat.
+- **`OnlineIndexer.MergeIndexes` (new on this branch) holds an indexing session.** Java's standalone
+  `mergeIndex` has no heartbeat (`IndexingBase.java:969-972`, `:1085-1096`): it writes none, checks no
+  index state and proceeds under a running build. Go's writes its own heartbeat over each WRITE_ONLY
+  target for the merge and clears it afterwards, so an exclusive builder (a Java one included) or a
+  fresh Go mutual session that starts meanwhile is refused as by any live session; a mutual builder
+  is not, and any merge transaction that runs while that builder's heartbeat is live fails the MERGE
+  (its exclusive check meets the builder's heartbeat) while the builder carries on (a VALUE target's
+  merge is one transaction, so a builder admitted after it lets that merge complete); a live peer's
+  heartbeat refuses the merge
+  itself (`SynchronizedSessionLockedError`); a DISABLED target fails it (`RecordCoreStorageError`
+  "Unexpected index state(s)"); over a READABLE target the merge runs and writes no heartbeat. See
+  DIVERGENCES.md, "OnlineIndexer session start and build catcher: where Go differs".
+- **Subspace keys are compared as Java compares them** (RFC-257 WS-C). Java normalizes an index or
+  former-index subspace key when it is assigned and compares the normalized objects; Go now does the
+  same at every comparison: the meta-data validator, `GetIndexFromSubspaceKey`, the evolution
+  validator and the online indexer's duplicate targets. So `RecordMetaDataBuilder.Build` accepts a
+  byte-array key beside a string key of the same content, and `0.0` beside `-0.0`, each two
+  prefixes, which it refused; refuses two NaN keys and two former indexes with one key, which it
+  accepted; and reports each collision with Java's message ("Same subspace key K used by both A and
+  B", "... used by two former indexes A and B", "... used by index A and former index B"); two
+  parts of those messages are Go's: the pair is named in name order where Java names it in its
+  HashMap's order, and a `[]byte` or list key renders with Go's `%v`. Its former-index version
+  checks report Java's messages too ("Former index X has added version N which is greater than
+  the removed version M", and the two meta-data version messages), and an index's version checks
+  name the index as Java does ("Index X has added version ..."). `Index.SetSubspaceKey` stores the
+  key normalized, as Java's setter does, so an `int32`, a narrow unsigned integer, a `[]any`, a
+  protobuf enum or an `fdb.Key` is stored in a form the tuple encoder writes (packing one used to
+  panic), and a nil key, a typed nil `*big.Int`, `*FDBRecordVersion` or generated-enum pointer
+  included, is refused with Java's `RecordCoreArgumentError` "Index subspace key cannot be null" by
+  every `Build` the index was handed to, whether the set came before or after `AddIndex` (an
+  `AddIndex` naming an unknown record type included) and also
+  when the index was later removed or refused as a duplicate; the refusal is sticky, leaves the key
+  and its explicit mark as they were, and comes first in program order among the builder's own
+  faults, as Java's throw ends the program's sequence of calls. A refused set on an index of an
+  already-built `RecordMetaData` has no `Build` to return it: it changes nothing and
+  `Index.SubspaceKeyError` reports it (Go-only; Java throws from the setter). An index built as a
+  struct literal is keyed by its name, as every Java constructor keys it (it had a nil key, was
+  maintained under the null item and was saved with no key), and a former index with a nil key is
+  refused with Java's "FormerIndex initialized with null subspace key".
+- **`MetaDataEvolutionValidator` pairs indexes by subspace key, as Java's does**, not by name. An
+  index that keeps its name and moves to another subspace key, versions unchanged, is refused ("index
+  missing in new meta-data"): Go accepted it, and a store would then have read the index, as
+  readable, from a subspace nothing had built. An index that keeps its key under a new name is
+  refused as renamed; an index moved to a new key whose old key became a former index is accepted,
+  which Go refused. A former index kept from the old meta-data must keep its name even with
+  `SetAllowMissingFormerIndexNames(true)`, which admits only an unnamed former index replacing an
+  index; the checks run in Java's order and report Java's messages (for example "old index has
+  last-modified version newer than new index", "former index added after old index", "former index
+  reports added version older than replacing index", "former index key used for new index in
+  meta-data", "index type changed", "index key expression changed", "new index removes record
+  type", "new index adds record type that is not newer than old meta-data", "new index changes
+  primary key component positions", "field renames result in inconsistent index definition for
+  multi-type index"), each followed by Go's detail; so do the record-type, field, enum and
+  per-index-type option checks ("record type since version changed", "field removed from message
+  descriptor", "field type changed", "repeated field is no longer repeated", "enum removes value",
+  "index option changed", "index adds uniqueness constraint", "rank levels changed", "rtree splitS
+  changed", "attempted to change immutable vector index option", and the rest), all but the Go-only SPFresh
+  index's option check, which has no Java counterpart, and the refusal of a `RecordMetaData` that
+  was never built (it has no union; every built one has, as every Java one has, so the validator's
+  union-less path is gone). An index root and a primary key
+  are compared as Java's `KeyExpression.equals` compares them, so a root that changes only a
+  field's null interpretation is admitted as Java admits it (Go compared the protos and refused
+  it). A field's checks run in Java's order (its type before its label), and its label is checked
+  as Java checks it: a required field must stay required, a repeated one repeated, and a field
+  must keep whether it tracks presence, so an OPTIONAL FIELD MADE REQUIRED is admitted, as Java
+  admits it, where Go refused every change of cardinality. The RANK, R-tree and vector option
+  checks compare each option's EFFECTIVE value, as Java's do (for the vector index, its `hnsw*`
+  canonical option names; the `vector*` aliases and Java's metric and boolean parsing are WS-D's
+  typed option catalog), parsed as the maintainers parse it (above), so an option set to its default where it was unspecified (or the reverse) is admitted,
+  where Go compared the raw strings and refused it; an unrecognized vector metric name is still a
+  change. An option neither engine's parser accepts refuses the change with the parser's own error
+  class, as Java's check does (`RecordCoreArgumentError`, `NumberFormatError`,
+  `IllegalArgumentError`). Record types, changed options and renamed types are walked in a fixed
+  order (names; the old union's fields for renames, as Java walks them), so which of several
+  violations a message names does not depend on map order; so is `RecordTypesForIndex`. `Build`
+  walks the record types by name (Java walks a HashMap, so where several types are at fault the
+  one named can differ), and runs Java's checks in Java's order: a record type without a primary
+  key first ("Record type X must have a primary key"), then the union's oneof ("Union descriptor
+  has more than one oneof", "Union descriptor oneof must contain every field"), "No record types
+  defined in meta-data", then for each record type, before any index, its primary key validated,
+  then "Primary key for X can generate more than one entry", "Same record type key K used by both
+  X and Y" and "Record type X has since version of N which is greater than the meta-data version
+  M". A key expression that does not fit its descriptor is refused with Java's
+  `KeyExpression.InvalidExpressionException` (`KeyExpressionError`) and Java's text ("Descriptor X
+  does not have field: f", "f is not repeated with FanType.FanOut", "f is repeated with
+  FanType.None", "Child expression of covering expression returns too few columns", "Must have a
+  single key before splitting", "Must produce multiple values for splitting"), and a message field
+  read as a scalar with Java's `Query.InvalidExpressionException` (`QueryInvalidExpressionError`,
+  "f is a nested message, but accessed as a scalar"), all unwrapped as Java throws them, where Go
+  wrapped Go texts in a `MetaDataError` naming the record type. Two more are Java's
+  now: a nesting into a scalar field is protobuf-java's `UnsupportedOperationException`
+  (`UnsupportedOperationError`, "This field is not of message type. (<field's full name>)"), and a
+  map field is repeated, as protobuf-java says. One refusal is Go-only: a primary key with no
+  columns. A Then of fewer than two children,
+  which Java refuses where it is built ("Then must have at least 2 children"), is refused by
+  `Build` in program order with the builder's other faults, where Go stored a Then neither
+  engine's loader reads back. `RecordTypeKey().Nest(x)` is now `Concat(RecordTypeKey(), x)`, the
+  Then Java writes, where it was a record type key holding a child. The field-renaming
+  visitor's refusals have Java's text ("field not found in source descriptor", "parent field is not
+  of message type", and the rest), and an expression it cannot rename is Java's
+  `RecordCoreArgumentException`. `Build`'s index texts are Java's too: "Index X has added version
+  N which is greater than the last modified version M", "Index X has replacement index Y that is
+  not in the meta-data" and "... that itself has replacement indexes". `RemoveIndex` of a name no
+  index has is refused with Java's "No index named X defined" (Go ignored it), in program order
+  with the builder's other faults. The conformance spec "Index option
+  changes in meta-data evolution" runs 30 option changes through Java's validator and Go's, and
+  requires the same class and Java's message as the prefix of Go's. The conformance specs "Subspace-key identity in meta-data validation", "Subspace-key
+  pairing in meta-data evolution" and "Field and record-type changes in meta-data evolution" run
+  each shape through Java's validators and require Java's whole message as the prefix of Go's.
+- **A stored index with no root expression is refused**, as Java's `Index(proto)` refuses it
+  ("Exactly one root must be specified for an index"); Go loaded the index with no root. The
+  refusal, and those of a nesting with no parent and a then of fewer than two children, are
+  `KeyExpressionDeserializationError`, Java's `KeyExpression.DeserializationException`, with Java's
+  text. Go no longer builds or writes such an index either: `Build` refuses an index with no root
+  ("Index X has no root expression"; Go-only as a refusal, since Java's constructors take a
+  non-null root and its validation fails with a NullPointerException), and so does serializing one.
+  A field without its name or fan type is refused with Java's texts ("Serialized Field is missing
+  field name", "... fan type"; only an in-memory or partially parsed proto lacks them), a nesting
+  reads its parent first, and the error is a `RecordCoreError` too (`errors.As`), as Java's
+  exception is a `RecordCoreException`. Inside a meta-data proto (an index's root, a primary key,
+  the record-count key), and for a subspace-key counter without its flag, `RecordMetaDataFromProto`
+  returns Java's `MetaDataProtoDeserializationException`: `MetaDataProtoDeserializationError`,
+  "Error converting from protobuf", a `MetaDataError` whose cause is the failure (the counter's
+  text was the error itself). A literal `Value` with two values set is Java's `RecordCoreError`
+  "More than one value encoded in value", in a key expression, a record type's explicit key and
+  the `record_type_key` option, where Go took the first.
+- **RANK and TIME_WINDOW_LEADERBOARD ranked sets hash as Java's do.** The `rankHashFunction`
+  option names one of Java's four hash functions, `JDK`, `CRC`, `RANDOM` and `MURMUR3` (Guava's
+  murmur3_32, seed 0), exactly; an unknown name is refused with Java's
+  `RecordCoreArgumentException` "hash function not found: X" when the index is maintained. Go hashed
+  `MURMUR3` and `RANDOM` indexes with the JDK hash, which puts scores on other ranked-set levels than
+  Java does: a Java store's ranked set maintained by Go, or the reverse, then had its counts
+  corrupted by the other engine's deletes. `rankNLevels` is read with `Integer.parseInt` and refused
+  outside [2, 8] ("levels must be between 2 and 8"): an earlier Go kept the default for a value that
+  was not a positive int, wrote ONE level for "1" and clamped a value above 8 to 8; such an index, which
+  only an earlier Go build wrote, is refused on every write (Compatibility above). `rankCountDuplicates` is read with
+  `Boolean.parseBoolean` ("TRUE" is true). A failed read of the randomness `RANDOM` draws from fails
+  the write (a zero hash would put the key on every level). The conformance spec "RANK ranked set per hash
+  function" saves the same records through Java and Go and requires byte-identical ranked sets for
+  each deterministic hash, and Java to read the ranks Go wrote with `RANDOM`.
+- **MULTIDIMENSIONAL indexes honour Java's R-tree options.** The `rtreeStorage` option's `BY_SLOT`
+  layout (one key-value pair per node slot, Java's `BySlotStorageAdapter`) and the
+  `rtreeUseNodeSlotIndex` option's node slot index (an entry per child slot in the index's secondary
+  subspace, Java's `NodeSlotIndexAdapter`) are now written and read; Go ignored both and maintained
+  such a Java index in the BY_NODE layout with no node slot index, corrupting it. The options are
+  read as Java's `MultiDimensionalIndexHelper.getConfig` reads them, including its quirk that
+  `rtreeStoreHilbertValues` is read only when `rtreeStorage` is set, and then an absent value is
+  false: so `{rtreeStorage}` stores no Hilbert values in leaf slots, and `{rtreeStoreHilbertValues:
+  false}` alone stores them (Go did the opposite of both). `rtreeMinimumM`, `rtreeMaximumM` and
+  `rtreeSplitS` are read with `Integer.parseInt` (a bad value refused, where Go kept the default),
+  the storage name with `RTree.Storage.valueOf` (an unknown one refused), the flags with
+  `Boolean.parseBoolean`. The conformance spec
+  "MULTIDIMENSIONAL index R-tree options" has Java and Go write, delete and scan the same records
+  under six option sets and checks the stored layout after each step.
+- **Index options other than the vector index's are parsed as Java parses them.** (The vector
+  index's `hnsw*` booleans are WS-D's typed option catalog.) Boolean options (`unique`,
+  `clearWhenZero`, the text index options, `rankCountDuplicates`) are true for "true" in any case,
+  as Java's `Boolean.valueOf`; Go required exactly "true", so `unique: "TRUE"` made a unique index
+  for Java and not for Go. A text index's `textTokenizerVersion` is `Integer.parseInt`'d when
+  present, the empty string included, with Java's refusal "tokenizer version could not be parsed as
+  int"; Go treated "" as absent. A PERMUTED_MIN/MAX index's `permutedSize` is read with
+  `Integer.parseInt` by the maintainer, the executor and the planner, as Java reads it, and `Build`
+  runs Java's validator: a grouping with at least one grouped column ("index type requires
+  grouping", "... at least 1 fields"), no version column, and a size that is present ("permuted
+  size not specified"), parses, and is neither negative nor past the grouping count. An earlier Go
+  read the size with `strconv.Atoi`, maintained an absent or unparsable one (such as "٢", which
+  Java reads as 2) at size 0, and built none of those refusals.
+- **A key expression is a flat Then, as Java's is.** `Concat` flattens a composite child into its
+  children, as Java's `ThenKeyExpression` constructor does, so Go writes the flat Then Java writes
+  (it wrote a nested one for a nested `Concat`); a stored Then is decoded and flattened before its
+  children are counted, so a Then holding one Then of two children loads, as in Java (Go refused
+  it), and a nested Then an earlier Go wrote loads flat.
+- **`Build` validates indexes as Java's `MetaDataValidator` does, index by index.** Each index runs
+  its type's validator (its key validated against every record type it covers, the validator's
+  check of the fields, the added version against the last modified, then the type's own checks),
+  then its subspace key, its versions against the meta-data version and its replacements; former
+  indexes follow, then a key an index and a former index share. Go ran each kind of check over
+  every index before the next kind, so where two faults met, a different one was reported. The
+  validators are Java's, with Java's texts and classes: VALUE (no grouping, no version), the atomic
+  types (the grouping each mutation needs, "index type does not support non-group fields; use
+  COUNT_NOT_NULL", "index type only supports single field", an integer field for SUM and the
+  `_EVER_LONG` types, "index type does not support clearWhenZero"), RANK and
+  TIME_WINDOW_LEADERBOARD (a grouping with a grouped column), PERMUTED_MIN/MAX, BITMAP_VALUE (an
+  integer position), TEXT, VERSION and MULTIDIMENSIONAL (a dimensions key). Meta-data Java refuses
+  is refused (a VALUE index over a grouping, a RANK index built in code over a plain field, a
+  COUNT_NOT_NULL over `GroupAll`, a leaderboard over a plain Then), and a MAX_EVER_VERSION index no
+  longer requires record versions, which Java does not. The conformance spec "Index validation at
+  build, as Java builds" gives 50 shapes to both loaders (at RFC-257 WS-C revision 13) and compares
+  class and text. A Then of
+  fewer than two children and an unknown record type named by `GetRecordType` (which panicked) are
+  builder faults in program order; `AddMultiTypeIndex` resolves its record types before it adds the
+  index, as a Java caller must.
+- **A BITMAP_VALUE index's `bitmapValueEntrySize` is read as Java reads it**: `Integer.parseInt`,
+  10000 when absent, and "entry size option is too large" above 250000. Go read it with `strconv`
+  and fell back to 10000 on every refusal, so "٢" was maintained at size 10000 where Java maintains
+  it at 2. A size of zero or below is refused where the index is used (Java fails at its first
+  write).
+- **A stored former index's subspace key is read as Java reads it.** An absent, empty or
+  multi-item key is refused with `RecordCoreError` "subspace key must encode a single item tuple", a
+  null item with `RecordCoreArgumentError` "FormerIndex initialized with null subspace key"; Go read
+  all four as a nil key, and a store's upgrade then cleared the null item's index subspace instead of
+  the dropped index's. A former index is written as Java writes it: the key always, and no name when
+  it has none (Go wrote an empty name, which Java reads as a name).
+- **`RecordCoreArgumentError` renders only the fields its site set**, where it rendered empty
+  `scanType=` and `index=` fields for every error.
+- **A stored index's options are read with its type, before its root and subspace key**, as Java's
+  `Index(proto)` reads them, so an index with a repeated option and a malformed key or root is refused
+  for the repeated option in both engines (RFC-257 WS-J).
+- **Indexing heartbeat keys are read as Java reads them** (`getUUID(0)`): a `(UUID, x)` key is that
+  UUID's heartbeat rather than a malformed key. Keys whose first element is not a UUID remain an
+  `IndexingHeartbeatKeyError` wherever they sort (RFC-257 WS-D).
+- **Index definitions are stored as Java stores them** (RFC-257 WS-J; each shape byte-compared against
+  the JVM by the WS-J oracle, and through the SQL `CREATE SCHEMA TEMPLATE` path by
+  `TestFDB_IndexDefinitionProductionPathStoresTargetShapes`). What a template built from the same DDL
+  persists changes; templates already stored keep their bytes (nothing rewrites them):
+  - a nested field followed by a top-level column (`ORDER BY s.x, ts`) keeps its nested subtree in the
+    root expression, where Go dropped it;
+  - a literal is stored with its own width: an INT literal as `int_value` (Go stored `long_value`), a
+    FLOAT literal as `float_value`, and the bitmap entry size as the INT `10000`. A literal's carrier
+    is part of its index's key, as Java's evolution validator reads it: a `long_value` against an
+    `int_value` of the same number is a changed key: a new template version rebuilds it through the
+    carry rule (below), and a rebind or a template restore of a version written past it refuses it.
+    Templates an
+    earlier Go build stored are pre-release data (above). An INT literal outside 32 bits is refused
+    (XX000) instead of wrapping, whatever Go integer kind carries it;
+  - index options are stored in Java's insertion order (`unique` first, then the type's options), where
+    Go wrote them in map iteration order, so the stored bytes varied from build to build;
+  - a template's tables are numbered in Java's order (its record type keys, union field numbers and
+    descriptor messages) and its index versions assigned in it: Java's `DdlVisitor` moves each table
+    an index clause names to the end of the table order, in clause order, where Go kept declaration
+    order; the RFC-209 group-existence companions take the versions after every declared index. The
+    WS-J oracle's 180 template runs whose metadata differed from the target's now store the target's
+    bytes (or differ only by the companions). A new version of a stored template keeps the stored
+    numbering through the carry rule (below).
+- **A new version of a stored template is carried from the stored one** (RFC-257 WS-J section 4):
+  `CREATE SCHEMA TEMPLATE` over a stored name, `fleet.SaveTemplate` and a library `CreateTemplate`
+  keep the stored version's record type keys, union fields and since-versions (a new table takes the
+  next of each), store each unchanged index's stored Index message as it was (a deprecated
+  `index_type` or `value_expression`, unknown fields and extensions included), give a changed index
+  (its key, options, type or predicate) a last-modified version above the stored metadata version,
+  so a store rebuilds it when it next opens under the new version (inline when the store is empty,
+  otherwise DISABLED until an online build), and turn a dropped index into a former index, whose data
+  a store clears when it next opens. Re-adding an index under a dropped index's name is refused
+  (42F59), since the name is the former index's subspace key. `CreateTemplate` also refuses a version
+  at or below the latest stored and runs the relational and metadata evolution validators (moved from
+  the save action, which now calls only `CreateTemplate`, as Java's does); a second `CREATE SCHEMA
+  TEMPLATE` of a name is Java's 42F62 "Schema template already exists", where Go answered 42F59.
+  `fleet.SaveTemplate` returns the template as stored, `(api.SchemaTemplate, error)`: a caller must
+  rebind or compare against it, not the template it passed in. The schema rebind (`RepairSchema`)
+  admits a version that rebuilds indexes.
+- **An index key the target cannot plan is refused where it is defined** (RFC-257 WS-J section 3.2):
+  a bit, bitmap or arithmetic key function whose operands' types have no row in Java's operator
+  table (a `v & 1` over a DOUBLE, FLOAT, STRING or BOOLEAN column, a bitmap bucket over a
+  non-integer) is refused at its `CREATE SCHEMA TEMPLATE` clause with the target's XX000 and message,
+  where Go stored eight such shapes; hand-built metadata with such a key is refused by
+  `CreateTemplate` (42F59, naming the index and the types). A stored template that already holds one
+  keeps the index through a new version that does not restate it.
+- **Long-arithmetic key functions read any numeric operand as Java's `getNullableLong` does**
+  (truncating toward zero, NaN to 0, saturating), where Go refused every non-`int64` operand; the
+  index entries equal the target's byte for byte (WS-J F2b spec). Go does not serve a query from such
+  an index over a non-integer operand: the entries do not hold the value of the query expression, and
+  the target, which does serve it, returns no row for `WHERE d + d = 3` over `d = 1.5`
+  (DIVERGENCES.md).
+- **A stored index's deprecated `value_expression` and a missing `added_version` are read as Java
+  reads them** (`Index.java:215-233`): the value expression is folded into the root as
+  `keyWithValue(concat(root, value), root's column size)`, and an index stored without an added
+  version counts as added at version 1, which is what the evolution validator and a `FormerIndex`
+  made by removing it now see. Go ignored `value_expression`, maintaining the index under its bare
+  root with no value columns, and took the last-modified version for a missing added version. Go
+  never writes a `value_expression`; both shapes come from metadata Java wrote with the deprecated
+  field or before `added_version` existed, or from hand-built protos. Entries an earlier Go build
+  maintained for such an index lack the value columns (Compatibility above).
+- **A stored index's subspace key is read as Java reads it** (`Index.java:80-97`, `:221-225`): a
+  present key must pack exactly one non-null item. An empty key or a key of several items is a
+  `RecordCoreError` ("subspace key must encode a single item tuple"), a null item a
+  `RecordCoreArgumentError` ("Index subspace key cannot be null"), as Java refuses them; Go fell back
+  to the index's name, loading metadata Java refuses and maintaining the index under a subspace Java
+  never reads.
+- **Stored index metadata listing one option key twice is refused** (`DuplicateIndexOptionError`,
+  Guava's message), as Java's `Index` constructor refuses it; Go kept the last value.
+- **The metadata evolution validator refuses a lower metadata version** even when an unchanged version
+  is allowed (`MetaDataEvolutionValidator.java:154`); Go accepted the downgrade, after which every
+  store open failed on stale metadata.
+- **`uint32` / `fixed32` fields are read signed**, as protobuf-java hands them to Java, by every
+  reader (key and index-predicate evaluation, row values, the SQL driver's values), typed `INTEGER`
+  as Java types them, and written from the `INTEGER` range as the value's 32 bits; `uint64` /
+  `fixed64` are `BIGINT` and written as the value's 64 bits (such fields are refused in record
+  descriptors, above; this keeps a descriptor that reaches a reader otherwise consistent).
+- **A key field's null interpretation is honoured** (Java's `Key.Evaluated.NullStandin`,
+  `Key.java:394-421`): `NOT_NULL` evaluates an unset field as its type's default and an unset
+  parent message as the parent's default message; `NOT_UNIQUE` (the default) and `UNIQUE` evaluate
+  it as null. A unique index, and a `COUNT_NOT_NULL` index's grouped columns, ignore only the
+  default's null (`IndexEntry.keyContainsNonUniqueNull`): a `UNIQUE` or `NOT_NULL` field's null,
+  and a function's plain null (the arithmetic functions'), collide and are counted, where Go
+  ignored every null. `collate_*` and `cardinality` return the ignored null, as in Java; a Go
+  function whose Java twin returns `Key.Evaluated.NULL` registers with
+  `FunctionSpec.NullIsNonUnique`. The interpretation is written back unchanged (Go rewrote
+  `NOT_NULL` as `NOT_UNIQUE`) and, as in Java, is not part of an index's definition to the
+  evolution validator. New API: `NullStandin`, `FieldWithNullStandin`.
+- **`IndexMaintenanceFilter` is ported** (Java's store option): `StoreBuilder.SetIndexMaintenanceFilter`
+  with `IndexMaintenanceFilterNormal` (the default) and `IndexMaintenanceFilterNoNulls`, or a filter
+  of your own, decides per index and record which entries every maintainer writes; the online
+  indexer takes it with `OnlineIndexerBuilder.SetIndexMaintenanceFilter`. A TEXT index now honours
+  its predicate, as Java's does. The index entries written under `NO_NULLS` equal Java's for VALUE,
+  COUNT, SUM, TEXT and RANK indexes (conformance "RFC-257 NullStandin").
+- **A non-idempotent index under a build from a source index is maintained as Java maintains it**:
+  a write during a BY_INDEX build of a COUNT, SUM, or duplicate-counting RANK or leaderboard index
+  applies where the record's source-index key is built, where Go checked its primary key against
+  that range set and miscounted. BITMAP_VALUE, MULTIDIMENSIONAL, VECTOR and non-counting
+  TIME_WINDOW_LEADERBOARD indexes are idempotent to the online indexer, as in Java (snapshot scans,
+  no per-record read conflicts).
+- **A proto3 field at its default value is absent**, as protobuf-java's `hasField` reports it, to
+  key evaluation (index and primary-key bytes hold null, not the zero value) and to a query's field
+  reads (`MessageHelpers.getFieldOnMessage`); an unset proto2 field declaring an explicit default
+  now reads that default in a query, as in Java, where Go read null. Live-JVM comparisons:
+  conformance specs "RFC-257 NullStandin" and "RFC-257 a query reads a field as Java's
+  getFieldOnMessage".
+- **Map fields and groups in key expressions are Java's** (RFC-257 WS-C): a nesting that fans out a
+  proto map's entries builds and is maintained (Go refused it), each entry the key/value message
+  protobuf-java reads, and a nesting into a proto2 group builds, where Go refused both; a group read
+  as a scalar is refused with Java's text. A record's map entries are indexed in the order its
+  stored bytes hold them, as Java's default serializer (a DynamicMessage) indexes them, so a
+  covering index whose key two entries share stores the last entry's value in both engines, and a
+  key written twice yields both entries. A record type that holds a map is written with each map as
+  Java's load-then-save of the record it replaces writes it: the stored entries in their order, a key
+  written twice with both its entries while its value is unchanged, each entry with its key and its
+  value (a stored entry without a value is written with the default, as Java writes it); a changed
+  key once, in its first position; new keys after, in key order; a new record's maps in key order.
+  It is indexed in the order written, so a record Java wrote that Go loads and saves unchanged keeps
+  its map entries as Java's own load-then-save writes them, and neither engine's index changes; its
+  bytes are Java's but for field order, where protobuf-go writes a oneof member after the other
+  fields and Java in field-number order, and unknown fields as stored where Java writes them by
+  field number (JVM specs; DIVERGENCES.md). An entry's key and value are
+  written whatever their value, a proto3 zero included. The stored entries are read from whichever
+  of the type's union fields holds the stored record, and maps below the top level (in a message, in
+  a map's values, in a repeated field's elements, matched to the stored elements by content in list
+  order) are written the same way. vtproto's marshal, which writes a map in Go's random order, is no
+  longer used for such a type. A dry-run save previews those bytes.
+- **Key validation Java makes at build, Go makes** (RFC-257 WS-C): a MULTIDIMENSIONAL index's
+  dimension columns must be protobuf `int64` ("the declared dimension columns have to be of type
+  INT64"), so meta-data with dimensions over `int32` fields no longer builds; the prefix and
+  dimension sizes must fit the key; and a CARDINALITY key's argument must produce one value and
+  name fields the record has. A negative dimensions prefix, which panicked, is refused.
+- **`GetSnapshotRecordCountForRecordType` counts from a COUNT index, as Java does** (RFC-257 WS-C;
+  a behaviour change): a COUNT index on the type, else a universal COUNT index grouped by record
+  type, else `RecordCoreError` "Require a COUNT index on X". It no longer reads the record count
+  key; read a count key grouped by record type with `GetSnapshotRecordCount(tuple.Tuple{typeKey})`,
+  as Java's `getSnapshotRecordCount` does. `frl record count --type` reads such a count key, then
+  the COUNT indexes, and says which index is missing when there is none.
+- **A record type whose key is not an integer is handled as Java handles it**: the store-open
+  index rebuild counts or probes only that type's records when every new index is on it, and the
+  online indexer's build presets the ranges outside the indexed types, ordering the type keys as
+  Java's `Tuple.compareTo` does; Go treated a string or bytes key as covering the whole store.
+- **A single-target online build by records presets the out-of-range gaps, as Java's does**: Java's
+  records-scan indexer is its multi-target one for any number of targets, and Go preset only for
+  several, so an index built alone left a range set Java does not write (one range where Java writes
+  two); the range-set bytes are now Java's (JVM spec, for an integer and a string record type key).
+- An unknown record type is refused with Java's text, "Unknown record type X" (`MetaDataError`),
+  by `SaveRecord`, the aggregate functions and `GetTypedRecordStore` (which said "record type 'X'
+  not found in metadata"). A windowed vector index's integer and double options parse as Java's
+  `Integer.parseInt` and `Double.parseDouble` (Go admitted `hnswM=2147483648`, `inf` and `nan`, and
+  refused Unicode digits, `0.5d` and a padded value, each the other way in Java), and a refusal is
+  Java's `MetaDataError` "incorrect index options", its parse error the cause (`Unwrap`;
+  `MetaDataError` gains `Cause`). The VECTOR maintainer reads every integer and double option with
+  the same parsers, so a value both engines accept means the same number to the index as to the
+  validator (the maintainer read `hnswM=８` as its default 16, and Java as 8), and a second decimal
+  point is refused with Java's text, "multiple points". A windowed vector index's metric is one of
+  Java's four `Metric` names; the lower-case aliases Go also read (`cosine`, `inner_product`,
+  `euclidean`) are refused as Java's `Metric.valueOf` refuses them, its "No enum constant" text the
+  cause. The VECTOR maintainer and the windowed validator read the HNSW configuration as Java's
+  `HnswVectorIndexEngine.parseConfig` does: each shared option under its `vector*` alias when its
+  `hnsw*` name is absent, an option under both names refused, booleans as `Boolean.parseBoolean`
+  (any case), and Java's `Config` checks with their texts (`m` in 4 to 200, `m <= mMax <= mMax0`,
+  `efConstruction` in 100 to 400, ...), where Go's maintainer silently took a default for a value
+  outside its own ranges (it maintained `hnswM=150` with 16). A value that does not parse, a
+  metric no constant names, or a configuration `Config` refuses now fails the maintainer rather
+  than being replaced by a default. RaBitQ with 9 to 15 extra bits, which `Config` admits and Java's
+  quantizer refuses, is refused (`IllegalArgumentError`) where Java constructs the quantizer, when an
+  operation first quantizes: a Euclidean index accepts saves until its centroid is established,
+  then refuses saves that change a vector entry, searches and deletes of present entries; a
+  cosine or dot-product index
+  refuses its first save (Go stored 4-bit codes before, then refused every save). A row-number
+  window under a disjunction is Java's `RecordCoreError`, not a `MetaDataError`.
+- **Stored bytes are read as protobuf-java reads them** (RFC-257 WS-J): a closed enum field
+  occurrence holding a number its enum does not declare does not set the field; the number is kept as
+  an unknown field, where protobuf-go kept it in the field. The field keeps its last declared
+  occurrence, a oneof keeps its member, and a required closed enum holding only undeclared numbers is
+  missing, so the record or meta-data is refused as Java refuses it ("Message missing required
+  fields"; a stored template with fan type 7 is now XXXXX, as Java's). A record's such enum is indexed
+  as null, as Java indexes it, and written back as an unknown field, in Java's order; a record Go
+  builds in memory with such a number is keyed, counted, indexed and written as Java reads the bytes,
+  so an update or delete removes exactly the entries its save wrote (the caller's message is not
+  changed). A map value holding such a number, in a record read as a DynamicMessage, keeps it: Java
+  writes the entry with its default value and the number as the entry's own unknown field, and Go
+  now writes the same bytes; Go's save dropped the number, so re-saving a record Java wrote lost it. A store header's unreadable record-count state is its default; an OrElse continuation
+  whose state Java cannot read resumes as UNDECIDED, as Java's does (Go refused it). A proto2 field of
+  an open enum counts as closed, as Java's `legacy_closed_enum` makes it. Every decode of stored
+  bytes (meta-data, store headers, index-build stamps, heartbeats, pending writes, continuations,
+  records, `frl`'s reads) is parsed with protobuf-java's recursion limit (a root and 100 nested
+  messages; a record, one level below Java's union, 100), so bytes nested deeper than Java can parse
+  are refused at parse in both engines. The cost is a scan of a record's bytes, only for a record type
+  that holds a closed enum (a DDL ENUM column): measured on a twelve-column record, 3.44 → 3.66 µs per
+  decode (`BenchmarkJavaRecordDecode`).
+- **A query reads an unset field that declares a default as NULL**, as Java's query does: Java reads a
+  copy of the record in the plan's type, which declares no default. `SELECT *`, a projection and a
+  predicate over such a column read the default in Go before.
+- **A VECTOR column stored in a template reads as VECTOR** (its precision and dimensions), as Java's
+  `Type.fromProtoType` reads it, where Go read it as BYTES; so a change of a vector column's
+  dimensions or precision is refused by the relational evolution validator and by a template
+  restore.
+- A stored template whose meta-data fails to load is reported with Java's code: 42000 for a
+  meta-data error, XXXXX for a parse failure or any other record-layer error, where the catalog
+  reported XX000.
+- An index predicate's comparison operand with more than one value is refused when the meta-data is
+  loaded ("More than one value encoded in value", a `RecordCoreError`, as Java), and one with no
+  value too (Java: `NullPointerException`); Go took the first value set, or compared with nil.
+- `RecordMetaDataBuilder.SetRecords` reads the records file's extension options as Java's does
+  (schema, record type and field options: a record type's `since_version` and record type key, a
+  field's `index` option, which defines an index), so a records file that sets them loads with the
+  target's record type keys and indexes; Go ignored them.
+- A save that leaves a record's VECTOR index entry unchanged (another field changed) no longer
+  deletes and re-inserts its graph node when the save maintains the index in its own transaction:
+  the entry common to the old and the new record is skipped, as Java's
+  `StandardIndexMaintainer.update` skips it, so the graph's edges, entry point and statistics are
+  untouched. A save queued for a WRITE_ONLY_WITH_QUEUE index, and a windowed index, still delete and
+  re-insert the node, as Java's do.
+- An SPFresh index option that does not parse, and an SPFresh metric other than Java's four
+  `Metric` names, are refused instead of read as their default ("cosine" was maintained as
+  Euclidean while the planner read it as cosine), and every SPFresh entry point (the build, the
+  search, the rebalancer, refine, recall, the integrity check, the topology dump) refuses a
+  configuration the maintainer refuses rather than running with it. A value out of range or an option
+  that does not parse is refused as a `MetaDataError`, which a SQL statement reports as SQLSTATE
+  42000; a metric that is not one of Java's four names is an `IllegalArgumentError`, as Java's
+  `Metric.valueOf` refuses it (SQL cannot spell such a metric). An SPFresh index an earlier build
+  stored with a configuration now refused (0 extra bits, an option that does not parse, a metric
+  that is not one of Java's four names) must be dropped and added again (the options are immutable
+  under evolution).
+- The planner takes a vector index's metric from the maintainer's own reader, so a metric the
+  maintainer refuses gives no candidate: an HNSW index with an empty metric was a Euclidean
+  candidate, and an SPFresh "cosine" metric a cosine candidate over an index maintained as
+  Euclidean.
+- An HNSW insert of a key already in the graph leaves the graph as it is, as Java's `Insert` does;
+  Go deleted and re-inserted the node (reachable when an index build meets an entry a concurrent
+  save indexed), rewiring edges Java leaves alone.
+- The planner reads a vector index's metric under its alias `vectorMetric` too, as Java does; an
+  index whose metric was stored only there was planned as Euclidean.
+- A stored map entry's unknown fields are kept when Go re-saves the record with that entry
+  unchanged, as Java keeps them; Go dropped them.
+- SPFresh's `spfreshRaBitQNumExBits` must be 1 to 8; 0 was accepted and then encoded with 4 bits
+  (`rabitq.NewQuantizer` no longer replaces an unsupported count).
+- A literal key column holding an `int_value` (`Literal(int32(n))`, the width Go's DDL now writes,
+  as Java's) is maintained as the integer Java writes; it panicked in the tuple encoder on the
+  first save.
+- An index predicate's field path steps into a proto2 group as into a message, as Java's
+  `FieldValue` does, where Go treated the record as not matching.
+- `KeyExpressionInvalidResultError.ActualType` names the Java class of the offending value, matching
+  `ExpectedType` (`com.google.protobuf.DynamicMessage` for a message read through a run-time
+  descriptor; a Go-generated message keeps its proto full name).
+- **The catalogs guard a template version against re-issue** (RFC-257 WS-J; a declared Go
+  extension, `DIVERGENCES.md`): creating a template, or a new version of one, is refused with
+  42F59 naming the schema while any schema binds a dropped version of it above the latest one
+  stored (every version, for a template stored afresh), and `DeleteTemplateVersion` refuses a
+  version a schema binds. The target accepts the first and rebinds those schemas to the new
+  metadata, and its `deleteTemplate(name, version)` deletes a bound version. Both the FDB-backed and
+  the in-memory catalog apply it. The FDB catalog reads the bindings from `TEMPLATES_VALUE_INDEX`
+  and refuses (XX000) while that index is not READABLE rather than finding none. A duplicate
+  template and an unknown one to delete are refused with Java's texts ("Schema template already
+  exists: t", "Could not delete unknown schema template t").
+- **`fleet.RestoreTemplateVersion` restores a dropped template version** for the schemas still
+  bound to it (RFC-257 WS-J; Java has no restore), from the version's stored MetaData bytes: the
+  one way out for a schema whose version DROP SCHEMA TEMPLATE removed. It refuses a stored
+  version, a version no schema binds, a bound store with no header in the caller's keyspace or
+  one above the restored metadata version, and bytes that are not one history with the
+  template's stored versions (inverted versions, a changed record type key or name, an index that
+  differs without a rebuild, a column type that differs).
+- **A schema bound to a template version that is gone is refused as Java refuses it**: `LoadSchema`,
+  `SaveSchema` over it and `RepairSchema` fail with 42F55 "SchemaTemplate=<n>, version=<v> is not
+  in catalog", where Go's `SaveSchema` (both catalogs) and the in-memory `LoadSchema` and
+  `RepairSchema` accepted it, the saves rebinding it without validation. The template loads and `SaveSchema`'s
+  database and template checks now use Java's texts ("SchemaTemplate '<n>' is not in catalog",
+  "Cannot create schema <s> because schema template <n> version <v> does not exist.").
 
 ## [v0.1.0] - 2026-08-26
 

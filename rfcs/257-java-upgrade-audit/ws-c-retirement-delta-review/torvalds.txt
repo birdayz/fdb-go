@@ -1,0 +1,19 @@
+**ACK — exact reviewed TREE `f0cb29576cde624e0f1c6e22ca18a5180d1b298f`.**
+
+No actionable findings in this delta or its reviewed interactions.
+
+Read the complete four-file source delta (+187/−6) from `5dc2a9cf465ff439ac75d1e5eb5682eecd0ca38b`, the five-fix delta and surrounding implementation, retirement scope, all four previous verdicts, initial NAKs, accepted design, and relevant Java at `fdacd162a9c8acfadc49082b89185c823ab8ae4a`. Accepted base: `ba06f34ff8998f61040a491e4f3a3e8b8de7ccf9`.
+
+- Own publication retires a target only after successful `Run`; later disablement, replacement retirement, or rebuilding cannot restore its participation. [online_indexer.go:1359](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer.go:1359)
+- Peer completion publishes retirement through the context’s successful-commit hook. Failed attempts leave ownership intact. The original target list remains unchanged for stamp identity. [online_indexer_queue.go:313](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer_queue.go:313)
+- Follow-up validation, drains, requested merges, and closeout skip retired targets. New build preparation and standalone merge reset retirement. [online_indexer_queue.go:325](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer_queue.go:325), [online_indexer.go:1152](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer.go:1152), [indexing_merger.go:145](/home/birdy/projects/fdb-go/pkg/recordlayer/indexing_merger.go:145)
+
+The other original fixes remain intact: admission precedes destructive preparation, nested Any validation matches Java, and mutual renewal requires committed admission. Cleanup retains deadline-aware readiness polling and calls `Get` only after readiness, with no abandoned blocking-`Get` goroutine. Late backend cleanup clears only the old UUID’s keys. [online_indexer_queue.go:231](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer_queue.go:231)
+
+The six regressions exercise meaningful persisted outcomes. Retained logs show all three original reproductions failing before the fix, both premature-retirement cases failing under mutation, and the omitted-reset mutation leaving rebuilt indexes unpublished.
+
+Latest **LOCAL** evidence: 93/93 targets passed, **6 executed/87 cached**; uncached race **189/3610** specs plus ordinary Go tests/seeds; JVM race **9/1523**. All 35 frozen hashes match this tree. The predecessor’s 93/93 uncached run remains historical.
+
+Format15/default14, approved extensions, C++7.3.77, SPFresh queue exclusion and unchanged algorithms/LIRE remain preserved. HNSW is synchronous; this establishes no future child-backend proof. GuardiANN WS-D and absent Lucene remain upgrade-wide work.
+
+Read-only review; no tests, mutations, edits, publication, or operational changes performed. No CI or overall migration-completion claim.

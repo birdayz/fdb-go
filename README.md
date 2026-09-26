@@ -4,8 +4,10 @@
 [![Test Report](https://img.shields.io/badge/test_report-latest-2980b9)](https://fdb-record-layer-go-reports.fsn1.your-objectstorage.com/reports/master/latest.html)
 
 Go port of Apple's [FoundationDB Record Layer](https://github.com/FoundationDB/fdb-record-layer).
-Wire-compatible with Java Record Layer 4.12.11.0 — Go and Java applications can read
-and write the same data on a shared FDB cluster.
+Targets wire compatibility with Java Record Layer 4.14.2.0 so Go and Java applications
+can read and write the same data on a shared FDB cluster. **The upgrade is in progress
+and currently fails compatibility tests; do not deploy this upgrade branch.** See
+[RFC-257](rfcs/257-java-4.14.2.0-upgrade.md) for the audit, regressions and remaining ports.
 
 ## Status
 
@@ -29,7 +31,7 @@ backup, and observability — see the [operator guide](docs/operations.md).
 | Component | Version | Notes |
 |-----------|---------|-------|
 | **FoundationDB** | **7.3.77** | Client library + headers. Go bindings pinned to `release-7.3` branch. |
-| **Java Record Layer** | **4.12.11.0** | Wire compatibility target. Conformance tests run against this version. |
+| **Java Record Layer** | **4.14.2.0** | Current oracle and compatibility target; upgrade parity is not yet established (RFC-257). |
 | **Go** | **1.26.4** | Minimum Go version (kept current with stdlib security patches; `govulncheck` CI gates this). |
 | **Bazel** | **9.0.1** | Build system. Pinned in `.bazelversion`. |
 
@@ -130,7 +132,7 @@ Cascades-based query planner ported from Java's `fdb-relational-core`.
 ```go
 import _ "fdb.dev/pkg/relational/sqldriver"
 
-db, _ := sql.Open("fdbsql", "fdbsql:///mydb?cluster_file=/etc/foundationdb/fdb.cluster&schema=main")
+db, _ := sql.Open("fdbsql", "fdbsql:///MYDB?cluster_file=/etc/foundationdb/fdb.cluster&schema=MAIN")
 
 // DDL
 db.Exec("CREATE DATABASE /mydb")
@@ -229,9 +231,10 @@ Full gap analysis in [TODO.md](TODO.md).
 
 ## Conformance
 
-Wire compatibility is verified by a conformance suite that runs both Go and Java
-(Record Layer 4.12.11.0) against the same FDB instance, cross-validating reads and
-writes bidirectionally.
+The conformance suite runs both Go and Java (Record Layer 4.14.2.0) against the
+same FDB instance, cross-validating reads and writes bidirectionally. The initial
+upgrade run is red; historical baseline passes do not certify the new target.
+Exact executed populations and failures are recorded in RFC-257.
 
 ### Wire format
 
@@ -309,7 +312,7 @@ import (
 )
 
 func main() {
-    db, _ := sql.Open("fdbsql", "fdbsql:///myapp?cluster_file=/tmp/fdb.cluster&schema=main")
+    db, _ := sql.Open("fdbsql", "fdbsql:///MYAPP?cluster_file=/tmp/fdb.cluster&schema=MAIN")
     db.Exec("CREATE DATABASE /myapp")
     db.Exec(`CREATE SCHEMA TEMPLATE app CREATE TABLE Users (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))`)
     db.Exec("CREATE SCHEMA /myapp/main WITH TEMPLATE app")

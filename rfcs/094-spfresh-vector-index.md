@@ -104,6 +104,51 @@ cannot reach the 1M–10M / many-concurrent-writers regime on FDB. Measured
 | update/delete vs split moving the same pk | serialize on `MEMBERSHIP/pk` + the split's **real** posting read; later one retries against truth |
 | query vs anything | snapshot reads — never conflicts |
 
+"Retries" in this table is a property of the transaction owner, and the two sides of a
+row usually have different owners:
+- The BACKGROUND side (the lifecycles, the rebalancer, NPA, merge, coarse split, the
+  sweeper and the build) runs in `spfreshRun` (spfresh_util.go), on the FDB client's own
+  retry loop with no attempt bound, so it retries until it wins or hits a
+  non-retryable error. RFC-257 WS-D phase D-0 bounds the attempts of every other
+  record-layer transaction owner at the target Java's `maxAttempts` (10 by default); it
+  leaves `spfreshRun` on the unbounded client loop, because SPFresh has no Java
+  counterpart whose bound it could match and because these lifecycles (a contended
+  split, the build's delete-fenced assignment scan) assume the retry. A test pins that
+  `spfreshRun` completes a closure that conflicts more times than the record layer's
+  bound.
+- The FOREGROUND side (a record save: `Update` and `UpdateWhileWriteOnly`,
+  spfresh_index_maintainer.go) does NOT run in `spfreshRun`: it runs inside the
+  CALLER's transaction, so "the later one retries" (and the synthetic retryable 1020 the
+  write path raises when every reachable centroid is mid-lifecycle, spfresh_write.go) is
+  the caller's retry, under the caller's owner. After D-0 that owner is bounded for
+  every retryable error EXCEPT the split-window signal: the synthetic 1020 becomes a
+  typed `SPFreshSplitWindowError` wrapping 1020 (so every owner and the SQL mapping still
+  read a retryable conflict, 40001), and the record layer's attempt loop re-runs it
+  WITHOUT counting an attempt, bounded only by the caller's context. So a write that
+  meets a split window waits it out as it does today, however long the window is: a
+  split in one transaction, a chunked drain whose parent stays SEALED across every chunk
+  transaction (§6), a SPLIT whose real read is aborted by concurrent updates and deletes,
+  or a STALLED seal held until the lease takeover finishes the split (section 12,
+  "writer killed between SEAL and SPLIT ⇒ lease recovery"). Real FDB conflicts of a
+  foreground write take the owner's bound (`maxAttempts`, 10 by default, with the ported
+  ExponentialDelay), and a SQL autocommit INSERT makes one attempt and surfaces 40001 for
+  either (it already did before RFC-257: SQL DML statements never replay). An earlier
+  revision of this paragraph bounded the split window by the owner's attempts on the
+  argument that a SEAL -> SPLIT window "closes within the split's two transactions";
+  that is false for the chunked drain and for a split aborted by deletes, so the window is
+  exempt. The wait itself is not a LIRE property: LIRE keeps foreground updates
+  independent of background rebalancing, and a foreground write that waits on a split is
+  an existing Go departure, which D-0 keeps as it is today. Each uncounted retry still
+  takes the loop's delay, drawn uniformly below the current delay, so re-runs average
+  about half the maximum delay apart (two can be almost back to back). Under a simulated
+  environment, where the delay is not waited, 100 consecutive uncounted retries against
+  one unchanged sealed posting fail the write with `SPFreshStalledSealError` instead of
+  looping. The loop sees the signal on every backend because it keeps the body's error
+  chain, which the pure-Go `fdb` wrapper strips today. Declared, with its
+  fixtures (every split-window retry uncounted, sequenced through the attempt observer
+  rather than timed), in `rfcs/257-java-upgrade-audit/ws-d-design.md` section 5 ("Attempt
+  bounds of the transaction owners", SPFresh).
+
 ### 2.1 FDB-native leverage (the global commit version, exploited)
 
 FDB's sequencer hands every transaction a globally ordered version — the read
@@ -162,7 +207,7 @@ rows are still ACTIVE, so state reads alone would pass and the mutation would be
 invisible in g+1 and eventually GC'd — codex r5 #1): **every write tx real-reads
 META's current-generation key and uses it BOTH ways** (codex r6 #1): as a
 **value check** — the read value must equal the tx's cached generation, else
-refresh and retry (covers a tx that *starts* after the flip: the flip already
+refresh and retry (the caller's retry under its owner's bound, §2; covers a tx that *starts* after the flip: the flip already
 committed, so no conflict will fire, but the value mismatch is visible) — and
 as a **conflict fence** — the flip's write aborts every *in-flight* writer of g
 at the resolver. One point read in the existing parallel burst, written only by
@@ -437,7 +482,7 @@ re-encode residuals (codex r3 #2). Rev 4:
    staging (between the waves the cell's centroids exist but its postings do
    not; rev 5's single "DONE" conflated the two and lost the straggler's vector
    — codex r5 #2). A FINALIZED transition mid-flight aborts the straggler at
-   the resolver, whose retry routes live. The finalizer's own staging range
+   the resolver, whose retry (the caller's, under its owner's bound, §2) routes live. The finalizer's own staging range
    read still serializes it against stragglers that committed first.
 6. Flip `Readable` (atomically updating META's current generation). Abandoned
    builds: the entire superseded generation is range-cleared (§3) — staging,

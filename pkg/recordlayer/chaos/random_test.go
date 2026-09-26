@@ -201,7 +201,7 @@ func buildRankRandomMetadata() *recordlayer.RecordMetaData {
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 	builder.SetRecordCountKey(recordlayer.EmptyKey())
 	builder.AddIndex("Order", recordlayer.NewIndex("rand_rank_price_val", recordlayer.Field("price")))
-	builder.AddIndex("Order", recordlayer.NewRankIndex("rand_rank_price", recordlayer.Field("price")))
+	builder.AddIndex("Order", recordlayer.NewRankIndex("rand_rank_price", recordlayer.Ungrouped(recordlayer.Field("price"))))
 	md, err := builder.Build()
 	if err != nil {
 		panic("chaos: failed to build rank random metadata: " + err.Error())
@@ -248,7 +248,7 @@ func buildKitchenSinkMetadata() *recordlayer.RecordMetaData {
 		recordlayer.GroupAll(recordlayer.Field("price"))))
 	builder.AddIndex("Order", recordlayer.NewSumIndex("rand_ks_sum",
 		recordlayer.Ungrouped(recordlayer.Field("price"))))
-	builder.AddIndex("Order", recordlayer.NewRankIndex("rand_ks_rank", recordlayer.Field("price")))
+	builder.AddIndex("Order", recordlayer.NewRankIndex("rand_ks_rank", recordlayer.Ungrouped(recordlayer.Field("price"))))
 	builder.AddIndex("Order", recordlayer.NewMaxEverLongIndex("rand_ks_maxever",
 		recordlayer.Ungrouped(recordlayer.Field("price"))))
 	builder.AddIndex("Order", recordlayer.NewVersionIndex("rand_ks_version",
