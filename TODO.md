@@ -8792,6 +8792,10 @@ the ci.yml race-lane comment names both hosts.
 
 ### [ ] STOP (owner): the `hetzner-fdb-vm` runner service is being stopped under running jobs — Nightly Coverage has not completed in 33 days, Nightly Reconcile is red for that reason
 
+ROOT-CAUSED 2026-09-26: a job process OOM-killed under systemd's default `OOMPolicy=stop`, on
+boxes the committed fix never reached. See "The runner OOM-lifecycle fix never reached the
+live fleet" at the end of this file.
+
 MEASURED 2026-09-10: every `Nightly Coverage` run from 2026-08-30 through 2026-09-10 (12 of 12)
 ends with `##[error]The runner has received a shutdown signal. This can happen when the runner
 service is stopped, or a manually started runner is canceled.` followed by `The operation was
@@ -15221,3 +15225,35 @@ catalog's XX000).
   non-prepared INSERT takes the CAST is not measured. Measure Java, then give Go the same reach. Found
   while pinning the SQLSTATE of a refused SPFresh configuration (RFC-257 WS-C revision 20), which uses
   a k-NN query instead.
+
+- [ ] **The runner OOM-lifecycle fix never reached the live fleet; CI was down for a day
+  (found and applied in place 2026-09-26).** The checked RFC-250 item "Repair the classic
+  Actions runner's OOM lifecycle" changed `infra/cloud-init.yaml` only (`9cf43b52d`), and
+  `hcloud_server` pins `ignore_changes = [user_data]`, so neither live box
+  (`gh-runner-fdb`, `gh-runner-drain-0`) had the watchdog
+  (no `runner-watchdog.timer`, no `/etc/runner-watchdog.conf`) or the drop-in; both units
+  ran systemd's default `OOMPolicy=stop`. On 2026-09-26 a job process was OOM-killed on
+  each box (07:23:20 and 11:47:37 UTC), systemd stopped the whole runner unit, nothing
+  restarted it, and every self-hosted job queued unacquired until restarted by hand at
+  13:57. This is the cause of the owner STOP entry "the `hetzner-fdb-vm` runner service is
+  being stopped under running jobs": today's Nightly Coverage (run 36226107050) logged
+  "The runner has received a shutdown signal" at 07:23:20, the second of the OOM-kill, and
+  the journals since each box's last boot (09-13 / 09-11) hold 20 `Failed with result
+  'oom-kill'` unit failures (8 fdb, 12 drain-0), mostly 07:00–09:00 UTC.
+  APPLIED IN PLACE (ssh as root, with the key the servers were provisioned with): the watchdog
+  script, service and timer rendered verbatim from `cloud-init.yaml` (`$${` → `${`),
+  `/etc/runner-watchdog.conf` as the template writes it (`WATCH_DEFER_WHILE_WORKER=1`), and
+  a drop-in `oom-policy.conf` with the template's `[Service]` half only
+  (`OOMPolicy=continue`, `KillMode=process`): the `Requires=ci-docker-gate.service` half
+  would keep the listener from starting on a box with no gate unit. Verified on both boxes:
+  `systemctl show` reports `OOMPolicy=continue` from that drop-in, the timer is scheduled,
+  and the script's restart arm, pointed at a stopped dummy unit, restarted it.
+  STILL OPEN: (1) the OOM victims are single test processes at ~7.3 GB anon RSS on a
+  7.9 GB `cpx32` (`factorycorpus_test` ×6, `factory-run` ×5, `verify-corpus-rows` ×2,
+  `full_test` ×1, kernel log since the last boots); those jobs still fail, now with the
+  process's own exit instead of a runner shutdown. (2) No OpenTofu state exists for the
+  fleet: `main.tf` has no `backend`, `infra/` holds no state, and the only recovered
+  `terraform.tfstate` is empty, so the README's `tofu apply -replace` path needs a
+  `tofu import` of both servers, both volumes, the ssh key and the reports bucket and its
+  policy (MinIO credentials included) before it can run. (3) The live boxes still lack
+  `ci-docker-gate.service` and the fstab ordering (`infra/README.md`, "The boot path").

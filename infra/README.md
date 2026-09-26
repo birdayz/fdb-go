@@ -265,6 +265,14 @@ from this template, three reboots):
 > so they still have the reboot-with-no-Docker failure this section describes. `user_data`
 > is pinned by `ignore_changes`, so the fix reaches a box only via
 > `tofu apply -replace=hcloud_server.runner_pool[N]`, one at a time, on an idle box.
+>
+> The watchdog and the runner unit's `[Service]` drop-in (`OOMPolicy=continue`,
+> `KillMode=process`) were installed on both live boxes in place on 2026-09-26, rendered
+> from this template's text, after both runners died of an OOM-killed job with nothing to
+> restart them (`TODO.md`, "The runner OOM-lifecycle fix never reached the live fleet").
+> The gate and its `Requires=` were NOT: they need the gate unit, which these boxes lack.
+> There is also no OpenTofu state for the fleet (`main.tf` has no `backend`), so
+> `-replace` needs the resources imported first.
 
 ## The 32 KiB `user_data` budget
 

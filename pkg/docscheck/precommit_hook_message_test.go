@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -340,5 +341,51 @@ func appendTo(t *testing.T, path, content string) {
 	defer f.Close()
 	if _, err := f.WriteString(content); err != nil {
 		t.Fatalf("append %s: %v", path, err)
+	}
+}
+
+// The repository is public, so the hook refuses a commit the secret scan
+// refuses, before anything else runs: a later step failing first would hide
+// the refusal behind an unrelated error, and one mutating the tree first would
+// scan something other than the commit. Both arms are driven: a refusing scan
+// stops the hook before `just generate`, a passing one lets it proceed.
+func TestPreCommitHookRunsTheSecretScanFirst(t *testing.T) {
+	t.Parallel()
+	hook := extractPreCommitHook(t)
+	for _, tc := range []struct {
+		name      string
+		scanExit  int
+		wantExit0 bool
+		wantCalls string
+	}{
+		{name: "refused", scanExit: 1, wantCalls: "secret-scan\n"},
+		{name: "clean", scanExit: 0, wantExit0: true, wantCalls: "secret-scan\ngenerate\nlint\nbuild\ntest\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := newStubRepo(t, hook, "")
+			calls := filepath.Join(dir, "calls.log")
+			writeFile(t, filepath.Join(dir, "stub", "just"), "#!/usr/bin/env bash\n"+
+				"echo \"${1:-}\" >> "+calls+"\n"+
+				"if [ \"${1:-}\" = secret-scan ]; then exit "+strconv.Itoa(tc.scanExit)+"; fi\nexit 0\n")
+			if err := os.Chmod(filepath.Join(dir, "stub", "just"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("bash", filepath.Join(dir, "hook.sh"))
+			cmd.Dir = dir
+			cmd.Env = append(os.Environ(), "PATH="+filepath.Join(dir, "stub")+":"+os.Getenv("PATH"))
+			raw, err := cmd.CombinedOutput()
+			if tc.wantExit0 != (err == nil) {
+				t.Fatalf("hook exit err=%v, want success=%v:\n%s", err, tc.wantExit0, raw)
+			}
+			got, _ := os.ReadFile(calls)
+			if string(got) != tc.wantCalls {
+				t.Fatalf("the hook ran %q, want %q: the secret scan must run first, and a refusal "+
+					"must stop the hook before anything else runs", got, tc.wantCalls)
+			}
+			if !tc.wantExit0 && !strings.Contains(string(raw), "the secret scan refused the staged content") {
+				t.Fatalf("a refused scan must say so:\n%s", raw)
+			}
+		})
 	}
 }
