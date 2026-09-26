@@ -266,8 +266,8 @@ func ValidateSPFreshConfig(c SPFreshConfig) error {
 
 // readSPFreshConfig is the configuration every SPFresh entry point runs with:
 // parseSPFreshConfig, then ValidateSPFreshConfig. The maintainer, the build,
-// the rebalancer, refine, recall, the integrity check and the search wrapper
-// all read through it, so no path runs over a configuration the maintainer
+// the rebalancer, refine, recall, the integrity check, the search wrapper and
+// the topology dump all read through it, so no path runs over a configuration the maintainer
 // would refuse (a 0-bit RaBitQ count reached the encoder's panic through the
 // rebalancer, which parsed without validating).
 func readSPFreshConfig(index *Index) (SPFreshConfig, error) {

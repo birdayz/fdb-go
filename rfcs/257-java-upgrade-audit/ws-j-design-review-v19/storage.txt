@@ -1,0 +1,81 @@
+**NAK.** I reviewed commit `1ad10b73e`. `ws-j-design.md` hashes to SHA256 `c58f713a8c07ec0b5bce1f4a76f1cca124cf0304da785f98de0014669295bfbd` over 3163 lines; I recomputed both.
+
+The decode rule, the save path, the carry, the version refusal and the lane table all hold against Java. The NAK is narrow: a fix for a v18 finding shipped without the pin two reviewers asked for (M1). Folding M1 and answering Low 1 should clear it on a delta re-confirmation.
+
+## MEDIUM
+
+**M1. The resumed-page round trip is fixed but no test covers it.**
+- **The fix.** `continuation.go:491` and `:512` now decode buffered values with `UnmarshalRecordAsJava`, and 4g.3 claims this.
+- **What v18 asked for.** Torvalds H1 said "pin a resumed-page read"; storage M2 said "pin a resume across that shape".
+- **What I found.** No test file touching either site changed in this commit, and the grep for closed-enum shapes under `query/` and `sqldriver` hits nothing relevant (it does hit the JVM spec as a control).
+- **Consequence.** If either line went back to `proto.Unmarshal`, everything would stay green, and a resumed page would again read the number where page one read NULL.
+- **INSERT…SELECT is not affected.** `executor.go:4165` is also covered through `asJava` at save time, which the held-record JVM spec pins.
+- **Fix.** Add a resume test over a STRUCT holding a closed enum with an undeclared number, and show it red→green by reverting `:491`.
+
+## LOW
+1. **`8e515423b`'s fixes still have no red run.** Torvalds raised it at v17 and all three reviewers repeated it at v18. v19 says nothing: 4g.11 lists only `wsj19-red`, which already contains `8e515423b`. Either run it or say explicitly why it is moot.
+2. **4g.10 cites the wrong Java lines and over-states the rule.**
+   - The citation `FDBRecordStore.java:4862-4884` (design `:2769`) is version-change logging. The rule is `getRecordCountForRebuildIndexes`, `:5062-5106`.
+   - "Any non-empty store" is too broad. When the rebuilt indexes sit on a single record type with a type-prefixed key, Java scans only that type's range (`:5068-5098`).
+3. **A spec comment still states the superseded mechanism.** `ws_j_index_fidelity_conformance_test.go:3136-3140` says "MessageTuple (getFieldOnMessage: an unset field is null)… a MessageTuple of the stored message". The same spec later says getFieldOnMessage reads the default, and 4g.6 replaced this reasoning with the deep copy. Grep for other copies.
+4. **Two routes are not measured on the JVM.**
+   - Fan type 7 through `FDBMetaDataStore` (`metadata_store.go:146`, `:171`) uses the same decoder but has no JVM row; storage v18 asked for one.
+   - `closedEnumField` (Java's per-field closedness) is pinned only against Go's own port. Label it a source reading.
+5. **The two `asJava` arms treat an undeclared number differently.**
+   - For a dynamic map value, `proto_closed_enums.go:1011` writes the default and drops the number. The scalar arm keeps the number as an unknown field.
+   - The held-record spec compares index KVs only, not record bytes. So "saved as Java reads it" is true for index entries; the record bytes differ from Java's re-save of the same bytes.
+6. **Unknown-field order when a singular message occurs twice** (source reading, and Java never writes this). `proto.Merge` (`:696`) appends the second occurrence's unknown fields after the first's; Java's `UnknownFieldSet` keeps them in number order.
+7. **The save-side walk has no cost figure.** `asJava` walks every save of a type that reaches a closed enum; only the decode was benchmarked.
+8. **Residue.**
+   - TODO's v11-v14 blocks (`TODO.md:14883, 14907, 14924, 14930, 14948`) still prescribe WIDENED without a superseded mark.
+   - `wsj19-red/*/TREE` says HEAD is `71ccd8cf8`, an unrelated commit. Its index tree `f7dd54ee` does equal `6b4b7817d`'s tree, so the red run itself stands; only the label is wrong.
+9. **The `?schema=` finding was filed as an unmeasured TODO**, not fixed and not raised with the owner. `CLAUDE.md` requires one or the other.
+
+## v18 findings
+- **Graefe**
+  - H1: resolved by the JVM held-record spec (red: Go wrote `(k,7)` and a count under 7; green: equal to Java).
+  - M1: resolved; fan type 7 is XXXXX in both engines, and the required record is refused.
+  - M2: resolved; 101 levels parse and 103 do not, and with v18's 2d+2 spec the boundary is pinned at exactly 101/102.
+  - L1 and L2: resolved by records 3-5.
+  - L3: resolved, measured through SQL.
+  - L4: resolved in code but not measured (Low 4).
+  - L5-L7: resolved.
+  - L8: the hierarchy half is resolved; the `8e515423b` half is open (Low 1).
+- **Torvalds**
+  - H1: resolved, except the resume pin (M1).
+  - H2: resolved.
+  - M1: resolved; the vtproto decodes are bounded by `vtBounded`.
+  - M2: resolved. My sweep over those trees, with extra spellings (`UnmarshalTo`, `UnmarshalNew`, `protodelim`, `proto.Merge`), finds 0 non-test lines outside the rule; the positive control is 12 lines inside `proto_closed_enums.go`.
+  - Lows: resolved, except `8e515423b`.
+- **Storage**
+  - H1: resolved via the catalog; `FDBMetaDataStore` is unpinned (Low 4).
+  - M1: resolved; the CHANGELOG and DIVERGENCES sentences now match the code.
+  - M2: fixed, but unpinned (M1).
+  - L1-L5 and L7: resolved.
+  - L6: resolved; the JVM greens are in the evidence and `8e515423b` is still open.
+
+## Checked and sound
+- **Lane table.** It matches `ArithmeticValue.java:406-522` row by row; both have 107 rows.
+- **Carry against Java's rules.**
+  - Absent `added_version` is read as 1 (`Index.java:227-233`).
+  - `subspace_key` is always written (`:664`).
+  - Every former-index and index rule in `MetaDataEvolutionValidator.java:486-661` that I checked is met.
+  - `record_type` is compared as a set, so a changed type list is CHANGED and not spliced.
+  - Java serves the cached stored metadata (`RecordLayerSchemaTemplate.java:154`, `:664-666`), so the carried numbering survives on the Java side.
+- **Conflicts.** `latestTemplateVersion`'s reverse scan with limit 1 has the conflict range the design claims. `TestFDB_CreateTemplate_ConcurrentSavesOfOneName` asserts `not_committed` and the retry verdicts for (3, 3), (3, 4) and (4, 3).
+- **Recursion accounting.** protobuf-go counts a map entry as a level (`codec_map.go:116,176`, `decode.go:222`), so the fast path and `merge`'s `remaining-2` both agree with Java.
+- **Save path.** `asJava` runs before key evaluation, indexing and marshalling. vtproto's marshal checks required fields too (`record_key_expression_vtproto.pb.go:149`), so a generated or dynamic record whose required enum is moved is refused at save by both marshal paths.
+- **Error class.** Only `frl`'s `errors.As(…, *RecordCoreError)` site is affected by `MetaDataError`'s new parent, and it is guarded.
+- **Index entries for an unset field.** `FieldKeyExpression.java:205` gives the null standin, which agrees with 4g.6's NULL query read.
+
+## Measured versus source reading
+- **Measured by me:**
+  - the hashes and line count;
+  - tree identity: the green and hook trees are `2e595339`, the commit's tree;
+  - the greps, each with a control;
+  - the red logs: parity 6 FAIL of 21, oracle 15/15 red;
+  - the green logs: parity 21/21, oracle 15/15;
+  - the hook: 96/96, 2 executed and the rest cached;
+  - the benchmark figures;
+  - the Java 4.14.2.0 and protobuf-go v1.36.11 sources cited above.
+- **Source readings, not run:** M1's consequence, and Lows 5-7.

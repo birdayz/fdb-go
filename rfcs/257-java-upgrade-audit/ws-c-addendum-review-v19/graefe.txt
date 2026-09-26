@@ -1,0 +1,78 @@
+**NAK.** I reviewed commit `97f21019d` (tree `c223253cf`), which is `6b4b7817d..97f21019d`.
+
+- **Design file:** I measured 2,985 lines from the committed blob. I could not compute the SHA256: `sha256sum`, `git diff` and `git grep` were refused. So `f55abdd0…` is the brief's figure, not something I checked.
+- **Method:** I read commits with `git show`. I searched the working tree, whose HEAD is `97f21019d`; the searches found the new symbols, so they were well-formed.
+- **Measured vs source:** "measured" means I read it in an evidence log or a git object; everything else is from reading source.
+
+The code changes are sound. The NAK is for two v18 findings that are still open and for text that claims more than the code does.
+
+## Query engine (Graefe lens)
+- **The planner's metric matches Java (source).**
+  - Java: `VectorIndexExpansionVisitor:191` → `VectorIndexHelper.getMetric:62-63` → `VectorIndexEngine.metricFromIndex:230-231`, which reads the metric key or its alias and defaults to Euclidean.
+  - Go: `VectorIndexMetric` (`hnsw_options.go:52-64`) now calls `hnswMetric` and `spfreshMetric`, the same readers the maintainers use (`readHNSWOptions:122`, `parseSPFreshConfig`). "One reader" is now literally true.
+  - The only other caller that passes `goForms=false` is the windowed validator (`vector_index_validation.go:28`), and a windowed index never becomes a vector candidate.
+  - Where Java throws, Go leaves the query unplannable; this is stated at the call site (`cascades_generator.go:3866-3871`).
+- **The non-vector error is Go-only and unreachable (source).** The `MetaDataError` for a non-vector index (`hnsw_options.go:62`) cannot be reached from the planner, which filters on index type first (`:3843`). Java's `metricFromIndex` has no type check at all.
+- **The scoped "no graph call" claim matches Java.** `VectorIndexMaintainer.java:432-449` sends both entries to the queue and `:453-467` replays them as a delete then an insert. `SlidingWindowIndexMaintainer.java:381-388` calls its delegate once with the old record and once with the new. `Update`'s body did not change in this revision.
+- **SPFresh as Go-only:** it is declared at `DIVERGENCES.md:3177`. One effect of this revision's error typing is not declared (finding 4).
+
+## Findings, most severe first
+
+1. **Low (measured): the strict SPFresh parse still has no red run.**
+   - 7.19 (`ws-c-design.md:2968`) says "the strict SPFresh parse and the typed refusal … are red on `6b4b7817d`'s tree".
+   - `wsj19-red/recordlayer/console.txt:35` shows only the typed-refusal check failing (`spfresh_layout_test.go:304`). The strict-parse checks (`:283-297`) passed, as they had to: `6b4b7817d` already contains the strict parse.
+   - So v18 Torvalds 3's first point is still open, in the very commit meant to correct 7.19's evidence.
+   - **Fix:** run the test on `d2e47b8bd`'s tree (the `wsc19-red` setup already uses it), or state that this check has no red→green run.
+
+2. **Low (checked in the committed file): one over-wide sentence was left unscoped.**
+   - `ws-c-design.md:2756-2757` still reads "[Superseded → 7.18: a save that leaves the vector entry unchanged reaches none of them, in either engine]".
+   - v18 Graefe 1 (`:2755-2756`) and storage 3 ("the 7.17 marker") both named it. 7.19's list of scoped sentences (`:2913-2915`) leaves it out.
+   - A queued or windowed save of an unchanged entry does reach `raBitQuantizerAdmits`.
+
+3. **Low (source): the "`MetaDataError`" claim is wider than the code.**
+   - These sentences say every SPFresh refusal is a `MetaDataError`:
+     - the CHANGELOG ("…metric other than Java's four… are refused… the refusal is a `MetaDataError`");
+     - 7.19 `:2937` ("every SPFresh entry point's");
+     - the test comment above `spfresh_layout_test.go:299`.
+   - A refused metric is actually an `IllegalArgumentError` (`spfresh_config.go:363`, returned unwrapped at `:274-276`), and the same test asserts that at `:293`.
+   - The code is defensible: Java's maintainer gets an `IllegalArgumentException` from `Metric.valueOf`, and only its validator wraps that in a `MetaDataException` (`VectorIndexMaintainerFactory.java:106-110`).
+   - **Fix:** limit the sentences to the range and parse refusals.
+
+4. **Low (source): the new error type changes a SQL error code, and nothing declares or tests it.**
+   - `translateFDBError` maps any `MetaDataError` to 42000 (`connection.go:1018-1020`).
+   - The DDL passes SPFresh's `RABITQ_NUM_EX_BITS` through unchecked (`ddl.go:478-479`). An SPFresh maintainer given such a configuration used to return an untyped error; it now surfaces as 42000.
+   - That is allowed for a Go-only feature, but it needs its own test. No SQL or sqldriver test pins it, and the CHANGELOG names the error class but not the SQL code.
+
+5. **Nit: the queue pin tests the maintainer, not the store.**
+   - It calls `SerializePendingWriteQueue` directly, so the store's queue path (`store.go:1196-1201`) is never run.
+   - "this pins that no skip reaches the queue" (the test comment) and "cannot reach the queue unnoticed" (`:2917-2918`) only cover the maintainer. A skip added in `store.go` would not turn it red.
+   - **Fix:** limit the claim, or drive the test through `SaveRecord`.
+
+6. **Nit: the evidence records are loose.**
+   - `wsc19-mutation/README` says the test file is "the only file each TREE lists"; each TREE lists three entries.
+   - Both TREEs share one timestamp and one hash (12:39:18), taken after both runs, so the mutated code is described only in prose. Keep the mutation diff or its hash.
+   - The `wsj19-red` TREE's HEAD is `71ccd8cf8`, an unrelated executor commit. The base is identified only by its index tree `f7dd54ee9` (= `6b4b7817d^{tree}`), and the README should say so.
+
+7. **Nit: the new SPFresh metric-agreement check cannot fail.**
+   - It compares `VectorIndexMetric` with `spfreshMetric`, which `VectorIndexMetric` calls, so the two cannot disagree. The value check is what gives the test its force, and `parseSPFreshConfig` is not part of the comparison.
+   - The non-vector `MetaDataError` has no test.
+   - The CHANGELOG's drop-and-add guidance names only "a metric in lower case"; the refusal covers any metric that is not one of Java's four names.
+
+## v18 findings
+| Finding | Status |
+|---|---|
+| Graefe 1 / storage 3 (scope of "no graph call") | Scoped in DIVERGENCES, CHANGELOG, TODO, `Update`'s comment and the 7.18 heading; the `:2756` sentence is still open (finding 2) |
+| Graefe 2 (green run not on a clean tree) | Answered; the hook TREEs list their files and their index trees equal the commit trees (measured) |
+| Graefe 3 / Torvalds 2 / storage 2 (superseded text) | Resolved |
+| Graefe 4 / Torvalds 1 / storage 1 (samples pin could not fail) | Resolved; mutation runs turned it red at `:2222`, and the queue pin at `:107` (measured) |
+| Graefe 5 (encoder panic) | Answered by gating; the three non-test `NewQuantizer` call sites and the 19 test lines match my search |
+| Torvalds 3 (red-evidence gaps) | Entry points: one spec each, three red and recall green with the reason given (measured). Part 1 unhashed and the adapter-based red: answered. Strict parse: still open (finding 1) |
+| Torvalds nits (duplicated parse, CHANGELOG wording, untyped errors) | Resolved; the typing is over-described (finding 3) |
+| Storage nits (drop guidance, minimal re-encoding) | Resolved |
+
+## Revisions 12–18
+Nothing I read is broken.
+- The pre-commit hooks passed 96 of 96 test targets on each commit's own tree: 4 executed for `97f21019d`, including `recordlayer_test`, and 2 for `1ad10b73e` (measured). Cached results are from runs of the same inputs.
+- The queue decode now goes through WS-J's `UnmarshalAsJava` and keeps Java's handling of enum numbers: truncation to int32 (`proto_closed_enums.go:780-782`) and the sign-extended unknown field (`:1094-1097`).
+- The sliding-window code, `hnsw.go`, the queue maintainer and `Update`'s body are unchanged.
+- The preserved boundaries are untouched.

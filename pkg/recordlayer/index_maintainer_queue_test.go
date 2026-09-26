@@ -82,7 +82,9 @@ var _ = Describe("Index maintainer pending queue", func() {
 	// VectorIndexMaintainer.serializePendingWriteQueue writes them
 	// (VectorIndexMaintainer.java:432-449): the skip of common entries is
 	// update's, and the queue's replay deletes then inserts. Both engines;
-	// this pins that no skip reaches the queue.
+	// this pins that no skip reaches the maintainer's serialization (it calls
+	// the maintainer directly, so the store's queue path and the replay are
+	// not covered here).
 	It("serializes both entries of a queued save that keeps the vector", func() {
 		index := NewVectorIndex("queued_unchanged", Concat(Field("price"), Field("quantity")), 2)
 		builder := baseBuilder()

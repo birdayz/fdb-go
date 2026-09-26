@@ -1500,7 +1500,7 @@ var _ = Describe("Vector pending entry conformance", func() {
 // accepts saves until its centroid is established (statistics sampled and
 // maintained on every insert, threshold 11) and after it refuses every save
 // that quantizes (one that inserts or deletes a node), every search and every
-// delete; a cosine index refuses its first save; a search of the empty index is
+// delete of a present node; a cosine index refuses its first save; a search of the empty index is
 // served. A save that leaves a record's vector unchanged makes no graph call in
 // Java (StandardIndexMaintainer.update drops the entry common to the old and
 // the new record), so it is served even after the centroid; Go skips it the

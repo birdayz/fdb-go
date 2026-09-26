@@ -2184,9 +2184,10 @@ var _ = Describe("HNSW with RaBitQ", func() {
 	// graph's edges and storing the new vector.
 	It("leaves a node already in the graph as it is", func() {
 		const dims = 4
-		// Every insert samples its vector and none rolls the samples up or
-		// forms a centroid, so the samples subspace holds one per node and an
-		// insert that reached addToStatsIfNecessary would add one.
+		// Every insert after the first samples its vector (firstInsert does not
+		// sample) and none rolls the samples up or forms a centroid, so the
+		// samples subspace holds one per node but the first, and an insert
+		// that reached addToStatsIfNecessary would add one.
 		ss := specSubspace().Sub("hnsw-rabitq-present")
 		config := HNSWConfig{
 			NumDimensions: dims, M: 4, MMax: 4, MMax0: 8, EfConstruction: 100,

@@ -15192,7 +15192,7 @@ ws-c-design.md 7.19 hold the decisions:
   template_carry_fdb_test.go`, JVM "WS-J a new version carried from the target's template".
 - WS-C: the "no graph call" claims scoped (a queued save and a windowed index still delete and
   re-insert), the samples pin made able to fail, a queue pin, one metric reader per vector engine,
-  SPFresh refusals typed.
+  SPFresh range and parse refusals typed `MetaDataError` (a metric keeps Java's IllegalArgument class).
 NEXT: the v19 gates (`ws-j-design-review-v19/`, `ws-c-addendum-review-v19/`), then step 4 (the
 existence policies: CREATE SCHEMA over a gone version is 42F55 in the FDB catalog; the in-memory
 catalog's XX000).
@@ -15211,3 +15211,13 @@ catalog's XX000).
   failed for another reason, the driver's Go-only keyspace); not measured. Measure both engines over a quoted mixed-case schema and a lower-case unquoted DSN, then port
   Java's lookup (the yamsql corpus pins the spellings that must keep working).
 
+
+- [ ] **Go's INSERT VALUES does not take a vector.** `INSERT INTO DOCS VALUES (1, [1.0, 0.0, 0.0])`
+  into a `VECTOR(3, HALF)` column answers 22000 (type mismatch), and
+  `CAST([1.0, 0.0, 0.0] AS VECTOR(3, HALF))` answers 0A000 ("CAST target type not expressible by the
+  walker"), measured with `pkg/relational/sqldriver/spfresh_refused_config_fdb_test.go`'s schema.
+  Java's corpus inserts vectors with the yamsql `!! !v32 [...] !!` literal and notes CAST "doesn't work
+  with prepared statements" (`third_party/.../vector-documentation-queries.yamsql:35`); whether Java's
+  non-prepared INSERT takes the CAST is not measured. Measure Java, then give Go the same reach. Found
+  while pinning the SQLSTATE of a refused SPFresh configuration (RFC-257 WS-C revision 20), which uses
+  a k-NN query instead.

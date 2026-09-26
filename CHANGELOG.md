@@ -562,11 +562,15 @@ assets carry (`RELEASE.md` §Versioning).
   re-insert the node, as Java's do.
 - An SPFresh index option that does not parse, and an SPFresh metric other than Java's four
   `Metric` names, are refused instead of read as their default ("cosine" was maintained as
-  Euclidean while the planner read it as cosine), and every SPFresh entry point (the rebalancer,
-  refine, recall, the integrity check) refuses a configuration the maintainer refuses rather than
-  running with it; the refusal is a `MetaDataError`. An SPFresh index an earlier build stored with a
-  configuration now refused (0 extra bits, an option that does not parse, a metric in lower case)
-  must be dropped and added again (the options are immutable under evolution).
+  Euclidean while the planner read it as cosine), and every SPFresh entry point (the build, the
+  search, the rebalancer, refine, recall, the integrity check, the topology dump) refuses a
+  configuration the maintainer refuses rather than running with it. A value out of range or an option
+  that does not parse is refused as a `MetaDataError`, which a SQL statement reports as SQLSTATE
+  42000; a metric that is not one of Java's four names is an `IllegalArgumentError`, as Java's
+  `Metric.valueOf` refuses it (SQL cannot spell such a metric). An SPFresh index an earlier build
+  stored with a configuration now refused (0 extra bits, an option that does not parse, a metric
+  that is not one of Java's four names) must be dropped and added again (the options are immutable
+  under evolution).
 - The planner takes a vector index's metric from the maintainer's own reader, so a metric the
   maintainer refuses gives no candidate: an HNSW index with an empty metric was a Euclidean
   candidate, and an SPFresh "cosine" metric a cosine candidate over an index maintained as

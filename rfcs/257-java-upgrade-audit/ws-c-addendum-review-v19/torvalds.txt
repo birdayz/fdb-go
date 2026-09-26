@@ -1,0 +1,89 @@
+**NAK.** I reviewed candidate `97f21019d` (tree `c223253cf`). The design file hashes to SHA256 `f55abdd08aff91b7862574799808c85face618252adec14a518c7b74bafc1b90` and has 2985 lines; I measured both from the committed blob. The review was read-only. "Measured" means I read it in the evidence logs or git objects; everything else is from reading source.
+
+The code revision 19 changed is sound. The NAK has two causes. Two v18 findings are claimed resolved but are not. And several new sentences claim more than the code or the evidence shows. Every fix is to evidence or text, except finding 5, which also changes a test.
+
+## Findings, most severe first
+
+**1. Low–Medium (measured): the strict SPFresh parse has still never been shown red. v18 Torvalds 3.1 is open.**
+- The design says the strict parse "and the typed refusal … are red on `6b4b7817d`'s tree in `evidence/wsj19-red`" (ws-c-design.md:2968-2969).
+- In `wsj19-red/recordlayer/console.txt:35-36`, only `spfresh_layout_test.go:304` fails, the typed 0-bit refusal.
+- The test uses `t.Errorf`, so every other assertion ran. The strict-parse assertions (:287 "does not parse", :295 `cosine` gives an IllegalArgumentError, :306 the "sixteen" MetaDataError) passed.
+- They have to pass there: revision 18 (`6b4b7817d`) is the commit that added the strict parse.
+- **Fix:** run the test on `d2e47b8bd`'s tree with an adapter, as `wsc19-red/entry-points` did. Otherwise, correct the sentence and keep the finding open.
+
+**2. Low (source): a superseded sentence named by the v18 gate is still unscoped.**
+- ws-c-design.md:2756-2757 still says "a save that leaves the vector entry unchanged reaches none of them, in either engine".
+- Graefe v18 finding 1 and storage v18 finding 3 both named this sentence.
+- A queued save or a windowed index does reach those refusal points: the replay deletes, then inserts (`index_maintainer_queue.go:52-74`; `VectorIndexMaintainer.java:461-466`).
+- 7.19's list of scoped places (:2913-2915) leaves it out.
+
+**3. Low (source): the "typed refusals" claim is wider than the code.**
+- The claim appears in two places:
+  - 7.19:2937-2938: "every SPFresh entry point's [refusals] are `MetaDataError`s";
+  - the CHANGELOG: "the refusal is a `MetaDataError`".
+- `readSPFreshConfig` → `parseSPFreshConfig` → `spfreshMetric` refuses a bad metric with an **IllegalArgumentError** (`spfresh_config.go:363`). The test pins that class at `spfresh_layout_test.go:295`.
+- The test's own comment (:298-299) is scoped correctly; the other two copies are not.
+
+**4. Low (source): the entry-point table has four rows, but the text says one per entry point.**
+- The spec is titled "every entry point", and 7.19:2970 says "the spec is now one per entry point".
+- Three more exported entry points read `readSPFreshConfig` and have no row:
+  - `BuildSPFreshIndex` (`spfresh_index_maintainer.go:1124`);
+  - `SearchSPFreshIndex` (`spfresh_verify_api.go:52`);
+  - `SPFreshDebugTopology` (`spfresh_write.go:625`).
+- Hypothesis from source: switching any of these three back to `parseSPFreshConfig` would not make any spec fail.
+- **Fix:** add the rows, or name the four covered entry points in the title and in 7.19.
+
+**5. Low (source): the "both calls agree" pin compares a function with itself.**
+- The loop at `spfresh_layout_test.go:311-325` compares `VectorIndexMetric` with `spfreshMetric`. But `VectorIndexMetric`'s SPFresh branch is just `return spfreshMetric(index)` (`hnsw_options.go:55`), so both sides come from the same code.
+- The maintainer's reader, `parseSPFreshConfig`, is not compared at all. If it grew its own metric parse again (the v18 duplication nit), the test would stay green.
+- Only the `want` values have teeth. The "pins that both calls agree" claim (:2935) overstates this.
+- **Fix:** compare against `parseSPFreshConfig(idx).Metric`, with dimensions set.
+
+**6. Low (text/measured): calling part 1 "not relied on" removes revision 18's red evidence.**
+- 7.19:2983-2984 says part 1 of `wsc18-red` "stays unhashed and is not relied on".
+- Part 1 holds the only red for revision 18's main fixes (`wsc18-red/TREE:13-17`):
+  - the unchanged-vector skip ("leaves the graph as it is");
+  - the JVM EXTRA_BITS re-save at 9 and 15 bits;
+  - the planner-metric pin.
+- 7.18's evidence paragraph still cites `wsc18-red`.
+- **Fix:** re-run part 1 hashed on `d2e47b8bd`'s tree (the same worktree and script as the entry-points run), or state that those reds are unhashed but still cited.
+
+## Nits
+- **Samples count:** `vector_index_test.go:2187-2189` says the samples subspace "holds one per node". `firstInsert` never samples (`hnsw.go:574-621`), so 12 nodes give 11 samples.
+- **Queue pin scope:** 7.19:2916-2917 says "a skip cannot reach the queue unnoticed". Only serialization is pinned. A skip in the `UpdateFromQueue` replay would pass.
+- **Mutation README:**
+  - It says each TREE lists "the only file", but each TREE lists three entries.
+  - Both TREEs carry the same `saved: 12:39:18`, after both runs, not one after each restore.
+  - "Exactly one sample and nothing else" is from source; Gomega truncated the diff (`samples/console.txt:63-67`). Label it as source in 7.19:2980-2981.
+- **`wsj19-red` TREEs:** they record `HEAD: 71ccd8cf8`, 19 commits before `6b4b7817d`. Only `index tree f7dd54ee9` (= `6b4b7817d^{tree}`) supports the README's "at 6b4b7817d". Say so.
+- **`readSPFreshConfig` doc comment** (`spfresh_config.go:267-272`): it leaves out the debug topology, which 7.18 lists.
+- **Conformance comment:** "every delete" at `vector_index_conformance_test.go:1502-1503`, where DIVERGENCES says "every delete of a present node".
+- **DIVERGENCES:** "and so are refused after the centroid in both" for the queue and window paths is from source (no JVM row). Label it.
+
+## Checked and holding
+- **Metric readers (source):**
+  - The only non-test metric readers are `hnswMetric` (`hnsw_options.go:73`) and `spfreshMetric` (`spfresh_config.go:347`). The DDL (`ddl.go:469-471`) only writes the option.
+  - `javaMetricName` and `spfreshMetricNamed` each have one caller.
+  - The `readHNSWOptions` refactor behaves as before: `err` is now declared once, and the closures see nil.
+  - `VectorIndexMetric` also behaves as before. Its non-vector error class changed, but its only caller ignores the class (`cascades_generator.go:3865-3873`).
+- **SPFresh config reads:** 8 non-test `readSPFreshConfig` call sites, all shown in one search.
+- **Quantizer:** 3 non-test `NewQuantizer` call sites and 19 test lines in 3 files, as 7.19 says (measured by search).
+- **Samples pin can now fail:** sampling probability 1 and maintain probability 0 (`hnsw.go:640-647`), and `before[2]` is asserted non-empty. Mutation 1 is red at `:2222` (measured).
+- **Queue pin:** it matches `VectorIndexMaintainer.java:437-448`. Mutation 2 is red at `index_maintainer_queue_test.go:107` (measured).
+- **Entry-point red (measured):** 4 specs ran; the rebalancer, refine and integrity are red and recall is green (console :31-63, :89-90). I read the adapter (`zz_redrun_adapter.go:5`).
+- **Hooks (measured):**
+  - `97f21019d`: index tree equals the commit tree; `recordlayer_test` executed; "Executed 4 out of 96 tests: 96 tests pass".
+  - `1ad10b73e`: 0 differing files; index tree equals the commit tree (`2e595339f`); 2 of 96 executed, all 96 pass.
+- **"No graph call" scoping:** done in DIVERGENCES, the CHANGELOG, TODO, the `Update` comment, 7.18's heading and ws-d. The markers at :2740 and :2845 are present.
+
+## v18 findings
+| Finding | Status |
+|---|---|
+| Graefe 1, Storage 3 (scope of "no graph call") | Mostly resolved; the 7.17 marker is still open (finding 2) |
+| Torvalds 1, Storage 1, Graefe 4 (samples pin) | Resolved; mutation-verified |
+| Torvalds 2, Graefe 3, Storage 2 (superseded text) | Resolved |
+| Torvalds 3 (red evidence gaps) | Entry-point arms and adapter note resolved; strict parse **open** (finding 1); part 1 answered by withdrawing it (finding 6) |
+| Graefe 2 and green-TREE nits | Answered; the TREE script now lists each differing file |
+| Nits: duplicated parse, CHANGELOG wording, panic, drop guidance, re-encoding scope | Resolved; untyped errors resolved only partly (finding 3) |
+
+Revisions 12 to 18 are not contradicted by anything I read. The preserved boundaries are untouched in WS-C's part; WS-J's part of `1ad10b73e` is gated separately.

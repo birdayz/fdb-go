@@ -2136,11 +2136,12 @@ maintained in its own transaction that leaves a record's vector entry unchanged 
 served in both, as it makes no graph call (Java's `StandardIndexMaintainer.update`
 removes the entry common to the old and the new record, and Go's
 `vectorIndexMaintainer.Update` does too; Go deleted and re-inserted the node before);
-two paths still delete and re-insert such a node, in both engines, and so are refused
-after the centroid in both: a save queued for a WRITE_ONLY_WITH_QUEUE index (both
-entries are serialized, and the replay deletes then inserts) and a windowed index,
-whose sliding window calls its delegate once with the old record and once with the
-new. A search of an empty index is served (the JVM spec "An
+two paths still delete and re-insert such a node, in both engines, and so, read from
+both sources (no JVM row covers them), are refused after the centroid in both: a save
+queued for a WRITE_ONLY_WITH_QUEUE index, which commits (both entries are serialized,
+with no graph call) and whose drain is refused (the replay deletes then inserts), and
+a windowed index, whose sliding window calls its delegate once with the old record and
+once with the new. A search of an empty index is served (the JVM spec "An
 HNSW index with more RaBitQ extra bits than the quantizer encodes is refused where
 Java constructs it" compares each operation's outcome). The refusal is an
 `IllegalArgumentError`, Java's class; Guava's `checkArgument` gives Java's no message

@@ -308,20 +308,39 @@ func TestParseSPFreshConfigRefusesWhatDoesNotParse(t *testing.T) {
 	}}); !errors.As(err, &mde) {
 		t.Errorf("an option that does not parse: %v, want a MetaDataError", err)
 	}
-	// The planner's metric is the maintainer's: an SPFresh index reads its
-	// metric through the same reader, and the default is Euclidean.
+	// The planner's metric is the maintainer's: VectorIndexMetric agrees with
+	// the metric of the configuration the maintainer parses
+	// (parseSPFreshConfig), and the default is Euclidean. A metric the
+	// maintainer refuses is refused by the planner's read too, with the
+	// maintainer's class.
 	for _, c := range []struct {
-		opts map[string]string
-		want VectorMetric
+		metric string // "" leaves the option unset
+		want   VectorMetric
 	}{
-		{map[string]string{}, VectorMetricEuclidean},
-		{map[string]string{IndexOptionSPFreshMetric: "COSINE_METRIC"}, VectorMetricCosine},
+		{"", VectorMetricEuclidean},
+		{"EUCLIDEAN_METRIC", VectorMetricEuclidean},
+		{"COSINE_METRIC", VectorMetricCosine},
+		{"EUCLIDEAN_SQUARE_METRIC", VectorMetricEuclideanSquare},
+		{"DOT_PRODUCT_METRIC", VectorMetricInnerProduct},
 	} {
-		idx := &Index{Name: "v", Type: IndexTypeVectorSPFresh, Options: c.opts}
-		got, err := VectorIndexMetric(idx)
-		parsed, perr := spfreshMetric(idx)
-		if err != nil || perr != nil || got != c.want || parsed != got {
-			t.Errorf("%v: VectorIndexMetric %v %v, spfreshMetric %v %v, want %v", c.opts, got, err, parsed, perr, c.want)
+		opts := map[string]string{IndexOptionSPFreshNumDimensions: "8"}
+		if c.metric != "" {
+			opts[IndexOptionSPFreshMetric] = c.metric
 		}
+		idx := &Index{Name: "v", Type: IndexTypeVectorSPFresh, Options: opts}
+		got, err := VectorIndexMetric(idx)
+		cfg, perr := parseSPFreshConfig(idx)
+		if err != nil || perr != nil || got != c.want || cfg.Metric != got {
+			t.Errorf("%q: VectorIndexMetric %v %v, parseSPFreshConfig's %v %v, want %v", c.metric, got, err, cfg.Metric, perr, c.want)
+		}
+	}
+	if _, err := VectorIndexMetric(idx); !errors.As(err, &iae) {
+		t.Errorf("the planner's read of metric cosine: %v, want the maintainer's IllegalArgumentError", err)
+	}
+	// A non-vector index has no vector metric: the Go-only refusal is a
+	// MetaDataError (the planner filters on the index type first).
+	if _, err := VectorIndexMetric(&Index{Name: "v", Type: IndexTypeValue}); !errors.As(err, &mde) ||
+		mde.Message != `index "v" of type "value" is not a vector index` {
+		t.Errorf("a non-vector index: %v", err)
 	}
 }

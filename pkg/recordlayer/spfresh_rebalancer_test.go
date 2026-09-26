@@ -2,7 +2,9 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -85,8 +87,10 @@ var _ = Describe("SPFresh rebalancer + coarse splits", func() {
 	// by every entry point, not only the maintainer: the rebalancer, refine,
 	// recall and the integrity check read their configuration through
 	// readSPFreshConfig, where they parsed without validating and could reach
-	// the encoder's panic. One spec per entry point, so a regression in any one
-	// reddens its own spec rather than stopping at the first.
+	// the encoder's panic. One spec per exported entry point that reads the
+	// configuration (the maintainer's own refusal is pinned with the
+	// maintainer), so a regression in any one reddens its own spec rather than
+	// stopping at the first.
 	DescribeTable("every entry point refuses an index configuration the maintainer refuses",
 		func(name string, call func(storeBuilder func(*FDBRecordContext) (*FDBRecordStore, error), name string) error) {
 			storeBuilder, _ := setup(name, 8)
@@ -130,6 +134,38 @@ var _ = Describe("SPFresh rebalancer + coarse splits", func() {
 					}
 					_, rerr := MeasureSPFreshRecall(ctx, store, name, 3, 2, 1)
 					return nil, rerr
+				})
+				return err
+			}),
+		Entry("the build", "spf_zero_bits_build",
+			func(sb func(*FDBRecordContext) (*FDBRecordStore, error), name string) error {
+				return BuildSPFreshIndex(ctx, sharedDB, sb, name, 42)
+			}),
+		Entry("the search", "spf_zero_bits_search",
+			func(sb func(*FDBRecordContext) (*FDBRecordStore, error), name string) error {
+				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, serr := sb(rtx)
+					if serr != nil {
+						return nil, serr
+					}
+					_, qerr := SearchSPFreshIndex(store, name, []float64{0, 1}, 3)
+					return nil, qerr
+				})
+				return err
+			}),
+		Entry("the topology dump", "spf_zero_bits_topology",
+			func(sb func(*FDBRecordContext) (*FDBRecordStore, error), name string) error {
+				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, serr := sb(rtx)
+					if serr != nil {
+						return nil, serr
+					}
+					// The dump reports as text; a refused configuration is its
+					// "config err=" line.
+					if s := SPFreshDebugTopology(rtx, store, name); strings.HasPrefix(s, "config err=") {
+						return nil, errors.New(s)
+					}
+					return nil, nil
 				})
 				return err
 			}),

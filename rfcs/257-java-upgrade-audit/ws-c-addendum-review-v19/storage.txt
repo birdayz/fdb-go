@@ -1,0 +1,66 @@
+**NAK (storage lens).** Candidate `97f21019d` (tree `c223253cf`). The design is SHA256 `f55abdd08aff91b7862574799808c85face618252adec14a518c7b74bafc1b90`, 2985 lines; I measured both on the committed blob. The review was read-only. "Measured" below means read in the evidence logs or in git objects; everything else is from source.
+
+Revision 19 changes no write path. The NAK is on one v18 item that is still open, one evidence sentence that the log contradicts, and one new claim that is wider than the code. All three fixes are text, plus one optional red run.
+
+## Findings, most severe first
+
+**1. Low (measured): 7.19 says the strict parse was red, but only the typed arm was.**
+- ws-c-design.md:2968 says "the strict SPFresh parse and the typed refusal … are red on `6b4b7817d`'s tree".
+- `wsj19-red/recordlayer/console.txt:35` shows exactly one failing line, `spfresh_layout_test.go:304`, which is the MetaDataError check for 0 extra bits.
+- `t.Errorf` does not stop the test, so the strict-parse arms (`:275-296`) ran and passed. That is expected: revision 18 landed the strict parse.
+- So Torvalds v18 3, bullet 1 ("strict SPFresh parse has no red") is still unanswered.
+- **Fix:** either run the spec on `d2e47b8bd`'s tree (the entry-point run already has that tree and adapter), or reword the sentence to cover only the typed arm and call the strict parse a pin with no red.
+
+**2. Low (source): one of the four "no graph call" sentences v18 named is still unscoped.**
+- ws-c-design.md:2756-2757 (the 7.17 marker) still reads "[Superseded → 7.18: a save that leaves the vector entry unchanged reaches none of them, in either engine]".
+- Storage v18 3 and Graefe v18 1 both named this sentence. 7.19's list at :2913-2915 leaves it out.
+- **Control:** the same search found every other copy, and each is scoped or describes a direct save:
+  - DIVERGENCES:2136;
+  - `vector_index_maintainer.go:208`;
+  - `index_maintainer_queue_test.go:39`;
+  - `chaos_test.go:726`;
+  - `vector_index_conformance.java:513`.
+
+**3. Low (source): "the refusal is a MetaDataError" is wider than the code.**
+- The claim appears at CHANGELOG.md:567 and ws-c-design.md:2937-2938 ("every SPFresh entry point's").
+- An unknown or lower-case metric is refused as `IllegalArgumentError` (`spfresh_config.go:346-363`). `parseSPFreshConfig` (:298-301) and `readSPFreshConfig` (:273-276) return that error unwrapped, and the code's own test pins that class (`spfresh_layout_test.go:293-296`).
+- **Effect over SQL:** `translateFDBError` maps a MetaDataError to 42000 (`embedded/connection.go:1018-1020`) and does not map an IAE. So two SPFresh configurations that need the same remedy (drop and add again) now surface with different SQL codes, and neither code is pinned.
+- **Fix:** scope both sentences (the metric keeps `Metric.valueOf`'s class) and state the resulting SQLSTATE split in the CHANGELOG.
+
+## Nits
+- **Agreement arm can't fail.** In the `spfresh_layout_test.go:313-326` table, `VectorIndexMetric` calls `spfreshMetric`, so `parsed != got` can never be true; only the `c.want` check pins anything. So ":2935 pins that both calls agree" overstates. To pin "the maintainer's metric", compare with `parseSPFreshConfig(idx).Metric`.
+- **The queued save commits; its drain is refused.** `SerializePendingWriteQueue` makes no graph call (`index_maintainer_queue.go:24-47`, Java `:432-449`); `UpdateFromQueue` is what refuses. ws-c-design.md:2909-2911 and DIVERGENCES:2139-2141 should say "the drain is refused".
+- **Queue pin reach.** The pin calls the maintainer directly. A skip placed in `updateOneIndex` (`store.go:1195-1201`) would bypass it, so "cannot reach the queue unnoticed" (:2916) covers only the maintainer.
+- **"Exactly one sample and nothing else" (:2980) is from source.** The mutation diff is truncated (`samples/console.txt:63-65`), so the log doesn't show which subspace moved.
+- **":2950 storage's v18 review measured the config reads":** that was a search, not a measurement.
+
+## Storage questions
+- **Writes after revision 19 (source):** `hnsw.go`, `index_maintainer_queue.go`, `sliding_window_index_maintainer.go` and `Update`'s logic are not in either commit's diff.
+  - A direct save skips common entries.
+  - `UpdateWhileWriteOnly` goes through `Update` (`vector_index_maintainer.go:321-323`).
+  - The queue serializes both entries.
+  - The sliding window splits its delegate calls (Java `SlidingWindowIndexMaintainer.java:381-388`, read).
+  - Graph bytes, access info and sample layout are unchanged.
+- **9-15 extra bits on the two scoped paths:** both engines delete and re-insert, so both refuse after the centroid (the windowed save, and the queue drain). This is from source; no JVM row covers these paths.
+- **Queue decode (source):** WS-J replaced `unmarshalPendingQueuePayload` with `UnmarshalAsJava` (`pending_writes_queue.go:199,227`). It is equivalent: the same int32 truncation (`proto_closed_enums.go:780-781`), sign-extended unknown value (:1096-1098), last declared occurrence, and required check (:101-104). Queue entries are never rewritten, so no written bytes depend on it. The only pin is the fuzz target.
+- **SPFresh against stored indexes:**
+  - Measured: the refine, rebalancer and integrity arms are red on `d2e47b8bd` with the unvalidated parse (`entry-points/console.txt:81-86`). Recall is green, and 7.19 explains why.
+  - Source: all 8 non-test config reads go through `readSPFreshConfig`.
+  - The `NewQuantizer` count holds: 3 non-test call sites, and 19 test lines in 3 files, which is 7.19's own control.
+- **Mutations (measured):** queue `:107` "to have length 1" and samples `:2222` are red, and both specs are green in the hook.
+- **Hooks (measured):** 96/96 pass at `1ad10b73e` (2 executed) and at `97f21019d` (4 executed; `recordlayer_test` was one of them). Each index tree equals its commit's tree (`2e595339f`, `c223253cf`).
+- **Revisions 12-18 hold** (source plus hook). The map-order path now decodes entries with the Java rule (`record_wire_map_order.go:321-325`), bounded by the record decode.
+
+## v18 findings
+
+| Finding | Status |
+|---|---|
+| Storage 1, Torvalds 1, Graefe 4 (samples) | Resolved: a sampling graph, and mutation 1 turns the spec red |
+| Storage 2, Graefe 3, Torvalds 2 (superseded text) | Resolved |
+| Storage 3, Graefe 1 (scope) | Open (finding 2); queue pin added |
+| Graefe 2, green TREE | Answered; TREEs now list their files |
+| Graefe 5 / encoder panic | Answered (gating) |
+| Torvalds 3 (red gaps) | Bullets 2-4 answered; bullet 1 open (finding 1) |
+| Nits (duplicate parse, CHANGELOG, minimal encoding, typed errors) | Resolved; typed errors are over-claimed (finding 3) |
+
+The preserved boundaries are untouched.

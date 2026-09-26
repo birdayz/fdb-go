@@ -1,0 +1,89 @@
+**Verdict: NAK.** I reviewed commit `1ad10b73e` (tree `2e595339`, the same tree the hook and green TREE files record). `ws-j-design.md` hashes to SHA256 `c58f713a8c07ec0b5bce1f4a76f1cca124cf0304da785f98de0014669295bfbd` over 3163 lines; I recomputed both. I read commit objects, the Java 4.14.2.0 sources and the evidence logs, and ran nothing.
+
+The decode rule, the save move and the default read are sound. The NAK is for two Mediums in step 3 and one missing pin that all three v18 gates asked for.
+
+## MEDIUM
+
+**M1. The catalog lane check does not use Java's names for the key functions.** Read from source; not run.
+- Java builds a key function's Value under a separate `valueFunctionName` (`LongArithmethicFunctionKeyExpression.java:121-123`). `subtract`, `multiply` and `divide` map to `sub`, `mul` and `div` (`:247-252`). Go's registry has all three names.
+- `index_lanes.go:120` asks `IsArithmeticFunction(fn.GetName())`. That is false for `multiply`, so the key is typed UNKNOWN and gets no lane check. This goes wrong both ways:
+  - **Go refuses what Java plans:** `add(multiply(a,b), 1)` gets 42F59, while Java finds MUL_LL and then ADD_LI.
+  - **Go stores what Java can never plan:** `multiply(s, 1)` with `s` a STRING.
+- The same over-refusal happens for `add(recordType(), 1)`. Java's `RecordTypeValue` is LONG (`RecordTypeValue.java:126`); Go types it UNKNOWN.
+- DIVERGENCES.md's entry at :3015 declares a refusal only for "a Go-only function key", so this refusal is undeclared.
+- **Fix:** map key-function names to Java's value names, give RecordTypeKeyExpression the type LONG, and pin each alias.
+
+**M2. The resumed-page fix has no test.**
+- The fix at `continuation.go:491,512` landed, but nothing tests it:
+  - `git grep UnmarshalRecordAsJava` finds no caller in any test;
+  - no executor or relational test mentions a closed enum.
+- Reverting either line stays green.
+- INSERT…SELECT is now also covered by the save's `asJava` (`store.go:587`). The continuation site is not.
+- All three v18 gates asked for a resumed-read pin. Add one Java-versus-Go test: a sort or recursive continuation over a STRUCT whose closed enum holds an undeclared number.
+
+**M3. The lane table and the planner are two copies of Java's operator table (the mandatory Graefe review).**
+- I checked all 107 rows against `ArithmeticValue.java:406-522`, and they match. `ArithmeticValue.Type()` (`values.go:3661`) agrees with the table on every ADD, SUB, MUL, DIV and MOD row.
+- But nothing ties the two together:
+  - `ArithmeticLanes()` has no caller;
+  - no unit test walks the table;
+  - WSJLANE drives only the 11 bitand and `bitmap_bucket_offset` shapes, so none of the five arithmetic operators is tested.
+- The planner's own typing and evaluation give a result for every pair of operand types, where Java refuses pairs with no row.
+- **Is the split sound?** It is sound as an interim state only:
+  - `values` is the right home for the table, since the catalog and the DDL generator can import it and the planner cannot import the catalog.
+  - It needs a pin that drives every row through both `LookupArithmeticLane` and `ArithmeticValue.Type()`.
+  - Section 6 needs to name `values.LookupArithmeticLane` as the one table the planner resolves lanes from, for the five arithmetic operators as well as the bit operators.
+
+## LOW
+1. **A stale test oracle.** `query/executor/name_oracle_test.go:19-21,38` still reads a declared default, and says this matches production.
+2. **The default-read comment claims too much.** `values.go:1047` says "a query never hands it the stored record". Java does hand it over when the type repository lacks the result type (`QueryResult.java:263-265`), which is the case for core `executeQuery` with `EvaluationContext.EMPTY` (`FDBRecordStoreBase.java:2116`). Go's behaviour is right, because the executor's only production importer is `relational/core/embedded`. The sentence should say it is about SQL.
+3. **Error class.**
+   - The MetaDataException markers (`errors.go:121-127`) and `OutermostJavaError`'s package test miss `protoname.InvalidNameError`; its Java class (`ProtoUtils.java:153`) extends MetaDataException.
+   - `translateFDBError` (`embedded/connection.go:1018`) still matches a MetaDataError anywhere in the chain. That is the rule 4g.8 corrected in `deserializeTemplate`.
+4. **Two recursion details, from source.**
+   - The `errJavaRecursion` text (`:106`) is protobuf-java 3.x's. The JVM runs 4.29.x (pulled in by `protobuf-java-util:4.29.3`, `MODULE.bazel:125`), while record layer 4.14.2.0 pins 3.25.9; the design should say which one is the target.
+   - The occurrence-by-occurrence decode counts a map entry as a level (`:549`, `:770`), and protobuf-go's own decode does not. So the same bytes can get a different depth verdict depending on whether they hold an undeclared number.
+5. **Test 7's measurement is not recorded.** Test 7 (`:2008-2011`) says 4g.11 records the measurement; 4g.11 does not. The measured refusal for the adjacent test 2 was "field renamed … B" (`wsj19-red/sqldriver/console.txt:74`), not "record type key changed".
+6. **Still unanswered for a third revision:** the red run for `8e515423b`'s fixes.
+7. **Some reads use the other decode function.** `frl`'s header read (`cmd/frl/internal/cmd/store.go:188`) and several continuation decodes (`executor.go:3263`, `continuation.go:821,1192,1202`) go through `UnmarshalAsJava`, which resolves extensions with the global registry. `UnmarshalAsJava`'s own doc (`:108-112`) says headers and continuations are read by `UnmarshalVTAsJava`. Behaviour is the same today, since nothing registers extensions of those types.
+8. **Unpriced cost.** The `holdsUndeclared` walk runs on every save of a type that reaches a closed enum. The benchmark measures only the decode.
+9. **Two over-claims and a citation.**
+   - `CHANGELOG.md:534-536` says deep bytes are "refused at parse in both engines", which `DIVERGENCES.md:3325` (unknown groups) contradicts.
+   - 4g.10 cites `FDBRecordStore.java:4862-4884` for the record-count rule; the rule is at `:5062-5106`.
+10. **A deferral.** The `?schema=` divergence is filed in TODO.md with a fix recipe instead of being fixed. That is the owner's call; it is outside WS-J.
+
+## v18 findings
+- **Graefe:**
+  - H1 resolved (the JVM's held save/update/delete); M1 resolved (fan type 7 gives XXXXX in both); M2 resolved (101 and 103 levels).
+  - L1 and L2 resolved (the spec's records 3, 4 and 5); L3 resolved (WSJDEFAULT, four queries); L4 fixed in code, with Java's half from source only.
+  - L5, L6 and L7 resolved.
+  - L8: the error hierarchy is resolved; the `8e515423b` red run is open.
+- **Torvalds:**
+  - H1 resolved, apart from the pin (M2); H2 resolved; M1 resolved.
+  - M2 resolved. Measured: over `pkg/recordlayer`, `pkg/relational` and `cmd`, the grep's hits are only test files and `proto_closed_enums.go`, and those hits are the positive control.
+  - Lows resolved, except the `8e515423b` red run.
+- **Storage:**
+  - H1 and M1 resolved; M2 resolved apart from M2 above.
+  - L1, L2, L3 and L7 resolved (benchmark: 3.44 → 3.66 µs, and 4.38 µs with an undeclared number).
+  - L4 resolved in `deserializeTemplate`; the sibling site is Low 3.
+  - L5 partly resolved (Low 5).
+  - L6: the JVM greens are supplied (21/21 and 15/15); 94 of the hook's 96 results were cached.
+
+## Checked and sound
+- **Java's parse of shared bytes:** protobuf-java's closed-enum occurrence merge, the unknown-field order, the map rules (DynamicMessage and generated), and `CheckInitialized` after the merge.
+- **The save:** `asJava` is applied in the single save function and in the dry-run and batch saves.
+- **The default read:** Java's key expressions index an unset field that declares a default as NULL (`FieldKeyExpression.java:205`), so index scans and filters agree with the new read.
+- **One operand reader:** the operand is read as Java reads it, and the planner's import of the internal package is legal.
+- **The carry:**
+  - record-type keys, union numbers, EQUIVALENT, CHANGED and former indexes, and the version arithmetic;
+  - the concurrent saves in (z);
+  - Java's rebuild threshold;
+  - `Type.java:774-792`'s list of primitive types.
+
+## Step 4 still owes
+- 42F55 for CREATE SCHEMA over a gone version in both catalogs (the in-memory one answers XX000 today).
+- Section 6's move of lane resolution into Value construction, which should take M3 with it.
+- Section 5 (enum DDL).
+
+## Measured versus hypothesis
+- **Measured by me:** the hash, line count and tree; the greps, each with a control; the 107 rows; the evidence logs.
+- **Source hypotheses, not run:** M1, Low 2's Java half, Lows 3 and 4, and the closedness-per-field arm (L4).

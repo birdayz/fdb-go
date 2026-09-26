@@ -2753,8 +2753,10 @@ non-empty graph calls, and `Insert.firstInsert` (Insert.java:274-285) for a metr
 translation-preserving. Revision 16 refused at maintainer construction, which refused every save of
 a Euclidean index that Java serves until its centroid is established. `parseHNSWConfig` now keeps
 the count, and `hnswGraph.raBitQuantizerAdmits` refuses at exactly those points (an
-`IllegalArgumentError`; Java's has no message) [Superseded → 7.18: a save that leaves the vector
-entry unchanged reaches none of them, in either engine]. `rabitq.NewQuantizer` no longer replaces an
+`IllegalArgumentError`; Java's has no message) [Superseded → 7.18: a save that
+`vectorIndexMaintainer.Update` applies with both records and that leaves the vector entry unchanged
+reaches none of them, in either engine; a queued save's drain and a windowed index's save still do,
+7.19]. `rabitq.NewQuantizer` no longer replaces an
 unsupported count by 4 (`rabitq.ValidNumExBits` is the encoder's range); SPFresh's validation, which
 admitted 0 extra bits and then stored 4-bit codes sized as 1-bit ones, now requires 1 to 8
 [Superseded → 7.18: and every SPFresh entry point runs it]. A JVM
@@ -2906,18 +2908,21 @@ changed. It lands with WS-J design v19's code (ws-j-design.md 4g).
 
 **Scope of "no graph call" (graefe 1, storage 3).** The claim holds for a save that
 `vectorIndexMaintainer.Update` applies with both records. Two paths still delete and re-insert a node
-whose vector is unchanged, in both engines, and so are refused after the centroid with 9 to 15 extra
-bits in both: a save queued for a WRITE_ONLY_WITH_QUEUE index (`SerializePendingWriteQueue` sends
-both entries, `VectorIndexMaintainer.java:432-449`, and the replay deletes then inserts, :453-467), and
-a windowed index, whose sliding window calls its delegate once with the old record and once with the
-new (`SlidingWindowIndexMaintainer.java:381-388`). The sentences are scoped where they stood:
+whose vector is unchanged, in both engines, and so, read from both sources (no JVM row covers them),
+are refused after the centroid with 9 to 15 extra bits in both: a save queued for a
+WRITE_ONLY_WITH_QUEUE index, which commits (`SerializePendingWriteQueue` sends both entries and makes
+no graph call, `VectorIndexMaintainer.java:432-449`) and whose drain is refused (`UpdateFromQueue`
+deletes then inserts, :453-467), and a windowed index, whose sliding window calls its delegate once
+with the old record and once with the new (`SlidingWindowIndexMaintainer.java:381-388`). The sentences are scoped where they stood:
 DIVERGENCES' VECTOR entry, the CHANGELOG, TODO's revision-18 entry, `vectorIndexMaintainer.Update`'s
 comment and 7.18's heading paragraph (marked). A new pin, "serializes both entries of a queued save
-that keeps the vector", asserts the queue's serialization keeps both equal entries, so a skip cannot
-reach the queue unnoticed.
+that keeps the vector", asserts the maintainer's serialization keeps both equal entries, so a skip
+there cannot pass unnoticed; it calls the maintainer directly, so the store's queue path
+(`updateOneIndex`) and the drain (`UpdateFromQueue`) are not pinned by it.
 
 **The samples pin (torvalds 1, storage 1, graefe 4).** "leaves a node already in the graph as it is"
-now runs on a graph that samples every insert and never rolls samples up or forms a centroid
+now runs on a graph that samples every insert after the first (`firstInsert` does not sample) and
+never rolls samples up or forms a centroid
 (`SampleVectorStatsProbability` 1, `MaintainStatsProbability` 0, `StatsThreshold` 2^20), and asserts
 the samples subspace is not empty before the second insert, so an insert that reached
 `addToStatsIfNecessary` would change it. The queue test's "samples included" comment, whose index has
@@ -2932,11 +2937,20 @@ now points here.
 **One metric reader per engine (torvalds nit).** `hnswMetric(index, goForms)` is the HNSW metric read
 of both the maintainer (`readHNSWOptions`) and the planner (`VectorIndexMetric`), and `spfreshMetric`
 the SPFresh one of `parseSPFreshConfig` and `VectorIndexMetric`, so "parsed by the maintainer's own
-reader" is now literal. `TestParseSPFreshConfigRefusesWhatDoesNotParse` pins that both calls agree.
+reader" is now literal. `TestParseSPFreshConfigRefusesWhatDoesNotParse` compares `VectorIndexMetric`
+with the metric of the configuration `parseSPFreshConfig` returns, for Java's four names and the
+default, and asserts that the planner's read of a refused metric has the maintainer's class.
 
-**Typed refusals (torvalds nit).** `ValidateSPFreshConfig`'s refusals, and so every SPFresh entry
-point's, are `MetaDataError`s, as an HNSW index's refused configuration is Java's
-`MetaDataException` or `IllegalArgumentException`; the same test asserts the class.
+**Typed refusals (torvalds nit).** A value `ValidateSPFreshConfig` refuses (out of range) and an
+option that does not parse are `MetaDataError`s, as an HNSW index's refused configuration is Java's
+`MetaDataException`. A metric that is not one of Java's four names keeps `Metric.valueOf`'s class,
+an `IllegalArgumentError`, as Java's maintainer receives it (only Java's validator wraps it,
+`VectorIndexMaintainerFactory.java:106-110`). Over SQL a `MetaDataError` surfaces as 42000
+(`translateFDBError`, `embedded/connection.go`), pinned by `TestFDB_SPFreshRefusedConfigurationIsA42000`
+through a k-NN query; SQL spells only Java's four metric names, so the other class does not reach
+SQL. `VectorIndexMetric`'s refusal of a non-vector index is a Go-only `MetaDataError` the planner
+never reaches (it filters on the index type first). `TestParseSPFreshConfigRefusesWhatDoesNotParse`
+asserts each class.
 
 **The encoder's panic (graefe 5, torvalds nit).** `rabitq.Quantizer.Encode` still panics for a count
 outside 1 to 8, which `NewQuantizer` accepts. No path in the tree reaches it with such a count. The
@@ -2947,13 +2961,14 @@ operation that encodes (insert, the delete of a present node, both searches) cal
 `raBitQuantizerAdmits` first, which refuses 9 to 15. The two SPFresh ones (`spfreshNewRaBitQ`, and
 the zero-norm cosine scorer in `spfresh_build.go`) take an `SPFreshConfig`, every function taking one
 is unexported, and every config they are handed is `readSPFreshConfig`'s, whose validation refuses
-a count outside 1 to 8 (storage's v18 review measured the config reads).
+a count outside 1 to 8 (storage's v18 review searched the config reads).
 The "no path from a Quantizer to that panic" item of v17 storage 1 is answered by that gating, the
 "or" its Graefe and Torvalds versions offered, not by an error return.
 
 **CHANGELOG (torvalds nit, storage nit).** The metric line says an SPFresh "cosine" metric used to
 give a cosine candidate over an index maintained as Euclidean; the drop-and-add guidance names every
-configuration now refused (0 extra bits, an option that does not parse, a lower-case metric).
+configuration now refused (0 extra bits, an option that does not parse, a metric that is not one of
+Java's four names) and the SQLSTATE a refused configuration surfaces with.
 
 **DIVERGENCES' minimal re-encoding (storage nit).** Scoped: measured for one varint value; tags and
 lengths are from protobuf-java's source.
@@ -2961,25 +2976,29 @@ lengths are from protobuf-java's source.
 **Evidence (graefe 2, torvalds 3, storage nit).** `wsc18-green-commit`'s TREE counted one working file
 differing from the index and did not name it (the evidence script counted and did not list); the
 green that revision 18 rests on is the pre-commit hook's, whose index tree equals the commit's
-(`f7dd54ee9`), and the script now lists each differing file. Of the red gaps, as measured (revision
-19's first text said the queue pin and the other entry points were red in `evidence/wsj19-red`;
-that run on `6b4b7817d`'s tree showed the queue pin GREEN and never ran the entry points, which
-`6b4b7817d` already refuses at, so the sentence is replaced by this one):
-- the strict SPFresh parse and the typed refusal (`TestParseSPFreshConfigRefusesWhatDoesNotParse`)
-  are red on `6b4b7817d`'s tree in `evidence/wsj19-red` (its recordlayer part);
-- the entry points: the spec is now one per entry point (a table), so a regression in one reddens
-  its own spec instead of stopping at the first. On `d2e47b8bd`'s tree, with `readSPFreshConfig` as
-  the old unvalidated parse (`evidence/wsc19-red/entry-points`, its TREE names the adapter), the
-  rebalancer, refine and the integrity check are red; recall is green, because its old unvalidated
-  parse was followed by a search through the maintainer, which refused, so that arm pins behaviour
-  that already held;
-- the queue pin and the samples pin hold on the old trees by construction (each pins behaviour
-  revision 18 already had), so red→green cannot show that they can fail. Mutation runs 1 and 2 of
-  this milestone do (`evidence/wsc19-mutation`, each applied alone, counted present, restored):
-  a present node reaching `addToStatsIfNecessary` before its early return reddens "leaves a node
-  already in the graph as it is" (with these settings that adds exactly one sample and nothing
-  else, the half the v18 gate found could not fail), and the queue's serialization dropping a pair
-  of equal entries reddens "serializes both entries of a queued save that keeps the vector";
-- part 1 of `wsc18-red` stays unhashed and is not relied on; the planner-only red of
-  `TestVectorPlan_MetricIsTheMaintainers` was an edited copy (7.18 now says so).
+(`f7dd54ee9`), and the script now lists each differing file. The red evidence for revisions 18 to 20
+is `evidence/wsc20-red`: the current tests on `d2e47b8bd`'s tree (the commit before revision 18),
+hashed, with the adapter and the one sed its README names. It replaces part 1 of `wsc18-red`, whose
+tree was not recorded.
+- The strict SPFresh parse and the typed refusals (`TestParseSPFreshConfigRefusesWhatDoesNotParse`)
+  are red there in every arm. On `6b4b7817d`'s tree (`evidence/wsj19-red`) only the typed arm was
+  red, since that tree already parses strictly.
+- The entry points: the spec is a table with a row for each exported entry point that reads the
+  configuration: the rebalancer, refine, recall, the integrity check, the build, the search and the
+  topology dump. On `d2e47b8bd` the rebalancer, refine, topology-dump and integrity-check rows are
+  red. The build (which ran `ValidateSPFreshConfig` itself), the search and recall (both reached the
+  maintainer, which validated) are green there: they pin behaviour that already held.
+- Revision 18's unchanged-vector skip ("leaves the graph as it is when a save keeps the vector"), the
+  EXTRA_BITS Euclidean re-saves at 9 and 15 bits and `TestVectorPlan_MetricIsTheMaintainers` are red
+  there.
+- The queue pin and the samples pin hold on the old trees by construction, so red→green cannot show
+  that they can fail. Mutation runs 1 and 2 of this milestone do (`evidence/wsc19-mutation`, each
+  applied alone, counted present, restored; the mutations are its `samples.patch` and
+  `queue.patch`): a present node reaching `addToStatsIfNecessary` before its early return reddens
+  "leaves a node already in the graph as it is" (with these settings that adds one sample and
+  nothing else, read from source: the console's diff is truncated), and the maintainer's
+  serialization dropping a pair of equal entries reddens "serializes both entries of a queued save
+  that keeps the vector".
+- The planner-only red of `TestVectorPlan_MetricIsTheMaintainers` in `wsc18-red` was an edited copy
+  (7.18 says so).
 
