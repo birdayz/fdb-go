@@ -4,12 +4,12 @@
 //
 // The distinction is not pedantic. A pull request whose workflow runs are held
 // at `action_required` — awaiting maintainer approval, which this repository
-// imposes on every run whose actor is github-actions[bot], see the header of
-// .github/workflows/frl-pin-bump.yml — reports `mergeStateStatus: UNSTABLE` and
-// `gh pr checks` prints "no checks reported on the '<branch>' branch". Held
-// runs are created, then never surface as check runs. Neither signal is an
-// error, so a merge decision made from either reads "nothing failed" out of
-// "nothing ran".
+// imposes on every run whose actor is github-actions[bot], measured in the header
+// of the since-removed .github/workflows/frl-pin-bump.yml (git history) — reports
+// `mergeStateStatus: UNSTABLE` and `gh pr checks` prints "no checks reported on
+// the '<branch>' branch". Held runs are created, then never surface as check
+// runs. Neither signal is an error, so a merge decision made from either reads
+// "nothing failed" out of "nothing ran".
 //
 // That inversion has already reached master: PR #637 (bot/frl-pin-bump) merged
 // with zero concluded checks, and on 2026-08-05 the CI run for that same branch

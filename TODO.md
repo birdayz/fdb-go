@@ -9305,6 +9305,9 @@ covered by the correctness suite and the golden plan diff, not by this table.
   `actions: write`, which the dispatch call needs), and `ci.yml` gained the `workflow_dispatch`
   trigger. If tomorrow's Reconcile still lists `#769` as ABSENT, the dispatched runs were held
   too and a token with a real actor is the remaining fix.
+  **Superseded by the frl fold (PR #786):** `cmd/frl` is a package of the root module, and the pin,
+  `frl-pin-bump.yml` and its dispatch are deleted, so the `#769` count has no cause once #786
+  merges; close #769 then (the bot keeps running on master until that merge).
   **Corrected while reviewing:** a draft blamed the coverage lane's `timeout-minutes: 150` and
   raised it; the six cancelled runs lasted 3, 55, 11, 67, 8 and 51 minutes with no
   maximum-execution-time annotation, so the cap never fired and the cancellations are the

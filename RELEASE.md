@@ -46,6 +46,9 @@ provides the machinery, not the act. When the maintainer chooses to cut `vX.Y.Z`
    notes filled (wire format, SQL, FDB options, required versions); open a fresh `## [Unreleased]`.
 4. If anything touched the wire format, it is called out and backed by passing conformance +
    differential + stress runs (default expectation: nothing did).
-5. `git tag vX.Y.Z` + publish a GitHub release pointing at the changelog entry.
+5. `git tag vX.Y.Z && git push origin vX.Y.Z`. The tag push runs `.github/workflows/frl-release.yml`,
+   which builds the `frl` binaries and publishes the GitHub release (linking `CHANGELOG.md` at the
+   tag). `frl` is a package of the root module, so `go install fdb.dev/cmd/frl@vX.Y.Z` resolves the
+   same tag.
 
 No tag is cut automatically by CI or by this document.

@@ -1,7 +1,7 @@
 # frl
 
-Operator and developer CLI for the Go FoundationDB Record Layer. Separate
-Go module so library consumers of `fdb.dev` don't inherit CLI deps.
+Operator and developer CLI for the Go FoundationDB Record Layer, a package of
+the `fdb.dev` module (it installs at the project's release tags).
 
 See **[docs/operator-guide.md](docs/operator-guide.md)** for the full
 wiring guide (Go + Java apps, both metadata paths). This README is a

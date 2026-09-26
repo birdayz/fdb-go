@@ -11,9 +11,9 @@ questions a user upgrading between two refs needs: wire format, SQL behaviour, F
 semantics, and required dependency versions.
 
 This changelog starts **2026-06-20**; earlier history is in `git log`. The first tagged release is
-**v0.1.0** (2026-08-26). The `frl` CLI ships from a parallel nested-module tag, `cmd/frl/v0.1.0` —
-that form is what makes `go install fdb.dev/cmd/frl@vX.Y.Z` resolve the same build the release
-assets carry (`RELEASE.md` §Versioning).
+**v0.1.0** (2026-08-26). v0.1.0 shipped the `frl` CLI from a parallel nested-module tag,
+`cmd/frl/v0.1.0`; from the next release `frl` is a package of the root module and ships under the
+project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (`RELEASE.md`).
 
 ## [Unreleased]
 
@@ -34,6 +34,14 @@ assets carry (`RELEASE.md` §Versioning).
   **1.26.x** (the `MODULE.bazel` / `go.mod` pins; the CI doc-guard enforces docs match them).
 
 ### Changed
+- **`frl` is a package of the root module.** `cmd/frl` had its own `go.mod`, tied to the library by
+  a `go.work` for development and by an `fdb.dev` pin for `go install`; a change to both sides
+  needed a pin bump before `go install fdb.dev/cmd/frl@latest` compiled again, which a nightly bot
+  maintained. The workspace, the nested module, its pin and the bot are gone. `frl` releases under
+  the project's `vX.Y.Z` tag (the release workflow now triggers on it), `install.sh` installs those
+  releases and still the `cmd/frl/v0.1.0` one, and CI's go install lane builds `cmd/frl` from the
+  root module without cgo. Library consumers' requirement graph is unchanged: the root `go.mod`
+  already listed every `frl` dependency, which Bazel builds from.
 - **Database paths fold like every other unquoted identifier, and the DSN takes names as given**, as
   in Java. `CREATE DATABASE /test/x` now stores `/TEST/X` (Go stored the path as written, a catalog
   row Java's DDL never writes), `CREATE`/`DROP SCHEMA /test/x/s1` fold the path before splitting it,

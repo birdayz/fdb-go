@@ -39,9 +39,9 @@ generate: ensure-buf generate-mocks generate-parser generate-frl
     .tools/buf generate
     bazelisk run //:gazelle
 
-# Regenerate protobuf code for the `frl` CLI module (separate go.mod, separate
-# buf.yaml under cmd/frl/). Output goes to cmd/frl/gen/, consumed by the CLI
-# only — never by the library module.
+# Regenerate protobuf code for the `frl` CLI (its own buf.yaml under cmd/frl/).
+# Output goes to cmd/frl/gen/, consumed by the CLI only — never by the library
+# packages.
 generate-frl: ensure-buf
     rm -rf cmd/frl/gen/
     cd cmd/frl && ../../.tools/buf generate

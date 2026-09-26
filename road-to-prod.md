@@ -833,7 +833,8 @@ stop. Three green runs are on record and they do not settle it.
   built it; everywhere else `import fdb` bound to an empty implicit namespace package. 100/100 api and
   30/30 directory seeds pass after the fix. The 07-17 stress failure is root-caused (Tier 1).
 - Repo SETTING (owner action, not code): Actions cannot create PRs, so `frl-pin-bump` has failed
-  27/27 — flip "Workflow permissions → allow PR creation".
+  27/27 — flip "Workflow permissions → allow PR creation". Moot once PR #786 merges: `cmd/frl` joins
+  the root module and the pin-bump bot is deleted.
 
 Booked by THIS revision, from defects the verification pass found:
 
