@@ -109,6 +109,38 @@ func TestGroupKeyStripRetainsBoundIdentity(t *testing.T) {
 	}
 }
 
+// TestGroupKeyStripDecidesBySegments pins that the single-source strip reads the
+// reference's segments. The caller tests the display TEXT for the source's name
+// plus a dot, so one quoted identifier whose text begins that way
+// ("foo.tableA.A2" under FROM "foo.tableA", valid-identifiers.yamsql) reaches the
+// helper with a stripped text of "A2". Its one segment does not account for the
+// strip, so it keeps its own name; a qualified reference still strips, and a
+// key with no segments (an expression) keeps the text rebuild.
+func TestGroupKeyStripDecidesBySegments(t *testing.T) {
+	t.Parallel()
+	value := exactFlatGroupKey(t, "T", "foo.tableA.A2")
+
+	oneSegment := logical.GroupKey{Display: "foo.tableA.A2", Bare: "foo.tableA.A2", Segs: []string{"foo.tableA.A2"}, Value: value}
+	if got := stripGroupKeyLeadingSegment(oneSegment, "A2"); got.Display != "foo.tableA.A2" || got.Bare != "foo.tableA.A2" ||
+		got.Qualified || len(got.Segs) != 1 || got.Value != value {
+		t.Fatalf("a single quoted identifier was stripped to %+v, want it unchanged", got)
+	}
+
+	qualified := logical.GroupKey{
+		Display: "foo.tableA.A2", Bare: "A2", Qualifier: "foo.tableA", Qualified: true,
+		Segs: []string{"foo.tableA", "A2"}, Value: value,
+	}
+	if got := stripGroupKeyLeadingSegment(qualified, "A2"); got.Display != "A2" || got.Bare != "A2" ||
+		got.Qualified || got.Qualifier != "" || len(got.Segs) != 1 || got.Value != value {
+		t.Fatalf("the qualified reference stripped to %+v, want bare A2", got)
+	}
+
+	expression := logical.GroupKey{Display: "T.A + 1", Value: value}
+	if got := stripGroupKeyLeadingSegment(expression, "A + 1"); got.Display != "A + 1" || got.Bare != "A + 1" || got.Value != value {
+		t.Fatalf("a key without segments stripped to %+v, want the text rebuild", got)
+	}
+}
+
 func TestGroupAliasPreservesBareBoundStar(t *testing.T) {
 	t.Parallel()
 	q, err := parseQueryFromSelect(t, "SELECT * FROM t GROUP BY 2 AS id, 1")

@@ -408,6 +408,15 @@ func indexComparisonToProto(c predicates.Comparison, columnType values.Type) (*g
 			return &gen.Comparison{NullComparison: &gen.NullComparison{IsNull: protoBool(false)}}, nil
 		}
 	}
+	// An enum column's comparand is promoted to the enum, which no
+	// SimpleComparison carries: Java's IndexComparison.fromComparison refuses
+	// it with a RecordCoreException ExceptionUtil leaves unmapped, XXXXX
+	// (RFC-257 WS-J section 5, F10; the oracle shape enum_predicate_index,
+	// measured). IS NULL and IS NOT NULL above are NullComparisons and pass.
+	if _, isEnum := columnType.(*values.EnumType); isEnum {
+		return nil, api.NewError(api.ErrCodeUnknown,
+			"attempt to create PoJo index comparison from unsupported comparison")
+	}
 	var typ gen.ComparisonType
 	switch c.Type {
 	case predicates.ComparisonEquals:

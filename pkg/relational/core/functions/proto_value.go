@@ -328,6 +328,18 @@ func convertScalarProtoValue(fd protoreflect.FieldDescriptor, val any) (protoref
 		if v, ok := val.(string); ok {
 			return protoreflect.ValueOfBytes([]byte(v)), nil
 		}
+	case protoreflect.EnumKind:
+		// A string is promoted to the column's enum as Java's STRING_TO_ENUM
+		// does; nothing else is (an integer has no promotion to an enum, and
+		// NULL never reaches here).
+		if s, ok := val.(string); ok {
+			n, err := values.StringToEnumNumber(fd.Enum(), s)
+			if err != nil {
+				// INVALID_ENUM_VALUE, which ExceptionUtil leaves INTERNAL_ERROR.
+				return protoreflect.Value{}, api.NewError(api.ErrCodeInternalError, err.Error())
+			}
+			return protoreflect.ValueOfEnum(protoreflect.EnumNumber(n)), nil
+		}
 	case protoreflect.MessageKind:
 		// UUID columns are stored as the tuple_fields.UUID message
 		// (most_significant_bits, least_significant_bits). Convert here

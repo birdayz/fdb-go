@@ -115,6 +115,7 @@ go_library(
     deps = [
         "//gen",
         "//pkg/recordlayer/protoname",
+        "//pkg/recordlayer/protoscope",
         "//pkg/recordlayer/vectorcodec",
         "@com_github_google_uuid//:uuid",
         "@org_golang_google_protobuf//proto",

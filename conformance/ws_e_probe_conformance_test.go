@@ -1270,8 +1270,8 @@ var _ = Describe("WS-E target oracle v5", func() {
 		} {
 			o.prepared(nested, nil, c)
 		}
-		// STRING into ENUM and UUID columns, literal and bound (separate schemas: Go cannot
-		// declare the enum yet, WS-J F6, and must still be measured on UUID).
+		// STRING into ENUM and UUID columns, literal and bound, one schema per column
+		// type so each probe's setup declares only the type it measures.
 		enumSchema := "CREATE TYPE AS ENUM CLR ('RED', 'GREEN') CREATE TABLE EN (id BIGINT, c CLR, PRIMARY KEY (id))"
 		for _, c := range []wseCase{
 			wseDML("insert_string_literal_into_enum", "INSERT INTO EN VALUES (1, 'RED')", "SELECT id, c FROM EN ORDER BY id"),

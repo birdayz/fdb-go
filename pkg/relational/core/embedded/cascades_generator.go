@@ -2411,9 +2411,38 @@ func materializePageRow(
 		if err != nil {
 			return nil, err
 		}
-		row[i] = materializeDriverValue(v)
+		row[i] = materializeDriverValue(enumValuesAsNames(v, rs.ColumnType(i+1)))
 	}
 	return row, nil
+}
+
+// enumValuesAsNames hands an enum column to the client as its value's name, as
+// Java's RowStruct.getString does (ProtoUtils.toUserIdentifier of the value
+// descriptor's name, RowStruct.java:214-215): in the value layer an enum
+// carries its declared number, an int64 only its type tells apart from a
+// BIGINT. An array of enums is the same per element. A number the enum does
+// not declare is left as it is (a closed enum's undeclared number reads unset,
+// so none reaches here).
+func enumValuesAsNames(v any, t values.Type) any {
+	switch typed := t.(type) {
+	case *values.EnumType:
+		if n, ok := v.(int64); ok {
+			if member, found := typed.LookupValueByNumber(int32(n)); found { //nolint:gosec
+				return member.Name
+			}
+		}
+	case *values.ArrayType:
+		if elems, ok := v.([]any); ok && typed.ElementType != nil {
+			if _, isEnum := typed.ElementType.(*values.EnumType); isEnum {
+				out := make([]any, len(elems))
+				for i, e := range elems {
+					out[i] = enumValuesAsNames(e, typed.ElementType)
+				}
+				return out
+			}
+		}
+	}
+	return v
 }
 
 // preflightTxBudget enforces the whole-transaction time budget before a page

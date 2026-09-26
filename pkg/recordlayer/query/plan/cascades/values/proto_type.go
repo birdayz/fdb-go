@@ -62,6 +62,7 @@ import (
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer/protoname"
+	"fdb.dev/pkg/recordlayer/protoscope"
 )
 
 // wrappedArrayFieldName is Java's NullableArrayTypeUtils.getRepeatedFieldName()
@@ -676,6 +677,9 @@ func (p *TypeProtoRepository) compileLocked() (protoreflect.FileDescriptor, erro
 	// p.messages in the form the emitter (and any test asserting on it) sees.
 	buildable := proto.Clone(fdp).(*descriptorpb.FileDescriptorProto)
 	absolutizeSyntheticTypeNames(buildable)
+	// A result type may hold two enums that share a value name (Java's DDL
+	// allows it); the synthesized file scopes them as the records file does.
+	protoscope.ScopeEnumValuesAsJava(buildable)
 	fd, err := protodesc.NewFile(buildable, resolver)
 	if err != nil {
 		return nil, &ProtoTypeError{

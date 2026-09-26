@@ -28,6 +28,7 @@ import (
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/protoscope"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -4472,7 +4473,16 @@ func goToProtoScalarValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.
 	case protoreflect.EnumKind:
 		switch n := v.(type) {
 		case int64:
+			// The enum carrier: an enum-typed value holds its declared number.
 			return protoreflect.ValueOfEnum(protoreflect.EnumNumber(n)), nil
+		case string:
+			// A string assigned to an enum column is promoted as Java's
+			// STRING_TO_ENUM does (the INSERT … VALUES converter's rule).
+			num, err := values.StringToEnumNumber(fd.Enum(), n)
+			if err != nil {
+				return protoreflect.Value{}, api.NewError(api.ErrCodeInternalError, err.Error())
+			}
+			return protoreflect.ValueOfEnum(protoreflect.EnumNumber(num)), nil
 		}
 	case protoreflect.MessageKind:
 		// A UUID column is the tuple_fields.UUID message. UPDATE SET uuid_col =
@@ -6162,7 +6172,7 @@ func copyElement(tfd, sfd protoreflect.FieldDescriptor, v protoreflect.Value) (p
 		tgtVal := tfd.Enum().Values().ByName(srcVal.Name())
 		if tgtVal == nil {
 			return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
-				"enum value %s is not declared by %s", srcVal.Name(), tfd.Enum().FullName())
+				"enum value %s is not declared by %s", srcVal.Name(), protoscope.JavaFullName(tfd.Enum()))
 		}
 		return protoreflect.ValueOfEnum(tgtVal.Number()), nil
 	default:

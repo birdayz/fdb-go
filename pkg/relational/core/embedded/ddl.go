@@ -215,6 +215,7 @@ func buildSchemaTemplate(s *antlrgen.CreateSchemaTemplateStatementContext) (*met
 		return nil, err
 	}
 
+	registerEnumDefinitions(s.AllTemplateClause(), b)
 	if err := registerStructDefinitions(s.AllTemplateClause(), b); err != nil {
 		return nil, err
 	}
@@ -282,6 +283,31 @@ func trimIdentifierQuotes(s string) string {
 	return s
 }
 
+// registerEnumDefinitions is the enum pass: CREATE TYPE AS ENUM registers an
+// auxiliary type as Java's DdlVisitor.visitEnumDefinition does (:480-490):
+// the name an identifier, the values the string literals as written
+// (normalizeStringLiteral), numbered 0..n-1 in declaration order, the type
+// not nullable (a column's nullability is the column's). Java registers it
+// inside the clause loop that partitions the other clauses (:519-521), so
+// before any struct or table is visited: it runs first here too, which is what
+// makes a later struct or table of the same name the one refused. The builder
+// emits the enum only where a table's closure reaches it
+// (fileEmitter.enums).
+func registerEnumDefinitions(clauses []antlrgen.ITemplateClauseContext, b *metadata.Builder) {
+	for _, clause := range clauses {
+		ed := clause.EnumDefinition()
+		if ed == nil {
+			continue
+		}
+		literals := ed.AllSTRING_LITERAL()
+		enumValues := make([]api.EnumValue, len(literals))
+		for i, l := range literals {
+			enumValues[i] = api.NewEnumValue(functions.StripStringLiteralQuotes(l.GetText()), i)
+		}
+		b.AddAuxiliaryType(api.NewEnumType(functions.NormalizeIdentifier(ed.Uid().GetText()), enumValues, false))
+	}
+}
+
 // registerStructDefinitions is the struct pass: CREATE TYPE AS STRUCT
 // registers an auxiliary type (Java's DdlVisitor.visitStructDefinition
 // builds a table-without-primary-key through the SAME column parser and
@@ -322,16 +348,13 @@ func registerStructDefinitions(clauses []antlrgen.ITemplateClauseContext, b *met
 // DIFFERENT template than the DDL declared — a view or SQL function would
 // simply vanish, and every later reference to it surfaces as a misleading
 // "table does not exist" — the accept-and-drop failure mode this file bans.
-// Java supports all of these (DdlVisitor visitEnumDefinition /
-// visitSqlInvokedFunction / visitViewDefinition), so each rejection is a
-// named parity gap, not a divergence: SQL functions are RFC-201 Phase 4.
-// Struct definitions are handled by the struct pass above (RFC-204).
+// Java supports both (DdlVisitor visitSqlInvokedFunction /
+// visitViewDefinition), so each rejection is a named parity gap, not a
+// divergence: SQL functions are RFC-201 Phase 4. Struct and enum definitions
+// are handled by their passes (RFC-204; RFC-257 WS-J section 5).
 func rejectUnsupportedTemplateClauses(clauses []antlrgen.ITemplateClauseContext) error {
 	for _, clause := range clauses {
 		switch {
-		case clause.EnumDefinition() != nil:
-			return api.NewError(api.ErrCodeUnsupportedOperation,
-				"enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template")
 		case clause.SqlInvokedFunction() != nil:
 			return api.NewError(api.ErrCodeUnsupportedOperation,
 				"SQL functions (CREATE FUNCTION) are not yet supported in a schema template")

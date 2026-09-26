@@ -1224,6 +1224,30 @@ class SqlPlanSteps {
         return out;
     }
 
+    /**
+     * TEST-ONLY (RFC-257 WS-J step 5): every raw record entry of a kept store (the records
+     * subspace, key 1), as the key relative to that subspace and the value, both lowercase hex,
+     * in key order.
+     */
+    @ConformanceStep("wsjRecordEntriesJava")
+    public JsonObject wsjRecordEntriesJava(String clusterFile, String dbPath, String schemaName) throws Exception {
+        ensureDriverRegistered(clusterFile);
+        JsonArray entries = new JsonArray();
+        try (com.apple.foundationdb.record.provider.foundationdb.FDBRecordContext ctx = sharedDatabase.openContext()) {
+            com.apple.foundationdb.subspace.Subspace store = RelationalKeyspaceProvider
+                    .toDatabasePath(java.net.URI.create(dbPath), sharedKeySpace).schemaPath(schemaName).toSubspace(ctx);
+            com.apple.foundationdb.subspace.Subspace records = store.subspace(com.apple.foundationdb.tuple.Tuple.from(1L));
+            for (com.apple.foundationdb.KeyValue kv : ctx.ensureActive().getRange(records.range()).asList().join()) {
+                byte[] key = kv.getKey();
+                byte[] rel = java.util.Arrays.copyOfRange(key, records.getKey().length, key.length);
+                entries.add(java.util.HexFormat.of().formatHex(rel) + "=" + java.util.HexFormat.of().formatHex(kv.getValue()));
+            }
+        }
+        JsonObject out = new JsonObject();
+        out.add("entries", entries);
+        return out;
+    }
+
     @ConformanceStep("createSchemaTemplatePersistentJava")
     public JsonObject createSchemaTemplatePersistentJava(String clusterFile,
                                                          String templateName,
@@ -2312,6 +2336,12 @@ class SqlPlanSteps {
                 arr.add(err);
             }
             return arr;
+        }
+        // An ENUM column: getObject hands back the value descriptor; its public
+        // spelling is RowStruct.getString's, the user identifier of its name.
+        if (v instanceof com.google.protobuf.Descriptors.EnumValueDescriptor) {
+            return new JsonPrimitive(com.apple.foundationdb.record.util.ProtoUtils.toUserIdentifier(
+                    ((com.google.protobuf.Descriptors.EnumValueDescriptor) v).getName()));
         }
         JsonObject marker = new JsonObject();
         marker.addProperty("__unsupported__", v.getClass().getName());

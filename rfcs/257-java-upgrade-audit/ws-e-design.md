@@ -3910,7 +3910,13 @@ Rows that depend on another workstream, compared when it lands and declared here
 their owner: `like_enum_operand` on RFC-257 WS-J F6 (enum DDL; until then its Go
 assertion runs through record-layer metadata, section 1.5), and the ENUM assignment
 rows [insert_string_literal_into_enum, insert_bound_string_into_enum,
-insert_bad_string_into_enum] on the same F6; `nn_bitand_literals` on
+insert_bad_string_into_enum] on the same F6. [F6 landed; measured through SQL
+by `WS-E target oracle` and `WS-E target oracle v5`: the three ENUM assignment rows
+equal the target, and `like_enum_operand` answers `OK [BIGINT] [NULL] []` against the
+target's 22F00, because `expr.ResolveLikeWithEscape` admits ENUM (with DATE and
+TIMESTAMP) and answers 42804 for the rest. That is the operand gate this section ports
+(`LikeOperatorValue.encapsulate`, STRING or NULL only), so the row's Go assertion
+now runs through SQL.] `nn_bitand_literals` on
 WS-J F4 (the bit operators' rows of the lane table, section 5.6); and every row whose
 target result column is ARRAY [array_cast_null_empty_table, insert_array_parameter,
 insert_empty_array_parameter, insert_null_array_parameter, update_array_parameter,

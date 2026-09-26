@@ -146,6 +146,7 @@ go_test(
         "driver_value_struct_test.go",
         "duplicate_from_alias_binding_test.go",
         "embedded_test.go",
+        "enum_ddl_test.go",
         "equality_prefix_pins_per_coordinate_test.go",
         "exists_in_on_plan_test.go",
         "explain_no_silent_degrade_test.go",
@@ -453,6 +454,7 @@ go_test(
         "cte_producer_test.go",
         "index_ddl_field_trie_test.go",
         "index_option_order_test.go",
+        "enum_ddl_test.go",
     ],
     deps = [
         "//gen",

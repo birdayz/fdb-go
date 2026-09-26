@@ -5194,6 +5194,21 @@ func stringToEnumValue(enum *EnumType, name string) (any, error) {
 	return int64(member.Number), nil
 }
 
+// StringToEnumNumber is Java's PromoteValue.stringToEnumValue over a stored
+// enum descriptor (PromoteValue.java:151-161): the first declared value whose
+// user identifier (ProtoUtils.toUserIdentifier of its name) equals name, else
+// INVALID_ENUM_VALUE. It is what writes a string into an enum column, where
+// Java's STRING_TO_ENUM promotion runs; no other type promotes to an enum.
+func StringToEnumNumber(ed protoreflect.EnumDescriptor, name string) (int64, error) {
+	vals := ed.Values()
+	for i := 0; i < vals.Len(); i++ {
+		if v := vals.Get(i); protoname.ToUserIdentifier(string(v.Name())) == name {
+			return int64(v.Number()), nil
+		}
+	}
+	return 0, &InvalidEnumValueError{Value: name}
+}
+
 // --- QuantifiedObjectValue -----------------------------------------
 
 // QuantifiedObjectValue is the sealed read view of one correlation-bearing

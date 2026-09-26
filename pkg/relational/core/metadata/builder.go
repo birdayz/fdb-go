@@ -16,6 +16,7 @@ import (
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/protoscope"
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -856,6 +857,7 @@ func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, *descripto
 
 	em := &fileEmitter{
 		seen:        map[string]bool{},
+		seenEnums:   map[string]bool{},
 		structTypes: map[string]*api.StructType{},
 	}
 	for i, tbl := range b.tables {
@@ -877,6 +879,7 @@ func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, *descripto
 		})
 	}
 	fdp.MessageType = append(em.messages, unionMsg)
+	fdp.EnumType = em.enums
 
 	// Build a resolver that includes the two dependency files.
 	// RegisterFile returns an error on duplicate registration; ignore it since
@@ -893,6 +896,10 @@ func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, *descripto
 	// Java-authored files (recordlayer.AbsolutizeFieldTypeNames).
 	buildable := proto.Clone(fdp).(*descriptorpb.FileDescriptorProto)
 	recordlayer.AbsolutizeFieldTypeNames(buildable)
+	// Two enums of the template may share a value name, as Java's DDL
+	// allows (protobuf-java scopes a value under its enum); the in-memory
+	// descriptor scopes them, the stored proto (fdp) does not change.
+	protoscope.ScopeEnumValuesAsJava(buildable)
 	fd, err := protodesc.NewFile(buildable, resolver)
 	if err != nil {
 		return nil, nil, false, api.WrapErrorf(err, api.ErrCodeInternalError, "protodesc.NewFile")
@@ -906,6 +913,12 @@ func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, *descripto
 type fileEmitter struct {
 	messages []*descriptorpb.DescriptorProto
 	seen     map[string]bool
+	// enums and seenEnums are the enum half of the same rule
+	// (registerTypeDescriptors' enumNames set): per table, the enums its
+	// closure reaches, in name order, each emitted once, under the FIRST
+	// table that reaches it. An enum no table reaches is never stored.
+	enums     []*descriptorpb.EnumDescriptorProto
+	seenEnums map[string]bool
 	// structTypes enforces one-storage-name-one-shape template-wide. The
 	// comparison normalizes the struct's OWN nullability away: a struct
 	// column's nullability lives on the referencing column, not the shared
@@ -939,6 +952,7 @@ func (em *fileEmitter) emitTableClosure(tbl tableSpec) (string, error) {
 		em:        em,
 		tableName: storageName,
 		msgs:      map[string]*descriptorpb.DescriptorProto{},
+		enums:     map[string]*descriptorpb.EnumDescriptorProto{},
 		wrappers:  map[string]string{},
 	}
 	msg := &descriptorpb.DescriptorProto{Name: proto.String(storageName)}
@@ -965,6 +979,20 @@ func (em *fileEmitter) emitTableClosure(tbl tableSpec) (string, error) {
 		em.seen[n] = true
 		em.messages = append(em.messages, r.msgs[n])
 	}
+	// The table's enums, the same way (TypeRepository.getEnumTypes is a
+	// TreeSet too).
+	enumNames := make([]string, 0, len(r.enums))
+	for n := range r.enums {
+		enumNames = append(enumNames, n)
+	}
+	sort.Strings(enumNames)
+	for _, n := range enumNames {
+		if em.seenEnums[n] {
+			continue
+		}
+		em.seenEnums[n] = true
+		em.enums = append(em.enums, r.enums[n])
+	}
 	return storageName, nil
 }
 
@@ -976,6 +1004,7 @@ type tableTypeRepo struct {
 	em        *fileEmitter
 	tableName string // wrapper-name derivation input (per-table wrapper identity)
 	msgs      map[string]*descriptorpb.DescriptorProto
+	enums     map[string]*descriptorpb.EnumDescriptorProto
 	wrappers  map[string]string // element-type signature -> wrapper message name
 }
 
@@ -1067,6 +1096,15 @@ func (r *tableTypeRepo) setFieldType(f *descriptorpb.FieldDescriptorProto, dt ap
 			return err
 		}
 		f.TypeName = proto.String(name)
+	case api.CodeEnum:
+		// Type.Enum.addProtoField sets the proto type AND the type name
+		// (unlike a message field, which carries only the type name).
+		name, err := r.defineEnum(dt.(*api.EnumType))
+		if err != nil {
+			return err
+		}
+		setScalar(descriptorpb.FieldDescriptorProto_TYPE_ENUM)
+		f.TypeName = proto.String(name)
 	case api.CodeArray:
 		// An array element that is itself an array — inexpressible in the
 		// SQL grammar (columnDefinition has a single ARRAY suffix).
@@ -1116,6 +1154,34 @@ func (r *tableTypeRepo) defineStruct(st *api.StructType) (string, error) {
 				"struct %q field %q", st.Name(), fld.Name())
 		}
 	}
+	return storage, nil
+}
+
+// defineEnum registers the enum's descriptor in the per-table namespace,
+// returning its storage name: Type.Enum.defineProtoType over
+// DataTypeUtils.toRecordLayerType's Type.Enum.fromValuesWithName, so the
+// enum's name and each value's go through toProtoBufCompliantName, and the
+// numbers are the declared ones (0..n-1 from DDL).
+func (r *tableTypeRepo) defineEnum(et *api.EnumType) (string, error) {
+	storage, err := recordlayer.ToProtoBufCompliantName(et.Name())
+	if err != nil {
+		return "", api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate, "enum name %q", et.Name())
+	}
+	if _, ok := r.enums[storage]; ok {
+		return storage, nil
+	}
+	ed := &descriptorpb.EnumDescriptorProto{Name: proto.String(storage)}
+	for _, v := range et.Values() {
+		valueName, verr := recordlayer.ToProtoBufCompliantName(v.Name())
+		if verr != nil {
+			return "", api.WrapErrorf(verr, api.ErrCodeInvalidSchemaTemplate, "enum %q value %q", et.Name(), v.Name())
+		}
+		ed.Value = append(ed.Value, &descriptorpb.EnumValueDescriptorProto{
+			Name:   proto.String(valueName),
+			Number: proto.Int32(int32(v.Number())), //nolint:gosec
+		})
+	}
+	r.enums[storage] = ed
 	return storage, nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/pkg/recordlayer/protoname"
+	"fdb.dev/pkg/recordlayer/protoscope"
 )
 
 // FieldTypeForProtoField maps a proto field descriptor to the logical column
@@ -243,7 +244,9 @@ func enumTypeForProto(ed protoreflect.EnumDescriptor) Type {
 		// string promotion compares that spelling, not protobuf escaping.
 		values = append(values, EnumValue{Name: protoname.ToUserIdentifier(string(value.Name())), Number: int32(value.Number())})
 	}
-	return NewEnumType(string(ed.FullName()), true, values)
+	// The enum's name as Java reads it, whatever scope the in-memory
+	// descriptor gave it (protoscope).
+	return NewEnumType(string(protoscope.JavaFullName(ed)), true, values)
 }
 
 // FieldNameForProtoField is THE single authority for the NAME a stored

@@ -1404,7 +1404,7 @@ var _ = Describe("WS-J literal-width query oracle", func() {
 		// Lane resolution's FIRST check: an operand that is not primitive (ENUM, UUID,
 		// ARRAY, RECORD) is a SemanticException before any lane is looked up
 		// (ArithmeticValue.java:215-220), and a NULL operand has no lane. Its own
-		// schema, because Go's DDL cannot declare the enum yet (WS-J F6).
+		// schema holds one column of each complex type.
 		complexSchema := "CREATE TYPE AS ENUM color ('RED', 'GREEN') " +
 			"CREATE TABLE C (id BIGINT, e color, u UUID, a BIGINT ARRAY, n BIGINT, PRIMARY KEY (id))"
 		complexSetup := []string{"INSERT INTO C VALUES (1, 'RED', '123e4567-e89b-12d3-a456-426614174000', [1, 2], 3)"}

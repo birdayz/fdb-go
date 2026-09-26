@@ -50,6 +50,20 @@ assets carry (`RELEASE.md` §Versioning).
   set the label unchecked. The `frl` CLI folds `--database` as it folded `--schema`, and its `\c`
   switches the connection's schema rather than only the label the meta-commands read. Pinned against
   the JVM by the conformance spec "the DSN's schema option reaches the schema Java's does" (18 arms).
+- **A schema template declares enum types** (`CREATE TYPE AS ENUM`, RFC-257 WS-J step 5), which Go
+  refused with 0A000. The records file carries each enum as Java's DDL writes it: emitted
+  template-wide in name order under the first table that reaches it, names made protobuf-compliant
+  (`a.b$c` is `a__2b__1c`), a field typed by the enum's name. A string assigns an enum column by
+  value name (an unknown name is XX000 "Invalid enum value for the enum type <value>", which names
+  the value as Java's does; an integer is 22000); reads answer the name, arrays included. A non-null
+  comparison of an enum column in an index predicate is refused as Java refuses it (XXXXX). Two
+  enums of one template may share a value name, which protobuf-java allows and protobuf-go refuses:
+  Go builds such a file by scoping the colliding enums in memory only (`pkg/recordlayer/protoscope`),
+  so the stored descriptor stays Java's and a store Java created that way opens. Pinned against the
+  JVM by "WS-J enum columns written and read by both engines" (records' messages, index entries
+  byte-equal, reads, refusals); the Java corpus's `enum.yamsql` and `insert-enum.yamsql` now pass. A
+  record Java's relational layer wrote is still unreadable to Go (the `TransformedRecordSerializer`
+  prefix, TODO.md).
 - **Saving a schema follows Java's existence policies** (`SchemaExistsBehavior`, RFC-257 WS-J step 4).
   `StoreCatalog.SaveSchema(txn, schema, createDatabaseIfNecessary, behavior)` takes Java's policy
   (`ERROR`, `ERROR_IF_DIFFERENT`, `DO_NOTHING`, `UPGRADE`) and checks in Java's order: the schema, the

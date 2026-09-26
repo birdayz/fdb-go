@@ -105,8 +105,13 @@ func logicalGroupKeys(keys []groupKeyRef) []logical.GroupKey {
 //
 // So the strip is performed on the SEGMENTS when the reference has them and its
 // leading segment is what the prefix named: the alias segment is dropped and the
-// remaining segments re-derive Bare/Qualifier/Qualified. A key without segments,
-// or whose leading segment is not the stripped prefix, keeps the flat rebuild.
+// remaining segments re-derive Bare/Qualifier/Qualified. A reference whose
+// segments do NOT account for the strip had no such qualifier, whatever its text
+// looks like, and is returned unchanged: the caller's prefix test reads the
+// display TEXT, and a single quoted identifier that happens to begin with the
+// table's name and a dot (`"foo.tableA.A2"` in `FROM "foo.tableA"`,
+// valid-identifiers.yamsql) matches it while naming a column of its own. Only a
+// key without segments (an expression) keeps the flat rebuild.
 func stripGroupKeyLeadingSegment(k logical.GroupKey, stripped string) logical.GroupKey {
 	if len(k.Segs) > 1 && strings.EqualFold(strings.Join(k.Segs[1:], "."), stripped) {
 		rest := k.Segs[1:]
@@ -122,9 +127,11 @@ func stripGroupKeyLeadingSegment(k logical.GroupKey, stripped string) logical.Gr
 		}
 		return out
 	}
-	// The single-source prefix was baked away and the segments cannot account
-	// for it: the key is BARE from here on — stale qualification segments would
-	// chase a qualifier the runtime row no longer carries.
+	if len(k.Segs) > 0 {
+		return k
+	}
+	// No segments to consult: the single-source prefix was baked away from the
+	// text, and the key is BARE from here on.
 	return logical.GroupKey{Display: stripped, Bare: stripped, Value: k.Value}
 }
 

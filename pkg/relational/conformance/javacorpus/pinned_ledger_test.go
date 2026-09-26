@@ -175,7 +175,17 @@ package javacorpus_test
 // move: one query in it disagrees with the corpus on purpose. Reading this as
 // "a file regressed" is the wrong reading — the run got 29 queries FURTHER
 // than it had ever been.
-const pinnedLedger = "pass=72 fail=0 skip=166 queries=2110 file_skips{conformance:go-accepts-what-java-rejects=5," +
+// ENUM DDL MOVES TWO FILES FROM SKIP TO PASS. RFC-257 WS-J step 5 lets a schema
+// template declare `CREATE TYPE AS ENUM`, which Go refused with 0A000 and booked
+// as `unsupported-DDL:other` at queries=0. `enum.yamsql` (20 queries) and
+// `insert-enum.yamsql` (4) now run to the end and pass: `pass` 72 → 74, `skip`
+// 166 → 164, `unsupported-DDL:other` 11 → 9 in both histograms. `queries` grows
+// 2110 → 2195 and the inner classes the newly reached configs book grow with it
+// (`plan-assertion` 954 → 994, `unsupported:continuation` 36 → 46,
+// `unsupported:check-cache` 146 → 148, `unsupported:prepared` 222 → 224).
+// `insert-enum.yamsql` compares an enum cell against a string expectation
+// (`[{'OWNING', 42}]`), the comparison match.go's enum note is about.
+const pinnedLedger = "pass=74 fail=0 skip=164 queries=2195 file_skips{conformance:go-accepts-what-java-rejects=5," +
 	"conformance:java-planner-bug=1," +
 	"engine-gap:catalog-system-tables=2,engine-gap:comma-join-mixed-from=1," +
 	"engine-gap:correlated-exists-setop=1," +
@@ -187,7 +197,7 @@ const pinnedLedger = "pass=72 fail=0 skip=166 queries=2110 file_skips{conformanc
 	"engine-gap:star-group-by-expansion=1,engine-gap:struct-query=2,engine-gap:table-valued-function=1,fragment=2," +
 	"no-checks=1,plan-assertion=8,polarity:fixed-version-meta=9," +
 	"polarity:negative-execution=26,polarity:negative-parse=25," +
-	"unsupported-DDL:function=11,unsupported-DDL:other=11," +
+	"unsupported-DDL:function=11,unsupported-DDL:other=9," +
 	"unsupported-DDL:struct-index=3,unsupported:continuation=3," +
 	"unsupported:multi-cluster=2,unsupported:result-metadata-nested=6," +
 	"unsupported:schema-command=8,unsupported:temporary-function=17," +
@@ -201,11 +211,11 @@ const pinnedLedger = "pass=72 fail=0 skip=166 queries=2110 file_skips{conformanc
 	"engine-gap:planner-declines=5," +
 	"engine-gap:returning-dry-run=1,engine-gap:serialization-options=1," +
 	"engine-gap:star-group-by-expansion=1,engine-gap:struct-query=2,engine-gap:table-valued-function=1," +
-	"no-checks=8,plan-assertion=954,polarity:negative-execution=26," +
-	"unsupported-DDL:function=11,unsupported-DDL:other=11," +
-	"unsupported-DDL:struct-index=3,unsupported:check-cache=146," +
-	"unsupported:continuation=36,unsupported:debugger=3," +
-	"unsupported:multi-cluster=2,unsupported:prepared=222," +
+	"no-checks=8,plan-assertion=994,polarity:negative-execution=26," +
+	"unsupported-DDL:function=11,unsupported-DDL:other=9," +
+	"unsupported-DDL:struct-index=3,unsupported:check-cache=148," +
+	"unsupported:continuation=46,unsupported:debugger=3," +
+	"unsupported:multi-cluster=2,unsupported:prepared=224," +
 	"unsupported:random-injection=25,unsupported:result-metadata-nested=85," +
 	"unsupported:schema-command=16,unsupported:temporary-function=197}"
 
@@ -249,4 +259,13 @@ const pinnedFileTotal = 238
 // `pass` does not move — but its `queries` goes 0 → 29, which is the whole
 // event and is invisible in this digest by construction. Read it beside the
 // ledger line's 1976 → 2005.
-const pinnedAssignmentDigest = "a5c81ddc39e1e755aecf44de6d5d3034a5559dbb91cbeb4ed3669a2fe142b9f1"
+//
+// ENUM DDL MOVED EXACTLY TWO LINES, proved on the hash rather than by eye:
+// putting these two lines back in the dumped assignment reproduces the previous
+// digest (a5c81ddc…) exactly, so nothing else moved or swapped.
+//
+//	-enum.yamsql  skip unsupported-DDL:other
+//	+enum.yamsql  pass -
+//	-insert-enum.yamsql  skip unsupported-DDL:other
+//	+insert-enum.yamsql  pass -
+const pinnedAssignmentDigest = "7a8c0b8ba4720cfd626ab35f8ba08791469c7ec4f36c54184b39b021b86de448"

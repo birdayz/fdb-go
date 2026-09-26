@@ -6768,17 +6768,14 @@ is tagged — never by hand-editing the doc.
     serialization-options.yamsql expects XXF01 on reads without the
     encryption key; Go's store layer has no encrypted serialization, so the
     read succeeds.
-  - **the enum matcher arm is not ported (0 files today, but unbooked until
-    now).** Java's `Matchers.matchField` has an arm comparing a String
-    expectation to a protobuf `EnumValueDescriptor` by NAME. Go omits it,
-    because whether it is needed depends on what the driver returns for an enum
-    column — if that is already the name as a string the existing String arm
-    covers it; if it is an ordinal or a typed value, the omission is a silent
-    mismatch. Unanswerable today: every corpus file with an enum column is
-    skipped before a row is compared. Answer it when `enum.yamsql` /
-    `insert-enum.yamsql` unblock, and delete the comment at the site or write
-    the arm. Stated rather than guessed — an untested arm written on a hunch is
-    worse than a named omission.
+  - [x] **the enum matcher arm is not ported — ANSWERED, not needed.** Java's
+    `Matchers.matchField` has an arm comparing a String expectation to a
+    protobuf `EnumValueDescriptor` by NAME. RFC-257 WS-J step 5 (enum DDL)
+    unblocked `enum.yamsql` and `insert-enum.yamsql`, and both pass: the Go
+    driver returns an enum cell as its name, a string, so the String arm is
+    Java's enum arm (`insert-enum.yamsql` compares `[{'OWNING', 42}]` against an
+    enum column). The comment at `match.go` states the measured answer, and
+    `pinned_ledger_test.go` pins the two passes.
 
   Order these by ledger count, not by list order: the array-literal five are
   worth more than the nine singletons combined, and the error-class one is
@@ -15225,17 +15222,15 @@ catalog's XX000).
   Java's lookup (the yamsql corpus pins the spellings that must keep working).
 
 
-- [ ] **The Go client lacks C++'s READ_ONLY transaction option.** `FDBTransactionOptions::READ_ONLY`
-  makes a commit that carries mutations or write conflict ranges fail with `transaction_read_only`
-  (`NativeAPI.actor.cpp:6810`, after the read-only fast path at `:6799-6803`); set through
-  `Transaction::setOption` (`:7079`, `:7090`). `pkg/fdbgo/fdb` exposes no `SetReadOnly` and
-  `pkg/fdbgo/client` has no such state (`grep -n 'readOnly' pkg/fdbgo/client/transaction.go
-  pkg/fdbgo/client/commitpath.go`: 0 lines; control: the same grep for `sizeLimit` finds them).
-  Found with RFC-258 (`rfcs/258-committed-version-is-libfdb-c.md`, "Found on the way"), whose
-  read-only-commit witness it would have duplicated. Port the option with a libfdb_c differential
-  (a set, a clear, an atomic op, an added write conflict range each refused; a read-only commit
-  admitted), after RFC-258 lands.
-
+- [ ] **Go's `READ_LOCK_AWARE` does not make the transaction read-only, as C++'s does.** (Restated
+  2026-09-26: this entry first said the Go client lacks a `READ_ONLY` option; `libfdb_c` 7.3.77 has
+  none.) C++'s `options.readOnly` is internal: `READ_LOCK_AWARE` sets it with `lockAware` when the
+  transaction is not already lock-aware (`NativeAPI.actor.cpp:7082-7092`), `LOCK_AWARE` clears it
+  (`:7079`), and `commitMutations` answers a commit with mutations or write conflict ranges 2023
+  `transaction_read_only` after the read-only fast path (`:6810`). Go's `READ_LOCK_AWARE`
+  (`client/transaction.go:3163-3170`) sets a read flag only, so Go commits writes `libfdb_c`
+  refuses. In scope of RFC-258 v2 (section "`READ_LOCK_AWARE` is read-only in C++"), with a
+  differential arm; close this entry when RFC-258 lands.
 - [ ] **Go's INSERT VALUES does not take a vector.** `INSERT INTO DOCS VALUES (1, [1.0, 0.0, 0.0])`
   into a `VECTOR(3, HALF)` column answers 22000 (type mismatch), and
   `CAST([1.0, 0.0, 0.0] AS VECTOR(3, HALF))` answers 0A000 ("CAST target type not expressible by the
@@ -15293,3 +15288,47 @@ catalog's XX000).
   2026-09-26), whose fix made DDL fold database paths with `NormalizeIdentifier`; that fold, too,
   must follow the option. Measure Java's stored names and resolution under the option over DDL,
   DML and the DSN, then thread the option through Go's normalization.
+
+- [ ] **A quoted identifier containing `.` breaks aggregate and GROUP BY queries (found 2026-09-26, measured).**
+  Over `CREATE TABLE "foo.tableA"("foo.tableA.A1" bigint, "foo.tableA.A2" bigint, ...)` (Java's
+  `valid-identifiers.yamsql`, whose queries Java answers), Go's plan harness answers
+  `SELECT SUM("foo.tableA.A1") FROM "foo.tableA" GROUP BY "foo.tableA.A2"` 0AF00 ("aggregate group key
+  \"A2\" has no resolved exact Value"), `SELECT "foo.tableA.A2", COUNT(*) ... GROUP BY "foo.tableA.A2"`
+  42703, and the alias form `SELECT t."foo.tableA.A2", SUM(t."foo.tableA.A1") FROM "foo.tableA" AS t
+  GROUP BY t."foo.tableA.A2"` 42703 ("T.foo.tableA.A2"); only ORDER BY plans. The index DDL
+  `create index ... as select sum("foo.tableA.A1") ... group by "foo.tableA.A2"` fails the same way
+  (WS-J oracle run `valid-identifiers.yamsql:23{index:"foo.tableA.idx2"}`). Cause: the single-source
+  qualifier strip (`buildSelectShell`'s and `visitSelectGroupBy`'s `strip`) tests the display TEXT for
+  the table's name plus a dot, so a single identifier whose text begins that way is "unqualified" to
+  its last dotted part; the same `strip` feeds the aggregate operands, projection names, output slots
+  and ORDER BY (`logical_builder.go:86,132,137,176,203,714,726,785`, `plan_visitor.go:1372,1617,1651`),
+  and later consumers re-split dotted display text. `stripGroupKeyLeadingSegment` is fixed (a key
+  with segments strips only by its segments, `TestGroupKeyStripDecidesBySegments`), which lets the index
+  DDL above build; the queries still fail, and the rest is the fix: decide every
+  strip from the reference's segments, never its text, and pin the four queries above plus
+  valid-identifiers.yamsql's aggregate queries (lines 341-347, 378, 402). Query-engine front end:
+  Graefe review. Reachable before RFC-257 (no enum is involved); surfaced when WS-J step 5 let the
+  valid-identifiers template build.
+
+- [ ] **The Go record layer cannot read a record Java wrote through TransformedRecordSerializer (found
+  2026-09-26, measured; wire-compat hard line).** Java's relational layer stores every record through
+  `StoreConfig.DEFAULT_RELATIONAL_SERIALIZER`, a `TransformedRecordSerializer` compressing by default
+  (`COMPRESS_WHEN_SERIALIZING`): a record behind a varint prefix whose low three bits are the type
+  (`PREFIX_CLEAR` 2, `PREFIX_COMPRESSED` 4, `PREFIX_ENCRYPTED` 1, both 5) and whose rest is the key
+  number (`TransformedRecordSerializerPrefix.java:68-110`), then a compressed or encrypted body
+  (`TransformedRecordSerializer.java:240-320`). MEASURED (conformance "WS-J enum columns written and
+  read by both engines", log `/var/tmp/fdb-upgrade-recovery/scratch-dsn/enum-rt3.log`): a four-byte
+  record Java's relational store wrote is `02` + the message. Go has no reader for the prefix
+  (`git grep -il 'TransformedRecordSerializer\|PREFIX_CLEAR' -- '*.go'`: no file; control: the same grep
+  for `RecordSerializer` finds the Java-named Go types), so the first byte parses as protobuf field 0 and
+  the record is unreadable; a Java core application that compresses or encrypts is equally unreadable to
+  Go. The other direction holds: Java's `decodePrefix` treats a bare message (its first byte a
+  length-delimited field, type bits 2 with a nonzero rest) as unprefixed (`:81-83`), so Java reads what
+  Go writes. Work: port the reader (clear, compressed: version byte, decompressed length, inflate;
+  encrypted: the `TransformedRecordSerializerJCE` key manager contract) into `pkg/recordlayer`'s
+  serializer, pinned against Java-written clear, compressed and encrypted records; the writer (so a Go
+  store configured like Java's compresses) with it, byte-identity of compressed bodies being out of reach
+  across deflate implementations and mutual readability the contract. The Go SQL driver adopting Java's
+  store configuration belongs with F11 ("Go SQL driver stores the relational catalog and user schemas on a
+  Go-only keyspace"), whose migration this reader is a precondition of. The enum spec above asserts the
+  prefix and compares messages; it reddens when this lands.

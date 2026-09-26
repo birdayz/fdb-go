@@ -734,7 +734,8 @@ var _ = Describe("WS-F target oracle", func() {
 				schema := strings.NewReplacer("T1", v.table, "I1", v.i1, "I2", v.i2).Replace(
 					"CREATE TABLE T1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id)) " +
 						"CREATE INDEX I1 AS SELECT col1 FROM T1 ORDER BY col1 " +
-						"CREATE INDEX I2 AS SELECT col2 FROM T1 ORDER BY col2")
+						"CREATE INDEX I2 AS SELECT col2 FROM T1 ORDER BY col2",
+				)
 				sqlText := strings.ReplaceAll(c.sql, "{T}", v.table)
 				canon := strings.NewReplacer(v.i1, "I1", v.i2, "I2", v.table, "T1")
 				var trace struct {
@@ -1352,16 +1353,8 @@ var wsfAcceptance = map[string]string{
 // wsfOpenUntil names, for each probe not yet at its acceptance verdict, the phase or
 // dependency that moves it there (ws-f-design.md section 12).
 var wsfOpenUntil = map[string]string{
-	"w10_enum_distinct_explain":                  "WS-J F6",
-	"w10_enum_distinct_rows":                     "WS-J F6",
-	"w10_enum_eq_explain":                        "WS-J F6",
-	"w10_enum_eq_rows":                           "WS-J F6",
-	"w10_enum_neq_rows":                          "WS-J F6",
-	"w10_enum_not_distinct_explain":              "WS-J F6, then F-1",
-	"w10_enum_not_distinct_null_rows":            "WS-J F6",
-	"w10_enum_not_distinct_rows":                 "WS-J F6",
-	"w10_enum_or_rows":                           "WS-J F6",
-	"w10_enum_unknown_literal":                   "WS-J F6",
+	"w10_enum_distinct_explain":                  "F-1",
+	"w10_enum_not_distinct_explain":              "F-1",
 	"w13_display_insert":                         "F-1",
 	"w13_display_rows":                           "F-1",
 	"w13_display_scan_explain":                   "F-1",
@@ -1580,16 +1573,16 @@ var wsfPins = map[string]string{
 
 // wsfGoPins is Go's measured answer of every WS-F probe at this tree.
 var wsfGoPins = map[string]string{
-	"w10_enum_distinct_explain":                  "SETUP-ERROR CREATE SCHEMA TEMPLATE: ERROR 0A000 \"enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template\"",
-	"w10_enum_distinct_rows":                     "SETUP-ERROR CREATE SCHEMA TEMPLATE: ERROR 0A000 \"enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template\"",
-	"w10_enum_eq_explain":                        "SETUP-ERROR CREATE SCHEMA TEMPLATE: ERROR 0A000 \"enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template\"",
-	"w10_enum_eq_rows":                           "SETUP-ERROR CREATE SCHEMA TEMPLATE: ERROR 0A000 \"enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template\"",
-	"w10_enum_neq_rows":                          "SETUP-ERROR CREATE SCHEMA TEMPLATE: ERROR 0A000 \"enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template\"",
-	"w10_enum_not_distinct_explain":              "SETUP-ERROR CREATE SCHEMA TEMPLATE: ERROR 0A000 \"enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template\"",
-	"w10_enum_not_distinct_null_rows":            "SETUP-ERROR CREATE SCHEMA TEMPLATE: ERROR 0A000 \"enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template\"",
-	"w10_enum_not_distinct_rows":                 "SETUP-ERROR CREATE SCHEMA TEMPLATE: ERROR 0A000 \"enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template\"",
-	"w10_enum_or_rows":                           "SETUP-ERROR CREATE SCHEMA TEMPLATE: ERROR 0A000 \"enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template\"",
-	"w10_enum_unknown_literal":                   "SETUP-ERROR CREATE SCHEMA TEMPLATE: ERROR 0A000 \"enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template\"",
+	"w10_enum_distinct_explain":                  "OK EXPLAIN \"PredicatesFilter(Scan(T), [1 preds])\"",
+	"w10_enum_distinct_rows":                     "OK [ID:BIGINT] [[1] [3] [5]]",
+	"w10_enum_eq_explain":                        "OK EXPLAIN \"IndexScan(T_M_IDX, [=, *])\"",
+	"w10_enum_eq_rows":                           "OK [ID:BIGINT] [[2] [4]]",
+	"w10_enum_neq_rows":                          "OK [ID:BIGINT] [[1] [3]]",
+	"w10_enum_not_distinct_explain":              "OK EXPLAIN \"PredicatesFilter(Scan(T), [1 preds])\"",
+	"w10_enum_not_distinct_null_rows":            "OK [ID:BIGINT] [[5]]",
+	"w10_enum_not_distinct_rows":                 "OK [ID:BIGINT] [[2] [4]]",
+	"w10_enum_or_rows":                           "OK [ID:BIGINT] [[1] [3] [5]]",
+	"w10_enum_unknown_literal":                   "ERROR XX000 \"Invalid enum value for the enum type ANGRY\"",
 	"w13_display_filter_explain":                 "OK EXPLAIN \"PredicatesFilter(Scan(foo.table$nested), [1 preds])\"",
 	"w13_display_insert":                         "ERROR 42F00 \"Unknown database foo\"",
 	"w13_display_insert_explain":                 "OK EXPLAIN \"Insert(foo.table$nested)\"",

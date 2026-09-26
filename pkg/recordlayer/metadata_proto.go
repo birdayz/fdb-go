@@ -9,6 +9,7 @@ import (
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer/internal/protovalue"
+	"fdb.dev/pkg/recordlayer/protoscope"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -1400,6 +1401,11 @@ func rebuildFileDescriptor(
 	// because the descriptor then stops loading rather than merely binding
 	// oddly.
 	absolutizeFieldTypeNames(recordsProto, depsProto...)
+	// Java's relational DDL stores records files whose enums share a value
+	// name; protobuf-go needs them scoped to build the descriptor (the
+	// retained source proto, not this clone, is what ToProto emits). A
+	// dependency is protoc-compiled and cannot carry the collision.
+	protoscope.ScopeEnumValuesAsJava(recordsProto)
 	for _, dp := range depsProto {
 		// Each dependency is resolved against the whole set too: dependencies
 		// import one another, and `tuple_fields.proto` referencing a type from a
