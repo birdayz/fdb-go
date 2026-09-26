@@ -1,6 +1,12 @@
 # RFC-257 WS-J design — catalog existence policies and index-definition fidelity
 
-Status: design v19, for Graefe + Torvalds + storage review. v19 answers the three v18 NAKs
+Status: design v20, for Graefe + Torvalds + storage review, under the owner's ruling that Low
+findings do not block a gate (RFC-257 item 9). v20 answers the v19 Mediums in section 4h, each
+with a test red without its fix, lands step 4 (section 2's existence policies, Java versus Go
+15 of 29 arms red before, 0 after), names the planner's one lane table in section 6, and records
+the database-path fold that landed beside it. Commit 4e2a9f795 plus this revision's tests.
+
+Status (v19): design v19, for Graefe + Torvalds + storage review. v19 answers the three v18 NAKs
 (`ws-j-design-review-v18/`) in a new section 4g, and lands step 3 (section 8) with it: the decode
 of shared bytes reads occurrences as protobuf-java does (required fields after, Java's recursion
 limit at root and record, closedness per field), a message Go holds is saved as Java reads it, a
@@ -2796,6 +2802,52 @@ a one-byte tag path and each entry's enum values taken at plan time brought it t
 record type bounded under the record limit still decodes through vtproto when the scan finds
 nothing.
 
+## 4h. v20: the v19 Mediums, step 4, and the database path
+
+The v19 round (`ws-j-design-review-v19/`) was NAK from all three lenses, on Mediums only. Each is
+answered by a test that is red without its fix. The red runs are in
+`/var/tmp/fdb-upgrade-recovery/evidence/`, each with a README naming its tree and adapters.
+
+| v19 finding | Answer | Red |
+|---|---|---|
+| Graefe M1: the lane check names Java's key functions wrong | `keyValueFunctionName` maps subtract/multiply/divide to sub/mul/div, and `recordType()` types LONG (`catalog/index_lanes.go`); five `TestCreateTemplate_LaneCheck` cases | `wsj20-v19folds-red`: 4 of the 5 fail on 4e2a9f795 with the fold reverse-applied (subtract's lane was admitted either way) |
+| Graefe M2, storage M1: the resumed-page read has no test | `continuation_closed_enum_test.go`: a dynamic and a generated row buffered with an undeclared closed-enum number resume unset, the number unknown | the fix landed in 1ad10b73e; the test is red with `continuation.go`'s decode reverted |
+| Graefe M3: the lane table and the planner are two copies | section 6 [v20]: `LookupArithmeticLane` is the planner's one table; `TestArithmeticLanesAgreeWithThePlanner` ties the copies until then, and the 156-pair gap is pinned | red with the planner's INT x INT arm removed |
+| Torvalds M1: five of six asJava fix sites untested | `SaveRecordBatch` and `DryRunSaveRecord`: `closed_enum_save_paths_test.go` (9d93943bf); the resumed page: above; the INSERT…SELECT copy: `rematerialize_closed_enum_test.go`, the copy's own output (field unset, number unknown) | the copy test is red with the pre-v19 plain unmarshal |
+
+On the INSERT…SELECT copy, what can and cannot be observed. The copy re-parses a composite
+value into the target column's message type and then saves through `SaveRecord`, whose
+`asJavaForSave` rewrites any held undeclared number as Java writes it, whatever the message's
+origin. So the stored record and its index entries are the same with or without the copy's
+decode; the held-record JVM spec ("saved, updated and deleted as Java reads it") pins that save
+byte for byte. The copy's decode decides only the message between the copy and the save, and the
+new test pins exactly that.
+
+Also folded: `translateFDBError` takes Java's order (`ExceptionUtil.recordCoreToRelationalException`):
+a deserialization failure first, and a MetaDataException only when it is the outermost Java error
+(`IsMetaDataException`, `OutermostJavaError`, which now recognise `protoname.InvalidNameError`).
+Red: `TestTranslateFDBError` (three cases) and `TestIsMetaDataExceptionTestsTheOutermostJavaException`
+in `wsj20-v19folds-red`.
+
+Step 4 landed (section 2) in 4e2a9f795: `api.SchemaExistsBehavior`, `SaveSchema` in Java's order
+in both catalogs, CREATE SCHEMA with ERROR, repair with UPGRADE, initialize with
+ERROR_IF_DIFFERENT, and the rebind validator only on a write over an existing row. Java versus
+Go: the conformance spec "WS-J existence policies answer as the target", 29 arms: 15 differ on
+fa02910f4 (the commit before step 4, with an adapter that drops the policy argument;
+`wsj20-step4-red`), 0 on 4e2a9f795 (`wsj20-step4-green`). Still owed: the direct witness that a
+no-op save issues no write, through the committed version, which needs RFC-258 (the pure-Go
+client's `GetCommittedVersion` diverges from libfdb_c). Until then
+`TestFDB_SaveSchema_ANoOpWritesNothing` pins it through its consequence, the absent write conflict
+range: a concurrent writer of the same row commits first and the no-op save still commits, while
+a save that writes, in the same interleaving, conflicts (the control).
+
+Landed beside it, the database path (TODO "The Go driver folds an unquoted `?schema=`"): DDL
+folds every database path as Java's `visitUid` does, the DSN is verbatim, and SetSchema refuses a
+missing schema. 18 JVM arms, equal; DIVERGENCES.md "A connection to a database that does not
+exist yet opens" declares the two kept extensions (connect before CREATE DATABASE, an honoured
+SHOW prefix), each pinned. And the owner-urgent map-entry data loss (9d93943bf): a map value
+holding an undeclared closed-enum number is written as Java writes the entry.
+
 ## 5. Enum DDL (F6, F10)
 
 SOURCE: `DdlVisitor.visitEnumDefinition` (:480-490): values numbered 0..n-1 in
@@ -2883,6 +2935,17 @@ keeps its 0AF00 with the target's lower-case operator name. Java's key-expressio
 disappears. Explain/plan-hash/cache identity follow ArithmeticValue's; bitmap index
 matching is re-verified by the existing bitmap tests, a plan-harness pin, and the Go-
 stored spec's EXPLAIN rows (the target's plans over a Go-stored template, pinned).
+
+[v20] ONE table. `values.LookupArithmeticLane` (`arithmetic_lanes.go`, Java's
+PhysicalOperator table, 107 rows) is the table the planner resolves every lane from: the five
+arithmetic operators (ADD, SUB, MUL, DIV, MOD) as well as the bit and bitmap operators above;
+`ArithmeticValue.Type()`'s promotion is replaced by that lookup at construction, and the catalog's
+lane check and the DDL generator already read it. Until this section lands the two copies are
+tied by `TestArithmeticLanesAgreeWithThePlanner` (every ADD..MOD row, 89, typed by the planner as
+the row says; red when the planner's INT x INT arm is removed) and the gap is pinned by
+`TestArithmeticPairsThePlannerTypesAndJavaRefuses`: 156 operand pairs over INT, LONG, FLOAT,
+DOUBLE, STRING, BOOLEAN and BYTES that the planner types and Java's `encapsulate` refuses. That
+count must reach 0 with this section, and the guard then reverses.
 
 The XXXXX-vs-22003 SQLSTATE difference for overflow is the one WS-E records in
 DIVERGENCES (the target leaks an unmapped ArithmeticException); Go keeps 22003 and the

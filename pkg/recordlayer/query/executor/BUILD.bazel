@@ -136,6 +136,7 @@ go_test(
         "recursive_cursor_resume_test.go",
         "recursive_distinct_replay_test.go",
         "recursive_union_cursor_test.go",
+        "rematerialize_closed_enum_test.go",
         "resultset_test.go",
         "rfc232_exact_value_views_test.go",
         "row_path_single_owner_test.go",
@@ -292,6 +293,7 @@ go_test(
         "aggregate_sum_initial_state_test.go",
         "aggregate_float_precision_test.go",
         "continuation_closed_enum_test.go",
+        "rematerialize_closed_enum_test.go",
     ],
     tags = ["resources:memory:400"],
     deps = [
