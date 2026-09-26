@@ -1,0 +1,46 @@
+**NAK.** The commit is `2e318b99b` (tree `8be239fb6`) and the design file is `ws-c-design.md`. I did not compute the SHA256 `431f99e2…` because the read-only policy allows only git commands. It is the brief's figure. The line count, about 3004, I read from the working copy, which git status shows unchanged. Every r19 finding is resolved, but revision 20 adds two Low findings, both about text or evidence rather than code.
+
+"Measured" below means I read it in a git object or an evidence log. "Source" means I read the code.
+
+## r19 findings (Graefe lens, plus where the other lenses overlap)
+
+| r19 finding | Status |
+|---|---|
+| G1 / T1 / S1: the strict parse had no red | **Resolved (measured).** On `d2e47b8bd`, `wsc20-red/recordlayer/console.txt:122-132` shows all six strict-parse arms red, plus the typed-refusal, planner-class and non-vector arms. The TREE's index tree `c01dcdad5` equals `d2e47b8bd^{tree}` (checked with rev-parse). The adapter keeps `d2e47b8bd`'s own parse. |
+| G2 / T2 / S2: the `:2756` marker | **Resolved.** The marker is scoped to `Update`, and 7.19 names the queued drain and the windowed save. |
+| G3 / T3 / S3: "every refusal is a `MetaDataError`" | **Resolved.** The CHANGELOG, 7.19, the test comment and the TODO are scoped. A refused metric keeps `IllegalArgumentError`, which matches `VectorIndexMaintainerFactory.java:106-110`. |
+| G4: the SQL code was untested | **Resolved.** `TestFDB_SPFreshRefusedConfigurationIsA42000` was added and the file is in `srcs`. The hook executed `sqldriver_test` and it passed (measured). See nit (a). |
+| G5 / S nit: queue-pin scope | **Resolved.** Both the test comment and 7.19 say that `updateOneIndex` and `UpdateFromQueue` are not covered by the pin. Both symbols exist. |
+| G6: evidence records | **Resolved.** The mutation README now describes the TREEs correctly, the patches are kept with their hashes (the hashes are unverified, as I can't run `sha256sum`), and `wsj19-red/README` explains the HEAD versus the index tree. |
+| G7 / T5 / S nit: the agreement check could not fail | **Resolved.** The check now compares against `parseSPFreshConfig`'s `Metric`, over Java's four names and the default. A refused metric and a non-vector index are now asserted by class, and the CHANGELOG says "not one of Java's four names". |
+| T4: entry-point rows | **Resolved (measured).** The build, search and topology-dump rows were added. The topology dump is red on `d2e47b8bd`; the build and search are green there, for the reasons the text gives. |
+
+## New findings
+
+**1. Low (measured): the planner half of `TestVectorPlan_MetricIsTheMaintainers` has still never been red.**
+- 7.19 cites `wsc20-red` as the red for this test. Both failures in `wsc20-red/embedded/console.txt:25,27` come from the `t.Fatalf` at `vector_plan_test.go:675`.
+- That line calls the adapter's stand-in `VectorIndexMetric`. `d2e47b8bd` has no such function; its `hnsw_options.go` has only `VectorIndexMetricOption`.
+- So the planner assertion at `:677-681` (unplannable, `UnplannableIndexOnlyResidualError`) never ran against the old planner.
+- 7.18 already says the earlier planner-only red was an edited copy. The query-engine half of revision 18 therefore has no red anywhere.
+- **Fix:** run the planner arm on the old tree without the fatal precondition, or say in 7.19 that this half has no red.
+
+**2. Low (source): the new TODO entry understates Java's reach (`TODO.md` line 15223 onward).**
+- It cites `vector-documentation-queries.yamsql:35` and says Java's reach is "not measured".
+- Lines 47-58 of the same file show Java's corpus running `SELECT CAST([1, 2, 3] AS VECTOR(3, HALF))` and getting a result.
+- Go's walker has no VECTOR cast target (`walk.go:465-469` refuses it, `primitiveTypeToValueType:1365-1405` has no vector case), so Go refuses the cast in every context.
+- That is a query shape Java runs and Go refuses, not an open question. The entry should say so.
+
+## Nits
+- **(a) The SQL pin's path is not asserted.**
+  - The comment says the query "plans the SPFresh index" and that the scan refuses. There is no `EXPLAIN` check, so a refusal at store open would pass the test equally.
+  - No log line shows the test ran: a search of `/var/tmp/fdb-upgrade-recovery` for `SPFREFUSED` or the test's name finds nothing. The same search tool does find `sqldriver` lines in the hook console, so the search works.
+  - The pin also has no red run.
+- **(b) "Red there in every arm" is too wide.**
+  - The five metric-agreement cases were green on `d2e47b8bd`: the console has no `:331` line.
+  - The planner-class and non-vector arms are red only because of the adapter's stand-in.
+- **(c) The adapter is not covered by the TREE hash.** The hash is labelled "working diff vs index", which by its name leaves out the untracked `zz_redrun_adapter.go`. I read the adapter in `fdb-wsc10` and it matches the README, but nothing ties that file to the run.
+
+## Unchanged ground the delta touches
+- Revision 20 does not change `hnsw_options.go`, `cascades_generator.go` or `VectorIndexMetric`, so the planner's metric read still matches Java's `metricFromIndex` (source).
+- The DDL spells only Java's four metric names (`ddl.go:504-521`), which supports the claim that SQL cannot reach the `IllegalArgumentError` class.
+- The hook ran on a clean tree: 0 differing files, the index tree equals the commit's tree, 37 of 96 targets executed and all 96 passed (measured).

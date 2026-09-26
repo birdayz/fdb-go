@@ -882,12 +882,31 @@ func declaredEnum(fd protoreflect.FieldDescriptor, n protoreflect.EnumNumber) bo
 // enum's undeclared number, else a clone with Java's reading (the caller's
 // message is not changed).
 func (rt *RecordType) asJava(msg proto.Message) proto.Message {
+	read, _ := rt.asJavaForSave(msg)
+	return read
+}
+
+// asJavaForSave is a save's two views of msg, the caller's message, which is
+// not changed. read is Java's reading of the bytes the save writes (asJava):
+// what the save keys, counts and indexes, and returns. write is the message the
+// save serializes: read, but with a DynamicMessage map value that holds an
+// undeclared number still holding it. Java reads such an entry keeping the
+// number in the entry's own unknown fields, which it writes back after the
+// entry's value (measured: key, default, then the number), and a dynamicpb map
+// has no per-entry unknown fields to hold it; so the number stays in write's map
+// and the map rewrite writes the entry in Java's form (mergeMapEntries,
+// canonicalEntry). Both are msg itself when it holds no undeclared number.
+func (rt *RecordType) asJavaForSave(msg proto.Message) (read, write proto.Message) {
 	if !rt.reachesClosedEnum || !holdsUndeclared(msg.ProtoReflect(), rt.closedEnumReach) {
-		return msg
+		return msg, msg
 	}
-	clone := proto.Clone(msg)
-	closedEnumsAsJava(clone.ProtoReflect(), rt.closedEnumReach, false)
-	return clone
+	write = proto.Clone(msg)
+	if !closedEnumsAsJavaKeeping(write.ProtoReflect(), rt.closedEnumReach, false, true) {
+		return write, write
+	}
+	read = proto.Clone(write)
+	closedEnumsAsJava(read.ProtoReflect(), rt.closedEnumReach, false)
+	return read, write
 }
 
 // holdsUndeclared reports whether m holds a closed enum's undeclared number
@@ -978,6 +997,13 @@ func walkClosedEnums(m protoreflect.Message, r *closedEnumReach, visit func(prot
 // enum reads as the enum's default for a DynamicMessage (the entry is kept);
 // for a generated class the entry goes to the unknown fields whole.
 func closedEnumsAsJava(m protoreflect.Message, r *closedEnumReach, generated bool) {
+	closedEnumsAsJavaKeeping(m, r, generated, false)
+}
+
+// closedEnumsAsJavaKeeping is closedEnumsAsJava, leaving a DynamicMessage map
+// value that holds an undeclared number in place when keepMapValues
+// (asJavaForSave's write view). It reports whether it left one.
+func closedEnumsAsJavaKeeping(m protoreflect.Message, r *closedEnumReach, generated, keepMapValues bool) bool {
 	type fix struct {
 		m  protoreflect.Message
 		fd protoreflect.FieldDescriptor
@@ -987,9 +1013,15 @@ func closedEnumsAsJava(m protoreflect.Message, r *closedEnumReach, generated boo
 		fixes = append(fixes, fix{owner, fd})
 		return true
 	})
+	kept := false
 	for _, f := range fixes {
+		if keepMapValues && !generated && f.fd.IsMap() {
+			kept = true
+			continue
+		}
 		moveUndeclared(f.m, f.fd, generated)
 	}
+	return kept
 }
 
 // moveUndeclared moves the undeclared numbers of one closed-enum field of m.

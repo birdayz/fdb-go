@@ -1125,6 +1125,7 @@ class MetaDataStoreSteps extends ConformanceBase {
         final Map<String, Object> result = new HashMap<>();
         result.put("verdicts", verdicts);
         result.put("kvs", dumpIndexSpaces(clusterFile, ss));
+        result.put("records", dumpSpaces(clusterFile, ss, 1L));
         return result;
     }
 
@@ -1215,10 +1216,15 @@ class MetaDataStoreSteps extends ConformanceBase {
     }
 
     private List<List<String>> dumpIndexSpaces(String clusterFile, Subspace ss) {
+        return dumpSpaces(clusterFile, ss, 2L, 3L);
+    }
+
+    /** The key-value pairs of the store at ss under each of spaces (1: records), relative to ss. */
+    private List<List<String>> dumpSpaces(String clusterFile, Subspace ss, long... spaces) {
         return runInContext(clusterFile, null, context -> {
             final byte[] prefix = ss.getKey();
             final List<List<String>> out = new ArrayList<>();
-            for (long space : new long[] {2L, 3L}) {
+            for (long space : spaces) {
                 for (com.apple.foundationdb.KeyValue kv : context.ensureActive().getRange(ss.range(Tuple.from(space))).asList().join()) {
                     final byte[] rel = java.util.Arrays.copyOfRange(kv.getKey(), prefix.length, kv.getKey().length);
                     out.add(List.of(java.util.HexFormat.of().formatHex(rel),

@@ -1242,11 +1242,13 @@ var _ = Describe("A closed enum's undeclared number is read as Java reads it", f
 		mdBytes, err := proto.Marshal(withIndex)
 		Expect(err).NotTo(HaveOccurred())
 		// Java saves the bytes Go writes for each version of the record, in
-		// turn, into one store: the entries a Java save, then update, leaves.
+		// turn, into one store: the index entries and the stored record a Java
+		// save, then update, leaves.
 		javaKVs := func(recs ...[]byte) [][]string {
 			var java struct {
 				Verdicts []string   `json:"verdicts"`
 				KVs      [][]string `json:"kvs"`
+				Records  [][]string `json:"records"`
 			}
 			args := make([][]int, len(recs))
 			for i, rec := range recs {
@@ -1260,9 +1262,30 @@ var _ = Describe("A closed enum's undeclared number is read as Java reads it", f
 			for _, v := range java.Verdicts {
 				Expect(v).To(Equal("ok"))
 			}
-			return java.KVs
+			Expect(java.Records).To(HaveLen(1), "the stored record")
+			return append(java.KVs, java.Records...)
 		}
 		ss := subspace.Sub(tuple.Tuple{"closedenum_held", uuid.NewString()}...)
+		// Go's index entries and stored record, in the order javaKVs returns them.
+		goKVs := func() [][]string {
+			kvs, err := dumpIndexKVs(ctx, db, ss)
+			Expect(err).NotTo(HaveOccurred())
+			recs, err := dumpSpaceKVs(ctx, db, ss, 1)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(recs).To(HaveLen(1), "the stored record")
+			return append(kvs, recs...)
+		}
+		// same compares Go's index entries and stored record with Java's, byte
+		// for byte. The record's map value holding an undeclared number is the
+		// arm that differed: Java's DynamicMessage keeps the number in the
+		// entry's own unknown fields and writes it after the value (entry
+		// 0a016b 1000 1007: key "k", value 0, then 7), which a dynamicpb map
+		// cannot hold, so Go's save dropped it (0a016b 1000);
+		// asJavaForSave's write view and the map rewrite now write Java's entry.
+		same := func(goOut, javaOut [][]string) {
+			Expect(goOut).To(Equal(javaOut))
+			Expect(javaOut[len(javaOut)-1][1]).To(ContainSubstring("2a070a016b10001007"), "the map entry as Java writes it")
+		}
 		run := func(f func(*recordlayer.FDBRecordStore) error) {
 			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
@@ -1275,23 +1298,21 @@ var _ = Describe("A closed enum's undeclared number is read as Java reads it", f
 		}
 		run(func(store *recordlayer.FDBRecordStore) error { _, err := store.SaveRecord(msg); return err })
 		Expect(msg.Get(fields.ByName("e")).Enum()).To(Equal(protoreflect.EnumNumber(7)), "the caller's message is not changed")
-		saved, err := dumpIndexKVs(ctx, db, ss)
-		Expect(err).NotTo(HaveOccurred())
+		saved := goKVs()
 		want := javaKVs(held)
 		GinkgoWriter.Printf("CLOSED_ENUM held save go=%v java=%v\n", saved, want)
-		Expect(saved).To(Equal(want))
+		same(saved, want)
 
 		// An update: e B. Java's save of the bytes the update writes is the oracle.
 		updated := proto.Clone(msg).(*dynamicpb.Message)
 		updated.Set(fields.ByName("e"), protoreflect.ValueOfEnum(2))
 		run(func(store *recordlayer.FDBRecordStore) error { _, err := store.SaveRecord(updated); return err })
-		afterUpdate, err := dumpIndexKVs(ctx, db, ss)
-		Expect(err).NotTo(HaveOccurred())
+		afterUpdate := goKVs()
 		updatedBytes, err := proto.Marshal(updated)
 		Expect(err).NotTo(HaveOccurred())
 		wantUpdate := javaKVs(held, updatedBytes)
 		GinkgoWriter.Printf("CLOSED_ENUM held update go=%v java=%v\n", afterUpdate, wantUpdate)
-		Expect(afterUpdate).To(Equal(wantUpdate))
+		same(afterUpdate, wantUpdate)
 
 		// A delete leaves no index entry, and every count at zero.
 		run(func(store *recordlayer.FDBRecordStore) error {

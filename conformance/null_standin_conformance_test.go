@@ -78,9 +78,15 @@ func nsRecords(syntax string) *descriptorpb.FileDescriptorProto {
 // INDEX_SECONDARY_SPACE keyspaces (2 and 3), as hex relative to the store
 // subspace, in key order: the Go side of saveRecordsAndDumpIndexesJava.
 func dumpIndexKVs(ctx context.Context, db *recordlayer.FDBDatabase, ss subspace.Subspace) ([][]string, error) {
+	return dumpSpaceKVs(ctx, db, ss, 2, 3)
+}
+
+// dumpSpaceKVs is the store at ss's key-value pairs under each of spaces (1:
+// records, 2: indexes, 3: index secondary space), relative to ss, hex-encoded.
+func dumpSpaceKVs(ctx context.Context, db *recordlayer.FDBDatabase, ss subspace.Subspace, spaces ...int64) ([][]string, error) {
 	out, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		var out [][]string
-		for _, space := range []int64{2, 3} {
+		for _, space := range spaces {
 			begin, end := ss.Sub(space).FDBRangeKeys()
 			kvs, err := rtx.Transaction().GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
 			if err != nil {

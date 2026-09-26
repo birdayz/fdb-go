@@ -528,7 +528,9 @@ assets carry (`RELEASE.md` §Versioning).
   as null, as Java indexes it, and written back as an unknown field, in Java's order; a record Go
   builds in memory with such a number is keyed, counted, indexed and written as Java reads the bytes,
   so an update or delete removes exactly the entries its save wrote (the caller's message is not
-  changed). A store header's unreadable record-count state is its default; an OrElse continuation
+  changed). A map value holding such a number, in a record read as a DynamicMessage, keeps it: Java
+  writes the entry with its default value and the number as the entry's own unknown field, and Go
+  now writes the same bytes; Go's save dropped the number, so re-saving a record Java wrote lost it. A store header's unreadable record-count state is its default; an OrElse continuation
   whose state Java cannot read resumes as UNDECIDED, as Java's does (Go refused it). A proto2 field of
   an open enum counts as closed, as Java's `legacy_closed_enum` makes it. Every decode of stored
   bytes (meta-data, store headers, index-build stamps, heartbeats, pending writes, continuations,

@@ -57,6 +57,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 	// --- Phase 1: Extract PKs and issue all Get futures (non-blocking) ---
 	type pendingRecord struct {
 		record     proto.Message
+		write      proto.Message // what the save serializes (asJavaForSave)
 		recordType *RecordType
 		primaryKey tuple.Tuple
 		unsplitKey fdb.Key // pre-computed, reused for save
@@ -79,8 +80,10 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		if recordType.PrimaryKey == nil {
 			return nil, &MetaDataError{Message: fmt.Sprintf("no primary key for: %s", recordTypeName)}
 		}
-		// As saveRecordInternal: the record as every later load reads it.
-		record = recordType.asJava(record)
+		// As saveRecordInternal: the record as every later load reads it, and
+		// the message the save serializes.
+		var write proto.Message
+		record, write = recordType.asJavaForSave(record)
 
 		// Record type supplied so a record-type-prefixed primary key can read
 		// its leading component off the type, as Java's saveTypedRecord does.
@@ -112,6 +115,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 
 		pending[i] = pendingRecord{
 			record:     record,
+			write:      write,
 			recordType: recordType,
 			primaryKey: primaryKey,
 			unsplitKey: unsplitKey,
@@ -187,7 +191,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		oldRecordExists := oldValue != nil
 
 		// Serialize
-		data, err := serializeUnionOver(p.record, p.recordType, store.storedRecordInner(oldValue, p.recordType))
+		data, err := serializeUnionOver(p.write, p.recordType, store.storedRecordInner(oldValue, p.recordType))
 		if err != nil {
 			return nil, &RecordSerializationError{Cause: err}
 		}

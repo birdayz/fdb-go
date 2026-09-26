@@ -1,0 +1,60 @@
+**NAK (storage lens).** Candidate `2e318b99b`, tree `8be239fb6`. I computed the design's SHA256 from the committed blob and it matches the brief: `431f99e2871e6994e1763fe1df50938068c5f67295608149d68af2042784c353`, 3004 lines. The review was read-only. "Measured" below means I read it in git objects or evidence logs; everything else is from reading source.
+
+Revision 20 changes no write path. Under `pkg/`, the diff touches only one comment in `spfresh_config.go`, tests, and one BUILD line (measured). One r19 finding that overlaps my lens is still open.
+
+## r19 findings
+
+| Finding | Status |
+|---|---|
+| Storage 1: strict parse never red | **Resolved (measured).** In `wsc20-red/recordlayer/console.txt:122-127`, all six strict-parse arms fail. The failing lines (:288, :296, :304, :309, :338, :344) match the candidate's file exactly. All four TREEs record index tree `c01dcdad` (`d2e47b8bd`'s tree) and share one diff hash. |
+| Storage 2: the 7.17 marker | **Resolved** (`ws-c-design.md:2756-2759`). A search for the old phrasings finds only this scoped copy. |
+| Storage 3 / Graefe 3: MetaDataError claim too wide; SQLSTATE split | CHANGELOG and 7.19 are scoped. The 42000 is pinned. SQL can only spell Java's four metric names (`ddl.go:504-521`, source), so the metric's IllegalArgumentError cannot reach SQL. **One copy Graefe 3 named is still open** (finding 1). |
+| Graefe 4: SQL code | Resolved (`spfresh_refused_config_fdb_test.go`) |
+| Torvalds 4: entry-point rows | Resolved. The topology-dump row is red on `d2e47b8bd` (measured). The build and search rows are green there, and the text explains why. |
+| Torvalds 6: part 1 of `wsc18-red` withdrawn | Resolved: the queue skip, EXTRA_BITS 9 and 15, and `TestVectorPlan_MetricIsTheMaintainers` are all red (measured, `wsc20-red` queue, conf and embedded logs) |
+| Nit: agreement arm couldn't fail | Resolved: it now compares against `parseSPFreshConfig`'s `Metric`, for all four names plus the default |
+| Nit: queued save commits, its drain is refused | Resolved (DIVERGENCES:2139-2144, 7.19) |
+| Nit: queue pin reach | Resolved (test comment :85-87; 7.19) |
+| Nit: "exactly one sample" | Now labelled as read from source. The patches match the README; I could not recompute their hashes (`sha256sum` was refused). |
+| Nit: "measured the config reads" | Resolved ("searched") |
+| Torvalds nits (doc comment, "every delete", DIVERGENCES label) | Resolved |
+
+## Findings
+
+**1. Low (measured): the over-wide typed-refusal claim survives in the test.**
+- `spfresh_layout_test.go:298-299` still says "A configuration the maintainer refuses is a MetaDataError, whether an option does not parse or a parsed value is out of range". The comment is identical at `97f21019d` and `2e318b99b`.
+- Five lines earlier, :293-296 asserts that the metric "cosine", an option that does not parse, is an `IllegalArgumentError`.
+- Graefe r19 3 named this copy. Its twins in the CHANGELOG and 7.19 were fixed; this one was missed.
+- **Fix:** scope it to "an option other than the metric".
+
+**2. Nit (measured): the SQL pin's run is not visible.**
+- There are zero hits for `SPFREFUSED` or `TestFDB_SPFresh` under `/var/tmp/fdb-upgrade-recovery`. The positive control, `TestParseSPFreshConfigRefusesWhatDoesNotParse`, found 8 files.
+- The hook did run `sqldriver_test` (console:197-208; "96 tests pass"), the file is in its `srcs`, and the helpers have no skip path (source). So it passed, but only by inference. There is also no red for it on an older tree.
+
+**3. Nit (source): the pin's comment names `parseVectorOptions` in `embedded/ddl.go`.**
+- The Go function is `parseVectorIndexOptions` (`ddl.go:437`). `parseVectorOptions` is the name of Java's `DdlVisitor` method.
+
+**4. Nit (source): the entry-point table checks the message, not the class.**
+- `spfresh_rebalancer_test.go:116` matches the text only.
+- CHANGELOG:565-570 lists every entry point, then says MetaDataError, then 42000.
+- An entry point that re-wrapped the error with `%v` would keep the message, lose the class, and stay green. The class is pinned only at `readSPFreshConfig` and on the k-NN scan over SQL.
+
+**5. Nit (storage): the CHANGELOG doesn't say when the 42000 arrives.**
+- The DDL passes a count of 0 extra bits through (`ddl.go:478-482`), and `CREATE` succeeds; the pin's setup depends on that.
+- So the 42000 surfaces on the first statement that reaches the index, not at `CREATE`. The drop-and-add guidance should say so.
+
+**6. Nit (measured): two of the "red in every arm" results come from the adapter, and the adapter is gone.**
+- The arms at :338 and :344 are red against the adapter's `VectorIndexMetric`. `d2e47b8bd` has no such function, only `VectorIndexMetricOption` (`hnsw_options.go:50`).
+- The TREE hash covers untracked files (`save-evidence.sh:20`), so the adapter was hashed. But the file at that path now holds a different adapter, so the hash can no longer be checked against it.
+- **Fix:** keep the adapter in the evidence directory next to the patches.
+
+**7. Nit (process): the new TODO entry at the end of TODO.md defers a gap and skips the Java-corpus path.**
+- The entry measures only a literal and `CAST`. Java's corpus inserts vectors as bound parameters (`!! !v32 !!`), and the entry doesn't measure that path in Go.
+- CLAUDE.md asks for this to be investigated now rather than filed. It is not a WS-C defect.
+
+## Storage checks
+
+- **Hook (measured):** index tree `8be239fb` = `2e318b99b^{tree}`, 0 files differ, 96/96 pass, 37 executed.
+- **Error mapping (source):** `translateFDBError` maps a MetaDataError to 42000 (`connection.go:1018-1020`).
+- **Config reads (source):** there are still 8 non-test `readSPFreshConfig` call sites: the maintainer plus the seven entry points.
+- **Wire paths:** the queue, drain, window and graph bytes are untouched.

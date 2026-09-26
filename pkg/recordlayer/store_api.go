@@ -312,8 +312,10 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 	if recordType.PrimaryKey == nil {
 		return nil, &MetaDataError{Message: fmt.Sprintf("no primary key defined for record type: %s", recordTypeName)}
 	}
-	// As saveRecordInternal: the record as every later load reads it.
-	record = recordType.asJava(record)
+	// As saveRecordInternal: the record as every later load reads it, and
+	// the message the save serializes.
+	var writeRecord proto.Message
+	record, writeRecord = recordType.asJavaForSave(record)
 
 	// Record type supplied so a record-type-prefixed primary key resolves its
 	// leading component, matching the real save path (and Java's dry run,
@@ -392,7 +394,7 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 	// Serialize as the save would, over the stored record (a type holding a map
 	// is written in the stored record's map order), so the preview's sizes are
 	// the save's.
-	data, err := serializeUnionOver(record, recordType, store.storedRecordInner(oldValue, recordType))
+	data, err := serializeUnionOver(writeRecord, recordType, store.storedRecordInner(oldValue, recordType))
 	if err != nil {
 		return nil, &RecordSerializationError{Cause: err}
 	}

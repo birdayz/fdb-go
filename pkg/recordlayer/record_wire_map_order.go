@@ -497,6 +497,11 @@ func rewriteMaps(md protoreflect.MessageDescriptor, raw, prior []byte, reach map
 					p = append(p, b...)
 				}
 			}
+			if p == nil {
+				// No stored occurrence: the message is new, and its maps are
+				// written as a new record's (mergeMapEntries with no prior).
+				p = []byte{}
+			}
 			rewritten, err := rewriteMaps(fd.Message(), body, p, reach)
 			if err != nil {
 				return nil, err
@@ -644,13 +649,24 @@ func mergeMapEntries(fd protoreflect.FieldDescriptor, current, prior [][]byte, r
 	keyOf := func(entry *dynamicpb.Message) any { return entry.Get(fd.MapKey()).MapKey().Interface() }
 	canonical := proto.MarshalOptions{Deterministic: true, AllowPartial: true}
 	now := map[any][]byte{}
+	nowEntry := map[any]*dynamicpb.Message{}
 	var order []any
 	for _, body := range current {
 		entry, err := parseMapEntry(fd, body)
 		if err != nil {
 			return nil, err
 		}
+		if len(entry.GetUnknown()) > 0 {
+			// The entry holds what its type does not declare: a map value's
+			// undeclared closed-enum number (asJavaForSave's write view).
+			// Java's DynamicMessage reads the entry keeping it as the
+			// entry's unknown field and writes it back after the value.
+			if body, err = canonicalEntry(fd, entry, body, reach); err != nil {
+				return nil, err
+			}
+		}
 		now[keyOf(entry)] = body
+		nowEntry[keyOf(entry)] = entry
 		order = append(order, keyOf(entry))
 	}
 	type priorEntry struct {
@@ -681,13 +697,9 @@ func mergeMapEntries(fd protoreflect.FieldDescriptor, current, prior [][]byte, r
 	}
 	unchanged := map[any]bool{}
 	for k, i := range last {
-		body, ok := now[k]
+		entry, ok := nowEntry[k]
 		if !ok {
 			continue
-		}
-		entry, err := parseMapEntry(fd, body)
-		if err != nil {
-			return nil, err
 		}
 		a, err := keyAndValue(entry)
 		if err != nil {
@@ -697,7 +709,11 @@ func mergeMapEntries(fd protoreflect.FieldDescriptor, current, prior [][]byte, r
 		if err != nil {
 			return nil, err
 		}
-		unchanged[k] = string(a) == string(b)
+		// An entry that holds unknown fields of its own (an undeclared number
+		// Go holds) is unchanged only where the stored entry holds the same:
+		// otherwise the stored entry's form would drop the number.
+		unchanged[k] = string(a) == string(b) &&
+			(len(entry.GetUnknown()) == 0 || string(entry.GetUnknown()) == string(was[i].entry.GetUnknown()))
 	}
 	var out []byte
 	emit := func(entry []byte) {
@@ -716,6 +732,10 @@ func mergeMapEntries(fd protoreflect.FieldDescriptor, current, prior [][]byte, r
 			emit(entry)
 		case !done[p.key]:
 			done[p.key] = true
+			if len(nowEntry[p.key].GetUnknown()) > 0 {
+				emit(body) // canonical above
+				continue
+			}
 			entry, err := rewriteMaps(fd.Message(), body, was[last[p.key]].body, reach)
 			if err != nil {
 				return nil, err

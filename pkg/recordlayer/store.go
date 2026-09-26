@@ -583,8 +583,11 @@ func (store *FDBRecordStore) saveRecordInternal(
 	// every later load, in both engines, as unset (proto_closed_enums.go), so
 	// the record is keyed, counted, indexed and written as that reading: an
 	// update or delete that loads it then removes exactly the entries this save
-	// writes. The caller's message is not changed.
-	record = recordType.asJava(record)
+	// writes. The caller's message is not changed. writeRecord is what the save
+	// serializes (asJavaForSave: a DynamicMessage map value keeps its number,
+	// which the map rewrite writes in Java's form).
+	var writeRecord proto.Message
+	record, writeRecord = recordType.asJavaForSave(record)
 
 	// Extract primary key values using the flat evaluator (avoids [][]any alloc).
 	// The record type is supplied to the evaluation because a record-type-prefixed
@@ -678,7 +681,7 @@ func (store *FDBRecordStore) saveRecordInternal(
 	}
 
 	// Serialize directly into union wire format (no UnionDescriptor allocation)
-	data, err := serializeUnionOver(record, recordType, store.storedRecordInner(oldValue, recordType))
+	data, err := serializeUnionOver(writeRecord, recordType, store.storedRecordInner(oldValue, recordType))
 	if err != nil {
 		return nil, &RecordSerializationError{Cause: err}
 	}
@@ -2175,6 +2178,12 @@ func serializeUnionOver(record proto.Message, recordType *RecordType, priorInner
 	}
 
 	if recordType.reachesMap {
+		if priorInner == nil && recordType.reachesClosedEnum && holdsUndeclared(record.ProtoReflect(), recordType.closedEnumReach) {
+			// A map value holding an undeclared closed-enum number (the only
+			// one asJavaForSave's write view keeps): a new record's maps go
+			// through the rewrite too, which writes that entry in Java's form.
+			priorInner = []byte{}
+		}
 		innerBytes, err := marshalMapRecord(record, priorInner, recordType.mapReach)
 		if err != nil {
 			return nil, err
