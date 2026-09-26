@@ -382,7 +382,7 @@ func (r *goSQLRunner) withEphemeralSchema(ctx context.Context, schemaTemplate st
 	var schemaDB *sql.DB
 	if schemaTemplate != "" {
 		schemaDB, err = sql.Open("fdbsql",
-			fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, r.clusterFilePath, schemaName))
+			fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", strings.ToUpper(dbPath), r.clusterFilePath, strings.ToUpper(schemaName)))
 	} else {
 		schemaDB, err = sql.Open("fdbsql",
 			fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s", r.clusterFilePath))

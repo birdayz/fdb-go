@@ -36,7 +36,7 @@ func TestFDB_UnionAggregateExprAlias(t *testing.T) {
 			"CREATE TABLE b (id BIGINT, g BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_union_expralias/s WITH TEMPLATE union_expralias_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_union_expralias?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_UNION_EXPRALIAS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

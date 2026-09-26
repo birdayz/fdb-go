@@ -127,7 +127,7 @@ func (e *restoreEnv) bind(db, schema string, version int, md []byte) {
 		if err != nil {
 			return err
 		}
-		return e.cat.SaveSchema(tx, tmpl.GenerateSchema(db, schema), true)
+		return e.cat.SaveSchema(tx, tmpl.GenerateSchema(db, schema), true, api.SchemaExistsError)
 	})
 	if md != nil {
 		e.openStore(db, schema, md, func(store *recordlayer.FDBRecordStore) error {

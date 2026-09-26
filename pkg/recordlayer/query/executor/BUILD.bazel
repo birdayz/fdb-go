@@ -56,6 +56,7 @@ go_test(
         "charge_coverage_test.go",
         "comparator_differential_fuzz_test.go",
         "comparison_key_program_cache_test.go",
+        "continuation_closed_enum_test.go",
         "continuation_decode_test.go",
         "continuation_determinism_test.go",
         "covering_logical_row_test.go",
@@ -290,6 +291,7 @@ go_test(
         "flat_map_row_limit_integration_test.go",
         "aggregate_sum_initial_state_test.go",
         "aggregate_float_precision_test.go",
+        "continuation_closed_enum_test.go",
     ],
     tags = ["resources:memory:400"],
     deps = [
@@ -308,6 +310,7 @@ go_test(
         "//pkg/relational/core/rowstruct",
         "//pkg/testcontainers/foundationdb",
         "//pkg/testutil/allocs",
+        "@org_golang_google_protobuf//encoding/protowire",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protodesc",
         "@org_golang_google_protobuf//reflect/protoreflect",

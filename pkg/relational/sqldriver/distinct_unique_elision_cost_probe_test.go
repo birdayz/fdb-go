@@ -483,7 +483,7 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 			"CREATE TABLE users50_s (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) "+
 			"CREATE UNIQUE INDEX by_email50_s ON users50_s (email)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_duec/s WITH TEMPLATE duec")
-	dsn := fmt.Sprintf("fdbsql:///testdb_duec?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_DUEC?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

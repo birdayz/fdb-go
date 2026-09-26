@@ -30,7 +30,7 @@ func TestFDB_ScalarSubqueryOrdinalSeed(t *testing.T) {
 		"CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id)) "+
 		"CREATE TABLE emp (id BIGINT, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ssos/s WITH TEMPLATE ssos")
-	dsn := fmt.Sprintf("fdbsql:///testdb_ssos?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_SSOS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -112,7 +112,7 @@ func TestFDB_ScalarSubqueryOrdinalSeed_ColumnType(t *testing.T) {
 		"CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id)) "+
 		"CREATE TABLE emp (id BIGINT, dept_id BIGINT, salary BIGINT, ename STRING, dsal DOUBLE, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ssosct/s WITH TEMPLATE ssosct")
-	dsn := fmt.Sprintf("fdbsql:///testdb_ssosct?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_SSOSCT?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -219,7 +219,7 @@ func TestFDB_ScalarInnerShapeProbe(t *testing.T) {
 		"CREATE TABLE dept (id BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE emp (id BIGINT, dept_id BIGINT, salary BIGINT, ename STRING, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ssisp/s WITH TEMPLATE ssisp")
-	dsn := fmt.Sprintf("fdbsql:///testdb_ssisp?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_SSISP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -34,39 +34,41 @@ func NewCreateSchemaConstantAction(
 	}
 }
 
+// Execute runs Java's RecordLayerCreateSchemaConstantAction.execute, in its
+// order and with its messages: the database exists (UNDEFINED_DATABASE); the
+// template's latest version loads (UNKNOWN_SCHEMA_TEMPLATE); the catalog saves
+// the schema with ERROR, which refuses a stored schema of that name with
+// SCHEMA_ALREADY_EXISTS (and one bound to a gone template version with
+// UNKNOWN_SCHEMA_TEMPLATE, as its load fails first); then the record store is
+// created, and a store already there is SCHEMA_ALREADY_EXISTS.
 func (a *CreateSchemaConstantAction) Execute(txn api.Transaction) error {
 	exists, err := a.catalog.DoesDatabaseExist(txn, a.dbPath)
 	if err != nil {
 		return err
 	}
 	if !exists {
-		return api.NewErrorf(api.ErrCodeUndefinedDatabase, "database %q does not exist", a.dbPath)
+		return api.NewErrorf(api.ErrCodeUndefinedDatabase, "Database %s does not exist", a.dbPath)
 	}
 
-	// Verify schema does not already exist.
-	_, err = a.catalog.LoadSchema(txn, a.dbPath, a.schemaName)
-	if err == nil {
-		return api.NewErrorf(api.ErrCodeSchemaAlreadyExists, "schema %q already exists in %q", a.schemaName, a.dbPath)
-	}
-	var apiErr *api.Error
-	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUndefinedSchema {
-		return api.WrapErrorf(err, api.ErrCodeInternalError, "checking schema existence")
-	}
-
-	// Load template and generate schema.
 	template, err := a.catalog.SchemaTemplateCatalog().LoadSchemaTemplate(txn, a.templateID)
 	if err != nil {
+		return err
+	}
+	schema := template.GenerateSchema(a.dbPath, a.schemaName)
+	if err := a.catalog.SaveSchema(txn, schema, false, api.SchemaExistsError); err != nil {
 		return err
 	}
 
 	if a.ks != nil {
 		if err := a.createFDBStore(txn, template); err != nil {
+			var exists *recordlayer.RecordStoreAlreadyExistsError
+			if errors.As(err, &exists) {
+				return api.NewErrorf(api.ErrCodeSchemaAlreadyExists, "Schema <%s> already exists", a.schemaName)
+			}
 			return err
 		}
 	}
-
-	schema := template.GenerateSchema(a.dbPath, a.schemaName)
-	return a.catalog.SaveSchema(txn, schema, false)
+	return nil
 }
 
 func (a *CreateSchemaConstantAction) createFDBStore(txn api.Transaction, tmpl api.SchemaTemplate) error {

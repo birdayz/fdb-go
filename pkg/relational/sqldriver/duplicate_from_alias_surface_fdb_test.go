@@ -88,7 +88,7 @@ func dupAliasSurfaceDB(t *testing.T, tag string) (*sql.DB, context.Context) {
 		" CREATE TABLE zp (pid BIGINT, w BIGINT, m nst, PRIMARY KEY (pid))"+
 		" CREATE TABLE zs (sid BIGINT, k BIGINT, PRIMARY KEY (sid))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE dupaliassurface_tmpl_"+tag)
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

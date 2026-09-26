@@ -82,7 +82,7 @@ func TestFDB_OuterMultilegNestedOnPredicate(t *testing.T) {
 		"CREATE TABLE nt(id BIGINT, sk BIGINT, n gst, PRIMARY KEY(id))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_omlnon/s WITH TEMPLATE omlnon_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_omlnon?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_OMLNON?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

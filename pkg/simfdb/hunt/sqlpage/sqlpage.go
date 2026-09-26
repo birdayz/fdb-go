@@ -315,7 +315,7 @@ func newHarness(seed uint64) (*harness, error) {
 	h := &harness{simDB: simDB}
 	h.closes = append(h.closes, sqldriver.RegisterBackend(key, simDB))
 
-	setup, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+key)
+	setup, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+key)
 	if err != nil {
 		h.close()
 		return nil, fmt.Errorf("open setup: %w", err)
@@ -338,7 +338,7 @@ func newHarness(seed uint64) (*harness, error) {
 		}
 	}
 
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+key+"&schema=s")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+key+"&schema=S")
 	if err != nil {
 		h.close()
 		return nil, fmt.Errorf("open db: %w", err)

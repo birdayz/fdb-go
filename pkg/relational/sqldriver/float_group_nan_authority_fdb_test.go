@@ -157,7 +157,7 @@ func TestFDB_FloatGroupByNaNAuthority(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE fgna "+
 		"CREATE TABLE t (id BIGINT, d DOUBLE, a BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_fgna/s WITH TEMPLATE fgna")
-	dsn := fmt.Sprintf("fdbsql:///testdb_fgna?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_FGNA?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -285,7 +285,7 @@ func TestFDB_FloatAggregateIndexSplitsNaNPayloads(t *testing.T) {
 		"CREATE TABLE t (id BIGINT, d DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX cnt_by_d AS SELECT COUNT(*) FROM t GROUP BY d")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_fgnaidx/s WITH TEMPLATE fgnaidx")
-	dsn := fmt.Sprintf("fdbsql:///testdb_fgnaidx?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_FGNAIDX?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -349,7 +349,7 @@ func TestFDB_FloatGroupByNaNAuthority_Float32(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE fgna32 "+
 		"CREATE TABLE t (id BIGINT, g FLOAT, h DOUBLE, a BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_fgna32/s WITH TEMPLATE fgna32")
-	dsn := fmt.Sprintf("fdbsql:///testdb_fgna32?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_FGNA32?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

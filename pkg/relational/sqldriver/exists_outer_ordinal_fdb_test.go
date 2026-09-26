@@ -36,7 +36,7 @@ func TestFDB_ExistsOuterOrdinal(t *testing.T) {
 			"CREATE TABLE dept (did BIGINT, dname STRING, PRIMARY KEY (did)) "+
 			"CREATE TABLE emp (eid BIGINT, did BIGINT, PRIMARY KEY (eid))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_exists_ord/s WITH TEMPLATE exists_ord")
-	dsn := fmt.Sprintf("fdbsql:///testdb_exists_ord?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_EXISTS_ORD?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

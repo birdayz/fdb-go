@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer"
@@ -46,8 +47,7 @@ func TestFDB_StatisticsChangesInvalidateCachedPlans(t *testing.T) {
 			" CREATE INDEX fkside_by_fk ON fkside (fk)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE statscache")
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s&planner_statistics=true",
-		dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S&planner_statistics=true", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)

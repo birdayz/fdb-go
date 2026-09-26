@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 // Sweep runs whole seeds: it materializes each seed's case once and evaluates
@@ -107,7 +108,7 @@ func (s Sweep) RunSeed(ctx context.Context, seed uint64, batch *Batch) ([]Outcom
 		_, _ = s.SetupDB.ExecContext(ctx, fmt.Sprintf("DROP SCHEMA TEMPLATE %s", tmpl))
 	}()
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", s.DBPath, s.ClusterFile, schema))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", strings.ToUpper(s.DBPath), s.ClusterFile, strings.ToUpper(schema)))
 	if err != nil {
 		return nil, fmt.Errorf("open: %w", err)
 	}

@@ -57,7 +57,7 @@ func aggWidthDB(t *testing.T, ctx context.Context, tag, tables string) *sql.DB {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 	db, err := sql.Open("fdbsql", fmt.Sprintf(
-		"fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath))
+		"fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

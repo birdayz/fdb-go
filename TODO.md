@@ -15203,7 +15203,16 @@ catalog's XX000).
 
 ### The Go driver folds an unquoted `?schema=` connection value; Java takes it verbatim (found 2026-09-26, source)
 
-- [ ] `EmbeddedConnection.SetDefaultSchema` normalizes the DSN's `schema` value as an SQL identifier
+- [x] DONE 2026-09-26. Measured on the JVM (conformance "the DSN's schema option reaches the schema
+  Java's does", 18 arms, equal): the DSN's path and `?schema=` are taken verbatim, and DDL folds an
+  unquoted path whole (`create database /test/x` stores `/TEST/X`), which Go did not. Go now keeps the
+  DSN verbatim, folds every DDL path (`databasePathOf`: CREATE/DROP DATABASE and SCHEMA, SHOW
+  DATABASES WITH PREFIX), reports a missing database as Java's connect does (42F00), and
+  `SetSchema` refuses a missing schema as Java's `setSchema` does. Connect-then-CREATE DATABASE stays
+  a Go extension; that and the honoured SHOW prefix are in DIVERGENCES.md ("A connection to a
+  database that does not exist yet opens"). CHANGELOG has the migration note. Found alongside:
+  `CASE_SENSITIVE_IDENTIFIERS` is ignored (entry at the end of this file). The original finding:
+  `EmbeddedConnection.SetDefaultSchema` normalizes the DSN's `schema` value as an SQL identifier
   (`functions.NormalizeIdentifier`: unquoted folds to upper case), where Java's
   `RecordLayerStorageCluster.parseConnectionQueryString` upper-cases the option NAME and keeps the
   value verbatim, and `loadSchema` looks it up as given (RecordLayerStorageCluster.java:76-124). So
@@ -15215,6 +15224,17 @@ catalog's XX000).
   failed for another reason, the driver's Go-only keyspace); not measured. Measure both engines over a quoted mixed-case schema and a lower-case unquoted DSN, then port
   Java's lookup (the yamsql corpus pins the spellings that must keep working).
 
+
+- [ ] **The Go client lacks C++'s READ_ONLY transaction option.** `FDBTransactionOptions::READ_ONLY`
+  makes a commit that carries mutations or write conflict ranges fail with `transaction_read_only`
+  (`NativeAPI.actor.cpp:6810`, after the read-only fast path at `:6799-6803`); set through
+  `Transaction::setOption` (`:7079`, `:7090`). `pkg/fdbgo/fdb` exposes no `SetReadOnly` and
+  `pkg/fdbgo/client` has no such state (`grep -n 'readOnly' pkg/fdbgo/client/transaction.go
+  pkg/fdbgo/client/commitpath.go`: 0 lines; control: the same grep for `sizeLimit` finds them).
+  Found with RFC-258 (`rfcs/258-committed-version-is-libfdb-c.md`, "Found on the way"), whose
+  read-only-commit witness it would have duplicated. Port the option with a libfdb_c differential
+  (a set, a clear, an atomic op, an added write conflict range each refused; a read-only commit
+  admitted), after RFC-258 lands.
 
 - [ ] **Go's INSERT VALUES does not take a vector.** `INSERT INTO DOCS VALUES (1, [1.0, 0.0, 0.0])`
   into a `VECTOR(3, HALF)` column answers 22000 (type mismatch), and
@@ -15257,3 +15277,19 @@ catalog's XX000).
   `tofu import` of both servers, both volumes, the ssh key and the reports bucket and its
   policy (MinIO credentials included) before it can run. (3) The live boxes still lack
   `ci-docker-gate.service` and the fstab ordering (`infra/README.md`, "The boot path").
+
+- [ ] **Go ignores `CASE_SENSITIVE_IDENTIFIERS`; under it Java's DDL stores every unquoted name as
+  written.** `api.OptCaseSensitiveIdentifiers` is declared and defaulted (`pkg/relational/api/options.go:128`,
+  `:249`) and read nowhere (`git grep -n 'OptCaseSensitiveIdentifiers' -- '*.go'`: those 2 lines;
+  control: the same grep for `OptCaseSensitiveIdentifiers\|OptionName` finds the whole table). Java
+  reads it in `PlanContext.java:263` (`isCaseSensitive`), `PlanGenerator.java:158`, the structured-SQL
+  `ExpressionFactoryImpl.java:62,91` and `UpdateStatementImpl.java:120,235`, and
+  `SemanticAnalyzer.normalizeString(s, caseSensitive)` then keeps an unquoted identifier verbatim
+  instead of upper-casing it. So a Java connection with the option set runs `CREATE TABLE foo` into a
+  template whose table is `foo`, where Go, with the same option, stores `FOO`: every name a template
+  holds differs, a stored-meta-data (wire) divergence for any user who sets the option. Not the
+  resolution divergence in DIVERGENCES.md "Identifier resolution: Go over-resolves case", which is
+  about lookup and which this option does not close. Found closing the `?schema=` item (RFC-257,
+  2026-09-26), whose fix made DDL fold database paths with `NormalizeIdentifier`; that fold, too,
+  must follow the option. Measure Java's stored names and resolution under the option over DDL,
+  DML and the DSN, then thread the option through Go's normalization.

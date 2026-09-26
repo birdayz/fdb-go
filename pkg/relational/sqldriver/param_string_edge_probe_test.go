@@ -24,7 +24,7 @@ func TestFDB_ParamStringEdgeProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE paramedge CREATE TABLE t (id BIGINT, n BIGINT, s STRING, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_paramedge/s WITH TEMPLATE paramedge")
-	dsn := fmt.Sprintf("fdbsql:///testdb_paramedge?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_PARAMEDGE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

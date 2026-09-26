@@ -44,7 +44,7 @@ func TestFDB_UUIDIndexableRoundTrip(t *testing.T) {
 			"CREATE TABLE t (id BIGINT, v UUID, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_v ON t (v)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uuidrt/s WITH TEMPLATE uuidrt")
-	dsn := fmt.Sprintf("fdbsql:///testdb_uuidrt?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_UUIDRT?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -309,7 +309,7 @@ func TestFDB_UUIDNonIndexedSort(t *testing.T) {
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE uuidsort CREATE TABLE t (id BIGINT, v UUID, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uuidsort/s WITH TEMPLATE uuidsort")
-	dsn := fmt.Sprintf("fdbsql:///testdb_uuidsort?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_UUIDSORT?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -381,7 +381,7 @@ func TestFDB_UUIDPrimaryKey(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE uuidpk "+
 			"CREATE TABLE t (k UUID, n BIGINT, PRIMARY KEY (k))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uuidpk/s WITH TEMPLATE uuidpk")
-	dsn := fmt.Sprintf("fdbsql:///testdb_uuidpk?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_UUIDPK?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -430,7 +430,7 @@ func TestFDB_UUIDInlJoin(t *testing.T) {
 			"CREATE TABLE b (id BIGINT, v UUID, label STRING, PRIMARY KEY (id)) "+
 			"CREATE INDEX b_v ON b (v)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uuidjoin/s WITH TEMPLATE uuidjoin")
-	dsn := fmt.Sprintf("fdbsql:///testdb_uuidjoin?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_UUIDJOIN?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

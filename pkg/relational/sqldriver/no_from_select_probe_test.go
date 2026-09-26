@@ -28,7 +28,7 @@ func TestFDB_NoFromSelectProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nofrom CREATE TABLE t (id BIGINT, PRIMARY KEY (id)) CREATE TABLE wide_t (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE pair_t (id BIGINT, PRIMARY KEY (id)) CREATE TABLE pair_s (id STRING, PRIMARY KEY (id)) CREATE TABLE sort_t (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TYPE AS STRUCT item_type (sk BIGINT, co BIGINT) CREATE TABLE items_t (id BIGINT, items item_type ARRAY, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nofrom/s WITH TEMPLATE nofrom")
-	dsn := fmt.Sprintf("fdbsql:///testdb_nofrom?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_NOFROM?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

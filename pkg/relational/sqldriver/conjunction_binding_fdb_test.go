@@ -77,7 +77,7 @@ func TestFDB_ConjunctionBinding(t *testing.T) {
 	const indexes = "CREATE INDEX idx_a ON t (a) CREATE INDEX idx_ab ON t (a, b)"
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE conjbind "+table+indexes)
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_conjbind/s WITH TEMPLATE conjbind")
-	dsn := fmt.Sprintf("fdbsql:///testdb_conjbind?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_CONJBIND?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

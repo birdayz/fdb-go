@@ -52,7 +52,7 @@ func TestFDB_DerivedStructComparisonGate(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /derivedstructgate/s WITH TEMPLATE dsg_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	dsn := fmt.Sprintf("fdbsql:///derivedstructgate?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///DERIVEDSTRUCTGATE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)

@@ -47,7 +47,7 @@ func TestFDB_TemporalComparandDateColumn(t *testing.T) {
 		"CREATE INDEX X_D ON X(D)")
 	mustExec(setup, "CREATE SCHEMA /"+dbName+"/s WITH TEMPLATE temporal_comparand_date")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///%s?cluster_file=%s&schema=s", dbName, clusterFilePath))
+		fmt.Sprintf("fdbsql:///%s?cluster_file=%s&schema=S", strings.ToUpper(dbName), clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

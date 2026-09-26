@@ -86,7 +86,7 @@ func TestFDB_DuecMeasurementWindowLoss_IsSeenByDetectorA(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE duecwin "+
 			"CREATE TABLE rows1 (id BIGINT, v STRING, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_duecwin/s WITH TEMPLATE duecwin")
-	dsn := fmt.Sprintf("fdbsql:///testdb_duecwin?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_DUECWIN?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -270,7 +270,7 @@ func TestFDB_DuecScannedRowsLimitDoesNotSilentlyTruncate(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE duecpage "+
 			"CREATE TABLE rows2 (id BIGINT, v STRING, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_duecpage/s WITH TEMPLATE duecpage")
-	dsn := fmt.Sprintf("fdbsql:///testdb_duecpage?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_DUECPAGE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

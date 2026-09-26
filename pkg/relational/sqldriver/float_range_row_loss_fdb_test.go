@@ -150,7 +150,7 @@ func TestFDB_FloatRangePredicate_IsExactThroughSQL(t *testing.T) {
 		"CREATE TABLE fo (id BIGINT, e DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX fi_ae ON fi (a, e)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_frrl/s WITH TEMPLATE frrl")
-	dsn := fmt.Sprintf("fdbsql:///testdb_frrl?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_FRRL?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -250,7 +250,7 @@ func TestFDB_FloatRangePredicate_IsExactThroughSQL_Float32(t *testing.T) {
 		"CREATE TABLE go_ (id BIGINT, g FLOAT, h DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX gi_ag ON gi (a, g)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_frrl32/s WITH TEMPLATE frrl32")
-	dsn := fmt.Sprintf("fdbsql:///testdb_frrl32?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_FRRL32?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

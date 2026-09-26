@@ -61,7 +61,7 @@ func TestFDB_GroupByNestedPathKey(t *testing.T) {
 		"CREATE INDEX i2 AS SELECT r.v.z FROM nested ORDER BY r.v.z")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /gbnpk/s WITH TEMPLATE gbnpk_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///gbnpk?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///GBNPK?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

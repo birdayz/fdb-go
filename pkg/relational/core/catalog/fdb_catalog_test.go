@@ -271,7 +271,7 @@ func TestFDB_SchemaCRUD(t *testing.T) {
 	})).To(gomega.Succeed())
 
 	g.Expect(run(func(tx api.Transaction) error {
-		return cat.SaveSchema(tx, tmpl.GenerateSchema("/db", "pub"), true)
+		return cat.SaveSchema(tx, tmpl.GenerateSchema("/db", "pub"), true, api.SchemaExistsError)
 	})).To(gomega.Succeed())
 
 	g.Expect(run(func(tx api.Transaction) error {
@@ -317,7 +317,7 @@ func TestFDB_SaveSchemaWithoutDatabase(t *testing.T) {
 	})).To(gomega.Succeed())
 
 	err := run(func(tx api.Transaction) error {
-		return cat.SaveSchema(tx, tmpl.GenerateSchema("/no-such-db", "pub"), false)
+		return cat.SaveSchema(tx, tmpl.GenerateSchema("/no-such-db", "pub"), false, api.SchemaExistsError)
 	})
 	var apiErr *api.Error
 	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
@@ -333,7 +333,7 @@ func TestFDB_SaveSchemaWithUnknownTemplate(t *testing.T) {
 	tmpl := buildVersionedTemplate(t, "ghost-tmpl", 1)
 
 	err := run(func(tx api.Transaction) error {
-		return cat.SaveSchema(tx, tmpl.GenerateSchema("/db", "pub"), true)
+		return cat.SaveSchema(tx, tmpl.GenerateSchema("/db", "pub"), true, api.SchemaExistsError)
 	})
 	var apiErr *api.Error
 	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
@@ -350,9 +350,9 @@ func TestFDB_ListSchemasInDatabase(t *testing.T) {
 
 	g.Expect(run(func(tx api.Transaction) error {
 		g.Expect(tc.CreateTemplate(tx, tmpl)).To(gomega.Succeed())
-		g.Expect(cat.SaveSchema(tx, tmpl.GenerateSchema("/db1", "s1"), true)).To(gomega.Succeed())
-		g.Expect(cat.SaveSchema(tx, tmpl.GenerateSchema("/db1", "s2"), true)).To(gomega.Succeed())
-		g.Expect(cat.SaveSchema(tx, tmpl.GenerateSchema("/db2", "s1"), true)).To(gomega.Succeed())
+		g.Expect(cat.SaveSchema(tx, tmpl.GenerateSchema("/db1", "s1"), true, api.SchemaExistsError)).To(gomega.Succeed())
+		g.Expect(cat.SaveSchema(tx, tmpl.GenerateSchema("/db1", "s2"), true, api.SchemaExistsError)).To(gomega.Succeed())
+		g.Expect(cat.SaveSchema(tx, tmpl.GenerateSchema("/db2", "s1"), true, api.SchemaExistsError)).To(gomega.Succeed())
 		return nil
 	})).To(gomega.Succeed())
 
@@ -396,7 +396,7 @@ func TestFDB_RepairSchema(t *testing.T) {
 
 	g.Expect(run(func(tx api.Transaction) error {
 		g.Expect(tc.CreateTemplate(tx, tmpl1)).To(gomega.Succeed())
-		return cat.SaveSchema(tx, tmpl1.GenerateSchema("/db", "pub"), true)
+		return cat.SaveSchema(tx, tmpl1.GenerateSchema("/db", "pub"), true, api.SchemaExistsError)
 	})).To(gomega.Succeed())
 
 	g.Expect(run(func(tx api.Transaction) error {
@@ -498,7 +498,7 @@ func TestFDB_SchemaRebindRejectsRecordTypeKeyChange(t *testing.T) {
 	carried1, carried2 := versions("rebind-key-tmpl")
 	g.Expect(run(func(tx api.Transaction) error {
 		g.Expect(tc.CreateTemplate(tx, carried1)).To(gomega.Succeed())
-		return cat.SaveSchema(tx, carried1.GenerateSchema("/rebinddb", "carried"), true)
+		return cat.SaveSchema(tx, carried1.GenerateSchema("/rebinddb", "carried"), true, api.SchemaExistsError)
 	})).To(gomega.Succeed())
 	g.Expect(run(func(tx api.Transaction) error {
 		return tc.CreateTemplate(tx, carried2)
@@ -519,7 +519,7 @@ func TestFDB_SchemaRebindRejectsRecordTypeKeyChange(t *testing.T) {
 	raw1, raw2 := versions("rebind-key-raw")
 	g.Expect(run(func(tx api.Transaction) error {
 		g.Expect(tc.CreateTemplate(tx, raw1)).To(gomega.Succeed())
-		return cat.SaveSchema(tx, raw1.GenerateSchema("/rebinddb", "pub"), true)
+		return cat.SaveSchema(tx, raw1.GenerateSchema("/rebinddb", "pub"), true, api.SchemaExistsError)
 	})).To(gomega.Succeed())
 	g.Expect(run(func(tx api.Transaction) error {
 		return rawCreateTemplate(t, cat, tx, raw2)
@@ -534,19 +534,19 @@ func TestFDB_SchemaRebindRejectsRecordTypeKeyChange(t *testing.T) {
 	g.Expect(bound("pub")).To(gomega.Equal(1))
 }
 
-// TestFDB_SchemaRebindRejectsVersionGoingBackwards pins the OTHER arm of the
-// rebind guard: the TEMPLATE VERSION must advance.
+// TestFDB_SchemaRebindRejectsVersionGoingBackwards pins the OTHER refusal of a
+// rebind: the TEMPLATE VERSION must not move backwards. Java's UPGRADE decides
+// it (SchemaExistsBehavior.shouldWrite): a lower version is refused with
+// SCHEMA_ALREADY_EXISTS and its message, and an equal one is a no-op.
 //
-// The two arms fail for unrelated reasons and are not substitutes. The
+// The two refusals fail for unrelated reasons and are not substitutes. The
 // evolution validator catches a rebind whose SHAPE is incompatible; this one
 // catches a rebind whose shape is perfectly compatible but whose version moves
-// BACKWARDS — re-binding a live schema to a superseded template. Nothing else
-// in the package exercises it, so deleting the monotonic branch left the
-// package green with the guard gone, which is the rot this test closes.
+// BACKWARDS — re-binding a live schema to a superseded template.
 //
 // v1 and v2 are structurally IDENTICAL on purpose: if the shape differed, the
 // evolution validator could reject the downgrade for its own reasons and the
-// test would pass without the version branch existing at all.
+// test would pass without the version refusal existing at all.
 func TestFDB_SchemaRebindRejectsVersionGoingBackwards(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
@@ -581,16 +581,17 @@ func TestFDB_SchemaRebindRejectsVersionGoingBackwards(t *testing.T) {
 	g.Expect(run(func(tx api.Transaction) error {
 		g.Expect(tc.CreateTemplate(tx, tmpl1)).To(gomega.Succeed())
 		g.Expect(tc.CreateTemplate(tx, tmpl2)).To(gomega.Succeed())
-		return cat.SaveSchema(tx, tmpl2.GenerateSchema("/rebindverdb", "pub"), true)
+		return cat.SaveSchema(tx, tmpl2.GenerateSchema("/rebindverdb", "pub"), true, api.SchemaExistsError)
 	})).To(gomega.Succeed())
 
 	downgradeErr := run(func(tx api.Transaction) error {
-		return cat.SaveSchema(tx, tmpl1.GenerateSchema("/rebindverdb", "pub"), true)
+		return cat.SaveSchema(tx, tmpl1.GenerateSchema("/rebindverdb", "pub"), true, api.SchemaExistsUpgrade)
 	})
-	g.Expect(downgradeErr).To(gomega.HaveOccurred())
-	g.Expect(downgradeErr.Error()).To(gomega.ContainSubstring(
-		"cannot rebind schema /rebindverdb/pub to template rebind-ver-tmpl@1: " +
-			"version does not advance past the bound rebind-ver-tmpl@2"))
+	var apiErr *api.Error
+	g.Expect(errors.As(downgradeErr, &apiErr)).To(gomega.BeTrue(), "%v", downgradeErr)
+	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeSchemaAlreadyExists))
+	g.Expect(apiErr.Message).To(gomega.Equal(
+		"Cannot upgrade schema /rebindverdb/pub: new template version 1 is lower than existing version 2."))
 
 	// The binding is untouched: still v2.
 	g.Expect(run(func(tx api.Transaction) error {
@@ -600,11 +601,9 @@ func TestFDB_SchemaRebindRejectsVersionGoingBackwards(t *testing.T) {
 		return nil
 	})).To(gomega.Succeed())
 
-	// An EQUAL version is rejected by the same branch (`<=`), and it is a
-	// distinct direction: a guard written `<` would let a same-version rebind
-	// to DIFFERENT metadata through, which is the silent-swap case.
+	// An EQUAL version is UPGRADE's no-op: it is accepted and writes nothing.
 	sameErr := run(func(tx api.Transaction) error {
-		return cat.SaveSchema(tx, tmpl2.GenerateSchema("/rebindverdb", "pub"), true)
+		return cat.SaveSchema(tx, tmpl2.GenerateSchema("/rebindverdb", "pub"), true, api.SchemaExistsUpgrade)
 	})
 	g.Expect(sameErr).ToNot(gomega.HaveOccurred(),
 		"a same-name same-version save is the no-op arm and must be accepted")
@@ -766,8 +765,8 @@ func TestFDB_DeleteDatabase(t *testing.T) {
 
 	g.Expect(run(func(tx api.Transaction) error {
 		g.Expect(tc.CreateTemplate(tx, tmpl)).To(gomega.Succeed())
-		g.Expect(cat.SaveSchema(tx, tmpl.GenerateSchema("/deldb", "s1"), true)).To(gomega.Succeed())
-		g.Expect(cat.SaveSchema(tx, tmpl.GenerateSchema("/deldb", "s2"), true)).To(gomega.Succeed())
+		g.Expect(cat.SaveSchema(tx, tmpl.GenerateSchema("/deldb", "s1"), true, api.SchemaExistsError)).To(gomega.Succeed())
+		g.Expect(cat.SaveSchema(tx, tmpl.GenerateSchema("/deldb", "s2"), true, api.SchemaExistsError)).To(gomega.Succeed())
 		return nil
 	})).To(gomega.Succeed())
 
@@ -948,7 +947,7 @@ func TestFDB_SchemaRebindOfALiteralCarrierChange(t *testing.T) {
 	carried1 := build("widen-carried", 1, &gen.Value{LongValue: proto.Int64(1)})
 	g.Expect(run(func(tx api.Transaction) error {
 		g.Expect(tc.CreateTemplate(tx, carried1)).To(gomega.Succeed())
-		return cat.SaveSchema(tx, carried1.GenerateSchema("/widendb", "carried"), true)
+		return cat.SaveSchema(tx, carried1.GenerateSchema("/widendb", "carried"), true, api.SchemaExistsError)
 	})).To(gomega.Succeed())
 	g.Expect(run(func(tx api.Transaction) error {
 		return tc.CreateTemplate(tx, build("widen-carried", 2, &gen.Value{IntValue: proto.Int32(1)}))
@@ -977,7 +976,7 @@ func TestFDB_SchemaRebindOfALiteralCarrierChange(t *testing.T) {
 	raw1 := build("widen-raw", 1, &gen.Value{LongValue: proto.Int64(1)})
 	g.Expect(run(func(tx api.Transaction) error {
 		g.Expect(tc.CreateTemplate(tx, raw1)).To(gomega.Succeed())
-		return cat.SaveSchema(tx, raw1.GenerateSchema("/widendb", "pub"), true)
+		return cat.SaveSchema(tx, raw1.GenerateSchema("/widendb", "pub"), true, api.SchemaExistsError)
 	})).To(gomega.Succeed())
 	for _, c := range []struct {
 		version int

@@ -40,10 +40,12 @@ A tenant is a SQL database path. The DSN is the ordinary one from
 [`operations.md` §1](operations.md#1-connecting-to-a-cluster):
 
 ```
-fdbsql:///t/<tenant-id>?cluster_file=/etc/foundationdb/fdb.cluster&schema=MAIN
+fdbsql:///T/<TENANT-ID>?cluster_file=/etc/foundationdb/fdb.cluster&schema=MAIN
 ```
 
-`/t/<tenant-id>` is **a convention this guide recommends, not a driver feature.** `ParseDSN`
+`/T/<TENANT-ID>` is **a convention this guide recommends, not a driver feature**, and it is written
+in upper case because the DSN takes the path exactly as written while `CREATE DATABASE /t/abc` stores
+`/T/ABC` (DDL folds an unquoted path whole, as Java's does). `ParseDSN`
 accepts any non-empty path and attaches no meaning to any segment
 (`pkg/relational/sqldriver/dsn.go:120`). An empty path or a bare `/` is rejected at
 `sql.Open` time (`pkg/relational/sqldriver/dsn.go:136`), which matters because several fail-closed
@@ -210,7 +212,7 @@ const RestrictDDLToSessionDatabaseParam = "restrict_ddl_to_session_database"
 
 ```go
 db, err := sql.Open("fdbsql",
-    "fdbsql:///t/"+tenantID+
+    "fdbsql:///T/"+tenantID+
         "?cluster_file=/etc/foundationdb/fdb.cluster"+
         "&schema=MAIN"+
         "&restrict_ddl_to_session_database=true")
@@ -265,7 +267,7 @@ catalog's own keyspace.
 
 `RESTRICT_DDL_TO_SESSION_DATABASE` is defense-in-depth. It is not an authorization system: it has
 one subject (the session's database path), no principals, no verbs, and it governs DDL only. DML
-and SELECT are unaffected — a connection opened against `/t/a` reads and writes `/t/a` because that
+and SELECT are unaffected — a connection opened against `/T/A` reads and writes `/T/A` because that
 is the path it was opened with, not because anything checked a permission. Untrusted SQL reaching
 the driver is still a full compromise of that tenant's data. Keep the option on anyway; it turns a
 class of application bugs from cross-tenant destruction into a 42501.
@@ -476,7 +478,7 @@ client metrics at all.** The driver opens the handle itself
 (`pkg/relational/sqldriver/driver.go:211`, `:215`) and stashes it in a package-private cache
 (`driver.go:73`) with no getter. The one inversion is `sqldriver.RegisterBackend`
 (`pkg/relational/sqldriver/driver.go:84`): build the `*client.Database` yourself, register the
-wrapped record-layer database under a key, and open `fdbsql:///t/<id>?cluster_file=<key>`. Note its
+wrapped record-layer database under a key, and open `fdbsql:///T/<ID>?cluster_file=<key>`. Note its
 doc frames it as a deterministic-simulation seam, not a metrics API — it works, but you are using
 it off-label.
 
@@ -497,7 +499,7 @@ handle, so it works before the lazy `Connect` that opens the database:
 timer := sqldriver.EnableStoreTimer("/etc/foundationdb/fdb.cluster")
 http.Handle("/metrics/recordlayer", rlmetrics.Handler(timer))
 
-db, _ := sql.Open("fdbsql", "fdbsql:///t/42?cluster_file=/etc/foundationdb/fdb.cluster")
+db, _ := sql.Open("fdbsql", "fdbsql:///T/42?cluster_file=/etc/foundationdb/fdb.cluster")
 ```
 
 Order does not matter — arming before or after the first connection both work, and repeat calls

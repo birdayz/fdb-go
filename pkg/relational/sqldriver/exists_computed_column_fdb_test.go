@@ -39,7 +39,7 @@ func TestFDB_ProjectedExists_UnaliasedComputedColumn(t *testing.T) {
 		"CREATE TABLE t2 (id BIGINT, PRIMARY KEY (id))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_existscomputed/s WITH TEMPLATE ecc_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_existscomputed?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_EXISTSCOMPUTED?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

@@ -488,10 +488,17 @@ func (c *EmbeddedConnection) execShowStatement(ctx context.Context, show antlrge
 	switch t := show.(type) {
 	case *antlrgen.ShowDatabasesStatementContext:
 		// `SHOW DATABASES WITH PREFIX <path>` — the prefix is read off the
-		// typed parse-tree node, never off statement text.
+		// typed parse-tree node, never off statement text, and folded as
+		// every DDL path is (databasePathOf), so `with prefix /a` lists what
+		// `create database /a/b` stored as /A/B. Java reads it the same way
+		// (visitUid) and then drops it: its CatalogQueryFactory lists every
+		// database ("TODO(bfines) make use of this prefix", measured: a JVM
+		// SHOW with any prefix listed the whole cluster). Go honours the
+		// scope, so the fold is what keeps it consistent with the stored
+		// paths.
 		prefix := scopePrefixOrEmpty(c.sess.DBPath)
 		if p := t.Path(); p != nil {
-			prefix = p.GetText()
+			prefix = databasePathOf(p.GetText())
 			if err := validateDatabasePath(prefix); err != nil {
 				return nil, err
 			}

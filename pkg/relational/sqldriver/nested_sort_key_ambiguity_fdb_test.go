@@ -80,7 +80,7 @@ func TestFDB_NestedSortKeyAmbiguityIsRejectedBeforeTheFold(t *testing.T) {
 		"CREATE TABLE t4(id BIGINT, n nst, t1_id BIGINT, PRIMARY KEY(id))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nsk_ambig/s WITH TEMPLATE nsk_ambig_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_nsk_ambig?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_NSK_AMBIG?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

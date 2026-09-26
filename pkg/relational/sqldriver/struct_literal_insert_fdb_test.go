@@ -53,12 +53,12 @@ func structInsertDB(t *testing.T, tag string) (*sql.DB, context.Context, subspac
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE "+tmpl); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	return db, ctx, subspace.Sub().Sub(tuple.Tuple{dbPath, "MAIN"})
+	return db, ctx, subspace.Sub().Sub(tuple.Tuple{strings.ToUpper(dbPath), "MAIN"}) // the path CREATE DATABASE stored
 }
 
 // structInsertMetaData rebuilds structInsertDDL's metadata out-of-band. The
@@ -537,7 +537,7 @@ func TestFDB_StructNotNullArrayFieldRejectsNull(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE structnn_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

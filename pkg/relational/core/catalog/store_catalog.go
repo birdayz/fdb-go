@@ -125,60 +125,76 @@ func (c *InMemoryStoreCatalog) LoadSchema(txn api.Transaction, databaseID, schem
 	return s, nil
 }
 
-// SaveSchema persists or updates schema. Creates the owning database
-// first when createDatabaseIfNecessary is true and it doesn't exist.
-//
-// Java compliance (RecordLayerStoreCatalog.saveSchema):
-//  1. If database missing and !createDatabaseIfNecessary → UNDEFINED_DATABASE.
-//  2. The schema template referenced by the Schema (name, version) MUST
-//     exist in the SchemaTemplateCatalog, else UNKNOWN_SCHEMA_TEMPLATE.
-//  3. Otherwise upsert the (db, schema) entry.
+// SaveSchema persists schema, in Java's saveSchema order, as the FDB
+// catalog's SaveSchema: validate the schema; the database exists (else
+// UNDEFINED_DATABASE unless createDatabaseIfNecessary); the template exists
+// at the schema's version (UNKNOWN_SCHEMA_TEMPLATE); the stored row loads
+// with its template, which fails when that version is gone; existsBehavior
+// decides a save over a stored row, and Go's rebind validator checks one
+// that overwrites it; write.
 //
 // Note the error codes: UNDEFINED_DATABASE here, not UNKNOWN_DATABASE —
 // those are two distinct SQLSTATEs in Java.
-func (c *InMemoryStoreCatalog) SaveSchema(txn api.Transaction, dataToWrite api.Schema, createDatabaseIfNecessary bool) error {
+func (c *InMemoryStoreCatalog) SaveSchema(txn api.Transaction, dataToWrite api.Schema, createDatabaseIfNecessary bool, existsBehavior api.SchemaExistsBehavior) error {
 	if err := checkOpenTxn(txn); err != nil {
 		return err
 	}
+	// The mutex is held from the template check to the write, so the
+	// version guard (which takes it before the template catalog's) cannot
+	// delete the version between the two.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.saveSchemaHeld(txn, dataToWrite, createDatabaseIfNecessary, existsBehavior)
+}
+
+// saveSchemaHeld is SaveSchema with c.mu held, the one save both SaveSchema
+// and RepairSchema run.
+func (c *InMemoryStoreCatalog) saveSchemaHeld(txn api.Transaction, dataToWrite api.Schema, createDatabaseIfNecessary bool, existsBehavior api.SchemaExistsBehavior) error {
 	if err := validateSchema(dataToWrite); err != nil {
 		return err
 	}
 	dbID := dataToWrite.DatabaseName()
 	name := dataToWrite.MetadataName()
 
-	// The mutex is held from the template check to the write, so the
-	// version guard (which takes it before the template catalog's) cannot
-	// delete the version between the two.
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	tmpl := dataToWrite.SchemaTemplate()
-	if tmpl != nil {
-		// Takes tc.mu under c.mu (the lock order).
-		exists, err := c.templates.DoesSchemaTemplateExistAtVersion(txn, tmpl.MetadataName(), tmpl.Version())
-		if err != nil {
-			return err
-		}
-		if !exists {
-			return api.NewErrorf(api.ErrCodeUnknownSchemaTemplate,
-				"Cannot create schema %s because schema template %s version %d does not exist.",
-				name, tmpl.MetadataName(), tmpl.Version())
-		}
+	// Java creates a missing database here, before the template check, in
+	// the transaction a refused save does not commit. This catalog has no
+	// rollback, so it records the database only once the save is admitted
+	// (below); the order of the refusals is Java's.
+	_, dbExists := c.databases[dbID]
+	if !dbExists && !createDatabaseIfNecessary {
+		return api.NewErrorf(api.ErrCodeUndefinedDatabase,
+			"Cannot create schema %s because database %s does not exist.", name, dbID)
 	}
 
-	// Java's saveSchema loads the existing row with its template, which
-	// fails when the bound version is gone.
+	tmpl := dataToWrite.SchemaTemplate()
+	// Takes tc.mu under c.mu (the lock order).
+	exists, err := c.templates.DoesSchemaTemplateExistAtVersion(txn, tmpl.MetadataName(), tmpl.Version())
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return api.NewErrorf(api.ErrCodeUnknownSchemaTemplate,
+			"Cannot create schema %s because schema template %s version %d does not exist.",
+			name, tmpl.MetadataName(), tmpl.Version())
+	}
+
 	if existing, ok := c.schemas[dbID][name]; ok {
 		if err := c.boundTemplateTakingTC(txn, existing); err != nil {
 			return err
 		}
+		write, err := existsBehavior.ShouldWrite(dataToWrite, existing)
+		if err != nil {
+			return err
+		}
+		if !write {
+			return nil
+		}
+		if err := validateSchemaRebind(existing, dataToWrite); err != nil {
+			return err
+		}
 	}
 
-	if _, ok := c.databases[dbID]; !ok {
-		if !createDatabaseIfNecessary {
-			return api.NewErrorf(api.ErrCodeUndefinedDatabase,
-				"Cannot create schema %s because database %s does not exist.", name, dbID)
-		}
+	if !dbExists {
 		c.databases[dbID] = struct{}{}
 	}
 	if c.schemas[dbID] == nil {
@@ -194,8 +210,9 @@ func (c *InMemoryStoreCatalog) SaveSchema(txn api.Transaction, dataToWrite api.S
 // RepairSchema rebinds schemaName to the latest version of its
 // owning template, as Java's repairSchema: it loads the schema with its
 // template (refused when the bound version is gone) and saves it onto the
-// latest version. The mutex is held throughout, so the template read and
-// the write see one state.
+// latest version with UPGRADE, through saveSchemaHeld and so the rebind
+// validator. The mutex is held throughout, so the template reads and the
+// write see one state.
 func (c *InMemoryStoreCatalog) RepairSchema(txn api.Transaction, databaseID, schemaName string) error {
 	if err := checkOpenTxn(txn); err != nil {
 		return err
@@ -213,11 +230,7 @@ func (c *InMemoryStoreCatalog) RepairSchema(txn api.Transaction, databaseID, sch
 	if err != nil {
 		return err
 	}
-	if c.beforeBind != nil {
-		c.beforeBind()
-	}
-	c.schemas[databaseID][schemaName] = latest.GenerateSchema(databaseID, schemaName)
-	return nil
+	return c.saveSchemaHeld(txn, latest.GenerateSchema(databaseID, schemaName), false, api.SchemaExistsUpgrade)
 }
 
 // CreateDatabase records a new database. Returns

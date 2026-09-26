@@ -132,7 +132,7 @@ Cascades-based query planner ported from Java's `fdb-relational-core`.
 ```go
 import _ "fdb.dev/pkg/relational/sqldriver"
 
-db, _ := sql.Open("fdbsql", "fdbsql:///mydb?cluster_file=/etc/foundationdb/fdb.cluster&schema=main")
+db, _ := sql.Open("fdbsql", "fdbsql:///MYDB?cluster_file=/etc/foundationdb/fdb.cluster&schema=MAIN")
 
 // DDL
 db.Exec("CREATE DATABASE /mydb")
@@ -312,7 +312,7 @@ import (
 )
 
 func main() {
-    db, _ := sql.Open("fdbsql", "fdbsql:///myapp?cluster_file=/tmp/fdb.cluster&schema=main")
+    db, _ := sql.Open("fdbsql", "fdbsql:///MYAPP?cluster_file=/tmp/fdb.cluster&schema=MAIN")
     db.Exec("CREATE DATABASE /myapp")
     db.Exec(`CREATE SCHEMA TEMPLATE app CREATE TABLE Users (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))`)
     db.Exec("CREATE SCHEMA /myapp/main WITH TEMPLATE app")

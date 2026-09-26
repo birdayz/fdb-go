@@ -25,7 +25,7 @@ func TestFDB_SelectDistinctNullProbe(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE distnullp "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_distnullp/s WITH TEMPLATE distnullp")
-	dsn := fmt.Sprintf("fdbsql:///testdb_distnullp?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_DISTNULLP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

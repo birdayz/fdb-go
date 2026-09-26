@@ -81,7 +81,7 @@ func TestFDB_NegativeZeroDistinctMultiColumnPlanIndependence(t *testing.T) {
 		"CREATE TABLE t (id BIGINT, d DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_da ON t (d, a)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nzmulti/s WITH TEMPLATE nzmulti")
-	dsn := fmt.Sprintf("fdbsql:///testdb_nzmulti?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_NZMULTI?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -139,7 +139,7 @@ func TestFDB_NegativeZeroDistinctDedupProbe(t *testing.T) {
 		"CREATE TABLE d (id BIGINT, v DOUBLE, PRIMARY KEY (id)) "+
 		"CREATE TABLE f (id BIGINT, v FLOAT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nzdedup/s WITH TEMPLATE nzdedup")
-	dsn := fmt.Sprintf("fdbsql:///testdb_nzdedup?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_NZDEDUP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

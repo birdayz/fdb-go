@@ -40,7 +40,9 @@ func setIndexStateRaw(t *testing.T, dbPath, schema, indexName string, state reco
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	ss := subspace.Sub().Sub(tuple.Tuple{dbPath, strings.ToUpper(schema)}).Sub(recordlayer.IndexStateSpaceKey)
+	// The names CREATE DATABASE / CREATE SCHEMA stored: unquoted, folded (a
+	// database path whole).
+	ss := subspace.Sub().Sub(tuple.Tuple{strings.ToUpper(dbPath), strings.ToUpper(schema)}).Sub(recordlayer.IndexStateSpaceKey)
 	key := ss.Pack(tuple.Tuple{indexName})
 	if _, err := rawDB.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		if state == recordlayer.IndexStateReadable {
@@ -75,7 +77,7 @@ func TestFDB_NonReadableIndexIsNotAMatchCandidate(t *testing.T) {
 			"CREATE TABLE t (pk BIGINT, c BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
 			"CREATE INDEX t_by_c ON t(c)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_idxread/s WITH TEMPLATE idxread")
-	dsn := fmt.Sprintf("fdbsql:///testdb_idxread?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_IDXREAD?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -244,7 +246,7 @@ func TestFDB_NonReadableAggregateIndexFallsBackToStreamingAggregation(t *testing
 			"CREATE TABLE t (pk BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
 			"CREATE INDEX t_cnt_g AS SELECT COUNT(*) FROM t GROUP BY g")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_idxreadagg/s WITH TEMPLATE idxreadagg")
-	dsn := fmt.Sprintf("fdbsql:///testdb_idxreadagg?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_IDXREADAGG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -58,7 +58,7 @@ func newStatsCmd() *cobra.Command {
 			"changes shape — statistics expire after ~24h and the planner " +
 			"silently falls back to its constant when they do.\n\n" +
 			"The planner only reads them when the connection opts in:\n" +
-			"  fdbsql:///myapp?schema=MAIN&planner_statistics=true\n\n" +
+			"  fdbsql:///MYAPP?schema=MAIN&planner_statistics=true\n\n" +
 			"Statistics are stored OUTSIDE every record store's subspace, so " +
 			"a Java client sharing this cluster neither sees nor is disturbed " +
 			"by them.",
@@ -96,7 +96,7 @@ func (f *statsAddressFlags) register(c *cobra.Command) {
 
 // describe renders the target for messages and confirmation prompts.
 func (f *statsAddressFlags) describe() string {
-	return f.database + "/" + functions.NormalizeIdentifier(f.schema)
+	return functions.NormalizeIdentifier(f.database) + "/" + functions.NormalizeIdentifier(f.schema)
 }
 
 // withStatsConn resolves the address, opens one pinned SQL connection, and
@@ -130,7 +130,7 @@ func (f *statsAddressFlags) withStatsConn(
 	// rule CREATE SCHEMA applies), so `--schema main` addresses the schema that
 	// `create schema /db/main` created.
 	schema := functions.NormalizeIdentifier(f.schema)
-	dsn := buildFDBSQLDSN(target.clusterFile(), f.database, schema)
+	dsn := buildFDBSQLDSN(target.clusterFile(), functions.NormalizeIdentifier(f.database), schema)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		return fmt.Errorf("open fdbsql %q: %w", dsn, err)

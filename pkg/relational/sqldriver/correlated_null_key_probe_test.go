@@ -32,7 +32,7 @@ func TestFDB_CorrelatedNullKeyJoin(t *testing.T) {
 			"CREATE TABLE b (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX a_k ON a (k) CREATE INDEX b_k ON b (k)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_corrnull/s WITH TEMPLATE corrnull")
-	dsn := fmt.Sprintf("fdbsql:///testdb_corrnull?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_CORRNULL?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

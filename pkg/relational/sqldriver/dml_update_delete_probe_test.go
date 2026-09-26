@@ -27,7 +27,7 @@ func TestFDB_DMLUpdateDeleteProbe(t *testing.T) {
 			"CREATE TABLE t (id BIGINT, grp BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_v ON t (v)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dml/s WITH TEMPLATE dml")
-	dsn := fmt.Sprintf("fdbsql:///testdb_dml?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_DML?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

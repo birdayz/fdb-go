@@ -28,7 +28,7 @@ func TestFDB_CrossTypeConstSarg(t *testing.T) {
 			"CREATE TABLE t (id BIGINT, d DOUBLE, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_d ON t (d)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_xtconstsarg/s WITH TEMPLATE xtconstsarg")
-	dsn := fmt.Sprintf("fdbsql:///testdb_xtconstsarg?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_XTCONSTSARG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

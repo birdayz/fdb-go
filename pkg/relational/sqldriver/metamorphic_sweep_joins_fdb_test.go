@@ -38,7 +38,7 @@ func TestFDB_MetamorphicJoinsSubqueries(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_mh3/sn WITH TEMPLATE mh3_noidx")
 
 	open := func(schema string) *sql.DB {
-		dsn := fmt.Sprintf("fdbsql:///testdb_mh3?cluster_file=%s&schema=%s", clusterFilePath, schema)
+		dsn := fmt.Sprintf("fdbsql:///TESTDB_MH3?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema))
 		db, err := sql.Open("fdbsql", dsn)
 		if err != nil {
 			t.Fatalf("open %s: %v", schema, err)

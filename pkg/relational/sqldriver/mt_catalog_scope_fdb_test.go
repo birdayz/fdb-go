@@ -91,8 +91,9 @@ func mtScopeAssertRows(t *testing.T, what string, got, want []string) {
 func mtScopeSetup(t *testing.T, ctx context.Context, suffix string) mtScopeFixture {
 	t.Helper()
 	f := mtScopeFixture{
-		tenantA: "/mt_scope_a_" + suffix,
-		tenantB: "/mt_scope_b_" + suffix,
+		// The spellings CREATE DATABASE stores (unquoted paths fold whole).
+		tenantA: strings.ToUpper("/mt_scope_a_" + suffix),
+		tenantB: strings.ToUpper("/mt_scope_b_" + suffix),
 		templA:  "mt_tmpl_a_" + suffix,
 		templB:  "mt_tmpl_b_" + suffix,
 	}
@@ -117,7 +118,7 @@ func mtScopeSetup(t *testing.T, ctx context.Context, suffix string) mtScopeFixtu
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+f.tenantA+"/alpha_schema WITH TEMPLATE "+f.templA)
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+f.tenantB+"/bravo_schema WITH TEMPLATE "+f.templB)
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=alpha_schema", f.tenantA, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=ALPHA_SCHEMA", strings.ToUpper(f.tenantA), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open tenant A: %v", err)
@@ -221,6 +222,14 @@ func TestFDB_MultiTenantCatalogScoping(t *testing.T) {
 
 		got = mtScopeQueryRows(t, db, ctx, "SHOW DATABASES WITH PREFIX "+f.tenantA)
 		mtScopeAssertRows(t, "SHOW DATABASES WITH PREFIX A", got, []string{f.tenantA})
+
+		// The prefix is a path and folds as DDL folds one: written in lower
+		// case it still names what CREATE DATABASE stored in upper case, and
+		// quoted it is taken as written, which names nothing stored.
+		got = mtScopeQueryRows(t, db, ctx, "SHOW DATABASES WITH PREFIX "+strings.ToLower(f.tenantB))
+		mtScopeAssertRows(t, "SHOW DATABASES WITH PREFIX b (lower case)", got, []string{f.tenantB})
+		got = mtScopeQueryRows(t, db, ctx, `SHOW DATABASES WITH PREFIX "`+strings.ToLower(f.tenantB)+`"`)
+		mtScopeAssertRows(t, "SHOW DATABASES WITH PREFIX \"b\" (quoted lower case)", got, nil)
 	})
 
 	// Segment granularity: /mt_scope_tenant_a must not swallow a sibling whose
@@ -241,7 +250,7 @@ func TestFDB_MultiTenantCatalogScoping(t *testing.T) {
 		t.Cleanup(func() { _, _ = db.ExecContext(ctx, "DROP DATABASE "+nested) })
 
 		got := mtScopeQueryRows(t, db, ctx, "SHOW DATABASES")
-		mtScopeAssertRows(t, "SHOW DATABASES nested", got, []string{f.tenantA, nested})
+		mtScopeAssertRows(t, "SHOW DATABASES nested", got, []string{f.tenantA, strings.ToUpper(nested)}) // the whole path folds
 	})
 }
 

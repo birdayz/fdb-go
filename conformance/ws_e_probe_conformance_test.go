@@ -1958,7 +1958,7 @@ var _ = Describe("WS-E target oracle v11", func() {
 		defer func() { _, _ = sysDB.ExecContext(context.Background(), "DROP DATABASE IF EXISTS "+goDB) }()
 		_, err = sysDB.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s/%s WITH TEMPLATE %s", goDB, goSchema, goTemplate))
 		Expect(err).NotTo(HaveOccurred())
-		schemaDB, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", goDB, goClusterFile, goSchema))
+		schemaDB, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", strings.ToUpper(goDB), goClusterFile, strings.ToUpper(goSchema)))
 		Expect(err).NotTo(HaveOccurred())
 		defer schemaDB.Close()
 		render := func(v any) string {
@@ -2124,7 +2124,7 @@ var _ = Describe("WS-E target oracle v12", func() {
 		defer func() { _, _ = sysDB.ExecContext(context.Background(), "DROP DATABASE IF EXISTS "+goDB) }()
 		_, err = sysDB.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s/%s WITH TEMPLATE %s", goDB, goSchema, goTemplate))
 		Expect(err).NotTo(HaveOccurred())
-		schemaDB, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", goDB, goClusterFile, goSchema))
+		schemaDB, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", strings.ToUpper(goDB), goClusterFile, strings.ToUpper(goSchema)))
 		Expect(err).NotTo(HaveOccurred())
 		defer schemaDB.Close()
 		for _, s := range stmts {
@@ -2440,7 +2440,7 @@ var _ = Describe("WS-E target oracle v12 cross-engine NaN", func() {
 		defer func() { _, _ = sysDB.ExecContext(context.Background(), "DROP DATABASE IF EXISTS "+goDB) }()
 		_, err = sysDB.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s/%s WITH TEMPLATE %s", goDB, goSchema, goTemplate))
 		Expect(err).NotTo(HaveOccurred())
-		schemaDB, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", goDB, goClusterFile, goSchema))
+		schemaDB, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", strings.ToUpper(goDB), goClusterFile, strings.ToUpper(goSchema)))
 		Expect(err).NotTo(HaveOccurred())
 		defer schemaDB.Close()
 		_, err = schemaDB.ExecContext(ctx, "INSERT INTO T VALUES (1, CAST('NaN' AS DOUBLE))")

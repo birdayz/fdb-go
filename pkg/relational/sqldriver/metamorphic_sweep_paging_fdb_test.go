@@ -30,7 +30,7 @@ func TestFDB_MetamorphicPagingAtScale(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_mhp/sn WITH TEMPLATE mhp_noidx")
 
 	open := func(schema string) *sql.DB {
-		dsn := fmt.Sprintf("fdbsql:///testdb_mhp?cluster_file=%s&schema=%s", clusterFilePath, schema)
+		dsn := fmt.Sprintf("fdbsql:///TESTDB_MHP?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema))
 		db, err := sql.Open("fdbsql", dsn)
 		if err != nil {
 			t.Fatalf("open %s: %v", schema, err)

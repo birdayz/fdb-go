@@ -42,7 +42,7 @@ func TestFDB_CreateTemplate_RefusesAReIssueBelowTheLatest(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			return cat.SaveSchema(tx, tmpl.GenerateSchema("/deldb", "two"), true)
+			return cat.SaveSchema(tx, tmpl.GenerateSchema("/deldb", "two"), true, api.SchemaExistsError)
 		})
 		// Java's deleteTemplate: the row goes, the binding stays.
 		eraseTemplateRow(t, cat, run, "del", 2)
@@ -234,6 +234,14 @@ func TestCreateTemplate_LaneCheck(t *testing.T) {
 		{"bitmap_bucket_offset over (LONG, LONG)", fn("bitmap_bucket_offset", field("coord_x"), longLit(10000)), "(LONG, LONG)"},
 		{"an order function's BYTES", fn("bitand", fn("order_desc_nulls_last", field("price")), intLit(1)), "(BYTES, INT)"},
 		{"a nested key with no lane refuses its parent", fn("add", fn("bitand", field("vector_data"), intLit(1)), intLit(1)), "(BYTES, INT)"},
+		// Java builds subtract, multiply and divide keys as the sub, mul and
+		// div Values (LongArithmethicFunctionKeyExpression.java:247-252).
+		{"multiply is mul: (LONG * LONG) + INT", fn("add", fn("multiply", field("coord_x"), field("coord_y")), intLit(1)), ""},
+		{"multiply is mul: a STRING has no lane", fn("multiply", recordlayer.FanOut("tags").ToKeyExpression(), intLit(1)), "(STRING, INT)"},
+		{"subtract is sub: LONG - INT", fn("subtract", field("coord_x"), intLit(1)), ""},
+		{"divide is div: BYTES has no lane", fn("divide", field("vector_data"), intLit(2)), "(BYTES, INT)"},
+		// RecordTypeValue is LONG (RecordTypeValue.java:126).
+		{"recordType() is LONG: recordType() + INT", fn("add", recordlayer.RecordTypeKey().ToKeyExpression(), intLit(1)), ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()

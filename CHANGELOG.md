@@ -34,6 +34,32 @@ assets carry (`RELEASE.md` §Versioning).
   **1.26.x** (the `MODULE.bazel` / `go.mod` pins; the CI doc-guard enforces docs match them).
 
 ### Changed
+- **Database paths fold like every other unquoted identifier, and the DSN takes names as given**, as
+  in Java. `CREATE DATABASE /test/x` now stores `/TEST/X` (Go stored the path as written, a catalog
+  row Java's DDL never writes), `CREATE`/`DROP SCHEMA /test/x/s1` fold the path before splitting it,
+  and `SHOW DATABASES WITH PREFIX /test` folds its prefix the same way. The driver's
+  `fdbsql:///path?schema=s` no longer folds `s`: Java's `parseConnectionQueryString` upper-cases the
+  option's name and keeps its value, so `?schema=test1` does not reach the schema
+  `create schema /db/test1` stored as `TEST1`, in either engine. **Migration:** a DSN or
+  `embedded.New` path naming what unquoted DDL created must spell it in upper case
+  (`fdbsql:///MYAPP?schema=MAIN`); a database an earlier Go build created under a lower-case path is
+  not found by the folded spelling (earlier Go data is unsupported, see Compatibility). A schema that
+  is missing because its database is missing reports 42F00 `Database <path> does not exist`, as
+  Java's connect does. `EmbeddedConnection.SetSchema` now returns an error and refuses a schema the
+  database does not hold (42F51 `Schema <s> does not exist in <path>`, Java's `setSchema`), where it
+  set the label unchecked. The `frl` CLI folds `--database` as it folded `--schema`, and its `\c`
+  switches the connection's schema rather than only the label the meta-commands read. Pinned against
+  the JVM by the conformance spec "the DSN's schema option reaches the schema Java's does" (18 arms).
+- **Saving a schema follows Java's existence policies** (`SchemaExistsBehavior`, RFC-257 WS-J step 4).
+  `StoreCatalog.SaveSchema(txn, schema, createDatabaseIfNecessary, behavior)` takes Java's policy
+  (`ERROR`, `ERROR_IF_DIFFERENT`, `DO_NOTHING`, `UPGRADE`) and checks in Java's order: the schema, the
+  database (created or 42F00), the template at its version, the existing row, then the policy. A
+  no-op save writes nothing and adds no write conflict range; each refusal is 42F06 with Java's
+  message. CREATE SCHEMA saves with `ERROR`, so a schema that exists, or a record store left without
+  a catalog row, is 42F06 in Java's order; repair saves with `UPGRADE` onto the latest template
+  version; catalog initialisation saves with `ERROR_IF_DIFFERENT`. The Go rebind validator runs only
+  for a write over an existing row. **API:** `SaveSchema` gained two parameters. Pinned against the
+  JVM by the conformance spec "WS-J existence policies answer as the target" (29 arms).
 - **Records descriptors are validated as Java validates them** (`RecordMetaDataBuilder.validateRecords`
   and `fetchUnionDescriptor`, ported in `pkg/recordlayer/metadata_validate_records.go`). A field of
   unsigned type (`uint32`, `uint64`, `fixed32`, `fixed64`) anywhere in a record type's reachable

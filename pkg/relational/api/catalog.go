@@ -74,10 +74,15 @@ type StoreCatalog interface {
 
 	// SaveSchema persists or updates a Schema. If
 	// createDatabaseIfNecessary is true and the owning database does
-	// not yet exist, it is created atomically with the schema. Java
-	// raises on transaction-level conflicts; in Go those surface as
-	// errors returned by the Transaction.Commit call, not from here.
-	SaveSchema(txn Transaction, dataToWrite Schema, createDatabaseIfNecessary bool) error
+	// not yet exist, it is created atomically with the schema. When a
+	// schema is already stored at (database, name), existsBehavior
+	// decides whether the save refuses, writes nothing, or overwrites it
+	// (Java's saveSchema(txn, schema, createDatabaseIfNecessary,
+	// existsBehavior)); a save that writes nothing adds no write conflict
+	// range. Java raises on transaction-level conflicts; in Go those
+	// surface as errors returned by the Transaction.Commit call, not from
+	// here.
+	SaveSchema(txn Transaction, dataToWrite Schema, createDatabaseIfNecessary bool, existsBehavior SchemaExistsBehavior) error
 
 	// RepairSchema rebinds schemaName in databaseID to the latest
 	// version of its owning template. Matches Java's

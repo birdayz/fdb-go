@@ -40,7 +40,7 @@ func TestFDB_CorrelatedPrimaryUnnestTableFirstServesRows(t *testing.T) {
 			"CREATE TABLE t (id BIGINT, tags BIGINT ARRAY, PRIMARY KEY (id)) "+
 			"CREATE TABLE tags (id BIGINT, e BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_cputf/s WITH TEMPLATE cputf")
-	dsn := fmt.Sprintf("fdbsql:///testdb_cputf?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_CPUTF?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

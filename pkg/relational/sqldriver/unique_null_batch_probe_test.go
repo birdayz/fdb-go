@@ -25,7 +25,7 @@ func TestFDB_UniqueNullAndBatchAtomicity(t *testing.T) {
 			"CREATE TABLE t (id BIGINT, email STRING, PRIMARY KEY (id)) "+
 			"CREATE UNIQUE INDEX by_email ON t (email)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uniqnullb/s WITH TEMPLATE uniqnullb")
-	dsn := fmt.Sprintf("fdbsql:///testdb_uniqnullb?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_UNIQNULLB?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

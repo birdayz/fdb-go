@@ -58,7 +58,7 @@ func TestFDB_SelfComparisonNotSargedToCircularRange(t *testing.T) {
 			"CREATE INDEX t_a ON t (a)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_selfcmp/s WITH TEMPLATE selfcmp_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_selfcmp?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_SELFCMP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -118,7 +118,7 @@ func TestFDB_CompositeJoinDrivesProbeSide(t *testing.T) {
 			"CREATE TABLE u (id BIGINT, c BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_compjoin/s WITH TEMPLATE compjoin_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_compjoin?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_COMPJOIN?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

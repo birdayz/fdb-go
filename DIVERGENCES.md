@@ -2232,6 +2232,38 @@ discard it today. `FromNormalized` hard-codes `wasQuoted: false` and is used
 
 ---
 
+## A connection to a database that does not exist yet opens; Java's connect refuses it (Go-only reach)
+
+**Java.** `EmbeddedRelationalDriver.connect` asks each storage cluster's `loadDatabase`
+(`RecordLayerStorageCluster.java:102-124`), which returns `null` for a missing database (with a
+`?schema=`, after `loadSchema` reports UNDEFINED_SCHEMA and `doesDatabaseExist` is false), and the
+driver then throws 42F00 `Database <path> does not exist` from `connect` itself
+(`EmbeddedRelationalDriver.java:74-94`).
+
+**Go.** The driver opens the connection without reading the catalog, so a program may connect to
+`fdbsql:///MYAPP` and run `CREATE DATABASE /myapp` on it. The first statement that needs the schema
+reports what Java's connect reports: `loadSchemaOfDatabase` (`pkg/relational/core/embedded/connection.go`)
+turns UNDEFINED_SCHEMA over a missing database into 42F00 `Database <path> does not exist`, the same
+code and message, one call later. A connect-time refusal was written and removed: the Go examples,
+the `frl` CLI and the test harnesses create their database through the connection they open, and
+the refusal would have taken that reach away for no wire difference.
+
+**Names on both sides.** The DSN's path and `?schema=` value are taken as given, as Java takes them
+(`parseConnectionQueryString` upper-cases the option name, not the value). DDL folds unquoted
+identifiers, a database path whole: `CREATE DATABASE /test/x` stores `/TEST/X`, and
+`CREATE SCHEMA /test/x/s1` stores (`/TEST/X`, `S1`). So a connection names what unquoted DDL created
+in upper case. Pinned against the JVM by `conformance/ws_j_schema_dsn_conformance_test.go`
+("the DSN's schema option reaches the schema Java's does", 18 arms, equal), which includes the
+missing-database arm.
+
+**`SHOW DATABASES WITH PREFIX` is honoured.** Java reads the prefix
+(`MetadataPlanVisitor.visitShowDatabasesStatement`, the same `visitUid` fold as DDL) and its
+`CatalogQueryFactory` then lists every database ("TODO(bfines) make use of this prefix"); Go lists the
+databases under the prefix, segment-granular, with the prefix folded as a DDL path is, so a
+lower-case prefix finds what unquoted DDL stored. Read-side only. Pinned on both sides by the
+conformance spec "SHOW DATABASES WITH PREFIX: Java lists every database, Go the prefix" (Java's
+listing holds `/__SYS` for any prefix) and in Go by `TestFDB_MultiTenantCatalogScoping`.
+
 ## Index fields are exported in Go and `private final` in Java
 
 **Java.** `Index` holds `private final` `name`, `type`, `rootExpression`,

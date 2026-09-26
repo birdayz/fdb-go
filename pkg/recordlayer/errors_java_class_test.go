@@ -22,6 +22,9 @@ func TestIsMetaDataExceptionTestsTheOutermostJavaException(t *testing.T) {
 		{"wrapped by fmt", fmt.Errorf("load: %w", fmt.Errorf("index i: %w", mde)), true},
 		{"a subclass", &MetaDataProtoDeserializationError{Cause: errors.New("x")}, true},
 		{"a subclass that unwraps to its parent", &UnknownIndexTypeError{IndexName: "i", IndexType: "t"}, true},
+		// ProtoUtils.InvalidNameException extends MetaDataException; its Go
+		// type is protoname's, which this package aliases.
+		{"an invalid name", fmt.Errorf("column: %w", &InvalidNameError{Message: "name cannot be empty string"}), true},
 		{"the cause of a RecordCoreError", &RecordCoreError{Message: "outer", Cause: mde}, false},
 		{"a key-expression refusal", &KeyExpressionDeserializationError{Message: "k"}, false},
 		{"no Java exception", errors.New("plain"), false},

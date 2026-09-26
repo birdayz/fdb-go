@@ -46,7 +46,7 @@ func TestFDB_RowVersionBareStar_MixedSourcesAndQuotedAliases(t *testing.T) {
 		WITH OPTIONS(store_row_versions=true)`)
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rvstar/s1 WITH TEMPLATE rvstar_tpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_rvstar?cluster_file=%s&schema=s1", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_RVSTAR?cluster_file=%s&schema=S1", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

@@ -51,7 +51,7 @@ func TestFDB_IndexedFloatSargProbe(t *testing.T) {
 		"CREATE INDEX di_f ON dblidx (f) "+
 		"CREATE INDEX bnd_f ON bnd (f)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ifs/s WITH TEMPLATE ifs")
-	dsn := fmt.Sprintf("fdbsql:///testdb_ifs?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_IFS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

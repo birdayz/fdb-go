@@ -23,7 +23,7 @@ func TestFDB_CorrelatedScalarCardinality_AllConsumers(t *testing.T) {
 		"CREATE TABLE child (id BIGINT, parent_id BIGINT, grp STRING, val BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE marker (id BIGINT, parent_id BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_cq4_scalar/s WITH TEMPLATE cq4_scalar")
-	dsn := fmt.Sprintf("fdbsql:///testdb_cq4_scalar?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_CQ4_SCALAR?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

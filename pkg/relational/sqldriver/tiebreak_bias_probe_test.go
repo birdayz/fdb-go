@@ -133,7 +133,7 @@ func joinOrderArrangement(t *testing.T, ctx context.Context, i, pkRows, fkRows i
 			" CREATE INDEX fkside_by_fk ON fkside (fk)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE "+tmpl)
 
-	base := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath)
+	base := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
 	plain := openDSN(t, base)
 	for r := 0; r < pkRows; r++ {
 		mwjoMustExec(t, plain, ctx, fmt.Sprintf("INSERT INTO pkside VALUES (%d, %d)", r, r))

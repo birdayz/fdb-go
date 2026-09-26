@@ -600,9 +600,9 @@ func (r *runner) open(t connTarget) (*sql.DB, error) {
 	if db, ok := r.dbs[t]; ok {
 		return db, nil
 	}
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s", t.Path, r.cfg.ClusterFile)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(t.Path), r.cfg.ClusterFile)
 	if t.Schema != "" {
-		dsn += "&schema=" + t.Schema
+		dsn += "&schema=" + strings.ToUpper(t.Schema)
 	}
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {

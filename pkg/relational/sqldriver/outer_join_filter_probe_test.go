@@ -29,7 +29,7 @@ func TestFDB_OuterJoinFilterProbe(t *testing.T) {
 			"CREATE TABLE b (id BIGINT, a_id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX b_a_id ON b (a_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_oj_filter/s WITH TEMPLATE oj_filter")
-	dsn := fmt.Sprintf("fdbsql:///testdb_oj_filter?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_OJ_FILTER?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -39,7 +39,7 @@ func TestFDB_UUIDMultiAggregateIntersection(t *testing.T) {
 			"CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM t GROUP BY g "+
 			"CREATE INDEX sum_by_g AS SELECT SUM(price) FROM t GROUP BY g")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uuidmiagg/s WITH TEMPLATE uuidmiagg")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_uuidmiagg?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_UUIDMIAGG?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestFDB_UUIDWritePathUpdateAndInsertSelect(t *testing.T) {
 			"CREATE TABLE t (id BIGINT, v UUID, PRIMARY KEY (id)) "+
 			"CREATE TABLE t2 (id BIGINT, v UUID, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uuidwrite/s WITH TEMPLATE uuidwrite")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_uuidwrite?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_UUIDWRITE?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestFDB_UUIDScalarFunctionRender(t *testing.T) {
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE uuidscalar CREATE TABLE t (id BIGINT, v UUID, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uuidscalar/s WITH TEMPLATE uuidscalar")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_uuidscalar?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_UUIDSCALAR?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestFDB_UUIDPaginatedSortAndGroupBy(t *testing.T) {
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE uuidpage CREATE TABLE t (id BIGINT, v UUID, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uuidpage/s WITH TEMPLATE uuidpage")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_uuidpage?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_UUIDPAGE?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

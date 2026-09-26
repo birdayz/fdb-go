@@ -972,6 +972,145 @@ class SqlPlanSteps {
         return out;
     }
 
+    /**
+     * TEST-ONLY (RFC-257 WS-J step 4): runs each statement on the /__SYS CATALOG connection, in
+     * order, and returns each one's outcome: "OK", or "ERROR", the SQLSTATE and the
+     * SQLException's message.
+     */
+    @ConformanceStep("wsjCatalogDdlJava")
+    public JsonObject wsjCatalogDdlJava(String clusterFile, java.util.List<String> statements) throws Exception {
+        ensureDriverRegistered(clusterFile);
+        JsonArray outcomes = new JsonArray();
+        try (java.sql.Connection sysConn = DriverManager.getConnection(SYS_CATALOG_URL);
+             Statement st = sysConn.createStatement()) {
+            for (String sql : statements) {
+                try {
+                    // A statement with a result set (SHOW DATABASES) reports its
+                    // first column, sorted: "ROWS a,b". Any other reports OK.
+                    final boolean hasRows = withFdbRetry(() -> st.execute(sql));
+                    if (!hasRows) {
+                        outcomes.add("OK");
+                        continue;
+                    }
+                    java.util.List<String> rows = new java.util.ArrayList<>();
+                    try (java.sql.ResultSet rs = st.getResultSet()) {
+                        while (rs.next()) {
+                            rows.add(rs.getString(1));
+                        }
+                    }
+                    java.util.Collections.sort(rows);
+                    outcomes.add("ROWS " + String.join(",", rows));
+                } catch (SQLException e) {
+                    outcomes.add("ERROR " + e.getSQLState() + " " + e.getMessage());
+                }
+            }
+        }
+        JsonObject out = new JsonObject();
+        out.add("outcomes", outcomes);
+        return out;
+    }
+
+    /**
+     * TEST-ONLY (RFC-257 WS-J step 4): creates the record store of schema (dbPath, schemaName)
+     * with the meta-data of template (templateName, 1) and writes no catalog row, as a store a
+     * foreign or failed creation left behind.
+     */
+    @ConformanceStep("wsjCreateBareStoreJava")
+    public JsonObject wsjCreateBareStoreJava(String clusterFile, String dbPath, String schemaName, String templateName) throws Exception {
+        ensureDriverRegistered(clusterFile);
+        final com.apple.foundationdb.record.RecordMetaData md;
+        try (DirectFdbConnection connection = new DirectFdbConnection(sharedDatabase);
+             Transaction txn = connection.getTransactionManager().createTransaction(Options.NONE)) {
+            final StoreCatalog catalog = StoreCatalogProvider.getCatalog(txn, sharedKeySpace);
+            md = com.apple.foundationdb.record.RecordMetaData.build(catalog.getSchemaTemplateCatalog().loadSchemaTemplate(txn, templateName, 1)
+                    .unwrap(com.apple.foundationdb.relational.recordlayer.metadata.RecordLayerSchemaTemplate.class)
+                    .toRecordMetadata().toProto());
+            txn.commit();
+        }
+        final var schemaPath = RelationalKeyspaceProvider
+                .toDatabasePath(java.net.URI.create(dbPath), sharedKeySpace).schemaPath(schemaName);
+        sharedDatabase.run(ctx -> {
+            com.apple.foundationdb.record.provider.foundationdb.FDBRecordStore.newBuilder()
+                    .setContext(ctx).setSubspace(schemaPath.toSubspace(ctx)).setMetaDataProvider(md)
+                    .setSerializer(com.apple.foundationdb.relational.recordlayer.storage.StoreConfig.DEFAULT_RELATIONAL_SERIALIZER)
+                    .create();
+            return null;
+        });
+        return new JsonObject();
+    }
+
+    /**
+     * TEST-ONLY (RFC-257 WS-J step 4): stores template (templateName, fromVersion) again as
+     * toVersion through the template catalog, the only way the target makes a second version of
+     * a template (its CREATE SCHEMA TEMPLATE creates the DDL's version).
+     */
+    @ConformanceStep("wsjCopyTemplateVersionJava")
+    public JsonObject wsjCopyTemplateVersionJava(String clusterFile, String templateName, int fromVersion, int toVersion) throws Exception {
+        ensureDriverRegistered(clusterFile);
+        try (DirectFdbConnection connection = new DirectFdbConnection(sharedDatabase);
+             Transaction txn = connection.getTransactionManager().createTransaction(Options.NONE)) {
+            final StoreCatalog catalog = StoreCatalogProvider.getCatalog(txn, sharedKeySpace);
+            final var from = catalog.getSchemaTemplateCatalog().loadSchemaTemplate(txn, templateName, fromVersion)
+                    .unwrap(com.apple.foundationdb.relational.recordlayer.metadata.RecordLayerSchemaTemplate.class);
+            catalog.getSchemaTemplateCatalog().createTemplate(txn, from.toBuilder().setVersion(toVersion).build());
+            txn.commit();
+        }
+        return new JsonObject();
+    }
+
+    /**
+     * TEST-ONLY (RFC-257 WS-J step 4): the catalog's saveSchema of (dbPath, schemaName) onto
+     * template (templateName, version) with the named SchemaExistsBehavior and no database
+     * creation; "OK", or "ERROR", the error code and the message.
+     */
+    @ConformanceStep("wsjSaveSchemaJava")
+    public JsonObject wsjSaveSchemaJava(String clusterFile, String dbPath, String schemaName, String templateName,
+                                        int version, String behavior) throws Exception {
+        ensureDriverRegistered(clusterFile);
+        JsonObject out = new JsonObject();
+        try (DirectFdbConnection connection = new DirectFdbConnection(sharedDatabase);
+             Transaction txn = connection.getTransactionManager().createTransaction(Options.NONE)) {
+            final StoreCatalog catalog = StoreCatalogProvider.getCatalog(txn, sharedKeySpace);
+            try {
+                final var template = catalog.getSchemaTemplateCatalog().loadSchemaTemplate(txn, templateName, version);
+                catalog.saveSchema(txn, template.generateSchema(dbPath, schemaName), false,
+                        com.apple.foundationdb.relational.api.catalog.SchemaExistsBehavior.valueOf(behavior));
+                txn.commit();
+                out.addProperty("outcome", "OK");
+            } catch (com.apple.foundationdb.relational.api.exceptions.RelationalException e) {
+                out.addProperty("outcome", "ERROR " + e.getErrorCode().getErrorCode() + " " + e.getMessage());
+            } catch (com.apple.foundationdb.relational.api.exceptions.UncheckedRelationalException e) {
+                final var cause = e.unwrap();
+                out.addProperty("outcome", "ERROR " + cause.getErrorCode().getErrorCode() + " " + cause.getMessage());
+            }
+        }
+        return out;
+    }
+
+    /**
+     * TEST-ONLY (RFC-257, the DSN's schema option): the schema names the catalog stores under the
+     * database at dbPath, as stored.
+     */
+    @ConformanceStep("wsjListSchemasJava")
+    public JsonObject wsjListSchemasJava(String clusterFile, String dbPath) throws Exception {
+        ensureDriverRegistered(clusterFile);
+        JsonArray names = new JsonArray();
+        try (DirectFdbConnection connection = new DirectFdbConnection(sharedDatabase);
+             Transaction txn = connection.getTransactionManager().createTransaction(Options.NONE)) {
+            final StoreCatalog catalog = StoreCatalogProvider.getCatalog(txn, sharedKeySpace);
+            try (var rs = catalog.listSchemas(txn, java.net.URI.create(dbPath),
+                    com.apple.foundationdb.relational.recordlayer.ContinuationImpl.BEGIN)) {
+                while (rs.next()) {
+                    names.add(rs.getString(2)); // DATABASE_ID, SCHEMA_NAME, TEMPLATE_NAME, TEMPLATE_VERSION
+                }
+            }
+            txn.commit();
+        }
+        JsonObject out = new JsonObject();
+        out.add("names", names);
+        return out;
+    }
+
     /** TEST-ONLY: drops a database {@link #wsjOpenStoreJava} kept. */
     @ConformanceStep("wsjDropDatabaseJava")
     public JsonObject wsjDropDatabaseJava(String clusterFile, String dbPath) throws Exception {

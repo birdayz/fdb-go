@@ -39,7 +39,7 @@ func TestFDB_INProj_OuterProjectionOverInJoin(t *testing.T) {
 			"CREATE TABLE tu (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_a ON ti (a)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_inproj/s WITH TEMPLATE inproj_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///testdb_inproj?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_INPROJ?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

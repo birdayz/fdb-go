@@ -68,7 +68,7 @@ func TestFDB_InListSignedZeroKeepsPrimaryKeyOrder(t *testing.T) {
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE inlistzero")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))
+		fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

@@ -17,6 +17,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"fdb.dev/pkg/relational/conformance/rowdiff"
@@ -64,7 +65,7 @@ func run(seeds, seedStart uint64, templates bool) int {
 	clusterFile := tmp.Name()
 
 	const dbPath = "/sqldiffstress"
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", dbPath, clusterFile))
+	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), clusterFile))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "INFRA: open: %v\n", err)
 		return 2

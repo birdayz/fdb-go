@@ -27,7 +27,7 @@ func TestFDB_SetOpsNullProbe(t *testing.T) {
 			"CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_setopsnull/s WITH TEMPLATE setopsnull")
-	dsn := fmt.Sprintf("fdbsql:///testdb_setopsnull?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_SETOPSNULL?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

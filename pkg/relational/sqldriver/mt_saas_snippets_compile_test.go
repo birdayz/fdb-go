@@ -109,7 +109,7 @@ func retainClientDatabaseForMetrics(ctx context.Context, clusterFile string, mux
 // openTenantDB is the §2 DSN (with the security flag) plus the §3 pool caps.
 func openTenantDB(tenantID string) (*sql.DB, error) {
 	db, err := sql.Open("fdbsql",
-		"fdbsql:///t/"+tenantID+
+		"fdbsql:///T/"+tenantID+
 			"?cluster_file=/etc/foundationdb/fdb.cluster"+
 			"&schema=MAIN"+
 			"&restrict_ddl_to_session_database=true")

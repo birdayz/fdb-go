@@ -39,7 +39,7 @@ func TestFDB_UnionLimitParameters(t *testing.T) {
 			}
 		}
 	})
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", path, clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(path), clusterFilePath))
 	if err != nil {
 		t.Fatal(err)
 	}

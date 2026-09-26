@@ -56,8 +56,26 @@ func (c *EmbeddedConnection) execDrop(ctx context.Context, ds antlrgen.IDropStat
 	}
 }
 
+// databasePathOf is a DDL statement's database path as Java reads it: the
+// path's uid normalized as an identifier (DdlVisitor's visitUid(ctx.path()
+// .uid()), IdentifierVisitor.visitUid: normalizeString of the uid's text), so
+// an unquoted path folds to upper case whole and a quoted one is kept as
+// written (measured against the JVM: `create database /test/x` stores
+// /TEST/X; conformance "the DSN's schema option reaches the schema Java's
+// does"). Go stored the path verbatim, a database row Java cannot reach.
+//
+// Every statement that takes a path reads it this way in Java: CREATE/DROP
+// DATABASE, CREATE/DROP SCHEMA, SHOW DATABASES WITH PREFIX
+// (MetadataPlanVisitor.visitShowDatabasesStatement, whose prefix Java then
+// ignores), DESCRIBE SCHEMA and COPY. The first five go through here; DESCRIBE
+// SCHEMA (0A000 in Go, RFC-257 WS-E) and COPY (no Go route, WS-K) must when
+// they are ported.
+func databasePathOf(text string) string {
+	return functions.NormalizeIdentifier(text)
+}
+
 func (c *EmbeddedConnection) execCreateDatabase(ctx context.Context, s *antlrgen.CreateDatabaseStatementContext) (int64, error) {
-	dbPath := s.Path().GetText()
+	dbPath := databasePathOf(s.Path().GetText())
 	if err := validateDatabasePath(dbPath); err != nil {
 		return 0, err
 	}
@@ -69,7 +87,7 @@ func (c *EmbeddedConnection) execCreateDatabase(ctx context.Context, s *antlrgen
 }
 
 func (c *EmbeddedConnection) execDropDatabase(ctx context.Context, s *antlrgen.DropDatabaseStatementContext) (int64, error) {
-	dbPath := s.Path().GetText()
+	dbPath := databasePathOf(s.Path().GetText())
 	if err := validateDatabasePath(dbPath); err != nil {
 		return 0, err
 	}
@@ -82,16 +100,14 @@ func (c *EmbeddedConnection) execDropDatabase(ctx context.Context, s *antlrgen.D
 }
 
 func (c *EmbeddedConnection) execCreateSchema(ctx context.Context, s *antlrgen.CreateSchemaStatementContext) (int64, error) {
-	schemaText := s.SchemaId().GetText()
+	// Java normalizes the whole uid, a path or a bare name, then splits it
+	// (visitUid, then SemanticAnalyzer.parseSchemaIdentifier): `create schema
+	// /db/test` creates TEST in /DB, and a quoted path keeps both segments.
+	schemaText := databasePathOf(s.SchemaId().GetText())
 	dbPath, schemaName, err := parseSchemaIdentifier(schemaText, c.sess.DBPath)
 	if err != nil {
 		return 0, err
 	}
-	// The SCHEMA segment is an SQL identifier: unquoted names normalize to
-	// upper case (Java's visitUid normalization) — `create schema /db/test`
-	// creates TEST, which is how a `schema=TEST` connection then finds it.
-	// The database PATH is not an identifier and stays verbatim.
-	schemaName = functions.NormalizeIdentifier(schemaName)
 	if err := c.checkDDLDatabaseScope("CREATE SCHEMA", dbPath); err != nil {
 		return 0, err
 	}
@@ -109,14 +125,13 @@ func (c *EmbeddedConnection) execDropSchema(ctx context.Context, s *antlrgen.Dro
 	// TEMPLATE (visitDropSchemaTemplateStatement:483) thread throwIfDoesNotExist from
 	// ifExists(); DROP SCHEMA does not. Do NOT "fix" this to honor IF EXISTS — that would
 	// DIVERGE from Java. Pinned by drop_schema_ifexists_conformance_probe_test.go.
-	schemaText := s.Uid().GetText()
+	// Same normalization as execCreateSchema (DdlVisitor.visitDropSchemaStatement
+	// reads visitUid(ctx.uid())): DROP SCHEMA /db/test drops TEST in /DB.
+	schemaText := databasePathOf(s.Uid().GetText())
 	dbPath, schemaName, err := parseSchemaIdentifier(schemaText, c.sess.DBPath)
 	if err != nil {
 		return 0, err
 	}
-	// Same identifier normalization as execCreateSchema: DROP SCHEMA
-	// /db/test drops TEST.
-	schemaName = functions.NormalizeIdentifier(schemaName)
 	if dbPath == "" {
 		return 0, api.NewErrorf(api.ErrCodeUnknownDatabase,
 			"invalid database identifier in %q", schemaText)

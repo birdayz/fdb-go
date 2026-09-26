@@ -65,7 +65,7 @@ func openUUIDInDB(t *testing.T) *sql.DB {
 		"CREATE TABLE u (id BIGINT, uu UUID, us STRING, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_in_uuid/s WITH TEMPLATE inuuid_t")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///testdb_in_uuid?cluster_file=%s&schema=s", clusterFilePath))
+		fmt.Sprintf("fdbsql:///TESTDB_IN_UUID?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -83,7 +83,7 @@ func openInJoinDB(t *testing.T, dbPath, template string) *sql.DB {
 		"CREATE TABLE r (id BIGINT, y BIGINT, lo BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE "+template)
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))
+		fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

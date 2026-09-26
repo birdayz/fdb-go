@@ -34,7 +34,7 @@ func TestFDB_AnonymousRecordsThroughADerivedRowKeepDistinctIdentities(t *testing
 	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE anonrec_tpl
 		CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))`)
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_anonrec/s1 WITH TEMPLATE anonrec_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_anonrec?cluster_file=%s&schema=s1", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_ANONREC?cluster_file=%s&schema=S1", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestFDB_ADeclaredRecordNameSurvivesTheBridge(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE namedrec_tpl
 		CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))`)
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_namedrec/s1 WITH TEMPLATE namedrec_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_namedrec?cluster_file=%s&schema=s1", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_NAMEDREC?cluster_file=%s&schema=S1", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestFDB_OneDeclaredNameOverTwoShapesIsRefused(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE samename_tpl
 		CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))`)
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_samename/s1 WITH TEMPLATE samename_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_samename?cluster_file=%s&schema=s1", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_SAMENAME?cluster_file=%s&schema=S1", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -266,7 +266,7 @@ func TestFDB_ADuplicateNameJoinPreservesComputedStructs(t *testing.T) {
 		CREATE TABLE c_md (id BIGINT, PRIMARY KEY (id))
 		CREATE TABLE s_md (id BIGINT, r st_s, PRIMARY KEY (id))`)
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dupjoin/s1 WITH TEMPLATE dupjoin_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_dupjoin?cluster_file=%s&schema=s1", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_DUPJOIN?cluster_file=%s&schema=S1", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

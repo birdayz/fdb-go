@@ -63,7 +63,7 @@ func TestFDB_MultiwayJoinOrder_Nway(t *testing.T) {
 			"CREATE TABLE yy (id BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nway/s WITH TEMPLATE nway_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_nway?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_NWAY?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

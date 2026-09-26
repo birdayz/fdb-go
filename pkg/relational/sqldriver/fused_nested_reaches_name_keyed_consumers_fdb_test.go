@@ -51,7 +51,7 @@ func TestFDB_FusedNestedReferenceSurvivesNameKeyedConsumers(t *testing.T) {
 			"CREATE TYPE AS STRUCT nn (sk BIGINT, co STRING) "+
 			"CREATE TABLE t (id BIGINT, n nn, sk DOUBLE, co BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_fnkc/s WITH TEMPLATE fnkc")
-	dsn := fmt.Sprintf("fdbsql:///testdb_fnkc?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_FNKC?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -215,7 +215,7 @@ func TestFDB_NestedMemberSpelledLikeItsUnnestAliasIsRefused(t *testing.T) {
 			"CREATE TYPE AS STRUCT item (sku STRING, qty BIGINT) "+
 			"CREATE TABLE orders (order_id BIGINT, items item ARRAY, PRIMARY KEY (order_id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_fnua/s WITH TEMPLATE fnua")
-	dsn := fmt.Sprintf("fdbsql:///testdb_fnua?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_FNUA?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

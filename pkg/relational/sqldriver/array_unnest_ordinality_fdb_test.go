@@ -4949,7 +4949,7 @@ func TestFDB_ArrayUnnestDMLNonDefaultSchema(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 	// Session schema = `main`, the NON-default schema (default is `s`).
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -5227,7 +5227,7 @@ func TestFDB_ArrayUnnestDMLDuplicateAlias(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE ajt_dml_dupalias_tmpl"); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=s")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=S")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

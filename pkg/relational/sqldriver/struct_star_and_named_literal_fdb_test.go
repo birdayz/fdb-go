@@ -46,7 +46,7 @@ func TestFDB_StructStarAndNamedLiteral(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /structstar/s WITH TEMPLATE ss_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///structstar?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///STRUCTSTAR?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

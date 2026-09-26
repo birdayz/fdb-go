@@ -3112,7 +3112,7 @@ var _ = Describe("WS-J a table or struct named UnionDescriptor", func() {
 					_, _ = sysDB.ExecContext(context.Background(), "DROP DATABASE IF EXISTS "+dbPath)
 					_, _ = sysDB.ExecContext(context.Background(), "DROP SCHEMA TEMPLATE IF EXISTS "+goName)
 				}()
-				conn, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))
+				conn, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
 				if err != nil {
 					return err
 				}
@@ -3302,7 +3302,7 @@ var _ = Describe("WS-J an unset field with a declared default reads as the targe
 			_, err := sysDB.ExecContext(ctx, stmt)
 			Expect(err).NotTo(HaveOccurred(), stmt)
 		}
-		conn, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))
+		conn, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
 		Expect(err).NotTo(HaveOccurred())
 		defer conn.Close()
 		_, err = conn.ExecContext(ctx, "INSERT INTO T (id) VALUES (1)")

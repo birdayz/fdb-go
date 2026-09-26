@@ -115,9 +115,13 @@ func (c laneChecker) keyOperandType(e *gen.KeyExpression, desc protoreflect.Mess
 		return c.keyOperandType(e.GetNesting().GetChild(), nestedDescriptor(desc, e.GetNesting().GetParent()))
 	case e.GetValue() != nil:
 		return literalOperandType(e.GetValue()), nil
+	case e.GetRecordTypeKey() != nil:
+		// RecordTypeValue's type (RecordTypeValue.java:126).
+		return values.TypeCodeLong, nil
 	case e.GetFunction() != nil:
 		fn := e.GetFunction()
-		if !values.IsArithmeticFunction(fn.GetName()) {
+		valueName := keyValueFunctionName(fn.GetName())
+		if !values.IsArithmeticFunction(valueName) {
 			if err := c.walk(fn.GetArguments(), desc); err != nil {
 				return values.TypeCodeUnknown, err
 			}
@@ -148,7 +152,7 @@ func (c laneChecker) keyOperandType(e *gen.KeyExpression, desc protoreflect.Mess
 		if err != nil {
 			return values.TypeCodeUnknown, err
 		}
-		lane, ok := values.LookupArithmeticLane(fn.GetName(), left, right)
+		lane, ok := values.LookupArithmeticLane(valueName, left, right)
 		if !ok {
 			return values.TypeCodeUnknown, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 				"index %s cannot be stored: its key function %s has no lane for operand types (%s, %s), so no query of its table can be planned",
@@ -157,6 +161,23 @@ func (c laneChecker) keyOperandType(e *gen.KeyExpression, desc protoreflect.Mess
 		return lane.Result, nil
 	}
 	return values.TypeCodeUnknown, c.walk(e, desc)
+}
+
+// keyValueFunctionName is the BuiltInFunction a key function's Value is built
+// with: LongArithmethicFunctionKeyExpression's valueFunctionName, which names
+// subtract, multiply and divide by the Value's sub, mul and div
+// (LongArithmethicFunctionKeyExpression.java:121-123, 247-252); every other key
+// function's Value has its own name.
+func keyValueFunctionName(name string) string {
+	switch name {
+	case "subtract":
+		return "sub"
+	case "multiply":
+		return "mul"
+	case "divide":
+		return "div"
+	}
+	return name
 }
 
 // nestedDescriptor is the message a nesting's parent field holds, nil when

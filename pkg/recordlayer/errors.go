@@ -8,6 +8,7 @@ import (
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/protoname"
 )
 
 // Phase 1: Store existence errors (replace sentinels from store.go)
@@ -133,16 +134,24 @@ func (*IndexNotFoundError) javaMetaDataException()                {}
 // err's wrappers (fmt's %w, and the first of several), each of which is a Java
 // exception class; a MetaDataError that is only the cause of another is not.
 func IsMetaDataException(err error) bool {
-	e := OutermostJavaError(err)
-	_, ok := e.(metaDataException)
-	return ok
+	switch OutermostJavaError(err).(type) {
+	case metaDataException:
+		return true
+	case *protoname.InvalidNameError:
+		// Java's ProtoUtils.InvalidNameException extends MetaDataException
+		// (ProtoUtils.java:153); its Go type lives in protoname, which this
+		// package aliases as InvalidNameError.
+		return true
+	}
+	return false
 }
 
-// OutermostJavaError is the first error of this package on err's chain of
-// wrappers, following the first of several; nil when there is none.
+// OutermostJavaError is the first error of this package (or of protoname,
+// which it aliases) on err's chain of wrappers, following the first of
+// several; nil when there is none.
 func OutermostJavaError(err error) error {
 	for e := err; e != nil; {
-		if t := reflect.TypeOf(e); t.Kind() == reflect.Pointer && t.Elem().PkgPath() == recordLayerPkgPath {
+		if t := reflect.TypeOf(e); t.Kind() == reflect.Pointer && javaErrorPkgPaths[t.Elem().PkgPath()] {
 			return e
 		}
 		switch u := e.(type) {
@@ -161,7 +170,13 @@ func OutermostJavaError(err error) error {
 	return nil
 }
 
-var recordLayerPkgPath = reflect.TypeOf(MetaDataError{}).PkgPath()
+// javaErrorPkgPaths are the packages whose error types are Java exception
+// classes: this one, and protoname, whose InvalidNameError this package
+// aliases.
+var javaErrorPkgPaths = map[string]bool{
+	reflect.TypeOf(MetaDataError{}).PkgPath():              true,
+	reflect.TypeOf(protoname.InvalidNameError{}).PkgPath(): true,
+}
 
 // RecordCoreMessages is the message of every RecordCoreError in err's tree, in
 // errors.As order (depth first, each error before what it wraps), each once:

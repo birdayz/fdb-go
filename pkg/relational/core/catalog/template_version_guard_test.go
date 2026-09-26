@@ -26,7 +26,7 @@ func TestInMemory_VersionGuard_FreshTemplateRefusedWhileDroppedVersionBound(t *t
 		t.Fatal(err)
 	}
 	for _, db := range []string{"/db2", "/db1"} {
-		if err := c.SaveSchema(tx, buildTemplateAtVersion(t, "g", 3).GenerateSchema(db, "s"), true); err != nil {
+		if err := c.SaveSchema(tx, buildTemplateAtVersion(t, "g", 3).GenerateSchema(db, "s"), true, api.SchemaExistsError); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -55,7 +55,7 @@ func TestInMemory_VersionGuard_VersionZeroBindingBlocksFreshTemplate(t *testing.
 	if err := tc.CreateTemplate(tx, buildTemplateAtVersion(t, "z", 0)); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.SaveSchema(tx, buildTemplateAtVersion(t, "z", 0).GenerateSchema("/db", "s"), true); err != nil {
+	if err := c.SaveSchema(tx, buildTemplateAtVersion(t, "z", 0).GenerateSchema("/db", "s"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 	if err := tc.DeleteTemplate(tx, "z", true); err != nil {
@@ -75,10 +75,10 @@ func TestInMemory_VersionGuard_DanglingBindingAboveLatest(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := c.SaveSchema(tx, buildTemplateAtVersion(t, "d", 1).GenerateSchema("/db", "low"), true); err != nil {
+	if err := c.SaveSchema(tx, buildTemplateAtVersion(t, "d", 1).GenerateSchema("/db", "low"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.SaveSchema(tx, buildTemplateAtVersion(t, "d", 3).GenerateSchema("/db", "high"), true); err != nil {
+	if err := c.SaveSchema(tx, buildTemplateAtVersion(t, "d", 3).GenerateSchema("/db", "high"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 	// The state a pre-guard DeleteTemplateVersion left: (d, 3) gone, bound.
@@ -92,7 +92,7 @@ func TestInMemory_VersionGuard_DanglingBindingAboveLatest(t *testing.T) {
 	_, err := c.LoadSchema(tx, "/db", "high")
 	wantAPIError(t, err, api.ErrCodeUnknownSchemaTemplate, gone)
 	wantAPIError(t, c.RepairSchema(tx, "/db", "high"), api.ErrCodeUnknownSchemaTemplate, gone)
-	wantAPIError(t, c.SaveSchema(tx, buildTemplateAtVersion(t, "d", 1).GenerateSchema("/db", "high"), false),
+	wantAPIError(t, c.SaveSchema(tx, buildTemplateAtVersion(t, "d", 1).GenerateSchema("/db", "high"), false, api.SchemaExistsError),
 		api.ErrCodeUnknownSchemaTemplate, gone)
 	if s, err := c.LoadSchema(tx, "/db", "low"); err != nil || s.SchemaTemplate().Version() != 1 {
 		t.Fatalf("schema low: %v, %v", s, err)
@@ -115,7 +115,7 @@ func TestInMemory_VersionGuard_DeleteBoundVersionRefused(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := c.SaveSchema(tx, buildTemplateAtVersion(t, "del", 2).GenerateSchema("/db", "s"), true); err != nil {
+	if err := c.SaveSchema(tx, buildTemplateAtVersion(t, "del", 2).GenerateSchema("/db", "s"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 	wantAPIError(t, tc.DeleteTemplateVersion(tx, "del", 2, true), api.ErrCodeInvalidSchemaTemplate,
@@ -202,7 +202,7 @@ func TestInMemory_VersionGuard_ConcurrentBindAndDelete(t *testing.T) {
 				v := 1 + (i+w)%3
 				switch i % 4 {
 				case 0:
-					_ = c.SaveSchema(tx, tmpls[v].GenerateSchema("/db", schema), false)
+					_ = c.SaveSchema(tx, tmpls[v].GenerateSchema("/db", schema), false, api.SchemaExistsUpgrade)
 				case 1:
 					_ = tc.DeleteTemplateVersion(tx, "r", v, false)
 				case 2:
@@ -267,7 +267,7 @@ func TestInMemory_VersionGuard_BindAndDeleteSerialize(t *testing.T) {
 			if repair {
 				// The schema binds v1; the repair rebinds it to v2, the version
 				// the delete then targets.
-				if err := c.SaveSchema(tx, buildTemplateAtVersion(t, "h", 1).GenerateSchema("/db", "s"), true); err != nil {
+				if err := c.SaveSchema(tx, buildTemplateAtVersion(t, "h", 1).GenerateSchema("/db", "s"), true, api.SchemaExistsError); err != nil {
 					t.Fatal(err)
 				}
 				if err := tc.CreateTemplate(tx, buildTemplateAtVersion(t, "h", 2)); err != nil {
@@ -285,7 +285,7 @@ func TestInMemory_VersionGuard_BindAndDeleteSerialize(t *testing.T) {
 				if repair {
 					bindErr <- c.RepairSchema(tx, "/db", "s")
 				} else {
-					bindErr <- c.SaveSchema(tx, buildTemplateAtVersion(t, "h", 1).GenerateSchema("/db", "s"), true)
+					bindErr <- c.SaveSchema(tx, buildTemplateAtVersion(t, "h", 1).GenerateSchema("/db", "s"), true, api.SchemaExistsError)
 				}
 			}()
 			<-checked
@@ -337,7 +337,7 @@ func TestInMemory_VersionGuard_FreshCreateAfterDropSerializesWithBind(t *testing
 	}
 	bindErr := make(chan error, 1)
 	go func() {
-		bindErr <- c.SaveSchema(tx, buildTemplateAtVersion(t, "h", 1).GenerateSchema("/db", "s"), true)
+		bindErr <- c.SaveSchema(tx, buildTemplateAtVersion(t, "h", 1).GenerateSchema("/db", "s"), true, api.SchemaExistsError)
 	}()
 	<-checked
 	if err := tc.DeleteTemplate(tx, "h", true); err != nil {

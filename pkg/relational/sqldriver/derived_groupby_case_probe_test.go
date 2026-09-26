@@ -19,7 +19,7 @@ func dgcOpen(t *testing.T, dbpath, tpl, ddl string) (*sql.DB, context.Context) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbpath)
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE "+tpl+" "+ddl)
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbpath+"/s WITH TEMPLATE "+tpl)
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbpath, clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbpath), clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

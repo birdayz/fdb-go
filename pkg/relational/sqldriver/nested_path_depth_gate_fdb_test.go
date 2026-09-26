@@ -57,7 +57,7 @@ func TestFDB_NestedPathDepthGate(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /nestdepth/s WITH TEMPLATE nd_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///nestdepth?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///NESTDEPTH?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

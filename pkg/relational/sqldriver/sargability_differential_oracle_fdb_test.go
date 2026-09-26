@@ -540,7 +540,7 @@ func sargOracleSchema(t *testing.T) (db *sql.DB, singleK, compositeK, idxA, idxB
 			"CREATE TABLE flt_col (id BIGINT, f FLOAT, PRIMARY KEY (id)) "+
 			"CREATE INDEX flt_col_f ON flt_col (f)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE sargoracle")
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

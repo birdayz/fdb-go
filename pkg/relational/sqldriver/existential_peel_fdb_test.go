@@ -30,7 +30,7 @@ func TestFDB_ExistentialPeelShapes(t *testing.T) {
 			"CREATE TABLE d (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX c_a_id ON c (a_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_exist_peel/s WITH TEMPLATE exist_peel")
-	dsn := fmt.Sprintf("fdbsql:///testdb_exist_peel?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_EXIST_PEEL?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

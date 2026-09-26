@@ -49,6 +49,8 @@ go_test(
         "integration_test.go",
         "keyspace_test.go",
         "metadata_test.go",
+        "schema_exists_behavior_fdb_test.go",
+        "schema_exists_behavior_test.go",
         "store_catalog_test.go",
         "system_tables_test.go",
         "template_carry_fdb_test.go",

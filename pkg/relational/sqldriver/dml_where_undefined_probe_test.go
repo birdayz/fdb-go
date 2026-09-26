@@ -30,7 +30,7 @@ func TestFDB_DmlWhereUndefinedProbe(t *testing.T) {
 
 	newDB := func(t *testing.T, schema string) *sql.DB {
 		mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dwu/"+schema+" WITH TEMPLATE dwu")
-		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_dwu?cluster_file=%s&schema=%s", clusterFilePath, schema))
+		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_DWU?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema)))
 		if err != nil {
 			t.Fatalf("sql.Open: %v", err)
 		}

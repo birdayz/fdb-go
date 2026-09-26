@@ -137,7 +137,19 @@ func TestCreateSchema_DatabaseNotExist(t *testing.T) {
 	g.Expect(f.SaveSchemaTemplate(tmpl, api.Options{}).Execute(txn)).To(gomega.Succeed())
 
 	err := f.CreateSchema("/nodb", "s1", "T1", api.Options{}).Execute(txn)
-	g.Expect(err).To(gomega.HaveOccurred())
+	wantDDLError(g, err, api.ErrCodeUndefinedDatabase, "Database /nodb does not exist")
+	// The database is checked before the template.
+	err = f.CreateSchema("/nodb", "s1", "ghost", api.Options{}).Execute(txn)
+	wantDDLError(g, err, api.ErrCodeUndefinedDatabase, "Database /nodb does not exist")
+}
+
+// wantDDLError asserts a DDL action's refusal is the target's: its SQLSTATE and
+// its message.
+func wantDDLError(g *gomega.WithT, err error, code api.ErrorCode, message string) {
+	var ae *api.Error
+	g.Expect(errors.As(err, &ae)).To(gomega.BeTrue(), "%v", err)
+	g.Expect(ae.Code).To(gomega.Equal(code), ae.Message)
+	g.Expect(ae.Message).To(gomega.Equal(message))
 }
 
 func TestCreateSchema_AlreadyExists(t *testing.T) {
@@ -151,7 +163,29 @@ func TestCreateSchema_AlreadyExists(t *testing.T) {
 	g.Expect(f.CreateSchema("/db1", "s1", "T1", api.Options{}).Execute(txn)).To(gomega.Succeed())
 
 	err := f.CreateSchema("/db1", "s1", "T1", api.Options{}).Execute(txn)
-	g.Expect(err).To(gomega.HaveOccurred())
+	wantDDLError(g, err, api.ErrCodeSchemaAlreadyExists, "Schema /db1/s1 already exists.")
+	// The template is loaded before the existing schema is refused.
+	err = f.CreateSchema("/db1", "s1", "ghost", api.Options{}).Execute(txn)
+	wantDDLError(g, err, api.ErrCodeUnknownSchemaTemplate, "SchemaTemplate 'ghost' is not in catalog")
+}
+
+// CREATE SCHEMA over a schema whose bound template version is gone is refused as
+// the target refuses it: the catalog's save loads the stored row with its
+// template first, which fails with UNKNOWN_SCHEMA_TEMPLATE (ws-j-design.md
+// section 2).
+func TestCreateSchema_OverAGoneVersion(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	g.Expect(f.SaveSchemaTemplate(buildTemplate(t, "T1", 1), api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.SaveSchemaTemplate(buildTemplate(t, "T2", 1), api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.CreateDatabase("/db1", api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.CreateSchema("/db1", "s1", "T1", api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.DropSchemaTemplate("T1", true, api.Options{}).Execute(txn)).To(gomega.Succeed())
+
+	err := f.CreateSchema("/db1", "s1", "T2", api.Options{}).Execute(txn)
+	wantDDLError(g, err, api.ErrCodeUnknownSchemaTemplate, "SchemaTemplate=T1, version=1 is not in catalog")
 }
 
 func TestDropSchema(t *testing.T) {
@@ -214,7 +248,8 @@ func TestCreateSchema_MissingTemplate(t *testing.T) {
 
 	g.Expect(f.CreateDatabase("/db", api.Options{}).Execute(txn)).To(gomega.Succeed())
 	// Template "ghost" was never saved — CreateSchema must fail.
-	g.Expect(f.CreateSchema("/db", "s1", "ghost", api.Options{}).Execute(txn)).NotTo(gomega.Succeed())
+	err := f.CreateSchema("/db", "s1", "ghost", api.Options{}).Execute(txn)
+	wantDDLError(g, err, api.ErrCodeUnknownSchemaTemplate, "SchemaTemplate 'ghost' is not in catalog")
 }
 
 // --- Schema evolution validator tests ---

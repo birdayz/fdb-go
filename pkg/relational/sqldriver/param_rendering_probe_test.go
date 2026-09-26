@@ -26,7 +26,7 @@ func TestFDB_ParamRenderingProbe(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE paramrender "+
 			"CREATE TABLE t (id BIGINT, n BIGINT, f DOUBLE, flag BOOLEAN, ts TIMESTAMP, dt DATE, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_paramrender/s WITH TEMPLATE paramrender")
-	dsn := fmt.Sprintf("fdbsql:///testdb_paramrender?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_PARAMRENDER?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

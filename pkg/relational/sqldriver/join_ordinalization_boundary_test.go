@@ -105,7 +105,7 @@ func TestFDB_TwoWayJoinUnderThreeWayClusterStaysNameModel(t *testing.T) {
 			"CREATE TABLE b (id BIGINT, a_id BIGINT, bv BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, b_id BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_gpa/s WITH TEMPLATE gpa_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///testdb_gpa?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_GPA?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -228,7 +228,7 @@ func TestFDB_FourWayFlatteningEvasionStaysNameModel(t *testing.T) {
 			"CREATE TABLE c (id BIGINT, cv BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE d (id BIGINT, c_id BIGINT, dw BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_gpb/s WITH TEMPLATE gpb_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///testdb_gpb?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_GPB?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -335,7 +335,7 @@ func TestFDB_GroupByHavingOverOrdinalJoin(t *testing.T) {
 			"CREATE TABLE a (id BIGINT, av BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, cw BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_gbhj/s WITH TEMPLATE gbhj_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///testdb_gbhj?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_GBHJ?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -443,7 +443,7 @@ func TestFDB_DupNameStarOverOrdinalJoin(t *testing.T) {
 			"CREATE TABLE pdup (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE qdup (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dupstar/s WITH TEMPLATE dupstar_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///testdb_dupstar?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_DUPSTAR?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -521,7 +521,7 @@ func TestFDB_CoveringIndexLegOverOrdinalJoin(t *testing.T) {
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX c_a_id ON c (a_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_covleg/s WITH TEMPLATE covleg_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///testdb_covleg?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_COVLEG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -616,7 +616,7 @@ func TestFDB_PureCrossProduct(t *testing.T) {
 			"CREATE TABLE b (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_cross/s WITH TEMPLATE cross_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///testdb_cross?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_CROSS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -674,7 +674,7 @@ func TestFDB_FullJoinOverBuriedRef(t *testing.T) {
 			"CREATE TABLE b (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_fullburied/s WITH TEMPLATE fullburied_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///testdb_fullburied?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_FULLBURIED?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -722,7 +722,7 @@ func TestFDB_SecondaryIndexThroughJoinMerge(t *testing.T) {
 			"CREATE TABLE c (id BIGINT, b_z BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX c_b_z ON c (b_z)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_idxmerge/s WITH TEMPLATE idxmerge_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///testdb_idxmerge?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_IDXMERGE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -793,7 +793,7 @@ func TestFDB_TopLevelLeftJoinOrdinalizes(t *testing.T) {
 			// actually executed (not just a memo alternative).
 			"CREATE INDEX c_a_id ON c (a_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_w4left/s WITH TEMPLATE w4left_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///testdb_w4left?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_W4LEFT?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -28,7 +28,7 @@ func TestFDB_DoubleOracleConsistency(t *testing.T) {
 			"CREATE TABLE t (id BIGINT, k DOUBLE, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_k ON t (k)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dbloracle/s WITH TEMPLATE dbloracle")
-	dsn := fmt.Sprintf("fdbsql:///testdb_dbloracle?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_DBLORACLE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

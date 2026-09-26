@@ -119,7 +119,7 @@ func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c
 		}
 	}
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, clusterFile, schemaName))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", strings.ToUpper(dbPath), clusterFile, strings.ToUpper(schemaName)))
 	if err != nil {
 		res.Kind = OutcomeInfra
 		res.InfraErr = fmt.Errorf("open: %w", err)

@@ -40,7 +40,7 @@ func TestFDB_DmlDryRun(t *testing.T) {
 	// run in parallel against private state.
 	newDB := func(t *testing.T, schema string) *sql.DB {
 		mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dryrun/"+schema+" WITH TEMPLATE dryrun")
-		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_dryrun?cluster_file=%s&schema=%s", clusterFilePath, schema))
+		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_DRYRUN?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema)))
 		if err != nil {
 			t.Fatalf("sql.Open: %v", err)
 		}
@@ -309,7 +309,7 @@ func TestFDB_DmlDryRun_MatchesJavaLightweightValidation(t *testing.T) {
 
 	newDB := func(t *testing.T, schema string) *sql.DB {
 		mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dryrun_lw/"+schema+" WITH TEMPLATE dryrun_lw")
-		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_dryrun_lw?cluster_file=%s&schema=%s", clusterFilePath, schema))
+		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_DRYRUN_LW?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema)))
 		if err != nil {
 			t.Fatalf("sql.Open: %v", err)
 		}

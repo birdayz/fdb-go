@@ -88,10 +88,10 @@ func TestFDB_VersionGuard_FreshTemplateRefusedWhileDroppedVersionBound(t *testin
 		if err := tc.CreateTemplate(tx, buildVersionedTemplate(t, "g", 3)); err != nil {
 			return err
 		}
-		if err := cat.SaveSchema(tx, buildVersionedTemplate(t, "g", 3).GenerateSchema("/db2", "b"), true); err != nil {
+		if err := cat.SaveSchema(tx, buildVersionedTemplate(t, "g", 3).GenerateSchema("/db2", "b"), true, api.SchemaExistsError); err != nil {
 			return err
 		}
-		return cat.SaveSchema(tx, buildVersionedTemplate(t, "g", 3).GenerateSchema("/db1", "a"), true)
+		return cat.SaveSchema(tx, buildVersionedTemplate(t, "g", 3).GenerateSchema("/db1", "a"), true, api.SchemaExistsError)
 	})
 	// The target's DROP SCHEMA TEMPLATE drops regardless of bindings.
 	mustRun(t, run, func(tx api.Transaction) error { return tc.DeleteTemplate(tx, "g", true) })
@@ -123,7 +123,7 @@ func TestFDB_VersionGuard_FailsClosedOverAnUnreadableIndex(t *testing.T) {
 		if err := tc.CreateTemplate(tx, buildVersionedTemplate(t, "u", 1)); err != nil {
 			return err
 		}
-		return cat.SaveSchema(tx, buildVersionedTemplate(t, "u", 1).GenerateSchema("/db", "s"), true)
+		return cat.SaveSchema(tx, buildVersionedTemplate(t, "u", 1).GenerateSchema("/db", "s"), true, api.SchemaExistsError)
 	})
 	mustRun(t, run, func(tx api.Transaction) error {
 		store, err := cat.openStore(tx)
@@ -151,7 +151,7 @@ func TestFDB_VersionGuard_VersionZeroBindingBlocksFreshTemplate(t *testing.T) {
 		if err := tc.CreateTemplate(tx, buildVersionedTemplate(t, "z", 0)); err != nil {
 			return err
 		}
-		return cat.SaveSchema(tx, buildVersionedTemplate(t, "z", 0).GenerateSchema("/db", "s"), true)
+		return cat.SaveSchema(tx, buildVersionedTemplate(t, "z", 0).GenerateSchema("/db", "s"), true, api.SchemaExistsError)
 	})
 	mustRun(t, run, func(tx api.Transaction) error { return tc.DeleteTemplate(tx, "z", true) })
 	err := run(func(tx api.Transaction) error { return tc.CreateTemplate(tx, buildVersionedTemplate(t, "z", 1)) })
@@ -170,7 +170,7 @@ func TestFDB_VersionGuard_BoundLowerVersionDoesNotBlockNewVersion(t *testing.T) 
 		if err := tc.CreateTemplate(tx, buildVersionedTemplate(t, "n", 1)); err != nil {
 			return err
 		}
-		return cat.SaveSchema(tx, buildVersionedTemplate(t, "n", 1).GenerateSchema("/db", "s"), true)
+		return cat.SaveSchema(tx, buildVersionedTemplate(t, "n", 1).GenerateSchema("/db", "s"), true, api.SchemaExistsError)
 	})
 	mustRun(t, run, func(tx api.Transaction) error { return tc.CreateTemplate(tx, buildVersionedTemplate(t, "n", 2)) })
 	mustRun(t, run, func(tx api.Transaction) error { return tc.CreateTemplate(tx, buildVersionedTemplate(t, "n", 5)) })
@@ -194,10 +194,10 @@ func TestFDB_VersionGuard_DanglingBindingAboveLatestRefusesNewVersion(t *testing
 				return err
 			}
 		}
-		if err := cat.SaveSchema(tx, buildVersionedTemplate(t, "d", 1).GenerateSchema("/db", "low"), true); err != nil {
+		if err := cat.SaveSchema(tx, buildVersionedTemplate(t, "d", 1).GenerateSchema("/db", "low"), true, api.SchemaExistsError); err != nil {
 			return err
 		}
-		return cat.SaveSchema(tx, buildVersionedTemplate(t, "d", 3).GenerateSchema("/db", "high"), true)
+		return cat.SaveSchema(tx, buildVersionedTemplate(t, "d", 3).GenerateSchema("/db", "high"), true, api.SchemaExistsError)
 	})
 	eraseTemplateRow(t, cat, run, "d", 3)
 
@@ -235,13 +235,13 @@ func TestFDB_VersionGuard_SaveAndRepairOverGoneVersionRefused(t *testing.T) {
 		if err := tc.CreateTemplate(tx, buildVersionedTemplate(t, "other", 1)); err != nil {
 			return err
 		}
-		return cat.SaveSchema(tx, buildVersionedTemplate(t, "old", 1).GenerateSchema("/db", "s"), true)
+		return cat.SaveSchema(tx, buildVersionedTemplate(t, "old", 1).GenerateSchema("/db", "s"), true, api.SchemaExistsError)
 	})
 	mustRun(t, run, func(tx api.Transaction) error { return tc.DeleteTemplate(tx, "old", true) })
 
 	gone := "SchemaTemplate=old, version=1 is not in catalog"
 	err := run(func(tx api.Transaction) error {
-		return cat.SaveSchema(tx, buildVersionedTemplate(t, "other", 1).GenerateSchema("/db", "s"), false)
+		return cat.SaveSchema(tx, buildVersionedTemplate(t, "other", 1).GenerateSchema("/db", "s"), false, api.SchemaExistsError)
 	})
 	wantAPIError(t, err, api.ErrCodeUnknownSchemaTemplate, gone)
 	err = run(func(tx api.Transaction) error { return cat.RepairSchema(tx, "/db", "s") })
@@ -260,12 +260,12 @@ func TestFDB_SaveSchemaMissingTemplateAndDatabaseTexts(t *testing.T) {
 	mustRun(t, run, func(tx api.Transaction) error { return tc.CreateTemplate(tx, buildVersionedTemplate(t, "tx", 1)) })
 
 	err := run(func(tx api.Transaction) error {
-		return cat.SaveSchema(tx, buildVersionedTemplate(t, "tx", 2).GenerateSchema("/db", "s"), true)
+		return cat.SaveSchema(tx, buildVersionedTemplate(t, "tx", 2).GenerateSchema("/db", "s"), true, api.SchemaExistsError)
 	})
 	wantAPIError(t, err, api.ErrCodeUnknownSchemaTemplate,
 		"Cannot create schema s because schema template tx version 2 does not exist.")
 	err = run(func(tx api.Transaction) error {
-		return cat.SaveSchema(tx, buildVersionedTemplate(t, "tx", 1).GenerateSchema("/nodb", "s"), false)
+		return cat.SaveSchema(tx, buildVersionedTemplate(t, "tx", 1).GenerateSchema("/nodb", "s"), false, api.SchemaExistsError)
 	})
 	wantAPIError(t, err, api.ErrCodeUndefinedDatabase,
 		"Cannot create schema s because database /nodb does not exist.")
@@ -285,7 +285,7 @@ func TestFDB_VersionGuard_DeleteBoundVersionRefused(t *testing.T) {
 				return err
 			}
 		}
-		return cat.SaveSchema(tx, buildVersionedTemplate(t, "del", 2).GenerateSchema("/db", "s"), true)
+		return cat.SaveSchema(tx, buildVersionedTemplate(t, "del", 2).GenerateSchema("/db", "s"), true, api.SchemaExistsError)
 	})
 
 	err := run(func(tx api.Transaction) error { return tc.DeleteTemplateVersion(tx, "del", 2, true) })
@@ -346,7 +346,7 @@ func TestFDB_VersionGuard_DeleteRacesBind(t *testing.T) {
 		return cat, run
 	}
 	bindV2 := func(cat *RecordLayerStoreCatalog, tx api.Transaction) error {
-		return cat.SaveSchema(tx, buildVersionedTemplate(t, "race", 2).GenerateSchema("/db", "s"), false)
+		return cat.SaveSchema(tx, buildVersionedTemplate(t, "race", 2).GenerateSchema("/db", "s"), false, api.SchemaExistsError)
 	}
 	stage := func(t *testing.T, cat *RecordLayerStoreCatalog, deleteVersion int) (func() error, func() error) {
 		delTx, delCommit := openRaced(t)
@@ -418,7 +418,7 @@ func TestFDB_VersionGuard_ConcurrentDropSchemaConverges(t *testing.T) {
 		if err := tc.CreateTemplate(tx, buildVersionedTemplate(t, "c", 1)); err != nil {
 			return err
 		}
-		return cat.SaveSchema(tx, buildVersionedTemplate(t, "c", 1).GenerateSchema("/db", "s"), true)
+		return cat.SaveSchema(tx, buildVersionedTemplate(t, "c", 1).GenerateSchema("/db", "s"), true, api.SchemaExistsError)
 	})
 	mustRun(t, run, func(tx api.Transaction) error { return tc.DeleteTemplate(tx, "c", true) })
 

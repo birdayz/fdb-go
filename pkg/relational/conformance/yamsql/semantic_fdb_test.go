@@ -17,7 +17,7 @@ func runSemanticScenario(t *testing.T, s *yamsql.Scenario) *yamsql.Result {
 	}
 	name := sanitize(t.Name())
 	path := "/_" + name
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=conf", path, clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=CONF", strings.ToUpper(path), clusterFilePath))
 	if err != nil {
 		t.Fatal(err)
 	}

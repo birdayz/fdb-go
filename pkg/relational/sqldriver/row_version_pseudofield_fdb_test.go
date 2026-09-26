@@ -35,7 +35,7 @@ func TestFDB_RowVersionPseudoField_BaseScan(t *testing.T) {
 		WITH OPTIONS(store_row_versions=true)`)
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rvpf/s1 WITH TEMPLATE rvpf_tpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_rvpf?cluster_file=%s&schema=s1", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_RVPF?cluster_file=%s&schema=S1", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestFDB_RowVersionPseudoField_DisabledTemplate(t *testing.T) {
 		WITH OPTIONS(store_row_versions=false)`)
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rvpf_off/s1 WITH TEMPLATE rvpf_off_tpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_rvpf_off?cluster_file=%s&schema=s1", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_RVPF_OFF?cluster_file=%s&schema=S1", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

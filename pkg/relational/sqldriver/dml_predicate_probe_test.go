@@ -24,7 +24,7 @@ func TestFDB_DMLPredicateProbe(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE dml_pred "+
 			"CREATE TABLE t (id BIGINT, v BIGINT, grp STRING, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dml_pred/s WITH TEMPLATE dml_pred")
-	dsn := fmt.Sprintf("fdbsql:///testdb_dml_pred?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_DML_PRED?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
