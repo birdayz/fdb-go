@@ -2780,7 +2780,11 @@ Found while landing it, each fixed:
 **11. Evidence.** The red run is `evidence/wsj19-red` (the tree of `6b4b7817d` with this
 revision's tests and the adapters its TREE names); the JVM greens on the commit are
 `evidence/wsj19-green` (the parity and oracle targets run by name: the hook runs them, but its log
-names no spec). Mutation runs: none.
+names no spec). Five of this revision's tests hold on `6b4b7817d`'s tree as well, so they pin
+behaviour that already held and are not red→green: section 4's test 6 (a tenant on an older version
+rebinds to the latest) and test 10 (an equivalent index stays READABLE),
+`TestFDB_ExecutedTemplateIsTheToolingPathsTemplate` (one builder, a structural pin), and the two WS-C
+pins that 7.19 shows able to fail by mutation. Mutation runs for WS-J: none.
 
 **12. The decode's cost (storage L7).** `BenchmarkJavaRecordDecode` (a twelve-column proto2 record,
 dynamic, as a relational record is; 200,000 decodes, three runs each, load 2-3 on a 24-thread host):

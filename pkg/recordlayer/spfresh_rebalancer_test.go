@@ -85,49 +85,67 @@ var _ = Describe("SPFresh rebalancer + coarse splits", func() {
 	// by every entry point, not only the maintainer: the rebalancer, refine,
 	// recall and the integrity check read their configuration through
 	// readSPFreshConfig, where they parsed without validating and could reach
-	// the encoder's panic.
-	It("every entry point refuses an index configuration the maintainer refuses", func() {
-		storeBuilder, _ := setup("spf_zero_bits", 8)
-		zero := spfIndex("spf_zero_bits")
-		zero.Options[IndexOptionSPFreshRaBitQNumExBits] = "0"
-		builder := baseMD()
-		builder.AddIndex("Order", zero)
-		md, err := builder.Build()
-		Expect(err).NotTo(HaveOccurred())
-		var ks subspace.Subspace
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			store, serr := storeBuilder(rtx)
-			if serr != nil {
-				return nil, serr
+	// the encoder's panic. One spec per entry point, so a regression in any one
+	// reddens its own spec rather than stopping at the first.
+	DescribeTable("every entry point refuses an index configuration the maintainer refuses",
+		func(name string, call func(storeBuilder func(*FDBRecordContext) (*FDBRecordStore, error), name string) error) {
+			storeBuilder, _ := setup(name, 8)
+			zero := spfIndex(name)
+			zero.Options[IndexOptionSPFreshRaBitQNumExBits] = "0"
+			builder := baseMD()
+			builder.AddIndex("Order", zero)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			var ks subspace.Subspace
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, serr := storeBuilder(rtx)
+				if serr != nil {
+					return nil, serr
+				}
+				ks = store.GetSubspace()
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			zeroBuilder := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+				return NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			}
-			ks = store.GetSubspace()
-			return nil, nil
-		})
-		Expect(err).NotTo(HaveOccurred())
-		zeroBuilder := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
-			return NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
-		}
-		refused := func(err error) {
-			GinkgoHelper()
-			Expect(err).To(MatchError(ContainSubstring("raBitQNumExBits must be in [1, 8], got 0")))
-		}
-		_, err = RebalanceSPFreshIndex(ctx, sharedDB, zeroBuilder, "spf_zero_bits")
-		refused(err)
-		_, err = RefineSPFreshIndexAll(ctx, sharedDB, zeroBuilder, "spf_zero_bits")
-		refused(err)
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			store, serr := zeroBuilder(rtx)
-			if serr != nil {
-				return nil, serr
-			}
-			_, rerr := MeasureSPFreshRecall(ctx, store, "spf_zero_bits", 3, 2, 1)
-			refused(rerr)
-			_, ierr := SPFreshCheckIntegrity(rtx, store, "spf_zero_bits", 0)
-			refused(ierr)
-			return nil, nil
-		})
-		Expect(err).NotTo(HaveOccurred())
-	})
+			Expect(call(zeroBuilder, name)).To(MatchError(ContainSubstring("raBitQNumExBits must be in [1, 8], got 0")))
+		},
+		Entry("the rebalancer", "spf_zero_bits_rebalance",
+			func(sb func(*FDBRecordContext) (*FDBRecordStore, error), name string) error {
+				_, err := RebalanceSPFreshIndex(ctx, sharedDB, sb, name)
+				return err
+			}),
+		Entry("refine", "spf_zero_bits_refine",
+			func(sb func(*FDBRecordContext) (*FDBRecordStore, error), name string) error {
+				_, err := RefineSPFreshIndexAll(ctx, sharedDB, sb, name)
+				return err
+			}),
+		Entry("recall", "spf_zero_bits_recall",
+			func(sb func(*FDBRecordContext) (*FDBRecordStore, error), name string) error {
+				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, serr := sb(rtx)
+					if serr != nil {
+						return nil, serr
+					}
+					_, rerr := MeasureSPFreshRecall(ctx, store, name, 3, 2, 1)
+					return nil, rerr
+				})
+				return err
+			}),
+		Entry("the integrity check", "spf_zero_bits_integrity",
+			func(sb func(*FDBRecordContext) (*FDBRecordStore, error), name string) error {
+				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, serr := sb(rtx)
+					if serr != nil {
+						return nil, serr
+					}
+					_, ierr := SPFreshCheckIntegrity(rtx, store, name, 0)
+					return nil, ierr
+				})
+				return err
+			}),
+	)
 
 	It("coarse split defers on SEALED rows and the guard pauses fine-split issuance", func() {
 		_, indexSubspace := setup("spf_csplit_defer", 8)

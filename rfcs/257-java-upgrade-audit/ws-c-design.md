@@ -2961,10 +2961,25 @@ lengths are from protobuf-java's source.
 **Evidence (graefe 2, torvalds 3, storage nit).** `wsc18-green-commit`'s TREE counted one working file
 differing from the index and did not name it (the evidence script counted and did not list); the
 green that revision 18 rests on is the pre-commit hook's, whose index tree equals the commit's
-(`f7dd54ee9`), and the script now lists each differing file. Of the red gaps: the strict SPFresh parse
-and the typed refusal, and the queue pin, are red on `6b4b7817d`'s tree in this revision's red run
-(`evidence/wsj19-red`, which covers both workstreams' tests); part 1 of `wsc18-red` stays unhashed
-and is not relied on; the planner-only red of `TestVectorPlan_MetricIsTheMaintainers` was an edited
-copy (7.18 now says so); the other SPFresh entry points' arms were not shown red in `wsc18-red`
-(Ginkgo stopped at the rebalancer's), and are covered by the same red run.
+(`f7dd54ee9`), and the script now lists each differing file. Of the red gaps, as measured (revision
+19's first text said the queue pin and the other entry points were red in `evidence/wsj19-red`;
+that run on `6b4b7817d`'s tree showed the queue pin GREEN and never ran the entry points, which
+`6b4b7817d` already refuses at, so the sentence is replaced by this one):
+- the strict SPFresh parse and the typed refusal (`TestParseSPFreshConfigRefusesWhatDoesNotParse`)
+  are red on `6b4b7817d`'s tree in `evidence/wsj19-red` (its recordlayer part);
+- the entry points: the spec is now one per entry point (a table), so a regression in one reddens
+  its own spec instead of stopping at the first. On `d2e47b8bd`'s tree, with `readSPFreshConfig` as
+  the old unvalidated parse (`evidence/wsc19-red/entry-points`, its TREE names the adapter), the
+  rebalancer, refine and the integrity check are red; recall is green, because its old unvalidated
+  parse was followed by a search through the maintainer, which refused, so that arm pins behaviour
+  that already held;
+- the queue pin and the samples pin hold on the old trees by construction (each pins behaviour
+  revision 18 already had), so red→green cannot show that they can fail. Mutation runs 1 and 2 of
+  this milestone do (`evidence/wsc19-mutation`, each applied alone, counted present, restored):
+  a present node reaching `addToStatsIfNecessary` before its early return reddens "leaves a node
+  already in the graph as it is" (with these settings that adds exactly one sample and nothing
+  else, the half the v18 gate found could not fail), and the queue's serialization dropping a pair
+  of equal entries reddens "serializes both entries of a queued save that keeps the vector";
+- part 1 of `wsc18-red` stays unhashed and is not relied on; the planner-only red of
+  `TestVectorPlan_MetricIsTheMaintainers` was an edited copy (7.18 now says so).
 
