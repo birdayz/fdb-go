@@ -14,14 +14,15 @@ import (
 // MetaDataException("incorrect index options", cause), and a missing dimension
 // count is the parse's own MetaDataException. So the windowed index Go builds is
 // the one Java builds, and its maintainer (parseHNSWConfig, the same reader)
-// reads the numbers Java reads.
-//
-// SCOPE, stated as what is NOT covered: the engine selector (vectorEngine; Go
-// maintains HNSW only) and Java's structure half (validateStructure: a
-// KeyWithValueExpression root, no grouping, not unique) are RFC-257 WS-D's, as is
-// running the validator for a plain VECTOR index (DIVERGENCES.md, the VECTOR
-// entry).
+// reads the numbers Java reads. A GuardiANN index is not parsed here.
 func validateVectorIndexOptionsAtBuild(idx *Index) error {
+	engine, err := VectorEngineOf(idx)
+	if err != nil {
+		return err
+	}
+	if engine != VectorEngineHNSW {
+		return nil
+	}
 	if err := hnswAliasConflict(idx); err != nil {
 		return err
 	}

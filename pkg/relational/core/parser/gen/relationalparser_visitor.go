@@ -106,6 +106,9 @@ type RelationalParserVisitor interface {
 	// Visit a parse tree produced by RelationalParser#vectorIndexDefinition.
 	VisitVectorIndexDefinition(ctx *VectorIndexDefinitionContext) interface{}
 
+	// Visit a parse tree produced by RelationalParser#vectorEngine.
+	VisitVectorEngine(ctx *VectorEngineContext) interface{}
+
 	// Visit a parse tree produced by RelationalParser#indexColumnList.
 	VisitIndexColumnList(ctx *IndexColumnListContext) interface{}
 
@@ -132,6 +135,9 @@ type RelationalParserVisitor interface {
 
 	// Visit a parse tree produced by RelationalParser#vectorIndexOption.
 	VisitVectorIndexOption(ctx *VectorIndexOptionContext) interface{}
+
+	// Visit a parse tree produced by RelationalParser#vectorIndexOptionValue.
+	VisitVectorIndexOptionValue(ctx *VectorIndexOptionValueContext) interface{}
 
 	// Visit a parse tree produced by RelationalParser#hnswMetric.
 	VisitHnswMetric(ctx *HnswMetricContext) interface{}

@@ -233,6 +233,12 @@ func (s *BaseRelationalParserListener) EnterVectorIndexDefinition(ctx *VectorInd
 // ExitVectorIndexDefinition is called when production vectorIndexDefinition is exited.
 func (s *BaseRelationalParserListener) ExitVectorIndexDefinition(ctx *VectorIndexDefinitionContext) {}
 
+// EnterVectorEngine is called when production vectorEngine is entered.
+func (s *BaseRelationalParserListener) EnterVectorEngine(ctx *VectorEngineContext) {}
+
+// ExitVectorEngine is called when production vectorEngine is exited.
+func (s *BaseRelationalParserListener) ExitVectorEngine(ctx *VectorEngineContext) {}
+
 // EnterIndexColumnList is called when production indexColumnList is entered.
 func (s *BaseRelationalParserListener) EnterIndexColumnList(ctx *IndexColumnListContext) {}
 
@@ -286,6 +292,14 @@ func (s *BaseRelationalParserListener) EnterVectorIndexOption(ctx *VectorIndexOp
 
 // ExitVectorIndexOption is called when production vectorIndexOption is exited.
 func (s *BaseRelationalParserListener) ExitVectorIndexOption(ctx *VectorIndexOptionContext) {}
+
+// EnterVectorIndexOptionValue is called when production vectorIndexOptionValue is entered.
+func (s *BaseRelationalParserListener) EnterVectorIndexOptionValue(ctx *VectorIndexOptionValueContext) {
+}
+
+// ExitVectorIndexOptionValue is called when production vectorIndexOptionValue is exited.
+func (s *BaseRelationalParserListener) ExitVectorIndexOptionValue(ctx *VectorIndexOptionValueContext) {
+}
 
 // EnterHnswMetric is called when production hnswMetric is entered.
 func (s *BaseRelationalParserListener) EnterHnswMetric(ctx *HnswMetricContext) {}

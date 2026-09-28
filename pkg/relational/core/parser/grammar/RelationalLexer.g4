@@ -136,6 +136,7 @@ GRANT:                               'GRANT';
 GROUP:                               'GROUP';
 HAVING:                              'HAVING';
 HNSW:                                'HNSW';
+GUARDIANN:                           'GUARDIANN';
 SPFRESH:                             'SPFRESH';
 HIGH_PRIORITY:                       'HIGH_PRIORITY';
 HISTOGRAM:                           'HISTOGRAM';

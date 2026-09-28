@@ -139,6 +139,10 @@ func (v *BaseRelationalParserVisitor) VisitVectorIndexDefinition(ctx *VectorInde
 	return v.VisitChildren(ctx)
 }
 
+func (v *BaseRelationalParserVisitor) VisitVectorEngine(ctx *VectorEngineContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
 func (v *BaseRelationalParserVisitor) VisitIndexColumnList(ctx *IndexColumnListContext) interface{} {
 	return v.VisitChildren(ctx)
 }
@@ -172,6 +176,10 @@ func (v *BaseRelationalParserVisitor) VisitVectorIndexOptions(ctx *VectorIndexOp
 }
 
 func (v *BaseRelationalParserVisitor) VisitVectorIndexOption(ctx *VectorIndexOptionContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
+func (v *BaseRelationalParserVisitor) VisitVectorIndexOptionValue(ctx *VectorIndexOptionValueContext) interface{} {
 	return v.VisitChildren(ctx)
 }
 

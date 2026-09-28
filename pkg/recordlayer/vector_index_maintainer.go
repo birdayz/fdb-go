@@ -122,6 +122,13 @@ func newVectorIndexMaintainer(
 	// included: a configuration Java refuses is refused here rather than built
 	// with Go's own reading (for example m > mMax, a new node selecting more
 	// neighbours than the pruning cap, or efRepair < m).
+	engine, err := VectorEngineOf(index)
+	if err != nil {
+		return nil, err
+	}
+	if engine != VectorEngineHNSW {
+		return nil, &UnsupportedVectorEngineError{Index: index.Name, Engine: engine}
+	}
 	config, err := parseHNSWConfig(index)
 	if err != nil {
 		return nil, fmt.Errorf("vector index %q: %w", index.Name, err)

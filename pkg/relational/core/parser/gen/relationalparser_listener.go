@@ -106,6 +106,9 @@ type RelationalParserListener interface {
 	// EnterVectorIndexDefinition is called when entering the vectorIndexDefinition production.
 	EnterVectorIndexDefinition(c *VectorIndexDefinitionContext)
 
+	// EnterVectorEngine is called when entering the vectorEngine production.
+	EnterVectorEngine(c *VectorEngineContext)
+
 	// EnterIndexColumnList is called when entering the indexColumnList production.
 	EnterIndexColumnList(c *IndexColumnListContext)
 
@@ -132,6 +135,9 @@ type RelationalParserListener interface {
 
 	// EnterVectorIndexOption is called when entering the vectorIndexOption production.
 	EnterVectorIndexOption(c *VectorIndexOptionContext)
+
+	// EnterVectorIndexOptionValue is called when entering the vectorIndexOptionValue production.
+	EnterVectorIndexOptionValue(c *VectorIndexOptionValueContext)
 
 	// EnterHnswMetric is called when entering the hnswMetric production.
 	EnterHnswMetric(c *HnswMetricContext)
@@ -949,6 +955,9 @@ type RelationalParserListener interface {
 	// ExitVectorIndexDefinition is called when exiting the vectorIndexDefinition production.
 	ExitVectorIndexDefinition(c *VectorIndexDefinitionContext)
 
+	// ExitVectorEngine is called when exiting the vectorEngine production.
+	ExitVectorEngine(c *VectorEngineContext)
+
 	// ExitIndexColumnList is called when exiting the indexColumnList production.
 	ExitIndexColumnList(c *IndexColumnListContext)
 
@@ -975,6 +984,9 @@ type RelationalParserListener interface {
 
 	// ExitVectorIndexOption is called when exiting the vectorIndexOption production.
 	ExitVectorIndexOption(c *VectorIndexOptionContext)
+
+	// ExitVectorIndexOptionValue is called when exiting the vectorIndexOptionValue production.
+	ExitVectorIndexOptionValue(c *VectorIndexOptionValueContext)
 
 	// ExitHnswMetric is called when exiting the hnswMetric production.
 	ExitHnswMetric(c *HnswMetricContext)

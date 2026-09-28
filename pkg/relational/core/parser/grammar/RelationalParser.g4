@@ -171,7 +171,14 @@ enumDefinition
 indexDefinition
     : (UNIQUE)? INDEX indexName=uid AS queryTerm indexAttributes?                                                                  #indexAsSelectDefinition
     | (UNIQUE)? INDEX indexName=uid ON source=fullId indexColumnList includeClause? indexOptions?                                  #indexOnSourceDefinition
-    | VECTOR INDEX indexName=uid USING method=(HNSW | SPFRESH) ON source=fullId indexColumnList includeClause? indexPartitionClause? vectorIndexOptions?   #vectorIndexDefinition
+    | VECTOR INDEX indexName=uid USING engine=vectorEngine ON source=fullId indexColumnList includeClause? indexPartitionClause? vectorIndexOptions?   #vectorIndexDefinition
+    ;
+
+// SPFRESH is a Go-only engine.
+vectorEngine
+    : HNSW
+    | GUARDIANN
+    | SPFRESH
     ;
 
 indexColumnList
@@ -207,16 +214,14 @@ vectorIndexOptions
     ;
 
 vectorIndexOption
-    : EF_CONSTRUCTION '=' efConstruction=DECIMAL_LITERAL
-    | CONNECTIVITY '=' connectivity=DECIMAL_LITERAL
-    | M_MAX '=' mMax=DECIMAL_LITERAL
-    | M_MAX_0 '=' mMaxZero=DECIMAL_LITERAL
-    | MAINTAIN_STATS_PROBABILITY '=' maintainStatsProbability=REAL_LITERAL
-    | METRIC '=' metric=hnswMetric
-    | RABITQ_NUM_EX_BITS '=' rabitQNumExBits=DECIMAL_LITERAL
-    | SAMPLE_VECTOR_STATS_PROBABILITY '=' statsProbability=REAL_LITERAL
-    | STATS_THRESHOLD '=' statsThreshold=DECIMAL_LITERAL
-    | USE_RABITQ '=' useRabitQ=booleanLiteral
+    : optionName=simpleId '=' optionValue=vectorIndexOptionValue
+    ;
+
+vectorIndexOptionValue
+    : DECIMAL_LITERAL
+    | REAL_LITERAL
+    | booleanLiteral
+    | hnswMetric
     ;
 
 hnswMetric
@@ -1315,7 +1320,9 @@ intervalTypeBase
     ;
 
 keywordsCanBeId
-    : ACCOUNT | ACTION | ADMIN | AFTER | AGGREGATE | ALGORITHM | ANY
+    : CONNECTIVITY | EF_CONSTRUCTION | M_MAX | M_MAX_0 | MAINTAIN_STATS_PROBABILITY | METRIC
+    | RABITQ_NUM_EX_BITS | SAMPLE_VECTOR_STATS_PROBABILITY | STATS_THRESHOLD | USE_RABITQ
+    | ACCOUNT | ACTION | ADMIN | AFTER | AGGREGATE | ALGORITHM | ANY
     | ARRAY_AGG
     | AT | AUDIT_ADMIN | AUTHORS | AUTOCOMMIT | AUTOEXTEND_SIZE
     | AUTO_INCREMENT | AVG | AVG_ROW_LENGTH | BACKUP_ADMIN | BEGIN | BINLOG | BINLOG_ADMIN | BINLOG_ENCRYPTION_ADMIN | BIT | BIT_AND | BIT_OR | BIT_XOR

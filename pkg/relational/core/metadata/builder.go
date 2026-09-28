@@ -406,9 +406,10 @@ func (b *Builder) AddVectorIndexUsing(method, tableName, indexName, vectorColumn
 	// mis-cased method must fail loudly here — AddVectorIndexUsing("SPFresh",
 	// …) silently building an HNSW index is exactly the kind of quiet
 	// misroute a schema author cannot debug.
-	if method != "HNSW" && method != "SPFRESH" {
+	// GUARDIANN is a VECTOR index like HNSW, told apart by its vectorEngine option.
+	if method != "HNSW" && method != "GUARDIANN" && method != "SPFRESH" {
 		b.errs = append(b.errs, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
-			"vector index %q: unknown method %q (want HNSW or SPFRESH)", indexName, method))
+			"vector index %q: unknown method %q (want HNSW, GUARDIANN or SPFRESH)", indexName, method))
 		return b
 	}
 	if method == "SPFRESH" && len(partitionColumns) > 0 {

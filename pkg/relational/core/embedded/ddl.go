@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	apiddl "fdb.dev/pkg/relational/api/ddl"
 	"fdb.dev/pkg/relational/core/catalog"
@@ -466,8 +467,8 @@ func parseVectorIndexDefinition(def *antlrgen.VectorIndexDefinitionContext, b *m
 	}
 
 	method := "HNSW"
-	if def.GetMethod() != nil {
-		method = strings.ToUpper(def.GetMethod().GetText())
+	if def.GetEngine() != nil {
+		method = strings.ToUpper(def.GetEngine().GetText())
 	}
 	options, err := parseVectorIndexOptions(def.VectorIndexOptions(), indexName, method)
 	if err != nil {
@@ -478,69 +479,112 @@ func parseVectorIndexDefinition(def *antlrgen.VectorIndexDefinitionContext, b *m
 	return nil
 }
 
-// parseVectorIndexOptions parses the OPTIONS(...) clause of a vector index
-// into recordlayer HNSW option keys. Mirrors Java's
-// DdlVisitor.parseVectorOptions (CONNECTIVITY→HNSW_M, METRIC→enum name, ...).
-func parseVectorIndexOptions(ctx antlrgen.IVectorIndexOptionsContext, indexName, method string) (map[string]string, error) {
+type vectorOptionKind int
+
+const (
+	vectorOptInt vectorOptionKind = iota
+	vectorOptDouble
+	vectorOptBool
+	vectorOptMetric
+)
+
+type vectorSQLOption struct {
+	key     string // canonical index option; for SPFRESH the spfresh key, "" if unsupported
+	spfresh string
+	kind    vectorOptionKind
+	engines string // "*" both Java engines, "HNSW", "GUARDIANN"
+}
+
+// vectorSQLOptions is Java's DdlVisitor.SUPPORTED_VECTOR_OPTIONS; the spfresh
+// column is Go's SPFRESH engine.
+var vectorSQLOptions = map[string]vectorSQLOption{
+	"metric":                              {recordlayer.IndexOptionVectorMetric, recordlayer.IndexOptionSPFreshMetric, vectorOptMetric, "*"},
+	"use_rabitq":                          {recordlayer.IndexOptionHNSWUseRaBitQ, "", vectorOptBool, "*"},
+	"rabitq_num_ex_bits":                  {recordlayer.IndexOptionHNSWRaBitQNumExBits, recordlayer.IndexOptionSPFreshRaBitQNumExBits, vectorOptInt, "*"},
+	"maintain_stats_probability":          {recordlayer.IndexOptionHNSWMaintainStatsProbability, "", vectorOptDouble, "*"},
+	"sample_vector_stats_probability":     {recordlayer.IndexOptionHNSWSampleVectorStatsProbability, "", vectorOptDouble, "*"},
+	"stats_threshold":                     {recordlayer.IndexOptionHNSWStatsThreshold, "", vectorOptInt, "*"},
+	"connectivity":                        {recordlayer.IndexOptionHNSWM, "", vectorOptInt, "HNSW"},
+	"ef_construction":                     {recordlayer.IndexOptionHNSWEfConstruction, "", vectorOptInt, "HNSW"},
+	"m_max":                               {recordlayer.IndexOptionHNSWMMax, "", vectorOptInt, "HNSW"},
+	"m_max_0":                             {recordlayer.IndexOptionHNSWMMax0, "", vectorOptInt, "HNSW"},
+	"primary_cluster_min":                 {recordlayer.IndexOptionGuardiannPrimaryClusterMin, "", vectorOptInt, "GUARDIANN"},
+	"primary_cluster_hard_max":            {recordlayer.IndexOptionGuardiannPrimaryClusterHardMax, "", vectorOptInt, "GUARDIANN"},
+	"primary_cluster_max":                 {recordlayer.IndexOptionGuardiannPrimaryClusterMax, "", vectorOptInt, "GUARDIANN"},
+	"underreplicated_primary_cluster_max": {recordlayer.IndexOptionGuardiannUnderreplicatedPrimaryClusterMax, "", vectorOptInt, "GUARDIANN"},
+	"replicated_cluster_max_writes":       {recordlayer.IndexOptionGuardiannReplicatedClusterMaxWrites, "", vectorOptInt, "GUARDIANN"},
+	"replicated_cluster_target":           {recordlayer.IndexOptionGuardiannReplicatedClusterTarget, "", vectorOptInt, "GUARDIANN"},
+	"replication_priority_min":            {recordlayer.IndexOptionGuardiannReplicationPriorityMin, "", vectorOptDouble, "GUARDIANN"},
+	"insert_max_candidate_clusters":       {recordlayer.IndexOptionGuardiannInsertMaxCandidateClusters, "", vectorOptInt, "GUARDIANN"},
+	"delete_max_candidate_clusters":       {recordlayer.IndexOptionGuardiannDeleteMaxCandidateClusters, "", vectorOptInt, "GUARDIANN"},
+	"split_num_nearest_clusters":          {recordlayer.IndexOptionGuardiannSplitNumNearestClusters, "", vectorOptInt, "GUARDIANN"},
+	"merge_num_nearest_clusters":          {recordlayer.IndexOptionGuardiannMergeNumNearestClusters, "", vectorOptInt, "GUARDIANN"},
+	"reassign_num_neighboring_clusters":   {recordlayer.IndexOptionGuardiannReassignNumNeighboringClusters, "", vectorOptInt, "GUARDIANN"},
+	"collapse_min_duplicates":             {recordlayer.IndexOptionGuardiannCollapseMinDuplicates, "", vectorOptInt, "GUARDIANN"},
+}
+
+// parseVectorIndexOptions is Java's DdlVisitor.parseVectorOptions: an unknown
+// option or one for another engine is 0A000, a duplicate or unparsable value
+// 42601, and values are written as Java's String.valueOf writes them.
+func parseVectorIndexOptions(ctx antlrgen.IVectorIndexOptionsContext, indexName, engine string) (map[string]string, error) {
 	opts := map[string]string{}
-	if ctx == nil {
-		return opts, nil
+	if engine == "GUARDIANN" {
+		opts[recordlayer.IndexOptionVectorEngine] = "GUARDIANN"
 	}
 	octx, ok := ctx.(*antlrgen.VectorIndexOptionsContext)
-	if !ok {
+	if !ok || octx == nil {
 		return opts, nil
 	}
+	seen := map[string]bool{}
 	for _, o := range octx.AllVectorIndexOption() {
 		oc, ok := o.(*antlrgen.VectorIndexOptionContext)
 		if !ok {
 			continue
 		}
-		switch {
-		case oc.EF_CONSTRUCTION() != nil:
-			opts[recordlayer.IndexOptionHNSWEfConstruction] = oc.GetEfConstruction().GetText()
-		case oc.CONNECTIVITY() != nil:
-			opts[recordlayer.IndexOptionHNSWM] = oc.GetConnectivity().GetText()
-		case oc.M_MAX() != nil:
-			opts[recordlayer.IndexOptionHNSWMMax] = oc.GetMMax().GetText()
-		case oc.M_MAX_0() != nil:
-			opts[recordlayer.IndexOptionHNSWMMax0] = oc.GetMMaxZero().GetText()
-		case oc.MAINTAIN_STATS_PROBABILITY() != nil:
-			opts[recordlayer.IndexOptionHNSWMaintainStatsProbability] = oc.GetMaintainStatsProbability().GetText()
-		case oc.METRIC() != nil:
-			metric, err := vectorMetricName(oc.GetMetric())
-			if err != nil {
-				return nil, api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
-					"vector index %q", indexName)
-			}
-			if method == "SPFRESH" {
-				opts[recordlayer.IndexOptionSPFreshMetric] = metric
-			} else {
-				opts[recordlayer.IndexOptionVectorMetric] = metric
-			}
-		case oc.RABITQ_NUM_EX_BITS() != nil:
-			// Both methods support it; each reads its own option namespace
-			// (the residual quantizer for SPFresh, the node codes for HNSW) —
-			// routing it to the hnsw key made the loud SPFRESH rejection
-			// below swallow a knob SPFresh actually has.
-			if method == "SPFRESH" {
-				opts[recordlayer.IndexOptionSPFreshRaBitQNumExBits] = oc.GetRabitQNumExBits().GetText()
-			} else {
-				opts[recordlayer.IndexOptionHNSWRaBitQNumExBits] = oc.GetRabitQNumExBits().GetText()
-			}
-		case oc.SAMPLE_VECTOR_STATS_PROBABILITY() != nil:
-			opts[recordlayer.IndexOptionHNSWSampleVectorStatsProbability] = oc.GetStatsProbability().GetText()
-		case oc.STATS_THRESHOLD() != nil:
-			opts[recordlayer.IndexOptionHNSWStatsThreshold] = oc.GetStatsThreshold().GetText()
-		case oc.USE_RABITQ() != nil:
-			opts[recordlayer.IndexOptionHNSWUseRaBitQ] = oc.GetUseRabitQ().GetText()
+		name := strings.ToLower(oc.GetOptionName().GetText())
+		spec, ok := vectorSQLOptions[name]
+		key := spec.key
+		if engine == "SPFRESH" {
+			key = spec.spfresh
 		}
-	}
-	if method == "SPFRESH" {
-		for k := range opts {
-			if strings.HasPrefix(k, "hnsw") {
-				return nil, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
-					"vector index %q: option %q is not supported with USING SPFRESH", indexName, k)
+		if !ok || key == "" {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported vector index option '%s'", name)
+		}
+		if engine != "SPFRESH" && spec.engines != "*" && spec.engines != engine {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"vector index option '%s' is not valid for the %s vector engine", name, engine)
+		}
+		if seen[name] {
+			return nil, api.NewErrorf(api.ErrCodeSyntaxError, "duplicate vector index option '%s'", name)
+		}
+		seen[name] = true
+		vc, _ := oc.GetOptionValue().(*antlrgen.VectorIndexOptionValueContext)
+		text := oc.GetOptionValue().GetText()
+		bad := api.NewErrorf(api.ErrCodeSyntaxError, "invalid value '%s' for vector index option '%s'", text, name)
+		switch spec.kind {
+		case vectorOptInt:
+			n, err := strconv.ParseInt(text, 10, 32)
+			if err != nil {
+				return nil, bad
 			}
+			opts[key] = strconv.FormatInt(n, 10)
+		case vectorOptDouble:
+			f, err := strconv.ParseFloat(text, 64)
+			if err != nil {
+				return nil, bad
+			}
+			opts[key] = values.JavaDoubleToString(f)
+		case vectorOptBool:
+			opts[key] = strconv.FormatBool(strings.EqualFold(text, "true"))
+		case vectorOptMetric:
+			if vc == nil || vc.HnswMetric() == nil {
+				return nil, bad
+			}
+			metric, err := vectorMetricName(vc.HnswMetric())
+			if err != nil {
+				return nil, api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate, "vector index %q", indexName)
+			}
+			opts[key] = metric
 		}
 	}
 	return opts, nil

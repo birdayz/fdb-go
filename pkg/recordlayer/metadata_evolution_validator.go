@@ -996,6 +996,23 @@ func validateSPFreshIndexOptions(oldIdx, newIdx *Index, changed map[string]bool)
 // Runtime-only options (concurrency limits, stats) are safe to change.
 // Matches Java's VectorIndexValidator.validateChangedOptions().
 func validateVectorIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) error {
+	// The engine never changes: it would reinterpret the stored layout.
+	oldEngine, err := VectorEngineOf(oldIdx)
+	if err != nil {
+		return err
+	}
+	newEngine, err := VectorEngineOf(newIdx)
+	if err != nil {
+		return err
+	}
+	if oldEngine != newEngine {
+		return &MetaDataError{Message: fmt.Sprintf("attempted to change immutable vector index option (index=%q, option=%q)",
+			newIdx.Name, IndexOptionVectorEngine)}
+	}
+	delete(changed, IndexOptionVectorEngine)
+	if newEngine != VectorEngineHNSW {
+		return nil
+	}
 	// Structural options: disallow EFFECTIVE value changes, as Java's
 	// VectorIndexOptionsHelper.disallowChange compares the parsed and defaulted
 	// values (VectorIndexOptionsHelper.java:120-147), so an option set to its
