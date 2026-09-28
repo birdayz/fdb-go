@@ -306,7 +306,7 @@ func withChildrenUnchecked(v Value, newChildren []Value) Value {
 		if len(newChildren) != 1 {
 			return v
 		}
-		return &AggregateValue{Op: vt.Op, Operand: newChildren[0]}
+		return vt.WithOperand(newChildren[0])
 	case *ScalarFunctionValue:
 		args := make([]Value, len(newChildren))
 		copy(args, newChildren)

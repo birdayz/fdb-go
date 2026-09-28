@@ -7915,7 +7915,7 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 			// established error surface.
 			return nil
 		}
-		spec := expressions.AggregateSpec{Function: fn, OperandName: call.Operand}
+		spec := expressions.AggregateSpec{Function: fn, OperandName: call.Operand, IgnoreNulls: call.IgnoreNulls, Limit: call.Limit}
 		// The resolved operand (set by upgradeAggregateOperands /
 		// buildCorrelatedScalar via resolver.WalkExpression) is the sole
 		// source of truth. COUNT(*) is represented by a nil operand, which is
@@ -7972,6 +7972,12 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		// are numeric). COUNT accepts any type (CountValue, not
 		// NumericAggregationValue) and is not gated. Unknown static type falls
 		// through to the runtime backstop.
+		if spec.Function == expressions.AggArrayAgg && spec.Operand != nil {
+			if ot := spec.Operand.Type(); ot == nil || ot.Code() == values.TypeCodeUnknown || ot.Code() == values.TypeCodeNull {
+				t.setTranslateErr(api.NewError(api.ErrCodeUnknownType, "Cannot resolve the argument type of ARRAY_AGG()"))
+				return nil
+			}
+		}
 		if spec.Function == expressions.AggBitmapConstructAgg && spec.Operand != nil {
 			// Java's operator map holds BITMAP_CONSTRUCT_AGG over INT and LONG
 			// only; any other operand has no operator.
@@ -8122,6 +8128,8 @@ func aggregateFunctionByName(name string) (expressions.AggregateFunction, bool) 
 		return expressions.AggMaxEver, true
 	case "BITMAP_CONSTRUCT_AGG":
 		return expressions.AggBitmapConstructAgg, true
+	case "ARRAY_AGG":
+		return expressions.AggArrayAgg, true
 	default:
 		return 0, false
 	}

@@ -16,6 +16,7 @@ import (
 	"fdb.dev/pkg/relational/core/metadata"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	queryddl "fdb.dev/pkg/relational/core/query/ddl"
+	"fdb.dev/pkg/relational/core/query/expr"
 	"github.com/antlr4-go/antlr/v4"
 )
 
@@ -672,9 +673,40 @@ func parseAsSelectIndexDefinition(def *antlrgen.IndexAsSelectDefinitionContext, 
 // drop the OVER and PERSIST a global SUM index whose semantics are unrelated to
 // the declaration.
 func rejectWindowedAggregate(node antlr.Tree) error {
+	if err := validateArrayAggCalls(node); err != nil {
+		return err
+	}
 	if windowedAggregateInTree(node) {
 		return api.NewError(api.ErrCodeUnsupportedQuery,
 			"windowed aggregate (aggregate function with an OVER clause) is not supported")
+	}
+	return nil
+}
+
+// validateArrayAggCalls applies Java's visitAggregateWindowedFunction checks to
+// every ARRAY_AGG call, in its order: aggregator, OVER, LIMIT, ORDER BY.
+func validateArrayAggCalls(node antlr.Tree) error {
+	if node == nil {
+		return nil
+	}
+	if awf, ok := node.(*antlrgen.AggregateWindowedFunctionContext); ok && awf.ARRAY_AGG() != nil {
+		if awf.DISTINCT() != nil {
+			return api.NewError(api.ErrCodeUnsupportedQuery, "aggregator DISTINCT is not supported")
+		}
+		if awf.OverClause() != nil {
+			return api.NewError(api.ErrCodeUnsupportedQuery, "an OVER clause is not supported for ARRAY_AGG()")
+		}
+		if _, _, err := expr.ArrayAggOptions(awf); err != nil {
+			return err
+		}
+		if awf.OrderByClause() != nil {
+			return api.NewError(api.ErrCodeUnsupportedQuery, "an ORDER BY clause is not supported for ARRAY_AGG()")
+		}
+	}
+	for i := 0; i < node.GetChildCount(); i++ {
+		if err := validateArrayAggCalls(node.GetChild(i)); err != nil {
+			return err
+		}
 	}
 	return nil
 }

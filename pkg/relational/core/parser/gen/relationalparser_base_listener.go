@@ -1521,6 +1521,18 @@ func (s *BaseRelationalParserListener) EnterAggregateWindowedFunction(ctx *Aggre
 func (s *BaseRelationalParserListener) ExitAggregateWindowedFunction(ctx *AggregateWindowedFunctionContext) {
 }
 
+// EnterNullTreatmentClause is called when production nullTreatmentClause is entered.
+func (s *BaseRelationalParserListener) EnterNullTreatmentClause(ctx *NullTreatmentClauseContext) {}
+
+// ExitNullTreatmentClause is called when production nullTreatmentClause is exited.
+func (s *BaseRelationalParserListener) ExitNullTreatmentClause(ctx *NullTreatmentClauseContext) {}
+
+// EnterAggregateLimitClause is called when production aggregateLimitClause is entered.
+func (s *BaseRelationalParserListener) EnterAggregateLimitClause(ctx *AggregateLimitClauseContext) {}
+
+// ExitAggregateLimitClause is called when production aggregateLimitClause is exited.
+func (s *BaseRelationalParserListener) ExitAggregateLimitClause(ctx *AggregateLimitClauseContext) {}
+
 // EnterNonAggregateWindowedFunction is called when production nonAggregateWindowedFunction is entered.
 func (s *BaseRelationalParserListener) EnterNonAggregateWindowedFunction(ctx *NonAggregateWindowedFunctionContext) {
 }

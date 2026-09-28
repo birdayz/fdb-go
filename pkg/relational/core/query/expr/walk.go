@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -393,6 +394,9 @@ func (r *Resolver) walkFunctionCall(fc antlrgen.IFunctionCallContext) (values.Va
 	if !ok {
 		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("AggregateWindowedFunction ctx %T", awf)}
 	}
+	if awfc.ARRAY_AGG() != nil {
+		return r.walkArrayAgg(awfc)
+	}
 	name, ok := aggregateFunctionName(awfc)
 	if !ok {
 		return nil, &UnsupportedExpressionShapeError{Shape: "AggregateWindowedFunction with unknown operator"}
@@ -418,6 +422,27 @@ func (r *Resolver) walkFunctionCall(fc antlrgen.IFunctionCallContext) (values.Va
 		args = []values.Value{v}
 	}
 	return r.ResolveFunctionCall(fcat, semantic.NewUnquoted(name), isStar, args)
+}
+
+// walkArrayAgg is ARRAY_AGG(expr ...); the call's shape was validated by the
+// statement pre-pass.
+func (r *Resolver) walkArrayAgg(awf *antlrgen.AggregateWindowedFunctionContext) (values.Value, error) {
+	argCtx, ok := awf.FunctionArg().(*antlrgen.FunctionArgContext)
+	if !ok || argCtx.Expression() == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "ARRAY_AGG without an argument"}
+	}
+	arg, err := r.walkExpressionInner(argCtx.Expression(), posOperand)
+	if err != nil {
+		return nil, err
+	}
+	ignore, limit, err := ArrayAggOptions(awf)
+	if err != nil {
+		return nil, err
+	}
+	if t := arg.Type(); t == nil || t.Code() == values.TypeCodeUnknown || t.Code() == values.TypeCodeNull {
+		return nil, api.NewError(api.ErrCodeUnknownType, "Cannot resolve the argument type of ARRAY_AGG()")
+	}
+	return values.NewArrayAggValue(arg, ignore, limit), nil
 }
 
 // walkSpecificFunction dispatches the SpecificFunction subtypes.
@@ -1432,6 +1457,23 @@ func primitiveTypeToValueType(pt antlrgen.IPrimitiveTypeContext) (values.Type, b
 // aggregateFunctionName reads which terminal is present on the
 // AggregateWindowedFunction context and returns the canonical
 // UPPER-case name.
+// ArrayAggOptions reads ARRAY_AGG's null treatment (default RESPECT) and
+// in-call LIMIT, a literal in [0, Integer.MAX_VALUE].
+func ArrayAggOptions(awf *antlrgen.AggregateWindowedFunctionContext) (ignoreNulls bool, limit int, err error) {
+	limit = values.ArrayAggNoLimit
+	if nt, ok := awf.NullTreatmentClause().(*antlrgen.NullTreatmentClauseContext); ok && nt != nil {
+		ignoreNulls = nt.IGNORE() != nil
+	}
+	if lc, ok := awf.AggregateLimitClause().(*antlrgen.AggregateLimitClauseContext); ok && lc != nil {
+		n, perr := strconv.ParseInt(lc.GetLimit().GetText(), 10, 64)
+		if perr != nil || n < 0 || n > math.MaxInt32 {
+			return false, 0, api.NewError(api.ErrCodeInvalidParameter, "the LIMIT of an aggregate must be a non-negative integer")
+		}
+		limit = int(n)
+	}
+	return ignoreNulls, limit, nil
+}
+
 func aggregateFunctionName(awf *antlrgen.AggregateWindowedFunctionContext) (string, bool) {
 	switch {
 	case awf.COUNT() != nil:

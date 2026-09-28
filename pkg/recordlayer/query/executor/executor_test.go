@@ -5060,7 +5060,7 @@ func TestAggregateContinuation_RoundTrip_SumCount(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 
-	gotInner, gotGroupKey, gotGS, err := decodeAggregateContinuation(encoded, len(aggs))
+	gotInner, gotGroupKey, gotGS, err := decodeAggregateContinuation(encoded, aggs, nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -5117,7 +5117,7 @@ func TestAggregateContinuation_NilGroupState(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 
-	gotInner, gotGroupKey, gotGS, err := decodeAggregateContinuation(encoded, 0)
+	gotInner, gotGroupKey, gotGS, err := decodeAggregateContinuation(encoded, make([]expressions.AggregateSpec, 0), nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -5154,7 +5154,7 @@ func TestAggregateContinuation_FloatMinMax(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 
-	_, _, gotGS, err := decodeAggregateContinuation(encoded, 1)
+	_, _, gotGS, err := decodeAggregateContinuation(encoded, make([]expressions.AggregateSpec, 1), nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -5205,7 +5205,7 @@ func TestAggregateContinuation_GroupKeyBytesSurvive_F4(t *testing.T) {
 		if err != nil {
 			t.Fatalf("encode %v: %v", tup, err)
 		}
-		_, gotKey, _, err := decodeAggregateContinuation(encoded, len(aggs))
+		_, gotKey, _, err := decodeAggregateContinuation(encoded, aggs, nil)
 		if err != nil {
 			t.Fatalf("decode %v: %v", tup, err)
 		}
@@ -5244,7 +5244,7 @@ func TestAggregateContinuation_TypesPreserved_F5(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	_, _, gotGS, err := decodeAggregateContinuation(encoded, len(aggs))
+	_, _, gotGS, err := decodeAggregateContinuation(encoded, aggs, nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -6604,5 +6604,42 @@ func TestExecuteExplode_ProtoDeclaredShape(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestAggregateContinuation_ArrayAgg(t *testing.T) {
+	t.Parallel()
+	aggs := []expressions.AggregateSpec{
+		{Function: expressions.AggArrayAgg, Operand: mustNamedTestField(t, "s", values.NullableString), Limit: values.ArrayAggNoLimit},
+		{Function: expressions.AggSum, Operand: mustNamedTestField(t, "amount", values.NullableLong)},
+		{Function: expressions.AggArrayAgg, Operand: mustNamedTestField(t, "n", values.NullableLong), IgnoreNulls: true, Limit: 3},
+	}
+	gs := &groupState{
+		count: 2, counts: []int64{0, 2, 0}, sums: []float64{0, 3, 0}, sumsI: []int64{0, 3, 0},
+		allInt: []bool{true, true, true}, mins: []any{nil, nil, nil}, maxs: []any{nil, nil, nil},
+		arrays: [][]any{{"a", "b"}, nil, nil},
+	}
+	encoded, err := encodeAggregateContinuation(nil, "k", nil, gs, aggs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, got, err := decodeAggregateContinuation(encoded, aggs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A group that saw rows but kept no element restores an empty, not absent, array.
+	if fmt.Sprint(got.arrays[0]) != "[a b]" || got.arrays[2] == nil || len(got.arrays[2]) != 0 {
+		t.Fatalf("arrays = %#v", got.arrays)
+	}
+	if got.sumsI[1] != 3 {
+		t.Fatalf("sumsI = %v", got.sumsI)
+	}
+	// A continuation written without ARRAY_AGG slots is not one for this plan.
+	legacy, err := encodeAggregateContinuation(nil, "k", nil, gs, aggs[1:2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := decodeAggregateContinuation(legacy, aggs, nil); err == nil {
+		t.Fatal("decoded a continuation missing its ARRAY_AGG slots")
 	}
 }

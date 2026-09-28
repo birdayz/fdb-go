@@ -712,6 +712,12 @@ type RelationalParserListener interface {
 	// EnterAggregateWindowedFunction is called when entering the aggregateWindowedFunction production.
 	EnterAggregateWindowedFunction(c *AggregateWindowedFunctionContext)
 
+	// EnterNullTreatmentClause is called when entering the nullTreatmentClause production.
+	EnterNullTreatmentClause(c *NullTreatmentClauseContext)
+
+	// EnterAggregateLimitClause is called when entering the aggregateLimitClause production.
+	EnterAggregateLimitClause(c *AggregateLimitClauseContext)
+
 	// EnterNonAggregateWindowedFunction is called when entering the nonAggregateWindowedFunction production.
 	EnterNonAggregateWindowedFunction(c *NonAggregateWindowedFunctionContext)
 
@@ -1548,6 +1554,12 @@ type RelationalParserListener interface {
 
 	// ExitAggregateWindowedFunction is called when exiting the aggregateWindowedFunction production.
 	ExitAggregateWindowedFunction(c *AggregateWindowedFunctionContext)
+
+	// ExitNullTreatmentClause is called when exiting the nullTreatmentClause production.
+	ExitNullTreatmentClause(c *NullTreatmentClauseContext)
+
+	// ExitAggregateLimitClause is called when exiting the aggregateLimitClause production.
+	ExitAggregateLimitClause(c *AggregateLimitClauseContext)
 
 	// ExitNonAggregateWindowedFunction is called when exiting the nonAggregateWindowedFunction production.
 	ExitNonAggregateWindowedFunction(c *NonAggregateWindowedFunctionContext)

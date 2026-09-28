@@ -2125,7 +2125,16 @@ func explainValueOrdinalsWithAliases(v Value, withOrdinals bool, aliases map[Cor
 		if cv.Op == AggCountStar {
 			return "COUNT(*)"
 		}
-		return cv.Op.Symbol() + "(" + explainValueOrdinalsWithAliases(cv.Operand, withOrdinals, aliases) + ")"
+		arg := explainValueOrdinalsWithAliases(cv.Operand, withOrdinals, aliases)
+		if cv.Op == AggArrayAgg {
+			if cv.IgnoreNulls {
+				arg += " IGNORE NULLS"
+			}
+			if cv.Limit != ArrayAggNoLimit {
+				arg += fmt.Sprintf(" LIMIT %d", cv.Limit)
+			}
+		}
+		return cv.Op.Symbol() + "(" + arg + ")"
 	case *quantifiedObjectValue:
 		if alias, ok := aliases[cv.correlation]; ok {
 			return alias
@@ -5831,7 +5840,12 @@ const (
 	// a BYTES bitmap. Go has no streaming accumulator for it; it reaches the
 	// graph so an index definition can be built from it.
 	AggBitmapConstructAgg
+	// AggArrayAgg is ARRAY_AGG(expr [IGNORE|RESPECT NULLS] [LIMIT n]): Java's ArrayAggValue.
+	AggArrayAgg
 )
+
+// ArrayAggNoLimit is Java's ArrayAggValue.NO_LIMIT.
+const ArrayAggNoLimit = -1
 
 // Symbol returns the canonical SQL function name.
 func (op AggregateOp) Symbol() string {
@@ -5850,6 +5864,8 @@ func (op AggregateOp) Symbol() string {
 		return "AVG"
 	case AggBitmapConstructAgg:
 		return "BITMAP_CONSTRUCT_AGG"
+	case AggArrayAgg:
+		return "ARRAY_AGG"
 	default:
 		return "?AGG?"
 	}
@@ -5868,6 +5884,22 @@ func (op AggregateOp) Symbol() string {
 type AggregateValue struct {
 	Op      AggregateOp
 	Operand Value // nil iff Op == AggCountStar
+	// IgnoreNulls and Limit are ARRAY_AGG's null treatment and in-call LIMIT
+	// (ArrayAggNoLimit when absent); zero for every other op.
+	IgnoreNulls bool
+	Limit       int
+}
+
+// NewArrayAggValue is ARRAY_AGG(operand) with its null treatment and limit.
+func NewArrayAggValue(operand Value, ignoreNulls bool, limit int) *AggregateValue {
+	return &AggregateValue{Op: AggArrayAgg, Operand: operand, IgnoreNulls: ignoreNulls, Limit: limit}
+}
+
+// WithOperand copies a with a new operand, keeping every option.
+func (a *AggregateValue) WithOperand(operand Value) *AggregateValue {
+	cp := *a
+	cp.Operand = operand
+	return &cp
 }
 
 // NewAggregateValue constructs an AggregateValue. Panics on
@@ -5912,6 +5944,16 @@ func (a *AggregateValue) Type() Type {
 		return NullableDouble
 	case AggBitmapConstructAgg:
 		return NullableBytes
+	case AggArrayAgg:
+		// Always nullable: an empty ungrouped input yields NULL.
+		elem := Type(UnknownType)
+		if a.Operand != nil && a.Operand.Type() != nil {
+			elem = a.Operand.Type()
+		}
+		if a.IgnoreNulls {
+			elem = WithNullability(elem, false)
+		}
+		return NewArrayType(true, elem)
 	case AggSum, AggMin, AggMax:
 		if a.Operand != nil {
 			ot := a.Operand.Type()

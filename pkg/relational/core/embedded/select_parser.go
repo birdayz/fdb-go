@@ -3,6 +3,7 @@ package embedded
 import (
 	"database/sql/driver"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer"
@@ -11,6 +12,7 @@ import (
 	"fdb.dev/pkg/relational/core/functions"
 	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
+	"fdb.dev/pkg/relational/core/query/expr"
 	"fdb.dev/pkg/relational/core/query/logical"
 	"fdb.dev/pkg/relational/core/query/semantic"
 	"fdb.dev/pkg/relational/core/query/semantic/rlcatalog"
@@ -373,6 +375,9 @@ func orderByLess(a, b driver.Value, ob orderByClause) (less, equal bool) {
 // aggSelectCol describes one column in a GROUP BY aggregate SELECT list.
 type aggSelectCol struct {
 	outName string // output column name
+	// aggIgnoreNulls and aggLimit are ARRAY_AGG's options.
+	aggIgnoreNulls bool
+	aggLimit       int
 	// selectOrdinal is the immutable one-based position of a visible item in
 	// the SQL SELECT list. Internal aggregates harvested from HAVING, ORDER BY,
 	// or a wrapping expression keep zero. Reclassification may reorder
@@ -455,6 +460,29 @@ func checkCountStar(e *antlrgen.SelectExpressionElementContext) bool {
 		return false
 	}
 	return awf.COUNT() != nil && awf.STAR() != nil
+}
+
+// selectElementArrayAggOptions reads ARRAY_AGG's options off a SELECT element
+// extractAggFunc accepted.
+func selectElementArrayAggOptions(e *antlrgen.SelectExpressionElementContext) (bool, int) {
+	pred, _ := e.Expression().(*antlrgen.PredicatedExpressionContext)
+	if pred == nil {
+		return false, values.ArrayAggNoLimit
+	}
+	fc, _ := pred.ExpressionAtom().(*antlrgen.FunctionCallExpressionAtomContext)
+	if fc == nil {
+		return false, values.ArrayAggNoLimit
+	}
+	agg, _ := fc.FunctionCall().(*antlrgen.AggregateFunctionCallContext)
+	if agg == nil {
+		return false, values.ArrayAggNoLimit
+	}
+	awf, _ := agg.AggregateWindowedFunction().(*antlrgen.AggregateWindowedFunctionContext)
+	if awf == nil {
+		return false, values.ArrayAggNoLimit
+	}
+	ignore, limit, _ := expr.ArrayAggOptions(awf)
+	return ignore, limit
 }
 
 // extractAggFunc attempts to parse an aggregate function (COUNT/SUM/MIN/MAX/AVG)
@@ -590,12 +618,26 @@ func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName,
 		// — no ALL/DISTINCT aggregator. Index-only, like the extremum family.
 		funcName = "BITMAP_CONSTRUCT_AGG"
 		resolveArg(awf.FunctionArg())
+	case awf.ARRAY_AGG() != nil:
+		funcName = "ARRAY_AGG"
+		resolveArg(awf.FunctionArg())
 	default:
 		return "", "", nil, "", false, false, "", "", nil, false
 	}
 	display := argCol
 	if display == "" && argExpr != nil {
 		display = aggOperandCanonicalText(argExpr)
+	}
+	if funcName == "ARRAY_AGG" {
+		// Distinct options are distinct aggregates, so they name apart.
+		if ignore, limit, err := expr.ArrayAggOptions(awf); err == nil {
+			if ignore {
+				display += " IGNORE NULLS"
+			}
+			if limit != values.ArrayAggNoLimit {
+				display += " LIMIT " + strconv.Itoa(limit)
+			}
+		}
 	}
 	switch {
 	case display == "":
@@ -1107,7 +1149,11 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 						return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 							"unsupported nested aggregate(s)")
 					}
-					aggCols = append(aggCols, aggSelectCol{outName: alias, outputAliased: selectOutputAlias(e) != "", selectOrdinal: selectOrdinal, aggFunc: fn, aggArg: argCol, aggExpr: argExpr, aggDistinct: isDistinct, aggArgQualified: argQual, aggArgBare: argBare, aggArgQualifier: argQualifier, aggArgSegs: argSegs, visible: true})
+					ac := aggSelectCol{outName: alias, outputAliased: selectOutputAlias(e) != "", selectOrdinal: selectOrdinal, aggFunc: fn, aggArg: argCol, aggExpr: argExpr, aggDistinct: isDistinct, aggArgQualified: argQual, aggArgBare: argBare, aggArgQualifier: argQualifier, aggArgSegs: argSegs, visible: true}
+					if fn == "ARRAY_AGG" {
+						ac.aggIgnoreNulls, ac.aggLimit = selectElementArrayAggOptions(e)
+					}
+					aggCols = append(aggCols, ac)
 				} else {
 					colName, alias, nameErr := selectExprToColumnName(e)
 					var expr antlrgen.IExpressionContext
@@ -2232,8 +2278,15 @@ func aggColFromAwf(awf *antlrgen.AggregateWindowedFunctionContext) (aggSelectCol
 	if !ok {
 		return aggSelectCol{}, false
 	}
+	var ignore bool
+	var limit int
+	if fn == "ARRAY_AGG" {
+		ignore, limit, _ = expr.ArrayAggOptions(awf)
+	}
 	return aggSelectCol{
 		outName:         outName,
+		aggIgnoreNulls:  ignore,
+		aggLimit:        limit,
 		aggFunc:         fn,
 		aggArg:          argCol,
 		aggExpr:         argExpr,

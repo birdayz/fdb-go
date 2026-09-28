@@ -266,6 +266,11 @@ func streamingAggregationOutputRecordType(
 				return nil, fmt.Errorf("RecordQueryStreamingAggregationPlan aggregate %d %s requires an operand", i, aggregate.Function)
 			}
 			resultType = values.WithNullability(aggregate.Operand.Type(), true)
+		case expressions.AggArrayAgg:
+			if aggregate.Operand == nil {
+				return nil, fmt.Errorf("RecordQueryStreamingAggregationPlan aggregate %d ARRAY_AGG requires an operand", i)
+			}
+			resultType = values.NewArrayAggValue(aggregate.Operand, aggregate.IgnoreNulls, aggregate.Limit).Type()
 		default:
 			return nil, fmt.Errorf("RecordQueryStreamingAggregationPlan aggregate %d has unsupported function %d", i, aggregate.Function)
 		}
@@ -296,7 +301,7 @@ func (p *RecordQueryStreamingAggregationPlan) GetChildren() []RecordQueryPlan {
 func (p *RecordQueryStreamingAggregationPlan) structuralKey() *structuralKey {
 	k := newStructuralKey().Values(p.groupingKeys)
 	for _, a := range p.aggregates {
-		k.Int(int(a.Function)).Value(a.Operand)
+		k.Int(int(a.Function)).Value(a.Operand).Bool(a.IgnoreNulls).Int(a.Limit)
 	}
 	return k
 }

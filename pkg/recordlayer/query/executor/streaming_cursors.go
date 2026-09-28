@@ -149,6 +149,8 @@ type groupState struct {
 	allInt  []bool
 	mins    []any
 	maxs    []any
+	// arrays holds each ARRAY_AGG's collected elements.
+	arrays [][]any
 }
 
 func newAggregateCursorWithOutputType(
@@ -706,6 +708,7 @@ func (c *aggregateCursor) newGroupState() *groupState {
 		allInt:  allIntInit,
 		mins:    make([]any, len(c.aggregates)),
 		maxs:    make([]any, len(c.aggregates)),
+		arrays:  make([][]any, len(c.aggregates)),
 	}
 }
 
@@ -733,6 +736,12 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 		val, err := agg.Operand.Evaluate(arg)
 		if err != nil {
 			return err
+		}
+		if agg.Function == expressions.AggArrayAgg {
+			if err := accumulateArrayAgg(gs, i, agg, val); err != nil {
+				return err
+			}
+			continue
 		}
 		if val == nil {
 			continue
@@ -798,6 +807,23 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 			gs.maxs[i] = aggMinMax(gs.maxs[i], val, false)
 		}
 	}
+	return nil
+}
+
+// accumulateArrayAgg is Java's ArrayAccumulator.accumulate: past the LIMIT a
+// row is consumed but dropped, IGNORE NULLS drops a NULL, and RESPECT NULLS
+// refuses one because an array element is never NULL.
+func accumulateArrayAgg(gs *groupState, i int, agg expressions.AggregateSpec, val any) error {
+	if agg.Limit != values.ArrayAggNoLimit && len(gs.arrays[i]) >= agg.Limit {
+		return nil
+	}
+	if val == nil {
+		if agg.IgnoreNulls {
+			return nil
+		}
+		return &values.NullArrayElementError{}
+	}
+	gs.arrays[i] = append(gs.arrays[i], val)
 	return nil
 }
 
@@ -970,6 +996,10 @@ func (c *aggregateCursor) finalizeGroup() QueryResult {
 			val = gs.mins[i]
 		case expressions.AggMax:
 			val = gs.maxs[i]
+		case expressions.AggArrayAgg:
+			// A group that saw rows yields an array, empty if every row was
+			// dropped.
+			val = append([]any{}, gs.arrays[i]...)
 		case expressions.AggAvg:
 			if gs.counts[i] > 0 {
 				if gs.allInt[i] {

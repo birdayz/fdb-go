@@ -732,6 +732,10 @@ type AggregateCall struct {
 	Operand  string // canonical operand text; "*" for COUNT(*)
 	Star     bool   // COUNT(*) (or COUNT(<non-null const>) collapsed to it)
 	Distinct bool
+	// IgnoreNulls and Limit are ARRAY_AGG's options (values.ArrayAggNoLimit
+	// when uncapped).
+	IgnoreNulls bool
+	Limit       int
 	// BareColumn: the operand is a single column reference PER THE PARSE
 	// TREE — a lazy FieldValue read of Operand is well-defined without
 	// catalog resolution. False for computed/expression operands, which

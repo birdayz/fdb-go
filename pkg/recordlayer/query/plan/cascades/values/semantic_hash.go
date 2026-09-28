@@ -135,7 +135,7 @@ func writeSemanticHash(h io.Writer, v Value) {
 	case *ArithmeticValue:
 		_, _ = fmt.Fprintf(h, "arith:%v", t.Op)
 	case *AggregateValue:
-		_, _ = fmt.Fprintf(h, "agg:%v", t.Op)
+		_, _ = fmt.Fprintf(h, "agg:%v:%v:%d", t.Op, t.IgnoreNulls, t.Limit)
 	case *AndOrValue:
 		_, _ = fmt.Fprintf(h, "andor:%v", t.Op)
 	case *IndexOnlyAggregateValue:

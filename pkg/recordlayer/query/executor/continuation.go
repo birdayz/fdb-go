@@ -794,6 +794,24 @@ func encodeAggregateContinuation(
 				State: &gen.OneOfTypedState_BytesState{BytesState: maxBytes},
 			})
 		}
+		// ARRAY_AGG elements ride one trailing slot per ARRAY_AGG, after the
+		// fixed layout, so a continuation without one is unchanged.
+		for i, agg := range aggregates {
+			if agg.Function != expressions.AggArrayAgg {
+				continue
+			}
+			elems := gs.arrays[i]
+			if elems == nil {
+				elems = []any{}
+			}
+			b, err := appendContValue(nil, elems)
+			if err != nil {
+				return nil, fmt.Errorf("failed to encode ARRAY_AGG state for aggregate continuation: %w", err)
+			}
+			as.State = append(as.State, &gen.OneOfTypedState{
+				State: &gen.OneOfTypedState_BytesState{BytesState: b},
+			})
+		}
 		states = append(states, as)
 
 		gkBytes, err := encodeAggGroupKey(groupKey, keyVals)
@@ -811,7 +829,7 @@ func encodeAggregateContinuation(
 
 // decodeAggregateContinuation deserializes the AggregateCursorContinuation
 // proto. Returns the inner continuation and the partial group state.
-func decodeAggregateContinuation(data []byte, numAggs int) (
+func decodeAggregateContinuation(data []byte, aggregates []expressions.AggregateSpec, resolve protoDescriptorResolver) (
 	innerContinuation []byte,
 	groupKey string,
 	gs *groupState,
@@ -873,10 +891,17 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 	// rejects external continuations with ErrCodeUnsupportedOperation, and the
 	// record-layer executor is Go's own engine — but correct-or-loud, never
 	// silent.)
-	if want := 1 + 6*numAggs; len(as.State) != want {
+	numAggs := len(aggregates)
+	numArrays := 0
+	for _, agg := range aggregates {
+		if agg.Function == expressions.AggArrayAgg {
+			numArrays++
+		}
+	}
+	if want := 1 + 6*numAggs + numArrays; len(as.State) != want {
 		return nil, "", nil, fmt.Errorf(
-			"aggregate continuation: accumulator has %d typed states, expected %d (1 + 6*%d aggregates) — not a Go-format continuation",
-			len(as.State), want, numAggs)
+			"aggregate continuation: accumulator has %d typed states, expected %d (1 + 6*%d aggregates + %d ARRAY_AGG) — not a Go-format continuation",
+			len(as.State), want, numAggs, numArrays)
 	}
 
 	gs = &groupState{
@@ -887,6 +912,7 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 		allInt:  make([]bool, numAggs),
 		mins:    make([]any, numAggs),
 		maxs:    make([]any, numAggs),
+		arrays:  make([][]any, numAggs),
 	}
 
 	// Positional decode, correct-or-loud: each slot MUST carry the type the
@@ -959,6 +985,29 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 		if gs.maxs[i], err = extremum("MAX"); err != nil {
 			return nil, "", nil, err
 		}
+	}
+	for i, agg := range aggregates {
+		if agg.Function != expressions.AggArrayAgg {
+			continue
+		}
+		v, ok := as.State[idx].State.(*gen.OneOfTypedState_BytesState)
+		if !ok {
+			return nil, "", nil, fmt.Errorf("aggregate continuation: ARRAY_AGG slot %d is not bytes — not a Go-format continuation", idx)
+		}
+		idx++
+		val, _, dErr := readContValue(v.BytesState)
+		if dErr != nil {
+			return nil, "", nil, fmt.Errorf("failed to decode ARRAY_AGG state in aggregate continuation: %w", dErr)
+		}
+		elems, ok := val.([]any)
+		if !ok {
+			return nil, "", nil, fmt.Errorf("aggregate continuation: ARRAY_AGG state is %T, want a list", val)
+		}
+		resolved, rErr := resolvePendingProtoValues(elems, resolve)
+		if rErr != nil {
+			return nil, "", nil, fmt.Errorf("failed to rebuild ARRAY_AGG state in aggregate continuation: %w", rErr)
+		}
+		gs.arrays[i] = resolved.([]any)
 	}
 
 	return innerContinuation, groupKey, gs, nil

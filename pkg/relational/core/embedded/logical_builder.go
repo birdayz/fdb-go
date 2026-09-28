@@ -94,8 +94,10 @@ func logicalAggregateCalls(
 			// The SEGMENTS behind arg, reconciled downstream against the
 			// rendering above (`strip` may have removed a qualifier prefix, in
 			// which case the triple no longer spells what Operand carries).
-			Bare:      ac.aggArgBare,
-			Qualifier: ac.aggArgQualifier,
+			Bare:        ac.aggArgBare,
+			Qualifier:   ac.aggArgQualifier,
+			IgnoreNulls: ac.aggIgnoreNulls,
+			Limit:       ac.aggLimit,
 		}
 		if countStar && call.Func == "COUNT" && call.Star && !call.Distinct {
 			continue

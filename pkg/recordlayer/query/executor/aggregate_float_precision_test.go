@@ -58,7 +58,7 @@ func TestAggregateFloatPrecision(t *testing.T) {
 							if err != nil {
 								t.Fatal(err)
 							}
-							_, key, state, err := decodeAggregateContinuation(encoded, len(c.aggregates))
+							_, key, state, err := decodeAggregateContinuation(encoded, c.aggregates, nil)
 							if err != nil {
 								t.Fatal(err)
 							}

@@ -86,7 +86,7 @@ func MapFieldValues(v Value, transform func(*fieldValue) Value) Value {
 		if len(newChildren) > 0 {
 			operand = newChildren[0]
 		}
-		return &AggregateValue{Op: cv.Op, Operand: operand}
+		return cv.WithOperand(operand)
 	case *RecordConstructorValue:
 		fields := make([]RecordConstructorField, len(cv.Fields))
 		for i, f := range cv.Fields {
@@ -406,7 +406,7 @@ func EqualsWithoutChildren(a, b Value) bool {
 		return ok && av.FuncName == bv.FuncName && len(av.Args) == len(bv.Args)
 	case *AggregateValue:
 		bv, ok := b.(*AggregateValue)
-		return ok && av.Op == bv.Op
+		return ok && av.Op == bv.Op && av.IgnoreNulls == bv.IgnoreNulls && av.Limit == bv.Limit
 	case *RecordConstructorValue:
 		bv, ok := b.(*RecordConstructorValue)
 		if !ok || len(av.Fields) != len(bv.Fields) {

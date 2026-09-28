@@ -1116,12 +1116,27 @@ aggregateWindowedFunction
         BIT_AND | BIT_OR | BIT_XOR | STD | STDDEV | STDDEV_POP
         | STDDEV_SAMP | VAR_POP | VAR_SAMP | VARIANCE
       ) '(' aggregator=ALL? functionArg ')' overClause?
+    | functionName=ARRAY_AGG '('
+        aggregator=(ALL | DISTINCT)?
+        functionArg
+        nullTreatmentClause?
+        orderByClause?
+        aggregateLimitClause?
+      ')' overClause?
     | functionName=GROUP_CONCAT '('
         aggregator=DISTINCT? functionArgs
         (ORDER BY
           orderByExpression (',' orderByExpression)*
         )? (SEPARATOR separator=STRING_LITERAL)?
       ')'
+    ;
+
+nullTreatmentClause
+    : nullTreatment=(IGNORE | RESPECT) NULLS
+    ;
+
+aggregateLimitClause
+    : LIMIT limit=decimalLiteral
     ;
 
 nonAggregateWindowedFunction
@@ -1301,6 +1316,7 @@ intervalTypeBase
 
 keywordsCanBeId
     : ACCOUNT | ACTION | ADMIN | AFTER | AGGREGATE | ALGORITHM | ANY
+    | ARRAY_AGG
     | AT | AUDIT_ADMIN | AUTHORS | AUTOCOMMIT | AUTOEXTEND_SIZE
     | AUTO_INCREMENT | AVG | AVG_ROW_LENGTH | BACKUP_ADMIN | BEGIN | BINLOG | BINLOG_ADMIN | BINLOG_ENCRYPTION_ADMIN | BIT | BIT_AND | BIT_OR | BIT_XOR
     | BLOCK | BOOL | BTREE | CACHE | CASCADED | CHAIN | CHANGED
@@ -1347,6 +1363,7 @@ keywordsCanBeId
     | RELAY | RELAYLOG | RELAY_LOG_FILE | RELAY_LOG_POS | REMOVE
     | REORGANIZE | REPAIR 
     | RESET
+    | RESPECT
     | RESOURCE_GROUP_ADMIN | RESOURCE_GROUP_USER | RESUME
     | RETURNED_SQLSTATE | RETURNS | ROLE | ROLE_ADMIN | ROLLBACK | ROLLUP | ROTATE | ROW | ROWS
     | ROW_FORMAT | RTREE | SAVEPOINT | SCHEDULE | SCHEMA | SCHEMAS | SCHEMA_NAME | SECURITY | SECONDARY_ENGINE_ATTRIBUTE | SERIAL | SERVER

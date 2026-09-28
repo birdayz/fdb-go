@@ -4406,3 +4406,80 @@ func TestIntegration_LoadByKeys_Resume(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// An ARRAY_AGG group straddling scan-limited pages resumes with its collected
+// elements.
+func TestIntegration_ArrayAggStraddle(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(50)},
+		&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(50)},
+		&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(50)},
+		&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(150)},
+		&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(150)},
+	)
+	var got []string
+	var continuation []byte
+	pages := 0
+	for {
+		pages++
+		if pages > 50 {
+			t.Fatal("resume loop did not converge")
+		}
+		exhausted, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			s, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+				SetSubspace(testSubspace(t)).Open()
+			if err != nil {
+				return nil, err
+			}
+			scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+			plan := mustExecutorConstruct(plans.NewRecordQueryStreamingAggregationPlan(scan,
+				[]values.Value{integrationField(t, scan, 2)},
+				[]expressions.AggregateSpec{{
+					Function: expressions.AggArrayAgg, Operand: integrationField(t, scan, 0), Limit: values.ArrayAggNoLimit,
+				}}))
+			props := recordlayer.DefaultExecuteProperties().WithScannedRecordsLimit(2)
+			cursor, err := ExecutePlan(ctx, plan, s, EmptyEvaluationContext(), continuation, props)
+			if err != nil {
+				return nil, err
+			}
+			defer cursor.Close()
+			for {
+				res, oerr := cursor.OnNext(ctx)
+				if oerr != nil {
+					return nil, oerr
+				}
+				if res.HasNext() {
+					k, _ := res.GetValue().Positional.Get(0)
+					v, _ := res.GetValue().Positional.Get(1)
+					got = append(got, fmt.Sprint(k, "=", v))
+					continue
+				}
+				if res.GetNoNextReason().IsSourceExhausted() {
+					return true, nil
+				}
+				cb, cerr := res.GetContinuation().ToBytes()
+				if cerr != nil {
+					return nil, cerr
+				}
+				continuation = cb
+				return false, nil
+			}
+		})
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		if exhausted.(bool) {
+			break
+		}
+	}
+	if pages < 3 {
+		t.Fatalf("finished in %d pages; the scan limit did not force a straddle", pages)
+	}
+	if fmt.Sprint(got) != "[50=[1 2 3] 150=[4 5]]" {
+		t.Fatalf("ARRAY_AGG across pages = %v", got)
+	}
+}

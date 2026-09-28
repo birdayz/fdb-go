@@ -947,6 +947,14 @@ func (v *BaseRelationalParserVisitor) VisitAggregateWindowedFunction(ctx *Aggreg
 	return v.VisitChildren(ctx)
 }
 
+func (v *BaseRelationalParserVisitor) VisitNullTreatmentClause(ctx *NullTreatmentClauseContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
+func (v *BaseRelationalParserVisitor) VisitAggregateLimitClause(ctx *AggregateLimitClauseContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
 func (v *BaseRelationalParserVisitor) VisitNonAggregateWindowedFunction(ctx *NonAggregateWindowedFunctionContext) interface{} {
 	return v.VisitChildren(ctx)
 }

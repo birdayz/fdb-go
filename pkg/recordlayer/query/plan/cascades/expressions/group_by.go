@@ -25,6 +25,8 @@ const (
 	AggMaxEver
 	// AggBitmapConstructAgg is Java's NumericAggregationValue.BitmapConstructAgg.
 	AggBitmapConstructAgg
+	// AggArrayAgg is Java's ArrayAggValue.
+	AggArrayAgg
 )
 
 func (f AggregateFunction) String() string {
@@ -45,6 +47,8 @@ func (f AggregateFunction) String() string {
 		return "MAX_EVER"
 	case AggBitmapConstructAgg:
 		return "BITMAP_CONSTRUCT_AGG"
+	case AggArrayAgg:
+		return "ARRAY_AGG"
 	default:
 		return "UNKNOWN"
 	}
@@ -57,7 +61,7 @@ func (f AggregateFunction) String() string {
 // implementation, so it is answered from an index or not at all.
 func (f AggregateFunction) HasStreamingAccumulator() bool {
 	switch f {
-	case AggCount, AggSum, AggMin, AggMax, AggAvg:
+	case AggCount, AggSum, AggMin, AggMax, AggAvg, AggArrayAgg:
 		return true
 	default:
 		return false
@@ -106,6 +110,10 @@ type AggregateSpec struct {
 	// per-row type derivation. TypeCodeUnknown retains the legacy runtime-carrier
 	// dispatch with int64 overflow checks; resolved SQL operands state their code.
 	OperandIntType values.TypeCode
+	// IgnoreNulls and Limit are ARRAY_AGG's options (values.ArrayAggNoLimit
+	// when uncapped).
+	IgnoreNulls bool
+	Limit       int
 }
 
 // IsCountStar reports whether agg is a COUNT(*)-equivalent aggregate: COUNT with
@@ -270,6 +278,16 @@ func groupByAggregateResultValue(aggregate AggregateSpec) (values.Value, error) 
 		}
 		op = values.AggBitmapConstructAgg
 		resultType = values.NullableBytes
+	case AggArrayAgg:
+		if aggregate.Operand == nil {
+			return nil, fmt.Errorf("%s requires an operand", aggregate.Function)
+		}
+		av := values.NewArrayAggValue(aggregate.Operand, aggregate.IgnoreNulls, aggregate.Limit)
+		exactResult, err := snapshotExpressionResultType(aggregate.Function.String(), av.Type())
+		if err != nil {
+			return nil, err
+		}
+		return values.NewDerivedValueWithType([]values.Value{av}, exactResult.Type()), nil
 	default:
 		return nil, fmt.Errorf("unsupported aggregate function %d", aggregate.Function)
 	}
@@ -397,6 +415,8 @@ func AggregateResultColumnName(agg AggregateSpec) string {
 		return fmt.Sprintf("MAX(%s)", opName)
 	case AggAvg:
 		return fmt.Sprintf("AVG(%s)", opName)
+	case AggArrayAgg:
+		return fmt.Sprintf("ARRAY_AGG(%s)", opName)
 	default:
 		return fmt.Sprintf("AGG(%s)", opName)
 	}
@@ -486,7 +506,7 @@ func (e *GroupByExpression) EqualsWithoutChildren(other RelationalExpression, al
 		}
 	}
 	for i, a := range e.aggregates {
-		if a.Function != o.aggregates[i].Function {
+		if a.Function != o.aggregates[i].Function || a.IgnoreNulls != o.aggregates[i].IgnoreNulls || a.Limit != o.aggregates[i].Limit {
 			return false
 		}
 		if !values.SemanticEqualsUnderAliasMap(a.Operand, o.aggregates[i].Operand, vm) {
@@ -506,7 +526,7 @@ func (e *GroupByExpression) HashCodeWithoutChildren() uint64 {
 		h.Write([]byte("|"))
 	}
 	for _, a := range e.aggregates {
-		binary.LittleEndian.PutUint64(b[:], uint64(a.Function))
+		binary.LittleEndian.PutUint64(b[:], uint64(a.Function)|uint64(uint32(a.Limit))<<16)
 		h.Write(b[:])
 		binary.LittleEndian.PutUint64(b[:], values.SemanticHashCode(a.Operand))
 		h.Write(b[:])

@@ -3778,7 +3778,11 @@ func executeAggregation(
 		var priorState *groupState
 
 		if aggCont != nil {
-			ic, gk, gs, decErr := decodeAggregateContinuation(aggCont, len(aggregates))
+			var resolve protoDescriptorResolver
+			if store != nil {
+				resolve = metadataMessageResolver(store.GetRecordMetaData())
+			}
+			ic, gk, gs, decErr := decodeAggregateContinuation(aggCont, aggregates, resolve)
 			if decErr != nil {
 				return nil, fmt.Errorf("invalid aggregate continuation: %w", decErr)
 			}

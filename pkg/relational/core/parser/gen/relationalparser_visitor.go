@@ -712,6 +712,12 @@ type RelationalParserVisitor interface {
 	// Visit a parse tree produced by RelationalParser#aggregateWindowedFunction.
 	VisitAggregateWindowedFunction(ctx *AggregateWindowedFunctionContext) interface{}
 
+	// Visit a parse tree produced by RelationalParser#nullTreatmentClause.
+	VisitNullTreatmentClause(ctx *NullTreatmentClauseContext) interface{}
+
+	// Visit a parse tree produced by RelationalParser#aggregateLimitClause.
+	VisitAggregateLimitClause(ctx *AggregateLimitClauseContext) interface{}
+
 	// Visit a parse tree produced by RelationalParser#nonAggregateWindowedFunction.
 	VisitNonAggregateWindowedFunction(ctx *NonAggregateWindowedFunctionContext) interface{}
 

@@ -4149,6 +4149,8 @@ func aggregateCallDraftValue(call logical.AggregateCall, operand values.Value) v
 		op = values.AggMax
 	case "AVG":
 		op = values.AggAvg
+	case "ARRAY_AGG":
+		return values.NewArrayAggValue(operand, call.IgnoreNulls, call.Limit)
 	default:
 		return nil
 	}
