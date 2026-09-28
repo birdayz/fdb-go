@@ -318,6 +318,9 @@ func (r *Resolver) walkPreparedParameter(pp antlrgen.IPreparedStatementParameter
 	if !ok {
 		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("PreparedStatementParameter ctx %T", pp)}
 	}
+	if bound, ok := BoundParameter(ppc.GetStart()); ok {
+		return bound, nil
+	}
 	if ppc.NAMED_PARAMETER() != nil {
 		// Lexer rule: NAMED_PARAMETER: [?$][A-Za-z][A-Za-z0-9_/]*
 		// Strip the leading sigil (`?` or `$`). Both surface forms
@@ -1991,6 +1994,44 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 			if fcn := ilc.FullColumnName(); fcn != nil {
 				return r.resolveInAgainstColumnList(p, atom, fcn)
 			}
+			// `x IN ?`: the parameter is bound to an ARRAY, whose elements are
+			// the list.
+			if pp, ok := ilc.PreparedStatementParameter().(*antlrgen.PreparedStatementParameterContext); ok && pp != nil {
+				if bound, ok := BoundParameter(pp.GetStart()); ok {
+					arr, ok := bound.(*values.ConstantValue)
+					elems, isSlice := any(nil), false
+					if ok {
+						elems, isSlice = arr.Value.([]any)
+					}
+					if !isSlice {
+						return nil, api.NewError(api.ErrCodeInvalidArgumentForFunction,
+							"IN ? requires an ARRAY parameter")
+					}
+					lhsVal, err := r.walkOperand(atom)
+					if err != nil {
+						return nil, err
+					}
+					elemType := values.TypeUnknown
+					if at, ok := arr.Typ.(*values.ArrayType); ok && at.ElementType != nil {
+						elemType = values.WithNullability(at.ElementType, false)
+					}
+					list := make([]values.Value, 0, len(elems.([]any)))
+					for _, el := range elems.([]any) {
+						if el == nil {
+							return nil, errNullArrayElement()
+						}
+						list = append(list, &values.ConstantValue{Value: el, Typ: elemType})
+					}
+					inPred, err := r.ResolveIn(lhsVal, list)
+					if err != nil {
+						return nil, err
+					}
+					if p.NOT() != nil {
+						return r.ResolveNot(inPred), nil
+					}
+					return inPred, nil
+				}
+			}
 			return nil, &InColumnRefError{}
 		}
 		ec, ok := exprs.(*antlrgen.ExpressionsContext)
@@ -2016,11 +2057,14 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 			// died with 0AF00 "a comparison operand of complex type (record) is
 			// not supported" where Java answers the same rows as `IN (10, 20)`.
 			v = functions.FlattenRecordWithOneField(v)
-			if _, isNull := v.(*values.NullValue); isNull {
+			// A bare NULL item is Java's AstNormalizer rejection (42809); any
+			// other NULL item — parenthesised, or a bound NULL — is an ARRAY
+			// element that cannot be NULL (0A000).
+			if IsBareNullLiteral(e) {
 				return nil, &InListNullError{}
 			}
-			if cv, isCon := v.(*values.ConstantValue); isCon && cv.Value == nil {
-				return nil, &InListNullError{}
+			if isNullConstant(v) {
+				return nil, errNullArrayElement()
 			}
 			list = append(list, v)
 		}
@@ -2370,6 +2414,38 @@ func stripStringLiteral(text string) string {
 		return strings.ReplaceAll(text[1:len(text)-1], "''", "'")
 	}
 	return text
+}
+
+// IsBareNullLiteral is Java's AstNormalizer.isNullLiteral: it descends through
+// single-child nodes only, so a NULL token is found through the
+// expression/predicate/atom chain above it, while `(NULL)` (a three-child
+// node) and `CAST(NULL AS BIGINT)` are not bare.
+func IsBareNullLiteral(tree antlr.Tree) bool {
+	current := tree
+	for {
+		if _, ok := current.(*antlrgen.NullLiteralContext); ok {
+			return true
+		}
+		if current == nil || current.GetChildCount() != 1 {
+			return false
+		}
+		current = current.GetChild(0)
+	}
+}
+
+func isNullConstant(v values.Value) bool {
+	if _, isNull := v.(*values.NullValue); isNull {
+		return true
+	}
+	cv, isCon := v.(*values.ConstantValue)
+	return isCon && cv.Value == nil
+}
+
+// errNullArrayElement is Java's SemanticException for a NULL array element
+// (the IN list is an array).
+func errNullArrayElement() error {
+	return api.NewError(api.ErrCodeUnsupportedOperation,
+		"The action is currently unsupported An ARRAY value cannot have NULL elements")
 }
 
 // InListNullError signals that a NULL literal was found in an IN list.

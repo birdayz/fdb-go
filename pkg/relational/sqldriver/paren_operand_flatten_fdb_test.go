@@ -44,7 +44,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"testing"
 
 	"fdb.dev/pkg/relational/api"
@@ -361,11 +360,11 @@ func TestFDB_ParenthesizedOperandDoesNotOverFlatten(t *testing.T) {
 			"a parenthesized NULL slipped past the IN-list NULL rejection. The item flatten runs "+
 				"BEFORE that check for exactly this reason — reorder them and `(NULL)` arrives as a "+
 				"one-field record, is not recognised as a NullValue, and reaches the comparison")
-		g.Expect(strings.ToUpper(parErr.Error())).To(gomega.ContainSubstring(
-			strings.ToUpper(parenFlattenErrCode(bareErr))),
-			"the parenthesized NULL is rejected, but not with the rejection the bare spelling "+
-				"gets — the two spellings must fail the same way\n  bare: %v\n  paren: %v",
-			bareErr, parErr)
+		// Java measured: a bare NULL is AstNormalizer's 42809, a parenthesised
+		// one is not bare and fails as a NULL ARRAY element, 0A000.
+		g.Expect(parenFlattenErrCode(bareErr)).To(gomega.Equal("42809"))
+		g.Expect(parenFlattenErrCode(parErr)).To(gomega.Equal("0A000"),
+			"the parenthesized NULL must be rejected as a NULL array element\n  paren: %v", parErr)
 	})
 }
 

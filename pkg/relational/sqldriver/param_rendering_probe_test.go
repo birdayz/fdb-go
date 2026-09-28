@@ -1,6 +1,6 @@
 package sqldriver_test
 
-// Probes substituteParams rendering for every supported param type (the path
+// Probes parameter binding for every supported param type (the path
 // where a []byte param was mis-rendered as a string). time.Time→DATE/TIMESTAMP,
 // nil→NULL, bool, MaxInt64, and special float64 values must each render to a SQL
 // literal that round-trips to the same value.

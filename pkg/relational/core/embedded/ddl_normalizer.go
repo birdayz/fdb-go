@@ -5,6 +5,7 @@ import (
 
 	"fdb.dev/pkg/relational/api"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
+	"fdb.dev/pkg/relational/core/query/expr"
 )
 
 // rejectNormalizerFaults is the part of Java's AstNormalizer that refuses a
@@ -72,26 +73,9 @@ func rejectInListFaults(in antlrgen.IInListContext) error {
 		return nil
 	}
 	for _, item := range exprs.AllExpression() {
-		if isBareNullLiteral(item) {
+		if expr.IsBareNullLiteral(item) {
 			return api.NewError(api.ErrCodeWrongObjectType, "NULL values are not allowed in the IN list")
 		}
 	}
 	return nil
-}
-
-// isBareNullLiteral is Java's isNullLiteral (AstNormalizer.java): it descends
-// through single-child nodes only, so a NULL that is merely wrapped is found,
-// while an expression holding a NULL somewhere below (`CAST(NULL AS BIGINT)`,
-// `NULL + 1`) is not.
-func isBareNullLiteral(tree antlr.Tree) bool {
-	current := tree
-	for {
-		if _, ok := current.(*antlrgen.NullLiteralContext); ok {
-			return true
-		}
-		if current.GetChildCount() != 1 {
-			return false
-		}
-		current = current.GetChild(0)
-	}
 }

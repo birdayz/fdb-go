@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "expr.go",
         "float32_bounds.go",
+        "parameters.go",
         "resolver_iface.go",
         "walk.go",
     ],

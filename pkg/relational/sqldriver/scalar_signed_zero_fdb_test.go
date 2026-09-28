@@ -313,15 +313,21 @@ func TestFDB_ScalarMathSignedZero(t *testing.T) {
 			}
 		}
 	})
-	t.Run("integer order key retains position interpretation", func(t *testing.T) {
+	t.Run("bound order key is a constant, not a position", func(t *testing.T) {
 		t.Parallel()
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
-		var got any
-		err := db.QueryRowContext(ctx, "SELECT id FROM t ORDER BY ?", int64(2)).Scan(&got)
-		var sqlErr *api.Error
-		if !errors.As(err, &sqlErr) || sqlErr.Code != api.ErrCodeInvalidParameter || sqlErr.Message != "ORDER BY position 2 is out of range: SELECT list has 1 entries" {
-			t.Errorf("integer ORDER BY 2 = (%v, %v), want positional 22023", got, err)
+		// A bound parameter is a constant sort key (every row ties), as a
+		// constant literal key is; only an integer LITERAL is a position.
+		rows, err := db.QueryContext(ctx, "SELECT id FROM t ORDER BY ?", int64(2))
+		if err != nil {
+			t.Fatalf("ORDER BY ? bound to 2: %v", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("ORDER BY ? bound to 2: %v", err)
 		}
 	})
 	t.Run("sequential constants", func(t *testing.T) {

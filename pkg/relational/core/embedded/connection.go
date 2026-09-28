@@ -11,7 +11,6 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
-	"fmt"
 	"log/slog"
 	"runtime/debug"
 	"strings"
@@ -49,6 +48,9 @@ import (
 //	Explicit transaction: BeginTx opens an FDB transaction; all statements in
 //	the transaction share it. Commit/Rollback close it.
 type EmbeddedConnection struct {
+	// releaseParams undoes the current statement's parameter bindings.
+	releaseParams []func()
+
 	// sess carries the durable resource handles + session identifiers
 	// (FDB database, catalog, keyspace, metadata factory, current /
 	// default schema + database path). Extracted to the core/session
@@ -670,13 +672,10 @@ func (c *EmbeddedConnection) ExecContext(ctx context.Context, sql string, args [
 	}
 	defer c.beginStatement()()
 
-	substituted, err := substituteParams(sql, args)
-	if err != nil {
-		return nil, err
-	}
-
+	defer c.releaseStatementParams()
 	gen := newCascadesGenerator(c)
-	plan, err := gen.Plan(ctx, substituted)
+	gen.args = args
+	plan, err := gen.Plan(ctx, sql)
 	if err != nil {
 		return nil, translateFDBError(err)
 	}
@@ -705,15 +704,13 @@ func (c *EmbeddedConnection) QueryContext(ctx context.Context, sql string, args 
 		return nil, driver.ErrBadConn
 	}
 	defer c.beginStatement()()
-	substituted, err := substituteParams(sql, args)
-	if err != nil {
-		return nil, err
-	}
+	defer c.releaseStatementParams()
 	if cerr := c.ensureCatalogInit(ctx); cerr != nil {
 		return nil, cerr
 	}
 	gen := newCascadesGenerator(c)
-	plan, err := gen.Plan(ctx, substituted)
+	gen.args = args
+	plan, err := gen.Plan(ctx, sql)
 	if err != nil {
 		return nil, translateFDBError(err)
 	}
@@ -1031,27 +1028,19 @@ func (c *EmbeddedConnection) execTransactionStatement(txn antlrgen.ITransactionS
 	}
 }
 
-// CheckNamedValue implements driver.NamedValueChecker. Converts custom
-// Go types to driver-compatible values before they reach substituteParams.
-// Accepts: uuid.UUID → string (canonical 36-char form).
-// All standard types (int64, float64, string, bool, []byte, time.Time)
-// pass through unchanged, and so does a float32: it is JDBC's setFloat, a
-// FLOAT, which database/sql's default converter would widen to a DOUBLE that
-// no FLOAT column admits (PromoteValue has no DOUBLE_TO_FLOAT).
-func (c *EmbeddedConnection) CheckNamedValue(nv *driver.NamedValue) error {
-	if nv.Value == nil {
-		return nil
+// CheckNamedValue implements driver.NamedValueChecker.
+func (c *EmbeddedConnection) CheckNamedValue(*driver.NamedValue) error {
+	// Every value reaches parameter binding as passed, so its Go type decides
+	// its SQL type (int32 is INT, int64 LONG, a slice an ARRAY, ...).
+	return nil
+}
+
+// releaseStatementParams drops the statement's parameter bindings.
+func (c *EmbeddedConnection) releaseStatementParams() {
+	for _, release := range c.releaseParams {
+		release()
 	}
-	switch v := nv.Value.(type) {
-	case int64, float64, float32, string, bool, []byte, time.Time:
-		return nil
-	default:
-		if s, ok := v.(fmt.Stringer); ok {
-			nv.Value = s.String()
-			return nil
-		}
-		return driver.ErrSkip
-	}
+	c.releaseParams = nil
 }
 
 // translateFDBCode maps an FDB numeric error code to a SQLSTATE-wrapped error.

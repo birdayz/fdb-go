@@ -1672,7 +1672,7 @@ func TestFDB_SelectColumnProjection(t *testing.T) {
 }
 
 // TestFDB_ParameterizedQueryApostrophe verifies that a string with an
-// apostrophe round-trips correctly through substituteParams → SQL → parser →
+// apostrophe round-trips correctly through parameter binding → parser →
 // FDB → SELECT. This catches the ”→' unescaping in evalConstant.
 func TestFDB_ParameterizedQueryApostrophe(t *testing.T) {
 	t.Parallel()

@@ -7,9 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"strconv"
 	"testing"
-	"time"
 
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -19,133 +19,6 @@ import (
 	"fdb.dev/pkg/relational/core/functions"
 	"fdb.dev/pkg/relational/core/session"
 )
-
-func TestSubstituteParams(t *testing.T) {
-	t.Parallel()
-	nv := func(ordinal int, v driver.Value) driver.NamedValue {
-		return driver.NamedValue{Ordinal: ordinal, Value: v}
-	}
-	cases := []struct {
-		name    string
-		query   string
-		args    []driver.NamedValue
-		want    string
-		wantErr bool
-	}{
-		{
-			name:  "no params",
-			query: "SELECT * FROM t",
-			args:  nil,
-			want:  "SELECT * FROM t",
-		},
-		{
-			name:  "int64",
-			query: "SELECT * FROM t WHERE id = ?",
-			args:  []driver.NamedValue{nv(1, int64(42))},
-			want:  "SELECT * FROM t WHERE id = 42",
-		},
-		{
-			name:  "float64",
-			query: "INSERT INTO t VALUES (?)",
-			args:  []driver.NamedValue{nv(1, float64(3.14))},
-			want:  "INSERT INTO t VALUES (3.14e+00)",
-		},
-		{
-			name:  "string escaping",
-			query: "INSERT INTO t VALUES (?)",
-			args:  []driver.NamedValue{nv(1, "it's fine")},
-			want:  "INSERT INTO t VALUES ('it''s fine')",
-		},
-		{
-			name:  "null",
-			query: "INSERT INTO t VALUES (?)",
-			args:  []driver.NamedValue{nv(1, nil)},
-			want:  "INSERT INTO t VALUES (NULL)",
-		},
-		{
-			name:  "bool true",
-			query: "INSERT INTO t VALUES (?)",
-			args:  []driver.NamedValue{nv(1, true)},
-			want:  "INSERT INTO t VALUES (TRUE)",
-		},
-		{
-			name:  "bool false",
-			query: "INSERT INTO t VALUES (?)",
-			args:  []driver.NamedValue{nv(1, false)},
-			want:  "INSERT INTO t VALUES (FALSE)",
-		},
-		{
-			name:  "multiple params",
-			query: "INSERT INTO t VALUES (?, ?, ?)",
-			args:  []driver.NamedValue{nv(1, int64(1)), nv(2, "hello"), nv(3, nil)},
-			want:  "INSERT INTO t VALUES (1, 'hello', NULL)",
-		},
-		{
-			name:    "too few args",
-			query:   "SELECT * FROM t WHERE id = ? AND name = ?",
-			args:    []driver.NamedValue{nv(1, int64(1))},
-			wantErr: true,
-		},
-		{
-			name:    "too many args",
-			query:   "SELECT * FROM t WHERE id = ?",
-			args:    []driver.NamedValue{nv(1, int64(1)), nv(2, int64(2))},
-			wantErr: true,
-		},
-		{
-			name:  "question mark inside string literal not substituted",
-			query: "SELECT * FROM t WHERE name = '?' AND id = ?",
-			args:  []driver.NamedValue{nv(1, int64(5))},
-			want:  "SELECT * FROM t WHERE name = '?' AND id = 5",
-		},
-		{
-			// Line comments must not consume ? placeholders.
-			// Previously: `id = ? -- why?` would eat two args (the first for
-			// the real placeholder, the second trying to satisfy the ? in
-			// the comment) and either over-consume or error on arg count.
-			name:  "question mark inside line comment not substituted",
-			query: "SELECT * FROM t WHERE id = ? -- why?\nAND name = ?",
-			args:  []driver.NamedValue{nv(1, int64(5)), nv(2, "x")},
-			want:  "SELECT * FROM t WHERE id = 5 -- why?\nAND name = 'x'",
-		},
-		{
-			name:  "question mark inside block comment not substituted",
-			query: "SELECT /* hmm? */ id FROM t WHERE id = ?",
-			args:  []driver.NamedValue{nv(1, int64(5))},
-			want:  "SELECT /* hmm? */ id FROM t WHERE id = 5",
-		},
-		{
-			name:  "time.Time parameter with time",
-			query: "INSERT INTO t VALUES (?, ?)",
-			args:  []driver.NamedValue{nv(1, int64(1)), nv(2, time.Date(2024, 7, 4, 15, 30, 45, 0, time.UTC))},
-			want:  "INSERT INTO t VALUES (1, '2024-07-04 15:30:45')",
-		},
-		{
-			name:  "time.Time parameter midnight (DATE format)",
-			query: "INSERT INTO t VALUES (?, ?)",
-			args:  []driver.NamedValue{nv(1, int64(1)), nv(2, time.Date(2024, 7, 4, 0, 0, 0, 0, time.UTC))},
-			want:  "INSERT INTO t VALUES (1, '2024-07-04')",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got, err := substituteParams(tc.query, tc.args)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("substituteParams(%q): want error, got %q", tc.query, got)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("substituteParams(%q): unexpected error: %v", tc.query, err)
-			}
-			if got != tc.want {
-				t.Errorf("substituteParams(%q) = %q, want %q", tc.query, got, tc.want)
-			}
-		})
-	}
-}
 
 func TestParseSchemaIdentifier_AbsolutePath(t *testing.T) {
 	t.Parallel()
@@ -287,50 +160,16 @@ func TestTranslateFDBError(t *testing.T) {
 	}
 }
 
-type testStringer struct{ s string }
-
-func (ts testStringer) String() string { return ts.s }
-
-type testNoStringer struct{ n int }
-
+// TestCheckNamedValue: every value passes through untouched, so its Go type
+// reaches parameter binding.
 func TestCheckNamedValue(t *testing.T) {
 	t.Parallel()
 	conn := &EmbeddedConnection{}
-
-	tests := []struct {
-		name    string
-		val     driver.Value
-		wantVal driver.Value
-		wantErr bool
-	}{
-		{"nil", nil, nil, false},
-		{"int64", int64(42), int64(42), false},
-		{"float64", float64(3.14), float64(3.14), false},
-		{"string", "hello", "hello", false},
-		{"bool", true, true, false},
-		{"bytes", []byte{1, 2, 3}, []byte{1, 2, 3}, false},
-		{"time", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), false},
-		{"stringer", testStringer{"uuid-value"}, "uuid-value", false},
-		{"no_stringer_skip", testNoStringer{42}, nil, true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			nv := &driver.NamedValue{Ordinal: 1, Value: tt.val}
-			err := conn.CheckNamedValue(nv)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatal("want error, got nil")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if fmt.Sprintf("%v", nv.Value) != fmt.Sprintf("%v", tt.wantVal) {
-				t.Errorf("value = %v (%T), want %v (%T)", nv.Value, nv.Value, tt.wantVal, tt.wantVal)
-			}
-		})
+	for _, v := range []any{nil, int32(1), int64(1), float32(1), []int64{1}, struct{}{}} {
+		nv := &driver.NamedValue{Ordinal: 1, Value: v}
+		if err := conn.CheckNamedValue(nv); err != nil || !reflect.DeepEqual(nv.Value, v) {
+			t.Fatalf("CheckNamedValue(%#v) = %v, value %#v", v, err, nv.Value)
+		}
 	}
 }
 

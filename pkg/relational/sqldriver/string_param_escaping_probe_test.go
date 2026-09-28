@@ -1,6 +1,6 @@
 package sqldriver_test
 
-// Probes string param escaping in substituteParams (the `'`→`''` path, sibling of
+// Probes string parameters carrying quotes (bound, never spliced into SQL; sibling of
 // the []byte render path). Embedded single quotes, injection-looking text,
 // backslashes, newlines, and unicode must round-trip EXACTLY (no SQL injection,
 // no corruption) and match via a string param in WHERE.

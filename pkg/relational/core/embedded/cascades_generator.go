@@ -53,6 +53,10 @@ import (
 type cascadesGenerator struct {
 	c     *EmbeddedConnection
 	cache *PlanCache
+	// args are the statement's driver arguments; paramKey renders their
+	// bindings for the plan-cache key, since bound constants are planned in.
+	args     []driver.NamedValue
+	paramKey string
 }
 
 func newCascadesGenerator(c *EmbeddedConnection) *cascadesGenerator {
@@ -103,6 +107,12 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 	if err != nil {
 		return nil, err
 	}
+	paramKey, release, err := bindStatementParameters(root, g.args)
+	if err != nil {
+		return nil, err
+	}
+	g.paramKey = paramKey
+	g.c.releaseParams = append(g.c.releaseParams, release)
 
 	stmts := root.Statements()
 	if stmts == nil || len(stmts.AllStatement()) == 0 {
@@ -362,7 +372,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		popts.config.ShouldJoinRightDeep = true
 	}
 	cacheScope := planCacheScope(g.c.sess.DBPath, g.c.sess.Schema, md.Version(), popts.cacheKeyPart())
-	cacheSQL := planCacheText(q)
+	cacheSQL := planCacheText(q) + g.paramKey
 	cache := g.cache
 	if so.noCache {
 		cache = nil

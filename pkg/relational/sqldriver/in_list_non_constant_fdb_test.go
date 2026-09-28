@@ -218,12 +218,9 @@ func TestFDB_InListWithNonConstantItems(t *testing.T) {
 	// the same thing as a ParameterValue, and this arm was originally written
 	// as though it were.
 	//
-	// The driver never plans a parameter at all. substituteParams "replaces
-	// positional '?' placeholders in a query with SQL literal representations
-	// of the supplied driver values" (embedded/utilities.go) BEFORE the parser
-	// runs, so `x IN (?, 999)` reaches the engine as the constant list
-	// `x IN (5, 999)`. It took the plan-time fold before the non-constant fork
-	// existed and it still does; nothing about this path changed.
+	// The driver binds each placeholder to a typed constant, so `x IN (?, 999)`
+	// reaches the planner as the constant list `x IN (5, 999)` and takes the
+	// plan-time fold.
 	//
 	// So what this arm actually pins is the interpolated round trip: a
 	// placeholder inside an IN list is substituted per EXECUTION, and two

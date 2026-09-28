@@ -2161,14 +2161,24 @@ func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver
 // syntax error: the grammar accepts any decimalLiteral here, but a
 // non-integer one is invalid and must be REJECTED, never silently dropped
 // (the old code left the no-limit / zero-offset sentinel, so `LIMIT 0.0`
-// returned ALL rows instead of none). Driver parameters are substituted before
-// query construction. A remaining parameter is unresolved and must fail here,
-// never become the absent-limit/zero-offset sentinel on another builder path.
+// returned ALL rows instead of none). A bound driver parameter supplies its
+// integer; an unbound one fails here, never becoming the absent-limit/zero-offset
+// sentinel on another builder path.
 func resolveLimitAtom(atom antlrgen.ILimitClauseAtomContext) (val int64, ok bool, err error) {
 	if atom == nil {
 		return 0, false, nil
 	}
-	if atom.PreparedStatementParameter() != nil {
+	if pp, isParam := atom.PreparedStatementParameter().(*antlrgen.PreparedStatementParameterContext); isParam && pp != nil {
+		if bound, ok := expr.BoundParameter(pp.GetStart()); ok {
+			if c, isConst := bound.(*values.ConstantValue); isConst {
+				// A LIMIT literal is unsigned; a negative binding must not
+				// reach the no-limit sentinel.
+				if n, isInt := c.Value.(int64); isInt && n >= 0 {
+					return n, true, nil
+				}
+			}
+			return 0, false, api.NewError(api.ErrCodeSyntaxError, "LIMIT/OFFSET parameter must be a non-negative integer")
+		}
 		return 0, false, api.NewError(api.ErrCodeUnsupportedQuery, "a query with a planning-time unresolved LIMIT/OFFSET is not supported")
 	}
 	text := atom.GetText()
