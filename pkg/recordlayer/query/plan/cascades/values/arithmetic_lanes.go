@@ -1,6 +1,10 @@
 package values
 
-import "strings"
+import (
+	"strings"
+
+	"fdb.dev/gen"
+)
 
 // ArithmeticLane is one row of Java's ArithmeticValue.PhysicalOperator table
 // (ArithmeticValue.java:406-522): a logical operator, the operand type codes it
@@ -199,4 +203,32 @@ func ArithmeticOperandIsPrimitive(tc TypeCode) bool {
 		return true
 	}
 	return false
+}
+
+// arithmeticLaneProtoOperator is the lane's PArithmeticValue.PPhysicalOperator:
+// the table is in Java's enum order, numbered from 1.
+func arithmeticLaneProtoOperator(lane ArithmeticLane) (gen.PArithmeticValue_PPhysicalOperator, bool) {
+	for i, l := range arithmeticLanes {
+		if l == lane {
+			return gen.PArithmeticValue_PPhysicalOperator(i + 1), true
+		}
+	}
+	return 0, false
+}
+
+func arithmeticLaneForProto(op gen.PArithmeticValue_PPhysicalOperator) (ArithmeticLane, bool) {
+	if op < 1 || int(op) > len(arithmeticLanes) {
+		return ArithmeticLane{}, false
+	}
+	return arithmeticLanes[op-1], true
+}
+
+// ArithmeticOpForLogicalName is the operator a lane's function names.
+func ArithmeticOpForLogicalName(name string) (ArithmeticOp, bool) {
+	for op := OpAdd; op <= OpBitmapBitPosition; op++ {
+		if op.LogicalOperatorName() == name {
+			return op, true
+		}
+	}
+	return 0, false
 }

@@ -217,17 +217,8 @@ type RelationalParserListener interface {
 	// EnterStatementBody is called when entering the statementBody production.
 	EnterStatementBody(c *StatementBodyContext)
 
-	// EnterUserDefinedScalarFunctionStatementBody is called when entering the userDefinedScalarFunctionStatementBody production.
-	EnterUserDefinedScalarFunctionStatementBody(c *UserDefinedScalarFunctionStatementBodyContext)
-
-	// EnterExpressionBody is called when entering the expressionBody production.
-	EnterExpressionBody(c *ExpressionBodyContext)
-
-	// EnterSqlReturnStatement is called when entering the sqlReturnStatement production.
-	EnterSqlReturnStatement(c *SqlReturnStatementContext)
-
-	// EnterReturnValue is called when entering the returnValue production.
-	EnterReturnValue(c *ReturnValueContext)
+	// EnterUserDefinedMacroFunctionStatementBody is called when entering the userDefinedMacroFunctionStatementBody production.
+	EnterUserDefinedMacroFunctionStatementBody(c *UserDefinedMacroFunctionStatementBodyContext)
 
 	// EnterCharSet is called when entering the charSet production.
 	EnterCharSet(c *CharSetContext)
@@ -1066,17 +1057,8 @@ type RelationalParserListener interface {
 	// ExitStatementBody is called when exiting the statementBody production.
 	ExitStatementBody(c *StatementBodyContext)
 
-	// ExitUserDefinedScalarFunctionStatementBody is called when exiting the userDefinedScalarFunctionStatementBody production.
-	ExitUserDefinedScalarFunctionStatementBody(c *UserDefinedScalarFunctionStatementBodyContext)
-
-	// ExitExpressionBody is called when exiting the expressionBody production.
-	ExitExpressionBody(c *ExpressionBodyContext)
-
-	// ExitSqlReturnStatement is called when exiting the sqlReturnStatement production.
-	ExitSqlReturnStatement(c *SqlReturnStatementContext)
-
-	// ExitReturnValue is called when exiting the returnValue production.
-	ExitReturnValue(c *ReturnValueContext)
+	// ExitUserDefinedMacroFunctionStatementBody is called when exiting the userDefinedMacroFunctionStatementBody production.
+	ExitUserDefinedMacroFunctionStatementBody(c *UserDefinedMacroFunctionStatementBodyContext)
 
 	// ExitCharSet is called when exiting the charSet production.
 	ExitCharSet(c *CharSetContext)

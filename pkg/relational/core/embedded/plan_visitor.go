@@ -501,6 +501,9 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 	if simpleTable.GroupByClause() != nil || hasPositionalOrderBy(simpleTable) || hasMixedSelectStar(simpleTable) {
 		expandStar = starExpanderFor(fs, v.md, v.templateName, v.cteScopes)
 	}
+	if fn := unknownScalarFunction(simpleTable.SelectElements(), v.md); fn != "" {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
+	}
 	cls, err := classifySelectElements(simpleTable, expandStar)
 	if err != nil {
 		return nil, err

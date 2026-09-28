@@ -1259,6 +1259,11 @@ func (r *Resolver) walkUserDefinedScalarFunction(udf *antlrgen.UserDefinedScalar
 	if ok && nameNode.DOUBLE_QUOTE_ID() != nil && nameNode.GetText() == `"`+SQLFunctionArgument+`"` {
 		return r.walkSQLFunctionArgument(udf.FunctionArgs())
 	}
+	if ok && !(nameNode.ID() != nil && strings.EqualFold(nameNode.ID().GetText(), "CARDINALITY")) {
+		if v, isMacro, err := r.walkMacroCall(udf); isMacro || err != nil {
+			return v, err
+		}
+	}
 	if !ok || nameNode.ID() == nil {
 		// Quoted (DOUBLE_QUOTE_ID) or otherwise non-bare — not a built-in.
 		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("user-defined scalar function %q", nameCtx.GetText())}
@@ -1269,6 +1274,44 @@ func (r *Resolver) walkUserDefinedScalarFunction(udf *antlrgen.UserDefinedScalar
 		return r.walkCardinality(udf.FunctionArgs())
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("user-defined scalar function %q (not a built-in)", name)}
+}
+
+// walkMacroCall is a call of a schema macro function: its body with the
+// arguments, promoted to the parameter types, substituted (Java's
+// UserDefinedMacroFunction.encapsulate). ok is false when name is no macro.
+func (r *Resolver) walkMacroCall(udf *antlrgen.UserDefinedScalarFunctionCallContext) (values.Value, bool, error) {
+	lookup, isLookup := r.analyzer.Catalog().(MacroLookup)
+	if !isLookup {
+		return nil, false, nil
+	}
+	name := functions.NormalizeIdentifier(udf.UserDefinedScalarFunctionName().GetText())
+	macro, err := lookup.LookupMacro(name)
+	if err != nil || macro == nil {
+		return nil, false, err
+	}
+	args, err := r.walkFunctionArgs(udf.FunctionArgs())
+	if err != nil {
+		return nil, true, err
+	}
+	if len(args) > len(macro.Params) {
+		return nil, true, api.NewError(api.ErrCodeUndefinedFunction, "argument length doesn't match with function definition")
+	}
+	bound := make([]values.Value, len(macro.Params))
+	for i, param := range macro.Params {
+		if i >= len(args) {
+			if macro.Defaults[i] == nil {
+				return nil, true, api.NewError(api.ErrCodeUndefinedFunction, "required argument must be specified")
+			}
+			bound[i] = macro.Defaults[i]
+			continue
+		}
+		arg := functions.FlattenRecordWithOneField(args[i])
+		if bound[i], err = promoteFunctionArgument(arg, param.FlowedType()); err != nil {
+			return nil, true, err
+		}
+	}
+	v, err := macro.Expand(bound)
+	return v, true, err
 }
 
 // SQLFunctionArgument names the call a SQL function's expansion binds each
@@ -1285,7 +1328,11 @@ func (r *Resolver) walkSQLFunctionArgument(fa antlrgen.IFunctionArgsContext) (va
 	if len(args) != 2 {
 		return nil, api.NewError(api.ErrCodeInternalError, "malformed SQL function argument")
 	}
-	arg, target := args[0], args[1].Type()
+	return promoteFunctionArgument(args[0], args[1].Type())
+}
+
+// promoteFunctionArgument is CatalogedFunction.promoteArgumentValueIfNeeded.
+func promoteFunctionArgument(arg values.Value, target values.Type) (values.Value, error) {
 	from := arg.Type()
 	if from != nil && values.WithNullability(from, true).Equals(values.WithNullability(target, true)) {
 		return arg, nil

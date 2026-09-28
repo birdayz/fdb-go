@@ -22,6 +22,7 @@ go_library(
         "logical_builder.go",
         "logical_predicate.go",
         "logical_qualify.go",
+        "macro_function.go",
         "on_exists_fold.go",
         "param_binding.go",
         "plan_cache.go",
@@ -484,6 +485,7 @@ go_test(
         "param_binding_test.go",
         "ever_aggregate_harness_test.go",
         "sql_function.go",
+        "macro_function.go",
     ],
     deps = [
         "//gen",

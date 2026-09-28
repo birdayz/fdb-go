@@ -77,3 +77,63 @@ func TestFDB_SQLFunctions(t *testing.T) {
 		}
 	}
 }
+
+// Schema-template macro functions, expanded at each call as Java's
+// UserDefinedMacroFunction.encapsulate does.
+func TestFDB_MacroFunctions(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	setup := openTestDB(t, "/testdb_macro")
+	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_macro")
+	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE macro_tpl "+
+		"CREATE TYPE AS STRUCT pt(x BIGINT, y BIGINT) "+
+		"CREATE TABLE t (id BIGINT, p pt, PRIMARY KEY (id)) "+
+		"CREATE FUNCTION px(IN a TYPE pt) RETURNS BIGINT AS a.x "+
+		"CREATE FUNCTION plus(IN a BIGINT, IN b BIGINT DEFAULT 10) RETURNS BIGINT RETURN a + b "+
+		"CREATE FUNCTION big(IN a BIGINT) AS SELECT id FROM t WHERE px(p) > a")
+	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_macro/s WITH TEMPLATE macro_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_MACRO?cluster_file=%s&schema=S", clusterFilePath))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+	mustExec(t, db, ctx, "INSERT INTO t VALUES (1, (1, 2)), (2, (5, 6)), (3, (9, 1))")
+
+	for q, want := range map[string]string{
+		"SELECT px(p) FROM t ORDER BY id":               "[1 5 9]",
+		"SELECT plus(px(p), id) FROM t WHERE id = 2":    "[7]",
+		"SELECT plus(id) FROM t WHERE id = 3":           "[13]",
+		"SELECT id FROM t WHERE px(p) >= 5 ORDER BY id": "[2 3]",
+		"SELECT id FROM big(4) ORDER BY id":             "[2 3]",
+	} {
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Errorf("%s: %v", q, err)
+			continue
+		}
+		var got []int64
+		for rows.Next() {
+			var v int64
+			if err := rows.Scan(&v); err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, v)
+		}
+		rows.Close()
+		if fmt.Sprint(got) != want {
+			t.Errorf("%s: %v, want %s", q, got, want)
+		}
+	}
+	for q, code := range map[string]api.ErrorCode{
+		"SELECT plus() FROM t":        api.ErrCodeUndefinedFunction,
+		"SELECT plus(1, 2, 3) FROM t": api.ErrCodeUndefinedFunction,
+		"SELECT px(id) FROM t":        api.ErrCodeUndefinedFunction,
+		"SELECT nope(id) FROM t":      api.ErrCodeUnsupportedQuery,
+	} {
+		_, err := db.QueryContext(ctx, q)
+		var apiErr *api.Error
+		if !errors.As(err, &apiErr) || apiErr.Code != code {
+			t.Errorf("%s: want %s, got %v", q, code, err)
+		}
+	}
+}

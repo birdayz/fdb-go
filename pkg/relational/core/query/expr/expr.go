@@ -144,6 +144,27 @@ type Resolver struct {
 	// before walking WHERE predicates. nil means EXISTS subqueries
 	// decline with UnsupportedExpressionShapeError.
 	subqueryPlanner SubqueryPlanner
+	// macroParams binds a macro body's parameter names while it is resolved.
+	macroParams []macroParam
+}
+
+type macroParam struct {
+	name  semantic.Identifier
+	value values.Value
+}
+
+// MacroLookup is a catalog that knows the schema's SQL macro functions.
+type MacroLookup interface {
+	LookupMacro(name string) (*values.MacroFunction, error)
+}
+
+// SetMacroParameters makes names resolve to values: a macro body's parameters,
+// as Java's parameter quantifier (DdlVisitor.visitSqlInvokedFunction).
+func (r *Resolver) SetMacroParameters(names []semantic.Identifier, vals []values.Value) {
+	r.macroParams = nil
+	for i := range names {
+		r.macroParams = append(r.macroParams, macroParam{names[i], vals[i]})
+	}
 }
 
 // SetSubqueryPlanner installs a callback that builds logical plans for
@@ -273,6 +294,27 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 // neither a source nor a column, which is how `SELECT a.n.sk` came to be
 // refused as an undefined column.
 func (r *Resolver) ResolveIdentifierPath(segs []semantic.Identifier) (values.Value, error) {
+	for _, p := range r.macroParams {
+		if len(segs) == 0 || !p.name.EqualsIgnoreQuoting(segs[0]) {
+			continue
+		}
+		if len(segs) == 1 {
+			return p.value, nil
+		}
+		path := make([]values.FieldRequest, len(segs)-1)
+		for i, seg := range segs[1:] {
+			req, err := values.FieldByName(seg.Name())
+			if err != nil {
+				return nil, err
+			}
+			path[i] = req
+		}
+		v, err := values.ResolveFieldAccess(p.value, path)
+		if err != nil {
+			return nil, &semantic.ColumnNotFoundError{Path: append([]semantic.Identifier(nil), segs...)}
+		}
+		return v, nil
+	}
 	col, src, accessors, err := r.analyzer.ResolveColumnRefPath(r.scope, segs)
 	if err != nil {
 		var notFound *semantic.ColumnNotFoundError

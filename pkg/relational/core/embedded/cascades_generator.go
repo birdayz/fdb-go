@@ -7540,6 +7540,10 @@ func findUnsupportedFunctionInParseTree(ctx antlr.Tree) string {
 	}
 	switch n := ctx.(type) {
 	case *antlrgen.FunctionCallExpressionAtomContext:
+		// A bare-name call may be a schema macro; the resolver decides.
+		if _, udf := n.FunctionCall().(*antlrgen.UserDefinedScalarFunctionCallContext); udf {
+			break
+		}
 		if fc := n.FunctionCall(); fc != nil {
 			// The name as the query spells it: Java's resolveFunction reports
 			// "Unsupported operator <name>" with the caller's spelling

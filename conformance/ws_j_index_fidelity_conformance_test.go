@@ -264,8 +264,41 @@ func wsjOtherIndexFields(g, j *gen.Index) []string {
 // content the comparison is for, and message order is what Java's
 // FileDescriptorSerializer emits (table-visit order, a TreeSet per table), which
 // the port matches rather than hides.
-func wsjCanonical(md *gen.MetaData) *gen.MetaData {
+func wsjRenameAliases(m protoreflect.Message, seen map[string]string) {
+	m.Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
+		switch {
+		case fd.Name() == "alias" && fd.Kind() == protoreflect.StringKind && m.Descriptor().Name() == "PQuantifiedObjectValue":
+			name, ok := seen[v.String()]
+			if !ok {
+				name = fmt.Sprintf("p%d", len(seen))
+				seen[v.String()] = name
+			}
+			m.Set(fd, protoreflect.ValueOfString(name))
+		case fd.Kind() == protoreflect.MessageKind && fd.IsList():
+			for i := 0; i < v.List().Len(); i++ {
+				wsjRenameAliases(v.List().Get(i).Message(), seen)
+			}
+		case fd.Kind() == protoreflect.MessageKind && !fd.IsMap():
+			wsjRenameAliases(v.Message(), seen)
+		}
+		return true
+	})
+}
+
+// wsjCanonicalAliases numbers each macro's parameter aliases, which are random
+// (CorrelationIdentifier.uniqueId), in order of appearance.
+func wsjCanonicalAliases(md *gen.MetaData) *gen.MetaData {
 	c := proto.Clone(md).(*gen.MetaData)
+	for _, f := range c.GetUserDefinedFunctions() {
+		if m := f.GetUserDefinedMacroFunction(); m != nil {
+			wsjRenameAliases(m.ProtoReflect(), map[string]string{})
+		}
+	}
+	return c
+}
+
+func wsjCanonical(md *gen.MetaData) *gen.MetaData {
+	c := wsjCanonicalAliases(md)
 	sort.SliceStable(c.RecordTypes, func(a, b int) bool {
 		return c.RecordTypes[a].GetName() < c.RecordTypes[b].GetName()
 	})
@@ -1072,13 +1105,15 @@ var _ = Describe("WS-J index-definition fidelity oracle", func() {
 				// does not move (a column type inside a metadata-diverge run, a root
 				// inside an index-diverge one) still reddens. The digest is sound only
 				// if a build is a function of its input, so every accepted body is
-				// built twice here and the two stored byte strings must be equal.
+				// built twice here and the two stored byte strings must be equal, macro
+				// parameter aliases aside (random in both engines).
 				first, firstErr := goTmpl.Underlying().ToProto()
 				Expect(firstErr).NotTo(HaveOccurred())
 				again, againErr := embedded.BuildSchemaTemplateFromDDLNamed(body, templateName)
 				Expect(againErr).NotTo(HaveOccurred(), "a second Go build of %s", id)
 				second, secondErr := again.Underlying().ToProto()
 				Expect(secondErr).NotTo(HaveOccurred())
+				first, second = wsjCanonicalAliases(first), wsjCanonicalAliases(second)
 				fb, fbErr := proto.MarshalOptions{Deterministic: true}.Marshal(first)
 				Expect(fbErr).NotTo(HaveOccurred())
 				sb, sbErr := proto.MarshalOptions{Deterministic: true}.Marshal(second)

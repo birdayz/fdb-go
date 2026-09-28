@@ -458,6 +458,14 @@ func (c Comparison) EvalAgainst(left, right any) (TriBool, error) {
 				sawNull = true
 				continue
 			}
+			// A record or array element compares by ordinal
+			// (MessageHelpers.compareMessageEquals), as `=` does.
+			if _, isMsg := asProtoMessage(left); isMsg || isCompositeOperand(left) {
+				if deepValueEqual(left, elem) {
+					return TriTrue, nil
+				}
+				continue
+			}
 			cmp, ok := cmpAny(left, elem)
 			if !ok {
 				if isNumericStringMismatch(left, elem) {

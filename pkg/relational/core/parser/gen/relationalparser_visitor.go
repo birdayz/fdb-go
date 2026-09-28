@@ -217,17 +217,8 @@ type RelationalParserVisitor interface {
 	// Visit a parse tree produced by RelationalParser#statementBody.
 	VisitStatementBody(ctx *StatementBodyContext) interface{}
 
-	// Visit a parse tree produced by RelationalParser#userDefinedScalarFunctionStatementBody.
-	VisitUserDefinedScalarFunctionStatementBody(ctx *UserDefinedScalarFunctionStatementBodyContext) interface{}
-
-	// Visit a parse tree produced by RelationalParser#expressionBody.
-	VisitExpressionBody(ctx *ExpressionBodyContext) interface{}
-
-	// Visit a parse tree produced by RelationalParser#sqlReturnStatement.
-	VisitSqlReturnStatement(ctx *SqlReturnStatementContext) interface{}
-
-	// Visit a parse tree produced by RelationalParser#returnValue.
-	VisitReturnValue(ctx *ReturnValueContext) interface{}
+	// Visit a parse tree produced by RelationalParser#userDefinedMacroFunctionStatementBody.
+	VisitUserDefinedMacroFunctionStatementBody(ctx *UserDefinedMacroFunctionStatementBodyContext) interface{}
 
 	// Visit a parse tree produced by RelationalParser#charSet.
 	VisitCharSet(ctx *CharSetContext) interface{}

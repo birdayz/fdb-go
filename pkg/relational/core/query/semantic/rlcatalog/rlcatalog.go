@@ -442,3 +442,16 @@ func protoKindToSQL(k protoreflect.Kind) string {
 	}
 	return "UNKNOWN"
 }
+
+// LookupMacro returns the schema's SQL macro function of that name.
+func (w *wrappedCatalog) LookupMacro(name string) (*values.MacroFunction, error) {
+	if w.md == nil {
+		return nil, nil
+	}
+	for _, f := range w.md.UserDefinedFunctions() {
+		if m := f.GetUserDefinedMacroFunction(); m != nil && m.GetFunctionName() == name {
+			return values.MacroFunctionFromProto(m)
+		}
+	}
+	return nil, nil
+}

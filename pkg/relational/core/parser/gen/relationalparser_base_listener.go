@@ -474,31 +474,13 @@ func (s *BaseRelationalParserListener) EnterStatementBody(ctx *StatementBodyCont
 // ExitStatementBody is called when production statementBody is exited.
 func (s *BaseRelationalParserListener) ExitStatementBody(ctx *StatementBodyContext) {}
 
-// EnterUserDefinedScalarFunctionStatementBody is called when production userDefinedScalarFunctionStatementBody is entered.
-func (s *BaseRelationalParserListener) EnterUserDefinedScalarFunctionStatementBody(ctx *UserDefinedScalarFunctionStatementBodyContext) {
+// EnterUserDefinedMacroFunctionStatementBody is called when production userDefinedMacroFunctionStatementBody is entered.
+func (s *BaseRelationalParserListener) EnterUserDefinedMacroFunctionStatementBody(ctx *UserDefinedMacroFunctionStatementBodyContext) {
 }
 
-// ExitUserDefinedScalarFunctionStatementBody is called when production userDefinedScalarFunctionStatementBody is exited.
-func (s *BaseRelationalParserListener) ExitUserDefinedScalarFunctionStatementBody(ctx *UserDefinedScalarFunctionStatementBodyContext) {
+// ExitUserDefinedMacroFunctionStatementBody is called when production userDefinedMacroFunctionStatementBody is exited.
+func (s *BaseRelationalParserListener) ExitUserDefinedMacroFunctionStatementBody(ctx *UserDefinedMacroFunctionStatementBodyContext) {
 }
-
-// EnterExpressionBody is called when production expressionBody is entered.
-func (s *BaseRelationalParserListener) EnterExpressionBody(ctx *ExpressionBodyContext) {}
-
-// ExitExpressionBody is called when production expressionBody is exited.
-func (s *BaseRelationalParserListener) ExitExpressionBody(ctx *ExpressionBodyContext) {}
-
-// EnterSqlReturnStatement is called when production sqlReturnStatement is entered.
-func (s *BaseRelationalParserListener) EnterSqlReturnStatement(ctx *SqlReturnStatementContext) {}
-
-// ExitSqlReturnStatement is called when production sqlReturnStatement is exited.
-func (s *BaseRelationalParserListener) ExitSqlReturnStatement(ctx *SqlReturnStatementContext) {}
-
-// EnterReturnValue is called when production returnValue is entered.
-func (s *BaseRelationalParserListener) EnterReturnValue(ctx *ReturnValueContext) {}
-
-// ExitReturnValue is called when production returnValue is exited.
-func (s *BaseRelationalParserListener) ExitReturnValue(ctx *ReturnValueContext) {}
 
 // EnterCharSet is called when production charSet is entered.
 func (s *BaseRelationalParserListener) EnterCharSet(ctx *CharSetContext) {}

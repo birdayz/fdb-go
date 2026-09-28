@@ -133,7 +133,7 @@ columnDefinition
 // this is not aligned with SQL standard, but it eliminates ambiguities related to necessating a lookahead of 1 to resolve
 // column with a custom type (which is a mere ID, just like the column ID).
 functionColumnType
-    : primitiveType | TYPE customType=uid;
+    : (primitiveType | TYPE customType=uid) ARRAY?;
 
 columnType
     : primitiveType | customType=uid;
@@ -287,7 +287,7 @@ returnsClause
     ;
 
 returnsType
-    : returnsDataType=columnType
+    : returnsDataType=columnType ARRAY?
     | returnsTableType
     ;
 
@@ -334,18 +334,9 @@ dispatchClause
     ;
 
 routineBody
-    : AS queryTerm         #statementBody
-    | AS fullId            #userDefinedScalarFunctionStatementBody
-    | sqlReturnStatement   #expressionBody
+    : AS queryTerm                    #statementBody
+    | (RETURN | AS) expression        #userDefinedMacroFunctionStatementBody
     // | externalBodyReferences TODO
-    ;
-
-sqlReturnStatement
-    : RETURN returnValue
-    ;
-
-returnValue
-    : expression
     ;
 
 charSet

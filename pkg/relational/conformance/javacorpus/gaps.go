@@ -227,6 +227,10 @@ var engineGaps = []EngineGap{
 	{"orderby.yamsql", SkipConformanceGoAccepts, `"select c, b from t1 order by c, b desc;": expecting statement to throw an error 0AF00, however it succeeded`, "RFC-256"},
 	// Quoted "the_a2" read as unquoted x.the_a2 under CASE_SENSITIVE_IDENTIFIERS.
 	{"join-with-order-by-tests.yamsql", SkipGapCaseSensitiveIdentifiers, `42703: column "X.THE_A2" does not exist`, "TODO.md, Go ignores CASE_SENSITIVE_IDENTIFIERS"},
+	{"in-predicate.yamsql", SkipGapErrorClass, `"select a, e from ta where e in ('foo' , 35 + 4)": expecting '22000' error code, got '42804' instead`, "CQ-72"},
+	// An unnamed record-constructor element takes the ordinal key, where Java
+	// takes the column's name (expr.walkRecordConstructorInner).
+	{"valid-identifiers.yamsql", SkipGapStructQuery, `struct "__0type__1" has no attribute "foo.tableA.A1"`, "RFC-204 P3"},
 	{"functions.yamsql", SkipGapDMLReturning, `"update C set st = coalesce(st, null) where c1 = 4 returning \"new\".st": actual result set is NULL, expecting non-NULL result set`, "CQ-72"},
 	// RE-BOOKED, not closed-by-relabel: the duplicate qualified star this file
 	// was booked for is FIXED. Java's expandStar has no uniqueness rule, so

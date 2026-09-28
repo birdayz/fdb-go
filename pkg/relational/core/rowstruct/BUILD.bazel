@@ -10,6 +10,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer/protoname",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/api",
         "//pkg/relational/core/functions",

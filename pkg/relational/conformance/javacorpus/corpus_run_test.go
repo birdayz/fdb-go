@@ -336,8 +336,6 @@ var maskedClasses = map[javacorpus.SkipClass]string{
 	javacorpus.SkipGapStructDML: "EMPTIED by RFC-204 Phase 2: struct literals write and read back, and " +
 		"every carrier passes or moved on to engine-gap:struct-query. Declared for a re-armed struct-DML " +
 		"regression, which gaps.go would book here",
-	javacorpus.SkipGapStructQuery: "EMPTIED by RFC-257: `(*)` and `(T.*)` build their record, so " +
-		"join-tests and star-expression-metadata pass",
 	javacorpus.SkipCopyBlock: "the only copy_block file is copy-basic.yamsql, skipped earlier by " +
 		"required_clusters: 2 (unsupported:multi-cluster)",
 	javacorpus.SkipVersionGate: "provably unreachable with one version under test: the version is the " +

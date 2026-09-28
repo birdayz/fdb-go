@@ -391,6 +391,9 @@ type RecordType struct {
 	// anonymous — frequently the case for projection result rows
 	// that haven't been bound to a named struct.
 	RecordName string
+	// StorageName is the record's protobuf message name where it differs
+	// from RecordName (Java's Type.Record storageName).
+	StorageName string
 	// Nullable reports whether the record allows NULL — i.e. a
 	// nullable column whose type is this RecordType. Anonymous
 	// records typically default to nullable since plan-time

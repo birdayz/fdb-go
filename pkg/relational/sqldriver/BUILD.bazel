@@ -557,6 +557,7 @@ go_test(
         "read_your_writes_index_fdb_test.go",
         "readable_index_view_latency_fdb_test.go",
         "record_constructor_expression_fdb_test.go",
+        "record_in_array_fdb_test.go",
         "recursive_cte_alias_frontier_test.go",
         "recursive_cte_computed_leg_projection_fdb_test.go",
         "recursive_cte_continuation_fdb_test.go",

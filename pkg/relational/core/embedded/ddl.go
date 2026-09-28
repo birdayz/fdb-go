@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
@@ -336,28 +337,64 @@ func registerView(vd antlrgen.IViewDefinitionContext, b *metadata.Builder) error
 	return b.AddView(name, definition)
 }
 
-// registerFunction is Java's DdlVisitor.getInvokedRoutineMetadata for a
-// table-valued function: stored as a RawSqlFunction, `CREATE ` plus the text
-// as written, after its body compiles against the template so far.
+// registerFunction is Java's DdlVisitor.getInvokedRoutineMetadata: a
+// table-valued function is stored as a RawSqlFunction, `CREATE ` plus the text
+// as written, after its body compiles against the template so far; a macro
+// (a RETURN or AS expression body) as its serialized body Value.
 func registerFunction(fd antlrgen.ISqlInvokedFunctionContext, b *metadata.Builder) error {
 	if containsPreparedParameter(fd) {
 		return api.NewError(api.ErrCodeSyntaxError, "found prepared parameter(s) in SQL statement")
+	}
+	if err := checkRoutineCharacteristics(fd); err != nil {
+		return err
+	}
+	tmpl, err := b.Build()
+	if err != nil {
+		return err
+	}
+	md := tmpl.Underlying()
+	if body, isMacro := fd.RoutineBody().(*antlrgen.UserDefinedMacroFunctionStatementBodyContext); isMacro {
+		macro, err := buildMacroFunction(fd, body, md)
+		if err != nil {
+			return err
+		}
+		stored, err := macro.ToProto()
+		if err != nil {
+			return api.WrapErrorf(err, api.ErrCodeUnsupportedOperation, "function %s", macro.Name)
+		}
+		return b.AddFunction(macro.Name, stored)
+	}
+	if fd.FunctionSpecification().ReturnsClause() != nil {
+		return api.NewError(api.ErrCodeUnsupportedOperation, "unsupported explicit return type for SQL table function")
 	}
 	fn, err := sqlFunctionOf(fd)
 	if err != nil {
 		return err
 	}
-	definition := "CREATE " + ctxText(fd)
-	tmpl, err := b.Build()
-	if err != nil {
-		return err
-	}
-	if md := tmpl.Underlying(); md != nil {
+	if md != nil {
 		if err := compileSQLFunction(fn, md, b.Name()); err != nil {
 			return err
 		}
 	}
-	return b.AddFunction(fn.name, definition)
+	name, definition := fn.name, "CREATE "+ctxText(fd)
+	return b.AddFunction(name, &gen.PUserDefinedFunction{SpecificFunction: &gen.PUserDefinedFunction_SqlFunction{
+		SqlFunction: &gen.PRawSqlFunction{Name: &name, Definition: &definition},
+	}})
+}
+
+// checkRoutineCharacteristics is visitSqlInvokedFunction's validations.
+func checkRoutineCharacteristics(fd antlrgen.ISqlInvokedFunctionContext) error {
+	props := fd.FunctionSpecification().RoutineCharacteristics()
+	if nc := props.NullCallClause(); nc != nil && nc.RETURNS() != nil {
+		return api.NewError(api.ErrCodeUnsupportedOperation, "only CALLED ON NULL INPUT clause is supported")
+	}
+	if ps := props.ParameterStyle(); ps != nil && ps.SQL() == nil {
+		return api.NewError(api.ErrCodeUnsupportedOperation, "only sql-style parameters are supported")
+	}
+	if lc := props.LanguageClause(); lc != nil && lc.LanguageName().JAVA() != nil {
+		return api.NewError(api.ErrCodeUnsupportedOperation, "only sql-language functions are supported")
+	}
+	return nil
 }
 
 // compileSQLFunction plans the body with every parameter bound to a NULL of

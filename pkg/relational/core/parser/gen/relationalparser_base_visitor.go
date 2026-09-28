@@ -287,19 +287,7 @@ func (v *BaseRelationalParserVisitor) VisitStatementBody(ctx *StatementBodyConte
 	return v.VisitChildren(ctx)
 }
 
-func (v *BaseRelationalParserVisitor) VisitUserDefinedScalarFunctionStatementBody(ctx *UserDefinedScalarFunctionStatementBodyContext) interface{} {
-	return v.VisitChildren(ctx)
-}
-
-func (v *BaseRelationalParserVisitor) VisitExpressionBody(ctx *ExpressionBodyContext) interface{} {
-	return v.VisitChildren(ctx)
-}
-
-func (v *BaseRelationalParserVisitor) VisitSqlReturnStatement(ctx *SqlReturnStatementContext) interface{} {
-	return v.VisitChildren(ctx)
-}
-
-func (v *BaseRelationalParserVisitor) VisitReturnValue(ctx *ReturnValueContext) interface{} {
+func (v *BaseRelationalParserVisitor) VisitUserDefinedMacroFunctionStatementBody(ctx *UserDefinedMacroFunctionStatementBodyContext) interface{} {
 	return v.VisitChildren(ctx)
 }
 
