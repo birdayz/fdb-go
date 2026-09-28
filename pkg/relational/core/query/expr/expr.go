@@ -808,7 +808,28 @@ func (r *Resolver) ResolveArithmetic(op values.ArithmeticOp, left, right values.
 	if err != nil {
 		return nil, arithmeticEncapsulationError(err)
 	}
+	// Java simplifies arithmetic over a typed NULL constant to NULL without
+	// evaluating the other operand.
+	if isTypedNullConstant(left) || isTypedNullConstant(right) {
+		return values.NewNullValue(values.WithNullability(v.Type(), true)), nil
+	}
 	return v, nil
+}
+
+func isTypedNullConstant(v values.Value) bool {
+	t := v.Type()
+	if t == nil || t.Code() == values.TypeCodeUnknown || t.Code() == values.TypeCodeNull {
+		return false
+	}
+	lit, ok := values.EvaluateConstant(v)
+	return ok && lit == nil
+}
+
+// notNullConstant is a row-independent operand whose type rules out NULL, so
+// IS [NOT] NULL over it folds without evaluating it, as in Java.
+func notNullConstant(v values.Value) bool {
+	t := v.Type()
+	return t != nil && t.Code() != values.TypeCodeUnknown && !t.IsNullable() && values.IsConstantValue(v)
 }
 
 // arithmeticEncapsulationError is Java's answer to a refused encapsulation:
@@ -1592,6 +1613,9 @@ func (r *Resolver) ResolveIsNull(v values.Value) (predicates.QueryPredicate, err
 	if v == nil {
 		return nil, fmt.Errorf("expr.ResolveIsNull: operand is nil")
 	}
+	if notNullConstant(v) {
+		return predicates.NewConstantPredicate(predicates.TriFalse), nil
+	}
 	return predicates.NewComparisonPredicate(v, predicates.Comparison{Type: predicates.ComparisonIsNull}), nil
 }
 
@@ -1599,6 +1623,9 @@ func (r *Resolver) ResolveIsNull(v values.Value) (predicates.QueryPredicate, err
 func (r *Resolver) ResolveIsNotNull(v values.Value) (predicates.QueryPredicate, error) {
 	if v == nil {
 		return nil, fmt.Errorf("expr.ResolveIsNotNull: operand is nil")
+	}
+	if notNullConstant(v) {
+		return predicates.NewConstantPredicate(predicates.TriTrue), nil
 	}
 	return predicates.NewComparisonPredicate(v, predicates.Comparison{Type: predicates.ComparisonIsNotNull}), nil
 }

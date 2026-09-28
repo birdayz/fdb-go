@@ -1208,22 +1208,22 @@ sql:   SELECT NULL * NULL FROM t WHERE id = 1
 plan:  <PLAN-ERROR: XX000: unable to encapsulate arithmetic operation due to type mismatch(es)>
 === arithmetic.yaml#14
 sql:   SELECT a + CAST(NULL AS BIGINT) FROM t WHERE id = 1
-plan:  Project([(_current.A#1 + CAST(NULL AS BIGINT))], Scan(T, [=]))
+plan:  Project([NULL], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === arithmetic.yaml#15
 sql:   SELECT CAST(NULL AS BIGINT) - b FROM t WHERE id = 1
-plan:  Project([(CAST(NULL AS BIGINT) - _current.B#2)], Scan(T, [=]))
+plan:  Project([NULL], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === arithmetic.yaml#16
 sql:   SELECT CAST(NULL AS BIGINT) / 5 FROM t WHERE id = 1
-plan:  Project([(CAST(NULL AS BIGINT) / 5)], Scan(T, [=]))
+plan:  Project([NULL], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === arithmetic.yaml#17
 sql:   SELECT 5 / CAST(NULL AS BIGINT) FROM t WHERE id = 1
-plan:  Project([(5 / CAST(NULL AS BIGINT))], Scan(T, [=]))
+plan:  Project([NULL], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === arithmetic.yaml#18 expect-error=22012
@@ -1233,7 +1233,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === arithmetic.yaml#19
 sql:   SELECT CAST(NULL AS BIGINT) / 0 FROM t WHERE id = 1
-plan:  Project([(CAST(NULL AS BIGINT) / 0)], Scan(T, [=]))
+plan:  Project([NULL], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === arithmetic.yaml#20 expect-error=XX000

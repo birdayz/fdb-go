@@ -4454,14 +4454,15 @@ func NewCastValue(child Value, target Type) *CastValue {
 func (c *CastValue) Children() []Value { return []Value{c.Child} }
 func (c *CastValue) Name() string      { return "cast" }
 
-// Type returns the cast's target Type. CAST may produce NULL on
-// out-of-range / unsupported source (Evaluate returns nil), so cast
-// results are always nullable in Go.
+// Type is the target, NULL only when the operand can be (Java's CastValue);
+// an untyped operand can reach the silent-NULL tail of castEvaluated.
 func (c *CastValue) Type() Type {
 	if c.Target == nil {
 		return UnknownType
 	}
-	return WithNullability(c.Target, true)
+	st := c.Child.Type()
+	nullable := st == nil || st.Code() == TypeCodeUnknown || st.Code() == TypeCodeNull || st.IsNullable()
+	return WithNullability(c.Target, nullable)
 }
 
 // trimJavaWhitespace strips leading/trailing characters the way Java's

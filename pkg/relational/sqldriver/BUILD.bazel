@@ -183,6 +183,7 @@ go_test(
         "conditional_aggregation_probe_test.go",
         "conjunction_binding_fdb_test.go",
         "connector_dsn_freeze_test.go",
+        "constant_null_fold_fdb_test.go",
         "constant_predicate_probe_test.go",
         "constraint_validation_probe_test.go",
         "correlated_exists_crossjoin_test.go",

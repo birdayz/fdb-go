@@ -1744,7 +1744,7 @@ func TestValue_Type_Composites(t *testing.T) {
 		{
 			"CastValue(int → STRING)",
 			NewCastValue(&ConstantValue{Value: int64(42), Typ: NullableLong}, TypeString),
-			"STRING NULL",
+			"STRING NOT NULL",
 		},
 		{
 			"PromoteValue(NOT NULL long → nullable DOUBLE)",
