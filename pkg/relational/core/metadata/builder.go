@@ -196,6 +196,20 @@ func (b *Builder) AddStoredQuery(name, query string, tempFunctions []string) {
 	b.storedQueries[name] = &gen.PStoredQuery{Name: &name, Query: &query, TempFunctions: tempFunctions}
 }
 
+// SetIndexPredicate sets the stored predicate of a table's index.
+func (b *Builder) SetIndexPredicate(tableName, indexName string, p *gen.Predicate) {
+	for i := range b.tables {
+		if b.tables[i].name != tableName {
+			continue
+		}
+		for j := range b.tables[i].indexes {
+			if b.tables[i].indexes[j].name == indexName {
+				b.tables[i].indexes[j].predicate = p
+			}
+		}
+	}
+}
+
 // AddFunction records a SQL function as the template stores it.
 func (b *Builder) AddFunction(name string, fn *gen.PUserDefinedFunction) error {
 	if err := b.verifyNameIsNotUsed(name); err != nil {
@@ -1467,6 +1481,11 @@ func buildVectorIndex(idx indexSpec) (*recordlayer.Index, error) {
 			rl.SetOption(k, dims)
 		} else {
 			rl.SetOption(k, idx.options[k])
+		}
+	}
+	if idx.predicate != nil {
+		if err := rl.SetPredicateProto(idx.predicate); err != nil {
+			return nil, err
 		}
 	}
 	return rl, nil

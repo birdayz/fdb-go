@@ -38,6 +38,7 @@ go_library(
         "select_helpers.go",
         "select_parser.go",
         "serializer_options.go",
+        "sliding_window_view.go",
         "sql_function.go",
         "statement_options.go",
         "statistics_reader.go",
@@ -488,6 +489,7 @@ go_test(
         "sql_function.go",
         "macro_function.go",
         "temp_function.go",
+        "sliding_window_view.go",
     ],
     deps = [
         "//gen",

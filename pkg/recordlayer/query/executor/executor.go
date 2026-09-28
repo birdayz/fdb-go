@@ -625,7 +625,7 @@ func executeVectorIndexScan(
 	if idx == nil {
 		return nil, fmt.Errorf("executor: vector index %q not found in metadata", p.GetIndexName())
 	}
-	if err := requireReadableQueryIndex(store, idx); err != nil {
+	if err := requireReadableVectorIndex(store, idx); err != nil {
 		return nil, err
 	}
 	if err := validateVectorPartitionPlan(idx, p); err != nil {
@@ -837,6 +837,22 @@ func requireReadableQueryIndex(store *recordlayer.FDBRecordStore, idx *recordlay
 		IndexName:    idx.Name,
 		CurrentState: state,
 	}
+}
+
+// requireReadableVectorIndex is requireReadableQueryIndex admitting a
+// sliding-window vector index, whose K-NN answer is its window by design.
+func requireReadableVectorIndex(store *recordlayer.FDBRecordStore, idx *recordlayer.Index) error {
+	if idx.GetPredicateProto().GetRowNumberWindowPredicate() == nil {
+		return requireReadableQueryIndex(store, idx)
+	}
+	state, err := store.ReadIndexState(idx.Name)
+	if err != nil {
+		return err
+	}
+	if state != recordlayer.IndexStateReadable {
+		return &recordlayer.IndexNotReadableError{IndexName: idx.Name, CurrentState: state}
+	}
+	return nil
 }
 
 func rejectContinuationForEmptyVectorScan(continuation []byte) error {

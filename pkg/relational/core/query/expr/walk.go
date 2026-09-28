@@ -2404,6 +2404,12 @@ func singleChildDescendant[T antlr.Tree](tree antlr.Tree) (T, bool) {
 // the grammar:
 //
 //	= | > | < | >= | <= | <> | != | IS [NOT] DISTINCT FROM
+//
+// ComparisonOpFromCtx is the comparison a comparison operator names.
+func ComparisonOpFromCtx(op antlrgen.IComparisonOperatorContext) (predicates.ComparisonType, error) {
+	return comparisonOpFromCtx(op)
+}
+
 func comparisonOpFromCtx(op antlrgen.IComparisonOperatorContext) (predicates.ComparisonType, error) {
 	if op == nil {
 		return predicates.ComparisonEquals, fmt.Errorf("comparisonOpFromCtx: nil operator")

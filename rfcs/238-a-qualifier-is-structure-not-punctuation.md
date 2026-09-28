@@ -885,7 +885,7 @@ bare basename names two files here, not one. THE UPDATE TARGET IS NOT JUST A NAM
 that constrains how it may be translated. `executeUpdate` builds the target
 quantified-object value as
 `NewQuantifiedObjectValue(NamedCorrelationIdentifier(p.GetTargetRecordType()),
-...)` (`executor.go:4274-4277`), and the SET right-hand sides are correlated to
+...)` (`executor.go:4290-4293`), and the SET right-hand sides are correlated to
 it. Re-spelling `upd.Target` alone would leave `SET name = name` bound to a
 correlation nobody publishes.
 

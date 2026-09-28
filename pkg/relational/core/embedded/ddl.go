@@ -347,6 +347,13 @@ func registerView(vd antlrgen.IViewDefinitionContext, b *metadata.Builder) error
 		if err != nil {
 			return err
 		}
+		// A sliding-window QUALIFY is kept by the vector index over the view
+		// (its RowNumberWindowPredicate), not evaluated; the rest compiles.
+		if _, rest, ok := slidingWindowQualify(parsed, definition); ok {
+			if parsed, err = parseQueryWithFunctions(rest, metaDataFunctions(md)); err != nil {
+				return err
+			}
+		}
 		if _, err := NewPlanVisitorWithTemplate(md, b.Name()).VisitQuery(parsed); err != nil {
 			return err
 		}
@@ -604,11 +611,13 @@ func parseVectorIndexDefinition(def *antlrgen.VectorIndexDefinitionContext, b *m
 		return err
 	}
 
+	var predicate *gen.Predicate
 	if !b.HasTable(tableName) {
-		table, mapping, err := plainProjectionView(b, tableName)
+		table, mapping, window, err := plainProjectionView(b, tableName)
 		if err != nil {
 			return err
 		}
+		predicate = window
 		if mapping != nil {
 			tableName = table
 			vecCols[0] = mapping[vecCols[0]]
@@ -621,32 +630,39 @@ func parseVectorIndexDefinition(def *antlrgen.VectorIndexDefinitionContext, b *m
 		}
 	}
 	b.AddVectorIndexOrdered(method, tableName, indexName, vecCols[0], partitionCols, options, order)
+	b.SetIndexPredicate(tableName, indexName, predicate)
 	return nil
 }
 
 // plainProjectionView maps a view that plainly projects columns of one table
 // (no filter, no computation) to that table and its view-to-column names; a
 // vector index over it indexes the same records. Any other view is refused.
-func plainProjectionView(b *metadata.Builder, name string) (string, map[string]string, error) {
+func plainProjectionView(b *metadata.Builder, name string) (string, map[string]string, *gen.Predicate, error) {
 	tmpl, err := b.Build()
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	md := tmpl.Underlying()
 	if md == nil {
-		return "", nil, nil
+		return "", nil, nil, nil
 	}
 	view := findView(md, name)
 	if view == nil {
-		return "", nil, nil
+		return "", nil, nil, nil
 	}
 	q, err := parser.ParseView(view.GetDefinition())
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
+	}
+	window, rest, isWindow := slidingWindowQualify(q, view.GetDefinition())
+	if isWindow {
+		if q, err = parser.ParseView(rest); err != nil {
+			return "", nil, nil, err
+		}
 	}
 	op, err := NewPlanVisitorWithTemplate(md, b.Name()).VisitQuery(q)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	proj, ok := op.(*logical.LogicalProject)
 	var scan *logical.LogicalScan
@@ -654,7 +670,7 @@ func plainProjectionView(b *metadata.Builder, name string) (string, map[string]s
 		scan, ok = proj.Input.(*logical.LogicalScan)
 	}
 	if !ok || scan.Source.Producer() != nil {
-		return "", nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+		return "", nil, nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"a vector index over view %q is supported only when the view plainly projects one table", name)
 	}
 	mapping := make(map[string]string, len(proj.Projections))
@@ -668,7 +684,7 @@ func plainProjectionView(b *metadata.Builder, name string) (string, map[string]s
 		}
 		mapping[strings.ToUpper(out)] = parseColRef(strings.ToUpper(col)).bare()
 	}
-	return scan.Table, mapping, nil
+	return scan.Table, mapping, window, nil
 }
 
 type vectorOptionKind int

@@ -3081,6 +3081,16 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 				candidates = append(candidates, vecCand)
 				continue
 			}
+		} else if idx.GetPredicateProto().GetRowNumberWindowPredicate() != nil {
+			// A sliding-window vector index answers K-NN over the base table from
+			// its window: Java plans it with the window as TRUE
+			// (RowNumberWindowPredicate.toPredicate), which is the index's intent
+			// (sliding-window-semantic-search.yamsql). Only the vector candidate
+			// takes it; a value scan would read a top-N index as the table.
+			if vecCand := tryVectorIndexCandidate(idx, c.md); vecCand != nil {
+				candidates = append(candidates, vecCand)
+				continue
+			}
 		}
 		// Atomic-mutation / aggregate-only index types (COUNT/SUM totals,
 		// MAX_EVER/MIN_EVER running extrema, BITMAP_VALUE bitsets) must not become
