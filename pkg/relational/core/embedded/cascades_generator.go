@@ -252,7 +252,7 @@ func (g *cascadesGenerator) planSelect(ctx context.Context, sel antlrgen.ISelect
 			"no schema metadata available")
 	}
 
-	return g.planSelectCascades(ctx, q, md, true, parseStatementOptions(sel))
+	return g.planSelectCascades(ctx, q, md, true, statementOptionsFor(sel, g.c.Options()))
 }
 
 // planSelectExplainOnly produces a PlanFunc that renders a logical plan
@@ -686,7 +686,7 @@ func (g *cascadesGenerator) computeExplainText(ctx context.Context, d *antlrgen.
 			return "", api.NewError(api.ErrCodeUnsupportedQuery,
 				"no schema metadata available")
 		}
-		plan, planErr := g.planSelectCascades(ctx, q, freshMd, false, parseStatementOptions(d))
+		plan, planErr := g.planSelectCascades(ctx, q, freshMd, false, statementOptionsFor(d, g.c.Options()))
 		if planErr != nil {
 			return "", planErr
 		}
@@ -890,7 +890,10 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// QUERY remain accepted-and-ignored hints. Detection walks the whole DML subtree so the
 	// INSERT…SELECT spelling — whose OPTIONS the grammar attaches to the inner SELECT, not
 	// insertStatement.queryOptions — cannot silently bypass DRY RUN and commit.
-	so := parseStatementOptions(dml)
+	so := statementOptionsFor(dml, g.c.Options())
+	if so.snapshot {
+		return nil, errSnapshotOnlySelect()
+	}
 	dryRun := so.dryRun
 
 	var logicalOp logical.LogicalOperator

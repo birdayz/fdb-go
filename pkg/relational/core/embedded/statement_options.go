@@ -1,6 +1,7 @@
 package embedded
 
 import (
+	"fdb.dev/pkg/relational/api"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"github.com/antlr4-go/antlr/v4"
 )
@@ -44,4 +45,23 @@ func parseStatementOptions(tree antlr.Tree) statementOptions {
 	}
 	walk(tree)
 	return so
+}
+
+// statementOptionsFor merges a statement's OPTIONS clause with the
+// connection's options, as Java's PlanGenerator merges them (:170): DRY_RUN
+// and ISOLATION_LEVEL_SNAPSHOT set on the connection apply to every statement.
+// (PLAN_RIGHT_DEEP on the connection reaches the planner through
+// plannerOptionsFrom.)
+func statementOptionsFor(tree antlr.Tree, opts *api.Options) statementOptions {
+	so := parseStatementOptions(tree)
+	so.dryRun = so.dryRun || optBool(opts, api.OptDryRun, false)
+	so.snapshot = so.snapshot || optBool(opts, api.OptIsolationLevelSnapshot, false)
+	return so
+}
+
+// errSnapshotOnlySelect is Java's validateIsolationLevelSnapshotOption refusal
+// (PlanGenerator.java:507-517): snapshot isolation is for reads only.
+func errSnapshotOnlySelect() error {
+	return api.NewError(api.ErrCodeUnsupportedOperation,
+		"OPTIONS (ISOLATION LEVEL SNAPSHOT) is only supported on SELECT queries")
 }

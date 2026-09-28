@@ -136,3 +136,41 @@ func TestFDB_StatementOptions_SnapshotRead(t *testing.T) {
 		t.Fatalf("committed own writes = %d (%v), want 1", n, err)
 	}
 }
+
+// TestFDB_StatementOptions_SnapshotRefusedOnDML: SNAPSHOT is for reads only,
+// whether set on the statement or the connection; DRY_RUN on the connection
+// previews every DML statement, as Java merges connection and statement
+// options.
+func TestFDB_StatementOptions_SnapshotRefusedOnDML(t *testing.T) {
+	t.Parallel()
+	_, db := setupCascadesTestDB(t)
+	ctx := context.Background()
+	unsupported := func(err error) bool {
+		var apiErr *api.Error
+		return errors.As(err, &apiErr) && apiErr.Code == api.ErrCodeUnsupportedOperation
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO Item VALUES (500, 'x', 1) OPTIONS (ISOLATION LEVEL SNAPSHOT)"); !unsupported(err) {
+		t.Fatalf("INSERT with SNAPSHOT: want 0A000, got %v", err)
+	}
+
+	snap := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		ec.SetOptions(api.NewOptionsBuilder().Set(api.OptIsolationLevelSnapshot, true).Build())
+	})
+	if _, err := snap.ExecContext(ctx, "UPDATE Item SET price = 2 WHERE item_id = 1"); !unsupported(err) {
+		t.Fatalf("UPDATE on a SNAPSHOT connection: want 0A000, got %v", err)
+	}
+	var n int
+	if err := snap.QueryRowContext(ctx, "SELECT COUNT(*) FROM Item").Scan(&n); err != nil {
+		t.Fatalf("SELECT on a SNAPSHOT connection: %v", err)
+	}
+
+	dry := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		ec.SetOptions(api.NewOptionsBuilder().Set(api.OptDryRun, true).Build())
+	})
+	if _, err := dry.ExecContext(ctx, "INSERT INTO Item VALUES (501, 'x', 1)"); err != nil {
+		t.Fatalf("INSERT on a DRY_RUN connection: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM Item WHERE item_id = 501").Scan(&n); err != nil || n != 0 {
+		t.Fatalf("DRY_RUN connection committed the INSERT: %d rows, %v", n, err)
+	}
+}

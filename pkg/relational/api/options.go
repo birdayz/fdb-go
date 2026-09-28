@@ -99,6 +99,10 @@ const (
 	// join that would otherwise exhaust the planner's task budget converges,
 	// at the cost of possibly missing the cheapest shape.
 	OptPlanRightDeep OptionName = "PLAN_RIGHT_DEEP"
+	// OptIsolationLevelSnapshot executes SELECT reads at snapshot isolation
+	// (no read-conflict ranges); a DML statement under it is refused (0A000).
+	// The statement option ISOLATION LEVEL SNAPSHOT sets it for one statement.
+	OptIsolationLevelSnapshot OptionName = "ISOLATION_LEVEL_SNAPSHOT"
 	// OptPlannerStatistics lets the cost model use per-record-type row counts
 	// gathered by the offline collector (RFC-236, `frl stats collect`). Boolean,
 	// default FALSE, and Go-only — Java has no planner statistics at all, so
@@ -246,6 +250,7 @@ var defaultOptionValues = map[OptionName]any{
 	OptExecutionScannedRowsLimit:          math.MaxInt32,
 	OptDryRun:                             false,
 	OptPlanRightDeep:                      false,
+	OptIsolationLevelSnapshot:             false,
 	OptCaseSensitiveIdentifiers:           false,
 	OptAsyncOperationsTimeoutMillis:       int64(10_000),
 	OptEncryptWhenSerializing:             false,
