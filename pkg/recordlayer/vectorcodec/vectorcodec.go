@@ -112,6 +112,24 @@ func Deserialize(data []byte) ([]float64, error) {
 	}
 }
 
+// SerializeAs encodes vec at the precision named by a VectorType ordinal, as a
+// Java RealVector of that type stores itself; RaBitQ and unknown ordinals fall
+// back to DOUBLE.
+func SerializeAs(typeOrdinal byte, vec []float64) []byte {
+	switch typeOrdinal {
+	case typeHalf:
+		return SerializeHalf(vec)
+	case typeSingle:
+		buf := make([]byte, 1+4*len(vec))
+		buf[0] = typeSingle
+		for i, v := range vec {
+			binary.BigEndian.PutUint32(buf[1+i*4:], math.Float32bits(float32(v)))
+		}
+		return buf
+	}
+	return Serialize(vec)
+}
+
 // SerializeHalf encodes a float64 vector into the HALF on-disk format
 // (byte 0 = VectorType.HALF, then 2 big-endian bytes per component). Values are
 // rounded to nearest-even half precision; magnitudes beyond half range become

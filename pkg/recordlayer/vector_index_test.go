@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"time"
 
+	"fdb.dev/pkg/recordlayer/vectorcodec"
+
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -320,6 +322,29 @@ var _ = Describe("HNSW Graph Direct", func() {
 		storage := newHNSWStorage(ss, config)
 		return NewHNSWGraph(storage, config)
 	}
+
+	// Java's no-op quantizer stores a vector at its own precision, so a HALF
+	// column's nodes (and the entry point) are HALF, not widened to DOUBLE.
+	It("an untransformed insert keeps the vector's HALF precision", func() {
+		graph := makeGraph(2)
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			for i, v := range [][]float64{{0.5, 1}, {1, 0.25}} {
+				pk := tuple.Tuple{int64(i)}
+				Expect(graph.insertTyped(tx, pk, v, vectorcodec.TypeHalf)).To(Succeed())
+				raw, err := tx.Get(fdb.Key(graph.storage.dataSubspace.Pack(tuple.Tuple{int64(0), pk}))).Get()
+				Expect(err).NotTo(HaveOccurred())
+				vecBytes, _, _, err := parseNodeValue(raw)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(vecBytes).To(Equal(vectorcodec.SerializeHalf(v)))
+			}
+			info, err := graph.storage.loadAccessInfo(tx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info.vectorBytes[0]).To(Equal(byte(vectorcodec.TypeHalf)))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 
 	It("a rewrite keeps a Java 4.14 compact node's covering values", func() {
 		graph := makeGraph(2)
@@ -3820,7 +3845,8 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 			KeyWithValue(Concat(Field("quantity"), Field("price"), Field("vector_data")), 2), 3)
 		builder := baseMetaData()
 		builder.GetRecordType("Order").SetPrimaryKey(
-			Concat(Field("quantity"), Field("price"), Field("order_id")))
+			Concat(Field("quantity"), Field("price"), Field("order_id")),
+		)
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
 		Expect(err).NotTo(HaveOccurred())

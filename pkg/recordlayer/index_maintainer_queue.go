@@ -93,11 +93,14 @@ func (m *vectorIndexMaintainer) applyIndexEntry(entry indexEntry, remove bool) e
 		}
 		return fmt.Errorf("trim primary key for vector index %q %s: %w", m.index.Name, action, err)
 	}
+	if m.engine == VectorEngineGuardiann {
+		return m.applyGuardiannEntry(prefix, trimmed, gVector{data: vector, typ: vectorTypeOfEntry(entry)}, remove)
+	}
 	return m.withPrefixWriteLock(prefix, func(graph *hnswGraph) error {
 		if remove {
 			return graph.Delete(m.tx, trimmed)
 		}
-		return graph.Insert(m.tx, trimmed, vector)
+		return graph.insertTyped(m.tx, trimmed, vector, vectorTypeOfEntry(entry))
 	})
 }
 

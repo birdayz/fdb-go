@@ -3,6 +3,8 @@ package recordlayer
 import (
 	"errors"
 	"testing"
+
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
 )
 
 func TestVectorEngineIdentity(t *testing.T) {
@@ -26,8 +28,16 @@ func TestVectorEngineIdentity(t *testing.T) {
 	if err := validateVectorIndexOptions(idx(""), idx("GUARDIANN"), map[string]bool{IndexOptionVectorEngine: true}); !errors.As(err, &mde) {
 		t.Errorf("engine change: %v", err)
 	}
-	var unsupported *UnsupportedVectorEngineError
-	if _, err := newVectorIndexMaintainer(idx("GUARDIANN"), nil, nil, nil, nil); !errors.As(err, &unsupported) {
+	sub := subspace.Sub("v")
+	m, err := newVectorIndexMaintainer(idx("GUARDIANN"), sub, sub, sub, nil, nil)
+	if err != nil || m.engine != VectorEngineGuardiann || m.guardiannConfig.primaryClusterMax != 1000 {
 		t.Errorf("GuardiANN maintainer: %v", err)
+	}
+	// Config's own checks refuse what Java's parseConfig refuses.
+	bad := idx("GUARDIANN")
+	bad.Options[IndexOptionGuardiannCollapseMinDuplicates] = "1000"
+	var iae *IllegalArgumentError
+	if _, err := newVectorIndexMaintainer(bad, sub, sub, sub, nil, nil); !errors.As(err, &iae) {
+		t.Errorf("collapseMinDuplicates >= primaryClusterMax: %v", err)
 	}
 }

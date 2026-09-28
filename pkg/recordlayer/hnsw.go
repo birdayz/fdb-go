@@ -351,7 +351,15 @@ func (g *hnswGraph) saveNodeLayer(tx fdb.WritableTransaction, layer int, pk tupl
 // primaryKey identifies the record. vector is the float64 vector to index.
 // Wire-compatible with Java's HNSW insert (compact + inlining node formats,
 // deterministic layer assignment, FHT-KAC rotation for RaBitQ).
+// Insert adds a DOUBLE vector; see insertTyped.
 func (g *hnswGraph) Insert(tx fdb.WritableTransaction, primaryKey tuple.Tuple, vector []float64) error {
+	return g.insertTyped(tx, primaryKey, vector, vectorcodec.TypeDouble)
+}
+
+// insertTyped adds primaryKey's vector. vectorType is the VectorType ordinal
+// the vector was encoded with: without a storage transform Java's no-op
+// quantizer stores the vector at that precision (a HALF column stays HALF).
+func (g *hnswGraph) insertTyped(tx fdb.WritableTransaction, primaryKey tuple.Tuple, vector []float64, vectorType byte) error {
 	// Fire both existence check and access info read as parallel futures.
 	// Existence check uses layer 0 (always compact format).
 	existKey := g.storage.dataSubspace.Pack(tuple.Tuple{int64(0), primaryKey})
@@ -386,7 +394,7 @@ func (g *hnswGraph) Insert(tx fdb.WritableTransaction, primaryKey tuple.Tuple, v
 
 	if epErr != nil {
 		// No entry point — first node in the graph.
-		return g.firstInsert(tx, primaryKey, vector, insertLayer)
+		return g.firstInsert(tx, primaryKey, vector, vectorType, insertLayer)
 	}
 	if err := g.raBitQuantizerAdmits(accessInfo); err != nil {
 		return err
@@ -402,10 +410,11 @@ func (g *hnswGraph) Insert(tx fdb.WritableTransaction, primaryKey tuple.Tuple, v
 	// is stored plain (and lifted at read once a centroid exists), matching Java's
 	// noOp-until-centroid quantizer choice.
 	queryVec := vector
+	vectorForWrite := hnswVector{data: vectorcodec.SerializeAs(vectorType, vector), transformed: true}
 	if transform != nil {
 		queryVec = transform.apply(vector)
+		vectorForWrite.data = serializeVector(queryVec)
 	}
-	vectorForWrite := hnswVector{data: serializeVector(queryVec), transformed: true}
 
 	epLayer := accessInfo.layer
 	epPK := accessInfo.pk
@@ -571,7 +580,7 @@ func (g *hnswGraph) Insert(tx fdb.WritableTransaction, primaryKey tuple.Tuple, v
 // When a quantizer is enabled and the metric doesn't preserve translation (Cosine/DotProduct),
 // initializes the FHT-KAC rotator immediately with a zero centroid.
 // Matches Java's Insert.firstInsert().
-func (g *hnswGraph) firstInsert(tx fdb.WritableTransaction, primaryKey tuple.Tuple, vector []float64, insertLayer int) error {
+func (g *hnswGraph) firstInsert(tx fdb.WritableTransaction, primaryKey tuple.Tuple, vector []float64, vectorType byte, insertLayer int) error {
 	info := &hnswAccessInfo{
 		layer:       insertLayer,
 		pk:          primaryKey,
@@ -581,15 +590,9 @@ func (g *hnswGraph) firstInsert(tx fdb.WritableTransaction, primaryKey tuple.Tup
 	queryVec := vector
 
 	if g.config.Quantizer != nil && !g.config.Metric.satisfiesPreservedUnderTranslation() {
-		// Cosine/DotProduct: activate rotation immediately.
-		// Generate deterministic seed from primary key, matching Java's:
-		//   SplittableRandom random = new SplittableRandom(splitMixLong(pk.hashCode()));
-		//   rotatorSeed = random.nextLong();
-		// SplittableRandom.nextLong() for the first call = splitMixLong(initialSeed)
-		packed := primaryKey.Pack()
-		h := javaHashCode(packed)
-		initialSeed := splitMixLong(int64(h))
-		info.rotatorSeed = splitMixLong(initialSeed)
+		// Cosine/DotProduct: activate rotation immediately, seeded by the
+		// insert's RandomHelpers.random(pk) (Insert.firstInsert).
+		info.rotatorSeed = newSplittableRandomForKey(primaryKey).nextLong()
 
 		// Zero centroid = no translation, rotation only.
 		info.centroid = make([]float64, g.config.NumDimensions)
@@ -608,7 +611,10 @@ func (g *hnswGraph) firstInsert(tx fdb.WritableTransaction, primaryKey tuple.Tup
 	// For a translation-preserving metric (Euclidean) the first node is pre-centroid, so
 	// it is stored plain — matching Java's noOp quantizer until a centroid is sampled.
 	g.opXform = g.buildTransform(info)
-	vectorForWrite := hnswVector{data: serializeVector(queryVec), transformed: true}
+	vectorForWrite := hnswVector{data: vectorcodec.SerializeAs(vectorType, queryVec), transformed: true}
+	if g.opXform != nil {
+		vectorForWrite.data = serializeVector(queryVec)
+	}
 	info.vectorBytes = vectorForWrite.data
 
 	for layer := 0; layer <= insertLayer; layer++ {
@@ -2764,11 +2770,20 @@ type splittableRandom struct {
 	gamma int64
 }
 
-// newSplittableRandomForKey seeds the RNG from a primary key, matching Java's
-// Primitives.random(pk): new SplittableRandom(splitMixLong(pk.hashCode())) — the
-// single-argument constructor uses GOLDEN_GAMMA.
+// newSplittableRandomForKey is Java's RandomHelpers.random(primaryKey): a
+// SplittableRandom (GOLDEN_GAMMA) seeded by folding the packed key through
+// splitMixLong byte by byte.
 func newSplittableRandomForKey(primaryKey tuple.Tuple) *splittableRandom {
-	return &splittableRandom{seed: splitMixLong(int64(javaHashCode(primaryKey.Pack()))), gamma: goldenGamma}
+	return &splittableRandom{seed: seedFromBytes(primaryKey.Pack()), gamma: goldenGamma}
+}
+
+// seedFromBytes is RandomHelpers.seedFromBytes.
+func seedFromBytes(b []byte) int64 {
+	var seed int64
+	for _, c := range b {
+		seed = splitMixLong(seed ^ int64(c))
+	}
+	return seed
 }
 
 // nextSeed advances and returns the seed (Java SplittableRandom.nextSeed).

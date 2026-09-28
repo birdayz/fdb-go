@@ -358,6 +358,10 @@ func (c *EmbeddedConnection) storeIn(rctx *recordlayer.FDBRecordContext, tx *emb
 	if err != nil {
 		return nil, err
 	}
+	// No background merger runs for embedded relational, so a GUARDIANN
+	// vector index pays down its deferred maintenance in the writing
+	// transaction (Java BackingRecordStore.load).
+	store.GetIndexDeferredMaintenanceControl().SetAutoMergeDuringCommit(true)
 	if tx != nil {
 		if tx.stores == nil {
 			tx.stores = make(map[string]*recordlayer.FDBRecordStore)

@@ -7661,6 +7661,8 @@ func isAllowedFunction(name string) bool {
 		// The bitmap functions are ArithmeticValues (expr.walkScalarFunction
 		// → ResolveArithmetic), as Java's are, not catalogue entries.
 		"BITMAP_BUCKET_OFFSET", "BITMAP_BIT_POSITION",
+		// Vector distances are DistanceValues (expr.distanceOperatorForFunc).
+		"EUCLIDEAN_DISTANCE", "EUCLIDEAN_SQUARE_DISTANCE", "COSINE_DISTANCE", "DOT_PRODUCT_DISTANCE",
 		`"` + expr.SQLFunctionArgument + `"`:
 		return true
 	}

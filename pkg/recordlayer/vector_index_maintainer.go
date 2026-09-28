@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"fmt"
 
+	"fdb.dev/pkg/recordlayer/vectorcodec"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -110,11 +112,18 @@ type vectorIndexMaintainer struct {
 	hnswSubspace subspace.Subspace
 	hnswConfig   HNSWConfig
 	storageCache map[string]*hnswStorage // subspace bytes → cached storage
+
+	// A GUARDIANN index keeps its own configuration, and its deferred-task
+	// counts and merge lock in the index's secondary subspace.
+	engine            VectorEngineKind
+	guardiannConfig   guardiannConfig
+	secondarySubspace subspace.Subspace
+	taskCounts        vectorTaskCounts
 }
 
 func newVectorIndexMaintainer(
 	index *Index,
-	indexSubspace, hnswSubspace subspace.Subspace,
+	indexSubspace, hnswSubspace, secondarySubspace subspace.Subspace,
 	tx fdb.WritableTransaction,
 	store indexStoreContext,
 ) (*vectorIndexMaintainer, error) {
@@ -126,8 +135,20 @@ func newVectorIndexMaintainer(
 	if err != nil {
 		return nil, err
 	}
-	if engine != VectorEngineHNSW {
-		return nil, &UnsupportedVectorEngineError{Index: index.Name, Engine: engine}
+	if engine == VectorEngineGuardiann {
+		gc, err := parseGuardiannConfig(index)
+		if err != nil {
+			return nil, fmt.Errorf("vector index %q: %w", index.Name, err)
+		}
+		return &vectorIndexMaintainer{
+			standardIndexMaintainer: *newStandardIndexMaintainer(index, indexSubspace, tx, store),
+			hnswSubspace:            hnswSubspace,
+			storageCache:            make(map[string]*hnswStorage),
+			engine:                  engine,
+			guardiannConfig:         gc,
+			secondarySubspace:       secondarySubspace,
+			taskCounts:              newVectorTaskCounts(secondarySubspace),
+		}, nil
 	}
 	config, err := parseHNSWConfig(index)
 	if err != nil {
@@ -198,6 +219,21 @@ func (m *vectorIndexMaintainer) splitPrefixAndVector(entry indexEntry) (prefix t
 	// Non-KWV index: no prefix, entire key is the vector.
 	vec, verr := tupleToVector(entry.key)
 	return nil, vec, verr
+}
+
+// vectorTypeOfEntry is the VectorType ordinal of an entry's serialized vector;
+// a vector spelled as numeric tuple elements is DOUBLE.
+func vectorTypeOfEntry(entry indexEntry) byte {
+	t := entry.key
+	if len(entry.value) > 0 {
+		t = entry.value
+	}
+	if len(t) == 1 {
+		if b, ok := t[0].([]byte); ok && len(b) > 0 && b[0] <= vectorcodec.TypeDouble {
+			return b[0]
+		}
+	}
+	return vectorcodec.TypeDouble
 }
 
 // Update handles insert/delete/update for the VECTOR index.
@@ -473,6 +509,18 @@ func (m *vectorIndexMaintainer) scanByDistanceWithParams(
 // fan-out (RFC-046). Mirrors Java's VectorIndexMaintainer.kNearestNeighborSearch
 // + toIndexEntry.
 func (m *vectorIndexMaintainer) searchOnePartition(readTx fdb.ReadTransaction, prefix tuple.Tuple, queryVector []float64, k, efSearch int) ([]*IndexEntry, error) {
+	if m.engine == VectorEngineGuardiann {
+		results, err := m.searchGuardiann(readTx, prefix, queryVector, k)
+		if err != nil {
+			return nil, err
+		}
+		entries := make([]*IndexEntry, len(results))
+		for i, r := range results {
+			key := append(append(tuple.Tuple{}, prefix...), r.primaryKey...)
+			entries[i] = &IndexEntry{Index: m.index, Key: key, Value: tuple.Tuple{nil}, primaryKey: m.entryFullPK(key, prefix)}
+		}
+		return entries, nil
+	}
 	if len(queryVector) != m.hnswConfig.NumDimensions {
 		return nil, fmt.Errorf("VECTOR index %q expects %d dimensions, but query vector has %d",
 			m.index.Name, m.hnswConfig.NumDimensions, len(queryVector))
@@ -1062,6 +1110,18 @@ func (m *vectorIndexMaintainer) SearchKNN(prefix tuple.Tuple, queryVector []floa
 	m.store.AcquireReadLock(lockKey)
 	defer m.store.ReleaseReadLock(lockKey)
 
+	if m.engine == VectorEngineGuardiann {
+		results, err := m.searchGuardiann(m.tx.Snapshot(), prefix, queryVector, k)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]VectorSearchResult, len(results))
+		for i, r := range results {
+			key := append(append(tuple.Tuple{}, prefix...), r.primaryKey...)
+			out[i] = VectorSearchResult{PrimaryKey: m.entryFullPK(key, prefix), Distance: r.distance}
+		}
+		return out, nil
+	}
 	// Guard: query vector dimension must match the index's configured dimensions.
 	if len(queryVector) != m.hnswConfig.NumDimensions {
 		return nil, fmt.Errorf("VECTOR index %q expects %d dimensions, but query vector has %d",
@@ -1151,7 +1211,8 @@ func (m *vectorIndexMaintainer) CanDeleteWhere(prefix tuple.Tuple) error {
 			"vector index %q: deleteWhere prefix has %d columns but the index has %d key column(s); "+
 				"a longer prefix names a graph that does not exist, so the clear would silently "+
 				"leave the deleted records' HNSW nodes in place",
-			m.index.Name, len(prefix), keyColumns)
+			m.index.Name, len(prefix), keyColumns,
+		)
 	}
 	return nil
 }
@@ -1168,6 +1229,14 @@ func (m *vectorIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 		return fmt.Errorf("vector index %q: DeleteWhere PrefixRange(%x): %w", m.index.Name, sub.Bytes(), err)
 	}
 	m.tx.ClearRange(pr)
+	if m.engine == VectorEngineGuardiann {
+		if err := m.taskCounts.clearPrefix(m.tx, prefix); err != nil {
+			return err
+		}
+		if err := addVectorDeleteWhereConflicts(m.tx, m.secondarySubspace, prefix); err != nil {
+			return err
+		}
+	}
 	// Every cached graph under the cleared range is now stale. The cache is
 	// per-maintainer (so per-transaction), and dropping all of it is both
 	// correct and cheap; keeping an entry whose bytes were just cleared would

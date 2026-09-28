@@ -53,14 +53,3 @@ const (
 	IndexOptionGuardiannReassignNumNeighboringClusters   = "guardiannReassignNumNeighboringClusters"
 	IndexOptionGuardiannCollapseMinDuplicates            = "guardiannCollapseMinDuplicates"
 )
-
-// UnsupportedVectorEngineError refuses to maintain or read a vector index
-// whose engine Go does not implement.
-type UnsupportedVectorEngineError struct {
-	Index  string
-	Engine VectorEngineKind
-}
-
-func (e *UnsupportedVectorEngineError) Error() string {
-	return "vector index " + e.Index + ": the " + e.Engine.String() + " vector engine is not supported"
-}
