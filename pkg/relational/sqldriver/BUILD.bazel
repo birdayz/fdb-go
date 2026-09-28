@@ -552,6 +552,7 @@ go_test(
         "quality_probes_test.go",
         "quoted_dot_nested_label_fdb_test.go",
         "quoted_machine_alias_fdb_test.go",
+        "range_table_function_fdb_test.go",
         "rawnan_pk_suffix_fdb_test.go",
         "rcte_crossjoin_probe_test.go",
         "read_your_writes_index_fdb_test.go",

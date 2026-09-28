@@ -336,11 +336,16 @@ func (p *parser) parseSetupBlock(v *Value) (*SetupBlock, []InertDirective, error
 	}
 	out := &SetupBlock{Connect: m["connect"]}
 	if opts, ok := m["options"]; ok {
-		om, oi, err := mapping(opts, "setup options", "connection_options")
+		om, oi, err := mapping(opts, "setup options", "connection_options", "supported_version")
 		if err != nil {
 			return nil, nil, err
 		}
 		inert = append(inert, oi...)
+		if x, ok := om["supported_version"]; ok {
+			if out.SupportedVersion, err = parseVersion(x); err != nil {
+				return nil, nil, err
+			}
+		}
 		if co, ok := om["connection_options"]; ok {
 			if out.ConnectionOptions, err = connectionOptions(co); err != nil {
 				return nil, nil, err

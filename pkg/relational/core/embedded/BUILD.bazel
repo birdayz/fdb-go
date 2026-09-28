@@ -47,6 +47,7 @@ go_library(
         "subquery_walk.go",
         "system_rows.go",
         "system_tables.go",
+        "table_function_source.go",
         "temp_function.go",
     ],
     importpath = "fdb.dev/pkg/relational/core/embedded",
@@ -490,6 +491,7 @@ go_test(
         "macro_function.go",
         "temp_function.go",
         "sliding_window_view.go",
+        "table_function_source.go",
     ],
     deps = [
         "//gen",

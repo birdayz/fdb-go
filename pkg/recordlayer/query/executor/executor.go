@@ -4798,6 +4798,13 @@ func executeTableFunction(
 	if sv == nil {
 		return applySkipLimit(recordlayer.Empty[QueryResult](), props.Skip, props.ReturnedRowLimit), nil
 	}
+	if rv, ok := sv.(*values.RangeValue); ok {
+		cursor, err := newRangeCursor(rv, evalCtx, continuation)
+		if err != nil {
+			return nil, err
+		}
+		return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
+	}
 	result, err := sv.Evaluate(evalCtx)
 	if err != nil {
 		return nil, err
@@ -4825,6 +4832,64 @@ func executeTableFunction(
 	}
 	return applySkipLimit(recordlayer.FromListWithContinuation(items, continuation), props.Skip, props.ReturnedRowLimit), nil
 }
+
+// rangeCursor is Java's RangeValue.Cursor: rows (ID) from nextPosition by step,
+// each continuation a RangeCursorContinuation carrying the following position.
+type rangeCursor struct {
+	rowType   *values.RecordType
+	next, end int64
+	step      int64
+	closed    bool
+}
+
+func newRangeCursor(rv *values.RangeValue, evalCtx *EvaluationContext, continuation []byte) (*rangeCursor, error) {
+	begin, end, step, err := rv.Bounds(evalCtx)
+	if err != nil {
+		return nil, rangeBoundsError(err)
+	}
+	if continuation != nil {
+		var c gen.RangeCursorContinuation
+		if err := proto.Unmarshal(continuation, &c); err != nil {
+			return nil, fmt.Errorf("invalid range continuation: %w", err)
+		}
+		begin = c.GetNextPosition()
+		if err := values.CheckRangeBounds(begin, end, step); err != nil {
+			return nil, rangeBoundsError(err)
+		}
+	}
+	return &rangeCursor{rowType: rv.Type().(*values.RecordType), next: begin, end: end, step: step}, nil
+}
+
+// rangeBoundsError surfaces Java's RecordCoreException as SQLSTATE XXXXX.
+func rangeBoundsError(err error) error {
+	var rbe *values.RangeBoundsError
+	if errors.As(err, &rbe) {
+		return api.NewError(api.ErrCodeUnknown, rbe.Message)
+	}
+	return err
+}
+
+func (c *rangeCursor) OnNext(context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	if c.closed || c.next >= c.end {
+		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
+	}
+	row := QueryResult{Positional: &PositionalRow{Type: c.rowType, Slots: []any{c.next}}}
+	c.next += c.step
+	var cont recordlayer.RecordCursorContinuation = &recordlayer.EndContinuation{}
+	// Java's Continuation.isEnd: nextPosition >= endExclusive + step.
+	if c.next < c.end+c.step {
+		b, err := proto.Marshal(&gen.RangeCursorContinuation{NextPosition: proto.Int64(c.next)})
+		if err != nil {
+			return recordlayer.RecordCursorResult[QueryResult]{}, err
+		}
+		cont = recordlayer.NewBytesContinuation(b)
+	}
+	return recordlayer.NewResultWithValue(row, cont), nil
+}
+
+func (c *rangeCursor) Close() error { c.closed = true; return nil }
+
+func (c *rangeCursor) IsClosed() bool { return c.closed }
 
 // executeExplode mirrors Java RecordQueryExplodePlan.executePlan: the
 // collection re-evaluates from the bindings and the cursor is

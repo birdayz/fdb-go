@@ -22,7 +22,7 @@ func TestManifestComposition(t *testing.T) {
 	want := map[javayamsql.Polarity]int{
 		javayamsql.NegativeParse:     25,
 		javayamsql.NegativeExecution: 42,
-		javayamsql.FixedVersionMeta:  9,
+		javayamsql.FixedVersionMeta:  11,
 		javayamsql.Fragment:          2,
 		javayamsql.Positive:          6,
 	}
@@ -43,7 +43,7 @@ func TestManifestComposition(t *testing.T) {
 	if total != len(javayamsql.Manifest) {
 		t.Errorf("composition counts %d entries, manifest has %d", total, len(javayamsql.Manifest))
 	}
-	if total != 84 {
-		t.Errorf("manifest has %d entries, pinned baseline is 84", total)
+	if total != 86 {
+		t.Errorf("manifest has %d entries, pinned baseline is 86", total)
 	}
 }

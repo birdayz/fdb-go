@@ -9,6 +9,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"
+	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query/expr"
 	"fdb.dev/pkg/relational/core/query/logical"
 	"fdb.dev/pkg/relational/core/query/semantic"
@@ -29,11 +30,13 @@ func bindLateralCollections(op logical.LogicalOperator, sq *selectQuery, md *rec
 	}
 	lateral := make([]bool, len(sq.joins))
 	anyLateral := false
+	anyTableFunction := isTableFunctionItem(sq.inlineValues)
 	for i, j := range sq.joins {
 		lateral[i] = isLateralUnnestJoin(j, tables)
 		anyLateral = anyLateral || lateral[i]
+		anyTableFunction = anyTableFunction || isTableFunctionItem(j.inlineValues)
 	}
-	if !anyLateral {
+	if !anyLateral && !anyTableFunction {
 		return nil
 	}
 	var joins []*logical.LogicalJoin
@@ -54,6 +57,11 @@ func bindLateralCollections(op logical.LogicalOperator, sq *selectQuery, md *rec
 	slices.Reverse(joins)
 	if len(joins) != len(sq.joins) {
 		return api.NewErrorf(api.ErrCodeInternalError, "lateral binding: parsed FROM has %d joins, logical FROM has %d", len(sq.joins), len(joins))
+	}
+	if anyTableFunction {
+		if err := bindTableFunctions(op, joins, sq, md, templateName, cteScopes); err != nil {
+			return err
+		}
 	}
 	for i, isLateral := range lateral {
 		if !isLateral {
@@ -120,6 +128,53 @@ func bindLateralCollections(op logical.LogicalOperator, sq *selectQuery, md *rec
 		u.CorrelatedCollection = bound
 		u.EnclosingOwner = !ownedByFromPrefix(bound, resolver.Scope())
 		if err := checkUnnestUsingColumns(j, resolver.Scope()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func isTableFunctionItem(item antlrgen.ITableSourceItemContext) bool {
+	_, ok := item.(*antlrgen.TableValuedFunctionContext)
+	return ok
+}
+
+// bindTableFunctions resolves each table function's arguments laterally: the
+// primary source against the enclosing scope, a FROM leg against its prefix
+// (Java's `FROM t AS a, range(a.id)`). The build pass left an unbound stream.
+func bindTableFunctions(op logical.LogicalOperator, joins []*logical.LogicalJoin, sq *selectQuery, md *recordlayer.RecordMetaData, templateName string, cteScopes map[string]semantic.ScopeSource) error {
+	bind := func(item antlrgen.ITableSourceItemContext, node logical.LogicalOperator, prefix selectQuery) error {
+		tf, ok := item.(*antlrgen.TableValuedFunctionContext)
+		if !ok {
+			return nil
+		}
+		target, ok := node.(*logical.LogicalInlineValues)
+		if !ok || target.StreamValue() == nil {
+			return api.NewError(api.ErrCodeInternalError, "table function binding: parsed/logical source mismatch")
+		}
+		resolver, err := buildSelectScopeChecked(&prefix, md, templateName, cteScopes)
+		if err != nil {
+			if mapped := mapPredicateWalkError(err); mapped != nil {
+				return mapped
+			}
+			return err
+		}
+		bound, err := buildTableFunctionLogical(tf, target.Alias, target.Binding, resolver)
+		if err != nil {
+			return err
+		}
+		target.SetStream(bound.StreamValue())
+		return nil
+	}
+	primary := *sq
+	primary.tableName, primary.inlineValues, primary.derivedQuery, primary.joins = "", nil, nil, nil
+	if err := bind(sq.inlineValues, primaryLeaf(op), primary); err != nil {
+		return err
+	}
+	for i, j := range sq.joins {
+		prefix := *sq
+		prefix.joins = sq.joins[:i]
+		if err := bind(j.inlineValues, joins[i].Right, prefix); err != nil {
 			return err
 		}
 	}

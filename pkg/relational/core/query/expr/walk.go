@@ -1338,7 +1338,7 @@ func promoteFunctionArgument(arg values.Value, target values.Type) (values.Value
 		return arg, nil
 	}
 	if !values.IsPromotable(from, target) {
-		return nil, api.NewError(api.ErrCodeUndefinedFunction, "argument type doesn't match with function definition")
+		return nil, api.NewError(api.ErrCodeInvalidArgumentForFunction, "argument type doesn't match with function definition")
 	}
 	return values.NewPromoteValue(arg, target), nil
 }

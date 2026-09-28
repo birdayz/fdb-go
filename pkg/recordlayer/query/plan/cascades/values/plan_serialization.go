@@ -263,6 +263,18 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 		}
 		rc.ResultType = t
 		return &gen.PValue{SpecificValue: &gen.PValue_RecordConstructorValue{RecordConstructorValue: rc}}, nil
+	case *SubscriptValue:
+		index, err := c.ValueToProto(vv.Index)
+		if err != nil {
+			return nil, err
+		}
+		source, err := c.ValueToProto(vv.Source)
+		if err != nil {
+			return nil, err
+		}
+		return &gen.PValue{SpecificValue: &gen.PValue_SubscriptValue{SubscriptValue: &gen.PSubscriptValue{
+			Index: index, Source: source,
+		}}}, nil
 	case *ArrayConstructorValue:
 		ac := &gen.PAbstractArrayConstructorValue{}
 		for _, e := range vv.Elements {
@@ -457,6 +469,20 @@ func (c *SerializationContext) ValueFromProto(p *gen.PValue) (Value, error) {
 			return nil, err
 		}
 		return NewRawRecordConstructorValue(fields...), nil
+	case p.GetSubscriptValue() != nil:
+		index, err := c.ValueFromProto(p.GetSubscriptValue().GetIndex())
+		if err != nil {
+			return nil, err
+		}
+		source, err := c.ValueFromProto(p.GetSubscriptValue().GetSource())
+		if err != nil {
+			return nil, err
+		}
+		array, ok := source.Type().(*ArrayType)
+		if !ok || array.ElementType == nil {
+			return nil, fmt.Errorf("deserialize subscript: source is %v, not an array", source.Type())
+		}
+		return NewSubscriptValue(source, index, WithNullability(array.ElementType, true)), nil
 	case p.GetLightArrayConstructorValue() != nil:
 		ac := p.GetLightArrayConstructorValue().GetSuper()
 		elems := make([]Value, len(ac.GetChildren()))

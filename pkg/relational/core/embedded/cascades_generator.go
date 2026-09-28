@@ -4008,6 +4008,10 @@ func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMet
 	if explode, ok := plan.(*plans.RecordQueryExplodePlan); ok {
 		return deriveColumnsFromProjectionlessExplode(explode)
 	}
+	if tf, ok := plan.(*plans.RecordQueryTableFunctionPlan); ok {
+		rowType, _ := tf.GetStreamValue().Type().(*values.RecordType)
+		return columnsOfRowType(rowType)
+	}
 	if proj, ok := plan.(*plans.RecordQueryProjectionPlan); ok {
 		return deriveColumnsFromProjection(proj, md)
 	}
@@ -4113,7 +4117,13 @@ func deriveColumnsFromProjectionlessExplode(explode *plans.RecordQueryExplodePla
 		!values.FlowedTypeEquals(layout.Carrier(), rowType) {
 		return nil
 	}
+	return columnsOfRowType(rowType)
+}
 
+func columnsOfRowType(rowType *values.RecordType) []executor.ColumnDef {
+	if rowType == nil {
+		return nil
+	}
 	cols := make([]executor.ColumnDef, len(rowType.Fields))
 	for ordinal, field := range rowType.Fields {
 		typeName := cascadesTypeName(field.FieldType)

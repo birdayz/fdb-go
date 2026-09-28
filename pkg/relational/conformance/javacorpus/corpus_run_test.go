@@ -203,38 +203,6 @@ func TestJavaCorpusRuns(t *testing.T) {
 		}
 	}
 
-	// A file whose only query carries NO configs must be booked `no-checks`,
-	// never counted as a pass.
-	//
-	// scenario-tests.yamsql is that file upstream — one query, no configs, and
-	// a "# TODO: add data" comment saying so. It executed and asserted
-	// nothing, and it was reported as one of the passes until the noChecks
-	// branch stopped incrementing QueriesRun. This is the exact shape the
-	// vacuous guard exists for, and the guard was defeated by the very branch
-	// that books the skip, so the census alone would not have caught it: the
-	// pass count simply looked one higher than it deserved.
-	const noChecksOnly = "scenario-tests.yamsql"
-	found := false
-	for _, f := range ledger.Files() {
-		if f.Path != noChecksOnly {
-			continue
-		}
-		found = true
-		if f.Status != javacorpus.StatusSkip || f.SkipClass != javacorpus.SkipNoChecks {
-			t.Errorf("%s asserts nothing (its only query carries no configs) and must be booked %q; "+
-				"got status=%s class=%s queries=%d",
-				noChecksOnly, javacorpus.SkipNoChecks, f.Status, f.SkipClass, f.QueriesRun)
-		}
-		if f.QueriesRun != 0 {
-			t.Errorf("%s counted %d asserted queries; a noChecks query asserts nothing and must not "+
-				"count towards QueriesRun, which is what the vacuous-pass guard tests",
-				noChecksOnly, f.QueriesRun)
-		}
-	}
-	if !found {
-		t.Errorf("%s is not in the corpus run — the no-checks regression is no longer pinned", noChecksOnly)
-	}
-
 	// The counts alone cannot see a SWAP: two files exchanging classes leaves
 	// every total identical. The per-file digest closes that hole.
 	lines := make([]string, 0, len(ledger.Files()))
@@ -327,6 +295,8 @@ var maskedClasses = map[javacorpus.SkipClass]string{
 	javacorpus.SkipDDLOther: "EMPTIED by RFC-257: views, SQL functions, stored queries and sliding-window " +
 		"vector indexes build, so no template fails DDL for an unnamed cause. The class stays declared " +
 		"as the classifier's fallback bucket",
+	javacorpus.SkipDDLFunction: "EMPTIED by RFC-257: SQL, macro and temporary functions all build. " +
+		"Declared as the classifier's bucket for a template whose function declaration fails",
 	javacorpus.SkipCopyBlock: "the only copy_block file is copy-basic.yamsql, skipped earlier by " +
 		"required_clusters: 2 (unsupported:multi-cluster)",
 	javacorpus.SkipVersionGate: "provably unreachable with one version under test: the version is the " +

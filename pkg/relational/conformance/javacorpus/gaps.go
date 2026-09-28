@@ -93,7 +93,6 @@ var engineGaps = []EngineGap{
 	// its first table-valued function in FROM, which the source parser still
 	// rejects explicitly. Pin the statement because the file contains several
 	// later range() queries and only this first blocker is measured here.
-	{"table-functions.yamsql", SkipGapTableValuedFunction, `"select * from range(1, 4)": 0A000: unsupported table source item *antlrgen.TableValuedFunctionContext; only plain table names are supported`, "CQ-72"},
 
 	// A correlated EXISTS whose body is a set operation (UNION ALL).
 	{"union-empty-tables.yamsql", SkipGapCorrelatedExistsSetOp, "correlated EXISTS: unsupported query body shape", "CQ-72"},
@@ -130,6 +129,8 @@ var engineGaps = []EngineGap{
 	// Go sorts in memory.
 	{"arrays-unnesting.yamsql", SkipConformanceGoAccepts, `line 143: "SELECT SQ.\"item\" FROM \"T1_indexed\" AS \"row\", (SELECT \"item\" FROM \"row\".\"items\" AS \"item\") AS SQ ORDER BY SQ.\"item\"": expecting statement to throw an error 0AF00, however it succeeded`, "Java issue #3896"},
 	{"array-agg-tests.yamsql", SkipConformanceGoAccepts, `line 423: "SELECT m.mid, r.rid, (SELECT ARRAY_AGG(a.url) FROM doc_asset a WHERE a.rid = r.rid) AS assets`, "scalar subquery in the SELECT list is a Go grammar extension"},
+	{"groupby-tests.yamsql", SkipConformanceGoAccepts, `line 339: "SELECT col1 FROM T1 GROUP BY col1 ORDER BY COUNT((T1.*))": expecting statement to throw an error 0AF00, however it succeeded`, "ORDER BY an aggregate is a Go extension"},
+	{"user-defined-macro-function-tests.yamsql", SkipConformanceGoAccepts, `line 329: "select temp_constructor(r.u.w) from nested where id = 1": expecting statement to throw an error 42F18, however it succeeded`, "Java issue #4317"},
 	{"maxRows.yamsql", SkipConformanceGoAccepts, `"select * from ta limit 5": expecting statement to throw an error 0AF00, however it succeeded`, "CQ-72"},
 
 	// `USE INDEX (i1)` where i1 is SPARSE: Java threads the hint as
@@ -361,6 +362,8 @@ var engineGaps = []EngineGap{
 	// the connect names a schema Go never stored. The runner upper-cased
 	// Java's URIs until the fold was confined to the names it generates, which
 	// is what hid this gap.
+	{"case-sensitivity.yamsql", SkipGapCaseSensitiveIdentifiers, "42F59: table with name 'TABLE1' already exists", "TODO.md, Go ignores CASE_SENSITIVE_IDENTIFIERS"},
+	{"keyword-case-insensitivity.yamsql", SkipGapCaseSensitiveIdentifiers, `column names "COLUMN" and "column" collide case-insensitively`, "TODO.md, Go folds quoted identifiers in the positional row layout"},
 	{"setup-with-connection-options.yamsql", SkipGapCaseSensitiveIdentifiers, "42F51: Schema </FRL/CASE_SENSITIVE_TEMPLATE/test1> does not exist in the catalog!", "TODO.md, Go ignores CASE_SENSITIVE_IDENTIFIERS"},
 	// A correlated EXISTS in the SELECT projection combined with a WHERE
 	// EXISTS — Cascades declines the double-EXISTS shape.

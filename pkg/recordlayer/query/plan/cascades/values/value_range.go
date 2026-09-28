@@ -1,163 +1,94 @@
 package values
 
-// RangeValue is the SQL range(begin, end, step) table-valued
-// function — produces a stream of LONG values from
-// `beginInclusive` (default 0) up to but not including `endExclusive`,
-// stepped by `step` (default 1). Mirrors Java's
-// `com.apple.foundationdb.record.query.plan.cascades.values.RangeValue`.
-//
-// Java's class is a STREAMING value (`StreamingValue` +
-// `CreatesDynamicTypesValue`) — its primary eval path is
-// `evalAsStream` which returns a `RecordCursor<QueryResult>`. The
-// scalar `eval` method throws because per-row evaluation makes no
-// sense for a table-function. Go mirrors this: Evaluate
-// returns nil per the placeholder pattern, and a separate
-// EvaluateAsStream method materialises the finite range as `[]int64`
-// for testability.
-//
-// Result type: a 1-column record with LONG-valued column "ID" — the
-// row shape Java's currentRangeValue produces. Go exposes the
-// element type (NotNullLong) directly via Type since record-typed
-// returns are awkward without StreamingValue / record-type
-// sub-shape support; consumers that care about the row shape can
-// wrap in a RecordConstructorValue.
-//
-// Cardinality is statically known when begin/end/step all evaluate
-// to constants — useful for the cost model to estimate. Go
-// exposes Cardinality() with the same `floorDiv(end-begin, step)`
-// formula Java uses.
+import "fmt"
+
+// RangeValue is the built-in range(begin, end, step) table function (Java's
+// RangeValue): a stream of rows (ID LONG) from beginInclusive up to but not
+// including endExclusive. Children are LONG-promoted at construction.
 type RangeValue struct {
 	BeginInclusive Value
 	EndExclusive   Value
 	Step           Value
 }
 
-// NewRangeValue constructs a RangeValue. All three children are
-// REQUIRED (Java's grammar lets begin and step default to 0 and 1
-// respectively, but those defaults are added at the parser level —
-// the constructed Value carries explicit children).
+// rangeRowType is Java's currentRangeValue type: one non-null LONG column ID.
+var rangeRowType = &RecordType{Fields: []Field{{Name: "ID", Ordinal: 0, FieldType: NotNullLong}}}
+
 func NewRangeValue(begin, end, step Value) *RangeValue {
-	return &RangeValue{
-		BeginInclusive: begin,
-		EndExclusive:   end,
-		Step:           step,
-	}
+	return &RangeValue{BeginInclusive: begin, EndExclusive: end, Step: step}
 }
 
-// Children returns [begin, end, step] in source order (matches
-// Java's withChildren list ordering).
+// Children returns [begin, end, step].
 func (r *RangeValue) Children() []Value {
 	return []Value{r.BeginInclusive, r.EndExclusive, r.Step}
 }
 
-// Name returns the SQL function name.
 func (*RangeValue) Name() string { return "range" }
 
-// Type returns NotNullLong — the element type of the produced range.
-//
-// Note: Java's getResultType() returns Type.Record (a 1-column
-// record with LONG-valued "ID"). Go exposes the element
-// type directly because record-typed Type wrappers without proper
-// StreamingValue support would force the seed to introduce the
-// streaming infrastructure piecemeal. Wrapping in a
-// RecordConstructorValue at the call site is the canonical way to
-// produce the record-shaped row.
-func (*RangeValue) Type() Type { return NotNullLong }
+// Type is the per-row record type (ID LONG).
+func (*RangeValue) Type() Type { return rangeRowType }
 
-// Evaluate is a placeholder — RangeValue is a streaming Value;
-// per-row eval makes no sense. Java throws IllegalStateException;
-// Go surfaces nil per the existing placeholder pattern.
-//
-// Use EvaluateAsStream for the materialised range expansion.
+// Evaluate: a streaming value has no scalar result (Java throws).
 func (*RangeValue) Evaluate(any) (any, error) { return nil, nil }
 
-// EvaluateAsStream materialises the finite range as a slice of
-// int64 elements: [begin, begin+step, begin+2*step, ...) up to but
-// excluding `end`. Returns nil if any of the children evaluate to
-// non-int64, or if the range is degenerate (step <= 0 with positive
-// direction, etc.).
-//
-// Real Java RangeValue produces a streaming RecordCursor — the
-// finite materialisation here is for tests + cost-model cardinality
-// estimation. Production execution would route through a streaming
-// integration (gated on StreamingValue port).
+// RangeBoundsError is Java's RecordCoreException from Cursor.checkValidRange.
+type RangeBoundsError struct{ Message string }
+
+func (e *RangeBoundsError) Error() string { return e.Message }
+
+// Bounds evaluates the three children and applies Java's checkValidRange.
+func (r *RangeValue) Bounds(evalCtx any) (begin, end, step int64, err error) {
+	vals := [3]int64{}
+	for i, child := range []Value{r.BeginInclusive, r.EndExclusive, r.Step} {
+		if child == nil {
+			return 0, 0, 0, fmt.Errorf("range bound %d is unbound", i)
+		}
+		v, evalErr := child.Evaluate(evalCtx)
+		if evalErr != nil {
+			return 0, 0, 0, evalErr
+		}
+		n, ok := v.(int64)
+		if !ok {
+			return 0, 0, 0, fmt.Errorf("range bound %d evaluated to %T, want LONG", i, v)
+		}
+		vals[i] = n
+	}
+	begin, end, step = vals[0], vals[1], vals[2]
+	return begin, end, step, CheckRangeBounds(begin, end, step)
+}
+
+// CheckRangeBounds is Java's RangeValue.Cursor.checkValidRange.
+func CheckRangeBounds(position, end, step int64) error {
+	switch {
+	case position < 0:
+		return &RangeBoundsError{Message: "only non-negative position is allowed in range"}
+	case end < 0:
+		return &RangeBoundsError{Message: "only non-negative exclusive end is allowed in range"}
+	case step <= 0:
+		return &RangeBoundsError{Message: "only positive step is allowed in range"}
+	}
+	return nil
+}
+
+// EvaluateAsStream materialises the range, or nil when the bounds are invalid.
 func (r *RangeValue) EvaluateAsStream(evalCtx any) []int64 {
-	// Bounds are constant literals; an evaluation error degrades to the
-	// same "not an int64 → empty stream" path as a non-int64 result.
-	beginV, err := r.BeginInclusive.Evaluate(evalCtx)
+	begin, end, step, err := r.Bounds(evalCtx)
 	if err != nil {
 		return nil
-	}
-	begin, ok := beginV.(int64)
-	if !ok {
-		return nil
-	}
-	endV, err := r.EndExclusive.Evaluate(evalCtx)
-	if err != nil {
-		return nil
-	}
-	end, ok := endV.(int64)
-	if !ok {
-		return nil
-	}
-	stepV, err := r.Step.Evaluate(evalCtx)
-	if err != nil {
-		return nil
-	}
-	step, ok := stepV.(int64)
-	if !ok {
-		return nil
-	}
-	if step == 0 {
-		return nil // infinite loop guard — Java throws on step=0 too
-	}
-	if step > 0 && begin >= end {
-		return nil // empty range (matches Java's empty-cursor case)
-	}
-	if step < 0 && begin <= end {
-		return nil // empty range (negative step over rising bounds)
 	}
 	out := []int64{}
-	for v := begin; (step > 0 && v < end) || (step < 0 && v > end); v += step {
+	for v := begin; v < end; v += step {
 		out = append(out, v)
 	}
 	return out
 }
 
-// Cardinality returns the static row count if all three children
-// are constant-foldable to int64, else returns (-1, false).
-//
-// Mirrors Java's getCardinalities — used by the cost model when
-// the planner has a RangeValue table function in scope and wants
-// to size operators above it.
+// Cardinality is Java's floorDiv(end - begin, step) over constant bounds.
 func (r *RangeValue) Cardinality() (int64, bool) {
-	// Bounds are constant literals; an evaluation error degrades to the
-	// same "not constant-foldable" path as a non-int64 result.
-	beginV, err := r.BeginInclusive.Evaluate(nil)
+	begin, end, step, err := r.Bounds(nil)
 	if err != nil {
 		return -1, false
 	}
-	begin, ok := beginV.(int64)
-	if !ok {
-		return -1, false
-	}
-	endV, err := r.EndExclusive.Evaluate(nil)
-	if err != nil {
-		return -1, false
-	}
-	end, ok := endV.(int64)
-	if !ok {
-		return -1, false
-	}
-	stepV, err := r.Step.Evaluate(nil)
-	if err != nil {
-		return -1, false
-	}
-	step, ok := stepV.(int64)
-	if !ok || step == 0 {
-		return -1, false
-	}
-	// floorDiv(end - begin, step), matching Java's Math.floorDiv.
 	num := end - begin
 	if (num < 0) != (step < 0) && num%step != 0 {
 		return num/step - 1, true

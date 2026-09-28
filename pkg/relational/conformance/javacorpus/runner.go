@@ -118,6 +118,14 @@ func Run(ctx context.Context, corpus *javayamsql.Corpus, path string, cfg Config
 		res.Skips = append(res.Skips, Skip{Class: skipErr.class, Where: path, Detail: skipErr.detail})
 		return res
 	}
+	// A failure this run has already measured, booked, and pinned to its exact
+	// rejection (a DDL one included). Any OTHER failure in the same file stays a hard failure.
+	if gap, ok := gapFor(path, runErr); ok {
+		res.Status = StatusSkip
+		res.SkipClass = gap.Class
+		res.Skips = append(res.Skips, Skip{Class: gap.Class, Where: path, Detail: gap.Booking + ": " + runErr.Error()})
+		return res
+	}
 	// A schema_template the engine will not create is an engine gap with a
 	// name, not a corpus regression — that is what the DDL skip classes are.
 	var ddl *ddlError
@@ -126,14 +134,6 @@ func Run(ctx context.Context, corpus *javayamsql.Corpus, path string, cfg Config
 		res.Status = StatusSkip
 		res.SkipClass = class
 		res.Skips = append(res.Skips, Skip{Class: class, Where: path, Detail: ddl.Error()})
-		return res
-	}
-	// A failure this run has already measured, booked, and pinned to its exact
-	// rejection. Any OTHER failure in the same file stays a hard failure.
-	if gap, ok := gapFor(path, runErr); ok {
-		res.Status = StatusSkip
-		res.SkipClass = gap.Class
-		res.Skips = append(res.Skips, Skip{Class: gap.Class, Where: path, Detail: gap.Booking + ": " + runErr.Error()})
 		return res
 	}
 
@@ -645,6 +645,10 @@ func (r *runner) open(t connTarget) (*sql.DB, error) {
 }
 
 func (r *runner) executeSetup(ctx context.Context, resource string, blk *javayamsql.Block) error {
+	if !javayamsql.SupportedAtCurrentVersion(blk.Setup.SupportedVersion) {
+		r.skip(SkipVersionGate, resource+" setup", "block supported_version")
+		return nil
+	}
 	target, err := r.resolveConnect(resource, blk.Setup.Connect)
 	if err != nil {
 		return fmt.Errorf("setup connect: %w", err)

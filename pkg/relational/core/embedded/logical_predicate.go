@@ -1311,7 +1311,7 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 		}
 		return true
 	}
-	addInlineSource := func(item *antlrgen.InlineTableItemContext, alias, bindingID string, hidden []string) bool {
+	addInlineSource := func(item antlrgen.ITableSourceItemContext, alias, bindingID string, hidden []string) bool {
 		src, ok := parsedInlineValuesScopeSource(item, alias, bindingID, md)
 		if !ok {
 			scopeDropRisk = true

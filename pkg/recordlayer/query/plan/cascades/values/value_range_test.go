@@ -10,8 +10,9 @@ import (
 func TestRangeValue_Type(t *testing.T) {
 	t.Parallel()
 	v := NewRangeValue(LiteralValue(int64(0)), LiteralValue(int64(10)), LiteralValue(int64(1)))
-	if !v.Type().Equals(NotNullLong) {
-		t.Fatalf("Type = %v, want NotNullLong", v.Type())
+	rt, ok := v.Type().(*RecordType)
+	if !ok || len(rt.Fields) != 1 || rt.Fields[0].Name != "ID" || !rt.Fields[0].FieldType.Equals(NotNullLong) {
+		t.Fatalf("Type = %v, want (ID LONG)", v.Type())
 	}
 }
 
@@ -65,13 +66,14 @@ func TestRangeValue_EvaluateAsStream_StepBy2(t *testing.T) {
 	}
 }
 
-func TestRangeValue_EvaluateAsStream_NegativeStep(t *testing.T) {
+// Java's checkValidRange refuses a negative begin/end and a non-positive step.
+func TestRangeValue_BoundsRejectsJavaInvalidRanges(t *testing.T) {
 	t.Parallel()
-	v := NewRangeValue(LiteralValue(int64(10)), LiteralValue(int64(0)), LiteralValue(int64(-1)))
-	got := v.EvaluateAsStream(nil)
-	want := []int64{10, 9, 8, 7, 6, 5, 4, 3, 2, 1}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("EvaluateAsStream = %v, want %v", got, want)
+	for _, b := range [][3]int64{{10, 0, -1}, {-1, 4, 1}, {0, -1, 1}, {1, 4, 0}} {
+		v := NewRangeValue(LiteralValue(b[0]), LiteralValue(b[1]), LiteralValue(b[2]))
+		_, _, _, err := v.Bounds(nil)
+		var rbe *RangeBoundsError
+		require.ErrorAs(t, err, &rbe, "bounds %v", b)
 	}
 }
 

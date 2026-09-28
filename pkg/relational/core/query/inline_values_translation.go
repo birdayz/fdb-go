@@ -13,6 +13,14 @@ import (
 // agree before publishing the physical leaf so a later mutation of the
 // collection's ordinary Type graph cannot split logical and physical schemas.
 func (t *cascadesTranslator) translateInlineValues(source *logical.LogicalInlineValues) expressions.RelationalExpression {
+	if source != nil && source.StreamValue() != nil {
+		tf, err := expressions.NewTableFunctionExpression(source.StreamValue())
+		if err != nil {
+			t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery, "table function source: %v", err))
+			return nil
+		}
+		return tf
+	}
 	if source == nil || source.CollectionValue() == nil {
 		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
 			"inline VALUES source has no exact literal collection"))

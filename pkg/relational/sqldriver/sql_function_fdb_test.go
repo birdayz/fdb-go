@@ -64,7 +64,7 @@ func TestFDB_SQLFunctions(t *testing.T) {
 	}
 
 	for q, code := range map[string]api.ErrorCode{
-		"SELECT * FROM below('a')":            api.ErrCodeUndefinedFunction,
+		"SELECT * FROM below('a')":            api.ErrCodeInvalidArgumentForFunction,
 		"SELECT * FROM below()":               api.ErrCodeUndefinedFunction,
 		"SELECT * FROM below":                 api.ErrCodeUndefinedFunction,
 		"SELECT * FROM below(1, 'x', 3)":      api.ErrCodeUndefinedFunction,
@@ -105,6 +105,7 @@ func TestFDB_MacroFunctions(t *testing.T) {
 		"SELECT plus(id) FROM t WHERE id = 3":           "[13]",
 		"SELECT id FROM t WHERE px(p) >= 5 ORDER BY id": "[2 3]",
 		"SELECT id FROM big(4) ORDER BY id":             "[2 3]",
+		"SELECT px((7, 8)) FROM range(1, 3)":            "[7 7]",
 	} {
 		rows, err := db.QueryContext(ctx, q)
 		if err != nil {
@@ -127,7 +128,7 @@ func TestFDB_MacroFunctions(t *testing.T) {
 	for q, code := range map[string]api.ErrorCode{
 		"SELECT plus() FROM t":        api.ErrCodeUndefinedFunction,
 		"SELECT plus(1, 2, 3) FROM t": api.ErrCodeUndefinedFunction,
-		"SELECT px(id) FROM t":        api.ErrCodeUndefinedFunction,
+		"SELECT px(id) FROM t":        api.ErrCodeInvalidArgumentForFunction,
 		"SELECT nope(id) FROM t":      api.ErrCodeUnsupportedQuery,
 	} {
 		_, err := db.QueryContext(ctx, q)

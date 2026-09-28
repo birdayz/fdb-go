@@ -175,7 +175,11 @@ func boundDependencies(op logical.LogicalOperator, ctes map[*logical.CTEProducer
 		}
 		r.local[values.NamedCorrelationIdentifier(strings.ToUpper(sourceBindingName(node)))] = struct{}{}
 	case *logical.LogicalInlineValues:
-		addValue(node.CollectionValue())
+		if node.StreamValue() != nil {
+			addValue(node.StreamValue())
+		} else {
+			addValue(node.CollectionValue())
+		}
 		r.local[values.NamedCorrelationIdentifier(strings.ToUpper(sourceBindingName(node)))] = struct{}{}
 	case *logical.LogicalUnnest:
 		addValue(node.CorrelatedCollection)

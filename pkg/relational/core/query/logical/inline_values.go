@@ -20,7 +20,23 @@ type LogicalInlineValues struct {
 	Alias      string
 	Binding    string
 	collection values.Value
+	// stream is set instead of collection for a built-in table function
+	// (range): Java lowers it to a TableFunctionExpression, not an Explode.
+	stream     values.Value
 	resultType values.ExactTypeHandle
+}
+
+// NewTableFunctionSource constructs a table-function source over a streaming
+// Value whose Type is the per-row record type.
+func NewTableFunctionSource(alias string, stream values.Value) (*LogicalInlineValues, error) {
+	if alias == "" || stream == nil {
+		return nil, fmt.Errorf("table function source requires an alias and a stream value")
+	}
+	resultType, err := values.SnapshotExactType(stream.Type())
+	if err != nil {
+		return nil, fmt.Errorf("table function result row: %w", err)
+	}
+	return &LogicalInlineValues{Alias: alias, stream: stream, resultType: resultType}, nil
 }
 
 // NewInlineValues constructs an exact literal-table source. alias is the
@@ -55,10 +71,19 @@ func NewInlineValues(alias string, collection values.Value) (*LogicalInlineValue
 func (*LogicalInlineValues) Children() []LogicalOperator { return []LogicalOperator{} }
 
 func (v *LogicalInlineValues) Explain(indent string) string {
+	if v.stream != nil {
+		return fmt.Sprintf("%sTableFunction(%s AS %s)", indent, values.ExplainValue(v.stream), v.Alias)
+	}
 	return fmt.Sprintf("%sInlineValues(%s AS %s)", indent, values.ExplainValue(v.collection), v.Alias)
 }
 
 func (v *LogicalInlineValues) CollectionValue() values.Value { return v.collection }
+
+func (v *LogicalInlineValues) StreamValue() values.Value { return v.stream }
+
+// SetStream binds a table function's arguments once its lateral scope is
+// known; the row type is fixed by the function, not by its arguments.
+func (v *LogicalInlineValues) SetStream(stream values.Value) { v.stream = stream }
 
 func (v *LogicalInlineValues) ResultType() values.Type { return v.resultType.Type() }
 

@@ -55,3 +55,39 @@ func TestMacroFunctionProtoRoundTrip(t *testing.T) {
 		t.Errorf("round trip changed the macro:\n%s\n%s", text, prototext.Format(again))
 	}
 }
+
+// `a[1]` over an array parameter serializes as Java's PSubscriptValue (index,
+// source) and reads back typed as the nullable element.
+func TestSubscriptMacroProtoRoundTrip(t *testing.T) {
+	t.Parallel()
+	st1 := NewRecordType("ST1", true, []Field{{Name: "Y", FieldType: NullableLong}})
+	arr := &ArrayType{ElementType: st1, Nullable: true}
+	param, err := NewQuantifiedObjectValue(NamedCorrelationIdentifier("c1"), arr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &MacroFunction{
+		Name: "FIRST", Params: []QuantifiedObjectValue{param}, ParamTypes: []Type{arr},
+		ParamNames: []string{"A"}, Defaults: []Value{nil},
+		Body: NewSubscriptValue(param, &ConstantValue{Value: int64(1), Typ: NotNullLong}, st1),
+	}
+	p, err := m.ToProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := MacroFunctionFromProto(p.GetUserDefinedMacroFunction())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub, ok := back.Body.(*SubscriptValue)
+	if !ok || !sub.Type().Equals(st1) {
+		t.Fatalf("body = %#v, want a subscript typed %v", back.Body, st1)
+	}
+	again, err := back.ToProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !proto.Equal(p, again) {
+		t.Errorf("round trip changed the macro:\n%s\n%s", prototext.Format(p), prototext.Format(again))
+	}
+}

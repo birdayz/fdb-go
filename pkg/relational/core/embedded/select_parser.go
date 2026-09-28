@@ -200,10 +200,9 @@ type selectQuery struct {
 	// derivedQuery is non-nil when the FROM clause is a subquery (derived table).
 	// When set, tableName holds the alias; the query is materialized at execution time.
 	derivedQuery antlrgen.IQueryContext
-	// inlineValues carries the parse-tree leaf for a literal VALUES table.
-	// This parser layer does not assign logical semantics; it only preserves the
-	// distinct source kind for the later builder.
-	inlineValues *antlrgen.InlineTableItemContext
+	// inlineValues carries the parse-tree leaf for a literal VALUES table or a
+	// built-in table function (range).
+	inlineValues antlrgen.ITableSourceItemContext
 }
 
 // joinType enumerates the join flavours; threaded through to the
@@ -271,8 +270,8 @@ type joinClause struct {
 	// CTE keyed by `alias` before the join executor runs, mirroring
 	// the first-source derived-table handling.
 	derivedQuery antlrgen.IQueryContext
-	// inlineValues is the literal-table source for this comma FROM leg.
-	inlineValues *antlrgen.InlineTableItemContext
+	// inlineValues is the literal-table / table-function source for this leg.
+	inlineValues antlrgen.ITableSourceItemContext
 	// bindingID is the leg's binding correlation name when its alias
 	// DUPLICATES an earlier FROM leg's at the same level; empty when the
 	// alias itself binds (every non-duplicate leg — zero change for
@@ -2382,7 +2381,7 @@ type fromSource struct {
 	sourceSegments     []string
 	tableNamePath      []string // selectQuery.tableNamePath
 	derivedQuery       antlrgen.IQueryContext
-	inlineValues       *antlrgen.InlineTableItemContext
+	inlineValues       antlrgen.ITableSourceItemContext
 	joins              []joinClause
 	whereExpr          antlrgen.IWhereExprContext
 	// catalogAwareInnerPlan is the PRIMARY derived source's inner plan, built
@@ -2398,16 +2397,28 @@ type fromSource struct {
 // deterministic private correlation when the optional definition is absent.
 // It is parser metadata only: output column names remain in the carried parse
 // node and are interpreted by the semantic builder in a later chunk.
-func inlineValuesCarrierAlias(item *antlrgen.InlineTableItemContext, position int) string {
-	if item != nil && item.InlineTableDefinition() != nil {
-		definition := item.InlineTableDefinition()
-		if definition.TableName() != nil {
+func inlineValuesCarrierAlias(item antlrgen.ITableSourceItemContext, position int) string {
+	switch item := item.(type) {
+	case *antlrgen.InlineTableItemContext:
+		if definition := item.InlineTableDefinition(); definition != nil && definition.TableName() != nil {
 			if alias := functions.FullIdToName(definition.TableName().FullId()); alias != "" {
 				return alias
 			}
 		}
+	case *antlrgen.TableValuedFunctionContext:
+		if item.GetAlias() != nil {
+			return functions.NormalizeIdentifier(item.GetAlias().GetText())
+		}
 	}
 	return fmt.Sprintf("Q$INLINE_VALUES%d", position)
+}
+
+func isInlineSourceItem(item antlrgen.ITableSourceItemContext) bool {
+	switch item.(type) {
+	case *antlrgen.InlineTableItemContext, *antlrgen.TableValuedFunctionContext:
+		return true
+	}
+	return false
 }
 
 // rejectAtOrdinality rejects an `AT atAlias` ordinality clause on an OUTER
@@ -2859,7 +2870,7 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 				derivedQuery: item.Query(),
 				fromComma:    true,
 			})
-		case *antlrgen.InlineTableItemContext:
+		case *antlrgen.InlineTableItemContext, *antlrgen.TableValuedFunctionContext:
 			alias := inlineValuesCarrierAlias(item, len(extraCrossJoins)+1)
 			extraCrossJoins = append(extraCrossJoins, joinClause{
 				tableName:    alias,
@@ -2905,7 +2916,7 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 		return fs, nil
 	}
 
-	if inlineItem, isInline := srcBase.TableSourceItem().(*antlrgen.InlineTableItemContext); isInline {
+	if inlineItem := srcBase.TableSourceItem(); isInlineSourceItem(inlineItem) {
 		alias := inlineValuesCarrierAlias(inlineItem, 0)
 		joins, jErr := parseJoinClauses(srcBase, alias, extraCrossJoins)
 		if jErr != nil {

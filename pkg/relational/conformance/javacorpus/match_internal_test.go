@@ -507,8 +507,7 @@ func TestGapSignaturesAreSpecific(t *testing.T) {
 // statementExactGaps are the gap entries whose signature must quote the EXACT
 // failing statement rather than the class-level rejection text alone.
 //
-// These files are big — array-join-at.yamsql is thirty PartiQL AT shapes,
-// table-functions.yamsql contains several range() calls, and functions.yamsql
+// These files are big — array-join-at.yamsql is thirty PartiQL AT shapes and functions.yamsql
 // asserts 111 queries. A generic signature converts the entry from "this
 // measured divergence" into "any failure of this shape anywhere in the file",
 // which is precisely the mute allowlist the gap table exists not to be: a NEW
@@ -518,7 +517,6 @@ func TestGapSignaturesAreSpecific(t *testing.T) {
 // The values are prefixes of the runner's `%q`-formatted statement text, so the
 // embedded SQL quotes appear escaped.
 var statementExactGaps = map[string]string{
-	"array-join-at.yamsql":   `(SELECT \"val2\" FROM T1 AS \"OtherT1\"`,
-	"functions.yamsql":       `"update C set st = coalesce(st, null) where c1 = 4 returning \"new\".st"`,
-	"table-functions.yamsql": `"select * from range(1, 4)"`,
+	"array-join-at.yamsql": `(SELECT \"val2\" FROM T1 AS \"OtherT1\"`,
+	"functions.yamsql":     `"update C set st = coalesce(st, null) where c1 = 4 returning \"new\".st"`,
 }

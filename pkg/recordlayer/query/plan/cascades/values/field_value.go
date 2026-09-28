@@ -447,6 +447,13 @@ func resolveFieldAccess(child Value, requests []*fieldRequest) (Value, error) {
 		return &resultCopy, nil
 	case *RecordConstructorValue:
 		return resolveAgainstRecordConstructor(typed, requests)
+	case *PromoteValue:
+		// A promoted record literal (a struct argument bound to a macro's
+		// typed parameter): read the field through the per-field promotion.
+		if pushed, ok := promoteIntoRecordConstructor(typed.Child, typed.Target); ok {
+			return resolveAgainstRecordConstructor(pushed, requests)
+		}
+		return nil, resolutionError(FieldUnsupportedChild, "field.child", "field child is a promotion of a non-constructor")
 	default:
 		// Do not call an open Value method at this admission boundary.
 		return nil, resolutionError(FieldUnsupportedChild, "field.child", "field child is not a QOV, admitted FieldValue, or record constructor")
@@ -1066,4 +1073,28 @@ func protoScalarShapeCompatible(field protoreflect.FieldDescriptor, expected *ex
 		return mapped == TypeCodeString
 	}
 	return false
+}
+
+// promoteIntoRecordConstructor distributes a record promotion over a record
+// constructor's fields, renaming them to the target's.
+func promoteIntoRecordConstructor(child Value, target Type) (*RecordConstructorValue, bool) {
+	rcv, ok := child.(*RecordConstructorValue)
+	rt, isRecord := target.(*RecordType)
+	if !ok || !isRecord || len(rcv.Fields) != len(rt.Fields) {
+		return nil, false
+	}
+	fields := make([]RecordConstructorField, len(rcv.Fields))
+	for i, f := range rcv.Fields {
+		want := rt.Fields[i].FieldType
+		v := f.Value
+		if !v.Type().Equals(want) {
+			if nested, ok := promoteIntoRecordConstructor(v, want); ok {
+				v = nested
+			} else {
+				v = NewPromoteValue(v, want)
+			}
+		}
+		fields[i] = RecordConstructorField{Name: rt.Fields[i].Name, Value: v}
+	}
+	return NewRawRecordConstructorValue(fields...), true
 }

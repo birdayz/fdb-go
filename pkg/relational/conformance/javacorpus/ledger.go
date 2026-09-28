@@ -184,8 +184,6 @@ const (
 	// SkipGapCatalogTables is a query against the catalog's own system tables.
 	SkipGapCatalogTables SkipClass = "engine-gap:catalog-system-tables"
 
-	// SkipGapTableValuedFunction is a table-valued function in FROM.
-	SkipGapTableValuedFunction SkipClass = "engine-gap:table-valued-function"
 	// SkipGapCorrelatedExistsSetOp is a correlated EXISTS over a set operation.
 	SkipGapCorrelatedExistsSetOp SkipClass = "engine-gap:correlated-exists-setop"
 	// SkipGapNestedRecursiveWith is a WITH nested inside a recursive CTE body.
@@ -268,7 +266,6 @@ func AllSkipClasses() []SkipClass {
 		SkipGapDMLReturning,
 		SkipGapCatalogTables,
 
-		SkipGapTableValuedFunction,
 		SkipGapCorrelatedExistsSetOp,
 		SkipGapNestedRecursiveWith,
 		SkipGapReturningDryRun,

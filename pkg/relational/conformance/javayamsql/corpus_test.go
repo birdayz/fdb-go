@@ -17,12 +17,12 @@ import (
 // The census covers the files that PARSE, so its file count is the corpus total
 // minus the parse-level negatives: 240 - 25 = 215. The three constants are
 // asserted against each other below so they cannot drift apart.
-const pinnedCensus = "files=216 blocks{copy_block=4,include=25,options=65,schema_template=193,setup=211,test_block=341,transaction_setups=17} queries=3160 commands{load schema template=9,query=3160,set schema state=7} configs{count=161,debugger=3,error=304,explain=1160,explainContains=50,initialVersionAtLeast=108,initialVersionLessThan=108,maxRows=39,result=1843,resultMetadata=318,setup=21,setupReference=65,supported_version=301,unorderedResult=617} tags{!a=3,!b=8,!current_version=23,!f=14,!ignore=48,!in=5,!l=458,!n=10,!not_null=470,!null=330,!pos=137,!r=3,!randomStr=15,!sc=1,!uuid=186,!v16=216,!v32=46,!v64=26} rows=6450 cells=14187 positional_cells=6008 segments=387 includes=25"
+const pinnedCensus = "files=230 blocks{copy_block=4,include=25,options=76,schema_template=207,setup=228,test_block=366,transaction_setups=17} queries=3391 commands{load schema template=10,query=3391,set schema state=8} configs{count=174,debugger=3,error=357,explain=1209,explainContains=50,initialVersionAtLeast=113,initialVersionLessThan=113,maxRows=39,result=1918,resultMetadata=328,setup=24,setupReference=65,supported_version=335,unorderedResult=677} tags{!a=3,!b=8,!current_version=20,!f=14,!ignore=48,!in=5,!l=541,!n=11,!not_null=470,!null=354,!pos=138,!r=3,!randomStr=15,!sc=1,!uuid=186,!v16=267,!v32=46,!v64=26} rows=6815 cells=14768 positional_cells=6286 segments=446 includes=25"
 
 // pinnedFileCount is asserted separately from the census so that a corpus that
 // gained or lost files fails with an obvious message rather than a 900-column
 // string diff.
-const pinnedFileCount = 241
+const pinnedFileCount = 255
 
 // pinnedParseLevelNegatives is how many of those 240 the parser must refuse.
 const pinnedParseLevelNegatives = 25
