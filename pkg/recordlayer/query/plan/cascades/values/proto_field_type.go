@@ -4,6 +4,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/pkg/recordlayer/protoname"
+	"fdb.dev/pkg/recordlayer/protoscope"
 )
 
 // FieldTypeForProtoField maps a proto field descriptor to the logical column
@@ -26,9 +27,11 @@ import (
 //
 // Conventions, all deliberate:
 //
-//   - Nullability follows the value the row materializer can actually emit:
-//     optional/presence-bearing fields may be nil, while proto3 scalars,
-//     required fields, and flat repeated fields always have a value.
+//   - Nullability is Java's (Type.Record.Field.fromDescriptor): a field that is
+//     not an array is nullable unless it is REQUIRED, a proto3 scalar without
+//     explicit presence included (its default reads as absent,
+//     protoFieldNullable); a flat repeated field is a NOT NULL array of NOT
+//     NULL elements.
 //   - Repeated fields are exact ARRAYs. ProtoFieldToRowValue materializes them
 //     as []any, so returning the element scalar (the old bug) or Unknown (the
 //     old workaround) both misdescribe the executable slot.
@@ -52,6 +55,15 @@ func FieldTypeForProtoField(fd protoreflect.FieldDescriptor) Type {
 }
 
 func fieldTypeForProtoField(fd protoreflect.FieldDescriptor, active map[protoreflect.FullName]struct{}) Type {
+	// A map field has no type here, so an index that fans a map's entries out
+	// is left out of matching (index_expansion.go, the FAN_OUT arm). Java types
+	// a map field as the array of its entry records it is on the wire
+	// (Type.java:453-455), so a RecordQuery's QueryComponent reaches such an
+	// index (Query.field(..).mapMatches, or oneOfThem over the entries). Go has
+	// no QueryComponent: its query surface is SQL alone, which has no map type
+	// in either engine (the relational DataType.Code has none), so no Go query
+	// reaches that match. The index is maintained as Java maintains it
+	// (record_wire_map_order.go).
 	if fd == nil || fd.IsMap() {
 		return UnknownType
 	}
@@ -121,8 +133,11 @@ func ScalarCodeForProtoKind(fd protoreflect.FieldDescriptor) (TypeCode, bool) {
 		return TypeCodeString, true
 	case protoreflect.BytesKind:
 		return TypeCodeBytes, true
-	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
-		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		// Type.TypeCode.fromProtobufFieldDescriptor (Type.java:909-914): INT, the
+		// value read as protobuf-java's signed Integer (ProtoScalarKindToRowValue).
+		return TypeCodeInt, true
+	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
 		return TypeCodeLong, true
 	case protoreflect.EnumKind:
 		if protoEnumHasNumberAlias(fd.Enum()) {
@@ -183,8 +198,13 @@ func scalarTypeForProtoField(fd protoreflect.FieldDescriptor, active map[protore
 	return NewPrimitiveType(code, true)
 }
 
+// protoFieldNullable is Java's Type.Record.Field.fromDescriptor nullability for
+// a field that is not an array: `!fieldDescriptor.isRequired()`. A proto3
+// field without explicit presence is nullable too: its default reads as absent
+// (values.ProtoFieldReadsValue, Java's getFieldOnMessage), so a query sees it
+// NULL and an UPDATE may assign it NULL (clearing it).
 func protoFieldNullable(fd protoreflect.FieldDescriptor) bool {
-	return fd != nil && fd.HasPresence() && fd.Cardinality() != protoreflect.Required
+	return fd != nil && fd.Cardinality() != protoreflect.Required
 }
 
 func recordTypeForProtoMessage(md protoreflect.MessageDescriptor, active map[protoreflect.FullName]struct{}) Type {
@@ -231,7 +251,9 @@ func enumTypeForProto(ed protoreflect.EnumDescriptor) Type {
 		// string promotion compares that spelling, not protobuf escaping.
 		values = append(values, EnumValue{Name: protoname.ToUserIdentifier(string(value.Name())), Number: int32(value.Number())})
 	}
-	return NewEnumType(string(ed.FullName()), true, values)
+	// The enum's name as Java reads it, whatever scope the in-memory
+	// descriptor gave it (protoscope).
+	return NewEnumType(string(protoscope.JavaFullName(ed)), true, values)
 }
 
 // FieldNameForProtoField is THE single authority for the NAME a stored

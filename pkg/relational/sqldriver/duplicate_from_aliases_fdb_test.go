@@ -35,7 +35,7 @@ func TestFDB_DuplicateFromAliases(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE w4l_dup_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -124,11 +124,8 @@ func TestFDB_DuplicateFromAliases(t *testing.T) {
 	// product). The architecture-gate condition: duplicate labels AND
 	// per-position values (the two p legs' slots vary independently across
 	// the cross product — never a single-leg echo).
-	// No ORDER BY: positional ORDER BY over a star SELECT is a SEPARATE
-	// both-reject class (Java "Cascades planner could not plan query"; corpus
-	// order_by_position_over_star) — not this test's subject. Row order is
-	// immaterial here; the assertions below are set-membership over the cross
-	// product.
+	// Row order is immaterial here; the assertions below are set-membership
+	// over the cross product. Positional star ordering has its own contracts.
 	starRows, err := db.QueryContext(ctx, "SELECT * FROM p, q, p")
 	if err != nil {
 		t.Errorf("SELECT * over duplicates must ANSWER (Java: duplicate columns): %v", err)
@@ -326,7 +323,7 @@ func TestFDB_DupAliasOrderGroupCorrelated(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE w4l_dupsg_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

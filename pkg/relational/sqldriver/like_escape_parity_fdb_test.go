@@ -44,7 +44,7 @@ func TestFDB_LikeTrailingEscape_EnginePath(t *testing.T) {
 		"CREATE TABLE B (B1 BIGINT, B2 STRING, PRIMARY KEY (B1))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_like_esc_engine/s WITH TEMPLATE like_esc_engine_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_like_esc_engine?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_LIKE_ESC_ENGINE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -93,7 +93,7 @@ func TestFDB_LikeTrailingEscape_MapPath(t *testing.T) {
 		"CREATE TABLE ZQ (id BIGINT, PRIMARY KEY (id))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_like_esc_map/s WITH TEMPLATE like_esc_map_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_like_esc_map?cluster_file=%s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_LIKE_ESC_MAP?cluster_file=%s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -103,7 +103,7 @@ func TestFDB_LikeTrailingEscape_MapPath(t *testing.T) {
 	// INFORMATION_SCHEMA.TABLES spans the whole cluster, which other
 	// parallel tests also write to — scope every probe to this test's
 	// own catalog so the row set is deterministic.
-	const scope = `TABLE_CATALOG = '/testdb_like_esc_map' AND `
+	const scope = `TABLE_CATALOG = '/TESTDB_LIKE_ESC_MAP' AND ` // the stored, folded path
 
 	// TABLE_NAME 'Z' vs pattern 'Z' ESCAPE 'Z': the dangling escape is
 	// a literal `Z`, so 'Z' matches and 'ZQ' does not.

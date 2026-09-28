@@ -487,14 +487,26 @@ func (t *cascadesTranslator) derivedBodyOpaqueOrdinalLeg(body logical.LogicalOpe
 	// but ordinalizes fresh via the gather path. A non-unnest body is either
 	// already computable (a plain flattening join — not poison) or a shape whose
 	// opaque-leg ordinalization is unverified; keep it name-model.
+	//
+	// A cluster with the unnest BURIED behind a later leg (`FROM q, q.bs AS b,
+	// h`, a chain behind one, a first FROM item's chain behind one) is the
+	// same cluster: the fresh body translation rotates it to the root form
+	// before it lowers (rotateEnclosedUnnest, rotateBuriedChainedSpine), so it
+	// is admitted exactly when one of those rotations classifies it.
 	op := proj.Input
 	for {
 		switch o := op.(type) {
 		case *logical.LogicalFilter:
 			op = o.Input
 		case *logical.LogicalJoin:
-			_, isUnnest := o.Right.(*logical.LogicalUnnest)
-			return isUnnest
+			if _, isUnnest := o.Right.(*logical.LogicalUnnest); isUnnest {
+				return true
+			}
+			if _, _, _, _, rotates := t.rotateEnclosedUnnest(o); rotates {
+				return true
+			}
+			_, rotates := t.rotateBuriedChainedSpine(o)
+			return rotates
 		default:
 			return false
 		}
@@ -525,7 +537,7 @@ func (t *cascadesTranslator) derivedBodyOpaqueOrdinalLeg(body logical.LogicalOpe
 //   - a SINGLE-SOURCE, single-alias outer (clusterArity 1 — excludes the
 //     merge-opaque FULL box, which is also arity 1 but multi-alias) bound to a
 //     REAL table whose segment path names an ARRAY (the classification
-//     gauntlet's own resolvers: a non-resolving segment 0 is a schema-qualified
+//     gauntlet's own resolvers: a non-resolving segment 0 is a template-qualified
 //     cross join, not an unnest; a CTE/derived-bound source classifies through
 //     its body — residual class 3);
 //   - NOT under an existential (the under-EXISTS seed gate adds scope-collision
@@ -582,7 +594,7 @@ func (t *cascadesTranslator) derivedBodyStarOrdinalLeg(body logical.LogicalOpera
 	if !isU || (u.Alias == "" && u.AtAlias == "") {
 		return nil, false
 	}
-	if isChainedUnnest(j.Left, u) {
+	if isSpineLink(j.Left, u) {
 		// The CHAINED star body: the top link is owned by a deeper link's
 		// element. Mirror translateChainedUnnestJoin's gauntlet side-effect-free:
 		// the AS==AT overwrite reject (translation loud-errors it; the admission
@@ -879,7 +891,12 @@ func (t *cascadesTranslator) clusterArity(op logical.LogicalOperator) int {
 			return a
 		}
 		return 1
-	case *logical.LogicalInlineValues:
+	case *logical.LogicalInlineValues, *logical.LogicalSingleton:
+		return 1
+	case *logical.LogicalUnnest:
+		// A standalone correlated unnest (a block's first FROM item over an
+		// enclosing query's array, translateCorrelatedPrimaryUnnest) is ONE
+		// quantifier, its Explode, correlated only outside the cluster.
 		return 1
 	case *logical.LogicalCTE:
 		if o.Recursive() {

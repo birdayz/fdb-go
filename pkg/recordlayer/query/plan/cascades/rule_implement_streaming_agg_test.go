@@ -741,3 +741,34 @@ func TestImplementStreamingAgg_EveryCoveringScanYieldsItsOwnCountAlternative(t *
 			len(seen))
 	}
 }
+
+// TestImplementStreamingAgg_DeclinesAnAggregateWithoutAccumulator: MIN_EVER and
+// MAX_EVER are index-only (Java's IndexOnlyAggregateValue is non-evaluable) and
+// Go has no BITMAP_CONSTRUCT_AGG accumulator. A streaming plan over one would
+// finalize every group with a NULL for it, so the rule yields nothing and the
+// group by is answered from an index or not at all. SUM beside it is the
+// control: the same group by without the unaccumulable aggregate does fire.
+func TestImplementStreamingAgg_DeclinesAnAggregateWithoutAccumulator(t *testing.T) {
+	t.Parallel()
+	for _, fn := range []expressions.AggregateFunction{
+		expressions.AggMinEver, expressions.AggMaxEver, expressions.AggBitmapConstructAgg,
+	} {
+		scanRef := expressions.InitialOf(streamingAggLogicalScan("Orders"))
+		scanQ := expressions.ForEachQuantifier(scanRef)
+		mustFireExpressionRule(t, NewPrimaryScanRule(), scanRef)
+		sum := expressions.AggregateSpec{Function: expressions.AggSum, Operand: streamingAggQuantifierField(scanQ, "amount")}
+		control := mustStreamingAggConstruct(expressions.NewGroupByExpression(
+			[]values.Value{streamingAggQuantifierField(scanQ, "region")}, []expressions.AggregateSpec{sum}, scanQ))
+		if len(mustFireExpressionRule(t, NewImplementStreamingAggregationRule(), expressions.InitialOf(control))) == 0 {
+			t.Fatalf("%v: the SUM-only control did not fire", fn)
+		}
+		gb := mustStreamingAggConstruct(expressions.NewGroupByExpression(
+			[]values.Value{streamingAggQuantifierField(scanQ, "region")},
+			[]expressions.AggregateSpec{sum, {Function: fn, Operand: streamingAggQuantifierField(scanQ, "amount")}},
+			scanQ,
+		))
+		if results := mustFireExpressionRule(t, NewImplementStreamingAggregationRule(), expressions.InitialOf(gb)); len(results) != 0 {
+			t.Fatalf("%v: the streaming aggregation fired over an aggregate it has no accumulator for: %v", fn, results)
+		}
+	}
+}

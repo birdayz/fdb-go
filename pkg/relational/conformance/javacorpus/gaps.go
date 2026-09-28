@@ -176,12 +176,12 @@ var engineGaps = []EngineGap{
 	// RE-BOOKED, not closed-by-relabel: `item.sku` (item = a lateral unnest
 	// of a struct array) now RESOLVES — the unnest binding's virtual column
 	// carries the array ELEMENT's field list, so the same lookupNestedField
-	// descent that serves a struct column reaches it. The file then hits a
-	// gap that has nothing to do with structs: its FROM clause unnests TWO
-	// arrays, and the translator lowers only one. Booked to that gap, at its
-	// own exact rejection, so the struct class no longer claims it and the
-	// real blocker is counted under its own name.
-	{"arrays-unnesting-documentation-queries.yamsql", SkipGapMultipleLateralUnnests, "multiple lateral array unnests in one FROM clause are not yet supported", "RFC-142"},
+	// descent that serves a struct column reaches it. Its FROM clauses with
+	// two unnests of one row now plan too (sibling spine links, WS-J v32c),
+	// and the file stops at an array SUBSCRIPT in the select list
+	// (`orders.prices[at]`) — the gap cast-tests already names: Go resolves
+	// no subscript there, `arr[1]` included.
+	{"arrays-unnesting-documentation-queries.yamsql", SkipGapPlannerDeclines, `"SELECT order_id, item.sku AS sku, item.qty AS qty, orders.prices[at] AS price FROM orders, orders.items AS item AT at": 0AF00: projection slot 3 has no resolved Value`, "CQ-72"},
 	// inserts-updates-deletes.yamsql PASSES: the record constructor now builds
 	// in EXPRESSION position (Java's ExpressionVisitor.visitRecordConstructor
 	// → RecordConstructorValue.ofColumns), and its `UPDATE … SET b3 =
@@ -292,11 +292,12 @@ var engineGaps = []EngineGap{
 	// answers through its sanctioned in-memory sort — the same
 	// Go-accepts-what-Java-rejects class join-tests-outer.yamsql carries.
 	{"uuid-non-prepared.yamsql", SkipConformanceGoAccepts, `"select * from ta where b is not null order by b": expecting statement to throw an error 0AF00, however it succeeded`, "CQ-72"},
-	// The former derived-table + AT blocker now executes. The file progresses
-	// through the inline-VALUES lateral cases and stops at its first FROM clause
-	// with two lateral unnests, the same explicit translator gap booked above.
-	// Pin the exact statement because this file has thirty PartiQL AT shapes.
-	{"array-join-at.yamsql", SkipGapMultipleLateralUnnests, `"SELECT T2.\"id\", \"at1\", \"val1\", \"at2\", \"val2\" FROM T2, T2.\"arr1\" AS \"val1\" AT \"at1\", T2.\"arr2\" AS \"val2\" AT \"at2\"": 0AF00: multiple lateral array unnests in one FROM clause are not yet supported`, "RFC-142"},
+	// The former derived-table + AT blocker now executes, and so do its FROM
+	// clauses with two lateral unnests of one row (sibling spine links, WS-J
+	// v32c). The file stops at an array SUBSCRIPT by the AT ordinal in the
+	// select list, the subscript gap cast-tests names. Pin the exact statement
+	// because this file has thirty PartiQL AT shapes.
+	{"array-join-at.yamsql", SkipGapPlannerDeclines, `"SELECT \"id\", \"at\", \"arr1_val\", T1.\"arr1_nn\"[\"at\"] AS \"arr1_nn_val\" FROM T1, T1.\"arr1\" AS \"arr1_val\" AT \"at\"": 0AF00: projection slot 3 has no resolved Value`, "CQ-72"},
 
 	// GO IS CORRECT AND JAVA IS NOT, and the corpus file says so in place:
 	// `# TODO Issue #4170: This should return [].` On a NULLABLE indexed
@@ -403,10 +404,13 @@ var engineGaps = []EngineGap{
 	// replaced rather than kept because a closed gap that can never match again
 	// is exactly the stale entry EngineGaps()' reachability assertion catches.
 	{"join-tests.yamsql", SkipGapStructQuery, `"select (*) from (select dept.name, project.name from emp, dept, project`, "RFC-204 P3"},
-	// Schema-template serialization options (encryption): Go's store layer
-	// does not implement encrypted serialization, so a read that Java fails
-	// with XXF01 (missing/wrong key) succeeds.
-	{"serialization-options.yamsql", SkipGapSerializationOptions, "expecting statement to throw an error XXF01, however it succeeded", "CQ-72"},
+	// The file's setup runs under CASE_SENSITIVE_IDENTIFIERS, so Java's DDL
+	// stores the schema `test1` as written and the verbatim connect URI
+	// (`?schema=test1`) reaches it; Go ignores the option, stores TEST1, and
+	// the connect names a schema Go never stored. The runner upper-cased
+	// Java's URIs until the fold was confined to the names it generates, which
+	// is what hid this gap.
+	{"setup-with-connection-options.yamsql", SkipGapCaseSensitiveIdentifiers, "42F51: Schema </FRL/CASE_SENSITIVE_TEMPLATE/test1> does not exist in the catalog!", "TODO.md, Go ignores CASE_SENSITIVE_IDENTIFIERS"},
 	// A correlated EXISTS in the SELECT projection combined with a WHERE
 	// EXISTS — Cascades declines the double-EXISTS shape.
 	{"exists-in-select.yamsql", SkipGapPlannerDeclines, "Cascades planner could not plan query", "CQ-72"},
@@ -416,8 +420,11 @@ var engineGaps = []EngineGap{
 
 	// The bitmap aggregate QUERY surface: RFC-202 S3 builds the BITMAP_VALUE
 	// index metadata (the file's DDL now succeeds and the key expression is
-	// pinned byte-exact), but the translator has no bitmap_construct_agg
-	// aggregate — every query over it declines with 0AF00.
+	// pinned byte-exact), and RFC-257 WS-J step 7b carries
+	// bitmap_construct_agg into the translated graph, but no aggregate-index
+	// candidate is built for a BITMAP_VALUE index and no streaming accumulator
+	// computes the aggregate — every query over it declines with 0AF00. Java
+	// answers it from the index.
 	//
 	// The pin used to sit on a duplicate-grouping NEGATIVE, where the decline
 	// surfaced as "expecting '42702', got '0AF00'". Master's error-class batch
@@ -427,7 +434,19 @@ var engineGaps = []EngineGap{
 	// bites. Re-pinned there. Measured to be independent of the bitmap arity
 	// check landed alongside it: reverting that check reproduces this exact
 	// statement and error.
-	{"bitmap-aggregate-index.yamsql", SkipGapPlannerDeclines, "SELECT bitmap_construct_agg(bitmap_bit_position(id)) as bitmap, bitmap_bucket_offset(id) as offset FROM T2 GROUP BY bitmap_bucket_offset(id)", "CQ-72"},
+	{"bitmap-aggregate-index.yamsql", SkipGapPlannerDeclines, "SELECT bitmap_construct_agg(bitmap_bit_position(id)) as bitmap, bitmap_bucket_offset(id) as offset FROM T2 GROUP BY bitmap_bucket_offset(id)", "TODO.md, BITMAP_VALUE query reach"},
+
+	// RFC-257 WS-J step 7c let this file's template build (its struct index
+	// mv20, `ek.k` over `(select k from t6.c) as ek`, was the DDL blocker), and
+	// step 7d serves its MIN_EVER / MAX_EVER queries from their indexes. It now
+	// stops at a permuted MAX index: mv9 is `max(col2)` grouped by col1, col3
+	// with PERMUTED_SIZE 1, whose key orders each col1 group by max(col2), and
+	// Java answers `… GROUP BY col1, col3 … ORDER BY max(col2) DESC` with its
+	// reverse scan, the tied groups (col3 100 and 1, both max 1) in the index's
+	// order. Go declines a positive permuted size (tryAggregateIndexCandidate:
+	// no residual compensation or logical ordering for that key yet), sorts the
+	// streamed groups, and answers the ties the other way round.
+	{"aggregate-index-tests.yamsql", SkipGapPlannerDeclines, `"select col3, max(col2) from t2 where col1 = 1 group by col1, col3 having max(col2) < 2 order by max(col2) desc;": cell mismatch at row 1, cell COL3: expected 100`, "TODO.md, permuted aggregate index query reach"},
 }
 
 // SetupNegatives are the execution-level negatives whose upstream-asserted

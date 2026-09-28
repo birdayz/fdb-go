@@ -34,7 +34,7 @@ func TestFDB_DistinctOverComputedPKExpr(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE distinct_pkexpr "+
 			"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_distinct_pkexpr/s WITH TEMPLATE distinct_pkexpr")
-	dsn := fmt.Sprintf("fdbsql:///testdb_distinct_pkexpr?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_DISTINCT_PKEXPR?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -95,7 +95,7 @@ func TestFDB_DistinctDelimiterInjection(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE distinct_delim "+
 			"CREATE TABLE t (id BIGINT, a STRING, b STRING, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_distinct_delim/s WITH TEMPLATE distinct_delim")
-	dsn := fmt.Sprintf("fdbsql:///testdb_distinct_delim?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_DISTINCT_DELIM?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

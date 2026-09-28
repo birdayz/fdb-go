@@ -48,7 +48,7 @@ func TestFDB_RuntimeRangeSetLimitThroughFilterAndDistinct(t *testing.T) {
 			}
 		}
 	})
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", path, clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(path), clusterFilePath))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestFDB_RuntimeSignedZeroRangeSetAccessPaths(t *testing.T) {
 		"CREATE UNIQUE INDEX u_vw ON u (v, w) "+
 		"CREATE TABLE o (id BIGINT, kd DOUBLE, kf FLOAT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rszr/s WITH TEMPLATE rszr")
-	dsn := fmt.Sprintf("fdbsql:///testdb_rszr?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_RSZR?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -135,15 +135,15 @@ func TestFDB_RuntimeSignedZeroRangeSetAccessPaths(t *testing.T) {
 		"(4,0.0,1,'d-low'),(5,7.0,5,'d-seven'),"+
 		"(6,-0.0,NULL,'d-neg-null'),(7,0.0,NULL,'d-pos-null')")
 	mwjoMustExec(t, db, ctx, "INSERT INTO f (id,v,w,payload) VALUES "+
-		"(101,-0.0,5,'f-neg'),(102,0.0,5,'f-pos'),(103,-0.0,9,'f-high'),"+
-		"(104,0.0,1,'f-low'),(105,7.0,5,'f-seven')")
+		"(101,CAST(-0.0 AS FLOAT),5,'f-neg'),(102,CAST(0.0 AS FLOAT),5,'f-pos'),(103,CAST(-0.0 AS FLOAT),9,'f-high'),"+
+		"(104,CAST(0.0 AS FLOAT),1,'f-low'),(105,CAST(7.0 AS FLOAT),5,'f-seven')")
 
 	// One row for every physical sign choice of (DOUBLE,FLOAT), plus flanks.
 	// IDs follow tuple order: (--), (-+), (+-), (++).
 	mwjoMustExec(t, db, ctx, "INSERT INTO m (id,v1,v2,w,payload) VALUES "+
-		"(201,-0.0,-0.0,5,'mm'),(202,-0.0,0.0,5,'mp'),"+
-		"(203,0.0,-0.0,5,'pm'),(204,0.0,0.0,5,'pp'),"+
-		"(205,-0.0,-0.0,9,'high'),(206,0.0,0.0,1,'low')")
+		"(201,-0.0,CAST(-0.0 AS FLOAT),5,'mm'),(202,-0.0,CAST(0.0 AS FLOAT),5,'mp'),"+
+		"(203,0.0,CAST(-0.0 AS FLOAT),5,'pm'),(204,0.0,CAST(0.0 AS FLOAT),5,'pp'),"+
+		"(205,-0.0,CAST(-0.0 AS FLOAT),9,'high'),(206,0.0,CAST(0.0 AS FLOAT),1,'low')")
 	mwjoMustExec(t, db, ctx, "INSERT INTO pfx (id,g,v,w) VALUES "+
 		"(211,1,-0.0,5),(212,1,0.0,5),(213,1,-0.0,9),(214,1,0.0,1),"+
 		"(215,2,-0.0,5),(216,2,0.0,5)")
@@ -153,7 +153,7 @@ func TestFDB_RuntimeSignedZeroRangeSetAccessPaths(t *testing.T) {
 		"(-0.0,9,303,'pk-high'),(0.0,1,304,'pk-low')")
 	mwjoMustExec(t, db, ctx, "INSERT INTO u (id,v,w) VALUES (401,-0.0,5),(402,0.0,5),(403,7.0,5)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO o (id,kd,kf) VALUES "+
-		"(10,0.0,-0.0),(11,-0.0,0.0),(20,7.0,7.0),(30,NULL,NULL)")
+		"(10,0.0,CAST(-0.0 AS FLOAT)),(11,-0.0,CAST(0.0 AS FLOAT)),(20,7.0,CAST(7.0 AS FLOAT)),(30,NULL,NULL)")
 
 	idsDB := func(t *testing.T, q string, args ...any) []int64 {
 		t.Helper()
@@ -316,8 +316,8 @@ func TestFDB_RuntimeSignedZeroCorrelatedFloatAndDouble(t *testing.T) {
 			"CREATE INDEX f_vw ON f (v, w) "+
 			"CREATE TABLE o (id BIGINT, kd DOUBLE, kf FLOAT, PRIMARY KEY (id))")
 	mwjoMustExec(t, db, ctx, "INSERT INTO d VALUES (1,-0.0,5),(2,0.0,5),(3,-0.0,9),(4,0.0,1)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO f VALUES (101,-0.0,5),(102,0.0,5),(103,-0.0,9),(104,0.0,1)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO o VALUES (10,0.0,-0.0),(11,-0.0,0.0),(30,NULL,NULL)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO f VALUES (101,CAST(-0.0 AS FLOAT),5),(102,CAST(0.0 AS FLOAT),5),(103,CAST(-0.0 AS FLOAT),9),(104,CAST(0.0 AS FLOAT),1)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO o VALUES (10,0.0,CAST(-0.0 AS FLOAT)),(11,-0.0,CAST(0.0 AS FLOAT)),(30,NULL,NULL)")
 
 	for _, tc := range []struct {
 		name  string

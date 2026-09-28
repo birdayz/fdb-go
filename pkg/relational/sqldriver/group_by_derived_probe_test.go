@@ -25,7 +25,7 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_gbderived/s WITH TEMPLATE gbderived_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_gbderived?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_GBDERIVED?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -165,7 +165,7 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 		g.Expect(setupA.ExecContext(ctx,
 			"CREATE SCHEMA /testdb_gbalias/s WITH TEMPLATE gbalias_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-		dsnA := fmt.Sprintf("fdbsql:///testdb_gbalias?cluster_file=%s&schema=s", clusterFilePath)
+		dsnA := fmt.Sprintf("fdbsql:///TESTDB_GBALIAS?cluster_file=%s&schema=S", clusterFilePath)
 		dbA, openErr := sql.Open("fdbsql", dsnA)
 		g.Expect(openErr).NotTo(gomega.HaveOccurred())
 		defer dbA.Close()
@@ -203,7 +203,7 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 		g.Expect(setup2.ExecContext(ctx,
 			"CREATE SCHEMA /testdb_gbpe/s WITH TEMPLATE gbpe_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-		dsn2 := fmt.Sprintf("fdbsql:///testdb_gbpe?cluster_file=%s&schema=s", clusterFilePath)
+		dsn2 := fmt.Sprintf("fdbsql:///TESTDB_GBPE?cluster_file=%s&schema=S", clusterFilePath)
 		db2, err := sql.Open("fdbsql", dsn2)
 		g.Expect(err).NotTo(gomega.HaveOccurred())
 		defer db2.Close()
@@ -252,7 +252,7 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 		g.Expect(setup4.ExecContext(ctx,
 			"CREATE SCHEMA /testdb_gbexpr/s WITH TEMPLATE gbexpr_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-		dsn4 := fmt.Sprintf("fdbsql:///testdb_gbexpr?cluster_file=%s&schema=s", clusterFilePath)
+		dsn4 := fmt.Sprintf("fdbsql:///TESTDB_GBEXPR?cluster_file=%s&schema=S", clusterFilePath)
 		db4, err := sql.Open("fdbsql", dsn4)
 		g.Expect(err).NotTo(gomega.HaveOccurred())
 		defer db4.Close()
@@ -291,7 +291,7 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 		g.Expect(setup3.ExecContext(ctx,
 			"CREATE SCHEMA /testdb_gbpe2/s WITH TEMPLATE gbpe2_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-		dsn3 := fmt.Sprintf("fdbsql:///testdb_gbpe2?cluster_file=%s&schema=s", clusterFilePath)
+		dsn3 := fmt.Sprintf("fdbsql:///TESTDB_GBPE2?cluster_file=%s&schema=S", clusterFilePath)
 		db3, err := sql.Open("fdbsql", dsn3)
 		g.Expect(err).NotTo(gomega.HaveOccurred())
 		defer db3.Close()
@@ -332,7 +332,7 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 		g.Expect(setupCJ.ExecContext(ctx,
 			"CREATE SCHEMA /testdb_cjderived/s WITH TEMPLATE cjderived_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-		dsnCJ := fmt.Sprintf("fdbsql:///testdb_cjderived?cluster_file=%s&schema=s", clusterFilePath)
+		dsnCJ := fmt.Sprintf("fdbsql:///TESTDB_CJDERIVED?cluster_file=%s&schema=S", clusterFilePath)
 		dbCJ, openErr := sql.Open("fdbsql", dsnCJ)
 		g.Expect(openErr).NotTo(gomega.HaveOccurred())
 		defer dbCJ.Close()

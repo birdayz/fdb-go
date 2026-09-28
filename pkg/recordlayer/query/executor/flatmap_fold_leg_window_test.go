@@ -58,12 +58,12 @@ func TestCursorResolvesFoldPositionally(t *testing.T) {
 	)
 
 	existCorr := values.NamedCorrelationIdentifier("EX")
-	c, err := newFlatMapCursorWithOuterProperties(
+	c, err := newFlatMapCursorForPlan(
 		recordlayer.FromList([]QueryResult{}), step1, scanB, nil,
 		EmptyEvaluationContext(), mergedCorr, existCorr, foldRV,
-		recordlayer.ExecuteProperties{}, false)
+		recordlayer.ExecuteProperties{}, false, false)
 	if err != nil {
-		t.Fatalf("newFlatMapCursorWithOuterProperties: %v", err)
+		t.Fatalf("newFlatMapCursorForPlan: %v", err)
 	}
 	defer c.Close()
 	if !c.foldWindowsOK {

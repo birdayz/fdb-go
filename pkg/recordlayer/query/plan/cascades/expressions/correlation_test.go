@@ -86,7 +86,7 @@ func TestUpdate_GetCorrelatedToWithoutChildren(t *testing.T) {
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
 	upd := mustExpression(NewUpdateExpression(q, "Order", testRecordType(), []UpdateTransform{
-		{FieldPath: "name", NewValue: mustExpression(q.RequireFlowedObjectValue())},
+		{FieldNames: []string{"name"}, FieldOrdinals: []int{0}, NewValue: mustExpression(q.RequireFlowedObjectValue())},
 	}))
 
 	got := upd.GetCorrelatedToWithoutChildren()

@@ -27,7 +27,7 @@ func TestFDB_BareBoolWhereProbe(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE barebw "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, flag BOOLEAN, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_barebw/s WITH TEMPLATE barebw")
-	dsn := fmt.Sprintf("fdbsql:///testdb_barebw?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_BAREBW?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

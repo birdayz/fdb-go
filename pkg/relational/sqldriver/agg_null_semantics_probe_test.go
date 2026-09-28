@@ -25,7 +25,7 @@ func TestFDB_AggNullSemanticsProbe(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE aggnull "+
 			"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggnull/s WITH TEMPLATE aggnull")
-	dsn := fmt.Sprintf("fdbsql:///testdb_aggnull?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGNULL?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -175,39 +175,80 @@ package javacorpus_test
 // move: one query in it disagrees with the corpus on purpose. Reading this as
 // "a file regressed" is the wrong reading — the run got 29 queries FURTHER
 // than it had ever been.
-const pinnedLedger = "pass=72 fail=0 skip=166 queries=2110 file_skips{conformance:go-accepts-what-java-rejects=5," +
-	"conformance:java-planner-bug=1," +
+// ENUM DDL MOVES TWO FILES FROM SKIP TO PASS. RFC-257 WS-J step 5 lets a schema
+// template declare `CREATE TYPE AS ENUM`, which Go refused with 0A000 and booked
+// as `unsupported-DDL:other` at queries=0. `enum.yamsql` (20 queries) and
+// `insert-enum.yamsql` (4) now run to the end and pass: `pass` 72 → 74, `skip`
+// 166 → 164, `unsupported-DDL:other` 11 → 9 in both histograms. `queries` grows
+// 2110 → 2195 and the inner classes the newly reached configs book grow with it
+// (`plan-assertion` 954 → 994, `unsupported:continuation` 36 → 46,
+// `unsupported:check-cache` 146 → 148, `unsupported:prepared` 222 → 224).
+// `insert-enum.yamsql` compares an enum cell against a string expectation
+// (`[{'OWNING', 42}]`), the comparison match.go's enum note is about.
+// THE RUNNER STOPS UPPER-CASING JAVA'S OWN CONNECT URIS, which moves one file.
+// `setup-with-connection-options.yamsql` runs its setup under
+// CASE_SENSITIVE_IDENTIFIERS, so Java stores the schema `test1` as written
+// and its verbatim `?schema=test1` reaches it. Go ignores the option and
+// stores TEST1; the runner's upper-casing of the URI was the only thing
+// letting the setup through, and the file went on to its temporary-function
+// skip. Taken verbatim, the setup fails 42F51, booked as
+// `engine-gap:case-sensitive-identifiers` (TODO.md "Go ignores
+// CASE_SENSITIVE_IDENTIFIERS"): its file class moves from
+// `unsupported:temporary-function` (17 → 16), and the inner classes the file's
+// test block used to book move with it (temporary-function 197 → 192,
+// check-cache 148 → 147, prepared 224 → 223). pass, fail, skip and queries are
+// unchanged.
+// THE RUNNER APPLIES connection_options, AND THE SERIALIZER IS PORTED, which
+// moves one file. Until now the runner dropped every file's, setup block's
+// and test block's connection_options; it now installs them as Java's yaml
+// framework does (connoptions.go). `serialization-options.yamsql` sets its
+// encryption options through them, and with RFC-257's TransformedRecordSerializer
+// and PKCS12 key store reader it passes: `pass` 74 → 75, `skip` 164 → 163,
+// `engine-gap:serialization-options` 1 → 0 in both histograms (the class is
+// retired), `queries` 2195 → 2218. Its test blocks past the first two are
+// reached for the first time and book their prepared and check-cache arms
+// (`unsupported:prepared` 223 → 229, `unsupported:check-cache` 147 → 148).
+// The other ten files naming connection_options keep their class (measured
+// at the 11 files `rg -l connection_options` finds in the corpus): five set
+// only CASE_SENSITIVE_IDENTIFIERS, which Go ignores (booked);
+// `join-tests` and `right-deep-plan-tests` stop at their gaps before their
+// PLAN_RIGHT_DEEP block; `null-extraction-tests` runs its
+// DISABLE_PLANNER_REWRITING block only as prepared; `groupby-tests` passes,
+// and both queries of its EXECUTION_SCANNED_ROWS_LIMIT block are multi-page
+// and booked unsupported:continuation; `showcasing-tests` names them only in
+// comments. So no query yet runs under PLAN_RIGHT_DEEP,
+// DISABLE_PLANNER_REWRITING or EXECUTION_SCANNED_ROWS_LIMIT from the corpus.
+const pinnedLedger = "pass=77 fail=0 skip=161 queries=2289 file_skips{conformance:go-accepts-what-java-rejects=5," +
+	"conformance:java-planner-bug=1,engine-gap:case-sensitive-identifiers=1," +
 	"engine-gap:catalog-system-tables=2,engine-gap:comma-join-mixed-from=1," +
 	"engine-gap:correlated-exists-setop=1," +
 	"engine-gap:dml-returning-result-set=2,engine-gap:error-class=2," +
-	"engine-gap:multiple-lateral-unnests=2," +
 	"engine-gap:nested-recursive-with=2," +
-	"engine-gap:planner-declines=5," +
-	"engine-gap:returning-dry-run=1,engine-gap:serialization-options=1," +
+	"engine-gap:planner-declines=8," +
+	"engine-gap:returning-dry-run=1," +
 	"engine-gap:star-group-by-expansion=1,engine-gap:struct-query=2,engine-gap:table-valued-function=1,fragment=2," +
 	"no-checks=1,plan-assertion=8,polarity:fixed-version-meta=9," +
 	"polarity:negative-execution=26,polarity:negative-parse=25," +
-	"unsupported-DDL:function=11,unsupported-DDL:other=11," +
-	"unsupported-DDL:struct-index=3,unsupported:continuation=3," +
+	"unsupported-DDL:function=11,unsupported-DDL:other=9," +
+	"unsupported:continuation=3," +
 	"unsupported:multi-cluster=2,unsupported:result-metadata-nested=6," +
-	"unsupported:schema-command=8,unsupported:temporary-function=17," +
+	"unsupported:schema-command=8,unsupported:temporary-function=16," +
 	"vacuous:all-assertions-skipped=5} inner_skips{conformance:go-accepts-what-java-rejects=5," +
-	"conformance:java-planner-bug=1," +
+	"conformance:java-planner-bug=1,engine-gap:case-sensitive-identifiers=1," +
 	"engine-gap:catalog-system-tables=2,engine-gap:comma-join-mixed-from=1," +
 	"engine-gap:correlated-exists-setop=1," +
 	"engine-gap:dml-returning-result-set=2,engine-gap:error-class=2," +
-	"engine-gap:multiple-lateral-unnests=2," +
 	"engine-gap:nested-recursive-with=2," +
-	"engine-gap:planner-declines=5," +
-	"engine-gap:returning-dry-run=1,engine-gap:serialization-options=1," +
+	"engine-gap:planner-declines=8," +
+	"engine-gap:returning-dry-run=1," +
 	"engine-gap:star-group-by-expansion=1,engine-gap:struct-query=2,engine-gap:table-valued-function=1," +
-	"no-checks=8,plan-assertion=954,polarity:negative-execution=26," +
-	"unsupported-DDL:function=11,unsupported-DDL:other=11," +
-	"unsupported-DDL:struct-index=3,unsupported:check-cache=146," +
-	"unsupported:continuation=36,unsupported:debugger=3," +
-	"unsupported:multi-cluster=2,unsupported:prepared=222," +
+	"no-checks=8,plan-assertion=1033,polarity:negative-execution=26," +
+	"unsupported-DDL:function=11,unsupported-DDL:other=9," +
+	"unsupported:check-cache=150," +
+	"unsupported:continuation=46,unsupported:debugger=3," +
+	"unsupported:multi-cluster=2,unsupported:prepared=232," +
 	"unsupported:random-injection=25,unsupported:result-metadata-nested=85," +
-	"unsupported:schema-command=16,unsupported:temporary-function=197}"
+	"unsupported:schema-command=16,unsupported:temporary-function=192}"
 
 // pinnedFileTotal closes the ledger: every corpus file lands in exactly one of
 // pass / fail / skip. Asserting the sum separately means a file that vanished
@@ -215,6 +256,46 @@ const pinnedLedger = "pass=72 fail=0 skip=166 queries=2110 file_skips{conformanc
 const pinnedFileTotal = 238
 
 // pinnedAssignmentDigest is sha256 over the sorted `path status class` lines.
+//
+// THE WS-J STEP-7C INDEX GENERATOR MOVED EXACTLY THREE LINES, proved on the
+// hash: putting them back in the dumped assignment reproduces the previous
+// digest (cbab8341…) exactly.
+//
+//	-aggregate-index-tests.yamsql  skip unsupported-DDL:struct-index
+//	+aggregate-index-tests.yamsql  skip engine-gap:planner-declines
+//	-documentation-queries/subqueries-documentation-queries.yamsql  skip unsupported-DDL:struct-index
+//	+documentation-queries/subqueries-documentation-queries.yamsql  pass
+//	-subquery-tests.yamsql  skip unsupported-DDL:struct-index
+//	+subquery-tests.yamsql  pass
+//
+// Their index definitions over a derived table of an unnest (`ek.k` over
+// `(select k from t6.c) as ek`, `sq.f` over `(select f from r.nr) sq`) build,
+// which lets the files run past their templates for the first time. The two
+// subquery files pass once a grouped subquery may read its enclosing query's
+// columns (TestFDB_GroupedSubqueryProjectsAnOuterColumn); aggregate-index-tests
+// stopped at its first MIN_EVER query (gaps.go). Step 7d serves those from their
+// indexes, and the file stops later, at a permuted MAX index Go declines — the
+// same class, so the assignment does not move; `queries` 2288 → 2289 and inner
+// plan-assertion 1032 → 1033. `unsupported-DDL:struct-index`
+// empties (maskedClasses); `queries` 2232 → 2288 and the inner classes the
+// newly reached test blocks book grow with it (plan-assertion 996 → 1032,
+// check-cache 148 → 150, prepared 229 → 232).
+//
+// SIBLING SPINE LINKS (WS-J v32c) MOVED EXACTLY TWO LINES, proved on the hash:
+// putting them back in the dumped assignment reproduces the previous digest
+// (7f4839a1…) exactly.
+//
+//	-array-join-at.yamsql  skip engine-gap:multiple-lateral-unnests
+//	+array-join-at.yamsql  skip engine-gap:planner-declines
+//	-arrays-unnesting-documentation-queries.yamsql  skip engine-gap:multiple-lateral-unnests
+//	+arrays-unnesting-documentation-queries.yamsql  skip engine-gap:planner-declines
+//
+// Two unnests of one row plan now; both files run on to an array subscript in
+// the select list, the gap cast-tests is booked to. The class they left has no
+// other member and is deleted rather than kept at zero. `queries` 2218 → 2232
+// and inner plan-assertion 994 → 996 move with these two files (they now run
+// 19 and 10 statements before their stop); every other file's stop is pinned
+// at its exact statement in gaps.go and did not move.
 //
 // It exists because the counts above are blind to a SWAP: two files trading
 // classes leaves every total identical, so the census stays green while the
@@ -249,4 +330,26 @@ const pinnedFileTotal = 238
 // `pass` does not move — but its `queries` goes 0 → 29, which is the whole
 // event and is invisible in this digest by construction. Read it beside the
 // ledger line's 1976 → 2005.
-const pinnedAssignmentDigest = "a5c81ddc39e1e755aecf44de6d5d3034a5559dbb91cbeb4ed3669a2fe142b9f1"
+//
+// ENUM DDL MOVED EXACTLY TWO LINES, proved on the hash rather than by eye:
+// putting these two lines back in the dumped assignment reproduces the previous
+// digest (a5c81ddc…) exactly, so nothing else moved or swapped.
+//
+//	-enum.yamsql  skip unsupported-DDL:other
+//	+enum.yamsql  pass -
+//	-insert-enum.yamsql  skip unsupported-DDL:other
+//	+insert-enum.yamsql  pass -
+//
+// THE CORPUS URIS TAKEN VERBATIM MOVED EXACTLY ONE LINE, proved on the hash:
+// putting it back reproduces the previous digest (7a8c0b8b…).
+//
+//	-setup-with-connection-options.yamsql  skip unsupported:temporary-function
+//	+setup-with-connection-options.yamsql  skip engine-gap:case-sensitive-identifiers
+//
+// THE connection_options AND SERIALIZER CHANGE MOVED EXACTLY ONE LINE, proved
+// on the hash: the dumped 238-line assignment hashes to this digest, and
+// putting the line back reproduces the previous digest (300e72f9…).
+//
+//	-serialization-options.yamsql  skip engine-gap:serialization-options
+//	+serialization-options.yamsql  pass -
+const pinnedAssignmentDigest = "e4240f465e496585b0d10593af5571adfab6f76549be6b3f7e5342f7891ecd6f"

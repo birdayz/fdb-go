@@ -25,13 +25,14 @@ func flatMapArmedFixture(t *testing.T, outer recordlayer.RecordCursor[QueryResul
 		&values.ConstantValue{Value: int64(7), Typ: values.NotNullLong},
 	}))
 	innerAlias := values.NamedCorrelationIdentifier("I")
-	c, err := newFlatMapCursorWithOuterProperties(
+	c, err := newFlatMapCursorForPlan(
 		outer, outerPlan, inner, nil, EmptyEvaluationContext(),
 		values.NamedCorrelationIdentifier("O"), innerAlias,
 		mustTestQOV(t, innerAlias, inner.GetResultType()), recordlayer.ExecuteProperties{}, false,
+		false,
 	)
 	if err != nil {
-		t.Fatalf("newFlatMapCursorWithOuterProperties: %v", err)
+		t.Fatalf("newFlatMapCursorForPlan: %v", err)
 	}
 	c.initialInnerCont = armedBytes
 	c.hasPendingInner = true

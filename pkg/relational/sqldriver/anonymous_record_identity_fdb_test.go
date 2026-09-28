@@ -34,7 +34,7 @@ func TestFDB_AnonymousRecordsThroughADerivedRowKeepDistinctIdentities(t *testing
 	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE anonrec_tpl
 		CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))`)
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_anonrec/s1 WITH TEMPLATE anonrec_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_anonrec?cluster_file=%s&schema=s1", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_ANONREC?cluster_file=%s&schema=S1", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestFDB_ADeclaredRecordNameSurvivesTheBridge(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE namedrec_tpl
 		CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))`)
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_namedrec/s1 WITH TEMPLATE namedrec_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_namedrec?cluster_file=%s&schema=s1", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_NAMEDREC?cluster_file=%s&schema=S1", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestFDB_OneDeclaredNameOverTwoShapesIsRefused(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE samename_tpl
 		CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))`)
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_samename/s1 WITH TEMPLATE samename_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_samename?cluster_file=%s&schema=s1", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_SAMENAME?cluster_file=%s&schema=S1", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -239,43 +239,19 @@ func TestFDB_OneDeclaredNameOverTwoShapesIsRefused(t *testing.T) {
 // DIFFERENT values and both outer sides null-extend — with the slots equal a
 // test cannot tell a preserved pair from one slot read twice.
 //
-// TestFinalizePlanLeavesTheDuplicateNameJoinRowUnstamped plans this same text
+// TestFinalizePlanContainsDuplicateNameRegistrationFailure plans this same text
 // and asserts the census that is this file's precondition. The two must run the
 // SAME text or these tests silently stop describing one plan — so they read one
 // shared constant and the compiler holds them together. This records why the
 // text is shared; it no longer asks anyone to keep two copies in step.
 const duplicateNameJoinQuery = queryfixtures.DuplicateNameJoinQuery
 
-// TestFDB_ADuplicateNameJoinRowLosesItsStructTypeNotItsValues pins what the
-// poisoned repository costs, in both directions and with values, not shapes.
-//
-// A row that names one field twice cannot be given a descriptor, and the
-// repository keeps the bad message, so constructors resolved after it lose
-// theirs too. That is USER-VISIBLE: a COMPUTED struct selected through such a
-// plan comes back as a raw `map[string]any`, where the SAME join with the
-// repeated name removed returns an `api.Struct` carrying the same values. The
-// control keeps the join and changes the name — and, because the dialect cannot
-// rename a base column in place, it also wraps that leg in a derived table. A
-// third read keeps that wrapper WITH the repeat and still gives the raw map,
-// which is what makes the wrapper inert. The set of three varies BOTH factors
-// deliberately — proving one inert is what the extra variation buys — and it is
-// each adjacent PAIR that isolates one. So the raw map is attributable to the
-// duplicate name, not to joining and not to the wrapper.
-//
-// What it does NOT cost is data: the emitting paths build dense positional rows
-// the result set reads by ORDINAL, so the whole outer-join result arrives, both
-// `ID` slots included. Both halves are asserted here because each bounds the
-// other — without the first the entry reads as harmless, without the second as
-// a wrong-answer bug.
-//
-// A STORED struct column read through the same poisoned plan is unaffected: it
-// carries its own stored descriptor rather than a constructor's, so it stays an
-// `api.Struct`. That bounds the blast radius to COMPUTED rows.
-//
-// TODO.md, "A join row that names one field twice leaves its plan's rows
-// unstamped", carries the closure. When it lands the computed half reddens: the
-// struct comes back an api.Struct and this test must then assert that.
-func TestFDB_ADuplicateNameJoinRowLosesItsStructTypeNotItsValues(t *testing.T) {
+// TestFDB_ADuplicateNameJoinPreservesComputedStructs pins transactional
+// descriptor registration: an invalid duplicate-name join row stays raw, but
+// cannot poison unrelated computed structs. Direct, wrapped and renamed legs
+// preserve both computed/stored metadata and exact values. The ordinal outer
+// join still returns both distinct ID slots, including both null-extended sides.
+func TestFDB_ADuplicateNameJoinPreservesComputedStructs(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -290,7 +266,7 @@ func TestFDB_ADuplicateNameJoinRowLosesItsStructTypeNotItsValues(t *testing.T) {
 		CREATE TABLE c_md (id BIGINT, PRIMARY KEY (id))
 		CREATE TABLE s_md (id BIGINT, r st_s, PRIMARY KEY (id))`)
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dupjoin/s1 WITH TEMPLATE dupjoin_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_dupjoin?cluster_file=%s&schema=s1", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_DUPJOIN?cluster_file=%s&schema=S1", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -300,75 +276,28 @@ func TestFDB_ADuplicateNameJoinRowLosesItsStructTypeNotItsValues(t *testing.T) {
 	mwjoMustExec(t, db, ctx, "INSERT INTO c_md VALUES (1), (2)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO s_md VALUES (1, (7))")
 
-	// Half one: a COMPUTED struct loses its type, keeping its values, while a
-	// STORED struct column in the SAME statement keeps both. Reading them
-	// together is what witnesses the poisoning for the stored assertion: if the
-	// shape stops being poisoned the computed value becomes a struct and this
-	// fails, rather than passing as a bound on the damage.
-	poisoned, stored := computedAndStoredRow(t, db, ctx, witnessWithRepeatedID)
-	if _, isStruct := poisoned.(api.Struct); isStruct {
-		t.Fatalf("the computed STRUCT through the duplicate-name join came back as %T — it is an "+
-			"api.Struct now, so TODO.md's booking has closed: assert that here instead", poisoned)
-	}
-	asMap, isMap := poisoned.(map[string]any)
-	if !isMap {
-		t.Fatalf("the computed STRUCT through the duplicate-name join = %T %v, want the raw map "+
-			"the missing descriptor forces", poisoned, poisoned)
-	}
-	if len(asMap) != 2 || asMap["X"] != int64(1) || asMap["Y"] != int64(10) {
-		t.Fatalf("the raw map = %#v, want exactly {X:1 Y:10}: the type is lost, the VALUES are not — "+
-			"a map with the wrong contents is a different (worse) defect, and one with an EXTRA "+
-			"field is a third, which two named lookups alone would not see", asMap)
-	}
-
-	clean, _ := computedAndStoredRow(t, db, ctx, controlWithoutRepeatedID)
-	cleanStruct, isStruct := clean.(api.Struct)
-	if !isStruct {
-		t.Fatalf("the control STRUCT (same join, the repeat removed through a derived-table "+
-			"rename) = %T %v, want an api.Struct — without this the first half cannot attribute the "+
-			"raw map to the duplicate name rather than to joining at all", clean, clean)
-	}
-	if got := cleanStruct.AttributeCount(); got != 2 {
-		t.Fatalf("the control struct carries %d attributes, want exactly 2 — {X:1 Y:10}: two named "+
-			"lookups pass for a struct carrying a THIRD, and this is the arm the attribution rests on "+
-			"POSITIVELY, so leaving it unsized is the same false green the two raw-map reads just "+
-			"closed", got)
-	}
-	for name, want := range map[string]any{"X": int64(1), "Y": int64(10)} {
-		got, err := cleanStruct.AttributeByName(name)
-		if err != nil || got != want {
-			t.Fatalf("control struct %s = %#v (%v), want %v: both representations must carry the "+
-				"same values, or this is not a type-only difference", name, got, err, want)
+	for _, query := range []string{witnessWithRepeatedID, controlWithoutRepeatedID, wrapperKeptRepeatedID} {
+		computed, stored := computedAndStoredRow(t, db, ctx, query)
+		for _, tc := range []struct {
+			value any
+			want  map[string]any
+		}{
+			{computed, map[string]any{"X": int64(1), "Y": int64(10)}},
+			{stored, map[string]any{"P": int64(7)}},
+		} {
+			s, ok := tc.value.(api.Struct)
+			if !ok {
+				t.Fatalf("%s: value = %T %#v, want api.Struct", query, tc.value, tc.value)
+			}
+			if s.AttributeCount() != len(tc.want) {
+				t.Fatalf("%s: attributes = %d, want %d", query, s.AttributeCount(), len(tc.want))
+			}
+			for name, want := range tc.want {
+				if got, err := s.AttributeByName(name); err != nil || got != want {
+					t.Fatalf("%s: %s = %#v (%v), want %v", query, name, got, err, want)
+				}
+			}
 		}
-	}
-
-	// The wrapper is inert: keep it, put the repeat back, and the computed value
-	// is a raw map again — so the control's struct is owed to the removed repeat
-	// and not to the derived table it was removed with.
-	wrapped, _ := computedAndStoredRow(t, db, ctx, wrapperKeptRepeatedID)
-	if _, isStruct := wrapped.(api.Struct); isStruct {
-		t.Fatalf("with the derived-table wrapper kept and the repeated `ID` restored, the computed "+
-			"struct came back as %T — the wrapper, not the repeat, would then be what the control "+
-			"changes, and the set of three would no longer attribute the raw map to the duplicate "+
-			"name", wrapped)
-	}
-	wrappedMap, isMap := wrapped.(map[string]any)
-	if !isMap || len(wrappedMap) != 2 || wrappedMap["X"] != int64(1) || wrappedMap["Y"] != int64(10) {
-		t.Fatalf("with the wrapper kept and the repeat restored, the computed struct = %#v, want "+
-			"exactly the raw map {X:1 Y:10} the witness gives: asserting only that it is NOT a struct "+
-			"would pass for an empty map, a wrong-valued one, one carrying an EXTRA field or a raw "+
-			"protobuf, leaving the wrapper merely harmless where this read has to show it INERT", wrapped)
-	}
-
-	// The STORED column from that same row keeps its type.
-	storedStruct, isStruct := stored.(api.Struct)
-	if !isStruct {
-		t.Fatalf("a STORED struct column through the poisoned join = %T %v, want an api.Struct: it "+
-			"carries its own stored descriptor, so the blast radius is COMPUTED rows only — if this "+
-			"fails, it is wider than TODO.md says", stored, stored)
-	}
-	if got, err := storedStruct.AttributeByName("P"); err != nil || got != int64(7) {
-		t.Fatalf("stored struct P = %#v (%v), want 7", got, err)
 	}
 
 	// Half two: the whole outer-join result arrives, exactly.
@@ -412,44 +341,17 @@ func nullBool(v sql.NullBool) string {
 	return fmt.Sprintf("%v", v.Bool)
 }
 
-// witnessWithRepeatedID, controlWithoutRepeatedID and wrapperKeptRepeatedID are
-// read as a SET OF THREE, because the first two differ in two things: whether
-// the join row repeats a field name, and whether that leg is wrapped in a
-// derived table. The wrapper is forced by the rename, not chosen, and the third
-// read is what shows it inert. Each adjacent PAIR isolates one factor: the
-// witness against wrapperKeptRepeatedID holds the repeat and varies the wrapper,
-// and wrapperKeptRepeatedID against the control holds the wrapper and varies the
-// repeat. The set varies both, which is exactly how it proves one of them inert.
-//
-// Both read a COMPUTED struct and a STORED struct column out of one row. The
-// CTE's struct is named `RR`, not `R`, deliberately: with both called `R` the
-// row would repeat TWO names — `ID` from the two id legs and `R` from the CTE
-// and `s_md` — and removing the repeated `ID` alone would leave a still-poisoned
-// plan, so the control could attribute nothing. Named apart, the witness row
-// repeats exactly `ID`, and projecting `c_md`'s column as `cid` removes exactly
-// that.
+// These queries vary duplicate names and derived-table wrapping independently.
+// Computed RR and stored R do not introduce a second duplicate name, so renaming
+// c_md.ID to CID removes the only duplicate without changing either struct.
 const witnessWithRepeatedID = "WITH d AS (SELECT id AS bid, STRUCT foo (id AS x, v AS y) AS rr FROM b_md) " +
 	"SELECT d.rr, s.r FROM s_md AS s JOIN d ON s.id = d.bid FULL OUTER JOIN c_md AS c ON s.id + 1 = c.id"
 
 const controlWithoutRepeatedID = "WITH d AS (SELECT id AS bid, STRUCT foo (id AS x, v AS y) AS rr FROM b_md) " +
 	"SELECT d.rr, s.r FROM s_md AS s JOIN d ON s.id = d.bid FULL OUTER JOIN (SELECT id AS cid FROM c_md) AS c ON s.id + 1 = c.cid"
 
-// wrapperKeptRepeatedID is the control with its derived-table wrapper INTACT and
-// the repeat restored: `c_md`'s column is projected under its own name again, so
-// the join row carries `ID` twice as the witness does.
-//
-// It exists because the control introduces two differences at once — a wrapper
-// AND a rename — and only the rename is supposed to matter. The wrapper is
-// FORCED: the dialect cannot rename a base table's column in place, so removing
-// the repeat requires a derived table to rename through. Reading this shape
-// shows the wrapper is inert: with the repeat back, the computed struct is a raw
-// map again. Written `id AS id` so it differs from the control in the alias
-// alone — and in the `c.cid`/`c.id` reference the alias forces, which is not a
-// second variable but a consequence of the first. Without this read, a change
-// in how derived tables are planned could make the control return a struct for
-// the wrapper's sake, and the pairing would keep reading as proof while proving
-// nothing — derived-table projections
-// are descriptor-relevant, which is exactly what the tests above this one pin.
+// wrapperKeptRepeatedID keeps the derived-table wrapper but restores the
+// duplicate ID, isolating the name from the extra projection boundary.
 const wrapperKeptRepeatedID = "WITH d AS (SELECT id AS bid, STRUCT foo (id AS x, v AS y) AS rr FROM b_md) " +
 	"SELECT d.rr, s.r FROM s_md AS s JOIN d ON s.id = d.bid FULL OUTER JOIN (SELECT id AS id FROM c_md) AS c ON s.id + 1 = c.id"
 

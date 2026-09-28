@@ -41,11 +41,6 @@ const (
 	scalarFunctionPosition
 	scalarFunctionLeft
 	scalarFunctionRight
-	scalarFunctionBitAnd
-	scalarFunctionBitOr
-	scalarFunctionBitXor
-	scalarFunctionBitmapBucketOffset
-	scalarFunctionBitmapBitPosition
 	scalarFunctionDatePart
 	scalarFunctionStatementDate
 	scalarFunctionStatementTimestamp
@@ -393,21 +388,12 @@ var scalarFunctionCatalog = map[string]scalarFunctionDefinition{
 	"IIF": internalScalarCall(
 		scalarFunctionIf, scalarFunctionBranchResult),
 
-	// Bit operators lower directly from BitExpressionAtom.
-	"BITAND": routedScalarFunction(scalarFunctionBitAnd, NullableLong),
-	"BITOR":  routedScalarFunction(scalarFunctionBitOr, NullableLong),
-	"BITXOR": routedScalarFunction(scalarFunctionBitXor, NullableLong),
-
-	// Bitmap bucketing functions (Java ArithmeticValue.java:513-520): binary
-	// under the hood — the SQL surface is unary and the walker appends the
-	// default entry size 10000 (SemanticAnalyzer.java:988-990). floorDiv
-	// semantics, exactly Java's physical operators. These enter through the
-	// generic ScalarFunctionCall grammar route (keyword functionName), so
-	// scalarCall is set. bitmap_bucket_number is deliberately absent: Java's
-	// SQL catalog registers only these two plus bitmap_construct_agg
+	// The bit operators and the bitmap functions are not catalogue entries:
+	// they are ArithmeticValues, as Java's are (ArithmeticValue.java:366-378),
+	// built by expr.ResolveArithmetic with their lane resolved from the
+	// operand types. bitmap_bucket_number is not reachable from SQL: Java's
+	// SQL catalog registers only bitmap_bucket_offset and bitmap_bit_position
 	// (SqlFunctionCatalogImpl.java:126-128).
-	"BITMAP_BUCKET_OFFSET": scalarCallFunction(scalarFunctionBitmapBucketOffset, NullableLong),
-	"BITMAP_BIT_POSITION":  scalarCallFunction(scalarFunctionBitmapBitPosition, NullableLong),
 
 	// Date/time functions.
 	"YEAR":       scalarCallFunction(scalarFunctionDatePart, NullableLong),

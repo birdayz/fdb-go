@@ -32,7 +32,7 @@ var templateVars = map[string]string{
 	"runner_name":         "gh-runner-drain-99",
 	"runner_labels":       "hetzner-fdb-vm",
 	"runner_ephemeral":    "false",
-	"runner_version":      "2.335.1",
+	"runner_version":      "2.337.0",
 	"runner_sha256":       strings.Repeat("0", 64),
 	"go_version":          "1.26.5",
 	"go_sha256":           strings.Repeat("0", 64),

@@ -1,21 +1,8 @@
 package ddl
 
-// The aggregate arm of the materialized-view index generator — the Go port of
-// MaterializedViewIndexGenerator's aggregate path (tag 4.12.11.0):
-// collectResultValues (:249-299), adjustGroupByFieldPaths (:302-327, a no-op
-// over Go's already-source-resolved grouping values — see collectAggregate),
-// the ordering/permuted logic (:204-244) and
-// generateAggregateIndexKeyExpression (:397-465) with removeBitmapBucketOffset
-// (:470-495).
-//
-// Correspondence: Java partitions the flattened result value into
-// IndexableAggregateValues and field values. Go's logical plan carries the
-// same information structurally: LogicalAggregate.Calls (the aggregates, with
-// AggregateOperands the source-resolved operand values), GroupKeys (the
-// grouping values, source-resolved), and OutputSlots (the SELECT list in
-// order, each addressing a group key or a call). The projection above the
-// aggregate reads the aggregate's OUTPUT row by name, so its ProjectedValues
-// are not source-resolved and are used only for sort-key identity mapping.
+// The aggregate arm of the materialized-view index generator — the aggregate
+// half of Java 4.14.2.0's MaterializedViewIndexGenerator and
+// ValueToKeyExpressionVisitor over the resolved projection IndexSpec collects.
 
 import (
 	"fmt"
@@ -25,151 +12,40 @@ import (
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/query/logical"
 )
 
-// aggOrderRef is one resolved ORDER BY entry of an aggregate index
-// definition: either the single aggregate or the native ordinal of a grouping
-// value.
-type aggOrderRef struct {
-	isAgg  bool
-	native int // grouping ordinal when !isAgg
-}
-
-func generateAggregate(d *decomposed, opts Options, res storageNames) (*GeneratedIndex, error) {
-	agg := d.aggregate
-	if agg.HasHaving {
-		// HAVING becomes an index predicate in Java (getTopLevelPredicate
-		// tolerates the select-having sandwich); fail closed until the
-		// predicate arm (RFC-202 S5) rather than drop it.
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-			"Unsupported index definition, HAVING is not yet supported in an index definition")
-	}
-	if agg.HasDistinctAggregate {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-			"Unsupported index definition, DISTINCT aggregate is not supported in an index definition")
-	}
-
-	groupVals, err := groupingValues(agg)
-	if err != nil {
-		return nil, err
-	}
-
-	// Java's phase order: the ORDER-BY ⊆ projection rejection fires at
-	// DdlVisitor.java:217, BEFORE generator.generate() and therefore before
-	// the multi-aggregation and alignment checks —
-	// createAggregateIndexOnMinMaxWithGroupingColumnsMissingInResultColumn
-	// pins INVALID_COLUMN_REFERENCE for a shape that would also fail
-	// alignment.
-	orderRefs, orderingFns, err := aggregateOrderRefs(d, groupVals)
-	if err != nil {
-		return nil, err
-	}
-
-	// checkValidity (:619-623): at most one aggregation inside the group by.
-	// IndexTest.java:773-779 pins the message.
-	if len(agg.Calls) > 1 {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-			"Unsupported index definition, found group by expression with more than one aggregation")
-	}
-
-	if err := validateSelectGroupingAlignment(agg); err != nil {
-		return nil, err
-	}
-
-	if len(agg.Calls) == 0 {
-		// GROUP BY with no aggregate: Java's aggregateValues comes out empty
-		// and the VALUE arm runs over the grouping values (generate :187).
-		orderBy := make([]values.Value, 0, len(orderRefs))
-		for _, ref := range orderRefs {
-			if ref.isAgg {
-				return nil, api.NewError(api.ErrCodeInternalError,
-					"index generator: aggregate order reference without an aggregate call")
-			}
-			orderBy = append(orderBy, groupVals[ref.native])
-		}
-		return buildValueIndex(d.scan.Table, groupVals, orderBy, orderingFns, res)
-	}
-
-	call := agg.Calls[0]
-	var operand values.Value
-	if len(agg.AggregateOperands) > 0 {
-		operand = agg.AggregateOperands[0]
-	}
-	if !call.Star && operand == nil {
-		// The operand resolver is fail-soft for queries (the translator has a
-		// lazy fallback); the index generator must not build from an
-		// unresolved operand.
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"Unsupported index definition, cannot resolve aggregate operand %q", call.Operand)
-	}
-
-	// Java :204-231: the aggregate may appear at most once in the ORDER BY,
-	// and the grouping columns must otherwise appear as an exact in-order
-	// prefix-complete sequence; anything else is an attempted covering
-	// aggregate index.
-	aggOrderIndex := -1
-	if len(orderRefs) > 0 {
-		nextField := 0
-		inOrder := true
-		for i, ref := range orderRefs {
-			if ref.isAgg {
-				if aggOrderIndex >= 0 {
-					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-						"Unsupported index definition, aggregate can appear only once in ordering clause")
-				}
-				aggOrderIndex = i
-			} else if nextField < len(groupVals) {
-				if ref.native != nextField {
-					inOrder = false
-					break
-				}
-				nextField++
-			} else {
-				inOrder = false
-				break
-			}
-		}
-		if nextField < len(groupVals) || !inOrder {
-			return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-				"Unsupported index definition, attempt to create a covering aggregate index")
-		}
-	}
-
-	// Grouping key expression (Java :233): the grouping values through the
-	// SAME expression builder as the value arm — trie compression, arithmetic
-	// leaves and ordering wrappers included.
+// generateAggregate is the aggregate arm of generate() (Java 4.14.2.0,
+// MaterializedViewIndexGenerator.java:95-117 with translateToKeyExpression and
+// addAggregatePermutationOptions): the projection in its own order — the
+// grouping columns with NO ordering functions (an aggregate index takes
+// Map.of(), whatever directions its ORDER BY names), then the aggregate — and,
+// for a permuted index, the permuted size its ordering implies.
+func generateAggregate(c *specCollector, spec *indexSpec, opts Options, res storageNames) (*GeneratedIndex, error) {
+	aggregate := aggregateOf(spec.projection)
+	grouping := fieldValuesOf(spec.projection)
 	var groupingExpr recordlayer.KeyExpression
-	if len(groupVals) > 0 {
-		groupingExpr, err = generateKeyExpression(groupVals, orderingFns, res)
-		if err != nil {
+	if len(grouping) > 0 {
+		var err error
+		if groupingExpr, err = generateKeyExpression(grouping, nil, res); err != nil {
 			return nil, err
 		}
 	}
-
-	root, indexType, err := aggregateKeyExpression(call, operand, groupingExpr, opts, res)
+	root, indexType, err := aggregateKeyExpression(aggregate, groupingExpr, opts, res)
 	if err != nil {
 		return nil, err
 	}
-
-	gi := &GeneratedIndex{
-		TableName: d.scan.Table,
-		Root:      root,
-		IndexType: indexType,
+	gi := &GeneratedIndex{TableName: spec.recordType, Root: root, IndexType: indexType}
+	aggOrderIndex, err := c.aggregateOrderIndex(spec)
+	if err != nil {
+		return nil, err
 	}
-	// Java :237-243: permuted min/max carry the permuted size; every other
-	// aggregate type refuses an aggregate-ordered key. aggOrderIndex == 0 is
-	// admitted for non-permuted types exactly as in Java (`aggregateOrderIndex
-	// > 0`), where the ordering is a no-op prefix.
 	switch indexType {
 	case recordlayer.IndexTypePermutedMin, recordlayer.IndexTypePermutedMax:
 		permutedSize := 0
 		if aggOrderIndex >= 0 {
-			permutedSize = len(groupVals) - aggOrderIndex
+			permutedSize = len(grouping) - aggOrderIndex
 		}
-		gi.Options = map[string]string{
-			recordlayer.IndexOptionPermutedSize: strconv.Itoa(permutedSize),
-		}
+		gi.Options = map[string]string{recordlayer.IndexOptionPermutedSize: strconv.Itoa(permutedSize)}
 	default:
 		if aggOrderIndex > 0 {
 			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
@@ -179,175 +55,38 @@ func generateAggregate(d *decomposed, opts Options, res storageNames) (*Generate
 	return gi, nil
 }
 
-// groupingValues extracts the source-resolved grouping values in GROUP BY
-// order; a value the walker declined is a hard error, never a silent skip.
-//
-// adjustGroupByFieldPaths (:302-327) strips the select-where quantifier's
-// root from Java's field paths so a key expression can be built; Go's
-// GroupKey.Value / AggregateOperands are resolved against the base table
-// scope directly (single-rooted accessor paths), so there is no root to
-// strip and the adjustment is structural identity here.
-func groupingValues(agg *logical.LogicalAggregate) ([]values.Value, error) {
-	groupVals := make([]values.Value, len(agg.GroupKeys))
-	for i, gk := range agg.GroupKeys {
-		if gk.Value == nil {
-			// A grouping expression the walker declined — silently treating
-			// it as "present" is how the wrong index gets built.
-			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-				"Unsupported index definition, cannot map group by expression %q to a key expression", gk.Display)
-		}
-		groupVals[i] = gk.Value
-	}
-	return groupVals, nil
-}
-
-// validateSelectGroupingAlignment is the Go form of collectResultValues
-// (:249-299): the SELECT list must be consistent with the grouping.
-//
-// Java reconciles the flattened result value against the group-by expression's
-// grouping value; Go reconciles OutputSlots (the SELECT list, each slot naming
-// a native ordinal into [group keys..., calls...]) against GroupKeys. A
-// single-aggregation SELECT adopts the grouping values wholesale (Java
-// :259-270); a multi-element SELECT must list them exactly in grouping order
-// (:272-297).
-func validateSelectGroupingAlignment(agg *logical.LogicalAggregate) error {
-	// A slot with native ordinal -1 is an expression the front end could not
-	// classify (a computed post-aggregate item, or an unrecognized call);
-	// Java's value-kind assert (:180) rejects those before any arm runs.
-	isSingleAggregation := len(agg.OutputSlots) == 1 && len(agg.Calls) == 1 &&
-		agg.OutputSlots[0].NativeOrdinal == len(agg.GroupKeys)
-	if isSingleAggregation || len(agg.OutputSlots) == 0 {
-		return nil
-	}
-
-	nonAggNatives := make([]int, 0, len(agg.OutputSlots))
-	for _, slot := range agg.OutputSlots {
-		if slot.NativeOrdinal < 0 {
-			return api.NewError(api.ErrCodeUnsupportedOperation,
-				"Unsupported index definition, cannot map select element to a key expression")
-		}
-		if slot.NativeOrdinal >= len(agg.GroupKeys) {
-			continue // the aggregate call
-		}
-		nonAggNatives = append(nonAggNatives, slot.NativeOrdinal)
-	}
-	// Java :272-297, message per direction (IndexTest.java pins each):
-	for i, native := range nonAggNatives {
-		if i >= len(agg.GroupKeys) {
-			return api.NewError(api.ErrCodeUnsupportedOperation,
-				"Aggregate result value contains values missing from the grouping expression")
-		}
-		if native != i {
-			return api.NewError(api.ErrCodeUnsupportedOperation,
-				"Aggregate result value does not align with grouping value")
-		}
-	}
-	if len(nonAggNatives) < len(agg.GroupKeys) {
-		return api.NewError(api.ErrCodeUnsupportedOperation,
-			"Grouping value absent from aggregate result value")
-	}
-	return nil
-}
-
-// aggregateOrderRefs maps the sort keys of an aggregate index definition to
-// (grouping ordinal | aggregate) references, plus the per-grouping-value
-// ordering-function map (getOrderByValues, :339-385, over the aggregate
-// plan's projection).
-//
-// The sort keys carry the PROJECTION's value instances (the projection above
-// an aggregate reads the aggregate's output row, and the sort resolved
-// against it), so identity against d.project.ProjectedValues recovers the
-// select ordinal, and OutputSlots translate it to the native ordinal. A sort
-// key that maps to no projection slot is Java's not-in-projection rejection
-// (DdlVisitor.java:217).
-func aggregateOrderRefs(d *decomposed, groupVals []values.Value) ([]aggOrderRef, map[values.Value]string, error) {
-	fns := map[values.Value]string{}
-	if d.sort == nil {
-		return nil, fns, nil
-	}
-	agg := d.aggregate
-	if d.project == nil {
-		return nil, nil, api.NewError(api.ErrCodeUnsupportedOperation,
-			"Unsupported index definition, cannot resolve ORDER BY over an aggregate without a projection")
-	}
-	refs := make([]aggOrderRef, 0, len(d.sort.Keys))
-	for _, k := range d.sort.Keys {
-		selectOrdinal := -1
-		switch {
-		case k.Pos > 0:
-			if k.Pos > len(d.project.ProjectedValues) {
-				return nil, nil, api.NewErrorf(api.ErrCodeInvalidColumnReference,
-					"ORDER BY position %d is not in the select list", k.Pos)
+// aggregateKeyExpression is the aggregate half of ValueToKeyExpressionVisitor:
+// COUNT(*) groups everything and aggregates nothing; BITMAP_CONSTRUCT_AGG takes
+// the column under bitmap_bit_position; every other aggregate groups a plain
+// column by the grouping columns (groupedAggregate).
+func aggregateKeyExpression(aggregate values.Value, groupingExpr recordlayer.KeyExpression, opts Options, res storageNames) (recordlayer.KeyExpression, string, error) {
+	var fn string
+	var operand values.Value
+	switch a := aggregate.(type) {
+	case *values.AggregateValue:
+		switch a.Op {
+		case values.AggCountStar:
+			if groupingExpr == nil {
+				return recordlayer.GroupAll(recordlayer.EmptyKey()), recordlayer.IndexTypeCount, nil
 			}
-			selectOrdinal = k.Pos
-		case k.Value != nil:
-			for j, pv := range d.project.ProjectedValues {
-				if pv != nil && pv == k.Value {
-					selectOrdinal = j + 1
-					break
-				}
-			}
+			return recordlayer.GroupAll(groupingExpr), recordlayer.IndexTypeCount, nil
+		case values.AggBitmapConstructAgg:
+			return bitmapKeyExpression(a.Operand, groupingExpr, res)
 		}
-		if selectOrdinal < 0 {
-			return nil, nil, api.NewError(api.ErrCodeInvalidColumnReference,
-				"Cannot create index and order by an expression that is not present in the projection list")
+		fn, operand = a.Op.Symbol(), a.Operand
+	case *values.IndexOnlyAggregateValue:
+		fn, operand = "MIN_EVER", a.Child
+		if a.Op == values.IndexOnlyMaxEverLong {
+			fn = "MAX_EVER"
 		}
-		native := -1
-		for _, slot := range agg.OutputSlots {
-			if slot.SelectOrdinal == selectOrdinal {
-				native = slot.NativeOrdinal
-				break
-			}
-		}
-		if native < 0 {
-			return nil, nil, api.NewError(api.ErrCodeInvalidColumnReference,
-				"Cannot create index and order by an expression that is not present in the projection list")
-		}
-		if native >= len(agg.GroupKeys) {
-			refs = append(refs, aggOrderRef{isAgg: true})
-			continue
-		}
-		refs = append(refs, aggOrderRef{native: native})
-		if fn := sortOrderFunction(k); fn != "" {
-			// Key the ordering function on the GROUPING value instance —
-			// generateKeyExpression consumes groupVals, and the map is
-			// identity-keyed (Java's IdentityHashMap, RFC-202 D12).
-			fns[groupVals[native]] = fn
-		}
+	default:
+		return nil, "", unableToConstruct()
 	}
-	return refs, fns, nil
-}
-
-// aggregateKeyExpression is generateAggregateIndexKeyExpression (:397-465):
-// the grouped/grouping split per aggregate kind, plus the extremum-ever
-// index-type rewrite.
-func aggregateKeyExpression(call logical.AggregateCall, operand values.Value,
-	groupingExpr recordlayer.KeyExpression, opts Options, res storageNames,
-) (recordlayer.KeyExpression, string, error) {
-	fn := strings.ToUpper(call.Func)
-
-	// COUNT(*) is a special case (:407-413): the whole key is the grouping,
-	// with zero grouped columns — never an Empty child inside the concat.
-	if fn == "COUNT" && call.Star {
-		if groupingExpr == nil {
-			return recordlayer.GroupAll(recordlayer.EmptyKey()), recordlayer.IndexTypeCount, nil
-		}
-		return recordlayer.GroupAll(groupingExpr), recordlayer.IndexTypeCount, nil
+	indexType, err := aggregateIndexType(fn, operand, opts)
+	if err != nil {
+		return nil, "", err
 	}
-
-	// AVG is streamable but not indexable (:176-178).
-	if fn == "AVG" {
-		return nil, "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"Unsupported aggregate index definition containing non-indexable aggregation (%s), consider using a value index on the aggregated column instead.",
-			strings.ToLower(call.Func)+"("+call.Operand+")")
-	}
-
-	if fn == "BITMAP_CONSTRUCT_AGG" {
-		return bitmapKeyExpression(operand, groupingExpr, res)
-	}
-
-	// Generic arm (:434-446): the operand must be a plain column.
-	child, ok := values.AsFieldValue(operand)
+	child, ok := operand.(*pathColumn)
 	if !ok {
 		return nil, "", api.NewError(api.ErrCodeUnsupportedOperation,
 			"Unsupported index definition, expecting a column argument in aggregation function")
@@ -358,15 +97,12 @@ func aggregateKeyExpression(call logical.AggregateCall, operand values.Value,
 	}
 	switch groupedValue.(type) {
 	case *recordlayer.FieldKeyExpression, *recordlayer.CompositeKeyExpression:
-		// Java :437 asserts FieldKeyExpression or ThenKeyExpression.
+		// Java asserts FieldKeyExpression or ThenKeyExpression
+		// (groupedAggregate); a nested column's NestingKeyExpression is its
+		// "condition is not met!" internal error.
 	default:
 		return nil, "", api.NewErrorf(api.ErrCodeInternalError,
 			"index generator: aggregate operand built a %T key expression", groupedValue)
-	}
-
-	indexType, err := aggregateIndexType(fn, operand, opts)
-	if err != nil {
-		return nil, "", err
 	}
 	if groupingExpr == nil {
 		return recordlayer.Ungrouped(groupedValue), indexType, nil

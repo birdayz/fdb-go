@@ -47,6 +47,19 @@ const planCacheScopeDelim = "\x01"
 // PARAMETERIZES literals so `... WHERE x = 1` and `... WHERE x = 2` share a
 // plan with different bindings. Go keys on the literal text, so those miss —
 // more cache misses, never a wrong plan. Closing that is a separate reach item.
+//
+// THE LITERAL TEXT IN THIS KEY IS ALSO LOAD-BEARING FOR CORRECTNESS once RFC-257
+// WS-J section 3.5 lets a plan match an index whose stored key holds a literal (an
+// arithmetic or bitmap function key, `d & 1`, `bitmap_bucket_offset(id)`) against
+// the query's literal by VALUE (today candidate construction declines those keys).
+// Java makes such a plan reusable only under a QueryPlanConstraint that re-checks
+// the constant (ConstantValueEquivalence, ValueEquivalence.java:351-395); Go has no
+// such constraint (cascades/value_equivalence.go), and a plan is sound for another
+// literal only because another literal is another key here. Parameterizing
+// literals without porting that constraint would serve `d & 1` its plan for
+// `d & 2`, and for the same reason a ParameterValue, whose `?` text is one key for
+// every binding, must never match a stored literal.
+//
 // plannerOpts is the resolved planner-option signature (plannerOptions.
 // cacheKeyPart): a plan built with PLAN_RIGHT_DEEP or a disabled rule set is
 // NOT the plan the same SQL gets under the defaults, so it must not be served

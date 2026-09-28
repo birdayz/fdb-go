@@ -1,6 +1,8 @@
 package embedded
 
 import (
+	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -13,7 +15,6 @@ import (
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query"
 	"fdb.dev/pkg/relational/core/query/expr"
-	"fdb.dev/pkg/relational/core/query/logical"
 	"fdb.dev/pkg/relational/core/query/semantic"
 	"fdb.dev/pkg/relational/core/query/semantic/rlcatalog"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -322,7 +323,32 @@ func parseRecordField(
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported INSERT VALUES expression: %v", walkErr)
 	}
+	if err := admitAssignedValue(query.FieldTypeForFD(fd), v); err != nil {
+		return nil, err
+	}
 	return v, nil
+}
+
+// admitAssignedValue is the verdict of Java's coercion of a cell to its target
+// field (ExpressionVisitor.parseRecordField's coerceIfNecessary over
+// coerceValueIfNecessary and PromoteValue.inject, ExpressionVisitor.java:1118-
+// 1130, PromoteValue.java:445-455): a NULL takes the field's type
+// (NullValue.canResultInType), and anything else must promote to it
+// (computePromotionsTrie; an array literal element by element, which is the
+// same walk), or the INSERT is refused while planning with INCOMPATIBLE_TYPE.
+// So a DOUBLE literal does not narrow into a FLOAT column, nor a LONG literal
+// into an INTEGER one: the target writes CAST(… AS FLOAT) for that.
+func admitAssignedValue(target values.Type, v values.Value) error {
+	if v == nil || isStaticNull(v) {
+		return nil
+	}
+	var incompatible *values.IncompatibleTypeError
+	if err := values.CheckPromotionsTrie(target, v.Type()); errors.As(err, &incompatible) {
+		return api.WrapError(api.ErrCodeCannotConvertType,
+			"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.",
+			err)
+	}
+	return nil
 }
 
 // parseStructLiteral builds the typed row constructor for a struct literal
@@ -505,38 +531,6 @@ func firstSubqueryOrExistsAtom(ctx antlr.Tree) string {
 	return ""
 }
 
-// validateUpdateAssignments enforces NOT NULL on UPDATE SET at plan time
-// (matching Java's visitor and the naive execUpdate): assigning a
-// statically-NULL value to a NOT NULL column is a NOT_NULL_VIOLATION.
-// Runtime NULLs (from a nullable-column RHS) are caught by the record
-// store's Required-field marshal at save time.
-func validateUpdateAssignments(upd *logical.LogicalUpdate, md *recordlayer.RecordMetaData) error {
-	rt := md.GetRecordType(upd.Target)
-	if rt == nil {
-		return nil
-	}
-	fields := rt.Descriptor.Fields()
-	for _, a := range upd.Sets {
-		fd := fields.ByName(protoreflect.Name(a.Column))
-		if fd == nil {
-			for i := 0; i < fields.Len(); i++ {
-				if strings.EqualFold(string(fields.Get(i).Name()), a.Column) {
-					fd = fields.Get(i)
-					break
-				}
-			}
-		}
-		if fd == nil {
-			continue
-		}
-		if fieldTypeIsNotNullable(fd) && isStaticNull(a.Value) {
-			return api.NewErrorf(api.ErrCodeNotNullViolation,
-				"NULL value in column %q violates NOT NULL constraint", a.Column)
-		}
-	}
-	return nil
-}
-
 // isStaticNull reports whether a SET RHS Value is a plan-time-known NULL
 // (the NULL literal or a constant that folded to nil).
 func isStaticNull(v values.Value) bool {
@@ -550,27 +544,169 @@ func isStaticNull(v values.Value) bool {
 	}
 }
 
-// structSetTargetField returns the descriptor of an UPDATE SET target column
-// when that column is a STRUCT (or an array of structs) — the only targets
-// whose right-hand side needs the type pushed into it. Anything else keeps
-// the ordinary expression walk.
-func structSetTargetField(rt *recordlayer.RecordType, column string) protoreflect.FieldDescriptor {
-	if rt == nil || rt.Descriptor == nil {
+// resolveUpdateColumn resolves an UPDATE SET column's identifier, once, to the
+// target field it names, as Java's SemanticAnalyzer.resolveIdentifier resolves
+// it against the target's quantifier, which the table names (name: the bare
+// table, or the whole qualified identifier when the statement qualifies it,
+// dmlTargetNamePath): the qualified reading first, the leading segments naming
+// the target (`t.f`, `t.s.f`, `T.t.f`), and
+// only when that names nothing the unqualified one (`f`, `s.f`). In each, the
+// first remaining segment is a column and every later one a field of the
+// struct before it (lookupNestedField, which descends STRUCT types only, by
+// field position). Java compares every name exactly, so both readings are
+// tried exactly first; only when neither names a field are they tried again
+// with one case-insensitive match per name (values.ResolveAssignmentColumn),
+// the over-resolution DIVERGENCES.md declares, which never outranks an exact
+// match ("Identifier resolution: Go over-resolves case"), and whose two
+// readings both folding to a field are ambiguous. The qualifier itself is never
+// folded. A column spelled like its table up to case (`"w".f` in table w) is
+// therefore the column, as in Java; the table named twice before a top-level
+// column (`t.t.c`) is Java's too (below). Every name is a user identifier, a
+// descriptor field's storage name decoded once. It returns the fields' ordinals
+// and names; hits is 1 when resolved, 0 when no reading names a field, and more
+// than 1 when a step is ambiguous or two readings each name a field.
+func resolveUpdateColumn(desc protoreflect.MessageDescriptor, name []string, segments []string) (ordinals []int, names []string, hits int) {
+	match := func(candidates []string, name string, fold bool) (int, int) {
+		if fold {
+			return values.ResolveAssignmentColumn(candidates, name)
+		}
+		idx, hits := -1, 0
+		for i, c := range candidates {
+			if c == name {
+				idx, hits = i, hits+1
+			}
+		}
+		if hits != 1 {
+			return -1, hits
+		}
+		return idx, 1
+	}
+	path := func(segments []string, fold bool) ([]int, []string, int) {
+		msg := desc
+		var ordinals []int
+		var names []string
+		for i, segment := range segments {
+			fields := msg.Fields()
+			fieldNames := make([]string, fields.Len())
+			for j := range fieldNames {
+				fieldNames[j] = values.FieldNameForProtoField(fields.Get(j))
+			}
+			idx, hits := match(fieldNames, segment, fold)
+			if hits != 1 {
+				return nil, nil, hits
+			}
+			ordinals = append(ordinals, idx)
+			names = append(names, fieldNames[idx])
+			if i < len(segments)-1 {
+				fd := fields.Get(idx)
+				if !targetIsStruct(fd) {
+					return nil, nil, 0
+				}
+				msg = fd.Message()
+			}
+		}
+		return ordinals, names, 1
+	}
+	if len(segments) == 0 || desc == nil {
+		return nil, nil, 0
+	}
+	for _, fold := range []bool{false, true} {
+		// The qualifier is compared exactly in both passes: it names the
+		// target, an alias SQL's scope compares exactly (semantic.Scope), not a
+		// descriptor's field, which is all the declared fold repairs.
+		var qualified []int
+		var qualifiedNames []string
+		qualifiedHits := 0
+		if len(segments) > len(name) && slices.Equal(segments[:len(name)], name) {
+			qualified, qualifiedNames, qualifiedHits = path(segments[len(name):], fold)
+		}
+		// The table named twice before a top-level column (`t.t.c`) is a
+		// qualified reading too: Java's qualified lookup matches an attribute
+		// by its name with the operator's name prepended (SemanticAnalyzer
+		// lookup, attributeIdentifier.withQualifier(operatorName.getName()),
+		// which PREPENDS the name's last segment to the qualifier the
+		// attribute already carries, the whole name: `t.t.c`, and `w.T.w.c`
+		// for a target named T.w), a top-level column only, never a nested
+		// path. It counts beside the reading above, so a
+		// struct column named like its table (`x.x.f`, where x has a column
+		// f and a struct column x with a field f) is two candidates, 42702, as
+		// Java answers (measured).
+		if len(segments) == len(name)+2 && segments[0] == name[len(name)-1] && slices.Equal(segments[1:len(name)+1], name) {
+			fields := desc.Fields()
+			columns := make([]string, fields.Len())
+			for j := range columns {
+				columns[j] = values.FieldNameForProtoField(fields.Get(j))
+			}
+			if idx, hits := match(columns, segments[len(name)+1], fold); hits == 1 {
+				switch {
+				case qualifiedHits == 1 && qualified[0] == idx:
+					// The same column by both readings: Java tries an
+					// attribute's direct forms before its nested path and
+					// stops at the first that matches, so the doubled reading
+					// replaces the path through that column (`ss.ss.ss` is the
+					// struct column ss, measured).
+					qualified, qualifiedNames = []int{idx}, []string{columns[idx]}
+				case qualifiedHits == 0:
+					qualified, qualifiedNames = []int{idx}, []string{columns[idx]}
+					qualifiedHits = 1
+				default:
+					qualifiedHits++
+				}
+			} else {
+				qualifiedHits += hits
+			}
+		}
+		if qualifiedHits > 1 {
+			return nil, nil, qualifiedHits
+		}
+		if qualifiedHits != 0 && !fold {
+			return qualified, qualifiedNames, qualifiedHits
+		}
+		ordinals, names, hits := path(segments, fold)
+		switch {
+		case fold && qualifiedHits != 0 && hits != 0:
+			// Both readings fold to a field: two candidates, as a fold onto
+			// two columns is (DIVERGENCES.md "Identifier resolution: Go
+			// over-resolves case"), ambiguous rather than the first reading's.
+			return nil, nil, qualifiedHits + hits
+		case qualifiedHits != 0:
+			return qualified, qualifiedNames, qualifiedHits
+		case hits != 0:
+			return ordinals, names, hits
+		}
+	}
+	return nil, nil, 0
+}
+
+// structSetTargetField returns the descriptor of the field an UPDATE SET
+// assigns (its resolved ordinals, resolveUpdateColumn) when that field is a
+// STRUCT (or an array of structs) — the only targets whose right-hand side
+// needs the type pushed into it. Anything else keeps the ordinary expression
+// walk.
+func structSetTargetField(rt *recordlayer.RecordType, ordinals []int) protoreflect.FieldDescriptor {
+	if rt == nil || rt.Descriptor == nil || len(ordinals) == 0 {
 		return nil
 	}
-	fields := rt.Descriptor.Fields()
-	for i := 0; i < fields.Len(); i++ {
-		fd := fields.Get(i)
-		if !strings.EqualFold(string(fd.Name()), column) {
-			continue
+	msg := rt.Descriptor
+	var fd protoreflect.FieldDescriptor
+	for i, ordinal := range ordinals {
+		fields := msg.Fields()
+		if ordinal < 0 || ordinal >= fields.Len() {
+			return nil
 		}
-		if targetIsStruct(fd) {
-			return fd
+		fd = fields.Get(ordinal)
+		if i < len(ordinals)-1 {
+			if !targetIsStruct(fd) {
+				return nil
+			}
+			msg = fd.Message()
 		}
-		if list, _, ok := values.EffectiveListField(fd); ok && elementIsStruct(list) {
-			return fd
-		}
-		return nil
+	}
+	if targetIsStruct(fd) {
+		return fd
+	}
+	if list, _, ok := values.EffectiveListField(fd); ok && elementIsStruct(list) {
+		return fd
 	}
 	return nil
 }

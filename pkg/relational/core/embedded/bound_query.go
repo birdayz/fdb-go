@@ -34,23 +34,17 @@ func (p *existsSubqueryPlanner) bindQuery(q antlrgen.IQueryContext) (*boundQuery
 	if err != nil {
 		return nil, err
 	}
-	plan, primaryUnnest, err := p.tryBuildCorrelatedPrimaryUnnest(q)
+	plan, err := visitor.VisitQuery(q)
 	if err != nil {
 		return nil, err
-	}
-	if !primaryUnnest {
-		plan, err = visitor.VisitQuery(q)
-		if err != nil {
-			return nil, err
-		}
 	}
 	if plan == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "bound query has no logical plan")
 	}
-	if err := demoteSchemaQualifiedUnnest(plan, p.effectiveSchemaName(), p.md); err != nil {
+	if err := demoteQualifiedTableUnnest(plan, p.effectiveTemplateName(), p.md); err != nil {
 		return nil, err
 	}
-	if err := resolveQualifiedTableNames(plan, p.effectiveSchemaName()); err != nil {
+	if err := resolveQualifiedTableNames(plan, p.effectiveTemplateName()); err != nil {
 		return nil, err
 	}
 	logical.BindCTESources(plan, p.cteProducers)
@@ -71,6 +65,7 @@ func newBoundQuery(plan logical.LogicalOperator, enclosing *semantic.Scope) (*bo
 		for _, source := range frame.Sources() {
 			source.HiddenColumns = maps.Clone(source.HiddenColumns)
 			source.AdditionalQualifiers = append([]semantic.Identifier(nil), source.AdditionalQualifiers...)
+			source.NamePath = append([]semantic.Identifier(nil), source.NamePath...)
 			parent = append(parent, source)
 		}
 	}
@@ -229,7 +224,7 @@ func boundDependencies(op logical.LogicalOperator, ctes map[*logical.CTEProducer
 			addPred(pred)
 		}
 		existential = node.OnExistsSubqueries
-	case *logical.LogicalValues:
+	case *logical.LogicalSingleton:
 	default:
 		return r, api.NewErrorf(api.ErrCodeUnsupportedQuery, "no bound dependency property for %T", op)
 	}

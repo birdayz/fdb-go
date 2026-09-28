@@ -144,7 +144,7 @@ func parseScanRangeSetContinuation(
 	compatibleFingerprints ...[]byte,
 ) ([]uint32, []byte, error) {
 	var continuation gen.ScanRangeSetContinuation
-	if err := continuation.UnmarshalVT(raw); err != nil {
+	if err := recordlayer.UnmarshalVTAsJava(&continuation, raw); err != nil {
 		return nil, nil, scanRangeSetContinuationError(raw, err)
 	}
 	if !fingerprintAccepted(continuation.Fingerprint, fingerprint, compatibleFingerprints) {

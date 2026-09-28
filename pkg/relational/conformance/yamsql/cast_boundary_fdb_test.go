@@ -7,6 +7,7 @@ import (
 	"math"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -183,7 +184,9 @@ CREATE TABLE q (id BIGINT, a DOUBLE ARRAY, PRIMARY KEY(id))`,
 		{"quoted_owner_rebuild", `SELECT x FROM (SELECT "q.q".*, x FROM (SELECT CAST(a AS BIGINT ARRAY) AS "a.b" FROM t) AS "q.q", "q.q"."a.b" x) d`},
 		{"quoted_cte", `WITH "q.q" AS (SELECT CAST(a AS BIGINT ARRAY) AS "a.b" FROM t) SELECT x FROM "q.q", "q.q"."a.b" x`},
 		{"quoted_solo_star", `SELECT id FROM (SELECT "q.q".* FROM (SELECT CAST(x AS BIGINT) AS id FROM t, t.a x) AS "q.q", q) e`},
-		{"session_schema", `SELECT x FROM (SELECT CAST(a AS BIGINT ARRAY) AS a FROM conf.t) d, d.a x`},
+		// A table qualified by its schema template's name ({T}, substituted
+		// below: runSemanticScenario's template), not by the schema's.
+		{"template_qualified", `SELECT x FROM (SELECT CAST(a AS BIGINT ARRAY) AS a FROM {T}.t) d, d.a x`},
 		{"cte_labels", `WITH c("a.b") AS (SELECT CAST(a AS BIGINT ARRAY) FROM t) SELECT x FROM c, c."a.b" x`},
 		{"chained_cte", `WITH c AS (SELECT CAST(a AS BIGINT ARRAY) AS a FROM t), d AS (SELECT a FROM c) SELECT x FROM d, d.a x`},
 		{"cte_shadows_table", `WITH q AS (SELECT CAST(a AS BIGINT ARRAY) AS a FROM t) SELECT x FROM q, q.a x`},
@@ -210,7 +213,8 @@ CREATE TABLE q (id BIGINT, a DOUBLE ARRAY, PRIMARY KEY(id))`,
 			t.Parallel()
 			scenario := *s
 			scenario.Name = tc.name
-			scenario.Tests = []yamsql.Test{{Query: tc.query, ExactRows: &want, Unordered: true, ColumnTypes: []string{"BIGINT"}, PlanContains: "Explode("}}
+			query := strings.ReplaceAll(tc.query, "{T}", "TMPL_"+sanitize(t.Name()))
+			scenario.Tests = []yamsql.Test{{Query: query, ExactRows: &want, Unordered: true, ColumnTypes: []string{"BIGINT"}, PlanContains: "Explode("}}
 			r := runSemanticScenario(t, &scenario)
 			if r.TestsRun != 1 || r.TestsPass != 1 || r.TestsFail != 0 {
 				t.Fatalf("bound array route: %+v", r)

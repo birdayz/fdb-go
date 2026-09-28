@@ -51,9 +51,14 @@ func TestPrivateFixtureValidation(t *testing.T) {
 		{"closed_cast", func(f *javayamsql.File) {
 			f.Blocks[1].Setup.Steps[0].Query = "INSERT INTO t VALUES (1, CAST(-0.0 AS BIGINT))"
 		}, true},
+		// A table's qualifier is its schema template's name; the schema's own
+		// name qualifies nothing (functions.ResolveTargetTablePath).
 		{"qualified", func(f *javayamsql.File) {
-			f.Blocks[1].Setup.Steps[0].Query = "INSERT INTO YAML_PIN_1_SCHEMA.t VALUES (1, 100)"
+			f.Blocks[1].Setup.Steps[0].Query = "INSERT INTO YAML_PIN_1_TEMPLATE.t VALUES (1, 100)"
 		}, true},
+		{"qualified_by_the_schema", func(f *javayamsql.File) {
+			f.Blocks[1].Setup.Steps[0].Query = "INSERT INTO YAML_PIN_1_SCHEMA.t VALUES (1, 100)"
+		}, false},
 		{"quoted_dotted", func(f *javayamsql.File) {
 			f.Blocks[0].SchemaTemplate.Variants[0].Definition = `CREATE TABLE "a.b" (id BIGINT, PRIMARY KEY (id))`
 			f.Blocks[1].Setup.Steps[0].Query = `INSERT INTO "a.b" VALUES (1)`

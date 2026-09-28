@@ -208,7 +208,7 @@ tests:
   - query: SELECT col1, SUM(col2) FROM t1 GROUP BY col1 HAVING col1 > 15 ORDER BY col1
     rows:
       - [20, 300]
-  # Positive: an AGGREGATE in HAVING is valid (harvestColumnRefs skips
+  # Positive: an AGGREGATE in HAVING is valid (harvestLocalBareColumnRefsOutsideSubqueries skips
   # the aggregate operand). MAX(col2): col1=10→200, col1=20→300; only
   # col1=20 passes `MAX(col2) > 250`.
   - query: SELECT col1 FROM t1 GROUP BY col1 HAVING MAX(col2) > 250 ORDER BY col1

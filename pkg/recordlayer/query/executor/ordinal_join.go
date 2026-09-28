@@ -1542,7 +1542,7 @@ type ordinalJoinBuild struct {
 	// type's AS/AT alias NAMES — a user may spell an alias `_0`/`_1`
 	// (`FROM t, t.arr AS "_1" AT "_0"`), and a name lookup would route the
 	// wrong internal key. Distinguished by PRODUCER CONTEXT (the FlatMap
-	// knows its inner is an ordinality Explode — newFlatMapCursorWithOuterProperties sets
+	// knows its inner is an ordinality Explode — newFlatMapCursorForPlan sets
 	// this), NOT the row SHAPE: a leg whose own columns are aliased
 	// `_0`/`_1` is shape-identical but binds correctly by NAME
 	// (adaptLegPositional).
@@ -1977,7 +1977,7 @@ func (b *ordinalJoinBuild) enabled() bool { return b != nil && b.Enabled }
 // build typeless for it even though the inner plan still references it — the
 // untyped leg then adapts to a
 // zero-width binding and dies loudly on a legitimate plan. Called by
-// newFlatMapCursorWithOuterProperties with the inner plan; the NLJ path gets the same widening
+// newFlatMapCursorForPlan with the inner plan; the NLJ path gets the same widening
 // directly from its predicate list in newOrdinalJoinBuild.
 //
 // The walk exists only because a folded RV can drop a leg the plan still
@@ -1998,7 +1998,7 @@ func (b *ordinalJoinBuild) widenLegTypesFromPlan(plan plans.RecordQueryPlan) err
 	}
 	var divergence error
 	// The walk continues widening LegTypes after a capture; harmless — the
-	// caller (newFlatMapCursorWithOuterProperties) discards the whole build on error.
+	// caller (newFlatMapCursorForPlan) discards the whole build on error.
 	walkBakedRefs(plan, func(v values.Value) values.Value {
 		fv, isFV := values.AsFieldValue(v)
 		if !isFV || fv.Path() == nil {
@@ -2276,7 +2276,7 @@ func (b *ordinalJoinBuild) bindLeg(legs map[values.CorrelationIdentifier]values.
 	// ordinal at slot 1 under the internal `[_0,_1]` schema, so slot i = row
 	// slot i — the leg type's AS/AT alias NAMES never participate (a user may
 	// spell an alias `_0`/`_1`). See OrdinalityLegs (producer context, set by
-	// newFlatMapCursorWithOuterProperties).
+	// newFlatMapCursorForPlan).
 	if _, isOrd := b.OrdinalityLegs[id]; isOrd {
 		if qr == nil {
 			legs[id] = nil

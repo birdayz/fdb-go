@@ -53,6 +53,20 @@ func NewRecordQueryInsertPlanFromQuantifier(innerQ expressions.Quantifier, targe
 	if _, ok := exactTarget.Type().(*values.RecordType); !ok {
 		return nil, fmt.Errorf("RecordQueryInsertPlan target type: expected record, got %v", targetType)
 	}
+	// Java's RecordQueryInsertPlan.insertPlan computes
+	// PromoteValue.computePromotionsTrie over the table type and the inner's
+	// flowed row: every column of the row must promote to its target column
+	// (an INSERT … SELECT's LONG into an INTEGER column does not), or the
+	// INSERT is refused while planning with INCOMPATIBLE_TYPE. The table type
+	// is the target without the pseudo-fields the planner's layout adds.
+	flowed, err := innerQ.GetFlowedObjectType()
+	if err != nil {
+		return nil, fmt.Errorf("RecordQueryInsertPlan inner type: %w", err)
+	}
+	tableType := values.WithoutPseudoFields(exactTarget.Type().(*values.RecordType))
+	if err := values.CheckPromotionsTrie(tableType, flowed); err != nil {
+		return nil, err
+	}
 	base, err := newPlanExprBaseForType("RecordQueryInsertPlan", exactTarget.Type())
 	if err != nil {
 		return nil, err

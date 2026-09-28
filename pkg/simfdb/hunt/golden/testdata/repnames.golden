@@ -35,7 +35,7 @@ ROWS(2) cols=[G, G, ID, W]:
   [200, 9, 100, 1]
 
 === SELECT * FROM c, (SELECT g, SUM(v) AS g FROM ga GROUP BY g) u WHERE c.id = 100
-PLAN: Project([_current.ID#0, _current.W#1, _current.G#2, _current.G_2#3], NestedLoopJoin(INNER, Scan(C, [=]), Project([_current.G#0, _current.SUM(V)#1], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA))))))
+PLAN: Project([_current.ID#0, _current.W#1, _current.G#2, _current.G_2#3], NestedLoopJoin(INNER, Project([_current.G#0, _current.SUM(V)#1], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA)))), Scan(C, [=])))
 ROWS(2) cols=[ID, W, G, G]:
   [100, 1, 100, 12]
   [100, 1, 200, 9]

@@ -48,7 +48,7 @@ import (
 // the scalar output title; identities never become part of that display label.
 func (t *cascadesTranslator) scalarSubqueryOrdinalSeed(outerAlias string, outerOp logical.LogicalOperator, innerColumns []values.Field, innerCorr values.CorrelationIdentifier, scalarCol string) values.Value {
 	outerType := t.ordinalLegType(outerOp)
-	if outerType == nil || len(outerType.Fields) == 0 {
+	if outerType == nil {
 		return nil // decline → caller loud-declines
 	}
 

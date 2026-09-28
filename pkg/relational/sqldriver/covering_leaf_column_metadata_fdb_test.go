@@ -37,6 +37,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/relational/conformance/coveringleaf"
@@ -58,7 +59,7 @@ func TestFDB_CoveringLeafKeepsColumnTypeMetadata(t *testing.T) {
 	// a hand-kept copy on each side.
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE covleafmeta "+coveringleaf.DDL)
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE covleafmeta")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

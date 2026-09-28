@@ -37,12 +37,13 @@ func TestPositionalAuthority_ScalarElement(t *testing.T) {
 		values.RecordConstructorField{Name: "X", Value: elementQOV},
 	)
 
-	c, err := newFlatMapCursorWithOuterProperties(
+	c, err := newFlatMapCursorForPlan(
 		recordlayer.FromList([]QueryResult{}), nil, nil, nil, EmptyEvaluationContext(),
 		outerCorr, innerCorr, mixed, recordlayer.ExecuteProperties{}, false,
+		false,
 	)
 	if err != nil {
-		t.Fatalf("newFlatMapCursorWithOuterProperties: %v", err)
+		t.Fatalf("newFlatMapCursorForPlan: %v", err)
 	}
 	defer c.Close()
 	if !c.build.enabled() {
@@ -167,7 +168,7 @@ func TestExactPlanObjectBindingRejectsWrongRecordTransport(t *testing.T) {
 
 // TestOrdinalAliasCollision pins the ordinal-alias-collision handling via
 // PRODUCER CONTEXT: a WITH-ORDINALITY Explode leg (marked in OrdinalityLegs by
-// newFlatMapCursorWithOuterProperties) binds STRICTLY POSITIONALLY (slot i = row[_i]) — so a user
+// newFlatMapCursorForPlan) binds STRICTLY POSITIONALLY (slot i = row[_i]) — so a user
 // AS/AT alias that SPELLS an internal OrdinalFieldName (`FROM t, t.arr AS "_1"
 // AT "_0"`) can't route the wrong internal key — while a SHAPE-IDENTICAL
 // name-model leg whose OWN columns are aliased "_0"/"_1" (NOT an ordinality
@@ -264,12 +265,13 @@ func TestPositionalAuthority_NullElement(t *testing.T) {
 		values.RecordConstructorField{Name: "ID", Value: o0},
 		values.RecordConstructorField{Name: "X", Value: mustTestQOV(t, innerCorr, values.NotNullLong)},
 	)
-	c, err := newFlatMapCursorWithOuterProperties(
+	c, err := newFlatMapCursorForPlan(
 		recordlayer.FromList([]QueryResult{}), nil, nil, nil, EmptyEvaluationContext(),
 		outerCorr, innerCorr, mixed, recordlayer.ExecuteProperties{}, false,
+		false,
 	)
 	if err != nil {
-		t.Fatalf("newFlatMapCursorWithOuterProperties: %v", err)
+		t.Fatalf("newFlatMapCursorForPlan: %v", err)
 	}
 	defer c.Close()
 

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer"
+
 	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
 )
 
@@ -243,6 +245,57 @@ func TestVectorPlan_MetricMismatchDoesNotMatchVector(t *testing.T) {
 	var uerr *cascades.UnplannableIndexOnlyResidualError
 	if !errors.As(err, &uerr) {
 		t.Fatalf("expected UnplannableIndexOnlyResidualError for metric mismatch, got err=%v\nexplain=%s", err, explain)
+	}
+}
+
+// TestVectorPlan_MetricUnderItsAlias pins that the planner reads a vector
+// index's metric as Java's VectorIndexExpansionVisitor does, through
+// VectorIndexOptionKeys.METRIC, whose alias is vectorMetric: an index whose
+// metric is stored only as vectorMetric=COSINE_METRIC (the name IndexOptions
+// tells Java users to create indexes with; Go's DDL writes hnswMetric, so the
+// options are edited on the built meta-data) serves a cosine QUALIFY through a
+// vector scan, where reading hnswMetric alone took it for Euclidean and left the
+// query unplannable, and a euclidean QUALIFY over it does not match.
+func TestVectorPlan_MetricUnderItsAlias(t *testing.T) {
+	t.Parallel()
+	schema := `CREATE TABLE docs (
+			zone string, doc_id string, embedding vector(3, half),
+			PRIMARY KEY (zone, doc_id))
+		CREATE VECTOR INDEX doc_idx USING HNSW ON docs(embedding)
+			PARTITION BY (zone) OPTIONS (METRIC = COSINE_METRIC)`
+	query := func(fn string) string {
+		return `SELECT doc_id FROM docs WHERE zone = 'z1'
+		QUALIFY ROW_NUMBER() OVER (
+			PARTITION BY zone
+			ORDER BY ` + fn + `(embedding, [1.0, 0.0, 0.0])
+		) <= 3`
+	}
+	tmpl, err := buildSchemaTemplateFromDDL(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := tmpl.Underlying()
+	idx := md.GetIndex("DOC_IDX")
+	if idx == nil {
+		t.Fatal("index DOC_IDX not in metadata")
+	}
+	if got := idx.Options[recordlayer.IndexOptionVectorMetric]; got != "COSINE_METRIC" {
+		t.Fatalf("DDL stored hnswMetric %q, want COSINE_METRIC", got)
+	}
+	delete(idx.Options, recordlayer.IndexOptionVectorMetric)
+	idx.Options["vectorMetric"] = "COSINE_METRIC"
+
+	plan, _, err := planPhysicalForMetaData(query("cosine_distance"), md, nil, false, nil, plannerOptionsFrom(nil), nil)
+	if err != nil {
+		t.Fatalf("cosine query over a vectorMetric=COSINE_METRIC index did not plan: %v", err)
+	}
+	if explain := plan.Explain(); !strings.Contains(explain, "VectorIndexScan") {
+		t.Fatalf("cosine query did not plan to a vector scan:\n%s", explain)
+	}
+	_, _, err = planPhysicalForMetaData(query("euclidean_distance"), md, nil, false, nil, plannerOptionsFrom(nil), nil)
+	var uerr *cascades.UnplannableIndexOnlyResidualError
+	if !errors.As(err, &uerr) {
+		t.Fatalf("a euclidean query over a cosine index must not match; got err=%v", err)
 	}
 }
 
@@ -578,6 +631,53 @@ func TestVectorPlan_ZeroCapAndParamRankAreBounded(t *testing.T) {
 			// is either 0 or a runtime param, neither of which folds).
 			if strings.Contains(explain, "rank<") {
 				t.Fatalf("k was consumed into the scan (rank<...) instead of a Limit above:\n%s", explain)
+			}
+		})
+	}
+}
+
+// TestVectorPlan_MetricIsTheMaintainers pins that the planner's vector
+// candidate takes its metric from the maintainer's own parse
+// (recordlayer.VectorIndexMetric): a metric the maintainer refuses builds no
+// candidate, where the planner's own parser mapped an empty HNSW metric to
+// Euclidean and an SPFresh "cosine" to cosine while the SPFresh maintainer read
+// it as Euclidean. Each such query is unplannable rather than served under a
+// metric the index is not maintained with.
+func TestVectorPlan_MetricIsTheMaintainers(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name, ddl, key, value, fn string
+	}{
+		{"an empty HNSW metric", `CREATE TABLE docs (doc_id string, embedding vector(3, half), PRIMARY KEY (doc_id))
+			CREATE VECTOR INDEX doc_idx USING HNSW ON docs(embedding)`, recordlayer.IndexOptionVectorMetric, "", "euclidean_distance"},
+		{"an SPFresh metric in lower case", `CREATE TABLE docs (doc_id string, embedding vector(3, half), PRIMARY KEY (doc_id))
+			CREATE VECTOR INDEX doc_idx USING SPFRESH ON docs(embedding) OPTIONS (METRIC = COSINE_METRIC)`, recordlayer.IndexOptionSPFreshMetric, "cosine", "cosine_distance"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			tmpl, err := buildSchemaTemplateFromDDL(c.ddl)
+			if err != nil {
+				t.Fatal(err)
+			}
+			md := tmpl.Underlying()
+			idx := md.GetIndex("DOC_IDX")
+			if idx == nil {
+				t.Fatal("index DOC_IDX not in metadata")
+			}
+			query := `SELECT doc_id FROM docs QUALIFY ROW_NUMBER() OVER (ORDER BY ` + c.fn + `(embedding, [1.0, 0.0, 0.0])) <= 3`
+			// The unedited index plans to a vector scan: the control.
+			plan, _, err := planPhysicalForMetaData(query, md, nil, false, nil, plannerOptionsFrom(nil), nil)
+			if err != nil || !strings.Contains(plan.Explain(), "VectorIndexScan") {
+				t.Fatalf("control: err=%v", err)
+			}
+			idx.Options[c.key] = c.value
+			if _, err := recordlayer.VectorIndexMetric(idx); err == nil {
+				t.Fatalf("the maintainer's parse admitted %s=%q", c.key, c.value)
+			}
+			_, _, err = planPhysicalForMetaData(query, md, nil, false, nil, plannerOptionsFrom(nil), nil)
+			var uerr *cascades.UnplannableIndexOnlyResidualError
+			if !errors.As(err, &uerr) {
+				t.Fatalf("a query over an index whose metric the maintainer refuses planned; err=%v", err)
 			}
 		})
 	}

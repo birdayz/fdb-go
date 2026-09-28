@@ -24,7 +24,7 @@ func TestFDB_ArithmeticEdgeProbe(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE arith "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_arith/s WITH TEMPLATE arith")
-	dsn := fmt.Sprintf("fdbsql:///testdb_arith?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_ARITH?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

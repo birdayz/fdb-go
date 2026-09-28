@@ -1123,8 +1123,14 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	t.Run("later-source unnest-alias collision inside an EXISTS subquery is legal when unused", func(t *testing.T) {
 		// The inner projection does not reference either repeated V output.
 		assertRows(t,
-			`SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM T1, T1."ARR1" AS "V", U AS "V")`,
+			`SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM T1 AS "I", "I"."ARR1" AS "V", U AS "V")`,
 			[]string{"ID=0", "ID=1", "ID=2", "ID=3"})
+		// Spelled with the inner source named like the outer one, the FROM
+		// item's path has two readings, the inner T1's and the outer's: Java's
+		// lookup for it is one list over both queries' operators (measured
+		// 42702 in conformance/ws_f_join_unnest_conformance_test.go).
+		assertRejected(t, md, `SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM T1, T1."ARR1" AS "V", U AS "V")`,
+			api.ErrCodeAmbiguousColumn)
 	})
 
 	t.Run("P1 derived alias shadowing a real same-named table rejects cleanly", func(t *testing.T) {
@@ -1164,18 +1170,41 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		assertRejected(t, md, `SELECT "ID", "AT" FROM T1 AT "AT"`, api.ErrCodeWrongObjectType)
 	})
 
-	t.Run("AT on a non-array column is WRONG_OBJECT_TYPE", func(t *testing.T) {
-		// TCOLL.VAL is a real, PRESENT scalar INT, not an array — AT (and indeed
-		// any unnest) on it is invalid → WRONG_OBJECT_TYPE. (T1 has no scalar
-		// column; using a table with a genuine present scalar keeps this test
-		// honest — a present-non-array source, not a missing field.)
-		assertRejected(t, md, `SELECT "ID" FROM TCOLL, TCOLL."VAL" AS "X" AT "AT"`, api.ErrCodeWrongObjectType)
+	t.Run("AT on a non-array column is INVALID_COLUMN_REFERENCE", func(t *testing.T) {
+		// TCOLL.VAL is a real, PRESENT scalar INT, not an array. A dotted FROM
+		// item that names no table is a correlated field, and Java's
+		// generateCorrelatedFieldAccess refuses a non-array one with
+		// INVALID_COLUMN_REFERENCE whether or not it carries AT (measured:
+		// `FROM w, w.f AS x AT p` is 42F10, conformance
+		// ws_f_table_qualifier_conformance_test.go). (T1 has no scalar column;
+		// a table with a genuine present scalar keeps this a present-non-array
+		// source, not a missing field.)
+		assertRejected(t, md, `SELECT "ID" FROM TCOLL, TCOLL."VAL" AS "X" AT "AT"`, api.ErrCodeInvalidColumnReference)
 	})
 
-	t.Run("multiple unnests rejected cleanly", func(t *testing.T) {
-		// Not yet supported (nested-FlatMap merged-row threading); rejected, never
-		// silently wrong.
-		assertRejected(t, md, `SELECT "ID", "V1", "V2" FROM T1, T1."ARR1" AS "V1", T1."ARR1_NN" AS "V2"`, api.ErrCodeUnsupportedQuery)
+	// siblingRows is the per-row product of ARR1 and ARR1_NN: two unnests of
+	// one row are two ForEach quantifiers over it (Java), so a NULL ARR1 (id 3)
+	// contributes nothing.
+	siblingRows := func(first, second string) []string {
+		out := []string{fmt.Sprintf("ID=1|%s=101|%s=101", first, second)}
+		for _, a := range []int{201, 202, 203} {
+			for _, b := range []int{201, 202, 203} {
+				out = append(out, fmt.Sprintf("ID=2|%s=%d|%s=%d", first, a, second, b))
+			}
+		}
+		return out
+	}
+
+	t.Run("two unnests of one row are a per-row product", func(t *testing.T) {
+		// Sibling spine links (WS-J v32c): the second unnest's collection roots
+		// at the table's window of the first link's merged row. The same shape —
+		// two DIFFERENT arrays of one row, one of them NULL on another row — is
+		// measured against Java in conformance/ws_f_join_unnest_conformance_test.go
+		// (`SELECT id, x, y FROM w2, w2.a AS x, w2.b AS y`: `[[1 1 3] [1 2 3]]`,
+		// the NULL row contributing nothing).
+		plan := assertRows(t, `SELECT "ID", "V1", "V2" FROM T1, T1."ARR1" AS "V1", T1."ARR1_NN" AS "V2"`,
+			siblingRows("V1", "V2"))
+		unnestMustContain(t, plan, "Explode")
 	})
 
 	// --- Classifier precision (P1 / P2a / P2b / P2c) ---------
@@ -1238,7 +1267,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// fix the prior-alias match classified `s.PB` as an unnest and column
 		// validation failed (the valid query was rejected). It must now plan
 		// IDENTICALLY to the un-aliased `FROM PA, s.PB AS B` control below.
-		plan := assertRows(t, `SELECT PA."ID" AS "PID", "B"."ID" AS "BID" FROM PA AS "s", "s"."PB" AS "B"`, []string{
+		plan := assertRows(t, `SELECT PA."ID" AS "PID", "B"."ID" AS "BID" FROM PA AS "S", "S"."PB" AS "B"`, []string{
 			"PID=1|BID=1",
 		})
 		// A real cross join — NO Explode/FlatMap unnest machinery.
@@ -1254,7 +1283,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// WRONG_OBJECT_TYPE (the table branch asserts atAlias.isEmpty()); the AT
 		// keeps this on the unnest path so the translator surfaces that code rather
 		// than demoting to a (would-be) table cross join. RFC-142.
-		assertRejected(t, md, `SELECT PA."ID" FROM PA AS "s", "s"."PB" AT "AT"`, api.ErrCodeWrongObjectType)
+		assertRejected(t, md, `SELECT PA."ID" FROM PA AS "S", "S"."PB" AT "AT"`, api.ErrCodeWrongObjectType)
 	})
 
 	t.Run("R5a scalar CTE-output unnest is INVALID_COLUMN_REFERENCE", func(t *testing.T) {
@@ -1328,8 +1357,11 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// scope. The classifier must NOT correlate an unnest against the hidden
 		// T1 scan. It falls to the table path; `T1.arr` is then a schema-
 		// qualified table whose qualifier (T1) is not the session schema → a
-		// clean UndefinedDatabase error, NOT a silent unnest of the hidden scan.
-		assertRejected(t, md, `SELECT "X" FROM (SELECT "ID" FROM T1) AS "d", T1."ARR1" AS "X"`, api.ErrCodeUndefinedDatabase)
+		// clean refusal, NOT a silent unnest of the hidden scan. The qualifier T1
+		// is not the schema template's name, so the path is no table either, and
+		// the target's correlated reading refuses it: 42703 "Unknown reference
+		// T1.ARR1", measured (conformance/ws_f_table_qualifier_conformance_test.go).
+		assertRejected(t, md, `SELECT "X" FROM (SELECT "ID" FROM T1) AS "d", T1."ARR1" AS "X"`, api.ErrCodeUndefinedColumn)
 	})
 
 	t.Run("P2c scalar correlated field is INVALID_COLUMN_REFERENCE", func(t *testing.T) {
@@ -1340,13 +1372,15 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		assertRejected(t, md, `SELECT "ID" FROM TCOLL, TCOLL."VAL" AS "X"`, api.ErrCodeInvalidColumnReference)
 	})
 
-	t.Run("AT on a single-name non-source comma source is WRONG_OBJECT_TYPE", func(t *testing.T) {
+	t.Run("AT on a single-name non-source comma source is UNDEFINED_TABLE", func(t *testing.T) {
 		// `FROM T1, BOGUS AT "AT"` — a single-segment comma source carrying AT
-		// where BOGUS is not a visible source. AT explicitly requests ordinality
-		// (valid only on a correlated array), so the classifier must still route
-		// it to the unnest path and reject it cleanly — NOT silently drop the AT
-		// and treat BOGUS as a plain table scan. RFC-142.
-		assertRejected(t, md, `SELECT "ID" FROM T1, "BOGUS" AT "AT"`, api.ErrCodeWrongObjectType)
+		// where BOGUS is neither a table, a CTE nor a prior FROM source. Java's
+		// generateAccess then reads it as a correlated identifier, and
+		// resolveCorrelatedIdentifier refuses an unqualified one as an unknown
+		// table (measured: `FROM w, nosuch AT p` is 42F01). The AT must reach
+		// that verdict, never be silently dropped with BOGUS scanned as a table.
+		// RFC-142.
+		assertRejected(t, md, `SELECT "ID" FROM T1, "BOGUS" AT "AT"`, api.ErrCodeUndefinedTable)
 	})
 
 	t.Run("AT on a schema-qualified table is WRONG_OBJECT_TYPE", func(t *testing.T) {
@@ -1362,7 +1396,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// is NOT a column of T1 (the field is MISSING). Mirroring Java's
 		// resolveCorrelatedIdentifier failing the field lookup on a known source,
 		// this is a clean UNDEFINED_COLUMN — distinct from the present-non-array
-		// scalar case above (WRONG_OBJECT_TYPE). A genuinely-missing field is NOT
+		// scalar case above (INVALID_COLUMN_REFERENCE). A genuinely-missing field is NOT
 		// a wrong-object-type and NEVER a silent-wrong unnest.
 		assertRejected(t, md, `SELECT "ID" FROM T1, T1."NOPE" AS "X"`, api.ErrCodeUndefinedColumn)
 	})
@@ -1479,12 +1513,12 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		unnestMustContain(t, plan, "WITH ORDINALITY")
 	})
 
-	t.Run("control: AT on a non-array correlated field is WRONG_OBJECT_TYPE", func(t *testing.T) {
+	t.Run("control: AT on a non-array correlated field is INVALID_COLUMN_REFERENCE", func(t *testing.T) {
 		// Control 2: `T1.ID AS X AT O` — segment 0 (T1) IS a visible source but ID is
 		// a SCALAR field, not an array. Java's generateCorrelatedFieldAccess asserts
-		// repeated type → WRONG_OBJECT_TYPE. Pins that a dotted AT on a present-scalar
-		// correlated field still converges on 42809, alongside the table-AT case.
-		assertRejected(t, md, `SELECT "ID" FROM T1, T1."ID" AS "X" AT "O"`, api.ErrCodeWrongObjectType)
+		// a repeated type with INVALID_COLUMN_REFERENCE (LogicalOperator.java:310,
+		// measured 42F10), the refusal the same path takes without AT.
+		assertRejected(t, md, `SELECT "ID" FROM T1, T1."ID" AS "X" AT "O"`, api.ErrCodeInvalidColumnReference)
 	})
 
 	t.Run("AT on a single-segment table inside an EXISTS subquery is WRONG_OBJECT_TYPE", func(t *testing.T) {
@@ -1552,7 +1586,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// the unnest-in-subquery row behaviour is exercised end-to-end by the dedicated
 		// P2b / R15 tests.) RFC-142.
 		if _, perr := embedded.PlanRecordQueryWithMetadata(
-			`SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM T1 AS "T", "T"."ARR1" AS "V" WHERE "V" > 0)`, md, nil); perr != nil {
+			`SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM T1 AS "T", "T"."ARR1" AS "V" WHERE "V" > 0)`, md, nil,
+		); perr != nil {
 			t.Fatalf("genuine unnest inside a subquery should plan, got: %v", perr)
 		}
 	})
@@ -1573,65 +1608,107 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		unnestMustNotContain(t, plan, "FlatMap")
 	})
 
-	// --- Explicit JOIN with a dotted array source must NOT lower as a lateral
-	// unnest: only the COMMA-syntax `FROM t, t.arr AS x` correlated-field path is
-	// a lateral array unnest in Java (generateCorrelatedFieldAccess). An explicit
-	// `INNER JOIN t.arr AS x` is resolved as a table/derived source (the JOIN
-	// visitor adds it as a normal operator), so a dotted `alias.field` JOIN source
-	// falls to the table-resolution path and fails cleanly (`alias` is an unknown
-	// database/schema qualifier), exactly as `extractJoinClause` treats every JOIN
-	// source as never-lateral. Before the fix the lateral-unnest lowering ran for
-	// EVERY fs.joins entry (onExpr alone cannot tell a no-ON inner join from a
-	// comma source), so `SELECT V FROM T1 INNER JOIN T1.ARR1 AS V` silently planned
-	// as FlatMap(Scan(T1), Explode(ARR1)) and RETURNED the unnested rows instead of
-	// surfacing the table/join error. RFC-142 R5. ------------------------------
-	t.Run("explicit INNER JOIN with a dotted array source is NOT a lateral unnest", func(t *testing.T) {
-		// The bug shape: `FROM T1 INNER JOIN T1.ARR1 AS V` (explicit JOIN, no ON).
-		// Pre-fix: planned as FlatMap over Explode → returned T1.ARR1's elements
-		// {101, 201, 202, 203}. Post-fix: the dotted `T1.ARR1` JOIN source resolves
-		// as a qualified table whose `T1` qualifier is not a known database →
-		// ErrCodeUndefinedDatabase (the existing table-not-found path, unchanged).
-		// NOT a silent FlatMap(Explode).
-		//
-		// THE SHAPE IS REACHABLE BECAUSE A CONDITIONLESS JOIN IS SUPPORTED.
-		// `a JOIN b` with no ON plans the cartesian product rather than being
-		// refused, so this query reaches source resolution and fails there on
-		// the unknown `T1` qualifier — which is what makes it a sentinel at all.
-		// A gate that refused conditionless joins up front would answer 0A000
-		// here and silently retire it.
-		assertRejected(t, md, `SELECT "V" FROM T1 INNER JOIN T1."ARR1" AS "V"`, api.ErrCodeUndefinedDatabase)
-	})
-
-	t.Run("the same dotted source with an ON is also not a lateral unnest", func(t *testing.T) {
-		// Breadth over the ON-carrying spelling of the identical shape, so the
-		// arm above is not the only thing covering it if the conditionless gate
-		// ever moves back ahead of resolution.
-		assertRejected(t, md, `SELECT "V" FROM T1 INNER JOIN T1."ARR1" AS "V" ON 1 = 1`,
-			api.ErrCodeUndefinedDatabase)
-	})
-
-	t.Run("control: comma source with the SAME dotted array still unnests", func(t *testing.T) {
-		// The discriminating control: swap the explicit `INNER JOIN` for a COMMA —
-		// `FROM T1, T1.ARR1 AS V` — and the SAME dotted array source IS a lateral
-		// unnest, lowering to FlatMap over Explode and returning T1.ARR1's elements.
-		// Proves the gate keys on the comma-vs-JOIN ORIGIN, not on the dotted-source
-		// shape (which is identical between the two queries).
-		plan := assertRows(t, `SELECT "ID", "V" FROM T1, T1."ARR1" AS "V"`, []string{
-			"ID=1|V=101", "ID=2|V=201", "ID=2|V=202", "ID=2|V=203",
+	// --- An explicit INNER JOIN over a dotted array source IS a lateral unnest,
+	// exactly as the comma spelling is. Java's visitInnerJoin visits the right side
+	// through visitAtomTableItem — the visitor that reads `t.arr` as a correlated
+	// field — and makes the ON a WHERE conjunct of the one flat select, so
+	// `FROM T1 JOIN T1.ARR1 AS V ON p` is `FROM T1, T1.ARR1 AS V WHERE p`. Measured
+	// against the target in conformance/ws_f_join_unnest_conformance_test.go. A
+	// USING join is one too: its columns resolve on the unnest's own operator. An
+	// OUTER join is not (the target crashes, "quantifier does not flow records"). --
+	t.Run("explicit INNER JOIN with a dotted array source is a lateral unnest", func(t *testing.T) {
+		// The ON carries the element predicate, lifted into the WHERE, whose
+		// element conjunct the planner pushes into the Explode's filter.
+		plan := assertRows(t, `SELECT "ID", "V" FROM T1 INNER JOIN T1."ARR1" AS "V" ON "V" > 201`, []string{
+			"ID=2|V=202", "ID=2|V=203",
 		})
 		unnestMustContain(t, plan, "FlatMap")
 		unnestMustContain(t, plan, "Explode")
 	})
 
-	t.Run("control: explicit LEFT JOIN with a dotted array source is NOT a lateral unnest", func(t *testing.T) {
-		// The OUTER-join arm of extractJoinClause is the same never-lateral path: an
-		// OUTER JOIN whose right source is a dotted `alias.field` resolves as a table.
-		// (An OUTER JOIN always carries an ON clause per the grammar, so the unnest
-		// classifier already excluded it via the onExpr guard pre-fix — this is a
-		// breadth control over the OUTER arm, not the revert-proof sentinel. The INNER
-		// JOIN test above — a no-ON join the onExpr guard cannot catch — is the
-		// revert-proof one.) `T1` is an unknown database qualifier → clean rejection.
-		assertRejected(t, md, `SELECT "V" FROM T1 LEFT JOIN T1."ARR1" AS "V" ON "V" = 1`, api.ErrCodeUndefinedDatabase)
+	t.Run("the ON may correlate the element to the outer row", func(t *testing.T) {
+		assertRows(t, `SELECT "ID", "V" FROM T1 INNER JOIN T1."ARR1" AS "V" ON "V" = T1."ID" * 100 + 1`, []string{
+			"ID=1|V=101", "ID=2|V=201",
+		})
+	})
+
+	t.Run("an INNER JOIN's unnest binds its AT ordinal", func(t *testing.T) {
+		assertRows(t, `SELECT "ID", "V", "P" FROM T1 INNER JOIN T1."ARR1" AS "V" AT "P" ON "P" = 2`, []string{
+			"ID=2|V=202|P=2",
+		})
+	})
+
+	t.Run("a conditionless INNER JOIN unnests every element", func(t *testing.T) {
+		// The target crashes here (XXXXX: visitInnerJoin reads a null ON
+		// expression), and the ON-carrying arms above show what the statement is
+		// in its design: the comma form's rows, which Go answers. Declared in the
+		// conformance spec with both answers.
+		assertRows(t, `SELECT "ID", "V" FROM T1 INNER JOIN T1."ARR1" AS "V"`, []string{
+			"ID=1|V=101", "ID=2|V=201", "ID=2|V=202", "ID=2|V=203",
+		})
+		assertRows(t, `SELECT "ID", "V" FROM T1 INNER JOIN T1."ARR1" AS "V" ON 1 = 1`, []string{
+			"ID=1|V=101", "ID=2|V=201", "ID=2|V=202", "ID=2|V=203",
+		})
+	})
+
+	t.Run("control: comma source with the SAME dotted array unnests the same", func(t *testing.T) {
+		plan := assertRows(t, `SELECT "ID", "V" FROM T1, T1."ARR1" AS "V" WHERE "V" > 201`, []string{
+			"ID=2|V=202", "ID=2|V=203",
+		})
+		unnestMustContain(t, plan, "FlatMap")
+		unnestMustContain(t, plan, "Explode")
+	})
+
+	t.Run("an INNER JOIN with USING over a dotted array source resolves USING on the element", func(t *testing.T) {
+		// Java resolves each USING column on the right operator alone
+		// (resolveJoinUsingClause), here the unnest, whose one column is the
+		// scalar element V: `ID` names nothing there, 42703 "Unknown reference
+		// ID" (measured). A record element's member resolves and joins (the JVM
+		// spec's `kk JOIN kk.items AS i USING (k)`).
+		assertRejected(t, md, `SELECT "V" FROM T1 INNER JOIN T1."ARR1" AS "V" USING ("ID")`, api.ErrCodeUndefinedColumn)
+		// The same with ordinality, and with AT on a table, which is refused
+		// before the USING is read (42809, measured).
+		assertRejected(t, md, `SELECT "V" FROM T1 INNER JOIN T1."ARR1" AS "V" AT "P" USING ("ID")`, api.ErrCodeUndefinedColumn)
+		assertRejected(t, md, `SELECT T1."ID" FROM T1 INNER JOIN "U" AT "P" USING ("ID")`, api.ErrCodeWrongObjectType)
+	})
+
+	// --- A source in a subquery unnesting an OUTER query's array. Java reads a
+	// FROM item's path with the column lookup over every operator in scope, the
+	// outer query's included (resolveCorrelatedIdentifier over
+	// getLogicalOperatorsIncludingOuter), so the unnest is correlated to the
+	// outer row and depends on no source of the subquery's own FROM. Measured
+	// in conformance/ws_f_join_unnest_conformance_test.go. ---------------------
+	t.Run("a subquery source unnests an outer query's array", func(t *testing.T) {
+		// The Explode is a scalar leg uncorrelated to U: it is the inner of a
+		// FlatMap over U, as every join is in Java. As a leg of the materialized
+		// NLJ it was read as its one-slot row, so `"E" = 202` matched nothing
+		// and EXISTS returned no rows.
+		plan := assertRows(t, `SELECT T1."ID" FROM T1 WHERE EXISTS (SELECT 1 FROM "U", T1."ARR1" AS "E" WHERE "E" = 202)`,
+			[]string{"ID=2"})
+		unnestMustContain(t, plan, "FlatMap(outer=Scan(U), inner=Explode")
+		unnestMustNotContain(t, plan, "NestedLoopJoin")
+		assertRows(t, `SELECT T1."ID" FROM T1 WHERE NOT EXISTS (SELECT 1 FROM "U", T1."ARR1" AS "E" WHERE "E" = 202)`,
+			[]string{"ID=0", "ID=1", "ID=3"})
+		// The element correlated to the subquery's own source.
+		assertRows(t, `SELECT T1."ID" FROM T1 WHERE EXISTS (SELECT 1 FROM "U" JOIN T1."ARR1" AS "E" ON "E" = "U"."ID" + 200)`,
+			[]string{"ID=2"})
+	})
+
+	t.Run("an inner source and an outer one both answering the path is ambiguous", func(t *testing.T) {
+		// Java's lookup for a FROM item is one list over the operators of the
+		// subquery and of the query around it (measured 42702).
+		assertRejected(t, md, `SELECT T1."ID" FROM T1 WHERE EXISTS (SELECT 1 FROM T1, T1."ARR1" AS "E" WHERE "E" = 202)`,
+			api.ErrCodeAmbiguousColumn)
+		// Renaming the inner source leaves one reading.
+		assertRows(t, `SELECT T1."ID" FROM T1 WHERE EXISTS (SELECT 1 FROM T1 AS "I", "I"."ARR1" AS "E" WHERE "E" = 202)`,
+			[]string{"ID=0", "ID=1", "ID=2", "ID=3"})
+	})
+
+	t.Run("an explicit LEFT JOIN with a dotted array source is not an unnest", func(t *testing.T) {
+		// An OUTER join's source is read as a table; `T1` is not the schema
+		// template's name, so the path is no table: 42703. The target crashes
+		// here (XXXXX "quantifier does not flow records").
+		assertRejected(t, md, `SELECT "V" FROM T1 LEFT JOIN T1."ARR1" AS "V" ON "V" = 1`, api.ErrCodeUndefinedColumn)
 	})
 
 	t.Run("colliding unnest alias with an ON-carrying join fails closed", func(t *testing.T) {
@@ -1658,12 +1735,13 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		assertRejected(t, md, `WITH "DSC" AS (SELECT "ID" + 1 AS "ARR" FROM T1) SELECT "O" FROM "DSC", "DSC"."ARR" AS "V" AT "O"`, api.ErrCodeInvalidColumnReference)
 	})
 
-	t.Run("control: AT on a real-table scalar field (no CTE) is still WRONG_OBJECT_TYPE", func(t *testing.T) {
+	t.Run("control: AT on a real-table scalar field (no CTE) is INVALID_COLUMN_REFERENCE", func(t *testing.T) {
 		// The discriminating control: a GENUINE base-table AT on a non-array field
-		// (no CTE shadow) must STILL raise 42809 — proving the fix narrowed the
-		// CTE-shadow skip to derived sources only, not the whole base-table check.
+		// (no CTE shadow) is refused as the scalar CTE-output sibling below is —
+		// the dotted item is a correlated field either way, and a non-array one
+		// is INVALID_COLUMN_REFERENCE (Java's generateCorrelatedFieldAccess).
 		// `FROM T1, T1.ID AT O` — T1 is a real table, ID a scalar field, no CTE.
-		assertRejected(t, md, `SELECT "ID" FROM T1, T1."ID" AT "O"`, api.ErrCodeWrongObjectType)
+		assertRejected(t, md, `SELECT "ID" FROM T1, T1."ID" AT "O"`, api.ErrCodeInvalidColumnReference)
 	})
 
 	t.Run("control: scalar CTE-output unnest without AT is INVALID_COLUMN_REFERENCE", func(t *testing.T) {
@@ -1789,7 +1867,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	t.Run("R26 P2a catalog-builder subquery qualifies the shadowed unnest projection AND sort key", func(t *testing.T) {
 		assertRejected(t, md, `SELECT "ID" FROM U WHERE EXISTS (SELECT "V" FROM GD, GD."ARR" AS "V", GW ORDER BY "V" DESC)`, api.ErrCodeAmbiguousColumn)
 		plan, perr := embedded.PlanRecordQueryWithMetadata(
-			`SELECT "ID" FROM U WHERE EXISTS (SELECT "V" FROM GD, GD."ARR" AS "V", BXC ORDER BY "V" DESC)`, md, nil)
+			`SELECT "ID" FROM U WHERE EXISTS (SELECT "V" FROM GD, GD."ARR" AS "V", BXC ORDER BY "V" DESC)`, md, nil,
+		)
 		if perr != nil {
 			t.Fatalf("plan: %v", perr)
 		}
@@ -1806,7 +1885,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// The ASC mirror independently pins current slot 3 in the BXC twin.
 		assertRejected(t, md, `SELECT "ID" FROM U WHERE EXISTS (SELECT "V" FROM GD, GD."ARR" AS "V", GW ORDER BY "V" ASC)`, api.ErrCodeAmbiguousColumn)
 		plan, perr := embedded.PlanRecordQueryWithMetadata(
-			`SELECT "ID" FROM U WHERE EXISTS (SELECT "V" FROM GD, GD."ARR" AS "V", BXC ORDER BY "V" ASC)`, md, nil)
+			`SELECT "ID" FROM U WHERE EXISTS (SELECT "V" FROM GD, GD."ARR" AS "V", BXC ORDER BY "V" ASC)`, md, nil,
+		)
 		if perr != nil {
 			t.Fatalf("plan: %v", perr)
 		}
@@ -1821,7 +1901,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// exact current ordinal 3. RFC-142.
 		assertRejected(t, md, `SELECT "ID" FROM U WHERE EXISTS (SELECT "V" FROM GD, GD."ARR" AS "V", GW)`, api.ErrCodeAmbiguousColumn)
 		plan, perr := embedded.PlanRecordQueryWithMetadata(
-			`SELECT "ID" FROM U WHERE EXISTS (SELECT "V" FROM GD, GD."ARR" AS "V", BXC)`, md, nil)
+			`SELECT "ID" FROM U WHERE EXISTS (SELECT "V" FROM GD, GD."ARR" AS "V", BXC)`, md, nil,
+		)
 		if perr != nil {
 			t.Fatalf("plan: %v", perr)
 		}
@@ -2679,7 +2760,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// of the missing field PB on source s.
 		//
 		// The parser-side classifier has no metadata, so it tentatively emits a
-		// LogicalUnnest for `s.PB`; the table-first demotion (demoteSchemaQualifiedUnnest)
+		// LogicalUnnest for `s.PB`; the table-first demotion (demoteQualifiedTableUnnest)
 		// rewrites it to a Scan once metadata is in scope. Before the fix that demotion
 		// walked only the TOP-LEVEL operator tree and never descended into the EXISTS
 		// subquery plan stored on LogicalFilter.ExistsSubqueries, so the surviving
@@ -2688,7 +2769,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		//
 		// The EXISTS subquery is non-correlated and PA(1)×PB(1) yields one row, so
 		// EXISTS is TRUE for every T1 row → all four T1 ids (0,1,2,3) survive.
-		plan := assertRows(t, `SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM PA AS "s", "s"."PB" AS "B")`, []string{
+		plan := assertRows(t, `SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM PA AS "S", "S"."PB" AS "B")`, []string{
 			"ID=0", "ID=1", "ID=2", "ID=3",
 		})
 		// The s.PB source inside the subquery is a real cross-join table — NO unnest
@@ -2707,7 +2788,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// every T1 id. Proves the demotion-in-subquery resolves B as a real table
 		// whose column `ID` is a scalar (a correlated-unnest mis-classification would
 		// instead fail to resolve `B.ID` here). RFC-142.
-		plan := assertRows(t, `SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM PA AS "s", "s"."PB" AS "B" WHERE "B"."ID" = 1)`, []string{
+		plan := assertRows(t, `SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM PA AS "S", "S"."PB" AS "B" WHERE "B"."ID" = 1)`, []string{
 			"ID=0", "ID=1", "ID=2", "ID=3",
 		})
 		// Same proof: the subquery's s.PB is a real table (cross join, B.ID filter
@@ -2723,7 +2804,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// subquery had failed to plan (the pre-fix behavior) this would error, not
 		// return an empty result; if it were a degenerate always-true it would return
 		// all rows. An empty result proves the cross join + filter executed. RFC-142.
-		assertRows(t, `SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM PA AS "s", "s"."PB" AS "B" WHERE "B"."ID" = 9)`, nil)
+		assertRows(t, `SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM PA AS "S", "S"."PB" AS "B" WHERE "B"."ID" = 9)`, nil)
 	})
 
 	t.Run("P2 control: plain schema-qualified table inside an EXISTS subquery plans", func(t *testing.T) {
@@ -2764,28 +2845,27 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		assertRejected(t, md, `SELECT "ID", "V" FROM T1, T1."ARR1" AS "V", T1."ID" AS "X"`, api.ErrCodeInvalidColumnReference)
 	})
 
-	t.Run("P3 control: a genuine second array unnest is still UNSUPPORTED_QUERY", func(t *testing.T) {
-		// Control: the multiple-unnest guard is preserved for an ACTUAL second array
-		// unnest. `FROM T1, T1.ARR1 AS V, T1.ARR1_NN AS W` is two valid array unnests
-		// in one FROM scope — chained multi-unnest, not yet supported (nested-FlatMap
-		// merged-row threading). It must still reject with UNSUPPORTED_QUERY (the guard
-		// fires AFTER the second source is confirmed a valid array unnest). Proves the
-		// reorder did not weaken the multiple-unnest rejection — only let the
-		// invalid-second-source cases reach the array-validation error first. RFC-142.
-		assertRejected(t, md, `SELECT "ID", "V", "W" FROM T1, T1."ARR1" AS "V", T1."ARR1_NN" AS "W"`, api.ErrCodeUnsupportedQuery)
+	t.Run("P3 control: a genuine second array unnest answers its rows", func(t *testing.T) {
+		// Control for the reorder above: a second source that IS a valid array
+		// unnest (`FROM T1, T1.ARR1 AS V, T1.ARR1_NN AS W`) passes the array
+		// validation and is a sibling spine link — the per-row product, as Java
+		// answers — while the invalid second sources keep their own errors.
+		assertRows(t, `SELECT "ID", "V", "W" FROM T1, T1."ARR1" AS "V", T1."ARR1_NN" AS "W"`,
+			siblingRows("V", "W"))
 	})
 
 	// --- Schema-qualified table inside a subquery resolved
 	// against a NON-DEFAULT session schema (P2b) -------------------------------
 
 	// querySchema plans + executes a SELECT under a NON-DEFAULT session schema (the
-	// real CONNECT-schema session path: NewPlanVisitorWithSchema + the
+	// real CONNECT-schema session path: NewPlanVisitorWithTemplate + the
 	// schema-qualified-table demotion threaded with the active schema), returning
-	// the explain + sorted "k=v" rows. The default-schema query() helper above
-	// always uses "s"; this one drives the threading under e.g. "main".
+	// the explain + sorted "k=v" rows. The query() helper above always plans with
+	// the default template name "S"; this one drives the threading under e.g.
+	// "main".
 	querySchema := func(t *testing.T, sql, schemaName string) (string, []string) {
 		t.Helper()
-		plan, perr := embedded.PlanRecordQueryWithMetadataSchema(sql, md, schemaName, nil)
+		plan, perr := embedded.PlanRecordQueryWithMetadataTemplate(sql, md, schemaName, nil)
 		if perr != nil {
 			t.Fatalf("plan %q (schema %s): %v", sql, schemaName, perr)
 		}
@@ -2884,7 +2964,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// The no-alias-collision sibling: `… EXISTS (SELECT 1 FROM PA, main.PB AS B)`.
 		// `main.PB` is a plain schema-qualified table scan (segment 0 `main` is the
 		// session schema, not a visible alias). The schema-qualifier stripping
-		// (resolveQualifiedTableNames + normalizeSchemaQualifiedSelectSources) must
+		// (resolveQualifiedTableNames + normalizeQualifiedSelectSources) must
 		// reach the SUBQUERY plan under the ACTIVE schema `main`, else the unresolved
 		// `MAIN.PB` scan fails translation. Plans identically to the alias-collision
 		// form. RFC-142.
@@ -3006,7 +3086,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	// (pre-fix) handed the raw `s.PB` straight to Analyzer.ResolveTable, which does
 	// NOT strip a schema qualifier → `table not found: S.PB` → a 42703 rejection of
 	// a VALID query. The normal SELECT path strips `s.PB`→`PB` via
-	// normalizeSchemaQualifiedSelectSources; the fix runs the SAME normalization in
+	// normalizeQualifiedSelectSources; the fix runs the SAME normalization in
 	// the correlated fallback before resolving the join sources, so `s.PB` is the
 	// real cross-join table PB. Java's generateAccess resolves the table first at
 	// every FROM-source point. RFC-142.
@@ -3018,7 +3098,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// existential residual `B.ID = T1.ID`. PB has only id=1, so EXISTS is TRUE
 		// only for T1.ID=1 → ID=1. Pre-fix: `table not found: S.PB` (42703). The
 		// cross join must resolve.
-		assertRows(t, `SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM PA AS "s", "s"."PB" AS "B" WHERE "B"."ID" = T1."ID")`, []string{
+		assertRows(t, `SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM PA AS "S", "S"."PB" AS "B" WHERE "B"."ID" = T1."ID")`, []string{
 			"ID=1",
 		})
 	})
@@ -3028,18 +3108,18 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// PB. PB has only id=1, so NOT EXISTS is TRUE for T1 ids 0, 2 and 3. Pins that
 		// the schema-qualified cross join drives the NEGATED semi-join too (not just
 		// the positive one), and is not a degenerate pass-through. RFC-142.
-		assertRows(t, `SELECT "ID" FROM T1 WHERE NOT EXISTS (SELECT 1 FROM PA AS "s", "s"."PB" AS "B" WHERE "B"."ID" = T1."ID")`, []string{
+		assertRows(t, `SELECT "ID" FROM T1 WHERE NOT EXISTS (SELECT 1 FROM PA AS "S", "S"."PB" AS "B" WHERE "B"."ID" = T1."ID")`, []string{
 			"ID=0", "ID=2", "ID=3",
 		})
 	})
 
 	t.Run("R25 P2a correlated EXISTS with a schema-qualified primary inner source", func(t *testing.T) {
 		// The schema qualifier on the PRIMARY inner source (`FROM s.PA AS A, PB AS B`)
-		// is normalized by the same pass (normalizeSchemaQualifiedSelectSources strips
+		// is normalized by the same pass (normalizeQualifiedSelectSources strips
 		// the primary source too). A.ID = T1.ID correlates to the outer; PA has only
 		// id=1 → EXISTS true only for T1.ID=1. Proves both the primary and the join
 		// leg are stripped, not just the comma leg. RFC-142.
-		assertRows(t, `SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM "s"."PA" AS "A", PB AS "B" WHERE "A"."ID" = T1."ID")`, []string{
+		assertRows(t, `SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM "S"."PA" AS "A", PB AS "B" WHERE "A"."ID" = T1."ID")`, []string{
 			"ID=1",
 		})
 	})
@@ -3055,7 +3135,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// `S.MAX(ID)` (the engine's existing dual-label for a correlated scalar
 		// aggregate, keyed by the subquery's primary alias); both carry the same value
 		// — the dual label is pre-existing behavior. RFC-142.
-		assertRows(t, `SELECT "ID", (SELECT MAX("B"."ID") FROM PA AS "s", "s"."PB" AS "B" WHERE "B"."ID" = T1."ID") AS "M" FROM T1`, []string{
+		assertRows(t, `SELECT "ID", (SELECT MAX("B"."ID") FROM PA AS "S", "S"."PB" AS "B" WHERE "B"."ID" = T1."ID") AS "M" FROM T1`, []string{
 			"ID=0|M=<nil>", "ID=1|M=1",
 			"ID=2|M=<nil>", "ID=3|M=<nil>",
 		})
@@ -3613,7 +3693,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// 0-2 and the mid-list element is slot 3. BXC contributes no V field, so the
 		// assertion measures that exact element slot without a duplicate-name query.
 		plan, perr := embedded.PlanRecordQueryWithMetadata(
-			`SELECT "V", COUNT(*) AS "N" FROM GD, GD."ARR" AS "V", BXC GROUP BY "V"`, md, nil)
+			`SELECT "V", COUNT(*) AS "N" FROM GD, GD."ARR" AS "V", BXC GROUP BY "V"`, md, nil,
+		)
 		if perr != nil {
 			t.Fatalf("plan: %v", perr)
 		}
@@ -3899,9 +3980,10 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	// finds the pair (200,200) → EXISTS TRUE → every T1 row kept. The non-empty result
 	// is the revert sentinel (pre-fix: empty). RFC-142.
 	t.Run("R31 P2a no-alias schema-qualified subquery bare table-name predicate reads the real column", func(t *testing.T) {
-		// The REVERT SENTINEL: `EXB.ID = 200` — a bare table-name reference to the
-		// no-alias schema-qualified source `s.EXB` compared to a constant EXB genuinely
-		// has (200). With the fix the scan binds under the SAME `EXB` alias the resolver
+		// The REVERT SENTINEL: `S.EXB.ID = 200` — a reference to the no-alias
+		// template-qualified source `S.EXB` (named by its whole identifier, as Java
+		// names the table operator; its correlation stays the bare EXB) compared to a
+		// constant EXB genuinely has (200). With the fix the scan binds under the SAME `EXB` alias the resolver
 		// uses → `EXB.ID` reads 200 → the existential holds → all four T1 rows. Pre-fix
 		// the scan binds under `S.EXB` while the resolver uses `EXB` → `EXB.ID` reads
 		// NULL → `NULL = 200` false → EXISTS FALSE → ALL outer rows silently DROPPED
@@ -3909,10 +3991,13 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// (no EXB row) → empty proves the predicate is not unconditionally satisfied.
 		// The EXISTS subquery plans through the catalog SELECT builder where the bug
 		// lived. RFC-142.
-		assertRows(t, `SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM EXA, "s"."EXB" WHERE "EXB"."ID" = 200)`, []string{
+		assertRows(t, `SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM EXA, "S"."EXB" WHERE "S"."EXB"."ID" = 200)`, []string{
 			"ID=0", "ID=1", "ID=2", "ID=3",
 		})
-		assertRows(t, `SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM EXA, "s"."EXB" WHERE "EXB"."ID" = 999)`, nil)
+		assertRows(t, `SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM EXA, "S"."EXB" WHERE "S"."EXB"."ID" = 999)`, nil)
+		// The table's bare name does not name the qualified source (Java: 42703,
+		// measured in conformance/ws_f_table_qualifier_conformance_test.go).
+		assertRejected(t, md, `SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM EXA, "S"."EXB" WHERE "EXB"."ID" = 200)`, api.ErrCodeUndefinedColumn)
 	})
 
 	t.Run("R31 P2a no-alias schema-qualified subquery cross-leg predicate (PB.ID = PA.ID shape)", func(t *testing.T) {
@@ -3923,12 +4008,12 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// constant-compare subtest above is the load-bearing revert sentinel; this
 		// cross-leg form documents the prompt's canonical shape resolving correctly.)
 		// RFC-142.
-		assertRows(t, `SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM EXA, "s"."EXB" WHERE "EXB"."ID" = "EXA"."ID")`, []string{
+		assertRows(t, `SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM EXA, "S"."EXB" WHERE "S"."EXB"."ID" = "EXA"."ID")`, []string{
 			"ID=0", "ID=1", "ID=2", "ID=3",
 		})
 		// Disjoint-id companion (`EXB.ID = EXA.ID + 1000` never matches) → empty, proving
 		// the cross-leg predicate genuinely filters and is not unconditionally true.
-		assertRows(t, `SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM EXA, "s"."EXB" WHERE "EXB"."ID" = "EXA"."ID" + 1000)`, nil)
+		assertRows(t, `SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM EXA, "S"."EXB" WHERE "S"."EXB"."ID" = "EXA"."ID" + 1000)`, nil)
 	})
 
 	t.Run("R31 P2a schema-qualified subquery with an aliased sibling still correct (control)", func(t *testing.T) {
@@ -3937,7 +4022,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// The aliased path keeps j.alias = "B" (≠ tableName) so the scan binds `B` both
 		// pre- and post-fix; this control proves the no-alias fix does not perturb the
 		// already-correct aliased case. `B.ID = 200` → all four T1 rows. RFC-142.
-		assertRows(t, `SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM EXA, "s"."EXB" AS "B" WHERE "B"."ID" = 200)`, []string{
+		assertRows(t, `SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM EXA, "S"."EXB" AS "B" WHERE "B"."ID" = 200)`, []string{
 			"ID=0", "ID=1", "ID=2", "ID=3",
 		})
 	})
@@ -4274,7 +4359,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// exact code/message is deliberately NOT pinned (pending live-Java
 		// classification); only THAT it errors is load-bearing.
 		if _, perr := embedded.PlanRecordQueryWithMetadata(
-			`SELECT "EL" FROM NST, NST."NSID"."NARR" AS "EL"`, md, nil); perr == nil {
+			`SELECT "EL" FROM NST, NST."NSID"."NARR" AS "EL"`, md, nil,
+		); perr == nil {
 			t.Fatalf("multi-segment path through the scalar intermediate NSID must ERROR, got a plan")
 		} else {
 			t.Logf("scalar-intermediate path rejected with: %v", perr)
@@ -4912,11 +4998,13 @@ func unnestEqualStrs(a, b []string) bool {
 // `main`, pinning that a schema-qualified comma source inside a DML SELECT/WHERE
 // classifies against the ACTIVE schema — not the hardcoded default `s`.
 //
-// The discriminating shape is `FROM PA AS main, main.PB AS B`: the prior source
-// PA is aliased `main`, which equals the session schema name, so `main.PB` is
-// BOTH "field PB on source main" AND "schema-qualified table PB". Java resolves
-// the TABLE first (newUnnestTableResolver: qualifier == active schema AND PB
-// exists). PA has NO column PB, so the pre-fix code — which planned the DML
+// The discriminating shape is `FROM PA AS AJT_DML_NDS_TMPL,
+// AJT_DML_NDS_TMPL.PB AS B` under the non-default schema `main`: the prior
+// source PA is aliased like the schema TEMPLATE, the name a table's qualifier
+// is (functions.ResolveTargetTablePath), so the path is BOTH "field PB on the
+// source" AND "the qualified table PB". Java resolves the TABLE first
+// (SemanticAnalyzer.tableExists before the correlated reading;
+// newUnnestTableResolver: qualifier == the template's name AND PB exists). PA has NO column PB, so the pre-fix code — which planned the DML
 // SELECT-source rebuild / WHERE-EXISTS subquery with the hardcoded default `s` —
 // left `main.PB` a correlated LogicalUnnest (qualifier `main` != `s`), which
 // resolveQualifiedTableNames cannot repair → the DML FAILS (`column PB missing`
@@ -4934,8 +5022,8 @@ func TestFDB_ArrayUnnestDMLNonDefaultSchema(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
-	// PA (the source aliased `main`, == schema name); PB (the real
-	// schema-qualified table); DST/USRC (DML targets). All single-schema, plain
+	// PA (the source aliased like the template); PB (the real qualified
+	// table); DST/USRC (DML targets). All single-schema, plain
 	// scalar columns so rows can be seeded via SQL VALUES.
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE ajt_dml_nds_tmpl"+
 		" CREATE TABLE PA (id BIGINT, k BIGINT, PRIMARY KEY (id))"+
@@ -4948,8 +5036,9 @@ func TestFDB_ArrayUnnestDMLNonDefaultSchema(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE ajt_dml_nds_tmpl"); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
-	// Session schema = `main`, the NON-default schema (default is `s`).
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	// Session schema = `main`, the NON-default schema, over the template
+	// AJT_DML_NDS_TMPL.
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -4974,7 +5063,7 @@ func TestFDB_ArrayUnnestDMLNonDefaultSchema(t *testing.T) {
 		// Pre-fix main.PB stayed a LogicalUnnest over the non-existent PA.PB column
 		// (classified against the hardcoded `s`) → the INSERT FAILS. RFC-142.
 		res, err := db.ExecContext(ctx,
-			`INSERT INTO DST SELECT "B"."ID", "B"."V" FROM PA AS "main", "main"."PB" AS "B" WHERE "B"."V" >= 200`)
+			`INSERT INTO DST SELECT "B"."ID", "B"."V" FROM PA AS "AJT_DML_NDS_TMPL", "AJT_DML_NDS_TMPL"."PB" AS "B" WHERE "B"."V" >= 200`)
 		if err != nil {
 			t.Fatalf("INSERT...SELECT (schema main): %v", err)
 		}
@@ -5013,7 +5102,7 @@ func TestFDB_ArrayUnnestDMLNonDefaultSchema(t *testing.T) {
 			t.Fatalf("seed USRC: %v", err)
 		}
 		res, err := db.ExecContext(ctx,
-			`DELETE FROM USRC WHERE EXISTS (SELECT 1 FROM PA AS "main", "main"."PB" AS "B" WHERE "B"."ID" = 10)`)
+			`DELETE FROM USRC WHERE EXISTS (SELECT 1 FROM PA AS "AJT_DML_NDS_TMPL", "AJT_DML_NDS_TMPL"."PB" AS "B" WHERE "B"."ID" = 10)`)
 		if err != nil {
 			t.Fatalf("DELETE WHERE EXISTS (schema main): %v", err)
 		}
@@ -5038,7 +5127,7 @@ func TestFDB_ArrayUnnestDMLNonDefaultSchema(t *testing.T) {
 			t.Fatalf("seed USRC (control): %v", err)
 		}
 		res, err := db.ExecContext(ctx,
-			`DELETE FROM USRC WHERE EXISTS (SELECT 1 FROM PA AS "main", "main"."PB" AS "B" WHERE "B"."ID" = 99)`)
+			`DELETE FROM USRC WHERE EXISTS (SELECT 1 FROM PA AS "AJT_DML_NDS_TMPL", "AJT_DML_NDS_TMPL"."PB" AS "B" WHERE "B"."ID" = 99)`)
 		if err != nil {
 			t.Fatalf("DELETE WHERE EXISTS no-match (schema main): %v", err)
 		}
@@ -5112,7 +5201,7 @@ func TestFDB_ArrayUnnestDMLNonDefaultSchema(t *testing.T) {
 		// REVERT-PROOF for the segments-vs-tableName normalization bug. A qualified
 		// star `SELECT B.*` (projQualifier set, projCols nil) forces the catalog
 		// SELECT builder to REBUILD the logical plan (buildLogicalPlanForSelect, no
-		// metadata in scope) AFTER normalizeSchemaQualifiedSelectSources has stripped
+		// metadata in scope) AFTER normalizeQualifiedSelectSources has stripped
 		// the schema qualifier off `main.PB` → `PB` on j.tableName. The rebuild's
 		// lateral-unnest classifier reads j.segments, NOT j.tableName. If the strip
 		// does not ALSO drop the leading schema segment, j.segments stays
@@ -5123,7 +5212,7 @@ func TestFDB_ArrayUnnestDMLNonDefaultSchema(t *testing.T) {
 		// lockstep (['main','PB'] → ['PB']), main.PB stays the real cross-join table:
 		// PA(1 row)×PB → B.* yields PB's three rows (id, v) into DST2. RFC-142.
 		res, err := db.ExecContext(ctx,
-			`INSERT INTO DST2 SELECT "B".* FROM PA AS "main", "main"."PB" AS "B"`)
+			`INSERT INTO DST2 SELECT "B".* FROM PA AS "AJT_DML_NDS_TMPL", "AJT_DML_NDS_TMPL"."PB" AS "B"`)
 		if err != nil {
 			t.Fatalf("INSERT...SELECT B.* (schema main): %v", err)
 		}
@@ -5162,7 +5251,7 @@ func TestFDB_ArrayUnnestDMLNonDefaultSchema(t *testing.T) {
 		// control pins the SOURCE classification (real table, three rows of PB
 		// data), not the projection width. RFC-142.
 		rows, qerr := db.QueryContext(ctx,
-			`SELECT "B".* FROM PA AS "main", "main"."PB" AS "B" ORDER BY "B"."ID"`)
+			`SELECT "B".* FROM PA AS "AJT_DML_NDS_TMPL", "AJT_DML_NDS_TMPL"."PB" AS "B" ORDER BY "B"."ID"`)
 		if qerr != nil {
 			t.Fatalf("SELECT B.* (schema main): %v", qerr)
 		}
@@ -5227,7 +5316,7 @@ func TestFDB_ArrayUnnestDMLDuplicateAlias(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE ajt_dml_dupalias_tmpl"); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=s")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=S")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -5265,7 +5354,7 @@ func TestFDB_ArrayUnnestDMLDuplicateAlias(t *testing.T) {
 	t.Run("INSERT...SELECT unused repeated AT alias is legal", func(t *testing.T) {
 		// The projected E is unique; the repeated V display alias is unused.
 		res, err := db.ExecContext(ctx,
-			`INSERT INTO DST SELECT "E" FROM T1, T1."ARR" AS "E" AT "V", U AS "V"`)
+			`INSERT INTO DST SELECT T1."ID", "E" FROM T1, T1."ARR" AS "E" AT "V", U AS "V"`)
 		if err != nil {
 			t.Fatalf("INSERT...SELECT unused repeated AT alias: %v", err)
 		}
@@ -5279,9 +5368,12 @@ func TestFDB_ArrayUnnestDMLDuplicateAlias(t *testing.T) {
 		// NOT reuse the unnest alias V (it is `W`, with column X). The INSERT must
 		// PLAN and run — proving the guard rejects ONLY the genuine alias collision, not
 		// every unnest-with-later-source. T1's array is NULL so zero rows flow, but the
-		// statement must SUCCEED (RowsAffected 0), not be rejected. RFC-142.
+		// statement must SUCCEED (RowsAffected 0), not be rejected. RFC-142. The row is
+		// DST's two columns: an unnested element does not spread over a table's columns,
+		// and a one-column row into DST is refused while planning in both engines
+		// (conformance "INSERT ... SELECT arity is admitted as the target admits it").
 		res, err := db.ExecContext(ctx,
-			`INSERT INTO DST SELECT "V" FROM T1, T1."ARR" AS "V", W`)
+			`INSERT INTO DST SELECT T1."ID", "V" FROM T1, T1."ARR" AS "V", W`)
 		if err != nil {
 			t.Fatalf("control INSERT...SELECT non-colliding unnest: %v", err)
 		}

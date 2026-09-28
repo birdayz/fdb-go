@@ -21,7 +21,7 @@ package embedded
 //   buildLogicalPlanForDeleteWithCatalog → buildLogicalPlanForDelete
 //   buildLogicalPlanForUpdateWithCatalog → buildLogicalPlanForUpdate
 //   buildLogicalPlanForInsertWithCatalog → buildLogicalPlanForInsert
-//   buildLogicalPlanForQueryWithCatalog (CTE/UNION/SELECT recursion)
+//   buildLogicalPlanForQueryWithTemplate (CTE/UNION/SELECT recursion)
 //
 // Predicate-extraction helpers:
 //
@@ -41,8 +41,6 @@ import (
 	"maps"
 	"slices"
 	"strings"
-
-	"github.com/antlr4-go/antlr/v4"
 
 	recordlayer "fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/protoname"
@@ -102,9 +100,10 @@ func (e *CorrelatedExistsError) Unwrap() error { return e.Cause }
 func buildWherePredicateForTable(
 	md *recordlayer.RecordMetaData,
 	tableName, tableAlias string,
+	tablePath []string,
 	whereExpr antlrgen.IWhereExprContext,
 ) (predicates.QueryPredicate, bool) {
-	pred, ok, _ := buildWherePredicateForTableE(md, tableName, tableAlias, whereExpr)
+	pred, ok, _ := buildWherePredicateForTableE(md, tableName, tableAlias, tablePath, whereExpr)
 	return pred, ok
 }
 
@@ -118,6 +117,7 @@ func buildWherePredicateForTable(
 func buildWherePredicateForTableE(
 	md *recordlayer.RecordMetaData,
 	tableName, tableAlias string,
+	tablePath []string,
 	whereExpr antlrgen.IWhereExprContext,
 ) (predicates.QueryPredicate, bool, error) {
 	if md == nil || tableName == "" || whereExpr == nil || whereExpr.Expression() == nil {
@@ -125,10 +125,15 @@ func buildWherePredicateForTableE(
 	}
 	cat := rlcatalog.Wrap(md)
 	analyzer := semantic.NewAnalyzer(cat, false)
-	// Split on '.' so a schema-qualified table name like "schema.t"
-	// reaches FromSegments as ["schema", "t"] rather than as a single
-	// dotted segment that would never resolve in the catalog.
-	tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
+	// The table's parse-time segments when the caller has them: a quoted name
+	// holding a dot is ONE segment. Without them (legacy callers), split on
+	// '.' so a template-qualified "schema.t" reaches FromSegments as
+	// ["schema", "t"].
+	segments := tablePath
+	if segments == nil {
+		segments = strings.Split(tableName, ".")
+	}
+	tbl, err := analyzer.ResolveTable(semantic.FromSegments(segments, false))
 	if err != nil {
 		return nil, false, nil
 	}
@@ -175,7 +180,7 @@ func buildWherePredicateForTableE(
 // shapes only — see buildDerivedTableSource).
 func buildWherePredicate(
 	md *recordlayer.RecordMetaData,
-	schemaName string,
+	templateName string,
 	sq *selectQuery,
 	whereExpr antlrgen.IWhereExprContext,
 ) (predicates.QueryPredicate, bool) {
@@ -183,7 +188,7 @@ func buildWherePredicate(
 		return nil, false
 	}
 	if selectHasInlineValuesSource(sq) {
-		resolver := buildSelectScope(sq, md, schemaName, nil)
+		resolver := buildSelectScope(sq, md, templateName, nil)
 		if resolver == nil || whereExpr == nil || whereExpr.Expression() == nil {
 			return nil, false
 		}
@@ -197,9 +202,9 @@ func buildWherePredicate(
 		return buildWherePredicateForDerived(md, sq, whereExpr)
 	}
 	if len(sq.joins) == 0 {
-		return buildWherePredicateForTable(md, sq.tableName, sq.tableAlias, whereExpr)
+		return buildWherePredicateForTable(md, sq.tableName, sq.tableAlias, sq.sourceSegments, whereExpr)
 	}
-	return buildWherePredicateForJoins(md, schemaName, sq, whereExpr)
+	return buildWherePredicateForJoins(md, templateName, sq, whereExpr)
 }
 
 // buildWherePredicateForDerived handles `FROM (SELECT ...) AS alias`.
@@ -282,6 +287,33 @@ func lookupSourceColumn(cols []semantic.Column, bare, full string) (semantic.Col
 	return semantic.Column{}, false
 }
 
+// dmlTargetNamePath is the name an INSERT, UPDATE or DELETE statement's target
+// is referenced by in its own clauses: the qualified identifier when the
+// statement qualifies the target (`UPDATE T.W … WHERE T.W.id = 1`), as Java
+// names the target's table operator by it (QueryVisitor.visitUpdateStatement,
+// lookupTableAccess(tableId)), and nil for an unqualified target, which is
+// named by its bare name. The qualifier has already been checked against the
+// schema template (functions.ResolveTargetTablePath).
+func dmlTargetNamePath(targetPath []string) []string {
+	if len(targetPath) < 2 {
+		return nil
+	}
+	return targetPath
+}
+
+// namePathIdentifiers is a source's NamePath from its normalized segments: nil
+// unless the source is named by a qualified identifier (two segments or more).
+func namePathIdentifiers(path []string) []semantic.Identifier {
+	if len(path) < 2 {
+		return nil
+	}
+	out := make([]semantic.Identifier, len(path))
+	for i, part := range path {
+		out[i] = semantic.FromNormalized(part)
+	}
+	return out
+}
+
 // exactVirtualScopeSource projects the exact result row of a logical body into
 // the semantic scope representation used while resolving an enclosing query.
 // This is the bridge for computed derived-table and CTE columns: their type is
@@ -335,9 +367,13 @@ func virtualScopeSourceFromResultType(
 	//
 	// A width disagreement declines rather than pairing a label with the wrong
 	// slot, the same rule preferredNames follows.
-	labels := preferredNames
+	// preferredNames are a CTE's column list, which the statement wrote.
+	var labels []query.OutputLabel
+	for _, name := range preferredNames {
+		labels = append(labels, query.OutputLabel{Name: name, Authored: true})
+	}
 	if len(labels) == 0 {
-		derived, labelErr := query.ExactLogicalOutputLabels(op, md, cteRegistryFromScopes(cteScopes))
+		derived, labelErr := query.ExactLogicalOutputLabelsAuthored(op, md, cteRegistryFromScopes(cteScopes))
 		if labelErr != nil || len(derived) != len(record.Fields) {
 			return semantic.ScopeSource{}, false
 		}
@@ -373,12 +409,13 @@ func virtualScopeSourceFromResultType(
 	for i, field := range record.Fields {
 		name := field.Name
 		if len(labels) > 0 {
-			name = labels[i]
+			name = labels[i].Name
 		}
 		column, exact := semanticColumnFromExactType(name, field.FieldType)
 		if !exact {
 			return semantic.ScopeSource{}, false
 		}
+		column.SQLAuthored = len(labels) > 0 && labels[i].Authored
 		columns[i] = column
 		if flowed != nil {
 			flowed[i] = column
@@ -561,8 +598,8 @@ func projectionOutputNames(sq *selectQuery) []string {
 	// source in the built body, so a name list drawn from these slots has the
 	// wrong width for a mixed star (`SELECT a.*, b.y`) and the exact derivation
 	// declines it. The body's own labels are the authority for such a list.
-	for _, qualifier := range sq.projStarQualifiers {
-		if qualifier != "" {
+	for _, col := range sq.projCols {
+		if col.star {
 			return nil
 		}
 	}
@@ -611,6 +648,7 @@ func cteRegistryFromScopes(scopes ...map[string]semantic.ScopeSource) *logical.C
 // names the wrong query.
 func buildExactScopeSourceOrBodyError(
 	md *recordlayer.RecordMetaData,
+	templateName string,
 	alias string,
 	sq *selectQuery,
 	cteScopes map[string]semantic.ScopeSource,
@@ -620,7 +658,7 @@ func buildExactScopeSourceOrBodyError(
 		return semantic.ScopeSource{}, false, nil
 	}
 	op, err := buildLogicalPlanForSelectWithCTECatalog(
-		sq, md, defaultEmbeddedSchema, cteScopes, nil,
+		sq, md, templateName, cteScopes, nil,
 	)
 	if err != nil {
 		return semantic.ScopeSource{}, false, err
@@ -630,32 +668,6 @@ func buildExactScopeSourceOrBodyError(
 	}
 	src, ok := exactVirtualScopeSource(alias, op, md, preferredNames, cteScopes)
 	return src, ok, nil
-}
-
-// buildDerivedTableSource prepares a standalone query through its owning visitor
-// and publishes the retained body's output under alias. Callers that already
-// own a prepared body use boundDerivedSource directly.
-func buildDerivedTableSource(
-	md *recordlayer.RecordMetaData,
-	alias string,
-	inner antlrgen.IQueryContext,
-) (semantic.ScopeSource, bool) {
-	return buildDerivedTableSourceWithCTEs(md, alias, inner, nil)
-}
-
-// buildDerivedTableSourceWithCTEs is buildDerivedTableSource with the enclosing
-// WITH bindings in hand, so a derived body that READS a CTE (`FROM (SELECT *
-// FROM c) c` under `WITH c AS (...)`) can be typed at all. Without them the body
-// resolves against the CATALOG only, `c` is not a table, the whole source
-// declines, and the outer projection over it comes back with no resolved Value.
-func buildDerivedTableSourceWithCTEs(
-	md *recordlayer.RecordMetaData,
-	alias string,
-	inner antlrgen.IQueryContext,
-	cteScopes map[string]semantic.ScopeSource,
-) (semantic.ScopeSource, bool) {
-	source, err := buildDerivedTableSourceWithCTEsChecked(md, alias, inner, defaultEmbeddedSchema, cteScopes)
-	return source, err == nil
 }
 
 // boundDerivedSource converts a completed body without rebuilding its query.
@@ -687,13 +699,13 @@ func buildDerivedTableSourceWithCTEsChecked(
 	md *recordlayer.RecordMetaData,
 	alias string,
 	inner antlrgen.IQueryContext,
-	schemaName string,
+	templateName string,
 	cteScopes map[string]semantic.ScopeSource,
 ) (semantic.ScopeSource, error) {
 	if md == nil || alias == "" || inner == nil {
 		return semantic.ScopeSource{}, api.NewError(api.ErrCodeUnsupportedQuery, "derived source has no exact semantic schema")
 	}
-	visitor := NewPlanVisitorWithSchema(md, schemaName)
+	visitor := NewPlanVisitorWithTemplate(md, templateName)
 	visitor.cteScopes = maps.Clone(cteScopes)
 	visitor.cteProducers = *cteRegistryFromScopes(cteScopes)
 	op, err := visitor.buildCTEBodyQuery(inner)
@@ -745,6 +757,98 @@ func nullSupplyingFromLegs(joins []joinClause) []bool {
 		}
 	}
 	return padded
+}
+
+// unnamedFromLegs is how many leading FROM positions (0 = the primary source)
+// the clauses after the FROM read through an unnamed operator
+// (semantic.ScopeSource.Unnamed): Java replaces an outer join's two sides, and
+// with them every source before it, by one operator with preserved expression
+// names and no name (QueryVisitor.wrapOperandsForOuterJoin), so every position
+// up to the last outer join's right side is unnamed, and a source joined after
+// it is not. Measured in conformance/ws_f_table_qualifier_conformance_test.go.
+func unnamedFromLegs(joins []joinClause) int {
+	n := 0
+	for i, j := range joins {
+		if j.joinType != joinTypeInner {
+			n = i + 2
+		}
+	}
+	return n
+}
+
+// withUnnamedFromLegs is scope with its sources marked by unnamedFromLegs, for
+// a builder that adds exactly one source per FROM position (0 = the primary)
+// without marking them. It is an asserted bridge: a scope of any other shape
+// reports false, and the caller declines rather than resolving through named
+// sources Java reads as unnamed.
+func withUnnamedFromLegs(scope *semantic.Scope, joins []joinClause) (*semantic.Scope, bool) {
+	n := unnamedFromLegs(joins)
+	if n == 0 {
+		return scope, true
+	}
+	sources := scope.Sources()
+	if len(sources) != len(joins)+1 {
+		return nil, false
+	}
+	marked := semantic.NewScope(scope.Parent())
+	for position, src := range sources {
+		src.Unnamed = position < n
+		if err := marked.AddSource(src); err != nil {
+			return nil, false
+		}
+	}
+	return marked, true
+}
+
+// unnamedBeforeOn is unnamedFromLegs for the ON of joins[at]. An inner join's
+// ON resolves against the operators the fragment holds, so it sees the positions
+// an earlier outer join replaced. An outer join's ON sees its left side
+// collapsed into one unnamed operator when two or more sources precede it
+// (QueryVisitor.collapseLeftSideOperators), and its right side named.
+func unnamedBeforeOn(joins []joinClause, at int) int {
+	if joins[at].joinType != joinTypeInner && at >= 1 {
+		return at + 1
+	}
+	return unnamedFromLegs(joins[:at])
+}
+
+// selectIsAggregate reports whether a query block aggregates, Java's
+// visitSimpleTable test: a GROUP BY, or an aggregate in the select list.
+func selectIsAggregate(sq *selectQuery) bool {
+	return sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0
+}
+
+// aggregateClauseResolver is the resolver an aggregate query block's select
+// list, GROUP BY, HAVING and ORDER BY resolve through: Java replaces the
+// block's operators with generateSelectWhere's before visiting them, one
+// operator with preserved expression names and no name, so every source is
+// Unnamed (semantic.Scope.WithUnnamedSources). Any other block resolves them
+// through its FROM scope, which the resolver is returned as.
+func aggregateClauseResolver(resolver *expr.Resolver, sq *selectQuery, md *recordlayer.RecordMetaData) *expr.Resolver {
+	if resolver == nil || resolver.Scope() == nil || sq == nil || !selectIsAggregate(sq) {
+		return resolver
+	}
+	return expr.New(semantic.NewAnalyzer(rlcatalog.Wrap(md), false), resolver.Scope().WithUnnamedSources())
+}
+
+// selectListResolvers are the resolvers a query block's select list resolves
+// through, in Java's order: a non-aggregate block's FROM scope; an aggregate
+// block's unnamed view (aggregateClauseResolver), preceded, when the block has
+// no GROUP BY, by the FROM scope itself. Java decides a GROUP BY-less block
+// aggregates by visiting its select list against the FROM operators
+// (QueryVisitor.hasAggregations, which a GROUP BY short-circuits), so a
+// reference that reading refuses fails with its error first: `SELECT
+// MAX(x.x.f) FROM x` is 42702, where the unnamed reading alone is 42703
+// (measured).
+func selectListResolvers(resolver *expr.Resolver, sq *selectQuery, md *recordlayer.RecordMetaData) []*expr.Resolver {
+	if resolver == nil {
+		return nil
+	}
+	clause := aggregateClauseResolver(resolver, sq, md)
+	if clause == resolver || len(sq.groupBy) > 0 {
+		return []*expr.Resolver{clause}
+	}
+	return []*expr.Resolver{resolver, clause}
 }
 
 // nullSupplyingTable is a catalog table seen through an outer join's padding:
@@ -811,7 +915,7 @@ func (c aggOutputCol) column() semantic.Column {
 // A body with joins is declined rather than searched: with more than one source
 // a bare argument name can be ambiguous, and answering it by first-match would
 // type an output column off the wrong table.
-func aggBodySourceColumns(sq *selectQuery, md *recordlayer.RecordMetaData) []semantic.Column {
+func aggBodySourceColumns(sq *selectQuery, md *recordlayer.RecordMetaData, templateName string) []semantic.Column {
 	if sq == nil || md == nil || sq.tableName == "" || len(sq.joins) > 0 {
 		return nil
 	}
@@ -829,8 +933,8 @@ func aggBodySourceColumns(sq *selectQuery, md *recordlayer.RecordMetaData) []sem
 		}
 		return src.Table.Columns()
 	} else if sq.derivedQuery != nil {
-		src, ok := buildDerivedTableSource(md, sq.tableName, sq.derivedQuery)
-		if !ok || src.Table == nil {
+		src, err := buildDerivedTableSourceWithCTEsChecked(md, sq.tableName, sq.derivedQuery, templateName, nil)
+		if err != nil || src.Table == nil {
 			return nil
 		}
 		return src.Table.Columns()
@@ -916,7 +1020,7 @@ func aggregateOutputColumn(ac aggSelectCol, name string, srcCols []semantic.Colu
 // md may be nil — the type simply stays UNKNOWN then, exactly as before. It is
 // never a reason to decline the source: the NAMES are what the caller's dedup
 // gate and the enclosing resolver need, and they do not depend on the types.
-func aggOutputCols(sq *selectQuery, md *recordlayer.RecordMetaData) []aggOutputCol {
+func aggOutputCols(sq *selectQuery, md *recordlayer.RecordMetaData, templateName string) []aggOutputCol {
 	var out []aggOutputCol
 	if sq.countStar {
 		name := sq.countStarAlias
@@ -929,7 +1033,7 @@ func aggOutputCols(sq *selectQuery, md *recordlayer.RecordMetaData) []aggOutputC
 		// same Java rule, two answers.
 		out = append(out, aggOutputCol{name: name, typ: "BIGINT", nullable: true})
 	}
-	srcCols := aggBodySourceColumns(sq, md)
+	srcCols := aggBodySourceColumns(sq, md, templateName)
 	for _, index := range aggregateColumnsInSelectOrder(sq.aggCols) {
 		ac := sq.aggCols[index]
 		name := aggregateOutputSQLName(ac)
@@ -956,8 +1060,8 @@ func aggOutputCols(sq *selectQuery, md *recordlayer.RecordMetaData) []aggOutputC
 	return out
 }
 
-func buildDerivedTableSourceFromAgg(alias string, sq *selectQuery, md *recordlayer.RecordMetaData) (semantic.ScopeSource, bool) {
-	cols := aggOutputCols(sq, md)
+func buildDerivedTableSourceFromAgg(alias string, sq *selectQuery, md *recordlayer.RecordMetaData, templateName string) (semantic.ScopeSource, bool) {
+	cols := aggOutputCols(sq, md, templateName)
 	if len(cols) == 0 {
 		return semantic.ScopeSource{}, false
 	}
@@ -1027,6 +1131,11 @@ func mapPredicateWalkError(walkErr error) *api.Error {
 		// Java ExceptionUtil leaves INVALID_ENUM_VALUE in INTERNAL_ERROR.
 		return api.WrapError(api.ErrCodeInternalError, enumErr.Error(), walkErr)
 	}
+	var uuidErr *values.InvalidUUIDValueError
+	if errors.As(walkErr, &uuidErr) {
+		// And INVALID_UUID_VALUE.
+		return api.WrapError(api.ErrCodeInternalError, uuidErr.Error(), walkErr)
+	}
 	var binErr *expr.InvalidBinaryLiteralError
 	if errors.As(walkErr, &binErr) {
 		return api.NewError(api.ErrCodeInvalidBinaryRepresentation, binErr.Error())
@@ -1077,7 +1186,7 @@ func bindingOrAlias(bindingID string, aliasID semantic.Identifier) string {
 // The join nodes are created in order matching sq.joins, so we match
 // them sequentially by walking the left-child spine (the builder chains
 // joins left-to-right with op = NewJoin(op, right, ...)).
-func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource, cteOnScopes map[string]semantic.ScopeSource, cteProducers ...logical.CTERegistry) error {
+func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, templateName string, cteScopes map[string]semantic.ScopeSource, cteOnScopes map[string]semantic.ScopeSource, cteProducers ...logical.CTERegistry) error {
 	cat := rlcatalog.Wrap(md)
 	analyzer := semantic.NewAnalyzer(cat, false)
 
@@ -1110,7 +1219,7 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 	// ON predicate still resolves against the real-table legs. RFC-142.
 	scope := semantic.NewScope(sq.enclosingScope)
 	addUnnestSourceRaw := unnestScopeSourceAdder(scope)
-	resolvesToTable := newUnnestTableResolver(md, schemaName)
+	resolvesToTable := newUnnestTableResolver(md, templateName)
 	// scopeDropRisk marks scope failures where the query could still PLAN and
 	// return silently-wrong cross-product rows if we fall through: a
 	// resolvable-but-unscopable source (derived-table decline, duplicate
@@ -1118,21 +1227,24 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 	// the downstream scan produces its precise UndefinedDatabase/Table error,
 	// which the fail-closed check below must not preempt with a generic one.
 	var scopeDropRisk bool
-	addTableSource := func(tableName, alias, bindingID string, path []string, source logical.ScanSource) bool {
+	addTableSource := func(tableName, alias, bindingID string, path, namePath []string, source logical.ScanSource) bool {
 		cte, isCTE := selectSourceCTEScope(tableName, path, source, cteOnScopes, cteScopes)
 		segments := selectSourceSegments(tableName, path)
-		// ACTIVE-SCHEMA-QUALIFIED source (`"s"."LA"`): the visitor path's sq
-		// keeps the dotted spelling (normalizeSchemaQualifiedSelectSources
+		// TEMPLATE-QUALIFIED source (`"S"."LA"` over template S): the visitor path's sq
+		// keeps the dotted spelling (normalizeQualifiedSelectSources
 		// runs only on the catalog sub-build path), so resolveTable failed
 		// and the silent unresolvable-table decline below dropped the ON —
 		// but the downstream scan SUCCEEDS after the tree-side demotion, so
 		// the "unresolvable table errors precisely downstream" assumption
 		// that keeps the decline silent is FALSE for this form: every
-		// explicit join with a schema-qualified leg silently cross-producted
+		// explicit join with a template-qualified leg silently cross-producted
 		// (review-caught by the Q37 pin). Strip the schema segment the same
-		// way the normalizer does, keeping a defaulted alias in lockstep.
+		// way the normalizer does, keeping a defaulted alias in lockstep; an
+		// unaliased qualified source is then named by the whole identifier
+		// (namePath), as buildSelectScope's addSource names it.
 		if len(segments) == 2 && resolvesToTable(segments) {
 			if alias == tableName {
+				namePath = segments
 				alias = segments[1]
 			}
 			tableName = segments[1]
@@ -1172,6 +1284,7 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 		if scope.AddSource(semantic.ScopeSource{
 			Table:           tbl,
 			Alias:           aliasID,
+			NamePath:        namePathIdentifiers(namePath),
 			CorrelationName: binding,
 		}) != nil {
 			scopeDropRisk = true // shadowing-duplicate alias: resolvable, unscopable
@@ -1240,10 +1353,12 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 		} else {
 			scopeDropRisk = true
 		}
+	} else if clause := primaryUnnestClause(sq.tableName, sq.tableAlias, sq.tableAliasExplicit, sq.tableAtAlias, sq.sourceSegments, sq.bindingID); primaryIsCorrelatedUnnest(sq.enclosingScope, clause, resolvesToTable) {
+		scopeOK = addUnnestSourceRaw(clause)
 	} else {
-		scopeOK = addTableSource(sq.tableName, sq.tableAlias, sq.bindingID, sq.sourceSegments, sq.resolvedSource)
+		scopeOK = addTableSource(sq.tableName, sq.tableAlias, sq.bindingID, sq.sourceSegments, sq.tableNamePath, sq.resolvedSource)
 	}
-	for i, j := range sq.joins {
+	for _, j := range sq.joins {
 		if !scopeOK {
 			break
 		}
@@ -1255,12 +1370,11 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 			scopeOK = addDerivedSource(j)
 			continue
 		}
-		visible := visibleFromAliases(sq.tableName, sq.tableAlias, sq.joins[:i], resolvesToTable)
-		if isLateralUnnestJoin(j, visible, resolvesToTable) {
+		if isLateralUnnestJoin(j, resolvesToTable) {
 			scopeOK = addUnnestSource(j)
 			continue
 		}
-		scopeOK = addTableSource(j.tableName, j.alias, j.bindingID, j.segments, j.resolvedSource)
+		scopeOK = addTableSource(j.tableName, j.alias, j.bindingID, j.segments, j.namePath, j.resolvedSource)
 	}
 	if !scopeOK {
 		// FAIL-CLOSED (guards a silent-wrong-rows bug class): the scope could
@@ -1297,7 +1411,9 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 			break
 		}
 		onScope := semantic.NewScope(sq.enclosingScope)
-		for _, source := range sources[:min(len(sources), sqIdx+2)] {
+		unnamed := unnamedBeforeOn(sq.joins, sqIdx)
+		for position, source := range sources[:min(len(sources), sqIdx+2)] {
+			source.Unnamed = position < unnamed
 			if err := onScope.AddSource(source); err != nil {
 				return err
 			}
@@ -1321,13 +1437,13 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 						"EXISTS in an OUTER JOIN ON clause is not yet supported")
 				}
 				onPlanner := &existsSubqueryPlanner{
-					bindings:    sq.bindings,
-					outerScope:  onScope,
-					md:          md,
-					schemaName:  schemaName,
-					outerScopes: buildOuterScopeSources(sq, md, schemaName, cteScopes),
-					cteScopes:   cteScopes,
-					cteOnScopes: cteOnScopes,
+					bindings:     sq.bindings,
+					outerScope:   onScope,
+					md:           md,
+					templateName: templateName,
+					outerScopes:  buildOuterScopeSources(sq, md, templateName, cteScopes),
+					cteScopes:    cteScopes,
+					cteOnScopes:  cteOnScopes,
 				}
 				if len(cteProducers) > 0 {
 					onPlanner.cteProducers = cteProducers[0]
@@ -1444,6 +1560,7 @@ func buildWherePredicateFromCTEScope(
 // duplicate that class happened to find first.
 func buildCTEColumnSource(
 	md *recordlayer.RecordMetaData,
+	templateName string,
 	cteName string,
 	cteQuery antlrgen.IQueryContext,
 	priorCTEs map[string]semantic.ScopeSource,
@@ -1466,7 +1583,7 @@ func buildCTEColumnSource(
 		}
 		for _, nq := range ctes.AllNamedQuery() {
 			nname := functions.FullIdToName(nq.GetName())
-			if src, ok, nestedErr := buildCTEColumnSource(md, nname, nq.Query(), scoped); nestedErr != nil {
+			if src, ok, nestedErr := buildCTEColumnSource(md, templateName, nname, nq.Query(), scoped); nestedErr != nil {
 				return semantic.ScopeSource{}, false, nestedErr
 			} else if ok {
 				scoped[strings.ToUpper(nname)] = applyCTEColumnAliases(src, nq.GetColumnAliases())
@@ -1537,7 +1654,7 @@ func buildCTEColumnSource(
 		// G — two distinct names for what SQL calls G twice, so u.g bound the
 		// second and never met the ambiguity check. A star body spells no
 		// projection and keeps the derivation's labels.
-		src, ok, bodyErr := buildExactScopeSourceOrBodyError(md, cteName, innerSQ, priorCTEs, projectionOutputNames(innerSQ))
+		src, ok, bodyErr := buildExactScopeSourceOrBodyError(md, templateName, cteName, innerSQ, priorCTEs, projectionOutputNames(innerSQ))
 		if bodyErr != nil {
 			return semantic.ScopeSource{}, false, bodyErr
 		}
@@ -1557,12 +1674,12 @@ func buildCTEColumnSource(
 		// not build raises its own error, exactly as the join-bodied arm above.
 		// aggOutputCols supplies SQL output names here, so a grouping key spelled
 		// `ga.g` is published as G, independently of the physical row's names.
-		aggColumns := aggOutputCols(innerSQ, md)
+		aggColumns := aggOutputCols(innerSQ, md, templateName)
 		aggNames := make([]string, len(aggColumns))
 		for i, column := range aggColumns {
 			aggNames[i] = column.name
 		}
-		src, ok, bodyErr := buildExactScopeSourceOrBodyError(md, cteName, innerSQ, priorCTEs, aggNames)
+		src, ok, bodyErr := buildExactScopeSourceOrBodyError(md, templateName, cteName, innerSQ, priorCTEs, aggNames)
 		if bodyErr != nil {
 			return semantic.ScopeSource{}, false, bodyErr
 		}
@@ -1579,7 +1696,7 @@ func buildCTEColumnSource(
 			// published.
 			return src, true, nil
 		}
-		src, ok = buildDerivedTableSourceFromAgg(cteName, innerSQ, md)
+		src, ok = buildDerivedTableSourceFromAgg(cteName, innerSQ, md, templateName)
 		if !ok {
 			return semantic.ScopeSource{}, false, nil
 		}
@@ -1590,7 +1707,7 @@ func buildCTEColumnSource(
 	// joined/computed bodies. Copying only the input's SQL columns loses the
 	// physical field names and binds consumers to a row no plan emits.
 	return buildExactScopeSourceOrBodyError(
-		md, cteName, innerSQ, priorCTEs, projectionOutputNames(innerSQ),
+		md, templateName, cteName, innerSQ, priorCTEs, projectionOutputNames(innerSQ),
 	)
 }
 
@@ -1619,6 +1736,7 @@ func applyCTEColumnAliases(src semantic.ScopeSource, colAliases antlrgen.IFullId
 			// OUTPUT name — references (a.node) resolve to it verbatim.
 			newName := functions.FullIdToName(aliases[i])
 			newCols[i] = renameCarriedColumn(col, newName)
+			newCols[i].SQLAuthored = true
 		} else {
 			newCols[i] = col
 		}
@@ -1650,7 +1768,7 @@ func applyCTEColumnAliases(src semantic.ScopeSource, colAliases antlrgen.IFullId
 // using pre-derived column schemas when metadata lookup fails.
 func buildWherePredicateForJoinsWithCTEScopes(
 	md *recordlayer.RecordMetaData,
-	schemaName string,
+	templateName string,
 	sq *selectQuery,
 	whereExpr antlrgen.IWhereExprContext,
 	cteScopes map[string]semantic.ScopeSource,
@@ -1659,7 +1777,7 @@ func buildWherePredicateForJoinsWithCTEScopes(
 		return nil, false
 	}
 	if selectHasInlineValuesSource(sq) {
-		resolver := buildSelectScope(sq, md, schemaName, cteScopes)
+		resolver := buildSelectScope(sq, md, templateName, cteScopes)
 		if resolver == nil {
 			return nil, false
 		}
@@ -1673,7 +1791,7 @@ func buildWherePredicateForJoinsWithCTEScopes(
 	analyzer := semantic.NewAnalyzer(cat, false)
 	scope := semantic.NewScope(sq.enclosingScope)
 
-	addSource := func(tableName, alias, bindingID string) bool {
+	addSource := func(tableName, alias, bindingID string, namePath []string) bool {
 		aliasID := semantic.FromNormalized(alias)
 		if alias == "" {
 			aliasID = semantic.FromNormalized(tableName)
@@ -1687,6 +1805,7 @@ func buildWherePredicateForJoinsWithCTEScopes(
 			return scope.AddSource(semantic.ScopeSource{
 				Table:           tbl,
 				Alias:           aliasID,
+				NamePath:        namePathIdentifiers(namePath),
 				CorrelationName: binding,
 			}) == nil
 		}
@@ -1702,23 +1821,27 @@ func buildWherePredicateForJoinsWithCTEScopes(
 	// (the non-CTE twin) uses, so a CTE-bearing query with an unnest WHERE on the
 	// element/ordinal resolves here instead of declining and degrading to text. RFC-142.
 	addUnnestSource := unnestScopeSourceAdder(scope)
-	resolvesToTable := newUnnestTableResolver(md, schemaName)
-	if !addSource(sq.tableName, sq.tableAlias, sq.bindingID) {
+	resolvesToTable := newUnnestTableResolver(md, templateName)
+	if !addSource(sq.tableName, sq.tableAlias, sq.bindingID, sq.tableNamePath) {
 		return nil, false
 	}
-	for i, j := range sq.joins {
-		visible := visibleFromAliases(sq.tableName, sq.tableAlias, sq.joins[:i], resolvesToTable)
-		if isLateralUnnestJoin(j, visible, resolvesToTable) {
+	for _, j := range sq.joins {
+		if isLateralUnnestJoin(j, resolvesToTable) {
 			if !addUnnestSource(j) {
 				return nil, false
 			}
 			continue
 		}
-		if !addSource(j.tableName, j.alias, j.bindingID) {
+		if !addSource(j.tableName, j.alias, j.bindingID, j.namePath) {
 			return nil, false
 		}
 	}
-	resolver := expr.New(analyzer, scope)
+	// A WHERE after an outer join resolves against the join's unnamed operator.
+	marked, ok := withUnnamedFromLegs(scope, sq.joins)
+	if !ok {
+		return nil, false
+	}
+	resolver := expr.New(analyzer, marked)
 	pred, err := resolver.WalkPredicate(whereExpr.Expression())
 	if err != nil {
 		return nil, false
@@ -1738,7 +1861,7 @@ func buildWherePredicateForJoinsWithCTEScopes(
 // the missing-table column ref anyway).
 func buildWherePredicateForJoins(
 	md *recordlayer.RecordMetaData,
-	schemaName string,
+	templateName string,
 	sq *selectQuery,
 	whereExpr antlrgen.IWhereExprContext,
 ) (predicates.QueryPredicate, bool) {
@@ -1749,7 +1872,7 @@ func buildWherePredicateForJoins(
 	analyzer := semantic.NewAnalyzer(cat, false)
 	scope := semantic.NewScope(sq.enclosingScope)
 
-	addSource := func(tableName, alias, bindingID string) bool {
+	addSource := func(tableName, alias, bindingID string, namePath []string) bool {
 		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
 		if err != nil {
 			return false
@@ -1762,27 +1885,32 @@ func buildWherePredicateForJoins(
 		return scope.AddSource(semantic.ScopeSource{
 			Table:           tbl,
 			Alias:           aliasID,
+			NamePath:        namePathIdentifiers(namePath),
 			CorrelationName: binding,
 		}) == nil
 	}
 	addUnnestSource := unnestScopeSourceAdder(scope)
-	resolvesToTable := newUnnestTableResolver(md, schemaName)
-	if !addSource(sq.tableName, sq.tableAlias, sq.bindingID) {
+	resolvesToTable := newUnnestTableResolver(md, templateName)
+	if !addSource(sq.tableName, sq.tableAlias, sq.bindingID, sq.tableNamePath) {
 		return nil, false
 	}
-	for i, j := range sq.joins {
-		visible := visibleFromAliases(sq.tableName, sq.tableAlias, sq.joins[:i], resolvesToTable)
-		if isLateralUnnestJoin(j, visible, resolvesToTable) {
+	for _, j := range sq.joins {
+		if isLateralUnnestJoin(j, resolvesToTable) {
 			if !addUnnestSource(j) {
 				return nil, false
 			}
 			continue
 		}
-		if !addSource(j.tableName, j.alias, j.bindingID) {
+		if !addSource(j.tableName, j.alias, j.bindingID, j.namePath) {
 			return nil, false
 		}
 	}
-	resolver := expr.New(analyzer, scope)
+	// A WHERE after an outer join resolves against the join's unnamed operator.
+	marked, ok := withUnnamedFromLegs(scope, sq.joins)
+	if !ok {
+		return nil, false
+	}
+	resolver := expr.New(analyzer, marked)
 	pred, err := resolver.WalkPredicate(whereExpr.Expression())
 	if err != nil {
 		return nil, false
@@ -1795,23 +1923,26 @@ func buildWherePredicateForJoins(
 // unnest scope source in the WHERE/projection scope binding. It delegates to the
 // SAME `unnestCandidateShape` predicate the logical lowering
 // (lateralUnnestCandidate) uses, with ONE scope-only refinement: a
-// schema-qualified TABLE source is NOT registered as an unnest source — it is a
+// template-qualified TABLE source is NOT registered as an unnest source — it is a
 // table cross join (or, with an AT alias, a WRONG_OBJECT_TYPE the demotion pass
 // rejects). unnestCandidateShape keeps an AT-on-a-table source as a LogicalUnnest
 // so the AT survives to that rejection, but the scope must resolve its columns as
 // a table, never an unnest binding. RFC-142.
-func isLateralUnnestJoin(j joinClause, visible map[string]struct{}, resolvesToTable tableResolver) bool {
-	if j.derivedQuery != nil || j.catalogAwareInnerPlan != nil || j.onExpr != nil {
+func isLateralUnnestJoin(j joinClause, resolvesToTable tableResolver) bool {
+	if j.derivedQuery != nil || j.catalogAwareInnerPlan != nil {
 		return false
 	}
-	if schemaQualifiedTableUnnest(j, resolvesToTable) {
+	if templateQualifiedTableUnnest(j, resolvesToTable) {
 		return false
 	}
-	return unnestCandidateShape(j, visible, resolvesToTable)
+	return unnestCandidateShape(j, resolvesToTable)
 }
 
 // unnestElementColumn resolves the declared collection through the current SQL
-// scope and returns its element column, preserving nested record/enum metadata.
+// scope — with the lookup the collection binding resolves it with
+// (ResolvePathAcrossLevels, Java's one list over every level), so the typing
+// and the binding cannot read different columns — and returns its element
+// column, preserving nested record/enum metadata.
 // Nested accessors identify the leaf collection, not the root record. Repetition
 // and container nullability are consumed here; stored array elements are non-null.
 // A missing or non-array source declines without manufacturing an element type.
@@ -1819,8 +1950,17 @@ func unnestElementColumn(scope *semantic.Scope, j joinClause) (semantic.Column, 
 	if scope == nil || len(j.segments) < 2 {
 		return semantic.Column{}, false
 	}
-	path := unnestSemanticPath(scope, j)
-	col, _, accessors, err := scope.ResolvePathNested(path)
+	path, sourceQualified := unnestSemanticPath(scope, j)
+	var (
+		col       semantic.Column
+		accessors []semantic.NestedAccessor
+		err       error
+	)
+	if sourceQualified {
+		col, _, accessors, err = scope.ResolveSourceQualifiedPath(path)
+	} else {
+		col, _, accessors, err = scope.ResolvePathAcrossLevels(path)
+	}
 	if err != nil {
 		return semantic.Column{}, false
 	}
@@ -1861,8 +2001,10 @@ func unnestVirtualScopeSourceWithElement(j joinClause, element *semantic.Column)
 		if element != nil {
 			elemCol = renameCarriedColumn(*element, asAlias)
 		}
+		elemCol.SQLAuthored = true
 		if atAlias == "" && elemCol.Type == "RECORD" && !elemCol.IsArray {
 			elemCol.Ephemeral = true
+			elemCol.UnqualifiedOutput = true
 			cols = append(cols, elemCol)
 			cols = append(cols, elemCol.StructFields...)
 		} else {
@@ -1876,7 +2018,7 @@ func unnestVirtualScopeSourceWithElement(j joinClause, element *semantic.Column)
 		// sqlTypeToCascadesType resolves it to values.NotNullInt — matching the
 		// translator's ordinal FieldValue type — and a PROJECT/COMPUTE over the AT
 		// alias reports INT, not UNKNOWN. RFC-142.
-		cols = append(cols, semantic.Column{Id: semantic.FromNormalized(atAlias), Type: "INT NOT NULL", Nullable: false})
+		cols = append(cols, semantic.Column{Id: semantic.FromNormalized(atAlias), Type: "INT NOT NULL", Nullable: false, SQLAuthored: true})
 		if corr == "" {
 			corr = atAlias
 		}
@@ -1933,6 +2075,10 @@ func unnestVirtualScopeSourceWithElement(j joinClause, element *semantic.Column)
 		FlowedColumns:   flowedColumns,
 		FlowedObject:    flowedObject,
 		ColumnOrdinals:  columnOrdinals,
+		// An INNER JOIN's USING hides the right copy of each column
+		// (QueryVisitor.resolveJoinUsingClause → asHidden), the element's
+		// member here, so an unqualified reference reads the left one.
+		HiddenColumns: hiddenColumnSet(j.usingHiddenCols),
 	}, true
 }
 
@@ -1967,18 +2113,18 @@ func unnestScopeSourceAdder(scope *semantic.Scope) func(j joinClause) bool {
 // LogicalFilter node differs when the walker succeeds. Passing md=nil
 // is equivalent to calling buildLogicalPlanForSelect: every WHERE
 // degrades to text.
-func buildLogicalPlanForSelectWithCatalog(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string) (logical.LogicalOperator, error) {
-	return buildLogicalPlanForSelectWithCTECatalog(sq, md, schemaName, nil, nil)
+func buildLogicalPlanForSelectWithCatalog(sq *selectQuery, md *recordlayer.RecordMetaData, templateName string) (logical.LogicalOperator, error) {
+	return buildLogicalPlanForSelectWithCTECatalog(sq, md, templateName, nil, nil)
 }
 
-func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource, cteOnScopes map[string]semantic.ScopeSource) (logical.LogicalOperator, error) {
-	if schemaName == "" {
-		schemaName = defaultEmbeddedSchema
+func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.RecordMetaData, templateName string, cteScopes map[string]semantic.ScopeSource, cteOnScopes map[string]semantic.ScopeSource) (logical.LogicalOperator, error) {
+	if templateName == "" {
+		templateName = defaultEmbeddedTemplate
 	}
 	if sq == nil {
 		return nil, nil
 	}
-	visitor := NewPlanVisitorWithSchema(md, schemaName)
+	visitor := NewPlanVisitorWithTemplate(md, templateName)
 	visitor.bindings = sq.bindings
 	visitor.enclosingScope = sq.enclosingScope
 	visitor.cteScopes, visitor.cteOnScopes = maps.Clone(cteScopes), maps.Clone(cteOnScopes)
@@ -1990,13 +2136,16 @@ func (visitor *PlanVisitor) buildLogicalPlanForSelect(sq *selectQuery) (logical.
 	if sq == nil {
 		return nil, nil
 	}
-	md, schemaName := visitor.md, visitor.schemaName
+	md, templateName := visitor.md, visitor.templateName
 	cteScopes, cteOnScopes := visitor.cteScopes, visitor.cteOnScopes
 	sq.enclosingScope = visitor.enclosingScope
 	fs := &fromSource{
 		bindings:  sq.bindings,
-		tableName: sq.tableName, tableAlias: sq.tableAlias, bindingID: sq.bindingID, sourceSegments: sq.sourceSegments,
-		derivedQuery: sq.derivedQuery, catalogAwareInnerPlan: sq.catalogAwareInnerPlan,
+		tableName: sq.tableName, tableAlias: sq.tableAlias, tableAliasExplicit: sq.tableAliasExplicit, tableAtAlias: sq.tableAtAlias,
+		bindingID: sq.bindingID, sourceSegments: sq.sourceSegments,
+		tableNamePath: sq.tableNamePath,
+		derivedQuery:  sq.derivedQuery, catalogAwareInnerPlan: sq.catalogAwareInnerPlan,
+		inlineValues: sq.inlineValues, resolvedSource: sq.resolvedSource,
 		joins: sq.joins, enclosingScope: sq.enclosingScope,
 	}
 	visitor.assignDerivedSourceBindings(fs)
@@ -2005,41 +2154,49 @@ func (visitor *PlanVisitor) buildLogicalPlanForSelect(sq *selectQuery) (logical.
 	}
 	sq.bindings = fs.bindings
 	sq.bindingID, sq.catalogAwareInnerPlan = fs.bindingID, fs.catalogAwareInnerPlan
-	resolvesToTable := newUnnestTableResolver(md, schemaName)
+	resolvesToTable := newUnnestTableResolver(md, templateName)
 	if err := retargetUsingJoins(sq.tableName, sq.tableAlias,
 		sq.derivedQuery == nil && sq.inlineValues == nil && sq.tableName != "",
-		sq.derivedQuery, sq.catalogAwareInnerPlan, sq.joins, md, schemaName,
-		cteNamePredicate(cteScopes), cteScopes); err != nil {
+		sq.derivedQuery, sq.catalogAwareInnerPlan, sq.joins, md, templateName,
+		cteNamePredicate(cteScopes), cteScopes, visitor.unnestLegDescriber(fs)); err != nil {
 		return nil, err
 	}
-	rememberSchemaAliasTableQualifiers(sq, resolvesToTable)
+	rememberTemplateAliasTableQualifiers(sq, resolvesToTable)
 	if sq.derivedQuery != nil && md != nil && len(sq.joins) == 0 {
 		op := buildOuterPlanOnDerived(sq, sq.catalogAwareInnerPlan)
 		if op == nil {
 			return nil, nil
 		}
-		return buildLogicalPlanForSelectWithCTECatalog_postBuild(op, sq, md, schemaName, cteScopes, cteOnScopes, visitor.cteProducers)
+		return buildLogicalPlanForSelectWithCTECatalog_postBuild(op, sq, md, templateName, cteScopes, cteOnScopes, visitor.cteProducers)
 	}
 
-	// Strip the session-schema qualifier off the parser's schema-qualified FROM
-	// sources (`s.PB` → `PB`) BEFORE the logical tree is built. The semantic
-	// analyzer's ResolveTable does not strip a schema qualifier, so without this a
-	// schema-qualified table inside a SUBQUERY fails to register a scope source, the
+	// Strip the qualifier (the schema template's name) off the parser's qualified
+	// FROM sources (`s.PB` → `PB`) BEFORE the logical tree is built. The semantic
+	// analyzer's ResolveTable does not strip a template qualifier, so without this a
+	// template-qualified table inside a SUBQUERY fails to register a scope source, the
 	// projection resolver degrades to nil, and translation fails (the same class
-	// demoteSchemaQualifiedUnnest / resolveQualifiedTableNames cover for the logical
+	// demoteQualifiedTableUnnest / resolveQualifiedTableNames cover for the logical
 	// tree). This is the catalog sub-build path (subqueries, derived tables) only —
 	// the top-level query builds its scope through the PlanVisitor, untouched.
 	//
 	// Running BEFORE buildLogicalPlanForSelect (not after) is the ROOT fix for the
-	// alias desync: a no-alias schema-qualified source `s.PB` parses with
+	// alias desync: a no-alias template-qualified source `s.PB` parses with
 	// alias == tableName == "S.PB", so the built LogicalScan would carry Alias
 	// "S.PB" while normalize strips sq's source alias to "PB". The post-build SCOPE
 	// (which reads the normalized sq) then resolves a predicate `PB.ID = PA.ID` to
 	// QOV(PB) while the scan binds under "S.PB" → the predicate reads NULL and
 	// misfilters rows. Normalizing FIRST makes the scan carry the SAME alias "PB"
 	// the resolver uses, so resolver and scan never disagree. RFC-142.
-	normalizeSchemaQualifiedSelectSources(sq, schemaName, md)
+	normalizeQualifiedSelectSources(sq, templateName, md)
 
+	if md != nil {
+		sq.resolvesToTable = newUnnestTableResolver(md, templateName)
+		clause := primaryUnnestClause(sq.tableName, sq.tableAlias, sq.tableAliasExplicit, sq.tableAtAlias, sq.sourceSegments, sq.bindingID)
+		if err := visitor.rejectPrimaryAtOnTable(sq.tableName, sq.sourceSegments, sq.tableAtAlias,
+			sq.derivedQuery != nil || primaryIsCorrelatedUnnest(sq.enclosingScope, clause, sq.resolvesToTable), sq.enclosingScope); err != nil {
+			return nil, err
+		}
+	}
 	op := buildLogicalPlanForSelect(sq)
 	if op == nil || md == nil {
 		// Returned WITHOUT the ON-EXISTS fold (_postBuild) — sound only because
@@ -2053,16 +2210,16 @@ func (visitor *PlanVisitor) buildLogicalPlanForSelect(sq *selectQuery) (logical.
 	}
 	// Java's generateAccess resolves a FROM identifier table-first at EVERY
 	// FROM-source point. buildLogicalPlanForSelect (no metadata in scope) runs the
-	// lateral-unnest classifier with a nil resolver, so a schema-qualified table
+	// lateral-unnest classifier with a nil resolver, so a template-qualified table
 	// whose qualifier also names a prior alias (`FROM PA AS s, s.PB`) is tentatively
 	// emitted as a LogicalUnnest. Demote it back to a Scan HERE — with metadata in
 	// scope — BEFORE the post-build scope/projection-value resolution runs, so the
 	// subquery's projections resolve against the correct table cross join rather than
 	// degrading on the would-be unnest. This is the subquery analog of the
-	// top-level demoteSchemaQualifiedUnnest pass (which mutates the logical tree only
+	// top-level demoteQualifiedTableUnnest pass (which mutates the logical tree only
 	// — too late to recover the projection Values this nested build computes).
-	// RFC-142 (P2: schema-qualified table inside a subquery).
-	if err := demoteSchemaQualifiedUnnest(op, schemaName, md); err != nil {
+	// RFC-142 (P2: template-qualified table inside a subquery).
+	if err := demoteQualifiedTableUnnest(op, templateName, md); err != nil {
 		return nil, err
 	}
 	// Reject AT-ordinality on a TABLE / non-array source (`FROM t, U AT O`, a
@@ -2079,32 +2236,33 @@ func (visitor *PlanVisitor) buildLogicalPlanForSelect(sq *selectQuery) (logical.
 	// fails first; running the same early rejection on the built FROM tree here, in
 	// EVERY SELECT build path, surfaces 42809 regardless of which path plans the
 	// SELECT. Reuses the same source resolver as PlanVisitor. RFC-142.
-	if err := rejectAtOrdinalityOnTableWithCTEs(op, md, visitor.cteProducers); err != nil {
+	if err := rejectAtOrdinalityOnTableWithCTEs(op, md, visitor.cteProducers, sq.enclosingScope); err != nil {
 		return nil, err
 	}
-	return buildLogicalPlanForSelectWithCTECatalog_postBuild(op, sq, md, schemaName, cteScopes, cteOnScopes, visitor.cteProducers)
+	return buildLogicalPlanForSelectWithCTECatalog_postBuild(op, sq, md, templateName, cteScopes, cteOnScopes, visitor.cteProducers)
 }
 
-// normalizeSchemaQualifiedSelectSources strips the session-schema qualifier off
-// a selectQuery's primary + join FROM-source table names AND, in lockstep, off
-// the matching join leg's un-flattened uid segments, when the source is a real
-// schema-qualified table (`s.PB` where `s` is the session schema and `PB`
-// resolves). It mirrors resolveQualifiedTableNames (which strips the logical
+// normalizeQualifiedSelectSources strips the qualifier (the schema template's
+// name) off a selectQuery's primary + join FROM-source table names AND, in
+// lockstep, off the matching join leg's un-flattened uid segments, when the
+// source is a real qualified table (`s.PB` where `s` is the template's name and
+// `PB` resolves); an unaliased source keeps its qualified identifier as its SQL
+// name (tableNamePath, namePath). It mirrors resolveQualifiedTableNames (which strips the logical
 // scan's `schema.`), applied to the parser struct the scope builders AND the
 // (metadata-less) rebuild classifier read. The segments MUST move with the
 // tableName: the lateral-unnest classifier resolves segment 0 against the
 // visible FROM aliases, and a leftover `[schema, table]` segment slice whose
 // schema also happens to name a prior alias would mis-classify the real table
 // as a correlated unnest on a later rebuild (`SELECT B.*` etc.).
-// Sources that do not resolve to a schema-qualified table are left untouched —
+// Sources that do not resolve to a template-qualified table are left untouched —
 // in particular a dotted reference whose qualifier is a prior FROM alias (a
 // lateral unnest candidate) is NOT a `[schema, table]` pair the resolver
 // matches, so its segments survive for the unnest classifier. RFC-142.
-func normalizeSchemaQualifiedSelectSources(sq *selectQuery, schemaName string, md *recordlayer.RecordMetaData) {
+func normalizeQualifiedSelectSources(sq *selectQuery, templateName string, md *recordlayer.RecordMetaData) {
 	if sq == nil || md == nil {
 		return
 	}
-	resolvesToTable := newUnnestTableResolver(md, schemaName)
+	resolvesToTable := newUnnestTableResolver(md, templateName)
 	strip := func(name string, path []string) string {
 		segs := selectSourceSegments(name, path)
 		if len(segs) == 2 && resolvesToTable(segs) {
@@ -2116,10 +2274,14 @@ func normalizeSchemaQualifiedSelectSources(sq *selectQuery, schemaName string, m
 		bare := strip(sq.tableName, sq.sourceSegments)
 		if bare != sq.tableName {
 			if sq.tableAlias == sq.tableName {
+				// Unaliased: SQL names the source by the qualified identifier
+				// (tableNamePath); the alias keeps the bare name, which is the
+				// source's correlation.
+				sq.tableNamePath = selectSourceSegments(sq.tableName, sq.sourceSegments)
 				sq.tableAlias = bare
 			}
 			sq.tableName = bare
-			if len(sq.sourceSegments) == 2 && strings.EqualFold(sq.sourceSegments[0], schemaName) {
+			if len(sq.sourceSegments) == 2 && sq.sourceSegments[0] == templateName {
 				sq.sourceSegments = sq.sourceSegments[1:]
 			}
 		}
@@ -2132,6 +2294,7 @@ func normalizeSchemaQualifiedSelectSources(sq *selectQuery, schemaName string, m
 		bare := strip(j.tableName, j.segments)
 		if bare != j.tableName {
 			if j.alias == j.tableName {
+				j.namePath = selectSourceSegments(j.tableName, j.segments)
 				j.alias = bare
 			}
 			j.tableName = bare
@@ -2141,24 +2304,24 @@ func normalizeSchemaQualifiedSelectSources(sq *selectQuery, schemaName string, m
 			// became the bare `PB` would let a later metadata-less REBUILD
 			// (`buildLogicalPlanForSelect`, e.g. forced by `SELECT B.*`)
 			// see segment 0 (`main`) as a visible FROM alias (the alias of
-			// `PA AS main`) and reclassify the real schema-qualified table
+			// `PA AS main`) and reclassify the real template-qualified table
 			// `main.PB` as a correlated unnest of `MAIN.PB`. The strip ran
 			// IFF the dotted name was `[schema, table]` (resolvesToTable),
-			// so segment 0 is the schema qualifier, not a prior FROM alias:
+			// so segment 0 is the template qualifier, not a prior FROM alias:
 			// dropping it yields the single-segment table name the rebuild
 			// classifier reads as a plain table. A genuine lateral unnest
 			// `alias.field` (segment 0 a prior FROM alias) does not resolve
 			// to a table, never enters this branch, and keeps its segments.
 			// RFC-142.
-			if len(j.segments) == 2 && strings.EqualFold(j.segments[0], schemaName) {
+			if len(j.segments) == 2 && j.segments[0] == templateName {
 				j.segments = j.segments[1:]
 			}
 		}
 	}
 }
 
-func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource, cteOnScopes map[string]semantic.ScopeSource, cteProducers ...logical.CTERegistry) (logical.LogicalOperator, error) {
-	built, err := buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op, sq, md, schemaName, cteScopes, cteOnScopes, cteProducers...)
+func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, templateName string, cteScopes map[string]semantic.ScopeSource, cteOnScopes map[string]semantic.ScopeSource, cteProducers ...logical.CTERegistry) (logical.LogicalOperator, error) {
+	built, err := buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op, sq, md, templateName, cteScopes, cteOnScopes, cteProducers...)
 	if err != nil {
 		return nil, err
 	}
@@ -2176,12 +2339,12 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 // buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded runs the upgrades;
 // buildLogicalPlanForSelectWithCTECatalog_postBuild folds the block's
 // ON-clause EXISTS afterwards.
-func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource, cteOnScopes map[string]semantic.ScopeSource, cteProducers ...logical.CTERegistry) (logical.LogicalOperator, error) {
+func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, templateName string, cteScopes map[string]semantic.ScopeSource, cteOnScopes map[string]semantic.ScopeSource, cteProducers ...logical.CTERegistry) (logical.LogicalOperator, error) {
 	queryCTEScopes := singleSourceQueryBlockCTEScopes(sq, cteScopes, cteOnScopes)
 	// Build the semantic scope once. All identifier resolution below
 	// goes through this scope — same architecture as Java's
 	// QueryVisitor holding a SemanticAnalyzer.
-	resolver := buildSelectScope(sq, md, schemaName, queryCTEScopes)
+	resolver := buildSelectScope(sq, md, templateName, queryCTEScopes)
 
 	// Expand qualified stars (a.*) in the projection list. Replaces each
 	// qualified-star slot with explicit column names from the source.
@@ -2194,31 +2357,32 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 	//     LogicalProject). For JOINs this is wrong — it must project
 	//     only the qualifier's columns. Expand into explicit projCols.
 	//  2. projStarQualifiers slots — `SELECT a.*, b.label` mixed.
-	//     Handled by expandQualifiedStars (rewrites star slots in-place).
+	//     Handled by expandProjectionStars (rewrites star slots in-place).
 	needRebuild := false
 	if sq.projQualifier != "" && sq.projCols == nil {
 		normalizeSoleQualifiedStar(sq)
 		needRebuild = true
 	}
-	if expanded, err := expandBareStarFromScope(sq, md, schemaName, queryCTEScopes); err != nil {
+	if expanded, err := expandBareStarFromScope(sq, md, templateName, queryCTEScopes); err != nil {
 		return nil, err
 	} else if expanded {
 		needRebuild = true
 	}
-	if hasAnyQualifiedStar(sq) {
-		if starErr := expandQualifiedStars(sq, md, schemaName, queryCTEScopes); starErr != nil {
+	if hasProjectionStar(sq) {
+		if starErr := expandProjectionStars(sq, md, templateName, queryCTEScopes); starErr != nil {
 			return nil, starErr
 		}
 		needRebuild = true
 	}
 	if needRebuild {
+		sq.resolvesToTable = newUnnestTableResolver(md, templateName)
 		op = buildLogicalPlanForSelect(sq)
 		if op == nil {
 			return op, nil
 		}
 	}
 
-	if err := bindLateralCollections(op, sq, md, schemaName, queryCTEScopes); err != nil {
+	if err := bindLateralCollections(op, sq, md, templateName, queryCTEScopes); err != nil {
 		return nil, err
 	}
 
@@ -2228,7 +2392,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 	// through the expression walker instead. Skip aggregate queries
 	// (aggCols / countStar) — their projection names are aggregate
 	// output labels, not column references.
-	if resolver != nil && sq.projCols != nil && len(sq.aggCols) == 0 && !sq.countStar {
+	if resolver := aggregateClauseResolver(resolver, sq, md); resolver != nil && sq.projCols != nil && len(sq.aggCols) == 0 && !sq.countStar {
 		proj := findProjection(op)
 		for i, col := range sq.projCols {
 			if col.bound != nil {
@@ -2372,7 +2536,8 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 					}
 				} else {
 					if v, err := resolver.ResolveIdentifierPath(
-						colRefIdentifiers(colBareOrName(col), col.qualifier, col.qualified, col.segs)); err == nil {
+						colRefIdentifiers(colBareOrName(col), col.qualifier, col.qualified, col.segs),
+					); err == nil {
 						if i < len(proj.ProjectedValues) {
 							proj.ProjectedValues[i] = v
 						}
@@ -2385,20 +2550,6 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 	// ORDER BY: Java's ExpressionVisitor.visitOrderByExpression walks each
 	// ORDER BY expression through the expression visitor. Do the same —
 	// the resolver detects ambiguous/undefined column references.
-	// Build a set of projection aliases for ORDER BY resolution.
-	projAliasSet := make(map[string]bool)
-	if sq.projAliases != nil {
-		for _, a := range sq.projAliases {
-			if a != "" {
-				projAliasSet[strings.ToUpper(a)] = true
-			}
-		}
-	}
-	for _, ac := range sq.aggCols {
-		if ac.outName != "" {
-			projAliasSet[strings.ToUpper(ac.outName)] = true
-		}
-	}
 
 	for _, ob := range sq.orderBy {
 		if ob.rawExpr != nil {
@@ -2423,30 +2574,27 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 			}
 		}
 	}
-	if resolver != nil {
+	if resolver := aggregateClauseResolver(resolver, sq, md); resolver != nil {
 		for _, ob := range sq.orderBy {
+			// Java resolves visible output aliases before consulting source scope,
+			// including when the source has zero or one column with that name.
+			if bare, matches := orderByOutputAliasBinding(ob.rawExpr, sq, resolver); bare && matches > 0 {
+				if matches > 1 {
+					name, _, _, _ := splitColumnRef(ob.rawExpr)
+					return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn, "Ambiguous alias %s", name)
+				}
+				continue
+			}
 			if ob.rawExpr != nil {
 				if _, walkErr := resolver.WalkExpression(ob.rawExpr); walkErr != nil {
 					var ambigErr *semantic.AmbiguousColumnError
 					if errors.As(walkErr, &ambigErr) {
-						// Output-alias precedence, mirrored from the visitor
-						// path's arm (review-caught: this twin was missed, so
-						// the SAME query 42702'd inside a subquery while the
-						// top level answered): a BARE key binding exactly ONE
-						// output alias wins over FROM-scope ambiguity.
-						if bare, n := orderByOutputAliasBinding(ob.rawExpr, ob.colName, sq); bare && n == 1 {
-							continue
-						}
 						// Java's exact text, from the reference as written (M5).
 						return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
 							"Ambiguous reference %s", ambigErr.Reference())
 					}
 					var notFoundErr *semantic.ColumnNotFoundError
 					if errors.As(walkErr, &notFoundErr) {
-						// Check if the ORDER BY name is a SELECT alias.
-						if projAliasSet[strings.ToUpper(ob.colName)] {
-							continue
-						}
 						// The ORDER BY rawExpr may reference a GROUP BY
 						// alias (`ORDER BY z` where `GROUP BY x.col1 AS
 						// z`). classifySelectElements rewrites ob.colName
@@ -2469,9 +2617,9 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 		}
 	}
 
-	if resolver != nil {
+	if resolver := aggregateClauseResolver(resolver, sq, md); resolver != nil {
 		for _, gb := range sq.groupBy {
-			if gb.expr != nil {
+			if gb.expr != nil || gb.bound != nil {
 				continue
 			}
 			if gb.bare != "" {
@@ -2484,7 +2632,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 		}
 	}
 
-	if resolver != nil {
+	for _, resolver := range selectListResolvers(resolver, sq, md) {
 		for _, ac := range sq.aggCols {
 			if ac.aggArg != "" && ac.aggExpr == nil {
 				if ac.aggArgBare != "" {
@@ -2505,7 +2653,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 	// bare re-read would silently bind ONE leg's key last-wins.
 	// Expression-redirected entries (groupCol = the GROUP BY expression's
 	// display) carry no column reference and are skipped.
-	if resolver != nil {
+	for _, resolver := range selectListResolvers(resolver, sq, md) {
 		exprKeyDisplays := map[string]bool{}
 		for _, gn := range sq.groupBy {
 			if gn.expr != nil {
@@ -2513,7 +2661,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 			}
 		}
 		for _, ac := range sq.aggCols {
-			if ac.groupCol == "" || ac.groupColBare == "" || exprKeyDisplays[ac.groupCol] {
+			if ac.groupCol == "" || ac.groupColBare == "" || ac.groupColValue != nil || exprKeyDisplays[ac.groupCol] {
 				continue
 			}
 			if err := resolveColumnRefStructural(resolver, ac.groupColBare, ac.groupColQualifier, ac.groupColQualified, ac.groupColSegs); err != nil {
@@ -2523,14 +2671,14 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 	}
 
 	if len(sq.groupBy) > 0 && !sq.countStar {
-		if err := validateGroupByProjection(sq, md); err != nil {
+		if err := validateGroupByProjection(sq, md, resolver); err != nil {
 			return nil, err
 		}
 	}
 
 	// Detect overflow numeric literals and correlated-subquery rejections
 	// in projection expressions.
-	if resolver != nil && len(sq.projExprs) > 0 {
+	for _, resolver := range selectListResolvers(resolver, sq, md) {
 		for _, e := range sq.projExprs {
 			if e == nil {
 				continue
@@ -2562,13 +2710,13 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 	// is nothing to rewrite back to a source column.
 
 	if len(sq.joins) > 0 {
-		if err := upgradeJoinOnPredicates(op, sq, md, schemaName, queryCTEScopes, cteOnScopes); err != nil {
+		if err := upgradeJoinOnPredicates(op, sq, md, templateName, queryCTEScopes, cteOnScopes); err != nil {
 			return nil, err
 		}
 	}
 
 	if len(sq.aggCols) > 0 {
-		if uerr := upgradeAggregateOperands(op, sq, md, schemaName, queryCTEScopes); uerr != nil {
+		if uerr := upgradeAggregateOperands(op, sq, md, templateName, queryCTEScopes); uerr != nil {
 			return nil, uerr
 		}
 	}
@@ -2584,9 +2732,9 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 		existsPlanner = &existsSubqueryPlanner{
 			bindings:     sq.bindings,
 			md:           md,
-			schemaName:   schemaName,
+			templateName: templateName,
 			outerScope:   resolverScope(resolver),
-			outerScopes:  buildOuterScopeSources(sq, md, schemaName, queryCTEScopes),
+			outerScopes:  buildOuterScopeSources(sq, md, templateName, queryCTEScopes),
 			cteScopes:    cteScopes,
 			cteOnScopes:  cteOnScopes,
 			cteProducers: bodies,
@@ -2594,7 +2742,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 	}
 
 	if len(sq.projExprs) > 0 || len(sq.postAggExprs) > 0 {
-		if err := upgradeProjectionValues(op, sq, md, schemaName, queryCTEScopes, existsPlanner); err != nil {
+		if err := upgradeProjectionValues(op, sq, md, templateName, queryCTEScopes, existsPlanner); err != nil {
 			return nil, err
 		}
 	}
@@ -2614,12 +2762,12 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 	}
 
 	if sq.havingExpr != nil {
-		if herr := upgradeHavingPredicate(op, sq, md, schemaName, queryCTEScopes, existsPlanner); herr != nil {
+		if herr := upgradeHavingPredicate(op, sq, md, templateName, queryCTEScopes, existsPlanner); herr != nil {
 			return nil, herr
 		}
 	}
 
-	if err := upgradeSortKeyValues(op, sq, md, schemaName, queryCTEScopes); err != nil {
+	if err := upgradeSortKeyValues(op, sq, md, templateName, queryCTEScopes); err != nil {
 		return nil, err
 	}
 
@@ -2661,7 +2809,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 		// predicate) must still be attached — synthesize a LogicalFilter above
 		// the scan rather than dropping it (an unpartitioned KNN query has no
 		// WHERE, so no filter was built upstream).
-		qualPred, qErr := buildQualifyPredicate(md, schemaName, sq, queryCTEScopes)
+		qualPred, qErr := buildQualifyPredicate(md, templateName, sq, queryCTEScopes)
 		if qErr != nil {
 			return nil, qErr
 		}
@@ -2737,7 +2885,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 				"EXISTS within an OR (disjunction) is not supported")
 		}
 
-		combined, qErr := combineQualifyPred(md, schemaName, sq, queryCTEScopes, pred)
+		combined, qErr := combineQualifyPred(md, templateName, sq, queryCTEScopes, pred)
 		if qErr != nil {
 			return nil, qErr
 		}
@@ -2770,7 +2918,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 		// The resolved predicate owns the query-local source identities even
 		// without subqueries. Rebuilding it from SQL aliases loses those IDs.
 		pred := predicates.SimplifyPredicateValues(preWalkPred)
-		combined, qErr := combineQualifyPred(md, schemaName, sq, queryCTEScopes, pred)
+		combined, qErr := combineQualifyPred(md, templateName, sq, queryCTEScopes, pred)
 		if qErr != nil {
 			return nil, qErr
 		}
@@ -2791,15 +2939,15 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 		}
 	}
 	if !ok && queryCTEScopes != nil && len(sq.joins) > 0 {
-		pred, ok = buildWherePredicateForJoinsWithCTEScopes(md, schemaName, sq, sq.whereExpr, queryCTEScopes)
+		pred, ok = buildWherePredicateForJoinsWithCTEScopes(md, templateName, sq, sq.whereExpr, queryCTEScopes)
 	}
 	if !ok {
-		pred, ok = buildWherePredicate(md, schemaName, sq, sq.whereExpr)
+		pred, ok = buildWherePredicate(md, templateName, sq, sq.whereExpr)
 	}
 	// QUALIFY (vector K-NN ROW_NUMBER() filter) is AND-combined with the WHERE
 	// predicate onto the same LogicalFilter — upgradeFirstFilter replaces, so
 	// both must be attached together.
-	qualPred, qErr := buildQualifyPredicate(md, schemaName, sq, queryCTEScopes)
+	qualPred, qErr := buildQualifyPredicate(md, templateName, sq, queryCTEScopes)
 	if qErr != nil {
 		return nil, qErr
 	}
@@ -2921,10 +3069,10 @@ func selectSourceCTEScope(name string, path []string, source logical.ScanSource,
 func buildSelectScope(
 	sq *selectQuery,
 	md *recordlayer.RecordMetaData,
-	schemaName string,
+	templateName string,
 	cteScopes map[string]semantic.ScopeSource,
 ) *expr.Resolver {
-	resolver, _ := buildSelectScopeChecked(sq, md, schemaName, cteScopes)
+	resolver, _ := buildSelectScopeChecked(sq, md, templateName, cteScopes)
 	return resolver
 }
 
@@ -2933,7 +3081,7 @@ func buildSelectScope(
 func buildSelectScopeChecked(
 	sq *selectQuery,
 	md *recordlayer.RecordMetaData,
-	schemaName string,
+	templateName string,
 	cteScopes map[string]semantic.ScopeSource,
 ) (*expr.Resolver, error) {
 	if sq == nil || md == nil {
@@ -2945,7 +3093,7 @@ func buildSelectScopeChecked(
 	if sq.tableName == "" {
 		return expr.New(analyzer, scope), nil
 	}
-	schemaStrip := newUnnestTableResolver(md, schemaName)
+	schemaStrip := newUnnestTableResolver(md, templateName)
 	additionalTableQualifiers := func(tableName, alias string) []semantic.Identifier {
 		if sq.tableQualifierAliases == nil || !sq.tableQualifierAliases[strings.ToUpper(alias)] ||
 			tableName == "" || strings.EqualFold(tableName, alias) {
@@ -2961,20 +3109,27 @@ func buildSelectScopeChecked(
 	// from the same helper, because a query block and that block read as a derived
 	// table must agree on their row.
 	padded := nullSupplyingFromLegs(sq.joins)
-	addSource := func(tableName, alias, bindingID string, path []string, source logical.ScanSource, hidden []string, position int) error {
+	unnamed := unnamedFromLegs(sq.joins)
+	at := func(src semantic.ScopeSource, position int) semantic.ScopeSource {
+		src = nullSupplyingSource(src, paddedAt(padded, position))
+		src.Unnamed = position < unnamed
+		return src
+	}
+	addSource := func(tableName, alias, bindingID string, path, namePath []string, source logical.ScanSource, hidden []string, position int) error {
 		cte, isCTE := selectSourceCTEScope(tableName, path, source, cteScopes)
 		segments := selectSourceSegments(tableName, path)
-		// ACTIVE-SCHEMA-QUALIFIED source (`"s"."LA"`): on the visitor path
-		// sq keeps the dotted spelling (normalizeSchemaQualifiedSelectSources
+		// TEMPLATE-QUALIFIED source (`"S"."LA"` over template S): on the visitor path
+		// sq keeps the dotted spelling (normalizeQualifiedSelectSources
 		// runs only on the catalog sub-build path), and a raw ResolveTable
 		// miss here NIL'd the whole resolver — killing the 42702/42703 gates
 		// (an ambiguous bare ref over `"s"."LA", LB` executed silently,
 		// review-caught) and every WHERE/ORDER BY resolution over
-		// schema-qualified explicit joins. Strip the schema segment with a
+		// template-qualified explicit joins. Strip the schema segment with a
 		// defaulted alias in lockstep, mirroring the ON-upgrade scope build
 		// and the normalizer.
 		if len(segments) == 2 && schemaStrip(segments) {
 			if alias == tableName {
+				namePath = segments
 				alias = segments[1]
 			}
 			tableName = segments[1]
@@ -2986,7 +3141,7 @@ func buildSelectScopeChecked(
 		// schema for reads that execute against the CTE — 42703 on the
 		// CTE's own columns (review-caught; the plain-body variant of the
 		// shape was broken this way all along, masked only for
-		// schema-qualified bodies by the pre-round-9 nil resolver).
+		// template-qualified bodies by the pre-round-9 nil resolver).
 		if isCTE {
 			src := cte
 			// TOMBSTONE (nil Table): a DECLARED CTE whose schema is not
@@ -3005,7 +3160,7 @@ func buildSelectScopeChecked(
 			cteSrc := cteSourceAs(src, aliasID, bindingOrAlias(bindingID, aliasID))
 			cteSrc.AdditionalQualifiers = additionalTableQualifiers(tableName, alias)
 			cteSrc.HiddenColumns = hiddenColumnSet(hidden)
-			return scope.AddSource(nullSupplyingSource(cteSrc, paddedAt(padded, position)))
+			return scope.AddSource(at(cteSrc, position))
 		}
 		tbl, err := analyzer.ResolveTable(semantic.FromSegments(segments, false))
 		if err != nil {
@@ -3018,13 +3173,14 @@ func buildSelectScopeChecked(
 		if alias == "" {
 			aliasID = semantic.FromNormalized(tableName)
 		}
-		return scope.AddSource(nullSupplyingSource(semantic.ScopeSource{
+		return scope.AddSource(at(semantic.ScopeSource{
 			Table:                tbl,
 			Alias:                aliasID,
+			NamePath:             namePathIdentifiers(namePath),
 			CorrelationName:      bindingOrAlias(bindingID, aliasID),
 			AdditionalQualifiers: additionalTableQualifiers(tableName, alias),
 			HiddenColumns:        hiddenColumnSet(hidden),
-		}, paddedAt(padded, position)))
+		}, position))
 	}
 
 	if sq.inlineValues != nil {
@@ -3032,7 +3188,7 @@ func buildSelectScopeChecked(
 		if !ok {
 			return nil, api.NewError(api.ErrCodeUnsupportedQuery, "inline VALUES has no exact semantic schema")
 		}
-		if err := scope.AddSource(nullSupplyingSource(src, paddedAt(padded, 0))); err != nil {
+		if err := scope.AddSource(at(src, 0)); err != nil {
 			return nil, err
 		}
 	} else if sq.derivedQuery != nil {
@@ -3040,13 +3196,29 @@ func buildSelectScopeChecked(
 		if err != nil {
 			return nil, err
 		}
-		if err := scope.AddSource(nullSupplyingSource(src, paddedAt(padded, 0))); err != nil {
+		if err := scope.AddSource(at(src, 0)); err != nil {
 			return nil, err
 		}
-	} else if err := addSource(sq.tableName, sq.tableAlias, sq.bindingID, sq.sourceSegments, sq.resolvedSource, nil, 0); err != nil {
+	} else if clause := primaryUnnestClause(sq.tableName, sq.tableAlias, sq.tableAliasExplicit, sq.tableAtAlias, sq.sourceSegments, sq.bindingID); primaryIsCorrelatedUnnest(sq.enclosingScope, clause, schemaStrip) {
+		// A correlated array as the block's first FROM item: its element is
+		// typed against the enclosing scopes (this level is still empty).
+		element, typed := unnestElementColumn(scope, clause)
+		var elementPtr *semantic.Column
+		if typed {
+			elementPtr = &element
+		}
+		src, ok := unnestVirtualScopeSourceWithElement(clause, elementPtr)
+		if !ok {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery, "unnest source requires an element or ordinal alias")
+		}
+		src.Unnamed = 0 < unnamed
+		if err := scope.AddSource(src); err != nil {
+			return nil, err
+		}
+	} else if err := addSource(sq.tableName, sq.tableAlias, sq.bindingID, sq.sourceSegments, sq.tableNamePath, sq.resolvedSource, nil, 0); err != nil {
 		return nil, err
 	}
-	resolvesToTable := newUnnestTableResolver(md, schemaName)
+	resolvesToTable := newUnnestTableResolver(md, templateName)
 	for i, j := range sq.joins {
 		if j.inlineValues != nil {
 			src, ok := parsedInlineValuesScopeSource(j.inlineValues, j.alias, j.bindingID, md)
@@ -3054,7 +3226,7 @@ func buildSelectScopeChecked(
 				return nil, api.NewError(api.ErrCodeUnsupportedQuery, "inline VALUES has no exact semantic schema")
 			}
 			src.HiddenColumns = hiddenColumnSet(j.usingHiddenCols)
-			if err := scope.AddSource(nullSupplyingSource(src, paddedAt(padded, i+1))); err != nil {
+			if err := scope.AddSource(at(src, i+1)); err != nil {
 				return nil, err
 			}
 			continue
@@ -3068,13 +3240,12 @@ func buildSelectScopeChecked(
 				src.CorrelationName = j.bindingID
 			}
 			src.HiddenColumns = hiddenColumnSet(j.usingHiddenCols)
-			if err := scope.AddSource(nullSupplyingSource(src, paddedAt(padded, i+1))); err != nil {
+			if err := scope.AddSource(at(src, i+1)); err != nil {
 				return nil, err
 			}
 			continue
 		}
-		visible := visibleFromAliases(sq.tableName, sq.tableAlias, sq.joins[:i], resolvesToTable)
-		if isLateralUnnestJoin(j, visible, resolvesToTable) {
+		if isLateralUnnestJoin(j, resolvesToTable) {
 			element, typed := unnestElementColumn(scope, j)
 			var elementPtr *semantic.Column
 			if typed {
@@ -3084,12 +3255,13 @@ func buildSelectScopeChecked(
 			if !ok {
 				return nil, api.NewError(api.ErrCodeUnsupportedQuery, "unnest source requires an element or ordinal alias")
 			}
+			src.Unnamed = i+1 < unnamed
 			if err := scope.AddSource(src); err != nil {
 				return nil, err
 			}
 			continue
 		}
-		if err := addSource(j.tableName, j.alias, j.bindingID, j.segments, j.resolvedSource, j.usingHiddenCols, i+1); err != nil {
+		if err := addSource(j.tableName, j.alias, j.bindingID, j.segments, j.namePath, j.resolvedSource, j.usingHiddenCols, i+1); err != nil {
 			return nil, err
 		}
 	}
@@ -3152,39 +3324,55 @@ func hiddenColumnSet(hidden []string) map[string]struct{} {
 // output columns bind the name (a presence-only check let duplicate aliases
 // K, K bypass 42702 and silently sort by whichever the alias map kept last,
 // review-caught). The precedence applies only when bareIdent && matches==1.
-func orderByOutputAliasBinding(rawExpr antlrgen.IExpressionContext, colName string, sq *selectQuery) (bareIdent bool, matches int) {
-	if colName == "" || !isBareIdentifierExpr(rawExpr) {
+func orderByOutputAliasBinding(rawExpr antlrgen.IExpressionContext, sq *selectQuery, resolver *expr.Resolver) (bareIdent bool, matches int) {
+	_, _, _, segments := splitColumnRef(rawExpr)
+	if len(segments) != 1 {
 		return false, 0
 	}
-	upper := strings.ToUpper(colName)
-	for _, a := range sq.projAliases {
-		if a != "" && strings.ToUpper(a) == upper {
-			matches++
-		}
-	}
-	for _, ac := range sq.aggCols {
-		if ac.outName != "" && strings.ToUpper(ac.outName) == upper {
-			matches++
-		}
-	}
+	_, matches = selectOutputAliasPosition(rawExpr, orderByOutputAliasNames(sq, resolver))
 	return true, matches
 }
 
-// isBareIdentifierExpr reports whether the expression is exactly a
-// single-segment column reference — descending only single-child wrapper
-// nodes to the atom (typed nodes, never text).
-func isBareIdentifierExpr(e antlrgen.IExpressionContext) bool {
-	var n antlr.Tree = e
-	for n != nil {
-		if c, ok := n.(*antlrgen.FullColumnNameExpressionAtomContext); ok {
-			return len(c.FullColumnName().FullId().AllUid()) == 1
-		}
-		if n.GetChildCount() != 1 {
-			return false
-		}
-		n = n.GetChild(0)
+// orderByOutputAliasNames preserves SQL identifier qualification, not result
+// labels. Named sources qualify inherited attributes; unnamed sources do not.
+// Grouped pull-up clears qualifiers from its visible output expressions.
+func orderByOutputAliasNames(sq *selectQuery, resolver *expr.Resolver) []string {
+	if sq.postSortSQLNames != nil {
+		return sq.postSortSQLNames
 	}
-	return false
+	if sq.countStar || len(sq.aggCols) > 0 {
+		var names []string
+		for _, ac := range visibleAggregateOutputColumns(sq.aggCols, sq.countStar, sq.countStarAlias) {
+			names = append(names, aggregateOutputSQLName(ac))
+		}
+		return names
+	}
+	names := make([]string, len(sq.selectSlots))
+	for i, slot := range sq.selectSlots {
+		if slot.column != nil {
+			if slot.column.sqlUnqualified {
+				names[i] = slot.column.bare
+			}
+			continue
+		}
+		selected, authored := slot.element.(*antlrgen.SelectExpressionElementContext)
+		if !authored {
+			continue
+		}
+		if slot.alias != "" {
+			names[i] = slot.alias
+			continue
+		}
+		name, qualifier, qualified, segments := splitColumnRef(selected.Expression())
+		if len(segments) == 0 || resolver == nil || resolver.Scope() == nil {
+			continue
+		}
+		column, source, nested, err := resolver.Scope().ResolvePathNested(colRefIdentifiers(name, qualifier, qualified, segments))
+		if err == nil && len(nested) == 0 && (source.UnqualifiedOutput || column.UnqualifiedOutput) {
+			names[i] = column.Id.Name()
+		}
+	}
+	return names
 }
 
 // resolveColumnRefStructural resolves a column reference from its
@@ -3596,23 +3784,108 @@ func installFirstWherePredicate(op logical.LogicalOperator, pred predicates.Quer
 // are stored in LogicalProject.ProjectedValues; failed slots remain nil
 // (the Cascades translator treats nil as "plain column reference" when
 // the text isn't a computed expression, or "cannot translate" otherwise).
-func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource, subqPlanner *existsSubqueryPlanner) error {
+func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, templateName string, cteScopes map[string]semantic.ScopeSource, subqPlanner *existsSubqueryPlanner) error {
 	var clause *subqueryClause
 	if subqPlanner != nil {
 		clause = subqPlanner.newClause()
+		// An aggregate block's select list resolves against its unnamed view,
+		// so a subquery in it has that view as its outer query. The planner
+		// is shared with the WHERE, which resolves against the FROM scope.
+		if selectIsAggregate(sq) {
+			if r := buildProjectionResolverWithCTEScopes(sq, md, templateName, cteScopes); r != nil {
+				whereOuter := subqPlanner.outerScope
+				subqPlanner.outerScope = r.Scope()
+				defer func() { subqPlanner.outerScope = whereOuter }()
+			}
+		}
 	}
-	if err := resolveProjectionValues(op, sq, md, schemaName, cteScopes, clause); err != nil {
+	if err := resolveProjectionValues(op, sq, md, templateName, cteScopes, clause); err != nil {
 		return err
 	}
 	if err := validateSelectOutputNames(sq); err != nil {
 		return err
 	}
 	publishInheritedProjectionNames(findProjection(op), sq)
+	if err := recordProjectionNameAuthorship(findProjection(op), sq, md, templateName, cteScopes); err != nil {
+		return err
+	}
 	if clause != nil {
 		if proj := findProjection(op); proj != nil {
 			return clause.admitValues(proj.ProjectedValues)
 		}
 	}
+	return nil
+}
+
+// recordProjectionNameAuthorship states, per output slot, whether the name the
+// slot publishes was written by the statement (LogicalProject.SQLNameAuthored):
+// an explicit `AS`; an un-aliased reference to a column whose own name was,
+// read from the column the reference resolves to (semantic.Column.SQLAuthored);
+// or a star-expanded column that is. A descriptor column, a struct field below
+// one, and a computed item without `AS` are not, so a derived table or CTE
+// over them keeps the relaxed pass for them.
+//
+// Every slot is recorded. The parsed output items and the projection's slots
+// are one list, so a width disagreement is a builder invariant broken, refused
+// rather than left unrecorded: an unrecorded slot reads as not authored, the
+// Go-only fold, which would answer a spelling Java refuses.
+func recordProjectionNameAuthorship(proj *logical.LogicalProject, sq *selectQuery, md *recordlayer.RecordMetaData, templateName string, cteScopes map[string]semantic.ScopeSource) error {
+	if proj == nil || sq == nil {
+		return nil
+	}
+	var resolver *expr.Resolver
+	resolvesAuthored := func(bare, qualifier string, qualified bool, segs []string) bool {
+		if bare == "" {
+			return false
+		}
+		if resolver == nil {
+			if resolver = buildProjectionResolverWithCTEScopes(sq, md, templateName, cteScopes); resolver == nil {
+				return false
+			}
+		}
+		column, _, nested, err := resolver.Scope().ResolvePathNested(colRefIdentifiers(bare, qualifier, qualified, segs))
+		return err == nil && len(nested) == 0 && column.SQLAuthored
+	}
+	authored := make([]bool, len(proj.Projections))
+	if sq.countStar || len(sq.aggCols) > 0 {
+		outputs := sq.postAggSlotCols
+		if len(outputs) != len(authored) {
+			return api.NewErrorf(api.ErrCodeInternalError,
+				"projection name provenance: %d aggregate outputs for %d slots", len(outputs), len(authored))
+		}
+		for i, ac := range outputs {
+			switch {
+			case ac.outputAliased:
+				authored[i] = ac.outName != ""
+			case ac.groupCol != "" && ac.aggFunc == "" && ac.outExpr == nil:
+				authored[i] = resolvesAuthored(ac.groupColBare, ac.groupColQualifier, ac.groupColQualified, ac.groupColSegs)
+			}
+		}
+		proj.SQLNameAuthored = authored
+		return nil
+	}
+	if len(sq.projCols) != len(authored) {
+		return api.NewErrorf(api.ErrCodeInternalError,
+			"projection name provenance: %d output items for %d slots", len(sq.projCols), len(authored))
+	}
+	for i, col := range sq.projCols {
+		switch {
+		case col.star:
+		case col.bound != nil:
+			authored[i] = col.sqlAuthored
+		case i < len(sq.projAliases) && sq.projAliases[i] != "":
+			authored[i] = true
+		case i < len(sq.projExprs) && sq.projExprs[i] != nil:
+			// An un-aliased expression item: only a bare column reference
+			// inherits a name (splitColumnRef walks the typed tree).
+			if bare, qualifier, qualified, segs := splitColumnRef(sq.projExprs[i]); len(segs) > 0 {
+				authored[i] = resolvesAuthored(bare, qualifier, qualified, segs)
+			}
+		default:
+			authored[i] = resolvesAuthored(col.bare, col.qualifier, col.qualified, col.segs)
+		}
+	}
+	proj.SQLNameAuthored = authored
 	return nil
 }
 
@@ -3701,7 +3974,7 @@ func validateSelectOutputNames(sq *selectQuery) error {
 	return nil
 }
 
-func resolveProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource, subqPlanner *subqueryClause) error {
+func resolveProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, templateName string, cteScopes map[string]semantic.ScopeSource, subqPlanner *subqueryClause) error {
 	proj := findProjection(op)
 	if proj == nil {
 		return nil
@@ -3709,7 +3982,7 @@ func resolveProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 	// Post-aggregation projections: walk through the Resolver using base
 	// table scope, then rewrite AggregateValues to FieldValue references.
 	if len(sq.postAggExprs) > 0 {
-		resolver := buildProjectionResolverWithCTEScopes(sq, md, schemaName, cteScopes)
+		resolver := buildProjectionResolverWithCTEScopes(sq, md, templateName, cteScopes)
 		if resolver == nil {
 			return nil
 		}
@@ -3789,7 +4062,7 @@ func resolveProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 	if len(exprs) == 0 {
 		return nil
 	}
-	resolver := buildProjectionResolverWithCTEScopes(sq, md, schemaName, cteScopes)
+	resolver := buildProjectionResolverWithCTEScopes(sq, md, templateName, cteScopes)
 	if resolver == nil {
 		return nil
 	}
@@ -4046,7 +4319,7 @@ func validateAggCallProvenance(agg *logical.LogicalAggregate, aggCols []aggSelec
 	return nil
 }
 
-func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) error {
+func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, templateName string, cteScopes map[string]semantic.ScopeSource) error {
 	agg := findAggregate(op)
 	if agg == nil {
 		return nil
@@ -4063,7 +4336,7 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 	if err := validateAggCallProvenance(agg, sq.aggCols); err != nil {
 		return err
 	}
-	resolver := buildProjectionResolverWithCTEScopes(sq, md, schemaName, cteScopes)
+	resolver := buildProjectionResolverWithCTEScopes(sq, md, templateName, cteScopes)
 	if resolver == nil {
 		return nil
 	}
@@ -4118,7 +4391,8 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 				bareArg = ac.aggArg
 			}
 			qv, rerr := resolver.ResolveIdentifierPath(
-				colRefIdentifiers(bareArg, ac.aggArgQualifier, ac.aggArgQualified, ac.aggArgSegs))
+				colRefIdentifiers(bareArg, ac.aggArgQualifier, ac.aggArgQualified, ac.aggArgSegs),
+			)
 			if rerr != nil || qv == nil {
 				var unresArg *expr.UnresolvableOrdinalError
 				if errors.As(rerr, &unresArg) {
@@ -4154,6 +4428,11 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 	keyValues := make([]values.Value, len(agg.GroupKeys))
 	filled := false
 	for i := range agg.GroupKeys {
+		if agg.GroupKeys[i].Value != nil {
+			keyValues[i] = agg.GroupKeys[i].Value
+			filled = true
+			continue
+		}
 		if i < len(sq.groupBy) && sq.groupBy[i].expr != nil {
 			v, err := resolver.WalkExpressionForProjection(sq.groupBy[i].expr)
 			if err != nil {
@@ -4327,7 +4606,29 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 			}
 		}
 	}
-	return groupByOutputConstructionPullUp(agg)
+	if err := groupByOutputConstructionPullUp(agg); err != nil {
+		return err
+	}
+	// Expanded attributes already have source identity. Validate that identity
+	// against the resolved grouping values; a same-named key of another source
+	// cannot make the attribute composable above the aggregate.
+	for _, ac := range sq.aggCols {
+		if ac.groupColValue == nil || !ac.visible {
+			continue
+		}
+		grouped := false
+		for _, key := range agg.GroupKeys {
+			if key.Value != nil && groupKeysPullUpEqual(ac.groupColValue, key.Value) {
+				grouped = true
+				break
+			}
+		}
+		if !grouped {
+			return api.NewErrorf(api.ErrCodeGroupingError,
+				"column %q must appear in the GROUP BY clause or be used in an aggregate function", ac.groupCol)
+		}
+	}
+	return nil
 }
 
 // groupByOutputConstructionPullUp is Java's group-by OUTPUT construction guard,
@@ -4400,12 +4701,12 @@ func groupKeysPullUpEqual(a, b values.Value) bool {
 		values.SemanticEqualsUnderAliasMap(a, b, values.EmptyAliasMap())
 }
 
-func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource, subqPlanner *existsSubqueryPlanner) error {
+func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, templateName string, cteScopes map[string]semantic.ScopeSource, subqPlanner *existsSubqueryPlanner) error {
 	agg := findAggregate(op)
 	if agg == nil || sq.havingExpr == nil {
 		return nil
 	}
-	resolver := buildProjectionResolverWithCTEScopes(sq, md, schemaName, cteScopes)
+	resolver := buildProjectionResolverWithCTEScopes(sq, md, templateName, cteScopes)
 	if resolver == nil {
 		return nil
 	}
@@ -4417,6 +4718,9 @@ func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *rec
 		havingOwner.subqueries = nil
 		havingOwner.scalarSubqueries = nil
 		havingOwner.correlatedScalarSubqueries = nil
+		// A HAVING subquery's outer query is the one its HAVING resolves
+		// against: the aggregate block's unnamed view.
+		havingOwner.outerScope = resolver.Scope()
 		clause = havingOwner.newClause()
 		resolver.SetSubqueryPlanner(clause)
 	}
@@ -4436,6 +4740,24 @@ func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *rec
 		var unres *expr.UnresolvableOrdinalError
 		if errors.As(err, &unres) {
 			return unres
+		}
+		// A reference that names nothing is the user's statement, not a
+		// planning limit: 42703, as Java's resolveIdentifier answers
+		// (`HAVING nosuch = 1`, measured).
+		var noColumn *semantic.ColumnNotFoundError
+		var noSource *semantic.SourceNotFoundError
+		if errors.As(err, &noColumn) || errors.As(err, &noSource) {
+			return mapPredicateWalkError(err)
+		}
+		// So is a refusal the walk returns as an api.Error of SQLSTATE class
+		// 42 (a syntax or access-rule violation): the walker's own operand
+		// type check (`HAVING f = 'a'`, 42804 in both engines, measured) and
+		// a subquery visitor's (an EXISTS body's ambiguous outer reference,
+		// 42702, as in Java, which resolves the subquery before it refuses a
+		// HAVING EXISTS; measured).
+		var nested *api.Error
+		if errors.As(err, &nested) && nested.Code.Class() == "42" {
+			return nested
 		}
 		return nil
 	}
@@ -4519,11 +4841,7 @@ func rewriteAggregateValuesInTree(v values.Value, agg *logical.LogicalAggregate)
 		return rewriteAggregateValue(v, agg)
 	}
 	if av, ok := v.(*values.ArithmeticValue); ok {
-		return &values.ArithmeticValue{
-			Op:    av.Op,
-			Left:  rewriteAggregateValuesInTree(av.Left, agg),
-			Right: rewriteAggregateValuesInTree(av.Right, agg),
-		}
+		return av.WithOperands(rewriteAggregateValuesInTree(av.Left, agg), rewriteAggregateValuesInTree(av.Right, agg))
 	}
 	if sf, ok := v.(*values.ScalarFunctionValue); ok {
 		args := make([]values.Value, len(sf.Args))
@@ -4703,6 +5021,13 @@ func validatePostAggregateValueDraft(v values.Value, agg *logical.LogicalAggrega
 			// its leaves are source-row implementation detail.
 			return false
 		}
+		if agg.CorrelatedOnlyToOuter(node) {
+			// An enclosing block's value (`w.f`, an AT ordinal) is constant
+			// across the aggregated rows: composable as it stands, the
+			// constantCorrelations arm of Java's isComposableFrom
+			// (SemanticAnalyzer.java:981). It reads no aggregate slot.
+			return false
+		}
 		if _, isField := values.AsFieldValue(node); isField {
 			// This is an ORIGINAL resolver reference: replacement roots are
 			// not revisited by values.Replace. If it was neither consumed as
@@ -4711,8 +5036,8 @@ func validatePostAggregateValueDraft(v values.Value, agg *logical.LogicalAggrega
 			// private aggregate row. Even an ordinal that happens to fall
 			// within nativeWidth would be a coincidental, silently wrong
 			// reinterpretation.
-			bindErr = api.NewError(api.ErrCodeUnsupportedQuery,
-				"post-aggregate expression references a field outside the aggregate output contract")
+			bindErr = api.NewErrorf(api.ErrCodeGroupingError,
+				"Invalid reference to non-grouping expression %s", values.ExplainValue(node))
 			return false
 		}
 		return true
@@ -4818,6 +5143,88 @@ func rewriteAggregateValue(v values.Value, agg *logical.LogicalAggregate) values
 	return v
 }
 
+// aggregateOuterCorrelations is Java's plan-fragment outer correlations for an
+// aggregate block over input, enclosed by enclosing (enclosingCorrelations).
+func aggregateOuterCorrelations(enclosing *semantic.Scope, input logical.LogicalOperator) map[values.CorrelationIdentifier]struct{} {
+	return enclosingCorrelations(enclosing, innerSourceAliases(input))
+}
+
+// enclosingCorrelations is the runtime correlation of every source an
+// enclosing block binds — the identity the resolver stamps on a parent-scope
+// reference (expr.Resolver.resolveScopedColumn: CorrelationName, else the
+// alias). A correlation in local (UPPER names the block's own FROM binds) is
+// left out, so a shadowing local source is never read as an outer one.
+func enclosingCorrelations(enclosing *semantic.Scope, local map[string]struct{}) map[values.CorrelationIdentifier]struct{} {
+	var out map[values.CorrelationIdentifier]struct{}
+	for _, src := range enclosing.AllSourcesRecursive() {
+		name := scopeSourceCorrelation(src)
+		if name == "" {
+			continue
+		}
+		if _, shadowed := local[strings.ToUpper(name)]; shadowed {
+			continue
+		}
+		if out == nil {
+			out = map[values.CorrelationIdentifier]struct{}{}
+		}
+		out[values.NamedCorrelationIdentifier(name)] = struct{}{}
+	}
+	return out
+}
+
+func scopeSourceCorrelation(src semantic.ScopeSource) string {
+	if src.CorrelationName != "" {
+		return src.CorrelationName
+	}
+	return src.Alias.Name()
+}
+
+// outerColumnRefFilter answers, per column reference, whether it resolves to
+// an ENCLOSING block's source. Such a reference is constant across the
+// block's aggregated rows — composable from the aggregate output as it stands,
+// the constantCorrelations arm of Java's SemanticAnalyzer.isComposableFrom —
+// so the name-based coverage checks must not judge it: compared by bare name
+// against the block's own fields, `w.f` read as ungrouped because the local h
+// also declares F, and `w.g` as undefined (42703) because it does not. The
+// decision is the resolver's: the reference resolves in the block's own scope
+// and is classified by its correlations. A reference that does not resolve is
+// not claimed, so it keeps the coverage checks' verdict.
+func outerColumnRefFilter(sq *selectQuery, resolver *expr.Resolver) func(antlrgen.IFullIdContext) bool {
+	isOuter := outerColumnSegsFilter(sq, resolver)
+	if isOuter == nil {
+		return nil
+	}
+	return func(id antlrgen.IFullIdContext) bool {
+		return id != nil && isOuter(fullIDSegments(id))
+	}
+}
+
+// outerColumnSegsFilter is outerColumnRefFilter over a reference's parse-tree
+// segments, for a select-list column the parser kept as segments rather than
+// as its FullId.
+func outerColumnSegsFilter(sq *selectQuery, resolver *expr.Resolver) func(segs []string) bool {
+	if sq == nil || resolver == nil || sq.enclosingScope == nil {
+		return nil
+	}
+	local := map[string]struct{}{}
+	for _, src := range resolver.Scope().Sources() {
+		if name := scopeSourceCorrelation(src); name != "" {
+			local[strings.ToUpper(name)] = struct{}{}
+		}
+	}
+	outer := enclosingCorrelations(sq.enclosingScope, local)
+	if len(outer) == 0 {
+		return nil
+	}
+	return func(segs []string) bool {
+		if len(segs) == 0 {
+			return false
+		}
+		v, err := resolver.ResolveIdentifierPath(colRefIdentifiers("", "", false, segs))
+		return err == nil && logical.CorrelatedOnlyTo(v, outer)
+	}
+}
+
 func findAggregate(op logical.LogicalOperator) *logical.LogicalAggregate {
 	for cur := op; cur != nil; {
 		if a, ok := cur.(*logical.LogicalAggregate); ok {
@@ -4846,7 +5253,8 @@ func findProjection(op logical.LogicalOperator) *logical.LogicalProject {
 	return nil
 }
 
-func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) error {
+func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData, resolver *expr.Resolver) error {
+	isOuter := outerColumnRefFilter(sq, resolver)
 	// RFC-141 §8 safety guard: GROUP BY on an EXISTS expression (e.g. `GROUP BY
 	// id, EXISTS(...)` where the EXISTS column is the grouping key) cannot be
 	// folded — the aggregate path has no SubqueryPlanner, so the existential
@@ -5018,7 +5426,7 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 				groupByColumns[strings.ToUpper(gb.bare)] = true
 			}
 		}
-		for _, ref := range harvestBareColumnRefsOutsideSubqueries(sq.havingExpr) {
+		for _, ref := range harvestLocalBareColumnRefsOutsideSubqueries(sq.havingExpr, isOuter) {
 			bare := strings.ToUpper(ref)
 			if groupByColumns[bare] {
 				continue
@@ -5053,10 +5461,10 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 			if ob.pos > 0 || ob.rawExpr == nil {
 				continue
 			}
-			if bare, n := orderByOutputAliasBinding(ob.rawExpr, ob.colName, sq); bare && n == 1 {
+			if bare, n := orderByOutputAliasBinding(ob.rawExpr, sq, nil); bare && n == 1 {
 				continue
 			}
-			for _, ref := range harvestBareColumnRefsOutsideSubqueries(ob.rawExpr) {
+			for _, ref := range harvestLocalBareColumnRefsOutsideSubqueries(ob.rawExpr, isOuter) {
 				bare := strings.ToUpper(ref)
 				if groupByColumns[bare] {
 					continue
@@ -5090,7 +5498,7 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 				// aggregate calls and verify each is in GROUP BY.
 				// Expressions that are purely constant or only reference
 				// aggregate results are fine.
-				refs := harvestColumnRefs(ac.outExpr)
+				refs := harvestLocalColumnRefs(ac.outExpr, isOuter)
 				for _, ref := range refs {
 					if err := checkColumn(ref); err != nil {
 						return err
@@ -5123,8 +5531,11 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 	return nil
 }
 
-func buildProjectionResolverWithCTEScopes(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) *expr.Resolver {
-	return buildSelectScope(sq, md, schemaName, cteScopes)
+// buildProjectionResolverWithCTEScopes is the resolver for the clauses after the
+// WHERE: the select list, aggregate operands, HAVING and sort keys. An aggregate
+// block resolves them through its unnamed view (aggregateClauseResolver).
+func buildProjectionResolverWithCTEScopes(sq *selectQuery, md *recordlayer.RecordMetaData, templateName string, cteScopes map[string]semantic.ScopeSource) *expr.Resolver {
+	return aggregateClauseResolver(buildSelectScope(sq, md, templateName, cteScopes), sq, md)
 }
 
 // buildLogicalPlanForDeleteWithCatalog is the catalog-aware variant
@@ -5135,7 +5546,7 @@ func buildProjectionResolverWithCTEScopes(sq *selectQuery, md *recordlayer.Recor
 func buildLogicalPlanForDeleteWithCatalog(
 	del antlrgen.IDeleteStatementContext,
 	md *recordlayer.RecordMetaData,
-	schemaName string,
+	templateName string,
 ) (logical.LogicalOperator, error) {
 	// DELETE … LIMIT is rejected — Java rejects it too (QueryVisitor.visitDeleteStatement:
 	// Assert ctx.limitClause()==null, "limit is not supported"), so this is conformant
@@ -5155,17 +5566,19 @@ func buildLogicalPlanForDeleteWithCatalog(
 	if op == nil || md == nil || del == nil {
 		return op, nil
 	}
-	tableName := ""
+	var tablePath []string
 	if tn := del.TableName(); tn != nil && tn.FullId() != nil {
-		tableName = functions.FullIdToName(tn.FullId())
+		tablePath = fullIDSegments(tn.FullId())
 	}
-	// Validate the schema qualifier (if any) BEFORE classifying WHERE-column errors: a bad
-	// qualifier's 42F00 (Unknown database) must take precedence over a WHERE-column 42703
-	// when the bare table happens to exist in the active schema. For a valid/absent
-	// qualifier this strips to the bare name used below. (Missing-but-valid-qualifier target
-	// tables are caught with 42F01 in planDML after resolveQualifiedTableNames.)
+	tableName := strings.Join(tablePath, ".")
+	// Resolve the target's qualifier (if any) BEFORE classifying WHERE-column errors, as
+	// Java's getTable runs before the WHERE is visited: a qualifier other than the schema
+	// template's name is 42F00 "Unknown schema template", which takes precedence over a
+	// WHERE-column 42703. A valid or absent qualifier strips to the bare name used below.
+	// (A target table that does not exist is 42F01 in planDML after
+	// resolveQualifiedTableNames.)
 	if tableName != "" {
-		resolved, qErr := functions.ResolveQualifiedTableName(tableName, schemaName)
+		resolved, qErr := functions.ResolveTargetTablePath(tablePath, templateName)
 		if qErr != nil {
 			return nil, qErr
 		}
@@ -5176,20 +5589,19 @@ func buildLogicalPlanForDeleteWithCatalog(
 		return op, nil
 	}
 	// A DML statement runs inside a single schema's store, so the record
-	// type is the bare name; strip any schema qualifier before resolving
-	// and aliasing the predicate, so refs bind to the resolved scan
-	// (which resolveQualifiedTableNames also reduces to the bare name).
-	bare := bareTableName(tableName)
+	// type is the bare name, which the resolution above left in tableName
+	// (resolveQualifiedTableNames reduces the scan to the same name).
+	bare := tableName
 	// Prefer the subquery-aware path so DELETE … WHERE EXISTS(…) plans
 	// through Cascades; fall back to the plain predicate builder. A carried
 	// SQLSTATE from a WHERE-EXISTS subquery plan failure (RFC-142: AT-on-a-table
 	// → WRONG_OBJECT_TYPE) is surfaced rather than masked by the text fallback.
-	if ok, carried := upgradeDMLWhereWithCatalog(op, md, bare, w, schemaName); ok {
+	if ok, carried := upgradeDMLWhereWithCatalog(op, md, bare, tablePath, w, templateName); ok {
 		return op, nil
 	} else if carried != nil {
 		return nil, carried
 	}
-	pred, ok, werr := buildWherePredicateForTableE(md, bare, bare, w)
+	pred, ok, werr := buildWherePredicateForTableE(md, bare, bare, []string{bare}, w)
 	if werr != nil {
 		// e.g. 42804 from a bare non-boolean DELETE WHERE — surface it, don't
 		// mask it as a generic DML translation error (RFC-146).
@@ -5225,14 +5637,15 @@ func recordTypeCI(md *recordlayer.RecordMetaData, name string) *recordlayer.Reco
 	return nil
 }
 
-// bareTableName strips a leading schema qualifier ("s1.T" → "T"). Used so
-// DML predicate resolution and correlation aliases match the resolved
-// (bare) scan name.
-func bareTableName(name string) string {
-	if dot := strings.LastIndexByte(name, '.'); dot >= 0 {
-		return name[dot+1:]
+// insertTargetTable is an INSERT's target record type name before
+// resolveQualifiedTableNames runs: the last of its parse-time segments, so a
+// quoted name holding a dot stays whole. An INSERT without segments has none
+// to name (resolveQualifiedTableNames refuses it).
+func insertTargetTable(op *logical.LogicalInsert) string {
+	if len(op.TablePath) == 0 {
+		return ""
 	}
-	return name
+	return op.TablePath[len(op.TablePath)-1]
 }
 
 // upgradeDMLWhereWithCatalog upgrades the WHERE filter of a single-table
@@ -5256,32 +5669,37 @@ func upgradeDMLWhereWithCatalog(
 	op logical.LogicalOperator,
 	md *recordlayer.RecordMetaData,
 	tableName string,
+	targetPath []string,
 	whereExpr antlrgen.IWhereExprContext,
-	schemaName string,
+	templateName string,
 ) (ok bool, carried error) {
 	if op == nil || md == nil || whereExpr == nil || whereExpr.Expression() == nil {
 		return false, nil
 	}
-	if schemaName == "" {
-		schemaName = defaultEmbeddedSchema
+	if templateName == "" {
+		templateName = defaultEmbeddedTemplate
 	}
-	sq := &selectQuery{tableName: tableName, tableAlias: tableName, limit: -1}
-	resolver := buildSelectScope(sq, md, schemaName, nil)
+	// tableName is the target already resolved to its bare record type name,
+	// one segment even when it holds a dot; targetPath is the target as the
+	// statement names it, which names the source in the WHERE when it is
+	// qualified (dmlTargetNamePath).
+	sq := &selectQuery{tableName: tableName, tableAlias: tableName, sourceSegments: []string{tableName}, tableNamePath: dmlTargetNamePath(targetPath), limit: -1}
+	resolver := buildSelectScope(sq, md, templateName, nil)
 	if resolver == nil {
 		return false, nil
 	}
-	// schemaName threads onto the EXISTS-subquery planner so a schema-qualified
-	// comma source inside a `DELETE/UPDATE … WHERE EXISTS (SELECT 1 FROM PA AS
-	// main, main.PB AS B)` classifies main.PB as a schema-qualified TABLE against
-	// the ACTIVE schema, not the hardcoded default. RFC-142.
+	// templateName threads onto the EXISTS-subquery planner so a qualified comma
+	// source inside a `DELETE/UPDATE … WHERE EXISTS (SELECT 1 FROM PA AS main,
+	// main.PB AS B)` over a template named `main` classifies main.PB as a
+	// qualified TABLE against that template, not the default. RFC-142.
 	existsPlanner := &existsSubqueryPlanner{
-		bindings:   sq.bindings,
-		md:         md,
-		schemaName: schemaName,
+		bindings:     sq.bindings,
+		md:           md,
+		templateName: templateName,
 		// nil CTE registry: this DML entry point builds its selectQuery from a bare
 		// table name, so there is no enclosing WITH clause whose legs could appear
 		// in the FROM it describes.
-		outerScopes: buildOuterScopeSources(sq, md, schemaName, nil),
+		outerScopes: buildOuterScopeSources(sq, md, templateName, nil),
 	}
 	walked, err := walkSubqueryPredicate(resolver, existsPlanner, whereExpr.Expression())
 	if err != nil || walked == nil {
@@ -5346,7 +5764,7 @@ func upgradeDMLWhereWithCatalog(
 func buildLogicalPlanForUpdateWithCatalog(
 	upd antlrgen.IUpdateStatementContext,
 	md *recordlayer.RecordMetaData,
-	schemaName string,
+	templateName string,
 ) (logical.LogicalOperator, error) {
 	op := buildLogicalPlanForUpdate(upd)
 	if op == nil || md == nil || upd == nil {
@@ -5356,27 +5774,29 @@ func buildLogicalPlanForUpdateWithCatalog(
 	if !ok {
 		return op, nil
 	}
-	tableName := ""
+	var tablePath []string
 	if tn := upd.TableName(); tn != nil && tn.FullId() != nil {
-		tableName = functions.FullIdToName(tn.FullId())
+		tablePath = fullIDSegments(tn.FullId())
 	}
+	tableName := strings.Join(tablePath, ".")
 	if tableName == "" {
 		return op, nil
 	}
-	// Validate the schema qualifier (if any) BEFORE the SET-column / WHERE classification: a
-	// bad qualifier's 42F00 must take precedence over a 42703/42F01 when the bare table
-	// exists in the active schema. Valid/absent qualifier → strips to the bare name.
-	resolved, qErr := functions.ResolveQualifiedTableName(tableName, schemaName)
+	// Resolve the target's qualifier (if any) BEFORE the WHERE and the SET list, as Java's
+	// getTable does: a qualifier other than the schema template's name is 42F00 "Unknown
+	// schema template", which takes precedence over a 42703/42F01. A valid or absent
+	// qualifier strips to the bare name.
+	resolved, qErr := functions.ResolveTargetTablePath(tablePath, templateName)
 	if qErr != nil {
 		return nil, qErr
 	}
 	tableName = resolved
-	bare := bareTableName(tableName)
+	bare := tableName
 
 	// Resolve the target type STRICTLY, the same way planDML's 42F01 guard does.
 	// (Missing target tables are rejected with 42F01 in planDML after
-	// resolveQualifiedTableNames; rt stays nil here for a missing/qualified target
-	// and the SET check below is then skipped.)
+	// resolveQualifiedTableNames; rt stays nil here for a missing target and the
+	// SET column resolution below is then skipped.)
 	//
 	// It folded case once, and the ORDER of the two checks made that visible as a
 	// wrong error rather than a lax one: this runs during logical construction,
@@ -5384,87 +5804,27 @@ func buildLogicalPlanForUpdateWithCatalog(
 	// nosuchcol = 'z'` against a table declared `"Customer"` reported
 	// `42703 column "NOSUCHCOL" not found in table "CUSTOMER"` -- diagnosing a
 	// column of a table that does not exist -- instead of 42F01. Strict here means
-	// rt is nil for that target and the SET check declines, leaving the 42F01 to
-	// be the answer.
+	// rt is nil for that target and the SET column resolution declines, leaving
+	// the 42F01 to be the answer.
 	rt := md.GetRecordType(bare)
 
-	// Validate each SET target column exists in the table, mirroring INSERT's
-	// build-time check (insert_cascades.go). Without this, an UPDATE that assigns a
-	// nonexistent column reaches the executor and surfaces a LEAKY raw error
-	// ("executor: update field %q not found in descriptor", no SQLSTATE) instead of
-	// a clean 42703 — the same condition INSERT and SELECT already report as 42703.
-	// The check is case-insensitive (EqualFold over the descriptor field names) so it
-	// is exactly as permissive as the executor's lookup (ByName(lower) →
-	// fieldByNameFold) and never rejects a column the executor would accept. rt may be
-	// nil for a schema-qualified target (validated downstream); skip the check then.
-	if rt != nil && rt.Descriptor != nil {
-		fields := rt.Descriptor.Fields()
-		for _, set := range updOp.Sets {
-			found := false
-			for i := 0; i < fields.Len(); i++ {
-				if strings.EqualFold(string(fields.Get(i).Name()), set.Column) {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
-					"column %q not found in table %q", set.Column, bare)
-			}
-		}
-	}
-
-	// Resolve each SET RHS expression to a real Value against the target
-	// table (e.g. `price / 2` → Divide(FieldValue(PRICE), 2)) so the
-	// executor evaluates it per row instead of choking on raw text. The
-	// iteration mirrors buildLogicalPlanForUpdate's append order/skip.
-	if resolver := buildSelectScope(&selectQuery{tableName: bare, tableAlias: bare, limit: -1}, md, schemaName, nil); resolver != nil {
-		idx := 0
-		for _, el := range upd.AllUpdatedElement() {
-			if el == nil || el.FullColumnName() == nil || el.Expression() == nil {
-				continue
-			}
-			if idx < len(updOp.Sets) {
-				// A STRUCT target takes the same target-type push-down the
-				// INSERT path uses, so `SET s = (100, 100)` acquires the
-				// column's field names and types instead of dying as an
-				// untyped multi-element record constructor. Java reaches the
-				// same typed result from the other side — it builds an
-				// ANONYMOUS record here (visitUpdatedElement,
-				// ExpressionVisitor.java:1085-1090, with no target type in
-				// state) and coerces it into the target descriptor when the
-				// transform is applied (MessageHelpers.deepCopyMessageIfNeeded,
-				// keyed by field number = position). Pushing the type down is
-				// the same information applied earlier, and it is what lets a
-				// mistyped literal fail at plan time rather than at write.
-				var v values.Value
-				var err error
-				if fd := structSetTargetField(rt, updOp.Sets[idx].Column); fd != nil {
-					v, err = parseUpdateSetValue(fd, el.Expression(), resolver)
-					if err != nil {
-						return nil, err
-					}
-				} else {
-					v, err = resolver.WalkExpression(el.Expression())
-				}
-				if err == nil && v != nil {
-					updOp.Sets[idx].Value = v
-				}
-			}
-			idx++
-		}
-	}
-
+	// The WHERE first: Java's QueryVisitor visits an UPDATE's WHERE before its
+	// SET list (visitUpdateStatement), so a fault either WHERE builder below
+	// reports is the statement's answer over a SET one (measured: `SET f = 1,
+	// f = 2 WHERE nosuch = 1` is 42703, not the duplicate's XXXXX). A WHERE
+	// both builders decline without an error stays text and is resolved when
+	// the plan is translated, after the SET list.
+	//
 	// Upgrade the WHERE filter with EXISTS/scalar subquery support; fall
 	// back to the plain predicate builder. No WHERE → UPDATE all rows. A carried
 	// SQLSTATE from a WHERE-EXISTS subquery plan failure (RFC-142: AT-on-a-table
 	// → WRONG_OBJECT_TYPE) is surfaced rather than masked by the text fallback.
 	if w := upd.WhereExpr(); w != nil {
-		if ok, carried := upgradeDMLWhereWithCatalog(op, md, bare, w, schemaName); !ok {
+		if ok, carried := upgradeDMLWhereWithCatalog(op, md, bare, tablePath, w, templateName); !ok {
 			if carried != nil {
 				return nil, carried
 			}
-			pred, ok, werr := buildWherePredicateForTableE(md, bare, bare, w)
+			pred, ok, werr := buildWherePredicateForTableE(md, bare, bare, []string{bare}, w)
 			if werr != nil {
 				// e.g. 42804 from a bare non-boolean UPDATE WHERE — surface it.
 				return nil, werr
@@ -5476,6 +5836,107 @@ func buildLogicalPlanForUpdateWithCatalog(
 			}
 		}
 	}
+	// Each SET element in order, its column and then its value, as Java's
+	// QueryVisitor visits them (visitUpdatedElement per element), so the first
+	// element's fault is the statement's answer.
+	//
+	// The column is resolved once to the target field it names
+	// (resolveUpdateColumn): the ordinals are what the SET value's type
+	// push-down, the plan's promotion check and the executor address the
+	// field by, as Java's transformation trie is keyed by the resolved
+	// ordinals; nothing looks the name up again. rt is nil only for a target
+	// that does not exist, which planDML answers 42F01.
+	//
+	// The value is resolved to a real Value against the target table (e.g.
+	// `price / 2` → Divide(FieldValue(PRICE), 2)) so the executor evaluates it
+	// per row. A resolution failure that mapPredicateWalkError maps is the
+	// statement's answer (measured against Java for a column that does not
+	// exist, 42703); one it does not map (a shape the resolver declines)
+	// leaves the value unresolved, which the translator refuses. Neither is
+	// resolved for a target that does not exist (rt nil): Java's getTable
+	// refuses the table before any element is visited, and the value's scope
+	// finds a table by its folded name, so resolving it would answer a column
+	// of a table the statement cannot name; planDML's 42F01 is the answer. (The
+	// WHERE, resolved above through the same folding scope, still answers its
+	// own 42703 for such a target, as a SELECT's does: the agreement
+	// unquoted_dml_against_a_quoted_table.yaml pins and RFC-238 section 7e
+	// books.) The iteration mirrors buildLogicalPlanForUpdate's append order and
+	// skip.
+	resolver := buildSelectScope(&selectQuery{tableName: bare, tableAlias: bare, sourceSegments: []string{bare}, tableNamePath: dmlTargetNamePath(tablePath), limit: -1}, md, templateName, nil)
+	idx := 0
+	for _, el := range upd.AllUpdatedElement() {
+		if el == nil || el.FullColumnName() == nil || el.Expression() == nil {
+			continue
+		}
+		if idx >= len(updOp.Sets) {
+			break
+		}
+		set := &updOp.Sets[idx]
+		idx++
+		if rt != nil && rt.Descriptor != nil {
+			name := dmlTargetNamePath(tablePath)
+			if name == nil {
+				name = []string{bare}
+			}
+			ordinals, names, hits := resolveUpdateColumn(rt.Descriptor, name, set.Segments)
+			switch {
+			case hits == 0:
+				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+					"column %q not found in table %q", set.Column, bare)
+			case hits > 1:
+				return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+					"Ambiguous reference %s", set.Column)
+			}
+			set.FieldOrdinals, set.FieldNames = ordinals, names
+		}
+		if resolver == nil || rt == nil {
+			continue
+		}
+		// A STRUCT target takes the same target-type push-down the INSERT
+		// path uses, so `SET s = (100, 100)` acquires the column's field names
+		// and types instead of dying as an untyped multi-element record
+		// constructor. Java reaches the same typed result from the other side —
+		// it builds an ANONYMOUS record here (visitUpdatedElement,
+		// ExpressionVisitor.java:1085-1090, with no target type in state) and
+		// coerces it into the target descriptor when the transform is applied
+		// (MessageHelpers.deepCopyMessageIfNeeded, keyed by field number =
+		// position). Pushing the type down is the same information applied
+		// earlier, and it is what lets a mistyped literal fail at plan time
+		// rather than at write.
+		var v values.Value
+		var err error
+		if fd := structSetTargetField(rt, set.FieldOrdinals); fd != nil {
+			v, err = parseUpdateSetValue(fd, el.Expression(), resolver)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			v, err = resolver.WalkExpression(el.Expression())
+		}
+		if err != nil {
+			if mapped := mapPredicateWalkError(err); mapped != nil {
+				return nil, mapped
+			}
+			continue
+		}
+		if v != nil {
+			set.Value = v
+		}
+	}
+
+	// One field assigned twice: Java collects the SET elements into an
+	// ImmutableMap keyed by the resolved FieldPath (QueryVisitor), whose
+	// build() refuses a repeated key (IllegalArgumentException, XXXXX). The
+	// FieldPath's equality is its ordinals'.
+	for i := range updOp.Sets {
+		for j := 0; j < i; j++ {
+			if updOp.Sets[i].FieldOrdinals != nil && slices.Equal(updOp.Sets[i].FieldOrdinals, updOp.Sets[j].FieldOrdinals) {
+				return nil, api.NewErrorf(api.ErrCodeUnknown,
+					"Multiple entries with same key: %s", strings.Join(updOp.Sets[i].FieldNames, "."))
+			}
+		}
+	}
+
 	return op, nil
 }
 
@@ -5487,7 +5948,7 @@ func buildLogicalPlanForUpdateWithCatalog(
 func buildLogicalPlanForInsertWithCatalog(
 	ins antlrgen.IInsertStatementContext,
 	md *recordlayer.RecordMetaData,
-	schemaName string,
+	templateName string,
 ) (logical.LogicalOperator, error) {
 	if ins == nil {
 		return nil, nil
@@ -5495,8 +5956,8 @@ func buildLogicalPlanForInsertWithCatalog(
 	if md == nil {
 		return buildLogicalPlanForInsert(ins), nil
 	}
-	if schemaName == "" {
-		schemaName = defaultEmbeddedSchema
+	if templateName == "" {
+		templateName = defaultEmbeddedTemplate
 	}
 	op := buildLogicalPlanForInsert(ins)
 	if op == nil {
@@ -5537,10 +5998,10 @@ func buildLogicalPlanForInsertWithCatalog(
 	// pinning the invariant in code instead of in the comment guards
 	// against future divergence between the text and catalog paths.
 	//
-	// schemaName is the ACTIVE session schema, threaded so a schema-qualified
-	// comma source in the INSERT … SELECT body (`INSERT INTO dst SELECT … FROM
-	// PA AS main, main.PB AS B` in a session whose schema is `main`) classifies
-	// main.PB as the schema-qualified TABLE against the active schema — the same
+	// templateName is the session schema's template name, threaded so a
+	// qualified comma source in the INSERT … SELECT body (`INSERT INTO dst SELECT
+	// … FROM PA AS main, main.PB AS B` over a template named `main`) classifies
+	// main.PB as the qualified TABLE against that template — the same
 	// classification the top-level SELECT path performs. Hardcoding the default
 	// would check it against `s`, leaving a LogicalUnnest the DML path's
 	// resolveQualifiedTableNames cannot repair. RFC-142.
@@ -5550,7 +6011,7 @@ func buildLogicalPlanForInsertWithCatalog(
 	// surfaced — not swallowed into the original (mis-classified unnest) source
 	// the text path produced, which would later fail translation with a generic
 	// "DML Cascades translation failed" instead of the faithful 42809.
-	upgraded, selErr := buildLogicalPlanForSelectWithCatalog(sq, md, schemaName)
+	upgraded, selErr := buildLogicalPlanForSelectWithCatalog(sq, md, templateName)
 	if selErr != nil {
 		return nil, selErr
 	}
@@ -5574,7 +6035,7 @@ func alignInsertSelectColumns(insertOp *logical.LogicalInsert, md *recordlayer.R
 	}
 	targetCols := insertOp.Columns
 	if len(targetCols) == 0 {
-		rt := md.GetRecordType(bareTableName(insertOp.Table))
+		rt := md.GetRecordType(insertTargetTable(insertOp))
 		if rt == nil {
 			return
 		}
@@ -5602,179 +6063,13 @@ func alignInsertSelectColumns(insertOp *logical.LogicalInsert, md *recordlayer.R
 	}
 }
 
-// protoKindToValueType maps a proto field kind to the cascades values.Type used
-// for INSERT promotion checks. Nullability is irrelevant to IsPromotable, so the
-// nullable singletons are returned. Returns nil for kinds outside the numeric
-// promotion core; the caller skips those (the runtime converter handles them).
-func protoKindToValueType(k protoreflect.Kind) values.Type {
-	switch k {
-	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
-		return values.NullableInt
-	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
-		return values.NullableLong
-	case protoreflect.FloatKind:
-		return values.NullableFloat
-	case protoreflect.DoubleKind:
-		return values.NullableDouble
-	}
-	return nil
-}
-
-// checkInsertSelectPromotable rejects an INSERT … SELECT whose projected
-// AGGREGATE-result column cannot be promoted to its target column type — the
-// plan-time, lattice-driven analogue of Java's PromoteValue assignability check.
-// AVG(BIGINT) types DOUBLE (AggregateValue.Type()); DOUBLE→BIGINT has no edge in
-// the promotion lattice, so the INSERT is rejected with SQLSTATE 22000 exactly
-// like Java — and, because the verdict is purely IsPromotable over the
-// structurally-derived type, independent of whether the source produces any rows
-// (the empty-source axis).
-//
-// Every SQL aggregate source now has one final LogicalProject in SELECT-list
-// order. An aggregate-derived slot appears in one of two shapes:
-//   - a COMPUTED expression that CONTAINS an aggregate (e.g. AVG(v)+1) —
-//     flagged by LogicalProject.AggregateSlots (provenance, captured pre-rewrite)
-//     and reliably typed via the value's Type() (the aggregate reference carries
-//     its result type, B′; ArithmeticValue propagates it). Provenance, NOT
-//     type-presence: plain columns are concrete-typed too (ResolveIdentifier).
-//   - a DIRECT aggregate (e.g. SELECT AVG(v)) — its exact projected Value carries
-//     the native aggregate result type. The canonical-name lookup below remains
-//     a defensive fallback for hand-built/legacy logical trees.
-//
-// Plain-column narrowing (LONG→INT, DOUBLE-col→INT) is NOT checked here — it
-// stays deferred to the runtime converter, pending the Java end-state
-// (PromoteValue projection nodes) that dissolves this guard. INSERT … SELECT
-// with an explicit column list is rejected upstream, so the projection maps
-// positionally onto the target record's fields.
-//
-// Scope: covers every SQL-built aggregate and ordinary projected source. A
-// direct hand-built LogicalAggregate has no public SELECT contract and is
-// conservatively outside this SQL-layer check.
-func checkInsertSelectPromotable(insertOp *logical.LogicalInsert, md *recordlayer.RecordMetaData) error {
-	proj := findProjection(insertOp.Source)
-	if proj == nil {
-		return nil
-	}
-	rt := md.GetRecordType(bareTableName(insertOp.Table))
-	if rt == nil {
-		return nil
-	}
-	// Canonical aggregate output name → reliable result type for a legacy or
-	// hand-built Project whose direct aggregate Value was not populated.
-	aggTypes := map[string]values.Type{}
-	if agg := findAggregate(insertOp.Source); agg != nil {
-		for j, call := range agg.Calls {
-			var operand values.Value
-			if j < len(agg.AggregateOperands) {
-				operand = agg.AggregateOperands[j]
-			}
-			if t := aggResultTypeFromFunc(call.Func, operand); t != nil {
-				aggTypes[strings.ToUpper(call.CanonicalName())] = t
-			}
-		}
-	}
-	fields := rt.Descriptor.Fields()
-	for i := 0; i < len(proj.Projections) && i < fields.Len(); i++ {
-		var srcType values.Type
-		if i < len(proj.AggregateSlots) && proj.AggregateSlots[i] &&
-			i < len(proj.ProjectedValues) && proj.ProjectedValues[i] != nil {
-			srcType = proj.ProjectedValues[i].Type()
-		} else if t, ok := aggTypes[strings.ToUpper(proj.Projections[i])]; ok {
-			srcType = t
-		}
-		if srcType == nil || srcType.Code() == values.TypeCodeUnknown {
-			continue
-		}
-		targetType := protoKindToValueType(fields.Get(i).Kind())
-		if targetType == nil {
-			continue
-		}
-		if !values.IsPromotable(srcType, targetType) {
-			return api.NewErrorf(api.ErrCodeCannotConvertType,
-				"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.")
-		}
-	}
-	return nil
-}
-
-// aggResultTypeFromName derives an aggregate's result type from its canonical
-// output function and its resolved operand. It is the defensive fallback for a
-// legacy/hand-built aggregate projection without a ProjectedValue. AVG→DOUBLE
-// and COUNT→LONG are function-determined; SUM/MIN/MAX
-// inherit the operand type. The function prefix is read off the *internal*
-// canonical name (the contract the executor's aggResultName also relies on), not
-// user SQL text. Mirrors AggregateValue.Type() / Java's per-operator resultTypeCode
-// — keep the two in sync until the PromoteValue follow-up (RFC-083) dissolves this
-// function.
-// Divergences from the shared javaAggregateResultCode table, deliberate
-// for METADATA (this function feeds ResultSet column types, not the
-// plan-time gates): COUNT reports NOT NULL (the metadata contract), and
-// an unknown-operand SUM/MIN/MAX falls back to NullableLong rather than
-// Unknown so the column still carries a displayable type.
-func aggResultTypeFromFunc(fn string, operand values.Value) values.Type {
-	switch fn {
-	case "AVG":
-		return values.NullableDouble
-	case "COUNT":
-		return values.NotNullLong
-	case "SUM", "MIN", "MAX":
-		if operand != nil {
-			if t := operand.Type(); t != nil && t.Code() != values.TypeCodeUnknown {
-				return t
-			}
-		}
-		return values.NullableLong
-	}
-	return nil
-}
-
-// buildLogicalPlanForQueryWithCatalog is the catalog-aware variant
-// of buildLogicalPlanForQuery. Recurses into CTE bodies and the
-// query body so WHERE clauses anywhere in the tree pick up the
+// buildLogicalPlanForQueryWithTemplate is the catalog-aware variant of
+// buildLogicalPlanForQuery, for a connection whose schema template is named
+// templateName (the only qualifier its tables take). Recurses into CTE bodies
+// and the query body so WHERE clauses anywhere in the tree pick up the
 // metadata when available. md=nil collapses to the text builder.
-func buildLogicalPlanForQueryWithCatalog(q antlrgen.IQueryContext, md *recordlayer.RecordMetaData) (logical.LogicalOperator, error) {
-	return NewPlanVisitorWithSchema(md, defaultEmbeddedSchema).VisitQuery(q)
-}
-
-// buildLogicalPlanForQueryBodyWithCatalog dispatches simple SELECT
-// vs UNION, threading md through both arms. Mirrors the text
-// builder's QueryTermDefault / SetQuery split.
-func buildLogicalPlanForQueryBodyWithCatalog(
-	body antlrgen.IQueryExpressionBodyContext,
-	md *recordlayer.RecordMetaData,
-) (logical.LogicalOperator, error) {
-	if body == nil {
-		return nil, nil
-	}
-	switch b := body.(type) {
-	case *antlrgen.QueryTermDefaultContext:
-		// A parenthesized query operand — `(SELECT … LIMIT n)` as a UNION
-		// branch — surfaces as a ParenthesisQueryContext. Recurse into the
-		// inner query body so the branch's own clauses (notably LIMIT) are
-		// built and not silently dropped (RFC-128 §4.7). Without this a
-		// parenthesized branch fell through to nil here.
-		if paren, ok := b.QueryTerm().(*antlrgen.ParenthesisQueryContext); ok {
-			if inner := paren.Query(); inner != nil {
-				return buildLogicalPlanForQueryBodyWithCatalog(inner.QueryExpressionBody(), md)
-			}
-			return nil, nil
-		}
-		simpleTable, ok := b.QueryTerm().(*antlrgen.SimpleTableContext)
-		if !ok {
-			return nil, nil
-		}
-		sq, err := extractFromSimpleTable(simpleTable)
-		if err != nil {
-			return nil, err
-		}
-		if fn := findUnsupportedFunctionInSelectQuery(sq); fn != "" {
-			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-				"Unsupported operator "+fn)
-		}
-		return buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedSchema)
-	case *antlrgen.SetQueryContext:
-		return buildLogicalPlanForUnionWithCatalog(b, md)
-	}
-	return nil, nil
+func buildLogicalPlanForQueryWithTemplate(q antlrgen.IQueryContext, md *recordlayer.RecordMetaData, templateName string) (logical.LogicalOperator, error) {
+	return NewPlanVisitorWithTemplate(md, templateName).VisitQuery(q)
 }
 
 func (v *PlanVisitor) buildLogicalPlanForUnion(setQ *antlrgen.SetQueryContext, allowDistinct bool) (logical.LogicalOperator, error) {
@@ -5837,7 +6132,7 @@ func (v *PlanVisitor) buildLogicalPlanForUnion(setQ *antlrgen.SetQueryContext, a
 	}
 	if len(lifted.sortKeys) > 0 {
 		liftedSort := &logical.LogicalSort{Keys: lifted.sortKeys}
-		if err := validateUnionOrderByColumns(liftedSort, inputs[0]); err != nil {
+		if err := validateUnionOrderByColumns(liftedSort, inputs[0], lifted.orderBy, md, &v.cteProducers); err != nil {
 			return nil, err
 		}
 	}
@@ -5856,27 +6151,9 @@ func (v *PlanVisitor) buildLogicalPlanForUnion(setQ *antlrgen.SetQueryContext, a
 // combined result.
 type unionLiftedClauses struct {
 	sortKeys []logical.SortKey
+	orderBy  []orderByClause
 	limit    int64 // <0 means no limit
 	offset   int64
-}
-
-// buildUnionRightBranchStrippingOrderBy builds the right branch of a
-// UNION, stripping any trailing ORDER BY and LIMIT/OFFSET from the
-// simpleTable before building the logical plan. Returns the built
-// plan and the stripped clauses (empty if none). For non-simpleTable
-// right branches (e.g. nested UNION), falls through to the normal
-// builder and returns empty clauses.
-func buildUnionRightBranchStrippingOrderBy(
-	body antlrgen.IQueryExpressionBodyContext,
-	md *recordlayer.RecordMetaData,
-	schemaName string,
-	cteScopes map[string]semantic.ScopeSource,
-	cteOnScopes map[string]semantic.ScopeSource,
-) (logical.LogicalOperator, unionLiftedClauses, error) {
-	visitor := NewPlanVisitorWithSchema(md, schemaName)
-	visitor.cteScopes, visitor.cteOnScopes = maps.Clone(cteScopes), maps.Clone(cteOnScopes)
-	visitor.cteProducers = *cteRegistryFromScopes(cteScopes, cteOnScopes)
-	return visitor.buildUnionRightBranchStrippingOrderBy(body)
 }
 
 func (v *PlanVisitor) visitUnionBranch(body antlrgen.IQueryExpressionBodyContext) (logical.LogicalOperator, error) {
@@ -5905,7 +6182,28 @@ func (v *PlanVisitor) buildUnionRightBranchStrippingOrderBy(body antlrgen.IQuery
 		op, err := v.visitUnionBranch(body)
 		return op, unionLiftedClauses{limit: -1}, err
 	}
-	sq, err := extractFromSimpleTable(simpleTable)
+	// Classify against the same exact source scope as an ordinary SELECT.
+	// Positional ORDER over stars needs its visible width before clauses lift.
+	fs, err := parseFromSource(simpleTable)
+	if err != nil {
+		return nil, unionLiftedClauses{limit: -1}, err
+	}
+	fs.enclosingScope = v.enclosingScope
+	v.assignDerivedSourceBindings(fs)
+	if err := v.prepareDerivedSourceBodies(fs); err != nil {
+		return nil, unionLiftedClauses{limit: -1}, err
+	}
+	var expandStar starExpander
+	if simpleTable.GroupByClause() != nil || hasPositionalOrderBy(simpleTable) || hasMixedSelectStar(simpleTable) {
+		expandStar = starExpanderFor(fs, v.md, v.templateName, v.cteScopes)
+	}
+	cls, err := classifySelectElements(simpleTable, expandStar)
+	if err != nil {
+		return nil, unionLiftedClauses{limit: -1}, err
+	}
+	v.moveCorrelatedGroupColumns(cls, fs, simpleTable, expandStar)
+	sq := selectQueryFromClassification(cls, fs)
+	sq.limit, sq.offset, err = parseLimitClause(simpleTable)
 	if err != nil {
 		return nil, unionLiftedClauses{limit: -1}, err
 	}
@@ -5915,6 +6213,7 @@ func (v *PlanVisitor) buildUnionRightBranchStrippingOrderBy(body antlrgen.IQuery
 
 	// Save and strip ORDER BY.
 	if len(sq.orderBy) > 0 {
+		lifted.orderBy = append([]orderByClause(nil), sq.orderBy...)
 		for _, ob := range sq.orderBy {
 			e := ob.colName
 			if e == "" && ob.rawExpr != nil {
@@ -5984,7 +6283,7 @@ func (v *PlanVisitor) buildUnionRightBranchStrippingOrderBy(body antlrgen.IQuery
 // key is an aggregate expression (SUM(v)*2, COALESCE(SUM(v),0)), the
 // walker produces a Value tree with AggregateValues rewritten to
 // FieldValues referencing the aggregate output.
-func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) error {
+func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, templateName string, cteScopes map[string]semantic.ScopeSource) error {
 	sort := findSort(op)
 	if sort == nil || len(sort.Keys) == 0 {
 		return nil
@@ -6013,23 +6312,6 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 	// not own either.
 	if len(sq.orderBy) == 0 {
 		return nil
-	}
-
-	// Build alias→column mapping from projections.
-	aliasToCol := make(map[string]string)
-	aliasToIdx := make(map[string]int)
-	if sq.projAliases != nil && sq.projCols != nil {
-		for i, a := range sq.projAliases {
-			if a != "" && i < len(sq.projCols) {
-				aliasToCol[strings.ToUpper(a)] = sq.projCols[i].name
-				aliasToIdx[strings.ToUpper(a)] = i
-			}
-		}
-	}
-	for _, ac := range sq.aggCols {
-		if ac.outName != "" && ac.groupCol != "" {
-			aliasToCol[strings.ToUpper(ac.outName)] = ac.groupCol
-		}
 	}
 
 	// Resolve ORDER BY alias → underlying column or Value.
@@ -6105,18 +6387,10 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 				colToIdx[key] = i
 			}
 		}
-		for i, alias := range proj.Aliases {
-			if alias == "" {
-				continue
-			}
-			key := strings.ToUpper(alias)
-			if _, dup := aliasToIdx[key]; !dup {
-				aliasToIdx[key] = i
-			}
-		}
 	}
-	// POSITIONAL keys first, by ORDINAL — never by text. A positional key
-	// is an ordinal into THIS select's output list; when the select's own
+	// Selected output slots first, by ORDINAL — never by text. Both a numeric
+	// ORDER key and a resolved SELECT alias address THIS select's output list.
+	// When the select's own
 	// projection sits ABOVE the sort (the plain-select shape), the ordinal
 	// resolves to that projection's item: the resolved item Value when the
 	// catalog pass populated it (typed — immune to items whose rendered
@@ -6127,10 +6401,24 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 	// aggregate reshaping strip below the sort, or a union), Pos survives
 	// untouched — those inputs ARE select-list carriers and the
 	// translator's Pos bake against them is the correct binding.
-	positionalKey := make([]bool, len(sort.Keys))
-	positionalBound := make([]bool, len(sort.Keys))
+	if len(sort.Keys) != len(sq.orderBy) {
+		return api.NewError(api.ErrCodeInternalError, "ORDER BY binding lost its parsed key positions")
+	}
+	resolver := buildProjectionResolverWithCTEScopes(sq, md, templateName, cteScopes)
+	aliasNames := orderByOutputAliasNames(sq, resolver)
 	for i := range sort.Keys {
-		positionalKey[i] = sort.Keys[i].Pos > 0
+		if sq.orderBy[i].pos == 0 {
+			if pos, matches := selectOutputAliasPosition(sq.orderBy[i].rawExpr, aliasNames); matches == 1 {
+				sort.Keys[i].Pos = pos
+			}
+		}
+	}
+	positionalKey := make([]bool, len(sort.Keys))
+	outputBound := make([]bool, len(sort.Keys))
+	for i := range sort.Keys {
+		// A selected slot is not evidence that the SQL used numeric syntax.
+		// Named-only duplicate checking follows semantic resolution below.
+		positionalKey[i] = sq.orderBy[i].pos > 0
 	}
 	if proj != nil && sortOwnedBySelect(proj, sort) {
 		for i := range sort.Keys {
@@ -6140,7 +6428,7 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 			}
 			if proj.ProjectedValues != nil && pos-1 < len(proj.ProjectedValues) && proj.ProjectedValues[pos-1] != nil {
 				sort.Keys[i].Value = proj.ProjectedValues[pos-1]
-				positionalBound[i] = true
+				outputBound[i] = true
 				if len(proj.AggregateOutputOrdinals) == len(proj.Projections) {
 					sort.Keys[i].AggregateOutputValueExact = true
 				}
@@ -6152,33 +6440,17 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 	}
 
 	for i := range sort.Keys {
-		// A successfully resolved ORDER BY ordinal is the SQL output-slot
+		// A successfully resolved output slot is the SQL binding
 		// authority. Its Expr is retained only for diagnostics; feeding that text
 		// through the alias/column maps below can select another slot when a
 		// computed SELECT item is omitted from sq.projCols (for example SELECT
 		// score+0 AS id, id AS y ... ORDER BY 2). Never let a later text match
 		// overwrite the exact projected Value copied by ordinal above.
-		if positionalBound[i] {
+		if outputBound[i] || sort.Keys[i].Pos > 0 {
 			continue
 		}
 		upper := strings.ToUpper(sort.Keys[i].Expr)
-		// Output aliases bind BARE one-segment identifiers only
-		// (SortKey.BareRef): a qualified key's Expr is already
-		// qualifier-stripped and an aggregate key's Expr is its canonical
-		// rendering, so without the flag `ORDER BY d.x` / `ORDER BY
-		// SUM(s.score)` would bind a same-spelled SELECT alias and
-		// silently mis-sort.
-		if real, ok := aliasToCol[upper]; ok && sort.Keys[i].BareRef {
-			sort.Keys[i].Expr = real
-		}
-		if idx, ok := aliasToIdx[upper]; ok && proj != nil && sort.Keys[i].BareRef {
-			if idx < len(proj.ProjectedValues) && proj.ProjectedValues[idx] != nil {
-				sort.Keys[i].Value = proj.ProjectedValues[idx]
-				if len(proj.AggregateOutputOrdinals) == len(proj.Projections) {
-					sort.Keys[i].AggregateOutputValueExact = true
-				}
-			}
-		} else if idx, ok := colToIdx[upper]; ok && proj != nil {
+		if idx, ok := colToIdx[upper]; ok && proj != nil {
 			if idx < len(proj.ProjectedValues) && proj.ProjectedValues[idx] != nil {
 				// ORDER BY resolves in the SELECT output namespace before the
 				// input namespace. Keep the projection's exact Value INSTANCE as
@@ -6237,7 +6509,6 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 		}
 	}
 
-	resolver := buildProjectionResolverWithCTEScopes(sq, md, schemaName, cteScopes)
 	if resolver == nil {
 		return nil
 	}
@@ -6249,7 +6520,7 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 		// numeric literal itself and would overwrite ORDER BY 2 with constant
 		// 2. Likewise, a prior alias/project/group-key mapping is already the
 		// authoritative SQL output binding.
-		if positionalKey[i] || sort.Keys[i].HasAggregateOutputOrdinal ||
+		if positionalKey[i] || sort.Keys[i].Pos > 0 || sort.Keys[i].HasAggregateOutputOrdinal ||
 			sort.Keys[i].AggregateOutputValueExact ||
 			(!exactAggregateBoundary && sort.Keys[i].Value != nil) {
 			continue
@@ -6312,6 +6583,78 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 		// (the FieldValue carries its Child correlation), so the executor's ValueExpr
 		// evaluates the qualified reference per row and the sort sorts for real.
 		sort.Keys[i].Value = v
+	}
+	if err := validateNamedSortColumns(sq); err != nil {
+		return err
+	}
+	return validatePositionalSortColumns(sort, sq, positionalKey)
+}
+
+// validateNamedSortColumns runs after semantic resolution, as Java's
+// validateOrderByColumns does. An ambiguous or undefined alias must fail lookup
+// before a repeated spelling can be diagnosed as a duplicate ORDER BY key.
+func validateNamedSortColumns(sq *selectQuery) error {
+	for i, current := range sq.orderBy {
+		if current.pos != 0 || current.rawExpr == nil {
+			continue
+		}
+		name, err := columnNameFromExpr(current.rawExpr, "ORDER BY expression")
+		if err != nil {
+			continue
+		}
+		_, _, _, segments := splitColumnRef(current.rawExpr)
+		for _, previous := range sq.orderBy[:i] {
+			if previous.pos != 0 || previous.rawExpr == nil {
+				continue
+			}
+			previousName, err := columnNameFromExpr(previous.rawExpr, "ORDER BY expression")
+			_, _, _, previousSegments := splitColumnRef(previous.rawExpr)
+			if err == nil && previousName == name &&
+				slices.Equal(previousSegments, segments) {
+				return api.NewErrorf(api.ErrCodeColumnAlreadyExists,
+					"duplicate column %q in ORDER BY", name)
+			}
+		}
+	}
+	return nil
+}
+
+// validatePositionalSortColumns compares direct column references only after
+// their source/output bindings are known. A label cannot distinguish two source
+// attributes, and an expression value is not a named-column duplicate in Java.
+func validatePositionalSortColumns(sort *logical.LogicalSort, sq *selectQuery, positional []bool) error {
+	if len(sort.Keys) != len(sq.orderBy) {
+		return api.NewError(api.ErrCodeInternalError, "ORDER BY binding lost its parsed key positions")
+	}
+	isColumn := func(i int) bool {
+		ob := sq.orderBy[i]
+		if !positional[i] {
+			return ob.bare != ""
+		}
+		if ob.pos < 1 || ob.pos > len(sq.selectSlots) {
+			return false
+		}
+		slot := sq.selectSlots[ob.pos-1]
+		if slot.column != nil {
+			return true
+		}
+		if selected, ok := slot.element.(*antlrgen.SelectExpressionElementContext); ok {
+			bare, _, _, _ := splitColumnRef(selected.Expression())
+			return bare != ""
+		}
+		return false
+	}
+	for i := range sort.Keys {
+		for j := 0; j < i; j++ {
+			if !(positional[i] || positional[j]) || !isColumn(i) || !isColumn(j) {
+				continue
+			}
+			a, b := sort.Keys[i].Value, sort.Keys[j].Value
+			if a != nil && b != nil && groupKeysPullUpEqual(a, b) {
+				return api.NewErrorf(api.ErrCodeColumnAlreadyExists,
+					"duplicate column %q in ORDER BY", sq.orderBy[i].colName)
+			}
+		}
 	}
 	return nil
 }
@@ -6524,7 +6867,8 @@ func bindExactCTESortKeysOnSort(
 		}
 
 		owner, err := values.NewQuantifiedObjectValue(
-			values.NamedCorrelationIdentifier(strings.ToUpper(correlation)), record)
+			values.NamedCorrelationIdentifier(strings.ToUpper(correlation)), record,
+		)
 		if err != nil {
 			return err
 		}
@@ -6585,7 +6929,8 @@ func bindExactCTEProjection(
 				continue
 			}
 			scan, record = uniqueQualifiedDirectCTEJoinInput(
-				project.Input, ref.Qualifier, cteTypes)
+				project.Input, ref.Qualifier, cteTypes,
+			)
 			if scan == nil {
 				continue
 			}
@@ -6617,7 +6962,8 @@ func bindExactCTEProjection(
 		}
 
 		owner, err := values.NewQuantifiedObjectValue(
-			values.NamedCorrelationIdentifier(strings.ToUpper(correlation)), record)
+			values.NamedCorrelationIdentifier(strings.ToUpper(correlation)), record,
+		)
 		if err != nil {
 			return err
 		}
@@ -6858,19 +7204,19 @@ func buildOuterPlanOnDerived(sq *selectQuery, innerOp logical.LogicalOperator) l
 	return buildSelectShell(op, sq, strings.ToUpper(sq.tableName)+".")
 }
 
-func hasAnyQualifiedStar(sq *selectQuery) bool {
-	if sq == nil || sq.projStarQualifiers == nil {
+func hasProjectionStar(sq *selectQuery) bool {
+	if sq == nil {
 		return false
 	}
-	for _, q := range sq.projStarQualifiers {
-		if q != "" {
+	for _, col := range sq.projCols {
+		if col.star {
 			return true
 		}
 	}
 	return false
 }
 
-// expandQualifiedStars replaces qualified-star projection slots (a.*)
+// expandProjectionStars replaces typed star projection slots (* or a.*)
 // with explicit column names from the matching source table. Modifies
 // sq.projCols, sq.projAliases, sq.projExprs, sq.projStarQualifiers in place.
 //
@@ -6881,15 +7227,17 @@ func hasAnyQualifiedStar(sq *selectQuery) bool {
 // query degrades to an UNQUALIFIED star → returns the ENTIRE FlatMap row (outer
 // columns included) instead of just the unnest source's columns (silent-wrong).
 // RFC-142.
-func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) error {
-	if sq == nil || !hasAnyQualifiedStar(sq) {
+func expandProjectionStars(sq *selectQuery, md *recordlayer.RecordMetaData, templateName string, cteScopes map[string]semantic.ScopeSource) error {
+	if sq == nil || !hasProjectionStar(sq) {
 		return nil
 	}
-	resolver, err := buildSelectScopeChecked(sq, md, schemaName, cteScopes)
+	resolver, err := buildSelectScopeChecked(sq, md, templateName, cteScopes)
 	if err != nil {
 		return err
 	}
-	var newCols []projCol
+	// A successful empty expansion is an explicit zero-column projection,
+	// not the nil marker that elides SELECT *.
+	newCols := make([]projCol, 0, len(sq.projCols))
 	var newAliases, newQuals []string
 	var newExprs []antlrgen.IExpressionContext
 	for i, col := range sq.projCols {
@@ -6897,7 +7245,7 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 		if i < len(sq.projStarQualifiers) {
 			qual = sq.projStarQualifiers[i]
 		}
-		if qual == "" {
+		if !col.star {
 			newCols = append(newCols, col)
 			alias := ""
 			if i < len(sq.projAliases) {
@@ -6923,6 +7271,30 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 			newQuals = append(newQuals, "")
 		}
 	}
+	// Keep the output-slot contract in lockstep with the projection expansion.
+	// Parse-only shells retained star placeholders before the exact scope existed.
+	var slots []selectOutputSlot
+	for _, slot := range sq.selectSlots {
+		qualifier, star := "", false
+		switch element := slot.element.(type) {
+		case *antlrgen.SelectStarElementContext:
+			star = true
+		case *antlrgen.SelectQualifierStarElementContext:
+			qualifier, star = functions.NormalizeIdentifier(element.Uid().GetText()), true
+		}
+		if !star {
+			slots = append(slots, slot)
+			continue
+		}
+		columns, err := starColumnsFromScopeChecked(resolver, qualifier)
+		if err != nil {
+			return err
+		}
+		for _, column := range columns {
+			slots = append(slots, selectOutputSlot{column: &column, name: column.name, alias: column.bare})
+		}
+	}
+	sq.selectSlots = slots
 	sq.projCols, sq.projAliases, sq.projExprs, sq.projStarQualifiers = newCols, newAliases, newExprs, newQuals
 	return nil
 }
@@ -6948,11 +7320,11 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 // expandBareStarFromScope publishes the visible SQL attributes when they differ
 // from the physical row. Projection elision requires the same names and ordinal
 // mapping, not merely a SELECT *: a CTE can expose K,K over physical K,K_2.
-func expandBareStarFromScope(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) (bool, error) {
+func expandBareStarFromScope(sq *selectQuery, md *recordlayer.RecordMetaData, templateName string, cteScopes map[string]semantic.ScopeSource) (bool, error) {
 	if sq == nil || md == nil || sq.projCols != nil || sq.projQualifier != "" || sq.countStar || len(sq.aggCols) > 0 {
 		return false, nil
 	}
-	resolver, err := buildSelectScopeChecked(sq, md, schemaName, cteScopes)
+	resolver, err := buildSelectScopeChecked(sq, md, templateName, cteScopes)
 	if err != nil {
 		return false, err
 	}
@@ -7055,7 +7427,7 @@ func starColumnsFromScopeChecked(resolver *expr.Resolver, qualifier string) ([]p
 	if qualifier != "" {
 		var selected []semantic.ScopeSource
 		for _, source := range sources {
-			if source.Alias.EqualsIgnoreQuoting(semantic.FromNormalized(qualifier)) {
+			if source.NamedBy(semantic.FromNormalized(qualifier)) {
 				// Java's qualified star selects the first operator, unlike named
 				// lookup, which counts all matching attributes.
 				if expr.SourceRowType(source) == nil {
@@ -7112,11 +7484,8 @@ func starColumnsFromScopeChecked(resolver *expr.Resolver, qualifier string) ([]p
 			if err != nil {
 				return nil, err
 			}
-			columns = append(columns, projCol{bound: bound, name: source.Alias.Name() + "." + name, bare: name, qualifier: source.Alias.Name(), qualified: true, segs: []string{source.Alias.Name(), name}})
+			columns = append(columns, projCol{bound: bound, sqlUnqualified: source.UnqualifiedOutput || column.UnqualifiedOutput, sqlAuthored: column.SQLAuthored, name: source.Alias.Name() + "." + name, bare: name, qualifier: source.Alias.Name(), qualified: true, segs: []string{source.Alias.Name(), name}})
 		}
-	}
-	if len(columns) == 0 {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "star source publishes no visible attributes")
 	}
 	return columns, nil
 }
@@ -7126,8 +7495,8 @@ func starColumnsFromScopeChecked(resolver *expr.Resolver, qualifier string) ([]p
 // first expansion that actually asks for it.
 //
 // The laziness is the point. visitSimpleTableBody runs for every SELECT, while
-// the expander is consulted only by the star-under-GROUP-BY branch of the
-// classifier — a small minority of queries. Building the FROM-only scope
+// the expander is consulted for stars with GROUP BY, positional ORDER BY,
+// or mixed projection slots. Building the FROM-only scope
 // eagerly put a second full scope construction on the hot path of every query
 // to pay for a branch most never reach.
 //
@@ -7140,7 +7509,7 @@ func starColumnsFromScopeChecked(resolver *expr.Resolver, qualifier string) ([]p
 // built is a determination, not a retry. starColumnsFromScope answers
 // (nil, false) for it, which is the same "cannot expand" the classifier needs.
 // This closure is called from one goroutine per plan build; it is not shared.
-func starExpanderFor(fs *fromSource, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) starExpander {
+func starExpanderFor(fs *fromSource, md *recordlayer.RecordMetaData, templateName string, cteScopes map[string]semantic.ScopeSource) starExpander {
 	if fs == nil || md == nil {
 		return nil
 	}
@@ -7151,7 +7520,7 @@ func starExpanderFor(fs *fromSource, md *recordlayer.RecordMetaData, schemaName 
 	return func(qualifier string) ([]projCol, bool) {
 		if !built {
 			built = true
-			resolver = buildFromOnlySelectScope(fs, md, schemaName, cteScopes)
+			resolver = buildFromOnlySelectScope(fs, md, templateName, cteScopes)
 		}
 		return starColumnsFromScope(resolver, qualifier)
 	}
@@ -7167,18 +7536,18 @@ func starExpanderFor(fs *fromSource, md *recordlayer.RecordMetaData, schemaName 
 // partial build that later grows. Java has the same ordering: the select-where
 // operator is generated (QueryVisitor.java:275) before visitSelectElements
 // expands the star against it (QueryVisitor.java:286).
-func buildFromOnlySelectScope(fs *fromSource, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) *expr.Resolver {
+func buildFromOnlySelectScope(fs *fromSource, md *recordlayer.RecordMetaData, templateName string, cteScopes map[string]semantic.ScopeSource) *expr.Resolver {
 	if fs == nil || md == nil {
 		return nil
 	}
-	return buildSelectScope(selectQueryFromClassification(&selectClassification{}, fs), md, schemaName, cteScopes)
+	return buildSelectScope(selectQueryFromClassification(&selectClassification{}, fs), md, templateName, cteScopes)
 }
 
 // normalizeSoleQualifiedStar routes SELECT alias.* through the same expansion
 // as a mixed projection. Both forms must use the visible source's carried row,
 // including derived/CTE outputs, rather than interpreting its alias as a table.
 func normalizeSoleQualifiedStar(sq *selectQuery) {
-	sq.projCols = []projCol{{name: "*", bare: "*"}}
+	sq.projCols = []projCol{{star: true, name: "*", bare: "*"}}
 	sq.projAliases = []string{""}
 	sq.projExprs = []antlrgen.IExpressionContext{nil}
 	sq.projStarQualifiers = []string{sq.projQualifier}
@@ -7228,44 +7597,26 @@ func countProjectionColumns(op logical.LogicalOperator) int {
 	return -1
 }
 
-func validateUnionOrderByColumns(sort *logical.LogicalSort, leftBranch logical.LogicalOperator) error {
-	leftProj := findProjection(leftBranch)
-	if leftProj == nil {
-		return nil
+func validateUnionOrderByColumns(sort *logical.LogicalSort, leftBranch logical.LogicalOperator, authored []orderByClause, md *recordlayer.RecordMetaData, ctes *logical.CTERegistry) error {
+	// Output labels are a property of the branch, not of an optional project.
+	// The same contract covers scans, joins, CTEs and explicit projections.
+	labels, err := query.ExactLogicalOutputLabels(leftBranch, md, ctes)
+	if err != nil {
+		return err
 	}
-	// UNION publishes the LEFT branch's output row. Resolve every accepted
-	// output spelling to that row's exact ordinal while the projection still
-	// carries the SQL output contract; the Cascades translator must never turn
-	// the spelling back into a field identity. First occurrence preserves the
-	// prior first-match behaviour for duplicate output labels.
-	leftOrdinals := make(map[string]int, len(leftProj.Projections)*2)
-	register := func(name string, ordinal int) {
-		if name == "" {
-			return
+	leftOrdinals := make(map[string]int, len(labels))
+	matches := make(map[string]int, len(labels))
+	for i, label := range labels {
+		if label == "" {
+			continue
 		}
-		key := strings.ToUpper(name)
+		key := label
+		matches[key]++
 		if _, exists := leftOrdinals[key]; !exists {
-			leftOrdinals[key] = ordinal
+			leftOrdinals[key] = i
 		}
 	}
-	for i, col := range leftProj.Projections {
-		register(col, i)
-		// The bare form comes from the RESOLVED channel: a childless
-		// FieldValue's Field IS the bare column (the same structural truth
-		// the upgrade passes bind), never a last-dot split of the rendering
-		// — a delimited identifier containing a literal dot is one name.
-		if i < len(leftProj.ProjectedValues) {
-			if fv, ok := values.AsFieldValue(leftProj.ProjectedValues[i]); ok {
-				register(fv.DisplayName(), i)
-			}
-		}
-		if i < len(leftProj.Aliases) && leftProj.Aliases[i] != "" {
-			register(leftProj.Aliases[i], i)
-		}
-		if i < len(leftProj.ProjectionRefs) && leftProj.ProjectionRefs[i].Present {
-			register(leftProj.ProjectionRefs[i].Bare, i)
-		}
-	}
+
 	for i := range sort.Keys {
 		k := &sort.Keys[i]
 		if k.Expr == "" {
@@ -7280,18 +7631,29 @@ func validateUnionOrderByColumns(sort *logical.LogicalSort, leftBranch logical.L
 		if k.Pos > 0 {
 			continue
 		}
-		upper := strings.ToUpper(k.Expr)
-		bareName := upper
+		bareName := k.Expr
 		if k.Bare != "" {
 			// Structured bare segment — never a last-dot split of the
 			// rendering (a delimited identifier may contain a literal dot).
-			bareName = strings.ToUpper(k.Bare)
+			bareName = k.Bare
 		}
-		ordinal, found := leftOrdinals[upper]
-		if !found {
-			ordinal, found = leftOrdinals[bareName]
+		count := matches[bareName]
+		ordinal := leftOrdinals[bareName]
+		if count == 0 {
+			// Record metadata can publish raw protobuf field names rather
+			// than SQL-normalized labels. Retain that relaxed lookup only
+			// after exact identity fails: quoted x and X are distinct slots.
+			for label, n := range matches {
+				if strings.EqualFold(label, bareName) {
+					count += n
+					ordinal = leftOrdinals[label]
+				}
+			}
 		}
-		if !found {
+		if count > 1 {
+			return api.NewErrorf(api.ErrCodeAmbiguousColumn, "Ambiguous reference %s", bareName)
+		}
+		if count == 0 {
 			return api.NewErrorf(api.ErrCodeUndefinedColumn,
 				"column %q not found in UNION result columns", k.Expr)
 		}
@@ -7299,7 +7661,7 @@ func validateUnionOrderByColumns(sort *logical.LogicalSort, leftBranch logical.L
 		// no longer a name consumer after this validation point.
 		k.Pos = ordinal + 1
 	}
-	return nil
+	return validateNamedSortColumns(&selectQuery{selectClassification: selectClassification{orderBy: authored}})
 }
 
 func validateUnionColumnTypes(inputs []logical.LogicalOperator, md *recordlayer.RecordMetaData) error {
@@ -7404,85 +7766,12 @@ func resolveProjectionTypes(op logical.LogicalOperator, md *recordlayer.RecordMe
 	return kinds
 }
 
-// buildLogicalPlanForUnionWithCatalog mirrors buildLogicalPlanForUnion
-// — same flattening logic, threads md to each branch.
-//
-// Trailing ORDER BY: the ANTLR grammar greedily attaches a trailing
-// ORDER BY to the rightmost SimpleTable, but SQL standard says it
-// applies to the whole UNION result. Mirror the lift in execUnion
-// (union.go): strip ORDER BY from the right branch's selectQuery
-// before building it, then wrap the final LogicalUnion in a
-// LogicalSort using the lifted keys.
-func buildLogicalPlanForUnionWithCatalog(
-	setQ *antlrgen.SetQueryContext,
-	md *recordlayer.RecordMetaData,
-) (logical.LogicalOperator, error) {
-	if setQ == nil {
-		return nil, nil
-	}
-	if setQ.ALL() == nil {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "only UNION ALL is supported")
-	}
-	left, err := buildLogicalPlanForQueryBodyWithCatalog(setQ.GetLeft(), md)
-	if err != nil {
-		return nil, err
-	}
-
-	// Same ORDER BY / LIMIT stripping as the CTE-catalog variant.
-	var lifted unionLiftedClauses
-	var right logical.LogicalOperator
-	right, lifted, err = buildUnionRightBranchStrippingOrderBy(setQ.GetRight(), md, defaultEmbeddedSchema, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-	if left == nil || right == nil {
-		return nil, nil
-	}
-
-	if len(lifted.sortKeys) == 0 {
-		if s, ok := right.(*logical.LogicalSort); ok {
-			lifted.sortKeys = s.Keys
-			right = s.Input
-		} else if p, ok := right.(*logical.LogicalProject); ok {
-			if s, ok := p.Input.(*logical.LogicalSort); ok {
-				lifted.sortKeys = s.Keys
-				p.Input = s.Input
-			}
-		}
-	}
-
-	inputs := []logical.LogicalOperator{left, right}
-	if innerUnion, ok := left.(*logical.LogicalUnion); ok && !innerUnion.Distinct {
-		inputs = append(append([]logical.LogicalOperator(nil), innerUnion.Inputs...), right)
-	}
-	if err := validateUnionColumnCounts(inputs); err != nil {
-		return nil, err
-	}
-	if err := validateUnionColumnTypes(inputs, md); err != nil {
-		return nil, err
-	}
-	if len(lifted.sortKeys) > 0 {
-		liftedSort := &logical.LogicalSort{Keys: lifted.sortKeys}
-		if err := validateUnionOrderByColumns(liftedSort, inputs[0]); err != nil {
-			return nil, err
-		}
-	}
-	var result logical.LogicalOperator = logical.NewUnion(inputs, false)
-	if len(lifted.sortKeys) > 0 {
-		result = logical.NewSort(result, lifted.sortKeys)
-	}
-	if lifted.limit >= 0 || lifted.offset > 0 {
-		result = logical.NewLimit(result, lifted.limit, lifted.offset)
-	}
-	return result, nil
-}
-
 // existsSubqueryPlanner implements expr.SubqueryPlanner. It builds
 // logical plans for EXISTS and scalar subqueries and collects the
 // (alias, plan) pairs that the LogicalFilter/LogicalProject need to
 // carry to the Cascades translator.
-func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) []semantic.ScopeSource {
-	resolver := buildSelectScope(sq, md, schemaName, cteScopes)
+func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData, templateName string, cteScopes map[string]semantic.ScopeSource) []semantic.ScopeSource {
+	resolver := buildSelectScope(sq, md, templateName, cteScopes)
 	if resolver == nil {
 		return nil
 	}
@@ -7494,14 +7783,14 @@ func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData, sch
 type existsSubqueryPlanner struct {
 	bindings *bindingAllocator
 	md       *recordlayer.RecordMetaData
-	// schemaName is the ACTIVE session schema. EXISTS / scalar subquery plans are
-	// built through buildLogicalPlanForQueryWithCTECatalog, which threads this into
-	// the schema-qualified-table demotion (demoteSchemaQualifiedUnnest /
-	// normalizeSchemaQualifiedSelectSources): a `… EXISTS (SELECT 1 FROM PA AS main,
-	// main.PB AS B)` in a session whose schema is `main` resolves `main.PB` as the
-	// schema-qualified TABLE against the ACTIVE schema, not the hardcoded default
-	// `s`. Empty falls back to defaultEmbeddedSchema. RFC-142 (P2b).
-	schemaName string
+	// templateName is the session schema's template name. EXISTS / scalar
+	// subquery plans are built through buildLogicalPlanForQueryWithCTECatalog,
+	// which threads this into the qualified-table demotion
+	// (demoteQualifiedTableUnnest / normalizeQualifiedSelectSources): a `…
+	// EXISTS (SELECT 1 FROM PA AS main, main.PB AS B)` over a template named
+	// `main` resolves `main.PB` as the qualified TABLE against that template, not
+	// the default. Empty falls back to defaultEmbeddedTemplate. RFC-142 (P2b).
+	templateName string
 	// outerScopes is a DUPLICATE-PRESERVING slice in FROM order — see
 	// buildOuterScopeSources.
 	outerScope                 *semantic.Scope
@@ -7565,222 +7854,6 @@ func (p *existsSubqueryPlanner) mintSubqueryAlias() values.CorrelationIdentifier
 	return p.bindings.mint()
 }
 
-// tryBuildCorrelatedPrimaryUnnest recognizes Java's correlated-array primary
-// source inside EXISTS:
-//
-//	EXISTS (SELECT E FROM R.TAGS AS E WHERE E = 9)
-//
-// The generic SELECT builder cannot classify this source because a primary
-// FROM item normally has no source to its left. Here, however, R belongs to the
-// enclosing query. Resolve the collection through the outer semantic scope and
-// build a standalone LogicalUnnest carrying that resolved Value. The path is
-// deliberately narrow: one direct array field, one explicit element alias,
-// and no query-shaping clauses. Wider recognized shapes fail loudly rather
-// than being rebuilt as a phantom table scan.
-func (p *existsSubqueryPlanner) tryBuildCorrelatedPrimaryUnnest(
-	q antlrgen.IQueryContext,
-) (logical.LogicalOperator, bool, error) {
-	if q == nil || len(p.outerScopes) == 0 || p.md == nil {
-		return nil, false, nil
-	}
-	body, ok := q.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
-	if !ok {
-		return nil, false, nil
-	}
-	sq, err := extractFromQueryTerm(body)
-	if err != nil || sq == nil || sq.derivedQuery != nil || len(sq.sourceSegments) < 2 {
-		return nil, false, nil
-	}
-	// Java resolves a real table before falling through to correlated-field
-	// access. Preserve that precedence for an active-schema-qualified table.
-	if newUnnestTableResolver(p.md, p.effectiveSchemaName())(sq.sourceSegments) {
-		return nil, false, nil
-	}
-
-	ownerID := semantic.FromNormalized(sq.sourceSegments[0])
-	fieldID := semantic.FromNormalized(sq.sourceSegments[1])
-	var owner *semantic.ScopeSource
-	var col semantic.Column
-	aliasSeen := false
-	// STRICT over every alias-matching source, then RELAXED over every one —
-	// never a mix. This loop COUNTS owners across sources and raises 42702 on
-	// two, so relaxing per source would let a case-insensitive match at one
-	// compete with an exact match at another and make a reference with exactly
-	// one right answer ambiguous. Same rule, same reason, as
-	// Scope.ResolveColumn and usingOwnerOf.
-	for _, relaxed := range [...]bool{false, true} {
-		for i := range p.outerScopes {
-			src := &p.outerScopes[i]
-			if !src.Alias.EqualsIgnoreQuoting(ownerID) {
-				continue
-			}
-			aliasSeen = true
-			if src.Table == nil {
-				continue
-			}
-			var candidateColumn semantic.Column
-			var found bool
-			if relaxed {
-				candidateColumn, found = semantic.LookupColumnRelaxed(src.Table, fieldID)
-			} else {
-				candidateColumn, found = src.Table.LookupColumn(fieldID)
-			}
-			if !found {
-				continue
-			}
-			if owner != nil {
-				return nil, true, api.NewErrorf(api.ErrCodeAmbiguousColumn,
-					"correlated array source %q is ambiguous", strings.Join(sq.sourceSegments, "."))
-			}
-			owner = src
-			col = candidateColumn
-		}
-		if owner != nil {
-			break
-		}
-	}
-	if owner == nil {
-		if aliasSeen {
-			return nil, true, api.NewErrorf(api.ErrCodeUndefinedColumn,
-				"column %q does not exist on source %q", sq.sourceSegments[1], sq.sourceSegments[0])
-		}
-		return nil, false, nil
-	}
-	if len(sq.sourceSegments) != 2 {
-		return nil, true, api.NewError(api.ErrCodeUnsupportedQuery,
-			"nested correlated array sources in an EXISTS primary FROM clause are not yet supported")
-	}
-	if owner.Table == nil {
-		return nil, true, api.NewError(api.ErrCodeUnsupportedQuery,
-			"a correlated array primary source requires a resolved outer table")
-	}
-
-	if !col.IsArray {
-		return nil, true, api.NewError(api.ErrCodeInvalidColumnReference,
-			"join correlation can occur only on a column of repeated (array) type")
-	}
-
-	innerAlias := sq.tableAlias
-	if innerAlias == "" || strings.EqualFold(innerAlias, sq.tableName) {
-		return nil, true, api.NewError(api.ErrCodeUnsupportedQuery,
-			"a correlated array primary source in EXISTS requires an explicit element alias")
-	}
-	for _, src := range p.outerScopes {
-		if src.Alias.EqualsIgnoreQuoting(semantic.FromNormalized(innerAlias)) ||
-			(src.CorrelationName != "" && strings.EqualFold(src.CorrelationName, innerAlias)) {
-			return nil, true, api.NewError(api.ErrCodeDuplicateAlias,
-				"correlated array element alias collides with an outer source alias")
-		}
-	}
-	if len(sq.joins) != 0 || sq.distinct || len(sq.orderBy) != 0 ||
-		len(sq.groupBy) != 0 || len(sq.aggCols) != 0 || sq.countStar ||
-		sq.havingExpr != nil || sq.qualifyExpr != nil || sq.limit >= 0 || sq.offset != 0 {
-		return nil, true, api.NewError(api.ErrCodeUnsupportedQuery,
-			"query-shaping clauses over a correlated array primary source in EXISTS are not yet supported")
-	}
-	// Validate the ignored EXISTS projection rather than silently accepting an
-	// invalid SELECT list. This first production slice admits exactly the
-	// element binding (`SELECT E`); EXISTS does not otherwise consume it.
-	if len(sq.projCols) != 1 || len(sq.projExprs) != 1 || sq.projExprs[0] != nil ||
-		sq.projCols[0].qualified {
-		return nil, true, api.NewError(api.ErrCodeUnsupportedQuery,
-			"correlated array EXISTS currently requires projecting its element alias")
-	}
-	if sq.projCols[0].bare != innerAlias {
-		return nil, true, api.NewErrorf(api.ErrCodeUndefinedColumn,
-			"column %q does not exist", sq.projCols[0].bare)
-	}
-
-	cat := rlcatalog.Wrap(p.md)
-	analyzer := semantic.NewAnalyzer(cat, false)
-	outerScope := semantic.NewScope(nil)
-	for _, src := range p.outerScopes {
-		if addErr := outerScope.AddSource(src); addErr != nil {
-			return nil, true, addErr
-		}
-	}
-	aliasID := semantic.FromNormalized(innerAlias)
-	if p.bindings == nil {
-		p.bindings = &bindingAllocator{}
-	}
-	p.bindings.reserve(innerAlias)
-	for _, segment := range sq.sourceSegments {
-		p.bindings.reserve(segment)
-	}
-	innerBinding := strings.ToUpper(p.mintSubqueryAlias().Name())
-	innerScope := semantic.NewScope(outerScope)
-	// The element column carries the array element's DECLARED FIELDS when that
-	// element is a struct, so `x.ek` / `x.d.dk` inside the EXISTS body descend
-	// through the ordinary struct-descent (Column.LookupStructField), exactly as
-	// they do on the SELECT-scope binding. col.Type already names the ELEMENT
-	// kind ("RECORD" for a struct array, the scalar kind otherwise) and
-	// col.StructFields already IS the element's field list — dropping it here
-	// left a "RECORD" column with no fields, which no descent can enter, so the
-	// member reference died 42703 while resolving fine outside EXISTS. Java has
-	// no such split: the unnest quantifier's flowed type IS the element type, so
-	// the element's fields are the quantifier's own attributes
-	// (LogicalOperator.generateCorrelatedFieldAccess emits one output per struct
-	// field). This mint is the correlated-primary sibling of
-	// unnestVirtualScopeSourceWithElement; the two must agree on what an element
-	// binding exposes.
-	virtual := &semantic.StaticTable{
-		TableName: semantic.FromSegments([]string{innerAlias}, false),
-		TableColumns: []semantic.Column{{
-			Id:           aliasID,
-			Type:         col.Type,
-			Nullable:     true,
-			StructFields: col.StructFields,
-		}},
-	}
-	if addErr := innerScope.AddSource(semantic.ScopeSource{
-		Table:           virtual,
-		Alias:           aliasID,
-		CorrelationName: innerBinding,
-		Shadowing:       true,
-	}); addErr != nil {
-		return nil, true, addErr
-	}
-	// Resolve the collection FROM THE INNER SCOPE so R is a parent-scope hit.
-	// ResolveIdentifier then emits FieldValue(QOV(R), TAGS), preserving the
-	// external correlation. Resolving against outerScope directly would treat
-	// R as local and produce a childless baked FieldValue: executable only by
-	// ambient-row accident and impossible to match to the candidate Explode.
-	resolver := expr.New(analyzer, innerScope)
-	collection, resolveErr := resolver.ResolveIdentifier(ownerID, fieldID)
-	if resolveErr != nil {
-		if mapped := mapPredicateWalkError(resolveErr); mapped != nil {
-			return nil, true, mapped
-		}
-		return nil, true, resolveErr
-	}
-
-	unnest := &logical.LogicalUnnest{
-		Segments:             append([]string(nil), sq.sourceSegments...),
-		Alias:                innerAlias,
-		Binding:              innerBinding,
-		CorrelatedCollection: collection,
-	}
-	if sq.whereExpr == nil || sq.whereExpr.Expression() == nil {
-		return unnest, true, nil
-	}
-	if expr.ContainsSubqueryAtom(sq.whereExpr.Expression()) ||
-		expr.ContainsExistsAtom(sq.whereExpr.Expression()) {
-		return nil, true, api.NewError(api.ErrCodeUnsupportedQuery,
-			"nested subqueries inside a correlated array EXISTS predicate are not yet supported")
-	}
-	pred, walkErr := resolver.WalkPredicate(sq.whereExpr.Expression())
-	if walkErr != nil {
-		if mapped := mapPredicateWalkError(walkErr); mapped != nil {
-			return nil, true, mapped
-		}
-		return nil, true, walkErr
-	}
-	return &logical.LogicalFilter{
-		Input:     unnest,
-		Predicate: predicates.SimplifyPredicateValues(pred),
-	}, true, nil
-}
-
 func (p *subqueryClause) BuildExists(q antlrgen.IQueryContext) (values.CorrelationIdentifier, values.Type, error) {
 	bound, err := p.bindQuery(q)
 	if err != nil {
@@ -7804,15 +7877,15 @@ func (p *subqueryClause) BuildExists(q antlrgen.IQueryContext) (values.Correlati
 	return alias, input.ResultType(), nil
 }
 
-// effectiveSchemaName is the planner's active session schema, falling back to
-// defaultEmbeddedSchema when unset — matching how buildLogicalPlanForQueryWithCTECatalog
-// resolves p.schemaName so the unnest table resolver classifies a
-// schema-qualified table source against the same schema. RFC-142.
-func (p *existsSubqueryPlanner) effectiveSchemaName() string {
-	if p.schemaName == "" {
-		return defaultEmbeddedSchema
+// effectiveTemplateName is the planner's template name, falling back to
+// defaultEmbeddedTemplate when unset — matching how buildLogicalPlanForQueryWithCTECatalog
+// resolves p.templateName so the unnest table resolver classifies a
+// qualified table source against the same template. RFC-142.
+func (p *existsSubqueryPlanner) effectiveTemplateName() string {
+	if p.templateName == "" {
+		return defaultEmbeddedTemplate
 	}
-	return p.schemaName
+	return p.templateName
 }
 
 // splitOuterOnlyConjuncts partitions a subquery WHERE's top-level AND tree into
@@ -7995,7 +8068,7 @@ func (p *existsSubqueryPlanner) newSubqueryVisitor() (*PlanVisitor, error) {
 	if p.bindings == nil {
 		p.bindings = &bindingAllocator{}
 	}
-	visitor := NewPlanVisitorWithSchema(p.md, p.schemaName)
+	visitor := NewPlanVisitorWithTemplate(p.md, p.templateName)
 	visitor.bindings = p.bindings
 	visitor.enclosingScope = parent
 	visitor.cteScopes = maps.Clone(p.cteScopes)
@@ -8022,14 +8095,14 @@ func (p *subqueryClause) BuildScalar(q antlrgen.IQueryContext) (values.Correlati
 		// definitions around it. Running the mutation passes over the wrapper
 		// rewrites names inside those definitions as if they belonged to this
 		// query block, which strands genuine outer correlations in nested CTEs.
-		schemaName := p.effectiveSchemaName()
-		if err := demoteSchemaQualifiedUnnest(innerOp, schemaName, p.md); err != nil {
+		templateName := p.effectiveTemplateName()
+		if err := demoteQualifiedTableUnnest(innerOp, templateName, p.md); err != nil {
 			return values.CorrelationIdentifier{}, values.UnknownType, err
 		}
 		if err := rejectAtOrdinalityOnTable(innerOp, p.md); err != nil {
 			return values.CorrelationIdentifier{}, values.UnknownType, err
 		}
-		if err := resolveQualifiedTableNames(innerOp, schemaName); err != nil {
+		if err := resolveQualifiedTableNames(innerOp, templateName); err != nil {
 			return values.CorrelationIdentifier{}, values.UnknownType, err
 		}
 		logical.BindCTESources(innerOp, p.cteProducers)
@@ -8238,9 +8311,8 @@ func aggregateCallOutputType(call logical.AggregateCall, operands []values.Value
 // DOUBLE for every numeric operand; SUM/MIN/MAX return the OPERAND's
 // code — and Java defines those operators ONLY over INT/LONG/FLOAT/
 // DOUBLE (SUM_I/L/F/D, MIN_*, MAX_*), so any other operand code has no
-// row (ok=false). Both this table's consumers document their own
-// nullability choice at the call site; aggResultTypeFromFunc layers its
-// metadata-specific divergences over the same table.
+// row (ok=false). Its consumers document their own nullability choice at the
+// call site.
 func javaAggregateResultCode(fn string, operandCode values.TypeCode) (values.TypeCode, bool) {
 	return values.JavaAggregateResultCode(fn, operandCode)
 }

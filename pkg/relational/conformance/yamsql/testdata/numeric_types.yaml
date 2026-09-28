@@ -4,10 +4,10 @@
 #   - INTEGER (int32) + INTEGER returns an integer, not float.
 #   - BIGINT (int64) + INTEGER mixes correctly.
 #   - FLOAT / DOUBLE arithmetic works.
-#   - INSERT of out-of-range int64 into an INTEGER column is rejected
-#     with 22003 NUMERIC_VALUE_OUT_OF_RANGE (was 22023 INVALID_PARAMETER
-#     in swingshift-35; tightened to the SQL-standard class-22 code in
-#     nightshift-39, matching the arithmetic-overflow sites).
+#   - INSERT of an out-of-range integer literal into an INTEGER column is
+#     rejected: the literal is a BIGINT, and a BIGINT does not promote to an
+#     INTEGER, so the target refuses it while planning with 22000
+#     (INCOMPATIBLE_TYPE), not as a range error.
 name: numeric_types
 schema_template: |
   CREATE TABLE t (id BIGINT, i INTEGER, l BIGINT, d DOUBLE, PRIMARY KEY (id))
@@ -30,13 +30,12 @@ tests:
   - query: SELECT i + d FROM t WHERE id = 1
     rows:
       - [11.5]
-  # Out-of-range int → INTEGER column: swingshift-35 range-check;
-  # nightshift-39 tightened SQLSTATE from 22023 to 22003.
+  # Out-of-range int → INTEGER column: a BIGINT literal, refused 22000.
   - query: INSERT INTO t VALUES (3, 2147483648, 100, 1.5)
-    error_code: "22003"
+    error_code: "22000"
   # Out-of-range negative too.
   - query: INSERT INTO t VALUES (3, -2147483649, 100, 1.5)
-    error_code: "22003"
+    error_code: "22000"
   # In-range values still succeed at the INT32 boundary.
   - query: INSERT INTO t VALUES (3, 2147483647, 100, 1.5)
   - query: SELECT i FROM t WHERE id = 3

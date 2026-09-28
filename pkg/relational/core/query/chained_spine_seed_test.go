@@ -79,7 +79,7 @@ func newChainedSpineTranslator(t *testing.T) *cascadesTranslator {
 				{Name: proto.String("ID"), Number: proto.Int32(1), Label: opt, Type: i64},
 				{Name: proto.String("A"), Number: proto.Int32(2), Label: rep, Type: msg, TypeName: tn("AElem")},
 			}},
-			{Name: proto.String("UnionDescriptor"), Field: []*descriptorpb.FieldDescriptorProto{
+			{Name: proto.String("RecordTypeUnion"), Field: []*descriptorpb.FieldDescriptorProto{
 				{Name: proto.String("_T4"), Number: proto.Int32(1), Label: opt, Type: msg, TypeName: tn("T4")},
 				{Name: proto.String("_T"), Number: proto.Int32(2), Label: opt, Type: msg, TypeName: tn("T")},
 			}},
@@ -337,13 +337,15 @@ func TestChainedSpineSeedForm(t *testing.T) {
 		// element slot.
 		{"linear3_at_mid_unfiltered", linear3AtMid, false, "ordinal", ""},
 		{"linear3_at_mid_filtered", linear3AtMid, true, "ordinal", ""},
-		// TWO iterations of the SAME table-rooted array are rejected LOUDLY by
-		// the pre-existing multiple-lateral-unnests guard UPSTREAM of the
-		// chained gate — so the twin-fork silent-wrong hazard (mis-rooting the
-		// same-named SUB at the wrong iteration variable) is unreachable via
-		// SQL. Pinned as loud-not-silent; if that guard is ever lifted, this
-		// case must flip to "name-model" (the linearity check declines it).
-		{"twin_fork_same_array", twinFork, false, "nil", "chained lateral unnest did not ordinalize"},
+		// TWO iterations of the SAME table-rooted array, the sub-unnest owned by
+		// the FIRST. The second iteration is a sibling link owned by the bottom
+		// table (Java: one more ForEach quantifier), and the ownership law
+		// resolves Y's owner by correlation identity, so the collection roots at
+		// X's element slot, never at the same-named X2. The rows are measured
+		// against Java in conformance/ws_f_join_unnest_conformance_test.go
+		// (`q, q.bs AS x, q.bs AS x2, x.tags AS y`), where a mis-root would
+		// pair y with the wrong iteration.
+		{"twin_fork_same_array", twinFork, false, "ordinal", ""},
 		// A malformed 1-segment link mid-spine dies LOUDLY in chained
 		// classification (chainedOwnerElementMessage requires 2 segments) before
 		// the gate ever runs — the walk's own Segments<2 check is defense in
@@ -386,9 +388,9 @@ func TestChainedSpineWalk(t *testing.T) {
 	l1, _ := link(t, scan("T4", "T4"), "T4", "SARR", "X")
 	l2, _ := link(t, l1, "X", "SUBSTRUCT", "Y")
 	l3, _ := link(t, l2, "Y", "DEEP", "Z")
-	// A TABLE-owned mid-spine link (X2's owner is T4, not a prior unnest —
-	// the twin shape, upstream-rejected as multiple lateral unnests): the
-	// ownership rule finds ZERO deeper links for it → defensive decline.
+	// A TABLE-owned mid-spine link (X2's owner is T4, the spine's single-source
+	// bottom — a sibling of X): owned by the bottom's own row, it is admitted,
+	// its collection rooting at the bottom's window.
 	forkL2, _ := link(t, l1, "T4", "SARR", "X2")
 	forkAtY, _ := link(t, forkL2, "X", "SUB", "Y")
 	// A GENUINE fork spine: Y and Y2 both owned by X, Z owned by Y2 — every
@@ -421,8 +423,8 @@ func TestChainedSpineWalk(t *testing.T) {
 	dupL1, _ := link(t, scan("T4", "T4"), "T4", "SARR", "X")
 	dupL2, _ := link(t, dupL1, "X", "SUBSTRUCT", "X")
 	dupAtY, _ := link(t, dupL2, "X", "SUB", "Y")
-	// An owner alias matching NO deeper link (a table-owned mid-spine unnest —
-	// upstream-rejected as multiple lateral unnests; defensive here).
+	// An owner alias matching NO deeper link, not the bottom's source and not an
+	// enclosing row (defensive: the binder resolves every owner it emits).
 	orphanL2, _ := link(t, l1, "NOSUCH", "SUB", "W")
 
 	cases := []struct {
@@ -436,7 +438,7 @@ func TestChainedSpineWalk(t *testing.T) {
 		{"one_link_spine", l1, 1, true, true},
 		{"two_link_spine", l2, 2, true, true},
 		{"three_link_spine", l3, 3, true, true},
-		{"table_owned_mid_spine", forkAtY, 0, false, false},
+		{"table_owned_mid_spine", forkAtY, 3, true, true},
 		{"genuine_fork_spine", gf4, 4, true, true},
 		// A multi-source INNER box bottom is ADMITTED (bottomInnerBox) and treated
 		// as pure (its per-leg windows compose into the chained merged row). A bare
@@ -486,7 +488,11 @@ func TestForkOwnerElementSlot(t *testing.T) {
 		if !admitted {
 			t.Fatalf("%s: spine not admitted", name)
 		}
-		got, ok := tr.chainedOwnerElementSlot(links, owner)
+		bottom := spine
+		if len(links) > 0 {
+			bottom = links[0].join.Left
+		}
+		got, ok := tr.chainedOwnerElementSlot(bottom, links, owner)
 		if ok != wantOK || (ok && got != wantSlot) {
 			t.Errorf("%s: chainedOwnerElementSlot(%q) = (%d, %v), want (%d, %v)", name, owner, got, ok, wantSlot, wantOK)
 		}
@@ -526,4 +532,85 @@ func TestForkOwnerElementSlot(t *testing.T) {
 
 	// Absent owner declines.
 	slotOf("absent_owner", l2, "NOSUCH", 0, false)
+}
+
+// TestChainedSpineOverAFirstFromItem pins a block's first FROM item over an
+// enclosing array (a standalone bound unnest, EnclosingOwner) as a chain's
+// bottom — Java's first ForEach quantifier, whose element the next link
+// explodes. The walk admits it with no links of its own; its element is slot 0
+// of the merged row, the owner a first link resolves to; and the real chained
+// dispatch builds the ordinal seed over it, one link or two. A standalone
+// unnest the binder did NOT resolve to an enclosing owner is no bottom.
+func TestChainedSpineOverAFirstFromItem(t *testing.T) {
+	t.Parallel()
+	tr := newChainedSpineTranslator(t)
+
+	_, first := link(t, scan("T4", "T4"), "T4", "SARR", "X")
+	first.EnclosingOwner = true
+	l1, u1 := link(t, first, "X", "SUBSTRUCT", "Y")
+	l2, u2 := link(t, l1, "Y", "DEEP", "Z")
+	fork, uFork := link(t, l1, "X", "SUB", "W")
+	// A link above the fork that reads it: the fork, owned by the bottom, is
+	// now an inner link the ownership law must resolve.
+	aboveFork, uAboveFork := link(t, l1, "X", "SUBSTRUCT", "Y2")
+	aboveFork2, uAboveFork2 := link(t, aboveFork, "Y2", "DEEP", "Z2")
+
+	for _, tc := range []struct {
+		name      string
+		op        logical.LogicalOperator
+		wantLinks int
+	}{
+		{"bottom_alone", first, 0},
+		{"one_link", l1, 1},
+		{"two_links", l2, 2},
+		{"fork_on_the_bottom", fork, 2},
+		{"link_above_a_bottom_owned_fork", aboveFork2, 3},
+	} {
+		links, admitted, pure := tr.chainedSpineWalk(tc.op)
+		if !admitted || !pure || len(links) != tc.wantLinks {
+			t.Errorf("%s: chainedSpineWalk = (links=%d, %v, %v), want (%d, true, true)",
+				tc.name, len(links), admitted, pure, tc.wantLinks)
+		}
+	}
+
+	slot := func(name string, spine logical.LogicalOperator, owner string, want int) {
+		t.Helper()
+		links, admitted, _ := tr.chainedSpineWalk(spine)
+		if !admitted {
+			t.Fatalf("%s: spine not admitted", name)
+		}
+		bottom := spine
+		if len(links) > 0 {
+			bottom = links[0].join.Left
+		}
+		if got, ok := tr.chainedOwnerElementSlot(bottom, links, owner); !ok || got != want {
+			t.Errorf("%s: chainedOwnerElementSlot(%q) = (%d, %v), want (%d, true)", name, owner, got, ok, want)
+		}
+	}
+	slot("first_link_owner", first, "X", 0)
+	slot("second_link_owner_is_the_first_link", l1, "Y", 1)
+	slot("fork_owner_is_the_bottom", l1, "X", 0)
+	slot("bottom_owned_fork_as_inner_link", aboveFork, "Y2", 2)
+
+	for _, tc := range []struct {
+		name string
+		j    *logical.LogicalJoin
+		u    *logical.LogicalUnnest
+	}{
+		{"one_link", l1, u1},
+		{"two_links", l2, u2},
+		{"fork_on_the_bottom", fork, uFork},
+		{"bottom_owned_fork_as_tip", aboveFork, uAboveFork},
+		{"link_above_a_bottom_owned_fork", aboveFork2, uAboveFork2},
+	} {
+		if got := seedForm(t, tr, tc.j, tc.u); got != "ordinal" {
+			t.Errorf("%s: chained seed over a first-item bottom = %s, want ordinal", tc.name, got)
+		}
+	}
+
+	_, unbound := link(t, scan("T4", "T4"), "T4", "SARR", "X")
+	unboundLink, _ := link(t, unbound, "X", "SUBSTRUCT", "Y")
+	if _, admitted, _ := tr.chainedSpineWalk(unboundLink); admitted {
+		t.Error("a standalone unnest the binder did not resolve to an enclosing owner was admitted as a bottom")
+	}
 }

@@ -23,7 +23,7 @@ func TestFDB_UpdateAssignmentProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE updassign CREATE TABLE t (id BIGINT, v BIGINT, w BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_updassign/s WITH TEMPLATE updassign")
-	dsn := fmt.Sprintf("fdbsql:///testdb_updassign?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_UPDASSIGN?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

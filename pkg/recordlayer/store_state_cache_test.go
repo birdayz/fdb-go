@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -91,6 +92,51 @@ var _ = Describe("Store State Cache", func() {
 	})
 
 	Describe("MetaDataVersionStampStoreStateCache", func() {
+		It("keeps published entries immutable during concurrent warmed opens", func() {
+			ss := specSubspace()
+			cache := NewMetaDataVersionStampStoreStateCache()
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				_, err = store.SetStateCacheability(true)
+				return nil, err
+			})
+			Expect(err).NotTo(HaveOccurred())
+			open := func() error {
+				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).SetStoreStateCache(cache).Open()
+					if err != nil {
+						return nil, err
+					}
+					if !store.IsCacheable() {
+						return nil, fmt.Errorf("cached header lost cacheability")
+					}
+					return nil, nil
+				})
+				return err
+			}
+			Expect(open()).To(Succeed())
+			start := make(chan struct{})
+			results := make(chan error, 8)
+			for range 8 {
+				go func() {
+					<-start
+					for range 20 {
+						if err := open(); err != nil {
+							results <- err
+							return
+						}
+					}
+					results <- nil
+				}()
+			}
+			close(start)
+			for range 8 {
+				Expect(<-results).To(Succeed())
+			}
+		})
 		It("cache hit on repeated open with no mutations", func() {
 			ss := specSubspace()
 			cache := NewMetaDataVersionStampStoreStateCache()
@@ -399,11 +445,11 @@ var _ = Describe("Store State Cache", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Cache stores entries regardless of cacheable flag.
+			// Noncacheable headers must never enter the shared cache.
 			cache.mu.Lock()
 			entryCount := len(cache.entries)
 			cache.mu.Unlock()
-			Expect(entryCount).To(Equal(1))
+			Expect(entryCount).To(BeZero())
 		})
 
 		It("SetStateCacheability(true) enables caching", func() {
@@ -516,9 +562,8 @@ var _ = Describe("Store State Cache", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Open again — store should correctly report non-cacheable.
-			// Clear cache first to force fresh load, verifying the persisted state.
-			cache.Clear()
+			// Open through the populated cache: the transition itself must
+			// invalidate the old cacheable header without manual eviction.
 			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).
@@ -534,11 +579,11 @@ var _ = Describe("Store State Cache", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Cache stores entries regardless of cacheable flag.
+			// The noncacheable reload must remove the stale cached header.
 			cache.mu.Lock()
 			count2 := len(cache.entries)
 			cache.mu.Unlock()
-			Expect(count2).To(Equal(1))
+			Expect(count2).To(BeZero())
 		})
 
 		It("multiple stores in same cache are independently cached", func() {
@@ -807,6 +852,30 @@ var _ = Describe("Store State Cache", func() {
 			// tx1 commit should fail due to read conflict on STORE_INFO key.
 			err = tx1.Commit().Get()
 			Expect(err).To(HaveOccurred(), "tx1 should fail: store header was modified by tx2 after cache hit")
+		})
+
+		It("SetStateCacheability propagates stamp read failure without publishing the header", func() {
+			ss := specSubspace()
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				_, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				return nil, err
+			})
+			Expect(err).NotTo(HaveOccurred())
+			tx, err := sharedDB.CreateTransaction()
+			Expect(err).NotTo(HaveOccurred())
+			defer tx.Cancel()
+			rtx := NewFDBRecordContext(tx, nil)
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+			Expect(err).NotTo(HaveOccurred())
+			header := proto.Clone(store.storeHeader)
+			rtx.Cancel()
+			changed, err := store.SetStateCacheability(true)
+			Expect(changed).To(BeFalse())
+			var cause fdb.Error
+			Expect(errors.As(err, &cause)).To(BeTrue())
+			Expect(cause.Code).To(Equal(1025))
+			Expect(proto.Equal(store.storeHeader, header)).To(BeTrue())
+			Expect(rtx.HasDirtyStoreState()).To(BeFalse())
 		})
 
 		It("SetStateCacheability returns error for old format versions", func() {

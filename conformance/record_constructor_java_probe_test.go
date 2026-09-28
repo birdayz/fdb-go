@@ -2,7 +2,7 @@
 
 package conformance_test
 
-// Records Java's live behaviour (tag 4.12.11.0 conformance server) for the
+// Records Java's live behaviour (the pinned conformance server) for the
 // record constructor as a VALUE, and for how a record literal binds to a
 // TARGET struct type.
 //
@@ -19,7 +19,7 @@ package conformance_test
 // The original diagnostic spec prints both engines' outcomes so the pins in
 // pkg/relational/sqldriver/record_constructor_expression_fdb_test.go can be
 // re-checked against the live JVM. The numeric-array spec additionally pins
-// Java's mixed-width failure and explicitly uniform-width success controls.
+// recursive mixed-width promotion and explicitly uniform-width success controls.
 
 import (
 	"context"
@@ -121,25 +121,14 @@ var _ = Describe("RecordConstructorJavaProbe", func() {
 		setup := []string{"INSERT INTO t VALUES (1)"}
 		for _, probe := range []struct {
 			name, query, field string
-			wantWidthError     bool
 		}{
-			{"matching_names", "SELECT ([(1 AS A), (2.5 AS A)] AS CH) FROM t", "A", true},
-			{"differing_names", "SELECT ([(1 AS A), (2.5 AS B)] AS CH) FROM t", "_0", true},
-			{"matching_names_double_control", "SELECT ([(1.0 AS A), (2.5 AS A)] AS CH) FROM t", "A", false},
-			{"differing_names_double_control", "SELECT ([(1.0 AS A), (2.5 AS B)] AS CH) FROM t", "_0", false},
+			{"matching_names", "SELECT ([(1 AS A), (2.5 AS A)] AS CH) FROM t", "A"},
+			{"differing_names", "SELECT ([(1 AS A), (2.5 AS B)] AS CH) FROM t", "_0"},
+			{"matching_names_double_control", "SELECT ([(1.0 AS A), (2.5 AS A)] AS CH) FROM t", "A"},
+			{"differing_names_double_control", "SELECT ([(1.0 AS A), (2.5 AS B)] AS CH) FROM t", "_0"},
 		} {
 			result := runner.RunWithSetup(ctx, schema, setup, probe.query)
 			fmt.Fprintf(GinkgoWriter, "RECORD-ARRAY-PROMOTION %s columns=%#v rows=%#v error=%v\n", probe.name, result.Rows.Columns, result.Rows.Rows, result.Err)
-			if probe.wantWidthError {
-				// This is an upstream runtime boxing failure, not an SQL rule
-				// disallowing arrays of compatible numeric records. The uniform
-				// DOUBLE controls below keep the same names and container shape.
-				var javaErr *plandiff.JavaError
-				Expect(errors.As(result.Err, &javaErr)).To(BeTrue(), probe.query)
-				Expect(javaErr.ExceptionClass).To(Equal("IllegalArgumentException"), probe.query)
-				Expect(javaErr.Message).To(Equal("Wrong object type used with protocol message reflection.\nField number: 1, field java type: DOUBLE, value type: java.lang.Integer\n"), probe.query)
-				continue
-			}
 			Expect(result.Err).NotTo(HaveOccurred(), probe.query)
 			Expect(result.Rows.Rows).To(Equal([][]any{{map[string]any{"CH": []any{
 				map[string]any{probe.field: float64(1)},

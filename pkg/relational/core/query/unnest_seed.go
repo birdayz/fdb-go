@@ -45,6 +45,29 @@ func (t *cascadesTranslator) unnestOrdinalSeed(
 	u *logical.LogicalUnnest,
 	elementType values.Type,
 ) values.Value {
+	if bottom := standaloneUnnestLeg(outer); bottom != nil {
+		// The outer is a block's first FROM item unnesting an enclosing array:
+		// its Explode flows the element itself (the element/ordinal pair under
+		// AT), not a row of columns, so the outer run is that leg's own
+		// element/ordinal fields over the outer quantifier — the same fields
+		// it contributes as an inner leg — never an ordinal read of the
+		// element's first member.
+		_, _, bottomArray := boundUnnestCollection(bottom)
+		if bottomArray == nil {
+			return nil
+		}
+		outerFields, _, ok := unnestSeedInnerFields(outerCorr, bottom, bottomArray.ElementType)
+		if !ok {
+			return nil
+		}
+		innerFields, _, ok := unnestSeedInnerFields(innerCorr, u, elementType)
+		if !ok {
+			return nil
+		}
+		// A direct-QOV element makes this a mixed seed on either side, so it
+		// skips the pristine-seed assert exactly as the single mixed seed does.
+		return values.NewRawRecordConstructorValue(append(outerFields, innerFields...)...)
+	}
 	outerType := t.ordinalLegType(outer)
 	if outerType == nil || len(outerType.Fields) == 0 {
 		// A DERIVED-TABLE outer flows its projection's OUTPUT columns as a
@@ -105,6 +128,18 @@ func (t *cascadesTranslator) unnestBakedRootCollection(
 	u *logical.LogicalUnnest,
 	explicitRootIdx int,
 ) values.Value {
+	if bottom := standaloneUnnestLeg(outer); bottom != nil {
+		// The outer quantifier IS the first FROM item's Explode, bound under
+		// the correlation the binder resolved the element to, and it flows
+		// that element (or the element/ordinal pair) exactly as the binder
+		// typed it: the bound collection already reads the outer row. Only
+		// that owner qualifies — any other owner is not this leg's element.
+		owner, _, _ := boundUnnestCollection(u)
+		if owner == nil || owner.Correlation() != outerCorr || unnestSourceCorrelation(bottom) != outerCorr {
+			return nil
+		}
+		return u.CorrelatedCollection
+	}
 	outerType := t.ordinalLegType(outer)
 	if outerType == nil || len(outerType.Fields) == 0 {
 		// A DERIVED-TABLE outer (`FROM (SELECT …) AS d, d.arr AS x`) is not a

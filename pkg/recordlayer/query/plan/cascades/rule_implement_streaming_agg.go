@@ -91,6 +91,13 @@ func admissibleStreamingAggInner(expr expressions.RelationalExpression) bool {
 
 func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 	gb := matching.Get[*expressions.GroupByExpression](call.Bindings, r.matcher)
+	for _, agg := range gb.GetAggregates() {
+		if !agg.Function.HasStreamingAccumulator() {
+			// No accumulator computes it (an index-only or bitmap aggregate):
+			// a streaming plan would emit a NULL for it on every group.
+			return
+		}
+	}
 
 	innerRef := gb.GetInner().GetRangesOver()
 	if innerRef == nil {

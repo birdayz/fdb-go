@@ -5,26 +5,32 @@ All notable changes to `fdb-record-layer-go` are recorded here. Format:
 (pre-1.0 `v0.MINOR.PATCH`).
 
 **This project is pre-1.0.** The **Go API may change across minor versions**; the **FDB wire
-format stays compatible with Java `fdb-record-layer-core` 4.12.11.0 across every release** (the
+format must stay compatible with each release's declared Java `fdb-record-layer-core` target** (the
 shared-cluster hard line — see `RELEASE.md`). Every entry's **Compatibility** block answers the four
 questions a user upgrading between two refs needs: wire format, SQL behaviour, FDB client option
 semantics, and required dependency versions.
 
 This changelog starts **2026-06-20**; earlier history is in `git log`. The first tagged release is
-**v0.1.0** (2026-08-26). The `frl` CLI ships from a parallel nested-module tag, `cmd/frl/v0.1.0` —
-that form is what makes `go install fdb.dev/cmd/frl@vX.Y.Z` resolve the same build the release
-assets carry (`RELEASE.md` §Versioning).
+**v0.1.0** (2026-08-26). v0.1.0 shipped the `frl` CLI from a parallel nested-module tag,
+`cmd/frl/v0.1.0`; from the next release `frl` is a package of the root module and ships under the
+project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (`RELEASE.md`).
 
 ## [Unreleased]
 
 ### Compatibility
-- **Wire format:** unchanged since v0.1.0 — records, indexes, versions, continuations, and split
-  records remain byte-identical to Java `fdb-record-layer-core` 4.12.11.0.
-- **SQL behaviour:** unchanged since v0.1.0.
+- **Wire format:** the Java target is upgraded to `fdb-record-layer-core` 4.14.2.0 (RFC-257, in
+  progress). Records Java writes through `TransformedRecordSerializer` (compressed, encrypted) are
+  read and written. Stores written only by an earlier pre-release Go build are not supported:
+  recreate them.
+- **SQL behaviour:** follows Java 4.14.2.0 where both engines run a query; see the PR for the
+  per-change list.
 - **FDB client option semantics:** unchanged since v0.1.0; the honored / `UnsupportedOptionError` /
   safe-no-op classification in `pkg/fdbgo/fdb/OPTIONS.md` still holds against `libfdb_c` 7.3.77.
-- **Required versions:** Java `fdb-record-layer-core` **4.12.11.0**, FDB C++ client **7.3.77**, Go
+- **Required versions:** Java `fdb-record-layer-core` **4.14.2.0**, FDB C++ client **7.3.77**, Go
   **1.26.x** (the `MODULE.bazel` / `go.mod` pins; the CI doc-guard enforces docs match them).
+
+### Changed
+- `frl` is a package of the root module and releases under the project's `vX.Y.Z` tag.
 
 ## [v0.1.0] - 2026-08-26
 

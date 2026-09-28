@@ -522,7 +522,7 @@ func TestPlanner_UpdateOverScanProducesPhysicalUpdate(t *testing.T) {
 
 	updateValue, updateErr := expressions.NewUpdateExpression(
 		q, "Order", phase3RowType(), []expressions.UpdateTransform{
-			{FieldPath: "STATUS", NewValue: values.LiteralValue("SHIPPED")},
+			{FieldNames: []string{"STATUS"}, FieldOrdinals: []int{0}, NewValue: values.LiteralValue("SHIPPED")},
 		})
 	update := mustConstruct(t, updateValue, updateErr)
 	ref := expressions.InitialOf(update)

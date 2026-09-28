@@ -43,7 +43,9 @@
   },
   "SA1019": {
     "exclude_files": {
-      "metadata_proto": "uses deprecated proto fields intentionally"
+      "metadata_proto": "uses deprecated proto fields intentionally",
+      "metadata_extension_options": "reads the deprecated (field).indexed option, as Java's setRecords does",
+      "key_expression_absent_child_conformance": "sets the deprecated record_count_key, which Java's loader still reads"
     }
   },
   "SA5011": {

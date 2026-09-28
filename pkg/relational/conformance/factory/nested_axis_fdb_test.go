@@ -206,25 +206,21 @@ func nestedAxes() []nestedAxis {
 		{axis: "join-projection", query: "SELECT l.n.sk, r.n.dp.co FROM nt AS l JOIN nt AS r ON l.id = r.id ORDER BY l.id", want: []string{"11|aa", "22|bb", "33|cc"}},
 
 		// --- shadowing -------------------------------------------------------
-		// `SELECT n.sk FROM nt AS n` is genuinely AMBIGUOUS, and the refusal is
-		// the correct answer rather than a gap. `n` is both the table alias —
-		// under which `sk` is a column — and the struct column, under which `sk`
-		// is a field, so `n.sk` names two different values and the engine cannot
-		// pick one.
-		//
-		// Java refuses it identically and Go matches it deliberately.
-		// SemanticAnalyzer.lookup appends BOTH the direct qualified match and
-		// the lookupNestedField match into the same directMatchesBuilder
-		// (SemanticAnalyzer.java:475-487), and resolveIdentifier then asserts
-		// `attributes.size() == 1` with AMBIGUOUS_COLUMN / "Ambiguous reference
-		// %s" (SemanticAnalyzer.java:422). This axis will never close, which is
-		// why it is booked as `refuses` and not as `declines`.
-		//
-		// The comment this replaces described a different defect — that the
-		// alias renames the table so the TABLE name is no longer a legal
-		// qualifier. That is a real hazard, but it is not this query: nothing
-		// here names the table, and the refusal being pinned is the ambiguity.
-		{axis: "alias-shadows-table", query: "SELECT n.sk FROM nt AS n ORDER BY n.id", refuses: "Ambiguous reference N.SK"},
+		// `SELECT n.sk FROM nt AS n` names the alias's flat column sk. `n` is
+		// both the table alias (under which `sk` is a column) and the struct
+		// column (under which `sk` is a field), but Java's
+		// SemanticAnalyzer.resolveIdentifierMaybe runs the qualified lookup first
+		// and the struct-relative one only when that finds nothing, so the
+		// qualified reading answers. Measured against the target: [[1]], the flat
+		// column (conformance/ws_f_table_qualifier_conformance_test.go). An
+		// earlier reading of Java booked this as a by-design ambiguity; the
+		// target answers it.
+		{axis: "alias-shadows-table", query: "SELECT n.sk FROM nt AS n ORDER BY n.id", want: []string{"100", "200", "300"}},
+		// Two sources carrying the struct column n: two struct-relative
+		// candidates at one level, which Java's second lookup counts and refuses
+		// (measured: "Ambiguous reference N.SK" in both engines). A shape that
+		// will never close, the population this gate's floor watches.
+		{axis: "two-sources-one-struct-name", query: "SELECT n.sk FROM nt AS a, nt AS b", refuses: "Ambiguous reference N.SK"},
 	}
 }
 

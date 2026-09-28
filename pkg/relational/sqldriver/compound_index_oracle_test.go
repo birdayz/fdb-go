@@ -27,7 +27,7 @@ func TestFDB_CompoundIndexOracle(t *testing.T) {
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_ab ON t (a, b)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_cmpidxora/s WITH TEMPLATE cmpidxora")
-	dsn := fmt.Sprintf("fdbsql:///testdb_cmpidxora?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_CMPIDXORA?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

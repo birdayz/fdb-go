@@ -53,6 +53,14 @@ type aggregateCursor struct {
 	groupingKeys []values.Value
 	aggregates   []expressions.AggregateSpec
 
+	// scalarInputLayout is the input's provided layout when that input flows a
+	// SCALAR (a non-ordinal Explode's element: a correlated array as a block's
+	// first FROM item, `(SELECT SUM(x) FROM p.arr x)`), nil otherwise. A key or
+	// operand over such an input reads the element as the input QOV itself, so
+	// it is bound to the unwrapped scalar, as executeFilter and
+	// executeProjection bind it.
+	scalarInputLayout values.OrdinalLayout
+
 	// evalCtx carries params/subqueries/outer bindings so a group-key / operand
 	// reference resolves against the inner PositionalRow the SAME way
 	// executeFilter / executeProjection do (frontierRowContext → evaluateOrdinal,
@@ -157,7 +165,15 @@ func newAggregateCursorWithOutputType(
 	if inputQOV != nil {
 		inputEdges = []values.QuantifiedObjectValue{inputQOV}
 	}
+	var scalarInputLayout values.OrdinalLayout
+	if innerPlan != nil {
+		if layout, err := innerPlan.ProvidedOutputLayout(); err == nil && layout != nil &&
+			layout.CarrierKind() == values.OrdinalCarrierScalar {
+			scalarInputLayout = layout
+		}
+	}
 	return &aggregateCursor{
+		scalarInputLayout: scalarInputLayout,
 		inner:             inner,
 		groupingKeys:      groupingKeys,
 		aggregates:        aggregates,
@@ -455,6 +471,10 @@ func (w *aggregateCursorContinuation) IsEnd() bool { return false }
 // values — the ONE frontier dispatch, so the aggregate input resolves
 // positionally on the same shapes those do.
 //
+//   - A BARE SCALAR input (scalarInputLayout: a non-ordinal Explode's element,
+//     the correlated array a block's first FROM item unnests) binds the
+//     unwrapped element to the input QOV, which is what a key or operand over
+//     it reads (`SUM(x)` is SUM over QOV(x)).
 //   - A POSITIONALLY-BAKED value (a FieldValue with a resolved ordinal — the
 //     gathered-seed un-collapse's qualifier-honoring group key/operand) reads the
 //     flat seed row it was baked against: a bare positional context, no
@@ -480,6 +500,15 @@ func (w *aggregateCursorContinuation) IsEnd() bool { return false }
 func (c *aggregateCursor) aggregateEvalArg(v values.Value, row QueryResult) (any, error) {
 	if row.Positional == nil {
 		return nil, nil
+	}
+	if c.scalarInputLayout != nil {
+		scalar, err := isBareScalarRow(row.Positional)
+		if err != nil {
+			return nil, err
+		}
+		if scalar {
+			return scalarLayoutRowContext(c.scalarInputLayout, row.Positional, c.evalCtx, c.inputEdges...)
+		}
 	}
 	if valueReadsBakedOrdinal(v) {
 		// A baked ordinal operand reads plan-time-resolved slots directly off the
@@ -2059,7 +2088,7 @@ func decodeNLJContinuation(continuation []byte) (outerContinuation []byte, resum
 		return nil, nil, nil
 	}
 	fmc := &gen.FlatMapContinuation{}
-	if uerr := proto.Unmarshal(continuation, fmc); uerr != nil {
+	if uerr := recordlayer.UnmarshalAsJava(continuation, fmc); uerr != nil {
 		return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join (unrecognized continuation bytes)"}
 	}
 	if len(fmc.GetOuterContinuation()) == 0 && len(fmc.GetInnerContinuation()) == 0 && len(fmc.GetCheckValue()) == 0 {

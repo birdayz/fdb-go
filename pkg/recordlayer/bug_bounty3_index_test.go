@@ -272,10 +272,10 @@ var _ = Describe("BugBounty3Index", func() {
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			builder.AddIndex("Order", idx)
 			_, err := builder.Build()
-			var mdErr *MetaDataError
-			Expect(errors.As(err, &mdErr)).To(BeTrue())
-			Expect(mdErr.Message).To(ContainSubstring("requires a GroupingKeyExpression"))
-			Expect(mdErr.Message).To(ContainSubstring("count_notnull_bare_field"))
+			// Java's validateGrouping (IndexValidator.java:58-77), its class and text.
+			var keyErr *KeyExpressionError
+			Expect(errors.As(err, &keyErr)).To(BeTrue(), "%T: %v", err, err)
+			Expect(keyErr.Message).To(Equal("index type requires grouping"))
 		})
 	})
 
@@ -312,10 +312,10 @@ var _ = Describe("BugBounty3Index", func() {
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			builder.AddIndex("Order", idx)
 			_, err := builder.Build()
-			var mdErr *MetaDataError
-			Expect(errors.As(err, &mdErr)).To(BeTrue())
-			Expect(mdErr.Message).To(ContainSubstring("requires a GroupingKeyExpression"))
-			Expect(mdErr.Message).To(ContainSubstring("sum_bare_price"))
+			// Java's validateGrouping (IndexValidator.java:58-77), its class and text.
+			var keyErr *KeyExpressionError
+			Expect(errors.As(err, &keyErr)).To(BeTrue(), "%T: %v", err, err)
+			Expect(keyErr.Message).To(Equal("index type requires grouping"))
 		})
 
 		It("works correctly with Ungrouped wrapper", func() {
@@ -380,10 +380,10 @@ var _ = Describe("BugBounty3Index", func() {
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			builder.AddIndex("Order", idx)
 			_, err := builder.Build()
-			var mdErr *MetaDataError
-			Expect(errors.As(err, &mdErr)).To(BeTrue())
-			Expect(mdErr.Message).To(ContainSubstring("requires a GroupingKeyExpression"))
-			Expect(mdErr.Message).To(ContainSubstring("max_ever_bare_price"))
+			// Java's validateGrouping (IndexValidator.java:58-77), its class and text.
+			var keyErr *KeyExpressionError
+			Expect(errors.As(err, &keyErr)).To(BeTrue(), "%T: %v", err, err)
+			Expect(keyErr.Message).To(Equal("index type requires grouping"))
 		})
 
 		It("MIN_EVER_LONG without GroupingKeyExpression is rejected at Build time", func() {
@@ -395,10 +395,10 @@ var _ = Describe("BugBounty3Index", func() {
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			builder.AddIndex("Order", idx)
 			_, err := builder.Build()
-			var mdErr *MetaDataError
-			Expect(errors.As(err, &mdErr)).To(BeTrue())
-			Expect(mdErr.Message).To(ContainSubstring("requires a GroupingKeyExpression"))
-			Expect(mdErr.Message).To(ContainSubstring("min_ever_bare_price"))
+			// Java's validateGrouping (IndexValidator.java:58-77), its class and text.
+			var keyErr *KeyExpressionError
+			Expect(errors.As(err, &keyErr)).To(BeTrue(), "%T: %v", err, err)
+			Expect(keyErr.Message).To(Equal("index type requires grouping"))
 		})
 	})
 

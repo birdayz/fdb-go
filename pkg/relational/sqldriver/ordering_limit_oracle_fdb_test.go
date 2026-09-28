@@ -178,7 +178,7 @@ func TestFDB_OrderingLimitOracle(t *testing.T) {
 			"CREATE INDEX sum_v_by_ab AS SELECT SUM(v) FROM t GROUP BY a, b "+
 			"CREATE INDEX max_v_by_a AS SELECT MAX(v) FROM t GROUP BY a")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ordoracle/s WITH TEMPLATE ordoracle")
-	dsn := fmt.Sprintf("fdbsql:///testdb_ordoracle?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_ORDORACLE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

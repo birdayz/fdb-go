@@ -131,12 +131,9 @@ func TestUnionExactOutputContract_WidensNotNullLiteral(t *testing.T) {
 	if len(projected) != 1 {
 		t.Fatalf("literal leg projected values = %v, want one", projected)
 	}
-	pick, ok := projected[0].(*values.PickValue)
-	if !ok || !pick.Type().Equals(values.NullableLong) || len(pick.Alternatives) != 2 {
-		t.Fatalf("literal widening = %T %v, want exact nullable LONG PickValue", projected[0], projected[0])
-	}
-	if _, ok := pick.Alternatives[1].(*values.NullValue); !ok {
-		t.Fatalf("literal widening nullable alternative = %T, want *values.NullValue", pick.Alternatives[1])
+	promoted, ok := projected[0].(*values.PromoteValue)
+	if !ok || !promoted.Type().Equals(values.NullableLong) || !promoted.Child.Type().Equals(values.NotNullInt) {
+		t.Fatalf("literal widening = %T %v, want INT -> nullable LONG promotion", projected[0], projected[0])
 	}
 	if _, _, err := planWithOptions(t,
 		`SELECT v FROM a UNION ALL SELECT 99 FROM b`, unionExactOutputDDL, nil); err != nil {
@@ -154,5 +151,60 @@ func TestUnionExactOutputContract_IncompatibleTypesStayLoud(t *testing.T) {
 	var relationalErr *api.Error
 	if !errors.As(err, &relationalErr) || relationalErr.Code != api.ErrCodeUnionIncompatibleColumns {
 		t.Fatalf("incompatible UNION error = %v, want %s", err, api.ErrCodeUnionIncompatibleColumns)
+	}
+}
+
+func TestUnionExactOutputContract_DuplicateSQLLabelsKeepDistinctPhysicalSlots(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		sql           string
+		physicalNames []string
+	}{
+		{`SELECT * FROM a p, a q UNION ALL SELECT * FROM a p, a q`, []string{"ID", "V", "ID", "V"}},
+		{`SELECT * FROM a p, a q UNION ALL SELECT p.id, p.v, q.id, q.v FROM a p, a q`, []string{"ID", "V", "ID_2", "V_2"}},
+		{`SELECT * FROM a p, a q UNION ALL SELECT * FROM a p, a q ORDER BY 1, 3`, []string{"ID", "V", "ID_2", "V_2"}},
+	} {
+		t.Run(tc.sql, func(t *testing.T) {
+			t.Parallel()
+			op, md, err := buildUnionLogical(t, tc.sql)
+			if err != nil {
+				t.Fatal(err)
+			}
+			labels, err := query.ExactLogicalOutputLabels(op, md, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []string{"ID", "V", "ID", "V"}
+			if len(labels) != len(want) {
+				t.Fatalf("SQL labels = %v", labels)
+			}
+			for i := range want {
+				if labels[i] != want[i] {
+					t.Fatalf("SQL label %d = %q, want %q", i, labels[i], want[i])
+				}
+			}
+			ref, _, err := query.TranslateToCascadesWithError(op, md)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertUnionRow(t, findTranslatedUnion(t, ref), tc.physicalNames, []values.Type{values.NullableLong, values.NullableLong, values.NullableLong, values.NullableLong})
+		})
+	}
+}
+
+func TestUnionExactOutputContract_UnorderedStarPreservesProjectionElision(t *testing.T) {
+	t.Parallel()
+	op, _, err := buildUnionLogical(t, `SELECT * FROM a UNION ALL SELECT * FROM a`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	union, ok := op.(*logical.LogicalUnion)
+	if !ok || len(union.Inputs) != 2 {
+		t.Fatalf("UNION = %#v", op)
+	}
+	for i, branch := range union.Inputs {
+		if projection := findProjection(branch); projection != nil {
+			t.Fatalf("leg %d acquired an unnecessary star projection: %v", i, projection)
+		}
 	}
 }

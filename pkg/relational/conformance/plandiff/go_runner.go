@@ -30,13 +30,16 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
 	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/embedded"
 
 	// Register the fdbsql driver for blank-import side-effects.
 	_ "fdb.dev/pkg/relational/sqldriver"
@@ -48,7 +51,15 @@ import (
 // the result as a RowSet matching the Java side's wire shape.
 type goSQLRunner struct {
 	clusterFilePath string
+	// teardownExec runs one teardown drop; nil is sysDB.ExecContext. It exists
+	// so a test can make the drops fail without making the RUN fail, which is
+	// the only way to see that their failures reach the returned error.
+	teardownExec func(ctx context.Context, db *sql.DB, stmt string) error
 }
+
+// teardownTimeout bounds the ephemeral teardown, which runs detached from the
+// run's context (see withEphemeralSchema).
+const teardownTimeout = 30 * time.Second
 
 // NewGoSQLRunner returns a Runner that drives the in-process Go
 // embedded engine. clusterFilePath must point at an FDB cluster
@@ -91,6 +102,21 @@ func (r *goSQLRunner) RunWithSetup(ctx context.Context, schemaTemplate string, s
 	return RunResult{Engine: "go", Rows: rows}
 }
 
+// PreparedSetupRunner runs a query with driver-bound parameters (database/sql
+// args), after the same ephemeral schema and setup as RunWithSetup.
+type PreparedSetupRunner interface {
+	RunPreparedWithSetup(ctx context.Context, schemaTemplate string, setupSqls []string, querySql string, args []any) RunResult
+}
+
+// RunPreparedWithSetup is RunWithSetup with args bound through database/sql.
+func (r *goSQLRunner) RunPreparedWithSetup(ctx context.Context, schemaTemplate string, setupSqls []string, querySql string, args []any) RunResult {
+	rows, err := r.runEphemeral(ctx, schemaTemplate, setupSqls, querySql, args...)
+	if err != nil {
+		return RunResult{Engine: "go", Err: err}
+	}
+	return RunResult{Engine: "go", Rows: rows}
+}
+
 // FixtureError marks a failure in the ephemeral-FIXTURE lifecycle — the DDL and
 // setup DML that build the throwaway schema a corpus entry runs against — as
 // distinct from a failure of the query under test.
@@ -122,12 +148,166 @@ func fixtureErrf(err error, format string, args ...any) error {
 	return &FixtureError{Phase: fmt.Sprintf(format, args...), Err: err}
 }
 
+// suppressedTeardownError is a run's own failure with the failure of its teardown
+// attached, the Go form of Java's addSuppressed: its text is the run's error and
+// errors.As reaches the run's error first, so callers comparing outcomes see the
+// run's failure, while the teardown failure stays reachable through Unwrap.
+type suppressedTeardownError struct{ primary, teardown error }
+
+func (e *suppressedTeardownError) Error() string   { return e.primary.Error() }
+func (e *suppressedTeardownError) Unwrap() []error { return []error{e.primary, e.teardown} }
+
+// withTeardown combines a run's error with the failures of its teardown: none
+// leaves the run's error as it is, a failed teardown of a successful run is the
+// run's error, and a failed teardown of a failed run rides behind the run's error.
+func withTeardown(runErr error, teardown []error) error {
+	if len(teardown) == 0 {
+		return runErr
+	}
+	if runErr == nil {
+		return errors.Join(teardown...)
+	}
+	return &suppressedTeardownError{primary: runErr, teardown: errors.Join(teardown...)}
+}
+
 // runEphemeral mirrors Java's runWithEphemeralSchema flow:
 // CREATE SCHEMA TEMPLATE → CREATE DATABASE → CREATE SCHEMA →
 // open connection on the ephemeral schema → run setup DMLs → run
 // the query and capture its result. Tears the ephemeral state down
 // in defer.
-func (r *goSQLRunner) runEphemeral(ctx context.Context, schemaTemplate string, setupSqls []string, querySql string) (RowSet, error) {
+func (r *goSQLRunner) runEphemeral(ctx context.Context, schemaTemplate string, setupSqls []string, querySql string, args ...any) (RowSet, error) {
+	return r.runEphemeralFollowUp(ctx, schemaTemplate, setupSqls, querySql, "", isDMLQuery(querySql), args...)
+}
+
+// PreparedDMLRunner runs a prepared DML statement and then a plain follow-up query
+// in the same ephemeral schema, so what the DML stored can be read back.
+type PreparedDMLRunner interface {
+	RunPreparedDMLWithSetup(ctx context.Context, schemaTemplate string, setupSqls []string, dml string, args []any, followUpSql string) RunResult
+}
+
+// RunPreparedDMLWithSetup executes dml with args, then returns followUpSql's rows.
+func (r *goSQLRunner) RunPreparedDMLWithSetup(ctx context.Context, schemaTemplate string, setupSqls []string, dml string, args []any, followUpSql string) RunResult {
+	rows, err := r.runEphemeralFollowUp(ctx, schemaTemplate, setupSqls, dml, followUpSql, true, args...)
+	if err != nil {
+		return RunResult{Engine: "go", Err: err}
+	}
+	return RunResult{Engine: "go", Rows: rows}
+}
+
+// PreparedSequenceRunner runs one statement text several times, once per argument set, on
+// ONE connection of one ephemeral schema, so a plan cached under the statement's
+// value-free text by one execution is the plan the next execution runs. With
+// reuseStatement the statement is prepared once and re-bound; without it the text is
+// re-submitted each time. Each execution's answer is its own RunResult; a fixture failure
+// is every execution's answer.
+type PreparedSequenceRunner interface {
+	RunPreparedSequenceWithSetup(ctx context.Context, schemaTemplate string, setupSqls []string, querySql string, argSets [][]any, reuseStatement bool) []RunResult
+}
+
+// RunPreparedSequenceWithSetup implements PreparedSequenceRunner.
+func (r *goSQLRunner) RunPreparedSequenceWithSetup(ctx context.Context, schemaTemplate string, setupSqls []string, querySql string, argSets [][]any, reuseStatement bool) []RunResult {
+	results := make([]RunResult, len(argSets))
+	_, err := r.withEphemeralSchema(ctx, schemaTemplate, setupSqls, func(schemaDB *sql.DB) (RowSet, error) {
+		conn, err := schemaDB.Conn(ctx)
+		if err != nil {
+			return RowSet{}, fixtureErrf(err, "open connection")
+		}
+		defer conn.Close()
+		// The plan cache's part in each execution, recorded by a logger on this
+		// connection: a sequence meant to measure a cached plan must show that the
+		// plan WAS cached, or its rows say nothing about the cache.
+		cacheLog := &planCacheLog{}
+		if err := conn.Raw(func(dc any) error {
+			ec, ok := dc.(*embedded.EmbeddedConnection)
+			if !ok {
+				return fmt.Errorf("driver conn is %T, want *embedded.EmbeddedConnection", dc)
+			}
+			ec.SetPlanLogger(cacheLog)
+			return nil
+		}); err != nil {
+			return RowSet{}, fixtureErrf(err, "install plan logger")
+		}
+		var stmt *sql.Stmt
+		if reuseStatement {
+			// A prepare failure is the fixture's, reported as such, not rendered as
+			// each execution's answer.
+			if stmt, err = conn.PrepareContext(ctx, querySql); err != nil {
+				return RowSet{}, fixtureErrf(err, "prepare")
+			}
+			defer stmt.Close()
+		}
+		for i, args := range argSets {
+			cacheLog.last = ""
+			var sqlRows *sql.Rows
+			var qerr error
+			if stmt != nil {
+				sqlRows, qerr = stmt.QueryContext(ctx, args...)
+			} else {
+				sqlRows, qerr = conn.QueryContext(ctx, querySql, args...)
+			}
+			if qerr != nil {
+				results[i] = RunResult{Engine: "go", Err: fmt.Errorf("plandiff/go: query: %w", qerr), PlanCache: cacheLog.last}
+				continue
+			}
+			rows, rerr := rowSetFrom(sqlRows, nil)
+			if rerr != nil {
+				results[i] = RunResult{Engine: "go", Err: rerr, PlanCache: cacheLog.last}
+				continue
+			}
+			results[i] = RunResult{Engine: "go", Rows: rows, PlanCache: cacheLog.last}
+		}
+		return RowSet{}, nil
+	})
+	if err != nil {
+		for i := range results {
+			results[i] = RunResult{Engine: "go", Err: err}
+		}
+	}
+	return results
+}
+
+// runEphemeralFollowUp is runEphemeral with an optional follow-up query run after a
+// DML statement in the same schema; its rows replace the rows-affected result.
+func (r *goSQLRunner) runEphemeralFollowUp(ctx context.Context, schemaTemplate string, setupSqls []string, querySql, followUpSql string, update bool, args ...any) (RowSet, error) {
+	return r.withEphemeralSchema(ctx, schemaTemplate, setupSqls, func(schemaDB *sql.DB) (RowSet, error) {
+		// An update statement (DML or DDL) runs through ExecContext and reports its update
+		// count. The caller says which, as the Java runner's `update` flag does: the prepared
+		// DML path always passes true (a DDL statement with a follow-up included), and the
+		// plain path passes its statement classification.
+		var updateCount *int64
+		if update {
+			result, err := schemaDB.ExecContext(ctx, querySql, args...)
+			if err != nil {
+				return RowSet{}, fmt.Errorf("plandiff/go: exec: %w", err)
+			}
+			affected, err := result.RowsAffected()
+			if err != nil {
+				return RowSet{}, fmt.Errorf("plandiff/go: rows affected: %w", err)
+			}
+			if followUpSql == "" {
+				return RowSet{
+					Columns: []Column{{Name: "ROWS_AFFECTED", Type: "BIGINT"}},
+					Rows:    [][]any{{float64(affected)}},
+				}, nil
+			}
+			updateCount = &affected
+			querySql, args = followUpSql, nil
+		}
+
+		// Run the query and capture rows.
+		sqlRows, err := schemaDB.QueryContext(ctx, querySql, args...)
+		if err != nil {
+			return RowSet{}, fmt.Errorf("plandiff/go: query: %w", err)
+		}
+		return rowSetFrom(sqlRows, updateCount)
+	})
+}
+
+// withEphemeralSchema mirrors Java's runWithEphemeralSchema flow: CREATE SCHEMA
+// TEMPLATE → CREATE DATABASE → CREATE SCHEMA → open a connection pool on the ephemeral
+// schema → run the setup statements → run fn against the pool. It tears the ephemeral
+// state down on return.
+func (r *goSQLRunner) withEphemeralSchema(ctx context.Context, schemaTemplate string, setupSqls []string, fn func(schemaDB *sql.DB) (RowSet, error)) (rows RowSet, err error) {
 	suffix := strings.ReplaceAll(uuid.NewString(), "-", "")
 	templateName := "PLAN_DIFF_T_" + suffix
 	// Go embedded engine requires a single-segment database path
@@ -146,14 +326,38 @@ func (r *goSQLRunner) runEphemeral(ctx context.Context, schemaTemplate string, s
 	templateCreated := false
 	dbCreated := false
 	defer func() {
-		// Best-effort teardown. fdb-relational accepts bare identifiers
-		// and paths; quoting them rejects with a parser error
-		// ("database path must be /name").
+		// Teardown through the connection that created the objects. fdb-relational
+		// accepts bare identifiers and paths; quoting them rejects with a parser
+		// error ("database path must be /name"). A failed drop is reported, never
+		// swallowed, so a leak cannot pass silently: it is the run's error when the
+		// run succeeded, and rides along behind the run's own error otherwise.
+		//
+		// The drops run under the run's context WITHOUT its cancellation (and
+		// under their own timeout): a run that was canceled or timed out still
+		// created the objects, and dropping them with the dead context would fail
+		// both drops and leak them.
+		dropCtx, cancelDrops := context.WithTimeout(context.WithoutCancel(ctx), teardownTimeout)
+		defer cancelDrops()
+		exec := r.teardownExec
+		if exec == nil {
+			exec = func(ctx context.Context, db *sql.DB, stmt string) error {
+				_, err := db.ExecContext(ctx, stmt)
+				return err
+			}
+		}
+		var teardown []error
 		if dbCreated {
-			_, _ = sysDB.ExecContext(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS %s", dbPath))
+			if dropErr := exec(dropCtx, sysDB, fmt.Sprintf("DROP DATABASE IF EXISTS %s", dbPath)); dropErr != nil {
+				teardown = append(teardown, fixtureErrf(dropErr, "DROP DATABASE"))
+			}
 		}
 		if templateCreated {
-			_, _ = sysDB.ExecContext(ctx, fmt.Sprintf("DROP SCHEMA TEMPLATE IF EXISTS %s", templateName))
+			if dropErr := exec(dropCtx, sysDB, fmt.Sprintf("DROP SCHEMA TEMPLATE IF EXISTS %s", templateName)); dropErr != nil {
+				teardown = append(teardown, fixtureErrf(dropErr, "DROP SCHEMA TEMPLATE"))
+			}
+		}
+		if len(teardown) > 0 {
+			rows, err = RowSet{}, withTeardown(err, teardown)
 		}
 	}()
 
@@ -178,7 +382,7 @@ func (r *goSQLRunner) runEphemeral(ctx context.Context, schemaTemplate string, s
 	var schemaDB *sql.DB
 	if schemaTemplate != "" {
 		schemaDB, err = sql.Open("fdbsql",
-			fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, r.clusterFilePath, schemaName))
+			fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", strings.ToUpper(dbPath), r.clusterFilePath, strings.ToUpper(schemaName)))
 	} else {
 		schemaDB, err = sql.Open("fdbsql",
 			fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s", r.clusterFilePath))
@@ -194,25 +398,12 @@ func (r *goSQLRunner) runEphemeral(ctx context.Context, schemaTemplate string, s
 			return RowSet{}, fixtureErrf(err, "setup %q", setup)
 		}
 	}
+	return fn(schemaDB)
+}
 
-	// DML queries (INSERT/UPDATE/DELETE) use ExecContext and return rows-affected.
-	if isDMLQuery(querySql) {
-		result, err := schemaDB.ExecContext(ctx, querySql)
-		if err != nil {
-			return RowSet{}, fmt.Errorf("plandiff/go: exec: %w", err)
-		}
-		affected, _ := result.RowsAffected()
-		return RowSet{
-			Columns: []Column{{Name: "ROWS_AFFECTED", Type: "BIGINT"}},
-			Rows:    [][]any{{float64(affected)}},
-		}, nil
-	}
-
-	// Run the query and capture rows.
-	sqlRows, err := schemaDB.QueryContext(ctx, querySql)
-	if err != nil {
-		return RowSet{}, fmt.Errorf("plandiff/go: query: %w", err)
-	}
+// rowSetFrom drains sqlRows (and closes them) into a RowSet in the Java side's wire
+// shape, carrying updateCount when a DML statement preceded the query.
+func rowSetFrom(sqlRows *sql.Rows, updateCount *int64) (RowSet, error) {
 	defer sqlRows.Close()
 
 	colNames, err := sqlRows.Columns()
@@ -233,13 +424,22 @@ func (r *goSQLRunner) runEphemeral(ctx context.Context, schemaTemplate string, s
 	}
 
 	out := RowSet{
-		Columns: make([]Column, len(colNames)),
-		Rows:    [][]any{},
+		Columns:     make([]Column, len(colNames)),
+		Rows:        [][]any{},
+		UpdateCount: updateCount,
 	}
+	out.Nullability = make([]string, len(colNames))
 	for i, name := range colNames {
 		typeName := ""
+		out.Nullability[i] = "UNKNOWN"
 		if i < len(colTypes) && colTypes[i] != nil {
 			typeName = colTypes[i].DatabaseTypeName()
+			if nullable, ok := colTypes[i].Nullable(); ok {
+				out.Nullability[i] = "NOT NULL"
+				if nullable {
+					out.Nullability[i] = "NULL"
+				}
+			}
 		}
 		out.Columns[i] = Column{Name: name, Type: typeName}
 	}
@@ -429,3 +629,11 @@ func isDMLQuery(sql string) bool {
 
 // Compile-time assertion that goSQLRunner satisfies SetupRunner.
 var _ SetupRunner = (*goSQLRunner)(nil)
+
+// planCacheLog records the plan cache's part in the last planning call on its
+// connection. The sequence runner resets last before each execution.
+type planCacheLog struct{ last string }
+
+func (l *planCacheLog) LogPlanGeneration(_ context.Context, info embedded.PlanGenerationInfo) {
+	l.last = info.Cache.String()
+}

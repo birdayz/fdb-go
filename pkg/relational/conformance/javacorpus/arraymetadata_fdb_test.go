@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -63,7 +64,7 @@ func TestFDB_ArrayColumnMetadataIsTruncated(t *testing.T) {
 		_, _ = cat.Exec("DROP SCHEMA TEMPLATE IF EXISTS " + tmpl)
 	})
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, clusterFilePath, schema))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", strings.ToUpper(dbPath), clusterFilePath, strings.ToUpper(schema)))
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}

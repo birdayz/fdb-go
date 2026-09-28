@@ -28,7 +28,7 @@ func TestFDB_DmlSubqueryWhereProbe(t *testing.T) {
 		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE ref (id BIGINT, flag BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dswp/s WITH TEMPLATE dswp")
-	dsn := fmt.Sprintf("fdbsql:///testdb_dswp?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_DSWP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

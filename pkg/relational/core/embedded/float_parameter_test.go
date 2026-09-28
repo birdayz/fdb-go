@@ -67,3 +67,47 @@ func FuzzSubstituteParamsFiniteFloat(f *testing.F) {
 		assertFiniteFloatParameter(t, value)
 	})
 }
+
+// TestSubstituteParamsFloat32IsAFloat pins a bound float32 (JDBC setFloat): it
+// resolves to a FLOAT, which a FLOAT column admits, and evaluates to exactly
+// the bound bits, signed zero, subnormals, both extremes, both infinities and
+// the one NaN the 'NaN' spelling parses to included. Any other NaN pattern is
+// refused rather than rewritten.
+func TestSubstituteParamsFloat32IsAFloat(t *testing.T) {
+	t.Parallel()
+	for _, value := range []float32{
+		float32(math.Copysign(0, -1)), 0, 1.1, -3.5, 16777217, math.SmallestNonzeroFloat32,
+		-math.SmallestNonzeroFloat32, math.MaxFloat32, -math.MaxFloat32,
+		float32(math.Inf(1)), float32(math.Inf(-1)), math.Float32frombits(float32ParsedNaNBits()),
+	} {
+		rendered, err := substituteParams("?", []driver.NamedValue{{Ordinal: 1, Value: value}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsed, err := parser.ParseExpression(rendered)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resolver := expr.New(semantic.NewAnalyzer(semantic.NewInMemoryCatalog(), false), semantic.NewScope(nil))
+		resolved, err := resolver.WalkExpression(parsed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resolved.Type().Code() != values.TypeCodeFloat {
+			t.Errorf("float32(%v) rendered %q resolves to %v, want FLOAT", value, rendered, resolved.Type())
+		}
+		evaluated, err := resolved.Evaluate(nil)
+		if err != nil {
+			t.Fatalf("float32(%v) rendered %q: %v", value, rendered, err)
+		}
+		got, ok := evaluated.(float64)
+		if !ok || math.Float32bits(float32(got)) != math.Float32bits(value) {
+			t.Errorf("float32(%v) rendered %q evaluates to %T(%v), want the bound bits %#08x",
+				value, rendered, evaluated, evaluated, math.Float32bits(value))
+		}
+	}
+	payload := math.Float32frombits(float32ParsedNaNBits() | 1)
+	if _, err := substituteParams("?", []driver.NamedValue{{Ordinal: 1, Value: payload}}); err == nil {
+		t.Errorf("a FLOAT NaN with a payload was carried; it must be refused, not rewritten")
+	}
+}

@@ -14,7 +14,8 @@ import (
 
 // The exact AFTER snapshot is intentionally not compared with today's corpus
 // here: later corpus growth must not invalidate an immutable historical
-// retirement. cmd/verify-corpus-retirement-history validates it against the
+// retirement.
+//
 // sampleLedgerBytes renders a syntactically complete retirement ledger for the
 // loader tests below.
 //

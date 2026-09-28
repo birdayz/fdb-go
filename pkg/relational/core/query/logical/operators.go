@@ -80,7 +80,7 @@ type LogicalScan struct {
 	Table  string
 	Alias  string
 	// TablePath preserves normalized identifier segments from the SQL parse
-	// boundary. A quoted dotted name is one segment, not a schema qualifier.
+	// boundary. A quoted dotted name is one segment, not a template qualifier.
 	// Nil denotes legacy programmatic input; non-nil empty is malformed.
 	TablePath []string
 	// Binding is the scan's binding correlation name when its FROM alias
@@ -122,7 +122,7 @@ type LogicalUnnest struct {
 	Segments []string
 	// Binding carries the comma source's duplicate-alias binding id
 	// (see LogicalScan.Binding) so the
-	// TABLE-FIRST demotion (demoteSchemaQualifiedUnnest) can restore it on
+	// TABLE-FIRST demotion (demoteQualifiedTableUnnest) can restore it on
 	// the demoted LogicalScan. A genuine unnest consumes the same identity;
 	// repeated SQL labels do not replace it or collapse element/ordinal
 	// slots (RFC-256).
@@ -139,6 +139,14 @@ type LogicalUnnest struct {
 	// scope. Carrying the value preserves the owner, exact type and ordinal
 	// path instead of resolving the syntax again during translation.
 	CorrelatedCollection values.Value
+	// EnclosingOwner records that a lateral FROM leg's collection resolved to a
+	// source of an ENCLOSING query, not of this FROM (`EXISTS (SELECT 1 FROM h,
+	// w.arr AS v)` over an outer w; Java's resolveCorrelatedIdentifier reads
+	// the operators including the outer ones). The binder sets it from the
+	// resolution; the translator explodes such a collection as it is, correlated
+	// to the outer query, and declines a collection its FROM's left side does
+	// not own unless this is set.
+	EnclosingOwner bool
 }
 
 // UnnestBindingName reads a lateral source's runtime identity. A nonempty
@@ -285,6 +293,16 @@ type LogicalProject struct {
 	// the datum key minted from source A. A short/nil vector means the source was
 	// not captured; consumers must never reconstruct it from alias text.
 	AliasSources []values.ProjectionAliasSource
+	// SQLNameAuthored is parallel to Projections: true = the SQL name the slot
+	// publishes was written by the statement — an explicit `AS`, or an
+	// un-aliased reference to a column whose own name was (an unnest's AS/AT
+	// alias, a derived table's or CTE's authored label). Aliases cannot say
+	// this: the builder fills an un-aliased reference's slot with the selected
+	// attribute's inherited name. A derived table or CTE over this projection
+	// publishes an authored slot as semantic.Column.SQLAuthored, which
+	// resolution compares exactly. nil (or a short slice) reads as NOT
+	// authored — the descriptor-name reading, which keeps the relaxed pass.
+	SQLNameAuthored []bool
 	// AggregateOutputOrdinals is the exact native [group keys..., aggregate
 	// calls...] input slot for each post-aggregate projection item. A negative
 	// entry marks a computed item whose Value tree is bound separately. nil
@@ -428,12 +446,12 @@ type SortKey struct {
 	Dir        SortDir
 	NullsFirst bool
 	Value      values.Value // resolved Value expression (nil = use text as FieldValue)
-	// Pos is the 1-based SELECT-list position for a positional key
-	// (`ORDER BY <n>`); 0 = not positional. A positional key IS an output
-	// ordinal by SQL definition, so the translator bakes it directly to the
-	// projection's output slot — no text-rendering round-trip, which
-	// diverges for computed items whose canonical source text differs from the
-	// baked output spelling.
+	// Pos is a selected output's 1-based position; 0 means no slot selected.
+	// ORDER BY <n>, a resolved SELECT alias, and a resolved UNION output name
+	// use the same slot-binding mechanism. Authored numeric syntax remains in
+	// the parser's orderByClause, independently of this semantic address.
+	// The translator bakes a surviving Pos directly to the output slot, without
+	// reinterpreting its rendered spelling as another alias or expression.
 	Pos int
 	// AggregateOutputOrdinal is an exact address into the grouped input's
 	// native [keys..., calls...] row. The bool distinguishes native slot zero
@@ -441,9 +459,10 @@ type SortKey struct {
 	// deliberately above ORDER BY.
 	AggregateOutputOrdinal    int
 	HasAggregateOutputOrdinal bool
-	// AggregateOutputValueExact marks Value as already structurally bound to
-	// the native aggregate row (including a computed tree whose leaves are
-	// native ordinals). Generic sort rebasing must not overwrite it by name.
+	// AggregateOutputValueExact marks Value as a validated structural draft
+	// over the aggregate's grouping keys and calls. The translator binds that
+	// draft to its real aggregate-row owner; generic sort rebasing must not
+	// overwrite it by name.
 	AggregateOutputValueExact bool
 	// Bare/Qualifier/Qualified: parse-tree segments of a plain column
 	// reference key; zero values for positional and expression keys (their
@@ -632,6 +651,38 @@ type LogicalAggregate struct {
 	CallProvenance     []AggCallProvenance
 	CallProvenanceCols int
 	HasCallProvenance  bool
+	// OuterCorrelations is Java's outerCorrelations as
+	// LogicalOperator.generateGroupBy receives them: the runtime correlations
+	// of the enclosing query blocks. They are constant for every row the
+	// aggregate consumes, so a post-aggregate value correlated only to them is
+	// composable from the aggregate output (SemanticAnalyzer.isComposableFrom's
+	// constantCorrelations arm) and pulls up unchanged (Expressions.pullUp's
+	// constantAliases). Nil for a block with no enclosing sources.
+	OuterCorrelations map[values.CorrelationIdentifier]struct{}
+}
+
+// CorrelatedOnlyToOuter reports whether v is correlated, and only to
+// OuterCorrelations: a value every aggregated row sees as the same constant,
+// e.g. the outer `w.f` in `(SELECT COUNT(*) + w.f FROM h)`.
+func (a *LogicalAggregate) CorrelatedOnlyToOuter(v values.Value) bool {
+	return a != nil && CorrelatedOnlyTo(v, a.OuterCorrelations)
+}
+
+// CorrelatedOnlyTo reports whether v is correlated, and only to aliases in set.
+func CorrelatedOnlyTo(v values.Value, set map[values.CorrelationIdentifier]struct{}) bool {
+	if v == nil || len(set) == 0 {
+		return false
+	}
+	corr := values.GetCorrelatedToOfValue(v)
+	if len(corr) == 0 {
+		return false
+	}
+	for c := range corr {
+		if _, in := set[c]; !in {
+			return false
+		}
+	}
+	return true
 }
 
 // AggCallProvenance records which parsed aggregate column produced one
@@ -919,7 +970,12 @@ func (u *LogicalUnion) Explain(indent string) string {
 // time), which needs the connection's evaluation context the pure
 // logical builder lacks.
 type LogicalInsert struct {
-	Table       string
+	Table string
+	// TablePath preserves the target's normalized identifier segments from
+	// the SQL parse, as LogicalScan.TablePath does: a quoted dotted name is
+	// one segment, not a template qualifier. Nil denotes legacy programmatic
+	// input, resolved from Table by splitting.
+	TablePath   []string
 	Columns     []string
 	Source      LogicalOperator
 	ValuesArray values.Value
@@ -952,8 +1008,10 @@ func (i *LogicalInsert) Explain(indent string) string {
 // expression assignments in Sets.
 type LogicalUpdate struct {
 	Target string
-	Sets   []Assignment
-	Input  LogicalOperator // the scan + filter producing target rows
+	// TargetPath is the target's identifier segments (LogicalInsert.TablePath).
+	TargetPath []string
+	Sets       []Assignment
+	Input      LogicalOperator // the scan + filter producing target rows
 }
 
 // Assignment is one SET clause entry. Expr is the canonical text (used
@@ -962,9 +1020,24 @@ type LogicalUpdate struct {
 // evaluates against each target row. A nil Value means the text builder
 // ran without catalog resolution.
 type Assignment struct {
+	// Column is the SET column's identifier for display, its segments joined
+	// by '.' as Java prints an Identifier (`Ambiguous reference X.X.F`). It is
+	// never parsed back: a quoted segment holding a dot would split wrong, so
+	// every reader of the path reads Segments or the resolved FieldOrdinals.
+	// Its readers are the refusals' messages and Explain.
 	Column string
-	Expr   string // canonical text
-	Value  values.Value
+	// Segments is the SET column's identifier, one normalized segment per
+	// part (a quoted part keeps its case and any '.').
+	Segments []string
+	Expr     string // canonical text
+	Value    values.Value
+	// FieldOrdinals and FieldNames are the target field the identifier
+	// resolved to, set by the catalog-aware builder and read by everything
+	// after it (nil until then): the column's position in the target
+	// descriptor, then each struct field's position in the struct before it,
+	// and the fields' names (user identifiers) along the way.
+	FieldOrdinals []int
+	FieldNames    []string
 }
 
 func NewUpdate(target string, sets []Assignment, input LogicalOperator) *LogicalUpdate {
@@ -993,7 +1066,9 @@ func (u *LogicalUpdate) Explain(indent string) string {
 // LogicalDelete removes rows matching Input from Target.
 type LogicalDelete struct {
 	Target string
-	Input  LogicalOperator
+	// TargetPath is the target's identifier segments (LogicalInsert.TablePath).
+	TargetPath []string
+	Input      LogicalOperator
 }
 
 func NewDelete(target string, input LogicalOperator) *LogicalDelete {
@@ -1015,40 +1090,20 @@ func (d *LogicalDelete) Explain(indent string) string {
 	return fmt.Sprintf("%s\n%s", header, d.Input.Explain(indent+"  "))
 }
 
-// --- LogicalValues (SELECT without FROM) ---------------------------
+// --- LogicalSingleton (SELECT without FROM) ------------------------
 
-// LogicalValues is a leaf operator that yields a single row of
-// constant/expression projections — the canonical target for a
-// SELECT without a FROM clause (`SELECT 1 + 2, 'hello'`). Rows is
-// a list of expression-texts per output column; Aliases is parallel
-// (empty string = no AS clause). The number of rows is always 1 in
-// this seed; a future VALUES (…), (…) literal table would extend to
-// multi-row. Java equivalent: a ConstantExpression flowing through
-// LogicalProjectionExpression.
-type LogicalValues struct {
-	Rows    []string
-	Aliases []string
-}
+// LogicalSingleton is a source containing one row with no public columns.
+// Java's FROM-less source uses Explode([true]) with empty visible expressions;
+// the translator hides that private BOOLEAN behind an empty-record projection.
+// SELECT expressions belong to the ordinary LogicalProject above this source.
+type LogicalSingleton struct{}
 
-// NewValues constructs a LogicalValues with per-column expression
-// text + parallel aliases.
-func NewValues(rows, aliases []string) *LogicalValues {
-	return &LogicalValues{Rows: rows, Aliases: aliases}
-}
+// NewSingleton constructs the one-row, zero-column FROM-less source.
+func NewSingleton() *LogicalSingleton { return &LogicalSingleton{} }
 
-func (*LogicalValues) Children() []LogicalOperator { return []LogicalOperator{} }
+func (*LogicalSingleton) Children() []LogicalOperator { return nil }
 
-func (v *LogicalValues) Explain(indent string) string {
-	parts := make([]string, len(v.Rows))
-	for i, r := range v.Rows {
-		if i < len(v.Aliases) && v.Aliases[i] != "" {
-			parts[i] = fmt.Sprintf("%s AS %s", r, v.Aliases[i])
-		} else {
-			parts[i] = r
-		}
-	}
-	return fmt.Sprintf("%sValues(%s)", indent, strings.Join(parts, ", "))
-}
+func (*LogicalSingleton) Explain(indent string) string { return indent + "Singleton()" }
 
 // --- CTE -----------------------------------------------------------
 

@@ -36,6 +36,7 @@ type RecordQueryFlatMapPlan struct {
 	innerAlias                   values.CorrelationIdentifier
 	resultValue                  values.Value
 	inheritOuterRecordProperties bool
+	nullSupplyingOuter           bool
 	nullSupplyingInner           bool
 }
 
@@ -47,7 +48,7 @@ func NewRecordQueryFlatMapPlan(
 ) (*RecordQueryFlatMapPlan, error) {
 	return newRecordQueryFlatMapPlanFromQuantifiers(
 		QuantifierOverPlan(outer), QuantifierOverPlan(inner),
-		outerAlias, innerAlias, resultValue, inheritOuterRecordProperties, false)
+		outerAlias, innerAlias, resultValue, inheritOuterRecordProperties, false, false)
 }
 
 // NewRecordQueryFlatMapPlanFromQuantifiers builds a correlated FlatMap whose two
@@ -71,22 +72,26 @@ func NewRecordQueryFlatMapPlanFromQuantifiers(
 ) (*RecordQueryFlatMapPlan, error) {
 	return newRecordQueryFlatMapPlanFromQuantifiers(
 		outerQ, innerQ, outerAlias, innerAlias, resultValue,
-		inheritOuterRecordProperties, false)
+		inheritOuterRecordProperties, false, false)
 }
 
-// NewRecordQueryFlatMapPlanFromQuantifiersWithNullSupplyingInner builds a
-// FlatMap whose inner edge may be absent and therefore supplies SQL NULLs. The
-// fact is explicit at lowering; plans never rediscover it by traversing an
-// executor-specific wrapper spine.
-func NewRecordQueryFlatMapPlanFromQuantifiersWithNullSupplyingInner(
+// NewRecordQueryFlatMapPlanFromQuantifiersWithNullSupplying builds a FlatMap
+// whose outer and/or inner edge may be absent and therefore supplies SQL
+// NULLs: the leg the lowering wrapped in DefaultOnEmpty, which is either one —
+// Java's planPartitionToPhysical wraps any null-on-empty quantifier, the outer
+// of a partitioned lower as much as a LEFT OUTER's inner. The fact is explicit
+// at lowering; plans never rediscover it by traversing an executor-specific
+// wrapper spine.
+func NewRecordQueryFlatMapPlanFromQuantifiersWithNullSupplying(
 	outerQ, innerQ expressions.Quantifier,
 	outerAlias, innerAlias values.CorrelationIdentifier,
 	resultValue values.Value,
 	inheritOuterRecordProperties bool,
+	nullSupplyingOuter, nullSupplyingInner bool,
 ) (*RecordQueryFlatMapPlan, error) {
 	return newRecordQueryFlatMapPlanFromQuantifiers(
 		outerQ, innerQ, outerAlias, innerAlias, resultValue,
-		inheritOuterRecordProperties, true)
+		inheritOuterRecordProperties, nullSupplyingOuter, nullSupplyingInner)
 }
 
 func newRecordQueryFlatMapPlanFromQuantifiers(
@@ -94,15 +99,22 @@ func newRecordQueryFlatMapPlanFromQuantifiers(
 	outerAlias, innerAlias values.CorrelationIdentifier,
 	resultValue values.Value,
 	inheritOuterRecordProperties bool,
-	nullSupplyingInner bool,
+	nullSupplyingOuter, nullSupplyingInner bool,
 ) (*RecordQueryFlatMapPlan, error) {
 	var nullSupplying []values.QuantifiedObjectValue
-	if nullSupplyingInner {
-		innerSource, err := exactQOVForResultSource(innerAlias, resultValue)
-		if err != nil {
-			return nil, fmt.Errorf("RecordQueryFlatMapPlan null-supplying inner: %w", err)
+	for _, leg := range []struct {
+		alias         values.CorrelationIdentifier
+		nullSupplying bool
+		role          string
+	}{{outerAlias, nullSupplyingOuter, "outer"}, {innerAlias, nullSupplyingInner, "inner"}} {
+		if !leg.nullSupplying {
+			continue
 		}
-		if innerSource != nil {
+		source, err := exactQOVForResultSource(leg.alias, resultValue)
+		if err != nil {
+			return nil, fmt.Errorf("RecordQueryFlatMapPlan null-supplying %s: %w", leg.role, err)
+		}
+		if source != nil {
 			// Java's Quantifier.pullUpResultColumnsWithNullability(true):
 			// QuantifiedObjectValue.of(alias, type.withNullability(true)). A leg
 			// this FlatMap null-extends flows a row that can BE null, and the
@@ -111,11 +123,11 @@ func newRecordQueryFlatMapPlanFromQuantifiers(
 			// about the same leg. The result program is rewritten in the same
 			// step so the program and the window never disagree about which
 			// exact row the alias names.
-			resultValue, innerSource, err = pullUpNullSupplyingSource(resultValue, innerSource)
+			resultValue, source, err = pullUpNullSupplyingSource(resultValue, source)
 			if err != nil {
-				return nil, fmt.Errorf("RecordQueryFlatMapPlan null-supplying inner: %w", err)
+				return nil, fmt.Errorf("RecordQueryFlatMapPlan null-supplying %s: %w", leg.role, err)
 			}
-			nullSupplying = []values.QuantifiedObjectValue{innerSource}
+			nullSupplying = append(nullSupplying, source)
 		}
 	}
 	base, err := newPlanExprBaseForRetainedResult(
@@ -125,7 +137,7 @@ func newRecordQueryFlatMapPlanFromQuantifiers(
 	}
 	base, err = flatMapBaseWithRetainedSources(
 		base, outerQ, innerQ, outerAlias, innerAlias,
-		resultValue, nullSupplying, nullSupplyingInner)
+		resultValue, nullSupplying, nullSupplyingOuter, nullSupplyingInner)
 	if err != nil {
 		return nil, err
 	}
@@ -137,6 +149,7 @@ func newRecordQueryFlatMapPlanFromQuantifiers(
 		innerAlias:                   innerAlias,
 		resultValue:                  resultValue,
 		inheritOuterRecordProperties: inheritOuterRecordProperties,
+		nullSupplyingOuter:           nullSupplyingOuter,
 		nullSupplyingInner:           nullSupplyingInner,
 	}, nil
 }
@@ -192,7 +205,7 @@ func flatMapBaseWithRetainedSources(
 	outerAlias, innerAlias values.CorrelationIdentifier,
 	resultValue values.Value,
 	nullSupplying []values.QuantifiedObjectValue,
-	nullSupplyingInner bool,
+	nullSupplyingOuter, nullSupplyingInner bool,
 ) (PlanExprBase, error) {
 	baseLayout, err := base.ProvidedOutputLayout()
 	if err != nil {
@@ -204,7 +217,7 @@ func flatMapBaseWithRetainedSources(
 		nullSupplying bool
 	}
 	legs := []selectedLeg{
-		{quantifier: outerQ, alias: outerAlias},
+		{quantifier: outerQ, alias: outerAlias, nullSupplying: nullSupplyingOuter},
 		{quantifier: innerQ, alias: innerAlias, nullSupplying: nullSupplyingInner},
 	}
 	// A record-valued UNNEST can be retained directly as one RC output slot.
@@ -491,8 +504,13 @@ func (p *RecordQueryFlatMapPlan) WithQuantifiers(qs []expressions.Quantifier) (e
 	}
 	return newRecordQueryFlatMapPlanFromQuantifiers(
 		qs[0], qs[1], p.outerAlias, p.innerAlias, relinked,
-		p.inheritOuterRecordProperties, p.nullSupplyingInner)
+		p.inheritOuterRecordProperties, p.nullSupplyingOuter, p.nullSupplyingInner)
 }
+
+// NullSupplyingOuter reports whether the outer edge is a DefaultOnEmpty the
+// lowering installed for a null-on-empty outer quantifier: its one row per
+// empty input is SQL NULL, and the output layout carries that leg's presence.
+func (p *RecordQueryFlatMapPlan) NullSupplyingOuter() bool { return p.nullSupplyingOuter }
 
 func relinkFlatMapResultSource(
 	resultValue values.Value,

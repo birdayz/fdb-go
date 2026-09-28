@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/relational/core/functions"
+
 	"github.com/spf13/cobra"
 
 	"fdb.dev/pkg/relational/core/embedded"
@@ -30,7 +32,7 @@ import (
 
 // setupStatsDB creates database /frlstats_<name> with one schema built from
 // ddl, seeded by dml, through the real `frl sql` path. Returns the database
-// URI.
+// path CREATE DATABASE stored: the unquoted path folded whole.
 func setupStatsDB(t *testing.T, name, ddl, dml string) string {
 	t.Helper()
 	bindConfig(t)
@@ -53,7 +55,7 @@ CREATE SCHEMA %s/main WITH TEMPLATE frlstats_%s_tpl;
 	if out, err := runCmd(t, "sql", "--database", dbURI, "--schema", "main", "-f", path); err != nil {
 		t.Fatalf("bootstrap %s: %v\noutput: %s", dbURI, err, out)
 	}
-	return dbURI
+	return functions.NormalizeIdentifier(dbURI)
 }
 
 const statsOneTableDDL = `CREATE TABLE items (

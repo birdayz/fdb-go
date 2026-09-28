@@ -44,7 +44,7 @@ func TestFDB_ConstraintValidationProbe(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE constrp "+
 			"CREATE TABLE t (id BIGINT, req BIGINT, opt BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_constrp/s WITH TEMPLATE constrp")
-	dsn := fmt.Sprintf("fdbsql:///testdb_constrp?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_CONSTRP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

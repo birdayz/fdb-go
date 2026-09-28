@@ -423,3 +423,55 @@ func TestMetaEvolveCheck_ValidEvolution(t *testing.T) {
 		t.Errorf("output missing 'ok:' line:\n%s", out.String())
 	}
 }
+
+// writeLiteralMetaFile writes the demo metadata with one index over Order whose
+// root is add(price, lit), whose literal's carrier is part of the root.
+func writeLiteralMetaFile(t *testing.T, version int32, lit any) string {
+	t.Helper()
+	builder := recordlayer.NewRecordMetaDataBuilder().
+		SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	idx := recordlayer.NewIndex("lit_idx", recordlayer.FunctionExpr("add",
+		recordlayer.Concat(recordlayer.Field("price"), recordlayer.Literal(lit))))
+	idx.AddedVersion, idx.LastModifiedVersion = 1, 1
+	builder.AddIndex("Order", idx)
+	builder.SetVersion(int(version))
+	md, err := builder.Build()
+	if err != nil {
+		t.Fatalf("build literal metadata: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "meta.pb")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	defer f.Close()
+	if err := recordlayer.WriteRecordMetaData(md, f); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	return path
+}
+
+// A literal's carrier is part of the key, as Java's validator reads it: a
+// long_value literal rebuilt as int_value with the same number is a changed key,
+// in either direction.
+func TestMetaEvolveCheck_LiteralCarrierIsPartOfTheKey(t *testing.T) {
+	t.Parallel()
+	run := func(args ...string) error {
+		c := newMetaEvolveCheckCmd()
+		var out bytes.Buffer
+		c.SetOut(&out)
+		c.SetErr(&out)
+		c.SetArgs(args)
+		return c.Execute()
+	}
+	wide, narrow := writeLiteralMetaFile(t, 2, int64(10000)), writeLiteralMetaFile(t, 3, int32(10000))
+	wider := writeLiteralMetaFile(t, 4, int64(10000))
+	for _, pair := range [][2]string{{wide, narrow}, {narrow, wider}} {
+		if err := run("--old", pair[0], "--new", pair[1]); err == nil || !strings.Contains(err.Error(), "key expression changed") {
+			t.Fatalf("%s to %s: %v, want the key-expression refusal", pair[0], pair[1], err)
+		}
+	}
+}

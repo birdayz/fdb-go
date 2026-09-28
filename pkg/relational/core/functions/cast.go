@@ -171,11 +171,10 @@ func CastValue(v any, typeName string) (any, error) {
 		if n, ok := v.(string); ok {
 			u, err := uuid.Parse(strings.TrimSpace(n))
 			if err != nil {
-				// Java verbatim: 'Invalid UUID value for the UUID type X'
-				// (where X is the input string, no quotes). Aligned
-				// .
-				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
-					"Invalid UUID value for the UUID type %s", n)
+				// Java's SemanticException INVALID_UUID_VALUE, left in
+				// INTERNAL_ERROR (XX000) by ExceptionUtil, with its message.
+				invalid := &values.InvalidUUIDValueError{Value: n}
+				return nil, api.WrapError(api.ErrCodeInternalError, invalid.Error(), invalid)
 			}
 			return u.String(), nil
 		}

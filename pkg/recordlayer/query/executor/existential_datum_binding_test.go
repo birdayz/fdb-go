@@ -213,7 +213,7 @@ func TestFlatMapNonBuildBindingUsesRecordOrDatumKind(t *testing.T) {
 						correlation = inner
 					}
 					result := mustExecutorConstruct(values.NewExistsValue(correlation, objectType))
-					cursor, err := newFlatMapCursorWithOuterProperties(recordlayer.FromList([]QueryResult{}), plan, plan, nil, EmptyEvaluationContext(), outer, inner, result, recordlayer.ExecuteProperties{}, false)
+					cursor, err := newFlatMapCursorForPlan(recordlayer.FromList([]QueryResult{}), plan, plan, nil, EmptyEvaluationContext(), outer, inner, result, recordlayer.ExecuteProperties{}, false, false)
 					if err != nil {
 						t.Fatal(err)
 					}

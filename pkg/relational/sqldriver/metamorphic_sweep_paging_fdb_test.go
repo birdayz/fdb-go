@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestFDB_MetamorphicPagingAtScale(t *testing.T) {
@@ -17,7 +18,8 @@ func TestFDB_MetamorphicPagingAtScale(t *testing.T) {
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
 	setup := openTestDB(t, "/testdb_mhp")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_mhp")
 	table := "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, s STRING, PRIMARY KEY (id)) "
@@ -28,7 +30,7 @@ func TestFDB_MetamorphicPagingAtScale(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_mhp/sn WITH TEMPLATE mhp_noidx")
 
 	open := func(schema string) *sql.DB {
-		dsn := fmt.Sprintf("fdbsql:///testdb_mhp?cluster_file=%s&schema=%s", clusterFilePath, schema)
+		dsn := fmt.Sprintf("fdbsql:///TESTDB_MHP?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema))
 		db, err := sql.Open("fdbsql", dsn)
 		if err != nil {
 			t.Fatalf("open %s: %v", schema, err)
@@ -88,6 +90,7 @@ func TestFDB_MetamorphicPagingAtScale(t *testing.T) {
 
 	checks := 0
 	for _, base := range bases {
+		t.Logf("paging base: %s", base)
 		full, ei := mhScanStrings(ctx, idb, base)
 		fullN, en := mhScanStrings(ctx, ndb, base)
 		if ei != nil || en != nil {
@@ -128,8 +131,7 @@ func TestFDB_MetamorphicPagingAtScale(t *testing.T) {
 		}
 	}
 	t.Logf("paging checks run: %d", checks)
-	if checks < len(bases)*len(slices) {
-		t.Errorf("instrument dead: only %d paging checks ran, expected at least %d",
-			checks, len(bases)*len(slices))
+	if want := 2 * len(bases) * len(slices); checks != want {
+		t.Errorf("incomplete paging population: %d successful checks, want %d across both schemas", checks, want)
 	}
 }

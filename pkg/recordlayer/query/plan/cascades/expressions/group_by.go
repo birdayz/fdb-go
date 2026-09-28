@@ -19,6 +19,12 @@ const (
 	AggMin
 	AggMax
 	AggAvg
+	// AggMinEver and AggMaxEver are Java's IndexOnlyAggregateValue.MinEver /
+	// MaxEver: non-evaluable, answerable only from a MIN_EVER / MAX_EVER index.
+	AggMinEver
+	AggMaxEver
+	// AggBitmapConstructAgg is Java's NumericAggregationValue.BitmapConstructAgg.
+	AggBitmapConstructAgg
 )
 
 func (f AggregateFunction) String() string {
@@ -33,8 +39,28 @@ func (f AggregateFunction) String() string {
 		return "MAX"
 	case AggAvg:
 		return "AVG"
+	case AggMinEver:
+		return "MIN_EVER"
+	case AggMaxEver:
+		return "MAX_EVER"
+	case AggBitmapConstructAgg:
+		return "BITMAP_CONSTRUCT_AGG"
 	default:
 		return "UNKNOWN"
+	}
+}
+
+// HasStreamingAccumulator reports whether the streaming aggregation can
+// compute f over a group's rows. MIN_EVER and MAX_EVER are index-only in Java
+// too (IndexOnlyAggregateValue is non-evaluable); BITMAP_CONSTRUCT_AGG has a
+// Java accumulator Go has not ported. A group by holding one has no streaming
+// implementation, so it is answered from an index or not at all.
+func (f AggregateFunction) HasStreamingAccumulator() bool {
+	switch f {
+	case AggCount, AggSum, AggMin, AggMax, AggAvg:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -208,6 +234,42 @@ func groupByAggregateResultValue(aggregate AggregateSpec) (values.Value, error) 
 			op = values.AggMax
 			resultType = values.WithNullability(operandType.Type(), true)
 		}
+	case AggMinEver, AggMaxEver:
+		// Java's MinEverFn / MaxEverFn take any single operand and keep its
+		// type (IndexOnlyAggregateValue.encapsulate); what the index may store
+		// is the index generator's to decide.
+		if aggregate.Operand == nil {
+			return nil, fmt.Errorf("%s requires an operand", aggregate.Function)
+		}
+		operandType, err := snapshotExpressionResultType(aggregate.Function.String()+" operand", aggregate.Operand.Type())
+		if err != nil {
+			return nil, err
+		}
+		indexOnlyOp := values.IndexOnlyMinEverLong
+		if aggregate.Function == AggMaxEver {
+			indexOnlyOp = values.IndexOnlyMaxEverLong
+		}
+		exactResult, err := snapshotExpressionResultType(aggregate.Function.String(), values.WithNullability(operandType.Type(), true))
+		if err != nil {
+			return nil, err
+		}
+		return values.NewDerivedValueWithType(
+			[]values.Value{values.NewIndexOnlyAggregateValue(indexOnlyOp, aggregate.Operand)}, exactResult.Type()), nil
+	case AggBitmapConstructAgg:
+		// Java's operator map has BITMAP_CONSTRUCT_AGG over INT and LONG only
+		// (NumericAggregationValue.PhysicalOperator), yielding BYTES.
+		if aggregate.Operand == nil {
+			return nil, fmt.Errorf("%s requires an operand", aggregate.Function)
+		}
+		operandType, err := snapshotExpressionResultType(aggregate.Function.String()+" operand", aggregate.Operand.Type())
+		if err != nil {
+			return nil, err
+		}
+		if code := operandType.Type().Code(); code != values.TypeCodeInt && code != values.TypeCodeLong {
+			return nil, fmt.Errorf("%s requires an INT or LONG operand, got %v", aggregate.Function, operandType.Type())
+		}
+		op = values.AggBitmapConstructAgg
+		resultType = values.NullableBytes
 	default:
 		return nil, fmt.Errorf("unsupported aggregate function %d", aggregate.Function)
 	}

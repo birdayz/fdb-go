@@ -60,7 +60,7 @@ func TestFDB_SelectivityBlindSpotWithCollectedStatistics(t *testing.T) {
 			" CREATE INDEX t_by_lo ON t (lo)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE selblind")
 
-	base := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath)
+	base := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
 	db := openDSN(t, base+"&planner_statistics=true")
 	for i := 0; i < rows; i++ {
 		mwjoMustExec(t, db, ctx,

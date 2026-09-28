@@ -141,6 +141,7 @@ go_test(
         "temp_table_scan_identity_test.go",
         "unordered_union_leg_types_test.go",
         "unordered_union_test.go",
+        "update_target_field_test.go",
         "with_quantifiers_arity_test.go",
     ],
     embed = [":plans"],
@@ -269,6 +270,7 @@ go_test(
         "unordered_union_leg_types_test.go",
         "erased_record_result_base_test.go",
         "aggregate_index_ordering_test.go",
+        "update_target_field_test.go",
     ],
     deps = [
         "//pkg/fdbgo/fdb/tuple",

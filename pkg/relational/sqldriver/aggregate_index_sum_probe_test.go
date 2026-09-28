@@ -28,7 +28,7 @@ func TestFDB_AggregateIndexSumMinMax(t *testing.T) {
 			"CREATE INDEX min_by_g AS SELECT MIN(v) FROM ga GROUP BY g "+
 			"CREATE INDEX max_by_g AS SELECT MAX(v) FROM ga GROUP BY g")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggidxp/s WITH TEMPLATE aggidxp")
-	dsn := fmt.Sprintf("fdbsql:///testdb_aggidxp?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGIDXP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -5,7 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
 )
 
 // TestOnlineIndexerBuilderRetryDefaults pins the two halves of the throttling
@@ -136,4 +138,45 @@ func TestOnlineIndexerBuilderRetryDefaults(t *testing.T) {
 			t.Errorf("SetMaxRetries(0) left maxRetries = %d, want 0", got)
 		}
 	})
+}
+
+// TestOnlineIndexerLeaseLengthDefault pins the session-heartbeat lease a caller
+// who never calls SetLeaseLengthMs gets: Java's
+// OnlineIndexOperationConfig.DEFAULT_LEASE_LENGTH_MILLIS = 10_000
+// (OnlineIndexOperationConfig.java:61). Go used to default to 30s, which is not a
+// longer safety margin but a disagreement: every peer judges a heartbeat stale by
+// ITS OWN lease, so a default Java builder already treats a Go heartbeat older than
+// 10s as dead, and the 30s only delayed Go's admission after a Java session died.
+func TestOnlineIndexerLeaseLengthDefault(t *testing.T) {
+	t.Parallel()
+	if defaultLeaseLengthMs != 10_000 {
+		t.Fatalf("defaultLeaseLengthMs = %d, want Java's DEFAULT_LEASE_LENGTH_MILLIS 10000", defaultLeaseLengthMs)
+	}
+	if got := resolvedLeaseLengthMs(0); got != 10_000 {
+		t.Errorf("unset lease resolves to %d, want 10000", got)
+	}
+	if got := resolvedLeaseLengthMs(2_500); got != 2_500 {
+		t.Errorf("explicit lease resolves to %d, want the explicit 2500", got)
+	}
+	// Build() is where the default lands for every real caller; drive it with no
+	// SetLeaseLengthMs call. Build validates configuration only, so a bare database
+	// handle is enough to reach the resolution.
+	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+	index := NewIndex("lease_default_order_price", Field("price"))
+	builder.AddIndex("Order", index)
+	md, err := builder.Build()
+	if err != nil {
+		t.Fatalf("metadata: %v", err)
+	}
+	oi, err := NewOnlineIndexerBuilder().SetDatabase(&FDBDatabase{}).SetMetaData(md).
+		SetIndex(md.GetIndex("lease_default_order_price")).SetSubspace(subspace.Sub("lease-default")).Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if oi.leaseLengthMs != 10_000 {
+		t.Errorf("Build() left leaseLengthMs = %d, want Java's 10000 when SetLeaseLengthMs is never called", oi.leaseLengthMs)
+	}
 }

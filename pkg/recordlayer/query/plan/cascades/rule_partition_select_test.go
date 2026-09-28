@@ -209,6 +209,47 @@ func TestAliasesConnectedByPredicates(t *testing.T) {
 	}
 }
 
+// TestAliasesConnectedByCorrelation pins the correlation-edge reading of the
+// same check, one arm per spelling it admits and per one it does not. The
+// shared-outside arm is what admits {d, e} under {w} for two lateral legs that
+// both read w — the only bipartition that block has — while a star whose legs
+// are joined to a hub only by PREDICATES stays disconnected (the predicate
+// arms above), so plain joins keep their pruning.
+func TestAliasesConnectedByCorrelation(t *testing.T) {
+	t.Parallel()
+	deps := func(pairs ...string) map[values.CorrelationIdentifier]map[values.CorrelationIdentifier]struct{} {
+		out := map[values.CorrelationIdentifier]map[values.CorrelationIdentifier]struct{}{}
+		for i := 0; i+1 < len(pairs); i += 2 {
+			from := values.NamedCorrelationIdentifier(pairs[i])
+			if out[from] == nil {
+				out[from] = map[values.CorrelationIdentifier]struct{}{}
+			}
+			out[from][values.NamedCorrelationIdentifier(pairs[i+1])] = struct{}{}
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name    string
+		aliases map[values.CorrelationIdentifier]struct{}
+		order   map[values.CorrelationIdentifier]map[values.CorrelationIdentifier]struct{}
+		want    bool
+	}{
+		{"one depends on the other", aliasSet("S", "X"), deps("X", "S"), true},
+		{"both depend on one alias outside", aliasSet("D", "E"), deps("D", "W", "E", "W"), true},
+		{"three all depend on one alias outside", aliasSet("D", "E", "F"), deps("D", "W", "E", "W", "F", "W"), true},
+		{"each depends on a different alias outside", aliasSet("D", "E"), deps("D", "W", "E", "H"), false},
+		{"only one depends on anything", aliasSet("D", "E"), deps("D", "W"), false},
+		{"no correlation at all", aliasSet("D", "E"), nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := aliasesConnectedByPredicatesOrCorrelation(tc.aliases, nil, tc.order); got != tc.want {
+				t.Errorf("aliasesConnectedByPredicatesOrCorrelation = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestTransitiveCorrelationOrder_RangesOverEdges pins the recovered
 // quantifier→sibling correlation edges: Go's Quantifier.GetCorrelatedTo is
 // empty (registered divergence), so computeTransitiveCorrelationOrder must

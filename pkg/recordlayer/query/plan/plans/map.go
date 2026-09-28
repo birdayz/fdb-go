@@ -70,6 +70,20 @@ func (p *RecordQueryMapPlan) GetResultValue() values.Value {
 // GetResultType returns the result value's type.
 func (p *RecordQueryMapPlan) GetResultType() values.Type { return p.resultValue.Type() }
 
+// GetCorrelatedToWithoutChildren is Java's
+// RecordQueryMapPlan.computeCorrelatedToWithoutChildren: the result value's
+// correlations. The framework subtracts the map's own inner alias, so what
+// survives is an outer quantifier the projection reads (`COUNT(*) + w.f`
+// over an aggregate), which the empty default hid from correlation-driven
+// placement.
+func (p *RecordQueryMapPlan) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{}
+	for k := range values.GetCorrelatedToOfValue(p.resultValue) {
+		out[k] = struct{}{}
+	}
+	return out
+}
+
 // GetChildren returns the inner plan as the only child.
 func (p *RecordQueryMapPlan) GetChildren() []RecordQueryPlan {
 	inner := p.GetInner()

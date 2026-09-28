@@ -26,7 +26,7 @@ func TestFDB_QuotedDotNestedMemberLabel(t *testing.T) {
 		CREATE TYPE AS STRUCT qs ("a.b" BIGINT)
 		CREATE TABLE tq (id BIGINT, s qs, PRIMARY KEY (id))`)
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_qdnl/s1 WITH TEMPLATE qdnl_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_qdnl?cluster_file=%s&schema=s1", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_QDNL?cluster_file=%s&schema=S1", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

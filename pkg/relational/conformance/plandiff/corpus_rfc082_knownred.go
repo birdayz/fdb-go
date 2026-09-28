@@ -21,13 +21,11 @@ var rfc082KnownRed = map[string]bool{
 	// rejects bool = int with Java's 42804 — cross-engine equivalent.
 	"agg_in_where_rejected":        true, // WHERE COUNT(*)>0 accepted; should reject
 	"cast_bigint_to_boolean_probe": true, // Go allows a cast Java disallows
-	// CAST edge cases (Go vs Java error/behaviour on overflow / malformed strings):
-	"cast_bigint_to_integer_overflow":               true,
-	"cast_bigint_to_int_overflow_rejected":          true,
-	"cast_empty_string_to_bigint_rejected":          true,
-	"cast_string_decimal_zero_to_bigint":            true,
-	"cast_string_internal_space_to_bigint_rejected": true,
-	"cast_string_non_numeric_rejected":              true,
+	// The six CAST edge cases (overflow and malformed strings) REMOVED (the
+	// lock shrinks): Go's INVALID_CAST now carries Java's SemanticException
+	// text, "Invalid cast operation " before the detail
+	// (SemanticException.java:89, values.InvalidCastError), so the messages
+	// match cross-engine.
 	// nested_derived_col_rename removed: the RFC-141 R4 projected-EXISTS fold's
 	// column metadata/alias-provenance unification fixed the derived-column
 	// rename so Go now matches Java cross-engine (RFC-082 lock shrinks).

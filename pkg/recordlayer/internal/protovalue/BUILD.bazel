@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "protovalue",
+    srcs = ["protovalue.go"],
+    importpath = "fdb.dev/pkg/recordlayer/internal/protovalue",
+    visibility = ["//pkg/recordlayer:__subpackages__"],
+    deps = ["//gen"],
+)
+
+go_test(
+    name = "protovalue_test",
+    srcs = ["protovalue_test.go"],
+    embed = [":protovalue"],
+    deps = [
+        "//gen",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

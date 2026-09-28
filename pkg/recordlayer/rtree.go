@@ -28,6 +28,14 @@ func NewRTree(storage *rtreeStorage, config RTreeConfig) (*RTree, error) {
 // InsertOrUpdate inserts a new item or updates an existing one.
 // Matches Java's RTree.insertOrUpdate().
 func (rt *RTree) InsertOrUpdate(tx fdb.WritableTransaction, point Point, keySuffix tuple.Tuple, value tuple.Tuple) error {
+	rt.storage.beginOperation()
+	if err := rt.insertOrUpdate(tx, point, keySuffix, value); err != nil {
+		return err
+	}
+	return rt.storage.flushNodeSlotIndex(tx)
+}
+
+func (rt *RTree) insertOrUpdate(tx fdb.WritableTransaction, point Point, keySuffix tuple.Tuple, value tuple.Tuple) error {
 	coords := make([]int64, point.NumDimensions())
 	for d := 0; d < len(coords); d++ {
 		coords[d] = point.Coordinate(d)
@@ -83,6 +91,14 @@ func (rt *RTree) InsertOrUpdate(tx fdb.WritableTransaction, point Point, keySuff
 // Delete removes an item from the R-tree.
 // Matches Java's RTree.delete().
 func (rt *RTree) Delete(tx fdb.WritableTransaction, point Point, keySuffix tuple.Tuple) error {
+	rt.storage.beginOperation()
+	if err := rt.delete(tx, point, keySuffix); err != nil {
+		return err
+	}
+	return rt.storage.flushNodeSlotIndex(tx)
+}
+
+func (rt *RTree) delete(tx fdb.WritableTransaction, point Point, keySuffix tuple.Tuple) error {
 	coords := make([]int64, point.NumDimensions())
 	for d := 0; d < len(coords); d++ {
 		coords[d] = point.Coordinate(d)
@@ -346,12 +362,30 @@ func (rt *RTree) fetchUpdatePathToLeaf(tx fdb.WritableTransaction, hv *big.Int, 
 		}
 		if childLeaf != nil {
 			path.leaf = childLeaf
+			path.setHeights()
 			return path, nil
 		}
 		if childInter == nil {
 			return path, nil
 		}
 		current = childInter
+	}
+}
+
+// setHeights gives each intermediate node of a path that reached its leaf its
+// height: the leaf's parent is at 1, the root at len(parents).
+func (p *updatePath) setHeights() {
+	for i, n := range p.parents {
+		setNodeHeight(n, len(p.parents)-i)
+	}
+}
+
+// setNodeHeight sets an intermediate node's height, and the height it was
+// read at when this is the first time.
+func setNodeHeight(n *intermediateNode, h int) {
+	n.height = h
+	if n.origHeight == 0 {
+		n.origHeight = h
 	}
 }
 
@@ -395,13 +429,15 @@ func (rt *RTree) splitRootLeaf(tx fdb.WritableTransaction, root *leafNode) error
 	rt.storage.writeLeafNode(tx, left)
 	rt.storage.writeLeafNode(tx, right)
 
-	// Root becomes intermediate.
+	// Root becomes intermediate. It held no child slots before (it was a
+	// leaf), so it has no node slot index entries to replace.
 	newRoot := &intermediateNode{
 		id: rootNodeID,
 		slots: []ChildSlot{
 			rt.childSlotForLeaf(left),
 			rt.childSlotForLeaf(right),
 		},
+		height: 1,
 	}
 	rt.storage.writeIntermediateNode(tx, newRoot)
 	return nil
@@ -492,7 +528,7 @@ func (rt *RTree) handleLeafUnderflow(tx fdb.WritableTransaction, path *updatePat
 	if len(path.parents) == 0 {
 		if len(leaf.slots) == 0 {
 			// Tree is now empty — delete root.
-			rt.storage.deleteNode(tx, rootNodeID)
+			rt.storage.deleteLeafNode(tx, leaf)
 		} else {
 			rt.storage.writeLeafNode(tx, leaf)
 		}
@@ -543,7 +579,7 @@ func (rt *RTree) handleLeafUnderflow(tx fdb.WritableTransaction, path *updatePat
 	if needFuse && len(siblings) > 1 {
 		// Fuse: remove the last sibling, redistribute across S-1 nodes.
 		removedSib := siblings[len(siblings)-1]
-		rt.storage.deleteNode(tx, removedSib.id)
+		rt.storage.deleteLeafNode(tx, removedSib)
 		siblings = siblings[:len(siblings)-1]
 	}
 
@@ -733,24 +769,24 @@ func (rt *RTree) splitRootIntermediate(tx fdb.WritableTransaction, root *interme
 		return err
 	}
 
-	left := &intermediateNode{id: leftID, slots: make([]ChildSlot, mid)}
+	left := &intermediateNode{id: leftID, slots: make([]ChildSlot, mid), height: root.height}
 	copy(left.slots, root.slots[:mid])
 
-	right := &intermediateNode{id: rightID, slots: make([]ChildSlot, len(root.slots)-mid)}
+	right := &intermediateNode{id: rightID, slots: make([]ChildSlot, len(root.slots)-mid), height: root.height}
 	copy(right.slots, root.slots[mid:])
 
 	rt.storage.writeIntermediateNode(tx, left)
 	rt.storage.writeIntermediateNode(tx, right)
 
-	// Root becomes new intermediate pointing to left + right.
-	newRoot := &intermediateNode{
-		id: rootNodeID,
-		slots: []ChildSlot{
-			rt.childSlotForIntermediate(left),
-			rt.childSlotForIntermediate(right),
-		},
+	// Root becomes an intermediate pointing to left + right, one level up.
+	// The root's own struct takes the new slots, so what it was fetched with
+	// stays what the node slot index difference starts from.
+	root.slots = []ChildSlot{
+		rt.childSlotForIntermediate(left),
+		rt.childSlotForIntermediate(right),
 	}
-	rt.storage.writeIntermediateNode(tx, newRoot)
+	root.height++
+	rt.storage.writeIntermediateNode(tx, root)
 	return nil
 }
 
@@ -798,7 +834,7 @@ func (rt *RTree) overflowIntermediate(tx fdb.WritableTransaction, path *updatePa
 		if err != nil {
 			return err
 		}
-		newSibling := &intermediateNode{id: newID}
+		newSibling := &intermediateNode{id: newID, height: overflowNode.height}
 		siblings = append(siblings, newSibling)
 	}
 
@@ -844,7 +880,7 @@ func (rt *RTree) handleIntermediateUnderflow(tx fdb.WritableTransaction, path *u
 		}
 		if len(node.slots) == 0 {
 			// No children — tree is empty.
-			rt.storage.deleteNode(tx, rootNodeID)
+			rt.storage.deleteIntermediateNode(tx, node)
 			return nil
 		}
 		// Root with 2+ children — just write it.
@@ -876,15 +912,22 @@ func (rt *RTree) promoteOnlyChild(tx fdb.WritableTransaction, root *intermediate
 		return fmt.Errorf("rtree: promoteOnlyChild: child node not found")
 	}
 
-	rt.storage.deleteNode(tx, childID)
-
 	if leaf != nil {
+		rt.storage.deleteLeafNode(tx, leaf)
+		// The root stops being an intermediate node: its one child slot
+		// leaves the node slot index.
+		rt.storage.deleteIntermediateNode(tx, root)
 		leaf.id = rootNodeID
 		rt.storage.writeLeafNode(tx, leaf)
-	} else {
-		inter.id = rootNodeID
-		rt.storage.writeIntermediateNode(tx, inter)
+		return nil
 	}
+	setNodeHeight(inter, root.height-1)
+	rt.storage.deleteIntermediateNode(tx, inter)
+	// The child's slots move to the root one level down. The root's own
+	// struct takes them, so what it was fetched with (its one slot) stays
+	// what the node slot index difference starts from.
+	root.slots, root.height = inter.slots, inter.height
+	rt.storage.writeIntermediateNode(tx, root)
 	return nil
 }
 
@@ -928,7 +971,7 @@ func (rt *RTree) fuseIntermediate(tx fdb.WritableTransaction, path *updatePath, 
 	if needFuse && len(siblings) > 1 {
 		// Fuse: remove the last sibling, redistribute across S-1 nodes.
 		removedSib := siblings[len(siblings)-1]
-		rt.storage.deleteNode(tx, removedSib.id)
+		rt.storage.deleteIntermediateNode(tx, removedSib)
 		siblings = siblings[:len(siblings)-1]
 	}
 
@@ -985,6 +1028,7 @@ func (rt *RTree) gatherIntermediateSiblings(tx fdb.WritableTransaction, parent *
 		if node == nil {
 			return nil, 0, fmt.Errorf("rtree: intermediate sibling %d not found", i)
 		}
+		setNodeHeight(node, parent.height-1)
 		siblings = append(siblings, node)
 	}
 	return siblings, startIdx, nil

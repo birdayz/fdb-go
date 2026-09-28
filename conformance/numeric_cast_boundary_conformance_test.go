@@ -71,12 +71,12 @@ var _ = Describe("NumericCastBoundaryConformance", func() {
 					continue
 				}
 				// SQL ARRAY targets declare non-nullable elements. Java's cast
-				// preserves a NULL but the live derived query throws NPE; Go's
-				// checked layout rejects that invalid element rather than panicking.
+				// target now explicitly rejects NULL elements during construction;
+				// Go's checked layout rejects the invalid typed element as before.
 				if probe.name == "computed array null element" {
 					if result.Engine == "java" {
 						var je *plandiff.JavaError
-						if !errors.As(result.Err, &je) || je.ExceptionClass != "NullPointerException" || je.Message != "java.lang.NullPointerException" {
+						if !errors.As(result.Err, &je) || je.ExceptionClass != "RelationalException" || je.SQLState != "0A000" || je.Message != "An ARRAY value cannot have NULL elements" {
 							failures = append(failures, fmt.Sprintf("derived NULL-array Java failure changed: %v, %v", result.Rows.Rows, result.Err))
 						}
 					} else {

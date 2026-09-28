@@ -79,28 +79,41 @@ func TestComputeRecordsRange(t *testing.T) {
 		}
 	})
 
-	t.Run("give up (ok=false) for a non-integer explicit record-type key", func(t *testing.T) {
+	t.Run("a string record-type key bounds the range by tuple order, as Java's Tuple.compareTo", func(t *testing.T) {
 		t.Parallel()
-		// Go's RecordTypeKeyExpression encodes only integer record-type keys; a string/bytes
-		// key is stored under the message type name, so bounds from GetRecordTypeKey() would
-		// not match the records — the preset must give up rather than skip them.
+		// A string key reaches the record keys verbatim (recordTypeKeyOf), so its
+		// records occupy that key's range; Java's computeRecordsRange orders the key
+		// tuples with Tuple.compareTo, which is packed-byte order, where a string
+		// (type code 0x02) sorts before an integer (0x14 and up).
 		md := mdTyped()
 		md.recordTypes["B"].explicitRecordTypeKey = "string-key"
 		oi := &OnlineIndexer{metaData: md, recordTypes: []string{"A", "B"}}
-		if _, _, ok := oi.computeRecordsRange(); ok {
-			t.Error("expected ok=false for a non-integer record-type key")
+		begin, end, ok := oi.computeRecordsRange()
+		if !ok {
+			t.Fatal("expected ok=true for a string record-type key")
+		}
+		if want := (tuple.Tuple{"string-key"}).Pack(); !bytes.Equal(begin, want) {
+			t.Errorf("begin = %x, want %x", begin, want)
+		}
+		if want := append((tuple.Tuple{int64(1)}).Pack(), 0xff); !bytes.Equal(end, want) {
+			t.Errorf("end = %x, want %x", end, want)
 		}
 	})
 
 	t.Run("int32 record-type key is normalized to int64 (no panic, matches placement)", func(t *testing.T) {
 		t.Parallel()
 		// SetRecordTypeKey(int32(...)) is valid; the tuple encoder panics on a raw int32, and
-		// GetRecordTypeKey widens every narrower integer to int64 (as Java's
-		// TupleTypeUtil.toTupleEquivalentValue does), so the preset must see int64 —
-		// matching where records are actually stored.
+		// the setter stores the canonical key, every narrower integer widened to int64 (as
+		// Java's TupleTypeUtil.toTupleEquivalentValue does; canonicalRecordTypeKey), so the
+		// preset sees int64 — matching where records are actually stored.
 		md := mdTyped()
-		md.recordTypes["A"].explicitRecordTypeKey = int32(1)
-		md.recordTypes["B"].explicitRecordTypeKey = int32(2)
+		for name, key := range map[string]int32{"A": 1, "B": 2} {
+			canonical, err := canonicalRecordTypeKey(key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			md.recordTypes[name].explicitRecordTypeKey = canonical
+		}
 		oi := &OnlineIndexer{metaData: md, recordTypes: []string{"A", "B"}}
 		begin, end, ok := oi.computeRecordsRange()
 		if !ok {

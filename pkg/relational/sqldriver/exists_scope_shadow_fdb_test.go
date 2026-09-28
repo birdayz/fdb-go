@@ -82,7 +82,7 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 				{Name: proto.String("ID"), Number: proto.Int32(1), Label: optl, Type: i64},
 				{Name: proto.String("K"), Number: proto.Int32(2), Label: optl, Type: i64},
 			}},
-			{Name: proto.String("UnionDescriptor"), Field: []*descriptorpb.FieldDescriptorProto{
+			{Name: proto.String("RecordTypeUnion"), Field: []*descriptorpb.FieldDescriptorProto{
 				{Name: proto.String("_ST"), Number: proto.Int32(1), Label: optl, Type: msg, TypeName: tn("ST")},
 				{Name: proto.String("_MA"), Number: proto.Int32(2), Label: optl, Type: msg, TypeName: tn("MA")},
 				{Name: proto.String("_OT"), Number: proto.Int32(3), Label: optl, Type: msg, TypeName: tn("OT")},

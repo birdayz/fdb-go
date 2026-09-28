@@ -1122,17 +1122,31 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (va
 	// argumentsCount)` (SqlFunctionCatalogImpl.java:126-127), and the only
 	// registered built-in is the binary one — so zero user arguments resolve
 	// arity 1 and two resolve arity 3, both of which fail to resolve and reject
-	// the query. Go's catalogue entry carries a FIXED result type and no arity,
-	// so without this check `BITMAP_BUCKET_OFFSET()` admitted and evaluated to
-	// NULL, and `BITMAP_BUCKET_OFFSET(id, 5)` admitted with the caller's 5
-	// silently replacing the entry size the index was built with.
+	// the query. Go once resolved these through a scalar catalogue entry with
+	// a FIXED result type and no arity (since replaced by the ArithmeticValue
+	// lanes), so without this check `BITMAP_BUCKET_OFFSET()` admitted and
+	// evaluated to NULL, and `BITMAP_BUCKET_OFFSET(id, 5)` admitted with the
+	// caller's 5 silently replacing the entry size the index was built with.
 	if name == "BITMAP_BUCKET_OFFSET" || name == "BITMAP_BIT_POSITION" {
 		if len(args) != 1 {
 			return nil, &UnsupportedExpressionShapeError{
 				Shape: fmt.Sprintf("%s requires exactly 1 argument, got %d", name, len(args)),
 			}
 		}
-		args = append(args, &values.ConstantValue{Value: int64(10000), Typ: values.NullableLong})
+		// Java appends `new LiteralValue<>(BITMAP_DEFAULT_ENTRY_SIZE)` with an
+		// int constant (SemanticAnalyzer.java:106,1115), so the entry size is
+		// INT-typed. The index key expression stores it as int_value; a LONG
+		// type here made Go store long_value, which Java cannot plan over.
+		args = append(args, &values.ConstantValue{Value: int64(10000), Typ: values.NullableInt})
+		// They are ArithmeticValues in Java (ArithmeticValue.java:375-377),
+		// encapsulated like the arithmetic operators: the lane follows the
+		// argument's type (INT over an INT, LONG over a LONG) and a type with
+		// no lane is refused.
+		op := values.OpBitmapBucketOffset
+		if name == "BITMAP_BIT_POSITION" {
+			op = values.OpBitmapBitPosition
+		}
+		return r.ResolveArithmetic(op, args[0], args[1])
 	}
 	typ, ok := values.ScalarFunctionResultType(name, args)
 	if !ok {
@@ -1497,14 +1511,19 @@ func (r *Resolver) walkBitExpression(b *antlrgen.BitExpressionAtomContext) (valu
 		return nil, &UnsupportedExpressionShapeError{Shape: "BitExpressionAtom with nil operator"}
 	}
 	opText := bo.GetText()
-	name := "BITAND"
+	// The bit operators are ArithmeticValues in Java (LogicalOperator BITAND,
+	// BITOR, BITXOR, ArithmeticValue.java:372-374), encapsulated like the
+	// arithmetic operators.
 	switch opText {
 	case "&":
-		name = "BITAND"
+		return r.ResolveArithmetic(values.OpBitAnd, left, right)
 	case "|":
-		name = "BITOR"
+		return r.ResolveArithmetic(values.OpBitOr, left, right)
 	case "^":
-		name = "BITXOR"
+		return r.ResolveArithmetic(values.OpBitXor, left, right)
+	}
+	var name string
+	switch opText {
 	case "<<":
 		name = "BITSHL"
 	case ">>":
@@ -1564,15 +1583,9 @@ func (r *Resolver) walkArrayConstructor(ac antlrgen.IArrayConstructorContext) (v
 		if err != nil {
 			return nil, err
 		}
-		// A NULL literal walks as NullValue with the Unknown type tag;
-		// Java types it Type.nullType, which MaximumType folds as "the
-		// other side, made nullable" — use NullType for the fold so
-		// `[10, NULL, 30]` resolves to a nullable INT element type
-		// instead of dying on Unknown.
+		// SQL NULL already has Type.nullType, so the common-type fold and
+		// the subsequent prepared promotion see the same declared source.
 		vt := v.Type()
-		if _, isNull := v.(*values.NullValue); isNull && (vt == nil || vt.Code() == values.TypeCodeUnknown) {
-			vt = values.NullType
-		}
 		if elemType == nil {
 			elemType = vt
 		} else if elemType = values.MaximumType(elemType, vt); elemType == nil {
@@ -1784,10 +1797,9 @@ func (r *Resolver) walkPredicatedExpression(pred *antlrgen.PredicatedExpressionC
 		}
 		return predicates.NewConstantPredicate(predicates.TriFalse), nil
 	}
-	// 2. NULL → unknown constant (Java :384, `value instanceof NullValue`).
-	//    Detected by VALUE type, not Type().Code(): a NULL literal is built as
-	//    NewNullValue(TypeUnknown), so its type code is Unknown — only the
-	//    value-type assertion identifies it. Must be folded HERE: the
+	// 2. NULL → constant (Java :384, `value instanceof NullValue`).
+	//    Match the Value rather than its annotation: typed NULLs can carry a
+	//    non-NULL type code too. Must be folded HERE: the
 	//    comparison-form lift below bypasses ValuePredicateConstantFoldRule
 	//    (which matches only *ValuePredicate) that `WHERE NULL` relied on.
 	if _, isNull := v.(*values.NullValue); isNull {

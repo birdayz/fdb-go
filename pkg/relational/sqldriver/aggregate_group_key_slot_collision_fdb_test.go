@@ -54,7 +54,7 @@ func TestFDB_AggregateGroupKeySlotCollision(t *testing.T) {
 		"CREATE TABLE t1 (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE t2 (id BIGINT, x BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggslotcol/s WITH TEMPLATE aggslotcol")
-	dsn := fmt.Sprintf("fdbsql:///testdb_aggslotcol?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGSLOTCOL?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -164,7 +164,7 @@ func TestFDB_AggregateResultSlotCollision(t *testing.T) {
 		"CREATE TABLE t1 (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE t2 (id BIGINT, x BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggrescol/s WITH TEMPLATE aggrescol")
-	dsn := fmt.Sprintf("fdbsql:///testdb_aggrescol?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGRESCOL?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -1,4 +1,4 @@
-# Divergences from Java fdb-record-layer-core 4.12.11.0
+# Divergences from Java fdb-record-layer-core 4.14.2.0
 
 Comprehensive list of Go vs Java differences. All Cascades planner subsystems
 fully ported: ~65 PlanningRuleSet rule instances, 5/5 RewritingRuleSet rules,
@@ -6,7 +6,7 @@ fully ported: ~65 PlanningRuleSet rule instances, 5/5 RewritingRuleSet rules,
 candidate types, 24/24 comparison operators, 9/9 predicates. Remaining items
 are execution-layer, wire-format, or intentional architectural choices.
 
-Validated against a live Java **4.12.11.0** conformance run (the cross-engine corpus runs against
+Validated against a live Java **4.12.11** conformance run (the cross-engine corpus runs against
 live 4.12 in `just test` with a stale-annotation guard, and the suite is green).
 
 ## Intentional Architectural Decisions (no functional difference)
@@ -27,7 +27,7 @@ question was carried to the Java source and the answer settles it.
 **What Java actually does, read rather than assumed.** `validateFormatVersion`
 (`FormatVersion.java:224-231`) throws `UnsupportedFormatVersionException` only when the
 candidate is `< getMinimumVersion()` **or** `> getMaximumSupportedVersion()`. At
-4.12.11.0 `MAX_SUPPORTED_VERSION` is computed as the maximum enum value (`:182`) and
+4.12.11 `MAX_SUPPORTED_VERSION` is computed as the maximum enum value (`:182`) and
 that value **is** `FULL_STORE_LOCK(14)`. So 14 ≤ 14 and the check passes. Then
 `checkPossiblyRebuild` (`FDBRecordStore.java:4627-4630`):
 
@@ -74,7 +74,7 @@ validation consults the ceiling and never the target.
 default 14 opening an existing **Java** store at 7 upgrades it to 14 and writes that,
 permanently narrowing the set of readers that store can be opened by. Java at its
 conservative default never does this to someone else's store. It is harmless at the
-pinned spec — Java 4.12.11.0 reads 14 — and it is the strongest argument that exists
+pinned spec — Java 4.12.11 reads 14 — and it is the strongest argument that exists
 for lowering the default.
 
 It flips the decision if any of these becomes true:
@@ -268,7 +268,7 @@ was a bipartition wrongly admitted by a live-existential guard that now requires
 result-live existential to be ALONE in its lower.
 
 `conformance/projected_exists_left_join_java_probe_test.go` keeps the parity claim
-measured against the live 4.12.11.0 JVM rather than inherited from prose.
+measured against the live 4.12.11 JVM rather than inherited from prose.
 ### Reference: finalMembers partially aligned
 
 **Java:** `Reference` has `exploratoryMembers` (logical EXPLORE-phase) and `finalMembers` (physical PLANNING-phase). `advancePlannerStage` clears exploratory, promotes REWRITING winner, clears finals. `OptimizeGroup` prunes `finalMembers` to 1 winner. `ToPlanPartitions` reads only `finalMembers` via `propertiesMap`.
@@ -458,7 +458,7 @@ arm to re-check if a production caller ever appears or if criterion 1 ever looks
 arrived in rather than on what they are. Go ranks both sides instead. Read-side plan choice only —
 nothing here touches the wire, so Java and Go still read and write byte-identical records.**
 
-Java (`PlanningCostModel.java`, tag 4.12.11.0):
+Java (`PlanningCostModel.java`, tag 4.12.11):
 
 - `compareInOperator(leftExpression, rightExpression)` (`:433`) declares its second parameter
   `@SuppressWarnings("unused")` (`:434`) and never reads it. It returns `OptionalInt.empty()` when the
@@ -558,7 +558,7 @@ verdicts on the pairs it DOES adjudicate already contain a cycle. Go ranks both 
 instead. Read-side plan choice only — nothing here touches the wire, so Java and Go still read and
 write byte-identical records.**
 
-Java (`PlanningCostModel.java`, tag 4.12.11.0):
+Java (`PlanningCostModel.java`, tag 4.12.11):
 
 - `comparePrimaryScanToIndexScan(primaryScan, indexScan, …)` (`:370`) is guarded by an applicability
   test (`:376-379`): the first side must be exactly one `RecordQueryScanPlan` with no
@@ -718,7 +718,7 @@ counts and a byte-identical EXPLAIN set (see TODO.md's stress table).
 
 ### Cost Model: RewritingCostModelLess
 
-Java 4.12.11.0's `RewritingCostModel.compare()` has **six** ordered criteria: (0) `outerJoinCount`, (1) `selectCount`, (2) `tableFunctionCount`, (3) normalized CNF conjuncts, (4) predicate-count-by-level, (5) `semanticHashCode` tie-break. Go ports criteria **1–5** (`selectCount`, `tableFunctionCount`, CNF conjuncts, predicate-count-by-level, deep hash tie-break). `Planner.WithCostModel()` wires the cost model per phase.
+Java 4.12.11's `RewritingCostModel.compare()` has **six** ordered criteria: (0) `outerJoinCount`, (1) `selectCount`, (2) `tableFunctionCount`, (3) normalized CNF conjuncts, (4) predicate-count-by-level, (5) `semanticHashCode` tie-break. Go ports criteria **1–5** (`selectCount`, `tableFunctionCount`, CNF conjuncts, predicate-count-by-level, deep hash tie-break). `Planner.WithCostModel()` wires the cost model per phase.
 
 **Criterion 0 — `outerJoinCount` — is DELIBERATELY NOT ported. This is an intentional, justified divergence, not a gap.**
 
@@ -865,7 +865,7 @@ A partition *inequality* is the one deliberate residual divergence: Go's executo
 | CollapseRecordConstructorOverFieldsToStar | Blocked: needs field-level type metadata (ordinal positions) |
 | ExtractFromIndexKeyValueRuleSet (3 rules) | Blocked: execution layer (partial record construction) |
 
-## Go-Only Extensions (features Java 4.12.11.0 rejects)
+## Go-Only Extensions (features Java 4.12.11 rejects)
 
 Go supports these SQL features that Java rejects. Removing them would be a user-visible regression; they stay as Go extensions.
 
@@ -903,7 +903,7 @@ The first three predate this list; it was written when a claim that there was on
 
 #### `54F02` in detail
 
-Java's Cascades planner defines three complexity caps — `maxTotalTaskCount`, `maxTaskQueueSize`, `maxNumMatchesPerRuleCall` — and throws `RecordQueryPlanComplexityException` from `CascadesPlanner.java:448`, `:493`, and `:1026` when one trips. **Java's SQL layer never enables any of them.** `PlannerConfiguration.buildRecordQueryPlannerConfiguration` (`fdb-relational-core/.../query/PlannerConfiguration.java:150-161`) sets index scan preference, in-join union size, index fetch method, disabled rules and `setJoinRightDeep`, and none of the three cap setters. All three guards are gated on a positive bound (`CascadesPlanner.java:325-335`) and the default is `0`, documented as "unbound" (`RecordQueryPlannerConfiguration.java:236,244`). So no JDBC user of stock 4.12.11.0 can observe that exception.
+Java's Cascades planner defines three complexity caps — `maxTotalTaskCount`, `maxTaskQueueSize`, `maxNumMatchesPerRuleCall` — and throws `RecordQueryPlanComplexityException` from `CascadesPlanner.java:448`, `:493`, and `:1026` when one trips. **Java's SQL layer never enables any of them.** `PlannerConfiguration.buildRecordQueryPlannerConfiguration` (`fdb-relational-core/.../query/PlannerConfiguration.java:150-161`) sets index scan preference, in-join union size, index fetch method, disabled rules and `setJoinRightDeep`, and none of the three cap setters. All three guards are gated on a positive bound (`CascadesPlanner.java:325-335`) and the default is `0`, documented as "unbound" (`RecordQueryPlannerConfiguration.java:236,244`). So no JDBC user of stock 4.12.11 can observe that exception.
 
 Go bounds planning at 100,000 tasks at every production callsite, because unbounded search on a pathological query is a liveness hazard. That makes budget exhaustion a **Go-only condition with no shared surface to conform to** — the cross-engine conformance principle governs inputs Java also attempts, and Java does not attempt this one.
 
@@ -928,7 +928,7 @@ Confirmed via cross-engine probes. Go's correct behavior is pinned in Go-only po
 | `WHERE pk_col = nonpk_col` | SQL-correct | `Missing binding` planner error |
 | PK-intersection whose legs fix DIFFERENT primary-key components (`PRIMARY KEY (pk1, pk2)`, indexes `(b, pk1)` and `(pk2)`, `WHERE b = 1 AND pk2 = 3`) | Intersects on `(pk1, pk2)`, the order both legs deliver; correct rows (RFC-245 declined the merge, RFC-247 widened the key) | Intersects on `COMPARE BY (_.PK1)` and returns every `pk2 = 3` record regardless of `b` (`COUNT(*)` 4 for a 1-row answer) — see below |
 
-4.12.11.0 fixed three former entries, now removed from this table — they run as plain cross-engine
+4.12.11 fixed three former entries, now removed from this table — they run as plain cross-engine
 equivalence in the corpus: PK literal-eq AND join predicate (`pk_literal_eq_in_join`) and 3-way join
 shared driver key (`three_way_join_shared_driver`), both fixed by 4.12's "planner no longer drops
 ANDed predicates" change; and `WHERE TRUE AND val > 5`, now planned by 4.12 (boolean literals in
@@ -938,7 +938,7 @@ WHERE, added in the 4.12 line — see `join-tests.yamsql` `WHERE TRUE`/`WHERE FA
 predicates), verified 2026-06-28 and pinned by `bare_bool_where_probe_test.go` (literal forms) plus the
 corpus `bare_bool_where` (`WHERE flag`). The remaining `WHERE pk_col = nonpk_col` "Missing binding" entry stays as not-yet-
 fixed in 4.12: the corpus keeps that probe deliberately omitted (column-self-equality), so the live
-4.12.11.0 run neither confirms a fix nor pins the divergence — it is retained on the not-yet-fixed
+4.12.11 run neither confirms a fix nor pins the divergence — it is retained on the not-yet-fixed
 side per the corpus's omit comment.
 
 ### PK-intersection comparison key: the soundness proof is per leg, not over the union of legs
@@ -951,7 +951,7 @@ from the requirement for ALL legs. Over `PRIMARY KEY (pk1, pk2)` with indexes `(
 `(pk2)`, `WHERE b = 1 AND pk2 = 3` merges the two covering scans on `(pk1)`: the `(pk2)` leg is a
 single record per pk1, but the `(b, pk1)` leg carries several records per pk1 differing only in
 pk2, so "equal comparison keys" no longer means "the same record" and the merge emits records the
-other leg never matched. Measured on 4.12.11.0
+other leg never matched. Measured on 4.12.11
 (`conformance/pk_intersection_leg_bound_key_java_probe_test.go`): plan
 `COVERING(TI_PK2 [EQUALS …]) ∩ COVERING(TI_B_PK1 [EQUALS …]) COMPARE BY (_.PK1)`, four rows and
 `COUNT(*) = 4` where the answer is the single record `(3, 3)`. With an `ORDER BY` Java picks the
@@ -1083,7 +1083,7 @@ the class un-shippable or file a tracked TODO — never leave it as a silent res
 ## RFC-183 P5 residue — tracked, out of scope for the fully-linked-plans branch
 
 Four pre-existing items surfaced by the P5 review. None is caused by P5; all are filed here
-rather than fixed in-branch. Verified against Java 4.12.11.0.
+rather than fixed in-branch. Verified against Java 4.12.11.
 
 ### `canCorrelate` — three divergences from Java, one of them in the UNSAFE direction
 
@@ -1202,7 +1202,7 @@ query ANSWERS with Java's live-verified semantics. Both variants are pinned by
 When a lateral unnest's element/AT alias DUPLICATES an outer column name (`SELECT SUB FROM t,
 t.scarr AS "SUB"`, or the CTE-boxed `WITH S AS (SELECT * FROM t, t.scarr AS "SUB") …`), Go's
 deployed RFC-142 semantics resolves the reference to the UNNEST ELEMENT (element-shadows-outer,
-last-write-wins). Java 4.12.11.0's `SemanticAnalyzer.resolveIdentifier` (SemanticAnalyzer.java
+last-write-wins). Java 4.12.11's `SemanticAnalyzer.resolveIdentifier` (SemanticAnalyzer.java
 ~:417/:422) resolves a duplicate column reference as `AMBIGUOUS_COLUMN` — an ERROR. So on this
 shared surface Go RETURNS ROWS (the element) where Java REJECTS.
 
@@ -1218,7 +1218,7 @@ resolution loud `AMBIGUOUS_COLUMN` UNIFORMLY (direct + CTE forms), never just th
 
 ## UNION ALL trailing ORDER BY: combined-result vs Java's right-leg-only (RFC-180, live-probed)
 
-Java 4.12.11.0 attaches a trailing `ORDER BY` after `… UNION ALL SELECT …` to
+Java 4.12.11 attaches a trailing `ORDER BY` after `… UNION ALL SELECT …` to
 the RIGHT LEG ONLY (QueryVisitor.visitSetQuery visits legs independently; each
 leg keeps its own ORDER BY) — live-probed: `SELECT id FROM a UNION ALL SELECT
 id FROM b ORDER BY id DESC` returns the interleave of left-natural with
@@ -1541,7 +1541,7 @@ test file states rather than leaving as accidental green.
 
 **Evidence class — read this before acting on the comparison.** The Go
 half is MEASURED (live FDB, `--nocache_test_results`, red-green
-mutation both ways). The JAVA half is INFERRED from 4.12.11.0 sources
+mutation both ways). The JAVA half is INFERRED from 4.12.11 sources
 plus the checked-in plan golden above. That golden is Java's own
 recorded planner output, which makes it strong, but **the Java planner
 was not run**. What would upgrade it: reproducing
@@ -2140,7 +2140,7 @@ SECOND PASS at each scope level: exact first, then an unambiguous
 case-insensitive match, then the parent. It counts candidates, so a folded
 reference matching two case-variants is 42702.
 
-**Measured against a live fdb-relational 4.12.11.0**, over
+**Measured against a live fdb-relational 4.12.11**, over
 `CREATE TABLE QCASE (id BIGINT, "KeepCase" BIGINT, plain BIGINT, …)`:
 
 | query | Java | Go |

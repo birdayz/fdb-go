@@ -26,7 +26,7 @@ func TestFDB_CompositePKProbe(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE compk "+
 			"CREATE TABLE t (a BIGINT, b BIGINT, v BIGINT, PRIMARY KEY (a, b))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_compk/s WITH TEMPLATE compk")
-	dsn := fmt.Sprintf("fdbsql:///testdb_compk?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_COMPK?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

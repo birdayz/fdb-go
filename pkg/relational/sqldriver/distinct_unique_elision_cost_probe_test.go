@@ -48,6 +48,7 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"math"
@@ -483,12 +484,8 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 			"CREATE TABLE users50_s (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) "+
 			"CREATE UNIQUE INDEX by_email50_s ON users50_s (email)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_duec/s WITH TEMPLATE duec")
-	dsn := fmt.Sprintf("fdbsql:///testdb_duec?cluster_file=%s&schema=s", clusterFilePath)
-	db, err := sql.Open("fdbsql", dsn)
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_DUEC?cluster_file=%s&schema=S", clusterFilePath)
+	db := duecOpenUncompressed(t, dsn)
 	db.SetMaxOpenConns(16)
 
 	duecLoad(t, ctx, db, "users", 0)
@@ -1296,6 +1293,52 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	}
 }
 
+// duecOpenUncompressed opens dsn with every connection writing records
+// UNCOMPRESSED (COMPRESS_WHEN_SERIALIZING false).
+//
+// The probe measures the DISTINCT operator, and a compressed fixture adds one
+// cost to both sides of every ratio while making the fixture's bytes depend on
+// the Go toolchain: the default-level deflate of these ~100-byte rows is kept
+// (shorter) under Go 1.26 and discarded under Go 1.27, so the same test stored
+// compressed rows in one build and clear ones in the other. Under the race
+// detector a compressed row also costs some 25 µs more to read (the inflate
+// loop is instrumented; about 1 µs without it), which took the 100k-row
+// single-transaction BUDGET arm past the driver's 4 s read budget. Writing
+// clear rows restores the regime every number in this file was taken on; the
+// product default (compressed, as in Java) is exercised by the serializer's
+// own tests and the conformance specs.
+func duecOpenUncompressed(t *testing.T, dsn string) *sql.DB {
+	t.Helper()
+	probe, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	connector, err := probe.Driver().(driver.DriverContext).OpenConnector(dsn)
+	_ = probe.Close()
+	if err != nil {
+		t.Fatalf("OpenConnector: %v", err)
+	}
+	db := sql.OpenDB(duecUncompressedConnector{Connector: connector})
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
+type duecUncompressedConnector struct{ driver.Connector }
+
+func (c duecUncompressedConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	conn, err := c.Connector.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ec, ok := conn.(*embedded.EmbeddedConnection)
+	if !ok {
+		_ = conn.Close()
+		return nil, fmt.Errorf("driver conn is %T, want *embedded.EmbeddedConnection", conn)
+	}
+	ec.SetOptions(api.NewOptionsBuilder().Set(api.OptCompressWhenSerializing, false).Build())
+	return conn, nil
+}
+
 // duecLoad fills one table with duecRows rows; every nullEvery-th row gets a
 // NULL email (and the same NULL in the unindexed mirror column). nullEvery <= 0
 // means none.
@@ -1320,23 +1363,25 @@ func duecLoadN(t *testing.T, ctx context.Context, db *sql.DB, table string, null
 			defer wg.Done()
 			lo := w * per
 			for base := lo; base < lo+per; base += batch {
-				var sb strings.Builder
-				fmt.Fprintf(&sb, "INSERT INTO %s (id, email, email_plain, payload) VALUES ", table)
-				for i := 0; i < batch; i++ {
-					id := base + i
-					if i > 0 {
-						sb.WriteString(",")
+				err := duecInsertFixtureRange(t, ctx, db, base, base+batch, func(lo, hi int) string {
+					var sb strings.Builder
+					fmt.Fprintf(&sb, "INSERT INTO %s (id, email, email_plain, payload) VALUES ", table)
+					for id := lo; id < hi; id++ {
+						if id > lo {
+							sb.WriteString(",")
+						}
+						if nullEvery > 0 && id%nullEvery == 0 {
+							fmt.Fprintf(&sb, "(%d, NULL, NULL, 'pad-%07d-xxxxxxxxxxxxxxxxxxxx')", id, id)
+							continue
+						}
+						fmt.Fprintf(&sb,
+							"(%d, 'user%07d@example.com', 'user%07d@example.com', 'pad-%07d-xxxxxxxxxxxxxxxxxxxx')",
+							id, id, id, id)
 					}
-					if nullEvery > 0 && id%nullEvery == 0 {
-						fmt.Fprintf(&sb, "(%d, NULL, NULL, 'pad-%07d-xxxxxxxxxxxxxxxxxxxx')", id, id)
-						continue
-					}
-					fmt.Fprintf(&sb,
-						"(%d, 'user%07d@example.com', 'user%07d@example.com', 'pad-%07d-xxxxxxxxxxxxxxxxxxxx')",
-						id, id, id, id)
-				}
-				if _, e := db.ExecContext(ctx, sb.String()); e != nil {
-					errCh <- fmt.Errorf("insert %s at %d: %w", table, base, e)
+					return sb.String()
+				})
+				if err != nil {
+					errCh <- fmt.Errorf("insert %s at %d: %w", table, base, err)
 					return
 				}
 			}

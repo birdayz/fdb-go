@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -37,7 +38,7 @@ func TestFDB_InCollapseArityAllRun(t *testing.T) {
 	ctx := context.Background()
 	const ddl = "CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) " +
 		"CREATE INDEX idx_c ON T_RD (c) CREATE INDEX idx_ab ON T_RD (a, b) CREATE INDEX idx_b ON T_RD (b) CREATE INDEX idx_a ON T_RD (a)"
-	const insert = "INSERT INTO T_RD VALUES (1, 2, 9, 7, ' a', TRUE, 9.0, 2.0), (2, 7, 3, 7, 'gamma', FALSE, 9.0, NULL), (3, 6, 8, 1, 'b ', NULL, -1.0, 7.0)"
+	const insert = "INSERT INTO T_RD VALUES (1, 2, 9, 7, ' a', TRUE, 9.0, CAST(2.0 AS FLOAT)), (2, 7, 3, 7, 'gamma', FALSE, 9.0, NULL), (3, 6, 8, 1, 'b ', NULL, -1.0, CAST(7.0 AS FLOAT))"
 
 	setupDB, err := sql.Open("fdbsql", "fdbsql:///__SYS?cluster_file="+clusterFilePath+"&schema=CATALOG")
 	if err != nil {
@@ -57,7 +58,7 @@ func TestFDB_InCollapseArityAllRun(t *testing.T) {
 			t.Fatalf("setup %q: %v", stmt, err)
 		}
 	}
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, clusterFilePath, schema))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", strings.ToUpper(dbPath), clusterFilePath, strings.ToUpper(schema)))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

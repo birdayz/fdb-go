@@ -26,7 +26,7 @@ func TestFDB_IsTruthValueProbe(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE istv "+
 			"CREATE TABLE t (id BIGINT, flag BOOLEAN, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_istv/s WITH TEMPLATE istv")
-	dsn := fmt.Sprintf("fdbsql:///testdb_istv?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_ISTV?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

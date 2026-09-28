@@ -1610,16 +1610,11 @@ func whereLiteralOnLeftScenario() *yamsql.Scenario {
 	}
 }
 
-// arithmeticScenario mirrors testdata/arithmetic.yaml. Two cross-engine
-// adaptations: drops NOT NULL on the PK column, and drops the bare-NULL
-// arithmetic + FROM-less SELECT cases. fdb-relational's planner rejects
-// `<op> NULL` literal arithmetic with "unable to encapsulate arithmetic
-// operation due to type mismatch(es)" — bare NULL has no inferred type,
-// so the planner can't pick an operator overload. Wrapping with
-// CAST(NULL AS BIGINT) would satisfy Java but the Go-side YAML uses bare
-// NULL for cleanliness. FROM-less SELECTs (`SELECT -10 / 3`) hit a
-// separate planner restriction. Both are tracked as Java gaps in
-// CLAUDE.md (cross-engine yamsql gotchas).
+// arithmeticScenario selects the table-backed, non-NULL operations from
+// testdata/arithmetic.yaml and drops scalar NOT NULL on the PK. It does not
+// exercise the YAML's bare-NULL or FROM-less arithmetic cases. Java 4.14.2.0
+// admits a singleton source; FromlessSelectJavaProbe separately pins its
+// arithmetic and bare-NULL result contracts.
 func arithmeticScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "arithmetic",
@@ -1922,8 +1917,8 @@ func aggregateEmptyTableScenario() *yamsql.Scenario {
 // bitwiseScenario mirrors testdata/bitwise.yaml. Drops NOT NULL on PK.
 // Drops the bit-shift tests (`<< / >>`) — fdb-relational tokenizes the
 // operators but the function registry has no evaluator (CLAUDE.md
-// gotcha). Drops the FROM-less SELECT and error_code shift-out-of-range
-// tests for the same reason.
+// gotcha). The FROM-less bit-shift and shift-out-of-range cases are also
+// outside this bitwise-AND/OR/XOR sample; absence of FROM is not their gate.
 func bitwiseScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "bitwise",
@@ -2464,9 +2459,8 @@ func indexedInListWithOrderByScenario() *yamsql.Scenario {
 
 // constantProjectionScenario probes pure-constant projections in
 // SELECT — `SELECT 1 FROM t`, `SELECT 'literal' FROM t`, mixed
-// constant + column. fdb-relational rejects FROM-less SELECT (existing
-// CLAUDE.md gotcha) so all queries here have a FROM. Drops NOT NULL
-// on PK. Net-new.
+// constant + column over real table rows. Singleton sources are exercised
+// separately by FromlessSelectJavaProbe. Drops scalar NOT NULL on the PK.
 func constantProjectionScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "constant_projection",
@@ -4153,10 +4147,12 @@ func uniqueViolationScenario() *yamsql.Scenario {
 	}
 }
 
-// notNullViolationScenario mirrors testdata/not_null_violation.yaml.
-// INSERT/UPDATE NULL into a NOT NULL column raises SQLSTATE 23502.
-// Drops NOT NULL on PK column (fdb-relational restriction). Keeps NOT
-// NULL on non-PK column 'name' where the YAML has it.
+// notNullViolationScenario mirrors testdata/not_null_violation.yaml, with
+// its scalar NOT NULL dropped (fdb-relational allows NOT NULL only on ARRAY
+// columns), so its two error_code arms are skipped cross-engine and their
+// SQLSTATEs are the yamsql twin's Go-only claim. For a NOT NULL ARRAY, UPDATE
+// to NULL is Java's run-time NULL_ASSIGNMENT, XX000, not 23502
+// (ws_j_update_column_conformance_test.go measures it).
 func notNullViolationScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "not_null_violation",
@@ -4172,7 +4168,8 @@ func notNullViolationScenario() *yamsql.Scenario {
 		Tests: []yamsql.Test{
 			// INSERT NULL into NOT NULL column raises 23502.
 			{Query: "INSERT INTO t VALUES (2, NULL)", ErrorCode: "23502"},
-			// UPDATE to NULL on NOT NULL column raises 23502.
+			// The yamsql twin's UPDATE-to-NULL arm; skipped cross-engine (its
+			// column is nullable here).
 			{Query: "UPDATE t SET name = NULL WHERE id = 1", ErrorCode: "23502"},
 			// Baseline: the valid row is still intact.
 			{Query: "SELECT id, name FROM t", Rows: [][]any{{1, "alice"}}},
@@ -4661,8 +4658,9 @@ func recursiveCteBaseScenario() *yamsql.Scenario {
 			{Query: "WITH RECURSIVE ancestors AS (SELECT id, parent FROM t WHERE id = 250 UNION ALL SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.parent) TRAVERSAL ORDER level_order SELECT id FROM ancestors ORDER BY id DESC", Rows: [][]any{
 				{250}, {50}, {10}, {1},
 			}},
-			// Counter via FROM-less SELECT literal → 0AF00.
-			{Query: "WITH RECURSIVE counter(n) AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM counter WHERE n < 5) SELECT n FROM counter ORDER BY n", ErrorCode: "0AF00"},
+			// Go's recursive sort extension over the singleton seed. Java's
+			// sorted-recursion refusal is pinned in FromlessSelectJavaProbe.
+			{Query: "WITH RECURSIVE counter(n) AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM counter WHERE n < 5) SELECT n FROM counter ORDER BY n", Rows: [][]any{{1}, {2}, {3}, {4}, {5}}},
 			// Cycle + UNION DISTINCT: reachable set terminates via seen-row filter.
 			{Query: "WITH RECURSIVE reach(n) AS (SELECT src FROM edge WHERE src = 1 UNION SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.n) SELECT n FROM reach ORDER BY n", Rows: [][]any{
 				{1}, {2}, {3},

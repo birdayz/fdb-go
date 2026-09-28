@@ -890,17 +890,17 @@ var _ = Describe("KeyExpression unit tests", func() {
 		})
 
 		It("FieldNames delegates to arguments expression", func() {
-			expr := FunctionExpr("get_versionstamp_incarnation", Field("order_id"))
+			expr := FunctionExpr("bitnot", Field("order_id"))
 			Expect(expr.FieldNames()).To(Equal([]string{"order_id"}))
 		})
 
 		It("FieldNames with EmptyKey arguments returns nil", func() {
-			expr := FunctionExpr("get_versionstamp_incarnation", EmptyKey())
+			expr := FunctionExpr("custom_fn", EmptyKey())
 			Expect(expr.FieldNames()).To(BeNil())
 		})
 
-		It("ColumnSize returns 1", func() {
-			expr := FunctionExpr("get_versionstamp_incarnation", EmptyKey())
+		It("ColumnSize is 1 for a name the registry lacks", func() {
+			expr := FunctionExpr("custom_fn", EmptyKey())
 			Expect(expr.ColumnSize()).To(Equal(1))
 		})
 
@@ -978,7 +978,7 @@ var _ = Describe("KeyExpression unit tests", func() {
 		})
 
 		It("FunctionKeyExpression always returns true", func() {
-			Expect(createsDuplicates(FunctionExpr("get_versionstamp_incarnation", EmptyKey()))).To(BeTrue())
+			Expect(createsDuplicates(FunctionExpr("custom_fn", EmptyKey()))).To(BeTrue())
 		})
 
 		It("KeyWithValue delegates to inner key", func() {
@@ -1060,7 +1060,7 @@ var _ = Describe("KeyExpression unit tests", func() {
 		})
 
 		It("FunctionKeyExpression returns itself", func() {
-			f := FunctionExpr("get_versionstamp_incarnation", EmptyKey())
+			f := FunctionExpr("custom_fn", EmptyKey())
 			result := normalizeKeyForPositions(f)
 			Expect(result).To(HaveLen(1))
 			Expect(result[0]).To(Equal(f))
@@ -1145,8 +1145,8 @@ var _ = Describe("KeyExpression unit tests", func() {
 		})
 
 		It("same FunctionKeyExpression (name+args) is equal", func() {
-			a := FunctionExpr("get_versionstamp_incarnation", EmptyKey())
-			b := FunctionExpr("get_versionstamp_incarnation", EmptyKey())
+			a := FunctionExpr("custom_fn", EmptyKey())
+			b := FunctionExpr("custom_fn", EmptyKey())
 			Expect(keyExpressionEquals(a, b)).To(BeTrue())
 		})
 

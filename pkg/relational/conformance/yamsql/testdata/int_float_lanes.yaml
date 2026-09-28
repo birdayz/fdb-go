@@ -14,7 +14,9 @@ schema_template: |
 setup:
   # MaxInt32 = 2147483647. 3e38 is finite in float32 (max ≈ 3.4e38)
   # but 3e38 + 3e38 crosses it.
-  - INSERT INTO t VALUES (1, 2000000000, 200000000, 1.5, 2.5, 3000000000), (2, 100, 23, 3.0E38, 3.0E38, 9223372036854775806), (3, 2147483647, 1, 0.5, 0.25, 1)
+  # A FLOAT column takes a FLOAT: a decimal literal is a DOUBLE, which does
+  # not promote to FLOAT, so the values are cast as on the target.
+  - INSERT INTO t VALUES (1, 2000000000, 200000000, CAST(1.5 AS FLOAT), CAST(2.5 AS FLOAT), 3000000000), (2, 100, 23, CAST(3.0E38 AS FLOAT), CAST(3.0E38 AS FLOAT), 9223372036854775806), (3, 2147483647, 1, CAST(0.5 AS FLOAT), CAST(0.25 AS FLOAT), 1)
 tests:
   # INTEGER + INTEGER crossing 2^31 → 22003 (Java ADD_II /
   # Math.addExact(int,int)). Under the LONG lane this would silently

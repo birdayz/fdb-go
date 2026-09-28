@@ -131,6 +131,7 @@ func collectStatisticsStep(
 					SetContext(rtx).
 					SetMetaDataProvider(md).
 					SetSubspace(ss).
+					SetSerializer(opts.Serializer).
 					// Collection is a READ. Opening with the pinned template
 					// metadata could otherwise trip checkPossiblyRebuild into
 					// writing a header bump or index-rebuild mark against a

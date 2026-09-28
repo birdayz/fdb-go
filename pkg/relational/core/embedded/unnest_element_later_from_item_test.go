@@ -39,11 +39,11 @@ func TestDuplicateUnnestAliasInsideExistsKeepsDistinctCorrelations(t *testing.T)
 	t.Parallel()
 	md := unnestFrontendMetadata(t)
 	root, err := parseQueryFromSelect(t,
-		`SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM T1, T1."ARR1" AS "V", U AS "V")`)
+		`SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM T1 AS "I", "I"."ARR1" AS "V", U AS "V")`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	op, err := NewPlanVisitorWithSchema(md, "s").VisitQuery(root)
+	op, err := NewPlanVisitorWithTemplate(md, defaultEmbeddedTemplate).VisitQuery(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestScalarUnnestProjectionKeepsExactWholeObjectValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	op, err := NewPlanVisitorWithSchema(md, "s").VisitQuery(root)
+	op, err := NewPlanVisitorWithTemplate(md, defaultEmbeddedTemplate).VisitQuery(root)
 	if err != nil {
 		t.Fatalf("VisitQuery: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestQualifiedStarOverScalarUnnestRejects(t *testing.T) {
 			if frontend == "catalog" {
 				_, err = buildLogicalPlanForQueryWithCatalog(root, md)
 			} else {
-				_, err = NewPlanVisitorWithSchema(md, "s").VisitQuery(root)
+				_, err = NewPlanVisitorWithTemplate(md, defaultEmbeddedTemplate).VisitQuery(root)
 			}
 			var sqlErr *api.Error
 			if !errors.As(err, &sqlErr) || sqlErr.Code != api.ErrCodeInvalidColumnReference {
@@ -129,11 +129,11 @@ func TestSchemaAliasCollisionRetainsOnlyTheAuthoredTableQualifier(t *testing.T) 
 	t.Parallel()
 	md := unnestFrontendMetadata(t)
 	root, err := parseQueryFromSelect(t,
-		`SELECT PA."ID" AS "PID", "B"."ID" AS "BID" FROM PA AS "s", "s"."PB" AS "B"`)
+		`SELECT PA."ID" AS "PID", "B"."ID" AS "BID" FROM PA AS "S", "S"."PB" AS "B"`)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	op, err := NewPlanVisitorWithSchema(md, "s").VisitQuery(root)
+	op, err := NewPlanVisitorWithTemplate(md, defaultEmbeddedTemplate).VisitQuery(root)
 	if err != nil {
 		t.Fatalf("VisitQuery: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestSchemaAliasCollisionRetainsOnlyTheAuthoredTableQualifier(t *testing.T) 
 	if err != nil {
 		t.Fatalf("parse negative: %v", err)
 	}
-	if _, err := NewPlanVisitorWithSchema(md, "s").VisitQuery(negative); err == nil {
+	if _, err := NewPlanVisitorWithTemplate(md, defaultEmbeddedTemplate).VisitQuery(negative); err == nil {
 		t.Fatal("ordinary alias X unexpectedly retained the hidden PA table qualifier")
 	}
 }

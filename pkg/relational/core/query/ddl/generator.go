@@ -10,10 +10,13 @@
 package ddl
 
 import (
+	"math"
+
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	querycore "fdb.dev/pkg/relational/core/query"
@@ -56,9 +59,13 @@ type Options struct {
 // as produced by the catalog-aware plan visitor (and its post-passes), md the
 // metadata the SELECT was planned against.
 //
-// Ports MaterializedViewIndexGenerator.generate
-// (MaterializedViewIndexGenerator.java:149-246): the value/version arm is
-// generateValue, the aggregate arm (:204-244) generateAggregate.
+// Ports MaterializedViewIndexGenerator.generate (Java 4.14.2.0,
+// MaterializedViewIndexGenerator.java:95-117): the query is translated into
+// the graph Go's query path plans (Java plans the index query into its
+// RelationalExpression graph, DdlVisitor.java:266), the graph's top is checked
+// as DdlVisitor.java:274 checks it, IndexSpec is collected over it with the
+// quantifiers resolved by QuantifierValues, checked for validity, and turned
+// into the key expression, the index type and options, and the predicate.
 func Generate(op logical.LogicalOperator, md *recordlayer.RecordMetaData, opts Options) (*GeneratedIndex, error) {
 	// The md == nil text fallback of the plan visitor produces a plan with no
 	// resolved values; an index generated from it would come from unresolved
@@ -67,138 +74,174 @@ func Generate(op logical.LogicalOperator, md *recordlayer.RecordMetaData, opts O
 		return nil, api.NewError(api.ErrCodeInternalError,
 			"index generator invoked without metadata — the catalog-less plan fallback must be unreachable here")
 	}
-	d, err := decompose(op)
+	ref, _, err := querycore.TranslateToCascadesWithError(op, md)
 	if err != nil {
 		return nil, err
 	}
+	if ref == nil {
+		return nil, unsupported("Unsupported index definition, the query does not translate")
+	}
+	root, err := member(ref)
+	if err != nil {
+		return nil, err
+	}
+	qv := newQuantifierValues()
+	c := &specCollector{qv: qv}
+	rootScope := &scope{expr: root}
+
+	// The root's result is the projection (a star projects the whole row).
+	resultRow, err := qv.row(root, rootScope)
+	if err != nil {
+		return nil, err
+	}
+	result, err := qv.deconstruct(resultRow)
+	if err != nil {
+		return nil, err
+	}
+	if err := rejectSubquerySorts(root); err != nil {
+		return nil, err
+	}
+	if err := checkTop(c, root, rootScope, result); err != nil {
+		return nil, err
+	}
+
+	spec, err := c.visit(root, rootScope)
+	if err != nil {
+		return nil, err
+	}
+	if spec.projection, err = c.projectionOf(result, spec.groupBy); err != nil {
+		return nil, err
+	}
+	if err := c.checkValidity(spec); err != nil {
+		return nil, err
+	}
+
 	// Every rendered field name comes from the scanned record type's
 	// DESCRIPTOR, by accessor ordinal — the storage name Java's
-	// ResolvedAccessor carries. Go's semantic accessors present FOLDED
-	// display names (the runtime positional namespace), which corrupt a
-	// quoted-DDL column ("col1" → COL1) if rendered into metadata.
+	// ResolvedAccessor carries. GetRecordType: spec.recordType is the SQL
+	// identifier the translator's scan carries, the map is keyed by the STORED
+	// protobuf name, and an escaped name misses; a miss leaves res.root nil and
+	// the index would be built from folded display names.
 	res := storageNames{}
-	// GetRecordType: d.scan.Table is the SQL identifier, the map is keyed by the
-	// STORED protobuf name, and an escaped name misses. A miss here silently
-	// leaves res.root nil, so the index would be built from folded display names
-	// instead of storage ones -- the corruption this block exists to prevent.
-	if rt := md.GetRecordType(d.scan.Table); rt != nil {
+	if rt := md.GetRecordType(spec.recordType); rt != nil {
 		res.root = rt.Descriptor
 	}
-	// The predicate arm runs before the value/aggregate split, as in Java
-	// (getTopLevelPredicate at :169-172 precedes collectResultValues at
-	// :174): a WHERE makes the index sparse regardless of which arm builds
-	// its key expression.
-	pred, err := generatePredicate(d, res)
-	if err != nil {
-		return nil, err
-	}
 	var gi *GeneratedIndex
-	if d.aggregate != nil {
-		gi, err = generateAggregate(d, opts, res)
+	if aggregateOf(spec.projection) != nil {
+		gi, err = generateAggregate(c, spec, opts, res)
 	} else {
-		gi, err = generateValue(d, md, res)
+		gi, err = generateValue(c, spec, res)
 	}
 	if err != nil {
 		return nil, err
 	}
-	gi.Predicate = pred
+	// The predicate is serialized after the key expression is built, as the
+	// target orders it (generate(), :101-104).
+	if gi.Predicate, err = generatePredicate(spec, res); err != nil {
+		return nil, err
+	}
 	return gi, nil
 }
 
-// decomposed is the Go analogue of Java's topologically-sorted expression
-// list (MaterializedViewIndexGenerator.java:161-166): the plan's operators by
-// role, plus the validity checks of checkValidity (:611-637) that are
-// expressible over this plan shape.
-type decomposed struct {
-	project   *logical.LogicalProject // nil for SELECT * (no final projection)
-	sort      *logical.LogicalSort
-	aggregate *logical.LogicalAggregate
-	filter    *logical.LogicalFilter
-	scan      *logical.LogicalScan
+// topSort is the ORDER BY of the definition's own select: the root, or the
+// sort under the root's projection. Nil without an ORDER BY.
+func topSort(root expressions.RelationalExpression) *expressions.LogicalSortExpression {
+	if sort, ok := root.(*expressions.LogicalSortExpression); ok {
+		return sort
+	}
+	if _, ok := root.(*expressions.LogicalProjectionExpression); ok {
+		if producer, err := member(root.GetQuantifiers()[0].GetRangesOver()); err == nil {
+			if sort, ok := producer.(*expressions.LogicalSortExpression); ok {
+				return sort
+			}
+		}
+	}
+	return nil
 }
 
-// decompose peels the plan Project → Sort → Aggregate → Filter → Scan.
-//
-// Anything else — joins, set operations, CTEs, derived tables, unnests —
-// fails with Java's "expected to find exactly one type filter operator"
-// (getRecordTypeName, MaterializedViewIndexGenerator.java:797): in Java those
-// shapes plan to zero or multiple LogicalTypeFilterExpressions over the
-// multiple quantifiers, and the record-type resolution rejects them before
-// anything else runs (:151 runs before checkValidity at :166).
-// IndexTest.java:500-520 and :718-725 pin the message for the join shapes.
-func decompose(op logical.LogicalOperator) (*decomposed, error) {
-	d := &decomposed{}
-	cur := op
-	if p, ok := cur.(*logical.LogicalProject); ok {
-		d.project = p
-		cur = p.Input
+// rejectSubquerySorts is the target's front-end refusal of an ORDER BY below
+// the top level (QueryVisitor.java:948-949, ExpressionVisitor.java:205-206,
+// !isTopLevel()), which runs while the definition is planned, before any check
+// on the plan — in a derived table and in an EXISTS subquery alike. ORDER BY in
+// a subquery is an approved Go extension for QUERIES (RFC-082); an index
+// definition is not a query, so the extension does not reach it.
+func rejectSubquerySorts(root expressions.RelationalExpression) error {
+	top := topSort(root)
+	var walk func(e expressions.RelationalExpression) error
+	walk = func(e expressions.RelationalExpression) error {
+		if sort, ok := e.(*expressions.LogicalSortExpression); ok && sort != top {
+			return unsupported("order by is not supported in subquery")
+		}
+		for _, q := range e.GetQuantifiers() {
+			producer, err := member(q.GetRangesOver())
+			if err != nil {
+				return err
+			}
+			if err := walk(producer); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
-	if s, ok := cur.(*logical.LogicalSort); ok {
-		d.sort = s
-		cur = s.Input
+	return walk(root)
+}
+
+// checkTop is DdlVisitor.java:274's assertion, made before IndexSpec runs as
+// the target makes it: the query's top is a sort over the select, which fails
+// when an ORDER BY key is not among the projected columns (LogicalOperator.
+// generateSelect wraps the sort in one more select then). Go's translator
+// emits Project(Sort(…)) for an ORDER BY; a key not among the projection's
+// resolved columns is the target's INVALID_COLUMN_REFERENCE.
+func checkTop(c *specCollector, root expressions.RelationalExpression, rootScope *scope, result []values.Value) error {
+	e, sc := root, rootScope
+	if _, ok := e.(*expressions.LogicalProjectionExpression); ok {
+		producer, err := member(e.GetQuantifiers()[0].GetRangesOver())
+		if err != nil {
+			return err
+		}
+		e, sc = producer, sc.child(producer)
 	}
-	if a, ok := cur.(*logical.LogicalAggregate); ok {
-		d.aggregate = a
-		cur = a.Input
-	}
-	if f, ok := cur.(*logical.LogicalFilter); ok {
-		d.filter = f
-		cur = f.Input
-	}
-	scan, ok := cur.(*logical.LogicalScan)
+	sort, ok := e.(*expressions.LogicalSortExpression)
 	if !ok {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-			"Unsupported query, expected to find exactly one type filter operator")
+		return nil
 	}
-	d.scan = scan
-	return d, nil
+	order, err := c.orderByOf(sort, sc)
+	if err != nil {
+		return err
+	}
+	for _, v := range order.values {
+		found := false
+		for _, r := range result {
+			if c.qv.equalValues(v, r) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return api.NewError(api.ErrCodeInvalidColumnReference,
+				"Cannot create index and order by an expression that is not present in the projection list")
+		}
+	}
+	return nil
 }
 
 // storageNames resolves a resolved-accessor path step to the DESCRIPTOR's
-// field name — the STORAGE name. Java's ResolvedAccessor carries the
-// Type.Record.Field itself, so getFieldPathNames yields storage names and the
-// generated key expression's field() names always match the descriptor
-// (toFieldKeyExpression, MaterializedViewIndexGenerator.java:810-827). Go's
-// semantic accessors instead present the FOLDED display name (the runtime
-// positional namespace — rlcatalog's recordTypeTable presents folded
-// identifiers by design), so rendering acc.Field into stored metadata
-// corrupts a quoted-DDL column ("col1" → COL1) into a name the descriptor
-// does not carry and metadata validation rejects. The accessor's ORDINAL is
-// its identity (Java's element equality is ordinal-only,
-// FieldValue.java:675-689) and indexes the declared column order, which IS
-// descriptor field order for the base-table scan — the only source shape
-// decompose admits.
+// field name — the STORAGE name Java's ResolvedAccessor carries, so the
+// generated key expression's field() names always match the descriptor. Go's
+// semantic accessors present the FOLDED display name, which corrupts a
+// quoted-DDL column ("col1" → COL1) if rendered into metadata. The accessor's
+// ORDINAL indexes the declared column order, which IS descriptor field order.
 type storageNames struct {
 	root protoreflect.MessageDescriptor
 }
 
 // fieldName returns the storage name of path[depth], descending nested
-// message descriptors along path[0:depth]. Falls back to the accessor's own
-// (folded) name when the ordinal lies outside the descriptor — the
-// __ROW_VERSION pseudo-slot sits one past the descriptor's fields and its
-// name is identical in both namespaces.
-type fieldAccessor struct {
-	ordinal int
-	name    string
-	typ     values.Type
-}
-
-func fieldAccessors(field values.FieldValue) ([]fieldAccessor, bool) {
-	if field == nil || field.Path() == nil || field.Path().Len() == 0 {
-		return nil, false
-	}
-	path := make([]fieldAccessor, field.Path().Len())
-	for i := range path {
-		accessor, ok := field.Path().Accessor(i)
-		if !ok || accessor.Ordinal() < 0 {
-			return nil, false
-		}
-		name, _ := accessor.DisplayName()
-		path[i] = fieldAccessor{ordinal: accessor.Ordinal(), name: name, typ: accessor.FieldType()}
-	}
-	return path, true
-}
-
+// message descriptors along path[0:depth] — through a nullable array's wrapper
+// message to its element, as the key expression is written over the logical
+// type and wrapped afterwards (NullableArrayUtils.wrapArray). Falls back to
+// the accessor's own (folded) name when the ordinal lies outside the
+// descriptor — the __ROW_VERSION pseudo-slot sits one past the descriptor's
+// fields and its name is identical in both namespaces.
 func (s storageNames) fieldName(path []fieldAccessor, depth int) string {
 	desc := s.root
 	for i := 0; i < depth && desc != nil; i++ {
@@ -206,7 +249,7 @@ func (s storageNames) fieldName(path []fieldAccessor, depth int) string {
 			desc = nil
 			break
 		}
-		desc = desc.Fields().Get(path[i].ordinal).Message()
+		desc = elementMessage(desc.Fields().Get(path[i].ordinal).Message())
 	}
 	if desc == nil || path[depth].ordinal < 0 || path[depth].ordinal >= desc.Fields().Len() {
 		return path[depth].name
@@ -214,150 +257,27 @@ func (s storageNames) fieldName(path []fieldAccessor, depth int) string {
 	return string(desc.Fields().Get(path[depth].ordinal).Name())
 }
 
-// sortOrderFunction maps a sort key's direction to the ordering-function
-// wrapper name, or "" for plain ascending.
-//
-// Java: OrderByExpression.toSortOrder (OrderByExpression.java:112-118)
-// produces the RequestedSortOrder, and getOrderByValues
-// (MaterializedViewIndexGenerator.java:347-363) maps it:
-//
-//	ASCENDING              (asc,  nulls first) → no wrapper
-//	ASCENDING_NULLS_LAST   (asc,  nulls last)  → order_asc_nulls_last
-//	DESCENDING             (desc, nulls last)  → order_desc_nulls_last
-//	DESCENDING_NULLS_FIRST (desc, nulls first) → order_desc_nulls_first
-//
-// The plan visitor already applied SQL's defaults (ASC → nulls first,
-// DESC → nulls last) to SortKey.NullsFirst, matching ParseHelpers.isDescending
-// / isNullsLast (ParseHelpers.java:167-179).
-func sortOrderFunction(k logical.SortKey) string {
-	if k.Dir == logical.SortDesc {
-		if k.NullsFirst {
-			return recordlayer.OrderFuncDescNullsFirst
-		}
-		return recordlayer.OrderFuncDescNullsLast
+// elementMessage is md itself, or the element message of a nullable array's
+// wrapper (`message M { repeated E values = 1; }`, Java's
+// NullableArrayTypeUtils).
+func elementMessage(md protoreflect.MessageDescriptor) protoreflect.MessageDescriptor {
+	if md == nil || md.Fields().Len() != 1 {
+		return md
 	}
-	if !k.NullsFirst {
-		return recordlayer.OrderFuncAscNullsLast
+	fd := md.Fields().Get(0)
+	if fd.Cardinality() != protoreflect.Repeated || fd.IsMap() || string(fd.Name()) != "values" {
+		return md
 	}
-	return ""
-}
-
-// orderByValues resolves the sort keys to their projected values and the
-// per-value ordering-function map.
-//
-// Ports getOrderByValues (MaterializedViewIndexGenerator.java:339-385) plus
-// the ORDER-BY ⊆ projection rule of LogicalOperator.generateSelect
-// (LogicalOperator.java:389-390): Java takes the set difference between the
-// sort's expression values and the select's output values, wraps a non-empty
-// remainder in an outer select, and DdlVisitor.java:217 rejects that shape as
-// INVALID_COLUMN_REFERENCE. Go tests membership directly over value identity
-// (RFC-202 D3 — never the plan's shape; see
-// embedded/index_ddl_order_by_shape_test.go for why position carries no
-// information).
-//
-// The returned values are the PROJECTION's value objects (not the sort key's
-// own copies) so that identity-keyed ordering functions and the reorder step
-// agree on object identity. Java needs no such canonicalisation because its
-// rebased sort values compare equal to the output values by construction; Go
-// compares structurally and then canonicalises to the projection instance.
-//
-// SELECT * is expanded to exact source FieldValues before this helper is
-// called. Passing that expansion as projected is load-bearing: it
-// canonicalizes an ORDER BY field to the very same Value instance and lets
-// reorderValues remove the field from the covering tail. Treating star as a
-// nil projection prepended the sort-key copy and then retained the expanded
-// copy, producing a false "multiple disconnected references" rejection (and
-// could hide the array-field semantic rejection behind it).
-func orderByValues(sort *logical.LogicalSort, projected []values.Value) ([]values.Value, map[values.Value]string, error) {
-	if sort == nil {
-		return nil, map[values.Value]string{}, nil
+	if inner := fd.Message(); inner != nil {
+		return inner
 	}
-	// Java's orderingFunctions is an IdentityHashMap (RFC-202 D12): Go's map
-	// over the Value interface compares pointers for pointer-typed values,
-	// which is the same identity semantics.
-	fns := make(map[values.Value]string, len(sort.Keys))
-	out := make([]values.Value, 0, len(sort.Keys))
-	for _, k := range sort.Keys {
-		var v values.Value
-		switch {
-		case k.Pos > 0:
-			// Positional ORDER BY <n> is an output ordinal by SQL definition;
-			// it resolves to the projection slot directly.
-			if projected == nil || k.Pos > len(projected) {
-				return nil, nil, api.NewErrorf(api.ErrCodeInvalidColumnReference,
-					"ORDER BY position %d is not in the select list", k.Pos)
-			}
-			v = projected[k.Pos-1]
-		case k.Value == nil:
-			// A nil Value slot means the expression walker declined the
-			// key's shape. Silently reading "unknown" as "projected" is how
-			// the wrong index gets built — hard error (RFC-202 D3).
-			return nil, nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-				"Unsupported index definition, cannot resolve ORDER BY expression %q", k.Expr)
-		default:
-			v = k.Value
-			if projected != nil {
-				found := false
-				for _, pv := range projected {
-					if pv != nil && projectedValueMatches(v, pv) {
-						v = pv // canonicalise to the projection's instance
-						found = true
-						break
-					}
-				}
-				if !found {
-					// Java: DdlVisitor.java:217, pinned by IndexTest.java:710-716.
-					return nil, nil, api.NewError(api.ErrCodeInvalidColumnReference,
-						"Cannot create index and order by an expression that is not present in the projection list")
-				}
-			}
-		}
-		if fn := sortOrderFunction(k); fn != "" {
-			fns[v] = fn
-		}
-		out = append(out, v)
-	}
-	return out, fns, nil
-}
-
-// projectedValueMatches is the single-source DDL equivalent of Java's
-// alias-aware Value equality. Most values compare structurally. A resolved
-// field also admits the same exact accessor path and leaf type when the two
-// producer-local QOV roots differ: SELECT * expansion owns the scan-shaped
-// QOV while ORDER BY owns a rebased logical-plan QOV. The decomposer has
-// already restricted this generator to one source, so ignoring that
-// producer-local root cannot conflate two join legs.
-func projectedValueMatches(ordering, projected values.Value) bool {
-	if values.ValuesStructurallyEqual(ordering, projected) {
-		return true
-	}
-	orderingField, orderingOK := values.AsFieldValue(ordering)
-	projectedField, projectedOK := values.AsFieldValue(projected)
-	if !orderingOK || !projectedOK || orderingField.Path() == nil || projectedField.Path() == nil {
-		return false
-	}
-	orderingOrdinals := orderingField.Path().Ordinals()
-	projectedOrdinals := projectedField.Path().Ordinals()
-	if len(orderingOrdinals) != len(projectedOrdinals) {
-		return false
-	}
-	for i := range orderingOrdinals {
-		if orderingOrdinals[i] != projectedOrdinals[i] {
-			return false
-		}
-	}
-	orderingType, projectedType := orderingField.ResultType(), projectedField.ResultType()
-	return orderingType != nil && projectedType != nil && orderingType.Equals(projectedType)
+	return md
 }
 
 // reorderValues puts the ORDER BY values first, in ORDER BY order, then the
-// remaining projection values in projection order. The ORDER BY fixes the key
-// order; the projection order only fixes the tail.
-//
-// Ports reorderValues (MaterializedViewIndexGenerator.java:387-394); the
-// SELECT-order-vs-ORDER-BY-order direction is pinned by IndexTest.java:673-681
-// (`SELECT a1, a2 … ORDER BY a2, a1` → concat(A2, A1)).
-func reorderValues(vals, orderBy []values.Value) ([]values.Value, error) {
+// remaining projection values in projection order (MaterializedViewIndex-
+// Generator.reorderValues: `keyValues.contains(value)`, Java equality).
+func reorderValues(qv *quantifierValues, vals, orderBy []values.Value) ([]values.Value, error) {
 	if len(vals) < len(orderBy) {
 		return nil, api.NewError(api.ErrCodeInternalError,
 			"index generator: more ORDER BY values than projected values")
@@ -365,12 +285,11 @@ func reorderValues(vals, orderBy []values.Value) ([]values.Value, error) {
 	if len(orderBy) == 0 {
 		return vals, nil
 	}
-	out := make([]values.Value, 0, len(vals))
-	out = append(out, orderBy...)
+	out := append(make([]values.Value, 0, len(vals)), orderBy...)
 	for _, v := range vals {
 		inOrderBy := false
 		for _, ov := range orderBy {
-			if values.ValuesStructurallyEqual(v, ov) {
+			if qv.equalValues(ov, v) {
 				inOrderBy = true
 				break
 			}
@@ -382,53 +301,18 @@ func reorderValues(vals, orderBy []values.Value) ([]values.Value, error) {
 	return out, nil
 }
 
-// generateValue is the value/version arm
-// (MaterializedViewIndexGenerator.java:187-203).
-func generateValue(d *decomposed, md *recordlayer.RecordMetaData, res storageNames) (*GeneratedIndex, error) {
-	fieldValues, err := projectedValues(d, md)
-	if err != nil {
-		return nil, err
+// generateValue is the value/version arm (generate(), :108-110 with
+// translateToKeyExpression and splitKeyFromValue): the ORDER BY columns lead
+// the key, the rest of the projection follows as the index's value when there
+// is an ORDER BY, and a version column makes it a VERSION index.
+func generateValue(c *specCollector, spec *indexSpec, res storageNames) (*GeneratedIndex, error) {
+	fieldValues := fieldValuesOf(spec.projection)
+	var orderBy []values.Value
+	var orderingFns map[values.Value]string
+	if spec.orderBy != nil {
+		orderBy, orderingFns = spec.orderBy.values, spec.orderBy.functions
 	}
-	// projectedValues expands SELECT * to the exact output list, so both star
-	// and explicit projections use one canonical membership/identity path.
-	orderBy, orderingFns, err := orderByValues(d.sort, fieldValues)
-	if err != nil {
-		return nil, err
-	}
-	return buildValueIndex(d.scan.Table, fieldValues, orderBy, orderingFns, res)
-}
-
-// buildValueIndex is the shared tail of the value arm
-// (MaterializedViewIndexGenerator.java:190-203), reached from the plain
-// projection (generateValue) and from an aggregate-free GROUP BY plan, whose
-// grouping values ARE the projection in Java's collectResultValues terms.
-func buildValueIndex(table string, fieldValues, orderBy []values.Value, orderingFns map[values.Value]string, res storageNames) (*GeneratedIndex, error) {
-	// Version partition (MaterializedViewIndexGenerator.java:183-189): the
-	// projected FieldValues whose result type IS the __ROW_VERSION
-	// pseudo-field's type (Type.primitiveType(VERSION, true)). Java filters
-	// by TYPE equality alone — an aliased projection of the pseudo-field
-	// still counts — and the version values STAY inside fieldValues so
-	// reorder and the covering split treat them as ordinary key columns; only
-	// the COUNT decides the index type (≤1, and VERSION instead of VALUE).
-	versionCount := 0
-	for _, v := range fieldValues {
-		if fv, ok := values.AsFieldValue(v); ok &&
-			fv.ResultType() != nil && fv.ResultType().Code() == values.TypeCodeVersion && fv.ResultType().IsNullable() {
-			versionCount++
-		}
-	}
-	if versionCount > 1 {
-		// Java's exact message (MaterializedViewIndexGenerator.java:185).
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-			"Cannot have index with more than one version column")
-	}
-	// Java :190-192: a multi-column value index must have a top-level ORDER BY
-	// (the key order would otherwise be unspecified). IndexTest.java:694-700.
-	if len(fieldValues) > 1 && len(orderBy) == 0 {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-			"Unsupported index definition, value indexes must have an order by clause at the top level")
-	}
-	reordered, err := reorderValues(fieldValues, orderBy)
+	reordered, err := reorderValues(c.qv, fieldValues, orderBy)
 	if err != nil {
 		return nil, err
 	}
@@ -436,113 +320,20 @@ func buildValueIndex(table string, fieldValues, orderBy []values.Value, ordering
 	if err != nil {
 		return nil, err
 	}
-	// Split point (Java :195-198): the ORDER BY length; -1 (no covering
-	// split) when the ORDER BY is empty — both DDL forms pass
-	// generateKeyValueExpressionWithEmptyKey = false (DdlVisitor.java:218,
-	// OnSourceIndexGenerator.java:227), the vector index being the only
-	// caller that flips it.
-	splitPoint := len(orderBy)
-	if len(orderBy) == 0 {
-		splitPoint = -1
-	}
+	// Split point: the ORDER BY length; no split without an ORDER BY (both
+	// DDL forms keep emptyKeyAllowed false, the vector index being the only
+	// caller that flips it).
 	root := expr
-	if splitPoint != -1 && splitPoint < len(fieldValues) {
-		// Covering index (Java :199-200): keyWithValue(expr, splitPoint).
-		root = recordlayer.KeyWithValue(expr, splitPoint)
+	if len(orderBy) > 0 && len(orderBy) < len(fieldValues) {
+		root = recordlayer.KeyWithValue(expr, len(orderBy))
 	}
-	// Java :189: IndexTypes.VERSION when the (aggregate-free) projection
-	// carries a version column, VALUE otherwise.
 	indexType := recordlayer.IndexTypeValue
-	if versionCount > 0 {
-		indexType = recordlayer.IndexTypeVersion
-	}
-	return &GeneratedIndex{
-		TableName: table,
-		Root:      root,
-		IndexType: indexType,
-	}, nil
-}
-
-// projectedValues returns the index's projected value list.
-//
-// Java flattens the top operator's result value with Values.deconstructRecord
-// and dereferences each through the quantifier map (:174 → :330-336). Go's
-// final LogicalProject already carries the flattened, source-resolved value
-// list in ProjectedValues; a nil slot means the walker declined that
-// expression's shape, which is a hard error, not a silent skip.
-//
-// SELECT * has no final projection (the plan is the bare source, optionally
-// under a sort); Java has expanded the star into every column by this point,
-// so Go expands it here from the record type's fields in declaration order.
-func projectedValues(d *decomposed, md *recordlayer.RecordMetaData) ([]values.Value, error) {
-	if d.project == nil {
-		return starValues(d.scan, md)
-	}
-	out := make([]values.Value, 0, len(d.project.ProjectedValues))
-	for i, pv := range d.project.ProjectedValues {
-		if pv == nil {
-			name := ""
-			if i < len(d.project.Projections) {
-				name = d.project.Projections[i]
-			}
-			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-				"Unsupported index definition, cannot map select element %q to a key expression", name)
-		}
-		out = append(out, pv)
-	}
-	if len(out) == 0 {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-			"Unsupported index definition, empty projection")
-	}
-	return out, nil
-}
-
-// starValues expands `SELECT *` into one baked FieldValue per column of the
-// scanned record type, in declaration order — the state Java's plan is
-// already in when the generator runs (the star expands during planning).
-func starValues(scan *logical.LogicalScan, md *recordlayer.RecordMetaData) ([]values.Value, error) {
-	// GetRecordType: see the note at storageNames. A raw map index by the SQL
-	// identifier misses on any escaped table name.
-	rt := md.GetRecordType(scan.Table)
-	if rt == nil {
-		return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
-			"Unknown table %q", scan.Table)
-	}
-	fields := rt.Descriptor.Fields()
-	rowFields := make([]values.Field, fields.Len())
-	for i := 0; i < fields.Len(); i++ {
-		field := fields.Get(i)
-		rowFields[i] = values.Field{
-			Name:      values.FieldNameForProtoField(field),
-			Ordinal:   i,
-			FieldType: querycore.TargetTypeForFD(field),
+	for _, v := range fieldValues {
+		if isVersionColumn(v) {
+			indexType = recordlayer.IndexTypeVersion
 		}
 	}
-	corrName := scan.Binding
-	if corrName == "" {
-		corrName = scan.Alias
-	}
-	if corrName == "" {
-		corrName = scan.Table
-	}
-	qov, err := values.NewQuantifiedObjectValue(
-		values.NamedCorrelationIdentifier(corrName),
-		&values.RecordType{RecordName: values.RecordNameForDescriptor(rt.Descriptor), Fields: rowFields},
-	)
-	if err != nil {
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"Unsupported index definition, cannot type star expansion: %v", err)
-	}
-	out := make([]values.Value, 0, fields.Len())
-	for i := 0; i < fields.Len(); i++ {
-		fv, resolveErr := values.ResolveFieldOrdinals(qov, []int{i})
-		if resolveErr != nil {
-			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-				"Unsupported index definition, cannot resolve star column %d: %v", i, resolveErr)
-		}
-		out = append(out, fv)
-	}
-	return out, nil
+	return &GeneratedIndex{TableName: spec.recordType, Root: root, IndexType: indexType}, nil
 }
 
 // generateKeyExpression is the expression builder
@@ -561,7 +352,7 @@ func generateKeyExpression(vals []values.Value, orderingFns map[values.Value]str
 	var components []recordlayer.KeyExpression
 	i := 0
 	for i < len(vals) {
-		_, isField := values.AsFieldValue(vals[i])
+		_, isField := vals[i].(*pathColumn)
 		if !isField {
 			expr, err := leafKeyExpression(vals[i], orderingFns, res)
 			if err != nil {
@@ -571,7 +362,7 @@ func generateKeyExpression(vals []values.Value, orderingFns map[values.Value]str
 			i++
 			continue
 		}
-		node, next, err := computeTrieForValues(vals, i)
+		node, next, err := computeTrieForValues(vals, i, res)
 		if err != nil {
 			return nil, err
 		}
@@ -589,32 +380,14 @@ func generateKeyExpression(vals []values.Value, orderingFns map[values.Value]str
 	if len(components) == 1 {
 		return components[0], nil
 	}
-	return concatFlat(components), nil
-}
-
-// concatFlat concatenates components with Java's ThenKeyExpression
-// constructor semantics: a component that is itself a Then contributes its
-// CHILDREN, not a nested node (ThenKeyExpression.java:264-270 flattens in
-// `add`). Go's recordlayer.Concat stores children verbatim, so without this a
-// trie run followed by a non-field component would serialize as a nested
-// Then proto — a byte shape Java can never produce for the same DDL.
-func concatFlat(components []recordlayer.KeyExpression) recordlayer.KeyExpression {
-	flat := make([]recordlayer.KeyExpression, 0, len(components))
-	for _, c := range components {
-		if then, ok := c.(*recordlayer.CompositeKeyExpression); ok {
-			flat = append(flat, then.SubKeyExpressions()...)
-			continue
-		}
-		flat = append(flat, c)
-	}
-	return recordlayer.Concat(flat...)
+	return recordlayer.Concat(components...), nil
 }
 
 // fieldTrieNode is the Go form of FieldValueTrieNode
 // (FieldValueTrieNode.java): a compressed trie over resolved accessor paths.
 // value is non-nil at a leaf that terminates a projected FieldValue.
 type fieldTrieNode struct {
-	value    values.FieldValue
+	value    *pathColumn
 	children []trieChild // insertion-ordered (Java's ImmutableMap preserves it)
 }
 
@@ -623,50 +396,53 @@ type trieChild struct {
 	node     *fieldTrieNode
 }
 
-// accessorKeyEqual is trie-key equality. Java keys the children map on
-// ResolvedAccessor, whose equals is ORDINAL-only (FieldValue.java:675-689) —
-// with the explode-counter refinement of AnnotatedAccessor
-// (MaterializedViewIndexGenerator.java:683-718) keeping two unnests of the
-// same array distinct. Go's ResolvedAccessor carries no explode marker yet
-// (the unnest shapes do not reach this generator — decompose rejects them),
-// so ordinal equality is exact here.
+// accessorKeyEqual is trie-KEY equality. Java keys a trie node's children in a
+// map by ResolvedAccessor: a plain accessor hashes by ordinal and an
+// AnnotatedAccessor by ordinal and marker, so as map keys a plain and an
+// annotated accessor of one column never meet, and two unnests of one array
+// (two markers) are two children (QuantifierValues.java, AnnotatedAccessor).
+// A path's prefix test is Java's asymmetric equals instead (fieldAccessor.equal,
+// prefixMatches).
 func accessorKeyEqual(a, b fieldAccessor) bool {
-	return a.ordinal == b.ordinal
+	return a.ordinal == b.ordinal && a.marker == b.marker
 }
 
 // computeTrieForValues consumes the maximal run of FieldValues starting at
 // start whose paths extend the empty prefix, building the trie. Returns the
 // node and the index one past the consumed run.
 // Ports FieldValueTrieNode.computeTrieForValues (FieldValueTrieNode.java:201-238).
-func computeTrieForValues(vals []values.Value, start int) (*fieldTrieNode, int, error) {
-	node, next, err := computeTrieAtDepth(vals, start, 0)
+func computeTrieForValues(vals []values.Value, start int, res storageNames) (*fieldTrieNode, int, error) {
+	node, next, err := computeTrieAtDepth(vals, start, 0, res)
 	if err != nil {
 		return nil, 0, err
 	}
 	return node, next, nil
 }
 
-func computeTrieAtDepth(vals []values.Value, start, depth int) (*fieldTrieNode, int, error) {
+func computeTrieAtDepth(vals []values.Value, start, depth int, res storageNames) (*fieldTrieNode, int, error) {
 	node := &fieldTrieNode{}
 	i := start
 	for i < len(vals) {
-		fv, ok := values.AsFieldValue(vals[i])
+		fv, ok := vals[i].(*pathColumn)
 		if !ok {
 			break
 		}
-		path, ok := fieldAccessors(fv)
-		if !ok {
+		path := fv.steps
+		// Java tests the WHOLE path against the prefix — equals, then
+		// isPrefixOf (FieldValueTrieNode.java:212-218) — so the prefix check
+		// comes first. Testing only the path's LENGTH first took a top-level
+		// column that follows a nested one (`s.x, ts`: ts has length 1 under
+		// prefix [S]) for the end of the S subtree, dropping S's children and
+		// rendering field(S) where Java renders concat(field(S).nest(X), TS).
+		if !prefixMatches(vals, start, i, depth, res) {
 			break
 		}
 		if len(path) == depth {
-			// The path terminates exactly at this prefix.
+			// The path equals the prefix: it terminates here.
 			if depth == 0 {
 				break // a zero-length path cannot occur (FieldPath is non-empty)
 			}
 			return &fieldTrieNode{value: fv}, i + 1, nil
-		}
-		if !prefixMatches(vals, start, i, depth) {
-			break
 		}
 		acc := path[depth]
 		// A duplicate child key = the same nested field path referenced twice
@@ -676,7 +452,7 @@ func computeTrieAtDepth(vals []values.Value, start, depth int) (*fieldTrieNode, 
 				return nil, 0, overlapError()
 			}
 		}
-		child, next, err := computeTrieAtDepth(vals, i, depth+1)
+		child, next, err := computeTrieAtDepth(vals, i, depth+1, res)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -689,28 +465,25 @@ func computeTrieAtDepth(vals []values.Value, start, depth int) (*fieldTrieNode, 
 // prefixMatches reports whether vals[i]'s path agrees with vals[start]'s path
 // on the first depth accessors — the "prefix.isPrefixOf(fieldPath)" walk of
 // Java's iterator version, expressed over the slice.
-func prefixMatches(vals []values.Value, start, i, depth int) bool {
-	baseField, ok := values.AsFieldValue(vals[start])
+//
+// The prefix is the receiver of the comparison, as Java's FieldPath.isPrefixOf
+// compares with the PREFIX side's equals: a plain prefix accessor admits a
+// marked one, a marked prefix accessor only the same marker.
+func prefixMatches(vals []values.Value, start, i, depth int, res storageNames) bool {
+	baseField, ok := vals[start].(*pathColumn)
 	if !ok {
 		return false
 	}
-	base, ok := fieldAccessors(baseField)
+	cur, ok := vals[i].(*pathColumn)
 	if !ok {
 		return false
 	}
-	cur, ok := values.AsFieldValue(vals[i])
-	if !ok {
-		return false
-	}
-	path, ok := fieldAccessors(cur)
-	if !ok {
-		return false
-	}
+	base, path := baseField.steps, cur.steps
 	if len(path) < depth || len(base) < depth {
 		return false
 	}
 	for k := 0; k < depth; k++ {
-		if !accessorKeyEqual(base[k], path[k]) {
+		if !base[k].equal(path[k]) {
 			return false
 		}
 	}
@@ -755,17 +528,28 @@ func trieKeyExpression(n *fieldTrieNode, orderingFns map[values.Value]string, re
 		childPath := make([]fieldAccessor, 0, len(prefix)+1)
 		childPath = append(append(childPath, prefix...), c.accessor)
 		name := res.fieldName(childPath, len(childPath)-1)
-		leaf, err := fieldLeafExpression(c.accessor, name, c.node.value)
-		if err != nil {
-			return nil, err
-		}
 		if len(c.node.children) > 0 {
+			// A nesting parent (ValueToKeyExpressionVisitor.trieToKeyExpression):
+			// the step renders as a field, FanOut when an unnest reached it, and
+			// nests the rest.
+			fanType, err := accessorFanType(c.accessor, name, recordlayer.FanTypeFanOut)
+			if err != nil {
+				return nil, err
+			}
 			childExpr, err := trieKeyExpression(c.node, orderingFns, res, childPath)
 			if err != nil {
 				return nil, err
 			}
-			parts = append(parts, recordlayer.Nest(name, childExpr))
+			if fanType == recordlayer.FanTypeFanOut {
+				parts = append(parts, recordlayer.NestFanOut(name, childExpr))
+			} else {
+				parts = append(parts, recordlayer.Nest(name, childExpr))
+			}
 			continue
+		}
+		leaf, err := fieldLeafExpression(c.accessor, name, c.node.value)
+		if err != nil {
+			return nil, err
 		}
 		if c.node.value != nil {
 			if fn, ok := orderingFns[values.Value(c.node.value)]; ok {
@@ -781,29 +565,52 @@ func trieKeyExpression(n *fieldTrieNode, orderingFns map[values.Value]string, re
 	return recordlayer.Concat(parts...), nil
 }
 
-// fieldLeafExpression builds the field expression for a terminal accessor.
-// Ports toFieldKeyExpression (MaterializedViewIndexGenerator.java:810-827)
-// for the FanOut path: an array field reached here was NOT unnested and is
-// rejected; a non-array field is FanType.None.
+// accessorFanType is fieldAccessorToKeyExpression's fan type
+// (ValueToKeyExpressionVisitor): a non-array field is None; an array is
+// indexable only through an unnest, which marks its accessor, or materialized
+// whole (fanTypeForArray Concatenate, under CARDINALITY) — any other array
+// reference is the target's 0A000.
+func accessorFanType(acc fieldAccessor, name string, fanTypeForArray recordlayer.FanType) (recordlayer.FanType, error) {
+	if acc.typ == nil || acc.typ.Code() != values.TypeCodeArray {
+		return recordlayer.FanTypeNone, nil
+	}
+	if acc.marker == 0 && fanTypeForArray != recordlayer.FanTypeConcatenate {
+		return 0, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"Unsupported index definition, cannot create index on array field '%s' without unnesting", name)
+	}
+	return fanTypeForArray, nil
+}
+
+// fieldLeafExpression builds the field expression for a terminal accessor
+// (fieldAccessorToKeyExpression with FanOut): the __ROW_VERSION pseudo-field is
+// the version key expression, an unnested array a FanOut field, any other
+// array refused, anything else a scalar field.
 //
-// name is the accessor's STORAGE name (storageNames.fieldName); acc.Field is
+// name is the accessor's STORAGE name (storageNames.fieldName); acc.name is
 // only consulted for the __ROW_VERSION pseudo-field check, whose name is
-// identical in both namespaces. leafValue (nil for an intermediate rendered
-// as a nesting parent) supplies the field's type — Go's ResolvedAccessor
-// carries no type, the FieldValue's leaf Typ does.
-func fieldLeafExpression(acc fieldAccessor, name string, leafValue values.FieldValue) (recordlayer.KeyExpression, error) {
+// identical in both namespaces. leafValue supplies the field's type where the
+// accessor carries none.
+func fieldLeafExpression(acc fieldAccessor, name string, leafValue *pathColumn) (recordlayer.KeyExpression, error) {
 	// The __ROW_VERSION pseudo-field renders as the version key expression —
-	// name AND type must both match (Java's toFieldKeyExpression,
-	// MaterializedViewIndexGenerator.java:821-823).
-	if leafValue != nil && values.IsRowVersionPseudoField(acc.name, leafValue.ResultType()) {
+	// name AND type must both match (ValueToKeyExpressionVisitor.isRowVersion).
+	if leafValue != nil && values.IsRowVersionPseudoField(acc.name, leafValue.typ) {
 		return recordlayer.VersionKey(), nil
 	}
-	if leafValue != nil && leafValue.ResultType() != nil && leafValue.ResultType().Code() == values.TypeCodeArray {
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"Unsupported index definition, cannot create index on array field '%s' without unnesting",
-			name)
+	fanType, err := accessorFanType(acc, name, recordlayer.FanTypeFanOut)
+	if err != nil {
+		return nil, err
+	}
+	if fanType == recordlayer.FanTypeFanOut {
+		return recordlayer.FanOut(name), nil
 	}
 	return recordlayer.Field(name), nil
+}
+
+// isVersionColumn reports whether v is the __ROW_VERSION pseudo-column, by the
+// type Java's Projection.versionValues filters on.
+func isVersionColumn(v values.Value) bool {
+	p, ok := v.(*pathColumn)
+	return ok && p.typ != nil && p.typ.Code() == values.TypeCodeVersion && p.typ.IsNullable()
 }
 
 // leafKeyExpression builds the key expression for one non-trie value,
@@ -823,14 +630,14 @@ func leafKeyExpression(v values.Value, orderingFns map[values.Value]string, res 
 // valueKeyExpression is toKeyExpression(Value)
 // (MaterializedViewIndexGenerator.java:551-582).
 func valueKeyExpression(v values.Value, res storageNames) (recordlayer.KeyExpression, error) {
-	if field, ok := values.AsFieldValue(v); ok {
-		return fieldPathExpression(field, recordlayer.FanTypeNone, res)
+	if field, ok := v.(*pathColumn); ok {
+		return fieldPathExpression(field, recordlayer.FanTypeFanOut, res)
 	}
 	switch val := v.(type) {
 	case *values.CardinalityValue:
 		// CARDINALITY consumes the materialised array: the field is accessed
 		// with Concatenate, not FanOut (:555-566).
-		child, ok := values.AsFieldValue(val.Child)
+		child, ok := val.Child.(*pathColumn)
 		if !ok {
 			return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 				"CARDINALITY() must be applied to a `field()` in an index key expression.")
@@ -853,131 +660,257 @@ func valueKeyExpression(v values.Value, res storageNames) (recordlayer.KeyExpres
 		if err != nil {
 			return nil, err
 		}
+		if _, err := encapsulateLane(name, []values.Value{val.Left, val.Right}); err != nil {
+			return nil, err
+		}
 		return recordlayer.FunctionExpr(name, recordlayer.Concat(left, right)), nil
-	case *values.ScalarFunctionValue:
-		// The bit operators parse as ScalarFunctionValues in Go; Java models
-		// them as ArithmeticValues and lowercases the operator name
-		// (:567-575; IndexTest.java pins bitand/bitor/bitxor).
-		name, ok := bitFunctionName(val.FuncName)
-		if !ok {
-			return nil, unableToConstruct()
-		}
-		args := make([]recordlayer.KeyExpression, 0, len(val.Args))
-		for _, a := range val.Args {
-			expr, err := valueKeyExpression(a, res)
-			if err != nil {
-				return nil, err
-			}
-			args = append(args, expr)
-		}
-		return recordlayer.FunctionExpr(name, argumentExpression(args)), nil
 	case *values.ConstantValue:
 		// LiteralValue → Key.Expressions.value(literal) (:576-577).
-		return recordlayer.Literal(val.Value), nil
+		carrier, err := literalKeyCarrier(val)
+		if err != nil {
+			return nil, err
+		}
+		return recordlayer.Literal(carrier), nil
 	default:
 		return nil, unableToConstruct()
 	}
+}
+
+// literalKeyCarrier returns the Go value whose Value proto matches the one Java
+// stores for the same literal. Java's LiteralValue holds the boxed Java type of
+// the literal's static type, and Key.Expressions.value(Integer) serialises as
+// int_value while value(Long) serialises as long_value. Go's query runtime keeps
+// every integer literal on an int64 carrier and every floating one on float64,
+// whatever its static width, so the carrier has to be narrowed to the static
+// type at this boundary. Without the narrowing Go stored long_value 10000 for
+// the entry size bitmap_bucket_offset injects, and Java then could not plan any
+// query over that table: its encapsulation of the stored (LONG, LONG) function
+// failed where Java's own (LONG, INT) form succeeds.
+//
+// An INT-typed value outside the int32 range cannot be narrowed without changing
+// the stored bytes, and the SQL literal typing never produces one (a literal is
+// INT only when it fits, ParseHelpers.java:96-98), so reaching it is a typing
+// defect upstream: it is refused instead of wrapping silently into the index
+// definition. A FLOAT-typed float64 carries a value already rounded to float32
+// (FLOAT literals are parsed as float32), so the float narrowing is exact.
+//
+// The carrier is decided by the STATIC type, never by the Go kind the value
+// happens to arrive in: an INT- or LONG-typed constant held in any Go integer
+// kind (a platform int, an int32, an unsigned kind) is carried as int32 or int64
+// respectively, so no Go kind can reach the wire as the other width.
+//
+// Every (static type, Go kind) pair is either one of the pairs below or refused:
+// an unrecognised pair (a FLOAT held in an integer kind, a STRING held in
+// anything but a string) would otherwise reach the wire with whatever carrier
+// the Go kind happens to have, the class of defect this function exists to end.
+//
+// A NULL literal is carried as nil whatever its type. A non-NULL value with no
+// static type is refused: the type is what decides the carrier.
+func literalKeyCarrier(c *values.ConstantValue) (any, error) {
+	if c.Value == nil {
+		return nil, nil
+	}
+	if c.Typ == nil {
+		return nil, noLiteralKeyCarrier(c)
+	}
+	switch c.Typ.Code() {
+	case values.TypeCodeInt, values.TypeCodeLong:
+		n, ok, err := literalInteger(c.Value)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, noLiteralKeyCarrier(c)
+		}
+		if c.Typ.Code() == values.TypeCodeLong {
+			return n, nil
+		}
+		if n < math.MinInt32 || n > math.MaxInt32 {
+			return nil, api.NewErrorf(api.ErrCodeInternalError,
+				"INT literal %d in an index definition does not fit in 32 bits", n)
+		}
+		return int32(n), nil
+	case values.TypeCodeFloat:
+		switch v := c.Value.(type) {
+		case float32:
+			return v, nil
+		case float64:
+			return float32(v), nil
+		}
+	case values.TypeCodeDouble:
+		switch v := c.Value.(type) {
+		case float64:
+			return v, nil
+		case float32:
+			return float64(v), nil
+		}
+	case values.TypeCodeString:
+		if v, ok := c.Value.(string); ok {
+			return v, nil
+		}
+	case values.TypeCodeBoolean:
+		if v, ok := c.Value.(bool); ok {
+			return v, nil
+		}
+	case values.TypeCodeBytes:
+		if v, ok := c.Value.([]byte); ok {
+			return v, nil
+		}
+	}
+	return nil, noLiteralKeyCarrier(c)
+}
+
+// noLiteralKeyCarrier is the refusal of a literal whose static type and Go kind
+// are not a pair literalKeyCarrier knows how to carry.
+func noLiteralKeyCarrier(c *values.ConstantValue) error {
+	typ := "no static type"
+	if c.Typ != nil {
+		typ = "type " + c.Typ.String()
+	}
+	return api.NewErrorf(api.ErrCodeInternalError,
+		"literal %v (%T) of %s in an index definition has no key carrier", c.Value, c.Value, typ)
+}
+
+// literalInteger reads an integer constant held in any Go integer kind as an
+// int64. ok is false for a non-integer value, which the caller refuses;
+// an unsigned value beyond int64 cannot be an INT or LONG literal and is refused.
+func literalInteger(v any) (n int64, ok bool, err error) {
+	switch x := v.(type) {
+	case int64:
+		return x, true, nil
+	case int:
+		return int64(x), true, nil
+	case int32:
+		return int64(x), true, nil
+	case int16:
+		return int64(x), true, nil
+	case int8:
+		return int64(x), true, nil
+	case uint8:
+		return int64(x), true, nil
+	case uint16:
+		return int64(x), true, nil
+	case uint32:
+		return int64(x), true, nil
+	case uint:
+		if uint64(x) > math.MaxInt64 {
+			return 0, false, api.NewErrorf(api.ErrCodeInternalError,
+				"integer literal %d in an index definition does not fit in 64 bits", x)
+		}
+		return int64(x), true, nil
+	case uint64:
+		if x > math.MaxInt64 {
+			return 0, false, api.NewErrorf(api.ErrCodeInternalError,
+				"integer literal %d in an index definition does not fit in 64 bits", x)
+		}
+		return int64(x), true, nil
+	}
+	return 0, false, nil
+}
+
+// encapsulateLane is ArithmeticValue.encapsulate's check as the target runs it
+// at the index clause (ArithmeticValue.java:213-231), where it builds the
+// index's Values: each operand's type must be primitive (a SemanticException
+// otherwise), and the operator must have a lane over the two types (a
+// VerifyException otherwise), both XX000 with the target's message. Operands
+// are typed as Java types them (arithmeticOperandType), and an operand is
+// checked before the call that holds it, as Java encapsulates bottom-up, since
+// valueKeyExpression recurses into the operands first. Without this, Go's DDL
+// stored a key the target can never plan (RFC-257 WS-J section 3.2).
+func encapsulateLane(function string, operands []values.Value) (values.ArithmeticLane, error) {
+	if len(operands) != 2 {
+		return values.ArithmeticLane{}, api.NewErrorf(api.ErrCodeInternalError,
+			"arithmetic operator %s takes two operands, not %d", function, len(operands))
+	}
+	left, right := arithmeticOperandType(operands[0]), arithmeticOperandType(operands[1])
+	lane, err := values.EncapsulateArithmeticLane(function, left, right)
+	if err != nil {
+		return values.ArithmeticLane{}, api.NewError(api.ErrCodeInternalError, err.Error())
+	}
+	return lane, nil
+}
+
+// arithmeticOperandType is the type code of the Value Java builds for v as an
+// arithmetic operand: a nested arithmetic, bit or bitmap operator by its lane's
+// result (the lane it was constructed with, or, when its operands' types were
+// unknown then, the lane they resolve to now), anything else by its Type.
+func arithmeticOperandType(v values.Value) values.TypeCode {
+	if val, ok := v.(*values.ArithmeticValue); ok {
+		if lane, ok := val.Lane(); ok {
+			return lane.Result
+		}
+		if name, err := arithmeticFunctionName(val.Op); err == nil {
+			if lane, err := encapsulateLane(name, []values.Value{val.Left, val.Right}); err == nil {
+				return lane.Result
+			}
+		}
+		return values.TypeCodeUnknown
+	}
+	return v.Type().Code()
 }
 
 func unableToConstruct() error {
 	return api.NewError(api.ErrCodeUnsupportedOperation, "unable to construct expression")
 }
 
-// argumentExpression is buildArgumentKeyExpression
-// (MaterializedViewIndexGenerator.java:540-548).
-func argumentExpression(args []recordlayer.KeyExpression) recordlayer.KeyExpression {
-	switch len(args) {
-	case 0:
-		return recordlayer.EmptyKey()
-	case 1:
-		return args[0]
-	default:
-		return recordlayer.Concat(args...)
-	}
-}
-
-// arithmeticFunctionName maps the arithmetic op to Java's lowercase logical
-// operator name (ArithmeticValue.getLogicalOperator().name().toLowerCase(),
-// MaterializedViewIndexGenerator.java:574).
+// arithmeticFunctionName is the op's key-expression function name, Java's
+// lowercase logical operator name (ArithmeticValue.getLogicalOperator().name()
+// .toLowerCase(), MaterializedViewIndexGenerator.java:574): add..mod, the bit
+// operators (IndexTest.java pins bitand/bitor/bitxor) and the bitmap
+// functions, whose second argument is the walker-injected INT entry size,
+// stored as int_value as Java stores it (SemanticAnalyzer.java:1115).
 func arithmeticFunctionName(op values.ArithmeticOp) (string, error) {
-	switch op {
-	case values.OpAdd:
-		return "add", nil
-	case values.OpSub:
-		return "sub", nil
-	case values.OpMul:
-		return "mul", nil
-	case values.OpDiv:
-		return "div", nil
-	case values.OpMod:
-		return "mod", nil
-	default:
-		return "", unableToConstruct()
+	if name := op.LogicalOperatorName(); name != "" {
+		return name, nil
 	}
-}
-
-// bitFunctionName maps Go's scalar bit-function spellings to Java's
-// key-expression function names. Shift operators have no Java
-// ArithmeticValue.LogicalOperator counterpart and are rejected. The bitmap
-// bucketing functions are Java ArithmeticValues too
-// (ArithmeticValue.java:374-375), so their key-expression form is the same
-// function(name, concat(args)) lowering — with the walker-injected 10000
-// entry-size literal as the second argument, exactly the proto Java stores.
-func bitFunctionName(fn string) (string, bool) {
-	switch fn {
-	case "BITAND":
-		return "bitand", true
-	case "BITOR":
-		return "bitor", true
-	case "BITXOR":
-		return "bitxor", true
-	case "BITMAP_BUCKET_OFFSET":
-		return "bitmap_bucket_offset", true
-	case "BITMAP_BIT_POSITION":
-		return "bitmap_bit_position", true
-	default:
-		return "", false
-	}
+	return "", unableToConstruct()
 }
 
 // fieldPathExpression renders a FieldValue's resolved accessor path as nested
-// field expressions — toKeyExpression(Iterator<ResolvedAccessor>, fanType)
-// (MaterializedViewIndexGenerator.java:777-789): each intermediate accessor
-// nests, the innermost carries the fan type when it is an array.
-//
-// fanTypeForArray applies only to an array LEAF; Go's accessors carry no
-// per-step type, and an intermediate array step is unreachable (dotted access
-// through an array requires an unnest, which decompose rejects).
-func fieldPathExpression(fv values.FieldValue, fanTypeForArray recordlayer.FanType, res storageNames) (recordlayer.KeyExpression, error) {
-	accs, ok := fieldAccessors(fv)
-	if !ok {
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"Unsupported index definition, cannot resolve column %q", fv.DisplayName())
+// field expressions — ValueToKeyExpressionVisitor.fieldPathToKeyExpression:
+// every step through fieldAccessorToKeyExpression with the same fan type for
+// an array (FanOut, or Concatenate under CARDINALITY), an array step admitted
+// only through an unnest's marker or as Concatenate.
+func fieldPathExpression(fv *pathColumn, fanTypeForArray recordlayer.FanType, res storageNames) (recordlayer.KeyExpression, error) {
+	accs := fv.steps
+	if len(accs) == 0 {
+		return nil, internalError("an empty field path")
 	}
 	// The __ROW_VERSION pseudo-field is always a single top-level accessor;
-	// it renders as the version key expression (name AND type — Java's
-	// toFieldKeyExpression, MaterializedViewIndexGenerator.java:821-823).
-	if len(accs) == 1 && values.IsRowVersionPseudoField(accs[0].name, fv.ResultType()) {
+	// it renders as the version key expression (name AND type).
+	if len(accs) == 1 && values.IsRowVersionPseudoField(accs[0].name, fv.typ) {
 		return recordlayer.VersionKey(), nil
 	}
-	isArray := fv.ResultType() != nil && fv.ResultType().Code() == values.TypeCodeArray
-	var leaf recordlayer.KeyExpression
-	leafName := res.fieldName(accs, len(accs)-1)
-	switch {
-	case !isArray:
-		leaf = recordlayer.Field(leafName)
-	case fanTypeForArray == recordlayer.FanTypeConcatenate:
-		leaf = recordlayer.FieldConcatenate(leafName)
-	default:
-		// FanOut of a non-unnested array is invalid
-		// (MaterializedViewIndexGenerator.java:814-819).
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"Unsupported index definition, cannot create index on array field '%s' without unnesting",
-			leafName)
+	last := len(accs) - 1
+	leafName := res.fieldName(accs, last)
+	fanType, err := accessorFanType(accs[last], leafName, fanTypeForArray)
+	if err != nil {
+		return nil, err
 	}
-	expr := leaf
-	for i := len(accs) - 2; i >= 0; i-- {
-		expr = recordlayer.Nest(res.fieldName(accs, i), expr)
+	var expr recordlayer.KeyExpression
+	switch fanType {
+	case recordlayer.FanTypeFanOut:
+		expr = recordlayer.FanOut(leafName)
+	case recordlayer.FanTypeConcatenate:
+		expr = recordlayer.FieldConcatenate(leafName)
+	default:
+		expr = recordlayer.Field(leafName)
+	}
+	for i := last - 1; i >= 0; i-- {
+		name := res.fieldName(accs, i)
+		stepFan, err := accessorFanType(accs[i], name, fanTypeForArray)
+		if err != nil {
+			return nil, err
+		}
+		switch stepFan {
+		case recordlayer.FanTypeFanOut:
+			expr = recordlayer.NestFanOut(name, expr)
+		case recordlayer.FanTypeNone:
+			expr = recordlayer.Nest(name, expr)
+		default:
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"Unsupported index definition, cannot nest through array field '%s' materialized whole", name)
+		}
 	}
 	return expr, nil
 }

@@ -26,7 +26,7 @@ func inlineValuesDB(t *testing.T) (*sql.DB, context.Context) {
 			t.Fatalf("%s: %v", statement, err)
 		}
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open inline VALUES schema: %v", err)
 	}

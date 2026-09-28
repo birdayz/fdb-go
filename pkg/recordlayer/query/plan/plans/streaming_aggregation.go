@@ -182,6 +182,29 @@ func (p *RecordQueryStreamingAggregationPlan) GetQuantifiers() []expressions.Qua
 	return []expressions.Quantifier{p.innerQ}
 }
 
+// GetCorrelatedToWithoutChildren is Java's
+// RecordQueryStreamingAggregationPlan.computeCorrelatedToWithoutChildren: the
+// grouping key and aggregate values' correlations. The framework subtracts the
+// plan's own inner alias, so what survives is an outer quantifier a key or an
+// aggregate operand reads (`SUM(h.f * w.f)` in a lateral block).
+func (p *RecordQueryStreamingAggregationPlan) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{}
+	for _, key := range p.groupingKeys {
+		for k := range values.GetCorrelatedToOfValue(key) {
+			out[k] = struct{}{}
+		}
+	}
+	for _, agg := range p.aggregates {
+		if agg.Operand == nil {
+			continue
+		}
+		for k := range values.GetCorrelatedToOfValue(agg.Operand) {
+			out[k] = struct{}{}
+		}
+	}
+	return out
+}
+
 func (p *RecordQueryStreamingAggregationPlan) GetGroupingKeys() []values.Value { return p.groupingKeys }
 func (p *RecordQueryStreamingAggregationPlan) GetAggregates() []expressions.AggregateSpec {
 	return p.aggregates
@@ -423,12 +446,32 @@ func validateStreamingAggregationOldInputRoots(
 		if providesErr == nil && provided {
 			return true
 		}
+		if !layoutRetainsCorrelation(layout, root.Correlation()) {
+			// Neither the input nor a source it retains: an enclosing block's
+			// row (`MAX(a.x)` in a lateral derived table over `a`), bound at
+			// runtime by the enclosing FlatMap as a projection's outer read is.
+			// Java's aggregate operands may be correlated to any outer
+			// quantifier.
+			return true
+		}
 		rootErr = fmt.Errorf(
 			"QOV root correlation %s is foreign to input edge %s",
 			root.Correlation().Name(), input.Correlation().Name())
 		return false
 	})
 	return rootErr
+}
+
+// layoutRetainsCorrelation reports whether layout retains a source window
+// under correlation — a root the input row owns, which must then be provided
+// exactly rather than accepted as an outer read.
+func layoutRetainsCorrelation(layout values.OrdinalLayout, correlation values.CorrelationIdentifier) bool {
+	for _, source := range layout.WindowSources() {
+		if source != nil && source.Correlation() == correlation {
+			return true
+		}
+	}
+	return false
 }
 
 // rebaseStreamingAggregationInputValue validates both sides of the edge

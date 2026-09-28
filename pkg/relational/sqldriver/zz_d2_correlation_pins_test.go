@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -30,7 +31,7 @@ func TestFDB_ParamBoundScanInJoinLeg_NotMisseenAsCorrelated(t *testing.T) {
 			"CREATE TABLE t (id BIGINT, fk BIGINT, k BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_paramleg/s WITH TEMPLATE paramleg_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_paramleg?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_PARAMLEG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -88,7 +89,7 @@ func TestFDB_NestedFlatMapUnderJoin_NoCorrelationLeak(t *testing.T) {
 			"CREATE TABLE c (id BIGINT, fk BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nestedfm/s WITH TEMPLATE nestedfm_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_nestedfm?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_NESTEDFM?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -140,7 +141,7 @@ func TestFDB_CorrelatedExistsUnderJoin_NoCorrelationLeak(t *testing.T) {
 			"CREATE TABLE c (id BIGINT, fk BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbp+"/s WITH TEMPLATE "+tmpl)
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbp, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbp), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

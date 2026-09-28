@@ -50,6 +50,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/onsi/gomega"
@@ -73,7 +74,7 @@ func setupCrossLegNullBornDB(t *testing.T, g *gomega.WithT) *sql.DB {
 	_, err = setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA %s/main WITH TEMPLATE xleg_nullborn_tmpl", dbPath))
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=main", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=MAIN", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	t.Cleanup(func() { db.Close() })

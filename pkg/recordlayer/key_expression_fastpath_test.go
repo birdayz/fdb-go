@@ -477,76 +477,62 @@ func TestKeyExpressionFastPath_RepeatedFieldInCompositeDeclinesFastPath(t *testi
 	g.Expect(result).To(HaveLen(2), "the slow path is what produces the two fan-out entries")
 }
 
-// RecordTypeKey().Nest(...) is a Go-only extension — Java's
-// RecordTypeKeyExpression is KeyExpressionWithoutChildren with getColumnSize()
-// fixed at 1. It makes ColumnSize() > 1, so the single-element fast paths
-// cannot express it: EvaluateScalar and PackDirect must decline, and
-// EvaluateFlat must produce the nested columns. Any of them emitting only the
-// type key writes an index key SHORT of ColumnSize() — and because deletes go
-// through Evaluate, which produces the full-width key, the short entry is
-// never matched and the index leaks an orphan on every write.
+// RecordTypeKey().Nest(x) is Java's concat(recordType(), x): a two-column Then.
+// Every fast path either declines it or produces the slow path's bytes. One
+// that emitted only the type key would write an index key SHORT of
+// ColumnSize() — and because deletes go through Evaluate, which produces the
+// full-width key, the short entry would never be matched and the index would
+// leak an orphan on every write.
 func TestKeyExpressionFastPath_NestedRecordTypeKeyKeepsAllColumns(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 
-	expr := RecordTypeKey().Nest(Field("order_id"))
-	msg := &gen.Order{OrderId: proto.Int64(42)}
-	record := storedOfType(t, msg, "Order", map[string]any{"Order": 7})
+	for _, c := range []struct {
+		name string
+		expr KeyExpression
+		msg  *gen.Order
+		want []any
+	}{
+		{
+			"RecordTypeKey().Nest(order_id)", RecordTypeKey().Nest(Field("order_id")),
+			&gen.Order{OrderId: proto.Int64(42)},
+			[]any{int64(7), int64(42)},
+		},
+		{
+			"inside a composite index root", Concat(RecordTypeKey().Nest(Field("order_id")), Field("price")),
+			&gen.Order{OrderId: proto.Int64(42), Price: proto.Int32(9)},
+			[]any{int64(7), int64(42), int64(9)},
+		},
+	} {
+		record := storedOfType(t, c.msg, "Order", map[string]any{"Order": 7})
+		g.Expect(c.expr.ColumnSize()).To(Equal(len(c.want)), c.name)
 
-	g.Expect(expr.ColumnSize()).To(Equal(2))
+		slow, slowBytes := packSlow(t, c.expr, record, c.msg)
+		g.Expect(slow).To(HaveLen(len(c.want)), c.name)
+		for i, v := range c.want {
+			g.Expect(slow[i]).To(Equal(v), "%s: column %d", c.name, i)
+		}
 
-	slow, slowBytes := packSlow(t, expr, record, msg)
-	g.Expect(slow).To(HaveLen(2))
-	g.Expect(slow[0]).To(Equal(int64(7)))
-	g.Expect(slow[1]).To(Equal(int64(42)))
+		flat, err := c.expr.(FlatEvaluator).EvaluateFlat(record, c.msg)
+		g.Expect(err).NotTo(HaveOccurred(), c.name)
+		g.Expect(flat).To(Equal(c.want),
+			"%s: EvaluateFlat dropped a column — a short index key that Evaluate-based deletes can never match", c.name)
 
-	rtk := expr.(*RecordTypeKeyExpression)
+		if se, ok := c.expr.(ScalarEvaluator); ok {
+			_, serr := se.EvaluateScalar(record, c.msg)
+			g.Expect(serr).To(HaveOccurred(),
+				"%s: EvaluateScalar returned a single value for a %d-column expression", c.name, len(c.want))
+		}
 
-	// EvaluateFlat must carry both columns — evaluateKeyFlat propagates it
-	// with no fallback.
-	flat, err := rtk.EvaluateFlat(record, msg)
-	g.Expect(err).NotTo(HaveOccurred())
-	ft := make(tuple.Tuple, len(flat))
-	for i, v := range flat {
-		ft[i] = v
+		pk := tuple.GetPacker()
+		pk.Reset()
+		if c.expr.(DirectPacker).PackDirect(pk, record, c.msg) {
+			var buf []byte
+			g.Expect(pk.AppendInto(&buf, nil)).To(Equal(slowBytes),
+				"%s: PackDirect packed a key other than the slow path's", c.name)
+		}
+		tuple.PutPacker(pk)
 	}
-	g.Expect(ft.Pack()).To(Equal(slowBytes),
-		"EvaluateFlat dropped the nested columns — a short index key that Evaluate-based deletes can never match")
-
-	// EvaluateScalar has room for exactly one column, so it must decline.
-	_, serr := rtk.EvaluateScalar(record, msg)
-	g.Expect(serr).To(HaveOccurred(),
-		"EvaluateScalar returned a single value for a 2-column expression — the nested column is silently dropped")
-
-	// PackDirect emits one element, so it must decline rather than pack a
-	// truncated key.
-	pk := tuple.GetPacker()
-	pk.Reset()
-	g.Expect(rtk.PackDirect(pk, record, msg)).To(BeFalse(),
-		"PackDirect accepted a nested record type key and packed a key short of ColumnSize()")
-	tuple.PutPacker(pk)
-
-	// And the same holds when it is a child of a composite index root: the
-	// composite must not silently lose the nested column either.
-	comp := Concat(RecordTypeKey().Nest(Field("order_id")), Field("price"))
-	msg2 := &gen.Order{OrderId: proto.Int64(42), Price: proto.Int32(9)}
-	rec2 := storedOfType(t, msg2, "Order", map[string]any{"Order": 7})
-
-	g.Expect(comp.ColumnSize()).To(Equal(3))
-
-	cflat, cerr := comp.(FlatEvaluator).EvaluateFlat(rec2, msg2)
-	g.Expect(cerr).NotTo(HaveOccurred())
-	g.Expect(cflat).To(HaveLen(3),
-		"composite EvaluateFlat dropped the nested record-type-key column")
-	g.Expect(cflat[0]).To(Equal(int64(7)))
-	g.Expect(cflat[1]).To(Equal(int64(42)))
-	g.Expect(cflat[2]).To(Equal(int64(9)))
-
-	cpk := tuple.GetPacker()
-	cpk.Reset()
-	g.Expect(comp.(DirectPacker).PackDirect(cpk, rec2, msg2)).To(BeFalse(),
-		"composite PackDirect packed a key short of ColumnSize()")
-	tuple.PutPacker(cpk)
 }
 
 // store.go and store_batch.go compute every record's primary key with
@@ -813,4 +799,21 @@ func TestKeyExpressionFastPath_PackerResetLeavesNoResidue(t *testing.T) {
 
 	g.Expect(second).To(Equal(tuple.Tuple{int64(999)}.Pack()),
 		"packer retained residue from the previous record")
+}
+
+// TestKeyExpressionFastPath_UnsignedFieldsReadSigned pins that a 32-bit unsigned
+// field is read the way protobuf-java hands it to Java's key evaluator, as a SIGNED
+// Integer, on every path: a fixed32 of 3000000000 is -1294967296, and a fixed64 of
+// 2^63 is Long.MIN_VALUE. Record metadata refuses unsigned fields
+// (validateRecordDataTypes, Java's validateRecords), so no stored index reaches
+// these arms; they are pinned so that, if one ever does, its bytes are Java's.
+func TestKeyExpressionFastPath_UnsignedFieldsReadSigned(t *testing.T) {
+	t.Parallel()
+	g := NewGomegaWithT(t)
+	got := assertFastPathAgreement(t, Field("section_number"),
+		&gen.SortSectionHeader{SectionNumber: proto.Uint32(3000000000)})
+	g.Expect(got).To(Equal(tuple.Tuple{int64(-1294967296)}))
+	got = assertFastPathAgreement(t, Field("number_of_bytes"),
+		&gen.SortSectionHeader{NumberOfBytes: proto.Uint64(1 << 63)})
+	g.Expect(got).To(Equal(tuple.Tuple{int64(-1 << 63)}))
 }

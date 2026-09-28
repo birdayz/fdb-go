@@ -12,7 +12,7 @@ is the authority. This page is scoped to the multi-tenant question and carries a
 citation for every claim, because an operator guide is worthless unless every sentence in it is
 checkable.
 
-**Verified against:** Java `fdb-record-layer-core` **4.12.11.0** (the wire-compat spec), the
+**Verified against:** Java `fdb-record-layer-core` **4.14.2.0** (the wire-compat spec), the
 FoundationDB **7.3.77** client protocol, Go **1.26.x**. These are drift-guarded — this page is on
 `pkg/docscheck`'s `livingDocs` list, so a version bump that leaves it behind fails the build.
 
@@ -902,7 +902,7 @@ the new template version — because no SQL DDL reaches it.
 ### No online index scrubber — a detection API, not a fleet tool
 
 Java has `OnlineIndexScrubber` with `scrubDanglingIndexEntries()` and `scrubMissingIndexEntries()`
-(Java source at tag 4.12.11.0,
+(Java source at tag 4.14.2.0,
 `fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/OnlineIndexScrubber.java:43`,
 `:92`, `:103`) — chunked, throttled, resumable, and repairing. **Go has no equivalent**, and says so
 at `pkg/recordlayer/index_state.go:567` ("the scrubbing subspaces (Go has no index scrubbing)").

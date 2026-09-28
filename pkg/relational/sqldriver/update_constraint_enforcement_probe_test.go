@@ -28,7 +28,7 @@ func TestFDB_UpdateConstraintEnforcementProbe(t *testing.T) {
 		"CREATE TABLE t (id BIGINT, email STRING, nn BIGINT, PRIMARY KEY (id)) "+
 		"CREATE UNIQUE INDEX t_email ON t (email)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uce/s WITH TEMPLATE uce")
-	dsn := fmt.Sprintf("fdbsql:///testdb_uce?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_UCE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

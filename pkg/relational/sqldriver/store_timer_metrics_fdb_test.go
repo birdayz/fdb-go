@@ -145,7 +145,7 @@ func TestFDB_StoreTimerExporter_CountsRealSQLWork(t *testing.T) {
 	const key = "storetimer-metrics-counts"
 	timer := armTimer(t, key, true)
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_sttimer?cluster_file=%s", key)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_STTIMER?cluster_file=%s", key)
 	setup, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -157,7 +157,7 @@ func TestFDB_StoreTimerExporter_CountsRealSQLWork(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE sttimer CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_sttimer/s WITH TEMPLATE sttimer")
 
-	db, err := sql.Open("fdbsql", dsn+"&schema=s")
+	db, err := sql.Open("fdbsql", dsn+"&schema=S")
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestFDB_StoreTimerExporter_IndexScansAreCounted(t *testing.T) {
 	const key = "storetimer-metrics-index"
 	timer := armTimer(t, key, true)
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_sttimer_idx?cluster_file=%s", key)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_STTIMER_IDX?cluster_file=%s", key)
 	setup, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -294,7 +294,7 @@ func TestFDB_StoreTimerExporter_IndexScansAreCounted(t *testing.T) {
 			"CREATE INDEX t_v AS SELECT v, id FROM t ORDER BY v, id")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_sttimer_idx/s WITH TEMPLATE sttimeridx")
 
-	db, err := sql.Open("fdbsql", dsn+"&schema=s")
+	db, err := sql.Open("fdbsql", dsn+"&schema=S")
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -365,7 +365,7 @@ func TestFDB_StoreTimerExporter_ArmingAfterTheBackendStillInstruments(t *testing
 	const key = "storetimer-metrics-late-arm"
 	timer := armTimer(t, key, false)
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_sttimer_late?cluster_file=%s", key)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_STTIMER_LATE?cluster_file=%s", key)
 	setup, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -377,7 +377,7 @@ func TestFDB_StoreTimerExporter_ArmingAfterTheBackendStillInstruments(t *testing
 		"CREATE SCHEMA TEMPLATE sttimerlate CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_sttimer_late/s WITH TEMPLATE sttimerlate")
 
-	db, err := sql.Open("fdbsql", dsn+"&schema=s")
+	db, err := sql.Open("fdbsql", dsn+"&schema=S")
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -414,7 +414,7 @@ func TestFDB_StoreTimerExporter_ExplicitTransactionIsInstrumented(t *testing.T) 
 	clk := newLateClock(30 * time.Second)
 	timer := armTimer(t, key, true, clk)
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_sttimer_tx?cluster_file=%s", key)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_STTIMER_TX?cluster_file=%s", key)
 	setup, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -426,7 +426,7 @@ func TestFDB_StoreTimerExporter_ExplicitTransactionIsInstrumented(t *testing.T) 
 		"CREATE SCHEMA TEMPLATE sttimertx CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_sttimer_tx/s WITH TEMPLATE sttimertx")
 
-	db, err := sql.Open("fdbsql", dsn+"&schema=s")
+	db, err := sql.Open("fdbsql", dsn+"&schema=S")
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

@@ -275,6 +275,40 @@ func (r *Resolver) ResolveIdentifierPath(segs []semantic.Identifier) (values.Val
 	if err != nil {
 		return nil, err
 	}
+	return r.resolvedPathValue(segs, col, src, accessors)
+}
+
+// ResolveCorrelatedIdentifierPath is ResolveIdentifierPath for a FROM item's
+// correlated path, Java's resolveCorrelatedIdentifier: one lookup over this
+// scope and every enclosing one (semantic.Scope.ResolvePathAcrossLevels).
+func (r *Resolver) ResolveCorrelatedIdentifierPath(segs []semantic.Identifier) (values.Value, error) {
+	if r.scope == nil {
+		return nil, &semantic.ColumnNotFoundError{Path: append([]semantic.Identifier(nil), segs...)}
+	}
+	col, src, accessors, err := r.scope.ResolvePathAcrossLevels(segs)
+	if err != nil {
+		return nil, err
+	}
+	return r.resolvedPathValue(segs, col, src, accessors)
+}
+
+// ResolveSourceQualifiedIdentifierPath is ResolveIdentifierPath for a path the
+// caller has already established begins with a source's name
+// (semantic.Scope.ResolveSourceQualifiedPath): the source-qualified reading
+// only, never the struct-relative or doubled one.
+func (r *Resolver) ResolveSourceQualifiedIdentifierPath(segs []semantic.Identifier) (values.Value, error) {
+	if r.scope == nil {
+		return nil, &semantic.ColumnNotFoundError{Path: append([]semantic.Identifier(nil), segs...)}
+	}
+	col, src, accessors, err := r.scope.ResolveSourceQualifiedPath(segs)
+	if err != nil {
+		return nil, err
+	}
+	return r.resolvedPathValue(segs, col, src, accessors)
+}
+
+// resolvedPathValue is the Value a resolved path denotes.
+func (r *Resolver) resolvedPathValue(segs []semantic.Identifier, col semantic.Column, src semantic.ScopeSource, accessors []semantic.NestedAccessor) (values.Value, error) {
 	var qualifier, id semantic.Identifier
 	if len(segs) > 0 {
 		id = segs[len(segs)-1]
@@ -356,7 +390,7 @@ func (r *Resolver) resolveScopedColumn(col semantic.Column, src semantic.ScopeSo
 			// Private source IDs do not expand the existing multi-source
 			// qualified-fallthrough contract. Local per-attribute matches remain
 			// legal, and single-source fallthrough remains supported.
-			lexicalShadow := !isLocal && len(r.scope.Sources()) > 1 && qualifier.Name() != "" && localSrc.Alias.EqualsIgnoreQuoting(qualifier)
+			lexicalShadow := !isLocal && len(r.scope.Sources()) > 1 && qualifier.Name() != "" && localSrc.NamedBy(qualifier)
 			if localSrc.CorrelationName != src.CorrelationName && !lexicalShadow {
 				continue
 			}
@@ -429,8 +463,8 @@ func (e *UnresolvableOrdinalError) Error() string {
 // duplicate field name, and a catalog is not this function's to validate — a
 // degenerate source should decline downstream, not abort resolution.
 //
-// nil when the source declares no column order, which is exactly the condition
-// sourceColumnOrdinal declines on, so the two answers cannot disagree.
+// A declared zero-column table has an exact empty row. nil means there is no
+// table declaration, or the source's flowed whole object is not a record.
 // SourceRowType is the exported view of sourceRowType, for callers outside this
 // package that hold a resolved ScopeSource and need the row it flows — the
 // enclosing-WITH bindings a derived body must be typed against, in particular.
@@ -447,11 +481,8 @@ func sourceRowType(src semantic.ScopeSource) *values.RecordType {
 		return nil
 	}
 	cols := src.Table.Columns()
-	if len(src.FlowedColumns) > 0 {
+	if src.FlowedColumns != nil {
 		cols = src.FlowedColumns
-	}
-	if len(cols) == 0 {
-		return nil
 	}
 	fields := make([]values.Field, len(cols))
 	for i, c := range cols {
@@ -716,7 +747,7 @@ func (r *Resolver) QualifierIsDuplicated(qualifier semantic.Identifier) bool {
 	}
 	n := 0
 	for _, s := range r.scope.Sources() {
-		if s.Alias.EqualsIgnoreQuoting(qualifier) {
+		if s.NamedBy(qualifier) {
 			n++
 		}
 	}
@@ -762,19 +793,33 @@ func (r *Resolver) ResolveColumnShadowingQualified(qualifier, id semantic.Identi
 	return v, true, nil
 }
 
-// ResolveArithmetic wraps left/right Values in a cascades
-// ArithmeticValue with the given operator. Used when the parser
-// produces an arithmetic expression node — the analyzer resolves
-// each operand recursively, then pairs them here.
-//
-// Operand types aren't cross-checked in the seed (both assumed
-// int); real type inference replaces this when the Type hierarchy
-// port lands.
+// ResolveArithmetic builds the ArithmeticValue for an arithmetic, bit or
+// bitmap operator as Java's ArithmeticValue.encapsulate does
+// (values.NewArithmeticValue): the lane is resolved from the operand types,
+// and a pair Java refuses is refused with its XX000 and message (a complex
+// operand's SemanticException, then the lane's VerifyException).
 func (r *Resolver) ResolveArithmetic(op values.ArithmeticOp, left, right values.Value) (values.Value, error) {
 	if left == nil || right == nil {
 		return nil, fmt.Errorf("expr.ResolveArithmetic: operand is nil")
 	}
-	return &values.ArithmeticValue{Op: op, Left: left, Right: right}, nil
+	v, err := values.NewArithmeticValue(op, left, right)
+	if err != nil {
+		return nil, arithmeticEncapsulationError(err)
+	}
+	return v, nil
+}
+
+// arithmeticEncapsulationError is Java's answer to a refused encapsulation:
+// both of ArithmeticValue.encapsulate's exceptions reach the client as XX000
+// with their message (SemanticException and VerifyException are unmapped
+// internal errors there).
+func arithmeticEncapsulationError(err error) error {
+	var complexOperand *values.ArithmeticComplexOperandError
+	var mismatch *values.ArithmeticLaneMismatchError
+	if errors.As(err, &complexOperand) || errors.As(err, &mismatch) {
+		return api.NewError(api.ErrCodeInternalError, err.Error())
+	}
+	return err
 }
 
 // ResolveComparison wraps left/right Values in a cascades
@@ -901,6 +946,16 @@ func (r *Resolver) ResolveComparison(op predicates.ComparisonType, left, right v
 	// parameters, internal untyped expressions) keep the runtime path.
 	if lt, rt := left.Type(), right.Type(); lt != nil && rt != nil &&
 		lt.Code() != values.TypeCodeUnknown && rt.Code() != values.TypeCodeUnknown {
+		// NULL and NONE have no common promotion type. Java nevertheless
+		// defines their equality/null-safe operator pairs directly
+		// (RelOpValue.BinaryPhysicalOperator), without promotion.
+		if isNullOrNone(lt) && isNullOrNone(rt) {
+			switch op {
+			case predicates.ComparisonEquals, predicates.ComparisonNotEquals,
+				predicates.ComparisonIsDistinctFrom, predicates.ComparisonNotDistinctFrom:
+				return predicates.NewComparisonPredicate(left, predicates.Comparison{Type: op, Operand: right}), nil
+			}
+		}
 		maximum := values.MaximumType(lt, rt)
 		if maximum == nil {
 			return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
@@ -1767,8 +1822,7 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 			if s, sok := lit.(string); sok {
 				u, perr := uuid.Parse(s)
 				if perr != nil {
-					// Java verbatim wording (SemanticException INVALID_UUID_VALUE).
-					return nil, fmt.Errorf("Invalid UUID value for the UUID type %s", s)
+					return nil, &values.InvalidUUIDValueError{Value: s}
 				}
 				lit = [16]byte(u)
 			}
@@ -2192,7 +2246,7 @@ func enumColumnType(col semantic.Column) values.Type {
 func (r *Resolver) ResolveConstant(lit any) (values.Value, error) {
 	switch v := lit.(type) {
 	case nil:
-		return values.NewNullValue(values.TypeUnknown), nil
+		return values.NewNullValue(values.NullType), nil
 	case bool:
 		return values.NewBooleanValue(v), nil
 	case int:

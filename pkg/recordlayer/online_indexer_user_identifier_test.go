@@ -92,7 +92,9 @@ var _ = Describe("OnlineIndexer SetRecordTypes with a SQL identifier", func() {
 		indexer, err := NewOnlineIndexerBuilder().
 			SetDatabase(sharedDB).
 			SetMetaData(mdWithIndex).
-			SetIndex(priceIdx).
+			// The renamed metadata's own index object: Build refuses any other,
+			// as Java's validateIndexSetting does.
+			SetIndex(mdWithIndex.GetIndex(priceIdx.Name)).
 			// THE SQL SPELLING. indexedRecordTypes resolves it, so the indexer
 			// believes this type is in scope; the per-record predicate has to
 			// agree, or the index is built empty and marked readable.

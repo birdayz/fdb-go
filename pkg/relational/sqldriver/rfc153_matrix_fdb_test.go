@@ -55,7 +55,7 @@ func TestFDB_RFC153_JoinedPreservedMatrix(t *testing.T) {
 			"CREATE INDEX c_a_id ON c (a_id) "+
 			"CREATE INDEX c_bx_ref ON c (bx_ref)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rfc153mx/s WITH TEMPLATE rfc153mx")
-	dsn := fmt.Sprintf("fdbsql:///testdb_rfc153mx?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_RFC153MX?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -181,7 +181,7 @@ func TestFDB_RFC153_AggregateInnerNullExtension(t *testing.T) {
 			"CREATE INDEX b_a_id ON b (a_id) "+
 			"CREATE INDEX c_a_id ON c (a_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rfc153agg/s WITH TEMPLATE rfc153agg")
-	dsn := fmt.Sprintf("fdbsql:///testdb_rfc153agg?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_RFC153AGG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

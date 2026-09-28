@@ -149,7 +149,7 @@ func TestSim_NotExistsTinyTimeBudget_MakesProgress(t *testing.T) {
 	key, _ := injectTickingSimFDB(t, 832, tick)
 	ctx := context.Background()
 
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///tiny?cluster_file=%s", key))
+	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TINY?cluster_file=%s", key))
 	if err != nil {
 		t.Fatalf("open setup: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestSim_NotExistsTinyTimeBudget_MakesProgress(t *testing.T) {
 		"CREATE TABLE t_rd (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
 	mustExecSQL(t, setup, ctx, "CREATE SCHEMA /tiny/s WITH TEMPLATE tiny_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///tiny?cluster_file=%s&schema=s", key))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TINY?cluster_file=%s&schema=S", key))
 	if err != nil {
 		t.Fatalf("open query conn: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestSim_NotExistsTimeLimit_PaginatesNotErrors(t *testing.T) {
 	key, backend := injectTickingSimFDB(t, 831, tick)
 	ctx := context.Background()
 
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///netl?cluster_file=%s", key))
+	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///NETL?cluster_file=%s", key))
 	if err != nil {
 		t.Fatalf("open setup: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestSim_NotExistsTimeLimit_PaginatesNotErrors(t *testing.T) {
 		"CREATE TABLE t_rd (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
 	mustExecSQL(t, setup, ctx, "CREATE SCHEMA /netl/s WITH TEMPLATE netl_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///netl?cluster_file=%s&schema=s", key))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///NETL?cluster_file=%s&schema=S", key))
 	if err != nil {
 		t.Fatalf("open query conn: %v", err)
 	}

@@ -11,7 +11,6 @@ import (
 	"math"
 	"reflect"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +38,7 @@ import (
 	"fdb.dev/pkg/relational/core/query"
 	"fdb.dev/pkg/relational/core/query/expr"
 	"fdb.dev/pkg/relational/core/query/logical"
+	"fdb.dev/pkg/relational/core/query/semantic"
 	"fdb.dev/pkg/relational/core/rowstruct"
 	"fdb.dev/pkg/relational/core/session"
 	"google.golang.org/protobuf/proto"
@@ -231,7 +231,7 @@ func (g *cascadesGenerator) planSelect(ctx context.Context, sel antlrgen.ISelect
 			ExplainFn: func() string {
 				md := c.cachedMetaData()
 				if md != nil {
-					if op, err := buildLogicalPlanForQueryWithCatalog(q, md); err == nil && op != nil {
+					if op, err := buildLogicalPlanForQueryWithTemplate(q, md, g.sessionTemplate()); err == nil && op != nil {
 						return op.Explain("")
 					}
 				}
@@ -274,7 +274,7 @@ func (g *cascadesGenerator) planSelectExplainOnly(sel antlrgen.ISelectStatementC
 		ExplainFn: func() string {
 			md := c.cachedMetaData()
 			if md != nil {
-				if op, err := buildLogicalPlanForQueryWithCatalog(q, md); err == nil && op != nil {
+				if op, err := buildLogicalPlanForQueryWithTemplate(q, md, g.sessionTemplate()); err == nil && op != nil {
 					return op.Explain("")
 				}
 			}
@@ -396,7 +396,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		return nil, err
 	}
 
-	visitor := NewPlanVisitorWithSchema(md, g.c.sess.Schema)
+	visitor := NewPlanVisitorWithTemplate(md, g.sessionTemplate())
 	logicalOp, buildErr := visitor.VisitQuery(q)
 	if buildErr != nil {
 		return nil, buildErr
@@ -409,7 +409,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 			"Unsupported operator "+fn)
 	}
 
-	if err := runFromResolutionPostPasses(logicalOp, g.c.sess.Schema, md, g.c.cachedMetaData()); err != nil {
+	if err := runFromResolutionPostPasses(logicalOp, g.sessionTemplate(), md, g.c.cachedMetaData()); err != nil {
 		return nil, err
 	}
 	outputLabels, labelErr := query.ExactLogicalOutputLabels(logicalOp, md, nil)
@@ -618,7 +618,7 @@ func (g *cascadesGenerator) explainLogicalQuery(ctx context.Context, q antlrgen.
 		return "", err
 	}
 	if md != nil {
-		if op, err := buildLogicalPlanForQueryWithCatalog(q, md); err == nil && op != nil {
+		if op, err := buildLogicalPlanForQueryWithTemplate(q, md, g.sessionTemplate()); err == nil && op != nil {
 			return explainWithContext(ctx, func() string { return op.Explain("") })
 		}
 	}
@@ -691,7 +691,7 @@ func (g *cascadesGenerator) computeExplainText(ctx context.Context, d *antlrgen.
 	// that gap is tracked in TODO.md, not done here.
 	if del := d.DeleteStatement(); del != nil {
 		if md != nil {
-			if op, _ := buildLogicalPlanForDeleteWithCatalog(del, md, g.sessionSchema()); op != nil {
+			if op, _ := buildLogicalPlanForDeleteWithCatalog(del, md, g.sessionTemplate()); op != nil {
 				return explainWithContext(ctx, func() string { return op.Explain("") })
 			}
 		}
@@ -701,7 +701,7 @@ func (g *cascadesGenerator) computeExplainText(ctx context.Context, d *antlrgen.
 	}
 	if ins := d.InsertStatement(); ins != nil {
 		if md != nil {
-			if op, _ := buildLogicalPlanForInsertWithCatalog(ins, md, g.sessionSchema()); op != nil {
+			if op, _ := buildLogicalPlanForInsertWithCatalog(ins, md, g.sessionTemplate()); op != nil {
 				return explainWithContext(ctx, func() string { return op.Explain("") })
 			}
 		}
@@ -711,7 +711,7 @@ func (g *cascadesGenerator) computeExplainText(ctx context.Context, d *antlrgen.
 	}
 	if upd := d.UpdateStatement(); upd != nil {
 		if md != nil {
-			if op, _ := buildLogicalPlanForUpdateWithCatalog(upd, md, g.sessionSchema()); op != nil {
+			if op, _ := buildLogicalPlanForUpdateWithCatalog(upd, md, g.sessionTemplate()); op != nil {
 				return explainWithContext(ctx, func() string { return op.Explain("") })
 			}
 		}
@@ -743,7 +743,7 @@ func (g *cascadesGenerator) planDDL(_ context.Context, stmt antlrgen.IStatementC
 			if dml := stmt.DmlStatement(); dml != nil {
 				if del := dml.DeleteStatement(); del != nil {
 					if md != nil {
-						if op, _ := buildLogicalPlanForDeleteWithCatalog(del, md, g.sessionSchema()); op != nil {
+						if op, _ := buildLogicalPlanForDeleteWithCatalog(del, md, g.sessionTemplate()); op != nil {
 							return op.Explain("")
 						}
 					}
@@ -753,7 +753,7 @@ func (g *cascadesGenerator) planDDL(_ context.Context, stmt antlrgen.IStatementC
 				}
 				if upd := dml.UpdateStatement(); upd != nil {
 					if md != nil {
-						if op, _ := buildLogicalPlanForUpdateWithCatalog(upd, md, g.sessionSchema()); op != nil {
+						if op, _ := buildLogicalPlanForUpdateWithCatalog(upd, md, g.sessionTemplate()); op != nil {
 							return op.Explain("")
 						}
 					}
@@ -763,7 +763,7 @@ func (g *cascadesGenerator) planDDL(_ context.Context, stmt antlrgen.IStatementC
 				}
 				if ins := dml.InsertStatement(); ins != nil {
 					if md != nil {
-						if op, _ := buildLogicalPlanForInsertWithCatalog(ins, md, g.sessionSchema()); op != nil {
+						if op, _ := buildLogicalPlanForInsertWithCatalog(ins, md, g.sessionTemplate()); op != nil {
 							return op.Explain("")
 						}
 					}
@@ -933,7 +933,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 				"EXISTS nested in a scalar expression is not yet supported")
 		}
 		var delErr error
-		logicalOp, delErr = buildLogicalPlanForDeleteWithCatalog(del, md, g.c.sess.Schema)
+		logicalOp, delErr = buildLogicalPlanForDeleteWithCatalog(del, md, g.sessionTemplate())
 		if delErr != nil {
 			// A carried SQLSTATE from a WHERE-EXISTS subquery plan failure (RFC-142:
 			// AT-on-a-table → WRONG_OBJECT_TYPE) — surface it as the SELECT path does.
@@ -961,7 +961,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 				"EXISTS nested in a scalar expression is not yet supported")
 		}
 		var updErr error
-		logicalOp, updErr = buildLogicalPlanForUpdateWithCatalog(upd, md, g.c.sess.Schema)
+		logicalOp, updErr = buildLogicalPlanForUpdateWithCatalog(upd, md, g.sessionTemplate())
 		if updErr != nil {
 			return nil, updErr
 		}
@@ -978,7 +978,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		}
 		insStmt = ins
 		var insErr error
-		logicalOp, insErr = buildLogicalPlanForInsertWithCatalog(ins, md, g.c.sess.Schema)
+		logicalOp, insErr = buildLogicalPlanForInsertWithCatalog(ins, md, g.sessionTemplate())
 		if insErr != nil {
 			// A carried SQLSTATE from the INSERT … SELECT body build (RFC-142:
 			// AT-on-a-table comma source → WRONG_OBJECT_TYPE) — surface it.
@@ -989,13 +989,13 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML logical plan failed")
 	}
 
-	if err := resolveQualifiedTableNames(logicalOp, g.c.sess.Schema); err != nil {
+	if err := resolveQualifiedTableNames(logicalOp, g.sessionTemplate()); err != nil {
 		return nil, err
 	}
 
 	// DML target-table existence: surface a clean 42F01 (matching INSERT INTO <missing>
 	// and the SELECT path), not a downstream generic 0AF00 "DML Cascades translation
-	// failed". Run AFTER resolveQualifiedTableNames so (a) a BAD schema qualifier's 42F00
+	// failed". Run AFTER resolveQualifiedTableNames so (a) a BAD template qualifier's 42F00
 	// already errored above and takes precedence, and (b) a VALID qualifier (or none) has
 	// been stripped to the bare Target, which is checked here — so `DELETE FROM
 	// <session_schema>.missing` and `DELETE FROM missing` both get 42F01, while
@@ -1030,8 +1030,10 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// reported success having removed no rows. Canonicalising the name instead
 	// would be worse still -- it would let an unquoted write mutate a table that
 	// can only be named with quotes.
-	if dmlTarget != "" && md.GetRecordType(bareTableName(dmlTarget)) == nil {
-		return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", strings.ToUpper(bareTableName(dmlTarget)))
+	// The target is bare here: resolveQualifiedTableNames stripped any
+	// qualifier from its segments, and a dot left in it belongs to the name.
+	if dmlTarget != "" && md.GetRecordType(dmlTarget) == nil {
+		return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", strings.ToUpper(dmlTarget))
 	}
 
 	// SOURCE tables too, and AFTER the target check so the target keeps its own
@@ -1051,16 +1053,6 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 			"setting column ordering for insert with select is not supported")
 	}
 
-	// INSERT … SELECT promotion guard: reject when an aggregate-result column
-	// cannot be promoted to its target column type (e.g. AVG(BIGINT)→DOUBLE into
-	// a BIGINT column), matching Java's plan-time PromoteValue rejection
-	// (SQLSTATE 22000), independent of how many rows the source yields.
-	if insOp, ok := logicalOp.(*logical.LogicalInsert); ok && insOp.Source != nil {
-		if err := checkInsertSelectPromotable(insOp, md); err != nil {
-			return nil, err
-		}
-	}
-
 	// INSERT … VALUES: build the literal rows into a Cascades array Value
 	// (resolved table name is now available). translateInsert explodes it
 	// as the InsertExpression inner, so VALUES rides the Cascades path.
@@ -1078,9 +1070,11 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 
 	// UPDATE: reject unsupported functions in SET RHS (parse-tree scan, the
 	// same mechanism the SELECT projection path uses — catches functions
-	// the resolver can't build a Value for, e.g. UPPER), and SET col = NULL
-	// on a NOT NULL column. Both at plan time, matching the naive path.
-	if updOp, ok := logicalOp.(*logical.LogicalUpdate); ok {
+	// the resolver can't build a Value for, e.g. UPPER). A NULL assigned to a
+	// field that cannot hold it is Java's run-time NULL_ASSIGNMENT, refused
+	// by the executor when a row is transformed (MessageHelpers.coerceObject),
+	// not here.
+	if _, ok := logicalOp.(*logical.LogicalUpdate); ok {
 		if upd := dml.UpdateStatement(); upd != nil {
 			for _, el := range upd.AllUpdatedElement() {
 				if el == nil || el.Expression() == nil {
@@ -1090,9 +1084,6 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 					return nil, api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
 				}
 			}
-		}
-		if err := validateUpdateAssignments(updOp, md); err != nil {
-			return nil, err
 		}
 	}
 
@@ -1228,7 +1219,7 @@ func (g *cascadesGenerator) planDMLExplainOnly(dml antlrgen.IDmlStatementContext
 			md := c.cachedMetaData()
 			if del := dml.DeleteStatement(); del != nil {
 				if md != nil {
-					if op, _ := buildLogicalPlanForDeleteWithCatalog(del, md, g.sessionSchema()); op != nil {
+					if op, _ := buildLogicalPlanForDeleteWithCatalog(del, md, g.sessionTemplate()); op != nil {
 						return op.Explain("")
 					}
 				}
@@ -1238,7 +1229,7 @@ func (g *cascadesGenerator) planDMLExplainOnly(dml antlrgen.IDmlStatementContext
 			}
 			if upd := dml.UpdateStatement(); upd != nil {
 				if md != nil {
-					if op, _ := buildLogicalPlanForUpdateWithCatalog(upd, md, g.sessionSchema()); op != nil {
+					if op, _ := buildLogicalPlanForUpdateWithCatalog(upd, md, g.sessionTemplate()); op != nil {
 						return op.Explain("")
 					}
 				}
@@ -1248,7 +1239,7 @@ func (g *cascadesGenerator) planDMLExplainOnly(dml antlrgen.IDmlStatementContext
 			}
 			if ins := dml.InsertStatement(); ins != nil {
 				if md != nil {
-					if op, _ := buildLogicalPlanForInsertWithCatalog(ins, md, g.sessionSchema()); op != nil {
+					if op, _ := buildLogicalPlanForInsertWithCatalog(ins, md, g.sessionTemplate()); op != nil {
 						return op.Explain("")
 					}
 				}
@@ -2412,9 +2403,38 @@ func materializePageRow(
 		if err != nil {
 			return nil, err
 		}
-		row[i] = materializeDriverValue(v)
+		row[i] = materializeDriverValue(enumValuesAsNames(v, rs.ColumnType(i+1)))
 	}
 	return row, nil
+}
+
+// enumValuesAsNames hands an enum column to the client as its value's name, as
+// Java's RowStruct.getString does (ProtoUtils.toUserIdentifier of the value
+// descriptor's name, RowStruct.java:214-215): in the value layer an enum
+// carries its declared number, an int64 only its type tells apart from a
+// BIGINT. An array of enums is the same per element. A number the enum does
+// not declare is left as it is (a closed enum's undeclared number reads unset,
+// so none reaches here).
+func enumValuesAsNames(v any, t values.Type) any {
+	switch typed := t.(type) {
+	case *values.EnumType:
+		if n, ok := v.(int64); ok {
+			if member, found := typed.LookupValueByNumber(int32(n)); found { //nolint:gosec
+				return member.Name
+			}
+		}
+	case *values.ArrayType:
+		if elems, ok := v.([]any); ok && typed.ElementType != nil {
+			if _, isEnum := typed.ElementType.(*values.EnumType); isEnum {
+				out := make([]any, len(elems))
+				for i, e := range elems {
+					out[i] = enumValuesAsNames(e, typed.ElementType)
+				}
+				return out
+			}
+		}
+	}
+	return v
 }
 
 // preflightTxBudget enforces the whole-transaction time budget before a page
@@ -2574,7 +2594,7 @@ func translateExecError(err error) error {
 	}
 	var overflow *values.ArithmeticOverflowError
 	if errors.As(err, &overflow) {
-		return api.NewError(api.ErrCodeNumericValueOutOfRange, "integer overflow")
+		return api.NewError(api.ErrCodeNumericValueOutOfRange, overflow.Error())
 	}
 	var scalarMismatch *values.ScalarTypeMismatchError
 	if errors.As(err, &scalarMismatch) {
@@ -2587,6 +2607,10 @@ func translateExecError(err error) error {
 	var enumErr *values.InvalidEnumValueError
 	if errors.As(err, &enumErr) {
 		return api.WrapError(api.ErrCodeInternalError, enumErr.Error(), err)
+	}
+	var uuidErr *values.InvalidUUIDValueError
+	if errors.As(err, &uuidErr) {
+		return api.WrapError(api.ErrCodeInternalError, uuidErr.Error(), err)
 	}
 	var invalidArg *values.InvalidArgumentError
 	if errors.As(err, &invalidArg) {
@@ -3062,17 +3086,17 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 // a pass added to only one side silently forks the two pipelines.
 //
 // schema is the resolution schema (the session's for queries,
-// defaultEmbeddedSchema for template DDL); md the metadata the plan was built
+// defaultEmbeddedTemplate for template DDL); md the metadata the plan was built
 // against; unnestMD the metadata for unnest-alias validation (the session's
 // cached metadata in production; the same md for DDL).
 func runFromResolutionPostPasses(logicalOp logical.LogicalOperator, schema string, md, unnestMD *recordlayer.RecordMetaData) error {
 	// Java's generateAccess resolves a FROM identifier as a CTE/table/view/
 	// function BEFORE treating it as a correlated array field. The parser, which
-	// has no metadata, may classify a schema-qualified table (`FROM PA AS s,
+	// has no metadata, may classify a template-qualified table (`FROM PA AS s,
 	// s.PB`, where the alias `s` also equals the schema name) as a lateral
 	// unnest; demote it back to a table scan so the table branch wins (or reject
 	// AT-on-a-table with WRONG_OBJECT_TYPE). RFC-142.
-	if err := demoteSchemaQualifiedUnnest(logicalOp, schema, md); err != nil {
+	if err := demoteQualifiedTableUnnest(logicalOp, schema, md); err != nil {
 		return err
 	}
 	// Backstop for AT-on-a-table sources (`FROM t, U AT O`, present-scalar field,
@@ -3735,14 +3759,21 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 	case recordlayer.IndexTypePermutedMax:
 		// Plain SQL MAX(col) resolves to a PERMUTED_MAX index (Java's
 		// NumericAggregationValue.Max.getIndexTypeName()), which tracks the true
-		// current maximum under deletes/updates. The monotone MAX_EVER/MIN_EVER
-		// index types are intentionally NOT matched here: a plain MAX/MIN query
-		// served from a monotone _EVER index would return stale extrema. The
-		// separate max_ever()/min_ever() aggregate would match those — but Go's
-		// read side does not expose them as query aggregates (only MAX/MIN).
+		// current maximum under deletes/updates. A plain MAX/MIN never reaches a
+		// monotone _EVER index, which would answer stale extrema: those carry
+		// their own aggregates below, which a MIN/MAX does not equal.
 		aggFunc = expressions.AggMax
 	case recordlayer.IndexTypePermutedMin:
 		aggFunc = expressions.AggMin
+	case recordlayer.IndexTypeMaxEverLong, recordlayer.IndexTypeMaxEverTuple:
+		// max_ever(col) / min_ever(col), the index-only aggregates Java's
+		// AggregateIndexExpansionVisitor maps these types to
+		// (IndexOnlyAggregateValue.MaxEverFn / MinEverFn,
+		// AggregateIndexExpansionVisitor.java:369-380). The deprecated bare
+		// spellings canonicalize onto _LONG.
+		aggFunc = expressions.AggMaxEver
+	case recordlayer.IndexTypeMinEverLong, recordlayer.IndexTypeMinEverTuple:
+		aggFunc = expressions.AggMinEver
 	default:
 		return nil
 	}
@@ -3756,13 +3787,21 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 	groupingCount := gke.GetGroupingCount()
 	groupedCount := gke.GetGroupedCount()
 
-	if groupingCount == 0 {
+	// An ungrouped index is one group, the whole table. It serves an _EVER
+	// aggregate, which the rule extends to a NULL row when the index holds no
+	// entry (Java's ON EMPTY NULL). An ungrouped SUM or COUNT(col) keeps
+	// base-row aggregation: its stored zero cannot tell a table whose rows were
+	// all deleted (SUM over no rows is NULL) from one that sums to zero, and the
+	// group-existence companion (RFC-209) is keyed by a grouping.
+	if groupingCount == 0 && aggFunc != expressions.AggMinEver && aggFunc != expressions.AggMaxEver {
 		return nil
 	}
 	permutedSize := 0
 	if idx.Type == recordlayer.IndexTypePermutedMax || idx.Type == recordlayer.IndexTypePermutedMin {
-		if raw, ok := idx.Options[recordlayer.IndexOptionPermutedSize]; ok {
-			parsed, err := strconv.Atoi(raw)
+		// Absent is 0 and present is Integer.parseInt, as Java's
+		// AggregateIndexMatchCandidate.getPermutedCount reads it.
+		if _, ok := idx.Options[recordlayer.IndexOptionPermutedSize]; ok {
+			parsed, err := recordlayer.PermutedSizeOption(idx)
 			if err != nil || parsed < 0 || parsed > groupingCount {
 				return nil
 			}
@@ -3854,25 +3893,23 @@ func tryVectorIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaD
 	if kwv, ok := idx.RootExpression.(*recordlayer.KeyWithValueExpression); ok {
 		partitionCount = kwv.SplitPoint()
 	}
-	metricOption := idx.Options[recordlayer.IndexOptionVectorMetric]
-	if idx.Type == recordlayer.IndexTypeVectorSPFresh {
-		metricOption = idx.Options[recordlayer.IndexOptionSPFreshMetric]
+	if idx.Type == recordlayer.IndexTypeVectorSPFresh && partitionCount > 0 {
 		// The SPFresh maintainer rejects prefixed (grouped) scans; a
 		// partitioned candidate would plan queries the executor cannot run.
 		// The DDL already rejects PARTITION BY USING SPFRESH — this guards
 		// directly-constructed metadata.
-		if partitionCount > 0 {
-			return nil
-		}
-	}
-	metric, ok := vectorMetricOperator(metricOption)
-	if !ok {
-		// Unrecognized metric (corrupt or newer-version metadata). Don't build
-		// a candidate with a wrong default metric; without the candidate the
-		// QUALIFY distance predicate stays uncompensatable and the query fails
-		// to plan rather than returning wrong-metric results.
 		return nil
 	}
+	parsed, err := recordlayer.VectorIndexMetric(idx)
+	if err != nil {
+		// A metric the maintainer refuses (corrupt or newer-version metadata):
+		// no candidate, so the QUALIFY distance predicate stays
+		// uncompensatable and the query fails to plan rather than returning
+		// wrong-metric results. Java's expansion throws there; the index's
+		// writes fail in both engines.
+		return nil
+	}
+	metric := vectorDistanceOperator(parsed)
 
 	rts := md.RecordTypesForIndex(idx)
 	rtNames := make([]string, len(rts))
@@ -3902,26 +3939,18 @@ func tryVectorIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaD
 	).WithPartitionKeyComponentTypes(partitionTypes)
 }
 
-// vectorMetricOperator maps the stored HNSW metric option (Java Metric enum
-// name) to the cascades DistanceOperator used by the distance placeholder. An
-// absent option defaults to Euclidean, matching Java's
-// VectorIndexExpansionVisitor (`getOrDefault(HNSW_METRIC, Config.DEFAULT_METRIC)`
-// where DEFAULT_METRIC == EUCLIDEAN_METRIC). It returns ok=false for an
-// unrecognized non-empty metric: Java throws there; we instead skip the
-// candidate so a corrupt or newer-version metric never silently maps to
-// Euclidean and serves the wrong distance.
-func vectorMetricOperator(name string) (values.DistanceOperator, bool) {
-	switch name {
-	case "", "EUCLIDEAN_METRIC", "euclidean":
-		return values.DistanceEuclidean, true
-	case "EUCLIDEAN_SQUARE_METRIC":
-		return values.DistanceEuclideanSquare, true
-	case "COSINE_METRIC", "cosine":
-		return values.DistanceCosine, true
-	case "DOT_PRODUCT_METRIC", "inner_product":
-		return values.DistanceDotProduct, true
+// vectorDistanceOperator is the distance placeholder's operator for the metric
+// the index is maintained with (recordlayer.VectorIndexMetric).
+func vectorDistanceOperator(m recordlayer.VectorMetric) values.DistanceOperator {
+	switch m {
+	case recordlayer.VectorMetricEuclideanSquare:
+		return values.DistanceEuclideanSquare
+	case recordlayer.VectorMetricCosine:
+		return values.DistanceCosine
+	case recordlayer.VectorMetricInnerProduct:
+		return values.DistanceDotProduct
 	default:
-		return values.DistanceEuclidean, false
+		return values.DistanceEuclidean
 	}
 }
 
@@ -6339,10 +6368,9 @@ func valueAggOp(f expressions.AggregateFunction) values.AggregateOp {
 // string-parsing the ExplainValue output. For plain field references,
 // it falls through and returns "".
 func valueTypeName(v values.Value, desc protoreflect.MessageDescriptor) string {
-	// Arithmetic result type is the numeric promotion of its operand types.
-	// The operand FieldValues aren't type-bound at projection time, so resolve
-	// them against the record descriptor here rather than via Value.Type()
-	// (which defaults to BIGINT for unbound operands).
+	// An arithmetic value is typed by its lane when it has one, and otherwise
+	// (an operand of unknown type) by the numeric widening of its operands,
+	// resolved against the record descriptor (arithTypeNameViaDesc).
 	if arith, ok := v.(*values.ArithmeticValue); ok {
 		if n := arithTypeNameViaDesc(arith, desc); n != "" {
 			return n
@@ -6434,11 +6462,21 @@ func cascadesTypeName(t values.Type) string {
 	return ""
 }
 
-// arithTypeNameViaDesc resolves an arithmetic value's result type NAME by
-// numeric promotion (DOUBLE > FLOAT > BIGINT > INTEGER) of its operand type
-// names, resolving FieldValue operands against the record descriptor. Returns
-// "" when no operand type can be resolved (caller falls back).
+// arithTypeNameViaDesc resolves an arithmetic value's result type NAME: its
+// lane's result type when the lane was resolved at build time (Java's
+// PhysicalOperator), otherwise the numeric widening (DOUBLE > FLOAT > BIGINT >
+// INTEGER) of its operand type names, FieldValue operands resolved against the
+// record descriptor. Returns "" when neither resolves (caller falls back).
 func arithTypeNameViaDesc(a *values.ArithmeticValue, desc protoreflect.MessageDescriptor) string {
+	// A value whose lane was resolved when it was built types by the lane,
+	// Java's PhysicalOperator result: `id + str` is ADD_LS, a STRING, which
+	// the numeric widening below would call BIGINT. Only a value built over
+	// an operand of unknown type has no lane; it keeps the widening.
+	if _, ok := a.Lane(); ok {
+		if n := cascadesTypeName(a.Type()); n != "" {
+			return n
+		}
+	}
 	return widerNumericTypeName(
 		operandTypeNameViaDesc(a.Left, desc),
 		operandTypeNameViaDesc(a.Right, desc),
@@ -6719,22 +6757,23 @@ func findFullOuterWithExists(op logical.LogicalOperator) string {
 	return ""
 }
 
-// demoteSchemaQualifiedUnnest enforces Java's `LogicalOperator.generateAccess`
+// demoteQualifiedTableUnnest enforces Java's `LogicalOperator.generateAccess`
 // resolution ORDER on a lateral-unnest candidate: a FROM identifier is resolved
 // as a CTE / TABLE / view / function FIRST, and only falls through to
 // `resolveCorrelatedIdentifier` (an in-scope correlated array field) when none
 // of those match. The parser classifies a dotted comma source as a
 // LogicalUnnest whenever segment 0 names a VISIBLE in-scope FROM-source alias —
 // but it has no metadata, so it cannot run the table-first check. When the prior
-// alias HAPPENS to equal the session schema name (`FROM PA AS s, s.PB AS B`),
-// `s.PB` is in truth a schema-qualified TABLE (`tableExists` in Java: qualifier
-// == schema name AND table `PB` exists), so the table branch must win — it is a
+// alias HAPPENS to equal the schema template's name (`FROM PA AS s, s.PB AS B`
+// over template s), `s.PB` is in truth a qualified TABLE (`tableExists` in
+// Java: qualifier == the template's name AND table `PB` exists), so the table
+// branch must win — it is a
 // plain cross join, never a correlated unnest. This pass walks the tree and, for
-// any LogicalJoin whose Right is a schema-qualified-table LogicalUnnest, demotes
+// any LogicalJoin whose Right is a template-qualified-table LogicalUnnest, demotes
 // it back to a LogicalScan of the resolved bare table name (mirroring
 // `resolveQualifiedTableNames` stripping `schema.` off a normal scan).
 //
-// When the schema-qualified table carries an AT ordinal alias (`FROM PA AS s,
+// When the template-qualified table carries an AT ordinal alias (`FROM PA AS s,
 // s.PB AT ord`), Java's table branch still wins — but it asserts
 // `atAlias.isEmpty()` and throws WRONG_OBJECT_TYPE ("'PB' is a table"). We surface
 // that code HERE (early, before scope binding tries to resolve a projection
@@ -6744,18 +6783,17 @@ func findFullOuterWithExists(op logical.LogicalOperator) string {
 // qualifier `T1` is NOT the schema name) is left untouched — it is not a schema-
 // qualified table, so it correctly falls through to the correlated-field path.
 // RFC-142 (P2b).
-func demoteSchemaQualifiedUnnest(op logical.LogicalOperator, schemaName string, md *recordlayer.RecordMetaData) error {
+func demoteQualifiedTableUnnest(op logical.LogicalOperator, templateName string, md *recordlayer.RecordMetaData) error {
 	if op == nil || md == nil {
 		return nil
 	}
 	if j, ok := op.(*logical.LogicalJoin); ok {
 		if u, ok := j.Right.(*logical.LogicalUnnest); ok {
-			if table, alias, isTable := schemaQualifiedUnnestTable(u, schemaName, md); isTable {
+			if table, alias, isTable := qualifiedUnnestTable(u, templateName, md); isTable {
 				if u.AtAlias != "" {
-					// AT on a schema-qualified TABLE → Java's table-branch
+					// AT on a template-qualified TABLE → Java's table-branch
 					// atAlias.isEmpty() assert → WRONG_OBJECT_TYPE.
-					return api.NewError(api.ErrCodeWrongObjectType,
-						"AT ordinality is only valid on a correlated array source, not a table")
+					return atOnNonArrayError(strings.Join(u.Segments, "."), "a table")
 				}
 				demoted := logical.NewScan(table, alias, table)
 				demoted.Binding = u.Binding
@@ -6764,21 +6802,21 @@ func demoteSchemaQualifiedUnnest(op logical.LogicalOperator, schemaName string, 
 		}
 	}
 	for _, ch := range op.Children() {
-		if err := demoteSchemaQualifiedUnnest(ch, schemaName, md); err != nil {
+		if err := demoteQualifiedTableUnnest(ch, templateName, md); err != nil {
 			return err
 		}
 	}
 	// Children() exposes only the operator's primary input tree; the nested
 	// logical plans for EXISTS / scalar subqueries are carried as side fields on
 	// LogicalFilter / LogicalProject / LogicalAggregate and are NOT children. A
-	// schema-qualified-table LogicalUnnest can live INSIDE such a subquery
+	// template-qualified-table LogicalUnnest can live INSIDE such a subquery
 	// (`… WHERE EXISTS (SELECT 1 FROM PA AS s, s.PB AS B)`), so the table-first
 	// demotion — Java's generateAccess runs at EVERY FROM-source resolution
 	// point, including inside subqueries — must reach those plans too, else
 	// `s.PB` is wrongly translated as a correlated unnest of the missing field
 	// `PB` on source `s`. RFC-142 (P2).
 	for _, sub := range subqueryPlans(op) {
-		if err := demoteSchemaQualifiedUnnest(sub, schemaName, md); err != nil {
+		if err := demoteQualifiedTableUnnest(sub, templateName, md); err != nil {
 			return err
 		}
 	}
@@ -6787,171 +6825,163 @@ func demoteSchemaQualifiedUnnest(op logical.LogicalOperator, schemaName string, 
 
 // rejectAtOrdinalityOnTable enforces Java's `generateAccess` AT-on-a-table
 // rejection EARLY — at FROM-source analysis time, before the SELECT/WHERE column
-// resolution — so the faithful WRONG_OBJECT_TYPE (42809) is the surfaced error and
-// is NOT masked by a scope-level undefined-column (42703) / ambiguous (42702)
-// raised while resolving a projection.
+// resolution — so the faithful WRONG_OBJECT_TYPE (42809) or UNDEFINED_TABLE
+// (42F01) is the surfaced error and is NOT masked by a scope-level
+// undefined-column (42703) / ambiguous (42702) raised while resolving a
+// projection.
 //
-// The masking bug: for an AT comma source that is in truth a TABLE — a
-// SINGLE-segment `FROM T1, U AT O` (U a real table), the bare-source `T1, T1 AT O`,
-// a present-but-scalar correlated field `T1.ID AS X AT O`, or a schema-qualified
-// `s.PB AT O` — the parser keeps it a LogicalUnnest (the AT shortcut in
+// The masking bug: a SINGLE-segment AT comma source (`FROM T1, U AT O`, the
+// bare-source `T1, T1 AT O`) stays a LogicalUnnest (the AT shortcut in
 // unnestCandidateShape) so the AT survives to a clean rejection, and the SELECT
 // scope registers a VIRTUAL unnest binding (correlation = the AT alias). A
 // reference to the REAL table's own column (`U.ID`) then fails to resolve at the
 // scope level (the real table `U` is shadowed by the virtual binding) with a
 // MASKING 42703 BEFORE translation. Running the rejection here — before any
-// projection column resolution — surfaces the intended 42809 regardless of what the
-// query references.
+// projection column resolution — surfaces the intended error regardless of what
+// the query references.
 //
-// This early check covers AT candidates before semantic collection binding:
-//
-//	(1) segment 0 does NOT resolve to a visible outer owner (scan, retained CTE,
-//	    derived source, prior unnest or inline VALUES), OR
-//	(2) a real-table owner is named without a field or with a present scalar
-//	    field instead of an array.
-//
-// CTE/derived outputs, prior elements, inline VALUES, missing fields and nested
-// field paths are left to semantic collection resolution. The translator consumes
-// that exact binding; it no longer reconstructs a table scan as a fallback.
+// Only the single-segment item is decided here (atOnJoinSourceError): a dotted
+// item is a template-qualified table (demoteQualifiedTableUnnest) or a
+// correlated path the semantic collection binding resolves, where an array
+// takes the AT and a non-array is refused as it is without one.
 // RFC-142.
 func rejectAtOrdinalityOnTable(op logical.LogicalOperator, md *recordlayer.RecordMetaData) error {
-	return rejectAtOrdinalityOnTableWithCTEs(op, md, logical.CTERegistry{})
+	return rejectAtOrdinalityOnTableWithCTEs(op, md, logical.CTERegistry{}, nil)
 }
 
 // Resolve constructor inputs once, then validate the retained producer graph.
 // Both selected CTEs and captured physical sources keep their defining ownership.
-func rejectAtOrdinalityOnTableWithCTEs(op logical.LogicalOperator, md *recordlayer.RecordMetaData, registry logical.CTERegistry) error {
+// enclosing is the scope of the blocks enclosing op, whose operators Java's
+// CTE branch reads by name; nil where the caller has none.
+func rejectAtOrdinalityOnTableWithCTEs(op logical.LogicalOperator, md *recordlayer.RecordMetaData, registry logical.CTERegistry, enclosing *semantic.Scope) error {
 	logical.BindCTESources(op, registry)
-	return rejectAtOrdinalityOnTableInGraph(op, md, make(map[*logical.CTEProducer]bool))
+	return rejectAtOrdinalityOnTableInGraph(op, md, make(map[*logical.CTEProducer]bool), registry, enclosing)
 }
 
-func rejectAtOrdinalityOnTableInGraph(op logical.LogicalOperator, md *recordlayer.RecordMetaData, producers map[*logical.CTEProducer]bool) error {
+// rejectAtOrdinalityOnTableInGraph walks op's block with its registry and
+// enclosing scope. A CTE body or a subquery plan it descends into is its own
+// block, whose enclosing scope this walk does not have (nil): its own build ran
+// this pass with that scope before it was attached, and this is the backstop.
+func rejectAtOrdinalityOnTableInGraph(op logical.LogicalOperator, md *recordlayer.RecordMetaData, producers map[*logical.CTEProducer]bool, registry logical.CTERegistry, enclosing *semantic.Scope) error {
 	if op == nil || md == nil {
 		return nil
 	}
 	if scan, ok := op.(*logical.LogicalScan); ok {
 		if producer := scan.Source.Producer(); producer != nil && !producers[producer] {
 			producers[producer] = true
-			if err := rejectAtOrdinalityOnTableInGraph(producer.Body(), md, producers); err != nil {
+			if err := rejectAtOrdinalityOnTableInGraph(producer.Body(), md, producers, registry, nil); err != nil {
 				return err
 			}
 		}
 	}
 	if j, ok := op.(*logical.LogicalJoin); ok {
 		if u, ok := j.Right.(*logical.LogicalUnnest); ok && u.AtAlias != "" {
-			if atOnNonArraySource(j.Left, u, md) {
-				return api.NewError(api.ErrCodeWrongObjectType,
-					"AT ordinality is only valid on a correlated array source, not a table")
+			if err := atOnJoinSourceError(j.Left, u, md, registry, enclosing); err != nil {
+				return err
 			}
 		}
 	}
 	for _, ch := range op.Children() {
-		if err := rejectAtOrdinalityOnTableInGraph(ch, md, producers); err != nil {
+		if err := rejectAtOrdinalityOnTableInGraph(ch, md, producers, registry, enclosing); err != nil {
 			return err
 		}
 	}
 	// AT-on-a-table can appear inside an EXISTS / scalar subquery's own FROM scope
 	// (carried on side fields, not Children()) — Java's generateAccess runs at every
-	// FROM point. Reach those plans too, like demoteSchemaQualifiedUnnest. RFC-142.
+	// FROM point. Reach those plans too, like demoteQualifiedTableUnnest. RFC-142.
 	for _, sub := range subqueryPlans(op) {
-		if err := rejectAtOrdinalityOnTableInGraph(sub, md, producers); err != nil {
+		if err := rejectAtOrdinalityOnTableInGraph(sub, md, producers, registry, nil); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// atOnNonArraySource reports whether an AT-bearing LogicalUnnest is in truth an
-// AT on a TABLE / non-array source (cases (1)/(2) of rejectAtOrdinalityOnTable),
-// resolving segment 0 against the outer leg's visible scans and their retained
-// producer identities.
+// atOnJoinSourceError is Java's generateAccess for a comma or INNER join FROM
+// item carrying AT (LogicalOperator.java:180-226), decided before binding so a
+// reference the AT source's virtual binding shadows cannot mask it with 42703.
+//
+// Only a SINGLE-segment item is decided here. Java reads it as a CTE — which,
+// for a name, is a WITH CTE or an operator of ANY fragment, the block's prior
+// FROM sources and every enclosing block's (findCteMaybe: `FROM w, w AT p` and
+// `EXISTS (SELECT 1 FROM h, w AT p)` under an outer w are both "'W' is a
+// common table expression", measured) — or as a table, and either refuses the
+// AT, WRONG_OBJECT_TYPE; anything else is an unqualified correlated
+// identifier, which resolveCorrelatedIdentifier refuses as an unknown table,
+// UNDEFINED_TABLE (`FROM w, nosuch AT p`, measured). registry supplies the
+// WITH CTEs in scope and enclosing the enclosing blocks' sources; either may
+// be empty where a caller has none.
+//
+// A DOTTED item is not decided here: a template-qualified table is refused by
+// demoteQualifiedTableUnnest, and every other dotted item is a correlated path
+// the binder resolves across every enclosing level — an array takes the AT
+// (`FROM t2, n.arr AS x AT p`, `EXISTS (SELECT 1 FROM h, w.arr AS v AT p)`,
+// both measured), a non-array is refused INVALID_COLUMN_REFERENCE with or
+// without AT (`FROM w, w.f AS x AT p`, measured), as
+// generateCorrelatedFieldAccess refuses it.
 // RFC-142.
-func atOnNonArraySource(left logical.LogicalOperator, u *logical.LogicalUnnest, md *recordlayer.RecordMetaData) bool {
-	if len(u.Segments) == 0 {
-		return false
+func atOnJoinSourceError(left logical.LogicalOperator, u *logical.LogicalUnnest, md *recordlayer.RecordMetaData, registry logical.CTERegistry, enclosing *semantic.Scope) error {
+	if len(u.Segments) != 1 {
+		return nil
 	}
-	// The selected producer's output owns this source even when its alias or
-	// declaration name also names a physical table. Physical absence is retained.
-	if scan := logical.FindVisibleScan(left, u.Segments[0]); scan != nil && scan.Source.Producer() != nil {
-		return false
-	}
-	if logical.OuterSourceIsDerivedTable(left, u.Segments[0]) {
-		return false
-	}
-	// Segment 0 names a PRIOR lateral unnest's element (a CHAINED unnest,
-	// `… t.arr AS x, x.sub AS y AT o`). The translator lowers it
-	// (translateChainedUnnestJoin) with ordinality support, so AT here is VALID,
-	// not "AT on a table" — leave it to the translator's per-case disposition
-	// (array→plan, scalar sub→UNDEFINED_COLUMN, present-scalar sub→INVALID_
-	// COLUMN_REFERENCE). Checked before the outerTable=="" reject below, which
-	// would otherwise mistake the unnest-element owner for a bare table source.
-	if logical.FindOwnerUnnest(left, u.Segments[0]) != nil {
-		return false
-	}
-	// An exact inline VALUES leaf is another real correlated owner. It has no
-	// catalog descriptor by design; its frozen logical row is the authority
-	// that translateUnnestJoin uses to classify the array path. Do not let this
-	// early table-error echo mask that exact classification with 42809.
-	if logical.FindOwnerInlineValues(left, u.Segments[0]) != nil {
-		return false
-	}
-	outerTable := logical.FindOuterScanTable(left, u.Segments[0])
-	if outerTable == "" {
-		// (1) No visible correlated owner: reject AT on a table or unknown
-		// qualifier before projection resolution can mask the diagnostic.
-		return true
-	}
-	rt := md.GetRecordType(outerTable)
-	if rt == nil || rt.Descriptor == nil {
-		// No physical descriptor authorizes a table/scalar rejection. Leave
-		// exact source and collection resolution to the semantic binder.
-		return false
-	}
-	// (2) Real base table. A bare source (single segment, no field) or a field
-	//     that is MISSING / a PRESENT SCALAR is not an array.
-	if len(u.Segments) < 2 {
-		// AT on a bare real-table source (`FROM T1, T1 AT O`) — no field segment.
-		return true
-	}
-	if len(u.Segments[1:]) != 1 {
-		// A multi-segment field path is not a top-level array unnest shape (mirrors
-		// unnestArrayElementType's single-segment requirement) — let the translator
-		// table-fallback / reject it; do not raise WRONG_OBJECT_TYPE here.
-		return false
-	}
-	fd := lookupFieldFold(rt.Descriptor, u.Segments[1])
-	if fd == nil {
-		// Missing field on a real table → the translator's clean UNDEFINED_COLUMN,
-		// NOT WRONG_OBJECT_TYPE. Leave it to the translator.
-		return false
-	}
-	// Present field: an array (flat repeated OR NullableArrayWrapper) is a
-	// genuine unnest (not rejected); a scalar is the "repeated type" assert
-	// → WRONG_OBJECT_TYPE.
-	_, _, isArr := values.EffectiveListField(fd)
-	return !isArr
+	name := u.Segments[0]
+	probe := logical.NewScan(name, "", name)
+	logical.BindCTESources(probe, registry)
+	cteNamed := logical.FindVisibleScan(left, name) != nil ||
+		logical.OuterSourceIsDerivedTable(left, name) ||
+		logical.FindOwnerUnnest(left, name) != nil ||
+		logical.FindOwnerInlineValues(left, name) != nil ||
+		logical.FindOuterScanTable(left, name) != "" ||
+		probe.Source.Producer() != nil ||
+		scopeNamesSource(enclosing, name)
+	return singleSegmentAtError(name, cteNamed, md)
 }
 
-// lookupFieldFold returns the proto field descriptor named `name` on `desc`
-// case-insensitively (SQL identifiers are case-folded; proto names are often
-// lower/snake), mirroring unnestArrayElementType's field lookup. RFC-142.
-func lookupFieldFold(desc protoreflect.MessageDescriptor, name string) protoreflect.FieldDescriptor {
-	if fd := desc.Fields().ByName(protoreflect.Name(strings.ToLower(name))); fd != nil {
-		return fd
+// scopeNamesSource reports that some level of scope has a source aliased name:
+// the operators of every enclosing query block, which Java's findCteMaybe
+// reads as CTEs of that name. A nil scope names nothing.
+func scopeNamesSource(scope *semantic.Scope, name string) bool {
+	if scope == nil {
+		return false
 	}
-	fields := desc.Fields()
-	for i := 0; i < fields.Len(); i++ {
-		f := fields.Get(i)
-		if strings.EqualFold(string(f.Name()), name) {
-			return f
+	for _, src := range scope.AllSourcesRecursive() {
+		if src.Alias.Name() == name {
+			return true
 		}
 	}
-	return nil
+	return false
+}
+
+// singleSegmentAtError is the verdict atOnJoinSourceError describes, for a
+// single-name FROM item carrying AT: cteNamed reports that Java's CTE branch
+// reads the name (a WITH CTE, or an operator of this or an enclosing block).
+//
+// The table test folds case (recordTypeExistsFold) where Java's tableExists
+// compares exactly: it asks the question Go's own table resolution answers for
+// the same name without the AT (a hand-written descriptor's lower-case record
+// type is a table to `FROM orders`), so the AT verdict and the scan agree on
+// what is a table. A DDL catalog stores the normalized spelling, where the two
+// comparisons coincide.
+func singleSegmentAtError(name string, cteNamed bool, md *recordlayer.RecordMetaData) error {
+	switch {
+	case cteNamed:
+		return atOnNonArrayError(name, "a common table expression")
+	case md != nil && recordTypeExistsFold(md, name):
+		return atOnNonArrayError(name, "a table")
+	}
+	return api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", name)
+}
+
+// atOnNonArrayError is Java's WRONG_OBJECT_TYPE for an AT on a FROM item that is
+// not a correlated array (LogicalOperator.java:187-216), in its wording.
+func atOnNonArrayError(name, kind string) error {
+	return api.NewErrorf(api.ErrCodeWrongObjectType,
+		"AT clause requires an array-typed column, but '%s' is %s", name, kind)
 }
 
 // subqueryPlans returns the nested logical plans an operator carries on its
 // side fields (EXISTS / scalar subqueries) — the plans NOT reachable via
-// Children(). These are the FROM scopes that a schema-qualified-table unnest
+// Children(). These are the FROM scopes that a template-qualified-table unnest
 // (or any per-source resolution) can appear in beyond the operator's primary
 // input. Mirrors the set of subquery-plan fields the cascades translator walks
 // (LogicalFilter / LogicalProject / LogicalAggregate). RFC-142.
@@ -6986,21 +7016,21 @@ func subqueryPlans(op logical.LogicalOperator) []logical.LogicalOperator {
 	return plans
 }
 
-// schemaQualifiedUnnestTable reports whether a lateral-unnest candidate is in
-// truth a schema-qualified TABLE reference (Java's `tableExists` precedence),
+// qualifiedUnnestTable reports whether a lateral-unnest candidate is in
+// truth a template-qualified TABLE reference (Java's `tableExists` precedence),
 // and if so returns the resolved bare table name and the FROM alias to scan it
-// under. It is a schema-qualified table IFF its segments are exactly
+// under. It is a template-qualified table IFF its segments are exactly
 // `[qualifier, table]`, the qualifier case-insensitively equals the session
 // schema name, and `table` resolves to a real record type — precisely Java's
 // `tableExists` (one qualifier segment == schema-template name + table in the
 // catalog). An AT alias does NOT change whether it is a TABLE (the caller handles
 // AT separately: a table cross join when AT is absent, WRONG_OBJECT_TYPE when
 // present). RFC-142.
-func schemaQualifiedUnnestTable(u *logical.LogicalUnnest, schemaName string, md *recordlayer.RecordMetaData) (table, alias string, ok bool) {
+func qualifiedUnnestTable(u *logical.LogicalUnnest, templateName string, md *recordlayer.RecordMetaData) (table, alias string, ok bool) {
 	if len(u.Segments) != 2 {
 		return "", "", false
 	}
-	if !strings.EqualFold(u.Segments[0], schemaName) {
+	if u.Segments[0] != templateName {
 		return "", "", false
 	}
 	tableName := u.Segments[1]
@@ -7025,30 +7055,33 @@ func recordTypeExistsFold(md *recordlayer.RecordMetaData, name string) bool {
 	return recordTypeCI(md, name) != nil
 }
 
-// defaultEmbeddedSchema is the schema name the embedded planner uses when no
-// session schema is supplied (the FDB test / EXPLAIN harnesses). The session
-// path passes the real CONNECT schema (g.c.sess.Schema). RFC-142.
-const defaultEmbeddedSchema = "s"
+// defaultEmbeddedTemplate is the table qualifier the embedded planner accepts
+// when it plans with metadata and no schema template (the FDB test and
+// planner harnesses): the name such a harness's tables are qualified by. A
+// session plans with its schema's template name (sessionTemplate). RFC-142.
+const defaultEmbeddedTemplate = "S"
 
-// sessionSchema returns the active CONNECT schema, falling back to
-// defaultEmbeddedSchema when there is no session (explain-only generator) or
-// the session never set one. EXPLAIN / DDL explain paths use this so the DML
-// catalog builders classify a schema-qualified comma source against the SAME
-// active schema the live planSelect/planDML paths use (g.c.sess.Schema). RFC-142.
-func (g *cascadesGenerator) sessionSchema() string {
-	if g.c != nil && g.c.sess != nil && g.c.sess.Schema != "" {
-		return g.c.sess.Schema
+// sessionTemplate returns the name a table's qualifier must carry: the name of
+// the session schema's TEMPLATE (functions.ResolveTargetTablePath), read from
+// the same cached schema the plan's metadata comes from (cachedMetaData). With
+// no session schema, or none cached (an explain-only generator without
+// metadata), it is defaultEmbeddedTemplate.
+func (g *cascadesGenerator) sessionTemplate() string {
+	if g.c != nil {
+		if tmpl := g.c.cachedSchemaTemplate(); tmpl != nil {
+			return tmpl.MetadataName()
+		}
 	}
-	return defaultEmbeddedSchema
+	return defaultEmbeddedTemplate
 }
 
 // newUnnestTableResolver builds the table-first resolver (Java's `tableExists`
 // precedence) the lateral-unnest classifier consults: a dotted FROM-source name
-// resolves to a schema-qualified TABLE — and is therefore NOT a correlated
+// resolves to a template-qualified TABLE — and is therefore NOT a correlated
 // unnest — when its segments are exactly `[qualifier, name]`, `qualifier`
-// case-insensitively equals the session schema name, and `name` is a real record
-// type. This mirrors Java's `tableExists`: one qualifier segment == the
-// schema-template name plus a table found in the catalog.
+// equals the schema template's name exactly (both normalized), and `name` is a
+// real record type. This mirrors Java's `tableExists`: one qualifier segment
+// equal to metadataCatalog.getName() plus a table found in the catalog.
 //
 // A dotted reference whose qualifier is a CTE/derived alias (`cte.col`,
 // `d.col`) is NOT matched here: a CTE reference in Java's `findCteMaybe` matches
@@ -7056,35 +7089,45 @@ func (g *cascadesGenerator) sessionSchema() string {
 // CTE-output unnest case (`FROM cte, cte.arr`) is handled on the correlated path
 // and validated against the CTE OUTPUT type — P2a (translateUnnestJoin's
 // outerSourceIsCTE rejection). RFC-142.
-func newUnnestTableResolver(md *recordlayer.RecordMetaData, schemaName string) tableResolver {
+func newUnnestTableResolver(md *recordlayer.RecordMetaData, templateName string) tableResolver {
 	return func(segments []string) bool {
 		if len(segments) != 2 {
 			return false
 		}
-		if !strings.EqualFold(segments[0], schemaName) {
+		if segments[0] != templateName {
 			return false
 		}
 		return recordTypeExistsFold(md, segments[1])
 	}
 }
 
-// resolveQualifiedTableNames walks the logical plan tree and resolves
-// schema-qualified table names (schema.table → table) in LogicalScan
-// nodes. Mirrors Java's SemanticAnalyzer.tableExists qualifier validation.
-func resolveQualifiedTableNames(op logical.LogicalOperator, schemaName string) error {
+// resolveQualifiedTableNames walks the logical plan tree and resolves each
+// qualified table name (template.table -> table): a scan as Java's
+// SemanticAnalyzer.tableExists reads a FROM source, a DML target as its
+// getTable reads a statement's table (functions.ResolveSourceTablePath and
+// ResolveTargetTablePath). A scan keeps its TablePath, so a qualified name
+// whose table does not exist is refused by validateTablesAndColumns as Java
+// refuses it.
+func resolveQualifiedTableNames(op logical.LogicalOperator, templateName string) error {
 	if op == nil {
 		return nil
 	}
 	if scan, ok := op.(*logical.LogicalScan); ok {
-		var resolved string
-		var err error
-		if scan.TablePath != nil {
-			resolved, err = functions.ResolveQualifiedTablePath(scan.TablePath, schemaName)
-		} else {
-			resolved, err = functions.ResolveQualifiedTableName(scan.Table, schemaName)
+		path := scan.TablePath
+		if path == nil {
+			path = strings.Split(scan.Table, ".")
 		}
+		// A qualified source that is not the template's table is, in Java, no
+		// table: generateAccess goes on to a view, a function and a correlated
+		// field, and the last refuses the path. Go's builders have already
+		// taken an alias-qualified path as a correlated field (an unnest), so
+		// what reaches a scan is refused here.
+		resolved, ok, err := functions.ResolveSourceTablePath(path, templateName)
 		if err != nil {
 			return err
+		}
+		if !ok {
+			return functions.UnknownSourceReferenceError(path)
 		}
 		// Keep a DEFAULTED alias in lockstep with the strip — the same
 		// alias-desync root fix the catalog sub-build path applies by
@@ -7100,39 +7143,50 @@ func resolveQualifiedTableNames(op logical.LogicalOperator, schemaName string) e
 		}
 		scan.Table = resolved
 	}
+	// A DML target resolves from its parse-time segments, as a scan does, so a
+	// quoted target holding a dot (`"foo.tableA"`) is one name, not a schema
+	// `foo` and a table `tableA`. Every builder of a DML operator sets the
+	// segments; a target without them has lost them, and splitting its joined
+	// name would read a quoted dot as a qualifier.
+	resolveTarget := func(name string, path []string) (string, error) {
+		if len(path) == 0 {
+			return "", fmt.Errorf("DML target %q carries no identifier segments", name)
+		}
+		return functions.ResolveTargetTablePath(path, templateName)
+	}
 	if ins, ok := op.(*logical.LogicalInsert); ok {
-		resolved, err := functions.ResolveQualifiedTableName(ins.Table, schemaName)
+		resolved, err := resolveTarget(ins.Table, ins.TablePath)
 		if err != nil {
 			return err
 		}
 		ins.Table = resolved
 	}
 	if del, ok := op.(*logical.LogicalDelete); ok {
-		resolved, err := functions.ResolveQualifiedTableName(del.Target, schemaName)
+		resolved, err := resolveTarget(del.Target, del.TargetPath)
 		if err != nil {
 			return err
 		}
 		del.Target = resolved
 	}
 	if upd, ok := op.(*logical.LogicalUpdate); ok {
-		resolved, err := functions.ResolveQualifiedTableName(upd.Target, schemaName)
+		resolved, err := resolveTarget(upd.Target, upd.TargetPath)
 		if err != nil {
 			return err
 		}
 		upd.Target = resolved
 	}
 	for _, ch := range op.Children() {
-		if err := resolveQualifiedTableNames(ch, schemaName); err != nil {
+		if err := resolveQualifiedTableNames(ch, templateName); err != nil {
 			return err
 		}
 	}
 	// Subquery plans (EXISTS / scalar) carried on side fields are not Children();
-	// a schema-qualified table scan can live inside one (`… EXISTS (SELECT 1 FROM
+	// a template-qualified table scan can live inside one (`… EXISTS (SELECT 1 FROM
 	// PA, s.PB AS B)`), so strip its `schema.` qualifier there too — the same
-	// structural gap the subquery-aware demoteSchemaQualifiedUnnest walk covers
+	// structural gap the subquery-aware demoteQualifiedTableUnnest walk covers
 	// for the unnest variant. RFC-142 (P2).
 	for _, sub := range subqueryPlans(op) {
-		if err := resolveQualifiedTableNames(sub, schemaName); err != nil {
+		if err := resolveQualifiedTableNames(sub, templateName); err != nil {
 			return err
 		}
 	}
@@ -7152,6 +7206,13 @@ func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.R
 		if scan.Source.Producer() == nil {
 			rt := md.GetRecordType(scan.Table)
 			if rt == nil {
+				// A qualified name that names no table ends in Java's
+				// correlated-field reading, which refuses the path; only an
+				// unqualified one is "Unknown table" (resolveCorrelatedIdentifier
+				// requires a qualifier).
+				if len(scan.TablePath) > 1 {
+					return functions.UnknownSourceReferenceError(scan.TablePath)
+				}
 				return api.NewErrorf(api.ErrCodeUndefinedTable, "table %q does not exist", scan.Table)
 			}
 		}
@@ -7347,8 +7408,12 @@ func findUnsupportedFunctionInParseTree(ctx antlr.Tree) string {
 	switch n := ctx.(type) {
 	case *antlrgen.FunctionCallExpressionAtomContext:
 		if fc := n.FunctionCall(); fc != nil {
+			// The name as the query spells it: Java's resolveFunction reports
+			// "Unsupported operator <name>" with the caller's spelling
+			// (SemanticAnalyzer.java:1105-1107), so `bitmap_bucket_number(x)`
+			// is refused in lower case. The allow-list reads it upper-cased.
 			if name := extractFunctionNameFromCall(fc); name != "" {
-				if !isAllowedFunction(name) {
+				if !isAllowedFunction(strings.ToUpper(name)) {
 					return name
 				}
 			}
@@ -7376,11 +7441,11 @@ func extractFunctionNameFromCall(fc antlrgen.IFunctionCallContext) string {
 	switch f := fc.(type) {
 	case *antlrgen.ScalarFunctionCallContext:
 		if f.ScalarFunctionName() != nil {
-			return strings.ToUpper(f.ScalarFunctionName().GetText())
+			return f.ScalarFunctionName().GetText()
 		}
 	case *antlrgen.UserDefinedScalarFunctionCallContext:
 		if f.UserDefinedScalarFunctionName() != nil {
-			return strings.ToUpper(f.UserDefinedScalarFunctionName().GetText())
+			return f.UserDefinedScalarFunctionName().GetText()
 		}
 	case *antlrgen.NonAggregateFunctionCallContext:
 		if wf := f.NonAggregateWindowedFunction(); wf != nil {
@@ -7434,7 +7499,10 @@ func isAllowedFunction(name string) bool {
 		// → CardinalityValue), not a generic ScalarFunctionValue, so it lives
 		// here rather than in IsCascadesSafeScalarFunction — the Cascades walk
 		// builds its own Value with nullable-INT typing and array validation.
-		"CARDINALITY":
+		"CARDINALITY",
+		// The bitmap functions are ArithmeticValues (expr.walkScalarFunction
+		// → ResolveArithmetic), as Java's are, not catalogue entries.
+		"BITMAP_BUCKET_OFFSET", "BITMAP_BIT_POSITION":
 		return true
 	}
 	return values.IsCascadesSafeScalarFunction(name)
@@ -7537,7 +7605,8 @@ func BuildSchemaTemplateFromDDLNamed(schemaDDL, name string) (*metadata.RecordLa
 
 // buildSchemaTemplateFromDDL parses schemaDDL as a single
 // CREATE SCHEMA TEMPLATE statement and builds a
-// RecordLayerSchemaTemplate without performing any catalog write.
+// RecordLayerSchemaTemplate without performing any catalog write, through
+// buildSchemaTemplate, the front end CREATE SCHEMA TEMPLATE executes.
 func buildSchemaTemplateFromDDL(schemaDDL string) (*metadata.RecordLayerSchemaTemplate, error) {
 	wrapped := schemaDDL
 	if !startsWithCreateSchemaTemplate(schemaDDL) {
@@ -7567,60 +7636,8 @@ func buildSchemaTemplateFromDDL(schemaDDL string) (*metadata.RecordLayerSchemaTe
 	if !ok {
 		return nil, fmt.Errorf("schema DDL must be a CREATE SCHEMA TEMPLATE statement, got %T", cs)
 	}
-
-	templateID := trimIdentifierQuotes(stCtx.SchemaTemplateId().GetText())
-	b := metadata.NewSchemaTemplateBuilder().SetName(templateID)
-	// WITH OPTIONS(...) — the same three options execCreateSchemaTemplate
-	// applies, parsed BEFORE the table/index passes because they change how
-	// Build() compiles primary keys (intermingle) and whether the
-	// __ROW_VERSION pseudo-column exists for index planning
-	// (store_row_versions). Silently dropping them here built metadata that
-	// DIVERGED from what the production DDL path builds for the same text.
-	if oc := stCtx.OptionsClause(); oc != nil {
-		for _, opt := range oc.AllOption() {
-			switch {
-			case opt.ENABLE_LONG_ROWS() != nil:
-				b.SetEnableLongRows(opt.BooleanLiteral().TRUE() != nil)
-			case opt.INTERMINGLE_TABLES() != nil:
-				b.SetIntermingleTables(opt.BooleanLiteral().TRUE() != nil)
-			case opt.STORE_ROW_VERSIONS() != nil:
-				b.SetStoreRowVersions(opt.BooleanLiteral().TRUE() != nil)
-			default:
-				return nil, fmt.Errorf("unknown option in schema template creation: %s", opt.GetText())
-			}
-		}
-	}
-	if rejErr := rejectUnsupportedTemplateClauses(stCtx.AllTemplateClause()); rejErr != nil {
-		return nil, rejErr
-	}
-	if serr := registerStructDefinitions(stCtx.AllTemplateClause(), b); serr != nil {
-		return nil, serr
-	}
-	for _, clause := range stCtx.AllTemplateClause() {
-		td := clause.TableDefinition()
-		if td == nil {
-			continue
-		}
-		// Normalize the table name the same way execCreateSchemaTemplate and
-		// the column/index parsers do (NormalizeIdentifier upper-cases
-		// unquoted identifiers), so index lookups by table name match.
-		tableName := functions.NormalizeIdentifier(td.Uid().GetText())
-		cols, pkCols, tdErr := parseTableDefinition(td, b)
-		if tdErr != nil {
-			return nil, fmt.Errorf("table %q: %w", tableName, tdErr)
-		}
-		b.AddTablePrimaryKeyPaths(tableName, cols, pkCols)
-	}
-	for _, clause := range stCtx.AllTemplateClause() {
-		idxDef := clause.IndexDefinition()
-		if idxDef == nil {
-			continue
-		}
-		if idxErr := parseIndexDefinition(idxDef, b); idxErr != nil {
-			return nil, fmt.Errorf("index: %w", idxErr)
-		}
-	}
-	return b.Build()
+	// The production front end, the one CREATE SCHEMA TEMPLATE executes.
+	return buildSchemaTemplate(stCtx)
 }
 
 // explainStatement returns a trivial textual description of a parsed

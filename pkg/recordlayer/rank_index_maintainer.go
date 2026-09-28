@@ -2,7 +2,6 @@ package recordlayer
 
 import (
 	"fmt"
-	"strconv"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -41,35 +40,47 @@ func newRankIndexMaintainer(
 	indexSubspace, secondarySubspace subspace.Subspace,
 	tx fdb.WritableTransaction,
 	store indexStoreContext,
-) *rankIndexMaintainer {
+) (*rankIndexMaintainer, error) {
+	config, err := parseRankedSetConfig(index)
+	if err != nil {
+		return nil, err
+	}
 	return &rankIndexMaintainer{
 		standardIndexMaintainer: *newStandardIndexMaintainer(index, indexSubspace, tx, store),
 		secondarySubspace:       secondarySubspace,
-		rankedSetConfig:         parseRankedSetConfig(index),
-	}
+		rankedSetConfig:         config.withEnv(store.Env()),
+	}, nil
 }
 
-// parseRankedSetConfig reads RankedSet configuration from index options.
-// Matches Java's RankedSetIndexHelper.getConfig().
-func parseRankedSetConfig(index *Index) rankedSetConfig {
+// parseRankedSetConfig reads RankedSet configuration from index options,
+// as Java's RankedSetIndexHelper.getConfig does and in its order: the hash
+// function by exact name (an unknown one refused), the level count by
+// Integer.parseInt and RankedSet.ConfigBuilder.setNLevels's range, and
+// count-duplicates by Boolean.parseBoolean. Java raises the refusals when a
+// maintainer is made and when the option check reads the config; so does Go.
+func parseRankedSetConfig(index *Index) (rankedSetConfig, error) {
 	config := defaultRankedSetConfig
-	if v, ok := index.Options[IndexOptionRankNLevels]; ok {
-		if n, err := strconv.Atoi(v); err == nil {
-			config.NLevels = n
-		}
-	}
 	if v, ok := index.Options[IndexOptionRankHashFunction]; ok {
-		switch v {
-		case "CRC":
-			config.HashFunction = crcHash
-		default:
-			config.HashFunction = jdkArrayHash
+		fn, found := rankedSetHashFunctions[v]
+		if !found {
+			return rankedSetConfig{}, &RecordCoreArgumentError{Message: "hash function not found: " + v}
 		}
+		config.HashFunction, config.HashFunctionName = fn, v
+	}
+	if v, ok := index.Options[IndexOptionRankNLevels]; ok {
+		n, err := javaParseInt(v)
+		if err != nil {
+			return rankedSetConfig{}, err
+		}
+		if n < 2 || n > rankedSetMaxLevels {
+			return rankedSetConfig{}, &IllegalArgumentError{Message: fmt.Sprintf("levels must be between 2 and %d", rankedSetMaxLevels)}
+		}
+		config.NLevels = int(n)
 	}
 	if v, ok := index.Options[IndexOptionRankCountDuplicates]; ok {
-		config.CountDuplicates = v == "true"
+		config.CountDuplicates = javaParseBoolean(v)
 	}
-	return config
+	return config, nil
 }
 
 // DeleteWhere clears both the primary B-tree and secondary ranked set entries
@@ -102,14 +113,14 @@ func (m *rankIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto
 	var oldEntries, newEntries []indexEntry
 
 	if oldRecord != nil {
-		entries, err := m.evaluateIndex(oldRecord)
+		entries, err := m.filteredIndexEntries(oldRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate index %q for old record: %w", m.index.Name, err)
 		}
 		oldEntries = entries
 	}
 	if newRecord != nil {
-		entries, err := m.evaluateIndex(newRecord)
+		entries, err := m.filteredIndexEntries(newRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate index %q for new record: %w", m.index.Name, err)
 		}
@@ -124,8 +135,11 @@ func (m *rankIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto
 		}
 	}
 
-	isWriteOnlyOrUniquePending := m.store != nil &&
-		(m.store.isIndexWriteOnly(m.index) || m.store.isIndexReadableUniquePending(m.index))
+	state, err := m.currentIndexState()
+	if err != nil {
+		return err
+	}
+	isWriteOnlyOrUniquePending := state.IsWriteOnly() || state == IndexStateReadableUniquePending
 
 	// Process removes: clear B-tree + update ranked set.
 	for i := range oldEntries {
@@ -156,7 +170,7 @@ func (m *rankIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto
 		if err := checkKeyValueSizes(m.index, newEntries[i].primaryKey, keyBytes, valueBytes); err != nil {
 			return err
 		}
-		if m.index.IsUnique() && !indexKeyContainsNull(newEntries[i].key) {
+		if m.index.IsUnique() && !keyContainsNonUniqueNull(m.index.RootExpression, newEntries[i].key) {
 			if err := m.checkUniqueness(newEntries[i]); err != nil {
 				return err
 			}
@@ -178,25 +192,9 @@ func (m *rankIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStor
 	if !m.rankedSetConfig.CountDuplicates {
 		return m.Update(oldRecord, newRecord) // idempotent
 	}
-	// Non-idempotent: check range set before updating.
-	// Use oldRecord's PK when available (for deletes), fall back to newRecord.
-	// Matches Java's rankIndexMaintainer.updateWriteOnlyByRecords().
-	var checkRecord *FDBStoredRecord[proto.Message]
-	if oldRecord != nil {
-		checkRecord = oldRecord
-	} else {
-		checkRecord = newRecord
-	}
-	if checkRecord != nil && m.store != nil {
-		inRange, err := m.store.isKeyInIndexBuildRange(m.index, checkRecord.PrimaryKey)
-		if err != nil {
-			return err
-		}
-		if !inRange {
-			return nil // PK not yet built — skip
-		}
-	}
-	return m.Update(oldRecord, newRecord)
+	// Non-idempotent: only where the build has covered the record, as Java's
+	// StandardIndexMaintainer.updateWhileWriteOnly decides it.
+	return updateWhileWriteOnlyNonIdempotent(oldRecord, newRecord, m.index, m.store, m.index.Type, m.Update)
 }
 
 // Scan scans the primary B-tree (BY_VALUE).
@@ -253,12 +251,16 @@ func (m *rankIndexMaintainer) updateRankedSet(entry indexEntry, remove bool) err
 	}
 
 	if remove {
+		state, err := m.currentIndexState()
+		if err != nil {
+			return err
+		}
 		if m.rankedSetConfig.CountDuplicates {
 			exists, err := rankedSet.Remove(m.tx, score)
 			if err != nil {
 				return err
 			}
-			if !exists && m.store != nil && !m.store.isIndexWriteOnly(m.index) {
+			if !exists && m.store != nil && !state.IsWriteOnly() {
 				return fmt.Errorf("rank index %q: score not present in ranked set", m.index.Name)
 			}
 		} else {
@@ -279,7 +281,7 @@ func (m *rankIndexMaintainer) updateRankedSet(entry indexEntry, remove bool) err
 				if err != nil {
 					return err
 				}
-				if !exists && m.store != nil && !m.store.isIndexWriteOnly(m.index) {
+				if !exists && m.store != nil && !state.IsWriteOnly() {
 					return fmt.Errorf("rank index %q: score not present in ranked set", m.index.Name)
 				}
 			}
@@ -362,7 +364,7 @@ func (m *rankIndexMaintainer) rankRangeToScoreRange(rankRange TupleRange) (*Tupl
 	}
 
 	// Prefetch sparse upper skip-list levels for the upcoming GetNth calls.
-	rankedSet.PreloadForLookup(m.tx)
+	rankedSet.PreloadForLookup(m.tx.Snapshot())
 
 	// Convert low rank to score.
 	var lowScore tuple.Tuple
@@ -449,7 +451,7 @@ func (m *rankIndexMaintainer) RankForScore(groupAndScore tuple.Tuple, nullIfMiss
 	}
 
 	rankedSet := newRankedSet(rankSubspace, m.rankedSetConfig)
-	rankedSet.PreloadForLookup(m.tx)
+	rankedSet.PreloadForLookup(m.tx.Snapshot())
 	return rankedSet.Rank(m.tx, scoreTuple.Pack(), nullIfMissing)
 }
 
@@ -481,7 +483,7 @@ func (m *rankIndexMaintainer) ScoreForRank(groupAndRank tuple.Tuple) (tuple.Tupl
 	}
 
 	rankedSet := newRankedSet(rankSubspace, m.rankedSetConfig)
-	rankedSet.PreloadForLookup(m.tx)
+	rankedSet.PreloadForLookup(m.tx.Snapshot())
 	scoreBytes, err := rankedSet.GetNth(m.tx, rank)
 	if err != nil {
 		return nil, err

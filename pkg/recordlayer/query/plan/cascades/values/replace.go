@@ -216,6 +216,16 @@ func withChildrenChecked(v Value, newChildren []Value) (Value, error) {
 		}
 		return rebuilt, nil
 	}
+	if promotion, ok := v.(*PromoteValue); ok {
+		if len(newChildren) != 1 {
+			return nil, resolutionError(RewriteInvalidArity, "promote.rebuild", "PromoteValue rebuild requires exactly one child")
+		}
+		rebuilt, err := NewPromoteValueChecked(newChildren[0], promotion.Target)
+		if err != nil {
+			return nil, err
+		}
+		return rebuilt, nil
+	}
 	return withChildrenUnchecked(v, newChildren), nil
 }
 
@@ -265,7 +275,7 @@ func withChildrenUnchecked(v Value, newChildren []Value) Value {
 		if len(newChildren) != 2 {
 			return v
 		}
-		return &ArithmeticValue{Op: vt.Op, Left: newChildren[0], Right: newChildren[1]}
+		return vt.WithOperands(newChildren[0], newChildren[1])
 	case *CastValue:
 		if len(newChildren) != 1 {
 			return v
@@ -275,7 +285,11 @@ func withChildrenUnchecked(v Value, newChildren []Value) Value {
 		if len(newChildren) != 1 {
 			return v
 		}
-		return &PromoteValue{Child: newChildren[0], Target: vt.Target}
+		rebuilt, err := NewPromoteValueChecked(newChildren[0], vt.Target)
+		if err != nil {
+			return nil
+		}
+		return rebuilt
 	case *RecordConstructorValue:
 		if len(newChildren) != len(vt.Fields) {
 			return v

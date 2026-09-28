@@ -165,7 +165,8 @@ var _ = Describe("SPFresh churn: writers vs rebalancer", func() {
 			defer wgRebalancer.Done()
 			defer GinkgoRecover()
 			storage := newSPFreshStorage(indexSubspace, 1)
-			config := parseSPFreshConfig(idx)
+			config, cerr := readSPFreshConfig(idx)
+			Expect(cerr).NotTo(HaveOccurred())
 			// Unique owner per invocation — the deployment shape
 			// (spfreshRebalanceOwner mints one per RebalanceSPFreshIndex
 			// call); a fixed owner string would exercise the same-owner
@@ -240,7 +241,8 @@ var _ = Describe("SPFresh churn: writers vs rebalancer", func() {
 		// the pre-094.4 csplit pause-window flake (split tasks for ballooned
 		// postings were never re-filed after a pause; the capped read then
 		// truncated live records out of search results).
-		config := parseSPFreshConfig(idx)
+		config, cerr := readSPFreshConfig(idx)
+		Expect(cerr).NotTo(HaveOccurred())
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			tx := rtx.Transaction()
 			cells, _, lerr := spfreshLoadAllCoarse(tx, storage)

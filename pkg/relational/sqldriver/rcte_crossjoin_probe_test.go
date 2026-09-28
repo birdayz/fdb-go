@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -34,7 +35,7 @@ func TestFDB_RecursiveCTECrossJoin(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -106,7 +107,7 @@ func TestFDB_RecursiveCTECrossJoin(t *testing.T) {
 			fmt.Sprintf("CREATE SCHEMA %s/e WITH TEMPLATE rcte_edge_tmpl", dbPath)); err != nil {
 			t.Fatalf("CREATE SCHEMA: %v", err)
 		}
-		edgeDSN := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=e", dbPath, clusterFilePath)
+		edgeDSN := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=E", strings.ToUpper(dbPath), clusterFilePath)
 		edb, err := sql.Open("fdbsql", edgeDSN)
 		if err != nil {
 			t.Fatalf("sql.Open: %v", err)

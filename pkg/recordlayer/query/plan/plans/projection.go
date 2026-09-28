@@ -217,6 +217,41 @@ func projectionRecordFieldNames(result *values.RecordConstructorValue) []string 
 	return names
 }
 
+// WithTranslatedProjections returns a copy whose projection program is
+// fn(projection) per slot, rebuilt at the SAME input boundary: aliases, the
+// frozen output schema, alias provenance and the distinct proof are carried.
+// It serves a rewrite that re-roots an outer correlation a projection reads
+// (the correlated FlatMap inner's normalization), not one that changes what a
+// slot computes. The plan itself, unchanged, when fn moves nothing.
+func (p *RecordQueryProjectionPlan) WithTranslatedProjections(
+	fn func(values.Value) (values.Value, error),
+) (*RecordQueryProjectionPlan, bool, error) {
+	translated := make([]values.Value, len(p.projections))
+	changed := false
+	for i, projection := range p.projections {
+		rewritten, err := fn(projection)
+		if err != nil {
+			return nil, false, fmt.Errorf("RecordQueryProjectionPlan projection %d: %w", i, err)
+		}
+		translated[i] = rewritten
+		changed = changed || rewritten != projection
+	}
+	if !changed {
+		return p, false, nil
+	}
+	rebuilt, err := newRecordQueryProjectionPlanFromBoundValues(
+		translated, p.aliases, p.aliasMinted, p.outputNames, p.innerQ)
+	if err != nil {
+		return nil, false, err
+	}
+	// The schema delta is frozen at construction, as WithQuantifiers carries
+	// it: re-rooting a program does not rename its output.
+	rebuilt.outputNameOverrides = slices.Clone(p.outputNameOverrides)
+	rebuilt.aliasSources = slices.Clone(p.aliasSources)
+	rebuilt.distinctProofIndexName = p.distinctProofIndexName
+	return rebuilt, true, nil
+}
+
 // WithAliasProvenance returns a copy carrying the given per-slot alias
 // provenance. It is the rebase/rebuild path's carry-across: a rewrite that
 // hands back "the same projection, moved" must preserve who named each slot.
@@ -302,6 +337,28 @@ func (p *RecordQueryProjectionPlan) IsIdentity() bool {
 // the row stated here and the row emitted there are the same row.
 func (p *RecordQueryProjectionPlan) GetResultValue() values.Value {
 	return p.resultValue
+}
+
+// GetCorrelatedToWithoutChildren walks this plan's own projection program —
+// Java's RecordQueryMapPlan.computeCorrelatedToWithoutChildren, which is
+// resultValue.getCorrelatedTo(). A projected column may read an outer
+// quantifier (a lateral derived table's `SELECT w.f …`) through nothing but
+// this program; the empty default made such a plan look self-contained, so a
+// join over it reported no correlation to that quantifier and could be placed
+// where it is unbound.
+func (p *RecordQueryProjectionPlan) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{}
+	for _, projection := range p.projections {
+		for k := range values.GetCorrelatedToOfValue(projection) {
+			out[k] = struct{}{}
+		}
+	}
+	if p.resultValue != nil {
+		for k := range values.GetCorrelatedToOfValue(p.resultValue) {
+			out[k] = struct{}{}
+		}
+	}
+	return out
 }
 
 // GetResultType derives from the result value, which is Java's arrangement:

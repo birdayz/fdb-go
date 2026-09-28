@@ -24,7 +24,7 @@ func TestFDB_ThreeValuedLogicProbe(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE tvl "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, s STRING, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_3vl/s WITH TEMPLATE tvl")
-	dsn := fmt.Sprintf("fdbsql:///testdb_3vl?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_3VL?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

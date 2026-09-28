@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades"
@@ -20,6 +22,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
 )
 
 var _ = Describe("Continuation Token Conformance", func() {
@@ -76,6 +79,353 @@ var _ = Describe("Continuation Token Conformance", func() {
 		}
 		return params
 	}
+
+	It("pins Java pending queue split resource limits", func() {
+		for _, tc := range []struct {
+			name      string
+			scanLimit int
+			byteLimit int
+			rowLimit  int
+			reverse   bool
+			fail      bool
+			ids       []int64
+			resumed   []int64
+			reason    string
+			scans     int
+			byteParts []int
+		}{
+			{name: "forward unlimited", ids: []int64{1, 2, 3}, reason: "SOURCE_EXHAUSTED", scans: 5, byteParts: []int{0, 1, 2, 2, 3, 4, 4}},
+			{name: "reverse unlimited", reverse: true, ids: []int64{3, 2, 1}, reason: "SOURCE_EXHAUSTED", scans: 5, byteParts: []int{4, 3, 3, 2, 1, 1, 0}},
+			{name: "forward scan limit", scanLimit: 1, ids: []int64{1}, resumed: []int64{2, 3}, reason: "SCAN_LIMIT_REACHED", scans: 3, byteParts: []int{0, 1, 2}},
+			{name: "reverse scan limit", scanLimit: 1, reverse: true, ids: []int64{3}, resumed: []int64{2, 1}, reason: "SCAN_LIMIT_REACHED", scans: 2, byteParts: []int{4, 3}},
+			{name: "forward byte limit", byteLimit: 1, ids: []int64{1}, resumed: []int64{2, 3}, reason: "BYTE_LIMIT_REACHED", scans: 3, byteParts: []int{0, 1, 2}},
+			{name: "scan precedes bytes", scanLimit: 1, byteLimit: 1, ids: []int64{1}, resumed: []int64{2, 3}, reason: "SCAN_LIMIT_REACHED", scans: 3, byteParts: []int{0, 1, 2}},
+			{name: "fail mid split", scanLimit: 1, fail: true, scans: 2, byteParts: []int{0}},
+			{name: "exact row boundary", rowLimit: 3, ids: []int64{1, 2, 3}, reason: "RETURN_LIMIT_REACHED", scans: 5, byteParts: []int{0, 1, 2, 2, 3, 4, 4}},
+		} {
+			params := buildJavaParams()
+			params["scanLimit"], params["byteLimit"], params["rowLimit"] = tc.scanLimit, tc.byteLimit, tc.rowLimit
+			params["reverse"], params["fail"] = tc.reverse, tc.fail
+			raw, err := java.Invoke(ctx, "pendingQueueLimits", params)
+			Expect(err).NotTo(HaveOccurred(), tc.name)
+			var result struct {
+				Continuation   string  `json:"continuation"`
+				PhysicalBytes  []int64 `json:"physicalBytes"`
+				IDs            []int64 `json:"ids"`
+				Resumed        []int64 `json:"resumed"`
+				Reason         string  `json:"reason"`
+				End            bool    `json:"end"`
+				TerminalCached bool    `json:"terminalCached"`
+				ErrorClass     string  `json:"errorClass"`
+				Scans          int     `json:"scans"`
+				Bytes          int64   `json:"bytes"`
+			}
+			Expect(json.Unmarshal(raw, &result)).To(Succeed())
+			Expect(result.PhysicalBytes).To(HaveLen(5), tc.name)
+			Expect(result.IDs).To(Equal(append([]int64{}, tc.ids...)), tc.name)
+			if tc.fail {
+				Expect(result.ErrorClass).To(Equal("ScanLimitReachedException"), tc.name)
+			} else {
+				Expect(result.ErrorClass).To(BeEmpty(), tc.name)
+				Expect(result.Reason).To(Equal(tc.reason), tc.name)
+				Expect(result.Resumed).To(Equal(append([]int64{}, tc.resumed...)), tc.name)
+				Expect(result.End).To(Equal(tc.reason == "SOURCE_EXHAUSTED"), tc.name)
+				Expect(result.TerminalCached).To(BeTrue(), tc.name)
+			}
+			Expect(result.Scans).To(Equal(tc.scans), tc.name)
+			var wantBytes int64
+			for _, part := range tc.byteParts {
+				wantBytes += result.PhysicalBytes[part]
+			}
+			Expect(result.Bytes).To(Equal(wantBytes), tc.name)
+			_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				root := env.Keyspace.Sub("pendingQueueLimits")
+				queue := recordlayer.NewPendingWritesQueue(root.Sub("entries"), root.Sub("size"), 0, &gen.Order{})
+				props := recordlayer.DefaultExecuteProperties()
+				props.ScannedRecordsLimit, props.ScannedBytesLimit, props.ReturnedRowLimit = tc.scanLimit, int64(tc.byteLimit), tc.rowLimit
+				props.FailOnScanLimitReached = tc.fail
+				cursor := queue.GetQueueCursor(rtx, recordlayer.NewScanProperties(props).WithReverse(tc.reverse), nil)
+				defer cursor.Close()
+				ids := []int64{}
+				for {
+					item, scanErr := cursor.OnNext(ctx)
+					if scanErr != nil {
+						var limitErr *recordlayer.ScanLimitReachedError
+						Expect(tc.fail && errors.As(scanErr, &limitErr)).To(BeTrue(), "%s: %v", tc.name, scanErr)
+						break
+					}
+					if item.HasNext() {
+						ids = append(ids, item.GetValue().Payload.GetOrderId())
+						continue
+					}
+					Expect(tc.fail).To(BeFalse(), tc.name)
+					reasons := map[string]recordlayer.NoNextReason{"SOURCE_EXHAUSTED": recordlayer.SourceExhausted, "RETURN_LIMIT_REACHED": recordlayer.ReturnLimitReached, "SCAN_LIMIT_REACHED": recordlayer.ScanLimitReached, "BYTE_LIMIT_REACHED": recordlayer.ByteLimitReached}
+					Expect(item.GetNoNextReason()).To(Equal(reasons[tc.reason]), tc.name)
+					continuation, err := item.GetContinuation().ToBytes()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(base64.StdEncoding.EncodeToString(continuation)).To(Equal(result.Continuation), tc.name)
+					again, err := cursor.OnNext(ctx)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(again).To(Equal(item))
+					if !item.GetContinuation().IsEnd() {
+						next := queue.GetQueueCursor(rtx, recordlayer.ForwardScan().WithReverse(tc.reverse), continuation)
+						defer next.Close()
+						resumed := []int64{}
+						for {
+							row, err := next.OnNext(ctx)
+							Expect(err).NotTo(HaveOccurred())
+							if !row.HasNext() {
+								break
+							}
+							resumed = append(resumed, row.GetValue().Payload.GetOrderId())
+						}
+						Expect(resumed).To(Equal(result.Resumed), tc.name)
+					}
+					break
+				}
+				Expect(ids).To(Equal(result.IDs), tc.name)
+				Expect(props.ScanState.RecordsScanned()).To(Equal(result.Scans), tc.name)
+				Expect(props.ScanState.BytesScanned()).To(Equal(result.Bytes), tc.name)
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			fmt.Fprintf(GinkgoWriter, "PENDING_QUEUE_LIMIT case=%s ids=%v scans=%d bytes=%d reason=%s error=%s\n", tc.name, result.IDs, result.Scans, result.Bytes, result.Reason, result.ErrorClass)
+		}
+	})
+
+	It("pins Java nested pending queue Any URL validation", func() {
+		for _, tc := range []struct {
+			kind    string
+			message proto.Message
+		}{
+			{"vector", &gen.OldAndNewIndexEntries{}},
+			{"sliding", &gen.SlidingWindowQueueEntry{}},
+			{"delete-where", &gen.DeleteWhere{Prefix: tuple.Tuple{int64(7)}.Pack()}},
+		} {
+			for _, prefix := range []string{"", "type.googleapis.com/", "custom.example/v1/", "/"} {
+				data, err := anypb.New(tc.message)
+				Expect(err).NotTo(HaveOccurred())
+				data.TypeUrl = prefix + string(data.MessageName())
+				encoded, err := proto.Marshal(data)
+				Expect(err).NotTo(HaveOccurred())
+				var accepted bool
+				Expect(java.InvokeAs(ctx, "pendingQueueNestedAny", map[string]any{"kind": tc.kind, "payload": BytesToIntArray(encoded)}, &accepted)).To(Succeed())
+				Expect(accepted).To(Equal(prefix != ""), "kind=%s prefix=%q", tc.kind, prefix)
+				fmt.Fprintf(GinkgoWriter, "NESTED-ANY kind=%s prefix=%q accepted=%t\n", tc.kind, prefix, accepted)
+			}
+		}
+	})
+
+	It("pins Java pending queue envelope and Any validation", func() {
+		order, err := anypb.New(&gen.Order{OrderId: proto.Int64(42)})
+		Expect(err).NotTo(HaveOccurred())
+		operation, err := anypb.New(&gen.PendingWritesQueueEntry{Operation: gen.PendingWritesQueueEntry_UPDATE.Enum()})
+		Expect(err).NotTo(HaveOccurred())
+		for _, tc := range []struct {
+			name         string
+			version      *int32
+			payload      *anypb.Any
+			indexPayload bool
+			errorText    string
+			value        int64
+			rawEnvelope  []byte
+		}{
+			{name: "default URL", version: proto.Int32(1), payload: order, value: 42},
+			{name: "absent version", payload: order, value: 42},
+			{name: "negative version", version: proto.Int32(-1), payload: order, value: 42},
+			{name: "custom URL", version: proto.Int32(1), payload: &anypb.Any{TypeUrl: "example.test/" + string(gen.File_record_layer_demo_proto.Messages().ByName("Order").FullName()), Value: order.Value}, value: 42},
+			{name: "slashless URL", version: proto.Int32(1), payload: &anypb.Any{TypeUrl: string(gen.File_record_layer_demo_proto.Messages().ByName("Order").FullName()), Value: order.Value}, errorText: "Pending writes queue entry payload type does not match the queue's bound type"},
+			{name: "malformed envelope", rawEnvelope: []byte{0xff}, errorText: "Failed to parse pending writes queue entry"},
+			{name: "future version", version: proto.Int32(2), payload: order, errorText: "Pending writes queue entry version is newer than this reader supports"},
+			{name: "missing payload", version: proto.Int32(1), errorText: "Pending writes queue entry payload type does not match the queue's bound type"},
+			{name: "wrong type", version: proto.Int32(1), payload: operation, errorText: "Pending writes queue entry payload type does not match the queue's bound type"},
+			{name: "malformed payload", version: proto.Int32(1), payload: &anypb.Any{TypeUrl: order.TypeUrl, Value: []byte{0xff}}, errorText: "Failed to unpack pending writes queue entry payload"},
+			{name: "update operation", version: proto.Int32(1), payload: operation, indexPayload: true, value: 1},
+			{name: "overwide update operation", version: proto.Int32(1), payload: &anypb.Any{TypeUrl: operation.TypeUrl, Value: []byte{8, 0x81, 0x80, 0x80, 0x80, 0x10}}, indexPayload: true, value: 1},
+			{name: "overwide delete operation", version: proto.Int32(1), payload: &anypb.Any{TypeUrl: operation.TypeUrl, Value: []byte{8, 0x82, 0x80, 0x80, 0x80, 0x10}}, indexPayload: true, value: 2},
+			{name: "unknown required operation", version: proto.Int32(1), payload: &anypb.Any{TypeUrl: operation.TypeUrl, Value: []byte{8, 99}}, indexPayload: true, errorText: "Failed to unpack pending writes queue entry payload"},
+			{name: "known then unknown operation", version: proto.Int32(1), payload: &anypb.Any{TypeUrl: operation.TypeUrl, Value: []byte{8, 1, 8, 99}}, indexPayload: true, value: 1},
+			{name: "negative unknown then known operation", version: proto.Int32(1), payload: &anypb.Any{TypeUrl: operation.TypeUrl, Value: []byte{8, 0xff, 0xff, 0xff, 0xff, 0x0f, 8, 1}}, indexPayload: true, value: 1},
+			{name: "overwide unknown then known operation", version: proto.Int32(1), payload: &anypb.Any{TypeUrl: operation.TypeUrl, Value: []byte{8, 0xe3, 0x80, 0x80, 0x80, 0x10, 8, 1}}, indexPayload: true, value: 1},
+			{name: "unknown then known operation", version: proto.Int32(1), payload: &anypb.Any{TypeUrl: operation.TypeUrl, Value: []byte{8, 99, 8, 1}}, indexPayload: true, value: 1},
+			{name: "absent required operation", version: proto.Int32(1), payload: &anypb.Any{TypeUrl: operation.TypeUrl}, indexPayload: true, errorText: "Failed to unpack pending writes queue entry payload"},
+		} {
+			envelope, err := proto.Marshal(&gen.PendingWriteItem{Version: tc.version, Payload: tc.payload, EnqueueTimestamp: proto.Int64(123)})
+			Expect(err).NotTo(HaveOccurred())
+			params := buildJavaParams()
+			if tc.rawEnvelope != nil {
+				envelope = tc.rawEnvelope
+			}
+			params["envelope"] = BytesToIntArray(envelope)
+			params["indexPayload"] = tc.indexPayload
+			raw, err := java.Invoke(ctx, "pendingQueueEnvelope", params)
+			Expect(err).NotTo(HaveOccurred(), tc.name)
+			var result struct {
+				Value        int64  `json:"value"`
+				TypeURL      string `json:"typeUrl"`
+				Timestamp    int64  `json:"timestamp"`
+				Incarnation  int64  `json:"incarnation"`
+				Serialized   string `json:"serialized"`
+				ErrorClass   string `json:"errorClass"`
+				ErrorMessage string `json:"errorMessage"`
+				Info         struct {
+					Version       *int32 `json:"version"`
+					StoredVersion *int32 `json:"stored_version"`
+					ExpectedType  string `json:"expected_type"`
+					ActualType    string `json:"actual_type"`
+				} `json:"info"`
+			}
+			Expect(json.Unmarshal(raw, &result)).To(Succeed())
+			if tc.errorText != "" {
+				Expect(result.ErrorClass).To(Equal("RecordCoreStorageException"), tc.name)
+				Expect(result.ErrorMessage).To(Equal(tc.errorText), tc.name)
+			} else {
+				Expect(result.ErrorClass).To(BeEmpty(), tc.name)
+				Expect(result.ErrorMessage).To(BeEmpty(), tc.name)
+				Expect(result.Value).To(Equal(tc.value), tc.name)
+				Expect(result.TypeURL).To(Equal(tc.payload.TypeUrl), tc.name)
+				Expect(result.Timestamp).To(Equal(int64(123)), tc.name)
+				Expect(result.Incarnation).To(Equal(int64(7)), tc.name)
+			}
+			_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				root := env.Keyspace.Sub("pendingQueueEnvelope")
+				var value, timestamp int64
+				var url string
+				var decodeErr error
+				if tc.indexPayload {
+					queue := recordlayer.NewPendingWritesQueue(root.Sub("entries"), root.Sub("size"), 0, &gen.PendingWritesQueueEntry{})
+					cursor := queue.GetQueueCursor(rtx, recordlayer.ForwardScan(), nil)
+					defer cursor.Close()
+					item, err := cursor.OnNext(ctx)
+					decodeErr = err
+					if err == nil {
+						Expect(item.HasNext()).To(BeTrue())
+						entry := item.GetValue()
+						value, timestamp, url = int64(entry.Payload.GetOperation()), entry.EnqueueTimestamp, entry.PayloadTypeURL
+						serialized, err := proto.Marshal(entry.Payload)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(base64.StdEncoding.EncodeToString(serialized)).To(Equal(result.Serialized), tc.name)
+					}
+				} else {
+					queue := recordlayer.NewPendingWritesQueue(root.Sub("entries"), root.Sub("size"), 0, &gen.Order{})
+					cursor := queue.GetQueueCursor(rtx, recordlayer.ForwardScan(), nil)
+					defer cursor.Close()
+					item, err := cursor.OnNext(ctx)
+					decodeErr = err
+					if err == nil {
+						Expect(item.HasNext()).To(BeTrue())
+						entry := item.GetValue()
+						value, timestamp, url = entry.Payload.GetOrderId(), entry.EnqueueTimestamp, entry.PayloadTypeURL
+					}
+				}
+				if tc.errorText != "" {
+					var storageErr *recordlayer.RecordCoreStorageError
+					Expect(errors.As(decodeErr, &storageErr)).To(BeTrue(), "%s: %v", tc.name, decodeErr)
+					Expect(storageErr.Message).To(Equal(tc.errorText), tc.name)
+					Expect(storageErr.KeyTuple).To(HaveLen(2), tc.name)
+					Expect(storageErr.KeyTuple[0]).To(Equal(int64(7)), tc.name)
+					Expect(storageErr.Version).To(Equal(result.Info.Version), tc.name)
+					Expect(storageErr.StoredVersion).To(Equal(result.Info.StoredVersion), tc.name)
+					Expect(storageErr.ActualType).To(Equal(result.Info.ActualType), tc.name)
+					if result.Info.ExpectedType != "" {
+						expected := order
+						javaClass := "com.apple.foundationdb.record.RecordLayerDemo$Order"
+						if tc.indexPayload {
+							expected = operation
+							javaClass = "com.apple.foundationdb.record.IndexBuildProto$PendingWritesQueueEntry"
+						}
+						Expect(result.Info.ExpectedType).To(Equal(javaClass), tc.name)
+						Expect(storageErr.ExpectedType).To(Equal(strings.TrimPrefix(expected.TypeUrl, "type.googleapis.com/")), tc.name)
+					} else {
+						Expect(storageErr.ExpectedType).To(BeEmpty(), tc.name)
+					}
+					if tc.name == "future version" {
+						Expect(storageErr.Version).NotTo(BeNil())
+						Expect(*storageErr.Version).To(Equal(int32(1)))
+						Expect(*storageErr.StoredVersion).To(Equal(int32(2)))
+					}
+				} else {
+					Expect(decodeErr).NotTo(HaveOccurred(), tc.name)
+					Expect(value).To(Equal(result.Value), tc.name)
+					Expect(timestamp).To(Equal(result.Timestamp), tc.name)
+					Expect(url).To(Equal(result.TypeURL), tc.name)
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			fmt.Fprintf(GinkgoWriter, "PENDING_QUEUE_ENVELOPE case=%s expectedError=%q value=%d\n", tc.name, tc.errorText, tc.value)
+		}
+	})
+
+	It("pins bidirectional pending queue skip and row continuation semantics", func() {
+		for _, javaWriter := range []bool{true, false} {
+			for _, skip := range []int{0, 1, 5} {
+				root := env.Keyspace.Sub("pendingQueueSkip")
+				queue := recordlayer.NewPendingWritesQueue(root.Sub("entries"), root.Sub("size"), 0, &gen.Order{})
+				if !javaWriter {
+					_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+						rtx.ClearRange(root)
+						for id := int64(1); id <= 3; id++ {
+							if err := queue.Enqueue(rtx, &gen.Order{OrderId: proto.Int64(id), Tags: []string{strings.Repeat("x", 120000)}}, 0); err != nil {
+								return nil, err
+							}
+						}
+						return nil, nil
+					})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				params := buildJavaParams()
+				params["skip"], params["seed"] = skip, javaWriter
+				raw, err := java.Invoke(ctx, "pendingQueueSkip", params)
+				Expect(err).NotTo(HaveOccurred())
+				var result struct {
+					IDs       []int64 `json:"ids"`
+					Reason    string  `json:"reason"`
+					Resumed   []int64 `json:"resumed"`
+					Exhausted bool    `json:"exhausted"`
+					Size      int64   `json:"size"`
+				}
+				Expect(json.Unmarshal(raw, &result)).To(Succeed())
+				// Java clears the inner skip without applying an outer skip wrapper.
+				// Preserve this observed queue behavior independently of record scans.
+				Expect(result.IDs).To(Equal([]int64{1, 2}))
+				Expect(result.Reason).To(Equal("RETURN_LIMIT_REACHED"))
+				Expect(result.Resumed).To(Equal([]int64{3}))
+				Expect(result.Exhausted).To(BeTrue())
+				Expect(result.Size).To(Equal(int64(3)))
+				_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+					props := recordlayer.DefaultExecuteProperties().WithSkip(skip).WithReturnedRowLimit(2)
+					cursor := queue.GetQueueCursor(rtx, recordlayer.NewScanProperties(props), nil)
+					defer cursor.Close()
+					for _, id := range result.IDs {
+						row, err := cursor.OnNext(ctx)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(row.HasNext()).To(BeTrue())
+						Expect(row.GetValue().Payload.GetOrderId()).To(Equal(id))
+					}
+					stop, err := cursor.OnNext(ctx)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(stop.HasNext()).To(BeFalse())
+					Expect(stop.GetNoNextReason()).To(Equal(recordlayer.ReturnLimitReached))
+					continuation, err := stop.GetContinuation().ToBytes()
+					Expect(err).NotTo(HaveOccurred())
+					next := queue.GetQueueCursor(rtx, recordlayer.ForwardScan(), continuation)
+					defer next.Close()
+					row, err := next.OnNext(ctx)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(row.HasNext()).To(BeTrue())
+					Expect(row.GetValue().Payload.GetOrderId()).To(Equal(result.Resumed[0]))
+					end, err := next.OnNext(ctx)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(end.HasNext()).To(BeFalse())
+					Expect(end.GetNoNextReason()).To(Equal(recordlayer.SourceExhausted))
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+				fmt.Fprintf(GinkgoWriter, "PENDING_QUEUE_SKIP javaWriter=%t skip=%d ids=%v reason=%s resumed=%v size=%d\n", javaWriter, skip, result.IDs, result.Reason, result.Resumed, result.Size)
+			}
+		}
+	})
 
 	It("executes an inline record explode across independent Java type repositories", func() {
 		for _, nullable := range []bool{true, false} {

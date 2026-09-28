@@ -40,17 +40,17 @@ tests:
 
   # --- Out-of-range enforcement ---
 
-  # INSERT above MAX_INT32 → 22003.
+  # A literal past the INT32 range is a BIGINT, and a BIGINT does not promote
+  # to an INTEGER: the target refuses it while planning, 22000
+  # (INCOMPATIBLE_TYPE), for INSERT and UPDATE alike.
   - query: INSERT INTO t_int VALUES (6, 2147483648, 'overflow')
-    error_code: "22003"
+    error_code: "22000"
 
-  # INSERT below MIN_INT32 → 22003.
   - query: INSERT INTO t_int VALUES (6, -2147483649, 'underflow')
-    error_code: "22003"
+    error_code: "22000"
 
-  # UPDATE to out-of-range → 22003.
   - query: UPDATE t_int SET val = 2147483648 WHERE id = 4
-    error_code: "22003"
+    error_code: "22000"
 
   # --- Arithmetic within range ---
 

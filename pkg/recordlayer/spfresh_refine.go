@@ -540,7 +540,10 @@ func spfreshResolveRefineTarget(ctx context.Context, db *FDBDatabase, storeBuild
 		if index.Type != IndexTypeVectorSPFresh {
 			return fmt.Errorf("spfresh refine: index %q has type %q", indexName, index.Type)
 		}
-		config = parseSPFreshConfig(index)
+		var cerr error
+		if config, cerr = readSPFreshConfig(index); cerr != nil {
+			return cerr
+		}
 		gen, gerr := spfreshReadGenerationSnapshot(rtx.Transaction(), newSPFreshStorage(store.indexSubspace(index), 0))
 		if gerr != nil {
 			if errors.Is(gerr, errSPFreshNotFound) {

@@ -36,7 +36,7 @@ func TestFDB_ArithOverflowInPredicate_PlanStable(t *testing.T) {
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, g BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX idx_g ON t (g)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aovfp/s WITH TEMPLATE aovfp")
-	dsn := fmt.Sprintf("fdbsql:///testdb_aovfp?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_AOVFP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

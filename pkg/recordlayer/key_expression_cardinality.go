@@ -29,7 +29,10 @@ const wrappedArrayValuesFieldName = "values"
 // the concrete root a cardinality index uses. Registering the fallback keeps
 // any bare FunctionExpr("cardinality", …) evaluable too.
 func init() {
-	RegisterFunction(FunctionNameCardinality, evaluateCardinalityMaterialized)
+	// CardinalityFunctionKeyExpression.java:58-75, :148.
+	registerCoreFunction(FunctionNameCardinality, FunctionSpec{
+		Evaluator: evaluateCardinalityMaterialized, MinArguments: 1, MaxArguments: 1, ColumnSize: 1, NullIsNonUnique: true,
+	})
 }
 
 // CardinalityFunctionKeyExpression is the root key expression of a CARDINALITY()
@@ -55,12 +58,16 @@ type CardinalityFunctionKeyExpression struct {
 // nullable-array wrapper. Mirrors Java's
 // function("cardinality", field("arr", …)).
 func CardinalityExpr(arguments KeyExpression) *CardinalityFunctionKeyExpression {
-	return &CardinalityFunctionKeyExpression{
+	c := &CardinalityFunctionKeyExpression{
 		FunctionKeyExpression: FunctionKeyExpression{
 			name:      FunctionNameCardinality,
 			arguments: arguments,
 		},
 	}
+	if err := functionConstructionFault(FunctionNameCardinality, arguments); err != nil {
+		c.fault, c.faultSeq = err, nextBuildFaultSeq()
+	}
+	return c
 }
 
 // Evaluate applies Java's two protobuf fast paths against the record message,

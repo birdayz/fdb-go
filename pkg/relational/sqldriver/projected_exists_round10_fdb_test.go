@@ -51,7 +51,7 @@ func TestFDB_ProjectedExistsRound10(t *testing.T) {
 		"CREATE TABLE t4 (id BIGINT, t3_id BIGINT, PRIMARY KEY (id))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_pexr10/s WITH TEMPLATE pexr10_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_pexr10?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_PEXR10?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

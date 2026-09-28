@@ -56,8 +56,36 @@ func (c *EmbeddedConnection) execDrop(ctx context.Context, ds antlrgen.IDropStat
 	}
 }
 
+// databasePathOf is a DDL statement's database path as Java reads it: the
+// path's uid normalized as an identifier (DdlVisitor's visitUid(ctx.path()
+// .uid()), IdentifierVisitor.visitUid: normalizeString of the uid's text), so
+// an unquoted path folds to upper case whole and a quoted one is kept as
+// written (measured against the JVM: `create database /test/x` stores
+// /TEST/X; conformance "the DSN's schema option reaches the schema Java's
+// does"). Go stored the path verbatim, a database row Java cannot reach.
+//
+// Every statement that takes a path reads it this way in Java: CREATE/DROP
+// DATABASE, CREATE/DROP SCHEMA, SHOW DATABASES WITH PREFIX
+// (MetadataPlanVisitor.visitShowDatabasesStatement, whose prefix Java then
+// ignores), DESCRIBE SCHEMA and COPY. The first five go through here; DESCRIBE
+// SCHEMA (0A000 in Go, RFC-257 WS-E) and COPY (no Go route, WS-K) must when
+// they are ported.
+func databasePathOf(text string) string {
+	return functions.NormalizeIdentifier(text)
+}
+
+// templateNameOf is a schema template's name as Java reads it: the uid
+// normalized as an identifier, at every statement that names a template
+// (DdlVisitor.visitUid at :495 CREATE SCHEMA TEMPLATE, :573 CREATE SCHEMA …
+// WITH TEMPLATE, :607 DROP SCHEMA TEMPLATE). An unquoted name folds to upper
+// case and a quoted one keeps its case without its quotes, so `create schema
+// template t1` stores the row and the records file Java's DDL writes (T1).
+func templateNameOf(text string) string {
+	return functions.NormalizeIdentifier(text)
+}
+
 func (c *EmbeddedConnection) execCreateDatabase(ctx context.Context, s *antlrgen.CreateDatabaseStatementContext) (int64, error) {
-	dbPath := s.Path().GetText()
+	dbPath := databasePathOf(s.Path().GetText())
 	if err := validateDatabasePath(dbPath); err != nil {
 		return 0, err
 	}
@@ -69,7 +97,7 @@ func (c *EmbeddedConnection) execCreateDatabase(ctx context.Context, s *antlrgen
 }
 
 func (c *EmbeddedConnection) execDropDatabase(ctx context.Context, s *antlrgen.DropDatabaseStatementContext) (int64, error) {
-	dbPath := s.Path().GetText()
+	dbPath := databasePathOf(s.Path().GetText())
 	if err := validateDatabasePath(dbPath); err != nil {
 		return 0, err
 	}
@@ -82,20 +110,18 @@ func (c *EmbeddedConnection) execDropDatabase(ctx context.Context, s *antlrgen.D
 }
 
 func (c *EmbeddedConnection) execCreateSchema(ctx context.Context, s *antlrgen.CreateSchemaStatementContext) (int64, error) {
-	schemaText := s.SchemaId().GetText()
+	// Java normalizes the whole uid, a path or a bare name, then splits it
+	// (visitUid, then SemanticAnalyzer.parseSchemaIdentifier): `create schema
+	// /db/test` creates TEST in /DB, and a quoted path keeps both segments.
+	schemaText := databasePathOf(s.SchemaId().GetText())
 	dbPath, schemaName, err := parseSchemaIdentifier(schemaText, c.sess.DBPath)
 	if err != nil {
 		return 0, err
 	}
-	// The SCHEMA segment is an SQL identifier: unquoted names normalize to
-	// upper case (Java's visitUid normalization) — `create schema /db/test`
-	// creates TEST, which is how a `schema=TEST` connection then finds it.
-	// The database PATH is not an identifier and stays verbatim.
-	schemaName = functions.NormalizeIdentifier(schemaName)
 	if err := c.checkDDLDatabaseScope("CREATE SCHEMA", dbPath); err != nil {
 		return 0, err
 	}
-	templateID := s.SchemaTemplateId().GetText()
+	templateID := templateNameOf(s.SchemaTemplateId().GetText())
 	action := c.sess.Factory.CreateSchema(dbPath, schemaName, templateID, *api.NoOptions())
 	return 0, c.runDDL(ctx, action)
 }
@@ -109,17 +135,22 @@ func (c *EmbeddedConnection) execDropSchema(ctx context.Context, s *antlrgen.Dro
 	// TEMPLATE (visitDropSchemaTemplateStatement:483) thread throwIfDoesNotExist from
 	// ifExists(); DROP SCHEMA does not. Do NOT "fix" this to honor IF EXISTS — that would
 	// DIVERGE from Java. Pinned by drop_schema_ifexists_conformance_probe_test.go.
-	schemaText := s.Uid().GetText()
+	// Same normalization as execCreateSchema (DdlVisitor.visitDropSchemaStatement
+	// reads visitUid(ctx.uid())): DROP SCHEMA /db/test drops TEST in /DB.
+	//
+	// Unlike CREATE SCHEMA, DROP SCHEMA takes a path: a bare uid names no
+	// database, and Java refuses it whatever database the connection is on
+	// (DdlVisitor.java:598-600, the raw uid text in single quotes). Resolving
+	// it against the session's database dropped a schema Java keeps.
+	rawUid := s.Uid().GetText()
+	schemaText := databasePathOf(rawUid)
+	if !strings.HasPrefix(schemaText, "/") {
+		return 0, api.NewErrorf(api.ErrCodeUnknownDatabase,
+			"invalid database identifier in '%s'", rawUid)
+	}
 	dbPath, schemaName, err := parseSchemaIdentifier(schemaText, c.sess.DBPath)
 	if err != nil {
 		return 0, err
-	}
-	// Same identifier normalization as execCreateSchema: DROP SCHEMA
-	// /db/test drops TEST.
-	schemaName = functions.NormalizeIdentifier(schemaName)
-	if dbPath == "" {
-		return 0, api.NewErrorf(api.ErrCodeUnknownDatabase,
-			"invalid database identifier in %q", schemaText)
 	}
 	if err := c.checkDDLDatabaseScope("DROP SCHEMA", dbPath); err != nil {
 		return 0, err
@@ -136,7 +167,7 @@ func (c *EmbeddedConnection) execDropSchemaTemplate(ctx context.Context, s *antl
 	if err := c.checkSchemaTemplateDDLAllowed("DROP SCHEMA TEMPLATE"); err != nil {
 		return 0, err
 	}
-	templateID := s.Uid().GetText()
+	templateID := templateNameOf(s.Uid().GetText())
 	throwIfNotExist := s.IfExists() == nil
 	action := c.sess.Factory.DropSchemaTemplate(templateID, throwIfNotExist, *api.NoOptions())
 	return 0, c.runDDL(ctx, action)
@@ -146,14 +177,42 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 	if err := c.checkSchemaTemplateDDLAllowed("CREATE SCHEMA TEMPLATE"); err != nil {
 		return 0, err
 	}
-	templateID := trimIdentifierQuotes(s.SchemaTemplateId().GetText())
+	tmpl, err := buildSchemaTemplate(s)
+	if err != nil {
+		return 0, err
+	}
+	action := c.sess.Factory.SaveSchemaTemplate(tmpl, *api.NoOptions())
+	if err := c.runDDL(ctx, action); err != nil {
+		return 0, err
+	}
+	// Template change may affect any schema using it — flush the whole cache.
+	c.sess.ResetSchemaCache()
+	return 0, nil
+}
+
+// buildSchemaTemplate is Go's one DDL front end, Java's
+// DdlVisitor.visitCreateSchemaTemplateStatement (:493-566): it builds the
+// schema template a CREATE SCHEMA TEMPLATE statement declares, and nothing
+// else. The execution path (execCreateSchemaTemplate) saves what it returns;
+// the tooling path (buildSchemaTemplateFromDDL, the planner harness and the
+// conformance oracle) returns it, so both build the same metadata by
+// construction (RFC-257 WS-J section 3.4; they were two copies that had
+// already diverged once, over WITH OPTIONS).
+func buildSchemaTemplate(s *antlrgen.CreateSchemaTemplateStatementContext) (*metadata.RecordLayerSchemaTemplate, error) {
+	// Java's AstNormalizer walks the whole statement before DdlVisitor builds
+	// any of it, so its faults win over every clause of the template.
+	if err := rejectNormalizerFaults(s); err != nil {
+		return nil, err
+	}
+	templateID := templateNameOf(s.SchemaTemplateId().GetText())
 	b := metadata.NewSchemaTemplateBuilder().SetName(templateID)
 
 	// WITH OPTIONS(...) — ENABLE_LONG_ROWS / INTERMINGLE_TABLES / STORE_ROW_VERSIONS.
 	// Mirrors Java's DdlVisitor.visitCreateSchemaTemplateStatement: applied before
 	// the table/index passes below, since intermingleTbls changes how AddTable's
 	// primary keys are compiled at Build() time (buildPrimaryKeyExpression prepends
-	// RecordTypeKey() unless intermingled).
+	// RecordTypeKey() unless intermingled), and store_row_versions decides whether
+	// the __ROW_VERSION pseudo-column exists for index planning.
 	if oc := s.OptionsClause(); oc != nil {
 		for _, opt := range oc.AllOption() {
 			switch {
@@ -167,18 +226,19 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 				// Unreachable through the grammar (option's three alternatives are
 				// exhaustive) — defensive default matching Java's
 				// Assert.failUnchecked(ErrorCode.SYNTAX_ERROR, ...).
-				return 0, api.NewErrorf(api.ErrCodeSyntaxError,
+				return nil, api.NewErrorf(api.ErrCodeSyntaxError,
 					"unknown option in schema template creation: %s", opt.GetText())
 			}
 		}
 	}
 
 	if err := rejectUnsupportedTemplateClauses(s.AllTemplateClause()); err != nil {
-		return 0, err
+		return nil, err
 	}
 
+	registerEnumDefinitions(s.AllTemplateClause(), b)
 	if err := registerStructDefinitions(s.AllTemplateClause(), b); err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	// First pass: register tables (indexes reference them by name).
@@ -198,9 +258,9 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 			// non-structured parse error still wraps (it carries no SQLSTATE to surface).
 			var apiErr *api.Error
 			if errors.As(err, &apiErr) {
-				return 0, err
+				return nil, err
 			}
-			return 0, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			return nil, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 				"table %q: %v", tableName, err)
 		}
 		b.AddTablePrimaryKeyPaths(tableName, cols, pkCols)
@@ -218,36 +278,42 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 			// does not wrap in-template index errors either. A non-structured error wraps.
 			var apiErr *api.Error
 			if errors.As(err, &apiErr) {
-				return 0, err
+				return nil, err
 			}
-			return 0, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate, "index: %v", err)
+			return nil, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate, "index: %v", err)
 		}
 	}
+	// Java generates every index first and then moves each index's table to the
+	// end, in clause order (DdlVisitor.java:559-564), which decides the record
+	// type keys, union field numbers and index versions the template stores.
+	b.MoveIndexedTablesToEnd()
 
-	tmpl, err := b.Build()
-	if err != nil {
-		return 0, err
-	}
-	action := c.sess.Factory.SaveSchemaTemplate(tmpl, *api.NoOptions())
-	if err := c.runDDL(ctx, action); err != nil {
-		return 0, err
-	}
-	// Template change may affect any schema using it — flush the whole cache.
-	c.sess.ResetSchemaCache()
-	return 0, nil
+	return b.Build()
 }
 
-// trimIdentifierQuotes removes surrounding double/back quotes VERBATIM,
-// without the case fold NormalizeIdentifier applies to unquoted names.
-// Template names historically keep their raw unquoted spelling (a template
-// created as `create schema template foo` is stored "foo"); a QUOTED name
-// must not keep its quote characters — they would leak into the persisted
-// descriptor's FILE name, which is wire.
-func trimIdentifierQuotes(s string) string {
-	if len(s) >= 2 && ((s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '`' && s[len(s)-1] == '`')) {
-		return s[1 : len(s)-1]
+// registerEnumDefinitions is the enum pass: CREATE TYPE AS ENUM registers an
+// auxiliary type as Java's DdlVisitor.visitEnumDefinition does (:480-490):
+// the name an identifier, the values the string literals as written
+// (normalizeStringLiteral), numbered 0..n-1 in declaration order, the type
+// not nullable (a column's nullability is the column's). Java registers it
+// inside the clause loop that partitions the other clauses (:519-521), so
+// before any struct or table is visited: it runs first here too, which is what
+// makes a later struct or table of the same name the one refused. The builder
+// emits the enum only where a table's closure reaches it
+// (fileEmitter.enums).
+func registerEnumDefinitions(clauses []antlrgen.ITemplateClauseContext, b *metadata.Builder) {
+	for _, clause := range clauses {
+		ed := clause.EnumDefinition()
+		if ed == nil {
+			continue
+		}
+		literals := ed.AllSTRING_LITERAL()
+		enumValues := make([]api.EnumValue, len(literals))
+		for i, l := range literals {
+			enumValues[i] = api.NewEnumValue(functions.StripStringLiteralQuotes(l.GetText()), i)
+		}
+		b.AddAuxiliaryType(api.NewEnumType(functions.NormalizeIdentifier(ed.Uid().GetText()), enumValues, false))
 	}
-	return s
 }
 
 // registerStructDefinitions is the struct pass: CREATE TYPE AS STRUCT
@@ -290,16 +356,13 @@ func registerStructDefinitions(clauses []antlrgen.ITemplateClauseContext, b *met
 // DIFFERENT template than the DDL declared — a view or SQL function would
 // simply vanish, and every later reference to it surfaces as a misleading
 // "table does not exist" — the accept-and-drop failure mode this file bans.
-// Java supports all of these (DdlVisitor visitEnumDefinition /
-// visitSqlInvokedFunction / visitViewDefinition), so each rejection is a
-// named parity gap, not a divergence: SQL functions are RFC-201 Phase 4.
-// Struct definitions are handled by the struct pass above (RFC-204).
+// Java supports both (DdlVisitor visitSqlInvokedFunction /
+// visitViewDefinition), so each rejection is a named parity gap, not a
+// divergence: SQL functions are RFC-201 Phase 4. Struct and enum definitions
+// are handled by their passes (RFC-204; RFC-257 WS-J section 5).
 func rejectUnsupportedTemplateClauses(clauses []antlrgen.ITemplateClauseContext) error {
 	for _, clause := range clauses {
 		switch {
-		case clause.EnumDefinition() != nil:
-			return api.NewError(api.ErrCodeUnsupportedOperation,
-				"enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template")
 		case clause.SqlInvokedFunction() != nil:
 			return api.NewError(api.ErrCodeUnsupportedOperation,
 				"SQL functions (CREATE FUNCTION) are not yet supported in a schema template")
@@ -562,7 +625,13 @@ func parseAsSelectIndexDefinition(def *antlrgen.IndexAsSelectDefinitionContext, 
 	if err := rejectWindowedAggregate(qt); err != nil {
 		return fmt.Errorf("index %q: %w", indexName, err)
 	}
-	op, err := NewPlanVisitor(md).VisitQueryTerm(qt)
+	// The query resolves against the template being created, so a table it
+	// names is qualified by that template's name, as Java's DdlVisitor plans
+	// it against the catalog it is building (measured in
+	// conformance/ws_f_table_qualifier_conformance_test.go: `FROM <tmpl>.w`
+	// is accepted, `FROM S.w` refused).
+	visitor := NewPlanVisitorWithTemplate(md, b.Name())
+	op, err := visitor.VisitQueryTerm(qt)
 	if err != nil {
 		return fmt.Errorf("index %q: %w", indexName, err)
 	}
@@ -575,7 +644,7 @@ func parseAsSelectIndexDefinition(def *antlrgen.IndexAsSelectDefinitionContext, 
 	// cascades_generator.go) — column validation there is the source of
 	// UNDEFINED_COLUMN for `AS SELECT nonexistent_col` (Java pin:
 	// IndexTest.java:702-708). RFC-202 D4.
-	if err := runFromResolutionPostPasses(op, defaultEmbeddedSchema, md, md); err != nil {
+	if err := runFromResolutionPostPasses(op, visitor.templateName, md, md); err != nil {
 		return fmt.Errorf("index %q: %w", indexName, err)
 	}
 

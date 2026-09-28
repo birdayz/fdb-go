@@ -540,7 +540,7 @@ func sargOracleSchema(t *testing.T) (db *sql.DB, singleK, compositeK, idxA, idxB
 			"CREATE TABLE flt_col (id BIGINT, f FLOAT, PRIMARY KEY (id)) "+
 			"CREATE INDEX flt_col_f ON flt_col (f)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE sargoracle")
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -720,11 +720,13 @@ func sargOracleSchema(t *testing.T) (db *sql.DB, singleK, compositeK, idxA, idxB
 		}
 		v := float64(rng.Intn(101)-40) + float64(rng.Intn(10))/10
 		stored := addF(v)
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO flt_col (id, f) VALUES (%d, %s)", 3000+i, renderFloat(stored)))
+		// A FLOAT column takes a FLOAT: the rendered literal is a DOUBLE, which
+		// does not promote to FLOAT, so it is cast (exactly: stored is a float32).
+		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO flt_col (id, f) VALUES (%d, CAST(%s AS FLOAT))", 3000+i, renderFloat(stored)))
 	}
 	for i, sp := range []float64{0.1, 16777216, -16777216, math.Copysign(0, -1)} {
 		stored := addF(sp)
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO flt_col (id, f) VALUES (%d, %s)", 3500+i, renderFloat(stored)))
+		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO flt_col (id, f) VALUES (%d, CAST(%s AS FLOAT))", 3500+i, renderFloat(stored)))
 	}
 	sort.Float64s(idxF.values)
 

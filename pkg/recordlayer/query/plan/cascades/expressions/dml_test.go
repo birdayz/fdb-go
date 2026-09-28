@@ -100,19 +100,21 @@ func TestDelete_DistinctHashFromInsert(t *testing.T) {
 
 // --- UpdateExpression -------------------------------------------------------
 
+// The transforms are ordered by their resolved ordinals, as Java orders the
+// transformation map's field paths (FieldValue.FieldPath.comparator).
 func TestUpdate_CanonicalisesTransforms(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
 	ts1 := []UpdateTransform{
-		{FieldPath: "name", NewValue: values.NewBooleanValue(true)},
-		{FieldPath: "active", NewValue: values.NewBooleanValue(false)},
+		{FieldNames: []string{"name"}, FieldOrdinals: []int{2}, NewValue: values.NewBooleanValue(true)},
+		{FieldNames: []string{"active"}, FieldOrdinals: []int{1}, NewValue: values.NewBooleanValue(false)},
 	}
 	upd := mustExpression(NewUpdateExpression(q, "Order", testRecordType(), ts1))
 	got := upd.GetTransforms()
-	want := []string{"active", "name"} // sorted
-	if !reflect.DeepEqual([]string{got[0].FieldPath, got[1].FieldPath}, want) {
-		t.Fatalf("transform order=%v, want %v", []string{got[0].FieldPath, got[1].FieldPath}, want)
+	want := []string{"active", "name"} // by ordinal
+	if !reflect.DeepEqual([]string{got[0].FieldPath(), got[1].FieldPath()}, want) {
+		t.Fatalf("transform order=%v, want %v", []string{got[0].FieldPath(), got[1].FieldPath()}, want)
 	}
 }
 
@@ -120,10 +122,11 @@ func TestUpdate_DefensiveCopy(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
-	src := []UpdateTransform{{FieldPath: "name", NewValue: values.NewBooleanValue(true)}}
+	src := []UpdateTransform{{FieldNames: []string{"name"}, FieldOrdinals: []int{2}, NewValue: values.NewBooleanValue(true)}}
 	upd := mustExpression(NewUpdateExpression(q, "Order", testRecordType(), src))
-	src[0].FieldPath = "MUTATED"
-	if upd.GetTransforms()[0].FieldPath != "name" {
+	src[0].FieldNames[0] = "MUTATED"
+	src[0].FieldOrdinals[0] = 9
+	if got := upd.GetTransforms()[0]; got.FieldPath() != "name" || got.FieldOrdinals[0] != 2 {
 		t.Fatal("constructor failed to defensively copy transforms")
 	}
 }
@@ -133,13 +136,13 @@ func TestUpdate_EqualsWithoutChildren_TextualOrderIndependent(t *testing.T) {
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
 	a := mustExpression(NewUpdateExpression(q, "Order", testRecordType(), []UpdateTransform{
-		{FieldPath: "name", NewValue: values.NewBooleanValue(true)},
-		{FieldPath: "active", NewValue: values.NewBooleanValue(false)},
+		{FieldNames: []string{"name"}, FieldOrdinals: []int{2}, NewValue: values.NewBooleanValue(true)},
+		{FieldNames: []string{"active"}, FieldOrdinals: []int{1}, NewValue: values.NewBooleanValue(false)},
 	}))
 
 	b := mustExpression(NewUpdateExpression(q, "Order", testRecordType(), []UpdateTransform{
-		{FieldPath: "active", NewValue: values.NewBooleanValue(false)},
-		{FieldPath: "name", NewValue: values.NewBooleanValue(true)},
+		{FieldNames: []string{"active"}, FieldOrdinals: []int{1}, NewValue: values.NewBooleanValue(false)},
+		{FieldNames: []string{"name"}, FieldOrdinals: []int{2}, NewValue: values.NewBooleanValue(true)},
 	}))
 
 	if !a.EqualsWithoutChildren(b, EmptyAliasMap()) {
@@ -152,15 +155,44 @@ func TestUpdate_EqualsWithoutChildren_DifferentValue(t *testing.T) {
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
 	a := mustExpression(NewUpdateExpression(q, "Order", testRecordType(), []UpdateTransform{
-		{FieldPath: "name", NewValue: values.NewBooleanValue(true)},
+		{FieldNames: []string{"name"}, FieldOrdinals: []int{2}, NewValue: values.NewBooleanValue(true)},
 	}))
 
 	b := mustExpression(NewUpdateExpression(q, "Order", testRecordType(), []UpdateTransform{
-		{FieldPath: "name", NewValue: values.NewBooleanValue(false)},
+		{FieldNames: []string{"name"}, FieldOrdinals: []int{2}, NewValue: values.NewBooleanValue(false)},
 	}))
 
 	if a.EqualsWithoutChildren(b, EmptyAliasMap()) {
 		t.Fatal("UPDATEs with different replacement Values reported equal")
+	}
+}
+
+// Two transforms naming one column spelling but resolved to different fields
+// are different updates: Java's FieldPath equality compares the resolved
+// accessors, and a ResolvedAccessor's equality is its ordinal's
+// (FieldValue.java:676-690). And one resolved to the same field under another
+// spelling is the same update.
+func TestUpdate_EqualsWithoutChildren_DifferentOrdinal(t *testing.T) {
+	t.Parallel()
+	leaf := &leafScan{name: "T"}
+	q := ForEachQuantifier(InitialOf(leaf))
+	a := mustExpression(NewUpdateExpression(q, "Order", testRecordType(), []UpdateTransform{
+		{FieldNames: []string{"name"}, FieldOrdinals: []int{2}, NewValue: values.NewBooleanValue(true)},
+	}))
+	b := mustExpression(NewUpdateExpression(q, "Order", testRecordType(), []UpdateTransform{
+		{FieldNames: []string{"name"}, FieldOrdinals: []int{3}, NewValue: values.NewBooleanValue(true)},
+	}))
+	if a.EqualsWithoutChildren(b, EmptyAliasMap()) {
+		t.Fatal("UPDATEs assigning different ordinals reported equal")
+	}
+	if a.HashCodeWithoutChildren() == b.HashCodeWithoutChildren() {
+		t.Fatal("UPDATEs assigning different ordinals hashed equal")
+	}
+	c := mustExpression(NewUpdateExpression(q, "Order", testRecordType(), []UpdateTransform{
+		{FieldNames: []string{"NAME"}, FieldOrdinals: []int{2}, NewValue: values.NewBooleanValue(true)},
+	}))
+	if !a.EqualsWithoutChildren(c, EmptyAliasMap()) || a.HashCodeWithoutChildren() != c.HashCodeWithoutChildren() {
+		t.Fatal("UPDATEs assigning one ordinal under two spellings reported apart")
 	}
 }
 
@@ -169,11 +201,11 @@ func TestUpdate_HashCodeStable(t *testing.T) {
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
 	a := mustExpression(NewUpdateExpression(q, "Order", testRecordType(), []UpdateTransform{
-		{FieldPath: "name", NewValue: values.NewBooleanValue(true)},
+		{FieldNames: []string{"name"}, FieldOrdinals: []int{2}, NewValue: values.NewBooleanValue(true)},
 	}))
 
 	b := mustExpression(NewUpdateExpression(q, "Order", testRecordType(), []UpdateTransform{
-		{FieldPath: "name", NewValue: values.NewBooleanValue(true)},
+		{FieldNames: []string{"name"}, FieldOrdinals: []int{2}, NewValue: values.NewBooleanValue(true)},
 	}))
 
 	if a.HashCodeWithoutChildren() != b.HashCodeWithoutChildren() {

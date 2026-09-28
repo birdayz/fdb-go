@@ -63,7 +63,7 @@ func MapFieldValues(v Value, transform func(*fieldValue) Value) Value {
 	// etc.) that Children() alone doesn't carry.
 	switch cv := v.(type) {
 	case *ArithmeticValue:
-		return &ArithmeticValue{Op: cv.Op, Left: newChildren[0], Right: newChildren[1]}
+		return cv.WithOperands(newChildren[0], newChildren[1])
 	case *StrictRankLimitValue:
 		// Same rebuild-switch coverage the ArithmeticValue it replaced had: a
 		// transform on the K child must not fall to the default (which discards
@@ -72,7 +72,11 @@ func MapFieldValues(v Value, transform func(*fieldValue) Value) Value {
 	case *CastValue:
 		return &CastValue{Child: newChildren[0], Target: cv.Target}
 	case *PromoteValue:
-		return &PromoteValue{Child: newChildren[0], Target: cv.Target}
+		rebuilt, err := NewPromoteValueChecked(newChildren[0], cv.Target)
+		if err != nil {
+			return nil
+		}
+		return rebuilt
 	case *NotValue:
 		return &NotValue{Child: newChildren[0]}
 	case *ScalarFunctionValue:

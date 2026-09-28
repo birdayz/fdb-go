@@ -2,13 +2,17 @@
 #
 # FLOAT (32-bit) column type. Java supports FLOAT via proto FloatKind.
 # Tests DDL, INSERT, SELECT, WHERE comparison, and CAST.
+#
+# A decimal literal is a DOUBLE, and PromoteValue has no DOUBLE_TO_FLOAT, so
+# a FLOAT column is written through CAST(… AS FLOAT) (or a bound float32), as
+# on the target; a bare DOUBLE is refused while planning with 22000.
 name: float_column
 schema_template: |
   CREATE TABLE Measurements (id BIGINT, temp FLOAT, PRIMARY KEY (id))
 setup:
-  - INSERT INTO Measurements VALUES (1, 36.6)
-  - INSERT INTO Measurements VALUES (2, 98.6)
-  - INSERT INTO Measurements VALUES (3, 0.0)
+  - INSERT INTO Measurements VALUES (1, CAST(36.6 AS FLOAT))
+  - INSERT INTO Measurements VALUES (2, CAST(98.6 AS FLOAT))
+  - INSERT INTO Measurements VALUES (3, CAST(0.0 AS FLOAT))
   - INSERT INTO Measurements VALUES (4, NULL)
 tests:
   # Round-trip.
@@ -38,8 +42,16 @@ tests:
   - query: SELECT COUNT(*) FROM Measurements WHERE temp BETWEEN 30 AND 100
     rows:
       - [2]
-  # UPDATE FLOAT to an exact float32 value (0.5 is a power-of-two fraction).
+  # A DOUBLE into the FLOAT column is refused, by INSERT and UPDATE alike,
+  # whether or not a row would be written.
+  - query: INSERT INTO Measurements VALUES (5, 1.5)
+    error_code: "22000"
   - query: UPDATE Measurements SET temp = 100.5 WHERE id = 3
+    error_code: "22000"
+  - query: UPDATE Measurements SET temp = 100.5 WHERE id = 999
+    error_code: "22000"
+  # UPDATE FLOAT to an exact float32 value (0.5 is a power-of-two fraction).
+  - query: UPDATE Measurements SET temp = CAST(100.5 AS FLOAT) WHERE id = 3
   - query: SELECT temp FROM Measurements WHERE id = 3
     rows:
       - [100.5]

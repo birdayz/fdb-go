@@ -996,3 +996,51 @@ var _ = Describe("StoreLockState", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 })
+
+// A builder reused with a new subspace opens its store wholly in the new one.
+// The records subspace is derived from the subspace and cached on the builder
+// (subspaceKeys, read by newStore, and the save path writes through it); a
+// SetSubspace that kept the cache opened a store whose header and indexes were
+// in the new subspace and whose records were written to the old.
+var _ = Describe("StoreBuilder_SetSubspace", func() {
+	It("re-derives the records subspace, so a reused builder saves into the new subspace", func() {
+		ctx := context.Background()
+		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		md, err := b.Build()
+		Expect(err).NotTo(HaveOccurred())
+		ssA, ssB := specSubspace().Sub("A"), specSubspace().Sub("B")
+		records := func(ss subspace.Subspace) int {
+			var n int
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				kvs, err := rtx.Transaction().GetRange(ss.Sub(RecordKey), fdb.RangeOptions{}).GetSliceWithError()
+				n = len(kvs)
+				return nil, err
+			})
+			Expect(err).NotTo(HaveOccurred())
+			return n
+		}
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			sb := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ssA)
+			sa, err := sb.CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			if _, err := sa.SaveRecord(&gen.Order{OrderId: proto.Int64(1)}); err != nil {
+				return nil, err
+			}
+			sbB, err := sb.SetSubspace(ssB).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			Expect(sbB.recordsSubspace.Bytes()).To(Equal(ssB.Sub(RecordKey).Bytes()))
+			_, err = sbB.SaveRecord(&gen.Order{OrderId: proto.Int64(2)})
+			return nil, err
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(records(ssA)).To(Equal(1), "A holds its own record only")
+		Expect(records(ssB)).To(Equal(1), "B's record is in B")
+	})
+})

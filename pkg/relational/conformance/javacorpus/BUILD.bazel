@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "javacorpus",
     srcs = [
+        "connoptions.go",
         "fixture.go",
         "gaps.go",
         "javarandom.go",
@@ -20,6 +21,7 @@ go_library(
         "//pkg/relational/api",
         "//pkg/relational/conformance/javayamsql",
         "//pkg/relational/conformance/yamsql",
+        "//pkg/relational/core/embedded",
         "//pkg/relational/core/functions",
         "//pkg/relational/core/parser",
         "//pkg/relational/core/parser/gen",
@@ -58,6 +60,7 @@ go_test(
         "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/recordlayer",
+        "//pkg/recordlayer/keystoretest",
         "//pkg/relational/api",
         "//pkg/relational/conformance/javayamsql",
         "//pkg/relational/sqldriver",

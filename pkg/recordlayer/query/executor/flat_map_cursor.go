@@ -122,9 +122,10 @@ type flatMapCursor struct {
 	pendingCheckValue      []byte
 }
 
-// newFlatMapCursorWithOuterProperties is the production constructor for a
-// RecordQueryFlatMapPlan.
-func newFlatMapCursorWithOuterProperties(
+// newFlatMapCursorForPlan is the production constructor for a
+// RecordQueryFlatMapPlan; nullSupplyingOuter is the plan's
+// NullSupplyingOuter.
+func newFlatMapCursorForPlan(
 	outerCursor recordlayer.RecordCursor[QueryResult],
 	outerPlan plans.RecordQueryPlan,
 	innerPlan plans.RecordQueryPlan,
@@ -134,6 +135,7 @@ func newFlatMapCursorWithOuterProperties(
 	resultValue values.Value,
 	props recordlayer.ExecuteProperties,
 	inheritOuterRecordProperties bool,
+	nullSupplyingOuter bool,
 ) (*flatMapCursor, error) {
 	build, err := newOrdinalJoinBuild(resultValue, nil)
 	if err != nil {
@@ -142,8 +144,18 @@ func newFlatMapCursorWithOuterProperties(
 	if build != nil {
 		build.Clock = evalCtx
 	}
-	if build.enabled() && planContainsDefaultOnEmpty(innerPlan) {
-		if err := build.configureNullSupplying(innerAlias); err != nil {
+	if build.enabled() {
+		// The outer's presence is the plan's own fact (a DefaultOnEmpty the
+		// lowering put on a null-on-empty outer); the inner's is still read
+		// off its wrapper spine. One layout carries both.
+		var nullLegs []values.CorrelationIdentifier
+		if nullSupplyingOuter {
+			nullLegs = append(nullLegs, outerAlias)
+		}
+		if planContainsDefaultOnEmpty(innerPlan) {
+			nullLegs = append(nullLegs, innerAlias)
+		}
+		if err := build.configureNullSupplying(nullLegs...); err != nil {
 			return nil, err
 		}
 	}

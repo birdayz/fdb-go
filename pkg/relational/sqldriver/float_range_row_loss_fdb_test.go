@@ -150,7 +150,7 @@ func TestFDB_FloatRangePredicate_IsExactThroughSQL(t *testing.T) {
 		"CREATE TABLE fo (id BIGINT, e DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX fi_ae ON fi (a, e)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_frrl/s WITH TEMPLATE frrl")
-	dsn := fmt.Sprintf("fdbsql:///testdb_frrl?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_FRRL?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -250,24 +250,24 @@ func TestFDB_FloatRangePredicate_IsExactThroughSQL_Float32(t *testing.T) {
 		"CREATE TABLE go_ (id BIGINT, g FLOAT, h DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX gi_ag ON gi (a, g)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_frrl32/s WITH TEMPLATE frrl32")
-	dsn := fmt.Sprintf("fdbsql:///testdb_frrl32?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_FRRL32?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	// No +/-Inf: a FLOAT column's write path range-checks against +/-MaxFloat32
-	// and rejects them. The negative NaN is therefore computed in DOUBLE
-	// arithmetic in the helper column `h` and narrowed on assignment, which
-	// preserves the sign bit.
+	// A FLOAT column takes only a FLOAT (no DOUBLE_TO_FLOAT promotion, and CAST
+	// of a DOUBLE NaN to FLOAT is refused), so the negative NaN is computed in
+	// the FLOAT lane: 3e38*10 saturates to +Inf in float32, 3e38*-10 to -Inf,
+	// and their sum is the default quiet NaN with the sign bit SET.
 	for _, tbl := range []string{"gi", "go_"} {
 		mwjoMustExec(t, db, ctx, fmt.Sprintf(
-			"INSERT INTO %s (id, g, h, a) VALUES (20, -1.5, 1.0e308, 1), (30, -0.0, 1.0e308, 1), "+
-				"(40, 0.0, 1.0e308, 1), (50, 1.5, 1.0e308, 1), (70, 1.0, 1.0e308, 1), (5, 0.0, 1.0e308, 1)", tbl))
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("UPDATE %s SET g = CAST('NaN' AS DOUBLE) WHERE id = 5", tbl))
+			"INSERT INTO %s (id, g, h, a) VALUES (20, CAST(-1.5 AS FLOAT), 1.0e308, 1), (30, CAST(-0.0 AS FLOAT), 1.0e308, 1), "+
+				"(40, CAST(0.0 AS FLOAT), 1.0e308, 1), (50, CAST(1.5 AS FLOAT), 1.0e308, 1), (70, CAST(1.0 AS FLOAT), 1.0e308, 1), (5, CAST(0.0 AS FLOAT), 1.0e308, 1)", tbl))
+		mwjoMustExec(t, db, ctx, fmt.Sprintf("UPDATE %s SET g = CAST('NaN' AS FLOAT) WHERE id = 5", tbl))
 		mwjoMustExec(t, db, ctx, fmt.Sprintf(
-			"UPDATE %s SET g = (h * 10.0) + (h * -10.0) WHERE id = 70", tbl))
+			"UPDATE %s SET g = (CAST(3.0E38 AS FLOAT) * CAST(10.0 AS FLOAT)) + (CAST(3.0E38 AS FLOAT) * CAST(-10.0 AS FLOAT)) WHERE id = 70", tbl))
 
 		// Vacuity guard: without a stored NEGATIVE NaN the physically-first
 		// block is empty and every assertion below is served by a single range.

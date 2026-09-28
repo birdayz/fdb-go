@@ -19,10 +19,12 @@ set -u
 
 REPO_URL="${FRL_BASE_URL:-https://github.com/birdayz/fdb-go}"
 API_URL="${FRL_API_URL:-https://api.github.com/repos/birdayz/fdb-go}"
-# Release tags follow the Go convention for modules in a subdirectory:
-# cmd/frl/vX.Y.Z. That is what lets `go install fdb.dev/cmd/frl@vX.Y.Z`
-# resolve the exact same version the binary reports.
-TAG_PREFIX="cmd/frl/"
+# frl is a package of the root module, so a release is the project's tag
+# vX.Y.Z, the same tag `go install fdb.dev/cmd/frl@vX.Y.Z` resolves. v0.1.0
+# shipped frl from a nested module under the tag cmd/frl/v0.1.0; that release
+# stays installable, so both tag forms are accepted (TAG_FORMS, tag_of).
+LEGACY_TAG_PREFIX="cmd/frl/"
+TAG_FORMS="root legacy"
 
 # Default resolved in main() (needs $HOME, which set -u would trip on if unset).
 INSTALL_DIR="${FRL_INSTALL_DIR:-}"
@@ -114,8 +116,10 @@ parse_args() {
         esac
         shift
     done
-    # Accept v0.1.0, 0.1.0, or the full tag cmd/frl/v0.1.0.
-    VERSION="${VERSION#"$TAG_PREFIX"}"
+    # Accept v0.1.0, 0.1.0, or the legacy full tag cmd/frl/v0.1.0.
+    case "$VERSION" in
+        "$LEGACY_TAG_PREFIX"*) VERSION="${VERSION#"$LEGACY_TAG_PREFIX"}"; TAG_FORMS=legacy ;;
+    esac
     case "$VERSION" in
         latest|v*) ;;
         *) VERSION="v$VERSION" ;;
@@ -169,13 +173,18 @@ resolve_version() {
        Or build from source: go install fdb.dev/cmd/frl@latest"
     fi
 
-    # Newest stable cmd/frl/v* release. The API returns releases newest-first;
-    # take the first stable-looking tag (the [0-9.]* pattern stops at the
-    # hyphen in -rc/-beta prereleases, so those never match).
+    # Newest stable release, in either tag form. The API returns releases
+    # newest-first; take the first stable-looking tag (the [0-9.]* pattern
+    # stops at the hyphen in -rc/-beta prereleases, so those never match, and
+    # the tag must be exactly vX.Y.Z or cmd/frl/vX.Y.Z).
     tags=$(grep -o '"tag_name"[^,]*' "$releases")
-    VERSION=$(printf '%s\n' "$tags" |
-        sed -n 's|.*"'"$TAG_PREFIX"'\(v[0-9][0-9.]*\)".*|\1|p' |
+    latest=$(printf '%s\n' "$tags" |
+        sed -n 's|.*"tag_name"[^"]*"\(\('"$LEGACY_TAG_PREFIX"'\)\{0,1\}v[0-9][0-9.]*\)".*|\1|p' |
         head -n1)
+    case "$latest" in
+        "$LEGACY_TAG_PREFIX"*) VERSION="${latest#"$LEGACY_TAG_PREFIX"}"; TAG_FORMS=legacy ;;
+        *) VERSION="$latest"; TAG_FORMS=root ;;
+    esac
 
     if [ -z "$VERSION" ]; then
         if [ -z "$tags" ]; then
@@ -185,7 +194,7 @@ resolve_version() {
        Build from source instead (same binary, needs the Go toolchain):
          go install fdb.dev/cmd/frl@latest"
         fi
-        die "$REPO_URL has releases, but none tagged ${TAG_PREFIX}vX.Y.Z --
+        die "$REPO_URL has releases, but none tagged vX.Y.Z (or ${LEGACY_TAG_PREFIX}vX.Y.Z) --
        the frl CLI has not been released from this repository yet.
        Build from source instead: go install fdb.dev/cmd/frl@latest"
     fi
@@ -201,24 +210,38 @@ make_workdir() {
     trap 'exit 130' INT TERM
 }
 
+# tag_of <form>: $VERSION's release tag in one of the two tag forms.
+tag_of() {
+    case "$1" in
+        root)   printf '%s' "$VERSION" ;;
+        legacy) printf '%s%s' "$LEGACY_TAG_PREFIX" "$VERSION" ;;
+    esac
+}
+
 download_and_verify() {
     ASSET="frl_${VERSION}_${OS}_${ARCH}.tar.gz"
 
-    # GitHub accepts the slashed tag raw in download URLs; fall back to the
-    # %2F-encoded form just in case.
-    base_raw="$REPO_URL/releases/download/${TAG_PREFIX}${VERSION}"
-    base_enc="$REPO_URL/releases/download/$(printf '%s' "$TAG_PREFIX" | sed 's|/|%2F|g')${VERSION}"
-
+    # Each candidate tag in turn: an explicit --version does not say which form
+    # its release was published under (v0.1.0 is cmd/frl/v0.1.0, later ones are
+    # vX.Y.Z). GitHub accepts a slashed tag raw in download URLs; the
+    # %2F-encoded form is the fallback. checksums.txt comes from the release
+    # that served the asset.
     info "downloading $ASSET"
-    if ! fetch "$base_raw/$ASSET" "$WORK_DIR/$ASSET" 2>/dev/null; then
-        fetch "$base_enc/$ASSET" "$WORK_DIR/$ASSET" ||
-            die "download failed: $base_raw/$ASSET
+    base=""
+    tried=""
+    for form in $TAG_FORMS; do
+        tag=$(tag_of "$form")
+        raw="$REPO_URL/releases/download/$tag"
+        enc="$REPO_URL/releases/download/$(printf '%s' "$tag" | sed 's|/|%2F|g')"
+        if fetch "$raw/$ASSET" "$WORK_DIR/$ASSET" 2>/dev/null; then base="$raw"; break; fi
+        if [ "$enc" != "$raw" ] && fetch "$enc/$ASSET" "$WORK_DIR/$ASSET" 2>/dev/null; then base="$enc"; break; fi
+        tried="$tried
+         $raw/$ASSET"
+    done
+    [ -n "$base" ] || die "download failed:$tried
        Does the release exist for ${OS}/${ARCH}? See $REPO_URL/releases"
-    fi
-    if ! fetch "$base_raw/checksums.txt" "$WORK_DIR/checksums.txt" 2>/dev/null; then
-        fetch "$base_enc/checksums.txt" "$WORK_DIR/checksums.txt" ||
-            die "download failed: checksums.txt (refusing to install an unverified binary)"
-    fi
+    fetch "$base/checksums.txt" "$WORK_DIR/checksums.txt" ||
+        die "download failed: checksums.txt (refusing to install an unverified binary)"
 
     want=$(awk -v a="$ASSET" '$2 == a { print $1 }' "$WORK_DIR/checksums.txt")
     [ -n "$want" ] || die "no entry for $ASSET in checksums.txt"

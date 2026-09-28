@@ -66,7 +66,7 @@ func TestFDB_MultiOuterResidual_NotDroppedToUnboundLeg(t *testing.T) {
 			"CREATE TABLE bb (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_multiresid/s WITH TEMPLATE multiresid_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_multiresid?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_MULTIRESID?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -115,7 +115,7 @@ func TestFDB_GroupByCount_ResidualNotDropped(t *testing.T) {
 			"CREATE TABLE t (id BIGINT, fk BIGINT, k BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_gbcount/s WITH TEMPLATE gbcount_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_gbcount?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_GBCOUNT?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

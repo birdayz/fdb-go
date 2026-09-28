@@ -23,6 +23,7 @@ package query
 // signal, and it is the only one available for this class of defect.
 
 import (
+	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -38,6 +39,18 @@ import (
 // on which the stored-row and DML-target mappers disagree, plus a self
 // reference.
 func scanRowFixture(t *testing.T) *recordlayer.RecordMetaData {
+	t.Helper()
+	md, err := scanRowFixtureBuild(t, false)
+	if err != nil {
+		t.Fatalf("build metadata: %v", err)
+	}
+	return md
+}
+
+// scanRowFixtureBuild builds the fixture, with an unsigned column U when asked.
+// Record metadata refuses unsigned fields as Java's validateDataTypes does, so
+// that variant is expected to fail to build.
+func scanRowFixtureBuild(t *testing.T, withUnsigned bool) (*recordlayer.RecordMetaData, error) {
 	t.Helper()
 	rep := descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum()
 	opt := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
@@ -69,27 +82,30 @@ func scanRowFixture(t *testing.T) *recordlayer.RecordMetaData {
 				{Name: proto.String("TAGS"), Number: proto.Int32(3), Label: rep, Type: str},
 				// nested message: field NAMES and record identity are the axis.
 				{Name: proto.String("N"), Number: proto.Int32(4), Label: opt, Type: msg, TypeName: tn("NESTED")},
-				// unsigned: the authoritative mapper carries it as LONG.
-				{Name: proto.String("U"), Number: proto.Int32(5), Label: opt, Type: u64},
 				// self-referencing message: no cycle guard blows the stack.
 				{Name: proto.String("TREE"), Number: proto.Int32(6), Label: opt, Type: msg, TypeName: tn("NODE")},
 			}},
-			{Name: proto.String("UnionDescriptor"), Field: []*descriptorpb.FieldDescriptorProto{
+			{Name: proto.String("RecordTypeUnion"), Field: []*descriptorpb.FieldDescriptorProto{
 				{Name: proto.String("_T"), Number: proto.Int32(1), Label: opt, Type: msg, TypeName: tn("T")},
 			}},
 		},
+	}
+	if withUnsigned {
+		for _, m := range fdp.MessageType {
+			if m.GetName() == "T" {
+				m.Field = append(m.Field, &descriptorpb.FieldDescriptorProto{Name: proto.String("U"), Number: proto.Int32(5), Label: opt, Type: u64})
+			}
+		}
 	}
 	fd, err := protodesc.NewFile(fdp, nil)
 	if err != nil {
 		t.Fatalf("NewFile: %v", err)
 	}
 	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(fd)
-	builder.GetRecordType("T").SetPrimaryKey(recordlayer.Field("ID"))
-	md, err := builder.Build()
-	if err != nil {
-		t.Fatalf("build metadata: %v", err)
+	if rt := builder.GetRecordTypes()["T"]; rt != nil {
+		rt.PrimaryKey = recordlayer.Field("ID")
 	}
-	return md
+	return builder.Build()
 }
 
 func TestLogicalScanRowIsTheStoredRow(t *testing.T) {
@@ -187,14 +203,13 @@ func TestLogicalScanRowIsTheStoredRow(t *testing.T) {
 		}
 	})
 
-	t.Run("unsigned_scalar_is_long", func(t *testing.T) {
-		f, ok := byName["U"]
-		if !ok {
-			t.Fatalf("no U column in %v", row.Fields)
-		}
-		if f.FieldType.Code() != values.TypeCodeLong {
-			t.Errorf("uint64 column = %v, want LONG (the runtime materializer"+
-				" emits int64 for it)", f.FieldType)
+	// An unsigned column never reaches a scan row: record metadata refuses it,
+	// as Java's RecordMetaDataBuilder.validateDataTypes does (the mapper's
+	// unsigned arm stays covered by the values-level scalar-shape tests).
+	t.Run("unsigned_column_is_refused_by_metadata", func(t *testing.T) {
+		_, err := scanRowFixtureBuild(t, true)
+		if err == nil || !strings.Contains(err.Error(), "Field U in message fdb.test.scanrow.T has illegal unsigned type UINT64") {
+			t.Fatalf("want Java's unsigned-type refusal, got %v", err)
 		}
 	})
 

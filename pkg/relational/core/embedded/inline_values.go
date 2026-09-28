@@ -390,7 +390,9 @@ func parsedInlineValuesScopeSource(
 	if err != nil {
 		return semantic.ScopeSource{}, false
 	}
-	return inlineValuesScopeSource(source)
+	scopeSource, ok := inlineValuesScopeSource(source)
+	scopeSource.UnqualifiedOutput = item.InlineTableDefinition() == nil
+	return scopeSource, ok
 }
 
 func selectHasInlineValuesSource(sq *selectQuery) bool {

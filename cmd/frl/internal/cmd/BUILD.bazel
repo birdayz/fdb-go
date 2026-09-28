@@ -109,6 +109,7 @@ go_test(
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
         "//pkg/relational/core/embedded",
+        "//pkg/relational/core/functions",
         "//pkg/testcontainers/foundationdb",
         "@com_github_spf13_cobra//:cobra",
         "@org_golang_google_protobuf//proto",

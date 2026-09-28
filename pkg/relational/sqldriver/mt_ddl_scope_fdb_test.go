@@ -17,6 +17,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/relational/api"
@@ -84,7 +85,7 @@ func mtDDLAssertTemplate42501(t *testing.T, what string, err error, wantSession 
 // mtDDLOpen opens a connection to dbPath, optionally with the restriction on.
 func mtDDLOpen(t *testing.T, dbPath string, restrict bool) *sql.DB {
 	t.Helper()
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), clusterFilePath)
 	if restrict {
 		dsn += "&restrict_ddl_to_session_database=true"
 	}
@@ -104,8 +105,10 @@ func TestFDB_RestrictDDLToSessionDatabase(t *testing.T) {
 	ctx := context.Background()
 
 	const (
-		home    = "/mt_ddl_home"
-		foreign = "/mt_ddl_foreign"
+		// The spellings CREATE DATABASE stores (unquoted paths fold whole);
+		// the refusals and catalog rows name these.
+		home    = "/MT_DDL_HOME"
+		foreign = "/MT_DDL_FOREIGN"
 	)
 
 	setup := openTestDB(t, home)
@@ -125,8 +128,9 @@ func TestFDB_RestrictDDLToSessionDatabase(t *testing.T) {
 		_, err := db.ExecContext(ctx, "DROP DATABASE "+foreign)
 		mtDDLAssert42501(t, "DROP DATABASE /foreign", err, home, foreign)
 
+		// Written lower case: the refusal names the path as DDL folds it.
 		_, err = db.ExecContext(ctx, "CREATE DATABASE /mt_ddl_intruder")
-		mtDDLAssert42501(t, "CREATE DATABASE /other", err, home, "/mt_ddl_intruder")
+		mtDDLAssert42501(t, "CREATE DATABASE /other", err, home, "/MT_DDL_INTRUDER")
 
 		_, err = db.ExecContext(ctx, "DROP SCHEMA "+foreign+"/victim")
 		mtDDLAssert42501(t, "DROP SCHEMA /foreign/victim", err, home, foreign)
@@ -152,13 +156,16 @@ func TestFDB_RestrictDDLToSessionDatabase(t *testing.T) {
 	t.Run("restricted_allows_own_database_ddl", func(t *testing.T) {
 		db := mtDDLOpen(t, home, true)
 
-		// Unqualified and fully-qualified forms of the connection's OWN
+		// Unqualified and fully-qualified CREATE SCHEMA in the connection's OWN
 		// database both pass — the check runs on the RESOLVED path, so the
 		// unqualified form resolves to the session database and is allowed.
+		// DROP SCHEMA takes a path in Java (a bare uid is 42F63 whatever the
+		// connection's database, DdlVisitor.java:598-600), so the bare schema
+		// is dropped by its path.
 		mwjoMustExec(t, db, ctx, "CREATE SCHEMA "+home+"/own_qualified WITH TEMPLATE mt_ddl_tmpl")
 		mwjoMustExec(t, db, ctx, "DROP SCHEMA "+home+"/own_qualified")
 		mwjoMustExec(t, db, ctx, "CREATE SCHEMA own_bare WITH TEMPLATE mt_ddl_tmpl")
-		mwjoMustExec(t, db, ctx, "DROP SCHEMA own_bare")
+		mwjoMustExec(t, db, ctx, "DROP SCHEMA "+home+"/own_bare")
 
 		// Containment, not equality: a database nested under the session's own
 		// path is inside the tenant's scope.
@@ -173,7 +180,7 @@ func TestFDB_RestrictDDLToSessionDatabase(t *testing.T) {
 		db := mtDDLOpen(t, home, true)
 		const lookalike = home + "_lookalike"
 		_, err := db.ExecContext(ctx, "CREATE DATABASE "+lookalike)
-		mtDDLAssert42501(t, "CREATE DATABASE lookalike", err, home, lookalike)
+		mtDDLAssert42501(t, "CREATE DATABASE lookalike", err, home, strings.ToUpper(lookalike)) // the whole path folds
 	})
 
 	// Schema-template DDL bypassed the restriction entirely: both handlers
@@ -203,7 +210,7 @@ func TestFDB_RestrictDDLToSessionDatabase(t *testing.T) {
 
 	// The Java-parity default. This is a CONTRACT, not an accident.
 	t.Run("unrestricted_is_java_parity", func(t *testing.T) {
-		const target = "/mt_ddl_parity_target"
+		const target = "/MT_DDL_PARITY_TARGET"
 		db := mtDDLOpen(t, home, false)
 
 		// Cross-database CREATE/DROP DATABASE from a foreign connection: Java
@@ -239,8 +246,8 @@ func TestFDB_RestrictDDLSurvivesDSNMutation(t *testing.T) {
 	ctx := context.Background()
 
 	const (
-		home    = "/mt_freeze_home"
-		foreign = "/mt_freeze_foreign"
+		home    = "/MT_FREEZE_HOME"
+		foreign = "/MT_FREEZE_FOREIGN"
 	)
 
 	setup := openTestDB(t, home)
@@ -249,8 +256,7 @@ func TestFDB_RestrictDDLSurvivesDSNMutation(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+foreign)
 	t.Cleanup(func() { _, _ = setup.ExecContext(ctx, "DROP DATABASE "+foreign) })
 
-	dsnStr := fmt.Sprintf("fdbsql://%s?cluster_file=%s&restrict_ddl_to_session_database=true",
-		home, clusterFilePath)
+	dsnStr := fmt.Sprintf("fdbsql://%s?cluster_file=%s&restrict_ddl_to_session_database=true", strings.ToUpper(home), clusterFilePath)
 	var d sqldriver.Driver
 	connector, err := d.OpenConnector(dsnStr)
 	if err != nil {

@@ -1002,6 +1002,89 @@ func TestProjectionPlan_Construction(t *testing.T) {
 	}
 }
 
+// TestProjectionPlan_ReportsItsProgramsCorrelations pins Java's
+// RecordQueryMapPlan.computeCorrelatedToWithoutChildren
+// (resultValue.getCorrelatedTo()): a projected column reading an outer
+// quantifier is this node's own dependency. The empty default made a physical
+// projection over a lateral leg look self-contained, so a join above it could
+// be placed where that quantifier is unbound.
+func TestProjectionPlan_ReportsItsProgramsCorrelations(t *testing.T) {
+	t.Parallel()
+	outer := values.NamedCorrelationIdentifier("W")
+	outerRow := values.NewRecordType("w", false, []values.Field{{Name: "F", FieldType: values.NotNullLong, Ordinal: 0}})
+	outerRoot, err := values.NewQuantifiedObjectValue(outer, outerRow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outerField, err := values.ResolveFieldOrdinals(outerRoot, []int{0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	correlated := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlan([]values.Value{outerField}, stub("Inner"))
+	})
+	if _, reported := correlated.GetCorrelatedToWithoutChildren()[outer]; !reported {
+		t.Fatalf("projection reading W reports %v, want W", correlated.GetCorrelatedToWithoutChildren())
+	}
+	constant := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlan([]values.Value{values.NewBooleanValue(true)}, stub("Inner"))
+	})
+	if got := constant.GetCorrelatedToWithoutChildren(); len(got) != 0 {
+		t.Fatalf("a constant projection reports %v, want nothing", got)
+	}
+}
+
+// TestMapAndStreamingAggPlans_ReportTheirValuesCorrelations pins Java's
+// RecordQueryMapPlan.computeCorrelatedToWithoutChildren (the result value)
+// and RecordQueryStreamingAggregationPlan's (the grouping key and aggregate
+// values): each arm, a map's result value, a grouping key, and an aggregate
+// operand, reads the outer W and must report it; the constant forms report
+// nothing.
+func TestMapAndStreamingAggPlans_ReportTheirValuesCorrelations(t *testing.T) {
+	t.Parallel()
+	outer := values.NamedCorrelationIdentifier("W")
+	outerRow := values.NewRecordType("w", false, []values.Field{{Name: "F", FieldType: values.NotNullLong, Ordinal: 0}})
+	outerRoot, err := values.NewQuantifiedObjectValue(outer, outerRow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outerField, err := values.ResolveFieldOrdinals(outerRoot, []int{0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, plan := range map[string]interface {
+		GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{}
+	}{
+		"map result value": mustChecked(t, func() (*RecordQueryMapPlan, error) {
+			return NewRecordQueryMapPlan(stub("Inner"), outerField)
+		}),
+		"grouping key": mustChecked(t, func() (*RecordQueryStreamingAggregationPlan, error) {
+			return NewRecordQueryStreamingAggregationPlan(stub("Inner"), []values.Value{outerField}, nil)
+		}),
+		"aggregate operand": mustChecked(t, func() (*RecordQueryStreamingAggregationPlan, error) {
+			return NewRecordQueryStreamingAggregationPlan(stub("Inner"), nil,
+				[]expressions.AggregateSpec{{Function: expressions.AggSum, Operand: outerField}})
+		}),
+	} {
+		if _, reported := plan.GetCorrelatedToWithoutChildren()[outer]; !reported {
+			t.Errorf("%s reading W reports %v, want W", name, plan.GetCorrelatedToWithoutChildren())
+		}
+	}
+	constantMap := mustChecked(t, func() (*RecordQueryMapPlan, error) {
+		return NewRecordQueryMapPlan(stub("Inner"), values.NewBooleanValue(true))
+	})
+	if got := constantMap.GetCorrelatedToWithoutChildren(); len(got) != 0 {
+		t.Errorf("a constant map reports %v, want nothing", got)
+	}
+	countStar := mustChecked(t, func() (*RecordQueryStreamingAggregationPlan, error) {
+		return NewRecordQueryStreamingAggregationPlan(stub("Inner"), nil,
+			[]expressions.AggregateSpec{{Function: expressions.AggCount}})
+	})
+	if got := countStar.GetCorrelatedToWithoutChildren(); len(got) != 0 {
+		t.Errorf("an ungrouped COUNT(*) reports %v, want nothing", got)
+	}
+}
+
 func TestProjectionPlan_DefensiveCopy(t *testing.T) {
 	t.Parallel()
 	originalProjection := testField(t, "id", values.NotNullLong)

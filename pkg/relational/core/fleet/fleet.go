@@ -64,7 +64,8 @@ const (
 	OutcomeSkipped Outcome = "skipped"
 	// OutcomeBuilt means at least one index was driven to READABLE.
 	OutcomeBuilt Outcome = "built"
-	// OutcomeNoWork means the store had no DISABLED/WRITE_ONLY index.
+	// OutcomeNoWork means the store had no DISABLED/WRITE_ONLY index, or every
+	// such index was published by another builder before its session ran.
 	OutcomeNoWork Outcome = "no-work"
 	// OutcomeFailed means this target errored. Other targets still ran.
 	OutcomeFailed Outcome = "failed"
@@ -99,6 +100,12 @@ type Options struct {
 	// Progress, when non-nil, receives one Event per target. Calls are
 	// serialised, so the callback does not need to be goroutine-safe.
 	Progress func(Event)
+	// Serializer is the serializer the targets' user stores are opened with,
+	// as the SQL driver opens them (embedded's serializerFromOptions; an
+	// encrypting tenant's carries its key manager). Nil opens them without
+	// one: every clear or compressed record still reads, and an encrypted one
+	// fails the target ("this serializer cannot decrypt") with nothing written.
+	Serializer *recordlayer.TransformedRecordSerializer
 }
 
 // DefaultConcurrency is deliberately small: fan-out is background maintenance

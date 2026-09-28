@@ -72,11 +72,22 @@ func TestTranslatePrimaryKeyToValues(t *testing.T) {
 	if TranslatePrimaryKeyToValues(VersionKey(), nil, rowType) != nil {
 		t.Fatal("a version PK must abstain (nil)")
 	}
-	// A nested RecordTypeKey must abstain: translating to a bare
-	// RecordTypeValue would drop the nested field, so RecordTypeKey().Nest(Field("x"))
-	// and RecordTypeKey().Nest(Field("y")) would translate identically → wrong dedup.
+	// RecordTypeKey().Nest(f) is Java's concat(recordType(), f): it translates
+	// as the Then it is, both columns kept, so two such keys over different
+	// fields never conflate; a field the row lacks abstains.
+	nestedType1 := TranslatePrimaryKeyToValues(RecordTypeKey().Nest(Field("ID")), nil, rowType)
+	if !valuesSlicesStructurallyEqual(nestedType1, prefixed) {
+		t.Fatalf("RecordTypeKey().Nest(ID) = %v, want concat(recordType(), ID) = %v", nestedType1, prefixed)
+	}
+	nestedTypeLower := TranslatePrimaryKeyToValues(RecordTypeKey().Nest(Field("id")), nil, rowType)
+	if len(nestedTypeLower) != 2 {
+		t.Fatalf("RecordTypeKey().Nest(id) = %v, want two values: the comparison below is vacuous against nil", nestedTypeLower)
+	}
+	if valuesSlicesStructurallyEqual(nestedType1, nestedTypeLower) {
+		t.Fatal("RecordTypeKey().Nest over two different fields must not translate alike")
+	}
 	if TranslatePrimaryKeyToValues(RecordTypeKey().Nest(Field("x")), nil, rowType) != nil {
-		t.Fatal("a nested RecordTypeKey PK must abstain (nil) — else structurally-different nested PKs conflate → dropped rows")
+		t.Fatal("a PK over a field the row lacks must abstain (nil)")
 	}
 	if TranslatePrimaryKeyToValues(nil, nil, rowType) != nil {
 		t.Fatal("nil PK must return nil")

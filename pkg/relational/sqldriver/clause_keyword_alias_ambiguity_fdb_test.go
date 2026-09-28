@@ -50,7 +50,7 @@ func openClauseKeywordDB(t *testing.T) *sql.DB {
 		"CREATE TABLE t (id BIGINT, g BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_clausekw/s WITH TEMPLATE clausekw_t")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///testdb_clausekw?cluster_file=%s&schema=s", clusterFilePath))
+		fmt.Sprintf("fdbsql:///TESTDB_CLAUSEKW?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

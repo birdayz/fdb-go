@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"fmt"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -184,7 +186,33 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 	tryMultiAggregateIntersection(call, gb, candidates, scanTypes, innerFilterPreds)
 }
 
+// projectAggregateResultToGroupBy publishes the aggregate scan as the
+// GroupBy's row — and, for an ungrouped GroupBy, as its one row. An ungrouped
+// aggregate answers exactly one row (the streaming aggregation emits it over
+// an empty input; Java ranges a null-on-empty quantifier over an ungrouped
+// GroupByExpression, LogicalOperator.java:462-464), while its index holds no
+// entry for a table that never had a row. The scan is extended with the row of
+// NULLs when it yields none, Java's `AISCAN … | ON EMPTY NULL`.
 func projectAggregateResultToGroupBy(
+	aggPlan plans.RecordQueryPlan,
+	groupBy *expressions.GroupByExpression,
+) (plans.RecordQueryPlan, error) {
+	published, err := publishAggregateResultAsGroupByRow(aggPlan, groupBy)
+	if err != nil || len(groupBy.GetGroupingKeys()) != 0 {
+		return published, err
+	}
+	row, ok := published.GetResultValue().Type().(*values.RecordType)
+	if !ok {
+		return nil, fmt.Errorf("ungrouped aggregate scan publishes %v, not a record", published.GetResultValue().Type())
+	}
+	nulls := make([]values.RecordConstructorField, len(row.Fields))
+	for i, f := range row.Fields {
+		nulls[i] = values.RecordConstructorField{Name: f.Name, Value: values.NewNullValue(f.FieldType)}
+	}
+	return plans.NewRecordQueryDefaultOnEmptyPlan(published, values.NewRawRecordConstructorValue(nulls...))
+}
+
+func publishAggregateResultAsGroupByRow(
 	aggPlan plans.RecordQueryPlan,
 	groupBy *expressions.GroupByExpression,
 ) (plans.RecordQueryPlan, error) {
@@ -1067,6 +1095,18 @@ func aggregateIndexResultType(cand *AggregateIndexMatchCandidate) (values.Type, 
 			return nil, false
 		}
 		if _, ok := values.JavaAggregateResultCode(cand.aggFunction.String(), operand.Code()); !ok {
+			return nil, false
+		}
+		result := values.WithNullability(operand, true)
+		if _, err := values.SnapshotExactType(result); err != nil {
+			return nil, false
+		}
+		return result, true
+	case expressions.AggMinEver, expressions.AggMaxEver:
+		// The index-only aggregates keep their operand's type, nullable
+		// (IndexOnlyAggregateValue; the GroupBy row types them the same way).
+		operand, ok := aggregateIndexOperandType(cand)
+		if !ok {
 			return nil, false
 		}
 		result := values.WithNullability(operand, true)

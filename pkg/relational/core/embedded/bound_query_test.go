@@ -210,9 +210,16 @@ func TestBoundPrimaryUnnestIdentityPrecedesValues(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		filter, ok := bound.plan.(*logical.LogicalFilter)
+		// The primary is the general FROM-item unnest, so the block is
+		// Project(Filter(Unnest)); the property is the filter's and the
+		// unnest's, whatever projects them.
+		root := bound.plan
+		if project, isProject := root.(*logical.LogicalProject); isProject {
+			root = project.Input
+		}
+		filter, ok := root.(*logical.LogicalFilter)
 		if !ok {
-			t.Fatalf("primary array plan = %T", bound.plan)
+			t.Fatalf("primary array plan = %T (%s)", bound.plan, bound.plan.Explain(""))
 		}
 		unnest, ok := filter.Input.(*logical.LogicalUnnest)
 		if !ok {

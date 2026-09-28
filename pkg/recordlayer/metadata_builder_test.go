@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"errors"
+	"strconv"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -56,19 +57,22 @@ var _ = Describe("RecordMetaDataBuilder advanced features", func() {
 			Expect(err).To(HaveOccurred())
 			var mdErr *MetaDataError
 			Expect(errors.As(err, &mdErr)).To(BeTrue())
-			Expect(mdErr.Message).To(ContainSubstring("reuses subspace key"))
+			Expect(mdErr.Message).To(Equal("Same subspace key old_idx used by index new_idx and former index old_idx"))
 		})
 
-		It("removing non-existent index is a no-op", func() {
+		It("removing a non-existent index is refused, as Java refuses it", func() {
 			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			builder.RemoveIndex("nonexistent")
 
+			// RecordMetaDataBuilder.removeIndex throws; Go's Build returns it.
 			md, err := builder.Build()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(md.GetFormerIndexes()).To(BeEmpty())
+			Expect(md).To(BeNil())
+			var mdErr *MetaDataError
+			Expect(errors.As(err, &mdErr)).To(BeTrue())
+			Expect(mdErr.Message).To(Equal("No index named nonexistent defined"))
 		})
 
 		It("removes universal index", func() {
@@ -292,20 +296,25 @@ var _ = Describe("RecordMetaDataBuilder advanced features", func() {
 		})
 	})
 
-	Describe("GetRecordType panics on unknown type", func() {
-		It("panics with MetaDataError for nonexistent type", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
-			Expect(func() {
-				builder.GetRecordType("NonExistentType")
-			}).To(PanicWith(MatchError(ContainSubstring("unknown record type"))))
-		})
-
-		It("panics with MetaDataError for empty string", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
-			Expect(func() {
-				builder.GetRecordType("")
-			}).To(PanicWith(MatchError(ContainSubstring("unknown record type"))))
-		})
+	Describe("GetRecordType of an unknown type", func() {
+		// Java's getRecordType throws MetaDataException "Unknown record type
+		// <name>" at the call (RecordMetaDataBuilder.java:986-996); Go records it
+		// in program order and Build returns it.
+		for _, name := range []string{"NonExistentType", ""} {
+			It("is Build's fault for "+strconv.Quote(name), func() {
+				builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				Expect(func() {
+					builder.GetRecordType(name).SetPrimaryKey(Field("order_id"))
+				}).NotTo(Panic())
+				builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+				builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+				builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+				_, err := builder.Build()
+				var mdErr *MetaDataError
+				Expect(errors.As(err, &mdErr)).To(BeTrue(), "%T: %v", err, err)
+				Expect(mdErr.Message).To(Equal("Unknown record type " + name))
+			})
+		}
 	})
 
 	Describe("RecordType accessor methods", func() {

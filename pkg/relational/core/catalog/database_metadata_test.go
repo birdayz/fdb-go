@@ -16,7 +16,7 @@ func newTestDatabaseMetaData(t testing.TB) (*CatalogDatabaseMetaData, *InMemoryS
 	c, tx, tmpl := newSeededCatalog(t, "demo")
 	md := NewCatalogDatabaseMetaData(CatalogDatabaseMetaDataOptions{
 		StoreCatalog: c,
-		URL:          "fdbsql:///test",
+		URL:          "fdbsql:///TEST",
 		UserName:     "testuser",
 		DriverName:   "fdbsql",
 	})
@@ -43,7 +43,7 @@ func collectStrings(t *testing.T, rs api.ResultSet, ncols int) [][]string {
 func TestDatabaseMetaData_ProductIdentification(t *testing.T) {
 	t.Parallel()
 	md, _, _, _ := newTestDatabaseMetaData(t)
-	if md.URL() != "fdbsql:///test" {
+	if md.URL() != "fdbsql:///TEST" {
 		t.Errorf("URL = %q", md.URL())
 	}
 	if md.UserName() != "testuser" {
@@ -77,7 +77,7 @@ func TestDatabaseMetaData_SchemasAllListed(t *testing.T) {
 	t.Parallel()
 	md, c, tx, tmpl := newTestDatabaseMetaData(t)
 	for _, p := range [][2]string{{"/a", "s1"}, {"/a", "s2"}, {"/b", "s1"}} {
-		if err := c.SaveSchema(tx, tmpl.GenerateSchema(p[0], p[1]), true); err != nil {
+		if err := c.SaveSchema(tx, tmpl.GenerateSchema(p[0], p[1]), true, api.SchemaExistsError); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -109,7 +109,7 @@ func TestDatabaseMetaData_SchemasFilteredPatterns(t *testing.T) {
 		{"/dev", "public"},
 		{"/dev", "private"},
 	} {
-		if err := c.SaveSchema(tx, tmpl.GenerateSchema(p[0], p[1]), true); err != nil {
+		if err := c.SaveSchema(tx, tmpl.GenerateSchema(p[0], p[1]), true, api.SchemaExistsError); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -158,7 +158,7 @@ func TestDatabaseMetaData_SchemasFilteredPatterns(t *testing.T) {
 func TestDatabaseMetaData_Tables(t *testing.T) {
 	t.Parallel()
 	md, c, tx, tmpl := newTestDatabaseMetaData(t)
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 	rs, err := md.Tables(context.Background(), "", "", "", nil)
@@ -183,7 +183,7 @@ func TestDatabaseMetaData_Tables(t *testing.T) {
 func TestDatabaseMetaData_TablesFiltered(t *testing.T) {
 	t.Parallel()
 	md, c, tx, tmpl := newTestDatabaseMetaData(t)
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 	rs, err := md.Tables(context.Background(), "", "", "Or%", nil)
@@ -204,7 +204,7 @@ func TestDatabaseMetaData_TablesFiltered(t *testing.T) {
 func TestDatabaseMetaData_TablesTypeFilterExcludesNonTable(t *testing.T) {
 	t.Parallel()
 	md, c, tx, tmpl := newTestDatabaseMetaData(t)
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 	// Asking for only VIEW rows → empty.
@@ -221,7 +221,7 @@ func TestDatabaseMetaData_TablesTypeFilterExcludesNonTable(t *testing.T) {
 func TestDatabaseMetaData_PrimaryKeys(t *testing.T) {
 	t.Parallel()
 	md, c, tx, tmpl := newTestDatabaseMetaData(t)
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 	rs, err := md.PrimaryKeys(context.Background(), "/db", "s", "Order")
@@ -253,7 +253,7 @@ func TestDatabaseMetaData_PrimaryKeys(t *testing.T) {
 func TestDatabaseMetaData_PrimaryKeysMissingTable(t *testing.T) {
 	t.Parallel()
 	md, c, tx, tmpl := newTestDatabaseMetaData(t)
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 	_, err := md.PrimaryKeys(context.Background(), "/db", "s", "NotATable")
@@ -269,7 +269,7 @@ func TestDatabaseMetaData_PrimaryKeysMissingTable(t *testing.T) {
 func TestDatabaseMetaData_Columns(t *testing.T) {
 	t.Parallel()
 	md, c, tx, tmpl := newTestDatabaseMetaData(t)
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 	rs, err := md.Columns(context.Background(), "", "", "Order", "")
@@ -339,7 +339,7 @@ func TestDatabaseMetaData_Columns(t *testing.T) {
 func TestDatabaseMetaData_ColumnsFilteredByColumnName(t *testing.T) {
 	t.Parallel()
 	md, c, tx, tmpl := newTestDatabaseMetaData(t)
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 	rs, err := md.Columns(context.Background(), "", "", "Order", "price")
@@ -360,7 +360,7 @@ func TestDatabaseMetaData_ColumnsFilteredByColumnName(t *testing.T) {
 func TestDatabaseMetaData_IndexInfoEmpty(t *testing.T) {
 	t.Parallel()
 	md, c, tx, tmpl := newTestDatabaseMetaData(t)
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 	// No indexes on the demo template → empty result.
@@ -403,7 +403,7 @@ func TestDatabaseMetaData_IndexInfoUniqueFilter(t *testing.T) {
 	if err := c.SchemaTemplateCatalog().CreateTemplate(tx, tmpl); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 
@@ -456,7 +456,7 @@ func TestDatabaseMetaData_IndexInfoUniqueFilter(t *testing.T) {
 func TestDatabaseMetaData_IndexInfoMissingTable(t *testing.T) {
 	t.Parallel()
 	md, c, tx, tmpl := newTestDatabaseMetaData(t)
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 	_, err := md.IndexInfo(context.Background(), "/db", "s", "NotATable", false, false)

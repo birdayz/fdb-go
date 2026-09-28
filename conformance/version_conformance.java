@@ -17,6 +17,15 @@ import java.util.HashMap;
 import java.util.Map;
 
 class VersionSteps extends ConformanceBase {
+    @ConformanceStep("incompleteVersionstampConversion")
+    public Map<String, Object> incompleteVersionstampConversion(int local) {
+        var version = FDBRecordVersion.incomplete(local);
+        var stamp = version.toVersionstamp();
+        var back = FDBRecordVersion.fromVersionstamp(stamp);
+        return Map.of("bytes", Base64.getEncoder().encodeToString(stamp.getBytes()),
+            "complete", back.isComplete(), "local", back.getLocalVersion());
+    }
+
     private static RecordMetaData createVersionedMetaData() {
         RecordMetaDataBuilder builder = RecordMetaData.newBuilder()
             .setRecords(RecordLayerDemo.getDescriptor());

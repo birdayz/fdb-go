@@ -1139,6 +1139,19 @@ func TestBindPostAggregateValueRejectsForeignExactField(t *testing.T) {
 	if _, err := bindPostAggregateValue(foreign, agg, output); err == nil {
 		t.Fatal("foreign exact field bypassed the aggregate output contract")
 	}
+	// An enclosing block's field pulls up unchanged (Expressions.pullUp's
+	// constantAliases); without the recorded outer correlation it is foreign.
+	outer := exactTestField(t, exactTestQOV(t, "OUTER", sourceType), 1)
+	if _, err := bindPostAggregateValue(outer, agg, output); err == nil {
+		t.Fatal("an outer field bound with no OuterCorrelations recorded")
+	}
+	agg.OuterCorrelations = map[values.CorrelationIdentifier]struct{}{values.NamedCorrelationIdentifier("OUTER"): {}}
+	if bound, err := bindPostAggregateValue(outer, agg, output); err != nil || bound != outer {
+		t.Fatalf("an outer field must pull up unchanged, got %v, %v", bound, err)
+	}
+	if _, err := bindPostAggregateValue(foreign, agg, output); err == nil {
+		t.Fatal("a local non-grouping field bound once OuterCorrelations was set")
+	}
 	wrongOutput := exactTestQOV(t, "AGG_OUT_BAD", &values.RecordType{Fields: []values.Field{
 		{Name: "ID", Ordinal: 0, FieldType: values.NullableString},
 	}})

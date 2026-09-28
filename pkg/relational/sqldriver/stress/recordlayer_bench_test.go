@@ -67,7 +67,7 @@ func TestFDB_SQLParallelConnections(t *testing.T) {
 				wg.Add(1)
 				go func(from, to int) {
 					defer wg.Done()
-					dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=main", dbPath, clusterFilePath)
+					dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=MAIN", strings.ToUpper(dbPath), clusterFilePath)
 					workerDB, openErr := sql.Open("fdbsql", dsn)
 					if openErr != nil {
 						firstErr.Record(openErr)

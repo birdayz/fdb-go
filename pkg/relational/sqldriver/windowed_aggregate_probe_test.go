@@ -32,7 +32,7 @@ func TestFDB_WindowedAggregateRejected(t *testing.T) {
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE winagg CREATE TABLE t (id BIGINT, grp BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_winagg/s WITH TEMPLATE winagg")
-	dsn := fmt.Sprintf("fdbsql:///testdb_winagg?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_WINAGG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

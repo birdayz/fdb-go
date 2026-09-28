@@ -4,6 +4,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/query/logical"
+	"fdb.dev/pkg/relational/core/rowstruct"
 )
 
 // boundUnnestCollection reads the semantic binding, never the diagnostic source
@@ -40,7 +41,7 @@ func boundUnnestBindingError(u *logical.LogicalUnnest) error {
 		if _, ok := values.AsQuantifiedObjectValue(collection); ok {
 			if typ := u.CorrelatedCollection.Type(); typ != nil {
 				if _, err := values.SnapshotExactType(typ); err == nil && typ.Code() != values.TypeCodeArray {
-					return api.NewError(api.ErrCodeInvalidColumnReference, "join correlation can occur only on a column of repeated (array) type")
+					return rowstruct.NonArrayCorrelationError(typ)
 				}
 			}
 		}
@@ -149,6 +150,23 @@ func resolveBoundSeedCollection(root values.Value, u *logical.LogicalUnnest, off
 		return nil
 	}
 	return collection
+}
+
+// standaloneUnnestLeg is op when it is a standalone correlated unnest with an
+// exact binding — a block's first FROM item over an enclosing query's array
+// (translateCorrelatedPrimaryUnnest), which Java makes the block's first
+// ForEach quantifier — and nil otherwise. As a leg its Explode flows the bare
+// element, or the element/ordinal pair under AT: the fields
+// boundUnnestLegColumns names, never a flat run of the element's members.
+func standaloneUnnestLeg(op logical.LogicalOperator) *logical.LogicalUnnest {
+	u, ok := op.(*logical.LogicalUnnest)
+	if !ok || !u.EnclosingOwner {
+		return nil
+	}
+	if owner, _, _ := boundUnnestCollection(u); owner == nil {
+		return nil
+	}
+	return u
 }
 
 // boundUnnestLegColumns is the AS-then-AT row the lateral seed actually emits.

@@ -25,8 +25,28 @@ import (
 // directly above itself. A plan leaving the builder never carries an
 // OnExistsSubqueries; the translator asserts that rather than consuming it.
 
+// innerSpineStartsAtUnnest reports that the left-deep INNER join spine under
+// j bottoms out at a standalone LogicalUnnest: a block's first FROM item that
+// names an enclosing query's array.
+func innerSpineStartsAtUnnest(j *logical.LogicalJoin) bool {
+	var leaf logical.LogicalOperator = j
+	for {
+		nj, isJoin := leaf.(*logical.LogicalJoin)
+		if !isJoin {
+			break
+		}
+		if nj.Kind != logical.JoinInner {
+			return false
+		}
+		leaf = nj.Left
+	}
+	_, isUnnest := leaf.(*logical.LogicalUnnest)
+	return isUnnest
+}
+
 // foldInnerOnExistsIntoWhere moves every ON-clause EXISTS of the block's FROM
-// tree to where Java's WHERE fold puts it. The WHERE filter sits directly
+// tree, and the whole ON of an explicit INNER join over a lateral unnest, to
+// where Java's WHERE fold puts it. The WHERE filter sits directly
 // above the FROM join (visitWhere wraps the join before any shell is added),
 // so the unary spine from op is followed to its bottom. A filter over an
 // inner cluster takes the cluster's lift (markers AND-ed BEFORE the WHERE's
@@ -60,7 +80,7 @@ func foldInnerOnExistsIntoWhere(op logical.LogicalOperator) (logical.LogicalOper
 			if err != nil {
 				return nil, err
 			}
-			if len(subqueries) == 0 {
+			if len(markers) == 0 && len(subqueries) == 0 {
 				f.Input = lifted
 				return op, nil
 			}
@@ -88,7 +108,7 @@ func foldInnerOnExistsIntoWhere(op logical.LogicalOperator) (logical.LogicalOper
 				if err != nil {
 					return nil, err
 				}
-				if len(subqueries) == 0 {
+				if len(markers) == 0 && len(subqueries) == 0 {
 					if lifted == join {
 						return op, nil
 					}
@@ -146,6 +166,23 @@ func liftClusterOnExists(j *logical.LogicalJoin) (*logical.LogicalJoin, []predic
 			return foldOuterJoinLegs(nj)
 		}
 		var ownMarkers []predicates.QueryPredicate
+		// An explicit INNER join whose right side is a lateral unnest (`w JOIN
+		// w.arr AS v ON c`), or whose inner spine starts at a block's first FROM
+		// item that is a standalone unnest over an enclosing query's array
+		// (`EXISTS (SELECT v FROM w.arr AS v JOIN h ON c)`), lifts its whole ON
+		// into the WHERE: Java's visitInnerJoin conjoins it into the one flat
+		// select's WHERE, which is what makes the join the comma form `FROM w,
+		// w.arr AS v WHERE c`, and the unnest translation reads no ON of its
+		// own.
+		_, unnestLeg := nj.Right.(*logical.LogicalUnnest)
+		unnestLeg = unnestLeg || innerSpineStartsAtUnnest(nj)
+		liftWholeOn := unnestLeg && nj.OnPredicate != nil
+		if liftWholeOn {
+			if _, isPred := nj.OnPredicate.(predicates.QueryPredicate); !isPred {
+				return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+					"an unnest join's ON clause without a predicate tree cannot be folded into the WHERE")
+			}
+		}
 		if len(nj.OnExistsSubqueries) > 0 {
 			onPred, isPred := nj.OnPredicate.(predicates.QueryPredicate)
 			if !isPred {
@@ -170,13 +207,21 @@ func liftClusterOnExists(j *logical.LogicalJoin) (*logical.LogicalJoin, []predic
 		if err != nil {
 			return nil, err
 		}
-		if left == nj.Left && right == nj.Right && len(nj.OnExistsSubqueries) == 0 {
+		if left == nj.Left && right == nj.Right && len(nj.OnExistsSubqueries) == 0 && !liftWholeOn {
 			return op, nil
 		}
 		lifted := *nj
 		lifted.Left = left
 		lifted.Right = right
-		if len(nj.OnExistsSubqueries) > 0 {
+		switch {
+		case liftWholeOn:
+			// Every conjunct, the EXISTS markers among them, in the ON's order.
+			markers = append(markers, conjunctsOf(nj.OnPredicate.(predicates.QueryPredicate))...)
+			subqueries = append(subqueries, nj.OnExistsSubqueries...)
+			lifted.OnPredicate = nil
+			lifted.OnText = ""
+			lifted.OnExistsSubqueries = nil
+		case len(nj.OnExistsSubqueries) > 0:
 			onPred := nj.OnPredicate.(predicates.QueryPredicate)
 			markers = append(markers, ownMarkers...)
 			subqueries = append(subqueries, nj.OnExistsSubqueries...)
@@ -189,17 +234,16 @@ func liftClusterOnExists(j *logical.LogicalJoin) (*logical.LogicalJoin, []predic
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	if len(subqueries) == 0 {
-		return out.(*logical.LogicalJoin), nil, nil, nil
-	}
 	return out.(*logical.LogicalJoin), markers, subqueries, nil
 }
 
-// foldOuterJoinLegs folds the ON-clause EXISTS under an OUTER join in place:
-// each leg that is an inner cluster carrying one becomes a filter directly
-// above that cluster (the cluster's rows are filtered before the outer join
-// null-extends or preserves them, which is exactly what the inner join's ON
-// did), and a leg that is itself an OUTER join recurses. Java absorbs these
+// foldOuterJoinLegs folds the ON-clause EXISTS under an OUTER join in place,
+// and the whole ON of an inner cluster's lateral-unnest leg
+// (liftClusterOnExists): each leg that is an inner cluster carrying either
+// becomes a filter directly above that cluster (the cluster's rows are
+// filtered before the outer join null-extends or preserves them, which is
+// exactly what the inner join's ON did), and a leg that is itself an OUTER join
+// recurses. Java absorbs these
 // ON conditions below the outer join the same way (QueryVisitor
 // .collapseLeftSideOperators). Copies; j itself comes back when nothing
 // changes.
@@ -226,7 +270,7 @@ func foldOuterJoinLegs(j *logical.LogicalJoin) (*logical.LogicalJoin, error) {
 		if err != nil {
 			return nil, err
 		}
-		if len(subqueries) > 0 {
+		if len(markers) > 0 || len(subqueries) > 0 {
 			f := logical.NewFilterWithPredicate(lifted, andOfConjuncts(markers), "")
 			f.ExistsSubqueries = subqueries
 			legs[i] = f

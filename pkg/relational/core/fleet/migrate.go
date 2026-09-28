@@ -7,6 +7,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/catalog"
 	"fdb.dev/pkg/relational/core/ddl"
 	"fdb.dev/pkg/relational/core/keyspace"
 )
@@ -38,20 +39,46 @@ func NextTemplateVersion(ctx context.Context, db *recordlayer.FDBDatabase, cat a
 }
 
 // SaveTemplate persists tmpl as a new template version in ONE catalog
-// transaction.
-//
-// It goes through SaveSchemaTemplateConstantAction rather than the template
-// catalog's CreateTemplate directly, because only the constant action applies
-// the version-monotonicity gate and the metadata-evolution validator;
-// CreateTemplate deliberately applies neither and would happily store a
-// template that no schema could then legally rebind onto.
+// transaction, through the save action (the template catalog's CreateTemplate:
+// the version-monotonicity gate, the relational evolution validator, the
+// version guard, and the carry of a stored template's numbering), and returns
+// the template AS STORED, read back in the same transaction. For a new version
+// of a stored template that differs from tmpl: tmpl holds the numbering its
+// builder gave it, and the stored version keeps the record-type keys, union
+// field numbers and index versions of the stored latest (ws-j-design.md
+// section 4), so a caller must rebind or compare against the returned template.
 //
 // This is the ONE step of a migration that is legitimately fleet-wide and
 // atomic: it writes a single catalog row, independent of tenant count.
-func SaveTemplate(ctx context.Context, db *recordlayer.FDBDatabase, cat api.StoreCatalog, tmpl api.SchemaTemplate) error {
-	return inCatalogTx(ctx, db, func(txn api.Transaction) error {
-		return ddl.NewSaveSchemaTemplateConstantAction(tmpl, cat.SchemaTemplateCatalog()).Execute(txn)
+func SaveTemplate(ctx context.Context, db *recordlayer.FDBDatabase, cat api.StoreCatalog, tmpl api.SchemaTemplate) (api.SchemaTemplate, error) {
+	var stored api.SchemaTemplate
+	err := inCatalogTx(ctx, db, func(txn api.Transaction) error {
+		if err := ddl.NewSaveSchemaTemplateConstantAction(tmpl, cat.SchemaTemplateCatalog()).Execute(txn); err != nil {
+			return err
+		}
+		var err error
+		stored, err = cat.SchemaTemplateCatalog().LoadSchemaTemplateAtVersion(txn, tmpl.MetadataName(), tmpl.Version())
+		return err
 	})
+	if err != nil {
+		return nil, err
+	}
+	return stored, nil
+}
+
+// RestoreTemplateVersion restores a dropped template version from md, its stored
+// MetaData bytes (a backup of the version's catalog row), for the schemas still
+// bound to it: the one way out for a schema whose bound version DROP SCHEMA
+// TEMPLATE removed. ks is the keyspace the deployment opens its schemas with;
+// every bound store's header is read through it. The restore refuses a version
+// that is stored or that no schema binds, a bound store whose header is missing
+// or above md's metadata version, and bytes that are not one history with every
+// stored version of the template (RecordLayerStoreCatalog.RestoreTemplateVersion
+// states the checks; RFC-257 WS-J section 2). Java has no restore.
+func RestoreTemplateVersion(ctx context.Context, db *recordlayer.FDBDatabase, cat *catalog.RecordLayerStoreCatalog,
+	ks *keyspace.RelationalKeyspace, templateName string, version int, md []byte,
+) error {
+	return cat.RestoreTemplateVersion(ctx, db, ks, templateName, version, md)
 }
 
 // Migrate rebinds every target onto template version targetVersion, ONE
@@ -228,7 +255,7 @@ func MigrateTemplate(
 		return Result{}, err
 	}
 	if !saved {
-		if err := SaveTemplate(ctx, db, cat, tmpl); err != nil {
+		if _, err := SaveTemplate(ctx, db, cat, tmpl); err != nil {
 			return Result{}, fmt.Errorf("save template %s@%d: %w", tmpl.MetadataName(), tmpl.Version(), err)
 		}
 	}

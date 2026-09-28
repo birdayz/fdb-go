@@ -104,6 +104,16 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 	// shape. The ExistentialValuePredicate in the predicate list
 	// evaluates to TRUE when FirstOrDefault returns a non-null row.
 	if quants[1].Kind() == expressions.QuantifierExistential {
+		// A null-on-empty OUTER here is a LEFT OUTER's null-supplying leg that
+		// partitioning paired with an existential correlated to it (`… LEFT
+		// JOIN e … WHERE NOT EXISTS (… e.id …)`). The existential lowering has
+		// no DefaultOnEmpty for its outer, and ignoring the flag would drop the
+		// null-extended rows; decline, so the partitions that keep the leg
+		// beside its preserved partner — where the extension IS implemented —
+		// carry the query.
+		if quants[0].IsNullOnEmpty() {
+			return
+		}
 		r.implementExistentialSelect(call, sel, quants)
 		return
 	}
@@ -290,21 +300,31 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 	// memo even when today's cost model happens to choose the strict alternative.
 	leftNeedsRightEvaluation := leftDepsRight || leftStrictSingle
 	rightNeedsLeftEvaluation := rightDepsLeft || rightStrictSingle
+	// A leg that FLOWS a scalar (not a record) is joined by a FlatMap, as every
+	// join is in Java (ImplementNestedLoopJoinRule yields
+	// RecordQueryFlatMapPlan): the FlatMap binds each quantifier's alias to its
+	// flowed object itself, where the materialized NLJ binds each leg as a
+	// record and would read a scalar as its one-slot row. The flowed type is the
+	// property, whatever produces it — a scalar Explode (a lateral unnest whose
+	// collection an enclosing query owns, `EXISTS (SELECT 1 FROM h, w.arr AS
+	// v)`) or a filter or projection over one. (An uncorrelated constant or
+	// parameter list never gets here: the IN-join rule owns it, above.) The
+	// scalar leg becomes the FlatMap's inner, re-evaluated
+	// per outer row; when it is a LEFT OUTER's preserved leg, which cannot move
+	// inside, it stays the outer and the other leg becomes the inner. (FULL
+	// OUTER returned above: it has only the materialized implementation.)
+	switch {
+	case scalarFlowingLeg(quants[1]) && !leftNeedsRightEvaluation:
+		rightNeedsLeftEvaluation = true
+	case scalarFlowingLeg(quants[0]) && !rightNeedsLeftEvaluation:
+		if canSwap {
+			leftNeedsRightEvaluation = true
+		} else {
+			rightNeedsLeftEvaluation = true
+		}
+	}
 	requiresFlatMap := leftNeedsRightEvaluation || rightNeedsLeftEvaluation
 	if !requiresFlatMap {
-		// RewriteOuterJoinRule represents LEFT OUTER as an INNER Select whose
-		// null-supplying edge is marked NullOnEmpty.  That marker has meaning only
-		// in the correlated FlatMap lowering below, where DefaultOnEmpty wraps the
-		// inner before it is mapped.  An ordinary materialized NLJ neither reads
-		// nor preserves the edge flag: yielding one here with JoinInner would drop
-		// unmatched preserved rows (and could materialize a still-correlated inner
-		// once with its outer binding absent).  Decline this rewritten alternative;
-		// the original JoinLeftOuter member remains in the memo and is the exact
-		// materialized fail-closed fallback when the correlated rebase cannot be
-		// proven.
-		if quants[0].IsNullOnEmpty() || quants[1].IsNullOnEmpty() {
-			return
-		}
 		// Incomplete-bipartition guard: if BOTH legs reference (via re-exposed
 		// merge seeds) the SAME external table that is neither leg's own provided
 		// alias, the two legs are connected through a sibling that this bipartition
@@ -337,6 +357,50 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 			}
 		}
 		if sharesExcludedSibling {
+			// Both legs read one alias neither provides. As a materialized NLJ
+			// this select is only valid INSIDE the operator that binds that
+			// alias, which a materialized plan cannot demand. A FlatMap can:
+			// its inner is evaluated per outer row, with the enclosing binding
+			// in scope, and it reports that correlation upward so it is never a
+			// root with the alias unbound. It is Java's only implementation
+			// of a binary select (ImplementNestedLoopJoinRule yields nothing
+			// else), and for two lateral siblings correlated to one earlier
+			// leg (`FROM w, (… w.f …) AS d, (… w.f …) AS e`, the lower {d, e})
+			// it is the only one.
+			// No leg is strict-single here (such a leg requires the FlatMap
+			// above). The left leg is the outer of this orientation; an INNER
+			// select is also fired swapped. A null-on-empty leg is one
+			// RewriteOuterJoinRule produced (its ON conjuncts inside the leg),
+			// which a partition of that rule's output select can separate from
+			// the leg it reads — on either side; an output select whose inner
+			// reads the preserved leg takes the correlated branch below. The
+			// lowering wraps the flagged leg in DefaultOnEmpty where it sits, as
+			// outer or as inner: bag-equivalent orientations, which Java
+			// enumerates through its matcher (exactlyInAnyOrder,
+			// ImplementNestedLoopJoinRule.java:99) and wraps in
+			// planPartitionToPhysical. A LEFT OUTER input — the select the
+			// rewrite starts from, which stays a member beside its output (`…
+			// (… w.f …) AS a LEFT JOIN (… w.id …) AS b ON b.k > 1`) — has its
+			// ON conjuncts in its own predicate list, and the lowering filters
+			// them below the DefaultOnEmpty; the materialized join cannot bind
+			// the sibling both legs read, so this is its implementation.
+			r.yieldGeneralFlatMap(call, sel,
+				leftPlan, rightPlan, leftCorr, rightCorr,
+				leftExpr, rightExpr, leftRef, rightRef, joinType,
+				quants[0].IsNullOnEmpty(), quants[1].IsNullOnEmpty(), false)
+			return
+		}
+		// RewriteOuterJoinRule represents LEFT OUTER as an INNER Select whose
+		// null-supplying edge is marked NullOnEmpty.  That marker has meaning only
+		// in the correlated FlatMap lowering, where DefaultOnEmpty wraps the leg
+		// before it is mapped (the arm above, and the correlated branch below).
+		// An ordinary materialized NLJ neither reads nor preserves the edge flag:
+		// yielding one here with JoinInner would drop unmatched preserved rows
+		// (and could materialize a still-correlated inner once with its outer
+		// binding absent).  Decline this rewritten alternative; the original
+		// JoinLeftOuter member remains in the memo and is the exact materialized
+		// fail-closed fallback when the correlated rebase cannot be proven.
+		if quants[0].IsNullOnEmpty() || quants[1].IsNullOnEmpty() {
 			return
 		}
 		// NOTE: a ChildrenAsSet-swapped firing (fireExprRuleOnMember) reuses
@@ -385,22 +449,45 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 	}
 
 	// Correlated FlatMap: for PartitionBinarySelectRule / RewriteOuterJoinRule output
-	// where predicates are absorbed into sub-Selects creating correlation. The inner's
-	// null-on-empty flag (set by RewriteOuterJoinRule for LEFT OUTER) drives the
-	// DefaultOnEmpty null-extension inside yieldGeneralFlatMap.
+	// where predicates are absorbed into sub-Selects creating correlation. Each leg's
+	// null-on-empty flag drives a DefaultOnEmpty null-extension of THAT leg inside
+	// yieldGeneralFlatMap, whichever side it lands on — Java's planPartitionToPhysical
+	// wraps the outer exactly as it wraps the inner. RewriteOuterJoinRule marks a LEFT
+	// OUTER's inner; a partition that makes that quantifier the OUTER of a lower with
+	// a leg correlated to it lands here with the flag on the outer
+	// (TestImplementNestedLoopJoin_NullOnEmptyOuterIsExtended drives it). The SQL
+	// shapes around it take other routes: `… LEFT JOIN e … WHERE NOT EXISTS (… e.id
+	// …)` is declined by the existential lowering and plans with the DefaultOnEmpty
+	// the simple-select rule puts over a one-quantifier lower, and `… LEFT JOIN e …,
+	// (SELECT … e.x …) AS f` binds e inside the preserved side's FlatMap, whose inner
+	// carries its own DefaultOnEmpty.
 	if leftNeedsRightEvaluation && !rightNeedsLeftEvaluation && canSwap {
 		r.yieldGeneralFlatMap(call, sel,
 			rightPlan, leftPlan, rightCorr, leftCorr,
 			rightExpr, leftExpr, rightRef, leftRef, joinType,
+			selQuantifierIsNullOnEmpty(sel, rightCorr),
 			selQuantifierIsNullOnEmpty(sel, leftCorr),
 			leftStrictSingle)
 	} else if rightNeedsLeftEvaluation && !leftNeedsRightEvaluation {
 		r.yieldGeneralFlatMap(call, sel,
 			leftPlan, rightPlan, leftCorr, rightCorr,
 			leftExpr, rightExpr, leftRef, rightRef, joinType,
+			selQuantifierIsNullOnEmpty(sel, leftCorr),
 			selQuantifierIsNullOnEmpty(sel, rightCorr),
 			rightStrictSingle)
 	}
+}
+
+// scalarFlowingLeg reports whether a join leg's quantifier flows a value that
+// is not a record — what the materialized NLJ cannot bind (see the FlatMap
+// choice in onMatch). An unknown flowed type is not claimed scalar.
+func scalarFlowingLeg(q expressions.Quantifier) bool {
+	t, err := q.GetFlowedObjectType()
+	if err != nil || t == nil {
+		return false
+	}
+	_, isRecord := t.(*values.RecordType)
+	return !isRecord
 }
 
 func referenceIsCorrelatedTo(ref *expressions.Reference, targetAlias values.CorrelationIdentifier) bool {
@@ -422,6 +509,15 @@ func referenceIsCorrelatedTo(ref *expressions.Reference, targetAlias values.Corr
 // on visited expressions (RelationalExpression members are pointers → comparable):
 // a fixed depth bound would silently return an INCOMPLETE alias set for a deeply
 // nested leg, re-introducing the exact unbound-buried-table 0-row bug class.
+//
+// A physical join binds its legs' rows under its EXECUTABLE aliases
+// (GetOuterAlias/GetInnerAlias), which need not be its memo quantifiers' — a
+// materialized NLJ over a dissolved LEFT box ranges fresh quantifiers (`q$N`)
+// while its rows, and every predicate and correlation over them, are `D`/`E`.
+// Those aliases are bound inside the leg as surely as the quantifiers are, so
+// they are provided too; left out, a leg reading the box's `E` looked
+// correlated to nothing the box provides, and the box itself looked correlated
+// to its own `D`/`E` from outside.
 func physicalProvidedAliases(expr expressions.RelationalExpression, ownAlias values.CorrelationIdentifier) map[values.CorrelationIdentifier]struct{} {
 	out := map[values.CorrelationIdentifier]struct{}{ownAlias: {}}
 	visited := map[expressions.RelationalExpression]struct{}{}
@@ -434,6 +530,16 @@ func physicalProvidedAliases(expr expressions.RelationalExpression, ownAlias val
 			return
 		}
 		visited[e] = struct{}{}
+		if ph, ok := e.(physicalPlanExpression); ok {
+			switch join := ph.GetRecordQueryPlan().(type) {
+			case *plans.RecordQueryNestedLoopJoinPlan:
+				out[join.GetOuterAlias()] = struct{}{}
+				out[join.GetInnerAlias()] = struct{}{}
+			case *plans.RecordQueryFlatMapPlan:
+				out[join.GetOuterAlias()] = struct{}{}
+				out[join.GetInnerAlias()] = struct{}{}
+			}
+		}
 		for _, q := range e.GetQuantifiers() {
 			out[q.GetAlias()] = struct{}{}
 			r := q.GetRangesOver()
@@ -507,14 +613,14 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 	outerExpr, innerExpr expressions.RelationalExpression,
 	outerSourceRef, innerSourceRef *expressions.Reference,
 	joinType plans.JoinType,
-	innerNullOnEmpty bool,
+	outerNullOnEmpty, innerNullOnEmpty bool,
 	innerStrictSingle bool,
 ) {
 	flatMapPlan, _, _, ok, err := buildCorrelatedFlatMapPlan(
 		call,
 		flattenAndPredicates(sel.GetPredicates()), sel.GetResultValue(),
 		outerPlan, innerPlan, outerCorr, innerCorr, outerExpr, innerExpr,
-		joinType, innerNullOnEmpty, innerStrictSingle, false,
+		joinType, outerNullOnEmpty, innerNullOnEmpty, innerStrictSingle, false,
 	)
 	if err != nil {
 		call.Fail(err)
@@ -538,7 +644,7 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 			flattenAndPredicates(sel.GetPredicates()), sel.GetResultValue(),
 			outerPhysical.GetRecordQueryPlan(), innerPhysical.GetRecordQueryPlan(),
 			outerCorr, innerCorr, orderedOuter, orderedInner,
-			joinType, innerNullOnEmpty, innerStrictSingle, true,
+			joinType, outerNullOnEmpty, innerNullOnEmpty, innerStrictSingle, true,
 		)
 		if err != nil {
 			return nil, err
@@ -1698,6 +1804,44 @@ func normalizeCorrelatedScanComparisonPlan(
 		}
 		return rebuiltPlan, true, nil
 
+	case *plans.RecordQueryProjectionPlan:
+		// A lateral derived leg's body projects over the filter that reads the
+		// outer (`FROM w, w.arr AS v AT p, (SELECT h.id FROM h WHERE h.f = p +
+		// 9) AS d`), and its own program may read the outer too (`SELECT p +
+		// h.f AS x FROM h`). Recurse, relink over the normalized child, then
+		// re-root the program's reads of the outer exactly as a filter's are.
+		inner, childChanged, err := normalizeCorrelatedScanComparisonPlan(
+			typed.GetInner(), sourceAlias, target)
+		if err != nil {
+			return nil, false, err
+		}
+		projection := typed
+		if childChanged {
+			relinked, relinkErr := relinkProjectionOverChild(typed, inner)
+			if relinkErr != nil {
+				return nil, false, relinkErr
+			}
+			projection = relinked
+		}
+		translated, programChanged, err := projection.WithTranslatedProjections(
+			func(value values.Value) (values.Value, error) {
+				normalized, normalizeErr := values.TranslateLogicalSourceNameNormalization(
+					value, sourceAlias, target)
+				if normalizeErr != nil {
+					return nil, normalizeErr
+				}
+				return values.TranslateProjectionInputNameNormalizationToCorrelation(
+					normalized, sourceAlias, target.FlowedType())
+			})
+		if err != nil {
+			return nil, false, fmt.Errorf(
+				"correlated Projection program source %s: %w", sourceAlias.Name(), err)
+		}
+		if !childChanged && !programChanged {
+			return plan, false, nil
+		}
+		return translated, true, nil
+
 	case *plans.RecordQueryPredicatesFilterPlan:
 		// A residual which the data-access matcher could not absorb is a
 		// transparent row operator around the correlated probe. Normalize both
@@ -1720,6 +1864,15 @@ func normalizeCorrelatedScanComparisonPlan(
 				func(value values.Value) (values.Value, error) {
 					normalized, normalizeErr := values.TranslateLogicalSourceNameNormalization(
 						value, sourceAlias, target)
+					if normalizeErr != nil {
+						return nil, normalizeErr
+					}
+					// An AT unnest's pair is declared with its AS/AT aliases as
+					// field names while its Explode flows the positional _0/_1
+					// row; the FlatMap binds that row to the pair by position,
+					// and a correlated read here must name the same row.
+					normalized, normalizeErr = values.TranslateProjectionInputNameNormalizationToCorrelation(
+						normalized, sourceAlias, target.FlowedType())
 					if normalizeErr == nil && normalized != value {
 						predicateChanged = true
 					}
@@ -1741,6 +1894,38 @@ func normalizeCorrelatedScanComparisonPlan(
 			return nil, false, err
 		}
 		return rebuilt, true, nil
+
+	case *plans.RecordQueryStreamingAggregationPlan:
+		// A lateral derived table that groups the rows its WHERE probes with the
+		// outer (`FROM a, (SELECT q, MAX(idb) FROM b WHERE q > a.x GROUP BY q)`)
+		// stores that probe below the aggregation. The aggregation is transparent
+		// to it: recurse, then relink over the normalized input at the input
+		// edge's own memo stage. WithQuantifiers re-anchors the grouping keys and
+		// aggregate operands onto the new input's exact carrier, which a
+		// projection relinked above an unrelinked aggregation would leave pinned
+		// to the input the aggregation was built over.
+		inner, changed, err := normalizeCorrelatedScanComparisonPlan(
+			typed.GetInner(), sourceAlias, target)
+		if err != nil || !changed {
+			return plan, changed, err
+		}
+		quantifier := typed.GetInnerQuantifier()
+		stage := expressions.StageCanonical
+		if ref := quantifier.GetRangesOver(); ref != nil {
+			stage = ref.Stage()
+		}
+		rebuilt, err := typed.WithQuantifiers([]expressions.Quantifier{
+			expressions.RebuildQuantifier(quantifier, expressions.FinalOfAtStage(inner, stage)),
+		})
+		if err != nil {
+			return nil, false, fmt.Errorf("correlated streaming aggregation comparison relink: %w", err)
+		}
+		rebuiltPlan, ok := rebuilt.(*plans.RecordQueryStreamingAggregationPlan)
+		if !ok {
+			return nil, false, fmt.Errorf(
+				"correlated streaming aggregation comparison relink produced %T", rebuilt)
+		}
+		return rebuiltPlan, true, nil
 
 	case *plans.RecordQueryFlatMapPlan:
 		// A gathered join can itself be the correlated inner chosen by an
@@ -1797,6 +1982,35 @@ func normalizeCorrelatedScanComparisonPlan(
 	default:
 		return plan, false, nil
 	}
+}
+
+// relinkProjectionOverChild rebuilds a projection over a normalized child at
+// the child edge's own memo stage, the TypeFilter arm's relink.
+func relinkProjectionOverChild(
+	projection *plans.RecordQueryProjectionPlan,
+	child plans.RecordQueryPlan,
+) (*plans.RecordQueryProjectionPlan, error) {
+	quantifiers := projection.GetQuantifiers()
+	if len(quantifiers) != 1 {
+		return nil, fmt.Errorf(
+			"correlated Projection comparison normalization: got %d quantifiers, want 1",
+			len(quantifiers))
+	}
+	stage := expressions.StageCanonical
+	if ref := quantifiers[0].GetRangesOver(); ref != nil {
+		stage = ref.Stage()
+	}
+	quantifiers[0] = expressions.RebuildQuantifier(
+		quantifiers[0], expressions.FinalOfAtStage(child, stage))
+	rebuilt, err := projection.WithQuantifiers(quantifiers)
+	if err != nil {
+		return nil, fmt.Errorf("correlated Projection comparison relink: %w", err)
+	}
+	rebuiltPlan, ok := rebuilt.(*plans.RecordQueryProjectionPlan)
+	if !ok {
+		return nil, fmt.Errorf("correlated Projection comparison relink produced %T", rebuilt)
+	}
+	return rebuiltPlan, nil
 }
 
 // normalizeCorrelatedScanComparisonPlanForOuterLayout normalizes every exact
@@ -2093,7 +2307,7 @@ func buildCorrelatedFlatMapPlan(
 	outerCorr, innerCorr values.CorrelationIdentifier,
 	outerExpr, innerExpr expressions.RelationalExpression,
 	joinType plans.JoinType,
-	innerNullOnEmpty bool,
+	outerNullOnEmpty, innerNullOnEmpty bool,
 	innerStrictSingle bool,
 	freezeLegs bool,
 ) (*plans.RecordQueryFlatMapPlan, expressions.Quantifier, expressions.Quantifier, bool, error) {
@@ -2108,6 +2322,34 @@ func buildCorrelatedFlatMapPlan(
 		} else {
 			outerPreds = append(outerPreds, pred)
 		}
+	}
+
+	memoizeLeg := call.MemoizeExpression
+	if freezeLegs {
+		memoizeLeg = call.MemoizeFinalExpression
+	}
+
+	// A null-on-empty OUTER null-extends exactly as a null-on-empty inner does
+	// below (Java's planPartitionToPhysical treats the two legs alike):
+	// DefaultOnEmpty first, the outer's select-level predicates filtering ABOVE
+	// it. It is wrapped HERE, before anything reads the outer's layout, because
+	// the wrapped plan is the outer this FlatMap binds: the inner's correlated
+	// references are normalized against its carrier below, so the inner reads
+	// the row the executor hands it — the NULL row DefaultOnEmpty supplies for an
+	// empty input included.
+	outerLayoutNullSupplying := false
+	if outerNullOnEmpty {
+		baseQ := expressions.NamedForEachQuantifier(outerCorr, memoizeLeg(outerExpr))
+		flowedType, err := baseQ.GetFlowedObjectType()
+		if err != nil {
+			return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
+		}
+		doePlan, err := plans.NewRecordQueryDefaultOnEmptyPlanFromQuantifier(baseQ, values.NewNullValue(flowedType))
+		if err != nil {
+			return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
+		}
+		outerPlan, outerExpr = doePlan, doePlan
+		outerLayoutNullSupplying = true
 	}
 
 	// RFC-153: rebase BURIED-preserved-leg references in the
@@ -2265,10 +2507,6 @@ func buildCorrelatedFlatMapPlan(
 	// The inner base ranges over innerExprForMemo, never innerExpr: when the
 	// buried-leg rebase above rewrote the inner, the memoized expression must
 	// report the REBASED correlations (see the block comment at that rebase).
-	memoizeLeg := call.MemoizeExpression
-	if freezeLegs {
-		memoizeLeg = call.MemoizeFinalExpression
-	}
 	outerQ := expressions.NamedForEachQuantifier(outerCorr, memoizeLeg(outerExpr))
 	innerQ := expressions.NamedForEachQuantifier(innerCorr, memoizeLeg(innerExprForMemo))
 	// Predicates arrive from the logical join seed, whose source QOV retains a
@@ -2311,24 +2549,35 @@ func buildCorrelatedFlatMapPlan(
 	// is resume-safe across pages (the prior in-memory leftOuter flag re-decided this
 	// from scratch on every resume → spurious null rows / paging that never advanced).
 	// Two sources land here: a quantifier RewriteOuterJoinRule marked null-on-empty
-	// (innerNullOnEmpty), and a directly LEFT-OUTER join type — both are LEFT OUTER and
-	// both lower identically.
+	// (innerNullOnEmpty), and a directly LEFT-OUTER join type — both are LEFT OUTER,
+	// and they differ in where their ON-predicates are.
 	//
-	// The ON-predicates already sit BELOW this boundary (inside the correlated inner
-	// SUBSEL / pushed onto the inner probe), so they filter before the null-fill —
-	// correct LEFT-OUTER semantics.
+	// The rewritten member's ON-predicates already sit BELOW this boundary (inside
+	// the correlated inner SUBSEL / pushed onto the inner probe), so they filter
+	// before the null-fill, and its select-level predicates are WHERE-class.
+	// Predicate placement then follows Java's planPartitionToPhysical: the wrap
+	// (DefaultOnEmpty) comes FIRST, the select-level predicates filter ABOVE it,
+	// seeing the null-extended row and dropping it on a non-matching comparison
+	// (`… LEFT JOIN e ON … WHERE e.fname = 'x'` drops the null-extended rows;
+	// placed below the wrap, the filter ran before the null-fill and the extended
+	// row survived unfiltered — rows Java drops).
 	//
-	// Predicate placement follows Java's planPartitionToPhysical: the wrap
-	// (DefaultOnEmpty) comes FIRST, the select-level predicates filter ABOVE
-	// it. Every select-level predicate reaching a null-on-empty inner is
-	// WHERE-class (the ON-predicates live inside the leg subsel / inner probe),
-	// so it must see the null-extended row and drop it on a non-matching
-	// comparison (`… LEFT JOIN e ON … WHERE e.fname = 'x'` drops the
-	// null-extended rows; placed below the wrap, the filter ran before the
-	// null-fill and the extended row survived unfiltered — rows Java drops). The
-	// strict-single (scalar subquery) wrap keeps its predicates BELOW: they are
-	// the subquery's own correlation, part of the subquery body the
+	// A LEFT-OUTER-typed select (RewriteOuterJoinRule's input, which Java does not
+	// have: its null-on-empty leg's ON conjuncts always live inside that leg) keeps
+	// its ON conjuncts in its own predicate list — every predicate it has is one.
+	// They all filter the inner BELOW the wrap, whichever legs they read: one
+	// reading only the preserved leg empties the inner for that row, which the
+	// wrap then null-extends, as the outer join does. Above the wrap they dropped
+	// the preserved rows the outer join keeps (INNER rows).
+	//
+	// The strict-single (scalar subquery) wrap keeps its predicates BELOW too:
+	// they are the subquery's own correlation, part of the subquery body the
 	// at-most-one-row check applies to.
+	if joinType == plans.JoinLeftOuter && !innerStrictSingle {
+		joinPreds = append(joinPreds, outerPreds...)
+		outerPreds = nil
+	}
+	onPredsBelowWrap := joinType == plans.JoinLeftOuter
 	nullOnEmpty := innerNullOnEmpty || joinType == plans.JoinLeftOuter
 	innerLayoutNullSupplying := false
 	var innerWrapped plans.RecordQueryPlan = innerPlan
@@ -2385,6 +2634,21 @@ func buildCorrelatedFlatMapPlan(
 		innerQ = expressions.NamedForEachQuantifier(innerCorr,
 			call.MemoizeFinalExpression(fodPlan))
 	} else if nullOnEmpty {
+		if onPredsBelowWrap && len(joinPreds) > 0 {
+			// The LEFT-OUTER-typed select's ON conjuncts, below the wrap.
+			fpInnerQ := expressions.NamedForEachQuantifier(innerQ.GetAlias(),
+				call.MemoizeFinalExpression(innerWrapped))
+			filterPlan, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
+				fpInnerQ, joinPreds, innerCorr,
+			)
+			if err != nil {
+				return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
+			}
+			innerWrapped = filterPlan
+			innerQ = expressions.NamedForEachQuantifier(innerCorr,
+				call.MemoizeFinalExpression(filterPlan))
+			joinPreds = nil
+		}
 		// The DefaultOnEmpty is its own cascades expression carrying the live innerQ
 		// edge (RFC-184 W2) — no physicalDefaultOnEmptyWrapper.
 		flowedType, err := innerQ.GetFlowedObjectType()
@@ -2454,14 +2718,11 @@ func buildCorrelatedFlatMapPlan(
 	// diverge. The correlated inner leg is a frozen final singleton (the fod/filter
 	// disentangle), so extraction resolves it faithfully and the correlation the
 	// FlatMap binds is preserved.
-	newFlatMapPlan := plans.NewRecordQueryFlatMapPlanFromQuantifiers
-	if innerLayoutNullSupplying {
-		newFlatMapPlan = plans.NewRecordQueryFlatMapPlanFromQuantifiersWithNullSupplyingInner
-	}
-	flatMapPlan, err := newFlatMapPlan(
+	flatMapPlan, err := plans.NewRecordQueryFlatMapPlanFromQuantifiersWithNullSupplying(
 		outerQ, innerQ,
 		outerCorr, innerCorr,
 		resultValue, false,
+		outerLayoutNullSupplying, innerLayoutNullSupplying,
 	)
 	if err != nil {
 		return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err

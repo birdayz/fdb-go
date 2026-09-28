@@ -32,6 +32,7 @@ go_library(
         "//pkg/relational/api",
         "//pkg/relational/core/functions",
         "//pkg/relational/core/query/logical",
+        "//pkg/relational/core/rowstruct",
         "@org_golang_google_protobuf//reflect/protoreflect",
     ],
 )
@@ -78,6 +79,7 @@ go_test(
         "leg_kind_discriminator_test.go",
         "leg_ref_nested_admission_test.go",
         "name_resolves_in_columns_test.go",
+        "output_label_authorship_test.go",
         "plan_test.go",
         "projection_labels_versus_type_test.go",
         "projection_segments_test.go",
@@ -97,6 +99,7 @@ go_test(
         "unnest_leg_mint_disposition_test.go",
         "unnest_leg_mint_partition_test.go",
         "unnest_seed_test.go",
+        "update_translation_test.go",
     ],
     embed = [":query"],
     deps = [

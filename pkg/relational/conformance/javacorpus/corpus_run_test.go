@@ -5,11 +5,13 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/recordlayer/keystoretest"
 	"fdb.dev/pkg/relational/conformance/javacorpus"
 	"fdb.dev/pkg/relational/conformance/javayamsql"
 	_ "fdb.dev/pkg/relational/sqldriver"
@@ -64,6 +66,35 @@ func TestMain(m *testing.M) {
 // skips everything, so the pass count, the skip count and the per-class
 // breakdown are all asserted: a file that stops running, a skip class that
 // grows, and a gap that quietly changes shape each fail with the delta named.
+// javaWorkingDir builds the directory Java's yaml-tests run in, holding the
+// one file the corpus names by a relative path: serialization-options.yamsql's
+// ENCRYPTION_KEY_STORE, `src/test/resources/serialization-keys.p12`. Java's
+// file holds two 32-byte AES keys, `key-1` and `key-2`, under the password
+// `YAML+SQL`; no key store file may be committed (cmd/secretscan), so an
+// equivalent is written here. The file's records are written and read in this
+// run, so only the aliases, the password and the keys' being distinct matter.
+func javaWorkingDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	resources := filepath.Join(dir, "src", "test", "resources")
+	if err := os.MkdirAll(resources, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	key := func(first byte) []byte {
+		k := make([]byte, 32)
+		for i := range k {
+			k[i] = first + byte(i)
+		}
+		return k
+	}
+	err := keystoretest.WritePKCS12(filepath.Join(resources, "serialization-keys.p12"), "YAML+SQL", "YAML+SQL",
+		[]keystoretest.Entry{{Alias: "key-1", Key: key(0x10)}, {Alias: "key-2", Key: key(0x80)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func TestJavaCorpusRuns(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -79,6 +110,7 @@ func TestJavaCorpusRuns(t *testing.T) {
 		t.Fatalf("list corpus: %v", err)
 	}
 
+	workingDir := javaWorkingDir(t)
 	ledger := &javacorpus.Ledger{}
 
 	// The inner group returns only once every parallel subtest under it has
@@ -93,6 +125,7 @@ func TestJavaCorpusRuns(t *testing.T) {
 				res := javacorpus.Run(ctx, corpus, path, javacorpus.Config{
 					ClusterFile: clusterFilePath,
 					IDPrefix:    fmt.Sprintf("C%d", i),
+					WorkingDir:  workingDir,
 				})
 				ledger.Add(res)
 				if res.Status == javacorpus.StatusFail {
@@ -296,6 +329,13 @@ var maskedClasses = map[javacorpus.SkipClass]string{
 		"(engine-gap:struct-dml, unsupported-DDL:struct-index, function/view causes) or passes. The class " +
 		"stays declared as the declaration-scan fallback for a struct-declaring template failing DDL for " +
 		"a cause the message rules do not name",
+	javacorpus.SkipDDLStructIndex: "EMPTIED by RFC-257 WS-J step 7c: the index generator reads the " +
+		"translated graph, and the class's three carriers build (aggregate-index-tests, subquery-tests, " +
+		"documentation-queries/subqueries-documentation-queries). The class stays declared as the " +
+		"message rule's bucket for a struct-declaring template whose index definition fails",
+	javacorpus.SkipGapStructDML: "EMPTIED by RFC-204 Phase 2: struct literals write and read back, and " +
+		"every carrier passes or moved on to engine-gap:struct-query. Declared for a re-armed struct-DML " +
+		"regression, which gaps.go would book here",
 	javacorpus.SkipCopyBlock: "the only copy_block file is copy-basic.yamsql, skipped earlier by " +
 		"required_clusters: 2 (unsupported:multi-cluster)",
 	javacorpus.SkipVersionGate: "provably unreachable with one version under test: the version is the " +

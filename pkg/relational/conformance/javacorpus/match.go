@@ -270,15 +270,11 @@ func matchField(exp *javayamsql.Value, actual any, sqlType string, rowNum int, c
 
 	// Java has one more arm here, between the tags and the scalar comparisons:
 	// a String expectation against a protobuf EnumValueDescriptor actual
-	// succeeds when the string equals the descriptor's NAME. It is not ported,
-	// because whether it is needed depends on what the Go driver hands back for
-	// an enum column — if that is already the name as a string, matchString
-	// below covers it and the arm is dead weight; if it is an ordinal or a
-	// typed value, the arm is required and its absence is a silent mismatch.
-	// That question is unanswerable today: every corpus file with an enum
-	// column is skipped before a row is compared, so nothing exercises it
-	// either way. Booked under CQ-72 rather than guessed at — an untested arm
-	// written on a hunch is worse than a stated omission.
+	// succeeds when the string equals the descriptor's NAME. It is not ported
+	// because the Go driver hands back an enum cell as its name, a string, so
+	// matchString below is that arm. Measured: `insert-enum.yamsql` compares
+	// `[{'OWNING', 42}]` against an enum column and passes (pinned_ledger_test.go
+	// counts it among the passes); an ordinal or typed value there would fail it.
 
 	u := exp.Untag()
 	switch u.Kind {

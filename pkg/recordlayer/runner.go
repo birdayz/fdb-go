@@ -287,9 +287,10 @@ func (r *FDBDatabaseRunner) runOnce(ctx context.Context, fn func(rtx *FDBRecordC
 	r.db.applyReadSystemKeys(tx.Options())
 
 	recordCtx := &FDBRecordContext{
-		tx:  tx,
-		ctx: ctx,
-		env: r.db.env,
+		tx:       tx,
+		ctx:      ctx,
+		env:      r.db.env,
+		database: r.db,
 	}
 	recordCtx.SetTimer(r.contextTimer())
 
@@ -354,9 +355,10 @@ func (r *FDBDatabaseRunner) OpenContext(ctx context.Context) (*FDBRecordContext,
 	r.db.applyReadSystemKeys(tx.Options())
 
 	recordCtx := &FDBRecordContext{
-		tx:  tx,
-		ctx: ctx,
-		env: r.db.env,
+		tx:       tx,
+		ctx:      ctx,
+		env:      r.db.env,
+		database: r.db,
 	}
 	recordCtx.SetTimer(r.contextTimer())
 

@@ -28,6 +28,8 @@ import (
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/protoname"
+	"fdb.dev/pkg/recordlayer/protoscope"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -821,7 +823,10 @@ func executeVectorIndexScan(
 // presence of a predicate field would kill, at execution, plans the planner is
 // entitled to build and no query can route around.
 func requireReadableQueryIndex(store *recordlayer.FDBRecordStore, idx *recordlayer.Index) error {
-	state := store.GetIndexState(idx.Name)
+	state, err := store.ReadIndexState(idx.Name)
+	if err != nil {
+		return err
+	}
 	if state == recordlayer.IndexStateReadable {
 		if idx.HasFilteringPredicate() {
 			return &FilteredIndexPlanError{IndexName: idx.Name}
@@ -1877,12 +1882,8 @@ func (c *limitEnvelopeCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 			// cursor from this continuation). Cached in terminal so a
 			// contract-violating re-call on THIS instance replays it verbatim
 			// (Java's cached no-next result) instead of re-pulling the inner.
-			contBytes, encErr := encodeLimitContinuation(result.GetContinuation(), c.remOffset, c.remLimit)
-			if encErr != nil {
-				return recordlayer.RecordCursorResult[QueryResult]{}, encErr
-			}
 			res := recordlayer.NewResultNoNext[QueryResult](
-				reason, recordlayer.NewBytesContinuation(contBytes),
+				reason, &limitEnvelopeContinuation{inner: result.GetContinuation(), remOffset: c.remOffset, remLimit: c.remLimit},
 			)
 			c.terminal = &res
 			return res, nil
@@ -1901,11 +1902,9 @@ func (c *limitEnvelopeCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 		if !c.unbounded {
 			c.remLimit--
 		}
-		contBytes, encErr := encodeLimitContinuation(result.GetContinuation(), 0, c.remLimit)
-		if encErr != nil {
-			return recordlayer.RecordCursorResult[QueryResult]{}, encErr
-		}
-		return recordlayer.NewResultWithValue(result.GetValue(), recordlayer.NewBytesContinuation(contBytes)), nil
+		return recordlayer.NewResultWithValue(result.GetValue(), &limitEnvelopeContinuation{
+			inner: result.GetContinuation(), remOffset: 0, remLimit: c.remLimit,
+		}), nil
 	}
 }
 
@@ -1947,6 +1946,23 @@ const limitContVersion byte = 1
 // limitContNilInner marks an absent inner continuation (start-from-begin),
 // distinct from a present-but-empty inner continuation (length 0).
 const limitContNilInner uint32 = 0xFFFFFFFF
+
+// limitEnvelopeContinuation snapshots the window without serializing its child.
+// In particular, a sort's continuation owns the remaining rows: encoding it on
+// every emission would repeatedly serialize the same tail. Like Java's
+// RowLimitedCursor and SkipCursor, retain the immutable continuation object
+// until a consumer requests bytes, independently of cursor advancement/closure.
+type limitEnvelopeContinuation struct {
+	inner     recordlayer.RecordCursorContinuation
+	remOffset int
+	remLimit  int
+}
+
+func (c *limitEnvelopeContinuation) ToBytes() ([]byte, error) {
+	return encodeLimitContinuation(c.inner, c.remOffset, c.remLimit)
+}
+
+func (c *limitEnvelopeContinuation) IsEnd() bool { return false }
 
 func encodeLimitContinuation(innerCont recordlayer.RecordCursorContinuation, remOffset, remLimit int) ([]byte, error) {
 	var innerBytes []byte
@@ -2171,7 +2187,7 @@ func executeDistinct(
 		var hasLast bool
 		if len(continuation) > 0 {
 			var dc gen.DedupContinuation
-			if uerr := dc.UnmarshalVT(continuation); uerr != nil {
+			if uerr := recordlayer.UnmarshalVTAsJava(&dc, continuation); uerr != nil {
 				return nil, fmt.Errorf("invalid streaming-distinct continuation: %w", uerr)
 			}
 			innerCont = dc.GetInnerContinuation()
@@ -2301,7 +2317,7 @@ func executeHashDistinct(
 	innerCont := continuation
 	if len(continuation) > 0 {
 		var dc gen.DistinctHashContinuation
-		if uerr := dc.UnmarshalVT(continuation); uerr != nil {
+		if uerr := recordlayer.UnmarshalVTAsJava(&dc, continuation); uerr != nil {
 			return nil, fmt.Errorf("invalid distinct-hash continuation: %w", uerr)
 		}
 		innerCont = dc.GetInnerContinuation()
@@ -2730,6 +2746,11 @@ func executeProjection(
 		}
 		slots := make([]any, len(projections))
 		var rowCtx any
+		scalar, kindErr := isBareScalarRow(qr.Positional)
+		if kindErr != nil {
+			evalErr = kindErr
+			return qr
+		}
 		if qr.Positional != nil && qr.Positional.Layout != nil {
 			rowCtx, evalErr = frontierRowContext(qr.Positional, evalCtx, posNeedsCtx, inputQOV)
 			if evalErr != nil {
@@ -2740,6 +2761,22 @@ func executeProjection(
 			// ordinal join — a leg reference QOV(leg).col needs its
 			// leg window (unconditional; see executeFilter).
 			rowCtx = legWindowRowContext(qr.Positional, evalCtx, legSpans)
+		} else if qr.Positional != nil && scalar {
+			// A BARE SCALAR input row: a non-ordinal Explode's element, wrapped
+			// in a one-slot transport row (a correlated array as a block's
+			// first FROM item, projected directly: `(SELECT v AS k FROM
+			// w.arr AS v) AS d`). Bind the unwrapped scalar to the input QOV,
+			// exactly as executeFilter does for the same input, so QOV(input)
+			// is the element and not its transport row.
+			layout, layoutErr := p.GetInner().ProvidedOutputLayout()
+			if layoutErr != nil {
+				evalErr = fmt.Errorf("projection scalar input layout: %w", layoutErr)
+				return qr
+			}
+			rowCtx, evalErr = scalarLayoutRowContext(layout, qr.Positional, evalCtx, inputQOV)
+			if evalErr != nil {
+				return qr
+			}
 		} else if qr.Positional != nil {
 			// The non-join frontier flows an authoritative ordinal
 			// row — resolve projections by ordinal (loud on a miss).
@@ -3246,7 +3283,7 @@ func executeFlatMap(
 	var outerCont, innerCont, checkValue []byte
 	if len(continuation) > 0 {
 		var fmc gen.FlatMapContinuation
-		if err := proto.Unmarshal(continuation, &fmc); err != nil {
+		if err := recordlayer.UnmarshalAsJava(continuation, &fmc); err != nil {
 			// Java: RecordCursor.flatMapPipelined —
 			//   throw new RecordCoreException("error parsing continuation", ex).
 			// A corrupt continuation must fail, not silently restart from
@@ -3263,12 +3300,13 @@ func executeFlatMap(
 		return nil, err
 	}
 
-	cursor, err := newFlatMapCursorWithOuterProperties(
+	cursor, err := newFlatMapCursorForPlan(
 		outerCursor, p.GetOuter(), p.GetInner(), store, evalCtx,
 		p.GetOuterAlias(), p.GetInnerAlias(),
 		p.GetResultValue(),
 		nestedProps,
 		p.InheritOuterRecordProperties(),
+		p.NullSupplyingOuter(),
 	)
 	if err != nil {
 		outerCursor.Close()
@@ -3725,6 +3763,15 @@ func executeAggregation(
 	// cursor plus the single in-progress group's partial state, and builds the
 	// aggregate cursor. Mirrors Java's
 	// RecordQueryStreamingAggregationPlan.executePlan().
+	for _, agg := range aggregates {
+		// finalizeGroup has a case per accumulated function and nothing else:
+		// an aggregate it has no accumulator for would come out NULL on every
+		// group. ImplementStreamingAggregationRule never builds such a plan; a
+		// plan arriving another way is refused here, loudly.
+		if !agg.Function.HasStreamingAccumulator() {
+			return nil, fmt.Errorf("streaming aggregation has no accumulator for %s", agg.Function)
+		}
+	}
 	buildAgg := func(aggCont []byte) (recordlayer.RecordCursor[QueryResult], error) {
 		var innerContinuation []byte
 		var priorGroupKey string
@@ -4145,23 +4192,50 @@ func rematerializeProtoScalar(fd protoreflect.FieldDescriptor, value protoreflec
 		return protoreflect.Value{}, fmt.Errorf("executor: copying composite insert value: %w", err)
 	}
 	target := dynamicpb.NewMessage(fd.Message())
-	if err := (proto.UnmarshalOptions{AllowPartial: true}).Unmarshal(wireBytes, target); err != nil {
+	// Read as the target type's record value is read (proto_closed_enums.go): a
+	// closed enum's undeclared number the source held as an unknown field is
+	// not taken back into the field by the re-parse.
+	if err := recordlayer.UnmarshalRecordAsJava(wireBytes, target, true); err != nil {
 		return protoreflect.Value{}, fmt.Errorf("executor: copying composite insert value: %w", err)
 	}
 	return protoreflect.ValueOfMessage(target), nil
 }
 
-// fieldByNameFold resolves a proto field by name, case-insensitively.
-// Computed-row datums key columns by the SQL identifier casing, which
-// need not match the proto descriptor's field-name casing.
-func fieldByNameFold(fields protoreflect.FieldDescriptors, name string) protoreflect.FieldDescriptor {
-	for i := 0; i < fields.Len(); i++ {
-		fd := fields.Get(i)
-		if strings.EqualFold(string(fd.Name()), name) {
-			return fd
-		}
+// updateTargetField is the message and descriptor field an UPDATE assigns,
+// addressed by the transform's resolved ordinals as Java's
+// MessageHelpers.transformMessage addresses targetDescriptor.getFields().get(index),
+// level by level through struct fields. A struct on the way that is NULL is
+// created, as Java's transformation builds the nested message whether or not
+// the current one is null. The descriptor carries storage names
+// (ProtoUtils.toProtoBufCompliantName escapes '.', '$' and a leading '__');
+// each field at an ordinal must be the one the transform names, its user
+// identifier decoded once, or the record is not of the type the statement was
+// planned over.
+func updateTargetField(msg protoreflect.Message, t expressions.UpdateTransform) (protoreflect.Message, protoreflect.FieldDescriptor, error) {
+	if len(t.FieldOrdinals) == 0 || len(t.FieldOrdinals) != len(t.FieldNames) {
+		return nil, nil, fmt.Errorf("executor: update field %q has %d ordinals for %d names", t.FieldPath(), len(t.FieldOrdinals), len(t.FieldNames))
 	}
-	return nil
+	for i, ordinal := range t.FieldOrdinals {
+		fields := msg.Descriptor().Fields()
+		if ordinal < 0 || ordinal >= fields.Len() {
+			return nil, nil, fmt.Errorf("executor: update field %q has ordinal %d outside the descriptor's %d fields", t.FieldPath(), ordinal, fields.Len())
+		}
+		fd := fields.Get(ordinal)
+		if name := protoname.ToUserIdentifier(string(fd.Name())); name != t.FieldNames[i] {
+			return nil, nil, fmt.Errorf("executor: update field %q at ordinal %d is field %q of the descriptor", t.FieldPath(), ordinal, name)
+		}
+		if i == len(t.FieldOrdinals)-1 {
+			return msg, fd, nil
+		}
+		// Only a struct is descended (the resolver's and the plan's rule): not
+		// an array, a map, a UUID or a nullable array's wrapper message.
+		if fd.Kind() != protoreflect.MessageKind || fd.IsList() || fd.IsMap() ||
+			string(fd.Message().FullName()) == uuidProtoMessageName || values.IsWrappedArrayDescriptor(fd.Message()) {
+			return nil, nil, fmt.Errorf("executor: update field %q: %q is not a struct", t.FieldPath(), t.FieldNames[i])
+		}
+		msg = msg.Mutable(fd).Message()
+	}
+	return nil, nil, fmt.Errorf("executor: update field %q is empty", t.FieldPath())
 }
 
 func executeUpdate(
@@ -4179,6 +4253,20 @@ func executeUpdate(
 	defer innerCursor.Close()
 
 	transforms := p.GetTransforms()
+	// Each transform's field type, read off the planned target type once: the
+	// NULL assignment check needs its nullability.
+	targetRecord, ok := p.GetTargetType().(*values.RecordType)
+	if !ok {
+		return nil, fmt.Errorf("executor: update target type %v is not a record", p.GetTargetType())
+	}
+	leafTypes := make([]values.Type, len(transforms))
+	for i, t := range transforms {
+		leaf, err := plans.UpdateTargetFieldType(targetRecord, t)
+		if err != nil {
+			return nil, err
+		}
+		leafTypes[i] = leaf
+	}
 	inputQOV, err := requireSoleInputQOV(p)
 	if err != nil {
 		return nil, fmt.Errorf("update input owner: %w", err)
@@ -4224,7 +4312,6 @@ func executeUpdate(
 
 		msg := proto.Clone(qr.Record.Record)
 		refl := msg.ProtoReflect()
-		desc := refl.Descriptor()
 		if qr.Positional == nil {
 			return nil, layoutBindingError(values.LayoutRuntimeShape,
 				"update target carries no positional row")
@@ -4242,26 +4329,29 @@ func executeUpdate(
 			return nil, fmt.Errorf("update target binding: %w", err)
 		}
 
-		for _, t := range transforms {
-			fd := desc.Fields().ByName(protoreflect.Name(strings.ToLower(t.FieldPath)))
-			if fd == nil {
-				fd = fieldByNameFold(desc.Fields(), t.FieldPath)
-			}
-			if fd == nil {
-				return nil, fmt.Errorf("executor: update field %q not found in descriptor", t.FieldPath)
+		for i, t := range transforms {
+			owner, fd, err := updateTargetField(refl, t)
+			if err != nil {
+				return nil, err
 			}
 			newVal, err := t.NewValue.Evaluate(rowCtx)
 			if err != nil {
 				return nil, err
 			}
 			if newVal == nil {
-				refl.Clear(fd)
+				// Java's coerceObject refuses a NULL for a slot whose type is
+				// not nullable (SemanticException NULL_ASSIGNMENT), when the
+				// row is transformed.
+				if !leafTypes[i].IsNullable() {
+					return nil, &values.NullAssignmentError{Field: t.FieldPath(), To: leafTypes[i]}
+				}
+				owner.Clear(fd)
 			} else {
 				pv, err := goToProtoValue(fd, newVal)
 				if err != nil {
-					return nil, fmt.Errorf("executor: converting update value for %q: %w", t.FieldPath, err)
+					return nil, fmt.Errorf("executor: converting update value for %q: %w", t.FieldPath(), err)
 				}
-				refl.Set(fd, pv)
+				owner.Set(fd, pv)
 			}
 		}
 
@@ -4389,21 +4479,21 @@ func goToProtoScalarValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.
 			return protoreflect.ValueOfInt64(int64(n)), nil
 		}
 	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		// An INT column holding a signed Integer in the target (see
+		// functions.ConvertToProtoValue): the INT range, stored as its 32 bits.
 		switch n := v.(type) {
 		case int64:
-			if n < 0 || n > math.MaxUint32 {
+			if n < math.MinInt32 || n > math.MaxInt32 {
 				return protoreflect.Value{}, &NumericRangeOverflowError{Value: n, Column: string(fd.Name()), TypeName: fd.Kind().String()}
 			}
-			return protoreflect.ValueOfUint32(uint32(n)), nil
+			return protoreflect.ValueOfUint32(uint32(int32(n))), nil
 		case uint32:
 			return protoreflect.ValueOfUint32(n), nil
 		}
 	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		// A signed Long in the target: every int64 is stored as its 64 bits.
 		switch n := v.(type) {
 		case int64:
-			if n < 0 {
-				return protoreflect.Value{}, &NumericRangeOverflowError{Value: n, Column: string(fd.Name()), TypeName: fd.Kind().String()}
-			}
 			return protoreflect.ValueOfUint64(uint64(n)), nil
 		case uint64:
 			return protoreflect.ValueOfUint64(n), nil
@@ -4411,7 +4501,11 @@ func goToProtoScalarValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.
 	case protoreflect.FloatKind:
 		switch n := v.(type) {
 		case float64:
-			if n > math.MaxFloat32 || n < -math.MaxFloat32 {
+			// Narrowing a FLOAT's widened carrier is exact, ±Infinity included;
+			// only a finite value beyond the float32 range would change, and no
+			// FLOAT-typed value is one (functions.ConvertToProtoValue's FLOAT
+			// arm, which answers the same).
+			if !math.IsInf(n, 0) && (n > math.MaxFloat32 || n < -math.MaxFloat32) {
 				return protoreflect.Value{}, &NumericRangeOverflowError{Value: n, Column: string(fd.Name()), TypeName: fd.Kind().String()}
 			}
 			return protoreflect.ValueOfFloat32(float32(n)), nil
@@ -4455,7 +4549,16 @@ func goToProtoScalarValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.
 	case protoreflect.EnumKind:
 		switch n := v.(type) {
 		case int64:
+			// The enum carrier: an enum-typed value holds its declared number.
 			return protoreflect.ValueOfEnum(protoreflect.EnumNumber(n)), nil
+		case string:
+			// A string assigned to an enum column is promoted as Java's
+			// STRING_TO_ENUM does (the INSERT … VALUES converter's rule).
+			num, err := values.StringToEnumNumber(fd.Enum(), n)
+			if err != nil {
+				return protoreflect.Value{}, api.NewError(api.ErrCodeInternalError, err.Error())
+			}
+			return protoreflect.ValueOfEnum(protoreflect.EnumNumber(num)), nil
 		}
 	case protoreflect.MessageKind:
 		// A UUID column is the tuple_fields.UUID message. UPDATE SET uuid_col =
@@ -4473,8 +4576,8 @@ func goToProtoScalarValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.
 			case string:
 				parsed, perr := uuid.Parse(u)
 				if perr != nil {
-					return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
-						"Invalid UUID value for the UUID type %s", u)
+					invalid := &values.InvalidUUIDValueError{Value: u}
+					return protoreflect.Value{}, api.WrapError(api.ErrCodeInternalError, invalid.Error(), invalid)
 				}
 				return uuidBytesToProtoMessage(fd, parsed)
 			}
@@ -5635,12 +5738,16 @@ func comparePKTuples(a, b tuple.Tuple) int {
 
 // sortEvalRow returns the row a sort-key Value expression should be evaluated
 // against: the authoritative ordinal positional row (Value.Evaluate then
-// resolves by ordinal, loud on a miss).
-func sortEvalRow(qr QueryResult, edges ...values.QuantifiedObjectValue) (any, error) {
+// resolves by ordinal, loud on a miss), chained to the evaluation context. A
+// sort under a correlated FlatMap inner — a grouped derived body ordering by
+// an enclosing row's value (`ORDER BY COUNT(*) - w.f`) — reads that value
+// from the context's bindings, exactly as the projection and filter above it
+// do; without the context the enclosing QOV is unbound.
+func sortEvalRow(qr QueryResult, evalCtx *EvaluationContext, edges ...values.QuantifiedObjectValue) (any, error) {
 	if qr.Positional == nil {
 		return nil, nil
 	}
-	return frontierRowContext(qr.Positional, nil, false, edges...)
+	return frontierRowContext(qr.Positional, evalCtx, evalCtx != nil, edges...)
 }
 
 // valueReadsOnlyExactCarrier reports whether every QOV leaf in value is the
@@ -5777,7 +5884,7 @@ func executeInMemorySort(
 		}
 		// The authoritative ordinal row on the non-join frontier (loud on a
 		// miss via FieldValue.evaluateOrdinal).
-		arg, err := sortEvalRow(qr, inputQOV)
+		arg, err := sortEvalRow(qr, evalCtx, inputQOV)
 		if err != nil {
 			return nil, err
 		}
@@ -6145,7 +6252,7 @@ func copyElement(tfd, sfd protoreflect.FieldDescriptor, v protoreflect.Value) (p
 		tgtVal := tfd.Enum().Values().ByName(srcVal.Name())
 		if tgtVal == nil {
 			return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
-				"enum value %s is not declared by %s", srcVal.Name(), tfd.Enum().FullName())
+				"enum value %s is not declared by %s", srcVal.Name(), protoscope.JavaFullName(tfd.Enum()))
 		}
 		return protoreflect.ValueOfEnum(tgtVal.Number()), nil
 	default:

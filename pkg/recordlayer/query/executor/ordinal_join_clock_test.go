@@ -84,14 +84,14 @@ func TestOrdinalJoinBuild_ConstructorsThreadClock(t *testing.T) {
 
 	t.Run("FlatMap", func(t *testing.T) {
 		t.Parallel()
-		fc, err := newFlatMapCursorWithOuterProperties(nil, nil, nil, nil, evalCtx,
+		fc, err := newFlatMapCursorForPlan(nil, nil, nil, nil, evalCtx,
 			values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"),
-			seed, recordlayer.ExecuteProperties{}, false)
+			seed, recordlayer.ExecuteProperties{}, false, false)
 		if err != nil {
-			t.Fatalf("newFlatMapCursorWithOuterProperties: %v", err)
+			t.Fatalf("newFlatMapCursorForPlan: %v", err)
 		}
 		if fc.build == nil || fc.build.Clock != values.StatementClock(evalCtx) {
-			t.Fatal("newFlatMapCursorWithOuterProperties must thread the EvaluationContext onto ordinalJoinBuild.Clock — a clockless build evaluates CURRENT_TIMESTAMP against the drifting wall clock")
+			t.Fatal("newFlatMapCursorForPlan must thread the EvaluationContext onto ordinalJoinBuild.Clock — a clockless build evaluates CURRENT_TIMESTAMP against the drifting wall clock")
 		}
 	})
 }

@@ -174,57 +174,16 @@ func (r *RewriteOuterJoinRule) OnMatch(call *ExpressionRuleCall) {
 		preds = append(preds, p)
 	}
 
-	// Only rewrite when there ARE ON-predicates to push below the null-extension; a
-	// predicate-less LEFT OUTER is a degenerate cross-with-null-fill that the
-	// materialized NLJ already handles. (Matches the "useful partition" guard in
-	// PartitionBinarySelectRule.)
-	if len(preds) == 0 {
-		return
-	}
-
-	// Only rewrite a CORRELATED LEFT OUTER — one whose ON-predicates actually
-	// reference the preserved leg, so the rewritten inner SUBSEL becomes correlated and
-	// the data-access FlatMap path (which replaced the retired tryFlatMapPlan) can fire. For
-	// an UNCORRELATED LEFT OUTER (ON FALSE / ON NULL / a predicate local to the
-	// null-supplying side), the rewrite would produce a null-on-empty inner with no
-	// correlation → no FlatMap → the non-correlated NLJ path, which would use the now-
-	// INNER join type and DROP the unmatched outer rows (silent degrade to INNER).
-	// Those are left on the original LEFT-OUTER materialized NLJ, which null-extends
-	// correctly. (tryFlatMapPlan likewise only handled the correlated case.)
-	//
-	// The correlation check tests every alias the preserved leg PROVIDES — its own
-	// quantifier alias PLUS every source alias buried inside it (RFC-153). When the
-	// preserved side is itself a join/merge (`A JOIN B ... LEFT JOIN C ON C.a_id =
-	// A.id`), the preserved quantifier is a synthetic merge M over A⋈B and the
-	// ON-predicate correlates to the BURIED source A, not to M. Checking only
-	// preserved.GetAlias() missed this → the rewrite was skipped → the planner fell
-	// back to a materialized NLJ over a full Scan(C).
-	//
-	// CRITICAL (RFC-153): broadening this guard to fire on buried-preserved
-	// correlation is safe ONLY because the implementation-layer rewire in
-	// ImplementNestedLoopJoinRule.yieldGeneralFlatMap rebases the buried reference onto
-	// the merge correlation (where Go assigns the $m alias — at PLANNING, after this
-	// rule). The two are ONE unit: a broadened guard WITHOUT the guaranteed rewire is
-	// the §2 wrong-rows trap (the buried correlation evaluates NULL at runtime). The
-	// FlatMap impl declines the probe when it cannot guarantee the rewire, so the
-	// materialized NLJ (which resolves the buried predicate via the merged row's
-	// qualified keys) stays the correct fallback.
-	preservedProvided := legProvidedAliases(preserved)
-	correlated := false
-	for _, p := range preds {
-		for alias := range predicates.GetCorrelatedToOfPredicate(p) {
-			if _, ok := preservedProvided[alias]; ok {
-				correlated = true
-				break
-			}
-		}
-		if correlated {
-			break
-		}
-	}
-	if !correlated {
-		return
-	}
+	// Every outer join is rewritten, whatever its ON reads and whether it has an
+	// ON at all, as Java's rule rewrites every OuterJoinExpression
+	// (RewriteOuterJoinRule.java:80-113). The rewritten inner of an ON that does
+	// not read the preserved leg is uncorrelated; the materialized NLJ declines a
+	// null-on-empty leg, so that inner is never joined as INNER, and the
+	// LEFT-OUTER-typed select stays a member beside it, whose own lowering places
+	// the ON conjuncts below the null-extension as the rewrite does. A leg whose
+	// correlation is buried in a merged preserved side is rebased onto the merge
+	// by ImplementNestedLoopJoinRule.yieldGeneralFlatMap, which declines the probe
+	// when it cannot guarantee that rewire (RFC-153), leaving the materialized NLJ.
 
 	// Idempotency: if this Reference already holds the rewritten form, don't
 	// re-fire. This rule is registered in TWO phases deliberately and re-explores
@@ -532,29 +491,6 @@ func (r *RewriteOuterJoinRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 	call.Yield(outerSelect)
-}
-
-// legProvidedAliases returns every correlation alias a LEFT-OUTER LEG
-// quantifier provides to an ON-predicate: its own quantifier alias PLUS every
-// source alias buried inside it. When the leg is a join/merge, its quantifier
-// is a synthetic merge over a sub-product (e.g. M=(A⋈B) provides {M, A, B}),
-// and an ON-predicate `C.a_id = A.id` correlates to the buried `A`, not to M.
-// Delegates the buried-alias collection to physicalProvidedAliases (the same
-// machinery ImplementNestedLoopJoinRule uses for spanning-join correlation),
-// adapted from its expression entry point to the leg quantifier's ranged-over
-// members. Called for the preserved leg (the correlation guard).
-func legProvidedAliases(leg expressions.Quantifier) map[values.CorrelationIdentifier]struct{} {
-	out := map[values.CorrelationIdentifier]struct{}{leg.GetAlias(): {}}
-	ref := leg.GetRangesOver()
-	if ref == nil {
-		return out
-	}
-	for _, m := range ref.AllMembers() {
-		for alias := range physicalProvidedAliases(m, leg.GetAlias()) {
-			out[alias] = struct{}{}
-		}
-	}
-	return out
 }
 
 // isRewrittenOuterJoinForm reports whether other is already this rule's output,

@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,7 +48,7 @@ func rfc198SetupDB(t *testing.T, dbPath, tmpl string) *sql.DB {
 func rfc198SetupDBOn(t *testing.T, key, dbPath, tmpl string) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", dbPath, key))
+	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), key))
 	if err != nil {
 		t.Fatalf("sql.Open setup: %v", err)
 	}
@@ -56,7 +57,7 @@ func rfc198SetupDBOn(t *testing.T, key, dbPath, tmpl string) *sql.DB {
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE "+tmpl+" CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE "+tmpl)
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, key))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), key))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

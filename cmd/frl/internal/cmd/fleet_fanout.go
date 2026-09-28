@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 
+	"fdb.dev/pkg/relational/core/functions"
+
 	"github.com/spf13/cobra"
 
 	"fdb.dev/pkg/recordlayer"
@@ -113,6 +115,8 @@ func runFleetIndexBuild(
 	}
 	ctx := cmd.Context()
 
+	// The path as DDL reads it: unquoted folds, whole.
+	databaseID = functions.NormalizeIdentifier(databaseID)
 	targets, err := fleet.ListTargets(ctx, db, cat, databaseID)
 	if err != nil {
 		return err
@@ -210,6 +214,8 @@ func newMetaCatalogRepairCmd() *cobra.Command {
 				return err
 			}
 			ctx := cmd.Context()
+			// The path as DDL reads it: unquoted folds, whole.
+			databaseID = functions.NormalizeIdentifier(databaseID)
 			targets, err := fleet.ListTargets(ctx, db, cat, databaseID)
 			if err != nil {
 				return err
@@ -297,15 +303,17 @@ func runFleetStatsCollect(
 	}
 	ctx := cmd.Context()
 
-	targets, err := fleet.ListTargets(ctx, db, cat, addr.database)
+	// The path as DDL reads it: unquoted folds, whole.
+	database := functions.NormalizeIdentifier(addr.database)
+	targets, err := fleet.ListTargets(ctx, db, cat, database)
 	if err != nil {
 		return err
 	}
 	if len(targets) == 0 {
-		return fmt.Errorf("no schemas found in database %q", addr.database)
+		return fmt.Errorf("no schemas found in database %q", database)
 	}
 	fmt.Fprintf(cmd.ErrOrStderr(), "collecting statistics across %s in %s\n",
-		fleetDescribeTargets(targets), addr.database)
+		fleetDescribeTargets(targets), database)
 
 	res, runErr := fleet.CollectStatistics(ctx, db, cat, relationalKeyspace(), targets,
 		fleet.StatisticsOptions{

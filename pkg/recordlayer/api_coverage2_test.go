@@ -651,31 +651,6 @@ var _ = Describe("API Coverage 2", func() {
 		})
 	})
 
-	Describe("GetNestedExpression", func() {
-		It("returns nil for non-RecordTypeKeyExpression", func() {
-			field := Field("order_id")
-			nested := GetNestedExpression(field)
-			Expect(nested).To(BeNil())
-		})
-
-		It("returns nil for bare RecordTypeKeyExpression without nesting", func() {
-			rtk := RecordTypeKey()
-			nested := GetNestedExpression(rtk)
-			Expect(nested).To(BeNil())
-		})
-
-		It("returns nested expression after Nest()", func() {
-			inner := Field("order_id")
-			rtk := RecordTypeKey()
-			rtk.Nest(inner)
-
-			nested := GetNestedExpression(rtk)
-			Expect(nested).NotTo(BeNil())
-			// The nested expression should be the same field expression we set.
-			Expect(nested).To(BeIdenticalTo(inner))
-		})
-	})
-
 	Describe("RecordMetaData accessors", func() {
 		It("RecordTypes returns all defined types", func() {
 			md, err := baseMetaData().Build()

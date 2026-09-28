@@ -360,6 +360,18 @@ func (rs *RecordLayerResultSet) Object(columnIndex int) (any, error) {
 	return rs.columnValue(columnIndex)
 }
 
+// ColumnType is the exact type of the current row's column (1-based), as its
+// positional output row carries it, or nil when the row carries none. It is
+// what tells a caller that an int64 is an enum's declared number (the carrier
+// an enum-typed value holds) rather than a BIGINT.
+func (rs *RecordLayerResultSet) ColumnType(columnIndex int) values.Type {
+	row := rs.current.Positional
+	if !rs.hasRow || row == nil || row.Type == nil || columnIndex < 1 || columnIndex > len(row.Type.Fields) {
+		return nil
+	}
+	return row.Type.Fields[columnIndex-1].FieldType
+}
+
 func (rs *RecordLayerResultSet) LongByName(name string) (int64, error) {
 	v, err := rs.columnValueByName(name)
 	if err != nil {

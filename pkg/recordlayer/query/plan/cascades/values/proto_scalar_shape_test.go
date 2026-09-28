@@ -111,15 +111,19 @@ func TestProtoScalarShapeUnsignedAndAliasedEnum(t *testing.T) {
 	md := scalarShapeDescriptor(t)
 	longType := &exactType{code: TypeCodeLong, nullable: true}
 	longType.finishCanonical()
+	intType := &exactType{code: TypeCodeInt, nullable: true}
+	intType.finishCanonical()
 
-	for _, name := range []string{"U32", "U64", "F32", "F64"} {
+	// The 32-bit unsigned kinds are INT (Type.java:909-914, read as a signed
+	// Integer), the 64-bit ones LONG.
+	for name, want := range map[string]*exactType{"U32": intType, "F32": intType, "U64": longType, "F64": longType} {
 		fd := md.Fields().ByName(protoreflect.Name(name))
 		if fd == nil {
 			t.Fatalf("fixture lacks %s", name)
 		}
-		if !protoScalarShapeCompatible(fd, longType) {
-			t.Errorf("%s: an unsigned/fixed column was not accepted as LONG, so a row"+
-				" containing it is rejected outright — Java writes these", name)
+		if !protoScalarShapeCompatible(fd, want) {
+			t.Errorf("%s: an unsigned/fixed column was not accepted as %v, so a row"+
+				" containing it is rejected outright — Java writes these", name, want.code)
 		}
 	}
 

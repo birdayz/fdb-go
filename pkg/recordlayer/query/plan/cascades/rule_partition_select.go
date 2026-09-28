@@ -299,6 +299,7 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 	// cross products when configured to do so.
 	independentPartitioning := computeIndependentQuantifiersPartitioning(sel, fullCorrelationOrder)
 	projectedContinuation, hasProjectedContinuation := independentForEachBlockBelowProjectedExistential(sel, fullCorrelationOrder)
+	filteringContinuation, hasFilteringContinuation := independentForEachBlockBelowFilteringExistential(sel, fullCorrelationOrder)
 
 	// The select's conjuncts (its list, lifted flat by the constructor): the classifier loop
 	// consumes them per bipartition, and the disconnected-lower guard judges
@@ -353,6 +354,18 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		// existential continuation. Other partitions still honor deferral.
 		_, continuationAbove := upperAliases[projectedContinuation]
 		keepsForEachBlock := hasProjectedContinuation && len(upperAliases) == 1 && continuationAbove
+		// Its FILTERING twin: a `WHERE EXISTS` whose conjuncts each read a
+		// different leg (`z.k = w.id AND z.v > h.f` over `FROM w, h`) connects
+		// the legs only THROUGH itself, so the whole ForEach block below it is
+		// the one bipartition that keeps the semi-join's predicates together
+		// (every other split tears them apart: the live-existential guard).
+		// The block is disconnected on its own, and the guard below would
+		// prune it, leaving the select with no plan (0AF00 where the Java
+		// target answers). Admit it exactly when counting the existential's
+		// predicates connects the block.
+		_, filteringAbove := upperAliases[filteringContinuation]
+		keepsFilteredBlock := hasFilteringContinuation && len(upperAliases) == 1 && filteringAbove &&
+			aliasesConnectedByPredicates(withAlias(lowerAliases, filteringContinuation), allPredicates)
 		// Check independent quantifiers partitioning for cross-product deferral.
 		if len(independentPartitioning) > 1 && !keepsForEachBlock {
 			if plannerCfg.ShouldDeferCrossProducts {
@@ -362,37 +375,18 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			}
 		}
 
-		// Reject a partitioning where a LOWER quantifier has a hard QUANTIFIER-LEVEL
-		// dependency on an UPPER quantifier. The lower partition is planned FIRST
-		// (it becomes the inner sub-Select / FlatMap outer), so an upper alias is
-		// NOT yet bound when the lower runs — a lower that genuinely DEPENDS on an
-		// upper would read an unbound correlation. This direction is the
-		// quantifier-correlation analog of the predicate cycle check below; it
-		// matters for a multi-source lateral UNNEST whose Explode (a lower) reads
-		// its array from a BURIED merge leg (an upper) — separating them
-		// materializes the Explode against a row where the array key is unbound
-		// (zero rows). The buried-leg dependency arrives as the Explode
-		// collection's own correlation to the leg that owns the array — the
-		// collection is an ordinal bake over that leg's quantifier, so
-		// GetCorrelatedTo reports it directly. Plain table
-		// quantifiers carry no quantifier-level correlations, so this never rejects
-		// an ordinary join's predicate-pushable bipartition. RFC-142.
-		lowerDependsOnUpper := false
-		for lowerAlias := range lowerAliases {
-			deps := fullCorrelationOrder[lowerAlias]
-			for upperAlias := range upperAliases {
-				if _, ok := deps[upperAlias]; ok {
-					lowerDependsOnUpper = true
-					break
-				}
-			}
-			if lowerDependsOnUpper {
-				break
-			}
-		}
-		if lowerDependsOnUpper {
-			continue
-		}
+		// A LOWER quantifier may depend on an UPPER one: the lower select is then
+		// correlated to that upper quantifier, and the upper select's own
+		// partitioning makes it the inner of the leg it reads — Java's rule has
+		// no check here, and for lateral legs correlated to an earlier leg
+		// (`FROM w, (… w.arr …) AS d, (… d.k …) AS e`) the lower {d, e} under
+		// {w} is the only bipartition there is. What admitting such a lower
+		// newly allows is a null-on-empty quantifier (a LEFT JOIN's
+		// null-supplying leg) as the lower's OUTER, whose extension must not be
+		// lost; the NLJ rule wraps that outer in DefaultOnEmpty as Java's
+		// planPartitionToPhysical does, and declines the existential lowering
+		// that has no such wrap. The LEFT JOIN shapes themselves plan without
+		// this admission (restoring the old refusal leaves them green).
 
 		// Reject partitioning if it would cause a dependency cycle.
 		// Collect upper aliases that depend on lower aliases.
@@ -500,10 +494,15 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 					// flows exactly those columns. With ≥2 live lower aliases the
 					// lower flows the positional merge RC and the upper
 					// predicate is translated onto the merge quantifier
-					// (positionalMergeCase). (Go's flat-seed quantifiers carry no
-					// quantifier-level correlations, so Java's uppersDependingOnLowers
-					// is empty and its "can do in lower" branch would push a predicate
-					// referencing an absent upper alias into the lower. RFC-043.)
+					// (positionalMergeCase). This is STRICTER than Java, whose "can do
+					// in lower" branch (PartitionSelectRule.java:201-206) places a
+					// spanning predicate in the lower when none of its upper aliases
+					// depends on a lower — a lower correlated to those uppers then
+					// evaluates it. Go keeps every spanning predicate upper: sound, with
+					// less pushdown. (The branch was written when no Go quantifier
+					// carried a quantifier-level correlation, so the lower could never
+					// have been correlated to the uppers it names; since a lower may
+					// depend on an upper, that premise no longer holds. RFC-043.)
 					upperPredicates = append(upperPredicates, pred)
 					for a := range correlatedToLower {
 						lowersCorrelatedToByUppers = append(lowersCorrelatedToByUppers, a)
@@ -656,7 +655,7 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		// A projected existential may require the entire row-producing block
 		// beneath it. Connectivity cannot prune that canonical partition: the
 		// live-existential checks prevent moving its boolean into the lower.
-		if disconnectedLower && !keepsForEachBlock &&
+		if disconnectedLower && !keepsForEachBlock && !keepsFilteredBlock &&
 			!(isCrossProduct(independentPartitioning, lowerAliases, upperAliases) &&
 				lowerComponentsAreSingletons(independentPartitioning, lowerAliases)) {
 			continue
@@ -1155,6 +1154,20 @@ func aliasesConnectedByPredicates(
 // correlationOrder this IS aliasesConnectedByPredicates (which delegates
 // here); admitting correlation edges additionally connects the
 // unnest-with-source pairings a flat gathered seed relies on.
+//
+// A correlation edge connects two lower aliases in exactly two spellings:
+//   - one depends on the other (an Explode and its array source);
+//   - both depend on the same alias OUTSIDE the set (`FROM w, (… w.f …) AS
+//     d, (… w.f …) AS e` read as lower {d, e}): each outer row pairs its own
+//     d rows with its own e rows, a per-row product the query states, not a
+//     free cross product. Go's join result value names every leg, so every
+//     lower is live and an upper leg correlated to a lower forbids the
+//     one-live-lower flow; that makes {d, e} under {w} the ONLY bipartition
+//     of this select, the one Java reaches through its merge case.
+//
+// Not covered: two aliases whose only tie is a predicate or correlation to a
+// THIRD lower alias are connected through it by the union itself, and two
+// aliases correlated to DIFFERENT outside aliases stay disconnected.
 func aliasesConnectedByPredicatesOrCorrelation(
 	aliases map[values.CorrelationIdentifier]struct{},
 	preds []predicates.QueryPredicate,
@@ -1186,10 +1199,17 @@ func aliasesConnectedByPredicatesOrCorrelation(
 			have = true
 		}
 	}
+	sharedOutside := make(map[values.CorrelationIdentifier]values.CorrelationIdentifier)
 	for a := range aliases {
 		for dep := range correlationOrder[a] {
 			if _, in := aliases[dep]; in {
 				parent[find(a)] = find(dep)
+				continue
+			}
+			if first, seen := sharedOutside[dep]; seen {
+				parent[find(a)] = find(first)
+			} else {
+				sharedOutside[dep] = a
 			}
 		}
 	}
@@ -1241,6 +1261,49 @@ func independentForEachBlockBelowProjectedExistential(
 	sel *expressions.SelectExpression,
 	correlationOrder map[values.CorrelationIdentifier]map[values.CorrelationIdentifier]struct{},
 ) (values.CorrelationIdentifier, bool) {
+	continuation, ok := soleExistentialOverIndependentForEach(sel, correlationOrder)
+	if !ok {
+		return values.CorrelationIdentifier{}, false
+	}
+	_, projected := values.GetCorrelatedToOfValue(sel.GetResultValue())[continuation]
+	return continuation, projected
+}
+
+// independentForEachBlockBelowFilteringExistential is the predicate-only twin:
+// the sole existential over two or more independent ForEach legs, read by the
+// select's predicates and not by its result value (`WHERE EXISTS`). The caller
+// admits the all-ForEach-below partition only when the existential's predicates
+// are what connect that block.
+func independentForEachBlockBelowFilteringExistential(
+	sel *expressions.SelectExpression,
+	correlationOrder map[values.CorrelationIdentifier]map[values.CorrelationIdentifier]struct{},
+) (values.CorrelationIdentifier, bool) {
+	continuation, ok := soleExistentialOverIndependentForEach(sel, correlationOrder)
+	if !ok {
+		return values.CorrelationIdentifier{}, false
+	}
+	if _, projected := values.GetCorrelatedToOfValue(sel.GetResultValue())[continuation]; projected {
+		return values.CorrelationIdentifier{}, false
+	}
+	return continuation, true
+}
+
+func withAlias(set map[values.CorrelationIdentifier]struct{}, alias values.CorrelationIdentifier) map[values.CorrelationIdentifier]struct{} {
+	out := make(map[values.CorrelationIdentifier]struct{}, len(set)+1)
+	for a := range set {
+		out[a] = struct{}{}
+	}
+	out[alias] = struct{}{}
+	return out
+}
+
+// soleExistentialOverIndependentForEach declines ordinary joins, multiple
+// existentials, and lower edge semantics/dependencies, and returns the one
+// existential over two or more plain, mutually independent ForEach legs.
+func soleExistentialOverIndependentForEach(
+	sel *expressions.SelectExpression,
+	correlationOrder map[values.CorrelationIdentifier]map[values.CorrelationIdentifier]struct{},
+) (values.CorrelationIdentifier, bool) {
 	var continuation values.CorrelationIdentifier
 	ordinary, existentials := 0, 0
 	for _, q := range sel.GetQuantifiers() {
@@ -1260,6 +1323,5 @@ func independentForEachBlockBelowProjectedExistential(
 	if ordinary < 2 || existentials != 1 {
 		return values.CorrelationIdentifier{}, false
 	}
-	_, projected := values.GetCorrelatedToOfValue(sel.GetResultValue())[continuation]
-	return continuation, projected
+	return continuation, true
 }

@@ -53,7 +53,7 @@ func TestFDB_ExistsAboveJoin_AliasBinding(t *testing.T) {
 		"CREATE TABLE proj (pid BIGINT, owner_id BIGINT, dept_ref BIGINT, pname STRING, PRIMARY KEY (pid))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_existsabovejoin/s WITH TEMPLATE eaj_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_existsabovejoin?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_EXISTSABOVEJOIN?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestFDB_ProjectedExists_FastPath_AliasBinding(t *testing.T) {
 		"CREATE INDEX t3_sec ON t3 (sec)")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_projexistsfast/s WITH TEMPLATE pef_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_projexistsfast?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_PROJEXISTSFAST?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

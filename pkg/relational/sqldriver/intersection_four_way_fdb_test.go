@@ -30,7 +30,7 @@ func TestFDB_FourWayIntersection(t *testing.T) {
 			"CREATE INDEX idx_d ON ix4 (d)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ix4way/s WITH TEMPLATE ix4way")
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_ix4way?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_IX4WAY?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

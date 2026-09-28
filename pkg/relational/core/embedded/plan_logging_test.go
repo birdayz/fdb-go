@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"google.golang.org/protobuf/proto"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	cascadesvalues "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 
@@ -650,48 +652,10 @@ func TestLegWalk_DuplicateAliasDeclines(t *testing.T) {
 	}
 }
 
-// TestFinalizePlanLeavesTheDuplicateNameJoinRowUnstamped pins the third
-// failure the swallow arm covers, with the query that produces it and the
-// blast radius it leaves behind. It costs descriptor identity, not data, and
-// that cost is user-visible: TestFDB_ADuplicateNameJoinRowLosesItsStructTypeNotItsValues
-// shows a computed STRUCT coming back as a raw map through this shape and as an
-// api.Struct once the repeated name is removed — removed through a derived-table
-// rename, because the dialect cannot rename a base column in place, with a third
-// read there that keeps the wrapper AND the repeat to show the wrapper inert.
-//
-// The invariant this test carries for that one is narrower than the whole
-// test, and saying which half matters: the census asserted here is a statement
-// about the query that produced the plan, so it is the ID-half's precondition
-// and worth nothing if the two texts drift. They cannot: both read the same
-// queryfixtures.DuplicateNameJoinQuery, so the compiler holds them together
-// where this comment used to ask the next editor to. The struct assertions run
-// their own texts —
-// one reading a computed and a stored struct out of the same poisoned row,
-// one the control with the repeat removed through a derived-table rename, and
-// one keeping that wrapper with the repeat to show it inert — and carry their
-// own witnesses, so this census says nothing about them.
-//
-// A FULL OUTER JOIN over legs that both carry `ID` builds its ordinal row with
-// NewRawRecordConstructorValue, which keeps field names VERBATIM by design —
-// positional access makes the duplicate unambiguous, and the ordinal-identity
-// pins are unconstructible without it. The synthesised descriptor for that row
-// cannot validate (`descriptor "…​.ID" already declared`). The damage reaches
-// past that row: the repository keeps the bad message, so every type asked for
-// after it fails the same way, while one resolved BEFORE it keeps its
-// descriptor — on this query three of the four constructors end up with no
-// descriptor and the fourth is stamped.
-//
-// What that costs is descriptor IDENTITY, not data: the plan paths emit dense
-// positional rows and the result set reads them by ordinal, so
-// `SELECT a.id, c.id, d.foo` over this shape still returns both `ID` values
-// (measured). This pin is therefore about the repository, not about a wrong
-// answer — there is no wrong answer here to pin.
-//
-// Turning the failure loud refuses this working query, so it stays swallowed
-// and pinned here; TODO.md's "A join row that names one field twice leaves its
-// plan's rows unstamped" carries the closure. When that lands, the rows get
-// their descriptors and this test reddens: assert that they are stamped then.
-func TestFinalizePlanLeavesTheDuplicateNameJoinRowUnstamped(t *testing.T) {
+// TestFinalizePlanContainsDuplicateNameRegistrationFailure keeps the invalid
+// ordinal join row raw without letting its rejected descriptor poison other
+// constructors. The shared SQL text also pins exact outer-join rows under FDB.
+func TestFinalizePlanContainsDuplicateNameRegistrationFailure(t *testing.T) {
 	t.Parallel()
 	_, md := newLoggingGenerator(t,
 		"CREATE TABLE a_md (id BIGINT, s STRING, PRIMARY KEY (id)) "+
@@ -739,48 +703,71 @@ func TestFinalizePlanLeavesTheDuplicateNameJoinRowUnstamped(t *testing.T) {
 		}
 	})
 
-	if duplicates == 0 {
-		t.Fatal("no row in this plan names a field twice any more — the ordinal join row is " +
-			"disambiguated now, so TODO.md's booking has closed: assert both ID values survive instead")
+	t.Logf("descriptor census: %d constructors, %d duplicate-name rows, %d unstamped", constructors, duplicates, unstamped)
+	if duplicates == 0 || constructors <= duplicates {
+		t.Fatalf("missing invalid/valid registration witnesses: constructors=%d duplicates=%d", constructors, duplicates)
 	}
-	// The blast radius is the whole repository, not the repeating row: the bad
-	// message stays in the file, so every type asked for AFTER it fails too,
-	// while one resolved BEFORE keeps its descriptor. Asserting only "duplicate
-	// rows are unstamped" would be a tautology — such a row can never be
-	// stamped — so what is asserted is the COLLATERAL (a row that repeats no
-	// name and lost its descriptor anyway) and the survivor beside it, which is
-	// also what proves the bake ran at all.
-	if constructors < 4 {
-		t.Fatalf("%d record constructors in this plan, want at least 4 — the specimen has moved "+
-			"and this test no longer measures the shape it names", constructors)
+	if unstamped != duplicates {
+		t.Fatalf("%d unstamped of %d constructors, %d duplicate-name rows: failed registration must not poison valid roots", unstamped, constructors, duplicates)
 	}
-	if unstamped <= duplicates {
-		t.Fatalf("%d unstamped of %d constructors, %d of which repeat a name: no COLLATERAL row "+
-			"lost its descriptor, so the failure is contained to the repeating row now and "+
-			"TODO.md's blast radius has narrowed — say so there", unstamped, constructors, duplicates)
-	}
-	if stamped := constructors - unstamped; stamped == 0 {
-		t.Fatal("no constructor in this plan is stamped, so the assertions above are vacuous: " +
-			"either FinalizePlan is not baking, or the damage is no longer order-dependent")
-	}
-	// The assertions above are floors, deliberately: they state the INVARIANT and
-	// survive a planner change that moves the specimen. "Three of the four" is a
-	// different kind of claim — a MEASUREMENT, quoted in SIX files as a fact
-	// about this plan, one of them this one — and a floor cannot keep a
-	// measurement true. A fifth constructor, or a fourth unstamped one, leaves
-	// every check above green while all six sentences go stale, which is exactly
-	// how a number with no expiry condition rots. This is that expiry condition,
-	// and the fatal below names the six so the count and the list cannot drift
-	// apart the way this comment's own count once did.
-	if constructors != 4 || unstamped != 3 {
-		t.Fatalf("this plan has %d record constructors, %d of them unstamped — the measurement "+
-			"written as `three of four` no longer describes this specimen. Six files state it: "+
-			"this one, queryfixtures.go, plan_finalize.go, values.go (RecordConstructorValue's "+
-			"Evaluate doc), TODO.md's booking and RFC-242. Re-measure and restate it in all six; "+
-			"do not relax this guard, or the number goes on being quoted at a plan nobody has "+
-			"looked at. The six are the files quoting the NUMBER; others describe the walk-order"+
-			" half without one and cannot go stale with it, so they are deliberately not counted "+
-			"here — a second population tracked in a message about the first is how the last two "+
-			"of these counts went wrong.", constructors, unstamped)
+}
+
+// TestFinalizePlanPromotesAnonymousRecordArray exercises the SQL producer of
+// an unrepresentable record name below a representable common element type.
+func TestFinalizePlanPromotesAnonymousRecordArray(t *testing.T) {
+	t.Parallel()
+	for _, elements := range []string{`(1 AS "$lead"), (2 AS A)`, `(1 AS A), (2 AS "$lead")`, `(1 AS "$lead"), (2 AS "$tail")`, `(1 AS "1x"), (2 AS A)`} {
+		t.Run(elements, func(t *testing.T) {
+			t.Parallel()
+			_, md := newLoggingGenerator(t, "CREATE TABLE t (id BIGINT, PRIMARY KEY (id))", &captureLogger{})
+			plan, _, err := PlanRecordQueryWithSubqueries(`SELECT ([`+elements+`] AS CH) FROM t`, md, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := cascades.FinalizePlan(plan); err != nil {
+				t.Fatal(err)
+			}
+			var found int
+			cascades.ForEachPlanRecordConstructor(plan, func(rc *cascadesvalues.RecordConstructorValue) {
+				if len(rc.Fields) != 1 || rc.Fields[0].Name != "CH" {
+					return
+				}
+				found++
+				result, err := rc.Evaluate(nil)
+				if err != nil {
+					t.Fatalf("finalized record array: %v", err)
+				}
+				message, ok := result.(proto.Message)
+				if !ok {
+					t.Fatalf("record array = %T, want protobuf message", result)
+				}
+				fd := rc.MessageDescriptor().Fields().Get(0)
+				array := rc.Fields[0].Value.(*cascadesvalues.ArrayConstructorValue)
+				for i, child := range array.Elements {
+					value, err := child.Evaluate(nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					element, ok := value.(proto.Message)
+					if !ok || element.ProtoReflect().Descriptor() != fd.Message() {
+						t.Fatalf("element %d = %T: promotion must bind to parent's descriptor", i, value)
+					}
+				}
+				items := message.ProtoReflect().Get(fd).List()
+				if items.Len() != 2 {
+					t.Fatalf("items = %d, want 2", items.Len())
+				}
+				for i, want := range []int64{1, 2} {
+					element := items.Get(i).Message()
+					field := element.Descriptor().Fields().Get(0)
+					if field.Name() != "_0" || element.Get(field).Int() != want {
+						t.Fatalf("element %d = %v, want anonymous field _0=%d", i, element, want)
+					}
+				}
+			})
+			if found == 0 {
+				t.Fatal("no CH record constructor reached")
+			}
+		})
 	}
 }

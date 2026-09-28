@@ -354,7 +354,7 @@ func TestReplace_PromoteValue(t *testing.T) {
 	if c.Value != int64(50) {
 		t.Fatalf("expected 50, got %v", c.Value)
 	}
-	if p.Target != NullableDouble {
+	if !p.Target.Equals(NullableDouble) {
 		t.Fatalf("target should be preserved")
 	}
 }

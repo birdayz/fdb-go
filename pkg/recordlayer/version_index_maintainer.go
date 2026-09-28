@@ -49,7 +49,7 @@ func (m *versionIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pr
 	var newEntries []indexEntry
 
 	if oldRecord != nil {
-		entries, err := m.evaluateIndex(oldRecord)
+		entries, err := m.filteredIndexEntries(oldRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate version index %q for old record: %w", m.index.Name, err)
 		}
@@ -57,7 +57,7 @@ func (m *versionIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pr
 	}
 
 	if newRecord != nil {
-		entries, err := m.evaluateIndex(newRecord)
+		entries, err := m.filteredIndexEntries(newRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate version index %q for new record: %w", m.index.Name, err)
 		}
@@ -168,10 +168,11 @@ func (m *versionIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 	return deleteWhereRange(m.tx, m.indexSubspace, prefix)
 }
 
-// evaluateIndex evaluates the index expression against a record to produce index entries.
-// Reuses the same logic as standardIndexMaintainer.evaluateIndex.
-func (m *versionIndexMaintainer) evaluateIndex(record *FDBStoredRecord[proto.Message]) ([]indexEntry, error) {
-	if m.index.Predicate != nil && !m.index.Predicate(record.Record) {
+// filteredIndexEntries is Java's StandardIndexMaintainer.filteredIndexEntries
+// over the version index's evaluated entries (see standardIndexMaintainer's).
+func (m *versionIndexMaintainer) filteredIndexEntries(record *FDBStoredRecord[proto.Message]) ([]indexEntry, error) {
+	values := indexValuesFor(m.store, m.index, record)
+	if values == IndexValuesNone {
 		return nil, nil
 	}
 
@@ -203,7 +204,7 @@ func (m *versionIndexMaintainer) evaluateIndex(record *FDBStoredRecord[proto.Mes
 		}
 	}
 
-	return entries, nil
+	return keepMaintainedEntries(m.store, m.index, record, values, entries), nil
 }
 
 // tupleHasIncompleteVersionstamp checks if any element in the tuple is an

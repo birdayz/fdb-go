@@ -131,18 +131,20 @@ func TestIntegration_MetaCatalog_DatabasesSchemasTemplates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("meta catalog databases: %v\noutput: %s", err, out)
 	}
-	if !strings.Contains(out, "/frlsql") {
-		t.Errorf("databases output missing /frlsql:\n%s", out)
+	// CREATE DATABASE /frlsql stores the unquoted path folded whole.
+	if !strings.Contains(out, "/FRLSQL") {
+		t.Errorf("databases output missing /FRLSQL:\n%s", out)
 	}
 
 	out, err = runCmd(t, "meta", "catalog", "schemas", "--database", "/frlsql")
 	if err != nil {
 		t.Fatalf("meta catalog schemas: %v\noutput: %s", err, out)
 	}
-	// The schema was created as unquoted `main`, which normalizes to MAIN
-	// (SQL identifier folding, matching CREATE SCHEMA and ?schema=).
-	if !strings.Contains(out, "MAIN") || !strings.Contains(out, "frlsql_tpl") {
-		t.Errorf("schemas output missing MAIN/frlsql_tpl:\n%s", out)
+	// The schema was created as unquoted `main` and its template as unquoted
+	// `frlsql_tpl`, which normalize to MAIN and FRLSQL_TPL (SQL identifier
+	// folding, as Java's DDL reads both).
+	if !strings.Contains(out, "MAIN") || !strings.Contains(out, "FRLSQL_TPL") {
+		t.Errorf("schemas output missing MAIN/FRLSQL_TPL:\n%s", out)
 	}
 
 	out, err = runCmd(t, "meta", "catalog", "templates", "-o", "json")
@@ -155,20 +157,26 @@ func TestIntegration_MetaCatalog_DatabasesSchemasTemplates(t *testing.T) {
 	}
 	found := false
 	for _, tpl := range templates {
-		if tpl["name"] == "frlsql_tpl" {
+		if tpl["name"] == "FRLSQL_TPL" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("templates JSON missing frlsql_tpl: %v", templates)
+		t.Errorf("templates JSON missing FRLSQL_TPL: %v", templates)
 	}
 }
 
 func TestIntegration_MetaCatalog_GetRendersMetaData(t *testing.T) {
 	setupSQLFixture(t)
+	// The argument is read as DDL reads a template name: the unquoted
+	// spelling the fixture wrote folds to the stored FRLSQL_TPL, and a quoted
+	// spelling of another case names no template.
 	out, err := runCmd(t, "meta", "catalog", "get", "frlsql_tpl")
 	if err != nil {
 		t.Fatalf("meta catalog get: %v\noutput: %s", err, out)
+	}
+	if _, qerr := runCmd(t, "meta", "catalog", "get", `"frlsql_tpl"`); qerr == nil {
+		t.Error(`meta catalog get "frlsql_tpl" found a template: a quoted name keeps its case, and the stored one is FRLSQL_TPL`)
 	}
 	var md map[string]any
 	if err := json.Unmarshal([]byte(out), &md); err != nil {
@@ -234,7 +242,7 @@ func TestIntegration_LayeredAddressing_SQLToRecordScan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store info --database: %v\noutput: %s", err, out)
 	}
-	if !strings.Contains(out, "Database/schema:   /frlsql/MAIN") ||
+	if !strings.Contains(out, "Database/schema:   /FRLSQL/MAIN") ||
 		!strings.Contains(out, "Format version:") {
 		t.Errorf("store info missing relational address or header fields:\n%s", out)
 	}
@@ -324,7 +332,8 @@ func TestIntegration_SQL_OutputFormats(t *testing.T) {
 // dispatch is the logic under test).
 func TestIntegration_SQL_DescribeAndExplain(t *testing.T) {
 	setupSQLFixture(t)
-	db, err := sql.Open("fdbsql", buildFDBSQLDSN(fixture.clusterFilePath, "/frlsql", "main"))
+	// The driver takes the DSN's names as given: the stored spellings.
+	db, err := sql.Open("fdbsql", buildFDBSQLDSN(fixture.clusterFilePath, "/FRLSQL", "MAIN"))
 	if err != nil {
 		t.Fatalf("open fdbsql: %v", err)
 	}
@@ -333,7 +342,7 @@ func TestIntegration_SQL_DescribeAndExplain(t *testing.T) {
 	r := &sqlRunner{
 		db: db, out: &out, errOut: &errOut, ctx: context.Background(),
 		clusterFile: fixture.clusterFilePath,
-		database:    "/frlsql", schema: "MAIN",
+		database:    "/FRLSQL", schema: "MAIN",
 		st: plainSQLStyles(), format: sqlFormatTable, timing: true,
 	}
 	defer r.close()
@@ -371,5 +380,92 @@ func TestIntegration_SQL_DescribeAndExplain(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToUpper(out.String()), "SCAN") {
 		t.Errorf(`\explain output has no plan text:\n%s`, out.String())
+	}
+}
+
+// TestIntegration_SQL_FlagSpellingsReachTheCatalogAndSchemaSwitch drives the
+// runner `frl sql` builds (openSQLRunner) from the flags as a user types them,
+// in lower case. CREATE DATABASE /frlswitch stores /FRLSWITCH, so the
+// connection and the meta-commands' catalog lookups must both be handed the
+// folded path; `\d` looked up the path as typed when only the DSN folded it.
+// And `\c` switches the CONNECTION, not only the label the meta-commands read:
+// the count after a switch is the new schema's table's.
+func TestIntegration_SQL_FlagSpellingsReachTheCatalogAndSchemaSwitch(t *testing.T) {
+	bindConfig(t)
+	script := filepath.Join(t.TempDir(), "switch.sql")
+	if err := os.WriteFile(script, []byte(`
+CREATE DATABASE /frlswitch;
+CREATE SCHEMA TEMPLATE frlswitch_tpl CREATE TABLE t (id BIGINT, PRIMARY KEY (id));
+CREATE SCHEMA /frlswitch/main WITH TEMPLATE frlswitch_tpl;
+CREATE SCHEMA /frlswitch/other WITH TEMPLATE frlswitch_tpl;
+`), 0o600); err != nil {
+		t.Fatalf("write switch.sql: %v", err)
+	}
+	if out, err := runCmd(t, "sql", "--database", "/frlswitch", "-f", script); err != nil {
+		t.Fatalf("bootstrap: %v\noutput: %s", err, out)
+	}
+
+	var out, errOut bytes.Buffer
+	r, db, err := openSQLRunner(context.Background(), &out, &errOut,
+		fixture.clusterFilePath, "/frlswitch", "main", sqlFormatCSV)
+	if err != nil {
+		t.Fatalf("openSQLRunner: %v", err)
+	}
+	defer db.Close()
+	defer r.close()
+	if r.database != "/FRLSWITCH" || r.schema != "MAIN" {
+		t.Fatalf("runner target = (%q, %q), want the stored names (/FRLSWITCH, MAIN)", r.database, r.schema)
+	}
+	if err := r.execute("INSERT INTO t VALUES (1)"); err != nil {
+		t.Fatalf("insert into MAIN: %v", err)
+	}
+
+	out.Reset()
+	errOut.Reset() // the INSERT's footer: CSV output sends it to errOut
+	r.runMeta(`\d t`)
+	if errOut.Len() > 0 || !strings.Contains(out.String(), "primary key: ID") {
+		t.Fatalf("\\d t through --database /frlswitch: out %q, err %q", out.String(), errOut.String())
+	}
+
+	count := func(when string) string {
+		t.Helper()
+		out.Reset()
+		errOut.Reset()
+		if err := r.execute("SELECT count(*) AS n FROM t"); err != nil {
+			t.Fatalf("%s: count: %v", when, err)
+		}
+		return strings.TrimSpace(out.String())
+	}
+	if got := count("in MAIN"); got != "N\n1" {
+		t.Fatalf("count in MAIN = %q, want the inserted row", got)
+	}
+
+	out.Reset()
+	errOut.Reset()
+	r.runMeta(`\c other`)
+	if errOut.Len() > 0 || !strings.Contains(out.String(), "schema → OTHER") {
+		t.Fatalf("\\c other: out %q, err %q", out.String(), errOut.String())
+	}
+	if got := count("after \\c other"); got != "N\n0" {
+		t.Fatalf("count after \\c other = %q, want OTHER's empty table: the switch "+
+			"reached the meta-commands' label and not the connection", got)
+	}
+
+	out.Reset()
+	errOut.Reset()
+	r.runMeta(`\c nope`)
+	if want := "Schema NOPE does not exist in /FRLSWITCH"; !strings.Contains(errOut.String(), want) {
+		t.Fatalf("\\c nope reported %q, want the connection's refusal %q", errOut.String(), want)
+	}
+	if r.schema != "OTHER" {
+		t.Fatalf("a refused \\c moved the runner to %q", r.schema)
+	}
+	if got := count("after the refused \\c"); got != "N\n0" {
+		t.Fatalf("count after a refused \\c = %q, want OTHER's still: the refusal moved the connection", got)
+	}
+
+	r.runMeta(`\c main`)
+	if got := count("after \\c main"); got != "N\n1" {
+		t.Fatalf("count after \\c main = %q, want MAIN's row again", got)
 	}
 }

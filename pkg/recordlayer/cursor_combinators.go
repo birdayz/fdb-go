@@ -196,7 +196,7 @@ func OrElseWithContinuation[T any](
 
 	if len(continuation) > 0 {
 		var cont gen.OrElseContinuation
-		if err := cont.UnmarshalVT(continuation); err != nil {
+		if err := UnmarshalVTAsJava(&cont, continuation); err != nil {
 			// Java: throw new RecordCoreException("error parsing continuation", ex)
 			//           .addLogInfo("raw_bytes", ...)  (OrElseCursor's constructor).
 			// A corrupt continuation must fail, not silently restart from scratch.
@@ -391,7 +391,7 @@ func ConcatCursors[T any](first, second CursorFactory[T], continuation []byte) R
 
 	if len(continuation) > 0 {
 		var cont gen.ConcatContinuation
-		if err := cont.UnmarshalVT(continuation); err != nil {
+		if err := UnmarshalVTAsJava(&cont, continuation); err != nil {
 			// Java: throw new RecordCoreException("Error parsing ConcatCursor continuation", ex)
 			//           .addLogInfo("raw_bytes", ...)  (ConcatCursor's constructor).
 			// A corrupt continuation must fail, not silently restart from scratch:
@@ -635,7 +635,7 @@ func FlatMapPipelinedWithCheck[T, V any](
 
 	if len(continuation) > 0 {
 		var cont gen.FlatMapContinuation
-		if err := cont.UnmarshalVT(continuation); err != nil {
+		if err := UnmarshalVTAsJava(&cont, continuation); err != nil {
 			// Java: RecordCursor.flatMapPipelined:
 			//   throw new RecordCoreException("error parsing continuation", ex)
 			//       .addLogInfo("raw_bytes", ...).

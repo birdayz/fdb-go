@@ -82,6 +82,11 @@ func TestFDB_CoveringIndexValueFidelityByType(t *testing.T) {
 
 			var rows []string
 			for i, lit := range tc.literals {
+				// A FLOAT column takes a FLOAT: a decimal literal is a DOUBLE,
+				// which does not promote to FLOAT (no DOUBLE_TO_FLOAT).
+				if tc.ddlType == "FLOAT" {
+					lit = "CAST(" + lit + " AS FLOAT)"
+				}
 				rows = append(rows, fmt.Sprintf("(%d, %s, 'padpad')", i+1, lit))
 			}
 			// A NULL row so the IS NULL arm has something to find, and so the

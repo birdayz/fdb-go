@@ -79,20 +79,8 @@ func jdbcizeColumnNames(cols []string) []string {
 //     out of range. Postgres / MySQL error on this instead of treating the
 //     integer as a constant sort / group key, so we do the same.
 func resolveSelectListPosition(clause string, expr antlrgen.IExpressionContext, projCols, projAliases []string, aggCols []aggSelectCol, countStar bool) (string, int, bool, error) {
-	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
-	if !ok {
-		return "", 0, false, nil
-	}
-	atom, ok := pred.ExpressionAtom().(*antlrgen.ConstantExpressionAtomContext)
-	if !ok {
-		return "", 0, false, nil
-	}
-	dec, ok := atom.Constant().(*antlrgen.DecimalConstantContext)
-	if !ok {
-		return "", 0, false, nil
-	}
-	n, err := strconv.ParseInt(dec.DecimalLiteral().GetText(), 10, 64)
-	if err != nil || n < 1 {
+	n, positional := selectListPosition(expr)
+	if !positional {
 		return "", 0, false, nil
 	}
 	listLen := len(projCols)
@@ -124,4 +112,38 @@ func resolveSelectListPosition(clause string, expr antlrgen.IExpressionContext, 
 		return "COUNT(*)", int(n), true, nil
 	}
 	return "", 0, false, nil
+}
+
+// selectListPosition recognizes the positive integer literal used by Go's
+// positional GROUP BY and ORDER BY extensions, without consulting list width.
+func selectListPosition(expr antlrgen.IExpressionContext) (int64, bool) {
+	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
+	if !ok {
+		return 0, false
+	}
+	atom, ok := pred.ExpressionAtom().(*antlrgen.ConstantExpressionAtomContext)
+	if !ok {
+		return 0, false
+	}
+	dec, ok := atom.Constant().(*antlrgen.DecimalConstantContext)
+	if !ok {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(dec.DecimalLiteral().GetText(), 10, 64)
+	if err != nil || n < 1 {
+		return 0, false
+	}
+	return n, true
+}
+
+func hasPositionalOrderBy(simpleTable *antlrgen.SimpleTableContext) bool {
+	if simpleTable.OrderByClause() == nil {
+		return false
+	}
+	for _, order := range simpleTable.OrderByClause().AllOrderByExpression() {
+		if _, ok := selectListPosition(order.Expression()); ok {
+			return true
+		}
+	}
+	return false
 }

@@ -45,10 +45,10 @@ func TestIdentityPassThroughDiscriminatesOuterKind(t *testing.T) {
 	// GATED ORDINAL OUTER: the step-1 NLJ carries the ordinal seed → outerMergedType
 	// set (from downstreamLegWindowsTyped), outerBakedType nil (leg-independent inner).
 	gatedOuter := mustExecutorConstruct(plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, nil, plans.JoinInner, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), seed))
-	cGated, err := newFlatMapCursorWithOuterProperties(recordlayer.FromList([]QueryResult{}), gatedOuter, legIndependentInner, nil,
-		EmptyEvaluationContext(), mergedCorr, existCorr, identityRV, recordlayer.ExecuteProperties{}, false)
+	cGated, err := newFlatMapCursorForPlan(recordlayer.FromList([]QueryResult{}), gatedOuter, legIndependentInner, nil,
+		EmptyEvaluationContext(), mergedCorr, existCorr, identityRV, recordlayer.ExecuteProperties{}, false, false)
 	if err != nil {
-		t.Fatalf("newFlatMapCursorWithOuterProperties (gated): %v", err)
+		t.Fatalf("newFlatMapCursorForPlan (gated): %v", err)
 	}
 	defer cGated.Close()
 	if cGated.outerBakedType != nil {
@@ -92,10 +92,10 @@ func TestIdentityPassThroughDiscriminatesOuterKind(t *testing.T) {
 		values.RecordConstructorField{Name: "B.ID", Value: mustTestFieldOrdinal(t, nameRoot, 1)},
 	)
 	nameModelOuter := mustExecutorConstruct(plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, nil, plans.JoinInner, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), nameModelRV))
-	cName, err := newFlatMapCursorWithOuterProperties(recordlayer.FromList([]QueryResult{}), nameModelOuter, legIndependentInner, nil,
-		EmptyEvaluationContext(), mergedCorr, existCorr, identityRV, recordlayer.ExecuteProperties{}, false)
+	cName, err := newFlatMapCursorForPlan(recordlayer.FromList([]QueryResult{}), nameModelOuter, legIndependentInner, nil,
+		EmptyEvaluationContext(), mergedCorr, existCorr, identityRV, recordlayer.ExecuteProperties{}, false, false)
 	if err != nil {
-		t.Fatalf("newFlatMapCursorWithOuterProperties (name-model): %v", err)
+		t.Fatalf("newFlatMapCursorForPlan (name-model): %v", err)
 	}
 	defer cName.Close()
 	if cName.outerMergedType != nil {

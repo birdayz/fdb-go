@@ -206,7 +206,8 @@ func dmlOrderingUpdate(inputQ expressions.Quantifier) *expressions.UpdateExpress
 		"MyRecord",
 		dmlOrderingRowType(),
 		[]expressions.UpdateTransform{{
-			FieldPath: "NAME",
+			FieldNames:    []string{"NAME"},
+			FieldOrdinals: []int{1},
 			NewValue: &values.ConstantValue{
 				Value: "updated",
 				Typ:   values.NotNullString,

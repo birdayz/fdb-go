@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -40,7 +41,7 @@ func arrayInsertDB(t *testing.T, tag string) (*sql.DB, context.Context) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE "+tmpl); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -243,7 +244,7 @@ func TestFDB_ArrayLiteralInsertWireBytes(t *testing.T) {
 		t.Fatalf("open db: %v", err)
 	}
 	rlDB := recordlayer.NewFDBDatabase(rawDB)
-	ss := subspace.Sub().Sub(tuple.Tuple{"/arrins_wire", "MAIN"})
+	ss := subspace.Sub().Sub(tuple.Tuple{"/ARRINS_WIRE", "MAIN"}) // CREATE DATABASE /arrins_wire stored it folded
 
 	var storedBytes []byte
 	_, err = rlDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {

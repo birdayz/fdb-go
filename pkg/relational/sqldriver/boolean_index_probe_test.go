@@ -25,7 +25,7 @@ func TestFDB_BooleanIndexProbe(t *testing.T) {
 			"CREATE TABLE t (id BIGINT, flag BOOLEAN, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_flag ON t (flag)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_bool/s WITH TEMPLATE booltbl")
-	dsn := fmt.Sprintf("fdbsql:///testdb_bool?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_BOOL?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

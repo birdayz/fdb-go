@@ -119,6 +119,10 @@ func (r *runner) executeTestBlock(ctx context.Context, resource string, blk *jav
 	if err != nil {
 		return err
 	}
+	opts, err := r.connectionOptions(b.Options.ConnectionOptions)
+	if err != nil {
+		return fmt.Errorf("%s: %w", where, err)
+	}
 
 	// Java builds `repetition` executables per test and then shuffles the
 	// flattened list, so the copies of one test do not stay adjacent.
@@ -139,7 +143,7 @@ func (r *runner) executeTestBlock(ctx context.Context, resource string, blk *jav
 	// t.Parallel over corpus files, which is the same dimension without
 	// multiplying live FDB connections by the block size.
 	if o.ConnectionLifecycle == "block" {
-		conn, err := db.Conn(ctx)
+		conn, err := pin(ctx, db, opts)
 		if err != nil {
 			return fmt.Errorf("%s: conn: %w", where, err)
 		}
@@ -152,7 +156,7 @@ func (r *runner) executeTestBlock(ctx context.Context, resource string, blk *jav
 		return nil
 	}
 	for _, e := range execs {
-		conn, err := db.Conn(ctx)
+		conn, err := pin(ctx, db, opts)
 		if err != nil {
 			return fmt.Errorf("%s: conn: %w", where, err)
 		}

@@ -52,7 +52,7 @@ func TestFDB_AggregateOperandDistinguishesLiteralCase(t *testing.T) {
 		`CREATE TABLE sales (id BIGINT, "Region" STRING, "Amount" BIGINT, plain BIGINT, PRIMARY KEY (id))`)
 	exec(setup, "CREATE SCHEMA /testdb_agg_literal_case/s WITH TEMPLATE agg_literal_case")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///testdb_agg_literal_case?cluster_file=%s&schema=s", clusterFilePath))
+		fmt.Sprintf("fdbsql:///TESTDB_AGG_LITERAL_CASE?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestFDB_AggregateOperandResolvesThroughADerivedTable(t *testing.T) {
 		`CREATE TABLE sales (id BIGINT, "Region" STRING, "Amount" BIGINT, plain BIGINT, PRIMARY KEY (id))`)
 	exec(setup, "CREATE SCHEMA /testdb_agg_derived_strip/s WITH TEMPLATE agg_derived_strip")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///testdb_agg_derived_strip?cluster_file=%s&schema=s", clusterFilePath))
+		fmt.Sprintf("fdbsql:///TESTDB_AGG_DERIVED_STRIP?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

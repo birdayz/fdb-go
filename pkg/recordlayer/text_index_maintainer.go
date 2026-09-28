@@ -2,7 +2,6 @@ package recordlayer
 
 import (
 	"fmt"
-	"strconv"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -74,24 +73,30 @@ func getTextTokenizer(index *Index) (TextTokenizer, error) {
 }
 
 // getTextTokenizerVersion gets the tokenizer version from index options.
+// Matches Java's TextIndexMaintainer.getIndexTokenizerVersion
+// (TextIndexMaintainer.java:179-192): an absent option is GLOBAL_MIN_VERSION,
+// and a present one, the empty string included, is Integer.parseInt'd, a
+// value it refuses a MetaDataException.
 func getTextTokenizerVersion(index *Index) (int, error) {
-	versionStr := index.Options[IndexOptionTextTokenizerVersion]
-	if versionStr == "" {
+	versionStr, ok := index.Options[IndexOptionTextTokenizerVersion]
+	if !ok {
 		return 0, nil // GLOBAL_MIN_VERSION
 	}
-	v, err := strconv.Atoi(versionStr)
+	v, err := javaParseInt(versionStr)
 	if err != nil {
-		return 0, fmt.Errorf("tokenizer version could not be parsed as int: %q", versionStr)
+		// Java's text (TextIndexMaintainer.java:185); the index and the
+		// option are its log info.
+		return 0, &MetaDataError{Message: "tokenizer version could not be parsed as int"}
 	}
-	return v, nil
+	return int(v), nil
 }
 
 func getTextAggressiveConflictRanges(index *Index) bool {
-	return index.Options[IndexOptionTextAddAggressiveConflictRanges] == "true"
+	return index.GetBooleanOption(IndexOptionTextAddAggressiveConflictRanges, false)
 }
 
 func getTextOmitPositions(index *Index) bool {
-	return index.Options[IndexOptionTextOmitPositions] == "true"
+	return index.GetBooleanOption(IndexOptionTextOmitPositions, false)
 }
 
 // textFieldPosition returns the position of the text field in the index expression.
@@ -198,8 +203,16 @@ func (m *textIndexMaintainer) updateStandard(oldRecord, newRecord *FDBStoredReco
 	// Then use the standard removeCommonEntries for correct full-key comparison.
 	// Matches Java: TextIndexMaintainer.update() calls super.update() which uses
 	// StandardIndexMaintainer.commonKeys() on IndexEntry objects (all columns compared).
+	// Java's StandardIndexMaintainer.update reads each record's entries through
+	// filteredIndexEntries: the index's predicate and the store's maintenance
+	// filter decide which are maintained, while the tokenizer version is
+	// written and cleared by Update whatever they decide.
 	evalEntries := func(record *FDBStoredRecord[proto.Message]) ([]indexEntry, [][]any, error) {
 		if record == nil {
+			return nil, nil, nil
+		}
+		maintained := indexValuesFor(m.store, m.index, record)
+		if maintained == IndexValuesNone {
 			return nil, nil, nil
 		}
 		tuples, err := m.index.RootExpression.Evaluate(record, record.Record)
@@ -213,6 +226,10 @@ func (m *textIndexMaintainer) updateStandard(oldRecord, newRecord *FDBStoredReco
 				key[j] = v
 			}
 			entries[i] = indexEntry{key: key, primaryKey: record.PrimaryKey}
+		}
+		if maintained == IndexValuesSome {
+			entries = keepMaintainedEntries(m.store, m.index, record, maintained, entries)
+			return entries, indexEntriesToRaw(entries), nil
 		}
 		return entries, tuples, nil
 	}

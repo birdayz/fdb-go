@@ -518,7 +518,7 @@ func TestGapSignaturesAreSpecific(t *testing.T) {
 // The values are prefixes of the runner's `%q`-formatted statement text, so the
 // embedded SQL quotes appear escaped.
 var statementExactGaps = map[string]string{
-	"array-join-at.yamsql":   `"SELECT T2.\"id\", \"at1\", \"val1\", \"at2\", \"val2\" FROM T2`,
+	"array-join-at.yamsql":   `"SELECT \"id\", \"at\", \"arr1_val\", T1.\"arr1_nn\"[\"at\"]`,
 	"functions.yamsql":       `"update C set st = coalesce(st, null) where c1 = 4 returning \"new\".st"`,
 	"table-functions.yamsql": `"select * from range(1, 4)"`,
 }

@@ -154,7 +154,7 @@ func parseOnSourceIndexDefinition(def *antlrgen.IndexOnSourceDefinitionContext, 
 	// for a dot in the text. tableName comes from GetText(), which concatenates
 	// a multi-segment FullId into `S.T` -- indistinguishable from a table
 	// declared as the quoted identifier `"S.T"`, whose storage name is S__2T.
-	// Escaping the flattened form would then resolve a SCHEMA-QUALIFIED
+	// Escaping the flattened form would then resolve a TEMPLATE-QUALIFIED
 	// reference onto that unrelated table and attach the index, and any UNIQUE
 	// constraint with it, to the wrong record type. A qualified source keeps the
 	// raw lookup, which misses and reports the table as unknown -- the behaviour

@@ -1,0 +1,19 @@
+{
+  "format_version": 2,
+  "rfc": "RFC-257",
+  "date": "2026-09-26",
+  "reason": "The bit operators are ArithmeticValues, as Java's are (RFC-257 WS-J section 6), where they were BITAND/BITOR/BITXOR scalar functions. The value's semantic hash moves with it, and in one negated TLP rendering of a three-way join that hash decides a tie between two equal-cost association orders: NLJ(FlatMap(l, m), r) becomes NLJ(l, FlatMap(m, r)). The frozen rows are unchanged.",
+  "base_commit": "f9c916f5db97160b5f8bdb8caa51dc92bc31b018",
+  "before_census_sha256": "c0d5e22caae91220d3aba1009ac512eccb8f1b366f0a9e7c7d874fdf04eddf1d",
+  "after_census_sha256": "13772d6ccc22e0c2756d98427f7fdd1f36f2bd6f7e7ab503c12dcb9941d3caa2",
+  "before_tree_sha256": "23030bea7917b2c511f4c3e0dcefe66eeb0cf4234c140db9a6ce7042816a6bad",
+  "after_tree_sha256": "9006dcfaaefdc7fe407498029eed678d635aeb9d3c1be3ef24cb8a487aa05b39",
+  "changes": [
+    {
+      "name": "join3_comma__and_bit-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "16927f2c4fd1e06cab0d5af2f25ff511eaad2e8a9152d3234f9c5b6cb064b18f",
+      "new_sha256": "253f4d64912d17dfd60c2ee00c55569649f523e812750c619d1605025af68abf"
+    }
+  ]
+}

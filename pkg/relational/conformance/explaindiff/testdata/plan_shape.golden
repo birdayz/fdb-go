@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=377 queries=2823 dml=172 non_query=109 plan_errors=312 unexpected_errors=4
+# files=377 queries=2826 dml=175 non_query=110 plan_errors=317 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -1086,7 +1086,7 @@ sql:   SELECT po.id, pi.id, COUNT(*) FROM po, pi WHERE pi.po_id = po.id GROUP BY
 plan:  <PLAN-ERROR: 42702: Ambiguous reference ID>
 === ambiguous_group_key_reread.yaml#1 expect-error=42702
 sql:   SELECT po.id, pi.id, COUNT(*) FROM po, pi WHERE pi.po_id = po.id GROUP BY po.id, pi.id ORDER BY id
-plan:  <PLAN-ERROR: 42702: Ambiguous reference ID>
+plan:  <PLAN-ERROR: 42702: Ambiguous alias ID>
 === ambiguous_group_key_reread.yaml#2 expect-error=42702
 sql:   SELECT id, COUNT(*) FROM po, pi WHERE pi.po_id = po.id GROUP BY po.id, pi.id
 plan:  <PLAN-ERROR: 42702: Ambiguous reference ID>
@@ -1197,62 +1197,69 @@ sql:   SELECT -10 % 3 FROM t WHERE id = 1
 plan:  Project([(-10 % 3)], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
-=== arithmetic.yaml#11
+=== arithmetic.yaml#11 expect-error=XX000
 sql:   SELECT a + NULL FROM t WHERE id = 1
-plan:  Project([(_current.A#1 + NULL)], Scan(T, [=]))
-shape: RecordQueryProjectionPlan
-shape:   RecordQueryScanPlan
-=== arithmetic.yaml#12
+plan:  <PLAN-ERROR: XX000: unable to encapsulate arithmetic operation due to type mismatch(es)>
+=== arithmetic.yaml#12 expect-error=XX000
 sql:   SELECT NULL - b FROM t WHERE id = 1
-plan:  Project([(NULL - _current.B#2)], Scan(T, [=]))
-shape: RecordQueryProjectionPlan
-shape:   RecordQueryScanPlan
-=== arithmetic.yaml#13
+plan:  <PLAN-ERROR: XX000: unable to encapsulate arithmetic operation due to type mismatch(es)>
+=== arithmetic.yaml#13 expect-error=XX000
 sql:   SELECT NULL * NULL FROM t WHERE id = 1
-plan:  Project([(NULL * NULL)], Scan(T, [=]))
-shape: RecordQueryProjectionPlan
-shape:   RecordQueryScanPlan
+plan:  <PLAN-ERROR: XX000: unable to encapsulate arithmetic operation due to type mismatch(es)>
 === arithmetic.yaml#14
-sql:   SELECT NULL / 5 FROM t WHERE id = 1
-plan:  Project([(NULL / 5)], Scan(T, [=]))
+sql:   SELECT a + CAST(NULL AS BIGINT) FROM t WHERE id = 1
+plan:  Project([(_current.A#1 + CAST(NULL AS BIGINT))], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === arithmetic.yaml#15
-sql:   SELECT 5 / NULL FROM t WHERE id = 1
-plan:  Project([(5 / NULL)], Scan(T, [=]))
+sql:   SELECT CAST(NULL AS BIGINT) - b FROM t WHERE id = 1
+plan:  Project([(CAST(NULL AS BIGINT) - _current.B#2)], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
-=== arithmetic.yaml#16 expect-error=22012
+=== arithmetic.yaml#16
+sql:   SELECT CAST(NULL AS BIGINT) / 5 FROM t WHERE id = 1
+plan:  Project([(CAST(NULL AS BIGINT) / 5)], Scan(T, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== arithmetic.yaml#17
+sql:   SELECT 5 / CAST(NULL AS BIGINT) FROM t WHERE id = 1
+plan:  Project([(5 / CAST(NULL AS BIGINT))], Scan(T, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== arithmetic.yaml#18 expect-error=22012
 sql:   SELECT a / 0 FROM t WHERE id = 1
 plan:  Project([(_current.A#1 / 0)], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
-=== arithmetic.yaml#17
-sql:   SELECT NULL / 0 FROM t WHERE id = 1
-plan:  Project([(NULL / 0)], Scan(T, [=]))
+=== arithmetic.yaml#19
+sql:   SELECT CAST(NULL AS BIGINT) / 0 FROM t WHERE id = 1
+plan:  Project([(CAST(NULL AS BIGINT) / 0)], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
-=== arithmetic.yaml#18 expect-error=22012
+=== arithmetic.yaml#20 expect-error=XX000
+sql:   SELECT NULL / 0 FROM t WHERE id = 1
+plan:  <PLAN-ERROR: XX000: unable to encapsulate arithmetic operation due to type mismatch(es)>
+=== arithmetic.yaml#21 expect-error=22012
 sql:   SELECT SUM(a / 0) FROM t
 plan:  Project([_current.SUM(A/0)#0], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
-=== arithmetic.yaml#19 expect-error=22012
+=== arithmetic.yaml#22 expect-error=22012
 sql:   SELECT b, SUM(a / 0) FROM t GROUP BY b
 plan:  Project([_current.B#0, _current.SUM(A/0)#1], StreamingAgg(keys=[_current.B#2], InMemorySort([_current.B#2 ASC], Scan(T))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryScanPlan
-=== arithmetic.yaml#20 expect-error=22012
+=== arithmetic.yaml#23 expect-error=22012
 sql:   SELECT COUNT(*) FROM t GROUP BY a / 0
 plan:  Project([_current.COUNT(*)#1], StreamingAgg(keys=[(_current.A#1 / 0)], InMemorySort([(_current.A#1 / 0) ASC], Scan(T))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryScanPlan
-=== arithmetic.yaml#21 expect-error=22012
+=== arithmetic.yaml#24 expect-error=22012
 sql:   SELECT a FROM t WHERE a / 0 > 0
 plan:  Project([_current.A#1], PredicatesFilter(Scan(T), [1 preds]))
 shape: RecordQueryProjectionPlan
@@ -1585,17 +1592,17 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === bitwise.yaml#0
 sql:   SELECT a & b FROM t WHERE id = 1
-plan:  Project([BITAND(_current.A#1, _current.B#2)], Scan(T, [=]))
+plan:  Project([(_current.A#1 & _current.B#2)], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === bitwise.yaml#1
 sql:   SELECT a | b FROM t WHERE id = 2
-plan:  Project([BITOR(_current.A#1, _current.B#2)], Scan(T, [=]))
+plan:  Project([(_current.A#1 | _current.B#2)], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === bitwise.yaml#2
 sql:   SELECT a ^ b FROM t WHERE id = 1
-plan:  Project([BITXOR(_current.A#1, _current.B#2)], Scan(T, [=]))
+plan:  Project([(_current.A#1 ^ _current.B#2)], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === bitwise.yaml#3 expect-error=0AF00
@@ -1606,7 +1613,7 @@ sql:   SELECT a >> 1 FROM t WHERE id = 1
 plan:  <PLAN-ERROR: 0AF00: Unsupported operator ››>
 === bitwise.yaml#5
 sql:   SELECT a & b FROM t WHERE id = 4
-plan:  Project([BITAND(_current.A#1, _current.B#2)], Scan(T, [=]))
+plan:  Project([(_current.A#1 & _current.B#2)], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === bitwise.yaml#6
@@ -5735,16 +5742,16 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === derived_table_patterns_java.yaml#5
 sql:   SELECT o.id, s.shipped_count FROM orders o, (SELECT customer_id, COUNT(*) AS shipped_count FROM orders WHERE status = 'shipped' GROUP BY customer_id) AS s WHERE o.customer_id = s.customer_id AND o.status = 'pending' ORDER BY o.id
-plan:  Project([_current.ID#0, _current.SHIPPED_COUNT#5], InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, [2 preds], Project([_current.CUSTOMER_ID#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.CUSTOMER_ID#1], InMemorySort([_current.CUSTOMER_ID#1 ASC], PredicatesFilter(Scan(ORDERS), [1 preds])))), Scan(ORDERS))))
+plan:  Project([_current.ID#0, _current.SHIPPED_COUNT#5], InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, [2 preds], Scan(ORDERS), Project([_current.CUSTOMER_ID#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.CUSTOMER_ID#1], InMemorySort([_current.CUSTOMER_ID#1 ASC], PredicatesFilter(Scan(ORDERS), [1 preds])))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryScanPlan
 shape:       RecordQueryProjectionPlan
 shape:         RecordQueryStreamingAggregationPlan
 shape:           RecordQueryInMemorySortPlan
 shape:             RecordQueryPredicatesFilterPlan
 shape:               RecordQueryScanPlan
-shape:       RecordQueryScanPlan
 === derived_table_patterns_java.yaml#6
 sql:   SELECT * FROM (SELECT id, amount * 2 AS double_amt FROM orders WHERE id <= 3) AS d ORDER BY id
 plan:  Project([_current.ID#0, (_current.AMOUNT#2 * 2)], Scan(ORDERS, [<>]))
@@ -6052,10 +6059,7 @@ sql:   DELETE FROM nonexistent WHERE id = 1
 plan:  <PLAN-ERROR: 42F01: Unknown table NONEXISTENT>
 === dml_error_codes.yaml#4 expect-error=22000
 sql:   UPDATE t SET v = 'text' WHERE id = 1
-plan:  Update(T, [1 transforms], UnorderedPrimaryKeyDistinct(Scan(T, [=])))
-shape: RecordQueryUpdatePlan
-shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
-shape:     RecordQueryScanPlan
+plan:  <PLAN-ERROR: planning failed: incompatible type: STRING NOT NULL cannot be promoted to LONG NULL (field V)>
 === dml_error_codes.yaml#5
 sql:   UPDATE t SET v = 99 WHERE id = 1
 plan:  Update(T, [1 transforms], UnorderedPrimaryKeyDistinct(Scan(T, [=])))
@@ -7459,18 +7463,24 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
-=== float_column.yaml#7
+=== float_column.yaml#8 expect-error=22000
 sql:   UPDATE Measurements SET temp = 100.5 WHERE id = 3
+plan:  <PLAN-ERROR: planning failed: incompatible type: DOUBLE NOT NULL cannot be promoted to FLOAT NULL (field TEMP)>
+=== float_column.yaml#9 expect-error=22000
+sql:   UPDATE Measurements SET temp = 100.5 WHERE id = 999
+plan:  <PLAN-ERROR: planning failed: incompatible type: DOUBLE NOT NULL cannot be promoted to FLOAT NULL (field TEMP)>
+=== float_column.yaml#10
+sql:   UPDATE Measurements SET temp = CAST(100.5 AS FLOAT) WHERE id = 3
 plan:  Update(MEASUREMENTS, [1 transforms], UnorderedPrimaryKeyDistinct(Scan(MEASUREMENTS, [=])))
 shape: RecordQueryUpdatePlan
 shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
 shape:     RecordQueryScanPlan
-=== float_column.yaml#8
+=== float_column.yaml#11
 sql:   SELECT temp FROM Measurements WHERE id = 3
 plan:  Project([_current.TEMP#1], Scan(MEASUREMENTS, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
-=== float_column.yaml#9
+=== float_column.yaml#12
 sql:   SELECT COUNT(*) FROM Measurements WHERE temp > 0
 plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(MEASUREMENTS), [1 preds])))
 shape: RecordQueryProjectionPlan
@@ -9269,19 +9279,19 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
 === information_schema.yaml#0
 sql:   SELECT TABLE_NAME FROM "INFORMATION_SCHEMA"."TABLES" WHERE TABLE_NAME IN ('EMP_SYSTEST', 'DEPT_SYSTEST') ORDER BY TABLE_NAME
-plan:  <PLAN-ERROR: 42F00: Unknown database INFORMATION_SCHEMA>
+plan:  <PLAN-ERROR: 42703: Unknown reference INFORMATION_SCHEMA.TABLES>
 === information_schema.yaml#1
 sql:   SELECT TABLE_NAME FROM "INFORMATION_SCHEMA"."TABLES" WHERE TABLE_NAME = 'EMP_SYSTEST'
-plan:  <PLAN-ERROR: 42F00: Unknown database INFORMATION_SCHEMA>
+plan:  <PLAN-ERROR: 42703: Unknown reference INFORMATION_SCHEMA.TABLES>
 === information_schema.yaml#2
 sql:   SELECT COLUMN_NAME FROM "INFORMATION_SCHEMA"."COLUMNS" WHERE TABLE_NAME = 'EMP_SYSTEST' ORDER BY ORDINAL_POSITION
-plan:  <PLAN-ERROR: 42F00: Unknown database INFORMATION_SCHEMA>
+plan:  <PLAN-ERROR: 42703: Unknown reference INFORMATION_SCHEMA.COLUMNS>
 === information_schema.yaml#3
 sql:   SELECT TABLE_NAME AS t_name FROM "INFORMATION_SCHEMA"."TABLES" WHERE TABLE_NAME = 'EMP_SYSTEST'
-plan:  <PLAN-ERROR: 42F00: Unknown database INFORMATION_SCHEMA>
+plan:  <PLAN-ERROR: 42703: Unknown reference INFORMATION_SCHEMA.TABLES>
 === information_schema.yaml#4 expect-error=42703
 sql:   SELECT NOT_A_COLUMN FROM "INFORMATION_SCHEMA"."TABLES" WHERE TABLE_NAME = 'EMP_SYSTEST'
-plan:  <PLAN-ERROR: 42F00: Unknown database INFORMATION_SCHEMA>
+plan:  <PLAN-ERROR: 42703: Unknown reference INFORMATION_SCHEMA.TABLES>
 === insert_arity.yaml#1
 sql:   SELECT a1, a2, a3 FROM a WHERE a1 = 1
 plan:  Project([_current.A1#0, _current.A2#1, _current.A3#2], Scan(A, [=]))
@@ -9579,12 +9589,9 @@ sql:   SELECT val FROM t_int WHERE id = 3
 plan:  Project([_current.VAL#1], Scan(T_INT, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
-=== integer_column_types.yaml#7 expect-error=22003
+=== integer_column_types.yaml#7 expect-error=22000
 sql:   UPDATE t_int SET val = 2147483648 WHERE id = 4
-plan:  Update(T_INT, [1 transforms], UnorderedPrimaryKeyDistinct(Scan(T_INT, [=])))
-shape: RecordQueryUpdatePlan
-shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
-shape:     RecordQueryScanPlan
+plan:  <PLAN-ERROR: planning failed: incompatible type: LONG NOT NULL cannot be promoted to INT NULL (field VAL)>
 === integer_column_types.yaml#8
 sql:   SELECT val + 1 FROM t_int WHERE id = 4
 plan:  Project([(_current.VAL#1 + 1)], Scan(T_INT, [=]))
@@ -9722,18 +9729,12 @@ sql:   SELECT CAST(-2147483649 AS INTEGER) FROM IntTest WHERE id = 1
 plan:  Project([CAST(-2147483649 AS INT)], Scan(INTTEST, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
-=== integer_range.yaml#7 expect-error=22003
+=== integer_range.yaml#7 expect-error=22000
 sql:   UPDATE IntTest SET val = 2147483648 WHERE id = 3
-plan:  Update(INTTEST, [1 transforms], UnorderedPrimaryKeyDistinct(Scan(INTTEST, [=])))
-shape: RecordQueryUpdatePlan
-shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
-shape:     RecordQueryScanPlan
-=== integer_range.yaml#8 expect-error=22003
+plan:  <PLAN-ERROR: planning failed: incompatible type: LONG NOT NULL cannot be promoted to INT NULL (field VAL)>
+=== integer_range.yaml#8 expect-error=22000
 sql:   UPDATE IntTest SET val = -2147483649 WHERE id = 3
-plan:  Update(INTTEST, [1 transforms], UnorderedPrimaryKeyDistinct(Scan(INTTEST, [=])))
-shape: RecordQueryUpdatePlan
-shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
-shape:     RecordQueryScanPlan
+plan:  <PLAN-ERROR: planning failed: incompatible type: LONG NOT NULL cannot be promoted to INT NULL (field VAL)>
 === integer_range.yaml#9 expect-error=22003
 sql:   UPDATE IntTest SET val = val + 1 WHERE id = 1
 plan:  Update(INTTEST, [1 transforms], UnorderedPrimaryKeyDistinct(Scan(INTTEST, [=])))
@@ -15142,7 +15143,7 @@ sql:   SELECT a.* FROM a GROUP BY a1
 plan:  <PLAN-ERROR: 42803: column "A.A2" must appear in the GROUP BY clause or be used in an aggregate function>
 === qualified_star_more.yaml#3 expect-error=42803
 sql:   SELECT a.*, b.* FROM a, b WHERE a.a1 = b.b1 GROUP BY a1
-plan:  <PLAN-ERROR: 42803: SELECT qualifier.* expands to columns not in GROUP BY>
+plan:  <PLAN-ERROR: 42803: column "A.A2" must appear in the GROUP BY clause or be used in an aggregate function>
 === quoted_identifier_aggregate_labels.yaml#0
 sql:   SELECT "Region", SUM("Amount") FROM sales GROUP BY "Region" ORDER BY "Region"
 plan:  Project([_current.Region#0, _current.SUM(Amount)#1], GroupExistenceMerge(AggregateIndex(COUNT, SUM_BY_REGION__GROUP_COUNT, [Region], SALES, live_groups_only), AggregateIndex(SUM, SUM_BY_REGION, [Region], SALES); keys=[Region#0], driving=0))
@@ -15277,9 +15278,9 @@ shape:     RecordQueryScanPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryProjectionPlan
 shape:         RecordQueryScanPlan
-=== quoted_identifier_columns.yaml#4 expect-error=42702
+=== quoted_identifier_columns.yaml#4 expect-error=42703
 sql:   SELECT d."ka" FROM (SELECT "k" AS "kA", "id" AS "Ka" FROM q2) d
-plan:  <PLAN-ERROR: 42702: Ambiguous reference D.ka>
+plan:  <PLAN-ERROR: 42703: column "D.ka" does not exist>
 === quoted_identifier_columns.yaml#5
 sql:   SELECT d."kA" FROM (SELECT "k" AS "kA", "id" AS "Ka" FROM q2) d ORDER BY d."kA"
 plan:  Project([_current.kA#0], InMemorySort([_current.kA#0 ASC], Project([_current.k#1, _current.id#0], Scan(Q2))))
@@ -15528,7 +15529,7 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryTempTableScanPlan
 === quoted_identifier_labels.yaml#30 expect-error=0AF00
 sql:   WITH RECURSIVE d AS (SELECT * FROM q1, QCASE WHERE q1."id" = 1 UNION ALL SELECT d."id" FROM d) SELECT * FROM d
-plan:  <PLAN-ERROR: 0AF00: recursive CTE branches have no exact common result row: recursive branch 0 has width 1, want 4>
+plan:  <PLAN-ERROR: 0AF00: recursive CTE "D" has no exact common result row: 42F64: UNION legs do not have the same number of columns>
 === quoted_identifier_labels.yaml#31
 sql:   WITH RECURSIVE d AS (SELECT * FROM dott WHERE "a.b" = 1 UNION ALL SELECT d."a.b" + 1, d.plain FROM d WHERE d."a.b" < 3) SELECT d."a.b" FROM d ORDER BY d."a.b"
 plan:  Project([_current.a.b#0], InMemorySort([_current.a.b#0 ASC], RecursiveDfsJoin(PREORDER, PredicatesFilter(Scan(DOTT), [1 preds]), Project([(_current.a.b#0 + 1), _current.PLAIN#1], PredicatesFilter(TempTableScan(DforScan), [1 preds])))))
@@ -15610,7 +15611,7 @@ shape:         RecordQueryScanPlan
 shape:       RecordQueryExplodePlan
 === quoted_identifier_labels.yaml#39 expect-error=42F10
 sql:   SELECT x FROM (SELECT b AS z FROM dottarr) d, d.z AS x
-plan:  <PLAN-ERROR: 42F10: join correlation can occur only on a column of repeated (array) type>
+plan:  <PLAN-ERROR: 42F10: join correlation can occur only on column of repeated type, not long ∪ ∅ type>
 === quoted_identifier_pins.yaml#0
 sql:   SELECT id FROM t ORDER BY "x" DESC
 plan:  Project([_current.ID#0], InMemorySort([_current.x#1 DESC], Scan(T)))
@@ -15807,9 +15808,19 @@ shape:           RecordQueryProjectionPlan
 shape:             RecordQueryFlatMapPlan
 shape:               RecordQueryTempTableScanPlan
 shape:               RecordQueryScanPlan
-=== recursive_cte.yaml#15 expect-error=0AF00
+=== recursive_cte.yaml#15
 sql:   WITH RECURSIVE counter(n) AS ( SELECT 1 AS n UNION ALL SELECT n + 1 FROM counter WHERE n < 5 ) SELECT n FROM counter ORDER BY n
-plan:  <PLAN-ERROR: 0AF00: query is not supported>
+plan:  Project([_current.N#0], InMemorySort([_current.N#0 ASC], RecursiveDfsJoin(PREORDER, Project([PROMOTE(_current.N#0 TO INT)], Project([1], Project([], Explode(array)))), Project([(_current.N#0 + 1)], PredicatesFilter(TempTableScan(COUNTERforScan), [1 preds])))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryRecursiveDfsJoinPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryProjectionPlan
+shape:             RecordQueryExplodePlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryTempTableScanPlan
 === recursive_cte.yaml#16
 sql:   WITH RECURSIVE reach(n) AS ( SELECT src FROM edge WHERE src = 1 UNION SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.n ) SELECT n FROM reach ORDER BY n
 plan:  Project([_current.N#0], InMemorySort([_current.N#0 ASC], RecursiveDfsJoin(PREORDER, Project([_current.SRC#0], Scan(EDGE, [=])), Project([_current.DST#2], FlatMap(outer=TempTableScan(REACHforScan), inner=Scan(EDGE, [=]))))))
@@ -16075,14 +16086,14 @@ shape:         RecordQueryInMemorySortPlan
 shape:           RecordQueryScanPlan
 === repeated_output_names.yaml#7
 sql:   SELECT * FROM c, (SELECT g, SUM(v) AS g FROM ga GROUP BY g) u WHERE c.id = 100
-plan:  Project([_current.ID#0, _current.W#1, _current.G#2, _current.G_2#3], NestedLoopJoin(INNER, Scan(C, [=]), Project([_current.G#0, _current.SUM(V)#1], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA))))))
+plan:  Project([_current.ID#0, _current.W#1, _current.G#2, _current.G_2#3], NestedLoopJoin(INNER, Project([_current.G#0, _current.SUM(V)#1], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA)))), Scan(C, [=])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryNestedLoopJoinPlan
-shape:     RecordQueryScanPlan
 shape:     RecordQueryProjectionPlan
 shape:       RecordQueryStreamingAggregationPlan
 shape:         RecordQueryInMemorySortPlan
 shape:           RecordQueryScanPlan
+shape:     RecordQueryScanPlan
 === repeated_output_names.yaml#8
 sql:   SELECT * FROM (SELECT g AS a, SUM(v) AS a FROM ga GROUP BY g) u, c WHERE c.id = 100
 plan:  Project([_current.A#0, _current.A_2#1, _current.ID#2, _current.W#3], NestedLoopJoin(INNER, Scan(C, [=]), Project([_current.G#0, _current.SUM(V)#1], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA))))))
@@ -16444,9 +16455,12 @@ shape:             RecordQueryProjectionPlan
 shape:               RecordQueryStreamingAggregationPlan
 shape:                 RecordQueryPredicatesFilterPlan
 shape:                   RecordQueryScanPlan
-=== scalar_subquery_java.yaml#2 expect-error=0AF00
+=== scalar_subquery_java.yaml#2
 sql:   SELECT (SELECT COUNT(*) FROM employees) AS total
-plan:  <PLAN-ERROR: 0AF00: query is not supported>
+plan:  Project([(SCALAR_SUBQUERY)], Project([], Explode(array)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryExplodePlan
 === scalar_subquery_java.yaml#3
 sql:   SELECT name FROM employees WHERE dept_id = (SELECT id FROM departments WHERE name = 'Sales') ORDER BY name
 plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], PredicatesFilter(Scan(EMPLOYEES), [1 preds])))
@@ -17178,24 +17192,42 @@ shape:   RecordQueryScanPlan
 === select_expressions_java.yaml#8 expect-error=42601
 sql:   SELECT id, -a, a * -1 FROM t WHERE id = 1
 plan:  <PLAN-ERROR: parse SQL: 42601: syntax error: SELECT id, -a, a * -1 FROM t WHERE id = 1 ^>
-=== select_no_from.yaml#0 expect-error=0AF00
+=== select_no_from.yaml#0
 sql:   SELECT 1 + 2
-plan:  <PLAN-ERROR: 0AF00: query is not supported>
-=== select_no_from.yaml#1 expect-error=0AF00
+plan:  Project([(1 + 2)], Project([], Explode(array)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryExplodePlan
+=== select_no_from.yaml#1
 sql:   SELECT 'hello'
-plan:  <PLAN-ERROR: 0AF00: query is not supported>
-=== select_no_from.yaml#2 expect-error=0AF00
+plan:  Project(['hello'], Project([], Explode(array)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryExplodePlan
+=== select_no_from.yaml#2
 sql:   SELECT NULL
-plan:  <PLAN-ERROR: 0AF00: query is not supported>
-=== select_no_from.yaml#3 expect-error=0AF00
+plan:  Project([NULL], Project([], Explode(array)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryExplodePlan
+=== select_no_from.yaml#3
 sql:   SELECT 'abc'
-plan:  <PLAN-ERROR: 0AF00: query is not supported>
-=== select_no_from.yaml#4 expect-error=0AF00
+plan:  Project(['abc'], Project([], Explode(array)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryExplodePlan
+=== select_no_from.yaml#4
 sql:   SELECT NOT TRUE
-plan:  <PLAN-ERROR: 0AF00: query is not supported>
-=== select_no_from.yaml#5 expect-error=0AF00
+plan:  Project([predicate], Project([], Explode(array)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryExplodePlan
+=== select_no_from.yaml#5
 sql:   SELECT CAST(1.7 AS BIGINT)
-plan:  <PLAN-ERROR: 0AF00: query is not supported>
+plan:  Project([CAST(1.7 AS BIGINT)], Project([], Explode(array)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryExplodePlan
 === select_star_join.yaml#0
 sql:   SELECT * FROM a ORDER BY id
 plan:  Scan(A)
@@ -17481,11 +17513,9 @@ sql:   SELECT s + s FROM t WHERE id = 1
 plan:  Project([(_current.S#3 + _current.S#3)], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
-=== string_concat_plus.yaml#6 expect-error=22000
+=== string_concat_plus.yaml#6 expect-error=XX000
 sql:   SELECT s - n FROM t WHERE id = 1
-plan:  Project([(_current.S#3 - _current.N#1)], Scan(T, [=]))
-shape: RecordQueryProjectionPlan
-shape:   RecordQueryScanPlan
+plan:  <PLAN-ERROR: XX000: unable to encapsulate arithmetic operation due to type mismatch(es)>
 === string_functions.yaml#0
 sql:   SELECT LEFT(s, 5) FROM t WHERE id = 1
 plan:  Project([LEFT(_current.S#1, 5)], Scan(T, [=]))
@@ -18127,7 +18157,7 @@ sql:   SELECT id, v FROM a UNION SELECT id FROM b
 plan:  <PLAN-ERROR: 0AF00: only UNION ALL is supported>
 === union_columns.yaml#8
 sql:   SELECT v FROM a UNION ALL SELECT 99 FROM b
-plan:  UnorderedUnion(Project([_current.V#1], Scan(A)), Project([CASE(0, [PROMOTE(_current.99#0 TO BIGINT), NULL])], Project([99], Scan(B))))
+plan:  UnorderedUnion(Project([_current.V#1], Scan(A)), Project([PROMOTE(_current.99#0 TO BIGINT)], Project([99], Scan(B))))
 shape: RecordQueryUnorderedUnionPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryScanPlan
@@ -18519,73 +18549,76 @@ plan:  <PLAN-ERROR: 42F01: Unknown table CUSTOMER>
 === unquoted_dml_against_a_quoted_table.yaml#4 expect-error=42F01
 sql:   UPDATE customer SET nosuchcol = 'z' WHERE id = 1
 plan:  <PLAN-ERROR: 42F01: Unknown table CUSTOMER>
-=== unquoted_dml_against_a_quoted_table.yaml#5 expect-error=42703
+=== unquoted_dml_against_a_quoted_table.yaml#5 expect-error=42F01
+sql:   UPDATE customer SET name = nosuchcol WHERE id = 1
+plan:  <PLAN-ERROR: 42F01: Unknown table CUSTOMER>
+=== unquoted_dml_against_a_quoted_table.yaml#6 expect-error=42703
 sql:   DELETE FROM customer WHERE nosuchcol = 1
 plan:  <PLAN-ERROR: 42703: column "NOSUCHCOL" does not exist>
-=== unquoted_dml_against_a_quoted_table.yaml#6 expect-error=42703
+=== unquoted_dml_against_a_quoted_table.yaml#7 expect-error=42703
 sql:   SELECT nosuchcol FROM customer
 plan:  <PLAN-ERROR: 42703: column "NOSUCHCOL" does not exist>
-=== unquoted_dml_against_a_quoted_table.yaml#7 expect-error=42703
+=== unquoted_dml_against_a_quoted_table.yaml#8 expect-error=42703
 sql:   UPDATE customer SET name = 'z' WHERE nosuchcol = 1
 plan:  <PLAN-ERROR: 42703: column "NOSUCHCOL" does not exist>
-=== unquoted_dml_against_a_quoted_table.yaml#8 expect-error=42703
+=== unquoted_dml_against_a_quoted_table.yaml#9 expect-error=42703
 sql:   UPDATE "Customer" SET nosuchcol = 'z' WHERE id = 1
 plan:  <PLAN-ERROR: 42703: column "NOSUCHCOL" not found in table "Customer">
-=== unquoted_dml_against_a_quoted_table.yaml#9
+=== unquoted_dml_against_a_quoted_table.yaml#10
 sql:   SELECT id, name FROM "Customer" ORDER BY id
 plan:  Project([_current.ID#0, _current.NAME#1], Scan(Customer))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
-=== unquoted_dml_against_a_quoted_table.yaml#10
+=== unquoted_dml_against_a_quoted_table.yaml#11
 sql:   DELETE FROM "Customer" WHERE id = 1
 plan:  Delete(Customer, Scan(Customer, [=]))
 shape: RecordQueryDeletePlan
 shape:   RecordQueryScanPlan
-=== unquoted_dml_against_a_quoted_table.yaml#11
+=== unquoted_dml_against_a_quoted_table.yaml#12
 sql:   SELECT id, name FROM "Customer" ORDER BY id
 plan:  Project([_current.ID#0, _current.NAME#1], Scan(Customer))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
-=== unquoted_dml_against_a_quoted_table.yaml#16
+=== unquoted_dml_against_a_quoted_table.yaml#17
 sql:   SELECT id, name FROM "Customer" ORDER BY id
 plan:  Project([_current.ID#0, _current.NAME#1], Scan(Customer))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
-=== unquoted_dml_against_a_quoted_table.yaml#18 expect-error=0AF00
+=== unquoted_dml_against_a_quoted_table.yaml#19 expect-error=0AF00
 sql:   DELETE FROM "Customer" WHERE id IN (SELECT id FROM customer)
 plan:  <PLAN-ERROR: 0AF00: DML Cascades translation failed>
-=== unquoted_dml_against_a_quoted_table.yaml#19 expect-error=0AF00
+=== unquoted_dml_against_a_quoted_table.yaml#20 expect-error=0AF00
 sql:   DELETE FROM "Customer" WHERE id IN (SELECT id FROM "Customer" WHERE id = 9)
 plan:  <PLAN-ERROR: 0AF00: DML Cascades translation failed>
-=== unquoted_dml_against_a_quoted_table.yaml#20 expect-error=42F01
+=== unquoted_dml_against_a_quoted_table.yaml#21 expect-error=42F01
 sql:   DELETE FROM "Customer" WHERE EXISTS (SELECT 1 FROM nosuchtable)
 plan:  <PLAN-ERROR: 42F01: scan "NOSUCHTABLE" has no exact catalog row type>
-=== unquoted_dml_against_a_quoted_table.yaml#21
+=== unquoted_dml_against_a_quoted_table.yaml#22
 sql:   SELECT id, name FROM "Customer" ORDER BY id
 plan:  Project([_current.ID#0, _current.NAME#1], Scan(Customer))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
-=== unquoted_dml_against_a_quoted_table.yaml#22 expect-error=42F01
+=== unquoted_dml_against_a_quoted_table.yaml#23 expect-error=42F01
 sql:   DELETE FROM t WHERE id = (SELECT MAX(id) FROM nosuchtable)
 plan:  <PLAN-ERROR: 42F01: table "NOSUCHTABLE" does not exist>
-=== unquoted_dml_against_a_quoted_table.yaml#23 expect-error=42F01
+=== unquoted_dml_against_a_quoted_table.yaml#24 expect-error=42F01
 sql:   UPDATE t SET v = 1 WHERE id = (SELECT MAX(id) FROM nosuchtable)
 plan:  <PLAN-ERROR: 42F01: table "NOSUCHTABLE" does not exist>
-=== unquoted_dml_against_a_quoted_table.yaml#24
+=== unquoted_dml_against_a_quoted_table.yaml#25
 sql:   DELETE FROM "Customer" WHERE id = (WITH x AS (SELECT id FROM "Customer" WHERE id = 99) SELECT MAX(id) FROM x)
 plan:  Delete(Customer, Scan(Customer, [=]))
 shape: RecordQueryDeletePlan
 shape:   RecordQueryScanPlan
-=== unquoted_dml_against_a_quoted_table.yaml#25
+=== unquoted_dml_against_a_quoted_table.yaml#26
 sql:   UPDATE "Customer" SET name = 'z' WHERE id = (WITH x AS (SELECT id FROM "Customer" WHERE id = 99) SELECT MAX(id) FROM x)
 plan:  Update(Customer, [1 transforms], UnorderedPrimaryKeyDistinct(Scan(Customer, [=])))
 shape: RecordQueryUpdatePlan
 shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
 shape:     RecordQueryScanPlan
-=== unquoted_dml_against_a_quoted_table.yaml#26 expect-error=42F01
+=== unquoted_dml_against_a_quoted_table.yaml#27 expect-error=42F01
 sql:   DELETE FROM "Customer" WHERE id = (WITH x AS (SELECT id FROM "Customer") SELECT MAX(id) FROM x) AND name = (SELECT MAX(name) FROM x)
 plan:  <PLAN-ERROR: 42F01: table "X" does not exist>
-=== unquoted_dml_against_a_quoted_table.yaml#27
+=== unquoted_dml_against_a_quoted_table.yaml#28
 sql:   SELECT id, name FROM "Customer" ORDER BY id
 plan:  Project([_current.ID#0, _current.NAME#1], Scan(Customer))
 shape: RecordQueryProjectionPlan
@@ -18642,10 +18675,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === update_case_when.yaml#9 expect-error=22000
 sql:   UPDATE a SET a2 = CASE WHEN a1 = 99 THEN 1 ELSE 2.2 END
-plan:  Update(A, [1 transforms], UnorderedPrimaryKeyDistinct(Scan(A)))
-shape: RecordQueryUpdatePlan
-shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
-shape:     RecordQueryScanPlan
+plan:  <PLAN-ERROR: planning failed: incompatible type: DOUBLE NULL cannot be promoted to LONG NULL (field A2)>
 === update_comprehensive.yaml#0
 sql:   UPDATE t SET score = 95 WHERE id = 1
 plan:  Update(T, [1 transforms], UnorderedPrimaryKeyDistinct(Scan(T, [=])))

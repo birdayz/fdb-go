@@ -24,7 +24,7 @@ func TestFDB_FloatIntegerTypesProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE fit CREATE TABLE t (id BIGINT, f FLOAT, i INTEGER, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_fit/s WITH TEMPLATE fit")
-	dsn := fmt.Sprintf("fdbsql:///testdb_fit?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_FIT?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -32,7 +32,7 @@ func TestFDB_FloatIntegerTypesProbe(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	t.Run("float_is_32bit_precision", func(t *testing.T) {
-		mwjoMustExec(t, db, ctx, "INSERT INTO t (id, f) VALUES (1, 0.1)")
+		mwjoMustExec(t, db, ctx, "INSERT INTO t (id, f) VALUES (1, CAST(0.1 AS FLOAT))")
 		var f float64
 		if err := db.QueryRowContext(ctx, "SELECT f FROM t WHERE id = 1").Scan(&f); err != nil {
 			t.Fatalf("scan: %v", err)
@@ -45,7 +45,7 @@ func TestFDB_FloatIntegerTypesProbe(t *testing.T) {
 		}
 	})
 	t.Run("float_exact_value_roundtrips", func(t *testing.T) {
-		mwjoMustExec(t, db, ctx, "INSERT INTO t (id, f) VALUES (2, 1.5)") // exact in float32
+		mwjoMustExec(t, db, ctx, "INSERT INTO t (id, f) VALUES (2, CAST(1.5 AS FLOAT))") // exact in float32
 		var f float64
 		if err := db.QueryRowContext(ctx, "SELECT f FROM t WHERE id = 2").Scan(&f); err != nil {
 			t.Fatalf("scan: %v", err)
@@ -66,9 +66,12 @@ func TestFDB_FloatIntegerTypesProbe(t *testing.T) {
 	})
 	overflow := func(name string, v int64) {
 		t.Run(name, func(t *testing.T) {
+			// A bound int64 is a BIGINT (JDBC setLong), and a BIGINT does not
+			// promote to the INTEGER column: refused while planning, 22000,
+			// as the target refuses it (PromoteValue has no LONG_TO_INT).
 			_, err := db.ExecContext(ctx, "INSERT INTO t (id, i) VALUES (?, ?)", v, v)
-			if err == nil || !strings.Contains(err.Error(), "22003") {
-				t.Errorf("INSERT INTEGER %d error = %v, want 22003 (int32 overflow)", v, err)
+			if err == nil || !strings.Contains(err.Error(), "22000") {
+				t.Errorf("INSERT INTEGER %d error = %v, want 22000 (a BIGINT into an INTEGER column)", v, err)
 			}
 		})
 	}

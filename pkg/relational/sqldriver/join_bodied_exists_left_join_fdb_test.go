@@ -47,7 +47,7 @@ func TestFDB_JoinBodiedExistsOverLeftJoin(t *testing.T) {
 			"CREATE TABLE r (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE s (k BIGINT, PRIMARY KEY (k))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /jbexists/s WITH TEMPLATE jbexists")
-	dsn := fmt.Sprintf("fdbsql:///jbexists?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///JBEXISTS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -218,7 +218,7 @@ func TestFDB_BuriedAliasShadowingIsRejectedUpstream(t *testing.T) {
 			"CREATE TABLE a (k BIGINT, id BIGINT, PRIMARY KEY (k)) "+
 			"CREATE TABLE b (k BIGINT, z BIGINT, PRIMARY KEY (k))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /shadowreject/s WITH TEMPLATE shadowreject")
-	dsn := fmt.Sprintf("fdbsql:///shadowreject?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///SHADOWREJECT?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)

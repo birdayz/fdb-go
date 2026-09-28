@@ -391,22 +391,37 @@ CREATE TABLE badge (id BIGINT, emp_id BIGINT, PRIMARY KEY (id))`
 	for _, tc := range []struct {
 		name string
 		sql  string
-		// want is the rendering the residual above the null extension must have.
-		// Only meaningful when keepsOuter is true.
-		want string
-		// keepsOuter says whether the plan must still carry a LEFT OUTER join.
-		// It is a property of the CONJUNCT, not of the planner: a conjunct that
-		// rejects NULL on the null-supplying side makes the join semantically
-		// inner, and one satisfied only BY null-extended rows cannot.
+		// want is the rendering the residual above the null extension must have,
+		// per extension form: the null extension is either the box's LEFT OUTER
+		// join (the residual reads the merged row) or a DefaultOnEmpty over the
+		// null-supplying leg alone, correlated per preserved row (it reads that
+		// leg's own row). Only meaningful when keepsOuter is true.
+		want map[string]string
+		// keepsOuter says whether the plan must still null-extend. It is a
+		// property of the CONJUNCT, not of the planner: a conjunct that rejects
+		// NULL on the null-supplying side makes the join semantically inner,
+		// and one satisfied only BY null-extended rows cannot.
 		keepsOuter bool
 	}{
 		{
-			// The anti-join conjunct. Merged row is
-			// [D.ID, D.DNAME, E.ID, E.DEPT_ID, E.FNAME], so E.ID is #2.
+			// The anti-join conjunct. The box's merged row is
+			// [D.ID, D.DNAME, E.ID, E.DEPT_ID, E.FNAME], so E.ID is #2 there; over
+			// EMP's own null-extended row it is #0. Either way it is E.ID — the
+			// defect this pins read D.ID (#0 of the box) instead.
+			//
+			// The planner now takes the per-row form: partitioning peels the
+			// null-supplying leg, with its `e.id IS NULL` conjunct, into a
+			// one-quantifier lower correlated to the preserved one, which the
+			// simple-select rule implements as DefaultOnEmpty then the filter
+			// (Java's ImplementSimpleSelectRule does the same).
+			// TestFDB_LeftJoinExistsResidual (I3) executes it: ["empty"].
 			name: "IS NULL anti-join conjunct beside NOT EXISTS",
 			sql: `SELECT d.dname FROM dept d LEFT JOIN emp e ON e.dept_id = d.id ` +
 				`WHERE e.id IS NULL AND NOT EXISTS (SELECT 1 FROM badge b WHERE b.emp_id = e.id)`,
-			want:       "_current.ID#2 IS NULL",
+			want: map[string]string{
+				"NestedLoopJoin(LEFT OUTER": "_current.ID#2 IS NULL",
+				"DefaultOnEmpty":            "E.ID#0 IS NULL",
+			},
 			keepsOuter: true,
 		},
 		{
@@ -440,10 +455,11 @@ CREATE TABLE badge (id BIGINT, emp_id BIGINT, PRIMARY KEY (id))`
 			if err != nil {
 				t.Fatalf("planning: %v", err)
 			}
-			hasOuter := strings.Contains(plan.Explain(), "NestedLoopJoin(LEFT OUTER")
+			hasOuter := strings.Contains(plan.Explain(), "NestedLoopJoin(LEFT OUTER") ||
+				strings.Contains(plan.Explain(), "DefaultOnEmpty")
 			switch {
 			case tc.keepsOuter && !hasOuter:
-				t.Fatalf("plan lost the LEFT OUTER join. This conjunct is satisfied ONLY by "+
+				t.Fatalf("plan lost the null extension. This conjunct is satisfied ONLY by "+
 					"null-extended rows, so dropping the extension drops the answer:\n%s",
 					plan.Explain())
 			case !tc.keepsOuter && hasOuter:
@@ -455,9 +471,10 @@ CREATE TABLE badge (id BIGINT, emp_id BIGINT, PRIMARY KEY (id))`
 			if !tc.keepsOuter {
 				return
 			}
-			if got := residualPredicateOverOuterJoin(t, plan); got != tc.want {
-				t.Errorf("residual above the LEFT OUTER join = %q, want %q\nplan: %s",
-					got, tc.want, plan.Explain())
+			form, got := residualPredicateOverOuterJoin(t, plan)
+			if want, known := tc.want[form]; !known || got != want {
+				t.Errorf("residual above the null extension (%q) = %q, want %q\nplan: %s",
+					form, got, tc.want, plan.Explain())
 			}
 		})
 	}
@@ -468,22 +485,29 @@ CREATE TABLE badge (id BIGINT, emp_id BIGINT, PRIMARY KEY (id))`
 // predicate rather than the plan text because the plan text renders every
 // filter as `[N preds]` — which is exactly why a conjunct that moved onto the
 // wrong leg was invisible in EXPLAIN.
-func residualPredicateOverOuterJoin(t *testing.T, plan plans.RecordQueryPlan) string {
+func residualPredicateOverOuterJoin(t *testing.T, plan plans.RecordQueryPlan) (form, found string) {
 	t.Helper()
-	var found string
 	var walk func(plans.RecordQueryPlan)
 	walk = func(p plans.RecordQueryPlan) {
 		if p == nil || found != "" {
 			return
 		}
 		if filter, isFilter := p.(*plans.RecordQueryPredicatesFilterPlan); isFilter {
-			if join, isJoin := filter.GetInner().(*plans.RecordQueryNestedLoopJoinPlan); isJoin &&
-				join.GetJoinType() == plans.JoinLeftOuter {
+			extension := ""
+			switch inner := filter.GetInner().(type) {
+			case *plans.RecordQueryNestedLoopJoinPlan:
+				if inner.GetJoinType() == plans.JoinLeftOuter {
+					extension = "NestedLoopJoin(LEFT OUTER"
+				}
+			case *plans.RecordQueryDefaultOnEmptyPlan:
+				extension = "DefaultOnEmpty"
+			}
+			if extension != "" {
 				preds := filter.GetPredicates()
 				if len(preds) != 1 {
-					t.Fatalf("the filter over the LEFT OUTER join has %d predicates, want 1", len(preds))
+					t.Fatalf("the filter over the null extension has %d predicates, want 1", len(preds))
 				}
-				found = preds[0].Explain()
+				form, found = extension, preds[0].Explain()
 				return
 			}
 		}
@@ -492,7 +516,7 @@ func residualPredicateOverOuterJoin(t *testing.T, plan plans.RecordQueryPlan) st
 		}
 	}
 	walk(plan)
-	return found
+	return form, found
 }
 
 // TestUnsupportedScalarFunctionIsRejectedByName pins WHICH rejection an

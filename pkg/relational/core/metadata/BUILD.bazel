@@ -18,6 +18,7 @@ go_library(
     deps = [
         "//gen",
         "//pkg/recordlayer",
+        "//pkg/recordlayer/protoscope",
         "//pkg/relational/api",
         "@com_github_google_uuid//:uuid",
         "@org_golang_google_protobuf//proto",
@@ -38,6 +39,7 @@ go_test(
         "proto_types_test.go",
         "schema_template_test.go",
         "struct_column_test.go",
+        "table_order_test.go",
     ],
     embed = [":metadata"],
     deps = [
@@ -48,6 +50,7 @@ go_test(
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protodesc",
         "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//reflect/protoregistry",
         "@org_golang_google_protobuf//types/descriptorpb",
     ],
 )

@@ -31,14 +31,12 @@ func unnestElementStructFields(scope *semantic.Scope, j joinClause) []semantic.C
 // the same discard, and the reason it is worth closing is that the two shapes
 // are indistinguishable at the call site.
 //
-// This is a UNIT test on purpose. The nested shape is not reachable from SQL
-// today — the translator classifies a comma source as a lateral unnest by
-// resolving segment 0 against the in-scope source ALIASES (select_parser.go
-// segments doc), so `FROM t, n.arr AS x` is read as a database qualifier and
-// dies with 42F00 before this function runs. That decline is pinned end to end
-// in the driver suite. Driving the branch here is what keeps it from shipping
-// untested: its first firing would otherwise read as a finding rather than as a
-// branch nobody exercised.
+// This is a UNIT test on purpose: it drives the branch with both shapes side
+// by side, which no single SQL statement does. The nested shape is reachable
+// from SQL — a FROM item is read with the scope's column lookup, so `FROM t2,
+// n.arr AS x` unnests the struct column n's array (measured rows in
+// conformance/ws_f_table_qualifier_conformance_test.go) — and that end-to-end
+// reach is pinned there; this test pins the leaf the typing takes.
 func TestUnnestElementStructFieldsTakesTheLeaf(t *testing.T) {
 	t.Parallel()
 

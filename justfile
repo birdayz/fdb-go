@@ -39,9 +39,9 @@ generate: ensure-buf generate-mocks generate-parser generate-frl
     .tools/buf generate
     bazelisk run //:gazelle
 
-# Regenerate protobuf code for the `frl` CLI module (separate go.mod, separate
-# buf.yaml under cmd/frl/). Output goes to cmd/frl/gen/, consumed by the CLI
-# only — never by the library module.
+# Regenerate protobuf code for the `frl` CLI (its own buf.yaml under cmd/frl/).
+# Output goes to cmd/frl/gen/, consumed by the CLI only — never by the library
+# packages.
 generate-frl: ensure-buf
     rm -rf cmd/frl/gen/
     cd cmd/frl && ../../.tools/buf generate
@@ -467,8 +467,8 @@ race:
 # THREE DIFFERENT RACE SETS EXIST. They are not meant to be equal, so do not
 # "reconcile" them without reading why:
 #
-#   this recipe          client, fdb, recordlayer, chaos, conformance, cascades/...
-#   nightly-coverage.yml client, fdb, recordlayer, chaos, conformance
+#   this recipe          client, fdb, recordlayer, chaos, conformance (+ corpora), cascades/...
+#   nightly-coverage.yml client, fdb, recordlayer, chaos, conformance (+ corpora)
 #   ci.yml (PR gate)     relational/..., client, transport, fdb, cascades/...
 #
 # This recipe mirrors NIGHTLY-COVERAGE (not the PR gate) and always has: it is
@@ -483,9 +483,11 @@ race:
 #
 # Cascades was added to BOTH this recipe and the PR gate, as a WILDCARD so new
 # planner subpackages are picked up instead of silently going unraced. It is
-# CPU-only (no Docker, no FDB), so it is the cheap part of both.
+# CPU-only (no Docker, no FDB), so it is the cheap part of both. The
+# run_sql / yamsql / fault-inject specs split out of conformance_test into
+# conformance_corpora_test are raced wherever conformance_test is.
 race-all:
-    bazelisk --output_base={{race_base}} test //pkg/fdbgo/client:client_test //pkg/recordlayer:recordlayer_test //pkg/fdbgo/fdb:fdb_test //pkg/recordlayer/chaos:chaos_test //conformance:conformance_test //pkg/recordlayer/query/plan/cascades/... --@rules_go//go/config:race --test_timeout=900
+    bazelisk --output_base={{race_base}} test //pkg/fdbgo/client:client_test //pkg/recordlayer:recordlayer_test //pkg/fdbgo/fdb:fdb_test //pkg/recordlayer/chaos:chaos_test //conformance:conformance_test //conformance:conformance_corpora_test //pkg/recordlayer/query/plan/cascades/... --@rules_go//go/config:race --test_timeout=900
 
 # Full pre-merge verification: build + test + race detector + fuzz smoke test.
 # Run this before requesting PR merge. Takes ~3 minutes on a warm cache.
@@ -517,7 +519,14 @@ verify:
         -test.fuzzcachedir=/tmp/fuzz_verify -test.fuzztime=10s
     echo "=== All verification passed ==="
 
-# Install pre-commit hook (generate drift check + lint + build + test)
+# Refuse staged content that must never reach this repository, which is public:
+# credentials, private keys, OpenTofu state, public host addresses, and the
+# contents of this machine's secret files (cmd/secretscan). The pre-commit hook
+# runs it first; CI runs it over every commit a change adds.
+secret-scan:
+    go run ./cmd/secretscan -staged
+
+# Install pre-commit hook (secret scan + generate drift check + lint + build + test)
 install-hooks:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -529,7 +538,16 @@ install-hooks:
     cat > "$hooks_dir/pre-commit" << 'HOOK'
     #!/usr/bin/env bash
     set -euo pipefail
-    echo "Running pre-commit: just generate && just lint && just build && just test"
+    echo "Running pre-commit: just secret-scan && just generate && just lint && just build && just test"
+
+    # This repository is public: nothing that grants access may be committed (a
+    # credential, a private key, OpenTofu state, a public host address, a secret
+    # file's contents from this machine). First, so no later step runs before it.
+    if ! just secret-scan; then
+      echo "ERROR: the secret scan refused the staged content, or could not run (a tree"
+      echo "  without the secret-scan recipe must merge master first). Nothing was committed."
+      exit 1
+    fi
 
     # This hook is per-clone state, and core.hooksPath is one absolute path SHARED
     # by every worktree — so any worktree, on any branch, overwrites it for all of

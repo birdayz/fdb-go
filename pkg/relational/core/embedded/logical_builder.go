@@ -125,8 +125,13 @@ func aggregateProjectionItem(ac aggSelectCol, strip func(string) string) (name, 
 	case ac.outExpr != nil && ac.aggFunc == "":
 		name = canonicalTextOf(ac.outExpr)
 		expr = ac.outExpr
+		// A direct column reference computed above the aggregate (a
+		// correlation, correlatedGroupColumnsToComputed) keeps its column
+		// name, as a grouping-key read does; other computed items inherit none.
 		if ac.outputAliased && ac.outName != "" {
 			alias = ac.outName
+		} else if ac.outputInheritedName != "" {
+			alias = ac.outputInheritedName
 		}
 	case ac.aggFunc != "":
 		name = ac.aggFunc + "(" + strip(aggColOperandText(ac)) + ")"
@@ -178,6 +183,8 @@ func buildAggregateOutputSlots(keys []logical.GroupKey, aggCols []aggSelectCol, 
 			for i, key := range keys {
 				same := false
 				switch {
+				case ac.groupColValue != nil && key.Value != nil:
+					same = groupKeysPullUpEqual(ac.groupColValue, key.Value)
 				case qualifierStripped:
 					// The builder deliberately collapsed a same-source
 					// qualifier on both the GroupKey and aggregate output, so
@@ -435,25 +442,6 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 	if sq == nil {
 		return nil
 	}
-	if sq.tableName == "" && sq.derivedQuery == nil && sq.inlineValues == nil {
-		// SELECT without FROM — emit LogicalValues (single-row
-		// constant projection). Carries the projection expression
-		// text per column (future: real Value nodes per RFC-021
-		// Phase 2).
-		rows := make([]string, len(sq.projCols))
-		aliases := make([]string, len(sq.projCols))
-		for i, col := range sq.projCols {
-			expr := col.name
-			if sq.projExprs != nil && i < len(sq.projExprs) && sq.projExprs[i] != nil {
-				expr = strings.TrimSpace(canonicalTextOf(sq.projExprs[i]))
-			}
-			rows[i] = expr
-			if sq.projAliases != nil && i < len(sq.projAliases) {
-				aliases[i] = sq.projAliases[i]
-			}
-		}
-		return logical.NewValues(rows, aliases)
-	}
 
 	// Build the FROM-source subtree. Either a plain table scan or a
 	// derived table (subquery in FROM). For derived tables we
@@ -466,7 +454,9 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 	// mergeRows uses the wrong qualifier and projections like
 	// "sq1.x" resolve to NULL.
 	var op logical.LogicalOperator
-	if sq.inlineValues != nil {
+	if sq.tableName == "" && sq.derivedQuery == nil && sq.inlineValues == nil {
+		op = logical.NewSingleton()
+	} else if sq.inlineValues != nil {
 		var err error
 		op, err = buildInlineValuesLogical(sq.inlineValues, sq.tableAlias, sq.bindingID, nil)
 		if err != nil {
@@ -497,6 +487,16 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 		// dropping the wrapper here silently undid the visitor path's
 		// alias fidelity.
 		op = derivedSourceCarrier(sq.tableName, sq.bindingID, innerOp)
+	} else if clause := primaryUnnestClause(sq.tableName, sq.tableAlias, sq.tableAliasExplicit, sq.tableAtAlias, sq.sourceSegments, sq.bindingID); primaryIsCorrelatedUnnest(sq.enclosingScope, clause, sq.resolvesToTable) {
+		op = lateralUnnestCandidate(clause, sq.resolvesToTable)
+	} else if sq.tableAtAlias != "" && sq.resolvesToTable == nil {
+		// Without metadata nothing classifies the first item, and a scan would
+		// drop its AT silently. Keep it an unnest node carrying the AT: the
+		// metadata-free EXPLAIN shows it, and planning it refuses it (no
+		// binding), where a catalog build decided it already
+		// (rejectPrimaryAtOnTable).
+		asAlias, atAlias := unnestAliases(clause)
+		op = &logical.LogicalUnnest{Segments: clause.segments, Alias: asAlias, AtAlias: atAlias, Binding: clause.bindingID}
 	} else {
 		scan := logical.NewScan(sq.tableName, sq.tableAlias, sq.sourceSegments...)
 		scan.Source = sq.resolvedSource
@@ -508,7 +508,7 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 	// the current op as Left and scans the joined table as Right.
 	// Produces `InnerJoin(on ...) → LeftScan → RightScan` nested as
 	// the logical operator tree expects.
-	for i, j := range sq.joins {
+	for _, j := range sq.joins {
 		var right logical.LogicalOperator
 		if j.inlineValues != nil {
 			var err error
@@ -539,13 +539,13 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 			} else {
 				right = innerRight
 			}
-		} else if u := lateralUnnestCandidate(j, visibleFromAliases(sq.tableName, sq.tableAlias, sq.joins[:i], nil), nil); u != nil {
+		} else if u := lateralUnnestCandidate(j, sq.resolvesToTable); u != nil {
 			// A comma source that may be a lateral array unnest
 			// (`FROM t, t.arr AS x [AT ord]`); the translator classifies it
 			// against the scope. This metadata-less path cannot run Java's
-			// table-first check (nil resolver); a schema-qualified table
+			// table-first check (nil resolver); a template-qualified table
 			// mis-classified here is demoted to a scan by
-			// demoteSchemaQualifiedUnnest once metadata is in scope. RFC-142.
+			// demoteQualifiedTableUnnest once metadata is in scope. RFC-142.
 			right = u
 		} else {
 			sc := logical.NewScan(j.tableName, j.alias, j.segments...)
@@ -599,11 +599,12 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 // between the two callers, so it is passed in. The returned antlr slice is the
 // per-column post-aggregate expression contexts (nil for plain references), which
 // the caller stores as postAggExprs for Value resolution.
-func buildPostAggregateProjection(op logical.LogicalOperator, aggCols []aggSelectCol, strip func(string) string) (*logical.LogicalProject, []antlrgen.IExpressionContext) {
+func buildPostAggregateProjection(op logical.LogicalOperator, aggCols []aggSelectCol, strip func(string) string) (*logical.LogicalProject, []antlrgen.IExpressionContext, []aggSelectCol) {
 	var allProj []string
 	var allAliases []string
 	var sqlNames []string
 	var allAntlr []antlrgen.IExpressionContext
+	var slotCols []aggSelectCol
 	var outputOrdinals []int
 	hasAlias := false
 	var slots []logical.AggregateOutputSlot
@@ -626,6 +627,7 @@ func buildPostAggregateProjection(op logical.LogicalOperator, aggCols []aggSelec
 		}
 		allProj = append(allProj, name)
 		allAntlr = append(allAntlr, expr)
+		slotCols = append(slotCols, ac)
 		allAliases = append(allAliases, alias)
 		if alias != "" {
 			hasAlias = true
@@ -637,7 +639,7 @@ func buildPostAggregateProjection(op logical.LogicalOperator, aggCols []aggSelec
 		outputOrdinals = append(outputOrdinals, ordinal)
 	}
 	if len(allProj) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	var aliases []string
 	if hasAlias {
@@ -654,7 +656,7 @@ func buildPostAggregateProjection(op logical.LogicalOperator, aggCols []aggSelec
 	proj.IsComputed = computed
 	proj.AggregateOutputOrdinals = outputOrdinals
 	proj.SQLNames = sqlNames
-	return proj, allAntlr
+	return proj, allAntlr, slotCols
 }
 
 // buildSelectShell builds the Aggregate/Sort/Limit/Projection/Distinct
@@ -680,13 +682,14 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 		for i := range keys {
 			stripped := strip(keys[i].Display)
 			if stripped != keys[i].Display {
-				keys[i] = stripGroupKeyLeadingSegment(keys[i], stripped)
+				keys[i] = stripGroupKeyLeadingSegments(keys[i], stripped)
 			}
 		}
 		aggCalls, aggProvenance, hasDistinct := logicalAggregateCalls(sq.aggCols, sq.countStar, strip)
 		outputAggCols := visibleAggregateOutputColumns(sq.aggCols, sq.countStar, sq.countStarAlias)
 		aggAliases := make([]string, len(aggCalls))
 		aggOp := logical.NewAggregate(op, keys, aggCalls, aggAliases, sq.havingExpr != nil)
+		aggOp.OuterCorrelations = aggregateOuterCorrelations(sq.enclosingScope, op)
 		aggOp.CallProvenance = aggProvenance
 		aggOp.HasCallProvenance = true
 		aggOp.CallProvenanceCols = len(sq.aggCols)
@@ -697,7 +700,8 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 		// Every SQL aggregate has one public output boundary. It stays above
 		// ORDER BY so hidden accumulators remain available on the private
 		// canonical [keys..., calls...] row.
-		if proj, antlr := buildPostAggregateProjection(op, outputAggCols, strip); proj != nil {
+		if proj, antlr, slotCols := buildPostAggregateProjection(op, outputAggCols, strip); proj != nil {
+			sq.postAggSlotCols = slotCols
 			sq.postSortStripProj = append([]string(nil), proj.Projections...)
 			sq.postSortStripAliases = append([]string(nil), proj.Aliases...)
 			sq.postSortAggregateOutputOrdinals = append([]int(nil), proj.AggregateOutputOrdinals...)
@@ -707,46 +711,21 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 		}
 	}
 
-	if len(sq.orderBy) > 0 && len(sq.postSortStripProj) > 0 {
-		// The sort sits BELOW the deferred reshaping projection, over the
-		// aggregate's internal layout: rebase keys naming SELECT aliases
-		// (alias first — SQL resolves output names before source columns)
-		// and positional keys (visible slots differ from internal ones) to
-		// the underlying expressions.
-		for i := range sq.orderBy {
-			ob := &sq.orderBy[i]
-			if ob.pos >= 1 && ob.pos <= len(sq.postSortStripProj) {
-				ob.colName = sq.postSortStripProj[ob.pos-1]
-				// The rebased name is internal projection text — the
-				// original reference's segments no longer describe it
-				// (stale segments silently mis-resolve against a
-				// same-spelled source column).
-				ob.bare, ob.qualifier, ob.qualified, ob.segs = ob.colName, "", false, nil
-				continue
-			}
-			// Output aliases bind BARE one-segment identifiers only: a
-			// qualified key (`d.x`) or an aggregate/computed key
-			// (`SUM(s.score)`) names source data, never the SELECT alias —
-			// text matching rebased both onto same-spelled aliases and
-			// silently mis-sorted. The parse tree decides (bareRef), not
-			// the name text.
-			if !ob.bareRef {
-				continue
-			}
-			for j, al := range sq.postSortSQLNames {
-				if al != "" && strings.EqualFold(al, ob.colName) && j < len(sq.postSortStripProj) {
-					ob.colName = sq.postSortStripProj[j]
-					// Same rule as the positional rebase above: internal
-					// text, segments cleared to the rebased bare.
-					ob.bare, ob.qualifier, ob.qualified, ob.segs = ob.colName, "", false, nil
-					break
-				}
-			}
-		}
-	}
 	if len(sq.orderBy) > 0 {
 		keys := make([]logical.SortKey, 0, len(sq.orderBy))
 		for _, ob := range sq.orderBy {
+			outputPos := ob.pos
+			if len(sq.postSortStripProj) > 0 {
+				if outputPos == 0 {
+					outputPos, _ = selectOutputAliasPosition(ob.rawExpr, sq.postSortSQLNames)
+				}
+				if outputPos >= 1 && outputPos <= len(sq.postSortStripProj) {
+					ob.colName = sq.postSortStripProj[outputPos-1]
+					ob.bare, ob.qualifier, ob.qualified, ob.segs = ob.colName, "", false, nil
+				}
+			}
+			// Keep selected-output ownership in the key, not in the parser's
+			// numeric-syntax position. Rebased text must never bind another alias.
 			dir := logical.SortAsc
 			if !ob.ascending {
 				dir = logical.SortDesc
@@ -782,16 +761,16 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 				Expr:       expr,
 				Dir:        dir,
 				NullsFirst: nullsFirst,
-				Pos:        ob.pos,
+				Pos:        outputPos,
 				BareRef:    ob.bareRef,
 				Bare:       ob.bare,
 				Qualifier:  ob.qualifier,
 				Qualified:  ob.qualified,
 				Segs:       append([]string(nil), ob.segs...),
 			}
-			if ob.pos >= 1 && ob.pos <= len(sq.postSortAggregateOutputOrdinals) &&
-				sq.postSortAggregateOutputOrdinals[ob.pos-1] >= 0 {
-				sk.AggregateOutputOrdinal = sq.postSortAggregateOutputOrdinals[ob.pos-1]
+			if outputPos >= 1 && outputPos <= len(sq.postSortAggregateOutputOrdinals) &&
+				sq.postSortAggregateOutputOrdinals[outputPos-1] >= 0 {
+				sk.AggregateOutputOrdinal = sq.postSortAggregateOutputOrdinals[outputPos-1]
 				sk.HasAggregateOutputOrdinal = true
 			}
 			if ob.bare != "" && expr != ob.colName {
@@ -816,7 +795,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 
 	// Projection: skip when the projection is SELECT * (projCols is
 	// nil per the selectQuery doc).
-	if len(sq.projCols) > 0 {
+	if sq.projCols != nil {
 		projs := make([]string, len(sq.projCols))
 		aliases := make([]string, len(sq.projCols))
 		computed := make([]bool, len(sq.projCols))
@@ -959,12 +938,15 @@ func buildLogicalPlanForDelete(del antlrgen.IDeleteStatementContext) logical.Log
 	if del == nil || del.TableName() == nil {
 		return nil
 	}
-	tableName := functions.FullIdToName(del.TableName().FullId())
-	var scan logical.LogicalOperator = logical.NewScan(tableName, "")
+	path := fullIDSegments(del.TableName().FullId())
+	tableName := strings.Join(path, ".")
+	var scan logical.LogicalOperator = logical.NewScan(tableName, "", path...)
 	if w := del.WhereExpr(); w != nil {
 		scan = logical.NewFilter(scan, canonicalTextOf(w))
 	}
-	return logical.NewDelete(tableName, scan)
+	op := logical.NewDelete(tableName, scan)
+	op.TargetPath = path
+	return op
 }
 
 // buildLogicalPlanForInsert returns a LogicalInsert-rooted tree for
@@ -983,7 +965,8 @@ func buildLogicalPlanForInsert(ins antlrgen.IInsertStatementContext) logical.Log
 	if ins == nil || ins.TableName() == nil {
 		return nil
 	}
-	tableName := functions.FullIdToName(ins.TableName().FullId())
+	path := fullIDSegments(ins.TableName().FullId())
+	tableName := strings.Join(path, ".")
 
 	var cols []string
 	if colCtx := ins.UidListWithNestingsInParens(); colCtx != nil {
@@ -1014,7 +997,9 @@ func buildLogicalPlanForInsert(ins antlrgen.IInsertStatementContext) logical.Log
 		}
 	}
 
-	return logical.NewInsert(tableName, cols, source)
+	op := logical.NewInsert(tableName, cols, source)
+	op.TablePath = path
+	return op
 }
 
 // buildLogicalPlanForUpdate returns a LogicalUpdate-rooted tree for
@@ -1025,8 +1010,9 @@ func buildLogicalPlanForUpdate(upd antlrgen.IUpdateStatementContext) logical.Log
 	if upd == nil || upd.TableName() == nil {
 		return nil
 	}
-	tableName := functions.FullIdToName(upd.TableName().FullId())
-	var scan logical.LogicalOperator = logical.NewScan(tableName, "")
+	path := fullIDSegments(upd.TableName().FullId())
+	tableName := strings.Join(path, ".")
+	var scan logical.LogicalOperator = logical.NewScan(tableName, "", path...)
 	if w := upd.WhereExpr(); w != nil {
 		scan = logical.NewFilter(scan, canonicalTextOf(w))
 	}
@@ -1035,15 +1021,45 @@ func buildLogicalPlanForUpdate(upd antlrgen.IUpdateStatementContext) logical.Log
 		if el == nil || el.FullColumnName() == nil || el.Expression() == nil {
 			continue
 		}
-		// UPDATE SET uses bare col names at the logical level — the LAST
-		// FullId segment per the parse tree, never a dot split of the
-		// rendering (a delimited identifier may contain a literal dot).
+		// The SET column's identifier, one normalized segment per uid from
+		// the parse tree, never a dot split of the rendering (a delimited
+		// identifier may contain a literal dot). Every segment is kept: a
+		// leading one may qualify the column by the target, and trailing ones
+		// name a field of a struct column (the catalog builder resolves them).
 		uids := el.FullColumnName().FullId().AllUid()
-		col := functions.NormalizeIdentifier(uids[len(uids)-1].GetText())
+		segments := make([]string, len(uids))
+		for i, u := range uids {
+			segments[i] = functions.NormalizeIdentifier(u.GetText())
+		}
 		sets = append(sets, logical.Assignment{
-			Column: col,
-			Expr:   strings.TrimSpace(canonicalTextOf(el.Expression())),
+			Column:   strings.Join(segments, "."),
+			Segments: segments,
+			Expr:     strings.TrimSpace(canonicalTextOf(el.Expression())),
 		})
 	}
-	return logical.NewUpdate(tableName, sets, scan)
+	op := logical.NewUpdate(tableName, sets, scan)
+	op.TargetPath = path
+	return op
+}
+
+// selectOutputAliasPosition resolves a bare ORDER BY name to its visible SELECT
+// slot, before any GROUP alias or projection-name rewriting. Qualified references
+// and computed expressions do not name output aliases.
+// The caller carries this position through rebasing instead of resolving the
+// selected expression's rendering as another name. Ambiguous names select no
+// owner; semantic validation reports their match count before source resolution.
+func selectOutputAliasPosition(authored antlrgen.IExpressionContext, outputNames []string) (position, matches int) {
+	name, _, _, segments := splitColumnRef(authored)
+	if len(segments) == 1 {
+		for i, alias := range outputNames {
+			if alias != "" && alias == name {
+				position = i + 1
+				matches++
+			}
+		}
+	}
+	if matches != 1 {
+		position = 0
+	}
+	return position, matches
 }

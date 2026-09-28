@@ -30,7 +30,7 @@ func TestFDB_DmlWhereUndefinedProbe(t *testing.T) {
 
 	newDB := func(t *testing.T, schema string) *sql.DB {
 		mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dwu/"+schema+" WITH TEMPLATE dwu")
-		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_dwu?cluster_file=%s&schema=%s", clusterFilePath, schema))
+		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_DWU?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema)))
 		if err != nil {
 			t.Fatalf("sql.Open: %v", err)
 		}
@@ -63,11 +63,16 @@ func TestFDB_DmlWhereUndefinedProbe(t *testing.T) {
 	// WHERE-independence: the table check fires even with NO WHERE clause.
 	wantCode("delete_nonexistent_table_no_where_42F01", "s_dntn", "DELETE FROM notable", "42F01")
 	wantCode("update_nonexistent_table_no_where_42F01", "s_untn", "UPDATE notable SET a = 1", "42F01")
-	// Active-schema-qualified missing table: a VALID qualifier (the
-	// session schema) + a missing table must still get 42F01 — the existence check runs
-	// after resolveQualifiedTableNames strips the (valid) qualifier.
-	wantCode("delete_active_schema_qualified_missing_42F01", "s_aqd", "DELETE FROM s_aqd.notable WHERE id = 1", "42F01")
-	wantCode("update_active_schema_qualified_missing_42F01", "s_aqu", "UPDATE s_aqu.notable SET a = 1 WHERE id = 1", "42F01")
+	// Template-qualified missing table: a VALID qualifier (the schema
+	// template's name, dwu) + a missing table must still get 42F01 — the
+	// existence check runs after resolveQualifiedTableNames strips the (valid)
+	// qualifier. The session schema's own name is no qualifier: 42F00 "Unknown
+	// schema template", as Java's getTable answers (measured in
+	// conformance/ws_f_table_qualifier_conformance_test.go).
+	wantCode("delete_template_qualified_missing_42F01", "s_aqd", "DELETE FROM dwu.notable WHERE id = 1", "42F01")
+	wantCode("update_template_qualified_missing_42F01", "s_aqu", "UPDATE dwu.notable SET a = 1 WHERE id = 1", "42F01")
+	wantCode("delete_schema_qualified_42F00", "s_sqd", "DELETE FROM s_sqd.notable WHERE id = 1", "42F00")
+	wantCode("update_schema_qualified_42F00", "s_squ", "UPDATE s_squ.t SET a = 1 WHERE id = 1", "42F00")
 
 	// Precedence: a schema-qualified target with a bad qualifier must NOT be
 	// preempted by the bare-table 42F01 — the qualifier validation downstream owns the

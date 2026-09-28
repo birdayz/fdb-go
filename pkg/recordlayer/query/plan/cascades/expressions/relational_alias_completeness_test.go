@@ -59,7 +59,7 @@ func TestRelationalAliasCompleteness(t *testing.T) {
 			return mustExpression(NewLogicalIntersectionExpression([]Quantifier{inner(), inner()}, []values.Value{qov(a)}))
 		}},
 		{"Update", func(a values.CorrelationIdentifier) RelationalExpression {
-			return mustExpression(NewUpdateExpression(inner(), "T", testRecordType(), []UpdateTransform{{FieldPath: "f", NewValue: qov(a)}}))
+			return mustExpression(NewUpdateExpression(inner(), "T", testRecordType(), []UpdateTransform{{FieldNames: []string{"f"}, FieldOrdinals: []int{0}, NewValue: qov(a)}}))
 		}},
 	}
 

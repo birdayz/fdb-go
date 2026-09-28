@@ -1,6 +1,6 @@
 # TODOs
 
-FoundationDB Record Layer — Go Port. Java version: **4.12.11.0**. FDB wire protocol: **7.3.77**.
+FoundationDB Record Layer — Go Port. Java version: **4.14.2.0**. FDB wire protocol: **7.3.77**.
 
 Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 508 cross-engine
 specs, 105 fuzz targets, ~65 Cascades rules, 41 plan types (36 executor-wired), 48 value types,
@@ -306,7 +306,7 @@ INSERT…SELECTs.
   this route is not a divergence at all. That inference is wrong, and only the
   live JVM could settle it. `conformance/duplicate_groupby_java_probe_test.go`
   (`paren_twin_aggonly`, `paren_twin_proj`, `paren_twin_having`, `cmp_twin`)
-  measures Java at tag 4.12.11.0 refusing all four:
+  measures Java at tag 4.12.11 refusing all four:
 
       GROUP BY (amount+1), amount+1  ->  java: Ambiguous columns for
                                            q...._0.AMOUNT + @c12   | go: PLANS
@@ -546,7 +546,7 @@ producer, which deletes both the table and its validator.
 ## 2. Wire compatibility and the pure-Go FDB client
 
 The hard line: key encoding, record/index format, continuations, metadata, and everything
-`pkg/fdbgo` puts on the wire. C++ (libfdb_c 7.3.77) is the spec for the client; Java 4.12.11.0 is
+`pkg/fdbgo` puts on the wire. C++ (libfdb_c 7.3.77) is the spec for the client; Java 4.12.11 is
 the spec for the record layer. Client gate applies to every entry here.
 
 ### [ ] Replay DB transaction defaults as an ordered option list, with TIMEOUT applied last
@@ -1524,7 +1524,7 @@ full window); GRV `batchTime` floors at 100µs where C++ has no floor.
 ### The metadata builder diverges from Java in three places, found while closing RFC-238 §7f
 
 These are one subsystem and should land as one PR. All three were surfaced by
-review during PR #761 and verified against the Java source at tag 4.12.11.0;
+review during PR #761 and verified against the Java source at tag 4.12.11;
 none is caused by that PR, and none is blocked on anything.
 
 **1. `updateRecords()` is not ported, so a descriptor cannot be evolved at all.**
@@ -2564,7 +2564,7 @@ was not re-checked, so it is neither confirmed nor closed here.
       NARROWED admission to the direct shape (declined wrapped → name-model); superseded — see below, the
       wrapped case now ORDINALIZES. Multi-EXISTS-under-aggregate stays name-model + LOUD (pre-existing
       planner gap, confirmed at parent — agg_multiexists_loud sentinel).
-      🔬 **JAVA CONFORMANCE (6-reader workflow, HIGH confidence):** Java 4.12.11.0 FULLY supports GROUP
+      🔬 **JAVA CONFORMANCE (6-reader workflow, HIGH confidence):** Java 4.12.11 FULLY supports GROUP
       BY (grouped+global COUNT/SUM/AVG/MIN/MAX via streaming aggregator, no index required — AstNormalizer
       rejects only OFFSET/LIMIT). The old translateAggregate comment claiming Java lacks GROUP BY was
       STALE/FALSE — corrected. Java ALSO plans GROUP BY over a multi-source-FROM derived table
@@ -3425,10 +3425,10 @@ hashes/reproducers. All experiments reverted; tree clean.
   (`scan_match_helpers.go:37`), and `ResolveStartsWith` (`expr.go:1437`), which
   builds the comparison the scan machinery does accept, has no production caller.
 
-  *Every Java claim in this item is against **Java 4.12.11.0** — the tree at
+  *Every Java claim in this item is against **Java 4.12.11** — the tree at
   `fdb-record-layer/` in the REPO ROOT (gitignored, so it is absent from
   `git ls-files` and from any worktree; the version is pinned in `MODULE.bazel:117`
-  as `org.foundationdb:fdb-record-layer-core:4.12.11.0`). That names exactly what
+  as `org.foundationdb:fdb-record-layer-core:4.14.2.0`). That names exactly what
   to check out to re-verify. The two backing `file:line` citations, both
   re-verified at that tag: `PatternForLikeValue.java:111-112` (the escape table's
   only two entries, `<esc>_` and `<esc>%`, layered over `REPLACE_MAP` at `:62-79`
@@ -3436,7 +3436,7 @@ hashes/reproducers. All experiments reverted; tree clean.
   `LikeOperatorValue.likeOperation` (`LikeOperatorValue.java:93-99`:
   `Pattern.compile(rhs)` with NO flags, then `.find()`).*
 
-  **Tightness — MEASURED; it constrains every possible design.** Java (4.12.11.0)
+  **Tightness — MEASURED; it constrains every possible design.** Java (4.12.11)
   compiles `%` to `.*` inside a `^…$` wrap with no DOTALL, so a wildcard cannot
   cross a line terminator: a subject that starts with the literal prefix but
   then carries a terminator lies in the byte-prefix range and does NOT match the
@@ -3526,7 +3526,7 @@ hashes/reproducers. All experiments reverted; tree clean.
   zero rows and the code is gone" is exactly the lead the next attempt needs — so
   the material is kept here, explicitly labelled NOT REPRODUCIBLE (blockers (1)
   and (4)). Its Java citations are likewise kept: Java is this port's spec, the
-  tree is `fdb-record-layer/` at tag 4.12.11.0 pinned in `MODULE.bazel`, and
+  tree is `fdb-record-layer/` at tag 4.14.2.0 pinned in `MODULE.bazel`, and
   citing it is the repo's established practice (`DIVERGENCES.md` rests entirely
   on such citations). Gitignored is not uncheckable when the pin says what to
   check out.
@@ -3598,7 +3598,7 @@ hashes/reproducers. All experiments reverted; tree clean.
   Java marks covering through a residual, this is a divergence; if not, it is a
   shared gap and the fix is an extension. (INSPECTION, not re-checkable from this
   tree — the Java checkout is a gitignored sibling absent from `git ls-files`:
-  Java 4.12.11.0 appears to have no such failure mode, because coveringness is a
+  Java 4.12.11 appears to have no such failure mode, because coveringness is a
   separate class there, `RecordQueryCoveringIndexPlan`, which HOLDS the index plan
   as a field rather than flagging it, and its `MergeProjectionAndFetchRule` yields
   the fetch plan's child with no shape check. Re-derive against the checkout
@@ -6519,7 +6519,7 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 0AF00s ("Cascades planner could not plan query") with NO aggregate involved, and WHERE-position
 `… WHERE p.id IN (SELECT COUNT(*) FROM e)` 0AF00s too. So IN-subquery is a general unsupported feature,
 NOT a scope-leak residual — the scope leak is closed (the IN case went from a misleading 42803
-to this honest 0AF00). **Correction (measured against Java 4.12.11.0 source):** the earlier
+to this honest 0AF00). **Correction (measured against Java 4.12.11 source):** the earlier
 "(Java supports it)" parenthetical here was WRONG — Java rejects the same grammar alternative.
 `ExpressionVisitor.visitInPredicate` asserts `inList().queryExpressionBody() == null` with
 `UNSUPPORTED_QUERY` ("IN predicate does not support nested SELECT"), and the earlier
@@ -6633,7 +6633,7 @@ is tagged — never by hand-editing the doc.
 
 **RFC-165 follow-ups (tracked, non-blocking):**
 
-- [ ] **Verify the `Java?` roster facts against the live 4.12.11.0 server.** The `Java?` column in
+- [ ] **Verify the `Java?` roster facts against the live 4.12.11 server.** The `Java?` column in
       `ansi_roster.go` is currently a hand-authored frozen-version *assertion* (sourced from
       SQL_CONFORMANCE.md), structurally contained (it can't inflate the Go headline — see RFC-165 §4.6)
       but unverified. As A3 cross-engine coverage grows, diff each tagged feature's `Java?` against the
@@ -7726,7 +7726,7 @@ work; unrelated to any wire/query change.
   - [x] **69.0 — Phase 0: vendor + parse.** No execution. **MERGED.** What it
     carries, read off commits `f20c884a4` + `a076ba66c`: 238 `.yamsql`
     files vendored byte-for-byte under `third_party/` mirroring the upstream
-    path, `VERSION` pinned to 4.12.11.0, `.metrics.*` excluded (and with them
+    path, `VERSION` pinned to 4.12.11, `.metrics.*` excluded (and with them
     `metrics-diff/` entirely); the `javayamsql` parser plus `TestCorpusParses`
     over all 238, each file either parsing clean or refused for the exact reason
     upstream refuses it; block/command/config key and YAML tag as CLOSED
@@ -7942,7 +7942,7 @@ work; unrelated to any wire/query change.
     `TestOptContinuation_RejectsLoudly`
     (`pkg/relational/core/embedded/continuation_option_test.go:18`) against the
     0A000 at `cascades_generator.go:1215-1218`. Four pieces are absent, measured
-    against Java 4.12.11.0:
+    against Java 4.12.11:
 
     - **(A) a page terminated by a caller-chosen row count that MINTS a token.**
       Java sets MAX_ROWS as `ExecuteProperties.setReturnedRowLimit` per
@@ -8811,7 +8811,7 @@ The reconcile job also lists four OPEN pull requests without their required chec
 ## 9. Java upstream — bugs to report, fixes to send, releases to wait for
 
 Defects in `fdb-record-layer` / `fdb-relational` itself, measured against the pinned Java
-**4.12.11.0** by the cross-engine probes. They live here because the repair belongs upstream, not
+**4.12.11** by the cross-engine probes. They live here because the repair belongs upstream, not
 because they are excused: CLAUDE.md's rule is that "it's an upstream bug" is never a deferral —
 fix it at the boundary, work around it deliberately with the divergence documented at the call
 site, AND report it upstream.
@@ -11618,7 +11618,7 @@ remains single-shot. No timestamp assertions, execution floors, paging options,
 row population or expected results are weakened.
 
 This is fixture reliability for a Go extension, not Java row parity. The pinned
-Java 4.12.11.0 BaseVisitor::visitCurrentTimestamp delegates to visitChildren
+Java 4.12.11 BaseVisitor::visitCurrentTimestamp delegates to visitChildren
 (lines1376–1380); QueryExecutionContext:28–65 has no statement-clock contract.
 The unchanged Go tests require one timestamp within each statement, advancing
 instants across statements, stable predicate counts and stable paginated results.
@@ -11676,7 +11676,7 @@ body reads O.ID; (2) two distinct outer IDs7/9 through nested CTE/scalar SQL;
 (3) an enclosing CTE read by a scalar inside a derived body; (4) nested derived
 passthrough growth at depths1–4; (5) preserved exact types and duplicate output
 names through at least three levels. Existing embedded builder tests and real-
-FDB SQL-driver tests own the regressions. Java4.12.11.0 QueryVisitor:170–181 and
+FDB SQL-driver tests own the regressions. Java4.12.11 QueryVisitor:170–181 and
 688–691 retains the built operator then renames it; its relational expression
 correlation property derives free references from values/quantifiers
 (AbstractRelationalExpressionWithChildren:57–77). Nested scalar/CTE SQL is tested
@@ -12770,7 +12770,7 @@ unchanged (one Go RUN/PASS; plain-loop SQL cases). Its table explicitly requires
 leaves an INT message under DOUBLE target metadata. Completing the Go conversion
 would remove that failure; the three approved shape snapshots do not authorize
 changing these expectations. The subsequent live-Java verification below
-corrects the premise of the initial request: Java 4.12.11.0 also fails these
+corrects the premise of the initial request: Java 4.12.11 also fails these
 exact queries, so successful rows would be a deliberate upstream-bug workaround,
 not measured Java SQL parity. Other admission/error/representation expectations
 remain unchanged.
@@ -12787,7 +12787,7 @@ authorizes finishing/publishing the parent, not merging it.
 
 ### RFC-256 live Java numeric record-array correction
 
-**Correction to the preceding owner-decision premise:** Java 4.12.11.0 also
+**Correction to the preceding owner-decision premise:** Java 4.12.11 also
 fails BOTH exact mixed-width array-of-record queries with
 `IllegalArgumentException: ... field java type: DOUBLE, value type: java.lang.Integer`.
 Changing Go to return rows would therefore be an upstream-bug workaround, not
@@ -12817,7 +12817,7 @@ split recorded below; it does not authorize a changed SQL outcome in the parent.
 
 ### RFC-256 owner-ordered parent and Java-upgrade successor
 
-The owner resolved the preceding stop: finish/publish PR785 on Java **4.12.11.0**,
+The owner resolved the preceding stop: finish/publish PR785 on Java **4.12.11**,
 accept the known broken promotion behavior here, then make the immediate stacked
 Java-upgrade PR including the required parity work. No upstream Java PR: #4171
 already fixed the SQL construction path; RFC-256 records its release history.
@@ -13015,7 +13015,7 @@ Published `6b833ba3c28b8266c00670e778f7497d07a188b7` has seven successful CI
 checks and four exact-published-SHA virtual reviewer confirmations. The published
 Claude review is **not LGTM** and discloses unread test/testdata/docs scope.
 
-- Fresh retained `NumericCastBoundaryConformance` against Java 4.12.11.0 confirms
+- Fresh retained `NumericCastBoundaryConformance` against Java 4.12.11 confirms
   legal unused AS==AT, 42702 when referenced, separate element/ordinal values
   behind duplicate labels, and ordinary ambiguity for competing UNNEST columns.
   RFC-142/source prose was stale; the behavior already follows RFC-256's reviewed
@@ -13080,7 +13080,7 @@ pending. No merge or upgrade-pin change is authorized by these results.
 The owner explicitly requested merging PR #785 on 2026-09-18. That supersedes the
 publication-only/no-merge authorization statements in earlier checkpoints here
 and in RFC-256; it does not turn unrun coverage into passes or select an upgrade
-version. The accepted Java 4.12.11.0 structured-promotion/mixed-numeric-record-array
+version. The accepted Java 4.12.11 structured-promotion/mixed-numeric-record-array
 split and mandatory immediate Java-upgrade/parity successor remain unchanged.
 The verified common-release candidate is recorded in RFC-256 and still awaits
 explicit version confirmation. No pin, Java checkout, golden, new hunt or upstream
@@ -13158,3 +13158,13 @@ and no performance repair was made. The five restricted factory hunts remain
 unapproved/unrun, not Docker skips or passing coverage. Prior paging140/eternal3600
 and transaction/watch/retry obligations are not newly executed by this follow-up.
 Companion: RFC-256 **Final follow-up verification and owner merge authorization**.
+
+### Open items found during the Java 4.14.2.0 upgrade (RFC-257)
+
+- [ ] A SQL page that fails with 1007 is re-read whole: `txPageTimeLimit` (4 s) assumes a 5 s MVCC
+  window, which a fast version clock after a bulk load shortens. Shrink the budget on retry and
+  leave margin; pin with a deterministic clock test.
+- [ ] Permuted aggregate index query reach: a PERMUTED_MIN/MAX index with PERMUTED_SIZE > 0 serves
+  no query (`tryAggregateIndexCandidate` declines it); Java serves it (aggregate-index-tests.yamsql).
+- [ ] BITMAP_VALUE query reach: no candidate or accumulator for `bitmap_construct_agg`; Java matches
+  it through `BitmapAggregateIndexExpansionVisitor` (bitmap-aggregate-index.yamsql).

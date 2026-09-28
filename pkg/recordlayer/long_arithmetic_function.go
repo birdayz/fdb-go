@@ -5,6 +5,9 @@ import (
 	"math"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/dynamicpb"
+
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
 // Long arithmetic function key expressions.
@@ -19,6 +22,14 @@ import (
 
 func init() {
 	registerArithmeticFunctions()
+}
+
+// registerLongArithmetic registers a LongArithmethicFunctionKeyExpression of
+// minArgs..maxArgs arguments (Builder.unaryFunction 1..1, binaryFunction 2..2,
+// bothFunction 1..2, LongArithmethicFunctionKeyExpression.java:162-235), one
+// column (:108-111), whose null is a plain null (:98).
+func registerLongArithmetic(name string, minArgs, maxArgs int, eval FunctionEvaluator) {
+	registerCoreFunction(name, FunctionSpec{Evaluator: eval, MinArguments: minArgs, MaxArguments: maxArgs, ColumnSize: 1})
 }
 
 func registerArithmeticFunctions() {
@@ -41,21 +52,21 @@ func registerArithmeticFunctions() {
 
 	for _, f := range binaryFunctions {
 		op := f.op // capture
-		RegisterFunction(f.name, makeBinaryEvaluator(f.name, op))
+		registerLongArithmetic(f.name, 2, 2, makeBinaryEvaluator(f.name, op))
 	}
 
 	// "both" functions: unary (1 arg) OR binary (2 args).
 	// Java registers "sub" as bothFunction(x -> -x, Math::subtractExact)
 	// and "subtract" as bothFunction("sub", Math::negateExact, Math::subtractExact).
-	RegisterFunction("sub", makeBothEvaluator("sub", longNegate, longSubtractExact))
-	RegisterFunction("subtract", makeBothEvaluator("subtract", longNegateExact, longSubtractExact))
+	registerLongArithmetic("sub", 1, 2, makeBothEvaluator("sub", longNegate, longSubtractExact))
+	registerLongArithmetic("subtract", 1, 2, makeBothEvaluator("subtract", longNegateExact, longSubtractExact))
 
 	// Aliases: "multiply" → same as "mul", "divide" → same as "div"
-	RegisterFunction("multiply", makeBinaryEvaluator("multiply", longMultiplyExact))
-	RegisterFunction("divide", makeBinaryEvaluator("divide", longDiv))
+	registerLongArithmetic("multiply", 2, 2, makeBinaryEvaluator("multiply", longMultiplyExact))
+	registerLongArithmetic("divide", 2, 2, makeBinaryEvaluator("divide", longDiv))
 
 	// Unary: bitnot (1 argument, bitwise complement)
-	RegisterFunction("bitnot", makeUnaryEvaluator("bitnot", func(x int64) (int64, error) {
+	registerLongArithmetic("bitnot", 1, 1, makeUnaryEvaluator("bitnot", func(x int64) (int64, error) {
 		return ^x, nil
 	}))
 }
@@ -127,16 +138,16 @@ func makeBothEvaluator(name string, unaryOp func(int64) (int64, error), binaryOp
 // applyBinary extracts two int64 values from arguments and applies the binary operation.
 // Returns nil if either argument is nil (matches Java's null propagation).
 func applyBinary(name string, op func(int64, int64) (int64, error), left, right any) (any, error) {
-	if left == nil || right == nil {
+	l, lok, err := nullableLong(name, 0, left)
+	if err != nil {
+		return nil, err
+	}
+	r, rok, err := nullableLong(name, 1, right)
+	if err != nil {
+		return nil, err
+	}
+	if !lok || !rok {
 		return nil, nil
-	}
-	l, ok := left.(int64)
-	if !ok {
-		return nil, fmt.Errorf("function %s: left argument must be int64, got %T", name, left)
-	}
-	r, ok := right.(int64)
-	if !ok {
-		return nil, fmt.Errorf("function %s: right argument must be int64, got %T", name, right)
 	}
 	result, err := op(l, r)
 	if err != nil {
@@ -148,18 +159,123 @@ func applyBinary(name string, op func(int64, int64) (int64, error), left, right 
 // applyUnary extracts one int64 value from the argument and applies the unary operation.
 // Returns nil if the argument is nil (matches Java's null propagation).
 func applyUnary(name string, op func(int64) (int64, error), arg any) (any, error) {
-	if arg == nil {
-		return nil, nil
-	}
-	x, ok := arg.(int64)
-	if !ok {
-		return nil, fmt.Errorf("function %s: argument must be int64, got %T", name, arg)
+	x, ok, err := nullableLong(name, 0, arg)
+	if err != nil || !ok {
+		return nil, err
 	}
 	result, err := op(x)
 	if err != nil {
 		return nil, fmt.Errorf("function %s: %w", name, err)
 	}
 	return result, nil
+}
+
+// KeyExpressionInvalidResultError is Java's KeyExpression.InvalidResultException
+// as Key.Evaluated.getObject raises it for an argument of the wrong class. The
+// fields are the exception's addLogInfo keys ("index", expected_type,
+// actual_type).
+type KeyExpressionInvalidResultError struct {
+	Function     string
+	Index        int
+	ExpectedType string
+	ActualType   string
+}
+
+func (e *KeyExpressionInvalidResultError) Error() string {
+	return fmt.Sprintf("Invalid type in value: function %s argument %d expected %s, got %s",
+		e.Function, e.Index, e.ExpectedType, e.ActualType)
+}
+
+// javaTupleValueClassName is the ACTUAL_TYPE Java logs for a value that is not a
+// Number: result.getClass().getName() of the value after
+// TupleTypeUtil.toTupleAppropriateValue (Key.java:553-561), so both fields of the
+// error carry Java class names. A Go carrier with no Java counterpart keeps its Go
+// type name, which no Java-produced value can be.
+func javaTupleValueClassName(v any) string {
+	switch x := v.(type) {
+	case string:
+		return "java.lang.String"
+	case []byte:
+		return "[B"
+	case bool:
+		return "java.lang.Boolean"
+	case tuple.UUID, [16]byte:
+		return "java.util.UUID"
+	case tuple.Versionstamp:
+		return "com.apple.foundationdb.tuple.Versionstamp"
+	case tuple.Tuple:
+		return "com.apple.foundationdb.tuple.Tuple"
+	case []any:
+		return "java.util.ArrayList"
+	case proto.Message:
+		return javaMessageClassName(x)
+	}
+	return fmt.Sprintf("%T", v)
+}
+
+// javaMessageClassName is getClass().getName() of the Java object that carries a
+// message, where Go can know it: a message read through a descriptor loaded at
+// run time (Go's dynamicpb, the relational layer's DynamicMessage) is
+// com.google.protobuf.DynamicMessage. A GENERATED message's Java class depends
+// on the protoc options of the Java build, which the Go-embedded descriptor does
+// not carry faithfully (this repository's generator rewrites java_package,
+// java_multiple_files and java_outer_classname in the Go copy: record_metadata.proto
+// declares RecordMetaDataProto and the Go copy says RecordMetadataProto), so a
+// generated message keeps its proto full name.
+func javaMessageClassName(m proto.Message) string {
+	if _, dynamic := m.(*dynamicpb.Message); dynamic {
+		return "com.google.protobuf.DynamicMessage"
+	}
+	return string(m.ProtoReflect().Descriptor().FullName())
+}
+
+// nullableLong is Key.Evaluated.getNullableLong (Key.java:579-582): any
+// java.lang.Number is accepted and converted with Number.longValue(); anything
+// else is InvalidResultException. ok is false for a NULL argument. Field
+// evaluation already widens every integral proto field to int64, so the other
+// carriers come from literal arguments (an INT literal is int32, as Java's
+// Integer is) and from float and double fields.
+func nullableLong(name string, idx int, v any) (int64, bool, error) {
+	switch x := v.(type) {
+	case nil:
+		return 0, false, nil
+	case int64:
+		return x, true, nil
+	case int32:
+		return int64(x), true, nil
+	case int:
+		return int64(x), true, nil
+	case int16:
+		return int64(x), true, nil
+	case int8:
+		return int64(x), true, nil
+	case float64:
+		return javaDoubleToLong(x), true, nil
+	case float32:
+		return javaDoubleToLong(float64(x)), true, nil
+	default:
+		return 0, false, &KeyExpressionInvalidResultError{
+			Function: name, Index: idx, ExpectedType: "java.lang.Number", ActualType: javaTupleValueClassName(v),
+		}
+	}
+}
+
+// javaDoubleToLong is Java's narrowing primitive conversion from double (and,
+// through the exact float-to-double widening, from float) to long (JLS 5.1.3):
+// NaN becomes 0, a value beyond the long range saturates, and everything else
+// rounds toward zero. Go's int64 conversion of an out-of-range float is
+// implementation-defined, so the saturating arms are explicit.
+func javaDoubleToLong(f float64) int64 {
+	switch {
+	case math.IsNaN(f):
+		return 0
+	case f >= 9223372036854775807.0:
+		return math.MaxInt64
+	case f <= -9223372036854775808.0:
+		return math.MinInt64
+	default:
+		return int64(f)
+	}
 }
 
 // Overflow-checked arithmetic operations matching Java's Math.*Exact methods.

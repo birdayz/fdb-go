@@ -6,6 +6,8 @@ go_library(
         "generator.go",
         "generator_aggregate.go",
         "generator_predicate.go",
+        "index_spec.go",
+        "quantifier_values.go",
     ],
     importpath = "fdb.dev/pkg/relational/core/query/ddl",
     visibility = ["//visibility:public"],
@@ -13,6 +15,7 @@ go_library(
         "//gen",
         "//pkg/recordlayer",
         "//pkg/recordlayer/query/plan/cascades",
+        "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/api",
@@ -25,13 +28,16 @@ go_library(
 go_test(
     name = "ddl_test",
     srcs = [
+        "field_accessor_test.go",
         "generator_guard_test.go",
-        "projected_value_match_test.go",
+        "literal_key_carrier_test.go",
     ],
     embed = [":ddl"],
     deps = [
+        "//pkg/recordlayer",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/api",
         "//pkg/relational/core/query/logical",
+        "@org_golang_google_protobuf//reflect/protoreflect",
     ],
 )

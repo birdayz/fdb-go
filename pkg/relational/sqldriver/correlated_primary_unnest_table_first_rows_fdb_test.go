@@ -13,9 +13,11 @@ import (
 // only assert that the plan does NOT contain an Explode — its package is a
 // metadata-only harness with no store.
 //
-// `FROM S.TAGS AS E` is ambiguous by spelling: `S` names both a schema holding a
-// real table `TAGS` and (in the plan-only twin) a table alias carrying an array
-// column `TAGS`. Resolution is TABLE-FIRST, mirroring Java's generateAccess,
+// `FROM CPUTF.TAGS AS E` is ambiguous by spelling: `CPUTF` names both the
+// schema template (a table's qualifier is its template's name, as Java's
+// SemanticAnalyzer.tableExists compares it) holding a real table `TAGS` and a
+// table alias carrying an array column `TAGS`. (The plan-only twin spells it
+// with its harness's template name, S.) Resolution is TABLE-FIRST, mirroring Java's generateAccess,
 // which exhausts the CTE/table/view/function lookups before it ever reaches
 // resolveCorrelatedIdentifier (LogicalOperator.java:178-226).
 //
@@ -40,7 +42,7 @@ func TestFDB_CorrelatedPrimaryUnnestTableFirstServesRows(t *testing.T) {
 			"CREATE TABLE t (id BIGINT, tags BIGINT ARRAY, PRIMARY KEY (id)) "+
 			"CREATE TABLE tags (id BIGINT, e BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_cputf/s WITH TEMPLATE cputf")
-	dsn := fmt.Sprintf("fdbsql:///testdb_cputf?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_CPUTF?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -60,7 +62,7 @@ func TestFDB_CorrelatedPrimaryUnnestTableFirstServesRows(t *testing.T) {
 	}
 
 	rows, err := db.QueryContext(ctx,
-		`SELECT S.ID FROM T AS S WHERE EXISTS (SELECT E.E FROM S.TAGS AS E WHERE E.E = 9)`)
+		`SELECT CPUTF.ID FROM T AS CPUTF WHERE EXISTS (SELECT E.E FROM CPUTF.TAGS AS E WHERE E.E = 9)`)
 	if err != nil {
 		t.Fatalf("table-first qualified source must plan and run: %v", err)
 	}
@@ -77,8 +79,8 @@ func TestFDB_CorrelatedPrimaryUnnestTableFirstServesRows(t *testing.T) {
 		t.Fatalf("rows: %v", e)
 	}
 	if len(got) != 2 || got[0] != 1 || got[1] != 2 {
-		t.Errorf("SELECT S.ID ... EXISTS (SELECT E.E FROM S.TAGS AS E WHERE E.E = 9) = %v, want [1 2] "+
-			"— every T row, because S.TAGS is the TABLE and the EXISTS is uncorrelated. "+
+		t.Errorf("SELECT CPUTF.ID ... EXISTS (SELECT E.E FROM CPUTF.TAGS AS E WHERE E.E = 9) = %v, want [1 2] "+
+			"— every T row, because CPUTF.TAGS is the TABLE and the EXISTS is uncorrelated. "+
 			"[2] means the qualified source was misclassified as T's array column.", got)
 	}
 }

@@ -93,8 +93,7 @@ func TestRFC152_RewriteOuterJoinYieldsNullOnEmpty(t *testing.T) {
 	qA := expressions.NamedForEachQuantifier(aliasA, expressions.InitialOf(scanA))
 	qB := expressions.NamedForEachQuantifier(aliasB, expressions.InitialOf(scanB))
 
-	// ON A.flag = 1 — references ONLY the preserved leg A (preserved-correlated, so
-	// the rule's `correlated` guard passes and it fires).
+	// ON A.flag = 1 — references ONLY the preserved leg A.
 	pred := rfc152FlagPredicate(aliasA)
 
 	sel := mustRFC152Construct(expressions.NewSelectExpressionWithJoinType(
@@ -137,6 +136,77 @@ func TestRFC152_RewriteOuterJoinYieldsNullOnEmpty(t *testing.T) {
 	}
 	if nullOnEmpty != 1 {
 		t.Errorf("rewritten select: want exactly 1 nullOnEmpty quantifier (the LEFT-OUTER semantics carrier), got %d", nullOnEmpty)
+	}
+}
+
+// TestRewriteOuterJoin_RewritesEveryOuterJoin: Java's rule rewrites every
+// OuterJoinExpression (RewriteOuterJoinRule.java:80-113), whatever its ON reads
+// and with no ON at all. Go's rule skipped a LEFT OUTER select whose ON did not
+// read the preserved leg, and one with no ON. Each is rewritten now: an INNER
+// select with no predicate of its own and one null-on-empty quantifier, whose
+// inner select carries the ON conjuncts below the null-extension.
+func TestRewriteOuterJoin_RewritesEveryOuterJoin(t *testing.T) {
+	t.Parallel()
+
+	aliasA := values.NamedCorrelationIdentifier("A")
+	aliasB := values.NamedCorrelationIdentifier("B")
+	scanARef := expressions.InitialOf(mustRFC152Construct(
+		expressions.NewFullUnorderedScanExpression([]string{"A"}, rfc152ARowType())))
+	scanBRef := expressions.InitialOf(mustRFC152Construct(
+		expressions.NewFullUnorderedScanExpression([]string{"B"}, rfc152BRowType())))
+	bRoot := mustRFC152Construct(values.NewQuantifiedObjectValue(aliasB, rfc152BRowType()))
+	bID := mustRFC152Construct(values.ResolveFieldOrdinals(bRoot, []int{0}))
+	nullSupplyingOnly := predicates.NewComparisonPredicate(
+		bID, predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(1)))
+
+	for _, tc := range []struct {
+		name  string
+		preds []predicates.QueryPredicate
+	}{
+		{"ON reads only the null-supplying leg", []predicates.QueryPredicate{nullSupplyingOnly}},
+		{"no ON predicate", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			qA := expressions.NamedForEachQuantifier(aliasA, scanARef)
+			qB := expressions.NamedForEachQuantifier(aliasB, scanBRef)
+			sel := mustRFC152Construct(expressions.NewSelectExpressionWithJoinType(
+				rfc152Result(qA, qB),
+				[]expressions.Quantifier{qA, qB},
+				tc.preds,
+				[]string{"A", "B"},
+				expressions.JoinLeftOuter,
+			))
+			var rewritten *expressions.SelectExpression
+			for _, e := range mustFireExpressionRule(t, NewRewriteOuterJoinRule(), expressions.InitialOf(sel)) {
+				if s, ok := e.(*expressions.SelectExpression); ok && s.GetJoinType() == expressions.JoinInner {
+					rewritten = s
+				}
+			}
+			if rewritten == nil {
+				t.Fatal("the LEFT OUTER select was not rewritten")
+			}
+			if n := len(rewritten.GetPredicates()); n != 0 {
+				t.Errorf("the rewritten select carries %d predicates, want none above the null-extension", n)
+			}
+			var nullOnEmpty []expressions.Quantifier
+			for _, q := range rewritten.GetQuantifiers() {
+				if q.IsNullOnEmpty() {
+					nullOnEmpty = append(nullOnEmpty, q)
+				}
+			}
+			if len(nullOnEmpty) != 1 {
+				t.Fatalf("%d null-on-empty quantifiers, want 1", len(nullOnEmpty))
+			}
+			below := 0
+			for _, m := range nullOnEmpty[0].GetRangesOver().AllMembers() {
+				if inner, ok := m.(*expressions.SelectExpression); ok {
+					below = len(inner.GetPredicates())
+				}
+			}
+			if below != len(tc.preds) {
+				t.Errorf("%d ON conjuncts below the null-extension, want %d", below, len(tc.preds))
+			}
+		})
 	}
 }
 

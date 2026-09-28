@@ -1,6 +1,7 @@
 package ddl
 
 import (
+	"errors"
 	"math"
 
 	"fdb.dev/gen"
@@ -11,45 +12,33 @@ import (
 	"fdb.dev/pkg/relational/api"
 )
 
-// generatePredicate is the sparse-index (WHERE) arm — the Go port of
-// getTopLevelPredicate (MaterializedViewIndexGenerator.java:640-682) plus the
-// IndexPredicate.fromQueryPredicate(...).toProto() serialization the caller
-// applies to its result (:169-172).
+// generatePredicate is the sparse-index (WHERE) arm — Java 4.14.2.0's
+// IndexPredicates.normalize over the conjuncts IndexSpec collected from the
+// innermost filtering expression, then IndexPredicate.fromQueryPredicate(...)
+// .toProto() (MaterializedViewIndexGenerator.java:101-104).
 //
-// Java walks the reversed topological expression list: an optional leading
-// sort, then either the top-level select (whose predicates are the WHERE) or
-// a select-having / group-by / select-where sandwich in which the
-// select-having must carry no predicates (:651) and the select-where's
-// predicates are the WHERE. Go's decomposed plan holds the same facts
-// directly: the HAVING lives on the LogicalAggregate (HasHaving), and the
-// WHERE is the one LogicalFilter below the aggregate. Inner selects with
-// predicates (:659-664) cannot reach this generator — decompose already
-// rejects every multi-quantifier shape with the type-filter error.
-//
-// The pipeline (:669-681): AND the select's predicates (Go's filter carries
-// the conjunction as one tree already), DNF-normalize WITHOUT simplification
-// (:675 calls normalize, not normalizeAndSimplify — absorption would change
-// the stored bytes), require IndexPredicate.isSupported (:676), and store the
-// DNF only when it expands to ranges — otherwise the NON-normalized
-// conjunction (:677-679), a wire-visible branch.
-func generatePredicate(d *decomposed, res storageNames) (*gen.Predicate, error) {
-	if d.aggregate != nil && d.aggregate.HasHaving {
-		// Java's exact message (MaterializedViewIndexGenerator.java:651).
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-			"Unsupported index definition, found predicate in select-having")
-	}
-	f := d.filter
-	if f == nil {
+// normalize: each conjunct's residual form, ANDed when there is more than
+// one; DNF-normalized WITHOUT simplification (absorption would change the
+// stored bytes); IndexPredicate.isSupported, else "Unsupported predicate
+// '%s'"; and the DNF stored only when it expands to ranges — otherwise the
+// NON-normalized conjunction, a wire-visible branch. The conjuncts are the
+// graph's own, unresolved, as Java's are: a predicate over a field of the
+// scanned record reads it through the filter's quantifier over the scan.
+func generatePredicate(spec *indexSpec, res storageNames) (*gen.Predicate, error) {
+	if len(spec.predicate) == 0 {
 		return nil, nil
 	}
-	conjunction := f.Predicate
-	if conjunction == nil {
-		// A text-only filter means the resolver declined the WHERE's shape.
-		// Building the index anyway would silently drop the predicate — a
-		// FULL index holding entries Java's sparse index omits. Fail closed
-		// with Java's unsupported-predicate message shape (:676).
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"Unsupported predicate '%s'", f.PredicateText)
+	residuals := make([]predicates.QueryPredicate, len(spec.predicate))
+	for i, p := range spec.predicate {
+		r, err := predicates.ToResidualPredicate(p)
+		if err != nil {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "Unsupported predicate '%s'", p.Explain())
+		}
+		residuals[i] = r
+	}
+	conjunction := residuals[0]
+	if len(residuals) > 1 {
+		conjunction = predicates.NewAnd(residuals...)
 	}
 	result := conjunction
 	if norm, changed := cascades.NormalizeDNFWithoutSimplification(
@@ -57,17 +46,35 @@ func generatePredicate(d *decomposed, res storageNames) (*gen.Predicate, error) 
 		result = norm
 	}
 	if !indexPredicateIsSupported(result) {
-		// Java's message (:676); the rendering of %s is Go's Explain.
+		// Java's message; the rendering of %s is Go's Explain.
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"Unsupported predicate '%s'", result.Explain())
 	}
 	if !dnfPredicateHasRanges(result) {
 		// IndexPredicateExpansion.dnfPredicateToRanges came back empty: the
 		// DNF is not a union of per-value ranges, so Java stores the
-		// NON-normalized conjunction instead (:677-679).
+		// NON-normalized conjunction instead.
 		result = conjunction
 	}
 	return indexPredicateToProto(result, res)
+}
+
+// fieldAccessors is the path of a predicate's field access, as the graph
+// holds it (predicates are serialized unresolved, as Java's are).
+func fieldAccessors(fv values.FieldValue) ([]fieldAccessor, bool) {
+	if fv == nil || fv.Path() == nil || fv.Path().Len() == 0 {
+		return nil, false
+	}
+	path := make([]fieldAccessor, fv.Path().Len())
+	for i := range path {
+		accessor, ok := fv.Path().Accessor(i)
+		if !ok || accessor.Ordinal() < 0 {
+			return nil, false
+		}
+		name, _ := accessor.DisplayName()
+		path[i] = fieldAccessor{ordinal: accessor.Ordinal(), name: name, typ: accessor.FieldType()}
+	}
+	return path, true
 }
 
 // indexPredicateIsSupported ports IndexPredicate.isSupported
@@ -408,6 +415,15 @@ func indexComparisonToProto(c predicates.Comparison, columnType values.Type) (*g
 			return &gen.Comparison{NullComparison: &gen.NullComparison{IsNull: protoBool(false)}}, nil
 		}
 	}
+	// An enum column's comparand is promoted to the enum, which no
+	// SimpleComparison carries: Java's IndexComparison.fromComparison refuses
+	// it with a RecordCoreException ExceptionUtil leaves unmapped, XXXXX
+	// (RFC-257 WS-J section 5, F10; the oracle shape enum_predicate_index,
+	// measured). IS NULL and IS NOT NULL above are NullComparisons and pass.
+	if _, isEnum := columnType.(*values.EnumType); isEnum {
+		return nil, api.NewError(api.ErrCodeUnknown,
+			"attempt to create PoJo index comparison from unsupported comparison")
+	}
 	var typ gen.ComparisonType
 	switch c.Type {
 	case predicates.ComparisonEquals:
@@ -461,6 +477,14 @@ func indexComparisonToProto(c predicates.Comparison, columnType values.Type) (*g
 	}
 	operand, err := recordlayer.LiteralToProtoValue(lit)
 	if err != nil {
+		// A comparand no Value field holds (a UUID column's): Java's
+		// LiteralKeyExpression.toProtoValue RecordCoreException, which
+		// ExceptionUtil leaves unmapped, XXXXX, with its message (the WS-J
+		// oracle shape uuid_predicate_index, measured).
+		var unsupported *recordlayer.UnsupportedValueTypeError
+		if errors.As(err, &unsupported) {
+			return nil, api.WrapError(api.ErrCodeUnknown, unsupported.Error(), err)
+		}
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"attempt to create PoJo index comparison from unsupported comparison: %v", err)
 	}

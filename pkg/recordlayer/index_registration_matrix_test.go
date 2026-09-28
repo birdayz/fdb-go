@@ -70,14 +70,14 @@ var _ = Describe("IndexRegistrationMatrix", func() {
 					// Untrimmed: (price, price). Trimmed it would be (price).
 					wantKey = tuple.Tuple{int64(100), int64(100)}
 				} else {
-					pkDedupIdx = NewIndex("pkdedup_idx", Concat(Field("order_id"), Field("price")))
-					builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-					builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+					pkDedupIdx = NewIndex("pkdedup_idx", Concat(Field("price"), Literal(int64(1))))
+					builder.GetRecordType("Order").SetPrimaryKey(Field("price"))
+					builder.GetRecordType("Customer").SetPrimaryKey(Field("price"))
 					builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 					if rc.wantPositions {
-						wantKey = tuple.Tuple{int64(1), int64(100)}
+						wantKey = tuple.Tuple{int64(100), int64(1)}
 					} else {
-						wantKey = tuple.Tuple{int64(1), int64(100), int64(1)}
+						wantKey = tuple.Tuple{int64(100), int64(1), int64(100)}
 					}
 				}
 				rc.register(builder, pkDedupIdx)
@@ -107,10 +107,7 @@ var _ = Describe("IndexRegistrationMatrix", func() {
 					Expect(entries[0].Key).To(Equal(wantKey),
 						"entry key for a %s registration", rc.name)
 
-					wantPK := tuple.Tuple{int64(1)}
-					if rc.isUniversal {
-						wantPK = tuple.Tuple{int64(100)}
-					}
+					wantPK := tuple.Tuple{int64(100)}
 					Expect(entries[0].PrimaryKey()).To(Equal(wantPK))
 
 					return nil, nil

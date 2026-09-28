@@ -1681,3 +1681,114 @@ func TestSelectMergeRule_ChainedUnnestBarrier(t *testing.T) {
 		}
 	}
 }
+
+// TestSelectMergeRule_KeepsTheReferenceLegTable pins the decline that closes
+// `FROM (SELECT * FROM w, g) AS a, h AS d` (XX000 "reference members disagree
+// on result type" before). The parent's row is tiled by its own sources,
+// [A, D]; dissolving the positional-seed child A re-tiles it [W, G, D], a
+// different populated leg table, which GetFlowedObjectType refuses for the
+// whole reference. The merge must not produce that member. A single-source
+// child re-tiles too, by renaming its alias ([A, D] → [W, D]). The control
+// arms: a parent that reads the child as a whole row states no table (the
+// merge proceeds), and expressions.LegTableConflictsWith's arms.
+func TestSelectMergeRule_KeepsTheReferenceLegTable(t *testing.T) {
+	t.Parallel()
+	row := func(name string, cols ...string) values.Type {
+		fields := make([]values.Field, len(cols))
+		for i, c := range cols {
+			fields[i] = values.Field{Name: c, Ordinal: i, FieldType: values.NotNullLong}
+		}
+		return values.NewRecordType(name, false, fields)
+	}
+	named := func(alias string, e expressions.RelationalExpression) expressions.Quantifier {
+		return expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier(alias), expressions.InitialOf(e))
+	}
+	wQ := named("W", selectMergeTypedScan(t, "W", row("W", "ID", "F")))
+	gQ := named("G", selectMergeTypedScan(t, "G", row("G", "K", "V")))
+	// The translator reads a source through a QOV typed by the row alone (no
+	// leg table): the parent's row is tiled by its own sources.
+	seed := func(q expressions.Quantifier, ords ...int) []values.RecordConstructorField {
+		qov := selectMergeQOV(t, q.GetAlias(), selectMergeFlowed(t, q).FlowedType())
+		var out []values.RecordConstructorField
+		for _, o := range ords {
+			rt := qov.FlowedType().(*values.RecordType)
+			out = append(out, values.RecordConstructorField{Name: rt.Fields[o].Name, Value: selectMergeOrdinalSeedField(t, qov, o)})
+		}
+		return out
+	}
+	childRC := values.NewRawRecordConstructorValue(append(seed(wQ, 0, 1), seed(gQ, 0, 1)...)...)
+	child := selectMergeSelect(t, childRC, []expressions.Quantifier{wQ, gQ}, nil)
+	aQ := named("A", child)
+	dQ := named("D", selectMergeTypedScan(t, "H", row("H", "ID", "F")))
+
+	parentRC := values.NewRawRecordConstructorValue(append(seed(aQ, 0, 1, 2, 3), seed(dQ, 0, 1)...)...)
+	if legs := values.SeedTilingLegs(parentRC, 6); len(legs) != 2 || legs[0].Name != "A" || legs[1].Name != "D" {
+		t.Fatalf("fixture: the parent row must tile as [A, D], got %+v", legs)
+	}
+	parent := selectMergeSelect(t, parentRC, []expressions.Quantifier{aQ, dQ}, nil)
+	if yielded := selectMergeFire(t, NewSelectMergeRule(), expressions.InitialOf(parent)); len(yielded) != 0 {
+		t.Fatalf("the merge re-tiled the parent's row [A, D] as the child's legs; yielded %d member(s): %v",
+			len(yielded), yielded[0].GetResultValue())
+	}
+
+	// Control: the same child read as a whole row states no parent leg table,
+	// so there is nothing to disagree with and the merge proceeds.
+	whole := selectMergeSelect(t, selectMergeFlowed(t, aQ), []expressions.Quantifier{aQ, dQ}, nil)
+	if yielded := selectMergeFire(t, NewSelectMergeRule(), expressions.InitialOf(whole)); len(yielded) == 0 {
+		t.Fatal("a parent stating no leg table must still merge its child")
+	}
+
+	// A single-source child dissolves by renaming its alias to the child's
+	// leg (`FROM (SELECT * FROM w WHERE …) AS a, h AS d` as the lower of a
+	// wider join): the parent's [A, D] would come back as [W, D]. At the
+	// merge-base this merge happened and the reference refused its members.
+	single := selectMergeSelect(t, values.NewRawRecordConstructorValue(seed(wQ, 0, 1)...), []expressions.Quantifier{wQ}, nil)
+	a1Q := named("A", single)
+	renamedRC := values.NewRawRecordConstructorValue(append(seed(a1Q, 0, 1), seed(dQ, 0, 1)...)...)
+	if legs := values.SeedTilingLegs(renamedRC, 4); len(legs) != 2 || legs[0].Name != "A" || legs[1].Name != "D" {
+		t.Fatalf("fixture: the single-source parent row must tile as [A, D], got %+v", legs)
+	}
+	renamed := selectMergeSelect(t, renamedRC, []expressions.Quantifier{a1Q, dQ}, nil)
+	if yielded := selectMergeFire(t, NewSelectMergeRule(), expressions.InitialOf(renamed)); len(yielded) != 0 {
+		t.Fatalf("the merge renamed the parent's leg A to the child's W; yielded %d member(s): %v",
+			len(yielded), yielded[0].GetResultValue())
+	}
+	wholeSingle := selectMergeSelect(t, selectMergeFlowed(t, a1Q), []expressions.Quantifier{a1Q, dQ}, nil)
+	if yielded := selectMergeFire(t, NewSelectMergeRule(), expressions.InitialOf(wholeSingle)); len(yielded) == 0 {
+		t.Fatal("a parent stating no leg table must still merge its single-source child")
+	}
+
+	merged := values.NewRawRecordConstructorValue(append(append(seed(wQ, 0, 1), seed(gQ, 0, 1)...), seed(dQ, 0, 1)...)...)
+	// The check asks the REFERENCE, whose table GetFlowedObjectType accumulates
+	// over every member, not the rewritten select's own value. (A member whose
+	// VALUE states no table while another member's does cannot be built from
+	// values here: a QOV's result type carries no legs, and semantically equal
+	// members are deduplicated — so that arm is not claimed.)
+	withMember := func(ref *expressions.Reference, member expressions.RelationalExpression) *expressions.Reference {
+		if !ref.Insert(member) {
+			t.Fatal("fixture: the second member was not inserted")
+		}
+		return ref
+	}
+	threeLegs := selectMergeSelect(t, merged, []expressions.Quantifier{wQ, gQ, dQ}, nil)
+	oneLeg := values.NewRawRecordConstructorValue(seed(wQ, 0, 1)...)
+	for _, tc := range []struct {
+		name     string
+		ref      *expressions.Reference
+		after    values.Value
+		conflict bool
+	}{
+		{"re-tiled by the child's legs", expressions.InitialOf(parent), merged, true},
+		{"the same table", expressions.InitialOf(threeLegs), merged, false},
+		{"renamed leg", expressions.InitialOf(renamed), values.NewRawRecordConstructorValue(append(seed(wQ, 0, 1), seed(dQ, 0, 1)...)...), true},
+		{"after states none (one leg)", expressions.InitialOf(parent), oneLeg, false},
+		// A reference none of whose members states a table has nothing to
+		// disagree with, whatever the new member states.
+		{"no member states a table", expressions.InitialOf(selectMergeSelect(t, oneLeg, []expressions.Quantifier{wQ}, nil)), merged, false},
+		{"a reference whose members already disagree", withMember(expressions.InitialOf(parent), threeLegs), merged, false},
+	} {
+		if got := expressions.LegTableConflictsWith(tc.ref, tc.after); got != tc.conflict {
+			t.Errorf("%s: LegTableConflictsWith = %v, want %v", tc.name, got, tc.conflict)
+		}
+	}
+}

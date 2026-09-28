@@ -73,6 +73,13 @@ var renderableNaNs = func() map[uint64]string {
 	return out
 }()
 
+// float32ParsedNaNBits is the FLOAT NaN the 'NaN' spelling produces: derived
+// from the same strconv.ParseFloat(…, 32) the STRING→FLOAT cast makes.
+func float32ParsedNaNBits() uint32 {
+	parsed, _ := strconv.ParseFloat("NaN", 32)
+	return math.Float32bits(float32(parsed))
+}
+
 // renderableNaNPatterns lists the accepted patterns for an error message, in a
 // stable order so the text does not depend on map iteration.
 func renderableNaNPatterns() string {
@@ -247,6 +254,34 @@ func substituteParams(query string, args []driver.NamedValue) (string, error) {
 				// sign, and 3 / 2 selects integer division. Precision -1 keeps
 				// every finite value exact, including subnormals and -0.
 				b.WriteString(strconv.FormatFloat(val, 'e', -1, 64))
+			}
+		case float32:
+			// A FLOAT (JDBC setFloat). No bare literal is typed FLOAT, so the
+			// value travels as a STRING cast to FLOAT: STRING_TO_FLOAT parses at
+			// 32 bits (Go ParseFloat(s, 32), Java Float.parseFloat), so the
+			// shortest float32 text comes back as exactly these bits, -0 and
+			// both infinities included. A DOUBLE literal cast to FLOAT would
+			// round twice. A NaN is carried only in the one pattern the 'NaN'
+			// spelling parses to; any other is refused, as the float64 arm
+			// refuses one, rather than rewritten.
+			switch {
+			case val != val:
+				if math.Float32bits(val) != float32ParsedNaNBits() {
+					return "", api.NewErrorf(api.ErrCodeInvalidParameter,
+						"NaN parameter for placeholder %d has FLOAT bit pattern %#08x, which the "+
+							"driver's text parameter path cannot represent without changing it "+
+							"(representable: %#08x); bind that one, or write the value with an expression",
+						argIdx, math.Float32bits(val), float32ParsedNaNBits())
+				}
+				b.WriteString("CAST('NaN' AS FLOAT)")
+			case math.IsInf(float64(val), 1):
+				b.WriteString("CAST('Infinity' AS FLOAT)")
+			case math.IsInf(float64(val), -1):
+				b.WriteString("CAST('-Infinity' AS FLOAT)")
+			default:
+				b.WriteString("CAST('")
+				b.WriteString(strconv.FormatFloat(float64(val), 'e', -1, 32))
+				b.WriteString("' AS FLOAT)")
 			}
 		case string:
 			// Escape single quotes by doubling them.

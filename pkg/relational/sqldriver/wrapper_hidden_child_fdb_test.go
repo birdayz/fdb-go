@@ -70,14 +70,11 @@ import (
 // at all — the controls that establish that are in the table, and each earlier
 // account went wrong by not running them.
 //
-//   - ARRAY element. Here the bad name IS the variable. An element whose own
-//     type protobuf cannot carry never stamps and evaluates to a name-keyed map.
-//     If the anonymised target erased that name the parent stamps, is handed the
-//     map, and REFUSES it — the query does not answer. If both elements carry
-//     the SAME bad name the target keeps it, the parent cannot stamp either, and
-//     the query ANSWERS as a uniform map with its values. And with nothing
-//     stamped above the array at all, it answers RAGGED: one element a message,
-//     one a map. That last is the worst of them, because nothing reports it.
+//   - ARRAY element. Recursive promotion adopts the common type by ordinal,
+//     including names and numeric widths. A raw constructor with an invalid
+//     protobuf name can therefore feed a representable anonymous target. When
+//     both elements retain the SAME invalid name, the target remains raw too.
+//     Both wrapped and bare arrays must preserve their values uniformly.
 //   - UNION. A loud 42F65 — but not about the name, not about records, and not
 //     about the target being anonymous either. It fails identically for two
 //     synthesisable names; it answers when the names agree, even across widths;
@@ -88,8 +85,7 @@ import (
 //   - CASE. With ONE field per branch it answers flattened: a bare leaf under
 //     the outer alias, no nested record, the same for good names and bad. With
 //     TWO fields a record DOES survive and IS coerced, the disagreeing field
-//     arriving as `_1`. So this site coerces records where the array site does
-//     not, which is a lead for the port rather than a curiosity — an earlier
+//     arriving as `_1`. This site also coerces records — an earlier
 //     round read the one-field row alone and concluded the opposite. Why a
 //     single-field branch flattens at all is still unexplained.
 //
@@ -97,9 +93,9 @@ import (
 // TestWhichRecordTypesCanBeGivenADescriptor the stamping predicate, both without
 // Docker.
 //
-// Every outcome here reproduces identically at the merge-base `36b97f1e9`, so
-// none is a regression of the work this ships with. TODO.md carries the
-// closures. When one lands, its rows redden: assert the ROWS then.
+// The original outcomes reproduced at merge-base `36b97f1e9`. The mixed-width
+// and anonymized record-array rows now require successful recursive promotion.
+// The UNION and CASE outcomes remain explicit, separately owned contracts.
 func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -111,7 +107,7 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE wraphidden_tpl
 		CREATE TABLE t (id BIGINT, PRIMARY KEY (id))`)
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_wraphidden/s1 WITH TEMPLATE wraphidden_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_wraphidden?cluster_file=%s&schema=s1", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_WRAPHIDDEN?cluster_file=%s&schema=S1", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -121,8 +117,6 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (1)")
 
 	const (
-		mapInMessage  = "cannot store map[string]interface {} in message field"
-		widthMismatch = "but double in the target"
 		// The refusal names the TARGET. Matching only "is not promotable to"
 		// would still pass if alignment had chosen a NAMED common type, which is
 		// the opposite of what these rows attribute the failure to.
@@ -147,11 +141,8 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 		// record literal lands in rather than the literal itself. Those rows are
 		// what showed the outcome is not a property of the literal at all.
 		query string
-		// wantRagged: the query ANSWERS with an array whose elements are of
-		// MIXED representation — some stamped, some raw maps — which is neither
-		// a failure nor a uniform degradation.
-		wantRagged bool
-		// exactly one of these three is set
+		// wantArray checks a bare array whose elements must all be api.Struct.
+		wantArray bool
 		failsWith string
 		// andFailsWith is a SECOND substring the same refusal must contain, for
 		// rows whose attribution depends on more than the error's family.
@@ -171,24 +162,28 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 		wantLeaves []leafRow
 	}{
 		{
-			why:       "one unsynthesisable name beside a good one: differing shapes anonymise the target, so the target IS synthesisable, the parent stamps, and the child's map is refused",
-			elems:     `(1 AS "$lead"), (2 AS A)`,
-			failsWith: mapInMessage,
+			why:        "one unsynthesisable source name beside a good one: promotion adopts the representable anonymous target",
+			elems:      `(1 AS "$lead"), (2 AS A)`,
+			wantStruct: true,
+			wantLeaves: []leafRow{{names: []string{"_0", "_0"}, vals: []float64{1, 2}}},
 		},
 		{
-			why:       "the offending element second, so the failure is not about position",
-			elems:     `(1 AS A), (2 AS "$lead")`,
-			failsWith: mapInMessage,
+			why:        "the unsynthesisable source second: promotion is independent of position",
+			elems:      `(1 AS A), (2 AS "$lead")`,
+			wantStruct: true,
+			wantLeaves: []leafRow{{names: []string{"_0", "_0"}, vals: []float64{1, 2}}},
 		},
 		{
-			why:       "TWO different unsynthesisable names: the target anonymises both, so it is still synthesisable and the parent still stamps alone",
-			elems:     `(1 AS "$lead"), (2 AS "$tail")`,
-			failsWith: mapInMessage,
+			why:        "two unsynthesisable names: both raw sources promote to the anonymous target",
+			elems:      `(1 AS "$lead"), (2 AS "$tail")`,
+			wantStruct: true,
+			wantLeaves: []leafRow{{names: []string{"_0", "_0"}, vals: []float64{1, 2}}},
 		},
 		{
-			why:       "a leading digit, not a dollar sign: the rule is what protobuf will carry, not one prefix",
-			elems:     `(1 AS "1x"), (2 AS A)`,
-			failsWith: mapInMessage,
+			why:        "a leading digit, not a dollar sign: the rule is what protobuf will carry, not one prefix",
+			elems:      `(1 AS "1x"), (2 AS A)`,
+			wantStruct: true,
+			wantLeaves: []leafRow{{names: []string{"_0", "_0"}, vals: []float64{1, 2}}},
 		},
 		{
 			why:        "the SAME unsynthesisable name twice with differing value types: a promotion IS inserted, but the target keeps the bad name, so the parent cannot synthesise either and the whole thing degrades together",
@@ -218,19 +213,22 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 			wantLeaves: []leafRow{{names: []string{"A", "A"}, vals: []float64{1, 2}}},
 		},
 		{
-			why:       "SYNTHESISABLE names but differing numeric widths: the same site refusing a wrong-KIND message instead of a map, and the error text's synthesis prefix is ProtoTypeError's stock wording, not where it happened",
-			elems:     `(1 AS A), (2.5 AS A)`,
-			failsWith: widthMismatch,
+			why:        "synthesisable matching names with differing numeric widths: recursively promote each record to the common DOUBLE field type",
+			elems:      `(1 AS A), (2.5 AS A)`,
+			wantStruct: true,
+			wantLeaves: []leafRow{{names: []string{"A", "A"}, vals: []float64{1, 2.5}}},
 		},
 		{
-			why:       "the same widths with DIFFERING names, so the target is anonymised as well: the width refusal does not depend on the names agreeing, which is what keeps it a separate axis from the erasure",
-			elems:     `(1 AS A), (2.5 AS B)`,
-			failsWith: widthMismatch,
+			why:        "differing numeric widths and names: recursive promotion also adopts the common anonymous field name",
+			elems:      `(1 AS A), (2.5 AS B)`,
+			wantStruct: true,
+			wantLeaves: []leafRow{{names: []string{"_0", "_0"}, vals: []float64{1, 2.5}}},
 		},
 		{
-			why:        "the SAME array, with no record wrapped around it: nothing above the array is stamped, so nothing refuses the map, and the array comes back RAGGED — one element a message, the other a map. It ANSWERS, which is worse than the failure above, and it is why the outcome is not a property of the literal",
+			why:        "the same array without a surrounding record: both elements adopt the common anonymous type",
 			query:      `SELECT [(1 AS "$lead"), (2 AS A)] FROM t`,
-			wantRagged: true,
+			wantArray:  true,
+			wantLeaves: []leafRow{{names: []string{"_0", "_0"}, vals: []float64{1, 2}}},
 		},
 		{
 			why:        "the same two record literals unified by a CASE rather than an array: ONE field per branch: it answers, but the leaf is a bare number under the outer alias and no record survives as a record. Read the two-field row below before concluding anything about coercion from this one",
@@ -271,7 +269,7 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 			wantLeaves: []leafRow{{names: []string{"CH"}, vals: []float64{1}}},
 		},
 		{
-			why:        "TWO fields per CASE branch, and now a record DOES survive as a record and IS coerced — the disagreeing field comes back `_1`, anonymised exactly as unification does. So the CASE site coerces records; the rows above are flattened only because a single-field branch is. Something on this path does what the array path does not, and finding out what is the first step of the port",
+			why:        "TWO fields per CASE branch, and now a record DOES survive as a record and IS coerced — the disagreeing field comes back `_1`, anonymised exactly as unification does. So the CASE site coerces records; the rows above are flattened only because a single-field branch is. The array path now performs the same ordinal coercion",
 			query:      `SELECT (CASE WHEN id=1 THEN (1 AS A, 3 AS Z) ELSE (2 AS A, 4 AS Y) END AS CH) FROM t`,
 			wantStruct: true,
 			wantLeaves: []leafRow{{names: []string{"A", "_1"}, vals: []float64{1, 3}}},
@@ -375,24 +373,7 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 			t.Errorf("%s returned %d rows, want exactly 1", query, len(got))
 			continue
 		}
-		if tc.wantRagged {
-			elems, isSlice := got[0].([]any)
-			if !isSlice || len(elems) != 2 {
-				t.Errorf("%s = %#v, want a two-element array. %s", query, got[0], tc.why)
-				continue
-			}
-			_, firstIsMap := elems[0].(map[string]any)
-			_, secondIsMap := elems[1].(map[string]any)
-			if firstIsMap == secondIsMap {
-				t.Errorf("%s returned an array whose elements are both %s (%T, %T), want them "+
-					"MIXED. %s — if they agree now, this shape either answers uniformly or fails, "+
-					"and either way the ragged outcome this row exists to record is gone",
-					query, map[bool]string{true: "raw maps", false: "stamped"}[firstIsMap],
-					elems[0], elems[1], tc.why)
-			}
-			continue
-		}
-		if tc.wantStruct {
+		if tc.wantStruct || tc.wantArray {
 			if len(tc.wantLeaves) != len(got) {
 				t.Errorf("%s returned %d row(s) and declares %d leaf expectation(s): every row needs "+
 					"its own, or a row goes unexamined", query, len(got), len(tc.wantLeaves))
@@ -410,9 +391,19 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 					t.Errorf("%s row %d has a leaf expectation that %s", query, i, reason)
 					continue
 				}
-				if _, isStruct := row.(api.Struct); !isStruct {
-					t.Errorf("%s row %d = %T, want an api.Struct. %s — a map or any other carrier "+
-						"here would mean the bake stopped stamping this shape", query, i, row, tc.why)
+				if tc.wantArray {
+					elems, ok := row.([]any)
+					if !ok || len(elems) != 2 {
+						t.Errorf("%s = %T %#v, want a two-element array", query, row, row)
+						continue
+					}
+					for j, elem := range elems {
+						if _, ok := elem.(api.Struct); !ok {
+							t.Errorf("%s element %d = %T, want api.Struct", query, j, elem)
+						}
+					}
+				} else if _, isStruct := row.(api.Struct); !isStruct {
+					t.Errorf("%s row %d = %T, want api.Struct: %s", query, i, row, tc.why)
 					continue
 				}
 				names, vals, others := leaves(t, row)

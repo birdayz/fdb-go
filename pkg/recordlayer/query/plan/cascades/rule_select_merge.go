@@ -383,6 +383,27 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 	if len(rcByAlias) > 0 {
 		newResultValue = values.Replace(newResultValue, cb)
 	}
+	// The merged member must state the leg table its reference's members
+	// already state, or the reference has no flowed row: GetFlowedObjectType
+	// refuses two different populated tables, and that refusal fails the whole
+	// plan (XX000). It is checked for EVERY merge, because two regimes above
+	// re-tile the row:
+	//   - a single-source child dissolves by RENAMING its alias to the child's
+	//     own leg (`FROM (SELECT * FROM w WHERE w.f > 1) AS a, h AS d, g AS e`:
+	//     the lower {a, d} states legs A, D; merging a's body states W, D);
+	//   - dissolving a positional-seed child re-tiles the row by the child's
+	//     own legs, which is the same statement only when the child is NAMED by
+	//     one of them (a box named by its rightmost leaf); a derived table's
+	//     quantifier (`FROM (SELECT * FROM w, g) AS a, h`) is not.
+	// In both, the derived table's alias is a leg of the parent's row and
+	// readers above address it by that alias, so the merge does not happen.
+	// A parent whose row states no table (a projection, the usual top-level
+	// select) is unaffected: an empty table agrees with any. Java's merge
+	// meets no such refusal (its member types carry no leg table); the SQL
+	// answer is the same either way, only the unmerged nested select remains.
+	if expressions.LegTableConflictsWith(call.Reference, newResultValue) {
+		return
+	}
 
 	// RETAINED quantifiers whose subtrees hold BAKED
 	// references over a MERGED-AWAY alias get those references translated

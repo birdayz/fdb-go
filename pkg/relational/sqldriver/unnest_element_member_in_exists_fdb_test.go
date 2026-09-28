@@ -76,7 +76,7 @@ func TestFDB_UnnestElementMemberInExists(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -217,19 +217,31 @@ func TestFDB_UnnestElementMemberInExists(t *testing.T) {
 			rearms: "the correlated-EXISTS inner JOIN-LEG unnest element mint changed",
 		},
 
-		// ---- a live divergence this change does NOT close ----
+		// ---- the correlated primary unnest is the general FROM-item path ----
 		{
 			// Java answers this with rows (`select * from t."level0.field1" as x
-			// where …`, valid-identifiers.yamsql:221). Go refuses the correlated
-			// primary unnest unless the EXISTS body projects exactly the bare
-			// element alias, so `SELECT *` / `SELECT 1` / `SELECT x.ek` are all
-			// declined. That gate is upstream of everything this test measures —
-			// it is the reason the arms above spell the projection `SELECT x` —
-			// and it is a loud refusal, never a wrong answer.
-			name:   "projection_gate_still_refuses_star_divergence_sentinel",
+			// where …`, valid-identifiers.yamsql:221): a block's first FROM item
+			// that names no table is a correlated field access, whatever the
+			// block projects. Go read it through an EXISTS-only path that
+			// admitted exactly the bare element projection; it is now the same
+			// classification and binding every FROM item takes, so `SELECT *`,
+			// `SELECT 1` and a member projection all answer.
+			name:   "projection_star_over_a_correlated_primary_unnest",
 			sql:    "SELECT t.id FROM t WHERE EXISTS (SELECT * FROM t.arr AS x WHERE x.ek = 20)",
-			want:   "ERROR: 0AF00: correlated array EXISTS currently requires projecting its element alias",
-			rearms: "the correlated-primary EXISTS projection gate was widened; assert rows (ID|1) here, matching Java",
+			want:   "ID|1",
+			rearms: "the correlated primary unnest no longer answers a star projection (Java does)",
+		},
+		{
+			name:   "projection_one_over_a_correlated_primary_unnest",
+			sql:    "SELECT t.id FROM t WHERE EXISTS (SELECT 1 FROM t.arr AS x WHERE x.ek = 20)",
+			want:   "ID|1",
+			rearms: "the correlated primary unnest no longer answers a constant projection (Java does)",
+		},
+		{
+			name:   "projection_member_over_a_correlated_primary_unnest",
+			sql:    "SELECT t.id FROM t WHERE EXISTS (SELECT x.ek FROM t.arr AS x WHERE x.ek = 20)",
+			want:   "ID|1",
+			rearms: "the correlated primary unnest no longer answers a member projection (Java does)",
 		},
 	}
 
@@ -279,7 +291,7 @@ func TestFDB_UnnestElementMemberInExistsConvertedSentinel(t *testing.T) {
 		"CREATE TABLE u (uk BIGINT, PRIMARY KEY(uk))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uelem/s WITH TEMPLATE uelem_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_uelem?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_UELEM?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
