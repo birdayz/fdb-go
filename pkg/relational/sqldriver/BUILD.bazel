@@ -699,6 +699,7 @@ go_test(
         "update_unique_violation_probe_test.go",
         "uuid_audit_regressions_fdb_test.go",
         "uuid_indexable_roundtrip_fdb_test.go",
+        "uuid_java_forms_fdb_test.go",
         "value_index_asselect_wire_fdb_test.go",
         "value_index_onsource_wire_fdb_test.go",
         "variadic_functions_fdb_test.go",

@@ -69,8 +69,6 @@ import (
 	"math"
 	"sync"
 
-	"github.com/google/uuid"
-
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
@@ -1818,11 +1816,11 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 		}
 		if parseStringToUUID {
 			if s, sok := lit.(string); sok {
-				u, perr := uuid.Parse(s)
-				if perr != nil {
+				u, ok := values.ParseJavaUUID(s)
+				if !ok {
 					return nil, &values.InvalidUUIDValueError{Value: s}
 				}
-				lit = [16]byte(u)
+				lit = u
 			}
 		}
 		if values.IsEnum(left.Type()) && v.Type() != nil && v.Type().Code() == values.TypeCodeString {

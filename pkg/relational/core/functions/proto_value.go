@@ -40,11 +40,12 @@ func isUUIDMessageField(fd protoreflect.FieldDescriptor) bool {
 // a dynamicpb message matching the tuple_fields.UUID descriptor.
 // Returns the Go uuid.UUID value too, for callers that want both.
 func uuidStringToProtoMessage(fd protoreflect.FieldDescriptor, s string) (protoreflect.Value, error) {
-	u, err := uuid.Parse(s)
-	if err != nil {
-		return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidCast,
-			"cannot CAST %q to UUID: %v", s, err)
+	b, ok := values.ParseJavaUUID(s)
+	if !ok {
+		invalid := &values.InvalidUUIDValueError{Value: s}
+		return protoreflect.Value{}, api.WrapError(api.ErrCodeInternalError, invalid.Error(), invalid)
 	}
+	u := uuid.UUID(b)
 	msgDesc := fd.Message()
 	dynMsg := dynamicpb.NewMessage(msgDesc)
 	mostFD := msgDesc.Fields().ByName("most_significant_bits")

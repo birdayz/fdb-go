@@ -4883,11 +4883,11 @@ func (c *CastValue) castEvaluated(v any, source Type) (any, error) {
 		// silently NULLing every row was a silent-wrong.
 		switch val := v.(type) {
 		case string:
-			u, perr := uuid.Parse(val)
-			if perr != nil {
+			u, ok := ParseJavaUUID(val)
+			if !ok {
 				return nil, &InvalidUUIDValueError{Value: val}
 			}
-			return [16]byte(u), nil
+			return u, nil
 		case [16]byte:
 			// Already the neutral UUID representation (RFC-162).
 			return val, nil

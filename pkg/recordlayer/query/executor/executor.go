@@ -4574,8 +4574,8 @@ func goToProtoScalarValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.
 			case uuid.UUID:
 				return uuidBytesToProtoMessage(fd, u)
 			case string:
-				parsed, perr := uuid.Parse(u)
-				if perr != nil {
+				parsed, ok := values.ParseJavaUUID(u)
+				if !ok {
 					invalid := &values.InvalidUUIDValueError{Value: u}
 					return protoreflect.Value{}, api.WrapError(api.ErrCodeInternalError, invalid.Error(), invalid)
 				}

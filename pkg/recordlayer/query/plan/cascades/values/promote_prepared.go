@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -385,11 +384,11 @@ func (n *promotionNode) coerce(v any) (any, error) {
 		if target, ok := n.target.(*EnumType); ok {
 			return stringToEnumValue(target, text)
 		}
-		u, err := uuid.Parse(text)
-		if err != nil {
+		u, ok := ParseJavaUUID(text)
+		if !ok {
 			return nil, &InvalidUUIDValueError{Value: text}
 		}
-		return [16]byte(u), nil
+		return u, nil
 	}
 	// The operator was selected from declared types during preparation. These
 	// carrier conversions implement that operator, not runtime type inference.

@@ -162,15 +162,11 @@ func CastValue(v any, typeName string) (any, error) {
 			return uuid.UUID(n).String(), nil
 		}
 	case typeName == "UUID":
-		// CAST(<expr> AS UUID): only string → UUID is supported (matches
-		// Java's CastValue.STRING_TO_UUID via java.util.UUID.fromString).
-		// Validate the canonical 36-char form; the SQL layer carries
-		// UUID values as canonical strings, with the proto-write
-		// boundary in ConvertToProtoValue encoding them as the
-		// tuple_fields.UUID message.
+		// Only string → UUID (Java's CastValue.STRING_TO_UUID).
 		if n, ok := v.(string); ok {
-			u, err := uuid.Parse(strings.TrimSpace(n))
-			if err != nil {
+			b, ok := values.ParseJavaUUID(n)
+			u := uuid.UUID(b)
+			if !ok {
 				// Java's SemanticException INVALID_UUID_VALUE, left in
 				// INTERNAL_ERROR (XX000) by ExceptionUtil, with its message.
 				invalid := &values.InvalidUUIDValueError{Value: n}
