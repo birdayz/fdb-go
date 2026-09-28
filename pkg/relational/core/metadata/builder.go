@@ -44,6 +44,8 @@ type Builder struct {
 	storeRowVersions bool
 	views            []viewSpec
 	functions        []functionSpec
+	storedQueries    map[string]*gen.PStoredQuery
+	storedQueryOrder []string
 }
 
 type functionSpec struct {
@@ -180,6 +182,18 @@ func (b *Builder) HasTable(name string) bool {
 		}
 	}
 	return false
+}
+
+// AddStoredQuery records a stored query; a repeated name replaces the query in
+// place, as Java's HashMap put does.
+func (b *Builder) AddStoredQuery(name, query string, tempFunctions []string) {
+	if b.storedQueries == nil {
+		b.storedQueries = map[string]*gen.PStoredQuery{}
+	}
+	if _, ok := b.storedQueries[name]; !ok {
+		b.storedQueryOrder = append(b.storedQueryOrder, name)
+	}
+	b.storedQueries[name] = &gen.PStoredQuery{Name: &name, Query: &query, TempFunctions: tempFunctions}
 }
 
 // AddFunction records a SQL function as the template stores it.
@@ -612,6 +626,9 @@ func (b *Builder) build() (*RecordLayerSchemaTemplate, error) {
 	}
 	for _, name := range javaHashMapOrder(nil, fnNames) {
 		mdBuilder.AddUserDefinedFunction(fnDef[name])
+	}
+	for _, name := range javaHashMapOrder(nil, b.storedQueryOrder) {
+		mdBuilder.AddStoredQuery(b.storedQueries[name])
 	}
 	// NO record count key: the stored template bytes must match Java's, and
 	// Java's RecordMetadataSerializer never sets one — Java core marks

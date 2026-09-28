@@ -787,8 +787,7 @@ const wsjStructT = `create type as struct sc(x bigint, y bigint) create table t(
 // pinned so that a grammar change which makes one parseable fails loudly here
 // (its derived runs then need pins) instead of silently growing the run set.
 var wsjUnsplittable = map[string]bool{
-	"isolation-level-snapshot.yamsql:79":       true,
-	"schema-template-stored-queries.yamsql:32": true,
+	"isolation-level-snapshot.yamsql:79": true,
 }
 
 // wsjRun is one template body driven through both engines.

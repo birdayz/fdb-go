@@ -495,6 +495,12 @@ func (b *RecordMetaDataBuilder) AddUserDefinedFunction(fn *gen.PUserDefinedFunct
 	return b
 }
 
+// AddStoredQuery appends a stored query (MetaData field 16).
+func (b *RecordMetaDataBuilder) AddStoredQuery(q *gen.PStoredQuery) *RecordMetaDataBuilder {
+	b.preserved.storedQueries = append(b.preserved.storedQueries, q)
+	return b
+}
+
 // AddView appends a SQL view (name and query text), as Java's RecordLayerView.asRawView.
 func (b *RecordMetaDataBuilder) AddView(name, definition string) *RecordMetaDataBuilder {
 	b.preserved.views = append(b.preserved.views, &gen.PView{Name: &name, Definition: &definition})

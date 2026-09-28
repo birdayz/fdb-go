@@ -91,7 +91,7 @@ utilityStatement
 
 templateClause
     :
-        CREATE ( structDefinition | tableDefinition | enumDefinition | indexDefinition | sqlInvokedFunction | viewDefinition )
+        CREATE ( structDefinition | tableDefinition | enumDefinition | indexDefinition | sqlInvokedFunction | viewDefinition | storedQueryDefinition )
     ;
 
 createStatement
@@ -249,6 +249,18 @@ dropTempFunction
 
 viewDefinition
     : VIEW viewName=fullId AS viewQuery=query
+    ;
+
+storedQueryDefinition
+    : STORED QUERY queryName=uid declareBlock? AS storedQuery=query
+    ;
+
+declareBlock
+    : DECLARE declaredFunction (SEMI declaredFunction)* SEMI?
+    ;
+
+declaredFunction
+    : FUNCTION functionName=uid sqlParameterDeclarationList AS '(' functionBody=query ')'
     ;
 
 tempSqlInvokedFunction

@@ -337,6 +337,25 @@ func (s *BaseRelationalParserListener) EnterViewDefinition(ctx *ViewDefinitionCo
 // ExitViewDefinition is called when production viewDefinition is exited.
 func (s *BaseRelationalParserListener) ExitViewDefinition(ctx *ViewDefinitionContext) {}
 
+// EnterStoredQueryDefinition is called when production storedQueryDefinition is entered.
+func (s *BaseRelationalParserListener) EnterStoredQueryDefinition(ctx *StoredQueryDefinitionContext) {
+}
+
+// ExitStoredQueryDefinition is called when production storedQueryDefinition is exited.
+func (s *BaseRelationalParserListener) ExitStoredQueryDefinition(ctx *StoredQueryDefinitionContext) {}
+
+// EnterDeclareBlock is called when production declareBlock is entered.
+func (s *BaseRelationalParserListener) EnterDeclareBlock(ctx *DeclareBlockContext) {}
+
+// ExitDeclareBlock is called when production declareBlock is exited.
+func (s *BaseRelationalParserListener) ExitDeclareBlock(ctx *DeclareBlockContext) {}
+
+// EnterDeclaredFunction is called when production declaredFunction is entered.
+func (s *BaseRelationalParserListener) EnterDeclaredFunction(ctx *DeclaredFunctionContext) {}
+
+// ExitDeclaredFunction is called when production declaredFunction is exited.
+func (s *BaseRelationalParserListener) ExitDeclaredFunction(ctx *DeclaredFunctionContext) {}
+
 // EnterTempSqlInvokedFunction is called when production tempSqlInvokedFunction is entered.
 func (s *BaseRelationalParserListener) EnterTempSqlInvokedFunction(ctx *TempSqlInvokedFunctionContext) {
 }

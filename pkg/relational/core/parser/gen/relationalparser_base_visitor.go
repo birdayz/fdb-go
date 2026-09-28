@@ -207,6 +207,18 @@ func (v *BaseRelationalParserVisitor) VisitViewDefinition(ctx *ViewDefinitionCon
 	return v.VisitChildren(ctx)
 }
 
+func (v *BaseRelationalParserVisitor) VisitStoredQueryDefinition(ctx *StoredQueryDefinitionContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
+func (v *BaseRelationalParserVisitor) VisitDeclareBlock(ctx *DeclareBlockContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
+func (v *BaseRelationalParserVisitor) VisitDeclaredFunction(ctx *DeclaredFunctionContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
 func (v *BaseRelationalParserVisitor) VisitTempSqlInvokedFunction(ctx *TempSqlInvokedFunctionContext) interface{} {
 	return v.VisitChildren(ctx)
 }

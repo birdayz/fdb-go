@@ -157,6 +157,15 @@ type RelationalParserVisitor interface {
 	// Visit a parse tree produced by RelationalParser#viewDefinition.
 	VisitViewDefinition(ctx *ViewDefinitionContext) interface{}
 
+	// Visit a parse tree produced by RelationalParser#storedQueryDefinition.
+	VisitStoredQueryDefinition(ctx *StoredQueryDefinitionContext) interface{}
+
+	// Visit a parse tree produced by RelationalParser#declareBlock.
+	VisitDeclareBlock(ctx *DeclareBlockContext) interface{}
+
+	// Visit a parse tree produced by RelationalParser#declaredFunction.
+	VisitDeclaredFunction(ctx *DeclaredFunctionContext) interface{}
+
 	// Visit a parse tree produced by RelationalParser#tempSqlInvokedFunction.
 	VisitTempSqlInvokedFunction(ctx *TempSqlInvokedFunctionContext) interface{}
 

@@ -268,6 +268,23 @@ func buildSchemaTemplate(s *antlrgen.CreateSchemaTemplateStatementContext) (*met
 		b.AddTablePrimaryKeyPaths(tableName, cols, pkCols)
 	}
 
+	// Stored queries, with their DECLAREd functions rewritten to standalone
+	// temporary functions (DdlVisitor.rewriteDeclaredFunctionToStandalone).
+	for _, clause := range s.AllTemplateClause() {
+		sq := clause.StoredQueryDefinition()
+		if sq == nil {
+			continue
+		}
+		var temps []string
+		if db := sq.DeclareBlock(); db != nil {
+			for _, df := range db.AllDeclaredFunction() {
+				temps = append(temps, "CREATE TEMPORARY FUNCTION "+ctxText(df.GetFunctionName())+
+					ctxText(df.SqlParameterDeclarationList())+" ON COMMIT DROP FUNCTION AS "+ctxText(df.GetFunctionBody()))
+			}
+		}
+		b.AddStoredQuery(functions.NormalizeIdentifier(sq.GetQueryName().GetText()), ctxText(sq.GetStoredQuery()), temps)
+	}
+
 	// SQL functions, then views, in clause order, each compiled against the
 	// template so far (DdlVisitor.java:551-558).
 	for _, clause := range s.AllTemplateClause() {

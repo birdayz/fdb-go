@@ -7,8 +7,8 @@ Apache License, Version 2.0.
 
 The pinned upstream tag is recorded in [`VERSION`](VERSION). During the 4.14.2.0
 migration `like.yamsql`, `struct-type-nullability-variants.yamsql`,
-`array-agg-tests.yamsql` and `documentation-queries/array-agg-documentation-queries.yamsql`
-are already at 4.14.2.0; the rest moves at the full re-sync.
+`array-agg-tests.yamsql`, `documentation-queries/array-agg-documentation-queries.yamsql`
+and `schema-template-stored-queries.yamsql` are already at 4.14.2.0; the rest moves at the full re-sync.
 
 ## Provenance
 

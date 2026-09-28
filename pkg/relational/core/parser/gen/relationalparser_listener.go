@@ -157,6 +157,15 @@ type RelationalParserListener interface {
 	// EnterViewDefinition is called when entering the viewDefinition production.
 	EnterViewDefinition(c *ViewDefinitionContext)
 
+	// EnterStoredQueryDefinition is called when entering the storedQueryDefinition production.
+	EnterStoredQueryDefinition(c *StoredQueryDefinitionContext)
+
+	// EnterDeclareBlock is called when entering the declareBlock production.
+	EnterDeclareBlock(c *DeclareBlockContext)
+
+	// EnterDeclaredFunction is called when entering the declaredFunction production.
+	EnterDeclaredFunction(c *DeclaredFunctionContext)
+
 	// EnterTempSqlInvokedFunction is called when entering the tempSqlInvokedFunction production.
 	EnterTempSqlInvokedFunction(c *TempSqlInvokedFunctionContext)
 
@@ -996,6 +1005,15 @@ type RelationalParserListener interface {
 
 	// ExitViewDefinition is called when exiting the viewDefinition production.
 	ExitViewDefinition(c *ViewDefinitionContext)
+
+	// ExitStoredQueryDefinition is called when exiting the storedQueryDefinition production.
+	ExitStoredQueryDefinition(c *StoredQueryDefinitionContext)
+
+	// ExitDeclareBlock is called when exiting the declareBlock production.
+	ExitDeclareBlock(c *DeclareBlockContext)
+
+	// ExitDeclaredFunction is called when exiting the declaredFunction production.
+	ExitDeclaredFunction(c *DeclaredFunctionContext)
 
 	// ExitTempSqlInvokedFunction is called when exiting the tempSqlInvokedFunction production.
 	ExitTempSqlInvokedFunction(c *TempSqlInvokedFunctionContext)
