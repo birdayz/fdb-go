@@ -8,7 +8,7 @@ import (
 
 // javaErrorCodes is the complete SQLSTATE set of Java's
 // com.apple.foundationdb.relational.api.exceptions.ErrorCode enum at the pinned
-// tag (4.12.11.0), captured mechanically so the parity check below is a diff
+// tag (4.14.2.0), captured mechanically so the parity check below is a diff
 // against Java rather than against someone's recollection of Java.
 //
 // Regenerate after a Java version bump with:
@@ -23,7 +23,7 @@ import (
 // Bazel sandbox where the Java sources are absent.
 var javaErrorCodes = []string{
 	"00000", "02F01", "08001", "08003", "08F01", "08F02", "0A000", "0AF00", "0AF01",
-	"22000", "2201W", "22023", "2202E", "22F00", "22F03", "22F04", "22F08", "22F3H",
+	"22000", "2200B", "22019", "2201W", "22023", "22025", "2202E", "22F00", "22F03", "22F04", "22F08", "22F3H",
 	"23502", "23505", "24000", "24F00", "25000", "25F01", "40001", "42000", "42501",
 	"42601", "42602", "42701", "42702", "42703", "42712", "42723", "42803", "42804",
 	"42809", "42883", "42F00", "42F01", "42F02", "42F04", "42F06", "42F07", "42F10",
@@ -50,7 +50,7 @@ var javaErrorCodes = []string{
 // surfaces in TestGoOnlyErrorCodesAreRegistered). What slips through is a
 // constant that is neither in Java's enum nor documented as Go-only AND is
 // unregistered — which is also a code ErrorCodeFromString can never return, so
-// nothing can produce it. Registry and const block both hold 78 entries today.
+// nothing can produce it. Registry and const block both hold 81 entries today.
 func TestErrorCodesMatchJava(t *testing.T) {
 	t.Parallel()
 

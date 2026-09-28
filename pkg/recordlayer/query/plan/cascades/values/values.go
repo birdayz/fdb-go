@@ -2100,6 +2100,17 @@ func explainValueOrdinalsWithAliases(v Value, withOrdinals bool, aliases map[Cor
 		return "FALSE"
 	case *CastValue:
 		return "CAST(" + explainValueOrdinalsWithAliases(cv.Child, withOrdinals, aliases) + " AS " + explainTypeName(cv.Target) + ")"
+	case *PatternForLikeValue:
+		// Java's `pattern ESCAPE escape` (PatternForLikeValue.java:182-188);
+		// an absent ESCAPE, a NULL escape child, is not shown.
+		out := explainValueOrdinalsWithAliases(cv.PatternChild, withOrdinals, aliases)
+		if _, absent := cv.EscapeChild.(*NullValue); cv.EscapeChild != nil && !absent {
+			out += " ESCAPE " + explainValueOrdinalsWithAliases(cv.EscapeChild, withOrdinals, aliases)
+		}
+		return out
+	case *LikeOperatorValue:
+		return explainValueOrdinalsWithAliases(cv.Probe, withOrdinals, aliases) + " LIKE " +
+			explainValueOrdinalsWithAliases(cv.Pattern, withOrdinals, aliases)
 	case *PromoteValue:
 		return "PROMOTE(" + explainValueOrdinalsWithAliases(cv.Child, withOrdinals, aliases) + " TO " + explainTypeName(cv.Target) + ")"
 	case *RecordConstructorValue:

@@ -155,8 +155,8 @@ func PredicateEquals(a, b QueryPredicate) bool {
 		// literal content, so equal literals render equal; FieldValue
 		// renders its name; IN-lists (ConstantValue over []any)
 		// render element-wise. Same surface as the LHS Operand
-		// comparison below. Escape rune is part of the
-		// Comparison's identity for LIKE — `LIKE 'x' ESCAPE '\'` and
+		// comparison below. A LIKE's escape is a child of its
+		// PatternForLikeValue operand, so `LIKE 'x' ESCAPE '\'` and
 		// `LIKE 'x' ESCAPE '!'` are distinct predicates.
 		//
 		// Unary types (IS [NOT] NULL) ignore Operand at Eval time, so
@@ -171,7 +171,6 @@ func PredicateEquals(a, b QueryPredicate) bool {
 		// (the comparisonEqual rationale in plans/semantic_identity.go,
 		// applied at the predicate layer).
 		if ap.Comparison.Type != bp.Comparison.Type ||
-			ap.Comparison.Escape != bp.Comparison.Escape ||
 			ap.Comparison.ParameterName != bp.Comparison.ParameterName ||
 			ap.Comparison.TextTokenizerName != bp.Comparison.TextTokenizerName ||
 			ap.Comparison.TextAnalyzerName != bp.Comparison.TextAnalyzerName ||

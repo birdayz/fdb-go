@@ -233,7 +233,16 @@ func TestMergedInRVOrderRefusesWhatItCannotAlign(t *testing.T) {
 	duplicatePath := balanced()
 	duplicatePath.Fields[2].Value = mergedRVTestField(t, left, 0)
 
+	// A PROJECTION of the merge aligns: a leg the result does not read (a
+	// peeled EXISTS leg's literal) has a merged column and no RC field.
 	shortRC := &values.RecordConstructorValue{Fields: balanced().Fields[:3]}
+	if got, ok := mergedInRVOrder(shortRC, merged, "L", "R", 2, slots); !ok {
+		t.Fatal("a projection of the merge was refused; its width can never match the merge")
+	} else if want := []string{"L.A", "R.C", "L.B"}; fmt.Sprintf("%v", mergedRVTestNames(got)) != fmt.Sprintf("%v", want) {
+		t.Fatalf("projection re-sequenced = %v, want %v", mergedRVTestNames(got), want)
+	}
+	longRC := &values.RecordConstructorValue{Fields: append(balanced().Fields,
+		values.RecordConstructorField{Name: "A2", Value: mergedRVTestField(t, left, 0)})}
 
 	// A resolver that cannot answer at all: the leg's path is outside anything
 	// it derives. This is legSlotIndex declining, which a wrapper it does not
@@ -254,8 +263,8 @@ func TestMergedInRVOrderRefusesWhatItCannotAlign(t *testing.T) {
 		why                     string
 	}{
 		{
-			"count mismatch", shortRC, "L", "R", 2, slots,
-			"an RC that does not account for every merged column cannot state a permutation",
+			"more fields than the merge", longRC, "L", "R", 2, slots,
+			"an RC wider than the merge must read some merged column twice",
 		},
 		{
 			"field is not a resolved read", notAField, "L", "R", 2, slots,

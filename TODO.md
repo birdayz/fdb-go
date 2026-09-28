@@ -4597,18 +4597,20 @@ MEASURED, not inferred:
 - It is NOT the Go-only statistics rung. Inverting that comparison changes none
   of these plans — mutation-checked, with the mutation's presence confirmed in
   the same invocation.
-- It IS identifier-sensitive. `T_DUP_EIP/EIQ` agrees with Java on the shadowing
-  spelling; the identical query over `T_DUP_SHP/SHQ` diverges.
+- It IS hash-sensitive: which shapes agree moves whenever anything the tie-break
+  hash folds changes. At 4.14.2.0 (after the LIKE escape left the comparison
+  hash) Go agrees with Java on one of the six probe shapes, the one whose
+  subquery is structurally identical to the first leg's scan.
 
 PINNED BY `conformance/dup_alias_exists_order_probe_test.go`, which asserts both
-engines' orders over six shapes and carries the renamed-table pair as its
-demonstration. Java's column is the reference and must not move; Go's column
+engines' orders over six shapes plus the renamed-table spelling of the corpus
+entry. Java's column is the reference and must not move; Go's column
 pins today's behaviour so that closing the gap turns the probe RED rather than
 silently changing what conformance means.
 
-WHAT IT BLOCKS: `dup_from_alias_leg_independent_exists` and
-`dup_from_alias_shadowing_exists` report "row data diverges". Both return the
-correct multiset; only the order differs. They conformed before RFC-235 because
+WHAT IT BLOCKS: `dup_from_alias_shadowing_exists` reports "row data diverges"
+(`dup_from_alias_leg_independent_exists` agrees since the hash change). It
+returns the correct multiset; only the order differs. Both conformed before RFC-235 because
 the retired three-quantifier NLJ arm forced one nesting for `WHERE EXISTS` over
 a comma join, and that nesting happened to be Java's. The arm masked this tie
 rather than preventing it.

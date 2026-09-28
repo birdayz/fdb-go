@@ -1,208 +1,237 @@
 package values
 
-import "strings"
+import (
+	"unicode/utf16"
+	"unicode/utf8"
+)
 
-// LikeMatch implements SQL `LIKE` matching:
-//   - `%` matches zero or more characters, none of which may be a
-//     line terminator
-//   - `_` matches exactly one character that is not a line terminator
-//   - `escape` (if non-zero) makes a following `%` or `_` literal
-//
-// Greedy backtrack; O(|pattern| * |s|) worst case.
-//
-// Conformance contract: this is the ONE runtime SQL LIKE matcher. It
-// backs the QueryPredicate-layer ComparisonLike (via the predicates
-// package), the Value-layer LikeOperatorValue, and the map-backed
-// INFORMATION_SCHEMA WHERE evaluator. Java's
-// `PatternForLikeValue.eval` (PatternForLikeValue.java:96-117) +
-// `LikeOperatorValue.likeOperation` (LikeOperatorValue.java:93-99) is
-// the spec: Java rewrites the SQL pattern into `^<regex>$`, compiles
-// it with `Pattern.compile` and NO flags, and matches via `.find()`.
-// This matcher must return what that composition would.
-//
-// NEWLINE semantics — the observable consequences of "no flags":
-//
-//   - No DOTALL: `_` -> `.` and `%` -> `.*` do NOT match a line
-//     terminator. Java's line-terminator code points in default mode
-//     (java.util.regex.Pattern, "Line terminators") are `\n`, `\r`,
-//     U+0085 (NEL), U+2028 (LS) and U+2029 (PS). A terminator in the
-//     input can only be matched by a literal terminator in the
-//     pattern. So `'a\nb' LIKE 'a_b'` and `'a\nb' LIKE 'a%b'` are
-//     FALSE.
-//   - No MULTILINE, so `^` only matches at index 0 — `.find()` on an
-//     `^...$` pattern degenerates to an anchored match.
-//   - Default `$` matches at end of input OR when the remaining
-//     input is exactly one FINAL line terminator: "\n", "\r\n",
-//     "\r", U+0085, U+2028 or U+2029 — and `$` never matches BETWEEN
-//     the `\r` and `\n` of a final "\r\n"
-//     (java.util.regex.Pattern$Dollar). So `'abc\n' LIKE 'abc'` is
-//     TRUE, `'a' + U+2028 LIKE 'a'` is TRUE, and — because `.*` can
-//     match empty with `$` sitting before the trailing terminator —
-//     `'\n' LIKE '%'` is TRUE even though `%` cannot consume the
-//     `\n` itself.
-//
-// ESCAPE semantics — Java's, exactly, and narrower than the SQL
-// standard's. `PatternForLikeValue` builds its replacement table as
-// exactly TWO escape entries on top of the metacharacter table:
-//
-//	.put(escapeChar + "_", "_")
-//	.put(escapeChar + "%", "%")
-//	.putAll(REPLACE_MAP)
-//
-// so an escape rune is consumed as an escape ONLY when `_` or `%`
-// follows it. In every other position — before an ordinary
-// character, before a second escape rune, or dangling at the end of
-// the pattern — no escape entry can match, and the rune is instead
-// rewritten by the ordinary per-character rules. Three consequences,
-// each of which differs from the more common "escape makes the next
-// character literal" reading, and each pinned by a test:
-//
-//   - A DANGLING escape is not malformed and is not a no-match: it
-//     is the escape rune taken literally (or, if the escape rune is
-//     itself `%` or `_`, taken as that wildcard). Java's own corpus
-//     records this — `like.yamsql:92` runs
-//     `B2 NOT LIKE 'Z' ESCAPE 'Z'` and excludes the two `'Z'` rows,
-//     i.e. `'Z' LIKE 'Z' ESCAPE 'Z'` is TRUE. Java's comment there
-//     concedes the SQL standard would raise 22025 instead, but the
-//     pinned behaviour is the literal match.
-//   - Escape before an ORDINARY character does not make that
-//     character literal — the escape rune itself is the literal and
-//     the next character is then read normally. `a\b` ESCAPE `\`
-//     matches `a\b`, not `ab`.
-//   - There is no escaped-escape: `a\\b` ESCAPE `\` is two literal
-//     backslashes, not one.
-//
-// The escape rune falling through to the ordinary rules is what
-// makes an escape rune of `%` or `_` still act as a wildcard in
-// those positions, which is why the fallthrough is a fallthrough and
-// not an unconditional literal.
-//
-// `values.sqlPatternToRegex` (PatternForLikeValue) is the same spec
-// expressed as Java's regex translation. The two are cross-checked
-// against each other by TestLikeMatch_CrossCheckSQLPatternToRegex in
-// this package (an exhaustive ASCII pattern/subject/escape grid,
-// evaluating the produced regex under Java's default-mode `.` and
-// `$` semantics), and LikeMatch is independently fuzzed against a
-// Java-semantics regex oracle by FuzzLikeMatch / FuzzLikeMatchEscape
-// in `pkg/recordlayer/query/plan/cascades/predicates/comparisons_test.go`.
-// Any divergence between them, or between either and Java, is a
-// conformance bug.
-func LikeMatch(pattern, s string, escape rune) bool {
-	if likeMatchWhole(pattern, s, escape) {
-		return true
+// LikeErrorKind is one of the four semantic errors Java's LIKE raises
+// (SemanticException.ErrorCode, SemanticException.java:47-57).
+type LikeErrorKind int
+
+const (
+	// LikeOperandNotString is OPERAND_OF_LIKE_OPERATOR_IS_NOT_STRING (22F00).
+	LikeOperandNotString LikeErrorKind = iota + 1
+	// LikeEscapeNotSingleChar is ESCAPE_CHAR_OF_LIKE_OPERATOR_IS_NOT_SINGLE_CHAR (22019).
+	LikeEscapeNotSingleChar
+	// LikeEscapeConflict is ESCAPE_CHARACTER_CONFLICT (2200B).
+	LikeEscapeConflict
+	// LikeInvalidEscapeSequence is INVALID_ESCAPE_SEQUENCE (22025).
+	LikeInvalidEscapeSequence
+)
+
+// LikeError is a LIKE semantic error, with Java's message.
+type LikeError struct{ Kind LikeErrorKind }
+
+func (e *LikeError) Error() string {
+	switch e.Kind {
+	case LikeOperandNotString:
+		return "The like operator expects string operands but was invoked with an operand of another type."
+	case LikeEscapeNotSingleChar:
+		return "The like operator expects an escape character of length 1."
+	case LikeEscapeConflict:
+		return "The like operator rejects wildcards as the escape character."
+	case LikeInvalidEscapeSequence:
+		return "The like operator pattern requires all escape characters to be followed by a special character."
 	}
-	// Java's default-mode `$` also matches just before a single FINAL
-	// line terminator, so the regex accepts the input with exactly one
-	// trailing terminator stripped. "\r\n" strips as a unit because
-	// `$` never matches between its `\r` and `\n`.
-	if trimmed, ok := trimFinalLineTerminator(s); ok {
-		return likeMatchWhole(pattern, trimmed, escape)
-	}
-	return false
+	return "like operator error"
 }
 
-// likeMatchWhole matches the pattern against ALL of s (both ends
-// anchored, no trailing-terminator tolerance — LikeMatch adds that).
-func likeMatchWhole(pattern, s string, escape rune) bool {
-	p := []rune(pattern)
-	str := []rune(s)
-	pi, si := 0, 0
-	starPi, starSi := -1, 0
-	for si < len(str) {
-		if pi < len(p) {
-			if escapedLiteralAt(p, pi, escape) {
-				// `<esc>_` / `<esc>%` — the wildcard is a literal.
-				if p[pi+1] == str[si] {
-					pi += 2
-					si++
-					continue
-				}
-			} else {
-				// Ordinary rules. An escape rune that did not open an
-				// escape sequence lands here too, and is therefore a
-				// wildcard when it happens to be `%` or `_` and a
-				// literal otherwise — Java's REPLACE_MAP fallthrough.
-				switch p[pi] {
-				case '%':
-					starPi = pi
-					starSi = si
-					pi++
-					continue
-				case '_':
-					// `.` without DOTALL rejects line terminators.
-					if !isJavaLineTerminator(str[si]) {
-						pi++
-						si++
-						continue
-					}
-				default:
-					if p[pi] == str[si] {
-						pi++
-						si++
-						continue
-					}
-				}
-			}
-		}
-		if starPi >= 0 && !isJavaLineTerminator(str[starSi]) {
-			// Resume at the last `%`, letting it consume one more
-			// rune. `.*` without DOTALL cannot consume a terminator,
-			// and no earlier `%` could consume it either, so a
-			// terminator at the resume point exhausts all backtracks.
-			pi = starPi + 1
-			starSi++
-			si = starSi
+// validateLikeEscape is PatternForLikeValue.validateEscapeChar
+// (PatternForLikeValue.java:133-139): exactly one UTF-16 unit, not a
+// surrogate, and neither wildcard.
+func validateLikeEscape(escape string) (uint16, error) {
+	units := utf16.Encode([]rune(escape))
+	if len(units) != 1 || utf16.IsSurrogate(rune(units[0])) {
+		return 0, &LikeError{Kind: LikeEscapeNotSingleChar}
+	}
+	if units[0] == '_' || units[0] == '%' {
+		return 0, &LikeError{Kind: LikeEscapeConflict}
+	}
+	return units[0], nil
+}
+
+// validateLikePattern is PatternForLikeValue.validatePattern
+// (PatternForLikeValue.java:141-153): an escape must be followed by a
+// wildcard or by itself.
+func validateLikePattern(pattern []uint16, escape uint16) error {
+	for i := 0; i < len(pattern); {
+		if pattern[i] != escape {
+			i++
 			continue
 		}
-		return false
+		if i+1 >= len(pattern) {
+			return &LikeError{Kind: LikeInvalidEscapeSequence}
+		}
+		if literal := pattern[i+1]; literal != '_' && literal != '%' && literal != escape {
+			return &LikeError{Kind: LikeInvalidEscapeSequence}
+		}
+		i += 2
 	}
-	// Input exhausted. The pattern remainder matches only if every
-	// remaining element consumes nothing — i.e. only `%` wildcards.
-	// An escaped `_` / `%` is a literal and still needs a character.
-	for pi < len(p) {
-		if escapedLiteralAt(p, pi, escape) {
+	return nil
+}
+
+// MatchLike is LikeOperatorValue.matchLike (LikeOperatorValue.java:145-241),
+// ported over the same UTF-16 code units Java's String holds: `%` matches
+// any run, `_` one unit or one surrogate pair, an escaped character that
+// unit literally; nothing treats a line terminator specially. A nil escape
+// is no escape. The escape and every escape sequence met are re-checked as
+// Java re-checks them.
+func MatchLike(text, pattern string, escape *string) (bool, error) {
+	if isASCII(text) && isASCII(pattern) && (escape == nil || isASCII(*escape)) {
+		// One byte is one UTF-16 unit; no surrogate can occur.
+		var esc uint8
+		if escape != nil {
+			e, err := validateLikeEscape(*escape)
+			if err != nil {
+				return false, err
+			}
+			esc = uint8(e)
+		}
+		return matchLikeUnits([]byte(text), []byte(pattern), escape != nil, esc)
+	}
+	var esc uint16
+	if escape != nil {
+		e, err := validateLikeEscape(*escape)
+		if err != nil {
+			return false, err
+		}
+		esc = e
+	}
+	return matchLikeUnits(javaUTF16(text), utf16.Encode([]rune(pattern)), escape != nil, esc)
+}
+
+type likeUnit interface{ ~uint8 | ~uint16 }
+
+func matchLikeUnits[T likeUnit](text, pattern []T, hasEscape bool, escape T) (bool, error) {
+	t, p := 0, 0
+	starP, starT := -1, -1
+	tLen, pLen := len(text), len(pattern)
+	for t < tLen {
+		matched := false
+		if p < pLen {
+			pc := pattern[p]
+			switch {
+			case hasEscape && pc == escape:
+				if p+1 >= pLen {
+					return false, &LikeError{Kind: LikeInvalidEscapeSequence}
+				}
+				literal := pattern[p+1]
+				if literal != '%' && literal != '_' && literal != escape {
+					return false, &LikeError{Kind: LikeInvalidEscapeSequence}
+				}
+				if literal == text[t] {
+					t++
+					p += 2
+					matched = true
+				}
+			case pc == '%':
+				if p+1 == pLen {
+					return true, nil
+				}
+				starP = p
+				p++
+				starT = t
+				matched = true
+			case pc == '_':
+				if isHighSurrogateUnit(uint16(text[t])) && t+1 < tLen && isLowSurrogateUnit(uint16(text[t+1])) {
+					t += 2
+				} else {
+					t++
+				}
+				p++
+				matched = true
+			case pc == text[t]:
+				t++
+				p++
+				matched = true
+			}
+		}
+		if !matched {
+			if starP < 0 {
+				return false, nil
+			}
+			p = starP + 1
+			starT++
+			t = starT
+		}
+	}
+	for p < pLen && pattern[p] == '%' {
+		p++
+	}
+	return p == pLen, nil
+}
+
+func isHighSurrogateUnit(u uint16) bool { return u >= 0xD800 && u <= 0xDBFF }
+func isLowSurrogateUnit(u uint16) bool  { return u >= 0xDC00 && u <= 0xDFFF }
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
 			return false
 		}
-		if p[pi] != '%' {
-			return false
-		}
-		pi++
 	}
 	return true
 }
 
-// isJavaLineTerminator reports whether r is one of the five code
-// points java.util.regex.Pattern treats as a line terminator in
-// default (non-UNIX_LINES) mode: `\n`, `\r`, NEL, LS, PS. These are
-// what `.` refuses to match without DOTALL and what default-mode `$`
-// tolerates as a single final terminator.
-func isJavaLineTerminator(r rune) bool {
-	return r == '\n' || r == '\r' || r == '\u0085' || r == '\u2028' || r == '\u2029'
-}
-
-// trimFinalLineTerminator strips exactly one final Java line
-// terminator from s: the two-rune sequence "\r\n" as a unit
-// (default-mode `$` never matches between a final `\r` and `\n`),
-// else one terminator rune. ok=false if s does not end in one.
-func trimFinalLineTerminator(s string) (string, bool) {
-	if strings.HasSuffix(s, "\r\n") {
-		return s[:len(s)-2], true
+// javaUTF16 is the UTF-16 Java holds for a stored string field. A valid
+// string is its UTF-16 encoding. Protobuf-java reads a proto2 string field
+// leniently (new String(bytes, UTF_8)), replacing each MAXIMAL invalid
+// subsequence with one U+FFFD, the Unicode recommended practice
+// (Unicode 15, section 3.9, "U+FFFD Substitution of Maximal Subparts");
+// Go's own decoding replaces each invalid BYTE, so an invalid string is
+// decoded here the Java way.
+func javaUTF16(s string) []uint16 {
+	if utf8.ValidString(s) {
+		return utf16.Encode([]rune(s))
 	}
-	for _, term := range []string{"\n", "\r", "\u0085", "\u2028", "\u2029"} {
-		if strings.HasSuffix(s, term) {
-			return s[:len(s)-len(term)], true
+	out := make([]uint16, 0, len(s))
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r != utf8.RuneError || size > 1 {
+			out = utf16.AppendRune(out, r)
+			i += size
+			continue
 		}
+		out = append(out, 0xFFFD)
+		i += maximalSubpartLength(s[i:])
 	}
-	return "", false
+	return out
 }
 
-// escapedLiteralAt reports whether pattern position pi opens an
-// escape sequence — the escape rune followed by `_` or `%`, the only
-// two sequences Java's PatternForLikeValue recognises. Everywhere
-// else the escape rune is an ordinary character.
-func escapedLiteralAt(p []rune, pi int, escape rune) bool {
-	if escape == 0 || p[pi] != escape || pi+1 >= len(p) {
-		return false
+// maximalSubpartLength is the length of the maximal subpart of an
+// ill-formed sequence starting at s[0] (Unicode Table 3-7's well-formed
+// byte ranges): the lead byte plus the continuation bytes that could still
+// begin a well-formed sequence, at least one byte.
+func maximalSubpartLength(s string) int {
+	lead := s[0]
+	var need int
+	lo, hi := byte(0x80), byte(0xBF) // the second byte's range
+	switch {
+	case lead >= 0xC2 && lead <= 0xDF:
+		need = 1
+	case lead == 0xE0:
+		need, lo = 2, 0xA0
+	case lead >= 0xE1 && lead <= 0xEC, lead == 0xEE, lead == 0xEF:
+		need = 2
+	case lead == 0xED:
+		need, hi = 2, 0x9F
+	case lead == 0xF0:
+		need, lo = 3, 0x90
+	case lead >= 0xF1 && lead <= 0xF3:
+		need = 3
+	case lead == 0xF4:
+		need, hi = 3, 0x8F
+	default:
+		return 1
 	}
-	return p[pi+1] == '_' || p[pi+1] == '%'
+	n := 1
+	for k := 0; k < need && n < len(s); k++ {
+		b := s[n]
+		if k == 0 && (b < lo || b > hi) || k > 0 && (b < 0x80 || b > 0xBF) {
+			break
+		}
+		n++
+	}
+	return n
 }

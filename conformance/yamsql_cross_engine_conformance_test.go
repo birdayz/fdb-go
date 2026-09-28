@@ -1407,7 +1407,7 @@ func likePrefixPushdownScenario() *yamsql.Scenario {
 			{Query: "SELECT id, region, name FROM ci WHERE region = 'us' AND name LIKE 'a%' ORDER BY id", Rows: [][]any{{1, "us", "apple"}, {2, "us", "apricot"}}},
 			{Query: "SELECT id FROM ci WHERE region = 'eu' AND name LIKE 'b%'", Rows: [][]any{{5}}},
 			{Query: "SELECT id FROM ci WHERE region = 'asia' AND name LIKE 'a%'", Rows: [][]any{}},
-			// Interior-wildcard prefix narrowing (post-filter via likeMatch).
+			// Interior wildcards (the LIKE is applied per row).
 			{Query: "SELECT name FROM t WHERE name LIKE 'a%le' ORDER BY name", Rows: [][]any{{"apple"}}},
 			{Query: "SELECT name FROM t WHERE name LIKE 'a_ple' ORDER BY name", Rows: [][]any{{"apple"}}},
 			{Query: "SELECT name FROM t WHERE name LIKE 'bana%'", Rows: [][]any{{"banana"}}},

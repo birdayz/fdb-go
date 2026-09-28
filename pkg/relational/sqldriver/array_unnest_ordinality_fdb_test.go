@@ -3865,7 +3865,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// aggregate, so the HAVING STAYS ABOVE the GroupBy and flows through the
 		// post-aggregate predicate rebase (rewriteAggregateRefsInPredicate +
 		// rebaseHavingGroupKeyPredicate). When that rebase reconstructed a fresh
-		// Comparison{Type, Operand} it DROPPED Comparison.Escape: `!_` lost its
+		// Comparison{Type, Operand} it DROPPED the escape: `!_` lost its
 		// escape and the pattern degraded to the unescaped `a_%`, whose `_`
 		// wildcard matches ANY single char.
 		//
@@ -3873,7 +3873,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// position 2) and "axy". The escaped pattern matches ONLY "a_b"; the
 		// unescaped degradation would ALSO match "axy" (the `_` wildcard accepts
 		// the `x`). The fix copies the whole Comparison and replaces only the
-		// rebased operand, preserving Escape — so exactly the "a_b" group survives.
+		// rebased operand, preserving the escape — so exactly the "a_b" group survives.
 		assertRows(t, `SELECT "V", COUNT(*) AS "N" FROM GD, GD."SARR" AS "V" GROUP BY "V" HAVING "V" LIKE 'a!_%' ESCAPE '!' AND COUNT(*) > 0`, []string{
 			"V=a_b|N=2",
 		})

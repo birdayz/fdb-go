@@ -1,6 +1,9 @@
 package values
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 // TestReanchorCrossesANullabilityWidenedLegRoot pins that the ORDINAL proof
 // still applies when a leg's two spellings differ only in the top-level
@@ -403,6 +406,81 @@ func TestReanchorCrossesANullabilityWidenedLegRootIntoANestedPath(t *testing.T) 
 			if got := carrierPath(t, tc.read); !equal(got, tc.want) {
 				t.Errorf("%s reanchored to carrier path %v, want %v",
 					ExplainValue(tc.read), got, tc.want)
+			}
+		})
+	}
+}
+
+// TestReanchorCrossesANullabilityWidenedWholeLegSlot: a positional merge RC
+// retains each leg as one whole-record slot, and a merged null-on-empty leg is
+// retained NULLABLE while the consumer reads it through the leg's own NOT NULL
+// row. `SELECT e.id … FROM emp e RIGHT JOIN dept d … WHERE EXISTS (…)` merges
+// {D, E} into one lower; E.ID must land on the E slot, not stay rooted on E
+// ("exact QOV E has no declared runtime binding").
+func TestReanchorCrossesANullabilityWidenedWholeLegSlot(t *testing.T) {
+	t.Parallel()
+	row := func(name string) *RecordType {
+		return NewRecordType(name, false, []Field{
+			{Name: "ID", Ordinal: 0, FieldType: NullableLong},
+			{Name: "V", Ordinal: 1, FieldType: NullableLong},
+		})
+	}
+	qov := func(alias string, typ Type) QuantifiedObjectValue {
+		t.Helper()
+		q, err := NewQuantifiedObjectValue(NamedCorrelationIdentifier(alias), typ)
+		if err != nil {
+			t.Fatalf("%s: %v", alias, err)
+		}
+		return q
+	}
+	preserved := qov("D", row("D"))
+	widened := qov("E", WithNullability(row("E"), true))
+	own := qov("E", row("E"))
+	foreign := qov("F", row("E"))
+
+	producer := NewRawRecordConstructorValue(
+		RecordConstructorField{Name: OrdinalFieldName(0), Value: preserved},
+		RecordConstructorField{Name: OrdinalFieldName(1), Value: widened},
+	)
+	producerType := producer.Type().(*RecordType)
+	layout, err := NewOrdinalLayoutForCarrierType(producerType,
+		[]OrdinalTileSpec{{Start: 0, Width: 2, Kind: OrdinalTileFlat}}, nil)
+	if err != nil {
+		t.Fatalf("target layout: %v", err)
+	}
+	carrier := layout.Carrier()
+
+	for _, tc := range []struct {
+		name     string
+		read     QuantifiedObjectValue
+		wantPath []int // nil: the crossing declines and the read keeps its root
+	}{
+		{"own-root read of the widened leg", own, []int{1, 1}},
+		{"widened-root read", widened, []int{1, 1}},
+		{"preserved leg", preserved, []int{0, 1}},
+		{"foreign leg of the same shape declines", foreign, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			read, err := ResolveFieldOrdinals(tc.read, []int{1})
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			got, err := ReanchorOwnedValueThroughProducer(read, producer, carrier, nil)
+			if err != nil {
+				t.Fatalf("reanchor: %v", err)
+			}
+			fv, _ := AsFieldValue(got)
+			root, _ := AsQuantifiedObjectValue(fv.ChildValue())
+			onCarrier := root.Correlation() == carrier.Correlation()
+			if tc.wantPath == nil {
+				if onCarrier {
+					t.Fatalf("%s crossed to %s, want it declined", ExplainValue(read), ExplainValue(got))
+				}
+				return
+			}
+			if !onCarrier || !slices.Equal(fv.Path().Ordinals(), tc.wantPath) {
+				t.Fatalf("%s reanchored to %s, want carrier path %v", ExplainValue(read), ExplainValue(got), tc.wantPath)
 			}
 		})
 	}

@@ -24,10 +24,11 @@ tests:
   # No match.
   - query: SELECT id FROM t WHERE s LIKE 'xyz'
     rows: []
-  # Grammar rejects both `LIKE NULL` and `LIKE CAST(NULL AS STRING)` —
-  # the RHS accepts only string literals. swingshift-35 handover flags
-  # this as a known gap. NULL pattern semantics are still correct in
-  # the evaluator; they just aren't reachable from SQL.
+  # A NULL pattern is UNKNOWN for every row, LIKE and NOT LIKE alike.
+  - query: SELECT id FROM t WHERE s LIKE NULL
+    rows: []
+  - query: SELECT id FROM t WHERE s NOT LIKE NULL
+    rows: []
   # Plain match with a concrete pattern — NULL-valued row #4 is still
   # filtered because its s is NULL (LHS) so the predicate is UNKNOWN.
   - query: SELECT id FROM t WHERE s LIKE 'hello'

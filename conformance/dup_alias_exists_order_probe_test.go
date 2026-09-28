@@ -10,12 +10,14 @@ package conformance_test
 // because one showed up and the question "which order is correct" is one only
 // the JVM answers.
 //
-// WHAT IT FOUND, measured on both engines at 4.12.11.0:
+// WHAT IT FOUND, measured on both engines at 4.14.2.0:
 //
 //	Java puts the FIRST FROM item outermost, always — [5 7 9 5 7 9] on every
-//	shape below. Go puts the SECOND outermost for a plain cross product
-//	([5 5 7 7 9 9]) and agrees with Java once an EXISTS is present, EXCEPT when
-//	the existential's subquery is structurally identical to a leg's own scan.
+//	shape below. Go puts the SECOND outermost ([5 5 7 7 9 9]) on every shape
+//	EXCEPT the one whose existential subquery is structurally identical to the
+//	first leg's own scan. Which shapes agree moves whenever anything the
+//	tie-break hash folds changes — it moved when the LIKE escape left the
+//	comparison hash.
 //
 // THE CAUSE IS NOT THE EXISTS, and it is not new. Go's cost model reaches a
 // genuine TIE on the two nestings of an unconstrained cross product and resolves
@@ -102,47 +104,46 @@ var _ = Describe("DupAliasExistsOrderProbe", func() {
 			},
 			{
 				// The subquery is structurally identical to the first leg's own
-				// scan, which is the only EXISTS shape where Go's tie falls the
-				// reversed way.
+				// scan — the only EXISTS shape where Go's tie falls Java's way.
 				name:     "exists_scans_first_legs_table",
 				sql:      "SELECT a.qid FROM T_DUP_EIP AS a, T_DUP_EIQ AS a WHERE EXISTS (SELECT 1 FROM T_DUP_EIP)",
+				wantJava: fromOrder,
+				wantGo:   fromOrder,
+			},
+			{
+				// A different table in the subquery. Kept beside the previous
+				// probe: the two differ only in the subquery's table and fall
+				// opposite ways, so the divergence is tie-specific rather than
+				// EXISTS-specific.
+				name:     "exists_scans_second_legs_table",
+				sql:      "SELECT a.qid FROM T_DUP_EIP AS a, T_DUP_EIQ AS a WHERE EXISTS (SELECT 1 FROM T_DUP_EIQ)",
 				wantJava: fromOrder,
 				wantGo:   reversed,
 				note:     "same tie as the control, surfaced through the peel",
 			},
 			{
-				// A different table in the subquery — engines AGREE. Kept because
-				// an all-divergent set cannot show that the divergence is
-				// tie-specific rather than EXISTS-specific.
-				name:     "exists_scans_second_legs_table",
-				sql:      "SELECT a.qid FROM T_DUP_EIP AS a, T_DUP_EIQ AS a WHERE EXISTS (SELECT 1 FROM T_DUP_EIQ)",
-				wantJava: fromOrder,
-				wantGo:   fromOrder,
-			},
-			{
 				// Same table as the first leg but FILTERED, so not structurally
-				// identical — engines AGREE. This is the pair that localises the
-				// trigger to structural identity.
+				// identical — and it falls the reversed way.
 				name:     "exists_scans_first_legs_table_filtered",
 				sql:      "SELECT a.qid FROM T_DUP_EIP AS a, T_DUP_EIQ AS a WHERE EXISTS (SELECT 1 FROM T_DUP_EIP WHERE id = 1)",
 				wantJava: fromOrder,
-				wantGo:   fromOrder,
+				wantGo:   reversed,
+				note:     "same tie as the control, surfaced through the peel",
 			},
 			{
-				// The shadowing spelling: the subquery rebinds `a`. Engines AGREE.
+				// The shadowing spelling: the subquery rebinds `a`.
 				name:     "shadowing_exists",
 				sql:      "SELECT a.qid FROM T_DUP_EIP AS a, T_DUP_EIQ AS a WHERE EXISTS (SELECT 1 FROM T_DUP_EIP AS a WHERE a.id = 1)",
 				wantJava: fromOrder,
-				wantGo:   fromOrder,
+				wantGo:   reversed,
+				note:     "same tie as the control, surfaced through the peel",
 			},
 		}
 
-		// THE NAME-SENSITIVITY DEMONSTRATION, and the reason this divergence reads
-		// as arbitrary rather than as a rule about FROM order. The corpus entries
-		// that surfaced this run the SAME two shapes over tables named SHP/SHQ
-		// instead of EIP/EIQ, and they fall the OTHER way — the shadowing spelling
-		// above agrees with Java here and diverges there. Nothing about the query
-		// differs; only the identifiers the tie-break hash consumes do.
+		// The corpus entry dup_from_alias_shadowing_exists runs the shadowing shape
+		// over tables named SHP/SHQ instead of EIP/EIQ. Today both spellings fall
+		// the same (reversed) way; the tie-break hash consumes the identifiers, so
+		// a rename can flip either one independently.
 		nameSchema := "CREATE TABLE T_DUP_SHP (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
 			" CREATE TABLE T_DUP_SHQ (qid BIGINT, PRIMARY KEY (qid))"
 		nameSetup := []string{
@@ -160,10 +161,8 @@ var _ = Describe("DupAliasExistsOrderProbe", func() {
 		Expect(render(nj)).To(Equal(fromOrder),
 			"renamed_shadowing_exists: Java must still put the first FROM item outermost")
 		Expect(render(ng)).To(Equal(reversed),
-			"renamed_shadowing_exists: this is the SAME query as shadowing_exists with the\n"+
-				"tables renamed, and it must still fall the OTHER way. If both spellings now\n"+
-				"agree with Java the tie-break stopped depending on identifiers, which is the\n"+
-				"gap closing — re-pin both and un-annotate the corpus entries.")
+			"renamed_shadowing_exists: Go's row order moved. If it now matches Java, drop\n"+
+				"the dup_from_alias_shadowing_exists corpus annotation and re-pin here.")
 
 		for _, p := range probes {
 			jr := runner.RunWithSetup(ctx, schema, setup, p.sql)

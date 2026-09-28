@@ -5,8 +5,9 @@ Apple's [fdb-record-layer](https://github.com/FoundationDB/fdb-record-layer),
 Copyright Apple Inc. and the FoundationDB project authors, licensed under the
 Apache License, Version 2.0.
 
-The pinned upstream tag is recorded in [`VERSION`](VERSION) and matches the tag
-the Go port is written against (see `CLAUDE.md`).
+The pinned upstream tag is recorded in [`VERSION`](VERSION). During the 4.14.2.0
+migration `like.yamsql` alone is already at 4.14.2.0, because Go's LIKE follows
+that target; the rest of the tree moves at the full re-sync below.
 
 ## Provenance
 

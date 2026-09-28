@@ -2588,6 +2588,10 @@ func translateExecError(err error) error {
 	if errors.As(err, &sumOverflow) {
 		return api.NewError(api.ErrCodeNumericValueOutOfRange, sumOverflow.Error())
 	}
+	var likeErr *values.LikeError
+	if errors.As(err, &likeErr) {
+		return api.NewError(likeErrorCode(likeErr.Kind), likeErr.Error())
+	}
 	var divZero *values.ArithmeticDivisionByZeroError
 	if errors.As(err, &divZero) {
 		return api.NewError(api.ErrCodeDivisionByZero, "/ by zero")
@@ -2627,6 +2631,20 @@ func translateExecError(err error) error {
 	// would otherwise escape raw (RFC-198 criterion 9). translateFDBError is
 	// idempotent on *api.Error, so double translation is harmless.
 	return translateFDBError(err)
+}
+
+// likeErrorCode is ExceptionUtil's mapping of the LIKE semantic errors
+// (ExceptionUtil.java:95-102).
+func likeErrorCode(kind values.LikeErrorKind) api.ErrorCode {
+	switch kind {
+	case values.LikeEscapeNotSingleChar:
+		return api.ErrCodeInvalidEscapeCharacter
+	case values.LikeEscapeConflict:
+		return api.ErrCodeEscapeCharacterConflict
+	case values.LikeInvalidEscapeSequence:
+		return api.ErrCodeInvalidEscapeSequence
+	}
+	return api.ErrCodeInvalidArgumentForFunction
 }
 
 // fetchTableStatistics reads per-record-type row counts from FDB using a
@@ -5443,12 +5461,15 @@ func mergedInRVOrder(
 	firstWidth int,
 	slotIndex func(alias string, path []int) (int, bool),
 ) ([]executor.ColumnDef, bool) {
-	if len(rc.Fields) != len(merged) ||
+	// The RC may PROJECT the merge as well as reorder it: a leg the result
+	// does not read (a peeled EXISTS leg's literal) has a merged column and no
+	// RC field. Each RC field still names exactly one merged column.
+	if len(rc.Fields) > len(merged) ||
 		firstWidth < 0 || firstWidth > len(merged) ||
 		firstAlias == "" || secondAlias == "" || firstAlias == secondAlias {
 		return nil, false
 	}
-	out := make([]executor.ColumnDef, len(merged))
+	out := make([]executor.ColumnDef, len(rc.Fields))
 	taken := make([]bool, len(merged))
 	for i, f := range rc.Fields {
 		field, isField := values.AsFieldValue(f.Value)
@@ -5506,6 +5527,26 @@ func legSlotIndex(
 		}
 		leg = inner.GetInner()
 	}
+	if fm, isFlatMap := leg.(*plans.RecordQueryFlatMapPlan); isFlatMap {
+		if firstLeg, secondLeg, firstAlias, secondAlias, ok := flatMapMergeLegs(fm); ok {
+			rc := fm.GetResultValue().(*values.RecordConstructorValue)
+			if path[0] < 0 || path[0] >= len(rc.Fields) {
+				return 0, false
+			}
+			slotLeg, _ := values.AsQuantifiedObjectValue(rc.Fields[path[0]].Value)
+			switch strings.ToUpper(slotLeg.Correlation().Name()) {
+			case firstAlias:
+				return legSlotIndex(firstLeg, md, path[1:])
+			case secondAlias:
+				index, ok := legSlotIndex(secondLeg, md, path[1:])
+				if !ok {
+					return 0, false
+				}
+				return len(deriveColumnsFromPlan(firstLeg, md)) + index, true
+			}
+			return 0, false
+		}
+	}
 	nlj, isJoin := leg.(*plans.RecordQueryNestedLoopJoinPlan)
 	if !isJoin {
 		if len(path) != 1 {
@@ -5536,6 +5577,69 @@ func legSlotIndex(
 		return len(deriveColumnsFromPlan(firstLeg, md)) + index, true
 	}
 	return 0, false
+}
+
+// flatMapMergeLegs reports a positional-merge FlatMap's legs in RC slot order,
+// with their aliases uppercased. The merge RC names exactly the FlatMap's outer
+// and inner quantifiers, one per slot.
+func flatMapMergeLegs(
+	fm *plans.RecordQueryFlatMapPlan,
+) (firstLeg, secondLeg plans.RecordQueryPlan, firstAlias, secondAlias string, ok bool) {
+	rc, isRC := fm.GetResultValue().(*values.RecordConstructorValue)
+	if !isRC || !values.IsPositionalMergeRC(rc) || len(rc.Fields) != 2 {
+		return nil, nil, "", "", false
+	}
+	legs := map[values.CorrelationIdentifier]plans.RecordQueryPlan{
+		fm.GetOuterAlias(): fm.GetOuter(),
+		fm.GetInnerAlias(): fm.GetInner(),
+	}
+	var ordered [2]plans.RecordQueryPlan
+	var aliases [2]string
+	for i, f := range rc.Fields {
+		qov, isQOV := values.AsQuantifiedObjectValue(f.Value)
+		if !isQOV {
+			return nil, nil, "", "", false
+		}
+		leg, isLeg := legs[qov.Correlation()]
+		if !isLeg {
+			return nil, nil, "", "", false
+		}
+		ordered[i], aliases[i] = leg, strings.ToUpper(qov.Correlation().Name())
+	}
+	if aliases[0] == aliases[1] {
+		return nil, nil, "", "", false
+	}
+	return ordered[0], ordered[1], aliases[0], aliases[1], true
+}
+
+// flatMapMergeLegColumns derives one merge leg's columns, nullable when that
+// leg is the null-supplying one.
+func flatMapMergeLegColumns(fm *plans.RecordQueryFlatMapPlan, leg plans.RecordQueryPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
+	cols := deriveColumnsFromPlan(leg, md)
+	if (leg == fm.GetOuter() && fm.NullSupplyingOuter()) ||
+		(leg == fm.GetInner() && planHasDefaultOnEmpty(leg)) {
+		cols = columnsWithNullable(cols)
+	}
+	return cols
+}
+
+// planHasDefaultOnEmpty reports whether a leg's pass-through spine carries a
+// DefaultOnEmpty — the operator that makes it null-supplying.
+func planHasDefaultOnEmpty(p plans.RecordQueryPlan) bool {
+	for p != nil {
+		if _, ok := p.(*plans.RecordQueryDefaultOnEmptyPlan); ok {
+			return true
+		}
+		if definesOutputSchema(p) {
+			return false
+		}
+		inner, wrapped := p.(innerPlan)
+		if !wrapped {
+			return false
+		}
+		p = inner.GetInner()
+	}
+	return false
 }
 
 // joinLegDerivationOrder returns the join's legs in the order
@@ -5974,6 +6078,16 @@ func arrayElementTypeNameOfField(fd protoreflect.FieldDescriptor) string {
 }
 
 func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
+	// A positional-merge FlatMap is a partition sub-product: its row is its two
+	// legs' rows, exactly like an NLJ-shaped sub-product, so its columns are the
+	// legs' columns in slot order, the null-supplying leg nullable. (It arises
+	// when a null-on-empty leg is merged with its partner: FlatMap over a
+	// DefaultOnEmpty inner.)
+	if first, second, firstAlias, secondAlias, ok := flatMapMergeLegs(fm); ok {
+		firstCols := flatMapMergeLegColumns(fm, first, md)
+		secondCols := flatMapMergeLegColumns(fm, second, md)
+		return qualifyAndMergeColumns(firstCols, secondCols, firstAlias, secondAlias)
+	}
 	// An ORDINAL lateral-unnest seed (a NON-anchored RC over a
 	// FlatMap-over-Explode, carrying baked ofOrdinal outer columns) replaces
 	// the name-model anchored seed for a single-source unnest. It lands here

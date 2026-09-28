@@ -3781,10 +3781,10 @@ func rebaseOuterLegRefsToMerged(
 			return p
 		}
 		// Copy the whole Comparison and replace ONLY the rebased RHS operand,
-		// preserving Escape (the LIKE escape rune) AND every other Comparison
-		// subclass field (ParameterName, the Text* fields, the DistanceRank
-		// vector fields). A partial {Type, Operand, Escape} reconstruction would
-		// silently drop the rest and change the comparison's semantics.
+		// preserving every other Comparison subclass field (ParameterName, the
+		// Text* fields, the DistanceRank vector fields). A partial {Type,
+		// Operand} reconstruction would silently drop the rest and change the
+		// comparison's semantics.
 		cmp := pred.Comparison
 		cmp.Operand = newCompOperand
 		return &predicates.ComparisonPredicate{

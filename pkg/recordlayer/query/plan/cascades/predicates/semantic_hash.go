@@ -33,13 +33,11 @@ func writeSemanticHash(h io.Writer, p QueryPredicate) {
 	case *ValuePredicate:
 		_, _ = io.WriteString(h, "vp:"+strconv.FormatUint(values.SemanticHashCode(t.Value), 16))
 	case *ComparisonPredicate:
-		// Escape IS a discriminator (equality compares it, e.g. LIKE … ESCAPE).
 		// The text-search comparand fields fold because both equality layers
 		// compare them (see PredicateEquals). Length-delimit the strings so
 		// "ab"+"c" cannot collide with "a"+"bc".
-		// ParameterName is length-delimited so a name ending in a digit
-		// cannot bleed into the escape-rune fold.
-		_, _ = io.WriteString(h, "cp:"+strconv.Itoa(int(t.Comparison.Type))+":"+strconv.Itoa(len(t.Comparison.ParameterName))+":"+t.Comparison.ParameterName+":"+string(t.Comparison.Escape)+":")
+		// ParameterName is length-delimited.
+		_, _ = io.WriteString(h, "cp:"+strconv.Itoa(int(t.Comparison.Type))+":"+strconv.Itoa(len(t.Comparison.ParameterName))+":"+t.Comparison.ParameterName+":")
 		_, _ = io.WriteString(h, strconv.Itoa(len(t.Comparison.TextTokenizerName))+":"+t.Comparison.TextTokenizerName+":")
 		_, _ = io.WriteString(h, strconv.Itoa(len(t.Comparison.TextAnalyzerName))+":"+t.Comparison.TextAnalyzerName+":")
 		_, _ = io.WriteString(h, strconv.Itoa(t.Comparison.TextMaxDistance)+":")

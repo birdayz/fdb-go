@@ -259,16 +259,11 @@ func (c ComparisonType) Symbol() string {
 // NewLiteralComparison / LiteralValue. IN-list RHS is carried as a
 // ConstantValue whose Value is a `[]any` of evaluated literals.
 //
-// Escape is the LIKE-pattern escape rune (`LIKE 'a\%b' ESCAPE '\'`).
-// Zero (the default) means "no escape" — `%` and `_` retain their
-// SQL wildcard meaning everywhere in the pattern. Non-zero values
-// flip the next character after the escape from wildcard to
-// literal. Only Type==ComparisonLike consults Escape; other types
-// ignore it.
+// A LIKE's Operand is its values.PatternForLikeValue, which carries the
+// pattern and the escape (Java's ValueComparison(LIKE, patternValue)).
 type Comparison struct {
 	Type    ComparisonType
 	Operand values.Value
-	Escape  rune
 
 	// --- Optional fields for Java Comparison subclass variants ---
 
@@ -357,7 +352,12 @@ func (c Comparison) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} 
 // appropriate Value subtype (NullValue for nil, BooleanValue for
 // bool, ConstantValue otherwise). For unary types callers should
 // set Operand to nil directly: `Comparison{Type: ComparisonIsNull}`.
+// A LIKE comparand is always a PatternForLikeValue, so a LIKE literal is
+// wrapped as a pattern with no escape.
 func NewLiteralComparison(typ ComparisonType, lit any) Comparison {
+	if typ == ComparisonLike {
+		return Comparison{Type: typ, Operand: values.NewPatternForLikeValue(values.LiteralValue(lit), values.LiteralValue(nil))}
+	}
 	return Comparison{Type: typ, Operand: values.LiteralValue(lit)}
 }
 
@@ -506,17 +506,14 @@ func (c Comparison) EvalAgainst(left, right any) (TriBool, error) {
 		}
 		return TriFalse, nil
 	}
-	// LIKE: SQL pattern with `%` (zero-or-more chars) and `_` (exactly
-	// one char). When c.Escape is non-zero, the rune preceding `%`
-	// or `_` makes the next character literal (`LIKE 'a\%b' ESCAPE '\'`
-	// matches `a%b`). Escape == 0 disables escape handling.
+	// LIKE: Java's compareLike (Comparisons.java:284-295) over the pattern
+	// record the PatternForLikeValue operand evaluated to.
 	if c.Type == ComparisonLike {
-		ls, lok := left.(string)
-		ps, rok := right.(string)
-		if !lok || !rok {
-			return TriUnknown, nil
+		match, err := values.LikeOperation(left, right)
+		if err != nil || match == nil {
+			return TriUnknown, err
 		}
-		if likeMatch(ps, ls, c.Escape) {
+		if match.(bool) {
 			return TriTrue, nil
 		}
 		return TriFalse, nil
@@ -571,30 +568,6 @@ func (c Comparison) EvalAgainst(left, right any) (TriBool, error) {
 		return TriTrue, nil
 	}
 	return TriFalse, nil
-}
-
-// likeMatch implements SQL LIKE pattern matching against `s`:
-//   - `%` matches zero or more characters (runes), none of which
-//     may be a line terminator
-//   - `_` matches exactly one non-line-terminator character (rune)
-//   - every other character matches itself
-//   - a non-zero `escape` rune makes a following `%` or `_` literal;
-//     in every other position it falls through to the ordinary
-//     per-character rules, so it is a literal UNLESS the escape rune
-//     is itself `%` or `_`, in which case it is still that wildcard
-//
-// Delegates to values.LikeMatch — the canonical LIKE matcher shared
-// between the QueryPredicate-layer ComparisonLike and the
-// Value-layer LikeOperatorValue; its doc comment
-// (values/like_match.go) carries the full contract, including the
-// escape fallthrough and the newline/`$` semantics. The spec is
-// Java's `PatternForLikeValue.eval` (PatternForLikeValue.java:96-117)
-// + `LikeOperatorValue.likeOperation` (LikeOperatorValue.java:93-99):
-// SQL pattern → `^<regex>$` → `Pattern.compile` with no flags →
-// `.find()`. Pinned by FuzzLikeMatch / FuzzLikeMatchEscape against
-// an oracle that models exactly that composition.
-func likeMatch(pattern, s string, escape rune) bool {
-	return values.LikeMatch(pattern, s, escape)
 }
 
 // cmpAny is a total-order comparator over the primitive types the
@@ -988,19 +961,7 @@ func (p *ComparisonPredicate) Explain() string {
 	if p.Comparison.Type.IsUnary() {
 		return fmt.Sprintf("%s %s", operandText, p.Comparison.Type.Symbol())
 	}
-	// LIKE with escape: append the ESCAPE clause so Explain output
-	// round-trips back to recognisable SQL. Plain LIKE elides the
-	// (default-zero) escape. The escape rune is rendered SQL-escaped
-	// — single quote becomes '' inside the literal so `ESCAPE ''''`
-	// stays valid SQL, not `ESCAPE '''` (broken).
 	rhs := formatComparisonRHS(p.Comparison.Operand)
-	if p.Comparison.Type == ComparisonLike && p.Comparison.Escape != 0 {
-		escLit := string(p.Comparison.Escape)
-		if p.Comparison.Escape == '\'' {
-			escLit = "''"
-		}
-		return fmt.Sprintf("%s %s %s ESCAPE '%s'", operandText, p.Comparison.Type.Symbol(), rhs, escLit)
-	}
 	return fmt.Sprintf("%s %s %s", operandText, p.Comparison.Type.Symbol(), rhs)
 }
 

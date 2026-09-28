@@ -15,7 +15,6 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"
 	"fdb.dev/pkg/relational/core/session"
@@ -412,96 +411,6 @@ func TestEmbeddedConnection_IsValid(t *testing.T) {
 	conn3.closed.Store(true)
 	if conn3.IsValid() {
 		t.Error("IsValid: want false for closed, got true")
-	}
-}
-
-func TestLikeMatch(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		pattern, s string
-		want       bool
-	}{
-		{"", "", true},
-		{"", "x", false},
-		{"abc", "abc", true},
-		{"abc", "abcd", false},
-		{"abc", "ab", false},
-		{"%", "", true},
-		{"%", "anything", true},
-		{"a%", "a", true},
-		{"a%", "abc", true},
-		{"a%", "bc", false},
-		{"%c", "abc", true},
-		{"%c", "abx", false},
-		{"a%c", "abc", true},
-		{"a%c", "axyzc", true},
-		{"a%c", "axyz", false},
-		{"_", "a", true},
-		{"_", "ab", false},
-		{"_", "", false},
-		{"a_c", "abc", true},
-		{"a_c", "ac", false},
-		{"a_c", "abbc", false},
-		{"%%", "anything", true},
-		{"a%b%c", "aXbYc", true},
-		{"a%b%c", "aXbY", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.pattern+"/"+tc.s, func(t *testing.T) {
-			t.Parallel()
-			got := values.LikeMatch(tc.pattern, tc.s, 0) // 0 = no escape
-			if got != tc.want {
-				t.Errorf("values.LikeMatch(%q, %q) = %v, want %v", tc.pattern, tc.s, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestLikeMatchWithEscape pins the ESCAPE truth table the map-path
-// WHERE evaluator inherits. It calls the matcher directly, so it can
-// only pin SEMANTICS — that the map path actually reaches this
-// matcher rather than a copy of it is pinned end-to-end by
-// TestFDB_LikeTrailingEscape_MapPath in pkg/relational/sqldriver.
-//
-// Java's PatternForLikeValue installs exactly two escape entries
-// (`<esc>_` and `<esc>%`), so an escape rune escapes nothing else —
-// see values/like_match.go for the full contract.
-func TestLikeMatchWithEscape(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		pattern string
-		s       string
-		escape  rune
-		want    bool
-	}{
-		// Literal underscore via escape.
-		{`a\_b`, "a_b", '\\', true},
-		{`a\_b`, "axb", '\\', false}, // escaped _ doesn't match arbitrary char
-		// Literal percent via escape.
-		{`a\%b`, "a%b", '\\', true},
-		{`a\%b`, "abb", '\\', false},
-		// There is no escaped-escape: `\\` is two literal runes.
-		{`a\\b`, `a\\b`, '\\', true},
-		{`a\\b`, `a\b`, '\\', false},
-		// A dangling escape is an ordinary literal, not a no-match —
-		// Java's like.yamsql:92 answer.
-		{"Z", "Z", 'Z', true},
-		// Alt escape char.
-		{`a!_b`, "a_b", '!', true},
-		{`a!_b`, "axb", '!', false},
-		// Without escape the same char is literal (escape=0).
-		{`a\_b`, "a_b", 0, false}, // `\` is literal, `_` still wildcard → "a\Xb"
-		{`a\_b`, `a\xb`, 0, true}, // matches `a\` + any char + `b`
-	}
-	for _, tc := range cases {
-		t.Run(tc.pattern+"/"+tc.s, func(t *testing.T) {
-			t.Parallel()
-			got := values.LikeMatch(tc.pattern, tc.s, tc.escape)
-			if got != tc.want {
-				t.Errorf("values.LikeMatch(%q, %q, %q) = %v, want %v",
-					tc.pattern, tc.s, string(tc.escape), got, tc.want)
-			}
-		})
 	}
 }
 

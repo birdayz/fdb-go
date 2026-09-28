@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**377 scenarios · 3111 query/assertion cases** across 18 feature areas — 2723 supported, 106 unsupported-feature pins, 282 error-path pins.
+**377 scenarios · 3113 query/assertion cases** across 18 feature areas — 2725 supported, 106 unsupported-feature pins, 282 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -34,7 +34,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Set operations (UNION / INTERSECT / EXCEPT) | 12 | 68 | 59 | 5 | 4 |
 | DML (INSERT / UPDATE / DELETE) | 26 | 239 | 202 | 3 | 34 |
 | Ordering & pagination | 18 | 138 | 133 | 0 | 5 |
-| Scalar functions & expressions | 34 | 384 | 329 | 21 | 34 |
+| Scalar functions & expressions | 34 | 386 | 331 | 21 | 34 |
 | Predicates & WHERE | 12 | 104 | 102 | 0 | 2 |
 | Column resolution & aliasing | 7 | 59 | 30 | 0 | 29 |
 | NULL handling | 5 | 27 | 24 | 3 | 0 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 40 | 340 | 301 | 5 | 34 |
-| **Total** | **377** | **3111** | **2723** | **106** | **282** |
+| **Total** | **377** | **3113** | **2725** | **106** | **282** |
 
 ## Aggregates & GROUP BY
 
@@ -337,7 +337,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `function_in_predicate` | 5 | 5 | 0 | 0 | Functions used in WHERE predicates |
 | `greatest_least` | 11 | 10 | 0 | 1 | swingshift-35 commit 97e0c731: GREATEST / LEAST propagate NULL |
 | `in_expression_types` | 6 | 6 | 0 | 0 | IN predicate with various expression types |
-| `like` | 16 | 16 | 0 | 0 | LIKE pattern matching with SQL wildcards (% and _). |
+| `like` | 18 | 18 | 0 | 0 | LIKE pattern matching with SQL wildcards (% and _). |
 | `like_patterns` | 5 | 5 | 0 | 0 | LIKE pattern matching |
 | `like_patterns_java` | 10 | 10 | 0 | 0 | LIKE/NOT LIKE pattern matching. |
 | `like_prefix_pushdown` | 41 | 41 | 0 | 0 | No LIKE prefix pushdown exists — every LIKE query here is a full scan. |

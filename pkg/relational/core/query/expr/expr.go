@@ -1601,46 +1601,35 @@ func (r *Resolver) ResolveIsNotNull(v values.Value) (predicates.QueryPredicate, 
 	return predicates.NewComparisonPredicate(v, predicates.Comparison{Type: predicates.ComparisonIsNotNull}), nil
 }
 
-// ResolveLike builds `lhs LIKE pattern`. Pattern must be a plan-time
-// constant string (parameter-bound patterns land with the
-// parameter-Comparison design).
-func (r *Resolver) ResolveLike(lhs values.Value, pattern values.Value) (predicates.QueryPredicate, error) {
-	return r.ResolveLikeWithEscape(lhs, pattern, 0)
-}
-
-// ResolveLikeWithEscape is the LIKE … ESCAPE form. escape == 0 is
-// equivalent to ResolveLike. Pattern must be a plan-time constant
-// string. The escape rune is carried verbatim on the resulting
-// Comparison.
-func (r *Resolver) ResolveLikeWithEscape(lhs values.Value, pattern values.Value, escape rune) (predicates.QueryPredicate, error) {
-	if lhs == nil || pattern == nil {
+// ResolveLike builds `lhs LIKE pattern ESCAPE escape` as Java does: the
+// pattern and escape wrap in a PatternForLikeValue, and the operand compares
+// against it (LikeOperatorValue.toQueryPredicate, LikeOperatorValue.java:
+// 245-248). Typing is Java's encapsulate: the operand, pattern and escape are
+// each NULL-typed or STRING, else 22F00. A bad escape or escape sequence is
+// found only when a row evaluates the pattern, as in Java.
+//
+// A DATE or TIMESTAMP operand is admitted too: Java has neither type, so this
+// is a Go-only read-side extension.
+func (r *Resolver) ResolveLike(lhs, pattern, escape values.Value) (predicates.QueryPredicate, error) {
+	if lhs == nil || pattern == nil || escape == nil {
 		return nil, fmt.Errorf("expr.ResolveLike: operand is nil")
 	}
-	lit, ok := values.EvaluateConstant(pattern)
-	if !ok {
-		return nil, fmt.Errorf("expr.ResolveLike: pattern must be a constant in the seed; got %T", pattern)
+	patternValue, err := values.NewPatternForLikeValueChecked(pattern, escape)
+	if err != nil {
+		return nil, api.NewError(api.ErrCodeInvalidArgumentForFunction, err.Error())
 	}
-	s, ok := lit.(string)
-	if !ok {
-		return nil, fmt.Errorf("expr.ResolveLike: pattern must be a string; got %T", lit)
-	}
-	// PLAN-TIME LHS gate: LIKE is a string predicate — a numeric or
-	// boolean LHS rejects 42804 like Java's SemanticAnalyzer, never a
-	// silent per-row UNKNOWN. STRING and the string-promotable temporal
-	// extension types pass; Unknown keeps the runtime path.
 	if lt := lhs.Type(); lt != nil {
 		switch lt.Code() {
 		case values.TypeCodeString, values.TypeCodeUnknown, values.TypeCodeNull,
-			values.TypeCodeEnum, values.TypeCodeDate, values.TypeCodeTimestamp:
+			values.TypeCodeDate, values.TypeCodeTimestamp:
 		default:
-			return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
-				"The operands of a comparison operator are not compatible.")
+			return nil, api.NewError(api.ErrCodeInvalidArgumentForFunction,
+				(&values.LikeError{Kind: values.LikeOperandNotString}).Error())
 		}
 	}
 	return predicates.NewComparisonPredicate(lhs, predicates.Comparison{
 		Type:    predicates.ComparisonLike,
-		Operand: values.LiteralValue(s),
-		Escape:  escape,
+		Operand: patternValue,
 	}), nil
 }
 

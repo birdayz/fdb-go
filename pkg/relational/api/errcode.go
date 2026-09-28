@@ -54,7 +54,10 @@ const (
 	ErrCodeNumericValueOutOfRange       ErrorCode = "22003"
 	ErrCodeDivisionByZero               ErrorCode = "22012"
 	ErrCodeInvalidRowCountInLimitClause ErrorCode = "2201W"
+	ErrCodeEscapeCharacterConflict      ErrorCode = "2200B"
+	ErrCodeInvalidEscapeCharacter       ErrorCode = "22019"
 	ErrCodeInvalidParameter             ErrorCode = "22023"
+	ErrCodeInvalidEscapeSequence        ErrorCode = "22025"
 	ErrCodeArrayElementError            ErrorCode = "2202E"
 	ErrCodeInvalidBinaryRepresentation  ErrorCode = "22F03"
 	ErrCodeInvalidArgumentForFunction   ErrorCode = "22F00"
@@ -227,6 +230,7 @@ func init() {
 		ErrCodeUnsupportedOperation, ErrCodeUnsupportedQuery, ErrCodeUnsupportedSort,
 		ErrCodeCardinalityViolation,
 		ErrCodeCannotConvertType, ErrCodeNumericValueOutOfRange, ErrCodeDivisionByZero, ErrCodeInvalidRowCountInLimitClause, ErrCodeInvalidParameter, ErrCodeArrayElementError,
+		ErrCodeEscapeCharacterConflict, ErrCodeInvalidEscapeCharacter, ErrCodeInvalidEscapeSequence,
 		ErrCodeInvalidBinaryRepresentation, ErrCodeInvalidArgumentForFunction, ErrCodeInvalidCast,
 		ErrCodeCopySerializationError, ErrCodeCopyImportValidationError,
 		ErrCodeNotNullViolation, ErrCodeUniqueConstraintViolation,

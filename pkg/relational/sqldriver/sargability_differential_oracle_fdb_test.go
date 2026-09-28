@@ -29,7 +29,7 @@ package sqldriver_test
 // below) — where `s LIKE 'prefix%'` never produces an IndexScan. The 6-to-150
 // row spread covers this file's OTHER tables, none of which carries a LIKE
 // case, so it is not evidence about LIKE. The mechanism is size-independent:
-// walk.go's LikePredicateContext arm always calls ResolveLikeWithEscape, never
+// walk.go's LikePredicateContext arm always calls ResolveLike, never
 // ResolveStartsWith/ComparisonStartsWith; grepping the whole tree turns up
 // zero non-test callers of ResolveStartsWith and no rewrite rule that
 // produces STARTS_WITH from a LIKE pattern (TODO.md CQ-33, pinned by

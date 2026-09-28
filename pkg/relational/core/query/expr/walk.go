@@ -2024,38 +2024,26 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 		}
 		return inPred, nil
 	case *antlrgen.LikePredicateContext:
-		// `x LIKE 'pattern' [ESCAPE 'c']` — both forms wire through
-		// the cascades likeMatch's escape-aware path. ESCAPE='' or
-		// missing ESCAPE produces escape == 0, which disables
-		// escape handling.
+		// Java's visitLikePredicate (ExpressionVisitor.java:695-710): the
+		// pattern is an ordinary constant, the escape its one token decoded,
+		// an absent ESCAPE a NULL escape.
 		lhsVal, err := r.walkAtom(atom)
 		if err != nil {
 			return nil, err
 		}
-		patTok := p.GetPattern()
-		if patTok == nil {
-			return nil, &UnsupportedExpressionShapeError{Shape: "LIKE without pattern token"}
-		}
-		patConst, err := r.ResolveConstant(stripStringLiteral(patTok.GetText()))
+		patVal, err := r.walkConstant(p.GetPattern())
 		if err != nil {
 			return nil, err
 		}
-		var escape rune
-		if p.ESCAPE() != nil {
-			escTok := p.GetEscape()
-			if escTok == nil {
-				return nil, &UnsupportedExpressionShapeError{Shape: "LIKE ESCAPE without escape token"}
-			}
-			escStr := stripStringLiteral(escTok.GetText())
-			runes := []rune(escStr)
-			if len(runes) != 1 {
-				return nil, &UnsupportedExpressionShapeError{
-					Shape: fmt.Sprintf("LIKE ESCAPE expects exactly one character; got %q", escStr),
-				}
-			}
-			escape = runes[0]
+		var escText any
+		if escTok := p.GetEscape(); escTok != nil {
+			escText = stripStringLiteral(escTok.GetText())
 		}
-		like, err := r.ResolveLikeWithEscape(lhsVal, patConst, escape)
+		escVal, err := r.ResolveConstant(escText)
+		if err != nil {
+			return nil, err
+		}
+		like, err := r.ResolveLike(lhsVal, patVal, escVal)
 		if err != nil {
 			return nil, err
 		}
@@ -2256,17 +2244,40 @@ func (r *Resolver) walkConstant(c antlrgen.IConstantContext) (values.Value, erro
 		}
 		return r.resolveDecimalText(k.GetText(), isReal)
 	case *antlrgen.StringConstantContext:
-		// Grammar emits the literal including surrounding quotes;
-		// strip them. Only single-quoted SQL strings for now.
-		text := k.GetText()
-		if len(text) >= 2 && text[0] == '\'' && text[len(text)-1] == '\'' {
-			text = strings.ReplaceAll(text[1:len(text)-1], "''", "'")
+		lit, ok := k.StringLiteral().(*antlrgen.StringLiteralContext)
+		if !ok {
+			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("StringLiteral ctx %T", k.StringLiteral())}
+		}
+		text, err := decodeStringLiteral(lit)
+		if err != nil {
+			return nil, err
 		}
 		return r.ResolveConstant(text)
 	case *antlrgen.BytesConstantContext:
 		return r.walkBytesConstant(k)
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", c)}
+}
+
+// decodeStringLiteral is Java's visitStringLiteral with
+// SemanticAnalyzer.normalizeStringLiteral (ExpressionVisitor.java:848-856,
+// SemanticAnalyzer.java:197-228): a charset, national or collated literal is
+// refused, and adjacent tokens are each decoded before they are joined, so
+// `'a' 'b'` is `ab`, while a doubled quote inside one token is one quote.
+func decodeStringLiteral(lit *antlrgen.StringLiteralContext) (string, error) {
+	switch {
+	case lit.STRING_CHARSET_NAME() != nil:
+		return "", api.NewError(api.ErrCodeUnsupportedQuery, "charset not is supported")
+	case lit.START_NATIONAL_STRING_LITERAL() != nil:
+		return "", api.NewError(api.ErrCodeUnsupportedQuery, "national string literal is not supported")
+	case lit.COLLATE() != nil:
+		return "", api.NewError(api.ErrCodeUnsupportedQuery, "collation is not supported")
+	}
+	var b strings.Builder
+	for _, part := range lit.AllSTRING_LITERAL() {
+		b.WriteString(stripStringLiteral(part.GetText()))
+	}
+	return b.String(), nil
 }
 
 // stripStringLiteral removes the single-quote delimiters from a

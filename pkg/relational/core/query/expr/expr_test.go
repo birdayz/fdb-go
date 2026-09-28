@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"testing"
 
+	"fdb.dev/pkg/relational/api"
+
 	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -559,7 +561,8 @@ func TestResolver_ResolveLike(t *testing.T) {
 
 	id, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("name"))
 	pat, _ := r.ResolveConstant("hel%")
-	pred, err := r.ResolveLike(id, pat)
+	noEscape, _ := r.ResolveConstant(nil)
+	pred, err := r.ResolveLike(id, pat, noEscape)
 	if err != nil {
 		t.Fatalf("LIKE: %v", err)
 	}
@@ -567,36 +570,25 @@ func TestResolver_ResolveLike(t *testing.T) {
 	if cp.Comparison.Type != predicates.ComparisonLike {
 		t.Fatal("Type mismatch")
 	}
-	patLit, ok := values.EvaluateConstant(cp.Comparison.Operand)
-	if !ok || patLit != "hel%" {
-		t.Fatalf("pattern: got %v", cp.Comparison.Operand)
+	pfl, ok := cp.Comparison.Operand.(*values.PatternForLikeValue)
+	if !ok {
+		t.Fatalf("the LIKE operand is %T, want a PatternForLikeValue", cp.Comparison.Operand)
+	}
+	if lit, ok := values.EvaluateConstant(pfl.PatternChild); !ok || lit != "hel%" {
+		t.Fatalf("pattern: got %v", pfl.PatternChild)
 	}
 
-	// Non-string pattern rejected.
+	// A non-string pattern or escape is Java's 22F00 at planning; a NULL
+	// pattern is admitted (it filters every row).
 	intPat, _ := r.ResolveConstant(int64(1))
-	if _, err := r.ResolveLike(id, intPat); err == nil {
-		t.Fatal("expected error for non-string pattern")
+	for _, args := range [][2]values.Value{{intPat, noEscape}, {pat, intPat}} {
+		var apiErr *api.Error
+		if _, err := r.ResolveLike(id, args[0], args[1]); !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidArgumentForFunction {
+			t.Fatalf("want 22F00 for a non-string pattern or escape, got %v", err)
+		}
 	}
-
-	// A NULL pattern is rejected by the same `lit.(string)` check, and it is
-	// named here rather than left to the int case because it is the one that
-	// keeps a Go/Java divergence UNREACHABLE.
-	//
-	// At runtime the two engines disagree about `x LIKE NULL`: Go's
-	// Comparison.EvalAgainst returns UNKNOWN (the SQL-standard answer) while
-	// Java's Comparisons.compareLike null-guards only the VALUE and then throws
-	// "Illegal pattern value type: null" on a non-String pattern
-	// (Comparisons.java:288-299). Nothing reaches that disagreement today
-	// because ResolveLike refuses the plan first — so THIS rejection is the
-	// thing holding it, and relaxing it re-arms the divergence rather than
-	// merely widening what SQL accepts.
-	nullPat, err := r.ResolveConstant(nil)
-	if err != nil {
-		t.Fatalf("resolve NULL constant: %v", err)
-	}
-	if _, err := r.ResolveLike(id, nullPat); err == nil {
-		t.Fatal("expected error for a NULL LIKE pattern — this rejection is what " +
-			"keeps Go's UNKNOWN and Java's throw from ever disagreeing on a live query")
+	if _, err := r.ResolveLike(id, noEscape, noEscape); err != nil {
+		t.Fatalf("a NULL pattern: %v", err)
 	}
 }
 

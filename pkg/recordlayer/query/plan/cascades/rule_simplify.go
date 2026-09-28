@@ -480,14 +480,9 @@ func (r *NotComparisonRewriteRule) OnMatch(call *RuleCall) {
 	if !ok {
 		return
 	}
-	// Preserve Escape across the negation. Today no Negate()-supporting
-	// type carries a non-zero Escape (only ComparisonLike does, and
-	// Negate declines on it), so this is defensive: if a future
-	// ComparisonType grows both Negate-support and Escape-meaning, the
-	// rewrite stays correct without an explicit fix.
 	call.Yield(&predicates.ComparisonPredicate{
 		Operand:    cp.Operand,
-		Comparison: predicates.Comparison{Type: negated, Operand: cp.Comparison.Operand, Escape: cp.Comparison.Escape},
+		Comparison: predicates.Comparison{Type: negated, Operand: cp.Comparison.Operand},
 	})
 }
 

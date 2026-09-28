@@ -436,10 +436,14 @@ func reanchorValueThroughProducer(
 					// A positional merge RC retains each leg as one complete
 					// record slot. A field of that exact leg is therefore the
 					// output slot followed by its already-resolved leg-local path.
-					// Correlation plus exact root type is required; a same-shaped
-					// foreign leg cannot select this nested slot by name.
-					if candidate.correlation != requestedRoot.correlation ||
-						!exactTypesEqual(candidate.flowed, requestedRoot.flowed) {
+					// The same correlation is required, so a same-shaped foreign
+					// leg cannot select this nested slot. The root types may differ
+					// in the top-level nullable bit only: a null-on-empty leg is
+					// retained NULLABLE by the merge that may null-pad it and read
+					// NOT NULL by a consumer holding the leg's own row type — the
+					// same row, as for the nested-field slot above. The leaf result
+					// type is still compared exactly below.
+					if !quantifiedRootsDenoteTheSameRow(candidate, requestedRoot) {
 						continue
 					}
 					path := make([]int, 1, 1+len(requested.Resolved.Accessors))

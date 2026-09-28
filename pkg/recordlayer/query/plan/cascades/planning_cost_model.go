@@ -1398,7 +1398,6 @@ func sargComparisonEqual(a, b *predicates.Comparison) bool {
 		return a == b
 	}
 	if a.Type != b.Type ||
-		a.Escape != b.Escape ||
 		a.ParameterName != b.ParameterName ||
 		a.TextTokenizerName != b.TextTokenizerName ||
 		a.TextAnalyzerName != b.TextAnalyzerName ||

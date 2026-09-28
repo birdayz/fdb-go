@@ -359,7 +359,7 @@ func TestComparisonConstSimplify_Like(t *testing.T) {
 			t.Parallel()
 			pred := predicates.NewComparisonPredicate(
 				&values.ConstantValue{Value: tc.s, Typ: values.TypeString},
-				predicates.Comparison{Type: predicates.ComparisonLike, Operand: values.LiteralValue(tc.pattern)},
+				predicates.Comparison{Type: predicates.ComparisonLike, Operand: values.NewPatternForLikeValue(values.LiteralValue(tc.pattern), values.LiteralValue(nil))},
 			)
 			got := firePredicateRule(t, rule, pred)
 			if len(got) != 1 {
@@ -370,6 +370,23 @@ func TestComparisonConstSimplify_Like(t *testing.T) {
 				t.Fatalf("got %T %v, want ConstantPredicate(%v)", got[0], got[0], tc.want)
 			}
 		})
+	}
+}
+
+// A constant LIKE whose escape is invalid is NOT folded: the error belongs
+// to the row that evaluates it (Java raises it per row, so a query that
+// reads no row succeeds), never to the planner.
+func TestComparisonConstSimplify_LikeBadEscapeDeclines(t *testing.T) {
+	t.Parallel()
+	rule := NewComparisonConstantSimplifyRule()
+	for _, esc := range []string{"ab", "%", ""} {
+		pred := predicates.NewComparisonPredicate(
+			&values.ConstantValue{Value: "abc", Typ: values.TypeString},
+			predicates.Comparison{Type: predicates.ComparisonLike, Operand: values.NewPatternForLikeValue(values.LiteralValue("a%"), values.LiteralValue(esc))},
+		)
+		if got := firePredicateRule(t, rule, pred); len(got) != 0 {
+			t.Fatalf("ESCAPE %q: folded to %v, want no yield", esc, got)
+		}
 	}
 }
 

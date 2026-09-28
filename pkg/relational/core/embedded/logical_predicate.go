@@ -4790,9 +4790,9 @@ func rewriteAggregateRefsInPredicate(pred predicates.QueryPredicate, agg *logica
 	case *predicates.ComparisonPredicate:
 		lhs := rewriteAggregateValuesInTree(p.Operand, agg)
 		// Copy the whole Comparison and replace ONLY the rewritten RHS operand,
-		// preserving Escape and every other Comparison field. A fresh
-		// {Type, Operand} would drop the LIKE escape rune (and the parameter /
-		// text / distance-rank metadata) and change comparison semantics. RFC-142.
+		// preserving every other Comparison field. A fresh {Type, Operand}
+		// would drop the parameter / text / distance-rank metadata and change
+		// comparison semantics. RFC-142.
 		cmp := p.Comparison
 		cmp.Operand = rewriteAggregateValuesInTree(p.Comparison.Operand, agg)
 		return predicates.NewComparisonPredicate(lhs, cmp)

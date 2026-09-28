@@ -47,14 +47,23 @@ func (r *PartitionSelectRule) positionalMergeCase(
 	// sound for the reason this decline is not — both sides of the extension sit
 	// inside the SAME box, so the null-extension stays per-outer-row rather than
 	// being split across a lower and an upper. What this guard refuses is
-	// collapsing a null-on-empty leg into a lower whose PARTNER stays outside it.
+	// collapsing a null-on-empty leg into a lower whose PARTNER — a quantifier
+	// of this select its range is correlated to — stays outside it, in the upper.
+	// A leg collapsed together with its partner is the binary outer-join shape
+	// the NLJ rule implements with DefaultOnEmpty.
 	liveSet := make(map[values.CorrelationIdentifier]struct{}, len(live))
 	for _, a := range live {
 		liveSet[a] = struct{}{}
 	}
 	for _, q := range sel.GetQuantifiers() {
-		if q.IsNullOnEmpty() {
-			if _, collapsed := liveSet[q.GetAlias()]; collapsed {
+		if !q.IsNullOnEmpty() {
+			continue
+		}
+		if _, collapsed := liveSet[q.GetAlias()]; !collapsed {
+			continue
+		}
+		for partner := range q.GetCorrelatedTo() {
+			if _, strandedAbove := upperAliases[partner]; strandedAbove {
 				return nil
 			}
 		}

@@ -218,7 +218,7 @@ package javacorpus_test
 // and booked unsupported:continuation; `showcasing-tests` names them only in
 // comments. So no query yet runs under PLAN_RIGHT_DEEP,
 // DISABLE_PLANNER_REWRITING or EXECUTION_SCANNED_ROWS_LIMIT from the corpus.
-const pinnedLedger = "pass=77 fail=0 skip=161 queries=2289 file_skips{conformance:go-accepts-what-java-rejects=5," +
+const pinnedLedger = "pass=77 fail=0 skip=161 queries=2459 file_skips{conformance:go-accepts-what-java-rejects=5," +
 	"conformance:java-planner-bug=1,engine-gap:case-sensitive-identifiers=1," +
 	"engine-gap:catalog-system-tables=2,engine-gap:comma-join-mixed-from=1," +
 	"engine-gap:correlated-exists-setop=1," +

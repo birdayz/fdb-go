@@ -38,7 +38,6 @@ func SemanticEqualsUnderAliasMap(a, b QueryPredicate, aliases values.AliasMap) b
 			return false
 		}
 		if ap.Comparison.Type != bp.Comparison.Type ||
-			ap.Comparison.Escape != bp.Comparison.Escape ||
 			ap.Comparison.ParameterName != bp.Comparison.ParameterName ||
 			ap.Comparison.TextTokenizerName != bp.Comparison.TextTokenizerName ||
 			ap.Comparison.TextAnalyzerName != bp.Comparison.TextAnalyzerName ||

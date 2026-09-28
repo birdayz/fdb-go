@@ -1796,7 +1796,7 @@ func relationalparserParserInit() {
 		2487, 2486, 1, 0, 0, 0, 2487, 2488, 1, 0, 0, 0, 2488, 2489, 1, 0, 0, 0,
 		2489, 2490, 5, 82, 0, 0, 2490, 2506, 3, 384, 192, 0, 2491, 2493, 5, 114,
 		0, 0, 2492, 2491, 1, 0, 0, 0, 2492, 2493, 1, 0, 0, 0, 2493, 2494, 1, 0,
-		0, 0, 2494, 2495, 5, 100, 0, 0, 2495, 2498, 5, 1177, 0, 0, 2496, 2497,
+		0, 0, 2494, 2495, 5, 100, 0, 0, 2495, 2498, 3, 288, 144, 0, 2496, 2497,
 		5, 421, 0, 0, 2497, 2499, 5, 1177, 0, 0, 2498, 2496, 1, 0, 0, 0, 2498,
 		2499, 1, 0, 0, 0, 2499, 2506, 1, 0, 0, 0, 2500, 2502, 5, 91, 0, 0, 2501,
 		2503, 5, 114, 0, 0, 2502, 2501, 1, 0, 0, 0, 2502, 2503, 1, 0, 0, 0, 2503,
@@ -49650,7 +49650,7 @@ func (s *InPredicateContext) Accept(visitor antlr.ParseTreeVisitor) interface{} 
 
 type LikePredicateContext struct {
 	PredicateContext
-	pattern antlr.Token
+	pattern IConstantContext
 	escape  antlr.Token
 }
 
@@ -49664,13 +49664,13 @@ func NewLikePredicateContext(parser antlr.Parser, ctx antlr.ParserRuleContext) *
 	return p
 }
 
-func (s *LikePredicateContext) GetPattern() antlr.Token { return s.pattern }
-
 func (s *LikePredicateContext) GetEscape() antlr.Token { return s.escape }
 
-func (s *LikePredicateContext) SetPattern(v antlr.Token) { s.pattern = v }
-
 func (s *LikePredicateContext) SetEscape(v antlr.Token) { s.escape = v }
+
+func (s *LikePredicateContext) GetPattern() IConstantContext { return s.pattern }
+
+func (s *LikePredicateContext) SetPattern(v IConstantContext) { s.pattern = v }
 
 func (s *LikePredicateContext) GetRuleContext() antlr.RuleContext {
 	return s
@@ -49680,12 +49680,20 @@ func (s *LikePredicateContext) LIKE() antlr.TerminalNode {
 	return s.GetToken(RelationalParserLIKE, 0)
 }
 
-func (s *LikePredicateContext) AllSTRING_LITERAL() []antlr.TerminalNode {
-	return s.GetTokens(RelationalParserSTRING_LITERAL)
-}
+func (s *LikePredicateContext) Constant() IConstantContext {
+	var t antlr.RuleContext
+	for _, ctx := range s.GetChildren() {
+		if _, ok := ctx.(IConstantContext); ok {
+			t = ctx.(antlr.RuleContext)
+			break
+		}
+	}
 
-func (s *LikePredicateContext) STRING_LITERAL(i int) antlr.TerminalNode {
-	return s.GetToken(RelationalParserSTRING_LITERAL, i)
+	if t == nil {
+		return nil
+	}
+
+	return t.(IConstantContext)
 }
 
 func (s *LikePredicateContext) NOT() antlr.TerminalNode {
@@ -49694,6 +49702,10 @@ func (s *LikePredicateContext) NOT() antlr.TerminalNode {
 
 func (s *LikePredicateContext) ESCAPE() antlr.TerminalNode {
 	return s.GetToken(RelationalParserESCAPE, 0)
+}
+
+func (s *LikePredicateContext) STRING_LITERAL() antlr.TerminalNode {
+	return s.GetToken(RelationalParserSTRING_LITERAL, 0)
 }
 
 func (s *LikePredicateContext) EnterRule(listener antlr.ParseTreeListener) {
@@ -49951,13 +49963,9 @@ func (p *RelationalParser) Predicate() (localctx IPredicateContext) {
 		{
 			p.SetState(2495)
 
-			var _m = p.Match(RelationalParserSTRING_LITERAL)
+			var _x = p.Constant()
 
-			localctx.(*LikePredicateContext).pattern = _m
-			if p.HasError() {
-				// Recognition error - abort rule
-				goto errorExit
-			}
+			localctx.(*LikePredicateContext).pattern = _x
 		}
 		p.SetState(2498)
 		p.GetErrorHandler().Sync(p)
