@@ -60,8 +60,8 @@ func TestDescendingMetadataCorpusCost(t *testing.T) {
 	sort.Strings(structHeld)
 
 	const (
-		wantDescending = 14
-		wantStructHeld = 12
+		wantDescending = 15
+		wantStructHeld = 13
 	)
 	if len(descending) != wantDescending || len(structHeld) != wantStructHeld {
 		t.Errorf("CQ-74's corpus cost drifted: %d files carry a descending resultMetadata "+

@@ -413,6 +413,9 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 
 	visitor := NewPlanVisitorWithTemplate(md, g.sessionTemplate())
 	logicalOp, buildErr := visitor.VisitQuery(q)
+	if buildErr == nil {
+		buildErr = rejectArrayAggOrderBy(q)
+	}
 	if buildErr != nil {
 		return nil, buildErr
 	}
@@ -867,6 +870,9 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// This runs before the explain-only split so every DML planning surface has
 	// identical correct-or-loud semantics.
 	if err := rejectWindowedAggregate(dml); err != nil {
+		return nil, err
+	}
+	if err := rejectArrayAggOrderBy(dml); err != nil {
 		return nil, err
 	}
 
@@ -7607,7 +7613,7 @@ func extractFunctionNameFromCall(fc antlrgen.IFunctionCallContext) string {
 
 func isAllowedFunction(name string) bool {
 	switch name {
-	case "COUNT", "SUM", "MIN", "MAX", "AVG",
+	case "COUNT", "SUM", "MIN", "MAX", "AVG", "ARRAY_AGG",
 		"CASE", "CAST", "IF",
 		"CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP", "LOCALTIME",
 		"CURRENT_USER",

@@ -15,25 +15,16 @@ import (
 // vanish without disturbing, whereas a diff of these counts says exactly what
 // upstream changed. Update it in the same commit as the re-sync.
 // The census covers the files that PARSE, so its file count is the corpus total
-// minus the parse-level negatives: 238 - 25 = 213. The three constants are
+// minus the parse-level negatives: 240 - 25 = 215. The three constants are
 // asserted against each other below so they cannot drift apart.
-const pinnedCensus = "files=213 " +
-	"blocks{copy_block=4,include=25,options=62,schema_template=190,setup=208,test_block=330,transaction_setups=17} " +
-	"queries=3052 " +
-	"commands{load schema template=9,query=3052,set schema state=7} " +
-	"configs{count=157,debugger=3,error=273,explain=1155,explainContains=50," +
-	"initialVersionAtLeast=108,initialVersionLessThan=108,maxRows=38,result=1778," +
-	"resultMetadata=312,setup=21,setupReference=65,supported_version=301,unorderedResult=614} " +
-	"tags{!a=3,!b=8,!current_version=23,!f=14,!ignore=48,!in=5,!l=458,!n=10,!not_null=470," +
-	"!null=327,!pos=137,!r=3,!randomStr=15,!sc=1,!uuid=180,!v16=216,!v32=46,!v64=26} " +
-	"rows=6357 cells=14037 positional_cells=5923 segments=387 includes=25"
+const pinnedCensus = "files=215 blocks{copy_block=4,include=25,options=64,schema_template=192,setup=210,test_block=340,transaction_setups=17} queries=3152 commands{load schema template=9,query=3152,set schema state=7} configs{count=161,debugger=3,error=304,explain=1160,explainContains=50,initialVersionAtLeast=108,initialVersionLessThan=108,maxRows=39,result=1841,resultMetadata=318,setup=21,setupReference=65,supported_version=301,unorderedResult=614} tags{!a=3,!b=8,!current_version=23,!f=14,!ignore=48,!in=5,!l=458,!n=10,!not_null=470,!null=330,!pos=137,!r=3,!randomStr=15,!sc=1,!uuid=186,!v16=216,!v32=46,!v64=26} rows=6428 cells=14149 positional_cells=6008 segments=387 includes=25"
 
 // pinnedFileCount is asserted separately from the census so that a corpus that
 // gained or lost files fails with an obvious message rather than a 900-column
 // string diff.
-const pinnedFileCount = 238
+const pinnedFileCount = 240
 
-// pinnedParseLevelNegatives is how many of those 238 the parser must refuse.
+// pinnedParseLevelNegatives is how many of those 240 the parser must refuse.
 const pinnedParseLevelNegatives = 25
 
 // TestCorpusParses is the gate: every vendored file is parsed, and each one

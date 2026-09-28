@@ -73,6 +73,9 @@ type plannerOptions struct {
 // in both engines. Rejecting here would fail queries Java accepts.
 func plannerOptionsFrom(o *api.Options) plannerOptions {
 	po := plannerOptions{config: cascades.DefaultPlannerConfiguration()}
+	// Java's buildRecordQueryPlannerConfiguration plans every SQL query with
+	// PREFER_INDEX.
+	po.config.IndexScanPreference = cascades.PreferIndex
 	if o == nil {
 		return po
 	}

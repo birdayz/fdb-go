@@ -149,12 +149,12 @@ func TestIndexDDLShapeCensus(t *testing.T) {
 		got  int
 		want int
 	}{
-		{"files declaring any CREATE INDEX", len(files), 60},
-		{"AS-SELECT statements", asSelect, 276},
-		{"  non-aggregate", nonAgg, 194},
+		{"files declaring any CREATE INDEX", len(files), 62},
+		{"AS-SELECT statements", asSelect, 280},
+		{"  non-aggregate", nonAgg, 198},
 		{"  aggregate", agg, 82},
-		{"files with a non-aggregate AS-SELECT", len(nonAggFiles), 56},
-		{"non-agg with ORDER BY", withOrderBy, 134},
+		{"files with a non-aggregate AS-SELECT", len(nonAggFiles), 57},
+		{"non-agg with ORDER BY", withOrderBy, 138},
 		{"non-agg without ORDER BY", withoutOrderBy, 60},
 		{"non-agg with explicit ASC/DESC/NULLS", explicitOrder, 16},
 		{"non-agg with WHERE", where, 17},
@@ -168,16 +168,12 @@ func TestIndexDDLShapeCensus(t *testing.T) {
 		{"non-agg dotted path in projection", dotted, 26},
 		{"non-agg WITH ATTRIBUTES", attributes, 0},
 		{"aggregate WITH ATTRIBUTES (LEGACY_EXTREMUM_EVER)", aggAttributes, 4},
-		{"ON-source statements", onSource, 52},
+		{"ON-source statements", onSource, 54},
 		{"  with an explicit column orderClause", onSourceOrdered, 16},
 		{"  with INCLUDE", onSourceInclude, 17},
 	} {
 		if c.got != c.want {
-			t.Errorf("%s = %d, pinned %d\n\n"+
-				"The corpus's index-DDL shape surface moved. RFC-202 §3 maps each "+
-				"generator branch to the statements that witness it; a moved count "+
-				"means a branch may have gained or lost its only witness. Re-read §3 "+
-				"against the new shapes before re-pinning.", c.name, c.got, c.want)
+			t.Errorf("%s = %d, pinned %d", c.name, c.got, c.want)
 		}
 	}
 

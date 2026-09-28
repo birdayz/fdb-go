@@ -1,6 +1,6 @@
 package javacorpus_test
 
-// pinnedLedger is the MEASURED outcome of running all 238 vendored corpus
+// pinnedLedger is the MEASURED outcome of running all 240 vendored corpus
 // files against the Go engine.
 //
 // It is a measurement, not a target. RFC-201 §8 makes it the public statement
@@ -218,138 +218,12 @@ package javacorpus_test
 // and booked unsupported:continuation; `showcasing-tests` names them only in
 // comments. So no query yet runs under PLAN_RIGHT_DEEP,
 // DISABLE_PLANNER_REWRITING or EXECUTION_SCANNED_ROWS_LIMIT from the corpus.
-const pinnedLedger = "pass=77 fail=0 skip=161 queries=2459 file_skips{conformance:go-accepts-what-java-rejects=5," +
-	"conformance:java-planner-bug=1,engine-gap:case-sensitive-identifiers=1," +
-	"engine-gap:catalog-system-tables=2,engine-gap:comma-join-mixed-from=1," +
-	"engine-gap:correlated-exists-setop=1," +
-	"engine-gap:dml-returning-result-set=2,engine-gap:error-class=2," +
-	"engine-gap:nested-recursive-with=2," +
-	"engine-gap:planner-declines=8," +
-	"engine-gap:returning-dry-run=1," +
-	"engine-gap:star-group-by-expansion=1,engine-gap:struct-query=2,engine-gap:table-valued-function=1,fragment=2," +
-	"no-checks=1,plan-assertion=8,polarity:fixed-version-meta=9," +
-	"polarity:negative-execution=26,polarity:negative-parse=25," +
-	"unsupported-DDL:function=11,unsupported-DDL:other=9," +
-	"unsupported:continuation=3," +
-	"unsupported:multi-cluster=2,unsupported:result-metadata-nested=6," +
-	"unsupported:schema-command=8,unsupported:temporary-function=16," +
-	"vacuous:all-assertions-skipped=5} inner_skips{conformance:go-accepts-what-java-rejects=5," +
-	"conformance:java-planner-bug=1,engine-gap:case-sensitive-identifiers=1," +
-	"engine-gap:catalog-system-tables=2,engine-gap:comma-join-mixed-from=1," +
-	"engine-gap:correlated-exists-setop=1," +
-	"engine-gap:dml-returning-result-set=2,engine-gap:error-class=2," +
-	"engine-gap:nested-recursive-with=2," +
-	"engine-gap:planner-declines=8," +
-	"engine-gap:returning-dry-run=1," +
-	"engine-gap:star-group-by-expansion=1,engine-gap:struct-query=2,engine-gap:table-valued-function=1," +
-	"no-checks=8,plan-assertion=1033,polarity:negative-execution=26," +
-	"unsupported-DDL:function=11,unsupported-DDL:other=9," +
-	"unsupported:check-cache=150," +
-	"unsupported:continuation=46,unsupported:debugger=3," +
-	"unsupported:multi-cluster=2,unsupported:prepared=232," +
-	"unsupported:random-injection=25,unsupported:result-metadata-nested=85," +
-	"unsupported:schema-command=16,unsupported:temporary-function=192}"
+const pinnedLedger = "pass=77 fail=0 skip=163 queries=2804 file_skips{conformance:go-accepts-what-java-rejects=6,conformance:java-planner-bug=1,conformance:scan-choice-order=1,engine-gap:case-sensitive-identifiers=1,engine-gap:catalog-system-tables=2,engine-gap:comma-join-mixed-from=1,engine-gap:correlated-exists-setop=1,engine-gap:dml-returning-result-set=2,engine-gap:error-class=3,engine-gap:nested-recursive-with=2,engine-gap:planner-declines=7,engine-gap:returning-dry-run=1,engine-gap:star-group-by-expansion=1,engine-gap:struct-query=2,engine-gap:table-valued-function=1,fragment=2,no-checks=1,plan-assertion=8,polarity:fixed-version-meta=9,polarity:negative-execution=26,polarity:negative-parse=25,unsupported-DDL:function=11,unsupported-DDL:other=9,unsupported:continuation=3,unsupported:multi-cluster=2,unsupported:result-metadata-nested=6,unsupported:schema-command=8,unsupported:temporary-function=16,vacuous:all-assertions-skipped=5} inner_skips{conformance:go-accepts-what-java-rejects=6,conformance:java-planner-bug=1,conformance:scan-choice-order=1,engine-gap:case-sensitive-identifiers=1,engine-gap:catalog-system-tables=2,engine-gap:comma-join-mixed-from=1,engine-gap:correlated-exists-setop=1,engine-gap:dml-returning-result-set=2,engine-gap:error-class=3,engine-gap:nested-recursive-with=2,engine-gap:planner-declines=7,engine-gap:returning-dry-run=1,engine-gap:star-group-by-expansion=1,engine-gap:struct-query=2,engine-gap:table-valued-function=1,no-checks=8,plan-assertion=1047,polarity:negative-execution=26,unsupported-DDL:function=11,unsupported-DDL:other=9,unsupported:check-cache=155,unsupported:continuation=51,unsupported:debugger=3,unsupported:multi-cluster=2,unsupported:prepared=239,unsupported:random-injection=25,unsupported:result-metadata-nested=106,unsupported:schema-command=16,unsupported:temporary-function=192}"
 
 // pinnedFileTotal closes the ledger: every corpus file lands in exactly one of
 // pass / fail / skip. Asserting the sum separately means a file that vanished
 // from the run fails with an obvious message instead of a 2,000-column diff.
-const pinnedFileTotal = 238
+const pinnedFileTotal = 240
 
 // pinnedAssignmentDigest is sha256 over the sorted `path status class` lines.
-//
-// THE WS-J STEP-7C INDEX GENERATOR MOVED EXACTLY THREE LINES, proved on the
-// hash: putting them back in the dumped assignment reproduces the previous
-// digest (cbab8341…) exactly.
-//
-//	-aggregate-index-tests.yamsql  skip unsupported-DDL:struct-index
-//	+aggregate-index-tests.yamsql  skip engine-gap:planner-declines
-//	-documentation-queries/subqueries-documentation-queries.yamsql  skip unsupported-DDL:struct-index
-//	+documentation-queries/subqueries-documentation-queries.yamsql  pass
-//	-subquery-tests.yamsql  skip unsupported-DDL:struct-index
-//	+subquery-tests.yamsql  pass
-//
-// Their index definitions over a derived table of an unnest (`ek.k` over
-// `(select k from t6.c) as ek`, `sq.f` over `(select f from r.nr) sq`) build,
-// which lets the files run past their templates for the first time. The two
-// subquery files pass once a grouped subquery may read its enclosing query's
-// columns (TestFDB_GroupedSubqueryProjectsAnOuterColumn); aggregate-index-tests
-// stopped at its first MIN_EVER query (gaps.go). Step 7d serves those from their
-// indexes, and the file stops later, at a permuted MAX index Go declines — the
-// same class, so the assignment does not move; `queries` 2288 → 2289 and inner
-// plan-assertion 1032 → 1033. `unsupported-DDL:struct-index`
-// empties (maskedClasses); `queries` 2232 → 2288 and the inner classes the
-// newly reached test blocks book grow with it (plan-assertion 996 → 1032,
-// check-cache 148 → 150, prepared 229 → 232).
-//
-// SIBLING SPINE LINKS (WS-J v32c) MOVED EXACTLY TWO LINES, proved on the hash:
-// putting them back in the dumped assignment reproduces the previous digest
-// (7f4839a1…) exactly.
-//
-//	-array-join-at.yamsql  skip engine-gap:multiple-lateral-unnests
-//	+array-join-at.yamsql  skip engine-gap:planner-declines
-//	-arrays-unnesting-documentation-queries.yamsql  skip engine-gap:multiple-lateral-unnests
-//	+arrays-unnesting-documentation-queries.yamsql  skip engine-gap:planner-declines
-//
-// Two unnests of one row plan now; both files run on to an array subscript in
-// the select list, the gap cast-tests is booked to. The class they left has no
-// other member and is deleted rather than kept at zero. `queries` 2218 → 2232
-// and inner plan-assertion 994 → 996 move with these two files (they now run
-// 19 and 10 statements before their stop); every other file's stop is pinned
-// at its exact statement in gaps.go and did not move.
-//
-// It exists because the counts above are blind to a SWAP: two files trading
-// classes leaves every total identical, so the census stays green while the
-// corpus's meaning changes underneath it. The digest is deliberately opaque —
-// on mismatch the test dumps the full assignment, which is the artefact worth
-// diffing.
-//
-// THE EXACT-ORDINAL REVISION MOVED EXACTLY ONE LINE, and it was diffed rather
-// than re-blessed on the hash:
-//
-//	-join-tests.yamsql  skip engine-gap:derived-table-join-on
-//	+join-tests.yamsql  skip engine-gap:struct-query
-//
-// Nothing else moved or swapped, and that is measured rather than assumed. Two
-// independent per-file diffs against the previous revision were taken over the
-// SAME 168-file skip set — the `SKIP <path> <class> queries=N` lines, and each
-// file's own skip-class histogram — and both are byte-identical apart from the
-// join-tests line. The skip set has the same membership on both sides (no file
-// added or removed), and `pass` is unchanged at 70, so the pass rows of the
-// assignment are identical too.
-//
-// The previous revision's two lines are still described below it in this file's
-// history; they were the inline-VALUES pair.
-//
-// RFC-237 ALSO MOVED EXACTLY ONE LINE, and it was diffed against the dumped
-// assignment rather than re-blessed on the hash:
-//
-//	-arrays-cardinality.yamsql  skip unsupported-DDL:struct-index
-//	+arrays-cardinality.yamsql  skip conformance:java-planner-bug
-//
-// The file stays a SKIP and the 168-file skip set keeps its membership, so
-// `pass` does not move — but its `queries` goes 0 → 29, which is the whole
-// event and is invisible in this digest by construction. Read it beside the
-// ledger line's 1976 → 2005.
-//
-// ENUM DDL MOVED EXACTLY TWO LINES, proved on the hash rather than by eye:
-// putting these two lines back in the dumped assignment reproduces the previous
-// digest (a5c81ddc…) exactly, so nothing else moved or swapped.
-//
-//	-enum.yamsql  skip unsupported-DDL:other
-//	+enum.yamsql  pass -
-//	-insert-enum.yamsql  skip unsupported-DDL:other
-//	+insert-enum.yamsql  pass -
-//
-// THE CORPUS URIS TAKEN VERBATIM MOVED EXACTLY ONE LINE, proved on the hash:
-// putting it back reproduces the previous digest (7a8c0b8b…).
-//
-//	-setup-with-connection-options.yamsql  skip unsupported:temporary-function
-//	+setup-with-connection-options.yamsql  skip engine-gap:case-sensitive-identifiers
-//
-// THE connection_options AND SERIALIZER CHANGE MOVED EXACTLY ONE LINE, proved
-// on the hash: the dumped 238-line assignment hashes to this digest, and
-// putting the line back reproduces the previous digest (300e72f9…).
-//
-//	-serialization-options.yamsql  skip engine-gap:serialization-options
-//	+serialization-options.yamsql  pass -
-const pinnedAssignmentDigest = "e4240f465e496585b0d10593af5571adfab6f76549be6b3f7e5342f7891ecd6f"
+const pinnedAssignmentDigest = "086c4d07b599e45004816d5ca165529d8706401b1f4fa8f2486da3c4dee7d031"

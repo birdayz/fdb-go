@@ -567,11 +567,7 @@ func semanticColumnFromValidatedExactType(name string, typ values.Type) (semanti
 		}
 		return column, true
 	case *values.ArrayType:
-		if typed.ElementType == nil || typed.ElementType.IsNullable() {
-			// semantic.Column carries the array container's nullability but has
-			// no independent nullable-element bit. Its reverse bridge always
-			// forces array elements NOT NULL, so accepting a nullable element
-			// here would silently change the exact type.
+		if typed.ElementType == nil {
 			return semantic.Column{}, false
 		}
 		element, exact := semanticColumnFromValidatedExactType(name, typed.ElementType)
@@ -582,6 +578,7 @@ func semanticColumnFromValidatedExactType(name string, typ values.Type) (semanti
 		}
 		element.Id = semantic.FromNormalized(name)
 		element.IsArray = true
+		element.ElementNullable = typed.ElementType.IsNullable()
 		element.Nullable = typed.Nullable
 		return element, true
 	default:
@@ -4077,6 +4074,17 @@ func resolveProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 			break
 		}
 		if e == nil {
+			// A bare name that is no column but a FROM source is the row.
+			if i < len(sq.projCols) && !sq.projCols[i].star && sq.projCols[i].bound == nil && !sq.projCols[i].qualified {
+				if v, err := resolver.ResolveIdentifier(semantic.Identifier{}, semantic.FromNormalized(sq.projCols[i].bare)); err == nil {
+					if row, ok := v.(*values.RecordConstructorValue); ok {
+						vals[i] = row
+						if i < len(proj.IsComputed) {
+							proj.IsComputed[i] = true
+						}
+					}
+				}
+			}
 			continue
 		}
 		v, err := resolver.WalkExpressionForProjection(e)
@@ -4406,6 +4414,17 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		}
 		for _, idx := range idxs {
 			operands[idx] = v
+		}
+		if len(ac.aggOrderBy) > 0 {
+			for _, ob := range ac.aggOrderBy {
+				if _, err := resolver.WalkExpression(ob); err != nil {
+					if mapped := mapPredicateWalkError(err); mapped != nil {
+						return mapped
+					}
+					return err
+				}
+			}
+			return api.NewError(api.ErrCodeUnsupportedQuery, "an ORDER BY clause is not supported for ARRAY_AGG()")
 		}
 	}
 	agg.AggregateOperands = operands

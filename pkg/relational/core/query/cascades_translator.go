@@ -7977,6 +7977,11 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 				t.setTranslateErr(api.NewError(api.ErrCodeUnknownType, "Cannot resolve the argument type of ARRAY_AGG()"))
 				return nil
 			}
+			// Java's visitSelectElements refuses an array-of-array element.
+			if values.IsArray(spec.Operand.Type()) {
+				t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedOperation, "nested arrays are not supported"))
+				return nil
+			}
 		}
 		if spec.Function == expressions.AggBitmapConstructAgg && spec.Operand != nil {
 			// Java's operator map holds BITMAP_CONSTRUCT_AGG over INT and LONG

@@ -214,6 +214,9 @@ func planPhysicalForMetaData(
 
 	visitor := NewPlanVisitor(md)
 	logicalOp, buildErr := visitor.VisitQuery(q)
+	if buildErr == nil {
+		buildErr = rejectArrayAggOrderBy(q)
+	}
 	if buildErr != nil {
 		return nil, nil, buildErr
 	}
@@ -421,6 +424,9 @@ func planPhysicalDMLWithMetadata(
 	// so the metadata-only harness must reject it before building the logical
 	// plan just like production does.
 	if err := rejectWindowedAggregate(dml); err != nil {
+		return nil, err
+	}
+	if err := rejectArrayAggOrderBy(dml); err != nil {
 		return nil, err
 	}
 

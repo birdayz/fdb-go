@@ -563,6 +563,11 @@ func exactLogicalAggregateCallType(aggregate *logical.LogicalAggregate, index in
 			return nil, fmt.Errorf("aggregate call %d has no exact operand type", index)
 		}
 		return values.WithNullability(aggregate.AggregateOperands[index].Type(), true), nil
+	case "ARRAY_AGG":
+		if index >= len(aggregate.AggregateOperands) || aggregate.AggregateOperands[index] == nil {
+			return nil, fmt.Errorf("aggregate call %d has no exact operand type", index)
+		}
+		return values.NewArrayAggValue(aggregate.AggregateOperands[index], call.IgnoreNulls, call.Limit).Type(), nil
 	default:
 		return nil, fmt.Errorf("aggregate call %d uses unsupported function %q", index, call.Func)
 	}

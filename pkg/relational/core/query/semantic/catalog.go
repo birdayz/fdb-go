@@ -90,6 +90,10 @@ type Column struct {
 	// When true, Type is the ELEMENT type string.
 	IsArray bool
 
+	// ElementNullable is an ARRAY whose element may be NULL (ARRAY_AGG under
+	// RESPECT NULLS); a DDL array column's element never is.
+	ElementNullable bool
+
 	// Ephemeral marks a column that is resolvable BY NAME but invisible to
 	// star expansion — Java's Expression.asEphemeral() attribute, applied to
 	// the __ROW_VERSION pseudo-field appended by generateTableAccess

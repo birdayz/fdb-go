@@ -633,6 +633,9 @@ func parseAsSelectIndexDefinition(def *antlrgen.IndexAsSelectDefinitionContext, 
 	// is accepted, `FROM S.w` refused).
 	visitor := NewPlanVisitorWithTemplate(md, b.Name())
 	op, err := visitor.VisitQueryTerm(qt)
+	if err == nil {
+		err = rejectArrayAggOrderBy(qt)
+	}
 	if err != nil {
 		return fmt.Errorf("index %q: %w", indexName, err)
 	}
@@ -683,8 +686,8 @@ func rejectWindowedAggregate(node antlr.Tree) error {
 	return nil
 }
 
-// validateArrayAggCalls applies Java's visitAggregateWindowedFunction checks to
-// every ARRAY_AGG call, in its order: aggregator, OVER, LIMIT, ORDER BY.
+// validateArrayAggCalls applies Java's visitAggregateWindowedFunction checks
+// that precede argument resolution: aggregator, OVER, LIMIT.
 func validateArrayAggCalls(node antlr.Tree) error {
 	if node == nil {
 		return nil
@@ -699,12 +702,26 @@ func validateArrayAggCalls(node antlr.Tree) error {
 		if _, _, err := expr.ArrayAggOptions(awf); err != nil {
 			return err
 		}
-		if awf.OrderByClause() != nil {
-			return api.NewError(api.ErrCodeUnsupportedQuery, "an ORDER BY clause is not supported for ARRAY_AGG()")
-		}
 	}
 	for i := 0; i < node.GetChildCount(); i++ {
 		if err := validateArrayAggCalls(node.GetChild(i)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// rejectArrayAggOrderBy runs after the logical build, because Java resolves
+// the arguments before refusing an in-call ORDER BY.
+func rejectArrayAggOrderBy(node antlr.Tree) error {
+	if node == nil {
+		return nil
+	}
+	if awf, ok := node.(*antlrgen.AggregateWindowedFunctionContext); ok && awf.ARRAY_AGG() != nil && awf.OrderByClause() != nil {
+		return api.NewError(api.ErrCodeUnsupportedQuery, "an ORDER BY clause is not supported for ARRAY_AGG()")
+	}
+	for i := 0; i < node.GetChildCount(); i++ {
+		if err := rejectArrayAggOrderBy(node.GetChild(i)); err != nil {
 			return err
 		}
 	}

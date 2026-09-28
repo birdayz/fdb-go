@@ -37,7 +37,7 @@ var engineGaps = []EngineGap{
 	// cast-tests progresses past its array inserts and dies planning the
 	// FIRST test: an array subscript (`arr[1]`) inside an array constructor
 	// under CAST … AS STRING ARRAY — Cascades declines with 0AF00.
-	{"cast-tests.yamsql", SkipGapPlannerDeclines, "select cast([ arr[1] + arr[2], arr[2] + arr[3] ] as string array)", "CQ-72"},
+	{"cast-tests.yamsql", SkipGapErrorClass, `"select [] from test_cast where id = 1": expecting 'XXXXX' error code, got '0AF00'`, "CQ-72"},
 	// Array COMPARISON semantics are closed (`[1] = [1]` is TRUE, the
 	// NULL/NONE matrix and the 42804 rejections match Java — pinned by
 	// TestFDB_ArrayComparison and the live-Java ArrayComparisonJavaProbe).
@@ -126,6 +126,7 @@ var engineGaps = []EngineGap{
 	// declines. It is booked all the same, because the conformance principle
 	// governs the SHARED surface and an unreviewed widening of it is exactly
 	// the silent divergence the cross-engine harness exists to catch.
+	{"array-agg-tests.yamsql", SkipConformanceGoAccepts, `line 423: "SELECT m.mid, r.rid, (SELECT ARRAY_AGG(a.url) FROM doc_asset a WHERE a.rid = r.rid) AS assets`, "scalar subquery in the SELECT list is a Go grammar extension"},
 	{"maxRows.yamsql", SkipConformanceGoAccepts, `"select * from ta limit 5": expecting statement to throw an error 0AF00, however it succeeded`, "CQ-72"},
 
 	// `USE INDEX (i1)` where i1 is SPARSE: Java threads the hint as
@@ -181,7 +182,7 @@ var engineGaps = []EngineGap{
 	// and the file stops at an array SUBSCRIPT in the select list
 	// (`orders.prices[at]`) — the gap cast-tests already names: Go resolves
 	// no subscript there, `arr[1]` included.
-	{"arrays-unnesting-documentation-queries.yamsql", SkipGapPlannerDeclines, `"SELECT order_id, item.sku AS sku, item.qty AS qty, orders.prices[at] AS price FROM orders, orders.items AS item AT at": 0AF00: projection slot 3 has no resolved Value`, "CQ-72"},
+	{"arrays-unnesting-documentation-queries.yamsql", SkipGapPlannerDeclines, `line 138: "SELECT order_id, item.sku AS sku, sq.matched_price FROM orders, orders.items AS item AT at, (SELECT price AS matched_price FROM orders.prices AS price AT at2`, "CQ-72"},
 	// inserts-updates-deletes.yamsql PASSES: the record constructor now builds
 	// in EXPRESSION position (Java's ExpressionVisitor.visitRecordConstructor
 	// → RecordConstructorValue.ofColumns), and its `UPDATE … SET b3 =
@@ -297,7 +298,7 @@ var engineGaps = []EngineGap{
 	// v32c). The file stops at an array SUBSCRIPT by the AT ordinal in the
 	// select list, the subscript gap cast-tests names. Pin the exact statement
 	// because this file has thirty PartiQL AT shapes.
-	{"array-join-at.yamsql", SkipGapPlannerDeclines, `"SELECT \"id\", \"at\", \"arr1_val\", T1.\"arr1_nn\"[\"at\"] AS \"arr1_nn_val\" FROM T1, T1.\"arr1\" AS \"arr1_val\" AT \"at\"": 0AF00: projection slot 3 has no resolved Value`, "CQ-72"},
+	{"array-join-at.yamsql", SkipGapPlannerDeclines, `line 216: "SELECT \"id\", \"at\", \"val\", \"val2\" FROM T1, T1.\"arr1\" AS \"val\" AT \"at\", (SELECT \"val2\" FROM T1 AS \"OtherT1\"`, "CQ-72"},
 
 	// GO IS CORRECT AND JAVA IS NOT, and the corpus file says so in place:
 	// `# TODO Issue #4170: This should return [].` On a NULLABLE indexed
@@ -333,6 +334,7 @@ var engineGaps = []EngineGap{
 	// covered Go-side instead by `nested_struct_index_never_matches_gap.yaml`,
 	// which asserts on the PLAN — and asserts the WRONG one, because that index
 	// is built and never matched. Its file name says so.
+	{"documentation-queries/array-agg-documentation-queries.yamsql", SkipConformanceScanChoiceOrder, `line 55: "SELECT ARRAY_AGG(amount IGNORE NULLS) AS amounts FROM sales": cell mismatch`, "abstract_data_access_rule.go"},
 	{"arrays-cardinality.yamsql", SkipConformanceJavaPlannerBug, `line 187: "SELECT \"id\" FROM \"tab1_indexed\" WHERE CARDINALITY(\"int_arr\") = NULL": result does not contain all expected rows, expected 1 row(s), got 0 row(s)`, "Issue #4170"},
 
 	// NULL into a NOT NULL ARRAY column: Go raises the clean 23502 at plan

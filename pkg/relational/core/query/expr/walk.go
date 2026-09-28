@@ -266,6 +266,8 @@ func (r *Resolver) walkAtomInner(atom antlrgen.IExpressionAtomContext, pos walkP
 		// constructors need dedicated support (RecordConstructorValue in
 		// cascades) and aren't wired yet.
 		return r.walkRecordConstructorInner(a.RecordConstructor(), pos)
+	case *antlrgen.SubscriptExpressionContext:
+		return r.walkSubscript(a)
 	case *antlrgen.MathExpressionAtomContext:
 		// `a + b`, `a * b`, etc. Recurse on both operands and
 		// resolve via ResolveArithmetic. MOD / DIV / MODULE +
@@ -422,6 +424,33 @@ func (r *Resolver) walkFunctionCall(fc antlrgen.IFunctionCallContext) (values.Va
 		args = []values.Value{v}
 	}
 	return r.ResolveFunctionCall(fcat, semantic.NewUnquoted(name), isStar, args)
+}
+
+// walkSubscript is `base[index]`, Java's SubscriptValueFn: the index promotes
+// to INT (22000 if it cannot) and the base must be an array.
+func (r *Resolver) walkSubscript(ctx *antlrgen.SubscriptExpressionContext) (values.Value, error) {
+	index, err := r.walkAtom(ctx.GetIndex())
+	if err != nil {
+		return nil, err
+	}
+	base, err := r.walkAtom(ctx.GetBase())
+	if err != nil {
+		return nil, err
+	}
+	if it := index.Type(); it != nil && it.Code() != values.TypeCodeUnknown && it.Code() != values.TypeCodeNull {
+		if values.MaximumType(it, values.NotNullInt) == nil {
+			return nil, api.NewError(api.ErrCodeCannotConvertType,
+				"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.")
+		}
+	}
+	if !values.IsArray(base.Type()) {
+		return nil, api.NewError(api.ErrCodeInternalError, "subscript base is not an array")
+	}
+	elem := values.Type(values.UnknownType)
+	if at, ok := base.Type().(*values.ArrayType); ok && at.ElementType != nil {
+		elem = values.WithNullability(at.ElementType, true)
+	}
+	return values.NewSubscriptValue(base, index, elem), nil
 }
 
 // walkArrayAgg is ARRAY_AGG(expr ...); the call's shape was validated by the

@@ -35,6 +35,9 @@ func (p *existsSubqueryPlanner) bindQuery(q antlrgen.IQueryContext) (*boundQuery
 		return nil, err
 	}
 	plan, err := visitor.VisitQuery(q)
+	if err == nil {
+		err = rejectArrayAggOrderBy(q)
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -348,13 +348,10 @@ func TestPlannerOptions_Defaults(t *testing.T) {
 		if len(po.disabledRules) != 0 {
 			t.Errorf("%s: disabled rules = %v, want none", name, po.disabledRules)
 		}
-		// reflect.DeepEqual, not ==: PlannerConfiguration carries the
-		// readable-index view, which holds a set and so makes the struct
-		// non-comparable. That is deliberate — a set is the right shape for an
-		// allow-list — and a stray `==` on the config now fails to compile
-		// rather than comparing a pointer-ish field by accident.
-		if !reflect.DeepEqual(po.config, cascades.DefaultPlannerConfiguration()) {
-			t.Errorf("%s: config = %+v, want the Cascades default", name, po.config)
+		want := cascades.DefaultPlannerConfiguration()
+		want.IndexScanPreference = cascades.PreferIndex // Java's SQL configuration
+		if !reflect.DeepEqual(po.config, want) {
+			t.Errorf("%s: config = %+v, want %+v", name, po.config, want)
 		}
 		if po.config.ShouldJoinRightDeep {
 			t.Errorf("%s: right-deep must default OFF (Java's JOIN_RIGHT_DEEP_MASK is unset)", name)

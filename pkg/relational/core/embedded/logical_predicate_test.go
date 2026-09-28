@@ -1697,18 +1697,14 @@ func TestDerivedInlineValuesScopeUsesExactLogicalRow(t *testing.T) {
 	})
 }
 
-func TestSemanticColumnFromExactTypeDeclinesUnrepresentableArrayElementNullability(t *testing.T) {
+func TestSemanticColumnFromExactTypeCarriesElementNullability(t *testing.T) {
 	t.Parallel()
-
-	representable := values.NewArrayType(true, values.NotNullLong)
-	column, ok := semanticColumnFromExactType("XS", representable)
-	if !ok || !column.IsArray || column.Type != "BIGINT" || !column.Nullable {
-		t.Fatalf("representable array = %+v, ok=%v; want nullable BIGINT ARRAY", column, ok)
-	}
-
-	unrepresentable := values.NewArrayType(false, values.NullableLong)
-	if column, ok := semanticColumnFromExactType("XS", unrepresentable); ok {
-		t.Fatalf("nullable-element array was published as exact semantic column: %+v", column)
+	for _, elem := range []values.Type{values.NotNullLong, values.NullableLong} {
+		arr := values.NewArrayType(true, elem)
+		column, ok := semanticColumnFromExactType("XS", arr)
+		if !ok || !column.IsArray || column.Type != "BIGINT" || column.ElementNullable != elem.IsNullable() {
+			t.Fatalf("array of %v = %+v, ok=%v", elem, column, ok)
+		}
 	}
 }
 
@@ -2490,9 +2486,6 @@ func TestBoundDerivedSourcePreservesFailureClass(t *testing.T) {
 		{"union_type", logical.NewUnion([]logical.LogicalOperator{
 			projection(values.NotNullLong), projection(values.NotNullString),
 		}, false), api.ErrCodeUnionIncompatibleColumns},
-		{"unrepresentable_nullable_array_element", projection(&values.ArrayType{
-			ElementType: values.NullableLong,
-		}), api.ErrCodeUnsupportedQuery},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

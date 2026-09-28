@@ -275,9 +275,45 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 func (r *Resolver) ResolveIdentifierPath(segs []semantic.Identifier) (values.Value, error) {
 	col, src, accessors, err := r.analyzer.ResolveColumnRefPath(r.scope, segs)
 	if err != nil {
+		var notFound *semantic.ColumnNotFoundError
+		if len(segs) == 1 && errors.As(err, &notFound) {
+			if row, ok, rowErr := r.resolveWholeRow(segs[0]); ok || rowErr != nil {
+				return row, rowErr
+			}
+		}
 		return nil, err
 	}
 	return r.resolvedPathValue(segs, col, src, accessors)
+}
+
+// resolveWholeRow resolves a bare identifier that names no column but a FROM
+// source to that source's row as a struct, as Java's resolveIdentifier falls
+// back to the quantifier (`SELECT t FROM t`).
+func (r *Resolver) resolveWholeRow(id semantic.Identifier) (values.Value, bool, error) {
+	if r.scope == nil {
+		return nil, false, nil
+	}
+	for _, src := range r.scope.Sources() {
+		if src.Table == nil || !src.Alias.EqualsIgnoreQuoting(id) {
+			continue
+		}
+		var fields []values.RecordConstructorField
+		for _, col := range src.Table.Columns() {
+			if col.Ephemeral {
+				continue
+			}
+			v, err := r.ResolveSourceQualifiedIdentifierPath([]semantic.Identifier{src.Alias, col.Id})
+			if err != nil {
+				return nil, true, err
+			}
+			fields = append(fields, values.RecordConstructorField{Name: col.Id.Name(), Value: v})
+		}
+		if len(fields) == 0 {
+			return nil, false, nil
+		}
+		return values.NewRecordConstructorValue(fields...), true, nil
+	}
+	return nil, false, nil
 }
 
 // ResolveCorrelatedIdentifierPath is ResolveIdentifierPath for a FROM item's
@@ -2242,8 +2278,8 @@ func columnCascadesType(col semantic.Column) values.Type {
 	// comparison gate requires the array types to match modulo OUTER
 	// nullability only — a nullable element type here made Go reject
 	// `arr = [1]` 42804 where live Java (4.12.11.0) returns rows.
-	if elem != nil && elem.Code() != values.TypeCodeUnknown && elem.IsNullable() {
-		elem = values.WithNullability(elem, false)
+	if elem != nil && elem.Code() != values.TypeCodeUnknown && elem.IsNullable() != col.ElementNullable {
+		elem = values.WithNullability(elem, col.ElementNullable)
 	}
 	return values.NewArrayType(col.Nullable, elem)
 }

@@ -2174,6 +2174,9 @@ func explainValueOrdinalsWithAliases(v Value, withOrdinals bool, aliases map[Cor
 			conds[i] = explainValueOrdinalsWithAliases(c, withOrdinals, aliases)
 		}
 		return "WHEN(" + strings.Join(conds, ", ") + ")"
+	case *SubscriptValue:
+		return explainValueOrdinalsWithAliases(cv.Source, withOrdinals, aliases) + "[" +
+			explainValueOrdinalsWithAliases(cv.Index, withOrdinals, aliases) + "]"
 	case *CardinalityValue:
 		// Java: ExplainTokens.addFunctionCall(FunctionNames.CARDINALITY, ...).
 		// Renders `cardinality(<child>)`, e.g. `cardinality(_.int_arr)`.

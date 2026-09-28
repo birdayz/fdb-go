@@ -375,9 +375,11 @@ func orderByLess(a, b driver.Value, ob orderByClause) (less, equal bool) {
 // aggSelectCol describes one column in a GROUP BY aggregate SELECT list.
 type aggSelectCol struct {
 	outName string // output column name
-	// aggIgnoreNulls and aggLimit are ARRAY_AGG's options.
+	// aggIgnoreNulls and aggLimit are ARRAY_AGG's options; aggOrderBy its
+	// in-call ORDER BY items, resolved and then refused.
 	aggIgnoreNulls bool
 	aggLimit       int
+	aggOrderBy     []antlrgen.IExpressionContext
 	// selectOrdinal is the immutable one-based position of a visible item in
 	// the SQL SELECT list. Internal aggregates harvested from HAVING, ORDER BY,
 	// or a wrapping expression keep zero. Reclassification may reorder
@@ -462,27 +464,37 @@ func checkCountStar(e *antlrgen.SelectExpressionElementContext) bool {
 	return awf.COUNT() != nil && awf.STAR() != nil
 }
 
-// selectElementArrayAggOptions reads ARRAY_AGG's options off a SELECT element
-// extractAggFunc accepted.
-func selectElementArrayAggOptions(e *antlrgen.SelectExpressionElementContext) (bool, int) {
+// selectElementArrayAggOptions reads ARRAY_AGG's options and in-call ORDER BY
+// items off a SELECT element extractAggFunc accepted.
+func selectElementArrayAggOptions(e *antlrgen.SelectExpressionElementContext) (bool, int, []antlrgen.IExpressionContext) {
 	pred, _ := e.Expression().(*antlrgen.PredicatedExpressionContext)
 	if pred == nil {
-		return false, values.ArrayAggNoLimit
+		return false, values.ArrayAggNoLimit, nil
 	}
 	fc, _ := pred.ExpressionAtom().(*antlrgen.FunctionCallExpressionAtomContext)
 	if fc == nil {
-		return false, values.ArrayAggNoLimit
+		return false, values.ArrayAggNoLimit, nil
 	}
 	agg, _ := fc.FunctionCall().(*antlrgen.AggregateFunctionCallContext)
 	if agg == nil {
-		return false, values.ArrayAggNoLimit
+		return false, values.ArrayAggNoLimit, nil
 	}
 	awf, _ := agg.AggregateWindowedFunction().(*antlrgen.AggregateWindowedFunctionContext)
 	if awf == nil {
-		return false, values.ArrayAggNoLimit
+		return false, values.ArrayAggNoLimit, nil
 	}
+	return arrayAggCallParts(awf)
+}
+
+func arrayAggCallParts(awf *antlrgen.AggregateWindowedFunctionContext) (bool, int, []antlrgen.IExpressionContext) {
 	ignore, limit, _ := expr.ArrayAggOptions(awf)
-	return ignore, limit
+	var orderBy []antlrgen.IExpressionContext
+	if ob, ok := awf.OrderByClause().(*antlrgen.OrderByClauseContext); ok && ob != nil {
+		for _, item := range ob.AllOrderByExpression() {
+			orderBy = append(orderBy, item.Expression())
+		}
+	}
+	return ignore, limit, orderBy
 }
 
 // extractAggFunc attempts to parse an aggregate function (COUNT/SUM/MIN/MAX/AVG)
@@ -1151,7 +1163,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 					}
 					ac := aggSelectCol{outName: alias, outputAliased: selectOutputAlias(e) != "", selectOrdinal: selectOrdinal, aggFunc: fn, aggArg: argCol, aggExpr: argExpr, aggDistinct: isDistinct, aggArgQualified: argQual, aggArgBare: argBare, aggArgQualifier: argQualifier, aggArgSegs: argSegs, visible: true}
 					if fn == "ARRAY_AGG" {
-						ac.aggIgnoreNulls, ac.aggLimit = selectElementArrayAggOptions(e)
+						ac.aggIgnoreNulls, ac.aggLimit, ac.aggOrderBy = selectElementArrayAggOptions(e)
 					}
 					aggCols = append(aggCols, ac)
 				} else {
@@ -2280,10 +2292,12 @@ func aggColFromAwf(awf *antlrgen.AggregateWindowedFunctionContext) (aggSelectCol
 	}
 	var ignore bool
 	var limit int
+	var orderBy []antlrgen.IExpressionContext
 	if fn == "ARRAY_AGG" {
-		ignore, limit, _ = expr.ArrayAggOptions(awf)
+		ignore, limit, orderBy = arrayAggCallParts(awf)
 	}
 	return aggSelectCol{
+		aggOrderBy:      orderBy,
 		outName:         outName,
 		aggIgnoreNulls:  ignore,
 		aggLimit:        limit,

@@ -129,16 +129,10 @@ func PrepareMatchesAndCompensations(
 			pm,
 			translatedRequestedOrderings,
 		)
-		// Skip a zero-prefix match (empty bound parameter prefix → a full
-		// index scan) UNLESS it provides a requested ordering. A full index
-		// scan with neither selectivity nor an ordering benefit is strictly
-		// dominated by the full table scan + residual filter the planner
-		// already has, and producing one per index lets a full scan of an
-		// unrelated index (e.g. IDX_AMOUNT for a WHERE on customer_id) win
-		// over the correct point lookup. ImplementIndexScanRule skips these
-		// the same way (len(prefix) == 0 → continue); the data-access path
-		// must too. (A restricted scan, or a zero-prefix scan that satisfies
-		// the ORDER BY, IS kept — the latter for ordered full-index scans.)
+		// Go-only pruning: a full index scan with neither a search argument
+		// nor a requested ordering is dropped. Java keeps it and PREFER_INDEX
+		// picks it for predicate-free reads, which changes only row order;
+		// keeping it costs 2-3x planning time and the OR-union task budget.
 		if satisfying == nil && !hasRestrictedScan(pm) {
 			continue
 		}
