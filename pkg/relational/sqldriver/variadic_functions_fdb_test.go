@@ -90,4 +90,48 @@ func TestFDB_VariadicFunctions(t *testing.T) {
 	if err := db.QueryRowContext(ctx, "SELECT id FROM T WHERE COALESCE(NULL, n) = 5").Scan(&id); err != nil || id != 2 {
 		t.Fatalf("COALESCE(NULL, n) = 5: %d, %v", id, err)
 	}
+
+	// A boolean expression is a function argument like any other.
+	ids := func(q string) []int64 {
+		t.Helper()
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+		defer rows.Close()
+		var out []int64
+		for rows.Next() {
+			var v int64
+			if err := rows.Scan(&v); err != nil {
+				t.Fatalf("%s: %v", q, err)
+			}
+			out = append(out, v)
+		}
+		return out
+	}
+	for q, want := range map[string]string{
+		"SELECT id FROM T WHERE COALESCE(n = 5, FALSE) ORDER BY id":      "[2]",
+		"SELECT id FROM T WHERE NOT COALESCE(n = 5, FALSE) ORDER BY id":  "[1]",
+		"SELECT id FROM T WHERE COALESCE(NULL, TRUE, n = 1) ORDER BY id": "[1 2]",
+	} {
+		if got := fmt.Sprint(ids(q)); got != want {
+			t.Errorf("%s: %s, want %s", q, got, want)
+		}
+	}
+	var got []bool
+	rows, err := db.QueryContext(ctx, "SELECT COALESCE(n = 5, FALSE) FROM T ORDER BY id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var b bool
+		if err := rows.Scan(&b); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, b)
+	}
+	rows.Close()
+	if fmt.Sprint(got) != "[false true]" {
+		t.Errorf("COALESCE(n = 5, FALSE) projection: %v", got)
+	}
 }

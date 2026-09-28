@@ -348,6 +348,7 @@ go_test(
         "in_list_array_column_fdb_test.go",
         "in_list_duplicate_values_fdb_test.go",
         "in_list_limit_nil_probe_test.go",
+        "in_list_nan_fdb_test.go",
         "in_list_non_constant_fdb_test.go",
         "in_list_null_item_fdb_test.go",
         "in_list_signed_zero_order_fdb_test.go",

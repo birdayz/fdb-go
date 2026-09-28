@@ -3,6 +3,7 @@ package cascades
 import (
 	"bytes"
 	"errors"
+	"math"
 	"reflect"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -152,6 +153,11 @@ func (r *InComparisonToExplodeRule) OnMatch(call *ExpressionRuleCall) {
 	// to a plain `col = 1` equality. Order-preserving (first occurrence) to
 	// match ArrayDistinctValue's distinct-not-sort semantics.
 	list = distinctInListValues(list)
+	// An index cannot probe a NaN (stored NaNs pack by payload), so a list
+	// holding one stays a residual filter.
+	if inListHasNaN(list) {
+		return
+	}
 
 	innerRef := f.GetInner().GetRangesOver()
 	if innerRef == nil {
@@ -386,6 +392,22 @@ func distinctInListValues(in []any) []any {
 		}
 	}
 	return out
+}
+
+func inListHasNaN(list []any) bool {
+	for _, v := range list {
+		switch f := v.(type) {
+		case float64:
+			if math.IsNaN(f) {
+				return true
+			}
+		case float32:
+			if f != f {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // inListValueEqual reports SQL value equality for two IN-list literals.

@@ -101,7 +101,9 @@ If you can't write the e2e test, the feature isn't done. Period.
 
 **Write the code. No design documents, RFC review rounds or reviewer gates while the work is in progress.** Read Java, port it, test it, commit, push. One review (Graefe/Torvalds/codex/@claude as fits) runs when the whole body of work is done (for the RFC-257 upgrade: the finished migration), and its Medium-or-higher findings are fixed then. This overrides the review steps in the skills (query-engine, todo-worker, fdb-client-engineer, fdb-client-review): skip their RFC and review phases until that final review.
 
-**Keep paperwork minimal.** Commit messages of 10 lines or fewer. No evidence READMEs, md5 records, gate transcripts or per-step design-doc updates. CHANGELOG: one line per user-visible change. TODO.md: only genuinely deferred work. A code comment explains WHY at the site; that is the documentation.
+**Keep paperwork minimal.** Commit messages of 10 lines or fewer. No evidence READMEs, md5 records, gate transcripts or per-step design-doc updates. CHANGELOG: one line per user-visible change. TODO.md: only genuinely deferred work.
+
+**Code comments: short, and only what the code cannot say.** A comment states a non-obvious WHY (a Java quirk being matched, a wire constraint, a trap) in one or two lines. No restating what the code does, no history of earlier attempts, no measurement narratives, no enumerations of tested shapes — those belong in the test or the commit message.
 
 **Verification per commit:** the pre-commit hook (`just test`) plus the tests you touched, run under Bazel. A regression test is written before its fix, so its red is observed while fixing; do not re-run tests at historical commits to manufacture reds. CI runs on the PR.
 

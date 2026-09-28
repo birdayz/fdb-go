@@ -411,7 +411,7 @@ func (r *Resolver) walkFunctionCall(fc antlrgen.IFunctionCallContext) (values.Va
 		if argCtx.Expression() == nil {
 			return nil, &UnsupportedExpressionShapeError{Shape: "FunctionArg without Expression (star handled separately)"}
 		}
-		v, err := r.WalkExpression(argCtx.Expression())
+		v, err := r.walkExpressionInner(argCtx.Expression(), posOperand)
 		if err != nil {
 			return nil, err
 		}
@@ -1080,7 +1080,8 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (va
 			if argCtx.Expression() == nil {
 				return nil, &UnsupportedExpressionShapeError{Shape: "FunctionArg without Expression"}
 			}
-			v, err := r.WalkExpression(argCtx.Expression())
+			// A function argument is a value position: a comparison folds.
+			v, err := r.walkExpressionInner(argCtx.Expression(), posOperand)
 			if err != nil {
 				// The function is the better explanation when this walker
 				// cannot shape an argument AND the planner has no catalogue
@@ -1264,7 +1265,7 @@ func (r *Resolver) walkFunctionArgs(fa antlrgen.IFunctionArgsContext) ([]values.
 		if argCtx.Expression() == nil {
 			return nil, &UnsupportedExpressionShapeError{Shape: "FunctionArg without Expression"}
 		}
-		v, err := r.WalkExpression(argCtx.Expression())
+		v, err := r.walkExpressionInner(argCtx.Expression(), posOperand)
 		if err != nil {
 			return nil, err
 		}
