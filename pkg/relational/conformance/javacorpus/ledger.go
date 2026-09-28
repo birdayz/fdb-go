@@ -94,10 +94,6 @@ const (
 	// gap is sized rather than hidden inside a passing file.
 	SkipResultMetadataNested SkipClass = "unsupported:result-metadata-nested"
 
-	// SkipTemporaryFunction is a `setup:` / `setupReference:` query config,
-	// which Java restricts to CREATE TEMPORARY FUNCTION. RFC-201 Phase 4.
-	SkipTemporaryFunction SkipClass = "unsupported:temporary-function"
-
 	// SkipCopyBlock is a `copy_block`, which moves data between two clusters.
 	SkipCopyBlock SkipClass = "unsupported:copy-block"
 
@@ -259,7 +255,6 @@ func AllSkipClasses() []SkipClass {
 		SkipPrepared,
 		SkipContinuation,
 		SkipResultMetadataNested,
-		SkipTemporaryFunction,
 		SkipCopyBlock,
 		SkipSchemaCommand,
 		SkipDebugger,

@@ -247,7 +247,7 @@ func (c SkipClass) SuppressesAssertion() bool {
 	// declining it would let them run clean and be reported as negatives that
 	// wrongly passed — crediting a driver gap as a finding.
 	case SkipPlanAssertion, SkipResultMetadataNested, SkipContinuation,
-		SkipTemporaryFunction, SkipRandomInjection, SkipVersionGate,
+		SkipRandomInjection, SkipVersionGate,
 		SkipSchemaCommand, SkipNoChecks:
 		return true
 	default:

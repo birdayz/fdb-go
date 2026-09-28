@@ -119,10 +119,9 @@ func TestClassifyConfigsMetadataAttachment(t *testing.T) {
 			wantSkipQuery: SkipContinuation,
 		},
 		{
-			name:          "a setup config claims the whole query",
+			name:          "a setup config runs with the query",
 			configs:       []string{"setup: CREATE TEMPORARY FUNCTION f() AS SELECT 1", "result: []"},
 			wantConsuming: 1,
-			wantSkipQuery: SkipTemporaryFunction,
 		},
 	}
 

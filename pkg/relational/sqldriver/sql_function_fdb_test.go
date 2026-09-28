@@ -137,3 +137,88 @@ func TestFDB_MacroFunctions(t *testing.T) {
 		}
 	}
 }
+
+// CREATE TEMPORARY FUNCTION binds a function to the transaction, which drops
+// it when it ends (CreateTemporaryFunctionConstantAction).
+func TestFDB_TemporaryFunctions(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	setup := openTestDB(t, "/testdb_tempfn")
+	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_tempfn")
+	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE tempfn_tpl "+
+		"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+		"CREATE FUNCTION kept(IN n BIGINT) AS SELECT id FROM t WHERE id = n")
+	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_tempfn/s WITH TEMPLATE tempfn_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_TEMPFN?cluster_file=%s&schema=S", clusterFilePath))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	mustExec(t, db, ctx, "INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)")
+
+	ids := func(q interface {
+		QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	}, query string,
+	) string {
+		rows, err := q.QueryContext(ctx, query)
+		if err != nil {
+			return err.Error()
+		}
+		defer rows.Close()
+		var got []int64
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, id)
+		}
+		return fmt.Sprint(got)
+	}
+	retryTx(t, db, txRetryOpts{}, func(at txAttempt) error {
+		tx := at.tx
+		for _, s := range []string{
+			"CREATE TEMPORARY FUNCTION big() ON COMMIT DROP FUNCTION AS SELECT id FROM t WHERE v > 15",
+			"CREATE TEMPORARY FUNCTION twice(IN x BIGINT) RETURNS BIGINT ON COMMIT DROP FUNCTION RETURN x + x",
+		} {
+			if _, err := tx.ExecContext(ctx, s); err != nil {
+				return fmt.Errorf("%s: %w", s, err)
+			}
+		}
+		for q, want := range map[string]string{
+			"SELECT id FROM big ORDER BY id":                              "[2 3]",
+			"SELECT twice(id) FROM t WHERE id = 3":                        "[6]",
+			"SELECT b.id FROM big() AS b, kept(3) AS k WHERE b.id = k.id": "[3]",
+		} {
+			if got := ids(tx, q); got != want {
+				t.Errorf("%s: %s, want %s", q, got, want)
+			}
+		}
+		for s, code := range map[string]api.ErrorCode{
+			"CREATE TEMPORARY FUNCTION big() ON COMMIT DROP FUNCTION AS SELECT id FROM t":  api.ErrCodeDuplicateFunction,
+			"CREATE TEMPORARY FUNCTION kept() ON COMMIT DROP FUNCTION AS SELECT id FROM t": api.ErrCodeDuplicateFunction,
+			"DROP TEMPORARY FUNCTION kept": api.ErrCodeInvalidFunctionDefinition,
+			"DROP TEMPORARY FUNCTION nope": api.ErrCodeUndefinedFunction,
+		} {
+			_, err := tx.ExecContext(ctx, s)
+			var apiErr *api.Error
+			if !errors.As(err, &apiErr) || apiErr.Code != code {
+				t.Errorf("%s: want %s, got %v", s, code, err)
+			}
+		}
+		if _, err := tx.ExecContext(ctx, "CREATE OR REPLACE TEMPORARY FUNCTION big() ON COMMIT DROP FUNCTION AS SELECT id FROM t WHERE v > 25"); err != nil {
+			return err
+		}
+		if got := ids(tx, "SELECT id FROM big"); got != "[3]" {
+			t.Errorf("replaced big: %s", got)
+		}
+		if _, err := tx.ExecContext(ctx, "DROP TEMPORARY FUNCTION IF EXISTS twice"); err != nil {
+			return err
+		}
+		return tx.Commit()
+	})
+	if got := ids(db, "SELECT id FROM big"); got == "[3]" || got == "[2 3]" {
+		t.Errorf("temporary function outlived its transaction: %s", got)
+	}
+}

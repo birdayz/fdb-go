@@ -362,7 +362,7 @@ func registerFunction(fd antlrgen.ISqlInvokedFunctionContext, b *metadata.Builde
 	if containsPreparedParameter(fd) {
 		return api.NewError(api.ErrCodeSyntaxError, "found prepared parameter(s) in SQL statement")
 	}
-	if err := checkRoutineCharacteristics(fd); err != nil {
+	if err := checkRoutineCharacteristics(fd.FunctionSpecification()); err != nil {
 		return err
 	}
 	tmpl, err := b.Build()
@@ -371,7 +371,7 @@ func registerFunction(fd antlrgen.ISqlInvokedFunctionContext, b *metadata.Builde
 	}
 	md := tmpl.Underlying()
 	if body, isMacro := fd.RoutineBody().(*antlrgen.UserDefinedMacroFunctionStatementBodyContext); isMacro {
-		macro, err := buildMacroFunction(fd, body, md)
+		macro, err := buildMacroFunction(fd.FunctionSpecification(), body, md)
 		if err != nil {
 			return err
 		}
@@ -384,7 +384,7 @@ func registerFunction(fd antlrgen.ISqlInvokedFunctionContext, b *metadata.Builde
 	if fd.FunctionSpecification().ReturnsClause() != nil {
 		return api.NewError(api.ErrCodeUnsupportedOperation, "unsupported explicit return type for SQL table function")
 	}
-	fn, err := sqlFunctionOf(fd)
+	fn, err := sqlFunctionOf(fd.FunctionSpecification(), fd.RoutineBody())
 	if err != nil {
 		return err
 	}
@@ -400,8 +400,8 @@ func registerFunction(fd antlrgen.ISqlInvokedFunctionContext, b *metadata.Builde
 }
 
 // checkRoutineCharacteristics is visitSqlInvokedFunction's validations.
-func checkRoutineCharacteristics(fd antlrgen.ISqlInvokedFunctionContext) error {
-	props := fd.FunctionSpecification().RoutineCharacteristics()
+func checkRoutineCharacteristics(spec antlrgen.IFunctionSpecificationContext) error {
+	props := spec.RoutineCharacteristics()
 	if nc := props.NullCallClause(); nc != nil && nc.RETURNS() != nil {
 		return api.NewError(api.ErrCodeUnsupportedOperation, "only CALLED ON NULL INPUT clause is supported")
 	}

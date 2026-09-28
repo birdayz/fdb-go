@@ -21,10 +21,9 @@ import (
 // buildMacroFunction is DdlVisitor.visitSqlInvokedFunction for a macro: each
 // parameter a quantified object under a fresh unique alias, the body resolved
 // over them, promoted to the declared return type.
-func buildMacroFunction(fd antlrgen.ISqlInvokedFunctionContext, body *antlrgen.UserDefinedMacroFunctionStatementBodyContext,
+func buildMacroFunction(spec antlrgen.IFunctionSpecificationContext, body *antlrgen.UserDefinedMacroFunctionStatementBodyContext,
 	md *recordlayer.RecordMetaData,
 ) (*values.MacroFunction, error) {
-	spec := fd.FunctionSpecification()
 	m := &values.MacroFunction{Name: functions.FullIdToName(spec.GetSchemaQualifiedRoutineName())}
 	analyzer := rlcatalog.NewAnalyzer(md, false)
 	var names []semantic.Identifier

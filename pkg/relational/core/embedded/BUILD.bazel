@@ -46,6 +46,7 @@ go_library(
         "subquery_walk.go",
         "system_rows.go",
         "system_tables.go",
+        "temp_function.go",
     ],
     importpath = "fdb.dev/pkg/relational/core/embedded",
     visibility = ["//visibility:public"],
@@ -486,6 +487,7 @@ go_test(
         "ever_aggregate_harness_test.go",
         "sql_function.go",
         "macro_function.go",
+        "temp_function.go",
     ],
     deps = [
         "//gen",

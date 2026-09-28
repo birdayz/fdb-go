@@ -33,8 +33,15 @@ type sqlFunctionParam struct {
 	structTyped bool
 }
 
-// parseSQLFunction reads a `CREATE FUNCTION ...` text.
+// parseSQLFunction reads a stored `CREATE FUNCTION ...` or
+// `CREATE [OR REPLACE] TEMPORARY FUNCTION ...` text.
 func parseSQLFunction(definition string) (*sqlFunction, error) {
+	if root, err := parser.Parse(definition); err == nil {
+		if ct, ok := root.Statements().AllStatement()[0].DdlStatement().CreateTempFunction().(*antlrgen.CreateTempFunctionContext); ok && ct != nil {
+			tf := ct.TempSqlInvokedFunction()
+			return sqlFunctionOf(tf.FunctionSpecification(), tf.RoutineBody())
+		}
+	}
 	root, err := parser.Parse("CREATE SCHEMA TEMPLATE F " + definition)
 	if err != nil {
 		return nil, err
@@ -43,17 +50,13 @@ func parseSQLFunction(definition string) (*sqlFunction, error) {
 	if cs == nil || len(cs.AllTemplateClause()) != 1 || cs.AllTemplateClause()[0].SqlInvokedFunction() == nil {
 		return nil, api.NewErrorf(api.ErrCodeInternalError, "not a SQL function: %s", definition)
 	}
-	fn, err := sqlFunctionOf(cs.AllTemplateClause()[0].SqlInvokedFunction())
-	if err != nil {
-		return nil, err
-	}
-	return fn, nil
+	fd := cs.AllTemplateClause()[0].SqlInvokedFunction()
+	return sqlFunctionOf(fd.FunctionSpecification(), fd.RoutineBody())
 }
 
-func sqlFunctionOf(ctx antlrgen.ISqlInvokedFunctionContext) (*sqlFunction, error) {
-	spec := ctx.FunctionSpecification()
+func sqlFunctionOf(spec antlrgen.IFunctionSpecificationContext, routine antlrgen.IRoutineBodyContext) (*sqlFunction, error) {
 	fn := &sqlFunction{name: functions.FullIdToName(spec.GetSchemaQualifiedRoutineName())}
-	body, ok := ctx.RoutineBody().(*antlrgen.StatementBodyContext)
+	body, ok := routine.(*antlrgen.StatementBodyContext)
 	if !ok {
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "function %s: only query bodies are supported", fn.name)
 	}

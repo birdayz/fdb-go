@@ -2357,3 +2357,30 @@ func keyConstructionFault(expr KeyExpression) (uint64, error) {
 	}
 	return firstSeq, first
 }
+
+// UserDefinedFunctionName is a stored SQL function's name.
+func UserDefinedFunctionName(f *gen.PUserDefinedFunction) string {
+	if m := f.GetUserDefinedMacroFunction(); m != nil {
+		return m.GetFunctionName()
+	}
+	return f.GetSqlFunction().GetName()
+}
+
+// WithUserDefinedFunctions is m with fns added, each replacing a function of
+// its name: the schema as a transaction that declared temporary functions
+// sees it.
+func (m *RecordMetaData) WithUserDefinedFunctions(fns []*gen.PUserDefinedFunction) *RecordMetaData {
+	overlay := *m
+	replaced := map[string]bool{}
+	for _, f := range fns {
+		replaced[UserDefinedFunctionName(f)] = true
+	}
+	var all []*gen.PUserDefinedFunction
+	for _, f := range m.preserved.userDefinedFunctions {
+		if !replaced[UserDefinedFunctionName(f)] {
+			all = append(all, f)
+		}
+	}
+	overlay.preserved.userDefinedFunctions = append(all, fns...)
+	return &overlay
+}

@@ -261,11 +261,56 @@ func (r *runner) runTest(ctx context.Context, conn *sql.Conn, where string, e ex
 	}
 
 	cfg := plan.Consuming[0]
-	if err := r.runConfig(ctx, conn, at, query, cfg, plan.Metadata); err != nil {
+	if err := r.runConfigWithSetups(ctx, conn, at, query, cfg, plan); err != nil {
 		return err
 	}
 	r.result.QueriesRun++
 	return nil
+}
+
+// runConfigWithSetups is executeWithSetup: the setups and the query share one
+// transaction, which commits after the query (setAutoCommit(true)).
+func (r *runner) runConfigWithSetups(ctx context.Context, conn *sql.Conn, at, query string, cfg *javayamsql.Config, plan configPlan) error {
+	if len(plan.Setups) == 0 {
+		return r.runConfig(ctx, conn, at, query, cfg, plan.Metadata)
+	}
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("%s: begin: %w", at, err)
+	}
+	var run execer = tx
+	for _, setup := range plan.Setups {
+		// QueryCommand.java:273 admits only this statement as a setup.
+		const allowed = "CREATE TEMPORARY FUNCTION"
+		if len(setup) < len(allowed) || !strings.EqualFold(setup[:len(allowed)], allowed) {
+			_ = tx.Rollback()
+			return fmt.Errorf("%s: Only \"CREATE TEMPORARY FUNCTION\" is allowed for transaction setups", at)
+		}
+		if _, err := execAny(ctx, tx, setup); err != nil {
+			run = failingExecer{err}
+			break
+		}
+	}
+	if err := r.runConfig(ctx, run, at, query, cfg, plan.Metadata); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("%s: commit: %w", at, err)
+	}
+	return nil
+}
+
+// failingExecer answers every statement with a setup's error, which Java
+// raises from the same executeTransactionally call as the query's own.
+type failingExecer struct{ err error }
+
+func (f failingExecer) ExecContext(context.Context, string, ...any) (sql.Result, error) {
+	return nil, f.err
+}
+
+func (f failingExecer) QueryContext(context.Context, string, ...any) (*sql.Rows, error) {
+	return nil, f.err
 }
 
 // pendingSkip is a counted skip whose location the caller supplies.
@@ -285,6 +330,9 @@ type configPlan struct {
 	Metadata *javayamsql.Config
 	// Skips are per-directive counted skips that do not claim the query.
 	Skips []pendingSkip
+	// Setups run before the query, in its transaction (setup: and
+	// setupReference:, QueryExecutor.executeWithSetup).
+	Setups []string
 }
 
 // classifyConfigs is QueryCommand.executeInternal's walk over the config list,
@@ -336,7 +384,7 @@ func classifyConfigs(cmd *javayamsql.Command) configPlan {
 		case javayamsql.ConfigResultMetadata:
 			pendingMetadata = cfg
 		case javayamsql.ConfigSetup, javayamsql.ConfigSetupReference:
-			plan.SkipQuery = SkipTemporaryFunction
+			plan.Setups = append(plan.Setups, cfg.Text)
 		case javayamsql.ConfigDebugger:
 			plan.Skips = append(plan.Skips, pendingSkip{SkipDebugger, cfg.Text})
 		case javayamsql.ConfigResult, javayamsql.ConfigUnorderedResult,
@@ -400,7 +448,7 @@ func (r *runner) adaptQuery(cmd *javayamsql.Command, at string) (string, bool) {
 // runConfig executes the query once and checks the single result-consuming
 // config against it, plus the sticky `resultMetadata:` directive armed before
 // it, if any.
-func (r *runner) runConfig(ctx context.Context, conn *sql.Conn, at, query string, cfg, meta *javayamsql.Config) error {
+func (r *runner) runConfig(ctx context.Context, conn execer, at, query string, cfg, meta *javayamsql.Config) error {
 	// Java hands the sticky directive to every consumer and lets
 	// checkInlineMetadataIfPresent decide; the guard is hoisted here so the
 	// three no-result-set shapes take one documented path instead of three.
@@ -465,7 +513,7 @@ func derefCount(cfg *javayamsql.Config) any {
 	return *cfg.Number
 }
 
-func (r *runner) checkError(ctx context.Context, conn *sql.Conn, at, query string, cfg *javayamsql.Config) error {
+func (r *runner) checkError(ctx context.Context, conn execer, at, query string, cfg *javayamsql.Config) error {
 	var err error
 	if isRowReturning(query) {
 		// A SELECT's error may surface only while rows are drawn — a division

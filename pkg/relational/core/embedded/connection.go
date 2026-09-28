@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"fdb.dev/gen"
+
 	"fdb.dev/pkg/dst"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -263,6 +265,12 @@ type embeddedTx struct {
 	// transaction would make the third statement fail for memory the first two
 	// released.
 	scanState *recordlayer.ScanLimiterState
+
+	// tempFunctions are this transaction's CREATE TEMPORARY FUNCTIONs,
+	// dropped with it; tempMD is the schema metadata with them added.
+	tempFunctions []*gen.PUserDefinedFunction
+	tempMD        *recordlayer.RecordMetaData
+	tempBase      *recordlayer.RecordMetaData
 
 	// schemaCache is the TRANSACTION-scoped catalog cache (RFC-198 Decision
 	// 8b). While this transaction is open, catalog resolution consults THIS
@@ -543,6 +551,9 @@ func (c *EmbeddedConnection) cachedMetaData() *recordlayer.RecordMetaData {
 	tmpl := c.cachedSchemaTemplate()
 	if tmpl == nil {
 		return nil
+	}
+	if c.activeTx != nil {
+		return c.activeTx.withTempFunctions(tmpl.Underlying())
 	}
 	return tmpl.Underlying()
 }
@@ -978,6 +989,10 @@ func (c *EmbeddedConnection) execStatement(ctx context.Context, stmt antlrgen.IS
 			n, err = c.execCreate(ctx, create)
 		case drop != nil:
 			n, err = c.execDrop(ctx, drop)
+		case ddl.CreateTempFunction() != nil:
+			n, err = c.execCreateTempFunction(ctx, ddl.CreateTempFunction().(*antlrgen.CreateTempFunctionContext))
+		case ddl.DropTempFunction() != nil:
+			n, err = c.execDropTempFunction(ctx, ddl.DropTempFunction().(*antlrgen.DropTempFunctionContext))
 		default:
 			return 0, api.NewError(api.ErrCodeUnsupportedOperation, "unsupported DDL statement")
 		}

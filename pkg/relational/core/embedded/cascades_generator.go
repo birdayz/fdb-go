@@ -385,7 +385,8 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	cacheScope := planCacheScope(g.c.sess.DBPath, g.c.sess.Schema, md.Version(), popts.cacheKeyPart())
 	cacheSQL := planCacheText(q) + g.paramKey
 	cache := g.cache
-	if so.noCache {
+	// A temporary function is not part of the schema version the key names.
+	if so.noCache || (g.c.activeTx != nil && len(g.c.activeTx.tempFunctions) > 0) {
 		cache = nil
 	}
 
