@@ -30,10 +30,9 @@ tests:
     rows:
       - [99]
 
-  # COALESCE all null → null
+  # COALESCE over only NULLs has no operator: 22F00 (Java measured).
   - query: SELECT COALESCE(null, null) FROM vals WHERE id = 1
-    rows:
-      - [null]
+    error_code: "22F00"
 
   # COALESCE with different values
   - query: SELECT id, COALESCE(int_col, 0) FROM vals ORDER BY id

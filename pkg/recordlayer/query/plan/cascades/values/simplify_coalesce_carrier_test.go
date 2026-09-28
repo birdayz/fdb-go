@@ -60,7 +60,7 @@ func TestSimplifyCoalesce_DegenerateExitKeepsDeclaredCarrier(t *testing.T) {
 					"so there is no carrier for the simplifier to drop", tc.declared, want, want)
 			}
 
-			simplified := SimplifyValue(coalesce)
+			simplified := SimplifyPredicateValue(coalesce)
 			if _, stillCoalesce := simplified.(*ScalarFunctionValue); stillCoalesce {
 				t.Fatalf("fixture is inert: the redundant-null removal did not fire, "+
 					"so the node-removing exit under test was never reached (got %s)",
@@ -102,7 +102,7 @@ func TestSimplifyCoalesce_WinningConstantKeepsDeclaredCarrier(t *testing.T) {
 		t.Fatalf("fixture is inert: expected the DOUBLE carrier to show, got %#v (%T)", want, want)
 	}
 
-	simplified := SimplifyValue(coalesce)
+	simplified := SimplifyPredicateValue(coalesce)
 	got, err := simplified.Evaluate(row)
 	if err != nil {
 		t.Fatalf("evaluate simplified %s: %v", ExplainValue(simplified), err)
@@ -124,7 +124,7 @@ func TestSimplifyCoalesce_NonConvertingTypeIsLeftBare(t *testing.T) {
 	coalesce := NewScalarFunctionValue("COALESCE", NullableLong,
 		column, &NullValue{Typ: NullableLong})
 
-	simplified := SimplifyValue(coalesce)
+	simplified := SimplifyPredicateValue(coalesce)
 	if _, wrapped := simplified.(*PromoteValue); wrapped {
 		t.Fatalf("LONG-declared COALESCE wrapped its survivor in a Promote: %s", ExplainValue(simplified))
 	}
@@ -257,7 +257,7 @@ func TestSimplifyCoalesce_DegenerateExitKeepsDeclaredType(t *testing.T) {
 			"so there is no refusal for the simplifier to lose")
 	}
 
-	simplified := SimplifyValue(cast)
+	simplified := SimplifyPredicateValue(cast)
 	simplifiedCast, isCast := simplified.(*CastValue)
 	if !isCast {
 		t.Fatalf("expected the CAST to survive simplification, got %s", ExplainValue(simplified))
@@ -319,7 +319,7 @@ func TestSimplifyCoalesce_DeclinesWhereAPromoteWouldNotReproduceTheNode(t *testi
 	if err != nil {
 		t.Fatalf("evaluate un-simplified: %v", err)
 	}
-	simplified := SimplifyValue(coalesce)
+	simplified := SimplifyPredicateValue(coalesce)
 	if simplified != Value(coalesce) {
 		t.Fatalf("expected the COALESCE to stand, got %s", ExplainValue(simplified))
 	}

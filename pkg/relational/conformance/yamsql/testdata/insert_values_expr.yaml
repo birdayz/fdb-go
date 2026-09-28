@@ -79,18 +79,16 @@ tests:
   # has NO Java cast pair — same 22F3H the SELECT path raises.
   - query: INSERT INTO tb VALUES (3, CAST(2147483648 AS BOOLEAN))
     error_code: "22F3H"
-  # COALESCE SHORT-CIRCUITS (SQL): the first non-NULL argument wins and
-  # later arguments are NEVER evaluated — 1/0 must not raise 22012 here.
-  # The eager fold evaluated every argument first and turned this legal
-  # INSERT into a division-by-zero error.
+  # COALESCE evaluates every argument (Java's VariadicFunctionValue.eval), so
+  # a division by zero in a later argument raises.
   - query: INSERT INTO t VALUES (60, COALESCE(1, 1 / 0))
+    error_code: "22012"
+  - query: INSERT INTO t VALUES (60, COALESCE(1, 2))
   - query: SELECT n FROM t WHERE id = 60
     rows:
       - [1]
-  # ...and the SELECT face of the same law.
   - query: SELECT COALESCE(2, 1 / 0) FROM t WHERE id = 60
-    rows:
-      - [2]
+    error_code: "22012"
   # IF evaluates ONLY the taken branch.
   - query: INSERT INTO t VALUES (61, IF(TRUE, 7, 1 / 0))
   - query: SELECT n FROM t WHERE id = 61

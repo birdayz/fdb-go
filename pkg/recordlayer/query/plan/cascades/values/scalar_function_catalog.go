@@ -97,6 +97,17 @@ var comparisonPhysicalOperatorTypes = []TypeCode{
 	TypeCodeString, TypeCodeFloat, TypeCodeDouble,
 }
 
+// coalescePhysicalOperatorTypes is Java's COALESCE operator map
+// (VariadicFunctionValue.java:483-490: INT, LONG, BOOLEAN, STRING, FLOAT,
+// DOUBLE, RECORD, ARRAY) plus the Go-only DATE and TIMESTAMP columns. BYTES,
+// UUID and ENUM have no operator: 22F00, as in Java.
+var coalescePhysicalOperatorTypes = []TypeCode{
+	TypeCodeInt, TypeCodeLong, TypeCodeBoolean,
+	TypeCodeString, TypeCodeFloat, TypeCodeDouble,
+	TypeCodeRecord, TypeCodeArray,
+	TypeCodeDate, TypeCodeTimestamp,
+}
+
 // withPhysicalOperatorTypes restricts a definition to the result type codes
 // that have a physical implementation.
 func withPhysicalOperatorTypes(
@@ -152,6 +163,11 @@ func DiagnoseScalarFunctionArguments(name string, args []Value) ScalarFunctionAr
 	if !ok || len(definition.physicalOperatorTypes) == 0 {
 		return ScalarFunctionArgumentsOK
 	}
+	if len(args) > 0 && allNullTyped(args) {
+		// Every argument NULL: Java's maximum type is NULL, which has no
+		// operator (FUNCTION_UNDEFINED_FOR_GIVEN_ARGUMENT_TYPES).
+		return ScalarFunctionArgumentsNoOperator
+	}
 	folded, state := foldArgumentTypeCodes(args)
 	switch state {
 	case argumentFoldUnresolved:
@@ -165,6 +181,15 @@ func DiagnoseScalarFunctionArguments(name string, args []Value) ScalarFunctionAr
 		}
 	}
 	return ScalarFunctionArgumentsNoOperator
+}
+
+func allNullTyped(args []Value) bool {
+	for _, a := range args {
+		if a == nil || a.Type() == nil || a.Type().Code() != TypeCodeNull {
+			return false
+		}
+	}
+	return true
 }
 
 type argumentFoldState int
@@ -372,7 +397,9 @@ var scalarFunctionCatalog = map[string]scalarFunctionDefinition{
 	"LOG": scalarCallFunction(scalarFunctionLog, NullableDouble),
 
 	// Null/comparison helpers.
-	"COALESCE": polymorphicScalarCall(scalarFunctionCoalesce, scalarFunctionCommonResult),
+	"COALESCE": withPhysicalOperatorTypes(
+		polymorphicScalarCall(scalarFunctionCoalesce, scalarFunctionCommonResult),
+		coalescePhysicalOperatorTypes),
 	"IFNULL": polymorphicScalarCall(
 		scalarFunctionIfNull, scalarFunctionCommonResult),
 	"GREATEST": withPhysicalOperatorTypes(commonNumericArguments(

@@ -2550,12 +2550,29 @@ func (s *ScalarFunctionValue) Children() []Value {
 }
 func (*ScalarFunctionValue) Name() string { return "scalarfn" }
 
-// Type returns the scalar function's rich result Type. Most scalar
-// functions can return NULL on NULL input — the result is forced to
-// nullable regardless of how the caller stored Typ.
+// Type returns the scalar function's result Type. Nullability follows Java's
+// VariadicFunctionValue for the three functions Java has (:339-376): COALESCE
+// is nullable only when every argument is, GREATEST and LEAST when any is.
+// Every Go-only function is nullable, since several return NULL on non-NULL
+// input.
 func (s *ScalarFunctionValue) Type() Type {
 	if s.Typ == nil {
 		return UnknownType
+	}
+	switch s.FuncName {
+	case "COALESCE":
+		for _, a := range s.Args {
+			if a != nil && a.Type() != nil && !a.Type().IsNullable() {
+				return WithNullability(s.Typ, false)
+			}
+		}
+	case "GREATEST", "LEAST":
+		for _, a := range s.Args {
+			if a == nil || a.Type() == nil || a.Type().IsNullable() {
+				return WithNullability(s.Typ, true)
+			}
+		}
+		return WithNullability(s.Typ, false)
 	}
 	return WithNullability(s.Typ, true)
 }
@@ -2572,20 +2589,16 @@ func (s *ScalarFunctionValue) Evaluate(evalCtx any) (any, error) {
 // its result with the declared-type carrier conversion so a statically DOUBLE
 // scalar cannot feed an int64 into downstream arithmetic.
 func (s *ScalarFunctionValue) evaluateUncoerced(evalCtx any) (any, error) {
-	// SHORT-CIRCUITING forms evaluate arguments lazily — SQL requires
-	// that COALESCE stop at the first non-NULL argument and that IF
-	// evaluate only the taken branch, so `COALESCE(1, 1/0)` is 1 and
-	// `IF(true, x, 1/0)` is x, never a 22012. The eager loop below
-	// evaluated every argument first and turned these legal
-	// expressions into runtime errors.
+	// COALESCE evaluates EVERY argument, as Java's VariadicFunctionValue.eval
+	// does (:115-118): `COALESCE(1, 1/0)` raises the division. The Go-only
+	// IFNULL and IF short-circuit: IFNULL stops at its first non-NULL argument
+	// and IF evaluates only the taken branch.
 	definition, knownFunction := scalarFunctionDefinitionFor(s.FuncName)
 	if knownFunction {
 		switch definition.operator {
-		case scalarFunctionCoalesce, scalarFunctionIfNull:
-			// IFNULL is the strictly 2-arg COALESCE spelling — the lazy arm
-			// must keep the strict arm's arity decline (nil, nil), not
-			// degrade IFNULL(1) / IFNULL(a,b,c) into variadic COALESCE.
-			if definition.operator == scalarFunctionIfNull && len(s.Args) != 2 {
+		case scalarFunctionIfNull:
+			// IFNULL is strictly two arguments; any other arity declines.
+			if len(s.Args) != 2 {
 				return nil, nil
 			}
 			for _, a := range s.Args {

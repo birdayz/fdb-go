@@ -24,10 +24,10 @@ func SimplifyPredicateValues(p QueryPredicate) QueryPredicate {
 	}
 	switch q := p.(type) {
 	case *ComparisonPredicate:
-		op := values.SimplifyValue(q.Operand)
+		op := values.SimplifyPredicateValue(q.Operand)
 		var rhs values.Value
 		if q.Comparison.Operand != nil {
-			rhs = values.SimplifyValue(q.Comparison.Operand)
+			rhs = values.SimplifyPredicateValue(q.Comparison.Operand)
 		}
 		if op == q.Operand && rhs == q.Comparison.Operand {
 			return q
@@ -44,7 +44,7 @@ func SimplifyPredicateValues(p QueryPredicate) QueryPredicate {
 			Comparison: cmp,
 		}
 	case *ValuePredicate:
-		v := values.SimplifyValue(q.Value)
+		v := values.SimplifyPredicateValue(q.Value)
 		if v == q.Value {
 			return q
 		}

@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**377 scenarios · 3113 query/assertion cases** across 18 feature areas — 2725 supported, 106 unsupported-feature pins, 282 error-path pins.
+**377 scenarios · 3114 query/assertion cases** across 18 feature areas — 2721 supported, 106 unsupported-feature pins, 287 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -32,9 +32,9 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Subqueries (EXISTS / IN / scalar) | 46 | 321 | 261 | 37 | 23 |
 | CTEs | 15 | 199 | 160 | 4 | 35 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 12 | 68 | 59 | 5 | 4 |
-| DML (INSERT / UPDATE / DELETE) | 26 | 239 | 202 | 3 | 34 |
+| DML (INSERT / UPDATE / DELETE) | 26 | 240 | 201 | 3 | 36 |
 | Ordering & pagination | 18 | 138 | 133 | 0 | 5 |
-| Scalar functions & expressions | 34 | 386 | 331 | 21 | 34 |
+| Scalar functions & expressions | 34 | 386 | 328 | 21 | 37 |
 | Predicates & WHERE | 12 | 104 | 102 | 0 | 2 |
 | Column resolution & aliasing | 7 | 59 | 30 | 0 | 29 |
 | NULL handling | 5 | 27 | 24 | 3 | 0 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 40 | 340 | 301 | 5 | 34 |
-| **Total** | **377** | **3113** | **2725** | **106** | **282** |
+| **Total** | **377** | **3114** | **2721** | **106** | **287** |
 
 ## Aggregates & GROUP BY
 
@@ -286,7 +286,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `insert_select_complex` | 2 | 2 | 0 | 0 | INSERT ... |
 | `insert_select_java` | 10 | 10 | 0 | 0 | INSERT...SELECT patterns. |
 | `insert_select_transform` | 2 | 2 | 0 | 0 | INSERT ... |
-| `insert_values_expr` | 27 | 22 | 1 | 4 | INSERT INTO t VALUES with expressions (arithmetic, CASE, CAST, etc). |
+| `insert_values_expr` | 28 | 21 | 1 | 6 | INSERT INTO t VALUES with expressions (arithmetic, CASE, CAST, etc). |
 | `multi_insert_delete` | 6 | 6 | 0 | 0 | Multiple INSERT/DELETE/UPDATE operations |
 | `unquoted_dml_against_a_quoted_table` | 29 | 10 | 2 | 17 | AN UNQUOTED DML TARGET MUST NOT REACH A TABLE THAT ONLY QUOTES CAN NAME. |
 | `update_case_when` | 10 | 9 | 0 | 1 | UPDATE SET col = CASE ... |
@@ -335,7 +335,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `coalesce_nullif` | 3 | 2 | 1 | 0 | COALESCE(v1, v2, ...) returns the first non-NULL argument, or NULL |
 | `datetime_functions` | 27 | 19 | 8 | 0 | Two groups: |
 | `function_in_predicate` | 5 | 5 | 0 | 0 | Functions used in WHERE predicates |
-| `greatest_least` | 11 | 10 | 0 | 1 | swingshift-35 commit 97e0c731: GREATEST / LEAST propagate NULL |
+| `greatest_least` | 11 | 8 | 0 | 3 | swingshift-35 commit 97e0c731: GREATEST / LEAST propagate NULL |
 | `in_expression_types` | 6 | 6 | 0 | 0 | IN predicate with various expression types |
 | `like` | 18 | 18 | 0 | 0 | LIKE pattern matching with SQL wildcards (% and _). |
 | `like_patterns` | 5 | 5 | 0 | 0 | LIKE pattern matching |
@@ -349,7 +349,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `numeric_overflow_detection` | 5 | 3 | 0 | 2 | Numeric overflow detection |
 | `overflow` | 10 | 4 | 0 | 6 | nightshift-36: integer overflow is now checked. |
 | `overflow_mixed` | 3 | 2 | 0 | 1 | Follow-up probe for `feedback_next_shift_arithmetic_overflow` (which |
-| `scalar_functions_java` | 17 | 15 | 2 | 0 | Scalar function patterns from Java's |
+| `scalar_functions_java` | 17 | 14 | 2 | 1 | Scalar function patterns from Java's |
 | `select_constant_expression` | 3 | 3 | 0 | 0 | Constant expressions in SELECT |
 | `select_expression_projection` | 4 | 4 | 0 | 0 | Computed columns in SELECT |
 | `select_expressions_java` | 9 | 7 | 0 | 2 | SELECT with various expression types. |

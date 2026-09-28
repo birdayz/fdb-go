@@ -1148,6 +1148,15 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (va
 		}
 		return r.ResolveArithmetic(op, args[0], args[1])
 	}
+	switch name {
+	case "COALESCE", "GREATEST", "LEAST":
+		// Java's VariadicFunctionValue.encapsulate verifies two or more
+		// arguments (a VerifyException, XX000).
+		if len(args) < 2 {
+			return nil, api.NewErrorf(api.ErrCodeInternalError,
+				"function %s requires at least 2 arguments, got %d", name, len(args))
+		}
+	}
 	typ, ok := values.ScalarFunctionResultType(name, args)
 	if !ok {
 		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("scalar function %q (not in seed catalogue)", name)}
@@ -1161,11 +1170,11 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (va
 	// with a runtime carrier-mismatch message.
 	switch values.DiagnoseScalarFunctionArguments(name, args) {
 	case values.ScalarFunctionArgumentsIncompatible:
-		return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
-			"function %s has incompatible argument types", name)
+		return nil, api.NewError(api.ErrCodeCannotConvertType,
+			"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.")
 	case values.ScalarFunctionArgumentsNoOperator:
-		return nil, api.NewErrorf(api.ErrCodeInvalidArgumentForFunction,
-			"function %s is not defined for argument type %s", name, typ)
+		return nil, api.NewError(api.ErrCodeInvalidArgumentForFunction,
+			"The function is not defined for the given argument types")
 	}
 	return values.NewScalarFunctionValue(name, typ, args...), nil
 }
