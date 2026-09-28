@@ -321,6 +321,30 @@ var _ = Describe("HNSW Graph Direct", func() {
 		return NewHNSWGraph(storage, config)
 	}
 
+	It("a rewrite keeps a Java 4.14 compact node's covering values", func() {
+		graph := makeGraph(2)
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			pk := tuple.Tuple{int64(1)}
+			Expect(graph.Insert(tx, pk, []float64{0, 0})).To(Succeed())
+			key := fdb.Key(graph.storage.dataSubspace.Pack(tuple.Tuple{int64(0), pk}))
+			raw, err := tx.Get(key).Get()
+			Expect(err).NotTo(HaveOccurred())
+			covering := tuple.Tuple{tuple.Tuple{"cov", int64(7)}}.Pack()
+			tx.Set(key, append(append([]byte(nil), raw...), covering...))
+			graph.storage.cache = map[string]*parsedNode{}
+			Expect(graph.Insert(tx, tuple.Tuple{int64(2)}, []float64{1, 1})).To(Succeed())
+			after, err := tx.Get(key).Get()
+			Expect(err).NotTo(HaveOccurred())
+			_, neighbors, additional, err := parseNodeValue(after)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(neighbors).To(HaveLen(1), "the insert rewrote the node's neighbours")
+			Expect(additional).To(Equal(covering))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("new node selects M neighbors at layer 0, not MMax0 (Java parity)", func() {
 		// Java Insert.insertIntoLayer selects getConfig().getM() for the NEW node
 		// (Insert.java:507); maxConn (MMax/MMax0) is only the cap for pruning EXISTING
@@ -1322,7 +1346,7 @@ var _ = Describe("HNSW Inlining Storage", func() {
 			Expect(layer0Data).NotTo(BeNil(), "layer 0 should use compact format (single KV)")
 
 			// Parse it as compact format — should succeed.
-			_, _, parseErr := parseNodeValue(layer0Data)
+			_, _, _, parseErr := parseNodeValue(layer0Data)
 			Expect(parseErr).NotTo(HaveOccurred())
 
 			// Find a node at layer > 0 by checking which PKs have topLayer > 0.

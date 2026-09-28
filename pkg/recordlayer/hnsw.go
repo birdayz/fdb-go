@@ -867,11 +867,11 @@ func (g *hnswGraph) Delete(tx fdb.WritableTransaction, primaryKey tuple.Tuple) e
 			g.storage.cache[f.key] = nil // negative cache
 			continue
 		}
-		vecBytes, neighbors, parseErr := parseNodeValue(data)
+		vecBytes, neighbors, additional, parseErr := parseNodeValue(data)
 		if parseErr != nil {
 			continue
 		}
-		g.storage.cache[f.key] = &parsedNode{vecBytes: vecBytes, neighbors: neighbors}
+		g.storage.cache[f.key] = &parsedNode{vecBytes: vecBytes, neighbors: neighbors, additional: additional}
 	}
 	if futureErr != nil {
 		return futureErr
@@ -1613,6 +1613,9 @@ type hnswSearchResult struct {
 type parsedNode struct {
 	vecBytes  []byte
 	neighbors [][]byte // neighbor PKs as nested-encoded spans (Tuple{pk}.Pack())
+	// additional is the encoded fourth element of a Java 4.14 compact node
+	// (its covering values), carried verbatim so a rewrite never drops it.
+	additional []byte
 }
 
 // hnswStorage handles FDB storage of HNSW graph nodes.
@@ -1737,7 +1740,11 @@ func (s *hnswStorage) saveNodeLayer(tx fdb.WritableTransaction, layer int, prima
 		tuple.Tuple{vectorBytes}, // vector bytes wrapped in tuple
 		neighborList,             // neighbor PKs as nested tuples
 	}
-	tx.Set(fdb.Key(key), value.Pack())
+	var additional []byte
+	if existing := s.cache[string(key)]; existing != nil {
+		additional = existing.additional
+	}
+	tx.Set(fdb.Key(key), append(value.Pack(), additional...))
 
 	// Update cache with parsed data so subsequent reads skip tuple.Unpack.
 	// The cache holds neighbors as nested-encoded spans (Tuple{pk}.Pack()).
@@ -1745,7 +1752,7 @@ func (s *hnswStorage) saveNodeLayer(tx fdb.WritableTransaction, layer int, prima
 	for i, pk := range neighbors {
 		cacheNeighbors[i] = nestPK(pk)
 	}
-	s.cache[string(key)] = &parsedNode{vecBytes: vectorBytes, neighbors: cacheNeighbors}
+	s.cache[string(key)] = &parsedNode{vecBytes: vectorBytes, neighbors: cacheNeighbors, additional: additional}
 }
 
 // parseNodeValue parses the raw FDB value bytes for a node into vector bytes
@@ -1761,12 +1768,12 @@ func (s *hnswStorage) saveNodeLayer(tx fdb.WritableTransaction, layer int, prima
 // boundaries. Avoiding the per-PK tuple decode + element boxing here is the bulk
 // of the search-path allocation savings — Java pays the equivalent Object[] cost,
 // but Go's GC is far more sensitive to the interface-boxing churn.
-func parseNodeValue(data []byte) (vectorBytes []byte, neighbors [][]byte, err error) {
+func parseNodeValue(data []byte) (vectorBytes []byte, neighbors [][]byte, additional []byte, err error) {
 	// elem 0: nodeKind (skip).
 	p := 0
 	n0 := tupleSkip(data[p:])
 	if n0 < 0 {
-		return nil, nil, fmt.Errorf("hnsw: truncated node value (nodeKind)")
+		return nil, nil, nil, fmt.Errorf("hnsw: truncated node value (nodeKind)")
 	}
 	p += n0
 
@@ -1775,11 +1782,11 @@ func parseNodeValue(data []byte) (vectorBytes []byte, neighbors [][]byte, err er
 	// the single bytes element's standalone encoding (which fastDecodeBytes
 	// unescapes on its own). No extra un-nesting pass is needed.
 	if p >= len(data) || data[p] != tcNested {
-		return nil, nil, fmt.Errorf("hnsw: node value missing vector tuple")
+		return nil, nil, nil, fmt.Errorf("hnsw: node value missing vector tuple")
 	}
 	n1 := tupleSkip(data[p:])
 	if n1 < 0 || p+n1 > len(data) {
-		return nil, nil, fmt.Errorf("hnsw: truncated vector tuple")
+		return nil, nil, nil, fmt.Errorf("hnsw: truncated vector tuple")
 	}
 	vecInner := data[p+1 : p+n1-1]
 	if len(vecInner) > 0 {
@@ -1788,7 +1795,7 @@ func parseNodeValue(data []byte) (vectorBytes []byte, neighbors [][]byte, err er
 		// fastDecodeBytes copies, which is required for correctness here.
 		vb, _, berr := fastDecodeBytes(vecInner)
 		if berr != nil {
-			return nil, nil, fmt.Errorf("hnsw: decode vector bytes: %w", berr)
+			return nil, nil, nil, fmt.Errorf("hnsw: decode vector bytes: %w", berr)
 		}
 		vectorBytes = vb
 	}
@@ -1798,20 +1805,30 @@ func parseNodeValue(data []byte) (vectorBytes []byte, neighbors [][]byte, err er
 	// content is the concatenation of each neighbor's verbatim nested encoding
 	// (== Tuple{pk}.Pack()), so each per-element span IS the fetch-key suffix.
 	if p >= len(data) {
-		return vectorBytes, nil, nil
+		return vectorBytes, nil, nil, nil
 	}
 	if data[p] != tcNested {
-		return nil, nil, fmt.Errorf("hnsw: node value neighbor list is not a tuple")
+		return nil, nil, nil, fmt.Errorf("hnsw: node value neighbor list is not a tuple")
 	}
 	n2 := tupleSkip(data[p:])
 	if n2 < 0 || p+n2 > len(data) {
-		return nil, nil, fmt.Errorf("hnsw: truncated neighbor list")
+		return nil, nil, nil, fmt.Errorf("hnsw: truncated neighbor list")
 	}
 	neighbors, err = nestedPKSpans(data[p+1 : p+n2-1])
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return vectorBytes, neighbors, nil
+	p += n2
+
+	// elem 3 (optional): the additional (covering) values tuple.
+	if p < len(data) {
+		n3 := tupleSkip(data[p:])
+		if n3 < 0 || p+n3 > len(data) {
+			return nil, nil, nil, fmt.Errorf("hnsw: truncated additional values")
+		}
+		additional = append([]byte(nil), data[p:p+n3]...)
+	}
+	return vectorBytes, neighbors, additional, nil
 }
 
 // decodeNestedPK turns a neighbor span (nested-encoded PK == Tuple{pk}.Pack())
@@ -1867,11 +1884,12 @@ func (s *hnswStorage) loadNodeLayer(tx fdb.ReadTransaction, layer int, primaryKe
 	}
 
 	// Parse and cache the result.
-	vectorBytes, neighbors, err = parseNodeValue(data)
+	var additional []byte
+	vectorBytes, neighbors, additional, err = parseNodeValue(data)
 	if err != nil {
 		return nil, nil, err
 	}
-	s.cacheStore(cacheKey, &parsedNode{vecBytes: vectorBytes, neighbors: neighbors})
+	s.cacheStore(cacheKey, &parsedNode{vecBytes: vectorBytes, neighbors: neighbors, additional: additional})
 	return vectorBytes, neighbors, nil
 }
 
@@ -1942,12 +1960,12 @@ func (s *hnswStorage) loadNodeLayerBatch(tx fdb.ReadTransaction, layer int, pks 
 			results[p.idx].err = fmt.Errorf("hnsw: node not found at layer %d: %w", layer, errHNSWNotPresent)
 			continue
 		}
-		vecBytes, neighbors, parseErr := parseNodeValue(data)
+		vecBytes, neighbors, additional, parseErr := parseNodeValue(data)
 		if parseErr != nil {
 			results[p.idx].err = parseErr
 			continue
 		}
-		s.cacheStore(p.key, &parsedNode{vecBytes: vecBytes, neighbors: neighbors})
+		s.cacheStore(p.key, &parsedNode{vecBytes: vecBytes, neighbors: neighbors, additional: additional})
 		results[p.idx].vecBytes = vecBytes
 		results[p.idx].neighbors = neighbors
 	}
@@ -2029,12 +2047,12 @@ func (s *hnswStorage) loadEdgeListsBatch(tx fdb.ReadTransaction, layer int, pks 
 			results[p.idx].err = fmt.Errorf("hnsw: node not found at layer %d: %w", layer, errHNSWNotPresent)
 			continue
 		}
-		vecBytes, neighbors, parseErr := parseNodeValue(data)
+		vecBytes, neighbors, additional, parseErr := parseNodeValue(data)
 		if parseErr != nil {
 			results[p.idx].err = parseErr
 			continue
 		}
-		s.cacheStore(p.cacheKey, &parsedNode{vecBytes: vecBytes, neighbors: neighbors})
+		s.cacheStore(p.cacheKey, &parsedNode{vecBytes: vecBytes, neighbors: neighbors, additional: additional})
 		results[p.idx].neighbors = neighbors
 	}
 
@@ -2062,11 +2080,11 @@ func (s *hnswStorage) preloadLayer(tx fdb.ReadTransaction, layer int) error {
 		if _, ok := s.cache[cacheKey]; ok {
 			continue // already cached (e.g. from a save earlier in this tx)
 		}
-		vecBytes, neighbors, parseErr := parseNodeValue(kv.Value)
+		vecBytes, neighbors, additional, parseErr := parseNodeValue(kv.Value)
 		if parseErr != nil {
 			continue // skip unparseable entries
 		}
-		s.cache[cacheKey] = &parsedNode{vecBytes: vecBytes, neighbors: neighbors}
+		s.cache[cacheKey] = &parsedNode{vecBytes: vecBytes, neighbors: neighbors, additional: additional}
 	}
 	// Advance()==false ends the loop on exhaustion OR a transient FDB error; check
 	// Get() for the stored error so a mid-scan 1007/timeout surfaces instead of
@@ -2317,11 +2335,11 @@ func (s *hnswStorage) saveNodeLayerInlining(tx fdb.WritableTransaction, layer in
 	// it (like the load path does). Writing vecBytes nil here clobbered the entry
 	// point's just-merged vector between two reverse-edge saves of the same insert,
 	// making the second save fail with "no vector for neighbor".
-	var existingVec []byte
+	var existingVec, additional []byte
 	if existing, ok := s.cache[string(compactKey)]; ok && existing != nil {
-		existingVec = existing.vecBytes
+		existingVec, additional = existing.vecBytes, existing.additional
 	}
-	s.cache[string(compactKey)] = &parsedNode{vecBytes: existingVec, neighbors: cachedNeighbors}
+	s.cache[string(compactKey)] = &parsedNode{vecBytes: existingVec, neighbors: cachedNeighbors, additional: additional}
 	return nil
 }
 
