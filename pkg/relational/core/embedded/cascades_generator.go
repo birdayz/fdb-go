@@ -252,7 +252,7 @@ func (g *cascadesGenerator) planSelect(ctx context.Context, sel antlrgen.ISelect
 			"no schema metadata available")
 	}
 
-	return g.planSelectCascades(ctx, q, md, true)
+	return g.planSelectCascades(ctx, q, md, true, parseStatementOptions(sel))
 }
 
 // planSelectExplainOnly produces a PlanFunc that renders a logical plan
@@ -291,7 +291,7 @@ func (g *cascadesGenerator) planSelectExplainOnly(sel antlrgen.ISelectStatementC
 // query path passes true; the EXPLAIN re-entry from computeExplainText passes
 // false so EXPLAIN does not emit a phantom planning event (Java's getPlan
 // funnel does not fire for EXPLAIN-internal planning).
-func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.IQueryContext, md *recordlayer.RecordMetaData, logMetrics bool) (plan query.Plan, err error) {
+func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.IQueryContext, md *recordlayer.RecordMetaData, logMetrics bool, so statementOptions) (plan query.Plan, err error) {
 	if err := contextCancellationError(ctx); err != nil {
 		return nil, err
 	}
@@ -357,18 +357,23 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	// PlannerConfiguration.SingleReadVersion.
 	popts.config.SingleReadVersion = g.c.activeTx != nil
 	// Plan-cache key parts: a VERBATIM schema+version+planner-options scope
-	// (case-sensitive, never normalized) and the injective canonical query
-	// text. NOT q.GetText() — that concatenated tokens with no separator,
-	// colliding `SELECT AB` with `SELECT A B`. PlanCache normalizes only the
-	// query text (see planCacheScope / PlanCache.Get).
+	// (case-sensitive) and the token-rendered query text.
+	if so.rightDeep {
+		popts.config.ShouldJoinRightDeep = true
+	}
 	cacheScope := planCacheScope(g.c.sess.DBPath, g.c.sess.Schema, md.Version(), popts.cacheKeyPart())
-	cacheSQL := canonicalTextOf(q)
+	cacheSQL := planCacheText(q)
+	cache := g.cache
+	if so.noCache {
+		cache = nil
+	}
 
-	if g.cache != nil {
-		if cachedPlan, cachedSubs, cachedLabels, ok := g.cache.GetWithOutputLabels(cacheScope, cacheSQL); ok {
+	if cache != nil {
+		if cachedPlan, cachedSubs, cachedLabels, ok := cache.GetWithOutputLabels(cacheScope, cacheSQL); ok {
 			ls.setPlan(cachedPlan)
 			ls.setCache(PlanCacheHit)
 			return &cascadesPlan{
+				snapshot:         so.snapshot,
 				conn:             g.c,
 				md:               md,
 				physicalPlan:     cachedPlan,
@@ -536,13 +541,14 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	// LIMIT/OFFSET queries are cacheable: the limit is now carried by the
 	// RecordQueryLimitPlan operator inside the cached physical plan (RFC-128),
 	// not applied post-execution, so the cached plan is complete.
-	if g.cache != nil {
+	if cache != nil {
 		ls.setCache(PlanCacheMiss)
-		g.cache.PutWithOutputLabels(cacheScope, cacheSQL, physPlan, scalarSubs, outputLabels)
+		cache.PutWithOutputLabels(cacheScope, cacheSQL, physPlan, scalarSubs, outputLabels)
 	} else {
 		ls.setCache(PlanCacheSkip)
 	}
 	return &cascadesPlan{
+		snapshot:         so.snapshot,
 		conn:             g.c,
 		md:               md,
 		physicalPlan:     physPlan,
@@ -680,7 +686,7 @@ func (g *cascadesGenerator) computeExplainText(ctx context.Context, d *antlrgen.
 			return "", api.NewError(api.ErrCodeUnsupportedQuery,
 				"no schema metadata available")
 		}
-		plan, planErr := g.planSelectCascades(ctx, q, freshMd, false)
+		plan, planErr := g.planSelectCascades(ctx, q, freshMd, false, parseStatementOptions(d))
 		if planErr != nil {
 			return "", planErr
 		}
@@ -775,40 +781,6 @@ func (g *cascadesGenerator) planDDL(_ context.Context, stmt antlrgen.IStatementC
 			return explainStatement(statementKind(stmt), stmt)
 		},
 	}, nil
-}
-
-// dmlHasDryRunOption reports whether a DML statement carries OPTIONS (DRY RUN) ANYWHERE in
-// its parse subtree. DRY RUN is a statement-level directive, but depending on the spelling
-// the grammar attaches the trailing OPTIONS clause to different nodes: a VALUES insert puts
-// it on insertStatement.queryOptions, while an `INSERT … SELECT … OPTIONS (DRY RUN)` is
-// consumed by the inner SELECT's queryTerm.queryOptions (#simpleTable), leaving
-// insertStatement.queryOptions nil. Checking only the statement-level clause therefore
-// MISSES the INSERT…SELECT spelling — and a missed DRY RUN COMMITS the mutation, the exact
-// data-loss the option exists to prevent.
-//
-// So this walks the whole DML subtree, matching Java's AstNormalizer, which visits every
-// queryOptions node and accumulates them into one statement-level Options (DRY_RUN set at
-// AstNormalizer.java:281). Over-detection only ever previews (no mutation), so a tree-wide
-// walk fails safe; the grammar's queryOption alternatives are
-// `NOCACHE | LOG QUERY | DRY RUN | EF_SEARCH n` and DRY RUN is the only one whose omission
-// changes whether data is mutated.
-func dmlHasDryRunOption(tree antlr.Tree) bool {
-	if tree == nil {
-		return false
-	}
-	if qo, ok := tree.(antlrgen.IQueryOptionsContext); ok {
-		for _, opt := range qo.AllQueryOption() {
-			if opt != nil && opt.DRY() != nil && opt.RUN() != nil {
-				return true
-			}
-		}
-	}
-	for i := 0; i < tree.GetChildCount(); i++ {
-		if dmlHasDryRunOption(tree.GetChild(i)) {
-			return true
-		}
-	}
-	return false
 }
 
 // updateHasDefaultAssignment reports whether an UPDATE has a `SET col = DEFAULT`
@@ -918,7 +890,8 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// QUERY remain accepted-and-ignored hints. Detection walks the whole DML subtree so the
 	// INSERT…SELECT spelling — whose OPTIONS the grammar attaches to the inner SELECT, not
 	// insertStatement.queryOptions — cannot silently bypass DRY RUN and commit.
-	dryRun := dmlHasDryRunOption(dml)
+	so := parseStatementOptions(dml)
+	dryRun := so.dryRun
 
 	var logicalOp logical.LogicalOperator
 	var insStmt antlrgen.IInsertStatementContext
@@ -1284,6 +1257,9 @@ type cascadesPlan struct {
 	// → ExecuteProperties.DryRun, so the DML executor previews via the store
 	// DryRun* primitives instead of mutating. Never a connection option.
 	dryRun bool
+	// snapshot is the statement-scoped OPTIONS (ISOLATION LEVEL SNAPSHOT) flag:
+	// the statement's reads take no read-conflict ranges.
+	snapshot bool
 }
 
 // IsUpdate reports whether this is a DML plan (INSERT/UPDATE/DELETE),
@@ -1404,6 +1380,7 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		tx:             c.activeTx,
 		isUpdate:       p.IsUpdate(),
 		dryRun:         p.dryRun,
+		snapshot:       p.snapshot,
 		// The statement-stable CURRENT_TIMESTAMP-family instant is stamped
 		// ONCE here, while the statement is in flight (the driver entry
 		// point's session-clock stamp is still live). It must be captured on
@@ -1592,6 +1569,9 @@ type paginatingRows struct {
 	// ExecuteProperties.DryRun. A fresh paginatingRows per statement means it can
 	// never leak to a subsequent plain DML on the same (pooled) connection.
 	dryRun bool
+	// snapshot is the statement-scoped OPTIONS (ISOLATION LEVEL SNAPSHOT) flag:
+	// the statement's reads take no read-conflict ranges.
+	snapshot bool
 
 	// statementTime is the statement-stable CURRENT_TIMESTAMP-family
 	// instant, captured once in Execute while the statement's session-clock
@@ -1956,6 +1936,9 @@ func (r *paginatingRows) executeProps() recordlayer.ExecuteProperties {
 	// cascadesPlan), NOT a connection option — read the field, never
 	// r.conn.Options(), so it can't leak to a later plain statement.
 	props = props.WithDryRun(r.dryRun)
+	if r.snapshot {
+		props.IsolationLevel = recordlayer.SnapshotIsolation
+	}
 
 	opts := r.conn.Options()
 
@@ -2279,7 +2262,8 @@ func (r *paginatingRows) fetchPage() error {
 		defer func() {
 			r.execLog.addScanned(
 				int64(props.ScanState.RecordsScanned())-scanRecordsAtEntry,
-				props.ScanState.BytesScanned()-scanBytesAtEntry)
+				props.ScanState.BytesScanned()-scanBytesAtEntry,
+			)
 		}()
 		if len(r.scalarSubqueries) > 0 {
 			scalarResults := make(map[values.CorrelationIdentifier]any, len(r.scalarSubqueries))
@@ -5838,7 +5822,8 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 			return legSlotIndex(secondLeg, md, path)
 		}
 		if resequenced, ok := mergedInRVOrder(
-			rc, merged, firstAlias, secondAlias, len(firstCols), resolveSlot); ok {
+			rc, merged, firstAlias, secondAlias, len(firstCols), resolveSlot,
+		); ok {
 			return resequenced
 		}
 	}

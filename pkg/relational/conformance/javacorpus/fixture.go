@@ -112,8 +112,8 @@ func validatePrivateFixture(file *javayamsql.File, prefix string) (*privateFixtu
 		}
 		ins := dml.InsertStatement()
 		body, ok := ins.InsertStatementValue().(*antlrgen.InsertStatementValueValuesContext)
-		if !ok || ins.QueryOptions() != nil {
-			return nil, fmt.Errorf("factory reset/load setup must contain only INSERT VALUES without query options")
+		if !ok || ins.StatementOptions() != nil {
+			return nil, fmt.Errorf("factory reset/load setup must contain only INSERT VALUES without statement options")
 		}
 		parts := ins.TableName().FullId().AllUid()
 		if len(parts) == 0 || len(parts) > 2 || (len(parts) == 2 && functions.NormalizeIdentifier(parts[0].GetText()) != fixture.template) {

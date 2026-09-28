@@ -873,20 +873,16 @@ func aggOperandCanonicalText(ctx antlr.Tree) string {
 				// cannot fold, because the token still carries its quotes.
 				b.WriteString(functions.NormalizeIdentifier(sym.GetText()))
 				return
-			case antlrgen.RelationalParserSTRING_LITERAL:
-				// A STRING LITERAL IS DATA, NOT A NAME, and folding it here
-				// collided two aggregates that compute different things:
-				// `COUNT(CASE WHEN s='x' …)` and `COUNT(CASE WHEN s='X' …)`
-				// both rendered COUNT(CASEWHENS='X'THEN1END), and the executor
-				// keys its group slots BY THAT NAME (aggResultName), so one
-				// wrote over the other. That collision is an old known hazard
-				// at the previous naming site; this mint reintroduced it at the
-				// new one, which is what an "upper-case everything else" rule
-				// buys if `everything else` is never enumerated.
-				b.WriteString(sym.GetText())
-				return
 			}
-			b.WriteString(strings.ToUpper(sym.GetText()))
+			// Only a keyword, punctuation or unquoted identifier folds — the
+			// plan-cache text's rule. A literal (string, B64, hex, number) is
+			// DATA: the executor keys aggregate slots by this name, so
+			// `COUNT(CASE WHEN s='x' …)` and `… s='X' …` must stay distinct.
+			if foldsInCacheText(sym.GetTokenType()) {
+				b.WriteString(strings.ToUpper(sym.GetText()))
+			} else {
+				b.WriteString(sym.GetText())
+			}
 			return
 		}
 		for i := 0; i < t.GetChildCount(); i++ {

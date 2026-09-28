@@ -374,32 +374,6 @@ func TestPlanCache_ScalarSubqueryBindings(t *testing.T) {
 	}
 }
 
-// TestPlanCache_NormalizationHit verifies that SQL strings differing only
-// in case, whitespace, or comments hit the same cache entry.
-func TestPlanCache_NormalizationHit(t *testing.T) {
-	t.Parallel()
-	c := NewPlanCache(16)
-
-	plan := &stubPlan{label: "normalized"}
-	c.Put("", "SELECT * FROM foo", plan, nil)
-
-	variants := []string{
-		"select * from foo",
-		"SELECT  *  FROM  foo",
-		"  SELECT * FROM foo  ",
-		"SELECT * FROM foo -- comment",
-	}
-	for _, v := range variants {
-		got, _, ok := c.Get("", v)
-		if !ok {
-			t.Fatalf("expected cache hit for %q", v)
-		}
-		if got != plan {
-			t.Fatalf("wrong plan for %q", v)
-		}
-	}
-}
-
 // TestPlanCache_NoHashCollision verifies that distinct SQL strings
 // always return their own plans, even if they would have collided
 // under the old uint64 hash scheme.
@@ -488,12 +462,8 @@ func TestPlanCache_DifferentialModel(t *testing.T) {
 
 				for step := 0; step < 4000; step++ {
 					k := "q" + strconv.Itoa(rng.Intn(keyspace))
-					// The cache keys on scope+delim+normalizeSQL(k) internally
-					// (scope "" here); the oracle must do the same. normalizeSQL
-					// is 1:1 over this key space (distinct integers → distinct
-					// normalized keys), so the stored stubPlan.label (raw k) is
-					// unambiguous on a hit.
-					nk := cacheKey{scope: "", sql: normalizeSQL(k)}
+					// The cache keys on (scope, key text) verbatim.
+					nk := cacheKey{scope: "", sql: k}
 
 					switch r := rng.Intn(10); {
 					case r < 5: // Put (50%)

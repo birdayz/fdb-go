@@ -413,7 +413,7 @@ func TestPlannerCapHit_ProductionSelectPathSQLSTATE(t *testing.T) {
 	q := parseQuery(t, "SELECT a.id FROM orders a, orders b, orders c, orders d, orders e, orders f "+
 		"WHERE a.id = b.id AND b.id = c.id AND c.id = d.id AND d.id = e.id AND e.id = f.id")
 
-	plan, err := g.planSelectCascades(context.Background(), q, md, false)
+	plan, err := g.planSelectCascades(context.Background(), q, md, false, statementOptions{})
 	if err == nil {
 		t.Fatalf("planning converged within the task cap; the query no longer exercises the cap "+
 			"(plan = %v) — widen the join rather than deleting this test", plan)

@@ -382,11 +382,11 @@ type RelationalParserListener interface {
 	// EnterLimitClauseAtom is called when entering the limitClauseAtom production.
 	EnterLimitClauseAtom(c *LimitClauseAtomContext)
 
-	// EnterQueryOptions is called when entering the queryOptions production.
-	EnterQueryOptions(c *QueryOptionsContext)
+	// EnterStatementOptions is called when entering the statementOptions production.
+	EnterStatementOptions(c *StatementOptionsContext)
 
-	// EnterQueryOption is called when entering the queryOption production.
-	EnterQueryOption(c *QueryOptionContext)
+	// EnterStatementOption is called when entering the statementOption production.
+	EnterStatementOption(c *StatementOptionContext)
 
 	// EnterStartTransaction is called when entering the startTransaction production.
 	EnterStartTransaction(c *StartTransactionContext)
@@ -1219,11 +1219,11 @@ type RelationalParserListener interface {
 	// ExitLimitClauseAtom is called when exiting the limitClauseAtom production.
 	ExitLimitClauseAtom(c *LimitClauseAtomContext)
 
-	// ExitQueryOptions is called when exiting the queryOptions production.
-	ExitQueryOptions(c *QueryOptionsContext)
+	// ExitStatementOptions is called when exiting the statementOptions production.
+	ExitStatementOptions(c *StatementOptionsContext)
 
-	// ExitQueryOption is called when exiting the queryOption production.
-	ExitQueryOption(c *QueryOptionContext)
+	// ExitStatementOption is called when exiting the statementOption production.
+	ExitStatementOption(c *StatementOptionContext)
 
 	// ExitStartTransaction is called when exiting the startTransaction production.
 	ExitStartTransaction(c *StartTransactionContext)

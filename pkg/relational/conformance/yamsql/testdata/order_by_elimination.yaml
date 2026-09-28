@@ -49,10 +49,10 @@ schema_template: |
   CREATE TABLE rp (
     id BIGINT,
     region STRING,
-    plan STRING,
+    plan_name STRING,
     PRIMARY KEY (id)
   )
-  CREATE INDEX idx_region_plan ON rp (region, plan)
+  CREATE INDEX idx_region_plan ON rp (region, plan_name)
 setup:
   - INSERT INTO t VALUES (3, 10, 'c'), (1, 30, 'a'), (2, 20, 'b'), (4, 40, 'd'), (5, 15, 'e')
   - INSERT INTO ab VALUES (1, 10, 100), (2, 20, 200), (1, 20, 150), (2, 10, 250), (1, 30, 130)
@@ -185,7 +185,7 @@ tests:
   # Composite secondary-index range + ORDER BY (region, plan)
   # -------------------------------------------------------------------
 
-  - query: SELECT id, region, plan FROM rp WHERE region = 'us' AND plan > 'a' ORDER BY region, plan
+  - query: SELECT id, region, plan_name FROM rp WHERE region = 'us' AND plan_name > 'a' ORDER BY region, plan_name
     plan_contains: "IndexScan(IDX_REGION_PLAN, [=, <>] COVERING)"
     plan_not_contains: "InMemorySort"
     rows:
@@ -196,7 +196,7 @@ tests:
   # ORDER BY id on a secondary-index scan: id is in PK suffix, and
   # natural order is (region, plan, id). ORDER BY [id] alone is NOT
   # a prefix of (region, plan, id) — must sort.
-  - query: SELECT id FROM rp WHERE region = 'us' AND plan > 'a' ORDER BY id
+  - query: SELECT id FROM rp WHERE region = 'us' AND plan_name > 'a' ORDER BY id
     plan_contains: "Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], IndexScan(IDX_REGION_PLAN, [=, <>])))"
     rows:
       - [1]
@@ -528,7 +528,7 @@ tests:
   # equated, effective naturalOrder is (plan, id). ORDER BY plan
   # matches → sort eliminated. The DESC twin below uses the same
   # equality-prefix relaxation with a reverse secondary-index scan.
-  - query: SELECT id, region, plan FROM rp WHERE region = 'us' ORDER BY plan
+  - query: SELECT id, region, plan_name FROM rp WHERE region = 'us' ORDER BY plan_name
     plan_contains: "IndexScan(IDX_REGION_PLAN, [=, *] COVERING)"
     plan_not_contains: "InMemorySort"
     rows:
@@ -584,7 +584,7 @@ tests:
   # plan DESC, id DESC). Within region='us' and plan='pro' (two
   # rows), id=3 comes before id=1 under reverse; then region='us'
   # + plan='free' trails.
-  - query: SELECT id, region, plan FROM rp WHERE region = 'us' ORDER BY plan DESC
+  - query: SELECT id, region, plan_name FROM rp WHERE region = 'us' ORDER BY plan_name DESC
     plan_contains: "IndexScan(IDX_REGION_PLAN, [=, *] COVERING) REVERSE"
     plan_not_contains: "InMemorySort"
     rows:
@@ -602,7 +602,7 @@ tests:
   # the un-pushed shape out of REWRITING and the covering member is then never
   # offered to PLANNING at all. That reachability half is pinned in
   # embedded.TestLimitOverProjectionKeepsTheCoveringRewrite.
-  - query: SELECT id FROM rp WHERE region = 'eu' ORDER BY plan DESC LIMIT 1
+  - query: SELECT id FROM rp WHERE region = 'eu' ORDER BY plan_name DESC LIMIT 1
     plan_contains: "Limit(1, Project([_current.ID#0], IndexScan(IDX_REGION_PLAN, [=, *] COVERING) REVERSE))"
     plan_not_contains: "InMemorySort"
     rows:

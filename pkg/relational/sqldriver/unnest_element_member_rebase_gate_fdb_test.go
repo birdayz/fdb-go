@@ -71,8 +71,8 @@ func TestFDB_UnnestElementMemberRebaseGate(t *testing.T) {
 	if _, err := setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE uerg_tmpl "+
 			"CREATE TYPE AS STRUCT souter (k BIGINT) "+
-			"CREATE TYPE AS STRUCT deep (dk BIGINT) "+
-			"CREATE TYPE AS STRUCT elem (ek BIGINT, d deep) "+
+			"CREATE TYPE AS STRUCT deeper (dk BIGINT) "+
+			"CREATE TYPE AS STRUCT elem (ek BIGINT, d deeper) "+
 			"CREATE TABLE t (s souter, id BIGINT, arr elem ARRAY, PRIMARY KEY (id))"); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}

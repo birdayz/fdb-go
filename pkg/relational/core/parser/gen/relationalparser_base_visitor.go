@@ -507,11 +507,11 @@ func (v *BaseRelationalParserVisitor) VisitLimitClauseAtom(ctx *LimitClauseAtomC
 	return v.VisitChildren(ctx)
 }
 
-func (v *BaseRelationalParserVisitor) VisitQueryOptions(ctx *QueryOptionsContext) interface{} {
+func (v *BaseRelationalParserVisitor) VisitStatementOptions(ctx *StatementOptionsContext) interface{} {
 	return v.VisitChildren(ctx)
 }
 
-func (v *BaseRelationalParserVisitor) VisitQueryOption(ctx *QueryOptionContext) interface{} {
+func (v *BaseRelationalParserVisitor) VisitStatementOption(ctx *StatementOptionContext) interface{} {
 	return v.VisitChildren(ctx)
 }
 

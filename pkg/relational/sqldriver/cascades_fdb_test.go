@@ -2071,8 +2071,8 @@ func TestFDB_CascadesSortPKTiebreaker(t *testing.T) {
 	tmpl := fmt.Sprintf("sorttie_tmpl_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE rp (id BIGINT, region STRING, plan STRING, PRIMARY KEY (id)) "+
-			"CREATE INDEX idx_region_plan ON rp (region, plan)", tmpl)); err != nil {
+			"CREATE TABLE rp (id BIGINT, region STRING, plan_name STRING, PRIMARY KEY (id)) "+
+			"CREATE INDEX idx_region_plan ON rp (region, plan_name)", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -2100,7 +2100,7 @@ func TestFDB_CascadesSortPKTiebreaker(t *testing.T) {
 
 	// DESC sort: tied plan='pro' should have id=3 before id=1 (PK DESC tiebreaker).
 	rows, err := db.QueryContext(ctx,
-		"SELECT id, region, plan FROM rp WHERE region = 'us' ORDER BY plan DESC")
+		"SELECT id, region, plan_name FROM rp WHERE region = 'us' ORDER BY plan_name DESC")
 	if err != nil {
 		t.Fatalf("ORDER BY plan DESC: %v", err)
 	}
@@ -2142,7 +2142,7 @@ func TestFDB_CascadesSortPKTiebreaker(t *testing.T) {
 	// ASC sort: tied plan='free' has only id=2, tied plan='pro' should
 	// have id=1 before id=3 (PK ASC tiebreaker).
 	rows2, err := db.QueryContext(ctx,
-		"SELECT id, region, plan FROM rp WHERE region = 'us' ORDER BY plan ASC")
+		"SELECT id, region, plan_name FROM rp WHERE region = 'us' ORDER BY plan_name ASC")
 	if err != nil {
 		t.Fatalf("ORDER BY plan ASC: %v", err)
 	}

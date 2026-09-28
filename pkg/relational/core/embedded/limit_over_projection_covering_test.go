@@ -9,15 +9,15 @@ import (
 // so this pin runs without the FDB conformance harness: a composite secondary
 // index whose entry already carries the projected column, which is what makes
 // the projection coverable.
-const limitCoveringDDL = `CREATE TABLE rp (id BIGINT, region STRING, plan BIGINT, PRIMARY KEY (id))
-CREATE INDEX idx_region_plan ON rp(region, plan)`
+const limitCoveringDDL = `CREATE TABLE rp (id BIGINT, region STRING, plan_name BIGINT, PRIMARY KEY (id))
+CREATE INDEX idx_region_plan ON rp(region, plan_name)`
 
 // TestLimitOverProjectionKeepsTheCoveringRewrite pins the reachability of the
 // covering plan under a LIMIT, on the axis that a whole-plan text assertion in
 // the yamsql corpus cannot state: WHY the covering member is in the memo group
 // at all.
 //
-// `SELECT id FROM rp WHERE region = 'eu' ORDER BY plan DESC LIMIT 1` is
+// `SELECT id FROM rp WHERE region = 'eu' ORDER BY plan_name DESC LIMIT 1` is
 // coverable — IDX_REGION_PLAN's entry carries ID, so the projection needs no
 // record fetch. Go used to emit the NON-covering plan
 // `Project([_current.ID#0], Limit(1, IndexScan(IDX_REGION_PLAN, [=, *]) REVERSE))`
@@ -39,7 +39,7 @@ CREATE INDEX idx_region_plan ON rp(region, plan)`
 // cost-model change: the two plans have never been costed against each other.
 func TestLimitOverProjectionKeepsTheCoveringRewrite(t *testing.T) {
 	t.Parallel()
-	const sql = `SELECT id FROM rp WHERE region = 'eu' ORDER BY plan DESC LIMIT 1`
+	const sql = `SELECT id FROM rp WHERE region = 'eu' ORDER BY plan_name DESC LIMIT 1`
 
 	got := explainWithOptions(t, sql, limitCoveringDDL, nil)
 	const want = "Limit(1, Project([_current.ID#0], IndexScan(IDX_REGION_PLAN, [=, *] COVERING) REVERSE))"

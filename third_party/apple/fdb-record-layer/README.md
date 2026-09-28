@@ -6,8 +6,9 @@ Copyright Apple Inc. and the FoundationDB project authors, licensed under the
 Apache License, Version 2.0.
 
 The pinned upstream tag is recorded in [`VERSION`](VERSION). During the 4.14.2.0
-migration `like.yamsql` alone is already at 4.14.2.0, because Go's LIKE follows
-that target; the rest of the tree moves at the full re-sync below.
+migration `like.yamsql` and `struct-type-nullability-variants.yamsql` are already at
+4.14.2.0, because Go's LIKE and comment lexing follow that target; the rest of the
+tree moves at the full re-sync below.
 
 ## Provenance
 

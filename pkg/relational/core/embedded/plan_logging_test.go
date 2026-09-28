@@ -77,7 +77,7 @@ func TestPlanLogging_MissThenHit(t *testing.T) {
 
 	for i := 0; i < 2; i++ {
 		q := parseQuery(t, sql)
-		if _, err := g.planSelectCascades(ctx, q, md, true); err != nil {
+		if _, err := g.planSelectCascades(ctx, q, md, true, statementOptions{}); err != nil {
 			t.Fatalf("plan %d: %v", i, err)
 		}
 	}
@@ -130,7 +130,7 @@ func TestPlanLogging_LimitIsCacheable(t *testing.T) {
 	cap := &captureLogger{}
 	g, md := newLoggingGenerator(t, ordersSchema, cap)
 	q := parseQuery(t, "SELECT id, amount FROM orders WHERE id = 1 LIMIT 5")
-	if _, err := g.planSelectCascades(context.Background(), q, md, true); err != nil {
+	if _, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{}); err != nil {
 		t.Fatalf("plan: %v", err)
 	}
 	if len(cap.events) != 1 {
@@ -146,7 +146,7 @@ func TestPlanLogging_LimitIsCacheable(t *testing.T) {
 
 	// Re-plan the identical text → cache HIT.
 	q2 := parseQuery(t, "SELECT id, amount FROM orders WHERE id = 1 LIMIT 5")
-	if _, err := g.planSelectCascades(context.Background(), q2, md, true); err != nil {
+	if _, err := g.planSelectCascades(context.Background(), q2, md, true, statementOptions{}); err != nil {
 		t.Fatalf("re-plan: %v", err)
 	}
 	if len(cap.events) != 2 {
@@ -164,7 +164,7 @@ func TestPlanLogging_SkipWhenNoCache(t *testing.T) {
 	g.cache = nil // disable cache
 	g.c.planCache = nil
 	q := parseQuery(t, "SELECT id, amount FROM orders WHERE id = 1")
-	if _, err := g.planSelectCascades(context.Background(), q, md, true); err != nil {
+	if _, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{}); err != nil {
 		t.Fatalf("plan: %v", err)
 	}
 	if len(cap.events) != 1 {
@@ -184,7 +184,7 @@ func TestPlanLogging_ErrorIsInconclusive(t *testing.T) {
 	g, md := newLoggingGenerator(t, ordersSchema, cap)
 	// References a column that doesn't exist → validation/planning error.
 	q := parseQuery(t, "SELECT nonexistent_col FROM orders")
-	if _, err := g.planSelectCascades(context.Background(), q, md, true); err == nil {
+	if _, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{}); err == nil {
 		t.Fatalf("expected an error for unknown column")
 	}
 	if len(cap.events) != 1 {
@@ -208,7 +208,7 @@ func TestPlanLogging_SlowQueryFlag(t *testing.T) {
 	g, md := newLoggingGenerator(t, ordersSchema, cap)
 	g.c.slowQueryThresholdMicros = 1 // 1µs: any real planning exceeds it
 	q := parseQuery(t, "SELECT id FROM orders WHERE id = 1")
-	if _, err := g.planSelectCascades(context.Background(), q, md, true); err != nil {
+	if _, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{}); err != nil {
 		t.Fatalf("plan: %v", err)
 	}
 	if !cap.events[0].SlowQuery {
@@ -219,7 +219,7 @@ func TestPlanLogging_SlowQueryFlag(t *testing.T) {
 	g2, md2 := newLoggingGenerator(t, ordersSchema, cap2)
 	g2.c.slowQueryThresholdMicros = 1 << 40 // absurdly high
 	q2 := parseQuery(t, "SELECT id FROM orders WHERE id = 1")
-	if _, err := g2.planSelectCascades(context.Background(), q2, md2, true); err != nil {
+	if _, err := g2.planSelectCascades(context.Background(), q2, md2, true, statementOptions{}); err != nil {
 		t.Fatalf("plan: %v", err)
 	}
 	if cap2.events[0].SlowQuery {
@@ -232,7 +232,7 @@ func TestPlanLogging_NilLogger(t *testing.T) {
 	// No logger: planning must work and the nil-scope path must be safe.
 	g, md := newLoggingGenerator(t, ordersSchema, nil)
 	q := parseQuery(t, "SELECT id FROM orders WHERE id = 1")
-	if _, err := g.planSelectCascades(context.Background(), q, md, true); err != nil {
+	if _, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{}); err != nil {
 		t.Fatalf("plan with nil logger: %v", err)
 	}
 }
@@ -243,7 +243,7 @@ func TestPlanLogging_ExplainDoesNotLog(t *testing.T) {
 	g, md := newLoggingGenerator(t, ordersSchema, cap)
 	q := parseQuery(t, "SELECT id FROM orders WHERE id = 1")
 	// logMetrics=false simulates the EXPLAIN re-entry from computeExplainText.
-	if _, err := g.planSelectCascades(context.Background(), q, md, false); err != nil {
+	if _, err := g.planSelectCascades(context.Background(), q, md, false, statementOptions{}); err != nil {
 		t.Fatalf("plan: %v", err)
 	}
 	if len(cap.events) != 0 {
@@ -319,7 +319,7 @@ func TestNestedDerivedArithmetic_TypeSurvivesUnmergedProjectionSpine(t *testing.
 			g, md := newLoggingGenerator(t, "CREATE TABLE t_nd8 (id BIGINT, val BIGINT, PRIMARY KEY (id))", &captureLogger{})
 			g.c.SetOptions(api.NewOptionsBuilder().Set(api.OptDisabledPlannerRules, tc.disabled).Build())
 			q := parseQuery(t, tc.sql)
-			p, err := g.planSelectCascades(context.Background(), q, md, true)
+			p, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{})
 			if err != nil {
 				t.Fatalf("plan: %v", err)
 			}
@@ -372,7 +372,7 @@ func TestJoinDerivedAggregate_LegOrdinalNeverIndexesFlattenedColumns(t *testing.
 		"CREATE TABLE a_md (id BIGINT, s STRING, PRIMARY KEY (id)) CREATE TABLE b_md (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 		&captureLogger{})
 	q := parseQuery(t, "SELECT a.s, d.total FROM a_md AS a, (SELECT SUM(v) AS total FROM b_md) AS d")
-	p, err := g.planSelectCascades(context.Background(), q, md, true)
+	p, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{})
 	if err != nil {
 		t.Fatalf("join-with-derived-aggregate must plan (it does today; a regression here is a planner bug, not a skip): %v", err)
 	}
@@ -406,7 +406,7 @@ func TestJoinDerivedCTE_QOVColumnsTypeThroughQualifiedKeys(t *testing.T) {
 		"CREATE TABLE a_md (id BIGINT, s STRING, PRIMARY KEY (id)) CREATE TABLE b_md (id BIGINT, v BIGINT, y BIGINT, PRIMARY KEY (id))",
 		&captureLogger{})
 	q := parseQuery(t, "WITH d AS (SELECT v * 2 AS foo, y * 2 AS bar FROM b_md) SELECT a.s, d.foo, d.bar FROM a_md AS a, d")
-	p, err := g.planSelectCascades(context.Background(), q, md, true)
+	p, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{})
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
@@ -443,7 +443,7 @@ func TestJoinDerivedDupName_SlotIdentitySurvivesCollision(t *testing.T) {
 		"CREATE TABLE a_md (id BIGINT, s STRING, PRIMARY KEY (id)) CREATE TABLE b_md (id BIGINT, v BIGINT, y STRING, PRIMARY KEY (id))",
 		&captureLogger{})
 	q := parseQuery(t, "WITH d AS (SELECT v * 2 AS foo, y AS foo FROM b_md) SELECT a.id, d.foo FROM a_md AS a, d")
-	p, err := g.planSelectCascades(context.Background(), q, md, true)
+	p, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{})
 	if err != nil {
 		// Duplicate output names may legitimately be rejected at planning —
 		// then there is no metadata to mis-type and the collision cannot
@@ -481,7 +481,7 @@ func TestLeftJoinDerived_InheritanceNeverUnNullExtends(t *testing.T) {
 	// derivation — the exact shape whose NoNulls must not survive the
 	// LEFT JOIN's null extension.
 	q := parseQuery(t, "WITH d AS (SELECT id AS bid, EXISTS (SELECT 1 FROM b_md AS c WHERE c.id = b_md.id) AS foo FROM b_md) SELECT a.id, d.foo FROM a_md AS a LEFT JOIN d ON a.id = d.bid")
-	p, err := g.planSelectCascades(context.Background(), q, md, true)
+	p, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{})
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
@@ -512,7 +512,7 @@ func TestCrossJoinDerivedExists_KeepsNoNulls(t *testing.T) {
 		"CREATE TABLE a_md (id BIGINT, s STRING, PRIMARY KEY (id)) CREATE TABLE b_md (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 		&captureLogger{})
 	q := parseQuery(t, "WITH d AS (SELECT EXISTS (SELECT 1 FROM b_md AS c WHERE c.id = b_md.id) AS foo FROM b_md) SELECT d.foo FROM a_md AS a, d")
-	p, err := g.planSelectCascades(context.Background(), q, md, true)
+	p, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{})
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
@@ -542,7 +542,7 @@ func TestJoinDerivedDottedName_OrdinalUnshifted(t *testing.T) {
 		"CREATE TABLE a_md (id BIGINT, s STRING, PRIMARY KEY (id)) CREATE TABLE b_md (id BIGINT, v BIGINT, y STRING, PRIMARY KEY (id))",
 		&captureLogger{})
 	q := parseQuery(t, "WITH d AS (SELECT y AS \"X.Y\", v * 2 AS foo, y AS bar FROM b_md) SELECT d.foo FROM a_md AS a, d")
-	p, err := g.planSelectCascades(context.Background(), q, md, true)
+	p, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{})
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
@@ -573,7 +573,7 @@ func TestNestedFullOuter_AncestorNullExtensionReachesLeg(t *testing.T) {
 		"CREATE TABLE a_md (id BIGINT, s STRING, PRIMARY KEY (id)) CREATE TABLE b_md (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE c_md (id BIGINT, PRIMARY KEY (id))",
 		&captureLogger{})
 	q := parseQuery(t, "WITH d AS (SELECT id AS bid, EXISTS (SELECT 1 FROM b_md AS x WHERE x.id = b_md.id) AS foo FROM b_md) SELECT d.foo FROM a_md AS a JOIN d ON a.id = d.bid FULL OUTER JOIN c_md AS c ON a.id = c.id")
-	p, err := g.planSelectCascades(context.Background(), q, md, true)
+	p, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{})
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}

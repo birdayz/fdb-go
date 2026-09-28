@@ -615,6 +615,7 @@ go_test(
         "star_body_cte_join_leg_fdb_test.go",
         "star_expansion_join_probe_test.go",
         "star_group_by_expansion_fdb_test.go",
+        "statement_options_fdb_test.go",
         "statistics_fdb_test.go",
         "statistics_join_order_fdb_test.go",
         "statistics_plancache_fdb_test.go",

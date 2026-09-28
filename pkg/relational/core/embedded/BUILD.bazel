@@ -36,6 +36,7 @@ go_library(
         "select_helpers.go",
         "select_parser.go",
         "serializer_options.go",
+        "statement_options.go",
         "statistics_reader.go",
         "stmt.go",
         "subquery_clause.go",
@@ -479,6 +480,7 @@ go_test(
         "index_aggregates_in_graph_test.go",
         "index_ddl_graph_helper_test.go",
         "index_ddl_resolver_arms_test.go",
+        "statement_options.go",
     ],
     deps = [
         "//gen",

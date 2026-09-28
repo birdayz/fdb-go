@@ -2962,7 +2962,7 @@ shape:     RecordQueryFetchFromPartialRecordPlan
 shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryCoveringIndexPlan
 === composite_secondary_index_prefix_pushdown.yaml#2
-sql:   SELECT id FROM rp WHERE plan = 'pro' ORDER BY id
+sql:   SELECT id FROM rp WHERE plan_name = 'pro' ORDER BY id
 plan:  Project([_current.ID#0], PredicatesFilter(Scan(RP), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
@@ -2974,12 +2974,12 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryIndexPlan
 === composite_secondary_index_prefix_pushdown.yaml#4
-sql:   SELECT id FROM rp WHERE region = 'us' AND plan = 'pro' ORDER BY id
+sql:   SELECT id FROM rp WHERE region = 'us' AND plan_name = 'pro' ORDER BY id
 plan:  Project([_current.ID#0], IndexScan(IDX_REGION_PLAN, [=, =] COVERING))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
 === composite_secondary_index_prefix_pushdown.yaml#5
-sql:   SELECT id FROM rp WHERE region = 'us' AND plan = 'pro' AND tier = 1 ORDER BY id
+sql:   SELECT id FROM rp WHERE region = 'us' AND plan_name = 'pro' AND tier = 1 ORDER BY id
 plan:  Project([_current.ID#0], IndexScan(IDX_REGION_PLAN_TIER, [=, =, =] COVERING))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
@@ -3399,13 +3399,13 @@ plan:  Project([_current.ID#0, _current.V#3], IndexScan(IDX_V, [<>] COVERING))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
 === covering_index_pushdown.yaml#7
-sql:   SELECT id, region, plan FROM t2 WHERE region = 'us' AND plan = 'pro' ORDER BY id
-plan:  Project([_current.ID#0, _current.REGION#1, _current.PLAN#2], IndexScan(IDX_REGION_PLAN, [=, =] COVERING))
+sql:   SELECT id, region, plan_name FROM t2 WHERE region = 'us' AND plan_name = 'pro' ORDER BY id
+plan:  Project([_current.ID#0, _current.REGION#1, _current.PLAN_NAME#2], IndexScan(IDX_REGION_PLAN, [=, =] COVERING))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
 === covering_index_pushdown.yaml#8
-sql:   SELECT region, plan FROM t2 WHERE region = 'us' AND plan > 'f' ORDER BY plan
-plan:  Project([_current.REGION#1, _current.PLAN#2], IndexScan(IDX_REGION_PLAN, [=, <>] COVERING))
+sql:   SELECT region, plan_name FROM t2 WHERE region = 'us' AND plan_name > 'f' ORDER BY plan_name
+plan:  Project([_current.REGION#1, _current.PLAN_NAME#2], IndexScan(IDX_REGION_PLAN, [=, <>] COVERING))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
 === covering_index_pushdown.yaml#9
@@ -8739,13 +8739,13 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === in_list_pushdown.yaml#34
-sql:   SELECT id, region, plan FROM tp WHERE region = 'us' AND plan IN ('pro', 'free') ORDER BY id
-plan:  Project([_current.ID#0, _current.REGION#1, _current.PLAN#2], InUnion(IndexScan(IDX_REGION_PLAN, [=, =]), bindings=1, ASC))
+sql:   SELECT id, region, plan_name FROM tp WHERE region = 'us' AND plan_name IN ('pro', 'free') ORDER BY id
+plan:  Project([_current.ID#0, _current.REGION#1, _current.PLAN_NAME#2], InUnion(IndexScan(IDX_REGION_PLAN, [=, =]), bindings=1, ASC))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInUnionPlan
 shape:     RecordQueryIndexPlan
 === in_list_pushdown.yaml#35
-sql:   SELECT id FROM tp WHERE plan = 'pro' AND region IN ('us', 'eu') ORDER BY id
+sql:   SELECT id FROM tp WHERE plan_name = 'pro' AND region IN ('us', 'eu') ORDER BY id
 plan:  Project([_current.ID#0], InUnion(IndexScan(IDX_REGION_PLAN, [=, =]), bindings=1, ASC))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInUnionPlan
@@ -13657,12 +13657,12 @@ plan:  Project([_current.A#0, _current.B#1], Scan(AB, [=]) REVERSE)
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === order_by_elimination.yaml#11
-sql:   SELECT id, region, plan FROM rp WHERE region = 'us' AND plan > 'a' ORDER BY region, plan
-plan:  Project([_current.ID#0, _current.REGION#1, _current.PLAN#2], IndexScan(IDX_REGION_PLAN, [=, <>] COVERING))
+sql:   SELECT id, region, plan_name FROM rp WHERE region = 'us' AND plan_name > 'a' ORDER BY region, plan_name
+plan:  Project([_current.ID#0, _current.REGION#1, _current.PLAN_NAME#2], IndexScan(IDX_REGION_PLAN, [=, <>] COVERING))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
 === order_by_elimination.yaml#12
-sql:   SELECT id FROM rp WHERE region = 'us' AND plan > 'a' ORDER BY id
+sql:   SELECT id FROM rp WHERE region = 'us' AND plan_name > 'a' ORDER BY id
 plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], IndexScan(IDX_REGION_PLAN, [=, <>])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
@@ -13811,8 +13811,8 @@ plan:  Project([_current.A#0, _current.B#1], Scan(AB, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === order_by_elimination.yaml#39
-sql:   SELECT id, region, plan FROM rp WHERE region = 'us' ORDER BY plan
-plan:  Project([_current.ID#0, _current.REGION#1, _current.PLAN#2], IndexScan(IDX_REGION_PLAN, [=, *] COVERING))
+sql:   SELECT id, region, plan_name FROM rp WHERE region = 'us' ORDER BY plan_name
+plan:  Project([_current.ID#0, _current.REGION#1, _current.PLAN_NAME#2], IndexScan(IDX_REGION_PLAN, [=, *] COVERING))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
 === order_by_elimination.yaml#40
@@ -13833,12 +13833,12 @@ shape: RecordQueryLimitPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryCoveringIndexPlan
 === order_by_elimination.yaml#43
-sql:   SELECT id, region, plan FROM rp WHERE region = 'us' ORDER BY plan DESC
-plan:  Project([_current.ID#0, _current.REGION#1, _current.PLAN#2], IndexScan(IDX_REGION_PLAN, [=, *] COVERING) REVERSE)
+sql:   SELECT id, region, plan_name FROM rp WHERE region = 'us' ORDER BY plan_name DESC
+plan:  Project([_current.ID#0, _current.REGION#1, _current.PLAN_NAME#2], IndexScan(IDX_REGION_PLAN, [=, *] COVERING) REVERSE)
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
 === order_by_elimination.yaml#44
-sql:   SELECT id FROM rp WHERE region = 'eu' ORDER BY plan DESC LIMIT 1
+sql:   SELECT id FROM rp WHERE region = 'eu' ORDER BY plan_name DESC LIMIT 1
 plan:  Limit(1, Project([_current.ID#0], IndexScan(IDX_REGION_PLAN, [=, *] COVERING) REVERSE))
 shape: RecordQueryLimitPlan
 shape:   RecordQueryProjectionPlan
@@ -16692,12 +16692,12 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === secondary_index_pushdown.yaml#15
-sql:   SELECT id, amount FROM t2 WHERE region = 'us' AND plan = 'pro' ORDER BY id
+sql:   SELECT id, amount FROM t2 WHERE region = 'us' AND plan_name = 'pro' ORDER BY id
 plan:  Project([_current.ID#0, _current.AMOUNT#3], IndexScan(IDX_REGION_PLAN, [=, =]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryIndexPlan
 === secondary_index_pushdown.yaml#16
-sql:   SELECT id FROM t2 WHERE plan = 'free' AND region = 'eu'
+sql:   SELECT id FROM t2 WHERE plan_name = 'free' AND region = 'eu'
 plan:  Project([_current.ID#0], IndexScan(IDX_REGION_PLAN, [=, =] COVERING))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
@@ -16708,25 +16708,25 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryIndexPlan
 === secondary_index_pushdown.yaml#18
-sql:   SELECT id FROM t2 WHERE region = 'eu' AND plan = 'pro' AND amount > 100
+sql:   SELECT id FROM t2 WHERE region = 'eu' AND plan_name = 'pro' AND amount > 100
 plan:  Project([_current.ID#0], PredicatesFilter(IndexScan(IDX_REGION_PLAN, [=, =]), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryIndexPlan
 === secondary_index_pushdown.yaml#19
-sql:   SELECT id FROM t2 WHERE region = 'asia' AND plan = 'pro'
+sql:   SELECT id FROM t2 WHERE region = 'asia' AND plan_name = 'pro'
 plan:  Project([_current.ID#0], IndexScan(IDX_REGION_PLAN, [=, =] COVERING))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#20
-sql:   UPDATE t2 SET amount = 999 WHERE region = 'us' AND plan = 'pro'
+sql:   UPDATE t2 SET amount = 999 WHERE region = 'us' AND plan_name = 'pro'
 plan:  Update(T2, [1 transforms], Fetch(UnorderedPrimaryKeyDistinct(IndexScan(IDX_REGION_PLAN, [=, =] COVERING))))
 shape: RecordQueryUpdatePlan
 shape:   RecordQueryFetchFromPartialRecordPlan
 shape:     RecordQueryUnorderedPrimaryKeyDistinctPlan
 shape:       RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#21
-sql:   SELECT id, amount FROM t2 WHERE region = 'us' AND plan = 'pro' ORDER BY id
+sql:   SELECT id, amount FROM t2 WHERE region = 'us' AND plan_name = 'pro' ORDER BY id
 plan:  Project([_current.ID#0, _current.AMOUNT#3], IndexScan(IDX_REGION_PLAN, [=, =]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryIndexPlan
@@ -16736,7 +16736,7 @@ plan:  Project([_current.AMOUNT#3], Scan(T2, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === secondary_index_pushdown.yaml#23
-sql:   DELETE FROM t2 WHERE region = 'eu' AND plan = 'free'
+sql:   DELETE FROM t2 WHERE region = 'eu' AND plan_name = 'free'
 plan:  Delete(T2, IndexScan(IDX_REGION_PLAN, [=, =]))
 shape: RecordQueryDeletePlan
 shape:   RecordQueryIndexPlan
@@ -16752,7 +16752,7 @@ plan:  Project([_current.ID#0], IndexScan(IDX_STATUS, [=] COVERING))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#26
-sql:   SELECT id FROM t2 WHERE region = 'us' AND plan = NULL
+sql:   SELECT id FROM t2 WHERE region = 'us' AND plan_name = NULL
 plan:  Project([_current.ID#0], IndexScan(IDX_REGION_PLAN, [=, =] COVERING))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
@@ -16856,49 +16856,49 @@ plan:  Delete(T2, Scan(T2))
 shape: RecordQueryDeletePlan
 shape:   RecordQueryScanPlan
 === secondary_index_pushdown.yaml#45
-sql:   SELECT id FROM t2 WHERE region = 'us' AND plan > 'a' ORDER BY id
+sql:   SELECT id FROM t2 WHERE region = 'us' AND plan_name > 'a' ORDER BY id
 plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], IndexScan(IDX_REGION_PLAN, [=, <>])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryIndexPlan
 === secondary_index_pushdown.yaml#46
-sql:   SELECT id FROM t2 WHERE region = 'us' AND plan >= 'a' AND plan <= 'b' ORDER BY id
+sql:   SELECT id FROM t2 WHERE region = 'us' AND plan_name >= 'a' AND plan_name <= 'b' ORDER BY id
 plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], IndexScan(IDX_REGION_PLAN, [=, <>])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryIndexPlan
 === secondary_index_pushdown.yaml#47
-sql:   SELECT id FROM t2 WHERE region = 'eu' AND plan < 'c'
+sql:   SELECT id FROM t2 WHERE region = 'eu' AND plan_name < 'c'
 plan:  Project([_current.ID#0], IndexScan(IDX_REGION_PLAN, [=, <>] COVERING))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#48
-sql:   SELECT id FROM t2 WHERE region = 'us' AND plan > 'z'
+sql:   SELECT id FROM t2 WHERE region = 'us' AND plan_name > 'z'
 plan:  Project([_current.ID#0], IndexScan(IDX_REGION_PLAN, [=, <>] COVERING))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#49
-sql:   SELECT id FROM t2 WHERE region = 'us' AND plan >= 'a' AND amount > 60 ORDER BY id
+sql:   SELECT id FROM t2 WHERE region = 'us' AND plan_name >= 'a' AND amount > 60 ORDER BY id
 plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], PredicatesFilter(IndexScan(IDX_REGION_PLAN, [=, <>]), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryIndexPlan
 === secondary_index_pushdown.yaml#50
-sql:   SELECT id FROM t2 WHERE plan > 'a' ORDER BY id
+sql:   SELECT id FROM t2 WHERE plan_name > 'a' ORDER BY id
 plan:  Project([_current.ID#0], PredicatesFilter(Scan(T2), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === secondary_index_pushdown.yaml#51
-sql:   UPDATE t2 SET amount = 777 WHERE region = 'us' AND plan >= 'b'
+sql:   UPDATE t2 SET amount = 777 WHERE region = 'us' AND plan_name >= 'b'
 plan:  Update(T2, [1 transforms], Fetch(UnorderedPrimaryKeyDistinct(IndexScan(IDX_REGION_PLAN, [=, <>] COVERING))))
 shape: RecordQueryUpdatePlan
 shape:   RecordQueryFetchFromPartialRecordPlan
 shape:     RecordQueryUnorderedPrimaryKeyDistinctPlan
 shape:       RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#52
-sql:   SELECT id, amount FROM t2 WHERE region = 'us' AND plan >= 'b' ORDER BY id
+sql:   SELECT id, amount FROM t2 WHERE region = 'us' AND plan_name >= 'b' ORDER BY id
 plan:  Project([_current.ID#0, _current.AMOUNT#3], InMemorySort([_current.ID#0 ASC], IndexScan(IDX_REGION_PLAN, [=, <>])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
@@ -16909,7 +16909,7 @@ plan:  Project([_current.AMOUNT#3], Scan(T2, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === secondary_index_pushdown.yaml#54
-sql:   DELETE FROM t2 WHERE region = 'eu' AND plan > 'a'
+sql:   DELETE FROM t2 WHERE region = 'eu' AND plan_name > 'a'
 plan:  Delete(T2, IndexScan(IDX_REGION_PLAN, [=, <>]))
 shape: RecordQueryDeletePlan
 shape:   RecordQueryIndexPlan
@@ -16937,7 +16937,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryIndexPlan
 === secondary_index_pushdown.yaml#60
-sql:   SELECT id FROM t2 WHERE region <= 'us' AND plan = 'pro' ORDER BY id
+sql:   SELECT id FROM t2 WHERE region <= 'us' AND plan_name = 'pro' ORDER BY id
 plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], Fetch(PredicatesFilter(IndexScan(IDX_REGION_PLAN, [<>, *] COVERING), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
@@ -16998,7 +16998,7 @@ plan:  Delete(T2, Scan(T2))
 shape: RecordQueryDeletePlan
 shape:   RecordQueryScanPlan
 === secondary_index_pushdown.yaml#72
-sql:   SELECT id FROM t2 WHERE region = 'us' AND plan BETWEEN 'a' AND 'b' ORDER BY id
+sql:   SELECT id FROM t2 WHERE region = 'us' AND plan_name BETWEEN 'a' AND 'b' ORDER BY id
 plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], IndexScan(IDX_REGION_PLAN, [=, <>])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan

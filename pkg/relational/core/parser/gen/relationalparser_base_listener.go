@@ -813,17 +813,17 @@ func (s *BaseRelationalParserListener) EnterLimitClauseAtom(ctx *LimitClauseAtom
 // ExitLimitClauseAtom is called when production limitClauseAtom is exited.
 func (s *BaseRelationalParserListener) ExitLimitClauseAtom(ctx *LimitClauseAtomContext) {}
 
-// EnterQueryOptions is called when production queryOptions is entered.
-func (s *BaseRelationalParserListener) EnterQueryOptions(ctx *QueryOptionsContext) {}
+// EnterStatementOptions is called when production statementOptions is entered.
+func (s *BaseRelationalParserListener) EnterStatementOptions(ctx *StatementOptionsContext) {}
 
-// ExitQueryOptions is called when production queryOptions is exited.
-func (s *BaseRelationalParserListener) ExitQueryOptions(ctx *QueryOptionsContext) {}
+// ExitStatementOptions is called when production statementOptions is exited.
+func (s *BaseRelationalParserListener) ExitStatementOptions(ctx *StatementOptionsContext) {}
 
-// EnterQueryOption is called when production queryOption is entered.
-func (s *BaseRelationalParserListener) EnterQueryOption(ctx *QueryOptionContext) {}
+// EnterStatementOption is called when production statementOption is entered.
+func (s *BaseRelationalParserListener) EnterStatementOption(ctx *StatementOptionContext) {}
 
-// ExitQueryOption is called when production queryOption is exited.
-func (s *BaseRelationalParserListener) ExitQueryOption(ctx *QueryOptionContext) {}
+// ExitStatementOption is called when production statementOption is exited.
+func (s *BaseRelationalParserListener) ExitStatementOption(ctx *StatementOptionContext) {}
 
 // EnterStartTransaction is called when production startTransaction is entered.
 func (s *BaseRelationalParserListener) EnterStartTransaction(ctx *StartTransactionContext) {}

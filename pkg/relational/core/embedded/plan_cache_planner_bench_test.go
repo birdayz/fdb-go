@@ -85,7 +85,7 @@ CREATE TABLE CUSTOMERS (
 			// realistically sized map (not a single entry). The hot key is
 			// inserted last so it is resident and never evicted; each Get
 			// re-promotes it, so this measures the steady-state hot-key hit
-			// (normalizeSQL + map lookup + MoveToBack) against a full cache.
+			// (map lookup + MoveToBack) against a full cache.
 			const capacity = 256
 			cache := NewPlanCache(capacity)
 			for i := 0; i < capacity-1; i++ {

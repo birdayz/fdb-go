@@ -42,10 +42,10 @@ schema_template: |
   CREATE TABLE tp (
     id BIGINT,
     region STRING,
-    plan STRING,
+    plan_name STRING,
     PRIMARY KEY (id)
   )
-  CREATE INDEX idx_region_plan ON tp (region, plan)
+  CREATE INDEX idx_region_plan ON tp (region, plan_name)
   CREATE TABLE tb (
     id BIGINT,
     payload BYTES,
@@ -327,7 +327,7 @@ tests:
   # WHERE region = 'us' AND plan IN ('pro', 'free') decomposes into
   # 2 sub-scans at tuple anchors [us, pro] and [us, free].
 
-  - query: SELECT id, region, plan FROM tp WHERE region = 'us' AND plan IN ('pro', 'free') ORDER BY id
+  - query: SELECT id, region, plan_name FROM tp WHERE region = 'us' AND plan_name IN ('pro', 'free') ORDER BY id
     rows:
       - [10, 'us', 'pro']
       - [11, 'us', 'free']
@@ -339,7 +339,7 @@ tests:
   # IN is already handled by the non-composite trySecondaryIndexInList
   # path. Wait — that path requires len(idxCols)==1. Composite idx with
   # IN on first col + eq on second → bails to scan.
-  - query: SELECT id FROM tp WHERE plan = 'pro' AND region IN ('us', 'eu') ORDER BY id
+  - query: SELECT id FROM tp WHERE plan_name = 'pro' AND region IN ('us', 'eu') ORDER BY id
     rows:
       - [10]
       - [12]

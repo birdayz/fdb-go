@@ -382,11 +382,11 @@ type RelationalParserVisitor interface {
 	// Visit a parse tree produced by RelationalParser#limitClauseAtom.
 	VisitLimitClauseAtom(ctx *LimitClauseAtomContext) interface{}
 
-	// Visit a parse tree produced by RelationalParser#queryOptions.
-	VisitQueryOptions(ctx *QueryOptionsContext) interface{}
+	// Visit a parse tree produced by RelationalParser#statementOptions.
+	VisitStatementOptions(ctx *StatementOptionsContext) interface{}
 
-	// Visit a parse tree produced by RelationalParser#queryOption.
-	VisitQueryOption(ctx *QueryOptionContext) interface{}
+	// Visit a parse tree produced by RelationalParser#statementOption.
+	VisitStatementOption(ctx *StatementOptionContext) interface{}
 
 	// Visit a parse tree produced by RelationalParser#startTransaction.
 	VisitStartTransaction(ctx *StartTransactionContext) interface{}

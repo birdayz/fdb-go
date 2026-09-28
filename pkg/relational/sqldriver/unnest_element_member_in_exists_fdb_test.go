@@ -65,8 +65,8 @@ func TestFDB_UnnestElementMemberInExists(t *testing.T) {
 	}
 	if _, err := setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE ueie_tmpl "+
-			"CREATE TYPE AS STRUCT deep (dk BIGINT) "+
-			"CREATE TYPE AS STRUCT elem (ek BIGINT, d deep) "+
+			"CREATE TYPE AS STRUCT deeper (dk BIGINT) "+
+			"CREATE TYPE AS STRUCT elem (ek BIGINT, d deeper) "+
 			"CREATE TABLE t (id BIGINT, arr elem ARRAY, PRIMARY KEY (id)) "+
 			"CREATE TABLE u (id2 BIGINT, tags BIGINT ARRAY, PRIMARY KEY (id2))"); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
@@ -284,8 +284,8 @@ func TestFDB_UnnestElementMemberInExistsConvertedSentinel(t *testing.T) {
 	setup := openTestDB(t, "/testdb_uelem")
 	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_uelem")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE uelem_tmpl "+
-		"CREATE TYPE AS STRUCT deep (dk BIGINT) "+
-		"CREATE TYPE AS STRUCT elem (ek BIGINT, d deep) "+
+		"CREATE TYPE AS STRUCT deeper (dk BIGINT) "+
+		"CREATE TYPE AS STRUCT elem (ek BIGINT, d deeper) "+
 		"CREATE TABLE t (id BIGINT, sarr BIGINT ARRAY, arr elem ARRAY, PRIMARY KEY(id)) "+
 		"CREATE TABLE v (vid BIGINT, vk BIGINT, PRIMARY KEY(vid)) "+
 		"CREATE TABLE u (uk BIGINT, PRIMARY KEY(uk))")
