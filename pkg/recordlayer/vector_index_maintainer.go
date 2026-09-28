@@ -182,6 +182,14 @@ func (m *vectorIndexMaintainer) getSubspaceForPrefix(prefix tuple.Tuple) subspac
 	return m.hnswSubspace.Sub(args...)
 }
 
+// numDimensions is the index's vector width under either engine.
+func (m *vectorIndexMaintainer) numDimensions() int {
+	if m.engine == VectorEngineGuardiann {
+		return m.guardiannConfig.numDimensions
+	}
+	return m.hnswConfig.NumDimensions
+}
+
 // getStorageForPrefix returns a cached hnswStorage for the given prefix subspace.
 // Reuses existing storage (and its parsed node cache) within the same maintainer lifetime.
 func (m *vectorIndexMaintainer) getStorageForPrefix(prefix tuple.Tuple) *hnswStorage {
@@ -449,7 +457,7 @@ func (m *vectorIndexMaintainer) ScanByDistance(
 	// Multi-partition fan-out (partial prefix) is dispatched inside
 	// scanByDistanceWithParams — the shared chokepoint for both this entry point
 	// and ScanVectorIndexWithPrefix — so it is not branched here.
-	return m.scanByDistanceWithParams(prefix, queryVector, k, efSearch, continuation, scanProperties)
+	return m.scanByDistanceWithParams(prefix, queryVector, k, VectorIndexScanOptions{EfSearch: efSearch}, continuation, scanProperties)
 }
 
 // partitionSize returns the number of leading partition (key) columns of the
@@ -475,7 +483,8 @@ func (m *vectorIndexMaintainer) partitionSize() int {
 func (m *vectorIndexMaintainer) scanByDistanceWithParams(
 	prefix tuple.Tuple,
 	queryVector []float64,
-	k, efSearch int,
+	k int,
+	opts VectorIndexScanOptions,
 	continuation []byte,
 	scanProperties ScanProperties,
 ) RecordCursor[*IndexEntry] {
@@ -487,10 +496,10 @@ func (m *vectorIndexMaintainer) scanByDistanceWithParams(
 	// points — ScanByDistance (executor) and ScanVectorIndexWithPrefix (direct
 	// API) — fan out on a partial prefix instead of scanning one wrong subspace.
 	if pSize := m.partitionSize(); pSize > 0 && len(prefix) < pSize {
-		return m.newVectorMultiPartitionCursor(prefix, queryVector, k, efSearch, pSize, continuation, scanProperties)
+		return m.newVectorMultiPartitionCursor(prefix, queryVector, k, opts, pSize, continuation, scanProperties)
 	}
 
-	entries, err := m.searchOnePartition(m.readTx(scanProperties), prefix, queryVector, k, efSearch)
+	entries, err := m.searchOnePartition(m.readTx(scanProperties), prefix, queryVector, k, opts)
 	if err != nil {
 		return &errorCursor[*IndexEntry]{err: err}
 	}
@@ -508,9 +517,9 @@ func (m *vectorIndexMaintainer) scanByDistanceWithParams(
 // single-partition scan and the per-partition inner of the multi-partition
 // fan-out (RFC-046). Mirrors Java's VectorIndexMaintainer.kNearestNeighborSearch
 // + toIndexEntry.
-func (m *vectorIndexMaintainer) searchOnePartition(readTx fdb.ReadTransaction, prefix tuple.Tuple, queryVector []float64, k, efSearch int) ([]*IndexEntry, error) {
+func (m *vectorIndexMaintainer) searchOnePartition(readTx fdb.ReadTransaction, prefix tuple.Tuple, queryVector []float64, k int, opts VectorIndexScanOptions) ([]*IndexEntry, error) {
 	if m.engine == VectorEngineGuardiann {
-		results, err := m.searchGuardiann(readTx, prefix, queryVector, k)
+		results, err := m.searchGuardiann(readTx, prefix, queryVector, k, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -528,7 +537,7 @@ func (m *vectorIndexMaintainer) searchOnePartition(readTx fdb.ReadTransaction, p
 	storage := m.getStorageForPrefix(prefix)
 	graph := NewHNSWGraph(storage, m.hnswConfig)
 
-	results, err := graph.Search(readTx, queryVector, k, efSearch)
+	results, err := graph.Search(readTx, queryVector, k, opts.EfSearch)
 	if err != nil {
 		return nil, err
 	}
@@ -755,7 +764,7 @@ type vectorMultiPartitionCursor struct {
 	scanProps     ScanProperties
 	queryVector   []float64
 	k             int
-	efSearch      int
+	opts          VectorIndexScanOptions
 	partialPrefix tuple.Tuple // the bound equality prefix (may be empty)
 	partitionSize int
 
@@ -786,7 +795,9 @@ type vectorMultiPartitionCursor struct {
 func (m *vectorIndexMaintainer) newVectorMultiPartitionCursor(
 	partialPrefix tuple.Tuple,
 	queryVector []float64,
-	k, efSearch, partitionSize int,
+	k int,
+	opts VectorIndexScanOptions,
+	partitionSize int,
 	continuation []byte,
 	scanProperties ScanProperties,
 ) RecordCursor[*IndexEntry] {
@@ -797,9 +808,9 @@ func (m *vectorIndexMaintainer) newVectorMultiPartitionCursor(
 	// dimension error, unlike the full-prefix/unpartitioned paths which validate
 	// before touching graph contents. Validate once here for
 	// consistent input validation regardless of how many partitions match.
-	if len(queryVector) != m.hnswConfig.NumDimensions {
+	if dims := m.numDimensions(); len(queryVector) != dims {
 		return &errorCursor[*IndexEntry]{err: fmt.Errorf("VECTOR index %q expects %d dimensions, but query vector has %d",
-			m.index.Name, m.hnswConfig.NumDimensions, len(queryVector))}
+			m.index.Name, dims, len(queryVector))}
 	}
 
 	// Enumeration subspace: partitions under partialPrefix (whole index if empty).
@@ -814,7 +825,7 @@ func (m *vectorIndexMaintainer) newVectorMultiPartitionCursor(
 		scanProps:          scanProperties,
 		queryVector:        queryVector,
 		k:                  k,
-		efSearch:           efSearch,
+		opts:               opts,
 		partialPrefix:      partialPrefix,
 		partitionSize:      partitionSize,
 		nextPartitionStart: fdb.Key(base.Bytes()),
@@ -918,7 +929,7 @@ func (c *vectorMultiPartitionCursor) OnNext(ctx context.Context) (RecordCursorRe
 			inner = c.pendingInner
 			c.pendingInner = nil
 		} else {
-			entries, err = c.m.searchOnePartition(c.m.readTx(c.scanProps), fullPrefix, c.queryVector, c.k, c.efSearch)
+			entries, err = c.m.searchOnePartition(c.m.readTx(c.scanProps), fullPrefix, c.queryVector, c.k, c.opts)
 			if err != nil {
 				return RecordCursorResult[*IndexEntry]{}, err
 			}
@@ -1111,7 +1122,7 @@ func (m *vectorIndexMaintainer) SearchKNN(prefix tuple.Tuple, queryVector []floa
 	defer m.store.ReleaseReadLock(lockKey)
 
 	if m.engine == VectorEngineGuardiann {
-		results, err := m.searchGuardiann(m.tx.Snapshot(), prefix, queryVector, k)
+		results, err := m.searchGuardiann(m.tx.Snapshot(), prefix, queryVector, k, VectorIndexScanOptions{EfSearch: efSearch})
 		if err != nil {
 			return nil, err
 		}
@@ -1284,6 +1295,57 @@ func (store *FDBRecordStore) ScanVectorIndexWithPrefix(
 	continuation []byte,
 	scanProperties ScanProperties,
 ) RecordCursor[*IndexEntry] {
+	return store.ScanVectorIndexWithOptions(index, prefix, queryVector, k, VectorIndexScanOptions{EfSearch: efSearch}, continuation, scanProperties)
+}
+
+// VectorIndexScanOptions is Java's VectorIndexScanOptions: per-scan search
+// knobs. A nil GuardiANN field keeps the SearchConfig default; each applies
+// only to an index of its engine.
+type VectorIndexScanOptions struct {
+	EfSearch                                int // HNSW; 0 derives it from k
+	GuardiannCandidatePoolFactor            *float64
+	GuardiannSearchMaxClusters              *int
+	GuardiannSearchMinClustersBeforePruning *int
+	GuardiannSearchDistanceRatioCutoff      *float64
+	GuardiannCentroidEfRingSearch           *int
+	GuardiannCentroidEfOutwardSearch        *int
+	GuardiannSearchConcurrency              *int
+}
+
+// guardiannSearchConfig is GuardiannVectorIndexEngine.searchConfig.
+func (o VectorIndexScanOptions) guardiannSearchConfig() (guardiannSearchConfig, error) {
+	c := defaultGuardiannSearchConfig()
+	setF := func(dst *float64, v *float64) {
+		if v != nil {
+			*dst = *v
+		}
+	}
+	setI := func(dst *int, v *int) {
+		if v != nil {
+			*dst = *v
+		}
+	}
+	setF(&c.candidatePoolFactor, o.GuardiannCandidatePoolFactor)
+	setI(&c.searchMaxClusters, o.GuardiannSearchMaxClusters)
+	setI(&c.searchMinClustersBeforePruning, o.GuardiannSearchMinClustersBeforePruning)
+	setF(&c.searchDistanceRatioCutoff, o.GuardiannSearchDistanceRatioCutoff)
+	setI(&c.centroidEfRingSearch, o.GuardiannCentroidEfRingSearch)
+	setI(&c.centroidEfOutwardSearch, o.GuardiannCentroidEfOutwardSearch)
+	setI(&c.searchConcurrency, o.GuardiannSearchConcurrency)
+	return c, c.validate()
+}
+
+// ScanVectorIndexWithOptions is ScanVectorIndexWithPrefix with the full set of
+// per-scan options.
+func (store *FDBRecordStore) ScanVectorIndexWithOptions(
+	index *Index,
+	prefix tuple.Tuple,
+	queryVector []float64,
+	k int,
+	opts VectorIndexScanOptions,
+	continuation []byte,
+	scanProperties ScanProperties,
+) RecordCursor[*IndexEntry] {
 	state, err := store.readIndexState(index.Name)
 	if err != nil {
 		return &errorCursor[*IndexEntry]{err: err}
@@ -1306,7 +1368,7 @@ func (store *FDBRecordStore) ScanVectorIndexWithPrefix(
 			err: fmt.Errorf("index %q (type %s) is not a VECTOR index", index.Name, index.Type),
 		}
 	}
-	return vm.scanByDistanceWithParams(prefix, queryVector, k, efSearch, continuation, scanProperties)
+	return vm.scanByDistanceWithParams(prefix, queryVector, k, opts, continuation, scanProperties)
 }
 
 // SearchVectorIndex performs a k-nearest-neighbor search on a VECTOR index.

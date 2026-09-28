@@ -449,7 +449,7 @@ func TestVectorMultiPartitionContinuationInvalid(t *testing.T) {
 			ctx := context.Background()
 			raw := tt.continuation(t)
 
-			cursor := m.newVectorMultiPartitionCursor(nil, []float64{1, 2, 3}, 5, 16, 1, raw, ScanProperties{})
+			cursor := m.newVectorMultiPartitionCursor(nil, []float64{1, 2, 3}, 5, VectorIndexScanOptions{EfSearch: 16}, 1, raw, ScanProperties{})
 
 			_, err := cursor.OnNext(ctx)
 			if err == nil {

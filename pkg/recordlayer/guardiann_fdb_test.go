@@ -2,12 +2,16 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"google.golang.org/protobuf/proto"
+
+	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -191,5 +195,57 @@ var _ = Describe("GuardiANN structure", func() {
 		})
 		Expect(len(snap.clusters)).To(BeNumerically("<", 5), "clusters were merged")
 		check(live)
+	})
+})
+
+var _ = Describe("GuardiANN scan options", func() {
+	ctx := context.Background()
+	It("applies per-scan search options and fans out over a partial prefix", func() {
+		ks := specSubspace()
+		vecIdx := NewVectorIndex("vec_guardiann_opts", KeyWithValue(Concat(Field("quantity"), Field("price")), 1), 1)
+		vecIdx.Options[IndexOptionVectorEngine] = "GUARDIANN"
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+			for _, o := range []struct{ id, price, qty int64 }{{1, 10, 1}, {2, 20, 1}, {3, 50, 2}} {
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(o.id), Price: proto.Int32(int32(o.price)), Quantity: proto.Int32(int32(o.qty))})
+				Expect(err).NotTo(HaveOccurred())
+			}
+			ids := func(prefix tuple.Tuple, opts VectorIndexScanOptions) ([]int64, error) {
+				cursor := store.ScanVectorIndexWithOptions(vecIdx, prefix, []float64{15}, 10, opts, nil, ForwardScan())
+				var out []int64
+				for {
+					r, err := cursor.OnNext(ctx)
+					if err != nil {
+						return nil, err
+					}
+					if !r.HasNext() {
+						return out, nil
+					}
+					out = append(out, r.GetValue().Key[1].(int64))
+				}
+			}
+			one := 1
+			got, err := ids(tuple.Tuple{int64(1)}, VectorIndexScanOptions{GuardiannSearchMaxClusters: &one})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got).To(ConsistOf(int64(1), int64(2)))
+			got, err = ids(nil, VectorIndexScanOptions{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got).To(ConsistOf(int64(1), int64(2), int64(3)), "every partition of a partial prefix")
+			half := 0.5
+			_, err = ids(tuple.Tuple{int64(1)}, VectorIndexScanOptions{GuardiannCandidatePoolFactor: &half})
+			var iae *IllegalArgumentError
+			Expect(errors.As(err, &iae)).To(BeTrue(), "%v", err)
+			Expect(iae.Message).To(Equal("candidatePoolFactor must be >= 1.0"))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
 	})
 })

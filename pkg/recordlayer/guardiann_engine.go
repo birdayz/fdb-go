@@ -200,12 +200,16 @@ func (m *vectorIndexMaintainer) applyGuardiannEntry(prefix, pk tuple.Tuple, vect
 	return control.SetMergeRequiredIndexes(m.index)
 }
 
-func (m *vectorIndexMaintainer) searchGuardiann(readTx fdb.ReadTransaction, prefix tuple.Tuple, query []float64, k int) ([]guardiannResult, error) {
+func (m *vectorIndexMaintainer) searchGuardiann(readTx fdb.ReadTransaction, prefix tuple.Tuple, query []float64, k int, opts VectorIndexScanOptions) ([]guardiannResult, error) {
 	if len(query) != m.guardiannConfig.numDimensions {
 		return nil, fmt.Errorf("VECTOR index %q expects %d dimensions, but query vector has %d",
 			m.index.Name, m.guardiannConfig.numDimensions, len(query))
 	}
-	return m.guardiannFor(prefix, nil).search(readTx, k, defaultGuardiannSearchConfig(), gVector{data: query, typ: 2})
+	cfg, err := opts.guardiannSearchConfig()
+	if err != nil {
+		return nil, err
+	}
+	return m.guardiannFor(prefix, nil).search(readTx, k, cfg, gVector{data: query, typ: 2})
 }
 
 // vectorMergeLeaseWindow is VectorIndexMergeLock.DEFAULT_LEASE_WINDOW_MILLIS.
