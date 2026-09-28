@@ -961,6 +961,15 @@ func TestDefaultArrayConstructorAcrossEmptyRecord(t *testing.T) {
 						}
 						defer cur.Close()
 						row, err := cur.OnNext(ctx)
+						if !matched && !nullableElement {
+							// A NULL element under a NOT NULL element type is Java's
+							// "An ARRAY value cannot have NULL elements".
+							var nullElem *values.NullArrayElementError
+							if !errors.As(err, &nullElem) {
+								t.Fatalf("NULL element of ARRAY<LONG NOT NULL>: %v, %v; want NullArrayElementError", row, err)
+							}
+							return
+						}
 						if err != nil || !row.HasNext() || !reflect.DeepEqual(row.GetValue().Positional.Slots[0], wantArray) {
 							t.Fatalf("constructed array after null extension = %v, %v; want %v", row, err, wantArray)
 						}

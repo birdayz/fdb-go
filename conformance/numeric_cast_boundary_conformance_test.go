@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strings"
 	"time"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/plandiff"
 	"github.com/google/uuid"
@@ -70,9 +70,8 @@ var _ = Describe("NumericCastBoundaryConformance", func() {
 					}
 					continue
 				}
-				// SQL ARRAY targets declare non-nullable elements. Java's cast
-				// target now explicitly rejects NULL elements during construction;
-				// Go's checked layout rejects the invalid typed element as before.
+				// An ARRAY element is never NULL: both engines refuse the
+				// NULL element during construction with 0A000.
 				if probe.name == "computed array null element" {
 					if result.Engine == "java" {
 						var je *plandiff.JavaError
@@ -80,10 +79,8 @@ var _ = Describe("NumericCastBoundaryConformance", func() {
 							failures = append(failures, fmt.Sprintf("derived NULL-array Java failure changed: %v, %v", result.Rows.Rows, result.Err))
 						}
 					} else {
-						var coded interface {
-							Code() values.ResolutionErrorCode
-						}
-						if !errors.As(result.Err, &coded) || coded.Code() != values.LayoutNullabilityMismatch {
+						var goErr *api.Error
+						if !errors.As(result.Err, &goErr) || goErr.Code != api.ErrCodeUnsupportedOperation || !strings.Contains(result.Err.Error(), "An ARRAY value cannot have NULL elements") {
 							failures = append(failures, fmt.Sprintf("derived NULL-array Go rejection changed: %v, %v", result.Rows.Rows, result.Err))
 						}
 					}

@@ -2585,6 +2585,10 @@ func translateExecError(err error) error {
 	if errors.As(err, &sumOverflow) {
 		return api.NewError(api.ErrCodeNumericValueOutOfRange, sumOverflow.Error())
 	}
+	var nullElem *values.NullArrayElementError
+	if errors.As(err, &nullElem) {
+		return api.NewError(api.ErrCodeUnsupportedOperation, nullElem.Error())
+	}
 	var likeErr *values.LikeError
 	if errors.As(err, &likeErr) {
 		return api.NewError(likeErrorCode(likeErr.Kind), likeErr.Error())

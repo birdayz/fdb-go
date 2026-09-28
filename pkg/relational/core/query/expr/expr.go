@@ -137,6 +137,10 @@ type Resolver struct {
 	// NamedValue.Ordinal (1-based). Named parameters (`?foo` / `$bar`)
 	// keep their declared name and consume no ordinal slot.
 	nextOrdinal int
+	// allowNullArrayElements admits NULL array elements while the operands of
+	// a literal-array comparison are walked (the nullable-array read
+	// extension); see walkBinaryComparison.
+	allowNullArrayElements bool
 	// subqueryPlanner is the callback for building EXISTS subquery
 	// plans. Set via SetSubqueryPlanner by the catalog-aware builder
 	// before walking WHERE predicates. nil means EXISTS subqueries

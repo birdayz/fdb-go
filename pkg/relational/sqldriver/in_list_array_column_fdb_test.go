@@ -190,7 +190,7 @@ func TestFDB_InListIsAnArrayColumn(t *testing.T) {
 					"NOT return a row whose array holds a NULL, because non-membership there " +
 					"is UNKNOWN rather than TRUE")
 			}
-			if !strings.Contains(err.Error(), "NULL as elements of a collection") {
+			if !strings.Contains(err.Error(), "An ARRAY value cannot have NULL elements") {
 				t.Errorf("the array-literal NULL rejection changed shape: %v\n"+
 					"  (this arm reads that rejection as the reason 3VL membership is "+
 					"untestable here, so a different refusal needs re-reading)", err)

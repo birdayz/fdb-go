@@ -182,7 +182,7 @@ func TestArrayConstructorValue_CheckedRebuild(t *testing.T) {
 	}{
 		{name: "exact", element: NotNullLong, children: []Value{&ConstantValue{Value: int64(7), Typ: NotNullLong}}, want: []any{int64(7)}},
 		{name: "nullable", element: NullableLong, children: []Value{NewNullValue(NotNullLong)}, want: []any{nil}},
-		{name: "nullable_widening", element: NotNullLong, children: []Value{NewNullValue(NotNullLong)}, want: []any{nil}},
+		{name: "null_into_not_null_element", element: NotNullLong, children: []Value{NewNullValue(NotNullLong)}, wantEvalErr: true},
 		{name: "nullable_narrowing", element: NullableLong, children: []Value{&ConstantValue{Value: int64(7), Typ: NotNullLong}}, want: []any{int64(7)}},
 		{name: "type_drift", element: NotNullLong, children: []Value{&ConstantValue{Value: int32(7), Typ: NotNullInt}}, want: []any{int64(7)}},
 		{name: "incompatible", element: NotNullLong, children: []Value{&ConstantValue{Value: "x", Typ: NotNullString}, &ConstantValue{Value: int64(7), Typ: NotNullLong}}, wantErr: true},
@@ -216,6 +216,11 @@ func TestArrayConstructorValue_CheckedRebuild(t *testing.T) {
 			}
 			got, err := rebuilt.Evaluate(nil)
 			if tc.wantEvalErr {
+				if tc.name == "null_into_not_null_element" {
+					var nullElem *NullArrayElementError
+					require.ErrorAs(t, err, &nullElem)
+					return
+				}
 				var nullAssignment *NonNullableFieldError
 				require.ErrorAs(t, err, &nullAssignment)
 				return

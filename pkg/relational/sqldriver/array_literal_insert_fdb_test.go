@@ -133,12 +133,10 @@ func TestFDB_ArrayLiteralInsertValues(t *testing.T) {
 	})
 
 	t.Run("null_element_rejected", func(t *testing.T) {
-		// Java forbids NULL elements in collections
-		// (MessageHelpers.coerceArray, SemanticException UNSUPPORTED —
-		// surfaces as the unmapped internal-error class; upstream
-		// fdb-record-layer#3646 tracks lifting this).
+		// Java 4.14.2.0 refuses a NULL array element before planning:
+		// RelationalException 0A000 "An ARRAY value cannot have NULL elements".
 		_, err := db.ExecContext(ctx, "INSERT INTO t_int VALUES (92, [10, NULL, 30])")
-		requireSQLSTATE(t, err, api.ErrCodeInternalError)
+		requireSQLSTATE(t, err, api.ErrCodeUnsupportedOperation)
 	})
 
 	t.Run("empty_array", func(t *testing.T) {

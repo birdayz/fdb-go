@@ -335,33 +335,7 @@ func TestExactCTEProjection_QualifiedDirectJoinLegUsesBuiltResultType(t *testing
 	}
 }
 
-// underivableCTE is a CTE body that BUILDS but cannot be PUBLISHED: its row
-// carries an array literal with a NULL element, whose exact type has a NULLABLE
-// element that semantic.Column cannot carry losslessly (it has the container's
-// nullability and no nullable-element bit, and its reverse bridge forces every
-// element NOT NULL), so the exact derivation declines the whole source —
-// including the plain column `a` a reference actually reads.
-//
-// The specimen has moved three times, each time because the shape it used
-// started publishing. It was a nested-WITH comma-join body, underivable only
-// because a join-bodied CTE's schema was guessed from its FROM legs by name;
-// then a body that named `dup` twice, withheld by a uniqueness gate — which was
-// itself the silent bind it claimed to prevent, since the declined CTE fell to
-// the ON-only class and a read of `dup` bound one duplicate or the other (a
-// repeated name is published now and its reader reports 42702; repeatedNameCTE
-// below resolves); then a join body carrying a catalog STRUCT column, declined
-// only because the bridge refused every record not literally named RECORD while
-// semantic.Column had carried a record's name in StructTypeName all along (a
-// nominal record is published under its name now). What is left that genuinely
-// cannot be advertised is a row the semantic column model cannot state; the
-// element bit that would state this one is booked in TODO.md ("An array literal
-// with a NULL element cannot be read through a CTE or derived table"), and
-// closing it moves the specimen a fourth time.
-const underivableCTE = `WITH c2 AS (
-		SELECT [x.id, NULL] AS s, x.id AS a FROM ts AS x, t AS y WHERE x.id = y.id
-	) `
-
-// repeatedNameCTE is the body underivableCTE used to be: it names `dup` twice.
+// repeatedNameCTE names `dup` twice.
 // It publishes as stated, so a computed key or projection over its unambiguous
 // column `a` resolves exactly as over any other join-bodied CTE, and only a
 // read that spells `dup` meets the ambiguity check.
@@ -448,53 +422,6 @@ func TestOrderByExactMetadata_ComputedProjectionOverRepeatedNameCTEResolves(t *t
 	}
 	if ref, _, translateErr := query.TranslateToCascadesWithError(op, md); ref == nil || translateErr != nil {
 		t.Fatalf("computed projection translation = ref %v, err %v; want a translated reference", ref, translateErr)
-	}
-}
-
-func TestOrderByExactMetadata_UnderivableCTEComputedKeyStaysLoud(t *testing.T) {
-	t.Parallel()
-	_, md := newLoggingGenerator(t, orderByExactMetadataDDL, &captureLogger{})
-	op, err := NewPlanVisitor(md).VisitQuery(parseQuery(t,
-		underivableCTE+`SELECT a FROM c2 ORDER BY a + 1`))
-	if err != nil {
-		t.Fatalf("VisitQuery: %v", err)
-	}
-	for _, sort := range logicalSorts(op) {
-		if len(sort.Keys) == 1 && sort.Keys[0].Expr == "a + 1" {
-			if sort.Keys[0].Value != nil || sort.Keys[0].Pos != 0 {
-				t.Fatalf("computed underivable key gained identity metadata: %+v", sort.Keys[0])
-			}
-			return
-		}
-	}
-	t.Fatal("computed ORDER BY key not found")
-}
-
-func TestOrderByExactMetadata_UnderivableCTEComputedProjectionStaysLoud(t *testing.T) {
-	t.Parallel()
-	_, md := newLoggingGenerator(t, orderByExactMetadataDDL, &captureLogger{})
-	op, err := NewPlanVisitor(md).VisitQuery(parseQuery(t,
-		underivableCTE+`SELECT a + 1 AS b FROM c2 ORDER BY a`))
-	if err != nil {
-		t.Fatalf("VisitQuery: %v", err)
-	}
-	found := false
-	for _, project := range logicalProjects(op) {
-		if len(project.IsComputed) != 1 || !project.IsComputed[0] {
-			continue
-		}
-		found = true
-		if len(project.ProjectedValues) > 0 && project.ProjectedValues[0] != nil {
-			t.Fatalf("computed underivable projection gained identity metadata: %v", project.ProjectedValues[0])
-		}
-	}
-	if !found {
-		t.Fatal("computed CTE projection not found")
-	}
-	ref, _, translateErr := query.TranslateToCascadesWithError(op, md)
-	if ref != nil || translateErr == nil ||
-		!strings.Contains(translateErr.Error(), "projection slot 0 has no resolved Value") {
-		t.Fatalf("computed projection translation = ref %v, err %v; want loud unresolved slot", ref, translateErr)
 	}
 }
 

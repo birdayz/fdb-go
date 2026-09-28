@@ -1595,6 +1595,12 @@ func (r *Resolver) walkArrayConstructor(ac antlrgen.IArrayConstructorContext) (v
 		if err != nil {
 			return nil, err
 		}
+		// An ARRAY element is never NULL (Java's handleArray,
+		// ExpressionVisitor.java:1186-1203): a NULL-typed element is refused
+		// here, a nullable one when it evaluates to NULL.
+		if !r.allowNullArrayElements && v.Type() != nil && v.Type().Code() == values.TypeCodeNull {
+			return nil, api.NewError(api.ErrCodeUnsupportedOperation, "An ARRAY value cannot have NULL elements")
+		}
 		// SQL NULL already has Type.nullType, so the common-type fold and
 		// the subsequent prepared promotion see the same declared source.
 		vt := v.Type()
@@ -1613,7 +1619,10 @@ func (r *Resolver) walkArrayConstructor(ac antlrgen.IArrayConstructorContext) (v
 	// elementType.nullable(). PromoteValue rejects an Unknown target,
 	// so an unresolved element type skips injection (the consumer's
 	// per-element coercion still applies).
-	if elemType != nil && elemType.Code() != values.TypeCodeUnknown {
+	if elemType != nil && elemType.Code() != values.TypeCodeUnknown && elemType.Code() != values.TypeCodeNull {
+		if !r.allowNullArrayElements {
+			elemType = values.WithNullability(elemType, false)
+		}
 		nullableElem := values.WithNullability(elemType, true)
 		for i, c := range children {
 			ct := c.Type()
@@ -2175,6 +2184,15 @@ func (r *Resolver) walkBinaryComparison(bc *antlrgen.BinaryComparisonPredicateCo
 	if err != nil {
 		return nil, err
 	}
+	// The approved Go nullable-array READ extension: a comparison between two
+	// array constructors of literals, one holding a NULL, builds them with
+	// nullable elements (`[1, NULL] = [1, NULL]` is TRUE) where Java refuses
+	// the NULL element. Every other NULL array element is refused.
+	if nullableArrayLiteralComparison(op, bc) {
+		saved := r.allowNullArrayElements
+		r.allowNullArrayElements = true
+		defer func() { r.allowNullArrayElements = saved }()
+	}
 	left, err := r.walkOperand(bc.GetLeft())
 	if err != nil {
 		return nil, err
@@ -2184,6 +2202,52 @@ func (r *Resolver) walkBinaryComparison(bc *antlrgen.BinaryComparisonPredicateCo
 		return nil, err
 	}
 	return r.ResolveComparison(op, left, right)
+}
+
+func nullableArrayLiteralComparison(op predicates.ComparisonType, bc *antlrgen.BinaryComparisonPredicateContext) bool {
+	switch op {
+	case predicates.ComparisonEquals, predicates.ComparisonNotEquals,
+		predicates.ComparisonIsDistinctFrom, predicates.ComparisonNotDistinctFrom:
+	default:
+		return false
+	}
+	sawNull := false
+	for _, side := range []antlr.Tree{bc.GetLeft(), bc.GetRight()} {
+		arr, ok := singleChildDescendant[*antlrgen.ArrayConstructorContext](side)
+		if !ok {
+			return false
+		}
+		exprs := arr.Expressions()
+		if exprs == nil {
+			continue
+		}
+		for _, e := range exprs.AllExpression() {
+			if IsBareNullLiteral(e) {
+				sawNull = true
+				continue
+			}
+			if _, isConst := singleChildDescendant[*antlrgen.ConstantExpressionAtomContext](e); !isConst {
+				return false
+			}
+		}
+	}
+	return sawNull
+}
+
+// singleChildDescendant descends through single-child nodes to a T.
+func singleChildDescendant[T antlr.Tree](tree antlr.Tree) (T, bool) {
+	current := tree
+	for current != nil {
+		if t, ok := current.(T); ok {
+			return t, true
+		}
+		if current.GetChildCount() != 1 {
+			break
+		}
+		current = current.GetChild(0)
+	}
+	var zero T
+	return zero, false
 }
 
 // comparisonOpFromCtx reads the terminal tokens on a
