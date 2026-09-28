@@ -107,6 +107,12 @@ func plannerOptionsFrom(o *api.Options) plannerOptions {
 	}
 
 	po.config.ShouldJoinRightDeep = optBool(o, api.OptPlanRightDeep, false)
+	switch o.Get(api.OptVectorIndexEnginePreference) {
+	case api.VectorIndexPreferHNSW:
+		po.config.VectorIndexEnginePreference = "HNSW"
+	case api.VectorIndexPreferGuardiann:
+		po.config.VectorIndexEnginePreference = "GUARDIANN"
+	}
 	po.useCollectedStatistics = optBool(o, api.OptPlannerStatistics, false)
 	return po
 }
@@ -157,6 +163,7 @@ func (p plannerOptions) cacheKeyPart() string {
 	// function's own "wrong-plan bug, not merely a stale-cost one".
 	if len(p.disabledRules) == 0 && !p.config.ShouldJoinRightDeep &&
 		!p.config.SingleReadVersion && !p.useCollectedStatistics &&
+		p.config.VectorIndexEnginePreference == "" &&
 		!readable.IndexStatesEstablished() {
 		return ""
 	}
@@ -174,6 +181,12 @@ func (p plannerOptions) cacheKeyPart() string {
 	}
 	if p.config.SingleReadVersion {
 		b.WriteString("srv")
+	}
+	switch p.config.VectorIndexEnginePreference {
+	case "HNSW":
+		b.WriteString("vh")
+	case "GUARDIANN":
+		b.WriteString("vg")
 	}
 	for _, n := range names {
 		b.WriteString(strconv.Itoa(len(n)))

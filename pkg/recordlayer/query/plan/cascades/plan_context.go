@@ -89,6 +89,11 @@ type PlannerConfiguration struct {
 	// plan — it models the mechanism for parity.
 	IndexScanPreference IndexScanPreference
 
+	// VectorIndexEnginePreference is Java's
+	// RecordQueryPlannerConfiguration.vectorIndexEnginePreference: "" (no
+	// preference), "HNSW" or "GUARDIANN".
+	VectorIndexEnginePreference string
+
 	// ReadableIndexes is the planner's view of which indexes may be scanned,
 	// the port of Java's `PlannerConfiguration.readableIndexes`
 	// (fdb-relational-core .../query/PlannerConfiguration.java:54-70, an

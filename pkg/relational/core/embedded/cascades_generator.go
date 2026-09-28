@@ -3980,10 +3980,14 @@ func tryVectorIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaD
 	if values.IsUnresolved(baseRowType) {
 		return nil
 	}
+	engine, err := recordlayer.VectorEngineOf(idx)
+	if err != nil {
+		return nil
+	}
 	return cascades.NewVectorIndexScanMatchCandidate(
 		idx.Name, rtNames, upperCols, partitionCount, metric,
 		baseRowType, idx.IsUnique(), pkCols,
-	).WithPartitionKeyComponentTypes(partitionTypes)
+	).WithPartitionKeyComponentTypes(partitionTypes).WithIndexEngine(engine.String())
 }
 
 // vectorDistanceOperator is the distance placeholder's operator for the metric

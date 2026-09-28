@@ -265,6 +265,12 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		return cmp
 	}
 
+	if ctx != nil {
+		if cmp := compareVectorIndexEnginePreference(a, b, ctx.GetPlannerConfiguration().VectorIndexEnginePreference); cmp != 0 {
+			return cmp
+		}
+	}
+
 	if cmp := comparePrimaryScanVsIndexScan(a, b, opsA, opsB, indexScanPreferenceOf(ctx)); cmp != 0 {
 		return cmp
 	}
@@ -918,6 +924,54 @@ func inPlanPenaltyRankOfPlan(p plans.RecordQueryPlan) int {
 	// IN-plan can exist beneath them for this walk to miss. A fetch is not
 	// one of them: it returns its inner as a child and is walked.
 	return 0
+}
+
+// compareVectorIndexEnginePreference is Java's PlanningCostModel method of the
+// same name: it abstains unless an engine is preferred and each plan makes
+// exactly one vector index access, on different engines; the one on the
+// preferred engine wins.
+func compareVectorIndexEnginePreference(a, b expressions.RelationalExpression, preferred string) int {
+	if preferred == "" {
+		return 0
+	}
+	ea, eb := singleVectorIndexEngine(a), singleVectorIndexEngine(b)
+	if ea == "" || eb == "" || ea == eb {
+		return 0
+	}
+	switch preferred {
+	case ea:
+		return -1
+	case eb:
+		return 1
+	}
+	return 0
+}
+
+// singleVectorIndexEngine is the engine of the one vector index scan in e's
+// plan tree, or "" when there is none or more than one.
+func singleVectorIndexEngine(e expressions.RelationalExpression) string {
+	ph, ok := e.(physicalPlanExpression)
+	if !ok {
+		return ""
+	}
+	engine, n := "", 0
+	var walk func(p plans.RecordQueryPlan)
+	walk = func(p plans.RecordQueryPlan) {
+		if p == nil || n > 1 {
+			return
+		}
+		if v, ok := p.(*plans.RecordQueryVectorIndexPlan); ok && v.GetIndexEngine() != "" {
+			engine, n = v.GetIndexEngine(), n+1
+		}
+		for _, c := range p.GetChildren() {
+			walk(c)
+		}
+	}
+	walk(ph.GetRecordQueryPlan())
+	if n != 1 {
+		return ""
+	}
+	return engine
 }
 
 // compareInOperator returns (penalty, applicable). applicable=false means the

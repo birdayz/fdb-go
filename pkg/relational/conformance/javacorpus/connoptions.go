@@ -86,6 +86,8 @@ func (r *runner) optionValue(name api.OptionName, v *javayamsql.Value) (any, err
 				return nil, err
 			}
 			return n, nil
+		case api.VectorIndexEnginePreference:
+			return api.ParseVectorIndexEnginePreference(v.Str)
 		case []string:
 			return nil, fmt.Errorf("a collection option spelled as the string %q is not supported", v.Str)
 		}

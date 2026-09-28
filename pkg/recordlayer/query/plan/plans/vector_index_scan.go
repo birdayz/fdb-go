@@ -58,6 +58,9 @@ type RecordQueryVectorIndexPlan struct {
 	// distinguishing plan property (fully determined by indexName) — excluded
 	// from Equals/HashCode.
 	partitionColumns []string
+	// indexEngine names the engine backing the index; determined by indexName,
+	// so excluded from Equals/HashCode like partitionColumns.
+	indexEngine string
 	// partitionKeyComponentTypes is aligned with prefixComparisons and records
 	// the physical partition-key widths used to encode the HNSW graph prefix.
 	partitionKeyComponentTypes []values.Type
@@ -188,6 +191,16 @@ func (p *RecordQueryVectorIndexPlan) WithPartitionColumns(cols []string) *Record
 	c.partitionColumns = append([]string(nil), cols...)
 	return &c
 }
+
+// WithIndexEngine returns a copy carrying the index's engine name.
+func (p *RecordQueryVectorIndexPlan) WithIndexEngine(engine string) *RecordQueryVectorIndexPlan {
+	c := *p
+	c.indexEngine = engine
+	return &c
+}
+
+// GetIndexEngine is the engine backing the scanned index ("" when unknown).
+func (p *RecordQueryVectorIndexPlan) GetIndexEngine() string { return p.indexEngine }
 
 // WithPartitionKeyComponentTypes returns a copy carrying authoritative
 // physical partition-key types aligned with GetPrefixComparisons.

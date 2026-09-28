@@ -341,6 +341,7 @@ go_test(
         "grouped_subquery_outer_column_fdb_test.go",
         "guardiann_fdb_test.go",
         "guardiann_merge_fdb_test.go",
+        "guardiann_preference_fdb_test.go",
         "hash_identifier_probe_test.go",
         "having_const_test.go",
         "having_groupby_probe_test.go",
