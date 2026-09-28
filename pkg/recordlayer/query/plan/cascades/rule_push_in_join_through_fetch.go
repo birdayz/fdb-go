@@ -99,6 +99,8 @@ func (r *PushInJoinThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	}
 	if inValues := inJoinPlan.GetInValues(); inValues != nil {
 		pushedInJoinPlan = pushedInJoinPlan.WithInValues(inValues)
+	} else if comparand := inJoinPlan.GetInComparand(); comparand != nil {
+		pushedInJoinPlan = pushedInJoinPlan.WithInComparand(comparand)
 	}
 	pushedInJoinPlan = pushedInJoinPlan.WithSourceKind(inJoinPlan.GetSourceKind())
 

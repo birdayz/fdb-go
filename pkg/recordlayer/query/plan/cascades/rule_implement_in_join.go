@@ -197,6 +197,13 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 						source := orderedSources[i]
 						inValues := extractInValues(source.quantifier)
 						sorted := source.sorted
+						var comparand values.Value
+						if inValues == nil {
+							// A runtime source cannot back a sorted claim.
+							if comparand = inComparandOf(source.quantifier); comparand != nil {
+								sorted = false
+							}
+						}
 						if sorted && len(inValues) > 1 {
 							// Back the "sorted" claim with actually-sorted values —
 							// Java's SortedInValuesSource sorts in its constructor
@@ -224,6 +231,8 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 						}
 						if inValues != nil {
 							inJoinPlan = inJoinPlan.WithInValues(inValues)
+						} else if comparand != nil {
+							inJoinPlan = inJoinPlan.WithInComparand(comparand)
 						}
 						inJoinPlan = inJoinPlan.WithSourceKind(classifyInSourceKind(source.quantifier))
 						currentRef = call.MemoizeFinalExpression(inJoinPlan)
@@ -581,6 +590,25 @@ func classifyInSourceKind(q expressions.Quantifier) plans.InSourceKind {
 		}
 		return plans.InSourceValues
 	}
+}
+
+// inComparandOf is the row-independent collection value of an explode source
+// whose values could not be extracted at plan time; the InJoin evaluates it
+// when it opens.
+func inComparandOf(q expressions.Quantifier) values.Value {
+	ref := q.GetRangesOver()
+	if ref == nil {
+		return nil
+	}
+	explode := getExplodeExpression(ref)
+	if explode == nil {
+		return nil
+	}
+	cv := explode.GetCollectionValue()
+	if cv == nil || !values.IsConstantValue(cv) {
+		return nil
+	}
+	return cv
 }
 
 func extractInValues(q expressions.Quantifier) []any {

@@ -1772,11 +1772,16 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 	// operand gate and the LHS-vs-element compatibility gate are type-based, so
 	// `b IN (a, 'x')` is still 42804 and a NULL item is still rejected by the
 	// caller before it reaches here.
-	if !allInListItemsConstant(rhs) {
+	//
+	// A constant item that folds to NULL (`CAST(NULL AS BIGINT)`) is not a
+	// literal either: Java sends it through __internal_array too, whose
+	// elements are never NULL, so the list fails with 0A000 when it is
+	// EVALUATED — at plan open for an exploded IN, per row for a residual one.
+	if !allInListItemsConstant(rhs) || anyInListItemFoldsToNull(rhs) {
 		items := promoteInListItemsToDeclaredType(left, rhs)
 		return predicates.NewComparisonPredicate(left, predicates.Comparison{
 			Type:    predicates.ComparisonIn,
-			Operand: values.NewArrayConstructorValue(inListItemType(items), items),
+			Operand: values.NewArrayConstructorValue(values.WithNullability(inListItemType(items), false), items),
 		}), nil
 	}
 	seenClass := ""
@@ -1905,6 +1910,20 @@ func allInListItemsConstant(rhs []values.Value) bool {
 		}
 	}
 	return true
+}
+
+// anyInListItemFoldsToNull reports whether a constant IN-list item folds to
+// NULL at plan time.
+func anyInListItemFoldsToNull(rhs []values.Value) bool {
+	for _, v := range rhs {
+		if v == nil {
+			continue
+		}
+		if lit, ok := values.EvaluateConstant(v); ok && lit == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // inListItemType is the element type for the runtime array: the maximum type

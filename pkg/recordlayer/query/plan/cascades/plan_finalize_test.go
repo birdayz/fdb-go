@@ -417,8 +417,9 @@ var specimens = map[string]specimen{
 	"RecordQueryInJoinPlan": {
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()
-			return mustFinalizeConstruct(plans.NewRecordQueryInJoinPlan(child, "b", false, false)),
-				map[string]*values.RecordConstructorValue{"innerQ": cs}
+			comparand := sentinel()
+			return mustFinalizeConstruct(plans.NewRecordQueryInJoinPlan(child, "b", false, false)).WithInComparand(comparand),
+				map[string]*values.RecordConstructorValue{"innerQ": cs, "inComparand": comparand}
 		},
 	},
 

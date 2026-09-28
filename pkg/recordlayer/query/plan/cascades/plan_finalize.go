@@ -204,6 +204,10 @@ func forEachNodeLocalValue(plan plans.RecordQueryPlan, emit func(values.Value)) 
 		forEachValue(p.GetComparisonKeys(), emit)
 	case *plans.RecordQueryInUnionPlan:
 		forEachValue(p.GetComparisonKeys(), emit)
+	case *plans.RecordQueryInJoinPlan:
+		if c := p.GetInComparand(); c != nil {
+			emit(c)
+		}
 	case *plans.RecordQueryIntersectionPlan:
 		forEachValue(p.GetComparisonKeyValues(), emit)
 	case *plans.RecordQueryMultiIntersectionOnValuesPlan:

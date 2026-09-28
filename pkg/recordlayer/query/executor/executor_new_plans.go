@@ -1786,6 +1786,17 @@ func executeInJoin(
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
 	inValues := p.GetInValues()
+	if comparand := p.GetInComparand(); inValues == nil && comparand != nil {
+		v, err := comparand.Evaluate(evalCtx)
+		if err != nil {
+			return nil, err
+		}
+		list, _ := v.([]any)
+		if len(list) == 0 {
+			return recordlayer.Empty[QueryResult](), nil
+		}
+		inValues = list
+	}
 	if len(inValues) == 0 {
 		return ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
 	}

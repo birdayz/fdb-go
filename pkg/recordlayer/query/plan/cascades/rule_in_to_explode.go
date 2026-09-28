@@ -2,6 +2,7 @@ package cascades
 
 import (
 	"bytes"
+	"errors"
 	"reflect"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -132,11 +133,13 @@ func (r *InComparisonToExplodeRule) OnMatch(call *ExpressionRuleCall) {
 	// Plan-time IN-list extraction: an erroring or non-list comparand
 	// declines to transform (returns) rather than failing planning.
 	rhs, err := inPred.Comparison.Operand.Evaluate(nil)
-	if err != nil {
+	var nullElement *values.NullArrayElementError
+	runtimeArray := err != nil && errors.As(err, &nullElement)
+	if err != nil && !runtimeArray {
 		return
 	}
 	list, ok := rhs.([]any)
-	if !ok || len(list) == 0 {
+	if !runtimeArray && (!ok || len(list) == 0) {
 		return
 	}
 
@@ -194,7 +197,7 @@ func (r *InComparisonToExplodeRule) OnMatch(call *ExpressionRuleCall) {
 	//
 	// The predicates already reference f.GetInner()'s alias, so no rebase is
 	// needed either; the rebase existed only to follow the mint.
-	if len(list) == 1 {
+	if !runtimeArray && len(list) == 1 {
 		eqCmp := predicates.NewLiteralComparison(predicates.ComparisonEquals, list[0])
 		eqPred := predicates.NewComparisonPredicate(inPred.Operand, eqCmp)
 		newPreds := make([]predicates.QueryPredicate, 0, len(otherPreds)+1)
@@ -221,9 +224,16 @@ func (r *InComparisonToExplodeRule) OnMatch(call *ExpressionRuleCall) {
 		// IN predicate instead of publishing an Unknown-typed explode/QOV pair.
 		return
 	}
-	explodeValue := &values.ConstantValue{
+	var explodeValue values.Value = &values.ConstantValue{
 		Value: list,
 		Typ:   values.NewArrayType(false, elementType),
+	}
+	// A row-independent array holding a NULL element is exploded as it is,
+	// as Java's rule explodes arrayDistinct(comparand) with no constancy
+	// check: the explode evaluates it when the plan opens and fails with
+	// 0A000 there, even over an empty table.
+	if runtimeArray {
+		explodeValue = inPred.Comparison.Operand
 	}
 	explodeExpr, err := expressions.NewExplodeExpression(explodeValue)
 	if err != nil {
