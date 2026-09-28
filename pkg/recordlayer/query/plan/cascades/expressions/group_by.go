@@ -415,8 +415,8 @@ func AggregateResultColumnName(agg AggregateSpec) string {
 		return fmt.Sprintf("MAX(%s)", opName)
 	case AggAvg:
 		return fmt.Sprintf("AVG(%s)", opName)
-	case AggArrayAgg:
-		return fmt.Sprintf("ARRAY_AGG(%s)", opName)
+	case AggArrayAgg, AggMinEver, AggMaxEver, AggBitmapConstructAgg:
+		return fmt.Sprintf("%s(%s)", agg.Function, opName)
 	default:
 		return fmt.Sprintf("AGG(%s)", opName)
 	}

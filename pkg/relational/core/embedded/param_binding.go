@@ -44,6 +44,10 @@ func bindStatementParameters(tree antlr.Tree, args []driver.NamedValue) (string,
 	next := 0
 	var walk func(antlr.Tree) error
 	walk = func(n antlr.Tree) error {
+		// DDL binds nothing; a view refuses its parameters itself.
+		if _, ok := n.(*antlrgen.CreateSchemaTemplateStatementContext); ok {
+			return nil
+		}
 		if pp, ok := n.(*antlrgen.PreparedStatementParameterContext); ok {
 			var raw any
 			switch {

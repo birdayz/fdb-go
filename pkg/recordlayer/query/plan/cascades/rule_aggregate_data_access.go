@@ -509,7 +509,7 @@ func buildGroupExistenceMerge(
 			call.MemoizeFinalExpression(&scanPlanExpression{plan: cp}))
 	}
 	merge, err := plans.NewRecordQueryMultiIntersectionOnValuesPlanFromQuantifiers(
-		childQuants, comparisonKey, values.NewRecordConstructorValue(fields...))
+		childQuants, comparisonKey, values.NewRawRecordConstructorValue(fields...))
 	if err != nil {
 		call.Fail(err)
 		return nil
@@ -1462,7 +1462,8 @@ func tryMultiAggregateIntersection(
 			Value: pickUp,
 		})
 	}
-	resultValue := values.NewRecordConstructorValue(fields...)
+	// The GroupBy's native row is positional: a repeated aggregate keeps its name.
+	resultValue := values.NewRawRecordConstructorValue(fields...)
 
 	// Memoize each leg and hand the plan real quantifiers. Passing nil left
 	// a two-leg intersection with NO edges in the memo at all: both children

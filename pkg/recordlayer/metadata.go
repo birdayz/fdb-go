@@ -115,6 +115,11 @@ type RecordMetaData struct {
 	preserved preservedMetaDataFields
 }
 
+// Views returns the schema's SQL views (MetaData field 15), in stored order.
+func (m *RecordMetaData) Views() []*gen.PView {
+	return m.preserved.views
+}
+
 // preservedMetaDataFields carries the MetaData proto fields the Go port does
 // not model (12: joined_record_types, 13: unnested_record_types,
 // 14: user_defined_functions, 15: views), so that ToProto re-emits exactly what
@@ -479,6 +484,12 @@ func (b *RecordMetaDataBuilder) SetRecordCountKey(key KeyExpression) *RecordMeta
 // SetStoreRecordVersions enables or disables automatic record versioning.
 // When enabled, each save assigns an FDBRecordVersion to the record.
 // Java equivalent: RecordMetaDataBuilder.setStoreRecordVersions(boolean)
+// AddView appends a SQL view (name and query text), as Java's RecordLayerView.asRawView.
+func (b *RecordMetaDataBuilder) AddView(name, definition string) *RecordMetaDataBuilder {
+	b.preserved.views = append(b.preserved.views, &gen.PView{Name: &name, Definition: &definition})
+	return b
+}
+
 func (b *RecordMetaDataBuilder) SetStoreRecordVersions(store bool) *RecordMetaDataBuilder {
 	if b.storeRecordVersions != store {
 		b.version++ // Matches Java: bumps version when value changes

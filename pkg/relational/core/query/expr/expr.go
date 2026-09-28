@@ -316,6 +316,34 @@ func (r *Resolver) resolveWholeRow(id semantic.Identifier) (values.Value, bool, 
 	return nil, false, nil
 }
 
+// expandStarRecord is Java's expandStar packed into one record: the columns of
+// the qualified source, or of every source in scope.
+func (r *Resolver) expandStarRecord(qualifier *semantic.Identifier) (values.Value, error) {
+	var fields []values.RecordConstructorField
+	if r.scope != nil {
+		for _, src := range r.scope.Sources() {
+			if src.Table == nil || (qualifier != nil && !src.Alias.EqualsIgnoreQuoting(*qualifier)) {
+				continue
+			}
+			for i, col := range src.Table.Columns() {
+				if col.Ephemeral {
+					continue
+				}
+				// By position: a derived source may repeat a column name.
+				v, err := resolvedSourceColumnAt(col, src, i, nil)
+				if err != nil {
+					return nil, err
+				}
+				fields = append(fields, values.RecordConstructorField{Name: col.Id.Name(), Value: v})
+			}
+		}
+	}
+	if len(fields) == 0 {
+		return nil, &UnsupportedExpressionShapeError{Shape: "RecordConstructor over STAR with no columns"}
+	}
+	return values.NewRecordConstructorValue(fields...), nil
+}
+
 // ResolveCorrelatedIdentifierPath is ResolveIdentifierPath for a FROM item's
 // correlated path, Java's resolveCorrelatedIdentifier: one lookup over this
 // scope and every enclosing one (semantic.Scope.ResolvePathAcrossLevels).

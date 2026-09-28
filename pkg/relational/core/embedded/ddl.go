@@ -5,6 +5,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -15,9 +16,11 @@ import (
 	"fdb.dev/pkg/relational/core/catalog"
 	"fdb.dev/pkg/relational/core/functions"
 	"fdb.dev/pkg/relational/core/metadata"
+	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	queryddl "fdb.dev/pkg/relational/core/query/ddl"
 	"fdb.dev/pkg/relational/core/query/expr"
+	"fdb.dev/pkg/relational/core/query/logical"
 	"github.com/antlr4-go/antlr/v4"
 )
 
@@ -268,6 +271,15 @@ func buildSchemaTemplate(s *antlrgen.CreateSchemaTemplateStatementContext) (*met
 		b.AddTablePrimaryKeyPaths(tableName, cols, pkCols)
 	}
 
+	// Views, in clause order, each compiled against the template so far.
+	for _, clause := range s.AllTemplateClause() {
+		if vd := clause.ViewDefinition(); vd != nil {
+			if err := registerView(vd, b); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	// Second pass: register indexes.
 	for _, clause := range s.AllTemplateClause() {
 		idxDef := clause.IndexDefinition()
@@ -291,6 +303,43 @@ func buildSchemaTemplate(s *antlrgen.CreateSchemaTemplateStatementContext) (*met
 	b.MoveIndexedTablesToEnd()
 
 	return b.Build()
+}
+
+// registerView is Java's DdlVisitor.getViewMetadata: the query text as
+// written, no prepared parameters, compiled against the template so far.
+func registerView(vd antlrgen.IViewDefinitionContext, b *metadata.Builder) error {
+	name := functions.FullIdToName(vd.GetViewName())
+	q := vd.GetViewQuery()
+	if containsPreparedParameter(q) {
+		return api.NewError(api.ErrCodeSyntaxError, "found prepared parameter(s) in SQL statement")
+	}
+	definition := q.GetStart().GetInputStream().GetText(q.GetStart().GetStart(), q.GetStop().GetStop())
+	tmpl, err := b.Build()
+	if err != nil {
+		return err
+	}
+	if md := tmpl.Underlying(); md != nil {
+		parsed, err := parser.ParseView(definition)
+		if err != nil {
+			return err
+		}
+		if _, err := NewPlanVisitorWithTemplate(md, b.Name()).VisitQuery(parsed); err != nil {
+			return err
+		}
+	}
+	return b.AddView(name, definition)
+}
+
+func containsPreparedParameter(n antlr.Tree) bool {
+	if _, ok := n.(*antlrgen.PreparedStatementParameterContext); ok {
+		return true
+	}
+	for i := 0; i < n.GetChildCount(); i++ {
+		if containsPreparedParameter(n.GetChild(i)) {
+			return true
+		}
+	}
+	return false
 }
 
 // registerEnumDefinitions is the enum pass: CREATE TYPE AS ENUM registers an
@@ -368,9 +417,6 @@ func rejectUnsupportedTemplateClauses(clauses []antlrgen.ITemplateClauseContext)
 		case clause.SqlInvokedFunction() != nil:
 			return api.NewError(api.ErrCodeUnsupportedOperation,
 				"SQL functions (CREATE FUNCTION) are not yet supported in a schema template")
-		case clause.ViewDefinition() != nil:
-			return api.NewError(api.ErrCodeUnsupportedOperation,
-				"views (CREATE VIEW) are not yet supported in a schema template")
 		}
 	}
 	return nil
@@ -470,13 +516,76 @@ func parseVectorIndexDefinition(def *antlrgen.VectorIndexDefinitionContext, b *m
 	if def.GetEngine() != nil {
 		method = strings.ToUpper(def.GetEngine().GetText())
 	}
-	options, err := parseVectorIndexOptions(def.VectorIndexOptions(), indexName, method)
+	options, order, err := parseVectorIndexOptions(def.VectorIndexOptions(), indexName, method)
 	if err != nil {
 		return err
 	}
 
-	b.AddVectorIndexUsing(method, tableName, indexName, vecCols[0], partitionCols, options)
+	if !b.HasTable(tableName) {
+		table, mapping, err := plainProjectionView(b, tableName)
+		if err != nil {
+			return err
+		}
+		if mapping != nil {
+			tableName = table
+			vecCols[0] = mapping[vecCols[0]]
+			for i, c := range partitionCols {
+				partitionCols[i] = mapping[c]
+			}
+			if vecCols[0] == "" || slices.Contains(partitionCols, "") {
+				return api.NewErrorf(api.ErrCodeUndefinedColumn, "vector index %q: column not in view", indexName)
+			}
+		}
+	}
+	b.AddVectorIndexOrdered(method, tableName, indexName, vecCols[0], partitionCols, options, order)
 	return nil
+}
+
+// plainProjectionView maps a view that plainly projects columns of one table
+// (no filter, no computation) to that table and its view-to-column names; a
+// vector index over it indexes the same records. Any other view is refused.
+func plainProjectionView(b *metadata.Builder, name string) (string, map[string]string, error) {
+	tmpl, err := b.Build()
+	if err != nil {
+		return "", nil, err
+	}
+	md := tmpl.Underlying()
+	if md == nil {
+		return "", nil, nil
+	}
+	view := findView(md, name)
+	if view == nil {
+		return "", nil, nil
+	}
+	q, err := parser.ParseView(view.GetDefinition())
+	if err != nil {
+		return "", nil, err
+	}
+	op, err := NewPlanVisitorWithTemplate(md, b.Name()).VisitQuery(q)
+	if err != nil {
+		return "", nil, err
+	}
+	proj, ok := op.(*logical.LogicalProject)
+	var scan *logical.LogicalScan
+	if ok {
+		scan, ok = proj.Input.(*logical.LogicalScan)
+	}
+	if !ok || scan.Source.Producer() != nil {
+		return "", nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"a vector index over view %q is supported only when the view plainly projects one table", name)
+	}
+	mapping := make(map[string]string, len(proj.Projections))
+	for i, col := range proj.Projections {
+		if i < len(proj.IsComputed) && proj.IsComputed[i] {
+			continue
+		}
+		out := col
+		if i < len(proj.Aliases) && proj.Aliases[i] != "" {
+			out = proj.Aliases[i]
+		}
+		mapping[strings.ToUpper(out)] = parseColRef(strings.ToUpper(col)).bare()
+	}
+	return scan.Table, mapping, nil
 }
 
 type vectorOptionKind int
@@ -526,14 +635,17 @@ var vectorSQLOptions = map[string]vectorSQLOption{
 // parseVectorIndexOptions is Java's DdlVisitor.parseVectorOptions: an unknown
 // option or one for another engine is 0A000, a duplicate or unparsable value
 // 42601, and values are written as Java's String.valueOf writes them.
-func parseVectorIndexOptions(ctx antlrgen.IVectorIndexOptionsContext, indexName, engine string) (map[string]string, error) {
+// The keys come back in insertion order, which fixes Java's stored order.
+func parseVectorIndexOptions(ctx antlrgen.IVectorIndexOptionsContext, indexName, engine string) (map[string]string, []string, error) {
 	opts := map[string]string{}
+	var order []string
 	if engine == "GUARDIANN" {
 		opts[recordlayer.IndexOptionVectorEngine] = "GUARDIANN"
+		order = append(order, recordlayer.IndexOptionVectorEngine)
 	}
 	octx, ok := ctx.(*antlrgen.VectorIndexOptionsContext)
 	if !ok || octx == nil {
-		return opts, nil
+		return opts, order, nil
 	}
 	seen := map[string]bool{}
 	for _, o := range octx.AllVectorIndexOption() {
@@ -548,16 +660,17 @@ func parseVectorIndexOptions(ctx antlrgen.IVectorIndexOptionsContext, indexName,
 			key = spec.spfresh
 		}
 		if !ok || key == "" {
-			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported vector index option '%s'", name)
+			return nil, nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported vector index option '%s'", name)
 		}
 		if engine != "SPFRESH" && spec.engines != "*" && spec.engines != engine {
-			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			return nil, nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 				"vector index option '%s' is not valid for the %s vector engine", name, engine)
 		}
 		if seen[name] {
-			return nil, api.NewErrorf(api.ErrCodeSyntaxError, "duplicate vector index option '%s'", name)
+			return nil, nil, api.NewErrorf(api.ErrCodeSyntaxError, "duplicate vector index option '%s'", name)
 		}
 		seen[name] = true
+		order = append(order, key)
 		vc, _ := oc.GetOptionValue().(*antlrgen.VectorIndexOptionValueContext)
 		text := oc.GetOptionValue().GetText()
 		bad := api.NewErrorf(api.ErrCodeSyntaxError, "invalid value '%s' for vector index option '%s'", text, name)
@@ -565,29 +678,29 @@ func parseVectorIndexOptions(ctx antlrgen.IVectorIndexOptionsContext, indexName,
 		case vectorOptInt:
 			n, err := strconv.ParseInt(text, 10, 32)
 			if err != nil {
-				return nil, bad
+				return nil, nil, bad
 			}
 			opts[key] = strconv.FormatInt(n, 10)
 		case vectorOptDouble:
 			f, err := strconv.ParseFloat(text, 64)
 			if err != nil {
-				return nil, bad
+				return nil, nil, bad
 			}
 			opts[key] = values.JavaDoubleToString(f)
 		case vectorOptBool:
 			opts[key] = strconv.FormatBool(strings.EqualFold(text, "true"))
 		case vectorOptMetric:
 			if vc == nil || vc.HnswMetric() == nil {
-				return nil, bad
+				return nil, nil, bad
 			}
 			metric, err := vectorMetricName(vc.HnswMetric())
 			if err != nil {
-				return nil, api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate, "vector index %q", indexName)
+				return nil, nil, api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate, "vector index %q", indexName)
 			}
 			opts[key] = metric
 		}
 	}
-	return opts, nil
+	return opts, order, nil
 }
 
 // vectorMetricName maps an hnswMetric parse node to the Java metric enum

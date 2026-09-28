@@ -126,6 +126,9 @@ var engineGaps = []EngineGap{
 	// declines. It is booked all the same, because the conformance principle
 	// governs the SHARED surface and an unreviewed widening of it is exactly
 	// the silent divergence the cross-engine harness exists to catch.
+	// Java cannot use the unnesting index for this ORDER BY (Java issue #3896);
+	// Go sorts in memory.
+	{"arrays-unnesting.yamsql", SkipConformanceGoAccepts, `line 143: "SELECT SQ.\"item\" FROM \"T1_indexed\" AS \"row\", (SELECT \"item\" FROM \"row\".\"items\" AS \"item\") AS SQ ORDER BY SQ.\"item\"": expecting statement to throw an error 0AF00, however it succeeded`, "Java issue #3896"},
 	{"array-agg-tests.yamsql", SkipConformanceGoAccepts, `line 423: "SELECT m.mid, r.rid, (SELECT ARRAY_AGG(a.url) FROM doc_asset a WHERE a.rid = r.rid) AS assets`, "scalar subquery in the SELECT list is a Go grammar extension"},
 	{"maxRows.yamsql", SkipConformanceGoAccepts, `"select * from ta limit 5": expecting statement to throw an error 0AF00, however it succeeded`, "CQ-72"},
 
@@ -220,38 +223,6 @@ var engineGaps = []EngineGap{
 	// (The %q-formatted statement text escapes the embedded quotes, so the
 	// signature matches the escaped form.)
 	{"functions.yamsql", SkipGapDMLReturning, `"update C set st = coalesce(st, null) where c1 = 4 returning \"new\".st": actual result set is NULL, expecting non-NULL result set`, "CQ-72"},
-	// `SELECT (*)` — the parenthesised star, a record constructor over the
-	// expanded row (ExpressionVisitor.visitRecordConstructor's STAR arm,
-	// :902-916). Go declines it in the expression walker
-	// (walkRecordConstructorInner's "RecordConstructor over STAR"), so every
-	// shape in this file fails 0AF00.
-	//
-	// The naming and typing rule is MEASURED against the live JVM in
-	// conformance/paren_star_java_probe_test.go and agrees with this file's
-	// own expectations, so the file IS the spec:
-	//   - ONE for-each quantifier in scope → a SINGLE struct-typed column
-	//     named after that quantifier (table, alias, subquery alias, TVF
-	//     name), carrying the whole row. An explicit `AS x` overrides it.
-	//   - TWO OR MORE → the column is anonymous (`_0`) and the struct
-	//     FLATTENS every source's columns rather than nesting one struct per
-	//     source. Star.overQuantifiers (Star.java:141-148) builds
-	//     ofUnnamed(quantifiers), but ensureValueConsistentWithExpansion
-	//     replaces it with the flat record constructor over the expansion
-	//     whenever the types differ — which for two quantifiers they always
-	//     do. "Two or more" counts PartiQL unnest bindings, not just joins.
-	//   - `(T.*)` names the column after the qualifier and is unaffected by
-	//     how many sources are in scope.
-	//
-	// TWO THINGS GATE CLOSING THIS FILE, and neither is the star itself:
-	//   - the multi-quantifier arm produces a COMPUTED record, which is
-	//     CQ-86 — a computed record reaches the driver as a bare map, not an
-	//     api.Struct, so its rows would not match even once it plans.
-	//   - the function-source block needs `CREATE TEMPORARY FUNCTION`
-	//     (skip class unsupported:temporary-function) and the values-source
-	//     block needs VALUES as a FROM source. Both are other workstreams, so
-	//     this file re-books at the FIRST of those it reaches rather than
-	//     passing outright.
-	{"star-expression-metadata.yamsql", SkipGapStructQuery, `"SELECT (*) FROM foo"`, "RFC-204 P3"},
 	// RE-BOOKED, not closed-by-relabel: the duplicate qualified star this file
 	// was booked for is FIXED. Java's expandStar has no uniqueness rule, so
 	// `SELECT A.*, A.* FROM A` is legal and the 42702 comes from the OUTER
@@ -375,37 +346,6 @@ var engineGaps = []EngineGap{
 	// Both remaining signatures pin the exact statement, so a DIFFERENT failure
 	// in either file stays a hard failure rather than hiding under the entry.
 	{"union.yamsql", SkipGapPlannerDeclines, "select id as W, col1 as X, col2 as Y from t1 union all (select * from t1)", "CQ-72"},
-	// RE-BOOKED because this file's former derived-table-join-on signature is
-	// now CLOSED — that class is retired and its constant deleted, since a label
-	// nothing emits reads as a covered case.
-	// The JOIN … USING over a computed-body derived table (`select c3 - 2 as
-	// c11`) that used to stop this file EXECUTES AND ASSERTS: the exact-ordinal
-	// output row makes the USING scope derivable, so the ON upgrade no longer
-	// fails closed. Measured, not inferred — a per-query outcome trace over the
-	// block shows that statement reaching ASSERT, and the file's asserted-query
-	// count rises 17 → 23 while its class changes. It is the ONLY file whose
-	// ledger line moves: a per-file diff of all 168 skip lines and of every
-	// file's skip-class histogram is otherwise byte-identical to HEAD.
-	//
-	// The file now stops at its next unimplemented shape:
-	//
-	//	select (*) from (select dept.name, project.name from emp, dept, project …) X
-	//
-	// `(*)` is the PARENTHESISED STAR — a record constructor over the expanded
-	// row — which Go does not implement; the expression walker declines it
-	// ("RecordConstructor over STAR"). This is the SAME pre-existing gap, not a
-	// new one: star-expression-metadata.yamsql is booked at `SELECT (*) FROM
-	// foo` and produces the identical `0AF00: projection slot 0 has no resolved
-	// Value` both here and at HEAD, so this entry carries that file's class.
-	//
-	// DO NOT read the two line numbers as "stops earlier". The block does not
-	// execute in file order — the same trace shows line 453 asserting before
-	// line 208 errors — so the position of the stopping statement in the file
-	// says nothing about how far the run got. The asserted-query count is what
-	// says it: this file gets FURTHER than before, and the earlier signature is
-	// replaced rather than kept because a closed gap that can never match again
-	// is exactly the stale entry EngineGaps()' reachability assertion catches.
-	{"join-tests.yamsql", SkipGapStructQuery, `"select (*) from (select dept.name, project.name from emp, dept, project`, "RFC-204 P3"},
 	// The file's setup runs under CASE_SENSITIVE_IDENTIFIERS, so Java's DDL
 	// stores the schema `test1` as written and the verbatim connect URI
 	// (`?schema=test1`) reaches it; Go ignores the option, stores TEST1, and

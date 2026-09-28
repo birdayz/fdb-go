@@ -1708,8 +1708,7 @@ func (r *Resolver) walkArrayConstructor(ac antlrgen.IArrayConstructorContext) (v
 
 // walkRecordConstructorInner resolves a record constructor in EXPRESSION
 // position — Java's ExpressionVisitor.visitRecordConstructor
-// (ExpressionVisitor.java:889-926), minus the two star arms (those need the
-// logical operators in scope, not just the expression resolver).
+// (ExpressionVisitor.java:889-926).
 //
 // There is exactly ONE outcome: a record. A one-element constructor is NOT
 // unwrapped, because Java does not unwrap it either — visitRecordConstructor
@@ -1747,11 +1746,14 @@ func (r *Resolver) walkRecordConstructorInner(rc antlrgen.IRecordConstructorCont
 	if !ok {
 		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("RecordConstructor ctx %T", rc)}
 	}
-	// `(t.*)` / `(*)` — the parenthesised star. It packs the whole row into one
-	// struct-typed column and is resolved against the FROM sources, which this
-	// resolver does not carry; the projection layer handles it.
+	// `(t.*)` / `(*)` pack the star's expansion into one record.
 	if rcc.STAR() != nil {
-		return nil, &UnsupportedExpressionShapeError{Shape: "RecordConstructor over STAR"}
+		var qualifier *semantic.Identifier
+		if rcc.Uid() != nil {
+			id := semantic.FromUidContext(rcc.Uid(), r.analyzer.CaseSensitive())
+			qualifier = &id
+		}
+		return r.expandStarRecord(qualifier)
 	}
 	exprs := rcc.AllExpressionWithOptionalName()
 	if len(exprs) == 0 {

@@ -36,11 +36,14 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/antlr4-go/antlr/v4"
+
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"
+	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query"
 	"fdb.dev/pkg/relational/core/query/expr"
@@ -117,8 +120,11 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 		logical.BindCTESources(plan, v.cteProducers)
 		return plan, nil
 	}
+	declarations, err := v.declareViews(q)
+	if err != nil {
+		return nil, err
+	}
 	ctesCtx := q.Ctes()
-	var declarations []*logical.CTEProducer
 	if ctesCtx != nil {
 		if v.cteScopes == nil {
 			v.cteScopes = make(map[string]semantic.ScopeSource)
@@ -271,6 +277,88 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 	return main, nil
 }
 
+// declareViews declares, as named queries, every schema view the query reaches
+// (directly or through another view), in declaration order: Java compiles a
+// view into a named logical operator its FROM clauses resolve.
+func (v *PlanVisitor) declareViews(q antlr.Tree) ([]*logical.CTEProducer, error) {
+	if v.md == nil {
+		return nil, nil
+	}
+	views := v.md.Views()
+	if len(views) == 0 {
+		return nil, nil
+	}
+	parsed := make([]antlrgen.IQueryContext, len(views))
+	needed := make([]bool, len(views))
+	for changed := true; changed; {
+		changed = false
+		for i, vw := range views {
+			if needed[i] {
+				continue
+			}
+			upper := strings.ToUpper(vw.GetName())
+			if _, declared := v.cteScopes[upper]; declared {
+				continue
+			}
+			if _, declared := v.cteOnScopes[upper]; declared {
+				continue
+			}
+			reached := containsTableRef(q, upper)
+			for j := range views {
+				if !reached && needed[j] && parsed[j] != nil {
+					reached = containsTableRef(parsed[j], upper)
+				}
+			}
+			if !reached {
+				continue
+			}
+			body, err := parser.ParseView(vw.GetDefinition())
+			if err != nil {
+				return nil, err
+			}
+			parsed[i], needed[i], changed = body, true, true
+		}
+	}
+	if v.cteScopes == nil {
+		v.cteScopes = make(map[string]semantic.ScopeSource)
+	}
+	if v.cteOnScopes == nil {
+		v.cteOnScopes = make(map[string]semantic.ScopeSource)
+	}
+	var declarations []*logical.CTEProducer
+	for i, vw := range views {
+		if !needed[i] {
+			continue
+		}
+		name := vw.GetName()
+		upper := strings.ToUpper(name)
+		body := parsed[i]
+		producer, err := logical.PrepareCTE(name, false, v.cteProducers, func(registry logical.CTERegistry) (logical.LogicalOperator, error) {
+			previous := v.cteProducers
+			v.cteProducers = registry
+			defer func() { v.cteProducers = previous }()
+			return v.buildCTEBodyQuery(body)
+		}, logical.CTENamePath(name))
+		if err != nil {
+			return nil, err
+		}
+		if producer.Body() == nil {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery, "view %q has no logical plan", name)
+		}
+		if source, exact := exactVirtualScopeSource(name, producer.Body(), v.md, nil, v.cteScopes); exact {
+			source.CTE = producer
+			v.cteScopes[upper] = source
+			delete(v.cteOnScopes, upper)
+		} else {
+			delete(v.cteScopes, upper)
+			v.cteOnScopes[upper] = semantic.ScopeSource{CTE: producer}
+		}
+		v.cteProducers = v.cteProducers.With(producer)
+		declarations = append(declarations, producer)
+	}
+	return declarations, nil
+}
+
 // VisitQueryBody dispatches simple SELECT vs UNION, threading
 // metadata and CTE scopes through both arms.
 func (v *PlanVisitor) VisitQueryBody(body antlrgen.IQueryExpressionBodyContext) (logical.LogicalOperator, error) {
@@ -331,7 +419,19 @@ func (v *PlanVisitor) VisitQueryTerm(qt antlrgen.IQueryTermContext) (logical.Log
 	if !ok {
 		return nil, nil
 	}
-	return v.visitSimpleTableBody(simpleTable)
+	declarations, err := v.declareViews(qt)
+	if err != nil {
+		return nil, err
+	}
+	op, err := v.visitSimpleTableBody(simpleTable)
+	if err != nil || op == nil {
+		return op, err
+	}
+	logical.BindCTESources(op, v.cteProducers)
+	for i := len(declarations) - 1; i >= 0; i-- {
+		op = logical.NewCTEReference(declarations[i], op)
+	}
+	return op, nil
 }
 
 func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableContext) (logical.LogicalOperator, error) {

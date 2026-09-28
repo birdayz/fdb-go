@@ -783,9 +783,61 @@ func columnNameFromExpr(expr antlrgen.IExpressionContext, context string) (strin
 // FROM and GROUP BY names have separate grammar contracts.
 func selectOutputAlias(e *antlrgen.SelectExpressionElementContext) string {
 	if e.AS() == nil || e.Uid() == nil {
-		return ""
+		return starRecordName(e)
 	}
 	return functions.NormalizeIdentifier(e.Uid().GetText())
+}
+
+// starRecordName is the name Java's visitRecordConstructor gives `(T.*)` (the
+// qualifier) and `(*)` (the sole FROM source; none when there are several).
+func starRecordName(e *antlrgen.SelectExpressionElementContext) string {
+	p, ok := e.Expression().(*antlrgen.PredicatedExpressionContext)
+	if !ok || p.Predicate() != nil {
+		return ""
+	}
+	atom, ok := p.ExpressionAtom().(*antlrgen.RecordConstructorExpressionAtomContext)
+	if !ok {
+		return ""
+	}
+	rc, ok := atom.RecordConstructor().(*antlrgen.RecordConstructorContext)
+	if !ok || rc.STAR() == nil {
+		return ""
+	}
+	if rc.Uid() != nil {
+		return functions.NormalizeIdentifier(rc.Uid().GetText())
+	}
+	st, _ := e.GetParent().GetParent().(*antlrgen.SimpleTableContext)
+	if st == nil || st.FromClause() == nil {
+		return ""
+	}
+	sources := st.FromClause().TableSources().AllTableSource()
+	if len(sources) != 1 {
+		return ""
+	}
+	base, ok := sources[0].(*antlrgen.TableSourceBaseContext)
+	if !ok || len(base.AllJoinPart()) > 0 {
+		return ""
+	}
+	switch item := base.TableSourceItem().(type) {
+	case *antlrgen.AtomTableItemContext:
+		if item.GetAlias() != nil {
+			return functions.NormalizeIdentifier(item.GetAlias().GetText())
+		}
+		uids := item.TableName().FullId().AllUid()
+		return functions.NormalizeIdentifier(uids[len(uids)-1].GetText())
+	case *antlrgen.SubqueryTableItemContext:
+		return functions.NormalizeIdentifier(item.GetAlias().GetText())
+	case *antlrgen.TableValuedFunctionContext:
+		if item.GetAlias() != nil {
+			return functions.NormalizeIdentifier(item.GetAlias().GetText())
+		}
+	case *antlrgen.InlineTableItemContext:
+		if def, ok := item.InlineTableDefinition().(*antlrgen.InlineTableDefinitionContext); ok {
+			uids := def.TableName().FullId().AllUid()
+			return functions.NormalizeIdentifier(uids[len(uids)-1].GetText())
+		}
+	}
+	return ""
 }
 
 func selectExprToColumnName(e *antlrgen.SelectExpressionElementContext) (string, string, error) {
@@ -3127,6 +3179,10 @@ func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 		onExpr, usingUids := joinOnOrUsing(j.Expression(), j.USING(), j.UidList())
 		return joinClause{tableName: tblName, joinType: jt, alias: alias, aliasExplicit: atomItem.GetAlias() != nil, onExpr: onExpr, usingUids: usingUids, segments: parts}, nil
 
+	case *antlrgen.StraightJoinContext:
+		return joinClause{}, api.NewError(api.ErrCodeUnsupportedQuery, "STRAIGHT_JOIN is not supported")
+	case *antlrgen.NaturalJoinContext:
+		return joinClause{}, api.NewError(api.ErrCodeUnsupportedQuery, "NATURAL JOIN is not supported")
 	default:
 		return joinClause{}, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported JOIN type %T; only INNER JOIN and LEFT/RIGHT/FULL OUTER JOIN are supported", jp)

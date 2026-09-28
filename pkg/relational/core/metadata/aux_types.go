@@ -25,9 +25,14 @@ func (b *Builder) AddAuxiliaryType(t api.Named) *Builder {
 	return b
 }
 
-// verifyNameIsNotUsed mirrors Java's verifyNameIsNotUsed (tables, auxiliary
-// types; Go has no routines/views to collide with yet).
+// verifyNameIsNotUsed mirrors Java's verifyNameIsNotUsed.
 func (b *Builder) verifyNameIsNotUsed(name string) error {
+	for _, v := range b.views {
+		if v.name == name {
+			return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+				"view with name '%s' already exists", name)
+		}
+	}
 	for _, tbl := range b.tables {
 		if tbl.name == name {
 			return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,

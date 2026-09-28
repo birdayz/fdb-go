@@ -3,6 +3,8 @@ package metadata
 import (
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -40,7 +42,10 @@ type Builder struct {
 	intermingleTbls  bool
 	enableLongRows   bool
 	storeRowVersions bool
+	views            []viewSpec
 }
+
+type viewSpec struct{ name, definition string }
 
 type tableSpec struct {
 	name    string
@@ -79,6 +84,7 @@ type indexSpec struct {
 	partitionColumns []string          // HNSW partition prefix (independent graph per partition)
 	numDimensions    int               // derived from the column's VECTOR type
 	options          map[string]string // HNSW tuning options (metric, ef_construction, m, ...)
+	optionOrder      []string          // vector options in DDL order
 
 	// rootExpression, when non-nil, makes this an EXPLICIT index: the key
 	// expression, type, options and predicate were produced by an index
@@ -160,6 +166,25 @@ func (b *Builder) SetStoreRowVersions(v bool) *Builder {
 // already-registered struct type is rejected whichever side is seen first.
 // Without it a `CREATE TYPE AS STRUCT s ... CREATE TABLE s ...` template
 // builds two descriptors named s, one silently shadowing the other.
+// HasTable reports whether a table of that name was added.
+func (b *Builder) HasTable(name string) bool {
+	for _, t := range b.tables {
+		if t.name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// AddView records a view: its name and its query text as written.
+func (b *Builder) AddView(name, definition string) error {
+	if err := b.verifyNameIsNotUsed(name); err != nil {
+		return err
+	}
+	b.views = append(b.views, viewSpec{name: name, definition: definition})
+	return nil
+}
+
 func (b *Builder) AddTable(name string, columns []ColumnSpec, primaryKey []string) *Builder {
 	paths := make([][]string, len(primaryKey))
 	for i, col := range primaryKey {
@@ -401,6 +426,13 @@ func (b *Builder) AddVectorIndex(tableName, indexName, vectorColumn string, part
 // "HNSW" (graph, Java-compatible wire format) or "SPFRESH" (RFC-094
 // centroid+posting-list, Go-native). SPFresh does not support PARTITION BY.
 func (b *Builder) AddVectorIndexUsing(method, tableName, indexName, vectorColumn string, partitionColumns []string, options map[string]string) *Builder {
+	order := slices.Sorted(maps.Keys(options))
+	return b.AddVectorIndexOrdered(method, tableName, indexName, vectorColumn, partitionColumns, options, order)
+}
+
+// AddVectorIndexOrdered is AddVectorIndexUsing with the options' DDL order,
+// which decides the stored option order as Java's HashMap does.
+func (b *Builder) AddVectorIndexOrdered(method, tableName, indexName, vectorColumn string, partitionColumns []string, options map[string]string, order []string) *Builder {
 	// The method is case-sensitive everywhere downstream (buildVectorIndex
 	// treats anything that is not "SPFRESH" as HNSW), so an unknown or
 	// mis-cased method must fail loudly here — AddVectorIndexUsing("SPFresh",
@@ -456,6 +488,7 @@ func (b *Builder) AddVectorIndexUsing(method, tableName, indexName, vectorColumn
 			partitionColumns: partitionColumns,
 			numDimensions:    vt.Dimensions(),
 			options:          options,
+			optionOrder:      order,
 		})
 		return b
 	}
@@ -546,6 +579,16 @@ func (b *Builder) build() (*RecordLayerSchemaTemplate, error) {
 	mdBuilder.SetSplitLongRecords(b.enableLongRows)
 	mdBuilder.SetStoreRecordVersions(b.storeRowVersions)
 	mdBuilder.SetVersion(b.version)
+	// Java keeps views in a HashMap keyed by name and stores its iteration order.
+	viewDef := make(map[string]string, len(b.views))
+	viewNames := make([]string, len(b.views))
+	for i, v := range b.views {
+		viewDef[v.name] = v.definition
+		viewNames[i] = v.name
+	}
+	for _, name := range javaHashMapOrder(nil, viewNames) {
+		mdBuilder.AddView(name, viewDef[name])
+	}
 	// NO record count key: the stored template bytes must match Java's, and
 	// Java's RecordMetadataSerializer never sets one — Java core marks
 	// getRecordCountKey @API(DEPRECATED), superseded by COUNT-type indexes.
@@ -1372,16 +1415,24 @@ func buildVectorIndex(idx indexSpec) (*recordlayer.Index, error) {
 		setOptionsSorted(rl, idx.options)
 		return rl, nil
 	}
-	rl := recordlayer.NewVectorIndex(idx.name, root, idx.numDimensions)
-	setOptionsSorted(rl, idx.options)
+	// Java's generator writes unique first, then its option HashMap: the
+	// clause options put in order, then the dimension count.
+	rl := recordlayer.NewIndex(idx.name, root)
+	rl.Type = recordlayer.IndexTypeVector
+	rl.SetOption(recordlayer.IndexOptionUnique, "false")
+	dims := fmt.Sprintf("%d", idx.numDimensions)
+	for _, k := range javaHashMapOrder(idx.optionOrder, []string{recordlayer.IndexOptionVectorNumDimensions}) {
+		if k == recordlayer.IndexOptionVectorNumDimensions {
+			rl.SetOption(k, dims)
+		} else {
+			rl.SetOption(k, idx.options[k])
+		}
+	}
 	return rl, nil
 }
 
 // setOptionsSorted sets a DDL option map on an index in key order, so the stored
-// option list is a function of the DDL. The vector clause options' own order
-// (Java's OnSourceIndexGenerator collects them into a HashMap, so the target
-// stores its iteration order after unique) belongs to the vector DDL port,
-// WS-D/WS-K of RFC-257.
+// option list is a function of the DDL.
 func setOptionsSorted(rl *recordlayer.Index, options map[string]string) {
 	keys := make([]string, 0, len(options))
 	for k := range options {
