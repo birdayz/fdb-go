@@ -14,19 +14,22 @@ import (
 // MetaDataException("incorrect index options", cause), and a missing dimension
 // count is the parse's own MetaDataException. So the windowed index Go builds is
 // the one Java builds, and its maintainer (parseHNSWConfig, the same reader)
-// reads the numbers Java reads. A GuardiANN index is not parsed here.
+// reads the numbers Java reads. A GuardiANN index is parsed by
+// parseGuardiannConfig, GuardiannVectorIndexEngine.parseConfig.
 func validateVectorIndexOptionsAtBuild(idx *Index) error {
 	engine, err := VectorEngineOf(idx)
 	if err != nil {
 		return err
 	}
-	if engine != VectorEngineHNSW {
-		return nil
-	}
 	if err := hnswAliasConflict(idx); err != nil {
 		return err
 	}
-	if _, err := readHNSWOptions(idx, false); err != nil {
+	if engine == VectorEngineGuardiann {
+		_, err = parseGuardiannConfig(idx)
+	} else {
+		_, err = readHNSWOptions(idx, false)
+	}
+	if err != nil {
 		var iae *IllegalArgumentError
 		if errors.As(err, &iae) {
 			return &MetaDataError{Message: "incorrect index options", Cause: err}

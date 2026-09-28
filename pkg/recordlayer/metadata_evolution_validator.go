@@ -1010,8 +1010,8 @@ func validateVectorIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) 
 			newIdx.Name, IndexOptionVectorEngine)}
 	}
 	delete(changed, IndexOptionVectorEngine)
-	if newEngine != VectorEngineHNSW {
-		return nil
+	if newEngine == VectorEngineGuardiann {
+		return validateGuardiannIndexOptions(oldIdx, newIdx, changed)
 	}
 	// Structural options: disallow EFFECTIVE value changes, as Java's
 	// VectorIndexOptionsHelper.disallowChange compares the parsed and defaulted
@@ -1043,26 +1043,9 @@ func validateVectorIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) 
 		{IndexOptionHNSWUseRaBitQ, oldOpts.useRaBitQ == newOpts.useRaBitQ},
 		{IndexOptionHNSWRaBitQNumExBits, oldOpts.raBitQNumExBits == newOpts.raBitQNumExBits},
 	} {
-		// A key covers its alias (VectorOptionKey's names), as Java's
-		// validateChangedOptions reads it: disallowChange visits the key's
-		// names in order, its hnsw* name then its alias, and a refusal names
-		// the first of them that changed.
-		alias := hnswOptionAliases[o.key]
-		name := o.key
-		switch {
-		case changed[o.key]:
-		case alias != "" && changed[alias]:
-			name = alias
-		default:
-			continue
+		if err := disallowVectorOptionChange(newIdx, changed, o.key, o.same); err != nil {
+			return err
 		}
-		if !o.same {
-			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("attempted to change immutable vector index option (index=%q, option=%q)", newIdx.Name, name),
-			}
-		}
-		delete(changed, o.key)
-		delete(changed, alias)
 	}
 
 	// Runtime-only options: always safe to change, just remove from changed.
@@ -1079,6 +1062,97 @@ func validateVectorIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) 
 		delete(changed, hnswOptionAliases[key])
 	}
 
+	return nil
+}
+
+// disallowVectorOptionChange is VectorIndexOptionsHelper.disallowChange for one
+// key over its effective values; a handled key leaves changed.
+func disallowVectorOptionChange(newIdx *Index, changed map[string]bool, key string, same bool) error {
+	// A key covers its alias (VectorOptionKey's names): disallowChange visits
+	// the hnsw* name then the alias, and a refusal names the first that changed.
+	alias := hnswOptionAliases[key]
+	name := key
+	switch {
+	case changed[key]:
+	case alias != "" && changed[alias]:
+		name = alias
+	default:
+		return nil
+	}
+	if !same {
+		return &MetaDataEvolutionError{
+			Message: fmt.Sprintf("attempted to change immutable vector index option (index=%q, option=%q)", newIdx.Name, name),
+		}
+	}
+	delete(changed, key)
+	delete(changed, alias)
+	return nil
+}
+
+// validateGuardiannIndexOptions is GuardiannVectorIndexEngine.validateChangedOptions:
+// only the stats and concurrency knobs and the primary-cluster hard cap may
+// change; everything else would restructure data already on disk.
+func validateGuardiannIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) error {
+	o, err := parseGuardiannConfig(oldIdx)
+	if err != nil {
+		return err
+	}
+	n, err := parseGuardiannConfig(newIdx)
+	if err != nil {
+		return err
+	}
+	for _, c := range []struct {
+		key  string
+		same bool
+	}{
+		{IndexOptionVectorMetric, o.metric == n.metric},
+		{IndexOptionVectorNumDimensions, o.numDimensions == n.numDimensions},
+		{IndexOptionHNSWUseRaBitQ, o.useRaBitQ == n.useRaBitQ},
+		{IndexOptionHNSWRaBitQNumExBits, o.raBitQNumExBits == n.raBitQNumExBits},
+		{IndexOptionGuardiannPrimaryClusterMin, o.primaryClusterMin == n.primaryClusterMin},
+		{IndexOptionGuardiannMergeMaxEverFraction, o.mergeMaxEverFraction == n.mergeMaxEverFraction},
+		{IndexOptionGuardiannMinChildFraction, o.minChildFraction == n.minChildFraction},
+		{IndexOptionGuardiannMaxRelativeImbalance, o.maxRelativeImbalance == n.maxRelativeImbalance},
+		{IndexOptionGuardiannSplitImbalancePenalty, o.splitImbalancePenalty == n.splitImbalancePenalty},
+		{IndexOptionGuardiannPrimaryClusterMax, o.primaryClusterMax == n.primaryClusterMax},
+		{IndexOptionGuardiannUnderreplicatedPrimaryClusterMax, o.underreplicatedPrimaryClusterMax == n.underreplicatedPrimaryClusterMax},
+		{IndexOptionGuardiannReplicatedClusterMaxWrites, o.replicatedClusterMaxWrites == n.replicatedClusterMaxWrites},
+		{IndexOptionGuardiannReplicatedClusterTarget, o.replicatedClusterTarget == n.replicatedClusterTarget},
+		{IndexOptionGuardiannReplicationPriorityMin, o.replicationPriorityMin == n.replicationPriorityMin},
+		{IndexOptionGuardiannReplicationDistanceRatioWeight, o.replicationDistanceRatioWeight == n.replicationDistanceRatioWeight},
+		{IndexOptionGuardiannReplicationZScoreWeight, o.replicationZScoreWeight == n.replicationZScoreWeight},
+		{IndexOptionGuardiannReplicationStatsMinSampleSize, o.replicationStatsMinSampleSize == n.replicationStatsMinSampleSize},
+		{IndexOptionGuardiannDeterministicRandomness, o.deterministicRandomness == n.deterministicRandomness},
+		{IndexOptionGuardiannInsertMaxCandidateClusters, o.insertMaxCandidateClusters == n.insertMaxCandidateClusters},
+		{IndexOptionGuardiannDeleteMaxCandidateClusters, o.deleteMaxCandidateClusters == n.deleteMaxCandidateClusters},
+		{IndexOptionGuardiannSplitNumNearestClusters, o.splitNumNearestClusters == n.splitNumNearestClusters},
+		{IndexOptionGuardiannMergeNumNearestClusters, o.mergeNumNearestClusters == n.mergeNumNearestClusters},
+		{IndexOptionGuardiannKMeansMaxIterations, o.kMeansMaxIterations == n.kMeansMaxIterations},
+		{IndexOptionGuardiannKMeansMaxRestarts, o.kMeansMaxRestarts == n.kMeansMaxRestarts},
+		{IndexOptionGuardiannReassignNumNeighboringClusters, o.reassignNumNeighboringClusters == n.reassignNumNeighboringClusters},
+		{IndexOptionGuardiannCollapseMinDuplicates, o.collapseMinDuplicates == n.collapseMinDuplicates},
+		{IndexOptionGuardiannConstructionCentroidEfRingSearch, o.constructionSearchConfig.centroidEfRingSearch == n.constructionSearchConfig.centroidEfRingSearch},
+		{IndexOptionGuardiannConstructionCentroidEfOutwardSearch, o.constructionSearchConfig.centroidEfOutwardSearch == n.constructionSearchConfig.centroidEfOutwardSearch},
+	} {
+		if err := disallowVectorOptionChange(newIdx, changed, c.key, c.same); err != nil {
+			return err
+		}
+	}
+	for _, key := range []string{
+		IndexOptionHNSWSampleVectorStatsProbability,
+		IndexOptionHNSWMaintainStatsProbability,
+		IndexOptionHNSWStatsThreshold,
+		IndexOptionGuardiannSampleBatchSize,
+		IndexOptionGuardiannDeleteConcurrency,
+		IndexOptionGuardiannSplitMergeConcurrency,
+		IndexOptionGuardiannReassignConcurrency,
+		IndexOptionGuardiannCollapseConcurrency,
+		IndexOptionGuardiannBounceConcurrency,
+		IndexOptionGuardiannPrimaryClusterHardMax,
+	} {
+		delete(changed, key)
+		delete(changed, hnswOptionAliases[key])
+	}
 	return nil
 }
 

@@ -40,4 +40,44 @@ func TestVectorEngineIdentity(t *testing.T) {
 	if _, err := newVectorIndexMaintainer(bad, sub, sub, sub, nil, nil); !errors.As(err, &iae) {
 		t.Errorf("collapseMinDuplicates >= primaryClusterMax: %v", err)
 	}
+	if err := validateVectorIndexOptionsAtBuild(bad); !errors.As(err, &mde) || mde.Message != "incorrect index options" {
+		t.Errorf("build-time GuardiANN config check: %v", err)
+	}
+}
+
+func TestGuardiannChangedOptions(t *testing.T) {
+	t.Parallel()
+	with := func(kv ...string) *Index {
+		i := &Index{Name: "vi", Type: IndexTypeVector, Options: map[string]string{
+			IndexOptionVectorNumDimensions: "3", IndexOptionVectorEngine: "GUARDIANN",
+		}}
+		for n := 0; n < len(kv); n += 2 {
+			i.Options[kv[n]] = kv[n+1]
+		}
+		return i
+	}
+	old := with()
+	var mee *MetaDataEvolutionError
+	for _, c := range []struct {
+		key, val string
+		ok       bool
+	}{
+		{IndexOptionGuardiannPrimaryClusterMax, "500", false},
+		{IndexOptionGuardiannPrimaryClusterMin, "100", true}, // its default: no effective change
+		{IndexOptionGuardiannConstructionCentroidEfRingSearch, "7", false},
+		{IndexOptionVectorMetric, "COSINE_METRIC", false},
+		{IndexOptionGuardiannPrimaryClusterHardMax, "3000", true},
+		{IndexOptionGuardiannBounceConcurrency, "3", true},
+		{IndexOptionHNSWStatsThreshold, "9", true},
+	} {
+		changed := map[string]bool{c.key: true}
+		err := validateVectorIndexOptions(old, with(c.key, c.val), changed)
+		if c.ok {
+			if err != nil || len(changed) != 0 {
+				t.Errorf("%s: %v, left %v", c.key, err, changed)
+			}
+		} else if !errors.As(err, &mee) {
+			t.Errorf("%s: want immutable-option refusal, got %v", c.key, err)
+		}
+	}
 }
