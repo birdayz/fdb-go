@@ -107,6 +107,17 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 	if err != nil {
 		return nil, err
 	}
+	if mayCallSQLFunction(root) && g.c.ensureMetaData(ctx) == nil {
+		expanded, changed, err := expandSQLFunctions(sql, root, metaDataFunctions(g.c.cachedMetaData()))
+		if err != nil {
+			return nil, err
+		}
+		if changed {
+			if root, err = parser.Parse(expanded); err != nil {
+				return nil, err
+			}
+		}
+	}
 	paramKey, release, err := bindStatementParameters(root, g.args)
 	if err != nil {
 		return nil, err
@@ -7624,7 +7635,8 @@ func isAllowedFunction(name string) bool {
 		"CARDINALITY",
 		// The bitmap functions are ArithmeticValues (expr.walkScalarFunction
 		// → ResolveArithmetic), as Java's are, not catalogue entries.
-		"BITMAP_BUCKET_OFFSET", "BITMAP_BIT_POSITION":
+		"BITMAP_BUCKET_OFFSET", "BITMAP_BIT_POSITION",
+		`"` + expr.SQLFunctionArgument + `"`:
 		return true
 	}
 	return values.IsCascadesSafeScalarFunction(name)

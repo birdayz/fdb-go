@@ -45,6 +45,12 @@ func (b *Builder) verifyNameIsNotUsed(name string) error {
 				"type with name '%s' already exists", name)
 		}
 	}
+	for _, f := range b.functions {
+		if f.name == name {
+			return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+				"routine with name '%s' already exists", name)
+		}
+	}
 	return nil
 }
 

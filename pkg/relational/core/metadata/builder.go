@@ -43,6 +43,7 @@ type Builder struct {
 	enableLongRows   bool
 	storeRowVersions bool
 	views            []viewSpec
+	functions        []viewSpec
 }
 
 type viewSpec struct{ name, definition string }
@@ -174,6 +175,15 @@ func (b *Builder) HasTable(name string) bool {
 		}
 	}
 	return false
+}
+
+// AddFunction records a SQL function: its name and its CREATE FUNCTION text.
+func (b *Builder) AddFunction(name, definition string) error {
+	if err := b.verifyNameIsNotUsed(name); err != nil {
+		return err
+	}
+	b.functions = append(b.functions, viewSpec{name: name, definition: definition})
+	return nil
 }
 
 // AddView records a view: its name and its query text as written.
@@ -588,6 +598,18 @@ func (b *Builder) build() (*RecordLayerSchemaTemplate, error) {
 	}
 	for _, name := range javaHashMapOrder(nil, viewNames) {
 		mdBuilder.AddView(name, viewDef[name])
+	}
+	fnDef := make(map[string]string, len(b.functions))
+	fnNames := make([]string, len(b.functions))
+	for i, f := range b.functions {
+		fnDef[f.name] = f.definition
+		fnNames[i] = f.name
+	}
+	for _, name := range javaHashMapOrder(nil, fnNames) {
+		name, def := name, fnDef[name]
+		mdBuilder.AddUserDefinedFunction(&gen.PUserDefinedFunction{SpecificFunction: &gen.PUserDefinedFunction_SqlFunction{
+			SqlFunction: &gen.PRawSqlFunction{Name: &name, Definition: &def},
+		}})
 	}
 	// NO record count key: the stored template bytes must match Java's, and
 	// Java's RecordMetadataSerializer never sets one — Java core marks

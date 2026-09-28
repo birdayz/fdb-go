@@ -503,7 +503,7 @@ func classifyDDLByDeclaration(f *javayamsql.File, ddl *ddlError) SkipClass {
 	if ddl != nil {
 		msg := ddl.Error()
 		switch {
-		case strings.Contains(msg, "SQL functions (CREATE FUNCTION)"):
+		case strings.Contains(msg, "SQL functions (CREATE FUNCTION)"), strings.Contains(msg, "only query bodies are supported"):
 			return SkipDDLFunction
 		case strings.Contains(msg, "views (CREATE VIEW)"):
 			return SkipDDLOther

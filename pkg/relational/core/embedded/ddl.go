@@ -237,10 +237,6 @@ func buildSchemaTemplate(s *antlrgen.CreateSchemaTemplateStatementContext) (*met
 		}
 	}
 
-	if err := rejectUnsupportedTemplateClauses(s.AllTemplateClause()); err != nil {
-		return nil, err
-	}
-
 	registerEnumDefinitions(s.AllTemplateClause(), b)
 	if err := registerStructDefinitions(s.AllTemplateClause(), b); err != nil {
 		return nil, err
@@ -269,6 +265,16 @@ func buildSchemaTemplate(s *antlrgen.CreateSchemaTemplateStatementContext) (*met
 				"table %q: %v", tableName, err)
 		}
 		b.AddTablePrimaryKeyPaths(tableName, cols, pkCols)
+	}
+
+	// SQL functions, then views, in clause order, each compiled against the
+	// template so far (DdlVisitor.java:551-558).
+	for _, clause := range s.AllTemplateClause() {
+		if fd := clause.SqlInvokedFunction(); fd != nil {
+			if err := registerFunction(fd, b); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	// Views, in clause order, each compiled against the template so far.
@@ -319,7 +325,7 @@ func registerView(vd antlrgen.IViewDefinitionContext, b *metadata.Builder) error
 		return err
 	}
 	if md := tmpl.Underlying(); md != nil {
-		parsed, err := parser.ParseView(definition)
+		parsed, err := parseQueryWithFunctions(definition, metaDataFunctions(md))
 		if err != nil {
 			return err
 		}
@@ -328,6 +334,49 @@ func registerView(vd antlrgen.IViewDefinitionContext, b *metadata.Builder) error
 		}
 	}
 	return b.AddView(name, definition)
+}
+
+// registerFunction is Java's DdlVisitor.getInvokedRoutineMetadata for a
+// table-valued function: stored as a RawSqlFunction, `CREATE ` plus the text
+// as written, after its body compiles against the template so far.
+func registerFunction(fd antlrgen.ISqlInvokedFunctionContext, b *metadata.Builder) error {
+	if containsPreparedParameter(fd) {
+		return api.NewError(api.ErrCodeSyntaxError, "found prepared parameter(s) in SQL statement")
+	}
+	fn, err := sqlFunctionOf(fd)
+	if err != nil {
+		return err
+	}
+	definition := "CREATE " + ctxText(fd)
+	tmpl, err := b.Build()
+	if err != nil {
+		return err
+	}
+	if md := tmpl.Underlying(); md != nil {
+		if err := compileSQLFunction(fn, md, b.Name()); err != nil {
+			return err
+		}
+	}
+	return b.AddFunction(fn.name, definition)
+}
+
+// compileSQLFunction plans the body with every parameter bound to a NULL of
+// its declared type, as Java compiles it against a typed parameter row.
+func compileSQLFunction(fn *sqlFunction, md *recordlayer.RecordMetaData, templateName string) error {
+	cols := make([]string, len(fn.params))
+	for i, p := range fn.params {
+		cols[i] = p.column("NULL", true)
+	}
+	sql := "SELECT * FROM (" + fn.body + ") AS F"
+	if len(cols) > 0 {
+		sql = "SELECT F.* FROM (SELECT " + strings.Join(cols, ", ") + ") AS P, (" + fn.body + ") AS F"
+	}
+	q, err := parseQueryWithFunctions(sql, metaDataFunctions(md))
+	if err != nil {
+		return err
+	}
+	_, err = NewPlanVisitorWithTemplate(md, templateName).VisitQuery(q)
+	return err
 }
 
 func containsPreparedParameter(n antlr.Tree) bool {
@@ -398,26 +447,6 @@ func registerStructDefinitions(clauses []antlrgen.ITemplateClauseContext, b *met
 			fields[i] = api.NewStructField(c.Name(), c.DataType(), i)
 		}
 		b.AddAuxiliaryType(api.NewStructType(structName, fields, true))
-	}
-	return nil
-}
-
-// rejectUnsupportedTemplateClauses fails closed on schema-template clause
-// kinds the builder below does not read. Silently skipping one builds a
-// DIFFERENT template than the DDL declared — a view or SQL function would
-// simply vanish, and every later reference to it surfaces as a misleading
-// "table does not exist" — the accept-and-drop failure mode this file bans.
-// Java supports both (DdlVisitor visitSqlInvokedFunction /
-// visitViewDefinition), so each rejection is a named parity gap, not a
-// divergence: SQL functions are RFC-201 Phase 4. Struct and enum definitions
-// are handled by their passes (RFC-204; RFC-257 WS-J section 5).
-func rejectUnsupportedTemplateClauses(clauses []antlrgen.ITemplateClauseContext) error {
-	for _, clause := range clauses {
-		switch {
-		case clause.SqlInvokedFunction() != nil:
-			return api.NewError(api.ErrCodeUnsupportedOperation,
-				"SQL functions (CREATE FUNCTION) are not yet supported in a schema template")
-		}
 	}
 	return nil
 }

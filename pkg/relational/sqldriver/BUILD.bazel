@@ -616,6 +616,7 @@ go_test(
         "sparse_index_query_safety_fdb_test.go",
         "sparse_unique_distinct_fdb_test.go",
         "spfresh_refused_config_fdb_test.go",
+        "sql_function_fdb_test.go",
         "sql_integration_test.go",
         "sql_querycontext_fuzz_test.go",
         "star_body_cte_join_leg_fdb_test.go",

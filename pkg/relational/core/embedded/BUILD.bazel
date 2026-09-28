@@ -37,6 +37,7 @@ go_library(
         "select_helpers.go",
         "select_parser.go",
         "serializer_options.go",
+        "sql_function.go",
         "statement_options.go",
         "statistics_reader.go",
         "stmt.go",
@@ -482,6 +483,7 @@ go_test(
         "param_binding.go",
         "param_binding_test.go",
         "ever_aggregate_harness_test.go",
+        "sql_function.go",
     ],
     deps = [
         "//gen",

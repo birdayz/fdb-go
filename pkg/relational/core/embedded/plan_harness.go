@@ -194,6 +194,13 @@ func planPhysicalForMetaData(
 	if err != nil {
 		return nil, nil, fmt.Errorf("parse SQL: %w", err)
 	}
+	if expanded, changed, expErr := expandSQLFunctions(sql, root, metaDataFunctions(md)); expErr != nil {
+		return nil, nil, expErr
+	} else if changed {
+		if root, err = parser.Parse(expanded); err != nil {
+			return nil, nil, err
+		}
+	}
 	stmts := root.Statements()
 	if stmts == nil || len(stmts.AllStatement()) == 0 {
 		return nil, nil, fmt.Errorf("no statements in SQL")

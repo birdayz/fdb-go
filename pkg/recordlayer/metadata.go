@@ -115,6 +115,11 @@ type RecordMetaData struct {
 	preserved preservedMetaDataFields
 }
 
+// UserDefinedFunctions returns the schema's SQL functions (MetaData field 14).
+func (m *RecordMetaData) UserDefinedFunctions() []*gen.PUserDefinedFunction {
+	return m.preserved.userDefinedFunctions
+}
+
 // Views returns the schema's SQL views (MetaData field 15), in stored order.
 func (m *RecordMetaData) Views() []*gen.PView {
 	return m.preserved.views
@@ -484,6 +489,12 @@ func (b *RecordMetaDataBuilder) SetRecordCountKey(key KeyExpression) *RecordMeta
 // SetStoreRecordVersions enables or disables automatic record versioning.
 // When enabled, each save assigns an FDBRecordVersion to the record.
 // Java equivalent: RecordMetaDataBuilder.setStoreRecordVersions(boolean)
+// AddUserDefinedFunction appends a SQL function.
+func (b *RecordMetaDataBuilder) AddUserDefinedFunction(fn *gen.PUserDefinedFunction) *RecordMetaDataBuilder {
+	b.preserved.userDefinedFunctions = append(b.preserved.userDefinedFunctions, fn)
+	return b
+}
+
 // AddView appends a SQL view (name and query text), as Java's RecordLayerView.asRawView.
 func (b *RecordMetaDataBuilder) AddView(name, definition string) *RecordMetaDataBuilder {
 	b.preserved.views = append(b.preserved.views, &gen.PView{Name: &name, Definition: &definition})

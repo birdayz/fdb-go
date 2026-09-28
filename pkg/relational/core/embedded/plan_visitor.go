@@ -43,7 +43,6 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"
-	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query"
 	"fdb.dev/pkg/relational/core/query/expr"
@@ -312,7 +311,7 @@ func (v *PlanVisitor) declareViews(q antlr.Tree) ([]*logical.CTEProducer, error)
 			if !reached {
 				continue
 			}
-			body, err := parser.ParseView(vw.GetDefinition())
+			body, err := parseQueryWithFunctions(vw.GetDefinition(), metaDataFunctions(v.md))
 			if err != nil {
 				return nil, err
 			}

@@ -1256,6 +1256,9 @@ func (r *Resolver) walkUserDefinedScalarFunction(udf *antlrgen.UserDefinedScalar
 		return nil, &UnsupportedExpressionShapeError{Shape: "UserDefinedScalarFunctionCall without name"}
 	}
 	nameNode, ok := nameCtx.(*antlrgen.UserDefinedScalarFunctionNameContext)
+	if ok && nameNode.DOUBLE_QUOTE_ID() != nil && nameNode.GetText() == `"`+SQLFunctionArgument+`"` {
+		return r.walkSQLFunctionArgument(udf.FunctionArgs())
+	}
 	if !ok || nameNode.ID() == nil {
 		// Quoted (DOUBLE_QUOTE_ID) or otherwise non-bare — not a built-in.
 		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("user-defined scalar function %q", nameCtx.GetText())}
@@ -1266,6 +1269,31 @@ func (r *Resolver) walkUserDefinedScalarFunction(udf *antlrgen.UserDefinedScalar
 		return r.walkCardinality(udf.FunctionArgs())
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("user-defined scalar function %q (not a built-in)", name)}
+}
+
+// SQLFunctionArgument names the call a SQL function's expansion binds each
+// argument with: `"$SQL_FUNCTION_ARGUMENT"(arg, CAST(NULL AS declared))`.
+const SQLFunctionArgument = "$SQL_FUNCTION_ARGUMENT"
+
+// walkSQLFunctionArgument is Java's promoteArgumentValueIfNeeded: the argument
+// promoted to its parameter's declared type, or 42883.
+func (r *Resolver) walkSQLFunctionArgument(fa antlrgen.IFunctionArgsContext) (values.Value, error) {
+	args, err := r.walkFunctionArgs(fa)
+	if err != nil {
+		return nil, err
+	}
+	if len(args) != 2 {
+		return nil, api.NewError(api.ErrCodeInternalError, "malformed SQL function argument")
+	}
+	arg, target := args[0], args[1].Type()
+	from := arg.Type()
+	if from != nil && values.WithNullability(from, true).Equals(values.WithNullability(target, true)) {
+		return arg, nil
+	}
+	if !values.IsPromotable(from, target) {
+		return nil, api.NewError(api.ErrCodeUndefinedFunction, "argument type doesn't match with function definition")
+	}
+	return values.NewPromoteValue(arg, target), nil
 }
 
 // walkCardinality builds the dedicated CardinalityValue for

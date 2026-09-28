@@ -222,6 +222,11 @@ var engineGaps = []EngineGap{
 	// result-set-less assertion this 111-query file grows.
 	// (The %q-formatted statement text escapes the embedded quotes, so the
 	// signature matches the escaped form.)
+	{"versions-tests.yamsql", SkipGapDMLReturning, `"UPDATE t3 SET col2 = col2 + 1 WHERE col1 = 'a' RETURNING \"new\".*": actual result set is NULL, expecting non-NULL result set`, "CQ-72"},
+	// Mixed ASC/DESC ORDER BY: Java needs an index in that order; Go sorts.
+	{"orderby.yamsql", SkipConformanceGoAccepts, `"select c, b from t1 order by c, b desc;": expecting statement to throw an error 0AF00, however it succeeded`, "RFC-256"},
+	// Quoted "the_a2" read as unquoted x.the_a2 under CASE_SENSITIVE_IDENTIFIERS.
+	{"join-with-order-by-tests.yamsql", SkipGapCaseSensitiveIdentifiers, `42703: column "X.THE_A2" does not exist`, "TODO.md, Go ignores CASE_SENSITIVE_IDENTIFIERS"},
 	{"functions.yamsql", SkipGapDMLReturning, `"update C set st = coalesce(st, null) where c1 = 4 returning \"new\".st": actual result set is NULL, expecting non-NULL result set`, "CQ-72"},
 	// RE-BOOKED, not closed-by-relabel: the duplicate qualified star this file
 	// was booked for is FIXED. Java's expandStar has no uniqueness rule, so
