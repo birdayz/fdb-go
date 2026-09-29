@@ -229,7 +229,10 @@ var _ = Describe("GuardiANN scan options", func() {
 					if !r.HasNext() {
 						return out, nil
 					}
-					out = append(out, r.GetValue().Key[1].(int64))
+					id := r.GetValue().Key[1].(int64)
+					price := map[int64]float64{1: 10, 2: 20, 3: 50}[id]
+					Expect(r.GetValue().Value).To(Equal(tuple.Tuple{vectorcodec.Serialize([]float64{price})}))
+					out = append(out, id)
 				}
 			}
 			one := 1

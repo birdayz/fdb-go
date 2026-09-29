@@ -526,7 +526,11 @@ func (m *vectorIndexMaintainer) searchOnePartition(readTx fdb.ReadTransaction, p
 		entries := make([]*IndexEntry, len(results))
 		for i, r := range results {
 			key := append(append(tuple.Tuple{}, prefix...), r.primaryKey...)
-			entries[i] = &IndexEntry{Index: m.index, Key: key, Value: tuple.Tuple{nil}, primaryKey: m.entryFullPK(key, prefix)}
+			value := tuple.Tuple{nil}
+			if !m.guardiannConfig.useRaBitQ {
+				value[0] = r.vector.encode()
+			}
+			entries[i] = &IndexEntry{Index: m.index, Key: key, Value: value, primaryKey: m.entryFullPK(key, prefix)}
 		}
 		return entries, nil
 	}
