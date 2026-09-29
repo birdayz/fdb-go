@@ -200,10 +200,11 @@ var _ = Describe("GuardiANN structure", func() {
 
 var _ = Describe("GuardiANN scan options", func() {
 	ctx := context.Background()
-	It("applies per-scan search options and fans out over a partial prefix", func() {
+	DescribeTable("applies per-scan search options and fans out over a partial prefix", func(useRaBitQ bool) {
 		ks := specSubspace()
 		vecIdx := NewVectorIndex("vec_guardiann_opts", KeyWithValue(Concat(Field("quantity"), Field("price")), 1), 1)
 		vecIdx.Options[IndexOptionVectorEngine] = "GUARDIANN"
+		vecIdx.Options[IndexOptionHNSWUseRaBitQ] = fmt.Sprint(useRaBitQ)
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
@@ -231,7 +232,7 @@ var _ = Describe("GuardiANN scan options", func() {
 					}
 					id := r.GetValue().Key[1].(int64)
 					price := map[int64]float64{1: 10, 2: 20, 3: 50}[id]
-					if opts.ReturnVectors != nil && !*opts.ReturnVectors {
+					if opts.ReturnVectors != nil && !*opts.ReturnVectors || opts.ReturnVectors == nil && useRaBitQ {
 						Expect(r.GetValue().Value).To(Equal(tuple.Tuple{nil}))
 					} else {
 						Expect(r.GetValue().Value).To(Equal(tuple.Tuple{vectorcodec.Serialize([]float64{price})}))
@@ -265,5 +266,5 @@ var _ = Describe("GuardiANN scan options", func() {
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
-	})
+	}, Entry("without RaBitQ", false), Entry("with RaBitQ configured before training", true))
 })
