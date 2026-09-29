@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"errors"
+	"math"
 	"testing"
 
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -78,6 +79,34 @@ func TestGuardiannChangedOptions(t *testing.T) {
 			}
 		} else if !errors.As(err, &mee) {
 			t.Errorf("%s: want immutable-option refusal, got %v", c.key, err)
+		}
+	}
+}
+
+func TestGuardiannNaNOptions(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{
+		IndexOptionGuardiannMergeMaxEverFraction, IndexOptionGuardiannMinChildFraction,
+		IndexOptionGuardiannMaxRelativeImbalance, IndexOptionGuardiannSplitImbalancePenalty,
+	} {
+		idx := &Index{Name: "vi", Type: IndexTypeVector, Options: map[string]string{
+			IndexOptionVectorNumDimensions: "3", IndexOptionVectorEngine: "GUARDIANN", key: "NaN",
+		}}
+		var md *MetaDataError
+		var argument *IllegalArgumentError
+		err := validateVectorIndexOptionsAtBuild(idx)
+		if !errors.As(err, &md) || !errors.As(err, &argument) {
+			t.Errorf("%s: want wrapped IllegalArgumentError, got %v", key, err)
+		}
+	}
+	nan := math.NaN()
+	for _, opts := range []VectorIndexScanOptions{
+		{GuardiannCandidatePoolFactor: &nan}, {GuardiannSearchDistanceRatioCutoff: &nan},
+	} {
+		_, err := opts.guardiannSearchConfig()
+		var argument *IllegalArgumentError
+		if !errors.As(err, &argument) {
+			t.Errorf("NaN scan option accepted: %v", err)
 		}
 	}
 }

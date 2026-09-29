@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -261,6 +262,10 @@ var _ = Describe("GuardiANN scan options", func() {
 			half := 0.5
 			_, err = ids(tuple.Tuple{int64(1)}, VectorIndexScanOptions{GuardiannCandidatePoolFactor: &half})
 			var iae *IllegalArgumentError
+			Expect(errors.As(err, &iae)).To(BeTrue(), "%v", err)
+			Expect(iae.Message).To(Equal("candidatePoolFactor must be >= 1.0"))
+			nan := math.NaN()
+			_, err = ids(tuple.Tuple{int64(1)}, VectorIndexScanOptions{GuardiannCandidatePoolFactor: &nan})
 			Expect(errors.As(err, &iae)).To(BeTrue(), "%v", err)
 			Expect(iae.Message).To(Equal("candidatePoolFactor must be >= 1.0"))
 			return nil, nil

@@ -30,13 +30,13 @@ func defaultGuardiannSearchConfig() guardiannSearchConfig {
 
 func (s guardiannSearchConfig) validate() error {
 	switch {
-	case s.candidatePoolFactor < 1:
+	case !(s.candidatePoolFactor >= 1):
 		return &IllegalArgumentError{Message: "candidatePoolFactor must be >= 1.0"}
 	case s.searchMaxClusters < 1:
 		return &IllegalArgumentError{Message: "searchMaxClusters must be >= 1"}
 	case s.searchMinClustersBeforePruning < 0:
 		return &IllegalArgumentError{Message: "searchMinClustersBeforePruning must be >= 0"}
-	case s.searchDistanceRatioCutoff < 1:
+	case !(s.searchDistanceRatioCutoff >= 1):
 		return &IllegalArgumentError{Message: "searchDistanceRatioCutoff must be >= 1.0"}
 	case s.centroidEfRingSearch < 1:
 		return &IllegalArgumentError{Message: "centroidEfRingSearch must be >= 1"}
@@ -145,13 +145,13 @@ func (c guardiannConfig) validate() error {
 		return &IllegalArgumentError{Message: "collapseMinDuplicates must be < primaryClusterMax"}
 	case c.primaryClusterHardMax <= c.primaryClusterMax:
 		return &IllegalArgumentError{Message: "primaryClusterHardMax must be > primaryClusterMax"}
-	case c.mergeMaxEverFraction < 0 || c.mergeMaxEverFraction >= 1:
+	case !(c.mergeMaxEverFraction >= 0 && c.mergeMaxEverFraction < 1):
 		return &IllegalArgumentError{Message: "mergeMaxEverFraction must be in [0, 1)"}
-	case c.minChildFraction < 0 || c.minChildFraction >= 0.5:
+	case !(c.minChildFraction >= 0 && c.minChildFraction < 0.5):
 		return &IllegalArgumentError{Message: "minChildFraction must be in [0, 0.5)"}
-	case c.maxRelativeImbalance < 0 || c.maxRelativeImbalance > 1:
+	case !(c.maxRelativeImbalance >= 0 && c.maxRelativeImbalance <= 1):
 		return &IllegalArgumentError{Message: "maxRelativeImbalance must be in [0, 1]"}
-	case c.splitImbalancePenalty < 0:
+	case !(c.splitImbalancePenalty >= 0):
 		return &IllegalArgumentError{Message: "splitImbalancePenalty must be >= 0"}
 	}
 	return c.constructionSearchConfig.validate()
