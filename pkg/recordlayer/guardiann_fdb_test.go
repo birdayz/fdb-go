@@ -273,3 +273,56 @@ var _ = Describe("GuardiANN scan options", func() {
 		Expect(err).NotTo(HaveOccurred())
 	}, Entry("without RaBitQ", false), Entry("with RaBitQ configured before training", true))
 })
+
+var _ = Describe("GuardiANN training", func() {
+	It("accumulates samples across transactions and clears them when the centroid is trained", func() {
+		ctx := context.Background()
+		ss := specSubspace().Sub("training")
+		cfg := defaultGuardiannConfig(3)
+		cfg.useRaBitQ, cfg.deterministicRandomness = true, true
+		cfg.sampleVectorStatsProbability, cfg.maintainStatsProbability = 1, 1
+		cfg.sampleBatchSize, cfg.statsThreshold = 2, 3
+		for i, data := range [][]float64{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}} {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				g := newGuardiann(ss, cfg, nil, nil)
+				tx := rtx.Transaction()
+				info, err := g.fetchAccessInfo(tx)
+				Expect(err).NotTo(HaveOccurred())
+				if info == nil {
+					info = &guardiannAccessInfoValue{rotatorSeed: -1}
+					g.writeAccessInfo(tx, info)
+				}
+				err = g.addToStatsIfNecessary(tx, newSplittableRandomForKey(tuple.Tuple{int64(i)}), info, gVector{data: data, typ: 2})
+				Expect(err).NotTo(HaveOccurred())
+				info, err = g.fetchAccessInfo(tx)
+				Expect(err).NotTo(HaveOccurred())
+				r, err := fdb.PrefixRange(g.sub(gSubSamples).Bytes())
+				Expect(err).NotTo(HaveOccurred())
+				samples, err := tx.GetRange(r, fdb.RangeOptions{}).GetSliceWithError()
+				Expect(err).NotTo(HaveOccurred())
+				if i < 2 {
+					Expect(info.negatedCentroid).To(BeNil())
+					Expect(samples).To(HaveLen(1))
+					key, err := g.sub(gSubSamples).Unpack(samples[0].Key)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(key[0]).To(Equal(int64(i + 1)))
+					Expect(key[1]).To(BeAssignableToTypeOf(tuple.UUID{}))
+				} else {
+					Expect(samples).To(BeEmpty())
+					Expect(info.negatedCentroid).To(HaveLen(3))
+					original := newFhtKacRotator(info.rotatorSeed, 3, 10).transposedApply(info.negatedCentroid)
+					for j, want := range []float64{-4, -5, -6} {
+						Expect(original[j]).To(BeNumerically("~", want, 1e-12))
+					}
+					err = g.addToStatsIfNecessary(tx, newSplittableRandomForKey(tuple.Tuple{int64(9)}), info, gVector{data: []float64{99, 99, 99}, typ: 2})
+					Expect(err).NotTo(HaveOccurred())
+					samples, err = tx.GetRange(r, fdb.RangeOptions{}).GetSliceWithError()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(samples).To(BeEmpty())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+	})
+})

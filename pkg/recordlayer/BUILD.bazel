@@ -37,6 +37,7 @@ go_library(
         "guardiann_splitmerge.go",
         "guardiann_storage.go",
         "guardiann_tasks.go",
+        "guardiann_training.go",
         "guardiann_types.go",
         "hnsw.go",
         "hnsw_distance_bytes.go",
