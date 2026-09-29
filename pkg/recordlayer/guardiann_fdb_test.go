@@ -231,7 +231,11 @@ var _ = Describe("GuardiANN scan options", func() {
 					}
 					id := r.GetValue().Key[1].(int64)
 					price := map[int64]float64{1: 10, 2: 20, 3: 50}[id]
-					Expect(r.GetValue().Value).To(Equal(tuple.Tuple{vectorcodec.Serialize([]float64{price})}))
+					if opts.ReturnVectors != nil && !*opts.ReturnVectors {
+						Expect(r.GetValue().Value).To(Equal(tuple.Tuple{nil}))
+					} else {
+						Expect(r.GetValue().Value).To(Equal(tuple.Tuple{vectorcodec.Serialize([]float64{price})}))
+					}
 					out = append(out, id)
 				}
 			}
@@ -242,6 +246,17 @@ var _ = Describe("GuardiANN scan options", func() {
 			got, err = ids(nil, VectorIndexScanOptions{})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(got).To(ConsistOf(int64(1), int64(2), int64(3)), "every partition of a partial prefix")
+			for _, include := range []bool{true, false} {
+				for _, prefix := range []tuple.Tuple{nil, {int64(1)}} {
+					got, err := ids(prefix, VectorIndexScanOptions{ReturnVectors: &include})
+					Expect(err).NotTo(HaveOccurred())
+					if prefix == nil {
+						Expect(got).To(ConsistOf(int64(1), int64(2), int64(3)))
+					} else {
+						Expect(got).To(ConsistOf(int64(1), int64(2)))
+					}
+				}
+			}
 			half := 0.5
 			_, err = ids(tuple.Tuple{int64(1)}, VectorIndexScanOptions{GuardiannCandidatePoolFactor: &half})
 			var iae *IllegalArgumentError

@@ -527,7 +527,7 @@ func (m *vectorIndexMaintainer) searchOnePartition(readTx fdb.ReadTransaction, p
 		for i, r := range results {
 			key := append(append(tuple.Tuple{}, prefix...), r.primaryKey...)
 			value := tuple.Tuple{nil}
-			if !m.guardiannConfig.useRaBitQ {
+			if opts.ReturnVectors != nil && *opts.ReturnVectors || opts.ReturnVectors == nil && !m.guardiannConfig.useRaBitQ {
 				value[0] = r.vector.encode()
 			}
 			entries[i] = &IndexEntry{Index: m.index, Key: key, Value: value, primaryKey: m.entryFullPK(key, prefix)}
@@ -1306,7 +1306,8 @@ func (store *FDBRecordStore) ScanVectorIndexWithPrefix(
 // knobs. A nil GuardiANN field keeps the SearchConfig default; each applies
 // only to an index of its engine.
 type VectorIndexScanOptions struct {
-	EfSearch                                int // HNSW; 0 derives it from k
+	ReturnVectors                           *bool // nil defaults to !useRaBitQ
+	EfSearch                                int   // HNSW; 0 derives it from k
 	GuardiannCandidatePoolFactor            *float64
 	GuardiannSearchMaxClusters              *int
 	GuardiannSearchMinClustersBeforePruning *int
