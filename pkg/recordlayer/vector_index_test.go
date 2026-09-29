@@ -2559,10 +2559,10 @@ var _ = Describe("VectorIndex Store Integration", func() {
 			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
 			Expect(gotIDs).To(Equal([]int64{1, 2}))
 
-			// Value is tuple{nil} (matching Java's toIndexEntry format).
+			// Plain indexes return vectors by default, as Java's toIndexEntry does.
 			for _, e := range entries {
-				Expect(e.Value).To(HaveLen(1))
-				Expect(e.Value[0]).To(BeNil())
+				coordinate := float64(e.Key[0].(int64) * 10)
+				Expect(e.Value).To(Equal(tuple.Tuple{serializeVector([]float64{coordinate, coordinate})}))
 			}
 
 			return nil, nil
@@ -4895,3 +4895,33 @@ func mustParseHNSWConfig(index *Index) HNSWConfig {
 	Expect(err).NotTo(HaveOccurred())
 	return config
 }
+
+var _ = Describe("HNSW returned vectors", func() {
+	It("reconstructs Java quantized payloads and preserves an explicit omission", func() {
+		cfg := DefaultHNSWConfig(3)
+		cfg.Quantizer = rabitq.NewQuantizer(rabitq.MetricEuclidean, 4)
+		storage := newHNSWStorage(specSubspace().Sub("returned-vectors"), cfg)
+		encoded, err := hex.DecodeString("0340218a6f8ff36398bfd24f6f0e0ad5b63fc34edb3de0b770fb7a")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			pk := tuple.Tuple{int64(1)}
+			storage.saveAccessInfo(tx, &hnswAccessInfo{pk: pk, vectorBytes: encoded, rotatorSeed: 42, centroid: []float64{-0.25, 0.5, -0.75}})
+			storage.saveNodeLayer(tx, 0, pk, encoded, nil)
+			for _, include := range []bool{true, false} {
+				graph := NewHNSWGraph(storage, cfg)
+				results, err := graph.searchWithVectors(tx, []float64{1.5, 2.5, 3.5}, 1, 10, include)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(results).To(HaveLen(1))
+				if include {
+					// Java StorageTransform.untransform: testdata/GuardiannVectors.java.
+					Expect(hex.EncodeToString(results[0].Vector)).To(Equal("023fee714ee8af20254000392c4f941c064007fca06b941fd5"))
+				} else {
+					Expect(results[0].Vector).To(BeNil())
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})

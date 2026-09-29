@@ -201,12 +201,12 @@ var _ = Describe("GuardiANN structure", func() {
 	})
 })
 
-var _ = Describe("GuardiANN scan options", func() {
+var _ = Describe("Vector scan options", func() {
 	ctx := context.Background()
-	DescribeTable("applies per-scan search options and fans out over a partial prefix", func(useRaBitQ bool) {
+	DescribeTable("applies per-scan search options and fans out over a partial prefix", func(engine string, useRaBitQ bool) {
 		ks := specSubspace()
 		vecIdx := NewVectorIndex("vec_guardiann_opts", KeyWithValue(Concat(Field("quantity"), Field("price")), 1), 1)
-		vecIdx.Options[IndexOptionVectorEngine] = "GUARDIANN"
+		vecIdx.Options[IndexOptionVectorEngine] = engine
 		vecIdx.Options[IndexOptionHNSWUseRaBitQ] = fmt.Sprint(useRaBitQ)
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
@@ -261,6 +261,9 @@ var _ = Describe("GuardiANN scan options", func() {
 					}
 				}
 			}
+			if engine == "HNSW" {
+				return nil, nil
+			}
 			half := 0.5
 			_, err = ids(tuple.Tuple{int64(1)}, VectorIndexScanOptions{GuardiannCandidatePoolFactor: &half})
 			var iae *IllegalArgumentError
@@ -273,7 +276,7 @@ var _ = Describe("GuardiANN scan options", func() {
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
-	}, Entry("without RaBitQ", false), Entry("with RaBitQ configured before training", true))
+	}, Entry("GuardiANN without RaBitQ", "GUARDIANN", false), Entry("GuardiANN before training", "GUARDIANN", true), Entry("HNSW without RaBitQ", "HNSW", false), Entry("HNSW before training", "HNSW", true))
 })
 
 var _ = Describe("GuardiANN training", func() {

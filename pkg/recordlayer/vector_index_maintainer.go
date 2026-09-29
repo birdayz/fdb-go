@@ -513,7 +513,7 @@ func (m *vectorIndexMaintainer) scanByDistanceWithParams(
 // searchOnePartition runs one HNSW kNN search for the single partition
 // identified by the FULL partition prefix (nil/empty for an unpartitioned
 // index) and returns the top-k entries in Java's toIndexEntry layout
-// (Key = prefix...+trimmedPK, Value = nil). It is both the body of the
+// (Key = prefix...+trimmedPK, Value = vector bytes or nil). It is both the body of the
 // single-partition scan and the per-partition inner of the multi-partition
 // fan-out (RFC-046). Mirrors Java's VectorIndexMaintainer.kNearestNeighborSearch
 // + toIndexEntry.
@@ -541,7 +541,11 @@ func (m *vectorIndexMaintainer) searchOnePartition(readTx fdb.ReadTransaction, p
 	storage := m.getStorageForPrefix(prefix)
 	graph := NewHNSWGraph(storage, m.hnswConfig)
 
-	results, err := graph.Search(readTx, queryVector, k, opts.EfSearch)
+	includeVectors := m.hnswConfig.Quantizer == nil
+	if opts.ReturnVectors != nil {
+		includeVectors = *opts.ReturnVectors
+	}
+	results, err := graph.searchWithVectors(readTx, queryVector, k, opts.EfSearch, includeVectors)
 	if err != nil {
 		return nil, err
 	}
@@ -555,10 +559,10 @@ func (m *vectorIndexMaintainer) searchOnePartition(readTx fdb.ReadTransaction, p
 		key = append(key, prefix...)
 		key = append(key, r.PrimaryKey...)
 
-		// Value: Java puts vector raw bytes here (or null if returnVectors=false/RaBitQ).
-		// Our hnswSearchResult doesn't carry vector bytes through search, so always nil.
-		// This matches Java's behavior when RaBitQ is enabled or returnVectors=false.
 		value := tuple.Tuple{nil}
+		if includeVectors {
+			value[0] = r.Vector
+		}
 
 		entries[i] = &IndexEntry{
 			Index:      m.index,

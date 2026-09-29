@@ -1207,6 +1207,10 @@ func containsSpan(spans [][]byte, span []byte) bool {
 // Search finds the k nearest neighbors to the query vector.
 // Returns results sorted by distance (closest first).
 func (g *hnswGraph) Search(tx fdb.ReadTransaction, query []float64, k, efSearch int) ([]hnswSearchResult, error) {
+	return g.searchWithVectors(tx, query, k, efSearch, false)
+}
+
+func (g *hnswGraph) searchWithVectors(tx fdb.ReadTransaction, query []float64, k, efSearch int, includeVectors bool) ([]hnswSearchResult, error) {
 	accessInfo, err := g.storage.loadAccessInfo(tx)
 	if err != nil {
 		if e := hnswFatal(err); e != nil {
@@ -1263,9 +1267,21 @@ func (g *hnswGraph) Search(tx fdb.ReadTransaction, query []float64, k, efSearch 
 		if derr != nil {
 			return nil, derr
 		}
+		var vector []byte
+		if includeVectors {
+			vector = c.vector.data
+			if transform != nil {
+				decoded, err := g.decodeVector(c.vector)
+				if err != nil {
+					return nil, err
+				}
+				vector = serializeVector(transform.invertedApply(decoded))
+			}
+		}
 		results[i] = hnswSearchResult{
 			PrimaryKey: pk,
 			Distance:   c.dist,
+			Vector:     vector,
 		}
 	}
 	return results, nil
@@ -1613,6 +1629,7 @@ func (g *hnswGraph) pruneNeighbors(tx fdb.ReadTransaction, nodeVec []float64, ne
 type hnswSearchResult struct {
 	PrimaryKey tuple.Tuple
 	Distance   float64
+	Vector     []byte
 }
 
 // parsedNode holds pre-parsed node data to avoid repeated tuple.Unpack on cache hits.
