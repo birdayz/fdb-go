@@ -611,8 +611,7 @@ const defaultVectorEfSearch = 200
 // executeVectorIndexScan runs a BY_DISTANCE K-NN scan over a VECTOR (HNSW)
 // index: the partition-equality prefix selects the independent HNSW graph and
 // the graph is traversed for the k nearest neighbors of the query vector.
-// Dispatches through ScanIndexByType(IndexScanByDistance), which the vector
-// index maintainer services via ScanByDistance.
+// VECTOR indexes receive typed scan options; SPFresh uses ScanIndexByType.
 func executeVectorIndexScan(
 	_ context.Context,
 	p *plans.RecordQueryVectorIndexPlan,
@@ -691,6 +690,7 @@ func executeVectorIndexScan(
 	}
 
 	scanType := recordlayer.IndexScanByDistance
+	scanLimit := rankCap
 	var makeScanRange func(tuple.Tuple) recordlayer.TupleRange
 	if p.IsOrderedStream() {
 		// RFC-156 — VBASE distance-ordered mode: do NOT self-limit to k. Stream
@@ -733,6 +733,7 @@ func executeVectorIndexScan(
 		if rankCap > horizon {
 			horizon = rankCap
 		}
+		scanLimit = horizon
 		makeScanRange = func(prefix tuple.Tuple) recordlayer.TupleRange {
 			return recordlayer.VectorDistanceScanRangeOrdered(queryVec, horizon, efSearch, horizon, prefix)
 		}
@@ -749,6 +750,9 @@ func executeVectorIndexScan(
 		makeScanRange = func(prefix tuple.Tuple) recordlayer.TupleRange {
 			return recordlayer.VectorDistanceScanRangeWithPrefix(queryVec, limit, efSearch, prefix)
 		}
+	}
+	if idx.Type == recordlayer.IndexTypeVector && efSearch <= 0 {
+		efSearch = min(max(4*scanLimit, 64), max(scanLimit, 400))
 	}
 	invocationRange := makeScanRange(nil)
 	fingerprintSalt, err := vectorScanRangeFingerprintSalt(
@@ -788,6 +792,11 @@ func executeVectorIndexScan(
 			prefix, prefixErr := exactVectorPartitionPrefix(partitionRange)
 			if prefixErr != nil {
 				return nil, fmt.Errorf("vector index %q: %w", p.GetIndexName(), prefixErr)
+			}
+			if idx.Type == recordlayer.IndexTypeVector {
+				return store.ScanVectorIndexWithOptions(idx, prefix, queryVec, scanLimit,
+					recordlayer.VectorIndexScanOptions{EfSearch: efSearch, ReturnVectors: p.GetReturnVectors()},
+					innerContinuation, childProperties), nil
 			}
 			return store.ScanIndexByType(
 				idx,

@@ -505,6 +505,7 @@ func vectorScanRangeFingerprintSalt(
 	b.stringField("scan-type", string(scanType))
 	b.intField("rank-comparison-type", int(plan.GetRankType()))
 	b.boolField("ordered-stream", plan.IsOrderedStream())
+	b.boolField("returning-vectors-supplied", plan.GetReturnVectors() != nil)
 	b.boolField("returning-vectors", plan.IsReturningVectors())
 	b.optionalIntField("supplied-ef-search", plan.GetEfSearch())
 	b.stringsField("record-types", plan.GetRecordTypes())

@@ -45,7 +45,7 @@ type RecordQueryVectorIndexPlan struct {
 	rankType predicates.ComparisonType
 	// efSearch is the HNSW search-quality knob (nil = index/engine default).
 	efSearch *int
-	// isReturningVectors requests the scan return vector payloads (nil = no).
+	// isReturningVectors overrides the engine's return-vector default (nil = unset).
 	isReturningVectors *bool
 	recordTypes        []string
 	flowedType         values.Type
@@ -225,7 +225,10 @@ func (p *RecordQueryVectorIndexPlan) GetK() values.Value { return p.k }
 // GetEfSearch returns the HNSW ef_search knob (nil = default).
 func (p *RecordQueryVectorIndexPlan) GetEfSearch() *int { return p.efSearch }
 
-// IsReturningVectors reports whether the scan returns vector payloads.
+// GetReturnVectors returns the return-vector override (nil = engine default).
+func (p *RecordQueryVectorIndexPlan) GetReturnVectors() *bool { return p.isReturningVectors }
+
+// IsReturningVectors reports whether vector payloads were explicitly requested.
 func (p *RecordQueryVectorIndexPlan) IsReturningVectors() bool {
 	return p.isReturningVectors != nil && *p.isReturningVectors
 }
@@ -256,6 +259,7 @@ func (p *RecordQueryVectorIndexPlan) structuralKey() *structuralKey {
 		Bool(p.orderedStream).
 		Type(p.flowedType).
 		IntPtr(p.efSearch).
+		Bool(p.isReturningVectors != nil).
 		Bool(p.IsReturningVectors()).
 		Strs(p.recordTypes).
 		ScanComps(p.prefixComparisons).
