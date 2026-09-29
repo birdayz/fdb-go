@@ -64,19 +64,20 @@ func (g *guardiann) runSplitMerge(tx fdb.WritableTransaction, t *guardiannTask) 
 
 // kMeansCandidate is SplitMergeTask.kMeans over a classification's cleaned
 // references.
-func (g *guardiann) kMeansCandidate(cls *clusterClassification, refs []guardiannVectorRef, random *splittableRandom, k int) *repartitioningCandidate {
+func (g *guardiann) kMeansCandidate(cls *clusterClassification, refs []guardiannVectorRef, random *splittableRandom, k int) (*repartitioningCandidate, error) {
 	var primaries []guardiannVectorRef
-	var vectors [][]float64
+	var vectors []gVector
 	for _, r := range refs {
 		if r.primary {
 			primaries = append(primaries, r)
-			vectors = append(vectors, r.vector.data)
+			vectors = append(vectors, r.vector)
 		}
 	}
-	return &repartitioningCandidate{
-		cls: cls, primaries: primaries,
-		kMeans: kMeansFit(random, g.config.metric, vectors, k, g.config.kMeansMaxIterations, g.config.kMeansMaxRestarts),
+	result, err := kMeansFit(random, g.codec, vectors, k, g.config.kMeansMaxIterations, g.config.kMeansMaxRestarts)
+	if err != nil {
+		return nil, err
 	}
+	return &repartitioningCandidate{cls: cls, primaries: primaries, kMeans: result}, nil
 }
 
 func largestCoreClusters(a, b *clusterClassification) []guardiannClusterWithDistance {
@@ -108,7 +109,10 @@ func (g *guardiann) candidatesFor(tx fdb.ReadTransaction, random *splittableRand
 		if err != nil {
 			return nil, err
 		}
-		out[i] = g.kMeansCandidate(cls, refs, nested, k(cls))
+		out[i], err = g.kMeansCandidate(cls, refs, nested, k(cls))
+		if err != nil {
+			return nil, err
+		}
 	}
 	return out, nil
 }
@@ -131,9 +135,17 @@ func (g *guardiann) selectSplitCandidate(tx fdb.WritableTransaction, t *guardian
 	if err != nil {
 		return nil, err
 	}
-	scored := []scoredCandidate{{cands[0], g.scoreCandidate(inner[:1], cands[0])}}
+	result, err := g.scoreCandidate(inner[:1], cands[0])
+	if err != nil {
+		return nil, err
+	}
+	scored := []scoredCandidate{{cands[0], result}}
 	if cands[1] != nil {
-		scored = append(scored, scoredCandidate{cands[1], g.scoreCandidate(inner, cands[1])})
+		result, err := g.scoreCandidate(inner, cands[1])
+		if err != nil {
+			return nil, err
+		}
+		scored = append(scored, scoredCandidate{cands[1], result})
 	}
 	if best := selectBestCandidate(scored); best != nil {
 		return best, nil
@@ -168,9 +180,17 @@ func (g *guardiann) selectMergeCandidate(tx fdb.WritableTransaction, t *guardian
 	if err != nil {
 		return nil, err
 	}
-	scored := []scoredCandidate{{cands[0], g.scoreCandidate(inner[:len(c21.core)], cands[0])}}
+	result, err := g.scoreCandidate(inner[:len(c21.core)], cands[0])
+	if err != nil {
+		return nil, err
+	}
+	scored := []scoredCandidate{{cands[0], result}}
 	if cands[1] != nil {
-		scored = append(scored, scoredCandidate{cands[1], g.scoreCandidate(inner, cands[1])})
+		result, err := g.scoreCandidate(inner, cands[1])
+		if err != nil {
+			return nil, err
+		}
+		scored = append(scored, scoredCandidate{cands[1], result})
 	}
 	if best := selectBestCandidate(scored); best != nil {
 		return best, nil
@@ -211,28 +231,29 @@ func isBetterCandidate(r, incumbent evaluationResult) bool {
 }
 
 // scoreCandidate is SplitMergeTask.scoreCandidate.
-func (g *guardiann) scoreCandidate(current []guardiannCluster, cand *repartitioningCandidate) evaluationResult {
-	var curVectors [][]float64
+func (g *guardiann) scoreCandidate(current []guardiannCluster, cand *repartitioningCandidate) (evaluationResult, error) {
+	var curVectors []gVector
 	var assignment []int
-	centroids := make([][]float64, len(current))
+	centroids := make([]gVector, len(current))
 	for c, cl := range current {
-		centroids[c] = cl.centroid.data
+		centroids[c] = cl.centroid
 		for _, r := range cl.refs {
 			if r.primary {
-				curVectors = append(curVectors, r.vector.data)
+				curVectors = append(curVectors, r.vector)
 				assignment = append(assignment, c)
 			}
 		}
 	}
-	candVectors := make([][]float64, len(cand.primaries))
+	candVectors := make([]gVector, len(cand.primaries))
 	for i, r := range cand.primaries {
-		candVectors[i] = r.vector.data
+		candVectors[i] = r.vector
 	}
-	candCentroids := make([][]float64, len(cand.kMeans.centroids))
+	candCentroids := make([]gVector, len(cand.kMeans.centroids))
 	for i, c := range cand.kMeans.centroids {
-		candCentroids[i] = c.data
+		candCentroids[i] = c
 	}
 	params := defaultPartitionParameters(g.config.metric)
+	params.codec = g.codec
 	params.minChildFraction = g.config.minChildFraction
 	params.maxRelativeImbalance = g.config.maxRelativeImbalance
 	if len(candCentroids) > len(centroids) {
@@ -261,7 +282,10 @@ func (g *guardiann) applyRepartitioning(tx fdb.WritableTransaction, random *spli
 	for _, k := range clusters.keys {
 		stats[k] = clusters.values[k].meta.stats
 	}
-	inverted, updates := g.computeNearestClusters(cand.primaries, clusters.list())
+	inverted, updates, err := g.computeNearestClusters(cand.primaries, clusters.list())
+	if err != nil {
+		return err
+	}
 	mergeStatsUpdates(stats, updates)
 	assignment := newOrderedAssignments()
 	topKs := map[tuple.UUID]*guardiannTopK{}
@@ -274,7 +298,11 @@ func (g *guardiann) applyRepartitioning(tx fdb.WritableTransaction, random *spli
 			continue
 		}
 		assignment.put(p.meta.id, r.toPrimary())
-		for _, s := range g.selectReplicas(r, p.distance, near[1:], stats, nil) {
+		selected, err := g.selectReplicas(r, p.distance, near[1:], stats, nil)
+		if err != nil {
+			return err
+		}
+		for _, s := range selected {
 			if containsUUID(newIDs, s.cluster) {
 				tk, ok := topKs[s.cluster]
 				if !ok {
@@ -298,7 +326,7 @@ func (g *guardiann) applyRepartitioning(tx fdb.WritableTransaction, random *spli
 		}
 	}
 	for _, id := range newIDs {
-		c := clusters.values[id].centroid
+		c := g.codec.toClientCoordinates(clusters.values[id].centroid)
 		if err := g.centroids.insertTyped(tx, tuple.Tuple{id}, c.data, c.typ); err != nil {
 			return err
 		}

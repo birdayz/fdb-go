@@ -39,6 +39,7 @@ type guardiann struct {
 	env       *dst.Env
 	listener  guardiannListener
 	centroids *hnswGraph
+	codec     *guardiannVectorCodec
 }
 
 func newGuardiann(ss subspace.Subspace, config guardiannConfig, env *dst.Env, listener guardiannListener) *guardiann {
@@ -48,13 +49,20 @@ func newGuardiann(ss subspace.Subspace, config guardiannConfig, env *dst.Env, li
 	hc.M, hc.MMax, hc.MMax0 = 16, 24, 32
 	storage := newHNSWStorage(ss.Sub(int64(gSubCentroids)), hc)
 	storage.env = env
-	return &guardiann{ss: ss, config: config, env: env, listener: listener, centroids: NewHNSWGraph(storage, hc)}
+	return &guardiann{ss: ss, config: config, env: env, listener: listener, codec: &guardiannVectorCodec{config: config}, centroids: NewHNSWGraph(storage, hc)}
 }
 
 func (g *guardiann) sub(prefix int64) subspace.Subspace { return g.ss.Sub(prefix) }
 
-func (g *guardiann) distance(a, b gVector) float64 {
-	return vectorDistance(a.data, b.data, g.config.metric)
+func (g *guardiann) withAccessInfo(info *guardiannAccessInfoValue) (*guardiann, error) {
+	local := *g
+	var err error
+	local.codec, err = newGuardiannVectorCodec(g.config, info)
+	return &local, err
+}
+
+func (g *guardiann) distance(a, b gVector) (float64, error) {
+	return g.codec.distance(a, b)
 }
 
 func (g *guardiann) randomUUID(random *splittableRandom) (tuple.UUID, error) {
@@ -204,8 +212,8 @@ func vectorRefFromValue(pk tuple.Tuple, value []byte, decode func([]byte) (gVect
 }
 
 // vectorRefValue is StorageAdapter.valueTupleFromVectorReference.
-func vectorRefValue(ref guardiannVectorRef) []byte {
-	raw := ref.vector.encode()
+func vectorRefValue(ref guardiannVectorRef, encode func(gVector) []byte) []byte {
+	raw := encode(ref.vector)
 	if !ref.primary {
 		return tuple.Tuple{ref.id.uuid, int64(roleCodeReplicated), ref.collapsed, raw, ref.priority}.Pack()
 	}
@@ -246,12 +254,12 @@ func (g *guardiann) fetchVectorRef(tx fdb.ReadTransaction, clusterID tuple.UUID,
 	if err != nil || b == nil {
 		return nil, err
 	}
-	ref, err := vectorRefFromValue(pk, b, decodeGVector)
+	ref, err := vectorRefFromValue(pk, b, g.codec.decode)
 	return &ref, err
 }
 
 func (g *guardiann) writeVectorRef(tx fdb.WritableTransaction, clusterID tuple.UUID, ref guardiannVectorRef) {
-	tx.Set(fdb.Key(g.sub(gSubVectorRefs).Pack(tuple.Tuple{clusterID, ref.id.pk})), vectorRefValue(ref))
+	tx.Set(fdb.Key(g.sub(gSubVectorRefs).Pack(tuple.Tuple{clusterID, ref.id.pk})), vectorRefValue(ref, g.codec.encode))
 }
 
 func (g *guardiann) deleteVectorRef(tx fdb.WritableTransaction, clusterID tuple.UUID, pk tuple.Tuple) {
@@ -338,22 +346,26 @@ func (c *guardiannConfig) replicationPriority(distance, distanceToPrimaryCentroi
 // isOccluded is StorageAdapter.isOccluded: a candidate is skipped when an
 // already selected replication cluster's centroid lies closer to it than the
 // vector does.
-func (g *guardiann) isOccluded(candidate guardiannClusterWithDistance, selected []guardiannClusterWithDistance) bool {
+func (g *guardiann) isOccluded(candidate guardiannClusterWithDistance, selected []guardiannClusterWithDistance) (bool, error) {
 	for _, s := range selected {
-		if candidate.distance > g.distance(candidate.centroid, s.centroid) {
-			return true
+		distance, err := g.distance(candidate.centroid, s.centroid)
+		if err != nil {
+			return false, err
+		}
+		if candidate.distance > distance {
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // clusterRefTuple is StorageAdapter.valueTupleFromClusterReference.
-func clusterRefTuple(r guardiannClusterRef) tuple.Tuple {
-	return tuple.Tuple{r.clusterID, r.centroid.encode()}
+func clusterRefTuple(r guardiannClusterRef, encode func(gVector) []byte) tuple.Tuple {
+	return tuple.Tuple{r.clusterID, encode(r.centroid)}
 }
 
-func clusterRefFromTuple(t tuple.Tuple) (guardiannClusterRef, error) {
-	v, err := decodeGVector(t[1].([]byte))
+func clusterRefFromTuple(t tuple.Tuple, decode func([]byte) (gVector, error)) (guardiannClusterRef, error) {
+	v, err := decode(t[1].([]byte))
 	return guardiannClusterRef{clusterID: t[0].(tuple.UUID), centroid: v}, err
 }
 

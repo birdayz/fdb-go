@@ -63,7 +63,7 @@ func (g *guardiann) centroidEntryOf(n centroidNode) (centroidEntry, error) {
 	if err != nil {
 		return centroidEntry{}, err
 	}
-	v, err := decodeGVector(n.vec)
+	v, err := g.codec.decode(n.vec)
 	if err != nil {
 		return centroidEntry{}, err
 	}
@@ -79,7 +79,7 @@ func (g *guardiann) fetchCentroid(tx fdb.ReadTransaction, clusterID tuple.UUID) 
 		}
 		return nil, err
 	}
-	v, err := decodeGVector(vec)
+	v, err := g.codec.decode(vec)
 	if err != nil {
 		return nil, err
 	}

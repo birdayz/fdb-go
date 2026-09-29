@@ -85,7 +85,7 @@ func (o *orderedClusters) list() []guardiannClusterWithDistance {
 // computeNearestClusters is AbstractDeferredTask.computeNearestClusters: for
 // each primary vector, the candidate clusters sorted by distance, and the
 // stats each vector adds to its nearest cluster.
-func (g *guardiann) computeNearestClusters(refs []guardiannVectorRef, candidates []guardiannClusterWithDistance) (map[string][]guardiannClusterWithDistance, map[tuple.UUID]guardiannRunningStats) {
+func (g *guardiann) computeNearestClusters(refs []guardiannVectorRef, candidates []guardiannClusterWithDistance) (map[string][]guardiannClusterWithDistance, map[tuple.UUID]guardiannRunningStats, error) {
 	inverted := map[string][]guardiannClusterWithDistance{}
 	updates := map[tuple.UUID]guardiannRunningStats{}
 	for _, r := range refs {
@@ -94,7 +94,11 @@ func (g *guardiann) computeNearestClusters(refs []guardiannVectorRef, candidates
 		}
 		sorted := make([]guardiannClusterWithDistance, len(candidates))
 		for i, c := range candidates {
-			c.distance = g.distance(r.vector, c.centroid)
+			var err error
+			c.distance, err = g.distance(r.vector, c.centroid)
+			if err != nil {
+				return nil, nil, err
+			}
 			sorted[i] = c
 		}
 		sortClustersByDistance(sorted)
@@ -106,7 +110,7 @@ func (g *guardiann) computeNearestClusters(refs []guardiannVectorRef, candidates
 		}
 		inverted[r.id.key()] = sorted
 	}
-	return inverted, updates
+	return inverted, updates, nil
 }
 
 func mergeStatsUpdates(target, updates map[tuple.UUID]guardiannRunningStats) {
@@ -226,10 +230,11 @@ func (g *guardiann) enqueueCollapseIfNecessary(tx fdb.WritableTransaction, rando
 // is ReassignTask's gate (underreplicated, or a cause cluster).
 func (g *guardiann) selectReplicas(ref guardiannVectorRef, distanceToPrimary float64, candidates []guardiannClusterWithDistance,
 	stats map[tuple.UUID]guardiannRunningStats, eligible func(guardiannClusterWithDistance) bool,
-) []struct {
+) ([]struct {
 	cluster tuple.UUID
 	ref     guardiannVectorRef
-} {
+}, error,
+) {
 	var selected []guardiannClusterWithDistance
 	var out []struct {
 		cluster tuple.UUID
@@ -242,7 +247,11 @@ func (g *guardiann) selectReplicas(ref guardiannVectorRef, distanceToPrimary flo
 		s := stats[c.meta.id]
 		priority := g.config.replicationPriority(c.distance, distanceToPrimary, int(s.n), s.meanOrNaN(), s.populationStdDev())
 		if priority >= g.config.replicationPriorityMin {
-			if g.isOccluded(c, selected) {
+			occluded, err := g.isOccluded(c, selected)
+			if err != nil {
+				return nil, err
+			}
+			if occluded {
 				continue
 			}
 			out = append(out, struct {
@@ -252,7 +261,7 @@ func (g *guardiann) selectReplicas(ref guardiannVectorRef, distanceToPrimary flo
 			selected = append(selected, c)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // countAssignments counts per-cluster additions of an assignment.
@@ -325,7 +334,10 @@ func (g *guardiann) reassign(tx fdb.WritableTransaction, t *guardiannTask, targe
 			stats[k] = clusters.values[k].meta.stats
 		}
 	}
-	inverted, updates := g.computeNearestClusters(cleaned, clusters.list())
+	inverted, updates, err := g.computeNearestClusters(cleaned, clusters.list())
+	if err != nil {
+		return err
+	}
 	mergeStatsUpdates(stats, updates)
 	assignment := newOrderedAssignments()
 	var replicas []guardiannVectorRef
@@ -344,7 +356,11 @@ func (g *guardiann) reassign(tx fdb.WritableTransaction, t *guardiannTask, targe
 		eligible := func(c guardiannClusterWithDistance) bool {
 			return r.isUnderreplicated() || containsUUID(t.causes, c.meta.id)
 		}
-		for _, s := range g.selectReplicas(r, p.distance, near[1:], stats, eligible) {
+		selected, err := g.selectReplicas(r, p.distance, near[1:], stats, eligible)
+		if err != nil {
+			return err
+		}
+		for _, s := range selected {
 			assignment.put(s.cluster, s.ref)
 		}
 	}
@@ -459,7 +475,10 @@ func (g *guardiann) collapse(tx fdb.WritableTransaction, t *guardiannTask, targe
 			replicated.add(r)
 			continue
 		}
-		d := g.distance(r.vector, t.centroid)
+		d, err := g.distance(r.vector, t.centroid)
+		if err != nil {
+			return err
+		}
 		if !r.collapsed {
 			sig := sigs[r.id.key()]
 			if bySig[sig] > g.config.collapseMinDuplicates && !blackHole[sig] {

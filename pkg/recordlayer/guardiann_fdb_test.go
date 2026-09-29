@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -375,5 +376,98 @@ var _ = Describe("GuardiANN trained search", func() {
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
+var _ = Describe("GuardiANN automatic training", func() {
+	It("trains during inserts and maintains mixed plain and quantized references", func() {
+		cfg := defaultGuardiannConfig(3)
+		cfg.useRaBitQ, cfg.deterministicRandomness = true, true
+		cfg.sampleVectorStatsProbability, cfg.maintainStatsProbability = 1, 1
+		cfg.sampleBatchSize, cfg.statsThreshold = 2, 8
+		cfg.primaryClusterMin, cfg.primaryClusterMax, cfg.primaryClusterHardMax = 2, 6, 40
+		ss := specSubspace().Sub("automatic-training")
+		g := newGuardiann(ss, cfg, nil, nil)
+		run := func(f func(fdb.WritableTransaction) error) {
+			_, err := sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) { return nil, f(rtx.Transaction()) })
+			Expect(err).NotTo(HaveOccurred())
+		}
+		for i := int64(0); i < 16; i++ {
+			run(func(tx fdb.WritableTransaction) error {
+				v := gVector{data: []float64{float64(i / 4 * 10), float64(i % 4), 1}, typ: 2}
+				if err := g.insert(tx, tuple.Tuple{i}, v, nil, false); err != nil {
+					return err
+				}
+				info, err := g.fetchAccessInfo(tx)
+				Expect(err).NotTo(HaveOccurred())
+				if i >= 7 {
+					Expect(info.negatedCentroid).To(HaveLen(3))
+				} else {
+					Expect(info.negatedCentroid).To(BeNil())
+				}
+				if i == 6 {
+					tasks, err := g.fetchSomeTasks(tx, 10)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(tasks).NotTo(BeEmpty(), "pretraining tasks must survive the coordinate transition")
+				}
+				return nil
+			})
+		}
+		run(func(tx fdb.WritableTransaction) error {
+			r, err := fdb.PrefixRange(g.sub(gSubVectorRefs).Bytes())
+			Expect(err).NotTo(HaveOccurred())
+			refs, err := tx.GetRange(r, fdb.RangeOptions{}).GetSliceWithError()
+			Expect(err).NotTo(HaveOccurred())
+			plain, encoded := 0, 0
+			for _, kv := range refs {
+				v, err := tuple.Unpack(kv.Value)
+				Expect(err).NotTo(HaveOccurred())
+				if v[3].([]byte)[0] == 3 {
+					encoded++
+				} else {
+					plain++
+				}
+			}
+			Expect(plain).To(BeNumerically(">", 0))
+			Expect(encoded).To(BeNumerically(">", 0))
+			return nil
+		})
+		for n := 0; n < 100; n++ {
+			count := 0
+			run(func(tx fdb.WritableTransaction) error {
+				var err error
+				count, err = g.executeDeferredTasks(tx, 5, time.Time{})
+				return err
+			})
+			if count == 0 {
+				break
+			}
+			Expect(n).To(BeNumerically("<", 99), "maintenance must quiesce")
+		}
+		run(func(tx fdb.WritableTransaction) error {
+			multiple, err := g.centroidCardinalityMultiple(tx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(multiple).To(BeTrue(), "maintenance must split the overfull cluster")
+			sc := defaultGuardiannSearchConfig()
+			sc.searchMinClustersBeforePruning, sc.searchMaxClusters = 100, 100
+			results, err := g.search(tx, 16, sc, gVector{data: []float64{10, 1, 1}, typ: 2})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(16))
+			seen := map[int64]bool{}
+			for _, r := range results {
+				seen[r.primaryKey[0].(int64)] = true
+			}
+			Expect(seen).To(HaveLen(16))
+			for _, i := range []int64{0, 12} {
+				Expect(g.delete(tx, tuple.Tuple{i}, gVector{data: []float64{float64(i / 4 * 10), float64(i % 4), 1}, typ: 2}, true)).To(Succeed())
+			}
+			results, err = g.search(tx, 16, sc, gVector{data: []float64{10, 1, 1}, typ: 2})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(14))
+			for _, r := range results {
+				Expect(r.primaryKey[0]).NotTo(BeElementOf(int64(0), int64(12)))
+			}
+			return nil
+		})
 	})
 })

@@ -1,6 +1,7 @@
 package recordlayer
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 )
@@ -10,12 +11,12 @@ import (
 func TestKMeansAndPartitionEvaluatorMatchJava(t *testing.T) {
 	t.Parallel()
 	data := &splittableRandom{seed: 3, gamma: goldenGamma}
-	vectors := make([][]float64, 40)
+	vectors := make([]gVector, 40)
 	for i := range vectors {
 		c := float64(i%3) * 5
 		x := c + data.nextDouble()
 		y := -c + data.nextDouble()
-		vectors[i] = []float64{x, y, data.nextDouble()}
+		vectors[i] = gVector{data: []float64{x, y, data.nextDouble()}, typ: 2}
 	}
 	want := map[string]string{
 		"E1":    "1376.4505252442514 [0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0]",
@@ -32,7 +33,10 @@ func TestKMeansAndPartitionEvaluatorMatchJava(t *testing.T) {
 		metric VectorMetric
 	}{{"E", VectorMetricEuclidean}, {"C", VectorMetricCosine}} {
 		for k := 1; k <= 3; k++ {
-			r := kMeansFit(&splittableRandom{seed: 11, gamma: goldenGamma}, m.metric, vectors, k, 8, 3)
+			r, err := kMeansFit(&splittableRandom{seed: 11, gamma: goldenGamma}, &guardiannVectorCodec{config: guardiannConfig{metric: m.metric}}, vectors, k, 8, 3)
+			if err != nil {
+				t.Fatal(err)
+			}
 			key := fmt.Sprintf("%s%d", m.name, k)
 			if got := fmt.Sprint(r.objective, r.assignment); got != want[key] {
 				t.Errorf("%s: %s, want %s", key, got, want[key])
@@ -40,16 +44,85 @@ func TestKMeansAndPartitionEvaluatorMatchJava(t *testing.T) {
 			if k != 2 {
 				continue
 			}
-			centroids := make([][]float64, len(r.centroids))
+			centroids := make([]gVector, len(r.centroids))
 			for i, c := range r.centroids {
-				centroids[i] = c.data
+				centroids[i] = c
 			}
-			e := evaluatePartitions(vectors, partition{centroids: [][]float64{{5, -5, 0.5}}, assignments: make([]int, len(vectors))},
+			e, err := evaluatePartitions(vectors, partition{centroids: []gVector{{data: []float64{5, -5, 0.5}, typ: 2}}, assignments: make([]int, len(vectors))},
 				vectors, partition{centroids: centroids, assignments: r.assignment}, defaultPartitionParameters(m.metric))
+			if err != nil {
+				t.Fatal(err)
+			}
 			decision := map[partitionDecision]string{decisionKeepCurrent: "keep", decisionAcceptCandidate: "accept", decisionInvalidCandidate: "invalid"}
 			if got := fmt.Sprint(decision[e.decision], " ", e.scoreGain); got != want[m.name+"eval"] {
 				t.Errorf("%s evaluate: %s, want %s", m.name, got, want[m.name+"eval"])
 			}
 		}
+	}
+}
+
+// TestKMeansQuantizedMatchJava preserves the estimator's encoded-operand path.
+func TestKMeansQuantizedMatchJava(t *testing.T) {
+	t.Parallel()
+	cfg := defaultGuardiannConfig(3)
+	cfg.useRaBitQ = true
+	codec, err := newGuardiannVectorCodec(cfg, &guardiannAccessInfoValue{rotatorSeed: 42, negatedCentroid: []float64{0, 0, 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vectors []gVector
+	for i := 0; i < 8; i++ {
+		v := gVector{data: []float64{float64(i / 4 * 10), float64(i % 4), 1}, typ: 2}
+		if i >= 3 {
+			v, err = codec.decode(codec.encode(v))
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		vectors = append(vectors, v)
+	}
+	for k, want := range []string{"207.93312416612986 [0 0 0 0 0 0 0 0]", "8.930730185115753 [0 0 0 0 1 1 1 1]"} {
+		r, err := kMeansFit(&splittableRandom{seed: 11, gamma: goldenGamma}, codec, vectors, k+1, 8, 3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := fmt.Sprint(r.objective, r.assignment); got != want {
+			t.Errorf("k=%d: got %s want %s", k+1, got, want)
+		}
+		if k == 1 {
+			params := defaultPartitionParameters(cfg.metric)
+			params.codec = codec
+			result, err := evaluatePartitions(vectors, partition{centroids: []gVector{{data: []float64{5, 1.5, 1}, typ: 2}}, assignments: make([]int, 8)}, vectors, partition{centroids: r.centroids, assignments: r.assignment}, params)
+			if err != nil || result.decision != decisionAcceptCandidate || result.scoreGain != 4.295281704527504 {
+				t.Fatalf("Java quantized partition: %+v, %v", result, err)
+			}
+		}
+	}
+}
+
+func TestKMeansQuantizedErrors(t *testing.T) {
+	t.Parallel()
+	cfg := defaultGuardiannConfig(3)
+	cfg.useRaBitQ = true
+	codec, err := newGuardiannVectorCodec(cfg, &guardiannAccessInfoValue{rotatorSeed: 42, negatedCentroid: []float64{0, 0, 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The decoded shape is valid, but its encoded distance-estimation payload is truncated.
+	bad := gVector{data: []float64{1, 2, 3}, typ: 3, encoded: []byte{3}}
+	plain := gVector{data: []float64{4, 5, 6}, typ: 2}
+	for _, k := range []int{1, 2} {
+		_, err := kMeansFit(&splittableRandom{seed: 11, gamma: goldenGamma}, codec, []gVector{bad, plain}, k, 8, 3)
+		var invalid *IllegalArgumentError
+		if !errors.As(err, &invalid) {
+			t.Fatalf("k=%d lost estimator error: %v", k, err)
+		}
+	}
+	params := defaultPartitionParameters(cfg.metric)
+	params.codec = codec
+	_, err = evaluatePartition([]gVector{bad}, partition{centroids: []gVector{plain}, assignments: []int{0}}, params)
+	var invalid *IllegalArgumentError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("partition lost estimator error: %v", err)
 	}
 }

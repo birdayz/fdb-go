@@ -23,17 +23,17 @@ func TestGuardiannCodecsMatchJava(t *testing.T) {
 		got  []byte
 		want string
 	}{
-		"primary":          {vectorRefValue(guardiannVectorRef{id: vid, vector: half, primary: true}), "300123456789abcdef887766554433221114260100ff3c00ff3800ffc000ff00"},
-		"underrep":         {vectorRefValue(guardiannVectorRef{id: vid, vector: half, primary: true, underrep: true, collapsed: true}), "300123456789abcdef88776655443322111501270100ff3c00ff3800ffc000ff00"},
-		"replicated":       {vectorRefValue(guardiannVectorRef{id: vid, vector: half, priority: 0.93}), "300123456789abcdef88776655443322111502260100ff3c00ff3800ffc000ff0021bfedc28f5c28f5c3"},
+		"primary":          {vectorRefValue(guardiannVectorRef{id: vid, vector: half, primary: true}, gVector.encode), "300123456789abcdef887766554433221114260100ff3c00ff3800ffc000ff00"},
+		"underrep":         {vectorRefValue(guardiannVectorRef{id: vid, vector: half, primary: true, underrep: true, collapsed: true}, gVector.encode), "300123456789abcdef88776655443322111501270100ff3c00ff3800ffc000ff00"},
+		"replicated":       {vectorRefValue(guardiannVectorRef{id: vid, vector: half, priority: 0.93}, gVector.encode), "300123456789abcdef88776655443322111502260100ff3c00ff3800ffc000ff0021bfedc28f5c28f5c3"},
 		"clustermeta":      {clusterMetaValue(guardiannClusterMetadata{id: u2, numUnderrep: 1, numReplicated: 2, stats: stats, states: 3, maxEverPrimary: 5}), "1501150205150321c000aaaaaaaaaaaa21c01e2aaaaaaaaaac21c0110000000000000015031505"},
 		"clustermetaEmpty": {clusterMetaValue(guardiannClusterMetadata{id: u2, stats: runningStatsIdentity()}), "1414051421800000000000000021800000000000000021000fffffffffffff001414"},
 		"accessInfo":       {tuple.Tuple{int64(-1), nil}.Pack(), "13fe00"},
 		"vectorMetadata":   {tuple.Tuple{u1, nil}.Pack(), "300123456789abcdef887766554433221100"},
-		"taskSplit":        {(&guardiannTask{kind: taskSplitMerge, id: u1, targets: []tuple.UUID{u2}, centroid: half, nearest: []guardiannClusterRef{cref}}).valueTuple().Pack(), "1430fedcba987654321011223344556677880100ff3c00ff3800ffc000ff00050530fedcba987654321011223344556677880100ff3c00ff3800ffc000ff000000"},
-		"taskReassign":     {(&guardiannTask{kind: taskReassign, id: u1, targets: []tuple.UUID{u2}, centroid: half, causes: []tuple.UUID{u1}, nearest: []guardiannClusterRef{cref}}).valueTuple().Pack(), "150130fedcba987654321011223344556677880100ff3c00ff3800ffc000ff0005300123456789abcdef887766554433221100050530fedcba987654321011223344556677880100ff3c00ff3800ffc000ff000000"},
-		"taskCollapse":     {(&guardiannTask{kind: taskCollapse, id: u1, targets: []tuple.UUID{u2}, centroid: half}).valueTuple().Pack(), "150330fedcba987654321011223344556677880100ff3c00ff3800ffc000ff00"},
-		"taskBounce":       {(&guardiannTask{kind: taskBounce, id: u1, targets: []tuple.UUID{u2}, dependents: []tuple.UUID{u1}, finalKind: taskReassign}).valueTuple().Pack(), "15020530fedcba987654321011223344556677880005300123456789abcdef88776655443322110002524541535349474e00"},
+		"taskSplit":        {(&guardiannTask{kind: taskSplitMerge, id: u1, targets: []tuple.UUID{u2}, centroid: half, nearest: []guardiannClusterRef{cref}}).valueTuple(gVector.encode).Pack(), "1430fedcba987654321011223344556677880100ff3c00ff3800ffc000ff00050530fedcba987654321011223344556677880100ff3c00ff3800ffc000ff000000"},
+		"taskReassign":     {(&guardiannTask{kind: taskReassign, id: u1, targets: []tuple.UUID{u2}, centroid: half, causes: []tuple.UUID{u1}, nearest: []guardiannClusterRef{cref}}).valueTuple(gVector.encode).Pack(), "150130fedcba987654321011223344556677880100ff3c00ff3800ffc000ff0005300123456789abcdef887766554433221100050530fedcba987654321011223344556677880100ff3c00ff3800ffc000ff000000"},
+		"taskCollapse":     {(&guardiannTask{kind: taskCollapse, id: u1, targets: []tuple.UUID{u2}, centroid: half}).valueTuple(gVector.encode).Pack(), "150330fedcba987654321011223344556677880100ff3c00ff3800ffc000ff00"},
+		"taskBounce":       {(&guardiannTask{kind: taskBounce, id: u1, targets: []tuple.UUID{u2}, dependents: []tuple.UUID{u1}, finalKind: taskReassign}).valueTuple(gVector.encode).Pack(), "15020530fedcba987654321011223344556677880005300123456789abcdef88776655443322110002524541535349474e00"},
 	} {
 		if got := hex.EncodeToString(c.got); got != c.want {
 			t.Errorf("%s = %s, want %s", name, got, c.want)
@@ -67,8 +67,8 @@ func TestGuardiannCodecsMatchJava(t *testing.T) {
 		{kind: taskSplitMerge, id: u1, targets: []tuple.UUID{u2}, centroid: half, nearest: []guardiannClusterRef{cref}},
 		{kind: taskBounce, id: u1, targets: []tuple.UUID{u2}, dependents: []tuple.UUID{u1}, finalKind: taskReassign},
 	} {
-		back, err := taskFromTuples(tuple.Tuple{task.id}, task.valueTuple())
-		if err != nil || hex.EncodeToString(back.valueTuple().Pack()) != hex.EncodeToString(task.valueTuple().Pack()) {
+		back, err := taskFromTuples(tuple.Tuple{task.id}, task.valueTuple(gVector.encode), decodeGVector)
+		if err != nil || hex.EncodeToString(back.valueTuple(gVector.encode).Pack()) != hex.EncodeToString(task.valueTuple(gVector.encode).Pack()) {
 			t.Errorf("task %d round trip: %v", task.kind, err)
 		}
 	}

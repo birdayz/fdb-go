@@ -103,7 +103,7 @@ func (g *guardiann) enqueueMergeIfUndersized(tx fdb.WritableTransaction, random 
 // findNearestClustersMetadata walks the centroids around the target cluster.
 func (g *guardiann) findNearestClustersMetadata(tx fdb.ReadTransaction, target guardiannClusterMetadata, centroid gVector, num int) ([]guardiannClusterWithDistance, error) {
 	sc := g.config.constructionSearchConfig
-	walk, err := g.centroidsOrderedByDistance(tx, centroid, sc.centroidEfRingSearch, sc.centroidEfOutwardSearch)
+	walk, err := g.centroidsOrderedByDistance(tx, g.codec.toClientCoordinates(centroid), sc.centroidEfRingSearch, sc.centroidEfOutwardSearch)
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +148,7 @@ func (g *guardiann) fetchCluster(tx fdb.ReadTransaction, id tuple.UUID, centroid
 	if m == nil {
 		return guardiannCluster{}, &RecordCoreError{Message: "guardiann cluster metadata is missing"}
 	}
-	refs, err := g.fetchVectorRefs(tx, id, decodeGVector)
+	refs, err := g.fetchVectorRefs(tx, id, g.codec.decode)
 	return guardiannCluster{meta: *m, centroid: centroid, refs: refs}, err
 }
 
@@ -211,6 +211,14 @@ func (g *guardiann) cleanUpVectorReferences(tx fdb.ReadTransaction, clusters []g
 // queued tasks in key order (high priority first), the first unconditionally
 // and the rest until the deadline (none when zero).
 func (g *guardiann) executeDeferredTasks(tx fdb.WritableTransaction, numTasks int, deadline time.Time) (int, error) {
+	info, err := g.fetchAccessInfo(tx)
+	if err != nil {
+		return 0, err
+	}
+	g, err = g.withAccessInfo(info)
+	if err != nil {
+		return 0, err
+	}
 	tasks, err := g.fetchSomeTasks(tx, numTasks)
 	if err != nil {
 		return 0, err
@@ -259,7 +267,7 @@ func (g *guardiann) insert(tx fdb.WritableTransaction, pk tuple.Tuple, vector gV
 		return err
 	}
 	if info == nil {
-		if _, err = g.initialAccessInfoAndFirstCluster(tx, random, vector); err != nil {
+		if info, err = g.initialAccessInfoAndFirstCluster(tx, random, vector); err != nil {
 			return err
 		}
 		existing = nil
@@ -271,12 +279,24 @@ func (g *guardiann) insert(tx fdb.WritableTransaction, pk tuple.Tuple, vector gV
 	if existing != nil {
 		return nil
 	}
-	return g.insertIntoClusters(tx, random, pk, vector, additional, maintainInTransaction)
+	g, err = g.withAccessInfo(info)
+	if err != nil {
+		return err
+	}
+	clientVector := vector
+	vector, err = g.codec.toStoredCoordinates(vector)
+	if err != nil {
+		return err
+	}
+	if err = g.insertIntoClusters(tx, random, pk, clientVector, vector, additional, maintainInTransaction); err != nil {
+		return err
+	}
+	return g.addToStatsIfNecessary(tx, random, info, vector)
 }
 
-func (g *guardiann) insertIntoClusters(tx fdb.WritableTransaction, random *splittableRandom, pk tuple.Tuple, vector gVector, additional tuple.Tuple, maintainInTransaction bool) error {
+func (g *guardiann) insertIntoClusters(tx fdb.WritableTransaction, random *splittableRandom, pk tuple.Tuple, clientVector, vector gVector, additional tuple.Tuple, maintainInTransaction bool) error {
 	sc := g.config.constructionSearchConfig
-	walk, err := g.centroidsOrderedByDistance(tx, vector, sc.centroidEfRingSearch, sc.centroidEfOutwardSearch)
+	walk, err := g.centroidsOrderedByDistance(tx, clientVector, sc.centroidEfRingSearch, sc.centroidEfOutwardSearch)
 	if err != nil {
 		return err
 	}
@@ -322,7 +342,11 @@ func (g *guardiann) insertIntoClusters(tx fdb.WritableTransaction, random *split
 			g.writeVectorRef(tx, m.id, guardiannVectorRef{id: md.id, vector: vector, primary: true})
 			stats = stats.add(c.distance)
 		} else {
-			if g.isOccluded(c, selected) {
+			occluded, err := g.isOccluded(c, selected)
+			if err != nil {
+				return err
+			}
+			if occluded {
 				continue
 			}
 			priority := g.config.replicationPriority(c.distance, primaryDistance, m.numPrimary(), m.stats.meanOrNaN(), m.stats.populationStdDev())
@@ -380,8 +404,17 @@ func (g *guardiann) delete(tx fdb.WritableTransaction, pk tuple.Tuple, vector gV
 			return err
 		}
 	}
+	g, err = g.withAccessInfo(info)
+	if err != nil {
+		return err
+	}
+	clientVector := vector
+	vector, err = g.codec.toStoredCoordinates(vector)
+	if err != nil {
+		return err
+	}
 	sc := g.config.constructionSearchConfig
-	walk, err := g.centroidsOrderedByDistance(tx, vector, sc.centroidEfRingSearch, sc.centroidEfOutwardSearch)
+	walk, err := g.centroidsOrderedByDistance(tx, clientVector, sc.centroidEfRingSearch, sc.centroidEfOutwardSearch)
 	if err != nil {
 		return err
 	}
@@ -442,10 +475,11 @@ func (g *guardiann) search(tx fdb.ReadTransaction, k int, sc guardiannSearchConf
 	if err != nil || info == nil || k <= 0 {
 		return nil, err
 	}
-	codec, err := newGuardiannVectorCodec(g.config, info)
+	g, err = g.withAccessInfo(info)
 	if err != nil {
 		return nil, err
 	}
+	codec := g.codec
 	transformedQuery, err := codec.toStoredCoordinates(query)
 	if err != nil {
 		return nil, err
@@ -569,31 +603,31 @@ type guardiannTask struct {
 func (t *guardiannTask) target() tuple.UUID { return t.targets[0] }
 
 // valueTuple is each task's valueTuple().
-func (t *guardiannTask) valueTuple() tuple.Tuple {
+func (t *guardiannTask) valueTuple(encode func(gVector) []byte) tuple.Tuple {
 	nearest := func() tuple.Tuple {
 		out := make(tuple.Tuple, len(t.nearest))
 		for i, r := range t.nearest {
-			out[i] = clusterRefTuple(r)
+			out[i] = clusterRefTuple(r, encode)
 		}
 		return out
 	}
 	switch t.kind {
 	case taskSplitMerge:
-		return tuple.Tuple{int64(t.kind), t.target(), t.centroid.encode(), nearest()}
+		return tuple.Tuple{int64(t.kind), t.target(), encode(t.centroid), nearest()}
 	case taskReassign:
-		return tuple.Tuple{int64(t.kind), t.target(), t.centroid.encode(), uuidSetTuple(t.causes), nearest()}
+		return tuple.Tuple{int64(t.kind), t.target(), encode(t.centroid), uuidSetTuple(t.causes), nearest()}
 	case taskBounce:
 		return tuple.Tuple{int64(t.kind), uuidSetTuple(t.targets), uuidSetTuple(t.dependents), taskKindNames[t.finalKind]}
 	default:
-		return tuple.Tuple{int64(t.kind), t.target(), t.centroid.encode()}
+		return tuple.Tuple{int64(t.kind), t.target(), encode(t.centroid)}
 	}
 }
 
-func taskFromTuples(key, value tuple.Tuple) (*guardiannTask, error) {
+func taskFromTuples(key, value tuple.Tuple, decode func([]byte) (gVector, error)) (*guardiannTask, error) {
 	t := &guardiannTask{kind: int(value[0].(int64)), id: key[0].(tuple.UUID)}
 	nearest := func(nt tuple.Tuple) error {
 		for _, e := range nt {
-			r, err := clusterRefFromTuple(e.(tuple.Tuple))
+			r, err := clusterRefFromTuple(e.(tuple.Tuple), decode)
 			if err != nil {
 				return err
 			}
@@ -615,7 +649,7 @@ func taskFromTuples(key, value tuple.Tuple) (*guardiannTask, error) {
 		return t, nil
 	case taskSplitMerge, taskReassign, taskCollapse:
 		t.targets = []tuple.UUID{value[1].(tuple.UUID)}
-		if t.centroid, err = decodeGVector(value[2].([]byte)); err != nil {
+		if t.centroid, err = decode(value[2].([]byte)); err != nil {
 			return nil, err
 		}
 		switch t.kind {
@@ -631,7 +665,7 @@ func taskFromTuples(key, value tuple.Tuple) (*guardiannTask, error) {
 }
 
 func (g *guardiann) writeTask(tx fdb.WritableTransaction, t *guardiannTask) {
-	tx.Set(fdb.Key(g.sub(gSubTasks).Pack(tuple.Tuple{t.id})), t.valueTuple().Pack())
+	tx.Set(fdb.Key(g.sub(gSubTasks).Pack(tuple.Tuple{t.id})), t.valueTuple(g.codec.encode).Pack())
 	if g.listener != nil {
 		g.listener.onTaskEnqueued()
 	}
@@ -657,7 +691,7 @@ func (g *guardiann) fetchSomeTasks(tx fdb.ReadTransaction, n int) ([]*guardiannT
 		if err != nil {
 			return nil, err
 		}
-		t, err := taskFromTuples(key, value)
+		t, err := taskFromTuples(key, value, g.codec.decode)
 		if err != nil {
 			return nil, err
 		}
@@ -675,7 +709,7 @@ func (g *guardiann) fetchTask(tx fdb.ReadTransaction, id tuple.UUID) (*guardiann
 	if err != nil {
 		return nil, err
 	}
-	return taskFromTuples(tuple.Tuple{id}, value)
+	return taskFromTuples(tuple.Tuple{id}, value, g.codec.decode)
 }
 
 // Task ids: the top bit orders normal-priority tasks after high-priority ones.
