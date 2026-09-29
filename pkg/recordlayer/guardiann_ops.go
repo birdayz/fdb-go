@@ -148,7 +148,7 @@ func (g *guardiann) fetchCluster(tx fdb.ReadTransaction, id tuple.UUID, centroid
 	if m == nil {
 		return guardiannCluster{}, &RecordCoreError{Message: "guardiann cluster metadata is missing"}
 	}
-	refs, err := g.fetchVectorRefs(tx, id)
+	refs, err := g.fetchVectorRefs(tx, id, decodeGVector)
 	return guardiannCluster{meta: *m, centroid: centroid, refs: refs}, err
 }
 
@@ -442,6 +442,14 @@ func (g *guardiann) search(tx fdb.ReadTransaction, k int, sc guardiannSearchConf
 	if err != nil || info == nil || k <= 0 {
 		return nil, err
 	}
+	codec, err := newGuardiannVectorCodec(g.config, info)
+	if err != nil {
+		return nil, err
+	}
+	transformedQuery, err := codec.toStoredCoordinates(query)
+	if err != nil {
+		return nil, err
+	}
 	walk, err := g.centroidsOrderedByDistance(tx, query, sc.centroidEfRingSearch, sc.centroidEfOutwardSearch)
 	if err != nil {
 		return nil, err
@@ -464,12 +472,16 @@ func (g *guardiann) search(tx fdb.ReadTransaction, k int, sc guardiannSearchConf
 	clusters = pruneClusters(clusters, sc)
 	var candidates []guardiannRefAndDistance
 	for _, c := range clusters {
-		refs, err := g.fetchVectorRefs(tx, c.meta.id)
+		refs, err := g.fetchVectorRefs(tx, c.meta.id, codec.decode)
 		if err != nil {
 			return nil, err
 		}
 		for _, r := range refs {
-			candidates = append(candidates, guardiannRefAndDistance{ref: r, distance: g.distance(query, r.vector)})
+			distance, err := codec.distance(transformedQuery, r.vector)
+			if err != nil {
+				return nil, err
+			}
+			candidates = append(candidates, guardiannRefAndDistance{ref: r, distance: distance})
 		}
 	}
 	pool := sc.candidatePoolSize(k)
@@ -511,7 +523,7 @@ func (g *guardiann) search(tx fdb.ReadTransaction, k int, sc guardiannSearchConf
 		if len(results) >= k || md == nil || md.id.uuid != t.ref.id.uuid {
 			continue
 		}
-		results = append(results, guardiannResult{primaryKey: md.id.pk, vector: t.ref.vector, additionalValues: md.additionalValues, distance: t.distance})
+		results = append(results, guardiannResult{primaryKey: md.id.pk, vector: codec.toClientCoordinates(t.ref.vector), additionalValues: md.additionalValues, distance: t.distance})
 	}
 	return results, nil
 }

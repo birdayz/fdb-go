@@ -20,11 +20,17 @@ import (
 // ordinal they are stored at. GuardiANN's storage transform is the identity
 // unless RaBitQ has established a centroid.
 type gVector struct {
-	data []float64
-	typ  byte
+	data    []float64
+	typ     byte
+	encoded []byte
 }
 
-func (v gVector) encode() []byte { return vectorcodec.SerializeAs(v.typ, v.data) }
+func (v gVector) encode() []byte {
+	if v.encoded != nil {
+		return v.encoded
+	}
+	return vectorcodec.SerializeAs(v.typ, v.data)
+}
 
 func decodeGVector(b []byte) (gVector, error) {
 	data, err := vectorcodec.Deserialize(b)

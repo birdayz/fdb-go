@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -53,7 +54,7 @@ func readGuardiann(tx fdb.ReadTransaction, g *guardiann) guardiannSnapshot {
 	for _, kv := range count(g.sub(gSubVectorRefs)) {
 		k, err := g.sub(gSubVectorRefs).Unpack(kv.Key)
 		Expect(err).NotTo(HaveOccurred())
-		ref, err := vectorRefFromValue(k[1].(tuple.Tuple), kv.Value)
+		ref, err := vectorRefFromValue(k[1].(tuple.Tuple), kv.Value, decodeGVector)
 		Expect(err).NotTo(HaveOccurred())
 		if ref.primary {
 			s.primaries[k[0].(tuple.UUID)]++
@@ -324,5 +325,55 @@ var _ = Describe("GuardiANN training", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 		}
+	})
+})
+
+var _ = Describe("GuardiANN trained search", func() {
+	It("reads mixed pretraining HALF and Java RaBitQ references in one cluster", func() {
+		cfg := defaultGuardiannConfig(3)
+		cfg.useRaBitQ, cfg.deterministicRandomness = true, true
+		cfg.metric = VectorMetricEuclideanSquare
+		ss := specSubspace().Sub("mixed-trained")
+		_, err := sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
+			g := newGuardiann(ss, cfg, nil, nil)
+			tx := rtx.Transaction()
+			v, err := decodeGVector(vectorcodec.SerializeHalf([]float64{1, 2, 3}))
+			Expect(err).NotTo(HaveOccurred())
+			for _, pk := range []int64{1, 2} {
+				Expect(g.insert(tx, tuple.Tuple{pk}, v, nil, false)).To(Succeed())
+			}
+			g.writeAccessInfo(tx, &guardiannAccessInfoValue{rotatorSeed: 42, negatedCentroid: []float64{-0.25, 0.5, -0.75}})
+			r, err := fdb.PrefixRange(g.sub(gSubVectorRefs).Bytes())
+			Expect(err).NotTo(HaveOccurred())
+			refs, err := tx.GetRange(r, fdb.RangeOptions{}).GetSliceWithError()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(refs).To(HaveLen(2))
+			for _, kv := range refs {
+				key, err := g.sub(gSubVectorRefs).Unpack(kv.Key)
+				Expect(err).NotTo(HaveOccurred())
+				if key[1].(tuple.Tuple)[0] == int64(1) {
+					value, err := tuple.Unpack(kv.Value)
+					Expect(err).NotTo(HaveOccurred())
+					value[3], err = hex.DecodeString("0340218a6f8ff36398bfd24f6f0e0ad5b63fc34edb3de0b770fb7a")
+					Expect(err).NotTo(HaveOccurred())
+					tx.Set(kv.Key, value.Pack())
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
+			g := newGuardiann(ss, cfg, nil, nil)
+			results, err := g.search(rtx.Transaction(), 2, defaultGuardiannSearchConfig(), gVector{data: []float64{1.5, 2.5, 3.5}, typ: 2})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(2))
+			Expect(results[0].primaryKey).To(Equal(tuple.Tuple{int64(2)}))
+			Expect(results[0].distance).To(BeNumerically("~", 0.75, 1e-14))
+			Expect(results[1].primaryKey).To(Equal(tuple.Tuple{int64(1)}))
+			Expect(results[1].distance).To(BeNumerically("~", 0.7715969549182908, 1e-14))
+			Expect(hex.EncodeToString(results[1].vector.encode())).To(Equal("023fee714ee8af20254000392c4f941c064007fca06b941fd5"))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
 	})
 })

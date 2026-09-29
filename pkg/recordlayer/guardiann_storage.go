@@ -180,12 +180,12 @@ func (g *guardiann) deleteClusterMetadata(tx fdb.WritableTransaction, id tuple.U
 }
 
 // vectorRefFromValue is StorageAdapter.vectorReferenceFromTuples.
-func vectorRefFromValue(pk tuple.Tuple, value []byte) (guardiannVectorRef, error) {
+func vectorRefFromValue(pk tuple.Tuple, value []byte, decode func([]byte) (gVector, error)) (guardiannVectorRef, error) {
 	t, err := tuple.Unpack(value)
 	if err != nil {
 		return guardiannVectorRef{}, err
 	}
-	vec, err := decodeGVector(t[3].([]byte))
+	vec, err := decode(t[3].([]byte))
 	if err != nil {
 		return guardiannVectorRef{}, err
 	}
@@ -216,7 +216,7 @@ func vectorRefValue(ref guardiannVectorRef) []byte {
 	return tuple.Tuple{ref.id.uuid, role, ref.collapsed, raw}.Pack()
 }
 
-func (g *guardiann) fetchVectorRefs(tx fdb.ReadTransaction, clusterID tuple.UUID) ([]guardiannVectorRef, error) {
+func (g *guardiann) fetchVectorRefs(tx fdb.ReadTransaction, clusterID tuple.UUID, decode func([]byte) (gVector, error)) ([]guardiannVectorRef, error) {
 	refs := g.sub(gSubVectorRefs)
 	r, err := fdb.PrefixRange(refs.Pack(tuple.Tuple{clusterID}))
 	if err != nil {
@@ -232,7 +232,7 @@ func (g *guardiann) fetchVectorRefs(tx fdb.ReadTransaction, clusterID tuple.UUID
 		if err != nil {
 			return nil, err
 		}
-		ref, err := vectorRefFromValue(key[1].(tuple.Tuple), kv.Value)
+		ref, err := vectorRefFromValue(key[1].(tuple.Tuple), kv.Value, decode)
 		if err != nil {
 			return nil, err
 		}
@@ -246,7 +246,7 @@ func (g *guardiann) fetchVectorRef(tx fdb.ReadTransaction, clusterID tuple.UUID,
 	if err != nil || b == nil {
 		return nil, err
 	}
-	ref, err := vectorRefFromValue(pk, b)
+	ref, err := vectorRefFromValue(pk, b, decodeGVector)
 	return &ref, err
 }
 
