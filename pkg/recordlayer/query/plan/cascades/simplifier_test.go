@@ -100,6 +100,67 @@ func BenchmarkSimplifyUnchangedChildren(b *testing.B) {
 	}
 }
 
+func TestIdentityRulesUnchangedAllocationBound(t *testing.T) {
+	t.Parallel()
+	runSimplificationAllocationBenchmark(t, "BenchmarkIdentityRulesUnchanged")
+}
+
+func BenchmarkIdentityRulesUnchanged(b *testing.B) {
+	leaves := simplificationContractLeaves(b)
+	children := append(leaves[:len(leaves):len(leaves)], predicates.NewConstantPredicate(predicates.TriUnknown))
+	andRule, orRule := NewAndConstantSimplifyRule(), NewOrConstantSimplifyRule()
+	andCall := &RuleCall{Bindings: matching.NewBindings().Bind(andRule.Matcher(), predicates.NewAnd(children...))}
+	orCall := &RuleCall{Bindings: matching.NewBindings().Bind(orRule.Matcher(), predicates.NewOr(children...))}
+	for _, tc := range []struct {
+		rule CascadesRule
+		call *RuleCall
+	}{{andRule, andCall}, {orRule, orCall}} {
+		allocations := testing.AllocsPerRun(5, func() { tc.rule.OnMatch(tc.call) })
+		if len(tc.call.Yielded()) != 0 || tc.call.Err() != nil {
+			b.Fatalf("%T rewrote an unchanged child list or dropped UNKNOWN", tc.rule)
+		}
+		if allocations != 0 {
+			b.Fatalf("%T: %.0f allocations for unchanged children, want zero", tc.rule, allocations)
+		}
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		andRule.OnMatch(andCall)
+		orRule.OnMatch(orCall)
+	}
+}
+
+func TestIdentityRulesPreserveRetainedChildren(t *testing.T) {
+	t.Parallel()
+	leaves := simplificationContractLeaves(t)
+	for _, mode := range []normalFormMode{normalFormCNF, normalFormDNF} {
+		var rule CascadesRule = NewAndConstantSimplifyRule()
+		identity := predicates.TriTrue
+		if mode == normalFormDNF {
+			rule, identity = NewOrConstantSimplifyRule(), predicates.TriFalse
+		}
+		for mask := range 16 {
+			var children, want []predicates.QueryPredicate
+			for i, leaf := range leaves[:4] {
+				if mask&(1<<i) != 0 {
+					children = append(children, predicates.NewConstantPredicate(identity))
+				} else {
+					children, want = append(children, leaf), append(want, leaf)
+				}
+			}
+			unknown := predicates.NewConstantPredicate(predicates.TriUnknown)
+			children, want = append(children, unknown), append(want, unknown)
+			input := predicates.WithAtomicity(mode.majorWithChildren(children), true)
+			original := slices.Clone(input.Children())
+			got := mustSimplify(t, input, []CascadesRule{rule})
+			assertSimplificationTree(t, got, predicates.WithAtomicity(mode.majorWithChildren(want), mask == 0))
+			if !slices.Equal(input.Children(), original) {
+				t.Fatalf("mode=%d mask=%b: identity removal changed the original children", mode, mask)
+			}
+		}
+	}
+}
+
 func TestSimplifyChildReplacementsPreserveSiblings(t *testing.T) {
 	t.Parallel()
 	leaves := simplificationContractLeaves(t)

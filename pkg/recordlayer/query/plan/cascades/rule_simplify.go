@@ -44,8 +44,8 @@ func (r *AndConstantSimplifyRule) Matcher() matching.BindingMatcher { return r.m
 func (r *AndConstantSimplifyRule) OnMatch(call *RuleCall) {
 	and := call.Bindings.Get(r.matcher).(*predicates.AndPredicate)
 	// Collect non-TRUE children; short-circuit on FALSE.
-	kept := make([]predicates.QueryPredicate, 0, len(and.SubPredicates))
-	for _, sp := range and.SubPredicates {
+	var kept []predicates.QueryPredicate
+	for i, sp := range and.SubPredicates {
 		if cp, ok := sp.(*predicates.ConstantPredicate); ok {
 			if cp.Value == predicates.TriFalse {
 				// Whole AND collapses to FALSE regardless of siblings.
@@ -53,16 +53,22 @@ func (r *AndConstantSimplifyRule) OnMatch(call *RuleCall) {
 				return
 			}
 			if cp.Value == predicates.TriTrue {
-				// TRUE is AND-identity; drop.
+				// Copy only when an identity is actually removed.
+				if kept == nil {
+					kept = make([]predicates.QueryPredicate, i, len(and.SubPredicates)-1)
+					copy(kept, and.SubPredicates[:i])
+				}
 				continue
 			}
 			// UNKNOWN: keep as-is — the AND rule fires again on a
 			// rewrite that canonicalises UNKNOWN before the AND.
 		}
-		kept = append(kept, sp)
+		if kept != nil {
+			kept = append(kept, sp)
+		}
 	}
 	// Only yield when we actually changed something.
-	if len(kept) == len(and.SubPredicates) {
+	if kept == nil {
 		return
 	}
 	switch len(kept) {
@@ -92,21 +98,26 @@ func (r *OrConstantSimplifyRule) Matcher() matching.BindingMatcher { return r.ma
 
 func (r *OrConstantSimplifyRule) OnMatch(call *RuleCall) {
 	or := call.Bindings.Get(r.matcher).(*predicates.OrPredicate)
-	kept := make([]predicates.QueryPredicate, 0, len(or.SubPredicates))
-	for _, sp := range or.SubPredicates {
+	var kept []predicates.QueryPredicate
+	for i, sp := range or.SubPredicates {
 		if cp, ok := sp.(*predicates.ConstantPredicate); ok {
 			if cp.Value == predicates.TriTrue {
 				call.Yield(predicates.NewConstantPredicate(predicates.TriTrue))
 				return
 			}
 			if cp.Value == predicates.TriFalse {
-				// FALSE is OR-identity; drop.
+				if kept == nil {
+					kept = make([]predicates.QueryPredicate, i, len(or.SubPredicates)-1)
+					copy(kept, or.SubPredicates[:i])
+				}
 				continue
 			}
 		}
-		kept = append(kept, sp)
+		if kept != nil {
+			kept = append(kept, sp)
+		}
 	}
-	if len(kept) == len(or.SubPredicates) {
+	if kept == nil {
 		return
 	}
 	switch len(kept) {
