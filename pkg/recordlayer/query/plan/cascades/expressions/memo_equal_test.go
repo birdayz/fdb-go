@@ -199,6 +199,74 @@ func TestPreparedMemberIndexPrunesDisjointSingletonInputs(t *testing.T) {
 	}
 }
 
+func TestPreparedMemberIndexPrunesDifferentSingletonSubtrees(t *testing.T) {
+	t.Parallel()
+	parent := func(name string, reverse bool) *memoObservedExpression {
+		left := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{name}, testRecordType())))
+		right := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"common"}, testRecordType())))
+		qs := []Quantifier{ForEachQuantifier(left), ForEachQuantifier(right)}
+		if reverse {
+			slices.Reverse(qs)
+		}
+		child := InitialOf(mustExpression(NewLogicalUnionExpression(qs)))
+		return &memoObservedExpression{RelationalExpression: mustExpression(NewLogicalUniqueExpression(ForEachQuantifier(child)))}
+	}
+	members := make([]RelationalExpression, 32)
+	for i := range members {
+		members[i] = parent(string(rune('A'+i)), false)
+	}
+	var equality PreparedMemberEquality
+	index := equality.NewMemberIndex(members, nil)
+	if duplicate, _ := index.Duplicate(parent("new", false)); duplicate {
+		t.Fatal("different singleton subtrees collapsed")
+	}
+	for i, member := range members {
+		if visits := member.(*memoObservedExpression).equalityVisits; visits != 0 {
+			t.Fatalf("member %d: disjoint subtree caused %d equality calls, want zero", i, visits)
+		}
+	}
+	if duplicate, _ := index.Duplicate(parent("A", true)); !duplicate {
+		t.Fatal("independently built, permuted equivalent subtree did not deduplicate")
+	}
+}
+
+func TestPreparedMemberIndexNestedContainmentAndCycles(t *testing.T) {
+	t.Parallel()
+	scan := func(name string) RelationalExpression {
+		return mustExpression(NewFullUnorderedScanExpression([]string{name}, testRecordType()))
+	}
+	parent := func(ref *Reference) RelationalExpression {
+		return mustExpression(NewLogicalUniqueExpression(ForEachQuantifier(ref)))
+	}
+	many, one := InitialOf(scan("T")), InitialOf(scan("T"))
+	many.members = append(many.members, scan("U"))
+	left, right := parent(InitialOf(parent(many))), parent(InitialOf(parent(one)))
+	for _, tc := range []struct {
+		have, incoming RelationalExpression
+		want           bool
+	}{
+		{left, right, true},
+		{right, left, false},
+	} {
+		var equality PreparedMemberEquality
+		members := slices.Repeat([]RelationalExpression{tc.have}, 8)
+		index := equality.NewMemberIndex(members, nil)
+		got, diagnostic := index.Duplicate(tc.incoming)
+		linear, linearDiagnostic := PreparedMemberDuplicate(members, tc.incoming)
+		if got != tc.want || got != linear || diagnostic != linearDiagnostic {
+			t.Fatalf("nested containment: indexed=%t/%t linear=%t/%t, want %t", got, diagnostic, linear, linearDiagnostic, tc.want)
+		}
+	}
+	cycle := InitialOf(scan("T"))
+	cyclic := parent(cycle)
+	cycle.members = []RelationalExpression{cyclic}
+	var equality PreparedMemberEquality
+	index := equality.NewMemberIndex(slices.Repeat([]RelationalExpression{cyclic}, 8), nil)
+	if duplicate, _ := index.Duplicate(cyclic); !duplicate {
+		t.Fatal("cyclic singleton input lost its exact-replica fallback")
+	}
+}
+
 func preparedIndexPadding() []RelationalExpression {
 	members := make([]RelationalExpression, 7)
 	for i := range members {
@@ -296,11 +364,10 @@ func TestPreparedMemberIndexPreservesCandidateOrder(t *testing.T) {
 		// The unkeyed group contains two distinct scan nodes with equal contents.
 		multi := InitialOf(scan())
 		multi.members = append(multi.members, scan())
-		members := []RelationalExpression{filter(values.UniqueCorrelationIdentifier(), multi), filter(alias, child)}
+		members := append([]RelationalExpression{filter(values.UniqueCorrelationIdentifier(), multi)}, slices.Repeat([]RelationalExpression{filter(alias, child)}, 8)...)
 		if keyedFirst {
 			slices.Reverse(members)
 		}
-		members = append(preparedIndexPadding(), members...)
 		var equality PreparedMemberEquality
 		index := equality.NewMemberIndex(members, nil)
 		got, aliasAware := index.Duplicate(incoming)
@@ -321,7 +388,7 @@ func TestPreparedMemberIndexCollisionsAndForwarding(t *testing.T) {
 	}
 	forwarded, middle := InitialOf(scan("U")), InitialOf(scan("V"))
 	forwarded.forwardedTo, middle.forwardedTo = middle, child
-	members := append(preparedIndexPadding(), parent(forwarded))
+	members := slices.Repeat([]RelationalExpression{parent(forwarded)}, 8)
 	var equality PreparedMemberEquality
 	index := equality.NewMemberIndex(members, nil)
 	for _, name := range []string{"T", "U"} {
@@ -487,7 +554,9 @@ func TestPreparedCorrelationsPublicationAfterGraphChanges(t *testing.T) {
 func preparedChildDuplicate(a, b RelationalExpression) bool {
 	left := mustExpression(NewLogicalDistinctExpression(ForEachQuantifier(InitialOf(a))))
 	right := mustExpression(NewLogicalDistinctExpression(ForEachQuantifier(InitialOf(b))))
-	duplicate, _ := PreparedMemberDuplicate([]RelationalExpression{left}, right)
+	var equality PreparedMemberEquality
+	index := equality.NewMemberIndex(slices.Repeat([]RelationalExpression{left}, 8), nil)
+	duplicate, _ := index.Duplicate(right)
 	return duplicate
 }
 

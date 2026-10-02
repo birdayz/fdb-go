@@ -13,9 +13,15 @@ type PreparedMemberIndex struct {
 
 type preparedInputKey struct {
 	hash         uint64
+	children     uint64
 	arity        int
 	canCorrelate bool
 	final        bool
+}
+
+type preparedInputSignature struct {
+	key      preparedInputKey
+	complete bool
 }
 
 func (p *PreparedMemberEquality) NewMemberIndex(members []RelationalExpression, hashes []uint64) *PreparedMemberIndex {
@@ -50,6 +56,11 @@ func (p *PreparedMemberIndex) Duplicate(expression RelationalExpression) (bool, 
 		p.indexed = true
 	}
 	candidates := p.buckets[key]
+	var deeper preparedInputKey
+	hasDeeper := false
+	if len(candidates) >= 8 {
+		deeper, hasDeeper = p.inputSignature(expression)
+	}
 	// Preserve lane order: the first match also determines aliasAwareOnly.
 	for i, j := 0, 0; i < len(candidates) || j < len(p.fallback); {
 		var next int
@@ -59,6 +70,11 @@ func (p *PreparedMemberIndex) Duplicate(expression RelationalExpression) (bool, 
 		} else {
 			next = p.fallback[j]
 			j++
+		}
+		if hasDeeper {
+			if candidate, complete := p.inputSignature(p.members[next]); complete && candidate != deeper {
+				continue
+			}
 		}
 		if duplicate, aliasAware := p.equality.DuplicateWithHashes(p.members[next:next+1], p.hashes[next:next+1], expression); duplicate {
 			return true, aliasAware
@@ -92,12 +108,47 @@ func (p *PreparedMemberIndex) inputKey(expression RelationalExpression) (prepare
 	if len(qs) != 1 {
 		return preparedInputKey{}, false
 	}
-	ref := preparedQuantifierReference(qs[0])
-	if ref == nil || len(ref.members)+len(ref.finalMembers) != 1 {
+	key, _, complete := p.equality.inputNodeKey(qs[0].rangesOver)
+	return key, complete
+}
+
+func (p *PreparedMemberIndex) inputSignature(expression RelationalExpression) (preparedInputKey, bool) {
+	qs := expression.GetQuantifiers()
+	if len(qs) != 1 {
 		return preparedInputKey{}, false
 	}
-	// Only singleton groups have symmetric containment. Larger groups must
-	// remain candidates even when their alternatives have different keys.
+	ref := preparedQuantifierReference(qs[0])
+	if signature, seen := p.equality.inputs[ref]; seen {
+		return signature.key, signature.complete
+	}
+	key, member, complete := p.equality.inputNodeKey(ref)
+	if !complete {
+		return preparedInputKey{}, false
+	}
+	// Read immediate child node signatures, not whole alternative populations:
+	// containment is directional below any non-singleton input.
+	for _, quantifier := range member.GetQuantifiers() {
+		child, _, childComplete := p.equality.inputNodeKey(quantifier.rangesOver)
+		if !childComplete {
+			complete = false
+			break
+		}
+		// Java's semantic hash ignores quantifier order. Collisions still pass
+		// through the full comparator, including attributes and alias bindings.
+		key.children += child.fingerprint()
+	}
+	if p.equality.inputs == nil {
+		p.equality.inputs = make(map[*Reference]preparedInputSignature)
+	}
+	p.equality.inputs[ref] = preparedInputSignature{key: key, complete: complete}
+	return key, complete
+}
+
+func (p *PreparedMemberEquality) inputNodeKey(ref *Reference) (preparedInputKey, RelationalExpression, bool) {
+	ref = canonicalReferenceReadOnly(ref)
+	if ref == nil || len(ref.members)+len(ref.finalMembers) != 1 {
+		return preparedInputKey{}, nil, false
+	}
 	final := len(ref.finalMembers) == 1
 	var member RelationalExpression
 	if final {
@@ -106,9 +157,22 @@ func (p *PreparedMemberIndex) inputKey(expression RelationalExpression) (prepare
 		member = ref.members[0]
 	}
 	return preparedInputKey{
-		hash:         p.equality.equality.hash(member),
+		hash:         p.equality.hash(member),
 		arity:        len(member.GetQuantifiers()),
 		canCorrelate: member.CanCorrelate(),
 		final:        final,
-	}, true
+	}, member, true
+}
+
+func (k preparedInputKey) fingerprint() uint64 {
+	hash := (k.hash*31+k.children)*31 + uint64(k.arity)
+	hash *= 31
+	if k.canCorrelate {
+		hash++
+	}
+	hash *= 31
+	if k.final {
+		hash++
+	}
+	return hash
 }

@@ -2,6 +2,7 @@ package expressions
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -158,7 +159,7 @@ func FuzzPreparedMemberIndexMatchesLinear(f *testing.F) {
 				)}, q))
 			}
 		}
-		members := append([]RelationalExpression(nil), pool[:3]...)
+		members := slices.Repeat(pool[:3], 8)
 		hashes := make([]uint64, int(data[0]%4))
 		for i := range hashes {
 			hashes[i] = members[i].HashCodeWithoutChildren()

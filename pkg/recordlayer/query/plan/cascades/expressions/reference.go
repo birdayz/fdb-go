@@ -887,6 +887,7 @@ func PreparedMemberDuplicateWithHashes(
 // discard it: local derivations must not outlive mutations to the graph.
 type PreparedMemberEquality struct {
 	equality memoEquality
+	inputs   map[*Reference]preparedInputSignature
 }
 
 // PublishCorrelations retains completed derivations after successful admission.
