@@ -65,3 +65,20 @@ func errSnapshotOnlySelect() error {
 	return api.NewError(api.ErrCodeUnsupportedOperation,
 		"OPTIONS (ISOLATION LEVEL SNAPSHOT) is only supported on SELECT queries")
 }
+
+// snapshotAdmits is the statement classification of Java's
+// validateIsolationLevelSnapshotOption: a SELECT, or EXPLAIN/DESCRIBE of one.
+// Transaction statements are Go-only and stay admitted.
+func snapshotAdmits(stmt antlrgen.IStatementContext) bool {
+	if stmt.SelectStatement() != nil || stmt.TransactionStatement() != nil {
+		return true
+	}
+	if util := stmt.UtilityStatement(); util != nil {
+		if full := util.FullDescribeStatement(); full != nil {
+			if describe, ok := full.DescribeObjectClause().(*antlrgen.DescribeStatementsContext); ok {
+				return describe.Query() != nil
+			}
+		}
+	}
+	return false
+}

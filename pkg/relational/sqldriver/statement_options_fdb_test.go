@@ -7,6 +7,7 @@ package sqldriver_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"testing"
 
@@ -172,5 +173,55 @@ func TestFDB_StatementOptions_SnapshotRefusedOnDML(t *testing.T) {
 	}
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM Item WHERE item_id = 501").Scan(&n); err != nil || n != 0 {
 		t.Fatalf("DRY_RUN connection committed the INSERT: %d rows, %v", n, err)
+	}
+}
+
+// TestFDB_StatementOptions_SnapshotAdmitsOnlyReads: on a SNAPSHOT connection
+// the target admits SELECT and EXPLAIN/DESCRIBE of a SELECT, and refuses every
+// other statement class with 0A000 (PlanGenerator.validateIsolationLevelSnapshotOption,
+// measured in the WS-E oracle's snapshot_connection_* rows).
+func TestFDB_StatementOptions_SnapshotAdmitsOnlyReads(t *testing.T) {
+	t.Parallel()
+	_, db := setupCascadesTestDB(t)
+	ctx := context.Background()
+	snap := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		ec.SetOptions(api.NewOptionsBuilder().Set(api.OptIsolationLevelSnapshot, true).Build())
+	})
+	for _, q := range []string{
+		"SELECT item_id FROM Item WHERE item_id = 1",
+		"EXPLAIN SELECT item_id FROM Item WHERE item_id = 1",
+		"DESCRIBE SELECT item_id FROM Item WHERE item_id = 1",
+	} {
+		rows, err := snap.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("%s on a SNAPSHOT connection: %v", q, err)
+		}
+		_ = rows.Close()
+	}
+	for _, c := range []struct {
+		sql   string
+		query bool
+	}{
+		{"EXPLAIN INSERT INTO Item VALUES (500, 'x', 1)", true},
+		{"SHOW DATABASES", true},
+		{"SHOW SCHEMA TEMPLATES", true},
+		{"CREATE DATABASE /SNAPSHOT_REFUSED_DB", false},
+		{"DROP DATABASE IF EXISTS /SNAPSHOT_ABSENT_DB", false},
+	} {
+		q := c.sql
+		var err error
+		if c.query {
+			var rows *sql.Rows
+			if rows, err = snap.QueryContext(ctx, q); err == nil {
+				_ = rows.Close()
+			}
+		} else {
+			_, err = snap.ExecContext(ctx, q)
+		}
+		var apiErr *api.Error
+		if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUnsupportedOperation ||
+			apiErr.Message != "OPTIONS (ISOLATION LEVEL SNAPSHOT) is only supported on SELECT queries" {
+			t.Errorf("%s on a SNAPSHOT connection: got %v, want the 0A000 snapshot refusal", q, err)
+		}
 	}
 }

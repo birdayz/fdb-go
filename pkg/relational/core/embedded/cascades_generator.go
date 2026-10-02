@@ -166,6 +166,9 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 // SHOW, DDL, or transaction.
 func (g *cascadesGenerator) planOne(ctx context.Context, stmt antlrgen.IStatementContext) (query.Plan, error) {
 	c := g.c
+	if statementOptionsFor(stmt, c.Options()).snapshot && !snapshotAdmits(stmt) {
+		return nil, errSnapshotOnlySelect()
+	}
 
 	// EXPLAIN <inner> → driver.Rows plan with a single PLAN column.
 	if util := stmt.UtilityStatement(); util != nil {
@@ -918,11 +921,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// QUERY remain accepted-and-ignored hints. Detection walks the whole DML subtree so the
 	// INSERT…SELECT spelling — whose OPTIONS the grammar attaches to the inner SELECT, not
 	// insertStatement.queryOptions — cannot silently bypass DRY RUN and commit.
-	so := statementOptionsFor(dml, g.c.Options())
-	if so.snapshot {
-		return nil, errSnapshotOnlySelect()
-	}
-	dryRun := so.dryRun
+	dryRun := statementOptionsFor(dml, g.c.Options()).dryRun
 
 	var logicalOp logical.LogicalOperator
 	var insStmt antlrgen.IInsertStatementContext
