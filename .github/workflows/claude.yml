@@ -97,17 +97,20 @@ jobs:
       # The action hides Claude's output on this public repo, and with it the reason a
       # run failed: an API refusal (auth, usage limit, model access) logs only as
       # "result is_error:true". Print the terminal result and API error text, never the
-      # transcript; lines are prefixed so model text cannot issue workflow commands.
+      # transcript; token-shaped strings are redacted (masking only covers registered
+      # secrets) and lines prefixed so model text cannot issue workflow commands.
       - name: Report why Claude failed
         if: failure() && steps.claude.outputs.execution_file != ''
         env:
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
         run: |
           python3 - <<'EOF'
-          import json, os
+          import json, os, re
+
+          TOKEN = re.compile(r"sk-ant-[A-Za-z0-9_-]+|gh[pousr]_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+")
 
           def show(label, text):
-              text = str(text)[:2000]
+              text = TOKEN.sub("[REDACTED]", str(text))[:2000]
               print(f"{label}:")
               for line in text.splitlines() or [""]:
                   print(f"  | {line}")
