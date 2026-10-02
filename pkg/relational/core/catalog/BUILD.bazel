@@ -54,6 +54,7 @@ go_test(
         "store_catalog_test.go",
         "system_tables_test.go",
         "template_carry_fdb_test.go",
+        "template_carry_order_test.go",
         "template_catalog_test.go",
         "template_restore_fdb_test.go",
         "template_version_guard_fdb_test.go",

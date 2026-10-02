@@ -3,6 +3,7 @@ package catalog
 import (
 	"bytes"
 	"fmt"
+	"sort"
 	"strings"
 
 	"google.golang.org/protobuf/proto"
@@ -80,7 +81,17 @@ func carryNumbering(stored, built *gen.MetaData) (carried *gen.MetaData, defined
 	}
 	kept := map[string]bool{}
 	defined = map[string]bool{}
-	for i, idx := range out.GetIndexes() {
+	// The list is by name; the builder's last-modified versions keep Java's
+	// registration order, in which new versions are numbered.
+	order := make([]int, len(out.GetIndexes()))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool {
+		return out.Indexes[order[a]].GetLastModifiedVersion() < out.Indexes[order[b]].GetLastModifiedVersion()
+	})
+	for _, i := range order {
+		idx := out.Indexes[i]
 		prior, ok := storedIndexes[idx.GetName()]
 		if !ok {
 			for _, f := range formers {
