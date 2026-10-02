@@ -94,3 +94,35 @@ jobs:
           # or https://code.claude.com/docs/en/cli-reference for available options
           # claude_args: '--allowed-tools Bash(gh pr:*)'
 
+      # The action hides Claude's output on this public repo, and with it the reason a
+      # run failed: an API refusal (auth, usage limit, model access) logs only as
+      # "result is_error:true". Print the terminal result and API error text, never the
+      # transcript; lines are prefixed so model text cannot issue workflow commands.
+      - name: Report why Claude failed
+        if: failure() && steps.claude.outputs.execution_file != ''
+        env:
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+        run: |
+          python3 - <<'EOF'
+          import json, os
+
+          def show(label, text):
+              text = str(text)[:2000]
+              print(f"{label}:")
+              for line in text.splitlines() or [""]:
+                  print(f"  | {line}")
+
+          messages = json.load(open(os.environ["EXECUTION_FILE"]))
+          for m in messages:
+              if m.get("type") == "assistant" and m.get("error"):
+                  parts = (m.get("message") or {}).get("content") or []
+                  text = " ".join(p.get("text", "") for p in parts if isinstance(p, dict))
+                  show(f"API error ({m['error']})", text)
+          results = [m for m in messages if m.get("type") == "result"]
+          if not results:
+              show("No result message", f"{len(messages)} messages recorded")
+          for r in results:
+              show(f"Result (subtype={r.get('subtype')}, is_error={r.get('is_error')})",
+                   r.get("result") or r.get("errors") or "<empty>")
+          EOF
+
