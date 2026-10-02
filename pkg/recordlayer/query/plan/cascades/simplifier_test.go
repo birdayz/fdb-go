@@ -25,6 +25,29 @@ type observedSimplifierRule struct {
 
 func (r *observedSimplifierRule) Matcher() matching.BindingMatcher { return r.matcher }
 
+func (r *observedSimplifierRule) rootOnly() bool {
+	scoped, ok := r.CascadesRule.(interface{ rootOnly() bool })
+	return ok && scoped.rootOnly()
+}
+
+func TestSimplifySkipsRootOnlyBindingsForChildren(t *testing.T) {
+	t.Parallel()
+	leaves := simplificationContractLeaves(t)
+	input := predicates.WithAtomicity(predicates.NewAnd(predicates.NewOr(leaves[0], leaves[1]), leaves[2]), true)
+	rule := newPredicateDNFRule()
+	visits := 0
+	observed := &observedSimplifierRule{CascadesRule: rule, matcher: &observedSimplifierMatcher{
+		RootOperatorMatcher: rule.Matcher().(matching.RootOperatorMatcher), visits: &visits,
+	}}
+	got := mustSimplify(t, input, []CascadesRule{observed})
+	if got != input {
+		t.Fatal("root-only DNF changed an atomic root or its children")
+	}
+	if visits != 1 {
+		t.Fatalf("DNF matcher calls=%d, want one root call and no child bindings", visits)
+	}
+}
+
 func TestSimplifyDispatchesOnlyApplicableRoots(t *testing.T) {
 	t.Parallel()
 	field := simplifierFields(t, simplifierFieldSpec{"A", values.NotNullLong})[0]

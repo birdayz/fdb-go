@@ -18,6 +18,8 @@ func newPredicateDNFRule() *predicateDNFRule {
 
 func (r *predicateDNFRule) Matcher() matching.BindingMatcher { return r.matcher }
 
+func (r *predicateDNFRule) rootOnly() bool { return true }
+
 func (r *predicateDNFRule) OnMatch(call *RuleCall) {
 	if !call.isRoot {
 		return

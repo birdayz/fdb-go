@@ -76,10 +76,17 @@ func simplifyPredicateChildren(pred predicates.QueryPredicate, rules []CascadesR
 	}
 }
 
+// Root-only rules expose their scope before binding to avoid allocating child calls
+// that their OnMatch must decline (Java's NormalFormRule.isRoot guard).
+type rootOnlySimplificationRule interface{ rootOnly() bool }
+
 // applyRulesOnce returns the first replacement; unchanged identity ends the fixpoint.
 func applyRulesOnce(pred predicates.QueryPredicate, rules []CascadesRule, isRoot bool) (predicates.QueryPredicate, bool, error) {
 	rootType := reflect.TypeOf(pred)
 	for _, rule := range rules {
+		if scoped, ok := rule.(rootOnlySimplificationRule); !isRoot && ok && scoped.rootOnly() {
+			continue
+		}
 		matcher := rule.Matcher()
 		if typed, ok := matcher.(matching.RootOperatorMatcher); ok {
 			if root := typed.RootOperator(); root != nil && root != rootType {
