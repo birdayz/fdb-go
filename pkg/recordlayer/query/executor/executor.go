@@ -3978,6 +3978,15 @@ func aggResultName(agg expressions.AggregateSpec) string {
 	return expressions.AggregateResultColumnName(agg)
 }
 
+// enforceSerializable is QueryPlanUtils.enforceSerializable: a
+// data-modification plan refuses SNAPSHOT isolation before opening its child.
+func enforceSerializable(props recordlayer.ExecuteProperties, plan string) error {
+	if props.IsolationLevel != recordlayer.SerializableIsolation {
+		return &recordlayer.RecordCoreArgumentError{Message: "Cannot execute plan at SNAPSHOT isolation level", Plan: plan}
+	}
+	return nil
+}
+
 func executeDelete(
 	ctx context.Context,
 	p *plans.RecordQueryDeletePlan,
@@ -3986,6 +3995,9 @@ func executeDelete(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
+	if err := enforceSerializable(props, "RecordQueryDeletePlan"); err != nil {
+		return nil, err
+	}
 	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props.ClearSkipAndLimit())
 	if err != nil {
 		return nil, err
@@ -4055,6 +4067,9 @@ func executeInsert(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
+	if err := enforceSerializable(props, "RecordQueryInsertPlan"); err != nil {
+		return nil, err
+	}
 	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props.ClearSkipAndLimit())
 	if err != nil {
 		return nil, err
@@ -4329,6 +4344,9 @@ func executeUpdate(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
+	if err := enforceSerializable(props, "RecordQueryUpdatePlan"); err != nil {
+		return nil, err
+	}
 	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props.ClearSkipAndLimit())
 	if err != nil {
 		return nil, err

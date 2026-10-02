@@ -28,6 +28,8 @@ type RecordCoreArgumentError struct {
 	// one: the offending key is often nil, so nil cannot mean "not attached".
 	SubspaceKey    any
 	HasSubspaceKey bool
+	// Plan is the refused plan's class name (LogMessageKeys.PLAN).
+	Plan string
 	// Cause is the exception Java's constructor chains (the key store's
 	// IOException / GeneralSecurityException in KeyStoreSerializationKeyManager).
 	Cause error
@@ -47,6 +49,9 @@ func (e *RecordCoreArgumentError) Error() string {
 	}
 	if e.HasSubspaceKey {
 		fields = append(fields, fmt.Sprintf("subspace_key=%v", e.SubspaceKey))
+	}
+	if e.Plan != "" {
+		fields = append(fields, "plan="+e.Plan)
 	}
 	msg := e.Message
 	if len(fields) > 0 {
