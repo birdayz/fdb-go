@@ -79,10 +79,34 @@ func TestAbsorptionSurvivorsMatchPairwiseScan(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := absorptionSurvivors(tc.clauses); !slices.Equal(got, tc.want) || !slices.Equal(got, referenceAbsorptionSurvivors(tc.clauses)) {
+			if got := absorptionSurvivors(tc.clauses, nil); !slices.Equal(got, tc.want) || !slices.Equal(got, referenceAbsorptionSurvivors(tc.clauses)) {
 				t.Fatalf("survivors=%v, want %v (pairwise %v)", got, tc.want, referenceAbsorptionSurvivors(tc.clauses))
 			}
 		})
+	}
+}
+
+func TestAbsorptionSurvivorsWorkspace(t *testing.T) {
+	t.Parallel()
+	pool := absorptionPool(t)
+	clauses := [][]predicates.QueryPredicate{pool[20:90], {pool[89], pool[20]}}
+	for _, capacity := range []int{0, 1, 2, 16} {
+		workspace := make([]int, capacity)
+		for i := range workspace {
+			workspace[i] = -1
+		}
+		got := absorptionSurvivors(clauses, workspace)
+		if !slices.Equal(got, []int{1}) {
+			t.Fatalf("capacity=%d: survivors=%v, want [1]", capacity, got)
+		}
+		if capacity >= len(clauses) && &got[0] != &workspace[0] {
+			t.Fatalf("capacity=%d: sufficient workspace was not reused", capacity)
+		}
+		// Reusing populated workspace must not retain the previous survivor.
+		got = absorptionSurvivors([][]predicates.QueryPredicate{{pool[0]}, {pool[1]}}, got)
+		if !slices.Equal(got, []int{1}) {
+			t.Fatalf("capacity=%d: reused survivors=%v, want [1]", capacity, got)
+		}
 	}
 }
 
@@ -133,7 +157,7 @@ func FuzzAbsorptionSurvivorsMatchPairwiseScan(f *testing.F) {
 			}
 			clauses = append(clauses, dedupPredicateSlice(clause))
 		}
-		if got, want := absorptionSurvivors(clauses), referenceAbsorptionSurvivors(clauses); !slices.Equal(got, want) {
+		if got, want := absorptionSurvivors(clauses, nil), referenceAbsorptionSurvivors(clauses); !slices.Equal(got, want) {
 			t.Fatalf("survivors=%v, pairwise scan=%v", got, want)
 		}
 	})
@@ -147,6 +171,11 @@ func TestAbsorptionRepeatedClausesAllocationBound(t *testing.T) {
 func TestAbsorptionSmallClausesAllocationBound(t *testing.T) {
 	t.Parallel()
 	runSimplificationAllocationBenchmark(t, "BenchmarkAbsorptionSmallClauses")
+}
+
+func TestAbsorbSingletonTermsAllocationBound(t *testing.T) {
+	t.Parallel()
+	runSimplificationAllocationBenchmark(t, "BenchmarkAbsorbSingletonTerms")
 }
 
 func runSimplificationAllocationBenchmark(t *testing.T, benchmark string) {
@@ -171,7 +200,7 @@ func BenchmarkAbsorptionRepeatedClauses(b *testing.B) {
 	}
 	var survivors []int
 	allocations := testing.AllocsPerRun(5, func() {
-		survivors = absorptionSurvivors(clauses)
+		survivors = absorptionSurvivors(clauses, nil)
 	})
 	if !slices.Equal(survivors, []int{len(clauses) - 1}) {
 		b.Fatalf("survivors=%v, want the last identical clause", survivors)
@@ -183,7 +212,7 @@ func BenchmarkAbsorptionRepeatedClauses(b *testing.B) {
 	}
 	b.ReportAllocs()
 	for b.Loop() {
-		absorptionSurvivors(clauses)
+		absorptionSurvivors(clauses, nil)
 	}
 }
 
@@ -195,7 +224,7 @@ func BenchmarkAbsorptionSmallClauses(b *testing.B) {
 	}
 	var survivors []int
 	allocations := testing.AllocsPerRun(5, func() {
-		survivors = absorptionSurvivors(clauses)
+		survivors = absorptionSurvivors(clauses, nil)
 	})
 	if !slices.Equal(survivors, []int{0, 1, 2, 3, 4, 5, 6, 7, 8}) {
 		b.Fatalf("survivors=%v, want all nine distinct clauses in order", survivors)
@@ -205,7 +234,27 @@ func BenchmarkAbsorptionSmallClauses(b *testing.B) {
 	}
 	b.ReportAllocs()
 	for b.Loop() {
-		absorptionSurvivors(clauses)
+		absorptionSurvivors(clauses, nil)
+	}
+}
+
+func BenchmarkAbsorbSingletonTerms(b *testing.B) {
+	terms := absorptionPool(b)[20:29]
+	for _, mode := range []normalFormMode{normalFormCNF, normalFormDNF} {
+		var kept []predicates.QueryPredicate
+		allocations := testing.AllocsPerRun(5, func() {
+			kept = absorbMinorTerms(terms, mode)
+		})
+		if !slices.Equal(kept, terms) || &kept[0] != &terms[0] {
+			b.Fatalf("mode=%d: unchanged terms were replaced", mode)
+		}
+		if allocations != 0 {
+			b.Fatalf("mode=%d: %.0f allocations for nine singleton terms, want zero", mode, allocations)
+		}
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		absorbMinorTerms(terms, normalFormDNF)
 	}
 }
 

@@ -123,15 +123,15 @@ func applyAbsorption(clauses [][]predicates.QueryPredicate) [][]predicates.Query
 	}
 
 	result := make([][]predicates.QueryPredicate, 0, len(deduped))
-	for _, i := range absorptionSurvivors(deduped) {
+	for _, i := range absorptionSurvivors(deduped, nil) {
 		result = append(result, deduped[i])
 	}
 	return result
 }
 
 // absorptionSurvivors returns the minimal clauses, retaining the last equal set
-// as Java does. The caller supplies deduplicated clauses.
-func absorptionSurvivors(deduped [][]predicates.QueryPredicate) []int {
+// as Java does. The caller supplies deduplicated clauses and optional workspace.
+func absorptionSurvivors(deduped [][]predicates.QueryPredicate, workspace []int) []int {
 	// Union legs normalize every fixed-factor subset, so this runs over
 	// thousands of clauses; subset tests are bitset operations on equality
 	// classes rather than pairwise PredicateEquals scans.
@@ -175,7 +175,10 @@ func absorptionSurvivors(deduped [][]predicates.QueryPredicate) []int {
 		}
 		return true
 	}
-	result := make([]int, 0, len(deduped))
+	result := workspace[:0]
+	if cap(result) < len(deduped) {
+		result = make([]int, 0, len(deduped))
+	}
 	for i, ci := range deduped {
 		absorbed := false
 		for j, cj := range deduped {

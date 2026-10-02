@@ -548,7 +548,13 @@ func (r *OrAbsorbAndRule) OnMatch(call *RuleCall) {
 // Java rebuilds surviving minor sets only when absorption removes a major term.
 // Rebuilding intentionally drops minor atomicity, permitting later normalization.
 func absorbMinorTerms(terms []predicates.QueryPredicate, mode normalFormMode) []predicates.QueryPredicate {
-	clauses := make([][]predicates.QueryPredicate, len(terms))
+	var clauseBuffer [16][]predicates.QueryPredicate
+	clauses := clauseBuffer[:]
+	if len(terms) > len(clauseBuffer) {
+		clauses = make([][]predicates.QueryPredicate, len(terms))
+	} else {
+		clauses = clauses[:len(terms)]
+	}
 	for i, term := range terms {
 		if mode.isMinor(term) {
 			clauses[i] = dedupPredicateSlice(term.Children())
@@ -556,7 +562,8 @@ func absorbMinorTerms(terms []predicates.QueryPredicate, mode normalFormMode) []
 			clauses[i] = terms[i : i+1]
 		}
 	}
-	survivors := absorptionSurvivors(clauses)
+	var survivorBuffer [16]int
+	survivors := absorptionSurvivors(clauses, survivorBuffer[:0])
 	if len(survivors) == len(terms) {
 		return terms
 	}
