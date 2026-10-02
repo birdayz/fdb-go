@@ -53,17 +53,21 @@ func simplifyPredicateChildren(pred predicates.QueryPredicate, rules []CascadesR
 	if len(children) == 0 {
 		return pred, nil
 	}
-	simpler := make([]predicates.QueryPredicate, len(children))
-	rewritten := false
+	var simpler []predicates.QueryPredicate
 	for i, child := range children {
-		var err error
-		simpler[i], err = simplifyWithReExploration(child, rules, false, childResults)
+		next, err := simplifyWithReExploration(child, rules, false, childResults)
 		if err != nil {
 			return nil, err
 		}
-		rewritten = rewritten || simpler[i] != child
+		if next != child && simpler == nil {
+			simpler = make([]predicates.QueryPredicate, len(children))
+			copy(simpler, children)
+		}
+		if simpler != nil {
+			simpler[i] = next
+		}
 	}
-	if !rewritten {
+	if simpler == nil {
 		return pred, nil
 	}
 	// Child replacement preserves atomicity; a rule may deliberately rebuild it away.

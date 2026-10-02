@@ -141,15 +141,15 @@ func FuzzAbsorptionSurvivorsMatchPairwiseScan(f *testing.F) {
 
 func TestAbsorptionRepeatedClausesAllocationBound(t *testing.T) {
 	t.Parallel()
-	runAbsorptionAllocationBenchmark(t, "BenchmarkAbsorptionRepeatedClauses")
+	runSimplificationAllocationBenchmark(t, "BenchmarkAbsorptionRepeatedClauses")
 }
 
 func TestAbsorptionSmallClausesAllocationBound(t *testing.T) {
 	t.Parallel()
-	runAbsorptionAllocationBenchmark(t, "BenchmarkAbsorptionSmallClauses")
+	runSimplificationAllocationBenchmark(t, "BenchmarkAbsorptionSmallClauses")
 }
 
-func runAbsorptionAllocationBenchmark(t *testing.T, benchmark string) {
+func runSimplificationAllocationBenchmark(t *testing.T, benchmark string) {
 	t.Helper()
 	executable, err := os.Executable()
 	if err != nil {

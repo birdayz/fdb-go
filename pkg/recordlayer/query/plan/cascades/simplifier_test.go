@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"slices"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
@@ -68,6 +69,83 @@ func TestSimplifyDispatchesOnlyApplicableRoots(t *testing.T) {
 	}
 	if visits[0] != 0 || visits[1] != 1 || visits[2] == 0 {
 		t.Fatalf("matcher calls=%v, want AND=0, NOT=1, interface-root>0", visits)
+	}
+}
+
+func TestSimplifyUnchangedChildrenAllocationBound(t *testing.T) {
+	t.Parallel()
+	runSimplificationAllocationBenchmark(t, "BenchmarkSimplifyUnchangedChildren")
+}
+
+func BenchmarkSimplifyUnchangedChildren(b *testing.B) {
+	leaves := simplificationContractLeaves(b)
+	input := predicates.NewAnd(leaves[:]...)
+	rules := queryPredicateSimplificationRules()
+	var got predicates.QueryPredicate
+	var err error
+	allocations := testing.AllocsPerRun(5, func() {
+		got, err = simplifyPredicateChildren(input, rules, nil)
+	})
+	if err != nil || got != input {
+		b.Fatalf("unchanged children did not retain root identity: %v", err)
+	}
+	if allocations != 0 {
+		b.Fatalf("%.0f allocations for unchanged children, want zero", allocations)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := simplifyPredicateChildren(input, rules, nil); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestSimplifyChildReplacementsPreserveSiblings(t *testing.T) {
+	t.Parallel()
+	leaves := simplificationContractLeaves(t)
+	for _, tc := range []struct {
+		name  string
+		arity int
+		build func([]predicates.QueryPredicate) predicates.QueryPredicate
+	}{
+		{"and", 3, func(children []predicates.QueryPredicate) predicates.QueryPredicate {
+			return predicates.NewAnd(children...)
+		}},
+		{"or", 3, func(children []predicates.QueryPredicate) predicates.QueryPredicate {
+			return predicates.NewOr(children...)
+		}},
+		{"not", 1, func(children []predicates.QueryPredicate) predicates.QueryPredicate {
+			return predicates.NewNot(children[0])
+		}},
+	} {
+		for mask := range 1 << tc.arity {
+			children := slices.Clone(leaves[:tc.arity])
+			for i := range children {
+				if mask&(1<<i) != 0 {
+					children[i] = predicates.NewAnd(children[i], predicates.NewConstantPredicate(predicates.TriTrue))
+				}
+			}
+			input := predicates.WithAtomicity(tc.build(children), true)
+			originalChildren := slices.Clone(input.Children())
+			got, err := simplifyPredicateChildren(input, []CascadesRule{NewAndConstantSimplifyRule()}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (got == input) != (mask == 0) {
+				t.Fatalf("%s mask=%b: root identity changed without a child rewrite, or rewrite was lost", tc.name, mask)
+			}
+			assertSimplificationTree(t, got, predicates.WithAtomicity(tc.build(leaves[:tc.arity]), true))
+			if !slices.Equal(input.Children(), originalChildren) {
+				t.Fatalf("%s mask=%b: changed the original children", tc.name, mask)
+			}
+			if mask != 0 {
+				// The replacement must own its child slice, even after a late rewrite.
+				got.Children()[0] = leaves[7]
+				if !slices.Equal(input.Children(), originalChildren) {
+					t.Fatalf("%s mask=%b: replacement aliases the original child slice", tc.name, mask)
+				}
+			}
+		}
 	}
 }
 
