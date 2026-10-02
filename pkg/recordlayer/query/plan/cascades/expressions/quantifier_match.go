@@ -33,7 +33,7 @@ func matchQuantifierBindings(
 		if asSet {
 			i = -1
 			for candidate := range left {
-				if !leftDone[candidate] && quantifierReady(leftDependencies[candidate], leftDone) {
+				if !leftDone[candidate] && (len(leftDependencies) == 0 || quantifierReady(leftDependencies[candidate], leftDone)) {
 					i = candidate
 					break
 				}
@@ -43,7 +43,7 @@ func matchQuantifierBindings(
 			}
 		}
 		for j := range right {
-			if rightDone[j] || (!asSet && j != i) || !quantifierReady(rightDependencies[j], rightDone) ||
+			if rightDone[j] || (!asSet && j != i) || (len(rightDependencies) != 0 && !quantifierReady(rightDependencies[j], rightDone)) ||
 				!quantifierAttributesEqual(left[i], right[j]) || pairable != nil && !pairable(left[i], right[j]) {
 				continue
 			}
@@ -78,10 +78,10 @@ func matchQuantifierBindings(
 }
 
 func quantifierDependencies(quantifiers []Quantifier, canCorrelate bool, correlations func(*Reference) map[values.CorrelationIdentifier]struct{}) [][]int {
-	dependencies := make([][]int, len(quantifiers))
 	if !canCorrelate {
-		return dependencies
+		return nil
 	}
+	var dependencies [][]int
 	owned := make(map[values.CorrelationIdentifier]int, len(quantifiers))
 	for i, quantifier := range quantifiers {
 		owned[quantifier.GetAlias()] = i
@@ -89,6 +89,9 @@ func quantifierDependencies(quantifiers []Quantifier, canCorrelate bool, correla
 	for i, quantifier := range quantifiers {
 		for alias := range correlations(quantifier.GetRangesOver()) {
 			if j, local := owned[alias]; local {
+				if dependencies == nil {
+					dependencies = make([][]int, len(quantifiers))
+				}
 				dependencies[i] = append(dependencies[i], j)
 			}
 		}

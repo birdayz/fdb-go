@@ -72,6 +72,37 @@ func TestReferenceMembersWithHash(t *testing.T) {
 	}
 }
 
+func TestQuantifierDependenciesUseNilForNoLocalEdges(t *testing.T) {
+	t.Parallel()
+	scan := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType())))
+	first := ForEachQuantifier(scan)
+	independent := ForEachQuantifier(scan)
+	dependent := ForEachQuantifier(InitialOf(mustExpression(NewSelectExpression(mustQOV(first.GetAlias()), nil, nil))))
+	external := ForEachQuantifier(InitialOf(mustExpression(NewSelectExpression(mustQOV(values.UniqueCorrelationIdentifier()), nil, nil))))
+	correlations := func(ref *Reference) map[values.CorrelationIdentifier]struct{} { return ref.GetCorrelatedTo() }
+	for _, tc := range []struct {
+		name         string
+		quantifiers  []Quantifier
+		canCorrelate bool
+	}{
+		{"empty", nil, true},
+		{"uncorrelated operator", []Quantifier{first, dependent}, false},
+		{"independent children", []Quantifier{first, independent}, true},
+		{"external correlation", []Quantifier{first, external}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := quantifierDependencies(tc.quantifiers, tc.canCorrelate, correlations); got != nil {
+				t.Fatalf("empty local dependency graph=%v, want nil", got)
+			}
+		})
+	}
+	dependencies := quantifierDependencies([]Quantifier{first, dependent}, true, correlations)
+	if len(dependencies) != 2 || len(dependencies[0]) != 0 || !slices.Equal(dependencies[1], []int{0}) {
+		t.Fatalf("local dependency graph=%v, want [[], [0]]", dependencies)
+	}
+}
+
 func TestPreparedMemberDuplicate_ReusesGraphDerivations(t *testing.T) {
 	t.Parallel()
 	child := &memoObservedExpression{RelationalExpression: mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType()))}
