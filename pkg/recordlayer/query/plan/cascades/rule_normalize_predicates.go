@@ -136,19 +136,23 @@ func absorptionSurvivors(deduped [][]predicates.QueryPredicate) []int {
 	// thousands of clauses; subset tests are bitset operations on equality
 	// classes rather than pairwise PredicateEquals scans.
 	var classes predicateClasses
-	ids := make([][]int, len(deduped))
-	for i, clause := range deduped {
-		ids[i] = make([]int, len(clause))
-		for k, predicate := range clause {
-			ids[i][k] = classes.id(predicate)
+	atomCount := 0
+	for _, clause := range deduped {
+		atomCount += len(clause)
+	}
+	ids := make([]int, 0, atomCount)
+	for _, clause := range deduped {
+		for _, predicate := range clause {
+			ids = append(ids, classes.id(predicate))
 		}
 	}
 	words := (len(classes.representatives) + 63) / 64
 	sets := make([]uint64, len(deduped)*words)
-	for i, clause := range ids {
-		for _, id := range clause {
+	for i, clause := range deduped {
+		for _, id := range ids[:len(clause)] {
 			sets[i*words+id/64] |= 1 << (id % 64)
 		}
+		ids = ids[len(clause):]
 	}
 	containsAll := func(i, j int) bool {
 		for w := range words {

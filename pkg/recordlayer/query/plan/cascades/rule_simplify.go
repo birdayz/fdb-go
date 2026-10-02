@@ -553,7 +553,7 @@ func absorbMinorTerms(terms []predicates.QueryPredicate, mode normalFormMode) []
 		if mode.isMinor(term) {
 			clauses[i] = dedupPredicateSlice(term.Children())
 		} else {
-			clauses[i] = []predicates.QueryPredicate{term}
+			clauses[i] = terms[i : i+1]
 		}
 	}
 	survivors := absorptionSurvivors(clauses)

@@ -1,6 +1,9 @@
 package cascades
 
 import (
+	"bytes"
+	"os"
+	"os/exec"
 	"slices"
 	"testing"
 
@@ -103,6 +106,44 @@ func FuzzAbsorptionSurvivorsMatchPairwiseScan(f *testing.F) {
 			t.Fatalf("survivors=%v, pairwise scan=%v", got, want)
 		}
 	})
+}
+
+func TestAbsorptionRepeatedClausesAllocationBound(t *testing.T) {
+	t.Parallel()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Allocation accounting is process-wide, so isolate it from parallel tests.
+	output, err := exec.CommandContext(t.Context(), executable,
+		"-test.run=^$", "-test.bench=^BenchmarkAbsorptionRepeatedClauses$", "-test.benchtime=1x").CombinedOutput()
+	if err != nil || !bytes.Contains(output, []byte("BenchmarkAbsorptionRepeatedClauses")) {
+		t.Fatalf("allocation benchmark: %v\n%s", err, output)
+	}
+}
+
+func BenchmarkAbsorptionRepeatedClauses(b *testing.B) {
+	leaf := simplificationContractLeaves(b)[0]
+	clauses := make([][]predicates.QueryPredicate, 1024)
+	for i := range clauses {
+		clauses[i] = []predicates.QueryPredicate{leaf}
+	}
+	var survivors []int
+	allocations := testing.AllocsPerRun(5, func() {
+		survivors = absorptionSurvivors(clauses)
+	})
+	if !slices.Equal(survivors, []int{len(clauses) - 1}) {
+		b.Fatalf("survivors=%v, want the last identical clause", survivors)
+	}
+	// Repeated clauses share one equality class; workspace allocation must not
+	// allocate a separate object for each clause.
+	if allocations >= float64(len(clauses)/8) {
+		b.Fatalf("%.0f allocations for %d identical clauses: per-clause workspace allocation returned", allocations, len(clauses))
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		absorptionSurvivors(clauses)
+	}
 }
 
 func BenchmarkPredicateUnionNineFactorDNF(b *testing.B) {
