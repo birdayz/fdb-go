@@ -133,13 +133,21 @@ func (m *indexingMerger) handleFailure(control *IndexDeferredMaintenanceControl,
 // mergeRequestedIndexes runs after the committed batch's queue drains, even
 // when that batch exhausted its input. Failed transactions publish no requests.
 func (oi *OnlineIndexer) mergeRequestedIndexes(ctx context.Context) error {
-	for _, index := range oi.mergeRequiredIndexes {
-		if err := oi.mergeIndex(ctx, index); err != nil {
-			return err
+	indexes := oi.mergeRequiredIndexes
+	oi.mergeRequiredIndexes = nil
+	return oi.mergeEach(ctx, indexes)
+}
+
+// mergeEach merges every index even when one fails, as Java's whenAll does,
+// and returns the first error in index order.
+func (oi *OnlineIndexer) mergeEach(ctx context.Context, indexes []*Index) error {
+	var first error
+	for _, index := range indexes {
+		if err := oi.mergeIndex(ctx, index); err != nil && first == nil {
+			first = err
 		}
 	}
-	oi.mergeRequiredIndexes = nil
-	return nil
+	return first
 }
 
 func (oi *OnlineIndexer) mergeIndex(ctx context.Context, index *Index) error {
@@ -169,12 +177,7 @@ func (oi *OnlineIndexer) MergeIndexes(ctx context.Context) error {
 		oi.sessionHeartbeat = oi.newHeartbeat("explicit index merge", false, oi.db.Env())
 		defer func() { oi.cleanupPendingQueueHeartbeat(oi.sessionHeartbeat); oi.sessionHeartbeat = nil }()
 	}
-	for _, index := range oi.targetIndexes {
-		if err := oi.mergeIndex(ctx, index); err != nil {
-			return err
-		}
-	}
-	return nil
+	return oi.mergeEach(ctx, oi.targetIndexes)
 }
 
 // addMergeRequests combines requests from successful build and drain commits.

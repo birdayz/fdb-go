@@ -5,7 +5,11 @@ import (
 	"errors"
 	"testing"
 
+	"google.golang.org/protobuf/proto"
+
+	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -378,6 +382,65 @@ var _ = Describe("Deferred maintenance transaction contract", func() {
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
+// Java merges every requested index under AsyncUtil.whenAll
+// (IndexingBase.mergeIndexes, :1085-1093): a failing target does not stop the
+// others. Go reports the first target's error, in target order.
+var _ = Describe("MergeIndexes over several targets", func() {
+	It("attempts every target when an earlier one fails", func() {
+		ctx := context.Background()
+		root := specSubspace()
+		builder := baseBuilder()
+		failing := NewVectorIndex("Order$merge_guardiann", KeyWithValue(Concat(Field("quantity"), Field("price")), 1), 1)
+		failing.Options[IndexOptionVectorEngine] = "GUARDIANN"
+		failing.Options[IndexOptionGuardiannPrimaryClusterMin] = "3"
+		failing.Options[IndexOptionGuardiannPrimaryClusterMax] = "12"
+		failing.Options[IndexOptionGuardiannPrimaryClusterHardMax] = "40"
+		failing.Options[IndexOptionGuardiannCollapseMinDuplicates] = "6"
+		merged := NewIndex("Order$merge_ok", Field("quantity"))
+		builder.AddIndex("Order", failing)
+		builder.AddIndex("Order", merged)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		// Thirteen vectors over a maximum of twelve queue a split of the one cluster.
+		_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root).Create()
+			if err != nil {
+				return nil, err
+			}
+			for i := int64(1); i <= 13; i++ {
+				if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i)), Quantity: proto.Int32(1)}); err != nil {
+					return nil, err
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		// Make that cluster's metadata unreadable, so the split fails.
+		_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root).Open()
+			if err != nil {
+				return nil, err
+			}
+			g := &guardiann{ss: store.indexSubspace(md.GetIndex(failing.Name)).Sub(int64(1)), codec: &guardiannVectorCodec{config: guardiannConfig{numDimensions: 1}}}
+			tasks, err := g.fetchSomeTasks(rc.Transaction(), 10)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(tasks).NotTo(BeEmpty(), "no split was queued")
+			for _, t := range tasks {
+				rc.Transaction().Set(g.clusterMetadataKey(t.target()), tuple.Tuple{int64(0), int64(0), tuple.Tuple{int64(0), 0.0, 0.0, 0.0}, int64(0)}.Pack())
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		oi, err := NewOnlineIndexerBuilder().SetDatabase(sharedDB).SetMetaData(md).
+			SetTargetIndexes([]*Index{md.GetIndex(failing.Name), md.GetIndex(merged.Name)}).SetSubspace(root).Build()
+		Expect(err).NotTo(HaveOccurred())
+		err = oi.MergeIndexes(ctx)
+		Expect(err).To(MatchError(ContainSubstring("has 4 elements, want 5")))
+		Expect(oi.mergers).To(HaveKey(merged.Name), "the second target was never merged")
+		Expect(oi.mergers[merged.Name].successes).To(Equal(1))
 	})
 })
 
