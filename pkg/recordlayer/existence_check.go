@@ -100,6 +100,8 @@ func (e *RecordAlreadyExistsError) Error() string {
 	return e.Message
 }
 
+func (*RecordAlreadyExistsError) JavaRecordCoreException() {}
+
 // RecordDoesNotExistError is returned when attempting to update a record that does not exist.
 // Includes structured context matching Java's RecordDoesNotExistException.
 //
@@ -114,6 +116,8 @@ type RecordDoesNotExistError struct {
 func (e *RecordDoesNotExistError) Error() string {
 	return e.Message
 }
+
+func (*RecordDoesNotExistError) JavaRecordCoreException() {}
 
 // RecordTypeChangedError is returned when attempting to update a record but its type has changed.
 // Includes structured context matching Java's RecordTypeChangedException.
@@ -131,3 +135,5 @@ type RecordTypeChangedError struct {
 func (e *RecordTypeChangedError) Error() string {
 	return e.Message
 }
+
+func (*RecordTypeChangedError) JavaRecordCoreException() {}

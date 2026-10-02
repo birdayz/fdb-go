@@ -977,6 +977,8 @@ func (e *SlidingWindowCorruptionError) Error() string {
 	return fmt.Sprintf("sliding window index %q: %s", e.IndexName, e.Message)
 }
 
+func (*SlidingWindowCorruptionError) JavaRecordCoreException() {}
+
 // SlidingWindowDeleteWhereError reports a deleteRecordsWhere the sliding window
 // cannot serve. Matches Java's Query.InvalidExpressionException
 // ("deleteRecordsWhere not supported by index X") raised when canDeleteWhere

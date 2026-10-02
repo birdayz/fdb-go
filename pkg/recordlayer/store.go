@@ -89,6 +89,8 @@ func (e *StoreIsLockedForRecordUpdatesError) Error() string {
 	return fmt.Sprintf("Record Store is locked for record updates: %s (timestamp: %d)", e.Reason, e.Timestamp)
 }
 
+func (*StoreIsLockedForRecordUpdatesError) JavaRecordCoreException() {}
+
 // StoreIsFullyLockedError is returned when attempting to open a store with
 // FULL_STORE lock state without providing the correct bypass reason.
 // Matches Java's com.apple.foundationdb.record.StoreIsFullyLockedException.
@@ -100,6 +102,8 @@ type StoreIsFullyLockedError struct {
 func (e *StoreIsFullyLockedError) Error() string {
 	return fmt.Sprintf("Record Store is fully locked and cannot be opened: %s (timestamp: %d)", e.Reason, e.Timestamp)
 }
+
+func (*StoreIsFullyLockedError) JavaRecordCoreException() {}
 
 // UnknownStoreLockStateError is returned when a store has an unrecognized lock state
 // at FormatVersion >= FULL_STORE_LOCK (14). This prevents opening stores with
@@ -120,6 +124,8 @@ func (e *UnknownStoreLockStateError) Error() string {
 	return fmt.Sprintf("Store has unknown lock state: %d", e.LockStateValue)
 }
 
+func (*UnknownStoreLockStateError) JavaRecordCoreException() {}
+
 // formatVersionCacheableState is the minimum format version required for
 // store state cacheability. Matches Java's FormatVersion.CACHEABLE_STATE.
 const formatVersionCacheableState = 7
@@ -135,6 +141,8 @@ type StaleMetaDataVersionError struct {
 func (e *StaleMetaDataVersionError) Error() string {
 	return fmt.Sprintf("local meta-data has stale version: local %d, stored %d", e.LocalVersion, e.StoredVersion)
 }
+
+func (*StaleMetaDataVersionError) JavaRecordCoreException() {}
 
 // FDBRecordStore provides record storage operations within a transaction context.
 // This is the main struct for storing and retrieving records.

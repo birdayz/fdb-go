@@ -716,6 +716,8 @@ func (e *IndexKeySizeError) Error() string {
 		e.IndexName, e.PrimaryKey, e.KeySize, e.Limit)
 }
 
+func (*IndexKeySizeError) JavaRecordCoreException() {}
+
 // IndexValueSizeError indicates an index entry value exceeds the FDB value size limit.
 // Matches Java's FDBExceptions.FDBStoreValueSizeException.
 type IndexValueSizeError struct {
@@ -729,6 +731,8 @@ func (e *IndexValueSizeError) Error() string {
 	return fmt.Sprintf("index entry value too large for index %q (pk=%v): %d bytes exceeds limit %d",
 		e.IndexName, e.PrimaryKey, e.ValueSize, e.Limit)
 }
+
+func (*IndexValueSizeError) JavaRecordCoreException() {}
 
 // keyContainsNonUniqueNull is Java's IndexEntry.keyContainsNonUniqueNull
 // (IndexEntry.java:183-191): whether a column of key holds NullStandin.NULL,
@@ -882,3 +886,5 @@ func (e *RecordIndexUniquenessViolationError) Error() string {
 	return fmt.Sprintf("uniqueness violation for index %q: value %v already exists for record %v (new record: %v)",
 		e.IndexName, e.IndexKey, e.ExistingKey, e.PrimaryKey)
 }
+
+func (*RecordIndexUniquenessViolationError) JavaRecordCoreException() {}

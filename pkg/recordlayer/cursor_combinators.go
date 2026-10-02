@@ -235,6 +235,8 @@ func (e *UnknownOrElseCursorStateError) Error() string {
 	return "unknown state for OrElseCursor"
 }
 
+func (*UnknownOrElseCursorStateError) JavaRecordCoreException() {}
+
 type orElseCursor[T any] struct {
 	primary            RecordCursor[T]
 	alternativeFactory CursorFactory[T]

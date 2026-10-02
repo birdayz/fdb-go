@@ -31,6 +31,8 @@ func (e *ScanLimitReachedError) Error() string {
 	}
 }
 
+func (*ScanLimitReachedError) JavaRecordCoreException() {}
+
 // noNextOrFail returns a ScanLimitReachedError when FailOnScanLimitReached
 // is set on the execute properties, otherwise it returns the out-of-band
 // no-next result (paginate). Reason must be ScanLimitReached or

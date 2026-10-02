@@ -113,6 +113,8 @@ func (e *AggregateFunctionNotSupportedError) Error() string {
 	return fmt.Sprintf("Aggregate function requires appropriate index: function=%s, operand=%s", e.Function, e.Operand)
 }
 
+func (*AggregateFunctionNotSupportedError) JavaRecordCoreException() {}
+
 // indexesForRecordTypes returns the indexes that apply to EXACTLY the given record
 // types, no more, no less. Port of Java's IndexFunctionHelper.indexesForRecordTypes
 // (IndexFunctionHelper.java:178-189):

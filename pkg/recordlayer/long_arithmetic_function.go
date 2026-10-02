@@ -186,6 +186,8 @@ func (e *KeyExpressionInvalidResultError) Error() string {
 		e.Function, e.Index, e.ExpectedType, e.ActualType)
 }
 
+func (*KeyExpressionInvalidResultError) JavaRecordCoreException() {}
+
 // javaTupleValueClassName is the ACTUAL_TYPE Java logs for a value that is not a
 // Number: result.getClass().getName() of the value after
 // TupleTypeUtil.toTupleAppropriateValue (Key.java:553-561), so both fields of the

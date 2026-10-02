@@ -47,6 +47,8 @@ type UnexpectedReadableError struct {
 	IndexStates []IndexState
 }
 
+func (*IndexingValidationError) JavaRecordCoreException() {}
+
 func (e *UnexpectedReadableError) Error() string { return e.Message }
 
 // shouldUsePendingWriteQueue is a fresh-build decision only. Continuing builds
@@ -61,6 +63,8 @@ func (oi *OnlineIndexer) shouldUsePendingWriteQueue(store *FDBRecordStore, index
 	}
 	return maintainer.IsPendingWriteQueueAllowed() && countVersionColumns(index.RootExpression) == 0 && store.GetFormatVersion() >= formatVersionPendingWrites, nil
 }
+
+func (*UnexpectedReadableError) JavaRecordCoreException() {}
 
 // checkOpenHeartbeats is the session's open-time preflight. It runs before the
 // store's metadata reconciliation, which can rebuild or disable indexes and so

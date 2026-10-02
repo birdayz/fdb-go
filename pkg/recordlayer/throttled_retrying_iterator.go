@@ -18,6 +18,8 @@ type iterationQuota struct {
 	hasMore          bool
 }
 
+func (*RunnerClosedError) JavaRecordCoreException() {}
+
 // throttledRetryingIterator ports Java's ThrottledRetryingIterator. It is the
 // sole retry owner: OpenContext must not be replaced with the retrying DB.Run.
 // Callbacks execute serially; Close may run concurrently with iterateAll.

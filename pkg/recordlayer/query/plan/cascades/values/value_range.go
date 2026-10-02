@@ -57,6 +57,8 @@ func (r *RangeValue) Bounds(evalCtx any) (begin, end, step int64, err error) {
 	return begin, end, step, CheckRangeBounds(begin, end, step)
 }
 
+func (*RangeBoundsError) JavaRecordCoreException() {}
+
 // CheckRangeBounds is Java's RangeValue.Cursor.checkValidRange.
 func CheckRangeBounds(position, end, step int64) error {
 	switch {

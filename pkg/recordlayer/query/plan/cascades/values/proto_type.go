@@ -93,6 +93,8 @@ func (e *ProtoTypeError) Error() string {
 	return fmt.Sprintf("cannot synthesise a protobuf descriptor for %s: %s", e.TypeName, e.Reason)
 }
 
+func (*ProtoTypeError) JavaRecordCoreException() {}
+
 // DeclaredNameClashError reports two record shapes DECLARED under one name in
 // one repository — `STRUCT foo (1 AS p)` beside `STRUCT foo (2 AS p, 3 AS q)`.
 // Each has a message form, but two DescriptorProtos of one name make a file

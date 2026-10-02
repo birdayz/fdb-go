@@ -1434,6 +1434,8 @@ func (e *RecordTypeKeyTypeError) Error() string {
 	return fmt.Sprintf("only primitive types are allowed as record type key, got %T (%v)", e.Key, e.Key)
 }
 
+func (*RecordTypeKeyTypeError) JavaRecordCoreException() {}
+
 // canonicalRecordTypeKey validates and canonicalizes a record type key, the
 // port of Java's setRecordTypeKey guard followed by
 // TupleTypeUtil.toTupleEquivalentValue.

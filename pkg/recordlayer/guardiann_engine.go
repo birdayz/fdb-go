@@ -39,9 +39,13 @@ type NegativeTaskCountError struct {
 	Count  int64
 }
 
+func (*VectorIndexClusterTooLargeError) JavaRecordCoreException() {}
+
 func (e *NegativeTaskCountError) Error() string {
 	return fmt.Sprintf("vector index deferred-task count is negative: %d for %v", e.Count, e.Prefix)
 }
+
+func (*NegativeTaskCountError) JavaRecordCoreException() {}
 
 // vectorTaskCounts is VectorIndexTaskCounts: per-partition counts of queued
 // GuardiANN tasks, maintained with atomic adds.

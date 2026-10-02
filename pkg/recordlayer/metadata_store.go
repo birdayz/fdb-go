@@ -56,6 +56,8 @@ func (e *MetaDataVersionMustIncreaseError) Error() string {
 	return fmt.Sprintf("meta-data version must increase (old: %d, new: %d)", e.OldVersion, e.NewVersion)
 }
 
+func (*MetaDataVersionMustIncreaseError) JavaRecordCoreException() {}
+
 // SaveRecordMetaData saves a MetaData proto to FDB, with the full
 // validation Java runs in the same transaction — this is NOT a raw
 // persist. In order (matching Java's FDBMetaDataStore.saveAndSetCurrent):

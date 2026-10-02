@@ -1164,6 +1164,17 @@ func translateFDBError(err error) error {
 	if errors.As(err, &fdbValErr) {
 		return translateFDBCode(fdbValErr.Code, err)
 	}
+	// ExceptionUtil's default: a RecordCoreException no arm above claims is
+	// ErrorCode.UNKNOWN, and so is a non-RecordCore Java exception
+	// (Query.InvalidExpressionException is an IllegalStateException).
+	var recordCore recordlayer.RecordCoreException
+	if errors.As(err, &recordCore) {
+		return api.WrapError(api.ErrCodeUnknown, recordCore.Error(), err)
+	}
+	var invalidExpression *recordlayer.QueryInvalidExpressionError
+	if errors.As(err, &invalidExpression) {
+		return api.WrapError(api.ErrCodeUnknown, invalidExpression.Error(), err)
+	}
 	// No string fallback: every in-tree producer wraps FDB errors with %w,
 	// so the typed errors.As lanes above are exhaustive (RFC-180 F-4). A
 	// wrap that severs the chain is a bug at the wrap site — fix it there,

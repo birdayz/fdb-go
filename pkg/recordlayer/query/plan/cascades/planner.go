@@ -681,6 +681,8 @@ func newTaskCapError(limit, observed int) *PlannerBudgetExceededError {
 	}
 }
 
+func (*PlannerBudgetExceededError) JavaRecordCoreException() {}
+
 // newQueueCapError reports the MaxTaskQueueSize budget.
 func newQueueCapError(limit, observed int) *PlannerBudgetExceededError {
 	return &PlannerBudgetExceededError{

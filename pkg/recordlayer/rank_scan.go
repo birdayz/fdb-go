@@ -63,6 +63,8 @@ func (e *RecordCoreArgumentError) Error() string {
 	return msg
 }
 
+func (*RecordCoreArgumentError) JavaRecordCoreException() {}
+
 // NewRankScanBounds accepts only BY_VALUE and BY_RANK, even without rank values.
 func NewRankScanBounds(scanType IndexScanType, rankRange TupleRange, includeRankAsValue bool) (RankScanBounds, error) {
 	bounds := RankScanBounds{ScanType: scanType, RankRange: rankRange, IncludeRankAsValue: includeRankAsValue}

@@ -814,6 +814,8 @@ func (e *UnsupportedValueTypeError) Error() string {
 	return "Unsupported value type class " + e.JavaClass
 }
 
+func (*UnsupportedValueTypeError) JavaRecordCoreException() {}
+
 // valueToProto serializes a Go value to a Value proto.
 // Matches Java's LiteralKeyExpression.toProtoValue().
 func valueToProto(v any) (*gen.Value, error) {

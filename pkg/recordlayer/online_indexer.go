@@ -336,6 +336,8 @@ func (e *TimeLimitExceededError) Error() string {
 	return fmt.Sprintf("online indexer time limit exceeded: limit=%v, elapsed=%v", e.TimeLimit, e.Elapsed)
 }
 
+func (*TimeLimitExceededError) JavaRecordCoreException() {}
+
 // OnlineIndexer builds indexes on existing data across multiple transactions.
 // Each transaction processes a chunk of records, tracks progress via IndexingRangeSet,
 // and the build resumes from where it left off if interrupted.
