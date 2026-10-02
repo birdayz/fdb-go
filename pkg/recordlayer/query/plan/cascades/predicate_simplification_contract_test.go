@@ -6,9 +6,14 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
+
+func predicateUnionDNFTerms(factors []predicates.QueryPredicate) ([]predicates.QueryPredicate, error) {
+	return newPredicateUnionSimplifier(factors...).terms(factors)
+}
 
 func simplificationContractLeaves(t testing.TB) [8]predicates.QueryPredicate {
 	t.Helper()
@@ -221,6 +226,103 @@ func TestPredicateUnionNineFactorSemanticPopulation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPredicateUnionSimplifierReusesChildRewrites(t *testing.T) {
+	t.Parallel()
+	leaves := simplificationContractLeaves(t)
+	shared := predicates.NewOr(leaves[0], predicates.NewConstantPredicate(predicates.TriFalse))
+	simplifier := newPredicateUnionSimplifier(shared)
+	visits := 0
+	for i, rule := range simplifier.rules {
+		if _, ok := rule.(*OrConstantSimplifyRule); ok {
+			simplifier.rules[i] = &observedSimplifierRule{CascadesRule: rule, matcher: &observedSimplifierMatcher{
+				RootOperatorMatcher: rule.Matcher().(matching.RootOperatorMatcher), visits: &visits,
+			}}
+		}
+	}
+	for _, sibling := range leaves[2:4] {
+		input := predicates.WithAtomicity(predicates.NewAnd(shared, sibling), true)
+		got, err := simplifier.simplify(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSimplificationTree(t, got, predicates.WithAtomicity(predicates.NewAnd(leaves[0], sibling), true))
+	}
+	if visits != 1 {
+		t.Fatalf("shared child simplified %d times across two roots, want once", visits)
+	}
+}
+
+func TestPredicateUnionSimplifierSeparatesRootScope(t *testing.T) {
+	t.Parallel()
+	leaves := simplificationContractLeaves(t)
+	child := predicates.NewAnd(predicates.NewOr(leaves[0], leaves[1]), leaves[2])
+	input := predicates.WithAtomicity(predicates.NewAnd(child, leaves[3]), true)
+	simplifier := newPredicateUnionSimplifier(input)
+	got, err := simplifier.simplify(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSimplificationTree(t, got, input)
+	got, err = simplifier.simplify(child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSimplificationTree(t, got, predicates.NewOr(
+		predicates.NewAnd(leaves[0], leaves[2]), predicates.NewAnd(leaves[1], leaves[2])))
+}
+
+func TestPredicateUnionSimplifierDoesNotRetainGeneratedTerms(t *testing.T) {
+	t.Parallel()
+	leaves := simplificationContractLeaves(t)
+	factors := []predicates.QueryPredicate{
+		predicates.NewOr(leaves[0], leaves[1]), predicates.NewOr(leaves[2], leaves[3]),
+	}
+	simplifier := newPredicateUnionSimplifier(factors...)
+	before := len(simplifier.childResults)
+	if before != 6 {
+		t.Fatalf("registered %d input subtrees, want two ORs and four leaves", before)
+	}
+	terms, err := simplifier.terms(factors)
+	if err != nil || len(terms) != 4 {
+		t.Fatalf("DNF terms=%v err=%v, want four terms", terms, err)
+	}
+	if after := len(simplifier.childResults); after != before {
+		t.Fatalf("retained %d child results, want the %d registered input subtrees only", after, before)
+	}
+}
+
+func FuzzPredicateUnionSimplifierMatchesIndependentRewrites(f *testing.F) {
+	for _, seed := range normalFormSeedScripts {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, script []byte) {
+		t.Parallel()
+		if len(script) == 0 {
+			return
+		}
+		builder := &predicateBuilder{script: script}
+		predicate := builder.build(0)
+		simplifier := newPredicateUnionSimplifier(predicate)
+		// Reuse subtrees both as children and as roots, in both directions.
+		roots := append([]predicates.QueryPredicate{predicate}, predicate.Children()...)
+		roots = append(roots, predicate)
+		for _, root := range roots {
+			if normalFormSize(root, false, normalFormDNF) > normalFormFuzzSizeBound {
+				continue
+			}
+			want, err := Simplify(root, simplifier.rules)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := simplifier.simplify(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertSimplificationTree(t, got, want)
+		}
+	})
 }
 
 func TestPredicateDNFOnlyNormalizesRoot(t *testing.T) {

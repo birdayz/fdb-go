@@ -10,16 +10,22 @@ import (
 // Simplify visits children before applying rules, as Java's Simplification does.
 // Rules that create new child expressions must request re-exploration.
 func Simplify(pred predicates.QueryPredicate, rules []CascadesRule) (predicates.QueryPredicate, error) {
-	return simplifyWithReExploration(pred, rules, true)
+	return simplifyWithReExploration(pred, rules, true, nil)
 }
 
-func simplifyWithReExploration(pred predicates.QueryPredicate, rules []CascadesRule, isRoot bool) (predicates.QueryPredicate, error) {
+func simplifyWithReExploration(pred predicates.QueryPredicate, rules []CascadesRule, isRoot bool, childResults map[predicates.QueryPredicate]predicates.QueryPredicate) (predicates.QueryPredicate, error) {
 	if pred == nil || len(rules) == 0 {
 		return pred, nil
 	}
+	original := pred
+	if !isRoot && childResults != nil {
+		if result := childResults[pred]; result != nil {
+			return result, nil
+		}
+	}
 	for {
 		var err error
-		pred, err = simplifyPredicateChildren(pred, rules)
+		pred, err = simplifyPredicateChildren(pred, rules, childResults)
 		if err != nil {
 			return nil, err
 		}
@@ -29,6 +35,9 @@ func simplifyWithReExploration(pred predicates.QueryPredicate, rules []CascadesR
 				return nil, err
 			}
 			if next == pred {
+				if _, registered := childResults[original]; !isRoot && registered {
+					childResults[original] = pred
+				}
 				return pred, nil
 			}
 			pred = next
@@ -39,7 +48,7 @@ func simplifyWithReExploration(pred predicates.QueryPredicate, rules []CascadesR
 	}
 }
 
-func simplifyPredicateChildren(pred predicates.QueryPredicate, rules []CascadesRule) (predicates.QueryPredicate, error) {
+func simplifyPredicateChildren(pred predicates.QueryPredicate, rules []CascadesRule, childResults map[predicates.QueryPredicate]predicates.QueryPredicate) (predicates.QueryPredicate, error) {
 	children := pred.Children()
 	if len(children) == 0 {
 		return pred, nil
@@ -48,7 +57,7 @@ func simplifyPredicateChildren(pred predicates.QueryPredicate, rules []CascadesR
 	rewritten := false
 	for i, child := range children {
 		var err error
-		simpler[i], err = simplifyWithReExploration(child, rules, false)
+		simpler[i], err = simplifyWithReExploration(child, rules, false, childResults)
 		if err != nil {
 			return nil, err
 		}

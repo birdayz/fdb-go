@@ -88,6 +88,7 @@ func explorePredicateUnion(call *ExpressionRuleCall, sel *expressions.SelectExpr
 		call.Fail(err)
 		return
 	}
+	simplifier := newPredicateUnionSimplifier(preds...)
 	for fixedMask := 0; fixedMask < combinations; fixedMask++ {
 		if call.CancellationErr() != nil || call.Err() != nil {
 			return
@@ -114,7 +115,7 @@ func explorePredicateUnion(call *ExpressionRuleCall, sel *expressions.SelectExpr
 		if !eligible {
 			continue
 		}
-		terms, err := predicateUnionDNFTerms(expanded)
+		terms, err := simplifier.terms(expanded)
 		if err != nil {
 			call.Fail(err)
 			return
@@ -360,12 +361,43 @@ func yieldPredicateUnion(call *ExpressionRuleCall, sel *expressions.SelectExpres
 	}
 }
 
-// predicateUnionDNFTerms applies Java's normalization and absorption before
-// materializing legs; raw cross-products retain redundant supersets.
-func predicateUnionDNFTerms(factors []predicates.QueryPredicate) ([]predicates.QueryPredicate, error) {
-	conjunction := buildAnd(factors)
-	rules := append([]CascadesRule{newPredicateDNFRule()}, queryPredicateSimplificationRules()...)
-	dnf, err := Simplify(conjunction, rules)
+// The context-free DNF rules share rewrites of original input subtrees only.
+// Root rewrites and generated terms are not reusable across fixed-factor subsets.
+type predicateUnionSimplifier struct {
+	rules        []CascadesRule
+	childResults map[predicates.QueryPredicate]predicates.QueryPredicate
+}
+
+func newPredicateUnionSimplifier(factors ...predicates.QueryPredicate) *predicateUnionSimplifier {
+	s := &predicateUnionSimplifier{
+		rules:        append([]CascadesRule{newPredicateDNFRule()}, queryPredicateSimplificationRules()...),
+		childResults: make(map[predicates.QueryPredicate]predicates.QueryPredicate),
+	}
+	var register func(predicates.QueryPredicate)
+	register = func(predicate predicates.QueryPredicate) {
+		if predicate == nil {
+			return
+		}
+		if _, known := s.childResults[predicate]; known {
+			return
+		}
+		s.childResults[predicate] = nil
+		for _, child := range predicate.Children() {
+			register(child)
+		}
+	}
+	for _, factor := range factors {
+		register(factor)
+	}
+	return s
+}
+
+func (s *predicateUnionSimplifier) simplify(predicate predicates.QueryPredicate) (predicates.QueryPredicate, error) {
+	return simplifyWithReExploration(predicate, s.rules, true, s.childResults)
+}
+
+func (s *predicateUnionSimplifier) terms(factors []predicates.QueryPredicate) ([]predicates.QueryPredicate, error) {
+	dnf, err := s.simplify(buildAnd(factors))
 	if err != nil {
 		return nil, err
 	}
