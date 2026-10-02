@@ -87,7 +87,7 @@ func (e *LogicalUniqueExpression) ChildrenAsSet() bool { return false }
 // GetCorrelatedToWithoutChildren returns the empty set (Java
 // behaviour: Unique has no correlations of its own).
 func (e *LogicalUniqueExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return map[values.CorrelationIdentifier]struct{}{}
+	return nil
 }
 
 // EqualsWithoutChildren is true iff other is a LogicalUnique in the same

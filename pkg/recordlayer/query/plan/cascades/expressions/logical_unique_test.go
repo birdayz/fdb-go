@@ -75,8 +75,8 @@ func TestLogicalUnique_GetCorrelatedToWithoutChildren(t *testing.T) {
 	t.Parallel()
 	scan := mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType()))
 	u := mustExpression(NewLogicalUniqueExpression(ForEachQuantifier(InitialOf(scan))))
-	if got := u.GetCorrelatedToWithoutChildren(); len(got) != 0 {
-		t.Fatalf("GetCorrelatedToWithoutChildren = %v, want empty", got)
+	if got := u.GetCorrelatedToWithoutChildren(); got != nil {
+		t.Fatalf("GetCorrelatedToWithoutChildren = %v, want nil without allocating an empty read-only set", got)
 	}
 }
 
