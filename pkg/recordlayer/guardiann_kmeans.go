@@ -87,6 +87,16 @@ func dotSequential(a, b []float64) float64 {
 // kMeansFit is KMeans.fit with lambda 0 (GuardiANN's call): k-means++
 // initialisation, Lloyd iterations, and the best of maxRestarts+1 runs.
 func kMeansFit(random *splittableRandom, codec *guardiannVectorCodec, vectors []gVector, k, maxIterations, maxRestarts int) (kMeansResult, error) {
+	switch {
+	case k < 1:
+		return kMeansResult{}, &IllegalArgumentError{Message: "k must be >= 1"}
+	case len(vectors) < k:
+		return kMeansResult{}, &IllegalArgumentError{Message: "vectors.size() must be >= k"}
+	case maxIterations < 1:
+		return kMeansResult{}, &IllegalArgumentError{Message: "maxIterations must be >= 1"}
+	case maxRestarts < 0:
+		return kMeansResult{}, &IllegalArgumentError{Message: "maxRestarts must be >= 0"}
+	}
 	a := kMeansAdapter{codec: codec}
 	n := len(vectors)
 	dims := len(vectors[0].data)

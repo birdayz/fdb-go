@@ -126,3 +126,41 @@ func TestKMeansQuantizedErrors(t *testing.T) {
 		t.Fatalf("partition lost estimator error: %v", err)
 	}
 }
+
+// KMeans.fit's preconditions (KMeans.java:135-139), checked before any vector is
+// read: an empty merge core, a candidate with fewer vectors than k and the
+// degenerate knobs are each Java's IllegalArgumentException.
+func TestKMeansFitPreconditionsAreJavas(t *testing.T) {
+	t.Parallel()
+	codec := &guardiannVectorCodec{config: guardiannConfig{metric: VectorMetricEuclidean}}
+	one := []gVector{{data: []float64{1, 2}, typ: 2}}
+	for _, c := range []struct {
+		name                    string
+		vectors                 []gVector
+		k, iterations, restarts int
+		want                    string
+	}{
+		{"k zero", one, 0, 8, 3, "k must be >= 1"},
+		{"empty merge core", nil, 1, 8, 3, "vectors.size() must be >= k"},
+		{"fewer vectors than k", one, 2, 8, 3, "vectors.size() must be >= k"},
+		{"no iterations", one, 1, 0, 3, "maxIterations must be >= 1"},
+		{"negative restarts", one, 1, 8, -1, "maxRestarts must be >= 0"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			var err error
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Fatalf("panicked: %v", r)
+					}
+				}()
+				_, err = kMeansFit(&splittableRandom{seed: 11, gamma: goldenGamma}, codec, c.vectors, c.k, c.iterations, c.restarts)
+			}()
+			var iae *IllegalArgumentError
+			if !errors.As(err, &iae) || iae.Message != c.want {
+				t.Fatalf("err = %v, want IllegalArgumentError %q", err, c.want)
+			}
+		})
+	}
+}
