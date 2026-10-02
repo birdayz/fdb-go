@@ -80,6 +80,14 @@ func TestProducerOwnedCorrelationsAdmitsExactlyItsTwoProvenSources(t *testing.T)
 	// A nil producer is a real state at construction time. The set must still
 	// carry the carrier — otherwise the bridge declines its own output row —
 	// and must not invent anything else.
+	unset := producerOwnedCorrelations(&values.ObjectValue{})
+	if len(unset) != 1 {
+		t.Fatalf("unset source produced %v, want only the current carrier", unset)
+	}
+	if _, present := unset[values.CurrentCorrelation()]; !present {
+		t.Fatal("removing the unset alias lost the current carrier")
+	}
+
 	bare := producerOwnedCorrelations(nil)
 	if _, isOwned := bare[values.CurrentCorrelation()]; !isOwned {
 		t.Error("a nil producer dropped the current carrier from its own owned set")

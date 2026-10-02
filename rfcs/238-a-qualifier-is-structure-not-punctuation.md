@@ -95,8 +95,8 @@ migrated by this PR:
 | Former `classifyDerivedUnnestArray` in derived_unnest.go | LAST dot | **RETIRED by RFC-256** — carried collection binding |
 | Former derived_unnest.go `projectionOutputNames` | LAST dot | **RETIRED by RFC-256** — carried SQL names |
 | `splitQualifier` (EXISTS sort keys) | LAST dot | yes, nonzero corpus floor |
-| `rowSlotForLegColumn` (`ordinal_join.go:1168`) | **FIRST** dot | **no — retired, revival alarm at 0** |
-| `isDottedQualifiedName` (`ordinal_join.go:1238`) | any dot, `{`/`[` prefix guard | yes, and it picks a JOIN ARM |
+| `rowSlotForLegColumn` (`ordinal_join.go:1157`) | **FIRST** dot | **no — retired, revival alarm at 0** |
+| `isDottedQualifiedName` (`ordinal_join.go:1242`) | any dot, `{`/`[` prefix guard | yes, and it picks a JOIN ARM |
 
 **`rowSlotForLegColumn` IS RETIRED, and that matters more than its being a parser.**
 `rowSlotForLegColumn`'s only driver was `adaptLegPositional`'s
@@ -760,7 +760,7 @@ why (8) has two halves. The stack, captured by mutating the probe's Go COLL arm
 and reading what actually reddened:
 
 ```
-values.NewRecordType                      type.go:768   panics
+values.NewRecordType                      type.go:769   panics
 executor.PositionalTypeForRecordLayout    query_result.go:277
 embedded.buildMatchCandidates             cascades_generator.go (historical panic frame)
 embedded.GetMatchCandidates               metadataPlanContext.GetMatchCandidates
@@ -885,7 +885,7 @@ bare basename names two files here, not one. THE UPDATE TARGET IS NOT JUST A NAM
 that constrains how it may be translated. `executeUpdate` builds the target
 quantified-object value as
 `NewQuantifiedObjectValue(NamedCorrelationIdentifier(p.GetTargetRecordType()),
-...)` (`executor.go:4290-4293`), and the SET right-hand sides are correlated to
+...)` (`executor.go:4356-4359`), and the SET right-hand sides are correlated to
 it. Re-spelling `upd.Target` alone would leave `SET name = name` bound to a
 correlation nobody publishes.
 
@@ -1040,7 +1040,8 @@ place.
 loud rather than discovered.** FIVE gates compare the SCAN's record types against
 a CANDIDATE's and therefore decline today for the same reason the primary
 candidate does: `rule_aggregate_data_access.go:86` and `:859`,
-`rule_ordered_index_scan.go:74`, `rule_implement_nested_loop_join.go:4708`, and
+`rule_ordered_index_scan.go:74`, `ImplementNestedLoopJoinRule.tryExistsFlatMap` in
+`rule_implement_nested_loop_join.go`, and
 `rule_streaming_agg_from_index.go:100`, which is live in
 `BatchAExpressionRules`. Landing this turns aggregate matching, ordered-index
 matching, FK-probe matching and streaming aggregation ON for those tables in one
@@ -1076,11 +1077,11 @@ change.
 
 **THE CONTINUATION SALT DOES MOVE, and saying it does not was wrong.**
 `PrimaryScanRule.OnMatch` builds the physical plan from the LOGICAL leaf's
-names (`rule_primary_scan.go:46`), and `executor.go:318` feeds that plan to
+names (`rule_primary_scan.go:46`), and `executor.go:320` feeds that plan to
 `primaryScanRangeFingerprintSalt` — so for an escaped table the salt input goes
 from `MY$TABLE` to `MY__1TABLE`. That is harmless, but only for a reason with an
 expiry condition, which is why it has to be written down rather than waved
-through: the salt is computed ONLY when `len(comps) > 0` (`executor.go:317`),
+through: the salt is computed ONLY when `len(comps) > 0` (`executor.go:319`),
 and an escaped table has no pushed-down comparisons today, so no continuation
 can exist through that path to be invalidated. The fix creates the pushdown and
 the salt in the same stroke. Anything that changes that ordering — a partial

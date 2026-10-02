@@ -1712,3 +1712,27 @@ func TestAggregateOutputColumns_DupNameConflictingTypes(t *testing.T) {
 		t.Errorf("unknown-then-typed dup-name key typed %v, want Unknown", fields[0].FieldType)
 	}
 }
+
+// The translated graph is also consumed by index DDL and aggregate/vector
+// candidate expansion. Those consumers require the shape-preserving filter;
+// union exploration must adapt it without minting a second memo population.
+func TestTranslateWherePreservesFilterForGraphConsumers(t *testing.T) {
+	t.Parallel()
+	scan := logical.NewScan("Order", "O")
+	pred := predicates.NewComparisonPredicate(exactTestNamedField(t, "O", "price", values.NullableInt), predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: &values.ConstantValue{Value: int32(10)}})
+	filter := logical.NewFilterWithPredicate(scan, pred, "")
+	ref, _ := TranslateToCascadesWithSubqueries(filter, demoMetaData(t))
+	if ref == nil {
+		t.Fatal("typed WHERE did not translate")
+	}
+	sel, ok := ref.Get().(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("WHERE starts as %T, want the filter consumed by index DDL and candidate expansion", ref.Get())
+	}
+	if len(sel.GetPredicates()) != 1 || len(sel.GetQuantifiers()) != 1 {
+		t.Fatalf("lost WHERE shape: %v", sel)
+	}
+	if _, ok := sel.GetResultValue().(values.QuantifiedObjectValue); !ok {
+		t.Fatalf("WHERE must preserve its input row, got %T", sel.GetResultValue())
+	}
+}

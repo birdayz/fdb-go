@@ -268,6 +268,43 @@ func TestNameModelCollectionIsRejectedByTheGate(t *testing.T) {
 	}
 }
 
+func TestBoundSeedCollectionNullableOwner(t *testing.T) {
+	t.Parallel()
+	element := &values.RecordType{Fields: []values.Field{{Name: "SUB", FieldType: values.NotNullLong, Ordinal: 0}}}
+	array := &values.ArrayType{ElementType: element}
+	ownerType := &values.RecordType{Nullable: true, Fields: []values.Field{{Name: "ARR", FieldType: array, Ordinal: 0}}}
+	owner := exactTestQOV(t, "A", ownerType)
+	u := &logical.LogicalUnnest{CorrelatedCollection: exactTestField(t, owner, 0)}
+	for _, mismatch := range []bool{false, true} {
+		t.Run(strconv.FormatBool(mismatch), func(t *testing.T) {
+			t.Parallel()
+			elementType := element
+			if mismatch {
+				elementType = &values.RecordType{Fields: []values.Field{{Name: "SUB", FieldType: values.NullableLong, Ordinal: 0}}}
+			}
+			root := exactTestQOV(t, "BOX", &values.RecordType{Fields: []values.Field{
+				{Name: "PAD", FieldType: values.NotNullLong, Ordinal: 0},
+				{Name: "ARR", FieldType: &values.ArrayType{Nullable: true, ElementType: elementType}, Ordinal: 1},
+			}})
+			got := resolveBoundSeedCollection(root, u, 1, false)
+			if mismatch {
+				if got != nil {
+					t.Fatal("accepted nested element nullability mismatch")
+				}
+				return
+			}
+			field, ok := values.AsFieldValue(got)
+			if !ok || !got.Type().Equals(&values.ArrayType{Nullable: true, ElementType: element}) {
+				t.Fatalf("nullable owner collection = %v, want nullable array with unchanged element", got)
+			}
+			ordinals := field.Path().Ordinals()
+			if len(ordinals) != 1 || ordinals[0] != 1 {
+				t.Fatalf("collection path = %v, want [1]", ordinals)
+			}
+		})
+	}
+}
+
 // TestUnnestBakedRootCollectionFusesAMultiSegmentPath covers the MULTI-SEGMENT
 // arm (`FROM t, t.rec.arr AS x`) at its own entry point. The fixture supplies a
 // real exact nested ARRAY: using the catalog's scalar Order.FLOWER.TYPE here

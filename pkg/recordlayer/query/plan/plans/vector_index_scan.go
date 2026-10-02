@@ -27,7 +27,9 @@ import (
 // HNSW subspace; a fetch step loads the base records.
 type RecordQueryVectorIndexPlan struct {
 	PlanExprBase
-	indexName string
+	indexName              string
+	commonPrimaryKeyValues []values.Value
+	distinctRecords        bool
 	// prefixComparisons are the partition-key equality ranges that select the
 	// HNSW partition (one per partition column, left-to-right).
 	prefixComparisons []*predicates.ComparisonRange
@@ -354,3 +356,17 @@ func (p *RecordQueryVectorIndexPlan) WithQuantifiers(qs []expressions.Quantifier
 
 // GetRecordQueryPlan returns the plan itself.
 func (p *RecordQueryVectorIndexPlan) GetRecordQueryPlan() RecordQueryPlan { return p }
+
+// WithRecordProperties carries the match candidate's primary-key and fan-out
+// facts, as Java RecordQueryIndexPlan does for a vector scan.
+func (p *RecordQueryVectorIndexPlan) WithRecordProperties(pk []values.Value, distinct bool) *RecordQueryVectorIndexPlan {
+	cp := *p
+	cp.commonPrimaryKeyValues = append([]values.Value(nil), pk...)
+	cp.distinctRecords = distinct
+	return &cp
+}
+
+func (p *RecordQueryVectorIndexPlan) GetCommonPrimaryKeyValues() []values.Value {
+	return p.commonPrimaryKeyValues
+}
+func (p *RecordQueryVectorIndexPlan) ProducesDistinctRecords() bool { return p.distinctRecords }

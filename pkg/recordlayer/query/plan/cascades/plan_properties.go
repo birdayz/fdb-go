@@ -10,23 +10,31 @@ import (
 // PlanPropertiesMap stores computed property values for each physical-plan
 // wrapper expression in a Reference's final members.
 type PlanPropertiesMap struct {
-	props map[expressions.RelationalExpression]properties.PropertyMap
-	order []expressions.RelationalExpression // insertion order
+	props        map[expressions.RelationalExpression]properties.PropertyMap
+	order        []expressions.RelationalExpression // insertion order
+	dependencies map[expressions.RelationalExpression][]planPropertyDependency
+	revision     uint64
 }
 
 // NewPlanPropertiesMap creates a new empty properties map.
 func NewPlanPropertiesMap() *PlanPropertiesMap {
 	return &PlanPropertiesMap{
-		props: make(map[expressions.RelationalExpression]properties.PropertyMap),
+		props:        make(map[expressions.RelationalExpression]properties.PropertyMap),
+		dependencies: make(map[expressions.RelationalExpression][]planPropertyDependency),
 	}
 }
 
 // Add computes and stores properties for the given physical wrapper.
 func (m *PlanPropertiesMap) Add(w physicalPlanExpression) {
+	if dependencies, computed := m.dependencies[w]; computed && planPropertyDependenciesUnchanged(dependencies) {
+		return
+	}
 	if _, exists := m.props[w]; !exists {
 		m.order = append(m.order, w)
 	}
 	m.props[w] = computeWrapperProperties(w)
+	m.dependencies[w] = capturePlanPropertyDependencies(w)
+	m.revision++
 }
 
 // Set stores an ALREADY-COMPUTED property map for an expression, preserving
@@ -40,9 +48,43 @@ func (m *PlanPropertiesMap) Set(expr expressions.RelationalExpression, props pro
 		m.order = append(m.order, expr)
 	}
 	m.props[expr] = props
+	delete(m.dependencies, expr)
+	m.revision++
 }
 
-// GetProperties returns the computed properties for a wrapper expression.
+// RetainMembers preserves the cached properties of surviving finals in member order.
+func (m *PlanPropertiesMap) RetainMembers(members []expressions.RelationalExpression) {
+	n, unchanged := 0, true
+	for _, member := range members {
+		if _, present := m.props[member]; present {
+			if n >= len(m.order) || m.order[n] != member {
+				unchanged = false
+			}
+			n++
+		}
+	}
+	if unchanged && n == len(m.order) {
+		return
+	}
+	retained := make(map[expressions.RelationalExpression]properties.PropertyMap, len(members))
+	order := make([]expressions.RelationalExpression, 0, len(members))
+	for _, member := range members {
+		if props, ok := m.props[member]; ok {
+			retained[member] = props
+			order = append(order, member)
+		}
+	}
+	for member := range m.dependencies {
+		if _, present := retained[member]; !present {
+			delete(m.dependencies, member)
+		}
+	}
+	m.props = retained
+	m.order = order
+	m.revision++
+}
+
+// GetProperties returns the read-only computed properties for a wrapper expression.
 func (m *PlanPropertiesMap) GetProperties(expr expressions.RelationalExpression) properties.PropertyMap {
 	return m.props[expr]
 }
@@ -52,7 +94,7 @@ func (m *PlanPropertiesMap) Expressions() []expressions.RelationalExpression {
 	return m.order
 }
 
-// All returns the full underlying map. Callers that need deterministic
+// All returns the read-only underlying map. Callers that need deterministic
 // iteration should use Expressions() and GetProperties() instead.
 func (m *PlanPropertiesMap) All() map[expressions.RelationalExpression]properties.PropertyMap {
 	return m.props
@@ -73,6 +115,8 @@ func computeWrapperProperties(w physicalPlanExpression) properties.PropertyMap {
 
 func computeDistinctRecords(w physicalPlanExpression, plan plans.RecordQueryPlan) bool {
 	switch plan.(type) {
+	case *plans.RecordQueryVectorIndexPlan:
+		return plan.(*plans.RecordQueryVectorIndexPlan).ProducesDistinctRecords()
 	case *plans.RecordQueryScanPlan:
 		return true
 	case *plans.RecordQueryIndexPlan:
@@ -294,6 +338,11 @@ func storedRecordAllChildren(children []plans.RecordQueryPlan) bool {
 
 func computePrimaryKey(plan plans.RecordQueryPlan) any {
 	switch p := plan.(type) {
+	case *plans.RecordQueryVectorIndexPlan:
+		if pk := p.GetCommonPrimaryKeyValues(); pk != nil {
+			return pk
+		}
+		return nil
 	case *plans.RecordQueryScanPlan:
 		if pk := p.GetPrimaryKeyValues(); pk != nil {
 			return pk
@@ -493,12 +542,14 @@ func computeJoinRichOrdering(w physicalPlanExpression) (*properties.RichOrdering
 	}
 	outerOrdering, err := pullChildOrderingThroughResult(
 		outerOrdering, outerExpr,
-		flatMapOrderingResultForChild(flatMap, outerAlias, true), outerAlias)
+		flatMapOrderingResultForChild(flatMap, outerAlias, true), outerAlias,
+	)
 	if err != nil {
 		return properties.EmptyOrdering(), true
 	}
 	innerOrdering, err = pullChildOrderingThroughResult(
-		innerOrdering, innerExpr, result, innerAlias)
+		innerOrdering, innerExpr, result, innerAlias,
+	)
 	if err != nil {
 		return properties.EmptyOrdering(), true
 	}
@@ -631,12 +682,16 @@ func computeRefPlanProperties(ref *expressions.Reference) {
 	if len(members) == 0 {
 		members = ref.AllMembers()
 	}
-	pm := NewPlanPropertiesMap()
+	pm := GetRefPlanPropertiesMap(ref)
+	if pm == nil {
+		pm = NewPlanPropertiesMap()
+	}
 	for _, m := range members {
 		if ph, ok := m.(physicalPlanExpression); ok {
 			pm.Add(ph)
 		}
 	}
+	pm.RetainMembers(members)
 	ref.SetPlanProperties(pm)
 }
 

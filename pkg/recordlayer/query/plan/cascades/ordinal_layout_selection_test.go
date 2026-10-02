@@ -10,6 +10,296 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+type inputlessOrdinalExpression struct{ *plans.RecordQueryLimitPlan }
+
+func (e *inputlessOrdinalExpression) GetQuantifiers() []expressions.Quantifier { return nil }
+
+func TestOptimizeInputsSchedulingRetainsValidation(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name string
+		kind int
+	}{
+		{"logical_leaf", 0},
+		{"physical_leaf", 1},
+		{"physical_parent", 2},
+		{"malformed_leaf", 3},
+		{"malformed_sibling", 4},
+		{"physical_sibling", 5},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			scan := mustOrderedScanPlan(t, []string{"T"}, false)
+			limit, err := plans.NewRecordQueryLimitPlan(scan, 1, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			malformed := &inputlessOrdinalExpression{limit}
+			var expr expressions.RelationalExpression = scan
+			switch test.kind {
+			case 0:
+				expr = mustOrderedScanFull(t, []string{"T"})
+			case 2:
+				expr = limit
+			case 3:
+				expr = malformed
+			}
+			ref := expressions.FinalOf(expr)
+			if test.kind == 4 {
+				ref.InsertFinal(malformed)
+			} else if test.kind == 5 {
+				ref.InsertFinal(limit)
+			}
+			p := NewPlanner(nil, nil)
+			p.constraintMap = NewConstraintMap()
+			p.push(&OptimizeInputsTask{Phase: PhasePlanning, Ref: ref, Expr: expr})
+			want := 0
+			if test.kind >= 2 {
+				want = 1
+			}
+			if got := len(p.stack); got != want {
+				t.Fatalf("queued %d OptimizeInputs tasks, want %d", got, want)
+			}
+			if want == 0 {
+				return
+			}
+			p.pop().Run(t.Context(), p)
+			if test.kind == 3 || test.kind == 4 {
+				if p.capErr == nil {
+					t.Fatal("malformed zero-quantifier ordinal requirements were not rejected")
+				}
+			} else {
+				if p.capErr != nil {
+					t.Fatal(p.capErr)
+				}
+				prunes := 0
+				for _, task := range p.stack {
+					if _, ok := task.(*OptimizeGroupTask); ok {
+						prunes++
+					}
+				}
+				wantPrunes := 1
+				if test.kind == 5 {
+					wantPrunes = 0
+				}
+				if prunes != wantPrunes {
+					t.Fatalf("scheduled %d child optimizations, want %d", prunes, wantPrunes)
+				}
+				child := limit.GetQuantifiers()[0].GetRangesOver()
+				if requirements, ok := Get(p.constraintMap, child, OrdinalLayoutConstraintKey); !ok || len(requirements) != 1 {
+					t.Fatalf("child requirements = %v, want the physical parent's retained layout", requirements)
+				}
+			}
+		})
+	}
+}
+
+func TestOptimizeInputsCoalescesAdjacentLeafPrepasses(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"adjacent", "intervening_task", "different_group", "forwarded_group", "dead_parent", "dead_leaf", "both_dead", "malformed_leaf", "valid", "cancelled", "other_phase", "second_leaf_survives"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			parent, child, _, _ := ordinalLayoutSelectionFixture(t)
+			leaf := child.Winner()
+			ref := expressions.FinalOf(parent)
+			ref.InsertFinal(leaf)
+			p := NewPlanner(nil, EmptyPlanContext())
+			p.constraintMap = NewConstraintMap()
+			phase := PhasePlanning
+			if mode == "other_phase" {
+				phase = PhaseRewriting
+			}
+			p.push(&OptimizeInputsTask{Phase: phase, Ref: ref, Expr: parent})
+			leafRef := ref
+			if mode == "different_group" || mode == "forwarded_group" {
+				leafRef = expressions.FinalOf(parent)
+				leafRef.InsertFinal(leaf)
+				if mode == "forwarded_group" {
+					ref.Absorb(leafRef)
+				}
+			}
+			if mode == "intervening_task" {
+				p.push(&InitiatePlannerPhaseTask{Phase: PhasePlanning, RootRef: ref})
+			}
+			if mode == "malformed_leaf" {
+				leaf = &inputlessOrdinalExpression{parent}
+				ref.InsertFinal(leaf)
+			}
+			p.push(&OptimizeInputsTask{Phase: PhasePlanning, Ref: leafRef, Expr: leaf})
+			if mode == "second_leaf_survives" {
+				second := mustPushFetchConstruct(plans.NewRecordQueryScanPlan([]string{"SECOND"}, parent.GetResultType(), false))
+				ref.InsertFinal(second)
+				p.push(&OptimizeInputsTask{Phase: PhasePlanning, Ref: ref, Expr: second})
+				ref.PruneToSet(map[expressions.RelationalExpression]struct{}{second: {}})
+			}
+			want := 1
+			if mode == "different_group" || mode == "malformed_leaf" || mode == "other_phase" {
+				want = 2
+			} else if mode == "intervening_task" {
+				want = 3
+			}
+			if len(p.stack) != want {
+				t.Fatalf("queued %d tasks, want %d", len(p.stack), want)
+			}
+			if want != 1 {
+				return
+			}
+			// A surviving leaf must still trigger the group prepass if the
+			// adjacent parent is removed before their shared task runs.
+			if mode == "dead_parent" {
+				ref.PruneToSet(map[expressions.RelationalExpression]struct{}{leaf: {}})
+			} else if mode == "dead_leaf" {
+				ref.PruneToSet(map[expressions.RelationalExpression]struct{}{parent: {}})
+			} else if mode == "both_dead" {
+				ref.PruneToSet(nil)
+			}
+			if mode != "valid" {
+				ref.InsertFinal(&inputlessOrdinalExpression{parent})
+			}
+			ctx := t.Context()
+			if mode == "cancelled" {
+				cancelled, cancel := context.WithCancel(ctx)
+				cancel()
+				ctx = cancelled
+			}
+			p.pop().Run(ctx, p)
+			wantError := mode != "both_dead" && mode != "valid" && mode != "cancelled"
+			if (p.capErr != nil) != wantError {
+				t.Fatalf("shared input prepass error=%v, want error=%t", p.capErr, wantError)
+			}
+			if mode == "valid" {
+				if requirements, ok := Get(p.constraintMap, child, OrdinalLayoutConstraintKey); !ok || len(requirements) != 1 {
+					t.Fatalf("shared prepass lost the parent's ordinal requirement: %v", requirements)
+				}
+				prunes := 0
+				for _, task := range p.stack {
+					if optimize, ok := task.(*OptimizeGroupTask); ok && optimize.Ref == child {
+						prunes++
+					}
+				}
+				if prunes != 1 {
+					t.Fatalf("shared task scheduled %d child optimizers, want 1", prunes)
+				}
+			}
+		})
+	}
+}
+
+func TestRulelessInputClosureRetainsOrdinalFailures(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"incompatible_descendant", "malformed_input", "incompatible_sibling", "malformed_sibling"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			parent, child, _, _ := ordinalLayoutSelectionFixture(t)
+			var inner expressions.RelationalExpression = parent
+			if mode == "malformed_input" || mode == "malformed_sibling" {
+				inner = &inputlessOrdinalExpression{parent}
+			}
+			inputRef := expressions.FinalOf(inner)
+			var outer expressions.RelationalExpression = mustPushFetchConstruct(plans.NewRecordQueryPredicatesFilterPlanFromQuantifier(
+				expressions.NewPhysicalQuantifier(inputRef), nil))
+			var untouched *expressions.Reference
+			if mode == "incompatible_sibling" || mode == "malformed_sibling" {
+				untouched = expressions.FinalOf(mustPushFetchConstruct(plans.NewRecordQueryScanPlan(
+					[]string{"UNTOUCHED"}, parent.GetResultType(), false)))
+				outer = mustPushFetchConstruct(plans.NewRecordQueryUnorderedUnionPlanFromQuantifiers([]expressions.Quantifier{
+					expressions.NewPhysicalQuantifier(untouched), expressions.NewPhysicalQuantifier(inputRef), expressions.NewPhysicalQuantifier(untouched),
+				}))
+			}
+			child.PruneToSet(map[expressions.RelationalExpression]struct{}{child.Winner(): {}})
+			child.AdvanceStagePreservingMembers(expressions.StagePlanned)
+			child.ConstraintsMap().SetExplored()
+			ref := expressions.FinalOf(outer)
+			p := NewPlanner(nil, EmptyPlanContext())
+			p.constraintMap = NewConstraintMap()
+			p.planningExpressionRules = []ExpressionRule{NewMatchLeafRule(), NewMatchIntermediateRule()}
+			tick := child.ConstraintsMap().CurrentTick()
+			p.push(&OptimizeInputsTask{Phase: PhasePlanning, Ref: ref, Expr: outer})
+			(&ExploreExprTask{Phase: PhasePlanning, Ref: ref, Expr: outer}).Run(t.Context(), p)
+			for len(p.stack) > 0 && p.capErr == nil {
+				p.pop().Run(t.Context(), p)
+			}
+			if p.capErr == nil {
+				t.Fatal("ruleless input completion bypassed ordinal validation")
+			}
+			if untouched != nil && untouched.ConstraintsMap().IsExplored() {
+				t.Fatal("sibling completion did not preserve reverse first-occurrence dependency order")
+			}
+			if child.ConstraintsMap().CurrentTick() != tick {
+				t.Fatal("optimizer-only validation rearmed expression exploration")
+			}
+		})
+	}
+}
+
+func TestRulelessGroupCompletionStillValidatesOrdinalRequirements(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"late_requirement", "malformed_sibling"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			parent, child, _, _ := ordinalLayoutSelectionFixture(t)
+			member := child.Winner()
+			if mode == "malformed_sibling" {
+				member = child.FinalMembers()[0]
+			}
+			child.PruneToSet(map[expressions.RelationalExpression]struct{}{member: {}})
+			child.AdvanceStagePreservingMembers(expressions.StagePlanned)
+			child.ConstraintsMap().SetExplored()
+			ref := expressions.FinalOf(parent)
+			if mode == "malformed_sibling" {
+				ref.InsertFinal(&inputlessOrdinalExpression{parent})
+			}
+			p := NewPlanner(nil, EmptyPlanContext())
+			p.constraintMap = NewConstraintMap()
+			tick := child.ConstraintsMap().CurrentTick()
+			(&ExploreGroupTask{Phase: PhasePlanning, Ref: ref}).Run(t.Context(), p)
+			for len(p.stack) > 0 && p.capErr == nil {
+				p.pop().Run(t.Context(), p)
+			}
+			if p.capErr == nil {
+				t.Fatal("ruleless group completion bypassed ordinal validation")
+			}
+			if child.ConstraintsMap().CurrentTick() != tick {
+				t.Fatal("optimizer-only validation rearmed expression exploration")
+			}
+		})
+	}
+}
+
+func TestSettledSingletonInputsStillValidateOrdinalRequirements(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"late_requirement", "malformed_sibling"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			parent, child, _, _ := ordinalLayoutSelectionFixture(t)
+			member := child.Winner()
+			if mode == "malformed_sibling" {
+				member = child.FinalMembers()[0]
+			}
+			child.PruneToSet(map[expressions.RelationalExpression]struct{}{member: {}})
+			child.AdvanceStagePreservingMembers(expressions.StagePlanned)
+			child.ConstraintsMap().SetExplored()
+			ref := expressions.FinalOf(parent)
+			if mode == "malformed_sibling" {
+				ref.InsertFinal(&inputlessOrdinalExpression{parent})
+			}
+			p := NewPlanner(nil, EmptyPlanContext())
+			p.constraintMap = NewConstraintMap()
+			tick := child.ConstraintsMap().CurrentTick()
+			(&OptimizeInputsTask{Phase: PhasePlanning, Ref: ref, Expr: parent}).Run(t.Context(), p)
+			for len(p.stack) > 0 && p.capErr == nil {
+				p.pop().Run(t.Context(), p)
+			}
+			if p.capErr == nil {
+				t.Fatal("settled singleton bypassed ordinal validation")
+			}
+			if child.ConstraintsMap().CurrentTick() != tick {
+				t.Fatal("optimizer-only validation rearmed expression exploration")
+			}
+		})
+	}
+}
+
 // TestExtractionFiltersOrdinalLayoutBeforeCost is the mutation pin for the
 // physical-property selection boundary. The Limit is finalized while its live
 // child reference contains only a retained-window join, so it requires that
@@ -85,6 +375,56 @@ func TestExtractionFiltersOrdinalLayoutBeforeCost(t *testing.T) {
 				t.Fatalf("extracted requirement satisfaction = (%v,%v), want true,nil", satisfied, satisfyErr)
 			}
 		})
+	}
+}
+
+func TestOrdinalLayoutRequirementDoesNotRestartExploration(t *testing.T) {
+	t.Parallel()
+	parent, child, _, _ := ordinalLayoutSelectionFixture(t)
+	requirements, err := ordinalInputRequirementsOf(parent)
+	if err != nil || len(requirements) != 1 {
+		t.Fatalf("requirements: %v, %v", requirements, err)
+	}
+	child.ConstraintsMap().SetExplored()
+	constraints := NewConstraintMap()
+	if !Set(constraints, child, OrdinalLayoutConstraintKey, requirements) {
+		t.Fatal("new optimization requirement was not stored")
+	}
+	if child.NeedsExploration() {
+		t.Fatal("optimizer-only layout requirement restarted expression rules")
+	}
+	stored, ok := Get(constraints, child, OrdinalLayoutConstraintKey)
+	if !ok || len(stored) != 1 {
+		t.Fatal("optimizer lost the required layout")
+	}
+	if Set(constraints, child, OrdinalLayoutConstraintKey, requirements) {
+		t.Fatal("identical requirement was not subsumed")
+	}
+	otherParent, err := plans.NewRecordQueryLimitPlanFromQuantifier(
+		expressions.NewPhysicalQuantifier(child), 2, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherRequirements, err := ordinalInputRequirementsOf(otherParent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !Set(constraints, child, OrdinalLayoutConstraintKey, otherRequirements) {
+		t.Fatal("distinct layout requirement was not accumulated")
+	}
+	stored, ok = Get(constraints, child, OrdinalLayoutConstraintKey)
+	if !ok || len(stored) != 2 || child.NeedsExploration() {
+		t.Fatal("growing retention requirements lost a layout or restarted expression rules")
+	}
+	child.ConstraintsMap().ReArm()
+	if !child.NeedsExploration() {
+		t.Fatal("member growth must still restart exploration")
+	}
+	child.ConstraintsMap().SetExplored()
+	ordinary := &PlannerConstraint[int]{name: "ordinary"}
+	Set(constraints, child, ordinary, 1)
+	if !child.NeedsExploration() {
+		t.Fatal("ordinary constraint growth must still restart exploration")
 	}
 }
 
@@ -194,12 +534,15 @@ func TestOptimizeInputsAndGroupRetainWinnersPerOrdinalLayout(t *testing.T) {
 	if !parentRef.InsertFinal(parentB) {
 		t.Fatal("fixture: distinct layout-B parent deduplicated from layout-A parent")
 	}
-	// Model the real LIFO edge: B's OptimizeInputs task runs first even though
-	// A is an earlier sibling in the same group. The group-local prepass must
-	// publish both requirements before B can schedule the child prune.
-	(&OptimizeInputsTask{
-		Phase: PhasePlanning, Ref: parentRef, Expr: parentB,
-	}).Run(context.Background(), p)
+	// The leaf shares B's prepass; both parent layouts must still be published
+	// before B's child pruning, regardless of sibling insertion order.
+	parentRef.InsertFinal(memberB)
+	p.push(&OptimizeInputsTask{Phase: PhasePlanning, Ref: parentRef, Expr: parentB})
+	p.push(&OptimizeInputsTask{Phase: PhasePlanning, Ref: parentRef, Expr: memberB})
+	if len(p.stack) != 1 {
+		t.Fatalf("adjacent leaf prepass retained %d tasks, want 1", len(p.stack))
+	}
+	p.pop().Run(t.Context(), p)
 	tickAfterBoth := childRef.ConstraintsMap().CurrentTick()
 	// An identical re-push is subsumed; it must not grow the exploration
 	// epoch or duplicate retention work.

@@ -546,10 +546,10 @@ func TestEnclosedRotationONElementRewrite(t *testing.T) {
 		})
 	}
 	for _, p := range gathered.GetPredicates() {
-		if cp, isCP := p.(*predicates.ComparisonPredicate); isCP {
-			inspect(cp.Operand)
-			inspect(cp.Comparison.Operand)
-		}
+		predicates.ReplaceValues(p, func(v values.Value) values.Value {
+			inspect(v)
+			return v
+		})
 	}
 	if sawUnrewritten {
 		t.Fatal("the collected ON's element ref survived UNREWRITTEN (FieldValue(QOV(EL), EL)) — it evaluates NIL over the bare-scalar Explode (silent drop/misfilter)")

@@ -61,7 +61,7 @@ func (r *ImplementProjectionRule) OnMatch(call *ExpressionRuleCall) {
 		if fetchInnerRef == nil {
 			continue
 		}
-		innerQ := expressions.ForEachQuantifier(fetchInnerRef)
+		innerQ := expressions.NewPhysicalQuantifier(fetchInnerRef)
 		srcAlias := qs[0].GetAlias()
 		tgtAlias := innerQ.GetAlias()
 		allPushable := true
@@ -144,7 +144,7 @@ func (r *ImplementProjectionRule) OnMatch(call *ExpressionRuleCall) {
 			call.Yield(reusable)
 			return true
 		}
-		innerQ := expressions.NamedForEachQuantifier(qs[0].GetAlias(), call.MemoizeMemberPlansFromOther(
+		innerQ := expressions.NamedPhysicalQuantifier(qs[0].GetAlias(), call.MemoizeMemberPlansFromOther(
 			innerRef, []expressions.RelationalExpression{member}))
 		logicalEdge, err := qs[0].RequireFlowedObjectValue()
 		if err != nil {

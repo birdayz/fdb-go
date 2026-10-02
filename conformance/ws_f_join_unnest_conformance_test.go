@@ -164,6 +164,19 @@ var _ = Describe("RFC-142 R5: an explicit JOIN's correlated array source", func(
 			`SELECT id FROM qq WHERE EXISTS (SELECT 1 FROM qq.cs AS c, c.bs AS b, b.tags AS t WHERE t = c.k + 8)`,
 			`SELECT d.t FROM qq, (SELECT t FROM qq.cs AS c, c.bs AS b, c.bs AS b2, b2.tags AS t) AS d`,
 			`SELECT id FROM qq WHERE EXISTS (SELECT 1 FROM qq.cs AS c, c.bs AS b, c.bs AS b2, b2.tags AS t WHERE t = b.k + 7)`,
+			// A WHERE reading the element of a link below the one under the tip.
+			`SELECT id FROM qq, qq.cs AS c, c.bs AS b, b.tags AS t WHERE t = c.k + 8`,
+			`SELECT t, u, z FROM qq, qq.cs AS c, c.bs AS b, b.tags AS t, b.tags AS u, b.tags AS z WHERE z = t + 1`,
+			`SELECT t FROM qq, qq.cs AS c AT o, c.bs AS b AT p, b.tags AS t WHERE t = c.k + b.k + o + p + 3`,
+			// A WHERE EXISTS over a spine, reading the tip or a deeper element,
+			// and an EXISTS beside a STRUCT-array unnest reading its table.
+			`SELECT t FROM q, q.bs AS b, b.tags AS t WHERE EXISTS (SELECT 1 FROM h WHERE h.f = t + 1)`,
+			`SELECT t FROM q, q.bs AS b, b.tags AS t WHERE EXISTS (SELECT 1 FROM h WHERE h.f = b.k + 8)`,
+			`SELECT t FROM q, q.bs AS b, b.tags AS t WHERE NOT EXISTS (SELECT 1 FROM h WHERE h.f = t + 1)`,
+			`SELECT t FROM q, q.bs AS b, b.tags AS t WHERE NOT EXISTS (SELECT 1 FROM h WHERE h.f = b.k + 9)`,
+			`SELECT v, v2 FROM w, w.arr AS v, w.arr AS v2 WHERE EXISTS (SELECT 1 FROM h WHERE h.f = v)`,
+			`SELECT t FROM qq, qq.cs AS c, c.bs AS b, b.tags AS t WHERE EXISTS (SELECT 1 FROM h WHERE h.f = c.k + b.k + 8)`,
+			`SELECT x.k FROM r, r.items AS x WHERE EXISTS (SELECT 1 FROM h WHERE h.id = r.id)`,
 			`SELECT v, v2 FROM w, w.arr AS v, w.arr AS v2`,
 			`SELECT v, v2 FROM w, h, w.arr AS v, w.arr AS v2`,
 			`SELECT v, v2, h.f FROM h, w, w.arr AS v, w.arr AS v2`,
@@ -298,6 +311,45 @@ var _ = Describe("RFC-142 R5: an explicit JOIN's correlated array source", func(
 			`SELECT id FROM w WHERE EXISTS (SELECT 1 FROM h, w.arr AS v, w.arr AS v2 WHERE v2 = v + 1)`,
 			`SELECT d.v, d.p FROM w, (SELECT v, p FROM w.arr AS v, w.arr AS v2 AT p) AS d`,
 			`SELECT id FROM w WHERE EXISTS (SELECT 1 FROM w.arr AS v, w.arr AS v2 WHERE v2 = v + 1)`,
+			// A lateral leg reading a chain's last element, and the element
+			// and AT ordinal beside a lateral leg in the output.
+			`SELECT d.id FROM q, q.bs AS b, b.tags AS t, (SELECT h.id FROM h WHERE h.f = t + 1) AS d`,
+			`SELECT id FROM q WHERE EXISTS (SELECT t FROM q.bs AS b, b.tags AS t, (SELECT h.id FROM h WHERE h.f = t + 1) AS d)`,
+			`SELECT id FROM q WHERE NOT EXISTS (SELECT t FROM q.bs AS b, b.tags AS t, (SELECT h.id FROM h WHERE h.f = t + 1) AS d)`,
+			`SELECT d.id, t FROM q, q.bs AS b, b.tags AS t, (SELECT h.id FROM h WHERE h.f = b.k + t + 1) AS d`,
+			`SELECT d.id, t, p FROM q, q.bs AS b, b.tags AS t AT p, (SELECT h.id FROM h WHERE h.f = t + p) AS d`,
+			`SELECT t, o, p, d.id FROM q, q.bs AS b AT o, b.tags AS t AT p, (SELECT h.id FROM h WHERE h.f = t + o + p - 1) AS d`,
+			`SELECT d.id, t, q.id FROM q, q.bs AS b, b.tags AS t, (SELECT h.id FROM h WHERE h.f = t + q.id) AS d`,
+			`SELECT d.id, t FROM q, q.bs AS b, b.tags AS t, (SELECT h.id FROM h WHERE h.f > t) AS d WHERE d.id = 1 AND t > 7`,
+			`SELECT d.id, e.id FROM q, q.bs AS b, b.tags AS t, (SELECT h.id FROM h WHERE h.f = t + 1) AS d, (SELECT h.id FROM h WHERE h.id = d.id) AS e`,
+			`SELECT t, z.id, d.id FROM q, q.bs AS b, b.tags AS t, h AS z, (SELECT h.id FROM h WHERE h.f = t + z.id) AS d`,
+			`SELECT t, d.id FROM qq, qq.cs AS c, c.bs AS b, b.tags AS t, (SELECT h.id FROM h WHERE h.f = t + c.k) AS d`,
+			`SELECT v, p, d.id FROM w, w.arr AS v AT p, (SELECT h.id FROM h WHERE h.f = p + 9) AS d`,
+			`SELECT v, p, h.id FROM w, w.arr AS v AT p, h WHERE h.f = p + 9`,
+			// A link whose owner sits behind an unrelated FROM item.
+			`SELECT t, h.id FROM q, q.bs AS b, h, b.tags AS t`,
+			`SELECT t FROM q, q.bs AS b, h, b.tags AS t WHERE t + 1 = h.f`,
+			`SELECT t, o FROM q, q.bs AS b AT o, h, b.tags AS t WHERE t + o = h.f`,
+			`SELECT d.t FROM q, (SELECT t FROM q.bs AS b, h, b.tags AS t WHERE t + 1 = h.f) AS d`,
+			`SELECT id FROM q WHERE EXISTS (SELECT 1 FROM q.bs AS b, h, b.tags AS t WHERE t + 1 = h.f)`,
+			`SELECT t, u FROM q, q.bs AS b, h, b.tags AS t, b.tags AS u WHERE u = t + 1`,
+			`SELECT t FROM qq, qq.cs AS c, h, c.bs AS b, b.tags AS t WHERE t = c.k + 8`,
+			// Unnests of two tables, the second table after the first's links.
+			`SELECT v, x.k FROM w, w.arr AS v, q, q.bs AS x`,
+			`SELECT v, t FROM w, w.arr AS v, q, q.bs AS b, b.tags AS t WHERE v = t + 3`,
+			`SELECT t, v FROM q, q.bs AS b, b.tags AS t, w, w.arr AS v WHERE v = t + 3`,
+			`SELECT t, v FROM q, q.bs AS b, w, w.arr AS v, b.tags AS t WHERE v = t + 3`,
+			`SELECT t, v, d.k FROM q, q.bs AS b, b.tags AS t, w, w.arr AS v, (SELECT b.k + v AS k FROM h) AS d WHERE v = t + 3`,
+			`SELECT id FROM q WHERE EXISTS (SELECT 1 FROM q.bs AS b, w, w.arr AS v, b.tags AS t WHERE v = t + 3)`,
+			`SELECT z FROM q, q.bs AS b, (SELECT b.tags AS arr FROM h) AS d, d.arr AS z`,
+			`SELECT z FROM w, w.arr AS v, (SELECT w.arr AS arr FROM h WHERE h.f = v) AS d, d.arr AS z`,
+			// An array-owning source must not pass the lateral source it reads.
+			`SELECT x.k, d.id FROM q, q.bs AS b, (SELECT h.id FROM h WHERE h.f = b.k + 8) AS d, (SELECT q.bs AS arr FROM h WHERE h.id = d.id) AS e, e.arr AS x`,
+			`SELECT id FROM q WHERE EXISTS (SELECT x.k FROM q.bs AS b, (SELECT h.id FROM h WHERE h.f = b.k + 8) AS d, (SELECT q.bs AS arr FROM h WHERE h.id = d.id) AS e, e.arr AS x)`,
+			`SELECT x.k, p, d.id FROM q, q.bs AS b, (SELECT h.id FROM h WHERE h.f = b.k + 8) AS d, (SELECT q.bs AS arr FROM h WHERE h.id = d.id) AS e, e.arr AS x AT p WHERE p = d.id`,
+			`SELECT id FROM q WHERE EXISTS (SELECT x.k FROM q.bs AS b AT o, (SELECT h.id FROM h WHERE h.f = b.k + 8) AS d, (SELECT q.bs AS arr FROM h WHERE h.id = d.id) AS e, e.arr AS x AT p WHERE p = d.id AND o = 2 AND x.k = b.k - 1)`,
+			`SELECT id FROM q WHERE NOT EXISTS (SELECT x.k FROM q.bs AS b AT o, (SELECT h.id FROM h WHERE h.f = b.k + 8) AS d, (SELECT q.bs AS arr FROM h WHERE h.id = d.id) AS e, e.arr AS x AT p WHERE p = d.id AND o = 2 AND x.k = b.k - 1)`,
+			`SELECT z.k FROM q, (SELECT x.k AS k FROM q.bs AS b, (SELECT h.id FROM h WHERE h.f = b.k + 8) AS d, (SELECT q.bs AS arr FROM h WHERE h.id = d.id) AS e, e.arr AS x WHERE x.k = d.id) AS z`,
 			// Lateral legs correlated to other legs of one FROM: each is one more
 			// quantifier of the block, planned inside the leg it reads.
 			`SELECT e.k FROM w, (SELECT v AS k FROM w.arr AS v) AS d, (SELECT d.k AS k FROM h) AS e`,
@@ -474,13 +526,6 @@ var _ = Describe("RFC-142 R5: an explicit JOIN's correlated array source", func(
 		//  - A derived table reading a prior FROM source, beside a later source:
 		//    the target crashes (XXXXX, "is not an element of this graph"); Go
 		//    answers the empty correlated result the statement defines.
-		//  - A later lateral derived table reading a chain's LAST element, and a
-		//    WHERE EXISTS over a spine (with a table at its bottom): the target
-		//    answers; Go refuses (0AF00) — the chain's merged row is bound under
-		//    its link's own binding, so a consumer below it cannot name the
-		//    element, and the EXISTS lowering skips a spine link. TODO.md "A
-		//    lateral unnest behind a later leg inside a derived leg, and a later
-		//    leg reading a chain's element".
 		//  - An aggregate over a first FROM item's unnest in a scalar
 		//    subquery, in the select list or a WHERE: the target's grammar has
 		//    no scalar subquery there (42601); Go's scalar subqueries are a
@@ -528,11 +573,6 @@ var _ = Describe("RFC-142 R5: an explicit JOIN's correlated array source", func(
 			`SELECT r.id, (SELECT MAX(x.k) FROM r.items AS x) FROM r`:                                                                                                                                                                             {"ERROR 42601", "[[1 6]]"},
 			`SELECT d.x FROM w, (SELECT w.f AS x FROM h WHERE h.f = w.f) AS d, h`:                                                                                                                                                                 {"ERROR XXXXX", "[]"},
 			`SELECT v, h.f FROM w JOIN w.arr AS v ON v > 10 LEFT JOIN h ON h.id = w.id`:                                                                                                                                                           {"[[11 10] [20 <nil>]]", "ERROR 0AF00"},
-			`SELECT d.id FROM q, q.bs AS b, b.tags AS t, (SELECT h.id FROM h WHERE h.f = t + 1) AS d`:                                                                                                                                             {"[[1]]", "ERROR 0AF00"},
-			`SELECT t FROM q, q.bs AS b, b.tags AS t WHERE EXISTS (SELECT 1 FROM h WHERE h.f = t + 1)`:                                                                                                                                            {"[[9]]", "ERROR 0AF00"},
-			`SELECT t FROM q, q.bs AS b, b.tags AS t WHERE EXISTS (SELECT 1 FROM h WHERE h.f = b.k + 8)`:                                                                                                                                          {"[[9]]", "ERROR 0AF00"},
-			`SELECT t FROM q, q.bs AS b, b.tags AS t WHERE NOT EXISTS (SELECT 1 FROM h WHERE h.f = t + 1)`:                                                                                                                                        {"[[7] [8]]", "ERROR 0AF00"},
-			`SELECT v, v2 FROM w, w.arr AS v, w.arr AS v2 WHERE EXISTS (SELECT 1 FROM h WHERE h.f = v)`:                                                                                                                                           {"[[10 10] [10 11]]", "ERROR 0AF00"},
 			`SELECT v, h.f FROM w, w.arr AS v LEFT JOIN h ON h.id = w.id WHERE v > 10`:                                                                                                                                                            {"[[11 10] [20 <nil>]]", "ERROR 0A000"},
 			`SELECT v, h.f FROM w, w.arr AS v LEFT JOIN h ON h.id = w.id`:                                                                                                                                                                         {"[[10 10] [11 10] [20 <nil>]]", "ERROR 0A000"},
 			`SELECT v FROM w CROSS JOIN w.arr AS v`:                                                                                                                                                                                               {"ERROR XXXXX", "[[10] [11] [20]]"},

@@ -14,8 +14,10 @@ package cascades
 //       correlation to an UNBOUND alias.
 
 import (
+	"maps"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -26,6 +28,93 @@ func mustRFC153P2Construct[T any](value T, err error) T {
 		panic("construct RFC-153 P2 fixture: " + err.Error())
 	}
 	return value
+}
+
+func TestDataAccessCorrelationRespectsBindings(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"map", "filter", "legacy_filter"} {
+		for _, source := range []string{"current", "bound", "foreign", "named_current", "constant", "constant_and_row"} {
+			t.Run(kind+"/"+source, func(t *testing.T) {
+				t.Parallel()
+				scan := mustRFC153P2Construct(plans.NewRecordQueryScanPlan([]string{"T"}, values.NotNullLong, false))
+				bound := values.NamedCorrelationIdentifier("bound")
+				foreign := values.NamedCorrelationIdentifier("foreign")
+				q := plans.QuantifierOverPlan(scan).WithAlias(bound)
+				var value values.Value = scan.GetResultValue()
+				want := map[values.CorrelationIdentifier]struct{}{}
+				switch source {
+				case "bound":
+					value = mustRFC153P2Construct(values.NewQuantifiedObjectValue(bound, values.NotNullLong))
+				case "foreign", "named_current":
+					if source == "named_current" {
+						foreign = values.NamedCorrelationIdentifier("_current")
+					}
+					value = mustRFC153P2Construct(values.NewQuantifiedObjectValue(foreign, values.NotNullLong))
+					want[foreign] = struct{}{}
+				case "constant", "constant_and_row":
+					value = values.NewConstantObjectValue(foreign, "c", values.NotNullLong)
+					if source == "constant_and_row" {
+						row := mustRFC153P2Construct(values.NewQuantifiedObjectValue(foreign, values.NotNullLong))
+						value = values.NewRecordConstructorValue(values.RecordConstructorField{Name: "constant", Value: value}, values.RecordConstructorField{Name: "row", Value: row})
+						want[foreign] = struct{}{}
+					}
+				}
+				preds := []predicates.QueryPredicate{predicates.NewComparisonPredicate(value, predicates.Comparison{Type: predicates.ComparisonIsNotNull})}
+				var plan plans.RecordQueryPlan
+				switch kind {
+				case "map":
+					plan = mustRFC153P2Construct(plans.NewRecordQueryMapPlanFromQuantifier(q, value))
+				case "filter":
+					plan = mustRFC153P2Construct(plans.NewRecordQueryPredicatesFilterPlanFromQuantifier(q, preds))
+				case "legacy_filter":
+					plan = mustRFC153P2Construct(plans.NewRecordQueryFilterPlanFromQuantifier(preds, q))
+				}
+				for name, got := range map[string]map[values.CorrelationIdentifier]struct{}{
+					"plan":    expressions.GetCorrelatedToOfExpression(plan),
+					"wrapper": (&scanPlanExpression{plan: plan}).GetCorrelatedToWithoutChildren(),
+				} {
+					if !maps.Equal(got, want) {
+						t.Errorf("%s correlations=%v, want %v", name, got, want)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestConstantPoolCannotEraseRowCorrelation(t *testing.T) {
+	t.Parallel()
+	outer := values.NamedCorrelationIdentifier("outer")
+	rowType := rfc153P2RowType("id")
+	field := rfc153P2Field(outer, rowType)
+	constant := values.NewConstantObjectValue(outer, "c", values.NotNullLong)
+	mixed := values.NewRecordConstructorValue(values.RecordConstructorField{Name: "row", Value: field}, values.RecordConstructorField{Name: "constant", Value: constant})
+	comparison := &predicates.Comparison{Type: predicates.ComparisonEquals, Operand: mixed}
+	if !comparisonRowCorrelated(comparison) {
+		t.Error("constant erased row dependency in intersection guard")
+	}
+	ranges := []*predicates.ComparisonRange{rfc153P2EqRange(mixed)}
+	scan := mustRFC153P2Construct(plans.NewRecordQueryScanPlan([]string{"T"}, rowType, false)).WithScanComparisons(ranges)
+	for name, got := range map[string]map[values.CorrelationIdentifier]struct{}{
+		"scan":        expressions.GetCorrelatedToOfExpression(scan),
+		"wrapper":     (&scanPlanExpression{plan: scan}).GetCorrelatedToWithoutChildren(),
+		"scan_helper": scanComparisonCorrelations(ranges),
+	} {
+		if _, found := got[outer]; !found || len(got) != 1 {
+			t.Errorf("%s lost row correlation: %v", name, got)
+		}
+	}
+	uncorrelated := mustRFC153P2Construct(plans.NewRecordQueryScanPlan([]string{"T"}, rowType, false))
+	filter := mustRFC153P2Construct(expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{
+		predicates.NewComparisonPredicate(field, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: constant}),
+	}, expressions.ForEachQuantifier(expressions.InitialOf(uncorrelated))))
+	if compensationResidualCorrelationSafe(filter) {
+		t.Error("constant hid an unbound outer alias in a compensation residual")
+	}
+	vector := mustRFC153P2Construct(plans.NewRecordQueryVectorIndexPlan("vec", nil, values.LiteralValue([]float64{1, 2}), values.LiteralValue(int64(5)), predicates.ComparisonDistanceRankLessThanOrEq, nil, nil, []string{"T"}, rowType)).WithPartitionColumns([]string{"id"})
+	if residualSelectsWholePartitions(filter, vector) {
+		t.Error("outer field was mistaken for a local partition field")
+	}
 }
 
 func rfc153P2RowType(fieldName string) *values.RecordType {

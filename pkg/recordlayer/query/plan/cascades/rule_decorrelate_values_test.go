@@ -57,6 +57,22 @@ func decorrelateLiteral(literal any) *values.ConstantValue {
 	return &values.ConstantValue{Value: literal, Typ: typ}
 }
 
+func decorrelateComparison(t testing.TB, preds []predicates.QueryPredicate) *predicates.ComparisonPredicate {
+	t.Helper()
+	if len(preds) != 1 {
+		t.Fatalf("expected 1 predicate, got %d", len(preds))
+	}
+	residual, err := predicates.ToResidualPredicate(preds[0])
+	if err != nil {
+		t.Fatalf("ToResidualPredicate: %v", err)
+	}
+	comparison, ok := residual.(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected a single ComparisonPredicate residual, got %T", residual)
+	}
+	return comparison
+}
+
 func TestDecorrelateValuesRule_ExactConstructorCollapseWithConstantObjectSibling(t *testing.T) {
 	t.Parallel()
 
@@ -130,10 +146,7 @@ func TestDecorrelateValuesRule_InlineConstantBox(t *testing.T) {
 		t.Fatalf("expected 1 predicate, got %d", len(decorrelated.GetPredicates()))
 	}
 	// The predicate's comparison operand should now be the constant value.
-	cp, ok := decorrelated.GetPredicates()[0].(*predicates.ComparisonPredicate)
-	if !ok {
-		t.Fatalf("expected ComparisonPredicate, got %T", decorrelated.GetPredicates()[0])
-	}
+	cp := decorrelateComparison(t, decorrelated.GetPredicates())
 	cv, ok := cp.Comparison.Operand.(*values.ConstantValue)
 	if !ok {
 		t.Fatalf("expected ConstantValue after decorrelation, got %T", cp.Comparison.Operand)
@@ -258,22 +271,29 @@ func TestDecorrelateValuesRule_AndPredicateTranslation(t *testing.T) {
 	if len(decorrelated.GetQuantifiers()) != 1 {
 		t.Fatalf("expected 1 quantifier, got %d", len(decorrelated.GetQuantifiers()))
 	}
-	// The Select constructor lifts the AND into its predicate list (Java's
-	// SelectExpression.partitionPredicates); the first conjunct is the
-	// comparison that had the constant substituted.
-	if got := len(decorrelated.GetPredicates()); got != 2 {
-		t.Fatalf("expected the two conjuncts as top-level predicates, got %d", got)
+	// Both conjuncts constrain COL, so the constructor groups their ranges.
+	if got := len(decorrelated.GetPredicates()); got != 1 {
+		t.Fatalf("expected 1 value group, got %d", got)
 	}
-	cp, ok := decorrelated.GetPredicates()[0].(*predicates.ComparisonPredicate)
+	residual, err := predicates.ToResidualPredicate(decorrelated.GetPredicates()[0])
+	if err != nil {
+		t.Fatalf("ToResidualPredicate: %v", err)
+	}
+	conjunction, ok := residual.(*predicates.AndPredicate)
 	if !ok {
-		t.Fatalf("expected ComparisonPredicate, got %T", decorrelated.GetPredicates()[0])
+		t.Fatalf("expected AndPredicate residual, got %T", residual)
 	}
-	cv, ok := cp.Comparison.Operand.(*values.ConstantValue)
-	if !ok {
-		t.Fatalf("expected ConstantValue after decorrelation, got %T", cp.Comparison.Operand)
+	if len(conjunction.SubPredicates) != 2 {
+		t.Fatalf("expected 2 comparisons, got %d", len(conjunction.SubPredicates))
 	}
-	if cv.Value != int64(7) {
-		t.Errorf("expected 7, got %v", cv.Value)
+	want := predicates.NewAnd(
+		predicates.NewComparisonPredicate(decorrelateField(decorrelateObject(scanQ), "COL"), predicates.Comparison{
+			Type: predicates.ComparisonEquals, Operand: constResult,
+		}),
+		andPred.SubPredicates[1],
+	)
+	if !predicates.PredicateEquals(conjunction, want) {
+		t.Fatalf("decorrelated comparisons = %v, want %v", conjunction, want)
 	}
 }
 
@@ -511,10 +531,7 @@ func TestDecorrelateValuesRule_TrimUncorrelatedValuesBoxes(t *testing.T) {
 	if len(decorrelated.GetPredicates()) != 1 {
 		t.Fatalf("expected 1 predicate, got %d", len(decorrelated.GetPredicates()))
 	}
-	cp, ok := decorrelated.GetPredicates()[0].(*predicates.ComparisonPredicate)
-	if !ok {
-		t.Fatalf("expected ComparisonPredicate, got %T", decorrelated.GetPredicates()[0])
-	}
+	cp := decorrelateComparison(t, decorrelated.GetPredicates())
 	if _, isCOV := cp.Comparison.Operand.(*values.ConstantObjectValue); !isCOV {
 		t.Errorf("expected ConstantObjectValue preserved in predicate, got %T", cp.Comparison.Operand)
 	}
@@ -621,10 +638,7 @@ func TestDecorrelateValuesRule_RewritePredicatesAndReturnValueOnUncorrelatedValu
 	if len(decorrelated.GetPredicates()) != 1 {
 		t.Fatalf("expected 1 predicate, got %d", len(decorrelated.GetPredicates()))
 	}
-	cp, ok := decorrelated.GetPredicates()[0].(*predicates.ComparisonPredicate)
-	if !ok {
-		t.Fatalf("expected ComparisonPredicate, got %T", decorrelated.GetPredicates()[0])
-	}
+	cp := decorrelateComparison(t, decorrelated.GetPredicates())
 	gotCOV, ok := cp.Comparison.Operand.(*values.ConstantObjectValue)
 	if !ok {
 		t.Fatalf("expected ConstantObjectValue in comparison operand, got %T", cp.Comparison.Operand)
@@ -888,10 +902,7 @@ func TestDecorrelateValuesRule_RemoveValuesIfOnlyChild(t *testing.T) {
 	if len(decorrelated.GetPredicates()) != 1 {
 		t.Fatalf("expected 1 predicate, got %d", len(decorrelated.GetPredicates()))
 	}
-	cp, ok := decorrelated.GetPredicates()[0].(*predicates.ComparisonPredicate)
-	if !ok {
-		t.Fatalf("expected ComparisonPredicate, got %T", decorrelated.GetPredicates()[0])
-	}
+	cp := decorrelateComparison(t, decorrelated.GetPredicates())
 	cv, ok := cp.Operand.(*values.ConstantValue)
 	if !ok {
 		t.Fatalf("expected ConstantValue operand after decorrelation, got %T", cp.Operand)
@@ -946,10 +957,7 @@ func TestDecorrelateValuesRule_RemoveValuesIfAllChildren(t *testing.T) {
 	if len(decorrelated.GetPredicates()) != 1 {
 		t.Fatalf("expected 1 predicate, got %d", len(decorrelated.GetPredicates()))
 	}
-	cp, ok := decorrelated.GetPredicates()[0].(*predicates.ComparisonPredicate)
-	if !ok {
-		t.Fatalf("expected ComparisonPredicate, got %T", decorrelated.GetPredicates()[0])
-	}
+	cp := decorrelateComparison(t, decorrelated.GetPredicates())
 	lhs, ok := cp.Operand.(*values.ConstantValue)
 	if !ok {
 		t.Fatalf("expected ConstantValue operand, got %T", cp.Operand)
@@ -1075,10 +1083,7 @@ func TestDecorrelateValuesRule_MultiFieldValuesBoxInline(t *testing.T) {
 
 	// Exact reconstruction resolves FieldValue(QOV(vbAlias), "x") through the
 	// replacement constructor and canonicalizes it to the selected literal.
-	cp, ok := decorrelated.GetPredicates()[0].(*predicates.ComparisonPredicate)
-	if !ok {
-		t.Fatalf("expected ComparisonPredicate, got %T", decorrelated.GetPredicates()[0])
-	}
+	cp := decorrelateComparison(t, decorrelated.GetPredicates())
 	literal, ok := cp.Comparison.Operand.(*values.ConstantValue)
 	if !ok {
 		t.Fatalf("expected direct ConstantValue in comparison operand, got %T", cp.Comparison.Operand)
@@ -1274,10 +1279,7 @@ func TestDecorrelateValuesRule_ConstantObjectValueResult(t *testing.T) {
 	}
 
 	// The predicate should now have the COV directly instead of QOV.
-	cp, ok := decorrelated.GetPredicates()[0].(*predicates.ComparisonPredicate)
-	if !ok {
-		t.Fatalf("expected ComparisonPredicate, got %T", decorrelated.GetPredicates()[0])
-	}
+	cp := decorrelateComparison(t, decorrelated.GetPredicates())
 	gotCOV, ok := cp.Comparison.Operand.(*values.ConstantObjectValue)
 	if !ok {
 		t.Fatalf("expected ConstantObjectValue after decorrelation, got %T", cp.Comparison.Operand)

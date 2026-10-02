@@ -147,6 +147,8 @@ func withNullability(t Type, nullable bool) Type {
 		// Legs is layout metadata, not shape, and is carried across
 		// unchanged for the same reason identity ignores it.
 		return &RecordType{RecordName: v.RecordName, Nullable: nullable, Fields: v.Fields, Legs: v.Legs}
+	case *VectorType:
+		return NewVectorType(nullable, v.Precision, v.Dimensions)
 	case *ArrayType:
 		return &ArrayType{Nullable: nullable, ElementType: v.ElementType}
 	case *EnumType:
@@ -589,6 +591,11 @@ func (p *TypeProtoRepository) addProtoFieldLocked(
 	}
 
 	switch t.Code() {
+	case TypeCodeVector:
+		v := t.(*VectorType)
+		f.Type = descriptorpb.FieldDescriptorProto_TYPE_BYTES.Enum()
+		f.Options = &descriptorpb.FieldOptions{}
+		proto.SetExtension(f.Options, gen.E_Field, &gen.FieldOptions{VectorOptions: &gen.FieldOptions_VectorOptions{Precision: proto.Int32(int32(v.Precision)), Dimensions: proto.Int32(int32(v.Dimensions))}})
 	case TypeCodeRecord:
 		if typeName == "" {
 			return &ProtoTypeError{TypeName: t.String(), Reason: "record type was not defined"}

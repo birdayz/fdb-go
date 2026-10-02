@@ -87,6 +87,52 @@ func TestConstructors_LiftedConjunctionSharesMemoIdentity(t *testing.T) {
 	}
 }
 
+func TestSelectPartitionsPredicatesByValue(t *testing.T) {
+	t.Parallel()
+	alias := values.NamedCorrelationIdentifier("row")
+	value := mustExpression(values.NewQuantifiedObjectValue(alias, values.NotNullLong))
+	sameValue := mustExpression(values.NewQuantifiedObjectValue(alias, values.NotNullLong))
+	other := mustExpression(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("other"), values.NotNullLong))
+	comparison := func(v values.Value, kind predicates.ComparisonType, literal int64) predicates.QueryPredicate {
+		return predicates.NewComparisonPredicate(v, predicates.NewLiteralComparison(kind, literal))
+	}
+	lower := comparison(value, predicates.ComparisonGreaterThan, 1)
+	upper := comparison(sameValue, predicates.ComparisonLessThan, 4)
+	residual := comparison(value, predicates.ComparisonNotEquals, 2)
+	atomic := predicates.WithAtomicity(predicates.NewAnd(lower, upper), true)
+	or := predicates.NewOr(lower, residual)
+	selectFor := func(ps ...predicates.QueryPredicate) *SelectExpression {
+		return mustExpression(NewSelectExpression(value, nil, ps))
+	}
+	got := selectFor(lower, or, upper, residual, comparison(other, predicates.ComparisonEquals, 3), atomic)
+	ps := got.GetPredicates()
+	if len(ps) != 5 || ps[0] != or || ps[1] != atomic || ps[2] != residual {
+		t.Fatalf("want opaque predicates first, then per-value residuals and ranges; got %v", ps)
+	}
+	rangePredicate, ok := ps[3].(*predicates.PredicateWithValueAndRanges)
+	if !ok || len(rangePredicate.GetRanges()) != 1 || len(rangePredicate.GetComparisons()) != 2 {
+		t.Fatalf("equal value handles must coalesce into one two-bound range: %T %v", ps[3], ps[3])
+	}
+	otherRange, ok := ps[4].(*predicates.PredicateWithValueAndRanges)
+	if !ok || !values.SemanticEqualsUnderAliasMap(otherRange.GetValue(), other, nil) {
+		t.Fatal("same-shaped values under different free aliases must not coalesce")
+	}
+	left := selectFor(lower, upper)
+	right := selectFor(upper, lower, lower)
+	if !MemoEqual(left, right) || left.HashCodeWithoutChildren() != right.HashCodeWithoutChildren() {
+		t.Fatal("comparison permutation and repetition on one value must have one memo identity")
+	}
+	rebuilt := selectFor(ps...)
+	if !MemoEqual(got, rebuilt) {
+		t.Fatal("partitioning existing ranges must be idempotent")
+	}
+	contradictory := selectFor(lower, comparison(value, predicates.ComparisonLessThan, 0))
+	pvr, ok := contradictory.GetPredicates()[0].(*predicates.PredicateWithValueAndRanges)
+	if !ok || len(pvr.GetComparisons()) != 2 {
+		t.Fatal("coalescing must retain both contradictory bounds, never weaken the conjunction")
+	}
+}
+
 func assertSamePredicates(t *testing.T, what string, got, want []predicates.QueryPredicate) {
 	t.Helper()
 	if len(got) != len(want) {

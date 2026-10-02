@@ -13,11 +13,8 @@ import (
 // TestIndexAggregatesReachTheTranslatedGraph: MIN_EVER, MAX_EVER and
 // BITMAP_CONSTRUCT_AGG translate into the group by's aggregates, as Java's
 // function catalog resolves them into the graph queries and index definitions
-// share. The index generator reads that graph. No streaming accumulator
-// computes one, so a QUERY using one plans only from its index: max_ever(col2)
-// grouped by col1 reads mx (RFC-257 WS-J step 7d), min_ever(col2), with no
-// MIN_EVER index, and bitmap_construct_agg, whose BITMAP_VALUE index builds no
-// candidate, keep 0AF00 with no plan. MAX is the control that still streams.
+// share. MAX_EVER reads its index; MIN_EVER has no matching index and cannot
+// stream. BITMAP_CONSTRUCT_AGG and MAX both have streaming accumulators.
 func TestIndexAggregatesReachTheTranslatedGraph(t *testing.T) {
 	t.Parallel()
 	const ddl = `CREATE TABLE t1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))
@@ -31,7 +28,7 @@ func TestIndexAggregatesReachTheTranslatedGraph(t *testing.T) {
 		{"SELECT max_ever(col2) FROM t1 GROUP BY col1", expressions.AggMaxEver, true},
 		{"SELECT min_ever(col2) FROM t1 GROUP BY col1", expressions.AggMinEver, false},
 		{"SELECT col1, bitmap_construct_agg(bitmap_bit_position(id)) AS bitmap, bitmap_bucket_offset(id) AS offset " +
-			"FROM t1 GROUP BY col1, bitmap_bucket_offset(id)", expressions.AggBitmapConstructAgg, false},
+			"FROM t1 GROUP BY col1, bitmap_bucket_offset(id)", expressions.AggBitmapConstructAgg, true},
 		{"SELECT max(col2) FROM t1 GROUP BY col1", expressions.AggMax, true},
 	} {
 		t.Run(tc.sql, func(t *testing.T) {

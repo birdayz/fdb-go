@@ -53,7 +53,7 @@ func TestFDB_DerivedStarJoinBesideAnotherSource(t *testing.T) {
 	// The GROUP BY arm already answered at the merge-base; its plan is pinned
 	// so a declined merge cannot silently change its join order.
 	pinnedPlans := map[string]string{
-		`SELECT a.k, COUNT(*) FROM (SELECT * FROM w, g) AS a, h AS d WHERE a.id = d.id GROUP BY a.k`: "FlatMap(outer=Scan(H), inner=PredicatesFilter(NestedLoopJoin(INNER, Scan(W), Scan(G))",
+		`SELECT a.k, COUNT(*) FROM (SELECT * FROM w, g) AS a, h AS d WHERE a.id = d.id GROUP BY a.k`: "FlatMap(outer=NestedLoopJoin(INNER, Scan(G), Scan(W)), inner=Scan(H, [=]))",
 	}
 	for _, tc := range []struct {
 		sql  string
@@ -158,9 +158,10 @@ func TestFDB_FilteredDerivedTableInsideAJoin(t *testing.T) {
 	a := `(SELECT * FROM w WHERE w.f > 1) AS a`
 	// The GROUP BY arm already planned at the merge-base (no lower pairs a with
 	// a sibling under a star row); its plan is pinned so the declined merge
-	// cannot silently change its join order.
+	// cannot silently change its join order (w, then h, then g). The chain
+	// nests in the inner, as Java's correlated FlatMaps do.
 	pinnedPlans := map[string]string{
-		`SELECT e.k, COUNT(*) FROM ` + a + `, h AS d, g AS e WHERE a.id = d.id AND d.id >= e.k GROUP BY e.k`: "FlatMap(outer=PredicatesFilter(Scan(W), [1 preds]), inner=PredicatesFilter(FlatMap(outer=Scan(G), inner=Scan(H, [<>]))",
+		`SELECT e.k, COUNT(*) FROM ` + a + `, h AS d, g AS e WHERE a.id = d.id AND d.id >= e.k GROUP BY e.k`: "FlatMap(outer=PredicatesFilter(Scan(W), [1 preds]), inner=FlatMap(outer=Scan(H, [=]), inner=Scan(G, [<>])))",
 	}
 	for _, tc := range []struct {
 		sql  string

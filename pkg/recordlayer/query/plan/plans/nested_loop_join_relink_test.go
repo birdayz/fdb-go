@@ -924,7 +924,7 @@ func TestFlatMapPlan_ReanchorsSourceThroughNestedLoopJoinChildBinding(t *testing
 	}
 }
 
-func TestFlatMapPlan_ReanchorsSelectedOrdinalityBindingNames(t *testing.T) {
+func TestFlatMapPlan_ReanchorsOrdinalityExplodeBindings(t *testing.T) {
 	t.Parallel()
 	outerType := values.NewRecordType("OUTER", false, []values.Field{
 		{Name: "ID", FieldType: values.NotNullLong},
@@ -944,7 +944,7 @@ func TestFlatMapPlan_ReanchorsSelectedOrdinalityBindingNames(t *testing.T) {
 		values.LiteralValue(int64(1)),
 	})
 	explode := mustChecked(t, func() (*RecordQueryExplodePlan, error) {
-		return NewRecordQueryExplodePlanWithOrdinality(array, true)
+		return NewRecordQueryExplodePlanWithOrdinalityNames(array, "X", "O")
 	})
 	filter := mustChecked(t, func() (*RecordQueryPredicatesFilterPlan, error) {
 		return NewRecordQueryPredicatesFilterPlan(explode, nil)
@@ -1005,11 +1005,11 @@ func TestFlatMapPlan_ReanchorsSelectedOrdinalityBindingNames(t *testing.T) {
 		})
 	}
 
-	// Authored AS/AT names remain the primary lineage authority even when one
-	// spells the other physical Explode slot. The physical carrier is [_0,_1],
-	// but AS "_1" AT "O" must map element/ordinal to distinct FlatMap output
-	// ordinals. Normalizing O to physical _1 before consulting the retained
-	// result program would collapse both onto the element slot.
+	// An AS alias spelling the positional name of the other slot (AS "_1" AT
+	// "O") still maps element/ordinal to distinct FlatMap output ordinals.
+	collisionExplode := mustChecked(t, func() (*RecordQueryExplodePlan, error) {
+		return NewRecordQueryExplodePlanWithOrdinalityNames(array, "_1", "O")
+	})
 	collisionType := values.NewRecordType("", false, []values.Field{
 		{Name: "_1", FieldType: values.NullableLong},
 		{Name: "O", FieldType: values.NotNullInt},
@@ -1027,7 +1027,7 @@ func TestFlatMapPlan_ReanchorsSelectedOrdinalityBindingNames(t *testing.T) {
 		return resolved
 	}
 	collisionInnerQ := expressions.NamedPhysicalQuantifier(
-		innerAlias, expressions.FinalOfAtStage(explode, expressions.StageCanonical))
+		innerAlias, expressions.FinalOfAtStage(collisionExplode, expressions.StageCanonical))
 	collisionFlat := mustChecked(t, func() (*RecordQueryFlatMapPlan, error) {
 		return NewRecordQueryFlatMapPlanFromQuantifiers(
 			outerQ, collisionInnerQ, outerAlias, innerAlias,
@@ -1052,10 +1052,9 @@ func TestFlatMapPlan_ReanchorsSelectedOrdinalityBindingNames(t *testing.T) {
 		}
 	}
 
-	// A later extraction pass has already normalized the logical AS/AT row to
-	// the selected Explode's physical type. The projection can therefore carry
-	// either a field on that row or the bare scalar element QOV retained by the
-	// FlatMap result program. Both must still cross the producer boundary.
+	// The projection can carry either a field on the Explode's row or the bare
+	// scalar element QOV retained by the FlatMap result program. Both must
+	// cross the producer boundary.
 	physicalInnerQ := expressions.NamedPhysicalQuantifier(
 		innerAlias, expressions.FinalOfAtStage(explode, expressions.StageCanonical))
 	scalarElement, err := values.NewQuantifiedObjectValue(innerAlias, values.NullableLong)
@@ -1169,12 +1168,5 @@ func TestFlatMapPlan_ReanchorsSelectedOrdinalityBindingNames(t *testing.T) {
 	}
 	if translated != drifted {
 		t.Fatal("leaf-type drift crossed the ordinality binding-name bridge")
-	}
-
-	plain := mustChecked(t, func() (*RecordQueryExplodePlan, error) {
-		return NewRecordQueryExplodePlan(array)
-	})
-	if selectedOrdinalityExplode(plain) {
-		t.Fatal("plain Explode admitted the WITH ORDINALITY lineage bridge")
 	}
 }

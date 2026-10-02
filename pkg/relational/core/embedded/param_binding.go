@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/vectorcodec"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
@@ -114,6 +115,12 @@ func parameterConstant(raw any) (values.Value, error) {
 			text = functions.FormatDate(v)
 		}
 		return &values.ConstantValue{Value: text, Typ: values.NotNullString}, nil
+	case api.Vector:
+		_, payload, stride, ok := vectorcodec.Payload(v)
+		if !ok || len(payload)%stride != 0 {
+			return nil, api.NewError(api.ErrCodeInvalidParameter, "invalid serialized VECTOR parameter")
+		}
+		return &values.ConstantValue{Value: []byte(v), Typ: values.NewVectorType(false, stride*8, len(payload)/stride)}, nil
 	case []byte:
 		return &values.ConstantValue{Value: v, Typ: values.NotNullBytes}, nil
 	case driver.Valuer:

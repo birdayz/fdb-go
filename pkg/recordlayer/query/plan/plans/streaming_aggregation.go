@@ -202,10 +202,12 @@ func (p *RecordQueryStreamingAggregationPlan) GetCorrelatedToWithoutChildren() m
 			out[k] = struct{}{}
 		}
 	}
+	delete(out, values.CurrentCorrelation())
 	return out
 }
 
 func (p *RecordQueryStreamingAggregationPlan) GetGroupingKeys() []values.Value { return p.groupingKeys }
+
 func (p *RecordQueryStreamingAggregationPlan) GetAggregates() []expressions.AggregateSpec {
 	return p.aggregates
 }
@@ -266,6 +268,11 @@ func streamingAggregationOutputRecordType(
 				return nil, fmt.Errorf("RecordQueryStreamingAggregationPlan aggregate %d %s requires an operand", i, aggregate.Function)
 			}
 			resultType = values.WithNullability(aggregate.Operand.Type(), true)
+		case expressions.AggBitmapConstructAgg:
+			if aggregate.Operand == nil {
+				return nil, fmt.Errorf("RecordQueryStreamingAggregationPlan aggregate %d BITMAP_CONSTRUCT_AGG requires an operand", i)
+			}
+			resultType = values.NullableBytes
 		case expressions.AggArrayAgg:
 			if aggregate.Operand == nil {
 				return nil, fmt.Errorf("RecordQueryStreamingAggregationPlan aggregate %d ARRAY_AGG requires an operand", i)

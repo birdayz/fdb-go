@@ -1,11 +1,50 @@
 package cascades
 
 import (
+	"math"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
+
+func TestPromotedFloatScanBound(t *testing.T) {
+	t.Parallel()
+	column, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("FLOAT_BOUND"), values.NullableFloat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promotion := values.NewPromoteValue(column, values.NullableDouble)
+	for _, tc := range []struct {
+		name       string
+		input      float64
+		op, wantOp predicates.ComparisonType
+		want       any
+	}{
+		{"exact", 3, predicates.ComparisonEquals, predicates.ComparisonEquals, float32(3)},
+		{"inexact equality", 0.1, predicates.ComparisonEquals, predicates.ComparisonEquals, float64(0.1)},
+		{"upper floor", 0.1, predicates.ComparisonLessThan, predicates.ComparisonLessThanOrEq, math.Nextafter32(float32(0.1), float32(math.Inf(-1)))},
+		{"lower ceiling", 0.1, predicates.ComparisonGreaterThan, predicates.ComparisonGreaterThanEq, float32(0.1)},
+		{"upper overflow", 1e40, predicates.ComparisonLessThan, predicates.ComparisonLessThanOrEq, float32(math.MaxFloat32)},
+		{"lower overflow", -1e40, predicates.ComparisonGreaterThanEq, predicates.ComparisonGreaterThanEq, -float32(math.MaxFloat32)},
+		{"tiny positive", math.SmallestNonzeroFloat64, predicates.ComparisonGreaterThan, predicates.ComparisonGreaterThanEq, float32(math.SmallestNonzeroFloat32)},
+		{"tiny negative", -math.SmallestNonzeroFloat64, predicates.ComparisonLessThan, predicates.ComparisonLessThanOrEq, -float32(math.SmallestNonzeroFloat32)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			operand := &values.ConstantValue{Value: tc.input, Typ: values.NotNullDouble}
+			original := comparisonOrientation{column: promotion, comparison: predicates.Comparison{Type: tc.op, Operand: operand}}
+			got := narrowPromotedFloatScanBound(original)
+			bound, ok := values.EvaluateConstant(got.comparison.Operand)
+			if !ok || got.column != column || got.comparison.Type != tc.wantOp || bound != tc.want {
+				t.Fatalf("scan bound = %v %v (%T), want operator %v bound %v (%T)", got.comparison.Type, bound, bound, tc.wantOp, tc.want, tc.want)
+			}
+			if original.column != promotion || original.comparison.Type != tc.op || original.comparison.Operand != operand || operand.Value != tc.input {
+				t.Fatal("scan inversion mutated the semantic predicate")
+			}
+		})
+	}
+}
 
 // TestBindOrientedComparison_NestedFieldShadowsTopLevelIndex pins RFC-187 S1:
 // a predicate on a NESTED field `addr.city` must NOT bind (SARG) a top-level

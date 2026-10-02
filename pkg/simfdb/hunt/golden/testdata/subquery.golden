@@ -25,7 +25,7 @@ ROWS(3) cols=[OID]:
   [103]
 
 === SELECT c.region, COUNT(*) FROM cust c JOIN ord o ON c.cid = o.cid GROUP BY c.region HAVING COUNT(*) > 1 ORDER BY c.region
-PLAN: Project([_current.REGION#0, _current.COUNT(*)#1], PredicatesFilter(StreamingAgg(keys=[_current.REGION#1], InMemorySort([_current.REGION#1 ASC], FlatMap(outer=Scan(ORD), inner=Scan(CUST, [=])))), [1 preds]))
+PLAN: Project([_current.REGION#0, _current.COUNT(*)#1], PredicatesFilter(StreamingAgg(keys=[_current.REGION#1], InMemorySort([_current.REGION#1 ASC], FlatMap(outer=Scan(CUST), inner=IndexScan(ORD_CID, [=])))), [1 preds]))
 ROWS(1) cols=[REGION, _1]:
   [10, 3]
 

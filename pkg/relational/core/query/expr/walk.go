@@ -989,15 +989,15 @@ func predicateWithChildValues(p predicates.QueryPredicate, newCh []values.Value)
 			for i, sp := range q.SubPredicates {
 				subs[i] = rebuild(sp)
 			}
-			return predicates.NewAnd(subs...)
+			return predicates.WithAtomicity(predicates.NewAnd(subs...), predicates.IsAtomic(q))
 		case *predicates.OrPredicate:
 			subs := make([]predicates.QueryPredicate, len(q.SubPredicates))
 			for i, sp := range q.SubPredicates {
 				subs[i] = rebuild(sp)
 			}
-			return predicates.NewOr(subs...)
+			return predicates.WithAtomicity(predicates.NewOr(subs...), predicates.IsAtomic(q))
 		case *predicates.NotPredicate:
-			return predicates.NewNot(rebuild(q.Child))
+			return predicates.WithAtomicity(predicates.NewNot(rebuild(q.Child)), predicates.IsAtomic(q))
 		}
 		return p
 	}
@@ -1477,10 +1477,8 @@ func (r *Resolver) walkNonAggregateWindowedFunction(fc *antlrgen.NonAggregateFun
 			if !ok {
 				return nil, &UnsupportedExpressionShapeError{Shape: "malformed ORDER BY expression in OVER clause"}
 			}
-			if occ, ok := obec.OrderClause().(*antlrgen.OrderClauseContext); ok && occ != nil && occ.DESC() != nil {
-				return nil, &UnsupportedExpressionShapeError{
-					Shape: "window function ORDER BY must be ascending (DESC not supported)",
-				}
+			if occ, ok := obec.OrderClause().(*antlrgen.OrderClauseContext); ok && occ != nil && (occ.DESC() != nil || occ.LAST() != nil) {
+				return nil, api.NewError(api.ErrCodeUnsupportedSort, "provided sort specification not supported with window function")
 			}
 			av, err := r.WalkExpression(obec.Expression())
 			if err != nil {
@@ -1512,14 +1510,27 @@ func (r *Resolver) walkNonAggregateWindowedFunction(fc *antlrgen.NonAggregateFun
 }
 
 // primitiveTypeToValueType maps the PrimitiveType terminal to a
-// values.Type. BYTES / VECTOR aren't in the CAST set yet —
-// they return (_, false) so the walker declines.
+// values.Type, retaining VECTOR precision and dimensions.
 func primitiveTypeToValueType(pt antlrgen.IPrimitiveTypeContext) (values.Type, bool) {
 	ptc, ok := pt.(*antlrgen.PrimitiveTypeContext)
 	if !ok {
 		return values.TypeUnknown, false
 	}
 	switch {
+	case ptc.VectorType() != nil:
+		vt := ptc.VectorType().(*antlrgen.VectorTypeContext)
+		dims, err := strconv.Atoi(vt.GetDimensions().GetText())
+		if err != nil {
+			return values.TypeUnknown, false
+		}
+		precision := 64
+		elem := vt.GetElementType().(*antlrgen.VectorElementTypeContext)
+		if elem.HALF() != nil {
+			precision = 16
+		} else if elem.FLOAT() != nil {
+			precision = 32
+		}
+		return values.NewVectorType(true, precision, dims), true
 	case ptc.INTEGER() != nil:
 		return values.NullableInt, true
 	case ptc.BIGINT() != nil:
@@ -1908,6 +1919,41 @@ func (r *Resolver) walkRecordConstructorInner(rc antlrgen.IRecordConstructorCont
 // Other shapes (BETWEEN, IN, LIKE, IS NULL via grammar's Predicate
 // node; NOT; XOR) return UnsupportedExpressionShapeError.
 func (r *Resolver) WalkPredicate(ctx antlrgen.IExpressionContext) (predicates.QueryPredicate, error) {
+	pred, err := r.walkPredicate(ctx)
+	if err != nil || ctx == nil {
+		return pred, err
+	}
+	if _, where := ctx.GetParent().(antlrgen.IWhereExprContext); !where {
+		return pred, nil
+	}
+	// ExpressionVisitor.visitWhereExpr rejects WindowedValue in the resolved
+	// expression, before the distance-rank comparison is lowered for planning.
+	found := false
+	check := func(v values.Value) {
+		values.WalkValue(v, func(n values.Value) bool {
+			if _, ok := n.(*values.RowNumberValue); ok {
+				found = true
+			}
+			return !found
+		})
+	}
+	predicates.WalkPredicate(pred, func(node predicates.QueryPredicate) bool {
+		switch n := node.(type) {
+		case *predicates.ComparisonPredicate:
+			check(n.Operand)
+			check(n.Comparison.Operand)
+		case *predicates.ValuePredicate:
+			check(n.Value)
+		}
+		return !found
+	})
+	if found {
+		return nil, api.NewError(api.ErrCodeWindowingError, "window functions are not allowed in WHERE")
+	}
+	return pred, nil
+}
+
+func (r *Resolver) walkPredicate(ctx antlrgen.IExpressionContext) (predicates.QueryPredicate, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("expr.WalkPredicate: nil context")
 	}

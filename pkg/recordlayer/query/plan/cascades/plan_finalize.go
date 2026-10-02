@@ -3,6 +3,8 @@ package cascades
 import (
 	"errors"
 
+	"google.golang.org/protobuf/reflect/protoreflect"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -193,6 +195,7 @@ func forEachNodeLocalValue(plan plans.RecordQueryPlan, emit func(values.Value)) 
 			forEachNodeLocalValue(idx, emit)
 		}
 	case *plans.RecordQueryVectorIndexPlan:
+		forEachValue(p.GetCommonPrimaryKeyValues(), emit)
 		forEachScanComparisonValue(p.GetPrefixComparisons(), emit)
 		emit(p.GetQueryVector())
 		emit(p.GetK())
@@ -369,4 +372,20 @@ func stampRecordConstructor(rc *values.RecordConstructorValue, st *planStamper) 
 		return
 	}
 	rc.SetMessageDescriptor(md)
+}
+
+// ForEachPlanMessageDescriptor visits the computed descriptors bound during
+// finalization. Continuation readers need these alongside stored metadata;
+// reconstructing a fresh repository would assign different anonymous names.
+func ForEachPlanMessageDescriptor(plan plans.RecordQueryPlan, visit func(protoreflect.MessageDescriptor)) {
+	forEachPlanValue(plan, func(node values.Value) {
+		switch v := node.(type) {
+		case *values.RecordConstructorValue:
+			if md := v.MessageDescriptor(); md != nil {
+				visit(md)
+			}
+		case *values.PromoteValue:
+			v.ForEachMessageDescriptor(visit)
+		}
+	})
 }

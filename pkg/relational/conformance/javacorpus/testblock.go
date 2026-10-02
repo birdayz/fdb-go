@@ -79,7 +79,8 @@ func resolveOptions(b *javayamsql.TestBlock) blockOptions {
 type executable struct {
 	test *javayamsql.Test
 	// rep is the 0-based repetition index, carried for failure messages.
-	rep int64
+	rep      int64
+	prepared bool
 }
 
 func (r *runner) executeTestBlock(ctx context.Context, resource string, blk *javayamsql.Block) error {
@@ -92,18 +93,6 @@ func (r *runner) executeTestBlock(ctx context.Context, resource string, blk *jav
 	}
 
 	o := resolveOptions(b)
-	switch o.StatementType {
-	case "prepared":
-		// Running the simple arm here would be a different test, not a
-		// partial one: the block exists to exercise the prepared path.
-		r.skip(SkipPrepared, where, "statement_type: prepared")
-		return nil
-	case "both":
-		// Java runs both arms and requires the mix to contain each at least
-		// once. Only the simple arm runs here, so the prepared half is a
-		// counted omission rather than a silent one.
-		r.skip(SkipPrepared, where, "statement_type defaults to BOTH; only the simple arm runs")
-	}
 	if o.CheckCache {
 		// The extra pass is cheap; the assertion attached to it is not. Java
 		// compares PLAN_CACHE_TERTIARY_HIT before and after and requires
@@ -127,13 +116,15 @@ func (r *runner) executeTestBlock(ctx context.Context, resource string, blk *jav
 	// Java builds `repetition` executables per test and then shuffles the
 	// flattened list, so the copies of one test do not stay adjacent.
 	var execs []executable
+	random := newJavaRandom(blockSeed(o, where))
 	for _, t := range b.Tests {
+		mix := preparedMix(o.StatementType, o.Repetition, random)
 		for i := int64(0); i < o.Repetition; i++ {
-			execs = append(execs, executable{test: t, rep: i})
+			execs = append(execs, executable{test: t, rep: i, prepared: mix[i]})
 		}
 	}
 	if o.Mode != "ordered" {
-		shuffle(execs, blockSeed(o, where))
+		shuffle(execs, random)
 	}
 
 	// connection_lifecycle: BLOCK holds one connection for every executable,
@@ -193,8 +184,7 @@ func blockSeed(o blockOptions, where string) int64 {
 
 // shuffle is java.util.Collections.shuffle: Fisher-Yates walking down from the
 // end, drawing nextInt(i) at each step.
-func shuffle(list []executable, seed int64) {
-	rnd := newJavaRandom(seed)
+func shuffle(list []executable, rnd *javaRandom) {
 	for i := len(list); i > 1; i-- {
 		j := rnd.nextInt(int32(i))
 		list[i-1], list[j] = list[j], list[i-1]
@@ -212,7 +202,14 @@ func (r *runner) runTest(ctx context.Context, conn *sql.Conn, where string, e ex
 		return nil
 	}
 
-	query, ok := r.adaptQuery(cmd, at)
+	var query string
+	var args []any
+	var ok bool
+	if e.prepared {
+		query, args, ok = r.adaptPreparedQuery(cmd, at)
+	} else {
+		query, ok = r.adaptQuery(cmd, at)
+	}
 	if !ok {
 		return nil
 	}
@@ -227,7 +224,11 @@ func (r *runner) runTest(ctx context.Context, conn *sql.Conn, where string, e ex
 	// exactly that file upstream ("# TODO: add data", one config-less query).
 	if cmd.ImplicitNoChecks() {
 		r.skip(SkipNoChecks, at, "query declares no configs")
-		if _, err := execAny(ctx, conn, query); err != nil {
+		var run execer = conn
+		if e.prepared {
+			run = preparedExecer{base: conn, args: args}
+		}
+		if _, err := execAny(ctx, run, query); err != nil {
 			return fmt.Errorf("%s: %q: %w", at, truncate(query), err)
 		}
 		return nil
@@ -261,7 +262,7 @@ func (r *runner) runTest(ctx context.Context, conn *sql.Conn, where string, e ex
 	}
 
 	cfg := plan.Consuming[0]
-	if err := r.runConfigWithSetups(ctx, conn, at, query, cfg, plan); err != nil {
+	if err := r.runConfigWithSetups(ctx, conn, at, query, cfg, plan, e.prepared, args); err != nil {
 		return err
 	}
 	r.result.QueriesRun++
@@ -270,15 +271,22 @@ func (r *runner) runTest(ctx context.Context, conn *sql.Conn, where string, e ex
 
 // runConfigWithSetups is executeWithSetup: the setups and the query share one
 // transaction, which commits after the query (setAutoCommit(true)).
-func (r *runner) runConfigWithSetups(ctx context.Context, conn *sql.Conn, at, query string, cfg *javayamsql.Config, plan configPlan) error {
+func (r *runner) runConfigWithSetups(ctx context.Context, conn *sql.Conn, at, query string, cfg *javayamsql.Config, plan configPlan, prepared bool, args []any) error {
 	if len(plan.Setups) == 0 {
-		return r.runConfig(ctx, conn, at, query, cfg, plan.Metadata)
+		var run execer = conn
+		if prepared {
+			run = preparedExecer{base: conn, args: args}
+		}
+		return r.runConfig(ctx, run, at, query, cfg, plan.Metadata)
 	}
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("%s: begin: %w", at, err)
 	}
 	var run execer = tx
+	if prepared {
+		run = preparedExecer{base: tx, args: args}
+	}
 	for _, setup := range plan.Setups {
 		// QueryCommand.java:273 admits only this statement as a setup.
 		const allowed = "CREATE TEMPORARY FUNCTION"

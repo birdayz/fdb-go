@@ -1,10 +1,14 @@
 package cascades
 
 import (
+	"math"
+	"reflect"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // MatchIntermediateRule is the Cascades rule that matches non-leaf
@@ -44,14 +48,16 @@ type MatchIntermediateRule struct {
 // NewMatchIntermediateRule constructs a MatchIntermediateRule.
 func NewMatchIntermediateRule() *MatchIntermediateRule {
 	return &MatchIntermediateRule{
-		matcher: NewExpressionMatcher[expressions.RelationalExpression]("match_intermediate"),
+		matcher: NewExpressionMatcher[expressions.RelationalExpression]("match_intermediate").WithRootPredicate(
+			func(expr expressions.RelationalExpression) bool { return len(expr.GetQuantifiers()) > 0 },
+		),
 	}
 }
 
-// Matcher returns the binding matcher. Matches any
-// RelationalExpression (the non-leaf check is inside OnMatch). Mirrors
-// Java's MatchIntermediateRule which returns Optional.empty() from
-// getRootOperator().
+// ConstraintDependencies mirrors Java's constraint-independent matching rule.
+func (r *MatchIntermediateRule) ConstraintDependencies() []any { return nil }
+
+// Matcher admits non-leaves of any expression type; leaves cannot compose child matches.
 func (r *MatchIntermediateRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 // OnMatch implements the intermediate matching logic. It collects
@@ -119,6 +125,48 @@ func (r *MatchIntermediateRule) OnMatch(call *ExpressionRuleCall) {
 				call, expr, candidate, parent.ref, parent.expr,
 			)
 		}
+	}
+}
+
+// Scheduling uses this only after child matching has settled. Consult actual
+// child matches, including candidates not declared by the PlanContext.
+func hasIntermediateMatchCandidate(expr expressions.RelationalExpression) bool {
+	for _, q := range expr.GetQuantifiers() {
+		ref := q.GetRangesOver()
+		if ref == nil {
+			continue
+		}
+		for _, candidate := range GetPartialMatchCandidatesTyped(ref) {
+			traversal := candidate.GetTraversal()
+			if traversal == nil {
+				continue
+			}
+			for _, raw := range ref.GetPartialMatchesFor(candidate) {
+				match, ok := raw.(*PartialMatchImpl)
+				if !ok {
+					continue
+				}
+				for _, parent := range traversal.GetParentRefPairs(match.GetCandidateRef()) {
+					if intermediateOperatorsMayMatch(expr, parent.expr) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+func intermediateOperatorsMayMatch(query, candidate expressions.RelationalExpression) bool {
+	// These implementations require the same concrete type for structural
+	// equality and have no subsumption route. Custom query types remain eligible.
+	switch query.(type) {
+	case *expressions.LogicalUniqueExpression, *expressions.LogicalUnionExpression,
+		*plans.RecordQueryPredicatesFilterPlan, *plans.RecordQueryFetchFromPartialRecordPlan,
+		*plans.RecordQueryUnorderedUnionPlan, *plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
+		return reflect.TypeOf(query) == reflect.TypeOf(candidate)
+	default:
+		return true
 	}
 }
 
@@ -987,18 +1035,20 @@ func matchSingleSourceAgainstSelect(
 	// Candidate bindings collected during the placeholder loop, finalized only
 	// after the scan prefix is computed (see the reconciliation after the loop).
 	var pendingSargables []pendingSargable
+	var candidateFilters []predicates.QueryPredicate
 
 	for _, candPred := range candidatePreds {
 		ph, ok := candPred.(*predicates.Placeholder)
 		if !ok {
 			// A candidate predicate that filters rows cannot be ignored: the
 			// candidate would then produce a subset of the query and no
-			// compensation can restore the eliminated records. Java removes
-			// only remaining tautologies at this point.
+			// compensation can restore the eliminated records. Discharge each
+			// filter by implication after composing the child's alias bindings.
 			if predicates.IsTautology(candPred) {
 				continue
 			}
-			return
+			candidateFilters = append(candidateFilters, candPred)
+			continue
 		}
 
 		// Every unmatched query comparison that binds this placeholder folds
@@ -1103,11 +1153,15 @@ func matchSingleSourceAgainstSelect(
 	// pruning). Without this, the residual would be silently dropped →
 	// wrong rows.
 	residualCount := 0
+	hasOrResidual := false
 	for _, queryPred := range queryPreds {
 		if matchedQueryPreds[queryPred] {
 			continue
 		}
 		residualPred := queryPred
+		if _, isOr := residualPred.(*predicates.OrPredicate); isOr {
+			hasOrResidual = true
+		}
 		mapping := RegularMappingBuilder(
 			residualPred,
 			residualPred,
@@ -1158,6 +1212,58 @@ func matchSingleSourceAgainstSelect(
 			}
 			boundAliasMap := aliasBuilder.Build()
 
+			// A filtered candidate may omit rows only when the query implies
+			// every stored filter. Keep the query's existing scan/residual
+			// mappings: proving candidate eligibility does not discharge a
+			// stricter query predicate.
+			for _, candidateFilter := range candidateFilters {
+				implied := false
+				for _, queryPredicate := range queryPreds {
+					if !budget.chargeState() {
+						return false
+					}
+					if _, ok := selectSubsumptionPredicateImpliedMappingMaybe(
+						queryPredicate, queryPredicate, candidateFilter, candidateQs, boundAliasMap,
+					); ok {
+						implied = true
+						break
+					}
+				}
+				if !implied {
+					return true
+				}
+			}
+
+			// OR-term hints need the child's composed aliases, but leave the
+			// scan prefix and whole-OR residual compensation unchanged.
+			matchedPredicateMap := predMultiMap
+			if hasOrResidual {
+				builder := NewPredicateMultiMapBuilder()
+				for _, entry := range predMultiMap.Entries() {
+					mapping := entry.Mapping
+					if _, isOr := entry.Predicate.(*predicates.OrPredicate); isOr {
+						for _, candidatePredicate := range candidatePreds {
+							if _, isPlaceholder := candidatePredicate.(*predicates.Placeholder); !isPlaceholder {
+								continue
+							}
+							if !budget.chargeState() {
+								return false
+							}
+							if hint, ok := selectSubsumptionPredicateImpliedMappingMaybe(entry.Predicate, entry.Predicate,
+								candidatePredicate, candidateQs, boundAliasMap); ok {
+								mapping = hint
+								break
+							}
+						}
+					}
+					builder.Put(entry.Predicate, mapping)
+				}
+				matchedPredicateMap = builder.BuildMaybe()
+				if matchedPredicateMap == nil {
+					return true
+				}
+			}
+
 			// This alias-compatible child is now a semantic match attempt.
 			// Charge before value matching and metadata merge so a rejected
 			// branch consumes the same bounded-work unit as a successful one.
@@ -1180,7 +1286,7 @@ func matchSingleSourceAgainstSelect(
 					partialMatch: childMatch,
 				}},
 				paramBindings,
-				predMultiMap,
+				matchedPredicateMap,
 				mmm,
 				EmptyGroupByMappings(),
 				nil,
@@ -1263,6 +1369,7 @@ func bindOrientedComparison(
 	sourceAlias values.CorrelationIdentifier,
 ) *predicates.ComparisonRange {
 	for _, orient := range comparisonOrientations(cp) {
+		orient = narrowPromotedFloatScanBound(orient)
 		if !isSargableComparisonForMatch(orient.comparison.Type) {
 			continue
 		}
@@ -1322,6 +1429,47 @@ func bindOrientedComparison(
 		return mr.Range
 	}
 	return nil
+}
+
+// narrowPromotedFloatScanBound inverts FLOAT-to-DOUBLE promotion for a constant
+// scan bound. Keep the semantic predicate promoted, including for OR-term hints.
+func narrowPromotedFloatScanBound(orient comparisonOrientation) comparisonOrientation {
+	promotion, ok := orient.column.(*values.PromoteValue)
+	if !ok || promotion.Target.Code() != values.TypeCodeDouble || promotion.Child.Type().Code() != values.TypeCodeFloat {
+		return orient
+	}
+	constant, ok := values.EvaluateConstant(orient.comparison.Operand)
+	if !ok {
+		return orient
+	}
+	bound, ok := constant.(float64)
+	if !ok || math.IsNaN(bound) {
+		return orient
+	}
+	converted := float32(bound)
+	if float64(converted) != bound {
+		switch orient.comparison.Type {
+		case predicates.ComparisonGreaterThan, predicates.ComparisonGreaterThanEq:
+			if float64(converted) < bound {
+				converted = math.Nextafter32(converted, float32(math.Inf(1)))
+			}
+			orient.comparison.Type = predicates.ComparisonGreaterThanEq
+		case predicates.ComparisonLessThan, predicates.ComparisonLessThanOrEq:
+			if float64(converted) > bound {
+				converted = math.Nextafter32(converted, float32(math.Inf(-1)))
+			}
+			orient.comparison.Type = predicates.ComparisonLessThanOrEq
+		case predicates.ComparisonEquals:
+			// No FLOAT key equals this DOUBLE; retain the disjoint bound encoding.
+			orient.column = promotion.Child
+			return orient
+		default:
+			return orient
+		}
+	}
+	orient.column = promotion.Child
+	orient.comparison.Operand = &values.ConstantValue{Value: converted, Typ: promotion.Child.Type()}
+	return orient
 }
 
 // comparandIndependentOfSource reports whether comparand can be bound into a scan

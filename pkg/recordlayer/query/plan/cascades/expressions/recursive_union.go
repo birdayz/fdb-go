@@ -146,6 +146,18 @@ func (e *RecursiveUnionExpression) GetQuantifiers() []Quantifier {
 
 func (e *RecursiveUnionExpression) CanCorrelate() bool { return true }
 
+func (e *RecursiveUnionExpression) ComputeCorrelatedTo(childCorrelations func(*Reference) map[values.CorrelationIdentifier]struct{}) map[values.CorrelationIdentifier]struct{} {
+	result := make(map[values.CorrelationIdentifier]struct{})
+	for _, quantifier := range e.GetQuantifiers() {
+		for alias := range childCorrelations(quantifier.GetRangesOver()) {
+			if alias != e.tempTableScanAlias && alias != e.tempTableInsertAlias {
+				result[alias] = struct{}{}
+			}
+		}
+	}
+	return result
+}
+
 func (e *RecursiveUnionExpression) ChildrenAsSet() bool { return false }
 
 func (e *RecursiveUnionExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {

@@ -30,7 +30,10 @@ import (
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // mustContValue / mustAggGroupKey wrap the now-erroring typed encoders for
@@ -1616,5 +1619,61 @@ func TestAggGroupKey_NaNPayloadsShareOneKey(t *testing.T) {
 		t.Errorf("-0.0 and +0.0 packed to the same group key (%x); Double.equals compares "+
 			"BITS, and an aggregate index stores them as two physical entries Java reads "+
 			"the same way", negZero)
+	}
+}
+
+func TestContinuationResolverUsesFinalizedComputedDescriptors(t *testing.T) {
+	t.Parallel()
+	source := values.NewRecordConstructorValue(values.RecordConstructorField{Name: "A", Value: &values.ConstantValue{Value: int32(7), Typ: values.NotNullInt}})
+	target := values.NewRecordType("PromotedRecord", true, []values.Field{{Name: "B", FieldType: values.NullableLong}})
+	promotion, err := values.NewPromoteValueChecked(source, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner, err := plans.NewRecordQueryExplodePlan(&values.ConstantValue{Value: []any{}, Typ: values.NewArrayType(false, values.NotNullLong)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := plans.NewRecordQueryProjectionPlan([]values.Value{promotion}, inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cascades.FinalizePlan(plan); err != nil {
+		t.Fatal(err)
+	}
+	resolve := continuationMessageResolver(nil, plan)
+	seen := map[protoreflect.FullName]bool{}
+	cascades.ForEachPlanMessageDescriptor(plan, func(desc protoreflect.MessageDescriptor) {
+		got, err := resolve(string(desc.FullName()))
+		if err != nil || got != desc {
+			t.Fatalf("descriptor %s: got %v, %v", desc.FullName(), got, err)
+		}
+		seen[desc.FullName()] = true
+	})
+	if !seen[source.MessageDescriptor().FullName()] || !seen["PromotedRecord"] {
+		t.Fatalf("must cover constructor and promotion descriptors: %v", seen)
+	}
+	if _, err := resolve("not_in_this_plan"); err == nil {
+		t.Fatal("unknown descriptor accepted")
+	}
+}
+
+func TestContinuationResolverRejectsConflictingComputedNames(t *testing.T) {
+	t.Parallel()
+	files := make([]protoreflect.FileDescriptor, 0, 2)
+	for _, typ := range []values.Type{values.NotNullInt, values.NotNullString} {
+		repo := values.NewTypeProtoRepository()
+		desc, err := repo.MessageDescriptorFor(values.NewRecordType("", false, []values.Field{{Name: "V", FieldType: typ}}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, desc.ParentFile())
+	}
+	if files[0].Messages().Get(0).FullName() != files[1].Messages().Get(0).FullName() {
+		t.Fatal("fixture must collide")
+	}
+	_, err := metadataMessageResolver(nil, files...)(string(files[0].Messages().Get(0).FullName()))
+	if err == nil || !strings.Contains(err.Error(), "conflicting continuation descriptors") {
+		t.Fatalf("must reject ambiguous descriptor, got %v", err)
 	}
 }

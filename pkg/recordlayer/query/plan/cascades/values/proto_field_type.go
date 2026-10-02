@@ -1,6 +1,8 @@
 package values
 
 import (
+	"fdb.dev/gen"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/pkg/recordlayer/protoname"
@@ -132,6 +134,9 @@ func ScalarCodeForProtoKind(fd protoreflect.FieldDescriptor) (TypeCode, bool) {
 		// slot genuinely holds a Go string either way.
 		return TypeCodeString, true
 	case protoreflect.BytesKind:
+		if vectorTypeForProtoField(fd) != nil {
+			return TypeCodeVector, true
+		}
 		return TypeCodeBytes, true
 	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
 		// Type.TypeCode.fromProtobufFieldDescriptor (Type.java:909-914): INT, the
@@ -176,6 +181,9 @@ func protoEnumHasNumberAlias(ed protoreflect.EnumDescriptor) bool {
 }
 
 func scalarTypeForProtoField(fd protoreflect.FieldDescriptor, active map[protoreflect.FullName]struct{}) Type {
+	if vt := vectorTypeForProtoField(fd); vt != nil {
+		return vt
+	}
 	if fd == nil {
 		return UnknownType
 	}
@@ -289,4 +297,16 @@ func FieldNameForProtoField(field protoreflect.FieldDescriptor) string {
 // name, un-escaped by the same rule.
 func RecordNameForDescriptor(descriptor protoreflect.MessageDescriptor) string {
 	return protoname.ToUserIdentifier(string(descriptor.Name()))
+}
+
+func vectorTypeForProtoField(fd protoreflect.FieldDescriptor) *VectorType {
+	if fd == nil || fd.Kind() != protoreflect.BytesKind || !proto.HasExtension(fd.Options(), gen.E_Field) {
+		return nil
+	}
+	opts, ok := proto.GetExtension(fd.Options(), gen.E_Field).(*gen.FieldOptions)
+	if !ok || opts.GetVectorOptions() == nil {
+		return nil
+	}
+	v := opts.GetVectorOptions()
+	return NewVectorType(true, int(v.GetPrecision()), int(v.GetDimensions()))
 }

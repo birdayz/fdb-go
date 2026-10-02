@@ -122,7 +122,8 @@ func (tr Transaction) GetDatabase() Database {
 }
 
 // GetCommittedVersion returns the version at which this transaction
-// committed. Must be called after a successful Commit.
+// last committed, or -1 before a write commit or after a read-only commit.
+// Reset and OnError preserve the last committed version.
 func (tr Transaction) GetCommittedVersion() (int64, error) {
 	v, err := tr.t.inner.GetCommittedVersion()
 	if err != nil {
@@ -352,24 +353,11 @@ func (tr Transaction) SetReadVersion(version int64) {
 // and will race with Reset. This matches Apple binding semantics
 // where Reset must not be called while the transaction is in use.
 func (tr Transaction) Reset() {
-	old := tr.t.inner
-	// Match C++ user-facing reset() (ReadYourWrites.actor.cpp:2735-2755): DROP
-	// user-set options, KEEP the tenant, re-apply the database transaction defaults.
-	// A fresh inner drops the user-set per-tx options (writeConflictsDisabled,
-	// user SetTimeout/SetRetryLimit/tags/priority — C++ clears persistentOptions);
-	// SetTenantId re-applies the tenant so a reset tenant tx stays scoped (NOT a
-	// wrong-keyspace write — C++ reset keeps the tenant); applyTxDefaults re-copies
-	// the DB defaults (C++ recopies getTransactionDefaults). NB the onError-RETRY
-	// reset is a DIFFERENT path (client resetRyow) that PRESERVES user options so
-	// retries keep them; that one is client.Transaction.Reset, used in the retry loop.
-	fresh := tr.t.db.d.inner.CreateTransaction()
-	if tid := old.TenantId(); tid >= 0 {
-		fresh.SetTenantId(tid)
-	}
-	tr.t.inner = fresh
+	// Reset in place: NativeAPI cloneAndReset preserves committedVersion and
+	// tenant identity while clearing user options and restoring DB defaults.
+	tr.t.inner.Reset()
 	tr.t.versionstamps = true
 	tr.t.db.applyTxDefaults(tr.t)
-	old.Cancel()
 }
 
 // AddReadConflictRange adds a read conflict range.

@@ -25,7 +25,8 @@ func adjustMatchRowType() *values.RecordType {
 
 func adjustMatchScan() *expressions.FullUnorderedScanExpression {
 	return mustAdjustMatchConstruct(expressions.NewFullUnorderedScanExpression(
-		[]string{"T"}, adjustMatchRowType()))
+		[]string{"T"}, adjustMatchRowType(),
+	))
 }
 
 func adjustMatchFilter(inner expressions.Quantifier) *expressions.LogicalFilterExpression {
@@ -80,9 +81,15 @@ func (adjustMatchCandidate) ToScanPlan(
 // adjustMatch; for testing we create a simple adjustable expression.
 type adjustableFilterExpression struct {
 	*expressions.LogicalFilterExpression
+	adjustments int
+	reject      bool
 }
 
 func (a *adjustableFilterExpression) AdjustMatch(pm PartialMatch) MatchInfo {
+	a.adjustments++
+	if a.reject {
+		return nil
+	}
 	return NewAdjustedBuilder(pm.GetMatchInfo()).Build()
 }
 
@@ -416,14 +423,8 @@ func candHasAdjustedMatch(ref *expressions.Reference, mc MatchCandidate, parentR
 	return false
 }
 
-// TestAdjustPartialMatches_LateSeededCandidateWaveStillAdjusted pins
-// RFC-076-step-1: AdjustPartialMatchesForRef must adjust matches that
-// are seeded AFTER an earlier candidate's matches were already adjusted (matches
-// arrive in waves across repeated pushDataAccessTasks calls). The retired coarse
-// `refHasAdjustedMatch` short-circuit skipped the whole ref once ANY match was
-// adjusted, leaving a later candidate's seeds with empty matchedOrderingParts
-// (sort elimination silently degrades). Idempotence is now per-match via the
-// content dedup, so the second wave is still absorbed.
+// A ref-level adjustment guard would lose candidates seeded by later
+// exploration waves, including the ordering parts needed for sort elimination.
 func TestAdjustPartialMatches_LateSeededCandidateWaveStillAdjusted(t *testing.T) {
 	t.Parallel()
 
@@ -449,10 +450,7 @@ func TestAdjustPartialMatches_LateSeededCandidateWaveStillAdjusted(t *testing.T)
 	}
 }
 
-// TestAdjustPartialMatches_NoDuplicateExplosionOnRepeatedCalls pins that
-// repeated AdjustPartialMatchesForRef calls do NOT accumulate duplicate adjusted
-// matches (the reason the coarse guard existed) — the content dedup in
-// AddPartialMatchForCandidate rejects content-equivalent re-adjustments.
+// Repeated data-access consumption must not accumulate adjusted duplicates.
 func TestAdjustPartialMatches_NoDuplicateExplosionOnRepeatedCalls(t *testing.T) {
 	t.Parallel()
 
@@ -470,6 +468,132 @@ func TestAdjustPartialMatches_NoDuplicateExplosionOnRepeatedCalls(t *testing.T) 
 
 	if afterN != after1 {
 		t.Fatalf("duplicate explosion: %d matches after 1 call, %d after 11 calls (content dedup must keep it stable)", after1, afterN)
+	}
+}
+
+func TestAdjustPartialMatches_ProcessesEachMatchOnce(t *testing.T) {
+	t.Parallel()
+	for _, reject := range []bool{false, true} {
+		t.Run(map[bool]string{false: "accepted", true: "rejected"}[reject], func(t *testing.T) {
+			t.Parallel()
+			query := adjustMatchScan()
+			ref := expressions.InitialOf(query)
+			candidate, parent := seedAdjustableCandidate("once", ref, query)
+			adjuster := parent.Get().(*adjustableFilterExpression)
+			adjuster.reject = reject
+			seed := GetPartialMatchesForCandidate(ref, candidate)[0]
+			for range 10 {
+				AdjustPartialMatchesForRef(ref)
+			}
+			if adjuster.adjustments != 1 {
+				t.Fatalf("unchanged match adjusted %d times, want 1", adjuster.adjustments)
+			}
+			want := 2
+			if reject {
+				want = 1
+			}
+			if got := len(GetPartialMatchesForCandidate(ref, candidate)); got != want {
+				t.Fatalf("stored matches = %d, want %d", got, want)
+			}
+
+			aliases := NewAliasMapBuilder()
+			aliases.Put(values.NamedCorrelationIdentifier("query"), values.NamedCorrelationIdentifier("candidate"))
+			late := NewPartialMatch(aliases.Build(), candidate, ref, query, seed.GetCandidateRef(), seed.GetMatchInfo())
+			if !AddPartialMatchForCandidate(ref, candidate, late) {
+				t.Fatal("late alias alternative was rejected")
+			}
+			AdjustPartialMatchesForRef(ref)
+			if adjuster.adjustments != 2 {
+				t.Fatalf("late match made total adjustment attempts %d, want 2", adjuster.adjustments)
+			}
+			if got := len(GetPartialMatchesForCandidate(ref, candidate)); got != 2*want {
+				t.Fatalf("matches after late seed = %d, want %d", got, 2*want)
+			}
+			reconstruction := NewPartialMatch(late.GetBoundAliasMap(), candidate, ref, query, seed.GetCandidateRef(), seed.GetMatchInfo())
+			if AddPartialMatchForCandidate(ref, candidate, reconstruction) {
+				t.Fatal("reconstructed seed was not deduplicated")
+			}
+			AdjustPartialMatchesForRef(ref)
+			if adjuster.adjustments != 2 {
+				t.Fatal("rejected duplicate rearmed adjustment")
+			}
+		})
+	}
+}
+
+func TestAdjustPartialMatches_TraversalReplacement(t *testing.T) {
+	t.Parallel()
+	query := adjustMatchScan()
+	ref := expressions.InitialOf(query)
+	candidate, lower := seedAdjustableCandidate("replacement", ref, query)
+	original := candidate.traversal
+	candidate.traversal = nil
+	AdjustPartialMatchesForRef(ref)
+	if got := len(GetPartialMatchesForCandidate(ref, candidate)); got != 1 {
+		t.Fatalf("nil traversal produced %d matches, want original seed only", got)
+	}
+	candidate.traversal = original
+	AdjustPartialMatchesForRef(ref)
+	if !candHasAdjustedMatch(ref, candidate, lower) {
+		t.Fatal("late traversal was not adjusted")
+	}
+
+	upper := &adjustableFilterExpression{LogicalFilterExpression: adjustMatchFilter(expressions.ForEachQuantifier(lower))}
+	root := expressions.InitialOf(upper)
+	candidate.traversal = NewTraversal(root)
+	AdjustPartialMatchesForRef(ref)
+	if !candHasAdjustedMatch(ref, candidate, root) {
+		t.Fatal("replacement traversal's new parent was not adjusted")
+	}
+	AdjustPartialMatchesForRef(ref)
+	if upper.adjustments != 1 {
+		t.Fatalf("new parent adjusted %d times, want 1", upper.adjustments)
+	}
+	if got := len(GetPartialMatchesForCandidate(ref, candidate)); got != 3 {
+		t.Fatalf("matches after traversal replacement = %d, want 3", got)
+	}
+}
+
+func TestAdjustPartialMatches_DrainsDeepTraversal(t *testing.T) {
+	t.Parallel()
+	query := adjustMatchScan()
+	ref := expressions.InitialOf(query)
+	candidate, root := seedAdjustableCandidate("deep", ref, query)
+	const levels = 12
+	adjusters := []*adjustableFilterExpression{root.Get().(*adjustableFilterExpression)}
+	for range levels - 1 {
+		parent := &adjustableFilterExpression{LogicalFilterExpression: adjustMatchFilter(expressions.ForEachQuantifier(root))}
+		adjusters = append(adjusters, parent)
+		root = expressions.InitialOf(parent)
+	}
+	candidate.traversal = NewTraversal(root)
+	AdjustPartialMatchesForRef(ref)
+	if !candHasAdjustedMatch(ref, candidate, root) {
+		t.Fatal("adjustment stopped before reaching the twelfth candidate parent")
+	}
+	if got := len(GetPartialMatchesForCandidate(ref, candidate)); got != levels+1 {
+		t.Fatalf("matches = %d, want seed plus %d adjusted layers", got, levels)
+	}
+	for i, adjuster := range adjusters {
+		if adjuster.adjustments != 1 {
+			t.Fatalf("parent %d adjusted %d times, want 1", i, adjuster.adjustments)
+		}
+	}
+}
+
+func BenchmarkAdjustPartialMatchesUnchanged(b *testing.B) {
+	query := adjustMatchScan()
+	ref := expressions.InitialOf(query)
+	candidate, _ := seedAdjustableCandidate("unchanged", ref, query)
+	AdjustPartialMatchesForRef(ref)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		AdjustPartialMatchesForRef(ref)
+	}
+	b.StopTimer()
+	if got := len(GetPartialMatchesForCandidate(ref, candidate)); got != 2 {
+		b.Fatalf("matches = %d, want seed plus adjusted match", got)
 	}
 }
 

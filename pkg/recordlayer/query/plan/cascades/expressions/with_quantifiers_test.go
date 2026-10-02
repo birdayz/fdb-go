@@ -35,7 +35,8 @@ func TestWithQuantifiersRejectsArityMismatchWithoutObject(t *testing.T) {
 		q2,
 		values.NamedCorrelationIdentifier("scan"),
 		values.NamedCorrelationIdentifier("insert"),
-		TraversalPreorder))
+		TraversalPreorder,
+	))
 
 	tests := []struct {
 		name        string
@@ -117,7 +118,7 @@ func TestWithQuantifiersRejectsArityMismatchWithoutObject(t *testing.T) {
 		},
 		{
 			name:        "logical unique",
-			expression:  &LogicalUniqueExpression{inner: q1},
+			expression:  &LogicalUniqueExpression{quantifiers: [1]Quantifier{q1}},
 			quantifiers: nil,
 		},
 		{
@@ -204,7 +205,8 @@ func TestWithQuantifiersExactArityRebuildsPositionally(t *testing.T) {
 		q2,
 		values.NamedCorrelationIdentifier("scan"),
 		values.NamedCorrelationIdentifier("insert"),
-		TraversalPostorder))
+		TraversalPostorder,
+	))
 
 	rebuiltRecursive, ok := mustWithQuantifiers(t, recursiveUnion, []Quantifier{q2, q3}).(*RecursiveUnionExpression)
 	if !ok {
@@ -222,7 +224,8 @@ func TestWithQuantifiersExactArityRebuildsPositionally(t *testing.T) {
 		[]Quantifier{q1, q2},
 		nil,
 		[]string{"left", "right"},
-		JoinCross))
+		JoinCross,
+	))
 
 	rebuiltSelect, ok := mustWithQuantifiers(t, selectExpression, []Quantifier{q2, q3}).(*SelectExpression)
 	if !ok {

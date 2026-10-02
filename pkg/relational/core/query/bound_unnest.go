@@ -129,8 +129,10 @@ func resolveBoundSeedCollection(root values.Value, u *logical.LogicalUnnest, off
 		if !ok || len(path) == 0 || offset+len(source.Fields) > len(row.Fields) {
 			return nil
 		}
-		for i, field := range source.Fields {
-			if !row.Fields[offset+i].FieldType.Equals(field.FieldType) {
+		for i := range source.Fields {
+			// Flattening carries field-access nullability, not the stored field declaration.
+			field, err := values.ResolveFieldOrdinals(owner, []int{i})
+			if err != nil || !row.Fields[offset+i].FieldType.Equals(field.Type()) {
 				return nil
 			}
 		}

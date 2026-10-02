@@ -65,6 +65,7 @@ const (
 	TypeCodeUuid
 	TypeCodeDate
 	TypeCodeTimestamp
+	TypeCodeVector
 )
 
 // String renders the code as the SQL-ish type name ("INT", "STRING",
@@ -108,6 +109,8 @@ func (tc TypeCode) String() string {
 		return "DATE"
 	case TypeCodeTimestamp:
 		return "TIMESTAMP"
+	case TypeCodeVector:
+		return "VECTOR"
 	}
 	return "UNKNOWN"
 }
@@ -121,7 +124,7 @@ func (tc TypeCode) IsPrimitive() bool {
 	case TypeCodeBoolean, TypeCodeInt, TypeCodeLong,
 		TypeCodeFloat, TypeCodeDouble,
 		TypeCodeString, TypeCodeBytes, TypeCodeVersion,
-		TypeCodeUuid, TypeCodeDate, TypeCodeTimestamp:
+		TypeCodeUuid, TypeCodeDate, TypeCodeTimestamp, TypeCodeVector:
 		return true
 	}
 	return false
@@ -181,7 +184,7 @@ type PrimitiveType struct {
 // not "primitive" per IsPrimitive's sense.
 func NewPrimitiveType(code TypeCode, nullable bool) *PrimitiveType {
 	switch code {
-	case TypeCodeRecord, TypeCodeArray, TypeCodeRelation, TypeCodeEnum:
+	case TypeCodeRecord, TypeCodeArray, TypeCodeRelation, TypeCodeEnum, TypeCodeVector:
 		panic("NewPrimitiveType: structured TypeCode " + code.String() +
 			" requires its dedicated constructor (NewRecordType / NewArrayType / NewEnumType / NewRelationType)")
 	}
@@ -986,6 +989,13 @@ func IsOrdinalFieldName(name string) bool {
 // Explode: an anonymous 2-field record (element, INT NOT NULL ordinal).
 // Mirrors Java's `ExplodeExpression.explodeResultType(elementType, true)`.
 func ExplodeOrdinalityResultType(elementType Type) Type {
+	return ExplodeOrdinalityResultTypeNamed(elementType, OrdinalFieldName(0), OrdinalFieldName(1))
+}
+
+// ExplodeOrdinalityResultTypeNamed is ExplodeOrdinalityResultType with its two
+// slots named: a SQL `AS e AT o` unnest names them after its aliases, so the
+// quantifier over the Explode flows exactly the row its references read.
+func ExplodeOrdinalityResultTypeNamed(elementType Type, elementName, ordinalName string) Type {
 	if elementType == nil {
 		elementType = UnknownType
 	}
@@ -995,8 +1005,8 @@ func ExplodeOrdinalityResultType(elementType Type) Type {
 	// non-null also preserves AT's authored INT NOT NULL contract through exact
 	// FieldValue result-type derivation.
 	return NewRecordType("", false, []Field{
-		{Name: OrdinalFieldName(0), FieldType: elementType, Ordinal: 0},
-		{Name: OrdinalFieldName(1), FieldType: NotNullInt, Ordinal: 1},
+		{Name: elementName, FieldType: elementType, Ordinal: 0},
+		{Name: ordinalName, FieldType: NotNullInt, Ordinal: 1},
 	})
 }
 
@@ -1386,25 +1396,24 @@ type promotionEdge struct {
 // Identity (T → T) is NOT in the map — IsPromotable handles that
 // trivially before consulting the map.
 var promotionMap = map[promotionEdge]struct{}{
-	{TypeCodeInt, TypeCodeLong}:     {},
-	{TypeCodeInt, TypeCodeFloat}:    {},
-	{TypeCodeInt, TypeCodeDouble}:   {},
-	{TypeCodeLong, TypeCodeFloat}:   {},
-	{TypeCodeLong, TypeCodeDouble}:  {},
-	{TypeCodeFloat, TypeCodeDouble}: {},
-	{TypeCodeNull, TypeCodeInt}:     {},
-	{TypeCodeNull, TypeCodeLong}:    {},
-	{TypeCodeNull, TypeCodeFloat}:   {},
-	{TypeCodeNull, TypeCodeDouble}:  {},
-	{TypeCodeNull, TypeCodeBoolean}: {},
-	{TypeCodeNull, TypeCodeString}:  {},
-	{TypeCodeNull, TypeCodeBytes}:   {},
-	{TypeCodeNull, TypeCodeArray}:   {},
-	{TypeCodeNull, TypeCodeRecord}:  {},
-	{TypeCodeNull, TypeCodeEnum}:    {},
-	{TypeCodeNull, TypeCodeVersion}: {},
-	// Java also has NULL→VECTOR (PromoteValue.java): Go has no VECTOR
-	// TypeCode — vectors are ARRAY-typed — so NULL→ARRAY covers it.
+	{TypeCodeInt, TypeCodeLong}:         {},
+	{TypeCodeInt, TypeCodeFloat}:        {},
+	{TypeCodeInt, TypeCodeDouble}:       {},
+	{TypeCodeLong, TypeCodeFloat}:       {},
+	{TypeCodeLong, TypeCodeDouble}:      {},
+	{TypeCodeFloat, TypeCodeDouble}:     {},
+	{TypeCodeNull, TypeCodeInt}:         {},
+	{TypeCodeNull, TypeCodeLong}:        {},
+	{TypeCodeNull, TypeCodeFloat}:       {},
+	{TypeCodeNull, TypeCodeDouble}:      {},
+	{TypeCodeNull, TypeCodeBoolean}:     {},
+	{TypeCodeNull, TypeCodeString}:      {},
+	{TypeCodeNull, TypeCodeBytes}:       {},
+	{TypeCodeNull, TypeCodeVector}:      {},
+	{TypeCodeNull, TypeCodeArray}:       {},
+	{TypeCodeNull, TypeCodeRecord}:      {},
+	{TypeCodeNull, TypeCodeEnum}:        {},
+	{TypeCodeNull, TypeCodeVersion}:     {},
 	{TypeCodeNone, TypeCodeArray}:       {},
 	{TypeCodeString, TypeCodeEnum}:      {},
 	{TypeCodeString, TypeCodeUuid}:      {},
@@ -1493,11 +1502,34 @@ func JavaAggregateResultCode(fn string, operandCode TypeCode) (TypeCode, bool) {
 // "No cast defined from X to Y" otherwise). Identity always casts;
 // NULL casts to anything.
 func CastPairDefined(from, to TypeCode) bool {
+	if from == TypeCodeArray && to == TypeCodeVector {
+		return true
+	}
 	if from == to || from == TypeCodeNull || from == TypeCodeNone {
 		return true
 	}
 	_, ok := castPairs[promotionEdge{from, to}]
 	return ok
+}
+
+// CastTypesDefined supplements the operator table with structural type checks.
+// VECTOR has no conversion operator: only an identical shape can flow through
+// unchanged. ARRAY casts must admit their element conversion recursively.
+func CastTypesDefined(from, to Type) bool {
+	if from == nil || to == nil {
+		return false
+	}
+	if from.Code() == TypeCodeVector && to.Code() == TypeCodeVector {
+		f, fok := from.(*VectorType)
+		t, tok := to.(*VectorType)
+		return fok && tok && f.Precision == t.Precision && f.Dimensions == t.Dimensions
+	}
+	if f, ok := from.(*ArrayType); ok {
+		if t, ok := to.(*ArrayType); ok && f.ElementType != nil && t.ElementType != nil {
+			return CastTypesDefined(f.ElementType, t.ElementType)
+		}
+	}
+	return CastPairDefined(from.Code(), to.Code())
 }
 
 // IsPromotable reports whether `from` can be implicitly promoted
@@ -1809,6 +1841,8 @@ func WithNullability(t Type, nullable bool) Type {
 		// leg's dotted-read windows (the null-supplying wrap is exactly
 		// where the flip happens).
 		return &RecordType{RecordName: tt.RecordName, Nullable: nullable, Fields: tt.Fields, Legs: tt.Legs}
+	case *VectorType:
+		return NewVectorType(nullable, tt.Precision, tt.Dimensions)
 	case *ArrayType:
 		return &ArrayType{Nullable: nullable, ElementType: tt.ElementType}
 	case *EnumType:

@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"errors"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -188,33 +190,7 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 					continue
 				}
 			}
-			// The chained-unnest correlation barrier: decline to merge a
-			// ForEach target when a RETAINED
-			// sibling quantifier is FREE-correlated to it AND the target is a
-			// LATERAL-UNNEST first link. A chained `FROM t, t.arr AS x, x.sub AS
-			// y` reuses the alias `x` for both the first unnest's output (this
-			// target) and the second unnest's Explode collection (a retained
-			// sibling correlated to `x`); flattening the first unnest up would
-			// strand that collection on the merged-away alias. Java never
-			// flattens a lateral chain either (generateCorrelatedFieldAccess
-			// nests them). Keep the nested FlatMap-over-FlatMap.
-			//
-			// The barrier covers BOTH result-value shapes of the first link:
-			//   - NON-SEED first link (childRefResultIsNonSeed): the
-			//     retained-sibling rebase runs only for positional-seed children
-			//     (rcByAlias empty for a non-seed child), so the Explode arm
-			//     below would not fire — merging strands the collection.
-			//   - ORDINAL first link (childRefIsPositionalUnnestSelect):
-			//     the chained link takes an ordinal seed, so its
-			//     first-link child is a POSITIONAL unnest select. The
-			//     positional-seed rebase DOES fire but cannot compose the chained
-			//     collection's fused ofOrdinal+name suffix (the deferred ordinal
-			//     compose direction), leaving the flattened root select
-			//     unimplementable. Keep it nested — Java's shape — where each
-			//     link implements as its own FlatMap. This is NARROWER than a
-			//     positional-child check: a GATED BOX child (no Explode
-			//     quantifier of its own) still merges via the rebase, unaffected.
-			// Conservative — worst case a missed flattening, never wrong rows.
+			// A lateral chain keeps the FlatMap boundary that binds each collection.
 			if (childRefResultIsNonSeed(childRef) || childRefIsPositionalUnnestSelect(childRef)) &&
 				siblingFreeCorrelatedTo(quantifiers, i, q.GetAlias()) {
 				break
@@ -270,255 +246,127 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	// Build alias rebase map (single-quantifier children) and
-	// TranslationMap (multi-quantifier children). rcByAlias mirrors the
-	// TranslationMap's entries as plain data so the retained-quantifier
-	// subtree translation below can rebuild SCOPED maps per nesting level
-	// (a locally-rebound alias shadows the merge's substitution).
-	aliasMapBuilder := NewAliasMapBuilder()
-	rcByAlias := map[values.CorrelationIdentifier]values.Value{}
-	tmBuilder := NewTranslationMapBuilder()
-	mergedIdxSet := map[int]bool{}
-	for _, t := range targets {
-		mergedIdxSet[t.idx] = true
+	byIndex := make(map[int]mergeTarget, len(targets))
+	for _, target := range targets {
+		byIndex[target.idx] = target
+	}
+	indices := make([]int, len(quantifiers))
+	byAlias := make(map[values.CorrelationIdentifier]int, len(quantifiers))
+	used := make(map[values.CorrelationIdentifier]bool)
+	for i, q := range quantifiers {
+		indices[i] = i
+		byAlias[q.GetAlias()] = i
+		if _, merged := byIndex[i]; !merged {
+			used[q.GetAlias()] = true
+		}
+	}
+	dependencies := make([]map[int]struct{}, len(quantifiers))
+	for i, q := range quantifiers {
+		dependencies[i] = make(map[int]struct{})
+		for alias := range q.GetCorrelatedTo() {
+			if dependency, local := byAlias[alias]; local {
+				dependencies[i][dependency] = struct{}{}
+			}
+		}
+	}
+	order, ok := stableTopologicalOrder(indices, dependencies)
+	if !ok {
+		return
 	}
 
-	// Build the new quantifier list and collect pulled-up predicates.
-	newQuantifiers := make([]expressions.Quantifier, 0, len(quantifiers))
-	var pulledPredicates []predicates.QueryPredicate
-
-	for i, q := range quantifiers {
-		if !mergedIdxSet[i] {
-			newQuantifiers = append(newQuantifiers, q)
+	tr := newSelectMergeTranslation(call)
+	var newQuantifiers []expressions.Quantifier
+	var newPredicates []predicates.QueryPredicate
+	var newAliases []string
+	fail := func(err error) {
+		var declined *selectMergeDeclinedError
+		if !errors.As(err, &declined) {
+			call.Fail(err)
+		}
+	}
+	for _, i := range order {
+		q := quantifiers[i]
+		parentAlias := ""
+		if i < len(sel.GetSourceAliases()) {
+			parentAlias = sel.GetSourceAliases()[i]
+		}
+		target, merged := byIndex[i]
+		if !merged {
+			translated, err := tr.quantifier(q)
+			if err != nil {
+				fail(err)
+				return
+			}
+			newQuantifiers = append(newQuantifiers, translated)
+			newAliases = append(newAliases, parentAlias)
 			continue
 		}
 
-		// Find the merge target for this index.
-		var target mergeTarget
-		for _, t := range targets {
-			if t.idx == i {
-				target = t
-				break
-			}
-		}
-
+		// Translate dependencies before dissolving this box, as Java's
+		// correlation-order traversal does. Pulled-up bindings must be unique.
 		childQs := target.childExpr.GetQuantifiers()
-
-		if len(childQs) == 1 {
-			if !aliasMapBuilder.Put(q.GetAlias(), childQs[0].GetAlias()) {
-				return
+		renamed := make(map[values.CorrelationIdentifier]values.CorrelationIdentifier)
+		for _, childQ := range childQs {
+			alias := childQ.GetAlias()
+			if used[alias] {
+				renamed[alias] = values.UniqueCorrelationIdentifier()
+				alias = renamed[alias]
 			}
-		} else if len(childQs) > 1 {
-			// Multi-quantifier child (e.g., Select with 2+ sources):
-			// the parent's alias must be replaced with the child's
-			// result value. TWO regimes by the child RV's shape:
-			//   - POSITIONAL ordinal-seed RC (a dissolved gated box): the
-			//     SURGICAL substitution (rcByAlias → bakedBoxRefCallback) —
-			//     baked refs collapse through the RC to the exact leg
-			//     reference; LAZY refs stay intact and re-bind by name to
-			//     the pulled-up leg quantifier (the box is NAMED by its
-			//     rightmost leaf, so the name stays bound). A blanket
-			//     TranslationMap substitution would put the dup-bare-named
-			//     concat under a lazy read, where the bare name matches
-			//     TWO of the concat's columns: every by-name lookup on
-			//     the bake path declines on that ambiguity, so the
-			//     reference never re-binds and the plan dies loud at
-			//     evaluation instead of staying bound to its leg column.
-			//   - NON-SEED child: the TranslationMap
-			//     substitution — the child alias disappears with the RV
-			//     substituted in place.
-			childResultValue := target.childExpr.GetResultValue()
-			capturedResult := childResultValue
-			parentAlias := q.GetAlias()
-			positionalSeed := false
-			if rcv, isRC := capturedResult.(*values.RecordConstructorValue); isRC {
-				if w, _ := values.OrdinalSeedLegWindows(rcv); w != nil {
-					positionalSeed = true
-				}
-			}
-			if positionalSeed {
-				rcByAlias[parentAlias] = capturedResult
-			} else {
-				tmBuilder.When(parentAlias).Then(func(_ values.CorrelationIdentifier, _ values.LeafValue) values.Value {
-					return capturedResult
-				})
-			}
+			used[alias] = true
 		}
-
-		newQuantifiers = append(newQuantifiers, childQs...)
-		pulledPredicates = append(pulledPredicates, target.child.GetPredicates()...)
-	}
-	aliasMap := aliasMapBuilder.Build()
-	valueAliasMap, err := aliasMap.ForwardMap()
-	if err != nil {
-		call.Fail(err)
-		return
-	}
-
-	// Rebase the parent's result value and predicates.
-	newResultValue := sel.GetResultValue()
-	if !aliasMap.IsEmpty() {
-		newResultValue, err = values.RebaseValueChecked(newResultValue, valueAliasMap)
-		if err != nil {
-			call.Fail(err)
-			return
-		}
-	}
-	// Apply TranslationMap for non-seed multi-quantifier children, and the
-	// surgical baked-collapse callback for positional-seed children (lazy
-	// refs re-bind by name to the pulled-up leg — see the regime comment at
-	// the multi-quantifier arm above).
-	tm := tmBuilder.Build()
-	if !tm.DefinesOnlyIdentities() {
-		// A merge that cannot re-express the result value against the child's
-		// program does not happen at all. Publishing the untranslated value
-		// would leave references to an alias this rewrite is about to dissolve.
-		translatedResult, ok := translateValueCorrelations(newResultValue, tm)
-		if !ok {
-			return
-		}
-		newResultValue = translatedResult
-	}
-	cb := bakedBoxRefCallback(rcByAlias)
-	if len(rcByAlias) > 0 {
-		newResultValue = values.Replace(newResultValue, cb)
-	}
-	// The merged member must state the leg table its reference's members
-	// already state, or the reference has no flowed row: GetFlowedObjectType
-	// refuses two different populated tables, and that refusal fails the whole
-	// plan (XX000). It is checked for EVERY merge, because two regimes above
-	// re-tile the row:
-	//   - a single-source child dissolves by RENAMING its alias to the child's
-	//     own leg (`FROM (SELECT * FROM w WHERE w.f > 1) AS a, h AS d, g AS e`:
-	//     the lower {a, d} states legs A, D; merging a's body states W, D);
-	//   - dissolving a positional-seed child re-tiles the row by the child's
-	//     own legs, which is the same statement only when the child is NAMED by
-	//     one of them (a box named by its rightmost leaf); a derived table's
-	//     quantifier (`FROM (SELECT * FROM w, g) AS a, h`) is not.
-	// In both, the derived table's alias is a leg of the parent's row and
-	// readers above address it by that alias, so the merge does not happen.
-	// A parent whose row states no table (a projection, the usual top-level
-	// select) is unaffected: an empty table agrees with any. Java's merge
-	// meets no such refusal (its member types carry no leg table); the SQL
-	// answer is the same either way, only the unmerged nested select remains.
-	if expressions.LegTableConflictsWith(call.Reference, newResultValue) {
-		return
-	}
-
-	// RETAINED quantifiers whose subtrees hold BAKED
-	// references over a MERGED-AWAY alias get those references translated
-	// through the merged child's result value — Java's
-	// Quantifier.translateCorrelations, which Go's merge never needed until
-	// the dissolved-LEFT fold produced the first stranded case: a
-	// box-level-baked reference (an enclosing scope's ON conjunct addressing
-	// a buried column) addresses the box quantifier POSITIONALLY; when the
-	// box's child select merges up, that positional read would
-	// re-bind by name to the same-named pulled-up LEG with the wrong type —
-	// the divergent-baked-types class. Collapsing through the RC resolves
-	// it to the exact leg reference the ordinal named, so the retained
-	// quantifier's correlation set names the spliced legs — what the
-	// partition/orientation machinery needs for the correlated probe. LAZY
-	// references are deliberately LEFT ALONE: outside references address
-	// legs by their own aliases (Go's box quantifier is NAMED by its
-	// rightmost leaf), so after the merge pulls the legs up a lazy
-	// read re-binds to the correct leg quantifier by construction —
-	// substituting the RC under a lazy read would instead put a duplicate
-	// bare name in front of the whole concat, which no by-name lookup will
-	// resolve — they decline on the ambiguity, so the reference is stranded
-	// lazy and fails loud at evaluation rather than reaching its leg
-	// column. A subtree the helper cannot rebuild keeps its original
-	// reference (dangling stays LOUD, never silently rebound).
-	if len(rcByAlias) > 0 {
-		mergedAliases := make(map[values.CorrelationIdentifier]struct{}, len(targets))
-		for _, tgt := range targets {
-			mergedAliases[quantifiers[tgt.idx].GetAlias()] = struct{}{}
-		}
-		for i, q := range newQuantifiers {
-			nq, ok, err := translateQuantifierCorrelations(q, mergedAliases, aliasMap, rcByAlias, call)
+		childTranslation := tr.withoutBindings(childQs).withAliases(renamed)
+		for j, childQ := range childQs {
+			translated, err := childTranslation.quantifier(childQ)
 			if err != nil {
-				call.Fail(err)
+				fail(err)
 				return
 			}
-			if ok {
-				newQuantifiers[i] = nq
+			if alias, changed := renamed[childQ.GetAlias()]; changed {
+				translated = translated.WithAlias(alias)
 			}
+			newQuantifiers = append(newQuantifiers, translated)
+			alias := parentAlias
+			if childSel, isSelect := target.childExpr.(*expressions.SelectExpression); isSelect && j < len(childSel.GetSourceAliases()) {
+				alias = childSel.GetSourceAliases()[j]
+			}
+			newAliases = append(newAliases, alias)
 		}
+		childPreds, err := childTranslation.predicates(target.child.GetPredicates())
+		if err != nil {
+			fail(err)
+			return
+		}
+		newPredicates = append(newPredicates, childPreds...)
+		childResult, err := childTranslation.value(target.childExpr.GetResultValue())
+		if err != nil {
+			fail(err)
+			return
+		}
+		positionalSeed := false
+		if rc, isRC := childResult.(*values.RecordConstructorValue); isRC && len(childQs) > 1 {
+			windows, _ := values.OrdinalSeedLegWindows(rc)
+			positionalSeed = windows != nil
+		}
+		tr.add(q.GetAlias(), childResult, positionalSeed)
 	}
-
-	newPredicates := make([]predicates.QueryPredicate, 0, len(sel.GetPredicates())+len(pulledPredicates))
-	for _, p := range sel.GetPredicates() {
-		rp := p
-		if !aliasMap.IsEmpty() {
-			// CHECKED: the error-less spelling returns nil on failure, and this
-			// merged select would then carry a predicate that silently is not
-			// there — the merge widens the result rather than declining.
-			rebased, rerr := predicates.RebasePredicateChecked(rp, valueAliasMap)
-			if rerr != nil {
-				call.Fail(rerr)
-				return
-			}
-			rp = rebased
-		}
-		if !tm.DefinesOnlyIdentities() {
-			translated, ok := translatePredicateCorrelations(rp, tm)
-			if !ok {
-				return
-			}
-			rp = translated
-		}
-		if len(rcByAlias) > 0 {
-			rp = predicates.ReplaceValues(rp, cb)
-		}
-		newPredicates = append(newPredicates, rp)
+	result, err := tr.value(sel.GetResultValue())
+	if err != nil {
+		fail(err)
+		return
 	}
-	newPredicates = append(newPredicates, pulledPredicates...)
-
-	// Rebuild source aliases: drop merged aliases, splice in child aliases.
-	var newAliases []string
-	if srcAliases := sel.GetSourceAliases(); len(srcAliases) > 0 {
-		for i := range quantifiers {
-			if !mergedIdxSet[i] {
-				if i < len(srcAliases) {
-					newAliases = append(newAliases, srcAliases[i])
-				}
-				continue
-			}
-			var target mergeTarget
-			for _, t := range targets {
-				if t.idx == i {
-					target = t
-					break
-				}
-			}
-			if childSel, ok := target.childExpr.(*expressions.SelectExpression); ok {
-				newAliases = append(newAliases, childSel.GetSourceAliases()...)
-			} else {
-				// Non-SelectExpression child (e.g., LogicalFilter): preserve
-				// the parent's alias for this position. The merged quantifier
-				// replaces the parent's ForEach, so the alias that qualified
-				// the parent's quantifier should carry over to the child's
-				// quantifier(s).
-				parentAlias := ""
-				if i < len(srcAliases) {
-					parentAlias = srcAliases[i]
-				}
-				for range target.childExpr.GetQuantifiers() {
-					newAliases = append(newAliases, parentAlias)
-				}
-			}
-		}
+	if expressions.LegTableConflictsWith(call.Reference, result) {
+		return
 	}
-
-	var merged *expressions.SelectExpression
-	if len(newAliases) > 0 {
-		merged, err = expressions.NewSelectExpressionWithJoinType(
-			newResultValue, newQuantifiers, newPredicates, newAliases, sel.GetJoinType(),
-		)
-	} else {
-		merged, err = expressions.NewSelectExpressionWithJoinType(
-			newResultValue, newQuantifiers, newPredicates, nil, sel.GetJoinType(),
-		)
+	parentPreds, err := tr.predicates(sel.GetPredicates())
+	if err != nil {
+		fail(err)
+		return
 	}
+	newPredicates = append(newPredicates, parentPreds...)
+	if len(sel.GetSourceAliases()) == 0 {
+		newAliases = nil
+	}
+	merged, err := expressions.NewSelectExpressionWithJoinType(result, newQuantifiers, newPredicates, newAliases, sel.GetJoinType())
 	if err != nil {
 		call.Fail(err)
 		return
@@ -527,223 +375,6 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 }
 
 var _ ExpressionRule = (*SelectMergeRule)(nil)
-
-// translateQuantifierCorrelations rebuilds a RETAINED quantifier whose
-// subtree references a merged-away alias FREELY (see the call site in
-// OnMatch): the first rebuildable member of the referenced group — a
-// SelectExpression (predicates + result value translated through the merge's
-// aliasMap/RC substitutions, recursively) or an ExplodeExpression (its
-// collection translated, the lateral-unnest arm below) — is translated,
-// re-memoized, and wrapped in a quantifier preserving the original's alias
-// and flags (nullOnEmpty carries the dissolved-LEFT pad; strictSingle the
-// scalar contract). ok=false when nothing references a merged alias or no
-// member is a rebuildable shape — the caller keeps the original quantifier
-// (a dangling reference stays LOUD, never silently rebound). The hit test is
-// on the reference's FREE correlations (Java-aligned GetCorrelatedTo): a
-// subtree whose OWN quantifier rebinds a merged name — the dissolved box's
-// null-on-empty leg reuses the null-supplying leg's alias, which also names
-// the box — is NOT correlated to the merge and must not be rewritten
-// (rewriting it would capture the inner binding).
-//
-// The rebuild takes the FIRST rebuildable member and re-memoizes only its
-// translation — deliberate, not lossy: OnMatch YIELDS the merged select
-// alongside the ORIGINAL, whose quantifier still ranges over the full
-// multi-member group, so alternative members stay reachable through the
-// pre-merge expression; the translated quantifier only needs one sound
-// member to plan through.
-func translateQuantifierCorrelations(
-	q expressions.Quantifier,
-	mergedAliases map[values.CorrelationIdentifier]struct{},
-	aliasMap *AliasMap,
-	rcByAlias map[values.CorrelationIdentifier]values.Value,
-	call *ExpressionRuleCall,
-) (expressions.Quantifier, bool, error) {
-	ref := q.GetRangesOver()
-	if ref == nil {
-		return q, false, nil
-	}
-	hit := false
-	for a := range ref.GetCorrelatedTo() {
-		if _, merged := mergedAliases[a]; merged {
-			hit = true
-			break
-		}
-	}
-	if !hit {
-		return q, false, nil
-	}
-	var newMember expressions.RelationalExpression
-	for _, m := range ref.AllMembers() {
-		switch me := m.(type) {
-		case *expressions.SelectExpression:
-			ns, err := translateSelectCorrelations(me, mergedAliases, aliasMap, rcByAlias, call)
-			if err != nil {
-				return q, false, err
-			}
-			if ns != nil {
-				newMember = ns
-			}
-		case *expressions.ExplodeExpression:
-			// A lateral unnest's Explode sibling whose COLLECTION baked-
-			// references a merged-away box alias gets that reference
-			// translated the same way a SelectExpression member would
-			// (Java: Quantifier.translateCorrelations reaches
-			// ExplodeExpression.translateCorrelations). DEFENSIVE, not a
-			// live-bug fix: no CURRENT path makes a box leg mergeable while
-			// a sibling Explode references it — outer boxes are opaque to
-			// this rule (the ChildrenAsSet guard above) and inner boxes are
-			// pre-flattened by legsOfGatedJoin before they reach the memo as
-			// a mergeable child. The arm exists so that if a future rewrite
-			// DOES make box legs mergeable, the stranded-collection shape is
-			// handled rather than silently dangling; it is pinned white-box
-			// by TestSelectMergeRule_TranslatesExplodeSiblingCollection
-			// (a hand-built memo that forces the merge), which is its only
-			// exercise today.
-			cb := bakedBoxRefCallback(rcByAlias)
-			valueAliasMap, err := aliasMap.ForwardMap()
-			if err != nil {
-				return q, false, err
-			}
-			col, err := values.RebaseValueChecked(me.GetCollectionValue(), valueAliasMap)
-			if err != nil {
-				return q, false, err
-			}
-			col = values.Replace(col, cb)
-			if col != me.GetCollectionValue() {
-				newMember, err = expressions.NewExplodeExpressionWithOrdinality(col, me.GetWithOrdinality())
-				if err != nil {
-					return q, false, err
-				}
-			}
-		}
-		if newMember != nil {
-			break
-		}
-	}
-	if newMember == nil {
-		return q, false, nil
-	}
-	newRef := call.MemoizeExpression(newMember)
-	switch {
-	case q.IsNullOnEmpty():
-		return expressions.NamedForEachNullOnEmptyQuantifier(q.GetAlias(), newRef), true, nil
-	case q.IsStrictSingle():
-		return expressions.NamedForEachStrictSingleQuantifier(q.GetAlias(), newRef), true, nil
-	case q.Kind() == expressions.QuantifierExistential:
-		return expressions.NamedExistentialQuantifier(q.GetAlias(), newRef), true, nil
-	default:
-		return expressions.NamedForEachQuantifier(q.GetAlias(), newRef), true, nil
-	}
-}
-
-// translateSelectCorrelations rebuilds a SelectExpression with every FREE
-// merged-alias reference translated: predicates and result value through the
-// merge's maps, and nested quantifiers recursively. Structure, source aliases
-// and join type are preserved verbatim. SCOPING: an alias bound by THIS
-// select's own quantifiers shadows the merge's substitution — its references
-// bind locally, so it is stripped from the effective maps at this level and
-// below (Go reuses human-readable aliases; Java's unique mints make this
-// impossible there).
-func translateSelectCorrelations(
-	sel *expressions.SelectExpression,
-	mergedAliases map[values.CorrelationIdentifier]struct{},
-	aliasMap *AliasMap,
-	rcByAlias map[values.CorrelationIdentifier]values.Value,
-	call *ExpressionRuleCall,
-) (*expressions.SelectExpression, error) {
-	shadowed := false
-	for _, q := range sel.GetQuantifiers() {
-		a := q.GetAlias()
-		inAlias := aliasMap.ContainsSource(a)
-		_, inRC := rcByAlias[a]
-		if inAlias || inRC {
-			shadowed = true
-			break
-		}
-	}
-	effAliasMap, effRCByAlias, effMerged := aliasMap, rcByAlias, mergedAliases
-	if shadowed {
-		bound := make(map[values.CorrelationIdentifier]struct{}, len(sel.GetQuantifiers()))
-		for _, q := range sel.GetQuantifiers() {
-			bound[q.GetAlias()] = struct{}{}
-		}
-		effBuilder := NewAliasMapBuilder()
-		for _, k := range aliasMap.Sources() {
-			if _, s := bound[k]; !s {
-				if !effBuilder.Put(k, aliasMap.GetTarget(k)) {
-					return nil, nil
-				}
-			}
-		}
-		effAliasMap = effBuilder.Build()
-		effRCByAlias = map[values.CorrelationIdentifier]values.Value{}
-		for k, v := range rcByAlias {
-			if _, s := bound[k]; !s {
-				effRCByAlias[k] = v
-			}
-		}
-		effMerged = map[values.CorrelationIdentifier]struct{}{}
-		for k := range mergedAliases {
-			if _, s := bound[k]; !s {
-				effMerged[k] = struct{}{}
-			}
-		}
-	}
-	valueAliasMap, err := effAliasMap.ForwardMap()
-	if err != nil {
-		return nil, err
-	}
-	cb := bakedBoxRefCallback(effRCByAlias)
-	changed := false
-	newPreds := make([]predicates.QueryPredicate, len(sel.GetPredicates()))
-	for i, p := range sel.GetPredicates() {
-		np := p
-		if !effAliasMap.IsEmpty() {
-			// CHECKED — see the sibling loop in OnMatch: a nil here is a
-			// predicate that silently is not there.
-			rebased, rerr := predicates.RebasePredicateChecked(np, valueAliasMap)
-			if rerr != nil {
-				return nil, rerr
-			}
-			np = rebased
-		}
-		np = predicates.ReplaceValues(np, cb)
-		if np != p {
-			changed = true
-		}
-		newPreds[i] = np
-	}
-	rv := sel.GetResultValue()
-	if !effAliasMap.IsEmpty() {
-		var rebaseErr error
-		rv, rebaseErr = values.RebaseValueChecked(rv, valueAliasMap)
-		if rebaseErr != nil {
-			return nil, rebaseErr
-		}
-	}
-	rv = values.Replace(rv, cb)
-	if rv != sel.GetResultValue() {
-		changed = true
-	}
-	qs := sel.GetQuantifiers()
-	newQs := make([]expressions.Quantifier, len(qs))
-	for i, q := range qs {
-		nq, ok, err := translateQuantifierCorrelations(q, effMerged, effAliasMap, effRCByAlias, call)
-		if err != nil {
-			return nil, err
-		}
-		if ok {
-			newQs[i] = nq
-			changed = true
-		} else {
-			newQs[i] = q
-		}
-	}
-	if !changed {
-		return nil, nil
-	}
-	return expressions.NewSelectExpressionWithJoinType(rv, newQs, newPreds, sel.GetSourceAliases(), sel.GetJoinType())
-}
 
 // bakedBoxRefCallback returns a values.Replace callback (pre-order) that
 // collapses BAKED references over a merged-away box alias through the box's
@@ -821,26 +452,10 @@ func bakedBoxRefCallback(rcByAlias map[values.CorrelationIdentifier]values.Value
 				if len(ordinals) >= 1 {
 					rootOrd = ordinals[0]
 				}
-				// A SOURCE-RELATIVE baked reference's ordinal is relative to its
-				// OWN leg's row, NOT the box's concatenated RC — and the box is
-				// NAMED by its rightmost leg, so a leg-addressed reference
-				// (QOV(E).ID#0) arrives under the very alias being collapsed.
-				// Resolving it by the RAW ordinal against the concat picks the
-				// FIRST leg's slot (D.ID for ord 0) — the wrong leg: a bug once
-				// turned `e.id IS NULL` into `d.id IS NULL`, mis-partitioning
-				// below the null-extension so the LEFT-join anti-join returned
-				// zero rows. Re-base by the reference's OWN leg exactly like the
-				// values.Replace collapse (LegAwareRootOrdinal): match the seed
-				// field over the SAME correlation at the leg-local ordinal.
-				// Keyed on the ROOT's leg-relativity (RootIsLegRelativeUnpinned),
-				// NOT the accessor count: a FUSED unpinned path (fused by an earlier
-				// merge round) keeps its leg-relative ROOT and MUST be rebased too —
-				// the raw collapse would fuse its suffix (the arm below) onto the
-				// WRONG leg's seed field for a non-first leg. Only FrontierPinned
-				// bakes keep
-				// the raw collapse — their ordinal IS box-relative by
-				// construction.
-				if !path.IsFrontierPinned() && len(ordinals) >= 1 {
+				// A reused leg alias needs a leg-relative lookup. A distinct box
+				// alias addresses its own output row, even without a seed marker.
+				_, reusedByLeg := values.GetCorrelatedToOfValue(rcv)[qov.Correlation()]
+				if !path.IsFrontierPinned() && len(ordinals) >= 1 && reusedByLeg {
 					rootOrd = values.LegAwareRootOrdinal(field, ordinals[0], rcv, rootOrd)
 				}
 				if len(ordinals) >= 1 && rootOrd >= 0 && rootOrd < len(rcv.Fields) && rcv.Fields[rootOrd].Value != nil {
@@ -884,11 +499,7 @@ func bakedBoxRefCallback(rcByAlias map[values.CorrelationIdentifier]values.Value
 	}
 }
 
-// childRefResultIsNonSeed reports whether a merge candidate's child result
-// value is NOT a positional ordinal seed. A positional seed
-// child routes through the rcByAlias/bakedBoxRefCallback rebase (which handles
-// a retained Explode sibling); a non-seed child does not, so the chained
-// barrier applies only to non-seed children.
+// childRefResultIsNonSeed identifies the non-positional lateral-chain barrier.
 func childRefResultIsNonSeed(childRef *expressions.Reference) bool {
 	for _, m := range childRef.AllMembers() {
 		sel, ok := m.(*expressions.SelectExpression)

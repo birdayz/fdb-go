@@ -117,21 +117,29 @@ func TestPredicatesFilterPlan_NormalizesPhysicalAndBindingAliases(t *testing.T) 
 	requireOnlyPredicateCorrelation(t, original.GetPredicates()[1], values.CurrentCorrelation())
 }
 
-func TestPredicatesFilterPlan_SelectedOrdinalityExplodeNormalizesBindingNames(t *testing.T) {
+// A WITH ORDINALITY Explode named after its unnest's AS/AT aliases flows the
+// row its binding's references read, so a filter over it crosses them onto its
+// input edge like any other binding.
+func TestPredicatesFilterPlan_NamedOrdinalityExplodeFlowsTheBindingRow(t *testing.T) {
 	t.Parallel()
 	array := values.NewArrayConstructorValue(values.NullableLong, []values.Value{
 		values.LiteralValue(int64(1)),
 	})
 	explode := mustChecked(t, func() (*RecordQueryExplodePlan, error) {
-		return NewRecordQueryExplodePlanWithOrdinality(array, true)
+		return NewRecordQueryExplodePlanWithOrdinalityNames(array, "ELEMENT", "ORDINAL")
 	})
 	alias := values.NamedCorrelationIdentifier("UNNEST")
-	logicalType := values.NewRecordType("", false, []values.Field{
+	bindingType := values.NewRecordType("", false, []values.Field{
 		{Name: "ELEMENT", FieldType: values.NullableLong},
 		{Name: "ORDINAL", FieldType: values.NotNullInt},
 	})
-	logical := mustOrdinalLayoutQOV(t, alias, logicalType)
-	ordinal, err := values.ResolveFieldOrdinals(logical, []int{1})
+	explodeLayout := requireProvidedLayout(t, explode)
+	if !explodeLayout.Carrier().FlowedType().Equals(bindingType) {
+		t.Fatalf("named Explode carrier = %s, want the binding row %s",
+			values.DescribeType(explodeLayout.Carrier().FlowedType()), values.DescribeType(bindingType))
+	}
+	binding := mustOrdinalLayoutQOV(t, alias, bindingType)
+	ordinal, err := values.ResolveFieldOrdinals(binding, []int{1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,53 +148,11 @@ func TestPredicatesFilterPlan_SelectedOrdinalityExplodeNormalizesBindingNames(t 
 	filter := mustChecked(t, func() (*RecordQueryPredicatesFilterPlan, error) {
 		return NewRecordQueryPredicatesFilterPlanWithAlias(explode, []predicates.QueryPredicate{predicate}, alias)
 	})
+	requireOnlyPredicateCorrelation(t, filter.GetPredicates()[0], values.CurrentCorrelation())
+	assertPredicateHasExactRoot(t, filter.GetPredicates()[0], values.CurrentCorrelation(), bindingType)
 
-	explodeLayout := requireProvidedLayout(t, explode)
-	assertPredicateHasExactRoot(
-		t, filter.GetPredicates()[0], alias, explodeLayout.Carrier().FlowedType())
-	assertPredicateLacksRoot(t, filter.GetPredicates()[0], alias, logicalType)
-	var normalizedField values.FieldValue
-	_, err = predicates.TransformEmbeddedValuesChecked(
-		filter.GetPredicates()[0],
-		func(value values.Value) (values.Value, error) {
-			values.WalkValue(value, func(node values.Value) bool {
-				field, fieldOK := values.AsFieldValue(node)
-				if !fieldOK {
-					return true
-				}
-				root, rootOK := values.AsQuantifiedObjectValue(field.ChildValue())
-				if rootOK && root.Correlation() == alias &&
-					root.FlowedType().Equals(explodeLayout.Carrier().FlowedType()) {
-					normalizedField = field
-				}
-				return true
-			})
-			return value, nil
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if normalizedField == nil {
-		t.Fatal("ordinal predicate has no normalized physical field")
-	}
-	if got := normalizedField.Path().Ordinals(); len(got) != 1 || got[0] != 1 {
-		t.Fatalf("ordinal predicate path = %v, want [1]", got)
-	}
-	if field, ok := values.AsFieldValue(ordinal); !ok || field.ChildValue() != logical {
-		t.Fatal("filter construction mutated the logical ordinal field")
-	}
-
-	plain := mustChecked(t, func() (*RecordQueryExplodePlan, error) {
-		return NewRecordQueryExplodePlan(array)
-	})
-	declined, err := translateOrdinalityBindingNames(
-		predicate, QuantifierOverPlan(plain), alias)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if declined != predicate {
-		t.Fatal("plain Explode admitted the WITH ORDINALITY binding-name bridge")
+	if _, err := NewRecordQueryExplodePlanWithOrdinalityNames(array, "E", "E"); err == nil {
+		t.Fatal("an Explode whose two ordinality slots share a name was admitted")
 	}
 }
 

@@ -514,6 +514,11 @@ func semanticColumnFromValidatedExactType(name string, typ values.Type) (semanti
 			return semantic.Column{}, false
 		}
 		return column, true
+	case *values.VectorType:
+		column.Type = "VECTOR"
+		column.VectorPrecision = typed.Precision
+		column.VectorDimensions = typed.Dimensions
+		return column, true
 	case *values.EnumType:
 		if typed.EnumName == "" || len(typed.Values) == 0 {
 			return semantic.Column{}, false
@@ -3279,6 +3284,18 @@ func nullSupplyingSource(src semantic.ScopeSource, nullSupplying bool) semantic.
 	if !nullSupplying || src.Table == nil {
 		return src
 	}
+	// Java widens the flowed object, not its nested field types. SQL lookup
+	// still exposes nullable columns, independently of that physical row shape.
+	if src.FlowedObject != nil {
+		flowed := *src.FlowedObject
+		flowed.Nullable = true
+		src.FlowedObject = &flowed
+	} else if !src.Shadowing || src.FlowedColumns != nil {
+		if src.FlowedColumns == nil {
+			src.FlowedColumns = append([]semantic.Column(nil), src.Table.Columns()...)
+		}
+		src.FlowedNullable = true
+	}
 	src.Table = nullSupplyingTable{Table: src.Table}
 	return src
 }
@@ -4822,15 +4839,15 @@ func rewriteAggregateRefsInPredicate(pred predicates.QueryPredicate, agg *logica
 		for i, sub := range p.SubPredicates {
 			rewritten[i] = rewriteAggregateRefsInPredicate(sub, agg)
 		}
-		return predicates.NewAnd(rewritten...)
+		return predicates.WithAtomicity(predicates.NewAnd(rewritten...), predicates.IsAtomic(pred))
 	case *predicates.OrPredicate:
 		rewritten := make([]predicates.QueryPredicate, len(p.SubPredicates))
 		for i, sub := range p.SubPredicates {
 			rewritten[i] = rewriteAggregateRefsInPredicate(sub, agg)
 		}
-		return predicates.NewOr(rewritten...)
+		return predicates.WithAtomicity(predicates.NewOr(rewritten...), predicates.IsAtomic(pred))
 	case *predicates.NotPredicate:
-		return predicates.NewNot(rewriteAggregateRefsInPredicate(p.Child, agg))
+		return predicates.WithAtomicity(predicates.NewNot(rewriteAggregateRefsInPredicate(p.Child, agg)), predicates.IsAtomic(pred))
 	}
 	return pred
 }
@@ -7884,6 +7901,9 @@ func (p *subqueryClause) BuildExists(q antlrgen.IQueryContext) (values.Correlati
 	if err != nil {
 		return values.CorrelationIdentifier{}, nil, err
 	}
+	if lowered.join != nil {
+		lowered.plan = &logical.LogicalFilter{Input: lowered.plan, Predicate: lowered.join}
+	}
 	input, err := query.LowerExistsInput(lowered.plan, p.md, lowered.retained...)
 	if err != nil {
 		return values.CorrelationIdentifier{}, nil, err
@@ -7891,8 +7911,7 @@ func (p *subqueryClause) BuildExists(q antlrgen.IQueryContext) (values.Correlati
 	alias := p.mintSubqueryAlias()
 	p.subqueries = append(p.subqueries, logical.ExistsSubquery{
 		Alias: alias, Plan: lowered.plan, Input: input, FlowedType: input.ResultType(),
-		JoinPredicate: lowered.join, KnownTruth: lowered.truth,
-		Constraint: lowered.constraint,
+		KnownTruth: lowered.truth, Constraint: lowered.constraint,
 	})
 	p.scalarSubqueries = append(p.scalarSubqueries, lowered.scalars...)
 	return alias, input.ResultType(), nil

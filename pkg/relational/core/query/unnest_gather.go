@@ -213,7 +213,7 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 		fieldsAt += len(legTypes[legs[i].binding].typ.Fields)
 	}
 
-	explode, err := expressions.NewExplodeExpressionWithOrdinality(collection, u.AtAlias != "")
+	explode, err := unnestExplode(collection, u)
 	if err != nil {
 		t.setTranslateErr(err)
 		return nil

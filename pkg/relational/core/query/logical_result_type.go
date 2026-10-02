@@ -209,10 +209,8 @@ func deriveLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordM
 		if typed.AtAlias == "" {
 			return array.ElementType, nil
 		}
-		return &values.RecordType{Fields: []values.Field{
-			{Name: strings.ToUpper(typed.Alias), Ordinal: 0, FieldType: array.ElementType},
-			{Name: strings.ToUpper(typed.AtAlias), Ordinal: 1, FieldType: values.NotNullInt},
-		}}, nil
+		names := logical.UnnestOrdinalityNames(typed.Alias, typed.AtAlias)
+		return values.ExplodeOrdinalityResultTypeNamed(array.ElementType, names[0], names[1]), nil
 	case *logical.LogicalJoin:
 		left, err := deriveLogicalResultType(typed.Left, md, env, unionType)
 		if err != nil {

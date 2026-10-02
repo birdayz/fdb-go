@@ -244,6 +244,18 @@ func matchField(exp *javayamsql.Value, actual any, sqlType string, rowNum int, c
 	}
 
 	switch exp.TagName() {
+	case javayamsql.TagVector16, javayamsql.TagVector32, javayamsql.TagVector64:
+		want, err := preparedValue(exp)
+		if err != nil {
+			return fail("%v", err)
+		}
+		got, ok := actual.([]byte)
+		// AbstractRealVector.equals compares the complete serialized bytes,
+		// including the precision ordinal, rather than approximate coordinates.
+		if !ok || string(got) != string(want.(api.Vector)) {
+			return fail("expected vector %v, got %v", want, actual)
+		}
+		return nil
 	case javayamsql.TagLong:
 		n, err := expectedLong(exp)
 		if err != nil {
@@ -433,7 +445,16 @@ func matchString(want string, actual any, fail func(string, ...any) error) error
 			prefix, length, err := parseStartsWith(want)
 			if err == nil && len(got) == length && len(prefix) <= len(got) &&
 				string(got[:len(prefix)]) == string(prefix) {
-				return nil
+				zeroTail := true
+				for _, b := range got[len(prefix):] {
+					if b != 0 {
+						zeroTail = false
+						break
+					}
+				}
+				if zeroTail {
+					return nil
+				}
 			}
 		}
 		if strings.HasPrefix(lower, "x'") && strings.HasSuffix(want, "'") {
@@ -447,7 +468,7 @@ func matchString(want string, actual any, fail func(string, ...any) error) error
 }
 
 // parseStartsWith decodes `xstartswith_<len>'<hex>'`, the corpus's way of
-// asserting a byte-array prefix plus an exact total length.
+// asserting a zero-padded byte array with an exact total length.
 func parseStartsWith(s string) ([]byte, int, error) {
 	us := strings.Index(s, "_")
 	q := strings.Index(s, "'")
@@ -458,7 +479,12 @@ func parseStartsWith(s string) ([]byte, int, error) {
 	if err != nil {
 		return nil, 0, fmt.Errorf("malformed xstartswith_ length in %q", s)
 	}
-	b, err := hex.DecodeString(s[q+1 : len(s)-1])
+	digits := s[q+1 : len(s)-1]
+	// Java ParseHelpers.parseBytes pads an odd final nibble on the right.
+	if len(digits)%2 != 0 {
+		digits += "0"
+	}
+	b, err := hex.DecodeString(digits)
 	if err != nil {
 		return nil, 0, fmt.Errorf("malformed xstartswith_ hex in %q", s)
 	}

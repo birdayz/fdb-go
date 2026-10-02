@@ -254,7 +254,7 @@ func rebaseOuterLegRefsOrdinal(
 		if !changed {
 			return p, true
 		}
-		return predicates.NewAnd(subs...), true
+		return predicates.WithAtomicity(predicates.NewAnd(subs...), predicates.IsAtomic(p)), true
 	case *predicates.OrPredicate:
 		changed := false
 		subs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
@@ -271,7 +271,7 @@ func rebaseOuterLegRefsOrdinal(
 		if !changed {
 			return p, true
 		}
-		return predicates.NewOr(subs...), true
+		return predicates.WithAtomicity(predicates.NewOr(subs...), predicates.IsAtomic(p)), true
 	case *predicates.NotPredicate:
 		newChild, ok := rebaseOuterLegRefsOrdinal(pred.Child, windows, mergedQOV, expectedLegs...)
 		if !ok {
@@ -280,7 +280,7 @@ func rebaseOuterLegRefsOrdinal(
 		if newChild == pred.Child {
 			return p, true
 		}
-		return predicates.NewNot(newChild), true
+		return predicates.WithAtomicity(predicates.NewNot(newChild), predicates.IsAtomic(p)), true
 	default:
 		// A shape the lazy twin also passes through untouched: safe
 		// only if it carries NO leg references — probe and decline if it does.

@@ -66,6 +66,9 @@ var seamAllowlist = map[string]string{
 	"pkg/recordlayer/spfresh_query.go:search: time.Now":               "search-latency metric",
 	"pkg/recordlayer/store_timer.go:RecordSince: time.Since":          "the StoreTimer's own latency accounting; the whole point of the type is real elapsed time",
 	"pkg/relational/core/embedded/plan_logging.go:finish: time.Since": "planning duration on a log line; the log is not a persisted row",
+	"pkg/recordlayer/query/plan/cascades/planner_trace.go:runTraced: time.Now": "per-task planner-trace duration, only for a diagnostics report; " +
+		"no planning decision reads it and nothing is persisted, and an untraced run never calls it",
+	"pkg/recordlayer/query/plan/cascades/planner_trace.go:runTraced: time.Since": "pairs with the runTraced time.Now entry above",
 	"pkg/relational/core/embedded/execution_logging.go:finish: time.Since": "execution duration on a log line; the log is not a persisted row. " +
 		"Pairs with the beginExecLog entry above — same clock, same reasoning",
 	"pkg/recordlayer/store.go:DeleteRecord: time.Now": "delete-latency metric",

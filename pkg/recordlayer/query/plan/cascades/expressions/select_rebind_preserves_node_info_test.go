@@ -92,6 +92,43 @@ func TestSelectWithQuantifiers_PreservesEveryNonQuantifierField(t *testing.T) {
 	}
 }
 
+func TestSelectWithTranslatedValuesPreservesNodeInfo(t *testing.T) {
+	t.Parallel()
+	for _, swapped := range []bool{false, true} {
+		name := "unswapped"
+		if swapped {
+			name = "swapped"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			leaf := &leafScan{name: "T"}
+			qs := []Quantifier{ForEachQuantifier(InitialOf(leaf)), ForEachQuantifier(InitialOf(leaf))}
+			base := mustExpression(NewSelectExpressionWithJoinType(values.NewBooleanValue(true), qs, nil, []string{"A", "B"}, JoinCross))
+			if swapped {
+				base = base.WithSwappedQuantifiers()
+			}
+			rv := values.NewBooleanValue(false)
+			pred := predicates.NewConstantPredicate(predicates.TriFalse)
+			got, err := base.WithTranslatedValues(rv, base.GetQuantifiers(), []predicates.QueryPredicate{pred})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.IsQuantifiersSwapped() != swapped || got.GetJoinType() != JoinCross || got.GetSourceAliases()[0] != base.GetSourceAliases()[0] {
+				t.Fatal("translation lost select node metadata")
+			}
+			if got.GetResultValue() != rv || len(got.GetPredicates()) != 1 || got.GetPredicates()[0] != pred {
+				t.Fatal("translation did not replace value programs")
+			}
+			if bad, err := base.WithTranslatedValues(rv, nil, nil); err == nil || bad != nil {
+				t.Fatal("translation accepted the wrong quantifier arity")
+			}
+			if bad, err := base.WithTranslatedValues(nil, qs, nil); err == nil || bad != nil {
+				t.Fatal("translation accepted an invalid result value")
+			}
+		})
+	}
+}
+
 // An unswapped Select must stay unswapped. Without this half, a copy that
 // hard-coded the marker to true would satisfy the test above — an invariant
 // that only holds in one direction is not an invariant.

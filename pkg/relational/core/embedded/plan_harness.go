@@ -44,6 +44,15 @@ func PlanPhysicalForTest(sql, schemaDDL string, stats properties.StatisticsProvi
 	return plan, err
 }
 
+// PlanPhysicalForTestTraced is PlanPhysicalForTest with the planner's work
+// attributed to trace, which then holds the run's per-rule cost and memo census.
+func PlanPhysicalForTestTraced(sql, schemaDDL string, stats properties.StatisticsProvider, trace *cascades.PlannerTrace) (plans.RecordQueryPlan, error) {
+	popts := plannerOptionsFrom(nil)
+	popts.trace = trace
+	plan, _, err := planPhysicalForTest(sql, schemaDDL, stats, false, nil, popts)
+	return plan, err
+}
+
 // PlanQueryForTestWithDisabledRules is PlanQueryForTest with a set of planner
 // rules excluded from selection, by the SIMPLE type name Planner.DisabledRules
 // is keyed by ("MergeProjectionAndFetchRule").

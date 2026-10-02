@@ -143,7 +143,7 @@ func (r *AndFlattenRule) OnMatch(call *RuleCall) {
 	// Check for any child that is itself an AndPredicate.
 	hasNested := false
 	for _, sp := range and.SubPredicates {
-		if _, ok := sp.(*predicates.AndPredicate); ok {
+		if _, ok := sp.(*predicates.AndPredicate); ok && !predicates.IsAtomic(sp) {
 			hasNested = true
 			break
 		}
@@ -153,7 +153,7 @@ func (r *AndFlattenRule) OnMatch(call *RuleCall) {
 	}
 	flat := make([]predicates.QueryPredicate, 0, len(and.SubPredicates))
 	for _, sp := range and.SubPredicates {
-		if inner, ok := sp.(*predicates.AndPredicate); ok {
+		if inner, ok := sp.(*predicates.AndPredicate); ok && !predicates.IsAtomic(inner) {
 			flat = append(flat, inner.SubPredicates...)
 		} else {
 			flat = append(flat, sp)
@@ -180,7 +180,7 @@ func (r *OrFlattenRule) OnMatch(call *RuleCall) {
 	or := call.Bindings.Get(r.matcher).(*predicates.OrPredicate)
 	hasNested := false
 	for _, sp := range or.SubPredicates {
-		if _, ok := sp.(*predicates.OrPredicate); ok {
+		if _, ok := sp.(*predicates.OrPredicate); ok && !predicates.IsAtomic(sp) {
 			hasNested = true
 			break
 		}
@@ -190,7 +190,7 @@ func (r *OrFlattenRule) OnMatch(call *RuleCall) {
 	}
 	flat := make([]predicates.QueryPredicate, 0, len(or.SubPredicates))
 	for _, sp := range or.SubPredicates {
-		if inner, ok := sp.(*predicates.OrPredicate); ok {
+		if inner, ok := sp.(*predicates.OrPredicate); ok && !predicates.IsAtomic(inner) {
 			flat = append(flat, inner.SubPredicates...)
 		} else {
 			flat = append(flat, sp)
@@ -516,32 +516,9 @@ func (r *AndAbsorbOrRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *AndAbsorbOrRule) OnMatch(call *RuleCall) {
 	and := call.Bindings.Get(r.matcher).(*predicates.AndPredicate)
-	kept := make([]predicates.QueryPredicate, 0, len(and.SubPredicates))
-	changed := false
-	for _, sp := range and.SubPredicates {
-		or, ok := sp.(*predicates.OrPredicate)
-		if !ok {
-			kept = append(kept, sp)
-			continue
-		}
-		// Drop the OR if any of its operands matches a sibling.
-		if anyMatchesAnother(or.SubPredicates, and.SubPredicates, sp) {
-			changed = true
-			continue
-		}
-		kept = append(kept, sp)
-	}
-	if !changed {
-		return
-	}
-	switch len(kept) {
-	case 0:
-		// Shouldn't happen — the matching OR still leaves its sibling.
-		call.Yield(predicates.NewConstantPredicate(predicates.TriTrue))
-	case 1:
-		call.Yield(kept[0])
-	default:
-		call.Yield(&predicates.AndPredicate{SubPredicates: kept})
+	kept := absorbMinorTerms(and.SubPredicates, normalFormCNF)
+	if len(kept) < len(and.SubPredicates) {
+		call.Yield(buildAnd(kept))
 	}
 }
 
@@ -562,47 +539,30 @@ func (r *OrAbsorbAndRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *OrAbsorbAndRule) OnMatch(call *RuleCall) {
 	or := call.Bindings.Get(r.matcher).(*predicates.OrPredicate)
-	kept := make([]predicates.QueryPredicate, 0, len(or.SubPredicates))
-	changed := false
-	for _, sp := range or.SubPredicates {
-		and, ok := sp.(*predicates.AndPredicate)
-		if !ok {
-			kept = append(kept, sp)
-			continue
-		}
-		if anyMatchesAnother(and.SubPredicates, or.SubPredicates, sp) {
-			changed = true
-			continue
-		}
-		kept = append(kept, sp)
-	}
-	if !changed {
-		return
-	}
-	switch len(kept) {
-	case 0:
-		call.Yield(predicates.NewConstantPredicate(predicates.TriFalse))
-	case 1:
-		call.Yield(kept[0])
-	default:
-		call.Yield(&predicates.OrPredicate{SubPredicates: kept})
+	kept := absorbMinorTerms(or.SubPredicates, normalFormDNF)
+	if len(kept) < len(or.SubPredicates) {
+		call.Yield(buildOr(kept))
 	}
 }
 
-// anyMatchesAnother reports whether any element of `candidates`
-// structurally equals any element of `siblings` other than `self`.
-// Used by the absorption rules to decide whether a child is made
-// redundant by a sibling.
-func anyMatchesAnother(candidates, siblings []predicates.QueryPredicate, self predicates.QueryPredicate) bool {
-	for _, c := range candidates {
-		for _, s := range siblings {
-			if s == self {
-				continue
-			}
-			if predicates.PredicateEquals(c, s) {
-				return true
-			}
+// Java rebuilds surviving minor sets only when absorption removes a major term.
+// Rebuilding intentionally drops minor atomicity, permitting later normalization.
+func absorbMinorTerms(terms []predicates.QueryPredicate, mode normalFormMode) []predicates.QueryPredicate {
+	clauses := make([][]predicates.QueryPredicate, len(terms))
+	for i, term := range terms {
+		if mode.isMinor(term) {
+			clauses[i] = dedupPredicateSlice(term.Children())
+		} else {
+			clauses[i] = []predicates.QueryPredicate{term}
 		}
 	}
-	return false
+	survivors := absorptionSurvivors(clauses)
+	if len(survivors) == len(terms) {
+		return terms
+	}
+	kept := make([]predicates.QueryPredicate, 0, len(survivors))
+	for _, i := range survivors {
+		kept = append(kept, mode.minorWithChildren(clauses[i]))
+	}
+	return kept
 }

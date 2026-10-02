@@ -145,8 +145,6 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewNoOpLimitElimRule(),
 		NewSelectMergeRule(),
 		NewSplitSelectExtractIndependentQuantifiersRule(),
-		NewNormalizePredicatesRule(),
-		NewPredicateToLogicalUnionRule(),
 		// Join-order enumeration (PartitionSelectRule / PartitionBinarySelectRule)
 		// is PLANNING-only — see PlanningExplorationRules, matching Java's
 		// PlanningRuleSet (the RewritingRuleSet is normalization only). REWRITING
@@ -175,6 +173,10 @@ func DefaultExpressionRules() []ExpressionRule {
 // canonical seed. Mirrors Java's PlanningRuleSet.EXPLORATION_RULES.
 func PlanningExplorationRules() []ExpressionRule {
 	return []ExpressionRule{
+		NewFilterToLogicalUnionRule(),
+		// Union access paths must survive alongside the unsplit select until
+		// candidate matching and costing, as in Java PlanningRuleSet.
+		NewPredicateToLogicalUnionRule(),
 		NewNormalizePredicatesRule(),
 		NewInComparisonToExplodeRule(),
 		NewSplitSelectExtractIndependentQuantifiersRule(),
@@ -480,7 +482,7 @@ func registerRewritingRules() {
 }
 
 func registerDefaultRules() {
-	for _, r := range DefaultExpressionRules() {
+	for _, r := range append(DefaultExpressionRules(), PlanningExplorationRules()...) {
 		// Use the concrete type name (without leading * and package
 		// prefix) as the registry key. Skip if already registered —
 		// init can be called twice in tests; idempotency keeps the

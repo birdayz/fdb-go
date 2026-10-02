@@ -619,7 +619,7 @@ func (l *ordinalLayout) EqualUnderAliases(other OrdinalLayout, aliases AliasMap)
 	return ordinalLayoutsEqual(l, right, exactAliases)
 }
 
-func ordinalLayoutsEqual(left, right *ordinalLayout, aliases *aliasMap) bool {
+func ordinalLayoutsEqual(left, right *ordinalLayout, aliases ownedAliasMap) bool {
 	if left == nil || right == nil || left.carrierKind != right.carrierKind ||
 		!exactTypesEqual(left.carrier.flowed, right.carrier.flowed) ||
 		!layoutCorrelationEqual(left.carrier.correlation, right.carrier.correlation, aliases) ||
@@ -635,7 +635,7 @@ func ordinalLayoutsEqual(left, right *ordinalLayout, aliases *aliasMap) bool {
 		leftWindow := &left.windows[i]
 		target := leftWindow.source.correlation
 		if aliases != nil {
-			if mapped, exists := aliases.forward[target]; exists {
+			if mapped, exists := aliases.Target(target); exists {
 				target = mapped
 			}
 		}
@@ -647,9 +647,9 @@ func ordinalLayoutsEqual(left, right *ordinalLayout, aliases *aliasMap) bool {
 	return true
 }
 
-func layoutCorrelationEqual(left, right CorrelationIdentifier, aliases *aliasMap) bool {
+func layoutCorrelationEqual(left, right CorrelationIdentifier, aliases ownedAliasMap) bool {
 	if aliases != nil {
-		if mapped, exists := aliases.forward[left]; exists {
+		if mapped, exists := aliases.Target(left); exists {
 			return mapped == right
 		}
 	}
@@ -750,6 +750,62 @@ func LayoutProvides(layout OrdinalLayout, source QuantifiedObjectValue) (bool, e
 	}
 	if !exactTypesEqual(exactLayout.windows[index].source.flowed, exactSource.flowed) {
 		return false, resolutionError(CorrelationTypeConflict, "layout.source", "provided correlation has a different exact type")
+	}
+	return true, nil
+}
+
+// LayoutWindowWithin reports whether every carrier path of source's window
+// lies inside parent's window: a source buried in a retained box leg, which a
+// join may publish without its child binding that source on its own.
+func LayoutWindowWithin(layout OrdinalLayout, source, parent QuantifiedObjectValue) (bool, error) {
+	exactLayout, ok := exactOrdinalLayout(layout)
+	if !ok {
+		return false, resolutionError(LayoutForeignValue, "layout", "layout is not a values-owned exact layout")
+	}
+	window := func(view QuantifiedObjectValue, path string) (*ordinalWindow, error) {
+		exactSource, err := exactLayoutQOV(view, path)
+		if err != nil {
+			return nil, err
+		}
+		index, present := exactLayout.bySource[exactSource.correlation]
+		if !present {
+			return nil, resolutionError(LayoutSourceNotProvided, path, "layout does not provide this source")
+		}
+		found := &exactLayout.windows[index]
+		if !exactTypesEqual(found.source.flowed, exactSource.flowed) {
+			return nil, resolutionError(CorrelationTypeConflict, path, "provided correlation has a different exact type")
+		}
+		return found, nil
+	}
+	inner, err := window(source, "layout.source")
+	if err != nil {
+		return false, err
+	}
+	outer, err := window(parent, "layout.parent")
+	if err != nil {
+		return false, err
+	}
+	if inner == outer {
+		return false, nil
+	}
+	paths := func(w *ordinalWindow) [][]int {
+		if w.objectPath != nil {
+			return [][]int{w.objectPath}
+		}
+		return w.fieldPaths
+	}
+	parentPaths := paths(outer)
+	for _, candidate := range paths(inner) {
+		covered := false
+		for _, prefix := range parentPaths {
+			if ordinalPathHasPrefix(candidate, prefix) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			return false, nil
+		}
 	}
 	return true, nil
 }

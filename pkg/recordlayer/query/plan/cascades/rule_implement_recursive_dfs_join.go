@@ -126,8 +126,8 @@ func (r *ImplementRecursiveDfsJoinRule) OnMatch(call *ExpressionRuleCall) {
 	// better than depending on two structurally-similar plans happening to
 	// differ below the root. The guarantee should not be a coincidence of the
 	// data.
-	rootQ := expressions.ForEachQuantifier(call.MemoizeFinalExpression(&scanPlanExpression{plan: rootPlan}))
-	childQ := expressions.ForEachQuantifier(call.MemoizeFinalExpression(&scanPlanExpression{plan: childPlan}))
+	rootQ := expressions.NewPhysicalQuantifier(call.MemoizeFinalExpression(&scanPlanExpression{plan: rootPlan}))
+	childQ := expressions.NewPhysicalQuantifier(call.MemoizeFinalExpression(&scanPlanExpression{plan: childPlan}))
 	// The plan carries its two leg edges directly — no separate physical
 	// wrapper (RFC-184 W2).
 	plan, err := plans.NewRecordQueryRecursiveDfsJoinPlanFromQuantifiers(

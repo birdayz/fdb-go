@@ -68,6 +68,7 @@ go_library(
         "//pkg/recordlayer/query/plan/cascades/properties",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/recordlayer/query/plan/plans",
+        "//pkg/recordlayer/vectorcodec",
         "//pkg/relational/api",
         "//pkg/relational/api/ddl",
         "//pkg/relational/core/catalog",
@@ -223,6 +224,7 @@ go_test(
         "plan_harness_exists_guard_test.go",
         "plan_harness_one_final_test.go",
         "plan_harness_test.go",
+        "plan_harness_trace_test.go",
         "plan_logging_test.go",
         "plan_stress_shapes_bench_test.go",
         "plan_visitor_where_installation_test.go",
@@ -492,6 +494,7 @@ go_test(
         "temp_function.go",
         "sliding_window_view.go",
         "table_function_source.go",
+        "plan_harness_trace_test.go",
     ],
     deps = [
         "//gen",

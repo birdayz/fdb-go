@@ -21,13 +21,21 @@ func TestSemanticEquals_UnionPermutedChildren(t *testing.T) {
 		return mustExpression(NewLogicalUnionExpression(qs))
 	}
 	u1 := build([]*leafScan{leafA, leafB, leafC})
-	u2 := build([]*leafScan{leafC, leafB, leafA}) // reverse order
-	u3 := build([]*leafScan{leafB, leafA, leafC}) // mixed permutation
-	if !SemanticEquals(u1, u2, EmptyAliasMap()) {
-		t.Fatal("UNION over [A,B,C] != UNION over [C,B,A] — permutation enumerator broken")
-	}
-	if !SemanticEquals(u1, u3, EmptyAliasMap()) {
-		t.Fatal("UNION over [A,B,C] != UNION over [B,A,C] — permutation enumerator broken")
+	for i, order := range [][]*leafScan{
+		{leafA, leafB, leafC},
+		{leafA, leafC, leafB},
+		{leafB, leafA, leafC},
+		{leafB, leafC, leafA},
+		{leafC, leafA, leafB},
+		{leafC, leafB, leafA},
+	} {
+		u2 := build(order)
+		if !SemanticEquals(u1, u2, EmptyAliasMap()) {
+			t.Fatalf("UNION permutation %d reported semantically unequal", i)
+		}
+		if duplicate, _ := PreparedMemberDuplicate([]RelationalExpression{u1}, u2); !duplicate {
+			t.Fatalf("prepared admission missed UNION permutation %d", i)
+		}
 	}
 }
 
@@ -88,49 +96,7 @@ func TestSemanticEquals_PositionalDoesNotPermute(t *testing.T) {
 	}
 }
 
-// TestPermute_AllPermutations enumerates [3]int permutations to
-// confirm the helper produces all 6 in the expected sequence.
-func TestPermute_AllPermutations(t *testing.T) {
-	t.Parallel()
-	got := [][]int{}
-	indices := []int{0, 1, 2}
-	permute(indices, 0, func(perm []int) bool {
-		cp := make([]int, len(perm))
-		copy(cp, perm)
-		got = append(got, cp)
-		return false // never accept; visit all
-	})
-	if len(got) != 6 {
-		t.Fatalf("permute visited %d permutations, want 6 (3!)", len(got))
-	}
-}
-
-// TestPermute_StopsOnFirstAccept — passing accept=true short-circuits
-// the enumeration. Permute should not visit further permutations.
-func TestPermute_StopsOnFirstAccept(t *testing.T) {
-	t.Parallel()
-	visited := 0
-	indices := []int{0, 1, 2, 3} // 24 permutations
-	permute(indices, 0, func(_ []int) bool {
-		visited++
-		return visited == 1 // accept on first call
-	})
-	if visited != 1 {
-		t.Fatalf("permute visited %d permutations after accept on first, want 1", visited)
-	}
-}
-
-// TestSemanticEquals_PermutationCap_FallsBackToPositional pins that
-// when the child count exceeds MaxPermutationChildren, the walker
-// falls back to positional pairing rather than burning O(N!) cycles
-// on a query shape that effectively never appears in real workloads.
-//
-// Construction: build two LogicalUnion expressions over (N+1)
-// distinct scans, where N=MaxPermutationChildren. Pair them in
-// reverse order. Under permutation enumeration they'd be equal;
-// under positional pairing they're NOT equal (because the leaves
-// at each position differ).
-func TestSemanticEquals_PermutationCap_FallsBackToPositional(t *testing.T) {
+func TestSemanticEquals_LargePermutedUnion(t *testing.T) {
 	t.Parallel()
 	n := MaxPermutationChildren + 1
 	mkUnion := func(reverse bool) *LogicalUnionExpression {
@@ -148,13 +114,13 @@ func TestSemanticEquals_PermutationCap_FallsBackToPositional(t *testing.T) {
 	}
 	u1 := mkUnion(false)
 	u2 := mkUnion(true)
-	// With permutation enumeration these would be equal (UNION is
-	// commutative). With positional fallback they are NOT — the
-	// leaves at position 0 differ ("A" vs the last letter).
-	if SemanticEquals(u1, u2, EmptyAliasMap()) {
-		t.Fatalf("unions over %d-child reverse-paired set reported equal — cap fallback didn't trigger", n)
+	if !SemanticEquals(u1, u2, EmptyAliasMap()) || !MemoEqual(u1, u2) {
+		t.Fatalf("unions over %d-child reverse-paired set must retain commutative memo identity", n)
 	}
-	// Sanity: same-order pairing IS equal.
+	if duplicate, _ := PreparedMemberDuplicate([]RelationalExpression{u1}, u2); !duplicate {
+		t.Fatalf("prepared admission missed %d-child reverse-paired union", n)
+	}
+	// Same-order pairing remains equal.
 	u1Twin := mkUnion(false)
 	if !SemanticEquals(u1, u1Twin, EmptyAliasMap()) {
 		t.Fatalf("unions over %d identical-children sets reported unequal under positional fallback", n)

@@ -182,19 +182,6 @@ func newFlatMapCursorForPlan(
 	if err := build.widenLegTypesFromPlan(innerPlan); err != nil {
 		return nil, err
 	}
-	// Producer context (RFC-142): a WITH-ORDINALITY unnest's inner IS an
-	// ordinality Explode, flowing a row keyed by the internal `_0`/`_1`
-	// positions. Mark the inner leg so it binds STRICTLY POSITIONALLY (see
-	// ordinalJoinBuild.OrdinalityLegs) — a user AS/AT alias spelling `_0`/`_1`
-	// then cannot route the wrong internal key, and a leg whose own
-	// columns are aliased `_0`/`_1` (shape-identical, but NOT an ordinality
-	// Explode) still binds correctly through the normal leg adapter.
-	if build.enabled() && innerIsOrdinalityExplode(innerPlan) {
-		if build.OrdinalityLegs == nil {
-			build.OrdinalityLegs = map[values.CorrelationIdentifier]struct{}{}
-		}
-		build.OrdinalityLegs[innerAlias] = struct{}{}
-	}
 	// A DISABLED-build FlatMap (identity RV — the
 	// WHERE-EXISTS pass-through) probes its inner plan for baked references
 	// over the outer alias; a hit means the outer must bind positionally
@@ -642,7 +629,10 @@ func qualifyOuterPositional(row *PositionalRow, alias values.CorrelationIdentifi
 			values.NewRecordTypeLeg(values.LegKindFlatRun, alias, alias.Name(), 0, len(row.Type.Fields)),
 		},
 	}
-	return &PositionalRow{Type: qualified, Slots: row.Slots, transportKind: row.transportKind}
+	// Qualification changes no value: retain whole-object absence and layout.
+	copyOfRow := *row
+	copyOfRow.Type = qualified
+	return &copyOfRow
 }
 
 // computeResultLegs is computeResult with the inner leg as a pointer: nil is

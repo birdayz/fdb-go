@@ -79,6 +79,10 @@ type Column struct {
 	// `DataType` once the Type hierarchy is ported.
 	Type string
 
+	// Vector shape accompanies the VECTOR scalar or array element kind.
+	VectorPrecision  int
+	VectorDimensions int
+
 	// Nullable reports whether the column allows NULL values.
 	// Matters for NOT-NULL-gated simplifications (x = x → TRUE).
 	Nullable bool

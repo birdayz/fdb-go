@@ -85,23 +85,9 @@ func adjustMatchesRecursive(ref *expressions.Reference, visited map[*expressions
 // consumption time or their ordering parts (needed to satisfy a
 // requested ordering and eliminate an in-memory sort) are never computed.
 func AdjustPartialMatchesForRef(ref *expressions.Reference) {
-	// Idempotence is handled per-match by AddPartialMatchForCandidate's content
-	// dedup (a match is rejected when an existing match shares its query
-	// expression + candidate ref), NOT by a coarse ref-level short-circuit.
-	// `pushDataAccessTasks` fires repeatedly per ref during PLANNING and matches
-	// arrive in waves (a second candidate can seed its matches AFTER an earlier
-	// candidate's matches were already adjusted). A ref-level "any adjusted match
-	// exists → skip the whole ref" guard would skip those later seeds entirely —
-	// their matchedOrderingParts stay empty, so they can never satisfy an ORDER BY
-	// and sort elimination silently degrades to a full scan + sort.
-	// Instead the round loop runs every time: re-adjusting an
-	// already-absorbed match produces a content-equivalent match that the dedup
-	// rejects (adjustPartialMatch returns false → no progress → the loop
-	// converges in one round), while a freshly-seeded match IS absorbed. This
-	// relies on the content dedup actually firing — see the
-	// TestAdjustPartialMatches_* regressions (no duplicate explosion across
-	// repeated calls; late-seeded candidate waves still get adjusted).
-	for round := 0; round < 8; round++ {
+	// Drain newly produced matches too; candidate depth is not bounded by the
+	// number of rounds. Each immutable match/traversal pair is attempted once.
+	for {
 		progress := false
 		for _, candAny := range ref.GetPartialMatchCandidates() {
 			cand := candAny.(MatchCandidate)
@@ -135,7 +121,7 @@ func adjustPartialMatch(queryRef *expressions.Reference, candidate MatchCandidat
 	}
 
 	traversal := candidate.GetTraversal()
-	if traversal == nil {
+	if traversal == nil || pmi.adjustedTraversal == traversal {
 		return false
 	}
 
@@ -164,6 +150,7 @@ func adjustPartialMatch(queryRef *expressions.Reference, candidate MatchCandidat
 			added = true
 		}
 	}
+	pmi.adjustedTraversal = traversal
 	return added
 }
 

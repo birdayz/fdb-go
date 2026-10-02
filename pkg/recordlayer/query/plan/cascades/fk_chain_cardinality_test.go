@@ -298,6 +298,38 @@ func TestFKChainCardinalityCap_OrderInvariant(t *testing.T) {
 	}
 }
 
+// buildForwardChainRightDeep is buildForwardChain re-associated to the right:
+// FlatMap(T1, FlatMap(T2, FlatMap(T3, T4))), each probe correlated to the leg
+// immediately outside it — the only shape Java-aligned select partitioning
+// produces for a chain.
+func buildForwardChainRightDeep(t *testing.T) plans.RecordQueryPlan {
+	t.Helper()
+	inner3 := fkChainFlat(fkChainFKProbe(t, "T3", "t3_by_t2", "T2", fkChainAlias(1)),
+		fkChainFKProbe(t, "T4", "t4_by_t3", "T3", fkChainAlias(2)), fkChainAlias(2))
+	inner2 := fkChainFlat(fkChainFKProbe(t, "T2", "t2_by_t1", "T1", fkChainAlias(0)), inner3, fkChainAlias(1))
+	return fkChainFlat(fkChainFullScan("T1"), inner2, fkChainAlias(0))
+}
+
+// A right-deep spine executes every leg exactly as often as its left-deep
+// re-association, so it must be costed identically; otherwise the cap proven
+// for each hop is lost to the FlatMap that multiplies the per-execution
+// estimate by the outer cardinality.
+func TestFKChainCardinalityCap_RightDeepSpineCostsLikeLeftDeep(t *testing.T) {
+	t.Parallel()
+	stats := fkChainStats()
+
+	leftDeep := concretePlanCost(buildForwardChain(t), stats, nil)
+	rightDeep := concretePlanCost(buildForwardChainRightDeep(t), stats, nil)
+
+	if rightDeep.Cardinality != 2000 {
+		t.Fatalf("right-deep chain cardinality = %v, want the proven 2000 (every T4 row has exactly one ancestor chain)",
+			rightDeep.Cardinality)
+	}
+	if rightDeep != leftDeep {
+		t.Fatalf("right-deep spine cost %+v differs from its left-deep re-association %+v", rightDeep, leftDeep)
+	}
+}
+
 // TestFKChainCardinalityCap_NeverExceedsProvableBound is the impossible-8000
 // regression: before the FK-chain cap, the forward direction's per-hop
 // EqualityBoundSelectivity-compounded estimate reached 8000 at level 3 —

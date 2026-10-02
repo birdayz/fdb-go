@@ -16,10 +16,131 @@ package matching
 //     matcher rejection.
 
 import (
+	"slices"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
+
+func BenchmarkPlannerBindingsSingle(b *testing.B) {
+	matcher := NewAnyValue()
+	var result *PlannerBindings
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		result = NewBindings().Bind(matcher, matcher)
+		if result.Get(matcher) != matcher {
+			b.Fatal("binding changed value")
+		}
+	}
+	b.StopTimer()
+	b.Logf("bindings retained at %p", result)
+}
+
+func TestPlannerBindingsRepresentations(t *testing.T) {
+	t.Parallel()
+	first, second := NewConstantMatcher(), NewConstantMatcher()
+	for _, leftSize := range []int{0, 1, 3} {
+		for _, rightSize := range []int{0, 1, 3} {
+			for _, sameKey := range []bool{false, true} {
+				left, right := NewBindings(), NewBindings()
+				rightKey := BindingMatcher(second)
+				if sameKey {
+					rightKey = first
+				}
+				var wantFirst, wantSecond []any
+				for i := range leftSize {
+					left = left.Bind(first, i)
+					wantFirst = append(wantFirst, i)
+				}
+				for i := range rightSize {
+					right = right.Bind(rightKey, i+10)
+					if sameKey {
+						wantFirst = append(wantFirst, i+10)
+					} else {
+						wantSecond = append(wantSecond, i+10)
+					}
+				}
+				merged := left.MergedWith(right)
+				if !slices.Equal(merged.GetAll(first), wantFirst) || !slices.Equal(merged.GetAll(second), wantSecond) {
+					t.Fatalf("merge %d/%d same=%t: got %v/%v, want %v/%v", leftSize, rightSize, sameKey,
+						merged.GetAll(first), merged.GetAll(second), wantFirst, wantSecond)
+				}
+				if len(left.GetAll(first)) != leftSize || len(right.GetAll(rightKey)) != rightSize {
+					t.Fatal("merge mutated an input")
+				}
+				for _, key := range []BindingMatcher{first, second} {
+					fork := merged.Bind(key, "fork")
+					if got := fork.GetAll(key); len(got) != len(merged.GetAll(key))+1 || got[len(got)-1] != "fork" {
+						t.Fatalf("fork lost or reordered bindings: %v", got)
+					}
+				}
+			}
+		}
+	}
+	var zero PlannerBindings
+	binding := zero.Bind(nil, nil)
+	if got := binding.GetAll(nil); len(got) != 1 || got[0] != nil || binding.Get(nil) != nil {
+		t.Fatalf("nil identity/value did not survive binding: %v", got)
+	}
+	if got := Get[BindingMatcher](zero.Bind(first, BindingMatcher(second)), first); got != second {
+		t.Fatal("generic Get changed matcher identity")
+	}
+}
+
+func FuzzPlannerBindings(f *testing.F) {
+	f.Add([]byte{0, 1, 2, 3, 4, 5, 6, 7})
+	f.Add([]byte{255, 255, 255, 255})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) > 64 {
+			data = data[:64]
+		}
+		keys := []BindingMatcher{NewConstantMatcher(), NewConstantMatcher(), nil}
+		type entry struct {
+			key   int
+			value byte
+		}
+		history := []*PlannerBindings{NewBindings()}
+		model := [][]entry{nil}
+		for i, value := range data {
+			index := int(value) % len(history)
+			key := i % len(keys)
+			source := history[index]
+			previous := model[index]
+			addition := entry{key: key, value: value}
+			var next *PlannerBindings
+			var want []entry
+			switch value % 3 {
+			case 0:
+				next = source.Bind(keys[key], value)
+				want = append(slices.Clone(previous), addition)
+			case 1:
+				next = source.MergedWith(NewBindings().Bind(keys[key], value))
+				want = append(slices.Clone(previous), addition)
+			case 2:
+				next = NewBindings().Bind(keys[key], value).MergedWith(source)
+				want = append([]entry{addition}, previous...)
+			}
+			history = append(history, next)
+			model = append(model, want)
+		}
+		for i, bindings := range history {
+			for key, matcher := range keys {
+				var want []any
+				for _, entry := range model[i] {
+					if entry.key == key {
+						want = append(want, entry.value)
+					}
+				}
+				if got := bindings.GetAll(matcher); !slices.Equal(got, want) {
+					t.Fatalf("history %d key %d: got %v, want %v", i, key, got, want)
+				}
+				if len(want) == 1 && (bindings.Get(matcher) != want[0] || Get[byte](bindings, matcher) != want[0]) {
+					t.Fatal("single binding lookup disagrees with the ordered model")
+				}
+			}
+		}
+	})
+}
 
 // TestPlannerBindings_BindIsImmutable: Bind must NOT mutate the
 // receiver. Speculative matches in the rule engine retry many shapes

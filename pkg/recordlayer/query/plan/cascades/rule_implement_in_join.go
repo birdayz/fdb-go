@@ -29,7 +29,8 @@ type ImplementInJoinRule struct {
 
 func NewImplementInJoinRule() *ImplementInJoinRule {
 	return &ImplementInJoinRule{
-		matcher: NewExpressionMatcher[*expressions.SelectExpression]("implement_in_join"),
+		matcher: NewExpressionMatcher[*expressions.SelectExpression]("implement_in_join").WithRootPredicate(
+			func(sel *expressions.SelectExpression) bool { return len(sel.GetQuantifiers()) >= 2 }),
 	}
 }
 

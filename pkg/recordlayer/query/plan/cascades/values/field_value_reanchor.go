@@ -10,6 +10,17 @@ func ReanchorFieldValue(
 	target QuantifiedObjectValue,
 	layout OrdinalLayout,
 ) (FieldValue, error) {
+	return reanchorFieldValue(field, target, layout, nil)
+}
+
+// reanchorFieldValue is ReanchorFieldValue restricted, when owned is non-nil,
+// to frontier-bridge roots the caller proves belong to the target's row.
+func reanchorFieldValue(
+	field FieldValue,
+	target QuantifiedObjectValue,
+	layout OrdinalLayout,
+	owned map[CorrelationIdentifier]struct{},
+) (FieldValue, error) {
 	original, ok := field.(*fieldValue)
 	if !ok || !isAdmittedFieldValue(original) {
 		return nil, resolutionError(ReanchorInvalidValue, "reanchor.field", "field is not a values-owned exact FieldValue")
@@ -52,7 +63,11 @@ func ReanchorFieldValue(
 			// the pinned path and exact whole-row type prove that its ordinals are
 			// the target carrier's ordinals. Source-relative (unpinned) paths never
 			// take this bridge; they require an explicit layout window.
-			if original.Resolved.FrontierPinned && exactTypesEqual(root.flowed, exactTarget.flowed) {
+			// Exact type proves only the row's shape, not its identity: in a
+			// self-join an outer leg of the same table matches too.
+			_, claimable := owned[root.correlation]
+			if original.Resolved.FrontierPinned && exactTypesEqual(root.flowed, exactTarget.flowed) &&
+				(owned == nil || claimable) {
 				mapped = append([]int(nil), sourcePath...)
 			} else {
 				return nil, resolutionError(ReanchorUnmappedSource, "reanchor.field",
@@ -113,6 +128,31 @@ func ReanchorValueForLayout(
 	target QuantifiedObjectValue,
 	layout OrdinalLayout,
 ) (Value, error) {
+	return reanchorValueForLayout(value, target, layout, nil)
+}
+
+// ReanchorOwnedValueForLayout is ReanchorValueForLayout for a Value that may
+// also read outer correlations: a root the layout does not window crosses onto
+// the carrier only when owned lists it. Every other root, including a
+// same-typed outer leg, is preserved for the evaluation context to bind.
+func ReanchorOwnedValueForLayout(
+	value Value,
+	target QuantifiedObjectValue,
+	layout OrdinalLayout,
+	owned map[CorrelationIdentifier]struct{},
+) (Value, error) {
+	if owned == nil {
+		owned = map[CorrelationIdentifier]struct{}{}
+	}
+	return reanchorValueForLayout(value, target, layout, owned)
+}
+
+func reanchorValueForLayout(
+	value Value,
+	target QuantifiedObjectValue,
+	layout OrdinalLayout,
+	owned map[CorrelationIdentifier]struct{},
+) (Value, error) {
 	if value == nil {
 		return nil, resolutionError(ReanchorInvalidValue, "reanchor.value", "value is nil")
 	}
@@ -134,7 +174,7 @@ func ReanchorValueForLayout(
 			return nil, resolutionError(RewriteNilReplacement, "reanchor.value", "value tree contains nil")
 		}
 		if field, isField := AsFieldValue(node); isField {
-			reanchored, reanchorErr := ReanchorFieldValue(field, exactTarget, exactLayout)
+			reanchored, reanchorErr := reanchorFieldValue(field, exactTarget, exactLayout, owned)
 			if reanchorErr == nil {
 				return reanchored, nil
 			}

@@ -196,6 +196,13 @@ func RebuildQuantifier(q Quantifier, newRef *Reference) Quantifier {
 	}
 }
 
+// WithAlias changes the binding declaration without changing its edge or flags.
+// Callers must already have a value program using the replacement alias.
+func (q Quantifier) WithAlias(alias values.CorrelationIdentifier) Quantifier {
+	q.alias = alias
+	return q
+}
+
 // Kind returns the Quantifier's flavour.
 func (q Quantifier) Kind() QuantifierKind { return q.kind }
 

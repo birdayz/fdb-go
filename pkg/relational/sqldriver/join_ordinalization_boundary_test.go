@@ -87,10 +87,9 @@ func pinRows(t *testing.T, db *sql.DB, ctx context.Context, q string) []string {
 // consumed inside a 3-way inner cluster must remain name-model — the cluster
 // gate declines it (pinned at translation in TestWedgeGate_Translation), and
 // at runtime the 3-way cluster must return the correct rows through that
-// name-model plan. The nested FlatMap(outer=FlatMap(...)) chain checked
-// below IS the name-model anchored 2-way re-enumeration machinery
-// (rule_partition_select bipartitions the 3-way select; a gated ordinal seed
-// never produces a 3-quantifier select for it to partition).
+// plan. The nested FlatMap chain checked below is rule_partition_select
+// bipartitioning the 3-way select (a gated ordinal seed never produces a
+// 3-quantifier select for it to partition).
 func TestFDB_TwoWayJoinUnderThreeWayClusterStaysNameModel(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -128,13 +127,14 @@ func TestFDB_TwoWayJoinUnderThreeWayClusterStaysNameModel(t *testing.T) {
 			t.Errorf("rows = %v, want %v", got, want)
 		}
 		plan := pinExplain(t, db, ctx, q)
-		// The distinguishing NAME-MODEL fragment: a 3-way inner cluster plans
-		// as the anchored 2-way merge CHAIN — FlatMap over FlatMap. A single
-		// gated 2-way plans as ONE FlatMap (see the GroupBy pin below); the
-		// nested shape only exists where the name-model re-enumeration
-		// machinery partitioned a ≥3-way select.
-		if !strings.Contains(plan, "FlatMap(outer=FlatMap(") {
-			t.Errorf("plan lost the nested name-model FlatMap merge chain:\n%s", plan)
+		// A 3-way inner cluster plans as a CHAIN of 2-way FlatMaps — one nested
+		// in the other. A single gated 2-way plans as ONE FlatMap (see the
+		// GroupBy pin below); the nested shape only exists where partitioning
+		// split a ≥3-way select. Java nests the chain in the inner, driving from
+		// c and probing b and then a by key:
+		// `SCAN(C) | FLATMAP { SCAN(B, [= q0.B_ID]) | FLATMAP { SCAN(A, [= q1.A_ID]) } }`.
+		if !strings.Contains(plan, "FlatMap(outer=Scan(C), inner=FlatMap(outer=Scan(B, [=]), inner=Scan(A, [=])))") {
+			t.Errorf("plan lost the nested FlatMap chain:\n%s", plan)
 		}
 		// The three output columns read the MERGED row by ordinal:
 		// [A.ID, A.AV, B.ID, B.A_ID, B.BV, C.ID, C.B_ID] puts a.id at 0,

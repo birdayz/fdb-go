@@ -738,13 +738,18 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		assertRows(t, `SELECT "_1", "O" FROM T1, T1."ARR1" AS "_1" AT "O"`, []string{
 			"_1=101|O=1", "_1=201|O=1", "_1=202|O=2", "_1=203|O=3",
 		})
+		// Both aliases spell the other slot's positional name.
+		assertRows(t, `SELECT "_1", "_0" FROM T1, T1."ARR1" AS "_1" AT "_0"`, []string{
+			"_1=101|_0=1", "_1=201|_0=1", "_1=202|_0=2", "_1=203|_0=3",
+		})
+		assertRows(t, `SELECT "_1", "_0" FROM T1, T1."ARR1" AS "_1" AT "_0" WHERE "_0" = 2`, []string{
+			"_1=202|_0=2",
+		})
 	})
 
 	// COMPOSITION axis: a WHERE-on-ordinal (which pushes a PredicatesFilter OVER
-	// the Explode) AND an ordinal-spelled element alias. innerIsOrdinalityExplode
-	// must walk THROUGH the PredicatesFilter to reach the WITH-ORDINALITY Explode,
-	// mark the leg, and bind positionally — so `SELECT "_1"` (the element) is still
-	// the array value under the ordinal filter, not the ordinal.
+	// the Explode) AND an ordinal-spelled element alias — `SELECT "_1"` (the
+	// element) is still the array value under the ordinal filter, not the ordinal.
 	t.Run("WHERE-on-ordinal with ordinal-spelled element alias", func(t *testing.T) {
 		assertRows(t, `SELECT "_1", "O" FROM T1, T1."ARR1" AS "_1" AT "O" WHERE "O" = 2`, []string{
 			"_1=202|O=2", // only id2's 2nd element (202); id1 has no 2nd element
@@ -1685,7 +1690,9 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// and EXISTS returned no rows.
 		plan := assertRows(t, `SELECT T1."ID" FROM T1 WHERE EXISTS (SELECT 1 FROM "U", T1."ARR1" AS "E" WHERE "E" = 202)`,
 			[]string{"ID=2"})
-		unnestMustContain(t, plan, "FlatMap(outer=Scan(U), inner=Explode")
+		// The element's own conjunct filters the Explode leg inside the FlatMap
+		// (Java: `EXPLODE q0.ARR1 | FILTER _ EQUALS @c22 | FLATMAP { SCAN(U) }`).
+		unnestMustContain(t, plan, "FlatMap(outer=Scan(U), inner=PredicatesFilter(Explode(field), [1 preds]))")
 		unnestMustNotContain(t, plan, "NestedLoopJoin")
 		assertRows(t, `SELECT T1."ID" FROM T1 WHERE NOT EXISTS (SELECT 1 FROM "U", T1."ARR1" AS "E" WHERE "E" = 202)`,
 			[]string{"ID=0", "ID=1", "ID=3"})
@@ -2145,13 +2152,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	})
 
 	t.Run("R5s EXISTS inner aliased same as unnest output, DISCRIMINATING outer ref", func(t *testing.T) {
-		// The discriminating NON-equality variant of R5q (inner JU aliased `X`, the
-		// unnest output alias). Under the OLD pre-baking design the translator baked
-		// MA.ID to QOV(X), which existsInnerCorrelation's inner-alias rename (X →
-		// unique) then captured — silent wrong rows, masked by R5q's equality. The
-		// STRUCTURAL fix leaves the correlation LEG-RELATIVE (QOV(MA).ID, not
-		// QOV(X)), so there is no QOV(X) outer ref for the rename to capture and the
-		// executor rebases it positionally. Deterministically correct now.
+		// The inner JU alias X shadows the unnest output. Keep the outer MA.ID
+		// reference leg-relative so the inner binding cannot capture it.
 		// EXISTS(JU AS X WHERE X.K < MA.ID + 1000). JU.K∈{1001,2002}: MA1(+1000=1001)
 		// → none < 1001 → dropped; MA2(+1000=1002) → 1001<1002 → kept → {20,21}.
 		assertRows(t, `SELECT "X" FROM MA, MA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM JU AS "X" WHERE "X"."K" < MA."ID" + 1000)`, []string{
@@ -3903,7 +3905,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	t.Run("WHERE LIKE ESCAPE on an unnest element preserves the escape (push-down rebase)", func(t *testing.T) {
 		// The WHERE twin: `FROM GD, GD.SARR AS V WHERE V LIKE 'a!_%' ESCAPE '!'`.
 		// The element filter is rewritten (rewriteUnnestPredicate →
-		// mapPredicateValues) and folded into the inner Explode's PredicatesFilter,
+		// TransformEmbeddedValues) and folded into the inner Explode's PredicatesFilter,
 		// and the planner's RebasePredicate / replacePredicateValues passes run over
 		// it. Each of those previously rebuilt the Comparison with a partial field
 		// set; the escape must survive the whole pipeline. Only "a_b" matches the
@@ -4077,9 +4079,15 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		r18Explain := assertRows(t, `SELECT WSRC."SID", WAUX."WV", "EL" FROM WSRC INNER JOIN WAUX ON WAUX."XID" = WSRC."SID", WSRC."WARR" AS "EL"`, []string{
 			"SID=1|WV=5|EL=7", "SID=1|WV=5|EL=8",
 		})
-		if !strings.Contains(r18Explain, "FlatMap(outer=Scan(WSRC)") {
+		// The element unnests directly under the WSRC row it reads. Java drives
+		// from WSRC and probes WAUX by key (`SCAN(WSRC) | FLATMAP { SCAN(WAUX,
+		// [= q0.SID]) | FLATMAP { EXPLODE q0.WARR } }`); Go may instead probe
+		// WSRC by key from WAUX, and either way the explode stays WSRC's.
+		if !strings.Contains(r18Explain, "inner=FlatMap(outer=Scan(WSRC, [=]), inner=Explode(field))") &&
+			!strings.Contains(r18Explain, "FlatMap(outer=Scan(WSRC)") {
 			t.Fatalf("the ON-carrying dotted-projection query must plan through the GATHERED path:\n%s", r18Explain)
 		}
+		unnestMustNotContain(t, r18Explain, "NestedLoopJoin")
 		// The AS+AT (full-baked) form of the same shape, plus an element WHERE.
 		assertRows(t, `SELECT WSRC."SID", "EL", "O" FROM WSRC INNER JOIN WAUX ON WAUX."XID" = WSRC."SID", WSRC."WARR" AS "EL" AT "O" WHERE "EL" > 7`, []string{
 			"SID=1|EL=8|O=2",

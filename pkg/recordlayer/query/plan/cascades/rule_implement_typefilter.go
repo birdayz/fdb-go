@@ -51,7 +51,7 @@ func (r *ImplementTypeFilterRule) OnMatch(call *ExpressionRuleCall) {
 	}
 	// The type filter is its own cascades expression now (RFC-184 W2) — it carries
 	// the live child edge directly, no physicalTypeFilterWrapper.
-	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
+	innerQ := expressions.NewPhysicalQuantifier(call.MemoizeExpression(winner))
 	tfPlan, err := plans.NewRecordQueryTypeFilterPlanFromQuantifier(tf.GetRecordTypes(), innerQ)
 	if err != nil {
 		call.Fail(err)

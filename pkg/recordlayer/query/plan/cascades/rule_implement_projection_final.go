@@ -45,7 +45,7 @@ func (r *ImplementProjectionFinalRule) OnMatch(call *ImplementationRuleCall) {
 			call.YieldFinalExpression(reusable)
 			continue
 		}
-		innerQ := expressions.ForEachQuantifier(expressions.InitialOf(m))
+		innerQ := expressions.NewPhysicalQuantifier(expressions.InitialOf(m))
 		logicalEdge, err := qs[0].RequireFlowedObjectValue()
 		if err != nil {
 			call.Fail(err)

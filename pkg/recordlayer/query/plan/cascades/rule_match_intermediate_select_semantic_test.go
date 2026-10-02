@@ -665,12 +665,13 @@ func TestMatchIntermediateSelectSemantic_EmitsResidualCardinalityAndResultState(
 			}(),
 		)
 	}
-	mappings := predicateMap.Get(queryPredicate)
+	originalPredicate := querySelect.GetPredicates()[0]
+	mappings := predicateMap.Get(originalPredicate)
 	if len(mappings) != 1 {
 		t.Fatalf("query residual mappings = %d, want 1", len(mappings))
 	}
 	residualMapping := mappings[0]
-	if residualMapping.GetOriginalQueryPredicate() != queryPredicate ||
+	if residualMapping.GetOriginalQueryPredicate() != originalPredicate ||
 		!predicates.IsTautology(residualMapping.GetCandidatePredicate()) {
 		t.Fatal("semantic parent did not retain the original query as a TRUE residual")
 	}
@@ -831,7 +832,7 @@ func TestMatchIntermediateSelectSemantic_ExistentialToForEachMarksDistinctRepair
 	// Carry the semantic match through the real single-data-access path. The
 	// compensation must survive as a required logical Unique, then lower to
 	// an executable primary-key distinct plan over the exact PK-proven scan.
-	dataAccesses := DataAccessForMatchPartition(
+	dataAccesses := DataAccessForMatchPartition(compensationTestMemoizer(),
 		[]*properties.RequestedOrdering{properties.PreserveOrdering()},
 		[]PartialMatch{parents[0]},
 		EmptyPlanContext(),
@@ -1066,12 +1067,13 @@ func TestMatchIntermediateSelectSemantic_BindsPlaceholderWithoutLegacyAdapter(
 	if predicateMap == nil {
 		t.Fatal("placeholder parent has no predicate map")
 	}
-	mappings := predicateMap.Get(queryPredicate)
+	originalPredicate := query.selectExpr.GetPredicates()[0]
+	mappings := predicateMap.Get(originalPredicate)
 	if len(mappings) != 1 {
 		t.Fatalf("placeholder mappings for original query = %d, want 1", len(mappings))
 	}
 	mapping := mappings[0]
-	if mapping.GetOriginalQueryPredicate() != queryPredicate ||
+	if mapping.GetOriginalQueryPredicate() != originalPredicate ||
 		mapping.GetCandidatePredicate() != candidatePlaceholder ||
 		mapping.GetTranslatedQueryPredicate() == nil {
 		t.Fatal("placeholder mapping lost original/translated/candidate predicate state")
@@ -1207,12 +1209,12 @@ func TestMatchIntermediateSelectSemantic_FlattensTranslatedAndConjuncts(
 	if mappings := predicateMap.Get(topLevelAnd); len(mappings) != 0 {
 		t.Fatalf("top-level AND retained %d mappings, want leaf mappings", len(mappings))
 	}
-	joinMappings := predicateMap.Get(joinKey)
+	joinMappings := predicateMap.Get(query.selectExpr.GetPredicates()[0])
 	if len(joinMappings) != 1 ||
 		joinMappings[0].GetCandidatePredicate() != candidatePlaceholder {
 		t.Fatal("correlated join-key leaf did not bind the candidate placeholder")
 	}
-	residualMappings := predicateMap.Get(residual)
+	residualMappings := predicateMap.Get(query.selectExpr.GetPredicates()[1])
 	if len(residualMappings) != 1 ||
 		!predicates.IsTautology(
 			residualMappings[0].GetCandidatePredicate(),
@@ -1239,12 +1241,12 @@ func TestMatchIntermediateSelectSemantic_FlattensTranslatedAndConjuncts(
 		)
 	}
 	predicateCompensation := forMatch.GetPredicateCompensationMap()
-	if predicateCompensation.Get(joinKey) != nil ||
-		predicateCompensation.Get(residual) == nil ||
+	if predicateCompensation.Get(query.selectExpr.GetPredicates()[0]) != nil ||
+		predicateCompensation.Get(query.selectExpr.GetPredicates()[1]) == nil ||
 		predicateCompensation.Get(topLevelAnd) != nil {
 		t.Fatal("compensation did not retain exactly the residual AND leaf")
 	}
-	applied, ok := forMatch.Apply(candidateLeg.child, nil)
+	applied, ok := forMatch.Apply(compensationTestMemoizer(), candidateLeg.child, nil)
 	if !ok || applied == nil {
 		t.Fatal("possible top-level AND compensation could not be applied")
 	}
@@ -1253,7 +1255,7 @@ func TestMatchIntermediateSelectSemantic_FlattensTranslatedAndConjuncts(
 		t.Fatalf("applied compensation = %T, want residual LogicalFilter", applied)
 	}
 	appliedPredicates := filter.GetPredicates()
-	if len(appliedPredicates) != 1 || appliedPredicates[0] != residual {
+	if len(appliedPredicates) != 1 || !predicates.SemanticEqualsUnderAliasMap(appliedPredicates[0], query.selectExpr.GetPredicates()[1], nil) {
 		t.Fatalf(
 			"applied residuals = %v, want the original residual leaf",
 			appliedPredicates,

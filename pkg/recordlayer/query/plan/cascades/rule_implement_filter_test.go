@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"context"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -38,7 +39,7 @@ func TestImplementFilterRule_FiresAfterScanImplemented(t *testing.T) {
 	// Build Filter(P, Scan). Run PrimaryScanRule to add a physical
 	// wrapper to the inner Reference. Then ImplementFilterRule should
 	// fire and yield a FilterPlan.
-	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	pred := predicates.NewConstantPredicate(predicates.TriFalse)
 	scan := implementFilterScan("Order")
 	innerRef := expressions.InitialOf(scan)
 	filter := mustImplementFilterConstruct(expressions.NewLogicalFilterExpression(
@@ -78,6 +79,163 @@ func TestImplementFilterRule_FiresAfterScanImplemented(t *testing.T) {
 	}
 	if rts := innerPlan.GetRecordTypes(); len(rts) != 1 || rts[0] != "Order" {
 		t.Fatalf("inner scan record types = %v", rts)
+	}
+}
+
+func TestFilterImplementationsSharePhysicalMemoIdentity(t *testing.T) {
+	t.Parallel()
+	for _, selectFirst := range []bool{false, true} {
+		t.Run(map[bool]string{false: "filter_first", true: "select_first"}[selectFirst], func(t *testing.T) {
+			t.Parallel()
+			scan := mustImplementFilterConstruct(plans.NewRecordQueryScanPlan([]string{"T"}, implementFilterRowType(), false))
+			inner := expressions.FinalOfAtStage(scan, expressions.StagePlanned)
+			computeRefPlanProperties(inner)
+			q := expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("input"), inner)
+			predicate := predicates.NewComparisonPredicate(implementFilterField(q, 1), predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(0)))
+			filter := mustImplementFilterConstruct(expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{predicate}, q))
+			selectExpr := mustImplementFilterConstruct(expressions.NewSelectExpression(mustImplementFilterConstruct(q.RequireFlowedObjectValue()), []expressions.Quantifier{q}, []predicates.QueryPredicate{predicate}))
+			root := expressions.InitialOf(filter)
+			root.Insert(selectExpr)
+			root.AdvanceStagePreservingMembers(expressions.StagePlanned)
+			p := NewPlanner(nil, nil)
+			p.memo = NewMemo(root)
+			p.constraintMap = NewConstraintMap()
+			tasks := []Task{
+				&TransformExprTask{Phase: PhasePlanning, Ref: root, Expr: filter, Rule: NewImplementFilterRule()},
+				&TransformImplTask{Phase: PhasePlanning, Ref: root, Expr: selectExpr, Rule: NewImplementSimpleSelectRule()},
+			}
+			if selectFirst {
+				tasks[0], tasks[1] = tasks[1], tasks[0]
+			}
+			for i, task := range tasks {
+				task.Run(context.Background(), p)
+				if p.capErr != nil {
+					t.Fatal(p.capErr)
+				}
+				if len(root.FinalMembers()) != 1 {
+					t.Fatalf("after producer %d, physical alternatives = %d, want 1", i, len(root.FinalMembers()))
+				}
+				physical := root.FinalMembers()[0].(*plans.RecordQueryPredicatesFilterPlan)
+				if physical.GetInnerQuantifier().Kind() != expressions.QuantifierPhysical {
+					t.Errorf("producer %d emitted logical edge kind %v", i, physical.GetInnerQuantifier().Kind())
+				}
+				if physical.GetInnerAlias() != q.GetAlias() {
+					t.Fatal("physicalization changed the predicate binding alias")
+				}
+				if i == 0 && len(p.stack) == 0 {
+					t.Fatal("first physical alternative scheduled no work")
+				}
+				if i == 1 && len(p.stack) != 0 {
+					t.Fatalf("duplicate physical alternative scheduled %d tasks", len(p.stack))
+				}
+				for len(p.stack) > 0 {
+					p.pop()
+				}
+			}
+		})
+	}
+}
+
+func TestFilterImplementationTautologiesYieldChildren(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		truth []predicates.TriBool
+		elide bool
+	}{
+		{"empty", nil, true},
+		{"true", []predicates.TriBool{predicates.TriTrue}, true},
+		{"all_true", []predicates.TriBool{predicates.TriTrue, predicates.TriTrue}, true},
+		{"false", []predicates.TriBool{predicates.TriFalse}, false},
+		{"unknown", []predicates.TriBool{predicates.TriUnknown}, false},
+		{"mixed", []predicates.TriBool{predicates.TriTrue, predicates.TriFalse}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ps := make([]predicates.QueryPredicate, len(tc.truth))
+			for i, truth := range tc.truth {
+				ps[i] = predicates.NewConstantPredicate(truth)
+			}
+			scans := []expressions.RelationalExpression{
+				mustImplementFilterConstruct(plans.NewRecordQueryScanPlan([]string{"T"}, implementFilterRowType(), false)),
+				mustImplementFilterConstruct(plans.NewRecordQueryScanPlan([]string{"T"}, implementFilterRowType(), true)),
+			}
+			inner := expressions.FinalOfAtStage(scans[0], expressions.StagePlanned)
+			inner.InsertFinal(scans[1])
+			q := expressions.ForEachQuantifier(inner)
+			filter := mustImplementFilterConstruct(expressions.NewLogicalFilterExpression(ps, q))
+			yields := mustFireExpressionRule(t, NewImplementFilterRule(), expressions.InitialOf(filter))
+			if tc.elide {
+				if len(yields) != len(scans) {
+					t.Fatalf("yields = %d, want %d original children", len(yields), len(scans))
+				}
+				for _, scan := range scans {
+					found := false
+					for _, yielded := range yields {
+						found = found || yielded == scan
+					}
+					if !found {
+						t.Fatal("tautology did not yield an original child")
+					}
+				}
+			} else {
+				if len(yields) == 0 {
+					t.Fatal("non-tautological filter produced no plans")
+				}
+				for _, yielded := range yields {
+					physical, ok := yielded.(*plans.RecordQueryPredicatesFilterPlan)
+					if !ok || physical.GetInnerAlias() != q.GetAlias() || len(physical.GetPredicates()) != len(ps) {
+						t.Fatalf("non-tautological predicates or binding were lost: %T", yielded)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestPushFilterThroughFetchProducesPhysicalEdges(t *testing.T) {
+	t.Parallel()
+	for _, residual := range []bool{false, true} {
+		t.Run(map[bool]string{false: "all_pushed", true: "partial_push"}[residual], func(t *testing.T) {
+			t.Parallel()
+			fetch := pushFetchFetch(pushFetchIndex("idx_x"), func(v values.Value, _, target values.CorrelationIdentifier) (values.Value, bool) {
+				if field, ok := values.AsFieldValue(v); ok && field.DisplayName() == "x" {
+					return pushFetchFieldForAlias(target, "x"), true
+				}
+				return nil, false
+			})
+			q := expressions.NewPhysicalQuantifier(expressions.FinalOfAtStage(fetch, expressions.StagePlanned))
+			ps := []predicates.QueryPredicate{predicates.NewComparisonPredicate(pushFetchFieldForAlias(q.GetAlias(), "x"), predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)))}
+			if residual {
+				ps = append(ps, predicates.NewComparisonPredicate(pushFetchFieldForAlias(q.GetAlias(), "y"), predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(2))))
+			}
+			filter := mustPushFetchConstruct(plans.NewRecordQueryPredicatesFilterPlanFromQuantifier(q, ps))
+			yields := mustFireImplementationRule(t, NewPushFilterThroughFetchRule(), expressions.InitialOf(filter))
+			if len(yields) != 1 {
+				t.Fatalf("yield count = %d, want 1", len(yields))
+			}
+			current := yields[0]
+			edges := 0
+			for len(current.GetQuantifiers()) > 0 {
+				quantifiers := current.GetQuantifiers()
+				if len(quantifiers) != 1 {
+					t.Fatalf("unexpected non-unary node %T", current)
+				}
+				edge := quantifiers[0]
+				if edge.Kind() != expressions.QuantifierPhysical {
+					t.Errorf("%T emitted logical edge kind %v", current, edge.Kind())
+				}
+				edges++
+				current = edge.GetRangesOver().AllMembers()[0]
+			}
+			want := 2
+			if residual {
+				want++
+			}
+			if edges != want {
+				t.Fatalf("physical path edges = %d, want %d", edges, want)
+			}
+		})
 	}
 }
 
@@ -213,7 +371,7 @@ func TestImplementFilterRule_FiresOverPhysicalIntersection(t *testing.T) {
 		[]values.Value{comparisonKey},
 	))
 	intrRef := expressions.InitialOf(intr)
-	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	pred := predicates.NewConstantPredicate(predicates.TriFalse)
 	filter := mustImplementFilterConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{pred},
 		expressions.ForEachQuantifier(intrRef),
@@ -251,7 +409,7 @@ func TestImplementFilterRule_FiresOverPhysicalUnion(t *testing.T) {
 		expressions.ForEachQuantifier(refB),
 	}))
 	unionRef := expressions.InitialOf(union)
-	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	pred := predicates.NewConstantPredicate(predicates.TriFalse)
 	filter := mustImplementFilterConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{pred},
 		expressions.ForEachQuantifier(unionRef),
@@ -294,7 +452,7 @@ func TestPlannerWithBatchA_ImplementsFilterOverScan(t *testing.T) {
 	// PrimaryScanRule + ImplementFilterRule as PLANNING rules yields a
 	// Reference holding a physical FilterPlan-over-ScanPlan member
 	// alongside the logical shapes.
-	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	pred := predicates.NewConstantPredicate(predicates.TriFalse)
 	scan := implementFilterScan("Order")
 	filter := mustImplementFilterConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{pred},

@@ -33,7 +33,8 @@ type ImplementNestedLoopJoinRule struct {
 
 func NewImplementNestedLoopJoinRule() *ImplementNestedLoopJoinRule {
 	return &ImplementNestedLoopJoinRule{
-		matcher: NewExpressionMatcher[*expressions.SelectExpression]("select_for_nlj"),
+		matcher: NewExpressionMatcher[*expressions.SelectExpression]("select_for_nlj").WithRootPredicate(
+			func(sel *expressions.SelectExpression) bool { return len(sel.GetQuantifiers()) == 2 }),
 	}
 }
 
@@ -99,6 +100,25 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
+	// An existential is never a FlatMap outer here: Java's matcher binds either
+	// quantifier as the outer but wraps an existential in FirstOrDefault first
+	// (planPartitionToPhysical), and iterating its rows instead turns the
+	// semi-join into a join that repeats the other leg once per match. Go
+	// implements an existential only as the inner, so a leading one is the
+	// same semi-join with the legs exchanged, and a pair of existentials is
+	// left to the partitions that give each one a row-producing partner.
+	if quants[0].Kind() == expressions.QuantifierExistential {
+		if quants[1].Kind() == expressions.QuantifierExistential || quants[1].IsNullOnEmpty() {
+			return
+		}
+		var exchangedAliases []string
+		if aliases := sel.GetSourceAliases(); len(aliases) >= 2 {
+			exchangedAliases = append([]string{aliases[1], aliases[0]}, aliases[2:]...)
+		}
+		r.implementExistentialSelect(call, sel, []expressions.Quantifier{quants[1], quants[0]}, exchangedAliases)
+		return
+	}
+
 	// EXISTS subquery: when the right quantifier is existential, wrap
 	// the inner in FirstOrDefault and use a semi-join (EXISTS) plan
 	// shape. The ExistentialValuePredicate in the predicate list
@@ -114,7 +134,7 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		if quants[0].IsNullOnEmpty() {
 			return
 		}
-		r.implementExistentialSelect(call, sel, quants)
+		r.implementExistentialSelect(call, sel, quants, sel.GetSourceAliases())
 		return
 	}
 
@@ -229,8 +249,8 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 			referenceIsCorrelatedTo(rightRef, quants[0].GetAlias()) {
 			return
 		}
-		leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
-		rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(rightExpr))
+		leftQ := expressions.NewPhysicalQuantifier(call.MemoizeExpression(leftExpr))
+		rightQ := expressions.NewPhysicalQuantifier(call.MemoizeExpression(rightExpr))
 		joinPredicates, joinResultValue, err := normalizeMaterializedJoinPrograms(
 			sel.GetPredicates(), sel.GetResultValue(),
 			leftPlan, leftCorr, rightPlan, rightCorr)
@@ -422,8 +442,8 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		// "nothing reads these ordinals". A future consumer must bring its own
 		// check, and the argument above is the reason one cannot simply be added
 		// here on suspicion.
-		leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
-		rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(rightExpr))
+		leftQ := expressions.NewPhysicalQuantifier(call.MemoizeExpression(leftExpr))
+		rightQ := expressions.NewPhysicalQuantifier(call.MemoizeExpression(rightExpr))
 		joinPredicates, joinResultValue, err := normalizeMaterializedJoinPrograms(
 			sel.GetPredicates(), sel.GetResultValue(),
 			leftPlan, leftCorr, rightPlan, rightCorr)
@@ -772,6 +792,7 @@ func (r *ImplementNestedLoopJoinRule) yieldBinaryJoinWithSourceOrderingVariants(
 		// The ordered sets pin each unary delegation spine against the
 		// child-space request before the join freezes the selected top member.
 		rawOuters, err := collectJoinLegOrderingVariants(
+			call,
 			outerRef, properties.PreserveOrdering(), outerOrderingResultValue,
 			outerAlias, less, false, call.Context)
 		if err != nil {
@@ -779,6 +800,7 @@ func (r *ImplementNestedLoopJoinRule) yieldBinaryJoinWithSourceOrderingVariants(
 			return
 		}
 		rawInners, err := collectJoinLegOrderingVariants(
+			call,
 			innerRef, properties.PreserveOrdering(), resultValue,
 			innerAlias, less, false, call.Context)
 		if err != nil {
@@ -786,6 +808,7 @@ func (r *ImplementNestedLoopJoinRule) yieldBinaryJoinWithSourceOrderingVariants(
 			return
 		}
 		orderedOuters, err := collectJoinLegOrderingVariants(
+			call,
 			outerRef, outerRequested, outerOrderingResultValue,
 			outerAlias, less, true, call.Context)
 		if err != nil {
@@ -793,6 +816,7 @@ func (r *ImplementNestedLoopJoinRule) yieldBinaryJoinWithSourceOrderingVariants(
 			return
 		}
 		orderedInners, err := collectJoinLegOrderingVariants(
+			call,
 			innerRef, innerRequested, resultValue,
 			innerAlias, less, true, call.Context)
 		if err != nil {
@@ -819,6 +843,7 @@ func (r *ImplementNestedLoopJoinRule) yieldBinaryJoinWithSourceOrderingVariants(
 // pin against the member's own directional ordering before using it as an
 // ordering contributor.
 func collectJoinLegOrderingVariants(
+	memoizer Memoizer,
 	ref *expressions.Reference,
 	requestedInChildSpace *properties.RequestedOrdering,
 	resultValue values.Value,
@@ -851,6 +876,7 @@ func collectJoinLegOrderingVariants(
 		for _, candidate := range dataAccessCandidates(ref) {
 			matches := GetPartialMatchesForCandidate(ref, candidate)
 			for _, expr := range DataAccessForMatchPartition(
+				memoizer,
 				[]*properties.RequestedOrdering{requestedInChildSpace},
 				matches,
 				ctx,
@@ -1579,7 +1605,7 @@ func translatePredicateLogicalSource(
 
 // normalizeMaterializedJoinPrograms validates that a materialized NLJ's two
 // selected legs can each state the carrier its programs will be bound against,
-// and returns the programs unchanged.
+// and residualizes its predicates without changing their Value programs.
 //
 // IT USED TO REWRITE THEM, and the rewrite has been REMOVED rather than left
 // unreachable. Its whole job was to cross the record-name divergence: a logical
@@ -1633,7 +1659,14 @@ func normalizeMaterializedJoinPrograms(
 				"materialized join %s exact binding: %w", leg.label, targetErr)
 		}
 	}
-	return append([]predicates.QueryPredicate(nil), preds...), result, nil
+	// The materialized join evaluates these predicates against each row pair,
+	// just as a FlatMap's physical filters do. Select's partitioned ranges are
+	// structural and must become executable comparisons at this boundary too.
+	residuals, err := predicates.ToResidualPredicates(preds)
+	if err != nil {
+		return nil, nil, err
+	}
+	return residuals, result, nil
 }
 
 // normalizeCorrelatedExplodeCollectionPlan retargets the collection program of
@@ -1675,8 +1708,7 @@ func normalizeCorrelatedExplodeCollectionPlan(
 		if normalized == collection {
 			return plan, false, nil
 		}
-		rebuilt, err := plans.NewRecordQueryExplodePlanWithOrdinality(
-			normalized, typed.IsWithOrdinality())
+		rebuilt, err := typed.WithCollection(normalized)
 		if err != nil {
 			return nil, false, err
 		}
@@ -1700,20 +1732,8 @@ func normalizeCorrelatedExplodeCollectionPlan(
 	}
 }
 
-// normalizeCorrelatedScanComparisonPlan retargets SARG operands which read the
-// enclosing FlatMap's outer binding onto that selected outer plan's exact
-// carrier. Logical join construction retains the table's nominal record name,
-// while the runtime binding is the anonymous row published by the selected
-// scan. Predicates are normalized separately below; scan comparisons are Value
-// programs stored inside the leaf and therefore need the same checked bridge
-// before the plan is memoized.
-//
-// Only Scan and Index leaves (including a covering-index field wrapper) own
-// these operands; Fetch and residual Filter are transparent wrappers on the
-// selected access path. The Value bridge admits a top-level record-name
-// difference only; foreign aliases, field-name/path drift, width/nullability
-// drift, and exact leaf-type drift leave both the plan and comparison pointers
-// unchanged.
+// normalizeCorrelatedScanComparisonPlan aligns correlated access programs with
+// the selected outer carrier without admitting field, width, or type drift.
 func normalizeCorrelatedScanComparisonPlan(
 	plan plans.RecordQueryPlan,
 	sourceAlias values.CorrelationIdentifier,
@@ -1722,295 +1742,135 @@ func normalizeCorrelatedScanComparisonPlan(
 	if plan == nil || sourceAlias.IsZero() || target == nil {
 		return plan, false, nil
 	}
-	switch typed := plan.(type) {
-	case *plans.RecordQueryScanPlan:
-		comparisons, changed, err := normalizeCorrelatedComparisonRanges(
-			typed.GetScanComparisons(), sourceAlias, target)
-		if err != nil || !changed {
-			return plan, changed, err
-		}
-		return typed.WithScanComparisons(comparisons), true, nil
-
-	case *plans.RecordQueryIndexPlan:
-		comparisons, changed, err := normalizeCorrelatedComparisonRanges(
-			typed.GetScanComparisons(), sourceAlias, target)
-		if err != nil || !changed {
-			return plan, changed, err
-		}
-		return typed.WithScanComparisons(comparisons), true, nil
-
-	case *plans.RecordQueryCoveringIndexPlan:
-		inner, ok := plans.IndexPlanOf(typed)
-		if !ok {
-			return plan, false, nil
-		}
-		normalized, changed, err := normalizeCorrelatedScanComparisonPlan(
-			inner, sourceAlias, target)
-		if err != nil || !changed {
-			return plan, changed, err
-		}
-		normalizedIndex, ok := normalized.(*plans.RecordQueryIndexPlan)
-		if !ok {
-			return nil, false, fmt.Errorf(
-				"correlated covering comparison normalization produced %T", normalized)
-		}
-		return typed.WithIndexPlan(normalizedIndex), true, nil
-
-	case *plans.RecordQueryFetchFromPartialRecordPlan:
-		// Fetch is transparent to executable scan comparisons: the correlated
-		// operand remains owned by the selected access path below it. Walk through
-		// the wrapper, then relink copy-on-write so its translate function, result
-		// contract, and fetch mode remain untouched.
-		inner, changed, err := normalizeCorrelatedScanComparisonPlan(
-			typed.GetInner(), sourceAlias, target)
-		if err != nil || !changed {
-			return plan, changed, err
-		}
-		return typed.WithInner(inner), true, nil
-
-	case *plans.RecordQueryTypeFilterPlan:
-		// TypeFilter is transparent to the executable SARG stored below it. A
-		// polymorphic scan selected for a correlated LEFT leg commonly retains
-		// the logical table's nominal outer row in its PK operand, while the
-		// enclosing FlatMap binds that owner using the selected anonymous carrier.
-		// Recurse through the wrapper and rebuild its exact quantifier identity;
-		// the record-type discriminator set and result contract remain untouched.
-		inner, changed, err := normalizeCorrelatedScanComparisonPlan(
-			typed.GetInner(), sourceAlias, target)
-		if err != nil || !changed {
-			return plan, changed, err
-		}
-		quantifiers := typed.GetQuantifiers()
-		if len(quantifiers) != 1 {
-			return nil, false, fmt.Errorf(
-				"correlated TypeFilter comparison normalization: got %d quantifiers, want 1",
-				len(quantifiers))
-		}
-		stage := expressions.StageCanonical
-		if ref := quantifiers[0].GetRangesOver(); ref != nil {
-			stage = ref.Stage()
-		}
-		quantifiers[0] = expressions.RebuildQuantifier(
-			quantifiers[0], expressions.FinalOfAtStage(inner, stage))
-		rebuilt, err := typed.WithQuantifiers(quantifiers)
-		if err != nil {
-			return nil, false, fmt.Errorf(
-				"correlated TypeFilter comparison relink: %w", err)
-		}
-		rebuiltPlan, ok := rebuilt.(*plans.RecordQueryTypeFilterPlan)
-		if !ok {
-			return nil, false, fmt.Errorf(
-				"correlated TypeFilter comparison relink produced %T", rebuilt)
-		}
-		return rebuiltPlan, true, nil
-
-	case *plans.RecordQueryProjectionPlan:
-		// A lateral derived leg's body projects over the filter that reads the
-		// outer (`FROM w, w.arr AS v AT p, (SELECT h.id FROM h WHERE h.f = p +
-		// 9) AS d`), and its own program may read the outer too (`SELECT p +
-		// h.f AS x FROM h`). Recurse, relink over the normalized child, then
-		// re-root the program's reads of the outer exactly as a filter's are.
-		inner, childChanged, err := normalizeCorrelatedScanComparisonPlan(
-			typed.GetInner(), sourceAlias, target)
-		if err != nil {
-			return nil, false, err
-		}
-		projection := typed
-		if childChanged {
-			relinked, relinkErr := relinkProjectionOverChild(typed, inner)
-			if relinkErr != nil {
-				return nil, false, relinkErr
-			}
-			projection = relinked
-		}
-		translated, programChanged, err := projection.WithTranslatedProjections(
-			func(value values.Value) (values.Value, error) {
-				normalized, normalizeErr := values.TranslateLogicalSourceNameNormalization(
-					value, sourceAlias, target)
-				if normalizeErr != nil {
-					return nil, normalizeErr
-				}
-				return values.TranslateProjectionInputNameNormalizationToCorrelation(
-					normalized, sourceAlias, target.FlowedType())
-			})
-		if err != nil {
-			return nil, false, fmt.Errorf(
-				"correlated Projection program source %s: %w", sourceAlias.Name(), err)
-		}
-		if !childChanged && !programChanged {
-			return plan, false, nil
-		}
-		return translated, true, nil
-
-	case *plans.RecordQueryPredicatesFilterPlan:
-		// A residual which the data-access matcher could not absorb is a
-		// transparent row operator around the correlated probe. Normalize both
-		// executable programs owned by that unit: the probe stored below it and
-		// the predicate retained on the filter itself. The latter can compare the
-		// local inner row with the enclosing FlatMap's outer binding (for example
-		// E.SALARY > M.SALARY). At runtime the FlatMap publishes E with the exact
-		// selected outer carrier; retaining E's nominal logical record type here
-		// creates a same-correlation/different-exact-type binding conflict.
-		inner, childChanged, err := normalizeCorrelatedScanComparisonPlan(
-			typed.GetInner(), sourceAlias, target)
-		if err != nil {
-			return nil, false, err
-		}
-		normalizedPredicates := make([]predicates.QueryPredicate, len(typed.GetPredicates()))
-		predicateChanged := false
-		for i, predicate := range typed.GetPredicates() {
-			normalizedPredicates[i], err = predicates.TransformEmbeddedValuesChecked(
-				predicate,
-				func(value values.Value) (values.Value, error) {
-					normalized, normalizeErr := values.TranslateLogicalSourceNameNormalization(
-						value, sourceAlias, target)
-					if normalizeErr != nil {
-						return nil, normalizeErr
-					}
-					// An AT unnest's pair is declared with its AS/AT aliases as
-					// field names while its Explode flows the positional _0/_1
-					// row; the FlatMap binds that row to the pair by position,
-					// and a correlated read here must name the same row.
-					normalized, normalizeErr = values.TranslateProjectionInputNameNormalizationToCorrelation(
-						normalized, sourceAlias, target.FlowedType())
-					if normalizeErr == nil && normalized != value {
-						predicateChanged = true
-					}
-					return normalized, normalizeErr
-				},
-			)
-			if err != nil {
-				return nil, false, fmt.Errorf(
-					"correlated residual predicate %d source %s: %w",
-					i, sourceAlias.Name(), err)
-			}
-		}
-		if !childChanged && !predicateChanged {
-			return plan, false, nil
-		}
-		rebuilt, err := plans.NewRecordQueryPredicatesFilterPlanWithAlias(
-			inner, normalizedPredicates, typed.GetInnerAlias())
-		if err != nil {
-			return nil, false, err
-		}
-		return rebuilt, true, nil
-
-	case *plans.RecordQueryStreamingAggregationPlan:
-		// A lateral derived table that groups the rows its WHERE probes with the
-		// outer (`FROM a, (SELECT q, MAX(idb) FROM b WHERE q > a.x GROUP BY q)`)
-		// stores that probe below the aggregation. The aggregation is transparent
-		// to it: recurse, then relink over the normalized input at the input
-		// edge's own memo stage. WithQuantifiers re-anchors the grouping keys and
-		// aggregate operands onto the new input's exact carrier, which a
-		// projection relinked above an unrelinked aggregation would leave pinned
-		// to the input the aggregation was built over.
-		inner, changed, err := normalizeCorrelatedScanComparisonPlan(
-			typed.GetInner(), sourceAlias, target)
-		if err != nil || !changed {
-			return plan, changed, err
-		}
-		quantifier := typed.GetInnerQuantifier()
-		stage := expressions.StageCanonical
-		if ref := quantifier.GetRangesOver(); ref != nil {
-			stage = ref.Stage()
-		}
-		rebuilt, err := typed.WithQuantifiers([]expressions.Quantifier{
-			expressions.RebuildQuantifier(quantifier, expressions.FinalOfAtStage(inner, stage)),
-		})
-		if err != nil {
-			return nil, false, fmt.Errorf("correlated streaming aggregation comparison relink: %w", err)
-		}
-		rebuiltPlan, ok := rebuilt.(*plans.RecordQueryStreamingAggregationPlan)
-		if !ok {
-			return nil, false, fmt.Errorf(
-				"correlated streaming aggregation comparison relink produced %T", rebuilt)
-		}
-		return rebuiltPlan, true, nil
-
-	case *plans.RecordQueryFlatMapPlan:
-		// A gathered join can itself be the correlated inner chosen by an
-		// enclosing FlatMap. Its executable SARG then lives below this retained
-		// producer (for example PA.ID in the B scan of FlatMap(B, C)). FlatMap is
-		// transparent to that external binding, but its child quantifiers are
-		// identity-bearing: walk the two concrete selections copy-on-write and
-		// rebuild the same quantifier kinds/aliases over only the changed plans.
-		// The plan's own runtime aliases and retained result program are relinked
-		// by WithQuantifiers; no comparison is authorized by a field name alone.
-		children := []plans.RecordQueryPlan{typed.GetOuter(), typed.GetInner()}
-		quantifiers := typed.GetQuantifiers()
-		if len(quantifiers) != len(children) {
-			return nil, false, fmt.Errorf(
-				"correlated FlatMap comparison normalization: got %d quantifiers for %d children",
-				len(quantifiers), len(children))
-		}
-		flatMapChanged := false
-		for i, child := range children {
-			if child == nil {
-				continue
-			}
-			normalizedChild, childChanged, err := normalizeCorrelatedScanComparisonPlan(
-				child, sourceAlias, target)
-			if err != nil {
-				return nil, false, fmt.Errorf(
-					"correlated FlatMap child %d comparison normalization: %w", i, err)
-			}
-			if !childChanged {
-				continue
-			}
-			stage := expressions.StageCanonical
-			if ref := quantifiers[i].GetRangesOver(); ref != nil {
-				stage = ref.Stage()
-			}
-			quantifiers[i] = expressions.RebuildQuantifier(
-				quantifiers[i], expressions.FinalOfAtStage(normalizedChild, stage))
-			flatMapChanged = true
-		}
-		if !flatMapChanged {
-			return plan, false, nil
-		}
-		rebuilt, err := typed.WithQuantifiers(quantifiers)
-		if err != nil {
-			return nil, false, fmt.Errorf(
-				"correlated FlatMap comparison relink: %w", err)
-		}
-		rebuiltPlan, ok := rebuilt.(*plans.RecordQueryFlatMapPlan)
-		if !ok {
-			return nil, false, fmt.Errorf(
-				"correlated FlatMap comparison relink produced %T", rebuilt)
-		}
-		return rebuiltPlan, true, nil
-	default:
-		return plan, false, nil
+	comparisonTransform := func(value values.Value) (values.Value, error) {
+		return values.TranslateLogicalSourceNameNormalization(value, sourceAlias, target)
 	}
+	programTransform := func(value values.Value) (values.Value, error) {
+		normalized, err := comparisonTransform(value)
+		if err != nil {
+			return nil, err
+		}
+		return values.TranslateProjectionInputNameNormalizationToCorrelation(
+			normalized, sourceAlias, target.FlowedType())
+	}
+	return translateCorrelatedAccessPrograms(plan, comparisonTransform, programTransform)
 }
 
-// relinkProjectionOverChild rebuilds a projection over a normalized child at
-// the child edge's own memo stage, the TypeFilter arm's relink.
-func relinkProjectionOverChild(
-	projection *plans.RecordQueryProjectionPlan,
-	child plans.RecordQueryPlan,
-) (*plans.RecordQueryProjectionPlan, error) {
-	quantifiers := projection.GetQuantifiers()
-	if len(quantifiers) != 1 {
-		return nil, fmt.Errorf(
-			"correlated Projection comparison normalization: got %d quantifiers, want 1",
-			len(quantifiers))
+// translateCorrelatedAccessPrograms translates scan ranges, filters and projections
+// through selected child edges; relinking preserves their aliases, kinds and stages.
+func translateCorrelatedAccessPrograms(
+	plan plans.RecordQueryPlan,
+	comparisonTransform, programTransform func(values.Value) (values.Value, error),
+) (plans.RecordQueryPlan, bool, error) {
+	if plan == nil {
+		return nil, false, nil
 	}
-	stage := expressions.StageCanonical
-	if ref := quantifiers[0].GetRangesOver(); ref != nil {
-		stage = ref.Stage()
+	children, quantifiers := plan.GetChildren(), plan.GetQuantifiers()
+	if len(children) != len(quantifiers) {
+		return nil, false, fmt.Errorf("correlated access translation: %T has %d children and %d quantifiers",
+			plan, len(children), len(quantifiers))
 	}
-	quantifiers[0] = expressions.RebuildQuantifier(
-		quantifiers[0], expressions.FinalOfAtStage(child, stage))
-	rebuilt, err := projection.WithQuantifiers(quantifiers)
-	if err != nil {
-		return nil, fmt.Errorf("correlated Projection comparison relink: %w", err)
+	changed := false
+	for i, child := range children {
+		translated, childChanged, err := translateCorrelatedAccessPrograms(child, comparisonTransform, programTransform)
+		if err != nil {
+			return nil, false, err
+		}
+		if !childChanged {
+			continue
+		}
+		stage := expressions.StageCanonical
+		if ref := quantifiers[i].GetRangesOver(); ref != nil {
+			stage = ref.Stage()
+		}
+		quantifiers[i] = expressions.RebuildQuantifier(quantifiers[i], expressions.FinalOfAtStage(translated, stage))
+		changed = true
 	}
-	rebuiltPlan, ok := rebuilt.(*plans.RecordQueryProjectionPlan)
-	if !ok {
-		return nil, fmt.Errorf("correlated Projection comparison relink produced %T", rebuilt)
+	if changed {
+		relinked, err := plan.WithQuantifiers(quantifiers)
+		if err != nil {
+			return nil, false, fmt.Errorf("correlated access translation relinking %T: %w", plan, err)
+		}
+		relinkedPlan, ok := relinked.(plans.RecordQueryPlan)
+		if !ok {
+			return nil, false, fmt.Errorf("correlated access translation relinking %T produced %T", plan, relinked)
+		}
+		plan = relinkedPlan
 	}
-	return rebuiltPlan, nil
+	switch typed := plan.(type) {
+	case *plans.RecordQueryScanPlan:
+		comparisons, moved, err := translateCorrelatedComparisonRanges(typed.GetScanComparisons(), comparisonTransform)
+		if err != nil {
+			return nil, false, err
+		}
+		if moved {
+			return typed.WithScanComparisons(comparisons), true, nil
+		}
+	case *plans.RecordQueryIndexPlan:
+		comparisons, moved, err := translateCorrelatedComparisonRanges(typed.GetScanComparisons(), comparisonTransform)
+		if err != nil {
+			return nil, false, err
+		}
+		if moved {
+			return typed.WithScanComparisons(comparisons), true, nil
+		}
+	case *plans.RecordQueryCoveringIndexPlan:
+		// The index is a field, not a quantifier child (as in Java).
+		index, ok := plans.IndexPlanOf(typed)
+		if !ok {
+			return nil, false, fmt.Errorf("correlated covering access has no index plan")
+		}
+		translated, moved, err := translateCorrelatedAccessPrograms(index, comparisonTransform, programTransform)
+		if err != nil {
+			return nil, false, err
+		}
+		if moved {
+			return typed.WithIndexPlan(translated.(*plans.RecordQueryIndexPlan)), true, nil
+		}
+	case *plans.RecordQueryProjectionPlan:
+		translated, moved, err := typed.WithTranslatedProjections(programTransform)
+		if err != nil {
+			return nil, false, err
+		}
+		return translated, changed || moved, nil
+	case *plans.RecordQueryPredicatesFilterPlan:
+		translated, moved, err := translateCorrelatedAccessPredicates(typed.GetPredicates(), programTransform)
+		if err != nil {
+			return nil, false, err
+		}
+		if moved {
+			rebuilt, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
+				typed.GetQuantifiers()[0], translated, typed.GetInnerAlias())
+			return rebuilt, true, err
+		}
+	case *plans.RecordQueryFilterPlan:
+		translated, moved, err := translateCorrelatedAccessPredicates(typed.GetPredicates(), programTransform)
+		if err != nil {
+			return nil, false, err
+		}
+		if moved {
+			rebuilt, err := plans.NewRecordQueryFilterPlanFromQuantifier(translated, typed.GetQuantifiers()[0])
+			return rebuilt, true, err
+		}
+	}
+	return plan, changed, nil
+}
+
+func translateCorrelatedAccessPredicates(
+	original []predicates.QueryPredicate,
+	transform func(values.Value) (values.Value, error),
+) ([]predicates.QueryPredicate, bool, error) {
+	translated := make([]predicates.QueryPredicate, len(original))
+	changed := false
+	for i, predicate := range original {
+		var err error
+		translated[i], err = predicates.TransformEmbeddedValuesChecked(predicate, transform)
+		if err != nil {
+			return nil, false, fmt.Errorf("correlated access predicate %d: %w", i, err)
+		}
+		changed = changed || translated[i] != predicate
+	}
+	return translated, changed, nil
 }
 
 // normalizeCorrelatedScanComparisonPlanForOuterLayout normalizes every exact
@@ -2244,10 +2104,9 @@ func admitCorrelatedFastPathOuterValue(
 	return admitted, admittedCorrelation, admittedWindow, true, nil
 }
 
-func normalizeCorrelatedComparisonRanges(
+func translateCorrelatedComparisonRanges(
 	ranges []*predicates.ComparisonRange,
-	sourceAlias values.CorrelationIdentifier,
-	target values.QuantifiedObjectValue,
+	transform func(values.Value) (values.Value, error),
 ) ([]*predicates.ComparisonRange, bool, error) {
 	normalized := make([]*predicates.ComparisonRange, len(ranges))
 	changed := false
@@ -2267,8 +2126,7 @@ func normalizeCorrelatedComparisonRanges(
 		for _, comparison := range comparisons {
 			normalizedComparison := comparison
 			if comparison != nil && comparison.Operand != nil {
-				normalizedOperand, err := values.TranslateLogicalSourceNameNormalization(
-					comparison.Operand, sourceAlias, target)
+				normalizedOperand, err := transform(comparison.Operand)
 				if err != nil {
 					return nil, false, fmt.Errorf("comparison %d operand: %w", i, err)
 				}
@@ -2282,7 +2140,7 @@ func normalizeCorrelatedComparisonRanges(
 			merged := rebuilt.Merge(normalizedComparison)
 			if !merged.Complete() {
 				return nil, false, fmt.Errorf(
-					"comparison %d could not be rebuilt after exact source normalization", i)
+					"comparison %d could not be rebuilt after translation", i)
 			}
 			rebuilt = merged.Range
 		}
@@ -2311,6 +2169,13 @@ func buildCorrelatedFlatMapPlan(
 	innerStrictSingle bool,
 	freezeLegs bool,
 ) (*plans.RecordQueryFlatMapPlan, expressions.Quantifier, expressions.Quantifier, bool, error) {
+	// Java's ImplementNestedLoopJoinRule residualizes the select predicates
+	// before constructing either leg's filter. Do it before the buried-leg
+	// rebase too: that walk consumes executable comparisons, not structural PVRs.
+	preds, err := predicates.ToResidualPredicates(preds)
+	if err != nil {
+		return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
+	}
 	var outerPreds, joinPreds []predicates.QueryPredicate
 	for _, pred := range preds {
 		corrSet := predicates.GetCorrelatedToOfPredicate(pred)
@@ -2339,7 +2204,7 @@ func buildCorrelatedFlatMapPlan(
 	// empty input included.
 	outerLayoutNullSupplying := false
 	if outerNullOnEmpty {
-		baseQ := expressions.NamedForEachQuantifier(outerCorr, memoizeLeg(outerExpr))
+		baseQ := expressions.NamedPhysicalQuantifier(outerCorr, memoizeLeg(outerExpr))
 		flowedType, err := baseQ.GetFlowedObjectType()
 		if err != nil {
 			return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
@@ -2507,8 +2372,8 @@ func buildCorrelatedFlatMapPlan(
 	// The inner base ranges over innerExprForMemo, never innerExpr: when the
 	// buried-leg rebase above rewrote the inner, the memoized expression must
 	// report the REBASED correlations (see the block comment at that rebase).
-	outerQ := expressions.NamedForEachQuantifier(outerCorr, memoizeLeg(outerExpr))
-	innerQ := expressions.NamedForEachQuantifier(innerCorr, memoizeLeg(innerExprForMemo))
+	outerQ := expressions.NamedPhysicalQuantifier(outerCorr, memoizeLeg(outerExpr))
+	innerQ := expressions.NamedPhysicalQuantifier(innerCorr, memoizeLeg(innerExprForMemo))
 	// Predicates arrive from the logical join seed, whose source QOV retains a
 	// nominal leg type (B RECORD<...>). The selected physical plans emit the
 	// executor carriers for those rows (normally unnamed RECORD<...>). The memo
@@ -2583,7 +2448,7 @@ func buildCorrelatedFlatMapPlan(
 	var innerWrapped plans.RecordQueryPlan = innerPlan
 	if innerStrictSingle {
 		if len(joinPreds) > 0 {
-			fpInnerQ := expressions.NamedForEachQuantifier(innerQ.GetAlias(),
+			fpInnerQ := expressions.NamedPhysicalQuantifier(innerQ.GetAlias(),
 				call.MemoizeFinalExpression(innerWrapped))
 			filterPlan, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
 				fpInnerQ, joinPreds, innerCorr,
@@ -2592,7 +2457,7 @@ func buildCorrelatedFlatMapPlan(
 				return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
 			}
 			innerWrapped = filterPlan
-			innerQ = expressions.NamedForEachQuantifier(innerCorr,
+			innerQ = expressions.NamedPhysicalQuantifier(innerCorr,
 				call.MemoizeFinalExpression(filterPlan))
 		}
 		// Correlated scalar subquery, no user LIMIT: enforce SQL at-most-one-row.
@@ -2618,7 +2483,7 @@ func buildCorrelatedFlatMapPlan(
 		// path; the fod merely ignores its final edge for RESOLUTION (freezing
 		// innerWrapped instead) while still consuming its alias, which equals
 		// innerCorr.
-		fodInnerQ := expressions.NamedForEachQuantifier(innerQ.GetAlias(),
+		fodInnerQ := expressions.NamedPhysicalQuantifier(innerQ.GetAlias(),
 			call.MemoizeFinalExpression(innerWrapped))
 		flowedType, err := fodInnerQ.GetFlowedObjectType()
 		if err != nil {
@@ -2631,12 +2496,12 @@ func buildCorrelatedFlatMapPlan(
 			return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
 		}
 		innerWrapped = fodPlan
-		innerQ = expressions.NamedForEachQuantifier(innerCorr,
+		innerQ = expressions.NamedPhysicalQuantifier(innerCorr,
 			call.MemoizeFinalExpression(fodPlan))
 	} else if nullOnEmpty {
 		if onPredsBelowWrap && len(joinPreds) > 0 {
 			// The LEFT-OUTER-typed select's ON conjuncts, below the wrap.
-			fpInnerQ := expressions.NamedForEachQuantifier(innerQ.GetAlias(),
+			fpInnerQ := expressions.NamedPhysicalQuantifier(innerQ.GetAlias(),
 				call.MemoizeFinalExpression(innerWrapped))
 			filterPlan, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
 				fpInnerQ, joinPreds, innerCorr,
@@ -2645,7 +2510,7 @@ func buildCorrelatedFlatMapPlan(
 				return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
 			}
 			innerWrapped = filterPlan
-			innerQ = expressions.NamedForEachQuantifier(innerCorr,
+			innerQ = expressions.NamedPhysicalQuantifier(innerCorr,
 				call.MemoizeFinalExpression(filterPlan))
 			joinPreds = nil
 		}
@@ -2662,7 +2527,7 @@ func buildCorrelatedFlatMapPlan(
 			return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
 		}
 		innerWrapped = doePlan
-		innerQ = expressions.NamedForEachQuantifier(innerCorr,
+		innerQ = expressions.NamedPhysicalQuantifier(innerCorr,
 			call.MemoizeFinalExpression(doePlan))
 		// This is the exact physical fact ordinal_join.configureNullSupplying
 		// previously rediscovered by walking the inner wrapper spine. Thread it
@@ -2671,7 +2536,7 @@ func buildCorrelatedFlatMapPlan(
 		// a DefaultOnEmpty null-supplying edge.
 		innerLayoutNullSupplying = true
 		if len(joinPreds) > 0 {
-			fpInnerQ := expressions.NamedForEachQuantifier(innerQ.GetAlias(),
+			fpInnerQ := expressions.NamedPhysicalQuantifier(innerQ.GetAlias(),
 				call.MemoizeFinalExpression(innerWrapped))
 			filterPlan, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
 				fpInnerQ, joinPreds, innerCorr,
@@ -2680,11 +2545,11 @@ func buildCorrelatedFlatMapPlan(
 				return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
 			}
 			innerWrapped = filterPlan
-			innerQ = expressions.NamedForEachQuantifier(innerCorr,
+			innerQ = expressions.NamedPhysicalQuantifier(innerCorr,
 				call.MemoizeFinalExpression(filterPlan))
 		}
 	} else if len(joinPreds) > 0 {
-		fpInnerQ := expressions.NamedForEachQuantifier(innerQ.GetAlias(),
+		fpInnerQ := expressions.NamedPhysicalQuantifier(innerQ.GetAlias(),
 			call.MemoizeFinalExpression(innerWrapped))
 		filterPlan, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
 			fpInnerQ, joinPreds, innerCorr,
@@ -2693,12 +2558,12 @@ func buildCorrelatedFlatMapPlan(
 			return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
 		}
 		innerWrapped = filterPlan
-		innerQ = expressions.NamedForEachQuantifier(innerCorr,
+		innerQ = expressions.NamedPhysicalQuantifier(innerCorr,
 			call.MemoizeFinalExpression(filterPlan))
 	}
 
 	if len(outerPreds) > 0 {
-		ofInnerQ := expressions.NamedForEachQuantifier(outerQ.GetAlias(),
+		ofInnerQ := expressions.NamedPhysicalQuantifier(outerQ.GetAlias(),
 			call.MemoizeFinalExpression(outerPlan))
 		outerFilter, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
 			ofInnerQ, outerPreds, outerCorr,
@@ -2706,7 +2571,7 @@ func buildCorrelatedFlatMapPlan(
 		if err != nil {
 			return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
 		}
-		outerQ = expressions.NamedForEachQuantifier(outerCorr,
+		outerQ = expressions.NamedPhysicalQuantifier(outerCorr,
 			call.MemoizeFinalExpression(outerFilter))
 	}
 
@@ -2860,10 +2725,16 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	call *ExpressionRuleCall,
 	sel *expressions.SelectExpression,
 	quants []expressions.Quantifier,
+	aliases []string,
 ) {
 	outerRef := quants[0].GetRangesOver()
 	innerRef := quants[1].GetRangesOver()
 	if outerRef == nil || innerRef == nil {
+		return
+	}
+	// Java rejects this orientation before selecting plans: the outer executes
+	// before the existential inner has installed its binding.
+	if referenceIsCorrelatedTo(outerRef, quants[1].GetAlias()) {
 		return
 	}
 
@@ -2907,9 +2778,21 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 		}
 		regularPreds = append(regularPreds, p)
 	}
+	// Keep the existential markers structural until their compensation and
+	// polarity have been classified above. Every remaining predicate is a row
+	// filter, as in Java's QueryPredicate::toResidualPredicate lowering.
+	regularPreds, err := predicates.ToResidualPredicates(regularPreds)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	// A single PVR range can hold an equality AND additional bounds. Expose
+	// those conjuncts to the PK/index shortcut so it consumes only the equality
+	// it proves, leaving the other bounds as residuals below FirstOrDefault.
+	// Multiple ranges remain an OR; neither arm is an unconditional probe key.
+	regularPreds = predicates.FlattenConjunction(regularPreds)
 
-	// Extract source aliases for datum qualification.
-	aliases := sel.GetSourceAliases()
+	// Extract source aliases (parallel to quants) for datum qualification.
 	var outerAlias, innerAlias string
 	if len(aliases) >= 1 {
 		outerAlias = aliases[0]
@@ -3522,50 +3405,17 @@ func translateExistentialWholeRowPredicates(
 	return translated, nil
 }
 
-// translateExistentialWholeRowPlanPredicates rewrites the predicates already
-// implemented inside the selected existential child. Logical EXISTS lowering
-// commonly puts correlated WHERE conjuncts in a physical PredicatesFilter
-// before this rule fires, leaving regularPreds empty; translating only the
-// SelectExpression's residual list therefore cannot reach the stale whole-row
-// root. The selected filter is rebuilt copy-on-write with its exact child and
-// binding alias preserved.
+// translateExistentialWholeRowPlanPredicates includes child scan comparisons:
+// access matching may already have absorbed the existential WHERE predicate.
 func translateExistentialWholeRowPlanPredicates(
 	plan plans.RecordQueryPlan,
 	declaration, replacement values.QuantifiedObjectValue,
 ) (plans.RecordQueryPlan, error) {
-	switch typed := plan.(type) {
-	case *plans.RecordQueryPredicatesFilterPlan:
-		translated, err := translateExistentialWholeRowPredicates(
-			typed.GetPredicates(), declaration, replacement)
-		if err != nil {
-			return nil, err
-		}
-		unchanged := len(translated) == len(typed.GetPredicates())
-		for i := range translated {
-			unchanged = unchanged && translated[i] == typed.GetPredicates()[i]
-		}
-		if unchanged {
-			return plan, nil
-		}
-		return plans.NewRecordQueryPredicatesFilterPlanWithAlias(
-			typed.GetInner(), translated, typed.GetInnerAlias())
-	case *plans.RecordQueryFilterPlan:
-		translated, err := translateExistentialWholeRowPredicates(
-			typed.GetPredicates(), declaration, replacement)
-		if err != nil {
-			return nil, err
-		}
-		unchanged := len(translated) == len(typed.GetPredicates())
-		for i := range translated {
-			unchanged = unchanged && translated[i] == typed.GetPredicates()[i]
-		}
-		if unchanged {
-			return plan, nil
-		}
-		return plans.NewRecordQueryFilterPlan(translated, typed.GetInner())
-	default:
-		return plan, nil
+	transform := func(value values.Value) (values.Value, error) {
+		return translateExistentialWholeRowValue(value, declaration, replacement)
 	}
+	translated, _, err := translateCorrelatedAccessPrograms(plan, transform, transform)
+	return translated, err
 }
 
 func translateExistentialWholeRowValue(
@@ -3809,7 +3659,7 @@ func rebaseOuterLegRefsToMerged(
 		if !changed {
 			return p
 		}
-		return predicates.NewAnd(subs...)
+		return predicates.WithAtomicity(predicates.NewAnd(subs...), predicates.IsAtomic(p))
 	case *predicates.OrPredicate:
 		changed := false
 		subs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
@@ -3822,13 +3672,13 @@ func rebaseOuterLegRefsToMerged(
 		if !changed {
 			return p
 		}
-		return predicates.NewOr(subs...)
+		return predicates.WithAtomicity(predicates.NewOr(subs...), predicates.IsAtomic(p))
 	case *predicates.NotPredicate:
 		newChild := rebaseOuterLegRefsToMerged(pred.Child, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes)
 		if newChild == pred.Child {
 			return p
 		}
-		return predicates.NewNot(newChild)
+		return predicates.WithAtomicity(predicates.NewNot(newChild), predicates.IsAtomic(p))
 	default:
 		return p
 	}
@@ -4507,38 +4357,8 @@ func predicateReferencesInnerLeg(p predicates.QueryPredicate, innerLegs map[valu
 	return false
 }
 
-// collectInnerLegAliases computes the existential inner's FROM-source-alias set:
-// the KNOWN set of correlations the existential subplan declares, against which a
-// predicate is classified as inner (route below the FOD) vs. outer/external
-// (route outer-side). innerCorr is the rule's inner correlation, under which the
-// FlatMap binds the FOD inner.
-//
-// Two cases, distinguished by whether innerCorr is itself one of the subplan's
-// declared FROM-source aliases:
-//
-//   - MULTI-TABLE inner (`EXISTS (SELECT 1 FROM t2, t3 WHERE …)`):
-//     existsInnerCorrelation declines the rename, so innerCorr is the RIGHTMOST
-//     leg (sourceAlias(esq.Plan)) — a declared leg. The correlation predicates
-//     reference RAW leg aliases (t2, t3), resolved through the merged inner row's
-//     qualified LEG.COL keys. The full inner-leg set is ALL declared legs, so
-//     this returns innerCorr ∪ {t2, t3, …}.
-//
-//   - SINGLE-TABLE inner (`EXISTS (SELECT 1 FROM t WHERE …)`):
-//     existsInnerCorrelation RENAMED the inner correlation to a UNIQUE alias
-//     (the alias-shadow fix), and rebased the join predicate onto it. The
-//     predicate references THAT unique alias = innerCorr, never the subplan's
-//     own scan alias. innerCorr is NOT among the subplan's declared aliases, so
-//     this returns {innerCorr} ALONE. Crucially it must NOT include the subplan's
-//     raw scan alias: in the alias-shadow self-subquery (`FROM t … EXISTS (SELECT
-//     1 FROM t …)`) the outer source and the inner scan share the name `T`, and
-//     an outer-only predicate (`id > 1`, correlated to the shared `T`) would be
-//     mis-routed below the FOD if `T` leaked into the inner-leg set (that
-//     regression). Returning {innerCorr} keeps it outer-side.
-//
-// The walk gathers declared aliases from each SelectExpression's
-// GetSourceAliases() and from ForEach/Physical quantifier aliases — never an
-// EXTERNAL value-tree binding (a scalar-subquery / parameter alias is not a FROM
-// quantifier), so such correlations never enter the inner-leg set.
+// collectInnerLegAliases admits declared inner sources only when innerCorr names
+// one of them; an opaque existential binding must not capture a shadowed outer.
 func collectInnerLegAliases(innerRef *expressions.Reference, innerCorr values.CorrelationIdentifier) map[values.CorrelationIdentifier]struct{} {
 	declared := map[values.CorrelationIdentifier]struct{}{}
 	if innerRef != nil {
@@ -4572,11 +4392,8 @@ func collectInnerLegAliases(innerRef *expressions.Reference, innerCorr values.Co
 		walk(innerRef)
 	}
 
-	// If innerCorr is itself a declared leg, the inner is multi-table (not
-	// renamed) and predicates reference the raw leg aliases — return all declared
-	// legs. Otherwise the inner correlation was renamed to a unique alias and
-	// predicates reference ONLY that; the subplan's raw aliases are not referenced
-	// and must not leak in (the alias-shadow case).
+	// SQL-owned inputs keep their WHERE predicates inside the child; only legacy
+	// explicit source bindings expose child aliases to the parent's predicates.
 	out := map[values.CorrelationIdentifier]struct{}{innerCorr: {}}
 	if _, ok := declared[innerCorr]; ok {
 		for a := range declared {
@@ -4888,17 +4705,17 @@ func (r *ImplementNestedLoopJoinRule) yieldExistsFlatMap(
 	if pinOuter {
 		outerRef = call.MemoizeFinalExpression(outerExpr)
 	}
-	leftQ := expressions.NamedForEachQuantifier(outerCorrelation, outerRef)
+	leftQ := expressions.NamedPhysicalQuantifier(outerCorrelation, outerRef)
 
 	if len(outerResiduals) > 0 {
-		ofInnerQ := expressions.NamedForEachQuantifier(leftQ.GetAlias(),
+		ofInnerQ := expressions.NamedPhysicalQuantifier(leftQ.GetAlias(),
 			call.MemoizeFinalExpression(outerPlan))
 		outerFilter, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(ofInnerQ, outerResiduals, outerCorrelation)
 		if err != nil {
 			call.Fail(err)
 			return
 		}
-		leftQ = expressions.NamedForEachQuantifier(outerCorrelation,
+		leftQ = expressions.NamedPhysicalQuantifier(outerCorrelation,
 			call.MemoizeFinalExpression(outerFilter))
 	}
 

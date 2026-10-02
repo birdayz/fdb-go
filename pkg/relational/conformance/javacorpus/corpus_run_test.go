@@ -180,23 +180,10 @@ func TestJavaCorpusRuns(t *testing.T) {
 	// A gap entry whose file stopped failing is a CLOSED gap nobody deleted,
 	// and it would keep a working file booked as broken. Assert each entry
 	// still matched something.
-	// A matched gap's skip detail is "<Booking>: <error>" (runner.go's
-	// gapFor arm), so reachability keys on each entry's OWN booking prefix —
-	// hard-coding one booking scheme ("CQ-") silently un-pinned every
-	// RFC-booked entry.
-	matchedBookings := map[string]map[string]bool{}
-	for _, f := range ledger.Files() {
-		for _, s := range f.Skips {
-			if i := strings.Index(s.Detail, ": "); i > 0 {
-				if matchedBookings[f.Path] == nil {
-					matchedBookings[f.Path] = map[string]bool{}
-				}
-				matchedBookings[f.Path][s.Detail[:i]] = true
-			}
-		}
-	}
+	// Bookings are structured: their text may itself contain a colon.
+
 	for _, g := range javacorpus.EngineGaps() {
-		if !matchedBookings[g.Path][g.Booking] {
+		if !gapBookingMatched(g, ledger.Files()) {
 			t.Errorf("engine gap %s (%s, %s) no longer matches: the file either passes now — "+
 				"delete the entry and raise the pass count — or fails differently, which is a new bug.",
 				g.Path, g.Class, g.Booking)
@@ -386,4 +373,35 @@ func containsClass(all []javacorpus.SkipClass, c javacorpus.SkipClass) bool {
 		}
 	}
 	return false
+}
+
+func gapBookingMatched(g javacorpus.EngineGap, files []javacorpus.FileResult) bool {
+	for _, f := range files {
+		if f.Path != g.Path {
+			continue
+		}
+		for _, s := range f.Skips {
+			if s.Class == g.Class && s.GapBooking == g.Booking {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func TestGapBookingWithColon(t *testing.T) {
+	t.Parallel()
+	g := javacorpus.EngineGap{Path: "uuid-prepared.yamsql", Class: javacorpus.SkipConformanceGoAccepts, Booking: "RFC-257: UUID sort"}
+	files := []javacorpus.FileResult{{Path: g.Path, Skips: []javacorpus.Skip{{Class: g.Class, GapBooking: g.Booking, Detail: g.Booking + ": measured rejection"}}}}
+	if !gapBookingMatched(g, files) {
+		t.Fatal("a colon in the booking must not hide a matched gap")
+	}
+	g.Booking = "RFC-257: other gap"
+	if gapBookingMatched(g, files) {
+		t.Fatal("matched another booking")
+	}
+	g.Booking = "RFC-257"
+	if gapBookingMatched(g, files) {
+		t.Fatal("matched a booking prefix instead of the full booking")
+	}
 }

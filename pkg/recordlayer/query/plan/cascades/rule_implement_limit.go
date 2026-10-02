@@ -71,7 +71,7 @@ func (r *ImplementLimitRule) OnMatch(call *ExpressionRuleCall) {
 		// holds (RFC-184 W2): GetQuantifiers / OrderingSourceRef / GetInner all
 		// resolve through this one quantifier, so there is no nil-inner shell to
 		// leave stale (the class the physicalLimitWrapper's WithChildren pinned).
-		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
+		innerQ := expressions.NewPhysicalQuantifier(call.MemoizeExpression(winner))
 		var limitPlan *plans.RecordQueryLimitPlan
 		var err error
 		if lv := lim.GetLimitValue(); lv != nil {

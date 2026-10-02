@@ -43,12 +43,16 @@ type RewriteOuterJoinRule struct {
 // NewRewriteOuterJoinRule constructs the rule.
 func NewRewriteOuterJoinRule() *RewriteOuterJoinRule {
 	return &RewriteOuterJoinRule{
-		matcher: NewExpressionMatcher[*expressions.SelectExpression]("outer_join_select"),
+		matcher: NewExpressionMatcher[*expressions.SelectExpression]("outer_join_select").WithRootPredicate(
+			func(sel *expressions.SelectExpression) bool { return sel.GetJoinType() == expressions.JoinLeftOuter },
+		),
 	}
 }
 
 // Matcher returns the pattern.
 var _ ExpressionRule = (*RewriteOuterJoinRule)(nil)
+
+func (r *RewriteOuterJoinRule) ConstraintDependencies() []any { return nil }
 
 func (r *RewriteOuterJoinRule) Matcher() matching.BindingMatcher { return r.matcher }
 
@@ -124,26 +128,8 @@ func (r *RewriteOuterJoinRule) OnMatch(call *ExpressionRuleCall) {
 	for _, q := range existentialQuants {
 		existentialAliases[q.GetAlias()] = struct{}{}
 	}
-	// A predicate can belong to an existential WITHOUT naming its alias, so
-	// classifying on the alias alone splits some of them the wrong way.
-	//
-	// existsInnerCorrelation rebases a hoisted EXISTS correlation onto the
-	// existential's own alias only when existsInnerSafeToRename allows it, and
-	// that returns FALSE for a JOIN- or CTE-bodied subquery
-	// (cascades_translator.go). For those, the hoisted predicate keeps the
-	// subquery-INTERNAL alias — `R.id = q.qid` for
-	// `EXISTS (SELECT 1 FROM r, s WHERE r.k = s.k AND r.id = q.qid)`.
-	//
-	// Classified by select-alias intersection alone, such a predicate names only
-	// the null-supplying leg, so it reads as an ON-predicate and is folded BELOW
-	// the null-extension — where its buried alias is bound by nothing. That is
-	// either an unbindable correlation or a NULL evaluation that empties the
-	// inner and null-extends every row.
-	//
-	// PartitionSelectRule already compensates for exactly this with the same map;
-	// this rule did not, and the shapes it affects are precisely the ones the
-	// corpus does not carry. Folding the owning existential's alias into the
-	// predicate's correlation set keeps the predicate WITH its existential.
+	// A legacy programmatic predicate may name a source inside an existential.
+	// Its owner must stay above null-extension, not become an ON predicate.
 	buriedToExistential := make(map[values.CorrelationIdentifier]values.CorrelationIdentifier)
 	for _, q := range existentialQuants {
 		for buried := range boundAliasesOfReference(q.GetRangesOver()) {
@@ -374,14 +360,8 @@ func (r *RewriteOuterJoinRule) OnMatch(call *ExpressionRuleCall) {
 	boxAlias := values.UniqueCorrelationIdentifier()
 	boxQ := expressions.NamedForEachQuantifier(boxAlias, call.MemoizeExpression(boxSelect))
 
-	// outerAliases names the OUTER select's quantifiers: the box, then each
-	// existential. The existential entries are CARRIED from the firing select
-	// rather than read off the quantifier, because an existential's source alias
-	// is not always its quantifier alias — existsInnerCorrelation renames a
-	// join/nested inner — and ImplementNestedLoopJoinRule resolves the inner
-	// existential's correlation through GetSourceAliases()[1]. Manufacturing it
-	// from the quantifier reproduces the exact fallback rule_partition_select.go
-	// documents as wrong, and passing nil here reproduces it too.
+	// Carry explicit runtime source bindings into the outer select: programmatic
+	// selects can declare them independently of the existential quantifier alias.
 	//
 	// All-or-nothing: an unnamed entry makes every LATER position name the wrong
 	// quantifier, so the slice is dropped rather than truncated. Dropping it

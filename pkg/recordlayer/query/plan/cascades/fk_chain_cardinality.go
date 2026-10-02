@@ -515,14 +515,25 @@ func computeFlatMapPKThread(fm *plans.RecordQueryFlatMapPlan) pkThread {
 // boundary. Two same-leaf-named columns reached through different quantifiers
 // no longer key one slot, and an ordinal is never compared across layouts.
 func innerFullyBindsThread(fm *plans.RecordQueryFlatMapPlan, outerThread pkThread) bool {
-	binding, ok := scanBindingOfLeaf(fm.GetInner())
+	return legFullyBindsThread(fm.GetInner(), fm.GetOuterAlias(), planRowLayout(fm.GetOuter()), outerThread)
+}
+
+// legFullyBindsThread is innerFullyBindsThread stated over the leg and the row
+// it probes from, so a hop can be judged without a FlatMap node that pairs
+// them — the right-deep re-association below has none.
+func legFullyBindsThread(
+	inner plans.RecordQueryPlan,
+	outerAlias values.CorrelationIdentifier,
+	outerLayout values.Type,
+	outerThread pkThread,
+) bool {
+	binding, ok := scanBindingOfLeaf(inner)
 	if !ok || len(binding.comparisons) == 0 {
 		return false
 	}
 	if len(outerThread.pkTypes) != len(outerThread.pkValues) {
 		return false
 	}
-	outerLayout := planRowLayout(fm.GetOuter())
 	frontier := values.OrdinalDomainOfType(outerLayout)
 	if !frontier.IsKnown() {
 		return false // no declared column order to state the proof in — fail closed
@@ -536,7 +547,7 @@ func innerFullyBindsThread(fm *plans.RecordQueryFlatMapPlan, outerThread pkThrea
 		if !ok {
 			return false // a non-flat-FieldValue PK component — fail closed
 		}
-		key = key.WithCorrelation(fm.GetOuterAlias())
+		key = key.WithCorrelation(outerAlias)
 		if _, duplicate := wantKeys[key]; duplicate {
 			return false
 		}
@@ -564,10 +575,10 @@ func innerFullyBindsThread(fm *plans.RecordQueryFlatMapPlan, outerThread pkThrea
 		// inner search does not make, and the FK-chain cap would then divide a
 		// real fan-out away.
 		key, ok := correlatedFieldIdentity(eq.Operand, frontier)
-		if !ok || !values.SameLeg(key.Correlation, fm.GetOuterAlias()) {
+		if !ok || !values.SameLeg(key.Correlation, outerAlias) {
 			continue
 		}
-		key = key.WithCorrelation(fm.GetOuterAlias())
+		key = key.WithCorrelation(outerAlias)
 		sourceType, wanted := wantKeys[key]
 		if wanted && properties.LogicalEqualityProjectionInjective(
 			sourceType, physicalTypeAt(binding.physicalTypes, i),
@@ -844,6 +855,69 @@ func fkChainCardinalityCap(fm *plans.RecordQueryFlatMapPlan, stats properties.St
 		stats = properties.DefaultStatistics{}
 	}
 	return stats.RecordTypeCardinality(innerRecordType), true
+}
+
+// rightDeepFKChainCost costs a right-deep FlatMap spine
+// FlatMap(L0, FlatMap(L1, ... FlatMap(Lk-1, Lk))) as its left-deep
+// re-association FlatMap(...FlatMap(L0, L1)..., Lk). Both execute every leg the
+// same number of times, but only the left-deep form exposes each hop's proven
+// FK-chain cap: in the right-deep form the cap of hop i is invisible to the
+// FlatMap that multiplies its per-execution estimate by the outer
+// cardinality. It applies only when the first hop's cap is provable, so a
+// spine that never threads a primary key keeps its plain estimate.
+func rightDeepFKChainCost(
+	fm *plans.RecordQueryFlatMapPlan,
+	outerCost properties.Cost,
+	stats properties.StatisticsProvider,
+	ctx PlanContext,
+) (properties.Cost, bool) {
+	legs := []plans.RecordQueryPlan{fm.GetOuter()}
+	aliases := []values.CorrelationIdentifier{fm.GetOuterAlias()}
+	rest := fm.GetInner()
+	for {
+		next, ok := rest.(*plans.RecordQueryFlatMapPlan)
+		if !ok || next == nil {
+			break
+		}
+		legs = append(legs, next.GetOuter())
+		aliases = append(aliases, next.GetOuterAlias())
+		rest = next.GetInner()
+	}
+	if len(legs) < 2 || rest == nil {
+		return properties.Cost{}, false
+	}
+	legs = append(legs, rest)
+	thread := computePKThread(legs[0])
+	if !thread.ok || !legFullyBindsThread(legs[1], aliases[0], planRowLayout(legs[0]), thread) {
+		return properties.Cost{}, false
+	}
+	if stats == nil {
+		stats = properties.DefaultStatistics{}
+	}
+	acc := outerCost
+	for i := 1; i < len(legs); i++ {
+		legCost := concretePlanCost(legs[i], stats, ctx)
+		inner := legCost
+		if thread.ok && legFullyBindsThread(legs[i], aliases[i-1], planRowLayout(legs[i-1]), thread) {
+			if recordType, ok := singleLeafRecordType(legs[i]); ok {
+				fixedCPU, derived := fkChainInnerFixedCPU(legs[i], ctx)
+				if !derived {
+					fixedCPU = legCost.CPU
+				}
+				cap := stats.RecordTypeCardinality(recordType)
+				if corrected, applied := fkChainCappedInnerCost(acc, legCost, cap, fixedCPU); applied {
+					inner = corrected
+				}
+			}
+			// The accumulated rows are now 1:1 with distinct rows of this leg's
+			// table, which is the thread the next hop must bind.
+			thread = computePKThread(legs[i])
+		} else {
+			thread = pkThread{}
+		}
+		acc = properties.FlatMapCost(acc, inner)
+	}
+	return acc, true
 }
 
 // fkChainCappedInnerCost derives a CPU-consistent average inner Cost for a

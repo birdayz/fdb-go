@@ -32,8 +32,11 @@ type ExplodeExpression struct {
 	// the bare element. Mirrors Java's `ExplodeExpression.withOrdinality`
 	// (the `WITH ORDINALITY` / `AT atAlias` companion, Java #4112).
 	withOrdinality bool
-	elementType    values.ExactTypeHandle
-	resultType     values.ExactTypeHandle
+	// ordinalityNames name the two ordinality slots (`_0`/`_1` unless a SQL
+	// unnest's AS/AT aliases name them; see NewExplodeExpressionWithOrdinalityNames).
+	ordinalityNames [2]string
+	elementType     values.ExactTypeHandle
+	resultType      values.ExactTypeHandle
 }
 
 // NewExplodeExpression builds a non-ordinal Explode over the given
@@ -42,17 +45,31 @@ type ExplodeExpression struct {
 // Verify.verify; Go defers the check to caller — invalid
 // construction surfaces as a degenerate result type).
 func NewExplodeExpression(collection values.Value) (*ExplodeExpression, error) {
-	return newExplodeExpression(collection, false)
+	return newExplodeExpression(collection, false, [2]string{})
 }
 
 // NewExplodeExpressionWithOrdinality builds an Explode that also emits a
 // 1-based ordinal alongside each element (the `WITH ORDINALITY` variant).
 // Mirrors Java's `new ExplodeExpression(collectionValue, withOrdinality)`.
 func NewExplodeExpressionWithOrdinality(collection values.Value, withOrdinality bool) (*ExplodeExpression, error) {
-	return newExplodeExpression(collection, withOrdinality)
+	if !withOrdinality {
+		return newExplodeExpression(collection, false, [2]string{})
+	}
+	return newExplodeExpression(collection, true, [2]string{values.OrdinalFieldName(0), values.OrdinalFieldName(1)})
 }
 
-func newExplodeExpression(collection values.Value, withOrdinality bool) (*ExplodeExpression, error) {
+// NewExplodeExpressionWithOrdinalityNames builds a WITH ORDINALITY Explode
+// whose element and ordinal slots carry the given names. Java leaves them
+// anonymous and binds a reference by alias; Go's references are exact about
+// the row they read, and a SQL unnest's references read its AS/AT names.
+func NewExplodeExpressionWithOrdinalityNames(collection values.Value, elementName, ordinalName string) (*ExplodeExpression, error) {
+	if elementName == "" || ordinalName == "" || elementName == ordinalName {
+		return nil, fmt.Errorf("ExplodeExpression ordinality names must be two distinct names, got %q and %q", elementName, ordinalName)
+	}
+	return newExplodeExpression(collection, true, [2]string{elementName, ordinalName})
+}
+
+func newExplodeExpression(collection values.Value, withOrdinality bool, names [2]string) (*ExplodeExpression, error) {
 	if collection == nil {
 		return nil, fmt.Errorf("ExplodeExpression collection: value is nil")
 	}
@@ -66,7 +83,7 @@ func newExplodeExpression(collection values.Value, withOrdinality bool) (*Explod
 	}
 	result := elementType.Type()
 	if withOrdinality {
-		result = values.ExplodeOrdinalityResultType(result)
+		result = values.ExplodeOrdinalityResultTypeNamed(result, names[0], names[1])
 	}
 	resultType, err := snapshotExpressionResultType("ExplodeExpression", result)
 	if err != nil {
@@ -75,9 +92,22 @@ func newExplodeExpression(collection values.Value, withOrdinality bool) (*Explod
 	return &ExplodeExpression{
 		collectionValue: collection,
 		withOrdinality:  withOrdinality,
+		ordinalityNames: names,
 		elementType:     elementType,
 		resultType:      resultType,
 	}, nil
+}
+
+// GetOrdinalityNames returns the element and ordinal slot names of a WITH
+// ORDINALITY Explode (empty for the bare variant).
+func (e *ExplodeExpression) GetOrdinalityNames() (string, string) {
+	return e.ordinalityNames[0], e.ordinalityNames[1]
+}
+
+// WithCollection rebuilds this Explode over another collection, keeping its
+// ordinality and slot names.
+func (e *ExplodeExpression) WithCollection(collection values.Value) (*ExplodeExpression, error) {
+	return newExplodeExpression(collection, e.withOrdinality, e.ordinalityNames)
 }
 
 // GetCollectionValue returns the underlying collection Value (the
@@ -160,7 +190,7 @@ func (e *ExplodeExpression) EqualsWithoutChildren(other RelationalExpression, al
 		e.collectionValue,
 		o.collectionValue,
 		aliases.ToValuesAliasMap(),
-	) && e.withOrdinality == o.withOrdinality
+	) && e.withOrdinality == o.withOrdinality && e.ordinalityNames == o.ordinalityNames
 }
 
 // HashCodeWithoutChildren mixes the class discriminator + the collection

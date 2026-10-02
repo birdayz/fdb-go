@@ -1,60 +1,20 @@
 package cascades
 
 import (
+	"slices"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// DefaultMaxNumConjuncts is the maximum number of OR-predicate conjuncts
-// that PredicateToLogicalUnionRule will attempt to convert to DNF. Beyond
-// this limit, the combinatorial explosion of DNF terms is too expensive.
-// Java's default is 9 (510 combinations).
+// DefaultMaxNumConjuncts bounds fixed-factor subset enumeration. Above it,
+// Java considers only the full DNF (the empty fixed subset).
 const DefaultMaxNumConjuncts = 9
 
-// PredicateToLogicalUnionRule transforms a SelectExpression whose predicates
-// (in CNF after NormalizePredicatesRule) contain OR terms into a
-// UNIQUE(UNION(SELECT leg1, SELECT leg2, ...)) structure. Each union
-// leg corresponds to one DNF term, enabling each leg to use a different
-// index for evaluation.
-//
-// The core transformation:
-//
-//	SELECT WHERE A AND B AND (C1 OR C2) AND (D1 OR D2)
-//
-// becomes:
-//
-//	UNIQUE-REQUIRED(UNION(
-//	  UNIQUE(SELECT WHERE A AND B AND C1 AND D1),
-//	  UNIQUE(SELECT WHERE A AND B AND C1 AND D2),
-//	  UNIQUE(SELECT WHERE A AND B AND C2 AND D1),
-//	  UNIQUE(SELECT WHERE A AND B AND C2 AND D2),
-//	))
-//
-// Both dedup levels are BY PRIMARY KEY: per-leg, and again across legs, where a
-// record satisfying several DNF terms arrives once per leg that produced it.
-// The fixed predicates (A, B) are repeated in every leg.
-//
-// The outer dedup corresponds to Java's LogicalDistinctExpression, which is a
-// primary-key dedup; Go's node of that name is a full-row dedup and would be
-// the wrong one. See the construction site below for why the distinction
-// decides whether this rewrite returns duplicate records.
-//
-// Guards:
-//   - Only fires on SelectExpressions with exactly 1 ForEach quantifier.
-//   - Skips SelectExpressions with Existential quantifiers.
-//   - Requires at least one non-leaf, non-atomic OR predicate.
-//   - Respects DefaultMaxNumConjuncts to avoid combinatorial explosion.
-//
-// Convergence: the output is Unique(Union(...)), not a SelectExpression,
-// so the rule cannot re-fire on its own output.
-//
-// Ports Java's PredicateToLogicalUnionRule (a match-partition rule) as a
-// Go ExpressionRule operating on SelectExpressions. The Go planner fires
-// expression rules in the EXPLORE phase rather than as match-partition
-// triggers — architecturally equivalent when combined with
-// NormalizePredicatesRule.
+// PredicateToLogicalUnionRule enumerates primary-key-distinct unions with
+// fixed factors made atomic so each leg cannot recursively expand them.
 type PredicateToLogicalUnionRule struct {
 	matcher matching.BindingMatcher
 }
@@ -70,6 +30,10 @@ func (r *PredicateToLogicalUnionRule) Matcher() matching.BindingMatcher { return
 
 func (r *PredicateToLogicalUnionRule) OnMatch(call *ExpressionRuleCall) {
 	sel := matching.Get[*expressions.SelectExpression](call.Bindings, r.matcher)
+	explorePredicateUnion(call, sel, partiallyMatchedOrPredicates(call.Reference, sel))
+}
+
+func explorePredicateUnion(call *ExpressionRuleCall, sel *expressions.SelectExpression, matchedOrs map[predicates.QueryPredicate]struct{}) {
 	preds := sel.GetPredicates()
 	if len(preds) == 0 {
 		return
@@ -83,7 +47,7 @@ func (r *PredicateToLogicalUnionRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	// Guard: exactly 1 ForEach quantifier and no Existential quantifiers.
+	// Guard: exactly 1 ForEach quantifier.
 	// Mirrors Java's check on ownedForEachAliases.size() != 1.
 	var forEachQuantifiers []expressions.Quantifier
 	for _, q := range quantifiers {
@@ -91,11 +55,12 @@ func (r *PredicateToLogicalUnionRule) OnMatch(call *ExpressionRuleCall) {
 		case expressions.QuantifierForEach:
 			forEachQuantifiers = append(forEachQuantifiers, q)
 		case expressions.QuantifierExistential:
-			// Java doesn't outright reject existential quantifiers —
-			// it subsets them per leg. But the TODO in Java says
-			// "for now we only allow exactly one for-each quantifier",
-			// and the existential subsetting is complex. Match Java's
-			// effective behaviour: skip if existentials are present.
+			// Existentials do not change cardinality by themselves. Each leg
+			// retains only those referenced by its predicates, as in Java.
+			if _, projected := values.GetCorrelatedToOfValue(sel.GetResultValue())[q.GetAlias()]; projected {
+				return // the outer projection cannot read a leg-local binding
+			}
+		default:
 			return
 		}
 	}
@@ -103,51 +68,155 @@ func (r *PredicateToLogicalUnionRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	// Partition predicates into OR predicates (non-trivial) and fixed predicates (leaves).
-	// Mirrors Java's nonTrivialPredicates filter: keep predicates that are
-	// not atomic and not LeafQueryPredicate. In Go, a non-trivial predicate
-	// is an OrPredicate (after CNF normalization, the top-level predicates
-	// are either leaves or ORs).
-	var orPredicates []*predicates.OrPredicate
-	var fixedPredicates []predicates.QueryPredicate
-	for _, p := range preds {
-		if op, ok := p.(*predicates.OrPredicate); ok {
-			orPredicates = append(orPredicates, op)
-		} else {
-			fixedPredicates = append(fixedPredicates, p)
+	nonTrivial := make(map[predicates.QueryPredicate]int)
+	for _, predicate := range preds {
+		if !predicates.IsAtomic(predicate) && len(predicate.Children()) > 0 {
+			if _, exists := nonTrivial[predicate]; !exists {
+				nonTrivial[predicate] = len(nonTrivial)
+			}
 		}
 	}
-
-	// Need at least one OR predicate to split.
-	if len(orPredicates) == 0 {
+	if len(nonTrivial) == 0 {
 		return
 	}
-
-	// Guard: respect the max conjuncts limit to avoid combinatorial explosion.
-	if len(orPredicates) > DefaultMaxNumConjuncts {
+	combinations := 1
+	if len(nonTrivial) <= DefaultMaxNumConjuncts {
+		combinations = (1 << len(nonTrivial)) - 1
+	}
+	legs, err := newPredicateUnionLegs(nonTrivial, combinations > 1)
+	if err != nil {
+		call.Fail(err)
 		return
 	}
-
-	// Convert the OR predicates to DNF. If there's one OR predicate,
-	// its children are the DNF terms directly. If there are multiple,
-	// AND them together and convert the result to DNF — the cross-product
-	// of all OR children.
-	var dnfTerms []predicates.QueryPredicate
-	if len(orPredicates) == 1 {
-		// Single OR: each child is a DNF term.
-		dnfTerms = orPredicates[0].SubPredicates
-	} else {
-		// Multiple ORs: compute the cross-product (DNF of the conjunction).
-		dnfTerms = orsToDNFTerms(orPredicates)
+	for fixedMask := 0; fixedMask < combinations; fixedMask++ {
+		if call.CancellationErr() != nil || call.Err() != nil {
+			return
+		}
+		var fixed []int
+		var expanded []predicates.QueryPredicate
+		for _, predicate := range preds {
+			ordinal, nonLeaf := nonTrivial[predicate]
+			if nonLeaf && fixedMask&(1<<ordinal) != 0 {
+				fixed = append(fixed, ordinal)
+			} else {
+				expanded = append(expanded, predicate)
+			}
+		}
+		eligible := true
+		for _, predicate := range expanded {
+			if _, isOr := predicate.(*predicates.OrPredicate); isOr {
+				if _, matched := matchedOrs[predicate]; !matched {
+					eligible = false
+					break
+				}
+			}
+		}
+		if !eligible {
+			continue
+		}
+		terms, err := predicateUnionDNFTerms(expanded)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		if len(terms) == 0 {
+			continue
+		}
+		yieldPredicateUnion(call, sel, quantifiers, forEachQuantifiers[0], legs, fixed, terms)
 	}
+}
 
-	// If DNF produced nothing useful, bail.
-	if len(dnfTerms) == 0 {
-		return
+// predicateUnionLegs builds each leg once per rule call. A fixed factor sharing
+// a literal with the leg's term is implied by it (the absorption Java's DNF
+// simplification already applies to expanded factors), so a leg is its term
+// plus only the fixed factors the term does not imply. That leg is the same
+// for every fixed subset yielding the term, so all unions share one leg group
+// instead of each subset planning its own syntactic variant.
+type predicateUnionLegs struct {
+	factors []predicateUnionFactor
+	built   map[uint64][]predicateUnionLeg
+}
+
+type predicateUnionFactor struct {
+	predicate predicates.QueryPredicate
+	// Disjuncts in the form the DNF simplification gives term literals.
+	literals []predicates.QueryPredicate
+}
+
+type predicateUnionLeg struct {
+	term  predicates.QueryPredicate
+	fixed []int
+	ref   *expressions.Reference
+}
+
+func newPredicateUnionLegs(nonTrivial map[predicates.QueryPredicate]int, fixable bool) (*predicateUnionLegs, error) {
+	legs := &predicateUnionLegs{
+		factors: make([]predicateUnionFactor, len(nonTrivial)),
+		built:   make(map[uint64][]predicateUnionLeg),
 	}
+	for factor, ordinal := range nonTrivial {
+		legs.factors[ordinal].predicate = factor
+		if !fixable {
+			continue
+		}
+		normalized, err := Simplify(factor, queryPredicateSimplificationRules())
+		if err != nil {
+			return nil, err
+		}
+		legs.factors[ordinal].literals = predicateUnionConnectiveChildren[*predicates.OrPredicate](normalized)
+	}
+	return legs, nil
+}
 
-	// Build union legs.
-	onlyForEachQ := forEachQuantifiers[0]
+// predicateUnionConnectiveChildren flattens a non-atomic connective of type T.
+func predicateUnionConnectiveChildren[T *predicates.AndPredicate | *predicates.OrPredicate](predicate predicates.QueryPredicate) []predicates.QueryPredicate {
+	connective, ok := predicate.(T)
+	if !ok || predicates.IsAtomic(predicate) {
+		return []predicates.QueryPredicate{predicate}
+	}
+	var children []predicates.QueryPredicate
+	for _, child := range predicates.QueryPredicate(connective).Children() {
+		children = append(children, predicateUnionConnectiveChildren[T](child)...)
+	}
+	return children
+}
+
+// unimplied returns the fixed factors a term does not imply, in factor order.
+func (l *predicateUnionLegs) unimplied(term predicates.QueryPredicate, fixed []int) []int {
+	conjuncts := predicateUnionConnectiveChildren[*predicates.AndPredicate](term)
+	var live []int
+	for _, ordinal := range fixed {
+		implied := false
+		for _, literal := range l.factors[ordinal].literals {
+			if slices.ContainsFunc(conjuncts, func(conjunct predicates.QueryPredicate) bool {
+				return predicates.SemanticEqualsUnderAliasMap(literal, conjunct, nil)
+			}) {
+				implied = true
+				break
+			}
+		}
+		if !implied {
+			live = append(live, ordinal)
+		}
+	}
+	return live
+}
+
+func (l *predicateUnionLegs) lookup(term predicates.QueryPredicate, fixed []int) *expressions.Reference {
+	for _, leg := range l.built[predicates.SemanticHashCode(term)] {
+		if slices.Equal(leg.fixed, fixed) && predicates.SemanticEqualsUnderAliasMap(leg.term, term, nil) {
+			return leg.ref
+		}
+	}
+	return nil
+}
+
+func (l *predicateUnionLegs) remember(term predicates.QueryPredicate, fixed []int, ref *expressions.Reference) {
+	hash := predicates.SemanticHashCode(term)
+	l.built[hash] = append(l.built[hash], predicateUnionLeg{term: term, fixed: fixed, ref: ref})
+}
+
+func yieldPredicateUnion(call *ExpressionRuleCall, sel *expressions.SelectExpression, quantifiers []expressions.Quantifier, onlyForEachQ expressions.Quantifier, legs *predicateUnionLegs, fixed []int, dnfTerms []predicates.QueryPredicate) {
 	lowerResultValue, err := onlyForEachQ.RequireFlowedObjectValue()
 	if err != nil {
 		call.Fail(err)
@@ -167,9 +236,15 @@ func (r *PredicateToLogicalUnionRule) OnMatch(call *ExpressionRuleCall) {
 
 	var legRefs []*expressions.Reference
 	for _, dnfTerm := range dnfTerms {
-		// Build the predicate list for this leg: fixed predicates + the DNF term.
-		legPreds := make([]predicates.QueryPredicate, 0, len(fixedPredicates)+1)
-		legPreds = append(legPreds, fixedPredicates...)
+		live := legs.unimplied(dnfTerm, fixed)
+		if ref := legs.lookup(dnfTerm, live); ref != nil {
+			legRefs = append(legRefs, ref)
+			continue
+		}
+		legPreds := make([]predicates.QueryPredicate, 0, len(live)+1)
+		for _, ordinal := range live {
+			legPreds = append(legPreds, predicates.WithAtomicity(legs.factors[ordinal].predicate, true))
+		}
 		legPreds = append(legPreds, dnfTerm)
 
 		// Rebuild the ForEach quantifier pointing at the same inner Reference.
@@ -178,9 +253,22 @@ func (r *PredicateToLogicalUnionRule) OnMatch(call *ExpressionRuleCall) {
 			onlyForEachQ.GetRangesOver(),
 		)
 
+		legQuantifiers := []expressions.Quantifier{legForEach}
+		for _, q := range quantifiers {
+			if q.Kind() != expressions.QuantifierExistential {
+				continue
+			}
+			for _, predicate := range legPreds {
+				if _, needed := predicates.GetCorrelatedToOfPredicate(predicate)[q.GetAlias()]; needed {
+					legQuantifiers = append(legQuantifiers, expressions.NamedExistentialQuantifier(q.GetAlias(), q.GetRangesOver()))
+					break
+				}
+			}
+		}
+
 		legSelect, err := expressions.NewSelectExpression(
 			lowerResultValue,
-			[]expressions.Quantifier{legForEach},
+			legQuantifiers,
 			legPreds,
 		)
 		if err != nil {
@@ -197,6 +285,7 @@ func (r *PredicateToLogicalUnionRule) OnMatch(call *ExpressionRuleCall) {
 			return
 		}
 		legUniqueRef := call.MemoizeExpression(legUnique)
+		legs.remember(dnfTerm, live, legUniqueRef)
 
 		legRefs = append(legRefs, legUniqueRef)
 	}
@@ -271,38 +360,42 @@ func (r *PredicateToLogicalUnionRule) OnMatch(call *ExpressionRuleCall) {
 	}
 }
 
-// orsToDNFTerms computes the cross-product (DNF) of multiple OR
-// predicates. Given ORs [(A|B), (C|D)], produces the terms:
-// [A AND C, A AND D, B AND C, B AND D].
-//
-// Each term is either a single predicate (if only one factor) or an
-// AndPredicate of the combined children. This is the dual of the CNF cross
-// product in minorToNormalized (normal_form.go), which RFC-240 unified;
-// this one stays separate because it consumes already-extracted OR factors
-// rather than walking a predicate tree.
-func orsToDNFTerms(ors []*predicates.OrPredicate) []predicates.QueryPredicate {
-	// Start with a single empty conjunction.
-	cross := [][]predicates.QueryPredicate{{}}
-
-	for _, or := range ors {
-		var newCross [][]predicates.QueryPredicate
-		for _, existing := range cross {
-			for _, child := range or.SubPredicates {
-				combined := make([]predicates.QueryPredicate, 0, len(existing)+1)
-				combined = append(combined, existing...)
-				combined = append(combined, child)
-				newCross = append(newCross, combined)
-			}
-		}
-		cross = newCross
+// predicateUnionDNFTerms applies Java's normalization and absorption before
+// materializing legs; raw cross-products retain redundant supersets.
+func predicateUnionDNFTerms(factors []predicates.QueryPredicate) ([]predicates.QueryPredicate, error) {
+	conjunction := buildAnd(factors)
+	rules := append([]CascadesRule{newPredicateDNFRule()}, queryPredicateSimplificationRules()...)
+	dnf, err := Simplify(conjunction, rules)
+	if err != nil {
+		return nil, err
 	}
-
-	// Convert each conjunction list into a single predicate.
-	terms := make([]predicates.QueryPredicate, 0, len(cross))
-	for _, conjunction := range cross {
-		terms = append(terms, buildAnd(conjunction))
+	if disjunction, ok := dnf.(*predicates.OrPredicate); ok && !predicates.IsAtomic(disjunction) {
+		return disjunction.SubPredicates, nil
 	}
-	return terms
+	return nil, nil
 }
 
 var _ ExpressionRule = (*PredicateToLogicalUnionRule)(nil)
+
+func partiallyMatchedOrPredicates(ref *expressions.Reference, expression expressions.RelationalExpression) map[predicates.QueryPredicate]struct{} {
+	matched := make(map[predicates.QueryPredicate]struct{})
+	for _, partialMatch := range GetPartialMatchesForExpression(ref, expression) {
+		info := partialMatch.GetMatchInfo().GetRegularMatchInfo()
+		for _, entry := range info.GetPredicateMap().Entries() {
+			mapping := entry.Mapping
+			if mapping.GetMappingKind() == MappingOrTermImpliesCandidate {
+				matched[mapping.GetOriginalQueryPredicate()] = struct{}{}
+			}
+		}
+	}
+	return matched
+}
+
+func isPredicateUnionRule(rule ExpressionRule) bool {
+	switch rule.(type) {
+	case *PredicateToLogicalUnionRule, *FilterToLogicalUnionRule:
+		return true
+	default:
+		return false
+	}
+}

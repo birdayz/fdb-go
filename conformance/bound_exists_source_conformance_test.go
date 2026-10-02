@@ -40,20 +40,19 @@ var _ = Describe("BoundExistsSourceConformance", func() {
 		var failures []string
 		for _, test := range []struct {
 			name, sql   string
-			unnest      bool
 			independent bool
 			ordered     bool
 		}{
-			{"quoted_outer", `SELECT "a".id FROM t AS "a" WHERE EXISTS (SELECT 1 FROM u AS A JOIN v AS B ON A.id = B.id WHERE A.id = "a".id)`, false, false, false},
-			{"quoted_inner", `SELECT A.id FROM t AS A WHERE EXISTS (SELECT 1 FROM u AS "a" JOIN v AS B ON "a".id = B.id WHERE "a".id = A.id)`, false, false, false},
-			{"distinct_letter_control", `SELECT O.id FROM t AS O WHERE EXISTS (SELECT 1 FROM u AS A JOIN v AS B ON A.id = B.id WHERE A.id = O.id)`, false, false, false},
-			{"later_inner_alias", `SELECT "a".id FROM t AS "a" WHERE EXISTS (SELECT 1 FROM u AS X JOIN v AS B ON B.id = "a".id JOIN u AS A ON A.id = X.id)`, false, false, false},
-			{"unnest_frame", `SELECT "a" FROM t, t.arr AS "a" WHERE EXISTS (SELECT 1 FROM u AS A JOIN v AS B ON A.id = B.id WHERE A.id = "a")`, true, false, false},
-			{"unnest_distinct_letter_control", `SELECT o FROM t, t.arr AS o WHERE EXISTS (SELECT 1 FROM u AS A JOIN v AS B ON A.id = B.id WHERE A.id = o)`, true, false, false},
-			{"independent_unnest_frame", `SELECT "a" FROM t, t.arr AS "a" WHERE EXISTS (SELECT 1 FROM u AS A JOIN v AS B ON A.id = B.id WHERE A.id = 1)`, true, true, false},
-			{"independent_unnest_control", `SELECT o FROM t, t.arr AS o WHERE EXISTS (SELECT 1 FROM u AS A JOIN v AS B ON A.id = B.id WHERE A.id = 1)`, true, true, false},
-			{"ordered_unnest_frame", `SELECT "a" FROM t, t.arr AS "a" WHERE EXISTS (SELECT 1 FROM u AS A JOIN v AS B ON A.id = B.id WHERE A.id = 1) ORDER BY 1`, true, true, true},
-			{"ordered_unnest_control", `SELECT o FROM t, t.arr AS o WHERE EXISTS (SELECT 1 FROM u AS A JOIN v AS B ON A.id = B.id WHERE A.id = 1) ORDER BY 1`, true, true, true},
+			{"quoted_outer", `SELECT "a".id FROM t AS "a" WHERE EXISTS (SELECT 1 FROM u AS A JOIN v AS B ON A.id = B.id WHERE A.id = "a".id)`, false, false},
+			{"quoted_inner", `SELECT A.id FROM t AS A WHERE EXISTS (SELECT 1 FROM u AS "a" JOIN v AS B ON "a".id = B.id WHERE "a".id = A.id)`, false, false},
+			{"distinct_letter_control", `SELECT O.id FROM t AS O WHERE EXISTS (SELECT 1 FROM u AS A JOIN v AS B ON A.id = B.id WHERE A.id = O.id)`, false, false},
+			{"later_inner_alias", `SELECT "a".id FROM t AS "a" WHERE EXISTS (SELECT 1 FROM u AS X JOIN v AS B ON B.id = "a".id JOIN u AS A ON A.id = X.id)`, false, false},
+			{"unnest_frame", `SELECT "a" FROM t, t.arr AS "a" WHERE EXISTS (SELECT 1 FROM u AS A JOIN v AS B ON A.id = B.id WHERE A.id = "a")`, false, false},
+			{"unnest_distinct_letter_control", `SELECT o FROM t, t.arr AS o WHERE EXISTS (SELECT 1 FROM u AS A JOIN v AS B ON A.id = B.id WHERE A.id = o)`, false, false},
+			{"independent_unnest_frame", `SELECT "a" FROM t, t.arr AS "a" WHERE EXISTS (SELECT 1 FROM u AS A JOIN v AS B ON A.id = B.id WHERE A.id = 1)`, true, false},
+			{"independent_unnest_control", `SELECT o FROM t, t.arr AS o WHERE EXISTS (SELECT 1 FROM u AS A JOIN v AS B ON A.id = B.id WHERE A.id = 1)`, true, false},
+			{"ordered_unnest_frame", `SELECT "a" FROM t, t.arr AS "a" WHERE EXISTS (SELECT 1 FROM u AS A JOIN v AS B ON A.id = B.id WHERE A.id = 1) ORDER BY 1`, true, true},
+			{"ordered_unnest_control", `SELECT o FROM t, t.arr AS o WHERE EXISTS (SELECT 1 FROM u AS A JOIN v AS B ON A.id = B.id WHERE A.id = 1) ORDER BY 1`, true, true},
 		} {
 			for _, runner := range []plandiff.SetupRunner{javaRunner, goRunner} {
 				wantRows := want
@@ -62,16 +61,6 @@ var _ = Describe("BoundExistsSourceConformance", func() {
 				}
 				result := runner.RunWithSetup(ctx, schema, setup, test.sql)
 				fmt.Fprintf(GinkgoWriter, "BOUND-EXISTS-QUOTED %s %s rows=%v err=%v\n", test.name, result.Engine, result.Rows.Rows, result.Err)
-				// Multi-source EXISTS reading an outer UNNEST element has a
-				// separate translator restriction, also reached with different
-				// letters. Fixing lexical equality must not remove that boundary.
-				if result.Engine == "go" && test.unnest && !test.independent {
-					var typed *api.Error
-					if !errors.As(result.Err, &typed) || typed.Code != api.ErrCodeUnsupportedQuery || typed.Message != "EXISTS with a multi-table FROM referencing the unnest element is not supported" {
-						failures = append(failures, fmt.Sprintf("%s: expected retained multi-source UNNEST restriction, got %v", test.name, result.Err))
-					}
-					continue
-				}
 				// Java cannot satisfy this ordered lateral shape; Go has an
 				// in-memory sort fallback. Keep the ordered probe separate from
 				// the unordered SQL contract, which requires an exact multiset.
@@ -88,6 +77,56 @@ var _ = Describe("BoundExistsSourceConformance", func() {
 				}
 				if result.Err != nil || matchErr != nil || !matches {
 					failures = append(failures, fmt.Sprintf("%s/%s: rows=%v err=%v matcher=%v, want %v", test.name, result.Engine, result.Rows.Rows, result.Err, matchErr, wantRows))
+				}
+			}
+		}
+		Expect(failures).To(BeEmpty())
+	})
+
+	It("threads unnest elements and ordinals through multi-source existential inputs", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		env, err := SetupTenantEnvironment(ctx, sharedContainer, "existselement_"+uuid.NewString())
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = env.Cleanup(ctx) }()
+		srv, err := NewIsolatedJavaInvoker()
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = srv.Close() }()
+		javaRunner := plandiff.NewJavaRunnerHTTP(javaBaseURL(srv), env.ClusterFile).(plandiff.SetupRunner)
+		file := writeClusterFileToTemp(env.ClusterFile)
+		defer os.Remove(file)
+		goRunner := plandiff.NewGoSQLSetupRunner(file)
+		const schema = `CREATE TYPE AS STRUCT elem (k BIGINT, tags BIGINT ARRAY)
+			CREATE TABLE t (id BIGINT, arr BIGINT ARRAY, bs elem ARRAY, PRIMARY KEY (id))
+			CREATE TABLE u (id BIGINT, PRIMARY KEY (id)) CREATE TABLE v (id BIGINT, PRIMARY KEY (id))`
+		setup := []string{
+			`INSERT INTO t VALUES (1, [1, 2, 2], [(1, [1, 2]), (2, [3])]), (2, [3, 4], [(3, [2, 4])]), (3, [], []), (4, NULL, NULL)`,
+			`INSERT INTO u VALUES (0), (1), (2), (3)`, `INSERT INTO v VALUES (0), (2), (3)`,
+		}
+		const from = `SELECT o FROM t, t.arr AS o WHERE `
+		const child = `SELECT 1 FROM u AS A JOIN v AS B ON A.id = B.id WHERE `
+		var failures []string
+		for _, test := range []struct {
+			name, sql string
+			want      [][]any
+		}{
+			{"scalar", from + `EXISTS (` + child + `A.id = o)`, [][]any{{float64(2)}, {float64(2)}, {float64(3)}}},
+			{"not_exists", from + `NOT EXISTS (` + child + `A.id = o)`, [][]any{{float64(1)}, {float64(4)}}},
+			{"on_correlation", from + `EXISTS (SELECT 1 FROM u AS A JOIN v AS B ON A.id = B.id AND B.id = o)`, [][]any{{float64(2)}, {float64(2)}, {float64(3)}}},
+			{"outer_only", from + `EXISTS (` + child + `o = 2)`, [][]any{{float64(2)}, {float64(2)}}},
+			{"ordinal", `SELECT o, p FROM t, t.arr AS o AT p WHERE EXISTS (` + child + `A.id = p)`, [][]any{{float64(2), float64(2)}, {float64(2), float64(3)}, {float64(4), float64(2)}}},
+			{"record_element", `SELECT x.k FROM t, t.bs AS x WHERE EXISTS (` + child + `A.id = x.k)`, [][]any{{float64(2)}, {float64(3)}}},
+			{"record_element_at", `SELECT x.k, p FROM t, t.bs AS x AT p WHERE EXISTS (` + child + `A.id = x.k AND B.id = p)`, [][]any{{float64(2), float64(2)}}},
+			{"spine_both_links", `SELECT o FROM t, t.bs AS x, x.tags AS o WHERE EXISTS (` + child + `A.id = o AND B.id = x.k - 1)`, [][]any{{float64(2)}}},
+			{"spine_at", `SELECT o, p FROM t, t.bs AS x, x.tags AS o AT p WHERE EXISTS (` + child + `A.id = p)`, [][]any{{float64(2), float64(2)}, {float64(4), float64(2)}}},
+			{"nested_exists", from + `EXISTS (` + child + `A.id = o AND EXISTS (SELECT 1 FROM v C WHERE C.id = o))`, [][]any{{float64(2)}, {float64(2)}, {float64(3)}}},
+		} {
+			for _, runner := range []plandiff.SetupRunner{javaRunner, goRunner} {
+				result := runner.RunWithSetup(ctx, schema, setup, test.sql)
+				fmt.Fprintf(GinkgoWriter, "BOUND-EXISTS-ELEMENT %s %s rows=%v err=%v\n", test.name, result.Engine, result.Rows.Rows, result.Err)
+				matches, matchErr := ConsistOf(test.want).Match(result.Rows.Rows)
+				if result.Err != nil || matchErr != nil || !matches {
+					failures = append(failures, fmt.Sprintf("%s/%s: rows=%v err=%v matcher=%v, want %v", test.name, result.Engine, result.Rows.Rows, result.Err, matchErr, test.want))
 				}
 			}
 		}

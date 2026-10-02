@@ -50,9 +50,12 @@ type SplitSelectExtractIndependentQuantifiersRule struct {
 
 func NewSplitSelectExtractIndependentQuantifiersRule() *SplitSelectExtractIndependentQuantifiersRule {
 	return &SplitSelectExtractIndependentQuantifiersRule{
-		matcher: NewExpressionMatcher[*expressions.SelectExpression]("split_select_extract_independent"),
+		matcher: NewExpressionMatcher[*expressions.SelectExpression]("split_select_extract_independent").WithRootPredicate(
+			func(sel *expressions.SelectExpression) bool { return len(sel.GetQuantifiers()) >= 2 }),
 	}
 }
+
+func (r *SplitSelectExtractIndependentQuantifiersRule) ConstraintDependencies() []any { return nil }
 
 func (r *SplitSelectExtractIndependentQuantifiersRule) Matcher() matching.BindingMatcher {
 	return r.matcher

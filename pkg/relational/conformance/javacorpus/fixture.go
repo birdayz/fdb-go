@@ -175,6 +175,17 @@ type txBeginner interface {
 }
 
 func (f *privateFixture) load(ctx context.Context, db txBeginner, steps []*javayamsql.Command, result *FileResult) error {
+	// A transaction that outlived FDB's 5-second MVCC window committed
+	// nothing, so the whole reset/load replays; on an oversubscribed machine
+	// the load alone can take that long. Any other step error is final.
+	windowLost := func(err error, attempt int) bool {
+		if !api.IsTransactionTimeLimit(err) || attempt == fixtureLoadMaxAttempts {
+			return false
+		}
+		result.FixtureWindowLosses = append(result.FixtureWindowLosses, err)
+		return true
+	}
+attempts:
 	for attempt := 1; attempt <= fixtureLoadMaxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -189,22 +200,34 @@ func (f *privateFixture) load(ctx context.Context, db txBeginner, steps []*javay
 			// reaches only the fixture's own table in its private schema.
 			query := "DELETE FROM " + quoteFixtureIdentifier(name)
 			if _, err := tx.ExecContext(ctx, query); err != nil {
-				return errors.Join(fmt.Errorf("fixture reset %q: %w", name, err), tx.Rollback())
+				err = errors.Join(fmt.Errorf("fixture reset %q: %w", name, err), tx.Rollback())
+				if windowLost(err, attempt) {
+					continue attempts
+				}
+				return err
 			}
 		}
 		for _, step := range steps {
 			if _, err := tx.ExecContext(ctx, step.Query); err != nil {
-				return errors.Join(&setupError{line: step.Line, query: truncate(step.Query), err: err}, tx.Rollback())
+				err = errors.Join(&setupError{line: step.Line, query: truncate(step.Query), err: err}, tx.Rollback())
+				if windowLost(err, attempt) {
+					continue attempts
+				}
+				return err
 			}
 		}
 		if err := ctx.Err(); err != nil {
 			return errors.Join(err, tx.Rollback())
 		}
-		// Only this error is eligible for replay. No SQL execution error and
-		// no assertion failure can reach the ambiguous-commit classification.
+		// Only this error is eligible for the ambiguous-commit replay. No SQL
+		// execution error and no assertion failure can reach that
+		// classification.
 		err = tx.Commit()
 		if err == nil {
 			return nil
+		}
+		if windowLost(err, attempt) {
+			continue
 		}
 		if !fixtureCommitUnknown(err) {
 			return err

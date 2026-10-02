@@ -24,6 +24,10 @@ type PartialMatchImpl struct {
 	queryExpression expressions.RelationalExpression
 	candidateRef    *expressions.Reference
 	matchInfo       MatchInfo
+
+	// Java schedules adjustment once per new match. A replacement immutable
+	// candidate traversal rearms that work without replaying unchanged matches.
+	adjustedTraversal *Traversal
 }
 
 // NewPartialMatch constructs a PartialMatchImpl with all six core
@@ -126,7 +130,8 @@ func (p *PartialMatchImpl) GetBoundParameterPrefixMap() map[values.CorrelationId
 		return map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
 	}
 	return p.matchCandidate.ComputeBoundParameterPrefixMap(
-		p.GetRegularMatchInfo().GetParameterBindingMap())
+		p.GetRegularMatchInfo().GetParameterBindingMap(),
+	)
 }
 
 // PullUp computes the PullUp chain for this partial match from the

@@ -758,7 +758,8 @@ func exactWithNullability(source *exactType, nullable bool) *exactType {
 		children[i] = source.fields[i].typ
 	}
 	probe := exactProbe{
-		code:       source.code,
+		code:      source.code,
+		precision: source.precision, dimensions: source.dimensions,
 		nullable:   nullable,
 		anyRecord:  source.anyRecord,
 		name:       source.name,
@@ -769,7 +770,8 @@ func exactWithNullability(source *exactType, nullable bool) *exactType {
 	}
 	return internedExactType(&probe, func() *exactType {
 		return &exactType{
-			code:       source.code,
+			code:      source.code,
+			precision: source.precision, dimensions: source.dimensions,
 			nullable:   nullable,
 			anyRecord:  source.anyRecord,
 			name:       source.name,
@@ -780,12 +782,21 @@ func exactWithNullability(source *exactType, nullable bool) *exactType {
 	})
 }
 
-// RebuildFieldValue resolves an admitted FieldValue's complete ordinal path on
-// a replacement child and refuses any type/nullability drift.
+// RebuildFieldValue retains an admitted FieldValue's resolved path on the same
+// exact root type, otherwise re-resolving it and refusing type/nullability drift.
 func RebuildFieldValue(field FieldValue, child Value) (Value, error) {
 	original, ok := field.(*fieldValue)
 	if !ok || !isAdmittedFieldValue(original) {
 		return nil, resolutionError(FieldUnsupportedChild, "field.rebuild", "foreign or malformed FieldValue")
+	}
+	// Java's withNewChild reuses the immutable FieldPath. Pointer equality also
+	// preserves nominal type metadata, which semantic type equality excludes.
+	if root, ok := child.(*quantifiedObjectValue); ok && root != nil &&
+		!root.correlation.IsZero() && root.flowed == original.rootType &&
+		original.Resolved.Domain == ordinalDomainOfExact(root.flowed) {
+		copy := *original
+		copy.Child = root
+		return &copy, nil
 	}
 	requests := make([]*fieldRequest, len(original.Resolved.Accessors))
 	for i := range original.Resolved.Accessors {
@@ -1062,6 +1073,10 @@ func protoScalarShapeCompatible(field protoreflect.FieldDescriptor, expected *ex
 		return false
 	}
 	if mapped == expected.code {
+		if mapped == TypeCodeVector {
+			v := vectorTypeForProtoField(field)
+			return v != nil && v.Precision == expected.precision && v.Dimensions == expected.dimensions
+		}
 		return true
 	}
 	// The two STORAGE ALIASES, kept explicitly: a SQL type whose stored carrier

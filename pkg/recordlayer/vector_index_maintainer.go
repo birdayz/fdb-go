@@ -1310,6 +1310,9 @@ func (store *FDBRecordStore) ScanVectorIndexWithPrefix(
 // knobs. A nil GuardiANN field keeps the SearchConfig default; each applies
 // only to an index of its engine.
 type VectorIndexScanOptions struct {
+	// wirePresence retains explicit NULL and zero options read from Java.
+	// The map is immutable after decoding; struct copies may safely share it.
+	wirePresence                            map[string]bool
 	ReturnVectors                           *bool // nil defaults to !useRaBitQ
 	EfSearch                                int   // HNSW; 0 derives it from k
 	GuardiannCandidatePoolFactor            *float64

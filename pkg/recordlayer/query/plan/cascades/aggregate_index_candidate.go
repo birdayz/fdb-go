@@ -20,12 +20,14 @@ import (
 // `com.apple.foundationdb.record.query.plan.cascades.AggregateIndexMatchCandidate`,
 // carrying the surface AggregateDataAccessRule consumes.
 type AggregateIndexMatchCandidate struct {
-	indexName   string
-	recordTypes []string
-	groupCols   []string
-	aggFunction expressions.AggregateFunction
-	aggColumn   string
-	aliases     []values.CorrelationIdentifier
+	bitmapEntrySize int64
+	permuted        bool
+	indexName       string
+	recordTypes     []string
+	groupCols       []string
+	aggFunction     expressions.AggregateFunction
+	aggColumn       string
+	aliases         []values.CorrelationIdentifier
 	// groupKeyTypes and physicalGroupingPrefixCount answer a SARGABILITY
 	// question — which grouping coordinates a scan range can bind, and how far
 	// the logical grouping columns stay a contiguous prefix of the physical
@@ -156,6 +158,12 @@ func NewAggregateIndexMatchCandidate(
 		groupKeyTypes:               groupKeyTypes,
 		physicalGroupingPrefixCount: physicalGroupingPrefixCount,
 	}
+}
+
+// WithPermutedOrdering records that the aggregate itself occupies a key coordinate.
+func (c *AggregateIndexMatchCandidate) WithPermutedOrdering(permuted bool) *AggregateIndexMatchCandidate {
+	c.permuted = permuted
+	return c
 }
 
 // GetBaseRowType returns the declared layout the grouping-column names resolve
@@ -334,7 +342,7 @@ func (c *AggregateIndexMatchCandidate) MatchesGroupBy(gb *expressions.GroupByExp
 		return false
 	}
 	for i, k := range keys {
-		if !aggColumnMatches(k, c.groupCols[i]) {
+		if !c.groupKeyMatches(k, i) {
 			return false
 		}
 	}
@@ -354,7 +362,7 @@ func (c *AggregateIndexMatchCandidate) MatchesGroupBy(gb *expressions.GroupByExp
 		}
 		return c.aggColumn != "" && aggColumnMatches(aggs[0].Operand, c.aggColumn)
 	}
-	return aggColumnMatches(aggs[0].Operand, c.aggColumn)
+	return c.aggregateOperandMatches(aggs[0].Operand)
 }
 
 // MatchesSingleAggregateOf reports whether this candidate's grouping
@@ -372,7 +380,7 @@ func (c *AggregateIndexMatchCandidate) MatchesSingleAggregateOf(gb *expressions.
 		return false
 	}
 	for i, k := range keys {
-		if !aggColumnMatches(k, c.groupCols[i]) {
+		if !c.groupKeyMatches(k, i) {
 			return false
 		}
 	}
@@ -393,7 +401,7 @@ func (c *AggregateIndexMatchCandidate) MatchesSingleAggregateOf(gb *expressions.
 		}
 		return c.aggColumn != "" && aggColumnMatches(agg.Operand, c.aggColumn)
 	}
-	return aggColumnMatches(agg.Operand, c.aggColumn)
+	return c.aggregateOperandMatches(agg.Operand)
 }
 
 // aggColumnMatches reports whether a query grouping-key / aggregate-operand
@@ -410,3 +418,37 @@ func aggColumnMatches(v values.Value, col string) bool {
 }
 
 var _ MatchCandidate = (*AggregateIndexMatchCandidate)(nil)
+
+// WithBitmapEntrySize carries the two arithmetic expressions introduced by
+// Java BitmapAggregateIndexExpansionVisitor: bucket offset and bit position.
+func (c *AggregateIndexMatchCandidate) WithBitmapEntrySize(size int64) *AggregateIndexMatchCandidate {
+	c.bitmapEntrySize = size
+	return c
+}
+
+func (c *AggregateIndexMatchCandidate) groupKeyMatches(v values.Value, ordinal int) bool {
+	if c.bitmapEntrySize > 0 && ordinal == len(c.groupCols)-1 {
+		return c.bitmapArithmeticMatches(v, values.OpBitmapBucketOffset)
+	}
+	return aggColumnMatches(v, c.groupCols[ordinal])
+}
+
+func (c *AggregateIndexMatchCandidate) aggregateOperandMatches(v values.Value) bool {
+	if c.bitmapEntrySize > 0 {
+		return c.bitmapArithmeticMatches(v, values.OpBitmapBitPosition)
+	}
+	return aggColumnMatches(v, c.aggColumn)
+}
+
+func (c *AggregateIndexMatchCandidate) bitmapArithmeticMatches(v values.Value, op values.ArithmeticOp) bool {
+	arithmetic, ok := v.(*values.ArithmeticValue)
+	if !ok || arithmetic.Op != op || !aggColumnMatches(arithmetic.Left, c.aggColumn) {
+		return false
+	}
+	size, ok := arithmetic.Right.(*values.ConstantValue)
+	if !ok {
+		return false
+	}
+	n, ok := size.Value.(int64)
+	return ok && n == c.bitmapEntrySize
+}

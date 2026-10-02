@@ -218,11 +218,11 @@ func TestFDB_PlannerOptions_PlanCacheKeyedByOptions(t *testing.T) {
 }
 
 // starOptsDB creates the all-live star schema the join-enumeration budget
-// exercise needs: a hub plus five spokes, each joined to the hub only.
+// exercise needs: a hub plus six spokes, each joined to the hub only.
 func starOptsDB(t *testing.T, tag string) *sql.DB {
 	t.Helper()
 	ddl := "CREATE TABLE H (id BIGINT, v BIGINT, PRIMARY KEY (id))"
-	for i := 1; i <= 5; i++ {
+	for i := 1; i <= 6; i++ {
 		ddl += fmt.Sprintf(" CREATE TABLE S%d (id BIGINT, hid BIGINT, PRIMARY KEY (id))", i)
 	}
 	db := setupErrorTestDB(t, "/planstar_"+tag, "planstar"+tag, ddl)
@@ -230,7 +230,7 @@ func starOptsDB(t *testing.T, tag string) *sql.DB {
 	if _, err := db.ExecContext(ctx, "INSERT INTO H (id, v) VALUES (1, 10)"); err != nil {
 		t.Fatalf("INSERT H: %v", err)
 	}
-	for i := 1; i <= 5; i++ {
+	for i := 1; i <= 6; i++ {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
 			"INSERT INTO S%d (id, hid) VALUES (%d, 1)", i, i)); err != nil {
 			t.Fatalf("INSERT S%d: %v", i, err)
@@ -369,9 +369,11 @@ func TestHasBushyJoin(t *testing.T) {
 
 // TestFDB_PlannerOptions_PlanRightDeepPreservesRows is the differential that
 // matters most for a search-space RESTRICTION: excluding bushy join trees must
-// change only which plan is chosen, never the answer. The default plan is
-// asserted bushy and the right-deep plan not, so row equality below compares
-// two genuinely different join trees over a multi-row result.
+// change only which plan is chosen, never the answer. The two plans are
+// asserted to differ and the right-deep one to hold no bushy join, so row
+// equality below compares two genuinely different join trees over a multi-row
+// result. The default need not be bushy: Java's own default for this chain is
+// right-deep.
 func TestFDB_PlannerOptions_PlanRightDeepPreservesRows(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -385,9 +387,9 @@ func TestFDB_PlannerOptions_PlanRightDeepPreservesRows(t *testing.T) {
 
 	basePlan := explainOnConn(t, ctx, base, chainQuery)
 	rdPlan := explainOnConn(t, ctx, rd, chainQuery)
-	if !hasBushyJoin(basePlan) || hasBushyJoin(rdPlan) {
-		t.Fatalf("want a bushy default and a right-deep option plan — row equality below "+
-			"would otherwise prove nothing about the option preserving semantics\n"+
+	if basePlan == rdPlan || hasBushyJoin(rdPlan) {
+		t.Fatalf("want the option to choose a different, non-bushy join tree — row equality "+
+			"below would otherwise prove nothing about the option preserving semantics\n"+
 			"  default    = %s\n  right-deep = %s", basePlan, rdPlan)
 	}
 
@@ -439,8 +441,8 @@ func TestFDB_PlannerOptions_PlanRightDeepPreservesOuterJoinRows(t *testing.T) {
 			if !strings.Contains(basePlan, "LEFT OUTER") && !strings.Contains(basePlan, "DefaultOnEmpty") {
 				t.Fatalf("default plan %q has no outer join; this fixture is not testing what it claims", basePlan)
 			}
-			if !hasBushyJoin(basePlan) || hasBushyJoin(rdPlan) {
-				t.Fatalf("want a bushy default and a right-deep option plan\n  default    = %s\n  right-deep = %s", basePlan, rdPlan)
+			if basePlan == rdPlan || hasBushyJoin(rdPlan) {
+				t.Fatalf("want the option to choose a different, non-bushy join tree\n  default    = %s\n  right-deep = %s", basePlan, rdPlan)
 			}
 
 			baseRows := scanAllRowsSorted(t, ctx, base, q)
@@ -463,14 +465,14 @@ func TestFDB_PlannerOptions_PlanRightDeepPreservesOuterJoinRows(t *testing.T) {
 	}
 }
 
-// fiveSpokeStarQuery is the hub+5 all-live star: every leg is projected, so
+// sixSpokeStarQuery is the hub+6 all-live star: every leg is projected, so
 // none can be pruned, and every leg joins only the hub.
-const fiveSpokeStarQuery = "SELECT H.id, S1.id, S2.id, S3.id, S4.id, S5.id " +
-	"FROM H, S1, S2, S3, S4, S5 " +
-	"WHERE H.id = S1.hid AND H.id = S2.hid AND H.id = S3.hid AND H.id = S4.hid AND H.id = S5.hid"
+const sixSpokeStarQuery = "SELECT H.id, S1.id, S2.id, S3.id, S4.id, S5.id, S6.id " +
+	"FROM H, S1, S2, S3, S4, S5, S6 " +
+	"WHERE H.id = S1.hid AND H.id = S2.hid AND H.id = S3.hid AND H.id = S4.hid AND H.id = S5.hid AND H.id = S6.hid"
 
 // TestFDB_PlannerOptions_PlanRightDeep is CQ-9's stated goal delivered through
-// Java's own opt-in lever. The hub+5 all-live star exhausts the 100,000-task
+// Java's own opt-in lever. The hub+6 all-live star exhausts the 150,000-task
 // planning budget at DEFAULT settings — and would in Java too, whose
 // PLAN_RIGHT_DEEP likewise defaults to false — so this is not a divergence to
 // close but a knob to wire. With the option set, join enumeration is restricted
@@ -485,7 +487,7 @@ func TestFDB_PlannerOptions_PlanRightDeep(t *testing.T) {
 	db := starOptsDB(t, "rd")
 
 	base := pinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})
-	rows, err := base.QueryContext(ctx, fiveSpokeStarQuery)
+	rows, err := base.QueryContext(ctx, sixSpokeStarQuery)
 	if rows != nil {
 		_ = rows.Close()
 	}
@@ -494,16 +496,16 @@ func TestFDB_PlannerOptions_PlanRightDeep(t *testing.T) {
 	rd := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().Set(api.OptPlanRightDeep, true).Build())
 	})
-	rdRows, rdErr := rd.QueryContext(ctx, fiveSpokeStarQuery)
+	rdRows, rdErr := rd.QueryContext(ctx, sixSpokeStarQuery)
 	if rdErr != nil {
-		t.Fatalf("PLAN_RIGHT_DEEP did not bring the hub+5 star inside the planning budget: %v", rdErr)
+		t.Fatalf("PLAN_RIGHT_DEEP did not bring the hub+6 star inside the planning budget: %v", rdErr)
 	}
 	defer func() { _ = rdRows.Close() }()
 
 	n := 0
 	for rdRows.Next() {
-		var hub, s1, s2, s3, s4, s5 sql.NullInt64
-		if err := rdRows.Scan(&hub, &s1, &s2, &s3, &s4, &s5); err != nil {
+		var hub, s1, s2, s3, s4, s5, s6 sql.NullInt64
+		if err := rdRows.Scan(&hub, &s1, &s2, &s3, &s4, &s5, &s6); err != nil {
 			t.Fatalf("scan star row: %v", err)
 		}
 		if hub.Int64 != 1 {
@@ -516,7 +518,7 @@ func TestFDB_PlannerOptions_PlanRightDeep(t *testing.T) {
 	}
 	// One hub row joined to exactly one row per spoke.
 	if n != 1 {
-		t.Fatalf("hub+5 star returned %d rows, want 1 — a right-deep plan must still be CORRECT", n)
+		t.Fatalf("hub+6 star returned %d rows, want 1 — a right-deep plan must still be CORRECT", n)
 	}
 
 	// Explicitly false must be identical to unset: the Java-identical default
@@ -524,7 +526,7 @@ func TestFDB_PlannerOptions_PlanRightDeep(t *testing.T) {
 	off := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().Set(api.OptPlanRightDeep, false).Build())
 	})
-	offRows, offErr := off.QueryContext(ctx, fiveSpokeStarQuery)
+	offRows, offErr := off.QueryContext(ctx, sixSpokeStarQuery)
 	if offRows != nil {
 		_ = offRows.Close()
 	}

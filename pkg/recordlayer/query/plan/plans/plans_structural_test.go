@@ -908,6 +908,10 @@ func TestUnorderedPrimaryKeyDistinctPlan_QuantifierAndRelink(t *testing.T) {
 		got.GetAlias() != alias {
 		t.Fatalf("inner quantifier = %#v, want supplied physical quantifier", got)
 	}
+	before, again := p.GetQuantifiers(), p.GetQuantifiers()
+	if len(before) != 1 || before[0] != innerQ || &before[0] != &again[0] {
+		t.Fatal("PK-distinct rebuilt its read-only quantifier slice")
+	}
 	resultQOV, ok := values.AsQuantifiedObjectValue(p.GetResultValue())
 	layout := requireProvidedLayout(t, p)
 	if !ok || resultQOV != layout.Carrier() {
@@ -927,6 +931,10 @@ func TestUnorderedPrimaryKeyDistinctPlan_QuantifierAndRelink(t *testing.T) {
 	if p.GetInner() != inner {
 		t.Fatal("WithChildren mutated the receiver")
 	}
+	if after := relinked.GetQuantifiers(); len(after) != 1 || after[0] != replacementQ ||
+		&after[0] == &before[0] || before[0] != innerQ {
+		t.Fatal("WithChildren did not own independent quantifier storage")
+	}
 	for _, invalid := range [][]expressions.Quantifier{
 		nil,
 		{innerQ, replacementQ},
@@ -942,6 +950,37 @@ func TestUnorderedPrimaryKeyDistinctPlan_QuantifierAndRelink(t *testing.T) {
 	if withInner == p || withInner.GetInner() != replacement || p.GetInner() != inner {
 		t.Fatal("WithInner did not copy-preservingly relink the child")
 	}
+	if after := withInner.GetQuantifiers(); len(after) != 1 || after[0] != withInner.GetInnerQuantifier() ||
+		&after[0] == &before[0] || before[0] != innerQ {
+		t.Fatal("WithInner did not own independent quantifier storage")
+	}
+}
+
+func BenchmarkPrimaryKeyDistinctMetadata(b *testing.B) {
+	first := mustChecked(b, func() (*RecordQueryUnorderedPrimaryKeyDistinctPlan, error) {
+		return NewRecordQueryUnorderedPrimaryKeyDistinctPlan(cwdScanFixture(b))
+	})
+	second := mustChecked(b, func() (*RecordQueryUnorderedPrimaryKeyDistinctPlan, error) {
+		return NewRecordQueryUnorderedPrimaryKeyDistinctPlan(cwdScanFixture(b))
+	})
+	b.Run("quantifiers", func(b *testing.B) {
+		b.ReportAllocs()
+		var quantifiers []expressions.Quantifier
+		for b.Loop() {
+			quantifiers = first.GetQuantifiers()
+		}
+		if len(quantifiers) != 1 {
+			b.Fatal("lost inner quantifier")
+		}
+	})
+	b.Run("equality", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if !first.EqualsPlanWithoutChildren(second) {
+				b.Fatal("equivalent PK-distinct node information differs")
+			}
+		}
+	})
 }
 
 func TestUnorderedPrimaryKeyDistinctPlan_Hints(t *testing.T) {
@@ -1124,15 +1163,18 @@ func TestProjectionPlan_AliasesAreSemanticIdentity(t *testing.T) {
 	}
 	aliased := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
 		return NewRecordQueryProjectionPlanWithAliases(
-			[]values.Value{readA}, []string{"OUTPUT_ALIAS"}, stub("Inner"))
+			[]values.Value{readA}, []string{"OUTPUT_ALIAS"}, stub("Inner"),
+		)
 	})
 	aliasedTwin := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
 		return NewRecordQueryProjectionPlanWithAliases(
-			[]values.Value{readB}, []string{"OUTPUT_ALIAS"}, stub("OtherInner"))
+			[]values.Value{readB}, []string{"OUTPUT_ALIAS"}, stub("OtherInner"),
+		)
 	})
 	renamed := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
 		return NewRecordQueryProjectionPlanWithAliases(
-			[]values.Value{readB}, []string{"OTHER_ALIAS"}, stub("Inner"))
+			[]values.Value{readB}, []string{"OTHER_ALIAS"}, stub("Inner"),
+		)
 	})
 
 	// TWO SPELLINGS OF AN ALIAS ARE TWO ALIASES — the plan-side twin of the
@@ -1141,7 +1183,8 @@ func TestProjectionPlan_AliasesAreSemanticIdentity(t *testing.T) {
 	// came from two different QUOTED aliases and names two different columns.
 	caseTwin := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
 		return NewRecordQueryProjectionPlanWithAliases(
-			[]values.Value{readB}, []string{"output_alias"}, stub("Inner"))
+			[]values.Value{readB}, []string{"output_alias"}, stub("Inner"),
+		)
 	})
 	if aliased.EqualsPlanWithoutChildren(caseTwin) {
 		t.Fatal(`AS "output_alias" and AS "OUTPUT_ALIAS" name different columns and must not be one plan identity`)
@@ -1169,11 +1212,13 @@ func TestProjectionPlan_EmptyAliasesAreEquivalent(t *testing.T) {
 	})
 	emptyAliases := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
 		return NewRecordQueryProjectionPlanWithAliases(
-			projection, []string{}, stub("Inner"))
+			projection, []string{}, stub("Inner"),
+		)
 	})
 	blankPlaceholder := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
 		return NewRecordQueryProjectionPlanWithAliases(
-			projection, []string{""}, stub("Inner"))
+			projection, []string{""}, stub("Inner"),
+		)
 	})
 
 	for _, candidate := range []*RecordQueryProjectionPlan{emptyAliases, blankPlaceholder} {
@@ -1206,7 +1251,8 @@ func TestProjectionPlan_DerivedOutputNamesAreSemanticIdentity(t *testing.T) {
 				if tc.useAliasAPI {
 					return mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
 						return NewRecordQueryProjectionPlanWithAliases(
-							[]values.Value{v}, tc.aliases, stub("Inner"))
+							[]values.Value{v}, tc.aliases, stub("Inner"),
+						)
 					})
 				}
 				return mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
@@ -1303,7 +1349,8 @@ func TestProjectionPlan_IsIdentityChecksSchemaAndInnerCorrelation(t *testing.T) 
 		t.Fatal("a QOV over a different quantifier must not be identity")
 	}
 	if _, err := NewRecordQueryProjectionPlanFromQuantifier(
-		[]values.Value{identityValue}, nil, innerQ); err == nil {
+		[]values.Value{identityValue}, nil, innerQ,
+	); err == nil {
 		t.Fatal("constructor accepted a one-slot whole-row projection")
 	}
 }
@@ -1336,7 +1383,8 @@ func TestProjectionPlan_Identity_ResolvedOrdinal(t *testing.T) {
 			t.Fatalf("field request X#%d: %v", ordinal, err)
 		}
 		field, err := values.ResolveFieldAccess(
-			mustTestQOV(t, "duplicate_x", duplicateLayout), []values.FieldRequest{request})
+			mustTestQOV(t, "duplicate_x", duplicateLayout), []values.FieldRequest{request},
+		)
 		if err != nil {
 			t.Fatalf("field X#%d: %v", ordinal, err)
 		}
@@ -1365,7 +1413,8 @@ func TestProjectionPlan_Identity_ResolvedOrdinal(t *testing.T) {
 	// Same reads ⟹ equal and hash-equal.
 	p01b := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
 		return NewRecordQueryProjectionPlanWithAliases(
-			[]values.Value{read(0), read(1)}, []string{"A", "B"}, inner)
+			[]values.Value{read(0), read(1)}, []string{"A", "B"}, inner,
+		)
 	})
 	if !p01.EqualsPlanWithoutChildren(p01b) {
 		t.Fatal("identical ordinal reads must compare equal")
@@ -1392,12 +1441,14 @@ func TestProjectionPlan_Identity_OrdinalVsLiteralHashField(t *testing.T) {
 	ordinalPlan := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
 		return NewRecordQueryProjectionPlanWithAliases(
 			[]values.Value{testFieldAt(t, "X", 0, values.NullableLong)},
-			[]string{"A"}, inner)
+			[]string{"A"}, inner,
+		)
 	})
 	literalPlan := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
 		return NewRecordQueryProjectionPlanWithAliases(
 			[]values.Value{testField(t, "X#0", values.NullableLong)},
-			[]string{"A"}, inner)
+			[]string{"A"}, inner,
+		)
 	})
 
 	if ordinalPlan.EqualsPlanWithoutChildren(literalPlan) {
@@ -1439,7 +1490,8 @@ func TestProjectionPlan_GetResultType(t *testing.T) {
 	p := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
 		return NewRecordQueryProjectionPlanWithAliases(
 			[]values.Value{testField(t, "A", values.NullableLong), testField(t, "B", values.NullableLong)},
-			[]string{"OUT", ""}, stub("X"))
+			[]string{"OUT", ""}, stub("X"),
+		)
 	})
 	rt, ok := p.GetResultType().(*values.RecordType)
 	if !ok {
@@ -1512,7 +1564,8 @@ func TestProjectionResultValue_RejectsWholeRowProjection(t *testing.T) {
 	t.Parallel()
 
 	machineryRow, err := values.NewQuantifiedObjectValue(
-		values.UniqueCorrelationIdentifier(), exactTestRecordType())
+		values.UniqueCorrelationIdentifier(), exactTestRecordType(),
+	)
 	if err != nil {
 		t.Fatalf("machinery-row QOV: %v", err)
 	}
@@ -1526,7 +1579,8 @@ func TestProjectionResultValue_RejectsWholeRowProjection(t *testing.T) {
 	// Precision: the guard must reject only the machinery whole-row shape. A
 	// one-slot projection of an actual column is ordinary and must build.
 	if _, err := values.ProjectionResultValue(
-		[]values.Value{testField(t, "A", values.NullableLong)}, nil); err != nil {
+		[]values.Value{testField(t, "A", values.NullableLong)}, nil,
+	); err != nil {
 		t.Errorf("a one-column projection of a real column must build, got: %v", err)
 	}
 
@@ -1540,7 +1594,8 @@ func TestProjectionResultValue_RejectsWholeRowProjection(t *testing.T) {
 	// And its STRUCT twin, which is the same SQL. A record-typed QOV over a
 	// NAMED source is one projected column whose value happens to be a row.
 	if _, err := values.ProjectionResultValue(
-		[]values.Value{mustTestQOV(t, "X", exactTestRecordType())}, []string{"X"}); err != nil {
+		[]values.Value{mustTestQOV(t, "X", exactTestRecordType())}, []string{"X"},
+	); err != nil {
 		t.Errorf("a one-slot projection of a STRUCT element must build, got: %v", err)
 	}
 }
@@ -2823,4 +2878,58 @@ func (s *distinctStubPlan) WithQuantifiers(qs []expressions.Quantifier) (express
 		return nil, err
 	}
 	return s, nil
+}
+
+func TestIndexPredicateProofIdentityAndCopies(t *testing.T) {
+	t.Parallel()
+	base, err := NewRecordQueryIndexPlan("sparse", nil, []string{"T"}, exactTestRecordType(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = base.HashCodeWithoutChildren()
+	encoded := []byte{1, 2, 3}
+	proved := base.WithMatchedIndexPredicate(encoded)
+	encoded[0] = 9
+	if base.EqualsPlanWithoutChildren(proved) {
+		t.Fatal("unproved and proved plans deduplicate")
+	}
+	if base.HashCodeWithoutChildren() == proved.HashCodeWithoutChildren() {
+		t.Fatal("proof missing from hash")
+	}
+	copied := proved.WithScanComparisons(nil).WithStrictlySorted().WithIndexMetadata([]string{"A"}, []string{"ID"}, false)
+	got := copied.GetMatchedIndexPredicate()
+	if string(got) != string([]byte{1, 2, 3}) {
+		t.Fatalf("copy lost proof: %x", got)
+	}
+	got[0] = 9
+	if copied.GetMatchedIndexPredicate()[0] != 1 {
+		t.Fatal("getter aliases proof")
+	}
+
+	copies := map[string]*RecordQueryIndexPlan{
+		"comparisons":       proved.WithScanComparisons(nil),
+		"key types":         proved.WithKeyComponentTypes([]values.Type{values.NotNullLong}),
+		"primary key types": proved.WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong}),
+		"grouping prefix":   proved.WithPhysicalGroupingPrefixCount(1),
+		"primary key":       proved.WithCommonPrimaryKey(nil),
+		"covering values":   proved.WithValueColumnNames([]string{"B"}),
+		"distinctness":      proved.WithDistinctRecordsSignal(true),
+		"metadata":          proved.WithIndexMetadata([]string{"A"}, []string{"ID"}, false),
+		"unnamed ordering":  proved.WithOrderingKeyNamesUnavailable(),
+		"strict ordering":   proved.WithStrictlySorted(),
+		"distinct proof":    proved.WithDistinctProofIndexName("sparse").(*RecordQueryIndexPlan),
+	}
+	for name, cp := range copies {
+		if cp == proved || string(cp.GetMatchedIndexPredicate()) != string([]byte{1, 2, 3}) {
+			t.Fatalf("%s did not preserve an independent proof-carrying copy", name)
+		}
+	}
+	requantified, err := proved.WithQuantifiers(nil)
+	if err != nil || requantified != proved {
+		t.Fatalf("leaf quantifier replacement: %v, %v", requantified, err)
+	}
+	same := base.WithMatchedIndexPredicate([]byte{1, 2, 3})
+	if !same.EqualsPlanWithoutChildren(proved) || same.HashCodeWithoutChildren() != proved.HashCodeWithoutChildren() {
+		t.Fatal("equal proof plans differ")
+	}
 }

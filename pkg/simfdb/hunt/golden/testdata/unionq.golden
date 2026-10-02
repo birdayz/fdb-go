@@ -50,7 +50,7 @@ ROWS(6) cols=[id, k]:
   [3, 30]
 
 === SELECT "id" AS w, "k" AS x FROM t UNION ALL SELECT * FROM t
-PLAN: UnorderedUnion(Project([_current.id#0, _current.k#1], Scan(T)), Project([_current.id#0, _current.k#1], Scan(T)))
+PLAN: UnorderedUnion(Project([_current.W#0, _current.X#1], Project([_current.id#0, _current.k#1], Scan(T))), Project([_current.id#0, _current.k#1], Scan(T)))
 ROWS(6) cols=[W, X]:
   [1, 10]
   [2, 20]

@@ -223,6 +223,16 @@ var _ = Describe("Vector scan options", func() {
 				Expect(err).NotTo(HaveOccurred())
 			}
 			ids := func(prefix tuple.Tuple, opts VectorIndexScanOptions) ([]int64, error) {
+				// Exercise the wire boundary before the real index reads,
+				// including ReturnVectors, cluster limits, and invalid knobs.
+				wire, err := opts.ToProto()
+				if err != nil {
+					return nil, err
+				}
+				opts, err = VectorIndexScanOptionsFromProto(wire)
+				if err != nil {
+					return nil, err
+				}
 				cursor := store.ScanVectorIndexWithOptions(vecIdx, prefix, []float64{15}, 10, opts, nil, ForwardScan())
 				var out []int64
 				for {

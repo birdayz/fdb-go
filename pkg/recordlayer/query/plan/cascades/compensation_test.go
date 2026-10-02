@@ -6,6 +6,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 func TestNoCompensation(t *testing.T) {
@@ -945,6 +946,110 @@ func TestResultCompensation_NilApply(t *testing.T) {
 
 // --- ForMatchCompensation.Apply tests ---
 
+func compensationTestMemoizer() *ExpressionRuleCall {
+	memo := NewMemo(nil)
+	memo.MarkPlanningActive()
+	return &ExpressionRuleCall{memo: memo}
+}
+
+func TestForMatchCompensationMemoizesLogicalInput(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"filter", "distinct", "result", "chain"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			base := compensationNamedForEachQuantifier(t, "base")
+			pred := predicates.NewConstantPredicate(predicates.TriFalse)
+			predMap := NewPredicateCompensationMap([]predicates.QueryPredicate{pred}, []PredicateCompensationFunc{OfPredicateCompensation(pred, false)})
+			filter := NewForMatchCompensation(false, NoCompensation, predMap, []expressions.Quantifier{base}, nil, aliasesOf(base), NoResultCompensation(), EmptyGroupByMappings())
+			comp := filter
+			switch mode {
+			case "distinct":
+				comp = NewForMatchCompensationWithPrimaryKeyDistinct(false, NoCompensation, EmptyPredicateCompensationMap(), []expressions.Quantifier{base}, nil, aliasesOf(base), NoResultCompensation(), EmptyGroupByMappings(), true)
+			case "result":
+				comp = NewForMatchCompensation(false, NoCompensation, EmptyPredicateCompensationMap(), []expressions.Quantifier{base}, nil, aliasesOf(base), ResultCompensationOfValue(&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}), EmptyGroupByMappings())
+			case "chain":
+				comp = NewForMatchCompensationWithPrimaryKeyDistinct(false, filter, predMap, []expressions.Quantifier{base}, nil, aliasesOf(base), ResultCompensationOfValue(&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}), EmptyGroupByMappings(), true)
+			}
+			scan := memoTestScan(t, "T")
+			memoizer := compensationTestMemoizer()
+			first, ok := comp.ApplyAllNeeded(memoizer, scan, nil)
+			if !ok {
+				t.Fatal("first compensation failed")
+			}
+			second, ok := comp.ApplyAllNeeded(memoizer, memoTestScan(t, "T"), nil)
+			if !ok {
+				t.Fatal("second compensation failed")
+			}
+			firstQ, secondQ := first.GetQuantifiers()[0], second.GetQuantifiers()[0]
+			if firstQ.GetAlias() != base.GetAlias() || firstQ.Kind() != expressions.QuantifierForEach {
+				t.Fatal("compensation lost its matched logical quantifier")
+			}
+			if firstQ.GetRangesOver() != secondQ.GetRangesOver() {
+				t.Error("equivalent logical compensation inputs were not memoized together")
+			}
+			depth := 0
+			for expr := first; expr != scan; {
+				qs := expr.GetQuantifiers()
+				if len(qs) != 1 {
+					t.Fatalf("compensation depth %d has %d quantifiers, want 1", depth, len(qs))
+				}
+				ref := qs[0].GetRangesOver()
+				if ref.Stage() != expressions.StagePlanned || ref.ID() == 0 || len(ref.Members()) != 1 || len(ref.FinalMembers()) != 0 {
+					t.Fatalf("depth %d is not an indexed planned exploratory singleton", depth)
+				}
+				expr = ref.Get()
+				depth++
+			}
+			wantDepth := 1
+			if mode == "chain" {
+				wantDepth = 4
+			}
+			if depth != wantDepth {
+				t.Fatalf("compensation depth=%d, want %d", depth, wantDepth)
+			}
+			if err := memoizer.memo.AdmissionErr(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestForMatchCompensationMemoizesPhysicalInputExactly(t *testing.T) {
+	t.Parallel()
+	base := compensationNamedForEachQuantifier(t, "base")
+	comp := NewForMatchCompensationWithPrimaryKeyDistinct(false, NoCompensation, EmptyPredicateCompensationMap(), []expressions.Quantifier{base}, nil, aliasesOf(base), NoResultCompensation(), EmptyGroupByMappings(), true)
+	memoizer := compensationTestMemoizer()
+	scan, err := plans.NewRecordQueryScanPlan([]string{"T"}, values.NotNullLong, false)
+	scan = mustConstruct(t, scan, err)
+	existing := expressions.FinalOf(scan)
+	memoizer.memo.indexReference(existing)
+	var previous *expressions.Reference
+	for range 2 {
+		applied, ok := comp.ApplyAllNeeded(memoizer, scan, nil)
+		if !ok {
+			t.Fatal("physical compensation failed")
+		}
+		q := applied.GetQuantifiers()[0]
+		ref := q.GetRangesOver()
+		if ref == existing || ref == previous {
+			t.Fatal("physical plan memoization must mint a fresh reference")
+		}
+		if ref.ID() == 0 || ref.Stage() != expressions.StagePlanned || len(ref.Members()) != 0 || len(ref.FinalMembers()) != 1 || ref.FinalMembers()[0] != scan {
+			t.Fatal("physical input must be indexed as an exact final at the planning target stage")
+		}
+		if !ref.ConstraintsMap().HasNeverBeenExplored() {
+			t.Fatal("new physical input must remain eligible for physical rewrites")
+		}
+		if q.GetAlias() != base.GetAlias() || q.Kind() != expressions.QuantifierForEach {
+			t.Fatal("logical compensation edge must retain its matched alias and kind")
+		}
+		previous = ref
+	}
+	if err := memoizer.memo.AdmissionErr(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestForMatchCompensation_Apply_NoCompensation(t *testing.T) {
 	t.Parallel()
 	scan := mustCompensationScan(t)
@@ -952,7 +1057,7 @@ func TestForMatchCompensation_Apply_NoCompensation(t *testing.T) {
 		false, NoCompensation, EmptyPredicateCompensationMap(),
 		baseMatched(), nil, baseCompensated(), NoResultCompensation(), EmptyGroupByMappings(),
 	)
-	result, applied := c.Apply(scan, TranslationMapFunc(nil))
+	result, applied := c.Apply(compensationTestMemoizer(), scan, TranslationMapFunc(nil))
 	if !applied {
 		t.Fatal("Apply unexpectedly failed")
 	}
@@ -980,7 +1085,7 @@ func TestForMatchCompensation_Apply_WithPredicates(t *testing.T) {
 		baseMatched(), nil, baseCompensated(), NoResultCompensation(), EmptyGroupByMappings(),
 	)
 
-	result, applied := c.Apply(scan, TranslationMapFunc(nil))
+	result, applied := c.Apply(compensationTestMemoizer(), scan, TranslationMapFunc(nil))
 	if !applied {
 		t.Fatal("Apply unexpectedly failed")
 	}
@@ -1157,7 +1262,7 @@ func TestForMatchCompensation_ApplyFailsClosed(t *testing.T) {
 
 	translationCalls := 0
 	scan := mustCompensationScan(t)
-	applied, ok := invalidOuter.Apply(scan, func(values.CorrelationIdentifier) TranslationMap {
+	applied, ok := invalidOuter.Apply(compensationTestMemoizer(), scan, func(values.CorrelationIdentifier) TranslationMap {
 		translationCalls++
 		return EmptyTranslationMap()
 	})
@@ -1188,7 +1293,7 @@ func TestForMatchCompensation_ApplyFinalFailsOnMissingResult(t *testing.T) {
 	}
 
 	scan := mustCompensationScan(t)
-	applied, ok := compensation.ApplyFinal(scan, nil)
+	applied, ok := compensation.ApplyFinal(compensationTestMemoizer(), scan, nil)
 	if ok || applied != nil {
 		t.Fatalf("ApplyFinal with a missing result returned (%T, %v), want (nil, false)", applied, ok)
 	}
@@ -2278,7 +2383,7 @@ func TestForMatchCompensation_PrimaryKeyDistinctOnly(t *testing.T) {
 
 	scan := mustCompensationScan(t)
 	translationCalls := 0
-	applied, ok := compensation.ApplyAllNeeded(
+	applied, ok := compensation.ApplyAllNeeded(compensationTestMemoizer(),
 		scan,
 		func(values.CorrelationIdentifier) TranslationMap {
 			translationCalls++
@@ -2331,7 +2436,7 @@ func TestForMatchCompensation_PrimaryKeyDistinctOrdering(t *testing.T) {
 
 	scan := mustCompensationScan(t)
 	var translatedAliases []values.CorrelationIdentifier
-	applied, ok := compensation.ApplyAllNeeded(
+	applied, ok := compensation.ApplyAllNeeded(compensationTestMemoizer(),
 		scan,
 		func(alias values.CorrelationIdentifier) TranslationMap {
 			translatedAliases = append(translatedAliases, alias)
@@ -2423,7 +2528,7 @@ func TestForMatchCompensation_NestedPrimaryKeyDistinct(t *testing.T) {
 	}
 
 	scan := mustCompensationScan(t)
-	applied, ok := parent.ApplyAllNeeded(scan, nil)
+	applied, ok := parent.ApplyAllNeeded(compensationTestMemoizer(), scan, nil)
 	if !ok {
 		t.Fatal("nested cardinality-only compensation was skipped or failed")
 	}

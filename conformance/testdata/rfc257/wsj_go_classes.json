@@ -423,7 +423,7 @@
  "shape:on_source_nested": "both-reject ERROR 42601 a50fb635a7f2",
  "shape:structs_identical_fields": "both-accept-equal OK c80c39abbb26",
  "shape:sum_grouped_by_nested_and_top": "both-reject ERROR XX000 cbeb43e8e430",
- "shape:top_exists": "both-reject ERROR 0A000 58ec8e8554e4",
+ "shape:top_exists": "both-reject ERROR 0A000 7e66b968294f",
  "shape:top_limit": "both-reject ERROR 0AF00 2258c8dd50d2",
  "shape:top_order_key_not_projected": "both-reject ERROR 42F10 2342ab374e50",
  "shape:top_order_key_not_projected_join": "both-reject ERROR 42F10 2342ab374e50",

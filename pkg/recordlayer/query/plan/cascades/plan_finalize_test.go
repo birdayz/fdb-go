@@ -688,7 +688,7 @@ var specimens = map[string]specimen{
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()
 			return mustFinalizeConstruct(plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(child)),
-				map[string]*values.RecordConstructorValue{"innerQ": cs}
+				map[string]*values.RecordConstructorValue{"quantifiers": cs}
 		},
 	},
 
@@ -724,14 +724,15 @@ var specimens = map[string]specimen{
 	"RecordQueryVectorIndexPlan": {
 		build: func(t *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			pre := sentinel()
+			pk := sentinel()
 			qv := sentinel()
 			k := sentinel()
 			p := mustFinalizeConstruct(plans.NewRecordQueryVectorIndexPlan(
 				"VIDX", []*predicates.ComparisonRange{sentinelRange(t, pre)},
 				qv, k, predicates.ComparisonDistanceRankLessThanOrEq,
-				nil, nil, []string{"T"}, finalizeRowType("T")))
+				nil, nil, []string{"T"}, finalizeRowType("T"))).WithRecordProperties([]values.Value{pk}, true)
 			return p, map[string]*values.RecordConstructorValue{
-				"prefixComparisons": pre, "queryVector": qv, "k": k,
+				"prefixComparisons": pre, "queryVector": qv, "k": k, "commonPrimaryKeyValues": pk,
 			}
 		},
 		allow: map[string]string{"resultValue": resultValueIsMinted},

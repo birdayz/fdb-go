@@ -576,11 +576,8 @@ func (t *cascadesTranslator) rotateBuriedChainedSpine(j *logical.LogicalJoin) (*
 	// a leg that read a spine element would find it out of scope once moved below.
 	// A trailing unnest owned by a spine element is already peeled as a FORK by
 	// chainedSpineWalk (never a plain trailing leg); this asserts it rather than rely on
-	// that. A lateral DERIVED table reading a spine alias (`…, (SELECT … t …) AS d`) is
-	// NOT seen here: rotated below the links it finds its correlation unbound and the
-	// query finds no plan (0AF00, loud, never wrong rows) — TODO.md "A lateral unnest
-	// behind a later leg inside a derived leg, and a later leg reading a chain's
-	// element".
+	// that. A lateral leg reading a link element through its values (`…, (SELECT … t …)
+	// AS d`) is not an unnest; lateralTrailingLegs keeps it above the links instead.
 	spineAliases := make(map[string]struct{}, 2*links)
 	spineUnnests := make([]*logical.LogicalUnnest, 0, links)
 	for _, lk := range linksTopDown {
@@ -603,6 +600,10 @@ func (t *cascadesTranslator) rotateBuriedChainedSpine(j *logical.LogicalJoin) (*
 		if subtreeUnnestsOffAlias(leg, spineAliases) {
 			return nil, false
 		}
+	}
+	trailingRev, lateral := lateralTrailingLegs(trailingRev, linksTopDown, bottomUnnest != nil)
+	if len(trailingRev) == 0 {
+		return nil, false // only lateral legs: translateLateralLegsOverSpine joins them
 	}
 	// Rebuild: bottom ⋈ trailing legs (FROM order) as the new spine bottom,
 	// then the links re-stacked bottom-most first — a first-item bottom as the
@@ -632,7 +633,458 @@ func (t *cascadesTranslator) rotateBuriedChainedSpine(j *logical.LogicalJoin) (*
 	if _, admitted, _ := t.chainedSpineWalk(rotated.Left); !admitted {
 		return nil, false
 	}
+	for _, leg := range lateral {
+		rotated = &logical.LogicalJoin{Left: rotated, Right: leg, Kind: logical.JoinInner}
+	}
 	return rotated, true
+}
+
+// lateralTrailingLegs splits a buried spine's trailing legs (reverse FROM
+// order) into those the rotation may reparent below the links and the LATERAL
+// ones (FROM order), which read the element of a link that would then sit
+// above them — every link but the first over a table bottom, whose select the
+// reparented legs share, and every link over a first-item bottom. A leg reading
+// a lateral leg is lateral too. A leg whose values cannot be enumerated is
+// reparented, as before.
+func lateralTrailingLegs(
+	trailingRev []logical.LogicalOperator,
+	linksTopDown []*logical.LogicalJoin,
+	firstItemBottom bool,
+) (safeRev, lateral []logical.LogicalOperator) {
+	upper := linksTopDown
+	if !firstItemBottom && len(upper) > 0 {
+		upper = upper[:len(upper)-1]
+	}
+	above := make(map[values.CorrelationIdentifier]struct{}, len(upper))
+	for _, lk := range upper {
+		if un, isUnnest := lk.Right.(*logical.LogicalUnnest); isUnnest {
+			above[unnestSourceCorrelation(un)] = struct{}{}
+		}
+	}
+	var safe []logical.LogicalOperator
+	for i := len(trailingRev) - 1; i >= 0; i-- {
+		leg := trailingRev[i]
+		if reads, enumerated := logicalReads(leg, above); enumerated && reads {
+			lateral = append(lateral, leg)
+			above[values.NamedCorrelationIdentifier(sourceBinding(leg))] = struct{}{}
+			continue
+		}
+		safe = append(safe, leg)
+	}
+	for i := len(safe) - 1; i >= 0; i-- {
+		safeRev = append(safeRev, safe[i])
+	}
+	return safeRev, lateral
+}
+
+// hoistInterleavedSpineLinks moves a spine link that a later FROM item
+// separates from the link owning it back beside that owner (`FROM q, q.bs AS
+// b, h, b.tags AS t` becomes `FROM q, q.bs AS b, b.tags AS t, h`). Java binds
+// every FROM item as a quantifier of one select wherever it stands; the
+// chained spine composes its merged row from adjacent links only. Comma items
+// are inner joins and a link reads only its owner's element, so the move keeps
+// every row; the separating item then trails the spine, where
+// rotateBuriedChainedSpine or translateLateralLegsOverSpine places it.
+func hoistInterleavedSpineLinks(j *logical.LogicalJoin) (*logical.LogicalJoin, bool) {
+	plainComma := func(lj *logical.LogicalJoin) bool {
+		return lj.Kind == logical.JoinInner && lj.OnPredicate == nil && lj.OnText == "" &&
+			(lj.BoundOn == nil || (lj.BoundOn.Predicate == nil && len(lj.BoundOn.Exists) == 0)) &&
+			len(lj.OnExistsSubqueries) == 0
+	}
+	if !plainComma(j) {
+		return nil, false
+	}
+	var rev []logical.LogicalOperator
+	var base logical.LogicalOperator
+	for cur := j; ; {
+		rev = append(rev, cur.Right)
+		next, isJoin := cur.Left.(*logical.LogicalJoin)
+		if !isJoin || !plainComma(next) {
+			base = cur.Left
+			break
+		}
+		cur = next
+	}
+	// The base owns a link when it is a block's first FROM item over an
+	// enclosing array (`FROM q.bs AS b, h, b.tags AS t`); it sits before
+	// every item, at index -1.
+	baseUnnest, _ := base.(*logical.LogicalUnnest)
+	var items []logical.LogicalOperator
+	moved := false
+	for i := len(rev) - 1; i >= 0; i-- {
+		item := rev[i]
+		owner, owned := -1, false
+		if u, isUnnest := item.(*logical.LogicalUnnest); isUnnest {
+			if bound, _, _ := boundUnnestCollection(u); bound != nil {
+				if baseUnnest != nil && unnestSourceCorrelation(baseUnnest) == bound.Correlation() {
+					owned = true
+				}
+				for k, prior := range items {
+					if pu, isPrior := prior.(*logical.LogicalUnnest); isPrior && unnestSourceCorrelation(pu) == bound.Correlation() {
+						owner, owned = k, true
+					}
+				}
+			}
+		}
+		if !owned {
+			items = append(items, item)
+			continue
+		}
+		at := owner + 1
+		for at < len(items) {
+			if _, isUnnest := items[at].(*logical.LogicalUnnest); !isUnnest {
+				break
+			}
+			at++
+		}
+		moved = moved || at < len(items)
+		items = append(items[:at], append([]logical.LogicalOperator{item}, items[at:]...)...)
+	}
+	// A source owning a later unnest, standing after another unnest, joins the
+	// spine's bottom box ahead of every link (`FROM w, w.arr AS v, q, q.bs AS
+	// x` becomes `FROM w, q, w.arr AS v, q.bs AS x`) unless it reads a
+	// source it would pass, including a lateral source depending on a link.
+	for i := 0; i < len(items); i++ {
+		source := items[i]
+		if _, isUnnest := source.(*logical.LogicalUnnest); isUnnest {
+			continue
+		}
+		passed := make(map[values.CorrelationIdentifier]struct{})
+		if baseUnnest != nil {
+			passed[unnestSourceCorrelation(baseUnnest)] = struct{}{}
+		}
+		first := -1
+		for k := 0; k < i; k++ {
+			if _, isUnnest := items[k].(*logical.LogicalUnnest); isUnnest && first < 0 {
+				first = k
+			}
+			if first >= 0 || baseUnnest != nil {
+				for binding := range outerBoundAliases(items[k]) {
+					passed[values.NamedCorrelationIdentifier(binding)] = struct{}{}
+				}
+			}
+		}
+		if len(passed) == 0 || !ownsALaterUnnest(source, items[i+1:]) {
+			continue
+		}
+		if reads, enumerated := logicalReads(source, passed); !enumerated || reads {
+			continue
+		}
+		rest := append(append([]logical.LogicalOperator(nil), items[:i]...), items[i+1:]...)
+		if baseUnnest != nil {
+			// The block's first FROM item is itself an unnest: the source
+			// becomes the bottom and that unnest its first link.
+			items = append([]logical.LogicalOperator{base}, rest...)
+			base, baseUnnest = source, nil
+		} else {
+			items = append(rest[:first], append([]logical.LogicalOperator{source}, rest[first:]...)...)
+		}
+		moved = true
+	}
+	if !moved {
+		return nil, false
+	}
+	op := base
+	for _, item := range items {
+		op = &logical.LogicalJoin{Left: op, Right: item, Kind: logical.JoinInner}
+	}
+	return op.(*logical.LogicalJoin), true
+}
+
+// ownsALaterUnnest reports whether source is the whole single source a later
+// unnest reads its collection from.
+func ownsALaterUnnest(source logical.LogicalOperator, later []logical.LogicalOperator) bool {
+	for _, item := range later {
+		if u, isUnnest := item.(*logical.LogicalUnnest); isUnnest && boundUnnestSingleSource(source, u) {
+			return true
+		}
+	}
+	return false
+}
+
+// translateLateralLegsOverSpine translates trailing legs that read a spine
+// link's element (`FROM q, q.bs AS b, b.tags AS t, (SELECT … t …) AS d`) as
+// further quantifiers of the spine tip's select — Java's one select over every
+// FROM item, at the level where the elements they read are bound. The tip's
+// element is a sibling quantifier; reads of deeper links and of the spine's
+// tables re-root on the tip's outer merged row, exactly as the tip's WHERE
+// does, and so does where. applies is false when j is not that shape; a nil
+// expression that applies carries a translate error.
+func (t *cascadesTranslator) translateLateralLegsOverSpine(
+	j *logical.LogicalJoin,
+	where predicates.QueryPredicate,
+) (expr expressions.RelationalExpression, applies bool) {
+	// Peel the legs above the tip: FROM items reading the spine, and unnests
+	// of their array columns.
+	var legs []logical.LogicalOperator
+	unnestLeg := false
+	var firstItem *logical.LogicalUnnest
+	cur := j
+	for {
+		if cur.Kind != logical.JoinInner || cur.OnPredicate != nil || cur.OnText != "" {
+			return nil, false
+		}
+		if u, isUnnest := cur.Right.(*logical.LogicalUnnest); isUnnest {
+			if !ownedByALegAboveTheTip(cur.Left, u) {
+				break
+			}
+			unnestLeg = true
+		}
+		legs = append([]logical.LogicalOperator{cur.Right}, legs...)
+		next, isJoin := cur.Left.(*logical.LogicalJoin)
+		if !isJoin {
+			firstItem = standaloneUnnestLeg(cur.Left)
+			if firstItem == nil {
+				return nil, false
+			}
+			break
+		}
+		cur = next
+	}
+	u := firstItem
+	var prefix logical.LogicalOperator
+	if u == nil {
+		u = cur.Right.(*logical.LogicalUnnest)
+		prefix = cur.Left
+	}
+	_, _, array := boundUnnestCollection(u)
+	if len(legs) == 0 || array == nil {
+		return nil, false
+	}
+	var outerAlias string
+	var outerCorr values.CorrelationIdentifier
+	if prefix != nil {
+		outerAlias = sourceAlias(prefix)
+		outerCorr = unnestOuterCorrelation(prefix)
+	}
+	innerCorr := unnestSourceCorrelation(u)
+	read := make(map[values.CorrelationIdentifier]struct{}, len(legs)+2)
+	var collection, seed values.Value
+	switch {
+	case firstItem != nil:
+		// The block starts at the enclosing array's Explode; it has no outer
+		// row of its own to rebase, just the element its later legs read.
+		read[innerCorr] = struct{}{}
+		fields, _, ok := unnestSeedInnerFields(innerCorr, u, array.ElementType)
+		if !ok {
+			return nil, false
+		}
+		collection = u.CorrelatedCollection
+		seed = values.NewRawRecordConstructorValue(fields...)
+	case isSpineLink(cur.Left, u):
+		if _, admitted, _ := t.chainedSpineWalk(cur); !admitted {
+			return nil, false
+		}
+		links, ok := t.spineElementLinks(cur)
+		if !ok {
+			return nil, false
+		}
+		for _, l := range links {
+			read[l.corr] = struct{}{}
+		}
+		var gated bool
+		collection, seed, gated = t.chainedUnnestOrdinalGate(cur, u, outerCorr, innerCorr, array.ElementType)
+		if !gated {
+			return nil, false
+		}
+	case unnestLeg && boundUnnestSingleSource(cur.Left, u):
+		// A single link: legs without an unnest of their own take the
+		// gathered path, which already places them.
+		read[innerCorr] = struct{}{}
+		seed = t.unnestOrdinalSeed(cur.Left, outerCorr, innerCorr, u, array.ElementType)
+		collection = t.unnestSeedCollection(cur.Left, outerCorr, u)
+		if collection == nil {
+			return nil, false
+		}
+	default:
+		return nil, false
+	}
+	seedRC, isRC := seed.(*values.RecordConstructorValue)
+	if !isRC {
+		return nil, false
+	}
+	for _, leg := range legs {
+		if lu, isUnnest := leg.(*logical.LogicalUnnest); isUnnest {
+			read[unnestSourceCorrelation(lu)] = struct{}{}
+			continue
+		}
+		if reads, enumerated := logicalReads(leg, read); !enumerated || !reads || legBinding(leg) != sourceBinding(leg) {
+			return nil, false
+		}
+		read[values.NamedCorrelationIdentifier(sourceBinding(leg))] = struct{}{}
+	}
+	fail := func(format string, args ...any) (expressions.RelationalExpression, bool) {
+		if t.translateErr == nil {
+			t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery, format, args...))
+		}
+		return nil, true
+	}
+
+	var quants []expressions.Quantifier
+	var aliases []string
+	if prefix != nil {
+		saved := t.inInnerCluster
+		t.inInnerCluster = false
+		outerRef := t.translateRef(prefix)
+		t.inInnerCluster = saved
+		if outerRef == nil {
+			return fail("lateral leg over a chained unnest: the spine below its last link did not translate")
+		}
+		quants = append(quants, expressions.NamedForEachQuantifier(outerCorr, outerRef))
+		aliases = append(aliases, outerAlias)
+	}
+	explode, err := unnestExplode(collection, u)
+	if err != nil {
+		t.setTranslateErr(err)
+		return nil, true
+	}
+	quants = append(quants, expressions.NamedForEachQuantifier(innerCorr, expressions.InitialOf(explode)))
+	aliases = append(aliases, innerCorr.Name())
+	fields := append([]values.RecordConstructorField(nil), seedRC.Fields...)
+
+	var ordType *values.RecordType
+	var outerLegs map[string]struct{}
+	if prefix != nil {
+		ordType = t.ordinalLegType(prefix)
+		outerLegs = unnestOuterLegAliases(prefix, outerCorr)
+	}
+	rebased := true
+	rebase := func(node values.Value) values.Value {
+		if !rebased || prefix == nil {
+			return node
+		}
+		if fv, isFV := values.AsFieldValue(node); isFV {
+			if _, rooted := values.AsQuantifiedObjectValue(fv.ChildValue()); !rooted {
+				return node
+			}
+		} else if _, isQOV := values.AsQuantifiedObjectValue(node); !isQOV {
+			return node
+		}
+		var p predicates.QueryPredicate = predicates.NewValuePredicate(node)
+		p, ok := t.rebaseSpineElementRefs(p, cur.Left, outerCorr, ordType)
+		if ok {
+			p, ok = rebaseUnnestOuterLegPredicateOrdinal(p, ordType, ordType, outerLegs, outerCorr)
+		}
+		vp, isVP := p.(*predicates.ValuePredicate)
+		if !ok || !isVP {
+			rebased = false
+			return node
+		}
+		return vp.Value
+	}
+	var unnestLegs []*logical.LogicalUnnest
+	for _, leg := range legs {
+		if lu, isUnnest := leg.(*logical.LogicalUnnest); isUnnest {
+			// An unnest of a leg's array column: one more Explode quantifier,
+			// its collection read off that leg's quantifier.
+			_, _, legArray := boundUnnestCollection(lu)
+			if legArray == nil || lu.CorrelatedCollection == nil {
+				return fail("unnest %s over a lateral leg has no exact collection", sourceAlias(lu))
+			}
+			legExplode, err := unnestExplode(lu.CorrelatedCollection, lu)
+			if err != nil {
+				t.setTranslateErr(err)
+				return nil, true
+			}
+			legCorr := unnestSourceCorrelation(lu)
+			legFields, _, ok := unnestSeedInnerFields(legCorr, lu, legArray.ElementType)
+			if !ok {
+				return fail("unnest %s over a lateral leg binds no column", sourceAlias(lu))
+			}
+			fields = append(fields, legFields...)
+			quants = append(quants, expressions.NamedForEachQuantifier(legCorr, expressions.InitialOf(legExplode)))
+			aliases = append(aliases, legCorr.Name())
+			unnestLegs = append(unnestLegs, lu)
+			continue
+		}
+		rebuilt, enumerated := rebuildInnerWithValues(leg, rebase)
+		if !enumerated || !rebased {
+			return fail("lateral leg %s over a chained unnest reads the spine where its merged row cannot place it", sourceAlias(leg))
+		}
+		ref := t.translateRef(rebuilt)
+		if ref == nil {
+			return nil, true
+		}
+		legCorr := values.NamedCorrelationIdentifier(legBinding(rebuilt))
+		legType := t.ordinalLegType(rebuilt)
+		if legType == nil {
+			return fail("lateral leg %s over a chained unnest has no positional row", sourceAlias(leg))
+		}
+		legQOV, err := values.NewQuantifiedObjectValue(legCorr, legType)
+		if err != nil {
+			t.setTranslateErr(err)
+			return nil, true
+		}
+		for i := range legType.Fields {
+			resolved, err := values.ResolveOrdinalSeedField(legQOV, i)
+			if err != nil {
+				t.setTranslateErr(err)
+				return nil, true
+			}
+			fv, _ := values.AsFieldValue(resolved)
+			fields = append(fields, values.RecordConstructorField{Name: fv.DisplayName(), Value: resolved})
+		}
+		quants = append(quants, expressions.NamedForEachQuantifier(legCorr, ref))
+		aliases = append(aliases, sourceAlias(leg))
+	}
+	sel, err := expressions.NewSelectExpressionWithJoinType(
+		values.NewRawRecordConstructorValue(fields...), quants, nil, aliases, expressions.JoinInner)
+	if err != nil {
+		t.setTranslateErr(err)
+		return nil, true
+	}
+	if where == nil {
+		return sel, true
+	}
+	var preds []predicates.QueryPredicate
+	for _, conjunct := range predicates.FlattenConjunction([]predicates.QueryPredicate{where}) {
+		conjunct = rewriteUnnestPredicate(conjunct, u)
+		for _, lu := range unnestLegs {
+			conjunct = rewriteUnnestPredicate(conjunct, lu)
+		}
+		if prefix != nil {
+			baked, ok := t.chainedSpineConjunct(cur, sel, conjunct)
+			if !ok {
+				return fail("a WHERE over a chained unnest and its lateral legs reads the spine where its merged row cannot place it")
+			}
+			conjunct = baked
+		}
+		preds = append(preds, conjunct)
+	}
+	return t.exactSelectWithJoinType(sel.GetResultValue(), quants, preds, aliases, expressions.JoinInner), true
+}
+
+// ownedByALegAboveTheTip reports whether u unnests the array column of a FROM
+// item standing between u and the spine tip below it in left.
+func ownedByALegAboveTheTip(left logical.LogicalOperator, u *logical.LogicalUnnest) bool {
+	for {
+		lj, isJoin := left.(*logical.LogicalJoin)
+		if !isJoin || lj.Kind != logical.JoinInner {
+			return false
+		}
+		if lu, isUnnest := lj.Right.(*logical.LogicalUnnest); isUnnest {
+			if !ownedByALegAboveTheTip(lj.Left, lu) {
+				return false // lu is the tip
+			}
+		} else if boundUnnestSingleSource(lj.Right, u) {
+			return true
+		}
+		left = lj.Left
+	}
+}
+
+// logicalReads reports whether op's values read any of corrs; enumerated is
+// false when op carries a node or subquery rider the value walk cannot visit.
+func logicalReads(op logical.LogicalOperator, corrs map[values.CorrelationIdentifier]struct{}) (reads, enumerated bool) {
+	_, enumerated = rebuildInnerWithValues(op, func(node values.Value) values.Value {
+		if qov, isQOV := values.AsQuantifiedObjectValue(node); isQOV {
+			if _, hit := corrs[qov.Correlation()]; hit {
+				reads = true
+			}
+		}
+		return node
+	})
+	return reads, enumerated
 }
 
 // subtreeUnnestsOffAlias reports whether op's subtree contains a LogicalUnnest
@@ -727,9 +1179,8 @@ func (t *cascadesTranslator) chainedOwnerElementSlot(bottom logical.LogicalOpera
 // the arm ACTIVE (its bottom aliases are box legs), so a box-leg WHERE
 // declines the WHOLE chain to name-model coherently with the first link's
 // own gate. The seed-safe operand is the TIP link's base — the same operand
-// the pre-fork gate passed. The existential arm is unreachable for a chain
-// in practice — EXISTS-over-chained is 0AF00 upstream — but it is scoped by
-// semantics, not by that reachability accident.
+// the pre-fork gate passed. Under an EXISTS the scope arm admits a pure
+// spine: its correlation bakes over the merged row like its WHERE refs.
 func (t *cascadesTranslator) chainedUnnestOrdinalGate(
 	j *logical.LogicalJoin,
 	u *logical.LogicalUnnest,
@@ -854,7 +1305,7 @@ func (t *cascadesTranslator) translateChainedUnnestOrdinal(
 		return nil
 	}
 
-	explode, err := expressions.NewExplodeExpressionWithOrdinality(collection, u.AtAlias != "")
+	explode, err := unnestExplode(collection, u)
 	if err != nil {
 		t.setTranslateErr(err)
 		return nil
@@ -890,68 +1341,135 @@ func siblingSpineLeft(op logical.LogicalOperator, u *logical.LogicalUnnest) logi
 	}
 }
 
+// spineElementLink is one unnest link of a spine and the slot its columns
+// (boundUnnestLegColumns: the element, then the ordinal) start at in the
+// spine's merged row.
+type spineElementLink struct {
+	link *logical.LogicalUnnest
+	corr values.CorrelationIdentifier
+	slot int
+}
+
+// root maps a reference path over the link's element, or over its AT pair
+// (element, ordinal), to the merged-row slot it starts at and the path left
+// to walk from there. An AT-only link emits only its ordinal.
+func (l spineElementLink) root(path []int) (int, []int, bool) {
+	if l.link.AtAlias == "" {
+		return l.slot, path, true
+	}
+	if len(path) == 0 {
+		return 0, nil, false
+	}
+	switch {
+	case l.link.Alias != "" && (path[0] == 0 || path[0] == 1):
+		return l.slot + path[0], path[1:], true
+	case l.link.Alias == "" && path[0] == 1:
+		return l.slot, path[1:], true
+	}
+	return 0, nil, false
+}
+
+// spineElementLinks lists every unnest link of the spine rooted at op, the
+// link under the tip first, then a standalone first-item bottom beneath the
+// links. ok=false when a link's prefix is underivable.
+func (t *cascadesTranslator) spineElementLinks(op logical.LogicalOperator) ([]spineElementLink, bool) {
+	var links []spineElementLink
+	cur := op
+	for {
+		sj, isJoin := cur.(*logical.LogicalJoin)
+		if !isJoin {
+			break
+		}
+		link, isUnnest := sj.Right.(*logical.LogicalUnnest)
+		if !isUnnest {
+			break
+		}
+		prefix := t.ordinalLegColumns(sj.Left)
+		if bottom := standaloneUnnestLeg(sj.Left); bottom != nil {
+			prefix = boundUnnestLegColumns(bottom)
+		}
+		if prefix == nil {
+			return nil, false
+		}
+		links = append(links, spineElementLink{link: link, corr: unnestSourceCorrelation(link), slot: len(prefix)})
+		cur = sj.Left
+	}
+	if bottom := standaloneUnnestLeg(cur); bottom != nil && cur != op {
+		links = append(links, spineElementLink{link: bottom, corr: unnestSourceCorrelation(bottom), slot: 0})
+	}
+	return links, true
+}
+
 // rebaseSpineElementRefs bakes a WHERE conjunct's references to the element of
-// the link directly under a spine's tip onto that element's slot of the merged
-// row. The merged row is bound under that link's own binding
+// any link of a spine onto that element's slot of the merged row. The merged
+// row is bound under the binding of the link directly under the tip
 // (sourceBinding(spine) — its rightmost leaf), so `b.k` in `FROM q, q.bs AS b,
 // b.tags AS t WHERE t > b.k` names B's ELEMENT while the chained select's
 // outer quantifier B flows the whole merged row: left as is, one correlation
-// carries two exact types and the plan is malformed at execution. The element
-// is a whole-object slot (no AT) or the flat element/ordinal run (AT), exactly
-// as resolveBoundSeedCollection roots a link's collection.
+// carries two exact types and the plan is malformed at execution. A deeper
+// link's element (`c.k` under `qq.cs AS c, c.bs AS b, b.tags AS t`) is bound
+// at no level above its own, so it re-roots the same way. The element is a
+// whole-object slot (no AT) or the flat element/ordinal run (AT), exactly as
+// resolveBoundSeedCollection roots a link's collection.
 //
-// A first-item bottom needs nothing: there the outer IS that element. Refs to
-// deeper links and base legs are rebaseChainedOuterLegPredicate's (outerLegs
-// excludes only the merged-row correlation). ok=false when a reference cannot
-// be re-rooted (a bare AT pair, an underivable prefix): the caller declines.
+// A first-item bottom directly under the tip needs nothing: there the outer
+// IS that element. Refs to base legs are rebaseChainedOuterLegPredicate's.
+// ok=false when a reference cannot be re-rooted (a bare AT pair, an AT-only
+// link's hidden element, an underivable prefix): the caller declines.
 func (t *cascadesTranslator) rebaseSpineElementRefs(
 	p predicates.QueryPredicate,
 	spine logical.LogicalOperator,
 	mergedCorr values.CorrelationIdentifier,
 	ordType *values.RecordType,
 ) (predicates.QueryPredicate, bool) {
-	sj, isJoin := spine.(*logical.LogicalJoin)
-	if p == nil || !isJoin || ordType == nil {
+	if p == nil || ordType == nil {
 		return p, true
 	}
-	link, isUnnest := sj.Right.(*logical.LogicalUnnest)
-	if !isUnnest || unnestSourceCorrelation(link) != mergedCorr {
-		return p, true
-	}
-	prefix := t.ordinalLegColumns(sj.Left)
-	if bottom := standaloneUnnestLeg(sj.Left); bottom != nil {
-		prefix = boundUnnestLegColumns(bottom)
-	}
-	if prefix == nil {
+	links, ok := t.spineElementLinks(spine)
+	if !ok {
 		return p, false
 	}
-	slot := len(prefix)
+	if len(links) == 0 {
+		return p, true
+	}
 	merged, err := values.NewQuantifiedObjectValue(mergedCorr, ordType)
 	if err != nil {
 		return p, false
 	}
-	// An element reference is told from the merged row by its exact type. A
-	// reference whose type cannot be established is left alone — the plan then
-	// fails loud on it, as before this rebase — never re-rooted on a guess.
-	isElementRef := func(v values.Value) bool {
-		qov, ok := values.AsQuantifiedObjectValue(v)
-		return ok && qov.Correlation() == mergedCorr && values.FlowedExactType(qov) != nil &&
-			!values.FlowedTypesEqual(qov, merged)
+	// The link under the tip shares its binding with the merged row, so its
+	// element reference is told from the merged row by exact type; one whose
+	// type cannot be established is left alone — the plan then fails loud on
+	// it — never re-rooted on a guess. A deeper link's binding names only its
+	// element.
+	linkOf := func(v values.Value) (spineElementLink, bool) {
+		qov, isQOV := values.AsQuantifiedObjectValue(v)
+		if !isQOV {
+			return spineElementLink{}, false
+		}
+		for _, l := range links {
+			if qov.Correlation() != l.corr {
+				continue
+			}
+			if l.corr == mergedCorr && (values.FlowedExactType(qov) == nil || values.FlowedTypesEqual(qov, merged)) {
+				return spineElementLink{}, false
+			}
+			return l, true
+		}
+		return spineElementLink{}, false
 	}
-	ok := true
 	rebased := predicates.ReplaceValues(p, func(v values.Value) values.Value {
 		if !ok {
 			return v
 		}
-		if fv, isFV := values.AsFieldValue(v); isFV && isElementRef(fv.ChildValue()) {
-			path := fv.Path().Ordinals()
-			root, rest := slot, path
-			if link.AtAlias != "" {
-				if len(path) == 0 {
-					ok = false
-					return v
-				}
-				root, rest = slot+path[0], path[1:]
+		if fv, isFV := values.AsFieldValue(v); isFV {
+			l, isElement := linkOf(fv.ChildValue())
+			if !isElement {
+				return v
+			}
+			root, rest, rooted := l.root(fv.Path().Ordinals())
+			if !rooted {
+				ok = false
+				return v
 			}
 			requests := make([]values.FieldRequest, len(rest))
 			for i, ordinal := range rest {
@@ -969,12 +1487,12 @@ func (t *cascadesTranslator) rebaseSpineElementRefs(
 			}
 			return access
 		}
-		if isElementRef(v) {
-			if link.AtAlias != "" {
+		if l, isElement := linkOf(v); isElement {
+			if l.link.AtAlias != "" {
 				ok = false
 				return v
 			}
-			access, err := values.ResolveOrdinalSeedField(merged, slot)
+			access, err := values.ResolveOrdinalSeedField(merged, l.slot)
 			if err != nil {
 				ok = false
 				return v

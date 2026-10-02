@@ -1,11 +1,14 @@
 package embedded
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"testing"
 
 	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/relational/core/parser"
 	"fdb.dev/pkg/relational/core/query"
 	"fdb.dev/pkg/relational/core/query/logical"
 
@@ -256,9 +259,13 @@ func TestDerivedSourceCorrelatedExistsPlans(t *testing.T) {
 func TestThreeLegExistsKeepsExactExistentialAlias(t *testing.T) {
 	t.Parallel()
 
-	plan, err := PlanPhysicalForTest(`WITH c AS (SELECT id, v FROM t1)
+	var wantInner values.CorrelationIdentifier
+	plan, _, err := planPhysicalForTestObserved(`WITH c AS (SELECT id, v FROM t1)
 		SELECT c.id, t1_id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = c.id) AS h
-		FROM c, t3 WHERE t3.t1_id = c.id ORDER BY c.id`, derivedExistsSchema, nil)
+		FROM c, t3 WHERE t3.t1_id = c.id ORDER BY c.id`, derivedExistsSchema, nil, false, nil, plannerOptionsFrom(nil),
+		func(op logical.LogicalOperator, ref *expressions.Reference) {
+			wantInner = observedExistentialIdentity(t, op, ref)
+		})
 	if err != nil {
 		t.Fatalf("plan failed: %T: %v", err, err)
 	}
@@ -266,7 +273,7 @@ func TestThreeLegExistsKeepsExactExistentialAlias(t *testing.T) {
 	var flatMap *plans.RecordQueryFlatMapPlan
 	var findFlatMap func(plans.RecordQueryPlan)
 	findFlatMap = func(node plans.RecordQueryPlan) {
-		if found, ok := node.(*plans.RecordQueryFlatMapPlan); ok {
+		if found, ok := node.(*plans.RecordQueryFlatMapPlan); ok && found.GetInnerAlias() == wantInner {
 			flatMap = found
 			return
 		}
@@ -287,27 +294,23 @@ func TestThreeLegExistsKeepsExactExistentialAlias(t *testing.T) {
 		t.Fatalf("existential binding %#v was reconstructed from its q$ spelling; want the exact generated quantifier identity", exactInner)
 	}
 
-	var join *plans.RecordQueryNestedLoopJoinPlan
-	var findJoin func(plans.RecordQueryPlan)
-	findJoin = func(node plans.RecordQueryPlan) {
-		if found, ok := node.(*plans.RecordQueryNestedLoopJoinPlan); ok {
-			join = found
-			return
-		}
-		for _, child := range node.GetChildren() {
-			if join == nil {
-				findJoin(child)
+	if _, misplaced := expressions.GetCorrelatedToOfExpression(flatMap.GetOuter())[exactInner]; misplaced {
+		t.Fatal("existential predicate was routed outside its inner binding")
+	}
+	if free := expressions.GetCorrelatedToOfExpression(plan); len(free) != 0 {
+		t.Fatalf("selected plan has unbound correlations: %#v", free)
+	}
+	sources := make(map[string]bool)
+	plans.Walk(plan, func(node plans.RecordQueryPlan) bool {
+		if scan, ok := node.(*plans.RecordQueryScanPlan); ok {
+			for _, recordType := range scan.GetRecordTypes() {
+				sources[recordType] = true
 			}
 		}
-	}
-	findJoin(flatMap.GetOuter())
-	if join == nil {
-		t.Fatal("three-leg correlated EXISTS plan has no outer NestedLoopJoin")
-	}
-	for _, predicate := range join.GetPredicates() {
-		if _, misplaced := predicate.GetCorrelatedTo()[exactInner]; misplaced {
-			t.Fatalf("existential predicate was routed to the outer join: %s", predicate.Explain())
-		}
+		return true
+	})
+	if !sources["T1"] || !sources["T2"] || !sources["T3"] {
+		t.Fatalf("three-leg EXISTS lost a source: %v", sources)
 	}
 
 	var firstOrDefault *plans.RecordQueryFirstOrDefaultPlan
@@ -332,30 +335,213 @@ func TestThreeLegExistsKeepsExactExistentialAlias(t *testing.T) {
 	if !ok {
 		t.Fatalf("FirstOrDefault folded an unfiltered existential leg: %s", firstOrDefault.Explain())
 	}
+	inputLayout, err := filter.GetInner().ProvidedOutputLayout()
+	if err != nil {
+		t.Fatal(err)
+	}
 	foundExactCorrelation := false
 	for _, predicate := range filter.GetPredicates() {
 		correlatedTo := predicate.GetCorrelatedTo()
 		if _, readsNamedTwin := correlatedTo[namedTwin]; readsNamedTwin {
 			t.Fatalf("predicate below FirstOrDefault reads same-spelled NAMED alias %#v: %s", namedTwin, predicate.Explain())
 		}
-		if _, readsOuter := correlatedTo[flatMap.GetOuterAlias()]; !readsOuter {
+		// C may be bound by an enclosing join, not the immediately enclosing FlatMap.
+		if _, readsOuter := correlatedTo[values.NamedCorrelationIdentifier("C")]; !readsOuter {
 			continue
 		}
-		for correlation := range correlatedTo {
-			if correlation == flatMap.GetOuterAlias() {
-				continue
-			}
-			// Extraction may relink the inner read from the logical EXISTS
-			// quantifier to the selected scan edge. That edge must still be an
-			// exact generated identifier, never another reconstruction from text.
-			if correlation == values.NamedCorrelationIdentifier(correlation.Name()) {
-				t.Fatalf("predicate below FirstOrDefault reconstructed inner-row alias from text: %s", predicate.Explain())
-			}
-			foundExactCorrelation = true
-		}
+		predicates.TransformEmbeddedValues(predicate, func(value values.Value) values.Value {
+			values.WalkValue(value, func(node values.Value) bool {
+				if field, ok := values.AsFieldValue(node); ok && field.ChildValue() == inputLayout.Carrier() {
+					ordinals := field.Path().Ordinals()
+					if len(ordinals) == 1 && ordinals[0] == 1 {
+						foundExactCorrelation = true
+					}
+				}
+				return true
+			})
+			return value
+		})
 	}
 	if !foundExactCorrelation {
-		t.Fatal("no predicate below FirstOrDefault references the exact inner-row and merged-outer bindings")
+		t.Fatal("no predicate below FirstOrDefault reads C and T2.T1_ID through the exact selected carrier")
+	}
+}
+
+func TestScalarAggregateOverDuplicateAliasJoinKeepsOuterBinding(t *testing.T) {
+	t.Parallel()
+	const schema = `CREATE TABLE p (id BIGINT, v BIGINT, PRIMARY KEY (id))
+CREATE TABLE q (qid BIGINT, PRIMARY KEY (qid))`
+	const sql = `SELECT (SELECT MAX(qid) FROM q WHERE a.id = 1) FROM p AS a, q AS a`
+	tmpl, err := buildSchemaTemplateFromDDL(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := parser.Parse(sql)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logicalPlan, err := NewPlanVisitor(tmpl.Underlying()).VisitQuery(parsed.Statements().AllStatement()[0].SelectStatement().Query())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resolveQualifiedTableNames(logicalPlan, defaultEmbeddedTemplate); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateTablesAndColumns(logicalPlan, tmpl.Underlying()); err != nil {
+		t.Fatal(err)
+	}
+	ref, _, err := query.TranslateToCascadesWithError(logicalPlan, tmpl.Underlying())
+	if err != nil {
+		t.Fatal(err)
+	}
+	planner := newCascadesPlanner(tmpl.Underlying(), plannerOptionsFrom(nil), cascades.BatchAExpressionRules(), nil)
+	previous := "translation"
+	mergeTasks := 0
+	planner.WithTaskObserver(func(task cascades.Task) {
+		if free := ref.GetCorrelatedTo(); len(free) != 0 {
+			t.Fatalf("after %s root has free correlations %#v", previous, free)
+		}
+		previous = fmt.Sprintf("%T", task)
+		if transform, ok := task.(*cascades.TransformExprTask); ok {
+			previous = fmt.Sprintf("%T on %T", transform.Rule, transform.Expr)
+			if _, merge := transform.Rule.(*cascades.SelectMergeRule); merge {
+				mergeTasks++
+			}
+		}
+	})
+	if _, _, err := planner.PlanWithContext(context.Background(), ref); err != nil {
+		t.Fatal(err)
+	}
+	if mergeTasks == 0 {
+		t.Fatal("no SelectMerge task exercised the scalar sibling")
+	}
+	plan, err := PlanPhysicalForTest(sql, schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if free := expressions.GetCorrelatedToOfExpression(plan); len(free) != 0 {
+		t.Fatalf("correlated aggregate has unbound correlations: %#v", free)
+	}
+}
+
+func TestInListBesideExistsKeepsBindings(t *testing.T) {
+	t.Parallel()
+	const schema = `CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY(id))
+CREATE INDEX idx_a ON T_RD(a) CREATE INDEX idx_e ON T_RD(e) CREATE INDEX idx_s ON T_RD(s)`
+	const sql = `SELECT * FROM t_rd
+WHERE (((s IS NOT NULL) AND (a=8) AND (e BETWEEN 3.0 AND 4.0)) OR ((d IN (2,5)) AND (COALESCE(a,8)<5)))
+AND EXISTS (SELECT 1 FROM t_rd AS r WHERE r.c<t_rd.c) ORDER BY c DESC NULLS FIRST,id`
+	tmpl, err := buildSchemaTemplateFromDDL(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := parser.Parse(sql)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logicalPlan, err := NewPlanVisitor(tmpl.Underlying()).VisitQuery(parsed.Statements().AllStatement()[0].SelectStatement().Query())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resolveQualifiedTableNames(logicalPlan, defaultEmbeddedTemplate); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateTablesAndColumns(logicalPlan, tmpl.Underlying()); err != nil {
+		t.Fatal(err)
+	}
+	ref, _, err := query.TranslateToCascadesWithError(logicalPlan, tmpl.Underlying())
+	if err != nil {
+		t.Fatal(err)
+	}
+	planner := newCascadesPlanner(tmpl.Underlying(), plannerOptionsFrom(nil), cascades.BatchAExpressionRules(), nil)
+	previous := "translation"
+	explodeTasks := 0
+	assertBound := func() {
+		t.Helper()
+		if free := ref.GetCorrelatedTo(); len(free) != 0 {
+			t.Fatalf("after %s root has free correlations %#v", previous, free)
+		}
+	}
+	planner.WithTaskObserver(func(task cascades.Task) {
+		assertBound()
+		previous = fmt.Sprintf("%T", task)
+		switch transform := task.(type) {
+		case *cascades.TransformExprTask:
+			previous = fmt.Sprintf("%T on %T group %d", transform.Rule, transform.Expr, transform.Ref.ID())
+			if _, explode := transform.Rule.(*cascades.InComparisonToExplodeRule); explode {
+				explodeTasks++
+			}
+		case *cascades.TransformImplTask:
+			previous = fmt.Sprintf("%T on %T group %d", transform.Rule, transform.Expr, transform.Ref.ID())
+		}
+	})
+	if _, _, err := planner.PlanWithContext(context.Background(), ref); err != nil {
+		t.Fatal(err)
+	}
+	assertBound()
+	if explodeTasks == 0 {
+		t.Fatal("no InComparisonToExplode task exercised the IN list")
+	}
+}
+
+func TestMultiExistsUnnestOwnsAllBindings(t *testing.T) {
+	t.Parallel()
+	const schema = `CREATE TABLE A (AID BIGINT, K BIGINT, ARR INTEGER ARRAY, PRIMARY KEY (AID))
+CREATE TABLE B (BID BIGINT, K BIGINT, PRIMARY KEY (BID))
+CREATE TABLE EE (CK BIGINT, PRIMARY KEY (CK))
+CREATE TABLE EEV (VK BIGINT, PRIMARY KEY (VK))`
+	plan, err := PlanPhysicalForTest(`SELECT COUNT("X") FROM A, B, A."ARR" AS "X"
+WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")
+AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`, schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := make(map[string]bool)
+	badOrder := false
+	var inspect func(plans.RecordQueryPlan)
+	inspect = func(node plans.RecordQueryPlan) {
+		if scan, ok := node.(*plans.RecordQueryScanPlan); ok {
+			for _, recordType := range scan.GetRecordTypes() {
+				sources[recordType] = true
+			}
+		}
+		if flatMap, ok := node.(*plans.RecordQueryFlatMapPlan); ok {
+			free := expressions.GetCorrelatedToOfExpression(flatMap.GetOuter())
+			for _, alias := range []values.CorrelationIdentifier{flatMap.GetInnerAlias(), flatMap.GetQuantifiers()[1].GetAlias()} {
+				if _, requiresInner := free[alias]; requiresInner {
+					badOrder = true
+					t.Errorf("FlatMap outer requires its not-yet-bound inner alias %#v", alias)
+				}
+			}
+		}
+		for _, child := range node.GetChildren() {
+			inspect(child)
+		}
+	}
+	inspect(plan)
+	// A unique probe can replace an existential wrapper, but not its source.
+	if !sources["EE"] || !sources["EEV"] {
+		t.Fatalf("missing existential sources: %v\n%s", sources, plan.Explain())
+	}
+	if free := expressions.GetCorrelatedToOfExpression(plan); badOrder || len(free) != 0 {
+		var describe func(plans.RecordQueryPlan, int)
+		describe = func(node plans.RecordQueryPlan, depth int) {
+			t.Logf("%s%T own=%#v result=%s", strings.Repeat(" ", depth), node,
+				node.GetCorrelatedToWithoutChildren(), values.ExplainValue(node.GetResultValue()))
+			for _, q := range node.GetQuantifiers() {
+				t.Logf("%sedge=%#v", strings.Repeat(" ", depth), q.GetAlias())
+			}
+			if filter, ok := node.(*plans.RecordQueryPredicatesFilterPlan); ok {
+				for _, p := range filter.GetPredicates() {
+					t.Logf("%sfilter binding=%#v predicate=%s", strings.Repeat(" ", depth), filter.GetInnerAlias(), p.Explain())
+				}
+			}
+			for _, child := range node.GetChildren() {
+				describe(child, depth+1)
+			}
+		}
+		describe(plan, 0)
+		t.Fatalf("multi-EXISTS binding violation: invalid dependency order=%t, unbound correlations=%#v", badOrder, free)
 	}
 }
 

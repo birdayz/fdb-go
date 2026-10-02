@@ -55,6 +55,10 @@ type plannerOptions struct {
 	// defaults, exactly as Java's buildRecordQueryPlannerConfiguration leaves
 	// everything it does not set at RecordQueryPlannerConfiguration's default.
 	config cascades.PlannerConfiguration
+
+	// trace attributes the run's work for the no-FDB diagnostics harness; the
+	// connection path never sets it.
+	trace *cascades.PlannerTrace
 }
 
 // plannerOptionsFrom resolves the connection's api.Options into the planner's
@@ -268,6 +272,7 @@ func newCascadesPlanner(
 		WithStatistics(stats).
 		WithMaxTasks(maxTasks)
 	planner.DisabledRules = popts.disabledRules
+	planner.WithTrace(popts.trace)
 	return planner
 }
 

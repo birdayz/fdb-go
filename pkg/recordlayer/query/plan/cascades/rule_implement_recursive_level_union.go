@@ -60,8 +60,8 @@ func (r *ImplementRecursiveLevelUnionRule) OnMatch(call *ExpressionRuleCall) {
 
 	// The plan carries its two leg edges directly — one live quantifier per
 	// winner, no separate physical wrapper (RFC-184 W2).
-	initQ := expressions.ForEachQuantifier(call.MemoizeExpression(initialWinner))
-	recQ := expressions.ForEachQuantifier(call.MemoizeExpression(recursiveWinner))
+	initQ := expressions.NewPhysicalQuantifier(call.MemoizeExpression(initialWinner))
+	recQ := expressions.NewPhysicalQuantifier(call.MemoizeExpression(recursiveWinner))
 	plan, err := plans.NewRecordQueryRecursiveLevelUnionPlanFromQuantifiers(
 		initQ, recQ,
 		recUnion.GetTempTableScanAlias(),

@@ -832,7 +832,7 @@ func uniqueKeysCovered(uniqueKeyCols []string, layout values.Type, projectedOrds
 //     streaming dedup over unordered input and LEAK a duplicate. The frozen edge
 //     makes planFromQuantifier resolve that exact member, never a group winner.
 //   - PLAIN (hash) → carry the LIVE edge the wrapper's innerQuant presented
-//     (ForEachQuantifier over InitialOf(member)). A hash distinct dedups over
+//     (NewPhysicalQuantifier over InitialOf(member)). A hash distinct dedups over
 //     ANY inner, so freezing buys nothing and instead strands a pre-push
 //     snapshot once a push rule (push_distinct_below_filter / _through_fetch)
 //     re-explores the leg — the parent would then cost an unreachable edge.
@@ -855,12 +855,12 @@ func newPhysicalDistinctFor(call *ImplementationRuleCall, member expressions.Rel
 		// Freeze the ordering-critical inner: a detached single-member final
 		// reference over the concrete plan whose ordering this flag was measured
 		// against, so it can never float to a differently-ordered sibling.
-		innerQ := expressions.ForEachQuantifier(call.MemoizeFinalExpression(concreteInner))
+		innerQ := expressions.NewPhysicalQuantifier(call.MemoizeFinalExpression(concreteInner))
 		return plans.NewRecordQueryDistinctPlanFromQuantifier(innerQ, true)
 	}
 	// Plain hash distinct: carry the live exploratory edge (what the wrapper's
 	// innerQuant presented) so a later push-rule canonicalization stays reachable.
-	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(member))
+	innerQ := expressions.NewPhysicalQuantifier(expressions.InitialOf(member))
 	return plans.NewRecordQueryDistinctPlanFromQuantifier(innerQ, false)
 }
 

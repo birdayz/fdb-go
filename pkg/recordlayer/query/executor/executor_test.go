@@ -6643,3 +6643,122 @@ func TestAggregateContinuation_ArrayAgg(t *testing.T) {
 		t.Fatal("decoded a continuation missing its ARRAY_AGG slots")
 	}
 }
+
+func TestBitmapAggregateStreaming(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		positions []any
+		length    int
+		first     byte
+		last      byte
+		fail      bool
+	}{
+		{"bits", []any{int64(1), int64(2), int64(2), nil}, 1250, 6, 0, false},
+		{"long narrows", []any{int64(1<<32) + 1}, 1250, 2, 0, false},
+		{"extended", []any{int64(10000)}, 1251, 0, 1, false},
+		{"maximum", []any{int64(249999)}, 31250, 0, 128, false},
+		{"null", []any{nil}, 0, 0, 0, false},
+		{"negative", []any{int64(-1)}, 0, 0, 0, true},
+		{"too large", []any{int64(250000)}, 0, 0, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			operand := &values.ConstantValue{Typ: values.NullableLong}
+			c := &aggregateCursor{aggregates: []expressions.AggregateSpec{{Function: expressions.AggBitmapConstructAgg, Operand: operand}}}
+			c.current = c.newGroupState()
+			var err error
+			for _, v := range tc.positions {
+				operand.Value = v
+				if err = c.accumulateRow(QueryResult{}); err != nil {
+					break
+				}
+			}
+			if tc.fail {
+				if err == nil {
+					t.Fatal("expected invalid bitmap position error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Resume a partially accumulated group before producing its result.
+			encoded, err := encodeAggregateContinuation(nil, "", nil, c.current, c.aggregates)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _, c.current, err = decodeAggregateContinuation(encoded, c.aggregates, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := c.finalizeGroup().Positional.Slots[0]
+			if tc.length == 0 {
+				if got != nil {
+					t.Fatalf("all-null aggregate = %v", got)
+				}
+				return
+			}
+			b, ok := got.([]byte)
+			if !ok || len(b) != tc.length {
+				t.Fatalf("bitmap type/length = %T/%v, want %d bytes", got, got, tc.length)
+			}
+			if b[0] != tc.first || b[len(b)-1] != tc.last {
+				t.Fatalf("bitmap endpoints %d/%d", b[0], b[len(b)-1])
+			}
+		})
+	}
+}
+
+func TestBitmapAggregateContinuationValidation(t *testing.T) {
+	t.Parallel()
+	operand := &values.ConstantValue{Typ: values.NullableLong, Value: int64(1)}
+	aggs := []expressions.AggregateSpec{{Function: expressions.AggBitmapConstructAgg, Operand: operand}, {Function: expressions.AggArrayAgg, Operand: operand, Limit: values.ArrayAggNoLimit}}
+	c := &aggregateCursor{aggregates: aggs}
+	c.current = c.newGroupState()
+	if err := c.accumulateRow(QueryResult{}); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := encodeAggregateContinuation(nil, "", nil, c.current, aggs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, c.current, err = decodeAggregateContinuation(encoded, aggs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operand.Value = int64(9)
+	if err := c.accumulateRow(QueryResult{}); err != nil {
+		t.Fatal(err)
+	}
+	row := c.finalizeGroup().Positional.Slots
+	bitmap := row[0].([]byte)
+	if bitmap[0] != 2 || bitmap[1] != 2 || fmt.Sprint(row[1]) != "[1 9]" {
+		t.Fatalf("resumed bitmap/array: %v", row)
+	}
+	for _, tc := range []struct {
+		name  string
+		state *gen.OneOfTypedState
+	}{
+		{"short", &gen.OneOfTypedState{State: &gen.OneOfTypedState_BytesState{BytesState: []byte{2}}}},
+		{"oversize", &gen.OneOfTypedState{State: &gen.OneOfTypedState_BytesState{BytesState: make([]byte, 31251)}}},
+		{"wrong type", &gen.OneOfTypedState{State: &gen.OneOfTypedState_Int64State{Int64State: 2}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var msg gen.AggregateCursorContinuation
+			if err := proto.Unmarshal(encoded, &msg); err != nil {
+				t.Fatal(err)
+			}
+			states := msg.PartialAggregationResults.AccumulatorStates[0].State
+			states[len(states)-1] = tc.state
+			bad, err := proto.Marshal(&msg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, _, err := decodeAggregateContinuation(bad, aggs, nil); err == nil {
+				t.Fatal("accepted malformed bitmap state")
+			}
+		})
+	}
+}

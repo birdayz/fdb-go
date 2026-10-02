@@ -143,6 +143,25 @@ func TestGetCorrelatedToOfValue_ConstantNoCorrelations(t *testing.T) {
 	}
 }
 
+func TestCollectCorrelatedToOfValue(t *testing.T) {
+	t.Parallel()
+	first, second := NamedCorrelationIdentifier("first"), NamedCorrelationIdentifier("second")
+	out := CollectCorrelatedToOfValue(nil, nil)
+	require.NotNil(t, out)
+	require.Empty(t, out)
+	out[first] = struct{}{}
+	value := &ArithmeticValue{Op: OpAdd, Left: mustQOV(t, first), Right: mustQOV(t, second)}
+	want := map[CorrelationIdentifier]struct{}{first: {}, second: {}}
+	for _, input := range []Value{value, nil, LiteralValue(int64(3))} {
+		require.Equal(t, want, CollectCorrelatedToOfValue(input, out))
+		require.Equal(t, want, out, "collection must fill the supplied map, not an unreturned copy")
+	}
+	fresh := GetCorrelatedToOfValue(value)
+	clear(fresh)
+	require.Equal(t, want, GetCorrelatedToOfValue(value))
+	require.Equal(t, want, out)
+}
+
 func TestGetCorrelatedToOfValue_SingleQuantifiedObject(t *testing.T) {
 	t.Parallel()
 	c1 := NamedCorrelationIdentifier("c1")
@@ -315,9 +334,21 @@ func TestGetCorrelatedToOfValue_ConstantObjectValue(t *testing.T) {
 	t.Parallel()
 	alias := NamedCorrelationIdentifier("const_obj")
 	v := &ConstantObjectValue{Alias: alias, ConstantID: "test"}
-	got := GetCorrelatedToOfValue(v)
-	if _, ok := got[alias]; !ok {
-		t.Fatal("ConstantObjectValue alias not in correlation set")
+	for name, got := range map[string]map[CorrelationIdentifier]struct{}{
+		"direct": v.GetCorrelatedTo(),
+		"tree":   GetCorrelatedToOfValue(v),
+		"own":    GetCorrelatedToWithoutChildrenOfValue(v),
+		"nested": GetCorrelatedToOfValue(NewRecordConstructorValue(RecordConstructorField{Name: "c", Value: v})),
+	} {
+		if len(got) != 0 {
+			t.Errorf("%s: constant-pool dependency is not a row correlation: %v", name, got)
+		}
+	}
+	row := mustQOV(t, alias)
+	mixed := NewRecordConstructorValue(RecordConstructorField{Name: "constant", Value: v}, RecordConstructorField{Name: "row", Value: row})
+	got := GetCorrelatedToOfValue(mixed)
+	if _, ok := got[alias]; !ok || len(got) != 1 {
+		t.Fatalf("a constant must not erase a genuine row dependency on the same alias: %v", got)
 	}
 }
 

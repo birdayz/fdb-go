@@ -48,6 +48,8 @@ type exactField struct {
 
 type exactType struct {
 	code       TypeCode
+	precision  int
+	dimensions int
 	nullable   bool
 	anyRecord  bool
 	name       string
@@ -190,6 +192,8 @@ func (e *exactType) RelationInner() (ExactTypeHandle, bool) {
 
 func (e *exactType) thaw() Type {
 	switch e.code {
+	case TypeCodeVector:
+		return NewVectorType(e.nullable, e.precision, e.dimensions)
 	case TypeCodeRecord:
 		if e.anyRecord {
 			return anyRecordType{nullable: e.nullable}
@@ -403,6 +407,11 @@ func snapshotExactType(typ Type, active []any) (*exactType, error) {
 			return nil, resolutionError(TypeTypedNil, path, "record type is typed nil")
 		}
 		identity = typed
+	case *VectorType:
+		if typed == nil {
+			return nil, resolutionError(TypeTypedNil, path, "vector type is typed nil")
+		}
+		identity = typed
 	case *ArrayType:
 		if typed == nil {
 			return nil, resolutionError(TypeTypedNil, path, "array type is typed nil")
@@ -485,6 +494,11 @@ func snapshotExactType(typ Type, active []any) (*exactType, error) {
 				name:     typed.RecordName,
 				fields:   fields,
 			}
+		}), nil
+	case *VectorType:
+		probe := exactProbe{code: TypeCodeVector, nullable: typed.Nullable, precision: typed.Precision, dimensions: typed.Dimensions}
+		return internedExactType(&probe, func() *exactType {
+			return &exactType{code: TypeCodeVector, nullable: typed.Nullable, precision: typed.Precision, dimensions: typed.Dimensions}
 		}), nil
 	case *ArrayType:
 		if typed.ElementType == nil {
@@ -588,6 +602,10 @@ func (e *exactType) finishCanonical() {
 	for _, value := range e.enumValues {
 		encoded = appendCanonicalString(encoded, value.Name)
 		encoded = binary.AppendVarint(encoded, int64(value.Number))
+	}
+	if e.code == TypeCodeVector {
+		encoded = binary.AppendVarint(encoded, int64(e.precision))
+		encoded = binary.AppendVarint(encoded, int64(e.dimensions))
 	}
 	e.canonical = encoded
 	h := fnv.New64a()
@@ -701,6 +719,8 @@ func describeExactType(e *exactType) string {
 			out += ":" + describeExactType(field.typ)
 		}
 		out += ")"
+	case e.code == TypeCodeVector:
+		out += "(" + uitoa(uint64(e.precision)) + "," + uitoa(uint64(e.dimensions)) + ")"
 	case e.code == TypeCodeEnum:
 		if e.name != "" {
 			out += "@" + e.name
@@ -825,6 +845,9 @@ func typeShapesAgreeBelowTheTop(left, right Type) bool {
 		// RecordName is deliberately not compared, because RecordType.Equals
 		// does not compare it either — provenance, not shape, matching Java.
 		return true
+	case *VectorType:
+		r, ok := right.(*VectorType)
+		return ok && l.Precision == r.Precision && l.Dimensions == r.Dimensions
 	case *ArrayType:
 		r, ok := right.(*ArrayType)
 		if !ok {

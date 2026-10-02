@@ -45,16 +45,32 @@ func (t *cascadesTranslator) existsInputRef(esq logical.ExistsSubquery) *express
 	if esq.Input == nil {
 		// Programmatically constructed logical plans enter at the translator,
 		// without the SQL query owner's lowering boundary.
-		return t.translateSubqueryRef(esq.Plan)
+		plan := esq.Plan
+		if esq.JoinPredicate != nil {
+			plan = &logical.LogicalFilter{Input: plan, Predicate: esq.JoinPredicate}
+		}
+		return t.translateSubqueryRef(plan)
 	}
 	if esq.FlowedType != nil && !esq.FlowedType.Equals(esq.Input.ResultType()) {
 		t.setTranslateErr(api.NewError(api.ErrCodeInternalError, "EXISTS attachment type disagrees with its owned producer"))
 		return nil
 	}
-	for _, scalar := range esq.Input.Scalars() {
+	input := esq.Input
+	if esq.JoinPredicate != nil {
+		// A subquery WHERE belongs below FirstOrDefault. Retain its owned FROM
+		// producer while attaching the correlation inside the existential input.
+		var err error
+		input, err = LowerExistsInput(&logical.LogicalFilter{Input: esq.Plan, Predicate: esq.JoinPredicate}, t.md,
+			logical.ExistsSubquery{Plan: esq.Plan, Input: input, FlowedType: input.ResultType()})
+		if err != nil {
+			t.setTranslateErr(err)
+			return nil
+		}
+	}
+	for _, scalar := range input.Scalars() {
 		t.scalarSubqueries = append(t.scalarSubqueries, ScalarSubqueryPlan{Alias: scalar.Alias, Plan: scalar.Plan})
 	}
-	return esq.Input.Reference()
+	return input.Reference()
 }
 
 // rebaseExistsInputPredicates preserves the owned producer when its enclosing
@@ -67,37 +83,79 @@ func rebaseExistsInputPredicates(esq logical.ExistsSubquery, rebase func(predica
 	if esq.Input == nil {
 		return esq, true
 	}
-	node := esq.Input.Reference().Get()
-	withPredicates, ok := node.(expressions.RelationalExpressionWithPredicates)
+	ref, ok := rebaseBoundFilterChain(esq.Input.Reference(), rebase)
 	if !ok {
 		return esq, false
 	}
-	old := withPredicates.GetPredicates()
-	rebased := make([]predicates.QueryPredicate, len(old))
-	for i, pred := range old {
-		var ok bool
-		rebased[i], ok = rebase(pred)
-		if !ok {
-			return esq, false
-		}
+	if ref == esq.Input.Reference() {
+		return esq, true
 	}
-	var rebuilt expressions.RelationalExpression
-	var err error
-	switch typed := node.(type) {
-	case *expressions.LogicalFilterExpression:
-		rebuilt, err = expressions.NewLogicalFilterExpression(rebased, typed.GetInner())
-	case *expressions.SelectExpression:
-		rebuilt, err = expressions.NewSelectExpressionWithJoinType(typed.GetResultValue(), typed.GetQuantifiers(), rebased, typed.GetSourceAliases(), typed.GetJoinType())
-	default:
+	if !esq.Input.ResultType().Equals(ref.Get().GetResultValue().Type()) {
 		return esq, false
 	}
-	if err != nil || !esq.Input.ResultType().Equals(rebuilt.GetResultValue().Type()) {
-		return esq, false
-	}
-	input, err := logical.NewExistsInput(expressions.InitialOf(rebuilt), esq.Input.Scalars())
+	input, err := logical.NewExistsInput(ref, esq.Input.Scalars())
 	if err != nil {
 		return esq, false
 	}
 	esq.Input = input
 	return esq, true
+}
+
+// rebaseBoundFilterChain rewrites the bound predicates of the producer's top
+// relational node and of each filter stacked directly beneath it: a WHERE with
+// a nested scalar lowers to one filter per conjunct group, and an outer-only
+// conjunct can sit in the lower one.
+func rebaseBoundFilterChain(
+	ref *expressions.Reference,
+	rebase func(predicates.QueryPredicate) (predicates.QueryPredicate, bool),
+) (*expressions.Reference, bool) {
+	node := ref.Get()
+	withPredicates, ok := node.(expressions.RelationalExpressionWithPredicates)
+	if !ok {
+		return ref, false
+	}
+	old := withPredicates.GetPredicates()
+	rebased := make([]predicates.QueryPredicate, len(old))
+	changed := false
+	for i, pred := range old {
+		var ok bool
+		rebased[i], ok = rebase(pred)
+		if !ok {
+			return ref, false
+		}
+		changed = changed || rebased[i] != pred
+	}
+	var rebuilt expressions.RelationalExpression
+	var err error
+	switch typed := node.(type) {
+	case *expressions.LogicalFilterExpression:
+		inner := typed.GetInner()
+		if innerRef := inner.GetRangesOver(); innerRef != nil {
+			if _, stacked := innerRef.Get().(*expressions.LogicalFilterExpression); stacked {
+				rebasedInner, ok := rebaseBoundFilterChain(innerRef, rebase)
+				if !ok {
+					return ref, false
+				}
+				if rebasedInner != innerRef {
+					inner = expressions.RebuildQuantifier(inner, rebasedInner)
+					changed = true
+				}
+			}
+		}
+		if !changed {
+			return ref, true
+		}
+		rebuilt, err = expressions.NewLogicalFilterExpression(rebased, inner)
+	case *expressions.SelectExpression:
+		if !changed {
+			return ref, true
+		}
+		rebuilt, err = expressions.NewSelectExpressionWithJoinType(typed.GetResultValue(), typed.GetQuantifiers(), rebased, typed.GetSourceAliases(), typed.GetJoinType())
+	default:
+		return ref, false
+	}
+	if err != nil || !ref.Get().GetResultValue().Type().Equals(rebuilt.GetResultValue().Type()) {
+		return ref, false
+	}
+	return expressions.InitialOf(rebuilt), true
 }

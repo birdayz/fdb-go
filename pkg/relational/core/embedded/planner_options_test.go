@@ -95,14 +95,15 @@ CREATE TABLE S1 (id BIGINT, hid BIGINT, PRIMARY KEY (id))
 CREATE TABLE S2 (id BIGINT, hid BIGINT, PRIMARY KEY (id))
 CREATE TABLE S3 (id BIGINT, hid BIGINT, PRIMARY KEY (id))
 CREATE TABLE S4 (id BIGINT, hid BIGINT, PRIMARY KEY (id))
-CREATE TABLE S5 (id BIGINT, hid BIGINT, PRIMARY KEY (id))`
+CREATE TABLE S5 (id BIGINT, hid BIGINT, PRIMARY KEY (id))
+CREATE TABLE S6 (id BIGINT, hid BIGINT, PRIMARY KEY (id))`
 
-// fiveSpokeStarSQL is the hub+5 all-live star. Its Cascades twin
-// (buildOrdinalStar(5)) is the narrowest all-live star that exhausts the
-// embedded planner task budget at default settings.
-const fiveSpokeStarSQL = "SELECT H.id, S1.id, S2.id, S3.id, S4.id, S5.id " +
-	"FROM H, S1, S2, S3, S4, S5 " +
-	"WHERE H.id = S1.hid AND H.id = S2.hid AND H.id = S3.hid AND H.id = S4.hid AND H.id = S5.hid"
+// sixSpokeStarSQL is the hub+6 all-live star, the narrowest all-live star that
+// exhausts the embedded planner task budget at default settings (hub+5
+// converges in ~130k of 150k tasks).
+const sixSpokeStarSQL = "SELECT H.id, S1.id, S2.id, S3.id, S4.id, S5.id, S6.id " +
+	"FROM H, S1, S2, S3, S4, S5, S6 " +
+	"WHERE H.id = S1.hid AND H.id = S2.hid AND H.id = S3.hid AND H.id = S4.hid AND H.id = S5.hid AND H.id = S6.hid"
 
 // TestPlannerOptions_PlanRightDeep pins PLAN_RIGHT_DEEP end to end from
 // api.Options to the join enumeration, on the shape CQ-9 named: an all-live
@@ -112,17 +113,17 @@ const fiveSpokeStarSQL = "SELECT H.id, S1.id, S2.id, S3.id, S4.id, S5.id " +
 func TestPlannerOptions_PlanRightDeep(t *testing.T) {
 	t.Parallel()
 
-	_, tasks, err := planWithOptions(t, fiveSpokeStarSQL, starJoinDDL, nil)
+	_, tasks, err := planWithOptions(t, sixSpokeStarSQL, starJoinDDL, nil)
 	if !errors.Is(err, cascades.ErrPlannerCapHit) {
-		t.Fatalf("hub+5 star at default options: err=%v (tasks=%d), want the task cap — "+
+		t.Fatalf("hub+6 star at default options: err=%v (tasks=%d), want the task cap — "+
 			"if the budget now covers this shape, widen the star rather than weakening the test",
 			err, tasks)
 	}
 
 	rightDeep := api.NewOptionsBuilder().Set(api.OptPlanRightDeep, true).Build()
-	plan, rdTasks, rdErr := planWithOptions(t, fiveSpokeStarSQL, starJoinDDL, rightDeep)
+	plan, rdTasks, rdErr := planWithOptions(t, sixSpokeStarSQL, starJoinDDL, rightDeep)
 	if rdErr != nil {
-		t.Fatalf("hub+5 star with PLAN_RIGHT_DEEP: %v (tasks=%d) — the option is not reaching "+
+		t.Fatalf("hub+6 star with PLAN_RIGHT_DEEP: %v (tasks=%d) — the option is not reaching "+
 			"PartitionSelectRule", rdErr, rdTasks)
 	}
 	if plan == nil {
@@ -131,24 +132,29 @@ func TestPlannerOptions_PlanRightDeep(t *testing.T) {
 	if rdTasks >= embeddedRightDeepPlannerMaxTasks {
 		t.Fatalf("PLAN_RIGHT_DEEP tasks=%d is not under the %d cap", rdTasks, embeddedRightDeepPlannerMaxTasks)
 	}
-	// THE CAP IS A CLIFF, NOT A GAUGE. The check above still passes at 249,999
-	// — one commit before this mode stops converging at all — so it cannot warn
-	// while there is still room to act. The band below watches the CONSUMPTION.
-	//
-	// Population: the hub+5 all-live star above (fiveSpokeStarSQL over
-	// starJoinDDL), PLAN_RIGHT_DEEP on, default rule set, measured at 173542 —
-	// 69% of the 250k ceiling, i.e. 1.44x headroom. That is the number to
-	// re-measure when this fails; do not widen the band to make it pass.
-	//
-	// Both directions are alarms, for different reasons. GROWTH means the search
-	// is eating the remaining 30% and the tier needs a decision before it is
-	// gone. COLLAPSE means either a genuine win worth re-baselining or that this
-	// star stopped being all-live — a spoke that can be pruned makes the whole
-	// test a much weaker statement while still reporting green.
-	const rightDeepObservedTasks = 173542
+	tables := make(map[string]bool)
+	var visit func(plans.RecordQueryPlan)
+	visit = func(node plans.RecordQueryPlan) {
+		if leaf, ok := node.(interface{ GetRecordTypes() []string }); ok && len(node.GetChildren()) == 0 {
+			for _, name := range leaf.GetRecordTypes() {
+				tables[name] = true
+			}
+		}
+		for _, child := range node.GetChildren() {
+			visit(child)
+		}
+	}
+	visit(plan)
+	for _, name := range []string{"H", "S1", "S2", "S3", "S4", "S5", "S6"} {
+		if !tables[name] {
+			t.Fatalf("all-live star lost table %s: %s", name, plan.Explain())
+		}
+	}
+	// Keep both growth and collapse alarms over the hub+6 all-live population.
+	const rightDeepObservedTasks = 9308
 	rdTol := rightDeepObservedTasks / 50 // +/-2%, matching the Cascades-level star sentinel
 	if rdTasks < rightDeepObservedTasks-rdTol || rdTasks > rightDeepObservedTasks+rdTol {
-		t.Errorf("PLAN_RIGHT_DEEP tasks=%d, want %d +/-2%% ([%d,%d]) over the hub+5 all-live star. "+
+		t.Errorf("PLAN_RIGHT_DEEP tasks=%d, want %d +/-2%% ([%d,%d]) over the hub+6 all-live star. "+
 			"Above the band: consumption is climbing toward the %d ceiling (%.0f%% used at the "+
 			"baseline, %.0f%% now) — re-measure and decide the tier, do not widen this. Below it: "+
 			"re-baseline if the search genuinely shrank, but first check the star is still all-live.",
@@ -157,12 +163,12 @@ func TestPlannerOptions_PlanRightDeep(t *testing.T) {
 			100*float64(rightDeepObservedTasks)/float64(embeddedRightDeepPlannerMaxTasks),
 			100*float64(rdTasks)/float64(embeddedRightDeepPlannerMaxTasks))
 	}
-	t.Logf("hub+5 star: default CAPS; PLAN_RIGHT_DEEP converges in %d tasks (%.0f%% of the %d ceiling)",
+	t.Logf("hub+6 star: default CAPS; PLAN_RIGHT_DEEP converges in %d tasks (%.0f%% of the %d ceiling)",
 		rdTasks, 100*float64(rdTasks)/float64(embeddedRightDeepPlannerMaxTasks), embeddedRightDeepPlannerMaxTasks)
 
 	// Explicit false must behave exactly like unset — the default is
 	// Java-identical and setting it must not be a way to change it.
-	if _, _, offErr := planWithOptions(t, fiveSpokeStarSQL, starJoinDDL,
+	if _, _, offErr := planWithOptions(t, sixSpokeStarSQL, starJoinDDL,
 		api.NewOptionsBuilder().Set(api.OptPlanRightDeep, false).Build()); !errors.Is(offErr, cascades.ErrPlannerCapHit) {
 		t.Fatalf("PLAN_RIGHT_DEEP=false: err=%v, want the same cap the unset default hits", offErr)
 	}

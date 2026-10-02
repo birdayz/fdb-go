@@ -123,7 +123,7 @@ func Run(ctx context.Context, corpus *javayamsql.Corpus, path string, cfg Config
 	if gap, ok := gapFor(path, runErr); ok {
 		res.Status = StatusSkip
 		res.SkipClass = gap.Class
-		res.Skips = append(res.Skips, Skip{Class: gap.Class, Where: path, Detail: gap.Booking + ": " + runErr.Error()})
+		res.Skips = append(res.Skips, Skip{Class: gap.Class, Where: path, GapBooking: gap.Booking, Detail: gap.Booking + ": " + runErr.Error()})
 		return res
 	}
 	// A schema_template the engine will not create is an engine gap with a
@@ -177,7 +177,7 @@ func Run(ctx context.Context, corpus *javayamsql.Corpus, path string, cfg Config
 			if gap, ok := gapFor(path, runErr); ok {
 				res.Status = StatusSkip
 				res.SkipClass = gap.Class
-				res.Skips = append(res.Skips, Skip{Class: gap.Class, Where: path, Detail: gap.Booking + ": " + runErr.Error()})
+				res.Skips = append(res.Skips, Skip{Class: gap.Class, Where: path, GapBooking: gap.Booking, Detail: gap.Booking + ": " + runErr.Error()})
 				return res
 			}
 			res.Status = StatusFail

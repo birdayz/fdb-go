@@ -100,7 +100,7 @@ func TestRuleSets_NoDuplicateRuleTypes(t *testing.T) {
 }
 
 // TestRuleRegistry_ResolvesEveryRegisteredSetRule asserts that every
-// rule in the four set constructors the package init registers
+// rule in the set constructors the package init registers
 // (registerDefaultRules / registerBatchARules / registerMatchingRules /
 // registerRewritingRules) resolves via LookupRule under its short type
 // name. Diagnostic / explain output relies on LookupRule(name) → rule,
@@ -116,10 +116,11 @@ func TestRuleSets_NoDuplicateRuleTypes(t *testing.T) {
 func TestRuleRegistry_ResolvesEveryRegisteredSetRule(t *testing.T) {
 	t.Parallel()
 	registered := map[string][]ExpressionRule{
-		"DefaultExpressionRules": DefaultExpressionRules(),
-		"BatchAExpressionRules":  BatchAExpressionRules(),
-		"MatchingRules":          MatchingRules(),
-		"RewritingRules":         RewritingRules(),
+		"DefaultExpressionRules":   DefaultExpressionRules(),
+		"PlanningExplorationRules": PlanningExplorationRules(),
+		"BatchAExpressionRules":    BatchAExpressionRules(),
+		"MatchingRules":            MatchingRules(),
+		"RewritingRules":           RewritingRules(),
 	}
 	fromSets := map[string]struct{}{}
 	for setName, rules := range registered {
@@ -623,18 +624,27 @@ func TestDefaultRules_EndToEndOptimisation(t *testing.T) {
 	// Reaching it requires the full FilterMerge + 2× NoOpFilter +
 	// DistinctMerge chain, so finding the shape pins the composition.
 	foundShape := false
-	for _, m := range ref.Members() {
+	for _, m := range ref.AllMembers() {
 		d, ok := m.(*expressions.LogicalDistinctExpression)
 		if !ok {
 			continue
 		}
-		inner := d.GetInner().GetRangesOver().Get()
-		if _, ok := inner.(*expressions.FullUnorderedScanExpression); ok {
-			foundShape = true
-			break
+		for _, inner := range d.GetInner().GetRangesOver().AllMembers() {
+			if _, ok := inner.(*expressions.FullUnorderedScanExpression); ok {
+				foundShape = true
+				break
+			}
 		}
 	}
 	if !foundShape {
+		for _, member := range ref.Members() {
+			t.Logf("root member: %T", member)
+			for _, quantifier := range member.GetQuantifiers() {
+				for _, child := range quantifier.GetRangesOver().Members() {
+					t.Logf("child member: %T", child)
+				}
+			}
+		}
 		t.Fatalf("after exploration, Reference has no Distinct(Scan) member — members=%d", len(ref.Members()))
 	}
 }

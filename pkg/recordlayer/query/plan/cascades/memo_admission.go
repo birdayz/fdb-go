@@ -25,6 +25,7 @@ type preparedReferenceBatch struct {
 	final            []expressions.RelationalExpression
 	inserted         []bool
 	aliasAwareDedups int
+	equality         expressions.PreparedMemberEquality
 }
 
 // prepareReferenceMemberBatch performs every fallible/method-driven operation
@@ -134,8 +135,9 @@ func prepareReferenceMemberBatch(
 		case expressions.ReferenceFinalMembers:
 			scratch, hashes = &finalScratch, &finalHashes
 		}
-		duplicate, aliasAware := expressions.PreparedMemberDuplicateWithHashes(
-			*scratch, *hashes, intent.expression)
+		duplicate, aliasAware := prepared.equality.DuplicateWithHashes(
+			*scratch, *hashes, intent.expression,
+		)
 		if duplicate {
 			if aliasAware {
 				prepared.aliasAwareDedups++
@@ -158,13 +160,17 @@ func (p *preparedReferenceBatch) commit() error {
 	if p == nil || p.reference == nil || p.view == nil {
 		return memoAdmissionError(values.MemoInvalidHandle, "memo.batch", "prepared Reference batch is nil or incomplete")
 	}
-	return p.reference.ApplyPreparedMemberBatch(
+	if err := p.reference.ApplyPreparedMemberBatch(
 		p.view,
 		p.relationType,
 		p.exploratory,
 		p.final,
 		p.aliasAwareDedups,
-	)
+	); err != nil {
+		return err
+	}
+	p.equality.PublishCorrelations()
+	return nil
 }
 
 func checkedStoredRelationType(handle values.ExactTypeHandle) (values.ExactTypeHandle, error) {

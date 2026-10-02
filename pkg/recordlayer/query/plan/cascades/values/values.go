@@ -57,6 +57,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/pkg/recordlayer/protoname"
+	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 // Canonical ISO 8601 layouts for temporal value formatting/parsing.
@@ -4572,6 +4573,9 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 // node nor an eval context, but its Go carrier alone cannot distinguish
 // FLOAT/DOUBLE or INT/LONG.
 func (c *CastValue) castEvaluated(v any, source Type) (any, error) {
+	if source != nil && source.Code() != TypeCodeUnknown && c.Target != nil && !CastTypesDefined(source, c.Target) {
+		return nil, &InvalidCastError{Message: fmt.Sprintf("No cast defined from %v to %v", source.Code(), c.Target.Code())}
+	}
 	if v == nil {
 		return nil, nil
 	}
@@ -4583,6 +4587,52 @@ func (c *CastValue) castEvaluated(v any, source Type) (any, error) {
 		sourceCode = source.Code()
 	}
 	switch c.Target.Code() {
+	case TypeCodeVector:
+		target, ok := c.Target.(*VectorType)
+		if !ok {
+			return nil, &InvalidCastError{Message: "Invalid vector target type"}
+		}
+		if sourceCode == TypeCodeVector {
+			return v, nil
+		}
+		array, ok := source.(*ArrayType)
+		if !ok || array.ElementType == nil {
+			return nil, &InvalidCastError{Message: "Source array element type cannot be null"}
+		}
+		list, ok := v.([]any)
+		if !ok {
+			return nil, &InvalidCastError{Message: "Source value is not an array"}
+		}
+		if len(list) != target.Dimensions {
+			return nil, &InvalidCastError{Message: "Source array is not the same size of the vector"}
+		}
+		elem := array.ElementType.Code()
+		if !elem.IsNumeric() || (target.Precision == 64 && elem == TypeCodeFloat) {
+			return nil, &InvalidCastError{Message: fmt.Sprintf("can not cast array of %v to vector", array.ElementType)}
+		}
+		coords := make([]float64, len(list))
+		for i, value := range list {
+			f, _, numeric := ToFloat64(value)
+			if !numeric {
+				return nil, &InvalidCastError{Message: "Vector element is not numeric"}
+			}
+			if elem == TypeCodeFloat {
+				f = float64(float32(f))
+			}
+			coords[i] = f
+		}
+		var ordinal byte
+		switch target.Precision {
+		case 16:
+			ordinal = vectorcodec.TypeHalf
+		case 32:
+			ordinal = vectorcodec.TypeSingle
+		case 64:
+			ordinal = vectorcodec.TypeDouble
+		default:
+			return nil, &InvalidCastError{Message: "Unexpected vector precision"}
+		}
+		return vectorcodec.SerializeAs(ordinal, coords), nil
 	case TypeCodeEnum:
 		if enum, ok := c.Target.(*EnumType); ok {
 			if name, isString := v.(string); isString {

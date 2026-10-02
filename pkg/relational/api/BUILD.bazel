@@ -29,6 +29,7 @@ go_library(
         "struct.go",
         "transaction.go",
         "transaction_time_limit_error.go",
+        "vector.go",
     ],
     importpath = "fdb.dev/pkg/relational/api",
     visibility = ["//visibility:public"],

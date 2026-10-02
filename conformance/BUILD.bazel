@@ -55,6 +55,20 @@ java_binary(
 )
 
 java_test(
+    name = "predicate_simplification_test",
+    main_class = "com.birdayz.conformance.PredicateSimplificationContract",
+    use_testrunner = False,
+    runtime_deps = [":conformance_lib"],
+)
+
+java_test(
+    name = "predicate_mapping_test",
+    main_class = "com.birdayz.conformance.PredicateMappingContract",
+    use_testrunner = False,
+    runtime_deps = [":conformance_lib"],
+)
+
+java_test(
     name = "rabitq_architecture_test",
     main_class = "com.birdayz.conformance.RaBitQArchitectureContract",
     use_testrunner = False,
@@ -518,6 +532,7 @@ go_test(
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/recordlayer/query/plan/plans",
+        "//pkg/recordlayer/vectorcodec",
         "//pkg/relational/api",
         "//pkg/relational/conformance/plandiff",
         "//pkg/relational/conformance/yamsql",

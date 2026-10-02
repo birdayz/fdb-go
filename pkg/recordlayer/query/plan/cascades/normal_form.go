@@ -19,17 +19,7 @@ import (
 //	  DNF      Or              And
 //	  CNF      And             Or
 //
-// ATOMICITY, and why there is one size function here where Java has two
-// fields. Java's PredicateMetrics carries normalFormSize (what the size GUARD
-// reads) and normalFormFullSize (what the COST MODEL reads via
-// NormalizedResidualPredicateProperty). They differ only at nodes where
-// QueryPredicate.isAtomic() is true (:323, :327, :330), which suppresses
-// multiplying a subtree out. Go has no atomicity concept at all — there is no
-// counterpart to withAtomicity — so the two metrics coincide and one function
-// serves both readers. If atomicity ever lands, THIS is the function that has
-// to split in two, and the two readers are normalFormSize's callers: the guard
-// in normalizeInternal and the cost sites in designated_final.go and
-// planning_cost_model.go.
+// Expansion size respects atomic barriers; residual costing uses full size.
 
 // normalFormMode selects which connective is the outer one. It is an enum with
 // a switch, as Java's Mode is (:72-112) — deliberately not a struct of
@@ -96,25 +86,11 @@ func connectiveChildren(p predicates.QueryPredicate) []predicates.QueryPredicate
 	}
 }
 
-// normalFormVariable is Java's isNormalFormVariable (:490-492): anything that
-// is not a boolean connective.
-//
-// Java's test is `isAtomic() || instanceof LeafQueryPredicate`. Go's structural
-// test is the exact equivalent for every predicate Go can build — among the
-// non-test QueryPredicate implementations, only And/Or/Not return a non-empty
-// Children() — and TestNormalFormVariable_MatchesTheConcreteTypes pins that
-// rather than leaving it asserted.
-//
-// It is MODE-INDEPENDENT, as Java's is: neither half of the question consults
-// which connective is outer.
-//
-// One divergence, in the FAILURE direction and recorded here because it is
-// silent: Java's isInNormalForm throws "unknown boolean expression" (:292) for
-// a predicate that is neither variable, connective, nor NOT. Go answers
-// "variable" instead. The sets coincide today so nothing differs; if a
-// connective-shaped predicate is ever added without an arm here, Java would
-// raise and Go will quietly treat it as an atom.
+// normalFormVariable matches Java's atomic subtree or leaf classification.
 func normalFormVariable(p predicates.QueryPredicate) bool {
+	if predicates.IsAtomic(p) {
+		return true
+	}
 	switch p.(type) {
 	case *predicates.AndPredicate, *predicates.OrPredicate, *predicates.NotPredicate:
 		return false
@@ -194,57 +170,53 @@ func isInNormalForm(p predicates.QueryPredicate, mode normalFormMode) bool {
 // Overflow SATURATES rather than wrapping; see normalFormSizeSaturated for why
 // testing for a negative product afterwards does not work.
 func normalFormSize(p predicates.QueryPredicate, negate bool, mode normalFormMode) int64 {
+	return normalFormSizeWithAtomicity(p, negate, mode, false)
+}
+
+func normalFormExpansionSize(p predicates.QueryPredicate, negate bool, mode normalFormMode) int64 {
+	return normalFormSizeWithAtomicity(p, negate, mode, true)
+}
+
+func normalFormSizeWithAtomicity(p predicates.QueryPredicate, negate bool, mode normalFormMode, respectAtomicity bool) int64 {
 	if p == nil {
 		return 0
 	}
-	if n, ok := p.(*predicates.NotPredicate); ok {
-		return normalFormSize(n.Child, !negate, mode)
-	}
-	children := connectiveChildren(p)
-	switch {
-	case mode.isMinor(p):
-		if negate {
-			return normalFormSizeSum(children, true, mode)
-		}
-		return normalFormSizeProduct(children, false, mode)
-	case mode.isMajor(p):
-		if negate {
-			return normalFormSizeProduct(children, true, mode)
-		}
-		return normalFormSizeSum(children, false, mode)
-	default:
+	if respectAtomicity && predicates.IsAtomic(p) {
 		return 1
 	}
-}
-
-// normalFormSizeSum is Java's getMetricsForMajor (:336-347): majors add.
-func normalFormSizeSum(children []predicates.QueryPredicate, negate bool, mode normalFormMode) int64 {
-	var sum int64
-	for _, c := range children {
-		sum = saturatingAddSize(sum, normalFormSize(c, negate, mode))
+	if n, ok := p.(*predicates.NotPredicate); ok {
+		return normalFormSizeWithAtomicity(n.Child, !negate, mode, respectAtomicity)
 	}
-	return sum
-}
-
-// normalFormSizeProduct is Java's getMetricsForMinor (:349-361): minors
-// multiply, because the minor is where the cross product happens.
-func normalFormSizeProduct(children []predicates.QueryPredicate, negate bool, mode normalFormMode) int64 {
-	var product int64 = 1
-	for _, c := range children {
-		product = saturatingMulSize(product, normalFormSize(c, negate, mode))
+	if !mode.isMinor(p) && !mode.isMajor(p) {
+		return 1
 	}
-	return product
+	sum := mode.isMajor(p) != negate
+	var size int64
+	if !sum {
+		size = 1
+	}
+	for _, child := range connectiveChildren(p) {
+		n := normalFormSizeWithAtomicity(child, negate, mode, respectAtomicity)
+		if sum {
+			size = saturatingAddSize(size, n)
+		} else {
+			size = saturatingMulSize(size, n)
+		}
+	}
+	return size
 }
 
 // toNormalized is Java's toNormalized (:370-384): the major-of-minor
 // list-of-lists, carrying the negate flag through the same role swap
 // normalFormSize uses. A NOT recurses with the flag flipped; a negated variable
 // is wrapped in NOT.
-//
-// Java opens with `if (!predicate.isAtomic())`, which suppresses descent into
-// an atomic subtree. Go has no atomicity, so the dispatch is unconditional —
-// see this file's header for where that has to change if atomicity lands.
 func toNormalized(p predicates.QueryPredicate, negate bool, mode normalFormMode) [][]predicates.QueryPredicate {
+	if predicates.IsAtomic(p) {
+		if negate {
+			return [][]predicates.QueryPredicate{{predicates.NewNot(p)}}
+		}
+		return [][]predicates.QueryPredicate{{p}}
+	}
 	if n, ok := p.(*predicates.NotPredicate); ok {
 		return toNormalized(n.Child, !negate, mode)
 	}

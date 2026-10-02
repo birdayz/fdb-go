@@ -93,9 +93,11 @@ func TestImplementInJoinRule_MatchesSelectExpression(t *testing.T) {
 	rule := NewImplementInJoinRule()
 	scanRef := expressions.InitialOf(inRuleLogicalScan())
 	q := expressions.ForEachQuantifier(scanRef)
+	explode := expressions.ForEachQuantifier(expressions.InitialOf(inRuleExplode(
+		inRuleArray(values.NotNullLong, int64(1), int64(2)))))
 	sel := inRuleSelect(
 		inRuleFlowedObject(q),
-		[]expressions.Quantifier{q},
+		[]expressions.Quantifier{explode, q},
 		nil,
 	)
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), sel)

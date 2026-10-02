@@ -135,47 +135,54 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 		if !candidateBindingRangesEligible(aggCand, partition.scanPrefix) {
 			continue
 		}
-		scanPlan := aggCand.ToScanPlan(partition.scanPrefix, false)
-		idxPlan := extractIndexPlan(scanPlan)
-		if idxPlan == nil {
-			continue
+		directions := []bool{false}
+		if aggCand.permuted {
+			directions = append(directions, true)
 		}
+		for _, reverse := range directions {
+			scanPlan := aggCand.ToScanPlan(partition.scanPrefix, reverse)
+			idxPlan := extractIndexPlan(scanPlan)
+			if idxPlan == nil {
+				continue
+			}
 
-		var recordTypeName string
-		if rts := aggCand.GetRecordTypes(); len(rts) > 0 {
-			recordTypeName = rts[0]
-		}
-		resultType, ok := aggregateIndexOutputType(aggCand)
-		if !ok {
-			continue
-		}
-		aggPlan, err := plans.NewRecordQueryAggregateIndexPlan(
-			idxPlan, recordTypeName, resultType, aggCand.aggFunction.String(),
-		)
-		if err != nil {
-			call.Fail(err)
-			return
-		}
-		aggPlan = aggPlan.WithGroupColumns(aggCand.groupCols, aggCand.aggColumn).
-			WithGroupColumnLayout(aggCand.GetBaseRowType()).
-			WithLiveGroupsOnly(dropsVacatedGroups(aggCand))
-		filtered, ok := partition.applyResiduals(aggPlan)
-		if !ok {
-			continue
-		}
-		logicalPlan, err := projectAggregateResultToGroupBy(filtered, gb)
-		if err != nil {
-			call.Fail(err)
-			return
-		}
+			var recordTypeName string
+			if rts := aggCand.GetRecordTypes(); len(rts) > 0 {
+				recordTypeName = rts[0]
+			}
+			resultType, ok := aggregateIndexOutputType(aggCand)
+			if !ok {
+				continue
+			}
+			aggPlan, err := plans.NewRecordQueryAggregateIndexPlan(
+				idxPlan, recordTypeName, resultType, aggCand.aggFunction.String(),
+			)
+			if err != nil {
+				call.Fail(err)
+				return
+			}
+			aggPlan = aggPlan.WithGroupColumns(aggCand.groupCols, aggCand.aggColumn).
+				WithGroupColumnLayout(aggCand.GetBaseRowType()).
+				WithPermutedOrdering(aggCand.permuted).
+				WithLiveGroupsOnly(dropsVacatedGroups(aggCand))
+			filtered, ok := partition.applyResiduals(aggPlan)
+			if !ok {
+				continue
+			}
+			logicalPlan, err := projectAggregateResultToGroupBy(filtered, gb)
+			if err != nil {
+				call.Fail(err)
+				return
+			}
 
-		// The yielded member must state the exact result type of the Reference it
-		// joins. projectAggregateResultToGroupBy is what guarantees that, and it
-		// publishes the GroupBy row through an ordinal projection ONLY when the
-		// leaf's own row does not already carry those column names — which, on this
-		// corpus, it always does. See its doc for the census.
-		call.Yield(logicalPlan)
-		singleMatched = true
+			// The yielded member must state the exact result type of the Reference it
+			// joins. projectAggregateResultToGroupBy is what guarantees that, and it
+			// publishes the GroupBy row through an ordinal projection ONLY when the
+			// leaf's own row does not already carry those column names — which, on this
+			// corpus, it always does. See its doc for the census.
+			call.Yield(logicalPlan)
+			singleMatched = true
+		}
 	}
 	if singleMatched {
 		return
@@ -1085,6 +1092,8 @@ func aggregateIndexOutputType(cand *AggregateIndexMatchCandidate) (*values.Recor
 
 func aggregateIndexResultType(cand *AggregateIndexMatchCandidate) (values.Type, bool) {
 	switch cand.aggFunction {
+	case expressions.AggBitmapConstructAgg:
+		return values.NullableBytes, true
 	case expressions.AggCount:
 		return values.NullableLong, true
 	case expressions.AggAvg:

@@ -69,10 +69,6 @@ const (
 	// FDB clusters wired as separate connections.
 	SkipMultiCluster SkipClass = "unsupported:multi-cluster"
 
-	// SkipPrepared is `statement_type: prepared` and parameter injection into
-	// a prepared statement. RFC-201 Phase 5.
-	SkipPrepared SkipClass = "unsupported:prepared"
-
 	// SkipContinuation is `maxRows` with multi-page result consumption. The
 	// driver has no per-page continuation surface to hand back. RFC-201
 	// Phase 2, and under the hard wire-compat line.
@@ -250,7 +246,6 @@ func AllSkipClasses() []SkipClass {
 		SkipVacuous,
 		SkipVersionGate,
 		SkipMultiCluster,
-		SkipPrepared,
 		SkipContinuation,
 		SkipResultMetadataNested,
 		SkipCopyBlock,
@@ -317,6 +312,8 @@ type Skip struct {
 	Where string
 	// Detail is the specific cause, e.g. the engine's DDL rejection message.
 	Detail string
+	// GapBooking identifies the matched engine gap without parsing display text.
+	GapBooking string
 }
 
 // FileResult is one corpus file's outcome.
@@ -331,9 +328,11 @@ type FileResult struct {
 	// QueriesRun counts queries whose configs were actually asserted.
 	QueriesRun int
 	// FixtureLoadAttempts counts explicit reset/load transactions in the
-	// generated-fixture mode only. Each ambiguous commit is retained below.
+	// generated-fixture mode only. Each ambiguous commit and each replayed
+	// transaction-window loss is retained below.
 	FixtureLoadAttempts      int
 	FixtureCommitAmbiguities []error
+	FixtureWindowLosses      []error
 	// Skips are the sub-file counted skips (block, query and config level).
 	Skips []Skip
 }

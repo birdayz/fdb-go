@@ -150,7 +150,8 @@ type groupState struct {
 	mins    []any
 	maxs    []any
 	// arrays holds each ARRAY_AGG's collected elements.
-	arrays [][]any
+	arrays  [][]any
+	bitmaps [][]byte
 }
 
 func newAggregateCursorWithOutputType(
@@ -709,6 +710,7 @@ func (c *aggregateCursor) newGroupState() *groupState {
 		mins:    make([]any, len(c.aggregates)),
 		maxs:    make([]any, len(c.aggregates)),
 		arrays:  make([][]any, len(c.aggregates)),
+		bitmaps: make([][]byte, len(c.aggregates)),
 	}
 }
 
@@ -748,6 +750,24 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 		}
 		gs.counts[i]++
 		switch agg.Function {
+		case expressions.AggBitmapConstructAgg:
+			n, ok := asInt64(val)
+			if !ok {
+				return fmt.Errorf("bitmap aggregate requires an integer, got %T", val)
+			}
+			// Java LONG narrows via Long.intValue before setting the BitSet.
+			position := int32(n)
+			if position < 0 || position >= 250000 {
+				return &BitmapAggregatePositionError{Position: position}
+			}
+			size := int(position)/8 + 1
+			if size < 1250 {
+				size = 1250
+			}
+			if len(gs.bitmaps[i]) < size {
+				gs.bitmaps[i] = append(gs.bitmaps[i], make([]byte, size-len(gs.bitmaps[i]))...)
+			}
+			gs.bitmaps[i][position/8] |= 1 << (uint32(position) % 8)
 		case expressions.AggSum, expressions.AggAvg:
 			if !isNumeric(val) {
 				return fmt.Errorf("cannot aggregate non-numeric value of type %T", val)
@@ -991,6 +1011,10 @@ func (c *aggregateCursor) finalizeGroup() QueryResult {
 				val = gs.sumsI[i]
 			} else {
 				val = gs.sums[i]
+			}
+		case expressions.AggBitmapConstructAgg:
+			if gs.counts[i] > 0 {
+				val = bytes.Clone(gs.bitmaps[i])
 			}
 		case expressions.AggMin:
 			val = gs.mins[i]
@@ -1441,7 +1465,7 @@ func (c *nljCursor) pairBinder(outer, inner values.OrdinalRow) *twoLegBinder {
 	return &twoLegBinder{
 		outerID: c.outerCorr, innerID: c.innerCorr,
 		outer: outer, inner: inner,
-		outerType: c.build.legType(c.outerCorr), innerType: c.build.legType(c.innerCorr),
+		outerType: c.build.legValueType(c.outerCorr), innerType: c.build.legValueType(c.innerCorr),
 		base: correlationBase(c.evalCtx),
 	}
 }
@@ -2225,4 +2249,15 @@ func javaMaxF64(a, b float64) float64 {
 		return math.NaN()
 	}
 	return math.Max(a, b)
+}
+
+// BitmapAggregatePositionError rejects a negative bit or a result exceeding
+// Java BitmapValueIndexMaintainer.MAX_ENTRY_SIZE, before allocating that result.
+type BitmapAggregatePositionError struct{ Position int32 }
+
+func (e *BitmapAggregatePositionError) Error() string {
+	if e.Position < 0 {
+		return fmt.Sprintf("bitIndex < 0: %d", e.Position)
+	}
+	return "entry size option is too large"
 }

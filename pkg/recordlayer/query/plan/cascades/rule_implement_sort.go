@@ -283,24 +283,28 @@ func orderedFlatMapCandidatesAtSort(
 	less := lessWithHashTieBreak(call.CostModel())
 
 	rawOuters, err := collectJoinLegOrderingVariants(
+		call,
 		outerRef, properties.PreserveOrdering(), outerOrderingResultValue,
 		flatMap.GetOuterAlias(), less, false, call.Context)
 	if err != nil {
 		return nil, err
 	}
 	rawInners, err := collectJoinLegOrderingVariants(
+		call,
 		innerRef, properties.PreserveOrdering(), resultValue,
 		flatMap.GetInnerAlias(), less, false, call.Context)
 	if err != nil {
 		return nil, err
 	}
 	orderedOuters, err := collectJoinLegOrderingVariants(
+		call,
 		outerRef, outerRequested, outerOrderingResultValue,
 		flatMap.GetOuterAlias(), less, true, call.Context)
 	if err != nil {
 		return nil, err
 	}
 	orderedInners, err := collectJoinLegOrderingVariants(
+		call,
 		innerRef, innerRequested, resultValue,
 		flatMap.GetInnerAlias(), less, true, call.Context)
 	if err != nil {
@@ -669,7 +673,7 @@ func makeStrictlySorted(expr expressions.RelationalExpression) (expressions.Rela
 			newCov := cov.WithIndexPlan(cov.GetIndexPlan().WithStrictlySorted())
 			newCovRef := expressions.InitialOf(newCov)
 			return plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
-				expressions.ForEachQuantifier(newCovRef),
+				expressions.NewPhysicalQuantifier(newCovRef),
 				fw.GetTranslateValueFunction(),
 				fw.GetResultType(),
 				fw.GetFetchIndexRecords(),
@@ -682,7 +686,7 @@ func makeStrictlySorted(expr expressions.RelationalExpression) (expressions.Rela
 			// strictlyOrderedIfUnique), so the plan's unique flag is already true.
 			newIdxPlan := idxPlan.WithStrictlySorted()
 			newIdxRef := expressions.InitialOf(newIdxPlan)
-			newFetchQ := expressions.ForEachQuantifier(newIdxRef)
+			newFetchQ := expressions.NewPhysicalQuantifier(newIdxRef)
 			// The fetch is its own cascades expression carrying the live newIdxRef
 			// edge (RFC-184 W2).
 			return plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(

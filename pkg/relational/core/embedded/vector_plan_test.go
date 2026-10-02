@@ -682,3 +682,22 @@ func TestVectorPlan_MetricIsTheMaintainers(t *testing.T) {
 		})
 	}
 }
+
+func TestVectorPlan_QualifyDisjunction(t *testing.T) {
+	t.Parallel()
+	schema := `CREATE TABLE docs(zone string, id bigint, embedding vector(3,half), PRIMARY KEY(zone,id))
+ CREATE VECTOR INDEX euclidean_idx USING HNSW ON docs(embedding) PARTITION BY(zone) OPTIONS(METRIC=EUCLIDEAN_METRIC)
+ CREATE VECTOR INDEX cosine_idx USING HNSW ON docs(embedding) PARTITION BY(zone) OPTIONS(METRIC=COSINE_METRIC)`
+	sql := `SELECT id FROM docs WHERE zone='z1' QUALIFY
+ ROW_NUMBER() OVER (PARTITION BY zone ORDER BY cosine_distance(embedding,[1.0,0.0,0.0])) <= 1 OR
+ ROW_NUMBER() OVER (PARTITION BY zone ORDER BY euclidean_distance(embedding,[0.5,0.5,0.5])) <= 1`
+	plan, err := PlanQueryForTest(sql, schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Union", "EUCLIDEAN_IDX", "COSINE_IDX"} {
+		if !strings.Contains(plan, want) {
+			t.Fatalf("missing %s: %s", want, plan)
+		}
+	}
+}

@@ -344,17 +344,23 @@ func TestCastValue(t *testing.T) {
 	}
 
 	// bool → int: true=1, false=0.
-	boolToInt := NewCastValue(NewBooleanValue(true), NullableLong)
+	boolToInt := NewCastValue(NewBooleanValue(true), NullableInt)
 	got, errEv4 := boolToInt.Evaluate(nil)
 	require.NoError(t, errEv4)
 	if got != int64(1) {
 		t.Fatalf("true→int: got %v", got)
 	}
-	boolToInt = NewCastValue(NewBooleanValue(false), NullableLong)
+	boolToInt = NewCastValue(NewBooleanValue(false), NullableInt)
 	got, errEv5 := boolToInt.Evaluate(nil)
 	require.NoError(t, errEv5)
 	if got != int64(0) {
 		t.Fatalf("false→int: got %v", got)
+	}
+
+	// Java defines BOOLEAN_TO_INT, not BOOLEAN_TO_LONG. SQL already rejects
+	// the latter at resolution; direct Value evaluation must reject it too.
+	if _, err := NewCastValue(NewBooleanValue(true), NullableLong).Evaluate(nil); err == nil {
+		t.Fatal("BOOLEAN→LONG must reject (no Java cast pair)")
 	}
 
 	// INT → bool: 0=false, non-zero=true (Java INT_TO_BOOLEAN — the
@@ -501,15 +507,19 @@ func TestCastValue(t *testing.T) {
 	if got != "false" {
 		t.Fatalf("FALSE→string: got %v, want \"false\"", got)
 	}
-	// bool → float. Mirrors runtime's CAST(b AS INT) AS FLOAT chain
-	// in one step (TRUE→1.0, FALSE→0.0).
-	boolToFloatT := NewCastValue(NewBooleanValue(true), NullableDouble)
+	// Java needs an explicit BOOLEAN→INT→DOUBLE chain, not a direct cast.
+	for _, target := range []Type{NullableFloat, NullableDouble} {
+		if _, err := NewCastValue(NewBooleanValue(true), target).Evaluate(nil); err == nil {
+			t.Fatalf("BOOLEAN→%s must reject (no Java cast pair)", target)
+		}
+	}
+	boolToFloatT := NewCastValue(NewCastValue(NewBooleanValue(true), NullableInt), NullableDouble)
 	got, errEv20 := boolToFloatT.Evaluate(nil)
 	require.NoError(t, errEv20)
 	if got != float64(1) {
 		t.Fatalf("TRUE→float: got %v, want 1", got)
 	}
-	boolToFloatF := NewCastValue(NewBooleanValue(false), NullableDouble)
+	boolToFloatF := NewCastValue(NewCastValue(NewBooleanValue(false), NullableInt), NullableDouble)
 	got, errEv21 := boolToFloatF.Evaluate(nil)
 	require.NoError(t, errEv21)
 	if got != float64(0) {

@@ -203,7 +203,7 @@ func TestPhase3_FilterOnly(t *testing.T) {
 	scanRef := expressions.InitialOf(scan)
 
 	filter := phase3Filter(t,
-		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriFalse)},
 		expressions.ForEachQuantifier(scanRef),
 	)
 	rootRef := expressions.InitialOf(filter)
@@ -429,6 +429,7 @@ func TestPhase3_PlanPropertyInvariant_ScanIsDistinct(t *testing.T) {
 
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
 
+	scanRef = plannedSeedChild(t, rootRef)
 	pm := GetRefPlanPropertiesMap(scanRef)
 	if pm == nil {
 		t.Fatal("scanRef PlanPropertiesMap is nil after PLANNING phase")
@@ -477,7 +478,7 @@ func TestPhase3_PlanPropertyInvariant_FilterInheritsDistinct(t *testing.T) {
 	scanRef := expressions.InitialOf(scan)
 
 	filter := phase3Filter(t,
-		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriFalse)},
 		expressions.ForEachQuantifier(scanRef),
 	)
 	filterRef := expressions.InitialOf(filter)
@@ -491,6 +492,8 @@ func TestPhase3_PlanPropertyInvariant_FilterInheritsDistinct(t *testing.T) {
 
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
 
+	filterRef = plannedSeedChild(t, rootRef)
+	scanRef = plannedSeedChild(t, filterRef)
 	// The inner scanRef must have distinct=true (established by test 7).
 	scanPM := GetRefPlanPropertiesMap(scanRef)
 	if scanPM == nil {

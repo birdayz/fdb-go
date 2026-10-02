@@ -1269,6 +1269,7 @@ func TestRetainedWindowExistentialPinsOuterAgainstOrderedAlternativeRecovery(t *
 	orderingResult := flatMapOrderingResultForChild(
 		existsFlatMap, existsFlatMap.GetOuterAlias(), true)
 	variants, err := collectJoinLegOrderingVariants(
+		call,
 		pinnedOuterRef,
 		properties.PreserveOrdering(),
 		orderingResult,
@@ -1535,6 +1536,158 @@ func TestTranslateExistentialWholeRowPredicatesPreservesSameAliasScalar(t *testi
 		original, oldWhole, wrongReplacement,
 	); result != nil || typeErr == nil {
 		t.Fatalf("wrong-type replacement = (%v, %v), want nil,error", result, typeErr)
+	}
+}
+
+func TestTranslateExistentialWholeRowAccessPrograms(t *testing.T) {
+	t.Parallel()
+	alias := values.NamedCorrelationIdentifier("X")
+	rowType := values.NewRecordType("", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+		{Name: "X", FieldType: values.NotNullInt},
+	})
+	declaration := mustNLJConstruct(values.NewQuantifiedObjectValue(alias, rowType))
+	replacement := mustNLJConstruct(values.NewQuantifiedObjectValue(
+		values.UniqueCorrelationIdentifier(), rowType))
+	field := mustNLJConstruct(values.ResolveFieldOrdinals(declaration, []int{0}))
+	scalar := mustNLJConstruct(values.NewQuantifiedObjectValue(alias, values.NotNullInt))
+	foreign := mustNLJConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("FOREIGN"), rowType))
+	wrong := mustNLJConstruct(values.NewQuantifiedObjectValue(alias, values.NotNullLong))
+	rangeOf := func(comparisons ...*predicates.Comparison) *predicates.ComparisonRange {
+		t.Helper()
+		rangeValue := predicates.EmptyComparisonRange()
+		for _, comparison := range comparisons {
+			merged := rangeValue.Merge(comparison)
+			if !merged.Complete() {
+				t.Fatal("construct comparison range")
+			}
+			rangeValue = merged.Range
+		}
+		return rangeValue
+	}
+	ranges := []*predicates.ComparisonRange{
+		rangeOf(&predicates.Comparison{Type: predicates.ComparisonEquals, Operand: field}),
+		rangeOf(&predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: field},
+			&predicates.Comparison{Type: predicates.ComparisonLessThan, Operand: field}),
+	}
+	for _, value := range []values.Value{scalar, foreign, wrong} {
+		ranges = append(ranges, rangeOf(&predicates.Comparison{Type: predicates.ComparisonEquals, Operand: value}))
+	}
+	scan := nljPhysicalScan("INNER").WithScanComparisons(ranges)
+	index := mustNLJConstruct(plans.NewRecordQueryIndexPlan(
+		"IDX", ranges, []string{"INNER"}, nljSimpleRowType("INNER"), true))
+	covering := mustNLJConstruct(plans.NewRecordQueryCoveringIndexPlan(index))
+	filterAlias := values.NamedCorrelationIdentifier("INNER_EDGE")
+	filter := mustNLJConstruct(plans.NewRecordQueryPredicatesFilterPlanWithAlias(
+		covering, []predicates.QueryPredicate{predicates.NewComparisonPredicate(
+			field, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: scalar})}, filterAlias))
+	fetch := mustNLJConstruct(plans.NewRecordQueryFetchFromPartialRecordPlan(
+		filter, nil, nljSimpleRowType("INNER"), plans.FetchIndexRecordsPrimaryKey))
+	legacy := mustNLJConstruct(plans.NewRecordQueryFilterPlan(filter.GetPredicates(), scan))
+	typeFilter := mustNLJConstruct(plans.NewRecordQueryTypeFilterPlan([]string{"INNER"}, legacy))
+	projection := mustNLJConstruct(plans.NewRecordQueryProjectionPlanWithAliases(
+		[]values.Value{field, scalar}, []string{"OUTER_ID", "ELEMENT"}, typeFilter))
+	strict := mustNLJConstruct(plans.NewRecordQueryFirstOrDefaultPlanStrict(
+		scan, values.NewNullValue(values.WithNullability(scan.GetResultType(), true))))
+
+	for _, test := range []struct {
+		name string
+		plan plans.RecordQueryPlan
+	}{
+		{name: "scan", plan: scan},
+		{name: "index", plan: index},
+		{name: "fetch_filter_covering", plan: fetch},
+		{name: "type_filter_legacy_filter", plan: typeFilter},
+		{name: "projection", plan: projection},
+		{name: "strict_first_or_default", plan: strict},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			translated := mustNLJConstruct(translateExistentialWholeRowPlanPredicates(
+				test.plan, declaration, replacement))
+			if translated == test.plan {
+				t.Fatal("whole-row scan operand was not translated")
+			}
+			var check func(plans.RecordQueryPlan, plans.RecordQueryPlan)
+			leaves := 0
+			check = func(before, after plans.RecordQueryPlan) {
+				t.Helper()
+				oldQuants, newQuants := before.GetQuantifiers(), after.GetQuantifiers()
+				if len(oldQuants) != len(newQuants) {
+					t.Fatalf("quantifier arity changed for %T", before)
+				}
+				for i, quantifier := range oldQuants {
+					if quantifier.GetAlias() != newQuants[i].GetAlias() || quantifier.Kind() != newQuants[i].Kind() ||
+						quantifier.GetRangesOver().Stage() != newQuants[i].GetRangesOver().Stage() {
+						t.Fatalf("child identity changed for %T edge %d", before, i)
+					}
+				}
+				if probe, ok := after.(interface {
+					GetScanComparisons() []*predicates.ComparisonRange
+				}); ok {
+					leaves++
+					got := probe.GetScanComparisons()
+					for _, comparison := range append([]*predicates.Comparison{got[0].GetEqualityComparison()}, got[1].GetInequalityComparisons()...) {
+						operand, ok := values.AsFieldValue(comparison.Operand)
+						if !ok || operand.ChildValue() != replacement {
+							t.Fatalf("scan operand = %v, want exact replacement root", comparison.Operand)
+						}
+					}
+					for i := 2; i < len(ranges); i++ {
+						if got[i] != ranges[i] {
+							t.Fatalf("unrelated range %d was rebuilt", i)
+						}
+					}
+				}
+				if residual, ok := after.(interface {
+					GetPredicates() []predicates.QueryPredicate
+				}); ok {
+					comparison := residual.GetPredicates()[0].(*predicates.ComparisonPredicate)
+					operand, ok := values.AsFieldValue(comparison.Operand)
+					if !ok || operand.ChildValue() != replacement || comparison.Comparison.Operand != scalar {
+						t.Fatalf("residual lost whole-row/scalar distinction: %v", comparison)
+					}
+				}
+				if afterFilter, ok := after.(*plans.RecordQueryPredicatesFilterPlan); ok && afterFilter.GetInnerAlias() != filterAlias {
+					t.Fatal("filter binding alias changed")
+				}
+				if projected, ok := after.(*plans.RecordQueryProjectionPlan); ok {
+					operand, isField := values.AsFieldValue(projected.GetProjections()[0])
+					if !isField || operand.ChildValue() != replacement || projected.GetProjections()[1] != scalar {
+						t.Fatal("projection lost whole-row/scalar distinction")
+					}
+				}
+				if first, ok := after.(*plans.RecordQueryFirstOrDefaultPlan); ok &&
+					(!first.IsStrict() || first.GetDefaultValue() != strict.GetDefaultValue()) {
+					t.Fatal("first-or-default lost its strict/default contract")
+				}
+				oldChildren, newChildren := before.GetChildren(), after.GetChildren()
+				if len(oldChildren) != len(newChildren) {
+					t.Fatalf("child arity changed for %T", before)
+				}
+				for i := range oldChildren {
+					check(oldChildren[i], newChildren[i])
+				}
+			}
+			check(test.plan, translated)
+			if leaves != 1 {
+				t.Fatalf("checked %d scan leaves, want 1", leaves)
+			}
+			originalField, ok := values.AsFieldValue(field)
+			if !ok || originalField.ChildValue() != declaration || scan.GetScanComparisons()[0] != ranges[0] ||
+				index.GetScanComparisons()[1] != ranges[1] || filter.GetInner() != covering || fetch.GetInner() != filter {
+				t.Fatal("translation mutated the source access path")
+			}
+			unchanged := mustNLJConstruct(translateExistentialWholeRowPlanPredicates(
+				test.plan, foreign, foreign))
+			if unchanged != test.plan {
+				t.Fatal("identity translation rebuilt an access path")
+			}
+			if result, err := translateExistentialWholeRowPlanPredicates(test.plan, declaration, wrong); result != nil || err == nil {
+				t.Fatalf("incompatible scan translation = (%v, %v), want nil,error", result, err)
+			}
+		})
 	}
 }
 
@@ -1805,6 +1958,50 @@ func TestImplementNestedLoopJoin_SharedNamedExternalSiblingStillDeclines(t *test
 	}
 }
 
+func TestImplementExistentialJoinHonorsDependencyDirection(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name                       string
+		outerDepends, innerDepends bool
+	}{
+		{"independent", false, false},
+		{"inner_depends_on_outer", false, true},
+		{"outer_depends_on_inner", true, false},
+		{"cycle", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			outerAlias, innerAlias := values.UniqueCorrelationIdentifier(), values.UniqueCorrelationIdentifier()
+			outerScan, innerScan := nljPhysicalScan("OUTER"), nljPhysicalScan("INNER")
+			var outer, inner plans.RecordQueryPlan = outerScan, innerScan
+			withDependency := func(plan, dependency plans.RecordQueryPlan, own, free values.CorrelationIdentifier) plans.RecordQueryPlan {
+				qov := mustNLJConstruct(values.NewQuantifiedObjectValue(free, dependency.GetResultType()))
+				return mustNLJConstruct(plans.NewRecordQueryPredicatesFilterPlanWithAlias(plan,
+					[]predicates.QueryPredicate{predicates.NewComparisonPredicate(qov, predicates.Comparison{Type: predicates.ComparisonIsNotNull})}, own))
+			}
+			if tc.outerDepends {
+				outer = withDependency(outer, innerScan, outerAlias, innerAlias)
+			}
+			if tc.innerDepends {
+				inner = withDependency(inner, outerScan, innerAlias, outerAlias)
+			}
+			outerQ := expressions.NamedForEachQuantifier(outerAlias, expressions.FinalOf(outer))
+			innerQ := expressions.NamedExistentialQuantifier(innerAlias, expressions.FinalOf(inner))
+			sel := mustNLJConstruct(expressions.NewSelectExpressionWithAliases(nljFlowed(outerQ),
+				[]expressions.Quantifier{outerQ, innerQ}, []predicates.QueryPredicate{mustExistentialAlias(t, innerAlias)},
+				[]string{outerAlias.Name(), innerAlias.Name()}))
+			results := mustFireExpressionRule(t, NewImplementNestedLoopJoinRule(), expressions.InitialOf(sel))
+			if tc.outerDepends {
+				if len(results) != 0 {
+					t.Fatalf("yielded %d plans whose outer requires the unbound existential inner", len(results))
+				}
+			} else if len(results) == 0 {
+				t.Fatal("a valid existential dependency direction yielded no implementation")
+			}
+		})
+	}
+}
+
 func TestImplementNestedLoopJoin_DoesNotFireOnSingleQuantifier(t *testing.T) {
 	t.Parallel()
 
@@ -1990,6 +2187,7 @@ func TestImplementNestedLoopJoin_StrictSingleForcesCompensatedFlatMap(t *testing
 
 	foundStrictFlatMap := false
 	for _, result := range results {
+		assertProducerPhysicalQuantifiers(t, result)
 		if _, ok := result.(*plans.RecordQueryNestedLoopJoinPlan); ok {
 			t.Fatalf("strict-single select yielded an unwrapped materialized NLJ: %T", result)
 		}
@@ -3091,6 +3289,205 @@ func TestBuriedLegOrdinalLayout_SkipsFusedNestedSameLeafName(t *testing.T) {
 	}
 }
 
+// A partitioned value can carry several conjuncts, or several alternative
+// ranges. Only a conjunctive equality may become a probe, and consuming it
+// must leave every other constraint below FirstOrDefault.
+func TestImplementNestedLoopJoin_ExistsPartitionedRanges(t *testing.T) {
+	t.Parallel()
+	for _, access := range []string{"primary", "secondary"} {
+		for _, shape := range []string{"conjunction", "disjunction"} {
+			for _, mode := range []string{"exists", "not_exists"} {
+				t.Run(access+"/"+shape+"/"+mode, func(t *testing.T) {
+					t.Parallel()
+					o, i := values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I")
+					outerType, innerType := nljTestLayouts["OUTER"], nljTestLayouts["INNER"]
+					outerRef := expressions.InitialOf(mustNLJConstruct(expressions.NewFullUnorderedScanExpression([]string{"OUTER"}, outerType)))
+					innerRef := expressions.InitialOf(mustNLJConstruct(expressions.NewFullUnorderedScanExpression([]string{"INNER"}, innerType)))
+					outerRef.InsertFinal(mustNLJConstruct(plans.NewRecordQueryScanPlan([]string{"OUTER"}, outerType, false)))
+					innerRef.InsertFinal(mustNLJConstruct(plans.NewRecordQueryScanPlan([]string{"INNER"}, innerType, false)))
+					oq, iq := expressions.NamedForEachQuantifier(o, outerRef), expressions.NamedExistentialQuantifier(i, innerRef)
+					innerID, outerID := nljBakedRef(t, "INNER", i, "ID"), nljBakedRef(t, "OUTER", o, "ID")
+					equality := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: outerID}
+					bound := predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(10))}
+					regular := []predicates.QueryPredicate{
+						predicates.NewComparisonPredicate(innerID, equality),
+						predicates.NewComparisonPredicate(innerID, bound),
+					}
+					if shape == "disjunction" {
+						regular = []predicates.QueryPredicate{predicates.NewPredicateWithValueAndRanges(innerID, []*predicates.RangeConstraints{
+							predicates.NewRangeConstraints(nil, []predicates.Comparison{equality}),
+							predicates.NewRangeConstraints([]predicates.Comparison{bound}, nil),
+						})}
+					}
+					var exists predicates.QueryPredicate = mustExistentialAlias(t, i)
+					wantPresence := predicates.ComparisonIsNotNull
+					if mode == "not_exists" {
+						exists = predicates.NewNot(exists)
+						wantPresence = predicates.ComparisonIsNull
+					}
+					outerBound := predicates.NewComparisonPredicate(nljBakedRef(t, "OUTER", o, "CATEGORY"),
+						predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(0))})
+					sel := mustNLJConstruct(expressions.NewSelectExpressionWithAliases(nljFlowed(oq),
+						[]expressions.Quantifier{oq, iq}, append(regular, exists, outerBound), []string{"O", "I"}))
+					partitionedInner := false
+					for _, predicate := range sel.GetPredicates() {
+						pvr, ok := predicate.(*predicates.PredicateWithValueAndRanges)
+						if !ok || !values.SemanticEqualsUnderAliasMap(pvr.GetValue(), innerID, nil) {
+							continue
+						}
+						partitionedInner = true
+						wantRanges := 1
+						if shape == "disjunction" {
+							wantRanges = 2
+						}
+						if len(pvr.GetRanges()) != wantRanges || len(pvr.GetComparisons()) != 2 {
+							t.Fatalf("fixture lost the partitioned range shape: %s", pvr.Explain())
+						}
+					}
+					if !partitionedInner {
+						t.Fatal("fixture did not partition the inner predicates into PVR")
+					}
+					ctx := nljPrimaryKeyPlanContext{PlanContext: NewPlanContextFromMatchCandidates(nil), primaryKey: []string{"ID"}}
+					if access == "secondary" {
+						scalar := false
+						candidate := NewValueIndexScanMatchCandidateWithFunctions("INNER$ID", []string{"INNER"}, []string{"ID"}, nil,
+							[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()}, innerType, false, nil, &scalar).
+							WithKeyComponentTypes([]values.Type{values.NullableLong})
+						ctx.PlanContext = NewPlanContextFromMatchCandidates([]MatchCandidate{candidate})
+						ctx.primaryKey = nil
+					}
+					results := mustFireExpressionRuleWithMemo(t, NewImplementNestedLoopJoinRule(), expressions.InitialOf(sel), ctx, nil)
+					if len(results) == 0 {
+						t.Fatal("partitioned existential yielded no plan")
+					}
+					for _, result := range results {
+						assertProducerPhysicalQuantifiers(t, result)
+						flatMap, ok := result.(*plans.RecordQueryFlatMapPlan)
+						if !ok {
+							t.Fatalf("existential implementation = %T, want FlatMap", result)
+						}
+						outerFilter, ok := flatMap.GetOuter().(*plans.RecordQueryPredicatesFilterPlan)
+						if !ok || len(outerFilter.GetPredicates()) != 1 {
+							t.Fatalf("outer constraint was lost or moved below FirstOrDefault: %s", flatMap.Explain())
+						}
+						presence, ok := flatMap.GetInner().(*plans.RecordQueryPredicatesFilterPlan)
+						if !ok || len(presence.GetPredicates()) != 1 {
+							t.Fatalf("missing existential residual: %s", flatMap.Explain())
+						}
+						presencePredicate, ok := presence.GetPredicates()[0].(*predicates.ComparisonPredicate)
+						if !ok || presencePredicate.Comparison.Type != wantPresence {
+							t.Fatalf("existential polarity changed: %s", presence.Explain())
+						}
+						fod, ok := presence.GetInner().(*plans.RecordQueryFirstOrDefaultPlan)
+						if !ok {
+							t.Fatalf("missing FirstOrDefault below presence test: %s", presence.Explain())
+						}
+						filter, ok := fod.GetInner().(*plans.RecordQueryPredicatesFilterPlan)
+						if !ok || len(filter.GetPredicates()) != 1 {
+							t.Fatalf("remaining range constraint must filter below FirstOrDefault: %s", fod.Explain())
+						}
+						residual := filter.GetPredicates()[0]
+						if shape == "conjunction" {
+							comparison, ok := residual.(*predicates.ComparisonPredicate)
+							if !ok || comparison.Comparison.Type != bound.Type || !values.SemanticEqualsUnderAliasMap(comparison.Comparison.Operand, bound.Operand, nil) {
+								t.Fatalf("probe consumed the additional range bound: %s", residual.Explain())
+							}
+						} else if disjunction, ok := residual.(*predicates.OrPredicate); !ok || len(disjunction.SubPredicates) != 2 {
+							t.Fatalf("alternative ranges were not preserved as OR: %s", residual.Explain())
+						}
+						var comparisons []*predicates.ComparisonRange
+						switch scan := filter.GetInner().(type) {
+						case *plans.RecordQueryScanPlan:
+							if shape == "conjunction" && access == "secondary" {
+								t.Fatal("secondary shortcut did not use the index")
+							}
+							comparisons = scan.GetScanComparisons()
+						case *plans.RecordQueryIndexPlan:
+							if shape != "conjunction" || access != "secondary" {
+								t.Fatal("unexpected secondary probe")
+							}
+							comparisons = scan.GetScanComparisons()
+						default:
+							t.Fatalf("unexpected filtered access plan: %T", filter.GetInner())
+						}
+						if shape == "conjunction" {
+							if len(comparisons) != 1 || !comparisons[0].IsEquality() {
+								t.Fatalf("partitioned equality did not become a point probe: %v", comparisons)
+							}
+						} else if len(comparisons) != 0 {
+							t.Fatalf("one disjunct incorrectly narrowed the entire inner: %v", comparisons)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestImplementNestedLoopJoin_MaterializedPartitionedPredicates(t *testing.T) {
+	t.Parallel()
+	for name, kind := range map[string]expressions.JoinType{"inner": expressions.JoinInner, "full_outer": expressions.JoinFullOuter} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			leftRef, rightRef := expressions.InitialOf(nljLogicalScan("L")), expressions.InitialOf(nljLogicalScan("R"))
+			leftRef.InsertFinal(nljPhysicalScan("L"))
+			rightRef.InsertFinal(nljPhysicalScan("R"))
+			leftQ := expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("L"), leftRef)
+			rightQ := expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("R"), rightRef)
+			leftID, rightID := nljField(leftQ, 0), nljField(rightQ, 0)
+			sel := mustNLJConstruct(expressions.NewSelectExpressionWithJoinType(nljFlowed(leftQ),
+				[]expressions.Quantifier{leftQ, rightQ}, []predicates.QueryPredicate{
+					predicates.NewComparisonPredicate(leftID, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: rightID}),
+					predicates.NewComparisonPredicate(leftID, predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(10))}),
+				}, []string{"L", "R"}, kind))
+			if len(sel.GetPredicates()) != 1 {
+				t.Fatalf("fixture did not combine the same-value constraints: %v", sel.GetPredicates())
+			}
+			if _, ok := sel.GetPredicates()[0].(*predicates.PredicateWithValueAndRanges); !ok {
+				t.Fatalf("fixture predicate = %T, want PVR", sel.GetPredicates()[0])
+			}
+			results := mustFireExpressionRule(t, NewImplementNestedLoopJoinRule(), expressions.InitialOf(sel))
+			if len(results) == 0 {
+				t.Fatal("materialized join yielded no plan")
+			}
+			for _, result := range results {
+				assertProducerPhysicalQuantifiers(t, result)
+				join, ok := result.(*plans.RecordQueryNestedLoopJoinPlan)
+				if !ok {
+					t.Fatalf("join implementation = %T, want materialized join", result)
+				}
+				for _, predicate := range join.GetPredicates() {
+					if bad, structural := predicates.FindStructuralPredicate(predicate); structural {
+						t.Fatalf("materialized join still carries structural %T: %s", bad, bad.Explain())
+					}
+				}
+				for _, row := range []struct {
+					left, right int64
+					want        predicates.TriBool
+				}{
+					{11, 11, predicates.TriTrue},
+					{5, 5, predicates.TriFalse},
+					{11, 12, predicates.TriFalse},
+				} {
+					program := predicates.ReplaceValues(predicates.NewAnd(join.GetPredicates()...), func(v values.Value) values.Value {
+						switch {
+						case values.SemanticEqualsUnderAliasMap(v, leftID, nil):
+							return values.LiteralValue(row.left)
+						case values.SemanticEqualsUnderAliasMap(v, rightID, nil):
+							return values.LiteralValue(row.right)
+						default:
+							return v
+						}
+					})
+					if got, err := program.Eval(nil); err != nil || got != row.want {
+						t.Fatalf("join predicates at (%d, %d) = (%v, %v), want %v", row.left, row.right, got, err, row.want)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestExistsShortcutPreservesPriorScanBounds(t *testing.T) {
 	t.Parallel()
 	for _, access := range []string{"primary", "secondary"} {
@@ -3320,6 +3717,7 @@ func TestImplementNestedLoopJoin_LeftOuterInputFiltersOnConjunctsBelowTheWrap(t 
 				[]string{"V", "A"}, expressions.JoinLeftOuter))
 			flatMaps := 0
 			for _, result := range mustFireExpressionRule(t, NewImplementNestedLoopJoinRule(), expressions.InitialOf(sel)) {
+				assertProducerPhysicalQuantifiers(t, result)
 				flatMap, ok := result.(*plans.RecordQueryFlatMapPlan)
 				if !ok {
 					continue
@@ -3390,6 +3788,7 @@ func TestImplementNestedLoopJoin_NullOnEmptyOuterIsExtended(t *testing.T) {
 			t.Fatal("a null-on-empty outer with a leg correlated to it yielded no implementation")
 		}
 		for _, result := range results {
+			assertProducerPhysicalQuantifiers(t, result)
 			flatMap, isFlatMap := result.(*plans.RecordQueryFlatMapPlan)
 			if !isFlatMap {
 				t.Fatalf("yielded %T; a correlated pair is a FlatMap", result)
@@ -3438,6 +3837,7 @@ func TestImplementNestedLoopJoin_NullOnEmptyOuterIsExtended(t *testing.T) {
 			t.Fatal("a null-on-empty outer with an Explode of its array yielded no implementation")
 		}
 		for _, result := range results {
+			assertProducerPhysicalQuantifiers(t, result)
 			flatMap, isFlatMap := result.(*plans.RecordQueryFlatMapPlan)
 			if !isFlatMap {
 				t.Fatalf("yielded %T; a correlated pair is a FlatMap", result)
@@ -3495,13 +3895,8 @@ func TestImplementNestedLoopJoin_NullOnEmptyOuterIsExtended(t *testing.T) {
 	})
 }
 
-// TestPhysicalProvidedAliasesIncludeAJoinsExecutableAliases pins that a leg
-// provides every alias its physical join binds when it executes, not only its
-// memo quantifiers'. A materialized NLJ over a dissolved LEFT box ranges fresh
-// quantifiers while its rows are bound as D and E; reading only the
-// quantifiers made a later leg that reads E look independent of the box (a
-// FlatMap with that leg as the OUTER), and made the box look correlated to its
-// own D and E from outside.
+// The join's memo edges must declare its runtime bindings, so a dissolved
+// LEFT box provides D/E without leaking discarded edge aliases.
 func TestPhysicalProvidedAliasesIncludeAJoinsExecutableAliases(t *testing.T) {
 	t.Parallel()
 	d, e := values.NamedCorrelationIdentifier("D"), values.NamedCorrelationIdentifier("E")
@@ -3520,7 +3915,15 @@ func TestPhysicalProvidedAliasesIncludeAJoinsExecutableAliases(t *testing.T) {
 		)))
 	box := values.NamedCorrelationIdentifier("E$BOX")
 	provided := physicalProvidedAliases(join, box)
-	for _, want := range []values.CorrelationIdentifier{box, d, e, leftQ.GetAlias(), rightQ.GetAlias()} {
+	if qs := join.GetQuantifiers(); qs[0].GetAlias() != d || qs[1].GetAlias() != e {
+		t.Fatal("join edges disagree with the runtime bindings")
+	}
+	for _, stale := range []values.CorrelationIdentifier{leftQ.GetAlias(), rightQ.GetAlias()} {
+		if _, ok := provided[stale]; ok {
+			t.Errorf("physicalProvidedAliases advertises discarded edge %v", stale)
+		}
+	}
+	for _, want := range []values.CorrelationIdentifier{box, d, e} {
 		if _, ok := provided[want]; !ok {
 			t.Errorf("physicalProvidedAliases lacks %v: %v", want, provided)
 		}

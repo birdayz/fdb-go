@@ -15,13 +15,15 @@ import (
 //     CorrelationIdentifiers actually present in the tree.
 //
 // The fuzzer builds small predicate trees from a byte stream;
-// alternates ConstantPredicate / ValuePredicate(QuantifiedObject(alias)) /
-// And/Or/Not at random nesting levels.
+// alternates constants, Values, DistanceRank comparisons, ranges, unfamiliar predicate
+// implementations, and And/Or/Not at random nesting levels.
 func FuzzGetCorrelatedToOfPredicate(f *testing.F) {
 	f.Add([]byte{0, 1, 2, 3})
 	f.Add([]byte{0xff, 0x00})
+	f.Add([]byte{2, 7, 3, 7, 4, 7})
 	f.Add(make([]byte, 16))
 	f.Fuzz(func(t *testing.T, b []byte) {
+		t.Parallel()
 		if len(b) < 2 {
 			return
 		}
@@ -58,7 +60,7 @@ func buildFuzzPredicate(t testing.TB, b []byte, start, depth int) (QueryPredicat
 	if depth >= 4 || len(b) == 0 {
 		return NewConstantPredicate(TriTrue), map[values.CorrelationIdentifier]struct{}{}
 	}
-	op := b[start%len(b)] % 6
+	op := b[start%len(b)] % 9
 	switch op {
 	case 0:
 		return NewConstantPredicate(TriTrue), map[values.CorrelationIdentifier]struct{}{}
@@ -83,7 +85,7 @@ func buildFuzzPredicate(t testing.TB, b []byte, start, depth int) (QueryPredicat
 		// NotPredicate over a child.
 		c, set := buildFuzzPredicate(t, b, (start+1)%len(b), depth+1)
 		return NewNot(c), set
-	default:
+	case 5:
 		// Compound predicate with a nil subtree. The historical helper skipped
 		// nil children; delegated GetCorrelatedTo implementations must preserve
 		// that compatibility.
@@ -92,6 +94,22 @@ func buildFuzzPredicate(t testing.TB, b []byte, start, depth int) (QueryPredicat
 			return NewAnd(nil, c), set
 		}
 		return NewOr(c, nil), set
+	case 6:
+		lhs := values.NamedCorrelationIdentifier("lhs")
+		rhs := values.NamedCorrelationIdentifier("rhs")
+		vector := values.NamedCorrelationIdentifier("vector")
+		return NewComparisonPredicate(mustQOV(t, lhs), Comparison{
+			Type: ComparisonDistanceRankLessThan, Operand: mustQOV(t, rhs), QueryVector: mustQOV(t, vector),
+		}), map[values.CorrelationIdentifier]struct{}{lhs: {}, rhs: {}, vector: {}}
+	case 7:
+		return rangeCorrelationPredicate(t), map[values.CorrelationIdentifier]struct{}{
+			values.NamedCorrelationIdentifier("left"): {}, values.NamedCorrelationIdentifier("right"): {},
+			values.NamedCorrelationIdentifier("vector"): {},
+		}
+	default:
+		alias := values.NamedCorrelationIdentifier("custom")
+		return &correlationOnlyTestPredicate{correlations: map[values.CorrelationIdentifier]struct{}{alias: {}}},
+			map[values.CorrelationIdentifier]struct{}{alias: {}}
 	}
 }
 

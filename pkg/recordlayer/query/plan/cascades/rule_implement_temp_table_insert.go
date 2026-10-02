@@ -41,7 +41,7 @@ func (r *ImplementTempTableInsertRule) OnMatch(call *ExpressionRuleCall) {
 	// Build the insert over the SAME live memo edge it reports as its child — no
 	// separate snapshot inner. The plan IS the cascades expression the memo holds
 	// (RFC-184 W2), no physicalTempTableInsertWrapper adapter needed.
-	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
+	innerQ := expressions.NewPhysicalQuantifier(call.MemoizeExpression(winner))
 	plan, err := plans.NewRecordQueryTempTableInsertPlanFromQuantifier(
 		innerQ,
 		insert.GetTempTableAlias(),

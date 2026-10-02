@@ -358,6 +358,7 @@ func (p *RecordQueryProjectionPlan) GetCorrelatedToWithoutChildren() map[values.
 			out[k] = struct{}{}
 		}
 	}
+	delete(out, values.CurrentCorrelation())
 	return out
 }
 
@@ -536,9 +537,11 @@ func (p *RecordQueryProjectionPlan) WithQuantifiers(qs []expressions.Quantifier)
 			// carrier (for example EL._0 over a FlatMap that materializes EL).
 			// Give the newly selected child one checked chance to prove that
 			// lineage. Values already moved to newLayout.Carrier are pointer-exact
-			// output programs and the materializer leaves them unchanged.
+			// output programs and the materializer leaves them unchanged. The
+			// lineage authority may sit below exact pass-through wrappers (a
+			// filter over the FlatMap), exactly as at construction.
 			if !valueReferencesExactQOV(rebased[i], newLayout.Carrier()) {
-				if materializer, ok := childValueMaterializer(selectedPlanFromQuantifier(qs[0])); ok {
+				if materializer, ok := descendantValueMaterializer(selectedPlanFromQuantifier(qs[0])); ok {
 					rebased[i], err = materializer.reanchorInputValueToOutput(rebased[i])
 				}
 				if err != nil {

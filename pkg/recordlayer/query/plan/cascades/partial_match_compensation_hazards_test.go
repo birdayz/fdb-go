@@ -1086,7 +1086,7 @@ func TestApply_RetainsQuantifierReferencedOnlyByRangeComparand(t *testing.T) {
 	}
 
 	scan := hazardScan(t, "T")
-	applied, ok := comp.Apply(scan, nil)
+	applied, ok := comp.Apply(compensationTestMemoizer(), scan, nil)
 	if !ok {
 		t.Fatal("Apply unexpectedly failed")
 	}

@@ -2,6 +2,7 @@ package cascades
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -227,8 +228,11 @@ func TestPushFilterThroughFetch_AllPushable(t *testing.T) {
 	if pushedFilter.GetInnerAlias().Name() == "" {
 		t.Fatal("pushed filter dropped the translated predicate's binding alias")
 	}
-	if pushedFilter.GetInnerAlias() == pushedFilter.GetInnerQuantifier().GetAlias() {
-		t.Fatal("fixture requires distinct logical predicate and physical memo-edge aliases")
+	if pushedFilter.GetInnerAlias() != pushedFilter.GetInnerQuantifier().GetAlias() {
+		t.Fatal("pushed predicate binding must belong to its quantifier, as in Java")
+	}
+	if !pushedFilter.InternsAliasAware() {
+		t.Fatal("pushed filter must deduplicate fresh local aliases on repeated rule firing")
 	}
 	correlated := pushedFilter.GetPredicates()[0].GetCorrelatedTo()
 	if len(correlated) != 1 {
@@ -268,6 +272,141 @@ func TestPushFilterThroughFetch_AllPushable(t *testing.T) {
 	if _, present := originalCorrelated[filterQ.GetAlias()]; !present {
 		t.Fatalf("source predicate correlations = %v, want unchanged alias %s",
 			originalCorrelated, filterQ.GetAlias())
+	}
+}
+
+func TestFetchRewritesEnumerateInnerAlternatives(t *testing.T) {
+	t.Parallel()
+	for _, reverse := range []bool{false, true} {
+		t.Run(map[bool]string{false: "forward", true: "reverse"}[reverse], func(t *testing.T) {
+			t.Parallel()
+			indexes := []*plans.RecordQueryIndexPlan{pushFetchIndex("idx_x"), pushFetchIndex("idx_other_x")}
+			if reverse {
+				indexes[0], indexes[1] = indexes[1], indexes[0]
+			}
+			inners := expressions.FinalOfAtStage(indexes[0], expressions.StagePlanned)
+			inners.InsertFinal(indexes[1])
+			inners.SetWinner(indexes[0])
+			translate := func(v values.Value, _, target values.CorrelationIdentifier) (values.Value, bool) {
+				return pushFetchFieldForAlias(target, "x"), true
+			}
+			fetch := mustPushFetchConstruct(plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+				expressions.NewPhysicalQuantifier(inners), translate, pushFetchRowType(), plans.FetchIndexRecordsPrimaryKey))
+			q := expressions.NewPhysicalQuantifier(expressions.FinalOfAtStage(fetch, expressions.StagePlanned))
+			pred := predicates.NewComparisonPredicate(pushFetchFieldForAlias(q.GetAlias(), "x"),
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42)))
+			filter := mustPushFetchConstruct(plans.NewRecordQueryPredicatesFilterPlanFromQuantifier(q, []predicates.QueryPredicate{pred}))
+			yielded := mustFireImplementationRule(t, NewPushFilterThroughFetchRule(), expressions.InitialOf(filter))
+			if len(yielded) != 2 {
+				t.Errorf("PushFilterThroughFetch yielded %d alternatives, want both inner plans", len(yielded))
+			}
+			for i, alternative := range yielded {
+				pushed := alternative.(*plans.RecordQueryFetchFromPartialRecordPlan).GetInner().(*plans.RecordQueryPredicatesFilterPlan)
+				if pushed.GetInner() != indexes[i] {
+					t.Fatalf("alternative %d selected %v, want exact inner %v", i, pushed.GetInner(), indexes[i])
+				}
+			}
+
+			coverings := expressions.FinalOfAtStage(mustPushFetchConstruct(plans.NewRecordQueryCoveringIndexPlan(indexes[0])), expressions.StagePlanned)
+			coverings.InsertFinal(mustPushFetchConstruct(plans.NewRecordQueryCoveringIndexPlan(indexes[1])))
+			fetch = mustPushFetchConstruct(plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+				expressions.NewPhysicalQuantifier(coverings), translate, pushFetchRowType(), plans.FetchIndexRecordsPrimaryKey))
+			yielded = mustFireImplementationRule(t, NewMergeFetchIntoCoveringIndexRule(), expressions.InitialOf(fetch))
+			if len(yielded) != 2 {
+				t.Errorf("MergeFetchIntoCoveringIndex yielded %d alternatives, want both index plans", len(yielded))
+			}
+			for i, alternative := range yielded {
+				if alternative != indexes[i] {
+					t.Fatalf("alternative %d = %v, want exact index %v", i, alternative, indexes[i])
+				}
+			}
+		})
+	}
+}
+
+func TestPushFilterThroughFetchEnumeratesFetchAndInnerProducts(t *testing.T) {
+	t.Parallel()
+	for _, declineFirst := range []bool{false, true} {
+		for _, partial := range []bool{false, true} {
+			for _, reverse := range []bool{false, true} {
+				t.Run(fmt.Sprintf("decline=%t/partial=%t/reverse=%t", declineFirst, partial, reverse), func(t *testing.T) {
+					t.Parallel()
+					fetches := make([]*plans.RecordQueryFetchFromPartialRecordPlan, 2)
+					wanted := make(map[*plans.RecordQueryIndexPlan]bool)
+					for i := range fetches {
+						indexes := []*plans.RecordQueryIndexPlan{
+							pushFetchIndex(fmt.Sprintf("idx_%d_a", i)), pushFetchIndex(fmt.Sprintf("idx_%d_b", i)),
+						}
+						inners := expressions.FinalOfAtStage(indexes[0], expressions.StagePlanned)
+						inners.InsertFinal(indexes[1])
+						inners.SetWinner(indexes[0])
+						decline := declineFirst && i == 0
+						translate := func(value values.Value, _, target values.CorrelationIdentifier) (values.Value, bool) {
+							field, ok := values.AsFieldValue(value)
+							if decline || !ok || field.DisplayName() != "x" {
+								return nil, false
+							}
+							return pushFetchFieldForAlias(target, "x"), true
+						}
+						fetches[i] = mustPushFetchConstruct(plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+							expressions.NewPhysicalQuantifier(inners), translate, pushFetchRowType(), plans.FetchIndexRecordsPrimaryKey))
+						if !decline {
+							for _, index := range indexes {
+								wanted[index] = true
+							}
+						}
+					}
+					if reverse {
+						fetches[0], fetches[1] = fetches[1], fetches[0]
+					}
+					fetchRef := expressions.FinalOfAtStage(pushFetchScan(), expressions.StagePlanned)
+					for _, fetch := range fetches {
+						fetchRef.InsertFinal(fetch)
+					}
+					fetchRef.SetWinner(fetches[0])
+					q := expressions.NewPhysicalQuantifier(fetchRef)
+					preds := []predicates.QueryPredicate{predicates.NewComparisonPredicate(pushFetchFieldForAlias(q.GetAlias(), "x"),
+						predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42)))}
+					if partial {
+						preds = append(preds, predicates.NewComparisonPredicate(pushFetchFieldForAlias(q.GetAlias(), "y"),
+							predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(7))))
+					}
+					filter := mustPushFetchConstruct(plans.NewRecordQueryPredicatesFilterPlanFromQuantifier(q, preds))
+					yields := mustFireImplementationRule(t, NewPushFilterThroughFetchRule(), expressions.InitialOf(filter))
+					if len(yields) != len(wanted) {
+						t.Fatalf("got %d alternatives, want %d fetch/inner combinations", len(yields), len(wanted))
+					}
+					for _, yield := range yields {
+						if partial {
+							residual := yield.(*plans.RecordQueryPredicatesFilterPlan)
+							if len(residual.GetPredicates()) != 1 {
+								t.Fatalf("residual predicates = %d, want 1", len(residual.GetPredicates()))
+							}
+							layout := mustPushFetchConstruct(residual.GetInner().ProvidedOutputLayout())
+							field, _ := values.AsFieldValue(residual.GetPredicates()[0].(*predicates.ComparisonPredicate).Operand)
+							if field == nil || field.ChildValue() != layout.Carrier() {
+								t.Fatal("residual predicate must bind its own selected fetch carrier")
+							}
+							yield = residual.GetInner()
+						}
+						pushed := yield.(*plans.RecordQueryFetchFromPartialRecordPlan).GetInner().(*plans.RecordQueryPredicatesFilterPlan)
+						index := pushed.GetInner().(*plans.RecordQueryIndexPlan)
+						if !wanted[index] {
+							t.Fatalf("unexpected or repeated inner index %s", index.GetIndexName())
+						}
+						delete(wanted, index)
+						if len(pushed.GetPredicates()) != 1 {
+							t.Fatalf("pushed predicates = %d, want 1", len(pushed.GetPredicates()))
+						}
+						layout := mustPushFetchConstruct(index.ProvidedOutputLayout())
+						field, _ := values.AsFieldValue(pushed.GetPredicates()[0].(*predicates.ComparisonPredicate).Operand)
+						if field == nil || field.ChildValue() != layout.Carrier() {
+							t.Fatal("pushed predicate must bind its own selected index carrier")
+						}
+					}
+				})
+			}
+		}
 	}
 }
 

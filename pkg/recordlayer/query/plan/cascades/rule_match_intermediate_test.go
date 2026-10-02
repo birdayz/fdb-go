@@ -1754,3 +1754,51 @@ func TestMatchIntermediateRule_PartialMatchFields(t *testing.T) {
 		t.Fatal("expected non-nil RegularMatchInfo")
 	}
 }
+
+func TestMatchIntermediateFilterOrTermHint(t *testing.T) {
+	t.Parallel()
+	queryRef := mustMatchInitial(t, mustMatchScan(t, []string{"T"}, matchRuleRowType()))
+	queryQ := expressions.ForEachQuantifier(queryRef)
+	query := predicates.NewOr(
+		predicates.NewComparisonPredicate(mustMatchField(t, mustMatchFlowed(t, queryQ), "col0"), predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(5))),
+		predicates.NewComparisonPredicate(mustMatchField(t, mustMatchFlowed(t, queryQ), "col1"), predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(7))))
+	filter := mustMatchFilter(t, []predicates.QueryPredicate{query}, queryQ)
+	filterRef := mustMatchInitial(t, filter)
+	candidateQ := expressions.ForEachQuantifier(mustMatchInitial(t, mustMatchScan(t, []string{"T"}, matchRuleRowType())))
+	parameter := values.UniqueCorrelationIdentifier()
+	placeholder := predicates.NewPlaceholder(parameter, mustMatchField(t, mustMatchFlowed(t, candidateQ), "col0"))
+	candidateSelect := mustMatchSelect(t, mustMatchFlowed(t, candidateQ), []expressions.Quantifier{candidateQ}, []predicates.QueryPredicate{placeholder})
+	candidate := NewPrimaryScanMatchCandidate(NewTraversal(mustMatchInitial(t, candidateSelect)), []values.CorrelationIdentifier{parameter}, []string{"T"}, []string{"T"}, []string{"col0"}, true, matchRuleRowType())
+	ctx := testPlanContextForMatching{candidates: []MatchCandidate{candidate}}
+	mustFireExpressionRuleWithMemo(t, NewMatchLeafRule(), queryRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, NewMatchIntermediateRule(), filterRef, ctx, nil)
+	matches := GetPartialMatchesForExpression(filterRef, filter)
+	if len(matches) == 0 {
+		t.Fatal("missing filter match")
+	}
+	for _, match := range matches {
+		info := match.GetMatchInfo().GetRegularMatchInfo()
+		mappings := info.GetPredicateMap().Get(query)
+		if len(mappings) != 1 || mappings[0].GetMappingKind() != MappingOrTermImpliesCandidate {
+			t.Fatalf("missing OR exploration hint: %v", mappings)
+		}
+		if binding := info.GetParameterBindingMap()[parameter]; binding == nil || !binding.IsEmpty() {
+			t.Fatalf("OR must leave scan unbound: %v", binding)
+		}
+		residual, ok := mappings[0].GetPredicateCompensation()(match, nil, nil).ApplyCompensationForPredicate(EmptyTranslationMap())
+		if !ok || len(residual) != 1 || !predicates.SemanticEqualsUnderAliasMap(residual[0], query, nil) {
+			t.Fatal("entire OR was not retained as compensation")
+		}
+	}
+
+	planner := NewPlanner(nil, ctx).WithPlanningExpressionRules(nil)
+	planner.queueDataAccessTask(filterRef)
+	planner.pushDataAccessTasks(filterRef, filter)
+	planner.pushDataAccessTasks(filterRef, filter)
+	if len(planner.stack) != 2 {
+		t.Fatalf("pending access consumption hid a new OR hint: tasks=%d, want consumption and union exploration", len(planner.stack))
+	}
+	if task, ok := planner.pop().(*TransformMatchPartitionTask); !ok || task.Expr != filter {
+		t.Fatal("new OR hint did not schedule the matched filter")
+	}
+}

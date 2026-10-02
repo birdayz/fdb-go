@@ -437,3 +437,21 @@ func TestAggregateDataAccessRule_WrongRecordType(t *testing.T) {
 		t.Fatal("AggregateDataAccessRule should NOT fire for wrong record type")
 	}
 }
+
+func TestBitmapCandidateArithmeticEntrySize(t *testing.T) {
+	t.Parallel()
+	gb := aggregateDataGroupBy(nil, aggregateDataSpec{function: expressions.AggBitmapConstructAgg, ordinal: aggregateDataID})
+	operand := gb.GetAggregates()[0].Operand
+	c := NewAggregateIndexMatchCandidate("bm", []string{"Orders"}, []string{"bucket"}, expressions.AggBitmapConstructAgg, "id", aggregateDataRowType("Orders"), []values.Type{values.NotNullLong}, 1).WithBitmapEntrySize(10000)
+	for _, size := range []int64{10000, 100, 0} {
+		position := mustAggregateDataConstruct(values.NewArithmeticValue(values.OpBitmapBitPosition, operand, &values.ConstantValue{Value: size, Typ: values.NullableInt}))
+		bucket := mustAggregateDataConstruct(values.NewArithmeticValue(values.OpBitmapBucketOffset, operand, &values.ConstantValue{Value: size, Typ: values.NullableInt}))
+		want := size == 10000
+		if c.aggregateOperandMatches(position) != want || c.groupKeyMatches(bucket, 0) != want {
+			t.Fatalf("size %d: position or bucket matched incorrectly", size)
+		}
+		if c.aggregateOperandMatches(bucket) || c.groupKeyMatches(position, 0) {
+			t.Fatal("interchanged bitmap operators matched")
+		}
+	}
+}

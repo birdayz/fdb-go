@@ -408,7 +408,7 @@ func TestGetWinnerForOrdering_PreserveOnRefWithMultiplePhysical(t *testing.T) {
 func TestFilterRule_UsesWinnerPerOrdering(t *testing.T) {
 	t.Parallel()
 
-	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	pred := predicates.NewConstantPredicate(predicates.TriFalse)
 	scan := winnerLookupFullScan(t, "Order", "ID")
 	innerRef := expressions.InitialOf(scan)
 

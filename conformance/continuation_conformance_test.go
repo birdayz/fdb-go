@@ -18,6 +18,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/pkg/recordlayer/vectorcodec"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -862,5 +863,36 @@ var _ = Describe("Continuation Token Conformance", func() {
 			Expect(int64(javaResult2.Orders[0]["orderId"].(float64))).To(Equal(int64(7)))
 			Expect(int64(javaResult2.Orders[3]["orderId"].(float64))).To(Equal(int64(10)))
 		})
+	})
+})
+
+var _ = Describe("Literal Value Wire Conformance", func() {
+	It("restores Java numeric and vector carriers from Go literal protos", func() {
+		java := NewJavaInvoker()
+		vectorType := values.NewVectorType(true, 32, 2)
+		nullVector, err := values.NewPromoteValueChecked(values.NewNullValue(values.NullType), vectorType)
+		Expect(err).NotTo(HaveOccurred())
+		for _, tc := range []struct {
+			name  string
+			value values.Value
+			class string
+		}{
+			{"INT", &values.ConstantValue{Value: int64(7), Typ: values.NotNullInt}, "Integer"},
+			{"FLOAT", &values.ConstantValue{Value: float64(1.25), Typ: values.NotNullFloat}, "Float"},
+			{"LONG", &values.ConstantValue{Value: int64(7), Typ: values.NotNullLong}, "Long"},
+			{"DOUBLE", &values.ConstantValue{Value: float64(1.25), Typ: values.NotNullDouble}, "Double"},
+			{"HALF VECTOR", &values.ConstantValue{Value: vectorcodec.SerializeHalf([]float64{1, 2}), Typ: values.NewVectorType(true, 16, 2)}, "HalfRealVector"},
+			{"FLOAT VECTOR", &values.ConstantValue{Value: vectorcodec.SerializeAs(vectorcodec.TypeSingle, []float64{1, 2}), Typ: vectorType}, "FloatRealVector"},
+			{"DOUBLE VECTOR", &values.ConstantValue{Value: vectorcodec.Serialize([]float64{1, 2}), Typ: values.NewVectorType(true, 64, 2)}, "DoubleRealVector"},
+			{"NULL VECTOR", nullVector, "null"},
+		} {
+			wire, err := values.NewSerializationContext().ValueToProto(tc.value)
+			Expect(err).NotTo(HaveOccurred(), tc.name)
+			data, err := proto.Marshal(wire)
+			Expect(err).NotTo(HaveOccurred(), tc.name)
+			var class string
+			Expect(java.InvokeAs(context.Background(), "literalValueRuntimeClass", map[string]any{"payload": BytesToIntArray(data)}, &class)).To(Succeed(), tc.name)
+			Expect(class).To(Equal(tc.class), tc.name)
+		}
 	})
 })

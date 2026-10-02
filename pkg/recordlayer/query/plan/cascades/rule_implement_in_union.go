@@ -148,7 +148,8 @@ type ImplementInUnionRule struct {
 
 func NewImplementInUnionRule() *ImplementInUnionRule {
 	return &ImplementInUnionRule{
-		matcher: NewExpressionMatcher[*expressions.SelectExpression]("implement_in_union"),
+		matcher: NewExpressionMatcher[*expressions.SelectExpression]("implement_in_union").WithRootPredicate(
+			func(sel *expressions.SelectExpression) bool { return len(sel.GetQuantifiers()) >= 2 }),
 	}
 }
 

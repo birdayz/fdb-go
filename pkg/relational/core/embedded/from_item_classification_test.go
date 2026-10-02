@@ -194,9 +194,12 @@ func TestUsingBesideAnUnnestLegResolvesLeftThenRight(t *testing.T) {
 func TestChainedUnnestOverAFirstFromItem(t *testing.T) {
 	t.Parallel()
 	const chain = "FlatMap(outer=Explode(field), inner=Explode(field))"
+	// A predicate on the second element filters the inner Explode, as Java's
+	// partitioning places it: `EXPLODE q.bs | FLATMAP { EXPLODE b.tags | FILTER … }`.
+	const filteredChain = "FlatMap(outer=Explode(field), inner=PredicatesFilter(Explode(field), [1 preds]))"
 	runFromItemCases(t, []fromItemCase{
-		{sql: `SELECT id FROM q WHERE EXISTS (SELECT t FROM q.bs AS b, b.tags AS t WHERE t = 9)`, contains: chain},
-		{sql: `SELECT id FROM q WHERE NOT EXISTS (SELECT t FROM q.bs AS b, b.tags AS t WHERE t = q.id + 8)`, contains: chain},
+		{sql: `SELECT id FROM q WHERE EXISTS (SELECT t FROM q.bs AS b, b.tags AS t WHERE t = 9)`, contains: filteredChain},
+		{sql: `SELECT id FROM q WHERE NOT EXISTS (SELECT t FROM q.bs AS b, b.tags AS t WHERE t = q.id + 8)`, contains: filteredChain},
 		{sql: `SELECT d.t FROM q, (SELECT t FROM q.bs AS b, b.tags AS t) AS d`, contains: chain},
 		{sql: `SELECT d.c FROM q, (SELECT COUNT(*) AS c FROM q.bs AS b, b.tags AS t) AS d`, contains: chain},
 		{

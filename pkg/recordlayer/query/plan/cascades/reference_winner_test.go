@@ -111,7 +111,7 @@ func referenceWinnerExploreRewriting(p *Planner, rootRef *expressions.Reference)
 		p.constraintMap = NewConstraintMap()
 	}
 	if p.dataAccessConsumed == nil {
-		p.dataAccessConsumed = make(map[*expressions.Reference]int)
+		p.dataAccessConsumed = make(map[*expressions.Reference][]matchConsumption)
 	}
 	p.push(&OptimizeGroupTask{Phase: PhaseRewriting, Ref: rootRef})
 	p.push(&ExploreGroupTask{Phase: PhaseRewriting, Ref: rootRef})
@@ -272,6 +272,7 @@ func TestSortElimination_ViaChildOrderedMember(t *testing.T) {
 	p := NewPlanner(rules, ctx).
 		WithPlanningExpressionRules(BatchAExpressionRules())
 	referenceWinnerExploreRewriting(p, sortRef)
+	scanRef = sortRef.Winner().GetQuantifiers()[0].GetRangesOver()
 
 	emptyPrefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
 	scanPlan := cand.ToScanPlan(emptyPrefix, false)
@@ -326,6 +327,7 @@ func TestSortElimination_CounterflowNullsNotElidedAtExtraction(t *testing.T) {
 	p := NewPlanner(rules, ctx).
 		WithPlanningExpressionRules(BatchAExpressionRules())
 	referenceWinnerExploreRewriting(p, sortRef)
+	scanRef = sortRef.Winner().GetQuantifiers()[0].GetRangesOver()
 
 	emptyPrefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
 	scanPlan := cand.ToScanPlan(emptyPrefix, false)

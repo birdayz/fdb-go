@@ -164,6 +164,7 @@ go_library(
         "vector_engine.go",
         "vector_index_maintainer.go",
         "vector_index_validation.go",
+        "vector_scan_options.go",
         "version_index_maintainer.go",
     ],
     importpath = "fdb.dev/pkg/recordlayer",

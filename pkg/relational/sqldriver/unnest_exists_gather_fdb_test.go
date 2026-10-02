@@ -248,15 +248,8 @@ func TestFDB_UnnestExistsGather(t *testing.T) {
 	pin("uncorrelated_exists", `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EE)`, "7", "8")
 	// (5) ARITHMETIC on a buried leg (compound leg ref through the ordinal bake).
 	pin("arith_on_buried_leg", `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K" + 0)`, "7", "8")
-	// the multi-table-element EXISTS stays LOUD 0AF00 (the same guard that fires
-	// on the INNER path too — a forward sentinel: if a future change makes it
-	// gather, this catches a silent-wrong regression instead).
-	t.Run("twotable_leg_and_element_loud", func(t *testing.T) {
-		_, _, err := runQ(t, `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EE, EEV WHERE EE."CK" = A."K" AND EEV."VK" = "X")`)
-		if err == nil || !strings.Contains(err.Error(), "0AF00") {
-			t.Fatalf("two-table leg+element EXISTS must be LOUD 0AF00, got: %v", err)
-		}
-	})
+	// Both the gathered leg and element must stay bound inside the joined child.
+	pin("twotable_leg_and_element", `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EE, EEV WHERE EE."CK" = A."K" AND EEV."VK" = "X")`, "7")
 
 	// A BAKEABLE leg conjunct alongside the EXISTS (`… A.K=100 AND EXISTS(…)`)
 	// ORDINALIZES: the conjunct bakes IN-SELECT over the re-derivable
@@ -297,6 +290,32 @@ func TestFDB_UnnestExistsGather(t *testing.T) {
 	// {D.X:7, D.X:8}. Projection `SELECT D."X"` keys the Datum as the
 	// qualified D.X.
 	pin("e1b_enclosed_cte_leg_conj", `WITH D AS (SELECT "X" `+from+` WHERE A."K" > "X" AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."X" FROM D, EEV`, "7", "8")
+
+	t.Run("multiexists_skips_first_nonmatching_row", func(t *testing.T) {
+		if _, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			if err != nil {
+				return nil, err
+			}
+			for _, row := range []proto.Message{mkA(3, 999, 7, 8), mk1("EE", "CK", 0), mk1("EEV", "VK", 0), mk1("EEV", "VK", 8)} {
+				if _, err := store.SaveRecord(row); err != nil {
+					return nil, err
+				}
+			}
+			return nil, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for _, tc := range []struct{ sql, want string }{
+			{`SELECT COUNT("X") ` + from + ` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`, "2"},
+			{`SELECT COUNT("X") ` + from + ` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND NOT EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`, "0"},
+		} {
+			rows, plan, err := runQ(t, tc.sql)
+			if err != nil || len(rows) != 1 || rows[0] != tc.want {
+				t.Errorf("%s: rows=%v, want [%s], err=%v\n%s", tc.sql, rows, tc.want, err, plan)
+			}
+		}
+	})
 }
 
 // TestUnnestExistsGatherCensus pins that the inner cluster under EXISTS keeps

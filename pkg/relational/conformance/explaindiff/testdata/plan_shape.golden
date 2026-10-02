@@ -961,24 +961,22 @@ shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryScanPlan
 === aggregate_sum_signed_zero.yaml#0
 sql:   SELECT s, COUNT(*) FROM (SELECT SUM(d) AS s FROM t GROUP BY g) a GROUP BY s
-plan:  Project([_current.S#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.S#0], InMemorySort([_current.S#0 ASC], Project([_current.SUM(D)#1], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(T)))))))
+plan:  Project([_current.S#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.S#0], InMemorySort([_current.S#0 ASC], Project([_current.SUM(D)#1], StreamingAgg(keys=[_current.G#1], IndexScan(T_GID_D, [*, *, *] COVERING))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryProjectionPlan
 shape:         RecordQueryStreamingAggregationPlan
-shape:           RecordQueryInMemorySortPlan
-shape:             RecordQueryScanPlan
+shape:           RecordQueryCoveringIndexPlan
 === aggregate_sum_signed_zero.yaml#1
 sql:   SELECT s, COUNT(*) FROM (SELECT AVG(d) AS s FROM t GROUP BY g) a GROUP BY s
-plan:  Project([_current.S#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.S#0], InMemorySort([_current.S#0 ASC], Project([_current.AVG(D)#1], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(T)))))))
+plan:  Project([_current.S#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.S#0], InMemorySort([_current.S#0 ASC], Project([_current.AVG(D)#1], StreamingAgg(keys=[_current.G#1], IndexScan(T_GID_D, [*, *, *] COVERING))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryProjectionPlan
 shape:         RecordQueryStreamingAggregationPlan
-shape:           RecordQueryInMemorySortPlan
-shape:             RecordQueryScanPlan
+shape:           RecordQueryCoveringIndexPlan
 === aggregate_with_null_groups.yaml#0
 sql:   SELECT region, COUNT(*), SUM(amount) FROM t GROUP BY region ORDER BY region
 plan:  Project([_current.REGION#0, _current.COUNT(*)#1, _current.SUM(AMOUNT)#2], StreamingAgg(keys=[_current.REGION#1], InMemorySort([_current.REGION#1 ASC], Scan(T))))
@@ -2121,10 +2119,13 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === case_insensitive_keywords.yaml#4
 sql:   SELECT id FROM t WHERE id = 1 oR id = 3 OrDeR bY id
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], UnorderedPrimaryKeyDistinct(UnorderedUnion(Scan(T, [=]), Scan(T, [=])))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryUnorderedPrimaryKeyDistinctPlan
+shape:       RecordQueryUnorderedUnionPlan
+shape:         RecordQueryScanPlan
+shape:         RecordQueryScanPlan
 === case_insensitive_keywords.yaml#5
 sql:   SELECT id FROM t WHERE id > 1 AnD n < 30
 plan:  Project([_current.ID#0], PredicatesFilter(Scan(T, [<>]), [1 preds]))
@@ -2464,13 +2465,14 @@ shape:       RecordQueryDefaultOnEmptyPlan
 shape:         RecordQueryScanPlan
 === coalesce_in_join.yaml#1
 sql:   SELECT COALESCE(d.name, 'None'), COUNT(*) FROM emp e LEFT JOIN dept d ON d.id = e.dept_id GROUP BY d.name ORDER BY d.name
-plan:  Project([COALESCE(_current.NAME#0, 'None'), _current.COUNT(*)#1], StreamingAgg(keys=[_current.NAME#4], InMemorySort([_current.NAME#4 ASC], NestedLoopJoin(LEFT OUTER, [1 preds], Scan(EMP), Scan(DEPT)))))
+plan:  Project([COALESCE(_current.NAME#0, 'None'), _current.COUNT(*)#1], StreamingAgg(keys=[_current.NAME#4], InMemorySort([_current.NAME#4 ASC], FlatMap(outer=Scan(EMP), inner=DefaultOnEmpty(Scan(DEPT, [=]))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
-shape:       RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryScanPlan
+shape:         RecordQueryDefaultOnEmptyPlan
+shape:           RecordQueryScanPlan
 === coalesce_nullif.yaml#0
 sql:   SELECT id, COALESCE(a, b, 'default') FROM t ORDER BY id
 plan:  Project([_current.ID#0, COALESCE(_current.A#1, _current.B#2, 'default')], Scan(T))
@@ -2506,43 +2508,46 @@ shape:       RecordQueryProjectionPlan
 shape:         RecordQueryScanPlan
 === comma_join_exists.yaml#0
 sql:   SELECT p.id, e.eid FROM p, e WHERE p.id = e.eref AND EXISTS (SELECT 1 FROM e e2 WHERE e2.eref = p.id AND e2.sal > 600) ORDER BY p.id, e.eid
-plan:  Project([_current.ID#0, _current.EID#2], InMemorySort([_current.ID#0 ASC, _current.EID#2 ASC], FlatMap(outer=FlatMap(outer=Scan(E), inner=Scan(P, [=])), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(E), [2 preds])), [1 preds]))))
+plan:  Project([_current.ID#0, _current.EID#2], InMemorySort([_current.ID#0 ASC, _current.EID#2 ASC], FlatMap(outer=Scan(E), inner=FlatMap(outer=Scan(P, [=]), inner=Map(PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(E), [2 preds])), [1 preds]), {_0: 1})))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryMapPlan
 shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:             RecordQueryFirstOrDefaultPlan
+shape:               RecordQueryPredicatesFilterPlan
+shape:                 RecordQueryScanPlan
 === comma_join_exists.yaml#1
 sql:   SELECT p.id, e.sal FROM p, e WHERE p.id = e.eref AND EXISTS (SELECT 1 FROM e e2 WHERE e2.eref = p.id AND e2.sal > 600) ORDER BY p.id, e.sal
-plan:  Project([_current.ID#0, _current.SAL#4], InMemorySort([_current.ID#0 ASC, _current.SAL#4 ASC], FlatMap(outer=FlatMap(outer=Scan(E), inner=Scan(P, [=])), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(E), [2 preds])), [1 preds]))))
+plan:  Project([_current.ID#0, _current.SAL#4], InMemorySort([_current.ID#0 ASC, _current.SAL#4 ASC], FlatMap(outer=Scan(E), inner=FlatMap(outer=Scan(P, [=]), inner=Map(PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(E), [2 preds])), [1 preds]), {_0: 1})))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryMapPlan
 shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:             RecordQueryFirstOrDefaultPlan
+shape:               RecordQueryPredicatesFilterPlan
+shape:                 RecordQueryScanPlan
 === comma_join_exists.yaml#2
 sql:   SELECT p.id FROM p, e WHERE p.id = e.eref AND EXISTS (SELECT 1 FROM e e2 WHERE e2.eref = p.id AND e2.sal > 600) ORDER BY p.id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], FlatMap(outer=FlatMap(outer=Scan(E), inner=Scan(P, [=])), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(E), [2 preds])), [1 preds]))))
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], FlatMap(outer=Scan(E), inner=FlatMap(outer=Scan(P, [=]), inner=Map(PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(E), [2 preds])), [1 preds]), {_0: 1})))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryMapPlan
 shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:             RecordQueryFirstOrDefaultPlan
+shape:               RecordQueryPredicatesFilterPlan
+shape:                 RecordQueryScanPlan
 === comma_join_exists.yaml#3
 sql:   SELECT p.id, e.eid FROM p, e WHERE p.id = e.eref ORDER BY p.id, e.eid
 plan:  Project([_current.ID#0, _current.EID#2], InMemorySort([_current.ID#0 ASC, _current.EID#2 ASC], FlatMap(outer=Scan(E), inner=Scan(P, [=]))))
@@ -2646,9 +2651,10 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === comparison_promotion_gate.yaml#9
 sql:   SELECT id FROM t WHERE id = 1.5
-plan:  Project([_current.ID#0], Scan(T, [=]))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryScanPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
 === comparison_promotion_gate.yaml#10
 sql:   SELECT id FROM t WHERE id > -10000000000000000000.0
 plan:  Project([_current.ID#0], Scan(T, [<>]))
@@ -2856,7 +2862,7 @@ shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === composite_pk_join.yaml#1
 sql:   SELECT c.name, SUM(o.total) FROM customers c, orders o WHERE o.customer_id = c.id GROUP BY c.name ORDER BY c.name
-plan:  Project([_current.NAME#0, _current.SUM(O.TOTAL)#1], StreamingAgg(keys=[_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(ORDERS), inner=Scan(CUSTOMERS, [=])))))
+plan:  Project([_current.NAME#0, _current.SUM(O.TOTAL)#1], StreamingAgg(keys=[_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(CUSTOMERS), inner=Scan(ORDERS, [=])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
@@ -3047,18 +3053,19 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === correlated_exists_advanced.yaml#0
 sql:   SELECT DISTINCT e.name FROM emp AS e, task AS t WHERE e.id = t.emp_id AND EXISTS (SELECT 1 FROM task WHERE emp_id = e.id AND prio > 4) ORDER BY e.name
-plan:  Distinct(Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=FlatMap(outer=Scan(TASK), inner=Scan(EMP, [=])), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(TASK), [2 preds])), [1 preds])))))
+plan:  Distinct(Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(TASK), inner=FlatMap(outer=Scan(EMP, [=]), inner=Map(PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(TASK), [2 preds])), [1 preds]), {_0: 1}))))))
 shape: RecordQueryDistinctPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryFlatMapPlan
+shape:         RecordQueryScanPlan
 shape:         RecordQueryFlatMapPlan
 shape:           RecordQueryScanPlan
-shape:           RecordQueryScanPlan
-shape:         RecordQueryPredicatesFilterPlan
-shape:           RecordQueryFirstOrDefaultPlan
+shape:           RecordQueryMapPlan
 shape:             RecordQueryPredicatesFilterPlan
-shape:               RecordQueryScanPlan
+shape:               RecordQueryFirstOrDefaultPlan
+shape:                 RecordQueryPredicatesFilterPlan
+shape:                   RecordQueryScanPlan
 === correlated_exists_advanced.yaml#1
 sql:   SELECT name FROM emp WHERE NOT EXISTS (SELECT 1 FROM task WHERE emp_id = emp.id) ORDER BY name
 plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(TASK), [1 preds])), [1 preds]))))
@@ -3156,17 +3163,18 @@ sql:   SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = 
 plan:  <PLAN-ERROR: 42703: no FROM source aliased as BOGUS>
 === correlated_subquery_probes.yaml#11
 sql:   SELECT e.fname FROM emp AS e, project AS p WHERE e.id = p.emp_id AND EXISTS (SELECT 1 FROM project WHERE emp_id = e.id) ORDER BY e.id
-plan:  Project([_current.FNAME#1], InMemorySort([_current.ID#0 ASC], FlatMap(outer=FlatMap(outer=Scan(PROJECT), inner=Scan(EMP, [=])), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(PROJECT), [1 preds])), [1 preds]))))
+plan:  Project([_current.FNAME#1], InMemorySort([_current.ID#0 ASC], FlatMap(outer=Scan(PROJECT), inner=FlatMap(outer=Scan(EMP, [=]), inner=Map(PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(PROJECT), [1 preds])), [1 preds]), {_0: 1})))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryMapPlan
 shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:             RecordQueryFirstOrDefaultPlan
+shape:               RecordQueryPredicatesFilterPlan
+shape:                 RecordQueryScanPlan
 === correlated_subquery_probes.yaml#12
 sql:   SELECT fname FROM ( SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id) ) AS sq ORDER BY fname
 plan:  Project([_current.FNAME#0], InMemorySort([_current.FNAME#0 ASC], Project([_current.FNAME#1], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(PROJECT), [1 preds])), [1 preds])))))
@@ -3257,15 +3265,15 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === correlated_subquery_probes.yaml#21
 sql:   SELECT fname FROM emp WHERE EXISTS ( SELECT 1 FROM project WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id) ) ORDER BY id
-plan:  Project([_current.FNAME#1], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(NestedLoopJoin(INNER, Scan(PROJECT), Scan(PROJECT)), [1 preds])), [1 preds])))
+plan:  Project([_current.FNAME#1], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(NestedLoopJoin(INNER, Scan(PROJECT), PredicatesFilter(Scan(PROJECT), [1 preds]))), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryFlatMapPlan
 shape:     RecordQueryScanPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryFirstOrDefaultPlan
-shape:         RecordQueryPredicatesFilterPlan
-shape:           RecordQueryNestedLoopJoinPlan
-shape:             RecordQueryScanPlan
+shape:         RecordQueryNestedLoopJoinPlan
+shape:           RecordQueryScanPlan
+shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryScanPlan
 === count_distinct.yaml#0 expect-error=0AF00
 sql:   SELECT COUNT(DISTINCT n) FROM t
@@ -3739,11 +3747,12 @@ plan:  Scan(T)
 shape: RecordQueryScanPlan
 === cte.yaml#8
 sql:   WITH c1(x, y) AS (SELECT id, v FROM t) SELECT x FROM c1 WHERE y >= 30 ORDER BY x
-plan:  Project([_current.X#0], PredicatesFilter(Project([_current.ID#0, _current.V#1], Scan(T)), [1 preds]))
+plan:  Project([_current.X#0], PredicatesFilter(Project([_current.ID#0, _current.V#1], Project([_current.ID#0, _current.V#1], Scan(T))), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryProjectionPlan
-shape:       RecordQueryScanPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryScanPlan
 === cte.yaml#9 expect-error=42F10
 sql:   WITH c1(only_one) AS (SELECT id, v FROM t) SELECT only_one FROM c1
 plan:  <PLAN-ERROR: 42F10: cte query has 2 column(s), however 1 aliases defined>
@@ -3757,23 +3766,27 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cte.yaml#12
 sql:   WITH base(d, val) AS (SELECT id, v FROM t), filtered(x, y) AS (SELECT d, val FROM base WHERE val > 15) SELECT x, y FROM filtered ORDER BY x
-plan:  Project([_current.D#0, _current.VAL#1], PredicatesFilter(Project([_current.ID#0, _current.V#1], Scan(T)), [1 preds]))
+plan:  Project([_current.D#0, _current.VAL#1], Project([_current.D#0, _current.VAL#1], PredicatesFilter(Project([_current.ID#0, _current.V#1], Project([_current.ID#0, _current.V#1], Scan(T))), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryProjectionPlan
-shape:       RecordQueryScanPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryScanPlan
 === cte.yaml#13
 sql:   WITH lo(li) AS (SELECT id FROM t WHERE v < 20), hi(hi_id) AS (SELECT id FROM t WHERE v >= 30) SELECT li, hi_id FROM lo, hi ORDER BY li, hi_id
-plan:  Project([_current.LI#0, _current.HI_ID#1], InMemorySort([_current.LI#0 ASC, _current.HI_ID#1 ASC], NestedLoopJoin(INNER, Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds])), Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds])))))
+plan:  Project([_current.LI#0, _current.HI_ID#1], InMemorySort([_current.LI#0 ASC, _current.HI_ID#1 ASC], NestedLoopJoin(INNER, Project([_current.ID#0], Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))), Project([_current.ID#0], Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryNestedLoopJoinPlan
 shape:       RecordQueryProjectionPlan
-shape:         RecordQueryPredicatesFilterPlan
-shape:           RecordQueryScanPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryPredicatesFilterPlan
+shape:             RecordQueryScanPlan
 shape:       RecordQueryProjectionPlan
-shape:         RecordQueryPredicatesFilterPlan
-shape:           RecordQueryScanPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryPredicatesFilterPlan
+shape:             RecordQueryScanPlan
 === cte.yaml#14
 sql:   WITH a AS (SELECT id FROM t WHERE v >= 20), b AS (SELECT id FROM a WHERE id >= 3) SELECT id FROM b ORDER BY id
 plan:  Project([_current.ID#0], PredicatesFilter(Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds])), [1 preds]))
@@ -3818,32 +3831,33 @@ shape:             RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === cte.yaml#21
 sql:   WITH c1(w) AS (SELECT id FROM t), c2(a) AS (WITH c3(x) AS (SELECT id FROM t WHERE id <= 2) SELECT x FROM c3) SELECT w, a FROM c1, c2 WHERE w = a ORDER BY w
-plan:  Project([_current.W#0, _current.A#1], InMemorySort([_current.W#0 ASC], NestedLoopJoin(INNER, [1 preds], Project([_current.ID#0], Scan(T)), Project([_current.ID#0], Scan(T, [<>])))))
+plan:  Project([_current.W#0, _current.A#1], InMemorySort([_current.W#0 ASC], NestedLoopJoin(INNER, [1 preds], Project([_current.ID#0], Scan(T)), Project([_current.X#0], Project([_current.ID#0], Scan(T, [<>]))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryNestedLoopJoinPlan
 shape:       RecordQueryProjectionPlan
 shape:         RecordQueryScanPlan
-shape:       RecordQueryProjectionPlan
-shape:         RecordQueryScanPlan
-=== cte.yaml#22
-sql:   WITH c1(w) AS (SELECT id FROM t WHERE id >= 3), c2(a) AS (WITH c3(x) AS (SELECT id FROM t WHERE id <= 2) SELECT x FROM c3), c4(b) AS (SELECT a FROM c2) SELECT b FROM c4 ORDER BY b
-plan:  Project([_current.ID#0], Scan(T, [<>]))
-shape: RecordQueryProjectionPlan
-shape:   RecordQueryScanPlan
-=== cte.yaml#23
-sql:   WITH c1(w) AS (SELECT id FROM t), c2(a) AS (WITH c1 AS (SELECT x.id AS id FROM t AS x, t AS y WHERE x.id = y.id) SELECT id FROM c1 WHERE id <= 2) SELECT w, a FROM c1, c2 WHERE w = a ORDER BY w
-plan:  Project([_current.W#0, _current.A#1], InMemorySort([_current.W#0 ASC], NestedLoopJoin(INNER, [1 preds], Project([_current.ID#0], Project([_current.ID#0], PredicatesFilter(Project([_current.ID#0], FlatMap(outer=Scan(T), inner=Scan(T, [=]))), [1 preds]))), Project([_current.ID#0], Scan(T)))))
-shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryNestedLoopJoinPlan
 shape:       RecordQueryProjectionPlan
 shape:         RecordQueryProjectionPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryProjectionPlan
-shape:               RecordQueryFlatMapPlan
-shape:                 RecordQueryScanPlan
-shape:                 RecordQueryScanPlan
+shape:           RecordQueryScanPlan
+=== cte.yaml#22
+sql:   WITH c1(w) AS (SELECT id FROM t WHERE id >= 3), c2(a) AS (WITH c3(x) AS (SELECT id FROM t WHERE id <= 2) SELECT x FROM c3), c4(b) AS (SELECT a FROM c2) SELECT b FROM c4 ORDER BY b
+plan:  Project([_current.X#0], Project([_current.ID#0], Scan(T, [<>])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryScanPlan
+=== cte.yaml#23
+sql:   WITH c1(w) AS (SELECT id FROM t), c2(a) AS (WITH c1 AS (SELECT x.id AS id FROM t AS x, t AS y WHERE x.id = y.id) SELECT id FROM c1 WHERE id <= 2) SELECT w, a FROM c1, c2 WHERE w = a ORDER BY w
+plan:  Project([_current.W#0, _current.A#1], InMemorySort([_current.W#0 ASC], NestedLoopJoin(INNER, [1 preds], Project([_current.ID#0], PredicatesFilter(Project([_current.ID#0], FlatMap(outer=Scan(T), inner=Scan(T, [=]))), [1 preds])), Project([_current.ID#0], Scan(T)))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryProjectionPlan
+shape:             RecordQueryFlatMapPlan
+shape:               RecordQueryScanPlan
+shape:               RecordQueryScanPlan
 shape:       RecordQueryProjectionPlan
 shape:         RecordQueryScanPlan
 === cte.yaml#24
@@ -3877,14 +3891,13 @@ sql:   WITH c2(a, b) AS (WITH t AS (SELECT x.v AS id FROM t AS x, t AS y WHERE x
 plan:  <PLAN-ERROR: 42F10: cte query has 1 column(s), however 2 aliases defined>
 === cte.yaml#27
 sql:   WITH c(a, b, cc, d) AS (SELECT x.*, y.id, y.v FROM t AS x, t AS y WHERE x.id = y.id) SELECT COUNT(*) FROM c
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Project([_current.ID#0, _current.V#1, _current.Y.ID#2, _current.Y.V#3], Project([_current.ID#0, _current.V#1, _current.ID#2, _current.V#3], FlatMap(outer=Scan(T), inner=Scan(T, [=]))))))
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Project([_current.ID#0, _current.V#1, _current.ID#2, _current.V#3], FlatMap(outer=Scan(T), inner=Scan(T, [=])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryProjectionPlan
-shape:       RecordQueryProjectionPlan
-shape:         RecordQueryFlatMapPlan
-shape:           RecordQueryScanPlan
-shape:           RecordQueryScanPlan
+shape:       RecordQueryFlatMapPlan
+shape:         RecordQueryScanPlan
+shape:         RecordQueryScanPlan
 === cte.yaml#28 expect-error=42F10
 sql:   WITH c(a, b) AS (SELECT x.*, y.id, y.v FROM t AS x, t AS y WHERE x.id = y.id) SELECT COUNT(*) FROM c
 plan:  <PLAN-ERROR: 42F10: cte query has 4 column(s), however 2 aliases defined>
@@ -3918,13 +3931,12 @@ sql:   WITH o AS (WITH i(a, b) AS (SELECT id FROM t WHERE id <= 2) SELECT id FRO
 plan:  <PLAN-ERROR: 42F10: cte query has 1 column(s), however 2 aliases defined>
 === cte.yaml#34
 sql:   WITH c(a, b) AS (SELECT id, id FROM t GROUP BY id) SELECT COUNT(*) FROM c
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Project([_current.ID#0, _current.ID_2#1], Project([_current.ID#0, _current.ID#0], StreamingAgg(keys=[_current.ID#0], Scan(T))))))
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Project([_current.ID#0, _current.ID#0], StreamingAgg(keys=[_current.ID#0], Scan(T)))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryProjectionPlan
-shape:       RecordQueryProjectionPlan
-shape:         RecordQueryStreamingAggregationPlan
-shape:           RecordQueryScanPlan
+shape:       RecordQueryStreamingAggregationPlan
+shape:         RecordQueryScanPlan
 === cte.yaml#35
 sql:   WITH x AS (SELECT id FROM t) SELECT x.*, x.id FROM (SELECT id, v FROM t) AS x ORDER BY x.id
 plan:  Project([_current.ID#0, _current.V#1, _current.ID#0], Project([_current.ID#0, _current.V#1], Scan(T)))
@@ -3933,25 +3945,23 @@ shape:   RecordQueryProjectionPlan
 shape:     RecordQueryScanPlan
 === cte.yaml#36
 sql:   WITH c(a, b) AS (SELECT id, id FROM t GROUP BY id) SELECT a, b FROM c ORDER BY a
-plan:  Project([_current.ID#0, _current.ID_2#1], Project([_current.ID#0, _current.ID#0], StreamingAgg(keys=[_current.ID#0], Scan(T))))
+plan:  Project([_current.ID#0, _current.ID#0], StreamingAgg(keys=[_current.ID#0], Scan(T)))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryProjectionPlan
-shape:     RecordQueryStreamingAggregationPlan
-shape:       RecordQueryScanPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryScanPlan
 === cte.yaml#37 expect-error=42F10
 sql:   SELECT id FROM t WHERE id = (WITH i(a, b) AS (SELECT id FROM t WHERE id <= 2) SELECT MAX(a) FROM i)
 plan:  <PLAN-ERROR: 42F10: cte query has 1 column(s), however 2 aliases defined>
 === cte.yaml#38
 sql:   WITH c(a, b, d) AS (SELECT id, id, id FROM t GROUP BY id, v ORDER BY v) SELECT COUNT(*) FROM c
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Project([_current.ID#0, _current.ID_2#1, _current.ID_3#2], Project([_current.ID#0, _current.ID#0, _current.ID#0], InMemorySort([_current.V#1 ASC], StreamingAgg(keys=[_current.ID#0, _current.V#1], InMemorySort([_current.ID#0 ASC, _current.V#1 ASC], Scan(T))))))))
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Project([_current.ID#0, _current.ID#0, _current.ID#0], InMemorySort([_current.V#1 ASC], StreamingAgg(keys=[_current.ID#0, _current.V#1], InMemorySort([_current.ID#0 ASC, _current.V#1 ASC], Scan(T)))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryProjectionPlan
-shape:       RecordQueryProjectionPlan
-shape:         RecordQueryInMemorySortPlan
-shape:           RecordQueryStreamingAggregationPlan
-shape:             RecordQueryInMemorySortPlan
-shape:               RecordQueryScanPlan
+shape:       RecordQueryInMemorySortPlan
+shape:         RecordQueryStreamingAggregationPlan
+shape:           RecordQueryInMemorySortPlan
+shape:             RecordQueryScanPlan
 === cte.yaml#39
 sql:   SELECT id FROM t WHERE id = (WITH c(a, b) AS (SELECT id AS x, id AS y FROM t GROUP BY id) SELECT COUNT(*) FROM c)
 plan:  Project([_current.ID#0], Scan(T, [=]))
@@ -3959,9 +3969,10 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cte.yaml#40
 sql:   WITH c(a, b) AS (SELECT id AS x, v AS x FROM t) SELECT a, b FROM c ORDER BY a
-plan:  Project([_current.ID#0, _current.V#1], Scan(T))
+plan:  Project([_current.X#0, _current.X_2#1], Project([_current.ID#0, _current.V#1], Scan(T)))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryScanPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryScanPlan
 === cte_aggregate.yaml#0
 sql:   WITH cte AS (SELECT customer_id, amount FROM orders) SELECT customer_id, SUM(amount) FROM cte GROUP BY customer_id ORDER BY customer_id
 plan:  Project([_current.CUSTOMER_ID#0, _current.SUM(AMOUNT)#1], StreamingAgg(keys=[_current.CUSTOMER_ID#0], InMemorySort([_current.CUSTOMER_ID#0 ASC], Project([_current.CUSTOMER_ID#1, _current.AMOUNT#2], Scan(ORDERS)))))
@@ -4104,7 +4115,7 @@ shape:         RecordQueryProjectionPlan
 shape:           RecordQueryScanPlan
 === cte_defining_environment.yaml#11
 sql:   WITH a(x) AS (SELECT id FROM t), b(y) AS (SELECT x FROM a) SELECT o.id FROM t o WHERE EXISTS (SELECT y FROM b WHERE b.y = o.id)
-plan:  Project([_current.ID#0], FlatMap(outer=Scan(T), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Project([_current.ID#0], Scan(T)), [1 preds])), [1 preds])))
+plan:  Project([_current.ID#0], FlatMap(outer=Scan(T), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Project([_current.X#0], Project([_current.ID#0], Project([_current.ID#0], Scan(T)))), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryFlatMapPlan
 shape:     RecordQueryScanPlan
@@ -4112,7 +4123,9 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryFirstOrDefaultPlan
 shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryProjectionPlan
-shape:             RecordQueryScanPlan
+shape:             RecordQueryProjectionPlan
+shape:               RecordQueryProjectionPlan
+shape:                 RecordQueryScanPlan
 === cte_defining_environment.yaml#12
 sql:   WITH a AS (SELECT id FROM t WHERE id < 0), b AS (SELECT id FROM a) SELECT (SELECT COUNT(*) FROM b) FROM t
 plan:  Project([(SCALAR_SUBQUERY)], Scan(T))
@@ -4154,26 +4167,28 @@ shape:     RecordQueryProjectionPlan
 shape:       RecordQueryScanPlan
 === cte_defining_environment.yaml#17
 sql:   WITH b AS (SELECT id FROM t) SELECT o.id FROM t o WHERE EXISTS ( SELECT x.id FROM b x, b y WHERE x.id = o.id AND y.id = o.id)
-plan:  Project([_current.ID#0], FlatMap(outer=Scan(T), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(NestedLoopJoin(INNER, Project([_current.ID#0], Scan(T)), Project([_current.ID#0], Scan(T))), [2 preds])), [1 preds])))
+plan:  Project([_current.ID#0], FlatMap(outer=Scan(T), inner=PredicatesFilter(FirstOrDefault(FlatMap(outer=PredicatesFilter(Project([_current.ID#0], Scan(T)), [1 preds]), inner=PredicatesFilter(Project([_current.ID#0], Scan(T)), [1 preds]))), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryFlatMapPlan
 shape:     RecordQueryScanPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryFirstOrDefaultPlan
-shape:         RecordQueryPredicatesFilterPlan
-shape:           RecordQueryNestedLoopJoinPlan
+shape:         RecordQueryFlatMapPlan
+shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryProjectionPlan
 shape:               RecordQueryScanPlan
+shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryProjectionPlan
 shape:               RecordQueryScanPlan
 === cte_defining_environment.yaml#18
 sql:   WITH RECURSIVE r(n) AS ( SELECT id FROM t UNION ALL SELECT n + 1 FROM r WHERE n < 3) SELECT n FROM r WHERE EXISTS ( WITH RECURSIVE r(n) AS ( SELECT id FROM t WHERE id < 0 UNION ALL SELECT n + 1 FROM r WHERE n < 3) SELECT n FROM r)
-plan:  Project([_current.N#0], FlatMap(outer=RecursiveDfsJoin(PREORDER, Project([_current.ID#0], Scan(T)), Project([(_current.N#0 + 1)], PredicatesFilter(TempTableScan(RforScan), [1 preds]))), inner=PredicatesFilter(FirstOrDefault(Project([_current.N#0], RecursiveDfsJoin(PREORDER, Project([_current.ID#0], Scan(T, [<>])), Project([(_current.N#0 + 1)], PredicatesFilter(TempTableScan(RforScan), [1 preds]))))), [1 preds])))
+plan:  Project([_current.N#0], FlatMap(outer=RecursiveDfsJoin(PREORDER, Project([_current.ID#0], Project([_current.ID#0], Scan(T))), Project([(_current.N#0 + 1)], PredicatesFilter(TempTableScan(RforScan), [1 preds]))), inner=PredicatesFilter(FirstOrDefault(Project([_current.N#0], RecursiveDfsJoin(PREORDER, Project([_current.ID#0], Project([_current.ID#0], Scan(T, [<>]))), Project([_current.(Q$BOUND2.N + 1)#0], Project([(_current.N#0 + 1)], PredicatesFilter(TempTableScan(RforScan), [1 preds])))))), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryFlatMapPlan
 shape:     RecordQueryRecursiveDfsJoinPlan
 shape:       RecordQueryProjectionPlan
-shape:         RecordQueryScanPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryScanPlan
 shape:       RecordQueryProjectionPlan
 shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryTempTableScanPlan
@@ -4182,19 +4197,22 @@ shape:       RecordQueryFirstOrDefaultPlan
 shape:         RecordQueryProjectionPlan
 shape:           RecordQueryRecursiveDfsJoinPlan
 shape:             RecordQueryProjectionPlan
-shape:               RecordQueryScanPlan
+shape:               RecordQueryProjectionPlan
+shape:                 RecordQueryScanPlan
 shape:             RecordQueryProjectionPlan
-shape:               RecordQueryPredicatesFilterPlan
-shape:                 RecordQueryTempTableScanPlan
+shape:               RecordQueryProjectionPlan
+shape:                 RecordQueryPredicatesFilterPlan
+shape:                   RecordQueryTempTableScanPlan
 === cte_defining_environment.yaml#19
 sql:   WITH RECURSIVE r(n) AS ( SELECT id FROM t UNION ALL SELECT n + 1 FROM r WHERE n < 3) SELECT n FROM r WHERE NOT EXISTS ( WITH RECURSIVE r(n) AS ( SELECT id FROM t WHERE id < 0 UNION ALL SELECT n + 1 FROM r WHERE n < 3) SELECT n FROM r) ORDER BY n
-plan:  Project([_current.N#0], InMemorySort([_current.N#0 ASC], FlatMap(outer=RecursiveDfsJoin(PREORDER, Project([_current.ID#0], Scan(T)), Project([(_current.N#0 + 1)], PredicatesFilter(TempTableScan(RforScan), [1 preds]))), inner=PredicatesFilter(FirstOrDefault(Project([_current.N#0], RecursiveDfsJoin(PREORDER, Project([_current.ID#0], Scan(T, [<>])), Project([(_current.N#0 + 1)], PredicatesFilter(TempTableScan(RforScan), [1 preds]))))), [1 preds]))))
+plan:  Project([_current.N#0], InMemorySort([_current.N#0 ASC], FlatMap(outer=RecursiveDfsJoin(PREORDER, Project([_current.ID#0], Project([_current.ID#0], Scan(T))), Project([(_current.N#0 + 1)], PredicatesFilter(TempTableScan(RforScan), [1 preds]))), inner=PredicatesFilter(FirstOrDefault(Project([_current.N#0], RecursiveDfsJoin(PREORDER, Project([_current.ID#0], Project([_current.ID#0], Scan(T, [<>]))), Project([_current.(Q$BOUND2.N + 1)#0], Project([(_current.N#0 + 1)], PredicatesFilter(TempTableScan(RforScan), [1 preds])))))), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
 shape:       RecordQueryRecursiveDfsJoinPlan
 shape:         RecordQueryProjectionPlan
-shape:           RecordQueryScanPlan
+shape:           RecordQueryProjectionPlan
+shape:             RecordQueryScanPlan
 shape:         RecordQueryProjectionPlan
 shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryTempTableScanPlan
@@ -4203,10 +4221,12 @@ shape:         RecordQueryFirstOrDefaultPlan
 shape:           RecordQueryProjectionPlan
 shape:             RecordQueryRecursiveDfsJoinPlan
 shape:               RecordQueryProjectionPlan
-shape:                 RecordQueryScanPlan
+shape:                 RecordQueryProjectionPlan
+shape:                   RecordQueryScanPlan
 shape:               RecordQueryProjectionPlan
-shape:                 RecordQueryPredicatesFilterPlan
-shape:                   RecordQueryTempTableScanPlan
+shape:                 RecordQueryProjectionPlan
+shape:                   RecordQueryPredicatesFilterPlan
+shape:                     RecordQueryTempTableScanPlan
 === cte_error_codes.yaml#0 expect-error=42F10
 sql:   WITH c1(w, z, x1, x2, x3, x4) AS (SELECT id, col1 FROM t1) SELECT * FROM c1
 plan:  <PLAN-ERROR: 42F10: cte query has 2 column(s), however 6 aliases defined>
@@ -4221,20 +4241,20 @@ sql:   WITH c1(w, z) AS (SELECT id, col1 FROM t1) SELECT col2 FROM c1
 plan:  <PLAN-ERROR: 42703: column "COL2" does not exist>
 === cte_error_codes.yaml#4
 sql:   WITH c1(w, z) AS (SELECT id, col1 FROM t1) SELECT w, z FROM c1 ORDER BY w
-plan:  Project([_current.ID#0, _current.COL1#1], Scan(T1))
+plan:  Project([_current.ID#0, _current.COL1#1], Project([_current.ID#0, _current.COL1#1], Scan(T1)))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryScanPlan
-=== cte_error_codes.yaml#5
-sql:   WITH c1(w, z) AS (SELECT id, col1 FROM t1), c2(a, b) AS (WITH c1(x, y) AS (SELECT id, col1 FROM t1 WHERE id IN (1, 2)) SELECT * FROM c1) SELECT * FROM c1, c2
-plan:  NestedLoopJoin(INNER, Project([_current.X#0, _current.Y#1], Project([_current.ID#0, _current.COL1#1], Project([_current.ID#0, _current.COL1#1], InJoin(Scan(T1, [=]), binding ASC)))), Project([_current.ID#0, _current.COL1#1], Scan(T1)))
-shape: RecordQueryNestedLoopJoinPlan
-shape:   RecordQueryProjectionPlan
-shape:     RecordQueryProjectionPlan
-shape:       RecordQueryProjectionPlan
-shape:         RecordQueryInJoinPlan
-shape:           RecordQueryScanPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryScanPlan
+=== cte_error_codes.yaml#5
+sql:   WITH c1(w, z) AS (SELECT id, col1 FROM t1), c2(a, b) AS (WITH c1(x, y) AS (SELECT id, col1 FROM t1 WHERE id IN (1, 2)) SELECT * FROM c1) SELECT * FROM c1, c2
+plan:  NestedLoopJoin(INNER, Project([_current.ID#0, _current.COL1#1], InJoin(Scan(T1, [=]), binding ASC)), Project([_current.ID#0, _current.COL1#1], Project([_current.ID#0, _current.COL1#1], Scan(T1))))
+shape: RecordQueryNestedLoopJoinPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryInJoinPlan
+shape:       RecordQueryScanPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
 === cte_exists.yaml#0
 sql:   WITH big_orders AS (SELECT customer_id FROM orders WHERE total > 100) SELECT c.name FROM customers c WHERE EXISTS (SELECT 1 FROM big_orders bo WHERE bo.customer_id = c.id) ORDER BY c.name
 plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(CUSTOMERS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Project([_current.CUSTOMER_ID#1], PredicatesFilter(Scan(ORDERS), [1 preds])), [1 preds])), [1 preds]))))
@@ -4450,24 +4470,22 @@ shape:       RecordQueryInMemorySortPlan
 shape:         RecordQueryScanPlan
 === cte_published_row_names.yaml#14
 sql:   WITH u AS (SELECT ga.g, c.w, SUM(v) AS s FROM ga, c WHERE ga.g = c.id GROUP BY ga.g, c.w) SELECT u.g, u.w, u.s FROM u ORDER BY u.g
-plan:  Project([_current.G#0, _current.W#1, _current.SUM(V)#2], StreamingAgg(keys=[_current.G#1, _current.W#4], InMemorySort([_current.G#1 ASC, _current.W#4 ASC], FlatMap(outer=Scan(C), inner=PredicatesFilter(Scan(GA), [1 preds])))))
+plan:  Project([_current.G#0, _current.W#1, _current.SUM(V)#2], StreamingAgg(keys=[_current.G#1, _current.W#4], InMemorySort([_current.G#1 ASC, _current.W#4 ASC], FlatMap(outer=Scan(GA), inner=Scan(C, [=])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryPredicatesFilterPlan
-shape:           RecordQueryScanPlan
+shape:         RecordQueryScanPlan
 === cte_published_row_names.yaml#15
 sql:   SELECT u.g, u.w, u.s FROM (SELECT ga.g, c.w, SUM(v) AS s FROM ga, c WHERE ga.g = c.id GROUP BY ga.g, c.w) u ORDER BY u.g
-plan:  Project([_current.G#0, _current.W#1, _current.SUM(V)#2], StreamingAgg(keys=[_current.G#1, _current.W#4], InMemorySort([_current.G#1 ASC, _current.W#4 ASC], FlatMap(outer=Scan(C), inner=PredicatesFilter(Scan(GA), [1 preds])))))
+plan:  Project([_current.G#0, _current.W#1, _current.SUM(V)#2], StreamingAgg(keys=[_current.G#1, _current.W#4], InMemorySort([_current.G#1 ASC, _current.W#4 ASC], FlatMap(outer=Scan(GA), inner=Scan(C, [=])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryPredicatesFilterPlan
-shape:           RecordQueryScanPlan
+shape:         RecordQueryScanPlan
 === cte_published_row_names.yaml#16
 sql:   WITH u AS (SELECT ga.g, c.id AS g, c.w FROM ga, c) SELECT u.w FROM u WHERE u.w = 1
 plan:  Project([_current.W#2], PredicatesFilter(Project([_current.G#1, _current.ID#3, _current.W#4], NestedLoopJoin(INNER, Scan(C), Scan(GA))), [1 preds]))
@@ -4488,7 +4506,7 @@ shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
 === cte_published_row_names.yaml#18
 sql:   WITH u AS (SELECT ga.g, c.id AS g, c.w FROM ga, c) SELECT u.w, COUNT(*) FROM u GROUP BY u.w ORDER BY u.w
-plan:  Project([_current.W#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.W#2], InMemorySort([_current.W#2 ASC], Project([_current.G#1, _current.ID#3, _current.W#4], NestedLoopJoin(INNER, Scan(GA), Scan(C))))))
+plan:  Project([_current.W#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.W#2], InMemorySort([_current.W#2 ASC], Project([_current.G#1, _current.ID#3, _current.W#4], NestedLoopJoin(INNER, Scan(C), Scan(GA))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
@@ -4498,7 +4516,7 @@ shape:           RecordQueryScanPlan
 shape:           RecordQueryScanPlan
 === cte_published_row_names.yaml#19
 sql:   SELECT u.w, COUNT(*) FROM (SELECT ga.g, c.id AS g, c.w FROM ga, c) u GROUP BY u.w ORDER BY u.w
-plan:  Project([_current.W#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.W#2], InMemorySort([_current.W#2 ASC], Project([_current.G#1, _current.ID#3, _current.W#4], NestedLoopJoin(INNER, Scan(GA), Scan(C))))))
+plan:  Project([_current.W#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.W#2], InMemorySort([_current.W#2 ASC], Project([_current.G#1, _current.ID#3, _current.W#4], NestedLoopJoin(INNER, Scan(C), Scan(GA))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
@@ -4772,11 +4790,12 @@ shape:     RecordQueryProjectionPlan
 shape:       RecordQueryScanPlan
 === cte_published_row_names.yaml#48
 sql:   SELECT x.q FROM (SELECT u.w AS q FROM (SELECT c.w FROM c) u) x ORDER BY x.q
-plan:  Project([_current.Q#0], InMemorySort([_current.Q#0 ASC], Project([_current.W#1], Scan(C))))
+plan:  Project([_current.Q#0], InMemorySort([_current.Q#0 ASC], Project([_current.W#0], Project([_current.W#1], Scan(C)))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryProjectionPlan
-shape:       RecordQueryScanPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryScanPlan
 === cte_published_row_names.yaml#49
 sql:   SELECT x.sk FROM (SELECT st.p.sk FROM st) x
 plan:  Project([_current.P#1.SK#0], Scan(ST))
@@ -4784,9 +4803,10 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cte_published_row_names.yaml#50
 sql:   SELECT x.sk FROM (SELECT u.p.sk FROM (SELECT st.p FROM st) u) x
-plan:  Project([_current.P#1.SK#0], Scan(ST))
+plan:  Project([_current.P#0.SK#0], Project([_current.P#1], Scan(ST)))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryScanPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryScanPlan
 === cte_published_row_names.yaml#51
 sql:   SELECT x.q FROM (SELECT u.p.sk AS q FROM (SELECT st.p FROM st) u) x
 plan:  Project([_current.P#0.SK#0], Project([_current.P#1], Scan(ST)))
@@ -4885,10 +4905,11 @@ shape:     RecordQueryProjectionPlan
 shape:       RecordQueryScanPlan
 === cte_published_row_names.yaml#67
 sql:   SELECT x.child.v FROM (SELECT u.p.child FROM (SELECT tn2.p FROM tn2) u) x
-plan:  Project([_current.CHILD#0.V#0], Project([_current.P#1.CHILD#0], Scan(TN2)))
+plan:  Project([_current.CHILD#0.V#0], Project([_current.P#0.CHILD#0], Project([_current.P#1], Scan(TN2))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryProjectionPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
 === cte_published_row_names.yaml#68
 sql:   SELECT x.child.v FROM (SELECT tn3.p.child FROM tn3) x
 plan:  Project([_current.CHILD#0.V#0], Project([_current.P#2.CHILD#0], Scan(TN3)))
@@ -5552,7 +5573,7 @@ shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === derived_star_visibility.yaml#11
 sql:   WITH d AS (SELECT * FROM rv, rw) SELECT d."__ROW_VERSION", COUNT(*) FROM d GROUP BY d."__ROW_VERSION"
-plan:  Project([_current.__ROW_VERSION#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.__ROW_VERSION#1], InMemorySort([_current.__ROW_VERSION#1 ASC], NestedLoopJoin(INNER, Scan(RV), Scan(RW)))))
+plan:  Project([_current.__ROW_VERSION#0, _current.COUNT(*)#1], StreamingAgg(keys=[D.__ROW_VERSION#1], InMemorySort([D.__ROW_VERSION#1 ASC], NestedLoopJoin(INNER, Scan(RV), Scan(RW)))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
@@ -5561,7 +5582,7 @@ shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
 === derived_star_visibility.yaml#12
 sql:   WITH d AS (SELECT * FROM rv, rw) SELECT d.v FROM d ORDER BY d.v
-plan:  Project([_current.V#2], InMemorySort([_current.V#2 ASC], NestedLoopJoin(INNER, Scan(RW), Scan(RV))))
+plan:  Project([_current.V#2], InMemorySort([D.V#2 ASC], NestedLoopJoin(INNER, Scan(RW), Scan(RV))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryNestedLoopJoinPlan
@@ -6418,7 +6439,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === e2e_inventory.yaml#0
 sql:   SELECT p.name, SUM(s.quantity) FROM products p, stock s WHERE s.product_id = p.id GROUP BY p.name ORDER BY p.name
-plan:  Project([_current.NAME#0, _current.SUM(S.QUANTITY)#1], StreamingAgg(keys=[_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(STOCK), inner=Scan(PRODUCTS, [=])))))
+plan:  Project([_current.NAME#0, _current.SUM(S.QUANTITY)#1], StreamingAgg(keys=[_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(PRODUCTS), inner=Scan(STOCK, [=])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
@@ -6437,15 +6458,14 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
 === e2e_inventory.yaml#2
 sql:   SELECT w.city FROM warehouses w WHERE NOT EXISTS ( SELECT 1 FROM stock s WHERE s.warehouse_id = w.id AND s.product_id = 3 ) ORDER BY w.city
-plan:  Project([_current.CITY#1], InMemorySort([_current.CITY#1 ASC], FlatMap(outer=Scan(WAREHOUSES), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(STOCK), [2 preds])), [1 preds]))))
+plan:  Project([_current.CITY#1], InMemorySort([_current.CITY#1 ASC], FlatMap(outer=Scan(WAREHOUSES), inner=PredicatesFilter(FirstOrDefault(Scan(STOCK, [=, =])), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
 shape:       RecordQueryScanPlan
 shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:           RecordQueryScanPlan
 === e2e_inventory.yaml#3
 sql:   UPDATE stock SET quantity = quantity + 20 WHERE quantity < 5
 plan:  Update(STOCK, [1 transforms], UnorderedPrimaryKeyDistinct(PredicatesFilter(Scan(STOCK), [1 preds])))
@@ -6470,17 +6490,16 @@ shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
 === e2e_order_management.yaml#1
 sql:   SELECT c.name, SUM(li.qty * li.price) FROM customers c, orders o, line_items li WHERE o.customer_id = c.id AND li.order_id = o.id AND o.status = 'shipped' GROUP BY c.name ORDER BY c.name
-plan:  Project([_current.NAME#0, _current.SUM(LI.QTY*LI.PRICE)#1], StreamingAgg(keys=[_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(CUSTOMERS), inner=PredicatesFilter(FlatMap(outer=Scan(LINE_ITEMS), inner=PredicatesFilter(Scan(ORDERS, [=]), [1 preds])), [1 preds])))))
+plan:  Project([_current.NAME#0, _current.SUM(LI.QTY*LI.PRICE)#1], StreamingAgg(keys=[_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(LINE_ITEMS), inner=FlatMap(outer=PredicatesFilter(Scan(ORDERS, [=]), [1 preds]), inner=Scan(CUSTOMERS, [=]))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryPredicatesFilterPlan
-shape:           RecordQueryFlatMapPlan
+shape:         RecordQueryFlatMapPlan
+shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryScanPlan
-shape:             RecordQueryPredicatesFilterPlan
-shape:               RecordQueryScanPlan
+shape:           RecordQueryScanPlan
 === e2e_order_management.yaml#2
 sql:   SELECT c.name FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.status = 'pending')
 plan:  Project([_current.NAME#1], FlatMap(outer=Scan(CUSTOMERS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(ORDERS), [2 preds])), [1 preds])))
@@ -6571,12 +6590,11 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === empty_result_aggregate.yaml#2
 sql:   SELECT val, COUNT(*) FROM t WHERE id > 100 GROUP BY val
-plan:  Project([_current.VAL#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.VAL#1], InMemorySort([_current.VAL#1 ASC], PredicatesFilter(Scan(T), [1 preds]))))
+plan:  Project([_current.VAL#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.VAL#1], InMemorySort([_current.VAL#1 ASC], Scan(T, [<>]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
+shape:       RecordQueryScanPlan
 === empty_result_aggregate.yaml#3
 sql:   SELECT val, COUNT(*) FROM t WHERE val > 15 GROUP BY val ORDER BY val
 plan:  Project([_current.VAL#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.VAL#1], InMemorySort([_current.VAL#1 ASC], PredicatesFilter(Scan(T), [1 preds]))))
@@ -6603,12 +6621,11 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === empty_result_edge_cases_java.yaml#3
 sql:   SELECT cat, COUNT(*) FROM t WHERE id = 999 GROUP BY cat
-plan:  Project([_current.CAT#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.CAT#2], InMemorySort([_current.CAT#2 ASC], PredicatesFilter(Scan(T), [1 preds]))))
+plan:  Project([_current.CAT#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.CAT#2], InMemorySort([_current.CAT#2 ASC], Scan(T, [=]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
+shape:       RecordQueryScanPlan
 === empty_result_edge_cases_java.yaml#4
 sql:   SELECT id FROM t WHERE EXISTS (SELECT 1 FROM t WHERE id = 999)
 plan:  Project([_current.ID#0], FlatMap(outer=Scan(T), inner=PredicatesFilter(FirstOrDefault(Project([1], Scan(T, [=]))), [1 preds])))
@@ -6908,30 +6925,28 @@ shape:               RecordQueryProjectionPlan
 shape:                 RecordQueryScanPlan
 === exists_multi_table_inner.yaml#0
 sql:   SELECT a.name FROM authors a WHERE EXISTS ( SELECT 1 FROM books b, awards w WHERE b.author_id = a.id AND w.book_id = b.id ) ORDER BY a.name
-plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(AUTHORS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(NestedLoopJoin(INNER, Scan(AWARDS), Scan(BOOKS)), [2 preds])), [1 preds]))))
+plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(AUTHORS), inner=PredicatesFilter(FirstOrDefault(NestedLoopJoin(INNER, [2 preds], Scan(AWARDS), Scan(BOOKS))), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
 shape:       RecordQueryScanPlan
 shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryNestedLoopJoinPlan
-shape:               RecordQueryScanPlan
-shape:               RecordQueryScanPlan
+shape:           RecordQueryNestedLoopJoinPlan
+shape:             RecordQueryScanPlan
+shape:             RecordQueryScanPlan
 === exists_multi_table_inner.yaml#1
 sql:   SELECT a.name FROM authors a WHERE NOT EXISTS ( SELECT 1 FROM books b, awards w WHERE b.author_id = a.id AND w.book_id = b.id ) ORDER BY a.name
-plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(AUTHORS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(NestedLoopJoin(INNER, Scan(AWARDS), Scan(BOOKS)), [2 preds])), [1 preds]))))
+plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(AUTHORS), inner=PredicatesFilter(FirstOrDefault(NestedLoopJoin(INNER, [2 preds], Scan(AWARDS), Scan(BOOKS))), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
 shape:       RecordQueryScanPlan
 shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryNestedLoopJoinPlan
-shape:               RecordQueryScanPlan
-shape:               RecordQueryScanPlan
+shape:           RecordQueryNestedLoopJoinPlan
+shape:             RecordQueryScanPlan
+shape:             RecordQueryScanPlan
 === exists_subquery_java.yaml#0
 sql:   SELECT name FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id) ORDER BY name
 plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(CUSTOMERS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(ORDERS), [1 preds])), [1 preds]))))
@@ -6978,12 +6993,11 @@ shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryScanPlan
 === exists_subquery_java.yaml#4
 sql:   SELECT name FROM customers c WHERE c.id > 1 AND EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id) ORDER BY name
-plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=PredicatesFilter(Scan(CUSTOMERS), [1 preds]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(ORDERS), [1 preds])), [1 preds]))))
+plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(CUSTOMERS, [<>]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(ORDERS), [1 preds])), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
+shape:       RecordQueryScanPlan
 shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryFirstOrDefaultPlan
 shape:           RecordQueryPredicatesFilterPlan
@@ -7260,14 +7274,13 @@ shape:     RecordQueryDefaultOnEmptyPlan
 shape:       RecordQueryScanPlan
 === flatmap_left_outer_coverage.yaml#1
 sql:   SELECT o.id, c.name FROM orders o LEFT JOIN customers c ON o.customer_id = c.id WHERE o.amount > 60 ORDER BY o.id
-plan:  Project([_current.ID#0, _current.NAME#4], InMemorySort([_current.ID#0 ASC], PredicatesFilter(FlatMap(outer=Scan(ORDERS), inner=DefaultOnEmpty(Scan(CUSTOMERS, [=]))), [1 preds])))
+plan:  Project([_current.ID#0, _current.NAME#4], PredicatesFilter(FlatMap(outer=Scan(ORDERS), inner=DefaultOnEmpty(Scan(CUSTOMERS, [=]))), [1 preds]))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryFlatMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryDefaultOnEmptyPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryDefaultOnEmptyPlan
-shape:           RecordQueryScanPlan
 === flatmap_left_outer_coverage.yaml#2
 sql:   SELECT o.id, c.name FROM orders o LEFT JOIN customers c ON o.customer_id = c.id ORDER BY o.id LIMIT 2
 plan:  Limit(2, Project([_current.ID#0, _current.NAME#4], FlatMap(outer=Scan(ORDERS), inner=DefaultOnEmpty(Scan(CUSTOMERS, [=])))))
@@ -7415,14 +7428,14 @@ shape:       RecordQueryScanPlan
 shape:       RecordQueryIndexPlan
 === flatmap_three_way.yaml#0
 sql:   SELECT r.name, s.name, p.name FROM regions r, stores s, products p WHERE s.region_id = r.id AND p.store_id = s.id ORDER BY r.name, s.name, p.name
-plan:  Project([_current.NAME#1, _current.NAME#4, _current.NAME#7], InMemorySort([_current.NAME#1 ASC, _current.NAME#4 ASC, _current.NAME#7 ASC], FlatMap(outer=FlatMap(outer=Scan(PRODUCTS), inner=Scan(STORES, [=])), inner=Scan(REGIONS, [=]))))
+plan:  Project([_current.NAME#1, _current.NAME#4, _current.NAME#7], InMemorySort([_current.NAME#1 ASC, _current.NAME#4 ASC, _current.NAME#7 ASC], FlatMap(outer=Scan(PRODUCTS), inner=FlatMap(outer=Scan(STORES, [=]), inner=Scan(REGIONS, [=])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
-shape:       RecordQueryScanPlan
 === float_column.yaml#0
 sql:   SELECT temp FROM Measurements WHERE id = 3
 plan:  Project([_current.TEMP#1], Scan(MEASUREMENTS, [=]))
@@ -8301,12 +8314,13 @@ shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
 === having.yaml#20
 sql:   SELECT grp, SUM(v) FROM t GROUP BY grp HAVING grp = 'b' AND SUM(v) > 30
-plan:  Project([_current.GRP#0, _current.SUM(V)#1], PredicatesFilter(StreamingAgg(keys=[_current.GRP#1], InMemorySort([_current.GRP#1 ASC], Scan(T))), [2 preds]))
+plan:  Project([_current.GRP#0, _current.SUM(V)#1], PredicatesFilter(StreamingAgg(keys=[_current.GRP#1], InMemorySort([_current.GRP#1 ASC], PredicatesFilter(Scan(T), [1 preds]))), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryStreamingAggregationPlan
 shape:       RecordQueryInMemorySortPlan
-shape:         RecordQueryScanPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === having.yaml#21
 sql:   SELECT grp, COUNT(*) FROM t GROUP BY grp HAVING grp = 'a'
 plan:  Project([_current.GRP#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.GRP#1], InMemorySort([_current.GRP#1 ASC], PredicatesFilter(Scan(T), [1 preds]))))
@@ -8586,11 +8600,10 @@ shape:   RecordQueryInUnionPlan
 shape:     RecordQueryScanPlan
 === in_list_pushdown.yaml#7
 sql:   SELECT DISTINCT id FROM t WHERE id IN (1, 1, 2) ORDER BY id
-plan:  Distinct(Project([_current.ID#0], InUnion(Scan(T, [=]), bindings=1, ASC)))
-shape: RecordQueryDistinctPlan
-shape:   RecordQueryProjectionPlan
-shape:     RecordQueryInUnionPlan
-shape:       RecordQueryScanPlan
+plan:  Project([_current.ID#0], InUnion(Scan(T, [=]), bindings=1, ASC))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInUnionPlan
+shape:     RecordQueryScanPlan
 === in_list_pushdown.yaml#8
 sql:   SELECT id FROM t WHERE id IN (1, 3, 5) AND v > 20 ORDER BY id
 plan:  Project([_current.ID#0], InUnion(PredicatesFilter(Scan(T, [=]), [1 preds]), bindings=1, ASC))
@@ -9133,10 +9146,14 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === index_range_and_or.yaml#7
 sql:   SELECT id, col1 FROM t1 WHERE col1 = 10 OR col1 = 20 ORDER BY id
-plan:  Project([_current.ID#0, _current.COL1#1], PredicatesFilter(Scan(T1), [1 preds]))
+plan:  Project([_current.ID#0, _current.COL1#1], InMemorySort([_current.ID#0 ASC], Fetch(UnorderedPrimaryKeyDistinct(UnorderedUnion(IndexScan(I1, [=] COVERING), IndexScan(I1, [=] COVERING))))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryFetchFromPartialRecordPlan
+shape:       RecordQueryUnorderedPrimaryKeyDistinctPlan
+shape:         RecordQueryUnorderedUnionPlan
+shape:           RecordQueryCoveringIndexPlan
+shape:           RecordQueryCoveringIndexPlan
 === index_range_and_or.yaml#8
 sql:   SELECT id, col1, col2 FROM t1 WHERE col1 = 20 AND col2 > 10 ORDER BY id
 plan:  Project([_current.ID#0, _current.COL1#1, _current.COL2#2], PredicatesFilter(IndexScan(I1, [=]), [1 preds]))
@@ -9178,16 +9195,24 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
 === index_range_predicates_java.yaml#5
 sql:   SELECT id FROM t1 WHERE col1 = 10 OR col1 = 30 ORDER BY id
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T1), [1 preds]))
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], Fetch(UnorderedPrimaryKeyDistinct(UnorderedUnion(IndexScan(I1, [=] COVERING), IndexScan(I1, [=] COVERING))))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryFetchFromPartialRecordPlan
+shape:       RecordQueryUnorderedPrimaryKeyDistinctPlan
+shape:         RecordQueryUnorderedUnionPlan
+shape:           RecordQueryCoveringIndexPlan
+shape:           RecordQueryCoveringIndexPlan
 === index_range_predicates_java.yaml#6
 sql:   SELECT id FROM t1 WHERE (col1 = 20 OR col1 = 10) AND (col1 = 20 OR col1 = 10) ORDER BY id
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T1), [1 preds]))
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], Fetch(UnorderedPrimaryKeyDistinct(UnorderedUnion(IndexScan(I1, [=] COVERING), IndexScan(I1, [=] COVERING))))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryFetchFromPartialRecordPlan
+shape:       RecordQueryUnorderedPrimaryKeyDistinctPlan
+shape:         RecordQueryUnorderedUnionPlan
+shape:           RecordQueryCoveringIndexPlan
+shape:           RecordQueryCoveringIndexPlan
 === index_range_predicates_java.yaml#7
 sql:   SELECT id, col1 FROM t1 WHERE col1 >= 20 ORDER BY col1, id
 plan:  Project([_current.ID#0, _current.COL1#1], IndexScan(I1, [<>] COVERING))
@@ -9883,12 +9908,13 @@ shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
 === java_alignment_probes.yaml#4
 sql:   SELECT col1, SUM(col2) FROM t1 GROUP BY col1 HAVING col1 >= 20 AND SUM(col2) > 400 ORDER BY col1
-plan:  Project([_current.COL1#0, _current.SUM(COL2)#1], PredicatesFilter(StreamingAgg(keys=[_current.COL1#1], InMemorySort([_current.COL1#1 ASC], Scan(T1))), [2 preds]))
+plan:  Project([_current.COL1#0, _current.SUM(COL2)#1], PredicatesFilter(StreamingAgg(keys=[_current.COL1#1], InMemorySort([_current.COL1#1 ASC], PredicatesFilter(Scan(T1), [1 preds]))), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryStreamingAggregationPlan
 shape:       RecordQueryInMemorySortPlan
-shape:         RecordQueryScanPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === java_alignment_probes.yaml#5
 sql:   SELECT t1.col1, t2.y FROM t1, t2 WHERE t1.col1 = t2.x ORDER BY t1.id
 plan:  Project([_current.COL1#1, _current.Y#5], FlatMap(outer=Scan(T1), inner=PredicatesFilter(Scan(T2), [1 preds])))
@@ -10106,14 +10132,14 @@ shape:         RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === join_chained.yaml#0
 sql:   SELECT emp.name, dept.name FROM emp INNER JOIN dept ON emp.dept_id = dept.id INNER JOIN project ON project.emp_id = emp.id ORDER BY emp.id
-plan:  Project([_current.NAME#1, _current.NAME#4], InMemorySort([_current.ID#0 ASC], FlatMap(outer=FlatMap(outer=Scan(PROJECT), inner=Scan(EMP, [=])), inner=Scan(DEPT, [=]))))
+plan:  Project([_current.NAME#1, _current.NAME#4], InMemorySort([_current.ID#0 ASC], FlatMap(outer=Scan(PROJECT), inner=FlatMap(outer=Scan(EMP, [=]), inner=Scan(DEPT, [=])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
-shape:       RecordQueryScanPlan
 === join_chained.yaml#1
 sql:   SELECT emp.name FROM emp, project WHERE project.emp_id = emp.id ORDER BY emp.id
 plan:  Project([_current.NAME#1], InMemorySort([_current.ID#0 ASC], FlatMap(outer=Scan(PROJECT), inner=Scan(EMP, [=]))))
@@ -10124,20 +10150,20 @@ shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === join_chained.yaml#2
 sql:   SELECT emp.name, dept.name FROM emp, dept, project WHERE emp.dept_id = dept.id AND project.emp_id = emp.id ORDER BY emp.id
-plan:  Project([_current.NAME#1, _current.NAME#4], InMemorySort([_current.ID#0 ASC], FlatMap(outer=FlatMap(outer=Scan(PROJECT), inner=Scan(EMP, [=])), inner=Scan(DEPT, [=]))))
+plan:  Project([_current.NAME#1, _current.NAME#4], InMemorySort([_current.ID#0 ASC], FlatMap(outer=Scan(PROJECT), inner=FlatMap(outer=Scan(EMP, [=]), inner=Scan(DEPT, [=])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
-shape:       RecordQueryScanPlan
 === join_complex_patterns.yaml#0
 sql:   SELECT p.id, c.id FROM items p, items c WHERE c.parent_id = p.id ORDER BY p.id, c.id
-plan:  Project([_current.ID#0, _current.ID#4], InMemorySort([_current.ID#0 ASC, _current.ID#4 ASC], NestedLoopJoin(INNER, [1 preds], Scan(ITEMS), Scan(ITEMS))))
+plan:  Project([_current.ID#0, _current.ID#4], InMemorySort([_current.ID#0 ASC, _current.ID#4 ASC], FlatMap(outer=Scan(ITEMS), inner=Scan(ITEMS, [=]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryNestedLoopJoinPlan
+shape:     RecordQueryFlatMapPlan
 shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === join_complex_patterns.yaml#1
@@ -10171,19 +10197,19 @@ shape:         RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === join_complex_patterns.yaml#4
 sql:   SELECT p.id, c.price FROM items p, items c WHERE c.parent_id = p.id ORDER BY c.price
-plan:  Project([_current.ID#0, _current.PRICE#6], InMemorySort([_current.PRICE#6 ASC], NestedLoopJoin(INNER, [1 preds], Scan(ITEMS), Scan(ITEMS))))
+plan:  Project([_current.ID#0, _current.PRICE#6], InMemorySort([_current.PRICE#6 ASC], FlatMap(outer=Scan(ITEMS), inner=Scan(ITEMS, [=]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryNestedLoopJoinPlan
+shape:     RecordQueryFlatMapPlan
 shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === join_complex_patterns.yaml#5
 sql:   SELECT p.id, c.id FROM items p, items c WHERE c.parent_id = p.id AND c.price + p.price > 250 ORDER BY c.id
-plan:  Project([_current.ID#0, _current.ID#4], InMemorySort([_current.ID#4 ASC], NestedLoopJoin(INNER, [2 preds], Scan(ITEMS), Scan(ITEMS))))
+plan:  Project([_current.ID#0, _current.ID#4], FlatMap(outer=Scan(ITEMS), inner=PredicatesFilter(Scan(ITEMS, [=]), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryNestedLoopJoinPlan
-shape:       RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === join_error_codes.yaml#0 expect-error=42702
 sql:   SELECT name FROM emp, dept WHERE emp.dept_id = dept.id
@@ -10261,28 +10287,27 @@ shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryScanPlan
 === join_four_tables.yaml#0
 sql:   SELECT c.name, d.name, e.name, p.name FROM company c, department d, employee e, project p WHERE d.company_id = c.id AND e.dept_id = d.id AND p.emp_id = e.id ORDER BY p.name
-plan:  Project([_current.NAME#1, _current.NAME#4, _current.NAME#7, _current.NAME#10], InMemorySort([_current.NAME#10 ASC], FlatMap(outer=FlatMap(outer=FlatMap(outer=Scan(PROJECT), inner=Scan(EMPLOYEE, [=])), inner=Scan(DEPARTMENT, [=])), inner=Scan(COMPANY, [=]))))
+plan:  Project([_current.NAME#1, _current.NAME#4, _current.NAME#7, _current.NAME#10], InMemorySort([_current.NAME#10 ASC], FlatMap(outer=Scan(PROJECT), inner=FlatMap(outer=Scan(EMPLOYEE, [=]), inner=FlatMap(outer=Scan(DEPARTMENT, [=]), inner=Scan(COMPANY, [=]))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
 shape:       RecordQueryFlatMapPlan
+shape:         RecordQueryScanPlan
 shape:         RecordQueryFlatMapPlan
 shape:           RecordQueryScanPlan
 shape:           RecordQueryScanPlan
-shape:         RecordQueryScanPlan
-shape:       RecordQueryScanPlan
 === join_four_tables.yaml#1
 sql:   SELECT d.name, COUNT(p.id) FROM department d, employee e, project p WHERE e.dept_id = d.id AND p.emp_id = e.id GROUP BY d.name ORDER BY d.name
-plan:  Project([_current.NAME#0, _current.COUNT(P.ID)#1], StreamingAgg(keys=[_current.NAME#2], InMemorySort([_current.NAME#2 ASC], FlatMap(outer=Scan(DEPARTMENT), inner=PredicatesFilter(FlatMap(outer=Scan(PROJECT), inner=Scan(EMPLOYEE, [=])), [1 preds])))))
+plan:  Project([_current.NAME#0, _current.COUNT(P.ID)#1], StreamingAgg(keys=[_current.NAME#2], InMemorySort([_current.NAME#2 ASC], FlatMap(outer=Scan(PROJECT), inner=FlatMap(outer=Scan(EMPLOYEE, [=]), inner=Scan(DEPARTMENT, [=]))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryPredicatesFilterPlan
-shape:           RecordQueryFlatMapPlan
-shape:             RecordQueryScanPlan
-shape:             RecordQueryScanPlan
+shape:         RecordQueryFlatMapPlan
+shape:           RecordQueryScanPlan
+shape:           RecordQueryScanPlan
 === join_group_having_exists.yaml#0
 sql:   SELECT c.name, COUNT(p.id) FROM categories c, products p WHERE p.cat_id = c.id GROUP BY c.name ORDER BY c.name
 plan:  Project([_current.NAME#0, _current.COUNT(P.ID)#1], StreamingAgg(keys=[_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(PRODUCTS), inner=Scan(CATEGORIES, [=])))))
@@ -10373,13 +10398,13 @@ shape:         RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === join_index_correlation.yaml#2
 sql:   SELECT d.name, COUNT(*) FROM departments d, employees e WHERE e.dept_id = d.id GROUP BY d.name ORDER BY d.name
-plan:  Project([_current.NAME#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(EMPLOYEES), inner=Scan(DEPARTMENTS, [=])))))
+plan:  Project([_current.NAME#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(DEPARTMENTS), inner=IndexScan(IDX_DEPT, [=])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryScanPlan
+shape:         RecordQueryIndexPlan
 === join_index_correlation.yaml#3
 sql:   SELECT e1.name, e2.name FROM employees e1, employees e2 WHERE e1.id = e2.id ORDER BY e1.id
 plan:  Project([_current.NAME#2, _current.NAME#6], FlatMap(outer=Scan(EMPLOYEES), inner=Scan(EMPLOYEES, [=])))
@@ -10678,14 +10703,13 @@ shape:       RecordQueryDefaultOnEmptyPlan
 shape:         RecordQueryScanPlan
 === join_patterns_java.yaml#2
 sql:   SELECT d.name, COUNT(*), SUM(e.salary) FROM employees e, departments d WHERE e.dept_id = d.id GROUP BY d.name ORDER BY d.name
-plan:  Project([_current.NAME#0, _current.COUNT(*)#1, _current.SUM(E.SALARY)#2], StreamingAgg(keys=[_current.NAME#5], InMemorySort([_current.NAME#5 ASC], FlatMap(outer=Scan(DEPARTMENTS), inner=PredicatesFilter(Scan(EMPLOYEES), [1 preds])))))
+plan:  Project([_current.NAME#0, _current.COUNT(*)#1, _current.SUM(E.SALARY)#2], StreamingAgg(keys=[_current.NAME#5], InMemorySort([_current.NAME#5 ASC], FlatMap(outer=Scan(EMPLOYEES), inner=Scan(DEPARTMENTS, [=])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryPredicatesFilterPlan
-shape:           RecordQueryScanPlan
+shape:         RecordQueryScanPlan
 === join_patterns_java.yaml#3
 sql:   SELECT e1.name, e2.name FROM employees e1, employees e2 WHERE e1.dept_id = e2.dept_id AND e1.id < e2.id ORDER BY e1.name, e2.name
 plan:  Project([_current.NAME#1, _current.NAME#5], InMemorySort([_current.NAME#1 ASC, _current.NAME#5 ASC], FlatMap(outer=Scan(EMPLOYEES), inner=PredicatesFilter(Scan(EMPLOYEES, [<>]), [1 preds]))))
@@ -10737,48 +10761,47 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === join_three_way_predicate.yaml#0
 sql:   SELECT d.name, e.name, p.name FROM dept d, emp e, project p WHERE e.dept_id = d.id AND p.emp_id = e.id ORDER BY p.name
-plan:  Project([_current.NAME#1, _current.NAME#4, _current.NAME#8], InMemorySort([_current.NAME#8 ASC], FlatMap(outer=FlatMap(outer=Scan(PROJECT), inner=Scan(EMP, [=])), inner=Scan(DEPT, [=]))))
+plan:  Project([_current.NAME#1, _current.NAME#4, _current.NAME#8], InMemorySort([_current.NAME#8 ASC], FlatMap(outer=Scan(PROJECT), inner=FlatMap(outer=Scan(EMP, [=]), inner=Scan(DEPT, [=])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
-shape:       RecordQueryScanPlan
 === join_three_way_predicate.yaml#1
 sql:   SELECT d.name, e.name, p.name FROM dept d, emp e, project p WHERE e.dept_id = d.id AND p.emp_id = e.id AND e.salary > 90 ORDER BY p.name
-plan:  Project([_current.NAME#1, _current.NAME#4, _current.NAME#8], InMemorySort([_current.NAME#8 ASC], FlatMap(outer=FlatMap(outer=Scan(PROJECT), inner=PredicatesFilter(Scan(EMP, [=]), [1 preds])), inner=Scan(DEPT, [=]))))
+plan:  Project([_current.NAME#1, _current.NAME#4, _current.NAME#8], InMemorySort([_current.NAME#8 ASC], FlatMap(outer=Scan(PROJECT), inner=FlatMap(outer=PredicatesFilter(Scan(EMP, [=]), [1 preds]), inner=Scan(DEPT, [=])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
 shape:       RecordQueryFlatMapPlan
-shape:         RecordQueryScanPlan
 shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
-shape:       RecordQueryScanPlan
+shape:         RecordQueryScanPlan
 === join_three_way_predicate.yaml#2
 sql:   SELECT d.name, e.name, p.name FROM dept d, emp e, project p WHERE e.dept_id = d.id AND p.emp_id = e.id AND p.budget > 300 ORDER BY p.name
-plan:  Project([_current.NAME#1, _current.NAME#4, _current.NAME#8], InMemorySort([_current.NAME#8 ASC], FlatMap(outer=FlatMap(outer=PredicatesFilter(Scan(PROJECT), [1 preds]), inner=Scan(EMP, [=])), inner=Scan(DEPT, [=]))))
+plan:  Project([_current.NAME#1, _current.NAME#4, _current.NAME#8], InMemorySort([_current.NAME#8 ASC], FlatMap(outer=PredicatesFilter(Scan(PROJECT), [1 preds]), inner=FlatMap(outer=Scan(EMP, [=]), inner=Scan(DEPT, [=])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryFlatMapPlan
-shape:         RecordQueryPredicatesFilterPlan
-shape:           RecordQueryScanPlan
+shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
-shape:       RecordQueryScanPlan
+shape:       RecordQueryFlatMapPlan
+shape:         RecordQueryScanPlan
+shape:         RecordQueryScanPlan
 === join_three_way_predicate.yaml#3
 sql:   SELECT d.name, COUNT(p.id) FROM dept d, emp e, project p WHERE e.dept_id = d.id AND p.emp_id = e.id GROUP BY d.name ORDER BY d.name
-plan:  Project([_current.NAME#0, _current.COUNT(P.ID)#1], StreamingAgg(keys=[_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(DEPT), inner=PredicatesFilter(FlatMap(outer=Scan(PROJECT), inner=Scan(EMP, [=])), [1 preds])))))
+plan:  Project([_current.NAME#0, _current.COUNT(P.ID)#1], StreamingAgg(keys=[_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(PROJECT), inner=FlatMap(outer=Scan(EMP, [=]), inner=Scan(DEPT, [=]))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryPredicatesFilterPlan
-shape:           RecordQueryFlatMapPlan
-shape:             RecordQueryScanPlan
-shape:             RecordQueryScanPlan
+shape:         RecordQueryFlatMapPlan
+shape:           RecordQueryScanPlan
+shape:           RecordQueryScanPlan
 === join_using_shapes.yaml#0
 sql:   SELECT a.id FROM a JOIN b USING (id) ORDER BY a.id
 plan:  Project([_current.ID#0], FlatMap(outer=Scan(A), inner=Scan(B, [=])))
@@ -10796,14 +10819,13 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === join_using_shapes.yaml#2
 sql:   SELECT a.id FROM a JOIN b USING (id, k) JOIN c USING (id, k) ORDER BY a.id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], FlatMap(outer=FlatMap(outer=Scan(C), inner=PredicatesFilter(Scan(A, [=]), [1 preds])), inner=PredicatesFilter(Scan(B, [=]), [1 preds]))))
+plan:  Project([_current.ID#0], FlatMap(outer=Scan(A), inner=FlatMap(outer=PredicatesFilter(Scan(C, [=]), [1 preds]), inner=PredicatesFilter(Scan(B, [=]), [1 preds]))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
 shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryFlatMapPlan
+shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryPredicatesFilterPlan
-shape:           RecordQueryScanPlan
 shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
 === join_using_shapes.yaml#3 expect-error=42702
@@ -10811,13 +10833,13 @@ sql:   SELECT a.id FROM a JOIN b USING (id) JOIN c USING (id, k) ORDER BY a.id
 plan:  <PLAN-ERROR: 42702: Ambiguous reference K>
 === join_using_shapes.yaml#4
 sql:   SELECT a.id FROM a JOIN b USING (id) JOIN c USING (j) ORDER BY a.id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, [1 preds], Scan(C), FlatMap(outer=Scan(B), inner=Scan(A, [=])))))
+plan:  Project([_current.ID#0], FlatMap(outer=Scan(A), inner=FlatMap(outer=Scan(B, [=]), inner=PredicatesFilter(Scan(C), [1 preds]))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryNestedLoopJoinPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryFlatMapPlan
 shape:       RecordQueryScanPlan
-shape:       RecordQueryFlatMapPlan
-shape:         RecordQueryScanPlan
+shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
 === join_using_shapes.yaml#5 expect-error=42703
 sql:   SELECT a.id FROM a JOIN b USING (id) JOIN c USING (nosuchcol)
@@ -10869,15 +10891,16 @@ sql:   SELECT a.id FROM a JOIN b USING (j)
 plan:  <PLAN-ERROR: 42703: column "J" does not exist>
 === join_using_shapes.yaml#13
 sql:   SELECT b.id FROM (SELECT id FROM a) b JOIN c USING (id) JOIN a USING (k) ORDER BY b.id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, [1 preds], Scan(A), FlatMap(outer=Project([_current.ID#0], Scan(A)), inner=Scan(C, [=])))))
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], FlatMap(outer=Project([_current.ID#0], Scan(A)), inner=FlatMap(outer=Scan(C, [=]), inner=PredicatesFilter(Scan(A), [1 preds])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryNestedLoopJoinPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryFlatMapPlan
-shape:         RecordQueryProjectionPlan
-shape:           RecordQueryScanPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryProjectionPlan
 shape:         RecordQueryScanPlan
+shape:       RecordQueryFlatMapPlan
+shape:         RecordQueryScanPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === join_with_or_predicate.yaml#0
 sql:   SELECT e.name, d.name FROM emp e, dept d WHERE e.dept_id = d.id AND (d.name = 'Eng' OR e.salary > 85) ORDER BY e.name
 plan:  Project([_current.NAME#2, _current.NAME#5], InMemorySort([_current.NAME#2 ASC], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(Scan(DEPT, [=]), [1 preds]))))
@@ -10916,17 +10939,18 @@ shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
 === left_join_exists_combo.yaml#1
 sql:   SELECT c.name FROM companies c, employees e WHERE e.company_id = c.id AND EXISTS (SELECT 1 FROM projects p WHERE p.company_id = c.id) ORDER BY c.name
-plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=FlatMap(outer=Scan(EMPLOYEES), inner=Scan(COMPANIES, [=])), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(PROJECTS), [1 preds])), [1 preds]))))
+plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(EMPLOYEES), inner=FlatMap(outer=Scan(COMPANIES, [=]), inner=Map(PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(PROJECTS), [1 preds])), [1 preds]), {_0: 1})))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryMapPlan
 shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:             RecordQueryFirstOrDefaultPlan
+shape:               RecordQueryPredicatesFilterPlan
+shape:                 RecordQueryScanPlan
 === left_join_null_fk_comprehensive.yaml#0
 sql:   SELECT p.name, c.value FROM parent p LEFT JOIN child c ON c.parent_id = p.id ORDER BY p.name, c.value
 plan:  Project([_current.NAME#1, _current.VALUE#4], InMemorySort([_current.NAME#1 ASC, _current.VALUE#4 ASC], NestedLoopJoin(LEFT OUTER, [1 preds], Scan(PARENT), Scan(CHILD))))
@@ -11633,7 +11657,7 @@ shape:       RecordQueryScanPlan
 shape:     RecordQueryScanPlan
 === map_path_predicate_kleene.yaml#2
 sql:   SELECT a.id FROM a INNER JOIN b ON a.id = b.id WHERE a.v BETWEEN NULL AND NULL
-plan:  Project([_current.ID#0], FlatMap(outer=PredicatesFilter(Scan(A), [2 preds]), inner=Scan(B, [=])))
+plan:  Project([_current.ID#0], FlatMap(outer=PredicatesFilter(Scan(B), [1 preds]), inner=Scan(A, [=])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryFlatMapPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -11782,12 +11806,11 @@ shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryIndexPlan
 === multi_column_index_java.yaml#5
 sql:   SELECT customer_id, COUNT(*) FROM orders WHERE status = 'shipped' GROUP BY customer_id ORDER BY customer_id
-plan:  Project([_current.CUSTOMER_ID#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.CUSTOMER_ID#1], Fetch(PredicatesFilter(IndexScan(IDX_CUST_STATUS, [*, *] COVERING), [1 preds]))))
+plan:  Project([_current.CUSTOMER_ID#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.CUSTOMER_ID#1], InMemorySort([_current.CUSTOMER_ID#1 ASC], IndexScan(IDX_STATUS_AMOUNT, [=, *]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryFetchFromPartialRecordPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryCoveringIndexPlan
+shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryIndexPlan
 === multi_column_index_java.yaml#6
 sql:   SELECT id, customer_id, status FROM orders ORDER BY customer_id, status, id
 plan:  Project([_current.ID#0, _current.CUSTOMER_ID#1, _current.STATUS#2], InMemorySort([_current.CUSTOMER_ID#1 ASC, _current.STATUS#2 ASC, _current.ID#0 ASC], Scan(ORDERS)))
@@ -11822,15 +11845,14 @@ shape:       RecordQueryDefaultOnEmptyPlan
 shape:         RecordQueryScanPlan
 === multi_column_join.yaml#3
 sql:   SELECT p.name FROM products p WHERE EXISTS ( SELECT 1 FROM inventory i WHERE i.warehouse_cat = p.category AND i.warehouse_sku = p.sku ) ORDER BY p.name
-plan:  Project([_current.NAME#2], InMemorySort([_current.NAME#2 ASC], FlatMap(outer=Scan(PRODUCTS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(INVENTORY, [=]), [1 preds])), [1 preds]))))
+plan:  Project([_current.NAME#2], InMemorySort([_current.NAME#2 ASC], FlatMap(outer=Scan(PRODUCTS), inner=PredicatesFilter(FirstOrDefault(Scan(INVENTORY, [=, =])), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
 shape:       RecordQueryScanPlan
 shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:           RecordQueryScanPlan
 === multi_feature.yaml#0
 sql:   WITH hv AS (SELECT customer_id, total FROM orders WHERE total >= 30) SELECT customer_id, SUM(total) FROM hv GROUP BY customer_id HAVING SUM(total) > 50 ORDER BY customer_id DESC
 plan:  Project([_current.CUSTOMER_ID#0, _current.SUM(TOTAL)#1], InMemorySort([_current.CUSTOMER_ID#0 DESC], PredicatesFilter(StreamingAgg(keys=[_current.CUSTOMER_ID#0], InMemorySort([_current.CUSTOMER_ID#0 ASC], Project([_current.CUSTOMER_ID#1, _current.TOTAL#2], PredicatesFilter(Scan(ORDERS), [1 preds])))), [1 preds])))
@@ -11930,28 +11952,25 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === multi_feature_join_agg_exists.yaml#0
 sql:   SELECT s.name, SUM(p.price * i.qty) FROM stores s, inventory i, products p WHERE i.store_id = s.id AND i.product_id = p.id GROUP BY s.name ORDER BY s.name
-plan:  Project([_current.NAME#0, _current.SUM(P.PRICE*I.QTY)#1], StreamingAgg(keys=[_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(STORES), inner=PredicatesFilter(FlatMap(outer=Scan(PRODUCTS), inner=PredicatesFilter(Scan(INVENTORY), [1 preds])), [1 preds])))))
+plan:  Project([_current.NAME#0, _current.SUM(P.PRICE*I.QTY)#1], StreamingAgg(keys=[_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(STORES), inner=FlatMap(outer=Scan(INVENTORY, [=]), inner=Scan(PRODUCTS, [=]))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryPredicatesFilterPlan
-shape:           RecordQueryFlatMapPlan
-shape:             RecordQueryScanPlan
-shape:             RecordQueryPredicatesFilterPlan
-shape:               RecordQueryScanPlan
+shape:         RecordQueryFlatMapPlan
+shape:           RecordQueryScanPlan
+shape:           RecordQueryScanPlan
 === multi_feature_join_agg_exists.yaml#1
 sql:   SELECT s.name FROM stores s WHERE EXISTS ( SELECT 1 FROM inventory i WHERE i.store_id = s.id AND i.product_id = 20 ) ORDER BY s.name
-plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(STORES), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(INVENTORY, [=]), [1 preds])), [1 preds]))))
+plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(STORES), inner=PredicatesFilter(FirstOrDefault(Scan(INVENTORY, [=, =])), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
 shape:       RecordQueryScanPlan
 shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:           RecordQueryScanPlan
 === multi_feature_join_agg_exists.yaml#2
 sql:   SELECT s.name, COUNT(i.product_id) FROM stores s, inventory i WHERE i.store_id = s.id AND s.city = 'NYC' GROUP BY s.name ORDER BY s.name
 plan:  Project([_current.NAME#0, _current.COUNT(I.PRODUCT_ID)#1], StreamingAgg(keys=[_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(INVENTORY), inner=PredicatesFilter(Scan(STORES, [=]), [1 preds])))))
@@ -12044,12 +12063,12 @@ shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryScanPlan
 === multi_operator_pipeline.yaml#5
 sql:   SELECT p.category, COUNT(*) AS product_count FROM products p WHERE EXISTS (SELECT 1 FROM orders o WHERE o.product_id = p.id) GROUP BY p.category ORDER BY p.category
-plan:  Project([_current.CATEGORY#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.CATEGORY#1], InMemorySort([_current.CATEGORY#1 ASC], FlatMap(outer=Scan(PRODUCTS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(ORDERS), [1 preds])), [1 preds])))))
+plan:  Project([_current.CATEGORY#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.CATEGORY#1], InMemorySort([_current.CATEGORY#1 ASC], FlatMap(outer=IndexScan(IDX_CATEGORY, [*]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(ORDERS), [1 preds])), [1 preds])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryFlatMapPlan
-shape:         RecordQueryScanPlan
+shape:         RecordQueryIndexPlan
 shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryFirstOrDefaultPlan
 shape:             RecordQueryPredicatesFilterPlan
@@ -12092,39 +12111,37 @@ shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === multi_table_where_join_java.yaml#1
 sql:   SELECT r.name, s.store_name, sa.amount FROM regions r, stores s, sales sa WHERE s.region_id = r.id AND sa.store_id = s.id ORDER BY sa.amount
-plan:  Project([_current.NAME#1, _current.STORE_NAME#4, _current.AMOUNT#7], InMemorySort([_current.AMOUNT#7 ASC], FlatMap(outer=FlatMap(outer=Scan(SALES), inner=Scan(STORES, [=])), inner=Scan(REGIONS, [=]))))
+plan:  Project([_current.NAME#1, _current.STORE_NAME#4, _current.AMOUNT#7], InMemorySort([_current.AMOUNT#7 ASC], FlatMap(outer=Scan(SALES), inner=FlatMap(outer=Scan(STORES, [=]), inner=Scan(REGIONS, [=])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
-shape:       RecordQueryScanPlan
 === multi_table_where_join_java.yaml#2
 sql:   SELECT r.name, SUM(sa.amount) AS total FROM regions r, stores s, sales sa WHERE s.region_id = r.id AND sa.store_id = s.id GROUP BY r.name ORDER BY r.name
-plan:  Project([_current.NAME#0, _current.SUM(SA.AMOUNT)#1], StreamingAgg(keys=[_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(REGIONS), inner=PredicatesFilter(FlatMap(outer=Scan(SALES), inner=Scan(STORES, [=])), [1 preds])))))
+plan:  Project([_current.NAME#0, _current.SUM(SA.AMOUNT)#1], StreamingAgg(keys=[_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(SALES), inner=FlatMap(outer=Scan(STORES, [=]), inner=Scan(REGIONS, [=]))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryPredicatesFilterPlan
-shape:           RecordQueryFlatMapPlan
-shape:             RecordQueryScanPlan
-shape:             RecordQueryScanPlan
+shape:         RecordQueryFlatMapPlan
+shape:           RecordQueryScanPlan
+shape:           RecordQueryScanPlan
 === multi_table_where_join_java.yaml#3
 sql:   SELECT r.name, COUNT(*) AS cnt FROM regions r, stores s, sales sa WHERE s.region_id = r.id AND sa.store_id = s.id GROUP BY r.name HAVING COUNT(*) > 1
-plan:  Project([_current.NAME#0, _current.COUNT(*)#1], PredicatesFilter(StreamingAgg(keys=[_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(REGIONS), inner=PredicatesFilter(FlatMap(outer=Scan(SALES), inner=Scan(STORES, [=])), [1 preds])))), [1 preds]))
+plan:  Project([_current.NAME#0, _current.COUNT(*)#1], PredicatesFilter(StreamingAgg(keys=[_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(SALES), inner=FlatMap(outer=Scan(STORES, [=]), inner=Scan(REGIONS, [=]))))), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryStreamingAggregationPlan
 shape:       RecordQueryInMemorySortPlan
 shape:         RecordQueryFlatMapPlan
 shape:           RecordQueryScanPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryFlatMapPlan
-shape:               RecordQueryScanPlan
-shape:               RecordQueryScanPlan
+shape:           RecordQueryFlatMapPlan
+shape:             RecordQueryScanPlan
+shape:             RecordQueryScanPlan
 === multi_table_where_join_java.yaml#4
 sql:   SELECT s.store_name, sa.amount FROM stores s, sales sa WHERE sa.store_id = s.id AND sa.amount > 400 ORDER BY sa.amount
 plan:  Project([_current.STORE_NAME#2, _current.AMOUNT#5], InMemorySort([_current.AMOUNT#5 ASC], FlatMap(outer=PredicatesFilter(Scan(SALES), [1 preds]), inner=Scan(STORES, [=]))))
@@ -12249,30 +12266,32 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
 === nested_correlation_over_a_join.yaml#2
 sql:   SELECT t1.id FROM t1 JOIN t3 ON t3.t1_id = t1.id WHERE EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = n.co) ORDER BY t1.id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], FlatMap(outer=FlatMap(outer=Scan(T3), inner=Scan(T1, [=])), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])), [1 preds]))))
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], FlatMap(outer=Scan(T3), inner=FlatMap(outer=Scan(T1, [=]), inner=Map(PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])), [1 preds]), {_0: 1})))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryMapPlan
 shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:             RecordQueryFirstOrDefaultPlan
+shape:               RecordQueryPredicatesFilterPlan
+shape:                 RecordQueryScanPlan
 === nested_correlation_over_a_join.yaml#3
 sql:   SELECT t1.id FROM t1 JOIN t3 ON t3.t1_id = t1.id WHERE NOT EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = n.co) ORDER BY t1.id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], FlatMap(outer=FlatMap(outer=Scan(T3), inner=Scan(T1, [=])), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])), [1 preds]))))
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], FlatMap(outer=Scan(T3), inner=FlatMap(outer=Scan(T1, [=]), inner=Map(PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])), [1 preds]), {_0: 1})))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryMapPlan
 shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:             RecordQueryFirstOrDefaultPlan
+shape:               RecordQueryPredicatesFilterPlan
+shape:                 RecordQueryScanPlan
 === nested_derived_table.yaml#0
 sql:   SELECT * FROM (SELECT * FROM (SELECT * FROM t1) AS x WHERE id IS NOT NULL) AS y ORDER BY id
 plan:  Scan(T1, [<>])
@@ -12480,24 +12499,24 @@ shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === nlj_column_ambiguity.yaml#4
 sql:   SELECT e.id, d.id, p.id FROM emp e, dept d, project p WHERE e.dept_id = d.id AND p.lead_id = e.id ORDER BY e.id
-plan:  Project([_current.ID#0, _current.ID#4, _current.ID#7], InMemorySort([_current.ID#0 ASC], FlatMap(outer=FlatMap(outer=Scan(PROJECT), inner=Scan(EMP, [=])), inner=Scan(DEPT, [=]))))
+plan:  Project([_current.ID#0, _current.ID#4, _current.ID#7], InMemorySort([_current.ID#0 ASC], FlatMap(outer=Scan(PROJECT), inner=FlatMap(outer=Scan(EMP, [=]), inner=Scan(DEPT, [=])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
-shape:       RecordQueryScanPlan
 === nlj_column_ambiguity.yaml#5
 sql:   SELECT e.name, d.name, p.name FROM emp e, dept d, project p WHERE e.dept_id = d.id AND p.lead_id = e.id ORDER BY e.id
-plan:  Project([_current.NAME#1, _current.NAME#5, _current.NAME#8], InMemorySort([_current.ID#0 ASC], FlatMap(outer=FlatMap(outer=Scan(PROJECT), inner=Scan(EMP, [=])), inner=Scan(DEPT, [=]))))
+plan:  Project([_current.NAME#1, _current.NAME#5, _current.NAME#8], InMemorySort([_current.ID#0 ASC], FlatMap(outer=Scan(PROJECT), inner=FlatMap(outer=Scan(EMP, [=]), inner=Scan(DEPT, [=])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
-shape:       RecordQueryScanPlan
 === nlj_column_ambiguity.yaml#6
 sql:   SELECT * FROM emp e, dept d WHERE e.dept_id = d.id ORDER BY e.id
 plan:  FlatMap(outer=Scan(EMP), inner=Scan(DEPT, [=]))
@@ -12538,24 +12557,22 @@ shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === nlj_column_ambiguity.yaml#11
 sql:   SELECT d.name, COUNT(e.id), SUM(e.salary) FROM emp e, dept d WHERE e.dept_id = d.id GROUP BY d.name ORDER BY d.name
-plan:  Project([_current.NAME#0, _current.COUNT(E.ID)#1, _current.SUM(E.SALARY)#2], StreamingAgg(keys=[_current.NAME#5], InMemorySort([_current.NAME#5 ASC], FlatMap(outer=Scan(DEPT), inner=PredicatesFilter(Scan(EMP), [1 preds])))))
+plan:  Project([_current.NAME#0, _current.COUNT(E.ID)#1, _current.SUM(E.SALARY)#2], StreamingAgg(keys=[_current.NAME#5], InMemorySort([_current.NAME#5 ASC], FlatMap(outer=Scan(EMP), inner=Scan(DEPT, [=])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryPredicatesFilterPlan
-shape:           RecordQueryScanPlan
+shape:         RecordQueryScanPlan
 === nlj_column_ambiguity.yaml#12
 sql:   SELECT e.name, SUM(d.budget) FROM emp e, dept d WHERE e.dept_id = d.id GROUP BY e.name ORDER BY e.name
-plan:  Project([_current.NAME#0, _current.SUM(D.BUDGET)#1], StreamingAgg(keys=[_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(DEPT), inner=PredicatesFilter(Scan(EMP), [1 preds])))))
+plan:  Project([_current.NAME#0, _current.SUM(D.BUDGET)#1], StreamingAgg(keys=[_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(EMP), inner=Scan(DEPT, [=])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryPredicatesFilterPlan
-shape:           RecordQueryScanPlan
+shape:         RecordQueryScanPlan
 === nlj_column_ambiguity.yaml#13
 sql:   SELECT e.name, CASE WHEN d.name = 'Engineering' THEN 'tech' WHEN d.name = 'Sales' THEN 'biz' ELSE 'other' END FROM emp e, dept d WHERE e.dept_id = d.id ORDER BY e.id
 plan:  Project([_current.NAME#1, CASE(WHEN(predicate, predicate, TRUE), ['tech', 'biz', 'other'])], FlatMap(outer=Scan(EMP), inner=Scan(DEPT, [=])))
@@ -12645,7 +12662,7 @@ shape:     RecordQueryScanPlan
 shape:     RecordQueryScanPlan
 === nlj_null_edge_cases.yaml#7
 sql:   SELECT o.id, s.id FROM orders o INNER JOIN shipments s ON o.customer_id = s.order_id WHERE o.customer_id IS NULL AND s.order_id IS NULL
-plan:  Project([_current.ID#0, _current.ID#4], FlatMap(outer=PredicatesFilter(Scan(SHIPMENTS), [1 preds]), inner=PredicatesFilter(Scan(ORDERS), [2 preds])))
+plan:  Project([_current.ID#0, _current.ID#4], FlatMap(outer=PredicatesFilter(Scan(SHIPMENTS), [1 preds]), inner=PredicatesFilter(Scan(ORDERS), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryFlatMapPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -12654,23 +12671,24 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === nlj_null_edge_cases.yaml#8
 sql:   SELECT o.id, o.name, s.carrier FROM orders o LEFT JOIN shipments s ON o.customer_id = s.order_id WHERE o.customer_id IS NULL ORDER BY o.id
-plan:  Project([_current.ID#0, _current.NAME#2, _current.CARRIER#6], InMemorySort([_current.ID#0 ASC], PredicatesFilter(NestedLoopJoin(LEFT OUTER, [1 preds], Scan(ORDERS), Scan(SHIPMENTS)), [1 preds])))
+plan:  Project([_current.ID#0, _current.NAME#2, _current.CARRIER#6], PredicatesFilter(FlatMap(outer=Scan(ORDERS), inner=DefaultOnEmpty(PredicatesFilter(Scan(SHIPMENTS), [1 preds]))), [1 preds]))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryNestedLoopJoinPlan
-shape:         RecordQueryScanPlan
-shape:         RecordQueryScanPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryDefaultOnEmptyPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === nlj_null_edge_cases.yaml#9
 sql:   SELECT o.name, c.name, s.carrier FROM orders o INNER JOIN customers c ON o.customer_id = c.id INNER JOIN shipments s ON s.order_id = o.id ORDER BY o.id
-plan:  Project([_current.NAME#2, _current.NAME#5, _current.CARRIER#9], InMemorySort([_current.ID#0 ASC], FlatMap(outer=FlatMap(outer=Scan(SHIPMENTS), inner=Scan(ORDERS, [=])), inner=Scan(CUSTOMERS, [=]))))
+plan:  Project([_current.NAME#2, _current.NAME#5, _current.CARRIER#9], InMemorySort([_current.ID#0 ASC], FlatMap(outer=Scan(SHIPMENTS), inner=FlatMap(outer=Scan(ORDERS, [=]), inner=Scan(CUSTOMERS, [=])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
-shape:       RecordQueryScanPlan
 === nlj_null_edge_cases.yaml#10
 sql:   SELECT o.name, c.name, s.carrier FROM orders o LEFT JOIN customers c ON o.customer_id = c.id LEFT JOIN shipments s ON s.order_id = o.id ORDER BY o.id
 plan:  Project([_current.NAME#2, _current.NAME#5, _current.CARRIER#9], InMemorySort([_current.ID#0 ASC], NestedLoopJoin(LEFT OUTER, [1 preds], FlatMap(outer=Scan(ORDERS), inner=DefaultOnEmpty(Scan(CUSTOMERS, [=]))), Scan(SHIPMENTS))))
@@ -12770,7 +12788,7 @@ shape:         RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === nlj_predicate_edge_cases.yaml#3
 sql:   SELECT p.name, o.customer FROM products p, orders o WHERE o.product_id = p.id AND o.total BETWEEN 200 AND 1000 ORDER BY p.name, o.customer
-plan:  Project([_current.NAME#1, _current.CUSTOMER#7], InMemorySort([_current.NAME#1 ASC, _current.CUSTOMER#7 ASC], FlatMap(outer=PredicatesFilter(Scan(ORDERS), [2 preds]), inner=Scan(PRODUCTS, [=]))))
+plan:  Project([_current.NAME#1, _current.CUSTOMER#7], InMemorySort([_current.NAME#1 ASC, _current.CUSTOMER#7 ASC], FlatMap(outer=PredicatesFilter(Scan(ORDERS), [1 preds]), inner=Scan(PRODUCTS, [=]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
@@ -12897,7 +12915,7 @@ shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
 === nlj_predicate_edge_cases.yaml#17
 sql:   SELECT p.name, o.customer FROM products p, orders o WHERE o.product_id = p.id AND p.price BETWEEN 5 AND 25 AND o.priority >= 3 AND o.customer LIKE 'A%' ORDER BY p.name
-plan:  Project([_current.NAME#1, _current.CUSTOMER#7], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=PredicatesFilter(Scan(ORDERS), [2 preds]), inner=PredicatesFilter(Scan(PRODUCTS, [=]), [2 preds]))))
+plan:  Project([_current.NAME#1, _current.CUSTOMER#7], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=PredicatesFilter(Scan(ORDERS), [2 preds]), inner=PredicatesFilter(Scan(PRODUCTS, [=]), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
@@ -14035,11 +14053,11 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === ordering_same_leaf_cross_quantifier.yaml#0
 sql:   SELECT o.id AS oid, i.id AS iid FROM t AS o, t AS i WHERE o.v = i.w ORDER BY i.id
-plan:  Project([_current.ID#0, _current.ID#3], InMemorySort([_current.ID#3 ASC], NestedLoopJoin(INNER, [1 preds], Scan(T), Scan(T))))
+plan:  Project([_current.ID#0, _current.ID#3], FlatMap(outer=Scan(T), inner=PredicatesFilter(Scan(T), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryNestedLoopJoinPlan
-shape:       RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === ordering_same_leaf_cross_quantifier.yaml#1
 sql:   SELECT o.id AS oid, i.id AS iid FROM t AS o, t AS i WHERE o.v = i.w ORDER BY o.id
@@ -14051,24 +14069,22 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === ordering_same_leaf_cross_quantifier.yaml#2
 sql:   SELECT i.id AS iid, SUM(o.v) AS s FROM t AS o, t AS i WHERE o.v = i.w GROUP BY i.id ORDER BY i.id
-plan:  Project([_current.ID#0, _current.SUM(O.V)#1], StreamingAgg(keys=[_current.ID#3], InMemorySort([_current.ID#3 ASC], FlatMap(outer=Scan(T), inner=PredicatesFilter(Scan(T), [1 preds])))))
+plan:  Project([_current.ID#0, _current.SUM(O.V)#1], StreamingAgg(keys=[_current.ID#3], InMemorySort([_current.ID#3 ASC], NestedLoopJoin(INNER, [1 preds], Scan(T), Scan(T)))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
-shape:       RecordQueryFlatMapPlan
+shape:       RecordQueryNestedLoopJoinPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryPredicatesFilterPlan
-shape:           RecordQueryScanPlan
+shape:         RecordQueryScanPlan
 === ordering_same_leaf_cross_quantifier.yaml#3
 sql:   SELECT o.id AS oid, SUM(o.v) AS s FROM t AS o, t AS i WHERE o.v = i.w GROUP BY o.id ORDER BY o.id
-plan:  Project([_current.ID#0, _current.SUM(O.V)#1], StreamingAgg(keys=[_current.ID#0], InMemorySort([_current.ID#0 ASC], FlatMap(outer=Scan(T), inner=PredicatesFilter(Scan(T), [1 preds])))))
+plan:  Project([_current.ID#0, _current.SUM(O.V)#1], StreamingAgg(keys=[_current.ID#0], InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, [1 preds], Scan(T), Scan(T)))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
-shape:       RecordQueryFlatMapPlan
+shape:       RecordQueryNestedLoopJoinPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryPredicatesFilterPlan
-shape:           RecordQueryScanPlan
+shape:         RecordQueryScanPlan
 === ordering_through_a_projection.yaml#0
 sql:   SELECT g FROM ga ORDER BY g
 plan:  Project([_current.G#1], IndexScan(GA_G, [*]))
@@ -14375,13 +14391,12 @@ shape:     RecordQueryProjectionPlan
 shape:       RecordQueryScanPlan
 === parse_channel_pins.yaml#5
 sql:   WITH RECURSIVE r("A.B") AS ( SELECT id FROM u WHERE id = 1 UNION ALL SELECT "A.B" + 1 FROM r WHERE "A.B" < 3 ) SELECT "A.B" FROM r ORDER BY "A.B"
-plan:  Project([_current.A.B#0], InMemorySort([_current.A.B#0 ASC], RecursiveDfsJoin(PREORDER, Project([_current.ID#0], Project([_current.ID#0], Scan(U, [=]))), Project([(_current.A.B#0 + 1)], PredicatesFilter(TempTableScan(RforScan), [1 preds])))))
+plan:  Project([_current.A.B#0], InMemorySort([_current.A.B#0 ASC], RecursiveDfsJoin(PREORDER, Project([_current.ID#0], Scan(U, [=])), Project([(_current.A.B#0 + 1)], PredicatesFilter(TempTableScan(RforScan), [1 preds])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryRecursiveDfsJoinPlan
 shape:       RecordQueryProjectionPlan
-shape:         RecordQueryProjectionPlan
-shape:           RecordQueryScanPlan
+shape:         RecordQueryScanPlan
 shape:       RecordQueryProjectionPlan
 shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryTempTableScanPlan
@@ -14580,11 +14595,13 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === pk_pushdown.yaml#37
 sql:   SELECT v FROM kv WHERE (k = 'a' AND g = 1) OR (k = 'b' AND g = 2) ORDER BY v
-plan:  Project([_current.V#2], InMemorySort([_current.V#2 ASC], PredicatesFilter(Scan(KV), [1 preds])))
+plan:  Project([_current.V#2], InMemorySort([_current.V#2 ASC], UnorderedPrimaryKeyDistinct(UnorderedUnion(Scan(KV, [=, =]), Scan(KV, [=, =])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryUnorderedPrimaryKeyDistinctPlan
+shape:       RecordQueryUnorderedUnionPlan
+shape:         RecordQueryScanPlan
+shape:         RecordQueryScanPlan
 === pk_pushdown.yaml#38
 sql:   UPDATE t SET v = 999 WHERE id = 2
 plan:  Update(T, [1 transforms], UnorderedPrimaryKeyDistinct(Scan(T, [=])))
@@ -14876,10 +14893,13 @@ shape: RecordQueryDeletePlan
 shape:   RecordQueryScanPlan
 === pk_pushdown.yaml#96
 sql:   SELECT id FROM t WHERE id BETWEEN 1 AND 2 OR id = 10 ORDER BY id
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], UnorderedPrimaryKeyDistinct(UnorderedUnion(Scan(T, [<>]), Scan(T, [=])))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryUnorderedPrimaryKeyDistinctPlan
+shape:       RecordQueryUnorderedUnionPlan
+shape:         RecordQueryScanPlan
+shape:         RecordQueryScanPlan
 === pk_range_scan.yaml#0
 sql:   SELECT val FROM t WHERE id = 5
 plan:  Project([_current.VAL#1], Scan(T, [=]))
@@ -14948,28 +14968,28 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
 === projected_exists_nested_sort_key.yaml#3
 sql:   SELECT t1.id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h FROM t1 JOIN t3 ON t3.t1_id = t1.id ORDER BY n.sk
-plan:  Project([_current.ID#0, _current.H#1], InMemorySort([_current.T1.N.SK#2 ASC], FlatMap(outer=FlatMap(outer=Scan(T3), inner=Scan(T1, [=])), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])))))
+plan:  Project([_current.ID#0, _current.H#1], InMemorySort([_current.T1.N.SK#2 ASC], FlatMap(outer=Scan(T3), inner=FlatMap(outer=Scan(T1, [=]), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds]))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryScanPlan
-shape:       RecordQueryFirstOrDefaultPlan
-shape:         RecordQueryPredicatesFilterPlan
-shape:           RecordQueryScanPlan
+shape:         RecordQueryFirstOrDefaultPlan
+shape:           RecordQueryPredicatesFilterPlan
+shape:             RecordQueryScanPlan
 === projected_exists_nested_sort_key.yaml#4
 sql:   SELECT t1.id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h FROM t1 JOIN t3 ON t3.t1_id = t1.id ORDER BY n.co
-plan:  Project([_current.ID#0, _current.H#1], InMemorySort([_current.T1.N.CO#2 ASC], FlatMap(outer=FlatMap(outer=Scan(T3), inner=Scan(T1, [=])), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])))))
+plan:  Project([_current.ID#0, _current.H#1], InMemorySort([_current.T1.N.CO#2 ASC], FlatMap(outer=Scan(T3), inner=FlatMap(outer=Scan(T1, [=]), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds]))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryScanPlan
-shape:       RecordQueryFirstOrDefaultPlan
-shape:         RecordQueryPredicatesFilterPlan
-shape:           RecordQueryScanPlan
+shape:         RecordQueryFirstOrDefaultPlan
+shape:           RecordQueryPredicatesFilterPlan
+shape:             RecordQueryScanPlan
 === projected_exists_nested_sort_key.yaml#5
 sql:   SELECT id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h FROM t1 ORDER BY id
 plan:  FlatMap(outer=Scan(T1), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])))
@@ -14989,30 +15009,31 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === projected_exists_over_a_derived_source.yaml#1
 sql:   WITH c AS (SELECT id, v FROM t1) SELECT c.id, t1_id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = c.id) AS h FROM c, t3 WHERE t3.t1_id = c.id ORDER BY c.id
-plan:  InMemorySort([_current.ID#0 ASC], FlatMap(outer=NestedLoopJoin(INNER, [1 preds], Project([_current.ID#0, _current.V#1], Scan(T1)), Scan(T3)), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds]))))
-shape: RecordQueryInMemorySortPlan
+plan:  FlatMap(outer=Project([_current.ID#0, _current.V#1], Scan(T1)), inner=FlatMap(outer=PredicatesFilter(Scan(T3), [1 preds]), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds]))))
+shape: RecordQueryFlatMapPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryScanPlan
 shape:   RecordQueryFlatMapPlan
-shape:     RecordQueryNestedLoopJoinPlan
-shape:       RecordQueryProjectionPlan
-shape:         RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 shape:     RecordQueryFirstOrDefaultPlan
 shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
 === projected_exists_over_a_derived_source.yaml#2
 sql:   WITH c AS (SELECT id, v FROM t1) SELECT c.id, t1_id FROM c, t3 WHERE t3.t1_id = c.id AND EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = c.id) ORDER BY c.id
-plan:  Project([_current.ID#0, _current.T1_ID#3], InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, [1 preds], FlatMap(outer=Project([_current.ID#0, _current.V#1], Scan(T1)), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])), [1 preds])), Scan(T3))))
+plan:  Project([_current.ID#0, _current.T1_ID#3], FlatMap(outer=Project([_current.ID#0, _current.V#1], Scan(T1)), inner=FlatMap(outer=Map(PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])), [1 preds]), {_0: 1}), inner=PredicatesFilter(Scan(T3), [1 preds]))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryNestedLoopJoinPlan
-shape:       RecordQueryFlatMapPlan
-shape:         RecordQueryProjectionPlan
-shape:           RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryMapPlan
 shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryFirstOrDefaultPlan
 shape:             RecordQueryPredicatesFilterPlan
 shape:               RecordQueryScanPlan
-shape:       RecordQueryScanPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryScanPlan
 === projected_exists_over_a_derived_source.yaml#3
 sql:   SELECT d.id, t1_id FROM (SELECT id, v FROM t1) AS d, t3 WHERE t3.t1_id = d.id ORDER BY d.id
 plan:  Project([_current.ID#0, _current.T1_ID#3], FlatMap(outer=Project([_current.ID#0, _current.V#1], Scan(T1)), inner=PredicatesFilter(Scan(T3), [1 preds])))
@@ -15024,30 +15045,31 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === projected_exists_over_a_derived_source.yaml#4
 sql:   SELECT d.id, t1_id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = d.id) AS h FROM (SELECT id, v FROM t1) AS d, t3 WHERE t3.t1_id = d.id ORDER BY d.id
-plan:  InMemorySort([_current.ID#0 ASC], FlatMap(outer=NestedLoopJoin(INNER, [1 preds], Project([_current.ID#0, _current.V#1], Scan(T1)), Scan(T3)), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds]))))
-shape: RecordQueryInMemorySortPlan
+plan:  FlatMap(outer=Project([_current.ID#0, _current.V#1], Scan(T1)), inner=FlatMap(outer=PredicatesFilter(Scan(T3), [1 preds]), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds]))))
+shape: RecordQueryFlatMapPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryScanPlan
 shape:   RecordQueryFlatMapPlan
-shape:     RecordQueryNestedLoopJoinPlan
-shape:       RecordQueryProjectionPlan
-shape:         RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 shape:     RecordQueryFirstOrDefaultPlan
 shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
 === projected_exists_over_a_derived_source.yaml#5
 sql:   SELECT d.id, t1_id FROM (SELECT id, v FROM t1) AS d, t3 WHERE t3.t1_id = d.id AND EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = d.id) ORDER BY d.id
-plan:  Project([_current.ID#0, _current.T1_ID#3], InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, [1 preds], FlatMap(outer=Project([_current.ID#0, _current.V#1], Scan(T1)), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])), [1 preds])), Scan(T3))))
+plan:  Project([_current.ID#0, _current.T1_ID#3], FlatMap(outer=Project([_current.ID#0, _current.V#1], Scan(T1)), inner=FlatMap(outer=Map(PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])), [1 preds]), {_0: 1}), inner=PredicatesFilter(Scan(T3), [1 preds]))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryNestedLoopJoinPlan
-shape:       RecordQueryFlatMapPlan
-shape:         RecordQueryProjectionPlan
-shape:           RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryMapPlan
 shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryFirstOrDefaultPlan
 shape:             RecordQueryPredicatesFilterPlan
 shape:               RecordQueryScanPlan
-shape:       RecordQueryScanPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryScanPlan
 === qualified_star.yaml#0
 sql:   SELECT a.* FROM a ORDER BY id
 plan:  Project([_current.ID#0, _current.NAME#1], Scan(A))
@@ -15380,41 +15402,45 @@ shape:   RecordQueryProjectionPlan
 shape:     RecordQueryScanPlan
 === quoted_identifier_labels.yaml#12
 sql:   WITH RECURSIVE r("n") AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION ALL SELECT r."n" + 1 FROM r WHERE r."n" < 3) SELECT * FROM r
-plan:  RecursiveDfsJoin(PREORDER, Project([_current.id#0], PredicatesFilter(Scan(Q1), [1 preds])), Project([(_current.n#0 + 1)], PredicatesFilter(TempTableScan(RforScan), [1 preds])))
+plan:  RecursiveDfsJoin(PREORDER, Project([_current.id#0], Project([_current.id#0], PredicatesFilter(Scan(Q1), [1 preds]))), Project([(_current.n#0 + 1)], PredicatesFilter(TempTableScan(RforScan), [1 preds])))
 shape: RecordQueryRecursiveDfsJoinPlan
 shape:   RecordQueryProjectionPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryScanPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryTempTableScanPlan
 === quoted_identifier_labels.yaml#13
 sql:   WITH RECURSIVE r(n) AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION ALL SELECT r.n + 1 FROM r WHERE r.n < 3) SELECT * FROM r
-plan:  RecursiveDfsJoin(PREORDER, Project([_current.id#0], PredicatesFilter(Scan(Q1), [1 preds])), Project([(_current.N#0 + 1)], PredicatesFilter(TempTableScan(RforScan), [1 preds])))
+plan:  RecursiveDfsJoin(PREORDER, Project([_current.id#0], Project([_current.id#0], PredicatesFilter(Scan(Q1), [1 preds]))), Project([(_current.N#0 + 1)], PredicatesFilter(TempTableScan(RforScan), [1 preds])))
 shape: RecordQueryRecursiveDfsJoinPlan
 shape:   RecordQueryProjectionPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryScanPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryTempTableScanPlan
 === quoted_identifier_labels.yaml#14
 sql:   WITH RECURSIVE r("n") AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION SELECT r."n" + 1 FROM r WHERE r."n" < 3) SELECT * FROM r
-plan:  RecursiveDfsJoin(PREORDER, Project([_current.id#0], PredicatesFilter(Scan(Q1), [1 preds])), Project([(_current.n#0 + 1)], PredicatesFilter(TempTableScan(RforScan), [1 preds])))
+plan:  RecursiveDfsJoin(PREORDER, Project([_current.id#0], Project([_current.id#0], PredicatesFilter(Scan(Q1), [1 preds]))), Project([(_current.n#0 + 1)], PredicatesFilter(TempTableScan(RforScan), [1 preds])))
 shape: RecordQueryRecursiveDfsJoinPlan
 shape:   RecordQueryProjectionPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryScanPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryTempTableScanPlan
 === quoted_identifier_labels.yaml#15
 sql:   WITH RECURSIVE r(n) AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION SELECT r.n + 1 FROM r WHERE r.n < 3) SELECT * FROM r
-plan:  RecursiveDfsJoin(PREORDER, Project([_current.id#0], PredicatesFilter(Scan(Q1), [1 preds])), Project([(_current.N#0 + 1)], PredicatesFilter(TempTableScan(RforScan), [1 preds])))
+plan:  RecursiveDfsJoin(PREORDER, Project([_current.id#0], Project([_current.id#0], PredicatesFilter(Scan(Q1), [1 preds]))), Project([(_current.N#0 + 1)], PredicatesFilter(TempTableScan(RforScan), [1 preds])))
 shape: RecordQueryRecursiveDfsJoinPlan
 shape:   RecordQueryProjectionPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryScanPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryTempTableScanPlan
@@ -15475,33 +15501,36 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryTempTableScanPlan
 === quoted_identifier_labels.yaml#24
 sql:   WITH RECURSIVE d("Node") AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION ALL SELECT d."Node" + 1 FROM d WHERE d."Node" < 3) SELECT * FROM d
-plan:  RecursiveDfsJoin(PREORDER, Project([_current.id#0], PredicatesFilter(Scan(Q1), [1 preds])), Project([(_current.Node#0 + 1)], PredicatesFilter(TempTableScan(DforScan), [1 preds])))
+plan:  RecursiveDfsJoin(PREORDER, Project([_current.id#0], Project([_current.id#0], PredicatesFilter(Scan(Q1), [1 preds]))), Project([(_current.Node#0 + 1)], PredicatesFilter(TempTableScan(DforScan), [1 preds])))
 shape: RecordQueryRecursiveDfsJoinPlan
 shape:   RecordQueryProjectionPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryScanPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryTempTableScanPlan
 === quoted_identifier_labels.yaml#25
 sql:   WITH RECURSIVE d AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION ALL SELECT d."id" + 1 FROM d WHERE d."id" < 3) SELECT * FROM d
-plan:  RecursiveDfsJoin(PREORDER, Project([_current.id#0], PredicatesFilter(Scan(Q1), [1 preds])), Project([(_current.id#0 + 1)], PredicatesFilter(TempTableScan(DforScan), [1 preds])))
+plan:  RecursiveDfsJoin(PREORDER, Project([_current.id#0], PredicatesFilter(Scan(Q1), [1 preds])), Project([_current.(D.id + 1)#0], Project([(_current.id#0 + 1)], PredicatesFilter(TempTableScan(DforScan), [1 preds]))))
 shape: RecordQueryRecursiveDfsJoinPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 shape:   RecordQueryProjectionPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryTempTableScanPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryTempTableScanPlan
 === quoted_identifier_labels.yaml#26
 sql:   WITH RECURSIVE d AS (SELECT * FROM q1 WHERE "id" = 1 UNION ALL SELECT d."id" + 1 FROM d WHERE d."id" < 3) SELECT * FROM d
-plan:  RecursiveDfsJoin(PREORDER, PredicatesFilter(Scan(Q1), [1 preds]), Project([(_current.id#0 + 1)], PredicatesFilter(TempTableScan(DforScan), [1 preds])))
+plan:  RecursiveDfsJoin(PREORDER, PredicatesFilter(Scan(Q1), [1 preds]), Project([_current.(D.id + 1)#0], Project([(_current.id#0 + 1)], PredicatesFilter(TempTableScan(DforScan), [1 preds]))))
 shape: RecordQueryRecursiveDfsJoinPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 shape:   RecordQueryProjectionPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryTempTableScanPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryTempTableScanPlan
 === quoted_identifier_labels.yaml#27
 sql:   WITH RECURSIVE d AS (SELECT * FROM QCASE WHERE id = 1 UNION ALL SELECT d.id + 1, d."KeepCase", d.plain FROM d WHERE d.id < 3) SELECT d.id FROM d ORDER BY d.id
 plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], RecursiveDfsJoin(PREORDER, Scan(QCASE, [=]), Project([(_current.ID#0 + 1), _current.KeepCase#1, _current.PLAIN#2], PredicatesFilter(TempTableScan(DforScan), [1 preds])))))
@@ -15514,14 +15543,15 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryTempTableScanPlan
 === quoted_identifier_labels.yaml#28
 sql:   WITH RECURSIVE d AS (SELECT * FROM (SELECT "id" FROM q1) x WHERE x."id" = 1 UNION ALL SELECT d."id" + 1 FROM d WHERE d."id" < 3) SELECT * FROM d
-plan:  RecursiveDfsJoin(PREORDER, PredicatesFilter(Project([_current.id#0], Scan(Q1)), [1 preds]), Project([(_current.id#0 + 1)], PredicatesFilter(TempTableScan(DforScan), [1 preds])))
+plan:  RecursiveDfsJoin(PREORDER, PredicatesFilter(Project([_current.id#0], Scan(Q1)), [1 preds]), Project([_current.(D.id + 1)#0], Project([(_current.id#0 + 1)], PredicatesFilter(TempTableScan(DforScan), [1 preds]))))
 shape: RecordQueryRecursiveDfsJoinPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryProjectionPlan
 shape:       RecordQueryScanPlan
 shape:   RecordQueryProjectionPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryTempTableScanPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryTempTableScanPlan
 === quoted_identifier_labels.yaml#29
 sql:   WITH RECURSIVE d(w, x, y, z) AS (SELECT * FROM q1, QCASE WHERE q1."id" = 1 UNION ALL SELECT d.w + 1, d.x, d.y, d.z FROM d WHERE d.w < 3) SELECT d.w FROM d ORDER BY d.w
 plan:  Project([_current.W#0], InMemorySort([_current.W#0 ASC], RecursiveDfsJoin(PREORDER, Project([_current.id#0, _current.ID#1, _current.KeepCase#2, _current.PLAIN#3], NestedLoopJoin(INNER, [1 preds], Scan(QCASE), Scan(Q1))), Project([(_current.W#0 + 1), _current.X#1, _current.Y#2, _current.Z#3], PredicatesFilter(TempTableScan(DforScan), [1 preds])))))
@@ -15569,23 +15599,19 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryTempTableScanPlan
 === quoted_identifier_labels.yaml#34
 sql:   WITH RECURSIVE d AS (SELECT * FROM (SELECT q1."id" AS aa, QCASE.id AS bb FROM q1, QCASE WHERE q1."id" = 1 UNION ALL SELECT q1."id" AS cc, QCASE.id AS dd FROM q1, QCASE WHERE q1."id" = 2) x UNION ALL SELECT d.aa + 1, d.bb FROM d WHERE d.aa < 3) SELECT d.aa FROM d ORDER BY d.aa
-plan:  Project([_current.AA#0], InMemorySort([_current.AA#0 ASC], RecursiveDfsJoin(PREORDER, UnorderedUnion(Project([_current.AA#0, _current.BB#1], Project([_current.id#0, _current.ID#1], NestedLoopJoin(INNER, PredicatesFilter(Scan(Q1), [1 preds]), Scan(QCASE)))), Project([_current.CC#0, _current.DD#1], Project([_current.id#0, _current.ID#1], NestedLoopJoin(INNER, PredicatesFilter(Scan(Q1), [1 preds]), Scan(QCASE))))), Project([(_current.AA#0 + 1), _current.BB#1], PredicatesFilter(TempTableScan(DforScan), [1 preds])))))
+plan:  Project([_current.AA#0], InMemorySort([_current.AA#0 ASC], RecursiveDfsJoin(PREORDER, UnorderedUnion(Project([_current.id#0, _current.ID#1], NestedLoopJoin(INNER, [1 preds], Scan(QCASE), Scan(Q1))), Project([_current.id#0, _current.ID#1], NestedLoopJoin(INNER, [1 preds], Scan(QCASE), Scan(Q1)))), Project([(_current.AA#0 + 1), _current.BB#1], PredicatesFilter(TempTableScan(DforScan), [1 preds])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryRecursiveDfsJoinPlan
 shape:       RecordQueryUnorderedUnionPlan
 shape:         RecordQueryProjectionPlan
-shape:           RecordQueryProjectionPlan
-shape:             RecordQueryNestedLoopJoinPlan
-shape:               RecordQueryPredicatesFilterPlan
-shape:                 RecordQueryScanPlan
-shape:               RecordQueryScanPlan
+shape:           RecordQueryNestedLoopJoinPlan
+shape:             RecordQueryScanPlan
+shape:             RecordQueryScanPlan
 shape:         RecordQueryProjectionPlan
-shape:           RecordQueryProjectionPlan
-shape:             RecordQueryNestedLoopJoinPlan
-shape:               RecordQueryPredicatesFilterPlan
-shape:                 RecordQueryScanPlan
-shape:               RecordQueryScanPlan
+shape:           RecordQueryNestedLoopJoinPlan
+shape:             RecordQueryScanPlan
+shape:             RecordQueryScanPlan
 shape:       RecordQueryProjectionPlan
 shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryTempTableScanPlan
@@ -15698,33 +15724,32 @@ shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryTempTableScanPlan
 === recursive_cte.yaml#4
 sql:   WITH RECURSIVE noseed AS ( SELECT id, parent FROM t WHERE id = 99999 UNION ALL SELECT b.id, b.parent FROM noseed AS a, t AS b WHERE b.parent = a.id ) SELECT id FROM noseed
-plan:  Project([_current.ID#0], RecursiveDfsJoin(PREORDER, Project([_current.ID#0, _current.PARENT#1], Scan(T, [=])), Project([_current.ID#2, _current.PARENT#3], FlatMap(outer=Scan(T), inner=PredicatesFilter(TempTableScan(NOSEEDforScan), [1 preds])))))
+plan:  Project([_current.ID#0], RecursiveDfsJoin(PREORDER, Project([_current.ID#0, _current.PARENT#1], Scan(T, [=])), Project([_current.ID#0, _current.PARENT#1], Project([_current.ID#2, _current.PARENT#3], FlatMap(outer=Scan(T), inner=PredicatesFilter(TempTableScan(NOSEEDforScan), [1 preds]))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryRecursiveDfsJoinPlan
 shape:     RecordQueryProjectionPlan
 shape:       RecordQueryScanPlan
 shape:     RecordQueryProjectionPlan
-shape:       RecordQueryFlatMapPlan
-shape:         RecordQueryScanPlan
-shape:         RecordQueryPredicatesFilterPlan
-shape:           RecordQueryTempTableScanPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryFlatMapPlan
+shape:           RecordQueryScanPlan
+shape:           RecordQueryPredicatesFilterPlan
+shape:             RecordQueryTempTableScanPlan
 === recursive_cte.yaml#5 expect-error=0A000
 sql:   WITH RECURSIVE nonrec AS ( SELECT id FROM t WHERE parent = -1 ) SELECT id FROM nonrec
 plan:  <PLAN-ERROR: 0A000: condition is not met!>
 === recursive_cte.yaml#6
 sql:   WITH RECURSIVE ancestors(node, up) AS ( SELECT id, parent FROM t WHERE id = 250 UNION ALL SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.up ) SELECT node FROM ancestors ORDER BY node DESC
-plan:  Project([_current.NODE#0], InMemorySort([_current.NODE#0 DESC], RecursiveDfsJoin(PREORDER, Project([_current.ID#0, _current.PARENT#1], Project([_current.ID#0, _current.PARENT#1], Scan(T, [=]))), Project([_current.ID#0, _current.PARENT#1], Project([_current.ID#2, _current.PARENT#3], FlatMap(outer=TempTableScan(ANCESTORSforScan), inner=Scan(T, [=])))))))
+plan:  Project([_current.NODE#0], InMemorySort([_current.NODE#0 DESC], RecursiveDfsJoin(PREORDER, Project([_current.ID#0, _current.PARENT#1], Scan(T, [=])), Project([_current.ID#2, _current.PARENT#3], FlatMap(outer=TempTableScan(ANCESTORSforScan), inner=Scan(T, [=]))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryRecursiveDfsJoinPlan
 shape:       RecordQueryProjectionPlan
-shape:         RecordQueryProjectionPlan
-shape:           RecordQueryScanPlan
+shape:         RecordQueryScanPlan
 shape:       RecordQueryProjectionPlan
-shape:         RecordQueryProjectionPlan
-shape:           RecordQueryFlatMapPlan
-shape:             RecordQueryTempTableScanPlan
-shape:             RecordQueryScanPlan
+shape:         RecordQueryFlatMapPlan
+shape:           RecordQueryTempTableScanPlan
+shape:           RecordQueryScanPlan
 === recursive_cte.yaml#7 expect-error=42F64
 sql:   WITH RECURSIVE ancestors AS ( SELECT id FROM t WHERE id = 250 UNION ALL SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = 50 ) SELECT * FROM ancestors
 plan:  <PLAN-ERROR: 42F64: UNION legs do not have the same number of columns>
@@ -15780,27 +15805,31 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryTempTableScanPlan
 === recursive_cte.yaml#12
 sql:   WITH RECURSIVE reach(n) AS ( SELECT src FROM edge WHERE src = 1 UNION SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.n ) TRAVERSAL ORDER pre_order SELECT n FROM reach ORDER BY n
-plan:  Project([_current.N#0], InMemorySort([_current.N#0 ASC], RecursiveDfsJoin(PREORDER, Project([_current.SRC#0], Scan(EDGE, [=])), Project([_current.DST#2], FlatMap(outer=TempTableScan(REACHforScan), inner=Scan(EDGE, [=]))))))
+plan:  Project([_current.N#0], InMemorySort([_current.N#0 ASC], RecursiveDfsJoin(PREORDER, Project([_current.SRC#0], Project([_current.SRC#0], Scan(EDGE, [=]))), Project([_current.DST#0], Project([_current.DST#2], FlatMap(outer=TempTableScan(REACHforScan), inner=Scan(EDGE, [=])))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryRecursiveDfsJoinPlan
 shape:       RecordQueryProjectionPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryScanPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryFlatMapPlan
+shape:             RecordQueryTempTableScanPlan
+shape:             RecordQueryScanPlan
+=== recursive_cte.yaml#13 expect-error=54F01
+sql:   WITH RECURSIVE reach(n) AS ( SELECT src FROM edge WHERE src = 1 UNION ALL SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.n ) TRAVERSAL ORDER pre_order SELECT n FROM reach
+plan:  Project([_current.N#0], RecursiveDfsJoin(PREORDER, Project([_current.SRC#0], Project([_current.SRC#0], Scan(EDGE, [=]))), Project([_current.DST#0], Project([_current.DST#2], FlatMap(outer=TempTableScan(REACHforScan), inner=Scan(EDGE, [=]))))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryRecursiveDfsJoinPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryProjectionPlan
 shape:         RecordQueryScanPlan
+shape:     RecordQueryProjectionPlan
 shape:       RecordQueryProjectionPlan
 shape:         RecordQueryFlatMapPlan
 shape:           RecordQueryTempTableScanPlan
 shape:           RecordQueryScanPlan
-=== recursive_cte.yaml#13 expect-error=54F01
-sql:   WITH RECURSIVE reach(n) AS ( SELECT src FROM edge WHERE src = 1 UNION ALL SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.n ) TRAVERSAL ORDER pre_order SELECT n FROM reach
-plan:  Project([_current.N#0], RecursiveDfsJoin(PREORDER, Project([_current.SRC#0], Scan(EDGE, [=])), Project([_current.DST#2], FlatMap(outer=TempTableScan(REACHforScan), inner=Scan(EDGE, [=])))))
-shape: RecordQueryProjectionPlan
-shape:   RecordQueryRecursiveDfsJoinPlan
-shape:     RecordQueryProjectionPlan
-shape:       RecordQueryScanPlan
-shape:     RecordQueryProjectionPlan
-shape:       RecordQueryFlatMapPlan
-shape:         RecordQueryTempTableScanPlan
-shape:         RecordQueryScanPlan
 === recursive_cte.yaml#14
 sql:   WITH RECURSIVE ancestors AS ( SELECT id, parent FROM t WHERE id = 250 UNION ALL SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.parent ) TRAVERSAL ORDER level_order SELECT id FROM ancestors ORDER BY id DESC
 plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 DESC], RecursiveLevelUnion(TempTableInsert(ANCESTORSforInsert, Project([_current.ID#0, _current.PARENT#1], Scan(T, [=]))), TempTableInsert(ANCESTORSforInsert, Project([_current.ID#0, _current.PARENT#1], Project([_current.ID#2, _current.PARENT#3], FlatMap(outer=TempTableScan(ANCESTORSforScan), inner=Scan(T, [=]))))), scan=ANCESTORSforScan, insert=ANCESTORSforInsert)))
@@ -15818,7 +15847,7 @@ shape:               RecordQueryTempTableScanPlan
 shape:               RecordQueryScanPlan
 === recursive_cte.yaml#15
 sql:   WITH RECURSIVE counter(n) AS ( SELECT 1 AS n UNION ALL SELECT n + 1 FROM counter WHERE n < 5 ) SELECT n FROM counter ORDER BY n
-plan:  Project([_current.N#0], InMemorySort([_current.N#0 ASC], RecursiveDfsJoin(PREORDER, Project([PROMOTE(_current.N#0 TO INT)], Project([1], Project([], Explode(array)))), Project([(_current.N#0 + 1)], PredicatesFilter(TempTableScan(COUNTERforScan), [1 preds])))))
+plan:  Project([_current.N#0], InMemorySort([_current.N#0 ASC], RecursiveDfsJoin(PREORDER, Project([PROMOTE(_current.N#0 TO INT)], Project([1], Project([], Explode(array)))), Project([_current.(COUNTER.N + 1)#0], Project([(_current.N#0 + 1)], PredicatesFilter(TempTableScan(COUNTERforScan), [1 preds]))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryRecursiveDfsJoinPlan
@@ -15827,31 +15856,36 @@ shape:         RecordQueryProjectionPlan
 shape:           RecordQueryProjectionPlan
 shape:             RecordQueryExplodePlan
 shape:       RecordQueryProjectionPlan
-shape:         RecordQueryPredicatesFilterPlan
-shape:           RecordQueryTempTableScanPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryPredicatesFilterPlan
+shape:             RecordQueryTempTableScanPlan
 === recursive_cte.yaml#16
 sql:   WITH RECURSIVE reach(n) AS ( SELECT src FROM edge WHERE src = 1 UNION SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.n ) SELECT n FROM reach ORDER BY n
-plan:  Project([_current.N#0], InMemorySort([_current.N#0 ASC], RecursiveDfsJoin(PREORDER, Project([_current.SRC#0], Scan(EDGE, [=])), Project([_current.DST#2], FlatMap(outer=TempTableScan(REACHforScan), inner=Scan(EDGE, [=]))))))
+plan:  Project([_current.N#0], InMemorySort([_current.N#0 ASC], RecursiveDfsJoin(PREORDER, Project([_current.SRC#0], Project([_current.SRC#0], Scan(EDGE, [=]))), Project([_current.DST#0], Project([_current.DST#2], FlatMap(outer=TempTableScan(REACHforScan), inner=Scan(EDGE, [=])))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryRecursiveDfsJoinPlan
 shape:       RecordQueryProjectionPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryScanPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryFlatMapPlan
+shape:             RecordQueryTempTableScanPlan
+shape:             RecordQueryScanPlan
+=== recursive_cte.yaml#17 expect-error=54F01
+sql:   WITH RECURSIVE reach(n) AS ( SELECT src FROM edge WHERE src = 1 UNION ALL SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.n ) SELECT n FROM reach
+plan:  Project([_current.N#0], RecursiveDfsJoin(PREORDER, Project([_current.SRC#0], Project([_current.SRC#0], Scan(EDGE, [=]))), Project([_current.DST#0], Project([_current.DST#2], FlatMap(outer=TempTableScan(REACHforScan), inner=Scan(EDGE, [=]))))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryRecursiveDfsJoinPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryProjectionPlan
 shape:         RecordQueryScanPlan
+shape:     RecordQueryProjectionPlan
 shape:       RecordQueryProjectionPlan
 shape:         RecordQueryFlatMapPlan
 shape:           RecordQueryTempTableScanPlan
 shape:           RecordQueryScanPlan
-=== recursive_cte.yaml#17 expect-error=54F01
-sql:   WITH RECURSIVE reach(n) AS ( SELECT src FROM edge WHERE src = 1 UNION ALL SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.n ) SELECT n FROM reach
-plan:  Project([_current.N#0], RecursiveDfsJoin(PREORDER, Project([_current.SRC#0], Scan(EDGE, [=])), Project([_current.DST#2], FlatMap(outer=TempTableScan(REACHforScan), inner=Scan(EDGE, [=])))))
-shape: RecordQueryProjectionPlan
-shape:   RecordQueryRecursiveDfsJoinPlan
-shape:     RecordQueryProjectionPlan
-shape:       RecordQueryScanPlan
-shape:     RecordQueryProjectionPlan
-shape:       RecordQueryFlatMapPlan
-shape:         RecordQueryTempTableScanPlan
-shape:         RecordQueryScanPlan
 === recursive_cte.yaml#18
 sql:   WITH RECURSIVE ancestors AS ( SELECT id, parent FROM t WHERE id = 250 UNION ALL SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.parent ) SELECT COUNT(*) FROM ancestors
 plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], RecursiveDfsJoin(PREORDER, Project([_current.ID#0, _current.PARENT#1], Scan(T, [=])), Project([_current.ID#0, _current.PARENT#1], Project([_current.ID#2, _current.PARENT#3], FlatMap(outer=TempTableScan(ANCESTORSforScan), inner=Scan(T, [=])))))))
@@ -15926,18 +15960,16 @@ shape:             RecordQueryPredicatesFilterPlan
 shape:               RecordQueryTempTableScanPlan
 === recursive_cte_advanced.yaml#0
 sql:   WITH RECURSIVE anc(node, up) AS ( SELECT id, parent FROM tree WHERE id = 5 UNION ALL SELECT t.id, t.parent FROM anc AS a, tree AS t WHERE t.id = a.up ) SELECT node FROM anc ORDER BY node
-plan:  Project([_current.NODE#0], InMemorySort([_current.NODE#0 ASC], RecursiveDfsJoin(PREORDER, Project([_current.ID#0, _current.PARENT#1], Project([_current.ID#0, _current.PARENT#1], Scan(TREE, [=]))), Project([_current.ID#0, _current.PARENT#1], Project([_current.ID#2, _current.PARENT#3], FlatMap(outer=TempTableScan(ANCforScan), inner=Scan(TREE, [=])))))))
+plan:  Project([_current.NODE#0], InMemorySort([_current.NODE#0 ASC], RecursiveDfsJoin(PREORDER, Project([_current.ID#0, _current.PARENT#1], Scan(TREE, [=])), Project([_current.ID#2, _current.PARENT#3], FlatMap(outer=TempTableScan(ANCforScan), inner=Scan(TREE, [=]))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryRecursiveDfsJoinPlan
 shape:       RecordQueryProjectionPlan
-shape:         RecordQueryProjectionPlan
-shape:           RecordQueryScanPlan
+shape:         RecordQueryScanPlan
 shape:       RecordQueryProjectionPlan
-shape:         RecordQueryProjectionPlan
-shape:           RecordQueryFlatMapPlan
-shape:             RecordQueryTempTableScanPlan
-shape:             RecordQueryScanPlan
+shape:         RecordQueryFlatMapPlan
+shape:           RecordQueryTempTableScanPlan
+shape:           RecordQueryScanPlan
 === recursive_cte_advanced.yaml#1
 sql:   WITH RECURSIVE desc_tree AS ( SELECT id, parent, label FROM tree WHERE id = 1 UNION ALL SELECT t.id, t.parent, t.label FROM desc_tree AS d, tree AS t WHERE t.parent = d.id ) SELECT label FROM desc_tree ORDER BY id
 plan:  Project([_current.LABEL#2], InMemorySort([_current.ID#0 ASC], RecursiveDfsJoin(PREORDER, Project([_current.ID#0, _current.PARENT#1, _current.LABEL#2], Scan(TREE, [=])), Project([_current.ID#3, _current.PARENT#4, _current.LABEL#5], FlatMap(outer=Scan(TREE), inner=PredicatesFilter(TempTableScan(DESC_TREEforScan), [1 preds]))))))
@@ -15953,7 +15985,7 @@ shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryTempTableScanPlan
 === recursive_cte_aggregate.yaml#0
 sql:   WITH RECURSIVE descendants AS ( SELECT id, v FROM tree WHERE parent_id IS NULL UNION ALL SELECT c.id, c.v FROM tree c, descendants d WHERE c.parent_id = d.id ) SELECT COUNT(*) FROM descendants
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], RecursiveDfsJoin(PREORDER, Project([_current.ID#0, _current.V#2], PredicatesFilter(Scan(TREE), [1 preds])), Project([_current.ID#0, _current.V#2], FlatMap(outer=Scan(TREE), inner=PredicatesFilter(TempTableScan(DESCENDANTSforScan), [1 preds]))))))
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], RecursiveDfsJoin(PREORDER, Project([_current.ID#0, _current.V#2], PredicatesFilter(Scan(TREE), [1 preds])), Project([_current.ID#0, _current.V#1], Project([_current.ID#0, _current.V#2], FlatMap(outer=Scan(TREE), inner=PredicatesFilter(TempTableScan(DESCENDANTSforScan), [1 preds])))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryRecursiveDfsJoinPlan
@@ -15961,13 +15993,14 @@ shape:       RecordQueryProjectionPlan
 shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
 shape:       RecordQueryProjectionPlan
-shape:         RecordQueryFlatMapPlan
-shape:           RecordQueryScanPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryTempTableScanPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryFlatMapPlan
+shape:             RecordQueryScanPlan
+shape:             RecordQueryPredicatesFilterPlan
+shape:               RecordQueryTempTableScanPlan
 === recursive_cte_aggregate.yaml#1
 sql:   WITH RECURSIVE all_nodes AS ( SELECT id, v FROM tree WHERE parent_id IS NULL UNION ALL SELECT c.id, c.v FROM tree c, all_nodes a WHERE c.parent_id = a.id ) SELECT SUM(v) FROM all_nodes
-plan:  Project([_current.SUM(V)#0], StreamingAgg(keys=[], RecursiveDfsJoin(PREORDER, Project([_current.ID#0, _current.V#2], PredicatesFilter(Scan(TREE), [1 preds])), Project([_current.ID#0, _current.V#2], FlatMap(outer=Scan(TREE), inner=PredicatesFilter(TempTableScan(ALL_NODESforScan), [1 preds]))))))
+plan:  Project([_current.SUM(V)#0], StreamingAgg(keys=[], RecursiveDfsJoin(PREORDER, Project([_current.ID#0, _current.V#2], PredicatesFilter(Scan(TREE), [1 preds])), Project([_current.ID#0, _current.V#1], Project([_current.ID#0, _current.V#2], FlatMap(outer=Scan(TREE), inner=PredicatesFilter(TempTableScan(ALL_NODESforScan), [1 preds])))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryRecursiveDfsJoinPlan
@@ -15975,13 +16008,14 @@ shape:       RecordQueryProjectionPlan
 shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
 shape:       RecordQueryProjectionPlan
-shape:         RecordQueryFlatMapPlan
-shape:           RecordQueryScanPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryTempTableScanPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryFlatMapPlan
+shape:             RecordQueryScanPlan
+shape:             RecordQueryPredicatesFilterPlan
+shape:               RecordQueryTempTableScanPlan
 === recursive_cte_aggregate.yaml#2
 sql:   WITH RECURSIVE all_nodes AS ( SELECT id FROM tree WHERE parent_id IS NULL UNION ALL SELECT c.id FROM tree c, all_nodes a WHERE c.parent_id = a.id ) SELECT id FROM all_nodes ORDER BY id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], RecursiveDfsJoin(PREORDER, Project([_current.ID#0], PredicatesFilter(Scan(TREE), [1 preds])), Project([_current.ID#0], FlatMap(outer=Scan(TREE), inner=PredicatesFilter(TempTableScan(ALL_NODESforScan), [1 preds]))))))
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], RecursiveDfsJoin(PREORDER, Project([_current.ID#0], PredicatesFilter(Scan(TREE), [1 preds])), Project([_current.ID#0], Project([_current.ID#0], FlatMap(outer=Scan(TREE), inner=PredicatesFilter(TempTableScan(ALL_NODESforScan), [1 preds])))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryRecursiveDfsJoinPlan
@@ -15989,10 +16023,11 @@ shape:       RecordQueryProjectionPlan
 shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
 shape:       RecordQueryProjectionPlan
-shape:         RecordQueryFlatMapPlan
-shape:           RecordQueryScanPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryTempTableScanPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryFlatMapPlan
+shape:             RecordQueryScanPlan
+shape:             RecordQueryPredicatesFilterPlan
+shape:               RecordQueryTempTableScanPlan
 === recursive_cte_tree_java.yaml#0
 sql:   WITH RECURSIVE descendants AS ( SELECT id, parent_id, name FROM tree WHERE id = 1 UNION ALL SELECT t.id, t.parent_id, t.name FROM tree t, descendants d WHERE t.parent_id = d.id ) SELECT name FROM descendants ORDER BY id
 plan:  Project([_current.NAME#2], InMemorySort([_current.ID#0 ASC], RecursiveDfsJoin(PREORDER, Project([_current.ID#0, _current.PARENT_ID#1, _current.NAME#2], Scan(TREE, [=])), Project([_current.ID#0, _current.PARENT_ID#1, _current.NAME#2], FlatMap(outer=Scan(TREE), inner=PredicatesFilter(TempTableScan(DESCENDANTSforScan), [1 preds]))))))
@@ -16585,13 +16620,13 @@ shape:       RecordQueryScanPlan
 shape:       RecordQueryIndexPlan
 === secondary_index_join.yaml#1
 sql:   SELECT c.name, COUNT(*), SUM(o.total) FROM customers c, orders o WHERE o.customer_id = c.id GROUP BY c.name ORDER BY c.name
-plan:  Project([_current.NAME#0, _current.COUNT(*)#1, _current.SUM(O.TOTAL)#2], StreamingAgg(keys=[_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(ORDERS), inner=Scan(CUSTOMERS, [=])))))
+plan:  Project([_current.NAME#0, _current.COUNT(*)#1, _current.SUM(O.TOTAL)#2], StreamingAgg(keys=[_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(CUSTOMERS), inner=IndexScan(IDX_CUSTOMER, [=])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryScanPlan
+shape:         RecordQueryIndexPlan
 === secondary_index_join.yaml#2
 sql:   SELECT c.name FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.total > 100) ORDER BY c.name
 plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(CUSTOMERS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(IndexScan(IDX_CUSTOMER, [=]), [1 preds])), [1 preds]))))
@@ -17358,14 +17393,13 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === self_join_advanced.yaml#2
 sql:   SELECT m.name, COUNT(e.id) FROM emp m, emp e WHERE e.manager_id = m.id GROUP BY m.name ORDER BY m.name
-plan:  Project([_current.NAME#0, _current.COUNT(E.ID)#1], StreamingAgg(keys=[_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(Scan(EMP), [1 preds])))))
+plan:  Project([_current.NAME#0, _current.COUNT(E.ID)#1], StreamingAgg(keys=[_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(EMP), inner=Scan(EMP, [=])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryPredicatesFilterPlan
-shape:           RecordQueryScanPlan
+shape:         RecordQueryScanPlan
 === self_not_exists.yaml#0
 sql:   SELECT e.name FROM emp e WHERE NOT EXISTS (SELECT 1 FROM emp sub WHERE sub.manager_id = e.id) ORDER BY e.name
 plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(EMP), [1 preds])), [1 preds]))))
@@ -18066,11 +18100,12 @@ shape:     RecordQueryProjectionPlan
 shape:       RecordQueryScanPlan
 === union_aggregate_java.yaml#1
 sql:   SELECT id AS w, col1 AS x, col2 AS y FROM t1 UNION ALL SELECT id, col1, col2 FROM t1 ORDER BY w
-plan:  InMemorySort([_current.W#0 ASC], UnorderedUnion(Project([_current.ID#0, _current.COL1#1, _current.COL2#2], Scan(T1)), Project([_current.ID#0, _current.COL1#1, _current.COL2#2], Scan(T1))))
+plan:  InMemorySort([_current.W#0 ASC], UnorderedUnion(Project([_current.W#0, _current.X#1, _current.Y#2], Project([_current.ID#0, _current.COL1#1, _current.COL2#2], Scan(T1))), Project([_current.ID#0, _current.COL1#1, _current.COL2#2], Scan(T1))))
 shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryUnorderedUnionPlan
 shape:     RecordQueryProjectionPlan
-shape:       RecordQueryScanPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryScanPlan
 shape:     RecordQueryProjectionPlan
 shape:       RecordQueryScanPlan
 === union_aggregate_java.yaml#2
@@ -18115,12 +18150,13 @@ sql:   SELECT col1, col2 FROM t1 UNION SELECT col1, col2 FROM t2
 plan:  <PLAN-ERROR: 0AF00: only UNION ALL is supported>
 === union_columns.yaml#0
 sql:   SELECT v FROM a UNION ALL SELECT w FROM b
-plan:  UnorderedUnion(Project([_current.V#1], Scan(A)), Project([_current.W#1], Scan(B)))
+plan:  UnorderedUnion(Project([_current.V#1], Scan(A)), Project([_current.W#0], Project([_current.W#1], Scan(B))))
 shape: RecordQueryUnorderedUnionPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryScanPlan
 shape:   RecordQueryProjectionPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
 === union_columns.yaml#1
 sql:   SELECT id, v FROM a UNION ALL SELECT id, w FROM b ORDER BY id, v
 plan:  InMemorySort([_current.ID#0 ASC, _current.V#1 ASC], UnorderedUnion(Project([_current.ID#0, _current.V#1], Scan(A)), Project([_current.ID#0, _current.W#1], Scan(B))))
@@ -18144,14 +18180,15 @@ sql:   SELECT id, v FROM a UNION ALL SELECT id, w FROM b ORDER BY w
 plan:  <PLAN-ERROR: 42703: column "W" not found in UNION result columns>
 === union_columns.yaml#4
 sql:   SELECT v FROM a UNION ALL SELECT w FROM b ORDER BY v LIMIT 2 OFFSET 1
-plan:  Limit(2, offset=1, InMemorySort([_current.V#0 ASC], UnorderedUnion(Project([_current.V#1], Scan(A)), Project([_current.W#1], Scan(B)))))
+plan:  Limit(2, offset=1, InMemorySort([_current.V#0 ASC], UnorderedUnion(Project([_current.V#1], Scan(A)), Project([_current.W#0], Project([_current.W#1], Scan(B))))))
 shape: RecordQueryLimitPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryUnorderedUnionPlan
 shape:       RecordQueryProjectionPlan
 shape:         RecordQueryScanPlan
 shape:       RecordQueryProjectionPlan
-shape:         RecordQueryScanPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryScanPlan
 === union_columns.yaml#5 expect-error=0AF00
 sql:   SELECT v FROM a UNION SELECT v FROM a ORDER BY v
 plan:  <PLAN-ERROR: 0AF00: only UNION ALL is supported>
@@ -18175,12 +18212,13 @@ sql:   SELECT v FROM a UNION ALL SELECT id_str FROM c
 plan:  <PLAN-ERROR: 42F65: Incompatible column types in UNION legs>
 === union_columns.yaml#10
 sql:   SELECT v FROM a UNION ALL SELECT w FROM b
-plan:  UnorderedUnion(Project([_current.V#1], Scan(A)), Project([_current.W#1], Scan(B)))
+plan:  UnorderedUnion(Project([_current.V#1], Scan(A)), Project([_current.W#0], Project([_current.W#1], Scan(B))))
 shape: RecordQueryUnorderedUnionPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryScanPlan
 shape:   RecordQueryProjectionPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
 === union_columns.yaml#11
 sql:   SELECT id, v FROM a UNION ALL SELECT id, w FROM b ORDER BY 2 DESC
 plan:  InMemorySort([_current.V#1 DESC], UnorderedUnion(Project([_current.ID#0, _current.V#1], Scan(A)), Project([_current.ID#0, _current.W#1], Scan(B))))
@@ -18298,21 +18336,19 @@ shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === union_join_leg_aggregate_forms.yaml#0
 sql:   WITH u AS (SELECT g, SUM(ga.v) AS s FROM ga GROUP BY g UNION ALL SELECT h, SUM(gb.v) AS s2 FROM gb GROUP BY h) SELECT c.w, u.s FROM u, c WHERE u.g = c.id
-plan:  Project([_current.W#3, _current.S#1], FlatMap(outer=UnorderedUnion(Project([_current.G#0, _current.S#1], Project([_current.G#0, _current.SUM(V)#1], GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_G, [G], GA, live_groups_only), AggregateIndex(SUM, SUM_BY_G, [G], GA); keys=[G#0], driving=0))), Project([_current.H#0, _current.S2#1], Project([_current.H#0, _current.SUM(GB.V)#1], Project([_current.H#0, _current.SUM(V)#1], GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_H, [H], GB, live_groups_only), AggregateIndex(SUM, SUM_BY_H, [H], GB); keys=[H#0], driving=0))))), inner=Scan(C, [=])))
+plan:  Project([_current.W#3, _current.S#1], FlatMap(outer=UnorderedUnion(Project([_current.G#0, _current.SUM(V)#1], GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_G, [G], GA, live_groups_only), AggregateIndex(SUM, SUM_BY_G, [G], GA); keys=[G#0], driving=0)), Project([_current.H#0, _current.SUM(GB.V)#1], Project([_current.H#0, _current.SUM(V)#1], GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_H, [H], GB, live_groups_only), AggregateIndex(SUM, SUM_BY_H, [H], GB); keys=[H#0], driving=0)))), inner=Scan(C, [=])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryFlatMapPlan
 shape:     RecordQueryUnorderedUnionPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryMultiIntersectionOnValuesPlan
+shape:           RecordQueryAggregateIndexPlan
+shape:           RecordQueryAggregateIndexPlan
 shape:       RecordQueryProjectionPlan
 shape:         RecordQueryProjectionPlan
 shape:           RecordQueryMultiIntersectionOnValuesPlan
 shape:             RecordQueryAggregateIndexPlan
 shape:             RecordQueryAggregateIndexPlan
-shape:       RecordQueryProjectionPlan
-shape:         RecordQueryProjectionPlan
-shape:           RecordQueryProjectionPlan
-shape:             RecordQueryMultiIntersectionOnValuesPlan
-shape:               RecordQueryAggregateIndexPlan
-shape:               RecordQueryAggregateIndexPlan
 shape:     RecordQueryScanPlan
 === union_join_leg_aggregate_forms.yaml#1
 sql:   WITH u AS (SELECT g, COUNT(1) AS n FROM ga GROUP BY g UNION ALL SELECT h, COUNT(1) AS m FROM gb GROUP BY h) SELECT c.w, u.n FROM u, c WHERE u.g = c.id
@@ -18345,20 +18381,18 @@ shape:               RecordQueryScanPlan
 shape:     RecordQueryScanPlan
 === union_join_leg_aggregate_forms.yaml#3
 sql:   WITH u AS (SELECT g, SUM(v) AS s FROM ga GROUP BY g UNION ALL SELECT h, SUM(v) AS s2 FROM gb GROUP BY h) SELECT c.w, u.s FROM u, c WHERE u.g = c.id
-plan:  Project([_current.W#3, _current.S#1], FlatMap(outer=UnorderedUnion(Project([_current.G#0, _current.S#1], Project([_current.G#0, _current.SUM(V)#1], GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_G, [G], GA, live_groups_only), AggregateIndex(SUM, SUM_BY_G, [G], GA); keys=[G#0], driving=0))), Project([_current.H#0, _current.S2#1], Project([_current.H#0, _current.SUM(V)#1], GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_H, [H], GB, live_groups_only), AggregateIndex(SUM, SUM_BY_H, [H], GB); keys=[H#0], driving=0)))), inner=Scan(C, [=])))
+plan:  Project([_current.W#3, _current.S#1], FlatMap(outer=UnorderedUnion(Project([_current.G#0, _current.SUM(V)#1], GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_G, [G], GA, live_groups_only), AggregateIndex(SUM, SUM_BY_G, [G], GA); keys=[G#0], driving=0)), Project([_current.H#0, _current.SUM(V)#1], GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_H, [H], GB, live_groups_only), AggregateIndex(SUM, SUM_BY_H, [H], GB); keys=[H#0], driving=0))), inner=Scan(C, [=])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryFlatMapPlan
 shape:     RecordQueryUnorderedUnionPlan
 shape:       RecordQueryProjectionPlan
-shape:         RecordQueryProjectionPlan
-shape:           RecordQueryMultiIntersectionOnValuesPlan
-shape:             RecordQueryAggregateIndexPlan
-shape:             RecordQueryAggregateIndexPlan
+shape:         RecordQueryMultiIntersectionOnValuesPlan
+shape:           RecordQueryAggregateIndexPlan
+shape:           RecordQueryAggregateIndexPlan
 shape:       RecordQueryProjectionPlan
-shape:         RecordQueryProjectionPlan
-shape:           RecordQueryMultiIntersectionOnValuesPlan
-shape:             RecordQueryAggregateIndexPlan
-shape:             RecordQueryAggregateIndexPlan
+shape:         RecordQueryMultiIntersectionOnValuesPlan
+shape:           RecordQueryAggregateIndexPlan
+shape:           RecordQueryAggregateIndexPlan
 shape:     RecordQueryScanPlan
 === union_quoted_identifiers.yaml#0
 sql:   SELECT * FROM t UNION ALL SELECT "id", "k" FROM t
@@ -18398,10 +18432,11 @@ shape:   RecordQueryScanPlan
 shape:   RecordQueryScanPlan
 === union_quoted_identifiers.yaml#5
 sql:   SELECT "id" AS w, "k" AS x FROM t UNION ALL SELECT * FROM t
-plan:  UnorderedUnion(Project([_current.id#0, _current.k#1], Scan(T)), Project([_current.id#0, _current.k#1], Scan(T)))
+plan:  UnorderedUnion(Project([_current.W#0, _current.X#1], Project([_current.id#0, _current.k#1], Scan(T))), Project([_current.id#0, _current.k#1], Scan(T)))
 shape: RecordQueryUnorderedUnionPlan
 shape:   RecordQueryProjectionPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryScanPlan
 === union_quoted_identifiers.yaml#6
@@ -18433,10 +18468,11 @@ shape:   RecordQueryProjectionPlan
 shape:     RecordQueryScanPlan
 === union_star.yaml#3
 sql:   SELECT id AS W, col1 AS X, col2 AS Y FROM t1 UNION ALL SELECT * FROM t1
-plan:  UnorderedUnion(Project([_current.ID#0, _current.COL1#1, _current.COL2#2], Scan(T1)), Project([_current.ID#0, _current.COL1#1, _current.COL2#2], Scan(T1)))
+plan:  UnorderedUnion(Project([_current.W#0, _current.X#1, _current.Y#2], Project([_current.ID#0, _current.COL1#1, _current.COL2#2], Scan(T1))), Project([_current.ID#0, _current.COL1#1, _current.COL2#2], Scan(T1)))
 shape: RecordQueryUnorderedUnionPlan
 shape:   RecordQueryProjectionPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryScanPlan
 === union_star.yaml#4

@@ -3,9 +3,50 @@ package cascades
 import (
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
+
+type observedSimplifierMatcher struct {
+	matching.RootOperatorMatcher
+	visits *int
+}
+
+func (m *observedSimplifierMatcher) BindMatches(outer *matching.PlannerBindings, in any) []*matching.PlannerBindings {
+	*m.visits++
+	return m.RootOperatorMatcher.BindMatches(outer, in)
+}
+
+type observedSimplifierRule struct {
+	CascadesRule
+	matcher matching.BindingMatcher
+}
+
+func (r *observedSimplifierRule) Matcher() matching.BindingMatcher { return r.matcher }
+
+func TestSimplifyDispatchesOnlyApplicableRoots(t *testing.T) {
+	t.Parallel()
+	field := simplifierFields(t, simplifierFieldSpec{"A", values.NotNullLong})[0]
+	predicate := predicates.NewNot(predicates.NewComparisonPredicate(field, predicates.Comparison{
+		Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong},
+	}))
+	visits := make([]int, 3)
+	rules := []CascadesRule{NewAndConstantSimplifyRule(), NewNotComparisonRewriteRule(), newPredicateDNFRule()}
+	for i, rule := range rules {
+		rules[i] = &observedSimplifierRule{CascadesRule: rule, matcher: &observedSimplifierMatcher{
+			RootOperatorMatcher: rule.Matcher().(matching.RootOperatorMatcher), visits: &visits[i],
+		}}
+	}
+	result := mustSimplify(t, predicate, rules)
+	comparison, ok := result.(*predicates.ComparisonPredicate)
+	if !ok || comparison.Comparison.Type != predicates.ComparisonNotEquals {
+		t.Fatalf("NOT comparison was not rewritten: %T %s", result, result.Explain())
+	}
+	if visits[0] != 0 || visits[1] != 1 || visits[2] == 0 {
+		t.Fatalf("matcher calls=%v, want AND=0, NOT=1, interface-root>0", visits)
+	}
+}
 
 type simplifierFieldSpec struct {
 	name string
@@ -78,9 +119,9 @@ func TestSimplify_DescendsIntoChildren(t *testing.T) {
 		predicates.NewNot(predicates.NewNot(leaf)),
 	)
 	got := mustSimplify(t, pred, DefaultSimplifyRules())
-	// After recursion: AND(TRUE, leaf) → leaf.
-	if got != predicates.QueryPredicate(leaf) {
-		t.Fatalf("expected the UNKNOWN leaf, got %T %s", got, got.Explain())
+	// Each child NOT folds before its parent; the resulting UNKNOWN may be new.
+	if cp, ok := got.(*predicates.ConstantPredicate); !ok || cp.Value != predicates.TriUnknown {
+		t.Fatalf("expected UNKNOWN, got %T %s", got, got.Explain())
 	}
 }
 
@@ -245,7 +286,8 @@ func TestSimplify_CompositeConstantOnEitherSide_Folds(t *testing.T) {
 			name: "0 < (1+2)",
 			pred: predicates.NewComparisonPredicate(
 				&values.ConstantValue{Value: int64(0), Typ: values.NullableLong},
-				predicates.Comparison{Type: predicates.ComparisonLessThan, Operand: add12}),
+				predicates.Comparison{Type: predicates.ComparisonLessThan, Operand: add12},
+			),
 		},
 	}
 	for _, tc := range cases {
@@ -269,7 +311,8 @@ func TestSimplify_CompositeConstantOnEitherSide_Folds(t *testing.T) {
 // declines correctly when RHS is a FieldValue.
 func TestSimplify_NonConstantRHS_Survives(t *testing.T) {
 	t.Parallel()
-	fields := simplifierFields(t,
+	fields := simplifierFields(
+		t,
 		simplifierFieldSpec{name: "age", typ: values.NullableLong},
 		simplifierFieldSpec{name: "cutoff", typ: values.NullableLong},
 	)
@@ -298,7 +341,8 @@ func TestSimplify_NonConstantRHS_Survives(t *testing.T) {
 // FieldValue.
 func TestSimplify_NotComparison_NonConstantRHS_Rewrites(t *testing.T) {
 	t.Parallel()
-	fields := simplifierFields(t,
+	fields := simplifierFields(
+		t,
 		simplifierFieldSpec{name: "a", typ: values.NullableLong},
 		simplifierFieldSpec{name: "b", typ: values.NullableLong},
 	)
@@ -353,7 +397,8 @@ func TestSimplify_TripleNotCollapses(t *testing.T) {
 	t.Parallel()
 	age := simplifierFields(t, simplifierFieldSpec{name: "age", typ: values.NullableLong})[0]
 	cp := predicates.NewComparisonPredicate(age, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(5))})
-	got := mustSimplify(t,
+	got := mustSimplify(
+		t,
 		predicates.NewNot(predicates.NewNot(predicates.NewNot(cp))),
 		DefaultSimplifyRules(),
 	)
@@ -373,7 +418,8 @@ func TestSimplify_TripleNotCollapses(t *testing.T) {
 func TestSimplify_Idempotent(t *testing.T) {
 	t.Parallel()
 	rules := DefaultSimplifyRules()
-	fields := simplifierFields(t,
+	fields := simplifierFields(
+		t,
 		simplifierFieldSpec{name: "age", typ: values.NullableLong},
 		simplifierFieldSpec{name: "flag", typ: values.TypeBool},
 	)
@@ -468,21 +514,12 @@ func TestSimplify_ComparisonPlusAnd(t *testing.T) {
 	}
 }
 
-// TestSimplify_NotOverOrDoesNotDistribute pins the documented
-// SEPARATION: De Morgan's NOT distribution is INTENTIONALLY left out
-// of DefaultSimplifyRules. Java's QueryPredicateTest.testQueryPredicate
-// NotPushDownOptimization rewrites `NOT(OR(p1, p2))` to `AND(NOT p1,
-// NOT p2)`; our seed leaves the NOT on top of the OR.
-//
-// Java does the De Morgan distribution in a separate normalisation
-// pass (BooleanNormalizer); the seed Simplify driver runs only the
-// constant-fold + identity-drop + absorbing-element + leaf-NOT-
-// rewrite rules. Callers wanting the De Morgan rewrite use the
-// `NormalizationRules()` rule set (which prepends `NewDeMorganRule`).
-// See `rule_demorgan.go` + `rule_demorgan_test.go`.
+// The null-substitution constant-evaluation set does not distribute NOT;
+// queryPredicateSimplificationRules and NormalizationRules do.
 func TestSimplify_NotOverOrDoesNotDistribute(t *testing.T) {
 	t.Parallel()
-	fields := simplifierFields(t,
+	fields := simplifierFields(
+		t,
 		simplifierFieldSpec{name: "a", typ: values.TypeString},
 		simplifierFieldSpec{name: "b", typ: values.TypeString},
 	)

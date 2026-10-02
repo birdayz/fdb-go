@@ -454,3 +454,35 @@ frozen rows were computed over. The setups were re-derived from each recipe by
 `go run ./cmd/factory-rebless -rederive-setup`, the same pure computation the
 determinism gate checks; `factorycorpus/full:full_test`, which re-executes every
 scenario against a real cluster, is the proof that the frozen rows still hold.
+
+---
+
+## Join planning follows Java 4.14.2.0 — PLAN CHANGE, with a FLOAT probe loss Java shares
+
+**Retired: 3 scenarios (`fc_0000000346_q0_p0..p2`). Re-blessed plan-shape and
+dedup-key headers: 2696 of 8150 scenarios. Result rows: UNCHANGED.**
+Machine ledger: `retirements/2026-10-01-rfc257-java-aligned-join-planning.json`.
+
+Measured with `cmd/factory-plan-census` against the base commit's corpus over
+8060 comparable scenarios: 3136 plans moved, 147 counted as losing an equality
+index probe, 0 newly unplannable. The causes:
+
+- PartitionSelectRule places a predicate spanning a bipartition in the lower,
+  as Java's does, so a join chain plans as a right-deep chain of correlated
+  FlatMaps instead of a left-deep one. The probes are the same, nested the
+  other way.
+- SelectExpression merges comparisons on one value into one range, as Java's
+  `partitionPredicates` does. Java then partitions that range whole and loses
+  the selective part of `o.k = 42 AND o.k = c.id` to the join side; Go splits
+  it back per quantifier while partitioning, so the selective part still binds
+  at its own leg (`TestPlanHarness_MergedJoinRangeKeepsSelectiveProbe`). On
+  this corpus the split took the probe losses from 162 to 147 and the new
+  unbounded full scans from 165 to 108.
+- 60 of the remaining losses are an equality on the FLOAT column `e` against a
+  DOUBLE literal. The comparison reads `promote(e AS DOUBLE)`, which select
+  subsumption does not sarg, and Java plans exactly the same filter (`ISCAN(IDX_D
+  <,>) | FILTER promote(_.E AS DOUBLE) EQUALS …` for `e = 3.0`). The rest move
+  an equality probe between equivalent forms (`IDX_AB [=, =]` for
+  `IDX_AB [=, *]` plus a key probe).
+- The retired candidate became the same (feature vector, plan shape) point as
+  `fc_0000000204_q2_p0..p2`, which stays.

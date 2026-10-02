@@ -1753,6 +1753,9 @@ func combineConcreteCostUnclamped(p plans.RecordQueryPlan, child []properties.Co
 		// derivation) instead of only overwriting Cardinality — a hop cannot
 		// be credited with producing at most `cap` rows while still being
 		// charged CPU for scanning the larger, disproven row count.
+		if reassociated, ok := rightDeepFKChainCost(pl, child[0], stats, ctx); ok {
+			return reassociated
+		}
 		innerCost := child[1]
 		if cap, ok := fkChainCardinalityCap(pl, stats); ok {
 			fixedCPU, derived := fkChainInnerFixedCPU(pl.GetInner(), ctx)

@@ -76,10 +76,6 @@ func NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(innerQ expression
 			if err != nil {
 				return nil, fmt.Errorf("RecordQueryPredicatesFilterPlan predicate %d binding alias: %w", i, err)
 			}
-			normalized[i], err = translateOrdinalityBindingNames(normalized[i], innerQ, alias)
-			if err != nil {
-				return nil, fmt.Errorf("RecordQueryPredicatesFilterPlan predicate %d ordinality binding: %w", i, err)
-			}
 		}
 		normalized[i], err = reanchorPredicateForInputWithAlias(normalized[i], innerQ, alias)
 		if err != nil {
@@ -107,40 +103,6 @@ func NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(innerQ expression
 		predicates:   normalized,
 		innerAlias:   alias,
 	}, nil
-}
-
-// translateOrdinalityBindingNames crosses the one physical boundary where a
-// logical source intentionally gives different names to every slot of the same
-// exact positional row. SQL AS/AT aliases name an Explode WITH ORDINALITY row,
-// while the physical carrier remains RECORD<_0 element, _1 ordinal>. A pushed
-// predicate must keep the logical binding correlation (the executor binds that
-// declared alias), but its exact row type must be the physical carrier type.
-//
-// The selected child and WITH ORDINALITY flag are admission authority. The
-// values bridge additionally requires exact positional width, leaf types,
-// nullability, record identity, and a real field-name difference. A plain
-// Explode, exploratory child, current/foreign root, or structural drift is a
-// pointer-stable decline.
-func translateOrdinalityBindingNames(
-	predicate predicates.QueryPredicate,
-	inputQ expressions.Quantifier,
-	bindingAlias values.CorrelationIdentifier,
-) (predicates.QueryPredicate, error) {
-	selected, ok := selectedPlanFromQuantifier(inputQ).(*RecordQueryExplodePlan)
-	if !ok || selected == nil || !selected.IsWithOrdinality() {
-		return predicate, nil
-	}
-	layout, err := selected.ProvidedOutputLayout()
-	if err != nil {
-		return nil, err
-	}
-	return predicates.TransformEmbeddedValuesChecked(
-		predicate,
-		func(value values.Value) (values.Value, error) {
-			return values.TranslateProjectionInputNameNormalizationToCorrelation(
-				value, bindingAlias, values.PhysicalCarrierType(layout))
-		},
-	)
 }
 
 // GetInner returns the wrapped inner plan, dereferenced through the quantifier.
@@ -200,16 +162,10 @@ func (p *RecordQueryPredicatesFilterPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{inner}
 }
 
-// EqualsWithoutChildren compares the predicate list pairwise via
-// PredicateEquals.
-// structuralKey lists the fields that distinguish this filter in the memo: the
-// binding alias and the predicate list. Children are excluded. innerAlias is
-// identity — it is the correlation the predicates resolve the current row
-// under, so two filters differing only in binding alias evaluate differently
-// and must not collapse into one memo group (the same field-class as the
-// NLJ/FlatMap outer/inner aliases).
+// The local binding may follow the quantifier's alias map; external
+// correlations retain identity. Children are compared by the memo separately.
 func (p *RecordQueryPredicatesFilterPlan) structuralKey() *structuralKey {
-	return newStructuralKey().Alias(p.innerAlias).Preds(p.predicates)
+	return newStructuralKey().MappedAlias(p.innerAlias).Preds(p.predicates)
 }
 
 func (p *RecordQueryPredicatesFilterPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
@@ -259,8 +215,15 @@ func (p *RecordQueryPredicatesFilterPlan) WithInner(inner RecordQueryPlan) (*Rec
 
 // EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
 // planEqualsAsExpression.
-func (p *RecordQueryPredicatesFilterPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
-	return planEqualsAsExpression(p, other)
+func (p *RecordQueryPredicatesFilterPlan) EqualsWithoutChildren(other expressions.RelationalExpression, aliases *expressions.AliasMap) bool {
+	otherFilter, ok := other.(*RecordQueryPredicatesFilterPlan)
+	return ok && p.structuralKey().EqualUnderAliases(otherFilter.structuralKey(), aliases.ToValuesAliasMap())
+}
+
+// A quantifier-owned row binding is local to this filter; a separate binding
+// identity is not a license to rename an external correlation.
+func (p *RecordQueryPredicatesFilterPlan) InternsAliasAware() bool {
+	return p.innerAlias.IsZero() || p.innerAlias == p.innerQ.GetAlias()
 }
 
 // WithQuantifiers atomically moves every predicate Value that belongs to the
@@ -368,9 +331,7 @@ func reanchorPredicateForInputWithAlias(
 		if retained, ok := descendantRetainedResultProducer(selected); ok {
 			producer = retained
 		}
-		for correlation := range values.GetCorrelatedToOfValue(producer) {
-			owned[correlation] = struct{}{}
-		}
+		values.CollectCorrelatedToOfValue(producer, owned)
 		// A chained materializer can retain a source through more than one
 		// producer boundary. The nearest FlatMap result is then expressed in its
 		// direct leg bindings (X/Y), while the selected outer FlatMap is the exact
@@ -384,7 +345,9 @@ func reanchorPredicateForInputWithAlias(
 		predicate,
 		func(value values.Value) (values.Value, error) {
 			allOwned := true
-			for correlation := range values.GetCorrelatedToOfValue(value) {
+			correlations := make(map[values.CorrelationIdentifier]struct{})
+			values.CollectCorrelatedToOfValue(value, correlations)
+			for correlation := range correlations {
 				if _, ok := owned[correlation]; !ok {
 					allOwned = false
 					break
@@ -429,7 +392,8 @@ func addSelectedMaterializerRetainedCorrelations(
 				}
 				owned[correlation] = struct{}{}
 			}
-			for _, child := range plan.GetChildren() {
+			for _, quantifier := range plan.GetQuantifiers() {
+				child := selectedPlanFromQuantifier(quantifier)
 				if _, selected := descendantValueMaterializer(child); selected {
 					addSelectedMaterializerRetainedCorrelations(child, owned)
 				}
@@ -437,11 +401,11 @@ func addSelectedMaterializerRetainedCorrelations(
 			return
 		}
 
-		unary, ok := plan.(interface{ GetInner() RecordQueryPlan })
-		if !ok {
+		quantifiers := plan.GetQuantifiers()
+		if len(quantifiers) != 1 {
 			return
 		}
-		inner := unary.GetInner()
+		inner := selectedPlanFromQuantifier(quantifiers[0])
 		if inner == nil {
 			return
 		}
@@ -503,7 +467,7 @@ func reanchorOwnedPredicateValueForInput(
 	if err != nil {
 		return nil, err
 	}
-	return values.ReanchorValueForLayout(normalized, target, layout)
+	return values.ReanchorOwnedValueForLayout(normalized, target, layout, owned)
 }
 
 // WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
@@ -534,6 +498,9 @@ func (p *RecordQueryPredicatesFilterPlan) GetCorrelatedToWithoutChildren() map[v
 			out[k] = struct{}{}
 		}
 	}
+	// Evaluation binds both the retained input alias and its physical carrier.
+	delete(out, p.innerAlias)
+	delete(out, values.CurrentCorrelation())
 	return out
 }
 

@@ -1,6 +1,7 @@
 package query
 
 import (
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
@@ -116,6 +117,17 @@ func (t *cascadesTranslator) unnestOrdinalSeed(
 	return rc
 }
 
+// unnestExplode is the Explode of a lateral unnest over collection. Under AT
+// its two slots carry the names the unnest's references read
+// (UnnestOrdinalityNames), so the quantifier flows exactly that row.
+func unnestExplode(collection values.Value, u *logical.LogicalUnnest) (*expressions.ExplodeExpression, error) {
+	if u.AtAlias == "" {
+		return expressions.NewExplodeExpression(collection)
+	}
+	names := logical.UnnestOrdinalityNames(u.Alias, u.AtAlias)
+	return expressions.NewExplodeExpressionWithOrdinalityNames(collection, names[0], names[1])
+}
+
 // unnestBakedRootCollection rebinds the semantic collection's exact ordinal
 // path onto the outer physical row. A single source starts at zero; a boxed
 // source uses its owner window. A chained owner supplies explicitRootIdx,
@@ -210,23 +222,13 @@ func unnestSeedInnerFields(
 	elementType values.Type,
 ) (fields []values.RecordConstructorField, fullBaked, ok bool) {
 	if u.AtAlias != "" {
-		// The Explode flows {_0:element, _1:ordinal} — a genuine 2-field record
-		// leg. NAME the leg type by the AS/AT ALIASES (not the Explode's `_0`/`_1`)
-		// so a downstream `QOV(<alias>).<AS|AT>` projection/predicate reference
-		// bakes its leg-local ordinal against the leg TYPE names (the AS/AT
-		// aliases are the columns' OUTPUT names, what an upper references). The
-		// Explode still flows `_0`/`_1`; the build's bindLeg binds that ordinality
-		// row to this alias-named leg strictly by position (element slot 0,
-		// ordinal slot 1). AT-only leaves the element slot named
-		// `_0` — unreferenced, since without an AS the element binds to nothing.
+		// The Explode flows a genuine 2-field record leg whose slots carry the
+		// AS/AT names (unnestExplode), the names a downstream
+		// `QOV(<alias>).<AS|AT>` reference bakes its leg-local ordinal against.
+		// AT-only leaves the element slot named `_0` — unreferenced, since
+		// without an AS the element binds to nothing.
 		names := logical.UnnestOrdinalityNames(u.Alias, u.AtAlias)
-		// Match the physical Explode WITH ORDINALITY carrier exactly. Each
-		// emitted element/ordinal pair is a present row; an empty or NULL array
-		// emits no row rather than a null-supplying row.
-		innerType := values.NewRecordType("", false, []values.Field{
-			{Name: names[0], FieldType: elementType, Ordinal: 0},
-			{Name: names[1], FieldType: values.NotNullInt, Ordinal: 1},
-		})
+		innerType := values.ExplodeOrdinalityResultTypeNamed(elementType, names[0], names[1])
 		innerQOV, err := values.NewQuantifiedObjectValue(innerCorr, innerType)
 		if err != nil {
 			return nil, false, false

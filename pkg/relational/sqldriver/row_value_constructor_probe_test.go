@@ -1,27 +1,14 @@
 package sqldriver_test
 
-// Probes row-value constructors and a couple of WHERE edges: a multi-column row-value
-// IN `(a,b) IN ((1,2),...)` and row-value equality `(a,b) = (1,2)` are parsed but not
-// plannable → 0AF00 (clean rejection, not wrong rows); an empty `IN ()` list is a
-// syntax error (42601); and the tautology `a = a` returns all rows with a non-NULL
-// value but excludes NULL-valued rows (NULL = NULL is UNKNOWN, 3VL).
-//
-// The row-value rejections are load-bearing, not incidental. Both spellings put a
-// RECORD where a comparison expects a scalar, which Java refuses at construction
-// (RelOpValue.isSupportedOperandType, RelOpValue.java:320-322, asserted at :333/:345/
-// :350), and Go has no record comparator to fall back on. When record constructors
-// became buildable in expression position the IN spelling briefly PLANNED instead,
-// and it was silently wrong in both directions — MEASURED over rows (1,1,2),(2,3,4),
-// (4,1,9) plus an a-NULL row: `(a,b) IN ((1,2),(3,4))` returned NO ids where 1 and 2
-// match, `(a,b) NOT IN ((1,2))` returned EVERY id, and a single-element list died
-// XX000. The NOT and single-element arms below exist because the plain positive form
-// alone cannot express those: an over-eager rejection and a broken membership test
-// both make it fail, so it cannot tell them apart.
+// Record IN accepts primitive fields with matching positional type codes.
+// Unlike IN, binary record equality is rejected by Java RelOpValue.
+// Integer literals must be BIGINT here: InOpValue does not promote record fields.
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -36,7 +23,7 @@ func TestFDB_RowValueConstructorProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_rvc")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_rvc")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE rvc CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE rvc CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) CREATE INDEX rvc_ab AS SELECT a,b FROM t ORDER BY a,b")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rvc/s WITH TEMPLATE rvc")
 	dsn := fmt.Sprintf("fdbsql:///TESTDB_RVC?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
@@ -70,19 +57,38 @@ func TestFDB_RowValueConstructorProbe(t *testing.T) {
 			}
 		})
 	}
-	rejected("row_value_in_unsupported", "(a, b) IN ((1,2),(3,4))", "0AF00")
-	// A SINGLE-element list is the arm that died XX000 rather than rejecting —
-	// a different internal path from the multi-element form.
-	rejected("row_value_in_single_element_unsupported", "(a, b) IN ((1,2))", "0AF00")
-	// The NEGATED form. A membership test that answers "no" to everything
-	// answers "yes" to everything once negated, so `NOT IN` is where a broken
-	// row-value IN stops looking like an over-strict filter and starts
-	// returning rows that do not belong in the result.
-	rejected("row_value_not_in_unsupported", "(a, b) NOT IN ((1,2))", "0AF00")
-	// Reversed element order — the same record shape spelled differently, so a
-	// rejection keyed on the literal text rather than the operand TYPE would
-	// let this one through.
-	rejected("row_value_in_reversed_unsupported", "(b, a) IN ((2,1))", "0AF00")
+	rejected("row_value_in_field_type_mismatch", "(a, b) IN ((1,2),(3,4))", "42804")
+	rejected("row_value_in_single_element_type_mismatch", "(a, b) IN ((1,2))", "42804")
+	rejected("row_value_not_in_field_type_mismatch", "(a, b) NOT IN ((1,2))", "42804")
+	rejected("row_value_in_reversed_type_mismatch", "(b, a) IN ((2,1))", "42804")
+	for _, tc := range []struct {
+		name, where string
+		want        []int64
+	}{
+		{"record_in", "(a,b) IN ((1L,2L),(3L,4L))", []int64{1, 2}},
+		{"record_in_duplicates", "(a,b) IN ((1L,2L),(1L,2L),(3L,4L))", []int64{1, 2}},
+		{"record_in_single", "(a,b) IN ((1L,2L))", []int64{1}},
+		{"record_not_in", "(a,b) NOT IN ((1L,2L))", []int64{2, 3}},
+		{"record_in_reversed", "(b,a) IN ((2L,1L))", []int64{1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if tc.name == "record_in_duplicates" {
+				var plan string
+				if err := db.QueryRowContext(ctx, "EXPLAIN SELECT id FROM t WHERE "+tc.where).Scan(&plan); err != nil {
+					t.Fatal(err)
+				}
+				t.Logf("record IN duplicate plan: %s", plan)
+				if !strings.Contains(plan, "Explode(array_distinct)") || !strings.Contains(plan, "IndexScan(RVC_AB, [=, =])") {
+					t.Fatalf("must exercise deduplicated record IN with a two-column index probe, got %s", plan)
+				}
+			}
+			got, err := ids(tc.where)
+			if err != nil || !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("%s: %v, %v; want %v", tc.where, got, err, tc.want)
+			}
+		})
+	}
 	rejected("row_value_eq_unsupported", "(a, b) = (1, 2)", "0AF00")
 	rejected("empty_in_list_syntax", "a IN ()", "42601")
 

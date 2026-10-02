@@ -30,6 +30,9 @@ func writeStructuralHash(h io.Writer, p QueryPredicate) {
 		return
 	}
 	writeU64 := func(u uint64) { _, _ = io.WriteString(h, strconv.FormatUint(u, 16)+":") }
+	if IsAtomic(p) {
+		_, _ = io.WriteString(h, "atomic:")
+	}
 	switch t := p.(type) {
 	case *ComparisonPredicate:
 		_, _ = io.WriteString(h, "cmp:")

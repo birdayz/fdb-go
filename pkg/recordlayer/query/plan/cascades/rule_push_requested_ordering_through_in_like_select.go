@@ -26,7 +26,8 @@ type PushRequestedOrderingThroughInLikeSelectRule struct {
 
 func NewPushRequestedOrderingThroughInLikeSelectRule() *PushRequestedOrderingThroughInLikeSelectRule {
 	return &PushRequestedOrderingThroughInLikeSelectRule{
-		matcher: NewExpressionMatcher[*expressions.SelectExpression]("push_req_ord_in_like_select"),
+		matcher: NewExpressionMatcher[*expressions.SelectExpression]("push_req_ord_in_like_select").WithRootPredicate(
+			func(sel *expressions.SelectExpression) bool { return len(sel.GetQuantifiers()) >= 2 }),
 	}
 }
 

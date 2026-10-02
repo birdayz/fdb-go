@@ -65,7 +65,7 @@ func (r *MergeProjectionAndFetchRule) OnMatch(call *ImplementationRuleCall) {
 	if fetchInnerRef == nil {
 		return
 	}
-	newInnerQ := expressions.ForEachQuantifier(fetchInnerRef)
+	newInnerQ := expressions.NewPhysicalQuantifier(fetchInnerRef)
 	newInnerAlias := newInnerQ.GetAlias()
 
 	// Check if ALL projected values can be pushed through the fetch.

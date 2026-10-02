@@ -335,6 +335,12 @@ func columnForField(f protoreflect.FieldDescriptor, enclosing []protoreflect.Ful
 		Nullable: nullable,
 		IsArray:  isArr,
 	}
+	if vt, ok := values.ScalarTypeForProtoKind(elemF).(*values.VectorType); ok {
+		col.Type = "VECTOR"
+		col.VectorPrecision = vt.Precision
+		col.VectorDimensions = vt.Dimensions
+		return col
+	}
 	if col.Type == "ENUM" {
 		// Use the stored-row authority, including its LONG representation for
 		// protobuf number aliases. An enum declaration must never describe a

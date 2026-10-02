@@ -68,6 +68,7 @@ type RecordQueryAggregateIndexPlan struct {
 	recordTypeName    string
 	resultType        values.Type
 	aggregateFunction string
+	permuted          bool
 	groupCols         []string
 	aggColumn         string
 	// groupColLayout is the DECLARED layout the groupCols names resolve
@@ -163,6 +164,13 @@ func (p *RecordQueryAggregateIndexPlan) WithGroupColumns(groupCols []string, agg
 		cp.physicalGroupingPrefixCount = len(groupCols)
 		cp.physicalGroupingPrefixKnown = true
 	}
+	return &cp
+}
+
+// WithPermutedOrdering makes the aggregate participate in the physical key order.
+func (p *RecordQueryAggregateIndexPlan) WithPermutedOrdering(permuted bool) *RecordQueryAggregateIndexPlan {
+	cp := *p
+	cp.permuted = permuted
 	return &cp
 }
 
@@ -311,6 +319,7 @@ func (p *RecordQueryAggregateIndexPlan) structuralKey() *structuralKey {
 		Strs(p.groupCols).
 		Int(p.GetPhysicalGroupingPrefixCount()).
 		Bool(p.liveGroupsOnly).
+		Bool(p.permuted).
 		Sub(p.indexPlan.structuralKey())
 }
 

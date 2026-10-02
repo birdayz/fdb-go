@@ -40,6 +40,9 @@ func copyPromotionType(t Type, active map[Type]bool) (Type, error) {
 		return nil, &PromotionError{Reason: "nil type"}
 	}
 	switch v := t.(type) {
+	case *VectorType:
+		copy := *v
+		return &copy, nil
 	case *PrimitiveType:
 		copy := *v
 		return &copy, nil
@@ -132,7 +135,7 @@ func compilePromotion(source, target Type) (*promotionNode, error) {
 	}
 	if source.Code() == TypeCodeNull {
 		switch target.Code() {
-		case TypeCodeInt, TypeCodeLong, TypeCodeFloat, TypeCodeDouble, TypeCodeBoolean, TypeCodeString, TypeCodeArray, TypeCodeRecord, TypeCodeEnum, TypeCodeBytes, TypeCodeVersion:
+		case TypeCodeInt, TypeCodeLong, TypeCodeFloat, TypeCodeDouble, TypeCodeBoolean, TypeCodeString, TypeCodeArray, TypeCodeRecord, TypeCodeEnum, TypeCodeBytes, TypeCodeVersion, TypeCodeVector:
 			return n, nil
 		}
 		return bad()
@@ -173,7 +176,7 @@ func compilePromotion(source, target Type) (*promotionNode, error) {
 		return n, nil
 	}
 	if source.Code() == target.Code() && source.Code() != TypeCodeUnknown {
-		if source.Code() == TypeCodeEnum && !WithNullability(source, false).Equals(WithNullability(target, false)) {
+		if (source.Code() == TypeCodeEnum || source.Code() == TypeCodeVector) && !WithNullability(source, false).Equals(WithNullability(target, false)) {
 			return bad()
 		}
 		return n, nil
@@ -482,4 +485,22 @@ func (n *promotionNode) coerceRecord(v any) (any, error) {
 		return result, nil
 	}
 	return out, nil
+}
+
+// ForEachMessageDescriptor visits the immutable target descriptors bound to
+// this promotion, including nested record and array-element promotions.
+func (p *PromoteValue) ForEachMessageDescriptor(visit func(protoreflect.MessageDescriptor)) {
+	if p.prepared == nil {
+		return
+	}
+	var walk func(*promotionNode)
+	walk = func(n *promotionNode) {
+		if n.descriptor != nil {
+			visit(n.descriptor)
+		}
+		for _, child := range n.children {
+			walk(child)
+		}
+	}
+	walk(p.prepared.root)
 }

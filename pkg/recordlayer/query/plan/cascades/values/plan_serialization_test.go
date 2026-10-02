@@ -1,8 +1,12 @@
 package values
 
 import (
+	"math"
 	"strings"
 	"testing"
+
+	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/vectorcodec"
 
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
@@ -89,5 +93,64 @@ func TestSubscriptMacroProtoRoundTrip(t *testing.T) {
 	}
 	if !proto.Equal(p, again) {
 		t.Errorf("round trip changed the macro:\n%s\n%s", prototext.Format(p), prototext.Format(again))
+	}
+}
+
+func TestLiteralSerializationJavaCarriers(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		value    any
+		typ      Type
+		expected *gen.Value
+	}{
+		{"int", int64(7), NotNullInt, &gen.Value{IntValue: proto.Int32(7)}},
+		{"float", float64(1.25), NotNullFloat, &gen.Value{FloatValue: proto.Float32(1.25)}},
+		{"long", int64(7), NotNullLong, &gen.Value{LongValue: proto.Int64(7)}},
+		{"native int", int(7), NotNullInt, &gen.Value{IntValue: proto.Int32(7)}},
+		{"narrow long carrier", int32(7), NotNullLong, &gen.Value{LongValue: proto.Int64(7)}},
+		{"narrow double carrier", float32(1.25), NotNullDouble, &gen.Value{DoubleValue: proto.Float64(1.25)}},
+		{"rounded float", float64(1.23456789), NotNullFloat, &gen.Value{FloatValue: proto.Float32(float32(1.23456789))}},
+		{"double", float64(1.25), NotNullDouble, &gen.Value{DoubleValue: proto.Float64(1.25)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			wire, err := NewSerializationContext().ValueToProto(&ConstantValue{Value: tc.value, Typ: tc.typ})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !proto.Equal(wire.GetLiteralValue().GetValue().GetPrimitiveObject(), tc.expected) {
+				t.Fatalf("wrong Java carrier: %v", wire)
+			}
+		})
+	}
+	for _, v := range []int64{math.MinInt32 - 1, math.MaxInt32 + 1} {
+		if _, err := NewSerializationContext().ValueToProto(&ConstantValue{Value: v, Typ: NotNullInt}); err == nil {
+			t.Fatalf("serialized out-of-range INT %d", v)
+		}
+	}
+}
+
+func TestVectorLiteralAndNullPromotionSerialization(t *testing.T) {
+	t.Parallel()
+	typ := NewVectorType(true, 32, 2)
+	wire, err := NewSerializationContext().ValueToProto(&ConstantValue{Value: vectorcodec.SerializeAs(vectorcodec.TypeSingle, []float64{1, 2}), Typ: typ})
+	if err != nil {
+		t.Fatal(err)
+	}
+	literal := wire.GetLiteralValue()
+	if !proto.Equal(literal.GetResultType(), literal.GetValue().GetType()) {
+		t.Errorf("Java needs the nested comparable-object VECTOR type: %v", literal)
+	}
+	promotion, err := NewPromoteValueChecked(NewNullValue(NullType), typ)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := NewSerializationContext().ValueToProto(promotion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op := p.GetPromoteValue().GetPromotionTrie().GetValue().GetPrimitiveCoercionBiFunction().GetOperator(); op.String() != "NULL_TO_VECTOR" {
+		t.Fatalf("operator=%s", op)
 	}
 }

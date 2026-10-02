@@ -335,7 +335,8 @@ func (c *VectorIndexScanMatchCandidate) ToScanPlan(
 	if err != nil {
 		return nil
 	}
-	plan = plan.WithPartitionKeyComponentTypes(c.partitionKeyComponentTypes).WithIndexEngine(c.indexEngine)
+	plan = plan.WithPartitionKeyComponentTypes(c.partitionKeyComponentTypes).WithIndexEngine(c.indexEngine).
+		WithRecordProperties(c.GetPrimaryKeyValues(), !c.createsDuplicates)
 
 	// Carry the partition-key column names so the planner can certify a
 	// partition-column residual (an unconsumed partition INEQUALITY, e.g.

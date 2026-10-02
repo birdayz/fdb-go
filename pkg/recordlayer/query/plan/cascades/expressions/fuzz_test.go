@@ -1,6 +1,7 @@
 package expressions
 
 import (
+	"fmt"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -57,6 +58,60 @@ func FuzzSemanticEquals_Properties(f *testing.F) {
 		if ab && a.HashCodeWithoutChildren() != c.HashCodeWithoutChildren() {
 			t.Fatalf("hash inconsistency: SemanticEquals(a,c) but HashCodeWithoutChildren differ (a=%d c=%d, a=%T c=%T)",
 				a.HashCodeWithoutChildren(), c.HashCodeWithoutChildren(), a, c)
+		}
+	})
+}
+
+func FuzzMemoEqual_QuantifierBindings(f *testing.F) {
+	f.Add([]byte{0, 0, 0, 0})
+	f.Add([]byte{3, 1, 1, 1, 1, 1})
+	f.Add([]byte{8, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9})
+	f.Add([]byte{7, 1, 7, 3, 5, 1, 6, 2, 4, 0})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) < 4 {
+			return
+		}
+		n := 2 + int(data[0]%9)
+		build := func(right, changed bool) RelationalExpression {
+			qs := make([]Quantifier, n)
+			for i := range qs {
+				name := "T"
+				if n > 5 || data[1]&1 == 0 {
+					name = fmt.Sprint("T", i)
+				}
+				if changed && i == n/2 {
+					name = "DIFFERENT"
+				}
+				child := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{name}, values.NotNullLong)))
+				if i > 0 && data[(i+2)%len(data)]&1 != 0 {
+					inner := ForEachQuantifier(child)
+					dependency := qs[int(data[(i+3)%len(data)])%i]
+					p := predicates.NewComparisonPredicate(mustExpression(inner.RequireFlowedObjectValue()), predicates.Comparison{
+						Type: predicates.ComparisonEquals, Operand: mustExpression(dependency.RequireFlowedObjectValue()),
+					})
+					child = InitialOf(mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{p}, inner)))
+				}
+				qs[i] = ForEachQuantifier(child)
+			}
+			result := mustExpression(qs[n-1].RequireFlowedObjectValue())
+			for i := n - 1; i > 0; i-- {
+				j := 0
+				if right {
+					j = int(data[(i+1)%len(data)]) % (i + 1)
+				}
+				qs[i], qs[j] = qs[j], qs[i]
+			}
+			return mustExpression(NewSelectExpression(result, qs, nil))
+		}
+		left, right, changed := build(false, false), build(true, false), build(true, true)
+		if !MemoEqual(left, right) || !MemoEqual(right, left) || !preparedChildDuplicate(left, right) {
+			t.Fatalf("alias-renamed, permuted dependency graph did not intern: n=%d data=%v", n, data)
+		}
+		if MemoEqual(left, changed) || MemoEqual(changed, left) || preparedChildDuplicate(left, changed) {
+			t.Fatal("matching lost a changed child behind quantifier permutations")
+		}
+		if left.HashCodeWithoutChildren() != right.HashCodeWithoutChildren() {
+			t.Fatal("equivalent parents hash differently")
 		}
 	})
 }

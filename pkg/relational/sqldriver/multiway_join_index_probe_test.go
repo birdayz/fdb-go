@@ -147,3 +147,58 @@ func TestFDB_MultiwayJoinIndexProbe(t *testing.T) {
 		t.Errorf("plan full-scans the 200-row T3 instead of index-probing:\n  %s", plan)
 	}
 }
+
+// TestFDB_MergedJoinRangeSplitKeepsRows runs the shapes whose same-value
+// comparisons the select merges into one range and partitioning splits back
+// per quantifier (TestPlanHarness_MergedJoinRangeKeepsSelectiveProbe pins the
+// plans): every part must still filter, on data where each part alone admits
+// rows the conjunction excludes.
+func TestFDB_MergedJoinRangeSplitKeepsRows(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := setupErrorTestDB(t, "/testdb_merged_range_split", "mergedsplit",
+		"CREATE TABLE orders (id BIGINT, cust_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE customers (id BIGINT, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE a (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE b (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE c (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX o_cust ON orders (cust_id)")
+	for _, stmt := range []string{
+		"INSERT INTO orders VALUES (1, 42), (2, 42), (3, 7), (4, 99), (5, NULL)",
+		"INSERT INTO customers VALUES (42, 'x'), (7, 'y')",
+		"INSERT INTO a VALUES (1, 10), (2, 20), (3, 30)",
+		"INSERT INTO b VALUES (1, 10), (2, 21), (3, 30)",
+		"INSERT INTO c VALUES (1, 10), (2, 20), (3, 31)",
+	} {
+		mwjoMustExec(t, db, ctx, stmt)
+	}
+	for _, tc := range []struct {
+		sql  string
+		want []string
+	}{
+		{"SELECT o.id FROM orders o JOIN customers c ON o.cust_id = c.id WHERE o.cust_id = 42", []string{"1", "2"}},
+		{"SELECT o.id FROM orders o JOIN customers c ON o.cust_id = c.id WHERE o.cust_id = 99", nil},
+		{"SELECT o.id FROM orders o JOIN customers c ON o.cust_id = c.id WHERE o.cust_id > 10", []string{"1", "2"}},
+		{"SELECT x.id FROM a AS x INNER JOIN a AS y ON x.id = y.id WHERE x.id = 2", []string{"2"}},
+		{"SELECT a.id FROM a JOIN b USING (id, k) JOIN c USING (id, k) ORDER BY a.id", []string{"1"}},
+	} {
+		t.Run(tc.sql, func(t *testing.T) {
+			rows, err := db.QueryContext(ctx, tc.sql)
+			if err != nil {
+				t.Fatalf("query: %v", err)
+			}
+			defer rows.Close()
+			var got []string
+			for rows.Next() {
+				got = append(got, siRenderRow(t, rows))
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatalf("rows.Err: %v", err)
+			}
+			sortStrings(got)
+			if !eqStrSlices(got, tc.want) {
+				t.Errorf("rows = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

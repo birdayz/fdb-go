@@ -72,10 +72,10 @@ const (
 	// per-reference window lookup — the EXISTS-over-join ordinal rebase, keyed by
 	// the reference's own QuantifiedObjectValue correlation.
 	//
-	// It WAS the corpus's heaviest reader by an order of magnitude. RFC-235
-	// retired the NLJ arm whose firings supplied most of that traffic, and it now
-	// reads 288 against 438 for the other four combined — comparable, not
-	// dominant.
+	// RETIRED: it reads ZERO. Java-aligned select partitioning keeps an
+	// existential's correlated predicates in the partition holding the
+	// existential, so none reaches a two-quantifier select beside an ordinal-seed
+	// outer. See SeedWindowReaderFloors.Retired.
 	SeedWindowSiteExistentialRebase SeedWindowSite = iota
 
 	// SeedWindowSiteBoxLegRef is query.rebaseLegRefsToBox's QOV-shaped arm, keyed
@@ -273,15 +273,17 @@ func FormatSeedWindowReaderCensus() string {
 // is the whole reason this instrument exists — the predecessor's deletion took
 // away the only thing that could tell a silenced reader from a quiet corpus.
 //
-// The asymmetry this used to cite is gone. The existential rebase carried an
-// order of magnitude more traffic than the rest put together until RFC-235
-// retired the NLJ arm supplying it; it now reads 288 against 438 for the other
-// four combined. Per-site flooring is if anything MORE necessary at comparable
-// magnitudes, since no single site can carry a total.
+// A total floor would also stay satisfied by the loudest site (gatheredGroupSlot)
+// alone, so per-site flooring is what keeps each reader visible.
 type SeedWindowReaderFloors struct {
 	// Reads is the per-site minimum, indexed by site. A zero entry means the site
 	// is not floored, which is a statement about the corpus and not an omission.
 	Reads [seedWindowSiteCount]int
+
+	// Retired marks a site whose expected population is ZERO. Its alarm points
+	// the other way from a floor: any read means the retired traffic came back.
+	// A retired site must not also be floored.
+	Retired [seedWindowSiteCount]bool
 
 	// NestedHitMustBeZero asserts that NO read selects a NESTED window.
 	//
@@ -355,6 +357,32 @@ func assertSeedWindowReaderCounts(w io.Writer, counts [seedWindowSiteCount][seed
 				"  downstream can rebase it onto the box row. Either the producer should be\n"+
 				"  emitting the QOV-shaped spelling (which carries the correlation the rebase\n"+
 				"  needs), or the rebase owes this shape an answer.\n", s, n)
+		}
+	}
+	if floors != nil {
+		for s := SeedWindowSite(0); s < seedWindowSiteCount; s++ {
+			if !floors.Retired[s] {
+				continue
+			}
+			total := 0
+			for c := 0; c < int(seedWindowReadClassCount); c++ {
+				total += counts[s][c]
+			}
+			if total == 0 {
+				continue
+			}
+			failed = true
+			fmt.Fprintf(w, "SEED-WINDOW READER CENSUS FAIL: RETIRED site %s reached %d reads, want 0.\n"+
+				"  The alarm direction is GROWTH: this reader's expected population is zero,\n"+
+				"  so a read means the traffic it served is being produced again.\n", s, total)
+			if s == SeedWindowSiteExistentialRebase {
+				fmt.Fprint(w, "  An existential's correlated predicate reached ImplementNestedLoopJoin's\n"+
+					"  two-quantifier select beside an ordinal-seed outer. Java's\n"+
+					"  PartitionSelectRule cannot produce that: the predicate is placed in the\n"+
+					"  lower when the existential does not depend on the lowers, and a positional\n"+
+					"  merge of several lowers is refused when it does. Find the producer that\n"+
+					"  hoisted the predicate out of the existential's partition.\n")
+			}
 		}
 	}
 	if floors != nil && floors.NestedHitMustBeZero {

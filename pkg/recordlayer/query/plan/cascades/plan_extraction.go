@@ -549,7 +549,7 @@ func rebuildOrderedSpine(
 			if inner == nil {
 				return nil, nil
 			}
-			freshChildren = append(freshChildren, expressions.ForEachQuantifier(freshExtractedReference(inner)))
+			freshChildren = append(freshChildren, expressions.RebuildQuantifier(q, freshExtractedReference(inner)))
 			continue
 		}
 		inner, err := extractBestPlanFromSelectorVisitedForRequirement(
@@ -563,7 +563,7 @@ func rebuildOrderedSpine(
 		} else {
 			freshRef = freshExtractedReference(inner)
 		}
-		freshChildren = append(freshChildren, expressions.ForEachQuantifier(freshRef))
+		freshChildren = append(freshChildren, expressions.RebuildQuantifier(q, freshRef))
 	}
 	rebuilt, err := rebuildWithFreshChildren(e, freshChildren)
 	if cancelErr := plannerContextErr(ctx); cancelErr != nil {
@@ -665,7 +665,7 @@ func rebuildExpressionFromSelectorVisited(
 		} else {
 			freshRef = freshExtractedReference(inner)
 		}
-		freshChildren = append(freshChildren, expressions.ForEachQuantifier(freshRef))
+		freshChildren = append(freshChildren, expressions.RebuildQuantifier(q, freshRef))
 	}
 	rebuilt, err := rebuildWithFreshChildren(e, freshChildren)
 	if cancelErr := plannerContextErr(ctx); cancelErr != nil {
@@ -710,7 +710,7 @@ func rebuildExpressionVisited(e expressions.RelationalExpression, stats properti
 		} else {
 			freshRef = freshExtractedReference(inner)
 		}
-		freshChildren = append(freshChildren, expressions.ForEachQuantifier(freshRef))
+		freshChildren = append(freshChildren, expressions.RebuildQuantifier(q, freshRef))
 	}
 	return rebuildWithFreshChildren(e, freshChildren)
 }

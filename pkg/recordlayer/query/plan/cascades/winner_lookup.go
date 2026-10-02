@@ -169,7 +169,7 @@ func pinOrderedSpineDepth(expr expressions.RelationalExpression, ordering *prope
 	// selection, not a one-member equivalence group that physical rewrite rules
 	// may expand. ExploreGroup recognizes the explicit marker and preserves the
 	// exact ordered member whose property licensed dropping the enforcer sort.
-	pinnedQ := expressions.ForEachQuantifier(expressions.PinnedFinalOf(inner))
+	pinnedQ := expressions.NamedPhysicalQuantifier(expr.GetQuantifiers()[0].GetAlias(), expressions.PinnedFinalOf(inner))
 	pinned, err := rebuilder.WithChildren([]expressions.Quantifier{pinnedQ})
 	if err != nil || pinned == nil {
 		return nil

@@ -771,6 +771,53 @@ func TestOrAbsorbAnd_DropsRedundantAndChild(t *testing.T) {
 	}
 }
 
+func TestAbsorptionUsesWholeMinorSets(t *testing.T) {
+	t.Parallel()
+	p := predicates.NewComparisonPredicate(simplifyField("age", values.NullableLong), predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)))
+	q := predicates.NewComparisonPredicate(simplifyField("rank", values.NullableLong), predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(2)))
+	r := predicates.NewComparisonPredicate(simplifyField("score", values.NullableLong), predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(3)))
+	for _, mode := range []normalFormMode{normalFormCNF, normalFormDNF} {
+		t.Run(map[normalFormMode]string{normalFormCNF: "and", normalFormDNF: "or"}[mode], func(t *testing.T) {
+			t.Parallel()
+			var rule CascadesRule = NewAndAbsorbOrRule()
+			if mode == normalFormDNF {
+				rule = NewOrAbsorbAndRule()
+			}
+			small := mode.minorWithChildren([]predicates.QueryPredicate{p, q})
+			large := mode.minorWithChildren([]predicates.QueryPredicate{r, q, p, p})
+			equal := mode.minorWithChildren([]predicates.QueryPredicate{q, p})
+			atomic := predicates.WithAtomicity(mode.minorWithChildren([]predicates.QueryPredicate{q, r}), true)
+			for _, tc := range []struct {
+				name  string
+				terms []predicates.QueryPredicate
+				want  []predicates.QueryPredicate
+			}{
+				{"superset_first", []predicates.QueryPredicate{large, small}, []predicates.QueryPredicate{small}},
+				{"subset_first", []predicates.QueryPredicate{small, large}, []predicates.QueryPredicate{small}},
+				{"equal_last_survives", []predicates.QueryPredicate{small, r, equal}, []predicates.QueryPredicate{r, equal}},
+				{"rebuild_atomic_survivor", []predicates.QueryPredicate{large, small, atomic}, []predicates.QueryPredicate{small, predicates.WithAtomicity(atomic, false)}},
+				{"incomparable", []predicates.QueryPredicate{small, atomic}, nil},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					t.Parallel()
+					got := firePredicateRule(t, rule, mode.majorWithChildren(tc.terms))
+					if tc.want == nil {
+						if len(got) != 0 {
+							t.Fatal("incomparable clauses were absorbed")
+						}
+						return
+					}
+					if len(got) != 1 {
+						t.Fatalf("yields = %d, want 1", len(got))
+					}
+					result := got[0].(predicates.QueryPredicate)
+					assertSimplificationTree(t, result, mode.majorWithChildren(tc.want))
+				})
+			}
+		})
+	}
+}
+
 // End-to-end through Simplify: a classic absorption plus flatten +
 // dedup cooperation.
 func TestSimplify_Absorption_EndToEnd(t *testing.T) {

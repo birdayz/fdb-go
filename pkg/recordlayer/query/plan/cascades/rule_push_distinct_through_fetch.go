@@ -36,7 +36,9 @@ type PushDistinctThroughFetchRule struct {
 func NewPushDistinctThroughFetchRule() *PushDistinctThroughFetchRule {
 	return &PushDistinctThroughFetchRule{
 		matcher: NewExpressionMatcher[*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan](
-			"phys_pk_distinct_over_fetch"),
+			"phys_pk_distinct_over_fetch").WithInputPredicate(func(plan *plans.RecordQueryUnorderedPrimaryKeyDistinctPlan) bool {
+			return referenceHasMemberOfType[*plans.RecordQueryFetchFromPartialRecordPlan](plan.GetInnerQuantifier().GetRangesOver())
+		}),
 	}
 }
 
@@ -87,10 +89,10 @@ func (r *PushDistinctThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	// push_filter_through_fetch case-2 uses, NOT the live fetchInnerExpr memo edge
 	// (whose children may still be holes). The alias is carried from the
 	// disentangled member ref so the flowed value stays stable.
-	baseQ := expressions.ForEachQuantifier(
+	baseQ := expressions.NewPhysicalQuantifier(
 		call.MemoizeFinalExpressionsFromOther(fetchInnerRef, []expressions.RelationalExpression{fetchInnerExpr}),
 	)
-	newDistinctInnerQ := expressions.NamedForEachQuantifier(baseQ.GetAlias(),
+	newDistinctInnerQ := expressions.NamedPhysicalQuantifier(baseQ.GetAlias(),
 		call.MemoizeFinalExpression(fetchInnerPlan))
 	newDistinctPlan, err := plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlanFromQuantifier(newDistinctInnerQ)
 	if err != nil {
@@ -103,7 +105,7 @@ func (r *PushDistinctThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 
 	// Build: Fetch(Distinct(fetchInner)) as its own cascades expression carrying
 	// the live distinctRef edge (RFC-184 W2).
-	newFetchQ := expressions.ForEachQuantifier(distinctRef)
+	newFetchQ := expressions.NewPhysicalQuantifier(distinctRef)
 	newFetchPlan, err := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
 		newFetchQ,
 		fetchW.GetTranslateValueFunction(),

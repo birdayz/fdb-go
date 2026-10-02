@@ -1061,10 +1061,8 @@ func TestSetReadVersionFuture_CPort(t *testing.T) {
 	}
 }
 
-// TestGetCommittedVersionReadOnly_CPort verifies that a read-only transaction
-// that is committed has no meaningful committed version. In our Go client,
-// GetCommittedVersion after a read-only Commit returns 0 (the zero-value),
-// since no commit was sent to FDB. The C test checks for -1.
+// TestGetCommittedVersionReadOnly_CPort verifies that a read-only commit
+// reports invalidVersion (-1), exactly as the C binding does.
 // Ported from unit_tests.cpp line 1849
 // https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L1849
 func TestGetCommittedVersionReadOnly_CPort(t *testing.T) {
@@ -1085,16 +1083,13 @@ func TestGetCommittedVersionReadOnly_CPort(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	// In our Go client, a read-only commit skips the actual commit RPC,
-	// so committedVersion stays at 0.
+	// A read-only commit resets the prior committed version to invalidVersion.
 	cv, err := tx.GetCommittedVersion()
 	if err != nil {
 		t.Fatalf("GetCommittedVersion: %v", err)
 	}
-	// The C binding returns -1 for read-only. Our Go client returns 0
-	// (default int64 zero) because no commit RPC was issued.
-	if cv != 0 {
-		t.Errorf("committed version: got %d, want 0 (read-only)", cv)
+	if cv != -1 {
+		t.Errorf("committed version: got %d, want -1 (read-only)", cv)
 	}
 }
 

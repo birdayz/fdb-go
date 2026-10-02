@@ -404,7 +404,7 @@ func TestPlanner_FilterOverScanProducesPhysicalFilter(t *testing.T) {
 	q := expressions.ForEachQuantifier(scanRef)
 
 	filter := phase3Filter(t,
-		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriFalse)},
 		q,
 	)
 	ref := expressions.InitialOf(filter)

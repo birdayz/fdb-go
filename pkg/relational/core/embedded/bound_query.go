@@ -446,6 +446,14 @@ func lowerBoundExists(bound *boundQuery) (loweredExists, error) {
 				if alias == edge.Alias && edge.KnownTruth == nil {
 					out.join = edge.JoinPredicate
 					out.constraint = edge.Constraint
+					// P(m,n,o) ranges over M×N: the WHERE N's block folded into
+					// its plan is the product's predicate. Left on N it would
+					// make N a lateral leg of M, read below M's bindings
+					// once the product is re-associated.
+					if factor, where := productFactor(edge); where != nil {
+						out.join = where
+						return &logical.LogicalJoin{Left: filter.Input, Right: factor, Kind: logical.JoinInner}, nil
+					}
 					out.retained = append(out.retained, edge)
 					return &logical.LogicalJoin{Left: filter.Input, Right: edge.Plan, Kind: logical.JoinInner}, nil
 				}
@@ -490,4 +498,31 @@ func lowerBoundExists(bound *boundQuery) (loweredExists, error) {
 		out.free = make(bindingSet)
 	}
 	return out, nil
+}
+
+// productFactor splits an EXISTS edge whose block WHERE was folded into its
+// plan into the block's FROM and that WHERE. where is nil when the plan carries
+// no such filter, or one with subquery riders whose bindings it owns.
+func productFactor(edge logical.ExistsSubquery) (factor logical.LogicalOperator, where predicates.QueryPredicate) {
+	if edge.JoinPredicate != nil {
+		return edge.Plan, nil
+	}
+	factor = edge.Plan
+	var conjuncts []predicates.QueryPredicate
+	for {
+		filter, ok := factor.(*logical.LogicalFilter)
+		if !ok || filter.Predicate == nil || filter.HasQualify || len(filter.ExistsSubqueries) != 0 ||
+			len(filter.ScalarSubqueries) != 0 || len(filter.CorrelatedScalarSubqueries) != 0 {
+			break
+		}
+		conjuncts = append(conjuncts, filter.Predicate)
+		factor = filter.Input
+	}
+	switch len(conjuncts) {
+	case 0:
+		return edge.Plan, nil
+	case 1:
+		return factor, conjuncts[0]
+	}
+	return factor, predicates.NewAnd(conjuncts...)
 }

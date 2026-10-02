@@ -23,6 +23,9 @@ type RecordQueryExplodePlan struct {
 	// (element, 1-based ordinal) per element instead of the bare element.
 	// Mirrors Java's `RecordQueryExplodePlan.withOrdinality`.
 	withOrdinality bool
+	// ordinalityNames name the two ordinality slots, as the logical Explode
+	// it implements named them.
+	ordinalityNames [2]string
 	// resultValue is the stable per-instance QuantifiedObjectValue standing for
 	// the rows this explode emits — minted once at construction, returned by
 	// GetResultValue, EXCLUDED from Equals/Hash (its correlation id is unique per
@@ -36,16 +39,29 @@ type RecordQueryExplodePlan struct {
 
 // NewRecordQueryExplodePlan builds a bare (non-ordinal) Explode plan.
 func NewRecordQueryExplodePlan(collectionValue values.Value) (*RecordQueryExplodePlan, error) {
-	return newRecordQueryExplodePlan(collectionValue, false)
+	return newRecordQueryExplodePlan(collectionValue, false, [2]string{})
 }
 
 // NewRecordQueryExplodePlanWithOrdinality builds an Explode plan that
 // also emits a 1-based ordinal alongside each element.
 func NewRecordQueryExplodePlanWithOrdinality(collectionValue values.Value, withOrdinality bool) (*RecordQueryExplodePlan, error) {
-	return newRecordQueryExplodePlan(collectionValue, withOrdinality)
+	if !withOrdinality {
+		return newRecordQueryExplodePlan(collectionValue, false, [2]string{})
+	}
+	return newRecordQueryExplodePlan(collectionValue, true, [2]string{values.OrdinalFieldName(0), values.OrdinalFieldName(1)})
 }
 
-func newRecordQueryExplodePlan(collectionValue values.Value, withOrdinality bool) (*RecordQueryExplodePlan, error) {
+// NewRecordQueryExplodePlanWithOrdinalityNames builds a WITH ORDINALITY
+// Explode plan whose slots carry the given names (see
+// expressions.NewExplodeExpressionWithOrdinalityNames).
+func NewRecordQueryExplodePlanWithOrdinalityNames(collectionValue values.Value, elementName, ordinalName string) (*RecordQueryExplodePlan, error) {
+	if elementName == "" || ordinalName == "" || elementName == ordinalName {
+		return nil, fmt.Errorf("RecordQueryExplodePlan: ordinality names must be two distinct names, got %q and %q", elementName, ordinalName)
+	}
+	return newRecordQueryExplodePlan(collectionValue, true, [2]string{elementName, ordinalName})
+}
+
+func newRecordQueryExplodePlan(collectionValue values.Value, withOrdinality bool, names [2]string) (*RecordQueryExplodePlan, error) {
 	if collectionValue == nil {
 		return nil, fmt.Errorf("RecordQueryExplodePlan: collection Value is nil")
 	}
@@ -55,7 +71,7 @@ func newRecordQueryExplodePlan(collectionValue values.Value, withOrdinality bool
 	}
 	resultType := arrayType.ElementType
 	if withOrdinality {
-		resultType = values.ExplodeOrdinalityResultType(resultType)
+		resultType = values.ExplodeOrdinalityResultTypeNamed(resultType, names[0], names[1])
 	}
 	base, err := newPlanExprBaseForType("RecordQueryExplodePlan", resultType)
 	if err != nil {
@@ -69,12 +85,32 @@ func newRecordQueryExplodePlan(collectionValue values.Value, withOrdinality bool
 		PlanExprBase:    base,
 		collectionValue: collectionValue,
 		withOrdinality:  withOrdinality,
+		ordinalityNames: names,
 		resultValue:     base.resultValue,
 		resultType:      exactResult,
 	}, nil
 }
 
 func (p *RecordQueryExplodePlan) GetCollectionValue() values.Value { return p.collectionValue }
+
+// GetOrdinalityNames returns the element and ordinal slot names of a WITH
+// ORDINALITY plan (empty for the bare variant).
+func (p *RecordQueryExplodePlan) GetOrdinalityNames() (string, string) {
+	return p.ordinalityNames[0], p.ordinalityNames[1]
+}
+
+// WithCollection rebuilds this plan over another collection, keeping its
+// ordinality and slot names.
+func (p *RecordQueryExplodePlan) WithCollection(collectionValue values.Value) (*RecordQueryExplodePlan, error) {
+	return newRecordQueryExplodePlan(collectionValue, p.withOrdinality, p.ordinalityNames)
+}
+
+// NewRecordQueryExplodePlanFor implements a logical Explode, keeping its
+// ordinality and slot names.
+func NewRecordQueryExplodePlanFor(explode *expressions.ExplodeExpression) (*RecordQueryExplodePlan, error) {
+	element, ordinal := explode.GetOrdinalityNames()
+	return newRecordQueryExplodePlan(explode.GetCollectionValue(), explode.GetWithOrdinality(), [2]string{element, ordinal})
+}
 
 // IsWithOrdinality reports whether the plan emits 1-based ordinals.
 func (p *RecordQueryExplodePlan) IsWithOrdinality() bool { return p.withOrdinality }
@@ -107,6 +143,9 @@ func (p *RecordQueryExplodePlan) GetResultType() values.Type {
 	}
 	elem := p.GetElementType()
 	if p.withOrdinality {
+		if p.ordinalityNames[0] != "" {
+			return values.ExplodeOrdinalityResultTypeNamed(elem, p.ordinalityNames[0], p.ordinalityNames[1])
+		}
 		return values.ExplodeOrdinalityResultType(elem)
 	}
 	return elem
@@ -118,7 +157,8 @@ func (p *RecordQueryExplodePlan) GetChildren() []RecordQueryPlan { return nil }
 // identity (ValuePtr — the hand-rolled equals used ==, NOT semantic equality)
 // and the withOrdinality flag. Drives both Equals and Hash.
 func (p *RecordQueryExplodePlan) structuralKey() *structuralKey {
-	return newStructuralKey().ValuePtr(p.collectionValue).Bool(p.withOrdinality)
+	return newStructuralKey().ValuePtr(p.collectionValue).Bool(p.withOrdinality).
+		Str(p.ordinalityNames[0]).Str(p.ordinalityNames[1])
 }
 
 func (p *RecordQueryExplodePlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {

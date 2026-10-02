@@ -475,6 +475,86 @@ func TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest(t *testing.T) {
 	})
 }
 
+// TestFDB_TwoExistentialsNeverRepeatARow pins two existentials of one block
+// on data where each existential matches SEVERAL rows. A select pairing an
+// existential with another leg used to be implemented with the existential as
+// a FlatMap OUTER, iterating its matches like a joined table: every row came
+// back once per match, and a NOT EXISTS lost its polarity entirely. The pins
+// above never saw it because each of their existentials matched at most one
+// row (a primary-key probe).
+//
+// a={1,2}; c: 10→a1, 20→a2; d.x: 1,1,1,2 (three matches for a1, one for a2);
+// e.c_id: 10,10,20.
+func TestFDB_TwoExistentialsNeverRepeatARow(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := setupErrorTestDB(t, "/testdb_two_existentials", "twoexists",
+		"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE d (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE e (id BIGINT, c_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX c_a_id ON c (a_id) "+
+			"CREATE INDEX e_c_id ON e (c_id) "+
+			"CREATE INDEX d_x ON d (x)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO a VALUES (1), (2)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (10, 1), (20, 2)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO d VALUES (100, 1), (101, 1), (102, 1), (103, 2)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO e VALUES (1000, 10), (1001, 10), (1002, 20)")
+
+	for _, tc := range []struct {
+		sql  string
+		want []string
+	}{
+		{
+			"SELECT a.id, c.id FROM a JOIN c ON c.a_id = a.id WHERE EXISTS (SELECT 1 FROM d WHERE d.x = a.id) AND EXISTS (SELECT 1 FROM e WHERE e.c_id = c.id)",
+			[]string{"1|10", "2|20"},
+		},
+		{
+			"SELECT a.id, c.id FROM a JOIN c ON c.a_id = a.id AND EXISTS (SELECT 1 FROM d WHERE d.x = a.id) WHERE EXISTS (SELECT 1 FROM e WHERE e.c_id = c.id)",
+			[]string{"1|10", "2|20"},
+		},
+		{
+			"SELECT a.id, c.id FROM a JOIN c ON c.a_id = a.id WHERE NOT EXISTS (SELECT 1 FROM d WHERE d.x = a.id + 5) AND EXISTS (SELECT 1 FROM e WHERE e.c_id = c.id)",
+			[]string{"1|10", "2|20"},
+		},
+		{
+			"SELECT a.id, c.id FROM a JOIN c ON c.a_id = a.id WHERE EXISTS (SELECT 1 FROM d WHERE d.x = a.id) AND NOT EXISTS (SELECT 1 FROM e WHERE e.c_id = c.id + 5)",
+			[]string{"1|10", "2|20"},
+		},
+		{
+			"SELECT a.id, c.id FROM a JOIN c ON c.a_id = a.id WHERE NOT EXISTS (SELECT 1 FROM d WHERE d.x = a.id AND a.id = 2) AND EXISTS (SELECT 1 FROM e WHERE e.c_id = c.id)",
+			[]string{"1|10"},
+		},
+		{
+			"SELECT a.id FROM a WHERE EXISTS (SELECT 1 FROM d WHERE d.x = 1) AND EXISTS (SELECT 1 FROM e WHERE e.c_id = 10)",
+			[]string{"1", "2"},
+		},
+		{
+			"SELECT a.id FROM a WHERE EXISTS (SELECT 1 FROM d WHERE d.x = a.id) AND EXISTS (SELECT 1 FROM e WHERE e.c_id = a.id * 10)",
+			[]string{"1", "2"},
+		},
+	} {
+		t.Run(tc.sql, func(t *testing.T) {
+			rows, err := db.QueryContext(ctx, tc.sql)
+			if err != nil {
+				t.Fatalf("query: %v", err)
+			}
+			defer rows.Close()
+			var got []string
+			for rows.Next() {
+				got = append(got, siRenderRow(t, rows))
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatalf("rows.Err: %v", err)
+			}
+			sortStrings(got)
+			if !eqStrSlices(got, tc.want) {
+				t.Errorf("rows = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // scanTriplesInOrder is scanTriples without the sort: the rows as the query
 // returned them.
 func scanTriplesInOrder(t *testing.T, db *sql.DB, ctx context.Context, q string) []string {

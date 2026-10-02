@@ -449,10 +449,8 @@ func TranslateProjectionInputNameNormalization(
 // TranslateProjectionInputNameNormalizationToCorrelation is the
 // source-correlation form of TranslateProjectionInputNameNormalization. It is
 // used at a boundary where the physical producer's exact row type is known but
-// the logical declaration is embedded in the Value program. WITH ORDINALITY is
-// such a boundary: SQL names its two output slots with AS/AT aliases while the
-// physical Explode carrier deliberately retains the private positional names
-// _0/_1.
+// the logical declaration is embedded in the Value program, such as a
+// correlated access program read through a selected scan's carrier.
 //
 // Only an exact source-correlated record whose top-level field names actually
 // differ, but whose record identity, width, nullability, ordinals, and exact

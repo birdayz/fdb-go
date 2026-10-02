@@ -22,10 +22,10 @@ func refTestScan(
 
 func makeRefTestPartialMatch(t *testing.T, candidateName string) (*PartialMatchImpl, MatchCandidate, *expressions.Reference) {
 	t.Helper()
-	candidate := stubMatchCandidate{name: candidateName}
 	scanExpr := refTestScan(t, "T")
 	queryRef := expressions.InitialOf(scanExpr)
 	candidateRef := expressions.InitialOf(refTestScan(t, "T"))
+	candidate := &testMatchCandidate{name: candidateName, traversal: NewTraversal(candidateRef)}
 	matchInfo := NewRegularMatchInfo(nil, nil, nil, nil, nil, nil, nil, nil)
 	pm := NewPartialMatch(EmptyAliasMap(), candidate, queryRef, scanExpr, candidateRef, matchInfo)
 	return pm, candidate, queryRef

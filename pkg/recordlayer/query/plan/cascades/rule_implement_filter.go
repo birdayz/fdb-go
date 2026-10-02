@@ -38,6 +38,8 @@ func NewImplementFilterRule() *ImplementFilterRule {
 }
 
 // Matcher returns the pattern.
+func (r *ImplementFilterRule) ConstraintDependencies() []any { return nil }
+
 func (r *ImplementFilterRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 // OnMatch fires on every LogicalFilterExpression. Walks the inner
@@ -62,16 +64,17 @@ func (r *ImplementFilterRule) OnMatch(call *ExpressionRuleCall) {
 	// validateNoIndexOnlyResidual is RETAINED as the catch-all backstop for Go-only
 	// physical-filter builders (ImplementSimpleSelectRule, NLJ, ImplementIndexScanRule)
 	// that this gate does not cover — do not remove it until every such builder is gated.
+	allTautologies := true
 	for _, pred := range f.GetPredicates() {
 		if predicateContainsUncompensatableValues(pred) {
 			return
 		}
+		allTautologies = allTautologies && predicates.IsTautology(pred)
 	}
 
 	// Residualise once, up front, where Java maps QueryPredicate::toResidualPredicate
 	// as it builds the RecordQueryPredicatesFilterPlan (ImplementFilterRule.java:90).
-	// Both yield sites below share the converted list so the rule cannot grow a
-	// second spelling of the same conversion.
+	// All property partitions share the converted list.
 	residualPreds, residualErr := predicates.ToResidualPredicates(f.GetPredicates())
 	if residualErr != nil {
 		call.Fail(residualErr)
@@ -83,79 +86,24 @@ func (r *ImplementFilterRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	orderings := call.GetRequestedOrderings()
-	if len(orderings) == 0 {
-		orderings = []*properties.RequestedOrdering{properties.PreserveOrdering()}
-	}
-
-	seen := make(map[expressions.RelationalExpression]bool)
-	// ENUMERATE, don't single-pick. Java fires an implementation rule once per
-	// (parent, child-member) pair — a rule binds every member of a child
-	// reference — so both Filter(Fetch(Covering)) and Filter(Index) reach the
-	// parent group and COST decides between them. Go used to build only the
-	// per-ordering winner, so a child member that is not the local winner was
-	// never lifted into a parent alternative at all: not out-priced, never
-	// constructed.
-	//
-	// This is not ranking at the rule site (which physical_wrapper.go's
-	// findPhysicalExpr comment rightly forbids, because a rule-time cost pick is
-	// an ordering-blind second optimizer). It is the opposite: the rule stops
-	// choosing and hands every valid child to the memo.
-	//
-	// The per-ordering winners below are still yielded — they are what guarantees
-	// an ORDERING-satisfying alternative exists — and the enumeration adds the
-	// members no ordering asked for.
-	//
-	// Each enumerated parent ranges over a reference RESTRICTED to its one child
-	// member (Java's memoizeMemberPlansFromOther, ImplementFilterRule.java:89),
-	// NOT over the interned group. Interning returns the group that already
-	// CONTAINS the member — here, innerRef itself — so every iteration would
-	// build the structurally identical Filter(innerRef) and the N alternatives
-	// would collapse into one on insert. The restriction is what makes them
-	// distinct; without it this loop yields N times and enumerates nothing.
-	for _, m := range physicalMembersForParentEnumeration(innerRef) {
-		if seen[m] {
+	// Java implements one parent per property partition, retaining every child
+	// in its restricted reference so costing can still choose between access paths.
+	computeRefPlanProperties(innerRef)
+	partitions := RollUpPlanPartitions(ToPlanPartitions(innerRef), properties.PropRichOrdering,
+		properties.PropDistinctRecords, properties.PropStoredRecord, properties.PropPrimaryKey)
+	for _, partition := range partitions {
+		members := partition.GetPhysicalExpressions()
+		if len(members) == 0 {
 			continue
 		}
-		seen[m] = true
-		innerAlias := f.GetInner().GetAlias()
-		innerQ := expressions.NamedForEachQuantifier(innerAlias, call.MemoizeMemberPlansFromOther(
-			innerRef, []expressions.RelationalExpression{m}))
-		filterPlan, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
-			innerQ, residualPreds, innerAlias)
-		if err != nil {
-			call.Fail(err)
-			return
-		}
-		call.Yield(filterPlan)
-	}
-	for _, ordering := range orderings {
-		// satisfied deliberately DISCARDED (RFC-186 §2C): this wrapper is an
-		// orderingDelegator — its ordering claim is re-derived through
-		// OrderingSourceRef at lookup time and pinOrderedSpine declines
-		// unsatisfied spines, so an unordered fallback yield here can never
-		// be CLAIMED as ordered; it is the member the in-memory-sort
-		// enforcer wraps (declining instead would empty the group — no plan).
-		winner, _ := getWinnerForOrdering(innerRef, ordering, call.CostModel())
-		if winner == nil {
-			continue
-		}
-		if seen[winner] {
-			continue
-		}
-		seen[winner] = true
-		if _, ok := winner.(physicalPlanExpression); !ok {
+		if allTautologies {
+			for _, member := range members {
+				call.Yield(member)
+			}
 			continue
 		}
 		innerAlias := f.GetInner().GetAlias()
-		// The filter carries the LIVE inner edge over the winner's shared group
-		// (RFC-184 W2) — exactly the edge the wrapper's innerQuant presented. A
-		// plain filter's inner has no correlated SARG snapshot to preserve (unlike
-		// the FoD/NLJ paths), so it ranges over the live group: this keeps
-		// push_filter_through_fetch's re-explored pushed member reachable from a
-		// parent that captures this leg. A frozen snapshot strands the pre-push
-		// filter once the merged group canonicalizes to the pushed one.
-		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
+		innerQ := expressions.NamedPhysicalQuantifier(innerAlias, call.MemoizeMemberPlansFromOther(innerRef, members))
 		filterPlan, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(innerQ, residualPreds, innerAlias)
 		if err != nil {
 			call.Fail(err)

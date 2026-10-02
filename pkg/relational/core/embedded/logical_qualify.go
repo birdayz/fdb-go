@@ -40,6 +40,9 @@ func buildQualifyPredicate(
 	}
 	pred, err := resolver.WalkPredicate(sq.qualifyExpr)
 	if err != nil {
+		if mapped := mapPredicateWalkError(err); mapped != nil {
+			return nil, mapped
+		}
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
 			"unsupported QUALIFY clause: %v", err)
 	}
@@ -206,15 +209,15 @@ func applyDistanceRankTransform(p predicates.QueryPredicate) predicates.QueryPre
 		for i, s := range pred.SubPredicates {
 			subs[i] = applyDistanceRankTransform(s)
 		}
-		return predicates.NewAnd(subs...)
+		return predicates.WithAtomicity(predicates.NewAnd(subs...), predicates.IsAtomic(p))
 	case *predicates.OrPredicate:
 		subs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
 		for i, s := range pred.SubPredicates {
 			subs[i] = applyDistanceRankTransform(s)
 		}
-		return predicates.NewOr(subs...)
+		return predicates.WithAtomicity(predicates.NewOr(subs...), predicates.IsAtomic(p))
 	case *predicates.NotPredicate:
-		return predicates.NewNot(applyDistanceRankTransform(pred.Child))
+		return predicates.WithAtomicity(predicates.NewNot(applyDistanceRankTransform(pred.Child)), predicates.IsAtomic(p))
 	case *predicates.ComparisonPredicate:
 		// ROW_NUMBER() <op> K — the row-number value is the LHS.
 		if rn, ok := pred.Operand.(*values.RowNumberValue); ok {

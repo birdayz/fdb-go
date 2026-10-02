@@ -471,7 +471,7 @@ func TestPostCommitReset_ReturnsConflictBufferToPool(t *testing.T) {
 // reset (internal OnError reset) — full reset minus persistent options.
 // ============================================================================
 
-func TestReset_ClearsCommittedIdentity(t *testing.T) {
+func TestReset_PreservesCommittedVersion(t *testing.T) {
 	t.Parallel()
 	tx := newTestTx()
 	tx.committedVersion = 999
@@ -481,8 +481,8 @@ func TestReset_ClearsCommittedIdentity(t *testing.T) {
 
 	tx.reset(false)
 
-	if tx.committedVersion != 0 || tx.hasCommitted || tx.txnBatchId != 0 {
-		t.Errorf("internal reset must clear committed identity: ver=%d has=%v batch=%d",
+	if tx.committedVersion != 999 || tx.hasCommitted || tx.txnBatchId != 0 {
+		t.Errorf("internal reset must preserve committed version and clear stamp state: ver=%d has=%v batch=%d",
 			tx.committedVersion, tx.hasCommitted, tx.txnBatchId)
 	}
 	if tx.nextWriteNoConflict {

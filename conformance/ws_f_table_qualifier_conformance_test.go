@@ -254,6 +254,7 @@ var _ = Describe("RFC-257 WS-F: a table's qualifier is its schema template's nam
 			`SELECT id FROM w WHERE EXISTS (SELECT 1 FROM nosuch AT p)`,
 			`SELECT id FROM w WHERE EXISTS (SELECT 1 FROM w.arr AS v, (SELECT h.id FROM h WHERE h.f = v) AS d)`,
 			`SELECT id FROM w WHERE EXISTS (SELECT 1 FROM w.arr AS v, (SELECT h.id FROM h WHERE h.f + 3 = v) AS d)`,
+			`SELECT id FROM w WHERE EXISTS (SELECT v FROM w.arr AS v, h, w AS z WHERE v = h.f AND z.id = h.id)`,
 			`SELECT id FROM t2 WHERE EXISTS (SELECT x FROM n.arr AS x)`,
 			// The path is looked up over every level's operators as one list,
 			// qualified readings first: a qualified reading at one level is not

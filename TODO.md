@@ -13011,8 +13011,8 @@ Claude review is **not LGTM** and discloses unread test/testdata/docs scope.
   SQL names but `bound_exists_on.go` upper-folds lexical admission comparisons.
   Both orientations and later-source ON fail in Go, succeed in Java; the
   distinct-letter control succeeds in both. The UNNEST-frame collision also
-  needs lexical equality without removing the separately retained correlated
-  multi-source UNNEST restriction. Design and exact regression scope are in
+  needed lexical equality; the subsequent RFC-257 migration also removed the stale
+  correlated multi-source UNNEST restriction, pinned by `TestFDB_MultiSourceExistsReadsUnnestElement`. Design and exact regression scope are in
   RFC-256, **Published-review follow-up: quoted lexical aliases in EXISTS
   admission**. Production is unchanged pending design ACKs.
 - Remaining review work: locate/check the reported CTE rewrite-cache concern,
@@ -13147,10 +13147,111 @@ Companion: RFC-256 **Final follow-up verification and owner merge authorization*
 
 ### Open items found during the Java 4.14.2.0 upgrade (RFC-257)
 
-- [ ] A SQL page that fails with 1007 is re-read whole: `txPageTimeLimit` (4 s) assumes a 5 s MVCC
-  window, which a fast version clock after a bulk load shortens. Shrink the budget on retry and
-  leave margin; pin with a deterministic clock test.
-- [ ] Permuted aggregate index query reach: a PERMUTED_MIN/MAX index with PERMUTED_SIZE > 0 serves
-  no query (`tryAggregateIndexCandidate` declines it); Java serves it (aggregate-index-tests.yamsql).
-- [ ] BITMAP_VALUE query reach: no candidate or accumulator for `bitmap_construct_agg`; Java matches
-  it through `BitmapAggregateIndexExpansionVisitor` (bitmap-aggregate-index.yamsql).
+- [x] SQL page retries reduce the time budget by 10% and retain it across pages, including
+  retries after commit failures. TestSimPageBudgetAdaptsToShortMVCCWindow returns all 600 rows
+  under a deterministic 1.5 s window; explicit transactions keep their non-retrying behavior.
+- [x] Permuted aggregate index query reach: physical grouping-prefix and aggregate ordering are
+  carried into forward/reverse scans; aggregate-index-tests.yamsql passes.
+- [x] BITMAP_VALUE query reach: candidate matching, BY_GROUP execution, and the streaming accumulator
+  are implemented; bitmap-aggregate-index.yamsql and TestFDB_BitmapAggregateIndex pass.
+
+### Stress test 1M baseline — Java migration working tree
+Baseline `e48f5b4965543cd4d99b5578356059e12d969c7c` (merge-base on 2026-09-29), versus
+`6bb230510ce76a1b6ad1590476a041e7afafb166` plus uncommitted migration tree
+`f27ba39f8f291def6fe68c83dd605dcd88dfa983`. Two sequential runs per side (`--runs_per_test=2 --local_test_jobs=1`),
+Bazel caching enabled: both sides executed both runs. Each side reported 48 RUN/PASS
+outcomes; all 22 timed row counts match, and COUNT(*) asserts 1,000,000. Same `/home`
+filesystem, 95% occupied throughout. One-minute load start/end: baseline 16.26/7.66,
+current 6.78/5.54. These timings do not establish causal performance parity.
+
+| Query | Rows | Baseline ms (n=2) | Current ms (n=2) | Mean current/base |
+|---|---:|---:|---:|---:|
+| PK lookup id=0 | 1 | 10.951 / 8.514 | 16.886 / 11.106 | 1.438x |
+| PK lookup id=N/2 | 1 | 11.722 / 8.472 | 25.588 / 9.425 | 1.734x |
+| PK lookup id=N-1 | 1 | 10.071 / 5.300 | 11.326 / 6.898 | 1.186x |
+| idx_customer eq | 8 | 10.602 / 6.568 | 33.868 / 8.711 | 2.480x |
+| idx_amount range >9000 | 100017 | 269.788 / 248.439 | 305.767 / 249.227 | 1.071x |
+| idx_status count pending | 1 | 517.557 / 360.654 | 326.618 / 396.840 | 0.824x |
+| full scan filter amount>5000 | 1 | 973.714 / 831.426 | 869.458 / 892.410 | 0.976x |
+| GROUP BY status | 4 | 6.768 / 14.134 | 7.272 / 6.437 | 0.656x |
+| GROUP BY status COUNT only | 4 | 6.975 / 20.855 | 5.980 / 6.180 | 0.437x |
+| SUM by status (aggregate index) | 4 | 10.809 / 6.618 | 6.371 / 6.198 | 0.721x |
+| GROUP BY customer HAVING | 47271 | 842.049 / 572.817 | 643.601 / 621.046 | 0.894x |
+| JOIN 10 orders x customers | 10 | 24.595 / 20.209 | 21.206 / 22.313 | 0.971x |
+| ORDER BY PK (full) | 1000000 | 4926.857 / 3862.279 | 4300.836 / 7879.534 | 1.386x |
+| ORDER BY PK + index filter | 8 | 10.775 / 9.054 | 10.640 / 10.911 | 1.087x |
+| scan all rows ordered | 1000000 | 4783.678 / 3702.436 | 7429.314 / 4121.309 | 1.361x |
+| scan all rows wide | 1000000 | 5156.386 / 3977.030 | 4486.717 / 4320.880 | 0.964x |
+| IN-list 5 values | 46 | 24.866 / 19.432 | 31.016 / 29.414 | 1.364x |
+| PK needle id=999999 | 1 | 7.550 / 5.917 | 8.209 / 7.639 | 1.177x |
+| PK+filter needle id=500000 | 1 | 9.275 / 7.733 | 10.591 / 11.088 | 1.275x |
+| full scan sparse filter | 97 | 4536.104 / 3341.825 | 3822.377 / 3898.220 | 0.980x |
+| UPDATE by index | 8 | 13.442 / 9.235 | 13.228 / 12.311 | 1.126x |
+| DELETE single row | 1 | 9.061 / 7.141 | 9.345 / 9.058 | 1.136x |
+
+### Java migration audit findings (2026-09-29, implementation in progress)
+
+- [x] Record-valued IN deduplication uses protobuf value equality; unit and real-FDB indexed SQL regressions observed red→green (duplicate tuple returned `[1,1,2]`, now `[1,2]`).
+- [x] Prevent permuted aggregate wrong matches: field-only candidates decline computed/nested/fan-out keys instead of flattening them. Planner regression observed red→green; real-FDB SQL checks computed operand/group keys and plain-field indexed control. This does not add computed-key aggregate-index optimization.
+- [x] Resume computed-record ARRAY_AGG using finalized constructor/promotion descriptors as well as metadata; real-FDB partial-group SQL regression observed red→green. Sort resumes use the same resolver. Unknown and conflicting named descriptors fail explicitly; constructor/promotion descriptor identity is unit-pinned.
+- [x] Reject incompatible vector CAST precision/dimensions at SQL resolution and direct Value evaluation, including NULL/empty array inputs; identity casts remain valid. Shared admission also closes direct BOOLEAN→LONG/FLOAT/DOUBLE evaluation that SQL already rejected; tests now pin Java's explicit BOOLEAN→INT→DOUBLE chain.
+- [x] Prove literal comparison range containment in Select subsumption and the existing Filter-to-Select bridge; real-FDB SQL uses the sparse index and retains stricter residuals. Non-implied NULL/boundary queries remain full scans. Mixed numeric domains decline rather than round large integer bounds (unit red→green). Runtime-bound/composite range proofs are not covered by this literal-only implementation.
+- [x] Validate VECTOR payloads in sort continuation decoding: precision/dimensions checked against selected plan; HALF/FLOAT/DOUBLE codec tests and real-FDB paginated sorted SQL observed red→green.
+- [x] Preserve Java INT/FLOAT carriers and nested VECTOR type tags in literal serialization. Live JVM deserialization verifies Integer/Float/Long/Double and HALF/FLOAT/DOUBLE RealVector classes; unit tests pin values and reject INT overflow.
+- [x] Add VECTOR to promotion serialization type codes (NULL_TO_VECTOR); unit regression observed missing `NULL_TO_` coercion, and live JVM now deserializes/evaluates the Go-produced NULL promotion.
+
+The three read-only audits returned NAK with incomplete full-migration coverage; no full-review
+ACK is claimed. Removing the redundant filter-to-select memo population recovered most of
+the measured planning overhead. The exposed grouped-sort bounded-scan regressions were fixed
+by enumerating admissible inputs and freezing their executable plans; reviewed plan goldens
+were refreshed and all 100 test targets passed (51 executed, 49 cached). Residual planning
+overhead and the SUM timing outlier in the table below are not claims of performance parity.
+
+### Stress test 1M baseline — after filter and grouped-sort repair
+
+Same baseline SHA and baseline samples as above; current HEAD remains `6bb230510ce76a1b6ad1590476a041e7afafb166`,
+with uncommitted tree `2d2172318ece13a7e07434bb451df9b6f61d99d8`. Two current runs,
+48 RUN/PASS outcomes and all 22 timed row counts match baseline. Caching enabled; both
+current samples executed. Disk remains 95% occupied. Load start/end: 13.74/2.57.
+
+| Query | Rows | Baseline ms (n=2) | Repaired ms (n=2) | Mean repaired/base |
+|---|---:|---:|---:|---:|
+| PK lookup id=0 | 1 | 10.951 / 8.514 | 8.821 / 9.008 | 0.916x |
+| PK lookup id=N/2 | 1 | 11.722 / 8.472 | 9.083 / 8.948 | 0.893x |
+| PK lookup id=N-1 | 1 | 10.071 / 5.300 | 5.717 / 5.476 | 0.728x |
+| idx_customer eq | 8 | 10.602 / 6.568 | 7.541 / 6.990 | 0.846x |
+| idx_amount range >9000 | 100017 | 269.788 / 248.439 | 248.604 / 191.804 | 0.850x |
+| idx_status count pending | 1 | 517.557 / 360.654 | 352.505 / 427.220 | 0.888x |
+| full scan filter amount>5000 | 1 | 973.714 / 831.426 | 554.362 / 721.742 | 0.707x |
+| GROUP BY status | 4 | 6.768 / 14.134 | 13.676 / 13.561 | 1.303x |
+| GROUP BY status COUNT only | 4 | 6.975 / 20.855 | 22.485 / 11.098 | 1.207x |
+| SUM by status (aggregate index) | 4 | 10.809 / 6.618 | 21.511 / 23.730 | 2.596x |
+| GROUP BY customer HAVING | 47271 | 842.049 / 572.817 | 788.164 / 708.914 | 1.058x |
+| JOIN 10 orders x customers | 10 | 24.595 / 20.209 | 20.567 / 20.558 | 0.918x |
+| ORDER BY PK (full) | 1000000 | 4926.857 / 3862.279 | 4003.692 / 4060.669 | 0.918x |
+| ORDER BY PK + index filter | 8 | 10.775 / 9.054 | 9.354 / 9.668 | 0.959x |
+| scan all rows ordered | 1000000 | 4783.678 / 3702.436 | 3915.377 / 3870.843 | 0.918x |
+| scan all rows wide | 1000000 | 5156.386 / 3977.030 | 4152.099 / 4196.605 | 0.914x |
+| IN-list 5 values | 46 | 24.866 / 19.432 | 24.186 / 19.800 | 0.993x |
+| PK needle id=999999 | 1 | 7.550 / 5.917 | 6.911 / 6.543 | 0.999x |
+| PK+filter needle id=500000 | 1 | 9.275 / 7.733 | 8.286 / 7.908 | 0.952x |
+| full scan sparse filter | 97 | 4536.104 / 3341.825 | 3533.887 / 3562.379 | 0.901x |
+| UPDATE by index | 8 | 13.442 / 9.235 | 11.417 / 10.550 | 0.969x |
+| DELETE single row | 1 | 9.061 / 7.141 | 7.816 / 7.536 | 0.948x |
+
+### Java migration — existential union exploration (2026-09-29)
+
+- [x] Subset existential edges per DNF leg and expose ForEach-only predicates beside EXISTS to index matching. Unit red→green and real-FDB SQL pin indexed unions, overlapping legs, correlated/uncorrelated EXISTS, and empty subqueries. Hoisted correlation predicates and projected existential values retain their original scope; FlatMap distinctness remains Java-conservative.
+- [ ] Complete Java's OR-term partial-match gate and fixed-factor subset enumeration; current union exploration still uses expression rules and full DNF. SQL admission still rejects EXISTS inside OR (separately pinned), so existential leg subsetting does not claim that SQL capability.
+
+### Fixed-factor union planning cost — seed 1884206 (2026-10-01)
+
+- [x] Union legs are canonical: a fixed factor the leg's term implies is dropped (the absorption Java's DNF simplification already applies to expanded factors), so a leg is one memo group however many fixed subsets yield it. Seed query: 2,910 union inputs over 78 leg groups (was 2,906 distinct legs); 147,123→15,155 tasks, 30,141→4,698 groups, ~7.2s→~1.7s; `fc_0000000960_q4` and `TestPlanHarness_FixedFactorUnionJavaComparable` no longer hit the task cap. Overflow-sensitive leg population 2,595→72 (`TestPredicateUnionNineFactorSemanticPopulation`): legs no longer evaluate implied factors.
+- [x] Planner trace: `cascades.PlannerTrace` (tasks, time and memo groups per phase/task/rule; memo census incl. equivalent groups), `embedded.PlanPhysicalForTestTraced`, `cmd/plan-trace`.
+- [x] The memo removes exact replicas (Graefe 1995 §2/§3.5: duplicate key = operator + input groups, `expressions.ExactReplica`). PLANNING merges groups found to hold the same expression (`Planner.integratePlanningYield`: checked admission, re-homed constraints, folded matches and consumed partitions, retired loser tasks, only unexplored goals explored), and a member differing from another only in a planner merge alias (`values.MergeCorrelationIdentifier`) is that member. Seed 1884206: 15,155→13,588 tasks, the 511-subset enumeration runs once. Ordinal chain 3/4: 905→559 / 8,915→2,381 tasks, chain 5 now converges (14,163); star hub+3/hub+4: 6,488→2,093 / 77,983→12,860; SQL 4-table chain 8,594→2,550. Plan-shape dump (2,828 queries + 175 DML) byte-identical; cap and PLAN_RIGHT_DEEP tests widened to 7 legs / hub+6.
+- [ ] Remaining seed cost per `plan-trace`: PredicateToLogicalUnionRule 460ms of 0.98s in tasks (after the PLANNING merge) — per-subset DNF through the rule engine (~46k raw cross-product terms over 511 subsets) and O(n²) member dedup of 511 payload-free LogicalUnique/LogicalUnion alternatives (memo hash ignores children); ImplementUniqueRule 115ms.
+
+### Lateral unnest spines — open reach gaps (2026-10-01)
+
+- [x] A lateral unnest behind a later leg inside a derived leg, and a later leg reading a chain's element: lateral legs stay above the links as quantifiers of the tip's select (`translateLateralLegsOverSpine`, unnests of their array columns included), and `hoistInterleavedSpineLinks` restores link adjacency and moves a second table's source into the bottom box; agreements in `conformance/ws_f_join_unnest_conformance_test.go`, rows in `TestFDB_LateralLegReadsASpineLinksElement`.
+- [x] Removed the stale rejection of multi-table EXISTS reading an unnest element: the owned child already retains its correlated WHERE below FirstOrDefault. `TestFDB_MultiSourceExistsReadsUnnestElement` pins scalar/record elements, ordinals, chains, nested/negated EXISTS and duplicate rows; `conformance/bound_exists_source_conformance_test.go` verifies Java agreement.

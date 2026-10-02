@@ -18,13 +18,8 @@ func (m *anyExpressionMatcher) BindMatches(outer *matching.PlannerBindings, in a
 	return []*matching.PlannerBindings{outer.Bind(m, in)}
 }
 
-// FinalizeExpressionsRule is a REWRITING-phase ImplementationRule that
-// promotes any exploratory expression to a final expression. This is how
-// the REWRITING phase marks its canonical output for OptimizeGroup to
-// select the best, and for advancePlannerStage to promote as the
-// PLANNING seed.
-//
-// Mirrors Java's FinalizeExpressionsRule.
+// FinalizeExpressionsRule disentangles exploratory children into final
+// expression partitions, as Java's rewriting-phase finalizer does.
 type FinalizeExpressionsRule struct {
 	matcher matching.BindingMatcher
 }
@@ -38,10 +33,61 @@ func NewFinalizeExpressionsRule() *FinalizeExpressionsRule {
 func (r *FinalizeExpressionsRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *FinalizeExpressionsRule) OnMatch(call *ImplementationRuleCall) {
-	expr := call.Bindings.Get(r.matcher)
-	if re, ok := expr.(expressions.RelationalExpression); ok {
-		call.Yield(re)
+	expr := matching.Get[expressions.RelationalExpression](call.Bindings, r.matcher)
+	if !isExploratoryMember(call.Reference, expr) {
+		return
 	}
+	quantifiers := expr.GetQuantifiers()
+	if len(quantifiers) == 0 {
+		final, err := expr.WithQuantifiers(nil)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		call.Yield(final)
+		return
+	}
+	partitions := make([][][]expressions.RelationalExpression, len(quantifiers))
+	for i, q := range quantifiers {
+		partitions[i] = rewritingExpressionPartitions(q.GetRangesOver())
+		if len(partitions[i]) == 0 {
+			return
+		}
+	}
+	for _, combination := range CrossProduct(partitions) {
+		rebuilt := make([]expressions.Quantifier, len(quantifiers))
+		for i, q := range quantifiers {
+			ref := call.MemoizeFinalExpressionsFromOther(q.GetRangesOver(), combination[i])
+			rebuilt[i] = expressions.RebuildQuantifier(q, ref)
+		}
+		final, err := expr.WithQuantifiers(rebuilt)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		call.Yield(final)
+	}
+}
+
+// SelectMergeable is Java's only rewriting partition key. Keep all final
+// alternatives with the same value, in encounter order.
+func rewritingExpressionPartitions(ref *expressions.Reference) [][]expressions.RelationalExpression {
+	if ref == nil {
+		return nil
+	}
+	var partitions [][]expressions.RelationalExpression
+	indices := make(map[bool]int)
+	for _, member := range ref.FinalMembers() {
+		_, mergeable := member.(expressions.RelationalExpressionWithPredicates)
+		index, found := indices[mergeable]
+		if !found {
+			index = len(partitions)
+			indices[mergeable] = index
+			partitions = append(partitions, nil)
+		}
+		partitions[index] = append(partitions[index], member)
+	}
+	return partitions
 }
 
 var _ ImplementationRule = (*FinalizeExpressionsRule)(nil)

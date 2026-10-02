@@ -743,15 +743,15 @@ func TestImplementStreamingAgg_EveryCoveringScanYieldsItsOwnCountAlternative(t *
 }
 
 // TestImplementStreamingAgg_DeclinesAnAggregateWithoutAccumulator: MIN_EVER and
-// MAX_EVER are index-only (Java's IndexOnlyAggregateValue is non-evaluable) and
-// Go has no BITMAP_CONSTRUCT_AGG accumulator. A streaming plan over one would
+// MAX_EVER are index-only (Java's IndexOnlyAggregateValue is non-evaluable).
+// A streaming plan over one would
 // finalize every group with a NULL for it, so the rule yields nothing and the
 // group by is answered from an index or not at all. SUM beside it is the
 // control: the same group by without the unaccumulable aggregate does fire.
 func TestImplementStreamingAgg_DeclinesAnAggregateWithoutAccumulator(t *testing.T) {
 	t.Parallel()
 	for _, fn := range []expressions.AggregateFunction{
-		expressions.AggMinEver, expressions.AggMaxEver, expressions.AggBitmapConstructAgg,
+		expressions.AggMinEver, expressions.AggMaxEver,
 	} {
 		scanRef := expressions.InitialOf(streamingAggLogicalScan("Orders"))
 		scanQ := expressions.ForEachQuantifier(scanRef)

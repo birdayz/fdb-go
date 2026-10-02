@@ -407,11 +407,11 @@ func TestPlannerCapHit_ProductionSelectPathSQLSTATE(t *testing.T) {
 	t.Parallel()
 
 	g, md := newLoggingGenerator(t, ordersSchema, nil)
-	// Six-way self-join: join enumeration exceeds the configured cap well before the
-	// memo converges. Four legs plan fine, so this is the cap tripping and not
-	// an unplannable shape.
-	q := parseQuery(t, "SELECT a.id FROM orders a, orders b, orders c, orders d, orders e, orders f "+
-		"WHERE a.id = b.id AND b.id = c.id AND c.id = d.id AND d.id = e.id AND e.id = f.id")
+	// Seven-way self-join: join enumeration exceeds the configured cap before the
+	// memo converges. Six legs plan, so this is the cap tripping and not an
+	// unplannable shape.
+	q := parseQuery(t, "SELECT a.id FROM orders a, orders b, orders c, orders d, orders e, orders f, orders g "+
+		"WHERE a.id = b.id AND b.id = c.id AND c.id = d.id AND d.id = e.id AND e.id = f.id AND f.id = g.id")
 
 	plan, err := g.planSelectCascades(context.Background(), q, md, false, statementOptions{})
 	if err == nil {

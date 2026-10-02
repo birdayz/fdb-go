@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"slices"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -134,6 +135,19 @@ func NewRecordQueryInUnionPlanFromQuantifierWithBindingAliases(
 }
 
 func (p *RecordQueryInUnionPlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
+
+func (p *RecordQueryInUnionPlan) CanCorrelate() bool { return true }
+
+// Each IN source binds its exact alias independently of the child quantifier.
+func (p *RecordQueryInUnionPlan) ComputeCorrelatedTo(childCorrelations func(*expressions.Reference) map[values.CorrelationIdentifier]struct{}) map[values.CorrelationIdentifier]struct{} {
+	result := make(map[values.CorrelationIdentifier]struct{})
+	for alias := range childCorrelations(p.innerQ.GetRangesOver()) {
+		if !slices.Contains(p.bindingAliases, alias) {
+			result[alias] = struct{}{}
+		}
+	}
+	return result
+}
 
 // GetInnerQuantifier returns the live child quantifier — the single memo edge the
 // InUnion ranges over. derivationsForInUnion reads its alias to decorrelate the

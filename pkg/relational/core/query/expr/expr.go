@@ -1041,8 +1041,8 @@ func (r *Resolver) ResolveComparison(op predicates.ComparisonType, left, right v
 	}
 	left, right = widenConstAgainstDoubleColumn(op, left, right)
 	op, left, right = narrowFloatConstAgainstInt(op, left, right)
-	op, left, right = narrowConstAgainstFloatColumn(op, left, right)
 	left, right = promoteColumnColumnNumeric(left, right)
+	op, left, right = narrowConstAgainstFloatColumn(op, left, right)
 	left, right = promoteStringComparandToUuid(op, left, right)
 	// The exported planner's parameters are unresolved until execution (the
 	// driver text-substitution route does not take this path). An enum
@@ -1626,46 +1626,9 @@ func sharesIntegerWireEncoding(a, b values.TypeCode) bool {
 	return isIntFamily(a) && isIntFamily(b)
 }
 
-// promoteColumnColumnNumeric wraps the narrower-typed operand of a
-// numeric comparison in a values.PromoteValue toward the pair's
-// MaximumType, when NEITHER operand is a compile-time constant. Mirrors
-// Java's RelOpValue.encapsulate (PromoteValue.java call sites in
-// RelOpValue.java: `lhs = PromoteValue.inject(lhs, maximumType); rhs =
-// PromoteValue.inject(rhs, maximumType);`) for the one shape the
-// constant-specific helpers above cannot handle: a correlated equi-join
-// comparand — `a.xbig (BIGINT) = bd.ydbl (DOUBLE)` lowered to an
-// index-nested-loop probe against bd's DOUBLE index — whose concrete
-// value isn't known until each outer row is read, so there is no
-// compile-time literal to retype in place.
-//
-// The widen/narrow helpers above retype a bare ConstantValue directly
-// (Java's PromoteValue.inject "value.with(promoteToType)" fast path,
-// taken because a literal's concrete value IS known at plan time); this
-// helper takes Java's OTHER branch — wrap in an actual PromoteValue node
-// — because a FieldValue/CorrelatedFieldValue cannot declare a different
-// result type without a real per-row coercion. values.PromoteValue.Evaluate
-// (coerceNumericResult) performs that coercion at row-eval time, and the
-// executor's tuple-packing boundary (coerceTupleElementForKey) narrows a
-// FLOAT-targeted result to a genuine Go float32 so the wire encoding
-// matches the indexed column's tuple type code — the same division of
-// labor as the bare-constant path, just split across plan time (retype)
-// vs. row time (wrap + coerce) depending on whether a value is known yet.
-//
-// An INT-vs-LONG pair is deliberately left UNWRAPPED (sharesIntegerWireEncoding):
-// the two codes pack to identical wire bytes, so a PromoteValue here buys
-// nothing at the encoding boundary and only costs a match — AccessorNamePath
-// (values/accessor_name_path.go) walks *FieldValue chains and stops at any
-// other node type, so a wrapped column no longer matches an index
-// placeholder's raw FieldValue in the SARG matcher (valuesMatchColumn),
-// degrading a point lookup to a residual full scan. cmpAny already compares
-// mixed-width ints correctly (values.CompareExactInts) with no promotion
-// needed. FLOAT-vs-DOUBLE still needs the wrapper: different wire type
-// codes, and the exact-representable-bound narrowing the comparison-
-// resolution callers above perform depends on it.
+// promoteColumnColumnNumeric follows Java RelOpValue's common numeric type,
+// including constant comparisons. INT/LONG share the same tuple encoding.
 func promoteColumnColumnNumeric(left, right values.Value) (values.Value, values.Value) {
-	if values.IsConstantValue(left) || values.IsConstantValue(right) {
-		return left, right
-	}
 	lt, rt := left.Type(), right.Type()
 	if lt == nil || rt == nil || lt.Code() == rt.Code() {
 		return left, right
@@ -1705,7 +1668,7 @@ func (r *Resolver) ResolveCast(v values.Value, target values.Type) (values.Value
 	// empty-table shape silently succeeding. Unknown-typed children keep
 	// the runtime dispatch.
 	if st := v.Type(); st != nil && st.Code() != values.TypeCodeUnknown {
-		if !values.CastPairDefined(st.Code(), target.Code()) {
+		if !values.CastTypesDefined(st, target) {
 			return nil, api.NewErrorf(api.ErrCodeInvalidCast,
 				"No cast defined from %v to %v", st.Code(), target.Code())
 		}
@@ -1798,24 +1761,32 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 	if left == nil {
 		return nil, fmt.Errorf("expr.ResolveIn: LHS is nil")
 	}
-	// IN is a comparison, so its operands answer to the same whitelist the
-	// binary form does (Java RelOpValue.isSupportedOperandType,
-	// RelOpValue.java:320-322). The ROW-VALUE spelling `(a, b) IN ((1,2),
-	// (3,4))` is what reaches here with a record operand, and it must reject
-	// rather than plan: the list membership test compares a record against
-	// each element with no record comparator behind it, so it answered NO ROWS
-	// for a matching row and ALL ROWS for the negated form. That is the same
-	// silent-wrong the binary gate closes, arriving through the other door —
-	// and it only became reachable once record constructors could be built in
-	// expression position at all, which is why the gate has to be on both.
-	if !comparisonOperandSupported(left.Type()) {
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
-			"a comparison operand of complex type (record) is not supported")
-	}
-	for _, e := range rhs {
-		if e != nil && !comparisonOperandSupported(e.Type()) {
-			return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
-				"a comparison operand of complex type (record) is not supported")
+	// InOpValue.InFn accepts records, unlike RelOpValue: fields must be
+	// primitive and have identical positional type codes (no field promotion).
+	if probe, ok := left.Type().(*values.RecordType); ok {
+		for _, item := range rhs {
+			if item == nil {
+				continue
+			}
+			element, ok := item.Type().(*values.RecordType)
+			if !ok || len(probe.Fields) != len(element.Fields) {
+				return nil, api.NewError(api.ErrCodeDatatypeMismatch, "The operands of a comparison operator are not compatible.")
+			}
+			for i, field := range probe.Fields {
+				other := element.Fields[i].FieldType
+				if field.FieldType == nil || other == nil || !field.FieldType.Code().IsPrimitive() || field.FieldType.Code() != other.Code() {
+					return nil, api.NewError(api.ErrCodeDatatypeMismatch, "The operands of a comparison operator are not compatible.")
+				}
+			}
+		}
+	} else {
+		if !comparisonOperandSupported(left.Type()) {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery, "a comparison operand of complex type (record) is not supported")
+		}
+		for _, item := range rhs {
+			if item != nil && !comparisonOperandSupported(item.Type()) {
+				return nil, api.NewError(api.ErrCodeDatatypeMismatch, "The operands of a comparison operator are not compatible.")
+			}
 		}
 	}
 	// Same cross-type index-SARG fix as widenConstAgainstDoubleColumn, for IN: when
@@ -1872,7 +1843,7 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 			if et == nil || et.Code() == values.TypeCodeUnknown {
 				continue
 			}
-			if values.MaximumType(lt, et) == nil {
+			if !values.IsRecord(lt) && values.MaximumType(lt, et) == nil {
 				return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
 					"The operands of a comparison operator are not compatible.")
 			}
@@ -1908,7 +1879,9 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 	// literal either: Java sends it through __internal_array too, whose
 	// elements are never NULL, so the list fails with 0A000 when it is
 	// EVALUATED — at plan open for an exploded IN, per row for a residual one.
-	if !allInListItemsConstant(rhs) || anyInListItemFoldsToNull(rhs) {
+	// Record constructors need their finalized descriptors before evaluation;
+	// folding here would turn positional records into name-keyed maps.
+	if values.IsRecord(left.Type()) || !allInListItemsConstant(rhs) || anyInListItemFoldsToNull(rhs) {
 		items := promoteInListItemsToDeclaredType(left, rhs)
 		return predicates.NewComparisonPredicate(left, predicates.Comparison{
 			Type:    predicates.ComparisonIn,
@@ -2327,6 +2300,8 @@ func columnCascadesType(col semantic.Column) values.Type {
 		elem = structColumnType(col)
 	} else if col.Type == "ENUM" {
 		elem = enumColumnType(col)
+	} else if col.Type == "VECTOR" {
+		elem = values.NewVectorType(col.Nullable, col.VectorPrecision, col.VectorDimensions)
 	}
 	if !col.IsArray {
 		// Honor the catalog's declared nullability (Java's

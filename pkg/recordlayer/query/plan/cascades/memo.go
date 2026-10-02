@@ -1,7 +1,8 @@
 package cascades
 
 import (
-	"strconv"
+	"iter"
+	"maps"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -87,13 +88,18 @@ type Memo struct {
 	nextID uint64
 
 	// planningActive marks that the PLANNING phase has started — the
-	// point after which cross-group merges are forbidden wholesale (see
-	// the tripwire in merge).
+	// point after which the REWRITING merge is forbidden (see the tripwire
+	// in merge).
 	planningActive bool
 
-	// mergeCount counts cross-group merges performed (RFC-037). Exposed
-	// via MergeCount for tests that assert the optimization fires.
+	// mergeCount counts cross-group merges performed (RFC-037 in REWRITING,
+	// exact-replica merges in PLANNING). Exposed via MergeCount for tests
+	// that assert the optimization fires.
 	mergeCount int
+
+	// replicasRemoved counts exploratory members a PLANNING merge made exact
+	// replicas of another member of their group, and that were removed.
+	replicasRemoved int
 
 	// mergeAliasCounter hands out per-plan deterministic merge-quantifier
 	// aliases for PartitionSelectRule's N-way join re-enumeration (RFC-077
@@ -202,9 +208,24 @@ func (m *Memo) AdmissionErr() error {
 // (RFC-037). Used by tests to assert the merge optimization fires.
 func (m *Memo) MergeCount() int { return m.mergeCount }
 
-// MarkPlanningActive records that the PLANNING phase has begun; any
-// cross-group merge after this point panics (RFC-037 §0).
+// ReplicasRemoved returns how many same-group exact replicas PLANNING merges
+// removed.
+func (m *Memo) ReplicasRemoved() int { return m.replicasRemoved }
+
+// MarkPlanningActive records that the PLANNING phase has begun; a REWRITING
+// merge after this point panics (RFC-037 §0).
 func (m *Memo) MarkPlanningActive() { m.planningActive = true }
+
+func (m *Memo) targetStage() expressions.PlannerStage {
+	if m.planningActive {
+		return expressions.StagePlanned
+	}
+	return expressions.StageCanonical
+}
+
+func (m *Memo) isEligibleForReuse(ref *expressions.Reference, correlations map[values.CorrelationIdentifier]struct{}) bool {
+	return ref.Stage() == m.targetStage() && maps.Equal(ref.GetCorrelatedTo(), correlations)
+}
 
 // AliasAwareDedups sums, over every Reference in the memo, the extra dedup the
 // alias-aware interning tier performed (Reference.AliasAwareDedups): proposals
@@ -246,19 +267,9 @@ func (m *Memo) TotalMembers() int {
 	return total
 }
 
-// NextMergeAlias returns a per-plan deterministic, collision-PROOF quantifier
-// alias for a PartitionSelectRule merge sub-join (RFC-077 7.5).
-//
-// The alias embeds a double-quote ("). That is the one character no parsed SQL
-// identifier can ever contain: the lexer's delimited-identifier rule is
-// DOUBLE_QUOTE_ID: '"' ~'"'+ '"' (RelationalLexer.g4) — a quoted identifier is
-// any run of NON-quote characters between quotes, so the quotes are stripped and
-// the resulting name can never include a ". A bare "$m"-prefix is NOT safe on its
-// own: a user could write a quoted alias `AS "$m1"`, which parses to the name
-// "$m1" and would collide with this merge quantifier, corrupting alias-keyed
-// binding/rebasing in a multi-way join. (This collision class also
-// affects UniqueCorrelationIdentifier's "q$N" — `AS "q$1"` — a pre-existing,
-// separate hardening item; here we make the merge alias uncollidable outright.)
+// NextMergeAlias returns a per-plan deterministic, collision-proof quantifier
+// alias for a PartitionSelectRule merge sub-join (RFC-077 7.5;
+// values.MergeCorrelationIdentifier).
 //
 // The per-Memo ordinal makes the alias deterministic across plannings of the same
 // query (for a stable plan hash) while still differing per merge occurrence, so
@@ -267,7 +278,7 @@ func (m *Memo) TotalMembers() int {
 // as a correlation key (rebasing, NLJ source alias, Explain). See mergeAliasCounter.
 func (m *Memo) NextMergeAlias() values.CorrelationIdentifier {
 	m.mergeAliasCounter++
-	return values.NamedCorrelationIdentifier(`$m"` + strconv.FormatUint(m.mergeAliasCounter, 10))
+	return values.MergeCorrelationIdentifier(m.mergeAliasCounter)
 }
 
 // Root returns the root Reference of the Memo.
@@ -384,25 +395,29 @@ func (m *Memo) MemoizeExpressions(exprs []expressions.RelationalExpression) *exp
 	// Use the first expression's topology for the lookup.
 	first := exprs[0]
 	qs := first.GetQuantifiers()
+	requiredCorrelations := make(map[values.CorrelationIdentifier]struct{})
+	for _, expr := range exprs {
+		maps.Copy(requiredCorrelations, expressions.GetCorrelatedToOfExpression(expr))
+	}
 
 	if len(qs) == 0 {
 		// All must be leaves for leaf-path.
 		for _, ref := range m.leafRefsSlice() {
-			if m.refContainsAll(ref, exprs) {
+			if ref.Stage() == m.targetStage() && m.refContainsAll(ref, exprs) && m.isEligibleForReuse(ref, requiredCorrelations) {
 				return ref
 			}
 		}
 	} else {
-		candidates := m.findCandidateParents(qs)
-		for _, ref := range candidates {
-			if m.refContainsAll(ref, exprs) {
+		candidates := m.findCandidateParents(qs, nil)
+		for ref := range candidates {
+			if ref.Stage() == m.targetStage() && m.refContainsAll(ref, exprs) && m.isEligibleForReuse(ref, requiredCorrelations) {
 				return ref
 			}
 		}
 	}
 
 	// Not found — create a new Reference holding all expressions.
-	ref := expressions.InitialOf(first)
+	ref := expressions.ExploratoryOfAtStage(first, m.targetStage())
 	for _, e := range exprs[1:] {
 		ref.Insert(e)
 	}
@@ -451,6 +466,7 @@ func (m *Memo) InsertReExploring(ref *expressions.Reference, expr expressions.Re
 // within an existing Reference. Call this after Reference.Insert
 // succeeds to keep the Memo's topology index up to date.
 func (m *Memo) AddExpression(ref *expressions.Reference, expr expressions.RelationalExpression) {
+	ref = ref.Canonical()
 	for _, q := range expr.GetQuantifiers() {
 		child := q.GetRangesOver()
 		if child == nil {
@@ -474,16 +490,22 @@ func (m *Memo) AddExpression(ref *expressions.Reference, expr expressions.Relati
 // memoizeLeaf handles the leaf case: no children.
 func (m *Memo) memoizeLeaf(expr expressions.RelationalExpression) *expressions.Reference {
 	h := expr.HashCodeWithoutChildren()
+	requiredCorrelations := expressions.GetCorrelatedToOfExpression(expr)
 	for _, ref := range m.leafRefs {
-		for _, member := range ref.Members() {
-			if member.HashCodeWithoutChildren() == h &&
-				member.EqualsWithoutChildren(expr, expressions.EmptyAliasMap()) {
+		if ref.Stage() != m.targetStage() {
+			continue
+		}
+		for member := range ref.MembersWithHash(h) {
+			if !m.isEligibleForReuse(ref, requiredCorrelations) {
+				break
+			}
+			if expressions.MemoEqualWithHashes(member, expr, h, h) {
 				return ref
 			}
 		}
 	}
 	// Not found — create fresh.
-	ref := expressions.InitialOf(expr)
+	ref := expressions.ExploratoryOfAtStage(expr, m.targetStage())
 	m.track(ref)
 	m.addLeafRef(ref)
 	return ref
@@ -492,8 +514,6 @@ func (m *Memo) memoizeLeaf(expr expressions.RelationalExpression) *expressions.R
 // memoizeNonLeaf handles the non-leaf case: use child References for
 // topological lookup.
 func (m *Memo) memoizeNonLeaf(expr expressions.RelationalExpression, qs []expressions.Quantifier) *expressions.Reference {
-	candidates := m.findCandidateParents(qs)
-
 	// Check each candidate for alias-aware containment (RFC-039 PR-A
 	// activation): MemoEqual builds the node's own quantifier-alias map, so
 	// members equivalent up to a consistent quantifier-alias renaming intern
@@ -501,19 +521,29 @@ func (m *Memo) memoizeNonLeaf(expr expressions.RelationalExpression, qs []expres
 	// distinct References). Children intern alias-aware bottom-up, so the
 	// topological candidate narrowing surfaces equivalent parents.
 	h := expr.HashCodeWithoutChildren()
-	for _, ref := range candidates {
-		for _, member := range ref.Members() {
-			if member.HashCodeWithoutChildren() != h {
-				continue
+	requiredCorrelations := expressions.GetCorrelatedToOfExpression(expr)
+	candidates := m.findCandidateParents(qs, func(ref *expressions.Reference) bool {
+		if ref.Stage() == m.targetStage() {
+			for range ref.MembersWithHash(h) {
+				return true
 			}
-			if expressions.MemoEqual(member, expr) {
+		}
+		return false
+	})
+	for ref := range candidates {
+		for member := range ref.MembersWithHash(h) {
+			// A hash miss cannot reuse this member; do not walk its whole group DAG.
+			if !m.isEligibleForReuse(ref, requiredCorrelations) {
+				break
+			}
+			if expressions.MemoEqualWithHashes(member, expr, h, h) {
 				return ref
 			}
 		}
 	}
 
 	// Not found — create fresh and index it.
-	ref := expressions.InitialOf(expr)
+	ref := expressions.ExploratoryOfAtStage(expr, m.targetStage())
 	m.track(ref)
 	for _, q := range qs {
 		child := q.GetRangesOver()
@@ -528,67 +558,72 @@ func (m *Memo) memoizeNonLeaf(expr expressions.RelationalExpression, qs []expres
 	return ref
 }
 
-// findCandidateParents returns References that are parents of ALL of
-// the given Quantifiers' child References. This is the topological
-// intersection that narrows down candidates for memoization.
+// findCandidateParents intersects referencing expressions, not groups: two
+// different alternatives each referencing one child do not reference both.
 // Results are returned in insertion order (deterministic).
-func (m *Memo) findCandidateParents(qs []expressions.Quantifier) []*expressions.Reference {
-	if len(qs) == 0 {
-		return nil
-	}
+func (m *Memo) findCandidateParents(qs []expressions.Quantifier, eligible func(*expressions.Reference) bool) iter.Seq[*expressions.Reference] {
+	return func(yield func(*expressions.Reference) bool) {
+		if len(qs) == 0 {
+			return
+		}
 
-	// Start with parents of the first child Reference (in edge order).
-	first := qs[0].GetRangesOver()
-	if first == nil {
-		return nil
-	}
-	edges := m.childToParents[first]
-	if len(edges) == 0 {
-		return nil
-	}
+		first := qs[0].GetRangesOver()
+		if first == nil {
+			return
+		}
+		candidateOrder := m.childToParents[first]
+		if len(candidateOrder) == 0 {
+			return
+		}
 
-	// Collect parent References from the first child in edge order
-	// (insertion order, deterministic).
-	var candidateOrder []*expressions.Reference
-	candidates := make(map[*expressions.Reference]struct{}, len(edges))
-	for _, e := range edges {
-		if _, seen := candidates[e.parent]; !seen {
-			candidates[e.parent] = struct{}{}
-			candidateOrder = append(candidateOrder, e.parent)
-		}
-	}
-
-	// Intersect with parents of subsequent child References.
-	for _, q := range qs[1:] {
-		child := q.GetRangesOver()
-		if child == nil {
-			return nil
-		}
-		childEdges := m.childToParents[child]
-		if len(childEdges) == 0 {
-			return nil
-		}
-		childParents := make(map[*expressions.Reference]struct{}, len(childEdges))
-		for _, e := range childEdges {
-			childParents[e.parent] = struct{}{}
-		}
-		// Intersect: filter candidateOrder in-place.
-		n := 0
-		for _, c := range candidateOrder {
-			if _, ok := childParents[c]; ok {
-				candidateOrder[n] = c
-				n++
-			} else {
-				delete(candidates, c)
+		copied := false
+		for _, q := range qs[1:] {
+			child := q.GetRangesOver()
+			if child == nil {
+				return
+			}
+			if child == first {
+				continue
+			}
+			childEdges := m.childToParents[child]
+			if len(childEdges) == 0 {
+				return
+			}
+			childParents := make(map[parentEdge]struct{}, len(childEdges))
+			for _, e := range childEdges {
+				childParents[e] = struct{}{}
+			}
+			if !copied {
+				candidateOrder = append([]parentEdge(nil), candidateOrder...)
+				copied = true
+			}
+			n := 0
+			for _, c := range candidateOrder {
+				if _, ok := childParents[c]; ok {
+					candidateOrder[n] = c
+					n++
+				}
+			}
+			candidateOrder = candidateOrder[:n]
+			if n == 0 {
+				return
 			}
 		}
-		candidateOrder = candidateOrder[:n]
-		if n == 0 {
-			return nil
+
+		// A memo hit needs only the first eligible group, not a copy of all parents.
+		seen := make(map[*expressions.Reference]struct{})
+		for _, edge := range candidateOrder {
+			if _, duplicate := seen[edge.parent]; !duplicate {
+				if eligible != nil && !eligible(edge.parent) {
+					continue
+				}
+				seen[edge.parent] = struct{}{}
+				if !yield(edge.parent) {
+					return
+				}
+			}
 		}
 	}
-
-	return candidateOrder
 }
 
 // refContainsAll checks whether ref contains a structural equivalent
@@ -606,12 +641,9 @@ func (m *Memo) refContainsAll(ref *expressions.Reference, exprs []expressions.Re
 // expr (same node info + same child References by pointer).
 func (m *Memo) refContains(ref *expressions.Reference, expr expressions.RelationalExpression) bool {
 	h := expr.HashCodeWithoutChildren()
-	for _, member := range ref.Members() {
-		if member.HashCodeWithoutChildren() != h {
-			continue
-		}
+	for member := range ref.MembersWithHash(h) {
 		// Alias-aware (RFC-039 PR-A activation).
-		if expressions.MemoEqual(member, expr) {
+		if expressions.MemoEqualWithHashes(member, expr, h, h) {
 			return true
 		}
 	}
@@ -629,22 +661,18 @@ func (m *Memo) indexReference(ref *expressions.Reference) {
 	}
 	m.track(ref)
 
-	members := ref.Members()
-	isLeaf := true
-	for _, member := range members {
+	isLeaf := false
+	for _, member := range ref.AllMembers() {
 		qs := member.GetQuantifiers()
-		if len(qs) > 0 {
-			isLeaf = false
+		if len(qs) == 0 {
+			isLeaf = true
 		}
 		for _, q := range qs {
 			child := q.GetRangesOver()
 			if child == nil {
 				continue
 			}
-			m.childToParents[child] = append(m.childToParents[child], parentEdge{
-				parent: ref,
-				expr:   member,
-			})
+			m.addParentEdge(child, ref, member)
 			m.indexReference(child)
 		}
 	}

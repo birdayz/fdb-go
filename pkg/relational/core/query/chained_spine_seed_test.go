@@ -534,6 +534,89 @@ func TestForkOwnerElementSlot(t *testing.T) {
 	slotOf("absent_owner", l2, "NOSUCH", 0, false)
 }
 
+// TestSpineElementLinks pins the slot every spine link's columns start at in
+// the merged row — the authority a WHERE reading a link's element re-roots
+// through — and how a reference path over the element, or over its AT pair,
+// maps onto those columns.
+func TestSpineElementLinks(t *testing.T) {
+	t.Parallel()
+	tr := newChainedSpineTranslator(t)
+	slotsOf := func(name string, spine logical.LogicalOperator, want map[string]int) {
+		t.Helper()
+		links, ok := tr.spineElementLinks(spine)
+		if !ok {
+			t.Fatalf("%s: spineElementLinks declined", name)
+		}
+		got := map[string]int{}
+		for _, l := range links {
+			got[l.corr.Name()] = l.slot
+		}
+		if len(got) != len(want) || len(links) != len(want) {
+			t.Fatalf("%s: links = %v, want %v", name, got, want)
+		}
+		for corr, slot := range want {
+			if got[corr] != slot {
+				t.Errorf("%s: slot of %s = %d, want %d (all: %v)", name, corr, got[corr], slot, got)
+			}
+		}
+	}
+
+	// T4 columns [ID SARR SUB], then one element slot per link.
+	l1, _ := link(t, scan("T4", "T4"), "T4", "SARR", "X")
+	l2, _ := link(t, l1, "X", "SUBSTRUCT", "Y")
+	l3, _ := link(t, l2, "Y", "DEEP", "Z")
+	slotsOf("linear", l3, map[string]int{"X": 3, "Y": 4, "Z": 5})
+
+	// An AT link is an element/ordinal run: everything above it shifts by two.
+	_, atX := link(t, scan("T4", "T4"), "T4", "SARR", "X")
+	atX.AtAlias = "P"
+	a1 := inner(scan("T4", "T4"), atX)
+	a2, _ := link(t, a1, "X", "SUBSTRUCT", "Y")
+	slotsOf("at_link", a2, map[string]int{"X": 3, "Y": 5})
+
+	// A first-item bottom leads the merged row; alone it is no merged row.
+	_, first := link(t, scan("T4", "T4"), "T4", "SARR", "X")
+	first.EnclosingOwner = true
+	f1, _ := link(t, first, "X", "SUBSTRUCT", "Y")
+	f2, _ := link(t, f1, "Y", "DEEP", "Z")
+	slotsOf("first_item_bottom", f2, map[string]int{"X": 0, "Y": 1, "Z": 2})
+	slotsOf("first_item_bottom_alone", first, map[string]int{})
+
+	for _, tc := range []struct {
+		name          string
+		alias, at     string
+		path          []int
+		wantRoot      int
+		wantRest      []int
+		wantResolving bool
+	}{
+		{"element_whole_path", "X", "", []int{1}, 7, []int{1}, true},
+		{"element_deep_path", "X", "", []int{2, 0}, 7, []int{2, 0}, true},
+		{"at_pair_element", "X", "P", []int{0, 1}, 7, []int{1}, true},
+		{"at_pair_ordinal", "X", "P", []int{1}, 8, []int{}, true},
+		{"at_pair_out_of_range", "X", "P", []int{2}, 0, nil, false},
+		{"at_pair_bare", "X", "P", nil, 0, nil, false},
+		// The parser defaults AS to the array's name, so an AT-only link is
+		// built only here; its run is boundUnnestLegColumns' ordinal alone.
+		{"at_only_ordinal", "", "P", []int{1}, 7, []int{}, true},
+		{"at_only_hidden_element", "", "P", []int{0}, 0, nil, false},
+	} {
+		l := spineElementLink{link: &logical.LogicalUnnest{Alias: tc.alias, AtAlias: tc.at}, slot: 7}
+		root, rest, ok := l.root(tc.path)
+		if ok != tc.wantResolving || (ok && (root != tc.wantRoot || len(rest) != len(tc.wantRest))) {
+			t.Errorf("%s: root(%v) = (%d, %v, %v), want (%d, %v, %v)",
+				tc.name, tc.path, root, rest, ok, tc.wantRoot, tc.wantRest, tc.wantResolving)
+			continue
+		}
+		for i := range tc.wantRest {
+			if rest[i] != tc.wantRest[i] {
+				t.Errorf("%s: rest = %v, want %v", tc.name, rest, tc.wantRest)
+				break
+			}
+		}
+	}
+}
+
 // TestChainedSpineOverAFirstFromItem pins a block's first FROM item over an
 // enclosing array (a standalone bound unnest, EnclosingOwner) as a chain's
 // bottom — Java's first ForEach quantifier, whose element the next link

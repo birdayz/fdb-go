@@ -65,7 +65,7 @@ func exploreInExplodeRewriting(p *Planner, rootRef *expressions.Reference) (int,
 		p.constraintMap = NewConstraintMap()
 	}
 	if p.dataAccessConsumed == nil {
-		p.dataAccessConsumed = make(map[*expressions.Reference]int)
+		p.dataAccessConsumed = make(map[*expressions.Reference][]matchConsumption)
 	}
 	p.push(&OptimizeGroupTask{Phase: PhaseRewriting, Ref: rootRef})
 	p.push(&ExploreGroupTask{Phase: PhaseRewriting, Ref: rootRef})
@@ -77,6 +77,25 @@ func exploreInExplodeRewriting(p *Planner, rootRef *expressions.Reference) (int,
 		p.tasksRun++
 	}
 	return p.tasksRun, true
+}
+
+func TestInComparisonToExplodeRule_FinalAlternativeIsAlreadyExpanded(t *testing.T) {
+	t.Parallel()
+	q := expressions.ForEachQuantifier(expressions.InitialOf(inExplodeScan("T")))
+	pred := predicates.NewComparisonPredicate(inExplodeField(q, 1), predicates.Comparison{
+		Type: predicates.ComparisonIn, Operand: inExplodeList([]any{int64(2), int64(5)}, values.NotNullLong),
+	})
+	filter := mustInExplodeConstruct(expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pred}, q))
+	initial := expressions.InitialOf(filter)
+	yielded := fireInExplodeRule(t, initial)
+	if len(yielded) != 1 {
+		t.Fatalf("first expansion yielded %d alternatives, want 1", len(yielded))
+	}
+	ref := expressions.InitialOf(filter)
+	ref.InsertFinal(yielded[0])
+	if again := fireInExplodeRule(t, ref); len(again) != 0 {
+		t.Fatalf("final IN expansion was ignored: minted %d redundant alternatives", len(again))
+	}
 }
 
 func TestInComparisonToExplodeRule_BasicExplode(t *testing.T) {
@@ -581,5 +600,45 @@ func TestDistinctInListValues(t *testing.T) {
 				t.Fatalf("distinctInListValues(%v) = %v (len %d), want len %d", c.in, got, len(got), c.want)
 			}
 		})
+	}
+}
+
+func TestInComparisonToExplodeRule_RecordKeepsConstructors(t *testing.T) {
+	t.Parallel()
+	q := expressions.ForEachQuantifier(expressions.InitialOf(inExplodeScan("T")))
+	probe := values.NewRecordConstructorValue(values.RecordConstructorField{Name: "ID", Value: inExplodeField(q, 0)}, values.RecordConstructorField{Name: "B", Value: inExplodeField(q, 1)})
+	item := values.NewRecordConstructorValue(values.RecordConstructorField{Name: "X", Value: &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}}, values.RecordConstructorField{Name: "Y", Value: &values.ConstantValue{Value: int64(2), Typ: values.NotNullLong}})
+	list := values.NewArrayConstructorValue(item.Type(), []values.Value{item, item})
+	pred := predicates.NewComparisonPredicate(probe, predicates.Comparison{Type: predicates.ComparisonIn, Operand: list})
+	filter := mustInExplodeConstruct(expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pred}, q))
+	results := fireInExplodeRule(t, expressions.InitialOf(filter))
+	if len(results) != 1 {
+		t.Fatalf("yields = %d, want 1", len(results))
+	}
+	sel, ok := results[0].(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("yield = %T, want Select", results[0])
+	}
+	qs := sel.GetQuantifiers()
+	if len(qs) != 2 {
+		t.Fatalf("quantifiers = %d, want 2", len(qs))
+	}
+	explode := getExplodeExpression(qs[1].GetRangesOver())
+	if explode == nil {
+		t.Fatal("missing explode")
+	}
+	distinct, ok := explode.GetCollectionValue().(*values.ArrayDistinctValue)
+	if !ok || distinct.Child != list {
+		t.Fatalf("explode must retain the typed constructor list, got %T", explode.GetCollectionValue())
+	}
+	inner := qs[0].GetRangesOver().Members()[0].(*expressions.LogicalFilterExpression)
+	if len(inner.GetPredicates()) != 2 {
+		t.Fatalf("want two positional equalities, got %d", len(inner.GetPredicates()))
+	}
+	for _, p := range inner.GetPredicates() {
+		cp, ok := p.(*predicates.ComparisonPredicate)
+		if !ok || cp.Comparison.Type != predicates.ComparisonEquals || values.IsRecord(cp.Operand.Type()) {
+			t.Fatalf("want primitive equality, got %v", p)
+		}
 	}
 }

@@ -376,22 +376,16 @@ var dottedLegQualifierFloors = values.DottedLegQualifierFloors{}
 // on the thing it is watching for.
 var seedWindowReaderFloors = func() values.SeedWindowReaderFloors {
 	var f values.SeedWindowReaderFloors
-	// THIS ONE USED TO BE A GROWTH PIN, and it is now an ordinary collapse
-	// guard. RFC-200 §6 predicted existentialRebase would GROW once nested
-	// acceptance landed (measured 962 → 1086), and the floor sat at 1000 — ABOVE
-	// the pre-activation reading — so it pinned the growth rather than merely
-	// detecting collapse.
-	//
-	// Those firings were the three-quantifier NLJ arm's, and the arm is deleted
-	// (RFC-235). The reader is still live on the surviving buried-leg path and
-	// reports 288. A growth pin over a population that no longer exists is
-	// unsatisfiable, so it is RECONCILED with the new expected value rather than
-	// relaxed toward a run: back to the order-of-magnitude rule its siblings use.
-	f.Reads[values.SeedWindowSiteExistentialRebase] = 28     // measured 288 (was 1086 with the retired arm)
-	f.Reads[values.SeedWindowSiteBoxLegRef] = 9              // measured 92
-	f.Reads[values.SeedWindowSiteBoxSurvivorQOV] = 18        // measured 184
-	f.Reads[values.SeedWindowSiteBoxSurvivorCorrelation] = 1 // measured 2 — no magnitude to drop to
-	f.Reads[values.SeedWindowSiteGatheredGroupSlot] = 16     // measured 160
+	// RETIRED, so its alarm is GROWTH. The buried-leg EXISTS rebase measured 0
+	// over the whole suite once select partitioning followed Java's predicate
+	// placement: an existential's correlated predicates stay in the partition
+	// holding the existential and never reach the NLJ beside an ordinal-seed outer.
+	f.Retired[values.SeedWindowSiteExistentialRebase] = true
+	// Measured over the whole sqldriver suite at the RFC-257 migration tree.
+	f.Reads[values.SeedWindowSiteBoxLegRef] = 22             // measured 221
+	f.Reads[values.SeedWindowSiteBoxSurvivorQOV] = 43        // measured 431
+	f.Reads[values.SeedWindowSiteBoxSurvivorCorrelation] = 4 // measured 42
+	f.Reads[values.SeedWindowSiteGatheredGroupSlot] = 207    // measured 2077
 	// RFC-200's ACTIVATION TRIPWIRE. Measured NESTED-HIT 0 at every site: the
 	// nested reader arm is correct and unreached, so gate (a)'s four mutation
 	// directions are not writable and the branch merged with that stated.
@@ -412,10 +406,12 @@ func assertSeedWindowReaderCensus(w io.Writer) bool {
 	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
 		fmt.Fprintf(w, "seed-window reader census: population floors NOT checked "+
 			"(-test.run=%q narrowed the corpus). The two decline hard zeros "+
-			"(QUALIFIED-NO-IDENTITY, CHILDLESS-BAKED) still run, over whatever "+
-			"population this filter reached — at zero they hold VACUOUSLY.\n",
+			"(QUALIFIED-NO-IDENTITY, CHILDLESS-BAKED) and the retired sites' zeros "+
+			"still run, over whatever population this filter reached — at zero they "+
+			"hold VACUOUSLY.\n",
 			f.Value.String())
-		floors = nil
+		// A revival is visible on any population, so retirement survives narrowing.
+		floors = &values.SeedWindowReaderFloors{Retired: seedWindowReaderFloors.Retired}
 	}
 	return values.AssertSeedWindowReaderCensus(w, floors)
 }

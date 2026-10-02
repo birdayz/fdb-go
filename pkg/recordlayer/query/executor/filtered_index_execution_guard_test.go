@@ -18,9 +18,8 @@ import (
 )
 
 // TestExecutePlanRejectsFilteredIndexesAtEveryIndexLeaf is the executor half
-// of filtered-index admission. Planning deliberately creates no sparse-index
-// candidates until predicate implication exists, but physical plans are public
-// Go values and can be hand-built or survive a metadata change. Every index
+// of filtered-index admission. Physical plans are public Go values and can be
+// hand-built without a candidate match or survive a metadata change. Every index
 // leaf must therefore fail before it evaluates dynamic inputs, constructs a
 // maintainer, or opens the incomplete index range.
 func TestExecutePlanRejectsFilteredIndexesAtEveryIndexLeaf(t *testing.T) {
@@ -238,5 +237,61 @@ func TestExecutePlanTransactionalIndexState(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestFilteredIndexProofChecksCurrentMetadata(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	ks := testSubspace(t)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	pred := &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_FALSE.Enum()}}
+	idx := recordlayer.NewIndex("proof_index", recordlayer.Field("price"))
+	if err := idx.SetPredicateProto(pred); err != nil {
+		t.Fatal(err)
+	}
+	builder.AddIndex("Order", idx)
+	md, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := (proto.MarshalOptions{Deterministic: true}).Marshal(pred)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+		if err != nil {
+			return nil, err
+		}
+		idx := store.GetMetaData().GetIndex("proof_index")
+		if err := requireReadableQueryIndexWithProof(store, idx, proof); err != nil {
+			t.Fatalf("matched predicate rejected: %v", err)
+		}
+		for _, invalid := range [][]byte{nil, {255}, append(append([]byte(nil), proof...), 1)} {
+			var rejected *FilteredIndexPlanError
+			if err := requireReadableQueryIndexWithProof(store, idx, invalid); !errors.As(err, &rejected) {
+				t.Fatalf("invalid proof %x admitted: %v", invalid, err)
+			}
+		}
+		changed := &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_NULL.Enum()}}
+		if err := idx.SetPredicateProto(changed); err != nil {
+			return nil, err
+		}
+		var rejected *FilteredIndexPlanError
+		if err := requireReadableQueryIndexWithProof(store, idx, proof); !errors.As(err, &rejected) {
+			t.Fatalf("stale proof admitted: %v", err)
+		}
+		idx.SetPredicate(func(proto.Message) bool { return false })
+		if err := requireReadableQueryIndexWithProof(store, idx, proof); !errors.As(err, &rejected) {
+			t.Fatalf("opaque predicate admitted: %v", err)
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

@@ -84,14 +84,15 @@ tests:
       - [1, 10]
       - [2, 20]
       - [3, 30]
-  # Aliased leg: the translator normalizes BOTH legs onto the first leg's
-  # names, so no bare-scan leg survives and the labels are the aliases. This
-  # is the negative result — a union whose legs name their columns differently
-  # never reaches the rule with differing names, because the translator is the
-  # one place that aligns them.
+  # Aliased leg: the first leg publishes its aliases through a rename over
+  # its own projection, and the union takes its labels from that leg, so no
+  # bare-scan leg survives and the labels are the aliases. This is the
+  # negative result — a union whose legs name their columns differently never
+  # reaches the rule with differing names, because the translator is the one
+  # place that aligns them.
   - query: SELECT "id" AS w, "k" AS x FROM t UNION ALL SELECT * FROM t
     columns: ["W", "X"]
-    plan_contains: "UnorderedUnion(Project([_current.id#0, _current.k#1], Scan(T)), Project([_current.id#0, _current.k#1], Scan(T)))"
+    plan_contains: "UnorderedUnion(Project([_current.W#0, _current.X#1], Project([_current.id#0, _current.k#1], Scan(T))), Project([_current.id#0, _current.k#1], Scan(T)))"
     unordered: true
     rows:
       - [1, 10]

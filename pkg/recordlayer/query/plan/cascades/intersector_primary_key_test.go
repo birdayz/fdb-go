@@ -101,7 +101,7 @@ func TestIntersector_TwoAccesses_DifferentCandidates(t *testing.T) {
 	pmB := makeDataAccessTestPartialMatch("idxB", 1, planB)
 
 	ctx := newTestPKContext("TestRecord", []string{"id"})
-	intersector := WithPrimaryKeyIntersector(ctx)
+	intersector := WithPrimaryKeyIntersector(compensationTestMemoizer(), ctx)
 
 	accesses := []Vectored[*SingleMatchedAccess]{
 		makeVectoredAccess(pmA, 0),
@@ -134,13 +134,13 @@ func TestIntersector_SingleAccess_NoIntersection(t *testing.T) {
 
 	pm := makeDataAccessTestPartialMatch("only", 3, mustDataAccessTestPlan(t, "scan"))
 	ctx := newTestPKContext("TestRecord", []string{"id"})
-	intersector := WithPrimaryKeyIntersector(ctx)
+	intersector := withPrimaryKeyIntersector(compensationTestMemoizer(), ctx)
 
 	accesses := []Vectored[*SingleMatchedAccess]{
 		makeVectoredAccess(pm, 0),
 	}
 
-	result := intersector(accesses, nil)
+	result := intersector(accesses, nil, make(accessRealizations))
 	if result.IsViable() {
 		t.Fatal("expected NoViableIntersection for a single access")
 	}
@@ -159,14 +159,14 @@ func TestIntersector_SameCandidateSkipped(t *testing.T) {
 	access2 := NewSingleMatchedAccess(pm, NoCompensation, alias2, false, EmptyTranslationMap(), nil)
 
 	ctx := newTestPKContext("TestRecord", []string{"id"})
-	intersector := WithPrimaryKeyIntersector(ctx)
+	intersector := withPrimaryKeyIntersector(compensationTestMemoizer(), ctx)
 
 	accesses := []Vectored[*SingleMatchedAccess]{
 		NewVectored(access1, 0),
 		NewVectored(access2, 1),
 	}
 
-	result := intersector(accesses, nil)
+	result := intersector(accesses, nil, make(accessRealizations))
 	if result.IsViable() {
 		t.Fatal("expected NoViableIntersection when both accesses share the same candidate")
 	}
@@ -180,7 +180,7 @@ func TestIntersector_ThreeWay(t *testing.T) {
 	pmC := makeDataAccessTestPartialMatch("idxC", 1, mustDataAccessTestPlan(t, "scanC"))
 
 	ctx := newTestPKContext("TestRecord", []string{"id"})
-	intersector := WithPrimaryKeyIntersector(ctx)
+	intersector := withPrimaryKeyIntersector(compensationTestMemoizer(), ctx)
 
 	accesses := []Vectored[*SingleMatchedAccess]{
 		makeVectoredAccess(pmA, 0),
@@ -188,7 +188,7 @@ func TestIntersector_ThreeWay(t *testing.T) {
 		makeVectoredAccess(pmC, 2),
 	}
 
-	result := intersector(accesses, nil)
+	result := intersector(accesses, nil, make(accessRealizations))
 	if !result.IsViable() {
 		t.Fatal("expected viable intersection from 3 different candidates")
 	}
@@ -277,13 +277,13 @@ func TestIntersector_ImpossibleLargerCompensationKeepsUsefulPair(
 		)
 	}
 
-	result := WithPrimaryKeyIntersector(
+	result := withPrimaryKeyIntersector(compensationTestMemoizer(),
 		newTestPKContext("TestRecord", []string{"id"}),
 	)([]Vectored[*SingleMatchedAccess]{
 		makeAccess("scan_a", makeCompensation(leftBaseQ), 0),
 		makeAccess("scan_b", makeCompensation(leftBaseQ), 1),
 		makeAccess("scan_c", makeCompensation(rightBaseQ), 2),
-	}, nil)
+	}, nil, make(accessRealizations))
 
 	if !result.IsViable() || len(result.GetExpressions()) != 1 {
 		t.Fatalf(
@@ -326,7 +326,7 @@ func TestIntersector_FourWay(t *testing.T) {
 	}
 
 	ctx := newTestPKContext("TestRecord", []string{"id"})
-	result := WithPrimaryKeyIntersector(ctx)(accesses, nil)
+	result := withPrimaryKeyIntersector(compensationTestMemoizer(), ctx)(accesses, nil, make(accessRealizations))
 	if !result.IsViable() {
 		t.Fatal("expected viable intersections from four different candidates")
 	}
@@ -392,13 +392,13 @@ func TestIntersector_JavaRedundancyExampleKeepsUsefulPair(t *testing.T) {
 		}
 	}
 
-	result := WithPrimaryKeyIntersector(
+	result := withPrimaryKeyIntersector(compensationTestMemoizer(),
 		newTestPKContext("TestRecord", []string{"id"}),
 	)([]Vectored[*SingleMatchedAccess]{
 		makeVectoredAccess(makeMatch("i1", "A"), 0),
 		makeVectoredAccess(makeMatch("i2", "B"), 1),
 		makeVectoredAccess(makeMatch("i3", "A", "B"), 2),
-	}, nil)
+	}, nil, make(accessRealizations))
 	if !result.IsViable() || len(result.GetExpressions()) != 1 {
 		t.Fatalf("Java redundancy example produced %d expressions, want only I1∩I2",
 			len(result.GetExpressions()))
@@ -469,12 +469,12 @@ func TestIntersector_MaxOneSingletonSuppressesIntersection(t *testing.T) {
 		}
 	}
 
-	result := WithPrimaryKeyIntersector(
+	result := withPrimaryKeyIntersector(compensationTestMemoizer(),
 		newTestPKContext("TestRecord", []string{"id"}),
 	)([]Vectored[*SingleMatchedAccess]{
 		makeVectoredAccess(makeMatch("unique_a", "A", true), 0),
 		makeVectoredAccess(makeMatch("idx_b", "B", false), 1),
-	}, nil)
+	}, nil, make(accessRealizations))
 	if result.IsViable() || len(result.GetExpressions()) != 0 {
 		t.Fatal("a singleton access with proven max cardinality one makes every containing intersection redundant")
 	}
@@ -1039,12 +1039,12 @@ func TestIntersector_DeclinesNonPKMonotoneLeg(t *testing.T) {
 	pmB := makeDataAccessTestPartialMatch("idxB", 1, mustDataAccessTestPlan(t, "scanB"))
 
 	ctx := newTestPKContext("TestRecord", []string{"id"})
-	intersector := WithPrimaryKeyIntersector(ctx)
+	intersector := withPrimaryKeyIntersector(compensationTestMemoizer(), ctx)
 
 	result := intersector([]Vectored[*SingleMatchedAccess]{
 		makeVectoredAccess(pmA, 0),
 		makeVectoredAccess(pmB, 1),
-	}, nil)
+	}, nil, make(accessRealizations))
 	if result.IsViable() {
 		t.Fatal("an inequality-bound (non-PK-monotone) leg must disqualify itself — the pk-sorted merge over it silently drops intersection rows")
 	}
@@ -1054,7 +1054,7 @@ func TestIntersector_DeclinesNonPKMonotoneLeg(t *testing.T) {
 	result = intersector([]Vectored[*SingleMatchedAccess]{
 		makeVectoredAccess(pmB, 0),
 		makeVectoredAccess(pmC, 1),
-	}, nil)
+	}, nil, make(accessRealizations))
 	if !result.IsViable() {
 		t.Fatal("two equality-bound pk-monotone legs must remain viable")
 	}
@@ -1094,11 +1094,11 @@ func TestIntersector_LowercasePKStillViable(t *testing.T) {
 	}
 
 	ctx := newTestPKContext("TestRecord", []string{"id"})
-	intersector := WithPrimaryKeyIntersector(ctx)
+	intersector := withPrimaryKeyIntersector(compensationTestMemoizer(), ctx)
 	result := intersector([]Vectored[*SingleMatchedAccess]{
 		makeVectoredAccess(mk("idxL"), 0),
 		makeVectoredAccess(mk("idxM"), 1),
-	}, nil)
+	}, nil, make(accessRealizations))
 	if !result.IsViable() {
 		t.Fatal("a lowercase pk-suffix field name must not over-decline the intersection (case-fold the comparison)")
 	}
@@ -1178,12 +1178,12 @@ func TestIntersector_DescendingCommonSecondaryOrdering(t *testing.T) {
 		properties.DistinctnessNotDistinct,
 		false,
 	)
-	result := WithPrimaryKeyIntersector(
+	result := withPrimaryKeyIntersector(compensationTestMemoizer(),
 		newTestPKContext("TestRecord", []string{"id"}),
 	)([]Vectored[*SingleMatchedAccess]{
 		makeAccess("idx_a_sort", "A", 7, 0),
 		makeAccess("idx_b_sort", "B", 9, 1),
-	}, []*properties.RequestedOrdering{requested})
+	}, []*properties.RequestedOrdering{requested}, make(accessRealizations))
 	if !result.IsViable() || len(result.GetExpressions()) != 1 {
 		t.Fatalf("descending common-secondary intersection = %#v, want one viable expression", result)
 	}
@@ -1301,12 +1301,12 @@ func TestIntersector_UsesTranslatedRequestedOrdering(t *testing.T) {
 		)
 	}
 
-	result := WithPrimaryKeyIntersector(
+	result := withPrimaryKeyIntersector(compensationTestMemoizer(),
 		newTestPKContext("TestRecord", []string{"id"}),
 	)([]Vectored[*SingleMatchedAccess]{
 		makeAccess("idx_a", 0, topMap),
 		makeAccess("idx_b", 1, EmptyTranslationMap()),
-	}, []*properties.RequestedOrdering{requested})
+	}, []*properties.RequestedOrdering{requested}, make(accessRealizations))
 
 	if !result.IsViable() || len(result.GetExpressions()) != 1 {
 		t.Fatalf(
@@ -1342,12 +1342,12 @@ func TestIntersector_FanoutLegIsPrimaryKeyDistinct(t *testing.T) {
 		mustDataAccessTestPlan(t, "plain"),
 	)
 
-	result := WithPrimaryKeyIntersector(
+	result := withPrimaryKeyIntersector(compensationTestMemoizer(),
 		newTestPKContext("TestRecord", []string{"id"}),
 	)([]Vectored[*SingleMatchedAccess]{
 		makeVectoredAccess(fanout, 0),
 		makeVectoredAccess(plain, 1),
-	}, nil)
+	}, nil, make(accessRealizations))
 	if !result.IsViable() || len(result.GetExpressions()) != 1 {
 		t.Fatalf(
 			"fanout intersection produced %d expressions, want 1",
@@ -1428,12 +1428,12 @@ func TestIntersector_DeclinesNonNaturalComparisonDirections(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			result := WithPrimaryKeyIntersector(
+			result := withPrimaryKeyIntersector(compensationTestMemoizer(),
 				newTestPKContext("TestRecord", tc.pkFields),
 			)([]Vectored[*SingleMatchedAccess]{
 				makeAccess("idx_a", tc.orders, 0),
 				makeAccess("idx_b", tc.orders, 1),
-			}, nil)
+			}, nil, make(accessRealizations))
 			if result.IsViable() {
 				t.Fatalf(
 					"%s comparison direction must fail closed",
@@ -1462,7 +1462,7 @@ func TestPushCrossCandidateIntersection_StillFires(t *testing.T) {
 	p := NewPlanner(nil, ctx)
 	p.pushCrossCandidateIntersection(ref,
 		[]MatchCandidate{pmA.GetMatchCandidate(), pmB.GetMatchCandidate()},
-		[]*properties.RequestedOrdering{properties.PreserveOrdering()})
+		[]*properties.RequestedOrdering{properties.PreserveOrdering()}, make(accessRealizations))
 
 	found := false
 	for _, m := range ref.FinalMembers() {
@@ -1500,12 +1500,12 @@ func TestPushCrossCandidateIntersection_MatchGrowthReachesFourWay(t *testing.T) 
 	ctx := newTestPKContext("TestRecord", []string{"id"})
 	p := NewPlanner(nil, ctx)
 	requested := []*properties.RequestedOrdering{properties.PreserveOrdering()}
-	p.pushCrossCandidateIntersection(ref, candidates[:2], requested)
+	p.pushCrossCandidateIntersection(ref, candidates[:2], requested, make(accessRealizations))
 
 	for i := 2; i < 4; i++ {
 		AddPartialMatchForCandidate(ref, candidates[i], matches[i])
 	}
-	p.pushCrossCandidateIntersection(ref, candidates, requested)
+	p.pushCrossCandidateIntersection(ref, candidates, requested, make(accessRealizations))
 
 	for _, member := range ref.FinalMembers() {
 		if plan, ok := member.(*plans.RecordQueryIntersectionPlan); ok &&
@@ -1563,7 +1563,7 @@ func TestPushCrossCandidateIntersection_RestrictedCandidateCap(t *testing.T) {
 	p.pushCrossCandidateIntersection(
 		ref,
 		candidates,
-		[]*properties.RequestedOrdering{properties.PreserveOrdering()},
+		[]*properties.RequestedOrdering{properties.PreserveOrdering()}, make(accessRealizations),
 	)
 	for _, member := range ref.FinalMembers() {
 		if _, ok := member.(*plans.RecordQueryIntersectionPlan); ok {
@@ -1585,10 +1585,10 @@ func TestIntersector_BakesComparisonKeys(t *testing.T) {
 	pmB := makeDataAccessTestPartialMatch("idxB", 1, mustDataAccessTestPlan(t, "scanB"))
 	ctx := newTestPKContext("TestRecord", []string{"id"})
 
-	result := WithPrimaryKeyIntersector(ctx)([]Vectored[*SingleMatchedAccess]{
+	result := withPrimaryKeyIntersector(compensationTestMemoizer(), ctx)([]Vectored[*SingleMatchedAccess]{
 		makeVectoredAccess(pmA, 0),
 		makeVectoredAccess(pmB, 1),
-	}, nil)
+	}, nil, make(accessRealizations))
 	if !result.IsViable() {
 		t.Fatal("expected viable intersection")
 	}
@@ -1620,10 +1620,10 @@ func TestIntersector_DeclinesLayoutlessLegs(t *testing.T) {
 	pmB := makeDataAccessTestPartialMatch("idxB", 1, &testPlan{name: "scanB"})
 	ctx := newTestPKContext("TestRecord", []string{"id"})
 
-	result := WithPrimaryKeyIntersector(ctx)([]Vectored[*SingleMatchedAccess]{
+	result := withPrimaryKeyIntersector(compensationTestMemoizer(), ctx)([]Vectored[*SingleMatchedAccess]{
 		makeVectoredAccess(pmA, 0),
 		makeVectoredAccess(pmB, 1),
-	}, nil)
+	}, nil, make(accessRealizations))
 	if result.IsViable() {
 		t.Fatal("layout-less legs must DECLINE at plan time, not yield unbaked comparison keys")
 	}
@@ -1639,10 +1639,10 @@ func TestIntersector_BakesCompositePKKeys(t *testing.T) {
 	pmB := makeDataAccessTestPartialMatchWithPK("idxB", 1, mustDataAccessTestPlan(t, "scanB"), "ID", "VERSION")
 	ctx := newTestPKContext("TestRecord", []string{"id", "version"})
 
-	result := WithPrimaryKeyIntersector(ctx)([]Vectored[*SingleMatchedAccess]{
+	result := withPrimaryKeyIntersector(compensationTestMemoizer(), ctx)([]Vectored[*SingleMatchedAccess]{
 		makeVectoredAccess(pmA, 0),
 		makeVectoredAccess(pmB, 1),
-	}, nil)
+	}, nil, make(accessRealizations))
 	if !result.IsViable() {
 		t.Fatal("expected viable composite-pk intersection")
 	}
@@ -1804,10 +1804,10 @@ func TestIntersector_DeclinesMixedLayoutLegs(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			ctx := newTestPKContext("TestRecord", []string{"id"})
-			result := WithPrimaryKeyIntersector(ctx)([]Vectored[*SingleMatchedAccess]{
+			result := withPrimaryKeyIntersector(compensationTestMemoizer(), ctx)([]Vectored[*SingleMatchedAccess]{
 				makeVectoredAccess(accesses[0], 0),
 				makeVectoredAccess(accesses[1], 1),
-			}, nil)
+			}, nil, make(accessRealizations))
 			if result.IsViable() {
 				t.Fatal("a layout-less leg must decline the candidate in EITHER slot")
 			}
@@ -1842,7 +1842,7 @@ func TestIntersector_ThreeWay_DuplicateCandidateNameSkipped(t *testing.T) {
 	pmB := makeDataAccessTestPartialMatch("idxB", 1, mustDataAccessTestPlan(t, "scanB"))
 
 	ctx := newTestPKContext("TestRecord", []string{"id"})
-	intersector := WithPrimaryKeyIntersector(ctx)
+	intersector := withPrimaryKeyIntersector(compensationTestMemoizer(), ctx)
 
 	sharedBase := expressions.NamedForEachQuantifier(
 		values.NamedCorrelationIdentifier("dup_name_base"),
@@ -1872,7 +1872,7 @@ func TestIntersector_ThreeWay_DuplicateCandidateNameSkipped(t *testing.T) {
 		), 2),
 	}
 
-	result := intersector(accesses, nil)
+	result := intersector(accesses, nil, make(accessRealizations))
 	if !result.IsViable() {
 		t.Fatal("expected the distinct-name pairs to remain viable")
 	}
@@ -1910,7 +1910,7 @@ func TestIntersector_FourWay_BadPairSieve(t *testing.T) {
 		makeVectoredAccess(makeDataAccessTestPartialMatch("idxC", 1, mustDataAccessTestPlan(t, "scanC")), 3),
 	}
 
-	result := WithPrimaryKeyIntersector(newTestPKContext("TestRecord", []string{"id"}))(accesses, nil)
+	result := withPrimaryKeyIntersector(compensationTestMemoizer(), newTestPKContext("TestRecord", []string{"id"}))(accesses, nil, make(accessRealizations))
 	if !result.IsViable() {
 		t.Fatal("subsets that do not contain the duplicate-candidate pair must remain viable")
 	}

@@ -30,10 +30,12 @@ import (
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/protoname"
 	"fdb.dev/pkg/recordlayer/protoscope"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/pkg/recordlayer/vectorcodec"
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -86,8 +88,8 @@ type UnsupportedContinuationError struct {
 
 // FilteredIndexPlanError reports a physical query plan that attempts to read a
 // sparse/filtered index without carrying a predicate-implication proof. The
-// planner currently excludes every filtered index from query candidates, so a
-// plan that reaches this guard is hand-built or stale. Executing it would read
+// proof must match the current metadata predicate; missing or stale proofs
+// are rejected. Executing an unproved scan would read
 // only the predicate-selected subset and could silently omit records.
 //
 // Low-level record-store APIs deliberately remain able to scan filtered
@@ -435,7 +437,7 @@ func openIndexEntryCursor(
 	if idx == nil {
 		return nil, fmt.Errorf("executor: index %q not found in metadata", p.GetIndexName())
 	}
-	if err := requireReadableQueryIndex(store, idx); err != nil {
+	if err := requireReadableQueryIndexWithProof(store, idx, p.GetMatchedIndexPredicate()); err != nil {
 		return nil, err
 	}
 	maintainer, err := store.GetIndexMaintainer(idx)
@@ -821,8 +823,7 @@ func executeVectorIndexScan(
 // uniqueness, cardinality, ordering, or complete coverage even when the leaf
 // itself looks like an ordinary scan. Therefore query-plan execution requires
 // both the one state Java admits to planning (strictly READABLE) and a complete
-// index. Filtered indexes remain rejected until physical plans carry a checked
-// predicate-implication proof.
+// index, or a matched predicate proof for the current filtered index.
 //
 // "Complete" is HasFilteringPredicate, not HasPredicate: a stored predicate
 // that is a PROVED tautology rejects no record, so the index holds an entry for
@@ -832,13 +833,24 @@ func executeVectorIndexScan(
 // presence of a predicate field would kill, at execution, plans the planner is
 // entitled to build and no query can route around.
 func requireReadableQueryIndex(store *recordlayer.FDBRecordStore, idx *recordlayer.Index) error {
+	return requireReadableQueryIndexWithProof(store, idx, nil)
+}
+
+func requireReadableQueryIndexWithProof(store *recordlayer.FDBRecordStore, idx *recordlayer.Index, proof []byte) error {
 	state, err := store.ReadIndexState(idx.Name)
 	if err != nil {
 		return err
 	}
 	if state == recordlayer.IndexStateReadable {
 		if idx.HasFilteringPredicate() {
-			return &FilteredIndexPlanError{IndexName: idx.Name}
+			current := idx.GetPredicateProto()
+			if len(proof) == 0 || current == nil {
+				return &FilteredIndexPlanError{IndexName: idx.Name}
+			}
+			encoded, err := (proto.MarshalOptions{Deterministic: true}).Marshal(cascades.NormalizeIndexPredicateProto(current))
+			if err != nil || !bytes.Equal(encoded, proof) {
+				return &FilteredIndexPlanError{IndexName: idx.Name}
+			}
 		}
 		return nil
 	}
@@ -1011,6 +1023,10 @@ func evalFloat64Slice(v values.Value, binder values.ParameterBinder) ([]float64,
 		return nil, err
 	}
 	switch s := ev.(type) {
+	case []byte:
+		// Prepared VECTOR parameters retain their serialized precision, just as
+		// stored vectors do when evaluated by scalar distance expressions.
+		return vectorcodec.Deserialize(s)
 	case []float64:
 		return s, nil
 	case []float32:
@@ -3584,6 +3600,42 @@ func nestedLoopJoinOutputSourceOrigins(
 				childSource:        claimedSource,
 				childNullSupplying: claimedNullSupplying,
 			}
+			continue
+		}
+		// No child binds the source itself: it is buried in a null-supplying
+		// leg's retained box (the layout inherited the leg's edge for it), and
+		// the child that implements the box need not keep it as its own row.
+		// Its presence is the leg's.
+		buriedIn := -1
+		for legIndex, leg := range legs {
+			if leg.alias.IsZero() || !leg.nullSupplying {
+				continue
+			}
+			var legWindow values.QuantifiedObjectValue
+			for _, source := range outputLayout.WindowSources() {
+				if source.Correlation() == leg.alias {
+					legWindow = source
+					break
+				}
+			}
+			if legWindow == nil {
+				continue
+			}
+			within, withinErr := values.LayoutWindowWithin(outputLayout, outputSource, legWindow)
+			if withinErr != nil {
+				return nil, fmt.Errorf("nested-loop join buried output source: %w", withinErr)
+			}
+			if !within {
+				continue
+			}
+			if buriedIn >= 0 {
+				return nil, layoutBindingError(values.LayoutInvalidWindow,
+					"two nested-loop join legs enclose one retained output source")
+			}
+			buriedIn = legIndex
+		}
+		if buriedIn >= 0 {
+			origins[outputSource.Correlation()] = outputSourceOrigin{topLegAlias: legs[buriedIn].alias}
 		}
 	}
 	if len(origins) == 0 {
@@ -3803,10 +3855,11 @@ func executeAggregation(
 		var priorState *groupState
 
 		if aggCont != nil {
-			var resolve protoDescriptorResolver
+			var md *recordlayer.RecordMetaData
 			if store != nil {
-				resolve = metadataMessageResolver(store.GetRecordMetaData())
+				md = store.GetRecordMetaData()
 			}
+			resolve := continuationMessageResolver(md, plan)
 			ic, gk, gs, decErr := decodeAggregateContinuation(aggCont, aggregates, resolve)
 			if decErr != nil {
 				return nil, fmt.Errorf("invalid aggregate continuation: %w", decErr)
@@ -4573,6 +4626,12 @@ func goToProtoScalarValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.
 	case protoreflect.BytesKind:
 		switch b := v.(type) {
 		case []byte:
+			if target, ok := values.FieldTypeForProtoField(fd).(*values.VectorType); ok {
+				_, payload, stride, valid := vectorcodec.Payload(b)
+				if !valid || stride*8 != target.Precision || len(payload) != target.Dimensions*stride {
+					return protoreflect.Value{}, api.NewError(api.ErrCodeCannotConvertType, "Vector precision or dimensions do not match the target column")
+				}
+			}
 			return protoreflect.ValueOfBytes(b), nil
 		}
 	case protoreflect.EnumKind:
@@ -5921,14 +5980,14 @@ func executeInMemorySort(
 		// (concrete-type identity with fresh rows, which the %T-keyed
 		// group/dedup paths depend on): a generated message (flag 0) restores
 		// via protoregistry.GlobalTypes; a *dynamicpb.Message (flag 1) restores
-		// via this metadata resolver — never across representations. A nil
-		// store leaves the resolver nil: a buffer with dynamic struct slots
-		// then fails the resume loudly rather than leaking a descriptor-less
-		// placeholder into the row domain.
-		var resolve protoDescriptorResolver
+		// via the selected plan's computed descriptors or stored metadata —
+		// never across representations. An unknown descriptor fails loudly
+		// rather than leaking a descriptor-less placeholder into the row domain.
+		var md *recordlayer.RecordMetaData
 		if store != nil {
-			resolve = metadataMessageResolver(store.GetRecordMetaData())
+			md = store.GetRecordMetaData()
 		}
+		resolve := continuationMessageResolver(md, inner)
 		// The continuation buffer contains CHILD rows: sort keys are evaluated
 		// before the materialization boundary and therefore use the child's exact
 		// layout/current handle. Attach the fresh sort output layout only when the

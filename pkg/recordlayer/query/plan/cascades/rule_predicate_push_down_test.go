@@ -156,9 +156,9 @@ func TestPredicatePushDown_MultiQuantifierPartial(t *testing.T) {
 	childBRef := expressions.InitialOf(childB)
 	qB := expressions.ForEachQuantifier(childBRef)
 
-	// Predicate on A only: qA.col = 'x'
+	// Predicate on A only: qA.NAME = 'x'
 	predA := &predicates.ComparisonPredicate{
-		Operand: ppdFlowed(qA),
+		Operand: ppdFieldValue(qA, "NAME"),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
 			Operand: &values.ConstantValue{Value: "x"},
@@ -166,10 +166,10 @@ func TestPredicatePushDown_MultiQuantifierPartial(t *testing.T) {
 	}
 	// Cross-predicate: qA.id = qB.id (references both)
 	predCross := &predicates.ComparisonPredicate{
-		Operand: ppdFlowed(qA),
+		Operand: ppdFieldValue(qA, "id"),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: ppdFlowed(qB),
+			Operand: ppdFieldValue(qB, "id"),
 		},
 	}
 
@@ -189,6 +189,21 @@ func TestPredicatePushDown_MultiQuantifierPartial(t *testing.T) {
 	// The cross-predicate stays on the outer.
 	if len(result.GetPredicates()) != 1 {
 		t.Fatalf("expected 1 remaining predicate on outer, got %d", len(result.GetPredicates()))
+	}
+	remaining, err := predicates.ToResidualPredicate(result.GetPredicates()[0])
+	if err != nil || !predicates.SemanticEqualsUnderAliasMap(remaining, predCross, nil) {
+		t.Fatalf("remaining predicate = %v, want join equality: %v", remaining, err)
+	}
+
+	// Bounds on the same value form one range: its cross-leg correlation
+	// prevents the rule from pushing only the constant bound.
+	sameValue := ppdFieldPred(qA, "id", predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(0)))
+	grouped := ppdSelect(ppdFlowed(qA), []expressions.Quantifier{qA, qB}, []predicates.QueryPredicate{sameValue, predCross})
+	if len(grouped.GetPredicates()) != 1 {
+		t.Fatal("same-value bounds were not coalesced")
+	}
+	if got := mustFireExpressionRule(t, NewPredicatePushDownRule(), expressions.InitialOf(grouped)); len(got) != 0 {
+		t.Fatalf("cross-correlated range was split during pushdown: %v", got)
 	}
 }
 

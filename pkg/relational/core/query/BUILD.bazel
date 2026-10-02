@@ -71,6 +71,7 @@ go_test(
         "gated_leg_box_test.go",
         "groupby_gate_test.go",
         "hidden_sort_column_value_recovery_test.go",
+        "hoist_interleaved_spine_links_test.go",
         "inline_values_translation_test.go",
         "is_scan_family_leg_test.go",
         "left_outer_seed_test.go",

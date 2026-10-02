@@ -276,6 +276,39 @@ func TestTruncateSQL(t *testing.T) {
 	}
 }
 
+func TestComputedJoinResultMetadata(t *testing.T) {
+	t.Parallel()
+	g, md := newLoggingGenerator(t, `CREATE TABLE p (id BIGINT, v BIGINT, PRIMARY KEY (id))
+CREATE TABLE q (qid BIGINT, PRIMARY KEY (qid))`, &captureLogger{})
+	query := parseQuery(t, `SELECT a.qid, EXISTS (SELECT 1 FROM p WHERE id = 1) AS e
+FROM p AS a, q AS a ORDER BY a.qid DESC`)
+	planned, err := g.planSelectCascades(context.Background(), query, md, true, statementOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := planned.(*cascadesPlan)
+	t.Logf("physical plan: %s", plan.physicalPlan.Explain())
+	var computedJoin bool
+	plans.Walk(plan.physicalPlan, func(node plans.RecordQueryPlan) bool {
+		if join, ok := node.(*plans.RecordQueryNestedLoopJoinPlan); ok {
+			cascadesvalues.WalkValue(join.GetResultValue(), func(value cascadesvalues.Value) bool {
+				if _, ok := value.(*cascadesvalues.ExistsValue); ok {
+					computedJoin = true
+				}
+				return true
+			})
+		}
+		return true
+	})
+	if !computedJoin {
+		t.Fatal("fixture did not select a nested-loop join with a computed EXISTS result")
+	}
+	columns := deriveColumnsFromPlan(plan.physicalPlan, md)
+	if len(columns) != 2 || columns[0].TypeName != "BIGINT" || columns[1].TypeName != "BOOLEAN" || columns[1].Nullable != api.ColumnNoNulls {
+		t.Fatalf("computed result metadata = %+v, want BIGINT and NOT NULL BOOLEAN", columns)
+	}
+}
+
 func TestPlanCacheEvent_String(t *testing.T) {
 	t.Parallel()
 	cases := map[PlanCacheEvent]string{

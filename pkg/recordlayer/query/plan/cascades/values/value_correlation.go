@@ -33,7 +33,7 @@ package values
 // GetCorrelatedToOfValue walks v + its descendants and returns the
 // union of every correlation-bearing leaf Value's alias. Handles
 // QuantifiedObjectValue, QuantifiedRecordValue, ScalarSubqueryValue,
-// ObjectValue, UnmatchedAggregateValue, and ConstantObjectValue.
+// ObjectValue, and UnmatchedAggregateValue.
 // ExistsValue is a transparent composite — its child QuantifiedObjectValue
 // is reached via the Children() descent.
 //
@@ -45,7 +45,15 @@ func GetCorrelatedToOfValue(v Value) map[CorrelationIdentifier]struct{} {
 	if v == nil {
 		return nil
 	}
-	out := map[CorrelationIdentifier]struct{}{}
+	return CollectCorrelatedToOfValue(v, nil)
+}
+
+// CollectCorrelatedToOfValue unions v's correlations into out, allocating out
+// when nil. Callers folding several Value trees can share one result set.
+func CollectCorrelatedToOfValue(v Value, out map[CorrelationIdentifier]struct{}) map[CorrelationIdentifier]struct{} {
+	if out == nil {
+		out = make(map[CorrelationIdentifier]struct{})
+	}
 	WalkValue(v, func(node Value) bool {
 		switch q := node.(type) {
 		case *quantifiedObjectValue:
@@ -61,8 +69,6 @@ func GetCorrelatedToOfValue(v Value) map[CorrelationIdentifier]struct{} {
 			out[q.Alias] = struct{}{}
 		case *UnmatchedAggregateValue:
 			out[q.UnmatchedID] = struct{}{}
-		case *ConstantObjectValue:
-			out[q.Alias] = struct{}{}
 		}
 		return true
 	})
@@ -92,8 +98,6 @@ func GetCorrelatedToWithoutChildrenOfValue(
 		out[correlated.Alias] = struct{}{}
 	case *UnmatchedAggregateValue:
 		out[correlated.UnmatchedID] = struct{}{}
-	case *ConstantObjectValue:
-		out[correlated.Alias] = struct{}{}
 	}
 	return out
 }

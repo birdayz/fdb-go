@@ -2,6 +2,7 @@ package expr_test
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -326,6 +327,33 @@ func TestResolver_ResolveArithmetic_NilOperand(t *testing.T) {
 	r := expr.New(a, s)
 	if _, err := r.ResolveArithmetic(values.OpAdd, nil, nil); err == nil {
 		t.Fatal("expected error for nil operands")
+	}
+}
+
+func TestResolver_ComparisonPromotesFloatColumnToDouble(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	column, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("FLOAT_COLUMN"), values.NullableFloat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, reverse := range []bool{false, true} {
+		t.Run(fmt.Sprint(reverse), func(t *testing.T) {
+			t.Parallel()
+			var left, right values.Value = column, &values.ConstantValue{Value: float64(3), Typ: values.NotNullDouble}
+			if reverse {
+				left, right = right, left
+			}
+			predicate, err := r.ResolveComparison(predicates.ComparisonGreaterThanEq, left, right)
+			if err != nil {
+				t.Fatal(err)
+			}
+			comparison, ok := predicate.(*predicates.ComparisonPredicate)
+			if !ok || comparison.Operand.Type().Code() != values.TypeCodeDouble || comparison.Comparison.Operand.Type().Code() != values.TypeCodeDouble {
+				t.Fatalf("comparison = %v, want both operands promoted to DOUBLE", predicate)
+			}
+		})
 	}
 }
 
@@ -1143,4 +1171,41 @@ func TestResolverEnumStructuralCompatibility(t *testing.T) {
 	got, err := pred.Eval(paramRow{bound: map[int]any{1: "R"}})
 	require.NoError(t, err)
 	require.Equal(t, predicates.TriTrue, got)
+}
+
+func TestResolver_RecordInTypeValidation(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	record := func(types ...values.Type) values.Value {
+		fields := make([]values.RecordConstructorField, len(types))
+		for i, typ := range types {
+			fields[i] = values.RecordConstructorField{Value: &values.ConstantValue{Value: int64(1), Typ: typ}}
+		}
+		return values.NewRecordConstructorValue(fields...)
+	}
+	for _, tc := range []struct {
+		name        string
+		left, right values.Value
+		valid       bool
+	}{
+		{"same primitive fields", record(values.NotNullLong, values.TypeString), record(values.NullableLong, values.TypeString), true},
+		{"different widths", record(values.NotNullLong), record(values.NotNullInt), false},
+		{"different arity", record(values.NotNullLong), record(values.NotNullLong, values.NotNullLong), false},
+		{"scalar rhs", record(values.NotNullLong), values.LiteralValue(int64(1)), false},
+		{"nested records", record(values.NewRecordType("inner", false, nil)), record(values.NewRecordType("inner", false, nil)), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := r.ResolveIn(tc.left, []values.Value{tc.right})
+			if tc.valid {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				var apiErr *api.Error
+				require.ErrorAs(t, err, &apiErr)
+				require.Equal(t, api.ErrCodeDatatypeMismatch, apiErr.Code)
+			}
+		})
+	}
 }

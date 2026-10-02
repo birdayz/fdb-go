@@ -6,6 +6,8 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/pkg/relational/core/query/expr"
+	"fdb.dev/pkg/relational/core/query/semantic"
 )
 
 // These pins all guard the same class of defect: a shape that used to PLAN and
@@ -257,8 +259,9 @@ CREATE TABLE t2 (id BIGINT, t1_id BIGINT, PRIMARY KEY (id))`
 // sibling read `A2.ID` and passed. `b.id` was mapped to a2's slot, the EXISTS
 // answered on the wrong column, and the query returned no rows.
 //
-// The assertion is the ORDINAL. Merged row is [b.id, c.id, a2.id], so the
-// correlated comparison must read #0.
+// The comparison is sargable, so it binds the primary-key scan of the leg it
+// names (as Java plans it); the assertion is WHICH table that scan reads, with
+// all three legs shaped RECORD(ID).
 func TestCorrelatedPredicateOverThreeSameShapedLegsReadsItsOwnLeg(t *testing.T) {
 	t.Parallel()
 	const ddl = `CREATE TABLE a (id BIGINT, PRIMARY KEY (id))
@@ -272,19 +275,19 @@ CREATE TABLE c (id BIGINT, PRIMARY KEY (id))`
 		{
 			name: "correlated on the first leg",
 			sql:  `SELECT id FROM a WHERE EXISTS (SELECT 1 FROM b, c, a a2 WHERE b.id = 10 + a.id - 1)`,
-			want: "_current.ID#0 = ((10 + A.ID#0) - 1)",
+			want: "B = ((10 + A.ID#0) - 1)",
 		},
 		{
 			// The MIDDLE leg, so a bridge that simply took the first or the
 			// last same-named slot fails here even if the arm above passes.
 			name: "correlated on the middle leg",
 			sql:  `SELECT id FROM a WHERE EXISTS (SELECT 1 FROM b, c, a a2 WHERE c.id = 10 + a.id - 1)`,
-			want: "_current.ID#1 = ((10 + A.ID#0) - 1)",
+			want: "C = ((10 + A.ID#0) - 1)",
 		},
 		{
 			name: "correlated on the last leg",
 			sql:  `SELECT id FROM a WHERE EXISTS (SELECT 1 FROM b, c, a a2 WHERE a2.id = 10 + a.id - 1)`,
-			want: "_current.ID#2 = ((10 + A.ID#0) - 1)",
+			want: "A = ((10 + A.ID#0) - 1)",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -293,34 +296,32 @@ CREATE TABLE c (id BIGINT, PRIMARY KEY (id))`
 			if err != nil {
 				t.Fatalf("planning: %v", err)
 			}
-			got := correlatedMergedRowPredicate(t, plan)
+			got := correlatedLegProbe(t, plan)
 			if got != tc.want {
-				t.Errorf("correlated predicate over the merged row = %q, want %q\nplan: %s",
+				t.Errorf("correlated probe = %q, want %q\nplan: %s",
 					got, tc.want, plan.Explain())
 			}
 		})
 	}
 }
 
-// correlatedMergedRowPredicate returns the rendering of the single predicate
-// filtering the EXISTS body's merged row — the one whose ordinal says which leg
-// it reads.
-func correlatedMergedRowPredicate(t *testing.T, plan plans.RecordQueryPlan) string {
+// correlatedLegProbe renders the single scan that carries a comparison as
+// "TABLE = comparand" — the table says which leg the correlated read bound.
+func correlatedLegProbe(t *testing.T, plan plans.RecordQueryPlan) string {
 	t.Helper()
-	var found string
+	var found []string
 	var walk func(plans.RecordQueryPlan)
 	walk = func(p plans.RecordQueryPlan) {
-		if p == nil || found != "" {
+		if p == nil {
 			return
 		}
-		if filter, isFilter := p.(*plans.RecordQueryPredicatesFilterPlan); isFilter {
-			if _, isJoin := filter.GetInner().(*plans.RecordQueryNestedLoopJoinPlan); isJoin {
-				preds := filter.GetPredicates()
-				if len(preds) != 1 {
-					t.Fatalf("the filter over the EXISTS body has %d predicates, want 1", len(preds))
+		if scan, isScan := p.(*plans.RecordQueryScanPlan); isScan {
+			for _, cr := range scan.GetScanComparisons() {
+				eq := cr.GetEqualityComparison()
+				if eq == nil {
+					t.Fatalf("scan %s carries a non-equality comparison", scan.Explain())
 				}
-				found = preds[0].Explain()
-				return
+				found = append(found, strings.Join(scan.GetRecordTypes(), ",")+" = "+values.ExplainValue(eq.Operand))
 			}
 		}
 		for _, child := range p.GetChildren() {
@@ -328,10 +329,10 @@ func correlatedMergedRowPredicate(t *testing.T, plan plans.RecordQueryPlan) stri
 		}
 	}
 	walk(plan)
-	if found == "" {
-		t.Fatalf("no predicate filters the EXISTS body's merged row:\n%s", plan.Explain())
+	if len(found) != 1 {
+		t.Fatalf("want exactly one comparison-carrying scan, got %v:\n%s", found, plan.Explain())
 	}
-	return found
+	return found[0]
 }
 
 // TestScalarSubqueryLegUnderDuplicateAliasCommaJoinPlans pins the nullability
@@ -420,7 +421,7 @@ CREATE TABLE badge (id BIGINT, emp_id BIGINT, PRIMARY KEY (id))`
 				`WHERE e.id IS NULL AND NOT EXISTS (SELECT 1 FROM badge b WHERE b.emp_id = e.id)`,
 			want: map[string]string{
 				"NestedLoopJoin(LEFT OUTER": "_current.ID#2 IS NULL",
-				"DefaultOnEmpty":            "E.ID#0 IS NULL",
+				"DefaultOnEmpty":            "_current.ID#0 IS NULL",
 			},
 			keepsOuter: true,
 		},
@@ -701,6 +702,50 @@ CREATE TABLE cc (cid BIGINT, cv BIGINT, PRIMARY KEY (cid))`
 				t.Errorf("plan = %q,\nwant %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestNullSupplyingSourcePreservesNestedFieldTypes(t *testing.T) {
+	t.Parallel()
+	column := semantic.Column{Id: semantic.FromNormalized("ITEMS"), Type: "BIGINT", IsArray: true}
+	source := semantic.ScopeSource{
+		Table:           &semantic.StaticTable{TableColumns: []semantic.Column{column}},
+		CorrelationName: "B",
+	}
+	for _, mode := range []string{"table", "flowed_columns", "flowed_object"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			src := source
+			switch mode {
+			case "flowed_columns":
+				src.FlowedColumns = []semantic.Column{column}
+			case "flowed_object":
+				object, ok := semanticColumnFromExactType("B", expr.SourceRowType(src))
+				if !ok {
+					t.Fatal("cannot declare exact record source")
+				}
+				src.FlowedObject = &object
+			}
+			padded := nullSupplyingSource(src, true)
+			row := expr.SourceRowType(padded)
+			if row == nil || !row.IsNullable() || len(row.Fields) != 1 || row.Fields[0].FieldType.IsNullable() {
+				t.Fatalf("padded source = %v, want nullable record retaining its NOT NULL array field", row)
+			}
+			read, err := expr.SourceColumnValue(padded, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !read.Type().IsNullable() || !padded.Table.Columns()[0].Nullable {
+				t.Fatal("null-supplying column must remain nullable to SQL consumers")
+			}
+			if src.Table.Columns()[0].Nullable || expr.SourceRowType(src).IsNullable() ||
+				expr.SourceRowType(nullSupplyingSource(src, false)).IsNullable() {
+				t.Fatal("null extension mutated the original or preserved source")
+			}
+		})
+	}
+	if nullSupplyingSource(semantic.ScopeSource{}, true).Table != nil {
+		t.Fatal("absent source acquired a table")
 	}
 }
 

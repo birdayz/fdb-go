@@ -67,20 +67,8 @@ func PrepareMatchesAndCompensations(
 
 	result := make([]*SingleMatchedAccess, 0, len(partialMatches))
 	for _, pm := range partialMatches {
-		// A SPARSE candidate's stored predicate lives in its candidate
-		// SELECT (ValueIndexExpansionVisitor.java:138-162 → Go's
-		// expandFlatValueIndex). A match that has not absorbed that select
-		// treats the filtered index as a FULL row source, and no compensation
-		// can restore the records the index deliberately omits — so a sparse
-		// candidate's match must sit at the traversal root (predicate
-		// accounted) to become a scan. Today this arm is SHADOWED (measured):
-		// a sparse candidate can only hold scan-leaf matches, because both
-		// the select-level subsumption and adjustMatchForSelect refuse a
-		// non-tautology candidate predicate, and a leaf match dies at the
-		// zero-prefix skip below. It stands because Go's data access —
-		// unlike Java's — consumes non-root matches, and any future path
-		// that lets a leaf match satisfy an ordering here would otherwise
-		// serve the filtered index as the whole table.
+		// Defend direct callers too: an incomplete sparse-index match cannot
+		// compensate for records the index deliberately omits.
 		if pmi, isImpl := pm.(*PartialMatchImpl); isImpl {
 			if vc, isSparse := pm.GetMatchCandidate().(*ValueIndexScanMatchCandidate); isSparse && vc.predicateProto != nil {
 				tr := vc.GetTraversal()
@@ -338,75 +326,6 @@ func MaximumCoverageMatches(
 	return result
 }
 
-// equalParameterPrefixMaps compares two bound-parameter prefix maps by
-// alias set and semantically-equal comparison ranges.
-func equalParameterPrefixMaps(a, b map[values.CorrelationIdentifier]*predicates.ComparisonRange) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, av := range a {
-		bv, ok := b[k]
-		if !ok {
-			return false
-		}
-		if (av == nil) != (bv == nil) {
-			return false
-		}
-		if av != nil && !comparisonRangesEqual(av, bv) {
-			return false
-		}
-	}
-	return true
-}
-
-// comparisonRangesEqual compares two comparison ranges conservatively:
-// equal only when every comparison matches on type, parameter name, and
-// semantically-equal operand. Unsure means NOT equal (the dedup then
-// keeps both accesses — never drops a genuinely different scan).
-func comparisonRangesEqual(a, b *predicates.ComparisonRange) bool {
-	if a.IsEquality() != b.IsEquality() || a.IsInequality() != b.IsInequality() {
-		return false
-	}
-	if a.IsEmpty() && b.IsEmpty() {
-		return true
-	}
-	var ac, bc []*predicates.Comparison
-	switch {
-	case a.IsEquality():
-		ac = []*predicates.Comparison{a.GetEqualityComparison()}
-		bc = []*predicates.Comparison{b.GetEqualityComparison()}
-	case a.IsInequality():
-		ac = a.GetInequalityComparisons()
-		bc = b.GetInequalityComparisons()
-	default:
-		// Neither equality nor inequality and not both empty — unsure,
-		// so NOT equal (keep both accesses).
-		return false
-	}
-	if len(ac) != len(bc) {
-		return false
-	}
-	for i := range ac {
-		x, y := ac[i], bc[i]
-		if (x == nil) != (y == nil) {
-			return false
-		}
-		if x == nil {
-			continue
-		}
-		if x.Type != y.Type || x.ParameterName != y.ParameterName {
-			return false
-		}
-		if (x.Operand == nil) != (y.Operand == nil) {
-			return false
-		}
-		if x.Operand != nil && !semanticValueEquals(x.Operand, y.Operand) {
-			return false
-		}
-	}
-	return true
-}
-
 // findContainingAccess checks whether `probe` is dominated by another
 // access from the same MatchCandidate in the list. A probe is
 // dominated if another match from the same candidate has strictly more
@@ -474,21 +393,7 @@ func CreateScansForMatches(
 	for _, v := range accesses {
 		access := v.Value
 		pm := access.GetPartialMatch()
-		candidate := pm.GetMatchCandidate()
-
-		// Compute the bound parameter prefix from the match info's
-		// parameter binding map.
-		matchInfo := pm.GetMatchInfo()
-		regularInfo := matchInfo.GetRegularMatchInfo()
-		bindings := regularInfo.GetParameterBindingMap()
-		if !candidateBindingRangesEligible(candidate, bindings) {
-			// Defensive repeat of the match-time gate: hand-built PartialMatches
-			// must not bypass NaN ineligibility and emit an uncompensated probe.
-			continue
-		}
-		prefix := candidate.ComputeBoundParameterPrefixMap(bindings)
-
-		plan := candidate.ToScanPlan(prefix, access.IsReverseScanOrder())
+		plan := createScanForAccess(access)
 		result[pm] = plan
 	}
 	return result
@@ -511,10 +416,22 @@ func CreateScansForMatches(
 //
 // Ports Java's AbstractDataAccessRule.dataAccessForMatchPartition.
 func DataAccessForMatchPartition(
+	memoizer Memoizer,
 	requestedOrderings []*properties.RequestedOrdering,
 	partialMatches []PartialMatch,
 	ctx PlanContext,
 	intersector IntersectorFunc,
+) []expressions.RelationalExpression {
+	return dataAccessForMatchPartition(memoizer, requestedOrderings, partialMatches, ctx, intersector, make(accessRealizations))
+}
+
+func dataAccessForMatchPartition(
+	memoizer Memoizer,
+	requestedOrderings []*properties.RequestedOrdering,
+	partialMatches []PartialMatch,
+	ctx PlanContext,
+	intersector IntersectorFunc,
+	realizations accessRealizations,
 ) []expressions.RelationalExpression {
 	if len(partialMatches) == 0 {
 		return nil
@@ -526,76 +443,13 @@ func DataAccessForMatchPartition(
 		return nil
 	}
 
-	// Step 2: create scan plans.
-	scanMap := CreateScansForMatches(bestMatches, ctx)
-
-	// Step 3: for each match, apply compensation and collect expressions.
 	var resultExprs []expressions.RelationalExpression
 	for _, v := range bestMatches {
 		access := v.Value
 		pm := access.GetPartialMatch()
-		plan, ok := scanMap[pm]
-		if !ok {
+		expr := realizations.single(memoizer, access)
+		if expr == nil {
 			continue
-		}
-
-		comp := access.GetCompensation()
-		if comp.IsImpossible() {
-			continue
-		}
-
-		cand := pm.GetMatchCandidate()
-		// There is deliberately NO coveringness signal computed here.
-		// wrapScanPlanWithCoverage builds Fetch(Covering(IndexScan))
-		// unconditionally, mirroring
-		// ValueIndexScanMatchCandidate.tryFetchCoveringIndexScan, which
-		// consults only whether the entry can be turned into a partial record
-		// and never looks at the projection. The `!comp.IsFinalNeeded()` signal
-		// that used to live here was removed rather than refined: Java has no
-		// such input, and deciding coveringness at a site that can see the
-		// compensation is exactly what made the decision defeasible by any
-		// operator later pushed between the fetch and the scan.
-		//
-		// Propagate the candidate's unique flag + column order onto the
-		// scan wrapper, exactly as OrderedIndexScanRule does. These drive
-		// the cost model (a unique index with all columns equality-bound
-		// has provable max-cardinality 1 → cheapest point lookup) and the
-		// ordering property (sort elimination). Omitting them made the
-		// data-access scan look non-unique/unordered, so a non-unique
-		// index could beat the unique one and sorts weren't eliminated.
-		unique := candidateUnique(cand)
-		expr, err := wrapScanPlanWithCoverage(plan, unique, cand.GetColumnNames(), candidatePKColumns(cand), candidateDistinctSignal(cand))
-		if err != nil {
-			// A scan is an optional access-path alternative. If its exact row
-			// contract cannot construct the wrapper, exclude that alternative.
-			continue
-		}
-
-		if comp.IsNeeded() {
-			fmc, ok := comp.(*ForMatchCompensation)
-			if !ok {
-				// A needed compensation only the ForMatch form can realize.
-				// Treat any other implementation as an optimization miss
-				// rather than emitting the scan without its required work.
-				continue
-			}
-			// Java AbstractDataAccessRule.applyCompensationForSingleDataAccessMaybe:
-			//   compensation.applyAllNeededCompensations(memoizer, plan,
-			//       realizedAlias -> TranslationMap.ofAliases(candidateTopAlias, realizedAlias))
-			// The function receives the matched query-side ForEach alias (the
-			// realized base-quantifier alias) and rebases compensated predicates
-			// from the candidate's top alias onto it.
-			candidateTopAlias := access.GetCandidateTopAlias()
-			applied, appliedOK := fmc.ApplyAllNeeded(expr, func(realizedAlias values.CorrelationIdentifier) TranslationMap {
-				return TranslationMapOfAliases(candidateTopAlias, realizedAlias)
-			})
-			if !appliedOK {
-				// A malformed or otherwise unappliable compensation is an
-				// optimization miss, never permission to use the scan
-				// without its required filters/result shaping.
-				continue
-			}
-			expr = applied
 		}
 		if pmi, ok := pm.(*PartialMatchImpl); ok &&
 			!exactDataAccessResultTypesAgree(expr, pmi.GetQueryExpression()) {
@@ -781,8 +635,8 @@ func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, unique bool, columnNam
 			if err != nil {
 				return nil, err
 			}
-			covRef := expressions.InitialOf(covering)
-			fetchQ := expressions.ForEachQuantifier(covRef)
+			covRef := expressions.FinalOfAtStage(covering, expressions.StagePlanned)
+			fetchQ := expressions.NewPhysicalQuantifier(covRef)
 			// The fetch is its own cascades expression carrying the live covRef
 			// edge (RFC-184 W2).
 			return plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
@@ -896,17 +750,9 @@ func (s *scanPlanExpression) TieBreakHashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
-// GetCorrelatedToWithoutChildren reports the outer correlations the wrapped plan
-// carries. A bare PK RecordQueryScanPlan SARGed with a join predicate (`pk =
-// QOV(outer).fk`) is a CORRELATED probe — returning nil here (the prior behaviour) let
-// join-leg detection / winner-stamping treat it as self-contained and materialize/stamp
-// it without tracking the outer alias (a pre-existing gap in the RFC-150 data-access
-// correlation wiring, which reached the bare scan/index expressions but not
-// this plan-backed leaf). dataAccessExprCorrelations reports the full set (SARG
-// comparands + residual preds + map values, params excluded), the same source the
-// bare scan/index expressions use for their correlations.
+// The adapter has no quantifiers, so its own correlations include the wrapped tree.
 func (s *scanPlanExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return dataAccessExprCorrelations(s.plan)
+	return expressions.GetCorrelatedToOfExpression(s.plan)
 }
 
 // EqualsWithoutChildren compares the wrapped plans DEEPLY (plans.Equals), not
@@ -1092,34 +938,9 @@ func matchBoundPrefixIsCorrelated(pm PartialMatch) bool {
 	return false
 }
 
-// comparisonRowCorrelated reports whether a bound comparison's RHS operand
-// depends on a per-row OUTER quantifier (a join correlation such as c.id),
-// as opposed to only constants. Plain ConstantValue literals carry no
-// correlation at all; a ConstantObjectValue is a reference to the query's
-// constant pool — bound once per execution, not per outer row — and likewise
-// does not make the scan row-dependent. Only a genuine row-bearing correlation
-// (a QuantifiedObjectValue etc. that survives subtracting constant-pool aliases)
-// disqualifies a leg from an independently-evaluable primary-key intersection.
-// (Today the SQL layer lowers WHERE constants as ConstantValue, so the
-// subtraction is belt-and-suspenders, but it keeps the guard correct if literal
-// parameterization to ConstantObjectValue is added later.)
+// Row-dependent bounds disqualify independently evaluated intersection legs.
 func comparisonRowCorrelated(c *predicates.Comparison) bool {
-	if c == nil {
-		return false
-	}
-	corr := c.GetCorrelatedTo()
-	if len(corr) == 0 {
-		return false
-	}
-	if c.Operand != nil {
-		values.WalkValue(c.Operand, func(node values.Value) bool {
-			if cov, ok := node.(*values.ConstantObjectValue); ok {
-				delete(corr, cov.Alias)
-			}
-			return true
-		})
-	}
-	return len(corr) > 0
+	return c != nil && len(c.GetCorrelatedTo()) > 0
 }
 
 // SatisfiesRequestedOrdering checks if a PartialMatch's matched

@@ -56,36 +56,74 @@ func TestSeedWindowReader_HardZerosAreWired(t *testing.T) {
 // running would read GREEN.
 //
 // Floored per SITE, because the sites do not substitute for one another — the
-// existential rebase carries more traffic than the other four together, so a
-// total floor stays satisfied with all four dark.
+// group-slot reader carries more traffic than the others together, so a total
+// floor stays satisfied with the rest dark.
 func TestSeedWindowReader_FloorCatchesASilencedReader(t *testing.T) {
 	t.Parallel()
 	floors := &SeedWindowReaderFloors{}
-	floors.Reads[SeedWindowSiteExistentialRebase] = 90
-	floors.Reads[SeedWindowSiteGatheredGroupSlot] = 16
+	floors.Reads[SeedWindowSiteGatheredGroupSlot] = 200
+	floors.Reads[SeedWindowSiteBoxSurvivorCorrelation] = 4
 
-	// The existential rebase alone, at full volume: the loud site cannot cover
+	// The group-slot reader alone, at full volume: the loud site cannot cover
 	// for the quiet one.
 	var lopsided [seedWindowSiteCount][seedWindowReadClassCount]int
-	lopsided[SeedWindowSiteExistentialRebase][SeedWindowHit] = 962
+	lopsided[SeedWindowSiteGatheredGroupSlot][SeedWindowHit] = 2077
 	var b strings.Builder
 	if !assertSeedWindowReaderCounts(&b, lopsided, floors) {
-		t.Fatal("a silenced gatheredGroupSlot must fail the gate even while the " +
-			"existential rebase runs at full volume — that is what per-site floors are for")
+		t.Fatal("a silenced boxSurvivorCorrelation must fail the gate even while the " +
+			"group-slot reader runs at full volume — that is what per-site floors are for")
 	}
-	if !strings.Contains(b.String(), "gatheredGroupSlot") {
+	if !strings.Contains(b.String(), "boxSurvivorCorrelation") {
 		t.Fatalf("the failure must name the DARK site; got %q", b.String())
 	}
-	if strings.Contains(b.String(), "existentialRebase reached") {
+	if strings.Contains(b.String(), "gatheredGroupSlot reached") {
 		t.Fatalf("the loud site must not be reported dark; got %q", b.String())
 	}
 
 	var both [seedWindowSiteCount][seedWindowReadClassCount]int
-	both[SeedWindowSiteExistentialRebase][SeedWindowHit] = 962
-	both[SeedWindowSiteGatheredGroupSlot][SeedWindowHit] = 160
+	both[SeedWindowSiteGatheredGroupSlot][SeedWindowHit] = 2077
+	both[SeedWindowSiteBoxSurvivorCorrelation][SeedWindowMiss] = 42
 	var b2 strings.Builder
 	if assertSeedWindowReaderCounts(&b2, both, floors) {
 		t.Fatalf("both floors met must pass; got %q", b2.String())
+	}
+}
+
+// A RETIRED site alarms on GROWTH, the opposite direction from a floor: its
+// expected population is zero, so a single read means the retired traffic is
+// being produced again.
+func TestSeedWindowReader_RetiredSiteAlarmsOnRevival(t *testing.T) {
+	t.Parallel()
+	floors := &SeedWindowReaderFloors{}
+	floors.Retired[SeedWindowSiteExistentialRebase] = true
+
+	var silent [seedWindowSiteCount][seedWindowReadClassCount]int
+	silent[SeedWindowSiteGatheredGroupSlot][SeedWindowHit] = 2077
+	var quiet strings.Builder
+	if assertSeedWindowReaderCounts(&quiet, silent, floors) {
+		t.Fatalf("a retired site at ZERO is its expected state, not a dark reader; got %q", quiet.String())
+	}
+
+	for _, class := range []SeedWindowReadClass{SeedWindowHit, SeedWindowMiss, SeedWindowNestedHit} {
+		var revived [seedWindowSiteCount][seedWindowReadClassCount]int
+		revived[SeedWindowSiteExistentialRebase][class] = 1
+		var b strings.Builder
+		if !assertSeedWindowReaderCounts(&b, revived, floors) {
+			t.Fatalf("a %s read at a RETIRED site left the census green", class)
+		}
+		for _, want := range []string{"RETIRED site existentialRebase reached 1 reads", "GROWTH", "PartitionSelectRule"} {
+			if !strings.Contains(b.String(), want) {
+				t.Fatalf("the revival message must contain %q; got %q", want, b.String())
+			}
+		}
+	}
+
+	// Retirement is per site: an unretired site's reads are ordinary traffic.
+	var other [seedWindowSiteCount][seedWindowReadClassCount]int
+	other[SeedWindowSiteBoxLegRef][SeedWindowHit] = 5
+	var b3 strings.Builder
+	if assertSeedWindowReaderCounts(&b3, other, floors) {
+		t.Fatalf("reads at an unretired site must not trip the retirement alarm; got %q", b3.String())
 	}
 }
 

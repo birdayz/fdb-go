@@ -2,6 +2,7 @@ package values
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"fdb.dev/gen"
@@ -36,6 +37,8 @@ var primitiveTypeCodes = map[TypeCode]gen.PType_PTypeCode{
 // TypeToProto is Java's Type.toTypeProto.
 func (c *SerializationContext) TypeToProto(t Type) (*gen.PType, error) {
 	switch tt := t.(type) {
+	case *VectorType:
+		return &gen.PType{SpecificType: &gen.PType_VectorType{VectorType: &gen.PType_PVectorType{IsNullable: proto.Bool(tt.Nullable), Precision: proto.Int32(int32(tt.Precision)), Dimensions: proto.Int32(int32(tt.Dimensions))}}}, nil
 	case *RecordType:
 		key := recordIdentityKey(tt)
 		if id, ok := c.recordIDs[key]; ok {
@@ -104,6 +107,8 @@ func recordIdentityKey(t Type) string {
 	var walk func(Type)
 	walk = func(t Type) {
 		switch tt := t.(type) {
+		case *VectorType:
+			fmt.Fprintf(&b, "V(%t,%d,%d)", tt.Nullable, tt.Precision, tt.Dimensions)
 		case *RecordType:
 			fmt.Fprintf(&b, "R(%q,%t", tt.RecordName, tt.Nullable)
 			for _, f := range tt.Fields {
@@ -128,6 +133,12 @@ func recordIdentityKey(t Type) string {
 // TypeFromProto is Java's Type.fromTypeProto.
 func (c *SerializationContext) TypeFromProto(p *gen.PType) (Type, error) {
 	switch {
+	case p.GetVectorType() != nil:
+		v := p.GetVectorType()
+		if v.IsNullable == nil {
+			return nil, fmt.Errorf("deserialize vector type: missing isNullable")
+		}
+		return NewVectorType(v.GetIsNullable(), int(v.GetPrecision()), int(v.GetDimensions())), nil
 	case p.GetRecordType() != nil:
 		rt := p.GetRecordType()
 		if len(rt.GetFields()) == 0 && rt.Name == nil && rt.IsNullable == nil {
@@ -235,13 +246,18 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 		}
 		return &gen.PValue{SpecificValue: &gen.PValue_NullValue{NullValue: &gen.PNullValue{ResultType: t}}}, nil
 	case *ConstantValue:
-		obj, err := literalToProto(vv.Value)
+		obj, err := literalToProto(vv.Value, vv.Typ)
 		if err != nil {
 			return nil, err
 		}
 		t, err := c.TypeToProto(vv.Typ)
 		if err != nil {
 			return nil, err
+		}
+		if vv.Typ.Code() == TypeCodeVector {
+			// Java's comparable-object decoder needs this nested tag to restore
+			// RealVector rather than byte[], independently of the literal type.
+			obj.Type = t
 		}
 		return &gen.PValue{SpecificValue: &gen.PValue_LiteralValue{LiteralValue: &gen.PLiteralValue{Value: obj, ResultType: t}}}, nil
 	case *RecordConstructorValue:
@@ -317,7 +333,7 @@ var javaTypeCodeNames = map[TypeCode]string{
 	TypeCodeNull: "NULL", TypeCodeBoolean: "BOOLEAN", TypeCodeInt: "INT", TypeCodeLong: "LONG",
 	TypeCodeFloat: "FLOAT", TypeCodeDouble: "DOUBLE", TypeCodeString: "STRING", TypeCodeBytes: "BYTES",
 	TypeCodeVersion: "VERSION", TypeCodeEnum: "ENUM", TypeCodeUuid: "UUID", TypeCodeArray: "ARRAY",
-	TypeCodeRecord: "RECORD",
+	TypeCodeRecord: "RECORD", TypeCodeVector: "VECTOR",
 }
 
 // primitivePromotionTrie is PromoteValue.computePromotionsTrie for a
@@ -346,7 +362,47 @@ func primitivePromotionTrie(from, to Type) (*gen.PCoercionTrieNode, error) {
 	}, nil
 }
 
-func literalToProto(v any) (*gen.PComparableObject, error) {
+func literalToProto(v any, typ Type) (*gen.PComparableObject, error) {
+	// SQL uses wide Go carriers even for INT/FLOAT literals. Java restores
+	// the runtime box from the value field, not PLiteralValue.result_type;
+	// writing the wide carrier would break Integer/Float arithmetic casts.
+	if typ != nil {
+		switch typ.Code() {
+		case TypeCodeInt, TypeCodeLong:
+			var n int64
+			switch x := v.(type) {
+			case int:
+				n = int64(x)
+			case int32:
+				n = int64(x)
+			case int64:
+				n = x
+			default:
+				return nil, fmt.Errorf("serialize %s literal: incompatible carrier %T", typ, v)
+			}
+			v = n
+			if typ.Code() == TypeCodeInt {
+				if n < math.MinInt32 || n > math.MaxInt32 {
+					return nil, fmt.Errorf("serialize INT literal: %d is out of range", n)
+				}
+				v = int32(n)
+			}
+		case TypeCodeFloat, TypeCodeDouble:
+			var n float64
+			switch x := v.(type) {
+			case float32:
+				n = float64(x)
+			case float64:
+				n = x
+			default:
+				return nil, fmt.Errorf("serialize %s literal: incompatible carrier %T", typ, v)
+			}
+			v = n
+			if typ.Code() == TypeCodeFloat {
+				v = float32(n)
+			}
+		}
+	}
 	pv := &gen.Value{}
 	switch x := v.(type) {
 	case int64:

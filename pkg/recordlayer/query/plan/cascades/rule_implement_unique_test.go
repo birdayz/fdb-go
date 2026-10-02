@@ -186,10 +186,14 @@ func TestImplementUniqueRule_RequiredWrapsEveryPKMemberAndFreezesExactInput(
 				result,
 			)
 		}
+		assertProducerPhysicalQuantifiers(t, distinct)
 		innerQ := distinct.GetInnerQuantifier()
 		pinnedRef := innerQ.GetRangesOver()
 		if pinnedRef == nil || pinnedRef == innerRef {
 			t.Fatal("required PK-distinct did not detach and freeze its exact input")
+		}
+		if pinnedRef.Stage() != innerRef.Stage() || pinnedRef.NeedsExploration() {
+			t.Errorf("retained member lost its source stage or was scheduled for fresh exploration: stage=%v source=%v needs=%t", pinnedRef.Stage(), innerRef.Stage(), pinnedRef.NeedsExploration())
 		}
 		pinnedMembers := pinnedRef.FinalMembers()
 		if len(pinnedMembers) != 1 {

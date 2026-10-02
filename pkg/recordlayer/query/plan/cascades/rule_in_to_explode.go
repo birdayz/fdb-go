@@ -56,9 +56,20 @@ type InComparisonToExplodeRule struct {
 
 func NewInComparisonToExplodeRule() *InComparisonToExplodeRule {
 	return &InComparisonToExplodeRule{
-		matcher: NewExpressionMatcher[*expressions.LogicalFilterExpression]("logical_filter_in_explode"),
+		matcher: NewExpressionMatcher[*expressions.LogicalFilterExpression]("logical_filter_in_explode").WithRootPredicate(
+			func(filter *expressions.LogicalFilterExpression) bool {
+				for _, pred := range filter.GetPredicates() {
+					if comparison, ok := pred.(*predicates.ComparisonPredicate); ok && comparison.Comparison.Type == predicates.ComparisonIn {
+						return true
+					}
+				}
+				return false
+			},
+		),
 	}
 }
+
+func (r *InComparisonToExplodeRule) ConstraintDependencies() []any { return nil }
 
 func (r *InComparisonToExplodeRule) Matcher() matching.BindingMatcher { return r.matcher }
 
@@ -69,7 +80,7 @@ func (r *InComparisonToExplodeRule) OnMatch(call *ExpressionRuleCall) {
 	// SelectExpression with an ExplodeExpression quantifier, the
 	// multi-element IN has already been transformed. Skip to prevent
 	// infinite memo growth from fresh-alias SelectExpressions.
-	for _, m := range call.Reference.Members() {
+	for _, m := range call.Reference.AllMembers() {
 		if sel, ok := m.(*expressions.SelectExpression); ok {
 			for _, q := range sel.GetQuantifiers() {
 				if ref := q.GetRangesOver(); ref != nil {
@@ -135,8 +146,8 @@ func (r *InComparisonToExplodeRule) OnMatch(call *ExpressionRuleCall) {
 	// declines to transform (returns) rather than failing planning.
 	rhs, err := inPred.Comparison.Operand.Evaluate(nil)
 	var nullElement *values.NullArrayElementError
-	runtimeArray := err != nil && errors.As(err, &nullElement)
-	if err != nil && !runtimeArray {
+	runtimeArray := (err != nil && errors.As(err, &nullElement)) || values.IsRecord(inPred.Operand.Type())
+	if err != nil && !errors.As(err, &nullElement) {
 		return
 	}
 	list, ok := rhs.([]any)
@@ -239,7 +250,7 @@ func (r *InComparisonToExplodeRule) OnMatch(call *ExpressionRuleCall) {
 	// check: the explode evaluates it when the plan opens and fails with
 	// 0A000 there, even over an empty table.
 	if runtimeArray {
-		explodeValue = inPred.Comparison.Operand
+		explodeValue = values.NewArrayDistinctValue(inPred.Comparison.Operand)
 	}
 	explodeExpr, err := expressions.NewExplodeExpression(explodeValue)
 	if err != nil {
@@ -259,11 +270,30 @@ func (r *InComparisonToExplodeRule) OnMatch(call *ExpressionRuleCall) {
 		call.Fail(err)
 		return
 	}
-	eqCmp := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: explodedQOV}
-	eqPred := predicates.NewComparisonPredicate(inPred.Operand, eqCmp)
-
 	innerPreds := make([]predicates.QueryPredicate, 0, len(otherPreds)+1)
-	innerPreds = append(innerPreds, eqPred)
+	if values.IsRecord(elementType) {
+		// Java deconstructs record membership into positional scalar equalities,
+		// making each constituent available to compound index matching.
+		probeFields, err := values.DeconstructRecord(inPred.Operand)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		listFields, err := values.DeconstructRecord(explodedQOV)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		if len(probeFields) != len(listFields) {
+			return
+		}
+		for i, field := range probeFields {
+			innerPreds = append(innerPreds, predicates.NewComparisonPredicate(field, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: listFields[i]}))
+		}
+	} else {
+		eqCmp := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: explodedQOV}
+		innerPreds = append(innerPreds, predicates.NewComparisonPredicate(inPred.Operand, eqCmp))
+	}
 	innerPreds = append(innerPreds, otherPreds...)
 
 	// The BOUND inner quantifier is reused, not re-memoized.

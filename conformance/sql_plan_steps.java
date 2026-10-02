@@ -1745,6 +1745,12 @@ class SqlPlanSteps {
      * the final ones). Registered only for the duration of one EXPLAIN on this thread
      * ({@code PlannerEventListeners} is thread-local).
      */
+    private static final class TraceTaskLimitReached extends RuntimeException {
+        TraceTaskLimitReached(int limit) {
+            super("planner trace stopped after " + limit + " tasks");
+        }
+    }
+
     private static final class RuleTraceListener implements
             com.apple.foundationdb.record.query.plan.cascades.events.PlannerEventListeners.EventListener {
         final java.util.Set<String> rules;
@@ -1776,20 +1782,29 @@ class SqlPlanSteps {
         //    ExecutingTaskPlannerEvent each task begins with (CascadesPlanner counts the same
         //    tasks into QueryPlanInfoKeys.TOTAL_TASK_COUNT, per phase).
         final boolean taskCount;
+        final int taskLimit;
+        int observedTasks;
+        boolean taskLimitReached;
         final java.util.Map<String, Integer> tasksPerPhase = new java.util.TreeMap<>();
         final java.util.Map<String, Integer> tasksPerKind = new java.util.TreeMap<>();
         String rewritingShape;
+        com.apple.foundationdb.record.query.plan.RecordQueryPlannerConfiguration observedConfig;
         final java.util.List<String> partitionLines = new java.util.ArrayList<>();
         com.apple.foundationdb.record.query.plan.cascades.Reference root;
         com.apple.foundationdb.record.query.plan.RecordQueryPlannerConfiguration rootConfig;
         java.util.List<com.apple.foundationdb.record.query.plan.cascades.expressions.RelationalExpression> rootMembers;
 
         RuleTraceListener(java.util.Collection<String> rules) {
+            this(rules, 0);
+        }
+
+        RuleTraceListener(java.util.Collection<String> rules, int taskLimit) {
+            this.taskLimit = taskLimit;
             this.rules = new java.util.HashSet<>(rules);
             this.inUnionPartitions = this.rules.contains("IN-UNION-PARTITIONS");
             this.rootPairs = this.rules.contains("ROOT-PAIRS");
             this.rewritingResult = this.rules.contains("REWRITING-RESULT");
-            this.taskCount = this.rules.contains("TASK-COUNT");
+            this.taskCount = taskLimit > 0 || this.rules.contains("TASK-COUNT");
         }
 
         private static String shape(com.apple.foundationdb.record.query.plan.cascades.Reference ref, int depth) {
@@ -1834,12 +1849,22 @@ class SqlPlanSteps {
 
         @Override
         public void onQuery(String queryAsString, com.apple.foundationdb.record.query.plan.cascades.PlanContext planContext) {
+            observedConfig = planContext.getPlannerConfiguration();
         }
 
         @Override
         public void onEvent(com.apple.foundationdb.record.query.plan.cascades.events.PlannerEvent event) {
+            if (event instanceof com.apple.foundationdb.record.query.plan.cascades.events.TransformRuleCallPlannerEvent) {
+                var call = (com.apple.foundationdb.record.query.plan.cascades.events.TransformRuleCallPlannerEvent) event;
+                observedConfig = call.getRuleCall().getContext().getPlannerConfiguration();
+            }
             if (taskCount && event instanceof com.apple.foundationdb.record.query.plan.cascades.events.ExecutingTaskPlannerEvent
                     && event.getLocation() == com.apple.foundationdb.record.query.plan.cascades.events.PlannerEvent.Location.BEGIN) {
+                if (taskLimit > 0 && observedTasks >= taskLimit) {
+                    taskLimitReached = true;
+                    throw new TraceTaskLimitReached(taskLimit);
+                }
+                observedTasks++;
                 tasksPerPhase.merge(((com.apple.foundationdb.record.query.plan.cascades.events.ExecutingTaskPlannerEvent) event)
                         .getPlannerPhase().name(), 1, Integer::sum);
                 tasksPerKind.merge("task " + ((com.apple.foundationdb.record.query.plan.cascades.events.ExecutingTaskPlannerEvent) event)
@@ -2142,21 +2167,76 @@ class SqlPlanSteps {
     @ConformanceStep("planRuleTrace")
     public JsonObject planRuleTrace(String clusterFile, String schemaTemplate, java.util.List<String> setupSqls,
                                     String querySql, java.util.List<String> rules) throws Exception {
+        return planRuleTraceOutcome(clusterFile, schemaTemplate, setupSqls, querySql, rules, false);
+    }
+
+    @ConformanceStep("planRuleTraceOutcome")
+    public JsonObject planRuleTraceOutcome(String clusterFile, String schemaTemplate, java.util.List<String> setupSqls,
+                                           String querySql, java.util.List<String> rules) throws Exception {
+        return planRuleTraceOutcome(clusterFile, schemaTemplate, setupSqls, querySql, rules, true);
+    }
+
+    @ConformanceStep("planRuleTraceWithinBudget")
+    public JsonObject planRuleTraceWithinBudget(String clusterFile, String schemaTemplate, java.util.List<String> setupSqls,
+                                                String querySql, java.util.List<String> rules, int taskLimit) throws Exception {
+        if (taskLimit <= 0) {
+            throw new IllegalArgumentException("trace task limit must be positive");
+        }
+        return planRuleTraceOutcome(clusterFile, schemaTemplate, setupSqls, querySql, rules, true, taskLimit);
+    }
+
+    private JsonObject planRuleTraceOutcome(String clusterFile, String schemaTemplate, java.util.List<String> setupSqls,
+                                            String querySql, java.util.List<String> rules, boolean captureFailure) throws Exception {
+        return planRuleTraceOutcome(clusterFile, schemaTemplate, setupSqls, querySql, rules, captureFailure, 0);
+    }
+
+    private JsonObject planRuleTraceOutcome(String clusterFile, String schemaTemplate, java.util.List<String> setupSqls,
+                                            String querySql, java.util.List<String> rules, boolean captureFailure, int taskLimit) throws Exception {
         return runWithEphemeralSchema(clusterFile, schemaTemplate, conn -> {
             try (Statement st = conn.createStatement()) {
                 for (String setup : setupSqls) {
                     withFdbRetry(() -> st.executeUpdate(setup));
                 }
             }
-            RuleTraceListener listener = new RuleTraceListener(rules);
+            RuleTraceListener listener = new RuleTraceListener(rules, taskLimit);
             com.apple.foundationdb.record.query.plan.cascades.events.PlannerEventListeners.addListener(RuleTraceListener.class, listener);
-            String plan;
+            String plan = "";
+            Throwable failure = null;
+            long started = System.nanoTime();
             try {
                 plan = runExplain(conn, querySql);
+            } catch (SQLException | StackOverflowError | TraceTaskLimitReached e) {
+                if (!captureFailure) {
+                    throw e;
+                }
+                failure = e;
             } finally {
                 com.apple.foundationdb.record.query.plan.cascades.events.PlannerEventListeners.removeListener(RuleTraceListener.class);
             }
+            long elapsedNanos = System.nanoTime() - started;
             JsonObject out = new JsonObject();
+            out.addProperty("elapsedNanos", elapsedNanos);
+            out.addProperty("traceTaskLimit", taskLimit);
+            out.addProperty("traceTaskLimitReached", listener.taskLimitReached);
+            if (listener.observedConfig != null) {
+                JsonObject limits = new JsonObject();
+                limits.addProperty("maxTotalTaskCount", listener.observedConfig.getMaxTotalTaskCount());
+                limits.addProperty("maxTaskQueueSize", listener.observedConfig.getMaxTaskQueueSize());
+                limits.addProperty("orToUnionMaxNumConjuncts", listener.observedConfig.getOrToUnionMaxNumConjuncts());
+                out.add("limits", limits);
+            }
+            if (failure != null && !listener.taskLimitReached) {
+                out.addProperty("error", failure.toString());
+                out.addProperty("exceptionClass", failure.getClass().getSimpleName());
+                if (failure instanceof SQLException) {
+                    out.addProperty("sqlState", ((SQLException) failure).getSQLState());
+                }
+                JsonArray stack = new JsonArray();
+                for (StackTraceElement frame : failure.getStackTrace()) {
+                    stack.add(frame.toString());
+                }
+                out.add("stackTrace", stack);
+            }
             out.addProperty("explain", plan);
             JsonObject perRule = new JsonObject();
             for (String rule : rules) {

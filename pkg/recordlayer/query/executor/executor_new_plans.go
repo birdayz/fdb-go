@@ -49,6 +49,9 @@ func executeAggregateIndexScan(
 	physicalGroupingCount := len(groupCols)
 	isPermuted := idx.Type == recordlayer.IndexTypePermutedMin || idx.Type == recordlayer.IndexTypePermutedMax
 	scanType := recordlayer.IndexScanByValue
+	if idx.Type == recordlayer.IndexTypeBitmapValue {
+		scanType = recordlayer.IndexScanByGroup
+	}
 	if isPermuted {
 		groupingCount, actualPhysicalPrefix, layoutErr := permutedAggregateGroupingLayout(idx)
 		if layoutErr != nil {
@@ -187,6 +190,9 @@ func executeAggregateIndexScan(
 			innerContinuation []byte,
 			childProperties recordlayer.ScanProperties,
 		) (recordlayer.RecordCursor[*recordlayer.IndexEntry], error) {
+			if idx.Type == recordlayer.IndexTypeBitmapValue {
+				return store.ScanIndexByType(idx, recordlayer.IndexScanByGroup, scanRange, innerContinuation, childProperties), nil
+			}
 			// Instrumented here because this path never touches FDBRecordStore.ScanIndex:
 			// the per-range factory needs the maintainer directly, so the store method
 			// that would otherwise count the scan is bypassed entirely.

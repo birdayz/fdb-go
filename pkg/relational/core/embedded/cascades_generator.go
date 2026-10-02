@@ -1576,6 +1576,10 @@ type paginatingRows struct {
 	// never recorded — exhaustion is how a successful result set ends.
 	statsErr error
 
+	// retryTimeLimit retains the reduced budget across successful pages. Zero
+	// means the initial ceiling; explicit transactions never adapt or retry.
+	retryTimeLimit time.Duration
+
 	// emitted counts rows actually returned to the caller across all pages.
 	// Shared by the MAX_ROWS cap and pageRowBudget. SQL LIMIT/OFFSET is NOT
 	// here anymore — it is carried by the RecordQueryLimitPlan operator
@@ -1955,6 +1959,17 @@ func (r *paginatingRows) pageRowBudget() int {
 	return int(remainingEmit)
 }
 
+func (r *paginatingRows) pageTimeLimit() time.Duration {
+	limit := txPageTimeLimit
+	if r.retryTimeLimit > 0 && r.retryTimeLimit < limit {
+		limit = r.retryTimeLimit
+	}
+	if millis := optInt64(r.conn.Options(), api.OptExecutionTimeLimit, 0); millis > 0 && millis <= txPageTimeLimit.Milliseconds() {
+		limit = min(limit, time.Duration(millis)*time.Millisecond)
+	}
+	return limit
+}
+
 func (r *paginatingRows) executeProps() recordlayer.ExecuteProperties {
 	// Anchor the scan/time budget on the database's env clock. This path ALWAYS arms a time
 	// limit (txPageTimeLimit below), and that limit decides where a page ends and therefore
@@ -1978,13 +1993,7 @@ func (r *paginatingRows) executeProps() recordlayer.ExecuteProperties {
 	// wall is never exceeded: the 4s cap is the ceiling and a smaller user
 	// limit only narrows it — a larger user value can never raise the page
 	// budget past the cap.
-	timeLimit := txPageTimeLimit
-	if userMillis := optInt64(opts, api.OptExecutionTimeLimit, 0); userMillis > 0 {
-		if ut := time.Duration(userMillis) * time.Millisecond; ut < timeLimit {
-			timeLimit = ut
-		}
-	}
-	props = props.WithTimeLimit(timeLimit)
+	props = props.WithTimeLimit(r.pageTimeLimit())
 
 	// Per-page scanned-records limit. MaxInt32 is the "no limit" sentinel
 	// (api default) — only wire a real (smaller) limit through.
@@ -2210,6 +2219,17 @@ func (r *paginatingRows) fetchPage() error {
 	// transaction that has since ended is a loud 25F01, never a silent fresh
 	// transaction (Decision 3).
 	_, txErr := c.runInCapturedTx(r.ctx, r.tx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		if attempts > 0 {
+			// Java's ThrottledRetryingIterator decreases work on every failed
+			// attempt. SQL pages use time rather than its scanned-row quota:
+			// reduce by 10%, retaining a positive budget and cleanup margin.
+			// A fast version clock can make FDB's MVCC window shorter than
+			// four wall-clock seconds. Retrying the same budget then repeats
+			// 1007 forever. Closure re-entry observes commit failures too,
+			// which happen outside this callback; it also conservatively
+			// reduces work for other retryable failures such as conflicts.
+			r.retryTimeLimit = max(time.Millisecond, r.pageTimeLimit()*9/10)
+		}
 		attempts++
 		// The driver budget governs an application's multi-statement explicit
 		// transaction. An internally owned auto-commit DML transaction may span
@@ -3099,10 +3119,8 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 		// index) reads stale data. In Java these types have no value-scan candidate
 		// (AtomicMutationIndexMaintainerFactory / BitmapValueIndexMaintainerFactory
 		// never call expandValueIndexMatchCandidate). The subset with a legitimate
-		// aggregate use — COUNT/SUM and permuted MIN/MAX — was already claimed as an
-		// aggregate candidate by tryAggregateIndexCandidate above and never reaches
-		// here; the running-extremum (_EVER) and bitmap types get no candidate at
-		// all. Either way, dropping them here leaves a plain MAX/MIN over only such
+		// aggregate use was already claimed by tryAggregateIndexCandidate above.
+		// Dropping the remaining atomic types here leaves a plain MAX/MIN over only such
 		// an index to fall back to a base-record StreamingAgg, which computes the
 		// correct current extremum.
 		if idx.IsAtomicMutationIndex() {
@@ -3799,6 +3817,8 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 	// the PermutedMax arm) — uniform because a switch that looks like it does not
 	// need canonicalizing is exactly how the bare spellings were missed.
 	switch idx.CanonicalType() {
+	case recordlayer.IndexTypeBitmapValue:
+		aggFunc = expressions.AggBitmapConstructAgg
 	case recordlayer.IndexTypeSum:
 		aggFunc = expressions.AggSum
 	case recordlayer.IndexTypeCount, recordlayer.IndexTypeCountNotNull:
@@ -3830,7 +3850,37 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 		return nil
 	}
 
-	allCols := gke.FieldNames()
+	// This candidate represents scalar top-level field accessors. FieldNames
+	// loses expression identity: MAX(add(v, 1)) would otherwise match MAX(v).
+	// Java expands the whole key into Values before matching. Decline key
+	// shapes this field-only candidate cannot represent rather than flattening
+	// functions, nested accessors or fan-out leaves into different expressions.
+	var allCols []string
+	var fields func(*gen.KeyExpression) bool
+	fields = func(key *gen.KeyExpression) bool {
+		if key == nil {
+			return false
+		}
+		if key.Empty != nil {
+			return true
+		}
+		if key.Then != nil {
+			for _, child := range key.Then.Child {
+				if !fields(child) {
+					return false
+				}
+			}
+			return true
+		}
+		if key.Field == nil || key.Field.GetFanType() != gen.Field_SCALAR {
+			return false
+		}
+		allCols = append(allCols, key.Field.GetFieldName())
+		return true
+	}
+	if !fields(gke.ToKeyExpression().GetGrouping().GetWholeKey()) || len(allCols) != gke.ColumnSize() {
+		return nil
+	}
 	groupingCount := gke.GetGroupingCount()
 	groupedCount := gke.GetGroupedCount()
 
@@ -3840,7 +3890,7 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 	// base-row aggregation: its stored zero cannot tell a table whose rows were
 	// all deleted (SUM over no rows is NULL) from one that sums to zero, and the
 	// group-existence companion (RFC-209) is keyed by a grouping.
-	if groupingCount == 0 && aggFunc != expressions.AggMinEver && aggFunc != expressions.AggMaxEver {
+	if groupingCount == 0 && aggFunc != expressions.AggMinEver && aggFunc != expressions.AggMaxEver && aggFunc != expressions.AggBitmapConstructAgg {
 		return nil
 	}
 	permutedSize := 0
@@ -3853,13 +3903,6 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 				return nil
 			}
 			permutedSize = parsed
-		}
-		if permutedSize > 0 {
-			// The physical key inserts the aggregate value before the permuted
-			// grouping suffix. The current aggregate rule has neither residual
-			// compensation nor a truthful logical ordering for that shape, so a
-			// positive permutation must fall back to base-record aggregation.
-			return nil
 		}
 	}
 
@@ -3894,6 +3937,33 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 	allTypes := physicalKeyComponentTypes(gke, rts)
 	groupTypes := alignPhysicalTypes(allTypes, groupingCount)
 
+	if aggFunc == expressions.AggBitmapConstructAgg {
+		// BitmapAggregateIndexExpansionVisitor adds the bucket offset as an
+		// implicit final grouping coordinate; the metadata stores the raw field.
+		size, err := recordlayer.BitmapValueEntrySizeOption(idx)
+		if err != nil || groupedCount != 1 || aggColumn == "" || idx.HasFilteringPredicate() {
+			return nil
+		}
+		row, ok := singleRecordTypeRowType(md, idx).(*values.RecordType)
+		if !ok {
+			return nil
+		}
+		field, ok := row.LookupFieldUnique(aggColumn)
+		if !ok {
+			return nil
+		}
+		bucketName := "__bitmap_bucket"
+		for _, name := range groupCols {
+			if name == bucketName {
+				return nil
+			}
+		}
+		groupCols = append(groupCols, bucketName)
+		groupTypes = append(groupTypes, field.FieldType)
+		return cascades.NewAggregateIndexMatchCandidate(idx.Name, rtNames, groupCols, aggFunc, aggColumn,
+			row, groupTypes, len(groupCols)).WithBitmapEntrySize(size)
+	}
+
 	// RFC-209: carry the two structural facts the group-existence machinery
 	// needs. countsRows distinguishes a COUNT(*) index (record-layer type
 	// `count`, whose stored value is the group's row count) from a COUNT(col)
@@ -3910,8 +3980,8 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 		// type, including a DOUBLE whose key order is not its value order.
 		singleRecordTypeRowType(md, idx),
 		groupTypes,
-		groupingCount,
-	).WithGroupExistence(idx.Type == recordlayer.IndexTypeCount, recordlayer.GroupingSignature(gke)).
+		groupingCount-permutedSize,
+	).WithPermutedOrdering(idx.Type == recordlayer.IndexTypePermutedMax || idx.Type == recordlayer.IndexTypePermutedMin).WithGroupExistence(idx.Type == recordlayer.IndexTypeCount, recordlayer.GroupingSignature(gke)).
 		WithGroupExistenceCompanionNeed(
 			recordlayer.PredicateSignature(idx),
 			recordlayer.NeedsGroupCountCompanion(idx),
@@ -5471,6 +5541,21 @@ func mergedRVSequenceDiverges(rc *values.RecordConstructorValue, merged []execut
 	return false
 }
 
+// isWholeLegPositionalMerge reports whether rc is exactly the two join legs'
+// whole rows, in the given derivation order.
+func isWholeLegPositionalMerge(rc *values.RecordConstructorValue, firstAlias, secondAlias string) bool {
+	if len(rc.Fields) != 2 {
+		return false
+	}
+	for i, alias := range []string{firstAlias, secondAlias} {
+		root, ok := values.AsQuantifiedObjectValue(rc.Fields[i].Value)
+		if !ok || !strings.EqualFold(root.Correlation().Name(), alias) {
+			return false
+		}
+	}
+	return true
+}
+
 // mergedInRVOrder re-sequences the name-model leg-merge into the ordinal RC's
 // authoritative output order, keeping each column's qualified datum key.
 //
@@ -5858,8 +5943,14 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 	// keep the byte-identical merge path (their display sequence equals the
 	// RV's), exactly as before.
 	rc, isOrdinalRC := nlj.GetResultValue().(*values.RecordConstructorValue)
-	mergedDivergesFromRV := isOrdinalRC && mergedRVSequenceDiverges(rc, merged)
 	elemAlias, elemTypeName, elemValue := gatheredExplodeElement(nlj, md)
+	// A positional merge of the two whole leg rows ({_0: A, _1: B}) nests each
+	// leg's row in one slot: its columns are the legs' columns in slot order,
+	// which is the merge above. Its two slot names say nothing about columns.
+	if isOrdinalRC && elemAlias == "" && isWholeLegPositionalMerge(rc, firstAlias, secondAlias) {
+		return merged
+	}
+	mergedDivergesFromRV := isOrdinalRC && mergedRVSequenceDiverges(rc, merged)
 	// A merge that is merely MISORDERED is re-sequenced, not discarded: the RC's
 	// baked ordinals name each slot's position in the merged physical row, so
 	// the permutation is stated rather than guessed, and the qualified datum
@@ -5886,7 +5977,8 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 			return resequenced
 		}
 	}
-	if isOrdinalRC && len(rc.Fields) > 0 && values.ContainsBakedOrdinal(rc) &&
+	// Computed slots are authoritative even without seed-ordinal references.
+	if isOrdinalRC && len(rc.Fields) > 0 &&
 		((hasPositionalMergeLeg(nlj) && elemAlias != "") || mergedDivergesFromRV) {
 		descs := allLeafDescriptors(nlj.GetOuter(), md)
 		descs = append(descs, allLeafDescriptors(nlj.GetInner(), md)...)

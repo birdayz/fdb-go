@@ -3,6 +3,7 @@ package conformance_test
 import (
 	"strconv"
 	"strings"
+	"testing"
 )
 
 // wsfAccessPath reduces one engine's EXPLAIN text to the access path the WS-F
@@ -284,6 +285,8 @@ func wsfGoPlan(s string) *wsfPathNode {
 			}
 		}
 		return n
+	case "UnorderedPrimaryKeyDistinct":
+		return &wsfPathNode{op: "PK-DISTINCT", children: []*wsfPathNode{plan(0)}}
 	case "Fetch":
 		return &wsfPathNode{op: "FETCH", children: []*wsfPathNode{plan(0)}}
 	case "PredicatesFilter":
@@ -329,4 +332,14 @@ func wsfExplainOf(line string) (string, bool) {
 		return "", false
 	}
 	return text, true
+}
+
+func TestWSFUnorderedPrimaryKeyDistinctPath(t *testing.T) {
+	t.Parallel()
+	input := "Fetch(UnorderedPrimaryKeyDistinct(UnorderedUnion(IndexScan(I1, [=] COVERING), IndexScan(I2, [=] COVERING))))"
+	got := wsfAccessPath("go", input)
+	want := "FETCH(PK-DISTINCT(UNION(COVERING(I1 [=]) COVERING(I2 [=]))))"
+	if got != want {
+		t.Fatalf("access path = %q, want %q", got, want)
+	}
 }

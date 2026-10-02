@@ -329,22 +329,16 @@ func NewDistanceRankComparison(typ ComparisonType, queryVector, comparand values
 // comparison bindings to explode aliases.
 func (c Comparison) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
 	out := map[values.CorrelationIdentifier]struct{}{}
-	if c.Operand != nil {
-		for k := range values.GetCorrelatedToOfValue(c.Operand) {
-			out[k] = struct{}{}
-		}
-	}
-	// DistanceRank comparisons also carry a query-vector Value, which may
-	// reference a parameter/correlation.
-	if c.QueryVector != nil {
-		for k := range values.GetCorrelatedToOfValue(c.QueryVector) {
-			out[k] = struct{}{}
-		}
-	}
+	c.collectCorrelations(out)
 	if len(out) == 0 {
 		return nil
 	}
 	return out
+}
+
+func (c Comparison) collectCorrelations(out map[values.CorrelationIdentifier]struct{}) {
+	values.CollectCorrelatedToOfValue(c.Operand, out)
+	values.CollectCorrelatedToOfValue(c.QueryVector, out)
 }
 
 // NewLiteralComparison is the common-case constructor for a binary
@@ -921,19 +915,10 @@ func (*ComparisonPredicate) Children() []QueryPredicate { return []QueryPredicat
 // GetCorrelatedTo returns the union of correlations from the LHS operand Value
 // and everything the RHS Comparison carries.
 //
-// The RHS goes through Comparison.GetCorrelatedTo rather than reading its
-// Operand directly: a comparison can carry more than one Value — a DistanceRank
-// comparison also holds a query vector — and reading only Operand silently
-// drops those correlations.
+// The comparison's collector includes its query vector as well as its operand;
+// reading only Operand would silently drop DistanceRank correlations.
 func (p *ComparisonPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
-	out := map[values.CorrelationIdentifier]struct{}{}
-	for k := range values.GetCorrelatedToOfValue(p.Operand) {
-		out[k] = struct{}{}
-	}
-	for k := range p.Comparison.GetCorrelatedTo() {
-		out[k] = struct{}{}
-	}
-	return out
+	return GetCorrelatedToOfPredicate(p)
 }
 
 func (p *ComparisonPredicate) Eval(evalCtx any) (TriBool, error) {

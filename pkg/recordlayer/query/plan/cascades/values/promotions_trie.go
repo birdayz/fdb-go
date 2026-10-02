@@ -56,6 +56,17 @@ func checkPromotions(path string, target, current Type) error {
 		return nil
 	}
 	refuse := func() error { return &IncompatibleTypeError{Field: path, From: current, To: target} }
+	// Go's SQL driver carries VECTOR parameters as serialized bytes. The
+	// field converter validates precision and dimensions before storing them.
+	if current.Code() == TypeCodeBytes && target.Code() == TypeCodeVector {
+		return nil
+	}
+	if current.Code() == TypeCodeVector && target.Code() == TypeCodeVector {
+		if !WithNullability(current, false).Equals(WithNullability(target, false)) {
+			return refuse()
+		}
+		return nil
+	}
 	if isPromotionPrimitive(current.Code()) {
 		if current.Code() == target.Code() {
 			return nil
@@ -115,7 +126,7 @@ func checkPromotions(path string, target, current Type) error {
 func isPromotionPrimitive(c TypeCode) bool {
 	switch c {
 	case TypeCodeNull, TypeCodeBoolean, TypeCodeBytes, TypeCodeDouble, TypeCodeFloat,
-		TypeCodeInt, TypeCodeLong, TypeCodeString, TypeCodeVersion, TypeCodeDate, TypeCodeTimestamp:
+		TypeCodeInt, TypeCodeLong, TypeCodeString, TypeCodeVersion, TypeCodeDate, TypeCodeTimestamp, TypeCodeVector:
 		return true
 	}
 	return false

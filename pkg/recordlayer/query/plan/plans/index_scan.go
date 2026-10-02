@@ -42,6 +42,9 @@ type RecordQueryIndexPlan struct {
 	// distinctProofIndexName names the secondary UNIQUE index whose uniqueness
 	// licensed eliding a DISTINCT above this scan (distinct_proof_stamp.go).
 	distinctProofIndexName string
+	// matchedIndexPredicate is the deterministic encoding of the normalized
+	// metadata predicate proved by a complete candidate match. Empty means no proof.
+	matchedIndexPredicate string
 	// keyComponentTypes is aligned with scanComparisons. It carries the
 	// physical index-key width (not the RHS type), which is load-bearing for
 	// FLOAT versus DOUBLE tuple encoding.
@@ -404,7 +407,8 @@ func (p *RecordQueryIndexPlan) structuralKey() *structuralKey {
 		Bool(p.strictlySorted).
 		Strs(p.recordTypes).
 		Type(p.flowedType).
-		Str(p.distinctProofIndexName)
+		Str(p.distinctProofIndexName).
+		Str(p.matchedIndexPredicate)
 }
 
 func (p *RecordQueryIndexPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
@@ -509,3 +513,16 @@ func (p *RecordQueryIndexPlan) WithDistinctProofIndexName(indexName string) Reco
 }
 
 var _ DistinctProofStampable = (*RecordQueryIndexPlan)(nil)
+
+// WithMatchedIndexPredicate carries the predicate discharged by the candidate
+// matcher. It is part of plan identity so memo dedup cannot discard the proof.
+func (p *RecordQueryIndexPlan) WithMatchedIndexPredicate(encoded []byte) *RecordQueryIndexPlan {
+	cp := *p
+	cp.matchedIndexPredicate = string(encoded)
+	return &cp
+}
+
+// GetMatchedIndexPredicate returns an owned copy of the matched predicate bytes.
+func (p *RecordQueryIndexPlan) GetMatchedIndexPredicate() []byte {
+	return []byte(p.matchedIndexPredicate)
+}

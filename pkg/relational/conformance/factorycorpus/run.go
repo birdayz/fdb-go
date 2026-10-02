@@ -142,6 +142,9 @@ func Describe(s *Scenario, res javacorpus.FileResult) string {
 	for i, err := range res.FixtureCommitAmbiguities {
 		fmt.Fprintf(&b, "  fixture commit ambiguity %d: %v\n", i+1, err)
 	}
+	for i, err := range res.FixtureWindowLosses {
+		fmt.Fprintf(&b, "  fixture transaction window loss %d: %v\n", i+1, err)
+	}
 	for _, sk := range res.Skips {
 		fmt.Fprintf(&b, "  skip %s at %s: %s\n", sk.Class, sk.Where, sk.Detail)
 	}

@@ -104,7 +104,7 @@ func normalizeInternal(
 	if isInNormalForm(pred, mode) {
 		return nil, false
 	}
-	if normalFormSize(pred, false, mode) > int64(sizeLimit) {
+	if normalFormExpansionSize(pred, false, mode) > int64(sizeLimit) {
 		return nil, false
 	}
 	return toNormalized(pred, false, mode), true

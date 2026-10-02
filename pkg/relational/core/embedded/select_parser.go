@@ -1760,9 +1760,9 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 		// BY col1 AS x` — the alias becomes a usable SELECT-list
 		// reference. Rewrite each grouping reference that names a GROUP BY
 		// alias to the underlying group-by column, preserving
-		// the alias itself as the output column name. Only bare column
-		// group-by items (groupByExprs[i] == nil) are handled;
-		// expression group keys keep their synthetic display name.
+		// the alias itself as the output column name. Computed keys retain
+		// their expression tree, just as Java's ephemeral grouping expressions
+		// resolve to the underlying Value rather than a synthetic column.
 		// aliasResolves maps a GROUP BY alias to its underlying key —
 		// the DISPLAY string for the name/datum channel AND the key's
 		// structural segments, so rewrites keep both channels in sync
@@ -1770,9 +1770,6 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 		aliasResolves := func(name string) (key groupKeyRef, outName string, ok bool) {
 			idx, aliased := cls.groupByAliases[strings.ToUpper(name)]
 			if !aliased {
-				return groupKeyRef{}, "", false
-			}
-			if cls.groupBy[idx].expr != nil {
 				return groupKeyRef{}, "", false
 			}
 			return cls.groupBy[idx], name, true
@@ -1793,6 +1790,10 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 			if ac.groupColValue == nil && ac.groupColBare != "" && !ac.groupColQualified {
 				if key, outName, ok := aliasResolves(ac.groupColBare); ok {
 					ac.groupCol = key.display
+					if key.expr != nil {
+						ac.groupCol = ""
+						ac.outExpr = key.expr
+					}
 					ac.groupColValue = key.bound
 					ac.groupColBare = key.bare
 					ac.groupColQualifier = key.qualifier
@@ -1809,6 +1810,10 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 				// collapsed to the alias string.
 				if key, _, ok := aliasResolves(ac.aggArg); ok {
 					ac.aggArg = key.display
+					if key.expr != nil {
+						ac.aggArg = ""
+						ac.aggExpr = key.expr
+					}
 					ac.aggArgBare = key.bare
 					ac.aggArgQualifier = key.qualifier
 					ac.aggArgQualified = key.qualified
@@ -1827,6 +1832,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 			}
 			if key, _, ok := aliasResolves(ob.bare); ok {
 				ob.colName = key.display
+				ob.expr = key.expr
 				// The structural segments must follow the rewrite — a
 				// stale pre-rewrite bare would re-validate the ALIAS
 				// against the FROM scope and 42703; a display copied

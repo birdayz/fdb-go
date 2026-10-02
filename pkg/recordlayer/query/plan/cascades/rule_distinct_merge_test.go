@@ -64,7 +64,7 @@ func exploreDistinctRewriting(p *Planner, rootRef *expressions.Reference) (int, 
 		p.constraintMap = NewConstraintMap()
 	}
 	if p.dataAccessConsumed == nil {
-		p.dataAccessConsumed = make(map[*expressions.Reference]int)
+		p.dataAccessConsumed = make(map[*expressions.Reference][]matchConsumption)
 	}
 	p.push(&OptimizeGroupTask{Phase: PhaseRewriting, Ref: rootRef})
 	p.push(&ExploreGroupTask{Phase: PhaseRewriting, Ref: rootRef})
@@ -96,6 +96,40 @@ func TestDistinctMergeRule_FiresOnNested(t *testing.T) {
 	innerExpr := merged.GetInner().GetRangesOver().Get()
 	if _, ok := innerExpr.(*expressions.FullUnorderedScanExpression); !ok {
 		t.Fatalf("merged inner=%T, want *FullUnorderedScanExpression — rule didn't strip the inner Distinct", innerExpr)
+	}
+}
+
+func TestDistinctMergeRule_MatchesNonFirstAlternative(t *testing.T) {
+	t.Parallel()
+	scan := distinctRuleScan(t, "T")
+	scanRef := expressions.InitialOf(scan)
+	inner := distinctRuleDistinct(t, expressions.ForEachQuantifier(scanRef))
+	filter := mustDistinctConstruct(expressions.NewLogicalFilterExpression(nil,
+		expressions.ForEachQuantifier(expressions.InitialOf(inner))))
+	child := expressions.InitialOf(filter)
+	if !child.Insert(inner) {
+		t.Fatal("distinct alternative was not inserted")
+	}
+	outer := distinctRuleDistinct(t, expressions.ForEachQuantifier(child))
+	yielded := mustFireDistinctExpressionRule(t, NewDistinctMergeRule(), expressions.InitialOf(outer))
+	if len(yielded) != 1 {
+		t.Fatalf("non-first distinct alternative yielded %d expressions, want 1", len(yielded))
+	}
+	merged := yielded[0].(*expressions.LogicalDistinctExpression)
+	if merged.GetInner().GetRangesOver() != scanRef {
+		t.Fatal("nested distinct was not removed")
+	}
+}
+
+func TestDistinctMergeRule_MatchesFinalAlternative(t *testing.T) {
+	t.Parallel()
+	scan := expressions.FinalOfAtStage(distinctRuleScan(t, "T"), expressions.StageCanonical)
+	inner := distinctRuleDistinct(t, expressions.ForEachQuantifier(scan))
+	child := expressions.FinalOfAtStage(inner, expressions.StageCanonical)
+	outer := distinctRuleDistinct(t, expressions.ForEachQuantifier(child))
+	yielded := mustFireDistinctExpressionRule(t, NewDistinctMergeRule(), expressions.InitialOf(outer))
+	if len(yielded) != 1 || yielded[0].GetQuantifiers()[0].GetRangesOver() != scan {
+		t.Fatal("finalized child distinct was not merged")
 	}
 }
 

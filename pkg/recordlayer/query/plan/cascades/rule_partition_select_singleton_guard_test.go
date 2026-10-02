@@ -247,6 +247,74 @@ func TestPartitionSelect_ProjectedExistentialKeepsOuterCrossProduct(t *testing.T
 	}
 }
 
+func TestPartitionSelect_ProjectedExistentialFlowsOwnedWitness(t *testing.T) {
+	t.Parallel()
+	a, b, inner := scanQuantifier("A"), scanQuantifier("B"), scanQuantifier("E")
+	body := mustPartitionConstruct(expressions.NewSelectExpression(
+		mustPartitionConstruct(inner.RequireFlowedObjectValue()), []expressions.Quantifier{inner},
+		[]predicates.QueryPredicate{joinPred("A", "E")}))
+	e := expressions.NamedExistentialQuantifier(values.NamedCorrelationIdentifier("EX"), expressions.InitialOf(body))
+	witness := mustPartitionConstruct(e.RequireFlowedObjectValue())
+	result := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "A", Value: partitionField("A", "col")},
+		values.RecordConstructorField{Name: "B", Value: partitionField("B", "col")},
+		values.RecordConstructorField{Name: "H", Value: values.NewExistsValueWithChild(witness)})
+	selectExpr := mustPartitionConstruct(expressions.NewSelectExpression(result,
+		[]expressions.Quantifier{a, b, e}, []predicates.QueryPredicate{joinPred("A", "B")}))
+	if _, depends := e.GetCorrelatedTo()[a.GetAlias()]; !depends {
+		t.Fatal("existential input has no owned outer dependency")
+	}
+	yields := mustFirePartitionExpressionRule(t, NewPartitionSelectRule(), expressions.InitialOf(selectExpr))
+	found := false
+	for _, expression := range yields {
+		upper := expression.(*expressions.SelectExpression)
+		for _, quantifier := range upper.GetQuantifiers() {
+			for _, member := range quantifier.GetRangesOver().Members() {
+				lower, ok := member.(*expressions.SelectExpression)
+				if !ok || len(lower.GetQuantifiers()) != 2 {
+					continue
+				}
+				aliases := map[values.CorrelationIdentifier]struct{}{}
+				for _, q := range lower.GetQuantifiers() {
+					aliases[q.GetAlias()] = struct{}{}
+				}
+				if !isSupersetOf(aliases, aliasSet("A", "EX")) {
+					continue
+				}
+				found = true
+				constructor, ok := lower.GetResultValue().(*values.RecordConstructorValue)
+				if !ok || len(constructor.Fields) != 2 {
+					t.Fatalf("lower did not retain both objects: %v", lower.GetResultValue())
+				}
+				witnessSlot := -1
+				for i, field := range constructor.Fields {
+					root, ok := values.AsQuantifiedObjectValue(field.Value)
+					if ok && root.Correlation() == e.GetAlias() {
+						witnessSlot = i
+						if !root.FlowedType().IsNullable() {
+							t.Fatal("existential witness lost its empty-subquery nullability")
+						}
+					}
+				}
+				projected := upper.GetResultValue().(*values.RecordConstructorValue).Fields[2].Value.(*values.ExistsValue)
+				child, ok := values.AsFieldValue(projected.GetChild())
+				if !ok || witnessSlot < 0 || len(child.Path().Ordinals()) != 1 || child.Path().Ordinals()[0] != witnessSlot {
+					t.Fatalf("projected EXISTS does not read witness slot %d: %v", witnessSlot, projected)
+				}
+				if free := expressions.InitialOf(upper).GetCorrelatedTo(); len(free) != 0 {
+					t.Fatalf("partition stranded bindings: %v", free)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no lower {A,EX} flowing the owned witness; %d alternatives", len(yields))
+	}
+	if e.GetRangesOver().Get() != body || len(body.GetPredicates()) != 1 {
+		t.Fatal("partition mutated the original existential input")
+	}
+}
+
 func TestProjectedExistentialBlockQualification(t *testing.T) {
 	t.Parallel()
 	a, b, eBase, fBase := scanQuantifier("A"), scanQuantifier("B"), scanQuantifier("E"), scanQuantifier("F")

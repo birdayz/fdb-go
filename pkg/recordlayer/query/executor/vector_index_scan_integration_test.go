@@ -333,3 +333,39 @@ func TestIntegration_VectorIndexScan_ReturnVectors(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestEvalFloat64SliceSerializedVector(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		data    []byte
+		want    []float64
+		wantErr string
+	}{
+		{"half", []byte{0, 0x3c, 0x01, 0xc0, 0}, []float64{1.0009765625, -2}, ""},
+		{"single", []byte{1, 0x3f, 0x80, 0, 0, 0xc0, 0, 0, 0}, []float64{1, -2}, ""},
+		{"double", []byte{2, 0x3f, 0xf0, 0, 0, 0, 0, 0, 0}, []float64{1}, ""},
+		{"empty", nil, nil, "empty vector data"},
+		{"unknown", []byte{255}, nil, "unsupported vector type"},
+		{"quantized", []byte{3}, nil, "RaBitQ"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := evalFloat64Slice(&values.ConstantValue{Value: tc.data}, nil)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("got %v, want error containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil || len(got) != len(tc.want) {
+				t.Fatalf("got %v, %v; want %v", got, err, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("component %d: got %v, want %v", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}

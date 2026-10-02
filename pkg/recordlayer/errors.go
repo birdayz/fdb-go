@@ -520,9 +520,10 @@ func (e *UnsupportedOperationError) Error() string { return e.Message }
 
 // RecordCoreError carries Java's base RecordCoreException diagnostics and cause.
 type RecordCoreError struct {
-	Message   string
-	IndexName string
-	Cause     error
+	IndexOption string
+	Message     string
+	IndexName   string
+	Cause       error
 }
 
 func (e *RecordCoreError) Error() string { return e.Message }

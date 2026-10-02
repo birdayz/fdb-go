@@ -1053,7 +1053,7 @@ func TestTranslateSelectSubsumptionInputs_ParameterComparisonIsValid(
 	translatedPredicates, translatedResult, translated := translateSelectSubsumptionInputs(querySelect, nil)
 	if !translated ||
 		len(translatedPredicates) != 1 ||
-		translatedPredicates[0] != queryPredicate ||
+		translatedPredicates[0] != querySelect.GetPredicates()[0] ||
 		translatedResult != queryValue {
 		t.Fatalf(
 			"parameter comparison translated predicates=%v result=%v ok=%v",

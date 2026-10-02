@@ -1,34 +1,62 @@
 package predicates
 
-import (
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-)
+import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 
-// GetCorrelatedToOfPredicate is a nil-safe wrapper around
-// QueryPredicate.GetCorrelatedTo: the transitive set of correlations p and its
-// descendants reference, as a fresh map. Returns nil for nil input, and a
-// non-nil empty map for a tree without correlations.
-//
-// It asks each predicate rather than inspecting it. This used to be a manual
-// type switch over the predicate shapes that were known when it was written,
-// which silently reported NOTHING for every shape added since —
-// PredicateWithValueAndRanges in particular, whose correlations can live
-// entirely in its range comparands. Callers used the result to decide which
-// quantifiers a compensation still needs, so an unseen correlation became a
-// dangling alias in a rebuilt expression. Delegation is complete, including
-// for shapes not yet invented, as long as each QueryPredicate implementation
-// honors the interface's transitive contract by reporting its own carried
-// Values/comparisons and the union of its children.
+// GetCorrelatedToOfPredicate returns transitive correlations as a fresh map.
+// Nil input returns nil; an uncorrelated predicate returns a non-nil empty map.
 func GetCorrelatedToOfPredicate(p QueryPredicate) map[CorrelationIdentifier]struct{} {
 	if p == nil {
 		return nil
 	}
-	correlations := p.GetCorrelatedTo()
-	out := make(map[CorrelationIdentifier]struct{}, len(correlations))
-	for k := range correlations {
-		out[k] = struct{}{}
-	}
+	// Keep allocation here so inlined read-only callers can use a stack map.
+	out := make(map[CorrelationIdentifier]struct{})
+	collectPredicateCorrelations(p, out)
 	return out
+}
+
+// CollectCorrelatedToOfPredicate unions p's correlations into out, allocating
+// out when nil. Callers folding several predicates can share one result set.
+func CollectCorrelatedToOfPredicate(p QueryPredicate, out map[CorrelationIdentifier]struct{}) map[CorrelationIdentifier]struct{} {
+	if out == nil {
+		out = make(map[CorrelationIdentifier]struct{})
+	}
+	collectPredicateCorrelations(p, out)
+	return out
+}
+
+// Fold the built-in connectives into one set rather than one map per node.
+// Other concrete types retain their transitive GetCorrelatedTo contract,
+// including types embedding a built-in predicate but overriding that method.
+func collectPredicateCorrelations(p QueryPredicate, out map[CorrelationIdentifier]struct{}) {
+	switch p := p.(type) {
+	case nil, *ConstantPredicate:
+	case *AndPredicate:
+		for _, child := range p.SubPredicates {
+			collectPredicateCorrelations(child, out)
+		}
+	case *OrPredicate:
+		for _, child := range p.SubPredicates {
+			collectPredicateCorrelations(child, out)
+		}
+	case *NotPredicate:
+		collectPredicateCorrelations(p.Child, out)
+	case *ComparisonPredicate:
+		values.CollectCorrelatedToOfValue(p.Operand, out)
+		p.Comparison.collectCorrelations(out)
+	case *ValuePredicate:
+		values.CollectCorrelatedToOfValue(p.Value, out)
+	case *PredicateWithValueAndRanges:
+		values.CollectCorrelatedToOfValue(p.value, out)
+		for _, constraint := range p.ranges {
+			for alias := range constraint.GetCorrelatedTo() {
+				out[alias] = struct{}{}
+			}
+		}
+	default:
+		for alias := range p.GetCorrelatedTo() {
+			out[alias] = struct{}{}
+		}
+	}
 }
 
 // CorrelationIdentifier is re-exported as a type alias so package

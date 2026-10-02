@@ -710,8 +710,7 @@ func (t *cascadesTranslator) starBodyBoundaryInputOrdinals(
 
 // starSpineAliasBinding is one spine link label's binding: the link's VISIBLE
 // correlation name plus the label's slot WITHIN the link's leg window (the
-// element rides slot 0, the AT ordinal slot 1 — the runtime OrdinalityLegs
-// layout, `_0`=element / `_1`=ordinal).
+// element rides slot 0, the AT ordinal slot 1 — the AT Explode's layout).
 type starSpineAliasBinding struct {
 	Corr string
 	Ord  int

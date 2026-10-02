@@ -35,6 +35,15 @@ import java.util.Map;
 import java.util.Optional;
 
 class ContinuationSteps extends ConformanceBase {
+    @ConformanceStep("literalValueRuntimeClass")
+    public String literalValueRuntimeClass(byte[] payload) throws Exception {
+        var context = com.apple.foundationdb.record.PlanSerializationContext.newForCurrentMode();
+        var value = Value.fromValueProto(context,
+                com.apple.foundationdb.record.planprotos.PValue.parseFrom(payload));
+        var result = value.eval(null, EvaluationContext.empty());
+        return result == null ? "null" : result.getClass().getSimpleName();
+    }
+
     @ConformanceStep("pendingQueueNestedAny")
     public boolean pendingQueueNestedAny(String kind, byte[] payload) {
         try {

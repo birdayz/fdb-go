@@ -119,7 +119,7 @@ func (p *RecordQueryDefaultOnEmptyPlan) GetInner() RecordQueryPlan {
 func (p *RecordQueryDefaultOnEmptyPlan) reanchorInputValueToOutput(
 	value values.Value,
 ) (values.Value, error) {
-	return reanchorDefaultInputValueToOutput(p, p.GetInner(), value)
+	return reanchorDefaultInputValueToOutput(p, selectedPlanFromQuantifier(p.innerQ), value)
 }
 
 // reanchorDefaultInputValueToOutput crosses only proven child lineage. An

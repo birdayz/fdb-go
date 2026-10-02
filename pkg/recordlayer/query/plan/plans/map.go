@@ -81,6 +81,8 @@ func (p *RecordQueryMapPlan) GetCorrelatedToWithoutChildren() map[values.Correla
 	for k := range values.GetCorrelatedToOfValue(p.resultValue) {
 		out[k] = struct{}{}
 	}
+	// The reserved carrier is the row supplied to this operator, not an outer binding.
+	delete(out, values.CurrentCorrelation())
 	return out
 }
 

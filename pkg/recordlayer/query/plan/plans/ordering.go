@@ -1313,14 +1313,14 @@ func orderProducingScanIsReverse(plan RecordQueryPlan) bool {
 // but drops the tail; the tail is truncated at the first FLOAT/DOUBLE) are the
 // index plan's, applied to the grouping key.
 func (p *RecordQueryAggregateIndexPlan) HintOrdering() properties.Ordering {
-	groupCols := p.GetGroupCols()
+	groupCols, ordinals, keyTypes := p.aggregateOrderingColumns()
 	if len(groupCols) == 0 {
-		return properties.Ordering{IsKnown: true}
+		return properties.Ordering{IsKnown: len(p.groupCols) == 0}
 	}
-	split := p.groupingOrderSplit(groupCols)
+	split := p.aggregateOrderSplit(groupCols, keyTypes)
 	fixedLen, sortedCols := split.fixedLen, split.tail
 	if len(sortedCols) == 0 {
-		if fixedLen == len(groupCols) && !split.tailDropped {
+		if fixedLen == len(groupCols) && !split.tailDropped && (!p.permuted || len(groupCols) == len(p.groupCols)+1) {
 			// Every grouping column is pinned to one physical key: at most one
 			// group flows, which is ordered by anything.
 			return properties.Ordering{IsKnown: true}
@@ -1337,7 +1337,7 @@ func (p *RecordQueryAggregateIndexPlan) HintOrdering() properties.Ordering {
 	keys := make([]values.Value, 0, len(sortedCols))
 	desc := make([]bool, 0, len(sortedCols))
 	for i, col := range sortedCols {
-		key := p.groupingOrderingKey(col, fixedLen+i)
+		key := p.groupingOrderingKey(col, ordinals[fixedLen+i])
 		if key == nil {
 			return properties.Ordering{IsKnown: false}
 		}
@@ -1357,21 +1357,60 @@ func (p *RecordQueryAggregateIndexPlan) groupingScanComparisons() []*predicates.
 	return p.indexPlan.GetScanComparisons()
 }
 
-// groupingOrderSplit is splitKeyOrder over the grouping key: the same three
-// rules RecordQueryIndexPlan applies to an index key, with no suffix (the
-// aggregate value lives in the FDB value, not the key, and takes no part in
-// the order).
-//
-// PRECONDITION: the grouping columns ARE the physical key prefix, in order.
-// That is false for a PERMUTED_MIN/MAX index with a positive permutation,
-// whose physical key interposes the aggregate value before the permuted
-// grouping suffix; such an index never becomes an aggregate plan
-// (tryAggregateIndexCandidate declines permutedSize > 0, and the candidate's
-// ComputeBoundParameterPrefixMap caps bindings at physicalGroupingPrefixCount),
-// so `groupCols[fixedLen:]` reads the key here and nowhere else.
-func (p *RecordQueryAggregateIndexPlan) groupingOrderSplit(groupCols []string) keyOrderSplit {
-	return splitKeyOrder(p.groupingScanComparisons(), groupCols, nil,
-		p.GetKeyComponentTypes(), p.GetGroupColumnLayout())
+// aggregateOrderSplit applies physical key ordering to output coordinates.
+func (p *RecordQueryAggregateIndexPlan) aggregateOrderSplit(cols []string, types []values.Type) keyOrderSplit {
+	layout := p.GetGroupColumnLayout()
+	if p.permuted {
+		layout = p.GetResultType()
+	}
+	return splitKeyOrder(p.groupingScanComparisons(), cols, nil, types, layout)
+}
+
+// aggregateOrderingColumns maps physical key coordinates to logical output
+// ordinals, as AggregateIndexMatchCandidate.indexWithPermutation does in Java.
+func (p *RecordQueryAggregateIndexPlan) aggregateOrderingColumns() ([]string, []int, []values.Type) {
+	cols := p.GetGroupCols()
+	types := p.GetKeyComponentTypes()
+	ordinals := make([]int, len(cols))
+	for i := range ordinals {
+		ordinals[i] = i
+	}
+	if !p.permuted {
+		return cols, ordinals, types
+	}
+	row, ok := p.GetResultType().(*values.RecordType)
+	if !ok || len(row.Fields) != len(cols)+1 {
+		return nil, nil, nil
+	}
+	prefix := p.GetPhysicalGroupingPrefixCount()
+	if prefix < 0 || prefix > len(cols) {
+		return nil, nil, nil
+	}
+	order := append([]int(nil), ordinals[:prefix]...)
+	// SQL MIN repairs stored NULL extrema by looking up a non-NULL value.
+	// That changes the key's aggregate coordinate, so only its preceding
+	// grouping prefix is ordered when the operand can contain NULLs.
+	aggregateSorted := true
+	if p.aggregateFunction == "MIN" {
+		if base, ok := p.GetGroupColumnLayout().(*values.RecordType); ok {
+			if field, ok := base.LookupFieldUnique(p.aggColumn); !ok || field.FieldType.IsNullable() {
+				aggregateSorted = false
+			}
+		} else {
+			aggregateSorted = false
+		}
+	}
+	if aggregateSorted {
+		order = append(order, len(cols))
+		order = append(order, ordinals[prefix:]...)
+	}
+	physicalCols := make([]string, len(order))
+	physicalTypes := make([]values.Type, len(order))
+	for i, ordinal := range order {
+		physicalCols[i] = row.Fields[ordinal].Name
+		physicalTypes[i] = row.Fields[ordinal].FieldType
+	}
+	return physicalCols, order, physicalTypes
 }
 
 // groupingOrderingKey mints the ordering key for grouping column col, which is
@@ -1396,12 +1435,12 @@ func (p *RecordQueryAggregateIndexPlan) groupingOrderingKey(col string, ordinal 
 // over `WHERE b IN (…) GROUP BY b, a`) needs the fixed entry to promote the
 // bound column into its comparison key; the plain form above drops it.
 func (p *RecordQueryAggregateIndexPlan) HintRichOrdering() *properties.RichOrdering {
-	groupCols := p.GetGroupCols()
+	groupCols, ordinals, keyTypes := p.aggregateOrderingColumns()
 	if len(groupCols) == 0 {
 		return properties.EmptyOrdering()
 	}
 	comps := p.groupingScanComparisons()
-	split := p.groupingOrderSplit(groupCols)
+	split := p.aggregateOrderSplit(groupCols, keyTypes)
 	dir := properties.ProvidedSortOrderAscending
 	if p.IsReverse() {
 		dir = properties.ProvidedSortOrderDescending
@@ -1409,7 +1448,7 @@ func (p *RecordQueryAggregateIndexPlan) HintRichOrdering() *properties.RichOrder
 	bm := make(map[values.Value][]properties.OrderingBinding, len(groupCols))
 	keys := make([]values.Value, 0, len(groupCols))
 	for i, col := range groupCols[:split.fixedLen] {
-		key := p.groupingOrderingKey(col, i)
+		key := p.groupingOrderingKey(col, ordinals[i])
 		if key == nil {
 			return properties.EmptyOrdering()
 		}
@@ -1427,7 +1466,7 @@ func (p *RecordQueryAggregateIndexPlan) HintRichOrdering() *properties.RichOrder
 		}
 	}
 	for i, col := range split.tail {
-		key := p.groupingOrderingKey(col, split.fixedLen+i)
+		key := p.groupingOrderingKey(col, ordinals[split.fixedLen+i])
 		if key == nil {
 			return properties.EmptyOrdering()
 		}

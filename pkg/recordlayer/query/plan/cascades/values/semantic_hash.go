@@ -3,8 +3,9 @@ package values
 import (
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
+
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/internal/fnv64"
 )
 
 // SemanticHashCode returns an ALIAS-INVARIANT structural hash of a Value: the
@@ -24,53 +25,9 @@ import (
 // cascades (memoEqual) can use it without an import cycle. Inert until those
 // call sites switch to it.
 func SemanticHashCode(v Value) uint64 {
-	h := newSemanticHasher()
+	h := fnv64.New()
 	writeSemanticHash(h, v)
 	return h.Sum64()
-}
-
-// semanticHasher is FNV-1a that can be fed a string WITHOUT materialising it as
-// a []byte. It is bit-identical to hash/fnv's sum64a — same offset basis, same
-// prime, same order — so every hash this produces is the value fnv produced
-// before, which matters because these bucket the memo.
-//
-// It exists because io.WriteString falls back to `w.Write([]byte(s))` for a
-// writer that is not an io.StringWriter, and hash/fnv is not one. Every constant
-// tag written here therefore allocated a fresh byte slice: 24% of this branch's
-// planning allocation growth, spent copying string literals so a hash could read
-// them. Implementing StringWriter is what removes the copy; the arithmetic is
-// unchanged.
-type semanticHasher struct{ state uint64 }
-
-const (
-	fnvOffset64 = 14695981039346656037
-	fnvPrime64  = 1099511628211
-)
-
-func newSemanticHasher() *semanticHasher { return &semanticHasher{state: fnvOffset64} }
-
-func (h *semanticHasher) Sum64() uint64 { return h.state }
-
-func (h *semanticHasher) Write(p []byte) (int, error) {
-	s := h.state
-	for _, b := range p {
-		s ^= uint64(b)
-		s *= fnvPrime64
-	}
-	h.state = s
-	return len(p), nil
-}
-
-// WriteString is the whole point: indexing a string allocates nothing, so a tag
-// is folded in place.
-func (h *semanticHasher) WriteString(str string) (int, error) {
-	s := h.state
-	for i := 0; i < len(str); i++ {
-		s ^= uint64(str[i])
-		s *= fnvPrime64
-	}
-	h.state = s
-	return len(str), nil
 }
 
 // SelfSemanticHash lets a Value implemented outside this package contribute its
@@ -158,7 +115,8 @@ func writeSemanticHash(h io.Writer, v Value) {
 			_, _ = io.WriteString(h, "fieldpath:")
 			_, _ = h.Write(t.rootType.canonical)
 			for _, acc := range t.Resolved.Accessors {
-				_, _ = fmt.Fprintf(h, "#%d", acc.Ordinal)
+				_, _ = io.WriteString(h, "#")
+				fnv64.WriteInt(h, int64(acc.Ordinal))
 			}
 			break
 		}
@@ -176,7 +134,8 @@ func writeSemanticHash(h io.Writer, v Value) {
 		if t.Resolved != nil {
 			_, _ = io.WriteString(h, "fieldpath:")
 			for _, acc := range t.Resolved.Accessors {
-				_, _ = fmt.Fprintf(h, "#%d", acc.Ordinal)
+				_, _ = io.WriteString(h, "#")
+				fnv64.WriteInt(h, int64(acc.Ordinal))
 			}
 		} else {
 			_, _ = io.WriteString(h, "field:"+strings.ReplaceAll(t.Field, "#", "##"))
@@ -232,10 +191,7 @@ func writeSemanticHash(h io.Writer, v Value) {
 	var scratch [1]Value
 	children := valueChildren(v, &scratch)
 	_, _ = io.WriteString(h, "(")
-	// Appended into a stack array rather than strconv.Itoa: the child count is
-	// written once per NODE, so its string allocation scaled with the whole tree.
-	var countBuf [20]byte
-	_, _ = h.Write(strconv.AppendInt(countBuf[:0], int64(len(children)), 10))
+	fnv64.WriteInt(h, int64(len(children)))
 	for _, c := range children {
 		_, _ = io.WriteString(h, ",")
 		writeSemanticHash(h, c)

@@ -17,8 +17,9 @@ sequence anticipated:
 - The unconditional plan-level `UnknownType` stub inventory is **zero**.
 - Aggregate-index construction passes an exact candidate-derived result type;
   the former call-site `UnknownType` stub inventory is **zero**.
-- Across 37 non-census, non-test call sites, the result-type consumer classifier
-  measures **FORWARD 1 / GUARDED 8 / PROPAGATED 28 / RAW 0** (the pinned test's comment carries every movement
+- Across 39 non-census, non-test call sites, the result-type consumer classifier
+  measures **FORWARD 1 / GUARDED 9 / PROPAGATED 29 / RAW 0** (the pinned test's comment carries every movement
+  (permuted aggregate ordering adds one guarded and one propagated layout read),
   since this sentence was first written: 14/29 at that time; RFC-235 retired
   three reads; RFC-242 retired three more — `planColumnNamesWithMD` and
   `physicalPlanColumnNames`, both GUARDED tail reads of a union leg's row, and

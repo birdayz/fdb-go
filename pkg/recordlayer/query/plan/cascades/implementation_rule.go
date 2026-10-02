@@ -37,7 +37,6 @@ type ImplementationRuleCall struct {
 	constraintOnly       bool
 	constraintPushedRefs []*expressions.Reference
 	pendingConstraints   []pendingRequestedOrderingConstraint
-	indexYieldedInMemo   bool
 	// stagedInserts are InsertReExploring effects held for the same commit
 	// boundary as the yields. An ExpressionRule running under this driver
 	// through expressionRuleAdapter hands its own staged inserts here, so the
@@ -188,26 +187,10 @@ func (c *ImplementationRuleCall) MemoizeFinalExpressionsFromOther(
 	source *expressions.Reference,
 	exprs []expressions.RelationalExpression,
 ) *expressions.Reference {
-	// FINAL set, CANONICAL stage. These are plans, and Java's memoizePlan
-	// lands plans in the final set (Reference.ofFinalExpressions) — minting
-	// via InitialOf put them in the EXPLORATORY set, so every reference built
-	// here had an empty FinalMembers() and the name said the opposite of what
-	// happened. FinalOf is not the right constructor either: it also stamps
-	// StagePlanned, which is the SPINE-PIN decision, not the memoize
-	// decision, and forcing it here changes what ExploreGroupTask does with
-	// the reference.
-	//
-	// Shares its whole body with MemoizeMemberPlansFromOther. Until this
-	// change it did NOT: it copied the source's property map wholesale
-	// (`SetPlanProperties(source.GetPlanProperties())`) while its twin
-	// restricted the map to the retained members — so a reference restricted
-	// to one plan still reported the entire source group to anything reading
-	// ToPlanPartitions, which walks the property map rather than the member
-	// list. That is the same defect the twin was written to avoid, live here
-	// across nine call sites. One implementation now, so the two cannot drift
-	// apart again.
+	// Java's newReferenceFromFinalMembers preserves the source stage and
+	// completed exploration; a canonical reset would re-explore retained plans.
 	restricted := newRestrictedFinalReference(
-		"MemoizeFinalExpressionsFromOther", source, exprs, expressions.StageCanonical)
+		"MemoizeFinalExpressionsFromOther", source, exprs, source.Stage())
 	// The new reference is the same constrained child domain narrowed to one
 	// plan partition. Preserve the requested-ordering requirement that caused
 	// that partition to be selected; otherwise its OptimizeGroup pass sees an
@@ -219,17 +202,26 @@ func (c *ImplementationRuleCall) MemoizeFinalExpressionsFromOther(
 		Set(c.Constraints, restricted, RequestedOrderingConstraintKey,
 			append([]*properties.RequestedOrdering(nil), orderings...))
 	}
+	// Retaining the source requirement is not a new exploration demand.
+	restricted.ConstraintsMap().SetExplored()
 	return restricted
 }
 
 // MemoizeFinalExpression creates a new Reference holding expr as its single
-// FINAL member — Java's memoizePlan (Reference.ofFinalExpressions). Stage
-// stays CANONICAL: see MemoizeFinalExpressionsFromOther for why the final-set
-// placement and the planner stage are separate decisions.
+// FINAL member — Java's memoizePlan (Reference.ofFinalExpressions). Physical
+// plans belong to the planned stage; logical rewriting finals stay canonical.
 func (c *ImplementationRuleCall) MemoizeFinalExpression(
 	expr expressions.RelationalExpression,
 ) *expressions.Reference {
+	if isPhysical(expr) {
+		return expressions.FinalOfAtStage(expr, expressions.StagePlanned)
+	}
 	return expressions.FinalOfAtStage(expr, expressions.StageCanonical)
+}
+
+// MemoizeUnknownExpression shares the logical/physical dispatch used by data access.
+func (c *ImplementationRuleCall) MemoizeUnknownExpression(expr expressions.RelationalExpression) *expressions.Reference {
+	return (&ExpressionRuleCall{Reference: c.Reference, memo: c.memo}).MemoizeUnknownExpression(expr)
 }
 
 // FireImplementationRule runs an ImplementationRule against a Reference,
@@ -323,8 +315,8 @@ func fireImplRuleOnMember(
 			}
 		}
 		call.applyPendingConstraints()
-		for _, y := range call.yielded {
-			if call.indexYieldedInMemo && memo != nil {
+		for i, y := range call.yielded {
+			if batch.inserted[i] && memo != nil {
 				memo.AddExpression(ref, y)
 			}
 		}

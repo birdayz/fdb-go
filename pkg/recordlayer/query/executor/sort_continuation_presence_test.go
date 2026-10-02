@@ -1,13 +1,16 @@
 package executor
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/vectorcodec"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -191,5 +194,47 @@ func TestSortContinuationWithoutMatchStateIsRejected(t *testing.T) {
 	if !strings.Contains(err.Error(), "match state") {
 		t.Errorf("rejection said %q; it must name the missing match state so the reader "+
 			"is not sent looking at column alignment", err)
+	}
+}
+
+func TestSortContinuationVectorDatum(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		precision int
+		ordinal   byte
+	}{{16, vectorcodec.TypeHalf}, {32, vectorcodec.TypeSingle}, {64, vectorcodec.TypeDouble}} {
+		t.Run(fmt.Sprint(tc.precision), func(t *testing.T) {
+			t.Parallel()
+			typ := values.NewVectorType(false, tc.precision, 2)
+			data := vectorcodec.SerializeAs(tc.ordinal, []float64{1, -2})
+			rowType := values.NewRecordType("", false, []values.Field{{Name: "V", FieldType: typ}})
+			layout, err := values.NewOrdinalLayoutForCarrierType(rowType, []values.OrdinalTileSpec{{Start: 0, Width: 1, Kind: values.OrdinalTileFlat}}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			token, err := encodeSortContinuation(recordlayer.NewBytesContinuation(nil), []QueryResult{{Positional: &PositionalRow{Type: rowType, Slots: []any{data}, Layout: layout}}}, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, rows, _, err := decodeSortContinuation(token, nil, layout)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != 1 || !bytes.Equal(rows[0].Positional.Slots[0].([]byte), data) {
+				t.Fatalf("lost vector payload: %v", rows)
+			}
+			for _, bad := range []any{[]byte{}, []byte{3}, data[:len(data)-1], append(append([]byte{}, data...), 0), vectorcodec.SerializeAs(tc.ordinal, []float64{1}), "not bytes", nil} {
+				if err := validateContinuationDatum(bad, typ); err == nil {
+					t.Errorf("accepted malformed vector %v", bad)
+				}
+			}
+			wrongPrecision := vectorcodec.SerializeAs((tc.ordinal+1)%3, []float64{1, -2})
+			if err := validateContinuationDatum(wrongPrecision, typ); err == nil {
+				t.Error("accepted wrong vector precision")
+			}
+			if err := validateContinuationDatum(nil, values.NewVectorType(true, tc.precision, 2)); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

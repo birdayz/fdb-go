@@ -98,6 +98,19 @@ func NewRecordQueryInJoinPlanFromQuantifierWithBindingAlias(
 
 func (p *RecordQueryInJoinPlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
 
+func (p *RecordQueryInJoinPlan) CanCorrelate() bool { return true }
+
+// The IN source binds an alias that is not a child quantifier's alias.
+func (p *RecordQueryInJoinPlan) ComputeCorrelatedTo(childCorrelations func(*expressions.Reference) map[values.CorrelationIdentifier]struct{}) map[values.CorrelationIdentifier]struct{} {
+	result := make(map[values.CorrelationIdentifier]struct{})
+	for alias := range childCorrelations(p.innerQ.GetRangesOver()) {
+		if alias != p.bindingAlias {
+			result[alias] = struct{}{}
+		}
+	}
+	return result
+}
+
 // GetInnerQuantifier returns the live child quantifier — the single memo edge the
 // InJoin ranges over. derivationsForInJoin reads its alias to decorrelate the
 // inner against the IN-source; since RFC-184 W2 the memo holds the bare plan (no

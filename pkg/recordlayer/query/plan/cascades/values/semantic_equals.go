@@ -15,11 +15,13 @@ package values
 // QueryPlanConstraints for match-candidate compensation; this is the
 // constraint-free bool primitive the expression/memo layer needs.
 func SemanticEqualsUnderAliasMap(a, b Value, aliases AliasMap) bool {
-	if a == b {
-		return true
-	}
 	if a == nil || b == nil {
-		return false
+		return a == nil && b == nil
+	}
+	// Unlike Java's identity shortcut, shared Go values can be compared under
+	// different binding environments; their aliases must still be checked.
+	if a == b && aliasMapEmpty(aliases) {
+		return true
 	}
 	// Correlation-bearing leaves: compare the alias THROUGH the map.
 	switch av := a.(type) {
