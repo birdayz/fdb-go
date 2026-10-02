@@ -164,7 +164,20 @@ func (m *vectorIndexMaintainer) mergeControl() *IndexDeferredMaintenanceControl 
 }
 
 func (m *vectorIndexMaintainer) guardiannFor(prefix tuple.Tuple, listener guardiannListener) *guardiann {
-	return newGuardiann(m.getSubspaceForPrefix(prefix), m.guardiannConfig, m.store.Env(), listener)
+	g := newGuardiann(m.getSubspaceForPrefix(prefix), m.guardiannConfig, m.store.Env(), listener)
+	g.poison = m.poisonTask
+	return g
+}
+
+// poisonTask registers the vectorTask commit check: the first task error of the
+// transaction is its commit error.
+func (m *vectorIndexMaintainer) poisonTask(err error) {
+	s, ok := m.store.(*FDBRecordStore)
+	if !ok || s.context == nil {
+		return
+	}
+	name := fmt.Sprintf("vectorTask/%x/%s", s.subspace.Bytes(), m.index.Name)
+	s.context.getOrCreateCommitCheck(name, func(string) CommitCheckFunc { return func() error { return err } })
 }
 
 // applyGuardiannEntry is VectorIndexMaintainer.updateIndexEntry over the

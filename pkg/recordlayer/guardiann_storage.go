@@ -40,6 +40,9 @@ type guardiann struct {
 	listener  guardiannListener
 	centroids *hnswGraph
 	codec     *guardiannVectorCodec
+	// poison makes the enclosing record context uncommittable; nil outside a
+	// record store.
+	poison func(error)
 }
 
 func newGuardiann(ss subspace.Subspace, config guardiannConfig, env *dst.Env, listener guardiannListener) *guardiann {

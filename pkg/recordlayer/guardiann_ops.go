@@ -248,6 +248,11 @@ func (g *guardiann) executeSingleTask(tx fdb.WritableTransaction, t *guardiannTa
 	}
 	tx.Clear(key)
 	if err := g.runTask(tx, t); err != nil {
+		// The removal is buffered and the work is not: whatever the error, a
+		// commit would drop the task (Java leaves that to its caller).
+		if g.poison != nil {
+			g.poison(err)
+		}
 		return false, err
 	}
 	if g.listener != nil {
