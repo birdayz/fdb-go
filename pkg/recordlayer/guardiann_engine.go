@@ -201,7 +201,8 @@ func (m *vectorIndexMaintainer) applyGuardiannEntry(prefix, pk tuple.Tuple, vect
 	m.store.ReleaseWriteLock(lockKey)
 	var capacity *guardiannClusterCapacityError
 	if errors.As(err, &capacity) {
-		return &VectorIndexClusterTooLargeError{Message: capacity.Error(), Cause: err}
+		return &VectorIndexClusterTooLargeError{Message: "vector index cluster reached its hard cap; a background merge must drain the deferred split " +
+			"backlog before more vectors can be inserted", Cause: err}
 	}
 	if err != nil || reg.control == nil || reg.signaled {
 		return err

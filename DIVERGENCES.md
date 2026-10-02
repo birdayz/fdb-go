@@ -2635,3 +2635,13 @@ The retained `DerivedSourceReference` JVM test proves same-alias, star/empty-bod
 and both-live-outer-row EXISTS queries; direct rule tests drive both deferral
 settings and verify the exact canonical lower block. See RFC-256's final sections
 for the rejected broader exemptions, reference outcomes and verification scope.
+
+## GuardiANN: a refused deferred insert writes no vector identity
+
+Java writes the vector's identity row (`VectorMetadata`, subspace tag 5) before the
+deferred-mode hard-cap check (`Insert.java:293`, `:330-338`), so a caller that catches
+`ClusterCapacityExceededException` and commits keeps an identity with no reference, and a
+later insert of that key is a no-op until the record is deleted. Go checks the cap first
+(`insertIntoClusters`, `guardiann_ops.go`); nothing between the two positions reads identity
+rows and the identity UUID is not drawn from the operation RNG, so every successful insert
+writes Java's bytes. Pinned by "GuardiANN deferred hard cap".

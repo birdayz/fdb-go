@@ -21,9 +21,10 @@ type guardiannClusterCapacityError struct {
 	hardMax   int
 }
 
+// Error is ClusterCapacityExceededException's message; the record layer
+// translates it to VectorIndexClusterTooLargeError.
 func (e *guardiannClusterCapacityError) Error() string {
-	return "vector index cluster reached its hard cap; a background merge must drain the deferred split " +
-		"backlog before more vectors can be inserted"
+	return "primary cluster reached its hard cap while the deferred split backlog is not being drained"
 }
 
 // updateClusterMetadataAndEnqueueSplitOrReassignTaskMaybe is the Primitives
@@ -330,6 +331,14 @@ func (g *guardiann) insertIntoClusters(tx fdb.WritableTransaction, random *split
 		}
 		candidates = append(candidates, c)
 	}
+	// Java writes the identity before this check (Insert.java:293, :330-338),
+	// leaving an identity without references behind a caught refusal; Go
+	// checks first. Nothing between the two positions reads identity rows.
+	if len(candidates) > 0 && !maintainInTransaction {
+		if m := candidates[0].meta; m.numPrimary()+1 > g.config.primaryClusterHardMax {
+			return &guardiannClusterCapacityError{clusterID: m.id, size: m.numPrimary() + 1, hardMax: g.config.primaryClusterHardMax}
+		}
+	}
 	vectorUUID, err := guardiannVectorUUID(pk, g.config.deterministicRandomness, g)
 	if err != nil {
 		return err
@@ -342,9 +351,6 @@ func (g *guardiann) insertIntoClusters(tx fdb.WritableTransaction, random *split
 		isPrimary := m.id == primaryID
 		stats := m.stats
 		if isPrimary {
-			if !maintainInTransaction && m.numPrimary()+1 > g.config.primaryClusterHardMax {
-				return &guardiannClusterCapacityError{clusterID: m.id, size: m.numPrimary() + 1, hardMax: g.config.primaryClusterHardMax}
-			}
 			g.writeVectorRef(tx, m.id, guardiannVectorRef{id: md.id, vector: vector, primary: true})
 			stats = stats.add(c.distance)
 		} else {
