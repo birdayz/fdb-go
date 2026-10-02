@@ -2879,14 +2879,6 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 	if hasSubqueries && preWalkPred != nil {
 		pred := predicates.SimplifyPredicateValues(preWalkPred)
 
-		// EXISTS is lowered to a conjunctive semi-join; under an OR that loses
-		// the disjunction and silently returns empty. Reject rather than
-		// return wrong rows (RFC-082; inline-EXISTS-under-OR is future work).
-		if existsUnderDisjunction(pred) {
-			return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-				"EXISTS within an OR (disjunction) is not supported")
-		}
-
 		combined, qErr := combineQualifyPred(md, templateName, sq, queryCTEScopes, pred)
 		if qErr != nil {
 			return nil, qErr
@@ -3533,9 +3525,8 @@ func mapColumnResolveError(err error, display string) error {
 	return nil
 }
 
-// splitNonExistsPredicatesFromWalked returns only the non-EXISTS parts
-// of a walked predicate tree. EXISTS and NOT(EXISTS) nodes are dropped.
-// Returns nil if there are no non-EXISTS predicates.
+// splitNonExistsPredicatesFromWalked extracts conjuncts without existential
+// consumers. A disjunction containing EXISTS cannot be split.
 func splitNonExistsPredicatesFromWalked(p predicates.QueryPredicate) predicates.QueryPredicate {
 	if p == nil {
 		return nil
@@ -3561,12 +3552,14 @@ func splitNonExistsPredicatesFromWalked(p predicates.QueryPredicate) predicates.
 		}
 		return nil
 	}
+	if predicates.ContainsExistentialPredicate(p) {
+		return nil
+	}
 	return p
 }
 
-// stripNonExistsPredicates removes non-EXISTS predicates from an AND
-// tree, returning only the EXISTS (or NOT EXISTS) predicate. Returns
-// nil if no EXISTS predicate is found.
+// stripNonExistsPredicates retains whole conjuncts containing existential
+// consumers, preserving their OR siblings.
 func stripNonExistsPredicates(p predicates.QueryPredicate) predicates.QueryPredicate {
 	if p == nil {
 		return nil
@@ -3591,38 +3584,10 @@ func stripNonExistsPredicates(p predicates.QueryPredicate) predicates.QueryPredi
 			return predicates.NewAnd(existsPreds...)
 		}
 	}
+	if predicates.ContainsExistentialPredicate(p) {
+		return p
+	}
 	return nil
-}
-
-// existsUnderDisjunction reports whether an EXISTS / NOT EXISTS predicate is
-// reachable through an OR in the predicate tree. Go lowers EXISTS predicates to
-// conjunctive semi-joins (FlatMap), which is only correct under AND. Under an
-// OR the EXISTS must instead be evaluated as an inline boolean (P OR EXISTS(Q)
-// is true when P is true OR Q matches) — not yet supported. Callers reject with
-// a clear error rather than returning wrong rows: the split helpers
-// (stripNonExistsPredicates / splitNonExistsPredicatesFromWalked) only recurse
-// through AND, so an EXISTS under OR is silently mis-extracted into an
-// unconditional semi-join and the disjunction is lost (returns empty).
-func existsUnderDisjunction(p predicates.QueryPredicate) bool {
-	return existsReachableUnderOr(p, false)
-}
-
-func existsReachableUnderOr(p predicates.QueryPredicate, underOr bool) bool {
-	if p == nil {
-		return false
-	}
-	if _, ok := predicates.IsExistentialPredicate(p); ok {
-		return underOr
-	}
-	if _, ok := p.(*predicates.OrPredicate); ok {
-		underOr = true
-	}
-	for _, ch := range p.Children() {
-		if existsReachableUnderOr(ch, underOr) {
-			return true
-		}
-	}
-	return false
 }
 
 // upgradeFirstFilterExistsSubqueries walks the single-child chain from op and,

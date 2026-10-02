@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -2445,7 +2446,7 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	f = t.foldKnownExists(f)
 	// Every successfully substituted alias was removed from ExistsSubqueries.
 	// Any KnownTruth that remains is an unsupported consumer/boolean shape (for
-	// example a synthetic projected-EXISTS carrier or an EXISTS below OR).
+	// example a synthetic projected-EXISTS carrier).
 	// Raw-semi-joining it would reintroduce the aggregate/pagination cardinality
 	// bug, so decline typed-loud.
 	if hasKnownExistsTruth(f.ExistsSubqueries) {
@@ -8691,11 +8692,7 @@ func (t *cascadesTranslator) translateJoinWithExists(
 // FALSE absorbs the entire AND. The corresponding subquery plan is removed, so
 // neither correlation routing nor execution can perturb the constant result.
 //
-// The existential lowering supports these markers as top-level AND conjuncts.
-// For robustness, an alias is folded only when every occurrence in the whole
-// predicate is one of those direct conjuncts. An occurrence nested under OR or
-// another unsupported boolean shape leaves the filter unchanged for that alias
-// rather than orphaning a marker by dropping its quantifier.
+// Boolean consumers are folded recursively without splitting disjunctions.
 func (t *cascadesTranslator) foldKnownExists(f *logical.LogicalFilter) *logical.LogicalFilter {
 	if f == nil || f.Predicate == nil || len(f.ExistsSubqueries) == 0 {
 		return f
@@ -8710,113 +8707,60 @@ func (t *cascadesTranslator) foldKnownExists(f *logical.LogicalFilter) *logical.
 		return f
 	}
 
-	// Count every marker occurrence, stopping at a recognized NOT-EXISTS so its
-	// existential child is not counted a second time.
-	allOccurrences := make(map[values.CorrelationIdentifier]int)
-	predicates.WalkPredicate(f.Predicate, func(p predicates.QueryPredicate) bool {
+	foldedAliases := make(map[values.CorrelationIdentifier]struct{})
+	var fold func(predicates.QueryPredicate) predicates.QueryPredicate
+	fold = func(p predicates.QueryPredicate) predicates.QueryPredicate {
 		if alias, ok := predicates.IsExistentialPredicate(p); ok {
-			allOccurrences[alias]++
-			return false
-		}
-		if alias, ok := predicates.IsNotExistentialPredicate(p); ok {
-			allOccurrences[alias]++
-			return false
-		}
-		return true
-	})
-
-	var conjuncts []predicates.QueryPredicate
-	var flattenAnd func(predicates.QueryPredicate)
-	flattenAnd = func(p predicates.QueryPredicate) {
-		if and, ok := p.(*predicates.AndPredicate); ok {
-			for _, sub := range and.SubPredicates {
-				flattenAnd(sub)
-			}
-			return
-		}
-		conjuncts = append(conjuncts, p)
-	}
-	flattenAnd(f.Predicate)
-
-	type marker struct {
-		alias   values.CorrelationIdentifier
-		negated bool
-		ok      bool
-	}
-	markers := make([]marker, len(conjuncts))
-	directOccurrences := make(map[values.CorrelationIdentifier]int)
-	for i, conjunct := range conjuncts {
-		if alias, ok := predicates.IsExistentialPredicate(conjunct); ok {
-			if _, isKnown := known[alias]; isKnown {
-				markers[i] = marker{alias: alias, ok: true}
-				directOccurrences[alias]++
-			}
-			continue
-		}
-		if alias, ok := predicates.IsNotExistentialPredicate(conjunct); ok {
-			if _, isKnown := known[alias]; isKnown {
-				markers[i] = marker{alias: alias, negated: true, ok: true}
-				directOccurrences[alias]++
+			if truth, known := known[alias]; known {
+				foldedAliases[alias] = struct{}{}
+				return predicates.NewConstantPredicate(truth)
 			}
 		}
-	}
-
-	eligible := make(map[values.CorrelationIdentifier]struct{})
-	for alias, direct := range directOccurrences {
-		if direct > 0 && direct == allOccurrences[alias] {
-			eligible[alias] = struct{}{}
+		switch p := p.(type) {
+		case *predicates.AndPredicate:
+			copy := *p
+			copy.SubPredicates = make([]predicates.QueryPredicate, len(p.SubPredicates))
+			for i, child := range p.SubPredicates {
+				copy.SubPredicates[i] = fold(child)
+			}
+			return &copy
+		case *predicates.OrPredicate:
+			copy := *p
+			copy.SubPredicates = make([]predicates.QueryPredicate, len(p.SubPredicates))
+			for i, child := range p.SubPredicates {
+				copy.SubPredicates[i] = fold(child)
+			}
+			return &copy
+		case *predicates.NotPredicate:
+			copy := *p
+			copy.Child = fold(p.Child)
+			return &copy
+		default:
+			return p
 		}
 	}
-	if len(eligible) == 0 {
+	rewritten := fold(f.Predicate)
+	if len(foldedAliases) == 0 {
 		return f
 	}
-
-	keptPredicates := make([]predicates.QueryPredicate, 0, len(conjuncts))
-	foldedAliases := make(map[values.CorrelationIdentifier]struct{})
-	for i, conjunct := range conjuncts {
-		m := markers[i]
-		if !m.ok {
-			keptPredicates = append(keptPredicates, conjunct)
-			continue
-		}
-		if _, canFold := eligible[m.alias]; !canFold {
-			keptPredicates = append(keptPredicates, conjunct)
-			continue
-		}
-		foldedAliases[m.alias] = struct{}{}
-		truth := *known[m.alias]
-		if m.negated {
-			truth = !truth
-		}
-		if !truth {
-			f2 := *f
-			// FALSE absorbs every EXISTS conjunct, so none of their quantifiers
-			// need to be built. EXISTS has no side effects.
-			f2.ExistsSubqueries = nil
-			f2.Predicate = predicates.NewConstantPredicate(predicates.TriFalse)
-			return &f2
-		}
-		// TRUE disappears from an AND.
+	rewritten, err := cascades.Simplify(rewritten, []cascades.CascadesRule{
+		cascades.NewAndConstantSimplifyRule(), cascades.NewOrConstantSimplifyRule(), cascades.NewNotConstantSimplifyRule(),
+	})
+	if err != nil {
+		t.setTranslateErr(err)
+		return f
 	}
-
-	keptSubqueries := make([]logical.ExistsSubquery, 0, len(f.ExistsSubqueries))
-	for _, esq := range f.ExistsSubqueries {
-		if _, folded := foldedAliases[esq.Alias]; !folded {
-			keptSubqueries = append(keptSubqueries, esq)
-		}
-	}
-	var rewritten predicates.QueryPredicate
-	switch len(keptPredicates) {
-	case 0:
-		rewritten = predicates.NewConstantPredicate(predicates.TriTrue)
-	case 1:
-		rewritten = keptPredicates[0]
-	default:
-		rewritten = predicates.NewAnd(keptPredicates...)
-	}
+	remaining := predicates.GetCorrelatedToOfPredicate(rewritten)
 	f2 := *f
-	f2.ExistsSubqueries = keptSubqueries
 	f2.Predicate = rewritten
+	f2.ExistsSubqueries = nil
+	for _, esq := range f.ExistsSubqueries {
+		_, folded := foldedAliases[esq.Alias]
+		_, stillUsed := remaining[esq.Alias]
+		if !predicates.IsContradiction(rewritten) && (!folded || stillUsed) {
+			f2.ExistsSubqueries = append(f2.ExistsSubqueries, esq)
+		}
+	}
 	return &f2
 }
 
@@ -8829,11 +8773,8 @@ func hasKnownExistsTruth(subqueries []logical.ExistsSubquery) bool {
 	return false
 }
 
-// splitNonExistsPredicates extracts the non-EXISTS parts of a predicate
-// tree. EXISTS predicates (and NOT EXISTS) are dropped — they're
-// represented by the Existential quantifier in the SelectExpression.
-// Compound AND predicates are flattened: AND(ExistentialValuePredicate, c.id < 10)
-// yields just [c.id < 10].
+// splitNonExistsPredicates extracts conjuncts without existential consumers.
+// Their complement is retained intact by extractExistsPredicates.
 func splitNonExistsPredicates(pred predicates.QueryPredicate) []predicates.QueryPredicate {
 	if pred == nil {
 		return nil
@@ -8851,13 +8792,14 @@ func splitNonExistsPredicates(pred predicates.QueryPredicate) []predicates.Query
 		}
 		return result
 	}
+	if predicates.ContainsExistentialPredicate(pred) {
+		return nil
+	}
 	return []predicates.QueryPredicate{pred}
 }
 
-// extractExistsPredicates returns the EXISTS-related predicates that
-// splitNonExistsPredicates drops: bare ExistentialValuePredicate or
-// NOT(ExistentialValuePredicate). The rule's implementExistentialSelect
-// needs these to detect EXISTS vs NOT EXISTS.
+// extractExistsPredicates retains whole conjuncts that consume an existential
+// binding. OR siblings must remain together above FirstOrDefault.
 func extractExistsPredicates(pred predicates.QueryPredicate) []predicates.QueryPredicate {
 	if pred == nil {
 		return nil
@@ -8874,6 +8816,9 @@ func extractExistsPredicates(pred predicates.QueryPredicate) []predicates.QueryP
 			result = append(result, extractExistsPredicates(sub)...)
 		}
 		return result
+	}
+	if predicates.ContainsExistentialPredicate(pred) {
+		return []predicates.QueryPredicate{pred}
 	}
 	return nil
 }

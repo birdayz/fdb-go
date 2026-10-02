@@ -229,13 +229,26 @@ func TestFDB_ProjectedExistsRound13_NestedSubqueryBoundary(t *testing.T) {
 			want)
 	})
 
-	// A WHERE NOT (NOT EXISTS(...)) at the OUTER level — a wrapped WHERE-EXISTS the
-	// NLJ rule does not route as a semi-join → still rejected (round-12 P1a).
-	t.Run("control_where_not_not_exists_rejected", func(t *testing.T) {
-		const want = "EXISTS in this query shape is not yet supported"
-		assertRejected(t,
-			"SELECT id FROM t1 WHERE NOT (NOT EXISTS (SELECT 1 FROM t2 WHERE t2.fk = t1.id))",
-			want)
+	t.Run("control_where_not_not_exists", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx, "SELECT id FROM t1 WHERE NOT (NOT EXISTS (SELECT 1 FROM t2 WHERE t2.fk = t1.id))")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var got []int64
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, id)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || got[0] != 2 {
+			t.Fatalf("double NOT EXISTS rows=%v, want [2]", got)
+		}
 	})
 
 	// A WHERE buried-scalar EXISTS at the OUTER level still rejected (round-12).

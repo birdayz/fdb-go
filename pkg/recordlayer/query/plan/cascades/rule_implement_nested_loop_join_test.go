@@ -1991,12 +1991,26 @@ func TestImplementExistentialJoinHonorsDependencyDirection(t *testing.T) {
 				[]expressions.Quantifier{outerQ, innerQ}, []predicates.QueryPredicate{mustExistentialAlias(t, innerAlias)},
 				[]string{outerAlias.Name(), innerAlias.Name()}))
 			results := mustFireExpressionRule(t, NewImplementNestedLoopJoinRule(), expressions.InitialOf(sel))
-			if tc.outerDepends {
+			if tc.outerDepends && tc.innerDepends {
 				if len(results) != 0 {
-					t.Fatalf("yielded %d plans whose outer requires the unbound existential inner", len(results))
+					t.Fatalf("yielded %d plans with a dependency cycle", len(results))
 				}
 			} else if len(results) == 0 {
 				t.Fatal("a valid existential dependency direction yielded no implementation")
+			}
+			if tc.outerDepends && !tc.innerDepends {
+				for _, result := range results {
+					flatMap, ok := result.(*plans.RecordQueryFlatMapPlan)
+					if !ok || flatMap.GetOuterAlias() != innerAlias || flatMap.GetInnerAlias() != outerAlias {
+						t.Fatalf("dependent ForEach must execute after the existential witness: %T", result)
+					}
+					if _, wrapped := flatMap.GetOuter().(*plans.RecordQueryFirstOrDefaultPlan); !wrapped {
+						t.Fatalf("existential outer lacks FirstOrDefault: %s", flatMap.Explain())
+					}
+					if flatMap.InheritOuterRecordProperties() {
+						t.Fatal("ordinary inner must not inherit existential cardinality")
+					}
+				}
 			}
 		})
 	}

@@ -2,6 +2,7 @@ package embedded
 
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
@@ -147,12 +148,8 @@ func foldInnerOnExistsIntoWhere(op logical.LogicalOperator) (logical.LogicalOper
 // can never be collected while its parent is left in place. Every touched
 // node is COPIED; j itself comes back when nothing changes.
 //
-// A join whose ON-EXISTS cannot be lifted is an error, never a silent
-// boundary: an EXISTS under an OR has no conjunct to lift (its marker would
-// stay under the OR while its quantifier moved — the dangling-existential
-// shape), and an EXISTS whose subquery has no marker in conjunct position
-// (nested in a scalar expression) would leave a quantifier nothing reads.
-// Both are refused with the WHERE's own wording for the same shapes.
+// A boolean conjunct containing EXISTS moves intact, including OR siblings.
+// An attachment without a predicate consumer is rejected before any lift.
 func liftClusterOnExists(j *logical.LogicalJoin) (*logical.LogicalJoin, []predicates.QueryPredicate, []logical.ExistsSubquery, error) {
 	var markers []predicates.QueryPredicate
 	var subqueries []logical.ExistsSubquery
@@ -189,14 +186,19 @@ func liftClusterOnExists(j *logical.LogicalJoin) (*logical.LogicalJoin, []predic
 				return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 					"EXISTS in a JOIN ON clause without a predicate tree cannot be folded into the WHERE")
 			}
-			if existsUnderDisjunction(onPred) {
-				return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-					"EXISTS within an OR (disjunction) is not supported")
-			}
 			ownMarkers = extractExistsMarkers(onPred)
-			if len(ownMarkers) != len(nj.OnExistsSubqueries) {
-				return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-					"EXISTS nested in a scalar expression is not yet supported")
+			consumers := make(map[values.CorrelationIdentifier]struct{})
+			predicates.WalkPredicate(onPred, func(p predicates.QueryPredicate) bool {
+				if alias, ok := predicates.IsExistentialPredicate(p); ok {
+					consumers[alias] = struct{}{}
+				}
+				return true
+			})
+			for _, edge := range nj.OnExistsSubqueries {
+				if _, found := consumers[edge.Alias]; !found {
+					return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+						"EXISTS nested in a scalar expression is not yet supported")
+				}
 			}
 		}
 		left, err := walk(nj.Left)
@@ -289,10 +291,8 @@ func foldOuterJoinLegs(j *logical.LogicalJoin) (*logical.LogicalJoin, error) {
 	return &folded, nil
 }
 
-// extractExistsMarkers returns the EXISTS / NOT EXISTS markers in conjunct
-// position of pred, in order: the bare ExistentialValuePredicate, NOT over
-// one, and the members of an AND, recursively. A marker below any other node
-// (OR, CASE, a comparison) is not in conjunct position and is not returned.
+// extractExistsMarkers returns whole conjuncts containing existential predicates.
+// In particular, an OR is never split into independently enforced predicates.
 func extractExistsMarkers(pred predicates.QueryPredicate) []predicates.QueryPredicate {
 	if pred == nil {
 		return nil
@@ -309,6 +309,9 @@ func extractExistsMarkers(pred predicates.QueryPredicate) []predicates.QueryPred
 			out = append(out, extractExistsMarkers(sub)...)
 		}
 		return out
+	}
+	if predicates.ContainsExistentialPredicate(pred) {
+		return []predicates.QueryPredicate{pred}
 	}
 	return nil
 }
@@ -331,6 +334,9 @@ func splitNonExistsConjuncts(pred predicates.QueryPredicate) []predicates.QueryP
 			out = append(out, splitNonExistsConjuncts(sub)...)
 		}
 		return out
+	}
+	if predicates.ContainsExistentialPredicate(pred) {
+		return nil
 	}
 	return []predicates.QueryPredicate{pred}
 }

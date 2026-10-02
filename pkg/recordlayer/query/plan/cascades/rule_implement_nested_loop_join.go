@@ -100,41 +100,27 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	// An existential is never a FlatMap outer here: Java's matcher binds either
-	// quantifier as the outer but wraps an existential in FirstOrDefault first
-	// (planPartitionToPhysical), and iterating its rows instead turns the
-	// semi-join into a join that repeats the other leg once per match. Go
-	// implements an existential only as the inner, so a leading one is the
-	// same semi-join with the legs exchanged, and a pair of existentials is
-	// left to the partitions that give each one a row-producing partner.
-	if quants[0].Kind() == expressions.QuantifierExistential {
-		if quants[1].Kind() == expressions.QuantifierExistential || quants[1].IsNullOnEmpty() {
+	if quants[0].Kind() == expressions.QuantifierExistential || quants[1].Kind() == expressions.QuantifierExistential {
+		// This lowering has no DefaultOnEmpty; keep null-supplying legs with
+		// their preserved partner rather than losing their empty-row witness.
+		if quants[0].IsNullOnEmpty() || quants[1].IsNullOnEmpty() {
 			return
 		}
-		var exchangedAliases []string
-		if aliases := sel.GetSourceAliases(); len(aliases) >= 2 {
-			exchangedAliases = append([]string{aliases[1], aliases[0]}, aliases[2:]...)
-		}
-		r.implementExistentialSelect(call, sel, []expressions.Quantifier{quants[1], quants[0]}, exchangedAliases)
-		return
-	}
-
-	// EXISTS subquery: when the right quantifier is existential, wrap
-	// the inner in FirstOrDefault and use a semi-join (EXISTS) plan
-	// shape. The ExistentialValuePredicate in the predicate list
-	// evaluates to TRUE when FirstOrDefault returns a non-null row.
-	if quants[1].Kind() == expressions.QuantifierExistential {
-		// A null-on-empty OUTER here is a LEFT OUTER's null-supplying leg that
-		// partitioning paired with an existential correlated to it (`… LEFT
-		// JOIN e … WHERE NOT EXISTS (… e.id …)`). The existential lowering has
-		// no DefaultOnEmpty for its outer, and ignoring the flag would drop the
-		// null-extended rows; decline, so the partitions that keep the leg
-		// beside its preserved partner — where the extension IS implemented —
-		// carry the query.
-		if quants[0].IsNullOnEmpty() {
+		leftDepends := referenceIsCorrelatedTo(quants[0].GetRangesOver(), quants[1].GetAlias())
+		rightDepends := referenceIsCorrelatedTo(quants[1].GetRangesOver(), quants[0].GetAlias())
+		if leftDepends && rightDepends {
 			return
 		}
-		r.implementExistentialSelect(call, sel, quants, sel.GetSourceAliases())
+		aliases := sel.GetSourceAliases()
+		// Dependencies take precedence over the usual ForEach-outer orientation:
+		// a correlated ForEach must execute after its existential witness.
+		if leftDepends || (!rightDepends && quants[0].Kind() == expressions.QuantifierExistential && quants[1].Kind() == expressions.QuantifierForEach) {
+			quants = []expressions.Quantifier{quants[1], quants[0]}
+			if len(aliases) >= 2 {
+				aliases = []string{aliases[1], aliases[0]}
+			}
+		}
+		r.implementExistentialSelect(call, sel, quants, aliases)
 		return
 	}
 
@@ -2697,8 +2683,8 @@ func buildExistsCompensationChain(
 	return innerQ, nil
 }
 
-// implementExistentialSelect handles a SelectExpression with a
-// ForEach outer and an Existential inner (EXISTS subquery).
+// implementExistentialSelect handles a binary SelectExpression with at least
+// one existential edge; each such edge gets its own FirstOrDefault witness.
 //
 // RFC-141: this matches Java's ImplementNestedLoopJoinRule exactly. The
 // FlatMap is a PURE MAP — there is no EXISTS/NOT-EXISTS join mode. The
@@ -2747,6 +2733,20 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 		return
 	}
 	outerPlan := outerPh.GetRecordQueryPlan()
+	if quants[0].Kind() == expressions.QuantifierExistential {
+		outerQ := expressions.NamedPhysicalQuantifier(quants[0].GetAlias(), call.MemoizeFinalExpression(outerPlan))
+		flowedType, err := outerQ.GetFlowedObjectType()
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		wrapped, err := plans.NewRecordQueryFirstOrDefaultPlanFromQuantifier(outerQ, values.NewNullValue(flowedType))
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		outerPlan, outerExpr = wrapped, wrapped
+	}
 
 	innerExpr, _ := getWinnerForOrdering(innerRef, properties.PreserveOrdering(), call.CostModel())
 	if innerExpr == nil {
@@ -2762,29 +2762,37 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	// EXISTS (no surrounding NOT) gives a positive existential filter; a
 	// NOT-EXISTS wraps it in NotPredicate, which flips the residual
 	// comparison polarity below.
+	innerIsExistential := quants[1].Kind() == expressions.QuantifierExistential
 	allPreds := sel.GetPredicates()
 	var regularPreds []predicates.QueryPredicate
 	hasExistsFilter := false
 	negated := false
 	for _, p := range flattenAndPredicates(allPreds) {
-		if _, ok := predicates.IsExistentialPredicate(p); ok {
+		if alias, ok := predicates.IsExistentialPredicate(p); ok && innerIsExistential && alias == quants[1].GetAlias() {
 			hasExistsFilter = true
 			continue
 		}
-		if _, ok := predicates.IsNotExistentialPredicate(p); ok {
+		if alias, ok := predicates.IsNotExistentialPredicate(p); ok && innerIsExistential && alias == quants[1].GetAlias() {
 			hasExistsFilter = true
 			negated = true
 			continue
 		}
 		regularPreds = append(regularPreds, p)
 	}
-	// Keep the existential markers structural until their compensation and
-	// polarity have been classified above. Every remaining predicate is a row
-	// filter, as in Java's QueryPredicate::toResidualPredicate lowering.
-	regularPreds, err := predicates.ToResidualPredicates(regularPreds)
-	if err != nil {
-		call.Fail(err)
-		return
+	// Preserve boolean existential consumers until placement is decided:
+	// their FALSE branch exists only after FirstOrDefault supplies NULL.
+	hasBooleanExists := false
+	for i, p := range regularPreds {
+		if predicates.ContainsExistentialPredicate(p) {
+			hasBooleanExists = true
+			continue
+		}
+		residual, err := predicates.ToResidualPredicate(p)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		regularPreds[i] = residual
 	}
 	// A single PVR range can hold an equality AND additional bounds. Expose
 	// those conjuncts to the PK/index shortcut so it consumes only the equality
@@ -2974,7 +2982,7 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	if w, _ := ordinalSeedLegWindowsOf(planResultValue(outerPlan)); w == nil {
 		needBuried := false
 		for _, p := range regularPreds {
-			if !predicateReferencesInnerLeg(p, innerLegs) {
+			if predicates.ContainsExistentialPredicate(p) || !predicateReferencesInnerLeg(p, innerLegs) {
 				continue
 			}
 			scalarAliases := scalarSubqueryAliasesOfPredicate(p)
@@ -3018,7 +3026,7 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 		windowsHoisted = true
 		expectedOuterRoots := map[values.CorrelationIdentifier]struct{}{outerCorr: {}}
 		for _, predicate := range regularPreds {
-			if !predicateReferencesInnerLeg(predicate, innerLegs) {
+			if predicates.ContainsExistentialPredicate(predicate) || !predicateReferencesInnerLeg(predicate, innerLegs) {
 				continue
 			}
 			scalarAliases := scalarSubqueryAliasesOfPredicate(predicate)
@@ -3038,8 +3046,8 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 			return
 		}
 		for i, p := range regularPreds {
-			if !predicateReferencesInnerLeg(p, innerLegs) {
-				continue // outer-only: evaluated in the outer context — do not bake
+			if predicates.ContainsExistentialPredicate(p) || !predicateReferencesInnerLeg(p, innerLegs) {
+				continue // not a child-row predicate
 			}
 			np, ok := rebaseOuterLegRefsOrdinal(p, windows, mergedQOV, expectedOuterRoots)
 			if !ok {
@@ -3057,7 +3065,7 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	// ExistsValue's QOV(existential-quantifier) would otherwise stay unbound
 	// and read FALSE for every matched row (the non-fast path's rebase is the
 	// only thing that makes the projected boolean resolve).
-	if len(regularPreds) > 0 && !sel.IsQuantifiersSwapped() {
+	if innerIsExistential && len(regularPreds) > 0 && !hasBooleanExists && !sel.IsQuantifiersSwapped() {
 		if r.tryExistsFlatMap(
 			call, resultValue, outerPlan, innerPlan,
 			originalOuterCorr, outerCorr, innerCorr,
@@ -3096,8 +3104,16 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	// computed above (the hoist uses the same routing authority).
 	var joinPreds []predicates.QueryPredicate
 	var outerOnlyPreds []predicates.QueryPredicate
+	var existentialResiduals []predicates.QueryPredicate
 	for _, p := range regularPreds {
-		if predicateReferencesInnerLeg(p, innerLegs) {
+		if predicates.ContainsExistentialPredicate(p) {
+			residual, err := predicates.ToResidualPredicate(p)
+			if err != nil {
+				call.Fail(err)
+				return
+			}
+			existentialResiduals = append(existentialResiduals, residual)
+		} else if predicateReferencesInnerLeg(p, innerLegs) {
 			joinPreds = append(joinPreds, p)
 		} else {
 			outerOnlyPreds = append(outerOnlyPreds, p)
@@ -3171,13 +3187,28 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	// interning from collapsing the below-FOD and existential residual filters.
 	innerQ := expressions.NamedPhysicalQuantifier(
 		quants[1].GetAlias(), call.MemoizeExpression(innerExpr))
-	innerQ, err = buildExistsCompensationChain(
-		call, innerQ, innerPlan, innerCorr, joinPreds,
-		hasExistsFilter, negated, false,
-	)
-	if err != nil {
-		call.Fail(err)
-		return
+	if innerIsExistential {
+		innerQ, err = buildExistsCompensationChain(
+			call, innerQ, innerPlan, innerCorr, joinPreds,
+			hasExistsFilter, negated, false,
+		)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+	} else {
+		// An ordinary inner retains all its rows, including an empty result.
+		innerQ = expressions.NamedPhysicalQuantifier(quants[1].GetAlias(), call.MemoizeFinalExpression(innerPlan))
+		existentialResiduals = append(joinPreds, existentialResiduals...)
+	}
+
+	if len(existentialResiduals) > 0 {
+		filter, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(innerQ, existentialResiduals, innerCorr)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		innerQ = expressions.NewPhysicalQuantifier(call.MemoizeFinalExpression(filter))
 	}
 
 	// outerOnlyPreds deliberately keep the buried-leg references the
@@ -3221,7 +3252,7 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	flatMapPlan, err := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
 		outerQ, innerQ,
 		outerCorr, innerCorr,
-		resultValue, true,
+		resultValue, innerIsExistential,
 	)
 	if err != nil {
 		call.Fail(err)

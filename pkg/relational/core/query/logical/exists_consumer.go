@@ -19,12 +19,13 @@ const (
 	ExistsPositivePredicate ExistsConsumer = 1 << iota
 	ExistsNegativePredicate
 	ExistsProjectedValue
+	ExistsBooleanPredicate
 )
 
 // AdmitConsumer returns a copy carrying a proof for this use. Every use must
 // satisfy the edge's constraint before its owner publishes the attachment.
 func (e ExistsSubquery) AdmitConsumer(use ExistsConsumer) (ExistsSubquery, error) {
-	if use != ExistsPositivePredicate && use != ExistsNegativePredicate && use != ExistsProjectedValue {
+	if use != ExistsPositivePredicate && use != ExistsNegativePredicate && use != ExistsProjectedValue && use != ExistsBooleanPredicate {
 		return e, fmt.Errorf("EXISTS has an unclassified consumer")
 	}
 	switch e.Constraint {

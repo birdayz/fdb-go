@@ -2575,9 +2575,7 @@ func TestAggregateIndexCandidatePreservesKeyExpressionIdentity(t *testing.T) {
 	}
 }
 
-// Predicate-union exploration is reachable for conjunctive EXISTS. An EXISTS
-// inside OR still fails clause admission before Cascades; changing that boundary
-// requires admitting a disjunctive consumer, not merely adding a union rule.
+// An indexed OR beside EXISTS still reaches predicate-union exploration.
 func TestPlanHarness_UnionWithExistentialPredicate(t *testing.T) {
 	t.Parallel()
 	plan, err := PlanQueryForTest("SELECT id FROM orders o WHERE (status = 'pending' OR amount = 42) AND EXISTS (SELECT id FROM orders i WHERE i.id = 1)", ordersSchema, properties.MapStatistics{PerType: map[string]float64{"ORDERS": 1_000_000}})
@@ -2590,10 +2588,12 @@ func TestPlanHarness_UnionWithExistentialPredicate(t *testing.T) {
 
 func TestPlanHarness_DisjunctiveExistsAdmission(t *testing.T) {
 	t.Parallel()
-	_, err := PlanQueryForTest("SELECT id FROM orders o WHERE status = 'pending' OR EXISTS (SELECT id FROM orders i WHERE i.id = o.customer_id)", ordersSchema, nil)
-	if err == nil || !strings.Contains(err.Error(), "EXISTS within an OR (disjunction) is not supported") {
-		t.Fatalf("clause admission changed; disjunctive EXISTS consumer must be verified end-to-end: %v", err)
+	plan, err := PlanQueryForTest("SELECT id FROM orders o WHERE status = 'pending' OR EXISTS (SELECT id FROM orders i WHERE i.id = o.customer_id)", ordersSchema, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
+	t.Log(plan)
+	assertPlanContains(t, plan, "PredicatesFilter(FirstOrDefault(")
 }
 
 func TestPlanHarness_UnionWithFixedUnindexedFactor(t *testing.T) {

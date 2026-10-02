@@ -23,13 +23,13 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**377 scenarios · 3114 query/assertion cases** across 18 feature areas — 2721 supported, 106 unsupported-feature pins, 287 error-path pins.
+**377 scenarios · 3114 query/assertion cases** across 18 feature areas — 2725 supported, 102 unsupported-feature pins, 287 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
 | Aggregates & GROUP BY | 55 | 349 | 314 | 19 | 16 |
 | Joins | 66 | 313 | 296 | 2 | 15 |
-| Subqueries (EXISTS / IN / scalar) | 46 | 321 | 261 | 37 | 23 |
+| Subqueries (EXISTS / IN / scalar) | 46 | 321 | 265 | 33 | 23 |
 | CTEs | 15 | 199 | 160 | 4 | 35 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 12 | 68 | 59 | 5 | 4 |
 | DML (INSERT / UPDATE / DELETE) | 26 | 240 | 201 | 3 | 36 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 40 | 340 | 301 | 5 | 34 |
-| **Total** | **377** | **3114** | **2721** | **106** | **287** |
+| **Total** | **377** | **3114** | **2725** | **102** | **287** |
 
 ## Aggregates & GROUP BY
 
@@ -198,7 +198,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `exists_multi_table_inner` | 2 | 2 | 0 | 0 | EXISTS with multi-table inner query |
 | `exists_subquery_java` | 8 | 8 | 0 | 0 | EXISTS and NOT EXISTS subquery patterns. |
 | `exists_with_aggregate` | 12 | 8 | 4 | 0 | EXISTS subquery with aggregate |
-| `exists_with_or` | 3 | 1 | 2 | 0 | EXISTS subqueries combined with OR predicates. |
+| `exists_with_or` | 3 | 3 | 0 | 0 | EXISTS subqueries combined with OR predicates. |
 | `having_not_exists` | 1 | 1 | 0 | 0 | HAVING with NOT EXISTS subquery |
 | `in_list_advanced` | 10 | 8 | 0 | 2 | Advanced IN-list scenarios from Java's in-predicate.yamsql: |
 | `in_list_comprehensive` | 8 | 8 | 0 | 0 | Comprehensive IN-list tests |
@@ -210,8 +210,8 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `insert_select_exists` | 5 | 5 | 0 | 0 | INSERT SELECT with EXISTS filter |
 | `limit_exists` | 2 | 2 | 0 | 0 | LIMIT with EXISTS subquery |
 | `nested_derived_table` | 18 | 15 | 0 | 3 | Nested derived tables (Java's null-operator-tests.yamsql): |
-| `normalized_exists_predicates` | 3 | 2 | 1 | 0 | OR predicates combined with EXISTS subqueries that benefit from CNF |
-| `not_exists_or` | 2 | 1 | 1 | 0 | NOT EXISTS combined with OR predicates |
+| `normalized_exists_predicates` | 3 | 3 | 0 | 0 | OR predicates combined with EXISTS subqueries that benefit from CNF |
+| `not_exists_or` | 2 | 2 | 0 | 0 | NOT EXISTS combined with OR predicates |
 | `not_exists_predicates` | 5 | 5 | 0 | 0 | NOT EXISTS with various predicate shapes |
 | `projected_exists_nested_sort_key` | 6 | 6 | 0 | 0 | The projected-EXISTS fold crossed with a NESTED `ORDER BY` key (RFC-218). |
 | `projected_exists_over_a_derived_source` | 6 | 6 | 0 | 0 | A correlated EXISTS over a DERIVED SOURCE — a CTE or a derived table — joined |

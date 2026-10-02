@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=377 queries=2828 dml=175 non_query=111 plan_errors=320 unexpected_errors=4
+# files=377 queries=2828 dml=175 non_query=111 plan_errors=316 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -7134,12 +7134,26 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryFirstOrDefaultPlan
 shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
-=== exists_with_or.yaml#1 expect-error=0A000
+=== exists_with_or.yaml#1
 sql:   SELECT id FROM items WHERE id > 2 OR EXISTS (SELECT 1 FROM tags WHERE tags.item_id = items.id) ORDER BY id
-plan:  <PLAN-ERROR: 0A000: EXISTS within an OR (disjunction) is not supported>
-=== exists_with_or.yaml#2 expect-error=0A000
+plan:  Project([_current.ID#0], FlatMap(outer=Scan(ITEMS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(TAGS), [1 preds])), [1 preds])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
+=== exists_with_or.yaml#2
 sql:   SELECT id FROM items WHERE NOT EXISTS (SELECT 1 FROM tags WHERE tags.item_id = items.id) OR id = 1 ORDER BY id
-plan:  <PLAN-ERROR: 0A000: EXISTS within an OR (disjunction) is not supported>
+plan:  Project([_current.ID#0], FlatMap(outer=Scan(ITEMS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(TAGS), [1 preds])), [1 preds])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === flatmap_empty_tables.yaml#0
 sql:   SELECT p.name, c.name FROM parents p, children c WHERE c.parent_id = p.id ORDER BY p.name
 plan:  Project([_current.NAME#1, _current.NAME#4], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(CHILDREN), inner=Scan(PARENTS, [=]))))
@@ -12944,12 +12958,27 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryFirstOrDefaultPlan
 shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
-=== normalized_exists_predicates.yaml#2 expect-error=0A000
+=== normalized_exists_predicates.yaml#2
 sql:   SELECT id FROM products WHERE products.price < 30 OR EXISTS ( SELECT 1 FROM reviews WHERE reviews.product_id = products.id AND reviews.rating = 5 ) ORDER BY id
-plan:  <PLAN-ERROR: 0A000: EXISTS within an OR (disjunction) is not supported>
-=== not_exists_or.yaml#0 expect-error=0A000
+plan:  Project([_current.ID#0], FlatMap(outer=Scan(PRODUCTS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(REVIEWS), [2 preds])), [1 preds])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
+=== not_exists_or.yaml#0
 sql:   SELECT p.name FROM products p WHERE p.discontinued = 1 OR NOT EXISTS (SELECT 1 FROM inventory i WHERE i.product_id = p.id) ORDER BY p.name
-plan:  <PLAN-ERROR: 0A000: EXISTS within an OR (disjunction) is not supported>
+plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(PRODUCTS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(INVENTORY), [1 preds])), [1 preds]))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryFirstOrDefaultPlan
+shape:           RecordQueryPredicatesFilterPlan
+shape:             RecordQueryScanPlan
 === not_exists_or.yaml#1
 sql:   SELECT p.name FROM products p WHERE p.discontinued = 0 AND EXISTS (SELECT 1 FROM inventory i WHERE i.product_id = p.id) ORDER BY p.name
 plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=PredicatesFilter(Scan(PRODUCTS), [1 preds]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(INVENTORY), [1 preds])), [1 preds]))))

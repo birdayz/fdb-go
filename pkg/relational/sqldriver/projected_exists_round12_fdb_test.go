@@ -60,7 +60,6 @@ func TestFDB_ProjectedExistsRound12(t *testing.T) {
 	mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30)")
 	mustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 2)")
 
-	const unsupportedWHERE = "EXISTS in this query shape is not yet supported"
 	const unsupportedSELECT = "projected EXISTS in this query shape is not yet supported"
 
 	// assertRejected runs q, fails if it returns rows (the silent-wrong revert),
@@ -144,34 +143,22 @@ func TestFDB_ProjectedExistsRound12(t *testing.T) {
 
 	exists := "EXISTS (SELECT 1 FROM t2 WHERE t2.fk = t1.id)"
 
-	// ───── P1a: wrapped WHERE EXISTS → clean reject (was silent-wrong: all rows) ─────
-
-	// `NOT (NOT EXISTS(...))` is logically plain EXISTS (→ {2}); before the fix it
-	// fell into the regular bucket and returned ALL rows {1,2,3}. A revert returns
-	// 3 rows; the backstop rejects.
-	t.Run("p1a_where_double_not_exists", func(t *testing.T) {
-		assertRejected(t, "SELECT id FROM t1 WHERE NOT (NOT "+exists+")", unsupportedWHERE)
-	})
-
-	// `EXISTS(...) OR id = 1` — an existential under a disjunction. Rejected cleanly
-	// (the upstream OR-EXISTS guard or this backstop). A revert silently returns
-	// the wrong row set.
-	t.Run("p1a_where_exists_or_pred", func(t *testing.T) {
-		assertRejected(t, "SELECT id FROM t1 WHERE "+exists+" OR id = 1", "")
-	})
-
-	// An existential buried inside an AND conjunct under a wrapper:
-	// `id > 1 AND NOT (NOT EXISTS(...))`. The plain conjunct routes directly but the
-	// buried existential conjunct does not → reject.
-	t.Run("p1a_where_buried_in_and", func(t *testing.T) {
-		assertRejected(t, "SELECT id FROM t1 WHERE id > 1 AND NOT (NOT "+exists+")", unsupportedWHERE)
-	})
-
-	// `NOT (EXISTS(...) AND id > 1)` — the existential is under NOT(AND(...)), not a
-	// direct single-NOT of a bare existential → reject.
-	t.Run("p1a_where_not_of_exists_and", func(t *testing.T) {
-		assertRejected(t, "SELECT id FROM t1 WHERE NOT ("+exists+" AND id > 1)", unsupportedWHERE)
-	})
+	for _, tc := range []struct {
+		name, where string
+		want        []int64
+	}{
+		{"p1a_where_double_not_exists", "NOT (NOT " + exists + ")", []int64{2}},
+		{"p1a_where_exists_or_pred", exists + " OR id = 1", []int64{1, 2}},
+		{"p1a_where_buried_in_and", "id > 1 AND NOT (NOT " + exists + ")", []int64{2}},
+		{"p1a_where_not_of_exists_and", "NOT (" + exists + " AND id > 1)", []int64{1, 3}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := queryInts(t, "SELECT id FROM t1 WHERE "+tc.where); !eqInts(got, tc.want) {
+				t.Fatalf("boolean EXISTS rows=%v, want %v", got, tc.want)
+			}
+		})
+	}
 
 	// ───── P1b: nested projected EXISTS → clean reject (was silent-wrong: ELSE/NULL) ─────
 
@@ -298,7 +285,6 @@ func TestFDB_ProjectedExistsRound12_DML(t *testing.T) {
 
 	mustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 2)")
 
-	const unsupportedWHERE = "EXISTS in this query shape is not yet supported"
 	exists := "EXISTS (SELECT 1 FROM t2 WHERE t2.fk = t1.id)"
 
 	remaining := func(t *testing.T) []int64 {
@@ -331,21 +317,12 @@ func TestFDB_ProjectedExistsRound12_DML(t *testing.T) {
 		return true
 	}
 
-	// Guard sentinel: DELETE with a buried existential rejects cleanly. A revert
-	// silently DELETES all 3 rows (the silent-wrong behavior).
-	t.Run("delete_buried_exists_rejected", func(t *testing.T) {
+	t.Run("delete_double_not_exists", func(t *testing.T) {
 		mustExec(t, db, ctx, "DELETE FROM t1")
 		mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30)")
-		_, err := db.ExecContext(ctx, "DELETE FROM t1 WHERE NOT (NOT "+exists+")")
-		if err == nil {
-			t.Fatalf("DELETE with buried EXISTS succeeded (remaining=%v) — should reject cleanly", remaining(t))
-		}
-		if !strings.Contains(err.Error(), unsupportedWHERE) {
-			t.Fatalf("expected clean rejection %q, got: %v", unsupportedWHERE, err)
-		}
-		// Nothing was deleted.
-		if got := remaining(t); !eq(got, []int64{1, 2, 3}) {
-			t.Fatalf("rows changed despite clean rejection: %v", got)
+		mustExec(t, db, ctx, "DELETE FROM t1 WHERE NOT (NOT "+exists+")")
+		if got := remaining(t); !eq(got, []int64{1, 3}) {
+			t.Fatalf("DELETE double NOT EXISTS: remaining=%v, want [1 3]", got)
 		}
 	})
 

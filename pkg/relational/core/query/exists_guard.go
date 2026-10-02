@@ -158,58 +158,16 @@ func emittedScopeValues(e expressions.RelationalExpression) []values.Value {
 	}
 }
 
-// BuriedExistentialPredicateError signals that a translated plan tree carries a
-// WHERE existential predicate (an ExistentialValuePredicate) buried under a
-// wrapper that is NOT a directly-handled semi-join shape — i.e. it is neither a
-// top-level existential nor a single-NOT-wrapped existential. Such a predicate
-// falls into the regular-predicate bucket of the NLJ rule's
-// implementExistentialSelect / the existential peel, where the empty
-// FirstOrDefault inner emits its NULL default that no residual filter removes,
-// so EVERY outer row silently passes (a silent wrong result). The production
-// path rejects such a plan with ErrCodeUnsupportedQuery rather than ship wrong
-// rows (RFC-141 R4 convergence backstop, P1a).
-//
-// The cleanly-rejected shapes are the wrapped-WHERE-EXISTS long tail: any
-// existential reachable only through a wrapper the rule's IsExistentialPredicate
-// / IsNotExistentialPredicate routing does not recognise — `WHERE NOT (NOT
-// EXISTS(...))`, `WHERE EXISTS(...) OR p`, deeper AND/OR/NOT nesting. A plain
-// `WHERE EXISTS` / `WHERE NOT EXISTS` (top-level or single-NOT-wrapped) is the
-// directly-handled shape and is NOT rejected.
+// BuriedExistentialPredicateError reports an ExistsValue that was not lowered
+// to a boolean predicate consumer before planning.
 type BuriedExistentialPredicateError struct{}
 
 func (e *BuriedExistentialPredicateError) Error() string {
 	return "EXISTS in this query shape is not yet supported"
 }
 
-// CheckBuriedExistentialPredicate is the RFC-141 R4 convergence
-// backstop for WHERE EXISTS (P1a). Given the root Reference of a freshly
-// translated (pre-planning) plan tree, it returns a
-// *BuriedExistentialPredicateError when any predicate-bearing expression carries
-// an existential predicate that is NOT in a directly-handled position — i.e. an
-// ExistentialValuePredicate buried inside a predicate that is neither the
-// top-level existential nor a single-NOT-wrapped existential.
-//
-// EXISTS can appear at any depth in a WHERE predicate tree. Only a top-level
-// (or single-NOT-wrapped) existential is the semi-join shape the NLJ rule lowers
-// to a FirstOrDefault + residual filter; everything else falls into the regular
-// bucket where the empty FOD's NULL default is never dropped and every outer row
-// passes. Rather than point-handle each wrapper shape (which never converges),
-// this structurally DETECTS any buried existential and rejects cleanly.
-//
-// Per predicate-bearing expression (SelectExpression / LogicalFilterExpression),
-// each top-level predicate is classified:
-//
-//   - IsExistentialPredicate(p) → directly handled (bare EXISTS). OK.
-//   - IsNotExistentialPredicate(p) → directly handled (single-NOT NOT-EXISTS). OK.
-//   - otherwise, if p's subtree CONTAINS an ExistentialValuePredicate anywhere
-//     (predicates.ContainsExistentialPredicate) → buried → REJECT.
-//
-// Returns nil when every existential predicate is in a directly-handled position
-// (the supported WHERE-EXISTS / NOT-EXISTS shapes, including alongside ordinary
-// non-existential conjuncts, multi-table inners, and projected EXISTS) AND every
-// directly-handled existential names a quantifier its expression owns; a
-// dangling one returns *DanglingExistentialPredicateError (a buried one takes
-// precedence when both are present).
+// CheckBuriedExistentialPredicate checks consumer ownership through boolean
+// connectives and rejects unlowered scalar ExistsValues.
 func CheckBuriedExistentialPredicate(root *expressions.Reference) error {
 	if root == nil {
 		return nil
@@ -227,36 +185,15 @@ func CheckBuriedExistentialPredicate(root *expressions.Reference) error {
 				owned[q.GetAlias()] = struct{}{}
 			}
 			for _, p := range wp.GetPredicates() {
-				// A directly-handled existential must name a quantifier THIS
-				// expression owns. One that does not is dangling: the
-				// translator attached the marker without its subquery, and
-				// the planner, finding no quantifier to peel, drops the
-				// predicate — every row the EXISTS should have excluded comes
-				// back. Refuse it here, where the shape is still visible.
-				if alias, ok := predicates.IsExistentialPredicate(p); ok {
-					if _, isOwned := owned[alias]; !isOwned && dangling == nil {
-						dangling = &DanglingExistentialPredicateError{Alias: alias}
+				predicates.WalkPredicate(p, func(node predicates.QueryPredicate) bool {
+					if alias, ok := predicates.IsExistentialPredicate(node); ok {
+						if _, isOwned := owned[alias]; !isOwned && dangling == nil {
+							dangling = &DanglingExistentialPredicateError{Alias: alias}
+						}
 					}
-					continue
-				}
-				if alias, ok := predicates.IsNotExistentialPredicate(p); ok {
-					if _, isOwned := owned[alias]; !isOwned && dangling == nil {
-						dangling = &DanglingExistentialPredicateError{Alias: alias}
-					}
-					continue
-				}
-				// A buried existential survives in two forms: as an
-				// ExistentialValuePredicate nested under a non-direct wrapper
-				// (`NOT (NOT EXISTS)`, OR), OR — when the EXISTS sits inside a
-				// scalar expression in the WHERE (`WHERE CASE WHEN EXISTS(...)
-				// THEN 1 ELSE 0 END = 1`, `WHERE (EXISTS(...)) = true`) — as a raw
-				// ExistsValue embedded in a predicate's operand value (the
-				// ExistsValueToQueryPredicate bridge never fired). A direct
-				// existential lowers to ExistentialValuePredicate whose operand is
-				// a QuantifiedObjectValue, never an ExistsValue, so detecting any
-				// ExistsValue in a predicate value tree is a precise "buried"
-				// signal. Catch both.
-				if predicates.ContainsExistentialPredicate(p) || predicateContainsExistsValue(p) {
+					return true
+				})
+				if predicateContainsExistsValue(p) {
 					found = true
 					return false
 				}

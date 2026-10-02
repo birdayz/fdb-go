@@ -11,7 +11,7 @@ package plandiff
 //     SQL-correct; column labels are not wire format (see CLAUDE.md
 //     "query reach is not the hard line").
 //   - JavaSucceedsGoRejects: Go has a tracked capability gap (UUID equality
-//     predicates, EXISTS under OR) and rejects rather than returning wrong rows.
+//     predicates) and rejects rather than returning wrong rows.
 //   - BothErrorMessagesDrift: both engines reject; only the message wording
 //     differs (pinned by a cause-specific substring).
 //
@@ -76,8 +76,6 @@ var rfc082Divergences = map[string]Divergence{
 	"error_unknown_qualifier_select":                 {Direction: DivergenceBothErrorMessagesDrift, Reason: "RFC-082: both engines reject; cosmetic message wording differs", GoErrorContains: "column reference with qualifier \"X\" cannot be resolved"},
 	"error_unknown_qualifier_where":                  {Direction: DivergenceBothErrorMessagesDrift, Reason: "RFC-082: both engines reject; cosmetic message wording differs", GoErrorContains: "no FROM source aliased as X"},
 	"error_update_nonexistent_col":                   {Direction: DivergenceBothErrorMessagesDrift, Reason: "RFC-082: both engines reject; cosmetic message wording differs (Go now reports a clean 42703 at build time, matching INSERT/SELECT, instead of the old leaky executor error)", GoErrorContains: "column \"NONEXISTENT\" not found in table"},
-	"exists_or_outer_predicate":                      {Direction: DivergenceJavaSucceedsGoRejects, Reason: "RFC-082: Go capability gap (tracked); Go rejects rather than returning wrong rows", GoErrorContains: "EXISTS within an OR (disjunction) is not supported"},
-	"exists_or_predicate":                            {Direction: DivergenceJavaSucceedsGoRejects, Reason: "RFC-082: Go capability gap (tracked); Go rejects rather than returning wrong rows", GoErrorContains: "EXISTS within an OR (disjunction) is not supported"},
 	"exists_with_aggregate":                          {Direction: DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects: Cascades planner could not plan query", GoExpectedRows: [][]any{{float64(10), float64(1)}, {float64(20), float64(1)}}},
 	"join_aggregate_having":                          {Direction: DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects: Cascades planner could not plan query", GoExpectedRows: [][]any{{"A", float64(6)}, {"B", float64(5)}}},
 	"limit_clause_rejected":                          {Direction: DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects: LIMIT clause is not supported.", GoExpectedRows: [][]any{{float64(1)}, {float64(2)}}},

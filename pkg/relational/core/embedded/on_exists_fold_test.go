@@ -232,22 +232,20 @@ func TestLiftClusterOnExists(t *testing.T) {
 		}
 	})
 
-	t.Run("exists_under_or_is_refused_not_half_lifted", func(t *testing.T) {
+	t.Run("exists_under_or_lifts_the_complete_conjunct", func(t *testing.T) {
 		t.Parallel()
 		marker := onExistsFoldMarker(t, "q$d")
 		eq := onExistsFoldCmp(t, "X")
 		other := onExistsFoldCmp(t, "Y")
 		j := onExistsFoldJoin(scan("A", "a"), scan("C", "c"),
 			predicates.NewOr(predicates.NewAnd(eq, marker), other), onExistsFoldSubquery("q$d"))
-		_, _, _, err := liftClusterOnExists(j)
-		var apiErr *api.Error
-		if err == nil || !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUnsupportedOperation {
-			t.Fatalf("EXISTS under OR in ON must be refused with %s, got %v", api.ErrCodeUnsupportedOperation, err)
+		lifted, markers, subqueries, err := liftClusterOnExists(j)
+		if err != nil || lifted.OnPredicate != nil || len(markers) != 1 || markers[0] != j.OnPredicate || len(subqueries) != 1 {
+			t.Fatalf("whole disjunction must lift with its producer: %v, %v, %v", markers, subqueries, err)
 		}
-		// The refusal reaches through a parent: a clean root over the OR join.
 		root := logical.NewJoinWithPredicate(j, scan("E", "e"), logical.JoinInner, onExistsFoldCmp(t, "Z"))
-		if _, _, _, err := liftClusterOnExists(root); err == nil {
-			t.Fatal("the refusal must propagate through the cluster")
+		if _, markers, subqueries, err := liftClusterOnExists(root); err != nil || len(markers) != 1 || markers[0] != j.OnPredicate || len(subqueries) != 1 {
+			t.Fatalf("nested disjunction lift: %v, %v, %v", markers, subqueries, err)
 		}
 	})
 
@@ -441,14 +439,17 @@ func TestFoldInnerOnExistsIntoWhere(t *testing.T) {
 		}
 	})
 
-	t.Run("refusal_propagates", func(t *testing.T) {
+	t.Run("disjunction_reaches_the_filter", func(t *testing.T) {
 		t.Parallel()
 		marker := onExistsFoldMarker(t, "q$d")
 		j := onExistsFoldJoin(scan("A", "a"), scan("C", "c"),
 			predicates.NewOr(marker, onExistsFoldCmp(t, "Y")), onExistsFoldSubquery("q$d"))
 		f := &logical.LogicalFilter{Input: j, Predicate: onExistsFoldCmp(t, "Z")}
-		if _, err := foldInnerOnExistsIntoWhere(f); err == nil {
-			t.Fatal("an EXISTS under OR in ON must be refused by the fold")
+		if _, err := foldInnerOnExistsIntoWhere(f); err != nil || len(f.ExistsSubqueries) != 1 || len(extractExistsMarkers(f.Predicate)) != 1 {
+			t.Fatalf("disjunctive consumer and producer must reach the WHERE together: %v", err)
+		}
+		if extractExistsMarkers(f.Predicate)[0] != j.OnPredicate {
+			t.Fatal("the disjunction was split while lifting")
 		}
 	})
 }
@@ -467,7 +468,7 @@ CREATE TABLE H (id BIGINT, g_id BIGINT, PRIMARY KEY (id))
 // with a WHERE-EXISTS, or with none, under ORDER BY / LIMIT, below an OUTER
 // join, left of a lateral unnest — the logical plan that leaves the builder
 // has NO join carrying OnExistsSubqueries, and the filter that took the lift
-// carries every existential with its marker in conjunct position.
+// carries every existential with its complete boolean consumer.
 func TestOnExistsFold_NoJoinLeavesTheBuilderUnfolded(t *testing.T) {
 	t.Parallel()
 	tmpl, err := buildSchemaTemplateFromDDL(onExistsFoldDDL)
@@ -489,6 +490,7 @@ func TestOnExistsFold_NoJoinLeavesTheBuilderUnfolded(t *testing.T) {
 		{"binary_on_exists_plus_where_exists", "SELECT a.id FROM a JOIN c ON c.a_id = a.id" + existsD + " WHERE EXISTS (SELECT 1 FROM g WHERE g.c_id = c.id)", 1, 2, 1, 2},
 		{"binary_two_exists_in_on", "SELECT a.id FROM a JOIN c ON c.a_id = a.id" + existsD + " AND EXISTS (SELECT 1 FROM g WHERE g.c_id = c.id)", 1, 2, 1, 2},
 		{"binary_on_only_exists", "SELECT a.id FROM a JOIN c ON EXISTS (SELECT 1 FROM d WHERE d.id = a.id)", 1, 1, 0, 1},
+		{"exists_under_or_in_on_moves_intact", "SELECT a.id FROM a JOIN c ON (c.a_id = a.id" + existsD + ") OR c.id > 100", 1, 1, 0, 1},
 		{"threeway_root_on_exists_under_order_by_limit", "SELECT a.id FROM a JOIN c ON c.a_id = a.id JOIN g ON g.c_id = c.id" + existsD + " ORDER BY a.id LIMIT 5", 1, 1, 2, 1},
 		{"threeway_nested_on_exists_plus_where_exists", "SELECT a.id FROM a JOIN c ON c.a_id = a.id" + existsD + " JOIN g ON g.c_id = c.id WHERE EXISTS (SELECT 1 FROM h WHERE h.g_id = g.id)", 1, 2, 2, 2},
 		// An inner cluster with an ON-EXISTS below an OUTER join is filtered in
@@ -571,18 +573,4 @@ func TestOnExistsFold_NoJoinLeavesTheBuilderUnfolded(t *testing.T) {
 			}
 		})
 	}
-
-	t.Run("exists_under_or_in_on_is_refused_by_the_builder", func(t *testing.T) {
-		t.Parallel()
-		root, err := parser.Parse("SELECT a.id FROM a JOIN c ON (c.a_id = a.id" + existsD + ") OR c.id > 100")
-		if err != nil {
-			t.Fatalf("parse: %v", err)
-		}
-		q := root.Statements().AllStatement()[0].SelectStatement().Query()
-		_, err = NewPlanVisitor(md).VisitQuery(q)
-		var apiErr *api.Error
-		if err == nil || !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUnsupportedOperation {
-			t.Fatalf("want %s from the builder, got %v", api.ErrCodeUnsupportedOperation, err)
-		}
-	})
 }

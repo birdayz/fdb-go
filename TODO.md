@@ -13242,7 +13242,7 @@ current samples executed. Disk remains 95% occupied. Load start/end: 13.74/2.57.
 ### Java migration — existential union exploration (2026-09-29)
 
 - [x] Subset existential edges per DNF leg and expose ForEach-only predicates beside EXISTS to index matching. Unit red→green and real-FDB SQL pin indexed unions, overlapping legs, correlated/uncorrelated EXISTS, and empty subqueries. Hoisted correlation predicates and projected existential values retain their original scope; FlatMap distinctness remains Java-conservative.
-- [ ] Complete Java's OR-term partial-match gate and fixed-factor subset enumeration; current union exploration still uses expression rules and full DNF. SQL admission still rejects EXISTS inside OR (separately pinned), so existential leg subsetting does not claim that SQL capability.
+- [x] Java's OR-term partial-match gate and fixed-factor subset enumeration are implemented and scheduled from new match-partition hints. `TestMatchIntermediateFilterOrTermHint`, the predicate-union rule tests, and `TestFDB_UnionWithUnmatchedFixedFactor` pin scheduling, atomic fixed factors, and indexed union execution. Boolean EXISTS consumers now run above FirstOrDefault, including existential-outer dependency orientation; `TestFDB_DisjunctiveExists`, its DML companion, and `DisjunctiveExistsConformance` pin the SQL behavior.
 
 ### Fixed-factor union planning cost — seed 1884206 (2026-10-01)
 

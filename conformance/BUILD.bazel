@@ -413,6 +413,7 @@ go_test(
         "delete_all_conformance_test.go",
         "delete_conformance_test.go",
         "delete_records_where_conformance_test.go",
+        "disjunctive_exists_conformance_test.go",
         "divergence_holds_test.go",
         "dotted_and_recursive_seed_java_probe_test.go",
         "dup_alias_exists_order_probe_test.go",

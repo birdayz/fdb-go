@@ -1136,8 +1136,7 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 	// operand) with no existential quantifier driving it, so it evaluates to a
 	// constant false → a silent wrong result (every row dropped). Detect such a
 	// buried EXISTS structurally on the parse tree (the WHERE companion to the
-	// projected nested-EXISTS guard) and reject cleanly. (A top-level EXISTS under
-	// an OR is separately rejected below.)
+	// projected nested-EXISTS guard) and reject cleanly.
 	if expr.WhereExistsInScalarPosition(sq.whereExpr.Expression()) {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 			"EXISTS nested in a scalar expression is not yet supported")
@@ -1169,13 +1168,6 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 		len(existsPlanner.correlatedScalarSubqueries) > 0
 	if hasSubqueries && preWalkPred != nil {
 		pred := predicates.SimplifyPredicateValues(preWalkPred)
-		// EXISTS is lowered to a conjunctive semi-join; under an OR that loses
-		// the disjunction and silently returns empty. Reject rather than
-		// return wrong rows (RFC-082; inline-EXISTS-under-OR is future work).
-		if existsUnderDisjunction(pred) {
-			return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-				"EXISTS within an OR (disjunction) is not supported")
-		}
 		combined, qErr := combineQualifyPred(v.md, v.templateName, sq, queryCTEScopes, pred)
 		if qErr != nil {
 			return nil, qErr
