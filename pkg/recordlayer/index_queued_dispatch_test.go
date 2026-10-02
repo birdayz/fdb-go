@@ -88,6 +88,41 @@ var _ = Describe("Queued store dispatch", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	// Java drains every requested queue under AsyncUtil.whenAll
+	// (IndexingBase.drainIndexes): one failing drain does not stop the others.
+	It("drains every queue when an earlier drain fails", func() {
+		md, index := makeMetadata()
+		failing := md.GetIndex("ordinary")
+		root := specSubspace()
+		oi := &OnlineIndexer{db: sharedDB, metaData: md, subspace: root, targetIndexes: []*Index{failing, index}, queuedIndexes: []*Index{failing, index}}
+		heartbeat := NewIndexingHeartbeat("two-drains", 30000, false, sharedDB.Env())
+		_, err := sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root).Create()
+			if err != nil {
+				return nil, err
+			}
+			// Not queued, so its drain's commit check refuses.
+			store.setIndexState(failing.Name, IndexStateWriteOnly)
+			store.setIndexState(index.Name, IndexStateWriteOnlyWithQueue)
+			if err := store.SaveIndexingTypeStamp(failing, oi.buildIndexingStamp()); err != nil {
+				return nil, err
+			}
+			return nil, store.SaveIndexingTypeStamp(index, oi.buildIndexingStamp())
+		})
+		Expect(err).NotTo(HaveOccurred())
+		err = oi.drainPendingIndexWrites(ctx, heartbeat)
+		var rce *RecordCoreError
+		Expect(errors.As(err, &rce)).To(BeTrue(), "error: %v", err)
+		Expect(rce.IndexName).To(Equal(failing.Name))
+		_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+			value, err := rc.Transaction().Get(heartbeat.heartbeatKey(root, index)).Get()
+			Expect(value).NotTo(BeEmpty(), "the second queue was never drained")
+			return nil, err
+		})
+		Expect(err).NotTo(HaveOccurred())
+		oi.cleanupPendingQueueHeartbeat(heartbeat)
+	})
+
 	for _, attempts := range []int64{0, 1, 2} {
 		It(fmt.Sprintf("re-drains a closeout writer race within the configured attempt budget %d", attempts), func() {
 			md, index := makeMetadata()

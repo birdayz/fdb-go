@@ -231,14 +231,17 @@ func (oi *OnlineIndexer) prepareIndexingState(store *FDBRecordStore) ([]*Index, 
 }
 
 // drainPendingIndexWrites gives each queue drain one retry owner and refreshes
-// the build session at commit, including the final empty transaction.
+// the build session at commit, including the final empty transaction. Every
+// queue is drained even when one fails, as Java's whenAll does; the first error
+// in index order is returned.
 func (oi *OnlineIndexer) drainPendingIndexWrites(ctx context.Context, heartbeat *IndexingHeartbeat) error {
+	var first error
 	for _, index := range oi.queuedIndexes {
-		if err := oi.drainPendingIndexWritesForIndex(ctx, index, heartbeat); err != nil {
-			return err
+		if err := oi.drainPendingIndexWritesForIndex(ctx, index, heartbeat); err != nil && first == nil {
+			first = err
 		}
 	}
-	return nil
+	return first
 }
 
 func (oi *OnlineIndexer) drainPendingIndexWritesForIndex(ctx context.Context, index *Index, heartbeat *IndexingHeartbeat) error {
