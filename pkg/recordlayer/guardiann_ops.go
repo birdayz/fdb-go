@@ -1,6 +1,7 @@
 package recordlayer
 
 import (
+	"fmt"
 	"math"
 	"sort"
 	"time"
@@ -624,10 +625,27 @@ func (t *guardiannTask) valueTuple(encode func(gVector) []byte) tuple.Tuple {
 }
 
 func taskFromTuples(key, value tuple.Tuple, decode func([]byte) (gVector, error)) (*guardiannTask, error) {
-	t := &guardiannTask{kind: int(value[0].(int64)), id: key[0].(tuple.UUID)}
-	nearest := func(nt tuple.Tuple) error {
-		for _, e := range nt {
-			r, err := clusterRefFromTuple(e.(tuple.Tuple), decode)
+	const what = "task"
+	kind, err := guardiannInt(value, 0, what)
+	if err != nil {
+		return nil, err
+	}
+	id, err := guardiannElem[tuple.UUID](key, 0, "task key")
+	if err != nil {
+		return nil, err
+	}
+	t := &guardiannTask{kind: kind, id: id}
+	nearest := func(i int) error {
+		nt, err := guardiannElem[tuple.Tuple](value, i, what)
+		if err != nil {
+			return err
+		}
+		for j := range nt {
+			e, err := guardiannElem[tuple.Tuple](nt, j, "task nearest clusters")
+			if err != nil {
+				return err
+			}
+			r, err := clusterRefFromTuple(e, decode)
 			if err != nil {
 				return err
 			}
@@ -635,29 +653,57 @@ func taskFromTuples(key, value tuple.Tuple, decode func([]byte) (gVector, error)
 		}
 		return nil
 	}
-	var err error
+	uuids := func(i int) ([]tuple.UUID, error) {
+		set, err := guardiannElem[tuple.Tuple](value, i, what)
+		if err != nil {
+			return nil, err
+		}
+		return uuidSetFromTuple(set)
+	}
 	switch t.kind {
 	case taskBounce:
-		t.targets = uuidSetFromTuple(value[1].(tuple.Tuple))
-		t.dependents = uuidSetFromTuple(value[2].(tuple.Tuple))
+		if t.targets, err = uuids(1); err != nil {
+			return nil, err
+		}
+		if t.dependents, err = uuids(2); err != nil {
+			return nil, err
+		}
+		name, err := guardiannElem[string](value, 3, what)
+		if err != nil {
+			return nil, err
+		}
 		t.finalKind = -1
 		for i, n := range taskKindNames {
-			if n == value[3].(string) {
+			if n == name {
 				t.finalKind = i
 			}
 		}
+		if t.finalKind < 0 {
+			// Java's Kind.valueOf throws on an unknown name.
+			return nil, &RecordCoreError{Message: fmt.Sprintf("guardiann bounce task: unknown final kind %q", name)}
+		}
 		return t, nil
 	case taskSplitMerge, taskReassign, taskCollapse:
-		t.targets = []tuple.UUID{value[1].(tuple.UUID)}
-		if t.centroid, err = decode(value[2].([]byte)); err != nil {
+		target, err := guardiannElem[tuple.UUID](value, 1, what)
+		if err != nil {
+			return nil, err
+		}
+		t.targets = []tuple.UUID{target}
+		raw, err := guardiannElem[[]byte](value, 2, what)
+		if err != nil {
+			return nil, err
+		}
+		if t.centroid, err = decode(raw); err != nil {
 			return nil, err
 		}
 		switch t.kind {
 		case taskSplitMerge:
-			err = nearest(value[3].(tuple.Tuple))
+			err = nearest(3)
 		case taskReassign:
-			t.causes = uuidSetFromTuple(value[3].(tuple.Tuple))
-			err = nearest(value[4].(tuple.Tuple))
+			if t.causes, err = uuids(3); err != nil {
+				return nil, err
+			}
+			err = nearest(4)
 		}
 		return t, err
 	}

@@ -80,13 +80,30 @@ func (g *guardiann) fetchAccessInfo(tx fdb.ReadTransaction) (*guardiannAccessInf
 	if err != nil || b == nil {
 		return nil, err
 	}
+	return accessInfoFromValue(b)
+}
+
+// accessInfoFromValue is StorageAdapter.accessInfoFromTuple.
+func accessInfoFromValue(b []byte) (*guardiannAccessInfoValue, error) {
 	t, err := tuple.Unpack(b)
 	if err != nil {
 		return nil, err
 	}
-	info := &guardiannAccessInfoValue{rotatorSeed: t[0].(int64)}
-	if nested, ok := t[1].(tuple.Tuple); ok {
-		v, err := decodeGVector(nested[0].([]byte))
+	seed, err := guardiannElem[int64](t, 0, "access info")
+	if err != nil {
+		return nil, err
+	}
+	info := &guardiannAccessInfoValue{rotatorSeed: seed}
+	if len(t) > 1 && t[1] != nil {
+		nested, err := guardiannElem[tuple.Tuple](t, 1, "access info")
+		if err != nil {
+			return nil, err
+		}
+		raw, err := guardiannElem[[]byte](nested, 0, "access info centroid")
+		if err != nil {
+			return nil, err
+		}
+		v, err := decodeGVector(raw)
 		if err != nil {
 			return nil, err
 		}
@@ -108,13 +125,24 @@ func (g *guardiann) fetchVectorMetadata(tx fdb.ReadTransaction, pk tuple.Tuple) 
 	if err != nil || b == nil {
 		return nil, err
 	}
+	return vectorMetadataFromValue(pk, b)
+}
+
+// vectorMetadataFromValue is StorageAdapter.vectorMetadataFromTuples.
+func vectorMetadataFromValue(pk tuple.Tuple, b []byte) (*guardiannVectorMetadata, error) {
 	t, err := tuple.Unpack(b)
 	if err != nil {
 		return nil, err
 	}
-	md := &guardiannVectorMetadata{id: guardiannVectorID{pk: pk, uuid: t[0].(tuple.UUID)}}
-	if av, ok := t[1].(tuple.Tuple); ok {
-		md.additionalValues = av
+	id, err := guardiannElem[tuple.UUID](t, 0, "vector metadata")
+	if err != nil {
+		return nil, err
+	}
+	md := &guardiannVectorMetadata{id: guardiannVectorID{pk: pk, uuid: id}}
+	if len(t) > 1 && t[1] != nil {
+		if md.additionalValues, err = guardiannElem[tuple.Tuple](t, 1, "vector metadata"); err != nil {
+			return nil, err
+		}
 	}
 	return md, nil
 }
@@ -140,22 +168,78 @@ func (g *guardiann) fetchClusterMetadata(tx fdb.ReadTransaction, id tuple.UUID) 
 	if err != nil || b == nil {
 		return nil, err
 	}
+	return clusterMetadataFromValue(id, b)
+}
+
+// clusterMetadataFromValue is StorageAdapter.clusterMetadataFromTuple. A
+// four-element value comes from a GuardiANN build before the lifetime peak was
+// stored; Java 4.14.2.0 cannot read it either, so it is refused by name.
+func clusterMetadataFromValue(id tuple.UUID, b []byte) (*guardiannClusterMetadata, error) {
 	t, err := tuple.Unpack(b)
 	if err != nil {
 		return nil, err
 	}
-	st := t[2].(tuple.Tuple)
-	return &guardiannClusterMetadata{
-		id:            id,
-		numUnderrep:   int(t[0].(int64)),
-		numReplicated: int(t[1].(int64)),
-		stats: guardiannRunningStats{
-			n: st[0].(int64), mean: st[1].(float64), m2: st[2].(float64),
-			maxEver: st[3].(float64),
-		},
-		states:         int(t[3].(int64)),
-		maxEverPrimary: int(t[4].(int64)),
-	}, nil
+	if len(t) == 4 {
+		return nil, &RecordCoreError{Message: fmt.Sprintf(
+			"guardiann cluster metadata of cluster %v has 4 elements, want 5: it was written by a GuardiANN build that did not store the lifetime peak; rebuild the index", id)}
+	}
+	var md guardiannClusterMetadata
+	md.id = id
+	if md.numUnderrep, err = guardiannInt(t, 0, "cluster metadata"); err != nil {
+		return nil, err
+	}
+	if md.numReplicated, err = guardiannInt(t, 1, "cluster metadata"); err != nil {
+		return nil, err
+	}
+	st, err := guardiannElem[tuple.Tuple](t, 2, "cluster metadata")
+	if err != nil {
+		return nil, err
+	}
+	if md.stats.n, err = guardiannElem[int64](st, 0, "cluster running stats"); err != nil {
+		return nil, err
+	}
+	if md.stats.mean, err = guardiannElem[float64](st, 1, "cluster running stats"); err != nil {
+		return nil, err
+	}
+	if md.stats.m2, err = guardiannElem[float64](st, 2, "cluster running stats"); err != nil {
+		return nil, err
+	}
+	if md.stats.maxEver, err = guardiannElem[float64](st, 3, "cluster running stats"); err != nil {
+		return nil, err
+	}
+	if md.states, err = guardiannInt(t, 3, "cluster metadata"); err != nil {
+		return nil, err
+	}
+	if md.maxEverPrimary, err = guardiannInt(t, 4, "cluster metadata"); err != nil {
+		return nil, err
+	}
+	return &md, nil
+}
+
+// guardiannElem reads element i of a stored tuple as T. Java's Tuple getters
+// throw on a missing or mistyped element; Go returns that as an error.
+func guardiannElem[T any](t tuple.Tuple, i int, what string) (T, error) {
+	var zero T
+	if i >= len(t) {
+		return zero, &RecordCoreError{Message: fmt.Sprintf("guardiann %s: element %d missing (%d elements)", what, i, len(t))}
+	}
+	v, ok := t[i].(T)
+	if !ok {
+		return zero, &RecordCoreError{Message: fmt.Sprintf("guardiann %s: element %d is %T, want %T", what, i, t[i], zero)}
+	}
+	return v, nil
+}
+
+// guardiannInt is Math.toIntExact(tuple.getLong(i)).
+func guardiannInt(t tuple.Tuple, i int, what string) (int, error) {
+	v, err := guardiannElem[int64](t, i, what)
+	if err != nil {
+		return 0, err
+	}
+	if v < math.MinInt32 || v > math.MaxInt32 {
+		return 0, &RecordCoreError{Message: fmt.Sprintf("guardiann %s: element %d (%d) is outside Java's int range", what, i, v)}
+	}
+	return int(v), nil
 }
 
 func (g *guardiann) requireClusterMetadata(tx fdb.ReadTransaction, id tuple.UUID) (guardiannClusterMetadata, error) {
@@ -193,18 +277,37 @@ func vectorRefFromValue(pk tuple.Tuple, value []byte, decode func([]byte) (gVect
 	if err != nil {
 		return guardiannVectorRef{}, err
 	}
-	vec, err := decode(t[3].([]byte))
+	const what = "vector reference"
+	id, err := guardiannElem[tuple.UUID](t, 0, what)
 	if err != nil {
 		return guardiannVectorRef{}, err
 	}
-	ref := guardiannVectorRef{id: guardiannVectorID{pk: pk, uuid: t[0].(tuple.UUID)}, vector: vec, collapsed: t[2].(bool)}
-	switch t[1].(int64) {
+	role, err := guardiannElem[int64](t, 1, what)
+	if err != nil {
+		return guardiannVectorRef{}, err
+	}
+	collapsed, err := guardiannElem[bool](t, 2, what)
+	if err != nil {
+		return guardiannVectorRef{}, err
+	}
+	raw, err := guardiannElem[[]byte](t, 3, what)
+	if err != nil {
+		return guardiannVectorRef{}, err
+	}
+	vec, err := decode(raw)
+	if err != nil {
+		return guardiannVectorRef{}, err
+	}
+	ref := guardiannVectorRef{id: guardiannVectorID{pk: pk, uuid: id}, vector: vec, collapsed: collapsed}
+	switch role {
 	case roleCodePrimary:
 		ref.primary = true
 	case roleCodeUnderreplicated:
 		ref.primary, ref.underrep = true, true
 	case roleCodeReplicated:
-		ref.priority = t[4].(float64)
+		if ref.priority, err = guardiannElem[float64](t, 4, what); err != nil {
+			return guardiannVectorRef{}, err
+		}
 	default:
 		return ref, fmt.Errorf("unknown vector reference role code: %d", t[1])
 	}
@@ -240,7 +343,11 @@ func (g *guardiann) fetchVectorRefs(tx fdb.ReadTransaction, clusterID tuple.UUID
 		if err != nil {
 			return nil, err
 		}
-		ref, err := vectorRefFromValue(key[1].(tuple.Tuple), kv.Value, decode)
+		pk, err := guardiannElem[tuple.Tuple](key, 1, "vector reference key")
+		if err != nil {
+			return nil, err
+		}
+		ref, err := vectorRefFromValue(pk, kv.Value, decode)
 		if err != nil {
 			return nil, err
 		}
@@ -291,11 +398,15 @@ func (g *guardiann) fetchCollapsedIDs(tx fdb.ReadTransaction, signature tuple.UU
 		if err != nil {
 			return nil, err
 		}
-		v, err := tuple.Unpack(kv.Value)
+		pk, err := guardiannElem[tuple.Tuple](key, 1, "collapsed id key")
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, guardiannVectorID{pk: key[1].(tuple.Tuple), uuid: v[0].(tuple.UUID)})
+		id, err := collapsedIDFromValue(pk, kv.Value)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *id)
 	}
 	return out, nil
 }
@@ -305,11 +416,19 @@ func (g *guardiann) fetchCollapsedID(tx fdb.ReadTransaction, signature tuple.UUI
 	if err != nil || b == nil {
 		return nil, err
 	}
+	return collapsedIDFromValue(pk, b)
+}
+
+func collapsedIDFromValue(pk tuple.Tuple, b []byte) (*guardiannVectorID, error) {
 	v, err := tuple.Unpack(b)
 	if err != nil {
 		return nil, err
 	}
-	return &guardiannVectorID{pk: pk, uuid: v[0].(tuple.UUID)}, nil
+	id, err := guardiannElem[tuple.UUID](v, 0, "collapsed id")
+	if err != nil {
+		return nil, err
+	}
+	return &guardiannVectorID{pk: pk, uuid: id}, nil
 }
 
 func (g *guardiann) writeCollapsedID(tx fdb.WritableTransaction, signature tuple.UUID, id guardiannVectorID) {
@@ -365,8 +484,16 @@ func clusterRefTuple(r guardiannClusterRef, encode func(gVector) []byte) tuple.T
 }
 
 func clusterRefFromTuple(t tuple.Tuple, decode func([]byte) (gVector, error)) (guardiannClusterRef, error) {
-	v, err := decode(t[1].([]byte))
-	return guardiannClusterRef{clusterID: t[0].(tuple.UUID), centroid: v}, err
+	id, err := guardiannElem[tuple.UUID](t, 0, "cluster reference")
+	if err != nil {
+		return guardiannClusterRef{}, err
+	}
+	raw, err := guardiannElem[[]byte](t, 1, "cluster reference")
+	if err != nil {
+		return guardiannClusterRef{}, err
+	}
+	v, err := decode(raw)
+	return guardiannClusterRef{clusterID: id, centroid: v}, err
 }
 
 func uuidSetTuple(ids []tuple.UUID) tuple.Tuple {
@@ -377,12 +504,16 @@ func uuidSetTuple(ids []tuple.UUID) tuple.Tuple {
 	return t
 }
 
-func uuidSetFromTuple(t tuple.Tuple) []tuple.UUID {
+func uuidSetFromTuple(t tuple.Tuple) ([]tuple.UUID, error) {
 	out := make([]tuple.UUID, len(t))
-	for i, e := range t {
-		out[i] = e.(tuple.UUID)
+	for i := range t {
+		id, err := guardiannElem[tuple.UUID](t, i, "uuid set")
+		if err != nil {
+			return nil, err
+		}
+		out[i] = id
 	}
-	return out
+	return out, nil
 }
 
 // appendUniqueUUID keeps an ImmutableSet's insertion order.

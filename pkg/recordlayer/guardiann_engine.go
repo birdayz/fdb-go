@@ -344,18 +344,31 @@ func (l vectorMergeLock) currentOwner(tx fdb.ReadTransaction, prefix tuple.Tuple
 	if err != nil || v == nil {
 		return nil, err
 	}
-	t, err := tuple.Unpack(v)
+	owner, ts, err := mergeLockFromValue(v)
 	if err != nil {
 		return nil, err
 	}
-	ts := t[1].(int64)
 	now := l.now().UnixMilli()
 	window := vectorMergeLeaseWindow.Milliseconds()
 	if ts <= now-window || ts >= now+window {
 		return nil, nil
 	}
-	u := uuid.UUID(t[0].(tuple.UUID))
+	u := uuid.UUID(owner)
 	return &u, nil
+}
+
+// mergeLockFromValue reads VectorIndexMergeLock's (owner, millis) value.
+func mergeLockFromValue(v []byte) (tuple.UUID, int64, error) {
+	t, err := tuple.Unpack(v)
+	if err != nil {
+		return tuple.UUID{}, 0, err
+	}
+	owner, err := guardiannElem[tuple.UUID](t, 0, "merge lock")
+	if err != nil {
+		return tuple.UUID{}, 0, err
+	}
+	ts, err := guardiannElem[int64](t, 1, "merge lock")
+	return owner, ts, err
 }
 
 func (l vectorMergeLock) acquire(tx fdb.WritableTransaction, prefix tuple.Tuple) {
@@ -368,11 +381,11 @@ func (l vectorMergeLock) release(tx fdb.WritableTransaction, prefix tuple.Tuple)
 	if err != nil || v == nil {
 		return err
 	}
-	t, err := tuple.Unpack(v)
+	owner, _, err := mergeLockFromValue(v)
 	if err != nil {
 		return err
 	}
-	if uuid.UUID(t[0].(tuple.UUID)) == l.owner {
+	if uuid.UUID(owner) == l.owner {
 		tx.Clear(l.key(prefix))
 	}
 	return nil

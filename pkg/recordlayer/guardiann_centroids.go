@@ -67,7 +67,11 @@ func (g *guardiann) centroidEntryOf(n centroidNode) (centroidEntry, error) {
 	if err != nil {
 		return centroidEntry{}, err
 	}
-	return centroidEntry{clusterID: pk[0].(tuple.UUID), vector: v, distance: n.distance}, nil
+	id, err := guardiannElem[tuple.UUID](pk, 0, "centroid key")
+	if err != nil {
+		return centroidEntry{}, err
+	}
+	return centroidEntry{clusterID: id, vector: v, distance: n.distance}, nil
 }
 
 // fetchCentroid is HNSW.fetch: the cluster's centroid on layer 0, or nil.
