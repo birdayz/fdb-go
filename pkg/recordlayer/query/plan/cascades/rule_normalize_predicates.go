@@ -135,19 +135,32 @@ func absorptionSurvivors(deduped [][]predicates.QueryPredicate) []int {
 	// Union legs normalize every fixed-factor subset, so this runs over
 	// thousands of clauses; subset tests are bitset operations on equality
 	// classes rather than pairwise PredicateEquals scans.
-	var classes predicateClasses
 	atomCount := 0
 	for _, clause := range deduped {
 		atomCount += len(clause)
 	}
-	ids := make([]int, 0, atomCount)
+	var classes predicateClasses
+	if atomCount > len(classes.inline) {
+		classes.byPointer = make(map[uintptr]int)
+	}
+	var idBuffer [64]int
+	ids := idBuffer[:0]
+	if atomCount > len(idBuffer) {
+		ids = make([]int, 0, atomCount)
+	}
 	for _, clause := range deduped {
 		for _, predicate := range clause {
 			ids = append(ids, classes.id(predicate))
 		}
 	}
-	words := (len(classes.representatives) + 63) / 64
-	sets := make([]uint64, len(deduped)*words)
+	words := (classes.size + 63) / 64
+	var setBuffer [64]uint64
+	sets := setBuffer[:]
+	if len(deduped)*words > len(setBuffer) {
+		sets = make([]uint64, len(deduped)*words)
+	} else {
+		sets = sets[:len(deduped)*words]
+	}
 	for i, clause := range deduped {
 		for _, id := range ids[:len(clause)] {
 			sets[i*words+id/64] |= 1 << (id % 64)
@@ -197,29 +210,39 @@ func absorptionSurvivors(deduped [][]predicates.QueryPredicate) []int {
 // predicateClasses numbers PredicateEquals classes. Predicates are immutable, so
 // a pointer seen once keeps its class for the duration of one normalization.
 type predicateClasses struct {
-	byPointer       map[uintptr]int
-	representatives []predicates.QueryPredicate
+	byPointer map[uintptr]int
+	inline    [16]predicates.QueryPredicate
+	overflow  []predicates.QueryPredicate
+	size      int
 }
 
 func (c *predicateClasses) id(predicate predicates.QueryPredicate) int {
 	var pointer uintptr
-	if value := reflect.ValueOf(predicate); value.Kind() == reflect.Pointer && !value.IsNil() {
+	if value := reflect.ValueOf(predicate); c.byPointer != nil && value.Kind() == reflect.Pointer && !value.IsNil() {
 		pointer = value.Pointer()
 		if id, seen := c.byPointer[pointer]; seen {
 			return id
 		}
 	}
-	id := slices.IndexFunc(c.representatives, func(representative predicates.QueryPredicate) bool {
+	equal := func(representative predicates.QueryPredicate) bool {
 		return predicates.PredicateEquals(predicate, representative)
-	})
+	}
+	id := slices.IndexFunc(c.inline[:min(c.size, len(c.inline))], equal)
 	if id < 0 {
-		id = len(c.representatives)
-		c.representatives = append(c.representatives, predicate)
+		if index := slices.IndexFunc(c.overflow, equal); index >= 0 {
+			id = len(c.inline) + index
+		}
+	}
+	if id < 0 {
+		id = c.size
+		if id < len(c.inline) {
+			c.inline[id] = predicate
+		} else {
+			c.overflow = append(c.overflow, predicate)
+		}
+		c.size++
 	}
 	if pointer != 0 {
-		if c.byPointer == nil {
-			c.byPointer = make(map[uintptr]int)
-		}
 		c.byPointer[pointer] = id
 	}
 	return id

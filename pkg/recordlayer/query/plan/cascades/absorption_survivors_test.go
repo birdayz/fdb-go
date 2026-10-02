@@ -86,6 +86,37 @@ func TestAbsorptionSurvivorsMatchPairwiseScan(t *testing.T) {
 	}
 }
 
+func TestPredicateClassesInlineOverflow(t *testing.T) {
+	t.Parallel()
+	for _, cached := range []bool{false, true} {
+		var classes predicateClasses
+		if cached {
+			classes.byPointer = make(map[uintptr]int)
+		}
+		operand := simplificationContractLeaves(t)[0].(*predicates.ComparisonPredicate).Operand
+		makePredicate := func(i int) predicates.QueryPredicate {
+			return predicates.NewComparisonPredicate(operand, predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(i)))
+		}
+		pool := make([]predicates.QueryPredicate, 34)
+		for i := range pool {
+			pool[i] = makePredicate(i)
+			if got := classes.id(pool[i]); got != i {
+				t.Fatalf("cached=%t: new class=%d, want %d", cached, got, i)
+			}
+		}
+		for i := len(pool) - 1; i >= 0; i-- {
+			for _, predicate := range []predicates.QueryPredicate{pool[i], makePredicate(i)} {
+				if got := classes.id(predicate); got != i {
+					t.Fatalf("cached=%t: repeated class=%d, want %d across inline/overflow boundary", cached, got, i)
+				}
+			}
+		}
+		if classes.size != len(pool) {
+			t.Fatalf("cached=%t: classes=%d, want %d", cached, classes.size, len(pool))
+		}
+	}
+}
+
 func FuzzAbsorptionSurvivorsMatchPairwiseScan(f *testing.F) {
 	f.Add([]byte{2, 0, 1, 1, 2, 3, 0})
 	f.Add([]byte{3, 16, 17, 18, 2, 0, 19, 4, 20, 89, 21, 88})
@@ -110,14 +141,24 @@ func FuzzAbsorptionSurvivorsMatchPairwiseScan(f *testing.F) {
 
 func TestAbsorptionRepeatedClausesAllocationBound(t *testing.T) {
 	t.Parallel()
+	runAbsorptionAllocationBenchmark(t, "BenchmarkAbsorptionRepeatedClauses")
+}
+
+func TestAbsorptionSmallClausesAllocationBound(t *testing.T) {
+	t.Parallel()
+	runAbsorptionAllocationBenchmark(t, "BenchmarkAbsorptionSmallClauses")
+}
+
+func runAbsorptionAllocationBenchmark(t *testing.T, benchmark string) {
+	t.Helper()
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Allocation accounting is process-wide, so isolate it from parallel tests.
 	output, err := exec.CommandContext(t.Context(), executable,
-		"-test.run=^$", "-test.bench=^BenchmarkAbsorptionRepeatedClauses$", "-test.benchtime=1x").CombinedOutput()
-	if err != nil || !bytes.Contains(output, []byte("BenchmarkAbsorptionRepeatedClauses")) {
+		"-test.run=^$", "-test.bench=^"+benchmark+"$", "-test.benchtime=1x").CombinedOutput()
+	if err != nil || !bytes.Contains(output, []byte(benchmark)) {
 		t.Fatalf("allocation benchmark: %v\n%s", err, output)
 	}
 }
@@ -139,6 +180,28 @@ func BenchmarkAbsorptionRepeatedClauses(b *testing.B) {
 	// allocate a separate object for each clause.
 	if allocations >= float64(len(clauses)/8) {
 		b.Fatalf("%.0f allocations for %d identical clauses: per-clause workspace allocation returned", allocations, len(clauses))
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		absorptionSurvivors(clauses)
+	}
+}
+
+func BenchmarkAbsorptionSmallClauses(b *testing.B) {
+	pool := absorptionPool(b)
+	clauses := make([][]predicates.QueryPredicate, 9)
+	for i := range clauses {
+		clauses[i] = pool[20+i : 21+i]
+	}
+	var survivors []int
+	allocations := testing.AllocsPerRun(5, func() {
+		survivors = absorptionSurvivors(clauses)
+	})
+	if !slices.Equal(survivors, []int{0, 1, 2, 3, 4, 5, 6, 7, 8}) {
+		b.Fatalf("survivors=%v, want all nine distinct clauses in order", survivors)
+	}
+	if allocations > 1 {
+		b.Fatalf("%.0f allocations for nine singleton clauses: only the returned survivor slice should escape", allocations)
 	}
 	b.ReportAllocs()
 	for b.Loop() {
