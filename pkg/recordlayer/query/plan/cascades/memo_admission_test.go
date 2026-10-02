@@ -596,6 +596,7 @@ func TestMemoAdmissionApplyAdapterHasOneRootCaller(t *testing.T) {
 	counts := map[string][]string{
 		"ApplyPreparedMemberBatch":          nil,
 		"DuplicateWithHashes":               nil,
+		"NewMemberIndex":                    nil,
 		"PreparedMemberDuplicate":           nil,
 		"PreparedMemberDuplicateWithHashes": nil,
 	}
@@ -636,14 +637,23 @@ func TestMemoAdmissionApplyAdapterHasOneRootCaller(t *testing.T) {
 		})
 	}
 	for name, sites := range counts {
-		if name == "PreparedMemberDuplicate" || name == "PreparedMemberDuplicateWithHashes" {
+		if name == "PreparedMemberDuplicate" || name == "PreparedMemberDuplicateWithHashes" || name == "DuplicateWithHashes" {
 			if len(sites) != 0 {
 				t.Fatalf("%s call sites = %v; root admission must use batch-scoped equality", name, sites)
 			}
 			continue
 		}
-		if len(sites) != 1 || !strings.HasPrefix(sites[0], "memo_admission.go:") {
-			t.Fatalf("%s call sites = %v, want exactly one root call in memo_admission.go", name, sites)
+		want := 1
+		if name == "NewMemberIndex" {
+			want = 2 // Exploratory and final lanes remain separate.
+		}
+		if len(sites) != want {
+			t.Fatalf("%s call sites = %v, want %d root calls in memo_admission.go", name, sites, want)
+		}
+		for _, site := range sites {
+			if !strings.HasPrefix(site, "memo_admission.go:") {
+				t.Fatalf("%s call site %s is outside root admission", name, site)
+			}
 		}
 	}
 }

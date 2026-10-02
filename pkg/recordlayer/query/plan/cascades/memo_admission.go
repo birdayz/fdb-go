@@ -117,27 +117,14 @@ func prepareReferenceMemberBatch(
 		relationType: relationType,
 		inserted:     make([]bool, len(intents)),
 	}
-	exploratoryScratch := append([]expressions.RelationalExpression(nil), existingExploratory...)
-	finalScratch := append([]expressions.RelationalExpression(nil), existingFinal...)
-	// Member hashes are derived ONCE per batch and grown as intents are
-	// admitted, rather than re-derived for every intent. HashCodeWithoutChildren
-	// walks a member's whole result Value through FNV, and a memo member is
-	// immutable, so the per-intent form spent O(intents × members) walks
-	// re-deriving values that could not have changed.
-	exploratoryHashes := reference.MemberHashes(exploratoryScratch)
-	finalHashes := reference.MemberHashes(finalScratch)
+	exploratoryIndex := prepared.equality.NewMemberIndex(existingExploratory, reference.MemberHashes(existingExploratory))
+	finalIndex := prepared.equality.NewMemberIndex(existingFinal, reference.MemberHashes(existingFinal))
 	for i, intent := range intents {
-		var scratch *[]expressions.RelationalExpression
-		var hashes *[]uint64
-		switch intent.set {
-		case expressions.ReferenceExploratoryMembers:
-			scratch, hashes = &exploratoryScratch, &exploratoryHashes
-		case expressions.ReferenceFinalMembers:
-			scratch, hashes = &finalScratch, &finalHashes
+		index := exploratoryIndex
+		if intent.set == expressions.ReferenceFinalMembers {
+			index = finalIndex
 		}
-		duplicate, aliasAware := prepared.equality.DuplicateWithHashes(
-			*scratch, *hashes, intent.expression,
-		)
+		duplicate, aliasAware := index.Duplicate(intent.expression)
 		if duplicate {
 			if aliasAware {
 				prepared.aliasAwareDedups++
@@ -145,8 +132,7 @@ func prepareReferenceMemberBatch(
 			continue
 		}
 		prepared.inserted[i] = true
-		*scratch = append(*scratch, intent.expression)
-		*hashes = append(*hashes, intent.expression.HashCodeWithoutChildren())
+		index.Add(intent.expression)
 		if intent.set == expressions.ReferenceExploratoryMembers {
 			prepared.exploratory = append(prepared.exploratory, intent.expression)
 		} else {

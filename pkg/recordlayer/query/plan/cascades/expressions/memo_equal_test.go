@@ -11,7 +11,7 @@ import (
 
 type memoObservedExpression struct {
 	RelationalExpression
-	hashVisits, correlationVisits int
+	hashVisits, correlationVisits, equalityVisits int
 }
 
 func (e *memoObservedExpression) HashCodeWithoutChildren() uint64 {
@@ -25,6 +25,7 @@ func (e *memoObservedExpression) GetCorrelatedToWithoutChildren() map[values.Cor
 }
 
 func (e *memoObservedExpression) EqualsWithoutChildren(other RelationalExpression, aliases *AliasMap) bool {
+	e.equalityVisits++
 	if observed, ok := other.(*memoObservedExpression); ok {
 		other = observed.RelationalExpression
 	}
@@ -151,6 +152,188 @@ func TestPreparedMemberDuplicate_ReusesGraphDerivations(t *testing.T) {
 		if duplicate, aliasAware := preparation.DuplicateWithHashes([]RelationalExpression{incoming}, nil, member(3)); !duplicate || !aliasAware {
 			t.Fatal("batch equality failed to recognize an alias-renamed duplicate")
 		}
+	}
+}
+
+func TestPreparedMemberIndexPrunesDisjointSingletonInputs(t *testing.T) {
+	t.Parallel()
+	scan := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType())))
+	parent := func(arity int) *memoObservedExpression {
+		qs := make([]Quantifier, arity)
+		for i := range qs {
+			qs[i] = ForEachQuantifier(scan)
+		}
+		child := InitialOf(mustExpression(NewLogicalUnionExpression(qs)))
+		return &memoObservedExpression{RelationalExpression: mustExpression(NewLogicalUniqueExpression(ForEachQuantifier(child)))}
+	}
+	members := make([]RelationalExpression, 32)
+	for i := range members {
+		members[i] = parent(i + 2)
+	}
+	var equality PreparedMemberEquality
+	index := equality.NewMemberIndex(members[:4], nil)
+	if duplicate, _ := index.Duplicate(parent(34)); duplicate {
+		t.Fatal("small lane collapsed different arities")
+	}
+	for _, member := range members[:4] {
+		member.(*memoObservedExpression).equalityVisits = 0
+	}
+	for i, member := range members[4:] {
+		index.Add(member)
+		if i == 3 {
+			if duplicate, _ := index.Duplicate(parent(34)); duplicate {
+				t.Fatal("lane crossing index threshold collapsed different arities")
+			}
+		}
+	}
+	if duplicate, _ := index.Duplicate(parent(34)); duplicate {
+		t.Fatal("different child arities collapsed")
+	}
+	for i, member := range members {
+		if visits := member.(*memoObservedExpression).equalityVisits; visits != 0 {
+			t.Fatalf("member %d: disjoint child signature caused %d equality calls, want zero", i, visits)
+		}
+	}
+	if duplicate, _ := index.Duplicate(parent(33)); !duplicate {
+		t.Fatal("independently built equivalent singleton input did not deduplicate")
+	}
+}
+
+func preparedIndexPadding() []RelationalExpression {
+	members := make([]RelationalExpression, 7)
+	for i := range members {
+		members[i] = mustExpression(NewFullUnorderedScanExpression([]string{"padding"}, testRecordType()))
+	}
+	return members
+}
+
+func TestPreparedMemberIndexPreservesDirectionalLanes(t *testing.T) {
+	t.Parallel()
+	scan := func(name string) RelationalExpression {
+		return mustExpression(NewFullUnorderedScanExpression([]string{name}, testRecordType()))
+	}
+	parent := func(exploratory, final int) RelationalExpression {
+		ref := InitialOf(scan("T"))
+		expression := mustExpression(NewLogicalUniqueExpression(ForEachQuantifier(ref)))
+		ref.members, ref.finalMembers = nil, nil
+		for i, name := range []string{"T", "U"} {
+			if exploratory&(1<<i) != 0 {
+				ref.members = append(ref.members, scan(name))
+			}
+			if final&(1<<i) != 0 {
+				ref.finalMembers = append(ref.finalMembers, scan(name))
+			}
+		}
+		return expression
+	}
+	for haveExploratory := range 4 {
+		for haveFinal := range 4 {
+			members := append(preparedIndexPadding(), parent(haveExploratory, haveFinal))
+			var equality PreparedMemberEquality
+			index := equality.NewMemberIndex(members, nil)
+			for wantExploratory := range 4 {
+				for wantFinal := range 4 {
+					incoming := parent(wantExploratory, wantFinal)
+					want := wantExploratory & ^haveExploratory == 0 && wantFinal & ^haveFinal == 0
+					got, aliasAware := index.Duplicate(incoming)
+					linear, linearAliasAware := PreparedMemberDuplicate(members, incoming)
+					if got != want || got != linear || aliasAware != linearAliasAware {
+						t.Fatalf("have=%02b/%02b want=%02b/%02b: indexed=%t/%t linear=%t/%t expected=%t", haveExploratory, haveFinal, wantExploratory, wantFinal, got, aliasAware, linear, linearAliasAware, want)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestPreparedMemberIndexRejectsDifferentChildKeys(t *testing.T) {
+	t.Parallel()
+	scan := func(name string) RelationalExpression {
+		return mustExpression(NewFullUnorderedScanExpression([]string{name}, values.NotNullLong))
+	}
+	leftScan, rightScan := scan("T"), scan("U")
+	if leftScan.HashCodeWithoutChildren() == rightScan.HashCodeWithoutChildren() {
+		t.Fatal("scan fixture must have different hashes")
+	}
+	selectExpression := mustExpression(NewSelectExpression(&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}, nil, nil))
+	for _, tc := range []struct {
+		name        string
+		left, right RelationalExpression
+	}{
+		{"hash", leftScan, rightScan},
+		{"correlation capability", &memoObservedExpression{RelationalExpression: leftScan}, &memoObservedExpression{RelationalExpression: selectExpression}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			left := &memoObservedExpression{RelationalExpression: mustExpression(NewLogicalUniqueExpression(ForEachQuantifier(InitialOf(tc.left))))}
+			right := &memoObservedExpression{RelationalExpression: mustExpression(NewLogicalUniqueExpression(ForEachQuantifier(InitialOf(tc.right))))}
+			var equality PreparedMemberEquality
+			index := equality.NewMemberIndex(append(preparedIndexPadding(), left), nil)
+			if duplicate, _ := index.Duplicate(right); duplicate {
+				t.Fatal("distinct child keys collapsed")
+			}
+			if left.equalityVisits != 0 {
+				t.Fatalf("distinct child key caused %d equality calls", left.equalityVisits)
+			}
+		})
+	}
+}
+
+func TestPreparedMemberIndexPreservesCandidateOrder(t *testing.T) {
+	t.Parallel()
+	scan := func() RelationalExpression {
+		return mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType()))
+	}
+	child := InitialOf(scan())
+	alias := values.NamedCorrelationIdentifier("q")
+	filter := func(alias values.CorrelationIdentifier, ref *Reference) RelationalExpression {
+		return mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{predicates.NewComparisonPredicate(
+			mustQOV(alias), predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(1)}},
+		)}, NamedForEachQuantifier(alias, ref)))
+	}
+	incoming := filter(alias, child)
+	for _, keyedFirst := range []bool{false, true} {
+		// The unkeyed group contains two distinct scan nodes with equal contents.
+		multi := InitialOf(scan())
+		multi.members = append(multi.members, scan())
+		members := []RelationalExpression{filter(values.UniqueCorrelationIdentifier(), multi), filter(alias, child)}
+		if keyedFirst {
+			slices.Reverse(members)
+		}
+		members = append(preparedIndexPadding(), members...)
+		var equality PreparedMemberEquality
+		index := equality.NewMemberIndex(members, nil)
+		got, aliasAware := index.Duplicate(incoming)
+		if !got || aliasAware == keyedFirst {
+			t.Fatalf("keyedFirst=%t: duplicate=%t aliasAware=%t, want true/%t", keyedFirst, got, aliasAware, !keyedFirst)
+		}
+	}
+}
+
+func TestPreparedMemberIndexCollisionsAndForwarding(t *testing.T) {
+	t.Parallel()
+	scan := func(name string) RelationalExpression {
+		return &memoObservedExpression{RelationalExpression: mustExpression(NewFullUnorderedScanExpression([]string{name}, testRecordType()))}
+	}
+	child := InitialOf(scan("T"))
+	parent := func(ref *Reference) RelationalExpression {
+		return mustExpression(NewLogicalUniqueExpression(ForEachQuantifier(ref)))
+	}
+	forwarded, middle := InitialOf(scan("U")), InitialOf(scan("V"))
+	forwarded.forwardedTo, middle.forwardedTo = middle, child
+	members := append(preparedIndexPadding(), parent(forwarded))
+	var equality PreparedMemberEquality
+	index := equality.NewMemberIndex(members, nil)
+	for _, name := range []string{"T", "U"} {
+		if duplicate, _ := index.Duplicate(parent(InitialOf(scan(name)))); duplicate != (name == "T") {
+			t.Fatalf("child %s: duplicate=%t, want %t", name, duplicate, name == "T")
+		}
+	}
+	if forwarded.forwardedTo != middle || middle.forwardedTo != child {
+		t.Fatal("prepared index path-compressed forwarding")
+	}
+	if child.correlatedToCache.Load() != nil {
+		t.Fatal("prepared index published a correlation cache")
 	}
 }
 

@@ -25,6 +25,7 @@ go_library(
         "matchable_sort.go",
         "memo_equal.go",
         "prepared_member_equality.go",
+        "prepared_member_index.go",
         "quantifier.go",
         "quantifier_match.go",
         "recursive_union.go",
