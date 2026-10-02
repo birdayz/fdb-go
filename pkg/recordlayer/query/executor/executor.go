@@ -605,9 +605,25 @@ func executeCoveringIndexScan(
 	}, props.Skip, props.ReturnedRowLimit), nil
 }
 
-// defaultVectorEfSearch is the HNSW search-quality knob used when the query
-// does not specify OPTIONS ef_search. ef_search must be >= k for a correct
-// top-K result; the executor raises it to k when the configured value is lower.
+// vectorEfSearch is the efSearch a scan runs with: the query's option, raised
+// to the limit in top-k mode, or for a VECTOR index Java's default over the
+// scan limit (HnswVectorIndexEngine.efSearch). SPFresh's 0 leaves its
+// maintainer's own default.
+func vectorEfSearch(indexType string, explicit *int, scanLimit int, selfLimiting bool) int {
+	efSearch := 0
+	if explicit != nil {
+		efSearch = *explicit
+	}
+	if selfLimiting && efSearch != 0 && efSearch < scanLimit {
+		efSearch = scanLimit
+	}
+	if indexType == recordlayer.IndexTypeVector && efSearch <= 0 {
+		efSearch = min(max(4*scanLimit, 64), max(scanLimit, 400))
+	}
+	return efSearch
+}
+
+// defaultVectorEfSearch is the ordered stream's minimum scan horizon.
 const defaultVectorEfSearch = 200
 
 // executeVectorIndexScan runs a BY_DISTANCE K-NN scan over a VECTOR (HNSW)
@@ -679,20 +695,10 @@ func executeVectorIndexScan(
 		return recordlayer.Empty[QueryResult](), nil
 	}
 
-	// The default is the INDEX METHOD's own (HNSW efSearch=200; SPFresh's
-	// tuned kc=64 — passing 200 here silently overrode it for every SQL
-	// query). 0 = "use the maintainer's default"; only
-	// an explicit per-query efSearch overrides it.
-	efSearch := 0
-	if idx.Type == recordlayer.IndexTypeVector {
-		efSearch = defaultVectorEfSearch
-	}
-	if p.GetEfSearch() != nil {
-		efSearch = *p.GetEfSearch()
-	}
-
 	scanType := recordlayer.IndexScanByDistance
 	scanLimit := rankCap
+	selfLimiting := !p.IsOrderedStream()
+	var efSearch int
 	var makeScanRange func(tuple.Tuple) recordlayer.TupleRange
 	if p.IsOrderedStream() {
 		// RFC-156 — VBASE distance-ordered mode: do NOT self-limit to k. Stream
@@ -746,16 +752,11 @@ func executeVectorIndexScan(
 		// (a non-positive adjusted cap returned EMPTY there). No re-derive, and no
 		// dead ≤0 check.
 		limit := rankCap
-		if efSearch != 0 && efSearch < limit {
-			efSearch = limit
-		}
 		makeScanRange = func(prefix tuple.Tuple) recordlayer.TupleRange {
 			return recordlayer.VectorDistanceScanRangeWithPrefix(queryVec, limit, efSearch, prefix)
 		}
 	}
-	if idx.Type == recordlayer.IndexTypeVector && efSearch <= 0 {
-		efSearch = min(max(4*scanLimit, 64), max(scanLimit, 400))
-	}
+	efSearch = vectorEfSearch(idx.Type, p.GetEfSearch(), scanLimit, selfLimiting)
 	invocationRange := makeScanRange(nil)
 	fingerprintSalt, err := vectorScanRangeFingerprintSalt(
 		p,

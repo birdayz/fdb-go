@@ -165,6 +165,7 @@ go_test(
         "union_read_budget_integration_test.go",
         "unordered_pk_distinct_cardinality_test.go",
         "update_target_field_test.go",
+        "vector_ef_search_test.go",
         "vector_index_scan_integration_test.go",
     ],
     embed = [":executor"],
@@ -305,6 +306,7 @@ go_test(
         "update_target_field_test.go",
         "flat_map_null_supplying_outer_integration_test.go",
         "range_cursor_test.go",
+        "vector_ef_search_test.go",
     ],
     tags = ["resources:memory:400"],
     deps = [
