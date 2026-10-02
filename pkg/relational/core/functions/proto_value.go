@@ -211,12 +211,9 @@ func ConvertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 func appendArrayElements(list protoreflect.List, elemFD protoreflect.FieldDescriptor, elems []any) error {
 	for _, e := range elems {
 		if e == nil {
-			// Java forbids NULL elements in collections
-			// (MessageHelpers.coerceArray, SemanticException
-			// UNSUPPORTED — surfaces as an internal error;
-			// tracked upstream as fdb-record-layer#3646).
-			return api.NewErrorf(api.ErrCodeInternalError,
-				"NULL as elements of a collection are currently not supported")
+			// A write backstop: admission refuses NULL elements first, with the
+			// same 0A000.
+			return api.NewError(api.ErrCodeUnsupportedOperation, (&values.NullArrayElementError{}).Error())
 		}
 		pv, err := convertScalarProtoValue(elemFD, e)
 		if err != nil {

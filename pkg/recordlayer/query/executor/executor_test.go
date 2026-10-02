@@ -6762,3 +6762,15 @@ func TestBitmapAggregateContinuationValidation(t *testing.T) {
 		})
 	}
 }
+
+// The executor's array write backstop raises the same 0A000 error as array
+// construction.
+func TestGoToProtoValue_NullArrayElementIsJavas(t *testing.T) {
+	t.Parallel()
+	fd := (&gen.Index{}).ProtoReflect().Descriptor().Fields().ByName("record_type")
+	_, err := goToProtoValue(fd, []any{"a", nil})
+	var nullElem *values.NullArrayElementError
+	if !errors.As(err, &nullElem) {
+		t.Fatalf("err = %v (%T), want NullArrayElementError", err, err)
+	}
+}

@@ -4514,12 +4514,8 @@ func goToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value,
 		}
 		for _, e := range elems {
 			if e == nil {
-				// Java forbids NULL elements in collections
-				// (MessageHelpers.coerceArray, SemanticException
-				// UNSUPPORTED — surfaces as an internal error;
-				// tracked upstream as fdb-record-layer#3646).
-				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInternalError,
-					"NULL as elements of a collection are currently not supported")
+				// A write backstop: admission refuses NULL elements first.
+				return protoreflect.Value{}, &values.NullArrayElementError{}
 			}
 			pv, err := goToProtoScalarValue(inner, e)
 			if err != nil {

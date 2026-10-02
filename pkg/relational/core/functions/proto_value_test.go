@@ -1176,3 +1176,19 @@ func BenchmarkLiteralMatchesPKKind_String(b *testing.B) {
 		_ = LiteralMatchesPKKind("hello", protoreflect.StringKind)
 	}
 }
+
+// A NULL element reaching a stored array is the target's 0A000 (Java's
+// SemanticException for an ARRAY value with NULL elements), whatever admission
+// path let it through.
+func TestConvertToProtoValue_NullArrayElementIs0A000(t *testing.T) {
+	t.Parallel()
+	fd := (&gen.Index{}).ProtoReflect().Descriptor().Fields().ByName("record_type")
+	_, err := ConvertToProtoValue(fd, []any{"a", nil})
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUnsupportedOperation {
+		t.Fatalf("err = %v, want 0A000", err)
+	}
+	if apiErr.Message != "The action is currently unsupported An ARRAY value cannot have NULL elements" {
+		t.Fatalf("message %q", apiErr.Message)
+	}
+}
