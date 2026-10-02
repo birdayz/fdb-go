@@ -11,7 +11,12 @@ import (
 
 type memoObservedExpression struct {
 	RelationalExpression
-	hashVisits, correlationVisits, equalityVisits int
+	hashVisits, correlationVisits, equalityVisits, quantifierVisits int
+}
+
+func (e *memoObservedExpression) GetQuantifiers() []Quantifier {
+	e.quantifierVisits++
+	return e.RelationalExpression.GetQuantifiers()
 }
 
 func (e *memoObservedExpression) HashCodeWithoutChildren() uint64 {
@@ -225,8 +230,33 @@ func TestPreparedMemberIndexPrunesDifferentSingletonSubtrees(t *testing.T) {
 			t.Fatalf("member %d: disjoint subtree caused %d equality calls, want zero", i, visits)
 		}
 	}
+	for _, member := range members {
+		member.(*memoObservedExpression).quantifierVisits = 0
+	}
+	for range 32 {
+		if duplicate, _ := index.Duplicate(parent("new", false)); duplicate {
+			t.Fatal("repeated disjoint signature collapsed")
+		}
+	}
+	for i, member := range members {
+		if visits := member.(*memoObservedExpression).quantifierVisits; visits != 0 {
+			t.Fatalf("member %d: repeated disjoint lookups revisited its input %d times, want zero", i, visits)
+		}
+	}
 	if duplicate, _ := index.Duplicate(parent("A", true)); !duplicate {
 		t.Fatal("independently built, permuted equivalent subtree did not deduplicate")
+	}
+	index.Add(parent("added", false))
+	if duplicate, _ := index.Duplicate(parent("added", true)); !duplicate {
+		t.Fatal("member added after refinement did not deduplicate")
+	}
+	extra := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"extra"}, testRecordType())))
+	extra.members = append(extra.members, mustExpression(NewFullUnorderedScanExpression([]string{"spare"}, testRecordType())))
+	common := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"common"}, testRecordType())))
+	union := InitialOf(mustExpression(NewLogicalUnionExpression([]Quantifier{ForEachQuantifier(extra), ForEachQuantifier(common)})))
+	index.Add(&memoObservedExpression{RelationalExpression: mustExpression(NewLogicalUniqueExpression(ForEachQuantifier(union)))})
+	if duplicate, _ := index.Duplicate(parent("extra", true)); !duplicate {
+		t.Fatal("incomplete signature added after refinement lost containment fallback")
 	}
 }
 
@@ -352,27 +382,32 @@ func TestPreparedMemberIndexPreservesCandidateOrder(t *testing.T) {
 	scan := func() RelationalExpression {
 		return mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType()))
 	}
-	child := InitialOf(scan())
 	alias := values.NamedCorrelationIdentifier("q")
 	filter := func(alias values.CorrelationIdentifier, ref *Reference) RelationalExpression {
 		return mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{predicates.NewComparisonPredicate(
 			mustQOV(alias), predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(1)}},
 		)}, NamedForEachQuantifier(alias, ref)))
 	}
-	incoming := filter(alias, child)
-	for _, keyedFirst := range []bool{false, true} {
-		// The unkeyed group contains two distinct scan nodes with equal contents.
-		multi := InitialOf(scan())
-		multi.members = append(multi.members, scan())
-		members := append([]RelationalExpression{filter(values.UniqueCorrelationIdentifier(), multi)}, slices.Repeat([]RelationalExpression{filter(alias, child)}, 8)...)
-		if keyedFirst {
-			slices.Reverse(members)
-		}
-		var equality PreparedMemberEquality
-		index := equality.NewMemberIndex(members, nil)
-		got, aliasAware := index.Duplicate(incoming)
-		if !got || aliasAware == keyedFirst {
-			t.Fatalf("keyedFirst=%t: duplicate=%t aliasAware=%t, want true/%t", keyedFirst, got, aliasAware, !keyedFirst)
+	for _, nested := range []bool{false, true} {
+		for _, keyedFirst := range []bool{false, true} {
+			child := InitialOf(scan())
+			multi := InitialOf(scan())
+			multi.members = append(multi.members, scan())
+			if nested {
+				child = InitialOf(mustExpression(NewLogicalUniqueExpression(ForEachQuantifier(child))))
+				multi = InitialOf(mustExpression(NewLogicalUniqueExpression(ForEachQuantifier(multi))))
+			}
+			incoming := filter(alias, child)
+			members := append([]RelationalExpression{filter(values.UniqueCorrelationIdentifier(), multi)}, slices.Repeat([]RelationalExpression{filter(alias, child)}, 8)...)
+			if keyedFirst {
+				slices.Reverse(members)
+			}
+			var equality PreparedMemberEquality
+			index := equality.NewMemberIndex(members, nil)
+			got, aliasAware := index.Duplicate(incoming)
+			if !got || aliasAware == keyedFirst {
+				t.Fatalf("nested=%t keyedFirst=%t: duplicate=%t aliasAware=%t, want true/%t", nested, keyedFirst, got, aliasAware, !keyedFirst)
+			}
 		}
 	}
 }

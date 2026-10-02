@@ -6,9 +6,15 @@ type PreparedMemberIndex struct {
 	equality *PreparedMemberEquality
 	members  []RelationalExpression
 	hashes   []uint64
-	buckets  map[preparedInputKey][]int
+	buckets  map[preparedInputKey]*preparedMemberBucket
 	fallback []int
 	indexed  bool
+}
+
+type preparedMemberBucket struct {
+	members  []int
+	refined  map[preparedInputKey][]int
+	fallback []int
 }
 
 type preparedInputKey struct {
@@ -55,32 +61,37 @@ func (p *PreparedMemberIndex) Duplicate(expression RelationalExpression) (bool, 
 		}
 		p.indexed = true
 	}
-	candidates := p.buckets[key]
-	var deeper preparedInputKey
-	hasDeeper := false
-	if len(candidates) >= 8 {
-		deeper, hasDeeper = p.inputSignature(expression)
-	}
-	// Preserve lane order: the first match also determines aliasAwareOnly.
-	for i, j := 0, 0; i < len(candidates) || j < len(p.fallback); {
-		var next int
-		if j == len(p.fallback) || i < len(candidates) && candidates[i] < p.fallback[j] {
-			next = candidates[i]
-			i++
-		} else {
-			next = p.fallback[j]
-			j++
-		}
-		if hasDeeper {
-			if candidate, complete := p.inputSignature(p.members[next]); complete && candidate != deeper {
-				continue
+	lists := [3][]int{nil, nil, p.fallback}
+	if bucket := p.buckets[key]; bucket != nil {
+		lists[0] = bucket.members
+		if len(bucket.members) >= 8 {
+			if signature, complete := p.inputSignature(expression); complete {
+				if bucket.refined == nil {
+					bucket.refined = make(map[preparedInputKey][]int)
+					for _, index := range bucket.members {
+						p.indexSignature(bucket, index, p.members[index])
+					}
+				}
+				lists[0], lists[1] = bucket.refined[signature], bucket.fallback
 			}
 		}
+	}
+	// Preserve lane order across exact signatures and both fallback populations.
+	for {
+		next, selected := -1, -1
+		for i, list := range lists {
+			if len(list) > 0 && (next < 0 || list[0] < next) {
+				next, selected = list[0], i
+			}
+		}
+		if selected < 0 {
+			return false, false
+		}
+		lists[selected] = lists[selected][1:]
 		if duplicate, aliasAware := p.equality.DuplicateWithHashes(p.members[next:next+1], p.hashes[next:next+1], expression); duplicate {
 			return true, aliasAware
 		}
 	}
-	return false, false
 }
 
 func (p *PreparedMemberIndex) Add(expression RelationalExpression) {
@@ -98,9 +109,26 @@ func (p *PreparedMemberIndex) indexMember(index int, expression RelationalExpres
 		return
 	}
 	if p.buckets == nil {
-		p.buckets = make(map[preparedInputKey][]int)
+		p.buckets = make(map[preparedInputKey]*preparedMemberBucket)
 	}
-	p.buckets[key] = append(p.buckets[key], index)
+	bucket := p.buckets[key]
+	if bucket == nil {
+		bucket = &preparedMemberBucket{}
+		p.buckets[key] = bucket
+	}
+	bucket.members = append(bucket.members, index)
+	if bucket.refined != nil {
+		p.indexSignature(bucket, index, expression)
+	}
+}
+
+func (p *PreparedMemberIndex) indexSignature(bucket *preparedMemberBucket, index int, expression RelationalExpression) {
+	signature, complete := p.inputSignature(expression)
+	if !complete {
+		bucket.fallback = append(bucket.fallback, index)
+		return
+	}
+	bucket.refined[signature] = append(bucket.refined[signature], index)
 }
 
 func (p *PreparedMemberIndex) inputKey(expression RelationalExpression) (preparedInputKey, bool) {
