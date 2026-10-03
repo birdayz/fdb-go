@@ -153,7 +153,6 @@ go_library(
         "rule_push_in_join_through_fetch.go",
         "rule_push_limit_through_union.go",
         "rule_push_map_through_fetch.go",
-        "rule_push_predicates_through_projection.go",
         "rule_push_referenced_fields.go",
         "rule_push_requested_ordering_through_delete.go",
         "rule_push_requested_ordering_through_distinct.go",
@@ -1195,7 +1194,6 @@ go_test(
         "planner_trace_test.go",
         "planner_memo_merge.go",
         "planner_memo_merge_test.go",
-        "rule_push_predicates_through_projection.go",
     ],
     deps = [
         "//gen",

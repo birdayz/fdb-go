@@ -13375,10 +13375,8 @@ against Java 4.14.2.0 before fixing, then tick with the commit.
   table-function calls differs from Java (the item above). Do: translate each
   block as `generateSimpleSelect` does, build the invocation as `encapsulate`
   does, and leave merging to `SelectMergeRule`/`DecorrelateValuesRule`.
-  Delete the stopgap this replaces: `PushFilterThroughProjectionRule`,
-  `PushPredicatesThroughProjectionRule`
-  (`rule_push_predicates_through_projection.go`), `pushThroughProjection` and the
-  same-named-leg arm in `pushIntoSelect` (`rule_predicate_push_down.go`), and
-  restore the two embedded tests it re-expected. Closes the DIVERGENCES.md
+  (A stopgap that pushed predicates into projection blocks with Go-only rules,
+  428668460, was reverted: it patched symptoms of this representation.) Closes
+  the DIVERGENCES.md
   entry "Go decomposes SelectExpression into separate logical operators" for
   query blocks.
