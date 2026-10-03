@@ -2114,6 +2114,8 @@ func explainValueOrdinalsWithAliases(v Value, withOrdinals bool, aliases map[Cor
 			explainValueOrdinalsWithAliases(cv.Pattern, withOrdinals, aliases)
 	case *PromoteValue:
 		return "PROMOTE(" + explainValueOrdinalsWithAliases(cv.Child, withOrdinals, aliases) + " TO " + explainTypeName(cv.Target) + ")"
+	case *NarrowValue:
+		return "NARROW(" + explainValueOrdinalsWithAliases(cv.Child, withOrdinals, aliases) + " TO " + explainTypeName(cv.Target) + ")"
 	case *RecordConstructorValue:
 		parts := make([]string, 0, len(cv.Fields))
 		for _, f := range cv.Fields {

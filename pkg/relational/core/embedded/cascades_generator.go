@@ -2649,6 +2649,12 @@ func translateExecError(err error) error {
 	if errors.As(err, &castErr) {
 		return api.NewError(api.ErrCodeInvalidCast, castErr.Error())
 	}
+	// Java fails the same write with an unmapped VerifyException or
+	// IllegalArgumentException, both XXXXX.
+	var slotErr *values.SlotAssignmentError
+	if errors.As(err, &slotErr) {
+		return api.NewError(api.ErrCodeUnknown, slotErr.Error())
+	}
 	var enumErr *values.InvalidEnumValueError
 	if errors.As(err, &enumErr) {
 		return api.WrapError(api.ErrCodeInternalError, enumErr.Error(), err)

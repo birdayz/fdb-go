@@ -2449,8 +2449,7 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 
 func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressions.RelationalExpression {
 	// Recursive terms were bound against the seed declaration. Predicates must
-	// read the same common row as projections and the temporary scan, including
-	// nullability widening caused by the recursive expression.
+	// read the same common row as projections and the temporary scan.
 	if len(t.recursiveCTEConsumerRows) != 0 && f.Predicate != nil {
 		var normalizeErr error
 		pred := predicates.TransformEmbeddedValues(f.Predicate, func(value values.Value) values.Value {
@@ -6922,11 +6921,11 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 			"projection slot %d has no resolved Value", i))
 		return nil
 	}
-	// A recursive CTE's main query was resolved against the seed declaration
-	// before the recursive fixed point could widen it. Retarget only that
-	// explicitly scoped source onto the physical common row. The bridge
-	// re-resolves complete ordinal paths and admits MaximumType widening only;
-	// ordinary derived/name normalization below remains exact-name-only.
+	// A recursive CTE's main query was resolved against the seed declaration.
+	// Retarget only that explicitly scoped source onto the physical common row.
+	// The bridge re-resolves complete ordinal paths and admits MaximumType
+	// widening only; ordinary derived/name normalization below remains
+	// exact-name-only.
 	for i := range projected {
 		if projected[i] == nil {
 			continue
@@ -9324,11 +9323,12 @@ func validateCTEAliasAritiesInGraph(op logical.LogicalOperator, producers map[*l
 	return nil
 }
 
-// recursiveCTECommonResultRow derives the exact positional row that both
-// recursive-union inserts and the intervening temp-table scan must publish.
-// Output names are seed-authoritative; branch-local names do not participate in
-// compatibility. Each slot is folded through SQL's implicit-promotion lattice,
-// including nullability widening, before the recursive branch is translated.
+// recursiveCTECommonResultRow is the row both recursive-union inserts and the
+// intervening temp-table scan publish: the seed's, named by the output list.
+// Java types the temporary table by the non-recursive leg
+// (SemanticAnalyzer.getRecursiveCteType) and the union by its first leg
+// (RecordQuerySetPlan.mergeValues); a recursive value is fitted to it per slot
+// (recursiveSlotValue).
 func (t *cascadesTranslator) recursiveCTECommonResultRow(
 	seed *values.RecordType,
 	recursiveBranches []logical.LogicalOperator,
@@ -9345,13 +9345,11 @@ func (t *cascadesTranslator) recursiveCTECommonResultRow(
 			FieldType: seed.Fields[i].FieldType,
 		}
 	}
-	resultNullable := seed.Nullable
 	for branchIndex, branch := range recursiveBranches {
 		var branchFields []values.Field
 		if branchType, err := exactLogicalResultTypeFor(branch, t.md, t.forDDL); err == nil {
 			if record, ok := branchType.(*values.RecordType); ok {
 				branchFields = record.Fields
-				resultNullable = resultNullable || record.Nullable
 			}
 		}
 		// A projection-less self-reference cannot be derived by the metadata-only
@@ -9365,20 +9363,37 @@ func (t *cascadesTranslator) recursiveCTECommonResultRow(
 			return nil, fmt.Errorf("recursive branch %d has width %d, want %d",
 				branchIndex, len(branchFields), len(fields))
 		}
-		for ordinal := range fields {
-			common := values.MaximumType(fields[ordinal].FieldType, branchFields[ordinal].FieldType)
-			if common == nil {
-				return nil, fmt.Errorf("recursive branch %d column %d types %s and %s are incompatible",
-					branchIndex, ordinal+1, fields[ordinal].FieldType, branchFields[ordinal].FieldType)
-			}
-			fields[ordinal].FieldType = common
-		}
 	}
-	row := &values.RecordType{Nullable: resultNullable, Fields: fields}
+	row := &values.RecordType{Nullable: seed.Nullable, Fields: fields}
 	if _, err := values.SnapshotExactType(row); err != nil {
 		return nil, fmt.Errorf("recursive CTE common row is not exact: %w", err)
 	}
 	return row, nil
+}
+
+// recursiveSlotValue fits a value to a slot of a recursive CTE's seed-typed
+// row: promoted where its type promotes, otherwise narrowed, so a NULL into a
+// NOT NULL slot or a value of another type fails when it is written.
+func recursiveSlotValue(value values.Value, target values.Type) (values.Value, error) {
+	if value == nil || target == nil {
+		return nil, fmt.Errorf("source Value or target type is nil")
+	}
+	if value.Type().Equals(target) {
+		return value, nil
+	}
+	if maximum := values.MaximumType(value.Type(), target); maximum != nil && maximum.Equals(target) {
+		return values.NewPromoteValueChecked(value, target)
+	}
+	nullableTarget := values.WithNullability(target, true)
+	if maximum := values.MaximumType(value.Type(), nullableTarget); maximum != nil && maximum.Equals(nullableTarget) &&
+		!value.Type().Equals(nullableTarget) {
+		promoted, err := values.NewPromoteValueChecked(value, nullableTarget)
+		if err != nil {
+			return nil, err
+		}
+		value = promoted
+	}
+	return values.NewNarrowValue(value, target), nil
 }
 
 // recursiveCTEMainBindings returns the exact correlations under which scans of
@@ -9713,11 +9728,9 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	}
 
 	// Derive the exact positional row shared by every iteration BEFORE creating
-	// the self-reference scan. SQL UNION compatibility is positional: names come
-	// from the seed/output alias list, while each slot uses Type.maximumType over
-	// the seed and recursive branches. In particular, `0 AS level` is NOT NULL
-	// but `level + 1` is nullable; publishing the seed's narrower row on the temp
-	// scan would make later iterations disagree with the recursive insert.
+	// the self-reference scan: the seed's row, which every later iteration is
+	// fitted to slot by slot (`0 AS level` keeps level NOT NULL, and a NULL
+	// `level + 1` fails when written).
 	seedResult := seedExpr.GetResultValue()
 	if seedResult == nil || seedResult.Type() == nil {
 		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
@@ -9768,8 +9781,8 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	t.cteColumnsScope[c.CTEProducer] = tempFields
 
 	// Normalize the seed onto that exact row. This is a no-op for the common
-	// same-schema case, preserving its plan shape; a rename, promotion, or
-	// nullability widening becomes an explicit ordinal projection.
+	// same-schema case, preserving its plan shape; a rename becomes an explicit
+	// ordinal projection.
 	if !seedType.Equals(commonRow) {
 		seedExpr = t.normalizeRecursiveLegToOutputRow(seedExpr, commonRow)
 		if seedExpr == nil {
@@ -9792,9 +9805,9 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		return nil
 	}
 
-	// The self-reference temp table carries the COMMON CTE row, including any
-	// nullability/type widening. Thus a recursive join leg anchors on the same
-	// exact contract that both inserts publish (RFC-077 7.6).
+	// The self-reference temp table carries the COMMON CTE row. Thus a
+	// recursive join leg anchors on the same exact contract that both inserts
+	// publish (RFC-077 7.6).
 	tempScan, err := expressions.NewTempTableScanExpression(scanAlias, commonRow)
 	if err != nil {
 		delete(t.cteColumnsScope, c.CTEProducer)
@@ -10036,8 +10049,7 @@ func (t *cascadesTranslator) normalizeLegToOutputColumns(
 
 // normalizeRecursiveLegToOutputRow re-emits one recursive-CTE leg under the
 // exact common positional row derived for the recursion. Resolving by ordinal
-// preserves source identity, while exactUnionSlotValue applies only the SQL
-// implicit promotion/nullability widening already proven by MaximumType.
+// preserves source identity, and recursiveSlotValue fits each slot to it.
 func (t *cascadesTranslator) normalizeRecursiveLegToOutputRow(
 	leg expressions.RelationalExpression,
 	outputRow *values.RecordType,
@@ -10063,7 +10075,7 @@ func (t *cascadesTranslator) normalizeRecursiveLegToOutputRow(
 				"recursive CTE output slot %d does not resolve: %v", i, resolveErr))
 			return nil
 		}
-		projected[i], err = exactUnionSlotValue(resolved, field.FieldType)
+		projected[i], err = recursiveSlotValue(resolved, field.FieldType)
 		if err != nil {
 			t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
 				"recursive CTE output slot %d cannot adopt the common type: %v", i, err))

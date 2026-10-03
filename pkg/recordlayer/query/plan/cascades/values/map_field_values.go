@@ -77,6 +77,8 @@ func MapFieldValues(v Value, transform func(*fieldValue) Value) Value {
 			return nil
 		}
 		return rebuilt
+	case *NarrowValue:
+		return NewNarrowValue(newChildren[0], cv.Target)
 	case *NotValue:
 		return &NotValue{Child: newChildren[0]}
 	case *ScalarFunctionValue:
@@ -401,6 +403,9 @@ func EqualsWithoutChildren(a, b Value) bool {
 	case *PromoteValue:
 		bv, ok := b.(*PromoteValue)
 		return ok && typesEqual(av.Target, bv.Target)
+	case *NarrowValue:
+		bv, ok := b.(*NarrowValue)
+		return ok && av.Target.Equals(bv.Target)
 	case *ScalarFunctionValue:
 		bv, ok := b.(*ScalarFunctionValue)
 		return ok && av.FuncName == bv.FuncName && len(av.Args) == len(bv.Args)

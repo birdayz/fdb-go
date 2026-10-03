@@ -15872,15 +15872,14 @@ shape:               RecordQueryTempTableScanPlan
 shape:               RecordQueryScanPlan
 === recursive_cte.yaml#15
 sql:   WITH RECURSIVE counter(n) AS ( SELECT 1 AS n UNION ALL SELECT n + 1 FROM counter WHERE n < 5 ) SELECT n FROM counter ORDER BY n
-plan:  Project([_current.N#0], InMemorySort([_current.N#0 ASC], Project([_current.N#0], RecursiveDfsJoin(PREORDER, Project([PROMOTE(_current.N#0 TO INT)], Project([1], Project([], Explode(array)))), Project([_current.(COUNTER.N + 1)#0], Project([(_current.N#0 + 1)], PredicatesFilter(TempTableScan(COUNTERforScan), [1 preds])))))))
+plan:  Project([_current.N#0], InMemorySort([_current.N#0 ASC], Project([_current.N#0], RecursiveDfsJoin(PREORDER, Project([1], Project([], Explode(array))), Project([NARROW(_current.(COUNTER.N + 1)#0 TO INT)], Project([(_current.N#0 + 1)], PredicatesFilter(TempTableScan(COUNTERforScan), [1 preds])))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryProjectionPlan
 shape:       RecordQueryRecursiveDfsJoinPlan
 shape:         RecordQueryProjectionPlan
 shape:           RecordQueryProjectionPlan
-shape:             RecordQueryProjectionPlan
-shape:               RecordQueryExplodePlan
+shape:             RecordQueryExplodePlan
 shape:         RecordQueryProjectionPlan
 shape:           RecordQueryProjectionPlan
 shape:             RecordQueryPredicatesFilterPlan

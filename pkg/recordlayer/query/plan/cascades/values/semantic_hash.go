@@ -103,6 +103,8 @@ func writeSemanticHash(h io.Writer, v Value) {
 		_, _ = fmt.Fprintf(h, "cast:%v", t.Target)
 	case *PromoteValue:
 		_, _ = fmt.Fprintf(h, "promote:%v", t.Target)
+	case *NarrowValue:
+		_, _ = fmt.Fprintf(h, "narrow:%v", t.Target)
 	case *ThrowsValue:
 		_, _ = fmt.Fprintf(h, "throws:%v", t.ResultType)
 	case *RecordConstructorValue:

@@ -2670,3 +2670,15 @@ Java 4.14.2.0 validates a named macro call by name (`UserDefinedFunctionCatalog.
 which turns `NamedArguments` into `PositionalArguments` in call order: `st1_d(z => 5, y => 4)`
 binds `y = 5, z = 4`. Go binds each value to the parameter it names. A built-in ignores names in
 both engines. Both answers are pinned in `conformance/named_call_conformance_test.go`.
+
+## Recursive CTE rows that do not fit the seed
+
+Java types a recursive CTE's temporary table by the seed's row (`SemanticAnalyzer.getRecursiveCteType`)
+and writes later iterations into it unconverted, so a mismatch surfaces only where something reads
+it: an INT written into a BIGINT or DOUBLE column fails with an internal `IllegalArgumentException`
+when read, and a NULL in a NOT NULL column survives until a record is built from it (a `COUNT(*)`
+over it answers, and `IS NULL` on it is folded to false). Go keeps the same seed-typed row but fits
+each recursive value when it is written (`recursiveSlotValue`, `values.NarrowValue`): it promotes
+what promotes, and refuses a NULL into NOT NULL or a value of another type with XXXXX at once. Both
+answers are pinned in `conformance/recursive_column_list_conformance_test.go`.
+

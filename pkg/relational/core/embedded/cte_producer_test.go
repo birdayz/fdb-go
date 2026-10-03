@@ -118,7 +118,9 @@ func TestRetainedRecursiveCTEReusesPreparedSeed(t *testing.T) {
 	}
 }
 
-func TestRecursiveCTEMainScopePublishesCommonRow(t *testing.T) {
+// TestRecursiveCTEMainScopePublishesSeedRow pins the consumer's row before
+// translation: the completed producer keeps the seed's NOT NULL `1 AS n`.
+func TestRecursiveCTEMainScopePublishesSeedRow(t *testing.T) {
 	t.Parallel()
 	owner, _ := clauseTestOwner(t)
 	visitor, err := owner.newSubqueryVisitor()
@@ -146,15 +148,15 @@ func TestRecursiveCTEMainScopePublishesCommonRow(t *testing.T) {
 				"group key":   agg.GroupKeys[0].Value,
 				"sum operand": agg.AggregateOperands[0],
 			} {
-				if value == nil || !value.Type().Equals(values.NullableInt) {
-					t.Fatalf("%s = %v, want the completed recursive producer's nullable INT before translation", name, value)
+				if value == nil || !value.Type().Equals(values.NotNullInt) {
+					t.Fatalf("%s = %v, want the completed recursive producer's NOT NULL INT before translation", name, value)
 				}
 				field, ok := values.AsFieldValue(value)
 				if !ok {
 					t.Fatalf("%s is not a resolved field: %T", name, value)
 				}
 				qov, ok := values.AsQuantifiedObjectValue(field.ChildValue())
-				wantRow := &values.RecordType{Fields: []values.Field{{Name: "N", Ordinal: 0, FieldType: values.NullableInt}}}
+				wantRow := &values.RecordType{Fields: []values.Field{{Name: "N", Ordinal: 0, FieldType: values.NotNullInt}}}
 				if !ok || !values.FlowedTypeEquals(qov, wantRow) {
 					t.Fatalf("%s does not carry the completed recursive row: %v", name, field.ChildValue())
 				}

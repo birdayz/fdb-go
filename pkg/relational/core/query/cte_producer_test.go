@@ -122,8 +122,8 @@ func TestRetainedRecursiveCTEConsumerCommonRow(t *testing.T) {
 				t.Fatalf("recursive consumer failed: %v", tr.translateErr)
 			}
 			projection, ok := ref.Get().(*expressions.LogicalProjectionExpression)
-			if !ok || !projection.GetProjectedValues()[0].Type().Equals(values.NullableInt) {
-				t.Fatalf("recursive consumer did not adopt the common nullable row: %T", ref.Get())
+			if !ok || !projection.GetProjectedValues()[0].Type().Equals(values.NotNullInt) {
+				t.Fatalf("recursive consumer did not adopt the seed row: %T", ref.Get())
 			}
 			other := logical.NewScan("R", "OTHER")
 			other.Source = logical.CTEScanSource(declaration.CTEProducer)

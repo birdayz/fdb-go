@@ -127,10 +127,6 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 		// is the only slot there is. That means these rows cannot tell a correct
 		// index from the constant 0 — say so rather than imply otherwise.
 		unionSlotRefusal = "42F65: UNION output slot 0 cannot adopt the common type"
-		// The SAME gate, reached through the recursive-CTE path, which wraps it in
-		// a different error CODE. A closure that fixes only the UNION spelling
-		// leaves this one, and nothing else pins it.
-		cteSlotRefusal = "0AF00: recursive CTE output slot 0 cannot adopt the common type"
 	)
 
 	for _, tc := range []struct {
@@ -322,10 +318,10 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 			andFailsWith: unionSlotRefusal,
 		},
 		{
-			why:          "the SAME gate reached through a RECURSIVE CTE, which wraps it in a different error code. A closure written against the UNION spelling alone would leave this one, and nothing else in the tree pins it",
+			why:          "a RECURSIVE CTE does not unify its legs: every iteration keeps the seed's record (SemanticAnalyzer.getRecursiveCteType), so a recursive leg naming another field fails when it is written, never at the union gate",
 			query:        `WITH RECURSIVE r AS (SELECT (1 AS A) AS C FROM t UNION ALL SELECT (2 AS B) AS C FROM r) SELECT * FROM r`,
-			failsWith:    anonTarget,
-			andFailsWith: cteSlotRefusal,
+			failsWith:    "cannot be stored in a column of type RECORD<A INT NOT NULL> NOT NULL",
+			andFailsWith: "XXXXX",
 		},
 	} {
 		query := tc.query

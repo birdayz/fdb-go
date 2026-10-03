@@ -13312,13 +13312,14 @@ against Java 4.14.2.0 before fixing, then tick with the commit.
 
 ### Recursive CTE row type
 
-- [ ] Java types a recursive CTE's temporary table and result by the SEED's row
+- [x] Java types a recursive CTE's temporary table and result by the SEED's row
   (`SemanticAnalyzer.getRecursiveCteType`; `RecursiveUnionExpression` result is
   `RecordQuerySetPlan.mergeValues`, the first leg's type): `SELECT me, par, 0 AS
   lvl … UNION ALL … lvl + 1` reports column 3 NOT NULL; a recursive NULL into a
   NOT NULL seed column fails XXXXX "Cannot set a non-nullable field to the NULL
   value"; a BIGINT into an INTEGER seed column fails XXXXX. Go widens the
-  fixed point to the common row (`recursiveCTECommonResultRow`). Pinned as
-  declared divergences r00/r02/r06/r14/r15 in
-  `conformance/recursive_column_list_conformance_test.go`.
+  fixed point to the common row (`recursiveCTECommonResultRow`). Done: the
+  fixed point is the seed's row and each recursive value is promoted or
+  narrowed when written (DIVERGENCES.md, "Recursive CTE rows that do not fit
+  the seed").
 

@@ -290,6 +290,11 @@ func withChildrenUnchecked(v Value, newChildren []Value) Value {
 			return nil
 		}
 		return rebuilt
+	case *NarrowValue:
+		if len(newChildren) != 1 {
+			return v
+		}
+		return NewNarrowValue(newChildren[0], vt.Target)
 	case *RecordConstructorValue:
 		if len(newChildren) != len(vt.Fields) {
 			return v

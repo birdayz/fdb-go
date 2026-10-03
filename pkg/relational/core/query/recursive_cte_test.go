@@ -176,7 +176,11 @@ func TestRecursiveCTEConsumerBridgeWidensOnlyTheDeclaredPositionalRoot(t *testin
 	}
 }
 
-func TestRecursiveCTECommonRowPrecedesSelfScanAndConsumerBinding(t *testing.T) {
+// TestRecursiveCTESeedRowPrecedesSelfScanAndConsumerBinding pins Java's
+// fixed point: every iteration keeps the seed's row (SemanticAnalyzer
+// .getRecursiveCteType), so `0 AS level` stays NOT NULL for the self scan, the
+// union and the consumer, and the nullable `level + 1` is narrowed on write.
+func TestRecursiveCTESeedRowPrecedesSelfScanAndConsumerBinding(t *testing.T) {
 	t.Parallel()
 	constantInt := func(value int32) values.Value {
 		return &values.ConstantValue{Value: value, Typ: values.NotNullInt}
@@ -210,14 +214,12 @@ func TestRecursiveCTECommonRowPrecedesSelfScanAndConsumerBinding(t *testing.T) {
 		t.Fatalf("main expression = %T, want logical projection", translated)
 	}
 	mainLevel := exactTestFieldView(t, projection.GetProjectedValues()[0])
-	if !mainLevel.ResultType().Equals(values.NullableInt) {
-		t.Fatalf("main LEVEL type = %s, want nullable INT", mainLevel.ResultType())
+	if !mainLevel.ResultType().Equals(values.NotNullInt) {
+		t.Fatalf("main LEVEL type = %s, want NOT NULL INT", mainLevel.ResultType())
 	}
 	mainOwner, ok := values.AsQuantifiedObjectValue(mainLevel.ChildValue())
-	if !ok || !mainOwner.FlowedType().Equals(&values.RecordType{Fields: []values.Field{
-		{Name: "LEVEL", Ordinal: 0, FieldType: values.NullableInt},
-	}}) {
-		t.Fatalf("main LEVEL owner = %v, want exact common nullable row", mainOwner)
+	if !ok || !mainOwner.FlowedType().Equals(declaredRow) {
+		t.Fatalf("main LEVEL owner = %v, want the seed row", mainOwner)
 	}
 
 	recursiveUnion, ok := projection.GetInner().GetRangesOver().Get().(*expressions.RecursiveUnionExpression)
@@ -247,22 +249,54 @@ func TestRecursiveCTECommonRowPrecedesSelfScanAndConsumerBinding(t *testing.T) {
 	}
 	findTempScan(recursiveUnion.GetRecursiveState().GetRangesOver().Get())
 	if tempScan == nil || !tempScan.GetResultValue().Type().Equals(mainOwner.FlowedType()) {
-		t.Fatalf("recursive self scan = %v, want common nullable row %s", tempScan, mainOwner.FlowedType())
+		t.Fatalf("recursive self scan = %v, want the seed row %s", tempScan, mainOwner.FlowedType())
+	}
+	if narrowed := recursiveLegSlot(t, recursiveUnion, 0); !narrowed.Target.Equals(values.NotNullInt) {
+		t.Fatalf("recursive LEVEL slot = %v, want narrowed to NOT NULL INT", narrowed)
 	}
 
 	incompatibleRecursive := logical.NewProject(scan("WALK", "w"), []string{"LEVEL"}, nil)
 	incompatibleRecursive.ProjectedValues = []values.Value{
 		&values.ConstantValue{Value: "wrong", Typ: values.NotNullString},
 	}
-	incompatibleCTE := logical.NewCTE("WALK",
-		logical.NewUnion([]logical.LogicalOperator{seed, incompatibleRecursive}, false), main, true)
-	incompatibleTranslator := newGateTranslator(t)
-	if got := incompatibleTranslator.translateRecursiveCTE(incompatibleCTE); got != nil ||
-		incompatibleTranslator.translateErr == nil ||
-		!strings.Contains(incompatibleTranslator.translateErr.Error(), "incompatible") {
-		t.Fatalf("incompatible recursive leg = (%T, %v), want typed rejection",
-			got, incompatibleTranslator.translateErr)
+	// Fresh seed and main: the first translation bound their scans to its own
+	// producer.
+	incompatibleSeed := logical.NewProject(scan("Order", "o"), []string{"LEVEL"}, nil)
+	incompatibleSeed.ProjectedValues = []values.Value{constantInt(0)}
+	incompatibleConsumer := logical.NewProject(scan("WALK", "r"), []string{"LEVEL"}, nil)
+	incompatibleConsumer.ProjectedValues = []values.Value{
+		exactTestField(t, exactTestQOV(t, "R", declaredRow), 0),
 	}
+	incompatibleCTE := logical.NewCTE("WALK",
+		logical.NewUnion([]logical.LogicalOperator{incompatibleSeed, incompatibleRecursive}, false), incompatibleConsumer, true)
+	incompatibleTranslator := newGateTranslator(t)
+	incompatibleMain, ok := incompatibleTranslator.translateRecursiveCTE(incompatibleCTE).(*expressions.LogicalProjectionExpression)
+	if !ok {
+		t.Fatalf("incompatible recursive leg: %v", incompatibleTranslator.translateErr)
+	}
+	incompatibleUnion := incompatibleMain.GetInner().GetRangesOver().Get().(*expressions.RecursiveUnionExpression)
+	if narrowed := recursiveLegSlot(t, incompatibleUnion, 0); narrowed.Child.Type().Code() != values.TypeCodeString ||
+		!narrowed.Target.Equals(values.NotNullInt) {
+		t.Fatalf("a STRING written to the INT seed slot = %v, want it narrowed to NOT NULL INT", narrowed)
+	}
+}
+
+// recursiveLegSlot is the narrowed value the recursive leg writes to slot i.
+func recursiveLegSlot(t *testing.T, union *expressions.RecursiveUnionExpression, i int) *values.NarrowValue {
+	t.Helper()
+	insert, ok := union.GetRecursiveState().GetRangesOver().Get().(*expressions.TempTableInsertExpression)
+	if !ok {
+		t.Fatalf("recursive state = %T, want a temp table insert", union.GetRecursiveState().GetRangesOver().Get())
+	}
+	leg, ok := insert.GetInner().GetRangesOver().Get().(*expressions.LogicalProjectionExpression)
+	if !ok {
+		t.Fatalf("recursive leg = %T, want its normalizing projection", insert.GetInner().GetRangesOver().Get())
+	}
+	narrowed, ok := leg.GetProjectedValues()[i].(*values.NarrowValue)
+	if !ok {
+		t.Fatalf("recursive leg slot %d = %T, want a NarrowValue", i, leg.GetProjectedValues()[i])
+	}
+	return narrowed
 }
 
 // TestRecursiveBodyGatesOrdinal is a structural sentinel over the actual

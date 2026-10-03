@@ -6,6 +6,7 @@ import (
 
 	recordlayer "fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/query/logical"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -812,11 +813,26 @@ func deriveCTEProducerType(producer *logical.CTEProducer, md *recordlayer.Record
 				if err != nil {
 					return nil, err
 				}
-				// A self-reference reads the seed's own names; the column list
-				// renames only what consumers outside the body see (Java's
-				// handleRecursiveNamedQuery types the temporary scan by the seed).
+				// Every iteration keeps the seed's row: a self-reference reads
+				// it under the seed's own names, and the column list renames
+				// only what consumers outside the body see (Java's
+				// handleRecursiveNamedQuery types the temporary table by the
+				// seed). Later legs are fitted to it when written, so their
+				// types only need the seed's width.
 				env.types[producer] = seed
-				break
+				seedRecord, isRecord := seed.(*values.RecordType)
+				for _, leg := range union.Inputs {
+					legType, err := deriveLogicalResultType(leg, md, env, unionType)
+					if err != nil {
+						return nil, err
+					}
+					legRecord, legIsRecord := legType.(*values.RecordType)
+					if !isRecord || !legIsRecord || len(legRecord.Fields) != len(seedRecord.Fields) {
+						return nil, api.NewError(api.ErrCodeUnionIncorrectColumnCount,
+							"UNION legs do not have the same number of columns")
+					}
+				}
+				return cteBoundRowType(seed, producer)
 			}
 		}
 	}
