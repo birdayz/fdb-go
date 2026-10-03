@@ -25,3 +25,28 @@ func TestPlanHarness_QuotedPrimaryKeyColumnIsScannable(t *testing.T) {
 		}
 	}
 }
+
+// The vector candidate names its columns verbatim too: a quoted lowercase
+// vector or primary-key column still reaches the vector index.
+func TestPlanHarness_QuotedVectorColumnsReachTheIndex(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct{ schema, sql string }{
+		{
+			`CREATE TABLE "vt" ("id" BIGINT, "emb" VECTOR(3, FLOAT), PRIMARY KEY ("id")) CREATE VECTOR INDEX vi USING HNSW ON "vt" ("emb")`,
+			`SELECT "id" FROM "vt" QUALIFY ROW_NUMBER() OVER (ORDER BY euclidean_distance("emb", [1.0, 0.0, 0.0])) <= 2`,
+		},
+		{
+			`CREATE TABLE VT (id BIGINT, emb VECTOR(3, FLOAT), PRIMARY KEY (id)) CREATE VECTOR INDEX vi USING HNSW ON VT (emb)`,
+			`SELECT id FROM vt QUALIFY ROW_NUMBER() OVER (ORDER BY euclidean_distance(emb, [1.0, 0.0, 0.0])) <= 2`,
+		},
+	} {
+		plan, err := PlanPhysicalForTest(c.sql, c.schema, nil)
+		if err != nil {
+			t.Errorf("%s: %v", c.sql, err)
+			continue
+		}
+		if got := plan.Explain(); !strings.Contains(got, "VectorIndexScan") {
+			t.Errorf("%s: plan %s, want a vector index scan", c.sql, got)
+		}
+	}
+}

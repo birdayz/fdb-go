@@ -4001,10 +4001,6 @@ func tryVectorIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaD
 	if len(cols) == 0 {
 		return nil
 	}
-	upperCols := make([]string, len(cols))
-	for i, col := range cols {
-		upperCols[i] = strings.ToUpper(col)
-	}
 	partitionCount := 0
 	if kwv, ok := idx.RootExpression.(*recordlayer.KeyWithValueExpression); ok {
 		partitionCount = kwv.SplitPoint()
@@ -4032,12 +4028,10 @@ func tryVectorIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaD
 	for i, rt := range rts {
 		rtNames[i] = rt.Name
 	}
+	// Physical names verbatim, as for the primary-scan candidate.
 	var pkCols []string
 	if pk, _, safe := commonCoveredPrimaryKeyColumns(rts); safe {
-		pkCols = make([]string, len(pk))
-		for i, col := range pk {
-			pkCols[i] = strings.ToUpper(col)
-		}
+		pkCols = pk
 	}
 
 	partitionTypes := alignPhysicalTypes(
@@ -4054,7 +4048,7 @@ func tryVectorIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaD
 		return nil
 	}
 	return cascades.NewVectorIndexScanMatchCandidate(
-		idx.Name, rtNames, upperCols, partitionCount, metric,
+		idx.Name, rtNames, cols, partitionCount, metric,
 		baseRowType, idx.IsUnique(), pkCols,
 	).WithPartitionKeyComponentTypes(partitionTypes).WithIndexEngine(engine.String())
 }
