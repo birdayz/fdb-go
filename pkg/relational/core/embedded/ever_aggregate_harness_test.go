@@ -32,12 +32,11 @@ func TestPlanHarness_StarRecordConstructor(t *testing.T) {
 	t.Parallel()
 	ddl := `CREATE SCHEMA TEMPLATE x CREATE TABLE T3 ("id" BIGINT, "integers" INTEGER ARRAY, PRIMARY KEY ("id"))`
 	for q, want := range map[string]string{
-		`SELECT "id", SQ.* FROM T3, (SELECT (*) AS "w" FROM T3."integers") AS SQ`: "Project([{integers: _current}], Explode(field))",
-		`SELECT (T3.*) AS w FROM T3`: "Project([{id: _current.id#0, integers: _current.integers#1}], Scan(T3))",
+		`SELECT "id", SQ.* FROM T3, (SELECT (*) AS "w" FROM T3."integers") AS SQ`: "FlatMap(outer=Scan(T3), inner=Explode(field)) => {id: T3.id#0, w: {integers: Q$BOUND1}}",
+		`SELECT (T3.*) AS w FROM T3`: "Map(Scan(T3), {W: {id: _current.id#0, integers: _current.integers#1}})",
 	} {
-		plan, err := PlanQueryForTest(q, ddl, nil)
-		if err != nil || !strings.Contains(plan, want) {
-			t.Errorf("%s: %s %v", q, plan, err)
+		if got := explainWithResult(t, q, ddl); !strings.HasPrefix(got, want) {
+			t.Errorf("%s: %s", q, got)
 		}
 	}
 }

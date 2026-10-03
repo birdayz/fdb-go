@@ -4,6 +4,7 @@ import (
 	"math"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -43,6 +44,37 @@ func TestPromotedFloatScanBound(t *testing.T) {
 				t.Fatal("scan inversion mutated the semantic predicate")
 			}
 		})
+	}
+}
+
+// A block Select carries its WHERE as a PredicateWithValueAndRanges, which
+// binds through the subsumption binder: a promoted FLOAT column still narrows
+// its constant bound onto the column, as the comparison binder does.
+func TestPromotedFloatBoundNarrowsInBothBinders(t *testing.T) {
+	t.Parallel()
+	rowType := values.NewRecordType("FLOAT_ROW", false, []values.Field{{Name: "F", FieldType: values.NullableFloat, Ordinal: 0}})
+	scan, err := expressions.NewFullUnorderedScanExpression([]string{"FLOAT_ROW"}, rowType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	column := mustMatchField(t, mustMatchQOV(t, candidate.GetAlias(), rowType), "F")
+	ph := predicates.NewPlaceholder(values.NamedCorrelationIdentifier("p0"), column)
+	cp := predicates.NewComparisonPredicate(values.NewPromoteValue(column, values.NullableDouble),
+		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: 1.5, Typ: values.NotNullDouble}})
+	for name, got := range map[string]*predicates.ComparisonRange{
+		"comparison": bindOrientedComparison(cp, ph, candidate.GetAlias()),
+		"subsumption": func() *predicates.ComparisonRange {
+			r, _ := bindSelectSubsumptionComparisonToPlaceholder(cp, ph, []expressions.Quantifier{candidate})
+			return r
+		}(),
+	} {
+		if got == nil || len(got.GetComparisons()) != 1 {
+			t.Fatalf("%s binder: promoted FLOAT equality did not bind the FLOAT column", name)
+		}
+		if bound, ok := values.EvaluateConstant(got.GetComparisons()[0].Operand); !ok || bound != float32(1.5) {
+			t.Fatalf("%s binder: bound %v (%T), want float32 1.5", name, bound, bound)
+		}
 	}
 }
 

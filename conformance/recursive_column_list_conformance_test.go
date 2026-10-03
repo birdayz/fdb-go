@@ -62,7 +62,7 @@ var _ = Describe("RecursiveColumnListConformance", func() {
 		// column answers no row (measured alone), while reading x first fails
 		// as Go does (measured within the whole suite).
 		divergent := map[string][2]string{
-			"r10": {`ERROR XXXXX IllegalArgumentException "Node Reference@N(isExplored=true) is not an element of this graph."`, `OK [BIGINT BIGINT] [NULL NULL] [[2 -1] [5 1]]`},
+			"r10": {`ERROR XXXXX IllegalArgumentException "Node Reference@N(isExplored=true) is not an element of this graph."`, `OK [BIGINT BIGINT] [NULL NULL] [[5 1] [2 -1]]`},
 			"r11": {`ERROR 0AF00 UnableToPlanException "Cascades planner could not plan query"`, `OK [INTEGER BIGINT] [NOT NULL NULL] [[0 1] [1 1] [2 1]]`},
 			"r14": {`ERROR XXXXX IllegalArgumentException "Wrong object type used with protocol message reflection.\nField number: 1, field java type: INT, value type: java.lang.Long\n"`, `ERROR XXXXX "BIGINT value cannot be stored in a column of type INT"`},
 			"r17": {`ERROR XXXXX IllegalArgumentException "Wrong object type used with protocol message reflection.\nField number: 1, field java type: LONG, value type: java.lang.Integer\n"`, `OK [BIGINT] [NULL] [[1] [2]]`},

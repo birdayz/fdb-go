@@ -1671,15 +1671,13 @@ RFC → Graefe + Torvalds ACK → implement → one review lap per milestone.
   derives one (`OrderingProperty.visitInJoinPlan`, `OrderingProperty.java:392`):
   when the inner's binding map holds the IN-bound value as a FIXED binding and
   the source is sorted, that binding becomes directional in the source's
-  direction and the rest of the inner ordering is inherited. (b) The whole
-  requested-ordering arm of `ImplementInJoinRule` is DEAD: it looks the
-  requested part up in `richOrdering.GetBindingMap()` by Value IDENTITY, and the
-  request carries the translator's baked `ID#0` while the ordering advertises
-  the lazy `ID`, so it finds nothing and returns nil for every request. Every
-  IN-source therefore comes from `buildSourcesFromProvided`, which hardcodes
-  `sorted: true` with `reverse` left false — no descending IN-join is ever
-  built. The fix for (b) is the bridge that already exists for exactly this
-  (`RichOrdering.orderingKeyFor` / `CanBridgeOrderingValueRoots`).
+  direction and the rest of the inner ordering is inherited. (b) CLOSED in the RFC-257 migration: the requested-ordering arm of
+  `ImplementInJoinRule` looked the requested part up by Value IDENTITY and so
+  never matched; the enumeration is now a port of Java's
+  `enumerateInSourcesForRequestedOrdering` resolving parts through
+  `RichOrdering.BindingsFor` (`orderingKeyFor`), and the Go-only
+  `buildSourcesFromProvided` arm (sorted claim on a preserve request) is gone.
+  Descending IN-joins are now built; without (a) they still sit under a sort.
   **Prototyped and REVERTED, with the measurement that says why it is its own
   workstream:** fixing (a)+(b) makes the descending IN-join real and eliminates
   the sort on `ORDER BY id DESC, k` — but it moves 16 further corpus plans, 15
@@ -9431,8 +9429,11 @@ covered by the correctness suite and the golden plan diff, not by this table.
   crosses. Closing it is a port of that: matched ordering parts for the zero-prefix match, so the
   data-access rule keeps the ordered full index scan (the zero-prefix skip already exempts a
   scan that satisfies a requested ordering) and the reverse direction, and the Go-only
-  `OrderedIndexScanRule` retires. Until then a sort over a derived table's or CTE's column is
-  never answered by an index, and a DESC over its primary key never by a reverse scan.
+  `OrderedIndexScanRule` retires. The observable half is closed by RFC-257's block select: a
+  derived table's select list is a block of the enclosing query, so the sort reaches the scan
+  and `IndexScan(GA_G, [*])` / `Scan(GA) REVERSE` answer it (`ordering_through_a_projection.yaml`
+  pins them positively). The mechanism below is still open: the Go-only ordered-scan rules are
+  what answer it.
   **That closure was misdiagnosed** (Graefe, r9 delta, measured): the ordering-parts machinery
   IS ported — `adjustMatchForMatchableSort` and `ValueIndexScanMatchCandidate.ComputeMatchedOrderingParts`
   emit unbound columns — and the zero-prefix match carries none because the scan group's ONE
@@ -13350,7 +13351,10 @@ against Java 4.14.2.0 before fixing, then tick with the commit.
 
 ### SQL function calls plan as nested derived tables
 
-- [ ] versions-tests.yamsql (line 619) joins two table functions,
+- [x] Done: a call's arguments are a `range(1)` values box (Java
+  `CompiledSqlFunction.encapsulate`), `DecorrelateValuesRule` inlines them, and
+  versions-tests.yamsql line 619 answers in Java's order.
+  versions-tests.yamsql (line 619) joins two table functions,
   `t3_by_col1('b') a, t4_by_col1('b') b`. Java inlines both bodies and plans
   T3's version index outermost, answering in version order; Go's text expansion
   keeps each call a derived table over a one-row parameter source
@@ -13402,3 +13406,29 @@ against Java 4.14.2.0 before fixing, then tick with the commit.
     Sort (`DdlVisitor.visitIndexAsSelectDefinition`), where `ddl/generator.go`
     looks for a projection root (`topSort`, `checkTop`). Then remove the
     projection-specific rules and the leg-by-alias reads left without producers.
+    Status: the translator emits one block Select (`query/block_rows.go`,
+    read-through of the input row as Java's `rewireQov`); derived and CTE bodies
+    hide their sources from the blocks above them (`scopeBodies`); a computed
+    item without an alias is named by position (`_0`); a SQL function call binds
+    its arguments through a `range(1)` values box that `DecorrelateValuesRule`
+    pushes into the body. ProjectionMergeRule is deleted (no translator projection
+    survives to merge). Every Go suite, the JVM conformance suites and the
+    javacorpus are green on it; the plan-shape golden holds the same 319 plan
+    errors (4 unpinned) as before. Still to do in this step: (1) the top-level
+    query a `LogicalSortExpression` over the block (Java `generateSelect`) and
+    index DDL reading that Sort (`ddl/generator.go` `topSort`/`checkTop`); (2)
+    delete `LogicalProjectionExpression` (the translator still builds one and
+    folds it at once), the projection implementation rules and
+    `RecordQueryProjectionPlan`, whose last producer is the aggregate data-access
+    rule's group-row publication (`publishAggregateResultAsGroupByRow`).
+
+### An EXISTS over a repeated field does not match a multi-valued index
+
+- [ ] versions-tests.yamsql (line 454): `SELECT "__ROW_VERSION", id, col1 FROM t4
+  WHERE EXISTS (SELECT 1 FROM t4.col4 WHERE col4 = 3)`. Java matches the
+  existential over the exploded `col4` against the multi-valued index
+  `T4_COL4_VERSION` (`ISCAN(T4_COL4_VERSION [EQUALS …])`) and answers in version
+  order; Go plans `FlatMap(Scan(T4), FirstOrDefault(Explode))` and answers in
+  primary-key order. Port Java's matching of an existential Explode against a
+  value index over the repeated field. Booked in `javacorpus/gaps.go` as
+  `conformance:scan-choice-order`.

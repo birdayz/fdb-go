@@ -1330,15 +1330,16 @@ type comparisonOrientation struct {
 // the commuted orientation is added only for a binary, commutable operator (the
 // inner-leg join probe `outer.fk = inner.pk`, and the literal-on-the-left
 // `5 = col`). Unary operators (IS [NOT] NULL) and non-commutable ones (IN,
-// STARTS_WITH, LIKE) yield only the as-written orientation.
+// STARTS_WITH, LIKE) yield only the as-written orientation. Each orientation is
+// a scan bound, so a promoted FLOAT column's constant bound is narrowed onto it.
 func comparisonOrientations(cp *predicates.ComparisonPredicate) []comparisonOrientation {
-	out := []comparisonOrientation{{column: cp.Operand, comparison: cp.Comparison}}
+	out := []comparisonOrientation{narrowPromotedFloatScanBound(comparisonOrientation{column: cp.Operand, comparison: cp.Comparison})}
 	if cp.Comparison.Operand != nil {
 		if flipped, ok := cp.Comparison.Type.Commute(); ok {
 			commuted := cp.Comparison // copy preserves Escape and the other Comparison fields
 			commuted.Type = flipped
 			commuted.Operand = cp.Operand
-			out = append(out, comparisonOrientation{column: cp.Comparison.Operand, comparison: commuted})
+			out = append(out, narrowPromotedFloatScanBound(comparisonOrientation{column: cp.Comparison.Operand, comparison: commuted}))
 		}
 	}
 	return out
@@ -1369,7 +1370,6 @@ func bindOrientedComparison(
 	sourceAlias values.CorrelationIdentifier,
 ) *predicates.ComparisonRange {
 	for _, orient := range comparisonOrientations(cp) {
-		orient = narrowPromotedFloatScanBound(orient)
 		if !isSargableComparisonForMatch(orient.comparison.Type) {
 			continue
 		}

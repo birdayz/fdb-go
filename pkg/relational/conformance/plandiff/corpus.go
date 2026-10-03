@@ -18083,15 +18083,22 @@ func SeedRunCorpus() []RunQuery {
 			// accepts the duplicate FROM (per-attribute a.qid → the q leg,
 			// the only leg carrying qid) and the UNCORRELATED EXISTS (always
 			// true — p is non-empty), so it answers the full cross product's
-			// q values: 6 rows, qid ∈ {5,7,9} each twice. PARITY — Go matches
-			// (the identity-FlatMap pass-through flows the gated outer's
-			// positional row so the minted-dup upper resolves positionally);
-			// Go previously declined this valid query (a mislabeled reach
-			// gap, not a Java divergence).
+			// q values: 6 rows, qid ∈ {5,7,9} each twice. Go answers the same
+			// rows in its own nesting order (Divergence below).
 			Name:           "dup_from_alias_leg_independent_exists",
 			SchemaTemplate: "CREATE TABLE T_DUP_EIP (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_EIQ (qid BIGINT, PRIMARY KEY (qid))",
 			SetupSqls:      []string{"INSERT INTO T_DUP_EIP VALUES (1, 10), (2, 20)", "INSERT INTO T_DUP_EIQ VALUES (5), (7), (9)"},
 			Query:          "SELECT a.qid FROM T_DUP_EIP AS a, T_DUP_EIQ AS a WHERE EXISTS (SELECT 1 FROM T_DUP_EIP)",
+			Divergence: &Divergence{
+				Reason: "ORDER ONLY — identical six-row multiset on both engines, and the query has no ORDER BY. " +
+					"The two nestings of the unconstrained comma join tie on cost and each engine breaks the tie " +
+					"with its own plan hash; see dup_from_alias_shadowing_exists, and the live pin beside its sibling " +
+					"shapes in conformance/dup_alias_exists_order_probe_test.go.",
+				Direction: DivergenceUnorderedRowOrderDiffers,
+				GoExpectedRows: [][]any{
+					{float64(5)}, {float64(5)}, {float64(7)}, {float64(7)}, {float64(9)}, {float64(9)},
+				},
+			},
 		},
 		{
 			// The SHADOWING variant: the exists subquery's own `T_DUP_SHP AS a`

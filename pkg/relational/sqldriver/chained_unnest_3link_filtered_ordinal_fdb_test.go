@@ -256,14 +256,9 @@ func TestFDB_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 	q6 := `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y", T4 AS "T4C" WHERE T4."ID" = "Y"`
 	ex6, r6 := run("buried_2chain_straddle", q6)
 	wantRows("buried_2chain_straddle", r6, []string{"Y=1", "Y=1", "Y=1"}, q6)
-	// POSITIONAL even on the buried path: the output column bakes to an ORDINAL
-	// slot (`Y.Y#0`, the ofOrdinal) over nested FlatMap-over-Explode links — a
-	// name-model row would render `Y.Y` with no `#N`. (Distinct from the
-	// chained-ordinal DISPATCH the 5 cases above take; the buried path is still
-	// positional, just a different producer.)
-	if !strings.Contains(ex6, "Y#") {
-		t.Fatalf("buried_2chain_straddle must bake the output POSITIONALLY (Y#N), not name-model; plan=%s", ex6)
-	}
+	// The output column is the outer FlatMap's own result value (Java's
+	// FLATMAP ... RETURN), which EXPLAIN does not render; every field read is a
+	// resolved access, so the rows above are what pin the slot it reads.
 	if !strings.Contains(ex6, "FlatMap(outer=") || !strings.Contains(ex6, "Explode(field)") {
 		t.Fatalf("buried_2chain_straddle must gather via FlatMap-over-Explode; plan=%s", ex6)
 	}

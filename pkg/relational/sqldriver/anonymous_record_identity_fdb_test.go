@@ -233,7 +233,7 @@ func TestFDB_OneDeclaredNameOverTwoShapesIsRefused(t *testing.T) {
 	}
 }
 
-// duplicateNameJoinQuery is the shape whose ordinal row names `ID` twice: a
+// duplicateNameJoinQuery is the shape whose result row names `ID` twice: a
 // FULL OUTER JOIN over legs that both carry it. The join predicate is
 // deliberately `a.id + 1 = c.id` over ids 1 and 2, so the two `ID` slots hold
 // DIFFERENT values and both outer sides null-extend — with the slots equal a
@@ -308,18 +308,23 @@ func TestFDB_ADuplicateNameJoinPreservesComputedStructs(t *testing.T) {
 	defer rows.Close()
 	var got []string
 	for rows.Next() {
-		var aID, cID sql.NullInt64
+		var aID, bid, cID sql.NullInt64
+		var s sql.NullString
 		var foo sql.NullBool
-		if err := rows.Scan(&aID, &cID, &foo); err != nil {
+		if err := rows.Scan(&aID, &s, &bid, &foo, &cID); err != nil {
 			t.Fatalf("scan: %v — every slot of an unstamped row must still arrive", err)
 		}
-		got = append(got, fmt.Sprintf("(%v,%v,%v)", nullInt(aID), nullInt(cID), nullBool(foo)))
+		str := "NULL"
+		if s.Valid {
+			str = s.String
+		}
+		got = append(got, fmt.Sprintf("(%v,%v,%v,%v,%v)", nullInt(aID), str, nullInt(bid), nullBool(foo), nullInt(cID)))
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("rows: %v", err)
 	}
 	sort.Strings(got)
-	want := []string{"(1,2,true)", "(2,NULL,true)", "(NULL,1,NULL)"}
+	want := []string{"(1,x,1,true,2)", "(2,y,2,true,NULL)", "(NULL,NULL,NULL,NULL,1)"}
 	sort.Strings(want)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("outer-join rows = %v, want %v: the two `ID` slots hold different values and both "+
@@ -342,18 +347,20 @@ func nullBool(v sql.NullBool) string {
 }
 
 // These queries vary duplicate names and derived-table wrapping independently.
-// Computed RR and stored R do not introduce a second duplicate name, so renaming
-// c_md.ID to CID removes the only duplicate without changing either struct.
+// Each result row carries the computed RR and stored R first, then one id from
+// each outer side. Computed RR and stored R do not introduce a second duplicate
+// name, so naming the c_md id CID removes the only duplicate without changing
+// either struct.
 const witnessWithRepeatedID = "WITH d AS (SELECT id AS bid, STRUCT foo (id AS x, v AS y) AS rr FROM b_md) " +
-	"SELECT d.rr, s.r FROM s_md AS s JOIN d ON s.id = d.bid FULL OUTER JOIN c_md AS c ON s.id + 1 = c.id"
+	"SELECT d.rr, s.r, s.id AS id, c.id AS id FROM s_md AS s JOIN d ON s.id = d.bid FULL OUTER JOIN c_md AS c ON s.id + 1 = c.id"
 
 const controlWithoutRepeatedID = "WITH d AS (SELECT id AS bid, STRUCT foo (id AS x, v AS y) AS rr FROM b_md) " +
-	"SELECT d.rr, s.r FROM s_md AS s JOIN d ON s.id = d.bid FULL OUTER JOIN (SELECT id AS cid FROM c_md) AS c ON s.id + 1 = c.cid"
+	"SELECT d.rr, s.r, s.id AS id, c.cid AS cid FROM s_md AS s JOIN d ON s.id = d.bid FULL OUTER JOIN (SELECT id AS cid FROM c_md) AS c ON s.id + 1 = c.cid"
 
 // wrapperKeptRepeatedID keeps the derived-table wrapper but restores the
 // duplicate ID, isolating the name from the extra projection boundary.
 const wrapperKeptRepeatedID = "WITH d AS (SELECT id AS bid, STRUCT foo (id AS x, v AS y) AS rr FROM b_md) " +
-	"SELECT d.rr, s.r FROM s_md AS s JOIN d ON s.id = d.bid FULL OUTER JOIN (SELECT id AS id FROM c_md) AS c ON s.id + 1 = c.id"
+	"SELECT d.rr, s.r, s.id AS id, c.id AS id FROM s_md AS s JOIN d ON s.id = d.bid FULL OUTER JOIN (SELECT id AS id FROM c_md) AS c ON s.id + 1 = c.id"
 
 // computedAndStoredRow returns the computed struct and the stored struct column
 // of the one row that carries both.
@@ -371,8 +378,8 @@ func computedAndStoredRow(t *testing.T, db *sql.DB, ctx context.Context, query s
 	defer rows.Close()
 	var found int
 	for rows.Next() {
-		var computedValue, storedValue any
-		if err := rows.Scan(&computedValue, &storedValue); err != nil {
+		var computedValue, storedValue, leftID, rightID any
+		if err := rows.Scan(&computedValue, &storedValue, &leftID, &rightID); err != nil {
 			t.Fatalf("%s: scan: %v", query, err)
 		}
 		if computedValue != nil && storedValue != nil {

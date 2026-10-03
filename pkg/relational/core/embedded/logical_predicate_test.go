@@ -82,11 +82,12 @@ func TestSingleSourceOnOnlyCTEScopeBindsEveryClauseToTheProjectedRow(t *testing.
 		t.Fatalf("VisitQuery: %v", err)
 	}
 
-	wantCorrelation := values.NamedCorrelationIdentifier("ORDER")
+	// The CTE reference binds under a minted identity; what must hold is that
+	// every clause reads one and the same exact one-field row through it.
 	wantType := values.NewRecordType("", false, []values.Field{{
 		Name: "ORDER_ID", FieldType: values.NullableLong,
 	}})
-	found := map[string]bool{}
+	found := map[string]values.CorrelationIdentifier{}
 	inspect := func(site string, value values.Value) {
 		if value == nil {
 			return
@@ -97,18 +98,25 @@ func TestSingleSourceOnOnlyCTEScopeBindsEveryClauseToTheProjectedRow(t *testing.
 				return true
 			}
 			root, ok := values.AsQuantifiedObjectValue(field.ChildValue())
-			if !ok || root.Correlation() != wantCorrelation {
+			if !ok {
 				return true
 			}
+			if row, isRow := root.FlowedType().(*values.RecordType); isRow && len(row.Fields) > 1 {
+				for _, f := range row.Fields {
+					if f.Name == "ORDER_ID" {
+						t.Fatalf("%s reads ORDER_ID through %s %s, a wider row than the projected CTE row %s",
+							site, root.Correlation(), root.FlowedType(), wantType)
+					}
+				}
+			}
 			if !root.FlowedType().Equals(wantType) {
-				t.Fatalf("%s ORDER root type = %s, want exact projected CTE row %s",
-					site, root.FlowedType(), wantType)
+				return true
 			}
 			ordinals := field.Path().Ordinals()
 			if len(ordinals) != 1 || ordinals[0] != 0 {
 				t.Fatalf("%s ORDER_ID path = %v, want [0]", site, ordinals)
 			}
-			found[site] = true
+			found[site] = root.Correlation()
 			return false
 		})
 	}
@@ -144,8 +152,11 @@ func TestSingleSourceOnOnlyCTEScopeBindsEveryClauseToTheProjectedRow(t *testing.
 	}
 	walk(op)
 	for _, site := range []string{"where", "projection", "sort"} {
-		if !found[site] {
+		if found[site].IsZero() {
 			t.Fatalf("no exact projected ORDER root found at %s", site)
+		}
+		if found[site] != found["where"] {
+			t.Fatalf("%s reads the CTE row through %s, WHERE through %s", site, found[site], found["where"])
 		}
 	}
 }

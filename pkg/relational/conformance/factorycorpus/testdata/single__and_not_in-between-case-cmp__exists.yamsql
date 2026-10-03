@@ -112,8 +112,8 @@ test_block:
 # blessing: metamorphic-tlp-only
 # oracles: tlp
 # feature-vector: shape=single;idx=B,E,S;proj=n1;where=and(!in.in,between.ge,cmp.eq,cmp.eq,case.le);exists=eq.bare;order=asc+asc
-# plan-shape: fd502fc9473b4f02
-# dedup-key: 9de5ce1869a80b23
+# plan-shape: 4484da6e61813dea
+# dedup-key: 1b4d09078a35a553
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 243 -seeds 1 -date 2026-07-31 -out <dir>
 ---
 schema_template: |-
@@ -198,8 +198,8 @@ test_block:
 # blessing: metamorphic-tlp-only
 # oracles: tlp
 # feature-vector: shape=single;idx=B,E,S;proj=n5;where=and(!in.in,between.ge,cmp.eq,cmp.eq,case.le);exists=eq.bare;order=asc+asc
-# plan-shape: fd502fc9473b4f02
-# dedup-key: 7b2d91a30c5c6256
+# plan-shape: 4484da6e61813dea
+# dedup-key: c3062ad7fd1b67d4
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 243 -seeds 1 -date 2026-07-31 -out <dir>
 ---
 schema_template: |-

@@ -167,7 +167,10 @@ CREATE INDEX idx_b ON T_AB (b)`
 	// ORDER BY there is no ordering for a union to satisfy, the IN-JOIN shape is
 	// the one planned, and the relink stays under test. (Measured: the same query
 	// WITH ORDER BY plans InUnion(IndexScan(IDX_A, [=]), bindings=1, ASC).)
-	const q = "SELECT id, a FROM t_ab WHERE a IN (1,2)"
+	// SELECT *, deliberately: a projected list is the block's result, so the
+	// InJoin ranges over its Map (Java's INJOIN { ISCAN | MAP }) and no fetch
+	// ever sits directly under it.
+	const q = "SELECT * FROM t_ab WHERE a IN (1,2)"
 	plan, err := PlanQueryForTest(q, schema, nil)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
@@ -175,16 +178,10 @@ CREATE INDEX idx_b ON T_AB (b)`
 	if strings.Contains(plan, "<nil>") {
 		t.Fatalf("relink left a nil inner: %s", plan)
 	}
-	// The exact nesting still matters: the InJoin must HOLD the index scan
-	// directly, which is what proves the relink ran. `InJoin(` alone would also
-	// match the un-pushed shape.
-	//
-	// The enclosing `Fetch(` is gone and its absence is not a weakening: the
-	// projection (id, a) is covered by idx_a plus the primary key, so
-	// MergeProjectionAndFetchRule elides the fetch and leaves a COVERING scan
-	// under the InJoin. Requiring `Fetch(` here would now assert the absence of a
-	// correct optimization rather than the presence of the relink.
-	if !strings.Contains(plan, "InJoin(IndexScan(IDX_A") {
-		t.Errorf("want InJoin(IndexScan(IDX_A…)) with real children, got: %s", plan)
+	// The exact nesting matters: the fetch is pulled above the InJoin and the
+	// InJoin HOLDS the index scan directly, which is what proves the relink
+	// ran. `InJoin(` alone would also match the un-pushed shape.
+	if !strings.Contains(plan, "Fetch(InJoin(IndexScan(IDX_A") {
+		t.Errorf("want Fetch(InJoin(IndexScan(IDX_A…))) with real children, got: %s", plan)
 	}
 }

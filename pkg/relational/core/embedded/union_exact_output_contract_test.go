@@ -99,12 +99,13 @@ func TestUnionExactOutputContract_NormalizesNamesByOrdinal(t *testing.T) {
 	assertUnionRow(t, union, []string{"ID", "V"}, []values.Type{values.NullableLong, values.NullableLong})
 
 	for leg, quantifier := range union.GetQuantifiers() {
-		projection, ok := quantifier.GetRangesOver().Get().(*expressions.LogicalProjectionExpression)
+		block, ok := quantifier.GetRangesOver().Get().(*expressions.SelectExpression)
 		if !ok {
-			t.Fatalf("leg %d = %T, want exact ordinal normalization projection", leg, quantifier.GetRangesOver().Get())
+			t.Fatalf("leg %d = %T, want exact ordinal normalization select", leg, quantifier.GetRangesOver().Get())
 		}
-		if got := projection.GetOutputNames(); len(got) != 2 || got[0] != "ID" || got[1] != "V" {
-			t.Fatalf("leg %d output names = %v, want [ID V]", leg, got)
+		row, _ := block.GetResultValue().Type().(*values.RecordType)
+		if row == nil || len(row.Fields) != 2 || row.Fields[0].Name != "ID" || row.Fields[1].Name != "V" {
+			t.Fatalf("leg %d output row = %v, want [ID V]", leg, block.GetResultValue().Type())
 		}
 	}
 	if _, _, err := planWithOptions(t,
@@ -126,14 +127,17 @@ func TestUnionExactOutputContract_WidensNotNullLiteral(t *testing.T) {
 	union := findTranslatedUnion(t, ref)
 	assertUnionRow(t, union, []string{"V"}, []values.Type{values.NullableLong})
 
-	second := union.GetQuantifiers()[1].GetRangesOver().Get().(*expressions.LogicalProjectionExpression)
-	projected := second.GetProjectedValues()
-	if len(projected) != 1 {
-		t.Fatalf("literal leg projected values = %v, want one", projected)
+	second, ok := union.GetQuantifiers()[1].GetRangesOver().Get().(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("literal leg = %T, want a select", union.GetQuantifiers()[1].GetRangesOver().Get())
 	}
-	promoted, ok := projected[0].(*values.PromoteValue)
+	rc, ok := second.GetResultValue().(*values.RecordConstructorValue)
+	if !ok || len(rc.Fields) != 1 {
+		t.Fatalf("literal leg result = %v, want one column", second.GetResultValue())
+	}
+	promoted, ok := rc.Fields[0].Value.(*values.PromoteValue)
 	if !ok || !promoted.Type().Equals(values.NullableLong) || !promoted.Child.Type().Equals(values.NotNullInt) {
-		t.Fatalf("literal widening = %T %v, want INT -> nullable LONG promotion", projected[0], projected[0])
+		t.Fatalf("literal widening = %T %v, want INT -> nullable LONG promotion", rc.Fields[0].Value, rc.Fields[0].Value)
 	}
 	if _, _, err := planWithOptions(t,
 		`SELECT v FROM a UNION ALL SELECT 99 FROM b`, unionExactOutputDDL, nil); err != nil {

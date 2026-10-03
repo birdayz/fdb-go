@@ -547,8 +547,8 @@ func TestTranslateProject(t *testing.T) {
 	if ref == nil {
 		t.Fatal("expected non-nil reference")
 	}
-	if _, ok := ref.Members()[0].(*expressions.LogicalProjectionExpression); !ok {
-		t.Fatalf("expected LogicalProjectionExpression, got %T", ref.Members()[0])
+	if _, ok := ref.Members()[0].(*expressions.SelectExpression); !ok {
+		t.Fatalf("expected the block SelectExpression, got %T", ref.Members()[0])
 	}
 }
 
@@ -603,15 +603,13 @@ func TestExactProjectionForLogicalProjectDoesNotLeakActiveCTEQualifier(t *testin
 		"S": logical.NewScan("T", ""),
 	})}
 	expr := translator.exactProjectionForLogicalProject([]values.Value{id}, project, inner)
-	proj, ok := expr.(*expressions.LogicalProjectionExpression)
+	block, ok := expr.(*expressions.SelectExpression)
 	if !ok {
-		t.Fatalf("projection = %T, want LogicalProjectionExpression", expr)
+		t.Fatalf("projection = %T, want the block SelectExpression", expr)
 	}
-	if got := proj.GetOutputNames(); len(got) != 1 || got[0] != "ID" {
-		t.Fatalf("SQL-boundary output names = %v, want [ID]", got)
-	}
-	if got := proj.GetAliases(); len(got) != 0 {
-		t.Fatalf("projection aliases = %v, want none", got)
+	output, ok := block.GetResultValue().Type().(*values.RecordType)
+	if !ok || len(output.Fields) != 1 || output.Fields[0].Name != "ID" {
+		t.Fatalf("SQL-boundary output row = %v, want [ID]", block.GetResultValue().Type())
 	}
 	// cteScope controls resolution of the child source, not the result label.
 	// Re-introducing a source-qualified output override here leaks the internal
@@ -958,16 +956,16 @@ func TestTranslateCTEShadowsTableName(t *testing.T) {
 	if ref == nil {
 		t.Fatal("expected non-nil reference when CTE name shadows table name")
 	}
-	proj, ok := ref.Members()[0].(*expressions.LogicalProjectionExpression)
+	block, ok := ref.Members()[0].(*expressions.SelectExpression)
 	if !ok {
-		t.Fatalf("expected LogicalProjectionExpression, got %T", ref.Members()[0])
+		t.Fatalf("expected the main block SelectExpression, got %T", ref.Members()[0])
 	}
-	innerRef := proj.GetQuantifiers()[0].GetRangesOver()
-	innerProj, ok := innerRef.Members()[0].(*expressions.LogicalProjectionExpression)
+	innerRef := block.GetQuantifiers()[0].GetRangesOver()
+	innerBlock, ok := innerRef.Members()[0].(*expressions.SelectExpression)
 	if !ok {
-		t.Fatalf("expected inlined projection from CTE body, got %T", innerRef.Members()[0])
+		t.Fatalf("expected the inlined CTE body block, got %T", innerRef.Members()[0])
 	}
-	innerScan := innerProj.GetQuantifiers()[0].GetRangesOver().Members()[0]
+	innerScan := innerBlock.GetQuantifiers()[0].GetRangesOver().Members()[0]
 	if _, ok := innerScan.(*expressions.FullUnorderedScanExpression); !ok {
 		t.Fatalf("expected FullUnorderedScanExpression at leaf, got %T", innerScan)
 	}

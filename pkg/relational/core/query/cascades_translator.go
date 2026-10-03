@@ -85,6 +85,28 @@ func translateWithOwnedInputs(op logical.LogicalOperator, md *recordlayer.Record
 		cteColumnsScope: make(map[*logical.CTEProducer][]values.Field),
 	}
 	ref := t.translateRef(op)
+	if ref != nil && t.translateErr == nil {
+		bodies := t.scopeBodies()
+		bound, err := readSiblingsThroughRows(ref, bodies)
+		if err != nil {
+			return nil, t.scalarSubqueries, api.NewErrorf(api.ErrCodeUnsupportedQuery,
+				"a source buried in a join cannot be read through it: %v", err)
+		}
+		// Nothing downstream binds a buried source: a read that survived would
+		// evaluate NULL at execution and drop or null-extend rows silently. The
+		// RFC-141 guards name the unsupported EXISTS shapes among such reads.
+		if violations := buriedReadViolations(bound, bodies); len(violations) > 0 {
+			if existsErr := CheckProjectedExistsFolded(bound); existsErr != nil {
+				return nil, t.scalarSubqueries, api.NewError(api.ErrCodeUnsupportedQuery, existsErr.Error())
+			}
+			if buriedErr := CheckBuriedExistentialPredicate(bound); buriedErr != nil {
+				return nil, t.scalarSubqueries, api.NewError(api.ErrCodeUnsupportedQuery, buriedErr.Error())
+			}
+			return nil, t.scalarSubqueries, api.NewErrorf(api.ErrCodeInternalError,
+				"translated graph reads a buried source: %s", strings.Join(violations, "; "))
+		}
+		ref = bound
+	}
 	return ref, t.scalarSubqueries, t.translateErr
 }
 
@@ -291,6 +313,43 @@ func (t *cascadesTranslator) exactFilter(
 	return filter
 }
 
+// scopeBodies is every derived-table and CTE body translated so far; a body is
+// translated before any block reading it.
+func (t *cascadesTranslator) scopeBodies() scopeBodies {
+	bodies := scopeBodies{}
+	for _, ref := range t.producerRefs {
+		for _, member := range ref.AllMembers() {
+			bodies[member] = true
+		}
+	}
+	return bodies
+}
+
+// blockSelect states a SELECT list as Java's query block does
+// (LogicalOperator.generateSimpleSelect): one SelectExpression owning the
+// block's FROM quantifiers and WHERE predicates, whose result value is the
+// projected row. Go builds the WHERE as a filter and a join as its own select
+// below the list; both fold in here when the list reads what they own.
+func (t *cascadesTranslator) blockSelect(projection expressions.RelationalExpression) expressions.RelationalExpression {
+	proj, ok := projection.(*expressions.LogicalProjectionExpression)
+	if !ok || proj == nil {
+		return projection
+	}
+	sel, err := foldBlock(proj, t.scopeBodies())
+	if err != nil {
+		// A projected EXISTS whose existential this block does not own leaves
+		// that read unbound; name the RFC-141 shape rather than the read.
+		if existsErr := CheckProjectedExistsFolded(expressions.InitialOf(proj)); existsErr != nil {
+			t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery, existsErr.Error()))
+			return nil
+		}
+		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
+			"query block has no exact result row: %v", err))
+		return nil
+	}
+	return sel
+}
+
 func (t *cascadesTranslator) exactProjectionWithOutputSchema(
 	projected []values.Value,
 	aliases []string,
@@ -391,10 +450,19 @@ func exactLogicalProjectionOutputNames(p *logical.LogicalProject, projected []va
 	return names, nil
 }
 
+// isColumnOrRowReference reports a SELECT item named after what it reads: a
+// column or a whole row.
+func isColumnOrRowReference(v values.Value) bool {
+	if _, isColumn := values.AsFieldValue(v); isColumn {
+		return true
+	}
+	_, isRow := values.AsQuantifiedObjectValue(v)
+	return isRow
+}
+
 // exactLogicalProjectionSlotName is shared by logical row publication and
 // Cascades projection construction. Published aliases and Value slot names,
-// not the executor keys in Projections, determine the physical row. The SQL
-// frontend supplies ordinal aliases for anonymous computed outputs.
+// not the executor keys in Projections, determine the physical row.
 func exactLogicalProjectionSlotName(p *logical.LogicalProject, i int, projectedValue values.Value) string {
 	alias := ""
 	if i < len(p.Aliases) {
@@ -403,6 +471,11 @@ func exactLogicalProjectionSlotName(p *logical.LogicalProject, i int, projectedV
 	// values.ProjectionSlotName is this rule; it is named there so the
 	// consumer that re-derives the natural schema (the former column derivation)
 	// cannot drift from it.
+	if alias == "" && !isColumnOrRowReference(projectedValue) {
+		// Java leaves a computed item unnamed and its record type names the
+		// field by position (Type.Record.normalizeFields).
+		return values.OrdinalFieldName(i)
+	}
 	name := values.ProjectionSlotName(projectedValue, alias)
 	if alias == "" {
 		// A COLUMN REFERENCE takes the DISPLAY name. The dotted rendering
@@ -460,49 +533,8 @@ func (t *cascadesTranslator) exactProjectionForLogicalProject(
 			"projection has no exact logical output schema: %v", err))
 		return nil
 	}
-	projection := t.exactProjectionWithOutputSchema(
-		projected, p.Aliases, p.AliasMinted, p.AliasSources, outputNames, inner)
-	typed, ok := projection.(*expressions.LogicalProjectionExpression)
-	if !ok || typed == nil {
-		return projection
-	}
-
-	// A named WITH-CTE remains registered while its Main query is translated.
-	// Its authored qualifier is a load-bearing LOGICAL discriminator: without
-	// C.ID, a projection over the CTE can coalesce with an isomorphic derived
-	// projection and later select a child carrying a different exact row. It is
-	// not, however, the SQL result label — unaliased `SELECT C.ID` publishes the
-	// bare leaf ID. Keep those two contracts separate: outputNames above shape
-	// the emitted row, while authoredNames below participate only in memo
-	// identity. Resolve against p.Input as well as cteScope so a real table alias
-	// shadowing an unused same-named CTE is not misclassified.
-	authoredNames := slices.Clone(outputNames)
-	hasAuthoredOverride := false
-	for i := range authoredNames {
-		if i < len(p.Aliases) && p.Aliases[i] != "" {
-			continue
-		}
-		ref := projectionRefAt(p, i)
-		if !ref.Present || !ref.Qualified {
-			continue
-		}
-		scan := logical.FindVisibleScan(p.Input, ref.Qualifier)
-		if scan == nil || logical.ResolveScan(scan, t.cteScope) == nil {
-			continue
-		}
-		authoredNames[i] = strings.ToUpper(ref.Qualifier) + "." + ref.Bare
-		hasAuthoredOverride = authoredNames[i] != outputNames[i] || hasAuthoredOverride
-	}
-	if !hasAuthoredOverride {
-		return typed
-	}
-	withIdentity, identityErr := typed.WithAuthoredOutputIdentity(authoredNames)
-	if identityErr != nil {
-		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
-			"projection has no exact authored output identity: %v", identityErr))
-		return nil
-	}
-	return withIdentity
+	return t.blockSelect(t.exactProjectionWithOutputSchema(
+		projected, p.Aliases, p.AliasMinted, p.AliasSources, outputNames, inner))
 }
 
 func (t *cascadesTranslator) exactSort(
@@ -4889,8 +4921,8 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 				"projected-EXISTS cleanup has no exact logical output schema: %v", outputErr))
 			return nil
 		}
-		expr = t.exactProjectionWithOutputSchema(
-			projVals, projAliases, projMinted, projSources, outputNames, cleanupQ)
+		expr = t.blockSelect(t.exactProjectionWithOutputSchema(
+			projVals, projAliases, projMinted, projSources, outputNames, cleanupQ))
 		if expr == nil {
 			return nil
 		}
@@ -5848,7 +5880,7 @@ func (t *cascadesTranslator) normalizeUnionLeg(
 			projection.GetResultValue().Type(), commonRow))
 		return nil
 	}
-	return projection
+	return t.blockSelect(projection)
 }
 
 // exactUnionSlotValue injects the implicit promotion to a UNION column's
@@ -6300,7 +6332,7 @@ func expressionOutputColumns(expr expressions.RelationalExpression) []string {
 		case *expressions.LogicalProjectionExpression:
 			return projectionOutputColumnNames(e)
 		case *expressions.GroupByExpression:
-			return expressions.GroupByOutputColumnNames(e.GetGroupingKeys(), e.GetAggregates())
+			return e.OutputColumnNames()
 		case *expressions.SelectExpression:
 			// A SELECT whose result value is a RECORD CONSTRUCTOR flows one
 			// output column per RC field, named by the field (the RC is the
@@ -6513,7 +6545,7 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 	sortGB := underlyingGroupBy(innerRef.Get())
 	var sortGBNames []string
 	if sortGB != nil {
-		sortGBNames = expressions.GroupByOutputColumnNames(sortGB.GetGroupingKeys(), sortGB.GetAggregates())
+		sortGBNames = sortGB.OutputColumnNames()
 	}
 	// A sort NEVER sits over the grouped select's reshaping projection: both
 	// builders defer that projection PAST the sort (`postSortStripProj`), which
@@ -6948,7 +6980,7 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 				"post-aggregate projection has no GroupBy output row"))
 			return nil
 		}
-		if names := expressions.GroupByOutputColumnNames(gb.GetGroupingKeys(), gb.GetAggregates()); len(names) != nativeWidth {
+		if names := gb.OutputColumnNames(); len(names) != nativeWidth {
 			t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
 				"post-aggregate projection disagrees with the GroupBy output width"))
 			return nil
@@ -7677,7 +7709,7 @@ func (t *cascadesTranslator) translateFilterWithCorrelatedScalar(f *logical.Logi
 			"correlated scalar WHERE cleanup has no exact output row: %v", err))
 		return nil
 	}
-	return projection
+	return t.blockSelect(projection)
 }
 
 func (t *cascadesTranslator) translateDistinct(d *logical.LogicalDistinct) expressions.RelationalExpression {
@@ -9801,7 +9833,7 @@ func (t *cascadesTranslator) normalizeLegToOutputColumns(
 			"recursive CTE normalization has no exact result row: %v", err))
 		return nil
 	}
-	return projection
+	return t.blockSelect(projection)
 }
 
 // normalizeRecursiveLegToOutputRow re-emits one recursive-CTE leg under the
@@ -9853,7 +9885,7 @@ func (t *cascadesTranslator) normalizeRecursiveLegToOutputRow(
 			projection.GetResultValue().Type(), outputRow))
 		return nil
 	}
-	return projection
+	return t.blockSelect(projection)
 }
 
 func (t *cascadesTranslator) translateInsert(ins *logical.LogicalInsert) expressions.RelationalExpression {

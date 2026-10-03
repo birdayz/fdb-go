@@ -225,7 +225,9 @@ func TestFDB_CaseParenthesizedConditionPlanShape(t *testing.T) {
 	} {
 		q := fmt.Sprintf("SELECT CASE WHEN %s THEN 1 ELSE 0 END FROM t", cond)
 		plan := w.Explain(q)
-		if strings.Contains(plan, "{_0:") {
+		// The Map names its own output {_0: …}; a wrapped condition shows inside
+		// the CASE as WHEN({…}).
+		if strings.Contains(plan, "WHEN({") || !strings.Contains(plan, "CASE(WHEN(predicate,") {
 			t.Errorf("the condition of a searched CASE compiled to a one-field RECORD wrapping the "+
 				"predicate instead of the predicate itself, so it is tested for equality with TRUE "+
 				"and can never match:\n  cond: %s\n  plan: %s", cond, plan)

@@ -295,6 +295,8 @@ type testPartialMatch struct {
 	candidate    MatchCandidate
 	matchInfo    MatchInfo
 	candidateRef *expressions.Reference
+	// queryExpression is the member of the query reference the match is for.
+	queryExpression expressions.RelationalExpression
 }
 
 func (pm *testPartialMatch) GetMatchCandidate() MatchCandidate   { return pm.candidate }
@@ -302,6 +304,9 @@ func (pm *testPartialMatch) GetMatchInfo() MatchInfo             { return pm.mat
 func (pm *testPartialMatch) GetBoundAliasMap() *AliasMap         { return EmptyAliasMap() }
 func (pm *testPartialMatch) GetQueryRef() *expressions.Reference { return nil }
 func (pm *testPartialMatch) GetQueryExpression() expressions.RelationalExpression {
+	if pm != nil && pm.queryExpression != nil {
+		return pm.queryExpression
+	}
 	if pm == nil || pm.matchInfo == nil {
 		return nil
 	}

@@ -38,6 +38,8 @@ type fromItemCase struct {
 	code api.ErrorCode
 	// contains, when set, must appear in the plan.
 	contains string
+	// result, when set, is the plan's root result value (explainWithResult).
+	result string
 }
 
 func runFromItemCases(t *testing.T, cases []fromItemCase) {
@@ -52,6 +54,11 @@ func runFromItemCases(t *testing.T, cases []fromItemCase) {
 				}
 				if tc.contains != "" && !strings.Contains(plan, tc.contains) {
 					t.Fatalf("plan lacks %q:\n%s", tc.contains, plan)
+				}
+				if tc.result != "" {
+					if got := explainWithResult(t, tc.sql, fromItemSchema); !strings.HasSuffix(got, " => "+tc.result) {
+						t.Fatalf("plan result is not %s:\n%s", tc.result, got)
+					}
 				}
 				return
 			}
@@ -252,22 +259,26 @@ func TestLateralLegsCorrelatedToOtherLegs(t *testing.T) {
 	runFromItemCases(t, []fromItemCase{
 		{
 			sql:      `SELECT e.k FROM w, (SELECT v AS k FROM w.arr AS v) AS d, (SELECT d.k AS k FROM h) AS e`,
-			contains: "FlatMap(outer=Scan(W), inner=FlatMap(outer=Project([_current], Explode(field)), inner=Project([D.K#0], Scan(H))))",
+			contains: "FlatMap(outer=Scan(H), inner=FlatMap(outer=Scan(W), inner=Explode(field)))",
+			result:   "{K: Q$BOUND1}",
 		},
 		{
 			sql:      `SELECT e.k FROM w, (SELECT w.f AS k FROM h) AS d, (SELECT w.f AS k FROM h AS h2) AS e`,
-			contains: "FlatMap(outer=Scan(W), inner=FlatMap(outer=Project([W.F#1], Scan(H)), inner=Project([W.F#1], Scan(H))))",
+			contains: "NestedLoopJoin(INNER, NestedLoopJoin(INNER, Scan(H), Scan(W)), Scan(H))",
+			result:   "{K: W.F#1}",
 		},
 		{
 			sql:      `SELECT e.k FROM w, h, (SELECT w.f + h.f AS k FROM h AS h2) AS e`,
-			contains: "Project([(W.F#1 + H.F#1)], Scan(H))",
+			contains: "NestedLoopJoin(INNER, Scan(H), NestedLoopJoin(INNER, Scan(H), Scan(W)))",
+			result:   "{K: (W.F#1 + H.F#1)}",
 		},
 		// An unnest behind a later table inside a derived leg: the leg is an
 		// opaque ordinal leg exactly when its body's rotation classifies it,
 		// and the body then lowers the rotated cluster.
 		{
 			sql:      `SELECT d.b, d.f FROM w, (SELECT b.k AS b, h.f FROM q, q.bs AS b, h) AS d`,
-			contains: "NestedLoopJoin(INNER, FlatMap(outer=Scan(Q), inner=Explode(field)), Scan(H))",
+			contains: "NestedLoopJoin(INNER, FlatMap(outer=Scan(Q), inner=Explode(field)), NestedLoopJoin(INNER, Scan(W), Scan(H)))",
+			result:   "{B: Q$BOUND2.K#0, F: Q$BOUND3.F#1}",
 		},
 		{
 			sql:      `SELECT d.t, d.f FROM q, (SELECT t, h.f FROM q.bs AS b, b.tags AS t, h) AS d`,
@@ -283,7 +294,8 @@ func TestLateralLegsCorrelatedToOtherLegs(t *testing.T) {
 		},
 		{
 			sql:      `SELECT w.id, d.x FROM w LEFT JOIN h ON h.id = w.id, (SELECT q.id AS x FROM q WHERE q.id = h.id) AS d`,
-			contains: "FlatMap(outer=FlatMap(outer=Scan(W), inner=DefaultOnEmpty(Scan(H, [=]))), inner=Project(",
+			contains: "FlatMap(outer=FlatMap(outer=Scan(W), inner=DefaultOnEmpty(Scan(H, [=]))), inner=Scan(Q, [=]))",
+			result:   "{ID: H$BOX.ID#0, X: Q$BOUND1.ID#0}",
 		},
 	})
 }

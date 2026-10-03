@@ -16,7 +16,7 @@ import (
 // anyway produces a spurious red for anyone running a focused test.
 //
 // The floor was previously passed inline at the call site with no narrowing
-// check, while assertOrientationGateCensus, assertProjectionMergeCensus and their
+// check, while assertOrientationGateCensus and its
 // siblings all skip theirs. Measured: `go test ./pkg/relational/sqldriver/
 // -run TestFDB_AggregateIndexVacatedGroup` reported
 // `DOTTED ROW-TYPE PRODUCER CENSUS FAIL: 14 derivation(s) over the whole run,

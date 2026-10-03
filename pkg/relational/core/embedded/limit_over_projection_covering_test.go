@@ -42,7 +42,7 @@ func TestLimitOverProjectionKeepsTheCoveringRewrite(t *testing.T) {
 	const sql = `SELECT id FROM rp WHERE region = 'eu' ORDER BY plan_name DESC LIMIT 1`
 
 	got := explainWithOptions(t, sql, limitCoveringDDL, nil)
-	const want = "Limit(1, Project([_current.ID#0], IndexScan(IDX_REGION_PLAN, [=, *] COVERING) REVERSE))"
+	const want = "Limit(1, Map(IndexScan(IDX_REGION_PLAN, [=, *] COVERING) REVERSE, {ID: _current.ID#0}))"
 	if got != want {
 		t.Errorf("plan = %q, want %q", got, want)
 	}

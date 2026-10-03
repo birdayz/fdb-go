@@ -65,6 +65,22 @@ func NewRecordQueryStreamingAggregationPlanFromQuantifier(
 	return newRecordQueryStreamingAggregationPlan(innerQ, groupingKeys, aggregates, nil)
 }
 
+// NewRecordQueryStreamingAggregationPlanForGroupBy implements a GroupBy
+// whose output columns carry outputNames: the logical aggregate's names,
+// which its keys, re-rooted onto the physical input, would not re-derive.
+func NewRecordQueryStreamingAggregationPlanForGroupBy(
+	innerQ expressions.Quantifier,
+	groupingKeys []values.Value,
+	aggregates []expressions.AggregateSpec,
+	outputNames []string,
+) (*RecordQueryStreamingAggregationPlan, error) {
+	if len(outputNames) != len(groupingKeys)+len(aggregates) {
+		return nil, fmt.Errorf("RecordQueryStreamingAggregationPlan: %d output names for %d keys and %d aggregates",
+			len(outputNames), len(groupingKeys), len(aggregates))
+	}
+	return newRecordQueryStreamingAggregationPlan(innerQ, groupingKeys, aggregates, outputNames)
+}
+
 func newRecordQueryStreamingAggregationPlan(
 	innerQ expressions.Quantifier,
 	groupingKeys []values.Value,
@@ -207,6 +223,11 @@ func (p *RecordQueryStreamingAggregationPlan) GetCorrelatedToWithoutChildren() m
 }
 
 func (p *RecordQueryStreamingAggregationPlan) GetGroupingKeys() []values.Value { return p.groupingKeys }
+
+// GetOutputNames is the output row's column names.
+func (p *RecordQueryStreamingAggregationPlan) GetOutputNames() []string {
+	return append([]string(nil), p.outputNames...)
+}
 
 func (p *RecordQueryStreamingAggregationPlan) GetAggregates() []expressions.AggregateSpec {
 	return p.aggregates

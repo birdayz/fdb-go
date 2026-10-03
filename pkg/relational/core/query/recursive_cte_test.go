@@ -78,25 +78,35 @@ func TestNormalizeRecursiveLegUsesExactOrdinalAuthority(t *testing.T) {
 	if normalizedExpr == nil {
 		t.Fatalf("normalize recursive leg: %v", tr.translateErr)
 	}
-	normalized, ok := normalizedExpr.(*expressions.LogicalProjectionExpression)
-	if !ok {
-		t.Fatalf("normalized leg = %T, want logical projection", normalizedExpr)
+	normalized, columns := blockColumns(t, normalizedExpr)
+	if len(columns) != 2 || columns[0].Name != "A.B" || columns[1].Name != "(T.RIGHT)" {
+		t.Fatalf("normalization output names = %v", columns)
 	}
-	aliases := normalized.GetAliases()
-	if len(aliases) != 2 || aliases[0] != "A.B" || aliases[1] != "(T.RIGHT)" {
-		t.Fatalf("normalization aliases = %v", aliases)
-	}
-	for ordinal, value := range normalized.GetProjectedValues() {
-		field := exactTestFieldView(t, value)
+	for ordinal, column := range columns {
+		field := exactTestFieldView(t, column.Value)
 		if got := field.Path().Ordinals(); len(got) != 1 || got[0] != ordinal {
 			t.Fatalf("normalized slot %d path = %v, want [%d]", ordinal, got, ordinal)
 		}
 		owner, ownerOK := values.AsQuantifiedObjectValue(field.ChildValue())
-		if !ownerOK || owner.Correlation() != normalized.GetInner().GetAlias() {
+		if !ownerOK || owner.Correlation() != normalized.GetQuantifiers()[0].GetAlias() {
 			t.Fatalf("normalized slot %d owner = %v, want inner quantifier %s",
-				ordinal, owner, normalized.GetInner().GetAlias())
+				ordinal, owner, normalized.GetQuantifiers()[0].GetAlias())
 		}
 	}
+}
+
+// blockColumns is the block SelectExpression expr and its result columns.
+func blockColumns(t *testing.T, expr expressions.RelationalExpression) (*expressions.SelectExpression, []values.RecordConstructorField) {
+	t.Helper()
+	block, ok := expr.(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("expression = %T, want a block SelectExpression", expr)
+	}
+	columns, ok := block.GetResultValue().(*values.RecordConstructorValue)
+	if !ok {
+		t.Fatalf("block result = %T, want a record of columns", block.GetResultValue())
+	}
+	return block, columns.Fields
 }
 
 // TestRecursiveCTESeedRowPrecedesSelfScanAndConsumerBinding pins Java's
@@ -132,11 +142,8 @@ func TestRecursiveCTESeedRowPrecedesSelfScanAndConsumerBinding(t *testing.T) {
 	if translated == nil {
 		t.Fatalf("translate nullable recursive CTE: %v", tr.translateErr)
 	}
-	projection, ok := translated.(*expressions.LogicalProjectionExpression)
-	if !ok {
-		t.Fatalf("main expression = %T, want logical projection", translated)
-	}
-	mainLevel := exactTestFieldView(t, projection.GetProjectedValues()[0])
+	projection, mainColumns := blockColumns(t, translated)
+	mainLevel := exactTestFieldView(t, mainColumns[0].Value)
 	if !mainLevel.ResultType().Equals(values.NotNullInt) {
 		t.Fatalf("main LEVEL type = %s, want NOT NULL INT", mainLevel.ResultType())
 	}
@@ -145,10 +152,10 @@ func TestRecursiveCTESeedRowPrecedesSelfScanAndConsumerBinding(t *testing.T) {
 		t.Fatalf("main LEVEL owner = %v, want the seed row", mainOwner)
 	}
 
-	recursiveUnion, ok := projection.GetInner().GetRangesOver().Get().(*expressions.RecursiveUnionExpression)
+	recursiveUnion, ok := projection.GetQuantifiers()[0].GetRangesOver().Get().(*expressions.RecursiveUnionExpression)
 	if !ok {
 		t.Fatalf("main child = %T, want RecursiveUnionExpression",
-			projection.GetInner().GetRangesOver().Get())
+			projection.GetQuantifiers()[0].GetRangesOver().Get())
 	}
 	if !recursiveUnion.GetResultValue().Type().Equals(mainOwner.FlowedType()) {
 		t.Fatalf("recursive union type = %s, want main common owner %s",
@@ -193,11 +200,11 @@ func TestRecursiveCTESeedRowPrecedesSelfScanAndConsumerBinding(t *testing.T) {
 	incompatibleCTE := logical.NewCTE("WALK",
 		logical.NewUnion([]logical.LogicalOperator{incompatibleSeed, incompatibleRecursive}, false), incompatibleConsumer, true)
 	incompatibleTranslator := newGateTranslator(t)
-	incompatibleMain, ok := incompatibleTranslator.translateRecursiveCTE(incompatibleCTE).(*expressions.LogicalProjectionExpression)
+	incompatibleMain, ok := incompatibleTranslator.translateRecursiveCTE(incompatibleCTE).(*expressions.SelectExpression)
 	if !ok {
 		t.Fatalf("incompatible recursive leg: %v", incompatibleTranslator.translateErr)
 	}
-	incompatibleUnion := incompatibleMain.GetInner().GetRangesOver().Get().(*expressions.RecursiveUnionExpression)
+	incompatibleUnion := incompatibleMain.GetQuantifiers()[0].GetRangesOver().Get().(*expressions.RecursiveUnionExpression)
 	if narrowed := recursiveLegSlot(t, incompatibleUnion, 0); narrowed.Child.Type().Code() != values.TypeCodeString ||
 		!narrowed.Target.Equals(values.NotNullInt) {
 		t.Fatalf("a STRING written to the INT seed slot = %v, want it narrowed to NOT NULL INT", narrowed)
@@ -211,13 +218,10 @@ func recursiveLegSlot(t *testing.T, union *expressions.RecursiveUnionExpression,
 	if !ok {
 		t.Fatalf("recursive state = %T, want a temp table insert", union.GetRecursiveState().GetRangesOver().Get())
 	}
-	leg, ok := insert.GetInner().GetRangesOver().Get().(*expressions.LogicalProjectionExpression)
+	_, columns := blockColumns(t, insert.GetInner().GetRangesOver().Get())
+	narrowed, ok := columns[i].Value.(*values.NarrowValue)
 	if !ok {
-		t.Fatalf("recursive leg = %T, want its normalizing projection", insert.GetInner().GetRangesOver().Get())
-	}
-	narrowed, ok := leg.GetProjectedValues()[i].(*values.NarrowValue)
-	if !ok {
-		t.Fatalf("recursive leg slot %d = %T, want a NarrowValue", i, leg.GetProjectedValues()[i])
+		t.Fatalf("recursive leg slot %d = %T, want a NarrowValue", i, columns[i].Value)
 	}
 	return narrowed
 }

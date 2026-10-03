@@ -474,11 +474,11 @@ func TestClusteredDispatch_BothDirections(t *testing.T) {
 
 	seedOf := func(t *testing.T, expr expressions.RelationalExpression) *values.RecordConstructorValue {
 		t.Helper()
-		proj, isProj := expr.(*expressions.LogicalProjectionExpression)
-		if !isProj {
-			t.Fatalf("translated = %T, want *LogicalProjectionExpression", expr)
+		block, isBlock := expr.(*expressions.SelectExpression)
+		if !isBlock {
+			t.Fatalf("translated = %T, want the block *SelectExpression", expr)
 		}
-		sel, isSel := proj.GetQuantifiers()[0].GetRangesOver().Members()[0].(*expressions.SelectExpression)
+		sel, isSel := block.GetQuantifiers()[0].GetRangesOver().Members()[0].(*expressions.SelectExpression)
 		if !isSel {
 			t.Fatalf("projection input is not the level-2 SelectExpression")
 		}
@@ -630,8 +630,8 @@ func TestJoinInnerDispatch_Ordinal(t *testing.T) {
 	if expr == nil {
 		t.Fatalf("single-source outer + JOIN-inner must translate: %v", tr.translateErr)
 	}
-	proj := expr.(*expressions.LogicalProjectionExpression)
-	sel := proj.GetQuantifiers()[0].GetRangesOver().Members()[0].(*expressions.SelectExpression)
+	block := expr.(*expressions.SelectExpression)
+	sel := block.GetQuantifiers()[0].GetRangesOver().Members()[0].(*expressions.SelectExpression)
 	rc, isRC := sel.GetResultValue().(*values.RecordConstructorValue)
 	if !isRC {
 		t.Fatalf("JOIN-inner seeded %T, want the ORDINAL seed RC", sel.GetResultValue())

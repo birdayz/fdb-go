@@ -79,7 +79,7 @@ tests:
 
   # Duplicate AND: col1 = 20 AND col1 = 20 → single equality, the duplicate re-applies nothing
   - query: SELECT id FROM t1 WHERE col1 = 20 AND col1 = 20 ORDER BY id
-    plan_contains: "Project([_current.ID#0], IndexScan(I1, [=] COVERING))"
+    plan_contains: "Map(IndexScan(I1, [=] COVERING), {ID: _current.ID#0})"
     plan_not_contains: "PredicatesFilter"
     rows:
       - [6]

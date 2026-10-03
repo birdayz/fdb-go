@@ -228,8 +228,7 @@ func publishAggregateResultAsGroupByRow(
 	if err != nil {
 		return nil, err
 	}
-	outputNames := expressions.GroupByOutputColumnNames(
-		groupBy.GetGroupingKeys(), groupBy.GetAggregates())
+	outputNames := groupBy.OutputColumnNames()
 	if aggregateLeafPublishesGroupByRow(root, outputNames) {
 		// Nothing to publish: the leaf's row already IS the GroupBy's row, so the
 		// projection would map ordinal i to ordinal i under the name the column

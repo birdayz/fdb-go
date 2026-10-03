@@ -15,7 +15,7 @@
 // necessary but not sufficient — it proves lockstep for the written queries,
 // not for shapes nobody wrote. So this harness must land and cover the
 // compensation sites (FlatMap, RecursiveDfsJoin, InJoin, UnorderedUnion,
-// PredicatesFilter, Projection) before W2 collapses anything.
+// PredicatesFilter, Map) before W2 collapses anything.
 //
 // This package is a TEST HARNESS ONLY — it contains no engine code. The
 // invariant checkers and the mutation-proofs that prove they fire live in the

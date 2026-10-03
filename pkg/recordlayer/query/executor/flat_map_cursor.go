@@ -831,7 +831,10 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 			if aerr != nil {
 				return QueryResult{}, aerr
 			}
-			if pos, isPos := adapted.(*PositionalRow); isPos {
+			if adapted == nil {
+				// An absent (null-extended) outer record flows on as itself.
+				out.Positional = outerRow.Positional
+			} else if pos, isPos := adapted.(*PositionalRow); isPos {
 				out.Positional = pos
 			}
 		} else if c.outerIdentityPassthrough && outerRow.Positional != nil {

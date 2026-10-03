@@ -79,5 +79,5 @@ func (t *cascadesTranslator) translateSingleton() expressions.RelationalExpressi
 		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery, "singleton row: %v", err))
 		return nil
 	}
-	return projection
+	return t.blockSelect(projection)
 }

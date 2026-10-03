@@ -98,7 +98,7 @@ func TestProjectionSemanticNamesDoNotPublishPhysicalKeys(t *testing.T) {
 	}{
 		{"unnamed_aggregate", "_0", []string{""}, false, false},
 		{"authored_positional_name", "_0", []string{"_0"}, false, false},
-		{"computed_without_alias", "CAST(1 AS BIGINT)", nil, true, false},
+		{"computed_without_alias", "_0", nil, true, false},
 		{"empty_vector", "_0", []string{}, false, true},
 		{"long_vector", "_0", []string{"", "X"}, false, true},
 	} {
@@ -120,8 +120,8 @@ func TestProjectionSemanticNamesDoNotPublishPhysicalKeys(t *testing.T) {
 				Aliases: []string{tc.physical}, AliasMinted: []bool{tc.name != "authored_positional_name"},
 			}
 			if tc.computed {
-				// The raw-IR no-alias path uses the Value's physical slot
-				// name, while IsComputed prevents publishing it for SQL lookup.
+				// A computed item without an alias is named by its position, as
+				// Java's record type names an unnamed field.
 				proj.Aliases, proj.AliasMinted = nil, nil
 			}
 			labels, err := ExactLogicalOutputLabels(proj, nil, nil)

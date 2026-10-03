@@ -65,6 +65,48 @@ func TestExplainValue(t *testing.T) {
 	}
 }
 
+// A map's result program reads its own input as the current row and may also
+// read an outer row the plan is correlated to. That outer alias is minted per
+// planning run, so it must render in the stable local namespace, never with its
+// process-global suffix: two plannings of one query must explain identically.
+func TestExplainValueOverInputNumbersOtherUniqueRoots(t *testing.T) {
+	t.Parallel()
+	rowType := NewRecordType("", false, []Field{
+		{Name: "ID", Ordinal: 0, FieldType: NotNullLong},
+		{Name: "V", Ordinal: 1, FieldType: NotNullLong},
+	})
+	render := func() string {
+		input, err := NewQuantifiedObjectValue(UniqueCorrelationIdentifier(), rowType)
+		if err != nil {
+			t.Fatalf("input: %v", err)
+		}
+		outer, err := NewQuantifiedObjectValue(UniqueCorrelationIdentifier(), rowType)
+		if err != nil {
+			t.Fatalf("outer: %v", err)
+		}
+		own, err := ResolveFieldOrdinals(input, []int{0})
+		if err != nil {
+			t.Fatalf("own: %v", err)
+		}
+		correlated, err := ResolveFieldOrdinals(outer, []int{1})
+		if err != nil {
+			t.Fatalf("correlated: %v", err)
+		}
+		rc := NewRecordConstructorValue(
+			RecordConstructorField{Name: "ID", Value: own},
+			RecordConstructorField{Name: "V", Value: correlated},
+		)
+		return ExplainValueOverInput(rc, input.Correlation())
+	}
+	first, second := render(), render()
+	if first != "{ID: _current.ID#0, V: q$0.V#1}" {
+		t.Fatalf("explain = %q, want the outer root numbered q$0", first)
+	}
+	if first != second {
+		t.Fatalf("two plannings explain differently:\n%s\n%s", first, second)
+	}
+}
+
 func TestExplainPlanValuesUsesStableLocalUniqueAliases(t *testing.T) {
 	t.Parallel()
 	rowType := NewRecordType("", false, []Field{{Name: "ID", Ordinal: 0, FieldType: NotNullLong}})

@@ -103,7 +103,7 @@ func (r *PushFilterThroughGroupByRule) OnMatch(call *ExpressionRuleCall) {
 		call.Fail(err)
 		return
 	}
-	newGB, err := expressions.NewGroupByExpression(rebasedKeys, rebasedAggregates, pushedQ)
+	newGB, err := gb.WithTranslatedValues(rebasedKeys, rebasedAggregates, pushedQ)
 	if err != nil {
 		call.Fail(err)
 		return

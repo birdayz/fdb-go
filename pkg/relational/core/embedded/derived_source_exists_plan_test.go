@@ -345,8 +345,13 @@ func TestThreeLegExistsKeepsExactExistentialAlias(t *testing.T) {
 		if _, readsNamedTwin := correlatedTo[namedTwin]; readsNamedTwin {
 			t.Fatalf("predicate below FirstOrDefault reads same-spelled NAMED alias %#v: %s", namedTwin, predicate.Explain())
 		}
-		// C may be bound by an enclosing join, not the immediately enclosing FlatMap.
-		if _, readsOuter := correlatedTo[values.NamedCorrelationIdentifier("C")]; !readsOuter {
+		// The outer read of c.id may be bound by an enclosing join, not the
+		// immediately enclosing FlatMap; c itself dissolves into the block.
+		readsOuter := false
+		for alias := range correlatedTo {
+			readsOuter = readsOuter || alias != exactInner && alias != values.CurrentCorrelation()
+		}
+		if !readsOuter {
 			continue
 		}
 		predicates.TransformEmbeddedValues(predicate, func(value values.Value) values.Value {

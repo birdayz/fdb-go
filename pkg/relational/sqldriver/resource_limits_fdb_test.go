@@ -669,8 +669,8 @@ func TestFDB_RFC106a_INJoinScanLimitAggregatesAcrossLegs(t *testing.T) {
 	// Plan-shape guard: this must be an IN-JOIN over a primary-key equality
 	// scan (the leaf cursor this test pins), not some other shape a future
 	// planner change might substitute.
-	if plan := planExplainVia(t, ctx, db, q); !strings.Contains(plan, "InJoin(Scan(") {
-		t.Fatalf("want InJoin(Scan(...)) plan shape, got: %s", plan)
+	if plan := planExplainVia(t, ctx, db, q); !strings.HasPrefix(plan, "InJoin(") || !strings.Contains(plan, "Scan(ITEM, [=])") {
+		t.Fatalf("want an InJoin over the primary-key equality Scan(ITEM, [=]), got: %s", plan)
 	}
 
 	// --- fail mode: the AGGREGATE scan across every leg must trip the limit,

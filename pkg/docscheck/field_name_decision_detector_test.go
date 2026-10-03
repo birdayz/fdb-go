@@ -302,10 +302,10 @@ func f(v values.Value) (string, bool) {
 			// expression. This is buriedLegOrdinalLayout — one of the seven —
 			// verbatim, as it stood: it built a `corr + "." + name` key and probed
 			// and wrote the layout under it. The gate was named for that function
-			// and could not see it. The name-built key is GONE (the function is
-			// now keyed by values.ColumnIdentity —
-			// pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2226),
-			// so the fixture is the only surviving statement of the shape.
+			// and could not see it. The function is GONE (deleted with the
+			// buried-leg rebase once the translator read every buried source
+			// through its owning quantifier), so the fixture is the only
+			// surviving statement of the shape.
 			name: "map key via a local derived from the name",
 			want: "a map key via local key derived from the name",
 			body: `func f(layout map[string]int, fv *values.FieldValue, corr string) int {

@@ -1065,7 +1065,7 @@ cost is a different shape. Both are asserted at the values they HAVE, so the
 fix has to come to that file.
 
 Two NEAR MEMBERS are not members, and both were on an earlier version of this
-list. `rule_aggregate_data_access.go:327` is candidate-vs-candidate. And
+list. `rule_aggregate_data_access.go:326` is candidate-vs-candidate. And
 `rule_type_filter_redundant.go:51` is query-vs-QUERY —
 `typesAreSubset(scan.GetRecordTypes(), tf.GetRecordTypes())`, both operands from
 the same subtree, so re-spelling moves them together and the outcome cannot

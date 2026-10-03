@@ -1,6 +1,11 @@
 package cascades
 
 import (
+	"errors"
+	"fmt"
+	"maps"
+	"slices"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -16,20 +21,77 @@ type selectMergeTranslation struct {
 	functions map[values.CorrelationIdentifier]TranslationFunction
 	seeds     map[values.CorrelationIdentifier]values.Value
 	targets   map[values.CorrelationIdentifier]map[values.CorrelationIdentifier]struct{}
-	cache     map[*expressions.Reference]*expressions.Reference
-	active    map[*expressions.Reference]bool
-	call      *ExpressionRuleCall
+	// reads are aliases whose reads rewrite replaces as whole value trees: a
+	// read may need its enclosing field access to say what it reads.
+	reads   map[values.CorrelationIdentifier]struct{}
+	rewrite GraphReadRewrite
+	cache   map[*expressions.Reference]*expressions.Reference
+	active  map[*expressions.Reference]bool
+	call    *ExpressionRuleCall
 }
+
+// GraphReadRewrite rewrites a value's reads of the aliases in reads. nil with
+// no error declines the rewrite of the whole graph.
+type GraphReadRewrite func(v values.Value, reads map[values.CorrelationIdentifier]struct{}) (values.Value, error)
 
 func newSelectMergeTranslation(call *ExpressionRuleCall) *selectMergeTranslation {
 	return &selectMergeTranslation{
 		functions: make(map[values.CorrelationIdentifier]TranslationFunction),
 		seeds:     make(map[values.CorrelationIdentifier]values.Value),
 		targets:   make(map[values.CorrelationIdentifier]map[values.CorrelationIdentifier]struct{}),
+		reads:     make(map[values.CorrelationIdentifier]struct{}),
 		cache:     make(map[*expressions.Reference]*expressions.Reference),
 		active:    make(map[*expressions.Reference]bool),
 		call:      call,
 	}
+}
+
+// RewriteExpressionReads is RewriteGraphReads applied at e, whose own
+// quantifiers are among the aliases the rewritten reads introduce: a read of a
+// source buried under one of them becomes a read of its row, so e's binders
+// are the intended targets and are not renamed.
+func RewriteExpressionReads(
+	e expressions.RelationalExpression,
+	reads map[values.CorrelationIdentifier]map[values.CorrelationIdentifier]struct{},
+	rewrite GraphReadRewrite,
+) (expressions.RelationalExpression, error) {
+	tr := newSelectMergeTranslation(&ExpressionRuleCall{})
+	tr.rewrite = rewrite
+	for alias, targets := range reads {
+		tr.reads[alias] = struct{}{}
+		tr.targets[alias] = targets
+	}
+	translated, err := tr.expressionBinding(e, true)
+	var declined *selectMergeDeclinedError
+	if errors.As(err, &declined) {
+		return nil, fmt.Errorf("the expression reads %v where it cannot be rewritten", slices.Collect(maps.Keys(reads)))
+	}
+	return translated, err
+}
+
+// RewriteGraphReads rewrites every value in ref's graph that reads one of
+// reads' aliases, as Java's References.rebaseGraphs rebases a graph: common
+// subexpressions stay shared, a binder in the graph reusing an alias shadows
+// it, and a binder that would capture one of the aliases a rewritten read
+// introduces (reads' values) is renamed. Used before planning, so nothing is
+// memoized.
+func RewriteGraphReads(
+	ref *expressions.Reference,
+	reads map[values.CorrelationIdentifier]map[values.CorrelationIdentifier]struct{},
+	rewrite GraphReadRewrite,
+) (*expressions.Reference, error) {
+	tr := newSelectMergeTranslation(&ExpressionRuleCall{})
+	tr.rewrite = rewrite
+	for alias, targets := range reads {
+		tr.reads[alias] = struct{}{}
+		tr.targets[alias] = targets
+	}
+	translated, err := tr.reference(ref)
+	var declined *selectMergeDeclinedError
+	if errors.As(err, &declined) {
+		return nil, fmt.Errorf("the graph reads %v where it cannot be rewritten", slices.Collect(maps.Keys(reads)))
+	}
+	return translated, err
 }
 
 func (tr *selectMergeTranslation) add(alias values.CorrelationIdentifier, result values.Value, positional bool) {
@@ -45,7 +107,35 @@ func (tr *selectMergeTranslation) add(alias values.CorrelationIdentifier, result
 func (tr *selectMergeTranslation) contains(alias values.CorrelationIdentifier) bool {
 	_, ordinary := tr.functions[alias]
 	_, seed := tr.seeds[alias]
-	return ordinary || seed
+	_, read := tr.reads[alias]
+	return ordinary || seed || read
+}
+
+// copyWith is tr without the aliases in drop, sharing its rewrite.
+func (tr *selectMergeTranslation) copyWith(drop map[values.CorrelationIdentifier]bool) *selectMergeTranslation {
+	copy := newSelectMergeTranslation(tr.call)
+	copy.rewrite = tr.rewrite
+	for alias, fn := range tr.functions {
+		if !drop[alias] {
+			copy.functions[alias] = fn
+		}
+	}
+	for alias, value := range tr.seeds {
+		if !drop[alias] {
+			copy.seeds[alias] = value
+		}
+	}
+	for alias := range tr.reads {
+		if !drop[alias] {
+			copy.reads[alias] = struct{}{}
+		}
+	}
+	for alias, targets := range tr.targets {
+		if !drop[alias] {
+			copy.targets[alias] = targets
+		}
+	}
+	return copy
 }
 
 func (tr *selectMergeTranslation) withoutBindings(qs []expressions.Quantifier) *selectMergeTranslation {
@@ -58,39 +148,14 @@ func (tr *selectMergeTranslation) withoutBindings(qs []expressions.Quantifier) *
 	if !shadowed {
 		return tr
 	}
-	copy := newSelectMergeTranslation(tr.call)
-	for alias, fn := range tr.functions {
-		if !bound[alias] {
-			copy.functions[alias] = fn
-		}
-	}
-	for alias, value := range tr.seeds {
-		if !bound[alias] {
-			copy.seeds[alias] = value
-		}
-	}
-	for alias, targets := range tr.targets {
-		if !bound[alias] {
-			copy.targets[alias] = targets
-		}
-	}
-	return copy
+	return tr.copyWith(bound)
 }
 
 func (tr *selectMergeTranslation) withAliases(aliases map[values.CorrelationIdentifier]values.CorrelationIdentifier) *selectMergeTranslation {
 	if len(aliases) == 0 {
 		return tr
 	}
-	copy := newSelectMergeTranslation(tr.call)
-	for alias, fn := range tr.functions {
-		copy.functions[alias] = fn
-	}
-	for alias, value := range tr.seeds {
-		copy.seeds[alias] = value
-	}
-	for alias, targets := range tr.targets {
-		copy.targets[alias] = targets
-	}
+	copy := tr.copyWith(nil)
 	for source, target := range aliases {
 		copy.functions[source] = func(_ values.CorrelationIdentifier, leaf values.LeafValue) values.Value {
 			return leaf.RebaseLeaf(target)
@@ -102,12 +167,26 @@ func (tr *selectMergeTranslation) withAliases(aliases map[values.CorrelationIden
 }
 
 func (tr *selectMergeTranslation) value(value values.Value) (values.Value, error) {
+	if value == nil {
+		// An absent value (COUNT(*)'s operand) reads nothing.
+		return nil, nil
+	}
 	translated, ok := translateValueCorrelations(value, &RegularTranslationMap{aliasToFunctionMap: tr.functions})
 	if !ok {
 		return nil, &selectMergeDeclinedError{}
 	}
 	if len(tr.seeds) > 0 {
 		translated = values.Replace(translated, bakedBoxRefCallback(tr.seeds))
+	}
+	if tr.rewrite != nil && len(tr.reads) > 0 {
+		rewritten, err := tr.rewrite(translated, tr.reads)
+		if err != nil {
+			return nil, err
+		}
+		if rewritten == nil {
+			return nil, &selectMergeDeclinedError{}
+		}
+		translated = rewritten
 	}
 	return translated, nil
 }
@@ -196,6 +275,13 @@ func (tr *selectMergeTranslation) reference(ref *expressions.Reference) (*expres
 }
 
 func (tr *selectMergeTranslation) expression(member expressions.RelationalExpression) (expressions.RelationalExpression, error) {
+	return tr.expressionBinding(member, false)
+}
+
+// expressionBinding translates member. ownsTargets says the translated reads
+// are meant to read member's own quantifiers, so none of them is renamed as a
+// capturing binder.
+func (tr *selectMergeTranslation) expressionBinding(member expressions.RelationalExpression, ownsTargets bool) (expressions.RelationalExpression, error) {
 	qs := member.GetQuantifiers()
 	scoped := tr.withoutBindings(qs)
 	incoming := make(map[values.CorrelationIdentifier]struct{})
@@ -206,7 +292,7 @@ func (tr *selectMergeTranslation) expression(member expressions.RelationalExpres
 	}
 	renamed := make(map[values.CorrelationIdentifier]values.CorrelationIdentifier)
 	for _, q := range qs {
-		if _, captures := incoming[q.GetAlias()]; captures {
+		if _, captures := incoming[q.GetAlias()]; captures && !ownsTargets {
 			renamed[q.GetAlias()] = values.UniqueCorrelationIdentifier()
 		}
 	}
@@ -302,7 +388,17 @@ func (tr *selectMergeTranslation) expression(member expressions.RelationalExpres
 				return nil, err
 			}
 		}
-		return expressions.NewGroupByExpression(keys, aggregates, translatedQs[0])
+		return e.WithTranslatedValues(keys, aggregates, translatedQs[0])
+	case *expressions.UpdateExpression:
+		transforms := append([]expressions.UpdateTransform(nil), e.GetTransforms()...)
+		for i := range transforms {
+			var err error
+			transforms[i].NewValue, err = scoped.value(transforms[i].NewValue)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return expressions.NewUpdateExpression(translatedQs[0], e.GetTargetRecordType(), e.GetTargetType(), transforms)
 	case *expressions.TableFunctionExpression:
 		value, err := scoped.value(e.GetValue())
 		if err != nil {

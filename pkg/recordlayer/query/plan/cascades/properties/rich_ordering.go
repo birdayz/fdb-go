@@ -332,6 +332,32 @@ func valuesEqual(a, b values.Value) bool {
 	return values.ValuesStructurallyEqual(a, b)
 }
 
+// BindingsFor returns the key a requested value resolves to, under the
+// resolution Satisfies uses, and that key's bindings.
+func (o *RichOrdering) BindingsFor(v values.Value) (string, []OrderingBinding, bool) {
+	k, ok := o.orderingKeyFor(v)
+	if !ok {
+		return "", nil, false
+	}
+	bindings := o.bindingMapForExplain(k)
+	return k, bindings, bindings != nil
+}
+
+// WithoutKeys drops the given keys unless singular and non-fixed — Java's
+// getOrderingSet().filterElements(v -> isSingularNonFixedValue(v) ||
+// !dropped.contains(v)) in ImplementInJoinRule.
+func (o *RichOrdering) WithoutKeys(drop map[string]struct{}) *RichOrdering {
+	mapping := make(map[string]values.Value, len(o.keys))
+	for _, k := range o.keys {
+		s := values.ExplainValue(k)
+		if _, dropped := drop[s]; dropped && !o.IsSingularNonFixedValue(k) {
+			continue
+		}
+		mapping[s] = k
+	}
+	return o.translateKeys(mapping)
+}
+
 func (o *RichOrdering) bindingMapForExplain(explain string) []OrderingBinding {
 	v, ok := o.keyLookup[explain]
 	if !ok {

@@ -23,13 +23,13 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**377 scenarios · 3118 query/assertion cases** across 18 feature areas — 2726 supported, 102 unsupported-feature pins, 290 error-path pins.
+**377 scenarios · 3119 query/assertion cases** across 18 feature areas — 2727 supported, 102 unsupported-feature pins, 290 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
 | Aggregates & GROUP BY | 55 | 349 | 314 | 19 | 16 |
 | Joins | 66 | 313 | 296 | 2 | 15 |
-| Subqueries (EXISTS / IN / scalar) | 46 | 321 | 265 | 33 | 23 |
+| Subqueries (EXISTS / IN / scalar) | 46 | 322 | 266 | 33 | 23 |
 | CTEs | 15 | 202 | 161 | 4 | 37 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 12 | 68 | 59 | 5 | 4 |
 | DML (INSERT / UPDATE / DELETE) | 26 | 241 | 201 | 3 | 37 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 40 | 340 | 301 | 5 | 34 |
-| **Total** | **377** | **3118** | **2726** | **102** | **290** |
+| **Total** | **377** | **3119** | **2727** | **102** | **290** |
 
 ## Aggregates & GROUP BY
 
@@ -204,7 +204,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `in_list_comprehensive` | 8 | 8 | 0 | 0 | Comprehensive IN-list tests |
 | `in_list_index_plan` | 6 | 6 | 0 | 0 | IN-list queries must probe the index per value |
 | `in_list_null` | 4 | 1 | 0 | 3 | Java rejects NULL anywhere in the IN list with verbatim "NULL values |
-| `in_list_pushdown` | 45 | 38 | 3 | 4 | IN-list pushdown: `WHERE pk_col IN (v1, v2, ...)` on a single-column |
+| `in_list_pushdown` | 46 | 39 | 3 | 4 | IN-list pushdown: `WHERE pk_col IN (v1, v2, ...)` on a single-column |
 | `in_list_with_order_by` | 3 | 3 | 0 | 0 | IN-list combined with ORDER BY |
 | `in_subquery_decomposition` | 11 | 2 | 9 | 0 | `col IN (SELECT ...)` is REJECTED (0AF00) in every shape — this file |
 | `insert_select_exists` | 5 | 5 | 0 | 0 | INSERT SELECT with EXISTS filter |
@@ -317,7 +317,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `order_by_nulls` | 4 | 4 | 0 | 0 | Java-conformant NULL ordering (swingshift-35, 3b87574d): |
 | `order_by_nulls_java` | 8 | 8 | 0 | 0 | ORDER BY with NULL values and multiple |
 | `ordering_same_leaf_cross_quantifier` | 4 | 4 | 0 | 0 | The ordering property's key identity must carry the CORRELATION, not just the |
-| `ordering_through_a_projection` | 11 | 11 | 0 | 0 | A requested ordering crosses a projection by the projection's result value, |
+| `ordering_through_a_projection` | 11 | 11 | 0 | 0 | A requested ordering crosses a derived table or CTE by the projection's |
 | `rfc202_version_index_ordered` | 1 | 1 | 0 | 0 | — |
 
 ## Scalar functions & expressions

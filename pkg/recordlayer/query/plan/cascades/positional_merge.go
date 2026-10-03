@@ -32,63 +32,9 @@ func (r *PartitionSelectRule) positionalMergeCase(
 	lowerBuilder *GraphExpansionBuilder,
 	upperPredicates []predicates.QueryPredicate,
 ) *expressions.SelectExpression {
-	// A null-on-empty quantifier — the dissolved-LEFT
-	// machinery — SPLICES through a merged select as a quantifier but must
-	// never be COLLAPSED into a positional lower: the null-extension is
-	// per-outer-row (Java's SelectMergeRule matches via
-	// forEachQuantifierWithoutDefaultOnEmptyOverRef — the quantifier merges,
-	// its child never does). DECLINE the collapse and leave the select to
-	// the per-quantifier NLJ implementation (DefaultOnEmpty — Java's
-	// planPartitionToPhysical), never a silently mis-merged null extension.
-	//
-	// SCOPE, because one merge DOES collapse a null-on-empty leg and this decline
-	// must not be read as forbidding that: RewriteOuterJoinRule's BOX puts the
-	// preserved and null-supplying legs into one positional merge together. It is
-	// sound for the reason this decline is not — both sides of the extension sit
-	// inside the SAME box, so the null-extension stays per-outer-row rather than
-	// being split across a lower and an upper. What this guard refuses is
-	// collapsing a null-on-empty leg into a lower whose PARTNER — a quantifier
-	// of this select its range is correlated to — stays outside it, in the upper.
-	// A leg collapsed together with its partner is the binary outer-join shape
-	// the NLJ rule implements with DefaultOnEmpty.
-	liveSet := make(map[values.CorrelationIdentifier]struct{}, len(live))
-	for _, a := range live {
-		liveSet[a] = struct{}{}
-	}
-	for _, q := range sel.GetQuantifiers() {
-		if !q.IsNullOnEmpty() {
-			continue
-		}
-		if _, collapsed := liveSet[q.GetAlias()]; !collapsed {
-			continue
-		}
-		for partner := range q.GetCorrelatedTo() {
-			if _, strandedAbove := upperAliases[partner]; strandedAbove {
-				return nil
-			}
-		}
-	}
-
-	// The collapsed lower's result value: the nested positional merge row.
-	// Field types flow the legs' whole row types (record-of-records — the
-	// shape the executor evaluates). An untyped merge slot would strip the leg
-	// types the executor's span recovery and downstream fused references resolve
-	// through — and worse, silently: a reference the bake could not type stays
-	// SOURCE-RELATIVE, and a source-relative operand pushed into a leg's scan as
-	// a SARG evaluates to NULL against the build-bound row, so the scan matches
-	// nothing and the join returns zero rows with no error.
-	//
-	// The QUANTIFIER is the authority for its own row type, exactly as in Java
-	// (`quantifier.getFlowedObjectValue()` is `QuantifiedObjectValue.of(alias,
-	// getFlowedObjectType())` — Quantifier.java:801-803, always typed).
-	// legRowTypes remains as the fallback for a quantifier whose reference
-	// carries no typed result value yet; it scavenges the select's own value
-	// surfaces, where every baked reference is a copy of the one
-	// planner-constructed typed leg QOV. It cannot be the primary source: when
-	// the select's result value is itself an untyped flowed row (the
-	// single-live-lower arm's `getFlowedObjectValue()`) there is no baked
-	// reference anywhere to scavenge, which is precisely the shape that lost the
-	// types.
+	// A null-on-empty leg may collapse into the lower with or without its
+	// partner: it extends per combination of the other legs either way, and
+	// Java's PartitionSelectRule does not distinguish it.
 	legTypes := legRowTypes(resultValue, sel.GetPredicates())
 	fields := make([]values.RecordConstructorField, len(live))
 	mergedFields := make([]values.Field, len(live))

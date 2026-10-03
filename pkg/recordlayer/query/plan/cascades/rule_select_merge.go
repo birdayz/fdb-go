@@ -325,9 +325,14 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 				translated = translated.WithAlias(alias)
 			}
 			newQuantifiers = append(newQuantifiers, translated)
+			// A filter passes its row through, so the parent's name is its
+			// source's; a select's name is the row it projects, never a source.
 			alias := parentAlias
-			if childSel, isSelect := target.childExpr.(*expressions.SelectExpression); isSelect && j < len(childSel.GetSourceAliases()) {
-				alias = childSel.GetSourceAliases()[j]
+			if childSel, isSelect := target.childExpr.(*expressions.SelectExpression); isSelect {
+				alias = ""
+				if j < len(childSel.GetSourceAliases()) {
+					alias = childSel.GetSourceAliases()[j]
+				}
 			}
 			newAliases = append(newAliases, alias)
 		}
@@ -423,11 +428,12 @@ func bakedBoxRefCallback(rcByAlias map[values.CorrelationIdentifier]values.Value
 	// smaller than the concat's (the other leg has ≥1 column), so the count
 	// is a sound key. An untyped reference is box-level: the only binder at
 	// the pre-merge scope was the box quantifier (the WHERE-EXISTS wrapper's
-	// bare untyped RV).
+	// bare untyped RV). A concrete non-record type (a scalar unnest element)
+	// cannot be the box's row, so it is the leg.
 	boxLevel := func(t values.Type, rcv *values.RecordConstructorValue) bool {
 		rt, isRT := t.(*values.RecordType)
 		if !isRT || rt == nil {
-			return true
+			return t == nil || t.Code() == values.TypeCodeUnknown || t.Code() == values.TypeCodeRecord
 		}
 		return len(rt.Fields) == len(rcv.Fields)
 	}

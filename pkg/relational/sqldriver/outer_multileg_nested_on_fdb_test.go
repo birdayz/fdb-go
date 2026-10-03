@@ -170,13 +170,13 @@ func TestFDB_OuterMultilegNestedOnPredicate(t *testing.T) {
 			name:   "A_two-way-inner-nested",
 			query:  "SELECT l.id FROM nt AS l JOIN nt AS r ON l.n.sk = r.n.sk ORDER BY l.id",
 			want:   []string{"1", "1", "2", "2", "3"},
-			planIs: "Project([_current.ID#0], FlatMap(outer=Scan(NT), inner=PredicatesFilter(Scan(NT), [1 preds])))",
+			planIs: "Map(FlatMap(outer=Scan(NT), inner=PredicatesFilter(Scan(NT), [1 preds])), {ID: _current.ID#0})",
 		},
 		{
 			name:   "B_two-way-outer-nested",
 			query:  "SELECT l.id FROM nt AS l LEFT JOIN nt AS r ON l.n.sk = r.n.sk ORDER BY l.id",
 			want:   []string{"1", "1", "2", "2", "3"},
-			planIs: "Project([_current.ID#0], FlatMap(outer=Scan(NT), inner=DefaultOnEmpty(PredicatesFilter(Scan(NT), [1 preds]))))",
+			planIs: "Map(FlatMap(outer=Scan(NT), inner=DefaultOnEmpty(PredicatesFilter(Scan(NT), [1 preds]))), {ID: _current.ID#0})",
 		},
 		{
 			name:  "C_three-way-inner-nested",
@@ -185,7 +185,7 @@ func TestFDB_OuterMultilegNestedOnPredicate(t *testing.T) {
 			// Java plans the same correlated FlatMap chain with no sort (L's
 			// primary scan supplies the order); Go probes m by key where Java
 			// filters a scan of m.
-			planIs: "Project([_current.ID#0], FlatMap(outer=Scan(NT), inner=FlatMap(outer=Scan(NT, [=]), inner=PredicatesFilter(Scan(NT), [1 preds]))))",
+			planIs: "Map(FlatMap(outer=Scan(NT), inner=FlatMap(outer=Scan(NT, [=]), inner=PredicatesFilter(Scan(NT), [1 preds]))), {ID: _current.ID#0})",
 		},
 		{
 			// The flat twin of F. Same three legs, same outer third leg, ONE
@@ -210,7 +210,7 @@ func TestFDB_OuterMultilegNestedOnPredicate(t *testing.T) {
 			name:   "E_three-way-outer-nested-preserved-only",
 			query:  "SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id LEFT JOIN nt AS r ON m.sk = r.n.sk ORDER BY l.id",
 			want:   []string{"1", "2", "3"},
-			planIs: "Project([_current.ID#0], FlatMap(outer=Scan(NT), inner=FlatMap(outer=Scan(NT, [=]), inner=DefaultOnEmpty(PredicatesFilter(Scan(NT), [1 preds])))))",
+			planIs: "Map(FlatMap(outer=Scan(NT), inner=FlatMap(outer=Scan(NT, [=]), inner=DefaultOnEmpty(PredicatesFilter(Scan(NT), [1 preds])))), {ID: _current.ID#0})",
 		},
 
 		// ---- F–H: the three arms that failed loud. m.n.sk is 1,1,2 over

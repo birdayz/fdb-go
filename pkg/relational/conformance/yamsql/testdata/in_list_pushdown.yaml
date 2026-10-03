@@ -124,18 +124,14 @@ tests:
       - [2]
       - [4]
 
-  # Duplicates in the list — each value hits at most one row, but
-  # pushdown does redundant scans (scan #1 and scan #3 both return
-  # id=1). The outer loop collects duplicate rows — NOT in the
-  # desired semantic. However Java also emits duplicates from IN with
-  # repeated literals, so this matches.
-  # Actually SQL semantics: `x IN (1, 1, 2)` = `x = 1 OR x = 1 OR x = 2`
-  # = `x = 1 OR x = 2` — one row per unique match. Our pushdown
-  # emits two rows for id=1. Test bails this — use DISTINCT or unique
-  # list elements for now.
-  #
-  # For MVP, require unique list elements at test time; real-world
-  # users rarely write IN with dupes. TODO: dedup in extractColInList.
+  # Duplicates in the list: `x IN (1, 1, 2)` is `x = 1 OR x = 2`, one row per
+  # match. The explode de-duplicates the list as Java's
+  # InComparisonToExplodeRule does, so each value probes once — with and
+  # without DISTINCT, whose primary-key projection then needs no operator.
+  - query: SELECT id FROM t WHERE id IN (1, 1, 2) ORDER BY id
+    rows:
+      - [1]
+      - [2]
   - query: SELECT DISTINCT id FROM t WHERE id IN (1, 1, 2) ORDER BY id
     rows:
       - [1]

@@ -291,10 +291,13 @@ func wsfGoPlan(s string) *wsfPathNode {
 		return &wsfPathNode{op: "FETCH", children: []*wsfPathNode{plan(0)}}
 	case "PredicatesFilter":
 		return &wsfPathNode{op: "FILTER", children: []*wsfPathNode{plan(0)}}
-	case "Project", "Map", "TypeFilter":
+	case "Project", "TypeFilter":
 		// The target folds the record type into its scan's [IS T]; Go's type filter
 		// restricts the same scan.
 		return plan(-1)
+	case "Map":
+		// Map(child, {result}) names its child first.
+		return plan(0)
 	case "InMemorySort":
 		return &wsfPathNode{op: "SORT", children: []*wsfPathNode{plan(-1)}}
 	case "InUnion":
@@ -340,6 +343,14 @@ func TestWSFUnorderedPrimaryKeyDistinctPath(t *testing.T) {
 	got := wsfAccessPath("go", input)
 	want := "FETCH(PK-DISTINCT(UNION(COVERING(I1 [=]) COVERING(I2 [=]))))"
 	if got != want {
+		t.Fatalf("access path = %q, want %q", got, want)
+	}
+}
+
+func TestWSFMapReducesToItsChild(t *testing.T) {
+	t.Parallel()
+	input := "Map(InUnion(IndexScan(I5, [=]), bindings=1, ASC), {ID: _current.ID#0, COL1: _current.COL1#1})"
+	if got, want := wsfAccessPath("go", input), "INUNION(ISCAN(I5 [=]))"; got != want {
 		t.Fatalf("access path = %q, want %q", got, want)
 	}
 }

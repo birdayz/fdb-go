@@ -89,7 +89,8 @@ func (r *PushMapThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	if fetchInnerPlan == nil {
 		return
 	}
-	newInnerQ := expressions.NewPhysicalQuantifier(
+	newInnerQ := expressions.NamedPhysicalQuantifier(
+		newInnerAlias,
 		call.MemoizeFinalExpressionsFromOther(fetchInnerRef, []expressions.RelationalExpression{fetchInnerExpr}),
 	)
 	// The pushed projection (Map) is its own cascades expression carrying the

@@ -149,7 +149,7 @@ func topSort(root expressions.RelationalExpression) *expressions.LogicalSortExpr
 	if sort, ok := root.(*expressions.LogicalSortExpression); ok {
 		return sort
 	}
-	if _, ok := root.(*expressions.LogicalProjectionExpression); ok {
+	if isBlockOverInput(root) {
 		if producer, err := member(root.GetQuantifiers()[0].GetRangesOver()); err == nil {
 			if sort, ok := producer.(*expressions.LogicalSortExpression); ok {
 				return sort
@@ -157,6 +157,15 @@ func topSort(root expressions.RelationalExpression) *expressions.LogicalSortExpr
 		}
 	}
 	return nil
+}
+
+// isBlockOverInput reports whether e is the definition's SELECT list as the
+// translator states it: a Select carrying the projected row over the block's
+// input, with no predicates of its own.
+func isBlockOverInput(e expressions.RelationalExpression) bool {
+	sel, ok := e.(*expressions.SelectExpression)
+	return ok && len(sel.GetQuantifiers()) == 1 && len(sel.GetPredicates()) == 0 &&
+		sel.GetQuantifiers()[0].Kind() == expressions.QuantifierForEach
 }
 
 // rejectSubquerySorts is the target's front-end refusal of an ORDER BY below
@@ -194,7 +203,7 @@ func rejectSubquerySorts(root expressions.RelationalExpression) error {
 // resolved columns is the target's INVALID_COLUMN_REFERENCE.
 func checkTop(c *specCollector, root expressions.RelationalExpression, rootScope *scope, result []values.Value) error {
 	e, sc := root, rootScope
-	if _, ok := e.(*expressions.LogicalProjectionExpression); ok {
+	if isBlockOverInput(e) {
 		producer, err := member(e.GetQuantifiers()[0].GetRangesOver())
 		if err != nil {
 			return err

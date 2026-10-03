@@ -1323,6 +1323,29 @@ func (p *Planner) pushCrossCandidateIntersection(ref *expressions.Reference, can
 	for _, candidate := range candidates {
 		allMatches = append(allMatches, completeMatchesForCandidate(ref, candidate)...)
 	}
+	// An intersection combines matches of ONE query expression (Java's
+	// MatchPartition is per expression): members of a group can carry different
+	// residuals, and intersecting their compensations would drop the ones they
+	// do not share.
+	byExpression := make(map[expressions.RelationalExpression][]PartialMatch)
+	for _, m := range allMatches {
+		byExpression[m.GetQueryExpression()] = append(byExpression[m.GetQueryExpression()], m)
+	}
+	for _, member := range ref.AllMembers() {
+		if matches := byExpression[member]; len(matches) >= 2 {
+			p.pushExpressionIntersection(ref, matches, requestedOrderings, realizations)
+		}
+	}
+}
+
+// pushExpressionIntersection builds the primary-key intersections over the
+// complete matches of one query expression.
+func (p *Planner) pushExpressionIntersection(
+	ref *expressions.Reference,
+	allMatches []PartialMatch,
+	requestedOrderings []*properties.RequestedOrdering,
+	realizations accessRealizations,
+) {
 	// Only include matches with non-empty bound parameter prefix
 	// (i.e., matches that actually restrict the scan). Zero-coverage
 	// matches produce full index scans that don't help with intersection.
@@ -1498,10 +1521,31 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 		if !f.ChildrenAsSet() || hasStrictSingleQuantifier(f.GetQuantifiers()) {
 			return false
 		}
-		if len(f.GetPredicates()) == 0 {
-			return true
+		if len(f.GetPredicates()) > 0 && !(compensationInnerScanSafe(f) && compensationResidualCorrelationSafe(f)) {
+			return false
 		}
-		return compensationInnerScanSafe(f) && compensationResidualCorrelationSafe(f)
+		// Reshaping rows is only as safe as what it ranges over: exploring this
+		// Select explores the residual compensation beneath it too.
+		for _, q := range f.GetQuantifiers() {
+			if ref := q.GetRangesOver(); ref != nil {
+				for _, member := range ref.AllMembers() {
+					if !isPhysical(member) && isCompensationShape(member) && !compensationSafeForYield(member) {
+						return false
+					}
+				}
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// isCompensationShape reports whether expr is a compensation a block's Select
+// compensation nests: the residual filter or the required Unique over the scan.
+func isCompensationShape(expr expressions.RelationalExpression) bool {
+	switch expr.(type) {
+	case *expressions.LogicalFilterExpression, *expressions.LogicalUniqueExpression:
+		return true
 	}
 	return false
 }

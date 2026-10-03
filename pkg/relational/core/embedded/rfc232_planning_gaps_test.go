@@ -46,8 +46,8 @@ func TestParenthesisedGroupingKeyPlans(t *testing.T) {
 		{
 			name: "parenthesised computed key",
 			sql:  `SELECT max(c2) FROM flat GROUP BY (c1 = 1)`,
-			want: "Project([_current.MAX(C2)#1], StreamingAgg(keys=[{_0: predicate}], " +
-				"InMemorySort([predicate ASC], Scan(FLAT))))",
+			want: "Map(StreamingAgg(keys=[{_0: predicate}], " +
+				"InMemorySort([predicate ASC], Scan(FLAT))), {_0: _current.MAX(C2)#1})",
 		},
 		{
 			// The parenthesised and bare spellings of one key side by side.
@@ -56,8 +56,8 @@ func TestParenthesisedGroupingKeyPlans(t *testing.T) {
 			// collapse would silently change the grouping.
 			name: "parenthesised beside its bare twin",
 			sql:  `SELECT max(c2) FROM flat GROUP BY (c1 = 1), c1 = 1`,
-			want: "Project([_current.MAX(C2)#2], StreamingAgg(keys=[{_0: predicate}, predicate], " +
-				"InMemorySort([predicate ASC, predicate ASC], Scan(FLAT))))",
+			want: "Map(StreamingAgg(keys=[{_0: predicate}, predicate], " +
+				"InMemorySort([predicate ASC, predicate ASC], Scan(FLAT))), {_0: _current.MAX(C2)#2})",
 		},
 		{
 			// The unparenthesised control. It planned throughout, and it is
@@ -65,8 +65,8 @@ func TestParenthesisedGroupingKeyPlans(t *testing.T) {
 			// problem rather than an accessor-construction one.
 			name: "bare computed key",
 			sql:  `SELECT max(c2) FROM flat GROUP BY c1 = 1`,
-			want: "Project([_current.MAX(C2)#1], StreamingAgg(keys=[predicate], " +
-				"InMemorySort([predicate ASC], Scan(FLAT))))",
+			want: "Map(StreamingAgg(keys=[predicate], " +
+				"InMemorySort([predicate ASC], Scan(FLAT))), {_0: _current.MAX(C2)#1})",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -180,10 +180,10 @@ CREATE TABLE t3 (id BIGINT, t2_id BIGINT, PRIMARY KEY (id))`
 	if !strings.Contains(got, "FirstOrDefault") {
 		t.Errorf("plan has no FirstOrDefault — the EXISTS did not lower to a semi-join:\n%s", got)
 	}
-	// #0 is t1.id in the outer merged row — the read whose lineage crossing is
-	// the subject here.
-	if !strings.Contains(got, "Project([_current.ID#0]") {
-		t.Errorf("plan does not project the outer join's first ID:\n%s", got)
+	// The result reads t1.id from the outer leg's own row — the read whose
+	// lineage crossing is the subject here.
+	if result := explainWithResult(t, sql, ddl); !strings.HasSuffix(result, " => {ID: T1.ID#0}") {
+		t.Errorf("plan does not return the outer join's first ID:\n%s", result)
 	}
 }
 
@@ -216,15 +216,15 @@ CREATE TABLE t2 (id BIGINT, t1_id BIGINT, PRIMARY KEY (id))`
 			name: "output alias collides with the hidden sort key",
 			sql: `SELECT col1 AS id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS e ` +
 				`FROM t1 ORDER BY t1.id`,
-			want: "Project([_current.ID#0, _current.E#1], " +
-				"FlatMap(outer=Scan(T1), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds]))))",
+			want: "Map(FlatMap(outer=Scan(T1), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds]))), " +
+				"{ID: _current.ID#0, E: _current.E#1})",
 		},
 		{
 			name: "descending, same collision",
 			sql: `SELECT col1 AS id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS e ` +
 				`FROM t1 ORDER BY t1.id DESC`,
-			want: "Project([_current.ID#0, _current.E#1], " +
-				"FlatMap(outer=Scan(T1) REVERSE, inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds]))))",
+			want: "Map(FlatMap(outer=Scan(T1) REVERSE, inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds]))), " +
+				"{ID: _current.ID#0, E: _current.E#1})",
 		},
 		{
 			// The VACUITY GUARD: no collision, and it planned correctly
@@ -233,8 +233,8 @@ CREATE TABLE t2 (id BIGINT, t1_id BIGINT, PRIMARY KEY (id))`
 			name: "no collision",
 			sql: `SELECT col1 AS id2, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS e ` +
 				`FROM t1 ORDER BY t1.id`,
-			want: "Project([_current.ID2#0, _current.E#1], " +
-				"FlatMap(outer=Scan(T1), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds]))))",
+			want: "Map(FlatMap(outer=Scan(T1), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds]))), " +
+				"{ID2: _current.ID2#0, E: _current.E#1})",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -586,7 +586,7 @@ func TestDerivedTableOrderByKeepsItsOwnSourceAnchor(t *testing.T) {
 	t.Parallel()
 	const ddl = `CREATE TABLE t (id BIGINT, g BIGINT, PRIMARY KEY (id))
 CREATE TABLE t2 (id BIGINT, PRIMARY KEY (id))`
-	const innerSort = "InMemorySort([_current.G#1 DESC, _current.ID#0 ASC], Scan(T))"
+	const derived = "Map(InMemorySort([_current.G#1 DESC, _current.ID#0 ASC], Scan(T)), {ID: _current.ID#0})"
 	for _, tc := range []struct {
 		name string
 		sql  string
@@ -598,12 +598,12 @@ CREATE TABLE t2 (id BIGINT, PRIMARY KEY (id))`
 			// below record a CAPTURE rather than the ordinary spelling.
 			name: "bare, no enclosing select",
 			sql:  `SELECT id FROM t ORDER BY g DESC, id ASC LIMIT 4`,
-			want: "Limit(4, Project([_current.ID#0], " + innerSort + "))",
+			want: "Limit(4, " + derived + ")",
 		},
 		{
 			name: "wrapped in a select that has no ORDER BY",
 			sql:  `SELECT a.id FROM (SELECT id FROM t ORDER BY g DESC, id ASC LIMIT 4) a`,
-			want: "Project([_current.ID#0], Limit(4, Project([_current.ID#0], " + innerSort + ")))",
+			want: "Map(Limit(4, " + derived + "), {ID: _current.ID#0})",
 		},
 		{
 			// The runtime failure's exact shape: the derived table is a join
@@ -612,8 +612,7 @@ CREATE TABLE t2 (id BIGINT, PRIMARY KEY (id))`
 			name: "derived table as a join leg",
 			sql: `SELECT a.id, b.id FROM (SELECT id FROM t ORDER BY g DESC, id ASC LIMIT 4) a, t2 b ` +
 				`WHERE b.id > a.id`,
-			want: "Project([_current.ID#0, _current.ID#1], FlatMap(outer=Limit(4, " +
-				"Project([_current.ID#0], " + innerSort + ")), inner=Scan(T2, [<>])))",
+			want: "FlatMap(outer=Limit(4, " + derived + "), inner=Scan(T2, [<>])) => {A.ID: A.ID#0, B.ID: B.ID#0}",
 		},
 		{
 			// The other direction, which must NOT be broken by the ownership
@@ -625,13 +624,16 @@ CREATE TABLE t2 (id BIGINT, PRIMARY KEY (id))`
 			// plan string is compared rather than the key alone.
 			name: "enclosing ORDER BY still anchors on the derived output",
 			sql:  `SELECT a.id FROM (SELECT id FROM t ORDER BY g DESC, id ASC LIMIT 4) a ORDER BY a.id DESC`,
-			want: "Project([_current.ID#0], InMemorySort([_current.ID#0 DESC], Limit(4, " +
-				"Project([_current.ID#0], " + innerSort + "))))",
+			want: "Map(InMemorySort([_current.ID#0 DESC], Limit(4, " + derived + ")), {ID: _current.ID#0})",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := explainWithOptions(t, tc.sql, ddl, nil); got != tc.want {
+			got := explainWithOptions(t, tc.sql, ddl, nil)
+			if strings.Contains(tc.want, " => ") {
+				got = explainWithResult(t, tc.sql, ddl)
+			}
+			if got != tc.want {
 				t.Errorf("plan = %q,\nwant %q", got, tc.want)
 			}
 		})
@@ -658,7 +660,7 @@ CREATE TABLE t2 (id BIGINT, PRIMARY KEY (id))`
 //	exact QOV "LB$BOX" (…) has no declared runtime binding
 //
 // The ordinals are the assertion: the box row is
-// [AID, K, ARR, BID, K, CID, CV, X], so LA.K is #1 and LB.K is #4. Two
+// [AID, K, ARR, BID, K, CID, CV], so LA.K is #1 and LB.K is #4. Two
 // same-named columns are told apart by nothing else, which is the same reason
 // the name evidence could not settle it.
 func TestNestedOuterJoinBoxCrossesItsProducer(t *testing.T) {
@@ -677,10 +679,9 @@ CREATE TABLE cc (cid BIGINT, cv BIGINT, PRIMARY KEY (cid))`
 			name: "nested box under a lateral unnest",
 			sql: `SELECT la.k, lb.k, cc.cv, x FROM la FULL OUTER JOIN lb ON la.aid = lb.bid ` +
 				`FULL OUTER JOIN cc ON la.aid = cc.cid, la.arr AS x WHERE la.k = 100`,
-			want: "Project([_current.K#1, _current.K#4, _current.CV#6, _current.X#7], " +
-				"FlatMap(outer=PredicatesFilter(NestedLoopJoin(FULL OUTER, [1 preds], " +
+			want: "FlatMap(outer=PredicatesFilter(NestedLoopJoin(FULL OUTER, [1 preds], " +
 				"NestedLoopJoin(FULL OUTER, [1 preds], Scan(LA), Scan(LB)), Scan(CC)), [1 preds]), " +
-				"inner=Explode(field)))",
+				"inner=Explode(field)) => {LA.K: CC$BOX.K#1, LB.K: CC$BOX.K#4, CV: CC$BOX.CV#6, X: X}",
 		},
 		{
 			// The DEPTH control, and it is what makes the arm above a
@@ -691,14 +692,13 @@ CREATE TABLE cc (cid BIGINT, cv BIGINT, PRIMARY KEY (cid))`
 			// correctly throughout.
 			name: "one box, no nesting",
 			sql:  `SELECT la.k, lb.k FROM la FULL OUTER JOIN lb ON la.aid = lb.bid, la.arr AS x`,
-			want: "Project([_current.K#1, _current.K#4], " +
-				"FlatMap(outer=NestedLoopJoin(FULL OUTER, [1 preds], Scan(LA), Scan(LB)), " +
-				"inner=Explode(field)))",
+			want: "FlatMap(outer=NestedLoopJoin(FULL OUTER, [1 preds], Scan(LA), Scan(LB)), " +
+				"inner=Explode(field)) => {LA.K: LB$BOX.K#1, LB.K: LB$BOX.K#4}",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := explainWithOptions(t, tc.sql, ddl, nil); got != tc.want {
+			if got := explainWithResult(t, tc.sql, ddl); got != tc.want {
 				t.Errorf("plan = %q,\nwant %q", got, tc.want)
 			}
 		})
@@ -868,29 +868,29 @@ CREATE TABLE ts (id BIGINT, items sitem ARRAY, name STRING, PRIMARY KEY (id))`
 			// lone record-typed bare QOV.
 			name: "the struct element alone",
 			sql:  `SELECT "X" FROM TS, TS."ITEMS" AS "X"`,
-			want: "Project([_current.X#3], FlatMap(outer=Scan(TS), inner=Explode(field)))",
+			want: "FlatMap(outer=Scan(TS), inner=Explode(field)) => {X: X}",
 		},
 		{
 			// The VACUITY GUARD for the projection-row derivation: with a
 			// second column the list is no longer one slot, so neither rule
-			// could reach it, and it planned throughout. The element still
-			// lands at merged ordinal 3 — [ID, ITEMS, NAME, X] — which is what
-			// says the two arms read the same slot.
+			// could reach it, and it planned throughout. The element is still
+			// the whole explode row X, which is what says the two arms read the
+			// same value.
 			name: "the element beside another column",
 			sql:  `SELECT "ID", "X" FROM TS, TS."ITEMS" AS "X"`,
-			want: "Project([_current.ID#0, _current.X#3], FlatMap(outer=Scan(TS), inner=Explode(field)))",
+			want: "FlatMap(outer=Scan(TS), inner=Explode(field)) => {ID: TS.ID#0, X: X}",
 		},
 		{
-			// The merged row still carries X as one struct slot; the star's
-			// projection reads its visible SKU/QTY members from that slot.
+			// X is one struct row; the star reads its visible SKU/QTY members
+			// from it.
 			name: "select star expands visible element members",
 			sql:  `SELECT * FROM TS, TS."ITEMS" AS "X"`,
-			want: "Project([_current.ID#0, _current.ITEMS#1, _current.NAME#2, _current.X#3.SKU#0, _current.X#3.QTY#1], FlatMap(outer=Scan(TS), inner=Explode(field)))",
+			want: "FlatMap(outer=Scan(TS), inner=Explode(field)) => {ID: TS.ID#0, ITEMS: TS.ITEMS#1, NAME: TS.NAME#2, SKU: X.SKU#0, QTY: X.QTY#1}",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := explainWithOptions(t, tc.sql, ddl, nil); got != tc.want {
+			if got := explainWithResult(t, tc.sql, ddl); got != tc.want {
 				t.Errorf("plan = %q,\nwant %q", got, tc.want)
 			}
 		})

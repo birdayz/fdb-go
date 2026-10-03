@@ -25,7 +25,7 @@ tests:
   # Bare-scan leg first, projection leg second.
   - query: SELECT * FROM t UNION ALL SELECT "id", "k" FROM t
     columns: ["id", "k"]
-    plan_contains: "UnorderedUnion(Scan(T), Project([_current.id#0, _current.k#1], Scan(T)))"
+    plan_contains: "UnorderedUnion(Scan(T), Map(Scan(T), {id: _current.id#0, k: _current.k#1}))"
     unordered: true
     rows:
       - [1, 10]
@@ -38,7 +38,7 @@ tests:
   # the OTHER side, so the failure was symmetric and the pin is too.
   - query: SELECT "id", "k" FROM t UNION ALL SELECT * FROM t
     columns: ["id", "k"]
-    plan_contains: "UnorderedUnion(Project([_current.id#0, _current.k#1], Scan(T)), Scan(T))"
+    plan_contains: "UnorderedUnion(Map(Scan(T), {id: _current.id#0, k: _current.k#1}), Scan(T))"
     unordered: true
     rows:
       - [1, 10]
@@ -51,7 +51,7 @@ tests:
   # to the scan, so the fold reached this shape too.
   - query: SELECT * FROM t WHERE "k" > 10 UNION ALL SELECT "id", "k" FROM t
     columns: ["id", "k"]
-    plan_contains: "UnorderedUnion(PredicatesFilter(Scan(T), [1 preds]), Project([_current.id#0, _current.k#1], Scan(T)))"
+    plan_contains: "UnorderedUnion(PredicatesFilter(Scan(T), [1 preds]), Map(Scan(T), {id: _current.id#0, k: _current.k#1}))"
     unordered: true
     rows:
       - [2, 20]
@@ -62,7 +62,7 @@ tests:
   # A filter under the projection leg.
   - query: SELECT * FROM t UNION ALL SELECT "id", "k" FROM t WHERE "k" > 10
     columns: ["id", "k"]
-    plan_contains: "UnorderedUnion(Scan(T), Project([_current.id#0, _current.k#1], PredicatesFilter(Scan(T), [1 preds])))"
+    plan_contains: "UnorderedUnion(Scan(T), Map(PredicatesFilter(Scan(T), [1 preds]), {id: _current.id#0, k: _current.k#1}))"
     unordered: true
     rows:
       - [1, 10]
@@ -92,7 +92,7 @@ tests:
   # place that aligns them.
   - query: SELECT "id" AS w, "k" AS x FROM t UNION ALL SELECT * FROM t
     columns: ["W", "X"]
-    plan_contains: "UnorderedUnion(Project([_current.W#0, _current.X#1], Project([_current.id#0, _current.k#1], Scan(T))), Project([_current.id#0, _current.k#1], Scan(T)))"
+    plan_contains: "UnorderedUnion(Map(Scan(T), {W: _current.id#0, X: _current.k#1}), Map(Scan(T), {W: _current.id#0, X: _current.k#1}))"
     unordered: true
     rows:
       - [1, 10]
@@ -105,7 +105,7 @@ tests:
   # to itself and so always planned.
   - query: SELECT * FROM u UNION ALL SELECT ID, K FROM u
     columns: ["ID", "K"]
-    plan_contains: "UnorderedUnion(Scan(U), Project([_current.ID#0, _current.K#1], Scan(U)))"
+    plan_contains: "UnorderedUnion(Scan(U), Map(Scan(U), {ID: _current.ID#0, K: _current.K#1}))"
     unordered: true
     rows:
       - [1, 10]

@@ -169,10 +169,10 @@ var engineGaps = []EngineGap{
 	// struct POSITIONALLY, which is what Java's parseRecordFields does with a
 	// target type in hand.
 	//
-	// Java joins the two function bodies with T3's version index outermost;
-	// Go's expansion keeps each call a derived table and runs T4 outermost
-	// (TODO.md, "SQL function calls plan as nested derived tables").
-	{"versions-tests.yamsql", SkipConformanceScanChoiceOrder, `"select a.version AS version3, a.r.id AS id3, b.version AS version4, b.r.id AS id4, a.r.col2, b.r.col4 from t3_by_col1('b') a, t4_by_col1('b') b where 2 in b.r.c…": cell mismatch at row 1, cell ID3: expected 3 (Integer), got 4 (Long)`, "TODO SQL function calls plan as nested derived tables"},
+	// Java answers an EXISTS over T4.COL4 from the multi-valued index
+	// T4_COL4_VERSION in version order; Go scans T4 (TODO.md, "An EXISTS over a
+	// repeated field does not match a multi-valued index").
+	{"versions-tests.yamsql", SkipConformanceScanChoiceOrder, `"select \"__ROW_VERSION\", id, col1 from t4 where exists (select 1 from t4.col4 where col4 = 3)": cell mismatch at row 1, cell ID: expected 9 (Integer), got 4 (Long)`, "TODO EXISTS over a repeated field does not match a multi-valued index"},
 	// The seeded schedule reaches the EXISTS LIMIT extension first.
 	{"orderby.yamsql", SkipConformanceGoAccepts, `"select b from t1 where exists (select * from t1 order by b limit 1)": expecting statement to throw an error 0AF00, however it succeeded`, "RFC-128; TestCorpusReadSideExtensions"},
 	// Java cannot satisfy both join-leg orderings from indexes; Go sorts the joined rows.

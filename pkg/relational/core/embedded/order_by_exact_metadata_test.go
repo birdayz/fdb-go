@@ -436,14 +436,15 @@ func TestOrderByExactMetadata_DerivedDuplicateNamesUsePhysicalInputContract(t *t
 	if err != nil {
 		t.Fatalf("PlanRecordQueryWithSubqueries: %v", err)
 	}
-	projection, ok := plan.(*plans.RecordQueryProjectionPlan)
+	projection, ok := plan.(*plans.RecordQueryMapPlan)
 	if !ok {
-		t.Fatalf("plan = %T, want RecordQueryProjectionPlan", plan)
+		t.Fatalf("plan = %T, want RecordQueryMapPlan", plan)
 	}
-	projected := projection.GetProjections()
-	if len(projected) != 1 {
-		t.Fatalf("projection width = %d, want 1", len(projected))
+	columns, ok := projection.GetResultValue().(*values.RecordConstructorValue)
+	if !ok || len(columns.Fields) != 1 {
+		t.Fatalf("projection = %v, want one column", projection.GetResultValue())
 	}
+	projected := []values.Value{columns.Fields[0].Value}
 	field, ok := values.AsFieldValue(projected[0])
 	if !ok {
 		t.Fatalf("projected value = %T, want exact FieldValue", projected[0])
@@ -463,16 +464,9 @@ func TestOrderByExactMetadata_DerivedDuplicateNamesUsePhysicalInputContract(t *t
 	if !root.FlowedType().Equals(input.FlowedType()) {
 		t.Fatalf("projected root type = %s, input type = %s", root.FlowedType(), input.FlowedType())
 	}
-	children := projection.GetChildren()
-	if len(children) != 1 {
-		t.Fatalf("projection child count = %d, want 1", len(children))
-	}
-	childLayout, err := children[0].ProvidedOutputLayout()
-	if err != nil {
-		t.Fatalf("projection child layout: %v", err)
-	}
-	if root != childLayout.Carrier() {
-		t.Fatal("projected field is not rooted at the selected child's exact layout carrier")
+	// A map reads its child's row through its own input quantifier.
+	if root.Correlation() != projection.GetInnerQuantifier().GetAlias() {
+		t.Fatalf("projected field reads %v, not the map's input %v", root.Correlation(), projection.GetInnerQuantifier().GetAlias())
 	}
 	inputRecord, ok := input.FlowedType().(*values.RecordType)
 	if !ok || len(inputRecord.Fields) != 3 {

@@ -577,6 +577,39 @@ func TestSelectMergeRule_WithSourceAliases(t *testing.T) {
 	}
 }
 
+// A parent's source alias for a select child names the row the child
+// projects, so the sources pulled up from it do not inherit it; a filter
+// child's row is its source's, so its source keeps the parent's name.
+func TestSelectMergeRule_SelectChildSourcesDoNotInheritTheDerivedName(t *testing.T) {
+	t.Parallel()
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(selectMergeScan(t)))
+	derived := selectMergeSelect(t, selectMergeFlowed(t, scanQ), []expressions.Quantifier{scanQ}, nil)
+	derivedQ := expressions.ForEachQuantifier(expressions.InitialOf(derived))
+	filterScanQ := expressions.ForEachQuantifier(expressions.InitialOf(selectMergeScan(t)))
+	filteredQ := expressions.ForEachQuantifier(expressions.InitialOf(selectMergeFilter(t, nil, filterScanQ)))
+	sel := selectMergeSelectWithAliases(t,
+		selectMergeFlowed(t, derivedQ),
+		[]expressions.Quantifier{derivedQ, filteredQ},
+		nil,
+		[]string{"DERIVED", "FILTERED"},
+	)
+	yielded := selectMergeFire(t, NewSelectMergeRule(), expressions.InitialOf(sel))
+	if len(yielded) < 1 {
+		t.Fatal("nothing merged")
+	}
+	merged := yielded[0].(*expressions.SelectExpression)
+	aliases := map[values.CorrelationIdentifier]string{}
+	for i, q := range merged.GetQuantifiers() {
+		aliases[q.GetAlias()] = merged.GetSourceAliases()[i]
+	}
+	if got := aliases[scanQ.GetAlias()]; got != "" {
+		t.Errorf("the derived select's source took the derived name %q", got)
+	}
+	if got := aliases[filterScanQ.GetAlias()]; got != "FILTERED" {
+		t.Errorf("the filter's source is named %q, want FILTERED", got)
+	}
+}
+
 func TestSelectMergeTranslationDescendsThroughAggregate(t *testing.T) {
 	t.Parallel()
 	pType := values.NewRecordType("", false, []values.Field{{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0}, {Name: "V", FieldType: values.NotNullLong, Ordinal: 1}})
@@ -1592,6 +1625,29 @@ func TestSelectMerge_BakedBoxRefCallback_MultiAccessor(t *testing.T) {
 	}
 	if len(ordinals) != 2 || ordinals[0] != 0 || ordinals[1] != 0 || !ok || !named || suffixName != "SUB" {
 		t.Fatalf("collapsed path = %v, want the slot's leg ordinal (0) fused with the suffix (SUB#0)", ordinals)
+	}
+}
+
+// TestSelectMerge_BakedBoxRefCallback_ScalarLegReadIsNotTheBox pins that a box
+// named after its rightmost leaf leaves a bare read of that leaf alone when the
+// leaf is a scalar unnest element: the box row is a record, so a LONG-typed
+// read of the shared alias can only be the leaf, which the pulled-up leg
+// quantifier re-binds.
+func TestSelectMerge_BakedBoxRefCallback_ScalarLegReadIsNotTheBox(t *testing.T) {
+	t.Parallel()
+	u := values.NamedCorrelationIdentifier("U")
+	leaf := selectMergeQOV(t, u, values.NotNullLong)
+	rc := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "U", Value: leaf},
+	)
+	read := selectMergeQOV(t, u, values.NotNullLong)
+	cb := bakedBoxRefCallback(map[values.CorrelationIdentifier]values.Value{u: rc})
+	if out := values.Replace(read, cb); out != read {
+		t.Fatalf("scalar leaf read became %v, want the read of leaf U itself", out)
+	}
+	box := values.NewRecordType("", false, []values.Field{{Name: "U", FieldType: values.NotNullLong, Ordinal: 0}})
+	if out := values.Replace(selectMergeQOV(t, u, box), cb); out != rc {
+		t.Fatalf("box-typed read became %v, want the box row %v", out, rc)
 	}
 }
 

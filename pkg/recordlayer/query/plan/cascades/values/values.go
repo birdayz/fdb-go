@@ -1875,11 +1875,29 @@ func ExplainValue(v Value) string { return explainValueOrdinals(v, true) }
 // q$1, ... by first structural occurrence. Named correlations — including a
 // quoted user alias whose text looks like q$7 — are never rewritten.
 func ExplainPlanValues(vs []Value) []string {
+	unique, hasBareUniqueQOV := uniqueExplainRoots(vs, CorrelationIdentifier{})
+	aliases := make(map[CorrelationIdentifier]string, len(unique))
+	if len(unique) == 1 && !hasBareUniqueQOV {
+		aliases[unique[0]] = ""
+	} else {
+		numberExplainRoots(aliases, unique)
+	}
+	result := make([]string, len(vs))
+	for i, v := range vs {
+		result[i] = explainValueOrdinalsWithAliases(v, true, aliases)
+	}
+	return result
+}
+
+// uniqueExplainRoots lists the unique correlations vs read, other than skip,
+// in first structural occurrence, and reports whether one is read as a bare
+// QOV.
+func uniqueExplainRoots(vs []Value, skip CorrelationIdentifier) ([]CorrelationIdentifier, bool) {
 	unique := make([]CorrelationIdentifier, 0, 2)
 	seen := make(map[CorrelationIdentifier]struct{})
 	hasBareUniqueQOV := false
 	add := func(correlation CorrelationIdentifier) {
-		if correlation.kind != correlationKindUnique {
+		if correlation.kind != correlationKindUnique || correlation == skip {
 			return
 		}
 		if _, ok := seen[correlation]; ok {
@@ -1889,7 +1907,8 @@ func ExplainPlanValues(vs []Value) []string {
 		unique = append(unique, correlation)
 	}
 	for _, v := range vs {
-		if qov, ok := v.(*quantifiedObjectValue); ok && qov != nil && qov.correlation.kind == correlationKindUnique {
+		if qov, ok := v.(*quantifiedObjectValue); ok && qov != nil &&
+			qov.correlation.kind == correlationKindUnique && qov.correlation != skip {
 			hasBareUniqueQOV = true
 		}
 		WalkValue(v, func(node Value) bool {
@@ -1910,19 +1929,26 @@ func ExplainPlanValues(vs []Value) []string {
 			return true
 		})
 	}
-	aliases := make(map[CorrelationIdentifier]string, len(unique))
-	if len(unique) == 1 && !hasBareUniqueQOV {
-		aliases[unique[0]] = ""
-	} else {
-		for i, correlation := range unique {
-			aliases[correlation] = "q$" + intToDec(int64(i))
-		}
+	return unique, hasBareUniqueQOV
+}
+
+func numberExplainRoots(aliases map[CorrelationIdentifier]string, unique []CorrelationIdentifier) {
+	for i, correlation := range unique {
+		aliases[correlation] = "q$" + intToDec(int64(i))
 	}
-	result := make([]string, len(vs))
-	for i, v := range vs {
-		result[i] = explainValueOrdinalsWithAliases(v, true, aliases)
-	}
-	return result
+}
+
+// ExplainValueOverInput renders v like ExplainValue with the input correlation
+// spelled as the current row, as Java prints a plan's own input as `_`. The
+// input alias is minted per planning run; printing it would make the plan text
+// depend on allocation order, and so would any other unique root v reads (an
+// outer row the plan is correlated to), which is numbered as ExplainPlanValues
+// numbers its roots.
+func ExplainValueOverInput(v Value, input CorrelationIdentifier) string {
+	aliases := map[CorrelationIdentifier]string{input: currentCorrelation.Name()}
+	unique, _ := uniqueExplainRoots([]Value{v}, input)
+	numberExplainRoots(aliases, unique)
+	return explainValueOrdinalsWithAliases(v, true, aliases)
 }
 
 // ColumnNameValue renders v exactly like ExplainValue but WITHOUT the baked

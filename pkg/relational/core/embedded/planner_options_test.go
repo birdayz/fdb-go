@@ -10,6 +10,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer"
 	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/parser"
@@ -79,6 +80,19 @@ func explainWithOptions(t *testing.T, sql, schemaDDL string, opts *api.Options) 
 		t.Fatalf("planning %q: %v", sql, err)
 	}
 	return plan.Explain()
+}
+
+// explainWithResult is the plan's explain followed by its root result value, in
+// the stable correlation namespace plan explains use. A block's columns are the
+// root's own result when the block folds into a join or flat-map, so a test
+// pinning which slot a column reads must look there.
+func explainWithResult(t *testing.T, sql, schemaDDL string) string {
+	t.Helper()
+	plan, _, err := planWithOptions(t, sql, schemaDDL, nil)
+	if err != nil {
+		t.Fatalf("planning %q: %v", sql, err)
+	}
+	return plan.Explain() + " => " + values.ExplainPlanValues([]values.Value{plan.GetResultValue()})[0]
 }
 
 // indexedTableDDL gives the planner a real access-path choice: without index
@@ -190,7 +204,7 @@ func TestPlannerOptions_DisabledPlannerRules(t *testing.T) {
 	// A bare IndexScan IS a fetching scan since RFC-220 (Java semantics), and
 	// MergeFetchIntoCoveringIndexRule collapses Fetch(Covering(Index)) into it.
 	// The fixture still starts from an INDEX plan, which is all the contrast needs.
-	const wantBase = "Project([_current.ID#0, _current.C#3], IndexScan(IDX_A, [=]))"
+	const wantBase = "Map(IndexScan(IDX_A, [=]), {ID: _current.ID#0, C: _current.C#3})"
 	if base != wantBase {
 		t.Fatalf("default plan = %q, want %q — the fixture must start from an INDEX plan for "+
 			"the disabled-rule contrast to mean anything", base, wantBase)
@@ -199,7 +213,7 @@ func TestPlannerOptions_DisabledPlannerRules(t *testing.T) {
 	disabled := api.NewOptionsBuilder().
 		Set(api.OptDisabledPlannerRules, []string{"MatchLeafRule"}).Build()
 	got := explainWithOptions(t, sql, indexedTableDDL, disabled)
-	const wantDisabled = "Project([_current.ID#0, _current.C#3], PredicatesFilter(Scan(T), [1 preds]))"
+	const wantDisabled = "Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0, C: _current.C#3})"
 	if got != wantDisabled {
 		t.Fatalf("with MatchLeafRule disabled, plan = %q, want %q — the option is accepted and "+
 			"ignored if the plan is unchanged", got, wantDisabled)
@@ -306,7 +320,7 @@ func TestPlannerOptions_DisablePlannerRewriting(t *testing.T) {
 		// rejection that went away when record names left exact-type identity.
 		// The fixture's point is the SHAPE (a rewritten outer join: FlatMap over a
 		// DefaultOnEmpty index probe), which is unchanged.
-		const wantBase = "Project([_current.ID#0], FlatMap(outer=Scan(T), inner=DefaultOnEmpty(IndexScan(IDX_A, [=]))))"
+		const wantBase = "FlatMap(outer=Scan(T), inner=DefaultOnEmpty(IndexScan(IDX_A, [=])))"
 		if base != wantBase {
 			t.Fatalf("default plan = %q, want %q — the fixture must start from the REWRITTEN "+
 				"outer join for the contrast to mean anything", base, wantBase)
@@ -314,7 +328,7 @@ func TestPlannerOptions_DisablePlannerRewriting(t *testing.T) {
 
 		off := api.NewOptionsBuilder().Set(api.OptDisablePlannerRewriting, true).Build()
 		got := explainWithOptions(t, sql, indexedTableDDL, off)
-		const wantOff = "Project([_current.ID#0], NestedLoopJoin(LEFT OUTER, [1 preds], Scan(T), Scan(T)))"
+		const wantOff = "NestedLoopJoin(LEFT OUTER, [1 preds], Scan(T), Scan(T))"
 		if got != wantOff {
 			t.Fatalf("with rewriting disabled, plan = %q, want %q — the option is accepted and "+
 				"ignored if the plan is unchanged", got, wantOff)

@@ -340,8 +340,8 @@ func TestNestedDerivedArithmetic_TypeSurvivesUnmergedProjectionSpine(t *testing.
 		minProjections int
 	}{
 		{"default", original, nil, 1},
-		{"identity_reuse", original, []string{"ProjectionMergeRule", "RemoveProjectionRule"}, 1},
-		{"renamed_unmerged", "SELECT id, d2_value AS doubled FROM (SELECT id, doubled AS d2_value FROM (SELECT id, val * 2 AS doubled FROM t_nd8) AS d2) AS d1 ORDER BY id", []string{"ProjectionMergeRule", "RemoveProjectionRule"}, 2},
+		{"identity_reuse", original, []string{"SelectMergeRule"}, 1},
+		{"renamed_unmerged", "SELECT id, d2_value AS doubled FROM (SELECT id, doubled AS d2_value FROM (SELECT id, val * 2 AS doubled FROM t_nd8) AS d2) AS d1 ORDER BY id", []string{"SelectMergeRule"}, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -362,7 +362,7 @@ func TestNestedDerivedArithmetic_TypeSurvivesUnmergedProjectionSpine(t *testing.
 			// composition disabled, the inheritance boundary must survive.
 			projectionCount := 0
 			plans.Walk(cp.physicalPlan, func(plan plans.RecordQueryPlan) bool {
-				if _, ok := plan.(*plans.RecordQueryProjectionPlan); ok {
+				if _, ok := plan.(*plans.RecordQueryMapPlan); ok {
 					projectionCount++
 				}
 				return true

@@ -1721,7 +1721,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// The output alias may reuse the joined table alias when it is not referenced.
 		plan := assertRows(t,
 			`SELECT 1 FROM T1 JOIN "U" ON "U"."ID" = T1."ID", T1."ARR1" AS "U"`,
-			[]string{"1=1"})
+			[]string{"_0=1"})
 		unnestMustContain(t, plan, "Explode")
 	})
 
@@ -1903,8 +1903,9 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	})
 
 	t.Run("R26 P2a catalog-builder subquery qualifies the shadowed unnest bare projection no ORDER BY", func(t *testing.T) {
-		// Without ORDER BY, the BXC twin isolates the projection and still requires
-		// exact current ordinal 3. RFC-142.
+		// Without ORDER BY nothing reads the EXISTS body's select list, so the
+		// block plans no projection at all and there is no slot to misread; the
+		// unnest still drives the existence test. RFC-142.
 		assertRejected(t, md, `SELECT "ID" FROM U WHERE EXISTS (SELECT "V" FROM GD, GD."ARR" AS "V", GW)`, api.ErrCodeAmbiguousColumn)
 		plan, perr := embedded.PlanRecordQueryWithMetadata(
 			`SELECT "ID" FROM U WHERE EXISTS (SELECT "V" FROM GD, GD."ARR" AS "V", BXC)`, md, nil,
@@ -1913,10 +1914,10 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			t.Fatalf("plan: %v", perr)
 		}
 		explain := plan.Explain()
-		if !unnestProjectionHasCurrentOrdinal(plan, 3) {
-			t.Fatalf("inner projection did not bind exact current ordinal 3: %s", explain)
+		if strings.Contains(explain, "Project(") || strings.Count(explain, "Map(") != strings.Count(explain, "FlatMap(") ||
+			!strings.Contains(explain, "Explode(field)") {
+			t.Fatalf("the EXISTS body must plan its unnest and no projection: %s", explain)
 		}
-		unnestMustNotContain(t, explain, "Project([V],")
 	})
 
 	t.Run("P2b WHERE EXISTS over a lateral unnest returns matching elements", func(t *testing.T) {
@@ -2369,7 +2370,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// The two outputs retain separate slots and labels; a reference is ambiguous.
 		assertRejected(t, md, `SELECT "X" FROM T1, T1."ARR1" AS "X" AT "X"`, api.ErrCodeAmbiguousColumn)
 		plan := assertRows(t, `SELECT 1 FROM T1, T1."ARR1" AS "X" AT "X"`, []string{
-			"1=1", "1=1", "1=1", "1=1",
+			"_0=1", "_0=1", "_0=1", "_0=1",
 		})
 		unnestMustContain(t, plan, "WITH ORDINALITY")
 		assertColumns(t, `SELECT * FROM T1, T1."ARR1" AS "X" AT "X"`,
@@ -3477,9 +3478,9 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// PROVE the un-collapse fired, not the retired wrap NOR a name-model fallback:
 		// the StreamingAgg groups by a BAKED ORDINAL key (`#<n>`) directly over the raw
 		// gather NLJ (FlatMap(Scan(WSRC),Explode) ⋈ Scan(WAUX)) — NO named-projection
-		// layer (a single outer SELECT Project, not two). A name-model decline would
-		// plan the FlatMap-over-merged-outer shape; the wrap would nest a second Project.
-		if strings.Count(ex, "Project(") != 1 ||
+		// layer (a single outer SELECT projection, not two). A name-model decline would
+		// plan the FlatMap-over-merged-outer shape; the wrap would nest a second one.
+		if unnestProjections(ex) != 1 ||
 			!strings.Contains(ex, "FlatMap(outer=Scan(WSRC)") ||
 			!regexp.MustCompile(`StreamingAgg\(keys=\[[^]]*#\d`).MatchString(ex) {
 			t.Fatalf("expected the un-collapse gather (baked-ordinal group key, no wrap), got plan: %s", ex)
@@ -3502,8 +3503,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		exGCount := assertRows(t, `SELECT COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
 			"N=6",
 		})
-		if strings.Count(exGCount, "Project(") != 1 ||
-			!strings.Contains(exGCount, "Project([COALESCE(_current.COUNT(*)#0, 0)]") {
+		if unnestProjections(exGCount) != 1 ||
+			!strings.Contains(exGCount, "{N: COALESCE(_current.COUNT(*)#0, 0)}") {
 			t.Fatalf("global COUNT(*) must keep the flat seed with exactly one public output Project, got: %s", exGCount)
 		}
 		// GLOBAL aggregate whose OPERAND references the element (SUM(EL)) ORDINALIZES via
@@ -3515,7 +3516,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		exGSum := assertRows(t, `SELECT SUM("EL") AS "S" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
 			"S=45",
 		})
-		if strings.Count(exGSum, "Project(") != 1 || !strings.Contains(exGSum, "FlatMap(outer=Scan(WSRC)") {
+		if unnestProjections(exGSum) != 1 || !strings.Contains(exGSum, "FlatMap(outer=Scan(WSRC)") {
 			t.Fatalf("global SUM(EL) must ORDINALIZE over the raw gather with one public output Project, got: %s", exGSum)
 		}
 		// A global aggregate over a BURIED leaf column (SUM(WAUX.WV)) needs the same
@@ -3552,7 +3553,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		exNoGather := assertRows(t, `SELECT SUM(WSRC."SID") AS "S" FROM WSRC`, []string{
 			"S=1",
 		})
-		if strings.Count(exNoGather, "Project(") != 1 {
+		if unnestProjections(exNoGather) != 1 {
 			t.Fatalf("non-gather global aggregate must have only the public output Project, got: %s", exNoGather)
 		}
 		// WAUX.WV and an element named WV are duplicate visible names, so the first
@@ -3563,7 +3564,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		exShadow := assertRows(t, `SELECT "EL" AS "WV", COUNT(*) AS "N" FROM WSRC, WAUX, WSRC."WARR" AS "EL" GROUP BY "EL"`, []string{
 			"WV=7|N=3", "WV=8|N=3",
 		})
-		if strings.Count(exShadow, "Project(") != 1 ||
+		if unnestProjections(exShadow) != 1 ||
 			!regexp.MustCompile(`StreamingAgg\(keys=\[[^]]*#\d`).MatchString(exShadow) {
 			t.Fatalf("element-shadows-outer-column should ORDINALIZE via the un-collapse element-first bake (baked-ordinal key, no wrap), got: %s", exShadow)
 		}
@@ -3580,7 +3581,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		exEncl := assertRows(t, `SELECT "EL" AS "WV", SUM(WAUX."WV") AS "S" FROM WSRC, WSRC."WARR" AS "EL", WAUX GROUP BY "EL"`, []string{
 			"WV=7|S=18", "WV=8|S=18",
 		})
-		if strings.Count(exEncl, "Project(") != 1 {
+		if unnestProjections(exEncl) != 1 {
 			t.Fatalf("enclosed shadow (element before the same-named leg) should ORDINALIZE, got: %s", exEncl)
 		}
 		// AT SID duplicates WSRC.SID, so a bare SID group key is 42702. The POS twin
@@ -3589,7 +3590,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		exOrdSh := assertRows(t, `SELECT "POS" AS "SID", COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL" AT "POS", WAUX GROUP BY "POS"`, []string{
 			"SID=1|N=3", "SID=2|N=3",
 		})
-		if strings.Count(exOrdSh, "Project(") != 1 {
+		if unnestProjections(exOrdSh) != 1 {
 			t.Fatalf("ordinal-alias shadow (AT alias shadows an outer column) should ORDINALIZE, got: %s", exOrdSh)
 		}
 		// Explicit WSRC.SID remains unambiguous in the POS twin: its sum over each
@@ -3617,7 +3618,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		exBoxShadow := assertRows(t, `SELECT "EL" AS "WV", SUM(WAUX."WV") AS "S" FROM WSRC LEFT JOIN WAUX ON WSRC."SID" = WAUX."XID", WSRC."WARR" AS "EL" GROUP BY "EL"`, []string{
 			"WV=7|S=5", "WV=8|S=5",
 		})
-		if strings.Count(exBoxShadow, "Project(") != 1 {
+		if unnestProjections(exBoxShadow) != 1 {
 			t.Fatalf("element shadowing a box's buried leaf should ORDINALIZE, got: %s", exBoxShadow)
 		}
 		// BOX leg (the unnest's left is an OUTER-join box) ORDINALIZES via leaf-source
@@ -3628,7 +3629,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		exBox := assertRows(t, `SELECT "EL", SUM(WAUX."WV") AS "S" FROM WSRC LEFT JOIN WAUX ON WSRC."SID" = WAUX."XID", WSRC."WARR" AS "EL" GROUP BY "EL"`, []string{
 			"EL=7|S=5", "EL=8|S=5",
 		})
-		if strings.Count(exBox, "Project(") != 1 {
+		if unnestProjections(exBox) != 1 {
 			t.Fatalf("box-leg grouped unnest should ORDINALIZE via leaf-source qualification, got: %s", exBox)
 		}
 		// BOX leg NO-MATCH: the LEFT box's ON never matches (WV=99999 exists in no
@@ -3643,7 +3644,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		exOrd := assertRows(t, `SELECT "O", COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL" AT "O", WAUX GROUP BY "O"`, []string{
 			"O=1|N=3", "O=2|N=3",
 		})
-		if strings.Count(exOrd, "Project(") != 1 {
+		if unnestProjections(exOrd) != 1 {
 			t.Fatalf("ordinality GROUP BY O should ORDINALIZE via the EL.O shadow, got: %s", exOrd)
 		}
 		// AT-only retains the same ordinal slot; defaulting the element label to
@@ -3651,7 +3652,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		exAtOnly := assertRows(t, `SELECT "O", COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AT "O", WAUX GROUP BY "O"`, []string{
 			"O=1|N=3", "O=2|N=3",
 		})
-		if strings.Count(exAtOnly, "Project(") != 1 {
+		if unnestProjections(exAtOnly) != 1 {
 			t.Fatalf("AT-only GROUP BY O should ORDINALIZE via the WARR.O shadow (positional binding), got: %s", exAtOnly)
 		}
 		// N-WAY (3 plain legs): WSRC, WAUX, GW all disjoint-named — the gather collapses
@@ -3661,7 +3662,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		exNway := assertRows(t, `SELECT "EL", SUM(GW."V") AS "S" FROM WSRC, WSRC."WARR" AS "EL", WAUX, GW GROUP BY "EL"`, []string{
 			"EL=7|S=2997", "EL=8|S=2997",
 		})
-		if strings.Count(exNway, "Project(") != 1 {
+		if unnestProjections(exNway) != 1 {
 			t.Fatalf("N-way (3 plain legs) grouped gather should ORDINALIZE, got: %s", exNway)
 		}
 	})
@@ -4585,13 +4586,19 @@ func TestFDB_ArrayUnnestOrdinalityColumnType(t *testing.T) {
 		if perr != nil {
 			t.Fatalf("plan %q: %v", sql, perr)
 		}
-		proj, ok := plan.(*plans.RecordQueryProjectionPlan)
-		if !ok {
-			t.Fatalf("plan %q: root is %T, want *RecordQueryProjectionPlan\n%s", sql, plan, plan.Explain())
+		// The root computes the select list: a Map, or the join returning it.
+		var projections []values.Value
+		var outputNames, aliases []string
+		if proj, ok := plan.(*plans.RecordQueryProjectionPlan); ok {
+			projections, outputNames, aliases = proj.GetProjections(), proj.GetOutputNames(), proj.GetAliases()
+		} else if row, ok := plan.GetResultValue().(*values.RecordConstructorValue); ok {
+			for _, field := range row.Fields {
+				projections = append(projections, field.Value)
+				outputNames = append(outputNames, field.Name)
+			}
+		} else {
+			t.Fatalf("plan %q: root %T computes no select list\n%s", sql, plan, plan.Explain())
 		}
-		projections := proj.GetProjections()
-		outputNames := proj.GetOutputNames()
-		aliases := proj.GetAliases()
 		for i := range projections {
 			outputNameMatches := i < len(outputNames) && strings.EqualFold(outputNames[i], wantField)
 			aliasMatches := i < len(aliases) && strings.EqualFold(aliases[i], wantField)
@@ -4806,13 +4813,25 @@ func unnestMustNotContain(t *testing.T, plan, substr string) {
 // than its display-only field label.  RFC-232 sort Explain text deliberately
 // keeps the authored label, while ValueExpr carries the exact physical owner
 // and ordinal used at runtime.
+// unnestProjections counts the projection operators in an explain: a Project
+// or a Map, never the FlatMap whose name contains it.
+func unnestProjections(explain string) int {
+	return strings.Count(explain, "Project(") + strings.Count(explain, "Map(") - strings.Count(explain, "FlatMap(")
+}
+
 func unnestIsCurrentOrdinal(value values.Value, ordinal int) bool {
+	return unnestIsInputOrdinal(value, values.CurrentCorrelation(), ordinal)
+}
+
+// unnestIsInputOrdinal reports whether value reads slot ordinal of the row
+// bound to input.
+func unnestIsInputOrdinal(value values.Value, input values.CorrelationIdentifier, ordinal int) bool {
 	field, ok := values.AsFieldValue(value)
 	if !ok {
 		return false
 	}
 	root, ok := values.AsQuantifiedObjectValue(field.ChildValue())
-	if !ok || root.Correlation() != values.CurrentCorrelation() {
+	if !ok || root.Correlation() != input {
 		return false
 	}
 	path := field.Path()
@@ -4826,6 +4845,16 @@ func unnestIsCurrentOrdinal(value values.Value, ordinal int) bool {
 func unnestProjectionHasCurrentOrdinal(plan plans.RecordQueryPlan, ordinal int) bool {
 	found := false
 	plans.Walk(plan, func(node plans.RecordQueryPlan) bool {
+		if mapPlan, ok := node.(*plans.RecordQueryMapPlan); ok {
+			if row, isRow := mapPlan.GetResultValue().(*values.RecordConstructorValue); isRow {
+				for _, field := range row.Fields {
+					if unnestIsInputOrdinal(field.Value, mapPlan.GetInnerQuantifier().GetAlias(), ordinal) {
+						found = true
+					}
+				}
+			}
+			return true
+		}
 		projection, ok := node.(*plans.RecordQueryProjectionPlan)
 		if !ok {
 			return true

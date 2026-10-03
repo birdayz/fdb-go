@@ -82,7 +82,7 @@ tests:
   # independently elide Fetch(PredicatesFilter(Covering)); disabling BOTH
   # restores that fetch and fails this positive RFC-220 covering pin.
   - query: SELECT id, ts FROM events WHERE ts BETWEEN 100 AND 200 ORDER BY ts
-    plan_contains: "Project([_current.ID#0, _current.TS#1], IndexScan(IDX_TS, [<>] COVERING))"
+    plan_contains: "Map(IndexScan(IDX_TS, [<>] COVERING), {ID: _current.ID#0, TS: _current.TS#1})"
     plan_not_contains: "InMemorySort"
     rows:
       - [1, 100]
@@ -98,7 +98,7 @@ tests:
 
   # Multi-value aggregate with indexed filter
   - query: SELECT category, COUNT(*), MIN(ts), MAX(ts) FROM events GROUP BY category ORDER BY category
-    plan_contains: "Project([_current.CATEGORY#0, _current.COUNT(*)#1, _current.MIN(TS)#2, _current.MAX(TS)#3], StreamingAgg(keys=[_current.CATEGORY#2], InMemorySort([_current.CATEGORY#2 ASC], Scan(EVENTS))))"
+    plan_contains: "Map(StreamingAgg(keys=[_current.CATEGORY#2], InMemorySort([_current.CATEGORY#2 ASC], Scan(EVENTS))), {CATEGORY: _current.CATEGORY#0, _1: _current.COUNT(*)#1, _2: _current.MIN(TS)#2, _3: _current.MAX(TS)#3})"
     rows:
       - ['error', 2, 50, 300]
       - ['login', 3, 100, 250]

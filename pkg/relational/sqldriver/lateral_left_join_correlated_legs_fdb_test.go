@@ -89,7 +89,7 @@ func TestFDB_LateralLeftJoinOfTwoCorrelatedLegs(t *testing.T) {
 	if err := db.QueryRowContext(ctx, "EXPLAIN "+mixed).Scan(&plan); err != nil {
 		t.Fatalf("EXPLAIN: %v", err)
 	}
-	if !strings.Contains(plan, "DefaultOnEmpty(PredicatesFilter(") {
+	if !strings.Contains(plan, "DefaultOnEmpty(Map(PredicatesFilter(") {
 		t.Errorf("the ON conjunct must filter below the null-extension: %s", plan)
 	}
 }

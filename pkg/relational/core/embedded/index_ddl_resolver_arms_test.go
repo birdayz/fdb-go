@@ -53,7 +53,7 @@ func TestIndexGenerator_ResolverArms(t *testing.T) {
 			// The filter owns the predicate (IndexSpec.java:387-402).
 			name:  "where",
 			index: `create index ix as select a from t where b > 1 order by a`,
-			graph: "Projection(Sort(Filter(FullUnorderedScan)))",
+			graph: "Select(Sort(Filter(FullUnorderedScan)))",
 			key:   f("A"), pred: bGreaterThan1,
 		},
 		{
@@ -62,21 +62,21 @@ func TestIndexGenerator_ResolverArms(t *testing.T) {
 			// predicate is the plain WHERE's. Java: equal.
 			name:  "derived_with_predicate",
 			index: `create index ix as select d.a from (select a from t where b > 1) as d order by d.a`,
-			graph: "Projection(Sort(Projection(Filter(FullUnorderedScan))))",
+			graph: "Select(Sort(Select(FullUnorderedScan)))",
 			key:   f("A"), pred: bGreaterThan1,
 		},
 		{
 			// A filter above an owner. Java: the same refusal.
 			name:  "derived_and_outer_predicate",
 			index: `create index ix as select d.a from (select a, b from t where b > 1) as d where d.a > 2 order by d.a`,
-			graph: "Projection(Sort(Filter(Projection(Filter(FullUnorderedScan)))))",
+			graph: "Select(Sort(Filter(Select(FullUnorderedScan))))",
 			code:  api.ErrCodeUnsupportedOperation, msg: "Unsupported index definition, found predicate in inner-select",
 		},
 		{
 			// A filter over the group by. Java: the same refusal.
 			name:  "having",
 			index: `create index ix as select a, count(*) from t group by a having count(*) > 1`,
-			graph: "Projection(Filter(GroupBy(FullUnorderedScan)))",
+			graph: "Select(Filter(GroupBy(FullUnorderedScan)))",
 			code:  api.ErrCodeUnsupportedOperation, msg: "Unsupported index definition, found predicate in select-having",
 		},
 		{
@@ -84,7 +84,7 @@ func TestIndexGenerator_ResolverArms(t *testing.T) {
 			// Java's visitor refuses it below the top level. Java: the same.
 			name:  "derived_sorted",
 			index: `create index ix as select d.a from (select a from t order by a) as d order by d.a`,
-			graph: "Projection(Sort(Projection(Sort(FullUnorderedScan))))",
+			graph: "Select(Sort(Select(Sort(FullUnorderedScan))))",
 			code:  api.ErrCodeUnsupportedOperation, msg: "order by is not supported in subquery",
 		},
 		{
@@ -94,14 +94,14 @@ func TestIndexGenerator_ResolverArms(t *testing.T) {
 			// "Unsupported predicate '<alias> NOT_NULL'".
 			name:  "exists_uncorrelated",
 			index: `create index ix as select a from t where exists (select 1 from u) order by a`,
-			graph: "Projection(Sort(Select(FullUnorderedScan, E:Projection(FullUnorderedScan))))",
+			graph: "Select(Sort(Select(FullUnorderedScan, E:Select(FullUnorderedScan))))",
 			code:  api.ErrCodeUnsupportedOperation, msg: "Unsupported predicate '",
 		},
 		{
 			// Two scans under a join are two type filters. Java: the same.
 			name:  "join",
 			index: `create index ix as select t.a from t, u where t.id = u.id order by t.a`,
-			graph: "Projection(Sort(Select(FullUnorderedScan, FullUnorderedScan)))",
+			graph: "Select(Sort(Select(FullUnorderedScan, FullUnorderedScan)))",
 			code:  api.ErrCodeUnsupportedOperation, msg: "Unsupported query, expected to find exactly one type filter operator",
 		},
 		{
@@ -109,7 +109,7 @@ func TestIndexGenerator_ResolverArms(t *testing.T) {
 			// Java: the same.
 			name:  "order_key_not_projected",
 			index: `create index ix as select a from t order by b`,
-			graph: "Projection(Sort(FullUnorderedScan))",
+			graph: "Select(Sort(FullUnorderedScan))",
 			code:  api.ErrCodeInvalidColumnReference,
 			msg:   "Cannot create index and order by an expression that is not present in the projection list",
 		},
@@ -118,7 +118,7 @@ func TestIndexGenerator_ResolverArms(t *testing.T) {
 			// Java: the same refusal.
 			name:  "array_without_unnest",
 			index: `create index ix as select col4 from t4 order by col4`,
-			graph: "Projection(Sort(FullUnorderedScan))",
+			graph: "Select(Sort(FullUnorderedScan))",
 			code:  api.ErrCodeUnsupportedOperation,
 			msg:   "Unsupported index definition, cannot create index on array field 'COL4' without unnesting",
 		},
@@ -127,7 +127,7 @@ func TestIndexGenerator_ResolverArms(t *testing.T) {
 			// nullable array's wrapper. Java: equal.
 			name:  "unnest_comma",
 			index: `create index ix as select t.col2, "e" from t4 as t, t.col4 as "e" order by t.col2, "e"`,
-			graph: "Projection(Sort(Select(FullUnorderedScan, Explode)))",
+			graph: "Select(Sort(Select(FullUnorderedScan, Explode)))",
 			key:   concat(f("COL2"), col4Values),
 		},
 		{
@@ -135,7 +135,7 @@ func TestIndexGenerator_ResolverArms(t *testing.T) {
 			// not a disconnected reference. Java: equal.
 			name:  "unnest_same_array_twice",
 			index: `create index ix as select "e1", "e2" from t4 as t, t.col4 as "e1", t.col4 as "e2" order by "e1", "e2"`,
-			graph: "Projection(Sort(Select(Select(FullUnorderedScan, Explode), Explode)))",
+			graph: "Select(Sort(Select(Select(FullUnorderedScan, Explode), Explode)))",
 			key:   concat(col4Values, col4Values),
 		},
 		{
@@ -143,7 +143,7 @@ func TestIndexGenerator_ResolverArms(t *testing.T) {
 			// resolves ek.k into the element. Java: equal.
 			name:  "unnest_derived",
 			index: `create index ix as select a, ek.k from t6, (select k from t6.c) as ek order by a, ek.k`,
-			graph: "Projection(Sort(Select(FullUnorderedScan, Projection(Explode))))",
+			graph: "Select(Sort(Select(FullUnorderedScan, Select(Explode))))",
 			key:   concat(f("A"), recordlayer.Nest("C", recordlayer.NestFanOut("values", f("K")))),
 		},
 		{
@@ -151,7 +151,7 @@ func TestIndexGenerator_ResolverArms(t *testing.T) {
 			// predicate on r is the join select's. Java: equal.
 			name:  "unnest_outer_predicate",
 			index: `create index ix as select sq."e" from t4 as r, (select "e" from r.col4 as "e") as sq where r.col2 > 1 order by sq."e"`,
-			graph: "Projection(Sort(Select(FullUnorderedScan, Projection(Explode))))",
+			graph: "Select(Sort(Select(FullUnorderedScan, Select(Explode))))",
 			key:   col4Values,
 			pred:  predVP([]string{"COL2"}, cmpSimple(gen.ComparisonType_GREATER_THAN, valLong(1))),
 		},
@@ -160,7 +160,7 @@ func TestIndexGenerator_ResolverArms(t *testing.T) {
 			// a new one. Java: equal.
 			name:  "arith_then_its_operand",
 			index: `create index ix as select a + b, a from t order by a + b, a`,
-			graph: "Projection(Sort(FullUnorderedScan))",
+			graph: "Select(Sort(FullUnorderedScan))",
 			key:   concat(recordlayer.FunctionExpr("add", concat(f("A"), f("B"))), f("A")),
 		},
 	}

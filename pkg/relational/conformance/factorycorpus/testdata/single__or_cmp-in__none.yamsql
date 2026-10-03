@@ -26,8 +26,8 @@
 # blessing: metamorphic
 # oracles: tlp,second-plan
 # feature-vector: shape=single;idx=A,D;proj=star;where=or(cmp.eq,in.in);order=desc
-# plan-shape: 2364f1ffcff091a5
-# dedup-key: 3d10db14744f0cde
+# plan-shape: 04f57f3cfa777633
+# dedup-key: 979bb9738543916d
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 1880095 -seeds 1 -date 2026-08-08 -out <dir>
 ---
 schema_template: |-
@@ -114,8 +114,8 @@ test_block:
 # blessing: metamorphic
 # oracles: tlp,second-plan
 # feature-vector: shape=single;idx=A,D;proj=n1;where=or(cmp.eq,in.in);order=desc
-# plan-shape: ee5e8b9ba9e4d5e8
-# dedup-key: 34f4eef82fd81586
+# plan-shape: 75a20f1ab6af3619
+# dedup-key: 8d74ea618d602017
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 1880095 -seeds 1 -date 2026-08-08 -out <dir>
 ---
 schema_template: |-
@@ -202,8 +202,8 @@ test_block:
 # blessing: metamorphic
 # oracles: tlp,second-plan
 # feature-vector: shape=single;idx=A,D;proj=n5;where=or(cmp.eq,in.in);order=desc
-# plan-shape: ee5e8b9ba9e4d5e8
-# dedup-key: 37669a6af5c9eeae
+# plan-shape: 75a20f1ab6af3619
+# dedup-key: bd2ee651f6af1d69
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 1880095 -seeds 1 -date 2026-08-08 -out <dir>
 ---
 schema_template: |-
@@ -378,8 +378,8 @@ test_block:
 # blessing: metamorphic
 # oracles: tlp,second-plan
 # feature-vector: shape=single;idx=A+B,B,C,E;proj=n1;where=or(in.in,cmp.eq);order=desc
-# plan-shape: ee5e8b9ba9e4d5e8
-# dedup-key: 3f4eeae100a2298e
+# plan-shape: 27fc9a618b56d125
+# dedup-key: 357a620ce949c7ae
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 1884229 -seeds 1 -date 2026-08-09 -out <dir>
 ---
 schema_template: |-
@@ -466,8 +466,8 @@ test_block:
 # blessing: metamorphic
 # oracles: tlp,second-plan
 # feature-vector: shape=single;idx=A+B,B,C,E;proj=n5;where=or(in.in,cmp.eq);order=desc
-# plan-shape: ee5e8b9ba9e4d5e8
-# dedup-key: 29ba8c43524c8e76
+# plan-shape: 27fc9a618b56d125
+# dedup-key: 1e541ce0c639833e
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 1884229 -seeds 1 -date 2026-08-09 -out <dir>
 ---
 schema_template: |-

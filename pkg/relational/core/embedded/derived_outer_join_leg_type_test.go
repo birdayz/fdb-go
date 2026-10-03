@@ -16,7 +16,9 @@ import (
 // leg that bound that row failed at execution (five of the FDB test's ten
 // arms). Every join kind the ordinal
 // gate gates is driven: LEFT, RIGHT (the star order is the FROM order, g's
-// columns first) and FULL, with an INNER body as the control.
+// columns first) and FULL, with an INNER body as the control: an inner body is
+// one block with its parent (SelectMergeRule dissolves it), so no join leg
+// carries its row.
 func TestDerivedOuterJoinLegTypedByItsRow(t *testing.T) {
 	t.Parallel()
 	// n.tags is the one NOT NULL column the DDL admits (an array), so it is the
@@ -35,10 +37,10 @@ func TestDerivedOuterJoinLegTypedByItsRow(t *testing.T) {
 		{`SELECT * FROM w LEFT JOIN g ON g.k = w.id`, []string{"ID", "F", "K", "V"}, nil},
 		{`SELECT * FROM g RIGHT JOIN w ON g.k = w.id`, []string{"K", "V", "ID", "F"}, nil},
 		{`SELECT * FROM w FULL JOIN g ON g.k = w.id`, []string{"ID", "F", "K", "V"}, nil},
-		{`SELECT * FROM w, g WHERE g.k = w.id`, []string{"ID", "F", "K", "V"}, nil},
+		{`SELECT * FROM w, g WHERE g.k = w.id`, nil, nil},
 		{`SELECT * FROM w LEFT JOIN n ON n.k = w.id`, []string{"ID", "F", "K", "TAGS"}, ptrTo(true)},
 		{`SELECT * FROM n RIGHT JOIN w ON n.k = w.id`, []string{"K", "TAGS", "ID", "F"}, ptrTo(true)},
-		{`SELECT * FROM w, n WHERE n.k = w.id`, []string{"ID", "F", "K", "TAGS"}, ptrTo(false)},
+		{`SELECT * FROM w, n WHERE n.k = w.id`, nil, nil},
 		// FULL makes both sides null-supplying; the preserved side of a LEFT or
 		// RIGHT join keeps its NOT NULL. n on FULL's left is the row that tells
 		// FULL from LEFT: a FULL typed as a LEFT keeps n's TAGS NOT NULL.
@@ -72,33 +74,46 @@ func TestDerivedOuterJoinLegTypedByItsRow(t *testing.T) {
 			if join == nil {
 				t.Fatalf("no join of the derived leg and d: %s", plan.Explain())
 			}
-			rt, ok := join.GetResultValue().Type().(*values.RecordType)
-			if !ok || len(rt.Fields) != len(tc.want)+2 {
-				t.Fatalf("join row %v, want the leg's %d columns and d's two: %s",
-					join.GetResultValue().Type(), len(tc.want), plan.Explain())
+			// The join reads the derived leg through the quantifier over it; that
+			// quantifier's row is the leg's own row.
+			var leg *values.RecordType
+			var legNames string
+			var legs []string
+			for _, q := range join.GetQuantifiers() {
+				qov, err := q.RequireFlowedObjectValue()
+				if err != nil {
+					t.Fatalf("join quantifier %v: %v", q.GetAlias(), err)
+				}
+				rt, ok := qov.FlowedType().(*values.RecordType)
+				if !ok {
+					continue
+				}
+				names := make([]string, len(rt.Fields))
+				for i, f := range rt.Fields {
+					names[i] = f.Name
+				}
+				legs = append(legs, strings.Join(names, ","))
+				if len(rt.Fields) > 2 {
+					leg, legNames = rt, strings.Join(names, ",")
+				}
 			}
-			// The derived leg's columns lead or trail the join row, whichever
-			// order the planner chose; find the run that is not d's.
-			names := make([]string, len(rt.Fields))
-			for i, f := range rt.Fields {
-				names[i] = f.Name
+			if tc.want == nil {
+				if leg != nil {
+					t.Fatalf("the inner body was not dissolved into the block: a join leg is typed %v: %s", leg, plan.Explain())
+				}
+				return
 			}
-			start := 0
-			if strings.Join(names[len(names)-len(tc.want):], ",") == strings.Join(tc.want, ",") {
-				start = len(names) - len(tc.want)
-			}
-			leg := names[start : start+len(tc.want)]
-			if strings.Join(leg, ",") != strings.Join(tc.want, ",") {
-				t.Fatalf("the derived leg's columns are %v in the join row %v, want %v (its own row, not the name model's keys)",
-					leg, names, tc.want)
+			if legNames != strings.Join(tc.want, ",") {
+				t.Fatalf("the join's legs are %v, want one typed by the derived row %v (its own row, not the name model's keys): %s",
+					legs, tc.want, plan.Explain())
 			}
 			if tc.nullableTags != nil {
 				for i, name := range tc.want {
 					if name != "TAGS" {
 						continue
 					}
-					if got := rt.Fields[start+i].FieldType.IsNullable(); got != *tc.nullableTags {
-						t.Fatalf("the derived leg's TAGS is nullable=%v in %v, want %v", got, rt, *tc.nullableTags)
+					if got := leg.Fields[i].FieldType.IsNullable(); got != *tc.nullableTags {
+						t.Fatalf("the derived leg's TAGS is nullable=%v in %v, want %v", got, leg, *tc.nullableTags)
 					}
 				}
 			}

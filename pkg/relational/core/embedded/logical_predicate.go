@@ -7949,7 +7949,9 @@ func (p *subqueryClause) BuildExists(q antlrgen.IQueryContext) (values.Correlati
 		KnownTruth: lowered.truth, Constraint: lowered.constraint,
 	})
 	p.scalarSubqueries = append(p.scalarSubqueries, lowered.scalars...)
-	return alias, input.ResultType(), nil
+	// The existential quantifier's object is NULL when the input is empty (Java
+	// Quantifier.Existential.getFlowedObjectType), so EXISTS reads it nullable.
+	return alias, values.WithNullability(input.ResultType(), true), nil
 }
 
 // effectiveTemplateName is the planner's template name, falling back to

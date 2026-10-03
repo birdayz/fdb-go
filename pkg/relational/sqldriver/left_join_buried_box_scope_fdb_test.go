@@ -1,30 +1,18 @@
 package sqldriver_test
 
-// Regression pin for a projected EXISTS over a BURIED box under a LEFT JOIN:
-// `(p JOIN q) LEFT JOIN s` (the 3-way clause associates left, so the LEFT's
-// preserved leg is the inner join box). The preserved leg is a JOIN, not a
-// scan, so it is not ordinal-safe: no ordinal path admits a join leg here. Folding a buried box like this has no name-model producer any
-// more, so Go DECLINES the query cleanly (0AF00) rather than minting a fresh
-// one. This is a Java-parity REACH gap (Java folds and answers `[[10
-// false]]`; Go rejects), not a correctness bug.
-//
-// This pin GUARDS the scope boundary: a future change that re-enables the
-// buried box (by adding back a producer for the outer-join fold) flips this
-// from a clean decline to rows and trips the test. The scan-leg-scope
-// answers for the same shape (where the LEFT box IS ordinal-safe) are pinned
-// separately.
+// A projected EXISTS over a BURIED box under a LEFT JOIN: `(p JOIN q) LEFT JOIN
+// s` (the 3-way clause associates left, so the LEFT's preserved leg is the
+// inner join box). The block is one Select whose EXISTS reads the
+// null-extended s, so Go answers as Java does: `[[10 false]]`.
 
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"strings"
 	"testing"
-
-	"fdb.dev/pkg/relational/api"
 )
 
-func TestFDB_LeftJoinBuriedBoxDeclinesCleanly(t *testing.T) {
+func TestFDB_ProjectedExistsOverABuriedLeftJoinBox(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -60,38 +48,28 @@ func TestFDB_LeftJoinBuriedBoxDeclinesCleanly(t *testing.T) {
 		}
 	}
 
-	// (p JOIN q ON q.qid = p.id) = {(p.v=10)}; LEFT JOIN s (empty) null-extends s.
-	// Java answers [[10 false]] (EXISTS(r.rid = s.sid=NULL) → false). Go's scan-leg
-	// scope excludes the buried preserved leg → clean 0AF00 decline (reach gap).
+	// (p JOIN q ON q.qid = p.id) = {(p.v=10)}; LEFT JOIN s (empty) null-extends
+	// s, so EXISTS(r.rid = s.sid = NULL) is false. Java: [[10 false]].
 	sqlText := "SELECT p.v, EXISTS (SELECT 1 FROM r WHERE r.rid = s.sid) " +
 		"FROM p JOIN q ON q.qid = p.id LEFT JOIN s ON s.sid = p.id"
 	rows, err := db.QueryContext(ctx, sqlText)
-	if err == nil {
-		defer rows.Close()
-		var got [][2]any
-		for rows.Next() {
-			var v int64
-			var ex sql.NullBool
-			if scanErr := rows.Scan(&v, &ex); scanErr != nil {
-				t.Fatalf("scan: %v", scanErr)
-			}
-			got = append(got, [2]any{v, ex})
-		}
-		t.Fatalf("buried-box projected EXISTS over LEFT JOIN produced rows %v — expected a clean 0AF00"+
-			" decline (scan-leg scope only; producing rows here means a name-model producer was"+
-			" re-added for the outer-join fold)", got)
+	if err != nil {
+		t.Fatalf("projected EXISTS over a buried LEFT JOIN box errored (Java answers it): %v", err)
 	}
-	// The decline must be the clean scope-boundary 0AF00, never a planner failure
-	// ("no plan found") or a resolution error — those would signal the fold was
-	// built but left unimplemented rather than declined at the source.
-	var apiErr *api.Error
-	if errors.As(err, &apiErr) {
-		if string(apiErr.Code) != "0AF00" {
-			t.Fatalf("buried-box decline has sqlstate %q, want 0AF00 (clean reach-gap decline): %v", apiErr.Code, err)
+	defer rows.Close()
+	var got [][2]any
+	for rows.Next() {
+		var v int64
+		var ex sql.NullBool
+		if scanErr := rows.Scan(&v, &ex); scanErr != nil {
+			t.Fatalf("scan: %v", scanErr)
 		}
-		return
+		got = append(got, [2]any{v, ex})
 	}
-	if !strings.Contains(err.Error(), "0AF00") {
-		t.Fatalf("buried-box decline is not the clean 0AF00 reach-gap decline: %v", err)
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	if len(got) != 1 || got[0] != [2]any{int64(10), sql.NullBool{Bool: false, Valid: true}} {
+		t.Fatalf("got %v, want [[10 false]]: s is null-extended, so EXISTS over s.sid is false", got)
 	}
 }

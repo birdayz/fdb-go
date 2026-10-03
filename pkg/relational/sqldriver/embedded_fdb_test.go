@@ -111,7 +111,6 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	values.ResetQualifierRecoveryCensus()
 	corequery.ResetUnnestLegMintCensus()
 	cascades.ResetMergeSlotTypingCensus()
-	cascades.ResetProjectionMergeCensus()
 	values.SetLegIdentityCensusEnabled(true)
 	code := m.Run()
 	values.SetLegIdentityCensusEnabled(false)
@@ -195,7 +194,6 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	// — it costs a proof or an optimization, never a wrong row — so the size of the
 	// loss has to be counted rather than argued.
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatUnresolvedResultTypeCensus())
-	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatProjectionMergeCensus())
 
 	// THE GATES, run through the reporter so a failure carries a `--- FAIL:` line
 	// naming which one moved. They used to assert inline here, each writing prose
@@ -233,7 +231,6 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 		// defect it watches for gets back in.
 		{"mergeSlotTyping", assertMergeSlotTypingCensus},
 		{"selectResultMint", assertSelectResultMintCensus},
-		{"projectionMerge", assertProjectionMergeCensus},
 		// RFC-213: the consumers must stay REACHED. There is no zero to defend —
 		// the unresolved reads ARE the defect and their count is a measurement,
 		// not a contract — but if these sites go dark, a later "unresolved is 0"

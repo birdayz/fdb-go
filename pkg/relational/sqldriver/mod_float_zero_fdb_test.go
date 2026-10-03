@@ -149,7 +149,7 @@ func TestFDB_ModFunctionIndexRemainsRejected(t *testing.T) {
 	var sqlErr *api.Error
 	if !errors.As(err, &sqlErr) || sqlErr.Code != api.ErrCodeUnsupportedOperation ||
 		!strings.Contains(sqlErr.Message,
-			"Unsupported index definition, not all fields can be mapped to key expression in LogicalProjectionExpression") {
+			"Unsupported index definition, not all fields can be mapped to key expression in SelectExpression") {
 		t.Fatalf("MOD() index: %v; want unsupported operation, not new persisted index-expression admission", err)
 	}
 	mwjoMustExec(t, db, ctx, `CREATE SCHEMA TEMPLATE `+name+`_operator

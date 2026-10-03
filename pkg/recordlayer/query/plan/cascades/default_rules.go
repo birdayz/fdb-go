@@ -24,16 +24,6 @@ package cascades
 // predicates without a TranslationMap rebase (translation_map.go)
 // first.
 //
-// **ProjectionMergeRule's soundness contract**: the merge
-// `Projection(P1) over Projection(P2) over X → Projection(P1) over X`
-// is sound only because LogicalProjectionExpression's GetResultValue()
-// passes the inner row through (projection is a pure side channel).
-// If projection ever narrows the row shape (materialized projections),
-// P1's Values may reference computed columns that only exist in P2's
-// output — at that point the rule needs a column-substitution rewrite
-// path or it must leave the default set. See ProjectionMergeRule's
-// own doc for the per-rule discussion.
-//
 // Each call returns a fresh slice — callers may mutate freely. Each
 // element is a fresh rule instance — see NewXxxRule constructors for
 // the per-call allocation contract.
@@ -68,7 +58,6 @@ func DefaultExpressionRules() []ExpressionRule {
 		// design first (guarding the transitive intern-to-ancestor makes the
 		// inverse-pair fixpoint non-terminate — proven, see RFC-185).
 		NewNoOpFilterRule(),
-		NewProjectionMergeRule(),
 		// PushProjectionBelowJoinRule REMOVED (Go-only, no Java equivalent).
 		// It wrapped a join's children in LogicalProjectionExpressions, which
 		// blocked SelectMergeRule from flattening the nested binary join into
@@ -115,7 +104,6 @@ func DefaultExpressionRules() []ExpressionRule {
 		// phase as PushRequestedOrderingThroughTempTableInsertRule (DefaultImplementationRules).
 		NewUnionSingletonElimRule(),
 		NewIntersectionSingletonElimRule(),
-		NewInComparisonToExplodeRule(),
 		NewLimitMergeRule(),
 		// PushLimitThroughProjectionRule REMOVED (Go-only, no Java equivalent).
 		// Java expresses a row limit as ExecuteProperties.setReturnedRowLimit()
@@ -144,7 +132,6 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewPushLimitThroughUnionRule(),
 		NewNoOpLimitElimRule(),
 		NewSelectMergeRule(),
-		NewSplitSelectExtractIndependentQuantifiersRule(),
 		// Join-order enumeration (PartitionSelectRule / PartitionBinarySelectRule)
 		// is PLANNING-only — see PlanningExplorationRules, matching Java's
 		// PlanningRuleSet (the RewritingRuleSet is normalization only). REWRITING

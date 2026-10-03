@@ -748,10 +748,16 @@ func TestPushMapThroughFetch_Fires(t *testing.T) {
 		t.Fatalf("expected 1 yielded, got %d", len(yielded))
 	}
 	// Result should be Map(translated, index) — no fetch.
-	if IsPhysicalMap(yielded[0]) {
-		return // good
+	pushed, ok := yielded[0].(*plans.RecordQueryMapPlan)
+	if !ok {
+		t.Fatalf("expected *plans.RecordQueryMapPlan, got %T", yielded[0])
 	}
-	t.Fatalf("expected *plans.RecordQueryMapPlan, got %T", yielded[0])
+	// The pushed value reads the new inner quantifier, so the map is not
+	// correlated to anything outside itself.
+	got := values.GetCorrelatedToOfValue(pushed.GetResultValue())
+	if _, ok := got[pushed.GetInnerQuantifier().GetAlias()]; !ok || len(got) != 1 {
+		t.Fatalf("pushed map reads %v, not its inner quantifier %v", got, pushed.GetInnerQuantifier().GetAlias())
+	}
 }
 
 func TestPushMapThroughFetch_DoesNotFire_WhenTranslationFails(t *testing.T) {

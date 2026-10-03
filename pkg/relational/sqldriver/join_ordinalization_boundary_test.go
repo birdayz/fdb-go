@@ -136,13 +136,11 @@ func TestFDB_TwoWayJoinUnderThreeWayClusterStaysNameModel(t *testing.T) {
 		if !strings.Contains(plan, "FlatMap(outer=Scan(C), inner=FlatMap(outer=Scan(B, [=]), inner=Scan(A, [=])))") {
 			t.Errorf("plan lost the nested FlatMap chain:\n%s", plan)
 		}
-		// The three output columns read the MERGED row by ordinal:
-		// [A.ID, A.AV, B.ID, B.A_ID, B.BV, C.ID, C.B_ID] puts a.id at 0,
-		// b.id at 2 and c.id at 5. Pinning the ordinals (not the leg names)
-		// is what makes this an answer about WHICH SLOT each column reads —
-		// three same-named ID columns are told apart by nothing else.
-		if !strings.Contains(plan, "Project([_current.ID#0, _current.ID#2, _current.ID#5]") {
-			t.Errorf("plan lost the 3-column merged-row projection:\n%s", plan)
+		// The outer FlatMap computes the three output columns from the leg rows
+		// it binds (Java's FLATMAP ... RETURN), so no merged-row projection is
+		// left to pin; the rows above tell the three same-named ID columns apart.
+		if strings.Contains(plan, "Project(") || strings.Count(plan, "Map(") != strings.Count(plan, "FlatMap(") {
+			t.Errorf("plan re-projects the joined row instead of returning it from the FlatMap:\n%s", plan)
 		}
 		return plan
 	}
@@ -259,8 +257,10 @@ func TestFDB_FourWayFlatteningEvasionStaysNameModel(t *testing.T) {
 	t.Run("explain_form_describes_the_plan_it_runs", func(t *testing.T) {
 		// EXPLAIN must agree with the statement: both plan, or neither does.
 		plan := pinExplain(t, db, ctx, evasion)
-		if !strings.Contains(plan, "NestedLoopJoin") {
-			t.Errorf("EXPLAIN lost the cross-derived join:\n%s", plan)
+		for _, source := range []string{"Scan(A", "Scan(B", "Scan(C", "Scan(D"} {
+			if !strings.Contains(plan, source) {
+				t.Errorf("EXPLAIN lost the cross-derived join's %s):\n%s", source, plan)
+			}
 		}
 	})
 	t.Run("cte_form_answers_like_its_derived_twin", func(t *testing.T) {

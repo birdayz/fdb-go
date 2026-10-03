@@ -184,10 +184,10 @@ func TestFDB_ForkCollidingSubfield(t *testing.T) {
 		[]string{"Z=100"})
 	want("reused_link_alias_unused",
 		`SELECT 1 FROM TC, TC."ARR" AS "X", "X"."SS" AS "X"`,
-		[]string{"1=1"})
+		[]string{"_0=1"})
 	want("reused_table_alias_unused",
 		`SELECT 1 FROM TC AS "X", "X"."ARR" AS "X"`,
-		[]string{"1=1"})
+		[]string{"_0=1"})
 
 	// The colliding fork, unfiltered and filtered: W must carry X's SUB2 {1,2}.
 	want("colliding_fork",

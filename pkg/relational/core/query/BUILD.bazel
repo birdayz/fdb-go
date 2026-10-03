@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "query",
     srcs = [
+        "block_rows.go",
         "bound_unnest.go",
         "box_conjunct.go",
         "cascades_translator.go",
@@ -18,6 +19,7 @@ go_library(
         "plan.go",
         "quantifier_column_names.go",
         "scalar_subquery_seed.go",
+        "sibling_reads.go",
         "unnest_alias_guard.go",
         "unnest_gather.go",
         "unnest_leg_mint_census.go",
@@ -95,6 +97,7 @@ go_test(
         "rotation_guard_test.go",
         "scalar_subquery_seed_test.go",
         "scan_row_type_mapper_test.go",
+        "sibling_reads_test.go",
         "sort_over_projection_decline_test.go",
         "unnest_alias_guard_test.go",
         "unnest_exists_test.go",

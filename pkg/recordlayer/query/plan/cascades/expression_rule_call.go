@@ -248,6 +248,33 @@ func (c *ExpressionRuleCall) MemoizeExpression(expr expressions.RelationalExpres
 	return expressions.InitialOf(expr)
 }
 
+// MemoizeExpressions is Java's memoizeExploratoryExpressions: a reference
+// holding exactly these alternatives, found in the memo or registered fresh. A
+// group minted per firing would make every parent built over it a new member,
+// and rules that rebuild each other's children would never converge.
+func (c *ExpressionRuleCall) MemoizeExpressions(exprs []expressions.RelationalExpression) *expressions.Reference {
+	if len(exprs) == 1 || c.memo == nil {
+		if len(exprs) == 1 {
+			return c.MemoizeExpression(exprs[0])
+		}
+		ref := expressions.InitialOf(exprs[0])
+		for _, e := range exprs[1:] {
+			ref.Insert(e)
+		}
+		return ref
+	}
+	ref := c.memo.MemoizeExpressions(exprs)
+	if ref.Canonical() == c.Reference.Canonical() {
+		fresh := expressions.ExploratoryOfAtStage(exprs[0], c.memo.targetStage())
+		for _, e := range exprs[1:] {
+			fresh.Insert(e)
+		}
+		c.memo.ScheduleFreshReference(fresh)
+		return fresh
+	}
+	return ref
+}
+
 // GetRequestedOrderings returns the requested orderings for this
 // Reference from the constraint map, if available. Returns nil if no
 // ordering constraint is set or no constraint map is present.

@@ -453,11 +453,12 @@ func TestBoundAliasesOfReference(t *testing.T) {
 // TestPartitionSelect_NullOnEmptyMergesWithItsPartner: a null-on-empty leg B,
 // correlated to its preserved partner A, may be collapsed into a positional
 // lower together with A — the lower is then exactly the binary outer-join
-// shape the NLJ rule implements with DefaultOnEmpty. A lower that strands the
-// partner in the upper ({B,C}, connected by the B–C predicate) is declined.
-// `SELECT * FROM b RIGHT JOIN a ON … WHERE EXISTS (…)` reaches the {A,B}
-// shape once SelectMergeRule folds the rewritten outer join into its parent,
-// and has no other plan.
+// shape the NLJ rule implements with DefaultOnEmpty. `SELECT * FROM b RIGHT
+// JOIN a ON … WHERE EXISTS (…)` reaches the {A,B} shape once SelectMergeRule
+// folds the rewritten outer join into its parent, and has no other plan.
+// It may equally collapse WITHOUT its partner ({B,C} under A), as Java's
+// PartitionSelectRule allows: B extends per combination of the other legs,
+// so per (a, c) either way.
 func TestPartitionSelect_NullOnEmptyMergesWithItsPartner(t *testing.T) {
 	t.Parallel()
 	a, bBase, c := scanQuantifier("A"), scanQuantifier("B"), scanQuantifier("C")
@@ -478,7 +479,7 @@ func TestPartitionSelect_NullOnEmptyMergesWithItsPartner(t *testing.T) {
 	if !lowers["{A,B}"] {
 		t.Fatalf("no lower {A,B}: the null-on-empty leg must merge with its partner; lowers=%v", lowers)
 	}
-	if lowers["{B,C}"] {
-		t.Fatalf("lower {B,C} strands the null-on-empty leg's partner A in the upper; lowers=%v", lowers)
+	if !lowers["{B,C}"] {
+		t.Fatalf("no lower {B,C}: the null-on-empty leg must also collapse without its partner; lowers=%v", lowers)
 	}
 }

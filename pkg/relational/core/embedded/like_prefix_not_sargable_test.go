@@ -9,15 +9,12 @@ import "testing"
 const likePrefixSchema = `CREATE TABLE t2 (id BIGINT, status STRING, PRIMARY KEY(id))
 CREATE INDEX idx_status ON t2 (status)`
 
-// The two rules the PART 3 disabling experiment names. Hoisted because
-// DisabledRules treats an unrecognized name as INERT: a typo in one row's
-// literal turns that row into "disabling nothing changes nothing", which is
-// green. Sharing one constant per rule means a typo cannot be isolated to a
-// single-rule row — it also hits the both-off row, which then fails.
-const (
-	ruleMergeProjectionAndFetch = "MergeProjectionAndFetchRule"
-	ruleImplementProjection     = "ImplementProjectionRule"
-)
+// The rule the PART 3 disabling experiment names: Java's one fetch-elider for
+// a query block, which pushes the block's Map through the fetch. An
+// unrecognized name is INERT under DisabledRules, so a typo here turns the
+// experiment into "disabling nothing changes nothing" — which the experiment's
+// own expectation (a different plan) then catches.
+const rulePushMapThroughFetch = "PushMapThroughFetchRule"
 
 // TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost pins the two
 // MEASUREMENTS behind TODO.md CQ-33. Both are NEGATIVE results — they
@@ -86,7 +83,7 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 		{
 			name: "like_prefix_full_scans",
 			sql:  "SELECT id FROM t2 WHERE status LIKE 'act%'",
-			want: "Project([_current.ID#0], PredicatesFilter(Scan(T2), [1 preds]))",
+			want: "Map(PredicatesFilter(Scan(T2), [1 preds]), {ID: _current.ID#0})",
 			why: "CQ-33's defect: a LIKE conjunct cannot bind an index placeholder. " +
 				"If this now plans an IndexScan, SOMETHING has given the LIKE an access " +
 				"path — but an IndexScan alone does not establish that a LIKE->range " +
@@ -103,7 +100,7 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 		{
 			name: "like_suffix_full_scans",
 			sql:  "SELECT id FROM t2 WHERE status LIKE '%act'",
-			want: "Project([_current.ID#0], PredicatesFilter(Scan(T2), [1 preds]))",
+			want: "Map(PredicatesFilter(Scan(T2), [1 preds]), {ID: _current.ID#0})",
 			why: "A leading-% LIKE has an EMPTY constant prefix, so no LIKE-derived range " +
 				"exists for it in any design. If this plans an IndexScan, the question to " +
 				"answer is whether the scan carries a bound DERIVED FROM THE LIKE (which " +
@@ -114,7 +111,7 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 		{
 			name: "equality_control_uses_the_index",
 			sql:  "SELECT id FROM t2 WHERE status = 'active'",
-			want: "Project([_current.ID#0], IndexScan(IDX_STATUS, [=] COVERING))",
+			want: "Map(IndexScan(IDX_STATUS, [=] COVERING), {ID: _current.ID#0})",
 			why: "The control that makes the two full scans above meaningful. If this " +
 				"stops using IDX_STATUS the schema no longer offers the access path the " +
 				"LIKE cases are being denied, and they prove nothing.",
@@ -122,7 +119,7 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 		{
 			name: "inequality_keeps_the_covering_stamp",
 			sql:  "SELECT id FROM t2 WHERE status > 'act'",
-			want: "Project([_current.ID#0], IndexScan(IDX_STATUS, [<>] COVERING))",
+			want: "Map(IndexScan(IDX_STATUS, [<>] COVERING), {ID: _current.ID#0})",
 			why: "The covering control for PART 2: with no residual between the fetch and " +
 				"the scan, the direct stamping branches fire and the stamp survives. " +
 				"Also the subject of the PART 3 disabling experiment.",
@@ -130,7 +127,7 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 		{
 			name: "residual_below_the_fetch_keeps_the_covering_stamp",
 			sql:  "SELECT id FROM t2 WHERE status > 'act' AND status LIKE '%zz%'",
-			want: "Project([_current.ID#0], PredicatesFilter(IndexScan(IDX_STATUS, [<>] COVERING), [1 preds]))",
+			want: "Map(PredicatesFilter(IndexScan(IDX_STATUS, [<>] COVERING), [1 preds]), {ID: _current.ID#0})",
 			why: "RFC-220's target. This shape used to LOSE the COVERING stamp: same " +
 				"index, same projected columns, same covering entry, but a residual sat " +
 				"between the fetch and the scan and the rules that STAMPED coveringness " +
@@ -159,55 +156,31 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 	t.Run("no_downstream_rule_can_remove_coveringness", func(t *testing.T) {
 		t.Parallel()
 
-		// PART 3, INVERTED BY RFC-220 — and the inversion is the point.
+		// PART 3, INVERTED BY RFC-220. Coveringness is a plan TYPE constructed at
+		// the access path, so no downstream rule participates in the decision and
+		// none can take COVERING off a scan that has it. What a downstream rule
+		// does decide is WHICH PLAN WINS: fetch elimination. The block's Map is
+		// pushed through the fetch by PushMapThroughFetchRule (Java's elider);
+		// with it disabled, no ancestor can remove the fetch that coveringness
+		// exists to make removable, so the covering path buys nothing and loses
+		// on cost to a bare fetching index scan. The covering plan is not damaged;
+		// it is not chosen.
 		//
-		// This experiment used to establish a CAUSAL claim about two redundant
-		// STAMPERS: MergeProjectionAndFetchRule and ImplementProjectionRule each
-		// stamped coveringness onto the scan, either alone sufficed, and with both
-		// disabled the stamp vanished. That claim was true, and it was the disease:
-		// coveringness had to be RECOGNISED downstream, so it could be lost — which
-		// is exactly what a residual pushed below the fetch did.
-		//
-		// Coveringness is now a plan TYPE constructed at the access path. There is
-		// no stamper left to disable, so the disabling experiment cannot say
-		// anything about stamping. What it CAN say is the architectural claim that
-		// replaced it: no downstream rule participates in the decision, so no
-		// downstream rule can take COVERING off a scan that has it.
-		//
-		// READ THE THIRD EXPECTATION CAREFULLY, because it is NOT "the marker
-		// survives" and an earlier version of this comment claimed it was. Two
-		// different things respond to these rules and only one of them is
-		// coveringness:
-		//
-		//   - COVERINGNESS is decided at the access path. Nothing downstream can
-		//     remove it. That is what the first two configurations show: with one
-		//     fetch-eliding rule gone the other still elides, and the covering scan
-		//     is untouched.
-		//   - WHICH PLAN WINS is a cost question, and fetch elimination is a
-		//     genuinely downstream decision. With BOTH eliders disabled, no ancestor
-		//     can remove the fetch that coveringness exists to make removable, so
-		//     the covering path buys nothing and loses on cost to a bare fetching
-		//     index scan. The covering plan is not damaged; it is not chosen.
-		//
-		// So the third configuration asserts a plan with NO covering scan — and no
-		// Fetch node either, which is the other thing that comment got wrong:
-		// MergeFetchIntoCoveringIndexRule collapses Fetch(Covering(Index)) into one
-		// bare fetching IndexScan, so nothing renders a separate Fetch. Since
-		// RFC-220 a bare `IndexScan(…)` already resolves its own records by primary
-		// key; a `Fetch(` node renders only above a COVERING scan, which is exactly
-		// what this configuration does not have.
+		// MergeFetchIntoCoveringIndexRule collapses Fetch(Covering(Index)) into
+		// one bare fetching IndexScan, so nothing renders a separate Fetch: a bare
+		// `IndexScan(…)` resolves its own records by primary key since RFC-220.
 		//
 		// SCOPE: the direct, no-residual control ONLY, so the shape difference
 		// between configurations stays legible. The residual shape is pinned above.
 		const sql = "SELECT id FROM t2 WHERE status > 'act'"
-		const merged = "Project([_current.ID#0], IndexScan(IDX_STATUS, [<>] COVERING))"
-		// With BOTH downstream rules off, NOTHING can elide the fetch — and
+		const merged = "Map(IndexScan(IDX_STATUS, [<>] COVERING), {ID: _current.ID#0})"
+		// With the elider off, NOTHING can elide the fetch — and
 		// MergeFetchIntoCoveringIndexRule then collapses Fetch(Covering(Index))
 		// into a bare fetching index scan, which is sound (a bare index plan
 		// resolves its own records by primary key) and one node cheaper. So the
 		// plan legitimately uses no covering scan: coveringness buys nothing when
 		// no ancestor can remove the fetch it exists to make removable.
-		const collapsedToFetchingScan = "Project([_current.ID#0], IndexScan(IDX_STATUS, [<>]))"
+		const collapsedToFetchingScan = "Map(IndexScan(IDX_STATUS, [<>]), {ID: _current.ID#0})"
 
 		exps := []struct {
 			name     string
@@ -216,33 +189,24 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 			why      string
 		}{
 			{
-				name: "merge_alone_off_covering_survives", disabled: []string{ruleMergeProjectionAndFetch},
+				name: "nothing_off_covering_survives", disabled: nil,
 				want: merged,
-				why: "ImplementProjectionRule still removes the fetch. Coveringness is " +
-					"not at stake in either rule.",
+				why:  "PushMapThroughFetchRule removes the fetch above the covering scan.",
 			},
 			{
-				name: "implement_projection_alone_off_covering_survives", disabled: []string{ruleImplementProjection},
-				want: merged,
-				why: "MergeProjectionAndFetchRule still removes the fetch. Same as above " +
-					"in the other direction.",
-			},
-			{
-				name: "both_off_collapses_to_a_fetching_scan",
-				disabled: []string{
-					ruleMergeProjectionAndFetch, ruleImplementProjection,
-				},
-				want: collapsedToFetchingScan,
-				why: "The CONTROL for the two assertions above: with every fetch-eliding " +
-					"rule disabled, coveringness correctly buys nothing and the plan " +
-					"collapses to a single fetching index scan. Together with those two, " +
-					"this pins that the covering scan above is chosen because an ancestor " +
-					"can ELIDE the fetch — not because coveringness is stamped or " +
-					"preferred unconditionally. " +
+				name:     "push_map_off_collapses_to_a_fetching_scan",
+				disabled: []string{rulePushMapThroughFetch},
+				want:     collapsedToFetchingScan,
+				why: "The CONTROL for the assertion above: with the fetch-eliding rule " +
+					"disabled, coveringness correctly buys nothing and the plan " +
+					"collapses to a single fetching index scan. Together with the arm " +
+					"above, this pins that the covering scan is chosen because an " +
+					"ancestor can ELIDE the fetch — not because coveringness is stamped " +
+					"or preferred unconditionally. " +
 					"If planning fails outright instead, DisabledRules stopped being able " +
-					"to express this experiment and the two assertions above went vacuous " +
-					"— an unrecognized rule name is INERT, so a rename would silently turn " +
-					"both into 'disabling nothing changes nothing'.",
+					"to express this experiment — an unrecognized rule name is INERT, so " +
+					"a rename would silently turn this into 'disabling nothing changes " +
+					"nothing'.",
 			},
 		}
 		for _, e := range exps {

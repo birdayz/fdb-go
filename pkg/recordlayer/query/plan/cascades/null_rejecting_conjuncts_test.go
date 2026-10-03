@@ -156,6 +156,31 @@ func TestDistinctFinal_R2NullRejectingPredicateAdmitsNullableUniqueIndex(t *test
 	}
 }
 
+// A block Select carries its conjuncts as PredicateWithValueAndRanges: the
+// value lies in the union of the ranges, so it rejects NULL only when every
+// range holds a NULL-rejecting comparison.
+func TestDistinctFinal_R2ReadsValueAndRangesConjuncts(t *testing.T) {
+	t.Parallel()
+	email := distinctRead("T", "NULLABLE_EMAIL")
+	notNull := predicates.Comparison{Type: predicates.ComparisonIsNotNull}
+	isNull := predicates.Comparison{Type: predicates.ComparisonIsNull}
+	rng := func(c predicates.Comparison) *predicates.RangeConstraints {
+		return predicates.NewRangeConstraints([]predicates.Comparison{c}, nil)
+	}
+	retained, _, fired := fireFilteredDistinct(t, []string{"NULLABLE_EMAIL"}, []predicates.QueryPredicate{
+		predicates.NewPredicateWithValueAndRanges(email, []*predicates.RangeConstraints{rng(notNull)}),
+	})
+	if !fired || retained {
+		t.Fatalf("IS NOT NULL as one range did not elide (fired %v, retained %v)", fired, retained)
+	}
+	retained, _, fired = fireFilteredDistinct(t, []string{"NULLABLE_EMAIL"}, []predicates.QueryPredicate{
+		predicates.NewPredicateWithValueAndRanges(email, []*predicates.RangeConstraints{rng(notNull), rng(isNull)}),
+	})
+	if !fired || !retained {
+		t.Fatalf("a range admitting NULL elided the operator (fired %v, retained %v)", fired, retained)
+	}
+}
+
 // TestDistinctFinal_R2RefusesNullAdmittingConjuncts is R2's fail-closed half,
 // and NotDistinctFrom is the reason it exists as its own test.
 //

@@ -22,13 +22,6 @@ func provenanceRowType() values.Type {
 	})
 }
 
-func provenanceMergeRowType() values.Type {
-	return values.NewRecordType("ProjectionProvenanceMergeRow", false, []values.Field{
-		{Name: "U.NAME", FieldType: values.NullableString, Ordinal: 0},
-		{Name: "O.TOTAL", FieldType: values.NullableLong, Ordinal: 1},
-	})
-}
-
 func provenanceFields(q expressions.Quantifier, ordinals ...int) []values.Value {
 	root := mustProvenanceConstruct(q.RequireFlowedObjectValue())
 	fields := make([]values.Value, len(ordinals))
@@ -170,119 +163,6 @@ func TestSameProjectionMetadataComparesStructuredAliasSource(t *testing.T) {
 	}))
 	if sameProjectionMetadata(logical, foreign, 1) {
 		t.Fatal("projection reuse discarded a different frozen structured alias source")
-	}
-}
-
-// TestProjectionMergeRule_ComposesAliasProvenance pins the one site that
-// COMPOSES two provenance vectors rather than copying one.
-//
-// Both halves of the composition are pinned, because the rule can be wrong in
-// two independent directions:
-//
-//   - a slot the outer had NOT aliased has its effective name written into the
-//     alias vector BY THIS RULE. That name is the Value's own Field, which over
-//     a join is leg-qualified ("U.NAME"), so reporting it as a user alias would
-//     make the merge alone leak the qualifier into `SELECT u.name`'s label.
-//     Measured at 67 firings across the sqldriver suite.
-//   - a slot the outer HAD aliased keeps the outer's own marker, so a machinery
-//     key that reached the outer stays a machinery key. Measured at 6 firings.
-func TestProjectionMergeRule_ComposesAliasProvenance(t *testing.T) {
-	t.Parallel()
-	scanExpr := mustProvenanceConstruct(expressions.NewFullUnorderedScanExpression(
-		[]string{"T"}, provenanceMergeRowType()))
-	scan := expressions.ForEachQuantifier(expressions.InitialOf(scanExpr))
-	// The inner supplies two slots the outer reads by baked ordinal.
-	inner := mustProvenanceConstruct(expressions.NewLogicalProjectionExpressionWithAliasProvenance(
-		provenanceFields(scan, 0, 1),
-		[]string{"U.NAME", "O.TOTAL"},
-		[]bool{true, true},
-		scan,
-	))
-	inner = mustProvenanceConstruct(inner.WithAliasSources([]values.ProjectionAliasSource{
-		values.NewProjectionAliasSource(values.NamedCorrelationIdentifier("U")),
-		values.NewProjectionAliasSource(values.NamedCorrelationIdentifier("O")),
-	}))
-	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(inner))
-	outerFields := provenanceFields(innerQ, 0, 1)
-
-	// Outer slot 0: NO alias — the rule mints its effective name here, so the
-	// merged slot is machinery-named regardless of the outer's marker.
-	// Outer slot 1: a user alias, marker false — must stay a user alias.
-	outer := mustProvenanceConstruct(expressions.NewLogicalProjectionExpressionWithAliasProvenance(
-		outerFields,
-		[]string{"", "MY.TOTAL"},
-		[]bool{false, false},
-		innerQ,
-	))
-
-	rule := NewProjectionMergeRule()
-	bindings := rule.Matcher().BindMatches(matching.NewBindings(), outer)
-	if len(bindings) == 0 {
-		t.Fatal("rule should match a projection over a projection")
-	}
-	call := NewExpressionRuleCall(expressions.InitialOf(outer), bindings[0], EmptyPlanContext())
-	rule.OnMatch(call)
-
-	var flat *expressions.LogicalProjectionExpression
-	for _, y := range call.Yielded() {
-		if p, ok := y.(*expressions.LogicalProjectionExpression); ok {
-			flat = p
-		}
-	}
-	if flat == nil {
-		t.Fatal("merge rule yielded no flattened projection")
-	}
-	got := flat.GetAliasMinted()
-	if len(got) != 2 {
-		t.Fatalf("merged provenance has %d slots, want 2 (got %v)", len(got), got)
-	}
-	if !got[0] {
-		t.Error("an outer slot with NO alias is named by this rule, so the merged slot is machinery-named; " +
-			"reporting it as a user alias leaks the leg qualifier into the label")
-	}
-	if got[1] {
-		t.Error("an outer slot the USER aliased must keep its user provenance across the merge")
-	}
-	mergedSources := flat.GetAliasSources()
-	if len(mergedSources) != 2 || !mergedSources[0].Present ||
-		mergedSources[0].Source != values.NamedCorrelationIdentifier("U") || mergedSources[1].Present {
-		t.Errorf("rule-minted outer slot did not inherit exact inner source / user slot gained one: %+v", mergedSources)
-	}
-
-	// The other direction of the carry: an outer slot that was ALREADY a
-	// machinery key must stay one even though it carries an explicit alias.
-	outerMinted := mustProvenanceConstruct(expressions.NewLogicalProjectionExpressionWithAliasProvenance(
-		outerFields,
-		[]string{"U.NAME", "O.TOTAL"},
-		[]bool{true, true},
-		innerQ,
-	))
-	outerMinted = mustProvenanceConstruct(outerMinted.WithAliasSources([]values.ProjectionAliasSource{
-		values.NewProjectionAliasSource(values.NamedCorrelationIdentifier("OUTER_U")),
-		values.NewProjectionAliasSource(values.NamedCorrelationIdentifier("OUTER_O")),
-	}))
-	bindings = rule.Matcher().BindMatches(matching.NewBindings(), outerMinted)
-	if len(bindings) == 0 {
-		t.Fatal("rule should match the minted-outer projection")
-	}
-	call = NewExpressionRuleCall(expressions.InitialOf(outerMinted), bindings[0], EmptyPlanContext())
-	rule.OnMatch(call)
-	flat = nil
-	for _, y := range call.Yielded() {
-		if p, ok := y.(*expressions.LogicalProjectionExpression); ok {
-			flat = p
-		}
-	}
-	if flat == nil {
-		t.Fatal("merge rule yielded no flattened projection for the minted outer")
-	}
-	if got := flat.GetAliasMinted(); len(got) != 2 || !got[0] || !got[1] {
-		t.Errorf("a machinery key must survive the merge: got %v, want [true true]", got)
-	}
-	gotSources := flat.GetAliasSources()
-	if len(gotSources) != 2 || gotSources[0].Source != values.NamedCorrelationIdentifier("OUTER_U") ||
-		gotSources[1].Source != values.NamedCorrelationIdentifier("OUTER_O") {
-		t.Errorf("existing outer machinery sources did not survive merge: %+v", gotSources)
 	}
 }
 

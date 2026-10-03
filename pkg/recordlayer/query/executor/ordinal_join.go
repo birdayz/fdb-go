@@ -1590,9 +1590,7 @@ func newOrdinalJoinBuildWithOutputLayout(
 	rc, isRC := rv.(*values.RecordConstructorValue)
 	// Plain concatenation retains child windows. Computed or nested slots instead
 	// require result evaluation, as in Java's RecordQueryFlatMapPlan.executePlan.
-	planBackedRC := outputLayout != nil && isRC &&
-		(len(sourceOrigins) > 0 || recordConstructorReadsNestedLegPath(rc) ||
-			recordConstructorRetainsWholeRecordSlot(rc) || recordConstructorComputesSlot(rc))
+	planBackedRC := outputLayout != nil && isRC
 	// A single leg object is not the merged row; only the latter is concatenation.
 	notAConcatenation := false
 	if qov, ok := values.AsQuantifiedObjectValue(rv); ok {
@@ -1710,68 +1708,6 @@ func newOrdinalJoinBuildWithOutputLayout(
 		return nil, err
 	}
 	return build, nil
-}
-
-func recordConstructorComputesSlot(rc *values.RecordConstructorValue) bool {
-	for _, field := range rc.Fields {
-		if _, ok := values.AsQuantifiedObjectValue(field.Value); ok {
-			continue
-		}
-		if read, ok := values.AsFieldValue(field.Value); ok {
-			if _, direct := values.AsQuantifiedObjectValue(read.ChildValue()); direct {
-				continue
-			}
-		}
-		return true
-	}
-	return false
-}
-
-// recordConstructorReadsNestedLegPath reports a selected-layout RC shape
-// which a plain concat of child rows cannot realize: a field descends through a
-// nested record owned by a quantified leg. A one-accessor field is already a
-// natural child slot and must keep the ordinary mergeRows path (and its exact
-// leg windows). Childless/computed values do not prove a nested physical leg.
-func recordConstructorReadsNestedLegPath(rc *values.RecordConstructorValue) bool {
-	if rc == nil {
-		return false
-	}
-	nested := false
-	values.WalkValue(rc, func(value values.Value) bool {
-		field, ok := values.AsFieldValue(value)
-		if !ok || field.Path() == nil || field.Path().Len() <= 1 {
-			return true
-		}
-		if _, ok := values.AsQuantifiedObjectValue(field.ChildValue()); !ok {
-			return true
-		}
-		nested = true
-		return false
-	})
-	return nested
-}
-
-// recordConstructorRetainsWholeRecordSlot reports a direct exact record QOV in
-// one RC output slot. NewFlatOrdinalLayoutForRetainedResult publishes that QOV
-// as an ObjectPath source, and the selected-layout carrier check below requires
-// the same exact record type at the same ordinal before a build is returned.
-// A scalar QOV remains a natural one-slot child value and is not authority to
-// leave mergeRows; ordinary flat one-level RCs likewise retain their leg-window
-// preserving concatenation path.
-func recordConstructorRetainsWholeRecordSlot(rc *values.RecordConstructorValue) bool {
-	if rc == nil {
-		return false
-	}
-	for _, field := range rc.Fields {
-		qov, ok := values.AsQuantifiedObjectValue(field.Value)
-		if !ok {
-			continue
-		}
-		if !values.IsMixedSeedElementType(qov.FlowedType()) {
-			return true
-		}
-	}
-	return false
 }
 
 // configureNullSupplying rebuilds the output layout with explicit per-row

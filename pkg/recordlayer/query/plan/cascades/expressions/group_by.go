@@ -159,9 +159,22 @@ func NewGroupByExpression(
 	aggregates []AggregateSpec,
 	inner Quantifier,
 ) (*GroupByExpression, error) {
+	return newGroupByExpression(groupingKeys, aggregates, inner,
+		GroupByOutputColumnNames(groupingKeys, aggregates))
+}
+
+func newGroupByExpression(
+	groupingKeys []values.Value,
+	aggregates []AggregateSpec,
+	inner Quantifier,
+	names []string,
+) (*GroupByExpression, error) {
 	groupingCopy := slices.Clone(groupingKeys)
 	aggregateCopy := slices.Clone(aggregates)
-	names := GroupByOutputColumnNames(groupingCopy, aggregateCopy)
+	if len(names) != len(groupingCopy)+len(aggregateCopy) {
+		return nil, fmt.Errorf("GroupByExpression: %d output names for %d keys and %d aggregates",
+			len(names), len(groupingCopy), len(aggregateCopy))
+	}
 	fields := make([]values.RecordConstructorField, 0, len(names))
 	for i, groupingKey := range groupingCopy {
 		if groupingKey == nil {
@@ -197,6 +210,16 @@ func NewGroupByExpression(
 		inner:        inner,
 		resultValue:  resultValue,
 	}, nil
+}
+
+// WithTranslatedValues rebuilds the aggregate over translated keys, aggregates
+// and input, keeping its output columns' names: a correlation rewrite changes
+// what the row is computed from, not the row, and the names are data, as Java
+// keeps a Field's name on its Type.
+func (e *GroupByExpression) WithTranslatedValues(
+	groupingKeys []values.Value, aggregates []AggregateSpec, inner Quantifier,
+) (*GroupByExpression, error) {
+	return newGroupByExpression(groupingKeys, aggregates, inner, e.OutputColumnNames())
 }
 
 func groupByAggregateResultValue(aggregate AggregateSpec) (values.Value, error) {
@@ -442,6 +465,17 @@ func GroupByOutputColumnNames(groupingKeys []values.Value, aggregates []Aggregat
 	return names
 }
 
+// OutputColumnNames is the aggregate row's column names, stated once at
+// construction and kept across rewrites; consumers read them rather than
+// derive them again from keys that a rewrite may have re-rooted.
+func (e *GroupByExpression) OutputColumnNames() []string {
+	names := make([]string, len(e.resultValue.Fields))
+	for i, field := range e.resultValue.Fields {
+		names[i] = field.Name
+	}
+	return names
+}
+
 func (e *GroupByExpression) GetGroupingKeys() []values.Value { return slices.Clone(e.groupingKeys) }
 func (e *GroupByExpression) GetAggregates() []AggregateSpec  { return slices.Clone(e.aggregates) }
 func (e *GroupByExpression) GetInner() Quantifier            { return e.inner }
@@ -511,7 +545,7 @@ func (e *GroupByExpression) WithQuantifiers(quantifiers []Quantifier) (Relationa
 	if err := requireQuantifierArity("GroupByExpression", len(quantifiers), 1); err != nil {
 		return nil, err
 	}
-	return NewGroupByExpression(e.groupingKeys, e.aggregates, quantifiers[0])
+	return e.WithTranslatedValues(e.groupingKeys, e.aggregates, quantifiers[0])
 }
 
 var _ RelationalExpression = (*GroupByExpression)(nil)

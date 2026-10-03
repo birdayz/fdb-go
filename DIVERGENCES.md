@@ -158,9 +158,7 @@ alternative — never rows. Revisit when a second realizable form exists.
 ### Go decomposes SelectExpression into separate logical operators
 
 **Java:** `SelectExpression` is a unified node for filters, projections, and joins.
-**Go:** Decomposes into `LogicalFilterExpression`, `LogicalProjectionExpression`, `LogicalSortExpression`, etc.
-
-Go needs ~25 extra rewrite rules (Push/Pull/Merge per operator). Same functional behavior. Go's decomposition makes each operator's semantics explicit and simplifies rule correctness verification.
+**Go:** A SQL query block is now one `SelectExpression`, as in Java (TODO.md, "A SQL query block is one SelectExpression"). Still open there: the top-level `Sort(Select)` and the deletion of `LogicalProjectionExpression`, which the translator builds and folds at once.
 
 ### NormalizePredicatesRule — RESOLVED
 

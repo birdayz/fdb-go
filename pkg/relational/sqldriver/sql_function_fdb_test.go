@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"fdb.dev/pkg/relational/api"
 )
@@ -221,5 +223,37 @@ func TestFDB_TemporaryFunctions(t *testing.T) {
 	})
 	if got := ids(db, "SELECT id FROM big"); got == "[3]" || got == "[2 3]" {
 		t.Errorf("temporary function outlived its transaction: %s", got)
+	}
+}
+
+// TestFDB_NestedSQLFunctionPlansThroughItsIndex: a call's arguments are a
+// one-row values box pushed into its body, so a function calling a function
+// carries both bodies' predicates into one index scan. Rewriting must converge:
+// rebuilding a child reference per rule firing made this call plan forever.
+func TestFDB_NestedSQLFunctionPlansThroughItsIndex(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	db, ctx := dgcOpen(t, "/testdb_nestedfn", "nestedfn",
+		"CREATE TABLE employees (id BIGINT, name STRING, department STRING, salary BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX dept_idx AS SELECT department, salary FROM employees ORDER BY department, salary "+
+			"CREATE FUNCTION employees_in_dept(IN dept STRING) AS SELECT id, name, salary FROM employees WHERE department = dept "+
+			"CREATE FUNCTION high_earners(IN dept STRING) AS SELECT * FROM employees_in_dept(dept) WHERE salary > 100000")
+	mwjoMustExec(t, db, ctx, "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 100000), "+
+		"(2, 'Bob', 'Engineering', 110000), (3, 'Carol', 'Engineering', 150000), (5, 'Eve', 'Sales', 120000)")
+
+	const q = "SELECT id FROM high_earners('Engineering')"
+	planCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	var plan string
+	if err := db.QueryRowContext(planCtx, "EXPLAIN "+q).Scan(&plan); err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	if !strings.Contains(plan, "IndexScan(DEPT_IDX, [=, <>]") {
+		t.Fatalf("planned %s, want both bodies' predicates in one DEPT_IDX scan", plan)
+	}
+	if got := dgcInts(t, db, ctx, q, true); !dgcEq(got, []int64{2, 3}) {
+		t.Errorf("%s = %v, want [2 3]", q, got)
 	}
 }

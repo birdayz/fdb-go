@@ -77,10 +77,10 @@ func (r *ImplementDistinctFinalRule) OnMatch(call *ImplementationRuleCall) {
 	var proof secondaryUniqueProof
 	if call.Context != nil {
 		for _, m := range innerRef.Members() {
-			if proj, ok := m.(*expressions.LogicalProjectionExpression); ok {
-				pkDistinct = distinctEliminatedByUniqueKey(proj, call.Context)
+			if isProjectionBlock(m) {
+				pkDistinct = distinctEliminatedByUniqueKey(m, call.Context)
 				if !pkDistinct {
-					proof = secondaryUniqueEliminationProof(proj, call.Context)
+					proof = secondaryUniqueEliminationProof(m, call.Context)
 				}
 				break
 			}
@@ -704,13 +704,27 @@ func collectProjectedOrdinals(
 	expr expressions.RelationalExpression,
 	layout values.OrdinalDomain,
 ) (map[int]struct{}, bool) {
-	proj, isProj := expr.(*expressions.LogicalProjectionExpression)
-	if !isProj {
+	var projected []values.Value
+	switch e := expr.(type) {
+	case *expressions.LogicalProjectionExpression:
+		projected = e.GetProjectedValues()
+	case *expressions.SelectExpression:
+		if !isProjectionBlock(e) {
+			return nil, true
+		}
+		columns, isRecord := e.GetResultValue().(*values.RecordConstructorValue)
+		if !isRecord {
+			return nil, true
+		}
+		for _, column := range columns.Fields {
+			projected = append(projected, column.Value)
+		}
+	default:
 		return nil, true
 	}
 
 	ords := make(map[int]struct{})
-	for _, v := range proj.GetProjectedValues() {
+	for _, v := range projected {
 		// TOP-LEVEL type assertion only — a FieldValue nested inside an
 		// ArithmeticValue/function is deliberately not unwrapped here.
 		fv, isFV := values.AsFieldValue(v)
@@ -758,6 +772,10 @@ func findRecordTypes(expr expressions.RelationalExpression) []string {
 		return e.GetRecordTypes()
 	case *expressions.LogicalProjectionExpression:
 		return findRecordTypesViaQuantifier(e.GetInner())
+	case *expressions.SelectExpression:
+		if isProjectionBlock(e) {
+			return findRecordTypesViaQuantifier(e.GetQuantifiers()[0])
+		}
 	case *expressions.LogicalFilterExpression:
 		return findRecordTypesViaQuantifier(e.GetInner())
 	case *expressions.LogicalSortExpression:
@@ -908,6 +926,16 @@ func distinctKeyColumns(inner plans.RecordQueryPlan) []values.Value {
 	if proj, ok := inner.(*plans.RecordQueryProjectionPlan); ok {
 		return proj.GetProjections()
 	}
+	// A block's Map states its columns the same way, as its row's fields.
+	if m, ok := inner.(*plans.RecordQueryMapPlan); ok {
+		if rc, isRC := m.GetResultValue().(*values.RecordConstructorValue); isRC && len(rc.Fields) > 0 {
+			cols := make([]values.Value, len(rc.Fields))
+			for i, f := range rc.Fields {
+				cols[i] = f.Value
+			}
+			return cols
+		}
+	}
 	recordResultTypeRead("distinctKeyColumns", inner.GetResultType())
 	if rt, ok := inner.GetResultType().(*values.RecordType); ok && len(rt.Fields) > 0 {
 		root, err := values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier(), rt)
@@ -939,6 +967,10 @@ func findScanExpression(expr expressions.RelationalExpression) *expressions.Full
 		return e
 	case *expressions.LogicalProjectionExpression:
 		return findScanViaQuantifier(e.GetInner())
+	case *expressions.SelectExpression:
+		if isProjectionBlock(e) {
+			return findScanViaQuantifier(e.GetQuantifiers()[0])
+		}
 	case *expressions.LogicalFilterExpression:
 		return findScanViaQuantifier(e.GetInner())
 	case *expressions.LogicalSortExpression:
@@ -959,4 +991,16 @@ func findScanViaQuantifier(q expressions.Quantifier) *expressions.FullUnorderedS
 		return nil
 	}
 	return findScanExpression(ref.Get())
+}
+
+// isProjectionBlock reports whether e is a query block over one source: a
+// select whose only quantifier is a plain ForEach. Its predicates are the
+// block's WHERE and its result value is the block's projection.
+func isProjectionBlock(e expressions.RelationalExpression) bool {
+	sel, ok := e.(*expressions.SelectExpression)
+	if !ok || len(sel.GetQuantifiers()) != 1 {
+		return false
+	}
+	q := sel.GetQuantifiers()[0]
+	return q.Kind() == expressions.QuantifierForEach && !q.IsNullOnEmpty() && !q.IsStrictSingle()
 }

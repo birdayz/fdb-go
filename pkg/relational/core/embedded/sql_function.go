@@ -316,7 +316,7 @@ func (fn *sqlFunction) invocation(tf *antlrgen.TableFunctionContext, alias strin
 	if len(cols) == 0 {
 		return fmt.Sprintf("(SELECT %s.* FROM (%s) AS %s) AS %s", body, fn.body, body, alias), nil
 	}
-	return fmt.Sprintf("(SELECT %s.* FROM (SELECT %s) AS FNP_%d, (%s) AS %s) AS %s",
+	return fmt.Sprintf("(SELECT %s.* FROM (SELECT %s FROM range(1L)) AS FNP_%d, (%s) AS %s) AS %s",
 		body, strings.Join(cols, ", "), n, fn.body, body, alias), nil
 }
 

@@ -91,14 +91,15 @@ func identityHashViolations(root plans.RecordQueryPlan) []string {
 //
 // RFC-184 §7 exit criterion: W4 must exercise every compensating-rule site
 // (FlatMap, RecursiveDfsJoin, InJoin, UnorderedUnion, PredicatesFilter,
-// Projection) with generated shapes — that coverage is what licenses W2. Family
+// Map) with generated shapes — that coverage is what licenses W2. A block's
+// result value is compensated by a Map, as in Java. Family
 // membership is read from the typed plan node, never from EXPLAIN text
 // (CLAUDE.md: NO TEXT MATCHING ON PLAN TREES).
 // ---------------------------------------------------------------------------
 
 var requiredFamilies = []string{
 	"FlatMap", "RecursiveDfsJoin", "InJoin",
-	"UnorderedUnion", "PredicatesFilter", "Projection",
+	"UnorderedUnion", "PredicatesFilter", "Map",
 }
 
 // planFamilies returns the compensating-rule families present in a plan tree,
@@ -117,8 +118,8 @@ func planFamilies(root plans.RecordQueryPlan) map[string]int {
 			fams["UnorderedUnion"]++
 		case *plans.RecordQueryPredicatesFilterPlan:
 			fams["PredicatesFilter"]++
-		case *plans.RecordQueryProjectionPlan:
-			fams["Projection"]++
+		case *plans.RecordQueryMapPlan:
+			fams["Map"]++
 		}
 		return true
 	})
@@ -179,7 +180,7 @@ var familyProbes = []familyProbe{
 		sql:    "SELECT id FROM orders WHERE amount > 5 AND status = 'x'",
 	},
 	{
-		name:   "Projection",
+		name:   "Map",
 		schema: probeOrdersSchema,
 		sql:    "SELECT status, amount FROM orders WHERE customer_id = 3",
 	},

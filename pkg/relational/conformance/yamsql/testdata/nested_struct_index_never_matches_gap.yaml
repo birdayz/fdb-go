@@ -10,7 +10,7 @@
 # from 0 to 29 executed Java-corpus queries. The planner never MATCHES it:
 #
 #   SELECT "id" FROM qnest WHERE CARDINALITY("struct"."int_arr") = 1
-#   go   : Project([_current.id#0], PredicatesFilter(Scan(QNEST), [1 preds]))
+#   go   : Map(PredicatesFilter(Scan(QNEST), [1 preds]), {id: _current.id#0})
 #   java : ISCAN(tab2_index [EQUALS promote(@c21 AS INT)])
 #
 # The FLAT twin — `CARDINALITY("int_arr")` over a top-level array — matches

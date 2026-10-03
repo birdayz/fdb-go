@@ -49,9 +49,10 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 	// Top-down: push ordering constraint to inner reference so
 	// downstream rules (index scans) can satisfy it. The constraint crosses into
 	// the inner reference's own current-row space, exactly as the dedicated
-	// push rule does; `requestedOrdering` itself stays in the sort's space
-	// below, because the satisfaction checks compare it against orderings
-	// derived from this expression's children.
+	// push rule does. The satisfaction checks below read the same rebased
+	// request: a member's ordering describes its own output row, and Java's
+	// RemoveSortRule states the sort's ordering over Quantifier.current() for
+	// the same comparison.
 	pushedOrdering, err := requestedOrderingAtInnerCurrent(requestedOrdering, s.GetInner())
 	if err != nil {
 		call.Fail(err)
@@ -69,9 +70,16 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	requestedParts := requestedOrdering.GetParts()
+	requestedParts := pushedOrdering.GetParts()
 	preserveDistinctReq := properties.NewRequestedOrdering(
 		requestedParts,
+		properties.DistinctnessPreserveDistinctness,
+		requestedOrdering.IsExhaustive(),
+	)
+	// The FlatMap recovery translates from the sort's declared input edge
+	// itself, so it takes the request as the sort spells it.
+	sortSpaceReq := properties.NewRequestedOrdering(
+		requestedOrdering.GetParts(),
 		properties.DistinctnessPreserveDistinctness,
 		requestedOrdering.IsExhaustive(),
 	)
@@ -121,7 +129,7 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 				// complete. Each candidate is verified through the same rich
 				// property before the enforcer is removed.
 				candidates, err := orderedFlatMapCandidatesAtSort(
-					call, expr, preserveDistinctReq, sortInput)
+					call, expr, sortSpaceReq, sortInput)
 				if err != nil {
 					call.Fail(err)
 					return

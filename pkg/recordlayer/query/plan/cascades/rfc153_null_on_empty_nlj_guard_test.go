@@ -9,9 +9,8 @@ import (
 )
 
 // RewriteOuterJoinRule carries LEFT-OUTER semantics on a NullOnEmpty edge of an
-// otherwise INNER Select. Only the correlated FlatMap lowering knows how to
-// turn that edge into DefaultOnEmpty. If correlation is absent (or a buried
-// rebase later declines), implementing this rewritten member as an ordinary
+// otherwise INNER Select. Only the FlatMap lowering turns that edge into
+// DefaultOnEmpty; implementing this rewritten member as an ordinary
 // materialized INNER NLJ drops unmatched rows. The original LEFT-OUTER member
 // is the materialized fallback and must remain independently implementable.
 func TestImplementNestedLoopJoin_NullOnEmptyRequiresFlatMap(t *testing.T) {
@@ -86,8 +85,19 @@ func TestImplementNestedLoopJoin_NullOnEmptyRequiresFlatMap(t *testing.T) {
 			if hasMaterializedNLJ(results) {
 				t.Fatalf("rewritten INNER with %s NullOnEmpty edge yielded a materialized NLJ", nullSide)
 			}
-			if len(results) != 0 {
-				t.Fatalf("uncorrelated NullOnEmpty shape yielded %d non-FlatMap implementation(s)", len(results))
+			if len(results) == 0 {
+				t.Fatalf("rewritten INNER with %s NullOnEmpty edge yielded no implementation", nullSide)
+			}
+			for _, result := range results {
+				flatMap, ok := result.(*plans.RecordQueryFlatMapPlan)
+				if !ok {
+					t.Fatalf("uncorrelated NullOnEmpty shape yielded a %T, want the FlatMap lowering", result)
+				}
+				_, outerExtended := flatMap.GetOuter().(*plans.RecordQueryDefaultOnEmptyPlan)
+				_, innerExtended := flatMap.GetInner().(*plans.RecordQueryDefaultOnEmptyPlan)
+				if !outerExtended && !innerExtended {
+					t.Fatalf("the %s NullOnEmpty leg is not extended: %s", nullSide, flatMap.Explain())
+				}
 			}
 		})
 	}

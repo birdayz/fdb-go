@@ -131,7 +131,7 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 				// Count-only, no grouping keys → no ordering precondition, so carry
 				// the LIVE shared-group edge (RFC-184 W2, no physicalStreamingAggWrapper).
 				coveringQ := expressions.NamedPhysicalQuantifier(inputAlias, call.MemoizeExpression(coveringPlan))
-				aggPlan, err := plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(coveringQ, groupingKeys, gb.GetAggregates())
+				aggPlan, err := plans.NewRecordQueryStreamingAggregationPlanForGroupBy(coveringQ, groupingKeys, gb.GetAggregates(), gb.OutputColumnNames())
 				if err != nil {
 					call.Fail(err)
 					return
@@ -160,7 +160,7 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 			// LIVE shared-group edge over the member (RFC-184 W2, no
 			// physicalStreamingAggWrapper). GetInner resolves the member's plan.
 			innerQ := expressions.NamedPhysicalQuantifier(inputAlias, call.MemoizeExpression(m))
-			aggPlan, err := plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(innerQ, groupingKeys, gb.GetAggregates())
+			aggPlan, err := plans.NewRecordQueryStreamingAggregationPlanForGroupBy(innerQ, groupingKeys, gb.GetAggregates(), gb.OutputColumnNames())
 			if err != nil {
 				call.Fail(err)
 				return
@@ -231,7 +231,7 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 			return
 		}
 		sortQ := expressions.NamedPhysicalQuantifier(inputAlias, call.MemoizeExpression(sortedPlan))
-		aggPlan, err := plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(sortQ, groupingKeys, gb.GetAggregates())
+		aggPlan, err := plans.NewRecordQueryStreamingAggregationPlanForGroupBy(sortQ, groupingKeys, gb.GetAggregates(), gb.OutputColumnNames())
 		if err != nil {
 			call.Fail(err)
 			return
@@ -295,7 +295,7 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 				// FROZEN edge — the correct freeze for a delegating ordered inner
 				// (RFC-184 W2, no physicalStreamingAggWrapper).
 				orderedQ := expressions.NamedPhysicalQuantifier(inputAlias, expressions.FinalOf(pinned))
-				aggPlan, err := plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(orderedQ, groupingKeys, gb.GetAggregates())
+				aggPlan, err := plans.NewRecordQueryStreamingAggregationPlanForGroupBy(orderedQ, groupingKeys, gb.GetAggregates(), gb.OutputColumnNames())
 				if err != nil {
 					call.Fail(err)
 					return

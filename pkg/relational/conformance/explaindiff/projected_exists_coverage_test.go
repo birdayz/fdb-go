@@ -76,13 +76,21 @@ func censusProjectedExists(entries []explaindiff.Entry) projectedExistsCensus {
 			c.DeclinedUnsupported++
 		case e.Failed():
 			c.UnpinnedFailures++
-		case strings.HasPrefix(e.Plan, "Project(") && strings.Contains(e.Plan, "InMemorySort"):
+		case cleansUpASortColumn(e.Shape):
 			c.FoldedWithHiddenSortColumn++
-		case !strings.HasPrefix(e.Plan, "Project("):
+		case len(e.Shape) == 0 || e.Shape[0] != "RecordQueryMapPlan":
 			c.ControlNoCleanupProjection++
 		}
 	}
 	return c
+}
+
+// cleansUpASortColumn reports a plan whose root Map drops a column appended for
+// the sort directly below it. Without a hidden sort column the block's result
+// value rides the plan below and no Map is left at the root.
+func cleansUpASortColumn(shape []string) bool {
+	return len(shape) >= 2 && shape[0] == "RecordQueryMapPlan" &&
+		strings.TrimSpace(shape[1]) == "RecordQueryInMemorySortPlan"
 }
 
 // assertFoldCoverage drives the verdict off explicit state so the decision is
@@ -245,6 +253,34 @@ func TestFoldCoverageGateDrivesEveryArm(t *testing.T) {
 				"fail closed on every run and stop meaning anything")
 		}
 	})
+}
+
+// TestFoldCensusClassifiesEveryArm drives each classification arm from a
+// synthetic entry, so an arm the corpus stops reaching is still exercised.
+func TestFoldCensusClassifiesEveryArm(t *testing.T) {
+	t.Parallel()
+	fixture := func(plan string, shape ...string) explaindiff.Entry {
+		return explaindiff.Entry{
+			File: foldFixtureFile, SQL: "SELECT id, EXISTS (SELECT 1 FROM t2) AS h FROM t1",
+			Plan: plan, Shape: shape,
+		}
+	}
+	got := censusProjectedExists([]explaindiff.Entry{
+		fixture("Map(InMemorySort(...))", "RecordQueryMapPlan", "  RecordQueryInMemorySortPlan", "    RecordQueryFlatMapPlan"),
+		fixture("FlatMap(...)", "RecordQueryFlatMapPlan", "  RecordQueryScanPlan"),
+		// A Map that is not over a sort is neither a cleanup nor the control.
+		fixture("Map(FlatMap(...))", "RecordQueryMapPlan", "  RecordQueryFlatMapPlan"),
+		{File: foldFixtureFile, SQL: "SELECT 1 FROM t1", Plan: "<PLAN-ERROR: x>", ErrorPin: "0AF00"},
+		{File: foldFixtureFile, SQL: "SELECT 1 FROM t1", Plan: "<PLAN-ERROR: x>"},
+		{File: "other.yaml", SQL: "SELECT EXISTS (SELECT 1 FROM t) FROM u", Plan: "Map(x)", Shape: []string{"RecordQueryMapPlan"}},
+	})
+	want := projectedExistsCensus{
+		SelectListExists: 4, FoldFixture: 5, FoldedWithHiddenSortColumn: 1,
+		DeclinedUnsupported: 1, ControlNoCleanupProjection: 1, UnpinnedFailures: 1,
+	}
+	if got != want {
+		t.Fatalf("census = %+v, want %+v", got, want)
+	}
 }
 
 // TestSelectListOfEndsAtTheFirstFrom pins the greedy-vs-non-greedy distinction

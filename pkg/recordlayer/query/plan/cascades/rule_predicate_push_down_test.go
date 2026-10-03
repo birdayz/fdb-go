@@ -656,6 +656,34 @@ func TestPredicatePushDownRule_DoesNotPushIntoOuterJoinChild(t *testing.T) {
 	}
 }
 
+// An outer join select's predicates are its ON conditions. One that reads only
+// the preserved leg must stay above that leg: pushed into it, it would drop the
+// preserved row instead of null-extending it.
+func TestPredicatePushDownRule_DoesNotPushAnOnConditionIntoAnOuterJoinLeg(t *testing.T) {
+	t.Parallel()
+	preservedScanQ := expressions.ForEachQuantifier(expressions.InitialOf(ppdScan()))
+	preserved := ppdSelect(ppdFlowed(preservedScanQ), []expressions.Quantifier{preservedScanQ}, nil)
+	preservedQ := expressions.ForEachQuantifier(expressions.InitialOf(preserved))
+	nullSuppliedQ := expressions.ForEachQuantifier(expressions.InitialOf(ppdScan()))
+	on := &predicates.ComparisonPredicate{
+		Operand: ppdFieldValue(preservedQ, "id"),
+		Comparison: predicates.Comparison{
+			Type:    predicates.ComparisonGreaterThan,
+			Operand: &values.ConstantValue{Value: int64(1)},
+		},
+	}
+	join := mustPredicatePushDownConstruct(expressions.NewSelectExpressionWithJoinType(
+		ppdFlowed(preservedQ),
+		[]expressions.Quantifier{preservedQ, nullSuppliedQ},
+		[]predicates.QueryPredicate{on},
+		nil,
+		expressions.JoinLeftOuter,
+	))
+	if yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), expressions.InitialOf(join)); len(yielded) != 0 {
+		t.Fatalf("an ON condition was pushed into an outer join's leg: %d yields", len(yielded))
+	}
+}
+
 // TestPredicatePushDown_NullOnEmptySkipped verifies that ForEach
 // quantifiers with nullOnEmpty=true (LEFT JOIN) are skipped.
 func TestPredicatePushDown_NullOnEmptySkipped(t *testing.T) {

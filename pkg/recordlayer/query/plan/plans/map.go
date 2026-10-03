@@ -17,6 +17,22 @@ type RecordQueryMapPlan struct {
 	PlanExprBase
 	innerQ      expressions.Quantifier
 	resultValue values.Value
+	// distinctProofIndexName names the secondary UNIQUE index whose uniqueness
+	// licensed eliding a DISTINCT above this map (distinct_proof_stamp.go). It is
+	// part of the plan's identity: the plan's correctness rests on it.
+	distinctProofIndexName string
+}
+
+// GetDistinctProofIndexName implements DistinctProofStamped.
+func (p *RecordQueryMapPlan) GetDistinctProofIndexName() string {
+	return p.distinctProofIndexName
+}
+
+// WithDistinctProofIndexName implements DistinctProofStampable.
+func (p *RecordQueryMapPlan) WithDistinctProofIndexName(indexName string) RecordQueryPlan {
+	cp := *p
+	cp.distinctProofIndexName = indexName
+	return &cp
 }
 
 // NewRecordQueryMapPlan constructs a map plan over the given inner
@@ -102,7 +118,7 @@ func (p *RecordQueryMapPlan) GetChildren() []RecordQueryPlan {
 // EqualsPlanWithoutChildren and HashCodeWithoutChildren, so the two can never
 // disagree on which fields matter.
 func (p *RecordQueryMapPlan) structuralKey() *structuralKey {
-	return newStructuralKey().Value(p.resultValue)
+	return newStructuralKey().Value(p.resultValue).Str(p.distinctProofIndexName)
 }
 
 func (p *RecordQueryMapPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
@@ -125,13 +141,14 @@ func (p *RecordQueryMapPlan) Explain() string {
 	if inner := p.GetInner(); inner != nil {
 		innerLabel = inner.Explain()
 	}
-	resultLabel := values.ExplainValue(p.resultValue)
-	return fmt.Sprintf("Map(%s, %s)", innerLabel, resultLabel)
+	return fmt.Sprintf("Map(%s, %s)%s", innerLabel, values.ExplainValueOverInput(p.resultValue, p.innerQ.GetAlias()),
+		explainDistinctProofSuffix(p.distinctProofIndexName))
 }
 
 var (
 	_ RecordQueryPlan                  = (*RecordQueryMapPlan)(nil)
 	_ expressions.RelationalExpression = (*RecordQueryMapPlan)(nil)
+	_ DistinctProofStampable           = (*RecordQueryMapPlan)(nil)
 )
 
 // WithInner returns a copy with the inner replaced and every other field

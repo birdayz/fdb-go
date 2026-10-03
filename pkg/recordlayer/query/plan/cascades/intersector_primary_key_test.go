@@ -1455,6 +1455,7 @@ func TestPushCrossCandidateIntersection_StillFires(t *testing.T) {
 
 	scan := mustFullUnorderedScan(t, []string{"TestRecord"}, dataAccessTestRow)
 	ref := expressions.InitialOf(scan)
+	pmA.queryExpression, pmB.queryExpression = scan, scan
 	AddPartialMatchForCandidate(ref, pmA.GetMatchCandidate(), pmA)
 	AddPartialMatchForCandidate(ref, pmB.GetMatchCandidate(), pmB)
 
@@ -1493,6 +1494,9 @@ func TestPushCrossCandidateIntersection_MatchGrowthReachesFourWay(t *testing.T) 
 
 	scan := mustFullUnorderedScan(t, []string{"TestRecord"}, dataAccessTestRow)
 	ref := expressions.InitialOf(scan)
+	for _, pm := range matches {
+		pm.queryExpression = scan
+	}
 	for i := 0; i < 2; i++ {
 		AddPartialMatchForCandidate(ref, candidates[i], matches[i])
 	}

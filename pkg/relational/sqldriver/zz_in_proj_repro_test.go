@@ -59,10 +59,11 @@ func TestFDB_INProj_OuterProjectionOverInJoin(t *testing.T) {
 	if !strings.Contains(up, "INJOIN") {
 		t.Errorf("expected the indexed plan to use an InJoin (optimization must fire), got: %s", idxPlan)
 	}
-	// The outer projection must cap the plan — a bare InJoin (the regression)
-	// would have no Project and emit [ID, A].
-	if !strings.HasPrefix(up, "PROJECT(") {
-		t.Errorf("expected the plan to be capped by Project(...) (not a bare InJoin), got: %s", idxPlan)
+	// The block's projection must survive — a bare InJoin (the regression)
+	// would project nothing and emit [ID, A]. The block over its one source
+	// carries the projection inside the InJoin, per IN binding.
+	if !strings.Contains(idxPlan, "{ID: _current.ID#0}") {
+		t.Errorf("expected the plan to carry the {ID} projection (not a bare InJoin), got: %s", idxPlan)
 	}
 	assertSingleIDColumn(t, db, ctx, "ti")
 

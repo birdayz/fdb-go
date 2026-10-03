@@ -18,12 +18,19 @@ func TestDMLDedupUsesPhysicalEdges(t *testing.T) {
 			t.Parallel()
 			scan := pushFetchScan()
 			source := expressions.FinalOfAtStage(scan, expressions.StagePlanned)
-			q, err := dmlDedupedInnerQuantifier(&ExpressionRuleCall{}, dmlInnerCandidate{expr: scan, source: source}, distinct)
+			// The DML's transforms read its input through the logical edge's
+			// alias, so the physical edge morphs from it (Java
+			// Quantifier.physicalBuilder().morphFrom(innerQuantifier)).
+			logical := expressions.ForEachQuantifier(source)
+			q, err := dmlDedupedInnerQuantifier(&ExpressionRuleCall{}, dmlInnerCandidate{expr: scan, source: source}, logical, distinct)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if q.Kind() != expressions.QuantifierPhysical {
 				t.Errorf("DML edge kind = %v, want physical", q.Kind())
+			}
+			if q.GetAlias() != logical.GetAlias() {
+				t.Errorf("DML edge alias = %v, want the logical edge's %v", q.GetAlias(), logical.GetAlias())
 			}
 			child := q.GetRangesOver().FinalMembers()[0]
 			if !distinct {
