@@ -271,8 +271,8 @@ type RelationalParserListener interface {
 	// EnterTableFunction is called when entering the tableFunction production.
 	EnterTableFunction(c *TableFunctionContext)
 
-	// EnterTableFunctionArgs is called when entering the tableFunctionArgs production.
-	EnterTableFunctionArgs(c *TableFunctionArgsContext)
+	// EnterNamedOrUnnamedFunctionArgs is called when entering the namedOrUnnamedFunctionArgs production.
+	EnterNamedOrUnnamedFunctionArgs(c *NamedOrUnnamedFunctionArgsContext)
 
 	// EnterTableFunctionName is called when entering the tableFunctionName production.
 	EnterTableFunctionName(c *TableFunctionNameContext)
@@ -1120,8 +1120,8 @@ type RelationalParserListener interface {
 	// ExitTableFunction is called when exiting the tableFunction production.
 	ExitTableFunction(c *TableFunctionContext)
 
-	// ExitTableFunctionArgs is called when exiting the tableFunctionArgs production.
-	ExitTableFunctionArgs(c *TableFunctionArgsContext)
+	// ExitNamedOrUnnamedFunctionArgs is called when exiting the namedOrUnnamedFunctionArgs production.
+	ExitNamedOrUnnamedFunctionArgs(c *NamedOrUnnamedFunctionArgsContext)
 
 	// ExitTableFunctionName is called when exiting the tableFunctionName production.
 	ExitTableFunctionName(c *TableFunctionNameContext)

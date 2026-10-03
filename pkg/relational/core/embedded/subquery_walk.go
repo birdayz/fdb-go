@@ -108,9 +108,12 @@ func walkScalarSubqueriesAtom(atom antlrgen.IExpressionAtomContext, cb func(antl
 				}
 			}
 		case *antlrgen.UserDefinedScalarFunctionCallContext:
-			if args := f.FunctionArgs(); args != nil {
+			if args := f.NamedOrUnnamedFunctionArgs(); args != nil {
 				for _, fa := range args.AllFunctionArg() {
 					walkScalarSubqueries(fa.Expression(), cb)
+				}
+				for _, na := range args.AllNamedFunctionArg() {
+					walkScalarSubqueries(na.GetValue(), cb)
 				}
 			}
 		}

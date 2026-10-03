@@ -271,8 +271,8 @@ type RelationalParserVisitor interface {
 	// Visit a parse tree produced by RelationalParser#tableFunction.
 	VisitTableFunction(ctx *TableFunctionContext) interface{}
 
-	// Visit a parse tree produced by RelationalParser#tableFunctionArgs.
-	VisitTableFunctionArgs(ctx *TableFunctionArgsContext) interface{}
+	// Visit a parse tree produced by RelationalParser#namedOrUnnamedFunctionArgs.
+	VisitNamedOrUnnamedFunctionArgs(ctx *NamedOrUnnamedFunctionArgsContext) interface{}
 
 	// Visit a parse tree produced by RelationalParser#tableFunctionName.
 	VisitTableFunctionName(ctx *TableFunctionNameContext) interface{}

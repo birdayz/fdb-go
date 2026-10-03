@@ -128,7 +128,7 @@ func TestFDB_MacroFunctions(t *testing.T) {
 	for q, code := range map[string]api.ErrorCode{
 		"SELECT plus() FROM t":        api.ErrCodeUndefinedFunction,
 		"SELECT plus(1, 2, 3) FROM t": api.ErrCodeUndefinedFunction,
-		"SELECT px(id) FROM t":        api.ErrCodeInvalidArgumentForFunction,
+		"SELECT px(id) FROM t":        api.ErrCodeCannotConvertType,
 		"SELECT nope(id) FROM t":      api.ErrCodeUnsupportedQuery,
 	} {
 		_, err := db.QueryContext(ctx, q)

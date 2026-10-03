@@ -378,7 +378,7 @@ func registerFunction(fd antlrgen.ISqlInvokedFunctionContext, b *metadata.Builde
 	}
 	md := tmpl.Underlying()
 	if body, isMacro := fd.RoutineBody().(*antlrgen.UserDefinedMacroFunctionStatementBodyContext); isMacro {
-		macro, err := buildMacroFunction(fd.FunctionSpecification(), body, md)
+		macro, err := buildMacroFunction(fd.FunctionSpecification(), body, md, b.AuxiliaryStructDescriptor)
 		if err != nil {
 			return err
 		}

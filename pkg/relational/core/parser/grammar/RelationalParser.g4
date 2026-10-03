@@ -420,10 +420,10 @@ namedQuery
     ;
 
 tableFunction
-    : tableFunctionName '(' tableFunctionArgs? ')' inlineTableDefinition?
+    : tableFunctionName '(' namedOrUnnamedFunctionArgs? ')' inlineTableDefinition?
     ;
 
-tableFunctionArgs
+namedOrUnnamedFunctionArgs
     : functionArg ( ',' functionArg )*
     | namedFunctionArg ( ',' namedFunctionArg)*
     ;
@@ -1005,7 +1005,7 @@ functionCall
     | nonAggregateWindowedFunction                                  #nonAggregateFunctionCall // done
     | specificFunction                                              #specificFunctionCall //
     | scalarFunctionName '(' functionArgs? ')'                      #scalarFunctionCall // done (unsupported)
-    | userDefinedScalarFunctionName '(' functionArgs? ')'           #userDefinedScalarFunctionCall
+    | userDefinedScalarFunctionName '(' namedOrUnnamedFunctionArgs? ')'           #userDefinedScalarFunctionCall
     ;
 
 specificFunction

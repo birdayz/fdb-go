@@ -585,11 +585,13 @@ func (s *BaseRelationalParserListener) EnterTableFunction(ctx *TableFunctionCont
 // ExitTableFunction is called when production tableFunction is exited.
 func (s *BaseRelationalParserListener) ExitTableFunction(ctx *TableFunctionContext) {}
 
-// EnterTableFunctionArgs is called when production tableFunctionArgs is entered.
-func (s *BaseRelationalParserListener) EnterTableFunctionArgs(ctx *TableFunctionArgsContext) {}
+// EnterNamedOrUnnamedFunctionArgs is called when production namedOrUnnamedFunctionArgs is entered.
+func (s *BaseRelationalParserListener) EnterNamedOrUnnamedFunctionArgs(ctx *NamedOrUnnamedFunctionArgsContext) {
+}
 
-// ExitTableFunctionArgs is called when production tableFunctionArgs is exited.
-func (s *BaseRelationalParserListener) ExitTableFunctionArgs(ctx *TableFunctionArgsContext) {}
+// ExitNamedOrUnnamedFunctionArgs is called when production namedOrUnnamedFunctionArgs is exited.
+func (s *BaseRelationalParserListener) ExitNamedOrUnnamedFunctionArgs(ctx *NamedOrUnnamedFunctionArgsContext) {
+}
 
 // EnterTableFunctionName is called when production tableFunctionName is entered.
 func (s *BaseRelationalParserListener) EnterTableFunctionName(ctx *TableFunctionNameContext) {}

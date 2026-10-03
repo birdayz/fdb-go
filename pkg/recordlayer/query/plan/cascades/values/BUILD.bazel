@@ -204,6 +204,7 @@ go_test(
         "projection_duplicate_name_test.go",
         "projection_namer_nested_collapse_test.go",
         "promote_prepared_test.go",
+        "promotion_needed_test.go",
         "promotions_trie_test.go",
         "proto_descent_test.go",
         "proto_field_escaped_name_test.go",

@@ -22,7 +22,7 @@ import (
 // parameter a quantified object under a fresh unique alias, the body resolved
 // over them, promoted to the declared return type.
 func buildMacroFunction(spec antlrgen.IFunctionSpecificationContext, body *antlrgen.UserDefinedMacroFunctionStatementBodyContext,
-	md *recordlayer.RecordMetaData,
+	md *recordlayer.RecordMetaData, aux auxiliaryTypes,
 ) (*values.MacroFunction, error) {
 	m := &values.MacroFunction{Name: functions.FullIdToName(spec.GetSchemaQualifiedRoutineName())}
 	analyzer := rlcatalog.NewAnalyzer(md, false)
@@ -42,7 +42,7 @@ func buildMacroFunction(spec antlrgen.IFunctionSpecificationContext, body *antlr
 					return nil, api.NewErrorf(api.ErrCodeInvalidFunctionDefinition, "unexpected duplicate parameter(s) %s", id.Name())
 				}
 			}
-			typ, err := functionParameterType(d.GetParameterType(), md)
+			typ, err := functionParameterType(d.GetParameterType(), md, aux)
 			if err != nil {
 				return nil, err
 			}
@@ -82,12 +82,21 @@ func buildMacroFunction(spec antlrgen.IFunctionSpecificationContext, body *antlr
 		if !ok || rt.ReturnsTableType() != nil {
 			return nil, api.NewError(api.ErrCodeUnsupportedOperation, "table return type is not supported")
 		}
-		target, err := columnTypeOf(rt.GetReturnsDataType(), rt.ARRAY() != nil, md)
+		target, err := columnTypeOf(rt.GetReturnsDataType(), rt.ARRAY() != nil, md, aux)
 		if err != nil {
 			return nil, err
 		}
-		if v, err = promoteIfNeeded(v, target); err != nil {
-			return nil, err
+		// UserDefinedMacroFunctionBuilder.build: a body whose type differs only
+		// in nullability keeps it.
+		needed, ok := values.IsPromotionNeeded(v.Type(), target)
+		if !ok {
+			return nil, api.NewError(api.ErrCodeCannotConvertType,
+				"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.")
+		}
+		if needed {
+			if v, err = promoteIfNeeded(v, target); err != nil {
+				return nil, err
+			}
 		}
 	}
 	m.Body = v
@@ -106,12 +115,12 @@ func promoteIfNeeded(v values.Value, target values.Type) (values.Value, error) {
 	return values.NewPromoteValue(v, target), nil
 }
 
-func functionParameterType(ctx antlrgen.IFunctionColumnTypeContext, md *recordlayer.RecordMetaData) (values.Type, error) {
+func functionParameterType(ctx antlrgen.IFunctionColumnTypeContext, md *recordlayer.RecordMetaData, aux auxiliaryTypes) (values.Type, error) {
 	c := ctx.(*antlrgen.FunctionColumnTypeContext)
 	var elem values.Type
 	var err error
 	if c.GetCustomType() != nil {
-		elem, err = customType(functions.NormalizeIdentifier(c.GetCustomType().GetText()), md)
+		elem, err = customType(functions.NormalizeIdentifier(c.GetCustomType().GetText()), md, aux)
 	} else {
 		elem, err = primitiveTypeOf(c.PrimitiveType())
 	}
@@ -121,12 +130,12 @@ func functionParameterType(ctx antlrgen.IFunctionColumnTypeContext, md *recordla
 	return values.NewArrayType(true, elem), nil
 }
 
-func columnTypeOf(ctx antlrgen.IColumnTypeContext, array bool, md *recordlayer.RecordMetaData) (values.Type, error) {
+func columnTypeOf(ctx antlrgen.IColumnTypeContext, array bool, md *recordlayer.RecordMetaData, aux auxiliaryTypes) (values.Type, error) {
 	c := ctx.(*antlrgen.ColumnTypeContext)
 	var elem values.Type
 	var err error
 	if c.GetCustomType() != nil {
-		elem, err = customType(functions.NormalizeIdentifier(c.GetCustomType().GetText()), md)
+		elem, err = customType(functions.NormalizeIdentifier(c.GetCustomType().GetText()), md, aux)
 	} else {
 		elem, err = primitiveTypeOf(c.PrimitiveType())
 	}
@@ -154,25 +163,36 @@ func primitiveTypeOf(ctx antlrgen.IPrimitiveTypeContext) (values.Type, error) {
 	return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported function parameter type %s", p.GetText())
 }
 
+// auxiliaryTypes resolves a schema template's struct type no table stores
+// (metadata.Builder.AuxiliaryStructDescriptor); nil outside a template.
+type auxiliaryTypes func(name string) (protoreflect.MessageDescriptor, error)
+
 // customType is a declared struct as a nullable record named after it.
-func customType(name string, md *recordlayer.RecordMetaData) (values.Type, error) {
+func customType(name string, md *recordlayer.RecordMetaData, aux auxiliaryTypes) (values.Type, error) {
 	storage, err := recordlayer.ToProtoBufCompliantName(name)
 	if err != nil {
 		return nil, err
 	}
+	var msg protoreflect.MessageDescriptor
 	if md != nil {
-		if msg := md.FileDescriptor().Messages().ByName(protoreflect.Name(storage)); msg != nil {
-			fields := make([]values.Field, msg.Fields().Len())
-			for i := range fields {
-				f := msg.Fields().Get(i)
-				fields[i] = values.Field{Name: string(f.Name()), FieldType: query.TargetTypeForFD(f), Ordinal: i}
-			}
-			t := values.NewRecordType(name, true, fields)
-			t.StorageName = storage
-			return t, nil
+		msg = md.FileDescriptor().Messages().ByName(protoreflect.Name(storage))
+	}
+	if msg == nil && aux != nil {
+		if msg, err = aux(name); err != nil {
+			return nil, err
 		}
 	}
-	return nil, api.NewErrorf(api.ErrCodeUnknownType, "unknown type %s", name)
+	if msg == nil {
+		return nil, api.NewErrorf(api.ErrCodeUnknownType, "unknown type %s", name)
+	}
+	fields := make([]values.Field, msg.Fields().Len())
+	for i := range fields {
+		f := msg.Fields().Get(i)
+		fields[i] = values.Field{Name: string(f.Name()), FieldType: query.TargetTypeForFD(f), Ordinal: i}
+	}
+	t := values.NewRecordType(name, true, fields)
+	t.StorageName = storage
+	return t, nil
 }
 
 // unknownScalarFunction is the first bare-name call under n that names
@@ -185,7 +205,8 @@ func unknownScalarFunction(n antlr.Tree, md *recordlayer.RecordMetaData) string 
 	if udf, ok := n.(*antlrgen.UserDefinedScalarFunctionCallContext); ok && udf.UserDefinedScalarFunctionName() != nil {
 		name := udf.UserDefinedScalarFunctionName().GetText()
 		if !isAllowedFunction(strings.ToUpper(name)) && !hasMacro(md, functions.NormalizeIdentifier(name)) {
-			return name
+			// visitUserDefinedScalarFunctionCall reports the normalized name.
+			return functions.NormalizeIdentifier(name)
 		}
 	}
 	for i := 0; i < n.GetChildCount(); i++ {

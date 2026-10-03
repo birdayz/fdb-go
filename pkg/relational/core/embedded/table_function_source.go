@@ -28,7 +28,7 @@ func buildTableFunctionLogical(
 	if fn.InlineTableDefinition() != nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "column list on a table function")
 	}
-	args := fn.TableFunctionArgs()
+	args := fn.NamedOrUnnamedFunctionArgs()
 	if args == nil || len(args.AllNamedFunctionArg()) > 0 || len(args.AllFunctionArg()) > 3 {
 		return nil, api.NewError(api.ErrCodeUndefinedFunction, "range expects 1 to 3 positional arguments")
 	}

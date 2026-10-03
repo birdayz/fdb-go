@@ -36,7 +36,7 @@ func (c *EmbeddedConnection) execCreateTempFunction(ctx context.Context, ct *ant
 	}
 	var stored *gen.PUserDefinedFunction
 	if body, isMacro := tf.RoutineBody().(*antlrgen.UserDefinedMacroFunctionStatementBodyContext); isMacro {
-		macro, err := buildMacroFunction(spec, body, md)
+		macro, err := buildMacroFunction(spec, body, md, nil)
 		if err != nil {
 			return 0, err
 		}

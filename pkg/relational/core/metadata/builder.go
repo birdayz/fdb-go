@@ -962,12 +962,7 @@ const relationalUnionName = "RecordTypeUnion"
 // NOT NULL repeated field called `values`) therefore cannot separate the two
 // engines on the index path, and no schema needs to be built to find that out.
 func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, *descriptorpb.FileDescriptorProto, bool, error) {
-	fdp := &descriptorpb.FileDescriptorProto{}
-	fdp.Name = proto.String(b.name)
-	fdp.Dependency = []string{
-		gen.File_tuple_fields_proto.Path(),
-		gen.File_record_metadata_options_proto.Path(),
-	}
+	fdp := b.templateFileProto()
 
 	unionOpts := &descriptorpb.MessageOptions{}
 	proto.SetExtension(unionOpts, gen.E_Record, &gen.RecordTypeOptions{
@@ -1003,7 +998,58 @@ func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, *descripto
 	}
 	fdp.MessageType = append(em.messages, unionMsg)
 	fdp.EnumType = em.enums
+	fd, err := newTemplateFile(fdp)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	return fd, fdp, em.containsNullableArray, nil
+}
 
+// templateFileProto is a template file holding no messages yet.
+func (b *Builder) templateFileProto() *descriptorpb.FileDescriptorProto {
+	return &descriptorpb.FileDescriptorProto{
+		Name: proto.String(b.name),
+		Dependency: []string{
+			gen.File_tuple_fields_proto.Path(),
+			gen.File_record_metadata_options_proto.Path(),
+		},
+	}
+}
+
+// AuxiliaryStructDescriptor is the message the template's struct type name is
+// stored as when a table uses it, or nil when name is no struct type. Java's
+// DdlVisitor resolves a function's types through Builder.findType, which also
+// sees an auxiliary type no table stores and the stored file therefore lacks.
+func (b *Builder) AuxiliaryStructDescriptor(name string) (protoreflect.MessageDescriptor, error) {
+	dt, ok := b.FindType(name)
+	st, isStruct := dt.(*api.StructType)
+	if !ok || !isStruct || !st.IsResolved() {
+		return nil, nil
+	}
+	carrier := "AuxiliaryTypeCarrier"
+	for _, taken := b.FindType(carrier); taken; _, taken = b.FindType(carrier) {
+		carrier += "_"
+	}
+	em := &fileEmitter{seen: map[string]bool{}, seenEnums: map[string]bool{}, structTypes: map[string]*api.StructType{}}
+	if _, err := em.emitTableClosure(tableSpec{name: carrier, columns: []ColumnSpec{NewColumnSpec("value", st, 1)}}); err != nil {
+		return nil, err
+	}
+	fdp := b.templateFileProto()
+	fdp.MessageType = em.messages
+	fdp.EnumType = em.enums
+	fd, err := newTemplateFile(fdp)
+	if err != nil {
+		return nil, err
+	}
+	storage, err := recordlayer.ToProtoBufCompliantName(name)
+	if err != nil {
+		return nil, err
+	}
+	return fd.Messages().ByName(protoreflect.Name(storage)), nil
+}
+
+// newTemplateFile builds the in-memory descriptor of a template file proto.
+func newTemplateFile(fdp *descriptorpb.FileDescriptorProto) (protoreflect.FileDescriptor, error) {
 	// Build a resolver that includes the two dependency files.
 	// RegisterFile returns an error on duplicate registration; ignore it since
 	// the global registry already has these files and we just want them
@@ -1025,9 +1071,9 @@ func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, *descripto
 	protoscope.ScopeEnumValuesAsJava(buildable)
 	fd, err := protodesc.NewFile(buildable, resolver)
 	if err != nil {
-		return nil, nil, false, api.WrapErrorf(err, api.ErrCodeInternalError, "protodesc.NewFile")
+		return nil, api.WrapErrorf(err, api.ErrCodeInternalError, "protodesc.NewFile")
 	}
-	return fd, fdp, em.containsNullableArray, nil
+	return fd, nil
 }
 
 // fileEmitter accumulates the template's top-level messages with

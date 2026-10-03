@@ -259,19 +259,27 @@ func (fn *sqlFunction) invocation(tf *antlrgen.TableFunctionContext, alias strin
 	argText := map[string]string{}
 	argNull := map[string]bool{}
 	var order []string
-	var args *antlrgen.TableFunctionArgsContext
+	var args *antlrgen.NamedOrUnnamedFunctionArgsContext
 	if tf != nil {
-		args, _ = tf.TableFunctionArgs().(*antlrgen.TableFunctionArgsContext)
+		args, _ = tf.NamedOrUnnamedFunctionArgs().(*antlrgen.NamedOrUnnamedFunctionArgsContext)
 	}
+	// UserDefinedFunctionCatalog.lookup's validateCall: an argument naming no
+	// parameter, too many arguments, or a missing parameter without a default
+	// is no such function.
+	notFound := api.NewErrorf(api.ErrCodeUndefinedFunction, "could not find function '%s'", fn.name)
 	if args != nil {
 		if named := args.AllNamedFunctionArg(); len(named) > 0 {
-			for _, na := range named {
-				key := functions.NormalizeIdentifier(na.GetKey().GetText())
-				if _, dup := argText[key]; dup {
-					return "", api.NewErrorf(api.ErrCodeSyntaxError, "argument name(s) used more than once%s", key)
-				}
+			keys := make([]string, len(named))
+			for i, na := range named {
+				keys[i] = functions.NormalizeIdentifier(na.GetKey().GetText())
+			}
+			if err := expr.DuplicateArgumentNamesError(keys); err != nil {
+				return "", err
+			}
+			for i, na := range named {
+				key := keys[i]
 				if fn.param(key) == nil {
-					return "", api.NewErrorf(api.ErrCodeUndefinedFunction, "required argument for function is not specified")
+					return "", notFound
 				}
 				argText[key] = ctxText(na.GetValue())
 				argNull[key] = expr.IsBareNullLiteral(na.GetValue())
@@ -280,7 +288,7 @@ func (fn *sqlFunction) invocation(tf *antlrgen.TableFunctionContext, alias strin
 		} else {
 			positional := args.AllFunctionArg()
 			if len(positional) > len(fn.params) {
-				return "", api.NewErrorf(api.ErrCodeUndefinedFunction, "argument length doesn't match with function definition")
+				return "", notFound
 			}
 			for i, a := range positional {
 				argText[fn.params[i].name] = ctxText(a)
@@ -298,7 +306,7 @@ func (fn *sqlFunction) invocation(tf *antlrgen.TableFunctionContext, alias strin
 			continue
 		}
 		if !p.hasDefault {
-			return "", api.NewErrorf(api.ErrCodeUndefinedFunction, "required argument must be specified")
+			return "", notFound
 		}
 		cols = append(cols, p.column(p.def, p.defIsNull))
 	}

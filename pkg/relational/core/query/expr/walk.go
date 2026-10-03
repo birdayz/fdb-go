@@ -1257,7 +1257,7 @@ func (r *Resolver) walkUserDefinedScalarFunction(udf *antlrgen.UserDefinedScalar
 	}
 	nameNode, ok := nameCtx.(*antlrgen.UserDefinedScalarFunctionNameContext)
 	if ok && nameNode.DOUBLE_QUOTE_ID() != nil && nameNode.GetText() == `"`+SQLFunctionArgument+`"` {
-		return r.walkSQLFunctionArgument(udf.FunctionArgs())
+		return r.walkSQLFunctionArgument(udf.NamedOrUnnamedFunctionArgs())
 	}
 	if ok && !(nameNode.ID() != nil && strings.EqualFold(nameNode.ID().GetText(), "CARDINALITY")) {
 		if v, isMacro, err := r.walkMacroCall(udf); isMacro || err != nil {
@@ -1271,7 +1271,7 @@ func (r *Resolver) walkUserDefinedScalarFunction(udf *antlrgen.UserDefinedScalar
 	name := strings.ToUpper(nameNode.ID().GetText())
 	switch name {
 	case "CARDINALITY":
-		return r.walkCardinality(udf.FunctionArgs())
+		return r.walkCardinality(udf.NamedOrUnnamedFunctionArgs())
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("user-defined scalar function %q (not a built-in)", name)}
 }
@@ -1289,29 +1289,83 @@ func (r *Resolver) walkMacroCall(udf *antlrgen.UserDefinedScalarFunctionCallCont
 	if err != nil || macro == nil {
 		return nil, false, err
 	}
-	args, err := r.walkFunctionArgs(udf.FunctionArgs())
+	args, names, err := r.walkNamedOrUnnamedFunctionArgs(udf.NamedOrUnnamedFunctionArgs())
 	if err != nil {
 		return nil, true, err
 	}
-	if len(args) > len(macro.Params) {
-		return nil, true, api.NewError(api.ErrCodeUndefinedFunction, "argument length doesn't match with function definition")
+	// UserDefinedFunctionCatalog.lookup's validateCall: an argument naming no
+	// parameter, a missing parameter without a default, or too many arguments
+	// is no such function.
+	notFound := api.NewErrorf(api.ErrCodeUndefinedFunction, "could not find function '%s'", name)
+	byName := map[string]values.Value{}
+	if names != nil {
+		if !macro.HasNamedParameters() {
+			return nil, true, notFound
+		}
+		for i, n := range names {
+			if macro.ParamIndex(n) < 0 {
+				return nil, true, notFound
+			}
+			byName[n] = args[i]
+		}
+	} else if len(args) > len(macro.Params) {
+		return nil, true, notFound
 	}
 	bound := make([]values.Value, len(macro.Params))
 	for i, param := range macro.Params {
-		if i >= len(args) {
+		arg, given := byName[macro.ParamNames[i]]
+		if names == nil && i < len(args) {
+			arg, given = args[i], true
+		}
+		if !given {
 			if macro.Defaults[i] == nil {
-				return nil, true, api.NewError(api.ErrCodeUndefinedFunction, "required argument must be specified")
+				return nil, true, notFound
 			}
 			bound[i] = macro.Defaults[i]
 			continue
 		}
-		arg := functions.FlattenRecordWithOneField(args[i])
-		if bound[i], err = promoteFunctionArgument(arg, param.FlowedType()); err != nil {
+		if bound[i], err = promoteFunctionArgument(functions.FlattenRecordWithOneField(arg), param.FlowedType()); err != nil {
 			return nil, true, err
 		}
 	}
 	v, err := macro.Expand(bound)
 	return v, true, err
+}
+
+// walkNamedOrUnnamedFunctionArgs is visitNamedOrUnnamedFunctionArgs: the
+// arguments in call order, with their normalized names for a named call (nil
+// for a positional one). A name given twice is a syntax error.
+func (r *Resolver) walkNamedOrUnnamedFunctionArgs(ctx antlrgen.INamedOrUnnamedFunctionArgsContext) ([]values.Value, []string, error) {
+	if ctx == nil {
+		return []values.Value{}, nil, nil
+	}
+	named := ctx.AllNamedFunctionArg()
+	if len(named) == 0 {
+		args, err := r.walkFunctionArgList(ctx.AllFunctionArg())
+		return args, nil, err
+	}
+	args := make([]values.Value, 0, len(named))
+	names := make([]string, 0, len(named))
+	for _, na := range named {
+		v, err := r.walkExpressionInner(na.GetValue(), posOperand)
+		if err != nil {
+			return nil, nil, err
+		}
+		args = append(args, v)
+		names = append(names, semantic.FromUidContext(na.GetKey(), false).Name())
+	}
+	if err := DuplicateArgumentNamesError(names); err != nil {
+		return nil, nil, err
+	}
+	return args, names, nil
+}
+
+// positionalFunctionArgs is a built-in's argument list: a built-in validates
+// arity only and SemanticAnalyzer.resolveFunction re-wraps the values as
+// positional (withArguments), so a named call's names are dropped.
+func (r *Resolver) positionalFunctionArgs(ctx antlrgen.INamedOrUnnamedFunctionArgsContext) ([]values.Value, error) {
+	args, _, err := r.walkNamedOrUnnamedFunctionArgs(ctx)
+	return args, err
 }
 
 // SQLFunctionArgument names the call a SQL function's expansion binds each
@@ -1320,8 +1374,8 @@ const SQLFunctionArgument = "$SQL_FUNCTION_ARGUMENT"
 
 // walkSQLFunctionArgument is Java's promoteArgumentValueIfNeeded: the argument
 // promoted to its parameter's declared type, or 42883.
-func (r *Resolver) walkSQLFunctionArgument(fa antlrgen.IFunctionArgsContext) (values.Value, error) {
-	args, err := r.walkFunctionArgs(fa)
+func (r *Resolver) walkSQLFunctionArgument(fa antlrgen.INamedOrUnnamedFunctionArgsContext) (values.Value, error) {
+	args, err := r.positionalFunctionArgs(fa)
 	if err != nil {
 		return nil, err
 	}
@@ -1334,14 +1388,25 @@ func (r *Resolver) walkSQLFunctionArgument(fa antlrgen.IFunctionArgsContext) (va
 // promoteFunctionArgument is CatalogedFunction.promoteArgumentValueIfNeeded.
 func promoteFunctionArgument(arg values.Value, target values.Type) (values.Value, error) {
 	from := arg.Type()
-	if from != nil && values.WithNullability(from, true).Equals(values.WithNullability(target, true)) {
+	needed, ok := values.IsPromotionNeeded(from, target)
+	if !ok {
+		return nil, api.NewError(api.ErrCodeCannotConvertType, incompatibleTypeMessage)
+	}
+	if !needed {
 		return arg, nil
 	}
 	if !values.IsPromotable(from, target) {
-		return nil, api.NewError(api.ErrCodeInvalidArgumentForFunction, "argument type doesn't match with function definition")
+		return nil, api.NewError(api.ErrCodeInvalidArgumentForFunction,
+			"The function is not defined for the given argument types argument type doesn't match with function definition")
+	}
+	if from != nil && from.Equals(target) {
+		return arg, nil
 	}
 	return values.NewPromoteValue(arg, target), nil
 }
+
+// incompatibleTypeMessage is SemanticException INCOMPATIBLE_TYPE's text.
+const incompatibleTypeMessage = "A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable."
 
 // walkCardinality builds the dedicated CardinalityValue for
 // `CARDINALITY(arr)`. Mirrors Java's CardinalityFn.encapsulateInternal:
@@ -1354,8 +1419,8 @@ func promoteFunctionArgument(arg values.Value, target values.Type) (values.Value
 // CARDINALITY(1) → CANNOT_CONVERT_TYPE). The result is a dedicated
 // CardinalityValue, NOT a generic ScalarFunctionValue: CARDINALITY needs
 // its own nullable-INT typing and array validation.
-func (r *Resolver) walkCardinality(fa antlrgen.IFunctionArgsContext) (values.Value, error) {
-	args, err := r.walkFunctionArgs(fa)
+func (r *Resolver) walkCardinality(fa antlrgen.INamedOrUnnamedFunctionArgsContext) (values.Value, error) {
+	args, err := r.positionalFunctionArgs(fa)
 	if err != nil {
 		return nil, err
 	}
@@ -1378,15 +1443,20 @@ func (r *Resolver) walkCardinality(fa antlrgen.IFunctionArgsContext) (values.Val
 // argument Value list, recursing each arg through WalkExpression so
 // nested expressions compose. Shared by the by-name built-in dispatch.
 func (r *Resolver) walkFunctionArgs(fa antlrgen.IFunctionArgsContext) ([]values.Value, error) {
-	args := []values.Value{}
 	if fa == nil {
-		return args, nil
+		return []values.Value{}, nil
 	}
 	fac, ok := fa.(*antlrgen.FunctionArgsContext)
 	if !ok {
 		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("FunctionArgs ctx %T", fa)}
 	}
-	for _, arg := range fac.AllFunctionArg() {
+	return r.walkFunctionArgList(fac.AllFunctionArg())
+}
+
+// walkFunctionArgList walks positional arguments in order.
+func (r *Resolver) walkFunctionArgList(list []antlrgen.IFunctionArgContext) ([]values.Value, error) {
+	args := []values.Value{}
+	for _, arg := range list {
 		argCtx, ok := arg.(*antlrgen.FunctionArgContext)
 		if !ok {
 			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("FunctionArg ctx %T", arg)}

@@ -1558,6 +1558,54 @@ func IsPromotable(from, to Type) bool {
 	return ok
 }
 
+// IsPromotionNeeded is PromoteValue.isPromotionNeeded: whether a value of
+// type from must be promoted to be used as type to. Nullability is not part
+// of it; a record needs promotion when a field's type, name or position
+// differs. ok is false where Java raises INCOMPATIBLE_TYPE (records of
+// different arity, a primitive against a structure).
+func IsPromotionNeeded(from, to Type) (needed, ok bool) {
+	if IsAny(to) {
+		return false, true
+	}
+	if IsNull(from) || IsNone(from) {
+		return true, true
+	}
+	if IsArray(from) && IsArray(to) {
+		fa, fromOK := from.(*ArrayType)
+		ta, toOK := to.(*ArrayType)
+		if !fromOK || !toOK || fa.ElementType == nil || ta.ElementType == nil {
+			return false, false
+		}
+		return IsPromotionNeeded(fa.ElementType, ta.ElementType)
+	}
+	if IsRecord(from) && IsRecord(to) {
+		fr, fromOK := from.(*RecordType)
+		tr, toOK := to.(*RecordType)
+		if !fromOK || !toOK || len(fr.Fields) != len(tr.Fields) {
+			return false, false
+		}
+		ff, tf := fr.Fields, tr.Fields
+		for i := range ff {
+			fieldNeeded, fieldOK := IsPromotionNeeded(ff[i].FieldType, tf[i].FieldType)
+			if !fieldOK {
+				return false, false
+			}
+			if fieldNeeded || ff[i].Name != tf[i].Name || ff[i].Ordinal != tf[i].Ordinal {
+				needed = true
+			}
+		}
+		return needed, true
+	}
+	if from.Code() == TypeCodeVector && to.Code() == TypeCodeVector {
+		return false, from.IsNullable() == to.IsNullable()
+	}
+	scalar := func(t Type) bool { return t.Code().IsPrimitive() || IsEnum(t) || IsUuid(t) }
+	if !scalar(from) || !scalar(to) {
+		return false, false
+	}
+	return from.Code() != to.Code(), true
+}
+
 // MaximumType returns the smallest Type both `t1` and `t2` can be
 // promoted to without explicit CAST, or nil if no such type exists.
 // Used during arithmetic / comparison planning to homogenise

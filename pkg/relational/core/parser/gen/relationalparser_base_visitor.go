@@ -359,7 +359,7 @@ func (v *BaseRelationalParserVisitor) VisitTableFunction(ctx *TableFunctionConte
 	return v.VisitChildren(ctx)
 }
 
-func (v *BaseRelationalParserVisitor) VisitTableFunctionArgs(ctx *TableFunctionArgsContext) interface{} {
+func (v *BaseRelationalParserVisitor) VisitNamedOrUnnamedFunctionArgs(ctx *NamedOrUnnamedFunctionArgsContext) interface{} {
 	return v.VisitChildren(ctx)
 }
 

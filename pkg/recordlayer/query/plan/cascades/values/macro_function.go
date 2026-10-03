@@ -90,6 +90,27 @@ func MacroFunctionFromProto(p *gen.PUserDefinedMacroFunction) (*MacroFunction, e
 	return m, nil
 }
 
+// HasNamedParameters is CatalogedFunction.hasNamedParameters: a function read
+// from metadata that stored no parameter names takes positional calls only.
+func (m *MacroFunction) HasNamedParameters() bool {
+	for _, n := range m.ParamNames {
+		if n == "" {
+			return false
+		}
+	}
+	return len(m.ParamNames) > 0
+}
+
+// ParamIndex is the position of the parameter named name, or -1.
+func (m *MacroFunction) ParamIndex(name string) int {
+	for i, n := range m.ParamNames {
+		if n == name {
+			return i
+		}
+	}
+	return -1
+}
+
 // Expand is encapsulateFromArgumentValues: the body with each parameter's
 // quantified object replaced by its argument.
 func (m *MacroFunction) Expand(args []Value) (Value, error) {

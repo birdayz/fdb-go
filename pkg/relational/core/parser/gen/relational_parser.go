@@ -494,7 +494,7 @@ func relationalparserParserInit() {
 		"deterministicCharacteristic", "nullCallClause", "dispatchClause", "routineBody",
 		"charSet", "intervalType", "schemaId", "path", "schemaTemplateId", "deleteStatement",
 		"insertStatement", "continuationAtom", "selectStatement", "query", "ctes",
-		"traversalOrderClause", "namedQuery", "tableFunction", "tableFunctionArgs",
+		"traversalOrderClause", "namedQuery", "tableFunction", "namedOrUnnamedFunctionArgs",
 		"tableFunctionName", "queryExpressionBody", "insertStatementValue",
 		"updatedElement", "assignmentField", "updateStatement", "orderByClause",
 		"orderByExpression", "orderClause", "tableSources", "tableSource", "tableSourceItem",
@@ -1632,7 +1632,7 @@ func relationalparserParserInit() {
 		2084, 2086, 5, 1167, 0, 0, 2085, 2087, 3, 382, 191, 0, 2086, 2085, 1, 0,
 		0, 0, 2086, 2087, 1, 0, 0, 0, 2087, 2088, 1, 0, 0, 0, 2088, 2089, 5, 1168,
 		0, 0, 2089, 2098, 1, 0, 0, 0, 2090, 2091, 3, 380, 190, 0, 2091, 2093, 5,
-		1167, 0, 0, 2092, 2094, 3, 382, 191, 0, 2093, 2092, 1, 0, 0, 0, 2093, 2094,
+		1167, 0, 0, 2092, 2094, 3, 162, 81, 0, 2093, 2092, 1, 0, 0, 0, 2093, 2094,
 		1, 0, 0, 0, 2094, 2095, 1, 0, 0, 0, 2095, 2096, 5, 1168, 0, 0, 2096, 2098,
 		1, 0, 0, 0, 2097, 2080, 1, 0, 0, 0, 2097, 2081, 1, 0, 0, 0, 2097, 2082,
 		1, 0, 0, 0, 2097, 2083, 1, 0, 0, 0, 2097, 2090, 1, 0, 0, 0, 2098, 349,
@@ -3231,7 +3231,7 @@ const (
 	RelationalParserRULE_traversalOrderClause            = 78
 	RelationalParserRULE_namedQuery                      = 79
 	RelationalParserRULE_tableFunction                   = 80
-	RelationalParserRULE_tableFunctionArgs               = 81
+	RelationalParserRULE_namedOrUnnamedFunctionArgs      = 81
 	RelationalParserRULE_tableFunctionName               = 82
 	RelationalParserRULE_queryExpressionBody             = 83
 	RelationalParserRULE_insertStatementValue            = 84
@@ -19581,7 +19581,7 @@ type ITableFunctionContext interface {
 	TableFunctionName() ITableFunctionNameContext
 	LEFT_ROUND_BRACKET() antlr.TerminalNode
 	RIGHT_ROUND_BRACKET() antlr.TerminalNode
-	TableFunctionArgs() ITableFunctionArgsContext
+	NamedOrUnnamedFunctionArgs() INamedOrUnnamedFunctionArgsContext
 	InlineTableDefinition() IInlineTableDefinitionContext
 
 	// IsTableFunctionContext differentiates from other interfaces.
@@ -19644,10 +19644,10 @@ func (s *TableFunctionContext) RIGHT_ROUND_BRACKET() antlr.TerminalNode {
 	return s.GetToken(RelationalParserRIGHT_ROUND_BRACKET, 0)
 }
 
-func (s *TableFunctionContext) TableFunctionArgs() ITableFunctionArgsContext {
+func (s *TableFunctionContext) NamedOrUnnamedFunctionArgs() INamedOrUnnamedFunctionArgsContext {
 	var t antlr.RuleContext
 	for _, ctx := range s.GetChildren() {
-		if _, ok := ctx.(ITableFunctionArgsContext); ok {
+		if _, ok := ctx.(INamedOrUnnamedFunctionArgsContext); ok {
 			t = ctx.(antlr.RuleContext)
 			break
 		}
@@ -19657,7 +19657,7 @@ func (s *TableFunctionContext) TableFunctionArgs() ITableFunctionArgsContext {
 		return nil
 	}
 
-	return t.(ITableFunctionArgsContext)
+	return t.(INamedOrUnnamedFunctionArgsContext)
 }
 
 func (s *TableFunctionContext) InlineTableDefinition() IInlineTableDefinitionContext {
@@ -19734,7 +19734,7 @@ func (p *RelationalParser) TableFunction() (localctx ITableFunctionContext) {
 	if ((int64(_la) & ^0x3f) == 0 && ((int64(1)<<_la)&-5188145838710325248) != 0) || ((int64((_la-73)) & ^0x3f) == 0 && ((int64(1)<<(_la-73))&10190273904708225) != 0) || ((int64((_la-145)) & ^0x3f) == 0 && ((int64(1)<<(_la-145))&70437530764929) != 0) || ((int64((_la-224)) & ^0x3f) == 0 && ((int64(1)<<(_la-224))&-34347023817) != 0) || ((int64((_la-288)) & ^0x3f) == 0 && ((int64(1)<<(_la-288))&-1) != 0) || ((int64((_la-352)) & ^0x3f) == 0 && ((int64(1)<<(_la-352))&-263169) != 0) || ((int64((_la-416)) & ^0x3f) == 0 && ((int64(1)<<(_la-416))&-2305913757122953217) != 0) || ((int64((_la-480)) & ^0x3f) == 0 && ((int64(1)<<(_la-480))&-1152921504606847009) != 0) || ((int64((_la-544)) & ^0x3f) == 0 && ((int64(1)<<(_la-544))&-2449676722556112897) != 0) || ((int64((_la-608)) & ^0x3f) == 0 && ((int64(1)<<(_la-608))&9191840787854196735) != 0) || ((int64((_la-673)) & ^0x3f) == 0 && ((int64(1)<<(_la-673))&1150671903676391423) != 0) || ((int64((_la-737)) & ^0x3f) == 0 && ((int64(1)<<(_la-737))&1152921504606844725) != 0) || ((int64((_la-802)) & ^0x3f) == 0 && ((int64(1)<<(_la-802))&-2305843009213708287) != 0) || ((int64((_la-866)) & ^0x3f) == 0 && ((int64(1)<<(_la-866))&-10748690433) != 0) || ((int64((_la-930)) & ^0x3f) == 0 && ((int64(1)<<(_la-930))&-65) != 0) || ((int64((_la-994)) & ^0x3f) == 0 && ((int64(1)<<(_la-994))&-4503616807239681) != 0) || ((int64((_la-1058)) & ^0x3f) == 0 && ((int64(1)<<(_la-1058))&-1) != 0) || ((int64((_la-1122)) & ^0x3f) == 0 && ((int64(1)<<(_la-1122))&-287631649120190849) != 0) || ((int64((_la-1187)) & ^0x3f) == 0 && ((int64(1)<<(_la-1187))&63) != 0) {
 		{
 			p.SetState(1074)
-			p.TableFunctionArgs()
+			p.NamedOrUnnamedFunctionArgs()
 		}
 
 	}
@@ -19772,8 +19772,8 @@ errorExit:
 	goto errorExit // Trick to prevent compiler error if the label is not used
 }
 
-// ITableFunctionArgsContext is an interface to support dynamic dispatch.
-type ITableFunctionArgsContext interface {
+// INamedOrUnnamedFunctionArgsContext is an interface to support dynamic dispatch.
+type INamedOrUnnamedFunctionArgsContext interface {
 	antlr.ParserRuleContext
 
 	// GetParser returns the parser.
@@ -19787,43 +19787,43 @@ type ITableFunctionArgsContext interface {
 	AllNamedFunctionArg() []INamedFunctionArgContext
 	NamedFunctionArg(i int) INamedFunctionArgContext
 
-	// IsTableFunctionArgsContext differentiates from other interfaces.
-	IsTableFunctionArgsContext()
+	// IsNamedOrUnnamedFunctionArgsContext differentiates from other interfaces.
+	IsNamedOrUnnamedFunctionArgsContext()
 }
 
-type TableFunctionArgsContext struct {
+type NamedOrUnnamedFunctionArgsContext struct {
 	antlr.BaseParserRuleContext
 	parser antlr.Parser
 }
 
-func NewEmptyTableFunctionArgsContext() *TableFunctionArgsContext {
-	var p = new(TableFunctionArgsContext)
+func NewEmptyNamedOrUnnamedFunctionArgsContext() *NamedOrUnnamedFunctionArgsContext {
+	var p = new(NamedOrUnnamedFunctionArgsContext)
 	antlr.InitBaseParserRuleContext(&p.BaseParserRuleContext, nil, -1)
-	p.RuleIndex = RelationalParserRULE_tableFunctionArgs
+	p.RuleIndex = RelationalParserRULE_namedOrUnnamedFunctionArgs
 	return p
 }
 
-func InitEmptyTableFunctionArgsContext(p *TableFunctionArgsContext) {
+func InitEmptyNamedOrUnnamedFunctionArgsContext(p *NamedOrUnnamedFunctionArgsContext) {
 	antlr.InitBaseParserRuleContext(&p.BaseParserRuleContext, nil, -1)
-	p.RuleIndex = RelationalParserRULE_tableFunctionArgs
+	p.RuleIndex = RelationalParserRULE_namedOrUnnamedFunctionArgs
 }
 
-func (*TableFunctionArgsContext) IsTableFunctionArgsContext() {}
+func (*NamedOrUnnamedFunctionArgsContext) IsNamedOrUnnamedFunctionArgsContext() {}
 
-func NewTableFunctionArgsContext(parser antlr.Parser, parent antlr.ParserRuleContext, invokingState int) *TableFunctionArgsContext {
-	var p = new(TableFunctionArgsContext)
+func NewNamedOrUnnamedFunctionArgsContext(parser antlr.Parser, parent antlr.ParserRuleContext, invokingState int) *NamedOrUnnamedFunctionArgsContext {
+	var p = new(NamedOrUnnamedFunctionArgsContext)
 
 	antlr.InitBaseParserRuleContext(&p.BaseParserRuleContext, parent, invokingState)
 
 	p.parser = parser
-	p.RuleIndex = RelationalParserRULE_tableFunctionArgs
+	p.RuleIndex = RelationalParserRULE_namedOrUnnamedFunctionArgs
 
 	return p
 }
 
-func (s *TableFunctionArgsContext) GetParser() antlr.Parser { return s.parser }
+func (s *NamedOrUnnamedFunctionArgsContext) GetParser() antlr.Parser { return s.parser }
 
-func (s *TableFunctionArgsContext) AllFunctionArg() []IFunctionArgContext {
+func (s *NamedOrUnnamedFunctionArgsContext) AllFunctionArg() []IFunctionArgContext {
 	children := s.GetChildren()
 	len := 0
 	for _, ctx := range children {
@@ -19844,7 +19844,7 @@ func (s *TableFunctionArgsContext) AllFunctionArg() []IFunctionArgContext {
 	return tst
 }
 
-func (s *TableFunctionArgsContext) FunctionArg(i int) IFunctionArgContext {
+func (s *NamedOrUnnamedFunctionArgsContext) FunctionArg(i int) IFunctionArgContext {
 	var t antlr.RuleContext
 	j := 0
 	for _, ctx := range s.GetChildren() {
@@ -19864,15 +19864,15 @@ func (s *TableFunctionArgsContext) FunctionArg(i int) IFunctionArgContext {
 	return t.(IFunctionArgContext)
 }
 
-func (s *TableFunctionArgsContext) AllCOMMA() []antlr.TerminalNode {
+func (s *NamedOrUnnamedFunctionArgsContext) AllCOMMA() []antlr.TerminalNode {
 	return s.GetTokens(RelationalParserCOMMA)
 }
 
-func (s *TableFunctionArgsContext) COMMA(i int) antlr.TerminalNode {
+func (s *NamedOrUnnamedFunctionArgsContext) COMMA(i int) antlr.TerminalNode {
 	return s.GetToken(RelationalParserCOMMA, i)
 }
 
-func (s *TableFunctionArgsContext) AllNamedFunctionArg() []INamedFunctionArgContext {
+func (s *NamedOrUnnamedFunctionArgsContext) AllNamedFunctionArg() []INamedFunctionArgContext {
 	children := s.GetChildren()
 	len := 0
 	for _, ctx := range children {
@@ -19893,7 +19893,7 @@ func (s *TableFunctionArgsContext) AllNamedFunctionArg() []INamedFunctionArgCont
 	return tst
 }
 
-func (s *TableFunctionArgsContext) NamedFunctionArg(i int) INamedFunctionArgContext {
+func (s *NamedOrUnnamedFunctionArgsContext) NamedFunctionArg(i int) INamedFunctionArgContext {
 	var t antlr.RuleContext
 	j := 0
 	for _, ctx := range s.GetChildren() {
@@ -19913,39 +19913,39 @@ func (s *TableFunctionArgsContext) NamedFunctionArg(i int) INamedFunctionArgCont
 	return t.(INamedFunctionArgContext)
 }
 
-func (s *TableFunctionArgsContext) GetRuleContext() antlr.RuleContext {
+func (s *NamedOrUnnamedFunctionArgsContext) GetRuleContext() antlr.RuleContext {
 	return s
 }
 
-func (s *TableFunctionArgsContext) ToStringTree(ruleNames []string, recog antlr.Recognizer) string {
+func (s *NamedOrUnnamedFunctionArgsContext) ToStringTree(ruleNames []string, recog antlr.Recognizer) string {
 	return antlr.TreesStringTree(s, ruleNames, recog)
 }
 
-func (s *TableFunctionArgsContext) EnterRule(listener antlr.ParseTreeListener) {
+func (s *NamedOrUnnamedFunctionArgsContext) EnterRule(listener antlr.ParseTreeListener) {
 	if listenerT, ok := listener.(RelationalParserListener); ok {
-		listenerT.EnterTableFunctionArgs(s)
+		listenerT.EnterNamedOrUnnamedFunctionArgs(s)
 	}
 }
 
-func (s *TableFunctionArgsContext) ExitRule(listener antlr.ParseTreeListener) {
+func (s *NamedOrUnnamedFunctionArgsContext) ExitRule(listener antlr.ParseTreeListener) {
 	if listenerT, ok := listener.(RelationalParserListener); ok {
-		listenerT.ExitTableFunctionArgs(s)
+		listenerT.ExitNamedOrUnnamedFunctionArgs(s)
 	}
 }
 
-func (s *TableFunctionArgsContext) Accept(visitor antlr.ParseTreeVisitor) interface{} {
+func (s *NamedOrUnnamedFunctionArgsContext) Accept(visitor antlr.ParseTreeVisitor) interface{} {
 	switch t := visitor.(type) {
 	case RelationalParserVisitor:
-		return t.VisitTableFunctionArgs(s)
+		return t.VisitNamedOrUnnamedFunctionArgs(s)
 
 	default:
 		return t.VisitChildren(s)
 	}
 }
 
-func (p *RelationalParser) TableFunctionArgs() (localctx ITableFunctionArgsContext) {
-	localctx = NewTableFunctionArgsContext(p, p.GetParserRuleContext(), p.GetState())
-	p.EnterRule(localctx, 162, RelationalParserRULE_tableFunctionArgs)
+func (p *RelationalParser) NamedOrUnnamedFunctionArgs() (localctx INamedOrUnnamedFunctionArgsContext) {
+	localctx = NewNamedOrUnnamedFunctionArgsContext(p, p.GetParserRuleContext(), p.GetState())
+	p.EnterRule(localctx, 162, RelationalParserRULE_namedOrUnnamedFunctionArgs)
 	var _la int
 
 	p.SetState(1097)
@@ -42357,10 +42357,10 @@ func (s *UserDefinedScalarFunctionCallContext) RIGHT_ROUND_BRACKET() antlr.Termi
 	return s.GetToken(RelationalParserRIGHT_ROUND_BRACKET, 0)
 }
 
-func (s *UserDefinedScalarFunctionCallContext) FunctionArgs() IFunctionArgsContext {
+func (s *UserDefinedScalarFunctionCallContext) NamedOrUnnamedFunctionArgs() INamedOrUnnamedFunctionArgsContext {
 	var t antlr.RuleContext
 	for _, ctx := range s.GetChildren() {
-		if _, ok := ctx.(IFunctionArgsContext); ok {
+		if _, ok := ctx.(INamedOrUnnamedFunctionArgsContext); ok {
 			t = ctx.(antlr.RuleContext)
 			break
 		}
@@ -42370,7 +42370,7 @@ func (s *UserDefinedScalarFunctionCallContext) FunctionArgs() IFunctionArgsConte
 		return nil
 	}
 
-	return t.(IFunctionArgsContext)
+	return t.(INamedOrUnnamedFunctionArgsContext)
 }
 
 func (s *UserDefinedScalarFunctionCallContext) EnterRule(listener antlr.ParseTreeListener) {
@@ -42494,7 +42494,7 @@ func (p *RelationalParser) FunctionCall() (localctx IFunctionCallContext) {
 		if ((int64(_la) & ^0x3f) == 0 && ((int64(1)<<_la)&-5188145838710325248) != 0) || ((int64((_la-73)) & ^0x3f) == 0 && ((int64(1)<<(_la-73))&10190273904708225) != 0) || ((int64((_la-145)) & ^0x3f) == 0 && ((int64(1)<<(_la-145))&70437530764929) != 0) || ((int64((_la-224)) & ^0x3f) == 0 && ((int64(1)<<(_la-224))&-34347023817) != 0) || ((int64((_la-288)) & ^0x3f) == 0 && ((int64(1)<<(_la-288))&-1) != 0) || ((int64((_la-352)) & ^0x3f) == 0 && ((int64(1)<<(_la-352))&-263169) != 0) || ((int64((_la-416)) & ^0x3f) == 0 && ((int64(1)<<(_la-416))&-2305913757122953217) != 0) || ((int64((_la-480)) & ^0x3f) == 0 && ((int64(1)<<(_la-480))&-1152921504606847009) != 0) || ((int64((_la-544)) & ^0x3f) == 0 && ((int64(1)<<(_la-544))&-2449676722556112897) != 0) || ((int64((_la-608)) & ^0x3f) == 0 && ((int64(1)<<(_la-608))&9191840787854196735) != 0) || ((int64((_la-673)) & ^0x3f) == 0 && ((int64(1)<<(_la-673))&1150671903676391423) != 0) || ((int64((_la-737)) & ^0x3f) == 0 && ((int64(1)<<(_la-737))&1152921504606844725) != 0) || ((int64((_la-802)) & ^0x3f) == 0 && ((int64(1)<<(_la-802))&-2305843009213708287) != 0) || ((int64((_la-866)) & ^0x3f) == 0 && ((int64(1)<<(_la-866))&-10748690433) != 0) || ((int64((_la-930)) & ^0x3f) == 0 && ((int64(1)<<(_la-930))&-65) != 0) || ((int64((_la-994)) & ^0x3f) == 0 && ((int64(1)<<(_la-994))&-4503616807239681) != 0) || ((int64((_la-1058)) & ^0x3f) == 0 && ((int64(1)<<(_la-1058))&-1) != 0) || ((int64((_la-1122)) & ^0x3f) == 0 && ((int64(1)<<(_la-1122))&-287631649120190849) != 0) || ((int64((_la-1187)) & ^0x3f) == 0 && ((int64(1)<<(_la-1187))&63) != 0) {
 			{
 				p.SetState(2092)
-				p.FunctionArgs()
+				p.NamedOrUnnamedFunctionArgs()
 			}
 
 		}

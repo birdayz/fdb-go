@@ -2662,3 +2662,15 @@ window option `EF_SEARCH = 2147483646` fails with `OutOfMemoryError` and `214748
 (`hnswSearchCapacityHint`, `hnsw.go`) and searches the whole layer, answering the k nearest rows.
 Every value either engine accepts searches the same beam; both answers are pinned in
 `conformance/window_options_conformance_test.go`.
+
+## Named macro arguments (upstream bug)
+
+Java 4.14.2.0 validates a named macro call by name (`UserDefinedFunctionCatalog.lookup`) but
+`SemanticAnalyzer.resolveFunction` then re-wraps the values with `CallSiteArguments.withArguments`,
+which turns `NamedArguments` into `PositionalArguments` in call order: `st1_d(z => 5, y => 4)`
+binds `y = 5, z = 4`. Go binds each value to the parameter it names. A built-in ignores names in
+both engines. Separately, Java keeps a macro's struct body NOT NULL when its record constructor's
+fields take the referenced parameters' names (`(y, z)` is `{Y, Z}`), so no promotion to the
+nullable return type is needed; Go's record constructor names an unnamed field by ordinal
+(`walkRecordConstructorInner`), so the body is promoted and the result is nullable. Both answers are
+pinned in `conformance/named_call_conformance_test.go`.
