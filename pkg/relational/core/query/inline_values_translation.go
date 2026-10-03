@@ -74,10 +74,5 @@ func (t *cascadesTranslator) translateSingleton() expressions.RelationalExpressi
 		return nil
 	}
 	inner := expressions.ForEachQuantifier(expressions.InitialOf(explode))
-	projection, err := expressions.NewLogicalProjectionExpression(nil, inner)
-	if err != nil {
-		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery, "singleton row: %v", err))
-		return nil
-	}
-	return t.blockSelect(projection)
+	return t.blockOf(nil, nil, nil, inner)
 }

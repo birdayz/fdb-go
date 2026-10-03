@@ -32,13 +32,11 @@ func (b scopeBodies) hides(ref *expressions.Reference) bool {
 	return false
 }
 
-func foldBlock(proj *expressions.LogicalProjectionExpression, bodies scopeBodies) (*expressions.SelectExpression, error) {
-	qs := proj.GetQuantifiers()
-	result := proj.GetResultValue()
-	if len(qs) != 1 || qs[0].GetRangesOver() == nil {
+func foldBlock(result values.Value, from expressions.Quantifier, bodies scopeBodies) (*expressions.SelectExpression, error) {
+	qs := []expressions.Quantifier{from}
+	if from.GetRangesOver() == nil {
 		return expressions.NewSelectExpression(result, qs, nil)
 	}
-	from := qs[0]
 	var where []predicates.QueryPredicate
 	if filter, isFilter := from.GetRangesOver().Get().(*expressions.LogicalFilterExpression); isFilter && filter != nil {
 		inner := filter.GetInner()
