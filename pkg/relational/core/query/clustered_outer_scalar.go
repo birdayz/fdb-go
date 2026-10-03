@@ -964,7 +964,7 @@ func (t *cascadesTranslator) buildClusteredOuterOrdinalScalar(p *logical.Logical
 		innerQ = expressions.NamedForEachQuantifier(innerCorr, innerRef)
 	}
 
-	innerResultType, err := ExactLogicalResultType(bakedInner, t.md)
+	innerResultType, err := exactLogicalResultTypeFor(bakedInner, t.md, t.forDDL)
 	if err != nil {
 		return nil
 	}

@@ -25,7 +25,7 @@ ROWS(3) cols=[OID]:
   [103]
 
 === SELECT COUNT(*) FROM cust c JOIN ord o ON c.cid = o.cid
-PLAN: Project([_current.COUNT(*)#0], StreamingAgg(keys=[], FlatMap(outer=Scan(CUST), inner=IndexScan(ORD_CID, [=]))))
+PLAN: Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], FlatMap(outer=Scan(CUST), inner=IndexScan(ORD_CID, [=]))))
 ROWS(1) cols=[_0]:
   [4]
 

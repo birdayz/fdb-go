@@ -3504,7 +3504,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			"N=6",
 		})
 		if strings.Count(exGCount, "Project(") != 1 ||
-			!strings.Contains(exGCount, "Project([_current.COUNT(*)#0]") {
+			!strings.Contains(exGCount, "Project([COALESCE(_current.COUNT(*)#0, 0)]") {
 			t.Fatalf("global COUNT(*) must keep the flat seed with exactly one public output Project, got: %s", exGCount)
 		}
 		// GLOBAL aggregate whose OPERAND references the element (SUM(EL)) ORDINALIZES via

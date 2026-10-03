@@ -34,7 +34,7 @@ sql:   SELECT category, COUNT(DISTINCT val) FROM t GROUP BY category ORDER BY ca
 plan:  <PLAN-ERROR: 0AF00: DISTINCT aggregates are not supported>
 === aggregate_edge_cases.yaml#0
 sql:   SELECT COUNT(*) FROM t WHERE g = 999
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -106,13 +106,13 @@ shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryScanPlan
 === aggregate_empty_table.yaml#0
 sql:   SELECT COUNT(*) FROM empty_t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(EMPTY_T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(EMPTY_T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === aggregate_empty_table.yaml#1
 sql:   SELECT COUNT(n) FROM empty_t
-plan:  Project([_current.COUNT(N)#0], StreamingAgg(keys=[], Scan(EMPTY_T)))
+plan:  Project([COALESCE(_current.COUNT(N)#0, 0)], StreamingAgg(keys=[], Scan(EMPTY_T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -142,33 +142,33 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === aggregate_empty_table.yaml#6
 sql:   SELECT COUNT(*) FROM empty_t WHERE id = 999
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(EMPTY_T, [=])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(EMPTY_T, [=])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === aggregate_empty_table.yaml#7
 sql:   SELECT COUNT(*) FROM empty_t HAVING COUNT(*) > 0
-plan:  Project([_current.COUNT(*)#0], PredicatesFilter(StreamingAgg(keys=[], Scan(EMPTY_T)), [1 preds]))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], PredicatesFilter(StreamingAgg(keys=[], Scan(EMPTY_T)), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryStreamingAggregationPlan
 shape:       RecordQueryScanPlan
 === aggregate_empty_table.yaml#8
 sql:   SELECT COUNT(*) FROM empty_t WHERE id > 0 HAVING COUNT(*) >= 0
-plan:  Project([_current.COUNT(*)#0], PredicatesFilter(StreamingAgg(keys=[], Scan(EMPTY_T, [<>])), [1 preds]))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], PredicatesFilter(StreamingAgg(keys=[], Scan(EMPTY_T, [<>])), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryStreamingAggregationPlan
 shape:       RecordQueryScanPlan
 === aggregate_empty_table_java.yaml#0
 sql:   SELECT COUNT(*) FROM empty_t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(EMPTY_T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(EMPTY_T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === aggregate_empty_table_java.yaml#1
 sql:   SELECT COUNT(*) FROM with_data WHERE col1 = 999
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(WITH_DATA), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(WITH_DATA), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -193,7 +193,7 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === aggregate_empty_table_java.yaml#5
 sql:   SELECT COUNT(*), SUM(col1), MIN(col1), MAX(col2) FROM empty_t
-plan:  Project([_current.COUNT(*)#0, _current.SUM(COL1)#1, _current.MIN(COL1)#2, _current.MAX(COL2)#3], StreamingAgg(keys=[], Scan(EMPTY_T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0), _current.SUM(COL1)#1, _current.MIN(COL1)#2, _current.MAX(COL2)#3], StreamingAgg(keys=[], Scan(EMPTY_T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -219,7 +219,7 @@ shape: RecordQueryDeletePlan
 shape:   RecordQueryScanPlan
 === aggregate_empty_table_java.yaml#10
 sql:   SELECT COUNT(*) FROM empty_t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(EMPTY_T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(EMPTY_T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -281,7 +281,7 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === aggregate_expr.yaml#8
 sql:   SELECT COUNT(qty * price) FROM t
-plan:  Project([_current.COUNT(QTY*PRICE)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(QTY*PRICE)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -290,7 +290,7 @@ sql:   SELECT SUM(DISTINCT qty * price) FROM t
 plan:  <PLAN-ERROR: 0AF00: DISTINCT aggregates are not supported>
 === aggregate_expr.yaml#10
 sql:   SELECT SUM(qty * price), COUNT(qty * price) FROM t WHERE id < 0
-plan:  Project([_current.SUM(QTY*PRICE)#0, _current.COUNT(QTY*PRICE)#1], StreamingAgg(keys=[], Scan(T, [<>])))
+plan:  Project([_current.SUM(QTY*PRICE)#0, COALESCE(_current.COUNT(QTY*PRICE)#1, 0)], StreamingAgg(keys=[], Scan(T, [<>])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -312,7 +312,7 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === aggregate_expr.yaml#14
 sql:   SELECT COUNT(CASE WHEN id < 3 THEN 1 END) FROM t
-plan:  Project([_current.COUNT(CASEWHENID<3THEN1END)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(CASEWHENID<3THEN1END)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -337,20 +337,20 @@ shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryScanPlan
 === aggregate_expr.yaml#18
 sql:   SELECT SUM(price) / COUNT(price) FROM t ORDER BY SUM(price) / COUNT(price)
-plan:  Project([(_current.SUM(PRICE)#0 / _current.COUNT(PRICE)#1)], InMemorySort([(_current.SUM(PRICE)#0 / _current.COUNT(PRICE)#1) ASC], StreamingAgg(keys=[], Scan(T))))
+plan:  Project([(_current.SUM(PRICE)#0 / COALESCE(_current.COUNT(PRICE)#1, 0))], InMemorySort([(_current.SUM(PRICE)#0 / _current.COUNT(PRICE)#1) ASC], StreamingAgg(keys=[], Scan(T))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryStreamingAggregationPlan
 shape:       RecordQueryScanPlan
 === aggregate_expr.yaml#19
 sql:   SELECT SUM(qty) / COUNT(*) FROM t
-plan:  Project([(_current.SUM(QTY)#0 / _current.COUNT(*)#1)], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([(_current.SUM(QTY)#0 / COALESCE(_current.COUNT(*)#1, 0))], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === aggregate_expr.yaml#20
 sql:   SELECT MIN(qty) + MAX(qty), SUM(qty) - COUNT(*) FROM t
-plan:  Project([(_current.MIN(QTY)#0 + _current.MAX(QTY)#1), (_current.SUM(QTY)#2 - _current.COUNT(*)#3)], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([(_current.MIN(QTY)#0 + _current.MAX(QTY)#1), (_current.SUM(QTY)#2 - COALESCE(_current.COUNT(*)#3, 0))], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -444,7 +444,7 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === aggregate_expression_select.yaml#14
 sql:   SELECT 'total', COUNT(*) FROM t
-plan:  Project(['total', _current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project(['total', COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -542,7 +542,7 @@ shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 === aggregate_index_count_not_null.yaml#1
 sql:   SELECT COUNT(*) FROM measurements
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(MEASUREMENTS)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(MEASUREMENTS)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -578,7 +578,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryAggregateIndexPlan
 === aggregate_index_count_star.yaml#1
 sql:   SELECT COUNT(*) FROM logs
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(LOGS)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(LOGS)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -726,14 +726,14 @@ shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
 === aggregate_null_edge.yaml#4
 sql:   SELECT COUNT(*), COUNT(score), SUM(score), MIN(score), MAX(score) FROM scores WHERE score IS NULL
-plan:  Project([_current.COUNT(*)#0, _current.COUNT(SCORE)#1, _current.SUM(SCORE)#2, _current.MIN(SCORE)#3, _current.MAX(SCORE)#4], StreamingAgg(keys=[], PredicatesFilter(Scan(SCORES), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0), COALESCE(_current.COUNT(SCORE)#1, 0), _current.SUM(SCORE)#2, _current.MIN(SCORE)#3, _current.MAX(SCORE)#4], StreamingAgg(keys=[], PredicatesFilter(Scan(SCORES), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === aggregate_null_edge.yaml#5
 sql:   SELECT COUNT(*), COUNT(score), SUM(score), MIN(score), MAX(score) FROM scores WHERE id > 1000
-plan:  Project([_current.COUNT(*)#0, _current.COUNT(SCORE)#1, _current.SUM(SCORE)#2, _current.MIN(SCORE)#3, _current.MAX(SCORE)#4], StreamingAgg(keys=[], Scan(SCORES, [<>])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0), COALESCE(_current.COUNT(SCORE)#1, 0), _current.SUM(SCORE)#2, _current.MIN(SCORE)#3, _current.MAX(SCORE)#4], StreamingAgg(keys=[], Scan(SCORES, [<>])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -746,13 +746,13 @@ shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryScanPlan
 === aggregate_nulls.yaml#0
 sql:   SELECT COUNT(*) FROM t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === aggregate_nulls.yaml#1
 sql:   SELECT COUNT(v) FROM t
-plan:  Project([_current.COUNT(V)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(V)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -785,7 +785,7 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === aggregate_nulls.yaml#6
 sql:   SELECT COUNT(*) FROM t WHERE grp = 'no_such_group'
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -1280,13 +1280,13 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === array_column_type.yaml#3
 sql:   SELECT COUNT(tags) FROM TaggedItems
-plan:  Project([_current.COUNT(TAGS)#0], StreamingAgg(keys=[], Scan(TAGGEDITEMS)))
+plan:  Project([COALESCE(_current.COUNT(TAGS)#0, 0)], StreamingAgg(keys=[], Scan(TAGGEDITEMS)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === array_column_type.yaml#4
 sql:   SELECT COUNT(*) FROM TaggedItems
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(TAGGEDITEMS)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(TAGGEDITEMS)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -1321,7 +1321,7 @@ sql:   SELECT v + 1, SUM(v) FROM t
 plan:  <PLAN-ERROR: 42803: column "v + 1" must appear in the GROUP BY clause or be used in an aggregate function>
 === bare_col_with_agg.yaml#3
 sql:   SELECT COUNT(*) FROM t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -1333,7 +1333,7 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === bare_col_with_agg.yaml#5
 sql:   SELECT COUNT(*), SUM(v), MAX(v), MIN(v) FROM t
-plan:  Project([_current.COUNT(*)#0, _current.SUM(V)#1, _current.MAX(V)#2, _current.MIN(V)#3], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0), _current.SUM(V)#1, _current.MAX(V)#2, _current.MIN(V)#3], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -1352,7 +1352,7 @@ shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryScanPlan
 === bare_col_with_agg.yaml#8
 sql:   SELECT 'total' AS label, COUNT(*) FROM t
-plan:  Project(['total', _current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project(['total', COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -1436,21 +1436,21 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === between.yaml#14
 sql:   SELECT COUNT(*) FROM t WHERE 4.5 BETWEEN 4 AND 6
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [2 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [2 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === between.yaml#15
 sql:   SELECT COUNT(*) FROM t WHERE 2+2 BETWEEN 1+1 AND 3+3
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [2 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [2 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === between.yaml#16
 sql:   SELECT COUNT(*) FROM t WHERE v NOT BETWEEN NULL AND 2
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -1499,7 +1499,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === between_java.yaml#2
 sql:   SELECT COUNT(*) FROM t1 WHERE col2 BETWEEN 4 AND 3
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [2 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [2 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -1512,7 +1512,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === between_java.yaml#4
 sql:   SELECT COUNT(*) FROM t1 WHERE col2 NOT BETWEEN 12 AND 2
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -1555,35 +1555,35 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === between_java.yaml#11
 sql:   SELECT COUNT(*) FROM t1 WHERE 4 BETWEEN 1 AND 10
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [2 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [2 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === between_java.yaml#12
 sql:   SELECT COUNT(*) FROM t1 WHERE 4 BETWEEN 5 AND 10
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [2 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [2 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === between_java.yaml#13
 sql:   SELECT COUNT(*) FROM t1 WHERE 2+2 BETWEEN 1+1 AND 3+3
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [2 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [2 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === between_java.yaml#14
 sql:   SELECT COUNT(*) FROM t1 WHERE null BETWEEN 1 AND 2
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [2 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [2 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === between_java.yaml#15
 sql:   SELECT COUNT(*) FROM t1 WHERE col2 BETWEEN null AND 10
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [2 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [2 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -1910,7 +1910,7 @@ sql:   SELECT id FROM t WHERE n NOT IN (1, NULL, 30)
 plan:  <PLAN-ERROR: 42809: NULL values are not allowed in the IN list>
 === bug_hunt_probes.yaml#6
 sql:   SELECT COUNT(*), COUNT(n), COUNT(s) FROM t
-plan:  Project([_current.COUNT(*)#0, _current.COUNT(N)#1, _current.COUNT(S)#2], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0), COALESCE(_current.COUNT(N)#1, 0), COALESCE(_current.COUNT(S)#2, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -1929,7 +1929,7 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === bug_hunt_probes.yaml#9
 sql:   SELECT COUNT(*) FROM t WHERE id > 1000
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T, [<>])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T, [<>])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -1948,7 +1948,7 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === bug_hunt_probes.yaml#12
 sql:   WITH high AS (SELECT n FROM t WHERE n > 15) SELECT SUM(n), COUNT(*) FROM high
-plan:  Project([_current.SUM(N)#0, _current.COUNT(*)#1], StreamingAgg(keys=[], Project([_current.N#1], PredicatesFilter(Scan(T), [1 preds]))))
+plan:  Project([_current.SUM(N)#0, COALESCE(_current.COUNT(*)#1, 0)], StreamingAgg(keys=[], Project([_current.N#1], PredicatesFilter(Scan(T), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryProjectionPlan
@@ -2046,7 +2046,7 @@ shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryScanPlan
 === cascades_plan_shapes.yaml#4
 sql:   SELECT COUNT(*) FROM orders WHERE status = 'shipped'
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_STATUS, [=] COVERING)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], IndexScan(IDX_STATUS, [=] COVERING)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryCoveringIndexPlan
@@ -2606,7 +2606,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === comparison_edge_cases.yaml#8
 sql:   SELECT COUNT(*) FROM t WHERE s IS NOT NULL
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -2842,7 +2842,7 @@ shape: RecordQueryDeletePlan
 shape:   RecordQueryScanPlan
 === composite_pk_java.yaml#7
 sql:   SELECT COUNT(*) FROM events
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(EVENTS)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(EVENTS)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -3102,7 +3102,7 @@ sql:   SELECT fname FROM emp WHERE id IN (SELECT emp_id FROM project WHERE emp_i
 plan:  <PLAN-ERROR: 0AF00: Cascades translation failed>
 === correlated_subquery_probes.yaml#3
 sql:   SELECT fname, (SELECT COUNT(*) FROM project WHERE emp_id = emp.id) FROM emp
-plan:  Project([_current.FNAME#1, _current._0#3], FlatMap(outer=Scan(EMP), inner=DefaultOnEmpty(Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(PROJECT), [1 preds]))))))
+plan:  Project([_current.FNAME#1, _current._0#3], FlatMap(outer=Scan(EMP), inner=DefaultOnEmpty(Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(PROJECT), [1 preds]))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryFlatMapPlan
 shape:     RecordQueryScanPlan
@@ -3283,13 +3283,13 @@ sql:   SELECT COUNT(DISTINCT s) FROM t
 plan:  <PLAN-ERROR: 0AF00: DISTINCT aggregates are not supported>
 === count_distinct.yaml#2
 sql:   SELECT COUNT(*) FROM t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === count_distinct_join.yaml#0
 sql:   SELECT COUNT(*) FROM orders AS o, tags AS t WHERE o.cust_id = t.cust_id
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], FlatMap(outer=Scan(ORDERS), inner=Scan(TAGS, [=]))))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], FlatMap(outer=Scan(ORDERS), inner=Scan(TAGS, [=]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryFlatMapPlan
@@ -3303,25 +3303,25 @@ sql:   SELECT COUNT(DISTINCT t.tag) FROM orders AS o, tags AS t WHERE o.cust_id 
 plan:  <PLAN-ERROR: 0AF00: DISTINCT aggregates are not supported>
 === count_star_vs_col.yaml#0
 sql:   SELECT COUNT(*) FROM t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === count_star_vs_col.yaml#1
 sql:   SELECT COUNT(val) FROM t
-plan:  Project([_current.COUNT(VAL)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(VAL)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === count_star_vs_col.yaml#2
 sql:   SELECT COUNT(name) FROM t
-plan:  Project([_current.COUNT(NAME)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(NAME)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === count_star_vs_col.yaml#3
 sql:   SELECT COUNT(*), COUNT(val), COUNT(name) FROM t
-plan:  Project([_current.COUNT(*)#0, _current.COUNT(VAL)#1, _current.COUNT(NAME)#2], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0), COALESCE(_current.COUNT(VAL)#1, 0), COALESCE(_current.COUNT(NAME)#2, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -3360,7 +3360,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
 === covering_index_java.yaml#5
 sql:   SELECT COUNT(*) FROM products WHERE category = 'A'
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_CAT_PRICE, [=, *] COVERING)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], IndexScan(IDX_CAT_PRICE, [=, *] COVERING)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryCoveringIndexPlan
@@ -3540,7 +3540,7 @@ shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === cross_join.yaml#3
 sql:   SELECT COUNT(*) FROM a INNER JOIN b
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], NestedLoopJoin(INNER, Scan(A), Scan(B))))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], NestedLoopJoin(INNER, Scan(A), Scan(B))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryNestedLoopJoinPlan
@@ -3574,7 +3574,7 @@ shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === cross_join.yaml#7
 sql:   SELECT COUNT(*) FROM a, b
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], NestedLoopJoin(INNER, Scan(A), Scan(B))))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], NestedLoopJoin(INNER, Scan(A), Scan(B))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryNestedLoopJoinPlan
@@ -3589,7 +3589,7 @@ shape:     RecordQueryScanPlan
 shape:     RecordQueryScanPlan
 === cross_join.yaml#9
 sql:   SELECT COUNT(*) FROM a WHERE EXISTS (SELECT 1 FROM a JOIN b)
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], FlatMap(outer=Scan(A), inner=PredicatesFilter(FirstOrDefault(Project([1], NestedLoopJoin(INNER, Scan(A), Scan(B)))), [1 preds]))))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], FlatMap(outer=Scan(A), inner=PredicatesFilter(FirstOrDefault(Project([1], NestedLoopJoin(INNER, Scan(A), Scan(B)))), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryFlatMapPlan
@@ -3602,7 +3602,7 @@ shape:               RecordQueryScanPlan
 shape:               RecordQueryScanPlan
 === cross_join.yaml#10
 sql:   SELECT COUNT(*) FROM a JOIN b UNION ALL SELECT COUNT(*) FROM a
-plan:  UnorderedUnion(Project([_current.COUNT(*)#0], StreamingAgg(keys=[], NestedLoopJoin(INNER, Scan(A), Scan(B)))), Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(A))))
+plan:  UnorderedUnion(Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], NestedLoopJoin(INNER, Scan(A), Scan(B)))), Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(A))))
 shape: RecordQueryUnorderedUnionPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryStreamingAggregationPlan
@@ -3619,7 +3619,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cross_join.yaml#12
 sql:   SELECT COUNT(*) FROM a JOIN (SELECT id FROM b) x
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], NestedLoopJoin(INNER, Project([_current.ID#0], Scan(B)), Scan(A))))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], NestedLoopJoin(INNER, Project([_current.ID#0], Scan(B)), Scan(A))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryNestedLoopJoinPlan
@@ -3628,7 +3628,7 @@ shape:         RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === cross_join.yaml#13
 sql:   WITH x AS (SELECT id FROM b) SELECT COUNT(*) FROM a JOIN x
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], NestedLoopJoin(INNER, Project([_current.ID#0], Scan(B)), Scan(A))))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], NestedLoopJoin(INNER, Project([_current.ID#0], Scan(B)), Scan(A))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryNestedLoopJoinPlan
@@ -3637,7 +3637,7 @@ shape:         RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === cross_join.yaml#14
 sql:   WITH x AS (SELECT id FROM b) SELECT COUNT(*) FROM a JOIN x ON a.id = x.id
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], FlatMap(outer=Project([_current.ID#0], Scan(B)), inner=Scan(A, [=]))))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], FlatMap(outer=Project([_current.ID#0], Scan(B)), inner=Scan(A, [=]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryFlatMapPlan
@@ -3668,7 +3668,7 @@ shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === cross_join_filter.yaml#2
 sql:   SELECT COUNT(*) FROM sizes, colors
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], NestedLoopJoin(INNER, Scan(COLORS), Scan(SIZES))))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], NestedLoopJoin(INNER, Scan(COLORS), Scan(SIZES))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryNestedLoopJoinPlan
@@ -3700,7 +3700,7 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === cte.yaml#1
 sql:   WITH hi AS (SELECT id, v FROM t WHERE v >= 20) SELECT COUNT(*), SUM(v) FROM hi
-plan:  Project([_current.COUNT(*)#0, _current.SUM(V)#1], StreamingAgg(keys=[], Project([_current.ID#0, _current.V#1], PredicatesFilter(Scan(T), [1 preds]))))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0), _current.SUM(V)#1], StreamingAgg(keys=[], Project([_current.ID#0, _current.V#1], PredicatesFilter(Scan(T), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryProjectionPlan
@@ -3716,7 +3716,7 @@ shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
 === cte.yaml#3
 sql:   WITH lo AS (SELECT id FROM t WHERE v < 20), hi AS (SELECT id FROM t WHERE v >= 30) SELECT COUNT(*) FROM lo, hi
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], NestedLoopJoin(INNER, Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds])), Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds])))))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], NestedLoopJoin(INNER, Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds])), Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryNestedLoopJoinPlan
@@ -3891,7 +3891,7 @@ sql:   WITH c2(a, b) AS (WITH t AS (SELECT x.v AS id FROM t AS x, t AS y WHERE x
 plan:  <PLAN-ERROR: 42F10: cte query has 1 column(s), however 2 aliases defined>
 === cte.yaml#27
 sql:   WITH c(a, b, cc, d) AS (SELECT x.*, y.id, y.v FROM t AS x, t AS y WHERE x.id = y.id) SELECT COUNT(*) FROM c
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Project([_current.ID#0, _current.V#1, _current.ID#2, _current.V#3], FlatMap(outer=Scan(T), inner=Scan(T, [=])))))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Project([_current.ID#0, _current.V#1, _current.ID#2, _current.V#3], FlatMap(outer=Scan(T), inner=Scan(T, [=])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryProjectionPlan
@@ -3903,7 +3903,7 @@ sql:   WITH c(a, b) AS (SELECT x.*, y.id, y.v FROM t AS x, t AS y WHERE x.id = y
 plan:  <PLAN-ERROR: 42F10: cte query has 4 column(s), however 2 aliases defined>
 === cte.yaml#29
 sql:   WITH t(z) AS (SELECT id FROM t), c(a, b) AS (SELECT p.*, q.z FROM t AS p, t AS q WHERE p.z = q.z) SELECT COUNT(*) FROM c
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Project([_current.Z#0, _current.Z#1], NestedLoopJoin(INNER, [1 preds], Project([_current.ID#0], Scan(T)), Project([_current.ID#0], Scan(T))))))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Project([_current.Z#0, _current.Z#1], NestedLoopJoin(INNER, [1 preds], Project([_current.ID#0], Scan(T)), Project([_current.ID#0], Scan(T))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryProjectionPlan
@@ -3931,7 +3931,7 @@ sql:   WITH o AS (WITH i(a, b) AS (SELECT id FROM t WHERE id <= 2) SELECT id FRO
 plan:  <PLAN-ERROR: 42F10: cte query has 1 column(s), however 2 aliases defined>
 === cte.yaml#34
 sql:   WITH c(a, b) AS (SELECT id, id FROM t GROUP BY id) SELECT COUNT(*) FROM c
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Project([_current.ID#0, _current.ID#0], StreamingAgg(keys=[_current.ID#0], Scan(T)))))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Project([_current.ID#0, _current.ID#0], StreamingAgg(keys=[_current.ID#0], Scan(T)))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryProjectionPlan
@@ -3954,7 +3954,7 @@ sql:   SELECT id FROM t WHERE id = (WITH i(a, b) AS (SELECT id FROM t WHERE id <
 plan:  <PLAN-ERROR: 42F10: cte query has 1 column(s), however 2 aliases defined>
 === cte.yaml#38
 sql:   WITH c(a, b, d) AS (SELECT id, id, id FROM t GROUP BY id, v ORDER BY v) SELECT COUNT(*) FROM c
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Project([_current.ID#0, _current.ID#0, _current.ID#0], InMemorySort([_current.V#1 ASC], StreamingAgg(keys=[_current.ID#0, _current.V#1], InMemorySort([_current.ID#0 ASC, _current.V#1 ASC], Scan(T)))))))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Project([_current.ID#0, _current.ID#0, _current.ID#0], InMemorySort([_current.V#1 ASC], StreamingAgg(keys=[_current.ID#0, _current.V#1], InMemorySort([_current.ID#0 ASC, _current.V#1 ASC], Scan(T)))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryProjectionPlan
@@ -5002,49 +5002,49 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === datetime_column_types.yaml#3
 sql:   SELECT COUNT(*) FROM Events WHERE d > '2024-02-01'
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === datetime_column_types.yaml#4
 sql:   SELECT COUNT(*) FROM Events WHERE d = '2024-01-01'
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === datetime_column_types.yaml#5
 sql:   SELECT COUNT(*) FROM Events WHERE d >= '2024-03-15'
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === datetime_column_types.yaml#6
 sql:   SELECT COUNT(*) FROM Events WHERE ts > '2024-03-15 10:00:00'
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === datetime_column_types.yaml#7
 sql:   SELECT COUNT(*) FROM Events WHERE ts < '2024-06-01 00:00:00'
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === datetime_column_types.yaml#8
 sql:   SELECT COUNT(*) FROM Events WHERE ts BETWEEN '2024-01-01 00:00:00' AND '2024-03-15 10:30:00'
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [2 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [2 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === datetime_column_types.yaml#9
 sql:   SELECT COUNT(*) FROM Events WHERE d BETWEEN '2024-02-01' AND '2024-12-31'
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [2 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [2 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -5106,7 +5106,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === datetime_column_types.yaml#21
 sql:   SELECT COUNT(*) FROM Events WHERE ts >= CAST('2024-03-15 10:30:00' AS TIMESTAMP)
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -5128,7 +5128,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === datetime_column_types.yaml#25
 sql:   SELECT COUNT(*) FROM Events WHERE d IS NOT NULL
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -5173,7 +5173,7 @@ sql:   SELECT COUNT(DISTINCT d) FROM Events
 plan:  <PLAN-ERROR: 0AF00: DISTINCT aggregates are not supported>
 === datetime_column_types.yaml#34
 sql:   SELECT COUNT(*) FROM Events WHERE d IN ('2024-03-15', '2024-06-20')
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -5219,7 +5219,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === datetime_column_types.yaml#42
 sql:   SELECT COUNT(*) FROM Events
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(EVENTS)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(EVENTS)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -5240,35 +5240,35 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === datetime_edge_pins.yaml#3
 sql:   SELECT COUNT(*) FROM ev WHERE d = '2024-03-15 00:00:00'
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(EV), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(EV), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === datetime_edge_pins.yaml#4
 sql:   SELECT COUNT(*) FROM ev WHERE d = 'zzzz'
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(EV), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(EV), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === datetime_edge_pins.yaml#5
 sql:   SELECT COUNT(*) FROM ev WHERE d > 'zzzz'
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(EV), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(EV), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === datetime_edge_pins.yaml#6
 sql:   SELECT COUNT(*) FROM ev WHERE d < 'zzzz' AND d IS NOT NULL
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(EV), [2 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(EV), [2 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === datetime_edge_pins.yaml#7
 sql:   SELECT COUNT(*) FROM ev WHERE d IS NULL
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(EV), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(EV), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -5400,7 +5400,7 @@ sql:   SELECT YEAR(NOW()) FROM t WHERE id = 1
 plan:  <PLAN-ERROR: 0AF00: Unsupported operator NOW>
 === delete_all_rows.yaml#0
 sql:   SELECT COUNT(*) FROM t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -5411,7 +5411,7 @@ shape: RecordQueryDeletePlan
 shape:   RecordQueryScanPlan
 === delete_all_rows.yaml#2
 sql:   SELECT COUNT(*) FROM t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -5452,7 +5452,7 @@ shape: RecordQueryDeletePlan
 shape:   RecordQueryScanPlan
 === delete_complex_where.yaml#5
 sql:   SELECT COUNT(*) FROM logs
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(LOGS)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(LOGS)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -5756,7 +5756,7 @@ shape:             RecordQueryInMemorySortPlan
 shape:               RecordQueryScanPlan
 === derived_table_patterns_java.yaml#4
 sql:   SELECT cnt FROM (SELECT COUNT(*) AS cnt FROM orders WHERE status = 'shipped') AS t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(ORDERS), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(ORDERS), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -5821,7 +5821,7 @@ sql:   SELECT COUNT(DISTINCT v) FROM t HAVING COUNT(DISTINCT v) = 99
 plan:  <PLAN-ERROR: 0AF00: DISTINCT aggregates are not supported>
 === distinct_aggregates.yaml#8
 sql:   SELECT SUM(v), COUNT(v) FROM t
-plan:  Project([_current.SUM(V)#0, _current.COUNT(V)#1], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([_current.SUM(V)#0, COALESCE(_current.COUNT(V)#1, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -5851,14 +5851,14 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === distinct_from_java.yaml#4
 sql:   SELECT COUNT(*) FROM t1 WHERE null IS DISTINCT FROM null
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === distinct_from_java.yaml#5
 sql:   SELECT COUNT(*) FROM t1 WHERE 10 IS DISTINCT FROM 10
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -5877,14 +5877,14 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === distinct_from_java.yaml#8
 sql:   SELECT COUNT(*) FROM t1 WHERE null IS NOT DISTINCT FROM null
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === distinct_from_java.yaml#9
 sql:   SELECT COUNT(*) FROM t1 WHERE 10 IS NOT DISTINCT FROM 10
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -6099,7 +6099,7 @@ shape: RecordQueryDeletePlan
 shape:   RecordQueryScanPlan
 === dml_error_codes.yaml#8
 sql:   SELECT COUNT(*) FROM t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -6202,7 +6202,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === dml_rowcount_java.yaml#5
 sql:   SELECT COUNT(*) FROM t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -6218,7 +6218,7 @@ shape: RecordQueryDeletePlan
 shape:   RecordQueryScanPlan
 === dml_rowcount_java.yaml#8
 sql:   SELECT COUNT(*) FROM t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -6285,7 +6285,7 @@ shape:           RecordQueryProjectionPlan
 shape:             RecordQueryScanPlan
 === dml_subquery.yaml#8
 sql:   SELECT COUNT(*) FROM t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -6577,13 +6577,13 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === empty_result_aggregate.yaml#0
 sql:   SELECT COUNT(*), SUM(val), AVG(val), MIN(val), MAX(val) FROM t WHERE id > 100
-plan:  Project([_current.COUNT(*)#0, _current.SUM(VAL)#1, _current.AVG(VAL)#2, _current.MIN(VAL)#3, _current.MAX(VAL)#4], StreamingAgg(keys=[], Scan(T, [<>])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0), _current.SUM(VAL)#1, _current.AVG(VAL)#2, _current.MIN(VAL)#3, _current.MAX(VAL)#4], StreamingAgg(keys=[], Scan(T, [<>])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === empty_result_aggregate.yaml#1
 sql:   SELECT COUNT(*) FROM t WHERE val < 0
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -6609,7 +6609,7 @@ plan:  Scan(T, [=])
 shape: RecordQueryScanPlan
 === empty_result_edge_cases_java.yaml#1
 sql:   SELECT COUNT(*) FROM t WHERE id = 999
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T, [=])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T, [=])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -6684,7 +6684,7 @@ plan:  Scan(EMPTY_T)
 shape: RecordQueryScanPlan
 === empty_table_operations.yaml#1
 sql:   SELECT COUNT(*) FROM empty_t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(EMPTY_T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(EMPTY_T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -7004,7 +7004,7 @@ shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryScanPlan
 === exists_subquery_java.yaml#5
 sql:   SELECT COUNT(*) FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], FlatMap(outer=Scan(CUSTOMERS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(ORDERS), [1 preds])), [1 preds]))))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], FlatMap(outer=Scan(CUSTOMERS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(ORDERS), [1 preds])), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryFlatMapPlan
@@ -7457,7 +7457,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === float_column.yaml#1
 sql:   SELECT COUNT(*) FROM Measurements WHERE temp > 50.0
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(MEASUREMENTS), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(MEASUREMENTS), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -7469,7 +7469,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === float_column.yaml#3
 sql:   SELECT COUNT(temp) FROM Measurements
-plan:  Project([_current.COUNT(TEMP)#0], StreamingAgg(keys=[], Scan(MEASUREMENTS)))
+plan:  Project([COALESCE(_current.COUNT(TEMP)#0, 0)], StreamingAgg(keys=[], Scan(MEASUREMENTS)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -7485,7 +7485,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === float_column.yaml#6
 sql:   SELECT COUNT(*) FROM Measurements WHERE temp BETWEEN 30 AND 100
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(MEASUREMENTS), [2 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(MEASUREMENTS), [2 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -7509,7 +7509,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === float_column.yaml#12
 sql:   SELECT COUNT(*) FROM Measurements WHERE temp > 0
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(MEASUREMENTS), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(MEASUREMENTS), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -7575,7 +7575,7 @@ shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryScanPlan
 === go_extensions_group_by.yaml#4
 sql:   SELECT COUNT(*), SUM(amount), AVG(amount) FROM orders
-plan:  Project([_current.COUNT(*)#0, _current.SUM(AMOUNT)#1, _current.AVG(AMOUNT)#2], StreamingAgg(keys=[], Scan(ORDERS)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0), _current.SUM(AMOUNT)#1, _current.AVG(AMOUNT)#2], StreamingAgg(keys=[], Scan(ORDERS)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -7587,7 +7587,7 @@ sql:   SELECT a.id, SUM(b.w) FROM a INNER JOIN b ON a.id = b.id
 plan:  <PLAN-ERROR: 42803: column "A.ID" must appear in the GROUP BY clause or be used in an aggregate function>
 === gr1_join.yaml#2
 sql:   SELECT COUNT(*) FROM a, b
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], NestedLoopJoin(INNER, Scan(A), Scan(B))))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], NestedLoopJoin(INNER, Scan(A), Scan(B))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryNestedLoopJoinPlan
@@ -7666,13 +7666,13 @@ shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryScanPlan
 === group_by_count_star.yaml#1
 sql:   SELECT COUNT(*) FROM t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === group_by_count_star.yaml#2
 sql:   SELECT COUNT(*) FROM t WHERE cat = 'A'
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -8298,21 +8298,21 @@ sql:   SELECT grp, COUNT(*) FROM t GROUP BY grp ORDER BY no_such_col
 plan:  <PLAN-ERROR: 42703: column "NO_SUCH_COL" does not exist>
 === having.yaml#16
 sql:   SELECT COUNT(*) FROM t HAVING COUNT(*) > 1
-plan:  Project([_current.COUNT(*)#0], PredicatesFilter(StreamingAgg(keys=[], Scan(T)), [1 preds]))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], PredicatesFilter(StreamingAgg(keys=[], Scan(T)), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryStreamingAggregationPlan
 shape:       RecordQueryScanPlan
 === having.yaml#17
 sql:   SELECT COUNT(*) FROM t HAVING COUNT(*) > 100
-plan:  Project([_current.COUNT(*)#0], PredicatesFilter(StreamingAgg(keys=[], Scan(T)), [1 preds]))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], PredicatesFilter(StreamingAgg(keys=[], Scan(T)), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryStreamingAggregationPlan
 shape:       RecordQueryScanPlan
 === having.yaml#18
 sql:   SELECT COUNT(*) FROM t WHERE grp = 'a' HAVING COUNT(*) = 2
-plan:  Project([_current.COUNT(*)#0], PredicatesFilter(StreamingAgg(keys=[], PredicatesFilter(Scan(T), [1 preds])), [1 preds]))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], PredicatesFilter(StreamingAgg(keys=[], PredicatesFilter(Scan(T), [1 preds])), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryStreamingAggregationPlan
@@ -8320,7 +8320,7 @@ shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
 === having.yaml#19
 sql:   SELECT COUNT(*) FROM t WHERE grp = 'a' HAVING COUNT(*) = 99
-plan:  Project([_current.COUNT(*)#0], PredicatesFilter(StreamingAgg(keys=[], PredicatesFilter(Scan(T), [1 preds])), [1 preds]))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], PredicatesFilter(StreamingAgg(keys=[], PredicatesFilter(Scan(T), [1 preds])), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryStreamingAggregationPlan
@@ -8519,7 +8519,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === in_list_comprehensive.yaml#7
 sql:   SELECT COUNT(*) FROM emp WHERE id IN (1, 2, 3, 4, 5)
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], InJoin(Scan(EMP, [=]), binding ASC)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], InJoin(Scan(EMP, [=]), binding ASC)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInJoinPlan
@@ -8686,7 +8686,7 @@ shape:   RecordQueryInJoinPlan
 shape:     RecordQueryScanPlan
 === in_list_pushdown.yaml#21
 sql:   SELECT COUNT(*) FROM t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -8751,13 +8751,13 @@ shape:   RecordQueryInJoinPlan
 shape:     RecordQueryScanPlan
 === in_list_pushdown.yaml#32
 sql:   SELECT COUNT(*) FROM kvw WHERE a = 1
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(KVW, [=])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(KVW, [=])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === in_list_pushdown.yaml#33
 sql:   SELECT COUNT(*) FROM kvw WHERE a = 2
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(KVW, [=])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(KVW, [=])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -9276,7 +9276,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
 === index_scan_direction.yaml#6
 sql:   SELECT COUNT(*) FROM events WHERE category = 'login'
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_CATEGORY, [=] COVERING)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], IndexScan(IDX_CATEGORY, [=] COVERING)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryCoveringIndexPlan
@@ -9349,13 +9349,13 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === insert_multi_row.yaml#1
 sql:   SELECT COUNT(*) FROM t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === insert_multi_row.yaml#3
 sql:   SELECT COUNT(*) FROM t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -9371,7 +9371,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === insert_multi_row_java.yaml#1
 sql:   SELECT COUNT(*) FROM t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -9382,7 +9382,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === insert_multi_row_java.yaml#4
 sql:   SELECT COUNT(*) FROM t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -9394,7 +9394,7 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === insert_multi_row_java.yaml#8
 sql:   SELECT COUNT(*) FROM t WHERE id = 7
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T, [=])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T, [=])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -9410,7 +9410,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === insert_returning.yaml#2
 sql:   SELECT COUNT(*) FROM log
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(LOG)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(LOG)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -9428,7 +9428,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === insert_select.yaml#3
 sql:   SELECT COUNT(*) FROM dst
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(DST)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(DST)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -9474,7 +9474,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === insert_select_java.yaml#1
 sql:   SELECT COUNT(*) FROM target
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(TARGET)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(TARGET)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -9695,7 +9695,7 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === integer_column_types.yaml#18
 sql:   SELECT COUNT(val) FROM t_int
-plan:  Project([_current.COUNT(VAL)#0], StreamingAgg(keys=[], Scan(T_INT)))
+plan:  Project([COALESCE(_current.COUNT(VAL)#0, 0)], StreamingAgg(keys=[], Scan(T_INT)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -9978,7 +9978,7 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
 === java_alignment_probes.yaml#10
 sql:   SELECT COUNT(*) FROM t1 WHERE id > 999
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T1, [<>])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T1, [<>])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -10290,7 +10290,7 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
 === join_exists_self.yaml#3
 sql:   SELECT COUNT(*) FROM t AS o WHERE EXISTS (SELECT 1 FROM t WHERE t.id = o.id AND t.status = 'active')
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], FlatMap(outer=Scan(T), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T, [=]), [1 preds])), [1 preds]))))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], FlatMap(outer=Scan(T), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T, [=]), [1 preds])), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryFlatMapPlan
@@ -11194,7 +11194,7 @@ shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryCoveringIndexPlan
 === like_patterns_java.yaml#6
 sql:   SELECT COUNT(*) FROM items WHERE name LIKE '%'
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(ITEMS), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(ITEMS), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -11213,7 +11213,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === like_patterns_java.yaml#9
 sql:   SELECT COUNT(*) FROM items WHERE name LIKE 'xyz%'
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(ITEMS), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(ITEMS), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -11304,7 +11304,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === like_prefix_pushdown.yaml#14
 sql:   SELECT COUNT(*) FROM t WHERE name LIKE '%'
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -11359,14 +11359,14 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === like_prefix_pushdown.yaml#23
 sql:   SELECT COUNT(*) FROM t WHERE name LIKE 'c%'
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === like_prefix_pushdown.yaml#24
 sql:   SELECT COUNT(*) FROM t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -11648,7 +11648,7 @@ shape:   RecordQueryProjectionPlan
 shape:     RecordQueryScanPlan
 === limit_zero.yaml#2
 sql:   SELECT COUNT(*) FROM data LIMIT 0
-plan:  Limit(0, Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(DATA))))
+plan:  Limit(0, Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(DATA))))
 shape: RecordQueryLimitPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryStreamingAggregationPlan
@@ -11706,7 +11706,7 @@ shape:         RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === map_path_predicate_kleene.yaml#6
 sql:   SELECT COUNT(*) FROM a INNER JOIN b ON a.id = b.id WHERE b.flag1 XOR NULL
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], FlatMap(outer=PredicatesFilter(Scan(B), [2 preds]), inner=Scan(A, [=]))))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], FlatMap(outer=PredicatesFilter(Scan(B), [2 preds]), inner=Scan(A, [=]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryFlatMapPlan
@@ -11960,7 +11960,7 @@ shape: RecordQueryDeletePlan
 shape:   RecordQueryIndexPlan
 === multi_feature_integer.yaml#10
 sql:   SELECT COUNT(*) FROM products
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(PRODUCTS)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(PRODUCTS)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -12014,7 +12014,7 @@ shape: RecordQueryDeletePlan
 shape:   RecordQueryScanPlan
 === multi_insert_delete.yaml#3
 sql:   SELECT COUNT(*) FROM inventory
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(INVENTORY)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(INVENTORY)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -12312,7 +12312,7 @@ plan:  Scan(T1, [<>])
 shape: RecordQueryScanPlan
 === nested_derived_table.yaml#1
 sql:   SELECT COUNT(*) FROM (SELECT * FROM (SELECT * FROM t1) AS x WHERE n IS NOT NULL) AS y
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -12335,7 +12335,7 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
 === nested_derived_table.yaml#4
 sql:   SELECT a FROM (SELECT COUNT(*) AS a FROM t1 WHERE n IS NOT NULL) AS sub
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -12361,7 +12361,7 @@ shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryScanPlan
 === nested_derived_table.yaml#9
 sql:   SELECT cnt FROM (SELECT COUNT(*) AS cnt FROM t1 WHERE n IS NOT NULL HAVING COUNT(*) > 0) AS sub
-plan:  Project([_current.COUNT(*)#0], PredicatesFilter(StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [1 preds])), [1 preds]))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], PredicatesFilter(StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [1 preds])), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryStreamingAggregationPlan
@@ -12636,7 +12636,7 @@ shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === nlj_null_edge_cases.yaml#2
 sql:   SELECT COUNT(*) FROM orders o INNER JOIN shipments s ON o.id = s.order_id WHERE o.id IN (40, 50) OR s.id = 102
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], FlatMap(outer=Scan(SHIPMENTS), inner=PredicatesFilter(Scan(ORDERS, [=]), [1 preds]))))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], FlatMap(outer=Scan(SHIPMENTS), inner=PredicatesFilter(Scan(ORDERS, [=]), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryFlatMapPlan
@@ -12893,7 +12893,7 @@ shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
 === nlj_predicate_edge_cases.yaml#13
 sql:   SELECT COUNT(*) FROM products p, orders o
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], NestedLoopJoin(INNER, Scan(ORDERS), Scan(PRODUCTS))))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], NestedLoopJoin(INNER, Scan(ORDERS), Scan(PRODUCTS))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryNestedLoopJoinPlan
@@ -13075,7 +13075,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === not_null_constraint_java.yaml#5
 sql:   SELECT COUNT(*) FROM items
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(ITEMS)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(ITEMS)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -13139,7 +13139,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === null_arithmetic_java.yaml#5
 sql:   SELECT SUM(a), SUM(b), COUNT(a), COUNT(b), COUNT(*) FROM nums
-plan:  Project([_current.SUM(A)#0, _current.SUM(B)#1, _current.COUNT(A)#2, _current.COUNT(B)#3, _current.COUNT(*)#4], StreamingAgg(keys=[], Scan(NUMS)))
+plan:  Project([_current.SUM(A)#0, _current.SUM(B)#1, COALESCE(_current.COUNT(A)#2, 0), COALESCE(_current.COUNT(B)#3, 0), COALESCE(_current.COUNT(*)#4, 0)], StreamingAgg(keys=[], Scan(NUMS)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -13175,7 +13175,7 @@ sql:   SELECT id, NULLIF(a, 10) FROM t ORDER BY id
 plan:  <PLAN-ERROR: 0AF00: Unsupported operator NULLIF>
 === null_in_expressions.yaml#3
 sql:   SELECT COUNT(*) FROM t WHERE a IS NULL AND b IS NULL
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [2 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [2 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -13198,7 +13198,7 @@ plan:  Scan(T1, [=])
 shape: RecordQueryScanPlan
 === null_operator_alignment.yaml#1
 sql:   SELECT COUNT(*) FROM (SELECT * FROM t1 WHERE id IS NOT NULL) AS x
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T1, [<>])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T1, [<>])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -14274,7 +14274,7 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === output_column_naming.yaml#1
 sql:   SELECT COUNT(*) AS cnt FROM t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -14531,7 +14531,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === pk_pushdown.yaml#19
 sql:   SELECT COUNT(*) FROM t WHERE id = 1
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T, [=])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T, [=])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -14693,7 +14693,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === pk_pushdown.yaml#49
 sql:   SELECT COUNT(*) FROM t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -14714,7 +14714,7 @@ shape: RecordQueryDeletePlan
 shape:   RecordQueryScanPlan
 === pk_pushdown.yaml#53
 sql:   SELECT COUNT(*) FROM t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -14741,7 +14741,7 @@ shape: RecordQueryDeletePlan
 shape:   RecordQueryScanPlan
 === pk_pushdown.yaml#58
 sql:   SELECT COUNT(*) FROM t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -14768,7 +14768,7 @@ shape: RecordQueryDeletePlan
 shape:   RecordQueryScanPlan
 === pk_pushdown.yaml#63
 sql:   SELECT COUNT(*) FROM kv
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(KV)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(KV)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -14832,7 +14832,7 @@ shape: RecordQueryDeletePlan
 shape:   RecordQueryScanPlan
 === pk_pushdown.yaml#76
 sql:   SELECT COUNT(*) FROM kvw
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(KVW)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(KVW)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -15278,19 +15278,19 @@ shape:       RecordQueryAggregateIndexPlan
 shape:       RecordQueryAggregateIndexPlan
 === quoted_identifier_aggregate_labels.yaml#9
 sql:   SELECT COUNT(CASE WHEN "Region" = 'us' THEN 1 END) FROM sales
-plan:  Project([_current.COUNT(CASEWHENRegion='us'THEN1END)#0], StreamingAgg(keys=[], Scan(SALES)))
+plan:  Project([COALESCE(_current.COUNT(CASEWHENRegion='us'THEN1END)#0, 0)], StreamingAgg(keys=[], Scan(SALES)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === quoted_identifier_aggregate_labels.yaml#10
 sql:   SELECT COUNT(CASE WHEN "Region" = 'US' THEN 1 END) FROM sales
-plan:  Project([_current.COUNT(CASEWHENRegion='US'THEN1END)#0], StreamingAgg(keys=[], Scan(SALES)))
+plan:  Project([COALESCE(_current.COUNT(CASEWHENRegion='US'THEN1END)#0, 0)], StreamingAgg(keys=[], Scan(SALES)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === quoted_identifier_aggregate_labels.yaml#11
 sql:   SELECT COUNT(CASE WHEN "Region" = 'EU' THEN 1 END), COUNT(CASE WHEN "Region" = 'US' THEN 1 END) FROM sales
-plan:  Project([_current.COUNT(CASEWHENRegion='EU'THEN1END)#0, _current.COUNT(CASEWHENRegion='US'THEN1END)#1], StreamingAgg(keys=[], Scan(SALES)))
+plan:  Project([COALESCE(_current.COUNT(CASEWHENRegion='EU'THEN1END)#0, 0), COALESCE(_current.COUNT(CASEWHENRegion='US'THEN1END)#1, 0)], StreamingAgg(keys=[], Scan(SALES)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -15304,7 +15304,7 @@ sql:   SELECT "Q'"."Z'", "R'"."Z'" FROM (SELECT "Amount" AS "Z'" FROM sales WHER
 plan:  <PLAN-ERROR: 42602: Z' it not a valid protobuf identifier: Z' it not a valid protobuf identifier>
 === quoted_identifier_aggregate_labels.yaml#14
 sql:   SELECT * FROM (SELECT COUNT(CASE WHEN "Region" = ')' THEN "Amount" END) FROM sales) d
-plan:  Project([_current.COUNT(CASEWHENRegion=')'THENAmountEND)#0], StreamingAgg(keys=[], Scan(SALES)))
+plan:  Project([COALESCE(_current.COUNT(CASEWHENRegion=')'THENAmountEND)#0, 0)], StreamingAgg(keys=[], Scan(SALES)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -15716,7 +15716,7 @@ shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryTempTableScanPlan
 === recursive_cte.yaml#2
 sql:   WITH RECURSIVE descendants AS ( SELECT id, parent FROM t WHERE parent = -1 UNION ALL SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id ) SELECT COUNT(*) FROM descendants
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], RecursiveDfsJoin(PREORDER, Project([_current.ID#0, _current.PARENT#1], PredicatesFilter(Scan(T), [1 preds])), Project([_current.ID#2, _current.PARENT#3], FlatMap(outer=Scan(T), inner=PredicatesFilter(TempTableScan(DESCENDANTSforScan), [1 preds]))))))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], RecursiveDfsJoin(PREORDER, Project([_current.ID#0, _current.PARENT#1], PredicatesFilter(Scan(T), [1 preds])), Project([_current.ID#2, _current.PARENT#3], FlatMap(outer=Scan(T), inner=PredicatesFilter(TempTableScan(DESCENDANTSforScan), [1 preds]))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryRecursiveDfsJoinPlan
@@ -15907,7 +15907,7 @@ shape:           RecordQueryTempTableScanPlan
 shape:           RecordQueryScanPlan
 === recursive_cte.yaml#18
 sql:   WITH RECURSIVE ancestors AS ( SELECT id, parent FROM t WHERE id = 250 UNION ALL SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.parent ) SELECT COUNT(*) FROM ancestors
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], RecursiveDfsJoin(PREORDER, Project([_current.ID#0, _current.PARENT#1], Scan(T, [=])), Project([_current.ID#0, _current.PARENT#1], Project([_current.ID#2, _current.PARENT#3], FlatMap(outer=TempTableScan(ANCESTORSforScan), inner=Scan(T, [=])))))))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], RecursiveDfsJoin(PREORDER, Project([_current.ID#0, _current.PARENT#1], Scan(T, [=])), Project([_current.ID#0, _current.PARENT#1], Project([_current.ID#2, _current.PARENT#3], FlatMap(outer=TempTableScan(ANCESTORSforScan), inner=Scan(T, [=])))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryRecursiveDfsJoinPlan
@@ -16004,7 +16004,7 @@ shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryTempTableScanPlan
 === recursive_cte_aggregate.yaml#0
 sql:   WITH RECURSIVE descendants AS ( SELECT id, v FROM tree WHERE parent_id IS NULL UNION ALL SELECT c.id, c.v FROM tree c, descendants d WHERE c.parent_id = d.id ) SELECT COUNT(*) FROM descendants
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], RecursiveDfsJoin(PREORDER, Project([_current.ID#0, _current.V#2], PredicatesFilter(Scan(TREE), [1 preds])), Project([_current.ID#0, _current.V#1], Project([_current.ID#0, _current.V#2], FlatMap(outer=Scan(TREE), inner=PredicatesFilter(TempTableScan(DESCENDANTSforScan), [1 preds])))))))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], RecursiveDfsJoin(PREORDER, Project([_current.ID#0, _current.V#2], PredicatesFilter(Scan(TREE), [1 preds])), Project([_current.ID#0, _current.V#1], Project([_current.ID#0, _current.V#2], FlatMap(outer=Scan(TREE), inner=PredicatesFilter(TempTableScan(DESCENDANTSforScan), [1 preds])))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryRecursiveDfsJoinPlan
@@ -16735,7 +16735,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#14
 sql:   SELECT COUNT(*) FROM t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -16790,7 +16790,7 @@ shape: RecordQueryDeletePlan
 shape:   RecordQueryIndexPlan
 === secondary_index_pushdown.yaml#24
 sql:   SELECT COUNT(*) FROM t2 WHERE region = 'eu'
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_REGION_PLAN, [=, *] COVERING)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], IndexScan(IDX_REGION_PLAN, [=, *] COVERING)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryCoveringIndexPlan
@@ -16894,7 +16894,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#42
 sql:   SELECT COUNT(*) FROM t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -16969,7 +16969,7 @@ shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryIndexPlan
 === secondary_index_pushdown.yaml#56
 sql:   SELECT COUNT(*) FROM t2
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T2)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T2)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -17101,28 +17101,28 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === select_count_where.yaml#0
 sql:   SELECT COUNT(*) FROM events WHERE kind = 'error'
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === select_count_where.yaml#1
 sql:   SELECT COUNT(*) FROM events WHERE severity >= 2
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === select_count_where.yaml#2
 sql:   SELECT COUNT(*) FROM events WHERE kind IN ('error', 'warn')
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === select_count_where.yaml#3
 sql:   SELECT COUNT(*) FROM events WHERE kind LIKE 'e%'
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -17507,7 +17507,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === star_body_columns_are_named.yaml#6
 sql:   SELECT COUNT(*) FROM (SELECT * FROM (SELECT * FROM sb) AS x) AS y WHERE amt > 150
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(SB), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(SB), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -17872,7 +17872,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === subquery_scalar_in_where.yaml#2
 sql:   SELECT COUNT(*) FROM readings WHERE value <= (SELECT MAX(value) FROM readings WHERE sensor = 'temp')
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(READINGS), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(READINGS), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -18080,7 +18080,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === type_promotion.yaml#5
 sql:   SELECT COUNT(*) FROM t WHERE i >= 20
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -18129,7 +18129,7 @@ shape:     RecordQueryProjectionPlan
 shape:       RecordQueryScanPlan
 === union_aggregate_java.yaml#2
 sql:   SELECT SUM(y) AS s FROM (SELECT COUNT(*) AS y FROM t1 UNION ALL SELECT COUNT(*) AS y FROM t2) AS x
-plan:  Project([_current.SUM(Y)#0], StreamingAgg(keys=[], UnorderedUnion(Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T1))), Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T2))))))
+plan:  Project([_current.SUM(Y)#0], StreamingAgg(keys=[], UnorderedUnion(Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T1))), Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T2))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryUnorderedUnionPlan
@@ -18293,7 +18293,7 @@ shape:   RecordQueryScanPlan
 shape:   RecordQueryScanPlan
 === union_empty_tables_java.yaml#2
 sql:   SELECT SUM(col1), COUNT(*) FROM empty1
-plan:  Project([_current.SUM(COL1)#0, _current.COUNT(*)#1], StreamingAgg(keys=[], Scan(EMPTY1)))
+plan:  Project([_current.SUM(COL1)#0, COALESCE(_current.COUNT(*)#1, 0)], StreamingAgg(keys=[], Scan(EMPTY1)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -18309,7 +18309,7 @@ shape:       RecordQueryProjectionPlan
 shape:         RecordQueryScanPlan
 === union_empty_tables_java.yaml#4
 sql:   SELECT COUNT(*) FROM (SELECT col1 FROM empty1 UNION ALL SELECT col1 FROM empty2) AS t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], UnorderedUnion(Project([_current.COL1#1], Scan(EMPTY1)), Project([_current.COL1#1], Scan(EMPTY2)))))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], UnorderedUnion(Project([_current.COL1#1], Scan(EMPTY1)), Project([_current.COL1#1], Scan(EMPTY2)))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryUnorderedUnionPlan
@@ -18347,7 +18347,7 @@ shape:       RecordQueryProjectionPlan
 shape:         RecordQueryScanPlan
 === union_empty_tables_java.yaml#8
 sql:   SELECT COUNT(*) FROM (SELECT * FROM has_data UNION ALL SELECT * FROM empty1) AS t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], UnorderedUnion(Scan(HAS_DATA), Scan(EMPTY1))))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], UnorderedUnion(Scan(HAS_DATA), Scan(EMPTY1))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryUnorderedUnionPlan
@@ -18496,7 +18496,7 @@ shape:   RecordQueryProjectionPlan
 shape:     RecordQueryScanPlan
 === union_star.yaml#4
 sql:   SELECT SUM(a) AS a, SUM(b) AS b FROM (SELECT SUM(col1) AS a, COUNT(*) AS b FROM t1 UNION ALL SELECT SUM(col1) AS a, COUNT(*) AS b FROM t1) AS x
-plan:  Project([_current.SUM(A)#0, _current.SUM(B)#1], StreamingAgg(keys=[], UnorderedUnion(Project([_current.SUM(COL1)#0, _current.COUNT(*)#1], StreamingAgg(keys=[], Scan(T1))), Project([_current.SUM(COL1)#0, _current.COUNT(*)#1], StreamingAgg(keys=[], Scan(T1))))))
+plan:  Project([_current.SUM(A)#0, _current.SUM(B)#1], StreamingAgg(keys=[], UnorderedUnion(Project([_current.SUM(COL1)#0, COALESCE(_current.COUNT(*)#1, 0)], StreamingAgg(keys=[], Scan(T1))), Project([_current.SUM(COL1)#0, COALESCE(_current.COUNT(*)#1, 0)], StreamingAgg(keys=[], Scan(T1))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryUnorderedUnionPlan
@@ -18533,19 +18533,19 @@ shape:           RecordQueryStreamingAggregationPlan
 shape:             RecordQueryScanPlan
 === unique_constraint_violation.yaml#3
 sql:   SELECT COUNT(*) FROM t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === unique_index_violation.yaml#1
 sql:   SELECT COUNT(*) FROM Users
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(USERS)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(USERS)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === unique_index_violation.yaml#3
 sql:   SELECT COUNT(*) FROM Users
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(USERS)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(USERS)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -18556,7 +18556,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
 === unique_violation.yaml#3
 sql:   SELECT COUNT(*) FROM t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -18782,7 +18782,7 @@ shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
 shape:     RecordQueryScanPlan
 === update_comprehensive.yaml#7
 sql:   SELECT COUNT(*) FROM t WHERE score = 0
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [1 preds])))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -18879,7 +18879,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === update_delete.yaml#5
 sql:   SELECT COUNT(*) FROM t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -18901,7 +18901,7 @@ shape: RecordQueryDeletePlan
 shape:   RecordQueryScanPlan
 === update_delete.yaml#10
 sql:   SELECT COUNT(*) FROM t
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -18948,7 +18948,7 @@ shape:   RecordQueryInJoinPlan
 shape:     RecordQueryScanPlan
 === update_delete_where_java.yaml#5
 sql:   SELECT COUNT(*) FROM inventory
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(INVENTORY)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(INVENTORY)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -18981,7 +18981,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === update_delete_where_java.yaml#11
 sql:   SELECT COUNT(*) FROM inventory
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(INVENTORY)))
+plan:  Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(INVENTORY)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -19170,7 +19170,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === uuid_column.yaml#4
 sql:   SELECT COUNT(session_id) FROM Sessions
-plan:  Project([_current.COUNT(SESSION_ID)#0], StreamingAgg(keys=[], Scan(SESSIONS)))
+plan:  Project([COALESCE(_current.COUNT(SESSION_ID)#0, 0)], StreamingAgg(keys=[], Scan(SESSIONS)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan

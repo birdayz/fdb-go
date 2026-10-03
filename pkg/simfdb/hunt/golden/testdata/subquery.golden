@@ -4,7 +4,7 @@
 #   CREATE INDEX ord_cid ON ord(cid)
 
 === SELECT c.cid, (SELECT COUNT(*) FROM ord o WHERE o.cid = c.cid) FROM cust c ORDER BY c.cid
-PLAN: Project([_current.CID#0, _current._0#2], FlatMap(outer=Scan(CUST), inner=DefaultOnEmpty(Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(ORD_CID, [=] COVERING))))))
+PLAN: Project([_current.CID#0, _current._0#2], FlatMap(outer=Scan(CUST), inner=DefaultOnEmpty(Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], IndexScan(ORD_CID, [=] COVERING))))))
 ROWS(3) cols=[CID, _1]:
   [1, 2]
   [2, 1]

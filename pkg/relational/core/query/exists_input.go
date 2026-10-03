@@ -22,7 +22,7 @@ func LowerExistsInput(plan logical.LogicalOperator, md *recordlayer.RecordMetaDa
 		}
 		inputs[edge.Plan] = edge.Input
 	}
-	ref, scalars, err := translateWithOwnedInputs(plan, md, inputs)
+	ref, scalars, err := translateWithOwnedInputs(plan, md, inputs, false)
 	if err != nil {
 		return nil, err
 	}

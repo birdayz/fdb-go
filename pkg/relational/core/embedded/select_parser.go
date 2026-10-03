@@ -2080,13 +2080,21 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 					if i < len(projExprs) && projExprs[i] != nil {
 						inheritedName = ""
 						projText := canonicalTextOf(projExprs[i])
+						matched := false
 						for _, gn := range cls.groupBy {
 							if gn.expr != nil && projText == gn.display {
 								gc = gn.display
 								gcBare = gn.display
 								gcQual, gcQualified, gcSegs = "", false, nil
+								matched = true
 								break
 							}
+						}
+						if !matched {
+							// A constant or another expression is evaluated over the
+							// aggregated row, as at the SELECT-list and GROUP BY sites.
+							prepended = append(prepended, aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, outExpr: projExprs[i], outputAliased: projAliases[i] != "", visible: true})
+							continue
 						}
 					}
 					prepended = append(prepended, aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, groupCol: gc, groupColValue: c.bound, outputInheritedName: inheritedName, groupColBare: gcBare, groupColQualifier: gcQual, groupColQualified: gcQualified, groupColSegs: gcSegs, outputAliased: projAliases[i] != "", visible: true})

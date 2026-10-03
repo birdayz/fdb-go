@@ -33,7 +33,7 @@ tests:
     rows:
       - [3]
   - query: SELECT COUNT(*) AS cnt FROM t
-    plan_contains: "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))"
+    plan_contains: "Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))"
     columns: [CNT]
     rows:
       - [4]

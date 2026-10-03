@@ -74,7 +74,7 @@ func Generate(op logical.LogicalOperator, md *recordlayer.RecordMetaData, opts O
 		return nil, api.NewError(api.ErrCodeInternalError,
 			"index generator invoked without metadata — the catalog-less plan fallback must be unreachable here")
 	}
-	ref, _, err := querycore.TranslateToCascadesWithError(op, md)
+	ref, _, err := querycore.TranslateIndexDefinitionToCascades(op, md)
 	if err != nil {
 		return nil, err
 	}

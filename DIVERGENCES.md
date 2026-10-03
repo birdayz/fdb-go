@@ -2645,3 +2645,11 @@ later insert of that key is a no-op until the record is deleted. Go checks the c
 (`insertIntoClusters`, `guardiann_ops.go`); nothing between the two positions reads identity
 rows and the identity UUID is not drawn from the operation RNG, so every successful insert
 writes Java's bytes. Pinned by "GuardiANN deferred hard cap".
+
+## HAVING without GROUP BY over a select list without an aggregate (upstream bug)
+
+SQL treats a query with HAVING and no GROUP BY as one group: `SELECT 7 FROM t HAVING COUNT(*) > 0`
+returns one row when the predicate holds. Java 4.14.2.0 returns one row per input row (three over a
+three-row table) and no row over an empty one, where `COUNT(*) = 0` holds. A query whose select list
+has an aggregate (`SELECT COUNT(*) FROM e HAVING COUNT(*) = 0`) agrees in both engines. Go answers the
+SQL result. Both engines' answers are pinned in `conformance/count_on_empty_conformance_test.go`.

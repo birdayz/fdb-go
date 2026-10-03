@@ -72,6 +72,22 @@ func logicalResultTypeWithCTEs(
 type cteRows struct {
 	types    map[*logical.CTEProducer]values.Type
 	registry logical.CTERegistry
+	// forDDL types an index definition, whose COUNT is not adjusted.
+	forDDL bool
+}
+
+// exactLogicalResultTypeFor is ExactLogicalResultType for a translator that
+// may be translating an index definition.
+func exactLogicalResultTypeFor(op logical.LogicalOperator, md *recordlayer.RecordMetaData, forDDL bool) (values.Type, error) {
+	env := cteRows{types: make(map[*logical.CTEProducer]values.Type), registry: logical.CTERegistry{}, forDDL: forDDL}
+	typ, err := deriveLogicalResultType(op, md, env, strictLogicalUnionResultType)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := values.SnapshotExactType(typ); err != nil {
+		return nil, fmt.Errorf("logical result type is not exact: %w", err)
+	}
+	return typ, nil
 }
 
 func exactLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordMetaData, env cteRows) (values.Type, error) {
@@ -123,10 +139,21 @@ func deriveLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordM
 				aggregateInput = positionalInput
 			}
 		}
+		// An ungrouped query's COUNT is COALESCE(count, 0), as the translator
+		// builds it (adjustCountOnEmpty).
+		var ungrouped *logical.LogicalAggregate
+		if aggregateInput != nil && !env.forDDL {
+			if agg := logicalAggregateUnder(typed.Input); agg != nil && len(agg.GroupKeys) == 0 {
+				ungrouped = agg
+			}
+		}
 		fields := make([]values.Field, len(typed.ProjectedValues))
 		for i, projected := range typed.ProjectedValues {
 			var fieldType values.Type
 			if projected != nil {
+				if ungrouped != nil {
+					projected = adjustCountOnEmpty(projected)
+				}
 				fieldType = projected.Type()
 			} else if aggregateInput != nil {
 				ordinal := typed.AggregateOutputOrdinals[i]
@@ -134,6 +161,9 @@ func deriveLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordM
 					return nil, fmt.Errorf("projection result slot %d has no resolved computed value", i)
 				}
 				fieldType = aggregateInput.Fields[ordinal].FieldType
+				if ungrouped != nil && ordinal < len(ungrouped.Calls) && strings.EqualFold(ungrouped.Calls[ordinal].Func, "COUNT") {
+					fieldType = countOnEmpty(&values.ConstantValue{Typ: fieldType}).Type()
+				}
 			} else if positionalInput != nil {
 				ordinal := typed.InputOrdinals[i]
 				if ordinal < 0 || ordinal >= len(positionalInput.Fields) {

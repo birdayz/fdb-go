@@ -87,6 +87,7 @@ java_test(
 # pkg/docscheck/build_membership_test.go fails if an excluded spec file is in no
 # target.
 # gazelle:exclude guardiann_probe_conformance_test.go
+# gazelle:exclude count_on_empty_conformance_test.go
 # gazelle:exclude ws_e_probe_conformance_test.go
 # gazelle:exclude ws_f_access_path_test.go
 # gazelle:exclude ws_f_probe_conformance_test.go
@@ -109,6 +110,7 @@ go_test(
     srcs = [
         "conformance_suite_test.go",
         "container_test.go",
+        "count_on_empty_conformance_test.go",
         "index_shape_helpers_test.go",
         "java_invoker_test.go",
         "store_helpers_test.go",

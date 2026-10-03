@@ -206,6 +206,7 @@ go_test(
         "correlated_scalar_where_reject_fdb_test.go",
         "correlated_zero_composite_sentinel_test.go",
         "correlated_zero_ordering_test.go",
+        "count_on_empty_fdb_test.go",
         "covering_index_test.go",
         "covering_index_value_fidelity_fdb_test.go",
         "covering_leaf_column_metadata_fdb_test.go",

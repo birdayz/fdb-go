@@ -16,12 +16,12 @@ ROWS(8) cols=[ID, CAT, VAL, NAME, FLAG]:
   [8, 2, 250, "h", NULL]
 
 === SELECT COUNT(*) FROM t
-PLAN: Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+PLAN: Project([COALESCE(_current.COUNT(*)#0, 0)], StreamingAgg(keys=[], Scan(T)))
 ROWS(1) cols=[_0]:
   [8]
 
 === SELECT COUNT(val), COUNT(name), COUNT(flag) FROM t
-PLAN: Project([_current.COUNT(VAL)#0, _current.COUNT(NAME)#1, _current.COUNT(FLAG)#2], StreamingAgg(keys=[], Scan(T)))
+PLAN: Project([COALESCE(_current.COUNT(VAL)#0, 0), COALESCE(_current.COUNT(NAME)#1, 0), COALESCE(_current.COUNT(FLAG)#2, 0)], StreamingAgg(keys=[], Scan(T)))
 ROWS(1) cols=[_0, _1, _2]:
   [7, 7, 7]
 

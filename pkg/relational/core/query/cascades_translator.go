@@ -64,12 +64,20 @@ func TranslateToCascadesWithSubqueries(op logical.LogicalOperator, md *recordlay
 // RFC-142) that a bare nil ref (untranslatable → UNSUPPORTED_QUERY) cannot.
 // The caller surfaces it verbatim instead of the generic "could not plan".
 func TranslateToCascadesWithError(op logical.LogicalOperator, md *recordlayer.RecordMetaData) (*expressions.Reference, []ScalarSubqueryPlan, error) {
-	return translateWithOwnedInputs(op, md, nil)
+	return translateWithOwnedInputs(op, md, nil, false)
 }
 
-func translateWithOwnedInputs(op logical.LogicalOperator, md *recordlayer.RecordMetaData, owned map[logical.LogicalOperator]*logical.ExistsInput) (*expressions.Reference, []ScalarSubqueryPlan, error) {
+// TranslateIndexDefinitionToCascades translates an index definition's query.
+// Java's QueryVisitor leaves an index definition's COUNT unadjusted
+// (isForDdl), so its aggregate stays the index's aggregate.
+func TranslateIndexDefinitionToCascades(op logical.LogicalOperator, md *recordlayer.RecordMetaData) (*expressions.Reference, []ScalarSubqueryPlan, error) {
+	return translateWithOwnedInputs(op, md, nil, true)
+}
+
+func translateWithOwnedInputs(op logical.LogicalOperator, md *recordlayer.RecordMetaData, owned map[logical.LogicalOperator]*logical.ExistsInput, forDDL bool) (*expressions.Reference, []ScalarSubqueryPlan, error) {
 	logical.BindCTESources(op, logical.CTERegistry{})
 	t := &cascadesTranslator{
+		forDDL:          forDDL,
 		ownedInputs:     owned,
 		md:              md,
 		cteScope:        logical.CTERegistry{},
@@ -81,7 +89,9 @@ func translateWithOwnedInputs(op logical.LogicalOperator, md *recordlayer.Record
 }
 
 type cascadesTranslator struct {
-	md           *recordlayer.RecordMetaData
+	md *recordlayer.RecordMetaData
+	// forDDL translates an index definition, whose COUNT is not adjusted.
+	forDDL       bool
 	cteScope     logical.CTERegistry
 	producerRefs map[*logical.CTEProducer]*expressions.Reference
 	// Recursive lowering publishes this immutable row pair with its shared
@@ -696,7 +706,7 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 	case *logical.LogicalSingleton:
 		return []values.Field{}
 	case *logical.LogicalInlineValues:
-		exact, err := ExactLogicalResultType(o, t.md)
+		exact, err := exactLogicalResultTypeFor(o, t.md, t.forDDL)
 		if err != nil {
 			return nil
 		}
@@ -804,7 +814,7 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 		// laundering its one exact slot to UNKNOWN makes the ordinal seed decline
 		// even though the projection has a complete positional contract.
 		var exactFields []values.Field
-		if exactType, err := ExactLogicalResultType(o, t.md); err == nil {
+		if exactType, err := exactLogicalResultTypeFor(o, t.md, t.forDDL); err == nil {
 			if recordType, ok := exactType.(*values.RecordType); ok && len(recordType.Fields) == len(o.Projections) {
 				exactFields = recordType.Fields
 			}
@@ -928,7 +938,7 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 		// derived/CTE unnest collection executable instead of laundering it back
 		// to UNKNOWN at this boundary.
 		var exactFields []values.Field
-		if exactType, err := ExactLogicalResultType(o, t.md); err == nil {
+		if exactType, err := exactLogicalResultTypeFor(o, t.md, t.forDDL); err == nil {
 			if recordType, ok := exactType.(*values.RecordType); ok && len(recordType.Fields) == len(o.Projections) {
 				exactFields = recordType.Fields
 			}
@@ -1288,6 +1298,29 @@ func bindPostAggregateNode(
 			ordinal, node.Type(), resolved.Type())
 	}
 	return resolved, nil
+}
+
+// adjustCountOnEmpty is Java's LogicalOperator.adjustCountOnEmpty: in an
+// ungrouped query each COUNT becomes COALESCE(count, 0) (SQL 4.16.4), each
+// instance once.
+func adjustCountOnEmpty(v values.Value) values.Value {
+	visited := map[values.Value]bool{}
+	return values.Replace(v, func(node values.Value) values.Value {
+		if visited[node] {
+			return node
+		}
+		visited[node] = true
+		if av, ok := node.(*values.AggregateValue); ok && (av.Op == values.AggCount || av.Op == values.AggCountStar) {
+			return countOnEmpty(av)
+		}
+		return node
+	})
+}
+
+func countOnEmpty(count values.Value) values.Value {
+	args := []values.Value{count, &values.ConstantValue{Value: int64(0), Typ: values.NotNullLong}}
+	typ, _ := values.ScalarFunctionResultType("COALESCE", args)
+	return values.NewScalarFunctionValue("COALESCE", typ, args...)
 }
 
 func aggregateValueNativeOrdinal(av *values.AggregateValue, agg *logical.LogicalAggregate) int {
@@ -6915,7 +6948,7 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 	// proves that correlation, width, ordinals, record/leaf nullability, and every
 	// exact leaf type agree; only top-level field names may differ.
 	if logicalDerivedProjectionInput(p.Input) {
-		logicalInputType, logicalTypeErr := ExactLogicalResultType(p.Input, t.md)
+		logicalInputType, logicalTypeErr := exactLogicalResultTypeFor(p.Input, t.md, t.forDDL)
 		if logicalTypeErr == nil && !values.FlowedTypeEquals(projectionInput, logicalInputType) {
 			declaration, declarationErr := values.NewQuantifiedObjectValue(
 				projectionInput.Correlation(), logicalInputType)
@@ -6980,6 +7013,7 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 				"post-aggregate projection disagrees with the GroupBy output width"))
 			return nil
 		}
+		adjust := !t.forDDL && len(exactAggregate.GroupKeys) == 0
 		for i, ordinal := range p.AggregateOutputOrdinals {
 			switch {
 			case ordinal >= 0 && ordinal < nativeWidth:
@@ -6989,12 +7023,18 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 						"post-aggregate projection slot %d does not resolve: %v", ordinal, err))
 					return nil
 				}
+				if adjust && ordinal >= len(exactAggregate.GroupKeys) && strings.EqualFold(exactAggregate.Calls[ordinal-len(exactAggregate.GroupKeys)].Func, "COUNT") {
+					resolved = countOnEmpty(resolved)
+				}
 				projected[i] = resolved
 			case ordinal == -1:
 				if projected[i] == nil {
 					t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
 						"computed post-aggregate output did not resolve to a Value"))
 					return nil
+				}
+				if adjust {
+					projected[i] = adjustCountOnEmpty(projected[i])
 				}
 				bound, err := bindPostAggregateValue(projected[i], exactAggregate, projectionInput)
 				if err != nil {
@@ -8031,6 +8071,9 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		return nil
 	}
 	havingPred, havingBindErr := predicates.TransformEmbeddedValuesChecked(a.HavingPredicate, func(v values.Value) (values.Value, error) {
+		if !t.forDDL && len(a.GroupKeys) == 0 {
+			v = adjustCountOnEmpty(v)
+		}
 		return bindPostAggregateValue(v, a, havingQOV)
 	})
 	if havingBindErr != nil {
@@ -9041,7 +9084,7 @@ func (t *cascadesTranslator) cteTranslationBody(c *logical.CTEProducer) logical.
 			// A nested WITH can end in a bare scan of its local CTE. Its
 			// complete query still declares an exact row even though neither
 			// the projection walk nor the catalog-only star walk sees it.
-			if typ, err := ExactLogicalResultType(body, t.md); err == nil {
+			if typ, err := exactLogicalResultTypeFor(body, t.md, t.forDDL); err == nil {
 				if row, ok := typ.(*values.RecordType); ok {
 					origCols = make([]string, len(row.Fields))
 					for i, field := range row.Fields {
@@ -9305,7 +9348,7 @@ func (t *cascadesTranslator) recursiveCTECommonResultRow(
 	resultNullable := seed.Nullable
 	for branchIndex, branch := range recursiveBranches {
 		var branchFields []values.Field
-		if branchType, err := ExactLogicalResultType(branch, t.md); err == nil {
+		if branchType, err := exactLogicalResultTypeFor(branch, t.md, t.forDDL); err == nil {
 			if record, ok := branchType.(*values.RecordType); ok {
 				branchFields = record.Fields
 				resultNullable = resultNullable || record.Nullable
