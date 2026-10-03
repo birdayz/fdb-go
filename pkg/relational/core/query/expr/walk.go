@@ -1471,6 +1471,7 @@ func (r *Resolver) walkNonAggregateWindowedFunction(fc *antlrgen.NonAggregateFun
 	// ORDER BY expressions → the row-number argument values (the distance
 	// expression for K-NN). Java requires ascending (or unspecified) sort.
 	var args []values.Value
+	unsupportedSort := false
 	if obc, ok := specc.OrderByClause().(*antlrgen.OrderByClauseContext); ok && obc != nil {
 		for _, obe := range obc.AllOrderByExpression() {
 			obec, ok := obe.(*antlrgen.OrderByExpressionContext)
@@ -1478,7 +1479,7 @@ func (r *Resolver) walkNonAggregateWindowedFunction(fc *antlrgen.NonAggregateFun
 				return nil, &UnsupportedExpressionShapeError{Shape: "malformed ORDER BY expression in OVER clause"}
 			}
 			if occ, ok := obec.OrderClause().(*antlrgen.OrderClauseContext); ok && occ != nil && (occ.DESC() != nil || occ.LAST() != nil) {
-				return nil, api.NewError(api.ErrCodeUnsupportedSort, "provided sort specification not supported with window function")
+				unsupportedSort = true
 			}
 			av, err := r.WalkExpression(obec.Expression())
 			if err != nil {
@@ -1488,25 +1489,69 @@ func (r *Resolver) walkNonAggregateWindowedFunction(fc *antlrgen.NonAggregateFun
 		}
 	}
 
-	// OPTIONS ef_search = N (HNSW search-quality knob).
-	var efSearch *int
+	// OPTIONS: every value is parsed with the OVER clause (visitWindowOption),
+	// before the sort check; a repeat is refused as the options are collected
+	// (CallSiteArguments.Options.putRaw), and each is coerced to its declared
+	// type as row_number is encapsulated.
+	type windowOption struct {
+		name string
+		raw  any
+	}
+	var options []windowOption
 	if woc, ok := specc.WindowOptionsClause().(*antlrgen.WindowOptionsClauseContext); ok && woc != nil {
 		for _, opt := range woc.AllWindowOption() {
 			optc, ok := opt.(*antlrgen.WindowOptionContext)
 			if !ok || optc.EF_SEARCH() == nil || optc.GetEfSearch() == nil {
-				continue
+				return nil, api.NewErrorf(api.ErrCodeInternalError, "unexpected option %s", opt.GetText())
 			}
-			n, err := strconv.Atoi(optc.GetEfSearch().GetText())
+			raw, err := ParseDecimal(optc.GetEfSearch().GetText())
 			if err != nil {
-				return nil, &UnsupportedExpressionShapeError{
-					Shape: fmt.Sprintf("invalid ef_search value %q", optc.GetEfSearch().GetText()),
-				}
+				return nil, err
 			}
-			efSearch = &n
+			options = append(options, windowOption{name: "hnswEfSearch", raw: raw})
 		}
+	}
+	if unsupportedSort {
+		return nil, api.NewError(api.ErrCodeUnsupportedSort, "provided sort specification not supported with window function")
+	}
+	seen := map[string]bool{}
+	for _, o := range options {
+		if seen[o.name] {
+			return nil, api.NewError(api.ErrCodeInvalidArgumentForFunction,
+				"The function is not defined for the given argument types option specified more than once")
+		}
+		seen[o.name] = true
+	}
+	var efSearch *int
+	for _, o := range options {
+		n, err := coerceIntegerOption(o.raw)
+		if err != nil {
+			return nil, err
+		}
+		efSearch = &n
 	}
 
 	return values.NewRowNumberValue(partitions, args, efSearch, nil), nil
+}
+
+// coerceIntegerOption is CallSiteArguments.Option.coerceInteger over a window
+// option's parsed literal.
+func coerceIntegerOption(raw any) (int, error) {
+	var v int64
+	switch n := raw.(type) {
+	case int32:
+		v = int64(n)
+	case int64:
+		v = n
+	default:
+		return 0, api.NewError(api.ErrCodeCannotConvertType,
+			"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable. option value is of an unexpected type")
+	}
+	if v < math.MinInt32 || v > math.MaxInt32 {
+		return 0, api.NewError(api.ErrCodeCannotConvertType,
+			"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable. option value is out of range for the option's type")
+	}
+	return int(v), nil
 }
 
 // primitiveTypeToValueType maps the PrimitiveType terminal to a
@@ -2544,23 +2589,10 @@ func (r *Resolver) walkConstant(c antlrgen.IConstantContext) (values.Value, erro
 		}
 		return nil, &UnsupportedExpressionShapeError{Shape: "BooleanLiteral with no TRUE/FALSE"}
 	case *antlrgen.DecimalConstantContext:
-		// DecimalLiteralContext wraps either DECIMAL_LITERAL (int)
-		// or REAL_LITERAL (float). Distinguish by which terminal is
-		// non-nil. Fall back to int parse when the literal node is
-		// missing (defensive — shouldn't happen).
-		isReal := false
-		if dl, ok := k.DecimalLiteral().(*antlrgen.DecimalLiteralContext); ok {
-			isReal = dl.REAL_LITERAL() != nil
-		}
-		return r.resolveDecimalText(k.GetText(), isReal)
+		return r.resolveDecimalText(k.GetText())
 	case *antlrgen.NegativeDecimalConstantContext:
-		// `-N` constant — same DecimalLiteral wrapper but with a
-		// leading MINUS. Dispatch on REAL vs DECIMAL again.
-		isReal := false
-		if dl, ok := k.DecimalLiteral().(*antlrgen.DecimalLiteralContext); ok {
-			isReal = dl.REAL_LITERAL() != nil
-		}
-		return r.resolveDecimalText(k.GetText(), isReal)
+		// `-N`: the text keeps the minus, as Java's does.
+		return r.resolveDecimalText(k.GetText())
 	case *antlrgen.StringConstantContext:
 		lit, ok := k.StringLiteral().(*antlrgen.StringLiteralContext)
 		if !ok {
@@ -2603,75 +2635,20 @@ func decodeStringLiteral(lit *antlrgen.StringLiteralContext) (string, error) {
 // by the grammar-Predicate handlers that receive STRING_LITERAL
 // tokens directly (LikePredicate pattern) rather than going
 // through the ConstantExpressionAtom dispatch.
-// resolveDecimalText parses one decimal literal token — including Java's
-// WIDTH SUFFIXES — into a typed constant, mirroring
-// ParseHelpers.parseDecimal (ParseHelpers.java:68-104):
-//
-//   - a REAL token containing '.': f/F parses the binary32 FLOAT
-//     (Float.parseFloat of the suffix-stripped text), d/D the DOUBLE;
-//     unsuffixed stays DOUBLE. Java honours the suffix only when a '.'
-//     is present (the contains(".") gate), so an exponent-only `1e5f`
-//     fails to parse in BOTH engines rather than silently floating.
-//     (Java's h/H Half arm has no counterpart: the Go grammar's
-//     REAL_TYPE_MODIFIER is F|D only, so the token cannot lex.)
-//   - an integer token: l/L parses LONG and STAYS LONG even when the
-//     value fits int32 (Long.parseLong — no re-narrowing), i/I parses
-//     INT with Integer.parseInt's range check (out-of-int32-range is an
-//     error, not a clamp); unsuffixed keeps the fits-int32-then-INT-
-//     else-LONG rule (intLiteralType).
-//
-// The suffix width is observable: INT operands ride the int32-bounded
-// arithmetic lane (ADD_II overflow → 22003) where LONG operands return
-// the wide value, and `1I = 1L` promotes exactly as Java's
-// literal-tests.yamsql pins.
-func (r *Resolver) resolveDecimalText(text string, isReal bool) (values.Value, error) {
-	n := len(text)
-	if isReal {
-		if n > 1 && strings.Contains(text, ".") {
-			switch text[n-1] {
-			case 'f', 'F':
-				f, err := strconv.ParseFloat(text[:n-1], 32)
-				if err != nil {
-					return nil, &NumericOverflowLiteralError{Text: text}
-				}
-				return r.ResolveConstant(float32(f))
-			case 'd', 'D':
-				f, err := strconv.ParseFloat(text[:n-1], 64)
-				if err != nil {
-					return nil, &NumericOverflowLiteralError{Text: text}
-				}
-				return r.ResolveConstant(f)
-			}
-		}
-		f, err := strconv.ParseFloat(text, 64)
-		if err != nil {
-			return nil, &NumericOverflowLiteralError{Text: text}
-		}
-		return r.ResolveConstant(f)
-	}
-	if n > 1 {
-		switch text[n-1] {
-		case 'l', 'L':
-			v, err := strconv.ParseInt(text[:n-1], 10, 64)
-			if err != nil {
-				return nil, &NumericOverflowLiteralError{Text: text}
-			}
-			// The suffix PINS the width: `2L` is LONG, never re-narrowed
-			// by intLiteralType's fits-int32 rule.
-			return &values.ConstantValue{Value: v, Typ: values.NullableLong}, nil
-		case 'i', 'I':
-			v, err := strconv.ParseInt(text[:n-1], 10, 32)
-			if err != nil {
-				return nil, &NumericOverflowLiteralError{Text: text}
-			}
-			return &values.ConstantValue{Value: v, Typ: values.NullableInt}, nil
-		}
-	}
-	v, err := strconv.ParseInt(text, 10, 64)
+// resolveDecimalText types one decimal literal token as Java's
+// ParseHelpers.parseDecimal does (ParseDecimal). An L suffix PINS the width:
+// `2L` is LONG, never re-narrowed; INT operands ride the int32-bounded
+// arithmetic lane (ADD_II overflow → 22003) where LONG operands return the
+// wide value.
+func (r *Resolver) resolveDecimalText(text string) (values.Value, error) {
+	lit, err := ParseDecimal(text)
 	if err != nil {
-		return nil, fmt.Errorf("expr.walkConstant: integer parse %q: %w", text, err)
+		return nil, err
 	}
-	return r.ResolveConstant(v)
+	if v, ok := lit.(int64); ok {
+		return &values.ConstantValue{Value: v, Typ: values.NullableLong}, nil
+	}
+	return r.ResolveConstant(lit)
 }
 
 func stripStringLiteral(text string) string {
@@ -3349,15 +3326,4 @@ func unwrapParenExpression(atom antlrgen.IExpressionAtomContext) antlrgen.IExpre
 		return nil
 	}
 	return ewon.Expression()
-}
-
-// NumericOverflowLiteralError signals that a numeric literal overflows
-// its target type (e.g. 1e400 overflows float64). Should be mapped
-// to SQLSTATE 22003 NUMERIC_VALUE_OUT_OF_RANGE.
-type NumericOverflowLiteralError struct {
-	Text string
-}
-
-func (e *NumericOverflowLiteralError) Error() string {
-	return fmt.Sprintf("numeric literal out of range: %s", e.Text)
 }

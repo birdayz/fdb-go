@@ -2313,12 +2313,12 @@ plan:  Project([CAST(NULL AS BIGINT)], Scan(T))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast.yaml#6
-sql:   SELECT CAST(1e20 AS BIGINT) FROM t
+sql:   SELECT CAST(1.0E20 AS BIGINT) FROM t
 plan:  Project([CAST(1e+20 AS BIGINT)], Scan(T))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast.yaml#7
-sql:   SELECT CAST(-1e20 AS BIGINT) FROM t
+sql:   SELECT CAST(-1.0E20 AS BIGINT) FROM t
 plan:  Project([CAST(-1e+20 AS BIGINT)], Scan(T))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
@@ -14347,12 +14347,12 @@ sql:   SELECT a % b FROM t WHERE id = 4
 plan:  Project([(_current.A#1 % _current.B#2)], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
-=== overflow.yaml#6 expect-error=22003
+=== overflow.yaml#6 expect-error=XXXXX
 sql:   SELECT 1e400 FROM t WHERE id = 1
-plan:  <PLAN-ERROR: 22003: numeric literal out of range: 1e400>
-=== overflow.yaml#7 expect-error=22003
+plan:  <PLAN-ERROR: XXXXX: For input string: "1e400": For input string: "1e400">
+=== overflow.yaml#7 expect-error=XXXXX
 sql:   SELECT -1e400 FROM t WHERE id = 1
-plan:  <PLAN-ERROR: 22003: numeric literal out of range: -1e400>
+plan:  <PLAN-ERROR: XXXXX: For input string: "-1e400": For input string: "-1e400">
 === overflow.yaml#8 expect-error=22003
 sql:   SELECT SUM(a) FROM t WHERE id IN (1, 3)
 plan:  Project([_current.SUM(A)#0], StreamingAgg(keys=[], InJoin(Scan(T, [=]), binding ASC)))

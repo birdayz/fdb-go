@@ -668,10 +668,9 @@ func overflowScenario() *yamsql.Scenario {
 			{Query: "SELECT a + -1 FROM t WHERE id = 1", Rows: [][]any{{9223372036854775806}}},
 			// MinInt64 % -1 is 0.
 			{Query: "SELECT a % b FROM t WHERE id = 4", Rows: [][]any{{0}}},
-			// Decimal literal that overflows float64 → +Inf.
-			{Query: "SELECT 1e400 FROM t WHERE id = 1", ErrorCode: "22003"},
-			// Negative counterpart — -1e400 overflows to -Inf.
-			{Query: "SELECT -1e400 FROM t WHERE id = 1", ErrorCode: "22003"},
+			// A REAL literal without '.' is Long.parseLong's NumberFormatException.
+			{Query: "SELECT 1e400 FROM t WHERE id = 1", ErrorCode: "XXXXX"},
+			{Query: "SELECT -1e400 FROM t WHERE id = 1", ErrorCode: "XXXXX"},
 		},
 	}
 }

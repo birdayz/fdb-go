@@ -47,15 +47,13 @@ tests:
   - query: SELECT a % b FROM t WHERE id = 4
     rows:
       - [0]
-  # Decimal literal that overflows float64 (≈1.8e308 is DBL_MAX, so
-  # 1e400 is +Inf after strconv.ParseFloat). Pre-nightshift-39 this
-  # errored 22023 (generic INVALID_PARAMETER); now 22003
-  # (NUMERIC_VALUE_OUT_OF_RANGE) matching other numeric overflow sites.
+  # A REAL literal without '.' goes to Long.parseLong in Java's
+  # ParseHelpers.parseDecimal, so 1e400 is its NumberFormatException,
+  # unclassified (XXXXX); 1.0e400 would be +Infinity.
   - query: SELECT 1e400 FROM t WHERE id = 1
-    error_code: "22003"
-  # Negative counterpart — -1e400 overflows to -Inf.
+    error_code: "XXXXX"
   - query: SELECT -1e400 FROM t WHERE id = 1
-    error_code: "22003"
+    error_code: "XXXXX"
   # SUM overflow: two MaxInt64 values → overflow during accumulation.
   # Java's aggregate accumulator uses Math.addExact which throws
   # ArithmeticException("long overflow").

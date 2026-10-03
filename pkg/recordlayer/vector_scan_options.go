@@ -35,7 +35,7 @@ func vectorScanOptionFields(o *VectorIndexScanOptions) []struct {
 func (o VectorIndexScanOptions) ToProto() (*gen.PVectorIndexScanOptions, error) {
 	out := &gen.PVectorIndexScanOptions{}
 	for _, slot := range vectorScanOptionFields(&o) {
-		isNull, wasPresent := o.wirePresence[slot.name]
+		_, wasPresent := o.wirePresence[slot.name]
 		var value any
 		var integer *int
 		switch field := slot.field.(type) {
@@ -49,10 +49,6 @@ func (o VectorIndexScanOptions) ToProto() (*gen.PVectorIndexScanOptions, error) 
 			}
 		case **int:
 			integer = *field
-		case *int:
-			if *field != 0 || (wasPresent && !isNull) {
-				integer = field
-			}
 		}
 		if integer != nil {
 			if *integer < math.MinInt32 || *integer > math.MaxInt32 {
@@ -73,7 +69,7 @@ func (o VectorIndexScanOptions) ToProto() (*gen.PVectorIndexScanOptions, error) 
 }
 
 // VectorIndexScanOptionsFromProto accepts canonical and legacy names, rejecting
-// duplicate aliases as Java does. Explicit NULL and integer zero retain presence.
+// duplicate aliases as Java does. An explicit NULL retains its presence.
 // Invalid value types are rejected at this typed Go boundary rather than at
 // Java's later getOption Class.cast call.
 func VectorIndexScanOptionsFromProto(p *gen.PVectorIndexScanOptions) (VectorIndexScanOptions, error) {
@@ -121,11 +117,6 @@ func VectorIndexScanOptionsFromProto(p *gen.PVectorIndexScanOptions) (VectorInde
 			if v, ok := value.(int32); ok {
 				n := int(v)
 				*target = &n
-				valid = true
-			}
-		case *int:
-			if v, ok := value.(int32); ok {
-				*target = int(v)
 				valid = true
 			}
 		}

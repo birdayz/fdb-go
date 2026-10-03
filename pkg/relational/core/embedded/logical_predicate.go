@@ -2686,9 +2686,9 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 				continue
 			}
 			if _, walkErr := resolver.WalkExpressionForProjection(e); walkErr != nil {
-				var overflow *expr.NumericOverflowLiteralError
-				if errors.As(walkErr, &overflow) {
-					return nil, api.NewError(api.ErrCodeNumericValueOutOfRange, overflow.Error())
+				var nfe *recordlayer.NumberFormatError
+				if errors.As(walkErr, &nfe) {
+					return nil, walkErr
 				}
 				var binErr *expr.InvalidBinaryLiteralError
 				if errors.As(walkErr, &binErr) {

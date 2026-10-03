@@ -430,6 +430,16 @@ class SqlPlanSteps {
                 if (positional) { ps.setArray(position, array); } else { ps.setArray(name, array); }
                 break;
             }
+            case "floatVector": {
+                java.util.List<?> items = (java.util.List<?>) value;
+                double[] components = new double[items.size()];
+                for (int i = 0; i < components.length; i++) {
+                    components[i] = ((Number) items.get(i)).doubleValue();
+                }
+                Object vector = new com.apple.foundationdb.linear.FloatRealVector(components);
+                if (positional) { ps.setObject(position, vector); } else { ps.setObject(name, vector); }
+                break;
+            }
             default:
                 throw new IllegalArgumentException("unknown parameter kind " + kind);
         }

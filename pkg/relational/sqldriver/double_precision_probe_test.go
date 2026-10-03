@@ -30,7 +30,7 @@ func TestFDB_DoublePrecisionProbe(t *testing.T) {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, d) VALUES (1, 0.1), (2, 1.5), (3, 1e308)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, d) VALUES (1, 0.1), (2, 1.5), (3, 1.0e308)")
 
 	dval := func(expr string, id int) float64 {
 		var v float64

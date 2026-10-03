@@ -117,9 +117,9 @@ func TestGuardiannNaNOptions(t *testing.T) {
 
 func TestVectorScanOptionsWireEncoding(t *testing.T) {
 	t.Parallel()
-	no, integer, fraction := false, 7, 1.5
+	no, integer, fraction, ef := false, 7, 1.5, 11
 	opts := VectorIndexScanOptions{
-		ReturnVectors: &no, EfSearch: 11,
+		ReturnVectors: &no, EfSearch: &ef,
 		GuardiannCandidatePoolFactor: &fraction, GuardiannSearchMaxClusters: &integer,
 		GuardiannSearchMinClustersBeforePruning: &integer, GuardiannSearchDistanceRatioCutoff: &fraction,
 		GuardiannCentroidEfRingSearch: &integer, GuardiannCentroidEfOutwardSearch: &integer, GuardiannSearchConcurrency: &integer,

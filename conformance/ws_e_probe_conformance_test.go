@@ -19,6 +19,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/vectorcodec"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/plandiff"
 	"fdb.dev/pkg/relational/core/catalog"
@@ -84,6 +85,8 @@ func wseGoArg(p wseParam) any {
 			out = append(out, int64(x))
 		}
 		v = out
+	case "floatVector":
+		v = vectorcodec.SerializeAs(1 /* VectorType.SINGLE */, p.value.([]float64))
 	default:
 		v = p.value
 	}
@@ -160,6 +163,7 @@ type wseOracle struct {
 	goRunner    plandiff.SetupRunner
 	tag         string
 	got         map[string]string
+	goGot       map[string]string
 }
 
 // newWSEOracle opens the tenant, the JVM and both runners; the returned function
@@ -179,6 +183,7 @@ func newWSEOracle(tenantPrefix, tag string) (*wseOracle, func()) {
 		goRunner:    plandiff.NewGoSQLSetupRunner(clusterFilePath),
 		tag:         tag,
 		got:         map[string]string{},
+		goGot:       map[string]string{},
 	}
 	return o, func() {
 		_ = os.Remove(clusterFilePath)
@@ -347,6 +352,7 @@ func (o *wseOracle) trace(schema string, setup []string, name, querySQL string, 
 func (o *wseOracle) record(name, sqlText, javaLine, goLine string) {
 	Expect(o.got).NotTo(HaveKey(name), "probe names are unique")
 	o.got[name] = javaLine
+	o.goGot[name] = goLine
 	fmt.Fprintf(GinkgoWriter, "%s %s\n  JAVA %s\n  GO   %s\n  SQL  %s\n", o.tag, name, javaLine, goLine, sqlText)
 }
 

@@ -2653,3 +2653,12 @@ returns one row when the predicate holds. Java 4.14.2.0 returns one row per inpu
 three-row table) and no row over an empty one, where `COUNT(*) = 0` holds. A query whose select list
 has an aggregate (`SELECT COUNT(*) FROM e HAVING COUNT(*) = 0`) agrees in both engines. Go answers the
 SQL result. Both engines' answers are pinned in `conformance/count_on_empty_conformance_test.go`.
+
+## HNSW efSearch beyond memory
+
+Java's `Search.beamSearchLayer` sizes its result queue `new PriorityQueue<>(efSearch + 1)`, so a
+window option `EF_SEARCH = 2147483646` fails with `OutOfMemoryError` and `2147483647` with an
+`IllegalArgumentException` (the capacity overflows). Go bounds the up-front allocation
+(`hnswSearchCapacityHint`, `hnsw.go`) and searches the whole layer, answering the k nearest rows.
+Every value either engine accepts searches the same beam; both answers are pinned in
+`conformance/window_options_conformance_test.go`.

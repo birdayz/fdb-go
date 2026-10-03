@@ -605,20 +605,20 @@ func executeCoveringIndexScan(
 	}, props.Skip, props.ReturnedRowLimit), nil
 }
 
-// vectorEfSearch is the efSearch a scan runs with: the query's option, raised
-// to the limit in top-k mode, or for a VECTOR index Java's default over the
-// scan limit (HnswVectorIndexEngine.efSearch). SPFresh's 0 leaves its
-// maintainer's own default.
+// vectorEfSearch is the efSearch a scan runs with. A VECTOR index runs Java's
+// HnswVectorIndexEngine.efSearch over the scan limit, the option unchanged even
+// below k. SPFresh raises the option to the limit in top-k mode, and its 0
+// leaves its maintainer's own default.
 func vectorEfSearch(indexType string, explicit *int, scanLimit int, selfLimiting bool) int {
+	if indexType == recordlayer.IndexTypeVector {
+		return recordlayer.HNSWEfSearch(explicit, scanLimit)
+	}
 	efSearch := 0
 	if explicit != nil {
 		efSearch = *explicit
 	}
 	if selfLimiting && efSearch != 0 && efSearch < scanLimit {
 		efSearch = scanLimit
-	}
-	if indexType == recordlayer.IndexTypeVector && efSearch <= 0 {
-		efSearch = min(max(4*scanLimit, 64), max(scanLimit, 400))
 	}
 	return efSearch
 }
@@ -798,7 +798,7 @@ func executeVectorIndexScan(
 			}
 			if idx.Type == recordlayer.IndexTypeVector {
 				return store.ScanVectorIndexWithOptions(idx, prefix, queryVec, scanLimit,
-					recordlayer.VectorIndexScanOptions{EfSearch: efSearch, ReturnVectors: p.GetReturnVectors()},
+					recordlayer.VectorIndexScanOptions{EfSearch: p.GetEfSearch(), ReturnVectors: p.GetReturnVectors()},
 					innerContinuation, childProperties), nil
 			}
 			return store.ScanIndexByType(

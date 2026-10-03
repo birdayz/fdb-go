@@ -1282,7 +1282,7 @@ func TestWalkExpression_NilContext(t *testing.T) {
 }
 
 // Float literal → ConstantValue{Typ: NullableDouble}. Walker handles
-// `3.14`, `0.5`, scientific notation, and negative forms via
+// `3.14`, `0.5`, scientific notation with a '.', and negative forms via
 // DecimalConstant + NegativeDecimalConstant dispatch on
 // REAL_LITERAL terminal.
 func TestWalkExpression_FloatLiteral(t *testing.T) {
@@ -1293,7 +1293,7 @@ func TestWalkExpression_FloatLiteral(t *testing.T) {
 		"3.14":    3.14,
 		"0.5":     0.5,
 		"-2.5":    -2.5,
-		"1e2":     100,
+		"1.0e2":   100,
 		"-1.5e10": -1.5e10,
 	}
 	for sql, want := range cases {

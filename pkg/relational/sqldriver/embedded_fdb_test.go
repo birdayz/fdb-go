@@ -4280,7 +4280,7 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 	// Java Math.round(double) saturates to LONG bounds before CAST returns.
 	// Scan into any to ensure float64(2^63) cannot masquerade as Long.MAX_VALUE.
 	var saturated any
-	g.Expect(db.QueryRowContext(ctx, `SELECT CAST(1e20 AS BIGINT) FROM Item WHERE id = 1`).Scan(&saturated)).To(gomega.Succeed())
+	g.Expect(db.QueryRowContext(ctx, `SELECT CAST(1.0e20 AS BIGINT) FROM Item WHERE id = 1`).Scan(&saturated)).To(gomega.Succeed())
 	g.Expect(saturated).To(gomega.Equal(int64(9223372036854775807)))
 
 	// ROUND is a Go-only math scalar extension (RFC-087). A non-coercible

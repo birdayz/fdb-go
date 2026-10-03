@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/query/expr"
 )
@@ -88,9 +89,9 @@ func TestWalkExpression_TypedNumericSuffixes(t *testing.T) {
 		// does not clamp or widen.
 		ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE 99999999999I")
 		_, err := r.WalkExpression(ctx)
-		var overflow *expr.NumericOverflowLiteralError
-		if err == nil || !errors.As(err, &overflow) {
-			t.Fatalf("99999999999I: expected NumericOverflowLiteralError, got %v", err)
+		var nfe *recordlayer.NumberFormatError
+		if err == nil || !errors.As(err, &nfe) || nfe.Input != "99999999999" {
+			t.Fatalf("99999999999I: expected Integer.parseInt's NumberFormatException, got %v", err)
 		}
 	})
 

@@ -17,7 +17,7 @@ name: overflow_mixed
 schema_template: |
   CREATE TABLE t (id BIGINT, a BIGINT, b DOUBLE, PRIMARY KEY (id))
 setup:
-  - INSERT INTO t VALUES (1, 9223372036854775807, 1.0), (2, 9223372036854775807, 1e200)
+  - INSERT INTO t VALUES (1, 9223372036854775807, 1.0), (2, 9223372036854775807, 1.0e200)
 tests:
   # long + double: Java ADD_LD promotes long to double, adds, returns
   # double. MAX_LONG+1.0 at double precision is MAX_LONG (round-to-nearest
@@ -31,10 +31,9 @@ tests:
   - query: SELECT a + b FROM t WHERE id = 2
     rows:
       - [1e200]
-  # (Sanity coverage for double*double overflow to +Inf is in
-  # overflow.yaml via `1e400` literals — both Java and Go produce +Inf
-  # without throwing. Not re-pinned here since the yamsql runner has
-  # no canonical rendering for infinity values.)
+  # (A `1.0e400` literal is +Inf in both engines, pinned by
+  # sqldriver's TestFDB_DecimalLiteralParsesAsJava; the yamsql runner
+  # has no canonical rendering for infinity values.)
   # Pure int overflow — checked (SQLSTATE 22003). Sanity regression
   # to confirm the int path wasn't accidentally collapsed into the
   # float path during a refactor.

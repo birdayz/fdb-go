@@ -6,12 +6,14 @@ go_library(
         "expr.go",
         "float32_bounds.go",
         "parameters.go",
+        "parse_decimal.go",
         "resolver_iface.go",
         "walk.go",
     ],
     importpath = "fdb.dev/pkg/relational/core/query/expr",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/recordlayer",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/api",
@@ -51,6 +53,7 @@ go_test(
     ],
     embed = [":expr"],
     deps = [
+        "//pkg/recordlayer",
         "//pkg/recordlayer/query/plan/cascades",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",

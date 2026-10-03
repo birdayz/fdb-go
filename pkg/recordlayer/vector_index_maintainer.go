@@ -449,15 +449,10 @@ func (m *vectorIndexMaintainer) ScanByDistance(
 		}
 	}
 
-	if efSearch <= 0 {
-		// Auto-compute efSearch from k, matching Java's heuristic.
-		efSearch = min(max(4*k, 64), max(k, 400))
-	}
-
 	// Multi-partition fan-out (partial prefix) is dispatched inside
 	// scanByDistanceWithParams — the shared chokepoint for both this entry point
 	// and ScanVectorIndexWithPrefix — so it is not branched here.
-	return m.scanByDistanceWithParams(prefix, queryVector, k, VectorIndexScanOptions{EfSearch: efSearch}, continuation, scanProperties)
+	return m.scanByDistanceWithParams(prefix, queryVector, k, VectorIndexScanOptions{EfSearch: positiveEfSearch(efSearch)}, continuation, scanProperties)
 }
 
 // partitionSize returns the number of leading partition (key) columns of the
@@ -545,7 +540,7 @@ func (m *vectorIndexMaintainer) searchOnePartition(readTx fdb.ReadTransaction, p
 	if opts.ReturnVectors != nil {
 		includeVectors = *opts.ReturnVectors
 	}
-	results, err := graph.searchWithVectors(readTx, queryVector, k, opts.EfSearch, includeVectors)
+	results, err := graph.searchWithVectors(readTx, queryVector, k, HNSWEfSearch(opts.EfSearch, k), includeVectors)
 	if err != nil {
 		return nil, err
 	}
@@ -1130,7 +1125,7 @@ func (m *vectorIndexMaintainer) SearchKNN(prefix tuple.Tuple, queryVector []floa
 	defer m.store.ReleaseReadLock(lockKey)
 
 	if m.engine == VectorEngineGuardiann {
-		results, err := m.searchGuardiann(m.tx.Snapshot(), prefix, queryVector, k, VectorIndexScanOptions{EfSearch: efSearch})
+		results, err := m.searchGuardiann(m.tx.Snapshot(), prefix, queryVector, k, VectorIndexScanOptions{EfSearch: positiveEfSearch(efSearch)})
 		if err != nil {
 			return nil, err
 		}
@@ -1158,7 +1153,7 @@ func (m *vectorIndexMaintainer) SearchKNN(prefix tuple.Tuple, queryVector []floa
 	storage := m.getStorageForPrefix(prefix)
 	graph := NewHNSWGraph(storage, m.hnswConfig)
 
-	results, err := graph.Search(m.tx.Snapshot(), queryVector, k, efSearch)
+	results, err := graph.Search(m.tx.Snapshot(), queryVector, k, HNSWEfSearch(positiveEfSearch(efSearch), k))
 	if err != nil {
 		return nil, err
 	}
@@ -1303,18 +1298,36 @@ func (store *FDBRecordStore) ScanVectorIndexWithPrefix(
 	continuation []byte,
 	scanProperties ScanProperties,
 ) RecordCursor[*IndexEntry] {
-	return store.ScanVectorIndexWithOptions(index, prefix, queryVector, k, VectorIndexScanOptions{EfSearch: efSearch}, continuation, scanProperties)
+	return store.ScanVectorIndexWithOptions(index, prefix, queryVector, k, VectorIndexScanOptions{EfSearch: positiveEfSearch(efSearch)}, continuation, scanProperties)
+}
+
+// HNSWEfSearch is HnswVectorIndexEngine.efSearch: the scan's option as given
+// (even below k, or 0), else derived from the scan limit.
+func HNSWEfSearch(option *int, k int) int {
+	if option != nil {
+		return *option
+	}
+	return min(max(4*k, 64), max(k, 400))
+}
+
+// positiveEfSearch adapts the int-valued Go entry points, where 0 means "not
+// set", to the typed option.
+func positiveEfSearch(efSearch int) *int {
+	if efSearch <= 0 {
+		return nil
+	}
+	return &efSearch
 }
 
 // VectorIndexScanOptions is Java's VectorIndexScanOptions: per-scan search
 // knobs. A nil GuardiANN field keeps the SearchConfig default; each applies
 // only to an index of its engine.
 type VectorIndexScanOptions struct {
-	// wirePresence retains explicit NULL and zero options read from Java.
+	// wirePresence retains explicit NULL options read from Java.
 	// The map is immutable after decoding; struct copies may safely share it.
 	wirePresence                            map[string]bool
 	ReturnVectors                           *bool // nil defaults to !useRaBitQ
-	EfSearch                                int   // HNSW; 0 derives it from k
+	EfSearch                                *int  // HNSW; nil derives it from k
 	GuardiannCandidatePoolFactor            *float64
 	GuardiannSearchMaxClusters              *int
 	GuardiannSearchMinClustersBeforePruning *int

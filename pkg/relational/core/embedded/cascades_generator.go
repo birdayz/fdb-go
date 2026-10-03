@@ -107,6 +107,9 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 	if err != nil {
 		return nil, err
 	}
+	if err := checkDecimalConstants(root); err != nil {
+		return nil, err
+	}
 	if mayCallSQLFunction(root) && g.c.ensureMetaData(ctx) == nil {
 		expanded, changed, err := expandSQLFunctions(sql, root, metaDataFunctions(g.c.cachedMetaData()))
 		if err != nil {

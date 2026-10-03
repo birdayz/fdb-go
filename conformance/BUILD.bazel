@@ -88,6 +88,7 @@ java_test(
 # target.
 # gazelle:exclude guardiann_probe_conformance_test.go
 # gazelle:exclude count_on_empty_conformance_test.go
+# gazelle:exclude window_options_conformance_test.go
 # gazelle:exclude ws_e_probe_conformance_test.go
 # gazelle:exclude ws_f_access_path_test.go
 # gazelle:exclude ws_f_probe_conformance_test.go
@@ -114,6 +115,7 @@ go_test(
         "index_shape_helpers_test.go",
         "java_invoker_test.go",
         "store_helpers_test.go",
+        "window_options_conformance_test.go",
         "ws_e_probe_conformance_test.go",
         "ws_f_access_path_test.go",
         "ws_f_join_unnest_conformance_test.go",
@@ -150,6 +152,7 @@ go_test(
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/recordlayer/query/plan/plans",
+        "//pkg/recordlayer/vectorcodec",
         "//pkg/relational/api",
         "//pkg/relational/conformance/plandiff",
         "//pkg/relational/core/catalog",

@@ -1250,8 +1250,9 @@ func (g *hnswGraph) searchWithVectors(tx fdb.ReadTransaction, query []float64, k
 		}
 	}
 
-	// Search at layer 0 with efSearch.
-	candidates, err := g.searchLayerMulti(tx, searchQuery, currentPK, currentVector, max(efSearch, k), 0)
+	// Search at layer 0 with efSearch as given: like Java's beam search, an
+	// efSearch below k returns fewer than k results.
+	candidates, err := g.searchLayerMulti(tx, searchQuery, currentPK, currentVector, efSearch, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -1345,6 +1346,9 @@ type hnswCandidate struct {
 // over-fetching (popping candidates that would have been pruned).
 const hnswPrefetchCandidates = 4
 
+// hnswSearchCapacityHint bounds the up-front allocation of a layer search.
+const hnswSearchCapacityHint = 1024
+
 // searchLayerMulti finds the ef nearest neighbors at a given layer.
 // Uses parallel candidate prefetching: pops up to hnswPrefetchCandidates
 // from the heap per iteration, issues all edge-list reads as pipelined FDB
@@ -1360,16 +1364,21 @@ func (g *hnswGraph) searchLayerMulti(tx fdb.ReadTransaction, query []float64, ep
 	epSpan := nestPK(epPK)
 	epSpanStr := string(epSpan)
 
+	// ef is a query option, not a capacity: Java's PriorityQueue(efSearch + 1)
+	// fails for a huge one, so preallocation here is bounded.
+	capHint := min(max(ef, 1), hnswSearchCapacityHint)
+	// Java's beam polls only after an add, so it never drops below the entry.
+	keep := max(ef, 1)
+
 	// Candidates (min-heap by distance) and visited set.
-	backing := make(distHeap, 0, ef)
+	backing := make(distHeap, 0, capHint)
 	candidates := &backing
 	heap.Push(candidates, distItem{pkSpan: epSpan, dist: epDist, spanStr: epSpanStr})
 
-	visited := make(map[string]bool, ef*2)
+	visited := make(map[string]bool, capHint*2)
 	visited[epSpanStr] = true
 
-	// Pre-allocate results to expected capacity (ef).
-	results := make([]hnswCandidate, 1, ef)
+	results := make([]hnswCandidate, 1, capHint)
 	results[0] = hnswCandidate{pkSpan: epSpan, vector: epVector, dist: epDist}
 
 	// Pre-allocate buffers reused across iterations. Spans are carried raw — no
@@ -1442,8 +1451,8 @@ func (g *hnswGraph) searchLayerMulti(tx fdb.ReadTransaction, query []float64, ep
 				results = append(results, hnswCandidate{})
 				copy(results[pos+1:], results[pos:])
 				results[pos] = c
-				if len(results) > ef {
-					results = results[:ef]
+				if len(results) > keep {
+					results = results[:keep]
 				}
 			}
 		}
