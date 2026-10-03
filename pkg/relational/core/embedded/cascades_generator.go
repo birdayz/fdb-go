@@ -2982,10 +2982,10 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 		if len(pkCols) == 0 {
 			continue
 		}
-		upperPK := make([]string, len(pkCols))
+		// Physical names verbatim, as the index candidates take them: a quoted
+		// lowercase key column is named "id", and folding it matches no field.
 		aliases := make([]values.CorrelationIdentifier, len(pkCols))
-		for i, col := range pkCols {
-			upperPK[i] = strings.ToUpper(col)
+		for i := range pkCols {
 			aliases[i] = values.UniqueCorrelationIdentifier()
 		}
 		// Flow the descriptor-shaped positional type, like the index
@@ -3013,7 +3013,7 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 			aliases,
 			allTypeNames,
 			[]string{rt.Name},
-			upperPK,
+			pkCols,
 			rt.PrimaryKeyHasRecordTypePrefix(),
 			flowed,
 		)

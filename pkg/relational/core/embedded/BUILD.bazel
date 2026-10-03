@@ -237,6 +237,7 @@ go_test(
         "qualifier_recovery_wiring_test.go",
         "qualifier_stripped_label_test.go",
         "query_hash_test.go",
+        "quoted_primary_key_plan_test.go",
         "record_core_exception_sqlstate_test.go",
         "resource_limits_test.go",
         "rfc152_outer_join_materialization_test.go",
@@ -497,6 +498,7 @@ go_test(
         "table_function_source.go",
         "plan_harness_trace_test.go",
         "record_core_exception_sqlstate_test.go",
+        "quoted_primary_key_plan_test.go",
     ],
     deps = [
         "//gen",

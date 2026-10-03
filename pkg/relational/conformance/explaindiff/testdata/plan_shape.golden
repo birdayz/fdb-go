@@ -15391,10 +15391,9 @@ shape:       RecordQueryScanPlan
 shape:       RecordQueryExplodePlan
 === quoted_identifier_labels.yaml#5
 sql:   SELECT * FROM (SELECT "id" FROM q1 WHERE "id" = 1) x
-plan:  Project([_current.id#0], PredicatesFilter(Scan(Q1), [1 preds]))
+plan:  Project([_current.id#0], Scan(Q1, [=]))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryScanPlan
 === quoted_identifier_labels.yaml#6
 sql:   WITH c AS (SELECT "id" FROM q1) SELECT * FROM c
 plan:  Project([_current.id#0], Scan(Q1))
@@ -15431,54 +15430,49 @@ shape:   RecordQueryProjectionPlan
 shape:     RecordQueryScanPlan
 === quoted_identifier_labels.yaml#12
 sql:   WITH RECURSIVE r("n") AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION ALL SELECT r."n" + 1 FROM r WHERE r."n" < 3) SELECT * FROM r
-plan:  RecursiveDfsJoin(PREORDER, Project([_current.id#0], Project([_current.id#0], PredicatesFilter(Scan(Q1), [1 preds]))), Project([(_current.n#0 + 1)], PredicatesFilter(TempTableScan(RforScan), [1 preds])))
+plan:  RecursiveDfsJoin(PREORDER, Project([_current.id#0], Project([_current.id#0], Scan(Q1, [=]))), Project([(_current.n#0 + 1)], PredicatesFilter(TempTableScan(RforScan), [1 preds])))
 shape: RecordQueryRecursiveDfsJoinPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryProjectionPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
+shape:       RecordQueryScanPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryTempTableScanPlan
 === quoted_identifier_labels.yaml#13
 sql:   WITH RECURSIVE r(n) AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION ALL SELECT r.n + 1 FROM r WHERE r.n < 3) SELECT * FROM r
-plan:  RecursiveDfsJoin(PREORDER, Project([_current.id#0], Project([_current.id#0], PredicatesFilter(Scan(Q1), [1 preds]))), Project([(_current.N#0 + 1)], PredicatesFilter(TempTableScan(RforScan), [1 preds])))
+plan:  RecursiveDfsJoin(PREORDER, Project([_current.id#0], Project([_current.id#0], Scan(Q1, [=]))), Project([(_current.N#0 + 1)], PredicatesFilter(TempTableScan(RforScan), [1 preds])))
 shape: RecordQueryRecursiveDfsJoinPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryProjectionPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
+shape:       RecordQueryScanPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryTempTableScanPlan
 === quoted_identifier_labels.yaml#14
 sql:   WITH RECURSIVE r("n") AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION SELECT r."n" + 1 FROM r WHERE r."n" < 3) SELECT * FROM r
-plan:  RecursiveDfsJoin(PREORDER, Project([_current.id#0], Project([_current.id#0], PredicatesFilter(Scan(Q1), [1 preds]))), Project([(_current.n#0 + 1)], PredicatesFilter(TempTableScan(RforScan), [1 preds])))
+plan:  RecursiveDfsJoin(PREORDER, Project([_current.id#0], Project([_current.id#0], Scan(Q1, [=]))), Project([(_current.n#0 + 1)], PredicatesFilter(TempTableScan(RforScan), [1 preds])))
 shape: RecordQueryRecursiveDfsJoinPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryProjectionPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
+shape:       RecordQueryScanPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryTempTableScanPlan
 === quoted_identifier_labels.yaml#15
 sql:   WITH RECURSIVE r(n) AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION SELECT r.n + 1 FROM r WHERE r.n < 3) SELECT * FROM r
-plan:  RecursiveDfsJoin(PREORDER, Project([_current.id#0], Project([_current.id#0], PredicatesFilter(Scan(Q1), [1 preds]))), Project([(_current.N#0 + 1)], PredicatesFilter(TempTableScan(RforScan), [1 preds])))
+plan:  RecursiveDfsJoin(PREORDER, Project([_current.id#0], Project([_current.id#0], Scan(Q1, [=]))), Project([(_current.N#0 + 1)], PredicatesFilter(TempTableScan(RforScan), [1 preds])))
 shape: RecordQueryRecursiveDfsJoinPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryProjectionPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
+shape:       RecordQueryScanPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryTempTableScanPlan
 === quoted_identifier_labels.yaml#16
 sql:   SELECT "id" AS "x", EXISTS (SELECT 1 FROM qcase WHERE qcase.id = q1."id") AS "e" FROM q1 WHERE "id" = 1
-plan:  FlatMap(outer=PredicatesFilter(Scan(Q1), [1 preds]), inner=FirstOrDefault(Scan(QCASE, [=])))
+plan:  FlatMap(outer=Scan(Q1, [=]), inner=FirstOrDefault(Scan(QCASE, [=])))
 shape: RecordQueryFlatMapPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryScanPlan
 shape:   RecordQueryFirstOrDefaultPlan
 shape:     RecordQueryScanPlan
 === quoted_identifier_labels.yaml#17
@@ -15520,42 +15514,38 @@ shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryScanPlan
 === quoted_identifier_labels.yaml#23
 sql:   WITH RECURSIVE d("Node") AS (SELECT * FROM q1 WHERE "id" = 1 UNION ALL SELECT d."Node" + 1 FROM d WHERE d."Node" < 3) SELECT * FROM d
-plan:  RecursiveDfsJoin(PREORDER, Project([_current.id#0], PredicatesFilter(Scan(Q1), [1 preds])), Project([(_current.Node#0 + 1)], PredicatesFilter(TempTableScan(DforScan), [1 preds])))
+plan:  RecursiveDfsJoin(PREORDER, Project([_current.id#0], Scan(Q1, [=])), Project([(_current.Node#0 + 1)], PredicatesFilter(TempTableScan(DforScan), [1 preds])))
 shape: RecordQueryRecursiveDfsJoinPlan
 shape:   RecordQueryProjectionPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryScanPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryTempTableScanPlan
 === quoted_identifier_labels.yaml#24
 sql:   WITH RECURSIVE d("Node") AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION ALL SELECT d."Node" + 1 FROM d WHERE d."Node" < 3) SELECT * FROM d
-plan:  RecursiveDfsJoin(PREORDER, Project([_current.id#0], Project([_current.id#0], PredicatesFilter(Scan(Q1), [1 preds]))), Project([(_current.Node#0 + 1)], PredicatesFilter(TempTableScan(DforScan), [1 preds])))
+plan:  RecursiveDfsJoin(PREORDER, Project([_current.id#0], Project([_current.id#0], Scan(Q1, [=]))), Project([(_current.Node#0 + 1)], PredicatesFilter(TempTableScan(DforScan), [1 preds])))
 shape: RecordQueryRecursiveDfsJoinPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryProjectionPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
+shape:       RecordQueryScanPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryTempTableScanPlan
 === quoted_identifier_labels.yaml#25
 sql:   WITH RECURSIVE d AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION ALL SELECT d."id" + 1 FROM d WHERE d."id" < 3) SELECT * FROM d
-plan:  RecursiveDfsJoin(PREORDER, Project([_current.id#0], PredicatesFilter(Scan(Q1), [1 preds])), Project([_current.(D.id + 1)#0], Project([(_current.id#0 + 1)], PredicatesFilter(TempTableScan(DforScan), [1 preds]))))
+plan:  RecursiveDfsJoin(PREORDER, Project([_current.id#0], Scan(Q1, [=])), Project([_current.(D.id + 1)#0], Project([(_current.id#0 + 1)], PredicatesFilter(TempTableScan(DforScan), [1 preds]))))
 shape: RecordQueryRecursiveDfsJoinPlan
 shape:   RecordQueryProjectionPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryScanPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryProjectionPlan
 shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryTempTableScanPlan
 === quoted_identifier_labels.yaml#26
 sql:   WITH RECURSIVE d AS (SELECT * FROM q1 WHERE "id" = 1 UNION ALL SELECT d."id" + 1 FROM d WHERE d."id" < 3) SELECT * FROM d
-plan:  RecursiveDfsJoin(PREORDER, PredicatesFilter(Scan(Q1), [1 preds]), Project([_current.(D.id + 1)#0], Project([(_current.id#0 + 1)], PredicatesFilter(TempTableScan(DforScan), [1 preds]))))
+plan:  RecursiveDfsJoin(PREORDER, Scan(Q1, [=]), Project([_current.(D.id + 1)#0], Project([(_current.id#0 + 1)], PredicatesFilter(TempTableScan(DforScan), [1 preds]))))
 shape: RecordQueryRecursiveDfsJoinPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryScanPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryProjectionPlan
 shape:       RecordQueryPredicatesFilterPlan
@@ -15583,7 +15573,7 @@ shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryTempTableScanPlan
 === quoted_identifier_labels.yaml#29
 sql:   WITH RECURSIVE d(w, x, y, z) AS (SELECT * FROM q1, QCASE WHERE q1."id" = 1 UNION ALL SELECT d.w + 1, d.x, d.y, d.z FROM d WHERE d.w < 3) SELECT d.w FROM d ORDER BY d.w
-plan:  Project([_current.W#0], InMemorySort([_current.W#0 ASC], RecursiveDfsJoin(PREORDER, Project([_current.id#0, _current.ID#1, _current.KeepCase#2, _current.PLAIN#3], NestedLoopJoin(INNER, [1 preds], Scan(QCASE), Scan(Q1))), Project([(_current.W#0 + 1), _current.X#1, _current.Y#2, _current.Z#3], PredicatesFilter(TempTableScan(DforScan), [1 preds])))))
+plan:  Project([_current.W#0], InMemorySort([_current.W#0 ASC], RecursiveDfsJoin(PREORDER, Project([_current.id#0, _current.ID#1, _current.KeepCase#2, _current.PLAIN#3], NestedLoopJoin(INNER, Scan(QCASE), Scan(Q1, [=]))), Project([(_current.W#0 + 1), _current.X#1, _current.Y#2, _current.Z#3], PredicatesFilter(TempTableScan(DforScan), [1 preds])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryRecursiveDfsJoinPlan
@@ -15615,7 +15605,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === quoted_identifier_labels.yaml#33
 sql:   WITH RECURSIVE d AS (SELECT * FROM (SELECT q1."id", QCASE.id AS oid FROM q1, QCASE WHERE q1."id" = 1) x UNION ALL SELECT d."id" + 1, d.oid FROM d WHERE d."id" < 3) SELECT d."id" FROM d ORDER BY d."id"
-plan:  Project([_current.id#0], InMemorySort([_current.id#0 ASC], RecursiveDfsJoin(PREORDER, Project([_current.id#0, _current.ID#1], NestedLoopJoin(INNER, [1 preds], Scan(QCASE), Scan(Q1))), Project([(_current.id#0 + 1), _current.OID#1], PredicatesFilter(TempTableScan(DforScan), [1 preds])))))
+plan:  Project([_current.id#0], InMemorySort([_current.id#0 ASC], RecursiveDfsJoin(PREORDER, Project([_current.id#0, _current.ID#1], NestedLoopJoin(INNER, Scan(QCASE), Scan(Q1, [=]))), Project([(_current.id#0 + 1), _current.OID#1], PredicatesFilter(TempTableScan(DforScan), [1 preds])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryRecursiveDfsJoinPlan
@@ -15628,7 +15618,7 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryTempTableScanPlan
 === quoted_identifier_labels.yaml#34
 sql:   WITH RECURSIVE d AS (SELECT * FROM (SELECT q1."id" AS aa, QCASE.id AS bb FROM q1, QCASE WHERE q1."id" = 1 UNION ALL SELECT q1."id" AS cc, QCASE.id AS dd FROM q1, QCASE WHERE q1."id" = 2) x UNION ALL SELECT d.aa + 1, d.bb FROM d WHERE d.aa < 3) SELECT d.aa FROM d ORDER BY d.aa
-plan:  Project([_current.AA#0], InMemorySort([_current.AA#0 ASC], RecursiveDfsJoin(PREORDER, UnorderedUnion(Project([_current.id#0, _current.ID#1], NestedLoopJoin(INNER, [1 preds], Scan(QCASE), Scan(Q1))), Project([_current.id#0, _current.ID#1], NestedLoopJoin(INNER, [1 preds], Scan(QCASE), Scan(Q1)))), Project([(_current.AA#0 + 1), _current.BB#1], PredicatesFilter(TempTableScan(DforScan), [1 preds])))))
+plan:  Project([_current.AA#0], InMemorySort([_current.AA#0 ASC], RecursiveDfsJoin(PREORDER, UnorderedUnion(Project([_current.id#0, _current.ID#1], NestedLoopJoin(INNER, Scan(QCASE), Scan(Q1, [=]))), Project([_current.id#0, _current.ID#1], NestedLoopJoin(INNER, Scan(QCASE), Scan(Q1, [=])))), Project([(_current.AA#0 + 1), _current.BB#1], PredicatesFilter(TempTableScan(DforScan), [1 preds])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryRecursiveDfsJoinPlan
