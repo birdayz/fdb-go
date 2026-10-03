@@ -94,9 +94,9 @@ type cascadesTranslator struct {
 	forDDL       bool
 	cteScope     logical.CTERegistry
 	producerRefs map[*logical.CTEProducer]*expressions.Reference
-	// Recursive lowering publishes this immutable row pair with its shared
-	// reference. Each consumer installs its own scoped correlation bridge.
-	recursiveProducerRows map[*logical.CTEProducer]recursiveCTEConsumerRow
+	// recursiveProducerRows is the row a lowered recursive producer's shared
+	// reference publishes to its consumers.
+	recursiveProducerRows map[*logical.CTEProducer]*values.RecordType
 	// ownedInputs are explicit retained edges of an existential composition,
 	// not a translation cache. A child already lowered by its owner keeps its
 	// Reference and exact layout when a containing EXISTS becomes a product.
@@ -110,16 +110,8 @@ type cascadesTranslator struct {
 	// (FieldValue(QOV(cteAlias), col) per column). nil/absent entry → not
 	// column-derivable → the leg cannot anchor (a join over it is untranslatable;
 	// the opaque-merge fallback was retired in RFC-077 7.6).
-	cteColumnsScope map[*logical.CTEProducer][]values.Field
-	// recursiveCTEConsumerRows records the seed-declared and common exact rows
-	// for aliases of a recursive CTE while its main query is translated. The
-	// logical resolver necessarily runs before the recursive fixed point is
-	// typed, so consumer Values can still carry the narrower seed row (most
-	// visibly, a NOT NULL seed literal whose recursive expression is nullable).
-	// The scoped bridge is consulted only when the physical input publishes the
-	// exact common row; unrelated same-named windows and joined carriers decline.
-	recursiveCTEConsumerRows map[values.CorrelationIdentifier][]recursiveCTEConsumerRow
-	scalarSubqueries         []ScalarSubqueryPlan
+	cteColumnsScope  map[*logical.CTEProducer][]values.Field
+	scalarSubqueries []ScalarSubqueryPlan
 	// translateErr records the FIRST translation error that carries a
 	// specific SQL error code the bare nil-ref signal cannot (RFC-142:
 	// AT-ordinality on a non-array source → ErrCodeWrongObjectType). Set once
@@ -243,11 +235,6 @@ type cascadesTranslator struct {
 	// consumed by the ordinal seed, pinned by tests. Lazily initialized so
 	// hand-built test translators need no constructor change.
 	wedgeGate map[*logical.LogicalJoin]wedgeGateDecision
-}
-
-type recursiveCTEConsumerRow struct {
-	declaration *values.RecordType
-	common      *values.RecordType
 }
 
 // setTranslateErr records a translation error (first writer wins) so a
@@ -724,7 +711,7 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 			return cols
 		}
 		if row, ok := t.recursiveProducerRows[producer]; ok {
-			return row.common.Fields
+			return row.Fields
 		}
 		var cols []values.Field
 		t.inCTEDefiningScope(producer, func() {
@@ -2448,27 +2435,6 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 }
 
 func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressions.RelationalExpression {
-	// Recursive terms were bound against the seed declaration. Predicates must
-	// read the same common row as projections and the temporary scan.
-	if len(t.recursiveCTEConsumerRows) != 0 && f.Predicate != nil {
-		var normalizeErr error
-		pred := predicates.TransformEmbeddedValues(f.Predicate, func(value values.Value) values.Value {
-			if normalizeErr != nil {
-				return value
-			}
-			var normalized values.Value
-			normalized, normalizeErr = t.normalizeRecursiveCTEConsumerValue(value)
-			return normalized
-		})
-		if normalizeErr != nil {
-			t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
-				"recursive CTE predicate cannot adopt its common output row: %v", normalizeErr))
-			return nil
-		}
-		copy := *f
-		copy.Predicate = pred
-		f = &copy
-	}
 	// Fold a WHERE-EXISTS whose post-pagination cardinality is known before any
 	// routing. The front-end proves the inner either empty or non-empty (notably:
 	// a non-grouped aggregate emits one row before LIMIT/OFFSET), so both EXISTS
@@ -6876,14 +6842,6 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 	if innerRef == nil {
 		return nil
 	}
-	// A retained recursive producer can be lowered lazily by this input scan,
-	// without a declaration envelope enclosing the projection. Its row bridge
-	// belongs to these selected consumers for the duration of this projection.
-	var recursiveBindings []values.CorrelationIdentifier
-	for producer, row := range t.recursiveProducerRows {
-		recursiveBindings = append(recursiveBindings, t.pushRecursiveCTEConsumerRows(p.Input, producer, row.declaration, row.common)...)
-	}
-	defer t.popRecursiveCTEConsumerRows(recursiveBindings)
 	projectionQ := t.namedQuantifier(sourceBinding(p.Input), innerRef)
 	projectionInput, flowedErr := projectionQ.RequireFlowedObjectValue()
 	if flowedErr != nil {
@@ -6920,23 +6878,6 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
 			"projection slot %d has no resolved Value", i))
 		return nil
-	}
-	// A recursive CTE's main query was resolved against the seed declaration.
-	// Retarget only that explicitly scoped source onto the physical common row.
-	// The bridge re-resolves complete ordinal paths and admits MaximumType
-	// widening only; ordinary derived/name normalization below remains
-	// exact-name-only.
-	for i := range projected {
-		if projected[i] == nil {
-			continue
-		}
-		normalized, normalizeErr := t.normalizeRecursiveCTEConsumerValue(projected[i])
-		if normalizeErr != nil {
-			t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
-				"recursive CTE projection slot %d cannot adopt its common output row: %v", i, normalizeErr))
-			return nil
-		}
-		projected[i] = normalized
 	}
 	// A derived boundary may publish SQL output names in its logical contract
 	// that differ from the physical projection's producer-local names. Duplicate
@@ -9396,181 +9337,6 @@ func recursiveSlotValue(value values.Value, target values.Type) (values.Value, e
 	return values.NewNarrowValue(value, target), nil
 }
 
-// recursiveCTEMainBindings returns the exact correlations under which scans of
-// cteName are visible in the main query. A nested same-named CTE shadows the
-// outer definition, so its complete subtree is excluded. Binding identifiers
-// win over display aliases exactly as they do at quantifier construction.
-func recursiveCTEMainBindings(
-	op logical.LogicalOperator,
-	producer *logical.CTEProducer,
-	bindings map[values.CorrelationIdentifier]struct{},
-) {
-	if op == nil {
-		return
-	}
-	switch current := op.(type) {
-	case *logical.LogicalScan:
-		if current.Source.Producer() == producer {
-			binding := sourceBinding(current)
-			if binding != "" {
-				bindings[values.NamedCorrelationIdentifier(binding)] = struct{}{}
-			}
-		}
-		return
-	case *logical.LogicalCTE:
-		if current.CTEProducer == producer {
-			return
-		}
-	}
-	for _, child := range op.Children() {
-		recursiveCTEMainBindings(child, producer, bindings)
-	}
-	for _, attached := range logical.AttachedPlans(op) {
-		recursiveCTEMainBindings(attached, producer, bindings)
-	}
-}
-
-// pushRecursiveCTEConsumerRows scopes the seed-declared/common-row pair to
-// each main-query alias of one recursive CTE. The returned bindings are popped
-// after main translation; stacks preserve an enclosing recursive definition.
-func (t *cascadesTranslator) pushRecursiveCTEConsumerRows(
-	main logical.LogicalOperator,
-	producer *logical.CTEProducer,
-	declaration *values.RecordType,
-	common *values.RecordType,
-) []values.CorrelationIdentifier {
-	bindings := make(map[values.CorrelationIdentifier]struct{})
-	recursiveCTEMainBindings(main, producer, bindings)
-	if len(bindings) == 0 {
-		return nil
-	}
-	if t.recursiveCTEConsumerRows == nil {
-		t.recursiveCTEConsumerRows = make(map[values.CorrelationIdentifier][]recursiveCTEConsumerRow)
-	}
-	result := make([]values.CorrelationIdentifier, 0, len(bindings))
-	for binding := range bindings {
-		t.recursiveCTEConsumerRows[binding] = append(
-			t.recursiveCTEConsumerRows[binding],
-			recursiveCTEConsumerRow{declaration: declaration, common: common},
-		)
-		result = append(result, binding)
-	}
-	return result
-}
-
-func (t *cascadesTranslator) popRecursiveCTEConsumerRows(bindings []values.CorrelationIdentifier) {
-	for _, binding := range bindings {
-		stack := t.recursiveCTEConsumerRows[binding]
-		if len(stack) <= 1 {
-			delete(t.recursiveCTEConsumerRows, binding)
-			continue
-		}
-		t.recursiveCTEConsumerRows[binding] = stack[:len(stack)-1]
-	}
-}
-
-// translateRecursiveCTEConsumerValue retargets one seed-declared logical Value
-// onto the recursive fixed point's exact common row. Admission is intentionally
-// narrower than a generic phase-root translation: the correlation and complete
-// declaration row must match, the physical target must equal the recorded
-// common row, every field is re-resolved by its full ordinal path, and the new
-// leaf/whole-value types may only be the MaximumType widening of the old ones.
-// Foreign windows, a reordered row, or an incompatible type remain outside the
-// bridge rather than being inferred from a display name.
-func translateRecursiveCTEConsumerValue(
-	value values.Value,
-	declaration values.QuantifiedObjectValue,
-	target values.QuantifiedObjectValue,
-) (values.Value, error) {
-	if value == nil || declaration == nil || target == nil {
-		return nil, fmt.Errorf("recursive CTE consumer bridge has a nil Value or root")
-	}
-	commonRoot := values.MaximumType(declaration.FlowedType(), target.FlowedType())
-	if commonRoot == nil || !values.FlowedTypeEquals(target, commonRoot) {
-		return nil, fmt.Errorf("recursive CTE declared row %s does not widen exactly to %s",
-			declaration.FlowedType(), target.FlowedType())
-	}
-
-	var rewriteErr error
-	rewritten := values.Replace(value, func(node values.Value) values.Value {
-		if rewriteErr != nil {
-			return node
-		}
-		if field, isField := values.AsFieldValue(node); isField {
-			root, isRoot := values.AsQuantifiedObjectValue(field.ChildValue())
-			if !isRoot || root.Correlation() != declaration.Correlation() ||
-				!values.FlowedTypesEqual(root, declaration) {
-				return node
-			}
-			resolved, err := values.ResolveFieldOrdinals(target, field.Path().Ordinals())
-			if err != nil {
-				rewriteErr = fmt.Errorf("recursive CTE field path %v does not resolve on the common row: %w",
-					field.Path().Ordinals(), err)
-				return node
-			}
-			commonLeaf := values.MaximumType(field.ResultType(), resolved.Type())
-			if commonLeaf == nil || !commonLeaf.Equals(resolved.Type()) {
-				rewriteErr = fmt.Errorf("recursive CTE field path %v changes incompatibly from %s to %s",
-					field.Path().Ordinals(), field.ResultType(), resolved.Type())
-				return node
-			}
-			return resolved
-		}
-		if root, isRoot := values.AsQuantifiedObjectValue(node); isRoot &&
-			root.Correlation() == declaration.Correlation() &&
-			values.FlowedTypesEqual(root, declaration) {
-			return target
-		}
-		return node
-	})
-	if rewriteErr != nil {
-		return nil, rewriteErr
-	}
-	if rewritten == value {
-		return value, nil
-	}
-	if rewritten == nil || rewritten.Type() == nil {
-		return nil, fmt.Errorf("recursive CTE consumer bridge produced no exact Value")
-	}
-	commonResult := values.MaximumType(value.Type(), rewritten.Type())
-	if commonResult == nil || !commonResult.Equals(rewritten.Type()) {
-		return nil, fmt.Errorf("recursive CTE consumer Value changes incompatibly from %s to %s",
-			value.Type(), rewritten.Type())
-	}
-	return rewritten, nil
-}
-
-func (t *cascadesTranslator) normalizeRecursiveCTEConsumerValue(
-	value values.Value,
-) (values.Value, error) {
-	if value == nil {
-		return value, nil
-	}
-	result := value
-	for binding, stack := range t.recursiveCTEConsumerRows {
-		if len(stack) == 0 {
-			continue
-		}
-		scope := stack[len(stack)-1]
-		if scope.declaration == nil || scope.common == nil {
-			continue
-		}
-		declaration, err := values.NewQuantifiedObjectValue(binding, scope.declaration)
-		if err != nil {
-			return nil, fmt.Errorf("recursive CTE consumer declaration is not exact: %w", err)
-		}
-		target, err := values.NewQuantifiedObjectValue(binding, scope.common)
-		if err != nil {
-			return nil, fmt.Errorf("recursive CTE consumer common row is not exact: %w", err)
-		}
-		result, err = translateRecursiveCTEConsumerValue(result, declaration, target)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return result, nil
-}
-
 // translateRecursiveCTE translates a WITH RECURSIVE CTE into a
 // RecursiveUnionExpression. Mirrors Java's
 // QueryVisitor.handleRecursiveNamedQuery:
@@ -9586,9 +9352,6 @@ func (t *cascadesTranslator) normalizeRecursiveCTEConsumerValue(
 func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expressions.RelationalExpression {
 	logical.BindCTESources(c, t.cteScope)
 	if ref := t.producerRefs[c.CTEProducer]; ref != nil {
-		row := t.recursiveProducerRows[c.CTEProducer]
-		bindings := t.pushRecursiveCTEConsumerRows(c.Main, c.CTEProducer, row.declaration, row.common)
-		defer t.popRecursiveCTEConsumerRows(bindings)
 		return t.translateOp(c.Main)
 	}
 	previousExpr, hadExpr := t.cteExprScope[c.CTEProducer]
@@ -9765,10 +9528,6 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 			Ordinal:   i,
 		}
 	}
-	declaredRow := &values.RecordType{
-		Nullable: seedType.Nullable,
-		Fields:   append([]values.Field(nil), seedFields...),
-	}
 	t.cteColumnsScope[c.CTEProducer] = seedFields
 	commonRow, commonErr := t.recursiveCTECommonResultRow(seedType, recursiveBranches, outCols)
 	if commonErr != nil {
@@ -9817,18 +9576,12 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	}
 	t.cteExprScope[c.CTEProducer] = tempScan
 	t.cteColumnsScope[c.CTEProducer] = tempFields
-	var recursiveConsumerBindings []values.CorrelationIdentifier
-	for _, branch := range recursiveBranches {
-		recursiveConsumerBindings = append(recursiveConsumerBindings,
-			t.pushRecursiveCTEConsumerRows(branch, c.CTEProducer, declaredRow, commonRow)...)
-	}
 	var recursiveExpr expressions.RelationalExpression
 	if len(recursiveBranches) == 1 {
 		recursiveExpr = t.translateOp(recursiveBranches[0])
 	} else {
 		recursiveExpr = t.translateUnion(&logical.LogicalUnion{Inputs: recursiveBranches, Distinct: false})
 	}
-	t.popRecursiveCTEConsumerRows(recursiveConsumerBindings)
 	delete(t.cteExprScope, c.CTEProducer)
 	delete(t.cteColumnsScope, c.CTEProducer)
 	if recursiveExpr == nil {
@@ -9920,9 +9673,8 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// The column-alias list renames the finished union for the Main query, as
 	// translateCTE's renaming Project does for a non-recursive body.
 	var cteResult expressions.RelationalExpression = recUnion
-	mainDeclared, mainCommon := declaredRow, commonRow
+	mainCommon := commonRow
 	if mainCols != nil {
-		mainDeclared = recordWithFieldNames(declaredRow, mainCols)
 		mainCommon = recordWithFieldNames(commonRow, mainCols)
 		cteResult = t.normalizeRecursiveLegToOutputRow(recUnion, mainCommon)
 		if cteResult == nil {
@@ -9933,10 +9685,10 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		t.producerRefs = make(map[*logical.CTEProducer]*expressions.Reference)
 	}
 	if t.recursiveProducerRows == nil {
-		t.recursiveProducerRows = make(map[*logical.CTEProducer]recursiveCTEConsumerRow)
+		t.recursiveProducerRows = make(map[*logical.CTEProducer]*values.RecordType)
 	}
 	t.producerRefs[c.CTEProducer] = expressions.InitialOf(cteResult)
-	t.recursiveProducerRows[c.CTEProducer] = recursiveCTEConsumerRow{declaration: mainDeclared, common: mainCommon}
+	t.recursiveProducerRows[c.CTEProducer] = mainCommon
 
 	// Register the result so the Main query's scan of the CTE name resolves to
 	// it. The OUTWARD column schema is mainCommon — so a CTE reference used as a
@@ -9944,9 +9696,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// merge (RFC-077 7.6).
 	t.cteExprScope[c.CTEProducer] = cteResult
 	t.cteColumnsScope[c.CTEProducer] = append([]values.Field(nil), mainCommon.Fields...)
-	consumerBindings := t.pushRecursiveCTEConsumerRows(c.Main, c.CTEProducer, mainDeclared, mainCommon)
 	result := t.translateOp(c.Main)
-	t.popRecursiveCTEConsumerRows(consumerBindings)
 	delete(t.cteExprScope, c.CTEProducer)
 	delete(t.cteColumnsScope, c.CTEProducer)
 	return result

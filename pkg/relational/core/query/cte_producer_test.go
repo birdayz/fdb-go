@@ -131,7 +131,7 @@ func TestRetainedRecursiveCTEConsumerCommonRow(t *testing.T) {
 			if otherRef == nil || projection.GetInner().GetRangesOver() != otherRef {
 				t.Fatal("recursive consumers do not share one lowered producer reference")
 			}
-			if len(tr.recursiveCTEConsumerRows) != 0 || len(tr.cteExprScope) != 0 || len(tr.cteColumnsScope) != 0 {
+			if len(tr.cteExprScope) != 0 || len(tr.cteColumnsScope) != 0 {
 				t.Fatal("recursive temporary or consumer scope leaked after translation")
 			}
 		})
