@@ -277,7 +277,7 @@ var maskedClasses = map[javacorpus.SkipClass]string{
 		"documentation-queries/subqueries-documentation-queries). The class stays declared as the " +
 		"message rule's bucket for a struct-declaring template whose index definition fails",
 	javacorpus.SkipGapStructDML: "EMPTIED by RFC-204 Phase 2: struct literals write and read back, and " +
-		"every carrier passes or moved on to engine-gap:struct-query. Declared for a re-armed struct-DML " +
+		"every carrier passes or moved on to the since-closed engine-gap:struct-query. Declared for a re-armed struct-DML " +
 		"regression, which gaps.go would book here",
 	javacorpus.SkipDDLOther: "EMPTIED by RFC-257: views, SQL functions, stored queries and sliding-window " +
 		"vector indexes build, so no template fails DDL for an unnamed cause. The class stays declared " +

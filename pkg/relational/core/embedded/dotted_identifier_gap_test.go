@@ -10,11 +10,10 @@ import (
 
 // TestDottedIdentifierGapsArePinned pins what Go answers today for a quoted
 // identifier containing '.', the shapes Java's valid-identifiers.yamsql
-// answers (TODO.md "A quoted identifier containing `.` breaks aggregate and
-// GROUP BY queries"). Each row is a KNOWN GAP pinned as measured, so the fix
+// answers. Each GAP row is a known gap pinned as measured, so the fix
 // reddens it on purpose: a row that starts planning, or plans without the
 // sort, is the fix landing, and the row flips to the plan Java's shape asks
-// for, with the TODO entry updated. A row that changes any other way is a new
+// for, with the TODO entry ("Quoted identifiers holding dots") updated. A row that changes any other way is a new
 // regression.
 func TestDottedIdentifierGapsArePinned(t *testing.T) {
 	t.Parallel()
@@ -33,16 +32,20 @@ func TestDottedIdentifierGapsArePinned(t *testing.T) {
 			"",
 		},
 		{
-			"GAP: the grouped dotted column projected", dotted,
-			`SELECT "foo.tableA.A2", COUNT(*) FROM "foo.tableA" GROUP BY "foo.tableA.A2"`, nil, api.ErrCodeUndefinedColumn,
+			"the grouped dotted column projected", dotted,
+			`SELECT "foo.tableA.A2", COUNT(*) FROM "foo.tableA" GROUP BY "foo.tableA.A2"`,
+			[]string{"StreamingAgg"},
+			"",
 		},
 		{
 			"GAP: the aliased form", dotted,
 			`SELECT t."foo.tableA.A2", SUM(t."foo.tableA.A1") FROM "foo.tableA" AS t GROUP BY t."foo.tableA.A2"`, nil, api.ErrCodeUndefinedColumn,
 		},
 		{
-			"GAP: a HAVING over the dotted aggregate", dotted,
-			`SELECT "foo.tableA.A2" AS k, MAX("foo.tableA.A3") FROM "foo.tableA" GROUP BY "foo.tableA.A2" HAVING MAX("foo.tableA.A3") > 1`, nil, api.ErrCodeUndefinedColumn,
+			"a HAVING over the dotted aggregate", dotted,
+			`SELECT "foo.tableA.A2" AS k, MAX("foo.tableA.A3") FROM "foo.tableA" GROUP BY "foo.tableA.A2" HAVING MAX("foo.tableA.A3") > 1`,
+			[]string{"StreamingAgg"},
+			"",
 		},
 		{
 			"GAP: ORDER BY a dotted primary key sorts in memory", dottedColumn,

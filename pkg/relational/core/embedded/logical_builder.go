@@ -180,7 +180,12 @@ func buildAggregateOutputSlots(keys []logical.GroupKey, aggCols []aggSelectCol, 
 		case ac.aggFunc != "":
 			native = callOrdinal[colIdx]
 		case ac.groupCol != "":
-			groupName := strip(ac.groupCol)
+			// An unqualified column reference has no qualifier to strip: its
+			// quoted name may itself start with `<source>.`.
+			groupName := ac.groupCol
+			if len(ac.groupColSegs) != 1 {
+				groupName = strip(ac.groupCol)
+			}
 			qualifierStripped := !strings.EqualFold(groupName, ac.groupCol)
 			for i, key := range keys {
 				same := false

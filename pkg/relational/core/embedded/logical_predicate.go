@@ -5305,7 +5305,10 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData, 
 			}
 			fields := rt.Descriptor.Fields()
 			for i := 0; i < fields.Len(); i++ {
-				tableFields[strings.ToUpper(string(fields.Get(i).Name()))] = true
+				stored := string(fields.Get(i).Name())
+				tableFields[strings.ToUpper(stored)] = true
+				// The column as SQL names it: a quoted name may hold dots.
+				tableFields[strings.ToUpper(recordlayer.ToUserIdentifier(stored))] = true
 			}
 		}
 		collect(sq.tableName)
@@ -5364,7 +5367,7 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData, 
 		if tableFields == nil {
 			return true
 		}
-		if tableFields[parseColRef(upper).bare()] {
+		if tableFields[upper] || tableFields[parseColRef(upper).bare()] {
 			return true
 		}
 		rest := upper
@@ -6051,7 +6054,18 @@ func alignInsertSelectColumns(insertOp *logical.LogicalInsert, md *recordlayer.R
 	if proj.Aliases == nil {
 		proj.Aliases = make([]string, len(proj.Projections))
 	}
+	var desc protoreflect.MessageDescriptor
+	if md != nil {
+		if rt := md.GetRecordType(insertTargetTable(insertOp)); rt != nil {
+			desc = rt.Descriptor
+		}
+	}
 	for i := 0; i < len(proj.Projections) && i < len(targetCols); i++ {
+		if desc != nil && i < len(proj.ProjectedValues) {
+			if fd := desc.Fields().ByName(protoreflect.Name(targetCols[i])); fd != nil {
+				proj.ProjectedValues[i] = promoteStructToField(proj.ProjectedValues[i], fd)
+			}
+		}
 		proj.Aliases[i] = targetCols[i]
 		// The target column list is the USER's, so the slot's provenance is
 		// reset with its name. Overwriting the name while leaving a mint marker

@@ -64,17 +64,10 @@ var _ = Describe("NamedCallConformance", func() {
 		} {
 			o.plain(schema, setup, fmt.Sprintf("n%02d", i), q)
 		}
-		// Declared divergences (DIVERGENCES.md, "Named macro arguments"): Java
-		// binds a named call's values in call order, and a struct body keeps
-		// NOT NULL there because its fields take the parameters' names, where
-		// Go's record constructor names fields by ordinal and so promotes.
+		// Declared divergence (DIVERGENCES.md, "Named macro arguments"): Java
+		// binds a named call's values in call order.
 		divergent := map[string][2]string{
-			"n00": {`OK [STRUCT] [NOT NULL] [[map[Y:4 Z:2]]]`, `OK [STRUCT] [NULL] [[map[Y:4 Z:2]]]`},
-			"n01": {`OK [STRUCT] [NOT NULL] [[map[Y:5 Z:4]]]`, `OK [STRUCT] [NULL] [[map[Y:4 Z:5]]]`},
-			"n02": {`OK [STRUCT] [NOT NULL] [[map[Y:4 Z:2]]]`, `OK [STRUCT] [NULL] [[map[Y:4 Z:2]]]`},
-			"n03": {`OK [STRUCT] [NOT NULL] [[map[Y:4 Z:5]]]`, `OK [STRUCT] [NULL] [[map[Y:4 Z:5]]]`},
-			"n12": {`OK [STRUCT] [NOT NULL] [[map[Y:4 Z:2]]]`, `OK [STRUCT] [NULL] [[map[Y:4 Z:2]]]`},
-			"n15": {`OK [STRUCT] [NOT NULL] [[map[Y:10 Z:2]]]`, `OK [STRUCT] [NULL] [[map[Y:10 Z:2]]]`},
+			"n01": {`OK [STRUCT] [NOT NULL] [[map[Y:5 Z:4]]]`, `OK [STRUCT] [NOT NULL] [[map[Y:4 Z:5]]]`},
 		}
 		javaClass := regexp.MustCompile(`^ERROR (\S+) \S+ "`)
 		var failures []string

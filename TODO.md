@@ -6847,7 +6847,7 @@ is tagged — never by hand-editing the doc.
   Java's column list, pinned against the live-JVM probe.
 
 
-- [ ] **CQ-87 (SMALL, needs confirmation first): Java may wrap a
+- [x] **CQ-87 (inherent field names done: `SELECT (val)` is `{VAL}`; writes bind records by position): Java may wrap a
   PARENTHESISED SCALAR into a one-field record where Go unwraps it.** Go's
   `walkRecordConstructorInner` unwraps a one-element unnamed constructor
   because that is the parser's shape for `(expr)`; Java's
@@ -13269,7 +13269,7 @@ against Java 4.14.2.0 before fixing, then tick with the commit.
 - [ ] WS-D runner: unified bounded attempt route, per-owner retry policies, commit ownership/deactivation, client proxy wait/body-chain cause preservation, SPFresh stall bound, instrumentation.
 - [ ] WS-E write path (array backstop 0A000 done, 7d448b7cd): immutable/bit-exact parameter bindings, invalid UTF-8 rejection on SQL/bindings/save, Java floating CAST/NaN bits and MIN/MAX operand bits, driver typing gaps ([N]byte, empty arrays, Valuer), temporal binding/promotion.
 - [ ] WS-E isolation/IN (executor DML snapshot guard 4f61e07b5, statement-class snapshot admission 7287666da done): conflict-free index-state reads, DSN/SetOption options, IN rewrite/partition/cost/covering-union/multi-binding product limit, constant IN evaluation timing.
-- [ ] WS-E semantics/pins (decimal constants parsed as AstNormalizer/parseDecimal, 308eada7b): record constructor fields take an element's inherent name (`SELECT (val)` is `{VAL}` in Java, `{_0}` in Go; needs construction-time target binding, `walkRecordConstructorInner`; also keeps a macro's struct body NOT NULL, DIVERGENCES "Named macro arguments"); variadic promoted-child types, Value nullability census, target simplification regime, adjacent-token/decorated-literal/lexer pins, FROM-less metadata, LOG_QUERY.
+- [ ] WS-E semantics/pins (decimal constants parsed as AstNormalizer/parseDecimal, 308eada7b; record constructor inherent names and structured variadic promotion done): variadic promoted-child types for scalar common types, Value nullability census, target simplification regime, adjacent-token/decorated-literal/lexer pins, FROM-less metadata, LOG_QUERY.
 - [ ] WS-F scheduling: conditional rule chains (decorrelate→simplify, merge→pushdown) with progress-driven fallback; partition-based select merge; multi-leg pushdown; physical REWRITING prune; full configuration in comparators; per-partition implementation yields.
 - [ ] WS-F readers/plans: raw index KEY/VALUE reader Values, nested reader trie, extraction rules, aggregate readers, covering-Value plan, aggregate cardinality/distinctness, reader/plan wire mapping.
 - [ ] WS-F misc (RecordCore XXXXX mapping 61b586444, verbatim primary/vector candidate names 1e45290a2/b1b043898 done): IN-union product limit and size, null-safe singleton scan candidates, zero-based EXPLODE ordinality and its distinctness, subscript typing/errors, display-only EXPLAIN decoding, ordered Value folding, vector-preference applicability pins.
@@ -13278,3 +13278,25 @@ against Java 4.14.2.0 before fixing, then tick with the commit.
 - [ ] WS-I: lock-registry cleanup, serializer retry diagnostics, typed client knobs (needs C++ research), typed session/index-update sets and the write-only key collision boundary, timer instrumentation for client ranges/HNSW/GuardiANN/vector tasks/queue, online-indexer config limits, ICU byte baseline.
 - [ ] WS-K: direct-API Struct insert (UUID scalar/nested/array, nested unique index), JSON descriptor FieldOptions import, recursive result metadata in the corpus runner, setup version gating, typed INDEX_FETCH_METHOD, relational queued-state plumbing, SQL vector-option and preference-cache pins.
 - [ ] Owner decision: Lucene queue/heartbeat/quota/spell-check/state contracts (WS-I) presuppose a Lucene backend Go does not have.
+
+### Recursive CTE column list
+
+- [ ] A recursive CTE's recursive leg reads the SEED's own column names; its
+  column list names the CTE only for consumers (Java: `WITH RECURSIVE r (a, b, c)
+  AS (SELECT me, par, 0 AS lvl … UNION ALL … FROM r …)` reads `r.lvl`, refuses
+  `r.c` 42703 "Attempting to query non existing column R.C"). Go scopes the self
+  reference by the list (`plan_visitor.go` seed scope `applyCTEColumnAliases`),
+  and the CTE scan row type everywhere carries the aliases
+  (`cascades_translator.go` ColumnAliases sites, `logical_result_type.go`), so
+  scoping alone fails at execution layout. Booked as
+  `engine-gap:recursive-cte-column-list` for `valid-identifiers.yamsql`
+  (`javacorpus/gaps.go`).
+
+### Quoted identifiers holding dots
+
+- [ ] Two shapes Java's valid-identifiers.yamsql answers stay pinned as gaps in
+  `embedded/dotted_identifier_gap_test.go`: an aliased dotted GROUP BY
+  (`SELECT t."foo.tableA.A2", SUM(…) FROM "foo.tableA" AS t GROUP BY t."foo.tableA.A2"`,
+  42703) and ORDER BY a dotted primary key, which sorts in memory instead of
+  reading the scan. The unaliased GROUP BY plans; Java answers it from the
+  aggregate index (`AISCAN(foo.tableA.idx2 …)`), Go from a sorted scan.

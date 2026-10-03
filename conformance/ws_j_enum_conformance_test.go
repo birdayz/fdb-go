@@ -451,17 +451,7 @@ var _ = Describe("RFC-257 WS-J enum columns written and read by both engines", f
 				"ERROR XXXXX should not be called", incompatible,
 			},
 		}
-		// A Go divergence booked elsewhere, pinned with both answers so the
-		// spec reddens when either engine moves. CQ-87 (TODO.md): an unnamed
-		// element of a record constructor takes its own inherent name in Java
-		// (a column contributes its name) and the ordinal `_i` in Go, for the
-		// structural reason at expr.walkRecordConstructorInner. The enum is a
-		// name on both.
-		goDivergences := map[string][2]string{
-			"SELECT id, (m, id) FROM t ORDER BY id": {
-				"[[1 map[ID:1 M:JOYFUL]] [2 map[ID:2]]]", "[[1 map[_0:JOYFUL _1:1]] [2 map[_1:2]]]",
-			},
-		}
+		goDivergences := map[string][2]string{}
 		var diffs []string
 		compared := 0
 		compare := func(what, j, g string) {

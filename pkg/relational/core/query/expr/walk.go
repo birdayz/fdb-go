@@ -1234,7 +1234,37 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (va
 		return nil, api.NewError(api.ErrCodeInvalidArgumentForFunction,
 			"The function is not defined for the given argument types")
 	}
+	switch name {
+	case "COALESCE", "GREATEST", "LEAST":
+		args = promoteStructuredVariadicArguments(args, typ)
+	}
 	return values.NewScalarFunctionValue(name, typ, args...), nil
+}
+
+// promoteStructuredVariadicArguments is VariadicFunctionValue.encapsulate's
+// promotion of each argument to the common type with its own nullability,
+// for a record or record-array common type: fields bind by position, so the
+// result carries the common type's names whichever argument it came from.
+func promoteStructuredVariadicArguments(args []values.Value, common values.Type) []values.Value {
+	structural := common.Code() == values.TypeCodeRecord
+	if at, ok := common.(*values.ArrayType); ok && at.ElementType != nil {
+		structural = at.ElementType.Code() == values.TypeCodeRecord
+	}
+	if !structural {
+		return args
+	}
+	out := make([]values.Value, len(args))
+	for i, arg := range args {
+		out[i] = arg
+		target := values.WithNullability(common, arg.Type().IsNullable())
+		if needed, ok := values.IsPromotionNeeded(arg.Type(), target); !ok || !needed {
+			continue
+		}
+		if promoted, err := values.NewPromoteValueChecked(arg, target); err == nil {
+			out[i] = promoted
+		}
+	}
+	return out
 }
 
 // walkUserDefinedScalarFunction handles `name '(' args ')'` calls whose
@@ -1961,7 +1991,9 @@ func (r *Resolver) walkRecordConstructorInner(rc antlrgen.IRecordConstructorCont
 		return nil, &UnsupportedExpressionShapeError{Shape: "RecordConstructor with no elements"}
 	}
 	fields := make([]values.RecordConstructorField, 0, len(exprs))
-	for i, e := range exprs {
+	names := make([]string, 0, len(exprs))
+	counts := map[string]int{}
+	for _, e := range exprs {
 		ewon, isEwon := e.(*antlrgen.ExpressionWithOptionalNameContext)
 		if !isEwon {
 			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("ExpressionWithOptionalName ctx %T", e)}
@@ -1970,42 +2002,25 @@ func (r *Resolver) walkRecordConstructorInner(rc antlrgen.IRecordConstructorCont
 		// position. Java has no position notion at all — a comparison is a
 		// boolean-typed value wherever it appears — so forwarding the caller's
 		// position is the closest Go analogue. It is also what keeps
-		// `(a > 3) IS NULL` resolving: the one-element unwrap used to forward
-		// the position on its way out, and with the unwrap gone the forwarding
-		// has to happen here instead.
+		// `(a > 3) IS NULL` resolving.
 		v, err := r.walkExpressionInner(ewon.Expression(), pos)
 		if err != nil {
 			return nil, err
 		}
-		// An unnamed element takes the ordinal key. Java instead takes the
-		// element's own inherent name — a column reference contributes the
-		// column, so `SELECT (val)` is `{VAL: 10}` on the live JVM where Go
-		// answers `{_0: 10}`. That difference is NOT closable here on its own,
-		// and the reason is structural rather than a matter of effort.
-		//
-		// Java can afford inherent names because a record built where a TARGET
-		// TYPE is in scope never keeps them: parseRecordFieldsUnderReorderings
-		// (ExpressionVisitor.java:1040-1083) overwrites them with the target's
-		// field names BY POSITION. Go has no target type at construction — a
-		// COALESCE operand acquires one only when the assignment coerces it —
-		// so it defers that binding to values.BuildStructMessage, which
-		// receives the record as an ORDER-LESS map[string]any and can only
-		// recover position from the ordinal names themselves. Give the fields
-		// inherent names and that recovery is gone: `(b1, b2)` assigned to a
-		// struct S arrives named B1/B2, matches none of S's fields, and the
-		// write fails.
-		//
-		// Closing it therefore means porting Java's construction-time target
-		// binding (or making the coercion order-preserving), not renaming
-		// fields here. Measured: doing only the rename turns
-		// `update B set b3 = coalesce(b3, (b1, b2), ...)` into
-		// `record constructor for "S" carries 2 fields, 0 of which the target
-		// struct declares`.
-		name := values.OrdinalFieldName(i)
-		if ewon.Uid() != nil {
-			name = functions.NormalizeIdentifier(ewon.Uid().GetText())
+		name := inherentElementName(ewon, r.analyzer.CaseSensitive())
+		if name != "" {
+			counts[name]++
 		}
-		fields = append(fields, values.RecordConstructorField{Name: name, Value: v})
+		names = append(names, name)
+		fields = append(fields, values.RecordConstructorField{Value: v})
+	}
+	// Expressions.underlyingAsColumns: an element keeps its name only when no
+	// other element has it; the rest are positional.
+	for i, name := range names {
+		if name == "" || counts[name] > 1 {
+			name = values.OrdinalFieldName(i)
+		}
+		fields[i].Name = name
 	}
 	rcv := values.NewRecordConstructorValue(fields...)
 	// `STRUCT <name> (…)` declares the record's TYPE name. Java routes this
@@ -2018,6 +2033,27 @@ func (r *Resolver) walkRecordConstructorInner(rc antlrgen.IRecordConstructorCont
 		rcv.SetTypeName(functions.NormalizeIdentifier(ofType.Uid().GetText()))
 	}
 	return rcv, nil
+}
+
+// inherentElementName is the name a record element carries in Java: its AS
+// alias, else a column reference's own (last) name, else none.
+func inherentElementName(ewon *antlrgen.ExpressionWithOptionalNameContext, caseSensitive bool) string {
+	if ewon.Uid() != nil {
+		return semantic.FromUidContext(ewon.Uid(), caseSensitive).Name()
+	}
+	pred, ok := ewon.Expression().(*antlrgen.PredicatedExpressionContext)
+	if !ok || pred.Predicate() != nil {
+		return ""
+	}
+	col, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext)
+	if !ok || col.FullColumnName() == nil || col.FullColumnName().FullId() == nil {
+		return ""
+	}
+	uids := col.FullColumnName().FullId().AllUid()
+	if len(uids) == 0 {
+		return ""
+	}
+	return semantic.FromUidContext(uids[len(uids)-1], caseSensitive).Name()
 }
 
 // WalkPredicate is the dual of WalkExpression — returns a cascades

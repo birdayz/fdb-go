@@ -133,13 +133,10 @@ const (
 	// regression belongs back here rather than in a new name.
 	SkipGapStructDML SkipClass = "engine-gap:struct-dml"
 
-	// SkipGapStructQuery is a struct-declaring file whose DML now works and
-	// which reaches a struct QUERY-surface gap: nested field access
-	// (`s.field` in a predicate or projection), a record constructor in an
-	// expression position, or `SELECT (*)`. This is RFC-204 Phase 3's work
-	// list — Java resolves these through SemanticAnalyzer's lookupNestedField
-	// descent and RecordConstructorValue in expression position.
-	SkipGapStructQuery SkipClass = "engine-gap:struct-query"
+	// SkipGapRecursiveColumnList is a recursive CTE with a column list whose
+	// recursive leg reads the seed's own column names: Java scopes the self
+	// reference by the seed's names and only its consumers by the list.
+	SkipGapRecursiveColumnList SkipClass = "engine-gap:recursive-cte-column-list"
 
 	// SkipDDLFunction is a schema template declaring a SQL function.
 	// RFC-201 Phase 4.
@@ -256,7 +253,7 @@ func AllSkipClasses() []SkipClass {
 		SkipDDLFunction,
 		SkipDDLOther,
 		SkipGapStructDML,
-		SkipGapStructQuery,
+		SkipGapRecursiveColumnList,
 		SkipGapCommaJoinFrom,
 		SkipGapDMLReturning,
 		SkipGapCatalogTables,

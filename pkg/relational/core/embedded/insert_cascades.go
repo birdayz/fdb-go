@@ -198,7 +198,7 @@ func (c *EmbeddedConnection) buildInsertValuesArray(
 				return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 					"%s is not supported in this context", atom)
 			}
-			cell, walkErr := parseRecordField(fd, cellExpr, resolver)
+			cell, walkErr := parseRecordField(fd, cellExpr, resolver, true)
 			if walkErr != nil {
 				return nil, walkErr
 			}
@@ -296,6 +296,7 @@ func parseRecordField(
 	fd protoreflect.FieldDescriptor,
 	cell antlrgen.IExpressionWithOptionalNameContext,
 	resolver *expr.Resolver,
+	assertNames bool,
 ) (values.Value, error) {
 	atom := unwrappedCellAtom(cell)
 	switch a := atom.(type) {
@@ -304,7 +305,7 @@ func parseRecordField(
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
 				"expected Record but got Primitive")
 		}
-		return parseStructLiteral(fd.Message(), a.RecordConstructor(), resolver)
+		return parseStructLiteral(fd.Message(), a.RecordConstructor(), resolver, assertNames)
 	case *antlrgen.ArrayConstructorExpressionAtomContext:
 		list, _, isList := values.EffectiveListField(fd)
 		if isList && elementIsStruct(list) {
@@ -312,7 +313,7 @@ func parseRecordField(
 			// the bare tuples inside the brackets are record constructors
 			// against the element struct rather than the unsupported
 			// multi-element shape the projection walker declines.
-			return parseStructArrayLiteral(list, a.ArrayConstructor(), resolver)
+			return parseStructArrayLiteral(list, a.ArrayConstructor(), resolver, assertNames)
 		}
 	}
 	v, walkErr := resolver.WalkExpressionForProjection(cell.Expression())
@@ -362,10 +363,15 @@ func admitAssignedValue(target values.Type, v values.Value) error {
 // (ExpressionVisitor.java:1068). The resulting constructor therefore carries
 // already-evaluated constants: a VALUES cell is constant after parameter
 // substitution, which is the same property the top-level fold relies on.
+//
+// assertNames is the INSERT's target state: an element's own name must be its
+// target field's. An UPDATE builds the record with no target type in state and
+// copies it in by position, so its names are ignored.
 func parseStructLiteral(
 	md protoreflect.MessageDescriptor,
 	rc antlrgen.IRecordConstructorContext,
 	resolver *expr.Resolver,
+	assertNames bool,
 ) (values.Value, error) {
 	rcc, ok := rc.(*antlrgen.RecordConstructorContext)
 	if !ok {
@@ -391,17 +397,16 @@ func parseStructLiteral(
 	for i, sub := range exprs {
 		subFD := fds.Get(i)
 		name := string(subFD.Name())
-		if ewon, isEwon := sub.(*antlrgen.ExpressionWithOptionalNameContext); isEwon && ewon.Uid() != nil {
+		if ewon, isEwon := sub.(*antlrgen.ExpressionWithOptionalNameContext); assertNames && isEwon && ewon.Uid() != nil {
 			// Java asserts a provided name equals the target field's name
-			// (ExpressionVisitor.java:1002-1003) rather than letting the
-			// literal rename the target's field.
+			// (parseRecordField's bare Assert.thatUnchecked) rather than
+			// letting the literal rename the target's field.
 			given := functions.NormalizeIdentifier(ewon.Uid().GetText())
 			if !strings.EqualFold(given, name) {
-				return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
-					"field %q cannot be assigned to target field %q", given, name)
+				return nil, api.NewError(api.ErrCodeInternalError, "condition is not met!")
 			}
 		}
-		v, err := parseRecordField(subFD, sub, resolver)
+		v, err := parseRecordField(subFD, sub, resolver, assertNames)
 		if err != nil {
 			return nil, err
 		}
@@ -418,6 +423,7 @@ func parseStructArrayLiteral(
 	elemFD protoreflect.FieldDescriptor,
 	ac antlrgen.IArrayConstructorContext,
 	resolver *expr.Resolver,
+	assertNames bool,
 ) (values.Value, error) {
 	acc, ok := ac.(*antlrgen.ArrayConstructorContext)
 	if !ok {
@@ -436,7 +442,7 @@ func parseStructArrayLiteral(
 	for _, e := range elems {
 		if pred, isPred := e.(*antlrgen.PredicatedExpressionContext); isPred && pred.Predicate() == nil {
 			if rc, isRC := pred.ExpressionAtom().(*antlrgen.RecordConstructorExpressionAtomContext); isRC {
-				v, err := parseStructLiteral(elemFD.Message(), rc.RecordConstructor(), resolver)
+				v, err := parseStructLiteral(elemFD.Message(), rc.RecordConstructor(), resolver, assertNames)
 				if err != nil {
 					return nil, err
 				}
@@ -721,19 +727,48 @@ func parseUpdateSetValue(
 	resolver *expr.Resolver,
 ) (values.Value, error) {
 	pred, isPred := e.(*antlrgen.PredicatedExpressionContext)
-	if !isPred || pred.Predicate() != nil {
-		return resolver.WalkExpression(e)
-	}
-	switch a := pred.ExpressionAtom().(type) {
-	case *antlrgen.RecordConstructorExpressionAtomContext:
-		if !targetIsStruct(fd) {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "expected Record but got Primitive")
+	if isPred && pred.Predicate() == nil {
+		switch a := pred.ExpressionAtom().(type) {
+		case *antlrgen.RecordConstructorExpressionAtomContext:
+			if !targetIsStruct(fd) {
+				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "expected Record but got Primitive")
+			}
+			return parseStructLiteral(fd.Message(), a.RecordConstructor(), resolver, false)
+		case *antlrgen.ArrayConstructorExpressionAtomContext:
+			if list, _, ok := values.EffectiveListField(fd); ok && elementIsStruct(list) {
+				return parseStructArrayLiteral(list, a.ArrayConstructor(), resolver, false)
+			}
 		}
-		return parseStructLiteral(fd.Message(), a.RecordConstructor(), resolver)
-	case *antlrgen.ArrayConstructorExpressionAtomContext:
-		if list, _, ok := values.EffectiveListField(fd); ok && elementIsStruct(list) {
-			return parseStructArrayLiteral(list, a.ArrayConstructor(), resolver)
-		}
 	}
-	return resolver.WalkExpression(e)
+	v, err := resolver.WalkExpression(e)
+	if err != nil {
+		return nil, err
+	}
+	return promoteStructToField(v, fd), nil
+}
+
+// promoteStructToField is the positional coercion Java's insert and update
+// plans give a record or record-array value through their promotions trie
+// (PromoteValue.computePromotionsTrie): fields bind by position, not by name.
+// A value the coercion cannot take is left for the plan's promotion check.
+func promoteStructToField(v values.Value, fd protoreflect.FieldDescriptor) values.Value {
+	if v == nil {
+		return v
+	}
+	target := query.FieldTypeForFD(fd)
+	structural := target.Code() == values.TypeCodeRecord
+	if at, ok := target.(*values.ArrayType); ok && at.ElementType != nil {
+		structural = at.ElementType.Code() == values.TypeCodeRecord
+	}
+	if !structural {
+		return v
+	}
+	if needed, ok := values.IsPromotionNeeded(v.Type(), target); !ok || !needed {
+		return v
+	}
+	promoted, err := values.NewPromoteValueChecked(v, target)
+	if err != nil {
+		return v
+	}
+	return promoted
 }

@@ -70,23 +70,8 @@ var engineGaps = []EngineGap{
 	// pseudocolumn) is CLOSED by RFC-202 S4: the version-storing catalog
 	// exposes the ephemeral pseudo-column, VERSION indexes generate/plan/
 	// execute, and join-tests-row-version.yamsql (JOIN USING on the
-	// pseudo-field) passes outright. pseudo-field-clash.yamsql progressed to
-	// a DIFFERENT, pre-existing decline, re-measured below at its exact new
-	// rejection.
-	//
-	// pseudo-field-clash's last query projects EXPLICIT-COLUMN struct
-	// constructors — `SELECT (t1.id, t1.col1, t1."__ROW_VERSION"), … FROM
-	// t1, t2, t3` — and the expression walker supports only the
-	// single-element unwrap (walkRecordConstructor); a multi-element record
-	// constructor in a projection has no Value lowering. NOT a row-version
-	// gap: `SELECT (t3.id, t3.col1) FROM t1, t3 WHERE t3.id = t1.id` fails
-	// with the same 0AF00 on a template with no store_row_versions option at
-	// all. Every other query in the file (real-column-wins, version ISCAN /
-	// COVERING reads, qualified stars over the 3-way join) passes.
-	// (The signature stops before the quoted pseudo-field name: the runner's
-	// failure text carries the query %q-quoted, so inner quotes appear
-	// escaped.)
-	{"pseudo-field-clash.yamsql", SkipGapPlannerDeclines, `SELECT (t1.id, t1.col1, t1.`, "CQ-72"},
+	// pseudo-field) passes outright, and pseudo-field-clash.yamsql passes
+	// since a record constructor's fields take their elements' names.
 
 	// Inline VALUES now parses, plans and executes, including nested authored
 	// column definitions and derived-table predicates. The file progresses to
@@ -159,7 +144,8 @@ var engineGaps = []EngineGap{
 	// signature matches the escaped form.
 	{"join-tests-outer.yamsql", SkipConformanceGoAccepts, `ORDER BY \"d\".\"name\";": expecting statement to throw an error 0AF00, however it succeeded`, "CQ-72"},
 
-	// ---- engine-gap:struct-query (RFC-204 Phase 2 → Phase 3) ----
+	// ---- engine-gap:struct-query (RFC-204 Phase 2 → Phase 3; closed when
+	// record fields took their elements' names) ----
 	//
 	// PHASE 2 CLOSED engine-gap:struct-dml (23 files): struct and
 	// array-of-struct literals write through the typed row-constructor
@@ -222,9 +208,9 @@ var engineGaps = []EngineGap{
 	// Java cannot satisfy both join-leg orderings from indexes; Go sorts the joined rows.
 	{"join-with-order-by-tests.yamsql", SkipConformanceGoAccepts, `"select (t1.*), (t2.*) from t1, t2 where t1.a1 = 1 and t2.b1 = 1 order by t1.a2, t2.b3": expecting statement to throw an error 0AF00, however it succeeded`, "sanctioned in-memory sort; TestCorpusReadSideExtensions"},
 	{"in-predicate.yamsql", SkipGapErrorClass, `"select a, e from ta where e in ('foo' , 35 + 4)": expecting '22000' error code, got '42804' instead`, "CQ-72"},
-	// An unnamed record-constructor element takes the ordinal key, where Java
-	// takes the column's name (expr.walkRecordConstructorInner).
-	{"valid-identifiers.yamsql", SkipGapStructQuery, `struct "__0type__1" has no attribute "foo.tableA.A1"`, "RFC-204 P3"},
+	// The recursive leg reads the seed's column names under a column list
+	// (TODO.md, "Recursive CTE column list").
+	{"valid-identifiers.yamsql", SkipGapRecursiveColumnList, `column "__level__" does not exist`, "TODO recursive CTE column list"},
 	{"functions.yamsql", SkipGapDMLReturning, `"update C set st = coalesce(st, null) where c1 = 4 returning \"new\".st": actual result set is NULL, expecting non-NULL result set`, "CQ-72"},
 	// RE-BOOKED, not closed-by-relabel: the duplicate qualified star this file
 	// was booked for is FIXED. Java's expandStar has no uniqueness rule, so
