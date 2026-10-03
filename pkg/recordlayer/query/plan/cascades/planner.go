@@ -1481,22 +1481,29 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 		return true
 	}
 
-	// Only a plain residual FILTER is a yield candidate. A non-filter compensation
-	// (a SelectExpression with result compensation / pulled-up quantifiers from
-	// ForMatchCompensation.ApplyAllNeeded, a projection over a vector scan, …)
-	// goes to InsertFinal. Without this top-level reject, such shapes would skip
-	// every guard below and fall through to "safe" → yieldUnknown, re-optimizing
-	// an unsafe residual.
-	f, ok := expr.(*expressions.LogicalFilterExpression)
-	if !ok {
-		return false
+	// Java yields every logical compensation (CascadesRuleCall
+	// yieldUnknownExpression): a residual filter, or a Select carrying the
+	// matched query's result value. The residual guards below are Go's own; a
+	// Select without residual predicates only reshapes rows and needs none.
+	// Anything else stays final.
+	switch f := expr.(type) {
+	case *expressions.LogicalFilterExpression:
+		// A residual filter with no predicates is not a yield candidate
+		// (ForMatchCompensation.ApplyAllNeeded never produces one; reject defensively).
+		if len(f.GetPredicates()) == 0 {
+			return false
+		}
+		return compensationInnerScanSafe(f) && compensationResidualCorrelationSafe(f)
+	case *expressions.SelectExpression:
+		if !f.ChildrenAsSet() || hasStrictSingleQuantifier(f.GetQuantifiers()) {
+			return false
+		}
+		if len(f.GetPredicates()) == 0 {
+			return true
+		}
+		return compensationInnerScanSafe(f) && compensationResidualCorrelationSafe(f)
 	}
-	// A residual filter with no predicates is not a yield candidate
-	// (ForMatchCompensation.ApplyAllNeeded never produces one; reject defensively).
-	if len(f.GetPredicates()) == 0 {
-		return false
-	}
-	return compensationInnerScanSafe(f) && compensationResidualCorrelationSafe(f)
+	return false
 }
 
 // compensationInnerScanSafe is the inner-scan half of
@@ -1526,7 +1533,7 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 // cursor delivers distance order, not pk order). Positions in the
 // partition prefix do not matter for the safety property — see
 // residualSelectsWholePartitions.
-func compensationInnerScanSafe(f *expressions.LogicalFilterExpression) bool {
+func compensationInnerScanSafe(f expressions.RelationalExpressionWithPredicates) bool {
 	for _, q := range f.GetQuantifiers() {
 		cref := q.GetRangesOver()
 		if cref == nil {
@@ -1568,7 +1575,7 @@ func compensationInnerScanSafe(f *expressions.LogicalFilterExpression) bool {
 // here — the !isIndexOnly() ImplementFilterRule gate is the single
 // structural authority for that property; a second guard here would be
 // a redundant second authority (RFC-151 §5).
-func compensationResidualCorrelationSafe(f *expressions.LogicalFilterExpression) bool {
+func compensationResidualCorrelationSafe(f expressions.RelationalExpressionWithPredicates) bool {
 	local := make(map[values.CorrelationIdentifier]struct{}, len(f.GetQuantifiers()))
 	for _, q := range f.GetQuantifiers() {
 		local[q.GetAlias()] = struct{}{}
@@ -1630,7 +1637,7 @@ func compensationResidualCorrelationSafe(f *expressions.LogicalFilterExpression)
 // NON-partition column (it filters within partitions, so top-K-then-
 // filter would silently drop rows: the unsafe-residual pin's shape).
 func residualSelectsWholePartitions(
-	f *expressions.LogicalFilterExpression,
+	f expressions.RelationalExpressionWithPredicates,
 	plan *plans.RecordQueryVectorIndexPlan,
 ) bool {
 	partCols := plan.GetPartitionColumns()
@@ -1695,7 +1702,7 @@ type Task interface {
 // from the scan's comparison ranges (scanComparisonCorrelations). Used by
 // compensationSafeForYield to tell a probe-fed secondary residual (safe) from a
 // severed primary-join-key residual (RFC-150 §8).
-func compensationProbeCorrelations(f *expressions.LogicalFilterExpression) map[values.CorrelationIdentifier]struct{} {
+func compensationProbeCorrelations(f expressions.RelationalExpressionWithPredicates) map[values.CorrelationIdentifier]struct{} {
 	out := map[values.CorrelationIdentifier]struct{}{}
 	visited := map[expressions.RelationalExpression]struct{}{}
 	var walk func(m expressions.RelationalExpression)

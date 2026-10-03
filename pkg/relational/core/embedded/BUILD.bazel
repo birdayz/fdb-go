@@ -124,6 +124,7 @@ go_test(
         "aggregate_output_slot_recorded_test.go",
         "aggregate_ungrouped_candidate_declines_test.go",
         "ast_util_test.go",
+        "block_select_access_test.go",
         "bound_admission_test.go",
         "bound_query_test.go",
         "bug_hunt_cascades_test.go",
@@ -503,6 +504,7 @@ go_test(
         "quoted_primary_key_plan_test.go",
         "decimal_constants.go",
         "dml_returning.go",
+        "block_select_access_test.go",
     ],
     deps = [
         "//gen",

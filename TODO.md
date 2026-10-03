@@ -13379,4 +13379,16 @@ against Java 4.14.2.0 before fixing, then tick with the commit.
   428668460, was reverted: it patched symptoms of this representation.) Closes
   the DIVERGENCES.md
   entry "Go decomposes SelectExpression into separate logical operators" for
-  query blocks.
+  query blocks. Building a block as a Select (measured by swapping the
+  projection for one, index DDL excluded) left the 319 plan errors as they were
+  and failed 50 embedded tests, which split into the steps below.
+  - [x] Data access over a block Select: its compensation (a Select carrying
+    the result value) is explored like a residual filter, as Java yields every
+    compensation; a result reading an unmatched quantifier is impossible
+    (`block_select_access_test.go`).
+  - [ ] Result-set labels and row width from the result row type (Java), not
+    from the physical projection plan's output names.
+  - [ ] Index DDL (`ddl/generator.go`) reads a block Select.
+  - [ ] Translator: one Select per block; function invocation as `encapsulate`
+    (`range(1)` values box); remove the projection-specific rules and the
+    leg-by-alias reads it leaves without producers.

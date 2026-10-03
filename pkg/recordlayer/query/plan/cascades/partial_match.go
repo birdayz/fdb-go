@@ -339,6 +339,16 @@ func (p *PartialMatchImpl) compensate(
 		return ImpossibleCompensation
 	}
 	isAnyCompensationFunctionImpossible = isAnyCompensationFunctionImpossible || cr.Impossible
+	// The result is rebuilt over the realized match alone (ApplyFinal), so a
+	// result reading an unmatched quantifier cannot be compensated — the twin
+	// of the predicate rule above.
+	if cr.ResultCompensationFn.IsNeeded() && cr.ResultCompensationFn.resultVal != nil {
+		for alias := range values.GetCorrelatedToOfValue(cr.ResultCompensationFn.resultVal) {
+			if _, unmatched := unmatchedAliases[alias]; unmatched {
+				isAnyCompensationFunctionImpossible = true
+			}
+		}
+	}
 
 	// Phase 4: Determine whether compensation is needed at all.
 	matchedQs := p.GetMatchedQuantifiers()
