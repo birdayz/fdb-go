@@ -13,7 +13,7 @@ import (
 //	P1 — `SELECT * FROM t1 WHERE EXISTS(...)` reported the INNER subquery's columns.
 //	     The RFC-141 re-architecture plans a plain WHERE-EXISTS as an IDENTITY
 //	     FlatMap (result value = the outer row's QuantifiedObjectValue, with a
-//	     PredicatesFilter on top). deriveColumnsFromFlatMap only special-cased the
+//	     PredicatesFilter on top). the former column derivation only special-cased the
 //	     PROJECTED-EXISTS RecordConstructor; the identity case fell through to
 //	     merging outer+inner columns → the driver reported t1's columns AND t2's.
 //	     The cursor emits ONLY the outer row, so the metadata was wrong (and a

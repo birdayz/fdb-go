@@ -758,8 +758,8 @@ func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.
 	qr := QueryResult{}
 	// Emit the authoritative ordinal OUTPUT row. The resultValue is a
 	// RecordConstructorValue whose Fields ARE the output columns in output order
-	// (the same rc.Fields deriveColumnsFromMultiIntersection names the ColumnDefs
-	// from), so evaluating each field against the concatenated child positional row
+	// (the plan's result row type, which names the result-set columns), so
+	// evaluating each field against the concatenated child positional row
 	// produces a per-slot output row whose names/order match the result-set columns.
 	if rc, ok := c.resultValue.(*values.RecordConstructorValue); ok {
 		if c.outputType == nil || len(c.outputType.Fields) != len(rc.Fields) {

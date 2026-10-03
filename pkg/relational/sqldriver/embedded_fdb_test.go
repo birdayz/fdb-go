@@ -446,8 +446,9 @@ func assertNameSplitCensus(w io.Writer) bool {
 }
 
 // qualifierRecoveryFloors watches collapse at the live sites reached by this
-// corpus. Derived UNNEST and projection-scope classification are fully retired;
-// their stable sites forbid all calls independently of these floors.
+// corpus. Derived UNNEST, projection-scope classification and the display-label
+// strip are fully retired; their stable sites forbid all calls independently of
+// these floors.
 var qualifierRecoveryFloors = values.QualifierRecoveryFloors{
 	Calls: [6]int{
 		// recursiveRemap: no entry. The site is retired and has no caller; its
@@ -460,7 +461,6 @@ var qualifierRecoveryFloors = values.QualifierRecoveryFloors{
 		// (recordProjQualVsScan classifies bare/AGREED/DIVERGED/MANUFACTURED
 		// only), so its Split floor and its Calls floor cover the identical
 		// population and one of the two would be redundant.
-		values.QualRecSiteDisplayLabelStrip: 70,
 	},
 	// The SPLIT floors carry the weight at the remaining live splitters.
 	Split: [6]int{
@@ -471,9 +471,8 @@ var qualifierRecoveryFloors = values.QualifierRecoveryFloors{
 		// recorder and its call site both still stand, and what stopped is the
 		// corpus REACHING them. That is a claim about this suite, so it is a
 		// declaration that a filter may drop — not a tree fact.
-		values.QualRecSiteProjQualVsScan:    0,
-		values.QualRecSiteExistsSortSplit:   4,
-		values.QualRecSiteDisplayLabelStrip: 70,
+		values.QualRecSiteProjQualVsScan:  0,
+		values.QualRecSiteExistsSortSplit: 4,
 	},
 }
 
@@ -515,6 +514,7 @@ func assertQualifierRecoveryCensus(w io.Writer) bool {
 			RetiredCalls: [6]bool{
 				values.QualRecSiteDerivedUnnestSource: true,
 				values.QualRecSiteProjScopeClassify:   true,
+				values.QualRecSiteDisplayLabelStrip:   true,
 			},
 		},
 		"sqldriver real-FDB corpus")

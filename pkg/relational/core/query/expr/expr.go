@@ -2363,7 +2363,7 @@ func columnCascadesType(col semantic.Column) values.Type {
 		// Type.primitiveType(typeCode, isNullable)): a NOT NULL column's
 		// flowed type is non-nullable. Without this every resolver-produced
 		// reference reads as nullable and the column-def derivation
-		// (deriveProjectionColumnDef's flowed-type upgrade) wrongly reports
+		// (the former column derivation's flowed-type upgrade) wrongly reports
 		// NOT NULL columns as nullable.
 		if elem != nil && elem.Code() != values.TypeCodeUnknown && elem.IsNullable() != col.Nullable {
 			elem = values.WithNullability(elem, col.Nullable)

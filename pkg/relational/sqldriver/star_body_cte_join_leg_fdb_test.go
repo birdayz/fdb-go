@@ -148,11 +148,10 @@ func TestFDB_StarBodyCTEJoinLeg(t *testing.T) {
 			`SELECT "S"."ID", "S"."X" FROM (SELECT * FROM T4, T4."SCARR" AS "X") AS "S", T4 AS "CC"`,
 			starCTE + `SELECT "S"."ID", "S"."X" FROM "S", T4 AS "CC"`,
 		} {
-			plan, perr := embedded.PlanRecordQueryWithMetadata(q, md, nil)
-			if perr != nil {
+			if _, perr := embedded.PlanRecordQueryWithMetadata(q, md, nil); perr != nil {
 				t.Fatalf("plan %q: %v", q, perr)
 			}
-			if got := fmt.Sprintf("%v", embedded.ResultColumnLabelsForPlan(plan, md)); got != "[ID X]" {
+			if got := fmt.Sprintf("%v", queryLabels(t, q, md)); got != "[ID X]" {
 				t.Fatalf("driver labels = %s, want [ID X] (the name model's labels)\n  sql: %s", got, q)
 			}
 		}

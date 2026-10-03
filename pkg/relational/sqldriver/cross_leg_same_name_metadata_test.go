@@ -65,7 +65,7 @@ func TestCrossLegSameNameDifferentType_ProjectedTypes(t *testing.T) {
 	if perr != nil {
 		t.Fatalf("plan: %v", perr)
 	}
-	defs := embedded.ResultColumnDefsForPlan(plan, md)
+	defs := embedded.ResultColumnDefsForPlan(plan)
 	if len(defs) != 2 {
 		t.Fatalf("got %d columns, want 2: %+v", len(defs), defs)
 	}
@@ -99,7 +99,7 @@ func TestCrossLegSameNameDifferentType_DistinctDatumKeys(t *testing.T) {
 	if perr != nil {
 		t.Fatalf("plan: %v", perr)
 	}
-	defs := embedded.ResultColumnDefsForPlan(plan, md)
+	defs := embedded.ResultColumnDefsForPlan(plan)
 	if len(defs) != 2 {
 		t.Fatalf("got %d columns, want 2: %+v", len(defs), defs)
 	}
@@ -137,7 +137,7 @@ func TestCrossLegSameNameDifferentType_CorrelatedScalarSubquery(t *testing.T) {
 	if perr != nil {
 		t.Fatalf("plan: %v", perr)
 	}
-	defs := embedded.ResultColumnDefsForPlan(plan, md)
+	defs := embedded.ResultColumnDefsForPlan(plan)
 	if len(defs) != 2 {
 		t.Fatalf("got %d columns, want 2: %+v", len(defs), defs)
 	}

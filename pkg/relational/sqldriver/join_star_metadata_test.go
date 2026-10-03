@@ -1,14 +1,8 @@
 package sqldriver_test
 
-// SELECT * metadata pins for the ordinal-top derivation arm
-// (deriveColumnsFromJoin):
-//
-//  1. The leak discriminator must be STRUCTURAL (a leg subplan carrying the
-//     positional-merge RC), never name-based: a user column literally named
-//     `_0` is a legal identifier, and a name-keyed check would reroute a
-//     working gated join's metadata off the qualified merge path.
-//  2. A STRUCT-typed array element must report STRUCT — valueTypeName had no
-//     TypeCodeRecord case, so the element fell to the BIGINT fallback.
+// SELECT * metadata pins over joins: the labels are the query's logical output
+// names in FROM order, the columns are the plan's result row, and a STRUCT
+// array element reports STRUCT.
 
 import (
 	"fmt"
@@ -25,12 +19,9 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 )
 
-// TestStarMetadataUserColumnNamedOrdinal pins that a plain gated 2-way join
-// whose schema carries a column literally named "_0" keeps the MERGE path's
-// alias-qualified column metadata — the ordinal-top arm must not fire (no
-// positional-merge leg exists). Against a name-keyed discriminator this test
-// is RED: the arm would reroute to bare RC-field names and the qualified
-// datum keys (and dup-name discrimination) would vanish.
+// TestStarMetadataUserColumnNamedOrdinal pins a 2-way join whose schema carries
+// a column literally named "_0": the user's name is a label like any other,
+// never mistaken for a positional placeholder.
 func TestStarMetadataUserColumnNamedOrdinal(t *testing.T) {
 	t.Parallel()
 	b := metadata.NewSchemaTemplateBuilder().SetName("w5starmeta")
@@ -47,28 +38,16 @@ func TestStarMetadataUserColumnNamedOrdinal(t *testing.T) {
 		t.Fatal(err)
 	}
 	md := tmpl.Underlying()
-	plan, perr := embedded.PlanRecordQueryWithMetadata(
-		`SELECT * FROM PZERO, QZERO`, md, nil)
+	const q = `SELECT * FROM PZERO, QZERO`
+	plan, perr := embedded.PlanRecordQueryWithMetadata(q, md, nil)
 	if perr != nil {
 		t.Fatalf("plan: %v", perr)
 	}
-	defs := embedded.ResultColumnDefsForPlan(plan, md)
-	if len(defs) != 4 {
+	if defs := embedded.ResultColumnDefsForPlan(plan); len(defs) != 4 {
 		t.Fatalf("got %d columns, want 4: %+v", len(defs), defs)
 	}
-	// The merge path qualifies column NAMES under the leg aliases (the datum
-	// keys downstream reads resolve); the RV arm emits bare RC field names
-	// and can never produce a qualified Name. One qualified Name proves the
-	// merge path ran despite the `_0` column.
-	qualified := false
-	for _, d := range defs {
-		if strings.Contains(d.Name, ".") {
-			qualified = true
-			break
-		}
-	}
-	if !qualified {
-		t.Fatalf("no alias-qualified column Name in %+v — the ordinal-top arm misfired on the user column named _0 (the name-keyed leak discriminator)", defs)
+	if got := fmt.Sprintf("%v", queryLabels(t, q, md)); got != "[PID _0 QID QV]" {
+		t.Fatalf("labels = %s, want [PID _0 QID QV]", got)
 	}
 }
 
@@ -166,8 +145,8 @@ func TestStarMetadataStructElementType(t *testing.T) {
 	if perr != nil {
 		t.Fatalf("plan: %v", perr)
 	}
-	labels := embedded.ResultColumnLabelsForPlan(plan, md)
-	types := embedded.ResultColumnTypesForPlan(plan, md)
+	labels := queryLabels(t, `SELECT * FROM WS, WX, WS."SITEMS" AS "EL"`, md)
+	types := embedded.ResultColumnTypesForPlan(plan)
 	if fmt.Sprintf("%v", labels) != "[WID SITEMS XID SKU]" {
 		t.Fatalf("labels = %v, want [WID SITEMS XID SKU]", labels)
 	}
@@ -326,8 +305,8 @@ func TestStarMetadataTwinLayoutTypesTheUnnestedLeg(t *testing.T) {
 			if perr != nil {
 				t.Fatalf("plan: %v", perr)
 			}
-			labels := embedded.ResultColumnLabelsForPlan(plan, md)
-			types := embedded.ResultColumnTypesForPlan(plan, md)
+			labels := queryLabels(t, tc.sql, md)
+			types := embedded.ResultColumnTypesForPlan(plan)
 			wantLabels := fmt.Sprintf("[ID SITEMS ID SITEMS %s]", tc.wantLabel)
 			if fmt.Sprintf("%v", labels) != wantLabels {
 				t.Fatalf("labels = %v, want %s", labels, wantLabels)
@@ -340,20 +319,11 @@ func TestStarMetadataTwinLayoutTypesTheUnnestedLeg(t *testing.T) {
 	}
 }
 
-// TestStarMetadataPlainThreeWayKeepsQualifiedNames pins that a PLAIN 3-way
-// join's partition can also leave a positional-merge subplan — with NO
-// unnest and NO `_N` leak in the merged columns — so the structural leg
-// check alone is not enough: it would reroute the SELECT * metadata to bare
-// RC names, dropping the alias-qualified duplicate-name keys
-// (`TA.K`/`TB.K`/`TC.K`) by-name reads rely on. The arm must ALSO require
-// the gathered-unnest signature (an Explode-bearing FlatMap leg).
-//
-// The 4-way sibling below is the same question at one more level of grouping,
-// where the legs genuinely INTERLEAVE and no leg-block ordering can express the
-// answer. Both are here because the grouping is an arbitrary cost tie: three
-// equal-cost scans plan `TA ⋈ (TB ⋈ TC)` or `TB ⋈ (TA ⋈ TC)` on a coin flip, so
-// a derivation that reads the physical order is right only by luck.
-func TestStarMetadataPlainThreeWayKeepsQualifiedNames(t *testing.T) {
+// TestStarMetadataPlainThreeWayKeepsFromOrder pins a plain 3-way star: three
+// equal-cost scans plan `TA ⋈ (TB ⋈ TC)` or `TB ⋈ (TA ⋈ TC)` on a cost tie, and
+// the columns follow the query's FROM order either way. The 4-way sibling below
+// is the same question where the legs interleave.
+func TestStarMetadataPlainThreeWayKeepsFromOrder(t *testing.T) {
 	t.Parallel()
 	b := metadata.NewSchemaTemplateBuilder().SetName("w5star3way")
 	for _, tbl := range []string{"TA", "TB", "TC"} {
@@ -368,52 +338,18 @@ func TestStarMetadataPlainThreeWayKeepsQualifiedNames(t *testing.T) {
 	}
 	md := tmpl.Underlying()
 	plan, perr := embedded.PlanRecordQueryWithMetadata(
-		// The CROSS form plans NLJ-shaped (the equijoin form goes through the
-		// correlated FlatMap path, whose bare-name fold is a separate,
-		// pre-existing issue, not this arm's regression surface).
 		`SELECT * FROM TA, TB, TC`, md, nil)
 	if perr != nil {
 		t.Fatalf("plan: %v", perr)
 	}
-	defs := embedded.ResultColumnDefsForPlan(plan, md)
-	qualifiedK := 0
-	for _, d := range defs {
-		up := strings.ToUpper(d.Name)
-		if strings.HasSuffix(up, ".K") {
-			qualifiedK++
-		}
+	// The legs cost the same, so the physical grouping is an arbitrary tie; the
+	// columns and their labels follow the query's FROM order regardless.
+	if defs := embedded.ResultColumnDefsForPlan(plan); len(defs) != 6 {
+		t.Fatalf("got %d columns, want 6: %+v\nplan: %s", len(defs), defs, plan.Explain())
 	}
-	if qualifiedK < 2 {
-		t.Fatalf("only %d alias-qualified K columns in %+v — the ordinal-top arm misfired on a plain 3-way join (positional-merge leg without any unnest) and dropped the qualified duplicate-name keys", qualifiedK, defs)
-	}
-	// The full SEQUENCE, not just a count of survivors. Counting qualified
-	// columns cannot see the failure this shape actually produces: the three
-	// legs cost the same, so which grouping wins (`TA ⋈ (TB ⋈ TC)` vs
-	// `TB ⋈ (TA ⋈ TC)`) is an arbitrary tie, and a derivation that reads the
-	// PHYSICAL leg order emits every qualified name — in the planner's order
-	// rather than the query's. The count stays at 3 through that, so the
-	// sequence is the axis that discriminates.
-	names := make([]string, 0, len(defs))
-	for _, d := range defs {
-		names = append(names, strings.ToUpper(d.Name))
-	}
-	want := []string{"TA.TAID", "TA.K", "TB.TBID", "TB.K", "TC.TCID", "TC.K"}
-	if fmt.Sprintf("%v", names) != fmt.Sprintf("%v", want) {
-		t.Fatalf("column sequence = %v, want %v (FROM order) — the metadata followed the "+
-			"physical join grouping instead of the query's own column order.\nplan: %s",
-			names, want, plan.Explain())
-	}
-	// The user-visible LABELS stay bare, which is what
-	// RecordLayerResultSet.positionalAligned compares each slot against; the
-	// qualifier lives only in the datum key. Re-sequencing must not smuggle a
-	// qualifier into the label.
-	labels := make([]string, 0, len(defs))
-	for _, d := range defs {
-		labels = append(labels, strings.ToUpper(d.Label))
-	}
-	wantLabels := []string{"TAID", "K", "TBID", "K", "TCID", "K"}
-	if fmt.Sprintf("%v", labels) != fmt.Sprintf("%v", wantLabels) {
-		t.Fatalf("column labels = %v, want %v (bare, Java's star layout)", labels, wantLabels)
+	want := "[TAID K TBID K TCID K]"
+	if got := fmt.Sprintf("%v", queryLabels(t, `SELECT * FROM TA, TB, TC`, md)); got != want {
+		t.Fatalf("column labels = %s, want %s (FROM order)", got, want)
 	}
 }
 
@@ -443,11 +379,7 @@ func TestStarMetadataFourWayInterleavedLegsKeepFromOrder(t *testing.T) {
 	if perr != nil {
 		t.Fatalf("plan: %v", perr)
 	}
-	defs := embedded.ResultColumnDefsForPlan(plan, md)
-	labels := make([]string, 0, len(defs))
-	for _, d := range defs {
-		labels = append(labels, strings.ToUpper(d.Label))
-	}
+	labels := queryLabels(t, `SELECT * FROM TA, TB, TC, TA`, md)
 	want := []string{"TAID", "K", "TBID", "K", "TCID", "K", "TAID", "K"}
 	if fmt.Sprintf("%v", labels) != fmt.Sprintf("%v", want) {
 		t.Fatalf("column labels = %v, want %v (FROM order)\nplan: %s", labels, want, plan.Explain())
@@ -466,17 +398,5 @@ func TestStarMetadataFourWayInterleavedLegsKeepFromOrder(t *testing.T) {
 	if fmt.Sprintf("%v", emitted) != fmt.Sprintf("%v", labels) {
 		t.Fatalf("metadata labels %v describe a different row than the plan emits %v — "+
 			"every read of this result set goes loud", labels, emitted)
-	}
-	// Duplicate labels are legal and expected here (TA appears twice); the
-	// qualified datum keys are what keep the two apart.
-	qualified := 0
-	for _, d := range defs {
-		if strings.Contains(strings.ToUpper(d.Name), ".") {
-			qualified++
-		}
-	}
-	if qualified != len(defs) {
-		t.Fatalf("only %d of %d columns carry an alias-qualified datum key: %+v",
-			qualified, len(defs), defs)
 	}
 }

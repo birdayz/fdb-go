@@ -193,7 +193,7 @@ func TestFDB_DuplicateFromAliases(t *testing.T) {
 	checkTwoColStar(t, "WITH w AS (SELECT id FROM p) SELECT * FROM w, w")
 	checkTwoColStar(t, "SELECT * FROM (SELECT id FROM p) AS d, (SELECT id FROM p) AS d")
 
-	// The SAME-TABLE self-cross star (`p, p`) — the corner deriveColumnsFromJoin's
+	// The SAME-TABLE self-cross star (`p, p`) — the corner the former column derivation's
 	// display-sequence check does NOT trip (both legs have IDENTICAL display
 	// names, so the merge sequence [ID V ID V] equals the RC's regardless of any
 	// leg regroup), yet the result must still be per-position correct. It is:

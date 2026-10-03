@@ -67,29 +67,6 @@ func TestAggregateGroupKeyMirrorsTakeTheExactNestedPath(t *testing.T) {
 			t.Fatalf("flat exact group key names its output %q, want STATUS", got)
 		}
 	})
-
-	t.Run("buildAggColumns follows the same authority", func(t *testing.T) {
-		t.Parallel()
-		cols := buildAggColumns([]values.Value{sk, co}, nil, nil)
-		if len(cols) != 2 {
-			t.Fatalf("buildAggColumns returned %d columns for 2 group keys", len(cols))
-		}
-		if cols[0].Name != "T1.N.SK" || cols[1].Name != "T1.N.CO" {
-			t.Fatalf("ColumnDef.Name = %q / %q, want T1.N.SK / T1.N.CO", cols[0].Name, cols[1].Name)
-		}
-		if cols[0].Label != "SK" || cols[1].Label != "CO" {
-			t.Fatalf("ColumnDef.Label = %q / %q, want SK / CO", cols[0].Label, cols[1].Label)
-		}
-	})
-
-	t.Run("buildAggColumns keeps a flat key bare and unlabelled", func(t *testing.T) {
-		t.Parallel()
-		flat := exactFlatGroupKey(t, "T1", "STATUS")
-		cols := buildAggColumns([]values.Value{flat}, nil, nil)
-		if len(cols) != 1 || cols[0].Name != "STATUS" || cols[0].Label != "" {
-			t.Fatalf("flat exact group key ColumnDef = %+v, want bare Name=STATUS and no display label", cols)
-		}
-	})
 }
 
 func TestGroupKeyStripRetainsBoundIdentity(t *testing.T) {

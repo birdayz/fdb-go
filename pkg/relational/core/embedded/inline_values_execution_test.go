@@ -173,8 +173,7 @@ func TestProjectionlessExplodeColumnsUseFrozenExactRecordType(t *testing.T) {
 		{Name: "ARR", TypeName: "STRING", Nullable: api.ColumnNoNulls},
 		{Name: "NEST", TypeName: "STRUCT", Nullable: api.ColumnNullable},
 	}
-	metadata := buildTestMetaData(t)
-	if got := deriveColumnsFromPlan(explode, metadata); !reflect.DeepEqual(got, want) {
+	if got := resultColumns(explode); !reflect.DeepEqual(got, want) {
 		t.Fatalf("projection-less Explode columns = %#v, want %#v", got, want)
 	}
 
@@ -186,7 +185,7 @@ func TestProjectionlessExplodeColumnsUseFrozenExactRecordType(t *testing.T) {
 	collection.Typ = values.NewArrayType(false, values.NewRecordType("", false, []values.Field{{
 		Name: "FOREIGN", FieldType: values.NotNullDouble,
 	}}))
-	if got := deriveColumnsFromPlan(explode, metadata); !reflect.DeepEqual(got, want) {
+	if got := resultColumns(explode); !reflect.DeepEqual(got, want) {
 		t.Fatalf("mutated collection changed frozen Explode columns = %#v, want %#v", got, want)
 	}
 
@@ -196,7 +195,7 @@ func TestProjectionlessExplodeColumnsUseFrozenExactRecordType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct scalar Explode control: %v", err)
 	}
-	if got := deriveColumnsFromPlan(scalar, metadata); got != nil {
+	if got := resultColumns(scalar); got != nil {
 		t.Fatalf("scalar Explode invented projection-less record columns: %#v", got)
 	}
 
@@ -209,8 +208,14 @@ func TestProjectionlessExplodeColumnsUseFrozenExactRecordType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct ordinal Explode control: %v", err)
 	}
-	if got := deriveColumnsFromPlan(ordinal, metadata); got != nil {
-		t.Fatalf("ordinality box was flattened as its record element: %#v", got)
+	// WITH ORDINALITY flows the (element, ordinal) box, not the element's
+	// fields.
+	wantBox := []executor.ColumnDef{
+		{Name: "_0", TypeName: "STRUCT", Nullable: api.ColumnNoNulls},
+		{Name: "_1", TypeName: "INTEGER", Nullable: api.ColumnNoNulls},
+	}
+	if got := resultColumns(ordinal); !reflect.DeepEqual(got, wantBox) {
+		t.Fatalf("ordinality box columns = %#v, want %#v", got, wantBox)
 	}
 }
 

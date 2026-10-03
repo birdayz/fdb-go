@@ -476,8 +476,10 @@ func TestResultTypeConsumersFailClosed(t *testing.T) {
 	// branching between exact scalar and record guards, moving that one read
 	// from syntactically GUARDED to PROPAGATED without changing the population.
 	// Permuted aggregate ordering adds a guarded record-layout read and a
-	// propagated layout read for physical-key ordering.
-	const wantForward, wantGuarded, wantPropagated = 1, 9, 29
+	// propagated layout read for physical-key ordering. Result-set columns read
+	// the top plan's row type (embedded resultColumns, Java's
+	// QueryPlan.getResultType) under a type switch: GUARDED 9 -> 10.
+	const wantForward, wantGuarded, wantPropagated = 1, 10, 29
 	if counts["FORWARD"] != wantForward || counts["GUARDED"] != wantGuarded || counts["PROPAGATED"] != wantPropagated {
 		t.Fatalf("consumer split moved: FORWARD=%d (want %d) GUARDED=%d (want %d) "+
 			"PROPAGATED=%d (want %d), total %d.\n"+

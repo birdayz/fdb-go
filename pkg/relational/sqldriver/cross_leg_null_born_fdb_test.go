@@ -7,7 +7,7 @@ package sqldriver_test
 // The gate keeps first-match when every candidate descriptor agrees on the SQL
 // type name and the cardinality, on the argument that the choice among agreeing
 // candidates is unobservable. That argument covers only the consumers that read
-// type+cardinality; the null-born upgrade in deriveColumnsFromProjection reads
+// type+cardinality; the null-born upgrade in the former column derivation reads
 // the returned descriptor's IDENTITY — nullBorn[d.FullName()], membership of
 // the leaf in an outer join's null-supplying legs — and two legs can agree on
 // type+cardinality while differing on that membership. First-match then answers

@@ -1640,11 +1640,9 @@ func ContainsAggregate(v Value) bool {
 // level up: over `FROM t1, t2` where both declare an `n`, `T1.N.SK` and
 // `T2.N.SK` are different columns and a bare `N.SK` collapses them in exactly
 // the name-keyed maps this predicate exists to protect. It is also what the two
-// neighbouring authorities already do for a childful reference — `sortKeyFieldRef`
-// renders `LEG.COL` (cascades_translator.go) and `deriveProjectionColumnDef`'s
-// non-nested arm calls `ColumnNameValue` when `Child != nil`
-// (cascades_generator.go) — so qualifying here makes the nested arm agree with
-// its siblings rather than inventing a third rule. The remaining asymmetry is
+// neighbouring authority already does for a childful reference — `sortKeyFieldRef`
+// renders `LEG.COL` (cascades_translator.go) — so qualifying here makes the
+// nested arm agree with it rather than inventing another rule. The remaining asymmetry is
 // ProjectionColumnName's own non-nested arm, which returns a bare `Field`; that
 // arm is deliberately untouched, because changing it moves emitted names for
 // every flat qualified projection and is a separate change.
@@ -1745,7 +1743,7 @@ func OutputColumnName(v Value, alias string) string {
 // rendering for everything else. It is the rule exactProjectionForLogicalProject
 // freezes with, and the rule a consumer must re-derive the natural schema by
 // when it asks whether a frozen name is that schema's own deduplication
-// suffix or an external rename (deriveColumnsFromProjection). Two copies of
+// suffix or an external rename. Two copies of
 // the rule have disagreed before: the natural schema was once re-derived by
 // OutputColumnName alone, which names a nested reference by its dotted path
 // (`N.SK`) where the freeze names it `SK`, so `SELECT sk, n.sk` read the

@@ -767,52 +767,8 @@ func planRecordQueryAndSubqueriesWithOptions(
 	if templateName == "" {
 		templateName = defaultEmbeddedTemplate
 	}
-	root, err := parser.Parse(sql)
+	logicalOp, err := harnessLogicalOp(sql, md, templateName)
 	if err != nil {
-		return nil, nil, fmt.Errorf("parse SQL: %w", err)
-	}
-	stmts := root.Statements()
-	if stmts == nil || len(stmts.AllStatement()) == 0 {
-		return nil, nil, fmt.Errorf("no statements in SQL")
-	}
-	sel := stmts.AllStatement()[0].SelectStatement()
-	if sel == nil {
-		return nil, nil, fmt.Errorf("not a SELECT statement")
-	}
-	q := sel.Query()
-	if q == nil {
-		return nil, nil, fmt.Errorf("malformed SELECT")
-	}
-
-	visitor := NewPlanVisitorWithTemplate(md, templateName)
-	logicalOp, buildErr := visitor.VisitQuery(q)
-	if buildErr != nil {
-		return nil, nil, buildErr
-	}
-	if logicalOp == nil {
-		return nil, nil, api.NewError(api.ErrCodeUnsupportedQuery, "could not build logical plan")
-	}
-	// Java table-first order: a template-qualified table mis-classified as a
-	// lateral unnest (`FROM PA AS s, s.PB`, alias `s` == the template's name) is demoted
-	// back to a table scan before validation/translation (or AT-on-a-table is
-	// rejected with WRONG_OBJECT_TYPE). RFC-142 (P2b).
-	if err := demoteQualifiedTableUnnest(logicalOp, templateName, md); err != nil {
-		return nil, nil, err
-	}
-	// Backstop for AT-on-a-table sources inside a subquery (the per-FROM-scope early
-	// pass in VisitQuery runs before subquery plans are attached). Surfaces the
-	// faithful WRONG_OBJECT_TYPE before validateTablesAndColumns can mask it with a
-	// column-validation error. RFC-142.
-	if err := rejectAtOrdinalityOnTable(logicalOp, md); err != nil {
-		return nil, nil, err
-	}
-	// Reject a lateral unnest's AS/AT alias colliding with ANY other FROM-source
-	// alias (earlier OR later) in the same scope — the later-source collision the
-	// translator's bottom-up lowering cannot see. RFC-142.
-	if err := resolveQualifiedTableNames(logicalOp, templateName); err != nil {
-		return nil, nil, err
-	}
-	if err := validateTablesAndColumns(logicalOp, md); err != nil {
 		return nil, nil, err
 	}
 
@@ -864,40 +820,53 @@ func planRecordQueryAndSubqueriesWithOptions(
 	return physPlan, subs, nil
 }
 
-// ResultColumnLabelsForPlan returns the user-visible result-set column labels a
-// plan would advertise — the metadata-only (no-FDB) analog of the driver's
-// paginatingRows.Columns(): it runs the SAME production column derivation
-// (deriveColumnsFromPlan, the function the live Execute() path calls) and maps
-// each ColumnDef to its label exactly as Columns() does (Label, or Name when the
-// label is empty), upper-cased. This lets the planner harness assert the result
-// COLUMN SET — distinct from the per-row datum map (which carries extra
-// resolution-convenience keys) — for shapes that cannot be seeded through the SQL
-// driver (historically non-empty array columns, before SQL INSERT gained
-// array literals). RFC-142.
-func ResultColumnLabelsForPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMetaData) []string {
-	cols := deriveColumnsFromPlan(plan, md)
-	labels := make([]string, len(cols))
-	for i, c := range cols {
-		if c.Label != "" {
-			labels[i] = strings.ToUpper(c.Label)
-		} else {
-			labels[i] = strings.ToUpper(c.Name)
-		}
+// harnessLogicalOp builds a SELECT's logical plan through the production
+// front end, up to translation.
+func harnessLogicalOp(sql string, md *recordlayer.RecordMetaData, templateName string) (logical.LogicalOperator, error) {
+	root, err := parser.Parse(sql)
+	if err != nil {
+		return nil, fmt.Errorf("parse SQL: %w", err)
 	}
-	return labels
+	stmts := root.Statements()
+	if stmts == nil || len(stmts.AllStatement()) == 0 {
+		return nil, fmt.Errorf("no statements in SQL")
+	}
+	sel := stmts.AllStatement()[0].SelectStatement()
+	if sel == nil {
+		return nil, fmt.Errorf("not a SELECT statement")
+	}
+	q := sel.Query()
+	if q == nil {
+		return nil, fmt.Errorf("malformed SELECT")
+	}
+	logicalOp, err := NewPlanVisitorWithTemplate(md, templateName).VisitQuery(q)
+	if err != nil {
+		return nil, err
+	}
+	if logicalOp == nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "could not build logical plan")
+	}
+	if err := runFromResolutionPostPasses(logicalOp, templateName, md, md); err != nil {
+		return nil, err
+	}
+	return logicalOp, nil
 }
 
-// ResultColumnTypesForPlan returns the SQL TYPE NAME advertised for each
-// result-set column, in order — the metadata-only (no-FDB) analog of the
-// driver's column-type metadata. It runs the SAME production column derivation
-// (deriveColumnsFromPlan → ColumnDef.TypeName) the live Execute() path uses, so
-// the harness can assert column types for shapes that cannot be seeded through
-// the SQL driver (historically a lateral unnest over a non-empty array column,
-// before SQL INSERT gained array literals). The element column of a non-ordinal unnest over a
-// STRING array must report STRING here, not the UnknownType→BIGINT fallback.
-// RFC-142.
-func ResultColumnTypesForPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMetaData) []string {
-	cols := deriveColumnsFromPlan(plan, md)
+// ResultColumnLabelsForQuery returns the labels the driver reports for a
+// SELECT: the names of its logical output row (Java's semantic struct type),
+// which Execute applies over the plan's columns.
+func ResultColumnLabelsForQuery(sql string, md *recordlayer.RecordMetaData) ([]string, error) {
+	op, err := harnessLogicalOp(sql, md, defaultEmbeddedTemplate)
+	if err != nil {
+		return nil, err
+	}
+	return query.ExactLogicalOutputLabels(op, md, nil)
+}
+
+// ResultColumnTypesForPlan returns the SQL type name of each result column,
+// from the plan's result row type as Execute reports it.
+func ResultColumnTypesForPlan(plan plans.RecordQueryPlan) []string {
+	cols := resultColumns(plan)
 	types := make([]string, len(cols))
 	for i, c := range cols {
 		types[i] = strings.ToUpper(c.TypeName)
@@ -905,17 +874,10 @@ func ResultColumnTypesForPlan(plan plans.RecordQueryPlan, md *recordlayer.Record
 	return types
 }
 
-// ResultColumnNullabilityForPlan returns the JDBC NULLABILITY flag advertised
-// for each result-set column, in order — the metadata-only (no-FDB) analog of
-// the driver's ResultSetMetaData.isNullable. It runs the SAME production column
-// derivation (deriveColumnsFromPlan → ColumnDef.Nullable) the live Execute()
-// path uses, so the harness can assert column nullability for shapes that cannot
-// be seeded through the SQL driver (historically a lateral unnest over a non-empty
-// array column, before SQL INSERT gained array literals). The WITH-ORDINALITY ordinal
-// column must report api.ColumnNoNulls here (Java's INT NOT NULL ordinal), even
-// though it has no backing proto descriptor field. RFC-142.
-func ResultColumnNullabilityForPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMetaData) []int {
-	cols := deriveColumnsFromPlan(plan, md)
+// ResultColumnNullabilityForPlan returns the JDBC nullability of each result
+// column, from the plan's result row type as Execute reports it.
+func ResultColumnNullabilityForPlan(plan plans.RecordQueryPlan) []int {
+	cols := resultColumns(plan)
 	nulls := make([]int, len(cols))
 	for i, c := range cols {
 		nulls[i] = c.Nullable
@@ -923,11 +885,8 @@ func ResultColumnNullabilityForPlan(plan plans.RecordQueryPlan, md *recordlayer.
 	return nulls
 }
 
-// ResultColumnDefsForPlan returns the FULL production ColumnDef set for a plan
-// — the same deriveColumnsFromPlan output the live Execute() path hands to
-// NewRecordLayerResultSet — so an FDB test can drive the REAL result-set read
-// path (including the positional-aligned column read) for shapes
-// not seeded through the SQL driver.
-func ResultColumnDefsForPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
-	return deriveColumnsFromPlan(plan, md)
+// ResultColumnDefsForPlan returns the columns Execute hands to
+// NewRecordLayerResultSet before applying the query's labels.
+func ResultColumnDefsForPlan(plan plans.RecordQueryPlan) []executor.ColumnDef {
+	return resultColumns(plan)
 }

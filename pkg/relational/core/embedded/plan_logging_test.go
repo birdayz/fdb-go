@@ -303,7 +303,7 @@ FROM p AS a, q AS a ORDER BY a.qid DESC`)
 	if !computedJoin {
 		t.Fatal("fixture did not select a nested-loop join with a computed EXISTS result")
 	}
-	columns := deriveColumnsFromPlan(plan.physicalPlan, md)
+	columns := resultColumns(plan.physicalPlan)
 	if len(columns) != 2 || columns[0].TypeName != "BIGINT" || columns[1].TypeName != "BOOLEAN" || columns[1].Nullable != api.ColumnNoNulls {
 		t.Fatalf("computed result metadata = %+v, want BIGINT and NOT NULL BOOLEAN", columns)
 	}
@@ -328,12 +328,8 @@ func TestPlanCacheEvent_String(t *testing.T) {
 // column-metadata typing against PLAN SHAPE: `doubled` (val * 2) through
 // two derived-table levels must report BIGINT no matter whether the
 // planner reused identical output rows or disabled composition kept renamed
-// projection boundaries stacked. The inherit path in deriveColumnsFromProjection only
-// fired for FLAT (childless) FieldValues; the pinned/unmerged shape reads
-// the inner output through a QUANTIFIER-ADDRESSED FieldValue (Child=QOV),
-// which skipped inheritance and reported UNKNOWN — a cross-engine
-// metadata divergence (Java types it from the flowed result type
-// regardless of shape).
+// projection boundaries stacked, as Java types it from the result type
+// regardless of shape.
 func TestNestedDerivedArithmetic_TypeSurvivesUnmergedProjectionSpine(t *testing.T) {
 	t.Parallel()
 	const original = "SELECT id, doubled FROM (SELECT id, doubled FROM (SELECT id, val * 2 AS doubled FROM t_nd8) AS d2) AS d1 ORDER BY id"
@@ -374,7 +370,7 @@ func TestNestedDerivedArithmetic_TypeSurvivesUnmergedProjectionSpine(t *testing.
 			if projectionCount < tc.minProjections {
 				t.Fatalf("physical plan has %d projection node(s), want at least %d", projectionCount, tc.minProjections)
 			}
-			cols := deriveColumnsFromPlan(cp.physicalPlan, cp.md)
+			cols := resultColumns(cp.physicalPlan)
 			doubledIdx := -1
 			for i := range cols {
 				if strings.EqualFold(cols[i].Label, "DOUBLED") || strings.EqualFold(cols[i].Name, "DOUBLED") {
@@ -413,7 +409,7 @@ func TestJoinDerivedAggregate_LegOrdinalNeverIndexesFlattenedColumns(t *testing.
 	if !ok {
 		t.Fatalf("plan is %T, want *cascadesPlan", p)
 	}
-	cols := deriveColumnsFromPlan(cp.physicalPlan, cp.md)
+	cols := resultColumns(cp.physicalPlan)
 	for _, c := range cols {
 		if strings.EqualFold(c.Label, "TOTAL") || strings.EqualFold(c.Name, "TOTAL") {
 			// EXACT type, not merely "not the other leg's": permitting
@@ -428,11 +424,9 @@ func TestJoinDerivedAggregate_LegOrdinalNeverIndexesFlattenedColumns(t *testing.
 	t.Fatalf("no TOTAL column in derived metadata: %+v", cols)
 }
 
-// TestJoinDerivedCTE_QOVColumnsTypeThroughQualifiedKeys pins the
-// qualified-key fallback for QOV-addressed derived columns over a join:
-// deriveColumnsFromJoin keys per-leg columns QUALIFIED ("D.FOO"), so a
-// bare-name lookup finds nothing and both derived columns reported
-// UNKNOWN.
+// TestJoinDerivedCTE_QOVColumnsTypeThroughQualifiedKeys pins the types of
+// QOV-addressed derived columns over a join, which a name-keyed derivation
+// once reported UNKNOWN.
 func TestJoinDerivedCTE_QOVColumnsTypeThroughQualifiedKeys(t *testing.T) {
 	t.Parallel()
 	g, md := newLoggingGenerator(t,
@@ -447,7 +441,7 @@ func TestJoinDerivedCTE_QOVColumnsTypeThroughQualifiedKeys(t *testing.T) {
 	if !ok {
 		t.Fatalf("plan is %T, want *cascadesPlan", p)
 	}
-	cols := deriveColumnsFromPlan(cp.physicalPlan, cp.md)
+	cols := resultColumns(cp.physicalPlan)
 	want := map[string]string{"FOO": "BIGINT", "BAR": "BIGINT"}
 	for _, c := range cols {
 		for col, typ := range want {
@@ -487,7 +481,7 @@ func TestJoinDerivedDupName_SlotIdentitySurvivesCollision(t *testing.T) {
 	if !ok {
 		t.Fatalf("plan is %T, want *cascadesPlan", p)
 	}
-	cols := deriveColumnsFromPlan(cp.physicalPlan, cp.md)
+	cols := resultColumns(cp.physicalPlan)
 	for _, c := range cols {
 		if strings.EqualFold(c.Label, "FOO") || strings.EqualFold(parseColRef(c.Name).bare(), "FOO") {
 			if c.TypeName != "BIGINT" {
@@ -522,7 +516,7 @@ func TestLeftJoinDerived_InheritanceNeverUnNullExtends(t *testing.T) {
 	if !ok {
 		t.Fatalf("plan is %T, want *cascadesPlan", p)
 	}
-	cols := deriveColumnsFromPlan(cp.physicalPlan, cp.md)
+	cols := resultColumns(cp.physicalPlan)
 	for _, c := range cols {
 		if strings.EqualFold(c.Label, "FOO") || strings.EqualFold(parseColRef(c.Name).bare(), "FOO") {
 			if c.Nullable != api.ColumnNullable {
@@ -553,7 +547,7 @@ func TestCrossJoinDerivedExists_KeepsNoNulls(t *testing.T) {
 	if !ok {
 		t.Fatalf("plan is %T, want *cascadesPlan", p)
 	}
-	for _, c := range deriveColumnsFromPlan(cp.physicalPlan, cp.md) {
+	for _, c := range resultColumns(cp.physicalPlan) {
 		if strings.EqualFold(c.Label, "FOO") || strings.EqualFold(parseColRef(c.Name).bare(), "FOO") {
 			if c.Nullable != api.ColumnNoNulls {
 				t.Fatalf("EXISTS flag over a CROSS join must stay NoNulls (no null extension exists); got %v", c.Nullable)
@@ -583,7 +577,7 @@ func TestJoinDerivedDottedName_OrdinalUnshifted(t *testing.T) {
 	if !ok {
 		t.Fatalf("plan is %T, want *cascadesPlan", p)
 	}
-	for _, c := range deriveColumnsFromPlan(cp.physicalPlan, cp.md) {
+	for _, c := range resultColumns(cp.physicalPlan) {
 		if strings.EqualFold(c.Label, "FOO") || strings.EqualFold(parseColRef(c.Name).bare(), "FOO") {
 			if c.TypeName != "BIGINT" {
 				t.Fatalf("d.foo typed %q, want BIGINT — a dotted quoted identifier shifted the leg ordinal", c.TypeName)
@@ -614,7 +608,7 @@ func TestNestedFullOuter_AncestorNullExtensionReachesLeg(t *testing.T) {
 	if !ok {
 		t.Fatalf("plan is %T, want *cascadesPlan", p)
 	}
-	for _, c := range deriveColumnsFromPlan(cp.physicalPlan, cp.md) {
+	for _, c := range resultColumns(cp.physicalPlan) {
 		if strings.EqualFold(c.Label, "FOO") || strings.EqualFold(parseColRef(c.Name).bare(), "FOO") {
 			if c.Nullable != api.ColumnNullable {
 				t.Fatalf("d.foo under an enclosing FULL OUTER must report NULLABLE (ancestor null extension); got %v", c.Nullable)
@@ -623,66 +617,6 @@ func TestNestedFullOuter_AncestorNullExtensionReachesLeg(t *testing.T) {
 		}
 	}
 	t.Fatal("no FOO column in derived metadata")
-}
-
-// TestLegWalk_DuplicateAliasDeclines pins unique-match-or-decline: the
-// plan-level leg walk is not query-scope-aware (a folded query block has
-// no projection node to stop at), so an interior block reusing a
-// top-block alias must make the walk DECLINE — attaching the interior
-// branch's null extension to the outer alias would transfer metadata
-// across scopes. Constructed directly: two join levels both binding
-// alias "X".
-func TestLegWalk_DuplicateAliasDeclines(t *testing.T) {
-	t.Parallel()
-	scan := func() plans.RecordQueryPlan {
-		plan, err := plans.NewRecordQueryScanPlan([]string{"T"}, &cascadesvalues.RecordType{Fields: []cascadesvalues.Field{
-			{Name: "K", Ordinal: 0, FieldType: cascadesvalues.NotNullLong},
-		}}, false)
-		if err != nil {
-			t.Fatalf("scan fixture: %v", err)
-		}
-		return plan
-	}
-	join := func(left, right plans.RecordQueryPlan, kind plans.JoinType, leftAlias, rightAlias string) plans.RecordQueryPlan {
-		// The leg-walk proof only needs the plan's alias topology, but the
-		// fallible RFC-232 constructor also requires an exact retained result.
-		// Project both synthetic legs away into one exact fixture field rather
-		// than passing the formerly tolerated nil result Value.
-		result := cascadesvalues.NewRawRecordConstructorValue(
-			cascadesvalues.RecordConstructorField{
-				Name:  "K",
-				Value: &cascadesvalues.ConstantValue{Value: int64(0), Typ: cascadesvalues.NotNullLong},
-			},
-		)
-		plan, err := plans.NewRecordQueryNestedLoopJoinPlan(
-			left, right, nil, kind, cascadesvalues.NamedCorrelationIdentifier(leftAlias), cascadesvalues.NamedCorrelationIdentifier(rightAlias), result)
-		if err != nil {
-			t.Fatalf("join fixture: %v", err)
-		}
-		return plan
-	}
-	innerJoin := join(
-		scan(), scan(), plans.JoinFullOuter, "X", "Y")
-	top := join(innerJoin, scan(), plans.JoinInner, "A", "X")
-
-	if _, _, found := legPlanFor(top, "X"); found {
-		t.Fatal("a duplicated alias across join levels must DECLINE (scope-ambiguous), not first-match")
-	}
-	// Unique aliases still resolve.
-	if _, _, found := legPlanFor(top, "A"); !found {
-		t.Fatal("a unique alias must resolve")
-	}
-	// An interior duplicate INSIDE a matched leg also declines: folds can
-	// break the plan-nesting/SQL-scoping mirror, so shallow-wins shadowing
-	// is not trusted either.
-	nested := join(scan(), scan(), plans.JoinInner, "Z", "W")
-	shadowTop := join(nested, scan(), plans.JoinInner, "Z", "Q")
-	if _, _, found := legPlanFor(shadowTop, "Z"); found {
-		t.Fatal("an alias duplicated between a leg and its own subtree must DECLINE")
-	}
-	if leg, ns, found := legPlanFor(top, "Y"); !found || leg == nil || !ns {
-		t.Fatalf("Y is unique and inside a FULL join's inner — found=%v ns=%v", found, ns)
-	}
 }
 
 // TestFinalizePlanContainsDuplicateNameRegistrationFailure keeps the invalid

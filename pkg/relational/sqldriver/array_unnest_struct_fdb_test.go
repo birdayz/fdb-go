@@ -271,15 +271,14 @@ func TestFDB_ArrayUnnestStruct(t *testing.T) {
 	}
 
 	// assertColumns pins the user-visible RESULT-SET COLUMN labels (the metadata
-	// the driver returns via rows.Columns(), from the same production
-	// ResultColumnLabelsForPlan the live path uses).
+	// the driver returns via rows.Columns(), the query's logical output labels).
 	assertColumns := func(t *testing.T, sql string, want []string) {
 		t.Helper()
 		plan, perr := embedded.PlanRecordQueryWithMetadata(sql, md, nil)
 		if perr != nil {
 			t.Fatalf("plan %q: %v", sql, perr)
 		}
-		got := embedded.ResultColumnLabelsForPlan(plan, md)
+		got := queryLabels(t, sql, md)
 		if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
 			t.Fatalf("columns %q\n got=%v\nwant=%v\nplan=%s", sql, got, want, plan.Explain())
 		}

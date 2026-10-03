@@ -178,11 +178,10 @@ func TestFDB_BuriedChainedRotation(t *testing.T) {
 	// a name->value map would collapse the repeats and hide a crossed binding.
 	t.Run("star_now_plans", func(t *testing.T) {
 		q := `SELECT * ` + buried
-		plan, perr := embedded.PlanRecordQueryWithMetadata(q, md, nil)
-		if perr != nil {
+		if _, perr := embedded.PlanRecordQueryWithMetadata(q, md, nil); perr != nil {
 			t.Fatalf("SELECT * over the buried chain must plan post-rotation: %v", perr)
 		}
-		labels := fmt.Sprintf("%v", embedded.ResultColumnLabelsForPlan(plan, md))
+		labels := fmt.Sprintf("%v", queryLabels(t, q, md))
 		if labels != "[ID SARR SCARR SUB SUB K SUBSTRUCT Y ID SARR SCARR SUB]" {
 			t.Fatalf("SELECT * labels = %s (SQL FROM-order layout expected)", labels)
 		}

@@ -18125,7 +18125,7 @@ func SeedRunCorpus() []RunQuery {
 			// in FROM order (unique quantifier ids; no dedup). PARITY: Go answers
 			// cols [ID V QID ID V], full cross product (the ordinal seed's
 			// positional row serves the duplicate labels —
-			// deriveColumnsFromJoin's RV-divergence arm). Go previously rejected
+			// the former column derivation's RV-divergence arm). Go previously rejected
 			// with 42702 at the FROM walk.
 			Name:           "dup_from_alias_select_star",
 			SchemaTemplate: "CREATE TABLE T_DUP_S (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_T (qid BIGINT, PRIMARY KEY (qid))",

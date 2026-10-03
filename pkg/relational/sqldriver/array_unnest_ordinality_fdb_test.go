@@ -673,9 +673,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	}
 
 	// assertColumns pins the user-visible RESULT-SET COLUMN labels a query
-	// advertises — the metadata the driver returns via rows.Columns(), derived from
-	// the SAME production code (embedded.ResultColumnLabelsForPlan →
-	// deriveColumnsFromPlan, the function the live Execute() path calls). This is a
+	// advertises — the metadata the driver returns via rows.Columns(), the
+	// query's logical output labels Execute applies (queryLabels). This is a
 	// distinct dimension from the per-row datum map the `query` helper inspects: the
 	// datum map carries extra resolution-convenience keys (bare AND qualified
 	// ALIAS.COL), so a dropped column shows up ONLY in the column metadata, not the
@@ -687,7 +686,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		if perr != nil {
 			t.Fatalf("plan %q: %v", sql, perr)
 		}
-		got := embedded.ResultColumnLabelsForPlan(plan, md)
+		got := queryLabels(t, sql, md)
 		if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
 			t.Fatalf("columns %q\n got=%v\nwant=%v\nplan=%s", sql, got, want, plan.Explain())
 		}
@@ -3921,7 +3920,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	// unnested element (and, under AT, the ordinal) in the RESULT-SET COLUMN
 	// metadata. The unnest lowers to FlatMap(outer, Explode) whose result value is a
 	// source-anchored join record carrying the outer columns + element [+ ordinal];
-	// but deriveColumnsFromFlatMap fell through to MERGING the outer scan's columns
+	// but the former column derivation fell through to MERGING the outer scan's columns
 	// with the inner Explode's — and the Explode has NO derivable record columns, so
 	// the element V (and ordinal O) were DROPPED from the column set. `SELECT *` thus
 	// advertised only the outer columns, omitting the unnest binding. The per-ROW
@@ -4168,10 +4167,10 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			if !strings.Contains(plan.Explain(), "FlatMap(outer=Scan(WSRC), inner=Explode(field") {
 				t.Fatalf("multi-source SELECT * %q must gather positionally (FlatMap-over-Explode over WSRC); plan=%s", sql, plan.Explain())
 			}
-			if got := embedded.ResultColumnLabelsForPlan(plan, md); fmt.Sprintf("%v", got) != fmt.Sprintf("%v", wantCols) {
+			if got := queryLabels(t, sql, md); fmt.Sprintf("%v", got) != fmt.Sprintf("%v", wantCols) {
 				t.Fatalf("star columns %q\n got=%v\nwant=%v\nplan=%s", sql, got, wantCols, plan.Explain())
 			}
-			defs := embedded.ResultColumnDefsForPlan(plan, md)
+			defs := embedded.ResultColumnDefsForPlan(plan)
 			var got []string
 			_, eerr := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				store, sErr := recordlayer.NewStoreBuilder().
@@ -4230,7 +4229,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 				"1|[7 8]|1|5|7|1", "1|[7 8]|2|6|7|1", "1|[7 8]|3|7|7|1",
 				"1|[7 8]|1|5|8|2", "1|[7 8]|2|6|8|2", "1|[7 8]|3|7|8|2",
 			})
-		if types := embedded.ResultColumnTypesForPlan(mustPlan(t, md, `SELECT * FROM WSRC, WAUX, WSRC."WARR" AS "EL"`), md); fmt.Sprintf("%v", types) != "[BIGINT INTEGER BIGINT INTEGER INTEGER]" {
+		if types := embedded.ResultColumnTypesForPlan(mustPlan(t, md, `SELECT * FROM WSRC, WAUX, WSRC."WARR" AS "EL"`)); fmt.Sprintf("%v", types) != "[BIGINT INTEGER BIGINT INTEGER INTEGER]" {
 			t.Fatalf("star column types = %v, want [BIGINT INTEGER BIGINT INTEGER INTEGER] (the mixed element's INTEGER from the Explode collection)", types)
 		}
 	})
@@ -4307,7 +4306,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// star expands to the FROM-order concat of every source's columns —
 		// BXA's, then the padded BXB's, then the buried BXC's, then the lateral
 		// element EL — exactly the labels the driver advertises via
-		// rows.Columns() (ResultColumnLabelsForPlan → deriveColumnsFromPlan).
+		// rows.Columns() (queryLabels).
 		// The explicit-column pins above never exercise the star's expansion
 		// through the gathered box cluster; this is that column-metadata pin.
 		starSQL := `SELECT * FROM BXA LEFT JOIN BXB ON "BAREF" = "BAID" INNER JOIN BXC ON "BCID" = 5, BXA."BARR" AS "EL" ORDER BY "BAID"`
@@ -4561,23 +4560,19 @@ func TestFDB_ArrayUnnestOrdinalityColumnType(t *testing.T) {
 	md := tmpl.Underlying()
 
 	// colTypesOf plans `sql` and returns the result-set column TYPE NAMES — the
-	// no-FDB analog of the driver's column-type metadata (deriveColumnsFromPlan →
-	// ColumnDef.TypeName, the SAME derivation the live Execute() path uses).
+	// no-FDB analog of the driver's column-type metadata (the plan's result row
+	// type, as Execute reports it).
 	colTypesOf := func(t *testing.T, sql string) []string {
 		t.Helper()
 		plan, perr := embedded.PlanRecordQueryWithMetadata(sql, md, nil)
 		if perr != nil {
 			t.Fatalf("plan %q: %v", sql, perr)
 		}
-		return embedded.ResultColumnTypesForPlan(plan, md)
+		return embedded.ResultColumnTypesForPlan(plan)
 	}
 	colLabelsOf := func(t *testing.T, sql string) []string {
 		t.Helper()
-		plan, perr := embedded.PlanRecordQueryWithMetadata(sql, md, nil)
-		if perr != nil {
-			t.Fatalf("plan %q: %v", sql, perr)
-		}
-		return embedded.ResultColumnLabelsForPlan(plan, md)
+		return queryLabels(t, sql, md)
 	}
 
 	// atProjType plans `sql` and returns the planned VALUE for the projection
@@ -4658,12 +4653,12 @@ func TestFDB_ArrayUnnestOrdinalityColumnType(t *testing.T) {
 
 	// R26 P2b (wrong metadata type): a NON-ordinality unnest's element column was
 	// the bare QuantifiedObjectValue, whose type is UnknownType, so
-	// deriveColumnsFromFlatMap → foldedColumnDef fell back to BIGINT. A STRING
+	// the former column derivation → the former column derivation fell back to BIGINT. A STRING
 	// array's element therefore advertised BIGINT even though every row is a string.
 	// The fix types the element QOV to the array's elementType (matching the
 	// WITH-ORDINALITY path, which already preserved it via NewOrdinalFieldValue), so
 	// `SELECT *` reports the real element type. The SELECT-* path reaches
-	// deriveColumnsFromFlatMap (no projection plan above the FlatMap), the exact site
+	// the former column derivation (no projection plan above the FlatMap), the exact site
 	// of the bug. RFC-142.
 	t.Run("R26 P2b SELECT star non-ordinal element over a STRING array reports STRING not BIGINT", func(t *testing.T) {
 		labels := colLabelsOf(t, `SELECT * FROM T1, T1."STRARR" AS "VAL"`)
@@ -4714,7 +4709,7 @@ func TestFDB_ArrayUnnestOrdinalityColumnType(t *testing.T) {
 
 	// R31 P2b (metadata nullability): the synthesized WITH-ORDINALITY ordinal column
 	// is Java's Type.primitiveType(INT, false) — INT NOT NULL — but it has NO backing
-	// proto descriptor field, so foldedColumnDef's colDesc-only path defaulted it to
+	// proto descriptor field, so the former column derivation's colDesc-only path defaulted it to
 	// ColumnNullable and the result-set metadata wrongly reported the ordinal as
 	// nullable. The fix derives the column's nullability from the VALUE's own type
 	// when no descriptor resolves, so a NOT-NULL synthesized value (the ordinal,
@@ -4725,17 +4720,16 @@ func TestFDB_ArrayUnnestOrdinalityColumnType(t *testing.T) {
 	// distinguishes the Value-type-derived fix from BOTH the pre-fix blanket default
 	// (every no-descriptor column ColumnNullable → ordinal wrongly nullable) AND a
 	// naive blanket override (every no-descriptor column ColumnNoNulls → element
-	// wrongly NOT NULL). Asserted via the SAME production derivation
-	// (deriveColumnsFromPlan → ColumnDef.Nullable) the driver's
-	// ResultSetMetaData.isNullable uses. RFC-142.
+	// wrongly NOT NULL). Asserted via the plan's result row type, which the
+	// driver's ResultSetMetaData.isNullable reports. RFC-142.
 	colNullsOf := func(t *testing.T, sql string) (labels []string, nulls []int) {
 		t.Helper()
 		plan, perr := embedded.PlanRecordQueryWithMetadata(sql, md, nil)
 		if perr != nil {
 			t.Fatalf("plan %q: %v", sql, perr)
 		}
-		return embedded.ResultColumnLabelsForPlan(plan, md),
-			embedded.ResultColumnNullabilityForPlan(plan, md)
+		return queryLabels(t, sql, md),
+			embedded.ResultColumnNullabilityForPlan(plan)
 	}
 
 	t.Run("R31 P2b ordinal and exact element both report NOT NULL in the same query", func(t *testing.T) {

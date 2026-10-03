@@ -277,11 +277,10 @@ func TestFDB_ChainedUnnestOrdinal(t *testing.T) {
 		// projection wrapper) implements only because SelectMergeRule's barrier
 		// keeps the ordinal first link nested.
 		const q = `SELECT * FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y"`
-		plan, perr := embedded.PlanRecordQueryWithMetadata(q, md, nil)
-		if perr != nil {
+		if _, perr := embedded.PlanRecordQueryWithMetadata(q, md, nil); perr != nil {
 			t.Fatalf("plan %q: %v", q, perr)
 		}
-		got := embedded.ResultColumnLabelsForPlan(plan, md)
+		got := queryLabels(t, q, md)
 		want := []string{"ID", "SARR", "SCARR", "SUB", "SUB", "K", "SUBSTRUCT", "Y"}
 		if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
 			t.Fatalf("SELECT * columns\n got=%v\nwant=%v", got, want)

@@ -1,9 +1,9 @@
 package sqldriver_test
 
 // Pins the ResultSet column-type metadata of a NESTED struct-member projection
-// whose leaf type deriveProjectionColumnDef cannot state from the value alone.
+// whose leaf type the former column derivation cannot state from the value alone.
 //
-// That is the one shape which reaches deriveColumnsFromProjection's
+// That is the one shape which reaches the former column derivation's
 // `TypeName == "" || == "UNKNOWN"` fall-through with a MULTI-accessor reference,
 // and the fall-through is `innerByName[fv.Field]` — a lookup keyed by the
 // reference's display NAME. Every leaf whose type the value can state types

@@ -13386,8 +13386,14 @@ against Java 4.14.2.0 before fixing, then tick with the commit.
     the result value) is explored like a residual filter, as Java yields every
     compensation; a result reading an unmatched quantifier is impossible
     (`block_select_access_test.go`).
-  - [ ] Result-set labels and row width from the result row type (Java), not
-    from the physical projection plan's output names.
+  - [x] Result-set columns from the result row type (Java
+    `QueryPlan.getResultType`), labels from the logical output row (Java's
+    semantic struct type; `ExactLogicalOutputLabels`, which production already
+    applied). The per-operator derivation (`deriveColumnsFromPlan`, about 2,300
+    lines) agreed with the result row type on width, type and nullability over
+    all 2,539 explaindiff SELECTs and is deleted; label tests read the
+    production labels (`ResultColumnLabelsForQuery`); the display-label-strip
+    census site retired with it.
   - [ ] Index DDL (`ddl/generator.go`) reads a block Select.
   - [ ] Translator: one Select per block; function invocation as `encapsulate`
     (`range(1)` values box); remove the projection-specific rules and the

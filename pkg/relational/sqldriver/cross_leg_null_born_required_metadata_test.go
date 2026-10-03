@@ -7,7 +7,7 @@ package sqldriver_test
 // reach this code path, so there is no query whose ROWS could differ. The
 // upgrade is guarded by a projected column deriving api.ColumnNoNulls, and on
 // the projection path that has exactly one source: a proto field whose
-// cardinality is REQUIRED (cascades_generator.go, deriveProjectionColumnDef).
+// cardinality is REQUIRED (cascades_generator.go, the former column derivation).
 // The SQL DDL emitter never emits one — metadata/builder.go's addField assigns
 // LABEL_OPTIONAL to every scalar and struct and LABEL_REPEATED to a flat array,
 // and has no LABEL_REQUIRED branch at all, mirroring Java's
@@ -149,7 +149,7 @@ func TestCrossLegNullBorn_RequiredColumnOnNullSupplyingLeg(t *testing.T) {
 	if perr != nil {
 		t.Fatalf("plan: %v", perr)
 	}
-	defs := embedded.ResultColumnDefsForPlan(plan, md)
+	defs := embedded.ResultColumnDefsForPlan(plan)
 	if len(defs) != 2 {
 		t.Fatalf("got %d columns, want 2: %+v", len(defs), defs)
 	}

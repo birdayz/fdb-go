@@ -291,12 +291,9 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 		1, "contract: projection output metadata is still named through the value renderer; retires when the projection stores its output label explicitly.",
 	},
 
-	// dotted (2)
+	// dotted (1)
 	"pkg/recordlayer/query/plan/cascades/values/accessor_name_path.go # AccessorNamePath # a Contains call # 1": {
 		1, "dotted: the lazy compatibility channel refuses to interpret a dotted display label as one accessor; retires when no unresolved name-only FieldValue can reach matching.",
-	},
-	"pkg/relational/core/embedded/cascades_generator.go # deriveColumnsFromProjection # a dotted-name MINT (qualifier joined to the name) # 1": {
-		1, "dotted: projection metadata still emits one qualified display alias for downstream textual lookup; retires when column provenance is carried structurally.",
 	},
 
 	// name-keyed (4)
@@ -313,16 +310,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 		1, "name-keyed: the compatibility map-field node still compares its display field without children; retires when the node carries an exact accessor identity.",
 	},
 
-	// translator (4)
-	"pkg/relational/core/embedded/cascades_generator.go # (legRead).column # a EqualFold call # 1": {
-		1, "translator: parsed projection aliases are matched case-insensitively before exact column metadata is available; the emitted column must remain exact.",
-	},
-	"pkg/relational/core/embedded/cascades_generator.go # deriveColumnsFromProjection # a map key # 1": {
-		1, "translator: bare projection display names seed the SQL-scope lookup map; retires when the logical projection stores resolved column identifiers.",
-	},
-	"pkg/relational/core/embedded/cascades_generator.go # deriveColumnsFromProjection # a map key via local qualified derived from the name # 1": {
-		1, "translator: the qualified compatibility label seeds the same SQL-scope map; retires with structural projection provenance.",
-	},
+	// translator (1)
 	"pkg/relational/core/query/cascades_translator.go # rewriteUnnestPredicate # a switch tag # 1": {
 		1, "translator: the logical unnest boundary still selects declared element/ordinality aliases from SQL text; output accesses are exact ordinals after this boundary.",
 	},
@@ -441,7 +429,7 @@ func bucketCounts(m map[string]fieldDebt) (counts map[string]int, untagged []str
 // headers were introduced; the authority count is the figure that now LEADS the
 // report, so it needs it more, not less. Changing this constant is how a change
 // to the authority count becomes deliberate.
-const fieldDebtAuthorityTotal = 11
+const fieldDebtAuthorityTotal = 9
 
 func bucketAuthorityCounts(m map[string]fieldDebt) map[string]int {
 	perBucket := map[string]map[string]struct{}{}

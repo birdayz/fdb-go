@@ -191,9 +191,9 @@ var accessorAritySites = map[string]accessorAritySite{
 // what the ordinal model retires, so the population growing here is the
 // conversion arriving, not new debt.
 const (
-	rfcPublishedPopulation = 47
+	rfcPublishedPopulation = 45
 	arityGeneratedLines    = 8  // protobuf loops over PFieldPath.FieldAccessors
-	arityCommentLines      = 7  // historical SourceRelativeBaked legibility prose
+	arityCommentLines      = 5  // historical SourceRelativeBaked legibility prose
 	arityCodeLines         = 32 // the live production population
 	arityExpressions       = 36 // exceeds arityCodeLines: some lines hold >1
 )

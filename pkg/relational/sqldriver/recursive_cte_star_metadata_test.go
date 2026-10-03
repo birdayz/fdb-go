@@ -12,14 +12,9 @@ import (
 
 // TestFDB_RecursiveCTEStarMetadata pins result-set COLUMN METADATA for
 // `SELECT *` directly over a recursive CTE (no projection above the recursive
-// plan). Without a deriveColumnsFromPlan arm for the recursive plan nodes
-// (RecursiveDfsJoin / RecursiveLevelUnion), the walk falls through to the leaf
-// handler, finds no scan, and returns NO columns — rows flow with the right
-// values, but Rows.Columns() is empty and every database/sql Scan fails with
-// "expected 0 destination arguments in Scan". This affects alias-free shapes
-// too, so it is pinned here on its own axis. The fix recurses into the SEED
-// leg — whose (possibly normalization-wrapped) projection carries the CTE's
-// output columns — mirroring the plain-UNION arm.
+// plan): the recursive plan's result row carries the CTE's columns. An empty
+// column set makes every database/sql Scan fail with "expected 0 destination
+// arguments in Scan".
 func TestFDB_RecursiveCTEStarMetadata(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {

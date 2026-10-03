@@ -401,7 +401,7 @@ func exactLogicalProjectionSlotName(p *logical.LogicalProject, i int, projectedV
 		alias = p.Aliases[i]
 	}
 	// values.ProjectionSlotName is this rule; it is named there so the
-	// consumer that re-derives the natural schema (deriveColumnsFromProjection)
+	// consumer that re-derives the natural schema (the former column derivation)
 	// cannot drift from it.
 	name := values.ProjectionSlotName(projectedValue, alias)
 	if alias == "" {
@@ -849,7 +849,7 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 	case *logical.LogicalAggregate:
 		// Output columns = the GROUP BY keys followed by the aggregate output
 		// column names (alias when present, else the aggregate text), mirroring
-		// extractOutputColumns / buildAggColumns.
+		// extractOutputColumns / the former column derivation.
 		return t.aggregateOutputColumns(o)
 	case *logical.LogicalCTE:
 		// A CTE-wrapped derived table used as a JOIN LEG (e.g. FROM a,
@@ -4682,14 +4682,14 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 		} else if _, isField := values.AsFieldValue(v); !isField {
 			// An UNALIASED COMPUTED (non-field) expression — `id + 1`, `COUNT(*)`,
 			// CASE, etc. The normal projection path names it with the GENERATED
-			// positional `_i` (deriveProjectionColumnDef's `_idx` rule;
+			// positional `_i` (the former column derivation's `_idx` rule;
 			// executeProjection also stores the value under the `_i` key). Using the
 			// expression TEXT (`ID + 1`) here would change Rows.Columns() from `_0`
 			// to `ID + 1` purely because an EXISTS was added — and break a downstream
 			// positional reference to the generated column. Use the SAME positional
 			// name so the folded column's record key + Name + Label are identical to
 			// the non-EXISTS control on every axis (RecordConstructorValue.Evaluate
-			// keys the row by f.Name; foldedColumnDef derives Name/Label from it).
+			// keys the row by f.Name; the former column derivation derives Name/Label from it).
 			name = "_" + strconv.Itoa(i)
 		}
 		fields[i] = values.RecordConstructorField{Name: name, Value: v}

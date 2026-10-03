@@ -23,9 +23,6 @@ package metadata
 // WHY THIS IS PINNED RATHER THAN LEFT AS PROSE. Several comments elsewhere rest
 // on it as a fact about reachability, not as a stylistic note:
 //
-//   - the null-born nullability upgrade in cascades_generator.go
-//     (deriveColumnsFromProjection) is gated on a projected column deriving
-//     api.ColumnNoNulls, whose ONLY source on that path is a REQUIRED field;
 //   - TestFDB_CrossLegAgreementGate_NullBornNotCovered pins the descriptor
 //     agreement gate's cross-leg hole as UNREACHABLE through the driver, and
 //     that unreachability is this emitter property and nothing else;
@@ -33,7 +30,7 @@ package metadata
 //     METADATA test rather than a row test on the same property, and says so.
 //
 // Each of those reads as "covered" while being vacuous, which is the expensive
-// direction. If this emitter ever starts emitting REQUIRED, all three become
+// direction. If this emitter ever starts emitting REQUIRED, both become
 // live and one of them silently stops testing what it claims — so the change
 // must be loud HERE, at the source, rather than inferred later from a puzzling
 // green somewhere else.
@@ -140,16 +137,14 @@ func TestDDLEmitterNeverEmitsRequired(t *testing.T) {
 						"three label assignments (builder.go:951 OPTIONAL for a nullable "+
 						"array, :957 REPEATED for a flat array, :963 OPTIONAL for every "+
 						"scalar and struct) and no REQUIRED branch, so this is a change to "+
-						"that function, not an unlucky column shape. Three things depend "+
+						"that function, not an unlucky column shape. Two things depend "+
 						"on it:\n"+
-						"  - the null-born nullability upgrade in deriveColumnsFromProjection "+
-						"is gated on a column deriving api.ColumnNoNulls, which this re-arms;\n"+
 						"  - TestFDB_CrossLegAgreementGate_NullBornNotCovered pins the "+
 						"cross-leg agreement-gate hole as UNREACHABLE, and this is what "+
 						"makes it reachable;\n"+
 						"  - TestCrossLegNullBorn_RequiredColumnOnNullSupplyingLeg justifies "+
 						"being metadata-only rather than row-asserting on this same fact.\n"+
-						"If the emitter change is intended, all three need revisiting — do "+
+						"If the emitter change is intended, both need revisiting — do "+
 						"not relax this assertion on its own.", m.FullName(), f.Name())
 				}
 			}

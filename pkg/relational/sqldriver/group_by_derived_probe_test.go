@@ -67,7 +67,7 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 	})
 
 	// The baked `#0` marker stays OUT of the user-visible column label: an
-	// unaliased computed column is labelled `_0` (deriveProjectionColumnDef), not
+	// unaliased computed column is labelled `_0` (the former column derivation), not
 	// its explain rendering — so the ordinal marker reaches EXPLAIN and the internal
 	// positional slot name (writer+reader agree via OutputColumnName) but never the
 	// result-set header.

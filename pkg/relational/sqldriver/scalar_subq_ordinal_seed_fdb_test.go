@@ -92,11 +92,11 @@ func TestFDB_ScalarSubqueryOrdinalSeed(t *testing.T) {
 // TestFDB_ScalarSubqueryOrdinalSeed_ColumnType pins the RESULT-SET
 // COLUMN TYPE of the ordinalized correlated-scalar subquery for a NON-BIGINT
 // scalar. The ordinal seed types the inner scalar leg UnknownType at translation
-// (Go quantifier flowed types are untyped), so deriveColumnsFromFlatMap must
+// (Go quantifier flowed types are untyped), so the former column derivation must
 // recover the real type from the INNER plan — otherwise a DOUBLE (AVG) or STRING
 // scalar regresses to BIGINT while the name-model path reports the true type.
 // The DATA is always correct; only the metadata was wrong. RED without the
-// deriveColumnsFromFlatMap fix (both report BIGINT); GREEN with it. That the
+// the former column derivation fix (both report BIGINT); GREEN with it. That the
 // test is RED at all also proves the ORDINAL path is taken here — the name-model
 // path already reports the true type, so a name-model plan would be GREEN
 // unconditionally.
@@ -152,7 +152,7 @@ func TestFDB_ScalarSubqueryOrdinalSeed_ColumnType(t *testing.T) {
 
 	// DOUBLE aggregate scalar: AVG(BIGINT) → DOUBLE (function-determined). The
 	// aggregate's synthesized output column resolves against no base descriptor,
-	// so the enclosing projection INHERITS the type from deriveColumnsFromFlatMap
+	// so the enclosing projection INHERITS the type from the former column derivation
 	// — RED (BIGINT) when the ordinal-seed inner scalar leg is mis-typed, GREEN
 	// once it is recovered from the inner plan.
 	t.Run("double_avg_scalar", func(t *testing.T) {
