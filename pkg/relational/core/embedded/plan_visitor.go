@@ -187,9 +187,10 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 					if len(aliases) > 0 && len(aliases) != len(source.Table.Columns()) {
 						return nil, api.NewErrorf(api.ErrCodeInvalidColumnReference, "cte query has %d column(s), however %d aliases defined", len(source.Table.Columns()), len(aliases))
 					}
-					// The body's self-reference sees the seed's names; the
-					// column list applies once the producer is complete, below.
-					v.cteScopes[upper] = source
+					// The body's self-reference reads the seed's row through a
+					// quantifier; the column list applies once the producer is
+					// complete, below.
+					v.cteScopes[upper] = quantifierNamedSource(source)
 					delete(v.cteOnScopes, upper)
 				} else {
 					v.cteScopes[upper] = semantic.ScopeSource{}
@@ -235,6 +236,9 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 					}
 					if typeErr == nil {
 						source, exact = virtualScopeSourceFromResultType(name, scan, v.md, row, aliases, v.cteScopes)
+						if exact && len(aliases) == 0 {
+							source = quantifierNamedSource(source)
+						}
 					}
 				} else {
 					source, exact = exactVirtualScopeSource(name, producer.Body(), v.md, nil, v.cteScopes)

@@ -178,14 +178,16 @@ func expandSQLFunctions(sql string, tree antlr.Tree, catalog sqlFunctionCatalog)
 		if depth >= maxFunctionExpansionDepth {
 			return "", false, api.NewError(api.ErrCodeUnsupportedOperation, "SQL function calls nest too deeply")
 		}
+		// Token offsets count runes, not bytes.
+		runes := []rune(sql)
 		var b strings.Builder
 		pos := 0
 		for _, e := range edits {
-			b.WriteString(sql[pos:e.start])
+			b.WriteString(string(runes[pos:e.start]))
 			b.WriteString(e.text)
 			pos = e.stop + 1
 		}
-		b.WriteString(sql[pos:])
+		b.WriteString(string(runes[pos:]))
 		sql, changed = b.String(), true
 		root, err := parser.Parse(sql)
 		if err != nil {
@@ -310,11 +312,12 @@ func (fn *sqlFunction) invocation(tf *antlrgen.TableFunctionContext, alias strin
 		}
 		cols = append(cols, p.column(p.def, p.defIsNull))
 	}
+	body := fmt.Sprintf(`"%s%d"`, expr.SQLFunctionBody, n)
 	if len(cols) == 0 {
-		return fmt.Sprintf("(%s) AS %s", fn.body, alias), nil
+		return fmt.Sprintf("(SELECT %s.* FROM (%s) AS %s) AS %s", body, fn.body, body, alias), nil
 	}
-	return fmt.Sprintf("(SELECT FNB_%d.* FROM (SELECT %s) AS FNP_%d, (%s) AS FNB_%d) AS %s",
-		n, strings.Join(cols, ", "), n, fn.body, n, alias), nil
+	return fmt.Sprintf("(SELECT %s.* FROM (SELECT %s) AS FNP_%d, (%s) AS %s) AS %s",
+		body, strings.Join(cols, ", "), n, fn.body, body, alias), nil
 }
 
 func (fn *sqlFunction) param(name string) *sqlFunctionParam {

@@ -379,6 +379,21 @@ func virtualScopeSourceFromResultType(
 		}
 		labels = derived
 	}
+	// A SQL function call reads its body through a quantifier
+	// (SemanticAnalyzer.resolveTableFunction). Only the SQL names change: a
+	// body whose labels are its row keeps them as its flowed layout.
+	var rowLabels []query.OutputLabel
+	if strings.HasPrefix(alias, expr.SQLFunctionBody) {
+		names := query.QuantifierColumnNames(query.OutputLabelNames(labels))
+		for i := range labels {
+			if names[i] != labels[i].Name {
+				if rowLabels == nil {
+					rowLabels = append([]query.OutputLabel(nil), labels...)
+				}
+				labels[i] = query.OutputLabel{Name: names[i], Authored: true}
+			}
+		}
+	}
 	columns := make([]semantic.Column, len(record.Fields))
 	// The FLOWED layout is the exact row itself, field names included: the
 	// names the plan flows are the names this source's quantified object must
@@ -403,7 +418,8 @@ func virtualScopeSourceFromResultType(
 	// position; a column whose label and flowed name differ is, by that same
 	// rule, never resolved by name.
 	var flowed []semantic.Column
-	if bodyFlowsARecordConstructor(op) {
+	recordFlowed := bodyFlowsARecordConstructor(op)
+	if recordFlowed || rowLabels != nil {
 		flowed = make([]semantic.Column, len(record.Fields))
 	}
 	for i, field := range record.Fields {
@@ -419,7 +435,11 @@ func virtualScopeSourceFromResultType(
 		columns[i] = column
 		if flowed != nil {
 			flowed[i] = column
-			flowed[i].Id = semantic.FromNormalized(field.Name)
+			if recordFlowed {
+				flowed[i].Id = semantic.FromNormalized(field.Name)
+			} else {
+				flowed[i].Id = semantic.FromNormalized(rowLabels[i].Name)
+			}
 		}
 	}
 	aliasID := semantic.FromNormalized(alias)
@@ -1725,6 +1745,35 @@ func applyCTEColumnAliases(src semantic.ScopeSource, colAliases antlrgen.IFullId
 	if len(aliases) == 0 {
 		return src
 	}
+	names := make([]string, len(aliases))
+	for i, alias := range aliases {
+		names[i] = functions.FullIdToName(alias)
+	}
+	return applyColumnNames(src, names)
+}
+
+// quantifierNamedSource names a recursive CTE's columns as Java's union
+// quantifier flows them (query.QuantifierColumnNames).
+func quantifierNamedSource(src semantic.ScopeSource) semantic.ScopeSource {
+	if src.Table == nil {
+		return src
+	}
+	columns := src.Table.Columns()
+	labels := make([]string, len(columns))
+	for i, column := range columns {
+		labels[i] = column.Id.Name()
+	}
+	names := query.QuantifierColumnNames(labels)
+	if slices.Equal(names, labels) {
+		return src
+	}
+	return applyColumnNames(src, names)
+}
+
+// applyColumnNames renames a ScopeSource's columns, physical row included, in
+// order: the column list's rename, or a recursive CTE's row read through its
+// quantifier (query.QuantifierColumnNames).
+func applyColumnNames(src semantic.ScopeSource, names []string) semantic.ScopeSource {
 	tbl := src.Table
 	if tbl == nil {
 		return src
@@ -1733,11 +1782,10 @@ func applyCTEColumnAliases(src semantic.ScopeSource, colAliases antlrgen.IFullId
 
 	newCols := make([]semantic.Column, len(origCols))
 	for i, col := range origCols {
-		if i < len(aliases) {
-			// The renamed column exposes the explicit CTE column alias as its
-			// OUTPUT name — references (a.node) resolve to it verbatim.
-			newName := functions.FullIdToName(aliases[i])
-			newCols[i] = renameCarriedColumn(col, newName)
+		if i < len(names) {
+			// The renamed column exposes the new name as its OUTPUT name —
+			// references (a.node) resolve to it verbatim.
+			newCols[i] = renameCarriedColumn(col, names[i])
 			newCols[i].SQLAuthored = true
 		} else {
 			newCols[i] = col
@@ -1754,11 +1802,11 @@ func applyCTEColumnAliases(src semantic.ScopeSource, colAliases antlrgen.IFullId
 	// while the record constructor's deduplicated keys name its physical slots.
 	src.Table = newTable
 	src.FlowedColumns = append([]semantic.Column(nil), newCols...)
-	names := make([]string, len(newCols))
+	flowedNames := make([]string, len(newCols))
 	for i, column := range newCols {
-		names[i] = column.Id.Name()
+		flowedNames[i] = column.Id.Name()
 	}
-	for i, name := range values.DedupFieldNames(names) {
+	for i, name := range values.DedupFieldNames(flowedNames) {
 		src.FlowedColumns[i].Id = semantic.FromNormalized(name)
 	}
 	src.FlowedNullable = false

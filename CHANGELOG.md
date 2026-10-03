@@ -33,6 +33,7 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
 - Fixed-factor union planning uses fewer temporary allocations in boolean normalization and memo matching.
 - A recursive CTE's column list names its columns only for the query that reads the CTE; the recursive branch reads the seed's own names, as in Java 4.14.2.0.
 - A recursive CTE keeps the seed's column types and nullability for every iteration, as in Java 4.14.2.0; a recursive row that does not fit (a NULL into a NOT NULL column, another type) is refused with XXXXX.
+- A SQL function call and a recursive CTE name a repeated or unnamed column by its position (`_0`, `_1`, …), as in Java 4.14.2.0; a SQL function whose name is not ASCII can be called.
 - SQL accepts EXISTS inside AND/OR/NOT boolean expressions in WHERE and INNER JOIN ON, matching Java's one-row existential witness semantics.
 - `frl` is a package of the root module and releases under the project's `vX.Y.Z` tag.
 - SQL `LIKE` follows Java 4.14.2.0: wildcards cross newlines, `LIKE NULL` is allowed, and invalid escapes raise 22019/2200B/22025 per row.

@@ -1402,6 +1402,11 @@ func (r *Resolver) positionalFunctionArgs(ctx antlrgen.INamedOrUnnamedFunctionAr
 // argument with: `"$SQL_FUNCTION_ARGUMENT"(arg, CAST(NULL AS declared))`.
 const SQLFunctionArgument = "$SQL_FUNCTION_ARGUMENT"
 
+// SQLFunctionBody prefixes the alias a SQL function's expansion gives the
+// function's body, whose columns are named as Java's function call names
+// them (query.QuantifierColumnNames).
+const SQLFunctionBody = "$SQL_FUNCTION_BODY_"
+
 // walkSQLFunctionArgument is Java's promoteArgumentValueIfNeeded: the argument
 // promoted to its parameter's declared type, or 42883.
 func (r *Resolver) walkSQLFunctionArgument(fa antlrgen.INamedOrUnnamedFunctionArgsContext) (values.Value, error) {

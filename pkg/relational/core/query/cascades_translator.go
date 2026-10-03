@@ -9485,6 +9485,13 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		}
 	}
 	outCols := seedOut
+	// The union's quantifier names a repeated or unnamed seed column by its
+	// position (QuantifierColumnNames over the seed's SQL labels).
+	if labels, err := ExactLogicalOutputLabels(seedBranches[0], t.md, nil); err == nil && len(labels) == len(outCols) {
+		if names := QuantifierColumnNames(labels); !slices.Equal(names, labels) {
+			outCols = names
+		}
+	}
 	var mainCols []string
 	if len(c.ColumnAliases()) > 0 && len(c.ColumnAliases()) == len(outCols) {
 		mainCols = c.ColumnAliases() // normalized once, at the parse capture

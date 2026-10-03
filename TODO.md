@@ -13304,11 +13304,13 @@ against Java 4.14.2.0 before fixing, then tick with the commit.
 
 ### Table function duplicate column names
 
-- [ ] `select * from "__$func3"(10, 1, 1)` (valid-identifiers.yamsql) whose body
+- [x] `select * from "__$func3"(10, 1, 1)` (valid-identifiers.yamsql) whose body
   projects `f1.__A, f1.__B, f2.__A, f2.__B`: Java names the function's row
   `_0 … _3` (`Expressions.underlyingAsColumns` names a repeated or unnamed
-  column by position), Go answers `__A __B __A __B`. Booked as
-  `engine-gap:function-duplicate-columns` (`javacorpus/gaps.go`).
+  column by position), Go answers `__A __B __A __B`. Done: a function body and
+  a recursive CTE are named by `query.QuantifierColumnNames`; pinned by
+  `conformance/function_columns_conformance_test.go`. valid-identifiers now
+  stops at UPDATE … RETURNING (`engine-gap:dml-returning-result-set`).
 
 ### Recursive CTE row type
 

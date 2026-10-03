@@ -2,6 +2,7 @@ package query
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	recordlayer "fdb.dev/pkg/recordlayer"
@@ -393,6 +394,9 @@ func exactLogicalOutputLabels(
 			labels, err := exactLogicalOutputLabels(body, md, &bodyScope)
 			if err != nil {
 				return nil, err
+			}
+			if producer.Recursive() {
+				labels = quantifierLabels(labels)
 			}
 			if aliases := producer.ColumnAliases(); len(aliases) > 0 {
 				if len(aliases) != len(labels) {
@@ -819,6 +823,10 @@ func deriveCTEProducerType(producer *logical.CTEProducer, md *recordlayer.Record
 				// handleRecursiveNamedQuery types the temporary table by the
 				// seed). Later legs are fitted to it when written, so their
 				// types only need the seed's width.
+				seed, err = quantifierNamedRow(branch, seed, md, env)
+				if err != nil {
+					return nil, err
+				}
 				env.types[producer] = seed
 				seedRecord, isRecord := seed.(*values.RecordType)
 				for _, leg := range union.Inputs {
@@ -841,4 +849,54 @@ func deriveCTEProducerType(producer *logical.CTEProducer, md *recordlayer.Record
 		return nil, err
 	}
 	return cteBoundRowType(body, producer)
+}
+
+// quantifierLabels renames labels as a quantifier's row names them
+// (QuantifierColumnNames); a renamed column's name is the statement's.
+func quantifierLabels(labels []OutputLabel) []OutputLabel {
+	names := QuantifierColumnNames(OutputLabelNames(labels))
+	var renamed []OutputLabel
+	for i, label := range labels {
+		if names[i] == label.Name {
+			continue
+		}
+		if renamed == nil {
+			renamed = append([]OutputLabel(nil), labels...)
+		}
+		renamed[i] = OutputLabel{Name: names[i], Authored: true}
+	}
+	if renamed == nil {
+		return labels
+	}
+	return renamed
+}
+
+// quantifierNamedRow is a recursive CTE's seed row as Java's union quantifier
+// flows it: its fields named by QuantifierColumnNames over the seed's labels.
+func quantifierNamedRow(seedBranch logical.LogicalOperator, seed values.Type, md *recordlayer.RecordMetaData, env cteRows) (values.Type, error) {
+	record, ok := seed.(*values.RecordType)
+	if !ok {
+		return seed, nil
+	}
+	labels, err := exactLogicalOutputLabels(seedBranch, md, &logicalLabelScope{
+		rows: env, labels: make(map[*logical.CTEProducer][]OutputLabel),
+	})
+	if err != nil || len(labels) != len(record.Fields) {
+		return seed, nil
+	}
+	names := QuantifierColumnNames(OutputLabelNames(labels))
+	if slices.Equal(names, OutputLabelNames(labels)) {
+		return seed, nil
+	}
+	fields := append([]values.Field(nil), record.Fields...)
+	for i := range fields {
+		fields[i].Name = names[i]
+		fields[i].Ordinal = i
+	}
+	return &values.RecordType{
+		RecordName: record.RecordName,
+		Nullable:   record.Nullable,
+		Fields:     fields,
+		Legs:       append([]values.RecordTypeLeg(nil), record.Legs...),
+	}, nil
 }

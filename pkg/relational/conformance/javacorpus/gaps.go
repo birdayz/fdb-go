@@ -208,8 +208,7 @@ var engineGaps = []EngineGap{
 	// Java cannot satisfy both join-leg orderings from indexes; Go sorts the joined rows.
 	{"join-with-order-by-tests.yamsql", SkipConformanceGoAccepts, `"select (t1.*), (t2.*) from t1, t2 where t1.a1 = 1 and t2.b1 = 1 order by t1.a2, t2.b3": expecting statement to throw an error 0AF00, however it succeeded`, "sanctioned in-memory sort; TestCorpusReadSideExtensions"},
 	{"in-predicate.yamsql", SkipGapErrorClass, `"select a, e from ta where e in ('foo' , 35 + 4)": expecting '22000' error code, got '42804' instead`, "CQ-72"},
-	// TODO.md, "Table function duplicate column names".
-	{"valid-identifiers.yamsql", SkipGapFunctionDuplicateColumns, `"select * from \"__$func3\"(10, 1, 1);": cell mismatch at row 1: no column named "_0" in result`, "TODO table function duplicate column names"},
+	{"valid-identifiers.yamsql", SkipGapDMLReturning, `"UPDATE \"foo.tableA\" SET \"foo.tableA.A2\" = 100 WHERE \"foo.tableA.A1\" > 1 RETURNING \"new\".\"foo.tableA.A1\"": actual result set is NULL, expecting non-NULL result set`, "CQ-72"},
 	{"functions.yamsql", SkipGapDMLReturning, `"update C set st = coalesce(st, null) where c1 = 4 returning \"new\".st": actual result set is NULL, expecting non-NULL result set`, "CQ-72"},
 	// RE-BOOKED, not closed-by-relabel: the duplicate qualified star this file
 	// was booked for is FIXED. Java's expandStar has no uniqueness rule, so
