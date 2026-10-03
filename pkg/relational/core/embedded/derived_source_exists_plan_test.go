@@ -164,9 +164,6 @@ func TestDerivedSourceCorrelatedExistsPlans(t *testing.T) {
 					t.Fatal("CTE correlation predicate was routed to the outer filter")
 				}
 
-				wantInnerType := values.NewRecordType("", false, []values.Field{{
-					Name: "T1_ID", FieldType: values.NullableLong,
-				}})
 				foundExactCarrierRead := false
 				var inspectInner func(plans.RecordQueryPlan)
 				inspectInner = func(node plans.RecordQueryPlan) {
@@ -186,8 +183,17 @@ func TestDerivedSourceCorrelatedExistsPlans(t *testing.T) {
 									continue
 								}
 								root, isQOV := values.AsQuantifiedObjectValue(field.ChildValue())
-								if !isQOV || root.Correlation() != values.CurrentCorrelation() ||
-									!root.FlowedType().Equals(wantInnerType) {
+								if !isQOV || root.Correlation() != values.CurrentCorrelation() {
+									continue
+								}
+								// The correlation moves into the CTE's block, so the
+								// filter reads T1_ID off T2's row rather than off the
+								// block's projected one.
+								accessor, ok := field.Path().Accessor(0)
+								if !ok {
+									continue
+								}
+								if name, named := accessor.DisplayName(); !named || name != "T1_ID" {
 									continue
 								}
 								if root != inputLayout.Carrier() {
@@ -197,9 +203,11 @@ func TestDerivedSourceCorrelatedExistsPlans(t *testing.T) {
 								if !field.ResultType().Equals(values.NullableLong) {
 									t.Fatalf("inner T1_ID result type = %s, want %s", field.ResultType(), values.NullableLong)
 								}
+								rowType, isRecord := root.FlowedType().(*values.RecordType)
 								ordinals := field.Path().Ordinals()
-								if len(ordinals) != 1 || ordinals[0] != 0 {
-									t.Fatalf("inner T1_ID path = %v, want exact ordinal [0]", ordinals)
+								if !isRecord || len(ordinals) != 1 || ordinals[0] >= len(rowType.Fields) ||
+									rowType.Fields[ordinals[0]].Name != "T1_ID" {
+									t.Fatalf("inner T1_ID path = %v over %s, want the row's T1_ID ordinal", ordinals, root.FlowedType())
 								}
 								foundExactCarrierRead = true
 							}

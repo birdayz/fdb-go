@@ -49,14 +49,16 @@ func TestJoinOfTwoSameShapedMaterializingLegsPlans(t *testing.T) {
 		want string
 	}{
 		{
+			// Joined on an unindexed column, so both legs stay materialized: a
+			// primary-key join instead probes the inner leg (pinned below).
 			name: "derived legs, one column each",
-			sql:  `SELECT x.id, y.id FROM (SELECT id FROM t) x JOIN (SELECT id FROM t) y ON x.id = y.id`,
-			want: "Project([_current.ID#0, _current.ID#1], NestedLoopJoin(INNER, [1 preds], " +
-				"Project([_current.ID#0], Scan(T)), Project([_current.ID#0], Scan(T))))",
+			sql:  `SELECT x.v, y.v FROM (SELECT v FROM t) x JOIN (SELECT v FROM t) y ON x.v = y.v`,
+			want: "Project([_current.V#0, _current.V#1], NestedLoopJoin(INNER, [1 preds], " +
+				"Project([_current.V#1], Scan(T)), Project([_current.V#1], Scan(T))))",
 		},
 		{
 			name: "derived legs, two columns each",
-			sql:  `SELECT x.id, y.id FROM (SELECT id, v FROM t) x JOIN (SELECT id, v FROM t) y ON x.id = y.id`,
+			sql:  `SELECT x.id, y.id FROM (SELECT id, v FROM t) x JOIN (SELECT id, v FROM t) y ON x.v = y.v`,
 			want: "Project([_current.ID#0, _current.ID#2], NestedLoopJoin(INNER, [1 preds], " +
 				"Project([_current.ID#0, _current.V#1], Scan(T)), Project([_current.ID#0, _current.V#1], Scan(T))))",
 		},
@@ -65,11 +67,18 @@ func TestJoinOfTwoSameShapedMaterializingLegsPlans(t *testing.T) {
 			// clause. It is a separate derivation of the leg's row type, and it
 			// was the reported reproducer.
 			name: "CTE legs",
-			sql: `WITH a AS (SELECT id FROM t WHERE v > 20), b AS (SELECT id FROM t WHERE v < 30) ` +
-				`SELECT a.id, b.id FROM a JOIN b ON a.id = b.id`,
-			want: "Project([_current.ID#0, _current.ID#1], NestedLoopJoin(INNER, [1 preds], " +
-				"Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds])), " +
-				"Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))))",
+			sql: `WITH a AS (SELECT v FROM t WHERE id > 20), b AS (SELECT v FROM t WHERE id < 30) ` +
+				`SELECT a.v, b.v FROM a JOIN b ON a.v = b.v`,
+			want: "Project([_current.V#0, _current.V#1], NestedLoopJoin(INNER, [1 preds], " +
+				"Project([_current.V#1], Scan(T, [<>])), Project([_current.V#1], Scan(T, [<>]))))",
+		},
+		{
+			// A join predicate on the inner leg's primary key moves into that
+			// leg's block and probes it, as Java's merged Select does.
+			name: "derived legs joined on the primary key",
+			sql:  `SELECT x.id, y.id FROM (SELECT id, v FROM t) x JOIN (SELECT id, v FROM t) y ON x.id = y.id`,
+			want: "Project([_current.ID#0, _current.ID#2], FlatMap(outer=Project([_current.ID#0, _current.V#1], Scan(T)), " +
+				"inner=Project([_current.ID#0, _current.V#1], Scan(T, [=]))))",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

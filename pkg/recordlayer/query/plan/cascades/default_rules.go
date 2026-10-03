@@ -87,8 +87,9 @@ func DefaultExpressionRules() []ExpressionRule {
 		// PullFilterAboveProjectionRule REMOVED: Go-only rule not in Java.
 		// Pulling Filter above Projection put Filter where it couldn't
 		// find projected columns, causing resolution failures.
-		// PushFilterThroughProjectionRule REMOVED: Go-only rule not in Java.
-		// Same class of issue as PullFilterAboveProjectionRule.
+		// A WHERE over a query block moves into the block, re-expressed over
+		// the projected row (an earlier rule of this name rebased it untranslated).
+		NewPushFilterThroughProjectionRule(),
 		NewSortMergeRule(),
 		NewSortDedupKeysRule(),
 		NewSortConstantKeysElimRule(),
@@ -194,6 +195,8 @@ func PlanningExplorationRules() []ExpressionRule {
 		NewRewriteOuterJoinRule(),
 		NewPartitionSelectRule(),
 		NewPartitionBinarySelectRule(),
+		// A join predicate partitioned onto a query-block leg moves into the block.
+		NewPushPredicatesThroughProjectionRule(),
 		// Match candidates (index selection) in PLANNING as well as REWRITING.
 		// PartitionBinarySelectRule absorbs a join predicate into a correlated
 		// inner Select([join pred], Scan) *during PLANNING*; that inner must be

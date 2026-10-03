@@ -222,6 +222,8 @@ func pushPredicateToExpression(
 		return pushIntoLogicalFilter(originalPredicates, pushQuantifier, expr)
 	case *expressions.SelectExpression:
 		return pushIntoSelect(originalPredicates, pushQuantifier, expr)
+	case *expressions.LogicalProjectionExpression:
+		return pushThroughProjection(call, originalPredicates, pushQuantifier, expr, false)
 	case *expressions.LogicalUnionExpression:
 		return pushThroughUnion(call, originalPredicates, pushQuantifier, expr)
 	case *expressions.LogicalSortExpression:
@@ -355,8 +357,22 @@ func pushIntoSelect(
 	if !pushedAliasDenotesSelectRow(pushQuantifier, resultValue) {
 		return nil, nil
 	}
+	// A box is named by its rightmost leg, so a read of that leg's row through
+	// the box's alias is already a read of the Select's own quantifier.
+	var sameNamedLeg values.Type
+	for _, q := range selectExpr.GetQuantifiers() {
+		if q.GetAlias() == pushQuantifier.GetAlias() {
+			if flowed, err := q.RequireFlowedObjectValue(); err == nil && flowed != nil {
+				sameNamedLeg = flowed.Type()
+			}
+		}
+	}
 	tmBuilder := NewTranslationMapBuilder()
-	tmBuilder.When(pushQuantifier.GetAlias()).Then(func(_ values.CorrelationIdentifier, _ values.LeafValue) values.Value {
+	tmBuilder.When(pushQuantifier.GetAlias()).Then(func(_ values.CorrelationIdentifier, leaf values.LeafValue) values.Value {
+		if sameNamedLeg != nil && !values.QuantifiedRowShapesAgree(leaf.Type(), resultValue.Type()) &&
+			values.QuantifiedRowShapesAgree(leaf.Type(), sameNamedLeg) {
+			return leaf
+		}
 		return resultValue
 	})
 	tm := tmBuilder.Build()
@@ -384,6 +400,150 @@ func pushIntoSelect(
 		selectExpr.GetSourceAliases(),
 		selectExpr.GetJoinType(),
 	)
+}
+
+// pushThroughProjection is PushToVisitor.visitSelectExpression for Go's query
+// block, whose SELECT list is a LogicalProjection over its FROM/WHERE rather
+// than a Select's result value: the predicates are re-expressed over the
+// projected row and join the block's WHERE under the input's own alias, which
+// the projected values read. asSelect states that WHERE as a Select, the form
+// PLANNING's candidate matching reads; REWRITING keeps a filter a filter, as its
+// cost model counts Selects.
+func pushThroughProjection(
+	call *ExpressionRuleCall,
+	originalPredicates []predicates.QueryPredicate,
+	pushQuantifier expressions.Quantifier,
+	projection *expressions.LogicalProjectionExpression,
+	asSelect bool,
+) (expressions.RelationalExpression, error) {
+	inner := projection.GetInner()
+	if inner.Kind() != expressions.QuantifierForEach || inner.IsNullOnEmpty() || inner.IsStrictSingle() {
+		return nil, nil
+	}
+	resultValue := projection.GetResultValue()
+	if !pushedAliasDenotesSelectRow(pushQuantifier, resultValue) {
+		return nil, nil
+	}
+	tmBuilder := NewTranslationMapBuilder()
+	tmBuilder.When(pushQuantifier.GetAlias()).Then(func(_ values.CorrelationIdentifier, _ values.LeafValue) values.Value {
+		return resultValue
+	})
+	tm := tmBuilder.Build()
+	pushed := make([]predicates.QueryPredicate, 0, len(originalPredicates))
+	for _, p := range originalPredicates {
+		translated, ok := translatePredicateCorrelations(p, tm)
+		if !ok {
+			return nil, nil
+		}
+		pushed = append(pushed, translated)
+	}
+	var filtered []expressions.RelationalExpression
+	if innerRef := inner.GetRangesOver(); innerRef != nil {
+		for _, member := range innerRef.AllMembers() {
+			var absorbed expressions.RelationalExpression
+			var err error
+			switch below := member.(type) {
+			case *expressions.LogicalFilterExpression:
+				if asSelect {
+					absorbed, err = pushIntoLogicalFilter(pushed, inner, below)
+				} else {
+					absorbed, err = mergeIntoLogicalFilter(pushed, inner, below)
+				}
+			case *expressions.SelectExpression:
+				// A null-supplying leg keeps the block's WHERE above its
+				// null extension, as the outer join it is.
+				if !hasNullOnEmptyQuantifier(below.GetQuantifiers()) {
+					absorbed, err = pushIntoSelect(pushed, inner, below)
+				}
+			}
+			if err != nil {
+				return nil, err
+			}
+			if absorbed != nil {
+				filtered = append(filtered, absorbed)
+			}
+		}
+	}
+	if len(filtered) == 0 {
+		flowed, err := inner.RequireFlowedObjectValue()
+		if err != nil {
+			return nil, err
+		}
+		// A read of one leg of a box through the box's alias is resolved by the
+		// box's consumers, not by a filter over the whole box.
+		if !readsWholeRowOnly(pushed, inner.GetAlias(), flowed.Type()) {
+			return nil, nil
+		}
+		var over expressions.RelationalExpression
+		if asSelect {
+			over, err = expressions.NewSelectExpression(flowed, []expressions.Quantifier{inner}, pushed)
+		} else {
+			over, err = expressions.NewLogicalFilterExpression(pushed, inner)
+		}
+		if err != nil {
+			return nil, err
+		}
+		filtered = append(filtered, over)
+	}
+	filteredRef := call.MemoizeExpression(filtered[0])
+	for _, member := range filtered[1:] {
+		call.InsertReExploring(filteredRef, member)
+	}
+	newInner := expressions.NamedForEachQuantifier(inner.GetAlias(), filteredRef)
+	return projection.WithQuantifiers([]expressions.Quantifier{newInner})
+}
+
+// mergeIntoLogicalFilter is pushIntoLogicalFilter keeping the filter form.
+func mergeIntoLogicalFilter(
+	originalPredicates []predicates.QueryPredicate,
+	pushQuantifier expressions.Quantifier,
+	filter *expressions.LogicalFilterExpression,
+) (expressions.RelationalExpression, error) {
+	inner := filter.GetInner()
+	if inner.Kind() != expressions.QuantifierForEach || !rebasedAliasesDenoteOneRow(pushQuantifier, inner) {
+		return nil, nil
+	}
+	aliasMap, err := values.NewAliasMap([]values.AliasPair{{Source: pushQuantifier.GetAlias(), Target: inner.GetAlias()}})
+	if err != nil {
+		return nil, err
+	}
+	merged := append([]predicates.QueryPredicate(nil), filter.GetPredicates()...)
+	for _, p := range originalPredicates {
+		rebased, err := predicates.RebasePredicateChecked(p, aliasMap)
+		if err != nil {
+			return nil, err
+		}
+		merged = append(merged, rebased)
+	}
+	return expressions.NewLogicalFilterExpression(merged, inner)
+}
+
+func hasNullOnEmptyQuantifier(qs []expressions.Quantifier) bool {
+	for _, q := range qs {
+		if q.IsNullOnEmpty() {
+			return true
+		}
+	}
+	return false
+}
+
+// readsWholeRowOnly reports whether every read of alias in preds addresses the
+// whole row it flows, never one of its legs.
+func readsWholeRowOnly(preds []predicates.QueryPredicate, alias values.CorrelationIdentifier, row values.Type) bool {
+	whole := true
+	for _, p := range preds {
+		predicates.TransformEmbeddedValues(p, func(v values.Value) values.Value {
+			values.WalkValue(v, func(n values.Value) bool {
+				if qov, ok := values.AsQuantifiedObjectValue(n); ok && qov.Correlation() == alias &&
+					!values.QuantifiedRowShapesAgree(n.Type(), row) {
+					whole = false
+				}
+				return whole
+			})
+			return v
+		})
+	}
+	return whole
 }
 
 // pushOverChild creates a new SelectExpression wrapping the child

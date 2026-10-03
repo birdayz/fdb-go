@@ -13357,3 +13357,28 @@ against Java 4.14.2.0 before fixing, then tick with the commit.
   (`sqlFunction.invocation`) and runs T4 outermost, so the unordered rows come
   back in another order. Booked as `conformance:scan-choice-order`.
 
+
+### A SQL query block is one SelectExpression
+
+- [ ] Java builds every SQL query block as ONE `SelectExpression`: FROM sources
+  are its quantifiers, WHERE its predicates, the SELECT list its result value
+  (`LogicalOperator.generateSimpleSelect`); fdb-relational never constructs a
+  `LogicalProjectionExpression`. A derived table, CTE or table-function call is
+  a quantifier over another block Select, `SelectMergeRule` merges it into the
+  parent in REWRITING, and a function's argument row is a `range(1)` values box
+  (`CompiledSqlFunction.encapsulate`) that `DecorrelateValuesRule` pushes into
+  the body. Go builds a block as `LogicalProjection` over a filter or join Select
+  (`cascades_translator.go`, five projection sites), whose consumers read the
+  join row's legs by source alias, and binds function arguments through a
+  FROM-less `Explode` source. So nested blocks are never merged, predicates
+  never reach a derived block's access paths, and the join order of
+  table-function calls differs from Java (the item above). Do: translate each
+  block as `generateSimpleSelect` does, build the invocation as `encapsulate`
+  does, and leave merging to `SelectMergeRule`/`DecorrelateValuesRule`.
+  Delete the stopgap this replaces: `PushFilterThroughProjectionRule`,
+  `PushPredicatesThroughProjectionRule`
+  (`rule_push_predicates_through_projection.go`), `pushThroughProjection` and the
+  same-named-leg arm in `pushIntoSelect` (`rule_predicate_push_down.go`), and
+  restore the two embedded tests it re-expected. Closes the DIVERGENCES.md
+  entry "Go decomposes SelectExpression into separate logical operators" for
+  query blocks.
