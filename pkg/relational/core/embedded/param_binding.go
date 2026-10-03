@@ -184,6 +184,12 @@ func arrayParameter(rv reflect.Value) (values.Value, error) {
 		if err != nil {
 			return nil, err
 		}
+		// A bool binds as a BooleanValue, not a constant.
+		if b, isBool := ev.(*values.BooleanValue); isBool && b.Value != nil {
+			elems[i] = *b.Value
+			types = append(types, values.NotNullBoolean)
+			continue
+		}
 		c, ok := ev.(*values.ConstantValue)
 		if !ok || c.Value == nil {
 			return nil, api.NewError(api.ErrCodeUnsupportedOperation, "An ARRAY value cannot have NULL elements")

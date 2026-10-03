@@ -1219,6 +1219,16 @@ func coerceTupleElementForKey(v any, physicalType, operandType values.Type) any 
 		if f, ok := toFloat64Scalar(v); ok {
 			return f
 		}
+	case values.TypeCodeVersion:
+		// A row's __ROW_VERSION reads as its 12 serialized bytes; a version
+		// index key holds it as a tuple versionstamp.
+		if b, ok := v.([]byte); ok {
+			if version, err := recordlayer.CompleteVersionFromBytes(b); err == nil {
+				if versionstamp, err := version.ToVersionstamp(); err == nil {
+					return versionstamp
+				}
+			}
+		}
 	}
 	return v
 }

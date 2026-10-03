@@ -49,8 +49,6 @@ var engineGaps = []EngineGap{
 	// passes outright.
 	// A JOIN mixed into a comma-separated FROM list.
 	{"right-deep-plan-tests.yamsql", SkipGapCommaJoinFrom, "JOIN clauses on comma-separated FROM sources are not supported", "CQ-72"},
-	// TODO.md, "Prepared ARRAY parameters".
-	{"prepared.yamsql", SkipGapPreparedArrays, `0A000: An ARRAY value cannot have NULL elements`, "TODO prepared ARRAY parameters"},
 
 	// Querying the catalog's own tables (TEMPLATES, SCHEMAS) from a user
 	// connection finds no schema metadata to plan against.
@@ -171,8 +169,10 @@ var engineGaps = []EngineGap{
 	// struct POSITIONALLY, which is what Java's parseRecordFields does with a
 	// target type in hand.
 	//
-	// TODO.md, "Version comparison scan".
-	{"versions-tests.yamsql", SkipGapVersionComparisonScan, `scan comparison 0 (2, physical VERSION) projects to incompatible tuple carrier []uint8`, "TODO version comparison scan"},
+	// Java joins the two function bodies with T3's version index outermost;
+	// Go's expansion keeps each call a derived table and runs T4 outermost
+	// (TODO.md, "SQL function calls plan as nested derived tables").
+	{"versions-tests.yamsql", SkipConformanceScanChoiceOrder, `"select a.version AS version3, a.r.id AS id3, b.version AS version4, b.r.id AS id4, a.r.col2, b.r.col4 from t3_by_col1('b') a, t4_by_col1('b') b where 2 in b.r.c…": cell mismatch at row 1, cell ID3: expected 3 (Integer), got 4 (Long)`, "TODO SQL function calls plan as nested derived tables"},
 	// The seeded schedule reaches the EXISTS LIMIT extension first.
 	{"orderby.yamsql", SkipConformanceGoAccepts, `"select b from t1 where exists (select * from t1 order by b limit 1)": expecting statement to throw an error 0AF00, however it succeeded`, "RFC-128; TestCorpusReadSideExtensions"},
 	// Java cannot satisfy both join-leg orderings from indexes; Go sorts the joined rows.

@@ -13331,17 +13331,29 @@ against Java 4.14.2.0 before fixing, then tick with the commit.
 
 ### Prepared ARRAY parameters
 
-- [ ] prepared.yamsql (type-with-arrays-roundtrip, line 201): an INSERT binding
+- [x] prepared.yamsql (type-with-arrays-roundtrip, line 201): an INSERT binding
   ARRAY parameters (`!! [!l 10, !l 20] !!`) is refused 0A000 "An ARRAY value
   cannot have NULL elements"; Java inserts the row. Booked as
-  `engine-gap:prepared-array-parameters` (`javacorpus/gaps.go`).
+  `engine-gap:prepared-array-parameters` (`javacorpus/gaps.go`). Done: a bool
+  element bound as a BooleanValue and was taken for NULL (`arrayParameter`).
 
 ### Version comparison scan
 
-- [ ] versions-tests.yamsql (line 714): `select (t2.*), (t3.*) from t2, t3 where
+- [x] versions-tests.yamsql (line 714): `select (t2.*), (t3.*) from t2, t3 where
   … t2."__ROW_VERSION" > t3."__ROW_VERSION"` fails at execution, "building scan
   ranges for T3_VERSION_WITH_COL1: scan comparison 0 (2, physical VERSION)
   projects to incompatible tuple carrier []uint8"; Java answers it (its plan
   filters the version comparison after `ISCAN(T3_VERSION_WITH_COL1 <,>)`).
-  Booked as `engine-gap:version-comparison-scan` (`javacorpus/gaps.go`).
+  Booked as `engine-gap:version-comparison-scan` (`javacorpus/gaps.go`). Done:
+  the key coercion turns a row version's bytes into the versionstamp the index
+  stores (`coerceTupleElementForKey`).
+
+### SQL function calls plan as nested derived tables
+
+- [ ] versions-tests.yamsql (line 619) joins two table functions,
+  `t3_by_col1('b') a, t4_by_col1('b') b`. Java inlines both bodies and plans
+  T3's version index outermost, answering in version order; Go's text expansion
+  keeps each call a derived table over a one-row parameter source
+  (`sqlFunction.invocation`) and runs T4 outermost, so the unordered rows come
+  back in another order. Booked as `conformance:scan-choice-order`.
 

@@ -165,12 +165,6 @@ const (
 	// SkipGapCommaJoinFrom is a JOIN clause combined with comma-separated
 	// FROM sources (`FROM a, a.refs AS r JOIN b ON …`).
 	SkipGapCommaJoinFrom SkipClass = "engine-gap:comma-join-mixed-from"
-	// SkipGapPreparedArrays is a prepared statement binding ARRAY parameters
-	// the engine refuses as holding NULL elements.
-	SkipGapPreparedArrays SkipClass = "engine-gap:prepared-array-parameters"
-	// SkipGapVersionComparisonScan is a correlated comparison of two
-	// rows' __ROW_VERSION that fails building the version index scan's range.
-	SkipGapVersionComparisonScan SkipClass = "engine-gap:version-comparison-scan"
 	// SkipGapCatalogTables is a query against the catalog's own system tables.
 	SkipGapCatalogTables SkipClass = "engine-gap:catalog-system-tables"
 
@@ -249,8 +243,6 @@ func AllSkipClasses() []SkipClass {
 		SkipDDLOther,
 		SkipGapStructDML,
 		SkipGapCommaJoinFrom,
-		SkipGapPreparedArrays,
-		SkipGapVersionComparisonScan,
 		SkipGapCatalogTables,
 
 		SkipGapCorrelatedExistsSetOp,
