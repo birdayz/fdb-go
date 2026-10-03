@@ -165,10 +165,12 @@ const (
 	// SkipGapCommaJoinFrom is a JOIN clause combined with comma-separated
 	// FROM sources (`FROM a, a.refs AS r JOIN b ON …`).
 	SkipGapCommaJoinFrom SkipClass = "engine-gap:comma-join-mixed-from"
-	// SkipGapDMLReturning is a DML statement's RETURNING clause: the engine
-	// executes the mutation but produces no result set (the same surface
-	// SkipGapReturningDryRun covers for the DRY RUN variant).
-	SkipGapDMLReturning SkipClass = "engine-gap:dml-returning-result-set"
+	// SkipGapPreparedArrays is a prepared statement binding ARRAY parameters
+	// the engine refuses as holding NULL elements.
+	SkipGapPreparedArrays SkipClass = "engine-gap:prepared-array-parameters"
+	// SkipGapVersionComparisonScan is a correlated comparison of two
+	// rows' __ROW_VERSION that fails building the version index scan's range.
+	SkipGapVersionComparisonScan SkipClass = "engine-gap:version-comparison-scan"
 	// SkipGapCatalogTables is a query against the catalog's own system tables.
 	SkipGapCatalogTables SkipClass = "engine-gap:catalog-system-tables"
 
@@ -176,8 +178,6 @@ const (
 	SkipGapCorrelatedExistsSetOp SkipClass = "engine-gap:correlated-exists-setop"
 	// SkipGapNestedRecursiveWith is a WITH nested inside a recursive CTE body.
 	SkipGapNestedRecursiveWith SkipClass = "engine-gap:nested-recursive-with"
-	// SkipGapReturningDryRun is UPDATE … RETURNING … OPTIONS(DRY RUN).
-	SkipGapReturningDryRun SkipClass = "engine-gap:returning-dry-run"
 	// SkipGapPlannerDeclines is a query Cascades declines to plan.
 	SkipGapPlannerDeclines SkipClass = "engine-gap:planner-declines"
 	// SkipGapErrorClass is an error that reaches the client without a SQLSTATE,
@@ -249,12 +249,12 @@ func AllSkipClasses() []SkipClass {
 		SkipDDLOther,
 		SkipGapStructDML,
 		SkipGapCommaJoinFrom,
-		SkipGapDMLReturning,
+		SkipGapPreparedArrays,
+		SkipGapVersionComparisonScan,
 		SkipGapCatalogTables,
 
 		SkipGapCorrelatedExistsSetOp,
 		SkipGapNestedRecursiveWith,
-		SkipGapReturningDryRun,
 		SkipGapPlannerDeclines,
 		SkipGapErrorClass,
 		SkipConformanceGoAccepts,

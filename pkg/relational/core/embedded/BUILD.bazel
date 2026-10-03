@@ -12,6 +12,7 @@ go_library(
         "ddl.go",
         "ddl_normalizer.go",
         "decimal_constants.go",
+        "dml_returning.go",
         "execution_logging.go",
         "index_name_guard.go",
         "index_onsource.go",
@@ -501,6 +502,7 @@ go_test(
         "record_core_exception_sqlstate_test.go",
         "quoted_primary_key_plan_test.go",
         "decimal_constants.go",
+        "dml_returning.go",
     ],
     deps = [
         "//gen",

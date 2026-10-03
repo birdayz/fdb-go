@@ -111,8 +111,8 @@ func NewUpdateExpression(inner Quantifier, targetRecordType string, targetType v
 		return nil, err
 	}
 	resultType := &values.RecordType{Fields: []values.Field{
-		{Name: "OLD", Ordinal: 0, FieldType: oldValue.FlowedType()},
-		{Name: "NEW", Ordinal: 1, FieldType: exactTarget.Type()},
+		{Name: "old", Ordinal: 0, FieldType: oldValue.FlowedType()},
+		{Name: "new", Ordinal: 1, FieldType: values.WithNullability(exactTarget.Type(), true)},
 	}}
 	exactResult, err := snapshotExpressionResultType("UpdateExpression", resultType)
 	if err != nil {
@@ -152,7 +152,7 @@ func (e *UpdateExpression) GetTransforms() []UpdateTransform { return e.transfor
 // `new QueriedValue(computeResultType(inner.getFlowedObjectType(), targetType))`,
 // and computeResultType (:209-213) builds a TWO-FIELD record — `OLD` carrying the
 // inner's row and `NEW` carrying the target's. An UPDATE flows the before/after
-// pair, which is what makes `UPDATE … RETURNING "OLD"."X", "NEW"."X"` expressible.
+// pair, which is what makes `UPDATE … RETURNING "old".x, "new".x` expressible.
 // Go returns the inner's row: not a differently-shaped version of the same claim,
 // a different row with a different column count.
 //

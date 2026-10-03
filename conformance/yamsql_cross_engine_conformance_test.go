@@ -4441,12 +4441,10 @@ func insertValuesExprScenario() *yamsql.Scenario {
 	}
 }
 
-// dmlReturningProbesScenario mirrors testdata/dml_returning_probes.yaml.
-// Probes for DML RETURNING clause (Postgres / Java fdb-relational
-// syntax). DELETE/UPDATE RETURNING silently succeed (RETURNING
-// ignored); INSERT RETURNING is a parse error (42601). DML tests
-// are auto-skipped; error_code tests included as-is. Drops NOT NULL
-// on PK.
+// dmlReturningProbesScenario follows testdata/dml_returning_probes.yaml:
+// DELETE/UPDATE RETURNING answer the modified rows; INSERT RETURNING is a
+// parse error (42601). The setup stands in for the file's earlier steps,
+// since each test runs against the setup alone.
 func dmlReturningProbesScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "dml_returning_probes",
@@ -4457,16 +4455,14 @@ func dmlReturningProbesScenario() *yamsql.Scenario {
 			"UPDATE t SET n = 99 WHERE id = 2",
 		},
 		Tests: []yamsql.Test{
-			// DML tests (auto-skipped until harness extension).
-			// DELETE ... RETURNING — silently does the DELETE, no result set.
-			{Query: "DELETE FROM t WHERE id = 1 RETURNING id, n"},
-			// Verify row is gone.
+			// Each test runs against the setup alone: the deleted row is gone.
+			{Query: "DELETE FROM t WHERE id = 3 RETURNING id, n", Rows: [][]any{{3, 30}}},
 			{Query: "SELECT id FROM t WHERE id = 1", Rows: [][]any{}},
-			// UPDATE ... RETURNING — silently does the UPDATE, no result set.
-			{Query: "UPDATE t SET n = 99 WHERE id = 2 RETURNING id, n"},
-			// Verify update took effect.
+			// An UPDATE's list reads only "old" and "new".
+			{Query: "UPDATE t SET n = 99 WHERE id = 2 RETURNING id, n", ErrorCode: "42703"},
+			{Query: `UPDATE t SET n = 98 WHERE id = 2 RETURNING "old".n, "new".n`, Rows: [][]any{{99, 98}}},
 			{Query: "SELECT n FROM t WHERE id = 2", Rows: [][]any{{99}}},
-			// INSERT ... RETURNING — parser rejects → 42601.
+			// INSERT has no RETURNING in the grammar.
 			{Query: "INSERT INTO t VALUES (4, 40) RETURNING id, n", ErrorCode: "42601"},
 		},
 	}

@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**377 scenarios · 3117 query/assertion cases** across 18 feature areas — 2726 supported, 102 unsupported-feature pins, 289 error-path pins.
+**377 scenarios · 3118 query/assertion cases** across 18 feature areas — 2726 supported, 102 unsupported-feature pins, 290 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -32,7 +32,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Subqueries (EXISTS / IN / scalar) | 46 | 321 | 265 | 33 | 23 |
 | CTEs | 15 | 202 | 161 | 4 | 37 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 12 | 68 | 59 | 5 | 4 |
-| DML (INSERT / UPDATE / DELETE) | 26 | 240 | 201 | 3 | 36 |
+| DML (INSERT / UPDATE / DELETE) | 26 | 241 | 201 | 3 | 37 |
 | Ordering & pagination | 18 | 138 | 133 | 0 | 5 |
 | Scalar functions & expressions | 34 | 386 | 328 | 21 | 37 |
 | Predicates & WHERE | 12 | 104 | 102 | 0 | 2 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 40 | 340 | 301 | 5 | 34 |
-| **Total** | **377** | **3117** | **2726** | **102** | **289** |
+| **Total** | **377** | **3118** | **2726** | **102** | **290** |
 
 ## Aggregates & GROUP BY
 
@@ -275,7 +275,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `delete_complex_where` | 7 | 7 | 0 | 0 | DELETE with complex WHERE predicates |
 | `dml_conditional` | 6 | 6 | 0 | 0 | Conditional DML operations |
 | `dml_error_codes` | 9 | 5 | 0 | 4 | Error codes for DML operations aligned with Java behavior. |
-| `dml_returning_probes` | 5 | 4 | 0 | 1 | Probes for DML RETURNING clause (Postgres / Java fdb-relational |
+| `dml_returning_probes` | 6 | 4 | 0 | 2 | DML RETURNING (Java's QueryVisitor.visitUpdateStatement / |
 | `dml_with_null_safe` | 7 | 7 | 0 | 0 | DML (UPDATE / DELETE) with IS NOT DISTINCT FROM in WHERE — the |
 | `insert_arity` | 7 | 4 | 0 | 3 | INSERT column count mismatches (Java's inserts-updates-deletes.yamsql): |
 | `insert_default_values` | 4 | 4 | 0 | 0 | INSERT with NULL for optional columns |

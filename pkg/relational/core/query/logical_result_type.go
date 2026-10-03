@@ -269,6 +269,21 @@ func deriveLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordM
 	case *logical.LogicalCTE:
 		env.registry = env.registry.With(typed.CTEProducer)
 		return deriveLogicalResultType(typed.Main, md, env, unionType)
+	case *logical.LogicalDelete:
+		// DeleteExpression flows its input's row.
+		return deriveLogicalResultType(typed.Input, md, env, unionType)
+	case *logical.LogicalUpdate:
+		// UpdateExpression flows the pair of the row before and the target
+		// record after the update.
+		old, err := deriveLogicalResultType(typed.Input, md, env, unionType)
+		if err != nil {
+			return nil, err
+		}
+		target, err := exactScanResultType(logical.NewScan(typed.Target, ""), md)
+		if err != nil {
+			return nil, err
+		}
+		return UpdateResultType(old, &values.RecordType{Fields: target.(*values.RecordType).Fields}), nil
 	}
 	return nil, fmt.Errorf("no exact logical result type for %T", op)
 }
@@ -462,6 +477,10 @@ func exactLogicalOutputLabels(
 		nested := *env
 		nested.rows.registry = rows.registry.With(typed.CTEProducer)
 		return exactLogicalOutputLabels(typed.Main, md, &nested)
+	case *logical.LogicalDelete:
+		return exactLogicalOutputLabels(typed.Input, md, env)
+	case *logical.LogicalUpdate:
+		return []OutputLabel{{Name: "old", Authored: true}, {Name: "new", Authored: true}}, nil
 	}
 	// Every other node's exact row already carries its own labels: a
 	// projection's are its aliases, a scan's are its stored column names, an
@@ -899,4 +918,14 @@ func quantifierNamedRow(seedBranch logical.LogicalOperator, seed values.Type, md
 		Fields:     fields,
 		Legs:       append([]values.RecordTypeLeg(nil), record.Legs...),
 	}, nil
+}
+
+// UpdateResultType is UpdateExpression's row: "old", the row before the
+// update, and "new", the target record after it, nullable as Java's
+// Type.Record.fromFields target type is.
+func UpdateResultType(old, target values.Type) *values.RecordType {
+	return &values.RecordType{Fields: []values.Field{
+		{Name: "old", Ordinal: 0, FieldType: old},
+		{Name: "new", Ordinal: 1, FieldType: values.WithNullability(target, true)},
+	}}
 }

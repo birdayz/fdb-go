@@ -63,11 +63,11 @@ func (r *PushRequestedOrderingThroughUpdateRule) OnMatch(call *ImplementationRul
 	// the input edge. pushDMLRequestedOrderingsThroughValue filters it after the
 	// structural push-down, matching Java's constant/correlation scope gate.
 	computationValue := values.NewRawRecordConstructorValue(
-		values.RecordConstructorField{Name: "OLD", Value: oldValue},
+		values.RecordConstructorField{Name: "old", Value: oldValue},
 		values.RecordConstructorField{
-			Name: "NEW",
+			Name: "new",
 			Value: values.NewObjectValue(
-				values.UniqueCorrelationIdentifier(), upd.GetTargetType()),
+				values.UniqueCorrelationIdentifier(), values.WithNullability(upd.GetTargetType(), true)),
 		},
 	)
 	call.PushConstraint(innerRef, pushDMLRequestedOrderingsThroughValue(

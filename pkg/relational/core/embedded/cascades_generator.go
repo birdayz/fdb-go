@@ -1098,6 +1098,22 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 			"Unsupported operator "+fn)
 	}
 
+	var outputLabels []string
+	if elements := returningSelectElements(dml); elements != nil {
+		returning, err := buildReturning(logicalOp, elements, md, g.sessionTemplate())
+		if err != nil {
+			return nil, err
+		}
+		if fn := query.FindUnsupportedFunction(returning); fn != "" {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
+		}
+		if outputLabels, err = query.ExactLogicalOutputLabels(returning, md, nil); err != nil {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
+				"RETURNING has no exact output-label contract: %v", err)
+		}
+		logicalOp = returning
+	}
+
 	// Pass md so DML join legs (e.g. UPDATE … FROM a JOIN b) anchor (RFC-077 7.6).
 	ref, dmlScalarSubqueryPlans, translateErr := query.TranslateToCascadesWithError(logicalOp, md)
 	if translateErr != nil {
@@ -1203,6 +1219,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 
 		indexDependencies: collectPlanIndexDependencies(md, physPlan, dmlScalarSubs),
 		dryRun:            dryRun,
+		outputLabels:      outputLabels,
 	}, nil
 }
 

@@ -694,9 +694,12 @@ func (c *EmbeddedConnection) ExecContext(ctx context.Context, sql string, args [
 	if err != nil {
 		return nil, translateFDBError(err)
 	}
+	// A result set belongs on Query: Java's executeUpdate refuses it with
+	// EXECUTE_UPDATE_RETURNED_RESULT_SET (after running the statement; Go
+	// refuses before, see DIVERGENCES.md "DML statement-layer routing").
 	if !plan.IsUpdate() {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-			"unsupported statement type; supported: DDL, INSERT, UPDATE, DELETE")
+		return nil, api.NewErrorf(api.ErrCodeExecuteUpdateReturnedResultSet,
+			"query '%s' returns a result set, use JDBC executeQuery method instead", sql)
 	}
 	result, err := plan.Execute(ctx)
 	if err != nil {
@@ -742,8 +745,8 @@ func (c *EmbeddedConnection) QueryContext(ctx context.Context, sql string, args 
 	// ExecContext. We reject before executing (no surprise mutation), a
 	// deliberate divergence from Java's execute-then-throw (see DIVERGENCES).
 	if plan.IsUpdate() {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-			"INSERT/UPDATE/DELETE return a row count, not rows — use Exec, not Query")
+		return nil, api.NewErrorf(api.ErrCodeNoResultSet,
+			"query '%s' does not return result set, use JDBC executeUpdate method instead", sql)
 	}
 	result, err := plan.Execute(ctx)
 	if err != nil {

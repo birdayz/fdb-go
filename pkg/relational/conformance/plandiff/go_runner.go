@@ -176,7 +176,7 @@ func withTeardown(runErr error, teardown []error) error {
 // the query and capture its result. Tears the ephemeral state down
 // in defer.
 func (r *goSQLRunner) runEphemeral(ctx context.Context, schemaTemplate string, setupSqls []string, querySql string, args ...any) (RowSet, error) {
-	return r.runEphemeralFollowUp(ctx, schemaTemplate, setupSqls, querySql, "", isDMLQuery(querySql), args...)
+	return r.runEphemeralFollowUp(ctx, schemaTemplate, setupSqls, querySql, "", isDMLQuery(querySql) && !embedded.DMLReturnsRows(querySql), args...)
 }
 
 // PreparedDMLRunner runs a prepared DML statement and then a plain follow-up query

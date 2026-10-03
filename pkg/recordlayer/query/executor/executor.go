@@ -4471,7 +4471,7 @@ func executeUpdate(
 	// settled before the first write).
 	resultType, ok := p.GetResultType().(*values.RecordType)
 	if !ok || resultType == nil || len(resultType.Fields) != 2 {
-		return nil, layoutBindingError(values.LayoutTypeMismatch, "update result is not exact {OLD,NEW}")
+		return nil, layoutBindingError(values.LayoutTypeMismatch, "update result is not exact {old,new}")
 	}
 	results := make([]QueryResult, 0, len(built))
 	for _, pending := range built {

@@ -359,10 +359,14 @@ func (r *Resolver) resolveWholeRow(id semantic.Identifier) (values.Value, bool, 
 }
 
 // expandStarRecord is Java's expandStar packed into one record: the columns of
-// the qualified source, or of every source in scope.
+// the qualified source, or of every source in scope, or the fields of a struct
+// column the qualifier names when no source does (expandStar's case 3).
 func (r *Resolver) expandStarRecord(qualifier *semantic.Identifier) (values.Value, error) {
 	var fields []values.RecordConstructorField
 	if r.scope != nil {
+		if qualifier != nil && !r.scopeNamesSource(*qualifier) {
+			return r.expandStructRecord(*qualifier)
+		}
 		for _, src := range r.scope.Sources() {
 			if src.Table == nil || (qualifier != nil && !src.Alias.EqualsIgnoreQuoting(*qualifier)) {
 				continue
@@ -384,6 +388,57 @@ func (r *Resolver) expandStarRecord(qualifier *semantic.Identifier) (values.Valu
 		return nil, &UnsupportedExpressionShapeError{Shape: "RecordConstructor over STAR with no columns"}
 	}
 	return values.NewRecordConstructorValue(fields...), nil
+}
+
+// scopeNamesSource reports whether a source in scope is named qualifier.
+func (r *Resolver) scopeNamesSource(qualifier semantic.Identifier) bool {
+	for _, src := range r.scope.Sources() {
+		if src.Alias.EqualsIgnoreQuoting(qualifier) {
+			return true
+		}
+	}
+	return false
+}
+
+// expandStructRecord packs the fields of the struct column qualifier names
+// into one record.
+func (r *Resolver) expandStructRecord(qualifier semantic.Identifier) (values.Value, error) {
+	value, err := r.ResolveIdentifierPath([]semantic.Identifier{qualifier})
+	if err != nil {
+		return nil, err
+	}
+	record, ok := value.Type().(*values.RecordType)
+	if !ok {
+		return nil, &NonStructStarError{Qualifier: qualifier.Name()}
+	}
+	fields := make([]values.RecordConstructorField, 0, len(record.Fields))
+	for i, field := range record.Fields {
+		// A pseudo-field is invisible to a star, as it is on a table.
+		if values.IsRowVersionPseudoField(field.Name, field.FieldType) {
+			continue
+		}
+		request, err := values.FieldByNameAndOrdinal(field.Name, i)
+		if err != nil {
+			return nil, err
+		}
+		bound, err := values.ResolveFieldAccess(value, []values.FieldRequest{request})
+		if err != nil {
+			return nil, err
+		}
+		fields = append(fields, values.RecordConstructorField{Name: field.Name, Value: bound})
+	}
+	if len(fields) == 0 {
+		return nil, &UnsupportedExpressionShapeError{Shape: "RecordConstructor over STAR with no columns"}
+	}
+	return values.NewRecordConstructorValue(fields...), nil
+}
+
+// NonStructStarError is Java's INVALID_COLUMN_REFERENCE for a star over a
+// column that is not a struct.
+type NonStructStarError struct{ Qualifier string }
+
+func (e *NonStructStarError) Error() string {
+	return "attempt to expand non-struct column " + e.Qualifier
 }
 
 // ResolveCorrelatedIdentifierPath is ResolveIdentifierPath for a FROM item's

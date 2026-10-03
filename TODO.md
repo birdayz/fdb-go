@@ -6564,7 +6564,11 @@ discarded (not committed) since it fails `codex_nested_scope`.
 </details>
 
 
-### [ ] dml: DELETE/UPDATE ... RETURNING silently ignored — Java supports it (divergence, found 2026-06-28)
+### [x] dml: DELETE/UPDATE ... RETURNING silently ignored — Java supports it (divergence, found 2026-06-28)
+
+Done: RETURNING builds Java's select over the modification's rows
+(`embedded/dml_returning.go`), pinned by `conformance/returning_conformance_test.go`
+and `sqldriver/dml_returning_fdb_test.go`.
 
 The shared grammar carries `(RETURNING selectElements)?` on `deleteStatement` and
 `updateStatement`, and **Java supports it** — `QueryVisitor.visitDeleteStatement:848` /
@@ -13324,4 +13328,20 @@ against Java 4.14.2.0 before fixing, then tick with the commit.
   fixed point is the seed's row and each recursive value is promoted or
   narrowed when written (DIVERGENCES.md, "Recursive CTE rows that do not fit
   the seed").
+
+### Prepared ARRAY parameters
+
+- [ ] prepared.yamsql (type-with-arrays-roundtrip, line 201): an INSERT binding
+  ARRAY parameters (`!! [!l 10, !l 20] !!`) is refused 0A000 "An ARRAY value
+  cannot have NULL elements"; Java inserts the row. Booked as
+  `engine-gap:prepared-array-parameters` (`javacorpus/gaps.go`).
+
+### Version comparison scan
+
+- [ ] versions-tests.yamsql (line 714): `select (t2.*), (t3.*) from t2, t3 where
+  … t2."__ROW_VERSION" > t3."__ROW_VERSION"` fails at execution, "building scan
+  ranges for T3_VERSION_WITH_COL1: scan comparison 0 (2, physical VERSION)
+  projects to incompatible tuple carrier []uint8"; Java answers it (its plan
+  filters the version comparison after `ISCAN(T3_VERSION_WITH_COL1 <,>)`).
+  Booked as `engine-gap:version-comparison-scan` (`javacorpus/gaps.go`).
 

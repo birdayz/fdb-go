@@ -512,6 +512,16 @@ func planPhysicalDMLWithMetadata(
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
 	}
+	if elements := returningSelectElements(dml); elements != nil {
+		returning, err := buildReturning(logicalOp, elements, md, defaultEmbeddedTemplate)
+		if err != nil {
+			return nil, err
+		}
+		if fn := query.FindUnsupportedFunction(returning); fn != "" {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
+		}
+		logicalOp = returning
+	}
 
 	// TranslateToCascadesWithError, the same call planDML makes. The subquery
 	// plans are dropped -- the corpus dump pins the OUTER plan's shape and there

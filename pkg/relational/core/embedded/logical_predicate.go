@@ -1129,6 +1129,10 @@ func mapPredicateWalkError(walkErr error) *api.Error {
 	if errors.As(walkErr, &inListNull) {
 		return api.NewError(api.ErrCodeWrongObjectType, "NULL values are not allowed in the IN list")
 	}
+	var nonStructStar *expr.NonStructStarError
+	if errors.As(walkErr, &nonStructStar) {
+		return api.NewError(api.ErrCodeInvalidColumnReference, nonStructStar.Error())
+	}
 	var srcNotFound *semantic.SourceNotFoundError
 	if errors.As(walkErr, &srcNotFound) {
 		return api.NewErrorf(api.ErrCodeUndefinedColumn, "no FROM source aliased as %s", srcNotFound.Alias.Name())
@@ -7518,6 +7522,10 @@ func starColumnsFromScopeChecked(resolver *expr.Resolver, qualifier string) ([]p
 			}
 			columns := make([]projCol, 0, len(record.Fields))
 			for i, field := range record.Fields {
+				// A pseudo-field is invisible to a star, as it is on a table.
+				if values.IsRowVersionPseudoField(field.Name, field.FieldType) {
+					continue
+				}
 				request, err := values.FieldByNameAndOrdinal(field.Name, i)
 				if err != nil {
 					return nil, err

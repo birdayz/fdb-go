@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/embedded"
 	"gopkg.in/yaml.v3"
 )
 
@@ -266,10 +267,14 @@ func runErrorTest(ctx context.Context, db *sql.DB, t *Test, args ...any) string 
 }
 
 // IsQuery reports whether stmt should be routed through database/sql's
-// Query path. SELECT (and its lead keywords WITH / VALUES) return
-// result sets; everything else goes through Exec. Strips a leading
-// paren so `(SELECT ...)` counts as a query, and leading comments.
+// Query path. SELECT (and its lead keywords WITH / VALUES) and an UPDATE or
+// DELETE with a RETURNING list return result sets; everything else goes
+// through Exec. Strips a leading paren so `(SELECT ...)` counts as a query,
+// and leading comments.
 func IsQuery(stmt string) bool {
+	if embedded.DMLReturnsRows(stmt) {
+		return true
+	}
 	s := strings.TrimLeft(stmt, " \t\r\n(")
 	for {
 		if rest, ok := strings.CutPrefix(s, "--"); ok {

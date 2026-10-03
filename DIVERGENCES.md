@@ -1024,7 +1024,8 @@ intentional divergence at the statement layer:
 
 | Aspect | Java | Go |
 |---|---|---|
-| DML via the rows-returning method (`executeQuery` / `Query`) | Executes the DML, counts rows, then throws "use executeUpdate" — the mutation still happens | Rejects **before** executing ("use Exec, not Query"); no mutation |
+| DML via the rows-returning method (`executeQuery` / `Query`) | Executes the DML, counts rows, then throws 02F01 "does not return result set" — the mutation still happens | Rejects with the same 02F01 **before** executing; no mutation |
+| A row-returning statement (SELECT, UPDATE/DELETE … RETURNING) via `executeUpdate` / `Exec` | Executes it, then throws 42F61 "returns a result set" — a RETURNING mutation still happens | Rejects with the same 42F61 **before** executing; no mutation |
 
 Go rejects up front to avoid a surprise write on a misused method; the plan
 path is identical to Java, only the execute-then-throw side effect differs.

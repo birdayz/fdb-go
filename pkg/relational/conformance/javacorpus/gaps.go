@@ -49,10 +49,8 @@ var engineGaps = []EngineGap{
 	// passes outright.
 	// A JOIN mixed into a comma-separated FROM list.
 	{"right-deep-plan-tests.yamsql", SkipGapCommaJoinFrom, "JOIN clauses on comma-separated FROM sources are not supported", "CQ-72"},
-	// UPDATE … RETURNING executes the mutation (the array SET now converts)
-	// but yields no result set — the driver's DML surface returns a row
-	// count only (dml_returning_probes.yaml pins the driver behaviour).
-	{"prepared.yamsql", SkipGapDMLReturning, `update ta set e = [10, 100, 1000] where a = 1 returning`, "CQ-72"},
+	// TODO.md, "Prepared ARRAY parameters".
+	{"prepared.yamsql", SkipGapPreparedArrays, `0A000: An ARRAY value cannot have NULL elements`, "TODO prepared ARRAY parameters"},
 
 	// Querying the catalog's own tables (TEMPLATES, SCHEMAS) from a user
 	// connection finds no schema metadata to plan against.
@@ -173,43 +171,14 @@ var engineGaps = []EngineGap{
 	// struct POSITIONALLY, which is what Java's parseRecordFields does with a
 	// target type in hand.
 	//
-	// functions.yamsql: the struct-query gap CLOSED and the file RE-BOOKED, it
-	// did not pass. A COMPUTED record now reaches the driver as an api.Struct
-	// — RFC-204 §4.5.1's plan-time bake stamps each RecordConstructorValue
-	// with a descriptor from the plan's single type repository, so Evaluate
-	// builds a dynamic proto Message exactly as Java's
-	// RecordConstructorValue.eval does (RecordConstructorValue.java:113-139),
-	// and materializeDriverValue's ProtoMessage → api.Struct conversion (Java
-	// RowStruct.java:184-197) fires for a computed record just as it already
-	// did for a stored one.
-	//
-	// Clearing that exposed two further blockers, each independent of structs
-	// and of each other. The FIRST is fixed here rather than booked: LEAST and
-	// GREATEST admitted argument types Java rejects, and rejected them with
-	// the wrong SQLSTATE. Java runs a two-step admission
-	// (VariadicFunctionValue.encapsulate :190-212) — fold with maximumType,
-	// then look up a physical operator — and the two steps carry DIFFERENT
-	// codes: `greatest(bytes_col, 'a')` has no common type (22000), while
-	// `least(struct_col, struct_col)` has a common type with no operator
-	// registered for it (22F00). Go had neither check; both now run at plan
-	// time, modelled on Java's operator map rather than a reject list.
-	//
-	// The SECOND is what this entry books, and it has nothing to do with
-	// structs: `update … returning "new".st` produces no result set, because
-	// DML RETURNING is not implemented. Pinned at that exact statement so the
-	// struct and LEAST/GREATEST fixes above cannot silently regress behind it —
-	// the bare "no result set" text alone would swallow ANY other
-	// result-set-less assertion this 111-query file grows.
-	// (The %q-formatted statement text escapes the embedded quotes, so the
-	// signature matches the escaped form.)
-	{"versions-tests.yamsql", SkipGapDMLReturning, `"UPDATE t3 SET col2 = col2 + 1 WHERE col1 = 'a' RETURNING \"new\".*": actual result set is NULL, expecting non-NULL result set`, "CQ-72"},
+	// TODO.md, "Version comparison scan".
+	{"versions-tests.yamsql", SkipGapVersionComparisonScan, `scan comparison 0 (2, physical VERSION) projects to incompatible tuple carrier []uint8`, "TODO version comparison scan"},
 	// The seeded schedule reaches the EXISTS LIMIT extension first.
 	{"orderby.yamsql", SkipConformanceGoAccepts, `"select b from t1 where exists (select * from t1 order by b limit 1)": expecting statement to throw an error 0AF00, however it succeeded`, "RFC-128; TestCorpusReadSideExtensions"},
 	// Java cannot satisfy both join-leg orderings from indexes; Go sorts the joined rows.
 	{"join-with-order-by-tests.yamsql", SkipConformanceGoAccepts, `"select (t1.*), (t2.*) from t1, t2 where t1.a1 = 1 and t2.b1 = 1 order by t1.a2, t2.b3": expecting statement to throw an error 0AF00, however it succeeded`, "sanctioned in-memory sort; TestCorpusReadSideExtensions"},
 	{"in-predicate.yamsql", SkipGapErrorClass, `"select a, e from ta where e in ('foo' , 35 + 4)": expecting '22000' error code, got '42804' instead`, "CQ-72"},
-	{"valid-identifiers.yamsql", SkipGapDMLReturning, `"UPDATE \"foo.tableA\" SET \"foo.tableA.A2\" = 100 WHERE \"foo.tableA.A1\" > 1 RETURNING \"new\".\"foo.tableA.A1\"": actual result set is NULL, expecting non-NULL result set`, "CQ-72"},
-	{"functions.yamsql", SkipGapDMLReturning, `"update C set st = coalesce(st, null) where c1 = 4 returning \"new\".st": actual result set is NULL, expecting non-NULL result set`, "CQ-72"},
+	{"valid-identifiers.yamsql", SkipGapCatalogTables, `"select count(*) from \"TEMPLATES\" where template_name = 'टेम्पलेट'": 0AF00: no schema metadata available`, "CQ-72"},
 	// RE-BOOKED, not closed-by-relabel: the duplicate qualified star this file
 	// was booked for is FIXED. Java's expandStar has no uniqueness rule, so
 	// `SELECT A.*, A.* FROM A` is legal and the 42702 comes from the OUTER
@@ -302,11 +271,6 @@ var engineGaps = []EngineGap{
 	// coercion and dies with an internal XX000 — the code class differs on
 	// a shared-surface statement, so it stays a counted divergence.
 	{"arrays.yamsql", SkipGapErrorClass, "expecting 'XX000' error code, got '23502'", "RFC-204 P2"},
-
-	// RE-ARMED by struct DDL landing (this class was masked while the file's
-	// template failed at its struct declarations): UPDATE … RETURNING with
-	// OPTIONS(DRY RUN) yields no result set through the driver.
-	{"update-delete-returning.yamsql", SkipGapReturningDryRun, "actual result set is NULL, expecting non-NULL result set", "RFC-201 Phase 5"},
 
 	// ---- Gaps armed by RFC-202 S2: these files' index DDL now succeeds, so
 	// their queries run for the first time and each reaches its own

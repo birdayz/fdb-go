@@ -76,8 +76,8 @@ func NewRecordQueryUpdatePlanFromQuantifierWithTargetType(
 		return nil, fmt.Errorf("RecordQueryUpdatePlan NEW type: %w", err)
 	}
 	resultType := &values.RecordType{Fields: []values.Field{
-		{Name: "OLD", Ordinal: 0, FieldType: oldType},
-		{Name: "NEW", Ordinal: 1, FieldType: exactTarget.Type()},
+		{Name: "old", Ordinal: 0, FieldType: oldType},
+		{Name: "new", Ordinal: 1, FieldType: values.WithNullability(exactTarget.Type(), true)},
 	}}
 	base, err := newPlanExprBaseForType("RecordQueryUpdatePlan", resultType)
 	if err != nil {
@@ -159,7 +159,7 @@ func UpdateTargetFieldType(target *values.RecordType, tr expressions.UpdateTrans
 // GetInner returns the source plan, dereferenced through the quantifier.
 func (p *RecordQueryUpdatePlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
 
-// GetResultValue returns the stable current QOV for {OLD,NEW}.
+// GetResultValue returns the stable current QOV for {old,new}.
 func (p *RecordQueryUpdatePlan) GetResultValue() values.Value {
 	return p.PlanExprBase.GetResultValue()
 }
