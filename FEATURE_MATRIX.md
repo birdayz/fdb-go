@@ -23,14 +23,14 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**377 scenarios · 3114 query/assertion cases** across 18 feature areas — 2725 supported, 102 unsupported-feature pins, 287 error-path pins.
+**377 scenarios · 3117 query/assertion cases** across 18 feature areas — 2726 supported, 102 unsupported-feature pins, 289 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
 | Aggregates & GROUP BY | 55 | 349 | 314 | 19 | 16 |
 | Joins | 66 | 313 | 296 | 2 | 15 |
 | Subqueries (EXISTS / IN / scalar) | 46 | 321 | 265 | 33 | 23 |
-| CTEs | 15 | 199 | 160 | 4 | 35 |
+| CTEs | 15 | 202 | 161 | 4 | 37 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 12 | 68 | 59 | 5 | 4 |
 | DML (INSERT / UPDATE / DELETE) | 26 | 240 | 201 | 3 | 36 |
 | Ordering & pagination | 18 | 138 | 133 | 0 | 5 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 40 | 340 | 301 | 5 | 34 |
-| **Total** | **377** | **3114** | **2725** | **102** | **287** |
+| **Total** | **377** | **3117** | **2726** | **102** | **289** |
 
 ## Aggregates & GROUP BY
 
@@ -243,7 +243,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `cte_recursive_tree` | 3 | 3 | 0 | 0 | Recursive CTE tree traversal |
 | `cte_star_column_aliases` | 3 | 2 | 0 | 1 | a CTE column-alias list over a STAR body. |
 | `cte_with_insert` | 2 | 1 | 0 | 1 | CTE used in INSERT ... |
-| `recursive_cte` | 26 | 19 | 4 | 3 | WITH RECURSIVE CTEs — semi-naive (level-order) evaluation. |
+| `recursive_cte` | 29 | 20 | 4 | 5 | WITH RECURSIVE CTEs — semi-naive (level-order) evaluation. |
 | `recursive_cte_advanced` | 2 | 2 | 0 | 0 | Advanced recursive CTE edge cases — regression guards for column alias |
 | `recursive_cte_aggregate` | 3 | 3 | 0 | 0 | Recursive CTE combined with aggregation — exercises the interaction |
 | `recursive_cte_tree_java` | 4 | 4 | 0 | 0 | Recursive CTE for tree traversal. |

@@ -972,7 +972,7 @@ func seedRecursiveChain(t *testing.T, ctx context.Context, db *sql.DB) *sql.Conn
 // (recursiveUnionCursor) is the only caller of checkDepth — the eager and DFS
 // arms have their own separate caps and would not exercise this at all.
 const recursiveChainQuery = "WITH RECURSIVE r(n) AS (" +
-	"SELECT id FROM edges WHERE parent = 0 " +
+	"SELECT id AS n FROM edges WHERE parent = 0 " +
 	"UNION ALL " +
 	"SELECT e.id FROM edges AS e, r WHERE e.parent = r.n" +
 	") TRAVERSAL ORDER level_order SELECT n FROM r"

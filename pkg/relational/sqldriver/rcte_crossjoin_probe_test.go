@@ -123,7 +123,7 @@ func TestFDB_RecursiveCTECrossJoin(t *testing.T) {
 		query := `WITH RECURSIVE reach(n) AS (
 			SELECT src FROM edge WHERE src = 1
 			UNION
-			SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.n
+			SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.src
 		)
 		SELECT n FROM reach ORDER BY n`
 

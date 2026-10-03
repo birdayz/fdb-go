@@ -84,7 +84,7 @@ func TestFDB_TimeBudgetCeiling_RecursionErrorsNotPartial(t *testing.T) {
 	}
 
 	const q = "WITH RECURSIVE r(n) AS (" +
-		"SELECT id FROM edges WHERE parent = 0 " +
+		"SELECT id AS n FROM edges WHERE parent = 0 " +
 		"UNION " +
 		"SELECT e.id FROM edges AS e, r WHERE e.parent = r.n" +
 		") SELECT n FROM r"

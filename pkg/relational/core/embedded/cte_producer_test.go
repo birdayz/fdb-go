@@ -89,7 +89,7 @@ func TestRetainedRecursiveCTEReusesPreparedSeed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	query, err := parseQueryFromSelect(t, "WITH RECURSIVE r(x) AS (SELECT id FROM t seed UNION ALL SELECT x FROM r step WHERE x < 3) SELECT x FROM r result")
+	query, err := parseQueryFromSelect(t, "WITH RECURSIVE r(x) AS (SELECT id AS x FROM t seed UNION ALL SELECT x FROM r step WHERE x < 3) SELECT x FROM r result")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,10 +249,10 @@ func TestComputedProjectionMissingColumnIsNotDeclined(t *testing.T) {
 func TestRetainedNestedRecursiveCTEPlanBindings(t *testing.T) {
 	t.Parallel()
 	const sql = `WITH RECURSIVE r(n) AS (
-		SELECT id FROM t UNION ALL SELECT n + 1 FROM r WHERE n < 3)
+		SELECT id AS n FROM t UNION ALL SELECT n + 1 FROM r WHERE n < 3)
 		SELECT n FROM r WHERE NOT EXISTS (
 			WITH RECURSIVE r(n) AS (
-				SELECT id FROM t WHERE id < 0 UNION ALL SELECT n + 1 FROM r WHERE n < 3)
+				SELECT id AS n FROM t WHERE id < 0 UNION ALL SELECT n + 1 FROM r WHERE n < 3)
 			SELECT n FROM r) ORDER BY n`
 	plan, err := PlanPhysicalForTest(sql, `CREATE TABLE t (id BIGINT, PRIMARY KEY (id))`, nil)
 	if err != nil {

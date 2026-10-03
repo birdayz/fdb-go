@@ -52,13 +52,13 @@ func TestFDB_RecursiveCTERekeyGate(t *testing.T) {
 		"INSERT INTO t VALUES (1, -1), (2, 1), (3, 2), (4, 3), (5, 4), (6, 5), (7, 6), (8, 7), (100, 3)")).
 		Error().NotTo(gomega.HaveOccurred())
 
-	// Renamed recursive CTE whose recursive branch is a self-join. `a.cur` resolves
-	// to the CTE's OUTPUT column CUR (post-flip: field CUR, not the source ID),
-	// so the temp table must be keyed under CUR/ORIG for the join predicate to match.
+	// Renamed recursive CTE whose recursive branch is a self-join. `a.id` reads
+	// the seed's column ID (the column list renames only what the main query
+	// sees), so the temp table is keyed under ID/PARENT for the join to match.
 	query := `WITH RECURSIVE walk(cur, orig) AS (
 		SELECT id, parent FROM t WHERE id = 1
 		UNION ALL
-		SELECT b.id, b.parent FROM walk AS a, t AS b WHERE b.parent = a.cur
+		SELECT b.id, b.parent FROM walk AS a, t AS b WHERE b.parent = a.id
 	)
 	SELECT cur FROM walk ORDER BY cur`
 
@@ -82,12 +82,12 @@ func TestFDB_RecursiveCTERekeyGate(t *testing.T) {
 	g.Expect(got).To(gomega.Equal([]int64{1, 2, 3, 4, 5, 6, 7, 8, 100}))
 
 	// UNION DISTINCT variant over the same renamed+joined shape: dedup keys on the
-	// OUTPUT column CUR (not the inert source key the rename projects from), so
+	// seed column ID, which the main query reads as CUR, so
 	// re-derivations collapse and the closure is produced exactly once.
 	distinctQuery := `WITH RECURSIVE walk(cur, orig) AS (
 		SELECT id, parent FROM t WHERE id = 1
 		UNION
-		SELECT b.id, b.parent FROM walk AS a, t AS b WHERE b.parent = a.cur
+		SELECT b.id, b.parent FROM walk AS a, t AS b WHERE b.parent = a.id
 	)
 	SELECT cur FROM walk ORDER BY cur`
 
@@ -168,11 +168,9 @@ func TestFDB_RecursiveCTEComputedColumn(t *testing.T) {
 // TestFDB_RecursiveCTEStarSeedAliases pins a star-seed alias drop: a
 // projection-less seed (`SELECT * FROM t`) exposed no projection columns, so an
 // explicit CTE column-alias list (`cte(a, b)`) never length-matched the alias
-// gate and was silently dropped — the temp table stayed keyed by the base
-// columns and a recursive reference to `a` resolved to a silent NULL or a loud
-// OrdinalResolutionError. The fix derives the seed schema from the operator's
-// output (table columns for a scan) so the alias list applies and the seed
-// normalizes onto it.
+// gate and was silently dropped. The seed schema is derived from the
+// operator's output (table columns for a scan): the recursive branch reads it
+// (`id`, `v`) and the main query reads the list's names.
 func TestFDB_RecursiveCTEStarSeedAliases(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -198,7 +196,7 @@ func TestFDB_RecursiveCTEStarSeedAliases(t *testing.T) {
 	g.Expect(db.ExecContext(ctx, "INSERT INTO t VALUES (1, 10)")).Error().NotTo(gomega.HaveOccurred())
 
 	rows, err := db.QueryContext(ctx,
-		"WITH RECURSIVE cte(a, b) AS (SELECT * FROM t UNION ALL SELECT a + 1, b FROM cte WHERE a < 3) SELECT a, b FROM cte ORDER BY a")
+		"WITH RECURSIVE cte(a, b) AS (SELECT * FROM t UNION ALL SELECT id + 1, v FROM cte WHERE id < 3) SELECT a, b FROM cte ORDER BY a")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
 	type row struct{ a, b int64 }

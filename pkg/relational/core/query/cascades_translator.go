@@ -9647,10 +9647,11 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		return nil
 	}
 
-	// outCols: the CTE's OUTPUT column names — the schema every reference to
-	// the CTE resolves against (the recursive branch's self-reference predicates
-	// AND the Main query). Standard SQL: the seed's projection defines these
-	// names, overridden by an explicit column-alias list `WITH RECURSIVE d(a, b)`.
+	// outCols: the column names of the temporary table the self-reference
+	// reads, defined by the seed's projection. An explicit column-alias list
+	// `WITH RECURSIVE d(a, b)` renames only what the Main query sees (mainCols);
+	// Java's handleRecursiveNamedQuery types the temporary scan by the seed and
+	// renames the finished named operator.
 	//
 	// The temp table is keyed under these OUTPUT names. Identifier resolution
 	// keeps OUTPUT names (the source-name reverse-map has been retired), so a
@@ -9664,12 +9665,9 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// publishes as the CTE's output schema, keying the temp table the
 	// self-reference scans.
 	//
-	// It is live through the NO-ALIAS path only: with an explicit column-alias
-	// list OF MATCHING LENGTH, `outCols` below takes the aliases and seedOut
-	// never reaches the key. The length condition is load-bearing and is not a
-	// technicality: an alias list of the wrong arity leaves seedOut in place,
-	// which is how the width disagreement gets reported against the seed's own
-	// labels rather than against a list that does not describe it.
+	// An alias list of the wrong arity is ignored here, so a width disagreement
+	// is reported against the seed's own labels rather than against a list
+	// that does not describe it.
 	seedOut := append([]string(nil), extractOutputProjectionNames(seedBranches[0])...)
 	// A projection-less seed (`SELECT * FROM t`) exposes no projection names,
 	// which silently DROPPED an explicit CTE column-alias list
@@ -9709,8 +9707,9 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		}
 	}
 	outCols := seedOut
+	var mainCols []string
 	if len(c.ColumnAliases()) > 0 && len(c.ColumnAliases()) == len(outCols) {
-		outCols = c.ColumnAliases() // normalized once, at the parse capture
+		mainCols = c.ColumnAliases() // normalized once, at the parse capture
 	}
 
 	// Derive the exact positional row shared by every iteration BEFORE creating
@@ -9823,15 +9822,14 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		return nil
 	}
 
-	// Normalize the recursive leg's output columns to the CTE's OUTPUT schema
-	// (outCols). In standard SQL, the CTE's output column names are defined by
-	// the seed (and any column-alias list). The recursive branch often uses
+	// Normalize the recursive leg's output columns to the temporary table's
+	// schema (outCols), which the seed's names define. The recursive branch often uses
 	// qualified column references (e.g. SELECT b.id, b.parent) which produce
 	// datum keys like "B.ID"; without this normalization the outer query (and
 	// DFS recursion) can't find the expected columns, yielding NULL for every row.
 	//
 	// The temp table is keyed under outCols so it agrees with the recursive
-	// predicates, which read the CTE's OUTPUT columns (the source-name reverse-map
+	// predicates, which read the seed's columns (the source-name reverse-map
 	// has been retired). recursiveRemapValues never persists a qualified key:
 	// each read is FieldValue{Field: <bare>, Child: QOV(<qualifier>)} — it reads
 	// the qualified datum key ("B.ID") while projectionColumnName returns the BARE
@@ -9906,11 +9904,18 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		return nil
 	}
 
-	// No outward rename projection is needed: the temp table (and therefore the
-	// recursive union's output) is already keyed under the CTE's OUTPUT column
-	// names (outCols) — the column-alias list, when present, was baked into
-	// outCols and applied to BOTH legs before the temp-table inserts.
-	cteResult := recUnion
+	// The column-alias list renames the finished union for the Main query, as
+	// translateCTE's renaming Project does for a non-recursive body.
+	var cteResult expressions.RelationalExpression = recUnion
+	mainDeclared, mainCommon := declaredRow, commonRow
+	if mainCols != nil {
+		mainDeclared = recordWithFieldNames(declaredRow, mainCols)
+		mainCommon = recordWithFieldNames(commonRow, mainCols)
+		cteResult = t.normalizeRecursiveLegToOutputRow(recUnion, mainCommon)
+		if cteResult == nil {
+			return nil
+		}
+	}
 	if t.producerRefs == nil {
 		t.producerRefs = make(map[*logical.CTEProducer]*expressions.Reference)
 	}
@@ -9918,20 +9923,29 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		t.recursiveProducerRows = make(map[*logical.CTEProducer]recursiveCTEConsumerRow)
 	}
 	t.producerRefs[c.CTEProducer] = expressions.InitialOf(cteResult)
-	t.recursiveProducerRows[c.CTEProducer] = recursiveCTEConsumerRow{declaration: declaredRow, common: commonRow}
+	t.recursiveProducerRows[c.CTEProducer] = recursiveCTEConsumerRow{declaration: mainDeclared, common: mainCommon}
 
 	// Register the result so the Main query's scan of the CTE name resolves to
-	// it. The OUTWARD column schema is outCols — so a CTE reference used as a JOIN
-	// LEG in the Main query anchors instead of falling back to the opaque merge
-	// (RFC-077 7.6).
+	// it. The OUTWARD column schema is mainCommon — so a CTE reference used as a
+	// JOIN LEG in the Main query anchors instead of falling back to the opaque
+	// merge (RFC-077 7.6).
 	t.cteExprScope[c.CTEProducer] = cteResult
-	t.cteColumnsScope[c.CTEProducer] = tempFields
-	consumerBindings := t.pushRecursiveCTEConsumerRows(c.Main, c.CTEProducer, declaredRow, commonRow)
+	t.cteColumnsScope[c.CTEProducer] = append([]values.Field(nil), mainCommon.Fields...)
+	consumerBindings := t.pushRecursiveCTEConsumerRows(c.Main, c.CTEProducer, mainDeclared, mainCommon)
 	result := t.translateOp(c.Main)
 	t.popRecursiveCTEConsumerRows(consumerBindings)
 	delete(t.cteExprScope, c.CTEProducer)
 	delete(t.cteColumnsScope, c.CTEProducer)
 	return result
+}
+
+// recordWithFieldNames is row with its fields renamed positionally.
+func recordWithFieldNames(row *values.RecordType, names []string) *values.RecordType {
+	fields := append([]values.Field(nil), row.Fields...)
+	for i := range fields {
+		fields[i].Name = names[i]
+	}
+	return &values.RecordType{Nullable: row.Nullable, Fields: fields}
 }
 
 // extractOuterProjectionColumns returns the SOURCE column names from the

@@ -187,7 +187,9 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 					if len(aliases) > 0 && len(aliases) != len(source.Table.Columns()) {
 						return nil, api.NewErrorf(api.ErrCodeInvalidColumnReference, "cte query has %d column(s), however %d aliases defined", len(source.Table.Columns()), len(aliases))
 					}
-					v.cteScopes[upper] = applyCTEColumnAliases(source, nq.GetColumnAliases())
+					// The body's self-reference sees the seed's names; the
+					// column list applies once the producer is complete, below.
+					v.cteScopes[upper] = source
 					delete(v.cteOnScopes, upper)
 				} else {
 					v.cteScopes[upper] = semantic.ScopeSource{}

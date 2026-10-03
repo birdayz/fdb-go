@@ -812,11 +812,10 @@ func deriveCTEProducerType(producer *logical.CTEProducer, md *recordlayer.Record
 				if err != nil {
 					return nil, err
 				}
-				row, err := cteBoundRowType(seed, producer)
-				if err != nil {
-					return nil, err
-				}
-				env.types[producer] = row
+				// A self-reference reads the seed's own names; the column list
+				// renames only what consumers outside the body see (Java's
+				// handleRecursiveNamedQuery types the temporary scan by the seed).
+				env.types[producer] = seed
 				break
 			}
 		}

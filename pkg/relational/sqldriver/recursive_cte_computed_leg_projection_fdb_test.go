@@ -48,7 +48,7 @@ func TestFDB_RecursiveCTEComputedLegProjection(t *testing.T) {
 			") SELECT * FROM r"},
 		{"cte_column_list", "WITH RECURSIVE r(n) AS (" +
 			"SELECT id FROM t WHERE id = 1" +
-			" UNION ALL SELECT b.id + 1 FROM r, t b WHERE b.id = r.n AND b.id < 4" +
+			" UNION ALL SELECT b.id + 1 FROM r, t b WHERE b.id = r.id AND b.id < 4" +
 			") SELECT * FROM r"},
 	} {
 		rows, err := db.QueryContext(ctx, tc.sql)

@@ -58,7 +58,7 @@ func TestFDB_RecursiveCTEStarMetadata(t *testing.T) {
 		{
 			// Column list renames the seed: output column is V.
 			name:  "column_list",
-			query: "WITH RECURSIVE c(v) AS (SELECT id FROM t UNION ALL SELECT v + 1 FROM c WHERE v < 5) SELECT * FROM c ORDER BY v",
+			query: "WITH RECURSIVE c(v) AS (SELECT id FROM t UNION ALL SELECT id + 1 FROM c WHERE id < 5) SELECT * FROM c ORDER BY v",
 			col:   "V",
 		},
 	} {

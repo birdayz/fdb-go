@@ -90,6 +90,7 @@ java_test(
 # gazelle:exclude count_on_empty_conformance_test.go
 # gazelle:exclude named_call_conformance_test.go
 # gazelle:exclude record_names_conformance_test.go
+# gazelle:exclude recursive_column_list_conformance_test.go
 # gazelle:exclude window_options_conformance_test.go
 # gazelle:exclude ws_e_probe_conformance_test.go
 # gazelle:exclude ws_f_access_path_test.go
@@ -118,6 +119,7 @@ go_test(
         "java_invoker_test.go",
         "named_call_conformance_test.go",
         "record_names_conformance_test.go",
+        "recursive_column_list_conformance_test.go",
         "store_helpers_test.go",
         "window_options_conformance_test.go",
         "ws_e_probe_conformance_test.go",

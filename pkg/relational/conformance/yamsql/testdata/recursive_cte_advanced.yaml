@@ -18,7 +18,7 @@ tests:
       WITH RECURSIVE anc(node, up) AS (
         SELECT id, parent FROM tree WHERE id = 5
         UNION ALL
-        SELECT t.id, t.parent FROM anc AS a, tree AS t WHERE t.id = a.up
+        SELECT t.id, t.parent FROM anc AS a, tree AS t WHERE t.id = a.parent
       )
       SELECT node FROM anc ORDER BY node
     rows:

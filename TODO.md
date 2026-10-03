@@ -13281,16 +13281,17 @@ against Java 4.14.2.0 before fixing, then tick with the commit.
 
 ### Recursive CTE column list
 
-- [ ] A recursive CTE's recursive leg reads the SEED's own column names; its
+- [x] A recursive CTE's recursive leg reads the SEED's own column names; its
   column list names the CTE only for consumers (Java: `WITH RECURSIVE r (a, b, c)
   AS (SELECT me, par, 0 AS lvl … UNION ALL … FROM r …)` reads `r.lvl`, refuses
   `r.c` 42703 "Attempting to query non existing column R.C"). Go scopes the self
   reference by the list (`plan_visitor.go` seed scope `applyCTEColumnAliases`),
   and the CTE scan row type everywhere carries the aliases
   (`cascades_translator.go` ColumnAliases sites, `logical_result_type.go`), so
-  scoping alone fails at execution layout. Booked as
-  `engine-gap:recursive-cte-column-list` for `valid-identifiers.yamsql`
-  (`javacorpus/gaps.go`).
+  scoping alone fails at execution layout. Done: the body scope, the logical
+  self-reference row and the temp table carry the seed's names; a renaming
+  projection over the recursive union publishes the list to the main query.
+  Pinned by `conformance/recursive_column_list_conformance_test.go`.
 
 ### Quoted identifiers holding dots
 
@@ -13300,3 +13301,24 @@ against Java 4.14.2.0 before fixing, then tick with the commit.
   42703) and ORDER BY a dotted primary key, which sorts in memory instead of
   reading the scan. The unaliased GROUP BY plans; Java answers it from the
   aggregate index (`AISCAN(foo.tableA.idx2 …)`), Go from a sorted scan.
+
+### Table function duplicate column names
+
+- [ ] `select * from "__$func3"(10, 1, 1)` (valid-identifiers.yamsql) whose body
+  projects `f1.__A, f1.__B, f2.__A, f2.__B`: Java names the function's row
+  `_0 … _3` (`Expressions.underlyingAsColumns` names a repeated or unnamed
+  column by position), Go answers `__A __B __A __B`. Booked as
+  `engine-gap:function-duplicate-columns` (`javacorpus/gaps.go`).
+
+### Recursive CTE row type
+
+- [ ] Java types a recursive CTE's temporary table and result by the SEED's row
+  (`SemanticAnalyzer.getRecursiveCteType`; `RecursiveUnionExpression` result is
+  `RecordQuerySetPlan.mergeValues`, the first leg's type): `SELECT me, par, 0 AS
+  lvl … UNION ALL … lvl + 1` reports column 3 NOT NULL; a recursive NULL into a
+  NOT NULL seed column fails XXXXX "Cannot set a non-nullable field to the NULL
+  value"; a BIGINT into an INTEGER seed column fails XXXXX. Go widens the
+  fixed point to the common row (`recursiveCTECommonResultRow`). Pinned as
+  declared divergences r00/r02/r06/r14/r15 in
+  `conformance/recursive_column_list_conformance_test.go`.
+

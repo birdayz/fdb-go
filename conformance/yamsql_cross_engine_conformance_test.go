@@ -404,22 +404,17 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		// a tracked Go bug, not an RFC-082 column/conformance issue, and a
 		// non-deterministic spec must not gate. Tracked under RFC-042; the
 		// builder stays for the Go-only determinism follow-up.
-		// recursiveCteAdvancedScenario is NOT cross-engine: BOTH its tests hit
-		// genuine fdb-relational 4.12.11.0 limitations, each confirmed
-		// deterministic when the scenario runs in isolation (no prior query to
-		// prime shared engine-state):
-		//   (1) column-RENAMING recursive CTE referenced through an alias
-		//       (`anc(node, up) ... anc AS a ... a.up`) → SemanticAnalyzer
-		//       rejects "Attempting to query non existing column A.UP".
-		//   (2) recursive CTE + outer ORDER BY (`... SELECT label FROM desc_tree
-		//       ORDER BY id`) → "order by is not supported in subquery" (the CTE
-		//       is treated as a subquery). This is the SAME limitation
-		//       SeedRunCorpus pins as JavaErrorsGoCorrect for recursive_cte_basic
-		//       / cte_basic_with_aggregate.
-		// Both are Go-only read-side extensions; a query Java can't plan has no
-		// cross-engine equivalence to assert. Covered Go-only via the
-		// recursive_cte_advanced yamsql corpus + SeedRunCorpus's annotated
-		// CTE-ORDER-BY entries. (Builder kept for that Go-only coverage.)
+		// recursiveCteAdvancedScenario is NOT cross-engine: its tests order a
+		// recursive CTE's result (`... SELECT label FROM desc_tree ORDER BY
+		// id`), which fdb-relational 4.12.11.0 rejected with "order by is not
+		// supported in subquery" — the SAME limitation SeedRunCorpus pins as
+		// JavaErrorsGoCorrect for recursive_cte_basic / cte_basic_with_aggregate.
+		// A query Java can't plan has no cross-engine equivalence to assert.
+		// Covered Go-only via the recursive_cte_advanced yamsql corpus +
+		// SeedRunCorpus's annotated CTE-ORDER-BY entries. (Builder kept for
+		// that Go-only coverage.) A recursive CTE's column list is scoped as
+		// Java scopes it (the recursive branch reads the seed's names), pinned
+		// by recursive_column_list_conformance_test.go.
 		orderByNullsScenario(),
 		orderByDupeColScenario(),
 		compositePKCrossScenario(),
@@ -456,7 +451,6 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		//     "order by is not supported in subquery" (the WITH body is treated
 		//     as a subquery), the same limitation noted on
 		//     recursiveCteAdvancedScenario;
-		//   - column-list renaming on a recursive CTE referenced via alias.
 		// The cross-engine-valid recursive-CTE basics (anchor + recursive UNION,
 		// COUNT, empty seed) are asserted by recursiveCteCountScenario. The full
 		// Go-only surface is covered by the recursive_cte yamsql corpus. (Builder
@@ -3917,10 +3911,9 @@ func joinOptimizationProbesScenario() *yamsql.Scenario {
 // Drops NOT NULL on PK (fdb-relational restriction). Tests column alias
 // rename resolution and descendant traversal patterns in WITH RECURSIVE.
 //
-// NOT in crossEngineScenarios() — see the exclusion note at the call site:
-// both queries hit genuine fdb-relational 4.12.11.0 limitations (renamed-
-// column recursion + recursive-CTE-with-outer-ORDER-BY). Builder retained as
-// faithful documentation of the Go-only yamsql twin.
+// NOT in crossEngineScenarios() — see the exclusion note at the call site
+// (recursive-CTE-with-outer-ORDER-BY). Builder retained as faithful
+// documentation of the Go-only yamsql twin.
 func recursiveCteAdvancedScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "recursive_cte_advanced",
@@ -3930,7 +3923,7 @@ func recursiveCteAdvancedScenario() *yamsql.Scenario {
 		},
 		Tests: []yamsql.Test{
 			// Recursive CTE with column alias rename (anc(node, up)).
-			{Query: "WITH RECURSIVE anc(node, up) AS (SELECT id, parent FROM tree WHERE id = 5 UNION ALL SELECT t.id, t.parent FROM anc AS a, tree AS t WHERE t.id = a.up) SELECT node FROM anc ORDER BY node", Rows: [][]any{{1}, {3}, {5}}},
+			{Query: "WITH RECURSIVE anc(node, up) AS (SELECT id, parent FROM tree WHERE id = 5 UNION ALL SELECT t.id, t.parent FROM anc AS a, tree AS t WHERE t.id = a.parent) SELECT node FROM anc ORDER BY node", Rows: [][]any{{1}, {3}, {5}}},
 			// Descendant traversal from root.
 			{Query: "WITH RECURSIVE desc_tree AS (SELECT id, parent, label FROM tree WHERE id = 1 UNION ALL SELECT t.id, t.parent, t.label FROM desc_tree AS d, tree AS t WHERE t.parent = d.id) SELECT label FROM desc_tree ORDER BY id", Rows: [][]any{{"root"}, {"child1"}, {"child2"}, {"grandchild1"}, {"grandchild2"}}},
 		},

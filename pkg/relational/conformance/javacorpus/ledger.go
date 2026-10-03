@@ -133,10 +133,10 @@ const (
 	// regression belongs back here rather than in a new name.
 	SkipGapStructDML SkipClass = "engine-gap:struct-dml"
 
-	// SkipGapRecursiveColumnList is a recursive CTE with a column list whose
-	// recursive leg reads the seed's own column names: Java scopes the self
-	// reference by the seed's names and only its consumers by the list.
-	SkipGapRecursiveColumnList SkipClass = "engine-gap:recursive-cte-column-list"
+	// SkipGapFunctionDuplicateColumns is a table function whose body projects
+	// one name twice: Java's function row names such columns by position
+	// (Expressions.underlyingAsColumns), Go keeps the repeated names.
+	SkipGapFunctionDuplicateColumns SkipClass = "engine-gap:function-duplicate-columns"
 
 	// SkipDDLFunction is a schema template declaring a SQL function.
 	// RFC-201 Phase 4.
@@ -253,7 +253,7 @@ func AllSkipClasses() []SkipClass {
 		SkipDDLFunction,
 		SkipDDLOther,
 		SkipGapStructDML,
-		SkipGapRecursiveColumnList,
+		SkipGapFunctionDuplicateColumns,
 		SkipGapCommaJoinFrom,
 		SkipGapDMLReturning,
 		SkipGapCatalogTables,

@@ -12776,29 +12776,18 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "WITH RECURSIVE c AS (SELECT id AS n FROM T_RCA1 UNION ALL SELECT n + 1 AS n FROM c WHERE n < 10) SELECT count(*) FROM c",
 		},
 		{
-			// Explicit CTE column list RENAMES a seed that carries its own
-			// alias (`c(v)` over `SELECT id AS x`): the seed-normalization wrap
-			// fires and must re-read the seed by its emitted alias X (the
-			// positional slot name), not the source column ID (same review-P2
-			// class as above, seed-side). Annotated JavaErrorsGoCorrect: Java's
-			// recursive-CTE inner type carries the SEED names only (the column
-			// list applies to the union's OUTPUT), so Java can't see `v` inside
-			// the recursive branch; Go exposes it Postgres-style.
+			// An explicit CTE column list (`c(v)` over `SELECT id AS x`) names
+			// the CTE only for the main query: the recursive branch cannot see
+			// `v`, and both engines reject it 42703.
 			Name:           "recursive_cte_column_list_renames_aliased_seed",
 			SchemaTemplate: "CREATE TABLE T_RCA2 (id BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_RCA2 VALUES (1)"},
 			Query:          "WITH RECURSIVE c(v) AS (SELECT id AS x FROM T_RCA2 UNION ALL SELECT v + 1 FROM c WHERE v < 5) SELECT count(*) FROM c",
 		},
 		{
-			// REVERSE direction of the entry above (PR #446): the recursive
-			// body references the seed's INNER alias
-			// `x`, not the column-list name `v`. Confirmed empirically:
-			// Java's recursive-CTE inner type carries the SEED's output names
-			// (X), so Java resolves `x` and runs the recursion; Go's
-			// normalization exposes the column-list names (V) inside the body
-			// per Postgres (the column list renames the CTE's columns for ALL
-			// references — PG rejects `x` here too), so Go rejects with a
-			// plan-time 42703. Annotated JavaSucceedsGoRejects.
+			// The recursive branch reads the seed's own alias `x`; the column
+			// list `v` renames only the main query's view
+			// (QueryVisitor.handleRecursiveNamedQuery).
 			Name:           "recursive_cte_body_references_seed_alias",
 			SchemaTemplate: "CREATE TABLE T_RCA3 (id BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_RCA3 VALUES (1)"},

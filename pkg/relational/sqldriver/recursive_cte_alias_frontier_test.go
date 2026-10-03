@@ -117,7 +117,7 @@ func TestFDB_RecursiveCTEColumnListRenamesAliasedSeed(t *testing.T) {
 
 	// Column list renames the aliased seed (X -> V); alias-free recursive branch.
 	rows, err := db.QueryContext(ctx,
-		"WITH RECURSIVE c(v) AS (SELECT id AS x FROM t UNION ALL SELECT v + 1 FROM c WHERE v < 5) SELECT v FROM c ORDER BY v")
+		"WITH RECURSIVE c(v) AS (SELECT id AS x FROM t UNION ALL SELECT x + 1 FROM c WHERE x < 5) SELECT v FROM c ORDER BY v")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
 	var got []int64
@@ -160,7 +160,7 @@ func TestFDB_RecursiveCTEColumnListAndAliasedBranches(t *testing.T) {
 	g.Expect(db.ExecContext(ctx, "INSERT INTO t VALUES (1)")).Error().NotTo(gomega.HaveOccurred())
 
 	rows, err := db.QueryContext(ctx,
-		"WITH RECURSIVE c(v) AS (SELECT id AS x FROM t UNION ALL SELECT v + 1 AS v FROM c WHERE v < 5) SELECT * FROM c ORDER BY v")
+		"WITH RECURSIVE c(v) AS (SELECT id AS x FROM t UNION ALL SELECT x + 1 AS v FROM c WHERE x < 5) SELECT * FROM c ORDER BY v")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
 	cols, err := rows.Columns()
@@ -215,7 +215,7 @@ func TestFDB_RecursiveCTEAliasedJoinBodyColumn(t *testing.T) {
 	query := `WITH RECURSIVE walk(cur, orig) AS (
 		SELECT id, parent FROM t WHERE id = 1
 		UNION ALL
-		SELECT b.id AS cur, b.parent AS orig FROM walk AS a, t AS b WHERE b.parent = a.cur
+		SELECT b.id AS cur, b.parent AS orig FROM walk AS a, t AS b WHERE b.parent = a.id
 	)
 	SELECT cur FROM walk ORDER BY cur`
 
@@ -274,7 +274,7 @@ func TestFDB_RecursiveCTEDuplicateAliases(t *testing.T) {
 
 	// Column-list form.
 	rows, err := db.QueryContext(ctx,
-		"WITH RECURSIVE c(a, b) AS (SELECT id, v FROM t UNION ALL SELECT a + 1 AS x, b + 1 AS x FROM c WHERE a < 3) SELECT a, b FROM c ORDER BY a")
+		"WITH RECURSIVE c(a, b) AS (SELECT id, v FROM t UNION ALL SELECT id + 1 AS x, v + 1 AS x FROM c WHERE id < 3) SELECT a, b FROM c ORDER BY a")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
 	var got []row
