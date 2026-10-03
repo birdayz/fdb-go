@@ -13394,7 +13394,11 @@ against Java 4.14.2.0 before fixing, then tick with the commit.
     all 2,539 explaindiff SELECTs and is deleted; label tests read the
     production labels (`ResultColumnLabelsForQuery`); the display-label-strip
     census site retired with it.
-  - [ ] Index DDL (`ddl/generator.go`) reads a block Select.
-  - [ ] Translator: one Select per block; function invocation as `encapsulate`
-    (`range(1)` values box); remove the projection-specific rules and the
-    leg-by-alias reads it leaves without producers.
+  - [ ] Translator: one Select per block, and the top-level query a
+    `LogicalSortExpression` over it (Java `generateSelect`: `Sort(Select)`, an
+    unsorted sort without ORDER BY, `Select(Sort(Select))` when an ORDER BY key
+    is not projected); function invocation as `encapsulate` (`range(1)` values
+    box). Index DDL moves with it: Java asserts the definition's top is that
+    Sort (`DdlVisitor.visitIndexAsSelectDefinition`), where `ddl/generator.go`
+    looks for a projection root (`topSort`, `checkTop`). Then remove the
+    projection-specific rules and the leg-by-alias reads left without producers.
