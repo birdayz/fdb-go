@@ -466,14 +466,9 @@ func BenchmarkExpressionMatcher_BindMatch(b *testing.B) {
 	}
 }
 
-// BenchmarkOptimise_StackedSorts exercises SortMergeRule +
-// DistinctOverSortElim cooperation on:
+// BenchmarkOptimise_StackedSorts exercises SortMergeRule on:
 //
 //	Distinct → Sort(k1) → Sort(k2) → Sort(k3) → Scan(Order)
-//
-// Optimal output is Distinct(Scan) (DistinctOverSortElim absorbs
-// the entire Sort stack iteratively). Pins the cooperation cost
-// for that rewrite chain.
 func BenchmarkOptimise_StackedSorts(b *testing.B) {
 	build := func() *expressions.Reference {
 		scan := mustFullUnorderedScan(b, []string{"Order"}, benchRowType("K1", "K2", "K3"))

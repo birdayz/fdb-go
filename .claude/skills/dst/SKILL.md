@@ -724,7 +724,7 @@ classification is a claim with a shelf life, not a result.)
    (`*_ever` vs Java's `permuted_*`)" — a wire/metadata-correctness bug, broader than the symptom. Some
    fixes are executor-contained (concat continuation); some are a planner/DDL change (Graefe *design*
    decision, larger blast radius); some are an RFC that changes a pinned semantics (value-`DISTINCT`
-   sort+dedup breaks `SELECT DISTINCT v ORDER BY <non-projected>` and collides with `DistinctOverSortElimRule`).
+   sort+dedup breaks `SELECT DISTINCT v ORDER BY <non-projected>`).
    **Don't force a planner redesign into a "fix" PR** — surface it. And check whether the code is already
    being rebuilt elsewhere (DISTINCT's `distinctKey` is RFC-173 name-burial site B7 → fold the fix into
    that slice, don't double-touch).

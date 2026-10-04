@@ -41,9 +41,7 @@
 //
 //   - Tunable constants are package-level. Calibration target: a
 //     Filter under a Sort should beat a Sort under a Filter
-//     (push-Filter-through-Sort = cheaper); a Distinct directly over a
-//     Sort should beat a Distinct over an unsorted scan that would
-//     need its own sort (DistinctOverSortElim picks the no-sort path);
+//     (push-Filter-through-Sort = cheaper);
 //     Union of cheap children should beat Intersection (the latter
 //     scans every child end-to-end).
 package properties
@@ -67,8 +65,7 @@ const (
 
 	// FilterSelectivity is the fraction of rows a Filter retains by
 	// default. 0.5 is a common heuristic when no per-predicate
-	// selectivity is known. ProjectionMerge / DistinctOverSortElim
-	// compare against this to pick rule outputs.
+	// selectivity is known.
 	FilterSelectivity = 0.5
 
 	// RangeSelectivity is the fraction of rows a range predicate

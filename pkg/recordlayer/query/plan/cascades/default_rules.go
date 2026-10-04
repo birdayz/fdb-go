@@ -37,7 +37,8 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewPushFilterThroughGroupByRule(),
 		NewPushFilterBelowJoinRule(),
 		NewDistinctMergeRule(),
-		NewDistinctOverSortElimRule(),
+		// No rule drops a sort under a distinct: Go's distinct keeps its
+		// input's order, and SELECT DISTINCT … ORDER BY relies on it.
 		NewDistinctOverUnionDedupRule(),
 		NewDistinctOverGroupByElimRule(),
 		// DistinctOnUniqueElimRule REMOVED (D-3): Java's ImplementDistinctRule

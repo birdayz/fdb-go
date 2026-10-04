@@ -92,3 +92,26 @@ tests:
       - [~]
       - [0]
       - [1]
+  # DISTINCT * keeps its ORDER BY. A distinct preserves its input's order, so
+  # the sort below it is the query's order and must not be eliminated; the rows
+  # are unique by primary key, so the distinct itself drops.
+  - query: SELECT DISTINCT * FROM t ORDER BY v, id
+    plan_contains: "InMemorySort"
+    rows:
+      - [6, 'a', ~]
+      - [7, 'a', ~]
+      - [1, 'a', 1]
+      - [2, 'a', 1]
+      - [3, 'b', 2]
+      - [4, ~, 3]
+      - [5, ~, 3]
+  - query: SELECT DISTINCT * FROM t ORDER BY v DESC, id
+    plan_contains: "InMemorySort"
+    rows:
+      - [4, ~, 3]
+      - [5, ~, 3]
+      - [3, 'b', 2]
+      - [1, 'a', 1]
+      - [2, 'a', 1]
+      - [6, 'a', ~]
+      - [7, 'a', ~]

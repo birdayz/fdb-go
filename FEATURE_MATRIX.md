@@ -23,11 +23,11 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**377 scenarios · 3119 query/assertion cases** across 18 feature areas — 2727 supported, 102 unsupported-feature pins, 290 error-path pins.
+**377 scenarios · 3121 query/assertion cases** across 18 feature areas — 2729 supported, 102 unsupported-feature pins, 290 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
-| Aggregates & GROUP BY | 55 | 349 | 314 | 19 | 16 |
+| Aggregates & GROUP BY | 55 | 351 | 316 | 19 | 16 |
 | Joins | 66 | 313 | 296 | 2 | 15 |
 | Subqueries (EXISTS / IN / scalar) | 46 | 322 | 266 | 33 | 23 |
 | CTEs | 15 | 202 | 161 | 4 | 37 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 40 | 340 | 301 | 5 | 34 |
-| **Total** | **377** | **3119** | **2727** | **102** | **290** |
+| **Total** | **377** | **3121** | **2729** | **102** | **290** |
 
 ## Aggregates & GROUP BY
 
@@ -103,7 +103,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `order_by_aggregate` | 3 | 3 | 0 | 0 | ORDER BY aggregate expressions |
 | `quoted_identifier_aggregate_labels` | 15 | 14 | 0 | 1 | THE AGGREGATE RESULT-SET LABEL, on the two plan shapes that do NOT put a |
 | `select_count_where` | 5 | 5 | 0 | 0 | COUNT with various WHERE predicates |
-| `select_distinct` | 7 | 7 | 0 | 0 | SELECT DISTINCT pins the dedup semantics. |
+| `select_distinct` | 9 | 9 | 0 | 0 | SELECT DISTINCT pins the dedup semantics. |
 | `select_distinct_null` | 1 | 1 | 0 | 0 | SELECT DISTINCT with NULL values |
 | `upstream_bug_distinct_compound` | 3 | 3 | 0 | 0 | Compound DISTINCT (Java upstream bug) |
 

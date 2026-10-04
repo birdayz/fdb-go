@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=377 queries=2832 dml=176 non_query=111 plan_errors=319 unexpected_errors=4
+# files=377 queries=2834 dml=176 non_query=111 plan_errors=319 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -16981,6 +16981,18 @@ shape: RecordQueryDistinctPlan
 shape:   RecordQueryMapPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryScanPlan
+=== select_distinct.yaml#7
+sql:   SELECT DISTINCT * FROM t ORDER BY v, id
+plan:  Distinct(InMemorySort([_current.V#2 ASC, _current.ID#0 ASC], Scan(T)))
+shape: RecordQueryDistinctPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryScanPlan
+=== select_distinct.yaml#8
+sql:   SELECT DISTINCT * FROM t ORDER BY v DESC, id
+plan:  Distinct(InMemorySort([_current.V#2 DESC, _current.ID#0 ASC], Scan(T)))
+shape: RecordQueryDistinctPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryScanPlan
 === select_distinct_null.yaml#0
 sql:   SELECT DISTINCT val FROM t ORDER BY val
 plan:  Distinct(Map(InMemorySort([_current.VAL#1 ASC], Scan(T)), {VAL: _current.VAL#1}))

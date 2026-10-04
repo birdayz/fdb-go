@@ -910,7 +910,6 @@ func TestPipeline_DistinctOverSort(t *testing.T) {
 	distinct := pipelineDistinct(expressions.ForEachQuantifier(sortRef))
 	plan := planPipeline(t, distinct)
 	t.Logf("plan: %s", plan)
-	// DistinctOverSortElimRule may eliminate the distinct or the sort.
 	if plan == "" {
 		t.Fatal("expected non-empty plan")
 	}
