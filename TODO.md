@@ -9951,6 +9951,33 @@ commands and limitations. Point lookups exceed the aspirational <5 ms target
 on both trees. The evidence delta received Graefe/Torvalds ACK; this closes
 the timing measurement requirement, not GitHub CI or merge authorization.
 
+### Stress test 1M baseline — RFC-257 query block (2026-10-04)
+
+- [x] Baseline `e48f5b496` (the merge-base, equal to `origin/master` on 2026-10-04) against
+  `d5a5132a1` and, after the row-path fix, `6ff77b823`; same filesystem (64% used), sequential
+  runs, 24 RUN lines and identical row counts for all 22 timed queries in every run.
+  `d5a5132a1` was 1.09x on both 1M projecting scans: a Map did not stamp its plan's layout
+  (the projection it replaced did), so every row was copied at the output boundary, and the
+  transformed-record prefix decode heap-allocated its state per record. `6ff77b823` restores
+  master's allocations per op (`BenchmarkFDB_ProjectionScan_*`, 20k rows, 4 interleaved
+  pairs: Narrow 1.026x, Wide 1.046x, Star 1.011x). What remains is the per-field cost of
+  binding the Map's input quantifier by alias (Java's `context.withBinding`), where master's
+  projection read `_current`.
+
+| 1M query, ms | `e48f5b496` (2 runs) | `d5a5132a1` (2 runs) | `6ff77b823` (clean run) |
+|---|---|---|---|
+| Ordered narrow scan | 3604 / 3604 | 3879 / 3945 | 3774 |
+| Wide scan | 3868 / 3850 | 4233 / 4213 | 4081 |
+| Sparse filter / 97 rows | 3325 / 3310 | 3372 / 3379 | 3355 |
+
+  Outliers near 2x on the 1M ordered scan appear on both trees (`e48f5b496` 7332 ms,
+  `6ff77b823` 7321 / 7396 ms) on a loaded host (load averages up to 9.6). They are page
+  retries: `TestFDB_Stress_1M_LatencyAttribution` caught one with Pages=2, Retries=1 and
+  1,933,750 records scanned for 1,000,000 rows, the failed attempt about 3.5 s into its 4 s
+  page; five quiet-host runs had none. That is the shrunken-MVCC-window retry the page loop
+  documents (`fetchPage`, 90% budget on re-entry); the FDB error code is not reported by
+  `ExecutionStats`, so this run did not confirm it is 1007.
+
 ### NestedLoopJoinCost ties the two orders of a materialized join, so predicate order picks the winner
 
 Found while classifying RFC-249's EXPLAIN corpus diff. `properties.NestedLoopJoinCost` is
