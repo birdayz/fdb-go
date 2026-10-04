@@ -101,29 +101,21 @@ func TestFDB_CoveringIndexValueFidelityByType(t *testing.T) {
 				// The premise: without a covering plan this compares the record
 				// path with itself and says nothing about entry decode.
 				//
-				// A signed ZERO is the documented exception and is asserted the
-				// other way round. +0.0 and -0.0 pack to two DISTINCT adjacent
-				// index keys, while SQL numeric equality says they are equal, so
-				// an equality probe on either has its range WIDENED to span both
-				// and carries a residual filter — which costs it the covering
-				// plan. Asserting that it is NOT covering pins the widening
-				// itself: if one of these ever comes back COVERING, the probe
-				// has narrowed to a single sign and `cv = 0.0` has silently
-				// stopped matching rows stored as -0.0.
+				// A signed ZERO is the documented exception. +0.0 and -0.0 pack to
+				// two DISTINCT adjacent index keys while SQL numeric equality says
+				// they are equal, so an equality probe on either must scan a range
+				// spanning both. The answer against the unindexed oracle is what
+				// pins that: a probe narrowed to one sign loses the other row. The
+				// plan may be covering or not; when it is, the entry-vs-record
+				// comparison below runs as for every other value.
 				plan := w.Explain(coveredQ)
 				isSignedZero := lit == "0.0" || lit == "-0.0"
-				switch {
-				case isSignedZero && strings.Contains(plan, "COVERING"):
-					t.Errorf("an equality probe on %s is now COVERING, which means it is no longer "+
-						"range-widened across both signed zeros. Check that `cv = %s` still matches "+
-						"rows stored with the OTHER sign.\n  q: %s\n  plan: %s",
-						lit, lit, coveredQ, plan)
-				case isSignedZero:
-					// Expected: no entry-vs-record comparison is possible, but
-					// the twin comparison below still checks the ANSWER.
-					w.Want("widened read of "+lit, coveredQ, mmMustRows(t, ctx, w.plain, coveredQ))
-					continue
-				case !strings.Contains(plan, "COVERING"):
+				if isSignedZero {
+					w.Want("signed-zero read of "+lit, coveredQ, mmMustRows(t, ctx, w.plain, coveredQ))
+					if !strings.Contains(plan, "COVERING") {
+						continue
+					}
+				} else if !strings.Contains(plan, "COVERING") {
 					t.Errorf("the projection for %s is not COVERING, so the comparison below "+
 						"exercises the record path twice and proves nothing about how an index "+
 						"entry decodes a %s\n  q: %s\n  plan: %s", lit, tc.ddlType, coveredQ, plan)

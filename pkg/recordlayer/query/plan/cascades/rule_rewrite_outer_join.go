@@ -172,8 +172,8 @@ func (r *RewriteOuterJoinRule) OnMatch(call *ExpressionRuleCall) {
 	// when it cannot guarantee that rewire (RFC-153), leaving the materialized NLJ.
 
 	// Idempotency: if this Reference already holds the rewritten form, don't
-	// re-fire. This rule is registered in TWO phases deliberately and re-explores
-	// the same Reference, and every firing mints a fresh
+	// re-fire. Re-exploration fires it on the same Reference again, and every
+	// firing mints a fresh
 	// UniqueCorrelationIdentifier — so a rewritten form the guard cannot
 	// recognize is a structurally distinct NEW member on every pass, which is
 	// unbounded memo growth for exactly the shape it failed to see.

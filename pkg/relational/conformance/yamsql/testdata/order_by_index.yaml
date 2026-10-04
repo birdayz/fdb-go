@@ -24,7 +24,7 @@ setup:
 tests:
   # ORDER BY indexed column ASC.
   - query: SELECT id, price FROM Products ORDER BY price
-    plan_contains: "IndexScan(IDX_PRODUCTS_PRICE, [*])"
+    plan_contains: "Map(IndexScan(IDX_PRODUCTS_PRICE, [*] COVERING), {ID: _current.ID#0, PRICE: _current.PRICE#1})"
     plan_not_contains: InMemorySort
     rows:
       - [2, 10]
@@ -34,7 +34,7 @@ tests:
       - [3, 50]
   # ORDER BY indexed column DESC (reverse scan).
   - query: SELECT id, price FROM Products ORDER BY price DESC
-    plan_contains: "IndexScan(IDX_PRODUCTS_PRICE, [*]) REVERSE"
+    plan_contains: "Map(IndexScan(IDX_PRODUCTS_PRICE, [*] COVERING) REVERSE, {ID: _current.ID#0, PRICE: _current.PRICE#1})"
     plan_not_contains: InMemorySort
     rows:
       - [3, 50]

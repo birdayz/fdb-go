@@ -175,6 +175,7 @@ func TestExistentialAttachmentKeepsCorrelationInsideInput(t *testing.T) {
 			if err != nil || ref == nil {
 				t.Fatalf("translation: ref=%v err=%v", ref, err)
 			}
+			ref = queryBody(t, ref)
 			sel, ok := ref.Get().(*expressions.SelectExpression)
 			if !ok || len(sel.GetPredicates()) != 1 {
 				t.Fatalf("correlation escaped the existential input: %T %v", ref.Get(), ref.Get())

@@ -57,16 +57,16 @@ func TestMain(m *testing.M) {
 //
 // MatchLeafRule is the sole seed of PartialMatch objects, so disabling it
 // starves the match/data-access pipeline, but that pipeline is not the only
-// builder of index scans: OrderedIndexScanRule reads the match candidates
-// directly and still plans a full-range ordered index scan, so the precondition
-// would report a correct engine as a broken planner option.
+// builder of index scans: StreamingAggFromIndexRule reads the match candidates
+// directly and still plans a full-range index scan under a GROUP BY, so the
+// precondition would report a correct engine as a broken planner option.
 //
 // The correlated EXISTS probe is no longer such a counterexample. The EXISTS
 // body keeps its WHERE below FirstOrDefault, so its `[=]` probe is the match
 // pipeline's and goes away with MatchLeafRule, while the two plans still
 // differ — which is all the oracle requires.
 //
-// If the ordered scan stops surviving, the precondition is worth reconsidering
+// If that index scan stops surviving, the precondition is worth reconsidering
 // — that is a real finding, not a test to relax.
 func TestFDB_SecondPlanIndexFreePreconditionStaysRetired(t *testing.T) {
 	t.Parallel()
@@ -129,13 +129,19 @@ func TestFDB_SecondPlanIndexFreePreconditionStaysRetired(t *testing.T) {
 			"  default = %s\n  second  = %s", basePlan, altPlan)
 	}
 
-	// The counterexample itself: an ordered index scan built without a
-	// PartialMatch survives.
-	const ordered = "SELECT id, a FROM t ORDER BY a"
-	if orderedPlan := explainVia(t, ctx, altConn, ordered); !strings.Contains(orderedPlan, "IndexScan(IDX_A, [*])") {
-		t.Fatalf("the MatchLeafRule-disabled plan for %q has no ordered index scan:\n  %s\nThe oracle's retired "+
+	// The counterexample itself: an index scan built without a PartialMatch
+	// survives. A sort over a block no longer reaches OrderedIndexScanRule, so
+	// ORDER BY's index scan is the match pipeline's, as in Java; the streaming
+	// aggregate's index scan is still StreamingAggFromIndexRule's own.
+	const grouped = "SELECT a, COUNT(*) FROM t GROUP BY a"
+	if groupedPlan := explainVia(t, ctx, altConn, grouped); !strings.Contains(groupedPlan, "IndexScan(IDX_A, [*]") {
+		t.Fatalf("the MatchLeafRule-disabled plan for %q has no index scan:\n  %s\nThe oracle's retired "+
 			"index-free precondition would now hold for this shape, so the reasoning that retired it needs "+
-			"re-deriving before anyone relies on it again.", ordered, orderedPlan)
+			"re-deriving before anyone relies on it again.", grouped, groupedPlan)
+	}
+	const ordered = "SELECT id, a FROM t ORDER BY a"
+	if orderedPlan := explainVia(t, ctx, altConn, ordered); strings.Contains(orderedPlan, "IndexScan(") {
+		t.Fatalf("the MatchLeafRule-disabled plan for %q scans an index outside the match pipeline:\n  %s", ordered, orderedPlan)
 	}
 }
 

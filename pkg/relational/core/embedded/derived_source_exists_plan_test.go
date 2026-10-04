@@ -409,7 +409,10 @@ CREATE TABLE q (qid BIGINT, PRIMARY KEY (qid))`
 		previous = fmt.Sprintf("%T", task)
 		if transform, ok := task.(*cascades.TransformExprTask); ok {
 			previous = fmt.Sprintf("%T on %T", transform.Rule, transform.Expr)
-			if _, merge := transform.Rule.(*cascades.SelectMergeRule); merge {
+		}
+		if transform, ok := task.(*cascades.TransformImplTask); ok {
+			previous = fmt.Sprintf("%T on %T", transform.Rule, transform.Expr)
+			if _, merge := transform.ActiveRule().(*cascades.SelectMergeRule); merge {
 				mergeTasks++
 			}
 		}

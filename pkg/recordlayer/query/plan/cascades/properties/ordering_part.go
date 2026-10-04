@@ -1,6 +1,7 @@
 package properties
 
 import (
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -159,3 +160,18 @@ func (b OrderingBinding) IsChoose() bool { return b.kind == OrderingBindingChoos
 
 func (b OrderingBinding) GetSortOrder() ProvidedSortOrder { return b.sortOrder }
 func (b OrderingBinding) GetComparison() any              { return b.comparison }
+
+// ComparisonCorrelatedTo is Java's binding.getComparison().getCorrelatedTo()
+// for Go's binding payloads: an equality ComparisonRange or a bare Comparison.
+// A literal or opaque payload names no correlation.
+func (b OrderingBinding) ComparisonCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
+	switch comp := b.comparison.(type) {
+	case *predicates.ComparisonRange:
+		if eq := comp.GetEqualityComparison(); eq != nil {
+			return eq.GetCorrelatedTo()
+		}
+	case *predicates.Comparison:
+		return comp.GetCorrelatedTo()
+	}
+	return nil
+}

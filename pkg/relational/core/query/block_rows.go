@@ -46,9 +46,13 @@ func foldBlock(result values.Value, from expressions.Quantifier, bodies scopeBod
 		from, where = inner, filter.GetPredicates()
 	}
 	if box, isSelect := from.GetRangesOver().Get().(*expressions.SelectExpression); isSelect && box != nil {
+		r, w, err := readRowAsBoxColumns(result, where, from, box)
+		if err != nil {
+			return nil, err
+		}
 		// Reads of sources nested in the box's own quantifiers (a box inside the
 		// box) become reads of those quantifiers' rows first.
-		r, w, ok, err := readBlockThrough(result, where, box.GetQuantifiers(), bodies)
+		r, w, ok, err := readBlockThrough(r, w, box.GetQuantifiers(), bodies)
 		if err != nil {
 			return nil, err
 		}
@@ -76,6 +80,80 @@ func foldBlock(result values.Value, from expressions.Quantifier, bodies scopeBod
 		from = fresh
 	}
 	return expressions.NewSelectExpression(r, []expressions.Quantifier{from}, w)
+}
+
+// readRowAsBoxColumns states a block's reads of from's row as the box's result
+// columns when the block also reads the box's sources, so the block folds into
+// the box whole, as SelectMergeRule translates an upper select's reads of the
+// lower one through its result value. An ORDER BY key reads the row below the
+// sort while the SELECT list reads the sources. A block reading only the row
+// stays a select over from.
+func readRowAsBoxColumns(
+	result values.Value,
+	where []predicates.QueryPredicate,
+	from expressions.Quantifier,
+	box *expressions.SelectExpression,
+) (values.Value, []predicates.QueryPredicate, error) {
+	row, err := from.RequireFlowedObjectValue()
+	if err != nil {
+		return nil, nil, err
+	}
+	sources, ok := sourceTypes(box)
+	if !ok {
+		return result, where, nil
+	}
+	readsRow, readsSource := false, false
+	visit := func(v values.Value) {
+		values.WalkValue(v, func(n values.Value) bool {
+			qov, isQOV := values.AsQuantifiedObjectValue(n)
+			if !isQOV {
+				return true
+			}
+			if types, isSource := sources[qov.Correlation()]; isSource && readsAs(qov, types) {
+				readsSource = true
+			} else if qov.Correlation() == from.GetAlias() && readsAs(qov, []values.Type{row.FlowedType()}) {
+				readsRow = true
+			}
+			return true
+		})
+	}
+	visit(result)
+	for _, p := range where {
+		predicates.TransformEmbeddedValues(p, func(v values.Value) values.Value {
+			visit(v)
+			return v
+		})
+	}
+	if !readsRow || !readsSource {
+		return result, where, nil
+	}
+	m := values.NewTranslationMapBuilder().When(from.GetAlias()).Then(
+		func(_ values.CorrelationIdentifier, leaf values.Value) values.Value {
+			if qov, isQOV := values.AsQuantifiedObjectValue(leaf); isQOV && readsAs(qov, []values.Type{row.FlowedType()}) {
+				return box.GetResultValue()
+			}
+			return leaf
+		},
+	).Build()
+	if result, err = values.TranslateCorrelationsChecked(result, m); err != nil {
+		return nil, nil, err
+	}
+	translated := make([]predicates.QueryPredicate, len(where))
+	for i, p := range where {
+		var failed error
+		translated[i] = predicates.TransformEmbeddedValues(p, func(v values.Value) values.Value {
+			read, err := values.TranslateCorrelationsChecked(v, m)
+			if err != nil {
+				failed = err
+				return v
+			}
+			return read
+		})
+		if failed != nil {
+			return nil, nil, failed
+		}
+	}
+	return result, translated, nil
 }
 
 // aliasedBelow reports whether q's alias also names a quantifier below q.

@@ -96,10 +96,9 @@ type RecordQueryIndexPlan struct {
 	// metadata-preserving copies cannot accidentally turn an unsafe plan safe.
 	orderingKeyNamesKnown bool
 	orderingKeyNamesSafe  bool
-	// orderingDirections is parallel to columnNames: the physical order of each
-	// key column, the direction of the order function wrapping it (a DESC index
-	// column). Nil means every column is tuple-natural ascending.
-	orderingDirections []values.OrderedBytesDirection
+	// orderingColumns is parallel to columnNames: what each key column orders
+	// the scan by. Nil means every column is its field, tuple-natural ascending.
+	orderingColumns []IndexOrderingColumn
 	// createsDuplicates and distinctRecordsKnown carry the match candidate's
 	// fan-out signal onto the plan for the DistinctRecords property. Java's
 	// DistinctRecordsProperty.visitIndexPlan returns !matchCandidate.createsDuplicates()
@@ -343,13 +342,21 @@ func (p *RecordQueryIndexPlan) WithIndexMetadata(columnNames, pkColumnNames []st
 	return &cp
 }
 
-// WithOrderingDirections returns a copy whose key columns order by their
-// fields in the given physical directions, as an order-function index column
-// does: Java simplifies ToOrderedBytesValue(field, direction) to the ordering
-// part (field, direction).
-func (p *RecordQueryIndexPlan) WithOrderingDirections(directions []values.OrderedBytesDirection) *RecordQueryIndexPlan {
+// IndexOrderingColumn is what one index key column orders a scan by: its field
+// in Direction (an order function's, else tuple-natural ascending), or the
+// field's CARDINALITY.
+type IndexOrderingColumn struct {
+	Direction   values.OrderedBytesDirection
+	Cardinality bool
+}
+
+// WithOrderingColumns returns a copy whose key columns order the scan as given:
+// Java's ordering parts for an index, where ToOrderedBytesValue(field,
+// direction) simplifies to (field, direction) and a CARDINALITY column orders
+// by the cardinality value.
+func (p *RecordQueryIndexPlan) WithOrderingColumns(columns []IndexOrderingColumn) *RecordQueryIndexPlan {
 	cp := *p
-	cp.orderingDirections = slices.Clone(directions)
+	cp.orderingColumns = slices.Clone(columns)
 	cp.orderingKeyNamesKnown = true
 	cp.orderingKeyNamesSafe = true
 	return &cp

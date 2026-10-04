@@ -41,23 +41,36 @@ func TestDefaultRules_NotEmpty(t *testing.T) {
 // rewritingImplRules), not by a set constructor.
 func productionRuleSets() map[string][]any {
 	return map[string][]any{
-		"DefaultExpressionRules":     anySlice(DefaultExpressionRules()),
-		"PlanningExplorationRules":   anySlice(PlanningExplorationRules()),
-		"BatchAExpressionRules":      anySlice(BatchAExpressionRules()),
-		"DMLImplementationRules":     anySlice(DMLImplementationRules()),
-		"RewritingRules":             anySlice(RewritingRules()),
-		"MatchingRules":              anySlice(MatchingRules()),
-		"DefaultImplementationRules": anySlice(DefaultImplementationRules()),
-		"DefaultSimplifyRules":       anySlice(DefaultSimplifyRules()),
-		"NormalizationRules":         anySlice(NormalizationRules()),
-		"planner rewritingImplRules": {NewFinalizeExpressionsRule()},
+		"DefaultExpressionRules":       anySlice(DefaultExpressionRules()),
+		"PlanningExplorationRules":     anySlice(PlanningExplorationRules()),
+		"BatchAExpressionRules":        anySlice(BatchAExpressionRules()),
+		"DMLImplementationRules":       anySlice(DMLImplementationRules()),
+		"RewritingRules":               anySlice(RewritingRules()),
+		"MatchingRules":                anySlice(MatchingRules()),
+		"DefaultImplementationRules":   anySlice(DefaultImplementationRules()),
+		"DefaultSimplifyRules":         anySlice(DefaultSimplifyRules()),
+		"NormalizationRules":           anySlice(NormalizationRules()),
+		"RewritingImplementationRules": anySlice(RewritingImplementationRules()),
 	}
 }
 
+// anySlice lists a rule set's rules, a conditional rule as its inner rules
+// (Java's RewritingRuleSet.expandConditionalRules).
 func anySlice[T any](in []T) []any {
-	out := make([]any, len(in))
-	for i, v := range in {
-		out[i] = v
+	out := make([]any, 0, len(in))
+	for _, v := range in {
+		switch cond := any(v).(type) {
+		case *conditionalExpressionRule:
+			for _, r := range cond.rules {
+				out = append(out, r)
+			}
+		case *conditionalImplementationRule:
+			for _, r := range cond.rules {
+				out = append(out, r)
+			}
+		default:
+			out = append(out, v)
+		}
 	}
 	return out
 }

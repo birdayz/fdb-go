@@ -118,8 +118,7 @@ func TestSortConstantKeysElimRule_OneNonConstantKey_NoFire(t *testing.T) {
 
 func TestSortConstantKeysElimRule_EmptyKeys_NoFire(t *testing.T) {
 	t.Parallel()
-	// Empty keys = Unsorted; UnsortedSortElim's territory. This rule
-	// declines.
+	// Empty keys = the unsorted form, which this rule declines.
 	scan := sortRewriteScan()
 	q := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	src := mustSortRewriteConstruct(expressions.UnsortedLogicalSortExpression(q))

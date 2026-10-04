@@ -59,7 +59,9 @@ func TestPushRequestedOrderingThroughSort_PushesConstraint(t *testing.T) {
 	}
 }
 
-func TestPushRequestedOrderingThroughSort_UnsortedDoesNotPush(t *testing.T) {
+// An unsorted sort pushes PRESERVE, as Java's rule pushes the sort's preserve
+// ordering untranslated: the input is planned for any order, not for none.
+func TestPushRequestedOrderingThroughSort_UnsortedPushesPreserve(t *testing.T) {
 	t.Parallel()
 
 	scanQ := requestedOrderingQuantifier("T", "sort_input")
@@ -79,9 +81,9 @@ func TestPushRequestedOrderingThroughSort_UnsortedDoesNotPush(t *testing.T) {
 	mustRunRequestedOrderingRule(t, rule, call)
 
 	innerRef := sort.GetInner().GetRangesOver()
-	_, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
-	if ok {
-		t.Fatal("unsorted expression should not push any constraint")
+	pushed, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
+	if !ok || len(pushed) != 1 || !pushed[0].IsPreserve() {
+		t.Fatalf("unsorted sort pushed %v, want [PRESERVE]", pushed)
 	}
 }
 

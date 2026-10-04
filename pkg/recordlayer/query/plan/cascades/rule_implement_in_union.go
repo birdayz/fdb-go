@@ -297,8 +297,8 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 				// the candidate rather than merge a descending key forward.
 				// This is the same fail-closed gate the intersection plans use.
 				//
-				// Reachable: it declines exactly twice over the 2475-query
-				// corpus, both times parts=[ASC, DESC] against a forward merge.
+				// Reachable: over the 2834-query corpus 6 of 424 candidate
+				// evaluations decline, each a two-part key mixing ASC and DESC.
 				comparisonKeys, natural := properties.NaturalComparisonKeyValues(comparisonParts, isReverse)
 				if !natural {
 					continue
@@ -365,7 +365,11 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 				if pinned == nil {
 					continue
 				}
-				if _, isPhys := pinned.(physicalPlanExpression); !isPhys {
+				pinnedPlan, isPhys := pinned.(physicalPlanExpression)
+				if !isPhys {
+					continue
+				}
+				if !inUnionMergeKeyIdentifiesRows(pinnedPlan, comparisonParts) {
 					continue
 				}
 
@@ -404,6 +408,21 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 			call.YieldFinalExpression(inUnionPlan)
 		}
 	}
+}
+
+// inUnionMergeKeyIdentifiesRows reports whether the merge's dedup on the
+// comparison key can never collapse two rows of the join it implements: the
+// baked inner must prove its rows distinct over coordinates inside the key. A
+// per-stream claim names the explode-bound coordinates that separate the
+// branches; a record-identity claim is a key across all of them. Java's
+// ImplementInUnionRule checks nothing, and its UnionCursor drops the tied rows
+// of a projection that lost the primary key.
+func inUnionMergeKeyIdentifiesRows(inner physicalPlanExpression, parts []properties.ProvidedOrderingPart) bool {
+	keys := make([]values.Value, len(parts))
+	for i, part := range parts {
+		keys[i] = part.Value
+	}
+	return computeWrapperRichOrdering(inner).RowsIdentifiedBy(keys)
 }
 
 // adjustBindingsForInUnion adjusts the inner ordering's bindings:

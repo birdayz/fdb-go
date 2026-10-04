@@ -45,7 +45,7 @@ ROWS(3) cols=[ID]:
   [8]
 
 === SELECT id, val FROM t WHERE val > 150 ORDER BY id
-PLAN: Map(InMemorySort([_current.ID#0 ASC], IndexScan(IDX_VAL, [<>])), {ID: _current.ID#0, VAL: _current.VAL#2})
+PLAN: InMemorySort([_current.ID#0 ASC], Map(IndexScan(IDX_VAL, [<>] COVERING), {ID: _current.ID#0, VAL: _current.VAL#2}))
 ROWS(3) cols=[ID, VAL]:
   [2, 200]
   [6, 300]
@@ -57,7 +57,7 @@ ROWS(1) cols=[ID]:
   [5]
 
 === SELECT id FROM t WHERE val IS NOT NULL AND val <= 150 ORDER BY id
-PLAN: Map(InMemorySort([_current.ID#0 ASC], IndexScan(IDX_VAL, [<>])), {ID: _current.ID#0})
+PLAN: InMemorySort([_current.ID#0 ASC], Map(IndexScan(IDX_VAL, [<>] COVERING), {ID: _current.ID#0}))
 ROWS(4) cols=[ID]:
   [1]
   [3]
@@ -65,7 +65,7 @@ ROWS(4) cols=[ID]:
   [7]
 
 === SELECT id FROM t WHERE cat IN (1, 3) ORDER BY id
-PLAN: Map(InUnion(IndexScan(IDX_CAT, [=]), bindings=1, ASC), {ID: _current.ID#0})
+PLAN: InUnion(Map(IndexScan(IDX_CAT, [=] COVERING), {ID: _current.ID#0}), bindings=1, ASC)
 ROWS(5) cols=[ID]:
   [1]
   [2]
@@ -74,7 +74,7 @@ ROWS(5) cols=[ID]:
   [7]
 
 === SELECT id, val FROM t ORDER BY val, id LIMIT 4
-PLAN: Limit(4, Map(InMemorySort([_current.VAL#2 ASC, _current.ID#0 ASC], Scan(T)), {ID: _current.ID#0, VAL: _current.VAL#2}))
+PLAN: Limit(4, Map(IndexScan(IDX_VAL, [*] COVERING), {ID: _current.ID#0, VAL: _current.VAL#2}))
 ROWS(4) cols=[ID, VAL]:
   [5, NULL]
   [7, 50]
@@ -82,7 +82,7 @@ ROWS(4) cols=[ID, VAL]:
   [3, 150]
 
 === SELECT DISTINCT cat FROM t ORDER BY cat
-PLAN: Distinct(Map(IndexScan(IDX_CAT, [*]), {CAT: _current.CAT#1}))
+PLAN: Distinct(Map(IndexScan(IDX_CAT, [*] COVERING), {CAT: _current.CAT#1}))
 ROWS(3) cols=[CAT]:
   [1]
   [2]

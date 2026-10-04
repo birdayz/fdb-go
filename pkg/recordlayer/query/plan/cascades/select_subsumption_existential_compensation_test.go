@@ -444,12 +444,15 @@ func TestSelectSubsumptionExistentialCompensation_ResidualAndNilSafety(
 		nil,
 		false,
 	)
+	// An EVP whose existential this Select does not own still sits in its
+	// predicates: nothing else applies it, so it is reapplied as a residual
+	// over the outer binding.
 	if fn := mappings[0].GetPredicateCompensation()(
 		foreignParent,
 		nil,
 		nil,
-	); fn.IsNeeded() {
-		t.Fatal("outer-owned EVP was compensated at the wrong match level")
+	); !fn.IsNeeded() || fn.IsImpossible() {
+		t.Fatal("an EVP over an outer existential was dropped from the Select holding it")
 	}
 
 	wrongKindParent := existentialCompensationTestParent(

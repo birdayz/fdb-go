@@ -65,6 +65,7 @@ go_test(
         "rich_ordering_merge_law_test.go",
         "rich_ordering_soundness_test.go",
         "rich_ordering_test.go",
+        "rows_identified_by_test.go",
         "storage_completeness_empty_ordering_test.go",
         "test_helpers_test.go",
     ],

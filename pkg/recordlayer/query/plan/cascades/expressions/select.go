@@ -418,11 +418,9 @@ func narrowLocalNullableReads(
 // copies the whole struct rather than re-listing fields. A field-by-field
 // literal silently drops anything added later, and it already had: the literal
 // omitted quantifiersSwapped, so a rebound swapped Select reported itself
-// UNSWAPPED. Both readers of that marker are safety DECLINES —
-// RemoveRangeOneRule refuses a swapped Select because the removal path does not
-// model restoring the swap's SQL column ordering, and the nested-loop-join rule
-// gates its correlated-scan fast path on it — so the omission failed OPEN in
-// both directions, admitting exactly the shapes those gates exist to refuse.
+// UNSWAPPED. The marker's reader is a safety DECLINE — the nested-loop-join
+// rule gates its correlated-scan fast path on it — so the omission failed OPEN,
+// admitting exactly the shape that gate exists to refuse.
 func (e *SelectExpression) WithQuantifiers(quantifiers []Quantifier) (RelationalExpression, error) {
 	if err := requireQuantifierArity("SelectExpression", len(quantifiers), len(e.quantifiers)); err != nil {
 		return nil, err

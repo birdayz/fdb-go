@@ -535,13 +535,14 @@ func TestOrderByExactMetadata_DerivedDelimitedLowercaseNameUsesPhysicalOrdinal(t
 	}
 	// THE QUOTED ALIAS KEEPS ITS CASE. `AS "a.b"` names the derived column
 	// a.b, and both the sort key's display name and the slot key it renders
-	// carry that spelling — the correlation prefix S is the source ALIAS,
-	// which is a different domain and stays folded.
+	// carry that spelling. The slot key's correlation prefix is the sort's
+	// input quantifier, the block Select's own (Java's generateSort), so only
+	// its column part is pinned.
 	//
-	// This asserted A.B / S.A.B#0 while the output-name authority folded, and
-	// that fold is what made a quoted alias unreachable by its own name.
-	if key.DisplayName() != "a.b" || keys[0].Field != "S.a.b#0" {
-		t.Fatalf("physical sort key = %q/%q, want a.b/S.a.b#0",
+	// This asserted A.B while the output-name authority folded, and that fold
+	// is what made a quoted alias unreachable by its own name.
+	if key.DisplayName() != "a.b" || !strings.HasSuffix(keys[0].Field, ".a.b#0") {
+		t.Fatalf("physical sort key = %q/%q, want a.b/<input>.a.b#0",
 			key.DisplayName(), keys[0].Field)
 	}
 	if !key.ResultType().Equals(values.NullableLong) {

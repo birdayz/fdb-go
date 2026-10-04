@@ -348,6 +348,7 @@ func TestTranslateScan(t *testing.T) {
 	t.Parallel()
 	scan := logical.NewScan("Order", "")
 	ref, _ := TranslateToCascadesWithSubqueries(scan, demoMetaData(t))
+	ref = queryBody(t, ref)
 	if ref == nil {
 		t.Fatal("expected non-nil reference")
 	}
@@ -379,6 +380,7 @@ func TestTranslateLimit(t *testing.T) {
 	scan := logical.NewScan("Order", "")
 	limit := logical.NewLimit(scan, 10, 5)
 	ref, _ := TranslateToCascadesWithSubqueries(limit, demoMetaData(t))
+	ref = queryBody(t, ref)
 	if ref == nil {
 		t.Fatal("expected non-nil reference")
 	}
@@ -405,6 +407,7 @@ func TestTranslateUnion(t *testing.T) {
 	scanB := logical.NewScan("Order", "B")
 	union := logical.NewUnion([]logical.LogicalOperator{scanA, scanB}, false)
 	ref, _ := TranslateToCascadesWithSubqueries(union, demoMetaData(t))
+	ref = queryBody(t, ref)
 	if ref == nil {
 		t.Fatal("expected non-nil reference")
 	}
@@ -544,6 +547,7 @@ func TestTranslateProject(t *testing.T) {
 	proj := logical.NewProject(scan, []string{"ORDER_ID", "PRICE"}, []string{"", "cost"})
 	proj.InputOrdinals = []int{0, 2}
 	ref, _ := TranslateToCascadesWithSubqueries(proj, demoMetaData(t))
+	ref = queryBody(t, ref)
 	if ref == nil {
 		t.Fatal("expected non-nil reference")
 	}
@@ -628,6 +632,7 @@ func TestTranslateJoin(t *testing.T) {
 	right := logical.NewScan("Customer", "")
 	join := logical.NewJoin(left, right, logical.JoinInner, "")
 	ref, _ := TranslateToCascadesWithSubqueries(join, demoMetaData(t))
+	ref = queryBody(t, ref)
 	if ref == nil {
 		t.Fatal("expected non-nil reference")
 	}
@@ -654,6 +659,7 @@ func TestTranslateJoin(t *testing.T) {
 	// nested binaries are never seeded).
 	three := logical.NewJoin(join, logical.NewScan("TypedRecord", ""), logical.JoinInner, "")
 	ref3, _ := TranslateToCascadesWithSubqueries(three, demoMetaData(t))
+	ref3 = queryBody(t, ref3)
 	if ref3 == nil {
 		t.Fatal("expected non-nil reference for the 3-way")
 	}
@@ -746,6 +752,7 @@ func TestTranslateAggregate(t *testing.T) {
 	}, []string{"total", "cnt"}, false)
 	agg.AggregateOperands = []values.Value{exactTestField(t, row, 2), nil}
 	ref, _ := TranslateToCascadesWithSubqueries(agg, demoMetaData(t))
+	ref = queryBody(t, ref)
 	if ref == nil {
 		t.Fatal("expected non-nil reference for aggregate")
 	}
@@ -772,6 +779,7 @@ func TestTranslateAggregateNoGroup(t *testing.T) {
 	scan := logical.NewScan("Order", "")
 	agg := logical.NewAggregate(scan, nil, []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}, []string{"cnt"}, false)
 	ref, _ := TranslateToCascadesWithSubqueries(agg, demoMetaData(t))
+	ref = queryBody(t, ref)
 	if ref == nil {
 		t.Fatal("expected non-nil reference for scalar aggregate")
 	}
@@ -852,6 +860,7 @@ func TestTranslateDistinct(t *testing.T) {
 	scan := logical.NewScan("Order", "")
 	dist := logical.NewDistinct(scan)
 	ref, _ := TranslateToCascadesWithSubqueries(dist, demoMetaData(t))
+	ref = queryBody(t, ref)
 	if ref == nil {
 		t.Fatal("expected non-nil reference for DISTINCT")
 	}
@@ -879,6 +888,7 @@ func TestTranslateCTEInlines(t *testing.T) {
 	cte := logical.NewCTE("expensive", body, main, false)
 
 	ref, _ := TranslateToCascadesWithSubqueries(cte, demoMetaData(t))
+	ref = queryBody(t, ref)
 	if ref == nil {
 		t.Fatal("expected non-nil reference for non-recursive CTE")
 	}
@@ -916,6 +926,7 @@ func TestTranslateCTEChained(t *testing.T) {
 	cteB := logical.NewCTE("B", bodyB, cteA, false)
 
 	ref, _ := TranslateToCascadesWithSubqueries(cteB, demoMetaData(t))
+	ref = queryBody(t, ref)
 	if ref == nil {
 		t.Fatal("expected non-nil reference for chained CTEs")
 	}
@@ -953,6 +964,7 @@ func TestTranslateCTEShadowsTableName(t *testing.T) {
 	cte := logical.NewCTE("Order", body, main, false)
 
 	ref, _ := TranslateToCascadesWithSubqueries(cte, demoMetaData(t))
+	ref = queryBody(t, ref)
 	if ref == nil {
 		t.Fatal("expected non-nil reference when CTE name shadows table name")
 	}
@@ -985,6 +997,7 @@ func TestTranslateCTEMultipleReferences(t *testing.T) {
 	cte := logical.NewCTE("p", body, join, false)
 
 	ref, _ := TranslateToCascadesWithSubqueries(cte, demoMetaData(t))
+	ref = queryBody(t, ref)
 	if ref == nil {
 		t.Fatal("expected non-nil reference for CTE with double reference")
 	}
@@ -1720,6 +1733,7 @@ func TestTranslateWherePreservesFilterForGraphConsumers(t *testing.T) {
 	pred := predicates.NewComparisonPredicate(exactTestNamedField(t, "O", "price", values.NullableInt), predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: &values.ConstantValue{Value: int32(10)}})
 	filter := logical.NewFilterWithPredicate(scan, pred, "")
 	ref, _ := TranslateToCascadesWithSubqueries(filter, demoMetaData(t))
+	ref = queryBody(t, ref)
 	if ref == nil {
 		t.Fatal("typed WHERE did not translate")
 	}
@@ -1733,4 +1747,26 @@ func TestTranslateWherePreservesFilterForGraphConsumers(t *testing.T) {
 	if _, ok := sel.GetResultValue().(values.QuantifiedObjectValue); !ok {
 		t.Fatalf("WHERE must preserve its input row, got %T", sel.GetResultValue())
 	}
+}
+
+// queryBody is the query below the unsorted sort a top level without ORDER BY
+// carries (Java's generateSelect), or below a LIMIT the sort under it.
+func queryBody(t *testing.T, ref *expressions.Reference) *expressions.Reference {
+	t.Helper()
+	if ref == nil {
+		return nil
+	}
+	if limit, ok := ref.Get().(*expressions.LogicalLimitExpression); ok {
+		inner := queryBody(t, limit.GetInner().GetRangesOver())
+		rebuilt, err := limit.WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(inner)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return expressions.InitialOf(rebuilt)
+	}
+	sort, ok := ref.Get().(*expressions.LogicalSortExpression)
+	if !ok || !sort.IsUnsorted() {
+		t.Fatalf("query top = %T, want the top level's unsorted sort", ref.Get())
+	}
+	return sort.GetInner().GetRangesOver()
 }

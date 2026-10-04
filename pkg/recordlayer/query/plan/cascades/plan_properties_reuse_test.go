@@ -13,7 +13,7 @@ import (
 func propertyReuseScan(reverse bool) *plans.RecordQueryScanPlan {
 	scan := mustPropertiesConstruct(plans.NewRecordQueryScanPlan([]string{"T"}, planPropertiesRowType(), reverse))
 	key := mustPropertiesConstruct(values.ResolveFieldOrdinals(scan.GetResultValue(), []int{0}))
-	return scan.WithPrimaryKey([]values.Value{key}).WithKeyComponentTypes([]values.Type{values.NotNullLong})
+	return scan.WithPrimaryKey([]values.Value{key}).WithCommonPrimaryKey([]values.Value{key}).WithKeyComponentTypes([]values.Type{values.NotNullLong})
 }
 
 func propertyReuseFilter(ref *expressions.Reference) *plans.RecordQueryPredicatesFilterPlan {
@@ -119,7 +119,7 @@ func TestPlanPropertiesReuseTracksWinnerDescendants(t *testing.T) {
 	pm := NewPlanPropertiesMap()
 	pm.Add(root)
 	newKey := mustPropertiesConstruct(values.ResolveFieldOrdinals(scan.GetResultValue(), []int{2}))
-	winnerInput.PruneWith(scan.WithPrimaryKey([]values.Value{newKey}))
+	winnerInput.PruneWith(scan.WithPrimaryKey([]values.Value{newKey}).WithCommonPrimaryKey([]values.Value{newKey}))
 	pm.Add(root)
 	got := pm.GetProperties(root)[properties.PropPrimaryKey].([]values.Value)
 	if len(got) != 1 || !values.ValuesStructurallyEqual(got[0], newKey) {

@@ -405,27 +405,48 @@ func TestQueryPredicateSimplification_AndPredicate(t *testing.T) {
 	}
 }
 
-// TestRewritingRules_ContainsExpectedRules verifies the RewritingRules
-// function returns the expected set of rules.
+// TestRewritingRules_ContainsExpectedRules pins Java's RewritingRuleSet: the
+// exploration rules are decorrelation-then-simplification and the outer-join
+// rewrite; SelectMerge-then-PushDown and the finalizer are implementation rules.
 func TestRewritingRules_ContainsExpectedRules(t *testing.T) {
 	t.Parallel()
 
 	rules := RewritingRules()
-	if len(rules) != 4 {
-		t.Fatalf("expected 4 rewriting rules, got %d", len(rules))
+	if len(rules) != 2 {
+		t.Fatalf("expected 2 rewriting exploration rules, got %d", len(rules))
+	}
+	cond, ok := rules[0].(*conditionalExpressionRule)
+	if !ok || len(cond.rules) != 2 {
+		t.Fatalf("rules[0]: expected a two-rule conditional, got %T", rules[0])
+	}
+	if _, ok := cond.rules[0].(*DecorrelateValuesRule); !ok {
+		t.Errorf("conditional[0]: expected DecorrelateValuesRule, got %T", cond.rules[0])
+	}
+	if _, ok := cond.rules[1].(*QueryPredicateSimplificationRule); !ok {
+		t.Errorf("conditional[1]: expected QueryPredicateSimplificationRule, got %T", cond.rules[1])
+	}
+	if _, ok := rules[1].(*RewriteOuterJoinRule); !ok {
+		t.Errorf("rules[1]: expected RewriteOuterJoinRule, got %T", rules[1])
 	}
 
-	// Check types.
-	if _, ok := rules[0].(*QueryPredicateSimplificationRule); !ok {
-		t.Errorf("rules[0]: expected QueryPredicateSimplificationRule, got %T", rules[0])
+	impl := RewritingImplementationRules()
+	if len(impl) != 2 {
+		t.Fatalf("expected 2 rewriting implementation rules, got %d", len(impl))
 	}
-	if _, ok := rules[1].(*PredicatePushDownRule); !ok {
-		t.Errorf("rules[1]: expected PredicatePushDownRule, got %T", rules[1])
+	implCond, ok := impl[0].(*conditionalImplementationRule)
+	if !ok || len(implCond.rules) != 2 {
+		t.Fatalf("impl[0]: expected a two-rule conditional, got %T", impl[0])
 	}
-	if _, ok := rules[2].(*DecorrelateValuesRule); !ok {
-		t.Errorf("rules[2]: expected DecorrelateValuesRule, got %T", rules[2])
+	if _, ok := implCond.rules[0].(*SelectMergeRule); !ok {
+		t.Errorf("impl conditional[0]: expected SelectMergeRule, got %T", implCond.rules[0])
 	}
-	if _, ok := rules[3].(*RewriteOuterJoinRule); !ok {
-		t.Errorf("rules[3]: expected RewriteOuterJoinRule, got %T", rules[3])
+	if _, ok := implCond.rules[1].(*PredicatePushDownRule); !ok {
+		t.Errorf("impl conditional[1]: expected PredicatePushDownRule, got %T", implCond.rules[1])
+	}
+	if !isPrunedInputsRule(impl[0]) {
+		t.Error("SelectMerge-then-PushDown must run only on pruned inputs")
+	}
+	if _, ok := impl[1].(*FinalizeExpressionsRule); !ok {
+		t.Errorf("impl[1]: expected FinalizeExpressionsRule, got %T", impl[1])
 	}
 }

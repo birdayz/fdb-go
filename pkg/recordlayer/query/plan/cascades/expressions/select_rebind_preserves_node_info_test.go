@@ -13,13 +13,11 @@ import (
 // drops.
 //
 // The swap marker is the case that was actually broken, and it is the one that
-// matters most: BOTH of its readers are safety DECLINES. RemoveRangeOneRule
-// refuses a swapped Select outright ("reconstructing it would have to restore
-// the swap + its SQL column ordering, which the removal path does not model"),
-// and ImplementNestedLoopJoinRule gates its correlated-scan FlatMap fast path on
-// `!sel.IsQuantifiersSwapped()`. A copy that reports UNSWAPPED therefore does
-// not lose an optimization — it admits a shape two rules explicitly refuse to
-// handle, and the observable is a wrong SQL column ORDER, not a slower plan.
+// matters most: its reader is a safety DECLINE. ImplementNestedLoopJoinRule
+// gates its correlated-scan FlatMap fast path on `!sel.IsQuantifiersSwapped()`.
+// A copy that reports UNSWAPPED therefore does not lose an optimization — it
+// admits a shape the rule explicitly refuses to handle, and the observable is a
+// wrong SQL column ORDER, not a slower plan.
 //
 // Reachability, measured rather than assumed, so the pin's status is honest:
 // a logging probe in this method over an uncached
@@ -66,10 +64,9 @@ func TestSelectWithQuantifiers_PreservesEveryNonQuantifierField(t *testing.T) {
 	if !got.IsQuantifiersSwapped() {
 		t.Error("WithQuantifiers dropped the quantifier-swap marker. " +
 			"A rebound swapped Select now reports itself UNSWAPPED, so " +
-			"RemoveRangeOneRule will strip a RANGE leg it declines to model the " +
-			"swap for, and ImplementNestedLoopJoinRule will take the correlated-scan " +
+			"ImplementNestedLoopJoinRule will take the correlated-scan " +
 			"fast path its `!IsQuantifiersSwapped()` guard exists to refuse. " +
-			"Both failures are silent and both come out as a wrong SQL column order. " +
+			"The failure is silent and comes out as a wrong SQL column order. " +
 			"Copy the struct; do not re-list the fields.")
 	}
 	if got.GetJoinType() != JoinCross {

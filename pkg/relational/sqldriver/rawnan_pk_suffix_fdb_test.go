@@ -300,10 +300,10 @@ func TestFDB_RawNaNPrimaryKeySuffixRetainsLogicalSort(t *testing.T) {
 			hasStatusIndex := false
 			hasLogicalSort := false
 			plans.Walk(indexedPlan, func(node plans.RecordQueryPlan) bool {
-				switch concrete := node.(type) {
-				case *plans.RecordQueryIndexPlan:
-					hasStatusIndex = hasStatusIndex || concrete.GetIndexName() == indexName
-				case *plans.RecordQueryInMemorySortPlan:
+				if index, ok := plans.IndexPlanOf(node); ok {
+					hasStatusIndex = hasStatusIndex || index.GetIndexName() == indexName
+				}
+				if _, ok := node.(*plans.RecordQueryInMemorySortPlan); ok {
 					hasLogicalSort = true
 				}
 				return true

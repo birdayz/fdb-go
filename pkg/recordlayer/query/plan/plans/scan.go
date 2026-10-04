@@ -48,6 +48,10 @@ type RecordQueryScanPlan struct {
 	// distinctProofIndexName names the secondary UNIQUE index whose uniqueness
 	// licensed eliding a DISTINCT above this scan (distinct_proof_stamp.go).
 	distinctProofIndexName string
+	// commonPrimaryKeyValues is the record type's primary key in the structural
+	// encoding an index plan reports (RecordQueryIndexPlan), so the primary-key
+	// property of a scan and of an index over one type agree, as Java's do.
+	commonPrimaryKeyValues []values.Value
 }
 
 // NewRecordQueryScanPlan builds a scan over the given record types
@@ -114,6 +118,22 @@ func (p *RecordQueryScanPlan) GetScanComparisons() []*predicates.ComparisonRange
 
 // GetPrimaryKeyValues returns the primary key values, or nil if not set.
 func (p *RecordQueryScanPlan) GetPrimaryKeyValues() []values.Value { return p.primaryKeyVals }
+
+// WithCommonPrimaryKey returns a copy carrying the structural common primary key.
+func (p *RecordQueryScanPlan) WithCommonPrimaryKey(pk []values.Value) *RecordQueryScanPlan {
+	cp := *p
+	cp.commonPrimaryKeyValues = append([]values.Value(nil), pk...)
+	if pk == nil {
+		cp.commonPrimaryKeyValues = nil
+	}
+	return &cp
+}
+
+// GetCommonPrimaryKeyValues returns the structural common primary key, or nil
+// when unknown.
+func (p *RecordQueryScanPlan) GetCommonPrimaryKeyValues() []values.Value {
+	return p.commonPrimaryKeyValues
+}
 
 // GetRecordTypes returns the canonical record-type-name list.
 func (p *RecordQueryScanPlan) GetRecordTypes() []string { return p.recordTypes }

@@ -158,7 +158,7 @@ alternative — never rows. Revisit when a second realizable form exists.
 ### Go decomposes SelectExpression into separate logical operators
 
 **Java:** `SelectExpression` is a unified node for filters, projections, and joins.
-**Go:** A SQL query block is now one `SelectExpression`, as in Java (TODO.md, "A SQL query block is one SelectExpression"), and Go has no projection expression or projection plan. Still open there: the top-level `Sort(Select)`.
+**Go:** A SQL query block is now one `SelectExpression`, as in Java (TODO.md, "A SQL query block is one SelectExpression"), and Go has no projection expression or projection plan; the top-level query is a `LogicalSortExpression` over the block, Java's `Sort(Select)`.
 
 ### NormalizePredicatesRule — RESOLVED
 
@@ -364,6 +364,25 @@ Functionally equivalent for current query shapes — all generated plans use sin
 **Go:** every `Explain()` method hand-builds its own `fmt.Sprintf` string; predicates and values are elided or rendered inconsistently (`[N preds]`), and there is no detail-level or formatter abstraction.
 
 Consequence: Go's EXPLAIN output cannot show predicate/value detail without editing each node's `Explain()`, and the rendering logic is scattered. Port target: `ExplainTokens` + `DefaultExplainFormatter` + the per-node `explain()` visitors. Not on the RFC-173 critical path (frozen behind it per owner directive); food for a post-RFC-173 slice.
+
+### Distinct union: merge states per leg, not the partition cross product
+
+Java's `ImplementDistinctUnionRule` walks the cross product of the legs' plan
+partitions, pruning a failing prefix with `skip()`, and yields one union per
+compatible combination and comparison key. The successes alone grow as the
+product of each leg's compatible partitions: the fixed-factor seed
+(`TestPlanHarness_FixedFactorUnionJavaComparable`) builds unions of 18 legs with
+1-5 partitions each, 1.66e9 combinations, and Java fails the same query with a
+StackOverflowError (`conformance/projected_exists_left_join_java_probe_test.go`).
+Go (`reachableUnionMergeStates`) carries the distinct merge states leg by leg —
+the merged ordering plus the merged legs' record identity, which is all a prefix
+contributes to the rest of the merge — and yields once per comparison key, each
+leg the cheapest member of any of its partitions that delivers that key. The
+yields are the cheapest of Java's per comparison key, as Cascades' winner per
+required property. Java also lacks Go's per-leg record-identity check
+(`RecordIdentityWithin`), which Go keeps in place of
+`isPrimaryKeyCompatibleWithOrdering`. Plans agree with Java on the primary-key
+disjunctions in `conformance/or_union_merge_java_probe_test.go`.
 
 ## Planning-Layer: Java-aligned core with documented Go extensions
 
@@ -716,15 +735,9 @@ counts and a byte-identical EXPLAIN set (see TODO.md's stress table).
 
 ### Cost Model: RewritingCostModelLess
 
-Java 4.12.11's `RewritingCostModel.compare()` has **six** ordered criteria: (0) `outerJoinCount`, (1) `selectCount`, (2) `tableFunctionCount`, (3) normalized CNF conjuncts, (4) predicate-count-by-level, (5) `semanticHashCode` tie-break. Go ports criteria **1–5** (`selectCount`, `tableFunctionCount`, CNF conjuncts, predicate-count-by-level, deep hash tie-break). `Planner.WithCostModel()` wires the cost model per phase.
+Java's `RewritingCostModel.compare()` has six ordered criteria: (0) `outerJoinCount`, (1) `selectCount`, (2) `tableFunctionCount`, (3) normalized CNF conjuncts, (4) predicate-count-by-level, (5) `semanticHashCode` tie-break. Go ports all six; its outer join count counts LEFT OUTER selects, Go's `OuterJoinExpression` (`isLeftOuterJoinSelect`, designated_final.go). The canonical form `RewriteOuterJoinRule` yields therefore survives the REWRITING prune as in Java, so `SelectMergeRule` dissolves it into its block and `PredicatePushDownRule` pushes a preserved-side conjunct into the preserved leg (`WHERE t.id = 2` over `t LEFT JOIN u` probes `t` by primary key, as Java plans it).
 
-**Criterion 0 — `outerJoinCount` — is DELIBERATELY NOT ported. This is an intentional, justified divergence, not a gap.**
-
-In Java, `outerJoinCount` (penalize any surviving `OuterJoinExpression`, checked FIRST) is a **correctness guard**, not a heuristic. Java's `OuterJoinExpression` is a logical-only node with **no physical operator** and exactly one consumer (`RewriteOuterJoinRule`); it *must* be rewritten before planning. Java's single-final-expression prune keeps one survivor per group, and without `outerJoinCount` the un-rewritten `OuterJoinExpression` (0 selects) would beat the rewritten form (2 selects) on the `selectCount` tie-break, survive the prune, and hand the planning phase an **unimplementable** node — the query would fail to plan. `outerJoinCount` forces the implementable rewritten form to win. (Evidence: `OuterJoinExpression.java` is logical-only; `PlanningRuleSet.java` has no rule matching it; `RewritingCostModel.java:60-68` comment states the rationale.)
-
-Go has **no such correctness problem**: Go's outer join is a `SelectExpression{joinType: LEFT/FULL OUTER}` that is **directly implementable** — `ImplementNestedLoopJoinRule` plans it as a materialized `RecordQueryNestedLoopJoinPlan` (RFC-152), a read-side extension Java lacks (Java has only the correlated `RecordQueryFlatMapPlan` re-scan). Go deliberately keeps the un-rewritten outer-join select as the REWRITING prune survivor (it wins on `selectCount`, 1<2), so PLANNING can derive **both** the materialized NLJ (scan the inner once) and the correlated FlatMap (re-scan) and cost-choose (RFC-152). **Porting `outerJoinCount` would force the rewritten form to win the prune, discard the outer-join select, and suppress the materialized-NLJ alternative — a plan regression, proven by `TestFDB_ArrayUnnestOrdinality` (asserts the materialized `NestedLoopJoin(LEFT OUTER, …)` box).** Pinned by `TestRewritingCostModel_KeepsUnrewrittenOuterJoin` / `TestRewritingBoundary_KeepsUnrewrittenOuterJoin`, which go RED if `outerJoinCount` is (re-)introduced.
-
-**Companion divergence — `RewriteOuterJoinRule` runs in Go's PLANNING phase (`PlanningExplorationRules`); Java's `PlanningRuleSet` does not contain it.** Because Go keeps the un-rewritten outer-join select as the prune survivor (above), PLANNING re-fires the canonicalizer to re-derive the rewritten form and keep the correlated-FlatMap alternative available alongside the materialized NLJ. Kept as an intentional divergence (Java can drop it precisely because `outerJoinCount` makes the rewritten form the sole survivor — the guard Go must not adopt). Empirically the full outer-join FDB suite is green whether or not this PLANNING re-fire is present (the correlated FlatMap is also derivable directly by `ImplementNestedLoopJoinRule.yieldGeneralFlatMap`), so a future cleanup could remove it — but only after pinning the correlated-LEFT-OUTER index-nested-loop (RFC-042) path with a dedicated plan-shape test.
+**Go-only: the materialized outer join.** Go plans a LEFT OUTER select as a materialized `RecordQueryNestedLoopJoinPlan` (RFC-152), which scans the null-supplying leg once where the correlated FlatMap re-scans it per preserved row; Java has only the FlatMap. `OuterJoinMaterializationRule` (PLANNING only) re-forms the LEFT OUTER select from the canonical form so both compete on cost, keeping the canonical select's own predicates (WHERE conjuncts) above it over a box quantifier. `RewriteOuterJoinRule` runs in REWRITING only, as in Java. A LEFT select survives REWRITING only where `RewriteOuterJoinRule` declines (a scalar subquery's strict edge); `PredicatePushDownRule` turns that one into an inner join under a predicate rejecting its null-extended row, which Java does through `EliminateNullOnEmptyRule` after dissolving the outer join. Pinned by `TestRewritingCostModel_PrefersCanonicalOuterJoin`, `TestRewritingBoundary_KeepsCanonicalOuterJoin` and the `TestOuterJoinMaterializationRule_*` tests.
 
 ### Properties: 19/19
 
@@ -830,7 +843,21 @@ Two-tier simplification matching Java's value rule sets:
 
 ### InJoinPlan: InSourceKind + PushInJoinThroughFetch
 
-`InSourceKind` enum classifies explode values (Values/Parameter/Comparand). `classifyInSourceKind()` sets it at plan creation. `PushInJoinThroughFetchRule` excludes InComparand. Source kind preserved through push-through-fetch.
+`InSourceKind` enum classifies explode values (Values/Parameter/Comparand). `classifyInSourceKind()` sets it at plan creation and the push-through-fetch preserves it. Go pushes EVERY InJoin through a fetch; Java does not push the comparand InJoin SQL IN-lists produce — see the next entry.
+
+### Plan choice: an ordered IN over a non-covering index runs as Fetch(InJoin), Java's as Fetch(InUnion) (RFC-191)
+
+**Divergence.** `SELECT * FROM tbl WHERE a IN (30, 10, 20) ORDER BY a` over a non-covering index on `a`: Java elects `[IN ...] INUNION q0 -> { COVERING(IA [EQUALS q0]) } COMPARE BY (_.A, _.ID, _.K) | FETCH`; Go elects `Fetch(InJoin(IndexScan(IA, [=] COVERING), binding ASC))`. Descending, Java elects `INJOIN SORTED DESC -> { ISCAN(IA [EQUALS q0]) }` and Go the same `Fetch(InJoin(...))` with the fetch above. Rows are identical; `conformance/in_join_ordering_java_probe_test.go` measures both engines (4.14.2.0) and flags either side moving.
+
+**Mechanism.** Both cost models prefer the plan with more in-join sources (`PlanningCostModel.java:263-273`; Go's `inJoinCount` rung in `planning_cost_model.go`), but Java reaches that rung only for DESC: for ASC its fetch-depth tiebreak decides first, because `PushInJoinThroughFetchRule` is registered for `RecordQueryInValuesJoinPlan` and `RecordQueryInParameterJoinPlan` only (`PlanningRuleSet.java:151-152`), never for the `RecordQueryInComparandJoinPlan` every SQL IN-list builds, so Java's InJoin cannot put its fetch at depth 0 while its IN-union can. Go's `PushInJoinThroughFetchRule` has no source-kind gate (`rule_push_in_join_through_fetch.go`; `TestPushInJoinThroughFetchRule_Fires` pins the comparand arm).
+
+**Why Go keeps it.** The exclusion reads as an omission, not a design: the rule is generic over `RecordQueryInJoinPlan` and needs no change to run for comparands; the comparand class arrived nine months after the two registrations and every other visitor of the InJoin trio handles all three; nothing in the Java source justifies it. Both shapes do the same N bounded index reads and one fetch per row, and the IN-union's merge is degenerate here (leg i emits only `a = v_i`, legs visited in order). Measured on real FDB with `BenchmarkFDB_InFetch_*` (5 rows per value, 4-6 interleaved pairs per N, 2026-10-04): N=3 InUnion 0.8% faster (4/4 pairs, sign test p≈0.06), N=10 InUnion 0.6% faster (3/4), N=100 InJoin 0.8% faster (6/6, p≈0.016) — no N at which the IN-union is significantly better.
+
+**Wire compatibility.** A read-path plan choice only. Continuation content differs between the two plans, but a continuation never crosses engines: Go refuses a caller-supplied statement continuation outright (`cascades_generator.go`, the `OptContinuation` check in `cascadesPlan`), and the executor dispatches a continuation only to the plan shape that minted it (`UnsupportedContinuationError` on a mismatch).
+
+**Reversal.** Registering `PushInJoinThroughFetchRule` for `RecordQueryInComparandJoinPlan` in Java closes this entry. Evidence that the exclusion is deliberate, or an `InFetch` benchmark where the IN-union wins at some N, flips Go to Java's choice.
+
+**Open against the RFC-257 acceptance.** The WS-F oracle's acceptance map (`wsfAcceptance` in `conformance/ws_f_probe_conformance_test.go`) still sets Java's path as the target for these rows (`w8_in_order_by_col1_explain`, `w8_in25_order_by_col1_*`, `w8_in4x6_explain`, `w8_in5x5_*`, `w8_in_no_order_explain`), owned by F-6 (covering emission under Java's gate) and F-7b (the IN-union size check, under which Java's 25-value IN-union fails with "too many IN values" while Go's InJoin answers). It was written without this ruling; the RFC-257 ledger's WS-F lines carry the reconciliation, which settles whether Go keeps this choice or takes Java's.
 
 ## Execution-Layer Gaps (blocked on infrastructure not yet built)
 
@@ -923,6 +950,8 @@ Confirmed via cross-engine probes. Go's correct behavior is pinned in Go-only po
 | UNION ALL outer ORDER BY | Deterministic sorted output | Intermittent ordering |
 | `WHERE pk_col = nonpk_col` | SQL-correct | `Missing binding` planner error |
 | PK-intersection whose legs fix DIFFERENT primary-key components (`PRIMARY KEY (pk1, pk2)`, indexes `(b, pk1)` and `(pk2)`, `WHERE b = 1 AND pk2 = 3`) | Intersects on `(pk1, pk2)`, the order both legs deliver; correct rows (RFC-245 declined the merge, RFC-247 widened the key) | Intersects on `COMPARE BY (_.PK1)` and returns every `pk2 = 3` record regardless of `b` (`COUNT(*)` 4 for a 1-row answer) — see below |
+| IN-union over a projection that drops the primary key (`SELECT s, b … WHERE a IN (1, 2) ORDER BY s, b`, index `(a, s, b)`) | Merges only on a key that identifies rows; otherwise sorts. Correct rows | Merges `COMPARE BY (_.S, _.B)` and drops records that tie on `(s, b)` across IN branches — see below |
+| EXISTS in a disjunction of a join condition (`ON (c.a_id = a.id AND EXISTS (…)) OR c.id > 100`) | Reapplies the existential predicate; correct rows | Drops it when the select carrying it is matched to an index: extra rows in the ON form, none in the WHERE form — see below |
 
 4.12.11 fixed three former entries, now removed from this table — they run as plain cross-engine
 equivalence in the corpus: PK literal-eq AND join predicate (`pk_literal_eq_in_join`) and 3-way join
@@ -968,6 +997,41 @@ two declines / the vacuous direction claim), corpus entry
 `pk_intersection_leg_bound_component_count` (`DivergenceJavaWrongRowsGoCorrect`), and
 `TestFDB_MetamorphicCompositePrimaryKey` (the composite-PK axis of the indexed/unindexed twin, which
 found it). Booked in TODO.md section 9 for the upstream report.
+
+### IN-union comparison key: the merge's dedup must not fire on the join it implements
+
+**Java** `ImplementInUnionRule` yields a `RecordQueryInUnionPlan` for every comparison key the
+inner's ordering admits, and `UnionCursor` drops each row whose key ties one already emitted. Over
+an inner that projects the primary key away (`MAP (_.S AS S, _.B AS B)` over a covering `(a, s, b)`
+scan) the key `(s, b)` ties distinct records of different IN branches, and Java returns one of
+them. `Ordering.pullUp` keeps `isDistinct` through that projection, though no rule reads it here.
+Measured on 4.14.2.0 (`conformance/in_union_projection_dedup_java_probe_test.go`).
+
+**Go** (`rule_implement_in_union.go`, `inUnionMergeKeyIdentifiesRows`) bakes the merge only when
+the pinned inner's ordering still holds a claim whose coordinates all lie in the comparison key:
+a distinctness claim, storage-key completeness, or the record-identity claim an index scan stamps
+over its primary-key coordinates (`RichOrdering.RowsIdentifiedBy`). Each claim is coordinate-bound
+and dropped by a projection that loses one of its coordinates. A per-stream claim is sound across
+branches because its explode-bound coordinates are in the key; record identity is a key across all
+of them. The InUnion's own output claims distinctness over its comparison key, which its dedup
+guarantees, so a nested IN-union still merges. Otherwise the query sorts. Pinned by
+`TestFDB_InUnionMergeKeyMustIdentifyRows` and `TestRichOrdering_RowsIdentifiedBy`; found by
+`TestFDB_MetamorphicCompositePrimaryKey`. Booked in TODO.md section 9 for the upstream report.
+
+### Existential predicate for an outer existential: reapplied, not dropped
+
+**Java** `ExistentialValuePredicate.computeCompensationFunction` (`:77-88`) returns
+`noCompensationNeeded()` when the predicate's existential is not a quantifier of the matched
+select. A disjunction containing an EXISTS stays in the lower select of a join, correlated to the
+existential one level up, so matching that select to an index silently removes the predicate.
+Measured on 4.14.2.0 (`conformance/exists_under_or_java_probe_test.go`): the ON form returns a row
+whose EXISTS is false, the WHERE forms return nothing.
+
+**Go** (`select_subsumption_predicates.go`, `selectSubsumptionExistentialPredicateCompensation`)
+reapplies the predicate in that case: no other select applies it, and over the outer row it is an
+ordinary residual. Pinned by `TestFDB_ExistsInOn` and
+`select_subsumption_existential_compensation_test.go`. Booked in TODO.md section 9 for the
+upstream report.
 
 ## Plan Architecture: Go collapses Java class hierarchies
 
@@ -1047,7 +1111,7 @@ written down with **"what invariant does Java carry that this drops?"** and each
 | **Scalar cost fallback + Go-only tiebreakers** (15b `compareFlatMapVsNLJ`, 15c `EstimateCostWith`) — no `advancePlannerStage`, so Go's flat member list has ties Java's prune-to-1-winner avoids | Structural single-winner selection; total-order tie resolution | nondeterministic / wrong index pick | **PARTIAL** — cost ORDERING pinned by WS-4 `TestBoundSelectivity_CostMonotonicity` (#405 class); equality-tie determinism pinned by `TestPlanDeterminism_*` (#409). **TRACKED:** the InJoin inner correlated-equality tie (WS-4 #2, OPEN — RFC-167 Phase 1b). |
 | **Hand-rolled `AggregateDataAccessRule`** (aggregate-index matching, not Java's generic data-access) | Guard(match)==consumer(build/execute) — one classifier | wrong agg result / wrong index match (COUNT-COL class) | **COVERED for the known drift** — WS-3 `expressions.IsCountStar` is the single source of truth for the planner candidate + the executor group cursors (#413); group-key matcher deduped via `groupColEqualityIndex` (RFC-163). **RESOLVED (RFC-242):** the translator's own count-star normalization (`aggregateNamesStableForUnion`) was deleted with the union join-leg gate it served, so `IsCountStar` is the one classifier; the `COUNT(NULL)` fold fidelity question stays with it. |
 | **`WithPrimaryKeyIntersector` was forward-PK-only and discarded `requestedOrderings`** (vs Java's rich common-ordering gate) | Every intersection leg shares the directional comparison ordering consumed by the sorted merge | wrong rows if reverse were widened piecemeal; safe misses for unsupported key encodings | **RESOLVED (RFC-190.5b):** rich common-order derivation, translated requests, fixed-binding dependency normalization, free-PK compatibility, redundancy proof, directional parts, reverse plan identity/execution/ordering/rewrites, and fan-out-leg PK distinct are one atomic path. Natural flat all-ASC/all-DESC keys execute; mixed/counterflow, ordered-bytes, non-flat, ambiguous-layout, stale-ordinal, and mixed structural/name-only PK-provider shapes decline safely. Multi-type layout remains separately tracked below. |
-| **Merge UNIONs (`InUnion`, `MergeSortUnion`) decline a MIXED-direction comparison key** | Java encodes direction and NULL placement into the physical key with `ToOrderedBytesValue` (`ProvidedOrderingPart.comparisonKeyValue`), so it can merge on `(a DESC, b ASC)` | plan-space narrowing only — never wrong rows; the request falls back to an in-memory sort | **TRACKED, fail-closed.** Go's `ToOrderedBytesValue` has no evaluator, so the executable comparison key is the raw Value and a merge runs in exactly one direction. Both merge-union rules now gate on `properties.NaturalComparisonKeyValues(parts, isReverse)` — the same gate the intersection plans already used — and decline any candidate whose parts disagree with the resolved direction, instead of building a plan whose merge front compares one key the wrong way round. Newly REACHABLE rather than newly introduced: until descending merges were enumerated at all, every comparison key was ascending. **Measured:** the IN-union gate declines exactly twice over the 2475-query corpus, both times `parts=[ASC, DESC]` against a forward merge; the merge-sort-union gate declines nothing, because the union merge carries no equality-bound key for a request to give a direction to (`TestDistinctUnionMergedOrderingCarriesNoEqualityBoundKeys` pins that premise, so the fence's dormancy stays a fact rather than an assumption). The reachable half is pinned at RULE level by `TestInUnionRuleRefusesMixedDirectionMerge`, verified red with the gate removed — the corpus scenarios do NOT pin it, since the mixed-direction shapes plan an in-memory sort with or without the gate. Closing it means porting the `ToOrderedBytesValue` evaluator, which also closes the counterflow-NULLS decline in `EnumerateSatisfyingComparisonKeyValues`. |
+| **Merge UNIONs (`InUnion`, `MergeSortUnion`) decline a MIXED-direction comparison key** | Java encodes direction and NULL placement into the physical key with `ToOrderedBytesValue` (`ProvidedOrderingPart.comparisonKeyValue`), so it can merge on `(a DESC, b ASC)` | plan-space narrowing only — never wrong rows; the request falls back to an in-memory sort | **TRACKED, fail-closed.** Go's `ToOrderedBytesValue` has no evaluator, so the executable comparison key is the raw Value and a merge runs in exactly one direction. Both merge-union rules now gate on `properties.NaturalComparisonKeyValues(parts, isReverse)` — the same gate the intersection plans already used — and decline any candidate whose parts disagree with the resolved direction, instead of building a plan whose merge front compares one key the wrong way round. Newly REACHABLE rather than newly introduced: until descending merges were enumerated at all, every comparison key was ascending. **Measured** over the 2834-query corpus: the IN-union gate declines 6 of 424 candidate evaluations, each a two-part key mixing ASC and DESC; the merge-sort-union gate declines none of the 15 candidate evaluations that reach it. Both gates are reachable — the union merge keeps an ID the legs bind to different constants as a key the request gives a direction to, as Java's union merge or-s those bindings — and both are pinned at RULE level, by `TestInUnionRuleRefusesMixedDirectionMerge` and `TestDistinctUnionRuleRefusesMixedDirectionMerge`, each verified red with its gate removed — the corpus scenarios do NOT pin it, since the mixed-direction shapes plan an in-memory sort with or without the gate. Closing it means porting the `ToOrderedBytesValue` evaluator, which also closes the counterflow-NULLS decline in `EnumerateSatisfyingComparisonKeyValues`. |
 | **`PrimaryScanMatchCandidate.ComputeMatchedOrderingParts` SKIPS two branches of Java's shared implementation, and softens a third from an assert to a decline** | `ValueIndexLikeMatchCandidate.computeMatchedOrderingParts` (`ValueIndexLikeMatchCandidate.java:63-118`) hard-asserts `Verify.verify(ordinalInCandidate >= 0)` on an unknown sort parameter, branches on `normalizedKeyExpression.createsDuplicates()`, and de-duplicates emitted ordering VALUES through a `normalizedValues` set | plan-space narrowing only, never wrong rows | **TRACKED, all three deliberate.** (a) A primary key is a flat list of scalar columns, so `createsDuplicates()` is false at every position and the fan-out branch has nothing to act on. (b) With no fan-out and distinct key columns, the `normalizedValues` dedup can never fire. (c) Java ASSERTS an unknown sort parameter is impossible; Go ends the reported prefix instead (`primary_scan_match_candidate.go`, pinned by `TestPrimaryScanMatchCandidateStopsAtUnknownParameter`). Java's assert is the stronger statement and Go should eventually match it, but a panic in library code is forbidden by design principle 4, and truncating is the fail-closed reading — it can only cost an access path, never claim an order the records lack. Revisit (a) and (b) together if a primary key ever gains a fan-out key expression. |
 | **Cross-candidate PK-intersection pruning retains singleton alternatives** | Java builds compensated singles and all intersections in one shared `IntersectionInfo` map, evicts immediate subpartitions only after a useful replacement, then yields survivors once | safe plan-space widening / possible winner difference, never missing or wrong rows | **TRACKED SAFE RESIDUAL (RFC-190.5b review):** Go first yields candidate-local accesses, then its separate cross-candidate pass builds a private eviction map. It correctly prunes smaller intersection expressions internally but cannot retract already-yielded exact singleton scans. Do not delete memo members post hoc. Closing this requires a partition-level assembler that creates singles once, shares the map with intersection enumeration, and flattens survivors before any yield; regressions must preserve unrelated finals and safe logical compensations. |
 | **Per-wrapper relink** (RFC-070 nil-inner shells across ~20 wrappers, vs Java's eager `memoizePlan` to concrete) | Every non-leaf plan has its child; deterministic relink to the cost winner; one final member | dropped/nil child (0 rows); nondeterministic plan/cache | **CLOSED for the shell half (RFC-183).** Rules now bake the concrete child at rule time, matching Java's memoizePlan-as-constructor-argument; `verifyChildrenMemoized` rejects a holed expression at yield, always-on (ports `CascadesRuleCall.verifyChildrenMemoized`); the ~600 lines of repair machinery are deleted, after instrumentation showed ZERO shells across the full suite and all 2407 corpus queries. `ValidatePlanInvariants` remains as the sink-side backstop. **NOW CLOSED (RFC-184 W2):** P5's terminal step landed — every physical wrapper is deleted, so the parent→child edge is no longer stored twice. A physical plan is its own cascades expression holding its children SOLELY as quantifiers (`RecordQueryFlatMapPlan`/`RecordQueryNestedLoopJoinPlan` carry `outerQ`/`innerQ` and no embedded plan-snapshot field; `GetChildren` resolves through them), so the dual-storage state is unrepresentable. The earlier BLOCKER — `rule_implement_nested_loop_join.go` building compensating filters that were never memoized, so the plan pointer held what EXECUTES while the quantifier held what the memo COSTS (9868 rule-time edges, 472 semantically different) — is resolved: those rules now memoize each compensating operator and advance the quantifier over that reference in lockstep (the FlatMap collapse), matching `rule_implement_simple_select.go`'s long-standing shape. The **LIVE DEFECT** that fell out of the same finding (the memo costing expressions that are not the ones that execute) is therefore gone — see the "memo costs an expression that is not the one that executes — CLOSED" section below. **STILL TRACKED (separate concerns):** retiring `findBestPhysicalPlan` — extraction's ad-hoc cost pick outside the cost framework, wired to ONE site against `findPhysicalPlan`'s twenty (do NOT "fix" that asymmetry by propagating the cheapest-selector: it is ordering-blind and turns `ORDER BY … DESC` into ASC, measured, see RFC-183 §10); and the reachability tally still driving a residual population of unreachable edges to zero (`plan_reachability.go` — a completeness/hygiene concern, NOT the wrong-tree-costing defect, which is closed). **RETRACTED (RFC-224):** an earlier revision cited "1186 references hold multiple finals, 1125 multiple PHYSICAL finals" as P5's blocker, then claimed singleton finals held at extraction. The first measurement was taken while rules were firing, and the second assertion mistook Java's mechanism for Go's property. Go deliberately retains one winner per required physical property; `TestExtractionIsUnambiguous` now pins the actual requirement — a total winner/compatible-physical-fallback selection on the path extraction dereferences, with zero dead ends and coherent retained alternatives. Note also the split's stated rationale in `plans/plan.go:23-28` — "physical and logical plan trees live in different namespaces in Java" — is FALSE: `QueryPlan<T> extends RelationalExpression` (`QueryPlan.java:51`), so a Java plan IS a RelationalExpression; the comment conflates package separation (real) with hierarchy separation (not real). |
@@ -1173,6 +1237,14 @@ collision mint: the inner source is born under a unique CorrelationName, so the 
 `isLocal` guard no longer swallows the parent hit — the fallthrough emits QOV(outer) and the
 query ANSWERS with Java's live-verified semantics. Both variants are pinned by
 `TestFDB_DuplicateFromAliases`.
+
+**SelectMergeRule renames a capturing binding.** A pulled-up quantifier keeps its SQL-visible name
+in Go, so it can share it with a correlation the merged select reads from an enclosing scope (a CTE
+body over `LB` inside a subquery correlated to the outer `LB`); `SelectMergeRule` renames it rather
+than letting it capture that read. Java's unique ids make the collision impossible. A read of a leg
+a merged box flows whole keeps its binding, as that read names the box's declared window
+(`TestSelectMergeRule_RenamesABindingThatWouldCaptureAnOuterRead`,
+`TestSelectMergeRule_KeepsABoxLegASiblingReads`, `TestFDB_CTEBoxUnnestOnResolutionProbe2`).
 
 ## Element-shadows-outer vs Java AMBIGUOUS_COLUMN (dup-label unnest, shared-surface, Go-only reach)
 

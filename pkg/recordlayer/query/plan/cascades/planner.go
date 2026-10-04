@@ -258,7 +258,7 @@ func NewPlanner(rules []ExpressionRule, ctx PlanContext) *Planner {
 	}
 	p := &Planner{
 		rules:              rules,
-		rewritingImplRules: []ImplementationRule{NewFinalizeExpressionsRule()},
+		rewritingImplRules: RewritingImplementationRules(),
 		ctx:                ctx,
 		memo:               nil,
 		MaxTasks:           100_000,
@@ -912,19 +912,7 @@ func (p *Planner) rulesForPhase(phase PlannerPhase) ([]ExpressionRule, []Impleme
 	// selected. Keyed by the simple type name, matching Java's
 	// `rule.getClass().getSimpleName()`.
 	if len(p.DisabledRules) > 0 {
-		fe := er[:0:0]
-		for _, r := range er {
-			if _, off := p.DisabledRules[shortTypeName(r)]; !off {
-				fe = append(fe, r)
-			}
-		}
-		fi := ir[:0:0]
-		for _, r := range ir {
-			if _, off := p.DisabledRules[shortTypeName(r)]; !off {
-				fi = append(fi, r)
-			}
-		}
-		return fe, fi
+		return enabledExpressionRules(er, p.DisabledRules), enabledImplementationRules(ir, p.DisabledRules)
 	}
 	return er, ir
 }

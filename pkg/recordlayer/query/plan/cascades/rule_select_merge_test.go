@@ -119,15 +119,11 @@ func selectMergeOrdinalSeedField(t testing.TB, child values.Value, ordinal int) 
 
 func selectMergeFire(
 	t testing.TB,
-	rule ExpressionRule,
+	rule ImplementationRule,
 	ref *expressions.Reference,
 ) []expressions.RelationalExpression {
 	t.Helper()
-	yielded, err := FireExpressionRule(rule, ref)
-	if err != nil {
-		t.Fatalf("FireExpressionRule: %v", err)
-	}
-	return yielded
+	return mustFirePrunedFinalRule(t, rule, ref)
 }
 
 func selectMergeExistentialAlias(
@@ -629,7 +625,7 @@ func TestSelectMergeTranslationDescendsThroughAggregate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tr := newSelectMergeTranslation(NewExpressionRuleCall(expressions.InitialOf(aggregate), nil, nil))
+	tr := newSelectMergeTranslation(nil)
 	tr.add(box.GetAlias(), row, true)
 	translatedPredicates, err := tr.predicates(filter.GetPredicates())
 	if err != nil {
@@ -1927,5 +1923,89 @@ func TestSelectMergeRule_KeepsTheReferenceLegTable(t *testing.T) {
 		if got := expressions.LegTableConflictsWith(tc.ref, tc.after); got != tc.conflict {
 			t.Errorf("%s: LegTableConflictsWith = %v, want %v", tc.name, got, tc.conflict)
 		}
+	}
+}
+
+// A pulled-up binding named like a correlation the select reads from an
+// enclosing scope is renamed rather than capturing that read: here the child's
+// own LB would otherwise answer the outer LB.K.
+func TestSelectMergeRule_RenamesABindingThatWouldCaptureAnOuterRead(t *testing.T) {
+	t.Parallel()
+	lb := values.NamedCorrelationIdentifier("LB")
+	rowType := values.NewRecordType("LB", false, []values.Field{
+		{Name: "BID", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "K", FieldType: values.NullableLong, Ordinal: 1},
+	})
+	scan := mustOuterJoinCostConstruct(expressions.NewFullUnorderedScanExpression([]string{"LB"}, rowType))
+	inner := expressions.NamedForEachQuantifier(lb, expressions.InitialOf(scan))
+	innerRow := mustOuterJoinCostConstruct(values.NewQuantifiedObjectValue(lb, rowType))
+	bid := mustOuterJoinCostConstruct(values.ResolveFieldOrdinals(innerRow, []int{0}))
+	child := mustOuterJoinCostConstruct(expressions.NewSelectExpression(
+		values.NewRawRecordConstructorValue(values.RecordConstructorField{Name: "B", Value: bid}),
+		[]expressions.Quantifier{inner}, nil))
+
+	childQ := expressions.NamedForEachQuantifier(values.UniqueCorrelationIdentifier(), expressions.InitialOf(child))
+	childRow := mustOuterJoinCostConstruct(childQ.RequireFlowedObjectValue())
+	b := mustOuterJoinCostConstruct(values.ResolveFieldOrdinals(childRow, []int{0}))
+	// The outer LB, bound by an enclosing query.
+	outerK := mustOuterJoinCostConstruct(values.ResolveFieldOrdinals(innerRow, []int{1}))
+	parent := mustOuterJoinCostConstruct(expressions.NewSelectExpression(
+		values.NewRawRecordConstructorValue(
+			values.RecordConstructorField{Name: "K", Value: outerK},
+			values.RecordConstructorField{Name: "B", Value: b}),
+		[]expressions.Quantifier{childQ}, nil))
+
+	yielded := mustFirePrunedFinalRule(t, NewSelectMergeRule(), expressions.InitialOf(parent))
+	if len(yielded) != 1 {
+		t.Fatalf("SelectMergeRule yielded %d expressions, want the merged select", len(yielded))
+	}
+	merged := yielded[0]
+	if len(merged.GetQuantifiers()) != 1 || merged.GetQuantifiers()[0].GetAlias() == lb {
+		t.Fatalf("the pulled-up binding kept the name LB the result reads from outside: %v", merged.GetQuantifiers())
+	}
+	if _, free := expressions.GetCorrelatedToOfExpression(merged)[lb]; !free {
+		t.Fatal("the merged select no longer reads LB from the enclosing scope")
+	}
+}
+
+// A read of a leg a merged box flows whole names that leg — the box declares
+// it as a window — so the pulled-up leg keeps its name and the read binds it.
+func TestSelectMergeRule_KeepsABoxLegASiblingReads(t *testing.T) {
+	t.Parallel()
+	rowType := values.NewRecordType("T", false, []values.Field{
+		{Name: "ID", FieldType: values.NullableLong, Ordinal: 0},
+	})
+	leg := func(name string) (expressions.Quantifier, values.Value) {
+		scan := mustOuterJoinCostConstruct(expressions.NewFullUnorderedScanExpression([]string{name}, rowType))
+		q := expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier(name), expressions.InitialOf(scan))
+		return q, mustOuterJoinCostConstruct(q.RequireFlowedObjectValue())
+	}
+	p, pRow := leg("P")
+	q, qRow := leg("Q")
+	box := mustOuterJoinCostConstruct(expressions.NewSelectExpression(
+		values.NewRawRecordConstructorValue(
+			values.RecordConstructorField{Name: values.OrdinalFieldName(0), Value: pRow},
+			values.RecordConstructorField{Name: values.OrdinalFieldName(1), Value: qRow}),
+		[]expressions.Quantifier{p, q}, nil))
+	boxQ := expressions.NamedForEachQuantifier(values.UniqueCorrelationIdentifier(), expressions.InitialOf(box))
+	qID := mustOuterJoinCostConstruct(values.ResolveFieldOrdinals(qRow, []int{0}))
+	parent := mustOuterJoinCostConstruct(expressions.NewSelectExpression(
+		values.NewRawRecordConstructorValue(values.RecordConstructorField{Name: "ID", Value: qID}),
+		[]expressions.Quantifier{boxQ}, nil))
+
+	yielded := mustFirePrunedFinalRule(t, NewSelectMergeRule(), expressions.InitialOf(parent))
+	if len(yielded) != 1 {
+		t.Fatalf("SelectMergeRule yielded %d expressions, want the merged select", len(yielded))
+	}
+	merged := yielded[0]
+	names := map[values.CorrelationIdentifier]bool{}
+	for _, mq := range merged.GetQuantifiers() {
+		names[mq.GetAlias()] = true
+	}
+	if !names[q.GetAlias()] {
+		t.Fatalf("the box leg Q was renamed away from the read naming it: %v", merged.GetQuantifiers())
+	}
+	if _, free := expressions.GetCorrelatedToOfExpression(merged)[q.GetAlias()]; free {
+		t.Fatal("the read of Q is left unbound after the merge")
 	}
 }

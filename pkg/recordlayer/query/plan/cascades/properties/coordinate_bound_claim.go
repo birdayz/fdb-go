@@ -123,6 +123,31 @@ func (c CoordinateBoundClaim) holdsOver(lookup map[string]values.Value) bool {
 	return true
 }
 
+// coordinatesWithin reports whether every coordinate of a bound claim is in
+// within. An unbound claim fails closed, and so does one over no coordinates:
+// that is whole-row distinctness, which no subset of the columns carries.
+func (c CoordinateBoundClaim) coordinatesWithin(within map[string]struct{}) bool {
+	if !c.claimed || c.bindAll || len(c.over) == 0 {
+		return false
+	}
+	for _, key := range c.over {
+		if _, present := within[key]; !present {
+			return false
+		}
+	}
+	return true
+}
+
+// Within reports whether the claim is bound to a non-empty coordinate set that
+// lies entirely among keys.
+func (c CoordinateBoundClaim) Within(keys []values.Value) bool {
+	within := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		within[values.ExplainValue(k)] = struct{}{}
+	}
+	return c.coordinatesWithin(within)
+}
+
 // translate carries a claim across a coordinate RENAME. renamed maps each old
 // coordinate key to its new one; a coordinate absent from renamed did not
 // survive, which drops the claim rather than shrinking it — a claim proved over

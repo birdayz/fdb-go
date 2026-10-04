@@ -446,7 +446,7 @@ func (t *ExploreExprTask) Run(ctx context.Context, p *Planner) {
 			return
 		}
 		rule := implRules[i]
-		if isPreOrderRule(rule) || !t.shouldPushRule(rule) {
+		if isPreOrderRule(rule) || isPrunedInputsRule(rule) || !t.shouldPushRule(rule) {
 			continue
 		}
 		if _, ok := rule.(*FinalizeExpressionsRule); ok {
@@ -504,7 +504,7 @@ func (t *ExploreExprTask) Run(ctx context.Context, p *Planner) {
 func (t *ExploreExprTask) preOrderRules(p *Planner, implRules []ImplementationRule) []ImplementationRule {
 	var result []ImplementationRule
 	for _, rule := range implRules {
-		if !isPreOrderRule(rule) || !t.shouldPushRule(rule) {
+		if !isPreOrderRule(rule) || isPrunedInputsRule(rule) || !t.shouldPushRule(rule) {
 			continue
 		}
 		// Only an inert prefix is removable: an earlier rule can schedule
@@ -687,6 +687,8 @@ type TransformExprTask struct {
 	Ref   *expressions.Reference
 	Expr  expressions.RelationalExpression
 	Rule  ExpressionRule
+	// conditionalIndex is the inner rule a conditional Rule runs next.
+	conditionalIndex int
 }
 
 // ConsumeMatchPartitionTask runs after the expression's matching transforms,
@@ -712,6 +714,25 @@ func (t *TransformExprTask) Run(ctx context.Context, p *Planner) {
 	if ctx.Err() != nil || t.Ref == nil || t.Expr == nil || t.Rule == nil {
 		return
 	}
+	cond, conditional := t.Rule.(*conditionalExpressionRule)
+	if !conditional {
+		t.runRule(ctx, p)
+		return
+	}
+	// Java ConditionalTransformExpression: the next rule runs only when this
+	// one made no progress.
+	inner := *t
+	inner.Rule = cond.rules[t.conditionalIndex]
+	if !inner.runRule(ctx, p) && t.conditionalIndex+1 < len(cond.rules) && ctx.Err() == nil && p.capErr == nil {
+		next := *t
+		next.conditionalIndex++
+		p.push(&next)
+	}
+}
+
+// runRule applies the task's rule and reports progress as Java's
+// executeRuleCall does: a new member inserted or a new partial match.
+func (t *TransformExprTask) runRule(ctx context.Context, p *Planner) (progress bool) {
 	if !t.Ref.ContainsExactly(t.Expr) {
 		return
 	}
@@ -843,7 +864,11 @@ func (t *TransformExprTask) Run(ctx context.Context, p *Planner) {
 				}
 			}
 			if t.Phase == PhasePlanning && len(t.Ref.GetAllPartialMatches()) > matchesBefore {
+				progress = true
 				p.pushDataAccessTasks(t.Ref, t.Expr)
+			}
+			for _, in := range inserted {
+				progress = progress || in
 			}
 
 			for i, newExpr := range yielded {
@@ -886,6 +911,7 @@ func (t *TransformExprTask) Run(ctx context.Context, p *Planner) {
 			}
 		}
 	}
+	return progress
 }
 
 // TransformImplTask fires a single ImplementationRule on a (group, expression)
@@ -896,16 +922,42 @@ type TransformImplTask struct {
 	Ref   *expressions.Reference
 	Expr  expressions.RelationalExpression
 	Rule  ImplementationRule
+	// conditionalIndex is the inner rule a conditional Rule runs next.
+	conditionalIndex int
+}
+
+// ActiveRule is the rule this task applies: a conditional rule's current inner
+// rule, otherwise Rule.
+func (t *TransformImplTask) ActiveRule() ImplementationRule {
+	if cond, ok := t.Rule.(*conditionalImplementationRule); ok {
+		return cond.rules[t.conditionalIndex]
+	}
+	return t.Rule
 }
 
 func (t *TransformImplTask) Run(ctx context.Context, p *Planner) {
 	if ctx.Err() != nil || t.Ref == nil || t.Expr == nil || t.Rule == nil {
 		return
 	}
+	cond, conditional := t.Rule.(*conditionalImplementationRule)
+	if !conditional {
+		t.runRule(ctx, p, t.Rule)
+		return
+	}
+	// Java ConditionalTransformExpression: the next rule runs only when this
+	// one made no progress.
+	if !t.runRule(ctx, p, cond.rules[t.conditionalIndex]) && t.conditionalIndex+1 < len(cond.rules) && ctx.Err() == nil && p.capErr == nil {
+		p.push(&TransformImplTask{Phase: t.Phase, Ref: t.Ref, Expr: t.Expr, Rule: t.Rule, conditionalIndex: t.conditionalIndex + 1})
+	}
+}
+
+// runRule applies rule to the task's expression and reports progress as Java's
+// executeRuleCall does: a new member inserted or a constraint pushed.
+func (t *TransformImplTask) runRule(ctx context.Context, p *Planner, rule ImplementationRule) (progress bool) {
 	if !t.Ref.ContainsExactly(t.Expr) {
 		return
 	}
-	bindings := t.Rule.Matcher().BindMatches(matching.NewBindings(), t.Expr)
+	bindings := rule.Matcher().BindMatches(matching.NewBindings(), t.Expr)
 	if ctx.Err() != nil {
 		return
 	}
@@ -937,9 +989,9 @@ func (t *TransformImplTask) Run(ctx context.Context, p *Planner) {
 			// entire Java-faithful ordering/referenced-fields constraint-propagation
 			// phase is wired but inert, so a requested ordering never reaches the scan
 			// and sort elimination through a residual filter never fires (RFC-076 3a).
-			constraintOnly: isPreOrderRule(t.Rule),
+			constraintOnly: isPreOrderRule(rule),
 		}
-		t.Rule.OnMatch(call)
+		rule.OnMatch(call)
 		if ctx.Err() != nil {
 			return
 		}
@@ -990,6 +1042,7 @@ func (t *TransformImplTask) Run(ctx context.Context, p *Planner) {
 			if !batch.inserted[i] {
 				continue
 			}
+			progress = true
 			// InsertFinal only — deliberately NO re-prune of a stamped group
 			// on late final growth. A re-push-OptimizeGroup-on-growth hook
 			// was tried here and REVERTED: re-pruning leaves ONE final where
@@ -1020,6 +1073,7 @@ func (t *TransformImplTask) Run(ctx context.Context, p *Planner) {
 				if ctx.Err() != nil {
 					return
 				}
+				progress = true
 				p.push(&ExploreGroupTask{Phase: t.Phase, Ref: childRef, forceNew: true})
 			}
 		}
@@ -1036,7 +1090,7 @@ func (t *TransformImplTask) Run(ctx context.Context, p *Planner) {
 				qs[0].Kind() == expressions.QuantifierForEach &&
 				qs[1].Kind() == expressions.QuantifierForEach {
 				swapped := sel.WithSwappedQuantifiers()
-				swapBindings := t.Rule.Matcher().BindMatches(matching.NewBindings(), swapped)
+				swapBindings := rule.Matcher().BindMatches(matching.NewBindings(), swapped)
 				if ctx.Err() != nil {
 					return
 				}
@@ -1060,7 +1114,7 @@ func (t *TransformImplTask) Run(ctx context.Context, p *Planner) {
 						Stats:       p.stats,
 						memo:        p.memo,
 					}
-					t.Rule.OnMatch(call)
+					rule.OnMatch(call)
 					if ctx.Err() != nil {
 						return
 					}
@@ -1101,6 +1155,7 @@ func (t *TransformImplTask) Run(ctx context.Context, p *Planner) {
 						if !batch.inserted[i] {
 							continue
 						}
+						progress = true
 						if ctx.Err() != nil {
 							return
 						}
@@ -1133,6 +1188,7 @@ func (t *TransformImplTask) Run(ctx context.Context, p *Planner) {
 							if ctx.Err() != nil {
 								return
 							}
+							progress = true
 							p.push(&ExploreGroupTask{Phase: t.Phase, Ref: childRef, forceNew: true})
 						}
 					}
@@ -1140,6 +1196,7 @@ func (t *TransformImplTask) Run(ctx context.Context, p *Planner) {
 			}
 		}
 	}
+	return progress
 }
 
 // OptimizeGroupTask picks the best final expression and prunes losers.
@@ -1396,6 +1453,17 @@ func (t *OptimizeInputsTask) Run(ctx context.Context, p *Planner) {
 		return
 	}
 	dependentFloor := len(p.stack)
+	// Java OptimizeInputs: the pruned-inputs rules are pushed beneath the
+	// input groups' OptimizeGroup tasks, so they see every input pruned.
+	if t.Ref != nil {
+		_, implIdx := p.ruleIndexesForPhase(t.Phase)
+		rules := implIdx.rulesFor(t.Expr)
+		for i := len(rules) - 1; i >= 0; i-- {
+			if isPrunedInputsRule(rules[i]) {
+				p.push(&TransformImplTask{Phase: t.Phase, Ref: t.Ref, Expr: t.Expr, Rule: rules[i]})
+			}
+		}
+	}
 	childRefs := make([]*expressions.Reference, 0, len(t.Expr.GetQuantifiers()))
 	for i, q := range t.Expr.GetQuantifiers() {
 		if ctx.Err() != nil {
@@ -1582,6 +1650,19 @@ func isFinalMember(ref *expressions.Reference, expr expressions.RelationalExpres
 		if m == expr {
 			return true
 		}
+	}
+	return false
+}
+
+// isPrunedInputsRule reports Java's CascadesRule.onlyOnPrunedInputs: such a
+// rule never fires while an expression is explored, only from OptimizeInputs
+// once every input group has been pruned to its cheapest final member.
+func isPrunedInputsRule(rule ImplementationRule) bool {
+	type prunedInputs interface {
+		OnlyOnPrunedInputs() bool
+	}
+	if pi, ok := rule.(prunedInputs); ok {
+		return pi.OnlyOnPrunedInputs()
 	}
 	return false
 }

@@ -64,20 +64,37 @@ func TranslateToCascadesWithSubqueries(op logical.LogicalOperator, md *recordlay
 // RFC-142) that a bare nil ref (untranslatable → UNSUPPORTED_QUERY) cannot.
 // The caller surfaces it verbatim instead of the generic "could not plan".
 func TranslateToCascadesWithError(op logical.LogicalOperator, md *recordlayer.RecordMetaData) (*expressions.Reference, []ScalarSubqueryPlan, error) {
-	return translateWithOwnedInputs(op, md, nil, false)
+	return translateWithOwnedInputs(op, md, nil, translateQuery)
+}
+
+// TranslateSubqueryToCascades translates a subquery planned on its own (a
+// scalar subquery, an EXISTS body): not a top level, so no sort is stated
+// above it.
+func TranslateSubqueryToCascades(op logical.LogicalOperator, md *recordlayer.RecordMetaData) (*expressions.Reference, []ScalarSubqueryPlan, error) {
+	return translateWithOwnedInputs(op, md, nil, translateSubquery)
 }
 
 // TranslateIndexDefinitionToCascades translates an index definition's query.
 // Java's QueryVisitor leaves an index definition's COUNT unadjusted
 // (isForDdl), so its aggregate stays the index's aggregate.
 func TranslateIndexDefinitionToCascades(op logical.LogicalOperator, md *recordlayer.RecordMetaData) (*expressions.Reference, []ScalarSubqueryPlan, error) {
-	return translateWithOwnedInputs(op, md, nil, true)
+	return translateWithOwnedInputs(op, md, nil, translateIndexDefinition)
 }
 
-func translateWithOwnedInputs(op logical.LogicalOperator, md *recordlayer.RecordMetaData, owned map[logical.LogicalOperator]*logical.ExistsInput, forDDL bool) (*expressions.Reference, []ScalarSubqueryPlan, error) {
+// translation is what a translated operator tree is: a top-level query, an
+// index definition (also top level), or a subquery.
+type translation int
+
+const (
+	translateSubquery translation = iota
+	translateQuery
+	translateIndexDefinition
+)
+
+func translateWithOwnedInputs(op logical.LogicalOperator, md *recordlayer.RecordMetaData, owned map[logical.LogicalOperator]*logical.ExistsInput, mode translation) (*expressions.Reference, []ScalarSubqueryPlan, error) {
 	logical.BindCTESources(op, logical.CTERegistry{})
 	t := &cascadesTranslator{
-		forDDL:          forDDL,
+		forDDL:          mode == translateIndexDefinition,
 		ownedInputs:     owned,
 		md:              md,
 		cteScope:        logical.CTERegistry{},
@@ -106,12 +123,54 @@ func translateWithOwnedInputs(op logical.LogicalOperator, md *recordlayer.Record
 				"translated graph reads a buried source: %s", strings.Join(violations, "; "))
 		}
 		ref = bound
+		if mode != translateSubquery {
+			if ref, err = t.topLevelSort(ref); err != nil {
+				return nil, t.scalarSubqueries, err
+			}
+		}
 	}
 	return ref, t.scalarSubqueries, t.translateErr
 }
 
+// topLevelSort states the top of a query as Java's generateSelect does for
+// the top level: the sort of its ORDER BY, or an unsorted sort over a top
+// without one. Go's LIMIT, which Java's SQL lacks, stays above the sort.
+func (t *cascadesTranslator) topLevelSort(ref *expressions.Reference) (*expressions.Reference, error) {
+	top := ref.Get()
+	if limit, ok := top.(*expressions.LogicalLimitExpression); ok {
+		inner, err := t.topLevelSort(limit.GetInner().GetRangesOver())
+		if err != nil {
+			return nil, err
+		}
+		if inner == limit.GetInner().GetRangesOver() {
+			return ref, nil
+		}
+		limited, err := limit.WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(inner)})
+		if err != nil {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery, "LIMIT over the query's sort: %v", err)
+		}
+		return expressions.InitialOf(limited), nil
+	}
+	if _, sorted := top.(*expressions.LogicalSortExpression); sorted {
+		return ref, nil
+	}
+	if sel, ok := top.(*expressions.SelectExpression); ok && len(sel.GetQuantifiers()) == 1 {
+		if sort, isSort := sel.GetQuantifiers()[0].GetRangesOver().Get().(*expressions.LogicalSortExpression); isSort && t.orderBySorts[sort] {
+			return ref, nil
+		}
+	}
+	sort, err := expressions.UnsortedLogicalSortExpression(expressions.ForEachQuantifier(ref))
+	if err != nil {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery, "query has no exact result row: %v", err)
+	}
+	return expressions.InitialOf(sort), nil
+}
+
 type cascadesTranslator struct {
 	md *recordlayer.RecordMetaData
+	// orderBySorts are the sorts of blocks whose ORDER BY reads a column the
+	// SELECT list drops: the block is a Select over the sort.
+	orderBySorts map[*expressions.LogicalSortExpression]bool
 	// forDDL translates an index definition, whose COUNT is not adjusted.
 	forDDL       bool
 	cteScope     logical.CTERegistry
@@ -331,6 +390,135 @@ func (t *cascadesTranslator) scopeBodies() scopeBodies {
 // projected row. Go builds the WHERE as a filter and a join as its own select
 // below the list; both fold in here when the list reads what they own.
 func (t *cascadesTranslator) blockSelectOf(result values.Value, inner expressions.Quantifier) expressions.RelationalExpression {
+	if sorted, ok := t.sortedBlock(result, inner); ok {
+		return sorted
+	}
+	return t.foldedBlock(result, inner)
+}
+
+// sortedBlock states an ORDER BY as Java's generateSelect does: the sort ranges
+// over the block's Select, its keys pulled up onto the Select's result
+// (OrderByExpression.pullUp). A key the SELECT list does not project is
+// appended to the block, and one more Select above the sort drops it again.
+func (t *cascadesTranslator) sortedBlock(result values.Value, inner expressions.Quantifier) (expressions.RelationalExpression, bool) {
+	ref := inner.GetRangesOver()
+	if ref == nil || len(ref.AllMembers()) != 1 {
+		return nil, false
+	}
+	sort, ok := ref.Get().(*expressions.LogicalSortExpression)
+	if !ok || sort.IsUnsorted() {
+		return nil, false
+	}
+	list, ok := result.(*values.RecordConstructorValue)
+	if !ok {
+		return nil, false
+	}
+	// The list reads the sort's row through inner; the same row is from's.
+	// The translation is by exact edge (alias and row type), since inner may
+	// share its alias with a source the list reads below it.
+	from := sort.GetInner()
+	innerRow, err := inner.RequireFlowedObjectValue()
+	if err != nil {
+		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery, "ORDER BY block input has no exact row: %v", err))
+		return nil, true
+	}
+	fromRow, err := from.RequireFlowedObjectValue()
+	if err != nil {
+		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery, "ORDER BY sort input has no exact row: %v", err))
+		return nil, true
+	}
+	// The keys join the list before the block folds, so both are stated in
+	// the folded block's terms (a key reading the input row by ordinal and an
+	// item reading the source through it become the same read). A key equal
+	// to a list item sorts by that item; any other key stays as a column.
+	keys := sort.GetSortKeys()
+	fields := make([]values.RecordConstructorField, 0, len(list.Fields)+len(keys))
+	for _, f := range list.Fields {
+		rebased, rebaseErr := values.TranslateDeclaredEdgeRoot(f.Value, innerRow, fromRow)
+		if rebaseErr != nil {
+			t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
+				"ORDER BY block column %q cannot be stated over the sort's input: %v", f.Name, rebaseErr))
+			return nil, true
+		}
+		fields = append(fields, values.RecordConstructorField{Name: f.Name, Value: rebased})
+	}
+	for _, k := range keys {
+		fields = append(fields, values.RecordConstructorField{Name: values.OrdinalFieldName(len(fields)), Value: k.Value})
+	}
+	folded, ok := t.foldedBlock(values.NewRecordConstructorValue(fields...), from).(*expressions.SelectExpression)
+	if !ok || folded == nil {
+		return nil, true
+	}
+	foldedRow, ok := folded.GetResultValue().(*values.RecordConstructorValue)
+	if !ok || len(foldedRow.Fields) != len(fields) {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery, "ORDER BY block folded to a different row"))
+		return nil, true
+	}
+	kept := slices.Clone(foldedRow.Fields[:len(list.Fields)])
+	keyOrdinals := make([]int, len(keys))
+	for i := range keys {
+		key := foldedRow.Fields[len(list.Fields)+i]
+		keyOrdinals[i] = -1
+		for j := range list.Fields {
+			if values.SemanticEqualsUnderAliasMap(key.Value, kept[j].Value, values.EmptyAliasMap()) {
+				keyOrdinals[i] = j
+				break
+			}
+		}
+		if keyOrdinals[i] < 0 {
+			keyOrdinals[i] = len(kept)
+			kept = append(kept, values.RecordConstructorField{Name: values.OrdinalFieldName(len(kept)), Value: key.Value})
+		}
+	}
+	block, err := folded.WithTranslatedValues(values.NewRecordConstructorValue(kept...), folded.GetQuantifiers(), folded.GetPredicates())
+	if err != nil {
+		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery, "ORDER BY block has no exact row: %v", err))
+		return nil, true
+	}
+	blockQ := expressions.ForEachQuantifier(expressions.InitialOf(block))
+	blockRow, err := blockQ.RequireFlowedObjectValue()
+	if err != nil {
+		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery, "ORDER BY block has no exact row: %v", err))
+		return nil, true
+	}
+	pulledKeys := make([]expressions.SortKey, len(keyOrdinals))
+	for i, k := range keys {
+		pulled, pullErr := values.ResolveFieldOrdinals(blockRow, []int{keyOrdinals[i]})
+		if pullErr != nil {
+			t.setTranslateErr(pullErr)
+			return nil, true
+		}
+		pulledKeys[i] = expressions.SortKey{Value: pulled, Reverse: k.Reverse, NullsFirst: k.NullsFirst}
+	}
+	sorted := t.exactSort(pulledKeys, blockQ)
+	if sorted == nil || len(kept) == len(list.Fields) {
+		return sorted, true
+	}
+	if t.orderBySorts == nil {
+		t.orderBySorts = map[*expressions.LogicalSortExpression]bool{}
+	}
+	t.orderBySorts[sorted.(*expressions.LogicalSortExpression)] = true
+	sortQ := expressions.ForEachQuantifier(expressions.InitialOf(sorted))
+	sortRow, err := sortQ.RequireFlowedObjectValue()
+	if err != nil {
+		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery, "ORDER BY sort has no exact row: %v", err))
+		return nil, true
+	}
+	output := make([]values.RecordConstructorField, len(list.Fields))
+	for i, f := range list.Fields {
+		column, colErr := values.ResolveFieldOrdinals(sortRow, []int{i})
+		if colErr != nil {
+			t.setTranslateErr(colErr)
+			return nil, true
+		}
+		output[i] = values.RecordConstructorField{Name: f.Name, Value: column}
+	}
+	return t.foldedBlock(values.NewRecordConstructorValue(output...), sortQ), true
+}
+
+// foldedBlock is the block Select publishing result over inner, folded with the
+// filter or join Select it owns.
+func (t *cascadesTranslator) foldedBlock(result values.Value, inner expressions.Quantifier) expressions.RelationalExpression {
 	sel, err := foldBlock(result, inner, t.scopeBodies())
 	if err != nil {
 		// A projected EXISTS whose existential this block does not own leaves

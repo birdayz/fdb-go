@@ -52,6 +52,7 @@ func TestInlineValuesExactResultTypeAndExplodeLoweringAgree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TranslateToCascadesWithError: %v", err)
 	}
+	ref = queryBody(t, ref)
 	if ref == nil || len(ref.Members()) != 1 {
 		t.Fatalf("translated ref = %#v, want one Explode member", ref)
 	}
@@ -126,6 +127,7 @@ func TestInlineValuesOwnerTypesLateralArrayWithoutMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TranslateToCascadesWithError(join): %v", err)
 	}
+	ref = queryBody(t, ref)
 	if ref == nil || len(ref.Members()) != 1 {
 		t.Fatalf("translated join = %#v, want one select member", ref)
 	}

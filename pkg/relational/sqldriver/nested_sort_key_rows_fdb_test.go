@@ -439,23 +439,21 @@ func equalIDs(a, b []int64) bool {
 	return true
 }
 
-// TestFDB_NestedSortKeyExplainRendersTheMember records the RENDERING half of the
-// same question, separately from the rows half, because they are separate facts
-// with opposite severities and a single test asserting both would report one
-// severity for either failure.
+// TestFDB_NestedSortKeyExplainRendersItsHiddenColumn records the RENDERING half
+// of the same question, separately from the rows half, because they are
+// separate facts with opposite severities and a single test asserting both
+// would report one severity for either failure.
 //
-// `ORDER BY n.co` now renders its sort key as the MEMBER (`N.CO`). It used to
-// render the struct ROOT (`N`), and that was not merely cosmetic after all: the
-// rendering was the hidden column's NAME, two members of one root were therefore
-// spelled alike, and the second key's column was dropped. Fixing the rows fixed
-// the rendering, because they were the same string.
+// `ORDER BY n.co` with n.co not projected sorts by a hidden column the block
+// appends after the SELECT list and names by position, as Java's generateSelect
+// names it (`_2` after `id, h`). It once rendered the struct ROOT (`N`), and
+// that was not cosmetic: the rendering was the hidden column's NAME, two
+// members of one root were spelled alike, and the second key's column was
+// dropped. A positional name cannot collide.
 //
-// This test remains SEPARATE from the rows test on purpose. A red here with the
-// rows test green is a display regression; a red there is a correctness
-// regression. Keeping them apart is what makes the two outcomes distinguishable
-// at a glance — and the name is still only hygiene, since resolution is by baked
-// ordinal (pullUpToOutputField), not by this string.
-func TestFDB_NestedSortKeyExplainRendersTheMember(t *testing.T) {
+// A red here with the rows test green is a display regression; a red there is a
+// correctness regression.
+func TestFDB_NestedSortKeyExplainRendersItsHiddenColumn(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -498,9 +496,9 @@ func TestFDB_NestedSortKeyExplainRendersTheMember(t *testing.T) {
 	// by an `N.CO` occurring anywhere ELSE in the plan (the projection, an
 	// inner scan) while the sort key itself reverted to the root.
 	keys := sortKeyListOf(t, plan)
-	if !nestedSortKeyMember.MatchString(keys) {
+	if keys != "_current._2#2 ASC" {
 		t.Errorf("the nested sort-key RENDERING changed.\nsort keys: %s\nplan: %s\n"+
-			"want a key naming the MEMBER — a path ending `.N.CO#<ordinal> ASC`.\n"+
+			"want the hidden column after the SELECT list, `_current._2#2 ASC`.\n"+
 			"If this reverted to the struct ROOT (a key ending `.N#<ordinal> ASC`), the "+
 			"hidden column is being named by its root again — check the rows test in this "+
 			"file, because that spelling is what let two members of one struct root "+
@@ -513,15 +511,9 @@ func TestFDB_NestedSortKeyExplainRendersTheMember(t *testing.T) {
 	}
 }
 
-// The sort key names a struct MEMBER (`…N.CO#2`) or, in the shape the collapse
-// defect wore, the struct ROOT alone (`…N#2`). Both are matched against the
-// EXTRACTED key list, never the whole plan text: the projection above the sort
-// carries its own `N.CO` spellings, so a whole-plan Contains would stay green
-// with the sort key itself reverted.
-var (
-	nestedSortKeyMember = regexp.MustCompile(`\.N\.CO#\d+ (ASC|DESC)`)
-	nestedSortKeyRoot   = regexp.MustCompile(`\.N#\d+ (ASC|DESC)`)
-)
+// The shape the collapse defect wore: a sort key naming the struct ROOT alone
+// (`…N#2`). Matched against the EXTRACTED key list, never the whole plan text.
+var nestedSortKeyRoot = regexp.MustCompile(`\.N#\d+ (ASC|DESC)`)
 
 // sortKeyListOf returns the text between `InMemorySort([` and its matching
 // `]`, i.e. the comma-separated sort keys. It fails the test when the plan has

@@ -47,13 +47,11 @@ import (
 //	  rebase(outerPreds, A→childResult) + rebase(childPreds) + outerPreds
 //	)
 //
-// Ports Java's SelectMergeRule (ImplementationCascadesRule). Placed in
-// EXPLORE as an ExpressionRule because Go's PLANNING phase does not
-// support multi-round implementation. Functionally equivalent: the
-// merged Select is explored + matched + implemented normally.
-//
-// Convergence: each firing strictly reduces nesting depth. A flat
-// Select with no mergeable children causes zero yields.
+// Ports Java's SelectMergeRule: a REWRITING implementation rule over a final
+// Select whose inputs are already pruned (OnPrunedInputsRule), yielding a
+// final. Merging only finals keeps its output away from the exploration rules;
+// exploring merges re-fed DecorrelateValuesRule, which pushed a values box
+// down that the next merge pulled back up, one range(1) more per round.
 type SelectMergeRule struct {
 	matcher matching.BindingMatcher
 }
@@ -66,8 +64,14 @@ func NewSelectMergeRule() *SelectMergeRule {
 
 func (r *SelectMergeRule) Matcher() matching.BindingMatcher { return r.matcher }
 
-func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
+// OnlyOnPrunedInputs: Java's SelectMergeRule implements OnPrunedInputsRule.
+func (r *SelectMergeRule) OnlyOnPrunedInputs() bool { return true }
+
+func (r *SelectMergeRule) OnMatch(call *ImplementationRuleCall) {
 	sel := matching.Get[*expressions.SelectExpression](call.Bindings, r.matcher)
+	if !isFinalMember(call.Reference, sel) {
+		return
+	}
 
 	// An OUTER-join SelectExpression is a binary box: exactly two quantifiers,
 	// the preserved (left) leg and the null-supplying (right) leg, with a fixed
@@ -129,7 +133,19 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 		if childRef == nil {
 			continue
 		}
-		for _, member := range childRef.AllMembers() {
+		// Java binds a child whose pruned finals hold exactly one mergeable
+		// expression (SelectMergeableProperty, only()).
+		finals := childRef.FinalMembers()
+		mergeable := 0
+		for _, member := range finals {
+			if _, ok := member.(expressions.RelationalExpressionWithPredicates); ok {
+				mergeable++
+			}
+		}
+		if mergeable != 1 {
+			continue
+		}
+		for _, member := range finals {
 			// A strict edge inside a child Select/Filter is equally opaque: the
 			// merge would splice it into a wider parent where no implementation
 			// owns its per-outer-row contract.
@@ -149,46 +165,6 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 			// (outer-join) child box is opaque.
 			if isChildSel && !childSel.ChildrenAsSet() {
 				continue
-			}
-			// A DISSOLVED outer-join box — RewriteOuterJoinRule's INNER select
-			// whose null-supplying leg rides a NULL-ON-EMPTY quantifier — is the
-			// SAME outer-join box as the arm above, with the outer-join edge
-			// moved from the JoinType onto the quantifier flag. Merging it up
-			// into a ForEach-only parent produces a flat noe-carrying select
-			// that Go's PLANNING cannot re-partition (PartitionSelectRule's
-			// positional-merge arm declines to collapse a null-on-empty
-			// quantifier into a lower, and a dissolved box's flat form has NO
-			// select-level predicates left to connect a lower) — so when the
-			// REWRITING phase then prunes the child's group to that flat member
-			// as its canonical seed, a nested outer box (`(a LEFT b) LEFT c`)
-			// under any enclosing select strands unimplementable ("best
-			// expression is not a physical plan"). Java DOES flatten this form
-			// and re-derives the join from the flat seed (its
-			// PartitionSelectRule collapses defaultOnEmpty quantifiers into
-			// positional lowers and its NLJ implements any 2-quantifier
-			// select); until Go's partitioning reaches that parity, the
-			// dissolved box stays nested under a ForEach-only parent — the same
-			// hard barrier as the un-dissolved arm, so the binary NLJ/FlatMap
-			// implementation over the nested form (the route the un-enclosed
-			// nested box already plans through) survives the rewrite prune.
-			// An EXISTENTIAL-carrying parent is EXEMPT: its flat form never
-			// reaches PartitionSelectRule (≤1 existential returns; ≥2 peel),
-			// and the [ForEach×N, Existential] implementer handles noe legs
-			// via buildCorrelatedFlatMapPlan — the correlated DefaultOnEmpty
-			// step-1 that the LEFT+EXISTS plan-shape pins require (declining
-			// there degraded step-1 to a materialized LEFT NLJ).
-			// Never wrong rows — strictly a narrower merge.
-			if isChildSel && !hasExistential {
-				childHasNullOnEmpty := false
-				for _, cq := range childSel.GetQuantifiers() {
-					if cq.IsNullOnEmpty() {
-						childHasNullOnEmpty = true
-						break
-					}
-				}
-				if childHasNullOnEmpty {
-					continue
-				}
 			}
 			// A lateral chain keeps the FlatMap boundary that binds each collection.
 			if (childRefResultIsNonSeed(childRef) || childRefIsPositionalUnnestSelect(childRef)) &&
@@ -260,6 +236,23 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 			used[q.GetAlias()] = true
 		}
 	}
+	// Go's quantifiers carry SQL-visible names, so a pulled-up binding can
+	// share its name with a correlation the select reads from an enclosing
+	// scope (a CTE body over LB inside a subquery correlated to the outer LB);
+	// it is renamed rather than capturing that read. Java's ids are unique. A
+	// read of a leg a merged box flows whole names that leg (the box declares
+	// it as a window), so it keeps its binding.
+	exposed := make(map[values.CorrelationIdentifier]struct{})
+	for _, target := range targets {
+		for alias := range selectMergeExposedLegs(target.childExpr) {
+			exposed[alias] = struct{}{}
+		}
+	}
+	for alias := range expressions.GetCorrelatedToOfExpression(sel) {
+		if _, leg := exposed[alias]; !leg {
+			used[alias] = true
+		}
+	}
 	dependencies := make([]map[int]struct{}, len(quantifiers))
 	for i, q := range quantifiers {
 		dependencies[i] = make(map[int]struct{})
@@ -274,7 +267,7 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	tr := newSelectMergeTranslation(call)
+	tr := newSelectMergeTranslation(call.memo)
 	var newQuantifiers []expressions.Quantifier
 	var newPredicates []predicates.QueryPredicate
 	var newAliases []string
@@ -379,7 +372,7 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 	call.Yield(merged)
 }
 
-var _ ExpressionRule = (*SelectMergeRule)(nil)
+var _ ImplementationRule = (*SelectMergeRule)(nil)
 
 // bakedBoxRefCallback returns a values.Replace callback (pre-order) that
 // collapses BAKED references over a merged-away box alias through the box's
@@ -625,4 +618,23 @@ func siblingFreeCorrelatedTo(quantifiers []expressions.Quantifier, self int, ali
 		}
 	}
 	return false
+}
+
+// selectMergeExposedLegs returns the quantifiers whose whole row child's result
+// flows: a filter's row, or a box's positional legs.
+func selectMergeExposedLegs(child expressions.RelationalExpression) map[values.CorrelationIdentifier]struct{} {
+	legs := make(map[values.CorrelationIdentifier]struct{})
+	add := func(v values.Value) {
+		if qov, ok := values.AsQuantifiedObjectValue(v); ok {
+			legs[qov.Correlation()] = struct{}{}
+		}
+	}
+	rv := child.GetResultValue()
+	add(rv)
+	if rc, ok := rv.(*values.RecordConstructorValue); ok {
+		for _, field := range rc.Fields {
+			add(field.Value)
+		}
+	}
+	return legs
 }

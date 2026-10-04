@@ -1866,10 +1866,10 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	// R26 exercises the catalog SELECT builder used by subqueries. With GW, bare V
 	// has two visible owners and must reject with 42702. The BXC twins remove the
 	// competing V while retaining the same non-rightmost-unnest shape. Their plan
-	// checks preserve the hand-derived slot-3 proof: GD contributes slots 0-2 and
-	// the element occupies current slot 3, so projection and sort must retain that
-	// exact ordinal. Explain prints only the display label, hence the Value-program
-	// inspection below. RFC-142.
+	// checks pin what V binds: the block folds into the join, so its projection
+	// reads the unnest's element quantifier itself, and the sort reads the
+	// block's one column. Explain prints only the display label, hence the
+	// Value-program inspection below. RFC-142.
 	t.Run("R26 P2a catalog-builder subquery qualifies the shadowed unnest projection AND sort key", func(t *testing.T) {
 		assertRejected(t, md, `SELECT "ID" FROM U WHERE EXISTS (SELECT "V" FROM GD, GD."ARR" AS "V", GW ORDER BY "V" DESC)`, api.ErrCodeAmbiguousColumn)
 		plan, perr := embedded.PlanRecordQueryWithMetadata(
@@ -1881,8 +1881,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		explain := plan.Explain()
 		// Explain renders the sort's display label only. Inspect the retained Value
 		// programs so a bare-label rendering cannot be confused with runtime name lookup.
-		if !unnestProjectionHasCurrentOrdinal(plan, 3) || !unnestSortHasCurrentOrdinal(plan, 3) {
-			t.Fatalf("inner projection/sort did not bind exact current ordinal 3: %s", explain)
+		if !unnestJoinProjectsTheElement(plan) || !unnestSortHasCurrentOrdinal(plan, 0) {
+			t.Fatalf("inner projection/sort did not bind the unnest element: %s", explain)
 		}
 		unnestMustNotContain(t, explain, "Project([V],")
 	})
@@ -1897,8 +1897,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			t.Fatalf("plan: %v", perr)
 		}
 		explain := plan.Explain()
-		if !unnestSortHasCurrentOrdinal(plan, 3) {
-			t.Fatalf("inner ASC sort did not bind exact current ordinal 3: %s", explain)
+		if !unnestJoinProjectsTheElement(plan) || !unnestSortHasCurrentOrdinal(plan, 0) {
+			t.Fatalf("inner ASC sort did not bind the unnest element: %s", explain)
 		}
 	})
 
@@ -4838,15 +4838,24 @@ func unnestIsInputOrdinal(value values.Value, input values.CorrelationIdentifier
 	return len(ordinals) == 1 && ordinals[0] == ordinal
 }
 
-func unnestProjectionHasCurrentOrdinal(plan plans.RecordQueryPlan, ordinal int) bool {
+// unnestJoinProjectsTheElement reports whether a join projects, as its one
+// column, the element quantifier of an Explode leg in the plan.
+func unnestJoinProjectsTheElement(plan plans.RecordQueryPlan) bool {
+	elements := map[values.CorrelationIdentifier]bool{}
+	plans.Walk(plan, func(node plans.RecordQueryPlan) bool {
+		if fm, ok := node.(*plans.RecordQueryFlatMapPlan); ok {
+			if _, isExplode := fm.GetInner().(*plans.RecordQueryExplodePlan); isExplode {
+				elements[fm.GetInnerAlias()] = true
+			}
+		}
+		return true
+	})
 	found := false
 	plans.Walk(plan, func(node plans.RecordQueryPlan) bool {
-		if mapPlan, ok := node.(*plans.RecordQueryMapPlan); ok {
-			if row, isRow := mapPlan.GetResultValue().(*values.RecordConstructorValue); isRow {
-				for _, field := range row.Fields {
-					if unnestIsInputOrdinal(field.Value, mapPlan.GetInnerQuantifier().GetAlias(), ordinal) {
-						found = true
-					}
+		if fm, ok := node.(*plans.RecordQueryFlatMapPlan); ok {
+			if row, isRow := fm.GetResultValue().(*values.RecordConstructorValue); isRow && len(row.Fields) == 1 {
+				if qov, isQOV := values.AsQuantifiedObjectValue(row.Fields[0].Value); isQOV && elements[qov.Correlation()] {
+					found = true
 				}
 			}
 		}

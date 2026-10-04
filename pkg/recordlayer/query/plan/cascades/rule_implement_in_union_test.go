@@ -61,11 +61,14 @@ func TestImplementInUnionRuleSeparatesFixedAndDirectionalRichOrderings(t *testin
 		t.Fatal("construct exact IN-binding equality range")
 	}
 
+	// Keyed by x, so the merge key (a, x) identifies the records it merges.
 	index := func(ranges []*predicates.ComparisonRange) *plans.RecordQueryIndexPlan {
 		return mustInRuleConstruct(plans.NewRecordQueryIndexPlan(
 			"IDX_A", ranges, []string{"T"}, inRuleRowType(), false)).
 			WithKeyComponentTypes([]values.Type{values.NotNullLong}).
-			WithIndexMetadata([]string{"a"}, nil, false)
+			WithIndexMetadata([]string{"a"}, []string{"x"}, false).
+			WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong}).
+			WithDistinctRecordsSignal(false)
 	}
 	unbound := index(nil)
 	boundIndex := index([]*predicates.ComparisonRange{equality.Range})
@@ -100,7 +103,7 @@ func TestImplementInUnionRuleSeparatesFixedAndDirectionalRichOrderings(t *testin
 	boundProps[properties.PropRichOrdering] = boundRich
 	unboundBindings, unboundOK := bindingsForStructuralKey(unboundRich, unboundRich.GetKeys()[0])
 	boundBindings, boundOK := bindingsForStructuralKey(boundRich, boundRich.GetKeys()[0])
-	if len(unboundRich.GetKeys()) != 1 || len(boundRich.GetKeys()) != 1 ||
+	if len(unboundRich.GetKeys()) != 2 || len(boundRich.GetKeys()) != 2 ||
 		!unboundOK || !boundOK || properties.AreAllBindingsFixed(unboundBindings) ||
 		!properties.AreAllBindingsFixed(boundBindings) {
 		t.Fatal("fixture must differ only in directional-versus-fixed rich binding for A")

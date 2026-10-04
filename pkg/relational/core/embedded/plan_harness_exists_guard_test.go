@@ -37,25 +37,28 @@ CREATE TABLE T3 (id BIGINT, t1_id BIGINT, PRIMARY KEY (id))
 // arm plans now, so the old fixture would have asserted a refusal that no longer
 // exists — a test that reds on a capability being ADDED.
 //
-// Two shapes still hit the RFC-141 §8 guard for reasons unrelated to the
-// re-anchor, and BOTH are driven, because a single fixture would leave this pin
-// one capability-fix away from being wrong again:
+// Two shapes still hit the RFC-141 §8 guard, and BOTH are driven, because a
+// single fixture would leave this pin one capability-fix away from being wrong
+// again:
 //
-//   - a LEFT source carrying any ORDER BY (Java's Cascades cannot plan it either)
-//   - a COMPUTED key that is not among the projected outputs
+//   - a correlated scalar subquery beside the EXISTS in the SELECT list
+//   - an EXISTS as a GROUP BY key
+//
+// A COMPUTED key absent from the projection and a LEFT source carrying an
+// ORDER BY were the arms until the block carried its ORDER BY keys below the
+// sort as exact reads (Java's generateSelect); both moved to the control.
 func TestPlanPhysicalForTest_RunsTheProjectedExistsGuards(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct{ name, q string }{
 		{
-			"left_source_with_an_order_by",
-			"SELECT t1.id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h " +
-				"FROM t1 LEFT JOIN t3 ON t3.t1_id = t1.id ORDER BY t1.id",
+			"exists_as_a_group_by_key",
+			"SELECT COUNT(*) FROM t1 GROUP BY EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id)",
 		},
 		{
-			"computed_key_absent_from_the_projection",
-			"SELECT id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h " +
-				"FROM t1 ORDER BY id + 1",
+			"correlated_scalar_beside_the_exists",
+			"SELECT id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h, " +
+				"(SELECT t3.id FROM t3 WHERE t3.t1_id = t1.id) AS s FROM t1",
 		},
 	} {
 		tc := tc
@@ -109,6 +112,16 @@ func TestPlanPhysicalForTest_GuardDoesNotRefuseTheFoldableShapes(t *testing.T) {
 		// harness must track the driver in BOTH directions, and a shape that
 		// starts planning has to be re-pinned as accepted rather than merely
 		// deleted from the refusal side.
+		{
+			"left_source_with_an_order_by",
+			"SELECT t1.id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h " +
+				"FROM t1 LEFT JOIN t3 ON t3.t1_id = t1.id ORDER BY t1.id",
+		},
+		{
+			"computed_key_absent_from_the_projection",
+			"SELECT id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h " +
+				"FROM t1 ORDER BY id + 1",
+		},
 		{
 			"nested_key_over_an_inner_join",
 			"SELECT t1.id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h " +

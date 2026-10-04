@@ -8216,7 +8216,7 @@ func (p *subqueryClause) BuildScalar(q antlrgen.IQueryContext) (values.Correlati
 	}
 	// Correlation is already known from the bound graph. Translation here
 	// supplies the scalar cardinality proof, not a second classification path.
-	ref, _, err := query.TranslateToCascadesWithError(innerOp, p.md)
+	ref, _, err := query.TranslateSubqueryToCascades(innerOp, p.md)
 	if err != nil {
 		return values.CorrelationIdentifier{}, values.UnknownType, err
 	}

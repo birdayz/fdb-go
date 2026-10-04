@@ -118,10 +118,11 @@ func PrepareMatchesAndCompensations(
 			translatedRequestedOrderings,
 		)
 		// Go-only pruning: a full index scan with neither a search argument
-		// nor a requested ordering is dropped. Java keeps it and PREFER_INDEX
-		// picks it for predicate-free reads, which changes only row order;
-		// keeping it costs 2-3x planning time and the OR-union task budget.
-		if satisfying == nil && !hasRestrictedScan(pm) {
+		// nor a requested ordering is dropped; a PRESERVE request asks for no
+		// order. Java keeps it and PREFER_INDEX picks it for predicate-free
+		// reads, which changes only row order; keeping it costs 2-3x planning
+		// time and the OR-union task budget.
+		if !satisfiesAnOrder(satisfying) && !hasRestrictedScan(pm) {
 			continue
 		}
 
@@ -536,11 +537,11 @@ func stampIndexMetadata(cand MatchCandidate, idxPlan *plans.RecordQueryIndexPlan
 		if _, safe := valueCandidate.plainFieldColumnsForShortcut(); !safe {
 			// RecordQueryIndexPlan carries flat column names, not semantic key
 			// Values: an order-wrapped column orders by its field in the
-			// function's direction, while any other expression key keeps its
-			// names for row layout/costing only (CARDINALITY(TAGS) is not TAGS
-			// ordering).
-			if directions, ordered := valueCandidate.orderingColumnDirections(); ordered {
-				stamped = stamped.WithOrderingDirections(directions)
+			// function's direction and a CARDINALITY column by the cardinality
+			// of its field, while any other expression key keeps its names for
+			// row layout/costing only.
+			if columns, ordered := valueCandidate.orderingColumns(); ordered {
+				stamped = stamped.WithOrderingColumns(columns)
 			} else {
 				stamped = stamped.WithOrderingKeyNamesUnavailable()
 			}
@@ -946,6 +947,17 @@ func matchBoundPrefixIsCorrelated(pm PartialMatch) bool {
 // Row-dependent bounds disqualify independently evaluated intersection legs.
 func comparisonRowCorrelated(c *predicates.Comparison) bool {
 	return c != nil && len(c.GetCorrelatedTo()) > 0
+}
+
+// satisfiesAnOrder reports whether any of the satisfied requests asks for an
+// order rather than preserving whatever order arrives.
+func satisfiesAnOrder(satisfying []*properties.RequestedOrdering) bool {
+	for _, requested := range satisfying {
+		if !requested.IsPreserve() {
+			return true
+		}
+	}
+	return false
 }
 
 // SatisfiesRequestedOrdering checks if a PartialMatch's matched

@@ -6,7 +6,6 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/combinatorics"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -320,7 +319,7 @@ func (r *ImplementInJoinRule) enumerateSourceOrderingsForRequestedOrdering(
 		}
 		correlatedTo := make(map[values.CorrelationIdentifier]struct{})
 		for _, b := range bindings {
-			for alias := range orderingBindingCorrelatedTo(b) {
+			for alias := range b.ComparisonCorrelatedTo() {
 				correlatedTo[alias] = struct{}{}
 			}
 		}
@@ -442,21 +441,6 @@ func attemptedProvidedSortOrdersForAny(exhaustive bool) []properties.ProvidedSor
 		}
 	}
 	return []properties.ProvidedSortOrder{properties.ProvidedSortOrderAscending}
-}
-
-// orderingBindingCorrelatedTo is Java's binding.getComparison().getCorrelatedTo()
-// for Go's binding payloads: an equality ComparisonRange or a bare Comparison.
-// A literal or opaque payload names no correlation.
-func orderingBindingCorrelatedTo(b properties.OrderingBinding) map[values.CorrelationIdentifier]struct{} {
-	switch comp := b.GetComparison().(type) {
-	case *predicates.ComparisonRange:
-		if eq := comp.GetEqualityComparison(); eq != nil {
-			return eq.GetCorrelatedTo()
-		}
-	case *predicates.Comparison:
-		return comp.GetCorrelatedTo()
-	}
-	return nil
 }
 
 func getExplodeExpression(ref *expressions.Reference) *expressions.ExplodeExpression {

@@ -101,7 +101,7 @@ func Generate(op logical.LogicalOperator, md *recordlayer.RecordMetaData, opts O
 	if err := rejectSubquerySorts(root); err != nil {
 		return nil, err
 	}
-	if err := checkTop(c, root, rootScope, result); err != nil {
+	if err := checkTop(root); err != nil {
 		return nil, err
 	}
 
@@ -143,8 +143,9 @@ func Generate(op logical.LogicalOperator, md *recordlayer.RecordMetaData, opts O
 	return gi, nil
 }
 
-// topSort is the ORDER BY of the definition's own select: the root, or the
-// sort under the root's projection. Nil without an ORDER BY.
+// topSort is the definition's own sort: the root, or the sort under the
+// Select that drops an ORDER BY key the list does not project, so that shape is
+// refused by checkTop rather than as a subquery's ORDER BY.
 func topSort(root expressions.RelationalExpression) *expressions.LogicalSortExpression {
 	if sort, ok := root.(*expressions.LogicalSortExpression); ok {
 		return sort
@@ -196,42 +197,15 @@ func rejectSubquerySorts(root expressions.RelationalExpression) error {
 }
 
 // checkTop is DdlVisitor.java:274's assertion, made before IndexSpec runs as
-// the target makes it: the query's top is a sort over the select, which fails
-// when an ORDER BY key is not among the projected columns (LogicalOperator.
-// generateSelect wraps the sort in one more select then). Go's translator
-// emits Project(Sort(…)) for an ORDER BY; a key not among the projection's
-// resolved columns is the target's INVALID_COLUMN_REFERENCE.
-func checkTop(c *specCollector, root expressions.RelationalExpression, rootScope *scope, result []values.Value) error {
-	e, sc := root, rootScope
-	if isBlockOverInput(e) {
-		producer, err := member(e.GetQuantifiers()[0].GetRangesOver())
-		if err != nil {
-			return err
-		}
-		e, sc = producer, sc.child(producer)
-	}
-	sort, ok := e.(*expressions.LogicalSortExpression)
-	if !ok {
+// the target makes it: the definition's top is the sort generateSelect states
+// over its select. An ORDER BY key the SELECT list does not project puts one
+// more select above that sort, which is the target's INVALID_COLUMN_REFERENCE.
+func checkTop(root expressions.RelationalExpression) error {
+	if _, ok := root.(*expressions.LogicalSortExpression); ok {
 		return nil
 	}
-	order, err := c.orderByOf(sort, sc)
-	if err != nil {
-		return err
-	}
-	for _, v := range order.values {
-		found := false
-		for _, r := range result {
-			if c.qv.equalValues(v, r) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return api.NewError(api.ErrCodeInvalidColumnReference,
-				"Cannot create index and order by an expression that is not present in the projection list")
-		}
-	}
-	return nil
+	return api.NewError(api.ErrCodeInvalidColumnReference,
+		"Cannot create index and order by an expression that is not present in the projection list")
 }
 
 // storageNames resolves a resolved-accessor path step to the DESCRIPTOR's

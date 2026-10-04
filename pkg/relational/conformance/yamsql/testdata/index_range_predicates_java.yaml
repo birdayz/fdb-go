@@ -39,7 +39,7 @@ tests:
 
   # AND range: col1 >= 10 AND col1 <= 20 → ONE two-sided range scan, no residual (RFC-249)
   - query: SELECT id FROM t1 WHERE col1 >= 10 AND col1 <= 20 ORDER BY id
-    plan_contains: "IndexScan(I1, [<>])"
+    plan_contains: "InMemorySort([_current.ID#0 ASC], Map(IndexScan(I1, [<>] COVERING), {ID: _current.ID#0}))"
     plan_not_contains: "PredicatesFilter"
     rows:
       - [1]
@@ -55,7 +55,7 @@ tests:
 
   # Strict range: col1 > 10 AND col1 < 30 → one two-sided range scan
   - query: SELECT id FROM t1 WHERE col1 > 10 AND col1 < 30 ORDER BY id
-    plan_contains: "IndexScan(I1, [<>])"
+    plan_contains: "InMemorySort([_current.ID#0 ASC], Map(IndexScan(I1, [<>] COVERING), {ID: _current.ID#0}))"
     plan_not_contains: "PredicatesFilter"
     rows:
       - [6]
@@ -90,7 +90,7 @@ tests:
 
   # OR with different values: col1 = 10 OR col1 = 30
   - query: SELECT id FROM t1 WHERE col1 = 10 OR col1 = 30 ORDER BY id
-    plan_contains: "UnorderedPrimaryKeyDistinct(UnorderedUnion(IndexScan(I1, [=] COVERING), IndexScan(I1, [=] COVERING)))"
+    plan_contains: "Map(MergeSortUnion(IndexScan(I1, [=]), IndexScan(I1, [=]), keys=[1], ASC DISTINCT), {ID: _current.ID#0})"
     plan_not_contains: "PredicatesFilter"
     rows:
       - [1]
@@ -104,7 +104,7 @@ tests:
 
   # Complex: identical OR conjuncts share the two covering index union legs
   - query: SELECT id FROM t1 WHERE (col1 = 20 OR col1 = 10) AND (col1 = 20 OR col1 = 10) ORDER BY id
-    plan_contains: "UnorderedPrimaryKeyDistinct(UnorderedUnion(IndexScan(I1, [=] COVERING), IndexScan(I1, [=] COVERING)))"
+    plan_contains: "Map(MergeSortUnion(IndexScan(I1, [=]), IndexScan(I1, [=]), keys=[1], ASC DISTINCT), {ID: _current.ID#0})"
     plan_not_contains: "PredicatesFilter"
     rows:
       - [1]
@@ -134,7 +134,7 @@ tests:
 
   # Less than
   - query: SELECT id FROM t1 WHERE col1 < 20 ORDER BY id
-    plan_contains: "IndexScan(I1, [<>])"
+    plan_contains: "InMemorySort([_current.ID#0 ASC], Map(IndexScan(I1, [<>] COVERING), {ID: _current.ID#0}))"
     rows:
       - [1]
       - [2]

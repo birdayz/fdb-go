@@ -19,13 +19,10 @@ import (
 //
 // Edge cases:
 //   - If the outer sort is unsorted (Sort([])), the rewrite would
-//     destroy the inner's ordering. Decline in that case — the
-//     UnsortedSortElim rule handles unsorted Sorts on its own pass
-//     by eliminating them from outer-side inputs.
+//     destroy the inner's ordering. Decline in that case; the unsorted
+//     sort's implementation passes its input through.
 //   - If the inner sort is unsorted (Sort([])), the rule still fires:
 //     dropping a no-op intermediate is cheap and structurally cleaner.
-//     (Technically UnsortedSortElim would also have caught the inner
-//     by itself — but having both rules cooperate is fine.)
 //
 // Java equivalent: emerges from cost preference for fewer operators.
 // Seed implements directly so the optimiser's logical phase produces

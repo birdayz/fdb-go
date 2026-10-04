@@ -1890,57 +1890,65 @@ func executeInUnion(
 		return ExecutePlan(ctx, p.GetInner(), store, childContext, continuation, props)
 	}
 
-	// Single binding dimension: execute inner once per IN value,
-	// merge-sort if comparison keys exist, otherwise concat. Mirrors Java
-	// RecordQueryInUnionPlan.executePlan (:150-175): size==1 hands the
-	// continuation straight to the sole child; otherwise the children are
-	// CURSOR FACTORIES and the continuation is the UnionCursor's per-child
-	// UnionContinuation, decoded into each child's start state.
-	if len(bindingAliases) == 1 && len(inSources[0]) > 0 {
-		bindingID := bindingAliases[0]
-		vals := inSources[0]
-		// childFactory tags each value's execution context with its own
-		// index (withRecursionInvocationBranch): when compKeys is non-empty
-		// below, newMergeSortCursorFromFactories constructs and drives ALL
-		// len(vals) factories CONCURRENTLY (every leg pulled from in
-		// lockstep, not one after another), so if p.GetInner() is itself a
-		// recursive-union plan, its statement-scoped depth guard
-		// (recordlayer.ExecuteState.recursionLevels) would otherwise key
-		// every one of these concurrently-live invocations by the SAME
-		// plan pointer — see recursionInvocationKey's doc comment for why
-		// that under- and over-counts. The index-tagged ctx gives each
-		// value's invocation of the same inner plan a distinct, resume-
-		// stable identity.
-		childFactory := func(idx int, val any) recordlayer.CursorFactory[QueryResult] {
-			return func(cont []byte) recordlayer.RecordCursor[QueryResult] {
-				boundCtx := evalCtx.WithBinding(bindingID, val)
-				childCtx := withRecursionInvocationBranch(ctx, idx)
-				cursor, err := ExecutePlan(childCtx, p.GetInner(), store, boundCtx, cont, props.ClearSkipAndAdjustLimit())
-				if err != nil {
-					return &errResultCursor{err: err}
-				}
-				return cursor
+	// One child execution per combination of IN values. Mirrors Java
+	// RecordQueryInUnionPlan.executePlan (:150-175) over getValuesContexts
+	// (:340-353): the Cartesian product of the sources, the first source most
+	// significant; size==1 hands the continuation straight to the sole child;
+	// otherwise the children are CURSOR FACTORIES and the continuation is the
+	// UnionCursor's per-child UnionContinuation.
+	combinations := [][]any{nil}
+	for i, source := range inSources {
+		if source == nil {
+			return nil, fmt.Errorf("executeInUnion: IN source %d has no planning-time values", i)
+		}
+		next := make([][]any, 0, len(combinations)*len(source))
+		for _, parent := range combinations {
+			for _, val := range source {
+				next = append(next, append(append(make([]any, 0, len(inSources)), parent...), val))
 			}
 		}
-		factories := make([]recordlayer.CursorFactory[QueryResult], len(vals))
-		for i, val := range vals {
-			factories[i] = childFactory(i, val)
-		}
-		compKeys := p.GetComparisonKeys()
-		if len(compKeys) > 0 {
-			merged, err := newMergeSortCursorFromFactories(factories, compKeys, p.IsReverse(), true, continuation)
-			if err != nil {
-				return nil, err
-			}
-			return applySkipLimit(merged, props.Skip, props.ReturnedRowLimit), nil
-		}
-		// No comparison keys (order-free IN union): a resumable branch-tagged
-		// concat chain (concatFactories, shared with executeUnion)
-		// instead of the pre-A5 eager concat that discarded the continuation.
-		return applySkipLimit(concatFactories(factories, continuation), props.Skip, props.ReturnedRowLimit), nil
+		combinations = next
 	}
-
-	return nil, fmt.Errorf("executeInUnion: multi-binding IN union (%d bindings) not yet implemented", len(bindingAliases))
+	// childFactory tags each combination's execution context with its own
+	// index (withRecursionInvocationBranch): when compKeys is non-empty
+	// below, newMergeSortCursorFromFactories constructs and drives ALL
+	// factories CONCURRENTLY (every leg pulled from in lockstep, not one
+	// after another), so if p.GetInner() is itself a recursive-union plan,
+	// its statement-scoped depth guard (recordlayer.ExecuteState.recursionLevels)
+	// would otherwise key every one of these concurrently-live invocations by
+	// the SAME plan pointer — see recursionInvocationKey's doc comment for why
+	// that under- and over-counts. The index-tagged ctx gives each
+	// combination's invocation of the same inner plan a distinct, resume-
+	// stable identity.
+	childFactory := func(idx int, combination []any) recordlayer.CursorFactory[QueryResult] {
+		return func(cont []byte) recordlayer.RecordCursor[QueryResult] {
+			boundCtx := evalCtx
+			for i, val := range combination {
+				boundCtx = boundCtx.WithBinding(bindingAliases[i], val)
+			}
+			childCtx := withRecursionInvocationBranch(ctx, idx)
+			cursor, err := ExecutePlan(childCtx, p.GetInner(), store, boundCtx, cont, props.ClearSkipAndAdjustLimit())
+			if err != nil {
+				return &errResultCursor{err: err}
+			}
+			return cursor
+		}
+	}
+	factories := make([]recordlayer.CursorFactory[QueryResult], len(combinations))
+	for i, combination := range combinations {
+		factories[i] = childFactory(i, combination)
+	}
+	if compKeys := p.GetComparisonKeys(); len(compKeys) > 0 {
+		merged, err := newMergeSortCursorFromFactories(factories, compKeys, p.IsReverse(), true, continuation)
+		if err != nil {
+			return nil, err
+		}
+		return applySkipLimit(merged, props.Skip, props.ReturnedRowLimit), nil
+	}
+	// No comparison keys (order-free IN union): a resumable branch-tagged
+	// concat chain (concatFactories, shared with executeUnion)
+	// instead of the pre-A5 eager concat that discarded the continuation.
+	return applySkipLimit(concatFactories(factories, continuation), props.Skip, props.ReturnedRowLimit), nil
 }
 
 // concatFactories folds N cursor factories into a right-nested chain of binary

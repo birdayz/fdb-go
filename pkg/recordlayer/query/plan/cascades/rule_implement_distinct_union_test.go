@@ -64,15 +64,20 @@ func distinctUnionScan(recordType string, rowType values.Type) *plans.RecordQuer
 		[]string{recordType}, rowType, false))
 }
 
-func TestImplementDistinctUnionRule_MatchesLogicalDistinct(t *testing.T) {
+// Java's rule hangs off its primary-key dedup node, which is Go's
+// LogicalUnique; Go's full-row LogicalDistinct is a different operator.
+func TestImplementDistinctUnionRule_MatchesThePrimaryKeyDedup(t *testing.T) {
 	t.Parallel()
 	rule := NewImplementDistinctUnionRule()
 	scanRef := expressions.InitialOf(mustDistinctUnionConstruct(expressions.NewFullUnorderedScanExpression(
 		[]string{"T"}, distinctUnionScanRowType())))
+	unique := mustDistinctUnionConstruct(expressions.NewRequiredLogicalUniqueExpression(expressions.ForEachQuantifier(scanRef)))
+	if len(rule.Matcher().BindMatches(matching.NewBindings(), unique)) == 0 {
+		t.Fatal("should match LogicalUniqueExpression")
+	}
 	distinct := mustDistinctUnionConstruct(expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(scanRef)))
-	bindings := rule.Matcher().BindMatches(matching.NewBindings(), distinct)
-	if len(bindings) == 0 {
-		t.Fatal("should match LogicalDistinctExpression")
+	if len(rule.Matcher().BindMatches(matching.NewBindings(), distinct)) != 0 {
+		t.Fatal("should not match the full-row LogicalDistinctExpression")
 	}
 }
 
@@ -98,7 +103,7 @@ func TestImplementDistinctUnionRule_RequiresUnionChild(t *testing.T) {
 	pm.Add(sw)
 	innerRef.SetPlanProperties(pm)
 
-	distinct := mustDistinctUnionConstruct(expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(innerRef)))
+	distinct := mustDistinctUnionConstruct(expressions.NewRequiredLogicalUniqueExpression(expressions.ForEachQuantifier(innerRef)))
 	outerRef := expressions.InitialOf(distinct)
 
 	results := mustFireImplementationRule(t, NewImplementDistinctUnionRule(), outerRef)
@@ -136,7 +141,7 @@ func TestImplementDistinctUnionRule_FiresWithPKAndStoredRecord(t *testing.T) {
 
 	unionRef := expressions.InitialOf(union)
 
-	distinct := mustDistinctUnionConstruct(expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(unionRef)))
+	distinct := mustDistinctUnionConstruct(expressions.NewRequiredLogicalUniqueExpression(expressions.ForEachQuantifier(unionRef)))
 	outerRef := expressions.InitialOf(distinct)
 
 	results := mustFireImplementationRule(t, NewImplementDistinctUnionRule(), outerRef)
@@ -179,7 +184,7 @@ func TestImplementDistinctUnionRule_NoFireWithoutPK(t *testing.T) {
 
 	unionRef := expressions.InitialOf(union)
 
-	distinct := mustDistinctUnionConstruct(expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(unionRef)))
+	distinct := mustDistinctUnionConstruct(expressions.NewRequiredLogicalUniqueExpression(expressions.ForEachQuantifier(unionRef)))
 	outerRef := expressions.InitialOf(distinct)
 
 	results := mustFireImplementationRule(t, NewImplementDistinctUnionRule(), outerRef)
@@ -200,102 +205,12 @@ func TestImplementDistinctUnionRule_IncompatiblePK(t *testing.T) {
 
 	unionRef := expressions.InitialOf(union)
 
-	distinct := mustDistinctUnionConstruct(expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(unionRef)))
+	distinct := mustDistinctUnionConstruct(expressions.NewRequiredLogicalUniqueExpression(expressions.ForEachQuantifier(unionRef)))
 	outerRef := expressions.InitialOf(distinct)
 
 	results := mustFireImplementationRule(t, NewImplementDistinctUnionRule(), outerRef)
 	if len(results) != 0 {
 		t.Fatalf("should not fire with incompatible PKs, got %d", len(results))
-	}
-}
-
-func TestGetCommonPK_AllSame(t *testing.T) {
-	t.Parallel()
-	pk := distinctUnionNamedFields("id")
-	p1 := &PlanPartition{
-		partitionProps: properties.PropertyMap{properties.PropPrimaryKey: pk},
-	}
-	p2 := &PlanPartition{
-		partitionProps: properties.PropertyMap{properties.PropPrimaryKey: pk},
-	}
-	result := getCommonPK([]*PlanPartition{p1, p2})
-	if result == nil {
-		t.Fatal("same PK should return non-nil")
-	}
-}
-
-func TestGetCommonPK_OneMissing(t *testing.T) {
-	t.Parallel()
-	pk := distinctUnionNamedFields("id")
-	p1 := &PlanPartition{
-		partitionProps: properties.PropertyMap{properties.PropPrimaryKey: pk},
-	}
-	p2 := &PlanPartition{
-		partitionProps: properties.PropertyMap{properties.PropPrimaryKey: nil},
-	}
-	result := getCommonPK([]*PlanPartition{p1, p2})
-	if result != nil {
-		t.Fatal("missing PK should return nil")
-	}
-}
-
-func TestRemoveCommonEqualityBoundParts_NoCommon(t *testing.T) {
-	t.Parallel()
-	keys := distinctUnionNamedFields("a", "b")
-	keyA, keyB := keys[0], keys[1]
-	o1 := properties.NewRichOrdering(
-		map[values.Value][]properties.OrderingBinding{keyA: {properties.FixedBinding(nil)}},
-		[]values.Value{keyA}, properties.NotDistinct())
-	o2 := properties.NewRichOrdering(
-		map[values.Value][]properties.OrderingBinding{keyB: {properties.FixedBinding(nil)}},
-		[]values.Value{keyB}, properties.NotDistinct())
-	result := removeCommonEqualityBoundParts([]*properties.RichOrdering{o1, o2})
-	if len(result) != 2 {
-		t.Fatalf("expected 2 orderings, got %d", len(result))
-	}
-	if len(result[0].GetKeys()) != 1 || len(result[1].GetKeys()) != 1 {
-		t.Fatal("no keys should be removed")
-	}
-}
-
-func TestRemoveCommonEqualityBoundParts_CommonRemoved(t *testing.T) {
-	t.Parallel()
-	keys := distinctUnionNamedFields("a", "b")
-	keyA, keyB := keys[0], keys[1]
-	o1 := properties.NewRichOrdering(
-		map[values.Value][]properties.OrderingBinding{
-			keyA: {properties.FixedBinding(nil)},
-			keyB: {properties.SortedBinding(properties.ProvidedSortOrderAscending)},
-		},
-		[]values.Value{keyA, keyB}, properties.NotDistinct())
-	o2 := properties.NewRichOrdering(
-		map[values.Value][]properties.OrderingBinding{
-			keyA: {properties.FixedBinding(nil)},
-			keyB: {properties.SortedBinding(properties.ProvidedSortOrderDescending)},
-		},
-		[]values.Value{keyA, keyB}, properties.NotDistinct())
-	result := removeCommonEqualityBoundParts([]*properties.RichOrdering{o1, o2})
-	if len(result) != 2 {
-		t.Fatalf("expected 2 orderings, got %d", len(result))
-	}
-	if len(result[0].GetKeys()) != 1 {
-		t.Fatalf("expected 1 key after removal, got %d", len(result[0].GetKeys()))
-	}
-	field, ok := values.AsFieldValue(result[0].GetKeys()[0])
-	if !ok || field.DisplayName() != "b" {
-		t.Fatalf("expected key 'b', got %q", values.ExplainValue(result[0].GetKeys()[0]))
-	}
-}
-
-func TestRemoveCommonEqualityBoundParts_SingleOrdering(t *testing.T) {
-	t.Parallel()
-	keyA := distinctUnionNamedFields("a")[0]
-	o := properties.NewRichOrdering(
-		map[values.Value][]properties.OrderingBinding{keyA: {properties.FixedBinding(nil)}},
-		[]values.Value{keyA}, properties.NotDistinct())
-	result := removeCommonEqualityBoundParts([]*properties.RichOrdering{o})
-	if len(result) != 1 || len(result[0].GetKeys()) != 1 {
-		t.Fatal("single ordering should not be modified")
 	}
 }
 
@@ -348,7 +263,7 @@ func TestImplementDistinctUnionRule_LyingDelegatorLegPinned(t *testing.T) {
 	}))
 
 	unionRef := expressions.InitialOf(union)
-	distinct := mustDistinctUnionConstruct(expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(unionRef)))
+	distinct := mustDistinctUnionConstruct(expressions.NewRequiredLogicalUniqueExpression(expressions.ForEachQuantifier(unionRef)))
 	outerRef := expressions.InitialOf(distinct)
 
 	results := mustFireImplementationRule(t, NewImplementDistinctUnionRule(), outerRef)
@@ -405,7 +320,7 @@ func distinctUnionOverLegs(legs ...*expressions.Reference) *expressions.Referenc
 		quantifiers[i] = expressions.ForEachQuantifier(leg)
 	}
 	union := mustDistinctUnionConstruct(expressions.NewLogicalUnionExpression(quantifiers))
-	distinct := mustDistinctUnionConstruct(expressions.NewLogicalDistinctExpression(
+	distinct := mustDistinctUnionConstruct(expressions.NewRequiredLogicalUniqueExpression(
 		expressions.ForEachQuantifier(expressions.InitialOf(union))))
 
 	return expressions.InitialOf(distinct)

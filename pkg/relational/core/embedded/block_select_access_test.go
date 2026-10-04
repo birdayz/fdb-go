@@ -45,7 +45,8 @@ func TestBlockOverASortedBodyReadsItsOwnInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertPlanContains(t, got, "{A: _current.ID#0, B: _current.ID#0, D: _current.ID#0}")
+	assertPlanContains(t, got, "{ID: _current.ID#0, ID_2: _current.ID#0, ID_3: _current.ID#0, _3: _current.V#1}")
+	assertPlanContains(t, got, "{A: _current.ID#0, B: _current.ID_2#1, D: _current.ID_3#2}")
 }
 
 // A scalar subquery's block merges under its null-on-empty edge, so the

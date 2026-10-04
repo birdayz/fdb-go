@@ -5,7 +5,7 @@
 #   CREATE INDEX min_by_cat AS SELECT MIN(v) FROM t GROUP BY cat
 
 === SELECT id FROM t WHERE cat IN (1, 2) ORDER BY id
-PLAN: Map(InUnion(IndexScan(CAT_IDX, [=]), bindings=1, ASC), {ID: _current.ID#0})
+PLAN: InUnion(Map(IndexScan(CAT_IDX, [=] COVERING), {ID: _current.ID#0}), bindings=1, ASC)
 ROWS(4) cols=[ID]:
   [1]
   [2]

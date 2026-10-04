@@ -159,6 +159,7 @@ func forEachNodeLocalValue(plan plans.RecordQueryPlan, emit func(values.Value)) 
 		}
 	case *plans.RecordQueryScanPlan:
 		forEachValue(p.GetPrimaryKeyValues(), emit)
+		forEachValue(p.GetCommonPrimaryKeyValues(), emit)
 		forEachScanComparisonValue(p.GetScanComparisons(), emit)
 	case *plans.RecordQueryIndexPlan:
 		forEachValue(p.GetCommonPrimaryKeyValues(), emit)

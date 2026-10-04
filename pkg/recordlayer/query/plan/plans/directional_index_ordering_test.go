@@ -15,7 +15,7 @@ func directionalIndexPlan(t *testing.T, direction values.OrderedBytesDirection, 
 		WithKeyComponentTypes(testPhysicalLongTypes(2)).
 		WithIndexMetadata([]string{"A", "B"}, []string{"ID"}, false).
 		WithPrimaryKeyComponentTypes(testPhysicalLongTypes(1)).
-		WithOrderingDirections([]values.OrderedBytesDirection{direction, values.OrderedBytesAscNullsFirst})
+		WithOrderingColumns([]IndexOrderingColumn{{Direction: direction}, {}})
 }
 
 // TestRecordQueryIndexPlan_OrderFunctionColumnDirection: an order-function
@@ -122,5 +122,38 @@ func TestRecordQueryMapPlan_HintRichOrderingNamesItsOutput(t *testing.T) {
 	dropsLeading := projectionMapForTest(t, innerQ, []values.Value{b, id}, []string{"Y", "Z"})
 	if keys := dropsLeading.HintRichOrdering().GetKeys(); len(keys) != 0 {
 		t.Fatalf("a map without the leading key still claims %d ordering keys", len(keys))
+	}
+}
+
+// TestRecordQueryIndexPlan_CardinalityColumnOrdersByTheCardinality: a scan of
+// an index over CARDINALITY(A) orders by the cardinality of A, not by A.
+func TestRecordQueryIndexPlan_CardinalityColumnOrdersByTheCardinality(t *testing.T) {
+	t.Parallel()
+	plan := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("IDX", nil, []string{"T"}, indexOrderingLayout(), true)
+	}).
+		WithKeyComponentTypes(testPhysicalLongTypes(2)).
+		WithIndexMetadata([]string{"A", "B"}, []string{"ID"}, false).
+		WithPrimaryKeyComponentTypes(testPhysicalLongTypes(1)).
+		WithOrderingColumns([]IndexOrderingColumn{{Cardinality: true}, {}})
+	for _, keys := range [][]values.Value{plan.HintOrdering().Keys, plan.HintRichOrdering().GetKeys()} {
+		if len(keys) != 3 {
+			t.Fatalf("ordering has %d keys, want [CARDINALITY(A), B, ID]", len(keys))
+		}
+		card, ok := keys[0].(*values.CardinalityValue)
+		if !ok {
+			t.Fatalf("key 0 = %s, want CARDINALITY(A)", values.ExplainValue(keys[0]))
+		}
+		if fv, ok := values.AsFieldValue(card.Child); !ok || fv.DisplayName() != "A" {
+			t.Fatalf("key 0 = %s, want CARDINALITY(A)", values.ExplainValue(keys[0]))
+		}
+		if _, ok := values.AsFieldValue(keys[1]); !ok {
+			t.Fatalf("key 1 = %s, want the plain field B", values.ExplainValue(keys[1]))
+		}
+	}
+	rich := plan.HintRichOrdering()
+	if b := rich.GetBindingMap()[rich.GetKeys()[0]]; len(b) != 1 ||
+		b[0].GetSortOrder() != properties.ProvidedSortOrderDescending {
+		t.Fatalf("CARDINALITY(A) under a reverse scan = %v, want DESCENDING", b)
 	}
 }

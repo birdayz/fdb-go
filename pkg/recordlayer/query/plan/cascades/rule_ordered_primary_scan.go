@@ -114,7 +114,8 @@ func (r *OrderedPrimaryScanRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 	plan = plan.WithPrimaryKey(pkVals).
-		WithKeyComponentTypes(physicalTypes)
+		WithKeyComponentTypes(physicalTypes).
+		WithCommonPrimaryKey(commonPrimaryKeyOf(call.Context, scan.GetRecordTypes()))
 
 	// Yield the BARE scan: RecordQueryScanPlan is its own physical Cascades
 	// expression now (RFC-184 W2), no adapter needed.

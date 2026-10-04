@@ -48,7 +48,7 @@ tests:
   # -------------------------------------------------------------------
 
   - query: SELECT id FROM rp WHERE region = 'us' ORDER BY id
-    plan_contains: "IndexScan(IDX_REGION_PLAN, [=, *])"
+    plan_contains: "InMemorySort([_current.ID#0 ASC], Map(IndexScan(IDX_REGION_PLAN, [=, *] COVERING), {ID: _current.ID#0}))"
     plan_not_contains: "Scan(RP)"
     rows:
       - [1]
@@ -83,7 +83,7 @@ tests:
   # -------------------------------------------------------------------
 
   - query: SELECT id FROM rp WHERE region = 'eu' ORDER BY id
-    plan_contains: "IndexScan(IDX_REGION_PLAN, [=, *])"
+    plan_contains: "InMemorySort([_current.ID#0 ASC], Map(IndexScan(IDX_REGION_PLAN, [=, *] COVERING), {ID: _current.ID#0}))"
     plan_not_contains: "Scan(RP)"
     rows:
       - [4]
@@ -130,7 +130,7 @@ tests:
     rowcount: 2
 
   - query: SELECT id, tier FROM rp WHERE region = 'eu' ORDER BY id
-    plan_contains: "IndexScan(IDX_REGION_PLAN, [=, *])"
+    plan_contains: "InMemorySort([_current.ID#0 ASC], Map(IndexScan(IDX_REGION_PLAN_TIER, [=, *, *] COVERING), {ID: _current.ID#0, TIER: _current.TIER#3}))"
     plan_not_contains: "Scan(RP)"
     rows:
       - [4, 99]
@@ -140,6 +140,6 @@ tests:
     rowcount: 2
 
   - query: SELECT id FROM rp WHERE region = 'eu' ORDER BY id
-    plan_contains: "IndexScan(IDX_REGION_PLAN, [=, *])"
+    plan_contains: "InMemorySort([_current.ID#0 ASC], Map(IndexScan(IDX_REGION_PLAN, [=, *] COVERING), {ID: _current.ID#0}))"
     plan_not_contains: "Scan(RP)"
     rows: []

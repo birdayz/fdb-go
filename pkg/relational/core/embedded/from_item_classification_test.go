@@ -293,9 +293,11 @@ func TestLateralLegsCorrelatedToOtherLegs(t *testing.T) {
 			contains: "DefaultOnEmpty",
 		},
 		{
+			// q.id = h.id rejects h's null-extended row, so the outer join is an
+			// inner one (EliminateNullOnEmptyRule), as Java plans it.
 			sql:      `SELECT w.id, d.x FROM w LEFT JOIN h ON h.id = w.id, (SELECT q.id AS x FROM q WHERE q.id = h.id) AS d`,
-			contains: "FlatMap(outer=FlatMap(outer=Scan(W), inner=DefaultOnEmpty(Scan(H, [=]))), inner=Scan(Q, [=]))",
-			result:   "{ID: H$BOX.ID#0, X: Q$BOUND1.ID#0}",
+			contains: "FlatMap(outer=Scan(H), inner=FlatMap(outer=Scan(Q, [=]), inner=Scan(W, [=])))",
+			result:   `{ID: $m"1._1#1.ID#0, X: $m"1._0#0.ID#0}`,
 		},
 	})
 }

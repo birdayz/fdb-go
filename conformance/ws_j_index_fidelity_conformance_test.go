@@ -1691,10 +1691,10 @@ var _ = Describe("WS-J nested-leaf value index plan oracle", func() {
 			"SELECT * FROM T WHERE s.x = 5":                 "ISCAN(NESTED_THEN_TOP [EQUALS promote(@c9 AS LONG)])",
 		}
 		wantGo := map[string]string{
-			"SELECT s.x, ts FROM T ORDER BY s.x, ts":        "Map(InMemorySort([_current.S#1.X#0 ASC, _current.TS#2 ASC], Scan(T)), {X: _current.S#1.X#0, TS: _current.TS#2})",
+			"SELECT s.x, ts FROM T ORDER BY s.x, ts":        "InMemorySort([_current.X#0 ASC, _current.TS#1 ASC], Map(Scan(T), {X: _current.S#1.X#0, TS: _current.TS#2}))",
 			"SELECT id FROM T WHERE s.x = 5":                "Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})",
 			"SELECT id, ts FROM T WHERE s.x = 5 AND ts > 3": "Map(PredicatesFilter(Scan(T), [2 preds]), {ID: _current.ID#0, TS: _current.TS#2})",
-			"SELECT s.y FROM T ORDER BY s.y":                "Map(InMemorySort([_current.S#1.Y#1 ASC], Scan(T)), {Y: _current.S#1.Y#1})",
+			"SELECT s.y FROM T ORDER BY s.y":                "InMemorySort([_current.Y#0 ASC], Map(Scan(T), {Y: _current.S#1.Y#1}))",
 			"SELECT id FROM T WHERE s.y > 2":                "Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})",
 			"SELECT * FROM T WHERE s.x = 5":                 "PredicatesFilter(Scan(T), [1 preds])",
 		}
@@ -2259,7 +2259,7 @@ var wsjNonIntGoPins = map[string]string{
 	"int_max_plus_one \"SELECT id FROM T WHERE i + 1 = 6\"":                  "ERROR 22003 \"integer overflow\"",
 	"int_max_plus_one \"SELECT i + 1 FROM T WHERE id = 1\"":                  "ERROR 22003 \"integer overflow\"",
 	"int_max_plus_one \"SELECT id FROM T WHERE i + 1 > 0 ORDER BY id\"":      "ERROR 22003 \"integer overflow\"",
-	"double_plus_double \"EXPLAIN SELECT d + d FROM T ORDER BY d + d\"":      "PLAN Map(InMemorySort([(_current.D#1 + _current.D#1) ASC], Scan(T)), {_0: (_current.D#1 + _current.D#1)})",
+	"double_plus_double \"EXPLAIN SELECT d + d FROM T ORDER BY d + d\"":      "PLAN InMemorySort([_current._0#0 ASC], Map(Scan(T), {_0: (_current.D#1 + _current.D#1)}))",
 	"double_plus_double \"EXPLAIN SELECT id FROM T WHERE d + d = 2\"":        "PLAN Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})",
 	"double_plus_double \"SELECT d + d FROM T ORDER BY d + d\"":              "OK [[-3] [3] [4]]",
 	"double_plus_double \"SELECT id FROM T WHERE d + d = 2\"":                "OK []",
@@ -2272,7 +2272,7 @@ var wsjNonIntGoPins = map[string]string{
 	"float_plus_int \"SELECT id FROM T WHERE f + 1 = 2\"":                    "OK []",
 	"float_plus_int \"EXPLAIN SELECT id FROM T WHERE f + 1 = 2.5\"":          "PLAN Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})",
 	"float_plus_int \"SELECT id FROM T WHERE f + 1 = 2.5\"":                  "OK [[1]]",
-	"int_max_plus_one \"EXPLAIN SELECT i + 1 FROM T ORDER BY i + 1\"":        "PLAN Map(InMemorySort([(_current.I#1 + 1) ASC], Scan(T)), {_0: (_current.I#1 + 1)})",
+	"int_max_plus_one \"EXPLAIN SELECT i + 1 FROM T ORDER BY i + 1\"":        "PLAN InMemorySort([_current._0#0 ASC], Map(Scan(T), {_0: (_current.I#1 + 1)}))",
 	"int_max_plus_one \"SELECT i + 1 FROM T ORDER BY i + 1\"":                "ERROR 22003 \"integer overflow\"",
 	"double_plus_double \"EXPLAIN SELECT d + d FROM T WHERE d + d = 2\"":     "PLAN Map(PredicatesFilter(Scan(T), [1 preds]), {_0: (_current.D#1 + _current.D#1)})",
 	"double_plus_double \"EXPLAIN SELECT d FROM T WHERE d + d = 2\"":         "PLAN Map(PredicatesFilter(Scan(T), [1 preds]), {D: _current.D#1})",

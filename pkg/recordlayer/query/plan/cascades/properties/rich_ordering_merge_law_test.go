@@ -112,3 +112,27 @@ func TestMergeOrderingsForUnion_NeverOutClaimsItsLegs(t *testing.T) {
 	t.Logf("union merge law: %d triples, %d merged-accepts, %d over-claims",
 		checked, mergedAccepts, overClaims)
 }
+
+// The merged key sequence follows the inputs' set order, as Java's
+// eligibleElements() does. Two keys eligible at once (a fixed key beside the
+// sorted one) once came out in map-iteration order, so equal merges compared
+// unequal and plans could depend on the run.
+func TestMergeOrderingsForUnion_KeyOrderIsDeterministic(t *testing.T) {
+	t.Parallel()
+
+	a := propertyField(t, "a", values.NullableLong)
+	id := propertyField(t, "id", values.NullableLong)
+	asc := SortedBinding(ProvidedSortOrderAscending)
+	leg := func(eq string) *RichOrdering {
+		return NewRichOrdering(map[values.Value][]OrderingBinding{
+			a:  {FixedBinding(eq)},
+			id: {asc},
+		}, []values.Value{a, id}, NotDistinct())
+	}
+	for range 64 {
+		keys := MergeOrderingsForUnion(leg("a = 1"), leg("a = 2")).GetKeys()
+		if len(keys) != 2 || keys[0] != a || keys[1] != id {
+			t.Fatalf("merged keys = %v, want the legs' order (a, id)", keys)
+		}
+	}
+}

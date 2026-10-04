@@ -130,7 +130,7 @@ func TestSecondaryUniqueProof_StrictOrderingReachability(t *testing.T) {
 	}{
 		{
 			name:           "unfiltered_declines",
-			query:          "SELECT N FROM T ORDER BY N",
+			query:          "SELECT * FROM T ORDER BY N",
 			wantStrictSort: false,
 			because: "the scan reaches every entry the index holds, NULLs included, " +
 				"so its sort key has genuine ties. R1 is false for this index (arm (b)) " +
@@ -139,7 +139,7 @@ func TestSecondaryUniqueProof_StrictOrderingReachability(t *testing.T) {
 		},
 		{
 			name:           "is_not_null_licenses",
-			query:          "SELECT N FROM T WHERE N IS NOT NULL ORDER BY N",
+			query:          "SELECT * FROM T WHERE N IS NOT NULL ORDER BY N",
 			wantStrictSort: true,
 			because: "R2 via the SCAN RANGE. IS NOT NULL is admitted by " +
 				"isSargableComparisonForMatch, so the planner pushes it INTO the range " +
@@ -148,14 +148,14 @@ func TestSecondaryUniqueProof_StrictOrderingReachability(t *testing.T) {
 		},
 		{
 			name:           "ordered_bound_licenses",
-			query:          "SELECT N FROM T WHERE N > 'a' ORDER BY N",
+			query:          "SELECT * FROM T WHERE N > 'a' ORDER BY N",
 			wantStrictSort: true,
 			because: "R2 again: a lower bound at a non-NULL comparand sits above the " +
 				"NULL boundary, so the NULL entries are outside the range",
 		},
 		{
 			name:           "residual_filter_declines",
-			query:          "SELECT N FROM T WHERE N <> 'z' ORDER BY N",
+			query:          "SELECT * FROM T WHERE N <> 'z' ORDER BY N",
 			wantStrictSort: false,
 			because: "the SQL-path twin of the refusal in " +
 				"cascades/null_rejecting_scan_range_test.go. `N <> 'z'` DOES reject " +
@@ -166,8 +166,18 @@ func TestSecondaryUniqueProof_StrictOrderingReachability(t *testing.T) {
 				"stream with ties, readable by any consumer that never sees the filter",
 		},
 		{
+			name:           "projection_declines",
+			query:          "SELECT N FROM T WHERE N IS NOT NULL ORDER BY N",
+			wantStrictSort: false,
+			because: "the sort ranges over the block's projecting Map, and Java's " +
+				"RecordQueryMapPlan.strictlySorted returns the map unchanged: a " +
+				"projection may map distinct rows to equal ones, so the stamp does " +
+				"not pass through it. The rows above select * so that no map sits " +
+				"between the sort and the scan",
+		},
+		{
 			name:           "is_null_declines",
-			query:          "SELECT N FROM T WHERE N IS NULL ORDER BY N",
+			query:          "SELECT * FROM T WHERE N IS NULL ORDER BY N",
 			wantStrictSort: false,
 			because: "the trap. IS NULL is a scan-range EQUALITY type exactly as " +
 				"ordinary equality is, and it seeks the NULL entries — which on this " +

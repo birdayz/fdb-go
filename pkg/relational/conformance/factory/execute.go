@@ -348,8 +348,8 @@ func (r *Runner) Run(ctx context.Context, cand Candidate) Outcome {
 // construct one WITHOUT ever touching a PartialMatch; they pass an empty
 // comparison prefix, so they emit full-range scans.
 //
-// `ORDER BY` an indexed column is such a counterexample: with MatchLeafRule off
-// it still plans `IndexScan(IDX_A, [*])`.
+// `GROUP BY` an indexed column is such a counterexample: with MatchLeafRule off
+// it still plans `IndexScan(IDX_A, [*] COVERING)` under the streaming aggregate.
 // TestFDB_SecondPlanIndexFreePreconditionStaysRetired pins that shape so the
 // claim stays checkable.
 //

@@ -129,10 +129,10 @@ func (s *designationScope) designated(ref *expressions.Reference, visiting map[*
 	return best
 }
 
-// compare is the designated five-tier REWRITING comparator — the tail of
-// Java's RewritingCostModel.compare(), with every property derived through
-// designated child finals (Java derives through the pruned single final;
-// see RewritingCostModelLess for the documented outerJoinCount omission):
+// compare is the designated REWRITING comparator — Java's
+// RewritingCostModel.compare(), with every property derived through designated
+// child finals (Java derives through the pruned single final):
+//  0. Fewer LEFT OUTER selects (Java's outerJoinCount)
 //  1. Fewer SelectExpressions
 //  2. Fewer TableFunctionExpressions
 //  3. Fewer normalized residual predicate conjuncts (CNF full-size)
@@ -142,6 +142,12 @@ func (s *designationScope) compare(a, b expressions.RelationalExpression, visiti
 	if visiting == nil {
 		visiting = map[*expressions.Reference]bool{}
 	}
+	outerA := s.exprCount(a, isLeftOuterJoinSelect, visiting)
+	outerB := s.exprCount(b, isLeftOuterJoinSelect, visiting)
+	if outerA != outerB {
+		return intCompare(outerA, outerB)
+	}
+
 	selectsA := s.exprCount(a, isSelectExpression, visiting)
 	selectsB := s.exprCount(b, isSelectExpression, visiting)
 	if selectsA != selectsB {
@@ -331,4 +337,11 @@ func (s *designationScope) deepHash(e expressions.RelationalExpression, visiting
 		})
 	}
 	return h
+}
+
+// isLeftOuterJoinSelect is Go's OuterJoinExpression: FULL OUTER has no
+// canonical form to prefer, so only LEFT is counted.
+func isLeftOuterJoinSelect(e expressions.RelationalExpression) bool {
+	sel, ok := e.(*expressions.SelectExpression)
+	return ok && sel.GetJoinType() == expressions.JoinLeftOuter
 }

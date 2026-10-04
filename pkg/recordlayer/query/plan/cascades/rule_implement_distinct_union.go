@@ -2,6 +2,9 @@ package cascades
 
 import (
 	"fmt"
+	"reflect"
+	"sort"
+	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
@@ -10,41 +13,35 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// ImplementDistinctUnionRule implements Distinct(Union(legs...)) as a
-// merge-sorted union plan. It matches LogicalDistinctExpression over
+// ImplementDistinctUnionRule implements Unique(Union(legs...)) as a
+// merge-sorted union plan. It matches LogicalUniqueExpression over
 // LogicalUnionExpression, finds compatible orderings across all union
 // legs, and creates a RecordQueryMergeSortUnionPlan with deduplication.
 //
-// Ports Java's ImplementDistinctUnionRule. The full algorithm:
-//  1. Get requested orderings from planner constraints
-//  2. For each cross-product combo of per-leg plan partitions:
-//     a. Verify common primary key across all legs
-//     b. Extract ordering from each leg's partition
-//     c. Incrementally merge orderings (bail on incompatibility)
-//     d. Verify PK values are covered by merged ordering
-//     e. Enumerate comparison keys satisfying the requested ordering
-//     f. Create MergeSortUnionPlan with comparison keys
+// Ports Java's ImplementDistinctUnionRule. Per requested ordering it merges
+// the leg partitions' orderings under the union merge, keeps the merges whose
+// legs' primary keys stay within the merged keys, and yields one merge-sort
+// union per satisfying comparison key. Where Java walks the cross product of
+// leg partitions, the merge states are enumerated leg by leg
+// (reachableUnionMergeStates).
 type ImplementDistinctUnionRule struct {
 	matcher matching.BindingMatcher
 }
 
-// NOTE: this matches LogicalDistinctExpression, the FULL-ROW dedup node, while
-// the OR-to-union rewrite now emits LogicalUniqueExpression — PK dedup, Java's
-// meaning. The ordered union alternative is therefore unreachable from the OR
-// path. Measured as already dead before that change (0 MergeSortUnion in the
-// plan-shape golden on BOTH sides), so nothing regressed — which is exactly why
-// it would otherwise go unnoticed. Tracked in TODO.md, "The ordered OR-union
-// alternative is structurally unreachable".
+// Java's rule hangs off its LogicalDistinctExpression, a primary-key dedup;
+// Go's node with that meaning is LogicalUniqueExpression, which
+// PredicateToLogicalUnionRule puts over its union. Go's LogicalDistinct is a
+// full-row dedup Java's Cascades has no node for.
 func NewImplementDistinctUnionRule() *ImplementDistinctUnionRule {
 	return &ImplementDistinctUnionRule{
-		matcher: NewExpressionMatcher[*expressions.LogicalDistinctExpression]("implement_distinct"),
+		matcher: NewExpressionMatcher[*expressions.LogicalUniqueExpression]("implement_distinct_union"),
 	}
 }
 
 func (r *ImplementDistinctUnionRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *ImplementDistinctUnionRule) OnMatch(call *ImplementationRuleCall) {
-	distinct := call.Bindings.Get(r.matcher).(*expressions.LogicalDistinctExpression)
+	distinct := call.Bindings.Get(r.matcher).(*expressions.LogicalUniqueExpression)
 
 	distinctQs := distinct.GetQuantifiers()
 	if len(distinctQs) != 1 {
@@ -103,90 +100,151 @@ func (r *ImplementDistinctUnionRule) OnMatch(call *ImplementationRuleCall) {
 				call.PushConstraint(ref, []*properties.RequestedOrdering{requestedOrdering})
 			}
 		}
-
-		iter := NewCrossProductIterator(legPartitions)
-		type mergeEntry struct {
-			merged  *properties.RichOrdering
-			current *properties.RichOrdering
-		}
-		var merge []mergeEntry
-
-		for iter.HasNext() {
-			combo := iter.Next()
-
-			pkValues := getCommonPK(combo)
-			if pkValues == nil {
-				continue
-			}
-
-			orderings := make([]*properties.RichOrdering, len(combo))
-			for i, partition := range combo {
-				exprs := partition.GetExpressions()
-				var ro *properties.RichOrdering
-				for _, expr := range exprs {
-					if ph, ok := expr.(physicalPlanExpression); ok {
-						ro = computeWrapperRichOrdering(ph)
-						break
-					}
-				}
-				if ro == nil {
-					o := partition.GetOrdering()
-					bm := make(map[values.Value][]properties.OrderingBinding)
-					for _, k := range o.Keys {
-						bm[k] = []properties.OrderingBinding{properties.SortedBinding(properties.ProvidedSortOrderAscending)}
-					}
-					ro = properties.NewRichOrdering(bm, o.Keys, properties.NotDistinct())
-				}
-				orderings[i] = ro
-			}
-			orderings = removeCommonEqualityBoundParts(orderings)
-
-			for i := 0; i < len(merge); i++ {
-				if !richOrderingEquals(orderings[i], merge[i].current) {
-					merge = merge[:i]
-					break
-				}
-			}
-
-			for len(merge) < len(orderings) {
-				if len(merge) == 0 {
-					merge = append(merge, mergeEntry{
-						merged:  properties.CreateUnionOrdering(orderings[0]),
-						current: orderings[0],
-					})
-				} else {
-					lastMerged := merge[len(merge)-1].merged
-					merged := properties.MergeOrderings(lastMerged, orderings[len(merge)])
-					if !isPrimaryKeyCompatibleWithOrdering(pkValues, merged) {
-						iter.Skip(len(merge))
-						break
-					}
-					merge = append(merge, mergeEntry{
-						merged:  merged,
-						current: orderings[len(merge)],
-					})
-				}
-			}
-
-			if len(merge) == len(orderings) {
-				mergedOrdering := merge[len(merge)-1].merged
-				r.yieldFromMergedOrdering(call, combo, mergedOrdering, requestedOrdering)
+		yielded := make(map[string]struct{})
+		for _, legs := range distinctUnionLegsByPrimaryKey(legPartitions) {
+			for _, state := range reachableUnionMergeStates(legs.orderings) {
+				r.yieldFromMergedOrdering(call, legs.partitions, legs.primaryKey,
+					state.merged, requestedOrdering, yielded)
 			}
 		}
 	}
 }
 
+// distinctUnionLegs is the union's legs restricted to the partitions sharing
+// one primary key, with each partition's ordering computed once.
+type distinctUnionLegs struct {
+	primaryKey []values.Value
+	partitions [][]*PlanPartition
+	orderings  [][]*properties.RichOrdering
+}
+
+func distinctUnionLegsByPrimaryKey(legPartitions [][]*PlanPartition) []distinctUnionLegs {
+	var result []distinctUnionLegs
+	for _, candidate := range legPartitions[0] {
+		pk := partitionPrimaryKey(candidate)
+		if len(pk) == 0 {
+			continue
+		}
+		seen := false
+		for _, legs := range result {
+			if mergeDistinctPrimaryKeysEqual(legs.primaryKey, pk) {
+				seen = true
+				break
+			}
+		}
+		if seen {
+			continue
+		}
+		legs := distinctUnionLegs{
+			primaryKey: pk,
+			partitions: make([][]*PlanPartition, len(legPartitions)),
+			orderings:  make([][]*properties.RichOrdering, len(legPartitions)),
+		}
+		complete := true
+		for i, partitions := range legPartitions {
+			for _, partition := range partitions {
+				if !mergeDistinctPrimaryKeysEqual(partitionPrimaryKey(partition), pk) {
+					continue
+				}
+				legs.partitions[i] = append(legs.partitions[i], partition)
+				legs.orderings[i] = append(legs.orderings[i], partitionRichOrdering(partition))
+			}
+			if len(legs.partitions[i]) == 0 {
+				complete = false
+				break
+			}
+		}
+		if complete {
+			result = append(result, legs)
+		}
+	}
+	return result
+}
+
+func partitionPrimaryKey(partition *PlanPartition) []values.Value {
+	pk, _ := partition.GetPartitionPropertyValue(properties.PropPrimaryKey).([]values.Value)
+	return pk
+}
+
+func partitionRichOrdering(partition *PlanPartition) *properties.RichOrdering {
+	for _, expr := range partition.GetExpressions() {
+		if ph, ok := expr.(physicalPlanExpression); ok {
+			return computeWrapperRichOrdering(ph)
+		}
+	}
+	o := partition.GetOrdering()
+	bm := make(map[values.Value][]properties.OrderingBinding)
+	for _, k := range o.Keys {
+		bm[k] = []properties.OrderingBinding{properties.SortedBinding(properties.ProvidedSortOrderAscending)}
+	}
+	return properties.NewRichOrdering(bm, o.Keys, properties.NotDistinct())
+}
+
+// unionMergeState is what a prefix of legs contributes to the rest of the
+// merge: the merged ordering and every merged leg's record identity, bound to
+// the union of their coordinates.
+type unionMergeState struct {
+	merged   *properties.RichOrdering
+	identity properties.CoordinateBoundClaim
+}
+
+func (s unionMergeState) equals(other unionMergeState) bool {
+	return richOrderingsEqual(s.merged, other.merged) &&
+		reflect.DeepEqual(s.merged.DistinctnessClaim(), other.merged.DistinctnessClaim()) &&
+		reflect.DeepEqual(s.identity, other.identity)
+}
+
+// reachableUnionMergeStates returns the distinct merged orderings Java's walk
+// over the cross product of leg partitions reaches. Java enumerates the cross
+// product and prunes a failing prefix with skip(); its successes still grow as
+// the product of each leg's compatible partitions. Two prefixes reaching an
+// equal state have the same completions, so this keeps one state per class
+// (the principle of optimality: each leg's plan is chosen per comparison key
+// afterwards, not per partition).
+func reachableUnionMergeStates(legOrderings [][]*properties.RichOrdering) []unionMergeState {
+	var frontier []unionMergeState
+	add := func(states []unionMergeState, state unionMergeState) []unionMergeState {
+		for _, existing := range states {
+			if existing.equals(state) {
+				return states
+			}
+		}
+		return append(states, state)
+	}
+	for _, ordering := range legOrderings[0] {
+		frontier = add(frontier, unionMergeState{
+			merged:   properties.CreateUnionOrdering(ordering),
+			identity: ordering.RecordIdentityClaim(),
+		})
+	}
+	for _, orderings := range legOrderings[1:] {
+		var next []unionMergeState
+		for _, state := range frontier {
+			for _, ordering := range orderings {
+				merged := properties.MergeOrderings(state.merged, ordering)
+				identity := properties.IntersectClaims(state.identity, ordering.RecordIdentityClaim())
+				// Java's isPrimaryKeyCompatibleWithOrdering, over every merged
+				// leg's own primary-key coordinates.
+				if !identity.Within(merged.GetKeys()) {
+					continue
+				}
+				next = add(next, unionMergeState{merged: merged, identity: identity})
+			}
+		}
+		frontier = next
+	}
+	return frontier
+}
+
 func (r *ImplementDistinctUnionRule) yieldFromMergedOrdering(
 	call *ImplementationRuleCall,
-	combo []*PlanPartition,
+	legPartitions [][]*PlanPartition,
+	commonPrimaryKey []values.Value,
 	mergedOrdering *properties.RichOrdering,
 	requestedOrdering *properties.RequestedOrdering,
+	yielded map[string]struct{},
 ) {
-	if len(combo) < 2 {
-		return
-	}
-	commonPrimaryKey := getCommonPK(combo)
-	if len(commonPrimaryKey) == 0 {
+	if len(legPartitions) < 2 || len(commonPrimaryKey) == 0 {
 		return
 	}
 
@@ -197,19 +255,12 @@ func (r *ImplementDistinctUnionRule) yieldFromMergedOrdering(
 		isReverse := ResolveComparisonDirection(comparisonParts)
 		comparisonParts = AdjustFixedBindings(comparisonParts, isReverse)
 
-		// The comparison keys ARE the per-leg ordering contract of the
-		// merge-front dedup: a leg whose EXECUTED order diverges from them
-		// mis-merges (duplicates through UNION distinct). The old shape
-		// trusted a partition-level first-member ordering ESTIMATE (a
-		// delegator's group hint, untethered to its baked child) and baked
-		// EVERY partition member as a plan child (a 2-leg union executing a
-		// 3+-way merge). Now: per leg, the cheapest member that
-		// STRUCTURALLY satisfies the comparison-key requirement
-		// (memberSatisfiesOrdering resolves delegators through their
-		// source groups), spine-PINNED (pinOrderedSpine — executable-plan
-		// verified) and baked as the ONE child over a FinalOf singleton.
-		// An unpinnable leg skips this comparison-key candidate — the
-		// in-memory-sort alternative still competes.
+		// The comparison keys are the per-leg ordering contract of the
+		// merge-front dedup: a leg whose executed order diverges from them
+		// mis-merges. Each leg is the cheapest member of any of its partitions
+		// that satisfies the requirement, spine-pinned and baked as the one
+		// child over a FinalOf singleton; a comparison key one leg cannot
+		// deliver is skipped and the in-memory-sort alternative still competes.
 		legReqParts := make([]properties.RequestedOrderingPart, len(comparisonParts))
 		for i, p := range comparisonParts {
 			so := properties.RequestedSortOrderAny
@@ -219,6 +270,11 @@ func (r *ImplementDistinctUnionRule) yieldFromMergedOrdering(
 			legReqParts[i] = properties.RequestedOrderingPart{Value: p.Value, SortOrder: so}
 		}
 		legReq := properties.NewRequestedOrdering(legReqParts, properties.DistinctnessPreserveDistinctness, false)
+		key := distinctUnionYieldKey(comparisonParts, isReverse)
+		if _, done := yielded[key]; done {
+			continue
+		}
+		yielded[key] = struct{}{}
 
 		tieBrokenLess := lessWithHashTieBreak(call.CostModel())
 		var childPlans []plans.RecordQueryPlan
@@ -226,44 +282,29 @@ func (r *ImplementDistinctUnionRule) yieldFromMergedOrdering(
 		commonRecordType := ""
 		haveCommonRecordType := false
 		ok := true
-		for _, partition := range combo {
-			var best expressions.RelationalExpression
-			for _, pe := range partition.GetExpressions() {
-				if !memberSatisfiesOrdering(pe, legReq) {
-					continue
+		for _, partitions := range legPartitions {
+			var candidates []expressions.RelationalExpression
+			for _, partition := range partitions {
+				for _, pe := range partition.GetExpressions() {
+					if memberSatisfiesOrdering(pe, legReq) {
+						candidates = append(candidates, pe)
+					}
 				}
-				if best == nil || tieBrokenLess(pe, best) {
-					best = pe
+			}
+			sort.SliceStable(candidates, func(i, j int) bool {
+				return tieBrokenLess(candidates[i], candidates[j])
+			})
+			var pinned expressions.RelationalExpression
+			var childPlan plans.RecordQueryPlan
+			recordType := ""
+			for _, candidate := range candidates {
+				pinned, childPlan, recordType = pinDistinctUnionLeg(
+					candidate, legReq, call.CostModel(), comparisonKeyValues, commonPrimaryKey)
+				if pinned != nil {
+					break
 				}
 			}
-			if best == nil {
-				ok = false
-				break
-			}
-			pinned := pinOrderedSpine(best, legReq, call.CostModel())
-			if pinned == nil {
-				ok = false
-				break
-			}
-			pp, isPhys := pinned.(physicalPlanExpression)
-			if !isPhys {
-				ok = false
-				break
-			}
-			childPlan := pp.GetRecordQueryPlan()
-			recordType, identityOK := mergeDistinctStoredRecordIdentity(
-				childPlan, commonPrimaryKey,
-			)
-			if !identityOK ||
-				!mergeDistinctLegProducesDistinctRecords(childPlan) ||
-				haveCommonRecordType && recordType != commonRecordType {
-				// The comparison key is a PHYSICAL record key. It is a valid
-				// SQL UNION-DISTINCT key only while every leg emits the same full
-				// stored record for that key. Row-shaping projections/maps and
-				// different record types can emit different SQL rows with the same
-				// propagated PK. Each leg must also be internally distinct: a merge
-				// cursor holds only one head per leg, so it cannot consume two
-				// consecutive equal rows from that same leg together.
+			if pinned == nil || haveCommonRecordType && recordType != commonRecordType {
 				ok = false
 				break
 			}
@@ -279,17 +320,9 @@ func (r *ImplementDistinctUnionRule) yieldFromMergedOrdering(
 
 		// One merge direction, raw tuple-encoded comparison Values: every part
 		// must agree with the resolved direction or the merge front compares one
-		// key the wrong way round. Fail closed, as the intersection plans do.
-		//
-		// UNREACHABLE TODAY, and kept as a fence rather than because a corpus
-		// query needs it: the union merge does not carry equality-bound keys
-		// into the merged ordering (measured — see
-		// TestDistinctUnionMergedOrderingCarriesNoEqualityBoundKeys), so every
-		// part here takes a leg's own uniform scan direction and AdjustFixedBindings
-		// normalizes the rest. Over the 2475-query corpus this declines nothing,
-		// while its in-union twin declines twice. It stays because the two rules
-		// share one algebra and the day the union path starts carrying such a key
-		// is the day a silent mis-merge would appear.
+		// key the wrong way round. A key the legs bind to different constants
+		// takes the request's direction, which can disagree with a leg's scan
+		// direction on the next key (TestDistinctUnionRuleRefusesMixedDirectionMerge).
 		comparisonKeys, natural := properties.NaturalComparisonKeyValues(comparisonParts, isReverse)
 		if !natural {
 			continue
@@ -314,6 +347,45 @@ func (r *ImplementDistinctUnionRule) yieldFromMergedOrdering(
 		}
 		call.YieldFinalExpression(mergePlan)
 	}
+}
+
+// pinDistinctUnionLeg pins member's ordered spine for legReq and proves the
+// leg can feed the merge: its record identity lies within the comparison key,
+// it emits the complete stored record that key identifies, and it emits each
+// record once. The comparison key is a PHYSICAL record key, a valid SQL
+// UNION-DISTINCT key only while every leg emits the same full stored record for
+// it; and the merge cursor holds one head per leg, so it cannot consume two
+// consecutive equal rows of one leg together.
+func pinDistinctUnionLeg(
+	member expressions.RelationalExpression,
+	legReq *properties.RequestedOrdering,
+	less func(a, b expressions.RelationalExpression) bool,
+	comparisonKeyValues []values.Value,
+	commonPrimaryKey []values.Value,
+) (expressions.RelationalExpression, plans.RecordQueryPlan, string) {
+	pinned := pinOrderedSpine(member, legReq, less)
+	pp, isPhys := pinned.(physicalPlanExpression)
+	if pinned == nil || !isPhys {
+		return nil, nil, ""
+	}
+	childPlan := pp.GetRecordQueryPlan()
+	if !computeWrapperRichOrdering(pp).RecordIdentityWithin(comparisonKeyValues) {
+		return nil, nil, ""
+	}
+	recordType, identityOK := mergeDistinctStoredRecordIdentity(childPlan, commonPrimaryKey)
+	if !identityOK || !mergeDistinctLegProducesDistinctRecords(childPlan) {
+		return nil, nil, ""
+	}
+	return pinned, childPlan, recordType
+}
+
+func distinctUnionYieldKey(parts []properties.ProvidedOrderingPart, reverse bool) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%t", reverse)
+	for _, part := range parts {
+		fmt.Fprintf(&b, "|%s %v", values.ExplainValue(part.Value), part.SortOrder)
+	}
+	return b.String()
 }
 
 const maxMergeDistinctIdentityDepth = 64
@@ -359,7 +431,7 @@ func mergeDistinctStoredRecordIdentityAtDepth(
 	switch p := plan.(type) {
 	case *plans.RecordQueryScanPlan:
 		return mergeDistinctLeafRecordIdentity(
-			p.GetRecordTypes(), p.GetPrimaryKeyValues(), commonPrimaryKey,
+			p.GetRecordTypes(), scanPrimaryKeyValues(p), commonPrimaryKey,
 			p.GetKeyComponentTypes(), len(p.GetPrimaryKeyValues()),
 		)
 
@@ -559,146 +631,6 @@ func everyMergeDistinctUnaryChildIsDistinct(
 		}
 	}
 	return foundPhysical
-}
-
-func richOrderingEquals(a, b *properties.RichOrdering) bool {
-	if a == b {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-	aKeys := a.GetKeys()
-	bKeys := b.GetKeys()
-	if len(aKeys) != len(bKeys) {
-		return false
-	}
-	for i := range aKeys {
-		if values.ExplainValue(aKeys[i]) != values.ExplainValue(bKeys[i]) {
-			return false
-		}
-	}
-	return true
-}
-
-func removeCommonEqualityBoundParts(orderings []*properties.RichOrdering) []*properties.RichOrdering {
-	if len(orderings) <= 1 {
-		return orderings
-	}
-
-	type fixedEntry struct {
-		key     string
-		binding string
-	}
-
-	var commonEntries map[fixedEntry]struct{}
-	for i, o := range orderings {
-		entries := make(map[fixedEntry]struct{})
-		bm := o.GetBindingMap()
-		for _, key := range o.GetKeys() {
-			keyStr := values.ExplainValue(key)
-			bindings := bm[key]
-			for _, b := range bindings {
-				if b.IsFixed() {
-					entries[fixedEntry{keyStr, explainBinding(b)}] = struct{}{}
-				}
-			}
-		}
-		if i == 0 {
-			commonEntries = entries
-		} else {
-			for e := range commonEntries {
-				if _, ok := entries[e]; !ok {
-					delete(commonEntries, e)
-				}
-			}
-		}
-	}
-
-	if len(commonEntries) == 0 {
-		return orderings
-	}
-
-	keysToRemove := make(map[string]struct{})
-	for e := range commonEntries {
-		keysToRemove[e.key] = struct{}{}
-	}
-
-	result := make([]*properties.RichOrdering, len(orderings))
-	for i, o := range orderings {
-		var filteredKeys []values.Value
-		filteredBindings := make(map[values.Value][]properties.OrderingBinding)
-		for _, key := range o.GetKeys() {
-			keyStr := values.ExplainValue(key)
-			if _, remove := keysToRemove[keyStr]; remove {
-				continue
-			}
-			filteredKeys = append(filteredKeys, key)
-			if bs, ok := o.GetBindingMap()[key]; ok {
-				filteredBindings[key] = bs
-			}
-		}
-		result[i] = properties.NewRichOrdering(filteredBindings, filteredKeys,
-			o.DistinctnessClaim())
-	}
-	return result
-}
-
-func explainBinding(b properties.OrderingBinding) string {
-	comp := b.GetComparison()
-	if comp == nil {
-		return "fixed"
-	}
-	if s, ok := comp.(fmt.Stringer); ok {
-		return s.String()
-	}
-	return "fixed"
-}
-
-func isPrimaryKeyCompatibleWithOrdering(pkValues []values.Value, ordering *properties.RichOrdering) bool {
-	if ordering == nil || len(ordering.GetKeys()) == 0 {
-		return len(pkValues) == 0
-	}
-	orderingKeySet := make(map[string]struct{}, len(ordering.GetKeys()))
-	for _, k := range ordering.GetKeys() {
-		orderingKeySet[values.ExplainValue(k)] = struct{}{}
-	}
-	for _, pkVal := range pkValues {
-		if _, ok := orderingKeySet[values.ExplainValue(pkVal)]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
-func getCommonPK(partitions []*PlanPartition) []values.Value {
-	if len(partitions) == 0 {
-		return nil
-	}
-	first := partitions[0].GetPartitionPropertyValue(properties.PropPrimaryKey)
-	if first == nil {
-		return nil
-	}
-	firstPK, ok := first.([]values.Value)
-	if !ok {
-		return nil
-	}
-	for _, p := range partitions[1:] {
-		other := p.GetPartitionPropertyValue(properties.PropPrimaryKey)
-		if other == nil {
-			return nil
-		}
-		otherPK, ok := other.([]values.Value)
-		if !ok || len(otherPK) != len(firstPK) {
-			return nil
-		}
-		for i := range firstPK {
-			if !values.ValuesStructurallyEqual(firstPK[i], otherPK[i]) {
-				return nil
-			}
-		}
-	}
-	return firstPK
 }
 
 var _ ImplementationRule = (*ImplementDistinctUnionRule)(nil)

@@ -703,8 +703,8 @@ func TestFDB_RFC106a_INJoinScanLimitAggregatesAcrossLegs(t *testing.T) {
 // of the InJoin test above — the exact "indexFetchCursor" mechanism named in
 // the original hang report (a many-legged IN-union over a SECONDARY index,
 // each leg's entries fetched by indexFetchCursor wrapping the index_scan.go
-// leaf cursor). ORDER BY on the IN column forces the InUnion (merge-sort)
-// plan shape instead of InJoin (verified by EXPLAIN).
+// leaf cursor). ORDER BY the primary key forces the InUnion (merge-sort) plan
+// shape: across IN values only the merge delivers it (verified by EXPLAIN).
 func TestFDB_RFC106a_INUnionScanLimitAggregatesAcrossLegs(t *testing.T) {
 	t.Parallel()
 	db := setupErrorTestDB(t, "/testdb_rfc106a_inunionscan", "inunionscan",
@@ -727,10 +727,10 @@ func TestFDB_RFC106a_INUnionScanLimitAggregatesAcrossLegs(t *testing.T) {
 	for i := range inList {
 		inList[i] = fmt.Sprintf("'p%d'", i)
 	}
-	q := "SELECT id FROM Item WHERE payload IN (" + strings.Join(inList, ",") + ") ORDER BY payload"
+	q := "SELECT id FROM Item WHERE payload IN (" + strings.Join(inList, ",") + ") ORDER BY id"
 
-	if plan := planExplainVia(t, ctx, db, q); !strings.Contains(plan, "InUnion(IndexScan(") {
-		t.Fatalf("want InUnion(IndexScan(...)) plan shape, got: %s", plan)
+	if plan := planExplainVia(t, ctx, db, q); !strings.Contains(plan, "InUnion(Map(IndexScan(PAYLOAD_IDX") {
+		t.Fatalf("want InUnion(Map(IndexScan(PAYLOAD_IDX...))) plan shape, got: %s", plan)
 	}
 
 	failConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {

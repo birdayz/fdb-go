@@ -695,16 +695,17 @@ func exactTypeOfKnownValue(value Value) (*exactType, error) {
 		return typed.resultType, nil
 	case *RecordConstructorValue:
 		return exactRecordConstructorType(typed)
-	case *ConstantValue, *BooleanValue, *NullValue, *ConstantObjectValue,
-		*ArithmeticValue, *CastValue, *PromoteValue, *ParameterValue,
-		*ScalarFunctionValue, *ExistsValue:
+	case nil:
+		return nil, resolutionError(FieldUnsupportedChild, "field.child", "nil record-constructor child")
+	default:
+		// Any other column is a scalar computed from its inputs (a function, a
+		// CARDINALITY, a comparison); its declared type is its exact type, and
+		// a type that does not snapshot fails here.
 		handle, err := SnapshotExactType(value.Type())
 		if err != nil {
 			return nil, err
 		}
 		return handle.(*exactType), nil
-	default:
-		return nil, resolutionError(FieldUnsupportedChild, "field.child", "unsupported record-constructor child Value kind")
 	}
 }
 

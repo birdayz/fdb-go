@@ -42,7 +42,9 @@ func TestLimitOverProjectionKeepsTheCoveringRewrite(t *testing.T) {
 	const sql = `SELECT id FROM rp WHERE region = 'eu' ORDER BY plan_name DESC LIMIT 1`
 
 	got := explainWithOptions(t, sql, limitCoveringDDL, nil)
-	const want = "Limit(1, Map(IndexScan(IDX_REGION_PLAN, [=, *] COVERING) REVERSE, {ID: _current.ID#0}))"
+	// The inner Map is the block projecting the ORDER BY key beside the list,
+	// the outer one drops it again: Java's `ISCAN | MAP (id, key AS _1) | MAP (id)`.
+	const want = "Limit(1, Map(Map(IndexScan(IDX_REGION_PLAN, [=, *] COVERING) REVERSE, {ID: _current.ID#0, _1: _current.PLAN_NAME#2}), {ID: _current.ID#0}))"
 	if got != want {
 		t.Errorf("plan = %q, want %q", got, want)
 	}

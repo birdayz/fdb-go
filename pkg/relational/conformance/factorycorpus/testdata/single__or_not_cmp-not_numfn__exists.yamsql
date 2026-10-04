@@ -182,8 +182,8 @@ test_block:
 # blessing: metamorphic-tlp-only
 # oracles: tlp
 # feature-vector: shape=single;idx=none;proj=n5;where=or(!cmp.eq,!numfn.le);exists=eq.bare;order=desc.nf+asc
-# plan-shape: 61b60c9799084488
-# dedup-key: eac795e00978d8b7
+# plan-shape: db850e81664751af
+# dedup-key: 438d8d29da4f2499
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 1892192 -seeds 1 -date 2026-08-11 -out <dir>
 ---
 schema_template: |-

@@ -97,7 +97,7 @@ func TestPredicatePushDown_SingleQuantifierPush(t *testing.T) {
 	)
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), outerRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -180,7 +180,7 @@ func TestPredicatePushDown_MultiQuantifierPartial(t *testing.T) {
 	)
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), outerRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -202,7 +202,7 @@ func TestPredicatePushDown_MultiQuantifierPartial(t *testing.T) {
 	if len(grouped.GetPredicates()) != 1 {
 		t.Fatal("same-value bounds were not coalesced")
 	}
-	if got := mustFireExpressionRule(t, NewPredicatePushDownRule(), expressions.InitialOf(grouped)); len(got) != 0 {
+	if got := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), expressions.InitialOf(grouped)); len(got) != 0 {
 		t.Fatalf("cross-correlated range was split during pushdown: %v", got)
 	}
 }
@@ -236,7 +236,7 @@ func TestPredicatePushDown_NoPushablePredicates(t *testing.T) {
 	)
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), outerRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), outerRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (no pushable predicates), got %d", len(yielded))
 	}
@@ -257,7 +257,7 @@ func TestPredicatePushDown_NoPredicates(t *testing.T) {
 	)
 	selRef := expressions.InitialOf(sel)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), selRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), selRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (no predicates), got %d", len(yielded))
 	}
@@ -302,7 +302,7 @@ func TestPredicatePushDown_PushWithExistentialSibling(t *testing.T) {
 	)
 	selRef := expressions.InitialOf(sel)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), selRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), selRef)
 	if len(yielded) == 0 {
 		t.Fatal("expected yields: predicate should push into ForEach child despite existential sibling")
 	}
@@ -340,7 +340,7 @@ func TestPredicatePushDown_ThroughSort(t *testing.T) {
 	)
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), outerRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -395,7 +395,7 @@ func TestPredicatePushDown_ThroughDistinct(t *testing.T) {
 	)
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), outerRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -439,7 +439,7 @@ func TestPredicatePushDown_ThroughUnion(t *testing.T) {
 	)
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), outerRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -500,7 +500,7 @@ func TestPredicatePushDown_IntoLogicalFilter(t *testing.T) {
 	)
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), outerRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -555,7 +555,7 @@ func TestPredicatePushDown_IntoSelectExpression(t *testing.T) {
 	)
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), outerRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -648,7 +648,7 @@ func TestPredicatePushDownRule_DoesNotPushIntoOuterJoinChild(t *testing.T) {
 	)
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), outerRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), outerRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields — a FULL OUTER child must stay opaque to predicate "+
 			"absorption (fusing WHERE into its own predicate list turns it into an "+
@@ -679,7 +679,7 @@ func TestPredicatePushDownRule_DoesNotPushAnOnConditionIntoAnOuterJoinLeg(t *tes
 		nil,
 		expressions.JoinLeftOuter,
 	))
-	if yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), expressions.InitialOf(join)); len(yielded) != 0 {
+	if yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), expressions.InitialOf(join)); len(yielded) != 0 {
 		t.Fatalf("an ON condition was pushed into an outer join's leg: %d yields", len(yielded))
 	}
 }
@@ -708,7 +708,7 @@ func TestPredicatePushDown_NullOnEmptySkipped(t *testing.T) {
 	)
 	selRef := expressions.InitialOf(sel)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), selRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), selRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (nullOnEmpty quantifier skipped), got %d", len(yielded))
 	}
@@ -737,7 +737,7 @@ func TestPredicatePushDown_StrictSingleSkipped(t *testing.T) {
 		[]predicates.QueryPredicate{pred},
 	)
 
-	yielded := mustFireExpressionRule(t,
+	yielded := mustFirePrunedFinalRule(t,
 		NewPredicatePushDownRule(), expressions.InitialOf(sel))
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (strictSingle quantifier skipped), got %d", len(yielded))
@@ -783,7 +783,7 @@ func TestPredicatePushDown_StrictSingleNestedChildFailsClosed(t *testing.T) {
 		[]predicates.QueryPredicate{parentPredicate},
 	)
 
-	yielded := mustFireExpressionRule(t,
+	yielded := mustFirePrunedFinalRule(t,
 		NewPredicatePushDownRule(), expressions.InitialOf(parent))
 	if len(yielded) != 0 {
 		t.Fatalf("nested strict-single child yielded %d predicate-push rewrite(s), want zero", len(yielded))
@@ -821,7 +821,7 @@ func TestPredicatePushDown_ThroughUnique(t *testing.T) {
 	)
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), outerRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -854,7 +854,7 @@ func TestPredicatePushDown_ThroughRequiredUniquePreservesMode(t *testing.T) {
 		[]predicates.QueryPredicate{pred},
 	)
 
-	yielded := mustFireExpressionRule(t,
+	yielded := mustFirePrunedFinalRule(t,
 		NewPredicatePushDownRule(),
 		expressions.InitialOf(outerSel),
 	)
@@ -922,7 +922,7 @@ func TestPredicatePushDown_UnsupportedChild(t *testing.T) {
 	)
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), outerRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), outerRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (unsupported child type), got %d", len(yielded))
 	}
@@ -1026,7 +1026,7 @@ func TestPredicatePushDownRule_PushMultiplePredicates(t *testing.T) {
 	higher := ppdSelectWithColumns(lowerQun, []string{"b"}, pred1, pred2)
 	higherRef := expressions.InitialOf(higher)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), higherRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), higherRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1069,7 +1069,7 @@ func TestPredicatePushDownRule_PushParameterPredicate(t *testing.T) {
 	higher := ppdSelectWithColumns(lowerQun, []string{"b"}, pred)
 	higherRef := expressions.InitialOf(higher)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), higherRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), higherRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1113,7 +1113,7 @@ func TestPredicatePushDownRule_PushFieldValuePredicate(t *testing.T) {
 	higher := ppdSelectWithColumns(lowerQun, []string{"a"}, pred)
 	higherRef := expressions.InitialOf(higher)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), higherRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), higherRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1159,7 +1159,7 @@ func TestPredicatePushDownRule_PushConstantValuePredicate(t *testing.T) {
 	higher := ppdSelectWithColumns(lowerQun, []string{"a", "b"}, pred)
 	higherRef := expressions.InitialOf(higher)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), higherRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), higherRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1205,7 +1205,7 @@ func TestPredicatePushDownRule_PushToExistingPredicates(t *testing.T) {
 	higher := ppdSelectWithColumns(lowerQun, []string{"a"}, pushedPred)
 	higherRef := expressions.InitialOf(higher)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), higherRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), higherRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1252,7 +1252,7 @@ func TestPredicatePushDownRule_PushOrPredicate(t *testing.T) {
 	higher := ppdSelectWithColumns(lowerQun, []string{"a", "b"}, orPred)
 	higherRef := expressions.InitialOf(higher)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), higherRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), higherRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1294,7 +1294,7 @@ func TestPredicatePushDownRule_PushIntoEmptyLogicalFilter(t *testing.T) {
 	sel := ppdSelectWithColumns(filterQun, []string{"c"}, pred)
 	selRef := expressions.InitialOf(sel)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), selRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), selRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1342,7 +1342,7 @@ func TestPredicatePushDownRule_PushMultipleToLogicalFilter(t *testing.T) {
 	sel := ppdSelectWithColumns(filterQun, []string{"b", "c"}, pred1, pred2)
 	selRef := expressions.InitialOf(sel)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), selRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), selRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1385,123 +1385,36 @@ func TestPredicatePushDownRule_DoNotPushNullCheckIntoNullOnEmpty(t *testing.T) {
 	higher := ppdSelectWithColumns(nullOnEmptyQun, []string{"a", "c"}, pred)
 	higherRef := expressions.InitialOf(higher)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), higherRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), higherRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (IS NULL + null-on-empty), got %d", len(yielded))
 	}
 }
 
-// --------------------------------------------------------------------------
-// Ported test: canPushDownToMultipleChildren
-// --------------------------------------------------------------------------
-
-// TestPredicatePushDownRule_PushToMultipleChildren ports Java's
-// canPushDownToMultipleChildren: when a Reference has multiple member
-// expressions that all accept a pushed predicate, all get the predicate.
-func TestPredicatePushDownRule_PushToMultipleChildren(t *testing.T) {
+// Java's rule binds a child whose pruned finals are a single expression
+// (expressions(only(...))); a reference still holding alternatives is not one.
+func TestPredicatePushDownRule_ChildWithSeveralFinalsIsNotPushed(t *testing.T) {
 	t.Parallel()
 
 	baseQun, _ := baseLeaf(t)
-
 	lower1 := ppdSelectWithColumns(baseQun, []string{"a", "b", "c"})
 	lower2 := ppdSelectWithColumns(baseQun, []string{"a", "b", "c"},
 		predicates.NewConstantPredicate(predicates.TriTrue))
-
-	// Create a Reference with two members.
 	lowerRef := expressions.InitialOf(lower1)
 	lowerRef.Insert(lower2)
 	lowerQun := expressions.ForEachQuantifier(lowerRef)
-
 	pred := ppdFieldPred(lowerQun, "a", predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42)))
-
 	higher := ppdSelectWithColumns(lowerQun, []string{"b", "c"}, pred)
-	higherRef := expressions.InitialOf(higher)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), higherRef)
-	if len(yielded) < 1 {
-		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
+	if yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), expressions.InitialOf(higher)); len(yielded) != 0 {
+		t.Fatalf("pushed into a child with two finals: %d yields", len(yielded))
 	}
 
-	result := yielded[0].(*expressions.SelectExpression)
-	if len(result.GetPredicates()) != 0 {
-		t.Errorf("expected 0 predicates on outer, got %d", len(result.GetPredicates()))
-	}
-
-	// The child Reference should have two members, each with the pushed predicate.
-	newChildRef := result.GetQuantifiers()[0].GetRangesOver()
-	members := newChildRef.AllMembers()
-	if len(members) < 2 {
-		t.Fatalf("expected at least 2 members in child Reference, got %d", len(members))
-	}
-	for i, m := range members {
-		sel, ok := m.(*expressions.SelectExpression)
-		if !ok {
-			t.Fatalf("member %d: expected SelectExpression, got %T", i, m)
-		}
-		// lower1 had 0 preds, lower2 had 1 (ConstantPredicate). After push,
-		// lower1 should have 1, lower2 should have 2.
-		if i == 0 && len(sel.GetPredicates()) != 1 {
-			t.Errorf("member 0: expected 1 predicate, got %d", len(sel.GetPredicates()))
-		}
-		if i == 1 && len(sel.GetPredicates()) != 2 {
-			t.Errorf("member 1: expected 2 predicates, got %d", len(sel.GetPredicates()))
-		}
-	}
-}
-
-// --------------------------------------------------------------------------
-// Ported test: canPushDownToSomeChildren
-// --------------------------------------------------------------------------
-
-// TestPredicatePushDownRule_PushToSomeChildren ports Java's
-// canPushDownToSomeChildren: when a Reference has multiple members and only
-// some accept the predicate (others are unsupported types), the result
-// contains only the accepting members.
-func TestPredicatePushDownRule_PushToSomeChildren(t *testing.T) {
-	t.Parallel()
-
-	// Second member: a SelectExpression (supported for push).
-	baseQun2, _ := baseLeaf(t)
-	selectAll := selectWithPreds(t, baseQun2)
-	// Both alternatives inhabit the same memo group, so the unsupported scan
-	// must flow exactly the row projected by selectAll.
-	scan := selectMergeScan(t)
-
-	baseRef := expressions.InitialOf(scan)
-	baseRef.Insert(selectAll)
-	baseQun := expressions.ForEachQuantifier(baseRef)
-
-	pred := ppdFieldPred(baseQun, "b", predicates.Comparison{
-		Type:          predicates.ComparisonEquals,
-		ParameterName: "p",
-	})
-
-	higher := ppdSelectWithColumns(baseQun, []string{"a", "c"}, pred)
-	higherRef := expressions.InitialOf(higher)
-
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), higherRef)
-	if len(yielded) < 1 {
-		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
-	}
-
-	result := yielded[0].(*expressions.SelectExpression)
-	if len(result.GetPredicates()) != 0 {
-		t.Errorf("expected 0 predicates on outer, got %d", len(result.GetPredicates()))
-	}
-
-	// The child Reference should contain only the SelectExpression member
-	// (the scan was unsupported and filtered out).
-	newChildRef := result.GetQuantifiers()[0].GetRangesOver()
-	members := newChildRef.AllMembers()
-	if len(members) != 1 {
-		t.Fatalf("expected 1 member (only supported child), got %d", len(members))
-	}
-	sel, ok := members[0].(*expressions.SelectExpression)
-	if !ok {
-		t.Fatalf("expected SelectExpression, got %T", members[0])
-	}
-	if len(sel.GetPredicates()) != 1 {
-		t.Errorf("expected 1 pushed predicate, got %d", len(sel.GetPredicates()))
+	single := expressions.ForEachQuantifier(expressions.InitialOf(lower1))
+	pred = ppdFieldPred(single, "a", predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42)))
+	higher = ppdSelectWithColumns(single, []string{"b", "c"}, pred)
+	if yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), expressions.InitialOf(higher)); len(yielded) != 1 {
+		t.Fatalf("control: a pruned child must take the push, got %d yields", len(yielded))
 	}
 }
 
@@ -1543,7 +1456,7 @@ func TestPredicatePushDownRule_DoesNotPushJoinCriteria(t *testing.T) {
 	)
 	joinRef := expressions.InitialOf(joinSel)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), joinRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), joinRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (join criteria not pushable), got %d", len(yielded))
 	}
@@ -1593,7 +1506,7 @@ func TestPredicatePushDownRule_DoesNotPushOrMixedJoin(t *testing.T) {
 	)
 	joinRef := expressions.InitialOf(joinSel)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), joinRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), joinRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (OR spans both join legs), got %d", len(yielded))
 	}
@@ -1656,31 +1569,25 @@ func TestPredicatePushDownRule_PartitionByJoinSource(t *testing.T) {
 	)
 	joinRef := expressions.InitialOf(joinSel)
 
-	// Go's rule fires once per quantifier and returns after the first
-	// quantifier that has pushable predicates. So we get one yield that
-	// pushes t.c=@1 into t's child.
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), joinRef)
-	if len(yielded) < 1 {
-		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
+	// One invocation pushes both single-leg predicates into their legs and
+	// leaves only the join predicate.
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), joinRef)
+	if len(yielded) != 1 {
+		t.Fatalf("expected 1 yield, got %d", len(yielded))
 	}
-
-	// The result should still have the join predicate and the tau predicate
-	// (the t-only predicate was pushed down).
 	result := yielded[0].(*expressions.SelectExpression)
-	if len(result.GetPredicates()) != 2 {
-		t.Fatalf("expected 2 remaining predicates (join + tau), got %d", len(result.GetPredicates()))
+	if len(result.GetPredicates()) != 1 {
+		t.Fatalf("expected only the join predicate to remain, got %d", len(result.GetPredicates()))
 	}
-
-	// Now fire the rule again on the result to push the tau predicate.
-	resultRef := expressions.InitialOf(result)
-	yielded2 := mustFireExpressionRule(t, NewPredicatePushDownRule(), resultRef)
-	if len(yielded2) < 1 {
-		t.Fatalf("second pass: expected at least 1 yield, got %d", len(yielded2))
-	}
-	result2 := yielded2[0].(*expressions.SelectExpression)
-	// Only the join predicate should remain.
-	if len(result2.GetPredicates()) != 1 {
-		t.Fatalf("second pass: expected 1 remaining predicate (join only), got %d", len(result2.GetPredicates()))
+	for i, q := range result.GetQuantifiers() {
+		finals := q.GetRangesOver().FinalMembers()
+		if len(finals) != 1 {
+			t.Fatalf("leg %d: expected one final member, got %d", i, len(finals))
+		}
+		leg, ok := finals[0].(*expressions.SelectExpression)
+		if !ok || len(leg.GetPredicates()) != 1 {
+			t.Fatalf("leg %d: expected its predicate pushed into its select, got %T", i, finals[0])
+		}
 	}
 }
 
@@ -1741,7 +1648,7 @@ func TestPredicatePushDownRule_RewritePredicatesOntoJoinSource(t *testing.T) {
 	outer := ppdSelectWithColumns(joinQun, []string{"b", "c1", "c2"}, pred1, pred2)
 	outerRef := expressions.InitialOf(outer)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), outerRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1805,7 +1712,7 @@ func TestPredicatePushDownRule_PushThroughExplodeNestedSelect(t *testing.T) {
 	)
 	topRef := expressions.InitialOf(topSel)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), topRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), topRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1856,7 +1763,7 @@ func TestPredicatePushDownRule_PushForEachPredicateWithExistentialSibling(t *tes
 	)
 	topRef := expressions.InitialOf(topSel)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), topRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), topRef)
 	if len(yielded) == 0 {
 		t.Fatal("expected yields: bPred should push into ForEach child despite existential sibling")
 	}
@@ -1890,7 +1797,7 @@ func TestPredicatePushDownRule_PushWithFieldRenames(t *testing.T) {
 	higher := ppdSelectWithColumns(lowerQun, []string{"y"}, pred1, pred2)
 	higherRef := expressions.InitialOf(higher)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), higherRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), higherRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1933,7 +1840,7 @@ func TestPredicatePushDownRule_RenameFieldComparison(t *testing.T) {
 	higher := ppdSelectWithColumns(lowerQun, []string{"x", "y", "z"}, pred)
 	higherRef := expressions.InitialOf(higher)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), higherRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), higherRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1994,7 +1901,7 @@ func TestPredicatePushDownRule_DoNotPushThroughGroupBy(t *testing.T) {
 	sel := ppdSelectWithColumns(groupByQun, []string{"b", "c", "SUM"}, pred)
 	selRef := expressions.InitialOf(sel)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), selRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), selRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (cannot push through GroupBy), got %d", len(yielded))
 	}
@@ -2030,7 +1937,7 @@ func TestPredicatePushDownRule_OneOfMultipleWithExistential(t *testing.T) {
 	)
 	selRef := expressions.InitialOf(sel)
 
-	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), selRef)
+	yielded := mustFirePrunedFinalRule(t, NewPredicatePushDownRule(), selRef)
 	if len(yielded) == 0 {
 		t.Fatal("expected yields: pred1 (a=42) should push into ForEach child despite existential sibling")
 	}

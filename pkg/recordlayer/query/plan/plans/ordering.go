@@ -55,7 +55,7 @@ import (
 // is decided by memo residency, not by a list kept here: computeWrapperRichOrdering
 // (cascades/plan_properties.go) dispatches to the rich form of ANY memo
 // expression that implements it, and every plan with a rich form in this
-// package — the six below and RecordQueryCoveringIndexPlan's, which
+// package — those below and RecordQueryCoveringIndexPlan's, which
 // delegates to the index scan's — also implements physicalPlanExpression
 // (GetRecordQueryPlan). The PK scan, the index scan and the vector scan are
 // memoized bare by the data-access rule (cascades/abstract_data_access_rule.go,
@@ -92,6 +92,10 @@ import (
 //     restates the keys it sorted BY, with the comparator. Its claim is true by
 //     construction and truncating it would delete the one plan that repairs
 //     the others.
+//
+//   - DOES NOT ASK: RecordQueryInJoinPlan. Its leading key is the IN value in
+//     the order its source was sorted with the comparator (sortInJoinValues),
+//     and the rest restates its inner's claim, which asked.
 //
 //   - DO NOT ASK, because a float cannot reach them:
 //     RecordQueryMergeSortUnionPlan, RecordQueryIntersectionPlan,
@@ -833,7 +837,7 @@ func (p *RecordQueryIndexPlan) HintOrdering() properties.Ordering {
 	columnNames, pkColumnNames := p.GetColumnNames(), p.GetPKColumnNames()
 	rev := p.IsReverse()
 	split := splitKeyOrder(p.GetScanComparisons(), columnNames,
-		TrimmedPKSuffix(columnNames, pkColumnNames), p.GetKeyComponentTypes(), p.GetFlowedType())
+		TrimmedPKSuffix(p.injectiveKeyColumnNames(), pkColumnNames), p.GetKeyComponentTypes(), p.GetFlowedType())
 	sorted := split.tail
 	if len(sorted) == 0 {
 		return properties.Ordering{}
@@ -842,7 +846,7 @@ func (p *RecordQueryIndexPlan) HintOrdering() properties.Ordering {
 	desc := make([]bool, 0, len(sorted))
 	nullsFirst := make([]bool, 0, len(sorted))
 	for j, col := range sorted {
-		key := orderingColumnOfName(p.GetResultValue(), p.GetFlowedType(), col)
+		key := p.orderingKeyOf(split.fixedLen+j, col)
 		if key == nil {
 			return properties.Ordering{}
 		}
@@ -1101,6 +1105,24 @@ func (p *RecordQueryIntersectionPlan) HintOrdering() properties.Ordering {
 // access path as unsatisfying and kept an in-memory sort over it.
 func (p *RecordQueryInUnionPlan) HintOrdering() properties.Ordering {
 	return mergeComparisonKeyOrdering(p.GetComparisonKeys(), p.IsReverse())
+}
+
+// HintRichOrdering: the merge dedups on its comparison key, so its output is
+// distinct over exactly those coordinates, whatever its legs claimed.
+func (p *RecordQueryInUnionPlan) HintRichOrdering() *properties.RichOrdering {
+	keys := p.GetComparisonKeys()
+	if len(keys) == 0 {
+		return properties.EmptyOrdering()
+	}
+	dir := properties.ProvidedSortOrderAscending
+	if p.IsReverse() {
+		dir = properties.ProvidedSortOrderDescending
+	}
+	bm := make(map[values.Value][]properties.OrderingBinding, len(keys))
+	for _, k := range keys {
+		bm[k] = []properties.OrderingBinding{properties.SortedBinding(dir)}
+	}
+	return properties.NewRichOrdering(bm, keys, properties.DistinctOverAllKeys())
 }
 
 // mergeComparisonKeyOrdering builds the provided ordering of a merge set
@@ -1484,15 +1506,70 @@ func (p *RecordQueryAggregateIndexPlan) HintRichOrdering() *properties.RichOrder
 	return properties.NewRichOrdering(bm, keys, properties.DistinctOverAllKeysIf(strictlySorted))
 }
 
-// --- unordered --------------------------------------------------------------
-
-// HintOrdering: an InJoin iterates IN-values one at a time. Each batch
-// preserves the inner scan's ordering, but the GLOBAL result ordering depends
-// on the IN-source order, not the inner scan. Claiming the inner's ordering
-// would let sort elimination remove a necessary ORDER BY.
+// HintOrdering is the plain projection of HintRichOrdering.
 func (p *RecordQueryInJoinPlan) HintOrdering() properties.Ordering {
-	return properties.Ordering{}
+	return p.HintRichOrdering().PlainOrdering()
 }
+
+// HintRichOrdering ports Java's OrderingProperty.visitInJoinPlan. The inner
+// runs once per IN value, so its own order holds only within one value: a
+// sorted source makes the IN value the leading sorted key, while an unsorted
+// one leaves only the inner's other equality-bound keys.
+func (p *RecordQueryInJoinPlan) HintRichOrdering() *properties.RichOrdering {
+	inner := richOrderingOf(p.innerQ.GetRangesOver())
+	inValue := inJoinValueForIn(inner, p.bindingAlias)
+	if inValue == nil || !p.sorted {
+		bm := make(map[values.Value][]properties.OrderingBinding)
+		var keys []values.Value
+		for _, k := range inner.GetKeys() {
+			if inValue != nil && values.ExplainValue(k) == values.ExplainValue(inValue) {
+				continue
+			}
+			var fixed []properties.OrderingBinding
+			for _, b := range inner.GetBindingMap()[k] {
+				if b.IsFixed() {
+					fixed = append(fixed, b)
+				}
+			}
+			if len(fixed) > 0 {
+				bm[k] = fixed
+				keys = append(keys, k)
+			}
+		}
+		return properties.NewRichOrdering(bm, keys, properties.NotDistinct())
+	}
+	dir := properties.ProvidedSortOrderAscending
+	if p.reverse {
+		dir = properties.ProvidedSortOrderDescending
+	}
+	outer := properties.NewRichOrdering(
+		map[values.Value][]properties.OrderingBinding{inValue: {properties.SortedBinding(dir)}},
+		[]values.Value{inValue}, properties.DistinctOverAllKeys())
+	filtered := inner.WithoutKeys(map[string]struct{}{values.ExplainValue(inValue): {}})
+	return properties.ConcatOrderings(outer, filtered)
+}
+
+// inJoinValueForIn is Java's findValueForIn: the inner ordering key whose
+// equality binding reads exactly the IN binding.
+func inJoinValueForIn(inner *properties.RichOrdering, inAlias values.CorrelationIdentifier) values.Value {
+	for _, k := range inner.GetKeys() {
+		for _, b := range inner.GetBindingMap()[k] {
+			if !b.IsFixed() {
+				continue
+			}
+			correlatedTo := b.ComparisonCorrelatedTo()
+			if len(correlatedTo) != 1 {
+				continue
+			}
+			if _, ok := correlatedTo[inAlias]; ok {
+				return k
+			}
+		}
+	}
+	return nil
+}
+
+// --- unordered --------------------------------------------------------------
 
 // HintOrdering: an unordered union interleaves its legs arbitrarily.
 func (p *RecordQueryUnorderedUnionPlan) HintOrdering() properties.Ordering {
@@ -1606,8 +1683,13 @@ func (p *RecordQueryScanPlan) HintRichOrdering() *properties.RichOrdering {
 	if len(keys) == 0 {
 		return properties.EmptyOrdering()
 	}
-	return properties.NewRichOrdering(bm, keys, properties.NotDistinct()).
+	ordering := properties.NewRichOrdering(bm, keys, properties.NotDistinct()).
 		WithStorageKeyComplete(storageComplete)
+	if storageComplete {
+		// A primary scan's whole storage key is the primary key.
+		ordering = ordering.WithRecordIdentity(keys)
+	}
+	return ordering
 }
 
 // HintRichOrdering returns the index scan's full ordering with bindings:
@@ -1652,7 +1734,7 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 	// satisfied only in the direction the scan runs. The loop below binds it
 	// accordingly; do not restate the vacuity argument here, it is refuted at
 	// EqualityBoundCoordinateClaimsOwnOrder.
-	split := splitKeyOrder(comps, columnNames, TrimmedPKSuffix(columnNames, pkColumnNames),
+	split := splitKeyOrder(comps, columnNames, TrimmedPKSuffix(p.injectiveKeyColumnNames(), pkColumnNames),
 		p.GetKeyComponentTypes(), p.GetFlowedType())
 	tail := split.tail
 	// The coordinates below are the whole storage key exactly when the tail was
@@ -1668,7 +1750,7 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 		properties.TupleKeyUniquenessMatchesLogicalEquality(
 			p.GetPrimaryKeyComponentTypes(), len(pkColumnNames))
 	for i, col := range columnNames[:split.fixedLen] {
-		key := orderingColumnOfName(p.GetResultValue(), p.GetFlowedType(), col)
+		key := p.orderingKeyOf(i, col)
 		if key == nil {
 			return properties.EmptyOrdering()
 		}
@@ -1699,7 +1781,7 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 		}
 	}
 	for j, col := range tail {
-		key := orderingColumnOfName(p.GetResultValue(), p.GetFlowedType(), col)
+		key := p.orderingKeyOf(split.fixedLen+j, col)
 		if key == nil {
 			return properties.EmptyOrdering()
 		}
@@ -1719,7 +1801,29 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 	// that exact plan strictly sorted after checking the coverage.
 	return properties.NewRichOrdering(bm, keys,
 		properties.DistinctOverAllKeysIf(p.IsStrictlySorted())).
-		WithStorageKeyComplete(storageComplete)
+		WithStorageKeyComplete(storageComplete).
+		WithRecordIdentity(p.recordIdentityCoordinates())
+}
+
+// recordIdentityCoordinates are the primary-key coordinates of a scan that
+// flows each record of one type at most once, or nil. The merge dedups compare
+// them with the sort comparator, so the key types must make that comparison
+// record identity.
+func (p *RecordQueryIndexPlan) recordIdentityCoordinates() []values.Value {
+	pkColumnNames := p.GetPKColumnNames()
+	if !p.ProducesDistinctRecords() || len(p.GetRecordTypes()) != 1 || len(pkColumnNames) == 0 ||
+		!properties.TupleKeyUniquenessMatchesLogicalEquality(p.GetPrimaryKeyComponentTypes(), len(pkColumnNames)) {
+		return nil
+	}
+	pk := make([]values.Value, 0, len(pkColumnNames))
+	for _, name := range pkColumnNames {
+		key := orderingColumnOfName(p.GetResultValue(), p.GetFlowedType(), name)
+		if key == nil {
+			return nil
+		}
+		pk = append(pk, key)
+	}
+	return pk
 }
 
 // HintRichOrdering: an HNSW probe returns its neighbours in distance order,
@@ -1742,6 +1846,34 @@ func (p *RecordQueryVectorIndexPlan) HintRichOrdering() *properties.RichOrdering
 // divergence in the property, not a live plan; the plans-level pin is what
 // holds it. Same source-reference shape as the fetch below.
 func (p *RecordQueryPredicatesFilterPlan) HintRichOrdering() *properties.RichOrdering {
+	return richOrderingOf(p.OrderingSourceRef())
+}
+
+// HintRichOrdering: these drop or pass rows without reordering them, so their
+// ordering, bindings and claims are the child's (Java's orderingFromSingleChild
+// for the filter, type-filter, distinct and default-on-empty plans; a limit is
+// Go's own and truncates the same way).
+func (p *RecordQueryFilterPlan) HintRichOrdering() *properties.RichOrdering {
+	return richOrderingOf(p.OrderingSourceRef())
+}
+
+func (p *RecordQueryTypeFilterPlan) HintRichOrdering() *properties.RichOrdering {
+	return richOrderingOf(p.OrderingSourceRef())
+}
+
+func (p *RecordQueryLimitPlan) HintRichOrdering() *properties.RichOrdering {
+	return richOrderingOf(p.OrderingSourceRef())
+}
+
+func (p *RecordQueryDistinctPlan) HintRichOrdering() *properties.RichOrdering {
+	return richOrderingOf(p.OrderingSourceRef())
+}
+
+func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) HintRichOrdering() *properties.RichOrdering {
+	return richOrderingOf(p.OrderingSourceRef())
+}
+
+func (p *RecordQueryDefaultOnEmptyPlan) HintRichOrdering() *properties.RichOrdering {
 	return richOrderingOf(p.OrderingSourceRef())
 }
 
@@ -1782,12 +1914,37 @@ func (p *RecordQueryFetchFromPartialRecordPlan) HintRichOrdering() *properties.R
 	return richOrderingOf(p.OrderingSourceRef())
 }
 
+// injectiveKeyColumnNames are the key columns whose entry determines their
+// field, so a primary-key column of the same name is not stored again: all but
+// a CARDINALITY column, as Java trims the primary key by key-expression
+// equality.
+func (p *RecordQueryIndexPlan) injectiveKeyColumnNames() []string {
+	names := make([]string, 0, len(p.GetColumnNames()))
+	for i, name := range p.GetColumnNames() {
+		if i < len(p.orderingColumns) && p.orderingColumns[i].Cardinality {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+// orderingKeyOf is the value key column i (or, past the key, the primary-key
+// column name) orders the scan by.
+func (p *RecordQueryIndexPlan) orderingKeyOf(i int, name string) values.Value {
+	key := orderingColumnOfName(p.GetResultValue(), p.GetFlowedType(), name)
+	if key != nil && i < len(p.GetColumnNames()) && i < len(p.orderingColumns) && p.orderingColumns[i].Cardinality {
+		return values.NewCardinalityValue(key)
+	}
+	return key
+}
+
 // columnSortOrder is the provided order of key column i under this scan's
 // direction; a reverse scan flips direction and null placement together.
 func (p *RecordQueryIndexPlan) columnSortOrder(i int) properties.ProvidedSortOrder {
 	order := properties.ProvidedSortOrderAscending
-	if i < len(p.orderingDirections) {
-		switch p.orderingDirections[i] {
+	if i < len(p.orderingColumns) {
+		switch p.orderingColumns[i].Direction {
 		case values.OrderedBytesAscNullsLast:
 			order = properties.ProvidedSortOrderAscendingNullsLast
 		case values.OrderedBytesDescNullsFirst:

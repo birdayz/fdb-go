@@ -330,6 +330,18 @@ func storedRecordAllChildren(children []plans.RecordQueryPlan) bool {
 	return len(children) > 0
 }
 
+// scanPrimaryKeyValues is a scan's primary-key property: the structural key an
+// index over the same type reports when the plan context supplied it, so scan
+// and index plans share one property as Java's (both translate the type's key
+// expression); otherwise the scan's own key coordinates, the only statement of
+// its key a context without record metadata has.
+func scanPrimaryKeyValues(p *plans.RecordQueryScanPlan) []values.Value {
+	if pk := p.GetCommonPrimaryKeyValues(); pk != nil {
+		return pk
+	}
+	return p.GetPrimaryKeyValues()
+}
+
 func computePrimaryKey(plan plans.RecordQueryPlan) any {
 	switch p := plan.(type) {
 	case *plans.RecordQueryVectorIndexPlan:
@@ -338,7 +350,7 @@ func computePrimaryKey(plan plans.RecordQueryPlan) any {
 		}
 		return nil
 	case *plans.RecordQueryScanPlan:
-		if pk := p.GetPrimaryKeyValues(); pk != nil {
+		if pk := scanPrimaryKeyValues(p); pk != nil {
 			return pk
 		}
 		return nil
@@ -433,7 +445,7 @@ func commonPKFromChildren(children []plans.RecordQueryPlan) any {
 
 func computeWrapperOrdering(w physicalPlanExpression) properties.Ordering {
 	if rich, isJoin := computeJoinRichOrdering(w); isJoin {
-		return plainOrderingFromRich(rich)
+		return rich.PlainOrdering()
 	}
 	if hinter, ok := w.(properties.OrderingHinter); ok {
 		return hinter.HintOrdering()
@@ -632,42 +644,6 @@ func exactFinalPhysicalMember(ref *expressions.Reference) (physicalPlanExpressio
 	}
 	ph, ok := finals[0].(physicalPlanExpression)
 	return ph, ok && ph.GetRecordQueryPlan() != nil
-}
-
-// plainOrderingFromRich is the partition-key projection of a rich ordering.
-// Fixed keys do not consume a sort position; directional bindings retain both
-// direction and counterflow NULL placement. Sort satisfaction itself still
-// uses the full RichOrdering.
-func plainOrderingFromRich(rich *properties.RichOrdering) properties.Ordering {
-	if rich == nil {
-		return properties.Ordering{}
-	}
-	var (
-		keys       []values.Value
-		descending []bool
-		nullsFirst []bool
-	)
-	for _, key := range rich.GetKeys() {
-		sortOrder := properties.SortOrderOf(rich.GetBindingMap()[key])
-		if !sortOrder.IsDirectional() {
-			continue
-		}
-		keys = append(keys, key)
-		desc := sortOrder.IsAnyDescending()
-		descending = append(descending, desc)
-		nullsFirst = append(nullsFirst,
-			sortOrder == properties.ProvidedSortOrderAscending ||
-				sortOrder == properties.ProvidedSortOrderDescendingNullsFirst)
-	}
-	if len(keys) == 0 {
-		return properties.Ordering{}
-	}
-	return properties.Ordering{
-		IsKnown:    true,
-		Keys:       keys,
-		Descending: descending,
-		NullsFirst: nullsFirst,
-	}
 }
 
 // computeRefPlanProperties computes and stores plan properties for all

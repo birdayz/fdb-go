@@ -26,6 +26,11 @@ type RichOrdering struct {
 	// that reshapes an ordering has no way to know, so it must not inherit the
 	// claim by omission.
 	storageComplete CoordinateBoundClaim
+	// recordIdentity states that its coordinates are the primary key of the
+	// one stored record each row came from, and that no record flows twice.
+	// Unlike a per-stream distinctness claim it holds across every binding of
+	// the stream's correlations, because a record has one primary key.
+	recordIdentity CoordinateBoundClaim
 }
 
 // NewRichOrdering creates a new ordering from bindings, key sequence,
@@ -122,6 +127,35 @@ func (o *RichOrdering) ValueForKey(key string) values.Value {
 	return o.keyLookup[key]
 }
 
+// PlainOrdering is the partition-key projection of a rich ordering. Fixed keys
+// do not consume a sort position; directional bindings retain both direction
+// and counterflow NULL placement. Sort satisfaction itself still uses the full
+// RichOrdering.
+func (o *RichOrdering) PlainOrdering() Ordering {
+	if o == nil {
+		return Ordering{}
+	}
+	var (
+		keys       []values.Value
+		descending []bool
+		nullsFirst []bool
+	)
+	for _, key := range o.keys {
+		sortOrder := SortOrderOf(o.bindingMap[key])
+		if !sortOrder.IsDirectional() {
+			continue
+		}
+		keys = append(keys, key)
+		descending = append(descending, sortOrder.IsAnyDescending())
+		nullsFirst = append(nullsFirst,
+			sortOrder == ProvidedSortOrderAscending || sortOrder == ProvidedSortOrderDescendingNullsFirst)
+	}
+	if len(keys) == 0 {
+		return Ordering{}
+	}
+	return Ordering{IsKnown: true, Keys: keys, Descending: descending, NullsFirst: nullsFirst}
+}
+
 // IsDistinct returns whether the ordering guarantees distinct output — that
 // is, whether its carried claim still holds over the coordinates it actually
 // has. A claim proved over a longer key set does not answer for a reduced one.
@@ -180,6 +214,72 @@ func (o *RichOrdering) StorageKeyIsComplete() bool {
 		return false
 	}
 	return o.storageComplete.holdsOver(o.keyLookup)
+}
+
+// WithRecordIdentity stamps the record-identity claim over pk, the producer's
+// primary-key coordinates. Every one of them must be a coordinate of this
+// ordering, or nothing is claimed.
+func (o *RichOrdering) WithRecordIdentity(pk []values.Value) *RichOrdering {
+	if o == nil {
+		return nil
+	}
+	stamped := *o
+	stamped.recordIdentity = NotDistinct()
+	if len(pk) == 0 {
+		return &stamped
+	}
+	over := make([]string, 0, len(pk))
+	for _, k := range pk {
+		s := values.ExplainValue(k)
+		if _, present := o.keyLookup[s]; !present {
+			return &stamped
+		}
+		over = append(over, s)
+	}
+	stamped.recordIdentity = CoordinateBoundClaim{claimed: true, over: sortedUniqueKeys(over)}
+	return &stamped
+}
+
+// RecordIdentityClaim returns the record-identity claim when it still holds
+// over this ordering's coordinates, for a consumer that folds several legs'
+// identities together (IntersectClaims) before checking them against a key.
+func (o *RichOrdering) RecordIdentityClaim() CoordinateBoundClaim {
+	if o == nil || !o.recordIdentity.holdsOver(o.keyLookup) {
+		return NotDistinct()
+	}
+	return o.recordIdentity
+}
+
+// RecordIdentityWithin reports whether the record-identity claim holds and its
+// primary-key coordinates are all among keys.
+func (o *RichOrdering) RecordIdentityWithin(keys []values.Value) bool {
+	if o == nil || !o.recordIdentity.holdsOver(o.keyLookup) {
+		return false
+	}
+	within := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		within[values.ExplainValue(k)] = struct{}{}
+	}
+	return o.recordIdentity.coordinatesWithin(within)
+}
+
+// RowsIdentifiedBy reports whether equal values of keys can only come from the
+// same row: a distinctness, storage-key or record-identity claim still holds
+// and every coordinate it was proved over is among keys.
+func (o *RichOrdering) RowsIdentifiedBy(keys []values.Value) bool {
+	if o == nil {
+		return false
+	}
+	within := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		within[values.ExplainValue(k)] = struct{}{}
+	}
+	for _, claim := range []CoordinateBoundClaim{o.distinct, o.storageComplete, o.recordIdentity} {
+		if claim.holdsOver(o.keyLookup) && claim.coordinatesWithin(within) {
+			return true
+		}
+	}
+	return false
 }
 
 // GetEqualityBoundValues returns the set of values that have at least
@@ -1060,6 +1160,7 @@ func (o *RichOrdering) translateKeysWithOverrides(
 	translated := NewRichOrderingWithDeps(
 		newBM, newKeys, mappedSet.DependencyMap(), o.distinct.translate(survived))
 	translated.storageComplete = o.storageComplete.translate(survived)
+	translated.recordIdentity = o.recordIdentity.translate(survived)
 	return translated
 }
 
@@ -1236,10 +1337,14 @@ func mergeOrderings(
 	for !leftES.IsEmpty() && !rightES.IsEmpty() {
 		leftElems := leftES.EligibleElements()
 		rightElems := rightES.EligibleElements()
+		// The merged key sequence follows the inputs' set order, never map
+		// iteration order.
+		leftOrdered := leftES.EligibleElementsInOrder()
+		rightOrdered := rightES.EligibleElementsInOrder()
 
 		var intersected []string
-		for le := range leftElems {
-			for re := range rightElems {
+		for _, le := range leftOrdered {
+			for _, re := range rightOrdered {
 				if le == re {
 					lv := a.keyLookup[le]
 					rv := b.keyLookup[re]
@@ -1256,7 +1361,7 @@ func mergeOrderings(
 			}
 		}
 
-		for le := range leftElems {
+		for _, le := range leftOrdered {
 			if _, inRight := rightElems[le]; !inRight {
 				lv := a.keyLookup[le]
 				combined := combine(a.bindingMap[lv], nil)
@@ -1265,7 +1370,7 @@ func mergeOrderings(
 				}
 			}
 		}
-		for re := range rightElems {
+		for _, re := range rightOrdered {
 			if _, inLeft := leftElems[re]; !inLeft {
 				rv := b.keyLookup[re]
 				combined := combine(nil, b.bindingMap[rv])

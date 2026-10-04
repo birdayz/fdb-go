@@ -6,10 +6,11 @@
 # O(N) for a full scan + filter.
 #
 # Which per-value operator wins is driven by the requested ordering. With
-# no ORDER BY the planner picks InJoin; with an ORDER BY the ordered
-# IN-UNION merge across the per-value streams PROVIDES that order, so it
-# beats InJoin plus an enforcer sort (Java's RecordQueryInUnionPlan is the
-# ordered-IN plan; InJoin provides no cross-value order).
+# no ORDER BY the planner picks InJoin. An ORDER BY led by the IN column is
+# served by an InJoin over its values sorted in that direction (Java's
+# OrderingProperty.visitInJoinPlan), which the cost model prefers, as Java's
+# does; an ORDER BY another column needs the IN-UNION merge across the
+# per-value streams, the only operator that orders across values.
 #
 # The plan_contains assertions verify the optimization fires.
 name: in_list_index_plan
@@ -36,7 +37,7 @@ setup:
 tests:
   # IN-list on indexed column with small list, ORDER BY id — ordered IN-UNION
   - query: SELECT id, category FROM items WHERE category IN ('books', 'electronics') ORDER BY id
-    plan_contains: "InUnion(IndexScan(IDX_CATEGORY, [=]), bindings=1, ASC)"
+    plan_contains: "InUnion(Map(IndexScan(IDX_CATEGORY, [=] COVERING), {ID: _current.ID#0, CATEGORY: _current.CATEGORY#1}), bindings=1, ASC)"
     rows:
       - [1, 'books']
       - [2, 'books']
@@ -52,20 +53,17 @@ tests:
 
   # IN-list on integer indexed column, ORDER BY id — ordered IN-UNION
   - query: SELECT id, name FROM items WHERE price IN (25, 45, 120) ORDER BY id
-    plan_contains: "InUnion(IndexScan(IDX_PRICE, [=]), bindings=1, ASC)"
+    plan_contains: "InUnion(Map(IndexScan(IDX_PRICE, [=]), {ID: _current.ID#0, NAME: _current.NAME#2}), bindings=1, ASC)"
     rows:
       - [1, 'Go Programming']
       - [3, 'Keyboard']
       - [5, 'Shirt']
 
-  # IN-list on PK column (should use PK index probe)
-  # ORDER BY over IN plans as an IN-UNION: the merge across per-value
-  # streams PROVIDES the requested order (Java's RecordQueryInUnionPlan is
-  # the ordered-IN plan — InJoin provides no cross-value order and would
-  # need an enforcer sort). The leg-pinned in-union rule (RFC-181 P0.3)
-  # fires for this shape now that leg satisfaction resolves structurally.
+  # IN-list on PK column (should use PK index probe). ORDER BY the IN column
+  # itself: the InJoin with sorted bindings provides the order, no sort.
   - query: SELECT id, name FROM items WHERE id IN (2, 5, 7) ORDER BY id
-    plan_contains: InUnion
+    plan_contains: "InJoin(Map(Scan(ITEMS, [=]), {ID: _current.ID#0, NAME: _current.NAME#2}), binding ASC)"
+    plan_not_contains: InMemorySort
     rows:
       - [2, 'Algorithms']
       - [5, 'Shirt']

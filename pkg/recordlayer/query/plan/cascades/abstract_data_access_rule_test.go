@@ -530,6 +530,40 @@ func TestPrepareMatchesAndCompensations_SingleMatch(t *testing.T) {
 	}
 }
 
+// TestPrepareMatchesAndCompensations_UnrestrictedScanNeedsAnOrder pins the
+// Go-only pruning: a match binding no search argument is realized only for a
+// request it orders, and a PRESERVE request (the top level's unsorted sort)
+// orders nothing.
+func TestPrepareMatchesAndCompensations_UnrestrictedScanNeedsAnOrder(t *testing.T) {
+	t.Parallel()
+
+	pm := makeDataAccessTestPartialMatch("unrestricted", 0, &testPlan{name: "full_scan"})
+	if hasRestrictedScan(pm) {
+		t.Fatal("fixture binds a search argument")
+	}
+	if accesses := PrepareMatchesAndCompensations(
+		[]PartialMatch{pm},
+		[]*properties.RequestedOrdering{properties.PreserveOrdering()},
+		EmptyPlanContext(),
+	); len(accesses) != 0 {
+		t.Fatalf("PRESERVE realized %d unrestricted accesses, want 0", len(accesses))
+	}
+	byID := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: dataAccessTestKey("ID"), SortOrder: properties.RequestedSortOrderAscending},
+		},
+		properties.DistinctnessNotDistinct,
+		false,
+	)
+	if accesses := PrepareMatchesAndCompensations(
+		[]PartialMatch{pm},
+		[]*properties.RequestedOrdering{properties.PreserveOrdering(), byID},
+		EmptyPlanContext(),
+	); len(accesses) != 1 {
+		t.Fatalf("an order the scan provides realized %d accesses, want 1", len(accesses))
+	}
+}
+
 func TestPrepareMatchesAndCompensations_TranslatesRequestedOrderingAtTop(
 	t *testing.T,
 ) {

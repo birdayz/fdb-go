@@ -89,9 +89,21 @@ type PrimaryScanMatchCandidate struct {
 	// baseType is the record type flowing through the scan.
 	baseType values.Type
 
+	// commonPrimaryKey is the structural primary key the scan plan reports
+	// (RecordQueryScanPlan.WithCommonPrimaryKey), or nil.
+	commonPrimaryKey []values.Value
 	// primaryKeyValues is computed lazily — the PK columns as Value objects.
 	primaryKeyValues     []values.Value
 	primaryKeyValuesOnce sync.Once
+}
+
+// WithCommonPrimaryKey sets the structural primary key the scan plan reports.
+func (c *PrimaryScanMatchCandidate) WithCommonPrimaryKey(pk []values.Value) *PrimaryScanMatchCandidate {
+	c.commonPrimaryKey = append([]values.Value(nil), pk...)
+	if pk == nil {
+		c.commonPrimaryKey = nil
+	}
+	return c
 }
 
 // NewPrimaryScanMatchCandidate constructs a primary-scan match candidate.
@@ -398,6 +410,9 @@ func (c *PrimaryScanMatchCandidate) ToScanPlan(
 	// Attach primary key values if available.
 	if pkVals := c.GetPrimaryKeyValues(); len(pkVals) > 0 {
 		scanPlan = scanPlan.WithPrimaryKey(pkVals)
+	}
+	if c.commonPrimaryKey != nil {
+		scanPlan = scanPlan.WithCommonPrimaryKey(c.commonPrimaryKey)
 	}
 	// Physical key types govern both bound probes and the ordering of an
 	// entirely unbound primary scan. Stamp them independently of whether a

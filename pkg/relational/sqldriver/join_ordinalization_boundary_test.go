@@ -394,7 +394,8 @@ func TestFDB_GroupByHavingOverOrdinalJoin(t *testing.T) {
 			t.Errorf("rows = %v, want %v", got, want)
 		}
 		plan := pinExplain(t, db, ctx, q)
-		for _, frag := range []string{"InMemorySort([_current.COUNT(C.ID)#1 DESC", "StreamingAgg(keys=[_current.ID#0]"} {
+		// The sort reads the projected COUNT column of the block.
+		for _, frag := range []string{"InMemorySort([_current._1#1 DESC", "_1: _current.COUNT(C.ID)#1", "StreamingAgg(keys=[_current.ID#0]"} {
 			if !strings.Contains(plan, frag) {
 				t.Errorf("plan lost %q:\n%s", frag, plan)
 			}
@@ -402,19 +403,17 @@ func TestFDB_GroupByHavingOverOrdinalJoin(t *testing.T) {
 	})
 	t.Run("order_by_limit_over_gated_join", func(t *testing.T) {
 		// The sort-key-over-ordinal-join axis: sort keys from BOTH legs
-		// (a.id, c.id) over the gated join's merged row, plus LIMIT. The two
-		// keys share the bare name ID and are told apart by their ORDINALS
-		// (#0 and #2) — the qualifier is not what separates them, which is
-		// the whole point of the ordinal identity. Two keys collapsing onto
-		// one ordinal is the defect this fragment catches. Row ORDER is
-		// asserted (not sorted away).
+		// (a.id, c.id) over the gated join's merged row, plus LIMIT. The sort
+		// reads the block's projected columns, the two keys at ORDINALS #0
+		// and #1. Two keys collapsing onto one ordinal is the defect this
+		// fragment catches. Row ORDER is asserted (not sorted away).
 		q := "SELECT a.id, c.id, c.cw FROM a JOIN c ON c.a_id = a.id ORDER BY a.id DESC, c.id DESC LIMIT 3"
 		got := pinRows(t, db, ctx, q)
 		if want := []string{"3|103|10", "2|102|9", "1|101|8"}; !eqStrSlices(got, want) {
 			t.Errorf("rows = %v, want %v (in order)", got, want)
 		}
 		plan := pinExplain(t, db, ctx, q)
-		for _, frag := range []string{"Limit(3", "InMemorySort([_current.ID#0 DESC, _current.ID#2 DESC]", "FlatMap(outer="} {
+		for _, frag := range []string{"Limit(3", "InMemorySort([_current.A.ID#0 DESC, _current.C.ID#1 DESC]", "FlatMap(outer="} {
 			if !strings.Contains(plan, frag) {
 				t.Errorf("plan lost %q:\n%s", frag, plan)
 			}

@@ -82,7 +82,6 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewSortMergeRule(),
 		NewSortDedupKeysRule(),
 		NewSortConstantKeysElimRule(),
-		NewUnsortedSortElimRule(),
 		// PushOrderingThroughGroupByRule REMOVED (D-2): moved to PLANNING
 		// phase as PushRequestedOrderingThroughGroupByRule (DefaultImplementationRules).
 		// PushOrderingThroughFilterRule REMOVED (D-3): moved to PLANNING
@@ -130,18 +129,16 @@ func DefaultExpressionRules() []ExpressionRule {
 		// embedded.TestVectorPlan_ExplicitLimitEqualToRankStillFolds.
 		NewPushLimitThroughUnionRule(),
 		NewNoOpLimitElimRule(),
-		NewSelectMergeRule(),
 		// Join-order enumeration (PartitionSelectRule / PartitionBinarySelectRule)
 		// is PLANNING-only — see PlanningExplorationRules, matching Java's
 		// PlanningRuleSet (the RewritingRuleSet is normalization only). REWRITING
 		// normalizes to the canonical flat N-quantifier SelectExpression
-		// (SelectMergeRule); since no partitioning runs here, every member promoted
+		// (SelectMergeRule, a REWRITING implementation rule over finals — see
+		// RewritingImplementationRules); since no partitioning runs here, every member promoted
 		// to PLANNING is flat, so PartitionSelectRule re-enumerates all join
 		// associativities in PLANNING where the stats-aware PlanningCostModel
 		// (RFC-041) picks the cheapest order. Firing them in REWRITING locked the
 		// FROM-order associativity at the phase boundary (RFC-042).
-		NewDecorrelateValuesRule(),
-		NewRemoveRangeOneRule(),
 		NewEliminateNullOnEmptyRule(),
 		// Index-candidate matching (MatchLeafRule / MatchIntermediateRule) is
 		// PLANNING-only — see PlanningExplorationRules, matching Java's
@@ -167,17 +164,9 @@ func PlanningExplorationRules() []ExpressionRule {
 		NewInComparisonToExplodeRule(),
 		NewSplitSelectExtractIndependentQuantifiersRule(),
 		NewEliminateNullOnEmptyRule(),
-		// Re-fire the LEFT-OUTER canonicalizer in PLANNING so a LEFT OUTER that only
-		// surfaces here is still rewritten to the correlated null-supplying form the
-		// FlatMap path consumes. This is a Go-only rule (Java's PlanningRuleSet has no
-		// RewriteOuterJoinRule) and an INTENTIONAL divergence: unlike Java, Go keeps the
-		// un-rewritten outer-join SelectExpression as the REWRITING prune survivor (it is
-		// directly implementable as a materialized RecordQueryNestedLoopJoinPlan, RFC-152 —
-		// see RewritingCostModelLess), so PLANNING re-derives the rewritten form here to
-		// keep the correlated-FlatMap alternative available alongside the materialized NLJ.
-		// (Java can drop it because outerJoinCount forces the rewritten form to survive the
-		// prune — a guard Go must NOT adopt, or it would suppress the materialized NLJ.)
-		NewRewriteOuterJoinRule(),
+		// Go-only: the materialized outer join (RFC-152) competes with Java's
+		// correlated FlatMap, re-formed from the canonical form REWRITING leaves.
+		NewOuterJoinMaterializationRule(),
 		NewPartitionSelectRule(),
 		NewPartitionBinarySelectRule(),
 		// Match candidates (index selection) in PLANNING as well as REWRITING.
@@ -368,9 +357,9 @@ func GoExtensionImplementationRules() []ImplementationRule {
 
 // RewritingRules returns the exploration rules for the REWRITING phase.
 // Mirrors Java's RewritingRuleSet.EXPLORATION_RULES:
-//   - QueryPredicateSimplificationRule: constant-fold predicate values
-//   - PredicatePushDownRule: push predicates into child quantifiers
-//   - DecorrelateValuesRule: inline constant value boxes
+//   - DecorrelateValuesRule, then QueryPredicateSimplificationRule when it
+//     made no progress: inline constant value boxes, constant-fold predicates
+//   - RewriteOuterJoinRule
 //
 // These rules are NOT part of DefaultExpressionRules — they target the
 // REWRITING phase, which runs before the main PLANNING phase to
@@ -378,14 +367,26 @@ func GoExtensionImplementationRules() []ImplementationRule {
 // as needed.
 func RewritingRules() []ExpressionRule {
 	return []ExpressionRule{
-		NewQueryPredicateSimplificationRule(),
-		NewPredicatePushDownRule(),
-		NewDecorrelateValuesRule(),
+		// Decorrelation first: it enables the simplification, which runs only
+		// when decorrelation made no progress.
+		newConditionalExpressionRule(NewDecorrelateValuesRule(), NewQueryPredicateSimplificationRule()),
 		// Canonicalize LEFT OUTER joins away before planning (Java's
 		// RewritingRuleSet runs RewriteOuterJoinRule): push ON-predicates below the
 		// null-extension boundary into a correlated null-supplying SUBSEL so the
 		// data-access FlatMap path can plan a correlated LEFT-OUTER join.
 		NewRewriteOuterJoinRule(),
+	}
+}
+
+// RewritingImplementationRules returns the REWRITING implementation rules,
+// Java's RewritingRuleSet.IMPLEMENTATION_RULES: SelectMergeRule, then
+// PredicatePushDownRule when the merge made no progress, over a final
+// expression with pruned inputs; FinalizeExpressionsRule turns exploratory
+// members into finals.
+func RewritingImplementationRules() []ImplementationRule {
+	return []ImplementationRule{
+		newConditionalImplementationRule(NewSelectMergeRule(), NewPredicatePushDownRule()),
+		NewFinalizeExpressionsRule(),
 	}
 }
 
@@ -398,19 +399,30 @@ func RewritingRules() []ExpressionRule {
 // Java's set is {QueryPredicateSimplificationRule, PredicatePushDownRule,
 // DecorrelateValuesRule, RewriteOuterJoinRule, SelectMergeRule}; all five
 // exist in Go under the same names, so the disabled set is name-identical.
-// SelectMergeRule is in Go's DefaultExpressionRules rather than
-// RewritingRules (Go's REWRITING phase runs the default expression rules),
-// so it is named explicitly instead of being derived from RewritingRules().
+// The conditional rules contribute their inner rules, as Java's
+// expandConditionalRules does.
 //
 // The names are the Java simple-class-name spelling, which is exactly what
 // Planner.DisabledRules is keyed by.
 func OptionalRewritingRuleNames() []string {
-	rewriting := RewritingRules()
-	names := make([]string, 0, len(rewriting)+1)
-	for _, r := range rewriting {
+	var names []string
+	for _, r := range RewritingRules() {
+		if cond, ok := r.(*conditionalExpressionRule); ok {
+			for _, inner := range cond.rules {
+				names = append(names, shortTypeName(inner))
+			}
+			continue
+		}
 		names = append(names, shortTypeName(r))
 	}
-	return append(names, shortTypeName(NewSelectMergeRule()))
+	for _, r := range RewritingImplementationRules() {
+		if cond, ok := r.(*conditionalImplementationRule); ok {
+			for _, inner := range cond.rules {
+				names = append(names, shortTypeName(inner))
+			}
+		}
+	}
+	return names
 }
 
 // MatchingRules returns the matching rules that seed the partial-match

@@ -1630,11 +1630,13 @@ an entry that writes such metadata from Java and reads it from Go.
 Plan quality, rule fidelity, cost-model soundness and memo structure. Query-engine gate applies:
 RFC → Graefe + Torvalds ACK → implement → one review lap per milestone.
 
-- [ ] **CQ-10f (MED, full-scan regression CLOSED by CQ-20 — sort-elimination
-  parity still open; Graefe ruling OBTAINED, option (ii)/diverge
-  deliberately, gated on conditions A–F with the FDB benchmark (E) able to
-  flip it) — `WHERE pk IN (...) ORDER BY pk DESC` planned a FULL
-  TABLE SCAN where Java plans N bounded seeks.** Introduced by CQ-10d and left
+- [x] **CQ-10f — CLOSED in the RFC-257 migration: a sorted InJoin claims Java's
+  `visitInJoinPlan` ordering (`RecordQueryInJoinPlan.HintRichOrdering`), so
+  every shape below plans Java's `INJOIN ... SORTED [DESC]` with no sort;
+  ruling (ii) holds under conditions A–F (RFC-191 status, DIVERGENCES.md
+  "Plan choice: an ordered IN over a non-covering index"). The text below is
+  the record of the open item. — `WHERE pk IN (...) ORDER BY pk DESC` planned
+  a FULL TABLE SCAN where Java plans N bounded seeks.** Introduced by CQ-10d and left
   deliberately unpinned there rather than blessed.
   ```
   SELECT * FROM tbl WHERE id IN (1, 2, 3) ORDER BY id DESC
@@ -1666,7 +1668,7 @@ RFC → Graefe + Torvalds ACK → implement → one review lap per milestone.
   cardinality rung (abstains) nor the data-access rung (counts NODES) can tell
   them apart.
   **Two further defects sit under it, both measured, and neither alone is
-  enough.** (a) `RecordQueryInJoinPlan.HintOrdering` returns the empty ordering
+  enough.** (a) `RecordQueryInJoinPlan.HintOrdering` returned the empty ordering
   unconditionally, so a sorted IN-join can never satisfy an ORDER BY — Java
   derives one (`OrderingProperty.visitInJoinPlan`, `OrderingProperty.java:392`):
   when the inner's binding map holds the IN-bound value as a FIXED binding and
@@ -1923,12 +1925,6 @@ RFC → Graefe + Torvalds ACK → implement → one review lap per milestone.
   //pkg/recordlayer/query/plan/cascades:cascades_test
   --test_arg="--test.run=TestCardinalityPropertyBoundsCostEstimate/typeFilter/overExactlyOneChild"
   --test_arg="-test.v"` (logs "KNOWN violation still reproduces").
-
-### [ ] Finding 2-followup-a — port Java's REAL RemoveRangeOneRule (booked by RFC-188 §1)
-Java `RemoveRangeOneRule.java:45-102` drops an unreferenced `RANGE(0,1)` table-function quantifier from
-a `SelectExpression` (nothing to do with LIMIT) — UNPORTED. Porting it reclaims the `RemoveRangeOne`
-name cleanly. Distinct missing-rule item; needs Graefe+Torvalds review (query-engine rule).
-
 
 ### [ ] Finding 6-followup — dense predicate-count producer for Java tiebreak parity
 Go's `predCountByLevel` is SPARSE, so the highest-level tiebreak (`intCompare(maxLevelA, maxLevelB)`) uses
@@ -2685,9 +2681,8 @@ and to convert the 0AF00 into a fold where Java answers, but it is NOT a silent-
   possible — Compensation.java:762 case 2). Conservative: missed plans, never
   rows. (Graefe impl-review finding, rfc182-row-soundness.)
 
-- [ ] Rule-registration hygiene: `RemoveRangeOneRule` dead in Java but registered
-  in Go; `DecorrelateValuesRule` double-registered; `OrderedPrimaryScanRule`
-  zero tests; `PredicateToLogicalUnionRule` REWRITING-vs-PLANNING phase.
+- [ ] Rule-registration hygiene: `OrderedPrimaryScanRule` zero tests;
+  `PredicateToLogicalUnionRule` REWRITING-vs-PLANNING phase.
 
 - [ ] ~750 LOC verified-dead code sweep (windowed candidate, `in_source.go`,
   `rule_demorgan.go`, `IntersectionInfo` island, `derivations_evaluator.go`
@@ -3961,10 +3956,9 @@ hashes/reproducers. All experiments reverted; tree clean.
   What is missing is that nothing says so and nothing enforces it. The drop is
   a side effect of which constructor was reached, not a decision: if a future
   rewrite at either site preserves quantifiers 0 and 1, the same line silently
-  becomes a fail-OPEN, because both readers of the marker are safety DECLINES
-  (`RemoveRangeOneRule` refuses a swapped Select; the nested-loop-join rule
-  gates its correlated-scan fast path on it). Losing it admits exactly the
-  shapes those gates exist to refuse — the same failure mode as the
+  becomes a fail-OPEN, because the marker's reader is a safety DECLINE (the
+  nested-loop-join rule gates its correlated-scan fast path on it). Losing it
+  admits exactly the shape that gate exists to refuse — the same failure mode as the
   `SelectExpression.WithQuantifiers` literal, reached by a different route.
 
   The work: decide the rule ("a rebuild that removes or reorders either of the
@@ -4716,45 +4710,6 @@ implication check that is too generous on the day sparse matching starts being
 chosen.
 
 ---
-
-
-### The ordered OR-union alternative is structurally unreachable
-
-`PredicateToLogicalUnionRule` now emits `LogicalUniqueExpression` — Java's
-PK dedup — where it used to emit `LogicalDistinctExpression`, the full-row
-node. That was the fix for the OR-union duplicate-row defect: Go had
-carried Java's *name* across instead of its *meaning*.
-
-The audit was not finished. Two rules still match the full-row node:
-
-- `rule_implement_distinct_union.go:33`
-- `rule_distinct_over_union_dedup.go:39`
-
-Their Java counterparts hang off Java's PK-dedup node, so with the OR path
-no longer producing `LogicalDistinctExpression` the merge-sorted union is
-unreachable from it, and `ImplementUniqueRule`'s required arm only ever
-yields `UnorderedPrimaryKeyDistinct(member)`. An OR with a leg-compatible
-`ORDER BY` therefore cannot produce Java's ordering-preserving union: it
-must go unordered union -> PKDistinct -> InMemorySort, which also gives up
-limit pushdown.
-
-NOTHING REGRESSED, and that is measured rather than assumed — the ordered
-alternative was already dead before the change:
-
-    G=pkg/relational/conformance/explaindiff/testdata/plan_shape.golden
-    grep -cE 'MergeSortUnion|RecordQueryUnionPlan' $G              -> 0
-    git show master:$G | grep -cE 'MergeSortUnion|RecordQueryUnionPlan' -> 0
-    grep -c IndexScan $G                                            -> 230   (control)
-
-0 on both sides over 2556 queries, with 70 `UnorderedUnion` (68 on master).
-So this is an architectural-coherence gap, not a live defect — which is
-exactly why it would never be noticed later.
-
-THE WORK: decide whether the two rules should match the PK-dedup node (and
-then whether Java's ordered union is reachable at all in Go), or whether
-the ordered alternative is genuinely out of scope and the rules are dead
-code to delete. Either answer needs the golden to move or to be shown it
-cannot. Query-engine change; needs the review gate before implementation.
 
 
 ### `IsConstantValue` is narrower than the property the explode rule wants
@@ -8980,6 +8935,60 @@ the order both legs deliver — where RFC-245 had declined the merge (RFC-247). 
 TO REPORT UPSTREAM with the reproducer above. Nothing here is blocked on the upstream fix; if
 upstream fixes it the probe and the corpus entry both fail and say so.
 
+### [ ] UPSTREAM — Java's IN-union merges on a projected key that ties distinct records (wrong rows)
+
+MEASURED on both engines at 4.14.2.0 (`conformance/in_union_projection_dedup_java_probe_test.go`,
+which fails if Java starts agreeing):
+
+```
+CREATE TABLE t (pk1 BIGINT, pk2 BIGINT, a BIGINT, b BIGINT, s STRING, PRIMARY KEY (pk1, pk2))
+CREATE INDEX t_asb ON t (a, s, b)
+rows (pk1,pk2,a,b,s): (1,1,1,1,x) (1,2,1,1,x) (2,1,2,1,x) (2,2,2,2,y) (3,1,3,1,x)
+
+SELECT s, b FROM t WHERE a IN (1, 2) ORDER BY s, b
+  java: [[x 1] [x 1] [y 2]]          go: [[x 1] [x 1] [x 1] [y 2]]   <- SQL-correct
+EXPLAIN (java): [IN …] INUNION q0 -> { COVERING(T_ASB [EQUALS q0] …) | MAP (_.S AS S, _.B AS B) } COMPARE BY (_.S, _.B)
+```
+
+Root cause: `ImplementInUnionRule` never asks whether the comparison key identifies a row, yet
+`UnionCursor` drops every row whose key ties one already emitted; `Ordering.pullUp` also keeps
+`isDistinct` after a projection drops the primary key. Go merges only when the baked inner proves
+its rows distinct over coordinates inside the key (`inUnionMergeKeyIdentifiesRows`; record identity
+over the primary key, storage-key completeness, or a distinctness claim), pinned by
+`TestFDB_InUnionMergeKeyMustIdentifyRows` and `TestRichOrdering_RowsIdentifiedBy`. Found by
+`TestFDB_MetamorphicCompositePrimaryKey`. Direction: `DivergenceJavaWrongRowsGoCorrect`;
+DIVERGENCES.md "IN-union comparison key" has the write-up. TO REPORT UPSTREAM with the reproducer
+above.
+
+### [ ] UPSTREAM — Java drops an EXISTS that sits in a disjunction of a join's condition (wrong rows)
+
+MEASURED on both engines at 4.14.2.0 (`conformance/exists_under_or_java_probe_test.go`, which fails
+if Java starts agreeing):
+
+```
+CREATE TABLE a (id BIGINT, PRIMARY KEY (id))
+CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id))
+CREATE TABLE d (id BIGINT, PRIMARY KEY (id))
+CREATE INDEX c_a_id ON c (a_id)
+rows: a (1) (2); c (50, 1) (51, 2); d (1) (51)
+
+SELECT a.id, c.id FROM a JOIN c ON (c.a_id = a.id AND EXISTS (SELECT 1 FROM d WHERE d.id = a.id)) OR c.id > 100
+  java: [[1 50] [2 51]]     go: [[1 50]]   <- SQL-correct
+SELECT a.id, c.id FROM a JOIN c ON c.a_id = a.id WHERE EXISTS (SELECT 1 FROM d WHERE d.id = a.id) OR c.id > 100
+  java: []                  go: [[1 50]]
+```
+
+Root cause: the disjunction stays in the lower select over `c`, correlated to the existential over
+`d` one level up. When that select is matched to an index,
+`ExistentialValuePredicate.computeCompensationFunction` (`:77-88`) returns
+`noCompensationNeeded()` because the existential is not one of the matched select's quantifiers, so
+the predicate vanishes from the plan. Go reapplies it as an ordinary residual over the outer row
+(`selectSubsumptionExistentialPredicateCompensation`), pinned by `TestFDB_ExistsInOn`
+(`inner_exists_under_or_in_on`) and
+`select_subsumption_existential_compensation_test.go`. Direction:
+`DivergenceJavaWrongRowsGoCorrect`; DIVERGENCES.md "Existential predicate for an outer existential"
+has the write-up. TO REPORT UPSTREAM with the reproducer above.
+
 ---
 
 ## 10. Blocked — owner decisions and watch entries
@@ -9427,6 +9436,16 @@ covered by the correctness suite and the golden plan diff, not by this table.
   candidate's select to its `MatchableSortExpression` and carries an ordering part (measured at
   r12; an r11 reading of a second gate at `adjustMatchForSelect` was a fixture artifact — a seed
   without the MaxMatchMap stops at that adjuster's nil-map check, which the planner never builds).
+  **Measured after the top-level sort sat over the block Select** (explain-differ dump, 2834
+  queries + 176 DML): with `OrderedIndexScanRule` and `OrderedPrimaryScanRule` taken out of
+  `BatchAExpressionRules`, no plan changes, and the four shapes above plan `IndexScan(GA_G, [*])`,
+  `IndexScan(GA_G, [*]) REVERSE` and `Scan(GA) REVERSE` without them — the translator no longer
+  produces a sort directly over a scan, so as top-level rules they answer nothing. What keeps
+  them registered is the planner unit tests built on a logical `Sort(Scan)`
+  (`TestSortElim_DescSortEliminated`, `TestOrderedIndexScan_PlannerIntegration`,
+  `TestPlan_OrderedMemberSelectable`) and `orderedFullScanAlternatives`, the join-leg helper
+  that fires them on a private `Sort(Scan)`; retiring them means re-basing those on the block
+  form.
 
 - [ ] **An IN subquery over an aggregate or DISTINCT body does not translate.**
   `SELECT c.id FROM c WHERE c.id IN (SELECT ga.g FROM ga GROUP BY ga.g)` fails
@@ -13247,7 +13266,7 @@ against Java 4.14.2.0 before fixing, then tick with the commit.
 - [ ] WS-E semantics/pins (decimal constants parsed as AstNormalizer/parseDecimal, 308eada7b; record constructor inherent names and structured variadic promotion done): variadic promoted-child types for scalar common types, Value nullability census, target simplification regime, adjacent-token/decorated-literal/lexer pins, FROM-less metadata, LOG_QUERY.
 - [ ] WS-F scheduling: conditional rule chains (decorrelate→simplify, merge→pushdown) with progress-driven fallback; partition-based select merge; multi-leg pushdown; physical REWRITING prune; full configuration in comparators; per-partition implementation yields.
 - [ ] WS-F readers/plans: raw index KEY/VALUE reader Values, nested reader trie, extraction rules, aggregate readers, covering-Value plan, aggregate cardinality/distinctness, reader/plan wire mapping.
-- [ ] WS-F misc (RecordCore XXXXX mapping 61b586444, verbatim primary/vector candidate names 1e45290a2/b1b043898 done): IN-union product limit and size, null-safe singleton scan candidates, zero-based EXPLODE ordinality and its distinctness, subscript typing/errors, display-only EXPLAIN decoding, ordered Value folding, vector-preference applicability pins.
+- [ ] WS-F misc (RecordCore XXXXX mapping 61b586444, verbatim primary/vector candidate names 1e45290a2/b1b043898 done): reconcile the F-6/F-7b acceptance rows with RFC-191's ruled `Fetch(InJoin)` plan choice (DIVERGENCES.md "Plan choice: an ordered IN over a non-covering index", "Open against the RFC-257 acceptance"); IN-union product limit and size, null-safe singleton scan candidates, zero-based EXPLODE ordinality and its distinctness, subscript typing/errors, display-only EXPLAIN decoding, ordered Value folding, vector-preference applicability pins.
 - [ ] WS-G (ungrouped COUNT adjustment done, 03bf9462e): Java typed-accumulator and group-key continuation codecs with legacy reads and byte/resume cross-engine tests; grouping-output simplification; post-cap evaluation and repeated-resume pins; plan/Value/config codecs, TupleSource mapping, reserved-tag pins; ARRAY_AGG absent-LIMIT decision.
 - [ ] WS-H (window OPTIONS parse/repeat/int-range errors done, 308eada7b; named macro calls b442b9422): native call-site arguments (named/options/window, option normalization and errors, rebase), retire the row-number high-order helper, stored-query getter/startup warming/metrics/NoOp getter, function/view metadata getters, macro pins.
 - [ ] WS-I: lock-registry cleanup, serializer retry diagnostics, typed client knobs (needs C++ research), typed session/index-update sets and the write-only key collision boundary, timer instrumentation for client ranges/HNSW/GuardiANN/vector tasks/queue, online-indexer config limits, ICU byte baseline.
@@ -13409,11 +13428,6 @@ against Java 4.14.2.0 before fixing, then tick with the commit.
     (the key and the SELECT item resolve through different paths; Java resolves
     ORDER BY against the SELECT list); (c) `IN (…) ORDER BY` loses the ordered
     InUnion for InJoin plus a sort.
-  - [ ] REWRITING cost of nested SQL functions: four nested calls plan in about
-    4.6s, most of it in `Memo.Integrate`. Java runs SelectMerge and
-    PredicatePushDown as implementation rules over final expressions and
-    Decorrelate/Simplification conditionally; Go explores all of them in
-    REWRITING.
 
 ### An EXISTS over a repeated field does not match a multi-valued index
 

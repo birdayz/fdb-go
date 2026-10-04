@@ -1,23 +1,11 @@
 package cascades
 
-// F26 — REWRITING-phase cost model and the outer-join prune survivor.
-//
-// Java's RewritingCostModel.compare() penalizes any surviving OuterJoinExpression
-// FIRST (ExpressionCountProperty.outerJoinCount), ahead of selectCount. That is a
-// CORRECTNESS GUARD unique to Java: Java's OuterJoinExpression is a logical-only
-// node with NO physical operator, so the single-final-expression prune MUST keep
-// the implementable rewritten form or the query fails to plan.
-//
-// Go's outer join is DIFFERENT — it is a SelectExpression that is directly
-// implementable as a materialized RecordQueryNestedLoopJoinPlan (RFC-152). Go
-// therefore DELIBERATELY keeps the un-rewritten outer-join select as the prune
-// survivor (it wins on selectCount, 1<2) so PLANNING can derive both the
-// materialized NLJ and the correlated FlatMap and cost-choose. Porting Java's
-// outerJoinCount would force the rewritten form to win the prune and SUPPRESS the
-// materialized NLJ (a regression — TestFDB_ArrayUnnestOrdinality).
-//
-// These tests are the sentinel: they pin that Go keeps the un-rewritten form and
-// go RED if outerJoinCount is (re-)introduced into RewritingCostModelLess.
+// Java's RewritingCostModel penalizes a surviving outer join FIRST
+// (ExpressionCountProperty.outerJoinCount), ahead of selectCount, so the
+// REWRITING prune keeps RewriteOuterJoinRule's canonical form and SelectMerge
+// and PredicatePushDown work on it. Go's LEFT OUTER select is implementable as
+// a materialized nested-loop join (RFC-152); OuterJoinMaterializationRule
+// re-forms it from the canonical form in PLANNING.
 
 import (
 	"testing"
@@ -43,8 +31,7 @@ func outerJoinCostRowType() values.Type {
 
 // isOuterJoinSelectForTest reports whether e is a SelectExpression carrying LEFT or
 // FULL OUTER semantics — Go's encoding of what Java models as a distinct
-// OuterJoinExpression. Local to the test: production has no such helper because
-// (unlike Java) Go's cost model must NOT count outer joins (see RewritingCostModelLess).
+// OuterJoinExpression.
 func isOuterJoinSelectForTest(e expressions.RelationalExpression) bool {
 	sel, ok := e.(*expressions.SelectExpression)
 	if !ok {
@@ -104,21 +91,15 @@ func deriveCanonicalRewrite(t *testing.T, unrewritten *expressions.SelectExpress
 	return nil
 }
 
-// TestRewritingCostModel_KeepsUnrewrittenOuterJoin pins that Go's RewritingCostModel
-// PREFERS the un-rewritten LEFT-OUTER select (1 select, 1 outer-join select) over the
-// canonical rewritten form (2 selects, 0 outer-join selects) — the OPPOSITE of Java.
-// The un-rewritten form wins on selectCount (1<2), so it survives the REWRITING prune
-// and PLANNING can still derive the materialized RecordQueryNestedLoopJoinPlan
-// (RFC-152). Introducing Java's outerJoinCount criterion (which prefers the 0-outer
-// form) flips this and this test goes RED.
-func TestRewritingCostModel_KeepsUnrewrittenOuterJoin(t *testing.T) {
+// TestRewritingCostModel_PrefersCanonicalOuterJoin: the canonical form (2
+// selects, no outer join) beats the LEFT OUTER select (1 select) on
+// outerJoinCount before selectCount is consulted.
+func TestRewritingCostModel_PrefersCanonicalOuterJoin(t *testing.T) {
 	t.Parallel()
 
 	unrewritten := buildCorrelatedLeftOuterSelect()
 	canonical := deriveCanonicalRewrite(t, unrewritten)
 
-	// The counts that matter. The un-rewritten form carries the outer join; the
-	// rewritten form has more selects but no outer join.
 	if got := properties.EvaluateExpressionCount(unrewritten, isSelectExpression); got != 1 {
 		t.Errorf("un-rewritten selectCount = %d, want 1", got)
 	}
@@ -131,56 +112,48 @@ func TestRewritingCostModel_KeepsUnrewrittenOuterJoin(t *testing.T) {
 	if got := properties.EvaluateExpressionCount(canonical, isOuterJoinSelectForTest); got != 0 {
 		t.Errorf("canonical outer-join count = %d, want 0", got)
 	}
-
-	// Go keeps the un-rewritten form: it is strictly preferred (fewer selects).
-	if !RewritingCostModelLess(unrewritten, canonical) {
-		t.Fatalf("RewritingCostModelLess(unrewritten, canonical) = false; want true — Go must keep the " +
-			"un-rewritten outer-join select as the prune survivor so the materialized NLJ (RFC-152) stays " +
-			"reachable. If this flipped, Java's outerJoinCount criterion was (wrongly) ported.")
+	if !RewritingCostModelLess(canonical, unrewritten) {
+		t.Fatal("RewritingCostModelLess(canonical, unrewritten) = false; outerJoinCount no longer ranks first")
 	}
-	if RewritingCostModelLess(canonical, unrewritten) {
-		t.Fatalf("RewritingCostModelLess(canonical, unrewritten) = true; want false (comparator not antisymmetric, " +
-			"or outerJoinCount was ported and now prefers the rewritten form)")
+	if RewritingCostModelLess(unrewritten, canonical) {
+		t.Fatal("RewritingCostModelLess(unrewritten, canonical) = true; the comparator is not antisymmetric")
 	}
 }
 
-// TestRewritingBoundary_KeepsUnrewrittenOuterJoin pins the phase boundary end-to-end:
-// after the REWRITING phase prunes and the planner stage advances (promoting final
-// members as the PLANNING seed), the promoted seed STILL contains the un-rewritten
-// LEFT-OUTER select. That is what lets ImplementNestedLoopJoinRule produce the
-// materialized RecordQueryNestedLoopJoinPlan in PLANNING. Porting outerJoinCount would
-// discard the outer-join select at the prune and this assertion fails.
-func TestRewritingBoundary_KeepsUnrewrittenOuterJoin(t *testing.T) {
+// TestRewritingBoundary_KeepsCanonicalOuterJoin: after the REWRITING prune the
+// promoted PLANNING seed is the canonical form, with the outer join carried by
+// a null-on-empty quantifier.
+func TestRewritingBoundary_KeepsCanonicalOuterJoin(t *testing.T) {
 	t.Parallel()
 
 	rootRef := expressions.InitialOf(buildCorrelatedLeftOuterSelect())
-
-	// Production REWRITING rule set (DefaultExpressionRules + RewritingRules, which
-	// contains RewriteOuterJoinRule). exploreRewriting drives the real unified task
-	// stack through REWRITING only, including the OptimizeGroup prune.
 	rules := append(DefaultExpressionRules(), RewritingRules()...)
 	p := NewPlanner(rules, nil)
 	if _, converged := exploreRewriting(p, rootRef); !converged {
 		t.Fatalf("REWRITING phase did not converge (MaxTasks hit)")
 	}
-
-	// Promote the pruned final members as the PLANNING seed — exactly what
-	// ExploreGroup(PhasePlanning) does at the phase boundary via AdvancePlannerStage.
 	rootRef.AdvancePlannerStage(expressions.StagePlanned)
 
 	members := rootRef.Members()
 	if len(members) == 0 {
 		t.Fatalf("root reference has no promoted PLANNING-seed members after the boundary")
 	}
-	keptOuter := false
 	for _, m := range members {
 		if isOuterJoinSelectForTest(m) {
-			keptOuter = true
+			t.Fatalf("the LEFT OUTER select survived the REWRITING prune: %v", members)
 		}
-	}
-	if !keptOuter {
-		t.Fatalf("no promoted member is an outer-join SelectExpression — the un-rewritten LEFT-OUTER form was "+
-			"discarded at the REWRITING prune, which suppresses the materialized NLJ (RFC-152). Promoted members: %v",
-			members)
+		sel, ok := m.(*expressions.SelectExpression)
+		if !ok {
+			t.Fatalf("promoted member %T, want the canonical SelectExpression", m)
+		}
+		noe := 0
+		for _, q := range sel.GetQuantifiers() {
+			if q.IsNullOnEmpty() {
+				noe++
+			}
+		}
+		if noe != 1 {
+			t.Fatalf("promoted select carries %d null-on-empty quantifiers, want the canonical one", noe)
+		}
 	}
 }

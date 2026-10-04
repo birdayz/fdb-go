@@ -49,7 +49,7 @@ tests:
   # id=2). Java's RemoveSortRule emits the same order: scan natural
   # order is the index-tuple order, scan direction flips both keys.
   - query: SELECT id, v FROM t ORDER BY 2 DESC
-    plan_contains: "IndexScan(IDX_V, [*]) REVERSE"
+    plan_contains: "Map(IndexScan(IDX_V, [*] COVERING) REVERSE, {ID: _current.ID#0, V: _current.V#2})"
     plan_not_contains: "InMemorySort"
     rows:
       - [3, 4]
@@ -69,7 +69,7 @@ tests:
   # ORDER BY on an aggregate query — position 2 refers to SUM(v).
   # Groups: a → 3+1+2=6, b → 4+1=5. DESC puts a first.
   - query: SELECT grp, SUM(v) FROM t GROUP BY grp ORDER BY 2 DESC
-    plan_contains: "InMemorySort([_current.SUM(V)#1 DESC], StreamingAgg("
+    plan_contains: "InMemorySort([_current._1#1 DESC], Map(StreamingAgg(keys=[_current.GRP#1], InMemorySort([_current.GRP#1 ASC], Scan(T))), {GRP: _current.GRP#0, _1: _current.SUM(V)#1}))"
     rows:
       - ['a', 6]
       - ['b', 5]

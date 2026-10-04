@@ -65,6 +65,12 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
 - A record constructor's field takes its element's own name (`SELECT (x, y)` is `{X, Y}`, `(x + 1)` is `{_0}`, a repeated name falls back to the position), so a derived record's fields can be read by name; INSERT … SELECT, UPDATE and COALESCE bind a record to its struct type by position, ignoring element names, and an INSERT VALUES element naming another field is XX000, as in Java 4.14.2.0.
 - Scalar macro calls take named arguments (`f(b => 1, a => 2)`), bound by name with the declared defaults; a repeated name is 42601, and an unknown name, a missing argument without a default or too many arguments is 42883 `could not find function '…'` (also for table functions), as in Java 4.14.2.0. A macro may take or return a struct type no table stores.
 - A window's `OPTIONS EF_SEARCH` accepts `L`/`I` suffixes, refuses a repeat (22F00) and a value beyond int (22000), and an HNSW search uses it as given: below k it returns fewer rows, as in Java 4.14.2.0.
+- The top-level query is a sort over its block, as in Java 4.14.2.0: EXPLAIN shows fewer `Map` operators, index scans that hold every projected column are covering, and an IN list over an unindexed column runs as Java's per-row explode.
+- A disjunction over a key (`id = 1 OR id = 3`, `NOT BETWEEN`) merges its legs' ordered scans as Java does, without a sort.
+- An `IN (…) ORDER BY` merge keeps rows that tie on a projected sort key (Java drops them), and an IN-union over several IN lists runs every combination.
+- `col IN (…) ORDER BY col` runs as Java's sorted IN-join with no sort, ascending, descending or followed by the rows' own order in either direction; over a non-covering index the IN-join runs under the fetch where Java merges an IN-union (DIVERGENCES.md).
+- A WHERE conjunct on a LEFT JOIN's preserved side narrows that side's scan (a key equality is a point lookup), a conjunct rejecting the null-extended row turns the join inner, and an EXISTS over the null-supplied side runs inside its join, as in Java 4.14.2.0.
+- A version index is never a covering scan, as in Java 4.14.2.0: `ORDER BY` a column with ties returns them in primary-key order through the plain index.
 
 ## [v0.1.0] - 2026-08-26
 

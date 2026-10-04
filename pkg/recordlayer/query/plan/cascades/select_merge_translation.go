@@ -27,14 +27,14 @@ type selectMergeTranslation struct {
 	rewrite GraphReadRewrite
 	cache   map[*expressions.Reference]*expressions.Reference
 	active  map[*expressions.Reference]bool
-	call    *ExpressionRuleCall
+	memo    *Memo
 }
 
 // GraphReadRewrite rewrites a value's reads of the aliases in reads. nil with
 // no error declines the rewrite of the whole graph.
 type GraphReadRewrite func(v values.Value, reads map[values.CorrelationIdentifier]struct{}) (values.Value, error)
 
-func newSelectMergeTranslation(call *ExpressionRuleCall) *selectMergeTranslation {
+func newSelectMergeTranslation(memo *Memo) *selectMergeTranslation {
 	return &selectMergeTranslation{
 		functions: make(map[values.CorrelationIdentifier]TranslationFunction),
 		seeds:     make(map[values.CorrelationIdentifier]values.Value),
@@ -42,7 +42,7 @@ func newSelectMergeTranslation(call *ExpressionRuleCall) *selectMergeTranslation
 		reads:     make(map[values.CorrelationIdentifier]struct{}),
 		cache:     make(map[*expressions.Reference]*expressions.Reference),
 		active:    make(map[*expressions.Reference]bool),
-		call:      call,
+		memo:      memo,
 	}
 }
 
@@ -55,7 +55,7 @@ func RewriteExpressionReads(
 	reads map[values.CorrelationIdentifier]map[values.CorrelationIdentifier]struct{},
 	rewrite GraphReadRewrite,
 ) (expressions.RelationalExpression, error) {
-	tr := newSelectMergeTranslation(&ExpressionRuleCall{})
+	tr := newSelectMergeTranslation(nil)
 	tr.rewrite = rewrite
 	for alias, targets := range reads {
 		tr.reads[alias] = struct{}{}
@@ -80,7 +80,7 @@ func RewriteGraphReads(
 	reads map[values.CorrelationIdentifier]map[values.CorrelationIdentifier]struct{},
 	rewrite GraphReadRewrite,
 ) (*expressions.Reference, error) {
-	tr := newSelectMergeTranslation(&ExpressionRuleCall{})
+	tr := newSelectMergeTranslation(nil)
 	tr.rewrite = rewrite
 	for alias, targets := range reads {
 		tr.reads[alias] = struct{}{}
@@ -113,7 +113,7 @@ func (tr *selectMergeTranslation) contains(alias values.CorrelationIdentifier) b
 
 // copyWith is tr without the aliases in drop, sharing its rewrite.
 func (tr *selectMergeTranslation) copyWith(drop map[values.CorrelationIdentifier]bool) *selectMergeTranslation {
-	copy := newSelectMergeTranslation(tr.call)
+	copy := newSelectMergeTranslation(tr.memo)
 	copy.rewrite = tr.rewrite
 	for alias, fn := range tr.functions {
 		if !drop[alias] {
@@ -267,8 +267,8 @@ func (tr *selectMergeTranslation) reference(ref *expressions.Reference) (*expres
 	if !changed {
 		return ref, nil
 	}
-	if tr.call.memo != nil {
-		tr.call.memo.ScheduleFreshReference(result)
+	if tr.memo != nil {
+		tr.memo.ScheduleFreshReference(result)
 	}
 	tr.cache[ref] = result
 	return result, nil

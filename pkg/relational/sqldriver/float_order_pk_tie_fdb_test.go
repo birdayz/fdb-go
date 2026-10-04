@@ -277,7 +277,7 @@ func TestFDB_FloatOrderByWithPKTieBreakerMatchesUnindexedBaseline(t *testing.T) 
 			// rather than assumed.
 			usesIndex := false
 			plans.Walk(indexedPlan, func(node plans.RecordQueryPlan) bool {
-				if index, ok := node.(*plans.RecordQueryIndexPlan); ok &&
+				if index, ok := plans.IndexPlanOf(node); ok &&
 					index.GetIndexName() == indexName {
 					usesIndex = true
 				}

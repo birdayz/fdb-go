@@ -41,12 +41,12 @@ func (r *PushRequestedOrderingThroughSortRule) OnMatch(call *ImplementationRuleC
 	}
 
 	s := call.Bindings.Get(r.matcher).(*expressions.LogicalSortExpression)
-	if s.IsUnsorted() {
-		return
-	}
-
 	innerRef := s.GetInner().GetRangesOver()
 	if innerRef == nil {
+		return
+	}
+	if s.IsUnsorted() {
+		call.PushConstraint(innerRef, []*properties.RequestedOrdering{properties.PreserveOrdering()})
 		return
 	}
 

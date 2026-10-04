@@ -1711,8 +1711,10 @@ CREATE INDEX o_cust ON orders (cust_id)`
 			"FlatMap(outer=Scan(A, [=]), inner=Scan(A, [=]))",
 		},
 		{
+			// A leg only the join predicates read publishes Java's
+			// PartitionSelectRule literal 1.
 			"SELECT a.id FROM a JOIN b USING (id, k) JOIN c USING (id, k) ORDER BY a.id",
-			"FlatMap(outer=Scan(A), inner=FlatMap(outer=PredicatesFilter(Scan(C, [=]), [1 preds]), inner=PredicatesFilter(Scan(B, [=]), [1 preds])))",
+			"FlatMap(outer=Scan(A), inner=FlatMap(outer=Map(PredicatesFilter(Scan(B, [=]), [1 preds]), {_0: 1}), inner=Map(PredicatesFilter(Scan(C, [=]), [1 preds]), {_0: 1})))",
 		},
 	} {
 		plan, err := PlanQueryForTest(tc.sql, schema, nil)

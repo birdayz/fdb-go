@@ -483,7 +483,7 @@ func TestValueIndexScanMatchCandidate_WholeRecordIsNotCovered(t *testing.T) {
 	}
 }
 
-func TestValueIndexScanMatchCandidate_FunctionKeyCoversOnlyPKAndAbstainsOrdering(
+func TestValueIndexScanMatchCandidate_FunctionKeyCoversOnlyPKAndOrdersByTheFunction(
 	t *testing.T,
 ) {
 	t.Parallel()
@@ -568,18 +568,23 @@ func TestValueIndexScanMatchCandidate_FunctionKeyCoversOnlyPKAndAbstainsOrdering
 	if indexPlan == nil {
 		t.Fatal("function-key candidate did not produce its non-covering scan")
 	}
-	if ordering := indexPlan.HintOrdering(); ordering.IsKnown ||
-		len(ordering.Keys) != 0 {
-		t.Fatalf(
-			"function-key physical ordering = %#v, want abstain",
-			ordering,
-		)
+	// The scan orders by CARDINALITY(TAGS), then B, then the primary key. TAGS
+	// is no key column (its cardinality is), so the entry stores it again
+	// after ID and the claim keeps it.
+	ordering := indexPlan.HintOrdering()
+	if !ordering.IsKnown || len(ordering.Keys) != 4 {
+		t.Fatalf("function-key physical ordering = %#v, want [CARDINALITY(TAGS), B, ID, TAGS]", ordering)
 	}
-	if rich := indexPlan.HintRichOrdering(); len(rich.GetKeys()) != 0 {
-		t.Fatalf(
-			"function-key rich ordering = %#v, want abstain",
-			rich.GetKeys(),
-		)
+	if _, ok := ordering.Keys[0].(*values.CardinalityValue); !ok {
+		t.Fatalf("function-key ordering key 0 = %s, want CARDINALITY(TAGS)", values.ExplainValue(ordering.Keys[0]))
+	}
+	for i, name := range []string{"B", "ID", "TAGS"} {
+		if fv, ok := values.AsFieldValue(ordering.Keys[i+1]); !ok || fv.DisplayName() != name {
+			t.Fatalf("function-key ordering key %d = %s, want %s", i+1, values.ExplainValue(ordering.Keys[i+1]), name)
+		}
+	}
+	if rich := indexPlan.HintRichOrdering(); len(rich.GetKeys()) != 4 {
+		t.Fatalf("function-key rich ordering = %d keys, want 4", len(rich.GetKeys()))
 	}
 }
 

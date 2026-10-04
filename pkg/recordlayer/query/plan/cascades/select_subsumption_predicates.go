@@ -783,9 +783,12 @@ func selectSubsumptionExistentialPredicateCompensation(
 			ownerFound = true
 		}
 		if !ownerFound {
-			// The EVP is owned by an outer Select. This match level neither
-			// consumes nor compensates it.
-			return NoPredicateCompensationNeeded()
+			// The EVP sits in this Select's predicates, so no other Select
+			// applies it; its existential is an outer binding (PartitionSelectRule
+			// moves a predicate correlated to an upper existential into the
+			// lower Select). Java returns noCompensationNeeded here and drops the
+			// filter; reapplied, it is an ordinary residual over the outer row.
+			return reapply()
 		}
 
 		regularMatchInfo := partialMatch.GetRegularMatchInfo()

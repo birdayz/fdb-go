@@ -76,13 +76,10 @@ func (r *ImplementDistinctFinalRule) OnMatch(call *ImplementationRuleCall) {
 	pkDistinct := false
 	var proof secondaryUniqueProof
 	if call.Context != nil {
-		for _, m := range innerRef.Members() {
-			if isProjectionBlock(m) {
-				pkDistinct = distinctEliminatedByUniqueKey(m, call.Context)
-				if !pkDistinct {
-					proof = secondaryUniqueEliminationProof(m, call.Context)
-				}
-				break
+		if m := distinctInputBlock(innerRef); m != nil {
+			pkDistinct = distinctEliminatedByUniqueKey(m, call.Context)
+			if !pkDistinct {
+				proof = secondaryUniqueEliminationProof(m, call.Context)
 			}
 		}
 	}
@@ -976,6 +973,25 @@ func findScanViaQuantifier(q expressions.Quantifier) *expressions.FullUnorderedS
 		return nil
 	}
 	return findScanExpression(ref.Get())
+}
+
+// distinctInputBlock is the query block producing a distinct's input rows: a
+// projection block of ref, or of the input of a sort in ref, since an ORDER BY
+// below the DISTINCT reorders the block's rows without changing them.
+func distinctInputBlock(ref *expressions.Reference) expressions.RelationalExpression {
+	for depth := 0; ref != nil && depth < 2; depth++ {
+		var below *expressions.Reference
+		for _, m := range ref.Members() {
+			if isProjectionBlock(m) {
+				return m
+			}
+			if sort, ok := m.(*expressions.LogicalSortExpression); ok && below == nil {
+				below = sort.GetInner().GetRangesOver()
+			}
+		}
+		ref = below
+	}
+	return nil
 }
 
 // isProjectionBlock reports whether e is a query block over one source: a

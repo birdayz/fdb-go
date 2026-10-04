@@ -85,15 +85,11 @@ func ordinalChildSelectExpression(
 
 func fireOrdinalSelectRule(
 	t *testing.T,
-	rule ExpressionRule,
+	rule ImplementationRule,
 	ref *expressions.Reference,
 ) []expressions.RelationalExpression {
 	t.Helper()
-	yielded, err := FireExpressionRule(rule, ref)
-	if err != nil {
-		t.Fatalf("FireExpressionRule: %v", err)
-	}
-	return yielded
+	return mustFirePrunedFinalRule(t, rule, ref)
 }
 
 // TestSelectMergeRule_OrdinalChildComposes pins the SelectMerge composition

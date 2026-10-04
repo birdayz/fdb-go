@@ -2289,7 +2289,17 @@ func buildCorrelatedFlatMapPlan(
 	// keeps). Only the ROW is retargeted; see translatePredicateLogicalSource.
 	outerWindows := retainedWindowTypesAt(outerLayout, outerCorr)
 	innerWindows := retainedWindowTypesAt(innerLayout, innerCorr)
-	joinPreds, err = translatePredicateLogicalSource(joinPreds, innerCorr, physicalInner, innerWindows)
+	// A null-on-empty inner's select-level predicates filter ABOVE its
+	// DefaultOnEmpty (below), so they read the null-extended row, whose type is
+	// nullable.
+	innerPredsTarget := physicalInner
+	if innerNullOnEmpty && joinType != plans.JoinLeftOuter && !innerStrictSingle {
+		innerPredsTarget, err = values.NewQuantifiedObjectValue(innerCorr, values.WithNullability(physicalInnerType, true))
+		if err != nil {
+			return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
+		}
+	}
+	joinPreds, err = translatePredicateLogicalSource(joinPreds, innerCorr, innerPredsTarget, innerWindows)
 	if err != nil {
 		return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
 	}

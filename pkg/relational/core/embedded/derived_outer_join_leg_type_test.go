@@ -14,11 +14,10 @@ import (
 // join row); the parent join's seed must type the derived leg the same way.
 // Typed by the name model's qualified keys (W.ID, …) instead, reads of the
 // leg that bound that row failed at execution (five of the FDB test's ten
-// arms). Every join kind the ordinal
-// gate gates is driven: LEFT, RIGHT (the star order is the FROM order, g's
-// columns first) and FULL, with an INNER body as the control: an inner body is
-// one block with its parent (SelectMergeRule dissolves it), so no join leg
-// carries its row.
+// arms). A FULL body is the join that keeps its own leg; a LEFT or RIGHT body
+// is one block with its parent, as an INNER one is: RewriteOuterJoinRule's
+// canonical form survives REWRITING and SelectMergeRule dissolves it, as Java
+// plans it (the leg flows the preserved row alone).
 func TestDerivedOuterJoinLegTypedByItsRow(t *testing.T) {
 	t.Parallel()
 	// n.tags is the one NOT NULL column the DDL admits (an array), so it is the
@@ -34,20 +33,19 @@ func TestDerivedOuterJoinLegTypedByItsRow(t *testing.T) {
 		// nil when the body has no TAGS column.
 		nullableTags *bool
 	}{
-		{`SELECT * FROM w LEFT JOIN g ON g.k = w.id`, []string{"ID", "F", "K", "V"}, nil},
-		{`SELECT * FROM g RIGHT JOIN w ON g.k = w.id`, []string{"K", "V", "ID", "F"}, nil},
+		{`SELECT * FROM w LEFT JOIN g ON g.k = w.id`, nil, nil},
+		{`SELECT * FROM g RIGHT JOIN w ON g.k = w.id`, nil, nil},
 		{`SELECT * FROM w FULL JOIN g ON g.k = w.id`, []string{"ID", "F", "K", "V"}, nil},
 		{`SELECT * FROM w, g WHERE g.k = w.id`, nil, nil},
-		{`SELECT * FROM w LEFT JOIN n ON n.k = w.id`, []string{"ID", "F", "K", "TAGS"}, ptrTo(true)},
-		{`SELECT * FROM n RIGHT JOIN w ON n.k = w.id`, []string{"K", "TAGS", "ID", "F"}, ptrTo(true)},
+		{`SELECT * FROM w LEFT JOIN n ON n.k = w.id`, nil, nil},
+		{`SELECT * FROM n RIGHT JOIN w ON n.k = w.id`, nil, nil},
 		{`SELECT * FROM w, n WHERE n.k = w.id`, nil, nil},
-		// FULL makes both sides null-supplying; the preserved side of a LEFT or
-		// RIGHT join keeps its NOT NULL. n on FULL's left is the row that tells
-		// FULL from LEFT: a FULL typed as a LEFT keeps n's TAGS NOT NULL.
+		// FULL makes both sides null-supplying: n's TAGS is nullable on either
+		// side.
 		{`SELECT * FROM w FULL JOIN n ON n.k = w.id`, []string{"ID", "F", "K", "TAGS"}, ptrTo(true)},
 		{`SELECT * FROM n FULL JOIN w ON n.k = w.id`, []string{"K", "TAGS", "ID", "F"}, ptrTo(true)},
-		{`SELECT * FROM n LEFT JOIN w ON n.k = w.id`, []string{"K", "TAGS", "ID", "F"}, ptrTo(false)},
-		{`SELECT * FROM w RIGHT JOIN n ON n.k = w.id`, []string{"ID", "F", "K", "TAGS"}, ptrTo(false)},
+		{`SELECT * FROM n LEFT JOIN w ON n.k = w.id`, nil, nil},
+		{`SELECT * FROM w RIGHT JOIN n ON n.k = w.id`, nil, nil},
 	} {
 		t.Run(tc.body, func(t *testing.T) {
 			t.Parallel()
@@ -99,7 +97,7 @@ func TestDerivedOuterJoinLegTypedByItsRow(t *testing.T) {
 			}
 			if tc.want == nil {
 				if leg != nil {
-					t.Fatalf("the inner body was not dissolved into the block: a join leg is typed %v: %s", leg, plan.Explain())
+					t.Fatalf("the body was not dissolved into the block: a join leg is typed %v: %s", leg, plan.Explain())
 				}
 				return
 			}

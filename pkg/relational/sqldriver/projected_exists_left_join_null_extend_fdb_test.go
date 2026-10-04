@@ -17,8 +17,9 @@ package sqldriver_test
 //
 // ORDER-BY-FREE deliberately: adding an ORDER BY on top of this fold makes Java's
 // Cascades fail to plan ("could not plan query") while Go handles it — a SEPARATE
-// Go-beyond-Java planner reach, not the parity claim. Row order is asserted by
-// sorting in Go, not via SQL, so these stay the verified parity shape.
+// Go-beyond-Java planner reach, not the parity claim, pinned by dimension 5.
+// Row order is asserted by sorting in Go, not via SQL, so these stay the verified
+// parity shape.
 
 import (
 	"context"
@@ -42,7 +43,8 @@ func TestFDB_ProjectedExistsOverLeftJoin(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE f2left_tmpl"+
 		" CREATE TABLE p (id BIGINT, v BIGINT, PRIMARY KEY (id))"+
 		" CREATE TABLE q (qid BIGINT, PRIMARY KEY (qid))"+
-		" CREATE TABLE r (id BIGINT, PRIMARY KEY (id))"); err != nil {
+		" CREATE TABLE r (id BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE s (id BIGINT, v BIGINT, PRIMARY KEY (id))"); err != nil {
 		t.Fatalf("tmpl: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE f2left_tmpl"); err != nil {
@@ -63,6 +65,10 @@ func TestFDB_ProjectedExistsOverLeftJoin(t *testing.T) {
 	}
 	if _, err := db.ExecContext(ctx, "INSERT INTO r VALUES (5)"); err != nil {
 		t.Fatalf("seed r: %v", err)
+	}
+	// s matches p.id = 1 only and shares p's column name v.
+	if _, err := db.ExecContext(ctx, "INSERT INTO s VALUES (1, 200)"); err != nil {
+		t.Fatalf("seed s: %v", err)
 	}
 
 	// (1) THE HAZARD PIN — null-padded correlated EXISTS. q NULL-extended (no
@@ -191,21 +197,61 @@ func TestFDB_ProjectedExistsOverLeftJoin(t *testing.T) {
 		}
 	})
 
-	// (5) + an ORDER BY — DECLINES cleanly (0AF00). Java's Cascades cannot plan ANY
-	// ORDER BY over this fold ("could not plan query"), and classifySortSource
-	// classifies only INNER as a join source, so a LEFT source's qualified key
-	// degrades to a bare last-leg-wins read and mis-orders on a column-name
-	// collision (P2). Go declines, matching Java exactly — never a silent wrong order.
-	t.Run("dim5_orderby_declines", func(t *testing.T) {
+	// (5) + an ORDER BY. The block carries its sort keys as exact reads of
+	// their legs, so a key whose column name the other leg shares sorts by its
+	// own leg: ORDER BY p.v DESC over s, which also has v (200 on p.id = 1, NULL
+	// on the null-extended p.id = 2), returns 20 before 10. A read of s.v would
+	// return 10 first.
+	t.Run("dim5_orderby_sorts_by_its_own_leg", func(t *testing.T) {
 		rows, err := db.QueryContext(ctx,
 			"SELECT p.v, EXISTS (SELECT 1 FROM r WHERE r.id = q.qid) "+
-				"FROM p LEFT JOIN q ON q.qid = p.id ORDER BY p.v")
-		if err == nil {
-			rows.Close()
-			t.Fatal("ORDER BY over the LEFT fold must decline (0AF00) — Java can't plan it and the fold's sort mis-orders qualified keys (P2)")
+				"FROM p LEFT JOIN q ON q.qid = p.id ORDER BY p.v DESC")
+		if err != nil {
+			t.Fatalf("ORDER BY over the LEFT fold: %v", err)
 		}
-		if !strings.Contains(err.Error(), "0AF00") {
-			t.Fatalf("want clean 0AF00 decline for ORDER BY over LEFT fold, got: %v", err)
+		got := scanValueExistsRows(t, rows)
+		if want := [][2]any{{int64(20), false}, {int64(10), false}}; !equalValueExistsRows(got, want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+		rows, err = db.QueryContext(ctx,
+			"SELECT p.v, EXISTS (SELECT 1 FROM r WHERE r.id = s.id) "+
+				"FROM p LEFT JOIN s ON s.id = p.id ORDER BY p.v DESC")
+		if err != nil {
+			t.Fatalf("ORDER BY a column both legs name: %v", err)
+		}
+		got = scanValueExistsRows(t, rows)
+		if want := [][2]any{{int64(20), false}, {int64(10), false}}; !equalValueExistsRows(got, want) {
+			t.Fatalf("got %v, want %v: the sort read the other leg's v", got, want)
 		}
 	})
+}
+
+func scanValueExistsRows(t *testing.T, rows *sql.Rows) [][2]any {
+	t.Helper()
+	defer rows.Close()
+	var got [][2]any
+	for rows.Next() {
+		var v int64
+		var ex bool
+		if err := rows.Scan(&v, &ex); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got = append(got, [2]any{v, ex})
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	return got
+}
+
+func equalValueExistsRows(a, b [][2]any) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

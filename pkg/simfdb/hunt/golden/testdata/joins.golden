@@ -4,7 +4,7 @@
 #   CREATE INDEX ord_cid ON ord(cid)
 
 === SELECT c.cid, o.oid, o.amt FROM cust c JOIN ord o ON c.cid = o.cid ORDER BY c.cid, o.oid
-PLAN: Map(InMemorySort([_current.CID#0 ASC, _current.OID#2 ASC], FlatMap(outer=Scan(CUST), inner=IndexScan(ORD_CID, [=]))), {CID: _current.CID#0, OID: _current.OID#2, AMT: _current.AMT#4})
+PLAN: InMemorySort([_current.CID#0 ASC, _current.OID#1 ASC], FlatMap(outer=Scan(CUST), inner=IndexScan(ORD_CID, [=])))
 ROWS(4) cols=[CID, OID, AMT]:
   [1, 100, 50]
   [1, 101, 70]
@@ -18,7 +18,7 @@ ROWS(2) cols=[REGION, _1]:
   [20, 30]
 
 === SELECT o.oid FROM ord o JOIN cust c ON o.cid = c.cid WHERE c.region = 10 ORDER BY o.oid
-PLAN: Map(FlatMap(outer=Scan(ORD), inner=PredicatesFilter(Scan(CUST, [=]), [1 preds])), {OID: _current.OID#0})
+PLAN: FlatMap(outer=Scan(ORD), inner=PredicatesFilter(Scan(CUST, [=]), [1 preds]))
 ROWS(3) cols=[OID]:
   [100]
   [101]

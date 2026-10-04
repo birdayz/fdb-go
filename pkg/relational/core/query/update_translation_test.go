@@ -27,6 +27,7 @@ func TestTranslateUpdateNeedsAResolvedColumn(t *testing.T) {
 	if err != nil || ref == nil {
 		t.Fatalf("a resolved column: %v", err)
 	}
+	ref = queryBody(t, ref)
 	upd, ok := ref.Members()[0].(*expressions.UpdateExpression)
 	if !ok || len(upd.GetTransforms()) != 1 || upd.GetTransforms()[0].FieldPath() != "price" {
 		t.Fatalf("a resolved column: %T %v", ref.Members()[0], ref.Members()[0])

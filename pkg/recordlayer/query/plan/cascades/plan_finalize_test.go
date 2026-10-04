@@ -588,12 +588,14 @@ var specimens = map[string]specimen{
 		build: func(t *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			comp := sentinel()
 			pk := sentinel()
+			commonPK := sentinel()
 			p := mustFinalizeConstruct(plans.NewRecordQueryScanPlan(
 				[]string{"T"}, finalizeRowType("T"), false)).
 				WithScanComparisons([]*predicates.ComparisonRange{sentinelRange(t, comp)}).
-				WithPrimaryKey([]values.Value{pk})
+				WithPrimaryKey([]values.Value{pk}).
+				WithCommonPrimaryKey([]values.Value{commonPK})
 			return p, map[string]*values.RecordConstructorValue{
-				"scanComparisons": comp, "primaryKeyVals": pk,
+				"scanComparisons": comp, "primaryKeyVals": pk, "commonPrimaryKeyValues": commonPK,
 			}
 		},
 		allow: map[string]string{"resultValue": resultValueIsMinted},

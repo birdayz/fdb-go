@@ -11,7 +11,7 @@ setup:
 tests:
   # Java pattern: IN list with arithmetic expressions.
   - query: SELECT a, b FROM ta WHERE b IN (1 + 0, 3 + 0, 5, 7) ORDER BY a
-    plan_contains: "PredicatesFilter(Scan(TA)"
+    plan_contains: "FlatMap(outer=Scan(TA), inner=PredicatesFilter(Explode(constant), [1 preds]))"
     plan_not_contains: "InUnion"
     rows:
       - [2, 7]
@@ -51,7 +51,7 @@ tests:
   # Mixed duplicates preserving first-seen order — confirms the
   # dedupeAny helper doesn't reorder.
   - query: SELECT a, b FROM ta WHERE a IN (2, 1, 2, 3, 1) ORDER BY a
-    plan_contains: "InUnion(Scan(TA, [=]), bindings=1, ASC)"
+    plan_contains: "InJoin(Map(Scan(TA, [=]), {A: _current.A#0, B: _current.B#1}), binding ASC)"
     rows:
       - [1, 8]
       - [2, 7]
@@ -64,7 +64,7 @@ tests:
       - [8, 1]
   # IN list with mixed-type integer literals (1 vs 1+0 both same type).
   - query: SELECT a, b FROM ta WHERE b IN (1, 2, 1, 3) ORDER BY a
-    plan_contains: "PredicatesFilter(Scan(TA)"
+    plan_contains: "FlatMap(outer=Scan(TA), inner=PredicatesFilter(Explode(constant), [1 preds]))"
     plan_not_contains: "InUnion"
     rows:
       - [6, 3]

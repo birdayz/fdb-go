@@ -1364,6 +1364,13 @@ func TestPushInJoinThroughFetchRule_Fires(t *testing.T) {
 			name:       "runtime parameter",
 			sourceKind: plans.InSourceParameter,
 		},
+		// A comparand is row-independent, so the push is as sound as for the
+		// others; Java registers the rule only for values and parameter joins,
+		// a divergence DIVERGENCES.md records (RFC-191).
+		{
+			name:       "runtime comparand",
+			sourceKind: plans.InSourceComparand,
+		},
 	}
 
 	for _, tc := range cases {

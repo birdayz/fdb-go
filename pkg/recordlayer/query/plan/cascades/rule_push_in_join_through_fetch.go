@@ -40,12 +40,6 @@ func (r *PushInJoinThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	// The InJoin is its own cascades expression now (RFC-184 W2).
 	inJoinPlan := matching.Get[*plans.RecordQueryInJoinPlan](call.Bindings, r.matcher)
 
-	// Java excludes InComparandJoinPlan: comparand values depend on the
-	// outer record and cannot be safely pushed past a fetch boundary.
-	if inJoinPlan.GetSourceKind() == plans.InSourceComparand {
-		return
-	}
-
 	innerRef := inJoinPlan.GetInnerQuantifier().GetRangesOver()
 	if innerRef == nil {
 		return

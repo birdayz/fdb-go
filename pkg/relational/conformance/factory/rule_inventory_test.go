@@ -50,7 +50,7 @@ func registryNames() map[string]string {
 	add("expression", namesOfRuleSlice(cascades.DefaultExpressionRules()))
 	add("planning-exploration", namesOfRuleSlice(cascades.PlanningExplorationRules()))
 	add("batchA", namesOfRuleSlice(cascades.BatchAExpressionRules()))
-	add("rewriting", namesOfRuleSlice(cascades.RewritingRules()))
+	add("rewriting", cascades.OptionalRewritingRuleNames())
 	add("matching", namesOfRuleSlice(cascades.MatchingRules()))
 	add("implementation", namesOfRuleSlice(cascades.DefaultImplementationRules()))
 	add("go-ext-impl", namesOfRuleSlice(cascades.GoExtensionImplementationRules()))

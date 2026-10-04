@@ -4,18 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 	"testing"
 )
 
-// TestFDB_ProjectedExists_Round7 pins a COMPUTED, non-selected
-// ORDER BY expression over a projected EXISTS — e.g. `... ORDER BY col1 + 1` where `col1 + 1`
-// is not in the SELECT list. The folded output record carries only the SELECT fields, so the
-// sort re-applied above the FlatMap evaluated `col1 + 1` against a record lacking `col1` →
-// NULL every row → the ordering silently became a no-op (wrong order). It is now REJECTED
-// cleanly by the projected-EXISTS guard (ErrCodeUnsupportedQuery), never silently
-// mis-ordered. A SELECTED column or alias ORDER BY still folds and orders for real — the
-// rejection is narrow (only computed expressions absent from the projection bail).
+// TestFDB_ProjectedExists_Round7 pins a COMPUTED, non-selected ORDER BY
+// expression over a projected EXISTS — `... ORDER BY col1 + 1` where `col1 + 1`
+// is not in the SELECT list. It was rejected while the sort ran above a folded
+// record lacking `col1`; the block now carries the key as a hidden column below
+// the sort and drops it above, as Java's generateSelect does, so it orders for
+// real.
 func TestFDB_ProjectedExists_Round7(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -41,23 +38,33 @@ func TestFDB_ProjectedExists_Round7(t *testing.T) {
 	mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 30), (2, 20), (3, 10)")
 	mustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 1), (101, 3)")
 
-	// Revert-proof: removing the fold's bail (cascades_translator.go) makes this query plan
-	// and return rows in scan order — silently wrong — instead of erroring.
-	t.Run("computed_nonselected_orderby_rejected_cleanly", func(t *testing.T) {
+	t.Run("computed_nonselected_orderby_sorts", func(t *testing.T) {
 		q := "SELECT id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS has_t2 " +
 			"FROM t1 ORDER BY col1 + 1 DESC"
-		_, qerr := db.QueryContext(ctx, q)
-		if qerr == nil {
-			t.Fatal("computed non-selected ORDER BY over projected EXISTS must be rejected " +
-				"cleanly, not silently mis-ordered")
+		rows, qerr := db.QueryContext(ctx, q)
+		if qerr != nil {
+			t.Fatalf("computed non-selected ORDER BY over projected EXISTS: %v", qerr)
 		}
-		if !strings.Contains(qerr.Error(), "projected EXISTS in this query shape is not yet supported") {
-			t.Fatalf("expected the §8 guard's clean unsupported message, got: %v", qerr)
+		defer rows.Close()
+		var got []string
+		for rows.Next() {
+			var id int64
+			var has bool
+			if err := rows.Scan(&id, &has); err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, fmt.Sprintf("%d:%v", id, has))
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		// col1+1: id1=31, id2=21, id3=11 → DESC → ids [1 2 3]; t2 references 1 and 3.
+		if want := "[1:true 2:false 3:true]"; fmt.Sprint(got) != want {
+			t.Fatalf("rows = %v, want %s", got, want)
 		}
 	})
 
-	// The rejection is narrow: a SELECTED computed expression, ordered by its alias, still
-	// folds and orders for real.
+	// A SELECTED computed expression ordered by its alias sorts by the output column.
 	t.Run("selected_alias_orderby_still_folds", func(t *testing.T) {
 		q := "SELECT id, col1 + 1 AS c, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS has_t2 " +
 			"FROM t1 ORDER BY c DESC"

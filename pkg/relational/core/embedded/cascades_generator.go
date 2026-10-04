@@ -3044,6 +3044,9 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 			flowed,
 		)
 		primaryCandidate.WithKeyComponentTypes(keyTypes)
+		if rt.PrimaryKey != nil && rt.Descriptor != nil {
+			primaryCandidate.WithCommonPrimaryKey(recordlayer.TranslatePrimaryKeyToValues(rt.PrimaryKey, strings.ToUpper, flowed))
+		}
 		candidates = append(candidates, primaryCandidate)
 	}
 
@@ -3817,6 +3820,21 @@ func (d *metadataIndexDef) IndexCommonPrimaryKeyValues() []values.Value {
 		strings.ToUpper,
 		d.IndexRowType(),
 	)
+}
+
+// GetCommonPrimaryKeyValues is the record type's primary key translated as an
+// index over the type translates it (IndexCommonPrimaryKeyValues), over the
+// same row layout, so scan and index plans report one primary-key property.
+func (c *metadataPlanContext) GetCommonPrimaryKeyValues(recordType string) []values.Value {
+	if c.md == nil {
+		return nil
+	}
+	rt := c.md.GetRecordType(recordType)
+	if rt == nil || rt.PrimaryKey == nil || rt.Descriptor == nil {
+		return nil
+	}
+	return recordlayer.TranslatePrimaryKeyToValues(rt.PrimaryKey, strings.ToUpper,
+		executor.PositionalTypeForRecordLayout(rt.Descriptor, c.md.IsStoreRecordVersions()))
 }
 
 func (c *metadataPlanContext) GetPrimaryKeyColumns(recordType string) []string {

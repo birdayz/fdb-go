@@ -586,7 +586,7 @@ func TestDerivedTableOrderByKeepsItsOwnSourceAnchor(t *testing.T) {
 	t.Parallel()
 	const ddl = `CREATE TABLE t (id BIGINT, g BIGINT, PRIMARY KEY (id))
 CREATE TABLE t2 (id BIGINT, PRIMARY KEY (id))`
-	const derived = "Map(InMemorySort([_current.G#1 DESC, _current.ID#0 ASC], Scan(T)), {ID: _current.ID#0})"
+	const derived = "Map(InMemorySort([_current._1#1 DESC, _current.ID#0 ASC], Map(Scan(T), {ID: _current.ID#0, _1: _current.G#1})), {ID: _current.ID#0})"
 	for _, tc := range []struct {
 		name string
 		sql  string
@@ -624,7 +624,7 @@ CREATE TABLE t2 (id BIGINT, PRIMARY KEY (id))`
 			// plan string is compared rather than the key alone.
 			name: "enclosing ORDER BY still anchors on the derived output",
 			sql:  `SELECT a.id FROM (SELECT id FROM t ORDER BY g DESC, id ASC LIMIT 4) a ORDER BY a.id DESC`,
-			want: "Map(InMemorySort([_current.ID#0 DESC], Limit(4, " + derived + ")), {ID: _current.ID#0})",
+			want: "InMemorySort([_current.ID#0 DESC], Map(Limit(4, " + derived + "), {ID: _current.ID#0}))",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

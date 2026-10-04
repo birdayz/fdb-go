@@ -5,7 +5,6 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -829,21 +828,24 @@ func TestMatchIntermediateSelectSemantic_ExistentialToForEachMarksDistinctRepair
 		t.Fatalf("fanout child = %p, want %p", got, fanoutChild)
 	}
 
-	// Carry the semantic match through the real single-data-access path. The
-	// compensation must survive as a required logical Unique, then lower to
-	// an executable primary-key distinct plan over the exact PK-proven scan.
-	dataAccesses := DataAccessForMatchPartition(compensationTestMemoizer(),
-		[]*properties.RequestedOrdering{properties.PreserveOrdering()},
-		[]PartialMatch{parents[0]},
-		EmptyPlanContext(),
-		nil,
-	)
-	if len(dataAccesses) != 1 {
-		t.Fatalf("E-to-ForEach data accesses = %d, want 1", len(dataAccesses))
-	}
-	unique, ok := dataAccesses[0].(*expressions.LogicalUniqueExpression)
+	// Carry the semantic match through the real single-data-access
+	// realization. The compensation must survive as a required logical Unique,
+	// then lower to an executable primary-key distinct plan over the exact
+	// PK-proven scan. The match binds no search argument and the candidate
+	// provides no order, so the access path would prune it before realizing
+	// it; it is realized here directly.
+	topToTop, ok := computeTopToTopTranslationMapMaybe(parents[0])
 	if !ok {
-		t.Fatalf("compensated data access = %T, want LogicalUniqueExpression", dataAccesses[0])
+		t.Fatal("E-to-ForEach match has no top-to-top translation")
+	}
+	candidateTop := values.UniqueCorrelationIdentifier()
+	access := NewSingleMatchedAccess(parents[0],
+		parents[0].(*PartialMatchImpl).CompensateCompleteMatch(nil, candidateTop),
+		candidateTop, false, topToTop, nil)
+	dataAccess := make(accessRealizations).single(compensationTestMemoizer(), access)
+	unique, ok := dataAccess.(*expressions.LogicalUniqueExpression)
+	if !ok {
+		t.Fatalf("compensated data access = %T, want LogicalUniqueExpression", dataAccess)
 	}
 	if !unique.IsRequired() {
 		t.Fatal("E-to-ForEach data access emitted an absorbable Unique")

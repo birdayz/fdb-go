@@ -383,9 +383,10 @@ func TestUnionExplorationSchedulingCost(t *testing.T) {
 		build         func() expressions.RelationalExpression
 		before, after int
 	}{
-		{"chain3", func() expressions.RelationalExpression { return buildOrdinalChainSelect(t, 3) }, 562, 562},
-		{"chain4", func() expressions.RelationalExpression { return buildOrdinalChainSelect(t, 4) }, 2365, 2365},
-		{"star3", func() expressions.RelationalExpression { return buildOrdinalStar(t, 3) }, 2557, 2557},
+		// SelectMerge over pruned finals instead of in exploration: 4 fewer each.
+		{"chain3", func() expressions.RelationalExpression { return buildOrdinalChainSelect(t, 3) }, 558, 558},
+		{"chain4", func() expressions.RelationalExpression { return buildOrdinalChainSelect(t, 4) }, 2361, 2361},
+		{"star3", func() expressions.RelationalExpression { return buildOrdinalStar(t, 3) }, 2553, 2553},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -396,7 +397,7 @@ func TestUnionExplorationSchedulingCost(t *testing.T) {
 					var rewriting []ExpressionRule
 					for _, r := range DefaultExpressionRules() {
 						rewriting = append(rewriting, r)
-						if _, merge := r.(*SelectMergeRule); merge {
+						if _, anchor := r.(*NoOpLimitElimRule); anchor {
 							rewriting = append(rewriting, NewNormalizePredicatesRule(), NewPredicateToLogicalUnionRule())
 						}
 					}

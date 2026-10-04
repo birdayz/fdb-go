@@ -4,14 +4,14 @@
 #   CREATE INDEX ord_cid ON ord(cid)
 
 === SELECT c.cid, (SELECT COUNT(*) FROM ord o WHERE o.cid = c.cid) FROM cust c ORDER BY c.cid
-PLAN: Map(FlatMap(outer=Scan(CUST), inner=DefaultOnEmpty(Map(StreamingAgg(keys=[], IndexScan(ORD_CID, [=] COVERING)), {_0: COALESCE(_current.COUNT(*)#0, 0)}))), {CID: _current.CID#0, _0: _current._0#2})
+PLAN: FlatMap(outer=Scan(CUST), inner=DefaultOnEmpty(Map(StreamingAgg(keys=[], IndexScan(ORD_CID, [=] COVERING)), {_0: COALESCE(_current.COUNT(*)#0, 0)})))
 ROWS(3) cols=[CID, _1]:
   [1, 2]
   [2, 1]
   [3, 1]
 
 === SELECT c.cid FROM cust c WHERE EXISTS (SELECT 1 FROM ord o WHERE o.cid = c.cid) ORDER BY c.cid
-PLAN: Map(FlatMap(outer=Scan(CUST), inner=PredicatesFilter(FirstOrDefault(IndexScan(ORD_CID, [=])), [1 preds])), {CID: _current.CID#0})
+PLAN: FlatMap(outer=Scan(CUST), inner=PredicatesFilter(FirstOrDefault(IndexScan(ORD_CID, [=])), [1 preds]))
 ROWS(3) cols=[CID]:
   [1]
   [2]

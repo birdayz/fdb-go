@@ -36,6 +36,22 @@ type PlanContext interface {
 	GetPrimaryKeyColumns(recordType string) []string
 }
 
+// PlanContextWithCommonPrimaryKey supplies a record type's primary key in the
+// structural encoding an index plan over that type reports, or nil.
+type PlanContextWithCommonPrimaryKey interface {
+	GetCommonPrimaryKeyValues(recordType string) []values.Value
+}
+
+// commonPrimaryKeyOf is the context's structural primary key for a scan over
+// recordTypes, nil unless the context supplies one for a single type.
+func commonPrimaryKeyOf(ctx PlanContext, recordTypes []string) []values.Value {
+	pkCtx, ok := ctx.(PlanContextWithCommonPrimaryKey)
+	if !ok || len(recordTypes) != 1 {
+		return nil
+	}
+	return pkCtx.GetCommonPrimaryKeyValues(recordTypes[0])
+}
+
 // PlannerConfiguration mirrors the subset of Java's
 // `RecordQueryPlannerConfiguration` that rules actually consult. As
 // further config-driven rules port, fields land here in step with

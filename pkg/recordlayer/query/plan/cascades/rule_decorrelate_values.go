@@ -44,6 +44,10 @@ func (r *DecorrelateValuesRule) Matcher() matching.BindingMatcher { return r.mat
 
 func (r *DecorrelateValuesRule) OnMatch(call *ExpressionRuleCall) {
 	sel := matching.Get[*expressions.SelectExpression](call.Bindings, r.matcher)
+	// Java matches exploratory expressions only; a final is SelectMergeRule's.
+	if !isExploratoryMember(call.Reference, sel) {
+		return
+	}
 	quantifiers := sel.GetQuantifiers()
 	if len(quantifiers) == 0 {
 		return

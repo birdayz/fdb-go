@@ -30,7 +30,7 @@ func TestSelectMergeTranslationPreservesScopeAndMembers(t *testing.T) {
 			)
 			sel := selectMergeSelectWithAliases(t, rv, []expressions.Quantifier{local}, nil, []string{"local"})
 			ref := expressions.InitialOf(sel)
-			tr := newSelectMergeTranslation(NewExpressionRuleCall(ref, nil, nil))
+			tr := newSelectMergeTranslation(nil)
 			tr.add(from, selectMergeQOV(t, to, selectMergeTestRowType()), false)
 			translated, err := tr.reference(ref)
 			if err != nil {
@@ -70,7 +70,7 @@ func TestSelectMergeTranslationPreservesLanesFlagsAndSharedGraphs(t *testing.T) 
 	filter := selectMergeFilter(t, []predicates.QueryPredicate{predicates.NewComparisonPredicate(outerField, literalCmp(predicates.ComparisonEquals, int64(1)))}, local)
 	ref := expressions.InitialOf(filter)
 	ref.InsertFinal(selectMergeSelect(t, selectMergeFlowed(t, local), []expressions.Quantifier{local}, filter.GetPredicates()))
-	tr := newSelectMergeTranslation(NewExpressionRuleCall(ref, nil, nil))
+	tr := newSelectMergeTranslation(nil)
 	tr.add(from, selectMergeQOV(t, to, selectMergeTestRowType()), false)
 	qs := []expressions.Quantifier{
 		expressions.NamedForEachNullOnEmptyQuantifier(values.UniqueCorrelationIdentifier(), ref),
@@ -120,7 +120,7 @@ func TestSelectMergeTranslationTranslatesAggregatePrograms(t *testing.T) {
 	if _, free := ref.GetCorrelatedTo()[from]; !free {
 		t.Fatal("aggregate operands/grouping keys hide their outer dependency")
 	}
-	tr := newSelectMergeTranslation(NewExpressionRuleCall(ref, nil, nil))
+	tr := newSelectMergeTranslation(nil)
 	tr.add(from, selectMergeQOV(t, to, selectMergeTestRowType()), false)
 	translated, err := tr.reference(ref)
 	if err != nil {
@@ -154,7 +154,7 @@ func TestSelectMergeTranslationUnaryInputDoesNotBindItsOwnAlias(t *testing.T) {
 		t.Fatal(err)
 	}
 	ref := expressions.InitialOf(sort)
-	tr := newSelectMergeTranslation(NewExpressionRuleCall(ref, nil, nil))
+	tr := newSelectMergeTranslation(nil)
 	tr.add(from, selectMergeQOV(t, to, selectMergeTestRowType()), false)
 	translated, err := tr.reference(ref)
 	if err != nil {

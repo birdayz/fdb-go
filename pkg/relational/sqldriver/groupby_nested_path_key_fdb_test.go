@@ -191,8 +191,11 @@ func TestFDB_GroupByNestedPathKey(t *testing.T) {
 			Scan(&plan); err != nil {
 			t.Fatalf("EXPLAIN: %v", err)
 		}
-		want := "Map(StreamingAgg(keys=[_current.R#2.V#1.Z#1], " +
-			"InMemorySort([_current.R#2.V#1.Z#1 ASC], Scan(NESTED))), {_0: _current.MAX(Q.S)#1})"
+		// The grouping key is not projected, so the block carries it as `_1`
+		// and one more Map drops it (Java's generateSelect).
+		want := "Map(Map(StreamingAgg(keys=[_current.R#2.V#1.Z#1], " +
+			"InMemorySort([_current.R#2.V#1.Z#1 ASC], Scan(NESTED))), " +
+			"{_0: _current.MAX(Q.S)#1, _1: _current.NESTED.R.V.Z#0}), {_0: _current._0#0})"
 		if plan != want {
 			t.Fatalf("plan shape moved.\n  got:  %s\n  want: %s\n"+
 				"  A SECOND sort above the aggregation means the ordering the "+

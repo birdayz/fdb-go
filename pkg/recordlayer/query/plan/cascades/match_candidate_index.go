@@ -9,6 +9,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // ValueIndexScanMatchCandidate represents a secondary index as a
@@ -1283,11 +1284,11 @@ func (c *ValueIndexScanMatchCandidate) plainFieldColumnsForShortcut() ([]string,
 	return c.columnNames, true
 }
 
-// orderingColumnDirections states each key column's physical order for the
-// scan plan's ordering claim: tuple-natural ascending for a plain field, the
-// order function's direction for an order-wrapped one. ok=false when any
-// column carries another function (a CARDINALITY column orders by no field).
-func (c *ValueIndexScanMatchCandidate) orderingColumnDirections() ([]values.OrderedBytesDirection, bool) {
+// orderingColumns states what each key column orders the scan plan by: a
+// plain field tuple-natural ascending, an order-wrapped field in the function's
+// direction, a CARDINALITY column by the cardinality of its field. ok=false
+// when the key carries another shape.
+func (c *ValueIndexScanMatchCandidate) orderingColumns() ([]plans.IndexOrderingColumn, bool) {
 	if !c.canProduceScanPlan() || c.rootKeyExpression == nil {
 		return nil, false
 	}
@@ -1295,7 +1296,7 @@ func (c *ValueIndexScanMatchCandidate) orderingColumnDirections() ([]values.Orde
 	if !ok || len(descriptors) != len(c.columnNames) {
 		return nil, false
 	}
-	directions := make([]values.OrderedBytesDirection, len(c.columnNames))
+	columns := make([]plans.IndexOrderingColumn, len(c.columnNames))
 	for i, descriptor := range descriptors {
 		function := ""
 		if i < len(c.columnFunctions) {
@@ -1304,16 +1305,19 @@ func (c *ValueIndexScanMatchCandidate) orderingColumnDirections() ([]values.Orde
 		if !strings.EqualFold(descriptor.name, c.columnNames[i]) || descriptor.function != function {
 			return nil, false
 		}
-		directions[i] = values.OrderedBytesAscNullsFirst
-		if function != "" {
+		switch function {
+		case "":
+		case FunctionKindCardinality:
+			columns[i].Cardinality = true
+		default:
 			direction, isOrder := OrderFunctionDirection(function)
 			if !isOrder {
 				return nil, false
 			}
-			directions[i] = direction
+			columns[i].Direction = direction
 		}
 	}
-	return directions, true
+	return columns, true
 }
 
 // HasAndOrderedByRecordTypeKey reports whether the index key starts
@@ -1355,7 +1359,11 @@ func (c *ValueIndexScanMatchCandidate) PushValueThroughFetch(
 // Ports the conceptual equivalent of Java's
 // ScanWithFetchMatchCandidate.createTranslateValueFunction.
 func (c *ValueIndexScanMatchCandidate) buildTranslateValueFunction() plans.TranslateValueFunction {
-	if !c.canProduceScanPlan() {
+	// Java's covering mapping copies every key column into a field of the
+	// queried record and has none when one cannot be copied
+	// (ScanWithFetchMatchCandidate.computeIndexEntryToLogicalRecord); a version
+	// key's __ROW_VERSION is no field of the record.
+	if !c.canProduceScanPlan() || keyExpressionHasVersion(c.rootKeyExpression) {
 		return func(
 			values.Value,
 			values.CorrelationIdentifier,
@@ -1460,3 +1468,33 @@ var (
 )
 
 // Interface compliance also checked in match_candidate_interfaces.go.
+
+// keyExpressionHasVersion reports whether root keys any column on the record
+// version (a VersionKeyExpression), as opposed to a real field that happens to
+// be named __ROW_VERSION.
+func keyExpressionHasVersion(root *gen.KeyExpression) bool {
+	found := false
+	var walk func(m protoreflect.Message)
+	walk = func(m protoreflect.Message) {
+		if key, ok := m.Interface().(*gen.KeyExpression); ok && key.GetVersion() != nil {
+			found = true
+			return
+		}
+		m.Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
+			switch {
+			case fd.IsMap() || fd.Kind() != protoreflect.MessageKind:
+			case fd.IsList():
+				for i, list := 0, v.List(); i < list.Len() && !found; i++ {
+					walk(list.Get(i).Message())
+				}
+			default:
+				walk(v.Message())
+			}
+			return !found
+		})
+	}
+	if root != nil {
+		walk(root.ProtoReflect())
+	}
+	return found
+}
