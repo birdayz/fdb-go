@@ -109,7 +109,7 @@ func (r *StreamingAggFromIndexRule) OnMatch(call *ExpressionRuleCall) {
 		for i, gk := range groupingKeys {
 			// Full accessor path, not leaf name (RFC-187 S8): a nested grouping
 			// key must not match a same-leaf-named top-level index column.
-			if !aggColumnMatches(gk, colNames[i]) {
+			if !aggColumnMatches(gk, []string{colNames[i]}) {
 				matches = false
 				break
 			}
@@ -172,7 +172,7 @@ func aggregatesCoveredByIndex(aggs []expressions.AggregateSpec, indexCols []stri
 		}
 		found := false
 		for _, col := range indexCols {
-			if aggColumnMatches(fv, col) {
+			if aggColumnMatches(fv, []string{col}) {
 				found = true
 				break
 			}

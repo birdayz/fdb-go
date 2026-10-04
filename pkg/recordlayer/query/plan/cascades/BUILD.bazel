@@ -236,6 +236,7 @@ go_test(
         "aggregate_group_row_test.go",
         "aggregate_index_shortcut_gate_test.go",
         "aggregate_index_unknown_key_type_test.go",
+        "aggregate_nested_column_paths_test.go",
         "alias_aware_interning_shadow_delta_test.go",
         "alias_map_compose_test.go",
         "alias_map_storage_test.go",
@@ -1174,6 +1175,7 @@ go_test(
         "rule_outer_join_materialization.go",
         "rule_outer_join_materialization_test.go",
         "key_expression_expansion.go",
+        "aggregate_nested_column_paths_test.go",
     ],
     deps = [
         "//gen",

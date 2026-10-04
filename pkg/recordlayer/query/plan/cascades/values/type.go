@@ -947,6 +947,26 @@ func (r *RecordType) LookupFieldUnique(name string) (Field, bool) {
 	return r.Fields[idx], true
 }
 
+// LookupFieldPathUnique resolves a field path from row, each step by
+// LookupFieldUnique; false for an empty path or a step that is not exactly one
+// field of a record.
+func LookupFieldPathUnique(row Type, path []string) (Field, bool) {
+	var field Field
+	for i, name := range path {
+		record, ok := row.(*RecordType)
+		if !ok {
+			return Field{}, false
+		}
+		if field, ok = record.LookupFieldUnique(name); !ok {
+			return Field{}, false
+		}
+		if i < len(path)-1 {
+			row = field.FieldType
+		}
+	}
+	return field, len(path) > 0
+}
+
 // GetField returns the field at the given ordinal plus a found flag.
 // Negative or out-of-range ordinals return (Field{}, false).
 func (r *RecordType) GetField(ordinal int) (Field, bool) {

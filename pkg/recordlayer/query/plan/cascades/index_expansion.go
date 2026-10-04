@@ -26,13 +26,22 @@ func ExpandValueIndex(candidate MatchCandidate) *Traversal {
 		}
 		return nil
 	}
-	columns := candidate.GetColumnNames()
 	aliases := candidate.GetSargableAliases()
-	if len(columns) < len(aliases) {
-		return nil
+	var root *gen.KeyExpression
+	if aggregate, ok := candidate.(*AggregateIndexMatchCandidate); ok {
+		paths := aggregate.GetGroupColumnPaths()
+		if len(paths) < len(aliases) {
+			return nil
+		}
+		root = pathColumnsRootKeyExpression(paths[:len(aliases)])
+	} else {
+		columns := candidate.GetColumnNames()
+		if len(columns) < len(aliases) {
+			return nil
+		}
+		root = flatColumnsRootKeyExpression(columns[:len(aliases)], nil)
 	}
-	expansion, err := expandValueIndexRoot(candidate,
-		flatColumnsRootKeyExpression(columns[:len(aliases)], nil), nil)
+	expansion, err := expandValueIndexRoot(candidate, root, nil)
 	if err != nil {
 		return nil
 	}

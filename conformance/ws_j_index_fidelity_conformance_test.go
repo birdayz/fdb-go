@@ -1578,12 +1578,10 @@ var wsjQueryGoOverflow = map[string]string{
 	"bucket_offset_long_min": "ERROR 22003 \"long overflow\"",
 }
 
-// Whether the target SERVES a GROUP BY over nested struct fields from an
-// aggregate index. Go stores such an index since the field-path trie fix, and
-// its planner does not use it (TestAggregateIndexResidual_RecordTypedGrouping
-// KeyIsUnreachable guards that, because RFC-248's residual ordinal rewrite has
-// no rows pin over a leaf-expanded grouping key). The Java tree decides whether
-// that is parity or a missing plan.
+// Whether each engine SERVES a GROUP BY over nested struct fields from an
+// aggregate index. Both serve the nested LEAF groupings from it, a residual on a
+// later grouping column above the scan and the leading equality bound (WS-J
+// 3.3b); neither serves a RECORD-typed grouping key from it.
 var _ = Describe("WS-J nested-grouping aggregate index plan oracle", func() {
 	It("records both engines' plans for GROUP BY over nested fields", func() {
 		ctx := context.Background()
@@ -1594,7 +1592,9 @@ var _ = Describe("WS-J nested-grouping aggregate index plan oracle", func() {
 		Expect(err).NotTo(HaveOccurred())
 		defer func() { _ = srv.Close() }()
 		java := plandiff.NewJavaEngineHTTP(javaBaseURL(srv), env.ClusterFile)
-		goEngine := plandiff.NewGoEngine()
+		clusterFilePath := writeClusterFileToTemp(env.ClusterFile)
+		defer os.Remove(clusterFilePath)
+		goRunner := plandiff.NewGoSQLSetupRunner(clusterFilePath)
 		schema := "CREATE TYPE AS STRUCT ADDR (city STRING, zip BIGINT) " +
 			"CREATE TABLE T_S (id BIGINT, home ADDR, cat STRING, v BIGINT, PRIMARY KEY (id)) " +
 			"CREATE INDEX cnt_home_cat AS SELECT COUNT(*) FROM T_S GROUP BY home.city, home.zip, cat " +
@@ -1618,23 +1618,43 @@ var _ = Describe("WS-J nested-grouping aggregate index plan oracle", func() {
 			"SELECT home.city, home.zip, cat, SUM(v) FROM T_S WHERE home.city = 'a' GROUP BY home.city, home.zip, cat": "AISCAN(SUM_HOME_CAT [EQUALS promote(@c22 AS STRING)] BY_GROUP -> [_0: KEY:[0], _1: KEY:[1], _2: KEY:[2], _3: VALUE:[0]]) | MAP (_._0 AS CITY, _._1 AS ZIP, _._2 AS CAT, _._3 AS _3)",
 			"SELECT home, cat, COUNT(*) FROM T_S GROUP BY home, cat":                                                   "ERROR plandiff: java UnableToPlanException: Cascades planner could not plan query",
 		}
-		n := 0
+		// Go's physical plans, through EXPLAIN on the SQL runner. The SUM read
+		// joins its COUNT(*) companion (RFC-209), where the target reads SUM alone.
+		wantGo := map[string]string{
+			"SELECT cat, COUNT(*) FROM T_S GROUP BY cat":                                                               "Map(AggregateIndex(COUNT, CNT_CAT, [CAT], T_S, live_groups_only), {CAT: _current.CAT#0, _1: _current.COUNT(*)#1})",
+			"SELECT home.city, home.zip, cat, COUNT(*) FROM T_S GROUP BY home.city, home.zip, cat":                     "Map(AggregateIndex(COUNT, CNT_HOME_CAT, [CITY ZIP CAT], T_S, live_groups_only), {CITY: _current.T_S.HOME.CITY#0, ZIP: _current.T_S.HOME.ZIP#1, CAT: _current.CAT#2, _3: _current.COUNT(*)#3})",
+			"SELECT home.city, home.zip, cat, COUNT(*) FROM T_S WHERE cat = 'x' GROUP BY home.city, home.zip, cat":     "Map(PredicatesFilter(AggregateIndex(COUNT, CNT_HOME_CAT, [CITY ZIP CAT], T_S, live_groups_only), [1 preds]), {CITY: _current.T_S.HOME.CITY#0, ZIP: _current.T_S.HOME.ZIP#1, CAT: _current.CAT#2, _3: _current.COUNT(*)#3})",
+			"SELECT home.city, home.zip, cat, SUM(v) FROM T_S WHERE home.city = 'a' GROUP BY home.city, home.zip, cat": "Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_HOME_CAT, [CITY ZIP CAT], T_S, live_groups_only), AggregateIndex(SUM, SUM_HOME_CAT, [CITY ZIP CAT], T_S); keys=[CITY#0, ZIP#1, CAT#2], driving=0), {CITY: _current.T_S.HOME.CITY#0, ZIP: _current.T_S.HOME.ZIP#1, CAT: _current.CAT#2, _3: _current.SUM(V)#3})",
+			"SELECT home, cat, COUNT(*) FROM T_S GROUP BY home, cat":                                                   "Map(StreamingAgg(keys=[_current.HOME#1, _current.CAT#2], InMemorySort([_current.HOME#1.CITY#0 ASC, _current.HOME#1.ZIP#1 ASC, _current.CAT#2 ASC], Scan(T_S))), {HOME: _current.HOME#0, CAT: _current.CAT#1, _2: _current.COUNT(*)#2})",
+		}
+		render := func(r plandiff.PlanResult) string {
+			if r.Err != nil {
+				return "ERROR " + wsjTrim(r.Err.Error())
+			}
+			return strings.Join(strings.Fields(r.Tree), " ")
+		}
+		renderGo := func(r plandiff.RunResult) string {
+			if r.Err != nil {
+				return "ERROR " + wsjTrim(r.Err.Error())
+			}
+			if len(r.Rows.Rows) == 0 || len(r.Rows.Rows[0]) == 0 {
+				return "EMPTY"
+			}
+			return fmt.Sprint(r.Rows.Rows[0][0])
+		}
+		gotJava, gotGo := map[string]string{}, map[string]string{}
 		for i, q := range reads {
 			query := plandiff.Query{Name: fmt.Sprintf("wsj_nested_%d", i), SQL: q, SchemaTemplate: schema}
-			jr := java.Plan(ctx, query)
-			gr := goEngine.Plan(ctx, query)
-			render := func(r plandiff.PlanResult) string {
-				if r.Err != nil {
-					return "ERROR " + wsjTrim(r.Err.Error())
-				}
-				return strings.Join(strings.Fields(r.Tree), " ")
-			}
-			fmt.Fprintf(GinkgoWriter, "WSJP %q\n  java=%s\n  go=%s\n", q, render(jr), render(gr))
-			Expect(render(jr)).To(Equal(wantJava[q]), "Java plan for %s moved", q)
-			n++
+			gotJava[q], gotGo[q] = render(java.Plan(ctx, query)), renderGo(goRunner.RunWithSetup(ctx, schema, nil, "EXPLAIN "+q))
+			fmt.Fprintf(GinkgoWriter, "WSJP %q\n  java=%s\n  go=%s\n", q, gotJava[q], gotGo[q])
 		}
-		Expect(n).To(Equal(len(reads)))
-		Expect(wantJava).To(HaveLen(len(reads)))
+		Expect(gotJava).To(HaveLen(len(reads)), "reads are unique")
+		Expect(sortedStringKeys(wantJava)).To(Equal(sortedStringKeys(gotJava)), "every read has a Java pin")
+		Expect(sortedStringKeys(wantGo)).To(Equal(sortedStringKeys(gotGo)), "every read has a Go pin")
+		for _, q := range reads {
+			Expect(gotJava[q]).To(Equal(wantJava[q]), "Java plan for %s moved", q)
+			Expect(gotGo[q]).To(Equal(wantGo[q]), "Go plan for %s moved", q)
+		}
 	})
 })
 

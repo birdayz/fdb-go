@@ -3930,39 +3930,18 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 		return nil
 	}
 
-	// This candidate represents scalar top-level field accessors. FieldNames
-	// loses expression identity: MAX(add(v, 1)) would otherwise match MAX(v).
-	// Java expands the whole key into Values before matching. Decline key
-	// shapes this field-only candidate cannot represent rather than flattening
-	// functions, nested accessors or fan-out leaves into different expressions.
-	var allCols []string
-	var fields func(*gen.KeyExpression) bool
-	fields = func(key *gen.KeyExpression) bool {
-		if key == nil {
-			return false
-		}
-		if key.Empty != nil {
-			return true
-		}
-		if key.Then != nil {
-			for _, child := range key.Then.Child {
-				if !fields(child) {
-					return false
-				}
-			}
-			return true
-		}
-		if key.Field == nil || key.Field.GetFanType() != gen.Field_SCALAR {
-			return false
-		}
-		allCols = append(allCols, key.Field.GetFieldName())
-		return true
-	}
-	if !fields(gke.ToKeyExpression().GetGrouping().GetWholeKey()) || len(allCols) != gke.ColumnSize() {
-		return nil
-	}
+	// The candidate identifies each column by the full field path it reads,
+	// the FieldValue the expansion visitor builds for it. A key the visitor
+	// would expand into any other Value (a function, a version, a fan-out)
+	// declines: MAX(add(v, 1)) must not match MAX(v). More than one grouped
+	// column is Java's UnsupportedOperationException (constructGroupBy).
 	groupingCount := gke.GetGroupingCount()
 	groupedCount := gke.GetGroupedCount()
+	groupPaths, groupedPaths, err := cascades.DescribeAggregateIndexKey(
+		gke.ToKeyExpression().GetGrouping().GetWholeKey(), groupingCount)
+	if err != nil || len(groupPaths) != groupingCount || len(groupedPaths) != groupedCount || groupedCount > 1 {
+		return nil
+	}
 
 	// An ungrouped index is one group, the whole table. It serves an _EVER
 	// aggregate, which the rule extends to a NULL row when the index holds no
@@ -4001,11 +3980,14 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 	// operand, which bottoms out in RecordType.fieldNameScan's `f.Name == name`
 	// (values/type.go) — a byte comparison with no fold anywhere near it.
 	groupCols := make([]string, groupingCount)
-	copy(groupCols, allCols[:groupingCount])
-
+	for i, path := range groupPaths {
+		groupCols[i] = path[len(path)-1]
+	}
 	var aggColumn string
-	if groupedCount > 0 && groupingCount+groupedCount <= len(allCols) {
-		aggColumn = allCols[groupingCount]
+	var aggPath []string
+	if groupedCount > 0 {
+		aggPath = groupedPaths[0]
+		aggColumn = aggPath[len(aggPath)-1]
 	}
 
 	rts := md.RecordTypesForIndex(idx)
@@ -4028,7 +4010,7 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 		if !ok {
 			return nil
 		}
-		field, ok := row.LookupFieldUnique(aggColumn)
+		field, ok := values.LookupFieldPathUnique(row, aggPath)
 		if !ok {
 			return nil
 		}
@@ -4039,9 +4021,10 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 			}
 		}
 		groupCols = append(groupCols, bucketName)
+		groupPaths = append(groupPaths, []string{bucketName})
 		groupTypes = append(groupTypes, field.FieldType)
 		return cascades.NewAggregateIndexMatchCandidate(idx.Name, rtNames, groupCols, aggFunc, aggColumn,
-			row, groupTypes, len(groupCols)).WithBitmapEntrySize(size)
+			row, groupTypes, len(groupCols)).WithColumnPaths(groupPaths, aggPath).WithBitmapEntrySize(size)
 	}
 
 	// RFC-209: carry the two structural facts the group-existence machinery
@@ -4061,7 +4044,8 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 		singleRecordTypeRowType(md, idx),
 		groupTypes,
 		groupingCount-permutedSize,
-	).WithPermutedOrdering(idx.Type == recordlayer.IndexTypePermutedMax || idx.Type == recordlayer.IndexTypePermutedMin).WithGroupExistence(idx.Type == recordlayer.IndexTypeCount, recordlayer.GroupingSignature(gke)).
+	).WithColumnPaths(groupPaths, aggPath).
+		WithPermutedOrdering(idx.Type == recordlayer.IndexTypePermutedMax || idx.Type == recordlayer.IndexTypePermutedMin).WithGroupExistence(idx.Type == recordlayer.IndexTypeCount, recordlayer.GroupingSignature(gke)).
 		WithGroupExistenceCompanionNeed(
 			recordlayer.PredicateSignature(idx),
 			recordlayer.NeedsGroupCountCompanion(idx),

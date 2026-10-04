@@ -38,6 +38,9 @@ type keyExpansionColumn struct {
 	// concatenate marks a plain CONCATENATE field: the whole repeated field as
 	// one key column.
 	concatenate bool
+	// fanOut marks a column registered below a FAN_OUT; its path, if any, is
+	// relative to the exploded element.
+	fanOut bool
 }
 
 // keyExpansionRegistry is the mutable half of Java's VisitorState: the key and
@@ -90,6 +93,7 @@ func (s keyExpansionState) registerValue(value values.Value, column keyExpansion
 	if s.internal {
 		return
 	}
+	column.fanOut = s.fanOut
 	if s.isKey() {
 		s.reg.keyValues = append(s.reg.keyValues, value)
 		s.reg.keyColumns = append(s.reg.keyColumns, column)
@@ -810,6 +814,64 @@ func expandValueIndexRoot(
 		valueValues:   registry.valueValues,
 		valueColumns:  registry.valueColumns,
 	}, nil
+}
+
+// DescribeAggregateIndexKey walks an aggregate index's whole key the way
+// AggregateIndexExpansionVisitor.constructBaseExpansion expands it (the
+// grouping columns are its keys, the grouped column its value), without a
+// base: the full field path of each grouping and grouped column. The aggregate
+// candidate identifies its columns by these paths, so a column that is not a
+// scalar field path (a function, a version, a fan-out or concatenated field)
+// is unsupported.
+func DescribeAggregateIndexKey(wholeKey *gen.KeyExpression, groupingCount int) (grouping, grouped [][]string, err error) {
+	registry := &keyExpansionRegistry{aliases: make([]values.CorrelationIdentifier, groupingCount)}
+	if _, err := expandKeyExpression(wholeKey, keyExpansionState{
+		reg:        registry,
+		splitPoint: groupingCount,
+		selectStar: true,
+		describe:   true,
+	}); err != nil {
+		return nil, nil, err
+	}
+	if err := checkAllAliasesTaken(registry); err != nil {
+		return nil, nil, err
+	}
+	paths := func(columns []keyExpansionColumn) ([][]string, error) {
+		out := make([][]string, len(columns))
+		for i, column := range columns {
+			if column.path == nil || column.function != "" || column.concatenate || column.fanOut ||
+				column.name == values.PseudoFieldRowVersion {
+				return nil, unsupportedKeyExpansion("aggregate column %d is not a scalar field path", i)
+			}
+			out[i] = column.path
+		}
+		return out, nil
+	}
+	if grouping, err = paths(registry.keyColumns); err != nil {
+		return nil, nil, err
+	}
+	if grouped, err = paths(registry.valueColumns); err != nil {
+		return nil, nil, err
+	}
+	return grouping, grouped, nil
+}
+
+// pathColumnsRootKeyExpression spells a list of scalar field paths as the key
+// expression they are: a SCALAR field, nested under its SCALAR parents.
+func pathColumnsRootKeyExpression(paths [][]string) *gen.KeyExpression {
+	children := make([]*gen.KeyExpression, len(paths))
+	for i, path := range paths {
+		key := flatColumnField(path[len(path)-1], gen.Field_SCALAR)
+		for j := len(path) - 2; j >= 0; j-- {
+			parent := path[j]
+			key = &gen.KeyExpression{Nesting: &gen.Nesting{
+				Parent: &gen.Field{FieldName: &parent, FanType: gen.Field_SCALAR.Enum()},
+				Child:  key,
+			}}
+		}
+		children[i] = key
+	}
+	return &gen.KeyExpression{Then: &gen.Then{Child: children}}
 }
 
 // flatColumnsRootKeyExpression spells a list of top-level columns as the key

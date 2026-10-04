@@ -186,3 +186,101 @@ func TestFDB_BitmapAggregateIndex(t *testing.T) {
 		sweep()
 	}
 }
+
+// TestFDB_AggregateIndexNestedLeafGrouping is the rows behind
+// TestAggregateIndexNestedLeafGroupingColumns (embedded, RFC-257 WS-J 3.3b): a
+// GROUP BY over nested LEAF fields served by the aggregate index grouping by
+// them answers what the unindexed twin answers, through DML that rewrites
+// structs, nulls them, empties and revives groups. A RECORD-typed grouping key
+// over the same leaves stays off the index and agrees too.
+func TestFDB_AggregateIndexNestedLeafGrouping(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	const table = "CREATE TYPE AS STRUCT ADDR (city STRING, zip BIGINT) " +
+		"CREATE TABLE t_s (id BIGINT, home ADDR, office ADDR, city STRING, cat STRING, v BIGINT, PRIMARY KEY (id)) "
+	const indexes = "CREATE INDEX cnt_home_cat AS SELECT COUNT(*) FROM t_s GROUP BY home.city, home.zip, cat " +
+		"CREATE INDEX sum_home_cat AS SELECT SUM(v) FROM t_s GROUP BY home.city, home.zip, cat " +
+		"CREATE INDEX cnt_home_office AS SELECT COUNT(*) FROM t_s GROUP BY home.city, office.city "
+	w := mmNewTwin(t, ctx, "/testdb_aggnested", "aggnested", table, indexes)
+
+	cities := []string{"'a'", "'b'", "NULL"}
+	cats := []string{"'x'", "'y'"}
+	var rows []string
+	for id := int64(0); id < 36; id++ {
+		home := fmt.Sprintf("(%s, %d)", cities[id%3], id%2+1)
+		if id%11 == 5 {
+			home = "NULL"
+		}
+		rows = append(rows, fmt.Sprintf("(%d, %s, (%s, %d), %s, %s, %d)", id, home,
+			cities[(id/3)%3], id%3, cities[(id/2)%3], cats[(id/4)%2], (id*5)%7-2))
+	}
+	w.Exec("INSERT INTO t_s (id, home, office, city, cat, v) VALUES " + strings.Join(rows, ", "))
+
+	served := []string{
+		"SELECT home.city, home.zip, cat, COUNT(*) FROM t_s GROUP BY home.city, home.zip, cat ORDER BY home.city, home.zip, cat",
+		"SELECT home.city, home.zip, cat, COUNT(*) FROM t_s WHERE cat = 'x' GROUP BY home.city, home.zip, cat ORDER BY home.city, home.zip",
+		"SELECT home.city, home.zip, cat, SUM(v) FROM t_s WHERE home.city = 'a' GROUP BY home.city, home.zip, cat ORDER BY home.city, home.zip, cat",
+		"SELECT home.city, home.zip, cat, COUNT(*) FROM t_s WHERE home.city = 'b' AND home.zip > 1 GROUP BY home.city, home.zip, cat",
+		"SELECT home.city, home.zip, cat, SUM(v), COUNT(*) FROM t_s WHERE home.zip = 2 GROUP BY home.city, home.zip, cat ORDER BY home.city, home.zip, cat",
+		"SELECT home.city, home.zip, cat, COUNT(*) FROM t_s WHERE home.city IS NULL GROUP BY home.city, home.zip, cat ORDER BY home.zip, cat",
+		"SELECT home.city, office.city, COUNT(*) FROM t_s WHERE office.city = 'b' GROUP BY home.city, office.city ORDER BY home.city",
+	}
+	unserved := []string{
+		// RECORD-typed key: Java plans nothing; Go aggregates the records.
+		// (projected without the struct, which the row scanner cannot hold).
+		"SELECT cat, COUNT(*) FROM t_s GROUP BY home, cat",
+		// The top-level CITY is not HOME.CITY.
+		"SELECT city, home.zip, cat, COUNT(*) FROM t_s GROUP BY city, home.zip, cat ORDER BY city, home.zip, cat",
+	}
+	for _, q := range served {
+		plan, err := embedded.PlanPhysicalForTest(q, table+indexes, nil)
+		if err != nil {
+			t.Fatalf("plan %s: %v", q, err)
+		}
+		if reached, sorted := aggregateIndexAndSortIn(plan); !reached || sorted {
+			t.Fatalf("read is not served by the aggregate index without a sort (reached=%v sorted=%v)\n  q: %s\n  plan: %s",
+				reached, sorted, q, plan.Explain())
+		}
+	}
+	for _, q := range unserved {
+		plan, err := embedded.PlanPhysicalForTest(q, table+indexes, nil)
+		if err != nil {
+			t.Fatalf("plan %s: %v", q, err)
+		}
+		if reached, _ := aggregateIndexAndSortIn(plan); reached {
+			t.Fatalf("read is served by an aggregate index over other columns\n  q: %s\n  plan: %s", q, plan.Explain())
+		}
+	}
+	sweep := func(stage string) {
+		t.Helper()
+		for _, q := range append(append([]string(nil), served...), unserved...) {
+			gi, ei := mmRows(t, ctx, w.idx, q)
+			gn, en := mmRows(t, ctx, w.plain, q)
+			if ei != nil || en != nil {
+				t.Errorf("%s: query failed\n  q: %s\n  indexed:   %v\n  unindexed: %v", stage, q, ei, en)
+				continue
+			}
+			if len(gn) == 0 {
+				t.Errorf("%s: the unindexed twin answers no rows, so agreement proves nothing\n  q: %s", stage, q)
+			}
+			if !mmEqRows(gi, gn) {
+				t.Errorf("%s: the nested-leaf aggregate index disagrees with the unindexed twin\n  q: %s\n  indexed  : %v\n  unindexed: %v\n  plan: %s",
+					stage, q, gi, gn, w.Explain(q))
+			}
+		}
+	}
+	sweep("initial")
+	for i, stmt := range []string{
+		"UPDATE t_s SET home = ('b', 2) WHERE id < 6",           // moves rows between nested groups
+		"DELETE FROM t_s WHERE cat = 'y' AND id > 30",           // empties groups
+		"UPDATE t_s SET office = ('b', 9) WHERE office IS NULL", // the second nested parent
+		"INSERT INTO t_s (id, home, office, city, cat, v) VALUES (100, ('a', 2), ('b', 1), 'a', 'x', 4), (101, NULL, NULL, NULL, 'y', 1)",
+		"UPDATE t_s SET v = 0 WHERE home.city = 'a'", // SUM to zero in live groups
+	} {
+		w.Exec(stmt)
+		sweep(fmt.Sprintf("after dml %d (%s)", i, stmt))
+	}
+}

@@ -1433,7 +1433,7 @@ func (p *RecordQueryAggregateIndexPlan) HintOrdering() properties.Ordering {
 	if len(groupCols) == 0 {
 		return properties.Ordering{IsKnown: len(p.groupCols) == 0}
 	}
-	split := p.aggregateOrderSplit(groupCols, keyTypes)
+	split := p.aggregateOrderSplit(groupCols, ordinals, keyTypes)
 	fixedLen, sortedCols := split.fixedLen, split.tail
 	if len(sortedCols) == 0 {
 		if fixedLen == len(groupCols) && !split.tailDropped && (!p.permuted || len(groupCols) == len(p.groupCols)+1) {
@@ -1452,8 +1452,8 @@ func (p *RecordQueryAggregateIndexPlan) HintOrdering() properties.Ordering {
 	// no domain is one no consumer may compare.
 	keys := make([]values.Value, 0, len(sortedCols))
 	desc := make([]bool, 0, len(sortedCols))
-	for i, col := range sortedCols {
-		key := p.groupingOrderingKey(col, ordinals[fixedLen+i])
+	for i := range sortedCols {
+		key := p.groupingOrderingKey(ordinals[fixedLen+i])
 		if key == nil {
 			return properties.Ordering{IsKnown: false}
 		}
@@ -1473,13 +1473,16 @@ func (p *RecordQueryAggregateIndexPlan) groupingScanComparisons() []*predicates.
 	return p.indexPlan.GetScanComparisons()
 }
 
-// aggregateOrderSplit applies physical key ordering to output coordinates.
-func (p *RecordQueryAggregateIndexPlan) aggregateOrderSplit(cols []string, types []values.Type) keyOrderSplit {
+// aggregateOrderSplit applies physical key ordering to output coordinates;
+// ordinals[i] is the output slot of coordinate i.
+func (p *RecordQueryAggregateIndexPlan) aggregateOrderSplit(cols []string, ordinals []int, types []values.Type) keyOrderSplit {
 	layout := p.GetGroupColumnLayout()
+	nestedPath := func(i int) []string { return p.nestedGroupColumnPath(ordinals[i]) }
 	if p.permuted {
-		layout = p.GetResultType()
+		// The permuted coordinates are named by the result row's slots.
+		layout, nestedPath = p.GetResultType(), nil
 	}
-	return splitKeyOrder(p.groupingScanComparisons(), cols, nil, types, layout, nil)
+	return splitKeyOrder(p.groupingScanComparisons(), cols, nil, types, layout, nestedPath)
 }
 
 // aggregateOrderingColumns maps physical key coordinates to logical output
@@ -1508,11 +1511,7 @@ func (p *RecordQueryAggregateIndexPlan) aggregateOrderingColumns() ([]string, []
 	// grouping prefix is ordered when the operand can contain NULLs.
 	aggregateSorted := true
 	if p.aggregateFunction == "MIN" {
-		if base, ok := p.GetGroupColumnLayout().(*values.RecordType); ok {
-			if field, ok := base.LookupFieldUnique(p.aggColumn); !ok || field.FieldType.IsNullable() {
-				aggregateSorted = false
-			}
-		} else {
+		if field, ok := p.aggColumnField(p.GetGroupColumnLayout()); !ok || field.FieldType.IsNullable() {
 			aggregateSorted = false
 		}
 	}
@@ -1529,10 +1528,15 @@ func (p *RecordQueryAggregateIndexPlan) aggregateOrderingColumns() ([]string, []
 	return physicalCols, order, physicalTypes
 }
 
-// groupingOrderingKey mints the ordering key for grouping column col, which is
-// slot ordinal of the row this plan flows.
-func (p *RecordQueryAggregateIndexPlan) groupingOrderingKey(col string, ordinal int) values.Value {
-	request, err := values.FieldByNameAndOrdinal(col, ordinal)
+// groupingOrderingKey mints the ordering key for the grouping column at slot
+// ordinal of the row this plan flows, named as that row names it: the row is
+// the GroupBy's, whose names are not the index's column labels.
+func (p *RecordQueryAggregateIndexPlan) groupingOrderingKey(ordinal int) values.Value {
+	row, ok := p.GetResultValue().Type().(*values.RecordType)
+	if !ok || ordinal < 0 || ordinal >= len(row.Fields) {
+		return nil
+	}
+	request, err := values.FieldByNameAndOrdinal(row.Fields[ordinal].Name, ordinal)
 	if err != nil {
 		return nil
 	}
@@ -1556,15 +1560,15 @@ func (p *RecordQueryAggregateIndexPlan) HintRichOrdering() *properties.RichOrder
 		return properties.EmptyOrdering()
 	}
 	comps := p.groupingScanComparisons()
-	split := p.aggregateOrderSplit(groupCols, keyTypes)
+	split := p.aggregateOrderSplit(groupCols, ordinals, keyTypes)
 	dir := properties.ProvidedSortOrderAscending
 	if p.IsReverse() {
 		dir = properties.ProvidedSortOrderDescending
 	}
 	bm := make(map[values.Value][]properties.OrderingBinding, len(groupCols))
 	keys := make([]values.Value, 0, len(groupCols))
-	for i, col := range groupCols[:split.fixedLen] {
-		key := p.groupingOrderingKey(col, ordinals[i])
+	for i := range groupCols[:split.fixedLen] {
+		key := p.groupingOrderingKey(ordinals[i])
 		if key == nil {
 			return properties.EmptyOrdering()
 		}
@@ -1581,8 +1585,8 @@ func (p *RecordQueryAggregateIndexPlan) HintRichOrdering() *properties.RichOrder
 			bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
 		}
 	}
-	for i, col := range split.tail {
-		key := p.groupingOrderingKey(col, ordinals[split.fixedLen+i])
+	for i := range split.tail {
+		key := p.groupingOrderingKey(ordinals[split.fixedLen+i])
 		if key == nil {
 			return properties.EmptyOrdering()
 		}

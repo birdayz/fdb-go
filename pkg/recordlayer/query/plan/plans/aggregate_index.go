@@ -71,6 +71,10 @@ type RecordQueryAggregateIndexPlan struct {
 	permuted          bool
 	groupCols         []string
 	aggColumn         string
+	// groupColPaths and aggColumnPath are the columns' full field paths when
+	// they read nested fields (groupCols and aggColumn are then leaf labels).
+	groupColPaths [][]string
+	aggColumnPath []string
 	// groupColLayout is the DECLARED layout the groupCols names resolve
 	// against, carried so HintOrdering can ask whether a grouping column may
 	// extend an ordering claim. Nil/UnknownType leaves the claim unconstrained,
@@ -165,6 +169,38 @@ func (p *RecordQueryAggregateIndexPlan) WithGroupColumns(groupCols []string, agg
 		cp.physicalGroupingPrefixKnown = true
 	}
 	return &cp
+}
+
+// WithColumnPaths carries the full field paths of the grouping and aggregated
+// columns, so the layout is asked about a nested column by its path, never by
+// its leaf label.
+func (p *RecordQueryAggregateIndexPlan) WithColumnPaths(groupPaths [][]string, aggPath []string) *RecordQueryAggregateIndexPlan {
+	cp := *p
+	cp.groupColPaths = make([][]string, len(groupPaths))
+	for i, path := range groupPaths {
+		cp.groupColPaths[i] = append([]string(nil), path...)
+	}
+	cp.aggColumnPath = append([]string(nil), aggPath...)
+	return &cp
+}
+
+// nestedGroupColumnPath is grouping column i's path when it reads a nested
+// field, nil for a top-level column.
+func (p *RecordQueryAggregateIndexPlan) nestedGroupColumnPath(i int) []string {
+	if i < 0 || i >= len(p.groupColPaths) || len(p.groupColPaths[i]) < 2 {
+		return nil
+	}
+	return p.groupColPaths[i]
+}
+
+// aggColumnField is the aggregated column's field in the layout, by its path
+// when one was carried.
+func (p *RecordQueryAggregateIndexPlan) aggColumnField(layout values.Type) (values.Field, bool) {
+	path := p.aggColumnPath
+	if len(path) == 0 {
+		path = []string{p.aggColumn}
+	}
+	return values.LookupFieldPathUnique(layout, path)
 }
 
 // WithPermutedOrdering makes the aggregate participate in the physical key order.
@@ -314,12 +350,19 @@ func (p *RecordQueryAggregateIndexPlan) structuralKey() *structuralKey {
 	// index's key component types, every one of which is already folded here.
 	// Its field NAMES are the GroupBy's the plan publishes, so they are folded:
 	// two scans of one index under different names state different rows.
-	return newStructuralKey().
+	// The column paths are the columns' identities, folded with the labels.
+	key := newStructuralKey().
 		Strs(resultFieldNames(p.resultType)).
 		Str(p.recordTypeName).
 		Str(p.aggregateFunction).
 		Str(p.aggColumn).
 		Strs(p.groupCols).
+		Strs(p.aggColumnPath).
+		Int(len(p.groupColPaths))
+	for _, path := range p.groupColPaths {
+		key.Strs(path)
+	}
+	return key.
 		Int(p.GetPhysicalGroupingPrefixCount()).
 		Bool(p.liveGroupsOnly).
 		Bool(p.permuted).

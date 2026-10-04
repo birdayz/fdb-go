@@ -1,0 +1,59 @@
+# nested_leaf_aggregate_index.yaml
+#
+# A GROUP BY over nested LEAF fields is served by the aggregate index grouping by
+# them, as Java's is (conformance "WS-J nested-grouping aggregate index plan
+# oracle"): unbound, with a residual on a later grouping column, and with the
+# leading nested equality bound. A RECORD-typed grouping key over the same leaves
+# stays off the index (Java plans no match for it).
+name: nested_leaf_aggregate_index
+schema_template: |
+  CREATE TYPE AS STRUCT ADDR (city STRING, zip BIGINT)
+  CREATE TABLE T_S (id BIGINT, home ADDR, city STRING, cat STRING, v BIGINT, PRIMARY KEY (id))
+  CREATE INDEX cnt_home_cat AS SELECT COUNT(*) FROM T_S GROUP BY home.city, home.zip, cat
+  CREATE INDEX sum_home_cat AS SELECT SUM(v) FROM T_S GROUP BY home.city, home.zip, cat
+setup:
+  - INSERT INTO T_S VALUES (1, ('a', 1), 'b', 'x', 10), (2, ('a', 1), 'a', 'x', 5), (3, ('a', 2), 'a', 'y', 7), (4, ('b', 1), 'a', 'x', 1), (5, NULL, 'b', 'x', 3), (6, ('b', 2), 'a', 'y', 4)
+tests:
+  - query: SELECT home.city, home.zip, cat, COUNT(*) FROM T_S GROUP BY home.city, home.zip, cat
+    plan_contains: "AggregateIndex(COUNT, CNT_HOME_CAT"
+    plan_not_contains: "Sort"
+    rows:
+      - [null, null, x, 1]
+      - [a, 1, x, 2]
+      - [a, 2, y, 1]
+      - [b, 1, x, 1]
+      - [b, 2, y, 1]
+  - query: SELECT home.city, home.zip, cat, COUNT(*) FROM T_S WHERE cat = 'x' GROUP BY home.city, home.zip, cat
+    plan_contains: "AggregateIndex(COUNT, CNT_HOME_CAT"
+    rows:
+      - [null, null, x, 1]
+      - [a, 1, x, 2]
+      - [b, 1, x, 1]
+  - query: SELECT home.city, home.zip, cat, SUM(v) FROM T_S WHERE home.city = 'a' GROUP BY home.city, home.zip, cat
+    plan_contains: "AggregateIndex(SUM, SUM_HOME_CAT"
+    rows:
+      - [a, 1, x, 15]
+      - [a, 2, y, 7]
+  - query: SELECT home.city, home.zip, cat, COUNT(*) FROM T_S WHERE home.city = 'a' GROUP BY home.city, home.zip, cat ORDER BY home.zip, cat
+    plan_contains: "AggregateIndex(COUNT, CNT_HOME_CAT"
+    plan_not_contains: "Sort"
+    rows:
+      - [a, 1, x, 2]
+      - [a, 2, y, 1]
+  # The top-level CITY is not HOME.CITY.
+  - query: SELECT city, cat, COUNT(*) FROM T_S GROUP BY city, cat
+    plan_not_contains: "AggregateIndex"
+    unordered: true
+    rows:
+      - [a, x, 2]
+      - [a, y, 2]
+      - [b, x, 2]
+  - query: SELECT cat, COUNT(*) FROM T_S GROUP BY home, cat
+    plan_not_contains: "AggregateIndex"
+    unordered: true
+    rows:
+      - [x, 1]
+      - [x, 2]
+      - [y, 1]
+      - [x, 1]
+      - [y, 1]

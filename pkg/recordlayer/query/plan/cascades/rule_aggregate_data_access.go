@@ -2,6 +2,7 @@ package cascades
 
 import (
 	"fmt"
+	"slices"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
@@ -166,6 +167,7 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 				return
 			}
 			aggPlan = aggPlan.WithGroupColumns(aggCand.groupCols, aggCand.aggColumn).
+				WithColumnPaths(aggCand.groupPaths, aggCand.aggPath).
 				WithGroupColumnLayout(aggCand.GetBaseRowType()).
 				WithPermutedOrdering(aggCand.permuted).
 				WithLiveGroupsOnly(dropsVacatedGroups(aggCand))
@@ -405,6 +407,7 @@ func buildGroupExistenceMerge(
 			return nil
 		}
 		childPlans[i] = aggPlan.WithGroupColumns(cand.groupCols, cand.aggColumn).
+			WithColumnPaths(cand.groupPaths, cand.aggPath).
 			WithGroupColumnLayout(cand.GetBaseRowType()).
 			// The COMPANION carries the vacated-group drop, and it is load-bearing
 			// here: the companion is itself subject to the over-approximation
@@ -545,7 +548,7 @@ func partitionAggregatePredicates(
 	var others []aggregateFilterPredicate
 	for _, fp := range filterPreds {
 		if cp, ok := fp.pred.(*predicates.ComparisonPredicate); ok {
-			if idx := groupColComparisonIndex(cp, cand.groupCols, fp.input); idx >= 0 {
+			if idx := groupColComparisonIndex(cp, cand.groupPaths, fp.input); idx >= 0 {
 				perColumn[idx] = append(perColumn[idx], fp)
 				continue
 			}
@@ -622,7 +625,7 @@ func partitionAggregatePredicates(
 	}
 	residuals = append(residuals, others...)
 	for _, fp := range residuals {
-		if !residualOverGroupingColumns(fp.pred, cand.groupCols, fp.input) {
+		if !residualOverGroupingColumns(fp.pred, cand.groupPaths, fp.input) {
 			return nil, false
 		}
 	}
@@ -640,7 +643,7 @@ func partitionAggregatePredicates(
 // indistinguishable from a rewrite that did nothing.
 func residualOverGroupingColumns(
 	p predicates.QueryPredicate,
-	groupCols []string,
+	groupPaths [][]string,
 	input values.CorrelationIdentifier,
 ) bool {
 	switch pred := p.(type) {
@@ -655,20 +658,20 @@ func residualOverGroupingColumns(
 		// leaf kind: checked below
 	case *predicates.AndPredicate:
 		for _, sub := range pred.SubPredicates {
-			if !residualOverGroupingColumns(sub, groupCols, input) {
+			if !residualOverGroupingColumns(sub, groupPaths, input) {
 				return false
 			}
 		}
 		return true
 	case *predicates.OrPredicate:
 		for _, sub := range pred.SubPredicates {
-			if !residualOverGroupingColumns(sub, groupCols, input) {
+			if !residualOverGroupingColumns(sub, groupPaths, input) {
 				return false
 			}
 		}
 		return true
 	case *predicates.NotPredicate:
-		return residualOverGroupingColumns(pred.Child, groupCols, input)
+		return residualOverGroupingColumns(pred.Child, groupPaths, input)
 	default:
 		return false
 	}
@@ -684,7 +687,7 @@ func residualOverGroupingColumns(
 					return false // an outer parameter: carried, not a grouping read
 				}
 				leaves++
-				if groupingColumnIndex(node, groupCols, input) < 0 {
+				if groupingColumnIndex(node, groupPaths, input) < 0 {
 					allGrouping = false
 				}
 				return false
@@ -731,12 +734,12 @@ func predicateEmbeddedValues(p predicates.QueryPredicate) []values.Value {
 // rooted at the aggregation input, matched by accessor path as the bound
 // builder matches — or -1. A same-named field rooted at another quantifier is
 // an outer parameter, not a grouping column.
-func groupingColumnIndex(v values.Value, groupCols []string, input values.CorrelationIdentifier) int {
+func groupingColumnIndex(v values.Value, groupPaths [][]string, input values.CorrelationIdentifier) int {
 	if !rootedAt(v, input) {
 		return -1
 	}
-	for i, col := range groupCols {
-		if aggColumnMatches(v, col) {
+	for i, path := range groupPaths {
+		if aggColumnMatches(v, path) {
 			return i
 		}
 	}
@@ -764,7 +767,7 @@ func (partition *aggregatePredicatePartition) applyResiduals(
 	if err != nil {
 		return nil, false
 	}
-	groupCols := partition.cand.groupCols
+	groupPaths := partition.cand.groupPaths
 	rewritten := make([]predicates.QueryPredicate, 0, len(partition.residuals))
 	for _, residual := range partition.residuals {
 		input := residual.input
@@ -773,7 +776,7 @@ func (partition *aggregatePredicatePartition) applyResiduals(
 			if _, isField := values.AsFieldValue(v); !isField || !rootedAt(v, input) {
 				return v
 			}
-			idx := groupingColumnIndex(v, groupCols, input)
+			idx := groupingColumnIndex(v, groupPaths, input)
 			if idx < 0 {
 				failed = true
 				return v
@@ -870,7 +873,7 @@ func rekeyScanPrefix(
 // ship.
 func groupColComparisonIndex(
 	cp *predicates.ComparisonPredicate,
-	groupCols []string,
+	groupPaths [][]string,
 	input values.CorrelationIdentifier,
 ) int {
 	if !aggregateScanBindableComparison(cp.Comparison.Type) {
@@ -890,7 +893,7 @@ func groupColComparisonIndex(
 	if valueReadsField(cp.Comparison.Operand) {
 		return -1
 	}
-	return groupingColumnIndex(fv, groupCols, input)
+	return groupingColumnIndex(fv, groupPaths, input)
 }
 
 // aggregateScanBindableComparison is the comparison-type set the group-key
@@ -1090,11 +1093,7 @@ func aggregateIndexOperandIsNumeric(cand *AggregateIndexMatchCandidate) bool {
 }
 
 func aggregateIndexOperandType(cand *AggregateIndexMatchCandidate) (values.Type, bool) {
-	rowType, ok := cand.GetBaseRowType().(*values.RecordType)
-	if !ok || cand.aggColumn == "" {
-		return nil, false
-	}
-	field, ok := rowType.LookupFieldUnique(cand.aggColumn)
+	field, ok := values.LookupFieldPathUnique(cand.GetBaseRowType(), cand.aggPath)
 	if !ok || field.FieldType == nil {
 		return nil, false
 	}
@@ -1208,13 +1207,10 @@ func tryMultiAggregateIntersection(
 	// so they're all equal by transitivity. But let's be explicit.
 	groupCols := matched[0].groupCols
 	for _, mc := range matched[1:] {
-		if len(mc.groupCols) != len(groupCols) {
+		if !slices.EqualFunc(mc.groupPaths, matched[0].groupPaths, func(x, y []string) bool {
+			return slices.EqualFunc(x, y, eqFold)
+		}) {
 			return
-		}
-		for k := range groupCols {
-			if !eqFold(mc.groupCols[k], groupCols[k]) {
-				return
-			}
 		}
 	}
 
@@ -1332,6 +1328,7 @@ func tryMultiAggregateIntersection(
 			return
 		}
 		childPlans[i] = aggPlan.WithGroupColumns(mc.groupCols, mc.aggColumn).
+			WithColumnPaths(mc.groupPaths, mc.aggPath).
 			WithGroupColumnLayout(mc.GetBaseRowType()).
 			WithLiveGroupsOnly(dropsVacatedGroups(mc))
 	}

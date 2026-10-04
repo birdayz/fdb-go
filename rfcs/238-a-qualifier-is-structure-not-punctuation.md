@@ -1030,7 +1030,7 @@ correct response.
 
 **THE CANDIDATE SIDE MUST NOT MOVE.** `rt.Name` reaches candidates at four
 places (`metadataPlanContext.buildMatchCandidates`, `:3605`, `:3844`, `:3917`) and those are
-cross-compared in `rule_aggregate_data_access.go:86,292`; converting one
+cross-compared in `rule_aggregate_data_access.go:87,294`; converting one
 silently disables aggregate matching. `queriedRecordTypes` flows into physical
 plans (`primary_scan_match_candidate.go:393,432`). Translating on the QUERY side
 leaves every one of them untouched, which is the other reason it is the right
@@ -1039,7 +1039,7 @@ place.
 **AND THE FIX SWITCHES MATCHING ON, which is the point but should be said out
 loud rather than discovered.** FIVE gates compare the SCAN's record types against
 a CANDIDATE's and therefore decline today for the same reason the primary
-candidate does: `rule_aggregate_data_access.go:86` and `:1176`,
+candidate does: `rule_aggregate_data_access.go:87` and `:1175`,
 `rule_ordered_index_scan.go:74`, `ImplementNestedLoopJoinRule.tryExistsFlatMap` in
 `rule_implement_nested_loop_join.go`, and
 `rule_streaming_agg_from_index.go:100`, which is live in
@@ -1065,7 +1065,7 @@ cost is a different shape. Both are asserted at the values they HAVE, so the
 fix has to come to that file.
 
 Two NEAR MEMBERS are not members, and both were on an earlier version of this
-list. `rule_aggregate_data_access.go:292` is candidate-vs-candidate. And
+list. `rule_aggregate_data_access.go:294` is candidate-vs-candidate. And
 `rule_type_filter_redundant.go:51` is query-vs-QUERY —
 `typesAreSubset(scan.GetRecordTypes(), tf.GetRecordTypes())`, both operands from
 the same subtree, so re-spelling moves them together and the outcome cannot
