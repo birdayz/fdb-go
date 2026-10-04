@@ -3891,11 +3891,12 @@ func (c *metadataPlanContext) GetPrimaryKeyColumns(recordType string) []string {
 // or nil if the index is not an aggregate type.
 func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaData) *cascades.AggregateIndexMatchCandidate {
 	var aggFunc expressions.AggregateFunction
-	// Canonicalized like every other behaviour-deriving switch on an index type.
-	// A no-op for the arms below (the deprecated bare _EVER spellings fold onto
-	// _LONG, which is equally unmatched here, and deliberately so per the note in
-	// the PermutedMax arm) — uniform because a switch that looks like it does not
-	// need canonicalizing is exactly how the bare spellings were missed.
+	// The deprecated bare "max_ever"/"min_ever" types are maintained as _LONG
+	// (CanonicalType) but are no candidate: Java's aggregate map holds only the
+	// suffixed types (AggregateIndexExpansionVisitor.supportsAggregateIndexType).
+	if idx.Type == recordlayer.IndexTypeMaxEver || idx.Type == recordlayer.IndexTypeMinEver {
+		return nil
+	}
 	switch idx.CanonicalType() {
 	case recordlayer.IndexTypeBitmapValue:
 		aggFunc = expressions.AggBitmapConstructAgg
@@ -3916,8 +3917,7 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 		// max_ever(col) / min_ever(col), the index-only aggregates Java's
 		// AggregateIndexExpansionVisitor maps these types to
 		// (IndexOnlyAggregateValue.MaxEverFn / MinEverFn,
-		// AggregateIndexExpansionVisitor.java:369-380). The deprecated bare
-		// spellings canonicalize onto _LONG.
+		// AggregateIndexExpansionVisitor.java:369-380).
 		aggFunc = expressions.AggMaxEver
 	case recordlayer.IndexTypeMinEverLong, recordlayer.IndexTypeMinEverTuple:
 		aggFunc = expressions.AggMinEver

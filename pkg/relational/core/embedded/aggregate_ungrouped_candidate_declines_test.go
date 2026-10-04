@@ -117,3 +117,38 @@ CREATE INDEX min_ever_all AS SELECT min_ever(amount) FROM SALES
 			"has no plan without it, since no streaming accumulator computes an _EVER aggregate")
 	}
 }
+
+// TestBareEverIndexTypesAreNotCandidates: Java's AggregateIndexExpansionVisitor
+// builds candidates for MAX_EVER_LONG/_TUPLE and MIN_EVER_LONG/_TUPLE only; the
+// deprecated bare "max_ever"/"min_ever" types are not in its aggregate map
+// (supportsAggregateIndexType), so no query reads them, though their
+// maintenance is _LONG's.
+func TestBareEverIndexTypesAreNotCandidates(t *testing.T) {
+	t.Parallel()
+	tmpl, err := BuildSchemaTemplateFromDDL(`
+CREATE TABLE SALES (id BIGINT, category STRING, amount BIGINT, PRIMARY KEY (id))
+CREATE INDEX max_by_cat AS SELECT category, max_ever(amount) FROM SALES GROUP BY category
+CREATE INDEX min_by_cat AS SELECT category, min_ever(amount) FROM SALES GROUP BY category
+`)
+	if err != nil {
+		t.Fatalf("build schema template: %v", err)
+	}
+	md := tmpl.Underlying()
+	for _, c := range []struct{ name, long, tuple, bare string }{
+		{"MAX_BY_CAT", recordlayer.IndexTypeMaxEverLong, recordlayer.IndexTypeMaxEverTuple, recordlayer.IndexTypeMaxEver},
+		{"MIN_BY_CAT", recordlayer.IndexTypeMinEverLong, recordlayer.IndexTypeMinEverTuple, recordlayer.IndexTypeMinEver},
+	} {
+		idx := md.GetIndex(c.name)
+		if idx == nil || (idx.Type != c.long && idx.Type != c.tuple) {
+			t.Fatalf("%s: want a %s or %s index, got %v", c.name, c.long, c.tuple, idx)
+		}
+		if tryAggregateIndexCandidate(idx, md) == nil {
+			t.Fatalf("control: the %s index is not a candidate", idx.Type)
+		}
+		bare := *idx
+		bare.Type = c.bare
+		if got := tryAggregateIndexCandidate(&bare, md); got != nil {
+			t.Fatalf("a bare %q index is a candidate; Java builds none for it", c.bare)
+		}
+	}
+}
