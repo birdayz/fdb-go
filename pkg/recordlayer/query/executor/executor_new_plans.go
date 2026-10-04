@@ -1296,6 +1296,9 @@ func executeMap(
 	// positional row, the result value evaluates under the LEG WINDOWS —
 	// computed once, from the input plan's result value.
 	legSpans, windowsOK := downstreamLegWindows(p.GetInner())
+	// The Map mints its rows and is their one owner, so they carry the layout
+	// the output boundary holds them to instead of being copied for it.
+	mintLayout := mintedRowLayout(p)
 	var evalErr error
 	mapped := recordlayer.MapCursor(inner, func(qr QueryResult) QueryResult {
 		if evalErr != nil {
@@ -1334,7 +1337,7 @@ func executeMap(
 				}
 				slots[i] = fv
 			}
-			pos = &PositionalRow{Type: mapPosType, Slots: slots}
+			pos = &PositionalRow{Type: mapPosType, Slots: slots, Layout: mintLayout}
 		} else {
 			m, err := resultValue.Evaluate(rowCtx)
 			if err != nil {

@@ -562,6 +562,7 @@ go_test(
         "projected_exists_round8_fdb_test.go",
         "projection_over_setop_columns_fdb_test.go",
         "projection_result_type_probe_fdb_test.go",
+        "projection_scan_bench_test.go",
         "qualified_nested_accessor_fdb_test.go",
         "qualified_nested_accessor_matrix_fdb_test.go",
         "quality_probes_test.go",

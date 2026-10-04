@@ -393,7 +393,7 @@ func (s *TransformedRecordSerializer) untransform(stored []byte) ([]byte, error)
 				return nil, err
 			}
 		}
-		if err := s.decryptAndDecompress(attemptState); err != nil {
+		if err := s.decryptAndDecompress(&attemptState); err != nil {
 			lastErr = err
 			continue
 		}
@@ -773,16 +773,17 @@ func encodeTransformPrefix(st *transformState) []byte {
 // readVarint: prefixed reports whether the data carries a prefix at all (a
 // bare union message's first field is length-delimited with a positive field
 // number, which reads as the clear type with a nonzero key).
-func decodeTransformPrefix(data []byte) (st *transformState, prefixed bool, err error) {
+// The state is returned by value: it is decoded once per record read.
+func decodeTransformPrefix(data []byte) (st transformState, prefixed bool, err error) {
 	var prefix uint64
 	n := 0
 	for {
 		if n >= len(data) {
-			return nil, false, serializationError("transformation prefix malformed")
+			return transformState{}, false, serializationError("transformation prefix malformed")
 		}
 		b := data[n]
 		if n == 9 && b&0xFE != 0 {
-			return nil, false, serializationError("transformation prefix too long")
+			return transformState{}, false, serializationError("transformation prefix too long")
 		}
 		prefix |= uint64(b&0x7F) << (7 * n)
 		n++
@@ -795,9 +796,9 @@ func decodeTransformPrefix(data []byte) (st *transformState, prefixed bool, err 
 	// more is negative there, and out of the int range either way.
 	remaining := int64(prefix) >> transformKeyShift //nolint:gosec
 	if typ == transformPrefixClear && remaining != 0 {
-		return nil, false, nil
+		return transformState{}, false, nil
 	}
-	st = &transformState{data: data[n:]}
+	st = transformState{data: data[n:]}
 	valid := true
 	switch typ {
 	case transformPrefixClear:
@@ -820,7 +821,7 @@ func decodeTransformPrefix(data []byte) (st *transformState, prefixed bool, err 
 		valid = false
 	}
 	if !valid {
-		return nil, false, serializationError("unrecognized transformation encoding")
+		return transformState{}, false, serializationError("unrecognized transformation encoding")
 	}
 	return st, true, nil
 }

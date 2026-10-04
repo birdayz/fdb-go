@@ -250,3 +250,54 @@ func TestIdentityAttachIsPresenceEquivalent(t *testing.T) {
 		t.Error("a row already carrying the layout was not returned as itself")
 	}
 }
+
+// TestMapRowsAreStampedAtMintTime pins the stamp on a Map's rows: a Map over a
+// scan is the plan of every projecting query, and an unstamped row is copied
+// at the Map's output boundary (two allocations per row).
+func TestMapRowsAreStampedAtMintTime(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	explode, err := plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+		Value: []any{int64(11), int64(22)}, Typ: values.NewArrayType(false, values.NotNullLong),
+	})
+	if err != nil {
+		t.Fatalf("explode plan: %v", err)
+	}
+	plan, err := newProjectionMapOverForTest(
+		[]values.Value{&values.ConstantValue{Value: int64(42), Typ: values.NotNullLong}}, explode)
+	if err != nil {
+		t.Fatalf("map plan: %v", err)
+	}
+	stamp := mintedRowLayout(plan)
+	if stamp == nil {
+		t.Fatal("mintedRowLayout returned nothing for a record-valued Map")
+	}
+
+	cursor, err := executeMap(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("executeMap: %v", err)
+	}
+	defer cursor.Close()
+	result, err := cursor.OnNext(ctx)
+	if err != nil || !result.HasNext() {
+		t.Fatalf("next = (%v, %v), want row", result, err)
+	}
+	minted := result.GetValue().Positional
+	if minted == nil || minted.Layout != stamp {
+		t.Fatalf("the Map minted a row without its plan's layout handle (got %v); every "+
+			"mapped row is then copied at the output boundary", minted)
+	}
+
+	boundary, err := attachProvidedOutputLayout(plan, recordlayer.FromList([]QueryResult{result.GetValue()}))
+	if err != nil {
+		t.Fatalf("attach output layout: %v", err)
+	}
+	crossed, err := boundary.OnNext(ctx)
+	if err != nil || !crossed.HasNext() {
+		t.Fatalf("boundary next = (%v, %v), want row", crossed, err)
+	}
+	if crossed.GetValue().Positional != minted {
+		t.Error("a stamped Map row was still copied at the output boundary")
+	}
+}

@@ -11,6 +11,8 @@ import (
 	"errors"
 	"io"
 	mathrand "math/rand/v2"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -976,5 +978,37 @@ func TestTransformedSerializer_ZlibStateIsReused(t *testing.T) {
 	out, err := io.ReadAll(again)
 	if err != nil || !bytes.Equal(out, union) {
 		t.Fatalf("a reused reader read %d bytes, %v", len(out), err)
+	}
+}
+
+// TestDecodeTransformPrefixDoesNotAllocate: the prefix is decoded once per
+// record read, so its state is a value. Allocation accounting is process-wide,
+// so the measurement runs in its own process, away from parallel tests.
+func TestDecodeTransformPrefixDoesNotAllocate(t *testing.T) {
+	t.Parallel()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const bench = "BenchmarkDecodeTransformPrefixAllocations"
+	output, err := exec.CommandContext(t.Context(), executable,
+		"-test.run=^$", "-test.bench=^"+bench+"$", "-test.benchtime=1x").CombinedOutput()
+	if err != nil || !bytes.Contains(output, []byte(bench)) {
+		t.Fatalf("allocation benchmark: %v\n%s", err, output)
+	}
+}
+
+func BenchmarkDecodeTransformPrefixAllocations(b *testing.B) {
+	stored := append(protowire.AppendVarint(nil, transformPrefixCompressed), 'x')
+	var st transformState
+	var prefixed bool
+	allocations := testing.AllocsPerRun(100, func() {
+		st, prefixed, _ = decodeTransformPrefix(stored)
+	})
+	if !prefixed || !st.compressed || string(st.data) != "x" {
+		b.Fatalf("decoded %+v, prefixed=%t", st, prefixed)
+	}
+	if allocations != 0 {
+		b.Fatalf("decodeTransformPrefix allocated %.0f times per record", allocations)
 	}
 }
