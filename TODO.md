@@ -13299,6 +13299,7 @@ against Java 4.14.2.0 before fixing, then tick with the commit.
 - [ ] WS-I: lock-registry cleanup, serializer retry diagnostics, typed client knobs (needs C++ research), typed session/index-update sets and the write-only key collision boundary, timer instrumentation for client ranges/HNSW/GuardiANN/vector tasks/queue, online-indexer config limits, ICU byte baseline.
 - [ ] WS-K: direct-API Struct insert (UUID scalar/nested/array, nested unique index), JSON descriptor FieldOptions import, recursive result metadata in the corpus runner, setup version gating, typed INDEX_FETCH_METHOD, relational queued-state plumbing, SQL vector-option and preference-cache pins.
 - [ ] Owner decision: Lucene queue/heartbeat/quota/spell-check/state contracts (WS-I) presuppose a Lucene backend Go does not have.
+- [ ] Planner cost on large join memos, regressed by 54fcf78f0 (query block as one Select; found by bisect against merge-base e48f5b496). At f5a637072, local wall-clock: `TestPlannerCapHit_ProductionSelectPathSQLSTATE` 45–52 s vs 4.3–5.3 s at e48f5b496; PlanRightDeep ~35 s vs 11.8 s; FixedFactorUnionJavaComparable ~22 s. b916b307f (correlation epoch, alias-map chain, cached plan keys) took CapHit from 128.8 s to here. Profile leads: `expressionSnapshot`/`expressionCorrelations` recomputed per duplicate-check batch (~13.6 s; wants a cross-batch per-expression correlation cache), the self-join `matchQuantifierBindings` bijection search, ~50% GC. The race lane is green at 32 m but its timeout margin is unmeasured.
 
 ### Recursive CTE column list
 
