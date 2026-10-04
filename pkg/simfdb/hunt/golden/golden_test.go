@@ -110,6 +110,7 @@ func corpus() []Scenario {
 		Tables: []string{
 			"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
 			"CREATE INDEX sum_by_g AS SELECT SUM(v) FROM t GROUP BY g",
+			"CREATE INDEX cntv_by_g AS SELECT COUNT(v) FROM t GROUP BY g",
 			"CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM t GROUP BY g",
 		},
 		Data: []string{
@@ -231,9 +232,11 @@ func corpus() []Scenario {
 			"CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
 			"CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM ga GROUP BY g",
 			"CREATE INDEX sum_by_g AS SELECT SUM(v) FROM ga GROUP BY g",
+			"CREATE INDEX cntv_by_g AS SELECT COUNT(v) FROM ga GROUP BY g",
 			"CREATE TABLE gb (id BIGINT, h BIGINT, v BIGINT, PRIMARY KEY (id))",
 			"CREATE INDEX cnt_by_h AS SELECT COUNT(*) FROM gb GROUP BY h",
 			"CREATE INDEX sum_by_h AS SELECT SUM(v) FROM gb GROUP BY h",
+			"CREATE INDEX cntv_by_h AS SELECT COUNT(v) FROM gb GROUP BY h",
 			"CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))",
 		},
 		Data: []string{

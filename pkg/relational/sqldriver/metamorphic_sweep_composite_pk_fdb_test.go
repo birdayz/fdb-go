@@ -714,10 +714,10 @@ func TestFDB_MetamorphicCompositePrimaryKeyDML(t *testing.T) {
 			"CREATE INDEX t_d ON t (d) "+
 			"CREATE INDEX t_pk2 ON t (pk2) "+
 			"CREATE INDEX t_cnt_a AS SELECT COUNT(*) FROM t GROUP BY a "+
-			// b is NOT NULL by construction below: SUM over a nullable column
-			// is the pinned sumResidualZero divergence, which a sweep that kept
-			// walking into it would report on every statement.
+			// b is nullable: its SUM index is served beside the COUNT(b) that
+			// tells a group's residue from its sum.
 			"CREATE INDEX t_sum_b_by_s AS SELECT SUM(b) FROM t GROUP BY s "+
+			"CREATE INDEX t_cntb_by_s AS SELECT COUNT(b) FROM t GROUP BY s "+
 			"CREATE INDEX t_max_d_by_a AS SELECT MAX(d) FROM t GROUP BY a ")
 
 	rng := rand.New(rand.NewPCG(3, 5))
@@ -729,7 +729,10 @@ func TestFDB_MetamorphicCompositePrimaryKeyDML(t *testing.T) {
 			if rng.IntN(5) != 0 {
 				a = int64(rng.IntN(4))
 			}
-			b := int64(rng.IntN(3))
+			var b any = int64(rng.IntN(3))
+			if rng.IntN(6) == 0 {
+				b = nil
+			}
 			if rng.IntN(5) != 0 {
 				s = strDomain[rng.IntN(len(strDomain))]
 			}
@@ -739,7 +742,7 @@ func TestFDB_MetamorphicCompositePrimaryKeyDML(t *testing.T) {
 			if rng.IntN(5) != 0 {
 				d = float64(rng.IntN(3))
 			}
-			values = append(values, fmt.Sprintf("(%d, %d, %s, %d, %s, %s, %s)", pk1, pk2, mhcpkLit(a), b, mhcpkLit(s), mhcpkLit(f), mhcpkLit(d)))
+			values = append(values, fmt.Sprintf("(%d, %d, %s, %s, %s, %s, %s)", pk1, pk2, mhcpkLit(a), mhcpkLit(b), mhcpkLit(s), mhcpkLit(f), mhcpkLit(d)))
 		}
 	}
 	w.Exec("INSERT INTO t (pk1, pk2, a, b, s, f, d) VALUES " + strings.Join(values, ", "))

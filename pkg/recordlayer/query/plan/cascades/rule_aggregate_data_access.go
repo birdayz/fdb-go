@@ -115,7 +115,13 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 			if companion == nil {
 				continue
 			}
-			mergePlan := buildGroupExistenceMerge(call, companion, aggCand, partition.scanPrefix, gb.OutputColumnNames())
+			var nonNull *AggregateIndexMatchCandidate
+			if aggCand.NeedsNonNullCompanion() {
+				if nonNull = findNonNullCountCompanion(aggCand, candidates); nonNull == nil {
+					continue
+				}
+			}
+			mergePlan := buildGroupExistenceMerge(call, companion, aggCand, nonNull, partition.scanPrefix, gb.OutputColumnNames())
 			if mergePlan == nil {
 				continue
 			}
@@ -133,6 +139,10 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 			continue
 		}
 
+		if aggCand.NeedsNonNullCompanion() {
+			// Only a merge with the COUNT(col) leg can tell a residue from a sum.
+			continue
+		}
 		if !candidateBindingRangesEligible(aggCand, partition.scanPrefix) {
 			continue
 		}
@@ -305,6 +315,38 @@ func findGroupCountCompanion(owner *AggregateIndexMatchCandidate, candidates []M
 	return nil
 }
 
+// findNonNullCountCompanion returns the COUNT(col) candidate that decides
+// whether owner's SUM is NULL (see NeedsNonNullCompanion), or nil: a
+// count_not_null index over the same record types, grouping key and sparse
+// predicate, counting owner's operand. Structural, like findGroupCountCompanion.
+func findNonNullCountCompanion(owner *AggregateIndexMatchCandidate, candidates []MatchCandidate) *AggregateIndexMatchCandidate {
+	if len(owner.groupingSignature) == 0 || len(owner.aggPath) == 0 {
+		return nil
+	}
+	for _, cand := range candidates {
+		ac, ok := cand.(*AggregateIndexMatchCandidate)
+		if !ok || ac == owner || ac.countsRows || ac.aggFunction != expressions.AggCount {
+			continue
+		}
+		if string(ac.groupingSignature) != string(owner.groupingSignature) ||
+			!samePredicateSignature(ac.predicateSignature, owner.predicateSignature) ||
+			!sameRecordTypeNames(ac.GetRecordTypes(), owner.GetRecordTypes()) ||
+			len(ac.groupCols) != len(owner.groupCols) ||
+			!slices.EqualFunc(ac.aggPath, owner.aggPath, eqFold) {
+			continue
+		}
+		return ac
+	}
+	return nil
+}
+
+// nonNullGatedSum is a SUM read from its index, NULL where the operand's
+// COUNT(col) reads 0 or nothing: there the stored value is a residue or absent,
+// and SQL's SUM over no non-NULL value is NULL.
+func nonNullGatedSum(sum, nonNullCount values.Value) values.Value {
+	return values.NewScalarFunctionValue("IF", sum.Type(), nonNullCount, sum, values.NewNullValue(sum.Type()))
+}
+
 // OpaquePredicateSignatureMarker is the signature a sparse index carries when
 // its predicate is a programmatic Go closure rather than a serialized proto.
 //
@@ -358,7 +400,7 @@ func sameRecordTypeNames(a, b []string) bool {
 // that builds this plan and then validates it.
 func buildGroupExistenceMerge(
 	call *ExpressionRuleCall,
-	companion, owner *AggregateIndexMatchCandidate,
+	companion, owner, nonNull *AggregateIndexMatchCandidate,
 	ownerScanPrefix map[values.CorrelationIdentifier]*predicates.ComparisonRange,
 	outputNames []string,
 ) plans.RecordQueryPlan {
@@ -372,6 +414,9 @@ func buildGroupExistenceMerge(
 	// to it verbatim once re-keyed to its aliases; both streams then emit
 	// exactly the groups the query asked for.
 	legs := []*AggregateIndexMatchCandidate{companion, owner}
+	if nonNull != nil {
+		legs = append(legs, nonNull)
+	}
 	childPlans := make([]plans.RecordQueryPlan, len(legs))
 	for i, cand := range legs {
 		prefix := rekeyScanPrefix(ownerScanPrefix, owner, cand)
@@ -460,9 +505,17 @@ func buildGroupExistenceMerge(
 	if err != nil {
 		return nil
 	}
+	aggValue := emptyGroupIdentity(owner, aggField)
+	if nonNull != nil {
+		countField, err := values.ResolveFieldOrdinals(mergedRoot, []int{2*childWidth + len(groupCols)})
+		if err != nil {
+			return nil
+		}
+		aggValue = nonNullGatedSum(aggField, countField)
+	}
 	fields = append(fields, values.RecordConstructorField{
 		Name:  outputNames[len(groupCols)],
-		Value: emptyGroupIdentity(owner, aggField),
+		Value: aggValue,
 	})
 
 	childQuants := make([]expressions.Quantifier, len(childPlans))
@@ -1279,6 +1332,25 @@ func tryMultiAggregateIntersection(
 			drivingLeg = 0
 		}
 	}
+	// A SUM over a nullable operand reads NULL where its COUNT(col) reads 0 or
+	// nothing (NeedsNonNullCompanion). That COUNT(col) is a leg: the query's own
+	// when it aggregates it, else one more stream after the aggregates.
+	nonNullLeg := make([]int, len(matched))
+	for i, mc := range matched {
+		nonNullLeg[i] = -1
+		if !mc.NeedsNonNullCompanion() {
+			continue
+		}
+		c := findNonNullCountCompanion(mc, candidates)
+		if c == nil {
+			return // fail closed — streaming aggregation over base rows
+		}
+		nonNullLeg[i] = slices.Index(legs, c)
+		if nonNullLeg[i] < 0 {
+			legs = append(slices.Clone(legs), c)
+			nonNullLeg[i] = len(legs) - 1
+		}
+	}
 
 	// Build child aggregate-index scan plans. Each child MUST be a
 	// RecordQueryAggregateIndexPlan (not a bare RecordQueryIndexPlan): an
@@ -1413,6 +1485,15 @@ func tryMultiAggregateIntersection(
 			// for arrives as NULL, which is already SUM's empty-group answer but
 			// not COUNT(col)'s — that one owes 0.
 			pickUp = emptyGroupIdentity(matched[i], pickUp)
+		}
+		if nonNullLeg[i] >= 0 {
+			countPickUp, resolveErr := values.ResolveFieldOrdinals(
+				mergedRoot, []int{nonNullLeg[i]*childWidth + len(groupCols)})
+			if resolveErr != nil {
+				call.Fail(resolveErr)
+				return
+			}
+			pickUp = nonNullGatedSum(pickUp, countPickUp)
 		}
 		fields = append(fields, values.RecordConstructorField{
 			Name:  outputNames[len(groupCols)+i],

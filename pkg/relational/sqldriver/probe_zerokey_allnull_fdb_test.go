@@ -1,15 +1,14 @@
 package sqldriver_test
 
-// PROBE (investigation scratch): the PRESENT-zero all-NULL group.
+// The PRESENT-zero all-NULL group.
 //
 // The existing vacated-group test covers the ABSENT case (a group whose values
 // were ALWAYS NULL has no SUM key at all, so the merge takes its absent branch
-// and answers NULL). This probe covers the sibling the merge's MATCHED branch
-// owns: a group that once held non-NULL values, so the SUM index has a key,
-// whose last non-NULL value is then removed while a NULL-valued row remains.
-// With clearWhenZero=false the SUM key survives holding 0; COUNT(*) stays
-// positive because rows still exist; so the merge matches and emits 0 where
-// SQL requires NULL.
+// and answers NULL). This covers the sibling the merge's MATCHED branch owns: a
+// group that once held non-NULL values, so the SUM index has a key, whose last
+// non-NULL value is then removed while a NULL-valued row remains. With
+// clearWhenZero=false the SUM key survives holding 0 and COUNT(*) stays
+// positive, so only the COUNT(v) leg (0) tells the merge SQL's answer is NULL.
 //
 // Two removal routes are probed separately because they take different
 // maintainer paths: UPDATE (old value subtracted, new NULL contributes nothing)
@@ -111,14 +110,10 @@ func TestFDB_ProbeZeroKeyAllNullGroup(t *testing.T) {
 		return plan
 	}
 
-	// pin records the MEASURED behaviour. `wantIndexed` is what the
-	// index-backed spelling answers today; `agreesWithOracle` says whether that
-	// equals the base-scan answer. Where it does not, the difference is the
-	// present-zero SUM defect, and it is BYTE-IDENTICAL to what Java's own
-	// aggregate index answers for the same data (see
-	// conformance/probe_zerokey_allnull_java_test.go) — so it is a shared
-	// property of the SUM index's storage, not something the group-existence
-	// merge introduced.
+	// pin records the MEASURED behaviour: `wantIndexed` is what the
+	// index-backed spelling answers, `agreesWithOracle` whether that equals the
+	// base-scan answer. Java's own aggregate index reads 0 for the SUM rows
+	// (conformance/probe_zerokey_allnull_java_test.go).
 	pin := func(name, indexedQ, oracleQ, wantIndexed string, agreesWithOracle bool) {
 		t.Run(name, func(t *testing.T) {
 			plan := explain(t, indexedQ)
@@ -128,26 +123,23 @@ func TestFDB_ProbeZeroKeyAllNullGroup(t *testing.T) {
 				name, indexedQ, plan, got, oracle)
 			if got != wantIndexed {
 				t.Errorf("%s: index-backed rows changed.\n  got : %s\n  want: %s\n"+
-					"Either the present-zero SUM defect moved, or the merge's matched "+
-					"branch changed what it passes through.", name, got, wantIndexed)
+					"The merge's matched branch changed what it passes through.", name, got, wantIndexed)
 			}
 			if (got == oracle) != agreesWithOracle {
 				t.Errorf("%s: index-vs-scan agreement flipped (agree=%v, expected %v).\n"+
 					"  index : %s\n  oracle: %s\nA group whose SUM key was decremented to "+
-					"zero while only NULL-valued rows remain reads 0 from the index and "+
-					"NULL from the scan. If this now AGREES, the defect was fixed and this "+
-					"pin must be re-armed to the correct expectation.",
+					"zero while only NULL-valued rows remain must read NULL from the index, "+
+					"through its COUNT(v) leg, as it does from the scan.",
 					name, got == oracle, agreesWithOracle, got, oracle)
 			}
 		})
 	}
 
-	// SUM: g=10 (update-to-NULL) and g=11 (delete-leaving-NULL) read 0 where SQL
-	// says NULL. g=12 (all-NULL from the start, no key ever written) correctly
-	// reads NULL — that is the merge's ABSENT branch, and it is where Go is
-	// strictly better than Java, which drops g=12 entirely.
+	// SUM: g=10 (update-to-NULL) and g=11 (delete-leaving-NULL) keep a 0 key
+	// and read NULL through the COUNT(v) leg; g=12 (no key ever written) reads
+	// NULL through the merge's ABSENT branch. Java reads 0, 0 and drops g=12.
 	pin("sum", "SELECT g, SUM(v) FROM ai GROUP BY g", "SELECT g, SUM(v) FROM ao GROUP BY g",
-		"[10 0],[11 0],[12 NULL],[13 7]", false)
+		"[10 NULL],[11 NULL],[12 NULL],[13 7]", true)
 	// COUNT(col) is NOT exposed: its SQL answer for an all-NULL group is 0, which
 	// is exactly what both a present-zero key and an absent key yield.
 	pin("count-col", "SELECT g, COUNT(v) FROM ai GROUP BY g", "SELECT g, COUNT(v) FROM ao GROUP BY g",
@@ -164,5 +156,5 @@ func TestFDB_ProbeZeroKeyAllNullGroup(t *testing.T) {
 		"[10 NULL],[11 NULL],[12 NULL],[13 4]", true)
 	pin("multi", "SELECT g, SUM(v), COUNT(v) FROM ai GROUP BY g",
 		"SELECT g, SUM(v), COUNT(v) FROM ao GROUP BY g",
-		"[10 0 0],[11 0 0],[12 NULL 0],[13 7 2]", false)
+		"[10 NULL 0],[11 NULL 0],[12 NULL 0],[13 7 2]", true)
 }

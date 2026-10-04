@@ -19,7 +19,9 @@ schema_template: |
     PRIMARY KEY (id)
   )
   CREATE INDEX sum_by_cat AS SELECT category, SUM(amount) FROM sales GROUP BY category
+  CREATE INDEX cnt_by_cat AS SELECT category, COUNT(amount) FROM sales GROUP BY category
   CREATE INDEX sum_by_cat_region AS SELECT category, region, SUM(amount) FROM sales GROUP BY category, region
+  CREATE INDEX cnt_by_cat_region AS SELECT category, region, COUNT(amount) FROM sales GROUP BY category, region
 setup:
   - INSERT INTO sales VALUES (1, 'a', 'US', 100)
   - INSERT INTO sales VALUES (2, 'a', 'EU', 200)

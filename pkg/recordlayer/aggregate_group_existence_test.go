@@ -99,3 +99,35 @@ func TestGroupCountCompanionName_IsDeterministicAndReserved(t *testing.T) {
 		t.Fatal("two different owner indexes derive the same companion name")
 	}
 }
+
+// TestNeedsGroupCountCompanion_UnsplittableGroupingStillNeedsOne pins the
+// fail-closed direction on the read side: a grouped SUM whose grouping and
+// grouped columns share one nesting (no structural split, so no companion can be
+// built or matched) still NEEDS a companion, so the planner declines it rather
+// than serving its phantoms and residues as answers.
+func TestNeedsGroupCountCompanion_UnsplittableGroupingStillNeedsOne(t *testing.T) {
+	t.Parallel()
+	straddling := &GroupingKeyExpression{wholeKey: Nest("HOME", Concat(Field("CITY"), Field("ZIP"))), groupedCount: 1}
+	sum := NewIndex("sum_zip_by_city", straddling)
+	sum.Type = IndexTypeSum
+	if !NeedsGroupCountCompanion(sum) {
+		t.Fatal("a grouped SUM whose key cannot be split reports needing no companion: the planner would " +
+			"serve it with no group-existence source")
+	}
+	if _, ok := NewGroupCountCompanion(sum); ok {
+		t.Fatal("a companion was built for a grouping that cannot be split")
+	}
+	if GroupingSignature(straddling) != nil {
+		t.Fatal("an unsplittable grouping produced a signature; companion discovery would match on it")
+	}
+	countStar := NewIndex("cnt_by_city", GroupAll(Nest("HOME", Field("CITY"))))
+	countStar.Type = IndexTypeCount
+	if NeedsGroupCountCompanion(countStar) {
+		t.Fatal("a COUNT(*) index is its own group-existence source")
+	}
+	ungrouped := NewIndex("sum_all", Ungrouped(Field("V")))
+	ungrouped.Type = IndexTypeSum
+	if NeedsGroupCountCompanion(ungrouped) {
+		t.Fatal("an ungrouped SUM's single group exists whatever the table holds")
+	}
+}

@@ -14,6 +14,7 @@ CREATE TABLE ORDERS (
 )
 CREATE INDEX count_by_customer AS SELECT COUNT(*) FROM ORDERS GROUP BY customer_id
 CREATE INDEX sum_amount_by_customer AS SELECT SUM(amount) FROM ORDERS GROUP BY customer_id
+CREATE INDEX sum_amount_by_customer_nn AS SELECT COUNT(amount) FROM ORDERS GROUP BY customer_id
 `
 
 // TestAggregateIndexHavingHasOneProjection pins the shape of an aggregate-index
@@ -81,6 +82,7 @@ CREATE TABLE ORDERS (
   PRIMARY KEY (id)
 )
 CREATE INDEX idx_sum_amount AS SELECT SUM(amount) FROM ORDERS GROUP BY customer_id
+CREATE INDEX idx_sum_amount_nn AS SELECT COUNT(amount) FROM ORDERS GROUP BY customer_id
 CREATE INDEX idx_count_amount AS SELECT COUNT(amount) FROM ORDERS GROUP BY customer_id
 `, nil)
 	if err != nil {

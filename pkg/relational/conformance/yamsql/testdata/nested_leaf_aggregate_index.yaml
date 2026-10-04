@@ -11,6 +11,7 @@ schema_template: |
   CREATE TABLE T_S (id BIGINT, home ADDR, city STRING, cat STRING, v BIGINT, PRIMARY KEY (id))
   CREATE INDEX cnt_home_cat AS SELECT COUNT(*) FROM T_S GROUP BY home.city, home.zip, cat
   CREATE INDEX sum_home_cat AS SELECT SUM(v) FROM T_S GROUP BY home.city, home.zip, cat
+  CREATE INDEX cnt_v_home_cat AS SELECT COUNT(v) FROM T_S GROUP BY home.city, home.zip, cat
 setup:
   - INSERT INTO T_S VALUES (1, ('a', 1), 'b', 'x', 10), (2, ('a', 1), 'a', 'x', 5), (3, ('a', 2), 'a', 'y', 7), (4, ('b', 1), 'a', 'x', 1), (5, NULL, 'b', 'x', 3), (6, ('b', 2), 'a', 'y', 4)
 tests:

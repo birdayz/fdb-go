@@ -785,7 +785,8 @@ func TestFDB_PlanShapeAggregateIndexDDL(t *testing.T) {
 	db := setupPlanShapeDB(t, "aggidx",
 		"CREATE TABLE orders (id BIGINT, status STRING, region STRING, amount BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX count_by_status AS SELECT COUNT(*) FROM orders GROUP BY status "+
-			"CREATE INDEX sum_amount_by_region AS SELECT SUM(amount) FROM orders GROUP BY region")
+			"CREATE INDEX sum_amount_by_region AS SELECT SUM(amount) FROM orders GROUP BY region "+
+			"CREATE INDEX sum_amount_by_region_nn AS SELECT COUNT(amount) FROM orders GROUP BY region")
 
 	for _, o := range []struct {
 		id     int
@@ -9995,7 +9996,8 @@ func TestFDB_MultiAggregateIntersection_Filtered(t *testing.T) {
 	db := setupPlanShapeDB(t, "magi",
 		"CREATE TABLE mitems(id BIGINT, cat STRING, price BIGINT, PRIMARY KEY(id)) "+
 			"CREATE INDEX m_cnt_by_cat AS SELECT COUNT(*) FROM mitems GROUP BY cat "+
-			"CREATE INDEX m_sum_price_by_cat AS SELECT SUM(price) FROM mitems GROUP BY cat")
+			"CREATE INDEX m_sum_price_by_cat AS SELECT SUM(price) FROM mitems GROUP BY cat "+
+			"CREATE INDEX m_sum_price_by_cat_nn AS SELECT COUNT(price) FROM mitems GROUP BY cat")
 	for i, item := range []struct {
 		cat   string
 		price int

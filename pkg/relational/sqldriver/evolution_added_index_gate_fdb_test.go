@@ -102,7 +102,8 @@ func evolTemplate(t *testing.T, name string, version int, withValueIndex, withAg
 		b.AddIndex("T", "T_BY_C", []string{"C"}, false)
 	}
 	if withAggIndex {
-		b.AddAggregateIndex("T", "T_SUM_V_BY_C", []string{"C"}, "SUM", "V")
+		b.AddAggregateIndex("T", "T_SUM_V_BY_C", []string{"C"}, "SUM", "V").
+			AddAggregateIndex("T", "T_CNTV_BY_C", []string{"C"}, "COUNT_NOT_NULL", "V")
 	}
 	tmpl, err := b.Build()
 	if err != nil {

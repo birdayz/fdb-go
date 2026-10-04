@@ -1,0 +1,50 @@
+# aggregate_index_sum_null_residue.yaml
+#
+# A live group whose last non-NULL value is deleted (or NULLed) keeps its SUM
+# index entry at the atomic-add residue 0, while SQL's SUM over its remaining
+# NULLs is NULL. The COUNT(*) companion proves the group live but not that it
+# holds a value, so a SUM over a nullable operand is served from its index only
+# with a COUNT(col) companion over the same grouping and operand, which reads 0
+# or nothing exactly when the SUM is NULL.
+name: aggregate_index_sum_null_residue
+schema_template: |
+  CREATE TABLE T (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))
+  CREATE INDEX t_sum_v AS SELECT SUM(v) FROM T GROUP BY g
+  CREATE TABLE T2 (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))
+  CREATE INDEX t2_sum_v AS SELECT SUM(v) FROM T2 GROUP BY g
+  CREATE INDEX t2_cnt_v AS SELECT COUNT(v) FROM T2 GROUP BY g
+setup:
+  - INSERT INTO T VALUES (1, 3, 5), (2, 3, NULL), (3, 4, 7), (4, 5, 2), (5, 5, -2)
+  - DELETE FROM T WHERE id = 1
+  - INSERT INTO T2 VALUES (1, 3, 5), (2, 3, NULL), (3, 4, 7), (4, 5, 2), (5, 5, -2), (6, 6, 9)
+  - DELETE FROM T2 WHERE id = 1
+  - UPDATE T2 SET v = NULL WHERE id = 6
+tests:
+  # No COUNT(v) companion: the index cannot tell group 3's residue 0 from a
+  # sum, so the SUM is computed from the records.
+  - query: SELECT g, SUM(v) FROM T GROUP BY g
+    plan_not_contains: "AggregateIndex(SUM"
+    unordered: true
+    rows:
+      - [3, null]
+      - [4, 7]
+      - [5, 0]
+  - query: SELECT g, SUM(v) FROM T2 GROUP BY g
+    plan_contains: "AggregateIndex(COUNT, T2_CNT_V"
+    rows:
+      - [3, null]
+      - [4, 7]
+      - [5, 0]
+      - [6, null]
+  - query: SELECT g, SUM(v), COUNT(v) FROM T2 GROUP BY g
+    plan_contains: "AggregateIndex(SUM, T2_SUM_V"
+    rows:
+      - [3, null, 0]
+      - [4, 7, 1]
+      - [5, 0, 2]
+      - [6, null, 0]
+  - query: SELECT g FROM T2 GROUP BY g HAVING SUM(v) IS NULL
+    plan_contains: "AggregateIndex(SUM, T2_SUM_V"
+    rows:
+      - [3]
+      - [6]

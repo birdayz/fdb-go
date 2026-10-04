@@ -25,6 +25,7 @@ func TestFDB_AggregateIndexSumMinMax(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE aggidxp "+
 			"CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX sum_by_g AS SELECT SUM(v) FROM ga GROUP BY g "+
+			"CREATE INDEX sum_by_g_nn AS SELECT COUNT(v) FROM ga GROUP BY g "+
 			"CREATE INDEX min_by_g AS SELECT MIN(v) FROM ga GROUP BY g "+
 			"CREATE INDEX max_by_g AS SELECT MAX(v) FROM ga GROUP BY g")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggidxp/s WITH TEMPLATE aggidxp")

@@ -1599,6 +1599,9 @@ var _ = Describe("WS-J nested-grouping aggregate index plan oracle", func() {
 			"CREATE TABLE T_S (id BIGINT, home ADDR, cat STRING, v BIGINT, PRIMARY KEY (id)) " +
 			"CREATE INDEX cnt_home_cat AS SELECT COUNT(*) FROM T_S GROUP BY home.city, home.zip, cat " +
 			"CREATE INDEX sum_home_cat AS SELECT SUM(v) FROM T_S GROUP BY home.city, home.zip, cat " +
+			// Go reads a SUM over a nullable operand only beside its COUNT(col)
+			// (DIVERGENCES.md "SUM residue").
+			"CREATE INDEX cntv_home_cat AS SELECT COUNT(v) FROM T_S GROUP BY home.city, home.zip, cat " +
 			"CREATE INDEX cnt_cat AS SELECT COUNT(*) FROM T_S GROUP BY cat"
 		reads := []string{
 			"SELECT cat, COUNT(*) FROM T_S GROUP BY cat",
@@ -1619,12 +1622,13 @@ var _ = Describe("WS-J nested-grouping aggregate index plan oracle", func() {
 			"SELECT home, cat, COUNT(*) FROM T_S GROUP BY home, cat":                                                   "ERROR plandiff: java UnableToPlanException: Cascades planner could not plan query",
 		}
 		// Go's physical plans, through EXPLAIN on the SQL runner. The SUM read
-		// joins its COUNT(*) companion (RFC-209), where the target reads SUM alone.
+		// merges its COUNT(*) and COUNT(v) companions (RFC-209, "SUM residue"),
+		// where the target reads SUM alone.
 		wantGo := map[string]string{
 			"SELECT cat, COUNT(*) FROM T_S GROUP BY cat":                                                               "Map(AggregateIndex(COUNT, CNT_CAT, [CAT], T_S, live_groups_only), {CAT: _current.CAT#0, _1: _current.COUNT(*)#1})",
 			"SELECT home.city, home.zip, cat, COUNT(*) FROM T_S GROUP BY home.city, home.zip, cat":                     "Map(AggregateIndex(COUNT, CNT_HOME_CAT, [CITY ZIP CAT], T_S, live_groups_only), {CITY: _current.T_S.HOME.CITY#0, ZIP: _current.T_S.HOME.ZIP#1, CAT: _current.CAT#2, _3: _current.COUNT(*)#3})",
 			"SELECT home.city, home.zip, cat, COUNT(*) FROM T_S WHERE cat = 'x' GROUP BY home.city, home.zip, cat":     "Map(PredicatesFilter(AggregateIndex(COUNT, CNT_HOME_CAT, [CITY ZIP CAT], T_S, live_groups_only), [1 preds]), {CITY: _current.T_S.HOME.CITY#0, ZIP: _current.T_S.HOME.ZIP#1, CAT: _current.CAT#2, _3: _current.COUNT(*)#3})",
-			"SELECT home.city, home.zip, cat, SUM(v) FROM T_S WHERE home.city = 'a' GROUP BY home.city, home.zip, cat": "Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_HOME_CAT, [CITY ZIP CAT], T_S, live_groups_only), AggregateIndex(SUM, SUM_HOME_CAT, [CITY ZIP CAT], T_S); keys=[CITY#0, ZIP#1, CAT#2], driving=0), {CITY: _current.T_S.HOME.CITY#0, ZIP: _current.T_S.HOME.ZIP#1, CAT: _current.CAT#2, _3: _current.SUM(V)#3})",
+			"SELECT home.city, home.zip, cat, SUM(v) FROM T_S WHERE home.city = 'a' GROUP BY home.city, home.zip, cat": "Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_HOME_CAT, [CITY ZIP CAT], T_S, live_groups_only), AggregateIndex(SUM, SUM_HOME_CAT, [CITY ZIP CAT], T_S), AggregateIndex(COUNT, CNTV_HOME_CAT, [CITY ZIP CAT], T_S); keys=[CITY#0, ZIP#1, CAT#2], driving=0), {CITY: _current.T_S.HOME.CITY#0, ZIP: _current.T_S.HOME.ZIP#1, CAT: _current.CAT#2, _3: _current.SUM(V)#3})",
 			"SELECT home, cat, COUNT(*) FROM T_S GROUP BY home, cat":                                                   "Map(StreamingAgg(keys=[_current.HOME#1, _current.CAT#2], InMemorySort([_current.HOME#1.CITY#0 ASC, _current.HOME#1.ZIP#1 ASC, _current.CAT#2 ASC], Scan(T_S))), {HOME: _current.HOME#0, CAT: _current.CAT#1, _2: _current.COUNT(*)#2})",
 		}
 		render := func(r plandiff.PlanResult) string {

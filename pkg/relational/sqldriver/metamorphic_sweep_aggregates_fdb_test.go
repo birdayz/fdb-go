@@ -64,12 +64,11 @@ func TestFDB_MetamorphicOrderingAggregatesDML(t *testing.T) {
 		"CREATE INDEX t_c ON t (c) "+
 		"CREATE INDEX t_s ON t (s) "+
 		"CREATE INDEX t_ba ON t (b, a) "+
-		// Every SUM index here aggregates b, which the fixture keeps NULL-free.
-		// SUM over a NULLABLE column has a known, separately pinned divergence
-		// (sumResidualZero); a sweep that kept walking into it would report the
-		// same pinned defect on every run and bury anything new underneath.
+		// b is nullable: its SUM index is served beside the COUNT(b) that tells a
+		// group's residue from its sum.
 		"CREATE INDEX t_cnt_a AS SELECT COUNT(*) FROM t GROUP BY a "+
 		"CREATE INDEX t_sum_b_a AS SELECT SUM(b) FROM t GROUP BY a "+
+		"CREATE INDEX t_cntb_a AS SELECT COUNT(b) FROM t GROUP BY a "+
 		"CREATE INDEX t_cnt_b AS SELECT COUNT(*) FROM t GROUP BY b "+
 		"CREATE INDEX t_min_b_a AS SELECT MIN(b) FROM t GROUP BY a "+
 		"CREATE INDEX t_max_b_a AS SELECT MAX(b) FROM t GROUP BY a")
@@ -130,7 +129,7 @@ func TestFDB_MetamorphicOrderingAggregatesDML(t *testing.T) {
 	const nRows = 120
 	var vals []string
 	for i := 1; i <= nRows; i++ {
-		vals = append(vals, mhRowLiteral(dataRand, i, true))
+		vals = append(vals, mhRowLiteral(dataRand, i))
 	}
 	for start := 0; start < len(vals); start += 20 {
 		end := start + 20
@@ -257,7 +256,7 @@ func TestFDB_MetamorphicOrderingAggregatesDML(t *testing.T) {
 		var stmt string
 		switch r.Intn(8) {
 		case 0:
-			stmt = fmt.Sprintf("INSERT INTO t %s VALUES %s", mhCols, mhRowLiteral(r, int(nextID), true))
+			stmt = fmt.Sprintf("INSERT INTO t %s VALUES %s", mhCols, mhRowLiteral(r, int(nextID)))
 			nextID++
 		case 1:
 			col := []string{"a", "b", "c", "s", "f"}[r.Intn(5)]

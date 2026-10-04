@@ -2,13 +2,15 @@
 #   CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))
 #   CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM ga GROUP BY g
 #   CREATE INDEX sum_by_g AS SELECT SUM(v) FROM ga GROUP BY g
+#   CREATE INDEX cntv_by_g AS SELECT COUNT(v) FROM ga GROUP BY g
 #   CREATE TABLE gb (id BIGINT, h BIGINT, v BIGINT, PRIMARY KEY (id))
 #   CREATE INDEX cnt_by_h AS SELECT COUNT(*) FROM gb GROUP BY h
 #   CREATE INDEX sum_by_h AS SELECT SUM(v) FROM gb GROUP BY h
+#   CREATE INDEX cntv_by_h AS SELECT COUNT(v) FROM gb GROUP BY h
 #   CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))
 
 === WITH u AS (SELECT g, SUM(ga.v) AS s FROM ga GROUP BY g UNION ALL SELECT h, SUM(gb.v) AS s2 FROM gb GROUP BY h) SELECT c.w, u.s FROM u, c WHERE u.g = c.id ORDER BY c.w, u.s
-PLAN: InMemorySort([_current.W#0 ASC, _current.S#1 ASC], FlatMap(outer=UnorderedUnion(Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_G, [G], GA, live_groups_only), AggregateIndex(SUM, SUM_BY_G, [G], GA); keys=[G#0], driving=0), {G: _current.G#0, S: _current.SUM(V)#1}), Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_H, [H], GB, live_groups_only), AggregateIndex(SUM, SUM_BY_H, [H], GB); keys=[H#0], driving=0), {G: _current.H#0, S: _current.SUM(GB.V)#1})), inner=Scan(C, [=])))
+PLAN: InMemorySort([_current.W#0 ASC, _current.S#1 ASC], FlatMap(outer=UnorderedUnion(Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_G, [G], GA, live_groups_only), AggregateIndex(SUM, SUM_BY_G, [G], GA), AggregateIndex(COUNT, CNTV_BY_G, [G], GA); keys=[G#0], driving=0), {G: _current.G#0, S: _current.SUM(V)#1}), Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_H, [H], GB, live_groups_only), AggregateIndex(SUM, SUM_BY_H, [H], GB), AggregateIndex(COUNT, CNTV_BY_H, [H], GB); keys=[H#0], driving=0), {G: _current.H#0, S: _current.SUM(GB.V)#1})), inner=Scan(C, [=])))
 ROWS(4) cols=[W, S]:
   [1, 1]
   [1, 12]
@@ -32,7 +34,7 @@ ROWS(4) cols=[W]:
   [3]
 
 === WITH u AS (SELECT g, SUM(v) AS s FROM ga GROUP BY g UNION ALL SELECT h, SUM(v) AS s2 FROM gb GROUP BY h) SELECT c.w, u.s FROM u, c WHERE u.g = c.id ORDER BY c.w, u.s
-PLAN: InMemorySort([_current.W#0 ASC, _current.S#1 ASC], FlatMap(outer=UnorderedUnion(Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_G, [G], GA, live_groups_only), AggregateIndex(SUM, SUM_BY_G, [G], GA); keys=[G#0], driving=0), {G: _current.G#0, S: _current.SUM(V)#1}), Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_H, [H], GB, live_groups_only), AggregateIndex(SUM, SUM_BY_H, [H], GB); keys=[H#0], driving=0), {G: _current.H#0, S: _current.SUM(V)#1})), inner=Scan(C, [=])))
+PLAN: InMemorySort([_current.W#0 ASC, _current.S#1 ASC], FlatMap(outer=UnorderedUnion(Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_G, [G], GA, live_groups_only), AggregateIndex(SUM, SUM_BY_G, [G], GA), AggregateIndex(COUNT, CNTV_BY_G, [G], GA); keys=[G#0], driving=0), {G: _current.G#0, S: _current.SUM(V)#1}), Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_H, [H], GB, live_groups_only), AggregateIndex(SUM, SUM_BY_H, [H], GB), AggregateIndex(COUNT, CNTV_BY_H, [H], GB); keys=[H#0], driving=0), {G: _current.H#0, S: _current.SUM(V)#1})), inner=Scan(C, [=])))
 ROWS(4) cols=[W, S]:
   [1, 1]
   [1, 12]

@@ -280,6 +280,31 @@ func (c *AggregateIndexMatchCandidate) NeedsGroupExistenceCompanion() bool {
 	return c.needsGroupExistenceCompanion && len(c.groupCols) > 0
 }
 
+// NeedsNonNullCompanion reports whether a grouped SUM's stored value can be a
+// residue: a live group whose non-NULL values were all deleted or NULLed keeps
+// the atomic-add residue (0) where SQL's SUM over its NULLs is NULL, and the
+// COUNT(*) companion proves the group live but not valued. A COUNT(col)
+// companion over the same operand decides it. An operand that cannot be NULL
+// needs none; one whose nullability is unknown is treated as nullable.
+func (c *AggregateIndexMatchCandidate) NeedsNonNullCompanion() bool {
+	if c.aggFunction != expressions.AggSum || len(c.groupCols) == 0 || len(c.aggPath) == 0 {
+		return false
+	}
+	row := c.GetBaseRowType()
+	for _, name := range c.aggPath {
+		record, ok := row.(*values.RecordType)
+		if !ok {
+			return true
+		}
+		field, ok := record.LookupFieldUnique(name)
+		if !ok || field.FieldType == nil || field.FieldType.IsNullable() {
+			return true
+		}
+		row = field.FieldType
+	}
+	return false
+}
+
 // CountsRows reports whether the index's stored value is the group's row count.
 func (c *AggregateIndexMatchCandidate) CountsRows() bool { return c.countsRows }
 

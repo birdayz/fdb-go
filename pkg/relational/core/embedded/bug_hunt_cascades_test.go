@@ -27,7 +27,8 @@ func TestBugHunt_AggregateIndexResidualNotDropped(t *testing.T) {
 	const schema = `
 CREATE TABLE ORDERS (id BIGINT, region STRING, status STRING, amount BIGINT, PRIMARY KEY (id))
 CREATE INDEX idx_status ON ORDERS(status)
-CREATE INDEX sum_amount_by_region AS SELECT SUM(amount) FROM ORDERS GROUP BY region`
+CREATE INDEX sum_amount_by_region AS SELECT SUM(amount) FROM ORDERS GROUP BY region
+CREATE INDEX sum_amount_by_region_nn AS SELECT COUNT(amount) FROM ORDERS GROUP BY region`
 
 	unfiltered, err := PlanQueryForTest("SELECT region, SUM(amount) FROM orders GROUP BY region", schema, nil)
 	if err != nil {
@@ -106,7 +107,8 @@ func TestBugHunt_AggregateIndexMultiKeyResidual(t *testing.T) {
 	t.Parallel()
 	const schema = `
 CREATE TABLE T (id BIGINT, a STRING, b STRING, c STRING, v BIGINT, PRIMARY KEY (id))
-CREATE INDEX sum_abc AS SELECT SUM(v) FROM T GROUP BY a, b, c`
+CREATE INDEX sum_abc AS SELECT SUM(v) FROM T GROUP BY a, b, c
+CREATE INDEX sum_abc_nn AS SELECT COUNT(v) FROM T GROUP BY a, b, c`
 
 	for _, tc := range []struct{ name, sql string }{
 		{"non_leading_key", "SELECT a, b, c, SUM(v) FROM t WHERE b = 'x' GROUP BY a, b, c"},

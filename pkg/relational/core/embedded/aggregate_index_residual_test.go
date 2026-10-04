@@ -49,6 +49,7 @@ func TestAggregateIndexResidualOverGroupingColumns(t *testing.T) {
 	const schema = `
 CREATE TABLE T (id BIGINT, a STRING, b STRING, c STRING, v BIGINT, d DOUBLE, PRIMARY KEY (id))
 CREATE INDEX sum_abc AS SELECT SUM(v) FROM T GROUP BY a, b, c
+CREATE INDEX sum_abc_nn AS SELECT COUNT(v) FROM T GROUP BY a, b, c
 CREATE INDEX cnt_abc AS SELECT COUNT(*) FROM T GROUP BY a, b, c
 CREATE INDEX cnt_d_a AS SELECT COUNT(*) FROM T GROUP BY d, a
 CREATE TABLE CUST (id BIGINT, b STRING, region STRING, PRIMARY KEY (id))`
@@ -162,6 +163,7 @@ CREATE TYPE AS STRUCT ONE (city STRING)
 CREATE TABLE T_S (id BIGINT, home ADDR, solo ONE, cat STRING, v BIGINT, PRIMARY KEY (id))
 CREATE INDEX cnt_home_cat AS SELECT COUNT(*) FROM T_S GROUP BY home.city, home.zip, cat
 CREATE INDEX sum_home_cat AS SELECT SUM(v) FROM T_S GROUP BY home.city, home.zip, cat
+CREATE INDEX sum_home_cat_nn AS SELECT COUNT(v) FROM T_S GROUP BY home.city, home.zip, cat
 CREATE INDEX cnt_solo AS SELECT COUNT(*) FROM T_S GROUP BY solo.city
 CREATE INDEX cnt_cat AS SELECT COUNT(*) FROM T_S GROUP BY cat`
 	served := func(q string) bool {
@@ -216,6 +218,7 @@ CREATE TYPE AS STRUCT ADDR (city STRING, zip BIGINT)
 CREATE TABLE T_S (id BIGINT, home ADDR, office ADDR, city STRING, cat STRING, v BIGINT, PRIMARY KEY (id))
 CREATE INDEX cnt_home_cat AS SELECT COUNT(*) FROM T_S GROUP BY home.city, home.zip, cat
 CREATE INDEX sum_home_cat AS SELECT SUM(v) FROM T_S GROUP BY home.city, home.zip, cat
+CREATE INDEX sum_home_cat_nn AS SELECT COUNT(v) FROM T_S GROUP BY home.city, home.zip, cat
 CREATE INDEX cnt_home_office AS SELECT COUNT(*) FROM T_S GROUP BY home.city, office.city
 CREATE INDEX cnt_cat AS SELECT COUNT(*) FROM T_S GROUP BY cat`
 	cases := []struct {

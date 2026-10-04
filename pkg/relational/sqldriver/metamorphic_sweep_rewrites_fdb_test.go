@@ -49,7 +49,7 @@ func TestFDB_MetamorphicRewriteEquivalenceSweep(t *testing.T) {
 	const nRows = 160
 	var vals []string
 	for i := 1; i <= nRows; i++ {
-		vals = append(vals, mhRowLiteral(dataRand, i, false))
+		vals = append(vals, mhRowLiteral(dataRand, i))
 	}
 	for start := 0; start < len(vals); start += 20 {
 		end := start + 20

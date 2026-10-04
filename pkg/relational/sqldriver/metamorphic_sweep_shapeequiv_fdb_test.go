@@ -12,10 +12,8 @@ package sqldriver_test
 // from the records, group by group. That is exactly the comparison that exposed
 // the permuted-MIN NULL defect when it was made by hand.
 //
-// SUM aggregates a NULL-FREE column throughout. SUM over a group whose last
-// non-NULL value was removed is a KNOWN divergence (sumResidualZero), and a
-// sweep that kept rediscovering a pinned defect would report it on every run and
-// bury anything new.
+// The summed column is nullable; its SUM index is served beside the COUNT(n)
+// that tells a group's residue from its sum.
 
 import (
 	"context"
@@ -38,19 +36,24 @@ func TestFDB_MetamorphicShapeEquivalenceSweep(t *testing.T) {
 		"CREATE INDEX t_g ON t (g) "+
 			"CREATE INDEX t_cnt AS SELECT COUNT(*) FROM t GROUP BY g "+
 			"CREATE INDEX t_sum AS SELECT SUM(n) FROM t GROUP BY g "+
+			"CREATE INDEX t_cntn AS SELECT COUNT(n) FROM t GROUP BY g "+
 			"CREATE INDEX t_min AS SELECT MIN(v) FROM t GROUP BY g "+
 			"CREATE INDEX t_max AS SELECT MAX(v) FROM t GROUP BY g "+
 			"CREATE INDEX u_ug ON u (ug) ")
 
 	r := rand.New(rand.NewSource(777))
-	// v is nullable (the extremum column); n is never NULL (the summed column).
+	// v (the extremum column) and n (the summed column) are both nullable.
 	var trows []string
 	for i := 1; i <= 240; i++ {
 		v := "NULL"
 		if r.Intn(100) >= 35 {
 			v = fmt.Sprintf("%d", r.Intn(21)-10)
 		}
-		trows = append(trows, fmt.Sprintf("(%d, %d, %s, %d)", i, r.Intn(8), v, r.Intn(15)-7))
+		g, n := r.Intn(8), fmt.Sprintf("%d", r.Intn(15)-7)
+		if r.Intn(100) < 25 {
+			n = "NULL"
+		}
+		trows = append(trows, fmt.Sprintf("(%d, %d, %s, %s)", i, g, v, n))
 	}
 	for start := 0; start < len(trows); start += 40 {
 		end := start + 40

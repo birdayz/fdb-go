@@ -10,17 +10,19 @@ import (
 )
 
 func nestedAggregateRowType() *values.RecordType {
+	// The summed fields and their parents are NOT NULL: a SUM over them is
+	// never a residue, so it needs no COUNT(col) companion.
 	addr := func() *values.RecordType {
-		return &values.RecordType{Nullable: true, Fields: []values.Field{
+		return &values.RecordType{Fields: []values.Field{
 			{Name: "CITY", Ordinal: 0, FieldType: values.NullableString},
-			{Name: "ZIP", Ordinal: 1, FieldType: values.NullableLong},
+			{Name: "ZIP", Ordinal: 1, FieldType: values.NotNullLong},
 		}}
 	}
 	return values.NewRecordType("T_S", false, []values.Field{
 		{Name: "ID", FieldType: values.NotNullLong},
 		{Name: "HOME", FieldType: addr()},
 		{Name: "OFFICE", FieldType: addr()},
-		{Name: "ZIP", FieldType: values.NullableLong},
+		{Name: "ZIP", FieldType: values.NotNullLong},
 		{Name: "CAT", FieldType: values.NullableString},
 		{Name: "SOLO", FieldType: &values.RecordType{Nullable: true, Fields: []values.Field{
 			{Name: "CITY", Ordinal: 0, FieldType: values.NullableString},

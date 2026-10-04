@@ -1,13 +1,9 @@
 package sqldriver_test
 
-// Edges around the SUM residual-zero divergence (see sumResidualZero): the
-// aggregates that DO get the right answer over the same data, and why.
-//
-// The point of pinning the neighbours of a known defect is that a repair will
-// be built next to them. Two of the three here are correct today for STRUCTURAL
-// reasons rather than by luck, and each pins the structure alongside the rows —
-// otherwise a change that removes the structure looks like an unrelated
-// improvement right up until the answer moves.
+// Edges around the SUM residual zero (aggregate_index_sum_null_semantics_fdb_test.go):
+// the aggregates that get the right answer over the same data, and why. Each is
+// correct for a STRUCTURAL reason, pinned alongside the rows, so a change that
+// removes the structure cannot look like an unrelated improvement.
 
 import (
 	"context"
@@ -17,14 +13,14 @@ import (
 
 // TestFDB_AggregateIndexSum_AvgDoesNotInheritTheDefect is a load-bearing
 // NEGATIVE result: AVG over a group whose last non-NULL value was removed
-// answers NULL correctly, where SUM over the identical data answers 0.
+// answers NULL correctly.
 //
 // The reason is structural, not arithmetic: AVG has no aggregate index at all
 // (the DDL generator declines it — "AVG is streamable but not indexable"), so
-// AVG is always computed by streaming the rows, which is the path that gets
-// NULL right. That is worth a test precisely BECAUSE it is an absence: the day
-// AVG becomes indexable, it inherits SUM's residual-zero problem on the same
-// day, and the plan assertion below is what will say so.
+// AVG is always computed by streaming the rows. That is worth a test precisely
+// BECAUSE it is an absence: the day AVG becomes indexable, its residual zero
+// needs the COUNT(col) discriminator SUM's merge reads, and the plan assertion
+// below is what will say so.
 func TestFDB_AggregateIndexSum_AvgDoesNotInheritTheDefect(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -48,25 +44,24 @@ func TestFDB_AggregateIndexSum_AvgDoesNotInheritTheDefect(t *testing.T) {
 
 	avgQ := "SELECT g, AVG(v) FROM t GROUP BY g ORDER BY g"
 	if plan := w.Explain(avgQ); strings.Contains(plan, "AggregateIndex") {
-		t.Errorf("AVG is now served by an aggregate index. It therefore inherits the residual-zero "+
-			"defect SUM has (sumResidualZero): a group whose last non-NULL value was removed keeps "+
-			"a zero accumulator, and nothing distinguishes it from a group that genuinely averages "+
-			"to zero. Re-check this suite's AVG expectations before accepting the new plan.\n"+
+		t.Errorf("AVG is now served by an aggregate index. A group whose last non-NULL value was "+
+			"removed keeps a zero accumulator, which only a COUNT(col) discriminator (as SUM's merge "+
+			"reads) tells from a group that genuinely averages to zero. Re-check this suite's AVG "+
+			"expectations before accepting the new plan.\n"+
 			"  plan: %s", plan)
 	}
 	// g=1 is the whole point: the group whose last non-NULL value was UPDATEd
-	// away answers NULL here, where the SUM twin below answers 0 over the very
-	// same rows. g=2 and g=3 are exact, so their rendering carries no rounding
+	// away answers NULL, as the SUM twin below does over the very same rows. g=2 and g=3 are exact, so their rendering carries no rounding
 	// question — AVG over BIGINT renders 0 and 5 rather than 0.0 and 5.0.
 	w.Want("AVG ignores NULLs and is NULL with no values", avgQ,
 		[]string{"1|NULL", "2|0", "3|5"})
 
-	// The SUM twin of the same query, for contrast: identical data, identical
-	// grouping, and the answer differs because the SUM path is index-served.
-	w.WantKnownDivergence("SUM over the same groups",
+	// The SUM twin of the same query: index-served, its residue read as NULL
+	// through the COUNT(v) companion.
+	w.WantPlanContains("SUM over the same groups", "SELECT g, SUM(v) FROM t GROUP BY g ORDER BY g", "AggregateIndex(SUM")
+	w.Want("SUM over the same groups",
 		"SELECT g, SUM(v) FROM t GROUP BY g ORDER BY g",
-		[]string{"1|0", "2|0", "3|10"},
-		[]string{"1|NULL", "2|0", "3|10"}, sumResidualZero)
+		[]string{"1|NULL", "2|0", "3|10"})
 
 	// COUNT(v) is immune for a different structural reason: its SQL answer for a
 	// group with no non-NULL values is 0, which is exactly what a residual zero

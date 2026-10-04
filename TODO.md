@@ -9082,6 +9082,20 @@ unrelated to the bug that prompted the measurement.
 
 - [ ] **No *general-purpose* window functions — and Java has none either.** Investigation (RFC-045): Java's relational layer has **no** general streaming window operator. The general `windowClause` is commented out in Java's grammar ("don't want to deal with them now"); `LAG`/`LEAD` are grammar tokens with **no** value class; `RankValue implements Value.IndexOnlyValue` (computable only from a rank/leaderboard index, never over a result set). The **only** working window function in Java is `ROW_NUMBER() OVER (... ORDER BY <distance>) <= K` via `QUALIFY`, used exclusively for **vector/HNSW K-NN search**. So "match Java's window functions" ≡ "finish the vector/HNSW relational parity" — tracked as **Phase 9** below. General windowing over plain tables would be a *Go-only extension Java lacks entirely* (allowed if wire-compat holds + deep tests), not parity — deferred, not in Phase 9.
 
+### [ ] OWNER DECISION — should the DDL emit a COUNT(col) companion for every SUM index?
+
+A SUM index over a nullable operand is read only beside a COUNT(col) over the same operand,
+grouping and predicate: a live group whose last non-NULL value is deleted or NULLed keeps the
+residue 0 where SQL's SUM is NULL (DIVERGENCES.md "SUM residue",
+`aggregate_index_sum_null_residue.yaml`). Relational scalar columns are always nullable, so a
+SUM index declared alone is now declined and the SUM aggregated from the records: correct rows,
+RFC-209's fail-closed direction, but no index reach. Unblocks: a ruling on whether the DDL emits
+`<owner>__NONNULL_COUNT` (count_not_null over the summed column, same grouping and predicate,
+create-if-absent) the way it emits `__GROUP_COUNT`: new stored metadata and one more maintained
+index per SUM index on Go-created schemas, a further difference from Java-created metadata. On a
+yes: extend `metadata.Builder`'s companion loop, reserve the suffix in `index_name_guard.go`,
+and every new SUM index is served again.
+
 ---
 
 ## 11. Reference — stress baselines

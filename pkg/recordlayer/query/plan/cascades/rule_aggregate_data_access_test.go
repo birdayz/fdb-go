@@ -28,7 +28,9 @@ func aggregateDataRowType(recordName string) *values.RecordType {
 	return values.NewRecordType(recordName, false, []values.Field{
 		{Name: "region", FieldType: values.NullableString},
 		{Name: "status", FieldType: values.NullableString},
-		{Name: "amount", FieldType: values.NullableLong},
+		// NOT NULL: a SUM over it is never a residue, so it needs no COUNT(col)
+		// companion (aggregate_sum_non_null_companion_test.go).
+		{Name: "amount", FieldType: values.NotNullLong},
 		{Name: "id", FieldType: values.NotNullLong},
 		{Name: "year", FieldType: values.NullableString},
 		{Name: "price", FieldType: values.NullableLong},

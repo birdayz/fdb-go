@@ -201,12 +201,8 @@ func (g *mhGen) pred(depth int) string {
 
 const mhCols = "(id, a, b, c, s, f)"
 
-// mhRowLiteral builds one fixture row. bNeverNull keeps column b NULL-free,
-// which the aggregate sweep needs: b is the column its SUM indexes aggregate,
-// and SUM over a group that loses its last non-NULL value is a KNOWN divergence
-// (see sumResidualZero). Letting the sweep wander into it would report a defect
-// that is already pinned, every run, and drown anything new.
-func mhRowLiteral(r *rand.Rand, id int, bNeverNull bool) string {
+// mhRowLiteral builds one fixture row.
+func mhRowLiteral(r *rand.Rand, id int) string {
 	nul := func(p int, gen func() string) string {
 		if r.Intn(100) < p {
 			return "NULL"
@@ -214,11 +210,7 @@ func mhRowLiteral(r *rand.Rand, id int, bNeverNull bool) string {
 		return gen()
 	}
 	a := nul(18, func() string { return fmt.Sprintf("%d", r.Intn(7)-2) })
-	bNullPct := 18
-	if bNeverNull {
-		bNullPct = 0
-	}
-	b := nul(bNullPct, func() string { return fmt.Sprintf("%d", r.Intn(4)) })
+	b := nul(18, func() string { return fmt.Sprintf("%d", r.Intn(4)) })
 	c := nul(18, func() string {
 		return []string{"-1.5", "-0.0", "0.0", "1.5", "2.25", "3.0"}[r.Intn(6)]
 	})
@@ -270,7 +262,7 @@ func TestFDB_MetamorphicIndexDifferential(t *testing.T) {
 	const nRows = 140
 	var vals []string
 	for i := 1; i <= nRows; i++ {
-		vals = append(vals, mhRowLiteral(dataRand, i, false))
+		vals = append(vals, mhRowLiteral(dataRand, i))
 	}
 	for start := 0; start < len(vals); start += 20 {
 		end := start + 20

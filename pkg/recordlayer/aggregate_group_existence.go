@@ -231,10 +231,9 @@ func NeedsGroupCountCompanion(idx *Index) bool {
 	if !ok {
 		return false
 	}
-	// GroupingKeyExpressionOf already declines the ungrouped case and any key it
-	// cannot split exactly, which is the same fail-closed answer wanted here.
-	_, ok = GroupingKeyExpressionOf(gke)
-	return ok
+	// A grouping that cannot be split still needs one: no companion can be
+	// built or matched for it, so the planner declines the index, fail-closed.
+	return gke.GetGroupingCount() > 0
 }
 
 // NewGroupCountCompanion builds the companion COUNT(*) index for a grouped SUM

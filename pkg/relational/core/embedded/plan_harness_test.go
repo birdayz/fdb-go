@@ -511,6 +511,7 @@ CREATE TABLE ORDERS (
 )
 CREATE INDEX count_by_status AS SELECT COUNT(*) FROM ORDERS GROUP BY status
 CREATE INDEX sum_amount_by_status AS SELECT SUM(amount) FROM ORDERS GROUP BY status
+CREATE INDEX sum_amount_by_status_nn AS SELECT COUNT(amount) FROM ORDERS GROUP BY status
 `
 	plan, err := PlanQueryForTest(
 		"SELECT status, COUNT(*), SUM(amount) FROM orders GROUP BY status ORDER BY status",
@@ -591,7 +592,8 @@ func TestPlanHarness_AggregateIndexSumViaBuilder(t *testing.T) {
 			metadata.NewColumnSpec("REGION", api.NewStringType(true), 2),
 			metadata.NewColumnSpec("AMOUNT", api.NewLongType(true), 3),
 		}, []string{"ID"}).
-		AddAggregateIndex("ORDERS", "sum_amount_by_region", []string{"REGION"}, "SUM", "AMOUNT")
+		AddAggregateIndex("ORDERS", "sum_amount_by_region", []string{"REGION"}, "SUM", "AMOUNT").
+		AddAggregateIndex("ORDERS", "cnt_amount_by_region", []string{"REGION"}, "COUNT_NOT_NULL", "AMOUNT")
 
 	tmpl, err := b.Build()
 	if err != nil {
@@ -645,6 +647,7 @@ CREATE TABLE ORDERS (
   PRIMARY KEY (id)
 )
 CREATE INDEX sum_amount_by_region AS SELECT SUM(amount) FROM ORDERS GROUP BY region
+CREATE INDEX sum_amount_by_region_nn AS SELECT COUNT(amount) FROM ORDERS GROUP BY region
 `
 	plan, err := PlanQueryForTest(
 		"SELECT region, SUM(amount) FROM orders GROUP BY region",
@@ -779,6 +782,7 @@ CREATE TABLE ORDERS (
   PRIMARY KEY (id)
 )
 CREATE INDEX sum_by_region_status AS SELECT SUM(amount) FROM ORDERS GROUP BY region, status
+CREATE INDEX sum_by_region_status_nn AS SELECT COUNT(amount) FROM ORDERS GROUP BY region, status
 `
 	plan, err := PlanQueryForTest(
 		"SELECT region, status, SUM(amount) FROM orders GROUP BY region, status",

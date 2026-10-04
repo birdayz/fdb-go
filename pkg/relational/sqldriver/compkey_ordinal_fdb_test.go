@@ -40,6 +40,7 @@ func TestFDB_CompKeyOrdinal(t *testing.T) {
 	db := setupPlanShapeDB(t, "ck",
 		"CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX sum_by_g AS SELECT SUM(v) FROM ga GROUP BY g "+
+			"CREATE INDEX sum_by_g_nn AS SELECT COUNT(v) FROM ga GROUP BY g "+
 			"CREATE INDEX min_by_g AS SELECT MIN(v) FROM ga GROUP BY g "+
 			"CREATE INDEX max_by_g AS SELECT MAX(v) FROM ga GROUP BY g")
 	// g=1: v=10,20,30 → SUM=60 MIN=10 MAX=30 ; g=2: v=25,45 → SUM=70 MIN=25 MAX=45

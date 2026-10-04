@@ -522,15 +522,17 @@ func TestPipeline_AggregateIndexSUM(t *testing.T) {
 	groupBy := pipelineGroupBy(scanQ,
 		[]values.Value{pipelineField(scanQ, "REGION")},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggSum, Operand: pipelineField(scanQ, "AMOUNT"), Alias: "total"},
+			// X is NOT NULL: a SUM over it is never a residue, so it needs no
+			// COUNT(col) companion.
+			{Function: expressions.AggSum, Operand: pipelineField(scanQ, "X"), Alias: "total"},
 		})
 
 	aggCand := NewAggregateIndexMatchCandidate(
-		"T$sum_amount_by_region",
+		"T$sum_x_by_region",
 		[]string{"T"},
 		[]string{"REGION"},
 		expressions.AggSum,
-		"AMOUNT",
+		"X",
 		pipelineRowType(),
 		[]values.Type{values.NullableString},
 		1,

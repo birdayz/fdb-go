@@ -23,6 +23,7 @@ CREATE TABLE ORDERS (
 )
 CREATE INDEX idx_customer ON ORDERS(customer_id)
 CREATE INDEX sum_amount_by_customer AS SELECT SUM(amount) FROM ORDERS GROUP BY customer_id
+CREATE INDEX sum_amount_by_customer_nn AS SELECT COUNT(amount) FROM ORDERS GROUP BY customer_id
 `
 
 const groupExistenceCostSchemaNoAgg = `

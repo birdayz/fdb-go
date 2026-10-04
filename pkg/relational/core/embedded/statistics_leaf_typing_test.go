@@ -36,7 +36,8 @@ CREATE TABLE customers (id BIGINT, region BIGINT, PRIMARY KEY (id))
 CREATE INDEX orders_by_cust ON orders (cust)
 CREATE INDEX orders_by_total ON orders (total)
 CREATE INDEX customers_by_region ON customers (region)
-CREATE INDEX orders_total_by_cust AS SELECT SUM(total) FROM orders GROUP BY cust`
+CREATE INDEX orders_total_by_cust AS SELECT SUM(total) FROM orders GROUP BY cust
+CREATE INDEX orders_total_by_cust_nn AS SELECT COUNT(total) FROM orders GROUP BY cust`
 
 	// Shapes chosen to reach different leaf constructors: bare scan, primary-key
 	// probe, index equality, index range, covering index, join (two leaves at
@@ -109,7 +110,7 @@ CREATE INDEX orders_total_by_cust AS SELECT SUM(total) FROM orders GROUP BY cust
 			"is vacuous", leaves, planned)
 	}
 	// AND THE EXACT COUNT, because the floor above is not a guard against plan
-	// RESHAPING. It tolerates 15 of these 23, so a master merge that changes which
+	// RESHAPING. It tolerates 15 of these 27, so a master merge that changes which
 	// physical leaves the corpus produces -- a new distinct-over-union dedup, a
 	// push-distinct-through-fetch, an in-to-explode rewrite -- would be absorbed
 	// silently, and the census would keep reporting a clean bill over a population
@@ -120,7 +121,7 @@ CREATE INDEX orders_total_by_cust AS SELECT SUM(total) FROM orders GROUP BY cust
 	// differently than when this was written. Re-read the plans, satisfy yourself
 	// the new shapes are still typed, and update the number in the same commit
 	// that reshaped them.
-	const wantLeaves = 23
+	const wantLeaves = 27
 	if leaves != wantLeaves {
 		t.Errorf("the corpus now produces %d scan/index leaves, not %d. The plans have "+
 			"RESHAPED -- which may be correct, and is not asserted against here. What "+

@@ -32,6 +32,7 @@ func TestFDB_AggregateIndexResidual(t *testing.T) {
 	const table = "CREATE TABLE t (id BIGINT, a STRING, b STRING, c STRING, v BIGINT, d DOUBLE, PRIMARY KEY (id)) " +
 		"CREATE TABLE cust (id BIGINT, b STRING, region STRING, PRIMARY KEY (id)) "
 	const indexes = "CREATE INDEX t_sum_abc AS SELECT SUM(v) FROM t GROUP BY a, b, c " +
+		"CREATE INDEX t_cntv_abc AS SELECT COUNT(v) FROM t GROUP BY a, b, c " +
 		"CREATE INDEX t_cnt_abc AS SELECT COUNT(*) FROM t GROUP BY a, b, c " +
 		"CREATE INDEX t_cnt_d_a AS SELECT COUNT(*) FROM t GROUP BY d, a "
 	w := mmNewTwin(t, ctx, "/testdb_aggresidual", "aggresidual", table, indexes)
@@ -203,6 +204,7 @@ func TestFDB_AggregateIndexNestedLeafGrouping(t *testing.T) {
 		"CREATE TABLE t_s (id BIGINT, home ADDR, office ADDR, city STRING, cat STRING, v BIGINT, PRIMARY KEY (id)) "
 	const indexes = "CREATE INDEX cnt_home_cat AS SELECT COUNT(*) FROM t_s GROUP BY home.city, home.zip, cat " +
 		"CREATE INDEX sum_home_cat AS SELECT SUM(v) FROM t_s GROUP BY home.city, home.zip, cat " +
+		"CREATE INDEX sum_home_cat_nn AS SELECT COUNT(v) FROM t_s GROUP BY home.city, home.zip, cat " +
 		"CREATE INDEX cnt_home_office AS SELECT COUNT(*) FROM t_s GROUP BY home.city, office.city "
 	w := mmNewTwin(t, ctx, "/testdb_aggnested", "aggnested", table, indexes)
 

@@ -13,8 +13,9 @@ package conformance_test
 //   g=13  control: live, non-zero
 //
 // The indexed table `ai` carries the SUM index; `ao` carries none and is the
-// scan oracle. If Java answers 0 for g=10/g=11 from its index and NULL from
-// its scan, Java has the same index-vs-scan divergence Go does.
+// scan oracle. Go reads NULL for g=10/g=11 through the COUNT(col) companion its
+// merge consults (TestFDB_ProbeZeroKeyAllNullGroup), and declines the index
+// without one.
 
 import (
 	"context"
@@ -111,14 +112,10 @@ var _ = Describe("PROBE zero-key all-NULL group (Java)", func() {
 
 		// THE MEASURED JAVA ANSWER. g=10 (last non-NULL UPDATEd away) and g=11
 		// (last non-NULL row DELETEd) both read 0 from Java's own aggregate
-		// index, exactly as Go's group-existence merge does — the SUM index
-		// cannot distinguish "the non-NULL values sum to zero" from "there are
-		// no non-NULL values", in either engine. g=12 (all-NULL from the start,
-		// so no SUM key was ever written) is DROPPED by Java entirely, where Go
-		// emits (12, NULL); that is the one axis on which Go is ahead.
-		//
-		// If this expectation ever fails, Java changed and the shared-defect
-		// classification has to be revisited — Go would then be uniquely wrong.
+		// index: the SUM index alone cannot distinguish "the non-NULL values sum
+		// to zero" from "there are no non-NULL values". g=12 (all-NULL from the
+		// start, so no SUM key was ever written) is DROPPED by Java entirely. Go
+		// answers SQL's NULL for all three (DIVERGENCES.md, "SUM residue").
 		Expect(fmt.Sprint(idx.Rows.Rows)).To(Equal("[[10 0] [11 0] [13 7]]"),
 			"Java's aggregate-index SUM for the present-zero all-NULL group")
 

@@ -8,9 +8,11 @@ import (
 const aggregateGroupRowSchema = `CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))
 CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM ga GROUP BY g
 CREATE INDEX sum_by_g AS SELECT SUM(v) FROM ga GROUP BY g
+CREATE INDEX sum_by_g_nn AS SELECT COUNT(v) FROM ga GROUP BY g
 CREATE TABLE gb (id BIGINT, h BIGINT, v BIGINT, PRIMARY KEY (id))
 CREATE INDEX cnt_by_h AS SELECT COUNT(*) FROM gb GROUP BY h
-CREATE INDEX sum_by_h AS SELECT SUM(v) FROM gb GROUP BY h`
+CREATE INDEX sum_by_h AS SELECT SUM(v) FROM gb GROUP BY h
+CREATE INDEX sum_by_h_nn AS SELECT COUNT(v) FROM gb GROUP BY h`
 
 // TestAggregateIndexPublishesTheGroupByRow pins that an aggregate-index plan
 // states the GroupBy's own row, so no projection renames the index's columns
@@ -32,12 +34,12 @@ func TestAggregateIndexPublishesTheGroupByRow(t *testing.T) {
 		{
 			name: "multi_aggregate_intersection",
 			sql:  "SELECT h, SUM(v), COUNT(1) FROM gb GROUP BY h",
-			want: "Map(GroupExistenceMerge(AggregateIndex(SUM, SUM_BY_H, [H], GB), AggregateIndex(COUNT, CNT_BY_H, [H], GB, live_groups_only); keys=[H#0], driving=1), {H: _current.H#0, _1: _current.SUM(V)#1, _2: _current.COUNT(1)#2})",
+			want: "Map(GroupExistenceMerge(AggregateIndex(SUM, SUM_BY_H, [H], GB), AggregateIndex(COUNT, CNT_BY_H, [H], GB, live_groups_only), AggregateIndex(COUNT, SUM_BY_H_NN, [H], GB); keys=[H#0], driving=1), {H: _current.H#0, _1: _current.SUM(V)#1, _2: _current.COUNT(1)#2})",
 		},
 		{
 			name: "group_existence_merge",
 			sql:  "SELECT g, SUM(ga.v) AS s FROM ga GROUP BY g UNION ALL SELECT h, SUM(gb.v) AS s2 FROM gb GROUP BY h",
-			want: "UnorderedUnion(Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_G, [G], GA, live_groups_only), AggregateIndex(SUM, SUM_BY_G, [G], GA); keys=[G#0], driving=0), {G: _current.G#0, S: _current.SUM(V)#1}), Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_H, [H], GB, live_groups_only), AggregateIndex(SUM, SUM_BY_H, [H], GB); keys=[H#0], driving=0), {G: _current.H#0, S: _current.SUM(GB.V)#1}))",
+			want: "UnorderedUnion(Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_G, [G], GA, live_groups_only), AggregateIndex(SUM, SUM_BY_G, [G], GA), AggregateIndex(COUNT, SUM_BY_G_NN, [G], GA); keys=[G#0], driving=0), {G: _current.G#0, S: _current.SUM(V)#1}), Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_H, [H], GB, live_groups_only), AggregateIndex(SUM, SUM_BY_H, [H], GB), AggregateIndex(COUNT, SUM_BY_H_NN, [H], GB); keys=[H#0], driving=0), {G: _current.H#0, S: _current.SUM(GB.V)#1}))",
 		},
 	}
 	for _, c := range cases {

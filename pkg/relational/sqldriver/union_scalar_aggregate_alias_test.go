@@ -92,9 +92,11 @@ func TestFDB_UnionGroupedAggregate(t *testing.T) {
 		"CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM ga GROUP BY g "+
 			"CREATE INDEX sum_by_g AS SELECT SUM(v) FROM ga GROUP BY g "+
+			"CREATE INDEX sum_by_g_nn AS SELECT COUNT(v) FROM ga GROUP BY g "+
 			"CREATE TABLE gb (id BIGINT, h BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX cnt_by_h AS SELECT COUNT(*) FROM gb GROUP BY h "+
 			"CREATE INDEX sum_by_h AS SELECT SUM(v) FROM gb GROUP BY h "+
+			"CREATE INDEX sum_by_h_nn AS SELECT COUNT(v) FROM gb GROUP BY h "+
 			"CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, db, ctx, "INSERT INTO ga VALUES (1, 100, 5), (2, 100, 7), (3, 200, 9)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO gb VALUES (10, 100, 1), (20, 300, 2)")

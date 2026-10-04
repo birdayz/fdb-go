@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=384 queries=2867 dml=176 non_query=111 plan_errors=319 unexpected_errors=4
+# files=385 queries=2871 dml=176 non_query=111 plan_errors=319 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -515,23 +515,26 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === aggregate_index_as_select_composite.yaml#0
 sql:   SELECT category, SUM(amount) FROM sales GROUP BY category ORDER BY category
-plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, SUM_BY_CAT__GROUP_COUNT, [CATEGORY], SALES, live_groups_only), AggregateIndex(SUM, SUM_BY_CAT, [CATEGORY], SALES); keys=[CATEGORY#0], driving=0), {CATEGORY: _current.CATEGORY#0, _1: _current.SUM(AMOUNT)#1})
+plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, SUM_BY_CAT__GROUP_COUNT, [CATEGORY], SALES, live_groups_only), AggregateIndex(SUM, SUM_BY_CAT, [CATEGORY], SALES), AggregateIndex(COUNT, CNT_BY_CAT, [CATEGORY], SALES); keys=[CATEGORY#0], driving=0), {CATEGORY: _current.CATEGORY#0, _1: _current.SUM(AMOUNT)#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryMultiIntersectionOnValuesPlan
+shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 === aggregate_index_as_select_composite.yaml#1
 sql:   SELECT category, region, SUM(amount) FROM sales GROUP BY category, region ORDER BY category, region
-plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, SUM_BY_CAT_REGION__GROUP_COUNT, [CATEGORY REGION], SALES, live_groups_only), AggregateIndex(SUM, SUM_BY_CAT_REGION, [CATEGORY REGION], SALES); keys=[CATEGORY#0, REGION#1], driving=0), {CATEGORY: _current.CATEGORY#0, REGION: _current.REGION#1, _2: _current.SUM(AMOUNT)#2})
+plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, SUM_BY_CAT_REGION__GROUP_COUNT, [CATEGORY REGION], SALES, live_groups_only), AggregateIndex(SUM, SUM_BY_CAT_REGION, [CATEGORY REGION], SALES), AggregateIndex(COUNT, CNT_BY_CAT_REGION, [CATEGORY REGION], SALES); keys=[CATEGORY#0, REGION#1], driving=0), {CATEGORY: _current.CATEGORY#0, REGION: _current.REGION#1, _2: _current.SUM(AMOUNT)#2})
 shape: RecordQueryMapPlan
 shape:   RecordQueryMultiIntersectionOnValuesPlan
+shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 === aggregate_index_as_select_composite.yaml#3
 sql:   SELECT category, SUM(amount) FROM sales WHERE category = 'b' GROUP BY category
-plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, SUM_BY_CAT__GROUP_COUNT, [CATEGORY], SALES, live_groups_only), AggregateIndex(SUM, SUM_BY_CAT, [CATEGORY], SALES); keys=[CATEGORY#0], driving=0), {CATEGORY: _current.CATEGORY#0, _1: _current.SUM(AMOUNT)#1})
+plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, SUM_BY_CAT__GROUP_COUNT, [CATEGORY], SALES, live_groups_only), AggregateIndex(SUM, SUM_BY_CAT, [CATEGORY], SALES), AggregateIndex(COUNT, CNT_BY_CAT, [CATEGORY], SALES); keys=[CATEGORY#0], driving=0), {CATEGORY: _current.CATEGORY#0, _1: _current.SUM(AMOUNT)#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryMultiIntersectionOnValuesPlan
+shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 === aggregate_index_count_not_null.yaml#0
@@ -590,9 +593,10 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryAggregateIndexPlan
 === aggregate_index_ddl.yaml#1
 sql:   SELECT region, SUM(amount) FROM orders GROUP BY region ORDER BY region
-plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, SUM_AMOUNT_BY_REGION__GROUP_COUNT, [REGION], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_REGION, [REGION], ORDERS); keys=[REGION#0], driving=0), {REGION: _current.REGION#0, _1: _current.SUM(AMOUNT)#1})
+plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, SUM_AMOUNT_BY_REGION__GROUP_COUNT, [REGION], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_AMOUNT_BY_REGION, [REGION], ORDERS), AggregateIndex(COUNT, CNT_AMOUNT_BY_REGION, [REGION], ORDERS); keys=[REGION#0], driving=0), {REGION: _current.REGION#0, _1: _current.SUM(AMOUNT)#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryMultiIntersectionOnValuesPlan
+shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 === aggregate_index_delete.yaml#0
@@ -602,9 +606,10 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryAggregateIndexPlan
 === aggregate_index_delete.yaml#1
 sql:   SELECT category, SUM(price) FROM items GROUP BY category ORDER BY category
-plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_CAT, [CATEGORY], ITEMS, live_groups_only), AggregateIndex(SUM, SUM_PRICE_BY_CAT, [CATEGORY], ITEMS); keys=[CATEGORY#0], driving=0), {CATEGORY: _current.CATEGORY#0, _1: _current.SUM(PRICE)#1})
+plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_CAT, [CATEGORY], ITEMS, live_groups_only), AggregateIndex(SUM, SUM_PRICE_BY_CAT, [CATEGORY], ITEMS), AggregateIndex(COUNT, CNT_PRICE_BY_CAT, [CATEGORY], ITEMS); keys=[CATEGORY#0], driving=0), {CATEGORY: _current.CATEGORY#0, _1: _current.SUM(PRICE)#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryMultiIntersectionOnValuesPlan
+shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 === aggregate_index_delete.yaml#2
@@ -619,24 +624,27 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryAggregateIndexPlan
 === aggregate_index_delete.yaml#4
 sql:   SELECT category, SUM(price) FROM items GROUP BY category ORDER BY category
-plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_CAT, [CATEGORY], ITEMS, live_groups_only), AggregateIndex(SUM, SUM_PRICE_BY_CAT, [CATEGORY], ITEMS); keys=[CATEGORY#0], driving=0), {CATEGORY: _current.CATEGORY#0, _1: _current.SUM(PRICE)#1})
+plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_CAT, [CATEGORY], ITEMS, live_groups_only), AggregateIndex(SUM, SUM_PRICE_BY_CAT, [CATEGORY], ITEMS), AggregateIndex(COUNT, CNT_PRICE_BY_CAT, [CATEGORY], ITEMS); keys=[CATEGORY#0], driving=0), {CATEGORY: _current.CATEGORY#0, _1: _current.SUM(PRICE)#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryMultiIntersectionOnValuesPlan
+shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 === aggregate_index_having.yaml#0
 sql:   SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id ORDER BY customer_id
-plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, SUM_BY_CUSTOMER__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_BY_CUSTOMER, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), {CUSTOMER_ID: _current.CUSTOMER_ID#0, _1: _current.SUM(AMOUNT)#1})
+plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, SUM_BY_CUSTOMER__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_BY_CUSTOMER, [CUSTOMER_ID], ORDERS), AggregateIndex(COUNT, CNT_AMOUNT_BY_CUSTOMER, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), {CUSTOMER_ID: _current.CUSTOMER_ID#0, _1: _current.SUM(AMOUNT)#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryMultiIntersectionOnValuesPlan
 shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
+shape:     RecordQueryAggregateIndexPlan
 === aggregate_index_having.yaml#1
 sql:   SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) > 500 ORDER BY customer_id
-plan:  Map(PredicatesFilter(GroupExistenceMerge(AggregateIndex(COUNT, SUM_BY_CUSTOMER__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_BY_CUSTOMER, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), [1 preds]), {CUSTOMER_ID: _current.CUSTOMER_ID#0, _1: _current.SUM(AMOUNT)#1})
+plan:  Map(PredicatesFilter(GroupExistenceMerge(AggregateIndex(COUNT, SUM_BY_CUSTOMER__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_BY_CUSTOMER, [CUSTOMER_ID], ORDERS), AggregateIndex(COUNT, CNT_AMOUNT_BY_CUSTOMER, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), [1 preds]), {CUSTOMER_ID: _current.CUSTOMER_ID#0, _1: _current.SUM(AMOUNT)#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryMultiIntersectionOnValuesPlan
+shape:       RecordQueryAggregateIndexPlan
 shape:       RecordQueryAggregateIndexPlan
 shape:       RecordQueryAggregateIndexPlan
 === aggregate_index_multi_group.yaml#0
@@ -646,18 +654,52 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryAggregateIndexPlan
 === aggregate_index_sum.yaml#0
 sql:   SELECT region, SUM(amount) FROM sales GROUP BY region ORDER BY region
-plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, SUM_BY_REGION__GROUP_COUNT, [REGION], SALES, live_groups_only), AggregateIndex(SUM, SUM_BY_REGION, [REGION], SALES); keys=[REGION#0], driving=0), {REGION: _current.REGION#0, _1: _current.SUM(AMOUNT)#1})
+plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, SUM_BY_REGION__GROUP_COUNT, [REGION], SALES, live_groups_only), AggregateIndex(SUM, SUM_BY_REGION, [REGION], SALES), AggregateIndex(COUNT, CNT_AMOUNT_BY_REGION, [REGION], SALES); keys=[REGION#0], driving=0), {REGION: _current.REGION#0, _1: _current.SUM(AMOUNT)#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryMultiIntersectionOnValuesPlan
+shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 === aggregate_index_sum.yaml#1
 sql:   SELECT region, SUM(amount) FROM sales WHERE region = 'US' GROUP BY region
-plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, SUM_BY_REGION__GROUP_COUNT, [REGION], SALES, live_groups_only), AggregateIndex(SUM, SUM_BY_REGION, [REGION], SALES); keys=[REGION#0], driving=0), {REGION: _current.REGION#0, _1: _current.SUM(AMOUNT)#1})
+plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, SUM_BY_REGION__GROUP_COUNT, [REGION], SALES, live_groups_only), AggregateIndex(SUM, SUM_BY_REGION, [REGION], SALES), AggregateIndex(COUNT, CNT_AMOUNT_BY_REGION, [REGION], SALES); keys=[REGION#0], driving=0), {REGION: _current.REGION#0, _1: _current.SUM(AMOUNT)#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryMultiIntersectionOnValuesPlan
 shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
+shape:     RecordQueryAggregateIndexPlan
+=== aggregate_index_sum_null_residue.yaml#0
+sql:   SELECT g, SUM(v) FROM T GROUP BY g
+plan:  Map(StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(T))), {G: _current.G#0, _1: _current.SUM(V)#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryScanPlan
+=== aggregate_index_sum_null_residue.yaml#1
+sql:   SELECT g, SUM(v) FROM T2 GROUP BY g
+plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, T2_SUM_V__GROUP_COUNT, [G], T2, live_groups_only), AggregateIndex(SUM, T2_SUM_V, [G], T2), AggregateIndex(COUNT, T2_CNT_V, [G], T2); keys=[G#0], driving=0), {G: _current.G#0, _1: _current.SUM(V)#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryMultiIntersectionOnValuesPlan
+shape:     RecordQueryAggregateIndexPlan
+shape:     RecordQueryAggregateIndexPlan
+shape:     RecordQueryAggregateIndexPlan
+=== aggregate_index_sum_null_residue.yaml#2
+sql:   SELECT g, SUM(v), COUNT(v) FROM T2 GROUP BY g
+plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, T2_SUM_V__GROUP_COUNT, [G], T2, live_groups_only), AggregateIndex(SUM, T2_SUM_V, [G], T2), AggregateIndex(COUNT, T2_CNT_V, [G], T2); keys=[G#0], driving=0), {G: _current.G#0, _1: _current.SUM(V)#1, _2: _current.COUNT(V)#2})
+shape: RecordQueryMapPlan
+shape:   RecordQueryMultiIntersectionOnValuesPlan
+shape:     RecordQueryAggregateIndexPlan
+shape:     RecordQueryAggregateIndexPlan
+shape:     RecordQueryAggregateIndexPlan
+=== aggregate_index_sum_null_residue.yaml#3
+sql:   SELECT g FROM T2 GROUP BY g HAVING SUM(v) IS NULL
+plan:  Map(PredicatesFilter(GroupExistenceMerge(AggregateIndex(COUNT, T2_SUM_V__GROUP_COUNT, [G], T2, live_groups_only), AggregateIndex(SUM, T2_SUM_V, [G], T2), AggregateIndex(COUNT, T2_CNT_V, [G], T2); keys=[G#0], driving=0), [1 preds]), {G: _current.G#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryMultiIntersectionOnValuesPlan
+shape:       RecordQueryAggregateIndexPlan
+shape:       RecordQueryAggregateIndexPlan
+shape:       RecordQueryAggregateIndexPlan
 === aggregate_index_update.yaml#0
 sql:   SELECT status, COUNT(*) FROM tasks GROUP BY status ORDER BY status
 plan:  Map(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], TASKS, live_groups_only), {STATUS: _current.STATUS#0, _1: _current.COUNT(*)#1})
@@ -665,9 +707,10 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryAggregateIndexPlan
 === aggregate_index_update.yaml#1
 sql:   SELECT status, SUM(effort) FROM tasks GROUP BY status ORDER BY status
-plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], TASKS, live_groups_only), AggregateIndex(SUM, SUM_EFFORT_BY_STATUS, [STATUS], TASKS); keys=[STATUS#0], driving=0), {STATUS: _current.STATUS#0, _1: _current.SUM(EFFORT)#1})
+plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], TASKS, live_groups_only), AggregateIndex(SUM, SUM_EFFORT_BY_STATUS, [STATUS], TASKS), AggregateIndex(COUNT, CNT_EFFORT_BY_STATUS, [STATUS], TASKS); keys=[STATUS#0], driving=0), {STATUS: _current.STATUS#0, _1: _current.SUM(EFFORT)#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryMultiIntersectionOnValuesPlan
+shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 === aggregate_index_update.yaml#2
@@ -688,9 +731,10 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryAggregateIndexPlan
 === aggregate_index_update.yaml#5
 sql:   SELECT status, SUM(effort) FROM tasks GROUP BY status ORDER BY status
-plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], TASKS, live_groups_only), AggregateIndex(SUM, SUM_EFFORT_BY_STATUS, [STATUS], TASKS); keys=[STATUS#0], driving=0), {STATUS: _current.STATUS#0, _1: _current.SUM(EFFORT)#1})
+plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], TASKS, live_groups_only), AggregateIndex(SUM, SUM_EFFORT_BY_STATUS, [STATUS], TASKS), AggregateIndex(COUNT, CNT_EFFORT_BY_STATUS, [STATUS], TASKS); keys=[STATUS#0], driving=0), {STATUS: _current.STATUS#0, _1: _current.SUM(EFFORT)#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryMultiIntersectionOnValuesPlan
+shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 === aggregate_null_edge.yaml#0
@@ -2753,9 +2797,10 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === composite_aggregate_intersection.yaml#0
 sql:   SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id ORDER BY customer_id
-plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, IDX_SUM_AMOUNT__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, IDX_SUM_AMOUNT, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), {CUSTOMER_ID: _current.CUSTOMER_ID#0, _1: _current.SUM(AMOUNT)#1})
+plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, IDX_SUM_AMOUNT__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, IDX_SUM_AMOUNT, [CUSTOMER_ID], ORDERS), AggregateIndex(COUNT, IDX_COUNT_AMOUNT, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), {CUSTOMER_ID: _current.CUSTOMER_ID#0, _1: _current.SUM(AMOUNT)#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryMultiIntersectionOnValuesPlan
+shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 === composite_aggregate_intersection.yaml#1
@@ -2767,9 +2812,10 @@ shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 === composite_aggregate_intersection.yaml#2
 sql:   SELECT customer_id, SUM(amount) FROM orders WHERE customer_id = 1 GROUP BY customer_id
-plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, IDX_SUM_AMOUNT__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, IDX_SUM_AMOUNT, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), {CUSTOMER_ID: _current.CUSTOMER_ID#0, _1: _current.SUM(AMOUNT)#1})
+plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, IDX_SUM_AMOUNT__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, IDX_SUM_AMOUNT, [CUSTOMER_ID], ORDERS), AggregateIndex(COUNT, IDX_COUNT_AMOUNT, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), {CUSTOMER_ID: _current.CUSTOMER_ID#0, _1: _current.SUM(AMOUNT)#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryMultiIntersectionOnValuesPlan
+shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 === composite_aggregate_intersection.yaml#3
@@ -2782,10 +2828,11 @@ shape:       RecordQueryAggregateIndexPlan
 shape:       RecordQueryAggregateIndexPlan
 === composite_aggregate_intersection.yaml#4
 sql:   SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) >= 600 ORDER BY customer_id
-plan:  Map(PredicatesFilter(GroupExistenceMerge(AggregateIndex(COUNT, IDX_SUM_AMOUNT__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, IDX_SUM_AMOUNT, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), [1 preds]), {CUSTOMER_ID: _current.CUSTOMER_ID#0, _1: _current.SUM(AMOUNT)#1})
+plan:  Map(PredicatesFilter(GroupExistenceMerge(AggregateIndex(COUNT, IDX_SUM_AMOUNT__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, IDX_SUM_AMOUNT, [CUSTOMER_ID], ORDERS), AggregateIndex(COUNT, IDX_COUNT_AMOUNT, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), [1 preds]), {CUSTOMER_ID: _current.CUSTOMER_ID#0, _1: _current.SUM(AMOUNT)#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryMultiIntersectionOnValuesPlan
+shape:       RecordQueryAggregateIndexPlan
 shape:       RecordQueryAggregateIndexPlan
 shape:       RecordQueryAggregateIndexPlan
 === composite_aggregate_intersection.yaml#5
@@ -12155,9 +12202,10 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryAggregateIndexPlan
 === nested_leaf_aggregate_index.yaml#2
 sql:   SELECT home.city, home.zip, cat, SUM(v) FROM T_S WHERE home.city = 'a' GROUP BY home.city, home.zip, cat
-plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_HOME_CAT, [CITY ZIP CAT], T_S, live_groups_only), AggregateIndex(SUM, SUM_HOME_CAT, [CITY ZIP CAT], T_S); keys=[CITY#0, ZIP#1, CAT#2], driving=0), {CITY: _current.T_S.HOME.CITY#0, ZIP: _current.T_S.HOME.ZIP#1, CAT: _current.CAT#2, _3: _current.SUM(V)#3})
+plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_HOME_CAT, [CITY ZIP CAT], T_S, live_groups_only), AggregateIndex(SUM, SUM_HOME_CAT, [CITY ZIP CAT], T_S), AggregateIndex(COUNT, CNT_V_HOME_CAT, [CITY ZIP CAT], T_S); keys=[CITY#0, ZIP#1, CAT#2], driving=0), {CITY: _current.T_S.HOME.CITY#0, ZIP: _current.T_S.HOME.ZIP#1, CAT: _current.CAT#2, _3: _current.SUM(V)#3})
 shape: RecordQueryMapPlan
 shape:   RecordQueryMultiIntersectionOnValuesPlan
+shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 === nested_leaf_aggregate_index.yaml#3
@@ -14968,9 +15016,10 @@ sql:   SELECT a.*, b.* FROM a, b WHERE a.a1 = b.b1 GROUP BY a1
 plan:  <PLAN-ERROR: 42803: column "A.A2" must appear in the GROUP BY clause or be used in an aggregate function>
 === quoted_identifier_aggregate_labels.yaml#0
 sql:   SELECT "Region", SUM("Amount") FROM sales GROUP BY "Region" ORDER BY "Region"
-plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, SUM_BY_REGION__GROUP_COUNT, [Region], SALES, live_groups_only), AggregateIndex(SUM, SUM_BY_REGION, [Region], SALES); keys=[Region#0], driving=0), {Region: _current.Region#0, _1: _current.SUM(Amount)#1})
+plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, SUM_BY_REGION__GROUP_COUNT, [Region], SALES, live_groups_only), AggregateIndex(SUM, SUM_BY_REGION, [Region], SALES), AggregateIndex(COUNT, CNT_AMOUNT_BY_REGION, [Region], SALES); keys=[Region#0], driving=0), {Region: _current.Region#0, _1: _current.SUM(Amount)#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryMultiIntersectionOnValuesPlan
+shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 === quoted_identifier_aggregate_labels.yaml#1
@@ -15030,9 +15079,10 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
 === quoted_identifier_aggregate_labels.yaml#8
 sql:   SELECT d."Region", d."tot" FROM (SELECT "Region", SUM("Amount") AS "tot" FROM sales GROUP BY "Region") d ORDER BY d."Region"
-plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, SUM_BY_REGION__GROUP_COUNT, [Region], SALES, live_groups_only), AggregateIndex(SUM, SUM_BY_REGION, [Region], SALES); keys=[Region#0], driving=0), {Region: _current.Region#0, tot: _current.SUM(Amount)#1})
+plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, SUM_BY_REGION__GROUP_COUNT, [Region], SALES, live_groups_only), AggregateIndex(SUM, SUM_BY_REGION, [Region], SALES), AggregateIndex(COUNT, CNT_AMOUNT_BY_REGION, [Region], SALES); keys=[Region#0], driving=0), {Region: _current.Region#0, tot: _current.SUM(Amount)#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryMultiIntersectionOnValuesPlan
+shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 === quoted_identifier_aggregate_labels.yaml#9
@@ -18052,15 +18102,17 @@ shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === union_join_leg_aggregate_forms.yaml#0
 sql:   WITH u AS (SELECT g, SUM(ga.v) AS s FROM ga GROUP BY g UNION ALL SELECT h, SUM(gb.v) AS s2 FROM gb GROUP BY h) SELECT c.w, u.s FROM u, c WHERE u.g = c.id
-plan:  FlatMap(outer=UnorderedUnion(Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_G, [G], GA, live_groups_only), AggregateIndex(SUM, SUM_BY_G, [G], GA); keys=[G#0], driving=0), {G: _current.G#0, S: _current.SUM(V)#1}), Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_H, [H], GB, live_groups_only), AggregateIndex(SUM, SUM_BY_H, [H], GB); keys=[H#0], driving=0), {G: _current.H#0, S: _current.SUM(GB.V)#1})), inner=Scan(C, [=]))
+plan:  FlatMap(outer=UnorderedUnion(Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_G, [G], GA, live_groups_only), AggregateIndex(SUM, SUM_BY_G, [G], GA), AggregateIndex(COUNT, CNTV_BY_G, [G], GA); keys=[G#0], driving=0), {G: _current.G#0, S: _current.SUM(V)#1}), Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_H, [H], GB, live_groups_only), AggregateIndex(SUM, SUM_BY_H, [H], GB), AggregateIndex(COUNT, CNTV_BY_H, [H], GB); keys=[H#0], driving=0), {G: _current.H#0, S: _current.SUM(GB.V)#1})), inner=Scan(C, [=]))
 shape: RecordQueryFlatMapPlan
 shape:   RecordQueryUnorderedUnionPlan
 shape:     RecordQueryMapPlan
 shape:       RecordQueryMultiIntersectionOnValuesPlan
 shape:         RecordQueryAggregateIndexPlan
 shape:         RecordQueryAggregateIndexPlan
+shape:         RecordQueryAggregateIndexPlan
 shape:     RecordQueryMapPlan
 shape:       RecordQueryMultiIntersectionOnValuesPlan
+shape:         RecordQueryAggregateIndexPlan
 shape:         RecordQueryAggregateIndexPlan
 shape:         RecordQueryAggregateIndexPlan
 shape:   RecordQueryScanPlan
@@ -18090,15 +18142,17 @@ shape:           RecordQueryScanPlan
 shape:   RecordQueryScanPlan
 === union_join_leg_aggregate_forms.yaml#3
 sql:   WITH u AS (SELECT g, SUM(v) AS s FROM ga GROUP BY g UNION ALL SELECT h, SUM(v) AS s2 FROM gb GROUP BY h) SELECT c.w, u.s FROM u, c WHERE u.g = c.id
-plan:  FlatMap(outer=UnorderedUnion(Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_G, [G], GA, live_groups_only), AggregateIndex(SUM, SUM_BY_G, [G], GA); keys=[G#0], driving=0), {G: _current.G#0, S: _current.SUM(V)#1}), Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_H, [H], GB, live_groups_only), AggregateIndex(SUM, SUM_BY_H, [H], GB); keys=[H#0], driving=0), {G: _current.H#0, S: _current.SUM(V)#1})), inner=Scan(C, [=]))
+plan:  FlatMap(outer=UnorderedUnion(Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_G, [G], GA, live_groups_only), AggregateIndex(SUM, SUM_BY_G, [G], GA), AggregateIndex(COUNT, CNTV_BY_G, [G], GA); keys=[G#0], driving=0), {G: _current.G#0, S: _current.SUM(V)#1}), Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_H, [H], GB, live_groups_only), AggregateIndex(SUM, SUM_BY_H, [H], GB), AggregateIndex(COUNT, CNTV_BY_H, [H], GB); keys=[H#0], driving=0), {G: _current.H#0, S: _current.SUM(V)#1})), inner=Scan(C, [=]))
 shape: RecordQueryFlatMapPlan
 shape:   RecordQueryUnorderedUnionPlan
 shape:     RecordQueryMapPlan
 shape:       RecordQueryMultiIntersectionOnValuesPlan
 shape:         RecordQueryAggregateIndexPlan
 shape:         RecordQueryAggregateIndexPlan
+shape:         RecordQueryAggregateIndexPlan
 shape:     RecordQueryMapPlan
 shape:       RecordQueryMultiIntersectionOnValuesPlan
+shape:         RecordQueryAggregateIndexPlan
 shape:         RecordQueryAggregateIndexPlan
 shape:         RecordQueryAggregateIndexPlan
 shape:   RecordQueryScanPlan

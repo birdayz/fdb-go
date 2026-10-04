@@ -40,6 +40,7 @@ func TestFDB_AggregateIndexCompanionLegPosition_GroupingKeysSurviveDesignatedLeg
 		"CREATE SCHEMA TEMPLATE agglegpos "+
 			"CREATE TABLE ai (pk BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
 			"CREATE INDEX ai_sum_g AS SELECT SUM(v) FROM ai GROUP BY g "+
+			"CREATE INDEX ai_sum_g_nn AS SELECT COUNT(v) FROM ai GROUP BY g "+
 			"CREATE INDEX ai_cnt_g AS SELECT COUNT(*) FROM ai GROUP BY g")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_agglegpos/s WITH TEMPLATE agglegpos")
 	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGLEGPOS?cluster_file=%s&schema=S", clusterFilePath)

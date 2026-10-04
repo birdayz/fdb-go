@@ -11,6 +11,7 @@ schema_template: |
     PRIMARY KEY (id)
   )
   CREATE INDEX sum_by_customer AS SELECT SUM(amount) FROM orders GROUP BY customer_id
+  CREATE INDEX cnt_amount_by_customer AS SELECT COUNT(amount) FROM orders GROUP BY customer_id
 setup:
   - INSERT INTO orders VALUES (1, 100, 500)
   - INSERT INTO orders VALUES (2, 100, 300)

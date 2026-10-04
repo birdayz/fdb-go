@@ -1,10 +1,11 @@
 # scenario: aggidx (seed 4)
 #   CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))
 #   CREATE INDEX sum_by_g AS SELECT SUM(v) FROM t GROUP BY g
+#   CREATE INDEX cntv_by_g AS SELECT COUNT(v) FROM t GROUP BY g
 #   CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM t GROUP BY g
 
 === SELECT g, SUM(v) FROM t GROUP BY g ORDER BY g
-PLAN: Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_G, [G], T, live_groups_only), AggregateIndex(SUM, SUM_BY_G, [G], T); keys=[G#0], driving=0), {G: _current.G#0, _1: _current.SUM(V)#1})
+PLAN: Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_G, [G], T, live_groups_only), AggregateIndex(SUM, SUM_BY_G, [G], T), AggregateIndex(COUNT, CNTV_BY_G, [G], T); keys=[G#0], driving=0), {G: _current.G#0, _1: _current.SUM(V)#1})
 ROWS(4) cols=[G, _1]:
   [1, 90]
   [2, 70]
