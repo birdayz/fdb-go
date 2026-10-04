@@ -19,8 +19,7 @@ Tags are `v0.MINOR.PATCH`. Two axes, deliberately decoupled:
   block and gated on conformance + cross-engine differential + binding-stress proof.
 
 The required dependency versions for a release (Java Record Layer, FDB C++ client, Go) are the pins
-in `MODULE.bazel` / `go.mod`; the CI doc-consistency guard (`pkg/docscheck`) fails if a living doc
-asserts a version other than those pins.
+in `MODULE.bazel` / `go.mod`.
 
 ## Support window
 

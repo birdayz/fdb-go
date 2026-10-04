@@ -28,11 +28,10 @@ chaos's double-commit fake). The brute-force loop-until-bug hunter that rides on
   pure-Go client) — that's **Track B**, a separate RFC. SimFDB simulates the *backend contract*
   (`fdb.BackendDatabase`), not the wire transport.
 
-**"Bit-exactly" has named exceptions — say them when you claim a replay.** The claim is enforced by
-`pkg/docscheck`'s `TestDSTSeamGate`, which requires every raw `time.Now` / `crypto/rand` /
-`math/rand` call in `pkg/recordlayer` and `pkg/relational` to sit on an allowlist with a written
-reason. Read that allowlist before asserting a run replays; everything on it is a latency metric,
-in-memory cache bookkeeping, or an asymmetric seam's production arm — **except**:
+**"Bit-exactly" has named exceptions — say them when you claim a replay.** A raw `time.Now` /
+`crypto/rand` / `math/rand` call in `pkg/recordlayer` or `pkg/relational` breaks replay unless it is
+a latency metric, in-memory cache bookkeeping, or an asymmetric seam's production arm. Check the
+calls before asserting a run replays. Known exceptions:
 
 - **`spfreshNowMs`** (`pkg/recordlayer/spfresh_util.go`, 23 call sites) — SPFresh task/lease
   timestamps DO reach persisted rows and are unseamed. A SPFresh-heavy run does not replay

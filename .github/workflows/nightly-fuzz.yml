@@ -45,10 +45,7 @@ jobs:
             echo "ok=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # The permitted band, governing ALL FIVE jobs below, declared as two
-          # explicit hours so it is machine-readable: pkg/docscheck's
-          # TestNightlyWindowAdmitsMeasuredLandings parses these and replays against
-          # them every job-allocation hour this net has ever actually been given.
+          # The permitted band, governing ALL FIVE jobs below, as two explicit hours.
           #
           # WINDOW_START > WINDOW_END means the band WRAPS midnight, and that wrap is
           # the correction. The previous bound was 00:00-10:00, which called 18:00-24:00

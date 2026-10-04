@@ -23,10 +23,8 @@ import "strings"
 //   - `CorrelationIdentifier.name` is unexported and is a QUANTIFIER alias, a
 //     different identity element with its own producers — never a column name.
 //
-// That is a structural defense, not a stylistic one. `pkg/docscheck`'s
-// `.Field` gate fires on composite-literal KEYS and on returned selectors; a
-// display name smuggled through a returned struct FIELD is invisible to it.
-// So the key type simply has nowhere to put one, and
+// That is a structural defense, not a stylistic one: the key type simply has
+// nowhere to put a display name, and
 // `column_identity_test.go`'s reflection walk fails the build if that ever
 // stops being true.
 type ColumnIdentity struct {

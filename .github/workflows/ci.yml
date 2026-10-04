@@ -90,9 +90,7 @@ jobs:
       # runner supervisor's GitHub-API dependencies never enter the
       # record-layer dependency graph. That separation also put its 53 tests outside
       # `bazelisk test //...` — they ran NOWHERE, in CI or locally, while looking
-      # entirely normal in review. This step is the lane; //pkg/docscheck's
-      # TestOutOfBazelLanesAreReal fails if it is renamed or removed, so the
-      # exemption cannot rot back into silence.
+      # entirely normal in review. This step is the lane.
       - name: Test the standalone runner-supervisor module
         if: ${{ !cancelled() }}
         run: go test ./... -count=1

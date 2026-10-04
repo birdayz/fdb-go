@@ -77,9 +77,7 @@ jobs:
             echo "ok=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # The permitted band, declared as two explicit hours so it is
-          # machine-readable: pkg/docscheck's TestNightlyWindowAdmitsMeasuredLandings
-          # parses these and replays every allocation hour this net has been given.
+          # The permitted band, as two explicit hours.
           # WINDOW_START > WINDOW_END means the band WRAPS midnight.
           #
           # This job landed with an inlined `-ge 0 -lt 10` bound, written before the

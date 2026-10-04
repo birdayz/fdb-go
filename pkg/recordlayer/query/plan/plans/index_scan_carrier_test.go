@@ -15,12 +15,6 @@ func carrierTestIndexPlan(t testing.TB, name string) *RecordQueryIndexPlan {
 // IndexScanCarrier type exists for: a caller asking "what index scan does this
 // node read entries from" gets the SAME answer for a bare scan and for the
 // covering plan that wraps it.
-//
-// It is the behavioural half of the docscheck gate. The gate proves no site
-// type-tests the bare plan without a covering arm; this proves the accessor
-// those sites are pointed at actually answers for both — a gate that redirected
-// every site to a helper returning nil for covering would pass while making
-// things worse.
 func TestIndexPlanOf_SeesThroughTheCoveringWrapper(t *testing.T) {
 	t.Parallel()
 	idx := carrierTestIndexPlan(t, "IDX_A")
@@ -122,8 +116,8 @@ func TestIndexScanCarrier_BothPlanTypesImplementIt(t *testing.T) {
 		}),
 	} {
 		if _, ok := plan.(IndexScanCarrier); !ok {
-			t.Errorf("%s does not implement IndexScanCarrier; every site the docscheck gate "+
-				"redirects to plans.IndexPlanOf would silently stop seeing it", name)
+			t.Errorf("%s does not implement IndexScanCarrier; every site that reads "+
+				"plans.IndexPlanOf would silently stop seeing it", name)
 		}
 	}
 }

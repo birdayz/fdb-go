@@ -84,8 +84,6 @@ java_test(
 # it; a second target can. Gazelle must not add these files to conformance_test,
 # and the target below is hand-maintained (# keep): its srcs are the oracle specs
 # plus the shared helper files they compile against.
-# pkg/docscheck/build_membership_test.go fails if an excluded spec file is in no
-# target.
 # gazelle:exclude guardiann_probe_conformance_test.go
 # gazelle:exclude count_on_empty_conformance_test.go
 # gazelle:exclude function_columns_conformance_test.go

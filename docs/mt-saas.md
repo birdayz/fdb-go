@@ -13,8 +13,7 @@ citation for every claim, because an operator guide is worthless unless every se
 checkable.
 
 **Verified against:** Java `fdb-record-layer-core` **4.14.2.0** (the wire-compat spec), the
-FoundationDB **7.3.77** client protocol, Go **1.26.x**. These are drift-guarded — this page is on
-`pkg/docscheck`'s `livingDocs` list, so a version bump that leaves it behind fails the build.
+FoundationDB **7.3.77** client protocol, Go **1.26.x**.
 
 **Read this first.** Three properties of this deployment shape are not negotiable and are not
 enforced by the engine:

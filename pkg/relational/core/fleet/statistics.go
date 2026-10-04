@@ -217,8 +217,7 @@ func describeSkipped(skipped map[string]string) string {
 	// reaches here. Delete that guard and this one narrows silently rather than
 	// failing.
 	//
-	// cmd/frl's docscheck gate cannot see this file, so the invariant is carried
-	// by calling the SHARED policy rather than by that gate. It used to be a
+	// The invariant is carried by calling the SHARED policy. It used to be a
 	// local copy justified by "a test pins that the two agree" -- there was no
 	// such test, and there could not easily be one across an unexported boundary,
 	// so the copy is gone instead.

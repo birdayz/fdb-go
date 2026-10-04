@@ -64,11 +64,8 @@ jobs:
             echo "ok=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # The permitted band, declared as two explicit hours so it is
-          # machine-readable: pkg/docscheck's TestNightlyWindowAdmitsMeasuredLandings
-          # parses these and replays against them every job-allocation hour this net
-          # has ever actually been given. WINDOW_START > WINDOW_END means the band
-          # WRAPS midnight.
+          # The permitted band, as two explicit hours. WINDOW_START > WINDOW_END means
+          # the band WRAPS midnight.
           #
           # Sized from measured allocation, not from the cron hour, which predicts
           # nothing: GitHub's own scheduled-trigger dispatch on this repo is late by

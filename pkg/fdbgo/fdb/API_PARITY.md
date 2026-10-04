@@ -24,13 +24,9 @@ removes.)
 
 ## TransactionOptions on the pure-Go backend
 
-The three tables below are machine-checked against `options.go`. `pkg/docscheck`'s
-`TestAPIParityTablesMatchOptionsGo` parses every option method body, classifies it
-from the statements alone as reject / no-op / honored, and fails the build when the
-classification disagrees with this page or when an option appears in neither. An
-option added or reclassified in code therefore cannot leave this page stale — which
-matters, because this page has been wrong in exactly that way before. Names may be
-written with or without the leading setter prefix.
+The three tables below classify every option in `options.go` as reject / no-op /
+honored. Keep them in step with the code when an option is added or reclassified.
+Names may be written with or without the leading setter prefix.
 
 ### Honored — the option does real work
 

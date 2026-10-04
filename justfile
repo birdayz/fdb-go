@@ -588,10 +588,8 @@ install-hooks:
     # scratch logs and redirect targets too, and blaming codegen for those sends
     # the reader to stage exactly what must never be staged.
     #
-    # Widening a recipe to write somewhere new means widening this list:
-    # TestCodegenOwnedGlobsCoverTheGenerateRecipes derives the paths from the
-    # recipes and fails the build when one is not covered, so the narrowing
-    # cannot silently start missing real codegen output.
+    # Widening a recipe to write somewhere new means widening this list, or the
+    # narrowing silently starts missing real codegen output.
     #
     # `.tools/` is gitignored, so nothing under it can reach the untracked list at
     # all; the entry keeps the list a complete statement of what codegen writes

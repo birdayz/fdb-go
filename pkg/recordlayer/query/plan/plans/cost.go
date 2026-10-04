@@ -784,8 +784,7 @@ func valueCorrelatedTo(v values.Value, alias values.CorrelationIdentifier) bool 
 //
 // This is RFC-197 item 2's replacement for `correlatedInnerField`, which
 // returned `(string, CorrelationIdentifier)` — the identity triple wrong by one
-// element, and the shape pkg/docscheck's gate is named after: the display name
-// escaped as a bare string and the caller keyed its want/bound sets by it, at
+// element: the display name escaped as a bare string and the caller keyed its want/bound sets by it, at
 // which point no type was left to consult. The key it returns now cannot carry
 // a name (values.ColumnIdentity has no string field, pinned by reflection).
 //

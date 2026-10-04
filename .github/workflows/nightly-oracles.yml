@@ -57,11 +57,8 @@ jobs:
             echo "ok=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # The permitted band, declared as two explicit hours so it is
-          # machine-readable: pkg/docscheck's TestNightlyWindowAdmitsMeasuredLandings
-          # parses these and replays against them every job-allocation hour this net
-          # has ever actually been given. WINDOW_START > WINDOW_END means the band
-          # WRAPS midnight; here it wraps to the date line, so the band is 13:00-24:00.
+          # The permitted band, as two explicit hours. WINDOW_START > WINDOW_END means
+          # the band WRAPS midnight; here it wraps to the date line, so the band is 13:00-24:00.
           #
           # This net deliberately sits in the afternoon rather than the 00:00+ cluster
           # the other nightlies occupy. The cron hour predicts nothing — GitHub's own

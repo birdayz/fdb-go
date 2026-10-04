@@ -108,9 +108,8 @@ type rowdiffLimits struct {
 // budget defaults to unbounded because its correct value is a property of the
 // seed range the CALLER chose, which only the caller knows: 25 seeds in the PR
 // smoke and 18000 in the nightly do not share a sane bound. nightly-rowdiff.yml
-// declares it as a test_env input next to the seed count it belongs to, and
-// pkg/docscheck's TestRowdiffSweepBudgetBoundsTheTimeout pins that it stays
-// declared and stays below the Bazel timeout.
+// declares it as a test_env input next to the seed count it belongs to; it must
+// stay below the Bazel timeout.
 func rowdiffSweepLimits(t *testing.T) rowdiffLimits {
 	t.Helper()
 	lim := rowdiffLimits{maxConsecutiveInfra: defaultMaxConsecutiveInfra}

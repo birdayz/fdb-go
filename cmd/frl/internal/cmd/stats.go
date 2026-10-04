@@ -775,7 +775,7 @@ func userName(storage string) string {
 // the sql.go sites and meta_diff's sortSection. A set of functions is
 // small enough to read; a set of call sites is open and rots. It is NOT closed
 // by the compiler: the policy is exported from recordlayer, so a new caller can
-// reach past these -- which is what the docscheck gate is for.
+// reach past these.
 //
 //	userName          one name, round-trip guarded, no declared-set context
 //	userNames         a slice, decoded then RE-SORTED in the printed namespace

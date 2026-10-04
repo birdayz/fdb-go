@@ -632,8 +632,8 @@ func CollectStatistics(
 //
 // THE TIMESTAMP IS DRAWN HERE, from the DST env rather than time.Now, and that
 // is a requirement rather than a style: these bytes are PERSISTED, so a raw
-// wall-clock read makes a seeded simulation run unreplayable (RFC-199 Tier 0;
-// the seam gate in pkg/docscheck enforces it). Env() is nil-safe and falls back
+// wall-clock read makes a seeded simulation run unreplayable (RFC-199 Tier 0).
+// Env() is nil-safe and falls back
 // to real time in production.
 //
 // Stamping here rather than in the caller also makes the stamp describe the

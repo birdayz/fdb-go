@@ -3321,9 +3321,7 @@ hashes/reproducers. All experiments reverted; tree clean.
   — see the false proof below.
 
   **THAT GATE IS CURRENTLY BLIND, AND TWO SENTENCES ABOVE ARE STALE.** Found by
-  the unexported-dead-code gate; the authority is
-  `unreferencedFuncLedger` in `pkg/docscheck/unreferenced_func_gate_test.go`,
-  which this paragraph quotes rather than the reverse.
+  the (since removed) unexported-dead-code gate.
 
   1. Of the four functions named for deletion above, `scanProvableMaxCard` is
      ALREADY dead — zero production callers. The live logical walk's scan arm
@@ -3382,7 +3380,7 @@ hashes/reproducers. All experiments reverted; tree clean.
   already exist and are the correct inputs. CockroachDB assigns a column id during
   name resolution and the optimizer never sees a name again;
   `ColumnMeta.Alias` is documented as display-only. **Enforcement is the point** —
-  a `pkg/docscheck`-style build check that `.Field` cannot feed a comparison
+  a build check that `.Field` cannot feed a comparison
   outside an allowlisted display site, or an eighth instance is certain.
   (This item previously cited "RFC-193 §5.1". **That document was never
   committed** — no such file exists in the repo or its history, so the citation
@@ -3698,12 +3696,7 @@ hashes/reproducers. All experiments reverted; tree clean.
   against the sentinel of the day before quoting a percentage.
 
   So the conversion is correct and cannot land until the coupling changes. Fix
-  the coupling FIRST, then land the value-keyed referenced-fields set and drop
-  the `referenced_fields.go:125` entry from `pkg/docscheck`'s
-  `field_name_decision_test.go` allowlist — that allowlist reason string is
-  where this finding was living, which is precisely why it needed to become an
-  item: prose inside an allowlist is unreachable under the pick-lowest-unchecked
-  rule.
+  the coupling FIRST, then land the value-keyed referenced-fields set.
 
   Read Java first: whether `PlannerConstraint.combine`'s changed-flag drives
   re-exploration the same way in `PlanContext`/`ConstraintsMap`, and if Java
@@ -5120,7 +5113,7 @@ to nothing.)
   "when the last caller stops slicing a rendered name".
   Also note the arithmetic in the sentence below is superseded: the call-boundary
   taint added in #540/#544 changed which sites are visible, so the `translator`
-  bucket now stands at **15** (`pkg/docscheck/field_name_decision_test.go:462`),
+  bucket now stands at **15**,
   and "CQ-52 retires four translator sites" no longer names the same four.
   Three debt sites exist only to undo a join the layer above performed
   for no reason. It was four; the gathered-EXISTS wrap's dotted arm is DELETED
@@ -5148,9 +5141,8 @@ to nothing.)
   '.')`, at four sites — `cascades_translator.go:5674` (single-ForEach flat
   baker), `:5722` (`bakeDottedRefsToLegQOV`), `:5846`
   (`bakeFlatRefsAgainstColumns` leg-window arm) and
-  `exists_gathered_cluster_wrap.go:131` (gathered-EXISTS wrap). All four are now
-  tagged `translator:` in `pkg/docscheck`'s `knownFieldDecisionDebt` rather than
-  `dotted:` — each guards `Child != nil → bail` before the slice, so it only
+  `exists_gathered_cluster_wrap.go:131` (gathered-EXISTS wrap). All four are
+  `translator:` debt rather than `dotted:` — each guards `Child != nil → bail` before the slice, so it only
   ever sees a lazy carrier minted from parsed text, and each emits a born-baked
   value. They are name RESOLUTION, correctly performed on a representation that
   destroyed its own input.
@@ -5374,7 +5366,7 @@ to nothing.)
 
 - [ ] **CQ-79 (MED, RFC-197) — CQ-53's surviving producer mint is owned by no
   item.** · S/M · query-engine review gate
-  `pkg/docscheck/field_name_decision_test.go:447` pins
+  The field-debt list (in the since-removed `pkg/docscheck`) described
   `cascades_translator.go:3598` as *"dotted: MINT. **CQ-53's surviving
   producer** — turns QOV(leg).COL into QOV(merged).\"LEG.COL\" so the FlatMap
   inner's binder can resolve the merged row by that string … this one is on the
@@ -5681,9 +5673,8 @@ to nothing.)
 
   **A PRIOR REVISION OF THIS ENTRY ASSERTED THE OPPOSITE OF THE FIRST BULLET**
   ("the three sites are DARK"), on a reading taken with the census counter placed
-  BELOW the function's inert guard, where every site reads 0. That ordering bug is
-  now AST-pinned (`docscheck.TestCensusReachedCallPrecedesEveryReturn`); the two
-  readings support opposite follow-ups and nothing could tell them apart.
+  BELOW the function's inert guard, where every site reads 0. That was an ordering
+  bug; the two readings support opposite follow-ups and nothing could tell them apart.
 
   **WHAT IS NOW BOOKED HERE**, in priority order:
   1. **Retire `RecordTypeLeg.Name`'s EXECUTOR reader** (`rowSlotForLegColumn`'s
@@ -5892,97 +5883,6 @@ to nothing.)
     mint survives item 1 untouched.
 
 
-- [ ] **Nine `SourceRelativeBaked()` call sites perform an arity decision that the accessor-arity census cannot classify — they are now ENUMERATED but not CLASSIFIED.**
-  `FieldValue.SourceRelativeBaked()` requires `len(Accessors) == 1`, and that
-  requirement lives inside the PREDICATE'S NAME. A site gating on it therefore
-  makes an arity decision while containing no `len(...Accessors)` expression, so
-  the arity sweep — a regexp over source — cannot see it. That is not
-  hypothetical: `bakeUnnestElementRefOrdinal` sat in exactly that hole with a
-  LIVE defect (a struct-element MEMBER reference was skipped, mis-resolved, and
-  EXISTS dropped every row SILENTLY) while `arityLiveDefect: 0` read green.
-  **The direction is the danger: such a site is invisible while broken and
-  becomes visible only by being FIXED**, because the repair is what introduces
-  the explicit arity expression.
-  ENUMERATION IS DONE and is guarded —
-  `TestSourceRelativeBakedSitesAreVisibleToTheCensus`
-  (`pkg/docscheck/source_relative_baked_visibility_test.go`) requires every call
-  site to be CLASSIFIED in `accessorAritySites` or LEGIBLE by a comment quoting
-  `len(Accessors) == 1`, fails on any site that is neither, and names GROWTH as
-  the alarm direction. It found 8 unguarded; all now carry a comment. **A
-  legibility comment states a FACT, never a verdict** — the classification below
-  is what is still owed. 10 sites total: 1 classified, 9 legible-only.
-  THE SHAPE TO PATTERN-MATCH, which is what makes this cheap for the next reader:
-  `if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) { return node }`
-  — a SKIP that silently passes a multi-accessor unpinned reference through
-  unbaked. Not every site below has it, and the differences are the point:
-  · **`clustered_outer_scalar.go:183`** (`clusterPullUp.bake`) — the skip shape
-    exactly. UNMEASURED.
-  · **`clustered_outer_scalar.go:391`** (`collectClusterOuterRefs`) — the skip
-    shape, but this walk COUNTS rather than bakes, and its own comment says the
-    refs "must be COUNTED or the decline guard misses them". So the consequence
-    is not a bad read but a MISSED DECLINE, which is the fail-open direction.
-    UNMEASURED, and the highest-value one to look at first for that reason.
-  · **`clustered_outer_scalar.go:660`** (`bakeClusterLegRefs`) — the skip shape.
-    UNMEASURED.
-  · **`unnest_gather.go:373`** (`bakeGatheredGroupValue`) — the skip shape, and
-    the closest sibling of the fixed defect: same gate, same
-    `elementSlots map[string]int`, same name-keyed `fv.Field` lookup, and its own
-    doc records a prior mis-bake to the element slot. **MEASURED, DOES NOT
-    REPRODUCE** across six shapes (two-level GROUP BY, HAVING, member in an
-    aggregated position, and a grouped unnest with the member correlated into an
-    EXISTS) — pinned by `TestFDB_UnnestElementMemberInGather`, whose doc states
-    what it does NOT establish: those shapes are correct, the gate still carries
-    the narrow predicate, and the reason they miss it is a property of how they
-    lower rather than a guarantee anyone stated.
-  · **`exists_gathered_cluster_wrap.go:159`** (`rebaseLegRefsToBox`) — the skip
-    shape, but here the decline is DELIBERATE and already pinned by
-    `TestRebaseLegRefsToBox_DeclinesANestedDescent`, with the surrounding comment
-    arguing that a decline costs the ordinal wrap while a half-widening costs
-    rows. Most likely already class (a); it needs the verdict recorded, not an
-    investigation.
-  · **`exists_gathered_cluster_wrap.go:343`** (`wrapRVFullyBaked`) — **INVERTED
-    relative to every site above**: `if nv.Resolved == nil || nv.SourceRelativeBaked()`
-    declines the SINGLE-accessor case, so a multi-accessor unpinned reference is
-    NOT declined and is treated as build-evaluable. The other sites risk skipping
-    a nested reference; this one risks ADMITTING one. UNMEASURED, and it is the
-    site whose failure mode is least like the others.
-  · **`rule_implement_nested_loop_join.go:4795`** (`correlatedFastPathOperand`)
-    and **`plan_visitor.go:1935`** (`resolveBaked`) — ADMIT gates, not skips: the
-    predicate admits only a flat reference, so a nested descent falls to the
-    general path or fails to resolve. Consequence is a lost fast path or a loud
-    miss, not a silent wrong read. Lowest risk; still owed a verdict.
-  DONE = each of the nine carries a class and a reason in `accessorAritySites`,
-  with the three unmeasured skip sites and the inverted one either reproduced
-  (fix + row-asserting pin) or pinned as negative results the way
-  `unnest_gather.go:373` was. Do NOT discharge this by deleting the legibility
-  comments — that re-hides the sites.
-
-
-- [ ] **The accessor-arity census records ONE class per SYMBOL, but a symbol can hold expressions of different classes — and now demonstrably does.**
-  `accessorAritySites` is keyed `file#symbol` with a single `class` plus an
-  `exprs` count. `exprs` works: adding an arity expression to an already-classified
-  function fails the census and forces re-classification (measured — it did
-  exactly that for `rewriteUnnestPredicate`). What is NOT captured is the class of
-  the ADDED expression.
-  `pkg/relational/core/query/cascades_translator.go#rewriteUnnestPredicate` now
-  holds TWO expressions of OPPOSITE class under a single `(a)` label: the
-  element-substitution arm's correct DECLINE (a), and the member-rebase arm which
-  HANDLES a multi-accessor path (c). The second is recorded in the entry's prose
-  only, so the class TALLY (`arityNestingOK` etc.) no longer describes the
-  expressions it is counted from — it describes symbols.
-  PRE-EXISTING, not introduced here: 10 symbols already carry `exprs > 1`
-  (`grep -oE 'exprs: [0-9]+' pkg/docscheck/accessor_arity_census_test.go`), and
-  whether any of the other nine is mixed-class has not been audited.
-  `rewriteUnnestPredicate` is simply the first KNOWN mixed one.
-  DELIBERATELY NOT FIXED IN THE CHANGE THAT FOUND IT: reworking the census's class
-  model inside a wrong-rows fix would bury an instrument defect inside a behaviour
-  change, and the two want separate review.
-  DONE = either the class moves per-expression (`classes []accessorArityClass`
-  matching `exprs`, so the tally counts expressions), or the census states
-  explicitly that its tally is symbol-granular and the per-expression verdicts
-  live in prose — and the nine other multi-expression symbols get audited for
-  mixed class either way.
-
 ---
 
 
@@ -6040,23 +5940,17 @@ to nothing.)
   gates it — so a bucket size or a decomposition copied into it is a second
   ungated copy of a fact the RFC's census table already owns, which is the exact
   rot this item exists to record. An earlier draft of this very block shipped
-  four such tallies. For sizes, read the gated table in RFC-197 `## Order`; the
+  four such tallies. For sizes, read the table in RFC-197 `## Order`; the
   dependency order and the per-group decomposition (by NAME, not by tally) live
   in that section's "Dependency order, measured".
 
   **(3) RFC-197's census had rotted three ways at once, and nothing checked it.**
-  `TestFieldDebtBucketsArePartition` checks the group headers INSIDE
-  `knownFieldDecisionDebt` and NOT the RFC's copies, which is exactly why one
-  rotted and the other did not. The RFC claimed 52 escape sites over 34
+  The RFC claimed 52 escape sites over 34
   authorities against a measured 44 over 33; its own per-bucket numbers summed to
   43 rather than the 52 the same paragraph stated; and its largest named
   concentration, `AggregateResultColumnName` at "6 of 52", had retired to ZERO
-  entries without the sentence moving. Fixed by making them the SAME fact rather
-  than two copies: the RFC carries the census as marked markdown tables and
-  `pkg/docscheck/field_debt_rfc_census_test.go` parses them and fails the build on
-  drift, in BOTH directions (a wrong number, a bucket omitted, a retired
-  authority still listed, or a new concentration nobody wrote down). Mutation-
-  proven on two disjoint arms.
+  entries without the sentence moving. The tables were corrected; the gate that
+  then checked them lived in `pkg/docscheck` and has been removed.
 
   **Method note worth keeping — the MECHANISM, deliberately without magnitudes.**
   Counting these entries with a line-oriented regex is wrong, because many wrap
@@ -6068,10 +5962,8 @@ to nothing.)
   exit in other words, so the marker under-reports.
 
   The numbers themselves are omitted ON PURPOSE, for the same reason this entry
-  gives above: the census total is the most-gated number in this workstream, and
-  a copy of it here would be a second ungated home in the very entry that defines
-  that as the rot. An earlier draft of this note carried three such magnitudes.
-  Read them from `pkg/docscheck`.
+  gives above: a copy here would be a second home in the very entry that defines
+  that as the rot. Read them from RFC-197.
 
 ---
 
@@ -7366,11 +7258,6 @@ wrong deadlocks the lane rather than slowing it. This repo's box is 62 GB, where
 question cannot be reproduced. Do not guess it on the wrong hardware — that is how the
 `~5 GB` figure got deleted as "unmeasured" in the first place when it was simply true.
 
-Related: `pkg/docscheck`'s `TestNightlyRaceStepsDeclareTheirJobCount` currently requires
-every race-instrumented nightly step to WRITE `--local_test_jobs`. If the tags land, that
-gate should be revisited — the point of the tags is that the number stops needing to be
-restated at each call site.
-
 ### [ ] Create the fake `ssh` once, before any parallel test starts forking
 
 MEASURED, 1 of 20 consecutive `GOWORK=off go test ./... -count=1` runs in
@@ -7383,9 +7270,8 @@ required `Build, Lint & Test` lane):
     : fork/exec /tmp/TestRemoteLaunchArgvAndJitDelivery3456571678/001/ssh: text file busy
 ```
 
-(The host is the test's dotted-quad placeholder, elided here only because
-`TestLivingDocsCiteCurrentJavaTarget` cannot tell a fake IP from a stale 4-part
-version string. Nothing else in the output is altered.)
+(The host is the test's dotted-quad placeholder, elided. Nothing else in the output is
+altered.)
 
 Mechanism: the test writes a fake `ssh` into its own temp dir, and a *parallel* test's
 `fork` duplicates the still-open write fd into a child that has not yet `exec`'d. O_CLOEXEC
@@ -8437,36 +8323,6 @@ of the container rather than from the shape of an error string.
 ---
 
 
-### A scratch tree inside the worktree can turn a docscheck census into fiction
-
-A second copy of the repo inside the worktree DOUBLES every basename, so any
-census that counts declarations or resolves cites by basename silently reports
-twice the population. During PR #761 a `git archive` extract sat briefly at
-`<worktree>/scratchpad/<sha>/` and a docscheck walk failed on a path inside it
-that had since been deleted — loud only because the directory vanished mid-run.
-A copy that STAYS is the dangerous case, and it reads as a finding.
-
-PARTLY CLOSED. `pkg/docscheck/rfc_cite_resolution_test.go`'s
-`nestedRepoRootsUnder` refuses to build a cite index while any directory below
-the root carries its own `MODULE.bazel`, so the RFC-238 cite gates and
-`TestRFCCiteCensusRepoWide` cannot report totals about a doubled tree.
-
-WHAT REMAINS is every OTHER docscheck census. They reach the tree through
-`fallbackWalk` (`pkg/docscheck/fallback_walk_test.go`) when git enumeration is
-unavailable, and its `fallbackWalkSkippedTrees` list covers build output, VCS
-metadata, the vendored Java tree and sibling worktrees — but nothing that
-matches an ad-hoc extract. Note the walk that failed in #761 was NOT
-`fallbackWalk`: it rolled its own `filepath.Walk` with its own exclusion switch,
-so extending `fallbackWalkSkippedTrees` alone would not have prevented it. Both
-shapes need the guard.
-
-DONE when: every census walk refuses a nested second copy of the repo rather
-than only the cite gates, and a unit pin drives that refusal — construct a
-nested `MODULE.bazel` in a temp tree and assert the walk declines — rather than
-the corpus happening to be clean.
----
-
-
 ### A gate for prose that restates a value an assertion already owns
 
 The instances two reviewers surfaced after #760 are fixed in that PR's
@@ -8576,43 +8432,6 @@ fk_chain_cardinality.go -- sit outside it by construction, and claiming
 otherwise would be the same over-claim one level up.
 
 
-### [ ] RFC-238 cites source by LINE NUMBER, and the census only catches the lucky half
-
-`rfcs/238-a-qualifier-is-structure-not-punctuation.md` anchors its argument to
-`file.go:NNNN`. Any edit above a cite silently retargets it, and RFC-241 broke
-the same two anchors TWICE in one change — once when a ~65-line net insertion
-into `logical_predicate.go` moved them, and again when folding review findings
-into that same file moved them further.
-
-**This repo already ruled on this class, for a different document.**
-`TestStatusPageCrossReferencesResolve` (`pkg/docscheck/status_page_crossref_test.go`)
-forbids line anchors on `road-to-prod.md` outright, and its comment states the
-reason: "a line anchor into it is wrong the moment anyone edits an earlier item,
-and it is wrong SILENTLY, still rendering as a precise-looking citation." Every
-word of that applies to RFC-238.
-
-**The existing census is a partial guard and its gap is measurable.**
-`TestRFC238WeakCitesAreTheOnesSection7dNames` catches a cite only when the line
-it lands on looks WEAK — blank, a brace, a comment. A cite that drifts onto
-another plausible statement stays green while pointing at the wrong code.
-Measured during RFC-241: the census flagged
-`logical_predicate.go:6796` (drifted onto a comment) and said nothing about
-`:6620`, which had drifted off `recordTypeCI` onto an unrelated line. One wrong
-citation was caught, one was not, and the difference was luck.
-
-THE WORK: convert RFC-238's source cites from `file.go:NNNN` to the stable form
-the status-page gate already requires — name the SYMBOL (`recordTypeCI`,
-`buildSelectScope`'s bare-alias call) — and then hold it with a gate that
-resolves each cited symbol, so a rename fails loudly instead of a renumber
-failing silently. The weak-cite census can then retire with the anchors it was
-compensating for, per the guard-shelf-life rule: it exists to watch a hazard that
-the conversion removes.
-
-Scope note: RFC-241 re-pointed the two anchors it broke rather than converting
-the document, because a citation-style change to a merged RFC is its own change
-with its own review. That is why this is booked rather than done there.
-
-
 ### [ ] gazelle emits 181 duplicated `srcs` entries in one target, and that made a reviewer file a wrong fix
 
 `pkg/relational/core/embedded/BUILD.bazel`'s `embedded_test` target lists **181**
@@ -8640,9 +8459,7 @@ handling of this file, not to any one change.
 THE WORK: find why gazelle appends rather than merges for this target — most
 likely the unsorted tail defeats its sort-and-dedup — and either normalise the
 list so gazelle owns it cleanly, or record at the file head that duplicates are
-expected output so the next reader does not file the same finding. Then assert
-it: a docscheck arm counting duplicate `srcs` entries per target, floored at
-whatever the normalisation achieves, so the count cannot silently grow again.
+expected output so the next reader does not file the same finding.
 
 Do not "fix" this by hand-deleting entries. That is what fails the hook.
 
@@ -9718,49 +9535,6 @@ covered by the correctness suite and the golden plan diff, not by this table.
   construction, since `recursiveCTECommonResultRow` derives its target with the same per-ordinal
   maximum. Pinned as its own row. Booked from RFC-242 r41, cause and direction corrected at r43,
   rows actually committed and the CTE call site added at r44, counts corrected at r45.
-
-- [ ] **`TestSourceCommentHygiene` scans only `*.go`, and its subject is not Go-specific.**
-  The rule it enforces — no reviewer or shift attribution in source comments — is about SOURCE
-  COMMENTS, and this repo reasons at length in shell and YAML comments: `infra/cloud-init.yaml`,
-  `infra/orphan_fdb_sweep_test.sh`, `pkg/docscheck/rowdiff_watcher_suite.sh`, the nightly
-  workflows. The gate's file set is `gitDeliverableFiles(root, "*.go")`
-  (`pkg/docscheck/source_hygiene_test.go`), so none of them are scanned.
-
-  Found by violating it twice in one change and having a reviewer catch what the gate could not:
-  "Three reviewers reached this independently" and "a review pointed out what that hides" both
-  shipped through a green `just test`.
-
-  **Measured 2026-09-06, and the entry got its own measurement wrong TWICE before this. Both
-  errors are kept, because they are the useful part and they are the same error twice.**
-
-  First version: 29 files, ZERO violations — a free ratchet touching nothing. Wrong three ways.
-  The glob `'*.sh' '*.yml'` does not match `*.yaml`, so it EXCLUDED `infra/cloud-init.yaml`, a
-  file the same sentence named as an example; the pattern listed `graefe|torvalds` but not
-  `codex`; so "0 matches" was a fact about a malformed search reported as a fact about the repo.
-
-  Second version: 429 files, 48 with attribution. The population was right and the PATTERN was
-  still invented — three of the eight regexes the gate actually uses. `bannedCommentPatterns`
-  (`pkg/docscheck/source_hygiene_test.go`) also bans `(day|night|swing)shift-[0-9]+`,
-  `audit #[0-9]+`, a generic `\breviewers?\b`, `@claude`, and review-round labels. The lesson is
-  the same one twice: I wrote a pattern from memory of the RULE instead of reading the GATE.
-
-  Third and measured against the gate's own list, over `git ls-files '*.sh' '*.yml' '*.yaml'`
-  (429 files): **57 files match.** A raw line scan gives 122 lines; a comment-only scan — which
-  is what the gate would do — gives fewer, so take the FILE count as the load-bearing figure.
-  Of the 57, **eight** are source-like — SEVEN workflows plus `infra/cloud-init.yaml` — and **49**
-  are `yamsql/testdata/*.yaml`, genuine rather than false positives ("Subquery false-positive
-  guard (Torvalds review)", "Codex-caught: CAST of a NON-string source to UUID"). The
-  seven-and-41 split written here first was a fourth arithmetic error in the same paragraph, and
-  it under-stated the workflow half — the half that is not test data.
-
-  So this is NOT a free ratchet. It is a gate extension plus a 57-file cleanup, and the cleanup
-  is the larger half — which is what someone needs to know before starting, and is the opposite
-  of what the first two versions of this paragraph said.
-
-  Not done on the RFC-242 branch deliberately: the Go path parses an AST and reports per comment
-  GROUP; a shell/YAML path is a different mechanism (line-based `#` scanning, with its own
-  quoting and heredoc hazards) needing its own arms and its own review lap, and 57 files of
-  comment edits do not belong inside a change about union leg alignment.
 
 - [ ] **A review gate was running into a void for a whole branch, and the reporting layer rendered
   "no findings" and "not read" identically.** RFC-242's PR ran a four-gate loop. One of the four

@@ -751,9 +751,6 @@ type RecordTypeLeg struct {
 // producer that never decided. Both are POSITIONAL parameters so that omitting
 // either is a compile error rather than a silent zero — that, and not the
 // literal index, is what the parameter list buys.
-//
-// A docscheck AST scan (TestRecordTypeLegIsConstructed) keeps the composite
-// literal from coming back in non-test production code.
 func NewRecordTypeLeg(kind LegKind, alias CorrelationIdentifier, name string, start, width int) RecordTypeLeg {
 	return RecordTypeLeg{Kind: kind, Alias: alias, Name: name, Start: start, Width: width}
 }

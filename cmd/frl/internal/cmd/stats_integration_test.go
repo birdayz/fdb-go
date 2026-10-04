@@ -453,8 +453,7 @@ func TestStats_AllSchemasRejectsAnUnrenderableOutputFormat(t *testing.T) {
 		t.Errorf("error %q does not name the flag that makes the format unrenderable", err)
 	}
 	// The banner is title-cased by fang, so an error may not LEAD with a flag or
-	// the operator reads "--Output". The repo gates this globally (pkg/docscheck);
-	// asserted here too because this specific message was rewritten for that.
+	// the operator reads "--Output". This specific message was rewritten for that.
 	if strings.HasPrefix(err.Error(), "-") {
 		t.Errorf("error leads with a flag and will render title-cased: %q", err)
 	}

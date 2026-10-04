@@ -22,17 +22,13 @@ only via the `cascades_generator.go` boundary recover.
 
 ## The gate (RFC-134) — this is what keeps the discipline honest
 
-The discipline is no longer a one-time audit; it is **enforced on every build**:
-
-1. **`norecover` nogo analyzer** (`pkg/linters/norecover`) — the recover ratchet. It counts
-   builtin `recover()` calls per file and compares to the allowlist in §2 (baked into the
-   analyzer). A `recover()` in a non-allowlisted file, or *more* than a file's allowance, is a
-   **nogo build error**. Removing a recover never reddens the build (it fires on *more*, never
-   *fewer*), so deleting a boundary needs no edit; adding one is a conscious act (update the
-   allowlist + this doc). Test files are exempt. Runs in `just build` / `just test` / pre-commit.
-2. **Boundary fuzz-net guard** (`pkg/docscheck/panic_boundary_test.go`) — asserts each of the
-   four public input boundaries keeps a seeded no-panic fuzz target, so malformed input is
-   actually exercised (not an empty fuzz). Losing a fuzzer or its `f.Add()` seeds → red.
+The discipline is no longer a one-time audit; it is **enforced on every build** by the
+**`norecover` nogo analyzer** (`pkg/linters/norecover`) — the recover ratchet. It counts
+builtin `recover()` calls per file and compares to the allowlist in §2 (baked into the
+analyzer). A `recover()` in a non-allowlisted file, or *more* than a file's allowance, is a
+**nogo build error**. Removing a recover never reddens the build (it fires on *more*, never
+*fewer*), so deleting a boundary needs no edit; adding one is a conscious act (update the
+allowlist + this doc). Test files are exempt. Runs in `just build` / `just test` / pre-commit.
 
 ## Headline (current)
 

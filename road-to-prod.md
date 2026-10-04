@@ -108,7 +108,7 @@ because an unguarded count in a status doc is a claim with a shelf life:
 | SQL corpus coverage | **342 scenarios · 2740 cases · 2401 supported (87.6%)**, 109 unsupported-feature pins, 230 error-path pins | **Yes** — `TestSQLCoverageUpToDate` regenerates `SQL_COVERAGE.md`; `FEATURE_MATRIX.md` carries the same generated totals |
 | Java yamsql corpus (RFC-201, NEW since the audit) | **238** files vendored · **32** pass · **0** fail · **206** on the skip ledger · **487** asserted queries | **Yes** — `pinnedLedger` + `pinnedFileTotal` + `pinnedAssignmentDigest` in `pkg/relational/conformance/javacorpus/pinned_ledger_test.go` |
 | Generation factory corpus (NEW, #555) | **5000** scenarios · **20000** tests · **4952** feature vectors; blessings **4469 `metamorphic` + 531 `metamorphic-tlp-only`**, labeled in every header | **Yes** — componentwise census ratchet over scenario/test totals and each feature vector, plus per-scenario authority keyed by dedup key; `ByBlessing` is report-only (`factorycorpus/census_baseline.json`) |
-| `.Field`-decides ratchet (RFC-197) | **12** sites, per-bucket totals gate-checked | **Yes** — `TestFieldNameNeverDecides` + `TestFieldDebtBucketsArePartition`, and `TestStatusPageQuotesTheLiveFieldDebt` for the numbers ON THIS PAGE |
+| `.Field`-decides ratchet (RFC-197) | **12** sites | **No** — its gates lived in `pkg/docscheck`, since removed |
 
 The first four run per-PR. Both former P0s of the client prod-readiness RFC are verified CLOSED in
 code: cluster-file rotation (`pkg/fdbgo/client/database.go:614` re-reads the file when the
@@ -161,16 +161,16 @@ entries mean the same query returns different rows or different errors on the tw
 | B2 | No read-your-writes in explicit transactions; SELECTs take no read locks → silent lost updates | Wrong data | L | **DONE — merged 2026-08-04 (#607, `d6f635073`), Tier 2 confirmed.** RFC-198 all five phases; joint Graefe+Torvalds lap ACK'd; 1M stress clean; the OQ-1 GRV-cache span survived a C++-client + Torvalds design review (fence reshape) and fifteen codex rounds, every finding folded before merge |
 | B3 | RFC-195: cost estimates contradict proven cardinality bounds; comparator uses a private cardinality walk | Wrong plans (perf), not wrong rows | M | **DONE, merged (#547.)** `rfcs/195-cost-must-not-contradict-proof.md:3` — "ACCEPTED, revision 3 … implemented". Seven shapes fixed in the end, not six; zero exclusions and no mechanism to add one (`cardinality_cost_bound_test.go:36-45`). **Residual: CQ-30 in `TODO.md`, open** — criterion 2's data-access maxima are still forked; held visible by a standing test |
 | B4 | RFC-197 identity migration residual (see per-bucket table) | Plan/decline-direction only; wrong-rows channels closed | M | Active; ratchet-enforced; **68 at inception → 12 now** |
-| B5 | WS-N Phase D: metadata re-derived by name instead of flowing from the type (production `UnknownType` mints: see the live census, `pkg/docscheck/unknown_type_mint_census_test.go` — 43 across 20 files at `aba271454`; five name-keyed guessers, enumerated in `shifts/handoff-ws-n-phase-d-typed-metadata.md:65-81`) | Wrong client VALUES on cross-leg same-name-different-type | L | Booked; gates the typed-row-representation work. Entry point: RFC-226 (projection states its row) |
-| B6 | Documentation authority contradictory/stale | Trust/decision risk, not code | S | **This revision.** Authority headers added to `PRODUCTION_READINESS.md` and `rfcs/prod-readiness-go-client.md`; stale TODO entries fixed; `TestProductionStatusAuthority` added so the redirects cannot silently rot |
+| B5 | WS-N Phase D: metadata re-derived by name instead of flowing from the type (production `UnknownType` mints: 43 across 20 files at `aba271454`; five name-keyed guessers, enumerated in `shifts/handoff-ws-n-phase-d-typed-metadata.md:65-81`) | Wrong client VALUES on cross-leg same-name-different-type | L | Booked; gates the typed-row-representation work. Entry point: RFC-226 (projection states its row) |
+| B6 | Documentation authority contradictory/stale | Trust/decision risk, not code | S | **This revision.** Authority headers added to `PRODUCTION_READINESS.md` and `rfcs/prod-readiness-go-client.md`; stale TODO entries fixed |
 
 **B5's count was refuted and is corrected above, recorded here rather than quietly changed.**
 It read *"~347 UnknownType mints repo-wide; three named guessers"*. Neither number was right and
 the first counted the wrong population. `347` was a raw line count of *mentions* —
 `git grep -n UnknownType a1d281a63 -- 'pkg/**/*.go' | grep -v '_test.go:' | wc -l` → **352** at
 the SHA this page measured at — which folds mints, declines, comparisons and reads together. The
-repo has an authoritative AST census of *mints* (`pkg/docscheck/unknown_type_mint_census_test.go`,
-ratcheted, red in both directions): **43** across 20 files. The raw number has since risen to 417
+repo had an AST census of *mints* (in the since-removed `pkg/docscheck`): **43** across 20
+files. The raw number has since risen to 417
 while the real mint population *fell* (45 when the census landed at `1e64d6e75` → 43), so anyone
 tracking B5 by its stated metric read progress as regression. The guessers are **five**, not
 three (`shifts/handoff-ws-n-phase-d-typed-metadata.md:65-81` plus the surviving last-wins
@@ -180,13 +180,11 @@ point (RFC-226) will not move this number, and must not be judged by it.
 
 ### B4 residual, per bucket — MEASURED on the current deliverable
 
-These are the gate-enforced group headers in `pkg/docscheck/field_name_decision_test.go`, which
-`TestFieldDebtBucketsArePartition` checks against the entries they advertise. The buckets are a
-partition, so they sum to the list: **12**.
+These are the group headers of the field-debt list that lived in the since-removed
+`pkg/docscheck/field_name_decision_test.go`. The buckets are a partition, so they sum to the
+list: **12**. The table is now a snapshot; nothing checks it against the code.
 
-**The numbers in this table and the totals quoted around it are now gate-checked ON THIS PAGE**
-(`TestStatusPageQuotesTheLiveFieldDebt`). They were not before, and the guarantee column above
-said they were: the two ratchet tests check the debt list against ITSELF — entries against group
+Before it was gate-checked on this page, the guarantee column above said it was: the two ratchet tests check the debt list against ITSELF — entries against group
 headers, headers against entries — and neither one reads this file. So the quote could drift from
 its source, and it had. This table said `boundary 1` / total **52** while the list held
 `boundary 2` / **53**; the second `boundary` entry arrived with `#601` (RFC-204 struct types,
@@ -285,7 +283,7 @@ Two further corrections to the migration's bookkeeping, both found by reading th
 
 - **CQ-53 is marked done but has a surviving producer.** `TODO.md`'s CQ-53 closes it as subsumed by
   CQ-67 (#549) "carrying no separate remainder", while
-  `pkg/docscheck/field_name_decision_test.go:447` pins `cascades_translator.go:3598` as "dotted:
+  the since-removed `pkg/docscheck/field_name_decision_test.go:447` pinned `cascades_translator.go:3598` as "dotted:
   MINT. **CQ-53's surviving producer**" — and the mint is live at that line, on the unnest-merge
   path. Its NLJ twin was deleted; this one "dies with the same work", and that work was owned by
   nothing. **This is a real gap between a closed checkbox and the gate.** Now booked as **CQ-79**,
@@ -816,8 +814,7 @@ stop. Three green runs are on record and they do not settle it.
 - Two LIKE implementations that provably disagree (trailing escape), one live on the
   `INFORMATION_SCHEMA` WHERE path — part of a shadow evaluator family that violates "no parallel
   pipelines". S.
-- `API_PARITY.md` contradicts `options.go` on two options (doc says no-op, code rejects) + a
-  docscheck gate to keep the table honest. S.
+- `API_PARITY.md` contradicts `options.go` on two options (doc says no-op, code rejects). S.
 - `SetSpecialKeySpaceRelaxed`/`EnableWrites` still silent no-ops — record the decision. S.
 - `pkg/fdbgo` README/doc.go missing the bounded-context requirement. S.
 - Two stated-unprobed differential axes (1021 idempotency — needs wire fault injection; cross-shard

@@ -603,8 +603,7 @@ func partitionCost(p *PlanPartition) float64 {
 	// model in the search today, not two.
 	//
 	// That is a claim about the tree, so here is how to re-check it rather than
-	// trust it (the unexported-func gate in pkg/docscheck cannot: its population
-	// is UNEXPORTED functions, and this one is exported):
+	// trust it:
 	//
 	//	grep -rn 'SelectMinCostPartition(' --include='*.go' . | grep -v _test.go |
 	//	  grep -v 'func SelectMinCostPartition' | grep -vc ':[0-9]*:[[:space:]]*//'

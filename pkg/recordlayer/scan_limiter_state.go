@@ -110,9 +110,7 @@ type ScanLimiterState struct {
 //
 // What makes it harmless is a fact about call sites: the clock only DECIDES anything here through
 // the time budget (which is what ends a page and picks the continuation), and the one production
-// site that arms a time limit builds its properties with DefaultExecutePropertiesIn. That fact is
-// gated, not merely asserted — pkg/docscheck TestScanLimiterStateArmingIsSeamed fails the build
-// if any production function arms a time limit without the seamed constructor.
+// site that arms a time limit builds its properties with DefaultExecutePropertiesIn.
 func resolveScanLimiterState(props ExecuteProperties) *ScanLimiterState {
 	if props.ScanState != nil {
 		return props.ScanState

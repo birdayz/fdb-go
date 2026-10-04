@@ -308,8 +308,7 @@ func TestDescribeSkippedNamesUserIdentifiers(t *testing.T) {
 //   - two stored names colliding on one decoded key LOSE a row outright, so a
 //     skipped type silently vanishes from the only place it is reported.
 //
-// cmd/frl's docscheck gate scans cmd/frl only and cannot see this file, so the
-// invariant is pinned here.
+// The invariant is pinned here.
 func TestDescribeSkippedLosesNoRowAndInventsNoName(t *testing.T) {
 	t.Parallel()
 

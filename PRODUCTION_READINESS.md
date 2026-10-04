@@ -63,10 +63,7 @@ earlier Java target than the README's current 4.14.2.0 — is fixed by **RFC-131
   documents, and the SQL-summary's hard-coded date is replaced by a "yamsql corpus at HEAD"
   pointer;
 - the one *live* finding buried in those snapshots (no read path for format-version-<6
-  record versions) was lifted into `TODO.md` so the archive loses nothing;
-- `pkg/docscheck/docs_consistency_test.go` is a CI guard that fails if a living doc cites a
-  record-layer version other than the `MODULE.bazel` pin, or reintroduces the README
-  escape-hatch contradiction, or leaves a stale report under `reports/`.
+  record versions) was lifted into `TODO.md` so the archive loses nothing.
 
 **CORRECTED.** This paragraph read "Remaining (deferred, **not** a launch blocker): a generated
 /maintained `FEATURE_MATRIX.md` — the dated README + `DIVERGENCES.md` pointer is the interim source

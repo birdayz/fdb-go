@@ -85,10 +85,3 @@ go_test(
         "@com_github_onsi_gomega//:gomega",
     ],
 )
-
-# keep: staged into the pkg/docscheck API_PARITY honest-options gate, which
-# parses options.go and cross-checks its classification against API_PARITY.md.
-exports_files([
-    "options.go",
-    "API_PARITY.md",
-])

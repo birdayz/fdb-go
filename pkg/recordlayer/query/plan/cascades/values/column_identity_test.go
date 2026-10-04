@@ -8,12 +8,10 @@ import (
 
 // TestColumnIdentity_CarriesNoName is the structural half of RFC-197 item 2.
 //
-// The `.Field` gate in pkg/docscheck fires on composite-literal KEYS and on a
-// returned `.Field` selector. A display name smuggled through a returned
-// STRUCT FIELD is invisible to it — so an "escape" site could be converted to
-// return a key type, look migrated, and still decide by name. The defense is
-// that the key type has nowhere to put a name, and this test is what holds
-// that true after the migration lands.
+// A display name smuggled through a returned STRUCT FIELD would let an
+// "escape" site return a key type, look migrated, and still decide by name.
+// The defense is that the key type has nowhere to put a name, and this test
+// is what holds that true.
 //
 // Two string-kinded leaves are reachable and both are allowed BY TYPE, with a
 // reason each:
@@ -67,11 +65,9 @@ func TestColumnIdentity_CarriesNoName(t *testing.T) {
 
 	if len(offenders) != 0 {
 		t.Fatalf("ColumnIdentity reaches string-kinded field(s) %s.\n"+
-			"A column's DISPLAY name carried inside a key struct is invisible to pkg/docscheck's\n"+
-			".Field gate (it fires on composite-literal keys and returned selectors, not on a\n"+
-			"returned struct field), so an escape site could look migrated and still decide by\n"+
-			"name. Identity is (correlation, domain, ordinal) — render diagnostics from the\n"+
-			"FieldValue the caller already holds instead.",
+			"A column's DISPLAY name carried inside a key struct lets an escape site look\n"+
+			"migrated and still decide by name. Identity is (correlation, domain, ordinal) —\n"+
+			"render diagnostics from the FieldValue the caller already holds instead.",
 			strings.Join(offenders, ", "))
 	}
 }
