@@ -3583,7 +3583,10 @@ var _ = Describe("WS-J a new version carried from the target's template", func()
 		v1Body := "create table a(id bigint, x bigint, n bigint, primary key(id)) " +
 			"create table b(id bigint, y bigint, primary key(id)) " +
 			"create index ib as select y from b order by y " +
-			"create index nplus as select n + 1 from a order by n + 1"
+			"create index nplus as select n + 1 from a order by n + 1 " +
+			// A sparse index: Go's rebuild of the same DDL must state the
+			// target's predicate bytes for the carry to keep it EQUIVALENT.
+			"create index sp as select x from a where x > 3 order by x"
 		var created struct {
 			Created bool `json:"created"`
 		}
@@ -3625,7 +3628,8 @@ var _ = Describe("WS-J a new version carried from the target's template", func()
 			Expect(proto.Equal(t2[tbl].GetExplicitKey(), t1[tbl].GetExplicitKey())).To(BeTrue(), "%s's record-type key", tbl)
 			Expect(u2[tbl]).To(Equal(u1[tbl]), "%s's union field", tbl)
 		}
-		for _, ix := range []string{"IB", "NPLUS"} {
+		Expect(i1["SP"].GetPredicate()).NotTo(BeNil(), "the target stores SP's predicate, or EQUIVALENT below compares nothing")
+		for _, ix := range []string{"IB", "NPLUS", "SP"} {
 			Expect(proto.Equal(i2[ix], i1[ix])).To(BeTrue(), "%s is EQUIVALENT, carried as the target stored it: %v against %v", ix, i2[ix], i1[ix])
 		}
 		Expect(i2["IB2"]).NotTo(BeNil())

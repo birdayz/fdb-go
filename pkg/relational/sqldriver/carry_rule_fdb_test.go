@@ -22,6 +22,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/catalog"
 	"fdb.dev/pkg/relational/core/ddl"
 	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/relational/core/fleet"
@@ -522,5 +523,196 @@ func TestFDB_Carry_ReAddingADroppedNameIsRefused(t *testing.T) {
 	var apiErr *api.Error
 	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidSchemaTemplate || apiErr.Message != want {
 		t.Fatalf("err = %v, want %s %q", err, api.ErrCodeInvalidSchemaTemplate, want)
+	}
+}
+
+// v2 changes ONLY an index's options (UNIQUE): the carry compares every stored
+// field, so the index is CHANGED whatever a validator configured to ignore that
+// option would say, and it is rebuilt on open (Java's validator ignores options
+// for VALIDATION, getChangedOptions, not for the stored bytes the carry keeps).
+func TestFDB_Carry_OptionOnlyChangeIsRebuilt(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name string
+		rows int
+	}{{"an empty tenant", 0}, {"a tenant with rows", 30}} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			h := newFleetHarness(t)
+			dbPath := fmt.Sprintf("/carry_option_%d", c.rows)
+			name := fmt.Sprintf("CARRY_OPTION_%d", c.rows)
+			body := func(unique string) string {
+				return "CREATE TABLE t(id BIGINT, c BIGINT, PRIMARY KEY(id)) CREATE " + unique + "INDEX ix AS SELECT c FROM t ORDER BY c"
+			}
+			row := func(i int) string { return fmt.Sprintf("(%d, %d)", i, 100+i) }
+			carrySetup(t, h, dbPath, name, body(""), []string{"S"}, func(string) []string { return carryInsert("t", c.rows, row) })
+			var stored1 *gen.MetaData
+			h.mustRun(t, "load v1", func(txn api.Transaction) error {
+				var err error
+				stored1, err = h.cat.SchemaTemplateCatalog().LoadTemplateProto(txn, name, 1)
+				return err
+			})
+			stored2, err := carrySave(t, h, carryTemplate(t, name, 2, body("UNIQUE ")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, after := carryIndex(stored1, "IX"), carryIndex(stored2, "IX")
+			if !proto.Equal(before.GetRootExpression(), after.GetRootExpression()) || proto.Equal(&gen.Index{Options: before.GetOptions()}, &gen.Index{Options: after.GetOptions()}) {
+				t.Fatalf("v2 must differ from v1 in IX's options alone: %v against %v", after, before)
+			}
+			if after.GetAddedVersion() != before.GetAddedVersion() || string(after.GetSubspaceKey()) != string(before.GetSubspaceKey()) ||
+				after.GetLastModifiedVersion() <= stored1.GetVersion() {
+				t.Fatalf("IX carried as added %d key %x modified %d; want the stored added %d and key %x, modified above %d",
+					after.GetAddedVersion(), after.GetSubspaceKey(), after.GetLastModifiedVersion(),
+					before.GetAddedVersion(), before.GetSubspaceKey(), stored1.GetVersion())
+			}
+			carryMigrate(t, h, dbPath, name, 2)
+			db := fleetOpen(t, dbPath, "S")
+			if c.rows == 0 {
+				// The first statement opens the store under v2: the inline rebuild.
+				mwjoMustExec(t, db, context.Background(), strings.Join(carryInsert("t", 30, row), ""))
+			} else {
+				_ = carryQuery(t, dbPath, "S", "SELECT id FROM t WHERE c = 103")
+				if states := evolIndexStates(t, dbPath, "S"); states["IX"] != recordlayer.IndexStateDisabled {
+					t.Fatalf("IX is %v on a tenant with rows, want DISABLED", states["IX"])
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+				defer cancel()
+				res, err := fleet.BuildAll(ctx, h.db, h.cat, h.ks, dbPath, fleet.BuildOptions{})
+				if err != nil || res.Failed > 0 || res.Built == 0 {
+					t.Fatalf("online build: %v %+v", err, res)
+				}
+			}
+			if states := evolIndexStates(t, dbPath, "S"); states["IX"] != recordlayer.IndexStateReadable {
+				t.Fatalf("IX is %v, want READABLE", states["IX"])
+			}
+			if n := carryIndexEntries(t, h, dbPath, "S", "IX"); n != 30 {
+				t.Errorf("IX holds %d entries, want 30", n)
+			}
+			// The rebuilt index enforces the option v2 added.
+			_, err = fleetOpen(t, dbPath, "S").ExecContext(context.Background(), "INSERT INTO t VALUES (99, 103)")
+			if err == nil || !strings.Contains(err.Error(), "23505") {
+				t.Fatalf("a duplicate c under the UNIQUE v2: %v, want 23505", err)
+			}
+		})
+	}
+}
+
+// Test 5's rows: a tenant populated under a v1 whose bitmap entry size is stored
+// as long_value (a Go build before F2) is carried to v2's int_value root as
+// CHANGED, the index rebuilt over its rows, and the bitmap reads then served by
+// it.
+func TestFDB_Carry_LongValueBitmapKeyIsRebuiltWithItsRows(t *testing.T) {
+	t.Parallel()
+	h := newFleetHarness(t)
+	const dbPath, name = "/carry_bitmap_long", "CARRY_BITMAP_LONG"
+	body := "CREATE TABLE t(id BIGINT, v BIGINT, PRIMARY KEY(id)) " +
+		"CREATE INDEX agg_bucket AS SELECT bitmap_bucket_offset(id) FROM t ORDER BY bitmap_bucket_offset(id)"
+	built, err := embedded.BuildSchemaTemplateFromDDLNamed(body, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	longProto, err := built.Underlying().ToProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+	widened := 0
+	var widen func(k *gen.KeyExpression)
+	widen = func(k *gen.KeyExpression) {
+		if k == nil {
+			return
+		}
+		if v := k.GetValue(); v != nil && v.IntValue != nil {
+			v.LongValue, v.IntValue = proto.Int64(int64(v.GetIntValue())), nil
+			widened++
+		}
+		widen(k.GetFunction().GetArguments())
+		for _, child := range k.GetThen().GetChild() {
+			widen(child)
+		}
+	}
+	widen(carryIndex(longProto, "AGG_BUCKET").GetRootExpression())
+	if widened == 0 {
+		t.Fatal("the bitmap key holds no int_value literal to store as long_value")
+	}
+	longBytes, err := proto.Marshal(longProto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalogMD, err := catalog.BuildCatalogMetaData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Written raw: this build refuses to save such a key (42F59), which a build
+	// before F2 stored.
+	h.mustRun(t, "bootstrap", func(txn api.Transaction) error {
+		if err := h.cat.Initialize(txn); err != nil {
+			return err
+		}
+		if err := ddl.NewCreateDatabaseConstantAction(dbPath, h.cat).Execute(txn); err != nil {
+			return err
+		}
+		return nil
+	})
+	if _, err := h.db.Run(context.Background(), func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetSubspace(h.ks.CatalogSubspace()).SetMetaDataProvider(catalogMD).Open()
+		if err != nil {
+			return nil, err
+		}
+		_, err = store.SaveRecord(&gen.Templates{TEMPLATE_NAME: proto.String(name), TEMPLATE_VERSION: proto.Int32(1), META_DATA: longBytes})
+		return nil, err
+	}); err != nil {
+		t.Fatalf("store v1: %v", err)
+	}
+	h.mustRun(t, "create schema", func(txn api.Transaction) error {
+		return ddl.NewCreateSchemaConstantAction(dbPath, "S", name, h.cat, h.ks).Execute(txn)
+	})
+	mwjoMustExec(t, fleetOpen(t, dbPath, "S"), context.Background(),
+		"INSERT INTO t VALUES (1, 1), (3, 1), (10005, 2), (20000, 3), (9999, 4)")
+	const read = "SELECT bitmap_bucket_offset(id) FROM t ORDER BY bitmap_bucket_offset(id)"
+	const want = "0;0;0;10000;20000"
+	if got := carryQuery(t, dbPath, "S", read); got != want {
+		t.Fatalf("under v1: %s = %s, want %s", read, got, want)
+	}
+	if plan := carryExplain(t, dbPath, "S", read); strings.Contains(plan, "AGG_BUCKET") {
+		t.Fatalf("the long_value key has no lane, yet it is planned under v1: %s", plan)
+	}
+
+	stored2, err := carrySave(t, h, carryTemplate(t, name, 2, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after := carryIndex(stored2, "AGG_BUCKET"); after.GetLastModifiedVersion() <= longProto.GetVersion() {
+		t.Fatalf("AGG_BUCKET carried modified %d, want CHANGED above %d", after.GetLastModifiedVersion(), longProto.GetVersion())
+	}
+	carryMigrate(t, h, dbPath, name, 2)
+	// Opening a store with rows under v2 disables the CHANGED index (a store
+	// with no record count rebuilds inline only when empty) and the read is
+	// answered from the records; the online build then fills it.
+	if got := carryQuery(t, dbPath, "S", read); got != want {
+		t.Fatalf("under v2: %s = %s, want %s", read, got, want)
+	}
+	if states := evolIndexStates(t, dbPath, "S"); states["AGG_BUCKET"] != recordlayer.IndexStateDisabled {
+		t.Fatalf("AGG_BUCKET is %v on opening a populated store under v2, want DISABLED", states["AGG_BUCKET"])
+	}
+	if plan := carryExplain(t, dbPath, "S", read); strings.Contains(plan, "AGG_BUCKET") {
+		t.Fatalf("a DISABLED index is planned: %s", plan)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	if res, err := fleet.BuildAll(ctx, h.db, h.cat, h.ks, dbPath, fleet.BuildOptions{}); err != nil || res.Failed > 0 || res.Built == 0 {
+		t.Fatalf("online build: %v %+v", err, res)
+	}
+	if states := evolIndexStates(t, dbPath, "S"); states["AGG_BUCKET"] != recordlayer.IndexStateReadable {
+		t.Fatalf("AGG_BUCKET is %v after the online build, want READABLE", states["AGG_BUCKET"])
+	}
+	if n := carryIndexEntries(t, h, dbPath, "S", "AGG_BUCKET"); n != 5 {
+		t.Errorf("AGG_BUCKET holds %d entries after the rebuild, want 5", n)
+	}
+	if plan := carryExplain(t, dbPath, "S", read); !strings.Contains(plan, "AGG_BUCKET") {
+		t.Fatalf("the rebuilt int_value key is not planned under v2: %s", plan)
+	}
+	if got := carryQuery(t, dbPath, "S", read); got != want {
+		t.Fatalf("served by the rebuilt index: %s = %s, want %s", read, got, want)
 	}
 }
