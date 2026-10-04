@@ -11,8 +11,8 @@ import "testing"
 // comparison (alias-invariant).
 func TestSemanticEquals_IndexEntryObject_OrdinalPath(t *testing.T) {
 	t.Parallel()
-	a := NewIndexEntryObjectValue(NamedCorrelationIdentifier("q0"), TupleSourceKey, []int{0}, UnknownType)
-	bDiffPath := NewIndexEntryObjectValue(NamedCorrelationIdentifier("q0"), TupleSourceKey, []int{1}, UnknownType)
+	a := mustIndexEntryObjectValue(t, NamedCorrelationIdentifier("q0"), TupleSourceKey, []int{0}, NullableLong)
+	bDiffPath := mustIndexEntryObjectValue(t, NamedCorrelationIdentifier("q0"), TupleSourceKey, []int{1}, NullableLong)
 
 	// Different OrdinalPath ⇒ NOT equal (was incorrectly equal).
 	if SemanticEqualsUnderAliasMap(a, bDiffPath, mustAliasMap(t)) {
@@ -25,7 +25,7 @@ func TestSemanticEquals_IndexEntryObject_OrdinalPath(t *testing.T) {
 	}
 
 	// Same OrdinalPath, different alias ⇒ equal (alias ignored) + equal hash.
-	bDiffAlias := NewIndexEntryObjectValue(NamedCorrelationIdentifier("q1"), TupleSourceKey, []int{0}, UnknownType)
+	bDiffAlias := mustIndexEntryObjectValue(t, NamedCorrelationIdentifier("q1"), TupleSourceKey, []int{0}, NullableLong)
 	if !SemanticEqualsUnderAliasMap(a, bDiffAlias, mustAliasMap(t)) {
 		t.Fatal("index-entry values differing only by alias must be equal (alias ignored)")
 	}
@@ -38,16 +38,16 @@ func TestSemanticEquals_IndexEntryObject_OrdinalPath(t *testing.T) {
 // bug: Source (KEY vs VALUE) was dropped from BOTH
 // EqualsWithoutChildren and SemanticHashCode, so KEY[p] and VALUE[p] with the
 // same alias + ordinal path collapsed to one value in the memo. But Evaluate
-// reads PrimaryKey() for KEY and IndexValues() for VALUE — different tuples —
+// reads the entry's KEY tuple for KEY and its VALUE tuple otherwise —
 // so they are distinct columns (e.g. KEY[0] and VALUE[0] of a KeyWithValue
 // covering-index entry). Java keeps them distinct (planHash folds source);
 // Go must too. Fix folds Source into equality AND hash (kept consistent:
 // equal ⟹ same hash).
 func TestSemanticEquals_IndexEntryObject_Source(t *testing.T) {
 	t.Parallel()
-	key0 := NewIndexEntryObjectValue(NamedCorrelationIdentifier("q0"), TupleSourceKey, []int{0}, UnknownType)
-	val0 := NewIndexEntryObjectValue(NamedCorrelationIdentifier("q0"), TupleSourceValue, []int{0}, UnknownType)
-	other0 := NewIndexEntryObjectValue(NamedCorrelationIdentifier("q0"), TupleSourceOther, []int{0}, UnknownType)
+	key0 := mustIndexEntryObjectValue(t, NamedCorrelationIdentifier("q0"), TupleSourceKey, []int{0}, NullableLong)
+	val0 := mustIndexEntryObjectValue(t, NamedCorrelationIdentifier("q0"), TupleSourceValue, []int{0}, NullableLong)
+	other0 := mustIndexEntryObjectValue(t, NamedCorrelationIdentifier("q0"), TupleSourceOther, []int{0}, NullableLong)
 
 	// Same alias + path, different Source ⇒ NOT equal (was incorrectly equal).
 	if SemanticEqualsUnderAliasMap(key0, val0, mustAliasMap(t)) {
@@ -64,7 +64,7 @@ func TestSemanticEquals_IndexEntryObject_Source(t *testing.T) {
 
 	// Same Source (and alias differs) ⇒ still equal + same hash: the fix does
 	// not over-restrict — Source-equal + path-equal + alias-ignored stays equal.
-	val0OtherAlias := NewIndexEntryObjectValue(NamedCorrelationIdentifier("q1"), TupleSourceValue, []int{0}, UnknownType)
+	val0OtherAlias := mustIndexEntryObjectValue(t, NamedCorrelationIdentifier("q1"), TupleSourceValue, []int{0}, NullableLong)
 	if !SemanticEqualsUnderAliasMap(val0, val0OtherAlias, mustAliasMap(t)) {
 		t.Fatal("VALUE[0] values differing only by alias must be equal")
 	}

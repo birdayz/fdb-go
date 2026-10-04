@@ -141,8 +141,8 @@ func TestFDB_UUIDIndexableRoundTrip(t *testing.T) {
 
 	// Covering scan: SELECT v WHERE v = '<uuid>' is served entirely from the
 	// index entry (v + PK). It must (a) fire the index and (b) surface the
-	// canonical string, not a raw tuple.UUID. This is the site the RFC flags:
-	// IndexEntryObjectValue stays a pure ordinal extractor; the conversion is at
+	// canonical string, not a raw tuple.UUID: an index entry's UUID enters the
+	// row domain as [16]byte (values.TupleElementToRowValue) and is rendered at
 	// materialization.
 	t.Run("covering_returns_canonical_string", func(t *testing.T) {
 		var plan string

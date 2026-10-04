@@ -2229,6 +2229,8 @@ func explainValueOrdinalsWithAliases(v Value, withOrdinals bool, aliases map[Cor
 		return "unmatched(" + alias + ")"
 	case *ParameterObjectValue:
 		return "$" + cv.ParameterName
+	case *IndexEntryObjectValue:
+		return cv.Explain()
 	}
 	return v.Name()
 }

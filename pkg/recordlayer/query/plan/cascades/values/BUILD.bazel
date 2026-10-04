@@ -121,6 +121,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//gen",
+        "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer/protoname",
         "//pkg/recordlayer/protoscope",
         "//pkg/recordlayer/query/plan/cascades/internal/fnv64",

@@ -1,6 +1,14 @@
 package values
 
-import "fmt"
+import (
+	"fmt"
+	"reflect"
+	"slices"
+	"strconv"
+	"strings"
+
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+)
 
 // TupleSource enumerates the two tuple-bearing fields of an FDB
 // IndexEntry — the index KEY (primary scan tuple) or the index
@@ -13,9 +21,8 @@ const (
 	TupleSourceKey TupleSource = iota
 	// TupleSourceValue selects the index entry's VALUE tuple.
 	TupleSourceValue
-	// TupleSourceOther is the fallback used when an index entry has
-	// neither KEY nor VALUE semantics for a given column (e.g.
-	// extracting a deferred-fetch field from a non-covering index).
+	// TupleSourceOther reads the VALUE tuple, as every non-KEY source does
+	// in Java's IndexEntryObjectValue.eval.
 	TupleSourceOther
 )
 
@@ -32,47 +39,14 @@ func (s TupleSource) String() string {
 	return "INVALID"
 }
 
-// IndexEntryObjectValue is a LEAF Value that references a specific
-// position inside an IndexEntry's KEY or VALUE tuple, identified by
-// an ordinal path (the Java-side "Dewey id"). Mirrors Java's
-// `com.apple.foundationdb.record.query.plan.cascades.values.IndexEntryObjectValue`.
-//
-// Used by covering-index plans + index-only access paths: when a
-// query can be answered directly from the index entry's key/value
-// tuples (without fetching the underlying record), this Value
-// extracts a specific column from those tuples by ordinal walk.
-//
-// Conceptually:
-//
-//	IndexEntryObjectValue(alias, KEY,   [0])    — first KEY column
-//	IndexEntryObjectValue(alias, KEY,   [2])    — third KEY column
-//	IndexEntryObjectValue(alias, VALUE, [0, 1]) — second sub-field
-//	                                              of first VALUE column
-//
-// The alias identifies WHICH index-entry binding to read in the
-// EvaluationContext (a query may join several indexed scans, each
-// flowing its own IndexEntry).
-//
-// Constraints (matches Java's Verify.verify in the constructor):
-//   - resultType must be primitive, enum, or UUID — IndexEntry tuples
-//     can only hold leaf-type Tuple-encodable values; structs are
-//     extracted via separate FieldValue chains, not through ordinal
-//     paths.
-//   - Go enforces this via planner-checked precondition rather
-//     than a runtime panic — Java's Verify would crash; we surface as
-//     a no-op-ready Value that evaluates to nil if the type contract
-//     is violated.
-//
-// Eval contract:
-//   - evalCtx must be a `map[CorrelationIdentifier]any` shape with a
-//     binding for `IndexEntryAlias`. The bound value is expected to
-//     expose `PrimaryKey() / IndexValues()` (the
-//     `*recordlayer.IndexEntry` shape) — typed as `IndexEntryReader`
-//     here to keep the values package free of the recordlayer
-//     dependency.
-//   - On lookup miss, returns nil (matches the
-//     "non-evaluable yet" pattern of placeholder Values like
-//     ObjectValue / VersionValue).
+// IndexEntryObjectValue is a LEAF Value that reads one element of an index
+// entry's KEY or VALUE tuple by an ordinal path (Java's "Dewey id"). Mirrors
+// Java's IndexEntryObjectValue: the entry is the correlation binding of
+// IndexEntryAlias (Quantifier.current() in the plans that read entries), KEY
+// reads the entry's key and any other source its value, a NULL midway answers
+// NULL, and the element is converted into the row domain
+// (TupleFieldsHelper.tupleValueToRuntimeValue; TupleElementToRowValue here).
+// The result type is a primitive, enum or UUID (Java's constructor Verify).
 type IndexEntryObjectValue struct {
 	IndexEntryAlias CorrelationIdentifier
 	Source          TupleSource
@@ -80,40 +54,25 @@ type IndexEntryObjectValue struct {
 	ResultType      Type
 }
 
-// IndexEntryReader is the minimal interface IndexEntryObjectValue
-// needs to walk an FDB index entry. The Go *recordlayer.IndexEntry
-// type satisfies this contract via its PrimaryKey + IndexValues
-// methods. Defined here (rather than imported from recordlayer) to
-// keep the cycle-free dependency direction values → ø.
-type IndexEntryReader interface {
-	// PrimaryKey returns the KEY tuple of the index entry — the
-	// indexed-column tuple plus the trailing primary-key columns.
-	PrimaryKey() any
-	// IndexValues returns the VALUE tuple of the index entry — the
-	// payload tuple (typically empty for VALUE indexes; populated
-	// for KeyWithValue covering-index entries).
-	IndexValues() any
+// IndexEntryTuples is the raw KEY and VALUE tuples of an index entry, the
+// binding an IndexEntryObjectValue reads (*recordlayer.IndexEntry).
+type IndexEntryTuples interface {
+	IndexEntryKey() tuple.Tuple
+	IndexEntryValue() tuple.Tuple
 }
 
-// NewIndexEntryObjectValue constructs the leaf. Caller is responsible
-// for the resultType-primitive-or-enum-or-UUID precondition; the
-// constructor doesn't enforce because the Type-classification
-// helpers (IsPrimitive / IsEnum / etc.) live alongside the planner
-// pipeline and Go defers the check to caller (matches Java's
-// Verify.verify-vs-runtime split).
-func NewIndexEntryObjectValue(alias CorrelationIdentifier, source TupleSource, ordinalPath []int, resultType Type) *IndexEntryObjectValue {
-	if resultType == nil {
-		resultType = UnknownType
+// NewIndexEntryObjectValue constructs the leaf; a result type that is not a
+// primitive, enum or UUID is refused, as Java's constructor refuses it.
+func NewIndexEntryObjectValue(alias CorrelationIdentifier, source TupleSource, ordinalPath []int, resultType Type) (*IndexEntryObjectValue, error) {
+	if resultType == nil || !(resultType.Code().IsPrimitive() || IsEnum(resultType) || IsUuid(resultType)) {
+		return nil, fmt.Errorf("index entry object value: result type %v is not a primitive, enum or UUID", resultType)
 	}
-	// Defensive copy — callers may reuse / mutate their backing slice.
-	cp := make([]int, len(ordinalPath))
-	copy(cp, ordinalPath)
 	return &IndexEntryObjectValue{
 		IndexEntryAlias: alias,
 		Source:          source,
-		OrdinalPath:     cp,
+		OrdinalPath:     slices.Clone(ordinalPath),
 		ResultType:      resultType,
-	}
+	}, nil
 }
 
 // Children returns the empty slice — leaf, no operands.
@@ -125,63 +84,96 @@ func (*IndexEntryObjectValue) Name() string { return "indexEntryObject" }
 // Type returns the bound result type.
 func (v *IndexEntryObjectValue) Type() Type { return v.ResultType }
 
-// Evaluate walks the ordinal path through the bound IndexEntry's
-// KEY or VALUE tuple. Returns nil if:
-//   - evalCtx is nil.
-//   - evalCtx is not a `map[CorrelationIdentifier]any`.
-//   - The map has no binding for IndexEntryAlias.
-//   - The bound value isn't an IndexEntryReader.
-//   - The ordinal walk runs off the end of the tuple.
-func (v *IndexEntryObjectValue) Evaluate(evalCtx any) (any, error) {
-	if evalCtx == nil {
-		return nil, nil
+// Explain is Java's `KEY:[0]`.
+func (v *IndexEntryObjectValue) Explain() string {
+	parts := make([]string, len(v.OrdinalPath))
+	for i, ordinal := range v.OrdinalPath {
+		parts[i] = strconv.Itoa(ordinal)
 	}
-	m, ok := evalCtx.(map[CorrelationIdentifier]any)
-	if !ok {
-		return nil, nil
-	}
-	bound, ok := m[v.IndexEntryAlias]
-	if !ok {
-		return nil, nil
-	}
-	reader, ok := bound.(IndexEntryReader)
-	if !ok {
-		return nil, nil
-	}
-	var t any
-	switch v.Source {
-	case TupleSourceKey:
-		t = reader.PrimaryKey()
-	case TupleSourceValue:
-		t = reader.IndexValues()
-	default:
-		return nil, nil
-	}
-	return walkOrdinalPath(t, v.OrdinalPath)
+	return v.Source.String() + ":[" + strings.Join(parts, ", ") + "]"
 }
 
-// walkOrdinalPath descends through `t` along `path`, treating each hop as an
-// integer-index into a `[]any` (the Tuple representation). Mirrors Java's
-// IndexKeyValueToPartialRecord.getForOrdinalPath exactly: a NULL value mid-
-// path propagates as nil (Java's `value == null → return null`), while an
-// out-of-bounds index or a non-tuple hop THROWS there
-// (List.get/Tuple.get/ClassCastException) — so here it is a loud error, never
-// a silent nil that would read as SQL NULL and drop rows.
+// Evaluate reads the element at OrdinalPath of the bound entry's KEY or VALUE
+// tuple. A missing or mistyped binding is an error, as Java's
+// requireNonNull and cast are.
+func (v *IndexEntryObjectValue) Evaluate(evalCtx any) (any, error) {
+	var binder CorrelationBinder
+	switch ctx := evalCtx.(type) {
+	case *RowEvalContext:
+		binder = ctx.Correlations
+	case CorrelationBinder:
+		binder = ctx
+	}
+	if binder == nil {
+		return nil, fmt.Errorf("index entry object value: no correlation bindings to read entry %s from", v.IndexEntryAlias.Name())
+	}
+	bound, ok := binder.GetCorrelationBinding(v.IndexEntryAlias)
+	if !ok {
+		return nil, fmt.Errorf("index entry object value: entry %s is not bound", v.IndexEntryAlias.Name())
+	}
+	entry, ok := bound.(IndexEntryTuples)
+	if rv := reflect.ValueOf(entry); !ok || entry == nil || (rv.Kind() == reflect.Pointer && rv.IsNil()) {
+		return nil, fmt.Errorf("index entry object value: %s is bound to %T, not an index entry", v.IndexEntryAlias.Name(), bound)
+	}
+	t := entry.IndexEntryValue()
+	if v.Source == TupleSourceKey {
+		t = entry.IndexEntryKey()
+	}
+	value, err := walkOrdinalPath(t, v.OrdinalPath)
+	if err != nil || value == nil {
+		return nil, err
+	}
+	return TupleElementToRowValue(value), nil
+}
+
+// walkOrdinalPath descends `t` along `path`. Mirrors Java's
+// IndexKeyValueToPartialRecord.getForOrdinalPath: a NULL mid-path answers NULL,
+// an out-of-bounds index or a non-tuple hop throws there, so here it is an
+// error, never a NULL that would drop rows.
 func walkOrdinalPath(t any, path []int) (any, error) {
 	for _, idx := range path {
 		if t == nil {
 			return nil, nil
 		}
-		s, ok := t.([]any)
-		if !ok {
+		var element any
+		switch s := t.(type) {
+		case tuple.Tuple:
+			if idx < 0 || idx >= len(s) {
+				return nil, fmt.Errorf("index entry ordinal path: index %d out of bounds for tuple of length %d", idx, len(s))
+			}
+			element = s[idx]
+		case []any:
+			if idx < 0 || idx >= len(s) {
+				return nil, fmt.Errorf("index entry ordinal path: index %d out of bounds for tuple of length %d", idx, len(s))
+			}
+			element = s[idx]
+		default:
 			return nil, fmt.Errorf("index entry ordinal path: hop %d addresses a non-tuple value %T", idx, t)
 		}
-		if idx < 0 || idx >= len(s) {
-			return nil, fmt.Errorf("index entry ordinal path: index %d out of bounds for tuple of length %d", idx, len(s))
-		}
-		t = s[idx]
+		t = element
 	}
 	return t, nil
+}
+
+// TupleElementToRowValue converts a decoded tuple element read off an index
+// entry or primary key into the row domain base records are read into, so a
+// column compares, sorts, dedups and joins alike whichever access path sourced
+// it: a tuple UUID is [16]byte, a FLOAT (a 32-bit tuple float) is float64 as
+// ProtoScalarKindToRowValue widens it, and a VERSION index's versionstamp is
+// the record version's 12 raw bytes (FDBRecordVersion.toBytes). Java's
+// tupleValueToRuntimeValue conversions (INT, BYTES, ENUM) are identities here.
+func TupleElementToRowValue(v any) any {
+	switch tv := v.(type) {
+	case tuple.UUID:
+		return [16]byte(tv)
+	case float32:
+		return float64(tv)
+	case tuple.Versionstamp:
+		out := make([]byte, 0, len(tv.TransactionVersion)+2)
+		out = append(out, tv.TransactionVersion[:]...)
+		return append(out, byte(tv.UserVersion>>8), byte(tv.UserVersion))
+	}
+	return v
 }
 
 // GetCorrelatedTo returns the empty set — IndexEntryObjectValue

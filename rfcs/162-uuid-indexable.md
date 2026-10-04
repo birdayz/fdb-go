@@ -82,9 +82,10 @@ mask approach is wrong:
    This is Java's model (the comparand is a `java.util.UUID`, not a string).
 
 4. **Covering projection + materialization (collapses the old sites 5 + 6 into ONE boundary).**
-   `IndexEntryObjectValue.Evaluate` stays a **pure ordinal extractor** (1:1 with Java's leaf, which never
-   renders type) — do NOT convert there (it would lie to any consumer that wants the tuple). Instead
-   convert `tuple.UUID → canonical string` at the **result-materialization boundary** (or via a
+   `IndexEntryObjectValue.Evaluate` converts the element into Go's row domain (`tuple.UUID` →
+   `[16]byte`, `values.TupleElementToRowValue`), as Java's leaf converts with
+   `TupleFieldsHelper.tupleValueToRuntimeValue` [corrected by RFC-257 WS-F: an earlier text said Java's
+   leaf never renders type]. The canonical string is rendered at the **result-materialization boundary** (or via a
    planner-inserted `PromoteValue` when `ResultType == UUID`), the same boundary the record-read path
    already crosses (`query_result.go uuidMessageToString`). One conversion point covers covering scans,
    `ORDER BY`, and any other read path.

@@ -1297,43 +1297,9 @@ func toExactInt64Scalar(v any) (int64, bool) {
 	return 0, false
 }
 
-// tupleElementToRowValue normalizes a decoded tuple element read off an index
-// entry / primary key into the value layer's row domain:
-//   - tuple.UUID → the neutral [16]byte the value layer works with (cmpAny,
-//     PromoteValue, materialization); the inverse of uuidToTupleElement.
-//   - float32 → float64: a FLOAT column is stored in index keys as a 32-bit
-//     tuple float (code 0x20) and decodes as float32, but the base-record path
-//     widens FLOAT to float64 (values.ProtoScalarKindToRowValue). Java is
-//     type-consistent across access paths by construction — the covering
-//     partial record sets the tuple element back on the proto builder
-//     (IndexKeyValueToPartialRecord.FieldCopier) and every read goes through
-//     the message, surfacing the same boxed Float either way — so the Go
-//     covering row must live in the SAME domain as the base row, or
-//     comparators (compareValues), dedup keys (distinctKey, packedDedupKey)
-//     and hash-join keys split float32-vs-float64 across access paths.
-//
-// Applied at every index-entry → row boundary so a column flows downstream
-// identically regardless of whether it was sourced from a stored record
-// (protoFieldToGo) or an index entry — the two must be interchangeable for
-// residual filters, sorts, DISTINCT and join keys. Other elements pass through.
-func tupleElementToRowValue(v any) any {
-	switch tv := v.(type) {
-	case tuple.UUID:
-		return [16]byte(tv)
-	case float32:
-		return float64(tv)
-	case tuple.Versionstamp:
-		// A VERSION index's key carries the record version as a Versionstamp
-		// tuple element; the row-value form of the __ROW_VERSION pseudo-field
-		// is the version's 12 raw bytes (FDBRecordVersion.toBytes — the same
-		// carrier FromStoredRecord fills on the base-scan path, so covering
-		// and fetching reads agree byte-for-byte).
-		out := make([]byte, 0, len(tv.TransactionVersion)+2)
-		out = append(out, tv.TransactionVersion[:]...)
-		return append(out, byte(tv.UserVersion>>8), byte(tv.UserVersion))
-	}
-	return v
-}
+// tupleElementToRowValue is values.TupleElementToRowValue, applied at every
+// index-entry → row boundary.
+func tupleElementToRowValue(v any) any { return values.TupleElementToRowValue(v) }
 
 // isZeroFloatBound reports whether a scan comparand v — already run through
 // coerceTupleElementForKey, so it carries the wire Go type (float32 for FLOAT,

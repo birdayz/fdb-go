@@ -3,214 +3,154 @@ package values
 import (
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
-// fakeIndexEntry implements IndexEntryReader for tests — the real
-// *recordlayer.IndexEntry can't be imported here (cycle).
-type fakeIndexEntry struct {
-	key, value []any
+// testIndexEntry is an index entry's two raw tuples; *recordlayer.IndexEntry is
+// the production binding (pinned on real scanned entries in recordlayer's
+// index_entry_reader_fdb_test.go).
+type testIndexEntry struct{ key, value tuple.Tuple }
+
+func (e *testIndexEntry) IndexEntryKey() tuple.Tuple   { return e.key }
+func (e *testIndexEntry) IndexEntryValue() tuple.Tuple { return e.value }
+
+type testEntryBindings map[CorrelationIdentifier]any
+
+func (b testEntryBindings) GetCorrelationBinding(id CorrelationIdentifier) (any, bool) {
+	v, ok := b[id]
+	return v, ok
 }
 
-func (f *fakeIndexEntry) PrimaryKey() any { return f.key }
-func (f *fakeIndexEntry) IndexValues() any {
-	return f.value
-}
-
-func TestIndexEntryObjectValue_Type(t *testing.T) {
-	t.Parallel()
-	v := NewIndexEntryObjectValue(NamedCorrelationIdentifier("e"), TupleSourceKey, []int{0}, NotNullLong)
-	if !v.Type().Equals(NotNullLong) {
-		t.Fatalf("Type = %v, want NotNullLong", v.Type())
+func mustIndexEntryObjectValue(t *testing.T, alias CorrelationIdentifier, source TupleSource, path []int, typ Type) *IndexEntryObjectValue {
+	t.Helper()
+	v, err := NewIndexEntryObjectValue(alias, source, path, typ)
+	if err != nil {
+		t.Fatal(err)
 	}
+	return v
 }
 
-func TestIndexEntryObjectValue_Children(t *testing.T) {
-	t.Parallel()
-	v := NewIndexEntryObjectValue(NamedCorrelationIdentifier("e"), TupleSourceKey, []int{0}, NotNullLong)
-	if got := v.Children(); len(got) != 0 {
-		t.Fatalf("Children = %v, want []", got)
-	}
-}
-
-func TestIndexEntryObjectValue_Name(t *testing.T) {
-	t.Parallel()
-	v := NewIndexEntryObjectValue(NamedCorrelationIdentifier("e"), TupleSourceKey, []int{0}, NotNullLong)
-	if got := v.Name(); got != "indexEntryObject" {
-		t.Fatalf("Name = %q, want indexEntryObject", got)
-	}
-}
-
-func TestIndexEntryObjectValue_EvaluateFromKey(t *testing.T) {
+func TestIndexEntryObjectValue_ConstructorRefusesStructuredTypes(t *testing.T) {
 	t.Parallel()
 	alias := NamedCorrelationIdentifier("e")
-	v := NewIndexEntryObjectValue(alias, TupleSourceKey, []int{1}, NotNullLong)
-	entry := &fakeIndexEntry{
-		key:   []any{int64(10), int64(20), int64(30)},
-		value: []any{},
+	for _, typ := range []Type{
+		nil, UnknownType, NewRecordType("R", true, []Field{{Name: "A", FieldType: NullableLong}}),
+		&ArrayType{ElementType: NullableLong, Nullable: true},
+	} {
+		if _, err := NewIndexEntryObjectValue(alias, TupleSourceKey, []int{0}, typ); err == nil {
+			t.Errorf("result type %v was admitted; Java's constructor admits only a primitive, enum or UUID", typ)
+		}
 	}
-	ctx := map[CorrelationIdentifier]any{alias: entry}
-	got, errEv0 := v.Evaluate(ctx)
-	require.NoError(t, errEv0)
-	if got != int64(20) {
-		t.Fatalf("Evaluate = %v, want 20", got)
-	}
-}
-
-func TestIndexEntryObjectValue_EvaluateFromValue(t *testing.T) {
-	t.Parallel()
-	alias := NamedCorrelationIdentifier("e")
-	v := NewIndexEntryObjectValue(alias, TupleSourceValue, []int{0}, NotNullString)
-	entry := &fakeIndexEntry{
-		key:   []any{int64(1)},
-		value: []any{"payload"},
-	}
-	ctx := map[CorrelationIdentifier]any{alias: entry}
-	got, errEv0 := v.Evaluate(ctx)
-	require.NoError(t, errEv0)
-	if got != "payload" {
-		t.Fatalf("Evaluate = %v, want 'payload'", got)
+	for _, typ := range []Type{NullableLong, NotNullString, NullableBytes, NullableUuid, NullableBoolean} {
+		if _, err := NewIndexEntryObjectValue(alias, TupleSourceKey, []int{0}, typ); err != nil {
+			t.Errorf("result type %v refused: %v", typ, err)
+		}
 	}
 }
 
-func TestIndexEntryObjectValue_EvaluateNestedPath(t *testing.T) {
-	t.Parallel()
-	alias := NamedCorrelationIdentifier("e")
-	v := NewIndexEntryObjectValue(alias, TupleSourceKey, []int{0, 1}, NotNullLong)
-	entry := &fakeIndexEntry{
-		key: []any{
-			[]any{int64(100), int64(200)}, // nested tuple in KEY
-			int64(999),
-		},
-	}
-	ctx := map[CorrelationIdentifier]any{alias: entry}
-	got, errEv0 := v.Evaluate(ctx)
-	require.NoError(t, errEv0)
-	if got != int64(200) {
-		t.Fatalf("Evaluate(nested) = %v, want 200", got)
-	}
-}
-
-// Java getForOrdinalPath THROWS on an out-of-bounds hop
-// (Tuple.get/List.get); a silent nil here would read as SQL NULL and drop
-// rows the moment something wires this Value up.
-func TestIndexEntryObjectValue_EvaluateOutOfBoundsErrors(t *testing.T) {
-	t.Parallel()
-	alias := NamedCorrelationIdentifier("e")
-	v := NewIndexEntryObjectValue(alias, TupleSourceKey, []int{99}, NotNullLong)
-	entry := &fakeIndexEntry{key: []any{int64(10)}}
-	ctx := map[CorrelationIdentifier]any{alias: entry}
-	if _, err := v.Evaluate(ctx); err == nil {
-		t.Fatal("out-of-bounds ordinal path must error loudly (Java throws), not evaluate to nil")
-	}
-}
-
-func TestIndexEntryObjectValue_EvaluateNegativePathErrors(t *testing.T) {
-	t.Parallel()
-	alias := NamedCorrelationIdentifier("e")
-	v := NewIndexEntryObjectValue(alias, TupleSourceKey, []int{-1}, NotNullLong)
-	entry := &fakeIndexEntry{key: []any{int64(10)}}
-	ctx := map[CorrelationIdentifier]any{alias: entry}
-	if _, err := v.Evaluate(ctx); err == nil {
-		t.Fatal("negative ordinal path must error loudly (Java throws), not evaluate to nil")
-	}
-}
-
-// A NULL value mid-path is Java's `value == null → return null` — legitimate
-// null propagation, NOT an error.
-func TestIndexEntryObjectValue_EvaluateNilMidPathPropagates(t *testing.T) {
-	t.Parallel()
-	alias := NamedCorrelationIdentifier("e")
-	v := NewIndexEntryObjectValue(alias, TupleSourceKey, []int{0, 1}, NotNullLong)
-	entry := &fakeIndexEntry{key: []any{nil}}
-	ctx := map[CorrelationIdentifier]any{alias: entry}
-	got, err := v.Evaluate(ctx)
-	if err != nil || got != nil {
-		t.Fatalf("nil mid-path must propagate nil without error, got (%v, %v)", got, err)
-	}
-}
-
-// A non-tuple mid-path hop is Java's ClassCastException — loud.
-func TestIndexEntryObjectValue_EvaluateNonTupleHopErrors(t *testing.T) {
-	t.Parallel()
-	alias := NamedCorrelationIdentifier("e")
-	v := NewIndexEntryObjectValue(alias, TupleSourceKey, []int{0, 0}, NotNullLong)
-	entry := &fakeIndexEntry{key: []any{int64(10)}}
-	ctx := map[CorrelationIdentifier]any{alias: entry}
-	if _, err := v.Evaluate(ctx); err == nil {
-		t.Fatal("a non-tuple hop must error loudly (Java class-casts), not evaluate to nil")
-	}
-}
-
-func TestIndexEntryObjectValue_EvaluateMissingAliasReturnsNil(t *testing.T) {
-	t.Parallel()
-	alias := NamedCorrelationIdentifier("e")
-	other := NamedCorrelationIdentifier("f")
-	v := NewIndexEntryObjectValue(alias, TupleSourceKey, []int{0}, NotNullLong)
-	entry := &fakeIndexEntry{key: []any{int64(10)}}
-	ctx := map[CorrelationIdentifier]any{other: entry}
-	got, errEv0 := v.Evaluate(ctx)
-	require.NoError(t, errEv0)
-	if got != nil {
-		t.Fatalf("Evaluate(missing alias) = %v, want nil", got)
-	}
-}
-
-func TestIndexEntryObjectValue_EvaluateNonReaderReturnsNil(t *testing.T) {
-	t.Parallel()
-	alias := NamedCorrelationIdentifier("e")
-	v := NewIndexEntryObjectValue(alias, TupleSourceKey, []int{0}, NotNullLong)
-	ctx := map[CorrelationIdentifier]any{alias: "not-an-entry"}
-	got, errEv0 := v.Evaluate(ctx)
-	require.NoError(t, errEv0)
-	if got != nil {
-		t.Fatalf("Evaluate(non-reader) = %v, want nil", got)
-	}
-}
-
-func TestIndexEntryObjectValue_EvaluateNilCtxReturnsNil(t *testing.T) {
-	t.Parallel()
-	alias := NamedCorrelationIdentifier("e")
-	v := NewIndexEntryObjectValue(alias, TupleSourceKey, []int{0}, NotNullLong)
-	got, errEv0 := v.Evaluate(nil)
-	require.NoError(t, errEv0)
-	if got != nil {
-		t.Fatalf("Evaluate(nil) = %v, want nil", got)
-	}
-}
-
-func TestIndexEntryObjectValue_GetCorrelatedToIsEmpty(t *testing.T) {
-	t.Parallel()
-	alias := NamedCorrelationIdentifier("e")
-	v := NewIndexEntryObjectValue(alias, TupleSourceKey, []int{0}, NotNullLong)
-	if got := v.GetCorrelatedTo(); len(got) != 0 {
-		t.Fatalf("GetCorrelatedTo = %v, want empty", got)
-	}
-}
-
-func TestIndexEntryObjectValue_OrdinalPathIsDefensiveCopy(t *testing.T) {
+func TestIndexEntryObjectValue_LeafShape(t *testing.T) {
 	t.Parallel()
 	original := []int{0, 1, 2}
-	alias := NamedCorrelationIdentifier("e")
-	v := NewIndexEntryObjectValue(alias, TupleSourceKey, original, NotNullLong)
-	// Mutate caller's slice.
+	v := mustIndexEntryObjectValue(t, NamedCorrelationIdentifier("e"), TupleSourceValue, original, NotNullLong)
 	original[0] = 99
 	if v.OrdinalPath[0] == 99 {
-		t.Fatalf("OrdinalPath aliased caller's slice — not defensively copied")
+		t.Fatal("OrdinalPath aliases the caller's slice")
+	}
+	if !v.Type().Equals(NotNullLong) || len(v.Children()) != 0 || len(v.GetCorrelatedTo()) != 0 || v.Name() != "indexEntryObject" {
+		t.Fatalf("leaf shape: type %v, children %v, correlated %v, name %q", v.Type(), v.Children(), v.GetCorrelatedTo(), v.Name())
+	}
+	if got := ExplainValue(v); got != "VALUE:[0, 1, 2]" {
+		t.Fatalf("explain = %q, want Java's VALUE:[0, 1, 2]", got)
 	}
 }
 
-func TestTupleSource_String(t *testing.T) {
+func TestIndexEntryObjectValue_Evaluate(t *testing.T) {
 	t.Parallel()
-	cases := map[TupleSource]string{
-		TupleSourceKey:   "KEY",
-		TupleSourceValue: "VALUE",
-		TupleSourceOther: "OTHER",
-		TupleSource(99):  "INVALID",
+	alias := NamedCorrelationIdentifier("e")
+	id := tuple.UUID{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	stamp := tuple.Versionstamp{TransactionVersion: [10]byte{0, 0, 0, 0, 0, 0, 0, 7, 0, 1}, UserVersion: 0x0203}
+	entry := &testIndexEntry{
+		key:   tuple.Tuple{int64(10), tuple.Tuple{int64(100), nil, "x"}, id, float32(1.5), stamp, nil},
+		value: tuple.Tuple{"payload", []byte{9}},
 	}
-	for s, want := range cases {
-		if got := s.String(); got != want {
-			t.Errorf("TupleSource(%d).String() = %q, want %q", s, got, want)
-		}
+	bindings := testEntryBindings{alias: entry}
+	for _, c := range []struct {
+		name   string
+		source TupleSource
+		path   []int
+		typ    Type
+		want   any
+	}{
+		{"key", TupleSourceKey, []int{0}, NullableLong, int64(10)},
+		{"value", TupleSourceValue, []int{0}, NullableString, "payload"},
+		// Every non-KEY source reads the VALUE tuple (IndexEntryObjectValue.eval).
+		{"other_reads_value", TupleSourceOther, []int{1}, NullableBytes, []byte{9}},
+		{"nested_tuple", TupleSourceKey, []int{1, 2}, NullableString, "x"},
+		{"null_element", TupleSourceKey, []int{5}, NullableLong, nil},
+		{"null_midway", TupleSourceKey, []int{5, 3}, NullableLong, nil},
+		{"null_nested_element", TupleSourceKey, []int{1, 1}, NullableLong, nil},
+		{"uuid_to_row_domain", TupleSourceKey, []int{2}, NullableUuid, [16]byte(id)},
+		{"float_widened", TupleSourceKey, []int{3}, NullableFloat, float64(1.5)},
+		{
+			"versionstamp_to_bytes", TupleSourceKey,
+			[]int{4},
+			NullableVersion,
+			[]byte{0, 0, 0, 0, 0, 0, 0, 7, 0, 1, 2, 3},
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			v := mustIndexEntryObjectValue(t, alias, c.source, c.path, c.typ)
+			for _, ctx := range []any{bindings, &RowEvalContext{Correlations: bindings}} {
+				got, err := v.Evaluate(ctx)
+				if err != nil {
+					t.Fatalf("Evaluate(%T): %v", ctx, err)
+				}
+				if !valuesEqualForTest(got, c.want) {
+					t.Fatalf("Evaluate(%T) = %#v, want %#v", ctx, got, c.want)
+				}
+			}
+		})
+	}
+}
+
+func valuesEqualForTest(a, b any) bool {
+	ab, aBytes := a.([]byte)
+	bb, bBytes := b.([]byte)
+	if aBytes || bBytes {
+		return aBytes && bBytes && string(ab) == string(bb)
+	}
+	return a == b
+}
+
+// Every way the entry cannot be read is an error: Java's requireNonNull on the
+// binding, its IndexEntry cast, and getForOrdinalPath's out-of-bounds and
+// non-tuple hops (a NULL there would drop rows).
+func TestIndexEntryObjectValue_EvaluateErrors(t *testing.T) {
+	t.Parallel()
+	alias := NamedCorrelationIdentifier("e")
+	entry := &testIndexEntry{key: tuple.Tuple{int64(10)}, value: tuple.Tuple{}}
+	for _, c := range []struct {
+		name string
+		path []int
+		ctx  any
+	}{
+		{"nil_context", []int{0}, nil},
+		{"context_without_bindings", []int{0}, &RowEvalContext{}},
+		{"unsupported_context", []int{0}, map[CorrelationIdentifier]any{alias: entry}},
+		{"unbound_alias", []int{0}, testEntryBindings{NamedCorrelationIdentifier("f"): entry}},
+		{"not_an_entry", []int{0}, testEntryBindings{alias: "not-an-entry"}},
+		{"nil_entry", []int{0}, testEntryBindings{alias: (*testIndexEntry)(nil)}},
+		{"out_of_bounds", []int{99}, testEntryBindings{alias: entry}},
+		{"negative", []int{-1}, testEntryBindings{alias: entry}},
+		{"non_tuple_hop", []int{0, 0}, testEntryBindings{alias: entry}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			v := mustIndexEntryObjectValue(t, alias, TupleSourceKey, c.path, NullableLong)
+			if got, err := v.Evaluate(c.ctx); err == nil {
+				t.Fatalf("Evaluate = %v with no error", got)
+			}
+		})
 	}
 }
