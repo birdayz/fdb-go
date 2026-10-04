@@ -13395,7 +13395,20 @@ against Java 4.14.2.0 before fixing, then tick with the commit.
     (`TestAggregateIndexPublishesTheGroupByRow`). Still to do in this step: the
     top-level query a `LogicalSortExpression` over the block (Java
     `generateSelect`) and index DDL reading that Sort (`ddl/generator.go`
-    `topSort`/`checkTop`).
+    `topSort`/`checkTop`, which then reduce to Java's `viewPlan instanceof
+    LogicalSortExpression`). Measured on the explain-differ dump at 2832
+    queries: an unsorted Sort over the root of every non-DDL query changes no
+    plan. Restating `Select(Sort(X))` as `Sort(Select(X))` in `blockSelectOf`
+    (keys matched to the list by `SemanticEqualsUnderAliasMap`, unmatched keys
+    appended and dropped by an outer Select) changes 762 plans with no new plan
+    error, and three blockers must be fixed first: (a) `SELECT DISTINCT
+    category FROM t ORDER BY category` loses its sort (`Distinct(Map(Scan(T)))`)
+    because the logical builder places DISTINCT above the ORDER BY and
+    distinct-over-sort elimination then drops it; (b) over a join `ORDER BY a.id`
+    does not equal the projected `a.id` Value, so 63 plans gain an InMemorySort
+    (the key and the SELECT item resolve through different paths; Java resolves
+    ORDER BY against the SELECT list); (c) `IN (…) ORDER BY` loses the ordered
+    InUnion for InJoin plus a sort.
   - [ ] REWRITING cost of nested SQL functions: four nested calls plan in about
     4.6s, most of it in `Memo.Integrate`. Java runs SelectMerge and
     PredicatePushDown as implementation rules over final expressions and
