@@ -16,38 +16,44 @@ import (
 
 func TestJoinBytesEmpty(t *testing.T) {
 	t.Parallel()
+	g := NewWithT(t)
 	result := joinBytes()
-	Expect(result).To(BeEmpty())
+	g.Expect(result).To(BeEmpty())
 }
 
 func TestJoinBytesSingle(t *testing.T) {
 	t.Parallel()
+	g := NewWithT(t)
 	result := joinBytes([]byte{0x01, 0x02})
-	Expect(result).To(Equal([]byte{0x01, 0x02}))
+	g.Expect(result).To(Equal([]byte{0x01, 0x02}))
 }
 
 func TestJoinBytesMultiple(t *testing.T) {
 	t.Parallel()
+	g := NewWithT(t)
 	result := joinBytes([]byte{0x01}, []byte{0x02, 0x03}, []byte{0x04})
-	Expect(result).To(Equal([]byte{0x01, 0x02, 0x03, 0x04}))
+	g.Expect(result).To(Equal([]byte{0x01, 0x02, 0x03, 0x04}))
 }
 
 func TestJoinBytesWithNilSlice(t *testing.T) {
 	t.Parallel()
+	g := NewWithT(t)
 	result := joinBytes([]byte{0x01}, nil, []byte{0x02})
-	Expect(result).To(Equal([]byte{0x01, 0x02}))
+	g.Expect(result).To(Equal([]byte{0x01, 0x02}))
 }
 
 func TestJoinBytesAllNil(t *testing.T) {
 	t.Parallel()
+	g := NewWithT(t)
 	result := joinBytes(nil, nil)
-	Expect(result).To(BeEmpty())
+	g.Expect(result).To(BeEmpty())
 }
 
 func TestJoinBytesAllEmpty(t *testing.T) {
 	t.Parallel()
+	g := NewWithT(t)
 	result := joinBytes([]byte{}, []byte{}, []byte{})
-	Expect(result).To(BeEmpty())
+	g.Expect(result).To(BeEmpty())
 }
 
 // ===========================================================================
@@ -56,38 +62,43 @@ func TestJoinBytesAllEmpty(t *testing.T) {
 
 func TestTupleEqualSame(t *testing.T) {
 	t.Parallel()
+	g := NewWithT(t)
 	a := tuple.Tuple{int64(42), "hello"}
 	b := tuple.Tuple{int64(42), "hello"}
-	Expect(tupleEqual(a, b)).To(BeTrue())
+	g.Expect(tupleEqual(a, b)).To(BeTrue())
 }
 
 func TestTupleEqualDifferent(t *testing.T) {
 	t.Parallel()
+	g := NewWithT(t)
 	a := tuple.Tuple{int64(42), "hello"}
 	b := tuple.Tuple{int64(42), "world"}
-	Expect(tupleEqual(a, b)).To(BeFalse())
+	g.Expect(tupleEqual(a, b)).To(BeFalse())
 }
 
 func TestTupleEqualEmpty(t *testing.T) {
 	t.Parallel()
+	g := NewWithT(t)
 	a := tuple.Tuple{}
 	b := tuple.Tuple{}
-	Expect(tupleEqual(a, b)).To(BeTrue())
+	g.Expect(tupleEqual(a, b)).To(BeTrue())
 }
 
 func TestTupleEqualDifferentLengths(t *testing.T) {
 	t.Parallel()
+	g := NewWithT(t)
 	a := tuple.Tuple{int64(1)}
 	b := tuple.Tuple{int64(1), int64(2)}
-	Expect(tupleEqual(a, b)).To(BeFalse())
+	g.Expect(tupleEqual(a, b)).To(BeFalse())
 }
 
 func TestTupleEqualNilVsEmpty(t *testing.T) {
 	t.Parallel()
+	g := NewWithT(t)
 	var a tuple.Tuple
 	b := tuple.Tuple{}
 	// Both pack to empty bytes.
-	Expect(tupleEqual(a, b)).To(BeTrue())
+	g.Expect(tupleEqual(a, b)).To(BeTrue())
 }
 
 // ===========================================================================
@@ -96,39 +107,46 @@ func TestTupleEqualNilVsEmpty(t *testing.T) {
 
 func TestPositionListsEqualSame(t *testing.T) {
 	t.Parallel()
-	Expect(positionListsEqual([]int{1, 2, 3}, []int{1, 2, 3})).To(BeTrue())
+	g := NewWithT(t)
+	g.Expect(positionListsEqual([]int{1, 2, 3}, []int{1, 2, 3})).To(BeTrue())
 }
 
 func TestPositionListsEqualDifferent(t *testing.T) {
 	t.Parallel()
-	Expect(positionListsEqual([]int{1, 2, 3}, []int{1, 2, 4})).To(BeFalse())
+	g := NewWithT(t)
+	g.Expect(positionListsEqual([]int{1, 2, 3}, []int{1, 2, 4})).To(BeFalse())
 }
 
 func TestPositionListsEqualDifferentLengths(t *testing.T) {
 	t.Parallel()
-	Expect(positionListsEqual([]int{1, 2}, []int{1, 2, 3})).To(BeFalse())
+	g := NewWithT(t)
+	g.Expect(positionListsEqual([]int{1, 2}, []int{1, 2, 3})).To(BeFalse())
 }
 
 func TestPositionListsEqualBothEmpty(t *testing.T) {
 	t.Parallel()
-	Expect(positionListsEqual([]int{}, []int{})).To(BeTrue())
+	g := NewWithT(t)
+	g.Expect(positionListsEqual([]int{}, []int{})).To(BeTrue())
 }
 
 func TestPositionListsEqualBothNil(t *testing.T) {
 	t.Parallel()
-	Expect(positionListsEqual(nil, nil)).To(BeTrue())
+	g := NewWithT(t)
+	g.Expect(positionListsEqual(nil, nil)).To(BeTrue())
 }
 
 func TestPositionListsEqualNilVsEmpty(t *testing.T) {
 	t.Parallel()
+	g := NewWithT(t)
 	// nil and empty have equal length (0), so loop body never executes.
-	Expect(positionListsEqual(nil, []int{})).To(BeTrue())
+	g.Expect(positionListsEqual(nil, []int{})).To(BeTrue())
 }
 
 func TestPositionListsEqualSingleElement(t *testing.T) {
 	t.Parallel()
-	Expect(positionListsEqual([]int{42}, []int{42})).To(BeTrue())
-	Expect(positionListsEqual([]int{42}, []int{43})).To(BeFalse())
+	g := NewWithT(t)
+	g.Expect(positionListsEqual([]int{42}, []int{42})).To(BeTrue())
+	g.Expect(positionListsEqual([]int{42}, []int{43})).To(BeFalse())
 }
 
 // ===========================================================================
@@ -137,12 +155,14 @@ func TestPositionListsEqualSingleElement(t *testing.T) {
 
 func TestBoolToIntTrue(t *testing.T) {
 	t.Parallel()
-	Expect(boolToInt(true)).To(Equal(1))
+	g := NewWithT(t)
+	g.Expect(boolToInt(true)).To(Equal(1))
 }
 
 func TestBoolToIntFalse(t *testing.T) {
 	t.Parallel()
-	Expect(boolToInt(false)).To(Equal(0))
+	g := NewWithT(t)
+	g.Expect(boolToInt(false)).To(Equal(0))
 }
 
 // ===========================================================================
@@ -151,24 +171,27 @@ func TestBoolToIntFalse(t *testing.T) {
 
 func TestTupleToTupleElementsEmpty(t *testing.T) {
 	t.Parallel()
+	g := NewWithT(t)
 	result := tupleToTupleElements(tuple.Tuple{})
-	Expect(result).To(BeEmpty())
+	g.Expect(result).To(BeEmpty())
 }
 
 func TestTupleToTupleElementsSingle(t *testing.T) {
 	t.Parallel()
+	g := NewWithT(t)
 	result := tupleToTupleElements(tuple.Tuple{int64(42)})
-	Expect(result).To(HaveLen(1))
-	Expect(result[0]).To(Equal(int64(42)))
+	g.Expect(result).To(HaveLen(1))
+	g.Expect(result[0]).To(Equal(int64(42)))
 }
 
 func TestTupleToTupleElementsMixed(t *testing.T) {
 	t.Parallel()
+	g := NewWithT(t)
 	result := tupleToTupleElements(tuple.Tuple{int64(1), "hello", []byte{0xFF}})
-	Expect(result).To(HaveLen(3))
-	Expect(result[0]).To(Equal(int64(1)))
-	Expect(result[1]).To(Equal("hello"))
-	Expect(result[2]).To(Equal([]byte{0xFF}))
+	g.Expect(result).To(HaveLen(3))
+	g.Expect(result[0]).To(Equal(int64(1)))
+	g.Expect(result[1]).To(Equal("hello"))
+	g.Expect(result[2]).To(Equal([]byte{0xFF}))
 }
 
 // ===========================================================================
@@ -177,21 +200,23 @@ func TestTupleToTupleElementsMixed(t *testing.T) {
 
 func TestNewBunchedMap(t *testing.T) {
 	t.Parallel()
+	g := NewWithT(t)
 	bm := NewBunchedMap(5)
-	Expect(bm).NotTo(BeNil())
-	Expect(bm.bunchSize).To(Equal(5))
-	Expect(bm.serializer).NotTo(BeNil())
-	Expect(bm.timer).To(BeNil())
+	g.Expect(bm).NotTo(BeNil())
+	g.Expect(bm.bunchSize).To(Equal(5))
+	g.Expect(bm.serializer).NotTo(BeNil())
+	g.Expect(bm.timer).To(BeNil())
 }
 
 func TestNewInstrumentedBunchedMap(t *testing.T) {
 	t.Parallel()
+	g := NewWithT(t)
 	timer := NewStoreTimer()
 	bm := NewInstrumentedBunchedMap(10, timer)
-	Expect(bm).NotTo(BeNil())
-	Expect(bm.bunchSize).To(Equal(10))
-	Expect(bm.serializer).NotTo(BeNil())
-	Expect(bm.timer).To(Equal(timer))
+	g.Expect(bm).NotTo(BeNil())
+	g.Expect(bm.bunchSize).To(Equal(10))
+	g.Expect(bm.serializer).NotTo(BeNil())
+	g.Expect(bm.timer).To(Equal(timer))
 }
 
 // ===========================================================================
@@ -207,6 +232,7 @@ func TestInstrumentWriteNilTimer(t *testing.T) {
 
 func TestInstrumentWriteWithTimer(t *testing.T) {
 	t.Parallel()
+	g := NewWithT(t)
 	timer := NewStoreTimer()
 	bm := NewInstrumentedBunchedMap(5, timer)
 
@@ -214,14 +240,15 @@ func TestInstrumentWriteWithTimer(t *testing.T) {
 	value := []byte{0x03, 0x04, 0x05}
 	bm.instrumentWrite(key, value, nil)
 
-	Expect(timer.GetCount(CountSaveIndexKey)).To(Equal(int64(1)))
-	Expect(timer.GetCount(CountSaveIndexKeyBytes)).To(Equal(int64(2)))
-	Expect(timer.GetCount(CountSaveIndexValueBytes)).To(Equal(int64(3)))
-	Expect(timer.GetCount(CountDeleteIndexValueBytes)).To(Equal(int64(0)))
+	g.Expect(timer.GetCount(CountSaveIndexKey)).To(Equal(int64(1)))
+	g.Expect(timer.GetCount(CountSaveIndexKeyBytes)).To(Equal(int64(2)))
+	g.Expect(timer.GetCount(CountSaveIndexValueBytes)).To(Equal(int64(3)))
+	g.Expect(timer.GetCount(CountDeleteIndexValueBytes)).To(Equal(int64(0)))
 }
 
 func TestInstrumentWriteWithOldValue(t *testing.T) {
 	t.Parallel()
+	g := NewWithT(t)
 	timer := NewStoreTimer()
 	bm := NewInstrumentedBunchedMap(5, timer)
 
@@ -230,24 +257,25 @@ func TestInstrumentWriteWithOldValue(t *testing.T) {
 	oldValue := []byte{0x10, 0x20, 0x30, 0x40}
 	bm.instrumentWrite(key, value, oldValue)
 
-	Expect(timer.GetCount(CountSaveIndexKey)).To(Equal(int64(1)))
-	Expect(timer.GetCount(CountSaveIndexKeyBytes)).To(Equal(int64(2)))
-	Expect(timer.GetCount(CountSaveIndexValueBytes)).To(Equal(int64(3)))
-	Expect(timer.GetCount(CountDeleteIndexValueBytes)).To(Equal(int64(4)))
+	g.Expect(timer.GetCount(CountSaveIndexKey)).To(Equal(int64(1)))
+	g.Expect(timer.GetCount(CountSaveIndexKeyBytes)).To(Equal(int64(2)))
+	g.Expect(timer.GetCount(CountSaveIndexValueBytes)).To(Equal(int64(3)))
+	g.Expect(timer.GetCount(CountDeleteIndexValueBytes)).To(Equal(int64(4)))
 }
 
 func TestInstrumentWriteMultipleCalls(t *testing.T) {
 	t.Parallel()
+	g := NewWithT(t)
 	timer := NewStoreTimer()
 	bm := NewInstrumentedBunchedMap(5, timer)
 
 	bm.instrumentWrite([]byte{0x01}, []byte{0x02}, nil)
 	bm.instrumentWrite([]byte{0x03, 0x04}, []byte{0x05, 0x06, 0x07}, []byte{0x08})
 
-	Expect(timer.GetCount(CountSaveIndexKey)).To(Equal(int64(2)))
-	Expect(timer.GetCount(CountSaveIndexKeyBytes)).To(Equal(int64(3)))   // 1 + 2
-	Expect(timer.GetCount(CountSaveIndexValueBytes)).To(Equal(int64(4))) // 1 + 3
-	Expect(timer.GetCount(CountDeleteIndexValueBytes)).To(Equal(int64(1)))
+	g.Expect(timer.GetCount(CountSaveIndexKey)).To(Equal(int64(2)))
+	g.Expect(timer.GetCount(CountSaveIndexKeyBytes)).To(Equal(int64(3)))   // 1 + 2
+	g.Expect(timer.GetCount(CountSaveIndexValueBytes)).To(Equal(int64(4))) // 1 + 3
+	g.Expect(timer.GetCount(CountDeleteIndexValueBytes)).To(Equal(int64(1)))
 }
 
 // ===========================================================================
@@ -263,19 +291,21 @@ func TestInstrumentDeleteNilTimer(t *testing.T) {
 
 func TestInstrumentDeleteWithTimer(t *testing.T) {
 	t.Parallel()
+	g := NewWithT(t)
 	timer := NewStoreTimer()
 	bm := NewInstrumentedBunchedMap(5, timer)
 
 	key := []byte{0x01, 0x02, 0x03}
 	bm.instrumentDelete(key, nil)
 
-	Expect(timer.GetCount(CountDeleteIndexKey)).To(Equal(int64(1)))
-	Expect(timer.GetCount(CountDeleteIndexKeyBytes)).To(Equal(int64(3)))
-	Expect(timer.GetCount(CountDeleteIndexValueBytes)).To(Equal(int64(0)))
+	g.Expect(timer.GetCount(CountDeleteIndexKey)).To(Equal(int64(1)))
+	g.Expect(timer.GetCount(CountDeleteIndexKeyBytes)).To(Equal(int64(3)))
+	g.Expect(timer.GetCount(CountDeleteIndexValueBytes)).To(Equal(int64(0)))
 }
 
 func TestInstrumentDeleteWithOldValue(t *testing.T) {
 	t.Parallel()
+	g := NewWithT(t)
 	timer := NewStoreTimer()
 	bm := NewInstrumentedBunchedMap(5, timer)
 
@@ -283,9 +313,9 @@ func TestInstrumentDeleteWithOldValue(t *testing.T) {
 	oldValue := []byte{0x10, 0x20, 0x30, 0x40, 0x50}
 	bm.instrumentDelete(key, oldValue)
 
-	Expect(timer.GetCount(CountDeleteIndexKey)).To(Equal(int64(1)))
-	Expect(timer.GetCount(CountDeleteIndexKeyBytes)).To(Equal(int64(2)))
-	Expect(timer.GetCount(CountDeleteIndexValueBytes)).To(Equal(int64(5)))
+	g.Expect(timer.GetCount(CountDeleteIndexKey)).To(Equal(int64(1)))
+	g.Expect(timer.GetCount(CountDeleteIndexKeyBytes)).To(Equal(int64(2)))
+	g.Expect(timer.GetCount(CountDeleteIndexValueBytes)).To(Equal(int64(5)))
 }
 
 // ===========================================================================
@@ -303,6 +333,7 @@ func TestInstrumentRangeReadNilTimer(t *testing.T) {
 
 func TestInstrumentRangeReadWithTimer(t *testing.T) {
 	t.Parallel()
+	g := NewWithT(t)
 	timer := NewStoreTimer()
 	bm := NewInstrumentedBunchedMap(5, timer)
 
@@ -312,18 +343,19 @@ func TestInstrumentRangeReadWithTimer(t *testing.T) {
 	}
 	bm.instrumentRangeRead(kvs)
 
-	Expect(timer.GetCount(CountLoadIndexKey)).To(Equal(int64(2)))
-	Expect(timer.GetCount(CountLoadIndexKeyBytes)).To(Equal(int64(5)))   // 2 + 3
-	Expect(timer.GetCount(CountLoadIndexValueBytes)).To(Equal(int64(3))) // 1 + 2
+	g.Expect(timer.GetCount(CountLoadIndexKey)).To(Equal(int64(2)))
+	g.Expect(timer.GetCount(CountLoadIndexKeyBytes)).To(Equal(int64(5)))   // 2 + 3
+	g.Expect(timer.GetCount(CountLoadIndexValueBytes)).To(Equal(int64(3))) // 1 + 2
 }
 
 func TestInstrumentRangeReadEmpty(t *testing.T) {
 	t.Parallel()
+	g := NewWithT(t)
 	timer := NewStoreTimer()
 	bm := NewInstrumentedBunchedMap(5, timer)
 	bm.instrumentRangeRead(nil)
 
-	Expect(timer.GetCount(CountLoadIndexKey)).To(Equal(int64(0)))
+	g.Expect(timer.GetCount(CountLoadIndexKey)).To(Equal(int64(0)))
 }
 
 // ===========================================================================
@@ -673,28 +705,31 @@ var _ = Describe("BunchedMapMultiIterator Next", func() {
 
 func TestBunchedMapExceptionError(t *testing.T) {
 	t.Parallel()
+	g := NewWithT(t)
 	e := &BunchedMapException{Message: "signpost mismatch"}
-	Expect(e.Error()).To(ContainSubstring("signpost mismatch"))
-	Expect(e.Error()).To(ContainSubstring("bunched map error"))
+	g.Expect(e.Error()).To(ContainSubstring("signpost mismatch"))
+	g.Expect(e.Error()).To(ContainSubstring("bunched map error"))
 }
 
 func TestBunchedSerializationErrorWithData(t *testing.T) {
 	t.Parallel()
+	g := NewWithT(t)
 	e := &BunchedSerializationError{
 		Message: "corrupt prefix",
 		Data:    []byte{0xDE, 0xAD},
 	}
-	Expect(e.Error()).To(ContainSubstring("corrupt prefix"))
-	Expect(e.Error()).To(ContainSubstring("data len=2"))
+	g.Expect(e.Error()).To(ContainSubstring("corrupt prefix"))
+	g.Expect(e.Error()).To(ContainSubstring("data len=2"))
 }
 
 func TestBunchedSerializationErrorWithoutData(t *testing.T) {
 	t.Parallel()
+	g := NewWithT(t)
 	e := &BunchedSerializationError{
 		Message: "no data available",
 	}
-	Expect(e.Error()).To(ContainSubstring("no data available"))
-	Expect(e.Error()).NotTo(ContainSubstring("data len="))
+	g.Expect(e.Error()).To(ContainSubstring("no data available"))
+	g.Expect(e.Error()).NotTo(ContainSubstring("data len="))
 }
 
 // ===========================================================================
@@ -703,7 +738,8 @@ func TestBunchedSerializationErrorWithoutData(t *testing.T) {
 
 func TestZeroArrayValue(t *testing.T) {
 	t.Parallel()
-	Expect(zeroArray).To(Equal([]byte{0x00}))
+	g := NewWithT(t)
+	g.Expect(zeroArray).To(Equal([]byte{0x00}))
 }
 
 // ===========================================================================
@@ -712,5 +748,6 @@ func TestZeroArrayValue(t *testing.T) {
 
 func TestBunchedMapMaxValueSize(t *testing.T) {
 	t.Parallel()
-	Expect(bunchedMapMaxValueSize).To(Equal(10_000))
+	g := NewWithT(t)
+	g.Expect(bunchedMapMaxValueSize).To(Equal(10_000))
 }
