@@ -117,6 +117,7 @@ go_test(
         "aggregate_group_key_reachability_test.go",
         "aggregate_having_no_double_projection_test.go",
         "aggregate_index_equality_prefix_ordering_test.go",
+        "aggregate_index_group_row_test.go",
         "aggregate_index_residual_test.go",
         "aggregate_native_slot_root_test.go",
         "aggregate_output_slot_domain_test.go",
@@ -499,6 +500,7 @@ go_test(
         "decimal_constants.go",
         "dml_returning.go",
         "block_select_access_test.go",
+        "aggregate_index_group_row_test.go",
     ],
     deps = [
         "//gen",

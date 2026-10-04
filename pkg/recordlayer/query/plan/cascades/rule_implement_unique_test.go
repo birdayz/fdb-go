@@ -118,7 +118,7 @@ func TestImplementUniqueRule_OrdinaryRequiresDistinctAndPrimaryKeyOnSameMember(
 
 	distinctWithPK := implementUniqueScan("DISTINCT_WITH_PK", true)
 	distinctWithoutPK := implementUniqueScan("DISTINCT_WITHOUT_PK", false)
-	notDistinctWithPK := mustImplementUniqueConstruct(plans.NewRecordQueryProjectionPlanWithAliases(
+	notDistinctWithPK := mustImplementUniqueConstruct(newProjectionMapForTest(
 		[]values.Value{&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}},
 		[]string{"ID"}, distinctWithPK))
 
@@ -153,7 +153,7 @@ func TestImplementUniqueRule_RequiredWrapsEveryPKMemberAndFreezesExactInput(
 
 	distinctWithPK := implementUniqueScan("DISTINCT_WITH_PK", true)
 	distinctWithoutPK := implementUniqueScan("DISTINCT_WITHOUT_PK", false)
-	notDistinctWithPK := mustImplementUniqueConstruct(plans.NewRecordQueryProjectionPlanWithAliases(
+	notDistinctWithPK := mustImplementUniqueConstruct(newProjectionMapForTest(
 		[]values.Value{&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}},
 		[]string{"ID"}, distinctWithPK))
 

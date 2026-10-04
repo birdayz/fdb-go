@@ -142,8 +142,6 @@ func computePKThread(p plans.RecordQueryPlan) pkThread {
 		return pkThreadFromSingleChild(pl.GetChildren())
 	case *plans.RecordQueryMapPlan:
 		return computeMapPKThread(pl)
-	case *plans.RecordQueryProjectionPlan:
-		return computeProjectionPKThread(pl)
 	case *plans.RecordQueryInMemorySortPlan:
 		return pkThreadFromSingleChild(pl.GetChildren())
 
@@ -255,8 +253,7 @@ func pkThreadFromSingleChild(children []plans.RecordQueryPlan) pkThread {
 // namedValue pairs an output-row field name with the Value that computes it —
 // the normalized shape pkThreadThroughFields needs from either a
 // RecordConstructorValue's Fields (RecordQueryMapPlan.resultValue,
-// RecordQueryFlatMapPlan.resultValue) or a RecordQueryProjectionPlan's
-// parallel projections/aliases slices.
+// RecordQueryFlatMapPlan.resultValue).
 type namedValue struct {
 	name  string
 	value values.Value
@@ -272,39 +269,6 @@ func computeMapPKThread(pl *plans.RecordQueryMapPlan) pkThread {
 	childThread := pkThreadFromSingleChild(pl.GetChildren())
 	return pkThreadThroughResultValue(childThread, pl.GetInnerQuantifier().GetAlias(),
 		singleChildRowLayout(pl.GetChildren()), pl.GetResultValue())
-}
-
-// computeProjectionPKThread is computeMapPKThread's analogue for
-// RecordQueryProjectionPlan, whose output shape is a parallel
-// projections/aliases pair rather than a single RecordConstructorValue.
-// IsIdentity() (the projection passes every column through unchanged) is the
-// same full-passthrough fast path pkThreadThroughResultValue recognizes for a
-// bare QuantifiedObjectValue resultValue; the general case defers to
-// pkThreadThroughFields with each projection's OWN output-name authority
-// (values.OutputColumnName — the exact name executeProjection keys the slot
-// under), so the check matches names the same way any downstream reader must.
-func computeProjectionPKThread(pl *plans.RecordQueryProjectionPlan) pkThread {
-	childThread := pkThreadFromSingleChild(pl.GetChildren())
-	if !childThread.ok {
-		return pkThread{}
-	}
-	if len(childThread.pkTypes) != len(childThread.pkValues) {
-		return pkThread{}
-	}
-	if pl.IsIdentity() {
-		return childThread
-	}
-	childAlias := pl.GetInnerQuantifier().GetAlias()
-	projections := pl.GetProjections()
-	outputNames := pl.GetOutputNames()
-	fields := make([]namedValue, len(projections))
-	for i, v := range projections {
-		if i >= len(outputNames) || outputNames[i] == "" {
-			return pkThread{}
-		}
-		fields[i] = namedValue{name: outputNames[i], value: v}
-	}
-	return pkThreadThroughFields(childThread, childAlias, singleChildRowLayout(pl.GetChildren()), fields)
 }
 
 // pkThreadThroughResultValue re-roots childThread (a proven pkThread whose

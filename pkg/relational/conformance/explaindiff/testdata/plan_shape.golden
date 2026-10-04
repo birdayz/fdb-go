@@ -18141,7 +18141,7 @@ shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === union_join_leg_aggregate_forms.yaml#0
 sql:   WITH u AS (SELECT g, SUM(ga.v) AS s FROM ga GROUP BY g UNION ALL SELECT h, SUM(gb.v) AS s2 FROM gb GROUP BY h) SELECT c.w, u.s FROM u, c WHERE u.g = c.id
-plan:  FlatMap(outer=UnorderedUnion(Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_G, [G], GA, live_groups_only), AggregateIndex(SUM, SUM_BY_G, [G], GA); keys=[G#0], driving=0), {G: _current.G#0, S: _current.SUM(V)#1}), Map(Project([_current.H#0, _current.SUM(V)#1], GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_H, [H], GB, live_groups_only), AggregateIndex(SUM, SUM_BY_H, [H], GB); keys=[H#0], driving=0)), {G: _current.H#0, S: _current.SUM(GB.V)#1})), inner=Scan(C, [=]))
+plan:  FlatMap(outer=UnorderedUnion(Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_G, [G], GA, live_groups_only), AggregateIndex(SUM, SUM_BY_G, [G], GA); keys=[G#0], driving=0), {G: _current.G#0, S: _current.SUM(V)#1}), Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_H, [H], GB, live_groups_only), AggregateIndex(SUM, SUM_BY_H, [H], GB); keys=[H#0], driving=0), {G: _current.H#0, S: _current.SUM(GB.V)#1})), inner=Scan(C, [=]))
 shape: RecordQueryFlatMapPlan
 shape:   RecordQueryUnorderedUnionPlan
 shape:     RecordQueryMapPlan
@@ -18149,22 +18149,19 @@ shape:       RecordQueryMultiIntersectionOnValuesPlan
 shape:         RecordQueryAggregateIndexPlan
 shape:         RecordQueryAggregateIndexPlan
 shape:     RecordQueryMapPlan
-shape:       RecordQueryProjectionPlan
-shape:         RecordQueryMultiIntersectionOnValuesPlan
-shape:           RecordQueryAggregateIndexPlan
-shape:           RecordQueryAggregateIndexPlan
+shape:       RecordQueryMultiIntersectionOnValuesPlan
+shape:         RecordQueryAggregateIndexPlan
+shape:         RecordQueryAggregateIndexPlan
 shape:   RecordQueryScanPlan
 === union_join_leg_aggregate_forms.yaml#1
 sql:   WITH u AS (SELECT g, COUNT(1) AS n FROM ga GROUP BY g UNION ALL SELECT h, COUNT(1) AS m FROM gb GROUP BY h) SELECT c.w, u.n FROM u, c WHERE u.g = c.id
-plan:  FlatMap(outer=UnorderedUnion(Map(Project([_current.G#0, _current.COUNT(*)#1], AggregateIndex(COUNT, CNT_BY_G, [G], GA, live_groups_only)), {G: _current.G#0, N: _current.COUNT(1)#1}), Map(Project([_current.H#0, _current.COUNT(*)#1], AggregateIndex(COUNT, CNT_BY_H, [H], GB, live_groups_only)), {G: _current.H#0, N: _current.COUNT(1)#1})), inner=Scan(C, [=]))
+plan:  FlatMap(outer=UnorderedUnion(Map(AggregateIndex(COUNT, CNT_BY_G, [G], GA, live_groups_only), {G: _current.G#0, N: _current.COUNT(1)#1}), Map(AggregateIndex(COUNT, CNT_BY_H, [H], GB, live_groups_only), {G: _current.H#0, N: _current.COUNT(1)#1})), inner=Scan(C, [=]))
 shape: RecordQueryFlatMapPlan
 shape:   RecordQueryUnorderedUnionPlan
 shape:     RecordQueryMapPlan
-shape:       RecordQueryProjectionPlan
-shape:         RecordQueryAggregateIndexPlan
+shape:       RecordQueryAggregateIndexPlan
 shape:     RecordQueryMapPlan
-shape:       RecordQueryProjectionPlan
-shape:         RecordQueryAggregateIndexPlan
+shape:       RecordQueryAggregateIndexPlan
 shape:   RecordQueryScanPlan
 === union_join_leg_aggregate_forms.yaml#2
 sql:   WITH u AS (SELECT g FROM ga GROUP BY g UNION ALL SELECT h FROM gb GROUP BY h) SELECT c.w FROM u, c WHERE u.g = c.id

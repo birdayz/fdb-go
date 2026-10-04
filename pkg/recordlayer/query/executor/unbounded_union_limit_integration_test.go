@@ -365,7 +365,7 @@ func TestIntegration_StrictFirstOrDefaultRequest(t *testing.T) {
 				if kind == "map" {
 					plan = mustExecutorConstruct(plans.NewRecordQueryMapPlan(plan, constant))
 				} else if kind == "projection" {
-					plan = mustExecutorConstruct(plans.NewRecordQueryProjectionPlan([]values.Value{constant}, plan))
+					plan = mustExecutorConstruct(newProjectionMapOverForTest([]values.Value{constant}, plan))
 				}
 				_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 					s, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).SetSubspace(testSubspace(t)).Open()

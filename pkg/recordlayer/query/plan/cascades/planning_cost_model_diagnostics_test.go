@@ -649,7 +649,6 @@ func TestClassifyConcretePlanExhaustiveTaxonomy(t *testing.T) {
 			count:    concreteCountPredicatesFilter,
 			residual: concreteResidualPredicateCNF,
 		},
-		{name: "Projection", plan: (*plans.RecordQueryProjectionPlan)(nil)},
 		{name: "RecursiveDfsJoin", plan: (*plans.RecordQueryRecursiveDfsJoinPlan)(nil)},
 		{name: "RecursiveLevelUnion", plan: (*plans.RecordQueryRecursiveLevelUnionPlan)(nil)},
 		{name: "Scan", plan: (*plans.RecordQueryScanPlan)(nil), count: concreteCountScan},
@@ -669,8 +668,8 @@ func TestClassifyConcretePlanExhaustiveTaxonomy(t *testing.T) {
 		{name: "VectorIndex", plan: (*plans.RecordQueryVectorIndexPlan)(nil), count: concreteCountVectorIndex},
 	}
 
-	if len(cases) != 41 {
-		t.Fatalf("taxonomy fixture contains %d plan types, want 41", len(cases))
+	if len(cases) != 40 {
+		t.Fatalf("taxonomy fixture contains %d plan types, want 40", len(cases))
 	}
 	for _, tc := range cases {
 		classification, known := classifyConcretePlan(tc.plan)

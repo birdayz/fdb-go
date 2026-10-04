@@ -26,7 +26,7 @@ func TestPlanningCostModel_InUnionRepeatedFullScanCannotWinScalarFallback(t *tes
 		)
 		return mustConstruct(t, filter, err)
 	}
-	plain, err := plans.NewRecordQueryProjectionPlan(nil, filteredScan())
+	plain, err := newProjectionMapOverForTest(nil, filteredScan())
 	plain = mustConstruct(t, plain, err)
 	repeatedInner := filteredScan()
 	inUnion, err := plans.NewRecordQueryInUnionPlan(
@@ -37,7 +37,7 @@ func TestPlanningCostModel_InUnionRepeatedFullScanCannotWinScalarFallback(t *tes
 	)
 	inUnion = mustConstruct(t, inUnion, err)
 	inUnion = inUnion.WithInSources([][]any{{int64(1), int64(2)}})
-	repeated, err := plans.NewRecordQueryProjectionPlan(nil, inUnion)
+	repeated, err := newProjectionMapOverForTest(nil, inUnion)
 	repeated = mustConstruct(t, repeated, err)
 
 	if _, applicable := compareInOperator(plain); applicable {

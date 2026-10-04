@@ -1587,7 +1587,7 @@ func TestTranslateExistentialWholeRowAccessPrograms(t *testing.T) {
 		filter, nil, nljSimpleRowType("INNER"), plans.FetchIndexRecordsPrimaryKey))
 	legacy := mustNLJConstruct(plans.NewRecordQueryFilterPlan(filter.GetPredicates(), scan))
 	typeFilter := mustNLJConstruct(plans.NewRecordQueryTypeFilterPlan([]string{"INNER"}, legacy))
-	projection := mustNLJConstruct(plans.NewRecordQueryProjectionPlanWithAliases(
+	projection := mustNLJConstruct(newProjectionMapForTest(
 		[]values.Value{field, scalar}, []string{"OUTER_ID", "ELEMENT"}, typeFilter))
 	strict := mustNLJConstruct(plans.NewRecordQueryFirstOrDefaultPlanStrict(
 		scan, values.NewNullValue(values.WithNullability(scan.GetResultType(), true))))
@@ -1653,10 +1653,11 @@ func TestTranslateExistentialWholeRowAccessPrograms(t *testing.T) {
 				if afterFilter, ok := after.(*plans.RecordQueryPredicatesFilterPlan); ok && afterFilter.GetInnerAlias() != filterAlias {
 					t.Fatal("filter binding alias changed")
 				}
-				if projected, ok := after.(*plans.RecordQueryProjectionPlan); ok {
-					operand, isField := values.AsFieldValue(projected.GetProjections()[0])
-					if !isField || operand.ChildValue() != replacement || projected.GetProjections()[1] != scalar {
-						t.Fatal("projection lost whole-row/scalar distinction")
+				if projected, ok := after.(*plans.RecordQueryMapPlan); ok {
+					fields := projected.GetResultValue().(*values.RecordConstructorValue).Fields
+					operand, isField := values.AsFieldValue(fields[0].Value)
+					if !isField || operand.ChildValue() != replacement || fields[1].Value != scalar {
+						t.Fatal("block Map lost whole-row/scalar distinction")
 					}
 				}
 				if first, ok := after.(*plans.RecordQueryFirstOrDefaultPlan); ok &&
@@ -1770,7 +1771,7 @@ func TestImplementNestedLoopJoin_CurrentRootsAreNotSharedExternalSibling(t *test
 		physicalLayout := mustNLJConstruct(physicalScan.ProvidedOutputLayout())
 		physicalField := mustNLJConstruct(values.ResolveFieldOrdinals(
 			physicalLayout.Carrier(), []int{0}))
-		physicalProjection := mustNLJConstruct(plans.NewRecordQueryProjectionPlan(
+		physicalProjection := mustNLJConstruct(newProjectionMapOverForTest(
 			[]values.Value{physicalField}, physicalScan))
 		if !legRef.InsertFinal(physicalProjection) {
 			t.Fatalf("insert %s physical projection final", recordName)
@@ -1833,7 +1834,7 @@ func TestImplementNestedLoopJoin_SharedNamedExternalSiblingStillDeclines(t *test
 		logicalProjection := mustNLJConstruct(newBlockSelectForTest(
 			[]values.Value{externalField}, logicalScanQ))
 		legRef := expressions.InitialOf(logicalProjection)
-		physicalProjection := mustNLJConstruct(plans.NewRecordQueryProjectionPlan(
+		physicalProjection := mustNLJConstruct(newProjectionMapOverForTest(
 			[]values.Value{externalField}, nljPhysicalScan(recordName)))
 		if !legRef.InsertFinal(physicalProjection) {
 			t.Fatalf("insert %s external-correlated projection final", recordName)
@@ -3808,7 +3809,7 @@ func TestImplementNestedLoopJoin_NullOnEmptyOuterIsExtended(t *testing.T) {
 			values.NamedCorrelationIdentifier("BADGE"), expressions.InitialOf(nljLogicalScan("BADGE")))
 		legRef := expressions.InitialOf(mustNLJConstruct(newBlockSelectForTest(
 			[]values.Value{outerID}, scanQ)))
-		if !legRef.InsertFinal(mustNLJConstruct(plans.NewRecordQueryProjectionPlan(
+		if !legRef.InsertFinal(mustNLJConstruct(newProjectionMapOverForTest(
 			[]values.Value{outerID}, nljPhysicalScan("BADGE")))) {
 			t.Fatal("insert the correlated leg's physical projection")
 		}

@@ -331,7 +331,6 @@ var (
 	_ orderingDelegator = (*plans.RecordQueryPredicatesFilterPlan)(nil)
 	_ orderingDelegator = (*plans.RecordQueryTypeFilterPlan)(nil)
 	_ orderingDelegator = (*plans.RecordQueryDistinctPlan)(nil)
-	_ orderingDelegator = (*plans.RecordQueryProjectionPlan)(nil)
 	_ orderingDelegator = (*plans.RecordQueryMapPlan)(nil)
 	_ orderingDelegator = (*plans.RecordQueryLimitPlan)(nil)
 	_ orderingDelegator = (*plans.RecordQueryDefaultOnEmptyPlan)(nil)
@@ -375,8 +374,6 @@ func requestedOrderingBelow(
 		innerQ      expressions.Quantifier
 	)
 	switch p := m.(type) {
-	case *plans.RecordQueryProjectionPlan:
-		resultValue, innerQ = p.GetResultValue(), p.GetInnerQuantifier()
 	case *plans.RecordQueryMapPlan:
 		resultValue, innerQ = p.GetResultValue(), p.GetInnerQuantifier()
 	default:

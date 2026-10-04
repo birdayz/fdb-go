@@ -63,7 +63,7 @@ func TestDistinctKeyColumns_WrapperOverProjection(t *testing.T) {
 
 	// A projection narrowing 3 columns to 1, renamed. If any consumer reads the
 	// SCAN's row instead of the projection's, it sees 3 fields named ID/A/B.
-	proj, err := plans.NewRecordQueryProjectionPlanWithAliases(
+	proj, err := newProjectionMapForTest(
 		[]values.Value{projectedA},
 		[]string{"RENAMED"}, scan)
 	proj = mustConstruct(t, proj, err)

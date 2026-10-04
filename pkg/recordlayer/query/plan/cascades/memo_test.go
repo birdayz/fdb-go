@@ -663,33 +663,6 @@ func TestMemo_MemoizeExpression_ProjectionAliasesDoNotCollapse(t *testing.T) {
 	}
 }
 
-func TestMemo_MemoizeExpression_PhysicalProjectionAliasesDoNotCollapse(t *testing.T) {
-	t.Parallel()
-	scan, scanErr := plans.NewRecordQueryScanPlan([]string{"T"}, values.NotNullLong, false)
-	scan = mustConstruct(t, scan, scanErr)
-	scanRef := expressions.InitialOf(scan)
-	m := NewMemo(nil)
-	m.RegisterReference(scanRef)
-
-	projection := func(alias string) *plans.RecordQueryProjectionPlan {
-		projection, err := plans.NewRecordQueryProjectionPlanFromQuantifier(
-			[]values.Value{values.NewBooleanValue(true)},
-			[]string{alias},
-			expressions.ForEachQuantifier(scanRef),
-		)
-		return mustConstruct(t, projection, err)
-	}
-
-	refA := m.MemoizeExpression(projection("A"))
-	refB := m.MemoizeExpression(projection("B"))
-	if refA == refB {
-		t.Fatal("memo collapsed physical projections with different output schemas")
-	}
-	if refATwin := m.MemoizeExpression(projection("A")); refATwin != refA {
-		t.Fatal("memo failed to intern a physical projection with the same exact output alias")
-	}
-}
-
 func TestMemo_MemoizeExpression_NonLeafDistinctChildren(t *testing.T) {
 	t.Parallel()
 	// Two filters that are structurally the same node-info but point to

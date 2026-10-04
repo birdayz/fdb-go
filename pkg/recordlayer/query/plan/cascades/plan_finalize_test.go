@@ -564,16 +564,6 @@ var specimens = map[string]specimen{
 		},
 	},
 
-	"RecordQueryProjectionPlan": {
-		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
-			child, cs := sentinelChild()
-			proj := sentinel()
-			return mustFinalizeConstruct(plans.NewRecordQueryProjectionPlan([]values.Value{proj}, child)),
-				map[string]*values.RecordConstructorValue{"innerQ": cs, "projections": proj}
-		},
-		allow: map[string]string{"resultValue": resultValueIsMinted},
-	},
-
 	"RecordQueryRecursiveDfsJoinPlan": {
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			root, rs := sentinelChild()

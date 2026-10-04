@@ -4588,10 +4588,8 @@ func TestFDB_ArrayUnnestOrdinalityColumnType(t *testing.T) {
 		}
 		// The root computes the select list: a Map, or the join returning it.
 		var projections []values.Value
-		var outputNames, aliases []string
-		if proj, ok := plan.(*plans.RecordQueryProjectionPlan); ok {
-			projections, outputNames, aliases = proj.GetProjections(), proj.GetOutputNames(), proj.GetAliases()
-		} else if row, ok := plan.GetResultValue().(*values.RecordConstructorValue); ok {
+		var outputNames []string
+		if row, ok := plan.GetResultValue().(*values.RecordConstructorValue); ok {
 			for _, field := range row.Fields {
 				projections = append(projections, field.Value)
 				outputNames = append(outputNames, field.Name)
@@ -4600,9 +4598,7 @@ func TestFDB_ArrayUnnestOrdinalityColumnType(t *testing.T) {
 			t.Fatalf("plan %q: root %T computes no select list\n%s", sql, plan, plan.Explain())
 		}
 		for i := range projections {
-			outputNameMatches := i < len(outputNames) && strings.EqualFold(outputNames[i], wantField)
-			aliasMatches := i < len(aliases) && strings.EqualFold(aliases[i], wantField)
-			if outputNameMatches || aliasMatches {
+			if i < len(outputNames) && strings.EqualFold(outputNames[i], wantField) {
 				return projections[i]
 			}
 		}
@@ -4610,8 +4606,8 @@ func TestFDB_ArrayUnnestOrdinalityColumnType(t *testing.T) {
 		if len(projections) == 1 {
 			return projections[0]
 		}
-		t.Fatalf("plan %q: no projection with field %q found (outputs=%v aliases=%v)\n%s",
-			sql, wantField, outputNames, aliases, plan.Explain())
+		t.Fatalf("plan %q: no projection with field %q found (outputs=%v)\n%s",
+			sql, wantField, outputNames, plan.Explain())
 		return nil
 	}
 
@@ -4852,16 +4848,6 @@ func unnestProjectionHasCurrentOrdinal(plan plans.RecordQueryPlan, ordinal int) 
 						found = true
 					}
 				}
-			}
-			return true
-		}
-		projection, ok := node.(*plans.RecordQueryProjectionPlan)
-		if !ok {
-			return true
-		}
-		for _, value := range projection.GetProjections() {
-			if unnestIsCurrentOrdinal(value, ordinal) {
-				found = true
 			}
 		}
 		return true

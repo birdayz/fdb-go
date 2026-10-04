@@ -16,7 +16,7 @@ import (
 
 // This file pins the ordinal-join wiring: the ordinal-BUILD state on the
 // NLJ/flatMap cursors, the build-time predicate context, and the downstream
-// leg-window dispatch in executeFilter/executeProjection/
+// leg-window dispatch in executeFilter/
 // executePredicatesFilter/executeMap. These tests hand-build the
 // plans/cursors rather than driving them through a full query, so each wiring
 // point can be pinned in isolation.

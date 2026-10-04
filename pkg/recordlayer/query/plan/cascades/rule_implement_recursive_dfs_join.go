@@ -103,29 +103,9 @@ func (r *ImplementRecursiveDfsJoinRule) OnMatch(call *ExpressionRuleCall) {
 	// expression report the plan actually being executed.
 	//
 	// MemoizeFinalExpression, NOT MemoizeExpression — the two legs must land in
-	// SEPARATE references.
-	//
-	// HISTORY, because the reason CHANGED and the old reason is now false:
-	// this originally guarded against an interning collapse. scanPlanExpression
-	// compared via EqualsPlanWithoutChildren (children excluded) and reports no
-	// quantifiers, so the memo could not tell two of them apart when their root
-	// nodes matched — and both legs here are RecordQueryProjectionPlan with the
-	// same projections (root `Project([ID,PARENT], TypeFilter(Scan))`, child
-	// `Project([ID,PARENT], Project(FlatMap(…)))`). They compared EQUAL and
-	// interned into ONE group, so the memo believed the two legs were the same
-	// expression. That collapse was introduced by an earlier revision of this
-	// very fix and is why the leg divergence fell only from 58 to 25.
-	//
-	// That mechanism NO LONGER EXISTS: scanPlanExpression now compares deeply
-	// (RFC-183 §15, abstract_data_access_rule.go), so these legs are distinct
-	// to the memo on their own. MemoizeExpression would very likely be safe
-	// here today.
-	//
-	// It stays MemoizeFinalExpression anyway, deliberately: the rule's
-	// correctness needs one reference PER LEG, and expressing that directly is
-	// better than depending on two structurally-similar plans happening to
-	// differ below the root. The guarantee should not be a coincidence of the
-	// data.
+	// SEPARATE references. The rule's correctness needs one reference per leg,
+	// and stating that directly beats depending on two structurally similar
+	// plans happening to differ below the root.
 	rootQ := expressions.NewPhysicalQuantifier(call.MemoizeFinalExpression(&scanPlanExpression{plan: rootPlan}))
 	childQ := expressions.NewPhysicalQuantifier(call.MemoizeFinalExpression(&scanPlanExpression{plan: childPlan}))
 	// The plan carries its two leg edges directly — no separate physical

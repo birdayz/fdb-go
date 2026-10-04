@@ -1790,12 +1790,17 @@ func translateCorrelatedAccessPrograms(
 		if moved {
 			return typed.WithIndexPlan(translated.(*plans.RecordQueryIndexPlan)), true, nil
 		}
-	case *plans.RecordQueryProjectionPlan:
-		translated, moved, err := typed.WithTranslatedProjections(programTransform)
+	case *plans.RecordQueryMapPlan:
+		// A query block's result, as Java's RecordQueryMapPlan translates its
+		// result value with the rest of the plan.
+		translated, err := programTransform(typed.GetResultValue())
 		if err != nil {
-			return nil, false, err
+			return nil, false, fmt.Errorf("correlated access map result: %w", err)
 		}
-		return translated, changed || moved, nil
+		if translated != typed.GetResultValue() {
+			rebuilt, err := plans.NewRecordQueryMapPlanFromQuantifier(typed.GetInnerQuantifier(), translated)
+			return rebuilt, true, err
+		}
 	case *plans.RecordQueryPredicatesFilterPlan:
 		translated, moved, err := translateCorrelatedAccessPredicates(typed.GetPredicates(), programTransform)
 		if err != nil {

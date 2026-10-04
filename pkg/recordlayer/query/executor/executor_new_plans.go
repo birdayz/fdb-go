@@ -116,14 +116,11 @@ func executeAggregateIndexScan(
 
 	scanProps := recordlayer.NewScanProperties(props).WithReverse(idxPlan.IsReverse())
 
-	canonicalName := p.CanonicalAggColumnName()
 	// The aggregate-index row's authoritative ordinal
 	// schema is the GROUP columns in scan order followed by the aggregate column
 	// — the exact order the row's slots are filled below (entry.Key then
 	// entry.Value). Row-invariant, so it is built once here and shared across
-	// rows. Named by the canonical output names (uppercase group
-	// cols, canonical agg name) — the exact schema plan-time bakes bind
-	// against.
+	// rows. Its names are the plan's: the GroupBy row the planner published.
 	posType, ok := p.GetResultType().(*values.RecordType)
 	if !ok || posType == nil || len(posType.Fields) != len(groupCols)+1 {
 		actualWidth := -1
@@ -134,11 +131,11 @@ func executeAggregateIndexScan(
 			"executor: aggregate index %q has result type %T with %d columns, want exact record width %d",
 			idxPlan.GetIndexName(), p.GetResultType(), actualWidth, len(groupCols)+1)
 	}
-	for i, name := range append(append([]string(nil), groupCols...), canonicalName) {
-		if posType.Fields[i].Name != name || posType.Fields[i].Ordinal != i {
+	for i := range posType.Fields {
+		if posType.Fields[i].Ordinal != i {
 			return nil, fmt.Errorf(
-				"executor: aggregate index %q result field %d is %q#%d, want %q#%d",
-				idxPlan.GetIndexName(), i, posType.Fields[i].Name, posType.Fields[i].Ordinal, name, i)
+				"executor: aggregate index %q result field %d is %q#%d, want ordinal %d",
+				idxPlan.GetIndexName(), i, posType.Fields[i].Name, posType.Fields[i].Ordinal, i)
 		}
 		if _, exactErr := values.SnapshotExactType(posType.Fields[i].FieldType); exactErr != nil {
 			return nil, fmt.Errorf(
@@ -207,11 +204,7 @@ func executeAggregateIndexScan(
 	result := &aggregateIndexCursor{
 		inner:     indexCursor,
 		groupCols: groupCols,
-		// Single source for the aggregate column key: the plan's
-		// CanonicalAggColumnName names the slot the cursor writes, so the row
-		// key and the plan's stated name can't drift (RFC-081).
-		canonicalName: canonicalName,
-		posType:       posType,
+		posType:   posType,
 		// RFC-209 §5.3(a): the plan decides, the cursor obeys.
 		liveGroupsOnly: p.IsLiveGroupsOnly(),
 		// Stamped at mint time so the output boundary checks the row instead of
@@ -433,10 +426,9 @@ func (c *permutedAggregateIndexCursor) IsClosed() bool { return c.closed }
 var _ recordlayer.RecordCursor[QueryResult] = (*permutedAggregateIndexCursor)(nil)
 
 type aggregateIndexCursor struct {
-	inner         recordlayer.RecordCursor[*recordlayer.IndexEntry]
-	groupCols     []string
-	canonicalName string
-	posType       *values.RecordType
+	inner     recordlayer.RecordCursor[*recordlayer.IndexEntry]
+	groupCols []string
+	posType   *values.RecordType
 	// liveGroupsOnly drops entries whose stored aggregate is zero. Set only for
 	// a grouped COUNT(*) scan, where the stored value is the group's row count
 	// and a zero can therefore only be the residue of a vacated group (the
@@ -1294,7 +1286,7 @@ func executeMap(
 	// positional row's OUTPUT names once from the result value's record type. When
 	// the result is a RecordConstructorValue, evaluate its Fields INDIVIDUALLY into
 	// dense slots (never through the collapsing name map — a duplicate output name
-	// keeps both slots by ordinal), mirroring executeProjection.
+	// keeps both slots by ordinal).
 	var mapPosType *values.RecordType
 	mapRC, _ := resultValue.(*values.RecordConstructorValue)
 	if rt, ok := resultValue.Type().(*values.RecordType); ok {

@@ -165,7 +165,7 @@ func TestImplementDeleteRuleMixedGroupDoesNotBypassTheDedup(t *testing.T) {
 	// Project every slot so it stays an exact co-member of the pass-through
 	// filter while still carrying projection's non-distinct property.
 	projectionQ := expressions.ForEachQuantifier(childRef)
-	nonDistinctPlan := mustRestrictedInnerConstruct(plans.NewRecordQueryProjectionPlanFromQuantifier(
+	nonDistinctPlan := mustRestrictedInnerConstruct(newProjectionMapFromQuantifierForTest(
 		[]values.Value{
 			restrictedInnerField(projectionQ, 0),
 			restrictedInnerField(projectionQ, 1),

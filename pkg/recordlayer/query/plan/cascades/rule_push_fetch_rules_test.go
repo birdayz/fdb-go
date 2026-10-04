@@ -1,7 +1,6 @@
 package cascades
 
 import (
-	"errors"
 	"fmt"
 	"testing"
 
@@ -1488,54 +1487,5 @@ func TestPushUnorderedUnionThroughFetchRule_Fires(t *testing.T) {
 		if inners[i] != plans.RecordQueryPlan(indexPlans[i]) {
 			t.Fatalf("pushed child %d = %T, want the original index plan", i, inners[i])
 		}
-	}
-}
-
-func TestProjectionPlan_WholeRowIdentityRejectedAtAdmission(t *testing.T) {
-	t.Parallel()
-
-	scan := pushFetchScan()
-	scanRef := expressions.InitialOf(scan)
-	innerQ := expressions.ForEachQuantifier(scanRef)
-	projection, err := plans.NewRecordQueryProjectionPlanFromQuantifier(
-		[]values.Value{pushFetchQOV(innerQ.GetAlias())},
-		nil,
-		innerQ,
-	)
-	if projection != nil || !errors.Is(err, values.ErrWholeRowProjection) {
-		t.Fatalf("whole-row physical projection = (%T, %v), want nil and ErrWholeRowProjection",
-			projection, err)
-	}
-}
-
-func TestProjectionPlan_AliasedWholeRowRejectedAtAdmission(t *testing.T) {
-	t.Parallel()
-
-	scan := pushFetchScan()
-	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	projection, err := plans.NewRecordQueryProjectionPlanFromQuantifier(
-		[]values.Value{pushFetchQOV(innerQ.GetAlias())},
-		[]string{"RENAMED_ROW"},
-		innerQ,
-	)
-	if projection != nil || !errors.Is(err, values.ErrWholeRowProjection) {
-		t.Fatalf("aliased whole-row physical projection = (%T, %v), want nil and ErrWholeRowProjection",
-			projection, err)
-	}
-}
-
-func TestProjectionPlan_EmptyAliasWholeRowRejectedAtAdmission(t *testing.T) {
-	t.Parallel()
-
-	scan := pushFetchScan()
-	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	projection, err := plans.NewRecordQueryProjectionPlanFromQuantifier(
-		[]values.Value{pushFetchQOV(innerQ.GetAlias())},
-		[]string{""},
-		innerQ,
-	)
-	if projection != nil || !errors.Is(err, values.ErrWholeRowProjection) {
-		t.Fatalf("empty-alias whole-row physical projection = (%T, %v), want nil and ErrWholeRowProjection",
-			projection, err)
 	}
 }

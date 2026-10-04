@@ -10,7 +10,7 @@ package sqldriver_test
 // The derived source's projection re-lays-out the t1×t2 join merge into a flat
 // positional row [Y, L]; the streaming aggregate's group key `l` and operand `y`
 // name PROJECTED OUTPUT columns, so they resolve against that projection row by
-// ordinal-in-row — exactly as executeProjection resolves the projection itself.
+// ordinal-in-row — exactly as executeMap resolves the projection itself.
 // The derived projection's flat positional row [Y, L] is the only source, and the
 // group key `l` / operand `y` resolve against it by ordinal. This test proves the
 // ordinal path end-to-end by asserting the exact rows. The schema is unique to

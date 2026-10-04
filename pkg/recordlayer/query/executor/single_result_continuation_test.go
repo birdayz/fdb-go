@@ -302,7 +302,7 @@ func TestFirstOrDefault_StrictRequestBoundary(t *testing.T) {
 						if kind == "map" {
 							plan = mustExecutorConstruct(plans.NewRecordQueryMapPlan(plan, constant))
 						} else if kind == "projection" {
-							plan = mustExecutorConstruct(plans.NewRecordQueryProjectionPlan([]values.Value{constant}, plan))
+							plan = mustExecutorConstruct(newProjectionMapOverForTest([]values.Value{constant}, plan))
 						}
 						props := recordlayer.DefaultExecuteProperties().WithSkip(skip).WithReturnedRowLimit(cap)
 						cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, props)
@@ -384,7 +384,7 @@ func TestFirstOrDefault_EmptyRecordRequestMatchesJava(t *testing.T) {
 	t.Parallel()
 	inner := mustExecutorConstruct(plans.NewRecordQueryValuesPlan(nil))
 	first := mustExecutorConstruct(plans.NewRecordQueryFirstOrDefaultPlan(inner, values.NewNullValue(inner.GetResultType())))
-	plan := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan([]values.Value{
+	plan := mustExecutorConstruct(newProjectionMapOverForTest([]values.Value{
 		&values.ConstantValue{Value: int64(42), Typ: values.NotNullLong},
 	}, first))
 	// Java forwards skip to the child BEFORE first/default. The skipped child
@@ -929,23 +929,20 @@ func TestDefaultArrayConstructorAcrossEmptyRecord(t *testing.T) {
 						child := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
 							Value: elements, Typ: values.NewArrayType(false, rt),
 						}))
-						childLayout := mustExecutorConstruct(child.ProvidedOutputLayout())
-						field := mustExecutorConstruct(values.ResolveFieldOrdinals(childLayout.Carrier(), []int{0}))
 						defaultPlan := defaultContextPlan(t, kind, child, values.NewNullValue(rt))
+						output := mustExecutorConstruct(defaultPlan.ProvidedOutputLayout())
+						field := mustExecutorConstruct(values.ResolveFieldOrdinals(output.Carrier(), []int{0}))
 						arrayElements := []values.Value{field}
 						wantArray := []any{want}
 						if mixed {
-							output := mustExecutorConstruct(defaultPlan.ProvidedOutputLayout())
-							outputField := mustExecutorConstruct(values.ResolveFieldOrdinals(output.Carrier(), []int{0}))
-							arrayElements = append(arrayElements, outputField)
+							arrayElements = append(arrayElements, field)
 							wantArray = append(wantArray, want)
 						}
 						elementType := values.WithNullability(values.NotNullLong, nullableElement)
 						array := values.NewArrayConstructorValue(elementType, arrayElements)
-						projection, err := plans.NewRecordQueryProjectionPlan([]values.Value{array}, defaultPlan)
-						if !field.Type().Equals(values.NotNullLong) || rt.IsNullable() || !rt.Fields[0].FieldType.Equals(values.NotNullLong) ||
-							!array.ElementType.Equals(elementType) || array.Elements[0] != field {
-							t.Fatal("array translation mutated its source field, descriptor or constructor")
+						projection, err := newProjectionMapOverForTest([]values.Value{array}, defaultPlan)
+						if rt.IsNullable() || !rt.Fields[0].FieldType.Equals(values.NotNullLong) || !array.ElementType.Equals(elementType) {
+							t.Fatal("the block Map mutated its source descriptor or constructor")
 						}
 						if err != nil {
 							t.Fatal(err)
@@ -1005,7 +1002,9 @@ func TestDefaultNonNullFieldReadAcrossEmptyRecord(t *testing.T) {
 					t.Fatalf("control child field type = %v, want NOT NULL LONG", field.Type())
 				}
 				defaultPlan := defaultContextPlan(t, kind, child, values.NewNullValue(rt))
-				projection, err := plans.NewRecordQueryProjectionPlan([]values.Value{field}, defaultPlan)
+				output := mustExecutorConstruct(defaultPlan.ProvidedOutputLayout())
+				read := mustExecutorConstruct(values.ResolveFieldOrdinals(output.Carrier(), []int{0}))
+				projection, err := newProjectionMapOverForTest([]values.Value{read}, defaultPlan)
 				if err != nil {
 					t.Fatal(err)
 				}

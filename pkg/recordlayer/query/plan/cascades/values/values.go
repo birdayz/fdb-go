@@ -1673,7 +1673,7 @@ func NestedResolvedPath(v Value) (string, bool) {
 
 // ProjectionColumnName is the projection output-column NAMING CONTRACT: the
 // name a projected Value's result is keyed under, alias-absent, in the
-// emitted positional row's type (executeProjection's posNames). A NESTED
+// emitted positional row's type. A NESTED
 // FieldValue projects under its resolved PATH ("N.SK"); any other FieldValue
 // under its (possibly dotted)
 // Field; any other Value under its upper-cased ORDINAL-FREE rendering (a
@@ -1717,8 +1717,7 @@ func ProjectionColumnName(v Value) string {
 }
 
 // OutputColumnName is the projection OUTPUT-name authority: the name that keys
-// the emitted positional row's slot for a projected column (executeProjection's
-// posNames) and therefore the name any downstream re-reader must use on the
+// the emitted positional row's slot for a projected column, and therefore the name any downstream re-reader must use on the
 // ordinal frontier — the upper-cased ALIAS when the column carries one, else
 // the ProjectionColumnName rendering. It lives here so every site derives the
 // name from ONE rule instead of a hand-synchronized copy — two copies of this
@@ -5406,7 +5405,7 @@ func (*RecordConstructorValue) Name() string { return "record" }
 // three fails the query.
 //
 // An unstamped constructor does not imply this branch runs for it. The plan
-// paths that emit a row — executeProjection, the record-constructor arm of the
+// paths that emit a row — executeMap, the record-constructor arm of the
 // flat-map cursor, evaluateOrdinalJoinRow — build a dense PositionalRow field
 // by field, and the result set reads those slots by ORDINAL, so an unstamped
 // row still delivers every field. The duplicate-name join regression in

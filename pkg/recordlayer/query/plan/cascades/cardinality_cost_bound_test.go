@@ -419,7 +419,7 @@ func cardinalityCostShapes() []cardinalityCostShape {
 	// --- projection / map (cardinality-preserving) --------------------------
 	add("projection/overBoundedChild", func(t *testing.T) plans.RecordQueryPlan {
 		child := pointLookupScan(t, "PROJ", "ID")
-		return mustBuild(t, captureBuild(plans.NewRecordQueryProjectionPlan(
+		return mustBuild(t, captureBuild(newProjectionMapOverForTest(
 			[]values.Value{mustCardinalityField(t, child, "K")}, child)))
 	})
 	add("map/overBoundedChild", func(t *testing.T) plans.RecordQueryPlan {
@@ -920,7 +920,7 @@ func randCardinalityPlan(t *testing.T, rng *rand.Rand, depth int, nextCorr func(
 		// correctly requires their output row programs to agree. A constant
 		// one-column projection is cardinality-preserving and gives both random
 		// legs the same exact type without narrowing the generated tree corpus.
-		return mustBuild(t, captureBuild(plans.NewRecordQueryProjectionPlan(
+		return mustBuild(t, captureBuild(newProjectionMapOverForTest(
 			[]values.Value{cardinalityLong(1)}, child())))
 	}
 	switch rng.IntN(11) {
@@ -940,7 +940,7 @@ func randCardinalityPlan(t *testing.T, rng *rand.Rand, depth int, nextCorr func(
 		return mustBuild(t, captureBuild(plans.NewRecordQueryTypeFilterPlan([]string{"T1"}, child())))
 	case 3:
 		inner := child()
-		return mustBuild(t, captureBuild(plans.NewRecordQueryProjectionPlan(
+		return mustBuild(t, captureBuild(newProjectionMapOverForTest(
 			[]values.Value{mustCardinalityScalarField(t, inner)}, inner)))
 
 	case 4:

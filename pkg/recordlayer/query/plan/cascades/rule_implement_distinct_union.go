@@ -396,10 +396,9 @@ func mergeDistinctStoredRecordIdentityAtDepth(
 			plan, commonPrimaryKey, depth+1,
 		)
 
-	case *plans.RecordQueryProjectionPlan,
-		*plans.RecordQueryMapPlan:
-		// Both executor paths construct a new one-slot PositionalRow even when
-		// the planner classifies the value as an identity. Do not equate their
+	case *plans.RecordQueryMapPlan:
+		// The executor constructs a new one-slot PositionalRow even when the
+		// planner classifies the value as an identity. Do not equate its
 		// carried base-record PK with the emitted SQL row.
 		return "", false
 
@@ -526,7 +525,6 @@ func mergeDistinctLegProducesDistinctRecordsAtDepth(
 		*plans.RecordQueryPredicatesFilterPlan,
 		*plans.RecordQueryTypeFilterPlan,
 		*plans.RecordQueryLimitPlan,
-		*plans.RecordQueryProjectionPlan,
 		*plans.RecordQueryMapPlan,
 		*plans.RecordQueryFetchFromPartialRecordPlan:
 		return everyMergeDistinctUnaryChildIsDistinct(plan, depth+1)

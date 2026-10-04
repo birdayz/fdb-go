@@ -536,10 +536,8 @@ func TestPredicatesFilterPlan_SelectedProjectionDoesNotCaptureForeignOuterField(
 	if err != nil {
 		t.Fatal(err)
 	}
-	derived := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
-		return NewRecordQueryProjectionPlanWithAliases(
-			[]values.Value{baseID}, []string{"A.ID"}, scan)
-	})
+	derived := projectionMapForTest(t, QuantifierOverPlan(scan),
+		[]values.Value{baseID}, []string{"A.ID"})
 	derivedQ := expressions.NamedPhysicalQuantifier(
 		values.UniqueCorrelationIdentifier(),
 		expressions.FinalOfAtStage(derived, expressions.StageCanonical),
@@ -619,14 +617,12 @@ func TestProjectionAcrossSelectedPredicatesFilterUsesRetainedJoinProducer(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	projection := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
-		return NewRecordQueryProjectionPlan([]values.Value{logicalID}, filter)
-	})
+	projections := reanchoredOverPlan(t, filter, logicalID)
 	joinLayout := requireProvidedLayout(t, join)
-	projected, ok := values.AsFieldValue(projection.GetProjections()[0])
+	projected, ok := values.AsFieldValue(projections[0])
 	if !ok || projected.ChildValue() != joinLayout.Carrier() {
 		t.Fatalf("projection root = %T/%v, want exact retained-join carrier %p",
-			projection.GetProjections()[0], projected, joinLayout.Carrier())
+			projections[0], projected, joinLayout.Carrier())
 	}
 	if got := projected.Path().Ordinals(); len(got) != 1 || got[0] != 0 {
 		t.Fatalf("projection path = %v, want retained outer ID at [0]", got)

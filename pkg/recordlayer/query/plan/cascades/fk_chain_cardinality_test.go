@@ -837,7 +837,7 @@ func TestFKChainCardinalityCap_DeclinesWhenOuterThreadedThroughFanOutIndex(t *te
 }
 
 // TestFKChainCardinalityCap_DeclinesWhenProjectionReplacesTrackedPK is HOLE
-// 2's regression: a RecordQueryProjectionPlan can REPLACE the tracked PK
+// 2's regression: a block's Map can REPLACE the tracked PK
 // field with a computed/constant value while keeping its NAME — "ID" stays
 // "ID" in the output schema, but it no longer distinguishes one T2 row from
 // another. If the next hop's name-only check treated that "ID" as the same
@@ -854,7 +854,7 @@ func TestFKChainCardinalityCap_DeclinesWhenProjectionReplacesTrackedPK(t *testin
 	// constant — the output column is still named "ID", but every row now
 	// carries the SAME value, breaking the underlying distinctness the name
 	// alone cannot reveal.
-	brokenProjection := mustFKChain(plans.NewRecordQueryProjectionPlanWithAliases(
+	brokenProjection := mustFKChain(newProjectionMapForTest(
 		[]values.Value{&values.ConstantValue{Value: int64(42), Typ: values.NotNullLong}},
 		[]string{"ID"},
 		hop1,

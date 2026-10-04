@@ -107,10 +107,11 @@ func TestIntegration_FlatMapNullSupplyingOuter(t *testing.T) {
 				if err != nil {
 					return nil, err
 				}
-				above := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan([]values.Value{
-					mustTestFieldOrdinal(t, plan.GetResultValue(), 0),
-					mustTestFieldOrdinal(t, plan.GetResultValue(), 1),
-					mustTestFieldOrdinal(t, plan.GetResultValue(), 2),
+				row := mustExecutorConstruct(plan.ProvidedOutputLayout()).Carrier()
+				above := mustExecutorConstruct(newProjectionMapOverForTest([]values.Value{
+					mustTestFieldOrdinal(t, row, 0),
+					mustTestFieldOrdinal(t, row, 1),
+					mustTestFieldOrdinal(t, row, 2),
 				}, plan))
 				cursor, err := ExecutePlan(ctx, above, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 				if err != nil {

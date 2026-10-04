@@ -146,8 +146,6 @@ func forEachNodeLocalValue(plan plans.RecordQueryPlan, emit func(values.Value)) 
 	emit(plan.GetResultValue())
 
 	switch p := plan.(type) {
-	case *plans.RecordQueryProjectionPlan:
-		forEachValue(p.GetProjections(), emit)
 	case *plans.RecordQueryPredicatesFilterPlan:
 		forEachPredicateValue(p.GetPredicates(), emit)
 	case *plans.RecordQueryFilterPlan:

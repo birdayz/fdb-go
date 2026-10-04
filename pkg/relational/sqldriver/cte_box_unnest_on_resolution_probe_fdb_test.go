@@ -555,7 +555,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	})
 	// Q5: STAR body — no Project wrapper at all (the CTE leg IS the unnest
 	// FlatMap's RC row). Its schema-complete authority is the RC arm
-	// (flat_map_cursor computedComplete), not executeProjection — this pin
+	// (flat_map_cursor computedComplete), not executeMap — this pin
 	// covers the class a projection-only fix would have missed (it was
 	// all-NULL too, a distinct unpinned instance found in the design consult).
 	t.Run("Q5_star_body_enclosed_qualified_reads", func(t *testing.T) {

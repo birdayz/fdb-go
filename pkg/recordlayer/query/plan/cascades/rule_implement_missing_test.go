@@ -31,7 +31,7 @@ func implementMissingPrice(quantifier expressions.Quantifier) values.Value {
 	return mustImplementMissingConstruct(values.ResolveFieldOrdinals(root, []int{0}))
 }
 
-func implementProjectionReuseChild(t testing.TB) *plans.RecordQueryProjectionPlan {
+func implementProjectionReuseChild(t testing.TB) *plans.RecordQueryMapPlan {
 	t.Helper()
 	rowType := values.NewRecordType("ProjectionReuseInput", false, []values.Field{
 		{Name: "SOURCE_A", FieldType: values.NotNullLong},
@@ -46,8 +46,8 @@ func implementProjectionReuseChild(t testing.TB) *plans.RecordQueryProjectionPla
 		mustImplementMissingConstruct(values.ResolveFieldOrdinals(root, []int{1})),
 	}
 	return mustImplementMissingConstruct(
-		plans.NewRecordQueryProjectionPlanFromQuantifierWithOutputSchema(
-			projected, nil, nil, []string{"A", "B"}, scanQ))
+		newProjectionMapWithOutputSchemaForTest(
+			projected, nil, []string{"A", "B"}, scanQ))
 }
 
 func implementProjectionReuseOuter(

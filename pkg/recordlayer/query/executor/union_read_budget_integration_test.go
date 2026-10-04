@@ -26,7 +26,7 @@ func budgetUnionPlan(t *testing.T, kind string) plans.RecordQueryPlan {
 	case "record":
 		return scan
 	case "projection":
-		return mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(keys, scan))
+		return mustExecutorConstruct(newProjectionMapOverForTest(keys, scan))
 	case "map":
 		return mustExecutorConstruct(plans.NewRecordQueryMapPlan(scan,
 			values.NewRecordConstructorValue(values.RecordConstructorField{Name: "order_id", Value: keys[0]})))

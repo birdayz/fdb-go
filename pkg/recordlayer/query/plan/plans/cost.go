@@ -390,17 +390,6 @@ func (p *RecordQueryMapPlan) HintCost(child []properties.Cost, _ properties.Stat
 	return properties.MapCost(child[0])
 }
 
-// HintCost: projection is cardinality-preserving with a per-row CPU charge.
-func (p *RecordQueryProjectionPlan) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) == 0 {
-		return properties.Cost{}
-	}
-	return properties.Cost{
-		Cardinality: child[0].Cardinality,
-		CPU:         (child[0].CPU + child[0].Cardinality*properties.ProjectionCPU) * properties.PhysicalWrapperCostMultiplier,
-	}
-}
-
 // HintCost: DefaultOnEmpty passes its child through unchanged — literally,
 // Cardinality AND CPU. It is a per-row null-extension shim over the SAME rows
 // the child produces, not an alternative implementation competing in the

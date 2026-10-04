@@ -6,18 +6,17 @@ import (
 
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// TestExecuteProjection_OutputNames drives the real executeProjection
-// cursor (ExecutePlan over a temp-table inner — the storeless pattern) and pins,
-// per emitted row:
-//  1. frontier propagation — the projection's input carried a Positional, so its
-//     output must too (the emission gate flows the frontier through);
-//  2. the positional TYPE is named by the projection's OUTPUT names
-//     (alias-preferring posNames: a renamed column carries the ALIAS, matching
-//     what a downstream ordinal consumer resolves).
-func TestExecuteProjection_OutputNames(t *testing.T) {
+// TestExecuteMap_ProjectionOutputNames drives a query block's Map through
+// ExecutePlan over a temp-table inner (the storeless pattern) and pins, per
+// emitted row:
+//  1. frontier propagation — the input carried a Positional, so the output
+//     must too;
+//  2. the positional TYPE is named by the block's OUTPUT names (a renamed
+//     column carries the ALIAS, matching what a downstream ordinal consumer
+//     resolves).
+func TestExecuteMap_ProjectionOutputNames(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	evalCtx := EmptyEvaluationContext()
@@ -39,7 +38,7 @@ func TestExecuteProjection_OutputNames(t *testing.T) {
 
 	// SELECT id, v AS renamed FROM tt — one bare column, one renamed.
 	scan := mustTempTableScan(t, evalCtx, alias)
-	proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlanWithAliases(
+	proj := mustExecutorConstruct(newProjectionMapForTest(
 		[]values.Value{
 			mustTestFieldOrdinal(t, scan.GetResultValue(), 0),
 			mustTestFieldOrdinal(t, scan.GetResultValue(), 1),

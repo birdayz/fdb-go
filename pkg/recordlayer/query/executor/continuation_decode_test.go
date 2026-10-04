@@ -1634,7 +1634,7 @@ func TestContinuationResolverUsesFinalizedComputedDescriptors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := plans.NewRecordQueryProjectionPlan([]values.Value{promotion}, inner)
+	plan, err := newProjectionMapOverForTest([]values.Value{promotion}, inner)
 	if err != nil {
 		t.Fatal(err)
 	}

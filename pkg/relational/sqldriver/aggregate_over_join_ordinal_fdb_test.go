@@ -5,7 +5,7 @@ package sqldriver_test
 // operand is a QUALIFIED leg reference (D.DNAME, E.SALARY); the aggregate reads
 // its keys / operands off the merged PositionalRow through legWindowRowContext
 // — the SAME spanAwareRow leg-window resolver that projection / filter over the
-// same join merge already use (executeProjection / executeFilter). There is no
+// same join merge already use (executeMap / executeFilter). There is no
 // name-keyed row reader for this path any more, so resolution is structurally
 // ordinal, not a name-model fallback.
 //

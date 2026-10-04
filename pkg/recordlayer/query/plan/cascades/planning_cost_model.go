@@ -1809,7 +1809,7 @@ func combineConcreteCostUnclamped(p plans.RecordQueryPlan, child []properties.Co
 			return properties.Cost{}
 		}
 		return properties.FetchCost(c0())
-	case *plans.RecordQueryMapPlan, *plans.RecordQueryProjectionPlan:
+	case *plans.RecordQueryMapPlan:
 		if len(child) == 0 {
 			return properties.Cost{}
 		}
@@ -2400,7 +2400,6 @@ func classifyConcretePlan(p plans.RecordQueryPlan) (classification concretePlanC
 		*plans.RecordQueryLimitPlan,
 		*plans.RecordQueryLoadByKeysPlan,
 		*plans.RecordQueryMergeSortUnionPlan,
-		*plans.RecordQueryProjectionPlan,
 		*plans.RecordQueryRecursiveDfsJoinPlan,
 		*plans.RecordQueryRecursiveLevelUnionPlan,
 		*plans.RecordQueryScoreForRankPlan,
@@ -2571,14 +2570,7 @@ func countClassifiedConcreteNode(
 			return true // already accounted for the scan; do not recurse (would mark unbounded)
 		}
 	case concreteCountMap:
-		// Map only — NOT RecordQueryProjectionPlan. The map-count criterion (#14)
-		// is a structural tiebreak; a near-ubiquitous top-of-query projection is
-		// not a discriminating operator, and counting it makes #14 fire on almost
-		// every plan pair. (concretePlanCost charges a projection via mapCost for
-		// magnitude, a different purpose — the two walks need not count the same
-		// nodes.) Counting projections here re-ranks ties broadly and selected a
-		// latent-buggy CTE plan that mis-projects an aliased column to NULL —
-		// caught by TestFDB_{CTEChainedColumnAliases,CascadesCTEColumnAliases}.
+		// A Map is one of Java's simple per-tuple operations (countSimpleOps).
 		counts.mapCount++
 	case concreteCountInJoin:
 		counts.inJoinCount++
@@ -3259,11 +3251,6 @@ func stablePlanNodeHash(p plans.RecordQueryPlan) uint64 {
 		if rv := t.GetResultValue(); rv != nil {
 			stableHashU64(h, values.SemanticHashCode(rv))
 		}
-	case *plans.RecordQueryProjectionPlan:
-		// Deliberately type-only. Projection Values and output names belong to
-		// memo identity; the #17 cost tie-break historically treated two
-		// projections over the same child as equal work. Folding the new
-		// schema discriminator here would flip established plan shapes.
 	case *plans.RecordQueryInMemorySortPlan:
 		for _, k := range t.GetSortKeys() {
 			_, _ = io.WriteString(h, k.Field)

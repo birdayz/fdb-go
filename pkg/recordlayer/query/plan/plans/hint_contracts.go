@@ -84,7 +84,6 @@ var CostedPlanPrototypes = []CostedPlan{
 	(*RecordQueryDistinctPlan)(nil),
 	(*RecordQueryUnorderedPrimaryKeyDistinctPlan)(nil),
 	(*RecordQueryMapPlan)(nil),
-	(*RecordQueryProjectionPlan)(nil),
 	(*RecordQueryDefaultOnEmptyPlan)(nil),
 	(*RecordQueryTempTableInsertPlan)(nil),
 	(*RecordQueryLimitPlan)(nil),
@@ -111,7 +110,6 @@ var (
 	_ properties.OrderingHinter = (*RecordQueryTypeFilterPlan)(nil)
 	_ properties.OrderingHinter = (*RecordQueryDistinctPlan)(nil)
 	_ properties.OrderingHinter = (*RecordQueryUnorderedPrimaryKeyDistinctPlan)(nil)
-	_ properties.OrderingHinter = (*RecordQueryProjectionPlan)(nil)
 	_ properties.OrderingHinter = (*RecordQueryMapPlan)(nil)
 	_ properties.OrderingHinter = (*RecordQueryLimitPlan)(nil)
 	_ properties.OrderingHinter = (*RecordQueryDefaultOnEmptyPlan)(nil)

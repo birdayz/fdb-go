@@ -581,7 +581,7 @@ var _ = Describe("Continuation Token Conformance", func() {
 	It("pins first-or-default request properties against the live Java core API", func() {
 		// This is a direct core-plan probe, not a SQL reach claim. Java has no
 		// separate projection plan; both Go mapping forms correspond to MapPlan.
-		for _, kind := range []string{"direct", "map", "projection"} {
+		for _, kind := range []string{"direct", "map"} {
 			for count := 0; count <= 2; count++ {
 				for skip := 0; skip <= 2; skip++ {
 					params := buildJavaParams()
@@ -620,8 +620,6 @@ var _ = Describe("Continuation Token Conformance", func() {
 					constant := &values.ConstantValue{Value: int64(42), Typ: values.NotNullLong}
 					if kind == "map" {
 						plan, err = plans.NewRecordQueryMapPlan(plan, constant)
-					} else if kind == "projection" {
-						plan, err = plans.NewRecordQueryProjectionPlan([]values.Value{constant}, plan)
 					}
 					Expect(err).NotTo(HaveOccurred())
 					props := recordlayer.DefaultExecuteProperties().WithSkip(skip).WithReturnedRowLimit(1)

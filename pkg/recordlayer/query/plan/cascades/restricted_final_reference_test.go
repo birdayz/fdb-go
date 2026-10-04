@@ -48,7 +48,7 @@ func restrictedFinalRowType() values.Type {
 func restrictedSourceRef(t *testing.T) (
 	ref *expressions.Reference,
 	distinct *plans.RecordQueryPredicatesFilterPlan,
-	nonDistinct *plans.RecordQueryProjectionPlan,
+	nonDistinct *plans.RecordQueryMapPlan,
 ) {
 	t.Helper()
 
@@ -67,7 +67,7 @@ func restrictedSourceRef(t *testing.T) (
 	projectionRoot := mustRestrictedFinalConstruct(projectionQ.RequireFlowedObjectValue())
 	projectionID := mustRestrictedFinalConstruct(values.ResolveFieldOrdinals(
 		projectionRoot, []int{0}))
-	nonDistinct = mustRestrictedFinalConstruct(plans.NewRecordQueryProjectionPlanFromQuantifier(
+	nonDistinct = mustRestrictedFinalConstruct(newProjectionMapFromQuantifierForTest(
 		[]values.Value{projectionID}, nil, projectionQ))
 
 	ref = expressions.InitialOf(distinct)

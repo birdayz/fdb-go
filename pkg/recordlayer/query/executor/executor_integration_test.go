@@ -1382,7 +1382,7 @@ func TestIntegration_ResultSet_TypedAccess(t *testing.T) {
 		// Project ORDER_ID, PRICE so the executor emits an ordinal output row aligned
 		// to the result-set columns — the name-keyed Datum no longer backs the read.
 		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
-		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+		proj := mustExecutorConstruct(newProjectionMapOverForTest(
 			[]values.Value{integrationField(t, scan, 0), integrationField(t, scan, 2)},
 			scan,
 		))
@@ -1460,7 +1460,7 @@ func TestIntegration_ResultSet_StringCoercion(t *testing.T) {
 		}
 
 		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
-		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+		proj := mustExecutorConstruct(newProjectionMapOverForTest(
 			[]values.Value{integrationField(t, scan, 2)},
 			scan,
 		))
@@ -1541,8 +1541,8 @@ func TestIntegration_ResultSet_FilterPipeline(t *testing.T) {
 			[]plans.SortKey{{Field: "price", ValueExpr: integrationField(t, scan, 2), Desc: false}},
 		))
 		// Project PRICE, ORDER_ID so the output row is ordinal-aligned to the columns.
-		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
-			[]values.Value{integrationField(t, scan, 2), integrationField(t, scan, 0)},
+		proj := mustExecutorConstruct(newProjectionMapOverForTest(
+			[]values.Value{integrationField(t, sorted, 2), integrationField(t, sorted, 0)},
 			sorted,
 		))
 
@@ -1605,7 +1605,7 @@ func TestIntegration_ResultSet_ByName(t *testing.T) {
 		}
 
 		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
-		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+		proj := mustExecutorConstruct(newProjectionMapOverForTest(
 			[]values.Value{integrationField(t, scan, 0), integrationField(t, scan, 2)},
 			scan,
 		))
@@ -1694,7 +1694,7 @@ func TestIntegration_ProjectionPlan(t *testing.T) {
 		}
 
 		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
-		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+		proj := mustExecutorConstruct(newProjectionMapOverForTest(
 			[]values.Value{
 				integrationField(t, scan, 2),
 			},
@@ -1750,7 +1750,7 @@ func TestIntegration_ProjectionPlan_MultiColumn(t *testing.T) {
 		}
 
 		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
-		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+		proj := mustExecutorConstruct(newProjectionMapOverForTest(
 			[]values.Value{
 				integrationField(t, scan, 0),
 				integrationField(t, scan, 2),
@@ -2952,10 +2952,10 @@ func TestIntegration_FilterSortProjection_Pipeline(t *testing.T) {
 			filter,
 			[]plans.SortKey{{Field: "price", ValueExpr: integrationField(t, scan, 2), Desc: false}},
 		))
-		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+		proj := mustExecutorConstruct(newProjectionMapOverForTest(
 			[]values.Value{
-				integrationField(t, scan, 2),
-				integrationField(t, scan, 4),
+				integrationField(t, sorted, 2),
+				integrationField(t, sorted, 4),
 			},
 			sorted,
 		))
@@ -3951,7 +3951,7 @@ func TestIntegration_ProjectionOverJoin(t *testing.T) {
 			outerAlias, innerAlias,
 			integrationJoinResult(t, scan1, scan2, outerAlias, innerAlias, plans.JoinInner),
 		))
-		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+		proj := mustExecutorConstruct(newProjectionMapOverForTest(
 			[]values.Value{
 				integrationField(t, nlj, 0),
 				integrationField(t, nlj, 2),

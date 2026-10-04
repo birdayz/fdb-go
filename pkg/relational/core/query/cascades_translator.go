@@ -4650,7 +4650,7 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 			// An UNALIASED COMPUTED (non-field) expression — `id + 1`, `COUNT(*)`,
 			// CASE, etc. The normal projection path names it with the GENERATED
 			// positional `_i` (the former column derivation's `_idx` rule;
-			// executeProjection also stores the value under the `_i` key). Using the
+			// executeMap also stores the value under the `_i` key). Using the
 			// expression TEXT (`ID + 1`) here would change Rows.Columns() from `_0`
 			// to `ID + 1` purely because an EXISTS was added — and break a downstream
 			// positional reference to the generated column. Use the SAME positional
@@ -6193,7 +6193,7 @@ func expressionOutputColumns(expr expressions.RelationalExpression) []string {
 		case *expressions.SelectExpression:
 			// A SELECT whose result value is a RECORD CONSTRUCTOR flows one
 			// output column per RC field, named by the field (the RC is the
-			// row authority — executeProjection/computeResultLegs emit slots
+			// row authority — executeMap/computeResultLegs emit slots
 			// in RC field order). A non-RC result value (a bare QOV
 			// passthrough) has no derivable flat layout here.
 			if rc, isRC := e.GetResultValue().(*values.RecordConstructorValue); isRC {
@@ -9403,9 +9403,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// the qualified datum key ("B.ID") while projectionColumnName returns the BARE
 	// field, so the qualified key (which would collide with the next recursion
 	// level's same-qualified join side and stall the recursion one level early) is
-	// never copied in. executeProjection also emits the value under the bare body
-	// column; when that differs from the OUTPUT name it is an INERT extra key
-	// (unqualified, re-qualified under the scan alias at the next level).
+	// never copied in.
 	recCols := extractOuterProjectionColumns(recursiveBranches[0])
 	if len(outCols) > 0 && len(recCols) > 0 && len(outCols) == len(recCols) {
 		recursiveExpr = t.normalizeRecursiveLegToOutputRow(recursiveExpr, commonRow)

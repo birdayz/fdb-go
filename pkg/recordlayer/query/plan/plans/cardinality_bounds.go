@@ -66,11 +66,6 @@ func (p *RecordQueryMapPlan) ProvenCardinalities(child []properties.Cardinalitie
 	return provenChild(child)
 }
 
-// ProvenCardinalities: projection is cardinality-preserving.
-func (p *RecordQueryProjectionPlan) ProvenCardinalities(child []properties.Cardinalities) properties.Cardinalities {
-	return provenChild(child)
-}
-
 // ProvenCardinalities: a temp-table insert emits what it consumed.
 func (p *RecordQueryTempTableInsertPlan) ProvenCardinalities(child []properties.Cardinalities) properties.Cardinalities {
 	return provenChild(child)

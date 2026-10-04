@@ -141,11 +141,6 @@ func computeDistinctRecords(w physicalPlanExpression, plan plans.RecordQueryPlan
 			return cp.ProducesDistinctRecords()
 		}
 		return false
-	case *plans.RecordQueryProjectionPlan:
-		// A SQL-level projection reshapes the output (selects specific
-		// columns); two different underlying records can project to the
-		// same value tuple, so record-level distinctness is NOT preserved.
-		return false
 	case *plans.RecordQueryMapPlan:
 		return computeDistinctRecordsForMap(w)
 	case *plans.RecordQueryFilterPlan,
@@ -290,7 +285,6 @@ func computeStoredRecord(plan plans.RecordQueryPlan) bool {
 		*plans.RecordQueryTypeFilterPlan,
 		*plans.RecordQueryLimitPlan,
 		*plans.RecordQueryInMemorySortPlan,
-		*plans.RecordQueryProjectionPlan,
 		*plans.RecordQueryMapPlan,
 		*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
 		return storedRecordFromChildren(plan.GetChildren())
@@ -376,7 +370,6 @@ func computePrimaryKey(plan plans.RecordQueryPlan) any {
 		*plans.RecordQueryPredicatesFilterPlan,
 		*plans.RecordQueryTypeFilterPlan,
 		*plans.RecordQueryLimitPlan,
-		*plans.RecordQueryProjectionPlan,
 		*plans.RecordQueryMapPlan,
 		*plans.RecordQueryDistinctPlan,
 		*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan,
@@ -769,7 +762,6 @@ func usesOrInnerChildResolver(plan plans.RecordQueryPlan) bool {
 	switch plan.(type) {
 	case *plans.RecordQueryTypeFilterPlan,
 		*plans.RecordQueryMapPlan,
-		*plans.RecordQueryProjectionPlan,
 		*plans.RecordQueryTempTableInsertPlan,
 		*plans.RecordQueryFetchFromPartialRecordPlan,
 		*plans.RecordQueryInUnionPlan:

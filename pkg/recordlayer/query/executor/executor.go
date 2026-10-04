@@ -170,8 +170,6 @@ func executePlanUnwrapped(
 			continuation,
 			props,
 		)
-	case *plans.RecordQueryProjectionPlan:
-		return executeProjection(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryUnionPlan:
 		return executeUnion(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryIntersectionPlan:
@@ -2749,115 +2747,6 @@ func canonicalDistinctProtoValue(
 	return value, false
 }
 
-func executeProjection(
-	ctx context.Context,
-	p *plans.RecordQueryProjectionPlan,
-	store *recordlayer.FDBRecordStore,
-	evalCtx *EvaluationContext,
-	continuation []byte,
-	props recordlayer.ExecuteProperties,
-) (recordlayer.RecordCursor[QueryResult], error) {
-	// Java's RecordQueryMapPlan delegates the original request to its child
-	// before mapping. This is 1:1 and wraps no continuation; a DML child may
-	// deliberately ignore the request, which mapping must not override.
-	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
-	if err != nil {
-		return nil, err
-	}
-	inputQOV, err := requireSoleInputQOV(p)
-	if err != nil {
-		return nil, err
-	}
-
-	projections := p.GetProjections()
-	// On the positional frontier an outer correlation resolves via
-	// the eval context's binder before the bare-positional frontier fallback.
-	// A CURRENT_TIMESTAMP-family projection needs the statement clock a
-	// RowEvalContext carries — a bare frontier row would drift per row.
-	posNeedsCtx := hasBindingContext(evalCtx) || valuesDependOnStatementClock(projections)
-	// The projection owner already admitted the exact result program. Reuse its
-	// record type verbatim: reconstructing from output names would replace every
-	// slot type with UNKNOWN and make the physical row disagree with the plan's
-	// provided output layout at the very next boundary.
-	projType, ok := p.GetResultType().(*values.RecordType)
-	if !ok || projType == nil || len(projType.Fields) != len(projections) {
-		return nil, layoutBindingError(values.LayoutTypeMismatch, "projection result is not an exact record matching its slots")
-	}
-	// When the input flows a 2-way ordinal join's merged
-	// positional row, projections evaluate under the LEG WINDOWS — computed
-	// once, from the input plan's result value.
-	legSpans, windowsOK := downstreamLegWindows(p.GetInner())
-	// The projection's rows are minted below and have exactly one owner, so they
-	// carry the boundary's handle from birth rather than being copied to acquire
-	// it — see mintedRowLayout.
-	mintLayout := mintedRowLayout(p)
-	var evalErr error
-	mapped := recordlayer.MapCursor(innerCursor, func(qr QueryResult) QueryResult {
-		if evalErr != nil {
-			return qr
-		}
-		slots := make([]any, len(projections))
-		var rowCtx any
-		scalar, kindErr := isBareScalarRow(qr.Positional)
-		if kindErr != nil {
-			evalErr = kindErr
-			return qr
-		}
-		if qr.Positional != nil && qr.Positional.Layout != nil {
-			rowCtx, evalErr = frontierRowContext(qr.Positional, evalCtx, posNeedsCtx, inputQOV)
-			if evalErr != nil {
-				return qr
-			}
-		} else if qr.Positional != nil && windowsOK {
-			// The merged positional row of a gated 2-way
-			// ordinal join — a leg reference QOV(leg).col needs its
-			// leg window (unconditional; see executeFilter).
-			rowCtx = legWindowRowContext(qr.Positional, evalCtx, legSpans)
-		} else if qr.Positional != nil && scalar {
-			// A BARE SCALAR input row: a non-ordinal Explode's element, wrapped
-			// in a one-slot transport row (a correlated array as a block's
-			// first FROM item, projected directly: `(SELECT v AS k FROM
-			// w.arr AS v) AS d`). Bind the unwrapped scalar to the input QOV,
-			// exactly as executeFilter does for the same input, so QOV(input)
-			// is the element and not its transport row.
-			layout, layoutErr := p.GetInner().ProvidedOutputLayout()
-			if layoutErr != nil {
-				evalErr = fmt.Errorf("projection scalar input layout: %w", layoutErr)
-				return qr
-			}
-			rowCtx, evalErr = scalarLayoutRowContext(layout, qr.Positional, evalCtx, inputQOV)
-			if evalErr != nil {
-				return qr
-			}
-		} else if qr.Positional != nil {
-			// The non-join frontier flows an authoritative ordinal
-			// row — resolve projections by ordinal (loud on a miss).
-			rowCtx, evalErr = frontierRowContext(qr.Positional, evalCtx, posNeedsCtx, inputQOV)
-			if evalErr != nil {
-				return qr
-			}
-		}
-		for i, proj := range projections {
-			val, err := proj.Evaluate(rowCtx)
-			if err != nil {
-				evalErr = fmt.Errorf("projection slot %d (%s), physical input %s: %w", i, values.ExplainValue(proj), values.ExplainValue(inputQOV), err)
-				return qr
-			}
-			slots[i] = val // dense positional slot (kept even on dup names)
-		}
-		// A projection's output IS a PositionalRow — ALWAYS emit it, built by
-		// parallel construction from the projected values, named by the output
-		// schema (projType).
-		return QueryResult{
-			Positional: &PositionalRow{Type: projType, Slots: slots, Layout: mintLayout},
-			Record:     qr.Record,
-			PrimaryKey: qr.PrimaryKey,
-		}
-	})
-	errCursor := &errCheckCursor{inner: mapped, err: &evalErr}
-	return errCursor, nil
-}
-
 type errCheckCursor struct {
 	inner recordlayer.RecordCursor[QueryResult]
 	err   *error
@@ -5392,15 +5281,9 @@ func executeRecursiveLevelUnion(
 	if distinct {
 		seen = newBoundedSet[string](props.State)
 		seenCharge = seen.Charged
-		// Dedup on the CTE's OUTPUT columns. Prefer the seed plan's projection
-		// OUTPUT schema: after the temp table is keyed under OUTPUT names, the
-		// seed row can carry INERT extra columns (e.g. the source column a rename
-		// projects from — {SRC, N} for `reach(n)` seeded by `SELECT src`). Those
-		// inert columns are absent from the recursive leg's rows, so keying ALL
-		// seed columns would wrongly treat a recursive row and a seed row with the
-		// same OUTPUT value as distinct (breaking cycle detection). The projection
-		// schema restricts the dedup to the real output columns. Fall back to
-		// the first row's layout when the seed has no projection (e.g. SELECT *).
+		// Dedup on the CTE's OUTPUT columns, the seed plan's result row; the
+		// first row's layout is the fallback for a seed whose result is not a
+		// record.
 		canonicalCols := recursiveUnionOutputColumns(p.GetInitialState())
 		if len(canonicalCols) == 0 && len(items) > 0 && items[0].Positional != nil {
 			// Positional column order is already deterministic (ordinal order),
@@ -5613,12 +5496,8 @@ func executeRecursiveDfsJoinDistinctEager(
 	// buffer (one key per distinct visited row) — charge each NEW key via
 	// boundedSet.
 	var seen *boundedSet[string]
-	// For UNION DISTINCT, dedup on the CTE's OUTPUT columns. Prefer the root
-	// plan's projection OUTPUT schema: after the temp table is keyed under OUTPUT
-	// names, the root row can carry INERT extra columns (the source column a rename
-	// projects from), absent from the recursive rows — keying ALL root columns
-	// would then treat equal-output rows as distinct and break cycle detection.
-	// Fall back to the first row's layout when there is no projection (SELECT *).
+	// For UNION DISTINCT, dedup on the CTE's OUTPUT columns, the root plan's
+	// result row (the first root row's layout when it is not a record).
 	var keyer *cteDedupKeyer
 	if p.IsDistinct() {
 		seen = newBoundedSet[string](props.State)
@@ -6163,35 +6042,22 @@ func executeInMemorySort(
 }
 
 // recursiveUnionOutputColumns returns the OUTPUT column names of a recursive
-// union leg by walking to its outermost projection plan and reading each slot's
-// alias (or the projection column name when unaliased), VERBATIM. Returns nil
-// when no single-child path reaches a projection (e.g. a SELECT * seed), so the
-// caller falls back to the first row's layout. Used to restrict UNION DISTINCT
-// dedup to the CTE's real output columns (cteDedupKeyer), ignoring inert extra
-// columns the temp-table normalization may carry.
-//
-// Two things it must not do, and it did both. It upper-folded, which made the
-// dedup key ask a verbatim-named row for a name it does not carry — see
-// cteDedupKeyer for the wrong answer that produced. And it wrote the folded
-// names back into the slice `GetOutputNames()` handed out, mutating the PLAN's
-// own output schema from an executor helper: a defensive copy is not a
-// tidiness preference here, it is the difference between reading a plan and
-// rewriting one.
+// union leg, VERBATIM: the leg plan's result row, which is the CTE body's
+// SELECT list. Used to restrict UNION DISTINCT dedup to the CTE's output
+// columns (cteDedupKeyer). A copy, so the plan's own schema is never written.
 func recursiveUnionOutputColumns(p plans.RecordQueryPlan) []string {
-	for cur := p; cur != nil; {
-		if proj, ok := cur.(*plans.RecordQueryProjectionPlan); ok {
-			names := proj.GetOutputNames()
-			out := make([]string, len(names))
-			copy(out, names)
-			return out
-		}
-		children := cur.GetChildren()
-		if len(children) != 1 {
-			return nil
-		}
-		cur = children[0]
+	if p == nil {
+		return nil
 	}
-	return nil
+	row, ok := p.GetResultType().(*values.RecordType)
+	if !ok || row == nil {
+		return nil
+	}
+	out := make([]string, len(row.Fields))
+	for i, f := range row.Fields {
+		out[i] = f.Name
+	}
+	return out
 }
 
 // cteDedupKeyer builds the recursive-CTE UNION-DISTINCT dedup key by reading

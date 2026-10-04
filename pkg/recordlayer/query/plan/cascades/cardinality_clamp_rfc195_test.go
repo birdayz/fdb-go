@@ -909,7 +909,6 @@ func TestRFC195_LogicalPhysicalArmsArePaired(t *testing.T) {
 		"*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan": "paired through LogicalUniqueExpression",
 		"*plans.RecordQueryDistinctPlan":                    "paired through LogicalDistinctExpression",
 		"*plans.RecordQueryTypeFilterPlan":                  "paired through LogicalTypeFilterExpression",
-		"*plans.RecordQueryProjectionPlan":                  "no logical counterpart: the aggregate data-access rule's group-row publication",
 		"*plans.RecordQueryInMemorySortPlan":                "paired through LogicalSortExpression",
 		"*plans.RecordQueryUnionPlan":                       "paired through LogicalUnionExpression",
 		"*plans.RecordQueryIntersectionPlan":                "paired through LogicalIntersectionExpression",

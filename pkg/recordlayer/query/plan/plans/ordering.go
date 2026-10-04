@@ -224,16 +224,6 @@ func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) HintOrdering() properties.O
 }
 
 // OrderingSourceRef reports the child group this plan's ordering flows from.
-func (p *RecordQueryProjectionPlan) OrderingSourceRef() *expressions.Reference {
-	return orderingSourceOf(p)
-}
-
-// HintOrdering: a projection reshapes rows without reordering them.
-func (p *RecordQueryProjectionPlan) HintOrdering() properties.Ordering {
-	return inheritOrdering(p.OrderingSourceRef())
-}
-
-// OrderingSourceRef reports the child group this plan's ordering flows from.
 func (p *RecordQueryMapPlan) OrderingSourceRef() *expressions.Reference {
 	return orderingSourceOf(p)
 }

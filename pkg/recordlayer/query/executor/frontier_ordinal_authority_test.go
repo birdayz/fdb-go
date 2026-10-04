@@ -51,7 +51,7 @@ func authorityCollect(t *testing.T, p plans.RecordQueryPlan, evalCtx *Evaluation
 }
 
 // TestFrontierOrdinalAuthority drives each PRODUCTION dispatch site
-// (executeProjection, executeFilter, executePredicatesFilter, executeMap)
+// (executeFilter, executePredicatesFilter, executeMap)
 // END-TO-END through ExecutePlan — not by calling the dispatch helper
 // directly, which would not notice a deleted production dispatch — over a
 // frontier row whose only value source is its Positional row (V=42). Each
@@ -68,7 +68,7 @@ func TestFrontierOrdinalAuthority(t *testing.T) {
 		evalCtx := EmptyEvaluationContext()
 		inner := authorityInner(t, evalCtx, "auth_proj")
 		fieldV := mustTestFieldOrdinal(t, inner.GetResultValue(), 0)
-		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+		proj := mustExecutorConstruct(newProjectionMapOverForTest(
 			[]values.Value{fieldV}, inner))
 		rows := authorityCollect(t, proj, evalCtx)
 		if len(rows) != 1 {
@@ -76,7 +76,7 @@ func TestFrontierOrdinalAuthority(t *testing.T) {
 		}
 		m, _ := rowMapOK(rows[0])
 		if m["V"] != int64(42) {
-			t.Fatalf("executeProjection read %v, want 42 — the production dispatch did not resolve the positional row", m["V"])
+			t.Fatalf("executeMap read %v, want 42 — the production dispatch did not resolve the positional row", m["V"])
 		}
 	})
 
@@ -171,7 +171,7 @@ func TestFrontierOrdinalAuthority(t *testing.T) {
 			t.Fatalf("temp table add: %v", err)
 		}
 		inner := mustExecutorConstruct(plans.NewRecordQueryTempTableScanPlan(alias, declared))
-		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+		proj := mustExecutorConstruct(newProjectionMapOverForTest(
 			[]values.Value{mustTestFieldOrdinal(t, inner.GetResultValue(), 1)}, inner))
 		cursor, err := ExecutePlan(context.Background(), proj, nil, evalCtx, nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {

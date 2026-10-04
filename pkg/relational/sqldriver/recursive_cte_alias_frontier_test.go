@@ -14,7 +14,7 @@ import (
 // recursive-CTE leg normalization. A leg's normalization wrap
 // (normalizeLegToOutputColumns) re-reads the leg's output by its PHYSICAL
 // column names. On the positional frontier the physical slot names are the
-// OUTPUT names — ALIAS-preferring (executeProjection's posNames) — so a leg whose top projection carries an alias must be
+// OUTPUT names — ALIAS-preferring (the block Map's row names) — so a leg whose top projection carries an alias must be
 // re-read by that alias, not by values.ProjectionColumnName of the projected
 // value (the source column / computed rendering). Reading the source name
 // against an alias-named positional row is a GetByName miss, and the ordinal

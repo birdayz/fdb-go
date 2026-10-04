@@ -21,7 +21,7 @@ func TestPhysicalUnaryCurrentIsLocal(t *testing.T) {
 	scan, err := NewRecordQueryScanPlan([]string{"T"}, values.NotNullLong, false)
 	scan = mustCorrelationPlan(t, scan, err)
 	for _, alias := range []values.CorrelationIdentifier{values.CurrentCorrelation(), values.NamedCorrelationIdentifier("_current"), values.NamedCorrelationIdentifier("foreign")} {
-		for _, kind := range []string{"map", "filter", "legacy_filter", "projection", "aggregate"} {
+		for _, kind := range []string{"map", "filter", "legacy_filter", "aggregate"} {
 			t.Run(kind+"/"+alias.Name(), func(t *testing.T) {
 				t.Parallel()
 				var root values.Value = scan.GetResultValue()
@@ -42,8 +42,6 @@ func TestPhysicalUnaryCurrentIsLocal(t *testing.T) {
 					plan, err = NewRecordQueryFilterPlan([]predicates.QueryPredicate{
 						predicates.NewComparisonPredicate(root, predicates.Comparison{Type: predicates.ComparisonIsNotNull}),
 					}, scan)
-				case "projection":
-					plan, err = NewRecordQueryProjectionPlan([]values.Value{root}, scan)
 				case "aggregate":
 					plan, err = NewRecordQueryStreamingAggregationPlan(scan, []values.Value{root}, nil)
 				}

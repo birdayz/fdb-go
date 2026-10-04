@@ -32,7 +32,7 @@ func twoMemberRefWithDisagreeingProperty(t *testing.T) (*expressions.Reference, 
 	})
 	scanValue, scanErr := plans.NewRecordQueryScanPlan([]string{"Order"}, rowType, false)
 	scan := mustConstruct(t, scanValue, scanErr)
-	projValue, projErr := plans.NewRecordQueryProjectionPlan(nil, scan)
+	projValue, projErr := newProjectionMapOverForTest(nil, scan)
 	proj := mustConstruct(t, projValue, projErr)
 
 	ref := expressions.FinalOfAtStage(scan, expressions.StageCanonical)

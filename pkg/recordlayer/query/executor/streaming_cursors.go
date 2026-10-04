@@ -57,19 +57,19 @@ type aggregateCursor struct {
 	// SCALAR (a non-ordinal Explode's element: a correlated array as a block's
 	// first FROM item, `(SELECT SUM(x) FROM p.arr x)`), nil otherwise. A key or
 	// operand over such an input reads the element as the input QOV itself, so
-	// it is bound to the unwrapped scalar, as executeFilter and
-	// executeProjection bind it.
+	// it is bound to the unwrapped scalar, as executeFilter and executeMap
+	// bind it.
 	scalarInputLayout values.OrdinalLayout
 
 	// evalCtx carries params/subqueries/outer bindings so a group-key / operand
 	// reference resolves against the inner PositionalRow the SAME way
-	// executeFilter / executeProjection do (frontierRowContext → evaluateOrdinal,
+	// executeFilter / executeMap do (frontierRowContext → evaluateOrdinal,
 	// by the baked plan-time ordinal), robust to a covering-index layout — never
 	// a name-keyed read. flatFrontierInput is true when the input bottoms out at
 	// a SINGLE-SOURCE flat producer (base-table scan/index, a nested
 	// StreamingAgg) beneath any number of layout-preserving / reshaping
 	// single-child nodes — the group-by SORT, a filter, a LIMIT/fetch, a
-	// projection / derived table / CTE (RecordQueryProjectionPlan/MapPlan), a
+	// projection / derived table / CTE (RecordQueryMapPlan), a
 	// DISTINCT, a WHERE-EXISTS semi-join (identity-over-outer FlatMap). Every such
 	// producer emits a flat single-source output row with an unambiguous plan-time
 	// layout, so keys/operands resolve positionally. It is FALSE the moment the
@@ -90,7 +90,7 @@ type aggregateCursor struct {
 	// (downstreamLegWindows unwraps the layout-preserving passthroughs down to
 	// the join and derives its leg windows), a QUALIFIED group-key / operand
 	// reference (D.DNAME, E.SALARY) resolves LEG-LOCALLY off the merged row
-	// through legWindowRowContext — the SAME spanAwareRow resolver executeProjection /
+	// through legWindowRowContext — the SAME spanAwareRow resolver executeMap /
 	// executeFilter use over the same merge.
 	// joinWindowsOK is true only for a genuine gated ordinal join input; a reshaping /
 	// non-join input keeps windowsOK false and resolves through the general
@@ -203,7 +203,7 @@ func newAggregateCursorWithOutputType(
 // aggregateInputIsFlatFrontier reports whether the streaming aggregate's input
 // bottoms out at a SINGLE-SOURCE flat producer whose emitted PositionalRow's
 // columns are unambiguous — so a group-key / operand name resolves against it by
-// its baked plan-time ordinal exactly as executeFilter / executeProjection resolve
+// its baked plan-time ordinal exactly as executeFilter / executeMap resolve
 // theirs (robust to a covering-index column order).
 //
 // It walks single-child nodes down to the leaf:
@@ -262,8 +262,6 @@ func aggregateInputIsFlatFrontier(input plans.RecordQueryPlan) bool {
 		case *plans.RecordQueryDistinctPlan:
 			input = p.GetInner()
 		case *plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
-			input = p.GetInner()
-		case *plans.RecordQueryProjectionPlan:
 			input = p.GetInner()
 		case *plans.RecordQueryMapPlan:
 			input = p.GetInner()
@@ -470,7 +468,7 @@ func (w *aggregateCursorContinuation) IsEnd() bool { return false }
 // aggregateEvalArg is the eval argument for a GROUP-BY key / aggregate operand.
 //
 // The streaming aggregate reads its keys / operands off the inner row exactly
-// the way executeFilter / executeProjection read their predicate / projected
+// the way executeFilter / executeMap read their predicate / projected
 // values — the ONE frontier dispatch, so the aggregate input resolves
 // positionally on the same shapes those do.
 //
@@ -494,7 +492,7 @@ func (w *aggregateCursorContinuation) IsEnd() bool { return false }
 //     MERGED positional row through passthroughs only): a qualified group-key /
 //     operand reference QOV(leg).col (or its flat DOTTED "D.DNAME" spelling)
 //     resolves LEG-LOCALLY through its window, exactly as
-//     executeProjection / executeFilter resolve theirs over the same merge.
+//     executeMap / executeFilter resolve theirs over the same merge.
 //     Unconditional on a windowed input: even with no param/subquery/outer binding,
 //     the leg windows are required (the bare merged row misreads leg-relative
 //     ordinals — a wrong-slot hazard).

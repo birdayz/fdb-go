@@ -336,7 +336,7 @@ func TestExecuteMappedValues_RequestSkipAvoidsEvaluation(t *testing.T) {
 				}
 				var plan plans.RecordQueryPlan
 				if kind == "projection" {
-					plan = mustExecutorConstruct(plans.NewRecordQueryProjectionPlan([]values.Value{division}, inner))
+					plan = mustExecutorConstruct(newProjectionMapOverForTest([]values.Value{division}, inner))
 				} else {
 					plan = mustExecutorConstruct(plans.NewRecordQueryMapPlan(inner, division))
 				}
@@ -387,7 +387,7 @@ func TestExecuteMappedPages_ChildContinuation(t *testing.T) {
 				field := mustTestFieldOrdinal(t, inner.GetResultValue(), 0)
 				var plan plans.RecordQueryPlan
 				if kind == "projection" {
-					plan = mustExecutorConstruct(plans.NewRecordQueryProjectionPlan([]values.Value{field}, inner))
+					plan = mustExecutorConstruct(newProjectionMapOverForTest([]values.Value{field}, inner))
 				} else {
 					plan = mustExecutorConstruct(plans.NewRecordQueryMapPlan(inner, field))
 				}
@@ -460,7 +460,7 @@ func TestExecuteMappedTempTableInsert_DelegatesRequest(t *testing.T) {
 				field := mustTestFieldOrdinal(t, inner.GetResultValue(), 0)
 				var plan plans.RecordQueryPlan
 				if kind == "projection" {
-					plan = mustExecutorConstruct(plans.NewRecordQueryProjectionPlan([]values.Value{field}, inner))
+					plan = mustExecutorConstruct(newProjectionMapOverForTest([]values.Value{field}, inner))
 				} else {
 					plan = mustExecutorConstruct(plans.NewRecordQueryMapPlan(inner, field))
 				}

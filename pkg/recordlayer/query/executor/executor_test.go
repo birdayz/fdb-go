@@ -454,7 +454,7 @@ func TestExecuteProjection_FieldExtraction(t *testing.T) {
 	inner := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
 		&values.ConstantValue{Value: int64(100), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
 	}))
-	projPlan := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+	projPlan := mustExecutorConstruct(newProjectionMapOverForTest(
 		[]values.Value{
 			&values.ConstantValue{Value: "projected", Typ: values.NewPrimitiveType(values.TypeCodeString, false)},
 		},
@@ -586,7 +586,7 @@ func TestExecuteIntersection_NoCommonRows(t *testing.T) {
 			Typ:   values.NewPrimitiveType(values.TypeCodeInt, false),
 		}
 		input := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{literal}))
-		return mustExecutorConstruct(plans.NewRecordQueryProjectionPlanWithAliases(
+		return mustExecutorConstruct(newProjectionMapForTest(
 			[]values.Value{literal}, []string{"V"}, input,
 		))
 	}
@@ -824,7 +824,7 @@ func TestExecute_CompositeFilterSortLimitProject(t *testing.T) {
 
 	limited := mustExecutorConstruct(plans.NewRecordQueryLimitPlan(sorted, 10, 0))
 
-	projected := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+	projected := mustExecutorConstruct(newProjectionMapOverForTest(
 		[]values.Value{
 			&values.ConstantValue{Value: "result", Typ: values.NewPrimitiveType(values.TypeCodeString, false)},
 		},
@@ -868,7 +868,7 @@ func TestProjection_MultiColumnFieldValue(t *testing.T) {
 	}))
 	root := inner.GetResultValue()
 
-	projected := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+	projected := mustExecutorConstruct(newProjectionMapOverForTest(
 		[]values.Value{
 			mustTestFieldOrdinal(t, root, 0),
 			mustTestFieldOrdinal(t, root, 1),
@@ -6342,7 +6342,7 @@ func TestExecuteUnorderedUnion_ResumeContract(t *testing.T) {
 			Typ:   values.NewPrimitiveType(values.TypeCodeInt, false),
 		}
 		input := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{literal}))
-		return mustExecutorConstruct(plans.NewRecordQueryProjectionPlanWithAliases(
+		return mustExecutorConstruct(newProjectionMapForTest(
 			[]values.Value{literal}, []string{"V"}, input,
 		))
 	}

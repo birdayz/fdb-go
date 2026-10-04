@@ -13387,16 +13387,15 @@ against Java 4.14.2.0 before fixing, then tick with the commit.
     errors (4 unpinned) as before. The translator builds each block as a Select
     directly, and `LogicalProjectionExpression` is deleted with its five rules
     (implement, implement-final, remove, merge-with-fetch, push-ordering); the
-    plan-shape dump is unchanged. Still to do in this step: (1) the top-level
-    query a `LogicalSortExpression` over the block (Java `generateSelect`) and
-    index DDL reading that Sort (`ddl/generator.go` `topSort`/`checkTop`); (2)
-    delete `RecordQueryProjectionPlan`, whose last producer is the aggregate
-    data-access rule's group-row publication
-    (`publishAggregateResultAsGroupByRow`). A Map there is not the fix: it counts
-    as a simple operation in cost criterion #14 (Java `countSimpleOps`) and
-    flips the aggregate-index choice (`TestPipeline_AggregateIndex_WithRegularIndex`);
-    Java's aggregate plan publishes the group row itself
-    (`AggregateIndexMatchCandidate.toEquivalentPlan`, `selectHavingResultValue`).
+    plan-shape dump is unchanged. `RecordQueryProjectionPlan` is deleted too:
+    an aggregate-index plan (single scan, group-existence merge, intersection)
+    publishes the GroupBy's row itself, as Java's
+    `AggregateIndexMatchCandidate.toEquivalentPlan` publishes its result Value,
+    so no projection renames `COUNT(*)` to `COUNT(1)`
+    (`TestAggregateIndexPublishesTheGroupByRow`). Still to do in this step: the
+    top-level query a `LogicalSortExpression` over the block (Java
+    `generateSelect`) and index DDL reading that Sort (`ddl/generator.go`
+    `topSort`/`checkTop`).
   - [ ] REWRITING cost of nested SQL functions: four nested calls plan in about
     4.6s, most of it in `Memo.Integrate`. Java runs SelectMerge and
     PredicatePushDown as implementation rules over final expressions and

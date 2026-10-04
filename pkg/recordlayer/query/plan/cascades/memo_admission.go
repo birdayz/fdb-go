@@ -387,10 +387,6 @@ func admitMemoRegistry(expression expressions.RelationalExpression) error {
 		if typed == nil {
 			return unsupportedTypedNilExpression()
 		}
-	case *plans.RecordQueryProjectionPlan:
-		if typed == nil {
-			return unsupportedTypedNilExpression()
-		}
 	case *plans.RecordQueryRecursiveDfsJoinPlan:
 		if typed == nil {
 			return unsupportedTypedNilExpression()

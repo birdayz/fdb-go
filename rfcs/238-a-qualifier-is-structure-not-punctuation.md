@@ -885,7 +885,7 @@ bare basename names two files here, not one. THE UPDATE TARGET IS NOT JUST A NAM
 that constrains how it may be translated. `executeUpdate` builds the target
 quantified-object value as
 `NewQuantifiedObjectValue(NamedCorrelationIdentifier(p.GetTargetRecordType()),
-...)` (`executor.go:4356-4359`), and the SET right-hand sides are correlated to
+...)` (`executor.go:4274-4277`), and the SET right-hand sides are correlated to
 it. Re-spelling `upd.Target` alone would leave `SET name = name` bound to a
 correlation nobody publishes.
 
@@ -1030,7 +1030,7 @@ correct response.
 
 **THE CANDIDATE SIDE MUST NOT MOVE.** `rt.Name` reaches candidates at four
 places (`metadataPlanContext.buildMatchCandidates`, `:3605`, `:3844`, `:3917`) and those are
-cross-compared in `rule_aggregate_data_access.go:86,327`; converting one
+cross-compared in `rule_aggregate_data_access.go:86,292`; converting one
 silently disables aggregate matching. `queriedRecordTypes` flows into physical
 plans (`primary_scan_match_candidate.go:393,432`). Translating on the QUERY side
 leaves every one of them untouched, which is the other reason it is the right
@@ -1039,7 +1039,7 @@ place.
 **AND THE FIX SWITCHES MATCHING ON, which is the point but should be said out
 loud rather than discovered.** FIVE gates compare the SCAN's record types against
 a CANDIDATE's and therefore decline today for the same reason the primary
-candidate does: `rule_aggregate_data_access.go:86` and `:859`,
+candidate does: `rule_aggregate_data_access.go:86` and `:1176`,
 `rule_ordered_index_scan.go:74`, `ImplementNestedLoopJoinRule.tryExistsFlatMap` in
 `rule_implement_nested_loop_join.go`, and
 `rule_streaming_agg_from_index.go:100`, which is live in
@@ -1065,7 +1065,7 @@ cost is a different shape. Both are asserted at the values they HAVE, so the
 fix has to come to that file.
 
 Two NEAR MEMBERS are not members, and both were on an earlier version of this
-list. `rule_aggregate_data_access.go:326` is candidate-vs-candidate. And
+list. `rule_aggregate_data_access.go:292` is candidate-vs-candidate. And
 `rule_type_filter_redundant.go:51` is query-vs-QUERY —
 `typesAreSubset(scan.GetRecordTypes(), tf.GetRecordTypes())`, both operands from
 the same subtree, so re-spelling moves them together and the outcome cannot
@@ -1077,11 +1077,11 @@ change.
 
 **THE CONTINUATION SALT DOES MOVE, and saying it does not was wrong.**
 `PrimaryScanRule.OnMatch` builds the physical plan from the LOGICAL leaf's
-names (`rule_primary_scan.go:46`), and `executor.go:320` feeds that plan to
+names (`rule_primary_scan.go:46`), and `executor.go:318` feeds that plan to
 `primaryScanRangeFingerprintSalt` — so for an escaped table the salt input goes
 from `MY$TABLE` to `MY__1TABLE`. That is harmless, but only for a reason with an
 expiry condition, which is why it has to be written down rather than waved
-through: the salt is computed ONLY when `len(comps) > 0` (`executor.go:319`),
+through: the salt is computed ONLY when `len(comps) > 0` (`executor.go:317`),
 and an escaped table has no pushed-down comparisons today, so no continuation
 can exist through that path to be invalidated. The fix creates the pushdown and
 the salt in the same stroke. Anything that changes that ordering — a partial

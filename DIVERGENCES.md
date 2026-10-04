@@ -158,7 +158,7 @@ alternative — never rows. Revisit when a second realizable form exists.
 ### Go decomposes SelectExpression into separate logical operators
 
 **Java:** `SelectExpression` is a unified node for filters, projections, and joins.
-**Go:** A SQL query block is now one `SelectExpression`, as in Java (TODO.md, "A SQL query block is one SelectExpression"). Still open there: the top-level `Sort(Select)` and the deletion of `LogicalProjectionExpression`, which the translator builds and folds at once.
+**Go:** A SQL query block is now one `SelectExpression`, as in Java (TODO.md, "A SQL query block is one SelectExpression"), and Go has no projection expression or projection plan. Still open there: the top-level `Sort(Select)`.
 
 ### NormalizePredicatesRule — RESOLVED
 
@@ -880,7 +880,7 @@ Go supports these SQL features that Java rejects. Removing them would be a user-
 | `XOR` operator | Not registered in `SqlFunctionCatalogImpl`; throws UNSUPPORTED_QUERY | SQL-standard XOR with NULL propagation |
 | Scalar subqueries in expressions | Grammar has no `subqueryExpressionAtom` (parse error) | Translated via `ScalarSubqueryValue` (`DecorrelateValuesRule` covers the other values-box patterns) |
 
-Go-only plan types: `RecordQueryHashAggregationPlan`, `RecordQueryInMemorySortPlan`, `RecordQueryLimitPlan`, `RecordQueryProjectionPlan`, `RecordQueryValuesPlan`, `RecordQueryNestedLoopJoinPlan`. `RecordQueryMergeSortUnionPlan` is Go's collapsed ordered-union counterpart, not a semantic extension; its `removeDuplicates=false` mode is an extension. Go also has a keyless concat shape named `RecordQueryUnionPlan`; Java's same-named class is keyed and ordered, so the Go shape—not the class name—is the extension.
+Go-only plan types: `RecordQueryInMemorySortPlan`, `RecordQueryLimitPlan`, `RecordQueryValuesPlan`, `RecordQueryNestedLoopJoinPlan`. `RecordQueryMergeSortUnionPlan` is Go's collapsed ordered-union counterpart, not a semantic extension; its `removeDuplicates=false` mode is an extension. Go also has a keyless concat shape named `RecordQueryUnionPlan`; Java's same-named class is keyed and ordered, so the Go shape—not the class name—is the extension.
 
 Go-only logical expressions: `LogicalLimitExpression`, `LogicalValuesExpression`.
 

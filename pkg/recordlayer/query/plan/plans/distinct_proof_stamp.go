@@ -36,11 +36,8 @@ type DistinctProofStamped interface {
 // the eliding rule uses, in the shape WithStrictlySorted already established
 // for stamping a proved planning fact onto a plan node.
 //
-// The stamp is IDENTITY-BEARING — every carrier folds it into structuralKey.
-// The tempting analogy is RecordQueryProjectionPlan.aliasMinted, which is
-// deliberately excluded, and the analogy fails in the direction that matters:
-// aliasMinted is a display tag, so two plans differing only in it compute
-// identical rows and splitting the memo group would buy nothing. This stamp is a
+// The stamp is IDENTITY-BEARING — every carrier folds it into structuralKey,
+// unlike a display tag that leaves two plans computing identical rows. It is a
 // PROVED FACT THAT LICENSED THE PLAN'S SHAPE — one of the two plans is correct
 // only while an index stays READABLE and the other is correct unconditionally,
 // so they are not interchangeable. If the stamp did not split the group, the

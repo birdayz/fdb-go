@@ -170,7 +170,7 @@ func TestImplementDeleteRule_DedupsOverANonDistinctAccessPath(t *testing.T) {
 	t.Parallel()
 	rowType := dmlDedupRowType()
 	scanPlan := dmlDedupScanPlan(t, rowType)
-	proj, err := plans.NewRecordQueryProjectionPlan(nil, scanPlan)
+	proj, err := newProjectionMapOverForTest(nil, scanPlan)
 	proj = mustConstruct(t, proj, err)
 	innerRef := expressions.FinalOfAtStage(proj, expressions.StageCanonical)
 	computeRefPlanProperties(innerRef)
