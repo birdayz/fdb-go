@@ -2,6 +2,7 @@ package expressions
 
 import (
 	"sync"
+	"sync/atomic"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -10,6 +11,24 @@ type correlationMemo struct {
 	version      uint64
 	correlations map[values.CorrelationIdentifier]struct{}
 	dependencies []correlationDependency
+	// validated is the correlation epoch at which every dependency was last
+	// seen unchanged; 0 is never.
+	validated atomic.Uint64
+}
+
+// correlationEpoch counts the graph changes that can move a reference's
+// correlations: member changes and forwarding. A snapshot validated at the
+// current epoch is current without revisiting its dependencies, so reads
+// between two changes cost one check instead of a walk of the subgraph.
+var correlationEpoch atomic.Uint64
+
+func init() { correlationEpoch.Store(1) }
+
+func bumpCorrelationEpoch() { correlationEpoch.Add(1) }
+
+// validatedAt reports whether the snapshot is current for epoch.
+func (m *correlationMemo) validatedAt(epoch uint64) bool {
+	return len(m.dependencies) == 0 || m.validated.Load() == epoch
 }
 
 type correlationDependency struct {
@@ -22,6 +41,16 @@ type referenceCorrelationReader struct {
 	expressions map[RelationalExpression]*correlationMemo
 	active      map[*Reference]struct{}
 	publish     bool
+	// epoch is read before the reader validates anything, so a stamp never
+	// claims a later graph than the one it saw.
+	epoch uint64
+}
+
+func (reader *referenceCorrelationReader) currentEpoch() uint64 {
+	if reader.epoch == 0 {
+		reader.epoch = correlationEpoch.Load()
+	}
+	return reader.epoch
 }
 
 var correlationReadScratch = sync.Pool{
@@ -33,6 +62,7 @@ func (reader *referenceCorrelationReader) reset() {
 	clear(reader.expressions)
 	clear(reader.active)
 	reader.publish = false
+	reader.epoch = 0
 }
 
 // GetCorrelatedTo returns the transitive free aliases across both member lanes.
@@ -43,7 +73,8 @@ func (r *Reference) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} 
 	if r == nil {
 		return nil
 	}
-	if cached := r.correlatedToCache.Load(); cached != nil && cached.version == r.memberVersion && len(cached.dependencies) == 0 {
+	if cached := r.correlatedToCache.Load(); cached != nil && cached.version == r.memberVersion &&
+		cached.validatedAt(correlationEpoch.Load()) {
 		return cached.correlations
 	}
 	reader := correlationReadScratch.Get().(*referenceCorrelationReader)
@@ -93,8 +124,9 @@ func (reader *referenceCorrelationReader) reference(ref *Reference) *correlation
 	if ref == nil {
 		return nil
 	}
+	epoch := reader.currentEpoch()
 	cached := ref.correlatedToCache.Load()
-	if cached != nil && cached.version == ref.memberVersion && len(cached.dependencies) == 0 {
+	if cached != nil && cached.version == ref.memberVersion && cached.validatedAt(epoch) {
 		return cached
 	}
 	if snapshot, ok := reader.memo[ref]; ok {
@@ -119,6 +151,7 @@ func (reader *referenceCorrelationReader) reference(ref *Reference) *correlation
 			}
 		}
 		if valid {
+			cached.validated.Store(epoch)
 			reader.memo[ref] = cached
 			return cached
 		}
@@ -128,15 +161,26 @@ func (reader *referenceCorrelationReader) reference(ref *Reference) *correlation
 		version:      ref.memberVersion,
 		correlations: make(map[values.CorrelationIdentifier]struct{}),
 	}
+	// Members of one group mostly range over the same children, and within one
+	// pass a reference has one snapshot, so each child is recorded once: a
+	// cache hit then revalidates distinct children, not every member's.
+	seen := make(map[*Reference]struct{})
 	for _, members := range [][]RelationalExpression{ref.members, ref.finalMembers} {
 		for _, member := range members {
 			snapshot := reader.expressionSnapshot(member)
-			computed.dependencies = append(computed.dependencies, snapshot.dependencies...)
+			for _, dependency := range snapshot.dependencies {
+				if _, dup := seen[dependency.reference]; dup {
+					continue
+				}
+				seen[dependency.reference] = struct{}{}
+				computed.dependencies = append(computed.dependencies, dependency)
+			}
 			for alias := range snapshot.correlations {
 				computed.correlations[alias] = struct{}{}
 			}
 		}
 	}
+	computed.validated.Store(epoch)
 	// Concurrent readers must return the same published snapshot, otherwise
 	// a parent's dependency would appear stale on an unchanged graph.
 	if reader.publish && !ref.correlatedToCache.CompareAndSwap(cached, computed) {

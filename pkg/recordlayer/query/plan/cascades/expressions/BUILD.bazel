@@ -56,6 +56,7 @@ go_test(
         "benchmark_test.go",
         "conjunction_lift_test.go",
         "constraints_map_test.go",
+        "correlation_epoch_test.go",
         "correlation_test.go",
         "cte_expressions_test.go",
         "dml_test.go",

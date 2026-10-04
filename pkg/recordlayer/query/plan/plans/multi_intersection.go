@@ -197,7 +197,7 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) structuralKey() *structuralKe
 
 func (p *RecordQueryMultiIntersectionOnValuesPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryMultiIntersectionOnValuesPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 // HashCodeWithoutChildren folds the type discriminator, comparison key
@@ -206,7 +206,7 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) HashCodeWithoutChildren() uin
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("multiintersectiononvaluesplan|")
+	hash := p.keyFor(p).Hash("multiintersectiononvaluesplan|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }

@@ -276,26 +276,22 @@ func FuzzAliasMap_BijectionInvariant(f *testing.F) {
 				m = m.Compose(candidate)
 			}()
 		}
-		// Bijection invariant: every (s, t) round-trips.
-		for s := range m.forward {
-			tgt, ok := m.GetTarget(s)
-			if !ok {
-				t.Fatalf("forward map has %v but GetTarget says missing", s)
+		// Bijection invariant: every (s, t) round-trips, in both directions.
+		count := 0
+		values.RangeAliasPairs(m.ToValuesAliasMap(), func(pair values.AliasPair) bool {
+			count++
+			tgt, ok := m.GetTarget(pair.Source)
+			if !ok || tgt != pair.Target {
+				t.Fatalf("pair %v→%v but GetTarget(%v)=%v,%v", pair.Source, pair.Target, pair.Source, tgt, ok)
 			}
-			revS, ok := m.GetSource(tgt)
-			if !ok || revS != s {
-				t.Fatalf("bijection broken: %v→%v but GetSource(%v)=%v,%v", s, tgt, tgt, revS, ok)
+			revS, ok := m.GetSource(pair.Target)
+			if !ok || revS != pair.Source {
+				t.Fatalf("bijection broken: %v→%v but GetSource(%v)=%v,%v", pair.Source, pair.Target, pair.Target, revS, ok)
 			}
-		}
-		for tgt := range m.reverse {
-			s, ok := m.GetSource(tgt)
-			if !ok {
-				t.Fatalf("reverse map has %v but GetSource says missing", tgt)
-			}
-			revT, ok := m.GetTarget(s)
-			if !ok || revT != tgt {
-				t.Fatalf("bijection broken: rev %v→%v but GetTarget(%v)=%v,%v", tgt, s, s, revT, ok)
-			}
+			return true
+		})
+		if count != m.Size() {
+			t.Fatalf("ranged %d pairs, Size()=%d", count, m.Size())
 		}
 	})
 }

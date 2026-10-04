@@ -93,7 +93,7 @@ func (p *RecordQueryFilterPlan) structuralKey() *structuralKey {
 // PredicateEquals.
 func (p *RecordQueryFilterPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryFilterPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 // HashCodeWithoutChildren mixes the class discriminator + per-predicate
@@ -105,7 +105,7 @@ func (p *RecordQueryFilterPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("filterplan|")
+	hash := p.keyFor(p).Hash("filterplan|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }

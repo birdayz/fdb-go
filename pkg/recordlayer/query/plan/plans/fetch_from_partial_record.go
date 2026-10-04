@@ -161,14 +161,14 @@ func (p *RecordQueryFetchFromPartialRecordPlan) structuralKey() *structuralKey {
 
 func (p *RecordQueryFetchFromPartialRecordPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryFetchFromPartialRecordPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 func (p *RecordQueryFetchFromPartialRecordPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("fetchfrompartialrecordplan|")
+	hash := p.keyFor(p).Hash("fetchfrompartialrecordplan|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }

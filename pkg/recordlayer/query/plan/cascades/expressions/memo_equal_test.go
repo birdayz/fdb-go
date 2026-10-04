@@ -505,7 +505,9 @@ func TestPreparedCorrelationsValidatePublishedDependencies(t *testing.T) {
 				}
 				want[added] = struct{}{}
 			case "forwarded":
+				// Absorb forwards and bumps the correlation epoch together.
 				child.forwardedTo = InitialOf(extra)
+				bumpCorrelationEpoch()
 				want = map[values.CorrelationIdentifier]struct{}{added: {}}
 			case "pruned":
 				child.PruneWith(member)
@@ -562,7 +564,9 @@ func TestPreparedCorrelationsPublicationAfterGraphChanges(t *testing.T) {
 					t.Fatal("new final correlation did not insert")
 				}
 			case "forwarded":
+				// Absorb forwards and bumps the correlation epoch together.
 				child.forwardedTo = InitialOf(extra)
+				bumpCorrelationEpoch()
 				delete(want, outer)
 			case "pruned":
 				child.PruneWith(member)

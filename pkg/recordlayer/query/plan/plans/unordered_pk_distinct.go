@@ -100,7 +100,7 @@ func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) structuralKey() *structural
 
 func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryUnorderedPrimaryKeyDistinctPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 // HashCodeWithoutChildren mirrors Java's
@@ -109,7 +109,7 @@ func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) HashCodeWithoutChildren() u
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("unorderedprimarykeyDistinctplan")
+	hash := p.keyFor(p).Hash("unorderedprimarykeyDistinctplan")
 	p.storeStructuralHash(p, hash)
 	return hash
 }

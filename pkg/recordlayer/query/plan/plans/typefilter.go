@@ -88,7 +88,7 @@ func (p *RecordQueryTypeFilterPlan) structuralKey() *structuralKey {
 // EqualsWithoutChildren compares record-type sets.
 func (p *RecordQueryTypeFilterPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryTypeFilterPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 // HashCodeWithoutChildren mixes class + record-type set.
@@ -96,7 +96,7 @@ func (p *RecordQueryTypeFilterPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("typefilterplan|")
+	hash := p.keyFor(p).Hash("typefilterplan|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }

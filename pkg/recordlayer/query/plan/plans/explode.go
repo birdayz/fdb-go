@@ -163,14 +163,14 @@ func (p *RecordQueryExplodePlan) structuralKey() *structuralKey {
 
 func (p *RecordQueryExplodePlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryExplodePlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 func (p *RecordQueryExplodePlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("explodeplan|")
+	hash := p.keyFor(p).Hash("explodeplan|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }

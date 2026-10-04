@@ -23,37 +23,17 @@ import (
 // Bigger pieces (zip-with-alias-permutations enumerator, dependency-aware
 // matching) are deferred to subsequent shifts as they're needed by rules.
 type AliasMap struct {
-	// Forward and reverse maps of the bijection. Both kept in sync;
-	// every (s, t) pair has Forward[s] == t and Reverse[t] == s.
-	forward map[values.CorrelationIdentifier]values.CorrelationIdentifier
-	reverse map[values.CorrelationIdentifier]values.CorrelationIdentifier
-	view    values.AliasMap
+	// view is the validated bijection itself. Extending it by one pair adds a
+	// node rather than copying the pairs, which is what a backtracking match
+	// does at every step.
+	view values.AliasMap
 }
 
-// EmptyAliasMap returns the empty AliasMap. It is a genuine SINGLETON: an
-// AliasMap has no exported mutator, and equal AliasMaps are equal regardless of
-// identity, so every reader can share one.
-//
-// It was a fresh three-allocation value per call — a struct plus two maps plus
-// a view — and the memo asks for it on every plan-level equality: 2.5GB over
-// the pure-planner sweep to hand out something with nothing in it.
-//
-// The BUILDERS below (AliasMapOf, Compose, With) use the empty map as a
-// mutable accumulator, which is why they take newMutableAliasMap instead. That
-// distinction is the whole safety argument here: if a future builder reaches
-// for EmptyAliasMap and writes into it, it corrupts every reader in the
-// process. Start from newMutableAliasMap.
+// EmptyAliasMap returns the empty AliasMap, a shared singleton: an AliasMap
+// is immutable, so every reader can share one.
 func EmptyAliasMap() *AliasMap { return emptyAliasMap }
 
-var emptyAliasMap = newMutableAliasMap()
-
-func newMutableAliasMap() *AliasMap {
-	return &AliasMap{
-		forward: map[values.CorrelationIdentifier]values.CorrelationIdentifier{},
-		reverse: map[values.CorrelationIdentifier]values.CorrelationIdentifier{},
-		view:    values.EmptyAliasMap(),
-	}
-}
+var emptyAliasMap = &AliasMap{view: values.EmptyAliasMap()}
 
 // AliasMapOf builds an AliasMap from explicit (source, target) pairs.
 // Panics if pairs has odd length, or if a source/target appears twice
@@ -62,63 +42,58 @@ func AliasMapOf(pairs ...values.CorrelationIdentifier) *AliasMap {
 	if len(pairs)%2 != 0 {
 		panic("AliasMapOf requires an even number of arguments")
 	}
-	m := newMutableAliasMap()
+	sources := make(map[values.CorrelationIdentifier]struct{}, len(pairs)/2)
+	targets := make(map[values.CorrelationIdentifier]struct{}, len(pairs)/2)
+	valuePairs := make([]values.AliasPair, 0, len(pairs)/2)
 	for i := 0; i < len(pairs); i += 2 {
 		s, t := pairs[i], pairs[i+1]
-		if _, exists := m.forward[s]; exists {
+		if _, exists := sources[s]; exists {
 			panic("AliasMapOf: duplicate source " + s.Name())
 		}
-		if _, exists := m.reverse[t]; exists {
+		if _, exists := targets[t]; exists {
 			panic("AliasMapOf: duplicate target " + t.Name())
 		}
-		m.forward[s] = t
-		m.reverse[t] = s
-	}
-	valuePairs := make([]values.AliasPair, 0, len(m.forward))
-	for source, target := range m.forward {
-		valuePairs = append(valuePairs, values.AliasPair{Source: source, Target: target})
+		sources[s], targets[t] = struct{}{}, struct{}{}
+		valuePairs = append(valuePairs, values.AliasPair{Source: s, Target: t})
 	}
 	view, err := values.NewAliasMap(valuePairs)
 	if err != nil {
 		panic("AliasMapOf: " + err.Error())
 	}
-	m.view = view
-	return m
+	return &AliasMap{view: view}
 }
 
 // IsEmpty reports whether the map has no bindings.
 func (a *AliasMap) IsEmpty() bool {
-	return len(a.forward) == 0
+	return values.AliasMapSize(a.view) == 0
 }
 
 // Size returns the number of (source, target) bindings.
 func (a *AliasMap) Size() int {
-	return len(a.forward)
+	return values.AliasMapSize(a.view)
 }
 
 // GetTarget looks up the target of source. Returns the zero
 // CorrelationIdentifier and ok=false if source is not bound.
 func (a *AliasMap) GetTarget(source values.CorrelationIdentifier) (values.CorrelationIdentifier, bool) {
-	t, ok := a.forward[source]
-	return t, ok
+	return a.view.Target(source)
 }
 
 // GetSource looks up the source mapped to target. Returns the zero
 // CorrelationIdentifier and ok=false if target is not bound.
 func (a *AliasMap) GetSource(target values.CorrelationIdentifier) (values.CorrelationIdentifier, bool) {
-	s, ok := a.reverse[target]
-	return s, ok
+	return a.view.Source(target)
 }
 
 // ContainsSource reports whether source has a binding.
 func (a *AliasMap) ContainsSource(source values.CorrelationIdentifier) bool {
-	_, ok := a.forward[source]
+	_, ok := a.view.Target(source)
 	return ok
 }
 
 // ContainsTarget reports whether target has a binding.
 func (a *AliasMap) ContainsTarget(target values.CorrelationIdentifier) bool {
-	_, ok := a.reverse[target]
+	_, ok := a.view.Source(target)
 	return ok
 }
 
@@ -140,31 +115,29 @@ func (a *AliasMap) Compose(other *AliasMap) *AliasMap {
 	if other.IsEmpty() {
 		return a
 	}
-	out := newMutableAliasMap()
-	for s, t := range a.forward {
-		out.forward[s] = t
-		out.reverse[t] = s
-	}
-	for s, t := range other.forward {
-		if existingT, ok := out.forward[s]; ok && existingT != t {
-			panic("AliasMap.Compose: conflict on source " + s.Name())
+	valuePairs := make([]values.AliasPair, 0, a.Size()+other.Size())
+	values.RangeAliasPairs(a.view, func(pair values.AliasPair) bool {
+		valuePairs = append(valuePairs, pair)
+		return true
+	})
+	values.RangeAliasPairs(other.view, func(pair values.AliasPair) bool {
+		if existingT, ok := a.view.Target(pair.Source); ok {
+			if existingT != pair.Target {
+				panic("AliasMap.Compose: conflict on source " + pair.Source.Name())
+			}
+			return true
 		}
-		if existingS, ok := out.reverse[t]; ok && existingS != s {
-			panic("AliasMap.Compose: conflict on target " + t.Name())
+		if existingS, ok := a.view.Source(pair.Target); ok && existingS != pair.Source {
+			panic("AliasMap.Compose: conflict on target " + pair.Target.Name())
 		}
-		out.forward[s] = t
-		out.reverse[t] = s
-	}
-	valuePairs := make([]values.AliasPair, 0, len(out.forward))
-	for source, target := range out.forward {
-		valuePairs = append(valuePairs, values.AliasPair{Source: source, Target: target})
-	}
+		valuePairs = append(valuePairs, pair)
+		return true
+	})
 	view, err := values.NewAliasMap(valuePairs)
 	if err != nil {
 		panic("AliasMap.Compose: " + err.Error())
 	}
-	out.view = view
-	return out
+	return &AliasMap{view: view}
 }
 
 // With returns a copy of the map with the (source, target) binding added,
@@ -174,54 +147,37 @@ func (a *AliasMap) Compose(other *AliasMap) *AliasMap {
 // of composing one pair; memoEqual builds a node's quantifier-alias map with it
 // and treats ok=false as "not equal".
 func (a *AliasMap) With(source, target values.CorrelationIdentifier) (*AliasMap, bool) {
-	if existingT, ok := a.forward[source]; ok {
-		if existingT != target {
-			return a, false
-		}
-		if existingS, ok2 := a.reverse[target]; ok2 && existingS != source {
-			return a, false
-		}
-		return a, true
-	}
-	if existingS, ok := a.reverse[target]; ok && existingS != source {
-		return a, false
-	}
-	out := newMutableAliasMap()
-	for s, t := range a.forward {
-		out.forward[s] = t
-		out.reverse[t] = s
-	}
-	out.forward[source] = target
-	out.reverse[target] = source
 	view, compatible, err := values.ExtendAliasMap(a.view, []values.AliasPair{{Source: source, Target: target}})
 	if err != nil || !compatible {
 		return a, false
 	}
-	out.view = view
-	return out, true
+	if view == a.view {
+		return a, true
+	}
+	cp := *a
+	cp.view = view
+	return &cp, true
 }
 
 // DefinesOnlyIdentities reports whether every binding maps a source to itself
 // (s↦s); an empty map qualifies. Mirrors Java AliasMap.definesOnlyIdentities —
 // the fast path in correlated-to matching where no alias translation is needed.
 func (a *AliasMap) DefinesOnlyIdentities() bool {
-	for s, t := range a.forward {
-		if s != t {
-			return false
-		}
-	}
-	return true
+	return values.RangeAliasPairs(a.view, func(pair values.AliasPair) bool {
+		return pair.Source == pair.Target
+	})
 }
 
-// GetTargetOrDefault returns the target bound to source, or def if unbound.
+// GetTargetOrDefault returns the target of source, or def when source is
+// unbound.
 func (a *AliasMap) GetTargetOrDefault(source, def values.CorrelationIdentifier) values.CorrelationIdentifier {
-	if t, ok := a.forward[source]; ok {
+	if t, ok := a.view.Target(source); ok {
 		return t
 	}
 	return def
 }
 
-// ToValuesAliasMap returns the forward bindings as a values.AliasMap (the
+// ToValuesAliasMap returns the values-package view of this bijection (the
 // simple source→target map the values/predicates alias-aware equality helpers
 // consume). Read-only view; callers must not mutate the result. Nil-safe: a
 // nil receiver (some EqualsWithoutChildren callers pass a nil *AliasMap)
@@ -238,10 +194,8 @@ func (a *AliasMap) Equals(other *AliasMap) bool {
 	if a.Size() != other.Size() {
 		return false
 	}
-	for s, t := range a.forward {
-		if otherT, ok := other.forward[s]; !ok || otherT != t {
-			return false
-		}
-	}
-	return true
+	return values.RangeAliasPairs(a.view, func(pair values.AliasPair) bool {
+		target, ok := other.view.Target(pair.Source)
+		return ok && target == pair.Target
+	})
 }

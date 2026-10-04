@@ -19,6 +19,63 @@ type ownedAliasMap interface {
 	AliasMap
 	size() int
 	appendPairs([]AliasPair) []AliasPair
+	rangePairs(func(AliasPair) bool) bool
+}
+
+// extendedAliasMap is a validated bijection plus one pair: the shape a
+// backtracking match builds one binding at a time, so an extension costs one
+// node rather than a copy of every pair. Lookups walk to the parent; a chain
+// longer than maxAliasChain is flattened.
+type extendedAliasMap struct {
+	parent ownedAliasMap
+	pair   AliasPair
+	n      int
+	depth  int
+}
+
+const maxAliasChain = 8
+
+func (*extendedAliasMap) isAliasMapView() {}
+
+func (m *extendedAliasMap) size() int { return m.n }
+
+func (m *extendedAliasMap) appendPairs(pairs []AliasPair) []AliasPair {
+	return append(m.parent.appendPairs(pairs), m.pair)
+}
+
+func (m *extendedAliasMap) rangePairs(yield func(AliasPair) bool) bool {
+	return yield(m.pair) && m.parent.rangePairs(yield)
+}
+
+func (m *extendedAliasMap) Target(source CorrelationIdentifier) (CorrelationIdentifier, bool) {
+	if source == m.pair.Source {
+		return m.pair.Target, true
+	}
+	return m.parent.Target(source)
+}
+
+func (m *extendedAliasMap) Source(target CorrelationIdentifier) (CorrelationIdentifier, bool) {
+	if target == m.pair.Target {
+		return m.pair.Source, true
+	}
+	return m.parent.Source(target)
+}
+
+// AliasMapSize returns the number of pairs in m.
+func AliasMapSize(m AliasMap) int {
+	if owned, ok := asAliasMap(m); ok {
+		return owned.size()
+	}
+	return 0
+}
+
+// RangeAliasPairs calls yield for each pair of m until it returns false, and
+// reports whether every call returned true. The order is unspecified.
+func RangeAliasPairs(m AliasMap, yield func(AliasPair) bool) bool {
+	if owned, ok := asAliasMap(m); ok {
+		return owned.rangePairs(yield)
+	}
+	return true
 }
 
 type singletonAliasMap struct {
@@ -55,6 +112,19 @@ func (m *aliasMap) appendPairs(pairs []AliasPair) []AliasPair {
 
 func (m *singletonAliasMap) appendPairs(pairs []AliasPair) []AliasPair {
 	return append(pairs, m.pair)
+}
+
+func (m *aliasMap) rangePairs(yield func(AliasPair) bool) bool {
+	for source, target := range m.forward {
+		if !yield(AliasPair{Source: source, Target: target}) {
+			return false
+		}
+	}
+	return true
+}
+
+func (m *singletonAliasMap) rangePairs(yield func(AliasPair) bool) bool {
+	return yield(m.pair)
 }
 
 func (m *singletonAliasMap) Target(source CorrelationIdentifier) (CorrelationIdentifier, bool) {
@@ -135,6 +205,9 @@ func ExtendAliasMap(base AliasMap, pairs []AliasPair) (AliasMap, bool, error) {
 	if !ok {
 		return nil, false, resolutionError(CorrelationForeignValue, "alias-map", "base is not a values-owned AliasMap")
 	}
+	if len(pairs) == 1 {
+		return extendAliasMapByOne(base, baseMap, pairs[0])
+	}
 	all := baseMap.appendPairs(make([]AliasPair, 0, baseMap.size()+len(pairs)))
 	for _, pair := range pairs {
 		if target, exists := baseMap.Target(pair.Source); exists && target != pair.Target {
@@ -155,6 +228,33 @@ func ExtendAliasMap(base AliasMap, pairs []AliasPair) (AliasMap, bool, error) {
 	return extended, true, nil
 }
 
+func extendAliasMapByOne(base AliasMap, baseMap ownedAliasMap, pair AliasPair) (AliasMap, bool, error) {
+	if err := validateAliasPair(pair); err != nil {
+		return nil, false, err
+	}
+	if target, exists := baseMap.Target(pair.Source); exists {
+		return base, target == pair.Target, nil
+	}
+	if _, exists := baseMap.Source(pair.Target); exists {
+		return base, false, nil
+	}
+	if baseMap.size() == 0 {
+		return &singletonAliasMap{pair: pair}, true, nil
+	}
+	depth := 0
+	if chained, ok := baseMap.(*extendedAliasMap); ok {
+		depth = chained.depth
+	}
+	if depth >= maxAliasChain {
+		flat, err := NewAliasMap(append(baseMap.appendPairs(make([]AliasPair, 0, baseMap.size()+1)), pair))
+		if err != nil {
+			return nil, false, err
+		}
+		return flat, true, nil
+	}
+	return &extendedAliasMap{parent: baseMap, pair: pair, n: baseMap.size() + 1, depth: depth + 1}, true, nil
+}
+
 func asAliasMap(view AliasMap) (ownedAliasMap, bool) {
 	switch concrete := view.(type) {
 	case nil:
@@ -162,6 +262,8 @@ func asAliasMap(view AliasMap) (ownedAliasMap, bool) {
 	case *aliasMap:
 		return concrete, concrete != nil
 	case *singletonAliasMap:
+		return concrete, concrete != nil
+	case *extendedAliasMap:
 		return concrete, concrete != nil
 	default:
 		return nil, false

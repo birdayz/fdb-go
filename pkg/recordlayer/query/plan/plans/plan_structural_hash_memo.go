@@ -50,6 +50,35 @@ type hashMemoCell struct {
 	// sequential task loop, and raced in tests that share an object across parallel
 	// subtests.
 	state atomic.Pointer[hashMemoState]
+	// key holds the owner's structural key under the same owner discipline:
+	// equality compares keys at every step of a memo match, and a key never
+	// changes once built, so the one write is claiming an empty slot.
+	key atomic.Pointer[keyMemoState]
+}
+
+type keyMemoState struct {
+	owner any
+	key   *structuralKey
+}
+
+type structuralKeyer interface{ structuralKey() *structuralKey }
+
+// keyFor returns owner's structural key, built once per plan as its hash is.
+// owner must be the plan embedding b; a copy that finds the slot claimed by
+// another plan builds its own and does not memoize.
+func (b *PlanExprBase) keyFor(owner structuralKeyer) *structuralKey {
+	if b.hashMemo == nil {
+		return owner.structuralKey()
+	}
+	if state := b.hashMemo.key.Load(); state != nil {
+		if state.owner == any(owner) {
+			return state.key
+		}
+		return owner.structuralKey()
+	}
+	key := owner.structuralKey()
+	b.hashMemo.key.CompareAndSwap(nil, &keyMemoState{owner: owner, key: key})
+	return key
 }
 
 // hashMemoState pairs a hash with the plan it was computed for. Immutable once

@@ -120,7 +120,7 @@ func (p *RecordQueryComparatorPlan) structuralKey() *structuralKey {
 
 func (p *RecordQueryComparatorPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryComparatorPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 // HashCodeWithoutChildren mixes comparison keys (semantic Value hashes),
@@ -129,7 +129,7 @@ func (p *RecordQueryComparatorPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("comparatorplan|")
+	hash := p.keyFor(p).Hash("comparatorplan|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }

@@ -221,7 +221,7 @@ func (p *RecordQueryUpdatePlan) structuralKey() *structuralKey {
 
 func (p *RecordQueryUpdatePlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryUpdatePlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 // HashCodeWithoutChildren mixes class + targetRecordType + per-transform
@@ -231,7 +231,7 @@ func (p *RecordQueryUpdatePlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("updateplan|")
+	hash := p.keyFor(p).Hash("updateplan|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }

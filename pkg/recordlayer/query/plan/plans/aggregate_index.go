@@ -330,7 +330,7 @@ func (p *RecordQueryAggregateIndexPlan) structuralKey() *structuralKey {
 // result type.
 func (p *RecordQueryAggregateIndexPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryAggregateIndexPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 // HashCodeWithoutChildren mixes index plan hash, record type, and
@@ -339,7 +339,7 @@ func (p *RecordQueryAggregateIndexPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("aggregateindexplan|")
+	hash := p.keyFor(p).Hash("aggregateindexplan|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }

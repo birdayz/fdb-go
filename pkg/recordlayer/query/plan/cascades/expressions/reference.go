@@ -363,6 +363,7 @@ func (r *Reference) ApplyPreparedMemberBatch(
 	canonical.aliasAwareDedups += aliasAwareDedups
 	canonical.admittedResultType = exact
 	canonical.memberVersion++
+	bumpCorrelationEpoch()
 	if len(exploratory)+len(final) > 0 {
 		// Prepared admission is the planner's normal insertion path. A winner
 		// ranks the member set that existed when it was stamped; publishing any
@@ -469,6 +470,7 @@ func (r *Reference) Absorb(loser *Reference) {
 		}
 	}
 	r.correlatedToCache.Store(nil)
+	bumpCorrelationEpoch()
 	loser.forwardedTo = r
 }
 
@@ -489,6 +491,7 @@ func (r *Reference) AbsorbPlanningState(loser *Reference) int {
 	}
 	r.aliasAwareDedups += loser.aliasAwareDedups
 	r.correlatedToCache.Store(nil)
+	bumpCorrelationEpoch()
 	loser.forwardedTo = r
 	return added
 }
@@ -505,6 +508,7 @@ func (r *Reference) RemoveExploratoryMember(e RelationalExpression) bool {
 		r.members = append(r.members[:i:i], r.members[i+1:]...)
 		delete(r.memberHash, e)
 		r.memberVersion++
+		bumpCorrelationEpoch()
 		r.correlatedToCache.Store(nil)
 		return true
 	}
@@ -784,6 +788,7 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 	// complete group before hashing.
 	r.admittedResultType = nil
 	r.memberVersion++
+	bumpCorrelationEpoch()
 	r.correlatedToCache.Store(nil)
 	return true
 }
@@ -1036,6 +1041,7 @@ func (r *Reference) InsertFinal(e RelationalExpression) bool {
 	r.winner = nil
 	r.admittedResultType = nil
 	r.memberVersion++
+	bumpCorrelationEpoch()
 	r.correlatedToCache.Store(nil)
 	finalsGeneration.Add(1)
 	return true
@@ -1075,6 +1081,7 @@ func (r *Reference) AdvancePlannerStage(newStage PlannerStage) {
 	r.members = append(r.members[:0], r.finalMembers...)
 	r.finalMembers = r.finalMembers[:0]
 	r.memberVersion++
+	bumpCorrelationEpoch()
 	finalsGeneration.Add(1)
 	r.planProperties = nil
 	r.explState = explorationNever
@@ -1119,6 +1126,7 @@ func (r *Reference) AdvanceStagePreservingMembers(newStage PlannerStage) {
 	// the transition conflict with every earlier admission view even though it
 	// deliberately preserves the member slices.
 	r.memberVersion++
+	bumpCorrelationEpoch()
 	r.planProperties = nil
 	r.explState = explorationNever
 	r.explRounds = 0
@@ -1194,6 +1202,7 @@ func (r *Reference) PruneWith(expr RelationalExpression) {
 	}
 	r.winner = nil
 	r.memberVersion++
+	bumpCorrelationEpoch()
 	finalsGeneration.Add(1)
 }
 
@@ -1214,6 +1223,7 @@ func (r *Reference) PruneToSet(keep map[RelationalExpression]struct{}) {
 	}
 	r.winner = nil
 	r.memberVersion++
+	bumpCorrelationEpoch()
 	finalsGeneration.Add(1)
 }
 
@@ -1226,6 +1236,7 @@ func (r *Reference) ClearFinalMembers() {
 	}
 	r.winner = nil
 	r.memberVersion++
+	bumpCorrelationEpoch()
 	finalsGeneration.Add(1)
 }
 
@@ -1311,6 +1322,7 @@ func (r *Reference) GetPartialMatchCandidates() []any {
 func (r *Reference) InvalidateCorrelatedToCache() {
 	r = r.Canonical()
 	r.correlatedToCache.Store(nil)
+	bumpCorrelationEpoch()
 }
 
 // sameChildReferences returns true if a and b have the same

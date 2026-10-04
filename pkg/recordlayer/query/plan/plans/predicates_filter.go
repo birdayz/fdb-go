@@ -170,7 +170,7 @@ func (p *RecordQueryPredicatesFilterPlan) structuralKey() *structuralKey {
 
 func (p *RecordQueryPredicatesFilterPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryPredicatesFilterPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 // HashCodeWithoutChildren mixes the class discriminator + per-predicate
@@ -182,7 +182,7 @@ func (p *RecordQueryPredicatesFilterPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("predicatesfilterplan|")
+	hash := p.keyFor(p).Hash("predicatesfilterplan|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }
@@ -217,7 +217,7 @@ func (p *RecordQueryPredicatesFilterPlan) WithInner(inner RecordQueryPlan) (*Rec
 // planEqualsAsExpression.
 func (p *RecordQueryPredicatesFilterPlan) EqualsWithoutChildren(other expressions.RelationalExpression, aliases *expressions.AliasMap) bool {
 	otherFilter, ok := other.(*RecordQueryPredicatesFilterPlan)
-	return ok && p.structuralKey().EqualUnderAliases(otherFilter.structuralKey(), aliases.ToValuesAliasMap())
+	return ok && p.keyFor(p).EqualUnderAliases(otherFilter.structuralKey(), aliases.ToValuesAliasMap())
 }
 
 // A quantifier-owned row binding is local to this filter; a separate binding

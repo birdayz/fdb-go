@@ -216,14 +216,14 @@ func normalizePrimaryKeyComponentTypes(types []values.Type, size int) []values.T
 
 func (p *RecordQueryScanPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryScanPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 func (p *RecordQueryScanPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("scanplan|")
+	hash := p.keyFor(p).Hash("scanplan|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }

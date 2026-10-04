@@ -912,14 +912,14 @@ func (p *RecordQueryFlatMapPlan) structuralKey() *structuralKey {
 
 func (p *RecordQueryFlatMapPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryFlatMapPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 func (p *RecordQueryFlatMapPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("flatmap|")
+	hash := p.keyFor(p).Hash("flatmap|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }
@@ -941,7 +941,7 @@ var (
 // its physical output layout through the memo's alpha-renaming.
 func (p *RecordQueryFlatMapPlan) EqualsWithoutChildren(other expressions.RelationalExpression, aliases *expressions.AliasMap) bool {
 	o, ok := other.(*RecordQueryFlatMapPlan)
-	return ok && p.structuralKey().EqualUnderAliases(o.structuralKey(), aliases.ToValuesAliasMap())
+	return ok && p.keyFor(p).EqualUnderAliases(o.keyFor(o), aliases.ToValuesAliasMap())
 }
 
 // CanCorrelate reports that this operator anchors a correlation between its

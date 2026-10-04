@@ -115,7 +115,7 @@ func (p *RecordQueryScoreForRankPlan) structuralKey() *structuralKey {
 // EqualsPlanWithoutChildren compares the ranks list.
 func (p *RecordQueryScoreForRankPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryScoreForRankPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 // HashCodeWithoutChildren mixes the class discriminator + ranks.
@@ -123,7 +123,7 @@ func (p *RecordQueryScoreForRankPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("scoreforrank|")
+	hash := p.keyFor(p).Hash("scoreforrank|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }

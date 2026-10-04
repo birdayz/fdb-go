@@ -271,14 +271,14 @@ func (p *RecordQueryInJoinPlan) structuralKey() *structuralKey {
 
 func (p *RecordQueryInJoinPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryInJoinPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 func (p *RecordQueryInJoinPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("injoinplan|")
+	hash := p.keyFor(p).Hash("injoinplan|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }

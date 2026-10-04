@@ -631,7 +631,7 @@ func (p *RecordQueryNestedLoopJoinPlan) structuralKey() *structuralKey {
 
 func (p *RecordQueryNestedLoopJoinPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryNestedLoopJoinPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 // HashCodeWithoutChildren folds the structural discriminators. Predicates
@@ -645,7 +645,7 @@ func (p *RecordQueryNestedLoopJoinPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("nljoin|")
+	hash := p.keyFor(p).Hash("nljoin|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }
@@ -678,7 +678,7 @@ var (
 // program and its physical output layout through the memo's alpha-renaming.
 func (p *RecordQueryNestedLoopJoinPlan) EqualsWithoutChildren(other expressions.RelationalExpression, aliases *expressions.AliasMap) bool {
 	o, ok := other.(*RecordQueryNestedLoopJoinPlan)
-	return ok && p.structuralKey().EqualUnderAliases(o.structuralKey(), aliases.ToValuesAliasMap())
+	return ok && p.keyFor(p).EqualUnderAliases(o.keyFor(o), aliases.ToValuesAliasMap())
 }
 
 // GetCorrelatedToWithoutChildren includes both predicates and the result program;

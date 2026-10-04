@@ -113,14 +113,14 @@ func (p *RecordQueryLimitPlan) structuralKey() *structuralKey {
 
 func (p *RecordQueryLimitPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryLimitPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 func (p *RecordQueryLimitPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("limit|")
+	hash := p.keyFor(p).Hash("limit|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }

@@ -266,7 +266,7 @@ func (p *RecordQueryInMemorySortPlan) structuralKey() *structuralKey {
 
 func (p *RecordQueryInMemorySortPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryInMemorySortPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 // sortKeyEqual reports semantic equality of two sort keys: the direction
@@ -285,7 +285,7 @@ func (p *RecordQueryInMemorySortPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("inmemsort|")
+	hash := p.keyFor(p).Hash("inmemsort|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }

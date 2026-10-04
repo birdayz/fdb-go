@@ -336,14 +336,14 @@ func (p *RecordQueryStreamingAggregationPlan) structuralKey() *structuralKey {
 
 func (p *RecordQueryStreamingAggregationPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryStreamingAggregationPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 func (p *RecordQueryStreamingAggregationPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("streamagg|")
+	hash := p.keyFor(p).Hash("streamagg|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }

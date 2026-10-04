@@ -74,7 +74,7 @@ func (p *RecordQueryUnionPlan) structuralKey() *structuralKey {
 // union has no operator-specific node-info beyond its children.
 func (p *RecordQueryUnionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryUnionPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 // HashCodeWithoutChildren is a constant for the type discriminator.
@@ -82,7 +82,7 @@ func (p *RecordQueryUnionPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("unionplan")
+	hash := p.keyFor(p).Hash("unionplan")
 	p.storeStructuralHash(p, hash)
 	return hash
 }

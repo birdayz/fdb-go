@@ -140,6 +140,7 @@ go_test(
     srcs = [
         "accessor_name_path_census_test.go",
         "accessor_name_path_test.go",
+        "alias_map_chain_test.go",
         "alias_map_storage_test.go",
         "arithmetic_lanes_test.go",
         "assignment_column_test.go",
