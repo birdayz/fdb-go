@@ -13459,7 +13459,14 @@ against Java 4.14.2.0 before fixing, then tick with the commit.
 
 ### An EXISTS over a repeated field does not match a multi-valued index
 
-- [ ] versions-tests.yamsql (line 454): `SELECT "__ROW_VERSION", id, col1 FROM t4
+- [x] Done: the key-expression expansion visitor expands the version column
+  (VersionKeyExpression.toValue), so `T4_COL4_VERSION` is a candidate, and a
+  fan-out element binding is reconciled against the whole match's scan prefix
+  at compensation (`exists_multivalued_version_index.yaml`,
+  `fanout_index_child_binding_prefix.yaml`). versions-tests.yamsql advanced to
+  line 575, a `conformance:scan-choice-order` row (Go prunes the unrestricted
+  version-index scan of the T3 leg).
+  versions-tests.yamsql (line 454): `SELECT "__ROW_VERSION", id, col1 FROM t4
   WHERE EXISTS (SELECT 1 FROM t4.col4 WHERE col4 = 3)`. Java matches the
   existential over the exploded `col4` against the multi-valued index
   `T4_COL4_VERSION` (`ISCAN(T4_COL4_VERSION [EQUALS …])`) and answers in version

@@ -23,13 +23,13 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**377 scenarios · 3121 query/assertion cases** across 18 feature areas — 2729 supported, 102 unsupported-feature pins, 290 error-path pins.
+**379 scenarios · 3125 query/assertion cases** across 18 feature areas — 2733 supported, 102 unsupported-feature pins, 290 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
 | Aggregates & GROUP BY | 55 | 351 | 316 | 19 | 16 |
 | Joins | 66 | 313 | 296 | 2 | 15 |
-| Subqueries (EXISTS / IN / scalar) | 46 | 322 | 266 | 33 | 23 |
+| Subqueries (EXISTS / IN / scalar) | 47 | 323 | 267 | 33 | 23 |
 | CTEs | 15 | 202 | 161 | 4 | 37 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 12 | 68 | 59 | 5 | 4 |
 | DML (INSERT / UPDATE / DELETE) | 26 | 241 | 201 | 3 | 37 |
@@ -39,13 +39,13 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Column resolution & aliasing | 7 | 59 | 30 | 0 | 29 |
 | NULL handling | 5 | 27 | 24 | 3 | 0 |
 | NULL handling & boolean logic | 2 | 48 | 48 | 0 | 0 |
-| Index usage | 14 | 182 | 179 | 0 | 3 |
+| Index usage | 15 | 185 | 182 | 0 | 3 |
 | Types | 13 | 148 | 127 | 4 | 17 |
 | Keys & primary keys | 5 | 133 | 128 | 0 | 5 |
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 40 | 340 | 301 | 5 | 34 |
-| **Total** | **377** | **3121** | **2729** | **102** | **290** |
+| **Total** | **379** | **3125** | **2733** | **102** | **290** |
 
 ## Aggregates & GROUP BY
 
@@ -196,6 +196,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `dml_subquery_residual` | 5 | 5 | 0 | 0 | Probes the DML correlated-EXISTS scan-loop rewrite when the correlation |
 | `exists` | 8 | 7 | 1 | 0 | EXISTS / NOT EXISTS subquery predicates. |
 | `exists_multi_table_inner` | 2 | 2 | 0 | 0 | EXISTS with multi-table inner query |
+| `exists_multivalued_version_index` | 1 | 1 | 0 | 0 | An EXISTS over a repeated field matches a multi-valued index whose key follows |
 | `exists_subquery_java` | 8 | 8 | 0 | 0 | EXISTS and NOT EXISTS subquery patterns. |
 | `exists_with_aggregate` | 12 | 8 | 4 | 0 | EXISTS subquery with aggregate |
 | `exists_with_or` | 3 | 3 | 0 | 0 | EXISTS subqueries combined with OR predicates. |
@@ -413,6 +414,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `covering_index_java` | 7 | 7 | 0 | 0 | Covering index optimization. |
 | `covering_index_pushdown` | 26 | 26 | 0 | 0 | Covering-index pushdown: when every column the SELECT reads from each |
 | `escaped_table_secondary_index` | 2 | 2 | 0 | 0 | A TABLE WHOSE NAME ESCAPES COULD NOT BE GIVEN A SECONDARY INDEX AT ALL. |
+| `fanout_index_child_binding_prefix` | 3 | 3 | 0 | 0 | A fan-out index whose exploded element follows a scalar column: the element's |
 | `index_range_and_or` | 10 | 10 | 0 | 0 | Port of Java standard-tests.yamsql — AND/OR range predicates with index. |
 | `index_range_predicates_java` | 10 | 10 | 0 | 0 | Index scan with range predicates |
 | `index_scan_direction` | 8 | 8 | 0 | 0 | Index scan direction tests |

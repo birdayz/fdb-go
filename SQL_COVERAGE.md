@@ -15,13 +15,13 @@ outcome, so it cannot go stale. For the ANSI-standard scorecard see
 - **unsupported** — an explicitly-unsupported feature we cleanly reject (SQLSTATE `0A000`/`0AF00`/`0AF01`/`42883`).
 - **error-path** — correct rejection/constraint semantics (unknown column, overflow, unique violation, type mismatch, …): supported behaviour, not a gap.
 
-**377 scenarios · 3121 test cases** — 2729 supported (87.4%), 102 unsupported-feature pins, 290 error-path pins.
+**379 scenarios · 3125 test cases** — 2733 supported (87.5%), 102 unsupported-feature pins, 290 error-path pins.
 
 | Feature area | Cases | Supported | Unsupported | Error-path | Supported % |
 |---|--:|--:|--:|--:|--:|
 | Aggregates & GROUP BY | 351 | 316 | 19 | 16 | 90.0% |
 | Joins | 313 | 296 | 2 | 15 | 94.6% |
-| Subqueries (EXISTS / IN / scalar) | 322 | 266 | 33 | 23 | 82.6% |
+| Subqueries (EXISTS / IN / scalar) | 323 | 267 | 33 | 23 | 82.7% |
 | CTEs | 202 | 161 | 4 | 37 | 79.7% |
 | Set operations (UNION / INTERSECT / EXCEPT) | 68 | 59 | 5 | 4 | 86.8% |
 | DML (INSERT / UPDATE / DELETE) | 241 | 201 | 3 | 37 | 83.4% |
@@ -31,11 +31,11 @@ outcome, so it cannot go stale. For the ANSI-standard scorecard see
 | Column resolution & aliasing | 59 | 30 | 0 | 29 | 50.8% |
 | NULL handling | 27 | 24 | 3 | 0 | 88.9% |
 | NULL handling & boolean logic | 48 | 48 | 0 | 0 | 100.0% |
-| Index usage | 182 | 179 | 0 | 3 | 98.4% |
+| Index usage | 185 | 182 | 0 | 3 | 98.4% |
 | Types | 148 | 127 | 4 | 17 | 85.8% |
 | Keys & primary keys | 133 | 128 | 0 | 5 | 96.2% |
 | Error codes & validation | 39 | 10 | 3 | 26 | 25.6% |
 | End-to-end scenarios | 20 | 20 | 0 | 0 | 100.0% |
 | Other | 340 | 301 | 5 | 34 | 88.5% |
-| **Total** | **3121** | **2729** | **102** | **290** | **87.4%** |
+| **Total** | **3125** | **2733** | **102** | **290** | **87.5%** |
 

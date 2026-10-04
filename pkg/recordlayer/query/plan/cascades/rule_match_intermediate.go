@@ -920,8 +920,7 @@ func mergeAliasMapsChecked(left, right *AliasMap) (*AliasMap, bool) {
 // SelectExpression.subsumedBy, narrowed to the Filter-vs-Select
 // case that Go encounters alongside SelectMergeRule normalisation.
 // pendingSargable is a candidate placeholder binding collected during matching,
-// finalized as either a sargable scan constraint or a residual filter once the
-// scan prefix is known.
+// mapped once every placeholder has folded its comparisons.
 type pendingSargable struct {
 	ph  *predicates.Placeholder
 	cp  *predicates.ComparisonPredicate
@@ -1105,43 +1104,33 @@ func matchSingleSourceAgainstSelect(
 		paramBindings[ph.GetParameterAlias()] = merged
 		for _, member := range members {
 			matchedQueryPreds[member.pred] = true
-			// Defer the sargable mapping until after the scan prefix is known
-			// (see reconciliation below): a binding the candidate cannot consume
-			// into its prefix must become a residual, not a dropped sargable.
 			// Every member carries the SAME merged range, which is what lets
 			// the predicate map admit them as one fold group.
 			pendingSargables = append(pendingSargables, pendingSargable{ph: ph, cp: member.cp, rng: merged})
 		}
 	}
 
-	// Reconcile bindings against the actual scan prefix. A comparison can match a
-	// placeholder (right column, sargable type) yet not be consumable as a scan
-	// constraint: a vector PARTITION inequality (the prefix is equality-leading
-	// only), or a column whose leading prefix column is unbound (a positional
-	// prefix cannot fix column N while column N-1 ranges free). Java's prefix
-	// extraction stops at the same boundary. Such a binding must be re-applied as
-	// a RESIDUAL filter, never silently dropped — dropping it returns wrong rows
-	// (TestFDB_VectorSearch_MultiPartition_InequalityResidual: `region > 'r1'`
-	// excluded the wrong partition) or hides an unplannable index-only composite.
-	// ComputeBoundParameterPrefixMap is the single source of truth for what the
-	// scan can actually constrain; the distance (index-only) binding it always
-	// retains stays sargable.
+	// Whether a binding is consumed by the scan prefix is decided when the
+	// complete match is compensated, against the prefix of ALL its bindings
+	// (Java's PredicateWithValueAndRanges compensation reads the root
+	// boundParameterPrefixMap): this Select may be a fan-out candidate's inner
+	// Select, whose element column follows a column an enclosing match binds.
+	// A binding outside the prefix — a vector PARTITION inequality, a column
+	// after an unbound one — is then re-applied as a residual, never dropped.
 	if !candidateBindingRangesEligible(candidate, paramBindings) {
 		return
 	}
-	prefix := candidate.ComputeBoundParameterPrefixMap(paramBindings)
 	for _, pb := range pendingSargables {
-		if _, inPrefix := prefix[pb.ph.GetParameterAlias()]; inPrefix {
-			mapping := RegularMappingBuilder(pb.cp, pb.cp, pb.ph).
-				SetSargable(pb.ph.GetParameterAlias(), pb.rng).
-				Build()
-			predicateMapBuilder.Put(pb.cp, mapping)
-			boundCount++
-		} else {
-			// Not consumable into the scan prefix → reclassify as residual.
-			delete(matchedQueryPreds, predicates.QueryPredicate(pb.cp))
-			paramBindings[pb.ph.GetParameterAlias()] = predicates.EmptyComparisonRange()
-		}
+		alias := pb.ph.GetParameterAlias()
+		mapping := RegularMappingBuilder(pb.cp, pb.cp, pb.ph).
+			SetSargable(alias, pb.rng).
+			setKnownPredicateCompensation(
+				selectSubsumptionSargablePredicateCompensation(pb.cp, alias),
+				"select-sargable-prefix",
+			).
+			Build()
+		predicateMapBuilder.Put(pb.cp, mapping)
+		boundCount++
 	}
 
 	// Residual predicates: any query predicate not bound to a placeholder

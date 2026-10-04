@@ -17,7 +17,7 @@ import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 // QueryPlanConstraint that re-checks the constant when a cached plan is reused.
 // Go does not match a function-key index's stored literal at all today: candidate
 // construction declines every function key but CARDINALITY and the order
-// functions (index_expansion.go, keyExpressionFlatColumnDescriptors). When the
+// functions (key_expression_expansion.go, functionKeyToValue). When the
 // value-index expansion of RFC-257 WS-J section 3.5 lands, Go matches such a
 // literal by VALUE without a constraint, which is sound ONLY because the plan
 // cache keys on the literal text (embedded/query_hash.go, the NOTE above

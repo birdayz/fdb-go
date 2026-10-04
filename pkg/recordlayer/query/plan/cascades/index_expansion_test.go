@@ -904,17 +904,17 @@ func tautologyPredicateProto() *gen.Predicate {
 // predicate at all — the state every downstream gate reads.
 //
 // The classification has to happen where the predicate ENTERS the candidate,
-// because "is this candidate sparse?" is asked in four places and only ONE of
+// because "is this candidate sparse?" is asked in three places and only ONE of
 // them converts the predicate first:
 //
-//   - ExpandValueIndex's fan-out arm drops the candidate outright,
 //   - AbstractDataAccessRule restricts it to root-reference matches,
 //   - candidatePreservesBaseRecordCardinality refuses cardinality shortcuts,
-//   - expandFlatValueIndex attaches it (and DOES check for a tautology).
+//   - the expansion attaches it to the candidate graph (and DOES check for a
+//     tautology).
 //
-// A tautology check at the one converting site leaves the other three treating
-// a complete index as filtered, so `WHERE TRUE` on a fan-out index yields no
-// candidate at all. Normalizing at the boundary is what makes the four agree.
+// A tautology check at the one converting site leaves the other two treating
+// a complete index as filtered. Normalizing at the boundary is what makes the
+// three agree.
 func TestCandidateBoundaryClassifiesTautologyAsNoPredicate(t *testing.T) {
 	t.Parallel()
 
@@ -974,8 +974,18 @@ func TestCandidateBoundaryClassifiesTautologyAsNoPredicate(t *testing.T) {
 		if cand.GetPredicateProto() == nil {
 			t.Fatal("WHERE FALSE indexes nothing and must stay a sparse candidate")
 		}
-		if cand.GetTraversal() != nil {
-			t.Fatal("a genuinely sparse fan-out candidate must still fail closed")
+		// The candidate graph carries the stored predicate beside the fan-out
+		// expansion (ValueIndexExpansionVisitor.java:138-162), so the matcher
+		// accounts for the filter instead of treating the index as full.
+		top := fanoutExpansionTopSelect(t, cand.GetTraversal())
+		carriesFilter := false
+		for _, pred := range top.GetPredicates() {
+			if _, isPlaceholder := pred.(*predicates.Placeholder); !isPlaceholder {
+				carriesFilter = true
+			}
+		}
+		if !carriesFilter {
+			t.Fatal("a genuinely sparse fan-out candidate graph lost its stored predicate")
 		}
 		scalarCand := newCandidate(keyExpressionField("TAGS", gen.Field_SCALAR), false).
 			WithPredicateProto(filtering)
@@ -983,4 +993,49 @@ func TestCandidateBoundaryClassifiesTautologyAsNoPredicate(t *testing.T) {
 			t.Fatal("a sparse index omits records and cannot preserve base-record cardinality")
 		}
 	})
+}
+
+// A plain CONCATENATE key column is the whole repeated field as one column:
+// Java's visitor reads it as FieldValue.ofFieldNames like a scalar field
+// (KeyExpressionExpansionVisitor.java:162-176), so the index is a candidate
+// whose placeholder is the array-typed field. Its entry holds the list as a
+// nested tuple, which the covering row does not decode, so it is not covered.
+func TestExpandValueIndex_ConcatenateColumnIsTheWholeField(t *testing.T) {
+	t.Parallel()
+	arrayType := values.NewArrayType(true, values.NotNullString)
+	itemType := values.NewRecordType("Item", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "TAGS", FieldType: arrayType, Ordinal: 1},
+	})
+	alias := values.UniqueCorrelationIdentifier()
+	distinct := false
+	cand := NewValueIndexScanMatchCandidateWithFunctions(
+		"idx_tags", []string{"Item"}, []string{"TAGS"}, nil,
+		[]values.CorrelationIdentifier{alias}, itemType, false, []string{"ID"}, &distinct,
+	).WithRootKeyExpression(keyExpressionField("TAGS", gen.Field_CONCATENATE))
+
+	top := fanoutExpansionTopSelect(t, cand.GetTraversal())
+	preds := top.GetPredicates()
+	if len(preds) != 1 {
+		t.Fatalf("predicates = %d, want the one placeholder", len(preds))
+	}
+	placeholder, ok := preds[0].(*predicates.Placeholder)
+	if !ok || placeholder.ParameterAlias != alias {
+		t.Fatalf("predicate = %#v, want the placeholder of %s", preds[0], alias)
+	}
+	field, ok := values.AsFieldValue(placeholder.Value)
+	if !ok || !slices.Equal(field.Path().Ordinals(), []int{1}) {
+		t.Fatalf("placeholder value = %#v, want the TAGS field", placeholder.Value)
+	}
+	if _, isArray := placeholder.Value.Type().(*values.ArrayType); !isArray {
+		t.Fatalf("placeholder type = %v, want the array", placeholder.Value.Type())
+	}
+
+	source, target := values.UniqueCorrelationIdentifier(), values.UniqueCorrelationIdentifier()
+	if _, ok := cand.PushValueThroughFetch(indexExpansionField(t, source, itemType, 1), source, target); ok {
+		t.Fatal("a CONCATENATE column was covered from its nested-tuple entry")
+	}
+	if _, ok := cand.PushValueThroughFetch(indexExpansionField(t, source, itemType, 0), source, target); !ok {
+		t.Fatal("control: the primary key must stay covered")
+	}
 }

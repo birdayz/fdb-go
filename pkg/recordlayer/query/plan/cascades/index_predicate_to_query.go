@@ -70,7 +70,7 @@ func indexPredicateToQueryPredicate(p *gen.Predicate, base values.Value) (predic
 		// `QualifyRowNumber(score, DESC) <= 100` "keeps the 100 records with the
 		// highest score values in the index" (IndexPredicate.java:608-619).
 		//
-		// Go's caller (expandFlatValueIndex) then OMITS a tautological candidate
+		// Go's caller (expandValueIndexRoot) then OMITS a tautological candidate
 		// predicate, so returning TRUE here produces a candidate that matches as
 		// if the index held every record, and a scan serves a top-100 index as
 		// the whole table. Refusing the conversion instead excludes the

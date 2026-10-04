@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=377 queries=2834 dml=176 non_query=111 plan_errors=319 unexpected_errors=4
+# files=379 queries=2838 dml=176 non_query=111 plan_errors=319 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -6724,6 +6724,13 @@ shape:       RecordQueryFirstOrDefaultPlan
 shape:         RecordQueryNestedLoopJoinPlan
 shape:           RecordQueryScanPlan
 shape:           RecordQueryScanPlan
+=== exists_multivalued_version_index.yaml#0
+sql:   SELECT id, col1 FROM t4 WHERE EXISTS (SELECT 1 FROM t4.col4 WHERE col4 = 3)
+plan:  Map(Fetch(UnorderedPrimaryKeyDistinct(IndexScan(T4_COL4_VERSION, [=, *] COVERING))), {ID: _current.ID#0, COL1: _current.COL1#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryFetchFromPartialRecordPlan
+shape:     RecordQueryUnorderedPrimaryKeyDistinctPlan
+shape:       RecordQueryCoveringIndexPlan
 === exists_subquery_java.yaml#0
 sql:   SELECT name FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id) ORDER BY name
 plan:  InMemorySort([_current.NAME#0 ASC], FlatMap(outer=Scan(CUSTOMERS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(ORDERS), [1 preds])), [1 preds])))
@@ -6918,6 +6925,27 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryFirstOrDefaultPlan
 shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
+=== fanout_index_child_binding_prefix.yaml#0
+sql:   SELECT id FROM t4 WHERE col2 = 5 AND EXISTS (SELECT 1 FROM t4.col4 x WHERE x = 2)
+plan:  Map(UnorderedPrimaryKeyDistinct(IndexScan(T4_COL2_COL4, [=, =] COVERING)), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
+shape:     RecordQueryCoveringIndexPlan
+=== fanout_index_child_binding_prefix.yaml#1
+sql:   SELECT id FROM t4 WHERE EXISTS (SELECT 1 FROM t4.col4 x WHERE x = 2)
+plan:  FlatMap(outer=Scan(T4), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Explode(field), [1 preds])), [1 preds]))
+shape: RecordQueryFlatMapPlan
+shape:   RecordQueryScanPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryFirstOrDefaultPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryExplodePlan
+=== fanout_index_child_binding_prefix.yaml#2
+sql:   SELECT id FROM t4 WHERE col2 = 5 AND EXISTS (SELECT 1 FROM t4.col4 x WHERE x > 1)
+plan:  Map(UnorderedPrimaryKeyDistinct(IndexScan(T4_COL2_COL4, [=, <>] COVERING)), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
+shape:     RecordQueryCoveringIndexPlan
 === flatmap_empty_tables.yaml#0
 sql:   SELECT p.name, c.name FROM parents p, children c WHERE c.parent_id = p.id ORDER BY p.name
 plan:  InMemorySort([_current.P.NAME#0 ASC], FlatMap(outer=Scan(CHILDREN), inner=Scan(PARENTS, [=])))

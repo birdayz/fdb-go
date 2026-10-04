@@ -108,8 +108,10 @@ type ValueIndexScanMatchCandidate struct {
 	// fan-out parent. It is always stored as a defensive clone.
 	rootKeyExpression *gen.KeyExpression
 
-	traversalOnce sync.Once
-	traversal     *Traversal
+	columnsOnce   sync.Once
+	columns       *valueIndexExpansion
+	expansionOnce sync.Once
+	expansion     *valueIndexExpansion
 }
 
 // WithRecordTypeRowTypes attaches the per-record-type row layouts to a freshly
@@ -625,7 +627,12 @@ func NewValueIndexScanMatchCandidateWithFunctions(
 // matching both consult, so a CARDINALITY() query value binds to the index by
 // Value-tree equality (Java: the match candidate carries the column's Value).
 func (c *ValueIndexScanMatchCandidate) ColumnValue(i int, base values.Value) values.Value {
-	if i < 0 || i >= len(c.columnNames) {
+	described := c.indexColumns()
+	if described == nil || i < 0 || i >= len(described.keyColumns) {
+		return nil
+	}
+	column := described.keyColumns[i]
+	if len(column.path) == 0 {
 		return nil
 	}
 	if base == nil {
@@ -643,23 +650,15 @@ func (c *ValueIndexScanMatchCandidate) ColumnValue(i int, base values.Value) val
 	if !ok {
 		return nil
 	}
-	record, ok := qov.FlowedType().(*values.RecordType)
-	if !ok {
+	fv := resolveUpperFieldPath(qov, column.path)
+	if fv == nil {
 		return nil
 	}
-	ordinal, unique := uniqueUpperFieldIndex(record, c.columnNames[i])
-	if !unique {
-		return nil
-	}
-	fv, err := values.ResolveFieldOrdinals(qov, []int{ordinal})
-	if err != nil {
-		return nil
-	}
-	if i < len(c.columnFunctions) {
-		if c.columnFunctions[i] == FunctionKindCardinality {
+	if column.function != "" {
+		if column.function == FunctionKindCardinality {
 			return values.NewCardinalityValue(fv)
 		}
-		if dir, isOrder := OrderFunctionDirection(c.columnFunctions[i]); isOrder {
+		if dir, isOrder := OrderFunctionDirection(column.function); isOrder {
 			// The column's stored bytes are the TupleOrdering encoding, so the
 			// candidate-side Value is ToOrderedBytesValue(field, direction)
 			// (OrderFunctionKeyExpression.toValue). A query comparison on the
@@ -673,25 +672,20 @@ func (c *ValueIndexScanMatchCandidate) ColumnValue(i int, base values.Value) val
 	return fv
 }
 
-// duplicateProducingColumns returns the per-index-column analogue of Java's
-// normalizedKeyExpression.createsDuplicates(). A direct FAN_OUT field marks
-// its one position; every child position underneath a fan-out nesting parent
-// is duplicate-producing. If metadata says the index duplicates but does not
-// provide a classifiable key tree, every position is conservatively marked.
+// duplicateProducingColumns returns, per index key column, Java's
+// normalizedKeyExpression.createsDuplicates(): whether the expansion registered
+// it below a FAN_OUT. If metadata says the index duplicates but no expansion
+// classifies its columns, every position is conservatively marked.
 func (c *ValueIndexScanMatchCandidate) duplicateProducingColumns() []bool {
 	result := make([]bool, len(c.columnNames))
-	if c.rootKeyExpression != nil {
-		if classified, ok := classifyDuplicateProducingColumns(
-			c.rootKeyExpression,
-			false,
-		); ok && len(classified) == len(result) {
-			hasDuplicate := false
-			for _, duplicate := range classified {
-				hasDuplicate = hasDuplicate || duplicate
-			}
-			if hasDuplicate || !c.createsDuplicates {
-				return classified
-			}
+	if described := c.indexColumns(); described != nil &&
+		len(described.keyDuplicates) == len(result) {
+		hasDuplicate := false
+		for _, duplicate := range described.keyDuplicates {
+			hasDuplicate = hasDuplicate || duplicate
+		}
+		if hasDuplicate || !c.createsDuplicates {
+			return append(result[:0], described.keyDuplicates...)
 		}
 	}
 	if c.CreatesDuplicates() {
@@ -702,72 +696,104 @@ func (c *ValueIndexScanMatchCandidate) duplicateProducingColumns() []bool {
 	return result
 }
 
-func classifyDuplicateProducingColumns(
-	expression *gen.KeyExpression,
-	inheritedFanOut bool,
-) ([]bool, bool) {
-	if expression == nil || keyExpressionShapeCount(expression) != 1 {
-		return nil, false
-	}
-	switch {
-	case expression.Field != nil:
-		if expression.Field.FanType == nil {
-			return nil, false
-		}
-		return []bool{
-			inheritedFanOut ||
-				expression.Field.GetFanType() == gen.Field_FAN_OUT,
-		}, true
-
-	case expression.Then != nil:
-		var result []bool
-		for _, child := range expression.Then.GetChild() {
-			childColumns, ok := classifyDuplicateProducingColumns(
-				child,
-				inheritedFanOut,
-			)
-			if !ok {
-				return nil, false
-			}
-			result = append(result, childColumns...)
-		}
-		return result, true
-
-	case expression.Nesting != nil:
-		nesting := expression.Nesting
-		if nesting.Parent == nil || nesting.Parent.FanType == nil ||
-			nesting.Child == nil {
-			return nil, false
-		}
-		switch nesting.Parent.GetFanType() {
-		case gen.Field_SCALAR:
-			return classifyDuplicateProducingColumns(
-				nesting.Child,
-				inheritedFanOut,
-			)
-		case gen.Field_FAN_OUT:
-			return classifyDuplicateProducingColumns(nesting.Child, true)
-		default:
-			return nil, false
-		}
-
-	default:
-		return nil, false
-	}
-}
-
 // CandidateName returns the index name.
 func (c *ValueIndexScanMatchCandidate) CandidateName() string { return c.indexName }
 
 // GetTraversal returns the Traversal of this candidate's expression
-// tree, built lazily on first access via ExpandValueIndex. The
-// traversal is stable once computed (sync.Once). Ports Java's
+// tree, built lazily on first access by the key-expression expansion and stable
+// once computed (sync.Once). Ports Java's
 // ValueIndexScanMatchCandidate.getTraversal().
 func (c *ValueIndexScanMatchCandidate) GetTraversal() *Traversal {
-	c.traversalOnce.Do(func() {
-		c.traversal = ExpandValueIndex(c)
+	if expansion := c.indexExpansion(); expansion != nil {
+		return expansion.traversal
+	}
+	return nil
+}
+
+// effectiveRootKeyExpression is the stored root, or the root the flat column
+// metadata spells when the candidate carries none.
+func (c *ValueIndexScanMatchCandidate) effectiveRootKeyExpression() *gen.KeyExpression {
+	if c.rootKeyExpression != nil {
+		return c.rootKeyExpression
+	}
+	return flatColumnsRootKeyExpression(c.columnNames, c.columnFunctions)
+}
+
+// indexColumns is the candidate's admission: its key expression's columns, as
+// the expansion visitor registers them, when the metadata names exactly those
+// columns; nil when the index is not a candidate.
+//
+// Without FAN_OUT structure only an affirmative createsDuplicates=false signal
+// admits the candidate: UNKNOWN metadata may hide a fan-out index, and a known
+// duplicate-producing index without a FAN_OUT AST has no Explode with which to
+// repair cardinality. Scalar nested leaves are rejected: their full accessor
+// path is not yet represented by the name-keyed ordering and covering surfaces.
+func (c *ValueIndexScanMatchCandidate) indexColumns() *valueIndexExpansion {
+	if c == nil {
+		return nil
+	}
+	c.columnsOnce.Do(func() {
+		if keyExpressionContainsNonFanOutNestedLeaf(c.rootKeyExpression) {
+			return
+		}
+		fanOut := keyExpressionContainsFanOut(c.rootKeyExpression)
+		if !fanOut && (!c.createsDuplicatesKnown || c.createsDuplicates) {
+			return
+		}
+		described, err := describeValueIndexRoot(c, c.effectiveRootKeyExpression())
+		if err != nil || !c.columnsDescribe(described) {
+			return
+		}
+		if fanOut {
+			for _, function := range c.columnFunctions {
+				if function != "" {
+					return
+				}
+			}
+		}
+		c.columns = described
 	})
-	return c.traversal
+	return c.columns
+}
+
+// indexExpansion is the candidate graph of an admitted candidate, or nil when
+// it has none (no exact base type, or a column its base does not resolve).
+func (c *ValueIndexScanMatchCandidate) indexExpansion() *valueIndexExpansion {
+	if c.indexColumns() == nil {
+		return nil
+	}
+	c.expansionOnce.Do(func() {
+		expansion, err := expandValueIndexRoot(c, c.effectiveRootKeyExpression(), c.predicateProto)
+		if err == nil {
+			c.expansion = expansion
+		}
+	})
+	return c.expansion
+}
+
+// columnsDescribe reports whether the flat column metadata names exactly the
+// columns the expansion registered, so the name-keyed surfaces and the
+// candidate graph speak of the same entry.
+func (c *ValueIndexScanMatchCandidate) columnsDescribe(expansion *valueIndexExpansion) bool {
+	if len(expansion.keyColumns) != len(c.columnNames) ||
+		len(expansion.valueColumns) != len(c.valueColumnNames) {
+		return false
+	}
+	for i, column := range expansion.keyColumns {
+		function := ""
+		if i < len(c.columnFunctions) {
+			function = c.columnFunctions[i]
+		}
+		if !strings.EqualFold(column.name, c.columnNames[i]) || column.function != function {
+			return false
+		}
+	}
+	for i, column := range expansion.valueColumns {
+		if column.function != "" || !strings.EqualFold(column.name, c.valueColumnNames[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // GetColumnNames returns the ordered column-name list (one per index
@@ -1165,81 +1191,15 @@ func (c *ValueIndexScanMatchCandidate) DistinctRecordsSignal() *bool {
 }
 
 // metadataSufficientForPlanning is the single admission authority for a value
-// candidate's flat scan, coverage, ordering, and PK-suffix surfaces.
-//
-// A structural FAN_OUT root is sufficient because ExpandValueIndex must build
-// and successfully match through an Explode graph before a scan can exist.
-// Without FAN_OUT structure, only an affirmative createsDuplicates=false
-// signal permits the historical flat compatibility path. UNKNOWN metadata may
-// hide a sparse/multiplying fan-out index, and createsDuplicates=true without
-// a FAN_OUT AST lacks the topology needed for cardinality compensation.
-// Scalar nested leaves are rejected regardless: their full accessor path is
-// not represented by the flat candidate column bridge.
+// candidate's scan, coverage, ordering, and PK-suffix surfaces: the index's
+// columns are the ones the metadata names (indexColumns).
 func (c *ValueIndexScanMatchCandidate) metadataSufficientForPlanning() bool {
-	if c == nil ||
-		keyExpressionContainsNonFanOutNestedLeaf(c.rootKeyExpression) {
-		return false
-	}
-	if keyExpressionContainsFanOut(c.rootKeyExpression) {
-		// The structural fan-out expansion models Field/Then/Nesting, not
-		// function-tagged columns. Any such combination is inconsistent
-		// metadata and must decline.
-		for _, function := range c.columnFunctions {
-			if function != "" {
-				return false
-			}
-		}
-		return true
-	}
-	if !c.createsDuplicatesKnown || c.createsDuplicates {
-		return false
-	}
-	for _, function := range c.columnFunctions {
-		if function != "" && function != FunctionKindCardinality {
-			if _, isOrder := OrderFunctionDirection(function); !isOrder {
-				return false
-			}
-		}
-	}
-	if c.rootKeyExpression == nil {
-		// Legacy flat metadata: the explicit false signal and supported
-		// function tags are the caller's semantic authority.
-		return true
-	}
-	keyDescriptors, valueDescriptors, ok := keyExpressionKeyValueColumnDescriptors(
-		c.rootKeyExpression,
-	)
-	if !ok || len(keyDescriptors) != len(c.columnNames) ||
-		len(valueDescriptors) != len(c.valueColumnNames) {
-		return false
-	}
-	for i, descriptor := range keyDescriptors {
-		function := ""
-		if i < len(c.columnFunctions) {
-			function = c.columnFunctions[i]
-		}
-		if !strings.EqualFold(descriptor.name, c.columnNames[i]) ||
-			descriptor.function != function {
-			return false
-		}
-	}
-	// Value-part columns are covering-only: a function-valued value column
-	// (e.g. a CARDINALITY in the VALUE part) cannot be translated by covered
-	// name, so the whole candidate declines fail-closed rather than serve a
-	// mis-translated covering row.
-	for i, descriptor := range valueDescriptors {
-		if descriptor.function != "" ||
-			!strings.EqualFold(descriptor.name, c.valueColumnNames[i]) {
-			return false
-		}
-	}
-	return true
+	return c.indexColumns() != nil
 }
 
 // canProduceScanPlan additionally proves that a structural fan-out root was
-// successfully expanded. This keeps the individual planning/coverage/ordering
-// methods fail-closed even for a prebuilt candidate whose FAN_OUT appears under
-// an unsupported key-expression wrapper or disagrees with its column metadata.
+// successfully expanded, keeping the planning/coverage/ordering methods
+// fail-closed for a fan-out candidate with no candidate graph.
 func (c *ValueIndexScanMatchCandidate) canProduceScanPlan() bool {
 	if !c.metadataSufficientForPlanning() {
 		return false
@@ -1292,25 +1252,18 @@ func (c *ValueIndexScanMatchCandidate) orderingColumns() ([]plans.IndexOrderingC
 	if !c.canProduceScanPlan() || c.rootKeyExpression == nil {
 		return nil, false
 	}
-	descriptors, ok := keyExpressionFlatColumnDescriptors(c.rootKeyExpression)
-	if !ok || len(descriptors) != len(c.columnNames) {
-		return nil, false
-	}
-	columns := make([]plans.IndexOrderingColumn, len(c.columnNames))
-	for i, descriptor := range descriptors {
-		function := ""
-		if i < len(c.columnFunctions) {
-			function = c.columnFunctions[i]
-		}
-		if !strings.EqualFold(descriptor.name, c.columnNames[i]) || descriptor.function != function {
+	described := c.indexColumns()
+	columns := make([]plans.IndexOrderingColumn, len(described.keyColumns))
+	for i, column := range described.keyColumns {
+		if described.keyDuplicates[i] || len(column.path) != 1 {
 			return nil, false
 		}
-		switch function {
+		switch column.function {
 		case "":
 		case FunctionKindCardinality:
 			columns[i].Cardinality = true
 		default:
-			direction, isOrder := OrderFunctionDirection(function)
+			direction, isOrder := OrderFunctionDirection(column.function)
 			if !isOrder {
 				return nil, false
 			}
@@ -1380,11 +1333,15 @@ func (c *ValueIndexScanMatchCandidate) buildTranslateValueFunction() plans.Trans
 		}
 	}
 	duplicateProducingColumns := c.duplicateProducingColumns()
+	described := c.indexColumns()
 	blockedColumns := make(map[string]struct{})
 	for i, col := range c.columnNames {
 		functionKey := i < len(c.columnFunctions) &&
 			c.columnFunctions[i] != ""
-		if duplicateProducingColumns[i] || functionKey {
+		// A CONCATENATE column stores the repeated field as a nested tuple,
+		// which the covering row does not decode into the field's list.
+		concatenated := described.keyColumns[i].concatenate
+		if duplicateProducingColumns[i] || functionKey || concatenated {
 			blockedColumns[strings.ToUpper(col)] = struct{}{}
 		}
 	}
@@ -1399,7 +1356,7 @@ func (c *ValueIndexScanMatchCandidate) buildTranslateValueFunction() plans.Trans
 	// are blocked below.
 	if !hasFunctionKey {
 		for i, col := range c.columnNames {
-			if duplicateProducingColumns[i] {
+			if duplicateProducingColumns[i] || described.keyColumns[i].concatenate {
 				continue
 			}
 			coveredColumns[strings.ToUpper(col)] = struct{}{}

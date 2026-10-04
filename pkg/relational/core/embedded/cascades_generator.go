@@ -3256,7 +3256,7 @@ func (d *metadataIndexDef) IndexColumnNames() []string {
 	// split point for a KeyWithValueExpression; nested leaves make the name
 	// count exceed the column count, in which case truncation would be a
 	// guess — return the untruncated list and let the candidate's
-	// flat-descriptor check decline it (NewPlanContextFromIndexDefs refuses
+	// column check decline it (NewPlanContextFromIndexDefs refuses
 	// nested-leaf roots outright before that).
 	names := d.idx.RootExpression.FieldNames()
 	if kwv, ok := d.idx.RootExpression.(*recordlayer.KeyWithValueExpression); ok {
@@ -3494,7 +3494,7 @@ func indexColumnFunctionTags(expr recordlayer.KeyExpression) []string {
 		// (Java: OrderFunctionKeyExpression.toValue,
 		// OrderFunctionKeyExpression.java:99-103). An unrecognized function
 		// stays "" — reported as a plain field, and the candidate's
-		// flat-descriptor check declines the mismatch fail-closed.
+		// column check declines the mismatch fail-closed.
 		if _, isOrder := cascades.OrderFunctionDirection(e.Name()); isOrder {
 			return []string{e.Name()}
 		}
