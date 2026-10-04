@@ -1293,6 +1293,61 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) HintOrdering() properties.Ord
 	return mergeComparisonKeyOrdering(keys, p.IsReverse())
 }
 
+// HintRichOrdering is the comparison-key ordering with each grouping column a
+// stream fixes carried as that stream's FixedBinding, as Java derives the
+// intersection's ordering from its children's (Ordering.merge with INTERSECTION:
+// a binding fixed in one stream is fixed in the rows every stream agrees on).
+// The outer merge's rows are the driving stream's keys, so its fixed bindings
+// are that stream's. Grouping column i is slot i of every stream and of the
+// output.
+func (p *RecordQueryMultiIntersectionOnValuesPlan) HintRichOrdering() *properties.RichOrdering {
+	plain := p.HintOrdering()
+	if !plain.IsKnown || len(plain.Keys) == 0 {
+		return properties.EmptyOrdering()
+	}
+	streams := p.GetChildren()
+	if driving := p.DrivingStreamIndex(); driving >= 0 {
+		streams = streams[driving : driving+1]
+	}
+	fixed := make(map[int]any)
+	for _, stream := range streams {
+		hinter, ok := stream.(properties.RichOrderingHinter)
+		if !ok {
+			continue
+		}
+		rich := hinter.HintRichOrdering()
+		if rich == nil {
+			continue
+		}
+		for key, bindings := range rich.GetBindingMap() {
+			if len(bindings) != 1 || !bindings[0].IsFixed() {
+				continue
+			}
+			fv, isField := values.AsFieldValue(key)
+			if !isField || fv.Path() == nil || fv.Path().Len() != 1 {
+				continue
+			}
+			accessor, ok := fv.Path().Accessor(0)
+			if ok && accessor.Ordinal() >= 0 && accessor.Ordinal() < len(plain.Keys) {
+				fixed[accessor.Ordinal()] = bindings[0].GetComparison()
+			}
+		}
+	}
+	dir := properties.ProvidedSortOrderAscending
+	if p.IsReverse() {
+		dir = properties.ProvidedSortOrderDescending
+	}
+	bm := make(map[values.Value][]properties.OrderingBinding, len(plain.Keys))
+	for i, key := range plain.Keys {
+		if comparison, isFixed := fixed[i]; isFixed {
+			bm[key] = []properties.OrderingBinding{properties.FixedBinding(comparison)}
+		} else {
+			bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
+		}
+	}
+	return properties.NewRichOrdering(bm, plain.Keys, properties.NotDistinct())
+}
+
 // outputColumnNames returns the column names of the row this plan emits, taken
 // from its result value's record-constructor fields, or nil when the result
 // value is not a record constructor (no nameable output layout).

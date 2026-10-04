@@ -1,6 +1,7 @@
 package sqldriver_test
 
-// Rows behind TestAggregateIndexReverseScan (embedded): a descending request
+// Rows behind TestAggregateIndexReverseScan and TestAggregateMergeKeepsFixedPrefixOrdering
+// (embedded): a descending request
 // over an aggregate index's groups is served by the reverse scan, the
 // group-existence merge and the multi-aggregate intersection running their
 // legs in reverse. The indexed schema answers what the unindexed one answers,
@@ -27,7 +28,9 @@ func TestFDB_AggregateIndexReverseScan(t *testing.T) {
 	const indexes = "CREATE INDEX mv_sum AS SELECT SUM(col2) FROM t1 GROUP BY col1 " +
 		"CREATE INDEX mv_cnt AS SELECT COUNT(*) FROM t1 GROUP BY col1 " +
 		"CREATE INDEX mv_cntv AS SELECT COUNT(col2) FROM t1 GROUP BY col1 " +
-		"CREATE INDEX mv_cnt13 AS SELECT COUNT(*) FROM t1 GROUP BY col1, col3 "
+		"CREATE INDEX mv_cnt13 AS SELECT COUNT(*) FROM t1 GROUP BY col1, col3 " +
+		"CREATE INDEX mv_sum13 AS SELECT SUM(col2) FROM t1 GROUP BY col1, col3 " +
+		"CREATE INDEX mv_cntv13 AS SELECT COUNT(col2) FROM t1 GROUP BY col1, col3 "
 	w := mmNewTwin(t, ctx, "/testdb_aggreverse", "aggreverse", table, indexes)
 
 	var rows []string
@@ -53,6 +56,10 @@ func TestFDB_AggregateIndexReverseScan(t *testing.T) {
 		{"SELECT col1, SUM(col2), COUNT(*) FROM t1 GROUP BY col1 ORDER BY col1 DESC", 4},
 		{"SELECT col1, col3, COUNT(*) FROM t1 WHERE col1 = 2 GROUP BY col1, col3 ORDER BY col3 DESC", 1},
 		{"SELECT col1, col3, COUNT(*) FROM t1 GROUP BY col1, col3 ORDER BY col1 DESC, col3 DESC", 1},
+		// The merge keeps its legs' fixed col1 (TestAggregateMergeKeepsFixedPrefixOrdering).
+		{"SELECT col1, col3, SUM(col2) FROM t1 WHERE col1 = 2 GROUP BY col1, col3 ORDER BY col3", 0},
+		{"SELECT col1, col3, SUM(col2) FROM t1 WHERE col1 = 2 GROUP BY col1, col3 ORDER BY col3 DESC", 4},
+		{"SELECT col1, col3, SUM(col2), COUNT(*) FROM t1 WHERE col1 = 3 GROUP BY col1, col3 ORDER BY col3 DESC", 4},
 	}
 	for _, r := range reads {
 		plan, err := embedded.PlanPhysicalForTest(r.sql, table+indexes, nil)
