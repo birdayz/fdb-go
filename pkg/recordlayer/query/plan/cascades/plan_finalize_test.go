@@ -457,7 +457,10 @@ var specimens = map[string]specimen{
 				"scanComparisons": comp, "commonPrimaryKeyValues": pk,
 			}
 		},
-		allow: map[string]string{"resultValue": resultValueIsMinted},
+		allow: map[string]string{
+			"resultValue":     resultValueIsMinted,
+			"orderingColumns": "a function key column's ordering Value, compared by the ordering property and never evaluated",
+		},
 	},
 
 	"RecordQueryInsertPlan": {

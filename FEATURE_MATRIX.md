@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**382 scenarios · 3142 query/assertion cases** across 18 feature areas — 2750 supported, 102 unsupported-feature pins, 290 error-path pins.
+**383 scenarios · 3148 query/assertion cases** across 18 feature areas — 2756 supported, 102 unsupported-feature pins, 290 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -34,7 +34,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Set operations (UNION / INTERSECT / EXCEPT) | 12 | 68 | 59 | 5 | 4 |
 | DML (INSERT / UPDATE / DELETE) | 26 | 241 | 201 | 3 | 37 |
 | Ordering & pagination | 18 | 138 | 133 | 0 | 5 |
-| Scalar functions & expressions | 34 | 386 | 328 | 21 | 37 |
+| Scalar functions & expressions | 35 | 392 | 334 | 21 | 37 |
 | Predicates & WHERE | 12 | 104 | 102 | 0 | 2 |
 | Column resolution & aliasing | 7 | 59 | 30 | 0 | 29 |
 | NULL handling | 5 | 27 | 24 | 3 | 0 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 40 | 340 | 301 | 5 | 34 |
-| **Total** | **382** | **3142** | **2750** | **102** | **290** |
+| **Total** | **383** | **3148** | **2756** | **102** | **290** |
 
 ## Aggregates & GROUP BY
 
@@ -336,6 +336,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `coalesce_nullif` | 3 | 2 | 1 | 0 | COALESCE(v1, v2, ...) returns the first non-NULL argument, or NULL |
 | `datetime_functions` | 27 | 19 | 8 | 0 | Two groups: |
 | `function_in_predicate` | 5 | 5 | 0 | 0 | Functions used in WHERE predicates |
+| `function_key_value_index` | 6 | 6 | 0 | 0 | A value index over a long-arithmetic key function is a match candidate whose |
 | `greatest_least` | 11 | 8 | 0 | 3 | swingshift-35 commit 97e0c731: GREATEST / LEAST propagate NULL |
 | `in_expression_types` | 6 | 6 | 0 | 0 | IN predicate with various expression types |
 | `like` | 18 | 18 | 0 | 0 | LIKE pattern matching with SQL wildcards (% and _). |

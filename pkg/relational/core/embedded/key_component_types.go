@@ -117,6 +117,12 @@ func keyExpressionTypes(
 		if strings.EqualFold(expression.Function.GetName(), "cardinality") {
 			return []values.Type{values.NullableInt}
 		}
+		// A long-arithmetic key stores the long its evaluator computes, a
+		// plain null when an operand is null (LongArithmethicFunctionKey
+		// Expression.evaluateFunction).
+		if recordlayer.IsLongArithmeticFunction(expression.Function.GetName()) {
+			return []values.Type{values.NullableLong}
+		}
 		// Function result types are not encoded in KeyExpression metadata.
 		// Preserve cardinality while declining physical coercion.
 		return unknownPhysicalTypes(1)

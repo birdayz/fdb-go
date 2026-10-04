@@ -2242,21 +2242,17 @@ func wsjWidenIntLiterals(m protoreflect.Message) int {
 }
 
 // wsjNonIntGoPins is Go's answer to each read of the non-integer-operand oracle.
-// Go's candidate bridge declines every arithmetic function key
-// (keyExpressionFlatColumnDescriptors), so each read is a scan over the record's
-// own values: `d + d = 3` and `c * 1.5 = 3` return row 1 where the target, serving
-// them from its truncated entries, returns none (DIVERGENCES.md, "long-arithmetic
-// index over a non-integer operand"). When Go ports function-key matching (WS-J
-// section 3.5), these reads must stay scans: the entries do not hold the value of
-// the query expression, so no index over them is a valid match.
+// Go declines an arithmetic function key over a non-INT/LONG argument, so those
+// reads scan the record's own values: `d + d = 3` and `c * 1.5 = 3` return row 1
+// where the target, serving them from its truncated entries, returns none
+// (DIVERGENCES.md, "Long-arithmetic key candidates"). The INT key `i + 1` is a
+// candidate, so its equalities are served from the index like the target's; Go
+// also probes it with the LONG 2147483648, which the target promotes and filters
+// (DIVERGENCES.md, "INT-vs-LONG stays sargable in Go").
 var wsjNonIntGoPins = map[string]string{
-	"int_max_plus_one \"EXPLAIN SELECT id FROM T WHERE i + 1 = 2147483648\"": "PLAN Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})",
-	"int_max_plus_one \"SELECT id FROM T WHERE i + 1 = 2147483648\"":         "ERROR 22003 \"integer overflow\"",
-	"int_max_plus_one \"EXPLAIN SELECT id FROM T WHERE i + 1 = 6\"":          "PLAN Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})",
-	"int_max_plus_one \"SELECT id FROM T WHERE i + 1 = 6\"":                  "ERROR 22003 \"integer overflow\"",
-	"int_max_plus_one \"SELECT i + 1 FROM T WHERE id = 1\"":                  "ERROR 22003 \"integer overflow\"",
-	"int_max_plus_one \"SELECT id FROM T WHERE i + 1 > 0 ORDER BY id\"":      "ERROR 22003 \"integer overflow\"",
 	"double_plus_double \"EXPLAIN SELECT d + d FROM T ORDER BY d + d\"":      "PLAN InMemorySort([_current._0#0 ASC], Map(Scan(T), {_0: (_current.D#1 + _current.D#1)}))",
+	"double_plus_double \"EXPLAIN SELECT d + d FROM T WHERE d + d = 2\"":     "PLAN Map(PredicatesFilter(Scan(T), [1 preds]), {_0: (_current.D#1 + _current.D#1)})",
+	"double_plus_double \"EXPLAIN SELECT d FROM T WHERE d + d = 2\"":         "PLAN Map(PredicatesFilter(Scan(T), [1 preds]), {D: _current.D#1})",
 	"double_plus_double \"EXPLAIN SELECT id FROM T WHERE d + d = 2\"":        "PLAN Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})",
 	"double_plus_double \"SELECT d + d FROM T ORDER BY d + d\"":              "OK [[-3] [3] [4]]",
 	"double_plus_double \"SELECT id FROM T WHERE d + d = 2\"":                "OK []",
@@ -2266,17 +2262,21 @@ var wsjNonIntGoPins = map[string]string{
 	"double_times_literal \"SELECT id FROM T WHERE c * 1.5 = 2\"":            "OK []",
 	"double_times_literal \"SELECT id FROM T WHERE c * 1.5 = 3\"":            "OK [[1]]",
 	"float_plus_int \"EXPLAIN SELECT id FROM T WHERE f + 1 = 2\"":            "PLAN Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})",
-	"float_plus_int \"SELECT id FROM T WHERE f + 1 = 2\"":                    "OK []",
 	"float_plus_int \"EXPLAIN SELECT id FROM T WHERE f + 1 = 2.5\"":          "PLAN Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})",
+	"float_plus_int \"SELECT id FROM T WHERE f + 1 = 2\"":                    "OK []",
 	"float_plus_int \"SELECT id FROM T WHERE f + 1 = 2.5\"":                  "OK [[1]]",
-	"int_max_plus_one \"EXPLAIN SELECT i + 1 FROM T ORDER BY i + 1\"":        "PLAN InMemorySort([_current._0#0 ASC], Map(Scan(T), {_0: (_current.I#1 + 1)}))",
+	"int_max_plus_one \"EXPLAIN SELECT i + 1 FROM T ORDER BY i + 1\"":        "PLAN Map(IndexScan(IX, [*]), {_0: (_current.I#1 + 1)})",
+	"int_max_plus_one \"EXPLAIN SELECT i + 1 FROM T WHERE i + 1 = 6\"":       "PLAN Map(IndexScan(IX, [=]), {_0: (_current.I#1 + 1)})",
+	"int_max_plus_one \"EXPLAIN SELECT i FROM T WHERE i + 1 = 6\"":           "PLAN Map(IndexScan(IX, [=]), {I: _current.I#1})",
+	"int_max_plus_one \"EXPLAIN SELECT id FROM T WHERE i + 1 = 2147483648\"": "PLAN Map(IndexScan(IX, [=] COVERING), {ID: _current.ID#0})",
+	"int_max_plus_one \"EXPLAIN SELECT id FROM T WHERE i + 1 = 6\"":          "PLAN Map(IndexScan(IX, [=] COVERING), {ID: _current.ID#0})",
 	"int_max_plus_one \"SELECT i + 1 FROM T ORDER BY i + 1\"":                "ERROR 22003 \"integer overflow\"",
-	"double_plus_double \"EXPLAIN SELECT d + d FROM T WHERE d + d = 2\"":     "PLAN Map(PredicatesFilter(Scan(T), [1 preds]), {_0: (_current.D#1 + _current.D#1)})",
-	"double_plus_double \"EXPLAIN SELECT d FROM T WHERE d + d = 2\"":         "PLAN Map(PredicatesFilter(Scan(T), [1 preds]), {D: _current.D#1})",
-	"int_max_plus_one \"EXPLAIN SELECT i + 1 FROM T WHERE i + 1 = 6\"":       "PLAN Map(PredicatesFilter(Scan(T), [1 preds]), {_0: (_current.I#1 + 1)})",
-	"int_max_plus_one \"SELECT i + 1 FROM T WHERE i + 1 = 6\"":               "ERROR 22003 \"integer overflow\"",
-	"int_max_plus_one \"EXPLAIN SELECT i FROM T WHERE i + 1 = 6\"":           "PLAN Map(PredicatesFilter(Scan(T), [1 preds]), {I: _current.I#1})",
-	"int_max_plus_one \"SELECT i FROM T WHERE i + 1 = 6\"":                   "ERROR 22003 \"integer overflow\"",
+	"int_max_plus_one \"SELECT i + 1 FROM T WHERE i + 1 = 6\"":               "OK [[6]]",
+	"int_max_plus_one \"SELECT i + 1 FROM T WHERE id = 1\"":                  "ERROR 22003 \"integer overflow\"",
+	"int_max_plus_one \"SELECT i FROM T WHERE i + 1 = 6\"":                   "OK [[5]]",
+	"int_max_plus_one \"SELECT id FROM T WHERE i + 1 = 2147483648\"":         "OK [[1]]",
+	"int_max_plus_one \"SELECT id FROM T WHERE i + 1 = 6\"":                  "OK [[2]]",
+	"int_max_plus_one \"SELECT id FROM T WHERE i + 1 > 0 ORDER BY id\"":      "OK [[1] [2]]",
 }
 
 // F2b across engines, byte for byte. The target maintains a long-arithmetic index

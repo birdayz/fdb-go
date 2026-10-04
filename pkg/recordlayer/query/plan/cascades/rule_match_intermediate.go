@@ -1399,7 +1399,8 @@ func bindOrientedComparison(
 		if !comparandIndependentOfSource(orient.comparison.Operand, sourceAlias) {
 			continue
 		}
-		if !valuesMatchColumn(orient.column, ph.GetValue()) {
+		if !valuesMatchColumn(orient.column, ph.GetValue()) &&
+			!expressionMatchesPlaceholder(orient.column, ph.GetValue(), sourceAlias) {
 			continue
 		}
 		// Don't push a type-incompatible comparison (e.g. a BIGINT column vs a
@@ -1512,10 +1513,38 @@ func comparandIndependentOfSource(comparand values.Value, sourceAlias values.Cor
 // matched source. CardinalityValue is a transparent wrapper handled by the same
 // primitive; a complex non-column value (arithmetic, cast, …) that is not a
 // distance key matches only by exact structural equality.
+// expressionMatchesPlaceholder is Java's semanticEquals of a query expression
+// and a candidate key Value under the matched quantifiers' correspondence
+// (source alias to the candidate's base): an expression index key such as
+// ArithmeticValue(bitand, D, 1). Its literals compare by value, which is sound
+// because the plan cache keys on the literal text (value_equivalence.go).
+func expressionMatchesPlaceholder(queryValue, placeholderValue values.Value, sourceAlias values.CorrelationIdentifier) bool {
+	if queryValue == nil || placeholderValue == nil {
+		return false
+	}
+	if _, isField := values.AsFieldValue(placeholderValue); isField || len(placeholderValue.Children()) == 0 {
+		return false
+	}
+	roots := values.GetCorrelatedToOfValue(placeholderValue)
+	if len(roots) != 1 {
+		return false
+	}
+	var candidateBase values.CorrelationIdentifier
+	for root := range roots {
+		candidateBase = root
+	}
+	aliases, err := values.NewAliasMap([]values.AliasPair{{Source: sourceAlias, Target: candidateBase}})
+	if err != nil {
+		return false
+	}
+	return values.SemanticEqualsUnderAliasMap(queryValue, placeholderValue, aliases)
+}
+
 func valuesMatchColumn(queryValue, placeholderValue values.Value) bool {
 	if queryValue == nil || placeholderValue == nil {
 		return false
 	}
+
 	// A primitive fanout element is the whole flowed object of the Explode
 	// quantifier, not a FieldValue beneath it. The query and candidate use
 	// different correlation identities, so structural equality cannot prove

@@ -416,6 +416,11 @@ func (p *RecordQueryIndexPlan) WithIndexMetadata(columnNames, pkColumnNames []st
 type IndexOrderingColumn struct {
 	Direction   values.OrderedBytesDirection
 	Cardinality bool
+	// Key, when set, is the column's Value over the record QOV KeyRoot: a
+	// function key such as ArithmeticValue(bitmap_bucket_offset, ID, 10000),
+	// which orders the scan as a whole Value rather than by a field.
+	Key     values.Value
+	KeyRoot values.CorrelationIdentifier
 }
 
 // WithOrderingColumns returns a copy whose key columns order the scan as given:

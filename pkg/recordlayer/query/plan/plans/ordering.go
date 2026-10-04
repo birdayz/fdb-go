@@ -2009,12 +2009,12 @@ func (p *RecordQueryFetchFromPartialRecordPlan) HintRichOrdering() *properties.R
 
 // injectiveKeyColumnNames are the key columns whose entry determines a
 // top-level field, so a primary-key column of the same name is not stored
-// again: all but a CARDINALITY column and a nested leaf, as Java trims the
+// again: all but a function column and a nested leaf, as Java trims the
 // primary key by key-expression equality.
 func (p *RecordQueryIndexPlan) injectiveKeyColumnNames() []string {
 	names := make([]string, 0, len(p.GetColumnNames()))
 	for i, name := range p.GetColumnNames() {
-		if i < len(p.orderingColumns) && p.orderingColumns[i].Cardinality {
+		if i < len(p.orderingColumns) && (p.orderingColumns[i].Cardinality || p.orderingColumns[i].Key != nil) {
 			continue
 		}
 		if p.NestedKeyColumnPath(i) != nil {
@@ -2028,6 +2028,19 @@ func (p *RecordQueryIndexPlan) injectiveKeyColumnNames() []string {
 // orderingKeyOf is the value key column i (or, past the key, the primary-key
 // column name) orders the scan by.
 func (p *RecordQueryIndexPlan) orderingKeyOf(i int, name string) values.Value {
+	if i < len(p.GetColumnNames()) && i < len(p.orderingColumns) && p.orderingColumns[i].Key != nil {
+		column := p.orderingColumns[i]
+		root := p.GetResultValue()
+		translation := values.NewTranslationMapBuilder().
+			When(column.KeyRoot).
+			Then(func(_ values.CorrelationIdentifier, _ values.Value) values.Value { return root }).
+			Build()
+		key, err := values.TranslateCorrelationsChecked(column.Key, translation)
+		if err != nil {
+			return nil
+		}
+		return key
+	}
 	var key values.Value
 	if path := p.NestedKeyColumnPath(i); path != nil && i < len(p.GetColumnNames()) {
 		key = orderingColumnOfPath(p.GetResultValue(), p.GetFlowedType(), path)

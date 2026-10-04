@@ -2731,3 +2731,27 @@ each recursive value when it is written (`recursiveSlotValue`, `values.NarrowVal
 what promotes, and refuses a NULL into NOT NULL or a value of another type with XXXXX at once. Both
 answers are pinned in `conformance/recursive_column_list_conformance_test.go`.
 
+
+## Long-arithmetic key candidates (WS-J 3.5)
+
+A value index over a long-arithmetic key function (`d & 1`, `d + 1`,
+`bitmap_bucket_offset(id)`) is a match candidate whose column Value is the
+arithmetic of the same logical operator, as Java's
+`LongArithmethicFunctionKeyExpression.toValue` builds it
+(`cascades/key_expression_expansion.go`, `functionKeyToValue`). Go declines two
+keys Java expands:
+
+- **An argument that is not INT or LONG.** The maintainer stores
+  `getNullableLong` of each operand (truncated toward zero), so the entries are
+  not the value of the query expression `d + d` over a DOUBLE. Java matches the
+  index anyway and answers `d + d = 3` with no row where the record's `d` is
+  1.5; Go answers from the records (conformance "WS-J long arithmetic key
+  functions over non-integer operands", `wsjNonIntGoPins`).
+- **A key `encapsulate` refuses**, such as the `long_value` bitmap entry size a
+  Go build before the literal-carrier fix stored (the bitmap functions have no
+  (LONG, LONG) lane). Java's `VerifyException` escapes candidate expansion
+  (`MatchCandidateExpansion` catches only `UnsupportedOperationException`) and
+  fails every query of the table; Go plans the query from the other access
+  paths. Any other expansion failure of a stored key, which neither engine's DDL
+  produces, declines too: Go builds candidates over every table, so failing
+  would refuse queries of tables that do not hold the key.

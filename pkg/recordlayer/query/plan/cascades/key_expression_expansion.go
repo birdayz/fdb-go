@@ -125,6 +125,8 @@ func expandKeyExpression(expression *gen.KeyExpression, s keyExpansionState) (*G
 		return expandKeyFunction(expression.Function, s)
 	case expression.Version != nil:
 		return expandKeyVersion(s)
+	case expression.Value != nil:
+		return expandKeyLiteral(expression.Value, s)
 	case expression.Empty != nil:
 		return NewGraphExpansion([]GraphExpansionColumn{{Value: values.NewEmptyValue()}}, nil, nil, nil), nil
 	case expression.KeyWithValue != nil:
@@ -497,6 +499,51 @@ func keyFunctionColumn(function *gen.Function, prefix []string) keyExpansionColu
 	return column
 }
 
+// FunctionKeyColumnName is the name index metadata gives a function key
+// column: the field its single argument reads, else none.
+func FunctionKeyColumnName(function *gen.Function) string {
+	if path := keyFunctionArgumentPath(function.GetArguments(), nil); len(path) > 0 {
+		return path[len(path)-1]
+	}
+	return ""
+}
+
+// expandKeyLiteral is LiteralKeyExpression.toValue: LiteralValue.ofScalar of
+// the stored value, typed by its carrier as a query literal of that width is.
+func expandKeyLiteral(literal *gen.Value, s keyExpansionState) (*GraphExpansion, error) {
+	var value values.Value
+	switch {
+	case literal.IntValue != nil:
+		value = &values.ConstantValue{Value: int64(literal.GetIntValue()), Typ: values.NullableInt}
+	case literal.LongValue != nil:
+		value = &values.ConstantValue{Value: literal.GetLongValue(), Typ: values.NullableLong}
+	default:
+		return nil, unsupportedKeyExpansion("literal key of an unmodelled type")
+	}
+	if s.describe {
+		value = nil
+	}
+	s.registerValue(value, keyExpansionColumn{})
+	if s.describe {
+		if s.isKey() && !s.internal {
+			if _, err := s.reg.takeAlias(); err != nil {
+				return nil, err
+			}
+		}
+		return EmptyGraphExpansion(), nil
+	}
+	columns := []GraphExpansionColumn{{Value: value}}
+	if s.isKey() && !s.internal {
+		placeholder, err := s.placeholderFor(value)
+		if err != nil {
+			return nil, err
+		}
+		return NewGraphExpansion(columns, []predicates.QueryPredicate{placeholder}, nil,
+			[]*predicates.Placeholder{placeholder}), nil
+	}
+	return NewGraphExpansion(columns, nil, nil, nil), nil
+}
+
 // keyFunctionArgumentPath is the field path a single-field function argument
 // reads: a direct field, a scalar nesting's child, or the parent of a
 // collapsed array wrapper.
@@ -514,9 +561,25 @@ func keyFunctionArgumentPath(arguments *gen.KeyExpression, prefix []string) []st
 	return keyFunctionArgumentPath(nesting.GetChild(), appendPath(prefix, nesting.GetParent().GetFieldName()))
 }
 
+// longArithmeticValueFunctions maps each binary LongArithmethicFunctionKey
+// Expression name to the BuiltInFunction its toValue resolves
+// (LongArithmethicFunctionKeyExpressionFactory: "subtract" is "sub", ...).
+var longArithmeticValueFunctions = map[string]string{
+	"add": "add", "sub": "sub", "subtract": "sub", "mul": "mul", "multiply": "mul",
+	"div": "div", "divide": "div", "mod": "mod", "bitand": "bitand", "bitor": "bitor",
+	"bitxor": "bitxor", "bitmap_bit_position": "bitmap_bit_position",
+	"bitmap_bucket_offset": "bitmap_bucket_offset",
+}
+
 // functionKeyHasValue reports whether functionKeyToValue models the function
 // over that many argument columns.
 func functionKeyHasValue(name string, argumentCount int) error {
+	if _, arithmetic := longArithmeticValueFunctions[name]; arithmetic {
+		if argumentCount != 2 {
+			return unsupportedKeyExpansion("%s over %d arguments has no value", name, argumentCount)
+		}
+		return nil
+	}
 	_, isOrder := OrderFunctionDirection(name)
 	if name != FunctionKindCardinality && !isOrder {
 		return unsupportedKeyExpansion("function key %s has no value", name)
@@ -529,9 +592,29 @@ func functionKeyHasValue(name string, argumentCount int) error {
 
 // functionKeyToValue is FunctionKeyExpression.toValue for the function keys
 // Go models; any other function has no Value and declines the candidate.
+//
+// A long-arithmetic key encapsulates the arithmetic of the same logical
+// operator (LongArithmethicFunctionKeyExpression.toValue), its lane resolved
+// from the argument types. Two Go declines, both DIVERGENCES.md: an argument
+// that is not INT or LONG (the entries hold getNullableLong's truncation, not
+// the query expression's value), and a pair encapsulate refuses (a stored
+// long_value bitmap entry size), where Java's exception fails the query.
 func functionKeyToValue(name string, arguments []values.Value) (values.Value, error) {
 	if err := functionKeyHasValue(name, len(arguments)); err != nil {
 		return nil, err
+	}
+	if function, arithmetic := longArithmeticValueFunctions[name]; arithmetic {
+		for _, argument := range arguments {
+			if code := argument.Type().Code(); code != values.TypeCodeInt && code != values.TypeCodeLong {
+				return nil, unsupportedKeyExpansion("%s over a %v argument holds no query value", name, code)
+			}
+		}
+		op, _ := values.ArithmeticOpForLogicalName(function)
+		value, err := values.NewArithmeticValue(op, arguments[0], arguments[1])
+		if err != nil {
+			return nil, unsupportedKeyExpansion("%s: %v", name, err)
+		}
+		return value, nil
 	}
 	if direction, isOrder := OrderFunctionDirection(name); isOrder {
 		return values.NewToOrderedBytesValue(arguments[0], direction), nil

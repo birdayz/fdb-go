@@ -29,7 +29,7 @@ func init() {
 // bothFunction 1..2, LongArithmethicFunctionKeyExpression.java:162-235), one
 // column (:108-111), whose null is a plain null (:98).
 func registerLongArithmetic(name string, minArgs, maxArgs int, eval FunctionEvaluator) {
-	registerCoreFunction(name, FunctionSpec{Evaluator: eval, MinArguments: minArgs, MaxArguments: maxArgs, ColumnSize: 1})
+	registerCoreFunction(name, FunctionSpec{Evaluator: eval, MinArguments: minArgs, MaxArguments: maxArgs, ColumnSize: 1, longArithmetic: true})
 }
 
 func registerArithmeticFunctions() {

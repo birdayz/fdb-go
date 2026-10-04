@@ -108,10 +108,9 @@ type ValueIndexScanMatchCandidate struct {
 	// fan-out parent. It is always stored as a defensive clone.
 	rootKeyExpression *gen.KeyExpression
 
-	columnsOnce   sync.Once
-	columns       *valueIndexExpansion
-	expansionOnce sync.Once
-	expansion     *valueIndexExpansion
+	columnsOnce sync.Once
+	columns     *valueIndexExpansion
+	expansion   *valueIndexExpansion
 }
 
 // WithRecordTypeRowTypes attaches the per-record-type row layouts to a freshly
@@ -391,7 +390,7 @@ func (c *ValueIndexScanMatchCandidate) orderingColumnValue(i int) values.Value {
 	if i < len(c.columnFunctions) && c.columnFunctions[i] != "" {
 		if _, isOrder := OrderFunctionDirection(c.columnFunctions[i]); !isOrder {
 			if c.columnFunctions[i] != FunctionKindCardinality {
-				return nil
+				return c.keyValueOverOrderingCarrier(i)
 			}
 			argument := c.bakeOrderingPath(c.keyColumnPath(i))
 			if argument == nil {
@@ -411,6 +410,31 @@ func (c *ValueIndexScanMatchCandidate) orderingColumnValue(i int) values.Value {
 		return nil
 	}
 	return c.bakeOrderingPath(path)
+}
+
+// keyValueOverOrderingCarrier is key column i's Value as the expansion built
+// it (FunctionKeyExpression.toValue), re-rooted on the ordering carrier the
+// baked columns use.
+func (c *ValueIndexScanMatchCandidate) keyValueOverOrderingCarrier(i int) values.Value {
+	expansion := c.indexExpansion()
+	layout := c.orderingKeyLayout()
+	if expansion == nil || layout == nil || i < 0 || i >= len(expansion.keyValues) ||
+		expansion.keyValues[i] == nil {
+		return nil
+	}
+	root, ok := orderingKeyCarrier(layout)
+	if !ok {
+		return nil
+	}
+	translation := values.NewTranslationMapBuilder().
+		When(expansion.base.Correlation()).
+		Then(func(_ values.CorrelationIdentifier, _ values.Value) values.Value { return root }).
+		Build()
+	translated, err := values.TranslateCorrelationsChecked(expansion.keyValues[i], translation)
+	if err != nil {
+		return nil
+	}
+	return translated
 }
 
 // coveredOrdinalSets resolves the covered-column names against every row
@@ -854,23 +878,26 @@ func (c *ValueIndexScanMatchCandidate) indexColumns() *valueIndexExpansion {
 				}
 			}
 		}
+		// With a base type, the index is a candidate only if it expands: a
+		// function key's Value depends on its arguments' types.
+		if _, typed := candidateBaseType(c); typed {
+			expansion, err := expandValueIndexRoot(c, c.effectiveRootKeyExpression(), c.predicateProto)
+			if err != nil {
+				return
+			}
+			c.expansion = expansion
+		}
 		c.columns = described
 	})
 	return c.columns
 }
 
 // indexExpansion is the candidate graph of an admitted candidate, or nil when
-// it has none (no exact base type, or a column its base does not resolve).
+// it has none (no exact base type).
 func (c *ValueIndexScanMatchCandidate) indexExpansion() *valueIndexExpansion {
 	if c.indexColumns() == nil {
 		return nil
 	}
-	c.expansionOnce.Do(func() {
-		expansion, err := expandValueIndexRoot(c, c.effectiveRootKeyExpression(), c.predicateProto)
-		if err == nil {
-			c.expansion = expansion
-		}
-	})
 	return c.expansion
 }
 
@@ -1356,7 +1383,7 @@ func (c *ValueIndexScanMatchCandidate) orderingColumns() ([]plans.IndexOrderingC
 	described := c.indexColumns()
 	columns := make([]plans.IndexOrderingColumn, len(described.keyColumns))
 	for i, column := range described.keyColumns {
-		if described.keyDuplicates[i] || len(column.path) == 0 {
+		if described.keyDuplicates[i] || (len(column.path) == 0 && column.function == "") {
 			return nil, false
 		}
 		switch column.function {
@@ -1364,11 +1391,16 @@ func (c *ValueIndexScanMatchCandidate) orderingColumns() ([]plans.IndexOrderingC
 		case FunctionKindCardinality:
 			columns[i].Cardinality = true
 		default:
-			direction, isOrder := OrderFunctionDirection(column.function)
-			if !isOrder {
+			if direction, isOrder := OrderFunctionDirection(column.function); isOrder {
+				columns[i].Direction = direction
+				continue
+			}
+			expansion := c.indexExpansion()
+			if expansion == nil || expansion.keyValues[i] == nil {
 				return nil, false
 			}
-			columns[i].Direction = direction
+			columns[i].Key = expansion.keyValues[i]
+			columns[i].KeyRoot = expansion.base.Correlation()
 		}
 	}
 	return columns, true

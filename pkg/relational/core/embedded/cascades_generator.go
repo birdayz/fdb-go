@@ -3487,22 +3487,16 @@ func indexColumnFunctionTags(expr recordlayer.KeyExpression) []string {
 		tags[0] = cascades.FunctionKindCardinality
 		return tags
 	case *recordlayer.FunctionKeyExpression:
-		// An order-function wrapper (order_desc_nulls_last, …) is a
-		// single-column key whose entry bytes are the TupleOrdering encoding;
-		// the tag tells the candidate its Value is
-		// ToOrderedBytesValue(field, direction) rather than a plain field
-		// (Java: OrderFunctionKeyExpression.toValue,
-		// OrderFunctionKeyExpression.java:99-103). An unrecognized function
-		// stays "" — reported as a plain field, and the candidate's
-		// column check declines the mismatch fail-closed.
-		if _, isOrder := cascades.OrderFunctionDirection(e.Name()); isOrder {
+		// A function key column is tagged with the function whose Value the
+		// candidate's expansion builds (FunctionKeyExpression.toValue): an
+		// order function's ToOrderedBytesValue, a long-arithmetic function's
+		// ArithmeticValue. Any other function, an application's of the same
+		// name included, stays "" and the candidate declines the mismatch.
+		if _, isOrder := cascades.OrderFunctionDirection(e.Name()); isOrder ||
+			recordlayer.IsLongArithmeticFunction(e.Name()) {
 			return []string{e.Name()}
 		}
-		n := e.ColumnSize()
-		if n == 0 {
-			n = 1
-		}
-		return make([]string, n)
+		return []string{""}
 	case *recordlayer.KeyWithValueExpression:
 		// Tags stay parallel to IndexColumnNames — the KEY part only.
 		tags := indexColumnFunctionTags(e.InnerKey())
@@ -3605,7 +3599,8 @@ func indexKeyColumnNames(expression *gen.KeyExpression) ([]string, bool) {
 		}
 		return indexKeyColumnNames(expression.Nesting.GetChild())
 	case expression.Function != nil:
-		return indexKeyColumnNames(expression.Function.GetArguments())
+		// One column, named by the field its single argument reads.
+		return []string{cascades.FunctionKeyColumnName(expression.Function)}, true
 	case expression.Grouping != nil:
 		return indexKeyColumnNames(expression.Grouping.GetWholeKey())
 	case expression.KeyWithValue != nil:

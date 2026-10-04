@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=382 queries=2855 dml=176 non_query=111 plan_errors=319 unexpected_errors=4
+# files=383 queries=2861 dml=176 non_query=111 plan_errors=319 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -7305,6 +7305,36 @@ shape:     RecordQueryScanPlan
 === function_in_predicate.yaml#4
 sql:   SELECT id, UPPER(name) FROM t WHERE val > 20 ORDER BY id
 plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0, _1: UPPER(_current.NAME#1)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== function_key_value_index.yaml#0
+sql:   SELECT bitmap_bucket_offset(id) FROM T1 ORDER BY bitmap_bucket_offset(id)
+plan:  Map(IndexScan(AGG_BUCKET, [*] COVERING), {_0: (_current.ID#0 bitmap_bucket_offset 10000)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== function_key_value_index.yaml#1
+sql:   SELECT id FROM T2 WHERE d & 1 = 1
+plan:  Map(IndexScan(DMASK, [=] COVERING), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== function_key_value_index.yaml#2
+sql:   SELECT id FROM T2 WHERE d + 1 = 5
+plan:  Map(IndexScan(DPLUS, [=] COVERING), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== function_key_value_index.yaml#3
+sql:   SELECT * FROM T2 WHERE d + 1 = 5
+plan:  IndexScan(DPLUS, [=])
+shape: RecordQueryIndexPlan
+=== function_key_value_index.yaml#4
+sql:   SELECT id, d & 1 FROM T2 ORDER BY d & 1, id
+plan:  Map(IndexScan(DMASK, [*]), {ID: _current.ID#0, _1: (_current.D#1 & 1)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryIndexPlan
+=== function_key_value_index.yaml#5
+sql:   SELECT id FROM TD WHERE d + d = 3
+plan:  Map(PredicatesFilter(Scan(TD), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan

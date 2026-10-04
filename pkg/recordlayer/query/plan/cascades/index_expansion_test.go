@@ -1047,3 +1047,54 @@ func TestExpandValueIndex_ConcatenateColumnIsTheWholeField(t *testing.T) {
 		t.Fatal("control: the primary key must stay covered")
 	}
 }
+
+// A long-arithmetic key expands to the arithmetic of its logical operator over
+// its argument Values (LongArithmethicFunctionKeyExpression.toValue). Two keys
+// Go declines (DIVERGENCES.md): an entry size stored as long_value, for which
+// the bitmap functions have no lane (Java's VerifyException fails the query),
+// and an argument that is not INT or LONG, whose entries hold the truncated
+// long rather than the query expression's value.
+func TestExpandValueIndex_LongArithmeticKey(t *testing.T) {
+	t.Parallel()
+	rowType := values.NewRecordType("T", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "D", FieldType: values.NullableDouble, Ordinal: 1},
+	})
+	key := func(function, field string, literal *gen.Value) *gen.KeyExpression {
+		return &gen.KeyExpression{Function: &gen.Function{
+			Name: proto.String(function),
+			Arguments: &gen.KeyExpression{Then: &gen.Then{Child: []*gen.KeyExpression{
+				keyExpressionField(field, gen.Field_SCALAR),
+				{Value: literal},
+			}}},
+		}}
+	}
+	candidate := func(root *gen.KeyExpression, function string) *ValueIndexScanMatchCandidate {
+		distinct := false
+		return NewValueIndexScanMatchCandidateWithFunctions(
+			"idx", []string{"T"}, []string{""}, []string{function},
+			[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
+			rowType, false, []string{"ID"}, &distinct,
+		).WithRootKeyExpression(root)
+	}
+
+	intSize := candidate(key("bitmap_bucket_offset", "ID", &gen.Value{IntValue: proto.Int32(10000)}), "bitmap_bucket_offset")
+	top := fanoutExpansionTopSelect(t, intSize.GetTraversal())
+	placeholder := top.GetPredicates()[0].(*predicates.Placeholder)
+	arithmetic, ok := placeholder.Value.(*values.ArithmeticValue)
+	if !ok || arithmetic.Op != values.OpBitmapBucketOffset {
+		t.Fatalf("placeholder = %#v, want bitmap_bucket_offset(ID, 10000)", placeholder.Value)
+	}
+	if lane, ok := arithmetic.Lane(); !ok || lane.Result != values.TypeCodeLong {
+		t.Fatalf("lane = %+v, %v; want the LONG lane of (LONG, INT)", lane, ok)
+	}
+
+	longSize := candidate(key("bitmap_bucket_offset", "ID", &gen.Value{LongValue: proto.Int64(10000)}), "bitmap_bucket_offset")
+	if longSize.GetTraversal() != nil || longSize.ToScanPlan(nil, false) != nil {
+		t.Fatal("a long_value entry size has no bitmap lane; the index must not be a candidate")
+	}
+	double := candidate(key("add", "D", &gen.Value{IntValue: proto.Int32(1)}), "add")
+	if double.GetTraversal() != nil || double.ToScanPlan(nil, false) != nil {
+		t.Fatal("an arithmetic key over a DOUBLE argument must not be a candidate")
+	}
+}

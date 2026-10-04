@@ -1079,7 +1079,7 @@ func createsDuplicatesRec(expr KeyExpression, unrecognized bool) bool {
 		// one entry per argument tuple. Go dispatches the same override by the
 		// registered function name, since the factory-built Java subclass is a
 		// plain FunctionKeyExpression here.
-		if isOrderFunctionName(e.name) {
+		if isOrderFunctionName(e.name) || IsLongArithmeticFunction(e.name) {
 			return createsDuplicatesRec(e.arguments, unrecognized)
 		}
 		// Matches Java's FunctionKeyExpression.createsDuplicates() which returns true.
@@ -1612,6 +1612,19 @@ type FunctionSpec struct {
 	// null is Key.Evaluated.scalar(null), a plain null
 	// (LongArithmethicFunctionKeyExpression.java:98), which collides.
 	NullIsNonUnique bool
+	// longArithmetic marks the target's LongArithmethicFunctionKeyExpression
+	// functions, registered by this package only: their duplicates are their
+	// arguments' (LongArithmethicFunctionKeyExpression.java:104-106) and their
+	// Value is the arithmetic of the same logical operator.
+	longArithmetic bool
+}
+
+// IsLongArithmeticFunction reports whether name is registered as one of the
+// target's long-arithmetic key functions, not an application's function of
+// the same name.
+func IsLongArithmeticFunction(name string) bool {
+	spec, ok := LookupFunction(name)
+	return ok && spec.longArithmetic
 }
 
 // globalFunctionRegistry is Java's FunctionKeyExpression.Registry: the key
