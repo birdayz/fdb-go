@@ -1283,6 +1283,39 @@ func (c *ValueIndexScanMatchCandidate) plainFieldColumnsForShortcut() ([]string,
 	return c.columnNames, true
 }
 
+// orderingColumnDirections states each key column's physical order for the
+// scan plan's ordering claim: tuple-natural ascending for a plain field, the
+// order function's direction for an order-wrapped one. ok=false when any
+// column carries another function (a CARDINALITY column orders by no field).
+func (c *ValueIndexScanMatchCandidate) orderingColumnDirections() ([]values.OrderedBytesDirection, bool) {
+	if !c.canProduceScanPlan() || c.rootKeyExpression == nil {
+		return nil, false
+	}
+	descriptors, ok := keyExpressionFlatColumnDescriptors(c.rootKeyExpression)
+	if !ok || len(descriptors) != len(c.columnNames) {
+		return nil, false
+	}
+	directions := make([]values.OrderedBytesDirection, len(c.columnNames))
+	for i, descriptor := range descriptors {
+		function := ""
+		if i < len(c.columnFunctions) {
+			function = c.columnFunctions[i]
+		}
+		if !strings.EqualFold(descriptor.name, c.columnNames[i]) || descriptor.function != function {
+			return nil, false
+		}
+		directions[i] = values.OrderedBytesAscNullsFirst
+		if function != "" {
+			direction, isOrder := OrderFunctionDirection(function)
+			if !isOrder {
+				return nil, false
+			}
+			directions[i] = direction
+		}
+	}
+	return directions, true
+}
+
 // HasAndOrderedByRecordTypeKey reports whether the index key starts
 // with the record type key. For standard value indexes this is false;
 // only indexes explicitly prefixed by recordType() return true.

@@ -155,6 +155,7 @@ go_test(
         "coercion_test.go",
         "column_identity_test.go",
         "column_name_value_test.go",
+        "constant_over_test.go",
         "constant_signed_zero_test.go",
         "correlation_merge_alias_test.go",
         "correlation_test.go",

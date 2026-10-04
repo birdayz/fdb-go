@@ -293,28 +293,28 @@ func orderedFlatMapCandidatesAtSort(
 	rawOuters, err := collectJoinLegOrderingVariants(
 		call,
 		outerRef, properties.PreserveOrdering(), outerOrderingResultValue,
-		flatMap.GetOuterAlias(), less, false, call.Context)
+		flatMap.GetOuterAlias(), localAliases, less, false, call.Context)
 	if err != nil {
 		return nil, err
 	}
 	rawInners, err := collectJoinLegOrderingVariants(
 		call,
 		innerRef, properties.PreserveOrdering(), resultValue,
-		flatMap.GetInnerAlias(), less, false, call.Context)
+		flatMap.GetInnerAlias(), localAliases, less, false, call.Context)
 	if err != nil {
 		return nil, err
 	}
 	orderedOuters, err := collectJoinLegOrderingVariants(
 		call,
 		outerRef, outerRequested, outerOrderingResultValue,
-		flatMap.GetOuterAlias(), less, true, call.Context)
+		flatMap.GetOuterAlias(), localAliases, less, true, call.Context)
 	if err != nil {
 		return nil, err
 	}
 	orderedInners, err := collectJoinLegOrderingVariants(
 		call,
 		innerRef, innerRequested, resultValue,
-		flatMap.GetInnerAlias(), less, true, call.Context)
+		flatMap.GetInnerAlias(), localAliases, less, true, call.Context)
 	if err != nil {
 		return nil, err
 	}

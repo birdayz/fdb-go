@@ -166,7 +166,7 @@ func TestRFC190FlatMapOrderingCrossesPhysicalCarrierToRuntimeAlias(t *testing.T)
 	runtimeAlias := values.NamedCorrelationIdentifier("T")
 	runtimeRow := mustRFC190RecoveryConstruct(values.NewQuantifiedObjectValue(runtimeAlias, rowType))
 	pulled, err := pullChildOrderingThroughResult(
-		provided, physical, runtimeRow, runtimeAlias)
+		provided, physical, runtimeRow, runtimeAlias, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func TestRFC190FlatMapOrderingCrossesNominalJoinResult(t *testing.T) {
 	physical := physicalPlanExpression(index)
 	provided := computeWrapperRichOrdering(physical)
 	pulled, err := pullChildOrderingThroughResult(
-		provided, physical, resultValue, runtimeAlias)
+		provided, physical, resultValue, runtimeAlias, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

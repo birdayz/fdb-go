@@ -340,6 +340,7 @@ go_test(
         "null_rejecting_scan_range_test.go",
         "optimize_group_ordering_test.go",
         "order_function_direction_test.go",
+        "order_function_index_plan_ordering_test.go",
         "ordering_comparator_dispatch_test.go",
         "ordering_comparison_census_test.go",
         "ordering_identity_decisions_test.go",
@@ -1166,6 +1167,7 @@ go_test(
         "planner_memo_merge_test.go",
         "block_select_fixture_test.go",
         "aggregate_group_row_test.go",
+        "order_function_index_plan_ordering_test.go",
     ],
     deps = [
         "//gen",

@@ -757,7 +757,7 @@ func (r *ImplementNestedLoopJoinRule) yieldBinaryJoinWithSourceOrderingVariants(
 		rawOuters, err := collectJoinLegOrderingVariants(
 			call,
 			outerRef, properties.PreserveOrdering(), outerOrderingResultValue,
-			outerAlias, less, false, call.Context)
+			outerAlias, localAliases, less, false, call.Context)
 		if err != nil {
 			call.Fail(err)
 			return
@@ -765,7 +765,7 @@ func (r *ImplementNestedLoopJoinRule) yieldBinaryJoinWithSourceOrderingVariants(
 		rawInners, err := collectJoinLegOrderingVariants(
 			call,
 			innerRef, properties.PreserveOrdering(), resultValue,
-			innerAlias, less, false, call.Context)
+			innerAlias, localAliases, less, false, call.Context)
 		if err != nil {
 			call.Fail(err)
 			return
@@ -773,7 +773,7 @@ func (r *ImplementNestedLoopJoinRule) yieldBinaryJoinWithSourceOrderingVariants(
 		orderedOuters, err := collectJoinLegOrderingVariants(
 			call,
 			outerRef, outerRequested, outerOrderingResultValue,
-			outerAlias, less, true, call.Context)
+			outerAlias, localAliases, less, true, call.Context)
 		if err != nil {
 			call.Fail(err)
 			return
@@ -781,7 +781,7 @@ func (r *ImplementNestedLoopJoinRule) yieldBinaryJoinWithSourceOrderingVariants(
 		orderedInners, err := collectJoinLegOrderingVariants(
 			call,
 			innerRef, innerRequested, resultValue,
-			innerAlias, less, true, call.Context)
+			innerAlias, localAliases, less, true, call.Context)
 		if err != nil {
 			call.Fail(err)
 			return
@@ -811,6 +811,7 @@ func collectJoinLegOrderingVariants(
 	requestedInChildSpace *properties.RequestedOrdering,
 	resultValue values.Value,
 	resultAlias values.CorrelationIdentifier,
+	localAliases map[values.CorrelationIdentifier]struct{},
 	less func(a, b expressions.RelationalExpression) bool,
 	pinOrdering bool,
 	ctx PlanContext,
@@ -889,7 +890,7 @@ func collectJoinLegOrderingVariants(
 			continue
 		}
 		pulled, err := pullChildOrderingThroughResult(
-			provided, ph, resultValue, resultAlias)
+			provided, ph, resultValue, resultAlias, localAliases)
 		if err != nil {
 			return nil, err
 		}

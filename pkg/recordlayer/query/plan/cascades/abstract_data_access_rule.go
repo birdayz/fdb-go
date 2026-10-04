@@ -534,11 +534,16 @@ func stampIndexMetadata(cand MatchCandidate, idxPlan *plans.RecordQueryIndexPlan
 			stamped = stamped.WithValueColumnNames(valueCols)
 		}
 		if _, safe := valueCandidate.plainFieldColumnsForShortcut(); !safe {
-			// RecordQueryIndexPlan currently carries only flat column names,
-			// not semantic key Values. Keep expression-key names for physical
-			// row layout/costing but do not synthesize false FieldValue
-			// ordering (CARDINALITY(TAGS) is not TAGS ordering).
-			stamped = stamped.WithOrderingKeyNamesUnavailable()
+			// RecordQueryIndexPlan carries flat column names, not semantic key
+			// Values: an order-wrapped column orders by its field in the
+			// function's direction, while any other expression key keeps its
+			// names for row layout/costing only (CARDINALITY(TAGS) is not TAGS
+			// ordering).
+			if directions, ordered := valueCandidate.orderingColumnDirections(); ordered {
+				stamped = stamped.WithOrderingDirections(directions)
+			} else {
+				stamped = stamped.WithOrderingKeyNamesUnavailable()
+			}
 		}
 	}
 	if sig := candidateDistinctSignal(cand); sig != nil {

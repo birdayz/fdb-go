@@ -390,6 +390,27 @@ func nonNilPassthroughValue(value Value) bool {
 	}
 }
 
+// IsConstantOver reports whether v is constant over an operator binding
+// localAliases: it reads neither those aliases nor the operator's input row,
+// and holds no aggregate or queried value (Java's MatchConstantValueRule,
+// whose AggregateValue includes the record constructor).
+func IsConstantOver(v Value, localAliases map[CorrelationIdentifier]struct{}) bool {
+	for alias := range GetCorrelatedToOfValue(v) {
+		if _, local := localAliases[alias]; local || alias.isCurrent() {
+			return false
+		}
+	}
+	constant := true
+	WalkValue(v, func(n Value) bool {
+		switch n.(type) {
+		case *AggregateValue, *IndexOnlyAggregateValue, *RecordConstructorValue, *QueriedValue:
+			constant = false
+		}
+		return constant
+	})
+	return constant
+}
+
 // PullUpValues translates a list of values through a result value,
 // returning a map from original value to pulled-up value. Values that
 // cannot be pulled up are omitted from the map.

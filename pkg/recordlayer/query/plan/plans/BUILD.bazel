@@ -87,6 +87,7 @@ go_test(
         "covering_point_probe_test.go",
         "cte_plans_test.go",
         "default_on_empty_result_contract_test.go",
+        "directional_index_ordering_test.go",
         "distinct_streaming_refuses_narrowing_test.go",
         "equality_prefix_test.go",
         "erased_record_result_base_test.go",
@@ -271,6 +272,7 @@ go_test(
         "update_target_field_test.go",
         "physical_correlation_bindings_test.go",
         "flat_map_mixed_lineage_test.go",
+        "directional_index_ordering_test.go",
     ],
     deps = [
         "//pkg/fdbgo/fdb/tuple",

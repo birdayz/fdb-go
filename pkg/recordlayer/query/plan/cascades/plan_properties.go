@@ -533,15 +533,17 @@ func computeJoinRichOrdering(w physicalPlanExpression) (*properties.RichOrdering
 	if outerOrdering == nil || innerOrdering == nil {
 		return properties.EmptyOrdering(), true
 	}
+	localAliases := map[values.CorrelationIdentifier]struct{}{outerAlias: {}, innerAlias: {}}
 	outerOrdering, err := pullChildOrderingThroughResult(
 		outerOrdering, outerExpr,
 		flatMapOrderingResultForChild(flatMap, outerAlias, true), outerAlias,
+		localAliases,
 	)
 	if err != nil {
 		return properties.EmptyOrdering(), true
 	}
 	innerOrdering, err = pullChildOrderingThroughResult(
-		innerOrdering, innerExpr, result, innerAlias,
+		innerOrdering, innerExpr, result, innerAlias, localAliases,
 	)
 	if err != nil {
 		return properties.EmptyOrdering(), true
@@ -572,15 +574,16 @@ func pullChildOrderingThroughResult(
 	child physicalPlanExpression,
 	resultValue values.Value,
 	resultAlias values.CorrelationIdentifier,
+	localAliases map[values.CorrelationIdentifier]struct{},
 ) (*properties.RichOrdering, error) {
 	if ordering == nil || child == nil || child.GetRecordQueryPlan() == nil {
 		return nil, nil
 	}
 	layout, err := child.GetRecordQueryPlan().ProvidedOutputLayout()
 	if err != nil || layout == nil || layout.Carrier() == nil {
-		return ordering.PullUpThroughValue(resultValue, resultAlias)
+		return ordering.PullUpThroughValue(resultValue, resultAlias, localAliases)
 	}
-	bound, err := ordering.PullUpThroughValue(layout.Carrier(), resultAlias)
+	bound, err := ordering.PullUpThroughValue(layout.Carrier(), resultAlias, localAliases)
 	if err != nil || bound == nil {
 		return bound, err
 	}
@@ -592,7 +595,7 @@ func pullChildOrderingThroughResult(
 		resultQOV.Correlation() == resultAlias {
 		return bound, nil
 	}
-	return bound.PullUpThroughValue(resultValue, resultAlias)
+	return bound.PullUpThroughValue(resultValue, resultAlias, localAliases)
 }
 
 // flatMapOrderingResultForChild returns the semantic result-value lens used to

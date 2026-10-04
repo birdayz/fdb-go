@@ -447,3 +447,29 @@ func bindingTranslationExplainValues(items []values.Value) []string {
 	}
 	return explained
 }
+
+// TestRichOrderingPullUpKeepsConstantFixedBinding: an equality bound to an
+// outer row the operator does not bind (an IN value, a correlated join's outer
+// leg) is constant over it and survives the pull-up unchanged, as Java's
+// pullUp keeps a value correlated only to its constantAliases.
+func TestRichOrderingPullUpKeepsConstantFixedBinding(t *testing.T) {
+	t.Parallel()
+
+	key := bindingTranslationField(t, "key")
+	outer := propertyFieldFrom(t,
+		mustQOV(t, values.NamedCorrelationIdentifier("outer_row"),
+			exactRecord(values.Field{Name: "v", FieldType: values.NullableLong})),
+		"v")
+	ordering := bindingTranslationOrdering(t, key, outer, false)
+	upperAlias := values.NamedCorrelationIdentifier("binding_constant")
+	resultValue := values.NewRecordConstructorValue(
+		values.RecordConstructorField{Name: "renamed_key", Value: key},
+	)
+	upperQOV := mustQOV(t, upperAlias, exactRecord(
+		values.Field{Name: "renamed_key", FieldType: values.NullableLong, Ordinal: 0},
+	))
+
+	pulled := mustPullUpThroughValue(t, ordering, resultValue, upperAlias)
+	bindingTranslationAssertSingleFixedRange(
+		t, pulled, propertyFieldFrom(t, upperQOV, "renamed_key"), outer, false)
+}

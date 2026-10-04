@@ -840,15 +840,26 @@ func (p *RecordQueryIndexPlan) HintOrdering() properties.Ordering {
 	}
 	keys := make([]values.Value, 0, len(sorted))
 	desc := make([]bool, 0, len(sorted))
-	for _, col := range sorted {
+	nullsFirst := make([]bool, 0, len(sorted))
+	for j, col := range sorted {
 		key := orderingColumnOfName(p.GetResultValue(), p.GetFlowedType(), col)
 		if key == nil {
 			return properties.Ordering{}
 		}
 		keys = append(keys, key)
-		desc = append(desc, rev)
+		order := properties.ProvidedSortOrderAscending
+		if rev {
+			order = properties.ProvidedSortOrderDescending
+		}
+		if column := split.fixedLen + j; column < len(columnNames) {
+			order = p.columnSortOrder(column)
+		}
+		desc = append(desc, order == properties.ProvidedSortOrderDescending ||
+			order == properties.ProvidedSortOrderDescendingNullsFirst)
+		nullsFirst = append(nullsFirst, order == properties.ProvidedSortOrderAscending ||
+			order == properties.ProvidedSortOrderDescendingNullsFirst)
 	}
-	return properties.Ordering{IsKnown: true, Keys: keys, Descending: desc}
+	return properties.Ordering{IsKnown: true, Keys: keys, Descending: desc, NullsFirst: nullsFirst}
 }
 
 // columnCanExtendOrderingClaim / keyCanExtendOrderingClaim are the plans-side
@@ -1684,16 +1695,20 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 		if split.pins[i] {
 			bm[key] = []properties.OrderingBinding{properties.FixedBinding(comps[i])}
 		} else {
-			bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
+			bm[key] = []properties.OrderingBinding{properties.SortedBinding(p.columnSortOrder(i))}
 		}
 	}
-	for _, col := range tail {
+	for j, col := range tail {
 		key := orderingColumnOfName(p.GetResultValue(), p.GetFlowedType(), col)
 		if key == nil {
 			return properties.EmptyOrdering()
 		}
 		keys = append(keys, key)
-		bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
+		order := dir
+		if column := split.fixedLen + j; column < len(columnNames) {
+			order = p.columnSortOrder(column)
+		}
+		bm[key] = []properties.OrderingBinding{properties.SortedBinding(order)}
 	}
 	if len(keys) == 0 {
 		return properties.EmptyOrdering()
@@ -1730,6 +1745,32 @@ func (p *RecordQueryPredicatesFilterPlan) HintRichOrdering() *properties.RichOrd
 	return richOrderingOf(p.OrderingSourceRef())
 }
 
+// HintRichOrdering: Java's OrderingProperty.visitMapPlan pulls the child's
+// ordering up through the result value, so the ordering states the map's own
+// output columns; a child key the result does not carry ends the ordering.
+func (p *RecordQueryMapPlan) HintRichOrdering() *properties.RichOrdering {
+	child := richOrderingOf(p.OrderingSourceRef())
+	if child == nil || len(child.GetKeys()) == 0 {
+		return properties.EmptyOrdering()
+	}
+	alias := p.innerQ.GetAlias()
+	local := map[values.CorrelationIdentifier]struct{}{alias: {}}
+	if inner := p.GetInner(); inner != nil {
+		if layout, err := inner.ProvidedOutputLayout(); err == nil && layout != nil && layout.Carrier() != nil {
+			bound, bindErr := child.PullUpThroughValue(layout.Carrier(), alias, local)
+			if bindErr != nil || bound == nil {
+				return properties.EmptyOrdering()
+			}
+			child = bound
+		}
+	}
+	pulled, err := child.PullUpThroughValue(p.resultValue, values.CurrentCorrelation(), local)
+	if err != nil || pulled == nil {
+		return properties.EmptyOrdering()
+	}
+	return pulled
+}
+
 // HintRichOrdering: fetching the full record per index entry preserves the
 // index scan's rich ordering, so inherit it from the source.
 //
@@ -1739,4 +1780,33 @@ func (p *RecordQueryPredicatesFilterPlan) HintRichOrdering() *properties.RichOrd
 // quantifier ranges over. Two questions, two answers.
 func (p *RecordQueryFetchFromPartialRecordPlan) HintRichOrdering() *properties.RichOrdering {
 	return richOrderingOf(p.OrderingSourceRef())
+}
+
+// columnSortOrder is the provided order of key column i under this scan's
+// direction; a reverse scan flips direction and null placement together.
+func (p *RecordQueryIndexPlan) columnSortOrder(i int) properties.ProvidedSortOrder {
+	order := properties.ProvidedSortOrderAscending
+	if i < len(p.orderingDirections) {
+		switch p.orderingDirections[i] {
+		case values.OrderedBytesAscNullsLast:
+			order = properties.ProvidedSortOrderAscendingNullsLast
+		case values.OrderedBytesDescNullsFirst:
+			order = properties.ProvidedSortOrderDescendingNullsFirst
+		case values.OrderedBytesDescNullsLast:
+			order = properties.ProvidedSortOrderDescending
+		}
+	}
+	if !p.IsReverse() {
+		return order
+	}
+	switch order {
+	case properties.ProvidedSortOrderAscending:
+		return properties.ProvidedSortOrderDescending
+	case properties.ProvidedSortOrderDescending:
+		return properties.ProvidedSortOrderAscending
+	case properties.ProvidedSortOrderAscendingNullsLast:
+		return properties.ProvidedSortOrderDescendingNullsFirst
+	default:
+		return properties.ProvidedSortOrderAscendingNullsLast
+	}
 }

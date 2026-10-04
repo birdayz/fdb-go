@@ -18,9 +18,12 @@ func propertyField(t testing.TB, name string, fieldType values.Type) values.Valu
 	return propertyFieldIn(t, exactRecord(values.Field{Name: name, FieldType: fieldType}), name)
 }
 
+// propertiesTestRow is the input row the fixtures' operator ranges over.
+var propertiesTestRow = values.NamedCorrelationIdentifier("properties_test_row")
+
 func propertyFieldIn(t testing.TB, row values.Type, name string) values.Value {
 	t.Helper()
-	child := mustQOV(t, values.NamedCorrelationIdentifier("properties_test_row"), row)
+	child := mustQOV(t, propertiesTestRow, row)
 	return propertyFieldFrom(t, child, name)
 }
 
@@ -53,7 +56,7 @@ func propertyFieldAt(t testing.TB, name string, ordinal int, fieldType values.Ty
 		fields[i] = values.Field{Name: fmt.Sprintf("unused_%d", i), FieldType: values.NullableLong}
 	}
 	fields[ordinal] = values.Field{Name: name, FieldType: fieldType}
-	child := mustQOV(t, values.NamedCorrelationIdentifier("properties_test_row"), exactRecord(fields...))
+	child := mustQOV(t, propertiesTestRow, exactRecord(fields...))
 	field, err := values.ResolveFieldOrdinals(child, []int{ordinal})
 	if err != nil {
 		t.Fatalf("ResolveFieldOrdinals(%q, %d): %v", name, ordinal, err)
@@ -213,7 +216,8 @@ func mustPullUpThroughValue(
 	alias values.CorrelationIdentifier,
 ) *RichOrdering {
 	t.Helper()
-	pulled, err := ordering.PullUpThroughValue(resultValue, alias)
+	pulled, err := ordering.PullUpThroughValue(resultValue, alias,
+		map[values.CorrelationIdentifier]struct{}{propertiesTestRow: {}})
 	if err != nil {
 		t.Fatalf("PullUpThroughValue: %v", err)
 	}

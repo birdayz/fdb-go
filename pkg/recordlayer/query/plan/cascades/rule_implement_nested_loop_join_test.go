@@ -1275,6 +1275,9 @@ func TestRetainedWindowExistentialPinsOuterAgainstOrderedAlternativeRecovery(t *
 		properties.PreserveOrdering(),
 		orderingResult,
 		existsFlatMap.GetOuterAlias(),
+		map[values.CorrelationIdentifier]struct{}{
+			existsFlatMap.GetOuterAlias(): {}, existsFlatMap.GetInnerAlias(): {},
+		},
 		lessWithHashTieBreak(call.CostModel()),
 		false,
 		context,

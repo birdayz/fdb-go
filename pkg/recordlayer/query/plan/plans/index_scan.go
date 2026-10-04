@@ -96,6 +96,10 @@ type RecordQueryIndexPlan struct {
 	// metadata-preserving copies cannot accidentally turn an unsafe plan safe.
 	orderingKeyNamesKnown bool
 	orderingKeyNamesSafe  bool
+	// orderingDirections is parallel to columnNames: the physical order of each
+	// key column, the direction of the order function wrapping it (a DESC index
+	// column). Nil means every column is tuple-natural ascending.
+	orderingDirections []values.OrderedBytesDirection
 	// createsDuplicates and distinctRecordsKnown carry the match candidate's
 	// fan-out signal onto the plan for the DistinctRecords property. Java's
 	// DistinctRecordsProperty.visitIndexPlan returns !matchCandidate.createsDuplicates()
@@ -336,6 +340,18 @@ func (p *RecordQueryIndexPlan) WithIndexMetadata(columnNames, pkColumnNames []st
 		cp.orderingKeyNamesKnown = true
 		cp.orderingKeyNamesSafe = true
 	}
+	return &cp
+}
+
+// WithOrderingDirections returns a copy whose key columns order by their
+// fields in the given physical directions, as an order-function index column
+// does: Java simplifies ToOrderedBytesValue(field, direction) to the ordering
+// part (field, direction).
+func (p *RecordQueryIndexPlan) WithOrderingDirections(directions []values.OrderedBytesDirection) *RecordQueryIndexPlan {
+	cp := *p
+	cp.orderingDirections = slices.Clone(directions)
+	cp.orderingKeyNamesKnown = true
+	cp.orderingKeyNamesSafe = true
 	return &cp
 }
 

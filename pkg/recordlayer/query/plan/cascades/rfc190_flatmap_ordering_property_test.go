@@ -140,7 +140,7 @@ func TestRFC190FlatMapOrderingCase2bDistinctOuterConcatenatesInner(t *testing.T)
 		false,
 	)
 	pulledOuter := mustRFC190OrderingConstruct(computeWrapperRichOrdering(outer).
-		PullUpThroughValue(resultValue, outerAlias))
+		PullUpThroughValue(resultValue, outerAlias, nil))
 	if pulledOuter.Satisfies(requested) {
 		t.Fatal("case 2b precondition: outer alone unexpectedly satisfies the combined request")
 	}

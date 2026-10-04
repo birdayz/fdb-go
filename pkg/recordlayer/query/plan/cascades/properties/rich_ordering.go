@@ -885,7 +885,16 @@ func (o *RichOrdering) PushDown(mapping map[string]values.Value) *RichOrdering {
 // Ports Java's Ordering.pullUp(Value, EvaluationContext, AliasMap,
 // Set<CorrelationIdentifier>) using the direct algorithmic pullUp
 // from values.PullUpValue.
-func (o *RichOrdering) PullUpThroughValue(resultValue values.Value, alias values.CorrelationIdentifier) (*RichOrdering, error) {
+//
+// localAliases are the aliases the operator itself binds. A fixed binding's
+// operand reading none of them is constant over the operator and passes
+// through unchanged: Java's MatchConstantValueRule over constantAliases, the
+// operator's external correlations.
+func (o *RichOrdering) PullUpThroughValue(
+	resultValue values.Value,
+	alias values.CorrelationIdentifier,
+	localAliases map[values.CorrelationIdentifier]struct{},
+) (*RichOrdering, error) {
 	if o == nil {
 		return nil, nil
 	}
@@ -908,6 +917,9 @@ func (o *RichOrdering) PullUpThroughValue(resultValue values.Value, alias values
 	pulled := o.translateKeysAndBindings(translated, func(value values.Value) values.Value {
 		if translateErr != nil {
 			return nil
+		}
+		if values.IsConstantOver(value, localAliases) {
+			return value
 		}
 		var translatedValue values.Value
 		translatedValue, translateErr = values.PullUpValue(value, resultValue, alias)
