@@ -2654,9 +2654,9 @@ and to convert the 0AF00 into a fold where Java answers, but it is NOT a silent-
 
 
 ### RFC-070 / RFC-083 follow-ups (lifted out of completed entries)
-  - [ ] **Follow-up (RFC-070): `pushValue`-into-covering-result-value modeling gap.** Java's `MergeProjectionAndFetchRule` yields a bare `fetchPlan.getChild()` because `RecordQueryFetchFromPartialRecordPlan.pushValue` rewrites the projected value into the covering plan's own result value. Go's `WithCovering` only sets a flag (the scan still flows the full partial record), so Go compensates with a thin outer `Project`. Pushing the value into the covering result value would let both rule branches collapse to a bare child yield, matching Java. Cosmetic/architectural — current behaviour is correct.
+  - [x] **Follow-up (RFC-070): `pushValue`-into-covering-result-value modeling gap.** Closed: a query block is a Select, and `PushMapThroughFetchRule` pushes the block's Map through the fetch and keeps it over the covering plan, as Java's rule does; the projection-and-fetch rules are deleted.
 
-  - [ ] **Follow-up (RFC-070): other transparent unary wrappers over joins.** `Map`, `Distinct`, `Limit`, `TypeFilter`, `FirstOrDefault`, `DefaultOnEmpty` still gate `WithChildren` on `isLeafReplaceable` and could exhibit the same nil-inner-over-join bug if a rule ever builds them with a placeholder inner over a join. Not currently reachable via SQL (projections route through `LogicalProjectionExpression`, not `Map`); the **blanket** gate removal is unsafe — it regressed `TestFDB_AggregateIndexUsage` by dropping the eq-filter on aggregation/DML wrappers (which embed filter semantics in their own plan). Each wrapper needs individual analysis if/when reachable.
+  - [x] **Follow-up (RFC-070): other transparent unary wrappers over joins.** Obsolete: RFC-184 W2 gave `Map`, `Distinct`, `Limit`, `TypeFilter`, `FirstOrDefault` and `DefaultOnEmpty` a single live child edge, so `WithChildren` is a quantifier swap and the `isLeafReplaceable` gate no longer exists.
 
   - [ ] **Follow-up (RFC-083): replace the guard + `AggregateSlots` marker with Java's `PromoteValue` projection nodes** — the single mechanism that both rejects-at-plan and widens-at-runtime, dissolving the dual lattice-encoding (guard + converters) and the load-bearing "aggregate-slot ⇒ guard" coupling (Graefe's end-state). Subsumes reliably typing `FieldValue`/`ArithmeticValue` projections, which then closes the **residual deferred cases**: bare-column `SELECT double_col → BIGINT` over an empty source, and `UPDATE … SET int_col = <double-expr>` — both currently rely on the runtime converter (correct for non-empty rows, miss the 0-row case).
 
@@ -3564,43 +3564,16 @@ hashes/reproducers. All experiments reverted; tree clean.
   single source `Merge` consults.
 
 
-- [ ] **CQ-39 (MED) — a residual filter over a fetch-free index scan is never
-  marked COVERING.** *(Renumbered from a duplicate CQ-38. Two distinct items
-  carried that number — the NaN-total-order semantics item earlier in this phase
-  and this covering-label item; the later one was renumbered. Any external
-  reference to "CQ-38 covering" means this item.)*
-  **TWO rules stamp covering for this shape, and BOTH miss the same way — a fix
-  has two sites, not one.** `MergeProjectionAndFetchRule` marks the inner scan
-  covering only in its direct `fetchInnerExpr.(*RecordQueryIndexPlan)` arm
-  (`rule_merge_projection_and_fetch.go:91`); with a residual `PredicatesFilter`
-  between projection and fetch it takes the `:103-126` fallback, which yields
-  the projection over the fetch's inner group and leaves the scan unmarked.
-  `ImplementProjectionRule` stamps the same shape redundantly and independently,
-  via `findIndexScanPlan` (`rule_implement_projection.go:73`), and fails on the
-  identical structural condition: neither descends through a
-  `RecordQueryPredicatesFilterPlan`. Both are PLANNING-phase rules (the first an
-  implementation rule, the second an expression rule from
-  `BatchAExpressionRules`). Measured and pinned by
+- [x] **CQ-39 (MED) — a residual filter over a fetch-free index scan is never
+  marked COVERING.** *(Renumbered from a duplicate CQ-38; any external reference
+  to "CQ-38 covering" means this item.)* Closed by RFC-220: coveringness is a plan
+  TYPE built at the access path, as Java's `RecordQueryCoveringIndexPlan`, so no
+  downstream rule decides it and a residual pushed below the fetch cannot drop it.
+  The two stamping rules (`MergeProjectionAndFetchRule`, `ImplementProjectionRule`)
+  are deleted with `LogicalProjectionExpression`. Pinned by
   `TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost`'s
-  `two_rules_stamp_covering_redundantly` subtest: on the no-residual covering
-  control, disabling either rule alone leaves the stamp and disabling both drops
-  it. Rows are CORRECT (pinned: `covering_index_pushdown.yaml#25`, 26/26 on real
-  FDB, with `plan_not_contains: Fetch` as the sharp pin) — this is a
-  labeling/costing gap, not wrong results: the plan renders and is costed
-  without the covering marker it earned. CQ-33's covering-stamp blocker is the
-  writeup; why it becomes load-bearing for CQ-33 on secondary indexes is the
-  INFERRED criterion-#7 chain recorded under CQ-33 above. Found during
-  the RFC-197 step-0 review fold; deferred from that fold because marking the
-  scan moves plan shapes corpus-wide and is a query-engine change needing its own
-  RFC-gated lap. Read Java's MergeProjectionAndFetchRule counterpart first — if
-  Java marks covering through a residual, this is a divergence; if not, it is a
-  shared gap and the fix is an extension. (INSPECTION, not re-checkable from this
-  tree — the Java checkout is a gitignored sibling absent from `git ls-files`:
-  Java 4.12.11 appears to have no such failure mode, because coveringness is a
-  separate class there, `RecordQueryCoveringIndexPlan`, which HOLDS the index plan
-  as a field rather than flagging it, and its `MergeProjectionAndFetchRule` yields
-  the fetch plan's child with no shape check. Re-derive against the checkout
-  before relying on it.)
+  `residual_below_the_fetch_keeps_the_covering_stamp` and
+  `no_downstream_rule_can_remove_coveringness`.
 
 
 - [ ] **Two producers mint primary-key comparison Values from the same
@@ -9411,12 +9384,9 @@ covered by the correctness suite and the golden plan diff, not by this table.
   `Project(IndexScan(GA_G, [*]))`; `… ORDER BY u.h DESC` over `id AS h` sorts in memory while
   `SELECT id FROM ga ORDER BY id DESC` takes `Scan(GA) REVERSE` (measured on the explain-differ
   dump at RFC-242 r9, `ordering_through_a_projection.yaml` pins both halves). Two mechanisms,
-  one now fixed: `PushRequestedOrderingThroughProjectionRule` pushed the constraint through the
-  projection's result value with the INNER quantifier's alias as the upper alias and without the
-  rebase into the child's current-row space, so a constraint rooted at the projection's current
-  — how every constraint arrives — failed the push-down's root check and nothing was pushed;
-  RFC-242 r9 routes it through `requestedOrderingBelow`, and the constraint now reaches the scan
-  group as `_current.G#1` (`TestPushRequestedOrderingThroughProjection_*`). What remains is on
+  one now fixed: the constraint crosses a block's result value through
+  `requestedOrderingBelow` and reaches the scan group as `_current.G#1` (the block is a Select,
+  so `PushRequestedOrderingThroughSelectRule` carries it, as in Java). What remains is on
   the receiving side: a zero-prefix index match carries NO matched ordering parts
   (`MatchInfo.GetMatchedOrderingParts()` is empty for a match over a `FullUnorderedScan`, so
   `SatisfiesRequestedOrdering` in `abstract_data_access_rule.go` returns nil for every candidate
@@ -13414,13 +13384,24 @@ against Java 4.14.2.0 before fixing, then tick with the commit.
     pushes into the body. ProjectionMergeRule is deleted (no translator projection
     survives to merge). Every Go suite, the JVM conformance suites and the
     javacorpus are green on it; the plan-shape golden holds the same 319 plan
-    errors (4 unpinned) as before. Still to do in this step: (1) the top-level
+    errors (4 unpinned) as before. The translator builds each block as a Select
+    directly, and `LogicalProjectionExpression` is deleted with its five rules
+    (implement, implement-final, remove, merge-with-fetch, push-ordering); the
+    plan-shape dump is unchanged. Still to do in this step: (1) the top-level
     query a `LogicalSortExpression` over the block (Java `generateSelect`) and
     index DDL reading that Sort (`ddl/generator.go` `topSort`/`checkTop`); (2)
-    delete `LogicalProjectionExpression` (the translator still builds one and
-    folds it at once), the projection implementation rules and
-    `RecordQueryProjectionPlan`, whose last producer is the aggregate data-access
-    rule's group-row publication (`publishAggregateResultAsGroupByRow`).
+    delete `RecordQueryProjectionPlan`, whose last producer is the aggregate
+    data-access rule's group-row publication
+    (`publishAggregateResultAsGroupByRow`). A Map there is not the fix: it counts
+    as a simple operation in cost criterion #14 (Java `countSimpleOps`) and
+    flips the aggregate-index choice (`TestPipeline_AggregateIndex_WithRegularIndex`);
+    Java's aggregate plan publishes the group row itself
+    (`AggregateIndexMatchCandidate.toEquivalentPlan`, `selectHavingResultValue`).
+  - [ ] REWRITING cost of nested SQL functions: four nested calls plan in about
+    4.6s, most of it in `Memo.Integrate`. Java runs SelectMerge and
+    PredicatePushDown as implementation rules over final expressions and
+    Decorrelate/Simplification conditionally; Go explores all of them in
+    REWRITING.
 
 ### An EXISTS over a repeated field does not match a multi-valued index
 

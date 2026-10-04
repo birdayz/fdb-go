@@ -5168,13 +5168,8 @@ func NewRawRecordConstructorValue(fields ...RecordConstructorField) *RecordConst
 // the error, because earlier text in three files claimed the opposite and this
 // is where a reader looks first.
 //
-// What actually holds: every LogicalProjectionExpression constructor is a plain
-// struct fill that validates nothing, so the one-slot whole-row projection can
-// be built and IS built (expressions/flowed_value_typing_test.go's
-// TestLogicalProjectionFallsBackToUntypedQOV). What this error does is stop the
-// projection CLAIMING a row it cannot name; GetResultValue then falls back to an
-// untyped QOV, which is the pre-RFC-226 decline kept deliberately for the one
-// shape that cannot answer. The fallback is a LIVE arm, not dead code.
+// A query block's result and the physical projection plan both derive their row
+// here, so this refusal is what stops either claiming a row it cannot name.
 //
 // WHY THE SHAPE CANNOT ANSWER. The executor emits one positional slot PER
 // PROJECTION, so this projection produces a 1-slot row WRAPPING its inner's row,

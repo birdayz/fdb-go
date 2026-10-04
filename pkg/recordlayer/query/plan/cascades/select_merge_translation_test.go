@@ -149,21 +149,21 @@ func TestSelectMergeTranslationUnaryInputDoesNotBindItsOwnAlias(t *testing.T) {
 	filter := selectMergeFilter(t, []predicates.QueryPredicate{predicates.NewComparisonPredicate(
 		selectMergeFieldOrdinals(t, selectMergeQOV(t, from, selectMergeTestRowType()), 0), literalCmp(predicates.ComparisonEquals, int64(1)))}, local)
 	input := expressions.NamedForEachQuantifier(from, expressions.InitialOf(filter))
-	projection, err := expressions.NewLogicalProjectionExpression([]values.Value{selectMergeFlowed(t, input)}, input)
+	sort, err := expressions.NewLogicalSortExpression([]expressions.SortKey{{Value: selectMergeFlowed(t, input)}}, input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ref := expressions.InitialOf(projection)
+	ref := expressions.InitialOf(sort)
 	tr := newSelectMergeTranslation(NewExpressionRuleCall(ref, nil, nil))
 	tr.add(from, selectMergeQOV(t, to, selectMergeTestRowType()), false)
 	translated, err := tr.reference(ref)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := translated.Get().(*expressions.LogicalProjectionExpression)
-	qov, _ := values.AsQuantifiedObjectValue(got.GetProjectedValues()[0])
+	got := translated.Get().(*expressions.LogicalSortExpression)
+	qov, _ := values.AsQuantifiedObjectValue(got.GetSortKeys()[0].Value)
 	if qov.Correlation() != from {
-		t.Fatal("projection's local row binding changed")
+		t.Fatal("sort's local row binding changed")
 	}
 	if _, dangling := translated.GetCorrelatedTo()[from]; dangling {
 		t.Fatal("unary input incorrectly shadowed the external BOX binding")

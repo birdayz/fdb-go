@@ -112,8 +112,6 @@ func EstimateOrdering(e expressions.RelationalExpression) Ordering {
 		return Ordering{IsKnown: true, Keys: keys, Descending: desc, NullsFirst: nullsFirst}
 	case *expressions.LogicalFilterExpression:
 		return inheritFromInner(v.GetInner())
-	case *expressions.LogicalProjectionExpression:
-		return inheritFromInner(v.GetInner())
 	case *expressions.LogicalTypeFilterExpression:
 		return inheritFromInner(v.GetInner())
 	case *expressions.InsertExpression:

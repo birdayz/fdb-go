@@ -142,23 +142,13 @@ func assertProducerPhysicalQuantifiers(t testing.TB, expression expressions.Rela
 
 func TestPhysicalProducerQuantifiers_Implementations(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"projection", "projection_final", "insert", "type_filter", "temp_insert", "recursive_level", "recursive_dfs"} {
+	for _, name := range []string{"insert", "type_filter", "temp_insert", "recursive_level", "recursive_dfs"} {
 		t.Run(name, func(t *testing.T) {
 			scan := directCoverageScan()
 			q := expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("producer_input"), expressions.FinalOf(scan))
 			var logical expressions.RelationalExpression
 			var rule ExpressionRule
-			var finalRule ImplementationRule
 			switch name {
-			case "projection", "projection_final":
-				root := mustDirectCoverageConstruct(q.RequireFlowedObjectValue())
-				field := mustDirectCoverageConstruct(values.ResolveFieldOrdinals(root, []int{0}))
-				logical = mustDirectCoverageConstruct(expressions.NewLogicalProjectionExpression([]values.Value{field}, q))
-				if name == "projection" {
-					rule = NewImplementProjectionRule()
-				} else {
-					finalRule = NewImplementProjectionFinalRule()
-				}
 			case "insert":
 				logical = mustDirectCoverageConstruct(expressions.NewInsertExpression(q, "T", directCoverageRowType()))
 				rule = NewImplementInsertRule()
@@ -178,12 +168,7 @@ func TestPhysicalProducerQuantifiers_Implementations(t *testing.T) {
 					rule = NewImplementRecursiveDfsJoinRule()
 				}
 			}
-			var yielded []expressions.RelationalExpression
-			if rule != nil {
-				yielded = fireDirectExpressionRule(t, rule, expressions.InitialOf(logical))
-			} else {
-				yielded = fireDirectImplementationRule(t, finalRule, expressions.InitialOf(logical))
-			}
+			yielded := fireDirectExpressionRule(t, rule, expressions.InitialOf(logical))
 			if len(yielded) != 1 {
 				t.Fatalf("yielded %d plans, want 1", len(yielded))
 			}
@@ -191,16 +176,13 @@ func TestPhysicalProducerQuantifiers_Implementations(t *testing.T) {
 			if logical.GetQuantifiers()[0].Kind() != expressions.QuantifierForEach {
 				t.Fatal("implementation changed the logical input quantifier")
 			}
-			if name == "projection" && yielded[0].GetQuantifiers()[0].GetAlias() != q.GetAlias() {
-				t.Fatal("projection lost the logical input alias")
-			}
 		})
 	}
 }
 
 func TestPhysicalProducerQuantifiers_FetchRewrites(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"distinct", "map", "in_join", "projection", "projection_expression", "union_all", "union_residual"} {
+	for _, name := range []string{"distinct", "map", "in_join", "union_all", "union_residual"} {
 		t.Run(name, func(t *testing.T) {
 			scan := directCoverageScan()
 			translate := func(v values.Value, _, _ values.CorrelationIdentifier) (values.Value, bool) {
@@ -220,13 +202,6 @@ func TestPhysicalProducerQuantifiers_FetchRewrites(t *testing.T) {
 			case "in_join":
 				input = mustDirectCoverageConstruct(plans.NewRecordQueryInJoinPlanWithBindingAlias(fetch, values.NamedCorrelationIdentifier("producer_in"), true, true)).WithInValues([]any{int64(1), int64(2)})
 				rule = NewPushInJoinThroughFetchRule()
-			case "projection":
-				input = mustDirectCoverageConstruct(plans.NewRecordQueryProjectionPlan([]values.Value{&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}}, fetch))
-				rule = NewMergeProjectionAndFetchRule()
-			case "projection_expression":
-				q := expressions.ForEachQuantifier(expressions.FinalOf(fetch))
-				input = mustDirectCoverageConstruct(expressions.NewLogicalProjectionExpression([]values.Value{&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}}, q))
-				rule = NewMergeProjectionAndFetchRule()
 			case "union_all", "union_residual":
 				other := mustDirectCoverageConstruct(plans.NewRecordQueryFetchFromPartialRecordPlan(directCoverageScan(), nil, directCoverageRowType(), plans.FetchIndexRecordsPrimaryKey))
 				inners := []plans.RecordQueryPlan{fetch, other}
@@ -236,12 +211,7 @@ func TestPhysicalProducerQuantifiers_FetchRewrites(t *testing.T) {
 				input = mustDirectCoverageConstruct(plans.NewRecordQueryUnionPlan(inners))
 				rule = NewPushUnionThroughFetchRule()
 			}
-			var yielded []expressions.RelationalExpression
-			if name == "projection_expression" {
-				yielded = fireDirectExpressionRule(t, NewImplementProjectionRule(), expressions.InitialOf(input))
-			} else {
-				yielded = fireDirectImplementationRule(t, rule, expressions.InitialOf(input))
-			}
+			yielded := fireDirectImplementationRule(t, rule, expressions.InitialOf(input))
 			if len(yielded) == 0 {
 				t.Fatal("rewrite yielded no plans")
 			}

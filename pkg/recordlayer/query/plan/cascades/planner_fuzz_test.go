@@ -274,7 +274,7 @@ func buildFuzzExpression(b []byte, start, depth int) expressions.RelationalExpre
 		// whole-row wrapper.
 		inner := buildFuzzExpression(b, (start+1)%len(b), depth+1)
 		q := expressions.ForEachQuantifier(expressions.InitialOf(inner))
-		return mustPlannerFuzzConstruct(expressions.NewLogicalProjectionExpression(
+		return mustPlannerFuzzConstruct(newBlockSelectForTest(
 			plannerFuzzProjectedFields(q), q))
 	case 4:
 		// TypeFilter over a random child.

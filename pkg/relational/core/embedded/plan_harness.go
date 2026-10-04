@@ -55,7 +55,7 @@ func PlanPhysicalForTestTraced(sql, schemaDDL string, stats properties.Statistic
 
 // PlanQueryForTestWithDisabledRules is PlanQueryForTest with a set of planner
 // rules excluded from selection, by the SIMPLE type name Planner.DisabledRules
-// is keyed by ("MergeProjectionAndFetchRule").
+// is keyed by ("MergeFetchIntoCoveringIndexRule").
 //
 // It exists so a causal claim about WHICH rule produces an observed plan shape
 // can be asserted rather than asserted-in-prose: the observable ("the plan has

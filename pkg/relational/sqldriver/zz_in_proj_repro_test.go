@@ -14,12 +14,9 @@ import (
 //
 // The regression: the indexed plan was `InJoin(IndexScan(IDX_A,[=]))` with
 // NO outer `Project([ID])`, so it returned columns [ID, A] (and `rows.Scan(&id)`
-// failed with "expected 2 destination arguments"). Root cause:
-// MergeProjectionAndFetchRule's fallback dropped the projection when the
-// fetch's child was an InJoin (not a directly-coverable index scan), leaking
-// a bare InJoin into the projection group; and the projection's extraction did
-// not relink a compound-join inner. Fixed in RFC-070 so the plan is
-// `Project([ID], InJoin(IndexScan(IDX_A,[=])))`.
+// failed with "expected 2 destination arguments"): a projection-and-fetch merge
+// dropped the projection when the fetch's child was an InJoin. The block's
+// result now keeps the column list over the InJoin.
 //
 // Compares the indexed table (InJoin path) against an unindexed copy
 // (PredicatesFilter scan path): both must return exactly one column [ID]

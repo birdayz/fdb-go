@@ -177,12 +177,10 @@ func TestFDB_BoxJoinMultiExistsGather(t *testing.T) {
 	})
 
 	// NO-PANIC regression guard: a broad set of multi-esq shapes that variously reach
-	// the peel / merge / gather / name-model paths. Each MUST be correct-or-LOUD —
+	// the peel / merge / gather / name-model paths. Each MUST plan and execute —
 	// never the "anchored re-enumeration must resolve an anchored parent's legs" panic
 	// the multi-way-join multi-esq peel used to hit. runQ does not recover panics, so a
-	// panic aborts this test; passing = no panic. (A few shapes strand loud — a
-	// LogicalProjectionExpression with no physical rule — which is correct-or-loud, a
-	// documented gap, not wrong rows: the retired name-map makes any miss loud.)
+	// panic aborts this test.
 	t.Run("multiesq_no_panic_sweep", func(t *testing.T) {
 		for _, q := range []string{
 			`SELECT A."K" FROM A, B WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = B."K")`,                                                              // 2-way join + 2 EXISTS
@@ -192,7 +190,9 @@ func TestFDB_BoxJoinMultiExistsGather(t *testing.T) {
 			`SELECT "X" FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`,            // FULL box + unnest + 2 EXISTS
 			`SELECT A."K" FROM A, B, EEV WHERE NOT EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = B."K")`,                                                     // 3-way join + NOT EXISTS + EXISTS
 		} {
-			_, _, _ = runQ(t, q) // a panic here (anchored re-enumeration) fails the test
+			if _, _, err := runQ(t, q); err != nil {
+				t.Errorf("%q: %v", q, err)
+			}
 		}
 	})
 

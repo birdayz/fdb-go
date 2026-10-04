@@ -298,7 +298,7 @@ func TestPhase3_ProjectionOverFilter(t *testing.T) {
 	filterRef := expressions.InitialOf(filter)
 	filterQ := expressions.ForEachQuantifier(filterRef)
 
-	projValue, projErr := expressions.NewLogicalProjectionExpression(
+	projValue, projErr := newBlockSelectForTest(
 		[]values.Value{phase3Field(t, filterQ, 1)},
 		filterQ,
 	)
@@ -307,21 +307,21 @@ func TestPhase3_ProjectionOverFilter(t *testing.T) {
 
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
 
-	// Check that the bare RecordQueryProjectionPlan appears (RFC-184 W2).
-	foundProjection := containsPhysical(rootRef, func(expr expressions.RelationalExpression) bool {
-		_, ok := expr.(*plans.RecordQueryProjectionPlan)
+	// The block's result is a Map.
+	foundMap := containsPhysical(rootRef, func(expr expressions.RelationalExpression) bool {
+		_, ok := expr.(*plans.RecordQueryMapPlan)
 		return ok
 	})
-	if !foundProjection {
+	if !foundMap {
 		for _, f := range rootRef.Members() {
-			if _, ok := f.(*plans.RecordQueryProjectionPlan); ok {
-				foundProjection = true
+			if _, ok := f.(*plans.RecordQueryMapPlan); ok {
+				foundMap = true
 				break
 			}
 		}
 	}
-	if !foundProjection {
-		t.Fatal("expected *plans.RecordQueryProjectionPlan in explored graph or final members")
+	if !foundMap {
+		t.Fatal("expected *plans.RecordQueryMapPlan in explored graph or final members")
 	}
 
 	// Check that a physical filter appears in the inner Reference.

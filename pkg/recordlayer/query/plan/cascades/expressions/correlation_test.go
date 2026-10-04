@@ -96,18 +96,6 @@ func TestLogicalFilter_GetCorrelatedToWithoutChildren_NoCorrelation(t *testing.T
 	}
 }
 
-func TestLogicalProjection_GetCorrelatedToWithoutChildren(t *testing.T) {
-	t.Parallel()
-	leaf := &leafScan{name: "T"}
-	q := ForEachQuantifier(InitialOf(leaf))
-	p := mustExpression(NewLogicalProjectionExpression(
-		[]values.Value{testCorrelatedField(q.GetAlias(), "ID", values.NotNullLong)}, q))
-	got := p.GetCorrelatedToWithoutChildren()
-	if _, ok := got[q.GetAlias()]; !ok {
-		t.Fatalf("projection correlation set %v doesn't contain q's alias", got)
-	}
-}
-
 func TestLogicalSort_GetCorrelatedToWithoutChildren(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}

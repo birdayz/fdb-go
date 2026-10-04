@@ -606,8 +606,8 @@ func wrapAccessScan(access *SingleMatchedAccess, plan plans.RecordQueryPlan) (ex
 // whenever the index entry can be turned into a partial record and never
 // consults the projection.
 //
-// It used to emit a bare Fetch(IndexScan) and leave coveringness to
-// MergeProjectionAndFetchRule, on the argument that a downstream rule comparing
+// It used to emit a bare Fetch(IndexScan) and leave coveringness to a
+// downstream projection-and-fetch merge, on the argument that a rule comparing
 // the actual projection against the covered columns is "strictly more precise".
 // That argument compared against the wrong Java operation. Java separates
 // CONSTRUCTING the covering plan (here, unconditional, needs no knowledge of the

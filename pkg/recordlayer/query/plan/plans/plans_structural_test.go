@@ -1542,8 +1542,7 @@ func TestProjectionPlan_ResultTypeMatchesLogicalTwin(t *testing.T) {
 //
 // SCOPE, stated precisely because an earlier revision of this comment
 // overstated it as an "unbuildability pin". It is not one. This drives
-// values.ProjectionResultValue, a derivation; the LogicalProjectionExpression
-// constructors do not otherwise validate the projection list. What this pins is
+// values.ProjectionResultValue, a derivation. What this pins is
 // narrower and still worth having: the derivation must keep refusing, because
 // the executor emits one positional slot per projection, so that shape WRAPS
 // its inner's row rather than passing it through and has no name to give its

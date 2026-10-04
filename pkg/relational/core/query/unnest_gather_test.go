@@ -1174,7 +1174,7 @@ func projectedCTEOutputGroupKeyFixture(
 		t.Fatal("fixture gathered seed declined")
 	}
 
-	project := func(input expressions.RelationalExpression, alias string) *expressions.LogicalProjectionExpression {
+	project := func(input expressions.RelationalExpression, alias string) *expressions.SelectExpression {
 		inputQ := expressions.NamedForEachQuantifier(
 			values.NamedCorrelationIdentifier(alias), expressions.InitialOf(input))
 		inputRow, inputErr := inputQ.RequireFlowedObjectValue()
@@ -1184,9 +1184,10 @@ func projectedCTEOutputGroupKeyFixture(
 			resolved, resolveErr := values.ResolveFieldOrdinals(inputRow, []int{ordinal})
 			projected[i] = mustGatherTestConstruct(t, resolved, resolveErr)
 		}
-		projection, projectionErr := expressions.NewLogicalProjectionExpressionWithOutputSchema(
-			projected, nil, nil, outputNames, inputQ)
-		return mustGatherTestConstruct(t, projection, projectionErr)
+		row, rowErr := values.ProjectionResultValueForOutputSchema(projected, nil, outputNames)
+		row = mustGatherTestConstruct(t, row, rowErr)
+		block, blockErr := expressions.NewSelectExpression(row, []expressions.Quantifier{inputQ}, nil)
+		return mustGatherTestConstruct(t, block, blockErr)
 	}
 
 	var output expressions.RelationalExpression

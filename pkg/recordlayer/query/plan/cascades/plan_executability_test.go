@@ -106,7 +106,7 @@ func TestFindIndexOnlyLogicalResidual_NestedUnderQuantifier(t *testing.T) {
 	badFilter := mustConstruct(t, badFilterValue, badFilterErr)
 	// Wrap the filter under a projection so the index-only filter sits at depth > 0.
 	projQ := expressions.ForEachQuantifier(expressions.InitialOf(badFilter))
-	projValue, projErr := expressions.NewLogicalProjectionExpression(nil, projQ)
+	projValue, projErr := newBlockSelectForTest(nil, projQ)
 	proj := mustConstruct(t, projValue, projErr)
 	root := expressions.InitialOf(proj)
 
@@ -134,7 +134,7 @@ func TestFindIndexOnlyLogicalResidual_CleanTree(t *testing.T) {
 		}, scanQ)
 	cleanFilter := mustConstruct(t, cleanFilterValue, cleanFilterErr)
 	projQ := expressions.ForEachQuantifier(expressions.InitialOf(cleanFilter))
-	projValue, projErr := expressions.NewLogicalProjectionExpression(nil, projQ)
+	projValue, projErr := newBlockSelectForTest(nil, projQ)
 	proj := mustConstruct(t, projValue, projErr)
 	root := expressions.InitialOf(proj)
 

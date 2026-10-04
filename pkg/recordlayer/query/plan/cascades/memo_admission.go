@@ -239,10 +239,6 @@ func admitMemoRegistry(expression expressions.RelationalExpression) error {
 		if typed == nil {
 			return unsupportedTypedNilExpression()
 		}
-	case *expressions.LogicalProjectionExpression:
-		if typed == nil {
-			return unsupportedTypedNilExpression()
-		}
 	case *expressions.LogicalSortExpression:
 		if typed == nil {
 			return unsupportedTypedNilExpression()

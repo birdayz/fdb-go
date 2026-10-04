@@ -188,17 +188,16 @@ func TestPlanner_RecursiveUnionProducesDfsJoin(t *testing.T) {
 	}
 }
 
-// TestPlanner_ProjectionOverScanProducesPhysicalProjection verifies
-// that LogicalProjectionExpression over a Scan produces a bare
-// *plans.RecordQueryProjectionPlan.
-func TestPlanner_ProjectionOverScanProducesPhysicalProjection(t *testing.T) {
+// TestPlanner_BlockOverScanProducesPhysicalMap verifies that a query block's
+// Select over a Scan implements its result as a *plans.RecordQueryMapPlan.
+func TestPlanner_BlockOverScanProducesPhysicalMap(t *testing.T) {
 	t.Parallel()
 
 	scan := phase3Scan(t, "Order")
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
 
-	projValue, projErr := expressions.NewLogicalProjectionExpression(
+	projValue, projErr := newBlockSelectForTest(
 		[]values.Value{phase3Field(t, q, 1)},
 		q,
 	)
@@ -208,12 +207,12 @@ func TestPlanner_ProjectionOverScanProducesPhysicalProjection(t *testing.T) {
 	rules := DefaultExpressionRules()
 	exploreAndVerify(t, ref, rules, nil)
 
-	isPhysicalProjection := func(expr expressions.RelationalExpression) bool {
-		_, ok := expr.(*plans.RecordQueryProjectionPlan)
+	isPhysicalMap := func(expr expressions.RelationalExpression) bool {
+		_, ok := expr.(*plans.RecordQueryMapPlan)
 		return ok
 	}
-	if !containsPhysical(ref, isPhysicalProjection) {
-		t.Fatal("expected *plans.RecordQueryProjectionPlan in explored members")
+	if !containsPhysical(ref, isPhysicalMap) {
+		t.Fatal("expected the block's result as a *plans.RecordQueryMapPlan in explored members")
 	}
 }
 

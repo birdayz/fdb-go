@@ -644,8 +644,8 @@ func TestMemo_MemoizeExpression_ProjectionAliasesDoNotCollapse(t *testing.T) {
 	m := NewMemo(nil)
 	m.RegisterReference(scanRef)
 
-	projection := func(alias string) *expressions.LogicalProjectionExpression {
-		projection, err := expressions.NewLogicalProjectionExpressionWithAliases(
+	projection := func(alias string) *expressions.SelectExpression {
+		projection, err := newBlockSelectWithAliasesForTest(
 			[]values.Value{values.NewBooleanValue(true)},
 			[]string{alias},
 			expressions.ForEachQuantifier(scanRef),

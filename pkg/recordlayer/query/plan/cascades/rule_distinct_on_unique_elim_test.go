@@ -159,7 +159,7 @@ func buildDistinctOverProjection(
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.NamedForEachQuantifier(distinctReadAlias(recType), scanRef)
 
-	proj := mustDistinctConstruct(expressions.NewLogicalProjectionExpression(projected, scanQ))
+	proj := mustDistinctConstruct(newBlockSelectForTest(projected, scanQ))
 	projRef := expressions.InitialOf(proj)
 	projRef.Insert(makeFakePlanWrapperForType(recType, proj.GetResultValue().Type(), false))
 	projQ := expressions.ForEachQuantifier(projRef)
@@ -352,12 +352,12 @@ func TestCollectProjectedOrdinals_BuriedFieldNotCredited(t *testing.T) {
 	layoutType := distinctScanType("USERS")
 	layout := values.OrdinalDomainOfType(layoutType)
 	bareID := distinctRead("USERS", "ID")
-	buildProj := func(v values.Value) *expressions.LogicalProjectionExpression {
+	buildProj := func(v values.Value) *expressions.SelectExpression {
 		scan := mustDistinctConstruct(expressions.NewFullUnorderedScanExpression(
 			[]string{"USERS"}, layoutType))
 		scanQ := expressions.NamedForEachQuantifier(
 			distinctReadAlias("USERS"), expressions.InitialOf(scan))
-		return mustDistinctConstruct(expressions.NewLogicalProjectionExpression(
+		return mustDistinctConstruct(newBlockSelectForTest(
 			[]values.Value{v}, scanQ))
 	}
 
@@ -437,7 +437,7 @@ func TestDistinctFinal_ThroughFilter(t *testing.T) {
 	filterRef := expressions.InitialOf(filter)
 	filterQ := expressions.NamedForEachQuantifier(distinctReadAlias("USERS"), filterRef)
 
-	proj := mustDistinctConstruct(expressions.NewLogicalProjectionExpression(
+	proj := mustDistinctConstruct(newBlockSelectForTest(
 		[]values.Value{
 			distinctRead("USERS", "ID"),
 		},
@@ -779,7 +779,7 @@ func TestDistinctFinal_MultiTypeVisiblePrimaryKeyDoesNotEliminate(t *testing.T) 
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	scanRow := mustDistinctConstruct(scanQ.RequireFlowedObjectValue())
 	id := mustDistinctConstruct(values.ResolveFieldOrdinals(scanRow, []int{0}))
-	projection := mustDistinctConstruct(expressions.NewLogicalProjectionExpression(
+	projection := mustDistinctConstruct(newBlockSelectForTest(
 		[]values.Value{id}, scanQ))
 	projectionRef := expressions.InitialOf(projection)
 	projectionRef.Insert(mustDistinctConstruct(plans.NewRecordQueryScanPlan(
@@ -814,7 +814,7 @@ func TestDistinctFinal_WrapsAllMembers(t *testing.T) {
 	scanQ := expressions.NamedForEachQuantifier(distinctReadAlias("ITEMS"), scanRef)
 
 	// Project a non-PK column so elimination does NOT fire.
-	proj := mustDistinctConstruct(expressions.NewLogicalProjectionExpression(
+	proj := mustDistinctConstruct(newBlockSelectForTest(
 		[]values.Value{
 			distinctRead("ITEMS", "NAME"),
 		},
@@ -1022,7 +1022,7 @@ func TestDistinctFinal_SecondaryUniqueMultiTypeStreamDoesNotEliminate(t *testing
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	scanRow := mustDistinctConstruct(scanQ.RequireFlowedObjectValue())
 	code := mustDistinctConstruct(values.ResolveFieldOrdinals(scanRow, []int{0}))
-	projection := mustDistinctConstruct(expressions.NewLogicalProjectionExpression(
+	projection := mustDistinctConstruct(newBlockSelectForTest(
 		[]values.Value{code}, scanQ))
 	projectionRef := expressions.InitialOf(projection)
 	projectionRef.Insert(mustDistinctConstruct(plans.NewRecordQueryScanPlan(
@@ -1135,7 +1135,7 @@ func soleUniqueProjectionFor(t *testing.T, column string) expressions.Relational
 		[]string{"T"}, distinctScanType("T")))
 	scanQ := expressions.NamedForEachQuantifier(
 		distinctReadAlias("T"), expressions.InitialOf(scan))
-	return mustDistinctConstruct(expressions.NewLogicalProjectionExpression(
+	return mustDistinctConstruct(newBlockSelectForTest(
 		[]values.Value{distinctRead("T", column)}, scanQ,
 	))
 }

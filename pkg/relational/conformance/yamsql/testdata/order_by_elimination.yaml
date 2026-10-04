@@ -276,8 +276,7 @@ tests:
       - [4]
 
   # ID is the PK suffix carried by every IDX_V entry, so this projection is
-  # fully covered. MergeProjectionAndFetchRule and ImplementProjectionRule each
-  # independently remove the fetch; disabling BOTH restores the fetching scan.
+  # fully covered, and PushMapThroughFetchRule removes the fetch.
   # The positive COVERING pin prevents either the projection/limit placement or
   # parent-alternative enumeration from silently hiding that index-only path.
   - query: SELECT id, v FROM t WHERE v > 0 ORDER BY v LIMIT 3
@@ -595,9 +594,8 @@ tests:
   # Equated leading + DESC on trailing non-equated col + LIMIT (Go
   # extension, RFC-128). region='eu' rows: (4, 'pro'), (5, 'free');
   # plan DESC puts 'pro' first, LIMIT 1 keeps id=4. ID is the PK suffix
-  # carried by IDX_REGION_PLAN, so the projection is covered. Either
-  # MergeProjectionAndFetchRule or ImplementProjectionRule removes the fetch;
-  # disabling BOTH restores the fetching scan and fails this positive pin.
+  # carried by IDX_REGION_PLAN, so the projection is covered and
+  # PushMapThroughFetchRule removes the fetch.
   # The LIMIT stays ABOVE the projection: a rewrite that pushes it below prunes
   # the un-pushed shape out of REWRITING and the covering member is then never
   # offered to PLANNING at all. That reachability half is pinned in

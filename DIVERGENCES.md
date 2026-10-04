@@ -850,11 +850,9 @@ These affect runtime behavior and wire compatibility, NOT plan selection.
 
 A partition *inequality* is the one deliberate residual divergence: Go's executor encodes only an equality prefix tuple (`VectorDistanceScanRangeWithPrefix`), so `ComputeBoundParameterPrefixMap` stops at the first non-equality and leaves the inequality unconsumed — enforced as a residual filter above the fanned-out scan (the same mechanism as a filter on a non-indexed column). Java instead threads the inequality endpoint into `getPrefixRange` to narrow the skip-scan; doing that in Go is a perf follow-up, not a correctness gap. Pinned by `TestVectorPlan_PartialPrefixPlansMultiPartition`, `TestVectorPlan_PartitionInequalityNotConsumedIntoPrefix`, and FDB E2E `TestFDB_VectorSearch_MultiPartition_{Fanout,InequalityResidual,Pagination}`.
 
-### Covering Index Scan — RESOLVED via ImplementProjectionRule
+### Covering Index Scan — RESOLVED
 
-**Status:** Covering index works end-to-end for SQL via `ImplementProjectionRule` (EXPLORE phase). When all projected FieldValues can push through the Fetch's TranslateValueFunction, the Fetch is eliminated. PK columns + all index key columns are coverable. Verified with planner harness tests: `CoveringCompositeIndex`, `CoveringCompositeIndexPKAndIndexCols`, `NonCoveringNeedsExtraColumn`. The FDB stress test shows 63x speedup for PK-only projections over index scans.
-
-**The compensation-based path** (`IsFinalNeeded`, `wrapScanPlanWithCoverage`) is bypassed — SQL projections always set `IsFinalNeeded() = true`. The ImplementProjectionRule path is the active mechanism. Java's `IndexKeyValueToPartialRecord` (826 LOC) approach remains unported but is not needed for SQL coverage.
+**Status:** Covering index works end-to-end for SQL. The data-access rule builds the covering plan (`wrapScanPlanWithCoverage`, Java `ValueIndexScanMatchCandidate`), and `PushMapThroughFetchRule` eliminates the fetch when the block's Map reads only covered columns, as Java's push-through-fetch rules do. Verified with planner harness tests: `CoveringCompositeIndex`, `CoveringCompositeIndexPKAndIndexCols`, `NonCoveringNeedsExtraColumn`.
 
 ## Optimization-Quality Gaps (correctness unaffected)
 
@@ -985,34 +983,14 @@ found it). Booked in TODO.md section 9 for the upstream report.
 | VariadicFunctionValue | `ScalarFunctionValue` | Aligned (COALESCE folding matches Java) |
 | 12 Comparison subclasses | Single `Comparison` struct with optional fields | Aligned |
 
-## RFC-220 — the projection is RETAINED over a covering scan where Java drops it
+## RFC-220 — the result over a covering scan — RESOLVED
 
-Java's `MergeProjectionAndFetchRule.onMatch`
-(`MergeProjectionAndFetchRule.java:62-78`) does exactly one thing when every
-projected value pushes through the fetch: `call.yieldPlan(fetchPlan.getChild())`.
-The projection is DROPPED. Go yields the fetch's child with the projection
-RETAINED above it (`rule_merge_projection_and_fetch.go`,
-`rule_implement_projection.go`).
-
-This is deliberate and permanent, and it is not a shortfall — Go is stricter
-than Java here.
-
-Java can drop the projection because
-`RecordQueryCoveringIndexPlan.getResultValue()` returns
-`IndexedValue(indexPlan.getResultType().getInnerType())` — the base record type,
-not the projected shape — and it carries a standing TODO in the Java source
-admitting exactly that. `pushValue` translates the projection's Values only for
-the FEASIBILITY test; Java then discards both and tolerates a wider output type
-than the query asked for.
-
-Go's covering plan reports the same full partial-record shape, but Go's callers
-do NOT tolerate a wider row: dropping the projection leaks the whole record and
-the wrong output schema. So the projection stays.
-
-There is therefore no "result-value rewrite" in Java to port. An earlier draft of
-RFC-220 described this as a fallback pending such a port; that was wrong about
-Java and is corrected here. The divergence is not effort-gated and should not be
-"closed" by making Go match Java — matching Java would be a regression.
+Java's `MergeProjectionAndFetchRule` drops a `LogicalProjectionExpression` over a
+covering fetch, but fdb-relational never builds that expression: a SQL query block
+is a `SelectExpression`, and `PushMapThroughFetchRule` keeps the block's Map over
+the covering plan (`RecordQueryMapPlan` over the fetch's child). Go builds blocks
+the same way and has no projection expression, so the covering plan reads
+`Map(IndexScan(… COVERING))` in both engines.
 
 ## DML statement-layer routing (RFC-035)
 

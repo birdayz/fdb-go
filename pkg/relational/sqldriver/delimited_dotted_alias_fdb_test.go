@@ -29,9 +29,8 @@ import (
 // mints for `SELECT a.k, b.k`. A string comparison cannot tell a machinery key
 // from a user alias, so user aliases were degraded too — including in the
 // single-table case where no machinery alias can exist. Provenance is now
-// CARRIED per slot (LogicalProject.AliasMinted → LogicalProjectionExpression →
-// RecordQueryProjectionPlan), so the label site asks who wrote the alias rather
-// than what it looks like.
+// CARRIED per slot (LogicalProject.AliasMinted), so the label site asks who
+// wrote the alias rather than what it looks like.
 func TestFDB_DelimitedDottedAliasIsVerbatim(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {

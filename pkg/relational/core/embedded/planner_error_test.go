@@ -214,7 +214,7 @@ func TestTranslatePlannerError_DefaultsToInternal(t *testing.T) {
 	// A structural extraction failure, verbatim in shape from
 	// plan_extraction.go's rebuild arms — a bare fmt.Errorf with no sentinel and
 	// no type, exactly what the default arm has to catch.
-	cause := fmt.Errorf("LogicalProjectionExpression: expected 1 child, got %d", 3)
+	cause := fmt.Errorf("SelectExpression: expected 1 child, got %d", 3)
 	got := translatePlannerError(cause, plannerUnableToPlanMessage)
 
 	var apiErr *api.Error
@@ -299,7 +299,7 @@ func TestTranslatePlannerError_FamilyIsTriageable(t *testing.T) {
 			"quantifier 1 ranges over no reference"),
 	}
 	rebuild := &cascades.PlanRebuildError{
-		Cause: errors.New("LogicalProjectionExpression: expected 1 child, got 3"),
+		Cause: errors.New("SelectExpression: expected 1 child, got 3"),
 	}
 
 	cases := []struct {

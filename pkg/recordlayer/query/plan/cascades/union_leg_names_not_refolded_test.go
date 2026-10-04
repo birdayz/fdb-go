@@ -54,7 +54,7 @@ func identityProjection(t testing.TB, inner expressions.RelationalExpression) ex
 		field, resolveErr := values.ResolveFieldOrdinals(root, []int{i})
 		projected[i] = mustConstruct(t, field, resolveErr)
 	}
-	projection, err := expressions.NewLogicalProjectionExpression(projected, q)
+	projection, err := newBlockSelectForTest(projected, q)
 	return mustConstruct(t, projection, err)
 }
 

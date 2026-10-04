@@ -215,10 +215,6 @@ func provenLogicalCardinalities(e expressions.RelationalExpression, child []Card
 	case *expressions.LogicalFilterExpression:
 		return Cardinalities{Min: OfCardinality(0), Max: only().GetMaxCardinality()}
 
-	// Twin: RecordQueryProjectionPlan — cardinality-preserving.
-	case *expressions.LogicalProjectionExpression:
-		return only()
-
 	// Twin: RecordQueryInMemorySortPlan — a sort reorders, it does not filter.
 	case *expressions.LogicalSortExpression:
 		return only()
@@ -360,7 +356,6 @@ func LimitBound(limit int64, child Cardinalities) Cardinalities { return limitBo
 var LogicalCardinalityArms = []string{
 	"*expressions.FullUnorderedScanExpression",
 	"*expressions.LogicalFilterExpression",
-	"*expressions.LogicalProjectionExpression",
 	"*expressions.LogicalSortExpression",
 	"*expressions.LogicalDistinctExpression",
 	"*expressions.LogicalTypeFilterExpression",

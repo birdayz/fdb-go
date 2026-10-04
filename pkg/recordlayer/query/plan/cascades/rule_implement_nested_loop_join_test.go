@@ -1762,7 +1762,7 @@ func TestImplementNestedLoopJoin_CurrentRootsAreNotSharedExternalSibling(t *test
 		logicalCurrent := logicalCurrentLayout.Carrier()
 		logicalCurrentField := mustNLJConstruct(values.ResolveFieldOrdinals(
 			logicalCurrent, []int{0}))
-		logicalProjection := mustNLJConstruct(expressions.NewLogicalProjectionExpression(
+		logicalProjection := mustNLJConstruct(newBlockSelectForTest(
 			[]values.Value{logicalCurrentField}, logicalScanQ))
 		legRef := expressions.InitialOf(logicalProjection)
 
@@ -1830,7 +1830,7 @@ func TestImplementNestedLoopJoin_SharedNamedExternalSiblingStillDeclines(t *test
 		logicalScanRef := expressions.InitialOf(nljLogicalScan(recordName))
 		logicalScanQ := expressions.NamedForEachQuantifier(
 			values.NamedCorrelationIdentifier(recordName), logicalScanRef)
-		logicalProjection := mustNLJConstruct(expressions.NewLogicalProjectionExpression(
+		logicalProjection := mustNLJConstruct(newBlockSelectForTest(
 			[]values.Value{externalField}, logicalScanQ))
 		legRef := expressions.InitialOf(logicalProjection)
 		physicalProjection := mustNLJConstruct(plans.NewRecordQueryProjectionPlan(
@@ -3806,7 +3806,7 @@ func TestImplementNestedLoopJoin_NullOnEmptyOuterIsExtended(t *testing.T) {
 	t.Run("correlated ForEach inner", func(t *testing.T) {
 		scanQ := expressions.NamedForEachQuantifier(
 			values.NamedCorrelationIdentifier("BADGE"), expressions.InitialOf(nljLogicalScan("BADGE")))
-		legRef := expressions.InitialOf(mustNLJConstruct(expressions.NewLogicalProjectionExpression(
+		legRef := expressions.InitialOf(mustNLJConstruct(newBlockSelectForTest(
 			[]values.Value{outerID}, scanQ)))
 		if !legRef.InsertFinal(mustNLJConstruct(plans.NewRecordQueryProjectionPlan(
 			[]values.Value{outerID}, nljPhysicalScan("BADGE")))) {

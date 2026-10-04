@@ -540,8 +540,8 @@ func TestFDB_CoveringIndexLegOverOrdinalJoin(t *testing.T) {
 
 	plan := pinExplain(t, db, ctx, q)
 	// CANARY: the covering-leg-into-gated-join shape is UNREACHABLE today —
-	// fetch elimination lives in MergeProjectionAndFetchRule, which needs a
-	// projection DIRECTLY over the fetch, and join legs never have one. The
+	// fetch elimination pushes a Map through the fetch, which needs a Map
+	// DIRECTLY over the fetch, and join legs never have one. The
 	// adapter's alignment guard + a unit pin
 	// (TestAdaptLegPositional_IndexShapedFallsBack) carry the protection. If
 	// this canary goes RED — a COVERING probe appeared in a gated join's plan

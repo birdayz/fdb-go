@@ -74,7 +74,7 @@ func diagnosticLogLines(buf *lockedDiagnosticBuffer) []string {
 }
 
 func diagnosticLogicalCounts(plan plans.RecordQueryPlan, ctx PlanContext) expressionCounts {
-	logical := mustDiagnosticConstruct(expressions.NewLogicalProjectionExpression(
+	logical := mustDiagnosticConstruct(newBlockSelectForTest(
 		nil,
 		expressions.ForEachQuantifier(
 			expressions.FinalOfAtStage(plan, expressions.StageCanonical),
@@ -288,7 +288,7 @@ func TestCostModelDiagnosticsCoverLogicalFallbackWalks(t *testing.T) {
 	logger, buf := newCostModelDiagnosticLogger(slog.LevelWarn)
 	ctx := WithCostModelDiagnostics(EmptyPlanContext(), logger)
 	unknown := &unclassifiedCostModelTestPlan{}
-	logical := mustDiagnosticConstruct(expressions.NewLogicalProjectionExpression(
+	logical := mustDiagnosticConstruct(newBlockSelectForTest(
 		nil,
 		expressions.ForEachQuantifier(
 			expressions.FinalOfAtStage(unknown, expressions.StageCanonical),

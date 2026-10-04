@@ -78,9 +78,9 @@ tests:
 
   # Covering index scan with ORDER BY. The BETWEEN upper bound remains a
   # residual below the fetch, but ID (PK suffix) and TS are both present in the
-  # index entry. MergeProjectionAndFetchRule and ImplementProjectionRule each
-  # independently elide Fetch(PredicatesFilter(Covering)); disabling BOTH
-  # restores that fetch and fails this positive RFC-220 covering pin.
+  # index entry. PushMapThroughFetchRule elides Fetch(PredicatesFilter(Covering))
+  # by pushing the block's Map through it; this is the positive RFC-220 covering
+  # pin.
   - query: SELECT id, ts FROM events WHERE ts BETWEEN 100 AND 200 ORDER BY ts
     plan_contains: "Map(IndexScan(IDX_TS, [<>] COVERING), {ID: _current.ID#0, TS: _current.TS#1})"
     plan_not_contains: "InMemorySort"

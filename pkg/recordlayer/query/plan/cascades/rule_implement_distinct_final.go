@@ -706,8 +706,6 @@ func collectProjectedOrdinals(
 ) (map[int]struct{}, bool) {
 	var projected []values.Value
 	switch e := expr.(type) {
-	case *expressions.LogicalProjectionExpression:
-		projected = e.GetProjectedValues()
 	case *expressions.SelectExpression:
 		if !isProjectionBlock(e) {
 			return nil, true
@@ -770,8 +768,6 @@ func findRecordTypes(expr expressions.RelationalExpression) []string {
 	switch e := expr.(type) {
 	case *expressions.FullUnorderedScanExpression:
 		return e.GetRecordTypes()
-	case *expressions.LogicalProjectionExpression:
-		return findRecordTypesViaQuantifier(e.GetInner())
 	case *expressions.SelectExpression:
 		if isProjectionBlock(e) {
 			return findRecordTypesViaQuantifier(e.GetQuantifiers()[0])
@@ -965,8 +961,6 @@ func findScanExpression(expr expressions.RelationalExpression) *expressions.Full
 	switch e := expr.(type) {
 	case *expressions.FullUnorderedScanExpression:
 		return e
-	case *expressions.LogicalProjectionExpression:
-		return findScanViaQuantifier(e.GetInner())
 	case *expressions.SelectExpression:
 		if isProjectionBlock(e) {
 			return findScanViaQuantifier(e.GetQuantifiers()[0])

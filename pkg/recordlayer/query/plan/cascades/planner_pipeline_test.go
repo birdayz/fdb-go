@@ -76,8 +76,8 @@ func pipelineFilter(q expressions.Quantifier, ps ...predicates.QueryPredicate) *
 	return mustPipelineConstruct(expressions.NewLogicalFilterExpression(ps, q))
 }
 
-func pipelineProjection(q expressions.Quantifier, projected ...values.Value) *expressions.LogicalProjectionExpression {
-	return mustPipelineConstruct(expressions.NewLogicalProjectionExpression(projected, q))
+func pipelineProjection(q expressions.Quantifier, projected ...values.Value) *expressions.SelectExpression {
+	return mustPipelineConstruct(newBlockSelectForTest(projected, q))
 }
 
 func pipelineSort(q expressions.Quantifier, keys ...expressions.SortKey) *expressions.LogicalSortExpression {
@@ -194,7 +194,7 @@ func TestPlannerPipeline_PreservesIdentityProjectionOutputAlias(t *testing.T) {
 	scan := mustPipelineConstruct(expressions.NewFullUnorderedScanExpression(
 		[]string{"Order"}, rowType))
 	q := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	logical := mustPipelineConstruct(expressions.NewLogicalProjectionExpressionWithAliases(
+	logical := mustPipelineConstruct(newBlockSelectWithAliasesForTest(
 		[]values.Value{mustPipelineConstruct(values.ResolveFieldOrdinals(
 			pipelineRoot(q), []int{0}))},
 		[]string{"RENAMED_ROW"},
@@ -209,13 +209,13 @@ func TestPlannerPipeline_PreservesIdentityProjectionOutputAlias(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Plan failed: %v", err)
 	}
-	projection, ok := best.(*plans.RecordQueryProjectionPlan)
+	mapped, ok := best.(*plans.RecordQueryMapPlan)
 	if !ok {
-		t.Fatalf("planner erased schema-bearing projection: best=%T, want *plans.RecordQueryProjectionPlan", best)
+		t.Fatalf("planner erased the block's schema-bearing result: best=%T, want *plans.RecordQueryMapPlan", best)
 	}
-	aliases := projection.GetAliases()
-	if len(aliases) != 1 || aliases[0] != "RENAMED_ROW" {
-		t.Fatalf("planned projection aliases=%v, want [RENAMED_ROW]", aliases)
+	row, isRow := mapped.GetResultValue().Type().(*values.RecordType)
+	if !isRow || len(row.Fields) != 1 || row.Fields[0].Name != "RENAMED_ROW" {
+		t.Fatalf("planned block row = %v, want [RENAMED_ROW]", mapped.GetResultValue().Type())
 	}
 }
 
@@ -336,8 +336,8 @@ func TestPipeline_Projection(t *testing.T) {
 		pipelineField(scanQ, "A"), pipelineField(scanQ, "B"))
 	plan := planPipeline(t, proj)
 	t.Logf("plan: %s", plan)
-	if !strings.Contains(plan, "Project") {
-		t.Fatalf("expected plan to contain Project, got: %s", plan)
+	if !strings.HasPrefix(plan, "Map(") {
+		t.Fatalf("expected the block's result as a Map, got: %s", plan)
 	}
 }
 
@@ -778,8 +778,8 @@ func TestPipeline_FilterProjection(t *testing.T) {
 	plan := planPipeline(t, proj)
 	t.Logf("plan: %s", plan)
 	// Both operators should be present in the explain tree.
-	if !strings.Contains(plan, "Project") {
-		t.Fatalf("expected plan to contain Project, got: %s", plan)
+	if !strings.HasPrefix(plan, "Map(") {
+		t.Fatalf("expected the block's result as a Map, got: %s", plan)
 	}
 	if !strings.Contains(plan, "Filter") && !strings.Contains(plan, "Scan") {
 		t.Fatalf("expected plan to contain Filter or Scan, got: %s", plan)
@@ -868,8 +868,8 @@ func TestPipeline_SortFilterProjection(t *testing.T) {
 	proj := pipelineProjection(sortQ, pipelineField(sortQ, "A"))
 	plan := planPipeline(t, proj)
 	t.Logf("plan: %s", plan)
-	if !strings.Contains(plan, "Project") {
-		t.Fatalf("expected plan to contain Project, got: %s", plan)
+	if !strings.HasPrefix(plan, "Map(") {
+		t.Fatalf("expected the block's result as a Map, got: %s", plan)
 	}
 }
 
@@ -930,8 +930,8 @@ func TestPipeline_ProjectionDistinct(t *testing.T) {
 	proj := pipelineProjection(distinctQ, pipelineField(distinctQ, "A"))
 	plan := planPipeline(t, proj)
 	t.Logf("plan: %s", plan)
-	if !strings.Contains(plan, "Project") {
-		t.Fatalf("expected plan to contain Project, got: %s", plan)
+	if !strings.HasPrefix(plan, "Map(") {
+		t.Fatalf("expected the block's result as a Map, got: %s", plan)
 	}
 }
 

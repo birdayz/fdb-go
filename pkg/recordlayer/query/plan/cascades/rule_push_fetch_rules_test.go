@@ -791,85 +791,6 @@ func TestPushMapThroughFetch_DoesNotFire_WhenTranslationFails(t *testing.T) {
 	}
 }
 
-func TestMergeProjectionAndFetch_WholeRecordRetainsFetch(t *testing.T) {
-	t.Parallel()
-
-	newSubject := func(t *testing.T, wholeRecord bool) *expressions.Reference {
-		t.Helper()
-		parameterAlias := values.UniqueCorrelationIdentifier()
-		rowType := testRecordRowType("T", "A", "B")
-		candidate := newKnownDistinctValueIndexCandidate(
-			"idx_a",
-			[]string{"T"},
-			[]string{"A"},
-			[]values.CorrelationIdentifier{parameterAlias},
-			rowType,
-			false,
-			nil,
-		)
-		template, ok := candidate.ToScanPlan(
-			map[values.CorrelationIdentifier]*predicates.ComparisonRange{},
-			false,
-		).(*plans.RecordQueryFetchFromPartialRecordPlan)
-		if !ok {
-			t.Fatalf("candidate scan = %T, want Fetch(IndexScan)", template)
-		}
-		indexPlan := template.GetInner()
-		if indexPlan == nil {
-			t.Fatal("candidate fetch has no index child")
-		}
-		fetch := mustPushFetchConstruct(plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
-			expressions.ForEachQuantifier(expressions.InitialOf(indexPlan)),
-			template.GetTranslateValueFunction(),
-			template.GetResultType(),
-			template.GetFetchIndexRecords(),
-		))
-		fetchRef := expressions.InitialOf(fetch)
-
-		projectionAlias := values.UniqueCorrelationIdentifier()
-		var projectedValue values.Value
-		if wholeRecord {
-			projectedValue = mustPushFetchConstruct(values.NewQuantifiedObjectValue(
-				projectionAlias, rowType))
-		} else {
-			projectedValue = testColumnRef(
-				mustPushFetchConstruct(values.NewQuantifiedObjectValue(projectionAlias, rowType)),
-				rowType, "A", values.NullableLong,
-			)
-		}
-		projection, err := plans.NewRecordQueryProjectionPlanFromQuantifier(
-			[]values.Value{projectedValue},
-			nil,
-			expressions.NamedForEachQuantifier(projectionAlias, fetchRef),
-		)
-		if wholeRecord {
-			if projection != nil || !errors.Is(err, values.ErrWholeRowProjection) {
-				t.Fatalf("whole-record projection = (%T, %v), want constructor rejection",
-					projection, err)
-			}
-			return nil
-		}
-		if err != nil {
-			t.Fatalf("construct scalar projection: %v", err)
-		}
-		return expressions.InitialOf(projection)
-	}
-
-	if ref := newSubject(t, true); ref != nil {
-		t.Fatal("rejected whole-record projection returned a memo Reference")
-	}
-
-	if yielded := mustFireImplementationRule(t,
-		NewMergeProjectionAndFetchRule(),
-		newSubject(t, false),
-	); len(yielded) != 1 {
-		t.Fatalf(
-			"covered scalar projection yielded %d plans, want 1 positive control",
-			len(yielded),
-		)
-	}
-}
-
 func TestPushUnionThroughFetch_AllChildrenHaveFetches(t *testing.T) {
 	t.Parallel()
 
@@ -1570,7 +1491,7 @@ func TestPushUnorderedUnionThroughFetchRule_Fires(t *testing.T) {
 	}
 }
 
-func TestRemoveProjectionRule_WholeRowIdentityRejectedAtAdmission(t *testing.T) {
+func TestProjectionPlan_WholeRowIdentityRejectedAtAdmission(t *testing.T) {
 	t.Parallel()
 
 	scan := pushFetchScan()
@@ -1587,7 +1508,7 @@ func TestRemoveProjectionRule_WholeRowIdentityRejectedAtAdmission(t *testing.T) 
 	}
 }
 
-func TestRemoveProjectionRule_AliasedWholeRowRejectedAtAdmission(t *testing.T) {
+func TestProjectionPlan_AliasedWholeRowRejectedAtAdmission(t *testing.T) {
 	t.Parallel()
 
 	scan := pushFetchScan()
@@ -1603,29 +1524,7 @@ func TestRemoveProjectionRule_AliasedWholeRowRejectedAtAdmission(t *testing.T) {
 	}
 }
 
-func TestRemoveProjectionRule_DeclinesForWrongQuantifier(t *testing.T) {
-	t.Parallel()
-
-	scan := pushFetchScan()
-	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	other := mustPushFetchConstruct(values.NewQuantifiedObjectValue(
-		values.NamedCorrelationIdentifier("OTHER"), values.NotNullLong))
-	projection := mustPushFetchConstruct(plans.NewRecordQueryProjectionPlanFromQuantifier(
-		[]values.Value{other},
-		nil,
-		innerQ,
-	))
-
-	yielded := mustFireImplementationRule(t,
-		NewRemoveProjectionRule(),
-		expressions.InitialOf(projection),
-	)
-	if len(yielded) != 0 {
-		t.Fatalf("rule erased a projection over the wrong quantifier — got %d yields", len(yielded))
-	}
-}
-
-func TestRemoveProjectionRule_EmptyAliasWholeRowRejectedAtAdmission(t *testing.T) {
+func TestProjectionPlan_EmptyAliasWholeRowRejectedAtAdmission(t *testing.T) {
 	t.Parallel()
 
 	scan := pushFetchScan()

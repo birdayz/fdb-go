@@ -293,7 +293,6 @@ func maxCardinalityForRedundancy(
 
 	switch expr.(type) {
 	case *expressions.LogicalFilterExpression,
-		*expressions.LogicalProjectionExpression,
 		*expressions.LogicalTypeFilterExpression,
 		*expressions.LogicalDistinctExpression,
 		*expressions.LogicalUniqueExpression,

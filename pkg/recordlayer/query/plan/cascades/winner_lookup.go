@@ -345,8 +345,7 @@ var (
 // the row: its output slot H may be the input's ID under another name, and a
 // request stated over the output — `_current.H#0` — names nothing in the
 // source's row until it is pushed through the wrapper's result value, exactly
-// as PushRequestedOrderingThroughProjectionRule pushes the constraint and as
-// Java's OrderingProperty.visitMapPlan pulls the child's ordering up through
+// as Java's OrderingProperty.visitMapPlan pulls the child's ordering up through
 // the map's result value (the dual of the same translation). Walking the
 // delegator chain with the untranslated request matched the output name
 // against the source's keys and so satisfied `ORDER BY u.h` over
@@ -380,12 +379,6 @@ func requestedOrderingBelow(
 		resultValue, innerQ = p.GetResultValue(), p.GetInnerQuantifier()
 	case *plans.RecordQueryMapPlan:
 		resultValue, innerQ = p.GetResultValue(), p.GetInnerQuantifier()
-	case *expressions.LogicalProjectionExpression:
-		// The logical projection takes the same crossing when its
-		// requested-ordering CONSTRAINT is pushed to its child group
-		// (PushRequestedOrderingThroughProjectionRule): one translation for
-		// the constraint going down and for the satisfaction walk.
-		resultValue, innerQ = p.GetResultValue(), p.GetInner()
 	default:
 		return requested, true
 	}

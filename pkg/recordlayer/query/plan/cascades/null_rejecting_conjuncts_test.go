@@ -29,7 +29,7 @@ func buildFilteredDistinctOverT(
 	filter = mustConstruct(t, filter, filterErr)
 	filterQ := expressions.ForEachQuantifier(expressions.InitialOf(filter))
 
-	proj, projErr := expressions.NewLogicalProjectionExpression(projected, filterQ)
+	proj, projErr := newBlockSelectForTest(projected, filterQ)
 	proj = mustConstruct(t, proj, projErr)
 	projRef := expressions.InitialOf(proj)
 	// A physical member of a projection group must flow the projection's exact

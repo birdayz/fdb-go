@@ -316,38 +316,6 @@ func TestFindPhysicalPlanVsFindBestPhysicalExpr_InsertionOrderMatters(t *testing
 	}
 }
 
-func TestProjectionRule_WrapsWinnerNotFirst(t *testing.T) {
-	t.Parallel()
-
-	// Build: Projection(inner-ref)
-	// Inner-ref has two physical plans. Verify the Projection wraps
-	// the winner (cost-model best), not the first.
-	scan := winnerLookupFullScan(t, "Order", "ID")
-	innerRef := expressions.InitialOf(scan)
-
-	scanRule := NewPrimaryScanRule()
-	mustWinnerLookupFireRule(t, scanRule, innerRef)
-
-	projectionQ := expressions.ForEachQuantifier(innerRef)
-	projVals := []values.Value{winnerLookupQuantifiedField(t, projectionQ, 0)}
-	proj := mustWinnerLookupConstruct(expressions.NewLogicalProjectionExpression(
-		projVals,
-		projectionQ,
-	))
-	topRef := expressions.InitialOf(proj)
-
-	projRule := NewImplementProjectionRule()
-	yielded := mustWinnerLookupFireRule(t, projRule, topRef)
-	if len(yielded) == 0 {
-		t.Fatal("ImplementProjectionRule yielded nothing")
-	}
-
-	if _, ok := yielded[0].(*plans.RecordQueryProjectionPlan); !ok {
-		t.Fatalf("yielded[0] = %T, want *plans.RecordQueryProjectionPlan", yielded[0])
-	}
-	t.Logf("ProjectionRule yielded %d plans", len(yielded))
-}
-
 // TestGetWinnerForOrdering_PreserveOnRefWithMultiplePhysical pins that a
 // reference holding physical members answers all three lookups even with no
 // winners stamped: findPhysicalPlan, findPhysicalExpr, and

@@ -84,8 +84,6 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewUnsortedSortElimRule(),
 		// PushOrderingThroughGroupByRule REMOVED (D-2): moved to PLANNING
 		// phase as PushRequestedOrderingThroughGroupByRule (DefaultImplementationRules).
-		// PushOrderingThroughProjectionRule REMOVED: moved to PLANNING
-		// phase as PushRequestedOrderingThroughProjectionRule (DefaultImplementationRules).
 		// PushOrderingThroughFilterRule REMOVED (D-3): moved to PLANNING
 		// phase as PushRequestedOrderingThroughFilterRule (DefaultImplementationRules).
 		// PushOrderingThroughDistinctRule REMOVED (D-2): moved to PLANNING
@@ -232,7 +230,6 @@ func BatchAExpressionRules() []ExpressionRule {
 	return []ExpressionRule{
 		NewPrimaryScanRule(),
 		NewImplementValuesRule(),
-		NewImplementProjectionRule(),
 		NewImplementFilterRule(),
 		NewOrderedIndexScanRule(),
 		NewOrderedPrimaryScanRule(),
@@ -287,7 +284,6 @@ func DefaultImplementationRules() []ImplementationRule {
 		NewPushRequestedOrderingThroughInsertRule(),
 		NewPushRequestedOrderingThroughUpdateRule(),
 		NewPushRequestedOrderingThroughTempTableInsertRule(),
-		NewPushRequestedOrderingThroughProjectionRule(),
 		NewPushRequestedOrderingThroughGroupByRule(),
 		NewPushRequestedOrderingThroughUnionRule(),
 		NewPushRequestedOrderingThroughRecursiveUnionRule(),
@@ -307,7 +303,6 @@ func DefaultImplementationRules() []ImplementationRule {
 		NewImplementInJoinRule(),
 		NewImplementInUnionRule(),
 		NewImplementSortRule(),
-		NewImplementProjectionFinalRule(),
 		NewImplementDistinctFinalRule(),
 		NewImplementUniqueRule(),
 		NewImplementUnorderedUnionRule(),
@@ -354,8 +349,6 @@ func DefaultImplementationRules() []ImplementationRule {
 		NewPushUnorderedUnionThroughFetchRule(),
 		NewPushMergeSortUnionThroughFetchRule(),
 		NewPushInUnionThroughFetchRule(),
-		NewRemoveProjectionRule(),
-		NewMergeProjectionAndFetchRule(),
 	}
 
 	rules = append(rules, GoExtensionImplementationRules()...)

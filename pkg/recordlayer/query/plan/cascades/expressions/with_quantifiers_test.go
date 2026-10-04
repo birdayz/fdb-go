@@ -112,11 +112,6 @@ func TestWithQuantifiersRejectsArityMismatchWithoutObject(t *testing.T) {
 			quantifiers: nil,
 		},
 		{
-			name:        "logical projection",
-			expression:  &LogicalProjectionExpression{inner: q1},
-			quantifiers: nil,
-		},
-		{
 			name:        "logical unique",
 			expression:  &LogicalUniqueExpression{quantifiers: [1]Quantifier{q1}},
 			quantifiers: nil,

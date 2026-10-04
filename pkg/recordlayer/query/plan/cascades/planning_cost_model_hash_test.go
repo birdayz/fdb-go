@@ -147,33 +147,6 @@ func TestCostModel_ProjectionSchemaIdentityDoesNotPerturbTieBreak(t *testing.T) 
 	innerQ := expressions.ForEachQuantifier(scanRef)
 	projected := []values.Value{hashField(innerQ, 0)}
 
-	logicalScore := mustHashConstruct(expressions.NewLogicalProjectionExpressionWithAliases(
-		projected, []string{"SCORE"}, innerQ))
-	logicalPoints := mustHashConstruct(expressions.NewLogicalProjectionExpressionWithAliases(
-		projected, []string{"POINTS"}, innerQ))
-	logicalMemo := NewMemo(nil)
-	logicalMemo.RegisterReference(scanRef)
-	if logicalMemo.MemoizeExpression(logicalScore) == logicalMemo.MemoizeExpression(logicalPoints) {
-		t.Fatal("logical projections with different output schemas collapsed in memo identity")
-	}
-	if logicalScore.HashCodeWithoutChildren() == logicalPoints.HashCodeWithoutChildren() {
-		t.Fatal("logical memo hashes must distinguish projection output schemas")
-	}
-	if tieBreakNodeHash(logicalScore) != tieBreakNodeHash(logicalPoints) {
-		t.Fatal("logical projection output schema perturbed the schema-neutral tie-break node hash")
-	}
-	if deepHashCode(logicalScore) != deepHashCode(logicalPoints) {
-		t.Fatal("logical projection output schema perturbed the planning cost tie-break")
-	}
-	if extractTieBreakHash(logicalScore, map[*expressions.Reference]bool{}) !=
-		extractTieBreakHash(logicalPoints, map[*expressions.Reference]bool{}) {
-		t.Fatal("logical projection output schema perturbed the extraction tie-break")
-	}
-	if newDesignationScope().deepHash(logicalScore, map[*expressions.Reference]bool{}) !=
-		newDesignationScope().deepHash(logicalPoints, map[*expressions.Reference]bool{}) {
-		t.Fatal("logical projection output schema perturbed the rewriting designation tie-break")
-	}
-
 	physicalScore := mustHashConstruct(plans.NewRecordQueryProjectionPlanFromQuantifier(
 		projected, []string{"SCORE"}, innerQ))
 	physicalPoints := mustHashConstruct(plans.NewRecordQueryProjectionPlanFromQuantifier(
@@ -245,9 +218,9 @@ func TestCostModel_UnaliasedProjectionCanonicalFieldNamesAreTieNeutral(t *testin
 		t.Fatal("name and ordinal resolution of the same exact slot must be semantically equal")
 	}
 
-	logicalA := mustHashConstruct(expressions.NewLogicalProjectionExpression(
+	logicalA := mustHashConstruct(newBlockSelectForTest(
 		[]values.Value{readByOrdinal}, innerQ))
-	logicalB := mustHashConstruct(expressions.NewLogicalProjectionExpression(
+	logicalB := mustHashConstruct(newBlockSelectForTest(
 		[]values.Value{readByName}, innerQ))
 	logicalMemo := NewMemo(nil)
 	logicalMemo.RegisterReference(scanRef)
@@ -282,9 +255,9 @@ func TestCostModel_ProjectionSemanticContentChangesTieBreakHash(t *testing.T) {
 		t.Fatal("test requires different ordinals to be a genuine semantic Value change")
 	}
 
-	logical0 := mustHashConstruct(expressions.NewLogicalProjectionExpressionWithAliases(
+	logical0 := mustHashConstruct(newBlockSelectWithAliasesForTest(
 		[]values.Value{read0}, []string{"SCORE"}, innerQ))
-	logical1 := mustHashConstruct(expressions.NewLogicalProjectionExpressionWithAliases(
+	logical1 := mustHashConstruct(newBlockSelectWithAliasesForTest(
 		[]values.Value{read1}, []string{"SCORE"}, innerQ))
 	if tieBreakNodeHash(logical0) == tieBreakNodeHash(logical1) {
 		t.Fatal("historical logical tie-break hash ignored a genuine projected-Value change")
@@ -310,13 +283,6 @@ func TestCostModel_ProjectionAliasVariantsRemainComparatorTies(t *testing.T) {
 		scorePlan  expressions.RelationalExpression
 		pointsPlan expressions.RelationalExpression
 	}{
-		{
-			name: "logical",
-			scorePlan: mustHashConstruct(expressions.NewLogicalProjectionExpressionWithAliases(
-				projected, []string{"SCORE"}, innerQ)),
-			pointsPlan: mustHashConstruct(expressions.NewLogicalProjectionExpressionWithAliases(
-				projected, []string{"POINTS"}, innerQ)),
-		},
 		{
 			name: "physical",
 			scorePlan: mustHashConstruct(plans.NewRecordQueryProjectionPlanFromQuantifier(

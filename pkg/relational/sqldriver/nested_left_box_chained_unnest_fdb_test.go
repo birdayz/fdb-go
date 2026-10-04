@@ -22,8 +22,7 @@ import (
 // TestFDB_NestedLeftBoxChained pins the NESTED-LEFT-box lateral-unnest
 // rows — `(A LEFT B) LEFT C` under both a single-link and a chained unnest.
 // Every one of these shapes fails to plan without SelectMergeRule's
-// dissolved-box handling ("best expression is not a physical plan:
-// LogicalProjectionExpression"): the REWRITING phase prunes the box's group to
+// dissolved-box handling ("best expression is not a physical plan"): the REWRITING phase prunes the box's group to
 // the flattened `[A, B(null-on-empty), C(null-on-empty)]` select — a canonical
 // seed the PLANNER cannot re-partition (no select-level predicates survive the
 // dissolve, and the positional-merge arm declines to collapse a null-on-empty

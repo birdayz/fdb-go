@@ -82,17 +82,17 @@ func hazardProjection(
 	t testing.TB,
 	projectedValues []values.Value,
 	inner expressions.Quantifier,
-) *expressions.LogicalProjectionExpression {
+) *expressions.SelectExpression {
 	t.Helper()
-	projectionValue, projectionErr := expressions.NewLogicalProjectionExpression(
-		projectedValues, inner)
-	return mustConstruct(t, projectionValue, projectionErr)
+	row, err := values.ProjectionResultValue(projectedValues, nil)
+	row = mustConstruct(t, row, err)
+	return hazardSelect(t, row, []expressions.Quantifier{inner}, nil)
 }
 
 func hazardExactRowProjection(
 	t testing.TB,
 	inner expressions.Quantifier,
-) *expressions.LogicalProjectionExpression {
+) *expressions.SelectExpression {
 	t.Helper()
 	root := hazardFlowedValue(t, inner)
 	recordType, ok := root.FlowedType().(*values.RecordType)

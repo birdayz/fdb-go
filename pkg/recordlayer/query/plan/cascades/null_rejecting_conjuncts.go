@@ -190,8 +190,6 @@ func conjunctsBetweenScanAnd(expr expressions.RelationalExpression) []predicates
 		case *expressions.LogicalFilterExpression:
 			out = append(out, typed.GetPredicates()...)
 			inner = typed.GetInner()
-		case *expressions.LogicalProjectionExpression:
-			inner = typed.GetInner()
 		case *expressions.SelectExpression:
 			if !isProjectionBlock(typed) {
 				return out

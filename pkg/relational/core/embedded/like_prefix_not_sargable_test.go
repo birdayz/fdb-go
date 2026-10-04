@@ -17,9 +17,9 @@ CREATE INDEX idx_status ON t2 (status)`
 const rulePushMapThroughFetch = "PushMapThroughFetchRule"
 
 // TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost pins the two
-// MEASUREMENTS behind TODO.md CQ-33. Both are NEGATIVE results — they
-// record defects that are live at HEAD — so each assertion's failure
-// message names what a fix means rather than claiming a bug.
+// MEASUREMENTS behind TODO.md CQ-33. PART 1 is a NEGATIVE result, live at
+// HEAD, so its failure messages name what a fix means rather than claiming a
+// bug; PART 2's defect is fixed (RFC-220) and its arm pins the fix.
 //
 // A negative result carried only in prose is the exact defect class
 // `yamsql/testdata/like_prefix_pushdown.yaml` exhibits: it asserts a
@@ -36,41 +36,15 @@ const rulePushMapThroughFetch = "PushMapThroughFetchRule"
 // index is reachable for this column, so the full scan is about the
 // comparison type and not about the schema.
 //
-// PART 2 — the covering stamp is lost through an intervening residual.
-// TWO rules stamp covering for this shape, redundantly, and both fail on
-// the same structural condition:
+// PART 2 — the covering stamp used to be lost through an intervening
+// residual: once `PushFilterThroughFetchRule` pushed a residual below the
+// fetch, the downstream rules that stamped coveringness could not descend
+// through the `RecordQueryPredicatesFilterPlan`. Coveringness is now a plan
+// type built at the access path, as Java's `RecordQueryCoveringIndexPlan`,
+// so no operator pushed below the fetch can drop it.
 //
-//   - `ImplementProjectionRule` — a PLANNING-phase expression rule, via
-//     `findIndexScanPlan` (rule_implement_projection.go:73);
-//   - `MergeProjectionAndFetchRule` — a PLANNING-phase implementation
-//     rule, via a direct `*RecordQueryIndexPlan` type assertion
-//     (rule_merge_projection_and_fetch.go:91), falling through to the
-//     :103 fallback when the assertion misses.
-//
-// Once `PushFilterThroughFetchRule` has pushed a residual below the
-// fetch, the fetch's inner is a `RecordQueryPredicatesFilterPlan`, and
-// neither the direct assertion nor `findIndexScanPlan` descends through
-// it, so the flag is dropped. Java (4.12.11.0) has no such failure mode:
-// coveringness there is a distinct class,
-// `RecordQueryCoveringIndexPlan`, which does not implement
-// `RecordQueryPlanWithIndex` but HOLDS one as a field, so an
-// intervening `Filter` cannot lose it. Go collapsed the two into a
-// `covering bool` on `RecordQueryIndexPlan`, which is what makes the
-// flag droppable at all. (The Java source is a gitignored sibling
-// checkout, absent from `git ls-files` — that reading cannot be
-// re-checked from this tree, so it is INSPECTION, not a measurement.)
-//
-// PART 3 (subtest) — the disabling experiment that makes "TWO rules,
-// redundantly" a measurement rather than a reading of the source.
-//
-// It matters beyond cosmetics because `isSingularIndexScanWithFetch`
-// (planning_cost_model.go:1389) returns true on `indexScanCount == 1`
-// before it ever consults `fetchCount`, so an unstamped index scan
-// counts as "singular index scan with fetch" at `fetchCount == 0` and
-// enters the cost model's contested tier. Whether that flips any
-// particular comparison is NOT asserted here and was never measured.
-// It does not change THIS query's plan, which is why the lost stamp
-// has stayed invisible.
+// PART 3 (subtest) — the disabling experiment showing the covering plan wins
+// because an ancestor can elide the fetch, not because it is preferred.
 func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 	t.Parallel()
 

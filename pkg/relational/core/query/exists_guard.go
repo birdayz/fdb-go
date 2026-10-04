@@ -45,9 +45,7 @@ func (e *UnfoldedProjectedExistsError) Error() string {
 //     the translator attaches the NamedExistentialQuantifier to).
 //
 //  2. For every expression in the tree, inspect the Value(s) it emits in its own
-//     scope (its resultValue, or — for a LogicalProjectionExpression whose
-//     resultValue is the inner's flowed object, not the projection — its
-//     projected values) and find every ExistsValue. For each, resolve the
+//     scope and find every ExistsValue. For each, resolve the
 //     existential alias it reads (its QuantifiedObjectValue child's correlation)
 //     and require that the emitting expression IS the SelectExpression that owns
 //     that existential quantifier. If it is not (or no SelectExpression owns the
@@ -126,8 +124,6 @@ func CheckProjectedExistsFolded(root *expressions.Reference) error {
 // false. Per type:
 //
 //   - SelectExpression: its result value (the correct fold target).
-//   - LogicalProjectionExpression: its projected values (its GetResultValue() is
-//     the inner's flowed object, which would miss a projected ExistsValue).
 //   - GroupByExpression: grouping keys + aggregate operands (`GROUP BY id,
 //     EXISTS(...)` parks the ExistsValue in a grouping key).
 //   - LogicalSortExpression: each sort key's Value.
@@ -138,8 +134,6 @@ func CheckProjectedExistsFolded(root *expressions.Reference) error {
 // false-positives).
 func emittedScopeValues(e expressions.RelationalExpression) []values.Value {
 	switch ex := e.(type) {
-	case *expressions.LogicalProjectionExpression:
-		return ex.GetProjectedValues()
 	case *expressions.GroupByExpression:
 		vals := append([]values.Value{}, ex.GetGroupingKeys()...)
 		for _, agg := range ex.GetAggregates() {

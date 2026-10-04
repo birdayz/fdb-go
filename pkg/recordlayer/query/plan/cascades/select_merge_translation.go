@@ -347,20 +347,6 @@ func (tr *selectMergeTranslation) expressionBinding(member expressions.Relationa
 			return nil, err
 		}
 		return e.WithCollection(collection)
-	case *expressions.LogicalProjectionExpression:
-		projected := make([]values.Value, len(e.GetProjectedValues()))
-		for i, value := range e.GetProjectedValues() {
-			var err error
-			projected[i], err = scoped.value(value)
-			if err != nil {
-				return nil, err
-			}
-		}
-		projection, err := expressions.NewLogicalProjectionExpressionWithAliasProvenance(projected, e.GetAliases(), e.GetAliasMinted(), translatedQs[0])
-		if err != nil {
-			return nil, err
-		}
-		return projection.WithInheritedOutputIdentity(e).WithAliasSources(e.GetAliasSources())
 	case *expressions.LogicalSortExpression:
 		keys := append([]expressions.SortKey(nil), e.GetSortKeys()...)
 		for i := range keys {

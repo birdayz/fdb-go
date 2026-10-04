@@ -2304,7 +2304,7 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 			// to the explicit bare projection of its boundary labels — exactly
 			// what the user would write by hand — so it translates as the
 			// verified BARE-PROJECTED derived-boundary class. The wrapper's
-			// LogicalProjectionExpression is a SelectMergeRule boundary; without
+			// block Select carries the boundary's labels; without
 			// it the body's SelectExpression MERGES into a gated parent select
 			// and the dissolved qualified reads fall into the name-model $m
 			// partition machinery, which mis-serves them over the positional
@@ -6138,8 +6138,6 @@ func positionalGatherUnbaked(expr expressions.RelationalExpression, seen map[*ex
 		quants = e.GetQuantifiers()
 	case *expressions.LogicalDistinctExpression:
 		quants = e.GetQuantifiers()
-	case *expressions.LogicalProjectionExpression:
-		quants = e.GetQuantifiers()
 	case *expressions.LogicalLimitExpression:
 		quants = e.GetQuantifiers()
 	case *expressions.LogicalSortExpression:
@@ -6167,60 +6165,6 @@ func positionalGatherUnbaked(expr expressions.RelationalExpression, seen map[*ex
 	return false
 }
 
-// governingProjection returns the outermost LogicalProjectionExpression that determines the
-// aggregate input row's column names, reachable through passthrough wrappers (a passthrough
-// Select, DISTINCT, LIMIT), or nil when none governs (a pure positional gather — whose
-// unresolved name read the executor already refuses LOUD, so the aggregate floor need not).
-func governingProjection(expr expressions.RelationalExpression, seen map[*expressions.Reference]bool) *expressions.LogicalProjectionExpression {
-	if expr == nil {
-		return nil
-	}
-	if p, ok := expr.(*expressions.LogicalProjectionExpression); ok {
-		return p
-	}
-	var quants []expressions.Quantifier
-	switch e := expr.(type) {
-	case *expressions.SelectExpression:
-		quants = e.GetQuantifiers()
-	case *expressions.LogicalDistinctExpression:
-		quants = e.GetQuantifiers()
-	case *expressions.LogicalLimitExpression:
-		quants = e.GetQuantifiers()
-	case *expressions.LogicalSortExpression:
-		quants = e.GetQuantifiers()
-	case *expressions.LogicalUnionExpression:
-		quants = e.GetQuantifiers()
-	default:
-		return nil
-	}
-	for _, q := range quants {
-		ref := q.GetRangesOver()
-		if seen[ref] {
-			continue
-		}
-		seen[ref] = true
-		if p := governingProjection(ref.Get(), seen); p != nil {
-			return p
-		}
-	}
-	return nil
-}
-
-// projectionOutputColumnNames returns the output-column names a projection emits,
-// VERBATIM — the alias when present, else the derived name of the projected Value
-// (values.OutputColumnName, the same authority the physical projection uses).
-// These are the names a name-model group key resolves against.
-//
-// "UPPER-cased" is what this said, and it was never this function's decision to
-// make: it returns GetOutputNames() unchanged, and that method's own doc says
-// "the exact… slot names". The sentence mattered because it is the `cols` side
-// of nameResolvesInColumns four lines below — a reader trusting it would
-// conclude that folding the KEY alone was symmetric, which is precisely the
-// mistake that gate shipped.
-func projectionOutputColumnNames(proj *expressions.LogicalProjectionExpression) []string {
-	return proj.GetOutputNames()
-}
-
 // expressionOutputColumns derives the OUTPUT column names, in ordinal order, of
 // a translated expression's row — the plan-time layout authority baked
 // consumer references resolve flat references against (Java's
@@ -6233,9 +6177,6 @@ func projectionOutputColumnNames(proj *expressions.LogicalProjectionExpression) 
 // takes the doc at its word.
 //
 // Coverage:
-//   - LogicalProjectionExpression: the projection's output names
-//     (values.OutputColumnName — the same authority the executor's posNames
-//     derivation reads, so the baked ordinal and the emitted slot agree).
 //   - GroupByExpression: [groupKeys..., aggregates...] via
 //     GroupByOutputColumnNames (the aggregateCursor's emission order).
 //   - LogicalUnion/RecursiveUnion: the FIRST leg's layout (legs are
@@ -6247,8 +6188,6 @@ func projectionOutputColumnNames(proj *expressions.LogicalProjectionExpression) 
 func expressionOutputColumns(expr expressions.RelationalExpression) []string {
 	for expr != nil {
 		switch e := expr.(type) {
-		case *expressions.LogicalProjectionExpression:
-			return projectionOutputColumnNames(e)
 		case *expressions.GroupByExpression:
 			return e.OutputColumnNames()
 		case *expressions.SelectExpression:
@@ -6342,60 +6281,6 @@ func projectionRefAt(p *logical.LogicalProject, i int) logical.ColumnRef {
 		return logical.ColumnRef{}
 	}
 	return p.ProjectionRefs[i]
-}
-
-// nameResolvesInColumns reports whether the group-key name resolves EXACTLY
-// against the input row's output columns.
-//
-// THE RULE IS "A GATE FOLDS EXACTLY AS THE READ IT GUARDS FOLDS", and getting
-// that wrong in either direction is a bug this function has now had both ways.
-// The read it guards is fieldRequestByName (values/field_value.go), which is
-// `fields[i].name == request.name` — byte-exact. So this must be byte-exact
-// too:
-//
-//   - It used to fold ONE side, `strings.ToUpper(key)` against a raw `cols`.
-//     That worked only while every output name was already upper. A projection
-//     publishes its columns verbatim now, so a `Region` key missed a `Region`
-//     column and hard-refused with `no exact output-slot binding` — a query
-//     Java answers. Loud, not a wrong answer, which is why it went unseen.
-//   - Folding BOTH sides fixes that case and buys a worse one: it is strictly
-//     WIDER than the guarded read, so a `REGION` key over a `Region` column is
-//     admitted here and then MISSES down there. A gate that admits what its
-//     read refuses moves the failure somewhere less legible.
-//
-// "It is a presence gate, so it may fold" was the argument for EqualFold, and
-// it is the wrong invariant twice over. The question is not what KIND of
-// predicate this is but which read it stands in front of — and this is not a
-// lookup at all, it is a FAIL-CLOSED REFUSAL (see the caller): loosening it
-// does not make a query resolve, it moves the query out of a loud refusal into
-// the name-model fallback, which is only safe if that fallback folds the same
-// way. Nothing established that.
-//
-// AGREEING WITH THAT READ TAKES MORE THAN BYTE-EXACTNESS, which is the part a
-// previous revision of this comment got wrong while congratulating itself on
-// the rest. fieldRequestByName COUNTS matches and refuses `>1` with
-// FieldAmbiguousName. A first-match bool therefore answers "resolves" for a row
-// carrying the name TWICE, and the read below then refuses it — the same
-// "admits what its read refuses" failure the fold produced, surviving at
-// exactness. So this counts too, and resolves only on exactly one.
-//
-// The duplicate is reachable, and NOT because of folding: a projection may
-// legitimately publish two slots with one name (the aggregate's native row
-// documents exactly that, leaving SQL de-duplication to the projection above).
-// An earlier note here framed multiplicity as something the verbatim conversion
-// unmasked; it was always there, and only the case-differing pair was new.
-//
-// Every arm is pinned in TestNameResolvesInColumns. It had no test at all when
-// it was loosened, which is how a one-line change to a gate became two
-// regressions in two directions.
-func nameResolvesInColumns(key string, cols []string) bool {
-	matches := 0
-	for _, c := range cols {
-		if c == key {
-			matches++
-		}
-	}
-	return matches == 1
 }
 
 func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.RelationalExpression {
@@ -7765,33 +7650,6 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 				t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
 					"aggregate group key %q could not bind to the gathered seed: %v", key.Display, err))
 				return nil
-			}
-		}
-	}
-	// Correct-or-loud floor for the PROJECTING-CTE-aggregate class: the bake was SKIPPED
-	// (findWindowedSeed couldn't reach an identity-wrapped seed) but the input is a
-	// POSITIONAL ordinal gather under a RESHAPING projection. The name-model fallback reads
-	// each group key by NAME over the projection's output columns — which is CORRECT for a
-	// BARE projection (`SELECT "AID"` names the output "AID", matching the D-stripped key
-	// "AID") but silently NULL for a QUALIFIED/mis-naming one (`SELECT A."AID"` names the
-	// output "A.AID", which the key "AID" cannot match). So refuse LOUD only when a group
-	// key does NOT resolve against the governing projection's output-column names; a
-	// name-resolvable (bare) projection is kept (pre-existing correct behavior,
-	// review-caught). Both sub-cases still need projected-output-layout
-	// ordinalization (Java answers GROUP BY over a projecting derived source,
-	// GroupByQueryTests:699) — booked as a TODO.
-	if bake.seedQOV == nil && positionalGatherUnbaked(innerRef.Get(), map[*expressions.Reference]bool{}) {
-		if proj := governingProjection(innerRef.Get(), map[*expressions.Reference]bool{}); proj != nil {
-			names := projectionOutputColumnNames(proj)
-			for i, key := range a.GroupKeys {
-				if projectedCTEKeys[i] {
-					continue
-				}
-				if key.Value == nil || !nameResolvesInColumns(key.Display, names) {
-					t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
-						"aggregate GROUP BY over a projected ordinal gather has no exact output-slot binding"))
-					return nil
-				}
 			}
 		}
 	}
