@@ -113,6 +113,36 @@ class SlidingWindowIndexSteps extends ConformanceBase {
         return buf.array();
     }
 
+    @ConformanceStep("captureSlidingPendingEntry")
+    public String captureSlidingPendingEntry(String clusterFile, byte[] subspace,
+            String oldJson, String newJson, String payloadHex, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openSlidingWindowStore(context, subspace);
+            java.util.function.Function<String, com.apple.foundationdb.record.provider.foundationdb.FDBStoredRecord<Order>> record = json -> {
+                if (json.isEmpty()) {
+                    return null;
+                }
+                com.google.gson.JsonObject object = com.google.gson.JsonParser.parseString(json).getAsJsonObject();
+                long id = object.get("id").getAsLong();
+                Order order = Order.newBuilder().setOrderId(id).setPrice(object.get("price").getAsInt())
+                    .setVectorData(ByteString.copyFrom(serializeVector(new double[]{id, 0, 0}))).build();
+                return com.apple.foundationdb.record.provider.foundationdb.FDBStoredRecord.newBuilder(order)
+                    .setPrimaryKey(Tuple.from(id)).setRecordType(store.getRecordMetaData().getRecordType("Order")).build();
+            };
+            com.apple.foundationdb.record.provider.foundationdb.IndexMaintainer maintainer =
+                store.getIndexMaintainer(store.getRecordMetaData().getIndex(INDEX_NAME));
+            com.google.protobuf.Any captured = maintainer.serializePendingWriteQueue(record.apply(oldJson), record.apply(newJson));
+            if (!payloadHex.isEmpty()) {
+                try {
+                    maintainer.updateFromQueue(com.google.protobuf.Any.parseFrom(java.util.HexFormat.of().parseHex(payloadHex))).join();
+                } catch (com.google.protobuf.InvalidProtocolBufferException ex) {
+                    throw new IllegalArgumentException(ex);
+                }
+            }
+            return java.util.HexFormat.of().formatHex(captured.toByteArray());
+        });
+    }
+
     @ConformanceStep("saveOrdersWithSlidingWindowIndex")
     public void saveOrdersWithSlidingWindowIndex(String clusterFile, byte[] subspace,
             String ordersJson, String tenantName) {
@@ -177,6 +207,7 @@ class SlidingWindowIndexSteps extends ConformanceBase {
             for (IndexEntry entry : cursor.asList().join()) {
                 Map<String, Object> m = new HashMap<>();
                 m.put("orderId", entry.getPrimaryKey().getLong(0));
+                m.put("vector", java.util.HexFormat.of().formatHex(entry.getValue().getBytes(0)));
                 results.add(m);
             }
             return results;

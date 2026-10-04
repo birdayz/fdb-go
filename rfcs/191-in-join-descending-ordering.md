@@ -7,6 +7,10 @@ deliberately** — ACK on the design choice, **NAK on revision 3's RFC text**, w
 claims that measurement does not support. This revision corrects each in place and records the ruling's binding
 conditions A–F, which gate implementation before it starts. See "Revision 4" below and "Design decision — RULED:
 option (ii)."
+**Update (RFC-257 migration):** defect (b) is closed — `ImplementInJoinRule`'s source enumeration is a port of
+Java's `enumerateInSourcesForRequestedOrdering`, resolving requested parts through `RichOrdering.BindingsFor`
+(the `orderingKeyFor` bridge), and a preserve request no longer claims a sorted source. No corpus plan changes
+shape; only IN-source direction tags move. Defect (a) remains open.
 **Area:** Cascades query engine — `RecordQueryInJoinPlan.HintOrdering`, `ImplementInJoinRule`/`ImplementInUnionRule`
 requested-ordering enumeration, plan partitioning (`ToPlanPartitions`/`orderingsEqual`), `PlanningCostModel`
 **Reviewers:** Graefe (Cascades alignment + the InJoin-vs-InUnion cost decision, and the ruling this revision

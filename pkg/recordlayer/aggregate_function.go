@@ -113,6 +113,8 @@ func (e *AggregateFunctionNotSupportedError) Error() string {
 	return fmt.Sprintf("Aggregate function requires appropriate index: function=%s, operand=%s", e.Function, e.Operand)
 }
 
+func (*AggregateFunctionNotSupportedError) JavaRecordCoreException() {}
+
 // indexesForRecordTypes returns the indexes that apply to EXACTLY the given record
 // types, no more, no less. Port of Java's IndexFunctionHelper.indexesForRecordTypes
 // (IndexFunctionHelper.java:178-189):
@@ -156,7 +158,7 @@ func indexesForRecordTypes(metaData *RecordMetaData, recordTypeNames []string) (
 	if len(recordTypeNames) == 1 {
 		rt := metaData.GetRecordType(recordTypeNames[0])
 		if rt == nil {
-			return nil, &MetaDataError{Message: fmt.Sprintf("unknown record type %q", recordTypeNames[0])}
+			return nil, unknownRecordTypeError(recordTypeNames[0])
 		}
 		return rt.GetIndexes(), nil
 	}
@@ -166,7 +168,7 @@ func indexesForRecordTypes(metaData *RecordMetaData, recordTypeNames []string) (
 	for _, name := range recordTypeNames {
 		rt := metaData.GetRecordType(name)
 		if rt == nil {
-			return nil, &MetaDataError{Message: fmt.Sprintf("unknown record type %q", name)}
+			return nil, unknownRecordTypeError(name)
 		}
 		if first == nil {
 			first = rt
@@ -216,7 +218,11 @@ func (store *FDBRecordStore) findIndexForAggregateFunction(
 		if idx == nil {
 			return nil, fmt.Errorf("aggregate function %q: %w", fn.Name, &IndexNotFoundError{IndexName: fn.Index})
 		}
-		if store.IsIndexReadable(idx.Name) {
+		state, err := store.readIndexState(idx.Name)
+		if err != nil {
+			return nil, err
+		}
+		if state == IndexStateReadable {
 			return idx, nil
 		}
 	}
@@ -230,7 +236,11 @@ func (store *FDBRecordStore) findIndexForAggregateFunction(
 	// rolling-up. Ties keep the first candidate, as Java's Stream.min does.
 	var best *Index
 	for _, idx := range candidates {
-		if !store.IsIndexReadable(idx.Name) {
+		state, err := store.readIndexState(idx.Name)
+		if err != nil {
+			return nil, err
+		}
+		if state != IndexStateReadable {
 			continue
 		}
 		if queryable != nil && !queryable(idx) {
@@ -565,7 +575,7 @@ func evaluateRankAggregate(
 	}
 
 	// Prefetch sparse upper skip-list levels for Rank/GetNth calls below.
-	rankedSet.PreloadForLookup(rm.tx)
+	rankedSet.PreloadForLookup(rm.tx.Snapshot())
 
 	switch fn.Name {
 	case FunctionNameCount, FunctionNameCountDistinct:

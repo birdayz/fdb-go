@@ -30,18 +30,33 @@ import "fmt"
 // appears in a fold-able position. Adding more shapes is mechanical
 // when need arises (extend isFoldableComposite + simplifyChildren).
 func SimplifyValue(v Value) Value {
+	return simplifyValue(v, false)
+}
+
+// SimplifyPredicateValue is SimplifyValue for a value inside a predicate: it
+// also folds a COALESCE over constant heads, Java's EvaluateConstantCoalesceRule,
+// which only the predicate value rule set carries
+// (DereferenceConstantObjectValueRuleSet.java:50-56). A COALESCE in a result
+// value is never folded, so it evaluates every argument.
+func SimplifyPredicateValue(v Value) Value {
+	return simplifyValue(v, true)
+}
+
+func simplifyValue(v Value, inPredicate bool) Value {
 	if v == nil {
 		return nil
 	}
-	rebuilt := simplifyChildren(v)
+	rebuilt := simplifyChildrenWith(v, inPredicate)
 	if s := composeFieldOverConstructor(rebuilt); s != nil {
-		return SimplifyValue(s)
+		return simplifyValue(s, inPredicate)
 	}
 	if s := composeFieldOverField(rebuilt); s != nil {
-		return SimplifyValue(s)
+		return simplifyValue(s, inPredicate)
 	}
-	if s := simplifyCoalesce(rebuilt); s != rebuilt {
-		return s
+	if inPredicate {
+		if s := simplifyCoalesce(rebuilt); s != rebuilt {
+			return s
+		}
 	}
 	if isCoalesceValue(rebuilt) {
 		return rebuilt
@@ -78,8 +93,24 @@ func SimplifyValue(v Value) Value {
 // Evaluate produces a Go-native scalar that LiteralValue can faithfully
 // rewrap.
 func isFoldableComposite(v Value) bool {
-	switch v.(type) {
-	case *ArithmeticValue, *CastValue, *PromoteValue, *ScalarFunctionValue, *NotValue,
+	switch v := v.(type) {
+	case *PromoteValue:
+		if v.prepared == nil {
+			return false
+		}
+		// A structured promotion must survive until the plan binds its
+		// descriptor graph. Folding its standalone raw result into a constant
+		// would erase the coercion boundary under a stamped parent.
+		target := v.prepared.root.target
+		for {
+			array, ok := target.(*ArrayType)
+			if !ok {
+				break
+			}
+			target = array.ElementType
+		}
+		return !IsRecord(target)
+	case *ArithmeticValue, *CastValue, *ScalarFunctionValue, *NotValue,
 		*AndOrValue, *ConditionSelectorValue, *PickValue, *EvaluatesToValue:
 		return true
 	}
@@ -89,17 +120,17 @@ func isFoldableComposite(v Value) bool {
 // simplifyChildren rebuilds v with each child recursively simplified.
 // Returns v unchanged (same pointer) when no child changed — keeps
 // the SimplifyValue caller's pointer-equality short-circuit usable.
-func simplifyChildren(v Value) Value {
+func simplifyChildrenWith(v Value, inPredicate bool) Value {
 	switch x := v.(type) {
 	case *ArithmeticValue:
-		l := SimplifyValue(x.Left)
-		r := SimplifyValue(x.Right)
+		l := simplifyValue(x.Left, inPredicate)
+		r := simplifyValue(x.Right, inPredicate)
 		if l == x.Left && r == x.Right {
 			return v
 		}
-		return &ArithmeticValue{Op: x.Op, Left: l, Right: r}
+		return x.WithOperands(l, r)
 	case *CastValue:
-		c := SimplifyValue(x.Child)
+		c := simplifyValue(x.Child, inPredicate)
 		if cv, ok := c.(*ConstantValue); ok {
 			if folded := tryCastConstant(cv, x.Target); folded != nil {
 				return folded
@@ -110,14 +141,14 @@ func simplifyChildren(v Value) Value {
 		}
 		return NewCastValue(c, x.Target)
 	case *PromoteValue:
-		c := SimplifyValue(x.Child)
-		if cv, ok := c.(*ConstantValue); ok {
+		c := simplifyValue(x.Child, inPredicate)
+		if cv, ok := c.(*ConstantValue); ok && isFoldableComposite(x) {
 			// Apply the promotion through Evaluate before re-tagging. Numeric
 			// promotions align the carrier width (including direct LONG→FLOAT
 			// rounding), while STRING→UUID reshapes the canonical string into a
 			// neutral [16]byte. On an error, keep the Promote node so it surfaces
 			// at execution, exactly as Java's PromoteValue does.
-			if folded, err := (&PromoteValue{Child: cv, Target: x.Target}).Evaluate(nil); err == nil {
+			if folded, err := NewPromoteValue(cv, x.Target).Evaluate(nil); err == nil {
 				return &ConstantValue{Value: folded, Typ: x.Target}
 			}
 			return NewPromoteValue(cv, x.Target)
@@ -130,7 +161,7 @@ func simplifyChildren(v Value) Value {
 		anyChanged := false
 		newArgs := make([]Value, len(x.Args))
 		for i, a := range x.Args {
-			n := SimplifyValue(a)
+			n := simplifyValue(a, inPredicate)
 			if n != a {
 				anyChanged = true
 			}
@@ -141,14 +172,14 @@ func simplifyChildren(v Value) Value {
 		}
 		return &ScalarFunctionValue{FuncName: x.FuncName, Args: newArgs, Typ: x.Typ}
 	case *NotValue:
-		c := SimplifyValue(x.Child)
+		c := simplifyValue(x.Child, inPredicate)
 		if c == x.Child {
 			return v
 		}
 		return &NotValue{Child: c}
 	case *AndOrValue:
-		l := SimplifyValue(x.Left)
-		r := SimplifyValue(x.Right)
+		l := simplifyValue(x.Left, inPredicate)
+		r := simplifyValue(x.Right, inPredicate)
 		if l == x.Left && r == x.Right {
 			return v
 		}
@@ -157,7 +188,7 @@ func simplifyChildren(v Value) Value {
 		anyChanged := false
 		newImpl := make([]Value, len(x.Implications))
 		for i, impl := range x.Implications {
-			n := SimplifyValue(impl)
+			n := simplifyValue(impl, inPredicate)
 			if n != impl {
 				anyChanged = true
 			}
@@ -168,14 +199,14 @@ func simplifyChildren(v Value) Value {
 		}
 		return NewConditionSelectorValue(newImpl)
 	case *EvaluatesToValue:
-		c := SimplifyValue(x.Child)
+		c := simplifyValue(x.Child, inPredicate)
 		if c == x.Child {
 			return v
 		}
 		return NewEvaluatesToValue(c, x.Eval)
 	case *PickValue:
 		anyChanged := false
-		newSel := SimplifyValue(x.Selector)
+		newSel := simplifyValue(x.Selector, inPredicate)
 		if newSel != x.Selector {
 			anyChanged = true
 		}
@@ -185,7 +216,7 @@ func simplifyChildren(v Value) Value {
 				newAlts[i] = nil
 				continue
 			}
-			n := SimplifyValue(a)
+			n := simplifyValue(a, inPredicate)
 			if n != a {
 				anyChanged = true
 			}
@@ -531,7 +562,7 @@ func simplifyChildrenWithContext(v Value, ctx ValueSimplifyContext) Value {
 		if l == x.Left && r == x.Right {
 			return v
 		}
-		return &ArithmeticValue{Op: x.Op, Left: l, Right: r}
+		return x.WithOperands(l, r)
 	case *RecordConstructorValue:
 		anyChanged := false
 		newFields := make([]RecordConstructorField, len(x.Fields))

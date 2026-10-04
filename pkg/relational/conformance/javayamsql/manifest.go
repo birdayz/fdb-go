@@ -313,6 +313,8 @@ var supportedVersionEntries = []ManifestEntry{
 	{"supported-version/unsupported-at-query.yamsql", FixedVersionMeta, "gate above the pinned 3.0.18.0; admits under current", "SupportedVersionTest.shouldPass"},
 	{"supported-version/current-version-at-file.yamsql", FixedVersionMeta, "!current_version gate excludes 3.0.18.0 but admits current", "SupportedVersionTest.shouldPass"},
 	{"supported-version/current-version-at-block.yamsql", FixedVersionMeta, "!current_version gate excludes 3.0.18.0 but admits current", "SupportedVersionTest.shouldPass"},
+	{"supported-version/current-version-at-setup-block.yamsql", FixedVersionMeta, "!current_version gate excludes 3.0.18.0 but admits current", "SupportedVersionTest.shouldPass"},
+	{"supported-version/current-version-at-file-and-setup-block.yamsql", FixedVersionMeta, "!current_version gate excludes 3.0.18.0 but admits current", "SupportedVersionTest.shouldPass"},
 	{"supported-version/current-version-at-query.yamsql", FixedVersionMeta, "!current_version gate excludes 3.0.18.0 but admits current", "SupportedVersionTest.shouldPass"},
 	{"supported-version/higher-at-block.yamsql", FixedVersionMeta, "gate above the pinned 3.0.18.0; admits under current", "SupportedVersionTest.shouldPass"},
 	{"supported-version/higher-at-query.yamsql", FixedVersionMeta, "gate above the pinned 3.0.18.0; admits under current", "SupportedVersionTest.shouldPass"},

@@ -218,7 +218,7 @@ func TestSimplifyValue_PromoteFold(t *testing.T) {
 	if cv.Value != float64(3) {
 		t.Fatalf("Value: got %v (%T), want float64(3)", cv.Value, cv.Value)
 	}
-	if cv.Typ != NullableDouble {
+	if !cv.Typ.Equals(NullableDouble) {
 		t.Fatalf("Typ: got %v, want NullableDouble (preserved from PROMOTE target)", cv.Typ)
 	}
 }
@@ -251,7 +251,7 @@ func TestSimplifyValue_CoalesceAllNulls(t *testing.T) {
 	t.Parallel()
 	v := NewScalarFunctionValue("COALESCE", NullableLong,
 		NewNullValue(NullableLong), NewNullValue(NullableLong))
-	got := SimplifyValue(v)
+	got := SimplifyPredicateValue(v)
 	if _, ok := got.(*NullValue); !ok {
 		t.Fatalf("COALESCE(NULL, NULL) = %T, want NullValue", got)
 	}
@@ -264,7 +264,7 @@ func TestSimplifyValue_CoalesceFirstNonNullConstant(t *testing.T) {
 		&ConstantValue{Value: int64(42), Typ: NullableLong},
 		&fieldValue{Field: "x", Typ: NullableLong},
 	)
-	got := SimplifyValue(v)
+	got := SimplifyPredicateValue(v)
 	c, ok := got.(*ConstantValue)
 	if !ok {
 		t.Fatalf("COALESCE(NULL, 42, x) = %T, want ConstantValue", got)
@@ -280,7 +280,7 @@ func TestSimplifyValue_CoalesceRemoveRedundantNulls(t *testing.T) {
 	y := &fieldValue{Field: "y", Typ: NullableLong}
 	v := NewScalarFunctionValue("COALESCE", NullableLong,
 		x, NewNullValue(NullableLong), y, NewNullValue(NullableLong))
-	got := SimplifyValue(v)
+	got := SimplifyPredicateValue(v)
 	sf, ok := got.(*ScalarFunctionValue)
 	if !ok {
 		t.Fatalf("COALESCE(x, NULL, y, NULL) = %T, want ScalarFunctionValue", got)
@@ -527,3 +527,19 @@ func TestSimplifyValue_FieldOverRecordConstructor_NotFound(t *testing.T) {
 // composeFieldOverConstructor (TestSimplifyValue_FieldOverRecordConstructor*) with
 // no opaque-merge ambiguity to canonicalize. The two tests that pinned the retired
 // rule were deleted.
+
+// A COALESCE in a result value is never folded: Java evaluates every argument
+// there, so COALESCE(42, x) must keep x (which may raise).
+func TestSimplifyValue_CoalesceNotFoldedOutsidePredicates(t *testing.T) {
+	t.Parallel()
+	v := NewScalarFunctionValue("COALESCE", NullableLong,
+		&ConstantValue{Value: int64(42), Typ: NotNullLong},
+		&fieldValue{Field: "x", Typ: NullableLong},
+	)
+	if got := SimplifyValue(v); got != Value(v) {
+		t.Fatalf("SimplifyValue(COALESCE(42, x)) = %v, want it unchanged", got)
+	}
+	if _, ok := SimplifyPredicateValue(v).(*ConstantValue); !ok {
+		t.Fatal("SimplifyPredicateValue(COALESCE(42, x)) did not fold")
+	}
+}

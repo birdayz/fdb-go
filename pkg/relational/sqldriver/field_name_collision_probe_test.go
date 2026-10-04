@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -39,7 +40,7 @@ func TestFDB_FieldNameCollisionAcrossEscaping(t *testing.T) {
 			` CREATE TABLE t (id BIGINT, "a$b" BIGINT, "a__1b" BIGINT, PRIMARY KEY (id))`)
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE fieldcollide")
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)

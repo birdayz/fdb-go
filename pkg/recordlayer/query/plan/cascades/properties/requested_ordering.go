@@ -58,6 +58,23 @@ func (s RequestedSortOrder) IsCounterflowNulls() bool {
 	return s == RequestedSortOrderAscendingNullsLast || s == RequestedSortOrderDescendingNullsFirst
 }
 
+// ToProvidedSortOrder ports Java RequestedSortOrder.toProvidedSortOrder. Only a
+// directional order has a provided counterpart.
+func (s RequestedSortOrder) ToProvidedSortOrder() (ProvidedSortOrder, bool) {
+	switch s {
+	case RequestedSortOrderAscending:
+		return ProvidedSortOrderAscending, true
+	case RequestedSortOrderDescending:
+		return ProvidedSortOrderDescending, true
+	case RequestedSortOrderAscendingNullsLast:
+		return ProvidedSortOrderAscendingNullsLast, true
+	case RequestedSortOrderDescendingNullsFirst:
+		return ProvidedSortOrderDescendingNullsFirst, true
+	default:
+		return ProvidedSortOrderChoose, false
+	}
+}
+
 // RequestedOrderingPart is a (Value, RequestedSortOrder) pair specifying
 // one element of a requested ordering. Mirrors Java's
 // OrderingPart.RequestedOrderingPart.

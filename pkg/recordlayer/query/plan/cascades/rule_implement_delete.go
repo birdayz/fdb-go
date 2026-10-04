@@ -50,7 +50,7 @@ func (r *ImplementDeleteRule) OnMatch(call *ExpressionRuleCall) {
 	for _, candidate := range storedRecordDMLCandidates(innerRef) {
 		// The DELETE plan is its own cascades expression (RFC-184 W2) — it
 		// carries the live child edge directly, no physicalDeleteWrapper.
-		innerQ, err := dmlDedupedInnerQuantifier(call, candidate, candidate.distinctRecords)
+		innerQ, err := dmlDedupedInnerQuantifier(call, candidate, del.GetInner(), candidate.distinctRecords)
 		if err != nil {
 			call.Fail(err)
 			return

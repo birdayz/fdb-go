@@ -107,7 +107,7 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	} else {
 		legs = t.legsOfGatedJoin(leftJoin)
 	}
-	fields, legTypes := t.ordinalJoinSeedFields(legs)
+	fields, legTypes, _ := t.ordinalJoinSeedFields(legs)
 	if fields == nil {
 		return nil // a leg untranslatable — same decline rule as the seed
 	}
@@ -150,20 +150,29 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	if owner == nil {
 		return nil
 	}
-	seg0 := owner.Correlation().Name()
-	ownerWindow, isOwner := legTypes[seg0]
-	if !isOwner || ownerWindow.typ == nil || ownerWindow.leafTyp == nil {
+	// A collection an enclosing query owns reads no leg of this cluster: the
+	// Explode is correlated to the outer query by the bound collection itself
+	// (unnestSeedCollection). Any other foreign owner declines.
+	collection := u.CorrelatedCollection
+	if !unnestOwnedByLeft(j.Left, u) && !u.EnclosingOwner {
 		return nil
 	}
-	ownerCorr := seg0
-	if ownerWindow.bakeCorr != "" {
-		ownerCorr = strings.ToUpper(ownerWindow.bakeCorr)
+	if unnestOwnedByLeft(j.Left, u) {
+		seg0 := owner.Correlation().Name()
+		ownerWindow, isOwner := legTypes[seg0]
+		if !isOwner || ownerWindow.typ == nil || ownerWindow.leafTyp == nil {
+			return nil
+		}
+		ownerCorr := seg0
+		if ownerWindow.bakeCorr != "" {
+			ownerCorr = strings.ToUpper(ownerWindow.bakeCorr)
+		}
+		ownerQOV, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(ownerCorr), ownerWindow.typ)
+		if err != nil {
+			return nil
+		}
+		collection = resolveBoundSeedCollection(ownerQOV, u, ownerWindow.leafOffset, false)
 	}
-	ownerQOV, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(ownerCorr), ownerWindow.typ)
-	if err != nil {
-		return nil
-	}
-	collection := resolveBoundSeedCollection(ownerQOV, u, ownerWindow.leafOffset, false)
 	if collection == nil {
 		return nil
 	}
@@ -204,7 +213,7 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 		fieldsAt += len(legTypes[legs[i].binding].typ.Fields)
 	}
 
-	explode, err := expressions.NewExplodeExpressionWithOrdinality(collection, u.AtAlias != "")
+	explode, err := unnestExplode(collection, u)
 	if err != nil {
 		t.setTranslateErr(err)
 		return nil

@@ -36,9 +36,9 @@ func TestDMLAndAggregateResultsStateTheirActualRows(t *testing.T) {
 
 	updateExpression := mustExpression(NewUpdateExpression(inner, "T", target, nil))
 	updateRow := updateExpression.GetResultValue().Type().(*values.RecordType)
-	if len(updateRow.Fields) != 2 || updateRow.Fields[0].Name != "OLD" || updateRow.Fields[1].Name != "NEW" ||
-		!updateRow.Fields[0].FieldType.Equals(innerRow) || !updateRow.Fields[1].FieldType.Equals(target) {
-		t.Fatalf("UPDATE result type = %v, want OLD %v / NEW %v", updateRow, innerRow, target)
+	if len(updateRow.Fields) != 2 || updateRow.Fields[0].Name != "old" || updateRow.Fields[1].Name != "new" ||
+		!updateRow.Fields[0].FieldType.Equals(innerRow) || !updateRow.Fields[1].FieldType.Equals(values.WithNullability(target, true)) {
+		t.Fatalf("UPDATE result type = %v, want old %v / new %v NULL", updateRow, innerRow, target)
 	}
 
 	groupBy := mustExpression(NewGroupByExpression(

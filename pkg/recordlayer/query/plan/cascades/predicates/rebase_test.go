@@ -232,3 +232,64 @@ func TestRebasePredicate_PlaceholderNoChange(t *testing.T) {
 		t.Fatal("placeholder with no matching aliases should return same pointer")
 	}
 }
+
+func TestAtomicitySurvivesRebaseAndIdentity(t *testing.T) {
+	t.Parallel()
+	old := values.NamedCorrelationIdentifier("atomic_old")
+	target := values.NamedCorrelationIdentifier("atomic_new")
+	leaf := NewComparisonPredicate(mustQOV(t, old), NewLiteralComparison(ComparisonEquals, int64(5)))
+	for _, connective := range []QueryPredicate{NewAnd(leaf, leaf), NewOr(leaf, leaf), NewNot(leaf)} {
+		atomic := WithAtomicity(connective, true)
+		if IsAtomic(connective) || !IsAtomic(atomic) {
+			t.Fatal("WithAtomicity mutated original or lost flag")
+		}
+		if PredicateEquals(atomic, connective) || StructurallyEqual(atomic, connective) || SemanticEqualsUnderAliasMap(atomic, connective, nil) {
+			t.Fatal("atomicity missing from predicate identity")
+		}
+		if StructuralHash(atomic) == StructuralHash(connective) || SemanticHashCode(atomic) == SemanticHashCode(connective) {
+			t.Fatal("atomicity missing from hash")
+		}
+		rebased := mustRebase(t, atomic, mustAliasMap(t, values.AliasPair{Source: old, Target: target}))
+		if !IsAtomic(rebased) {
+			t.Fatal("rebase lost atomicity")
+		}
+		if _, exists := GetCorrelatedToOfPredicate(rebased)[target]; !exists {
+			t.Fatal("rebase did not change child")
+		}
+	}
+}
+
+func TestAtomicitySurvivesValueAndResidualRewrites(t *testing.T) {
+	t.Parallel()
+	old := mustQOV(t, values.NamedCorrelationIdentifier("atomic_source"))
+	replacement := mustQOV(t, values.NamedCorrelationIdentifier("atomic_target"))
+	leaf := NewComparisonPredicate(old, NewLiteralComparison(ComparisonEquals, int64(5)))
+	for _, connective := range []QueryPredicate{NewAnd(leaf, leaf), NewOr(leaf, leaf), NewNot(leaf)} {
+		atomic := WithAtomicity(connective, true)
+		rewritten := ReplaceValues(atomic, func(value values.Value) values.Value {
+			if value == old {
+				return replacement
+			}
+			return value
+		})
+		if !IsAtomic(rewritten) || rewritten == atomic {
+			t.Fatal("value rewrite lost barrier or did not rewrite")
+		}
+		checked, err := TransformEmbeddedValuesChecked(atomic, func(value values.Value) (values.Value, error) {
+			if value == old {
+				return replacement, nil
+			}
+			return value, nil
+		})
+		if err != nil || !IsAtomic(checked) || checked == atomic {
+			t.Fatalf("checked rewrite lost barrier: %v", err)
+		}
+	}
+	placeholder := NewPlaceholder(values.NamedCorrelationIdentifier("p"), old)
+	for _, connective := range []QueryPredicate{NewAnd(placeholder, leaf), NewOr(placeholder, leaf), NewNot(placeholder)} {
+		residual, err := ToResidualPredicate(WithAtomicity(connective, true))
+		if err != nil || !IsAtomic(residual) {
+			t.Fatalf("residual rewrite lost barrier: %v", err)
+		}
+	}
+}

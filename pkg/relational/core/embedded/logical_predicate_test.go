@@ -82,11 +82,12 @@ func TestSingleSourceOnOnlyCTEScopeBindsEveryClauseToTheProjectedRow(t *testing.
 		t.Fatalf("VisitQuery: %v", err)
 	}
 
-	wantCorrelation := values.NamedCorrelationIdentifier("ORDER")
+	// The CTE reference binds under a minted identity; what must hold is that
+	// every clause reads one and the same exact one-field row through it.
 	wantType := values.NewRecordType("", false, []values.Field{{
 		Name: "ORDER_ID", FieldType: values.NullableLong,
 	}})
-	found := map[string]bool{}
+	found := map[string]values.CorrelationIdentifier{}
 	inspect := func(site string, value values.Value) {
 		if value == nil {
 			return
@@ -97,18 +98,25 @@ func TestSingleSourceOnOnlyCTEScopeBindsEveryClauseToTheProjectedRow(t *testing.
 				return true
 			}
 			root, ok := values.AsQuantifiedObjectValue(field.ChildValue())
-			if !ok || root.Correlation() != wantCorrelation {
+			if !ok {
 				return true
 			}
+			if row, isRow := root.FlowedType().(*values.RecordType); isRow && len(row.Fields) > 1 {
+				for _, f := range row.Fields {
+					if f.Name == "ORDER_ID" {
+						t.Fatalf("%s reads ORDER_ID through %s %s, a wider row than the projected CTE row %s",
+							site, root.Correlation(), root.FlowedType(), wantType)
+					}
+				}
+			}
 			if !root.FlowedType().Equals(wantType) {
-				t.Fatalf("%s ORDER root type = %s, want exact projected CTE row %s",
-					site, root.FlowedType(), wantType)
+				return true
 			}
 			ordinals := field.Path().Ordinals()
 			if len(ordinals) != 1 || ordinals[0] != 0 {
 				t.Fatalf("%s ORDER_ID path = %v, want [0]", site, ordinals)
 			}
-			found[site] = true
+			found[site] = root.Correlation()
 			return false
 		})
 	}
@@ -144,8 +152,11 @@ func TestSingleSourceOnOnlyCTEScopeBindsEveryClauseToTheProjectedRow(t *testing.
 	}
 	walk(op)
 	for _, site := range []string{"where", "projection", "sort"} {
-		if !found[site] {
+		if found[site].IsZero() {
 			t.Fatalf("no exact projected ORDER root found at %s", site)
+		}
+		if found[site] != found["where"] {
+			t.Fatalf("%s reads the CTE row through %s, WHERE through %s", site, found[site], found["where"])
 		}
 	}
 }
@@ -339,7 +350,7 @@ func TestBuildLogicalPlanWithCatalog_WhereWalked(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
 	sq := parseSelect(t, "SELECT * FROM Order WHERE price > 5")
-	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedSchema)
+	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedTemplate)
 	if op == nil {
 		t.Fatal("expected non-nil LogicalOperator")
 	}
@@ -564,7 +575,7 @@ func TestBuildLogicalPlanWithCatalog_WhereAnd(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
 	sq := parseSelect(t, "SELECT * FROM Order WHERE price > 5 AND order_id = 1")
-	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedSchema)
+	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedTemplate)
 	filter, ok := op.(*logical.LogicalFilter)
 	if !ok {
 		t.Fatalf("expected LogicalFilter, got %T", op)
@@ -584,7 +595,7 @@ func TestBuildLogicalPlanWithCatalog_WhereAnd(t *testing.T) {
 func TestBuildLogicalPlanWithCatalog_NilMetaData(t *testing.T) {
 	t.Parallel()
 	sq := parseSelect(t, "SELECT * FROM t WHERE id > 5")
-	op, _ := buildLogicalPlanForSelectWithCatalog(sq, nil, defaultEmbeddedSchema)
+	op, _ := buildLogicalPlanForSelectWithCatalog(sq, nil, defaultEmbeddedTemplate)
 	filter, ok := op.(*logical.LogicalFilter)
 	if !ok {
 		t.Fatalf("expected LogicalFilter, got %T", op)
@@ -603,7 +614,7 @@ func TestBuildLogicalPlanWithCatalog_UnknownTable(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
 	sq := parseSelect(t, "SELECT * FROM NoSuchTable WHERE id > 5")
-	op, err := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedSchema)
+	op, err := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedTemplate)
 	var sqlErr *api.Error
 	if op != nil || !errors.As(err, &sqlErr) || sqlErr.Code != api.ErrCodeUndefinedTable {
 		t.Fatalf("plan=%v error=%v, want no plan and 42F01", op, err)
@@ -623,7 +634,7 @@ func TestBuildLogicalPlanWithCatalog_UnsupportedShape(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
 	sq := parseSelect(t, "SELECT * FROM Order WHERE FROBNICATE(price) = 1")
-	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedSchema)
+	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedTemplate)
 	filter, ok := op.(*logical.LogicalFilter)
 	if !ok {
 		t.Fatalf("expected LogicalFilter, got %T", op)
@@ -645,7 +656,7 @@ func TestBuildLogicalPlanWithCatalog_RHSArithmeticFolded(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
 	sq := parseSelect(t, "SELECT * FROM Order WHERE price = 1+2")
-	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedSchema)
+	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedTemplate)
 	filter, ok := op.(*logical.LogicalFilter)
 	if !ok {
 		t.Fatalf("expected LogicalFilter, got %T", op)
@@ -665,7 +676,7 @@ func TestBuildLogicalPlanWithCatalog_RHSScalarFunctionFolded(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
 	sq := parseSelect(t, "SELECT * FROM Customer WHERE name = UPPER('hi')")
-	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedSchema)
+	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedTemplate)
 	filter, ok := op.(*logical.LogicalFilter)
 	if !ok {
 		t.Fatalf("expected LogicalFilter, got %T", op)
@@ -689,7 +700,7 @@ func TestBuildLogicalPlanWithCatalog_ScalarFunctionWalked(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
 	sq := parseSelect(t, "SELECT * FROM Order WHERE UPPER(price) = 'X'")
-	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedSchema)
+	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedTemplate)
 	filter, ok := op.(*logical.LogicalFilter)
 	if !ok {
 		t.Fatalf("expected LogicalFilter, got %T", op)
@@ -706,7 +717,7 @@ func TestBuildLogicalPlanWithCatalog_DeleteWhere(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
 	del := parseDelete(t, "DELETE FROM Order WHERE price > 5")
-	op, err := buildLogicalPlanForDeleteWithCatalog(del, md, defaultEmbeddedSchema)
+	op, err := buildLogicalPlanForDeleteWithCatalog(del, md, defaultEmbeddedTemplate)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -742,7 +753,7 @@ func TestBuildLogicalPlanWithCatalog_UpdateWhere(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
 	upd := parseUpdate(t, "UPDATE Order SET price = 10 WHERE order_id = 1")
-	op, err := buildLogicalPlanForUpdateWithCatalog(upd, md, defaultEmbeddedSchema)
+	op, err := buildLogicalPlanForUpdateWithCatalog(upd, md, defaultEmbeddedTemplate)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1056,7 +1067,7 @@ func TestBuildLogicalPlanWithCatalog_InsertSelectThreadsMd(t *testing.T) {
 	md := buildTestMetaData(t)
 	ins := parseInsert(t,
 		"INSERT INTO Customer (customer_id, name) SELECT order_id, 'x' FROM Order WHERE price > 5")
-	op, _ := buildLogicalPlanForInsertWithCatalog(ins, md, defaultEmbeddedSchema)
+	op, _ := buildLogicalPlanForInsertWithCatalog(ins, md, defaultEmbeddedTemplate)
 	insertOp, ok := op.(*logical.LogicalInsert)
 	if !ok {
 		t.Fatalf("expected LogicalInsert, got %T", op)
@@ -1093,7 +1104,7 @@ func TestBuildLogicalPlanWithCatalog_InsertSelect_NoWhere(t *testing.T) {
 	md := buildTestMetaData(t)
 	ins := parseInsert(t,
 		"INSERT INTO Customer (customer_id, name) SELECT order_id, 'x' FROM Order")
-	op, _ := buildLogicalPlanForInsertWithCatalog(ins, md, defaultEmbeddedSchema)
+	op, _ := buildLogicalPlanForInsertWithCatalog(ins, md, defaultEmbeddedTemplate)
 	insertOp, ok := op.(*logical.LogicalInsert)
 	if !ok {
 		t.Fatalf("expected LogicalInsert, got %T", op)
@@ -1125,7 +1136,7 @@ func TestBuildLogicalPlanWithCatalog_InsertSelectJoin(t *testing.T) {
 	ins := parseInsert(t,
 		"INSERT INTO Customer (customer_id, name) "+
 			"SELECT order_id, 'x' FROM Order o JOIN Customer c ON o.order_id = c.customer_id WHERE o.price > 5")
-	op, _ := buildLogicalPlanForInsertWithCatalog(ins, md, defaultEmbeddedSchema)
+	op, _ := buildLogicalPlanForInsertWithCatalog(ins, md, defaultEmbeddedTemplate)
 	insertOp, ok := op.(*logical.LogicalInsert)
 	if !ok {
 		t.Fatalf("expected LogicalInsert, got %T", op)
@@ -1167,7 +1178,7 @@ func TestBuildLogicalPlanWithCatalog_InsertValuesNoOp(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
 	ins := parseInsert(t, "INSERT INTO Customer (customer_id, name) VALUES (1, 'x')")
-	op, _ := buildLogicalPlanForInsertWithCatalog(ins, md, defaultEmbeddedSchema)
+	op, _ := buildLogicalPlanForInsertWithCatalog(ins, md, defaultEmbeddedTemplate)
 	insertOp, ok := op.(*logical.LogicalInsert)
 	if !ok {
 		t.Fatalf("expected LogicalInsert, got %T", op)
@@ -1240,7 +1251,7 @@ func TestBuildLogicalPlanWithCatalog_JoinQualifiedColumn(t *testing.T) {
 	md := buildTestMetaData(t)
 	sq := parseSelect(t,
 		"SELECT * FROM Order JOIN Customer ON Order.order_id = Customer.customer_id WHERE Order.price > 5")
-	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedSchema)
+	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedTemplate)
 	// Walk down to the Filter — the Join sits below.
 	var filter *logical.LogicalFilter
 	for cur := op; cur != nil; {
@@ -1272,7 +1283,7 @@ func TestBuildLogicalPlanWithCatalog_JoinUniqueBareColumn(t *testing.T) {
 	md := buildTestMetaData(t)
 	sq := parseSelect(t,
 		"SELECT * FROM Order JOIN Customer ON Order.order_id = Customer.customer_id WHERE quantity > 0")
-	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedSchema)
+	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedTemplate)
 	var filter *logical.LogicalFilter
 	for cur := op; cur != nil; {
 		if f, ok := cur.(*logical.LogicalFilter); ok {
@@ -1305,7 +1316,7 @@ func TestBuildLogicalPlanWithCatalog_SelfJoinWithoutAlias_FailsClosed(t *testing
 	md := buildTestMetaData(t)
 	sq := parseSelect(t,
 		"SELECT * FROM Order JOIN Order ON Order.order_id = Order.order_id WHERE price > 5")
-	op, err := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedSchema)
+	op, err := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedTemplate)
 	if err == nil {
 		t.Fatalf("expected a loud error for the unaliased self-join ON (silent drop = cross product), got op:\n%v", op)
 	}
@@ -1325,7 +1336,7 @@ func TestBuildLogicalPlanWithCatalog_ThreeWayJoin(t *testing.T) {
 			"JOIN Customer c ON o.order_id = c.customer_id "+
 			"JOIN TypedRecord t ON o.order_id = t.id "+
 			"WHERE o.price > 5 AND t.id > 0")
-	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedSchema)
+	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedTemplate)
 	if op == nil {
 		t.Fatal("expected non-nil plan")
 	}
@@ -1365,7 +1376,7 @@ func TestBuildLogicalPlanWithCatalog_JoinAmbiguousColumn_ErrorsProperly(t *testi
 	md := buildTestMetaData(t)
 	sq := parseSelect(t,
 		"SELECT * FROM Order JOIN Customer ON Order.order_id = Customer.customer_id WHERE price > 5")
-	_, err := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedSchema)
+	_, err := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedTemplate)
 	if err == nil {
 		t.Fatal("expected ambiguous column error for unqualified 'price' in JOIN (exists in both Order and Customer)")
 	}
@@ -1520,7 +1531,7 @@ func TestComputedVirtualScopesUseExactProjectedValues(t *testing.T) {
 		if len(named) != 1 {
 			t.Fatalf("named CTE count = %d, want 1", len(named))
 		}
-		src, ok, err := buildCTEColumnSource(md, "D", named[0].Query(), nil)
+		src, ok, err := buildCTEColumnSource(md, defaultEmbeddedTemplate, "D", named[0].Query(), nil)
 		if err != nil {
 			t.Fatalf("computed CTE body did not build: %v", err)
 		}
@@ -1697,18 +1708,14 @@ func TestDerivedInlineValuesScopeUsesExactLogicalRow(t *testing.T) {
 	})
 }
 
-func TestSemanticColumnFromExactTypeDeclinesUnrepresentableArrayElementNullability(t *testing.T) {
+func TestSemanticColumnFromExactTypeCarriesElementNullability(t *testing.T) {
 	t.Parallel()
-
-	representable := values.NewArrayType(true, values.NotNullLong)
-	column, ok := semanticColumnFromExactType("XS", representable)
-	if !ok || !column.IsArray || column.Type != "BIGINT" || !column.Nullable {
-		t.Fatalf("representable array = %+v, ok=%v; want nullable BIGINT ARRAY", column, ok)
-	}
-
-	unrepresentable := values.NewArrayType(false, values.NullableLong)
-	if column, ok := semanticColumnFromExactType("XS", unrepresentable); ok {
-		t.Fatalf("nullable-element array was published as exact semantic column: %+v", column)
+	for _, elem := range []values.Type{values.NotNullLong, values.NullableLong} {
+		arr := values.NewArrayType(true, elem)
+		column, ok := semanticColumnFromExactType("XS", arr)
+		if !ok || !column.IsArray || column.Type != "BIGINT" || column.ElementNullable != elem.IsNullable() {
+			t.Fatalf("array of %v = %+v, ok=%v", elem, column, ok)
+		}
 	}
 }
 
@@ -1822,6 +1829,11 @@ func enumHomonymMetaData(t *testing.T) *recordlayer.RecordMetaData {
 					TypeName: proto.String(".enumhomonymtest.T.Paint"),
 				},
 			}},
+			// Java requires a union (RecordMetaDataBuilder.fetchUnionDescriptor).
+			{Name: proto.String("RecordTypeUnion"), Field: []*descriptorpb.FieldDescriptorProto{{
+				Name: proto.String("_T"), Number: proto.Int32(1), Label: &label, Type: &messageKind,
+				TypeName: proto.String(".enumhomonymtest.T"),
+			}}},
 		},
 	}, nil)
 	if err != nil {
@@ -2374,7 +2386,7 @@ func TestLegacyDerivedBindingPreparesPromotedBodyOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	counted := &countedDerivedQuery{IQueryContext: q}
-	source, err := buildDerivedTableSourceWithCTEsChecked(template.Underlying(), "D", counted, defaultEmbeddedSchema, nil)
+	source, err := buildDerivedTableSourceWithCTEsChecked(template.Underlying(), "D", counted, defaultEmbeddedTemplate, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2485,9 +2497,6 @@ func TestBoundDerivedSourcePreservesFailureClass(t *testing.T) {
 		{"union_type", logical.NewUnion([]logical.LogicalOperator{
 			projection(values.NotNullLong), projection(values.NotNullString),
 		}, false), api.ErrCodeUnionIncompatibleColumns},
-		{"unrepresentable_nullable_array_element", projection(&values.ArrayType{
-			ElementType: values.NullableLong,
-		}), api.ErrCodeUnsupportedQuery},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -2683,7 +2692,7 @@ func TestCatalogUsingStarPublishesAttributeOrdinals(t *testing.T) {
 			md := buildTestMetaData(t)
 			sq := parseSelect(t, "SELECT * FROM (SELECT "+tc.selectList+" FROM Order) d JOIN (SELECT customer_id AS id FROM Customer) u USING (id)")
 			sq.bindingID = "USING_LEFT_SLOT_OWNER"
-			op, err := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedSchema)
+			op, err := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedTemplate)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2732,14 +2741,14 @@ func TestReaderScopesDoNotPublishIncompleteSources(t *testing.T) {
 			if tc.noCatalog {
 				md = nil
 			}
-			checked, err := buildSelectScopeChecked(tc.query, md, defaultEmbeddedSchema, tc.cteScopes)
+			checked, err := buildSelectScopeChecked(tc.query, md, defaultEmbeddedTemplate, tc.cteScopes)
 			if err == nil || checked != nil {
 				t.Fatalf("checked source construction = (%v, %v), want no scope and an error", checked, err)
 			}
-			if got := buildProjectionResolverWithCTEScopes(tc.query, md, defaultEmbeddedSchema, tc.cteScopes); got != nil {
+			if got := buildProjectionResolverWithCTEScopes(tc.query, md, defaultEmbeddedTemplate, tc.cteScopes); got != nil {
 				t.Fatal("projection reader published a partial or substitute source")
 			}
-			if got := buildOuterScopeSources(tc.query, md, defaultEmbeddedSchema, tc.cteScopes); got != nil {
+			if got := buildOuterScopeSources(tc.query, md, defaultEmbeddedTemplate, tc.cteScopes); got != nil {
 				t.Fatalf("outer-source reader published a partial or substitute source: %+v", got)
 			}
 		})

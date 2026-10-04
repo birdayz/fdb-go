@@ -134,10 +134,11 @@ type dataAccessTestCandidate struct {
 	fixedPlan         plans.RecordQueryPlan
 	unique            bool
 	createsDuplicates bool
+	traversal         *Traversal
 }
 
 func (c *dataAccessTestCandidate) CandidateName() string    { return c.name }
-func (c *dataAccessTestCandidate) GetTraversal() *Traversal { return nil }
+func (c *dataAccessTestCandidate) GetTraversal() *Traversal { return c.traversal }
 func (c *dataAccessTestCandidate) GetColumnNames() []string { return c.columnNames }
 func (c *dataAccessTestCandidate) GetKeyComponentTypes() []values.Type {
 	return append([]values.Type(nil), c.keyComponentTypes...)
@@ -291,8 +292,11 @@ func (m *testMatchInfo) GetRegularMatchInfo() *RegularMatchInfo {
 
 // testPartialMatch is a minimal PartialMatch for tests.
 type testPartialMatch struct {
-	candidate MatchCandidate
-	matchInfo MatchInfo
+	candidate    MatchCandidate
+	matchInfo    MatchInfo
+	candidateRef *expressions.Reference
+	// queryExpression is the member of the query reference the match is for.
+	queryExpression expressions.RelationalExpression
 }
 
 func (pm *testPartialMatch) GetMatchCandidate() MatchCandidate   { return pm.candidate }
@@ -300,6 +304,9 @@ func (pm *testPartialMatch) GetMatchInfo() MatchInfo             { return pm.mat
 func (pm *testPartialMatch) GetBoundAliasMap() *AliasMap         { return EmptyAliasMap() }
 func (pm *testPartialMatch) GetQueryRef() *expressions.Reference { return nil }
 func (pm *testPartialMatch) GetQueryExpression() expressions.RelationalExpression {
+	if pm != nil && pm.queryExpression != nil {
+		return pm.queryExpression
+	}
 	if pm == nil || pm.matchInfo == nil {
 		return nil
 	}
@@ -309,7 +316,7 @@ func (pm *testPartialMatch) GetQueryExpression() expressions.RelationalExpressio
 	}
 	return &dataAccessTestResultExpression{resultValue: maxMatchMap.GetQueryValue()}
 }
-func (pm *testPartialMatch) GetCandidateRef() *expressions.Reference { return nil }
+func (pm *testPartialMatch) GetCandidateRef() *expressions.Reference { return pm.candidateRef }
 func (pm *testPartialMatch) GetRegularMatchInfo() *RegularMatchInfo {
 	return pm.matchInfo.GetRegularMatchInfo()
 }
@@ -416,7 +423,9 @@ func makeDataAccessTestPartialMatchWithPK(name string, numParts int, plan plans.
 		))
 	}
 
+	root := expressions.InitialOf(mustPlannerTestConstruct(expressions.NewFullUnorderedScanExpression([]string{"TestRecord"}, dataAccessTestRow)))
 	candidate := &dataAccessTestCandidate{
+		traversal:         NewTraversal(root),
 		name:              name,
 		sargableAliases:   sargAliases,
 		columnNames:       columnNames,
@@ -426,7 +435,8 @@ func makeDataAccessTestPartialMatchWithPK(name string, numParts int, plan plans.
 	}
 
 	return &testPartialMatch{
-		candidate: candidate,
+		candidate:    candidate,
+		candidateRef: root,
 		matchInfo: &testMatchInfo{
 			orderingParts: parts,
 			paramBindings: paramBindings,
@@ -825,7 +835,7 @@ func TestDataAccessForMatchPartition_SingleMatch(t *testing.T) {
 	plan := &testPlan{name: "single_idx"}
 	pm := makeDataAccessTestPartialMatch("idx", 2, plan)
 
-	exprs := DataAccessForMatchPartition(
+	exprs := DataAccessForMatchPartition(compensationTestMemoizer(),
 		[]*properties.RequestedOrdering{properties.PreserveOrdering()},
 		[]PartialMatch{pm},
 		EmptyPlanContext(),
@@ -849,7 +859,7 @@ func TestDataAccessForMatchPartition_SingleMatch(t *testing.T) {
 func TestDataAccessForMatchPartition_NoMatches(t *testing.T) {
 	t.Parallel()
 
-	exprs := DataAccessForMatchPartition(
+	exprs := DataAccessForMatchPartition(compensationTestMemoizer(),
 		[]*properties.RequestedOrdering{properties.PreserveOrdering()},
 		nil, // no matches
 		EmptyPlanContext(),
@@ -887,7 +897,7 @@ func TestDataAccessForMatchPartition_MultipleMatchesWithIntersector(t *testing.T
 		)
 	}
 
-	exprs := DataAccessForMatchPartition(
+	exprs := DataAccessForMatchPartition(compensationTestMemoizer(),
 		[]*properties.RequestedOrdering{properties.PreserveOrdering()},
 		[]PartialMatch{pm1, pm2},
 		EmptyPlanContext(),
@@ -925,7 +935,7 @@ func TestDataAccessForMatchPartition_MultipleMatchesNoIntersector(t *testing.T) 
 	pm2 := makeDataAccessTestPartialMatch("idx2", 1, plan2)
 
 	// nil intersector -- should just return individual scans.
-	exprs := DataAccessForMatchPartition(
+	exprs := DataAccessForMatchPartition(compensationTestMemoizer(),
 		[]*properties.RequestedOrdering{properties.PreserveOrdering()},
 		[]PartialMatch{pm1, pm2},
 		EmptyPlanContext(),
@@ -950,7 +960,7 @@ func TestDataAccessForMatchPartition_IntersectorNoViable(t *testing.T) {
 		return NoViableIntersection()
 	}
 
-	exprs := DataAccessForMatchPartition(
+	exprs := DataAccessForMatchPartition(compensationTestMemoizer(),
 		[]*properties.RequestedOrdering{properties.PreserveOrdering()},
 		[]PartialMatch{pm1, pm2},
 		EmptyPlanContext(),

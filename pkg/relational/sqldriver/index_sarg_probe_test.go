@@ -25,7 +25,7 @@ func TestFDB_IndexSargProbe(t *testing.T) {
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, s STRING, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_a ON t (a) CREATE INDEX t_ab ON t (a, b) CREATE INDEX t_s ON t (s)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_idx_sarg/s WITH TEMPLATE idx_sarg")
-	dsn := fmt.Sprintf("fdbsql:///testdb_idx_sarg?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_IDX_SARG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

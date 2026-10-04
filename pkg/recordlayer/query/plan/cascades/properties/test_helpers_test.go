@@ -150,19 +150,6 @@ func mustLogicalIntersectionExpression(
 	return expression
 }
 
-func mustLogicalProjectionExpression(
-	t testing.TB,
-	projectedValues []values.Value,
-	inner expressions.Quantifier,
-) *expressions.LogicalProjectionExpression {
-	t.Helper()
-	expression, err := expressions.NewLogicalProjectionExpression(projectedValues, inner)
-	if err != nil {
-		t.Fatalf("NewLogicalProjectionExpression: %v", err)
-	}
-	return expression
-}
-
 func mustLogicalUniqueExpression(
 	t testing.TB,
 	inner expressions.Quantifier,

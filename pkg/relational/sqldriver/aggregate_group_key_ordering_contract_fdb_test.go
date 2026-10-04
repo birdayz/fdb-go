@@ -70,7 +70,7 @@ func TestFDB_AggregateGroupKeyOrderingIsProvidedNotResorted(t *testing.T) {
 			"CREATE TABLE it (k BIGINT, o_k BIGINT, v BIGINT, PRIMARY KEY (k))")
 	agkoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_agg_ord_contract/s WITH TEMPLATE agg_ord_contract")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///testdb_agg_ord_contract?cluster_file=%s&schema=s", clusterFilePath))
+		fmt.Sprintf("fdbsql:///TESTDB_AGG_ORD_CONTRACT?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

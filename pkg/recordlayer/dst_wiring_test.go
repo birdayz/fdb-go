@@ -10,6 +10,7 @@ import (
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/dst"
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/simfdb"
@@ -202,6 +203,23 @@ func (c *steppingClock) Now() time.Time {
 	return c.now
 }
 
+// elapsedBuildBackend advances time between successful Run transactions, never
+// during one. Counting clock reads instead would make additional heartbeat
+// admission reads exhaust SimFDB's five-second transaction lifetime, testing
+// transaction expiry rather than the build's between-batch time limit.
+type elapsedBuildBackend struct {
+	fdb.BackendDatabase
+	clock *dst.SimClock
+}
+
+func (b *elapsedBuildBackend) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
+	value, err := b.BackendDatabase.Transact(fn)
+	if err == nil {
+		b.clock.Advance(time.Second)
+	}
+	return value, err
+}
+
 // TestBuildIndexTimeLimitUsesTheEnvClock pins that the online indexer's time limit is measured
 // on the env clock — the anchor AND the elapsed comparison, which must be the same clock.
 //
@@ -221,15 +239,13 @@ func TestBuildIndexTimeLimitUsesTheEnvClock(t *testing.T) {
 	t.Parallel()
 	const records = 40
 
-	// run indexes records under a clock that steps 1s per read, and reports what the build did.
+	// Advance 1s per committed Run transaction, keeping each transaction's clock stable.
 	run := func(t *testing.T, name string, timeLimit time.Duration) (int64, error) {
 		t.Helper()
 		ctx := context.Background()
-		env := &dst.Env{
-			Clock:  &steppingClock{now: dst.Epoch, step: time.Second},
-			Random: dst.NewSeededRandomness(11),
-		}
-		db := NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+		clock := dst.NewSimClock(dst.Epoch)
+		env := &dst.Env{Clock: clock, Random: dst.NewSeededRandomness(11)}
+		db := NewFDBDatabaseWithBackend(&elapsedBuildBackend{BackendDatabase: simfdb.New(env), clock: clock}).SetEnv(env)
 		sub := subspace.FromBytes(tuple.Tuple{"timelimitseam", name}.Pack())
 
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
@@ -277,7 +293,7 @@ func TestBuildIndexTimeLimitUsesTheEnvClock(t *testing.T) {
 		var exceeded *TimeLimitExceededError
 		if errors.As(err, &exceeded) {
 			t.Fatalf("BuildIndex reported %v elapsed against a 24h limit under a clock that "+
-				"steps one second per read — the elapsed comparison is reading the wall clock "+
+				"steps one second per committed transaction — the elapsed comparison is reading the wall clock "+
 				"while the anchor came off the env clock", exceeded.Elapsed)
 		}
 		if err != nil {
@@ -297,7 +313,7 @@ func TestBuildIndexTimeLimitUsesTheEnvClock(t *testing.T) {
 			var exceeded *TimeLimitExceededError
 			if !errors.As(err, &exceeded) {
 				t.Fatalf("BuildIndex did not reach its %v limit under a clock that steps one "+
-					"second per read (err=%v) — an anchor minted on the wall clock and "+
+					"second per committed transaction (err=%v) — an anchor minted on the wall clock and "+
 					"measured against the env clock spans two unrelated epochs, so elapsed "+
 					"comes out NEGATIVE and the limit can never trip", limit, err)
 			}

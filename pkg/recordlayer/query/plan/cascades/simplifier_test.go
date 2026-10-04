@@ -1,11 +1,214 @@
 package cascades
 
 import (
+	"slices"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
+
+type observedSimplifierMatcher struct {
+	matching.RootOperatorMatcher
+	visits *int
+}
+
+func (m *observedSimplifierMatcher) BindMatches(outer *matching.PlannerBindings, in any) []*matching.PlannerBindings {
+	*m.visits++
+	return m.RootOperatorMatcher.BindMatches(outer, in)
+}
+
+type observedSimplifierRule struct {
+	CascadesRule
+	matcher matching.BindingMatcher
+}
+
+func (r *observedSimplifierRule) Matcher() matching.BindingMatcher { return r.matcher }
+
+func (r *observedSimplifierRule) rootOnly() bool {
+	scoped, ok := r.CascadesRule.(interface{ rootOnly() bool })
+	return ok && scoped.rootOnly()
+}
+
+func TestSimplifySkipsRootOnlyBindingsForChildren(t *testing.T) {
+	t.Parallel()
+	leaves := simplificationContractLeaves(t)
+	input := predicates.WithAtomicity(predicates.NewAnd(predicates.NewOr(leaves[0], leaves[1]), leaves[2]), true)
+	rule := newPredicateDNFRule()
+	visits := 0
+	observed := &observedSimplifierRule{CascadesRule: rule, matcher: &observedSimplifierMatcher{
+		RootOperatorMatcher: rule.Matcher().(matching.RootOperatorMatcher), visits: &visits,
+	}}
+	got := mustSimplify(t, input, []CascadesRule{observed})
+	if got != input {
+		t.Fatal("root-only DNF changed an atomic root or its children")
+	}
+	if visits != 1 {
+		t.Fatalf("DNF matcher calls=%d, want one root call and no child bindings", visits)
+	}
+}
+
+func TestSimplifyDispatchesOnlyApplicableRoots(t *testing.T) {
+	t.Parallel()
+	field := simplifierFields(t, simplifierFieldSpec{"A", values.NotNullLong})[0]
+	predicate := predicates.NewNot(predicates.NewComparisonPredicate(field, predicates.Comparison{
+		Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong},
+	}))
+	visits := make([]int, 3)
+	rules := []CascadesRule{NewAndConstantSimplifyRule(), NewNotComparisonRewriteRule(), newPredicateDNFRule()}
+	for i, rule := range rules {
+		rules[i] = &observedSimplifierRule{CascadesRule: rule, matcher: &observedSimplifierMatcher{
+			RootOperatorMatcher: rule.Matcher().(matching.RootOperatorMatcher), visits: &visits[i],
+		}}
+	}
+	result := mustSimplify(t, predicate, rules)
+	comparison, ok := result.(*predicates.ComparisonPredicate)
+	if !ok || comparison.Comparison.Type != predicates.ComparisonNotEquals {
+		t.Fatalf("NOT comparison was not rewritten: %T %s", result, result.Explain())
+	}
+	if visits[0] != 0 || visits[1] != 1 || visits[2] == 0 {
+		t.Fatalf("matcher calls=%v, want AND=0, NOT=1, interface-root>0", visits)
+	}
+}
+
+func TestSimplifyUnchangedChildrenAllocationBound(t *testing.T) {
+	t.Parallel()
+	runSimplificationAllocationBenchmark(t, "BenchmarkSimplifyUnchangedChildren")
+}
+
+func BenchmarkSimplifyUnchangedChildren(b *testing.B) {
+	leaves := simplificationContractLeaves(b)
+	input := predicates.NewAnd(leaves[:]...)
+	rules := queryPredicateSimplificationRules()
+	var got predicates.QueryPredicate
+	var err error
+	allocations := testing.AllocsPerRun(5, func() {
+		got, err = simplifyPredicateChildren(input, rules, nil)
+	})
+	if err != nil || got != input {
+		b.Fatalf("unchanged children did not retain root identity: %v", err)
+	}
+	if allocations != 0 {
+		b.Fatalf("%.0f allocations for unchanged children, want zero", allocations)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := simplifyPredicateChildren(input, rules, nil); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestIdentityRulesUnchangedAllocationBound(t *testing.T) {
+	t.Parallel()
+	runSimplificationAllocationBenchmark(t, "BenchmarkIdentityRulesUnchanged")
+}
+
+func BenchmarkIdentityRulesUnchanged(b *testing.B) {
+	leaves := simplificationContractLeaves(b)
+	children := append(leaves[:len(leaves):len(leaves)], predicates.NewConstantPredicate(predicates.TriUnknown))
+	andRule, orRule := NewAndConstantSimplifyRule(), NewOrConstantSimplifyRule()
+	andCall := &RuleCall{Bindings: matching.NewBindings().Bind(andRule.Matcher(), predicates.NewAnd(children...))}
+	orCall := &RuleCall{Bindings: matching.NewBindings().Bind(orRule.Matcher(), predicates.NewOr(children...))}
+	for _, tc := range []struct {
+		rule CascadesRule
+		call *RuleCall
+	}{{andRule, andCall}, {orRule, orCall}} {
+		allocations := testing.AllocsPerRun(5, func() { tc.rule.OnMatch(tc.call) })
+		if len(tc.call.Yielded()) != 0 || tc.call.Err() != nil {
+			b.Fatalf("%T rewrote an unchanged child list or dropped UNKNOWN", tc.rule)
+		}
+		if allocations != 0 {
+			b.Fatalf("%T: %.0f allocations for unchanged children, want zero", tc.rule, allocations)
+		}
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		andRule.OnMatch(andCall)
+		orRule.OnMatch(orCall)
+	}
+}
+
+func TestIdentityRulesPreserveRetainedChildren(t *testing.T) {
+	t.Parallel()
+	leaves := simplificationContractLeaves(t)
+	for _, mode := range []normalFormMode{normalFormCNF, normalFormDNF} {
+		var rule CascadesRule = NewAndConstantSimplifyRule()
+		identity := predicates.TriTrue
+		if mode == normalFormDNF {
+			rule, identity = NewOrConstantSimplifyRule(), predicates.TriFalse
+		}
+		for mask := range 16 {
+			var children, want []predicates.QueryPredicate
+			for i, leaf := range leaves[:4] {
+				if mask&(1<<i) != 0 {
+					children = append(children, predicates.NewConstantPredicate(identity))
+				} else {
+					children, want = append(children, leaf), append(want, leaf)
+				}
+			}
+			unknown := predicates.NewConstantPredicate(predicates.TriUnknown)
+			children, want = append(children, unknown), append(want, unknown)
+			input := predicates.WithAtomicity(mode.majorWithChildren(children), true)
+			original := slices.Clone(input.Children())
+			got := mustSimplify(t, input, []CascadesRule{rule})
+			assertSimplificationTree(t, got, predicates.WithAtomicity(mode.majorWithChildren(want), mask == 0))
+			if !slices.Equal(input.Children(), original) {
+				t.Fatalf("mode=%d mask=%b: identity removal changed the original children", mode, mask)
+			}
+		}
+	}
+}
+
+func TestSimplifyChildReplacementsPreserveSiblings(t *testing.T) {
+	t.Parallel()
+	leaves := simplificationContractLeaves(t)
+	for _, tc := range []struct {
+		name  string
+		arity int
+		build func([]predicates.QueryPredicate) predicates.QueryPredicate
+	}{
+		{"and", 3, func(children []predicates.QueryPredicate) predicates.QueryPredicate {
+			return predicates.NewAnd(children...)
+		}},
+		{"or", 3, func(children []predicates.QueryPredicate) predicates.QueryPredicate {
+			return predicates.NewOr(children...)
+		}},
+		{"not", 1, func(children []predicates.QueryPredicate) predicates.QueryPredicate {
+			return predicates.NewNot(children[0])
+		}},
+	} {
+		for mask := range 1 << tc.arity {
+			children := slices.Clone(leaves[:tc.arity])
+			for i := range children {
+				if mask&(1<<i) != 0 {
+					children[i] = predicates.NewAnd(children[i], predicates.NewConstantPredicate(predicates.TriTrue))
+				}
+			}
+			input := predicates.WithAtomicity(tc.build(children), true)
+			originalChildren := slices.Clone(input.Children())
+			got, err := simplifyPredicateChildren(input, []CascadesRule{NewAndConstantSimplifyRule()}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (got == input) != (mask == 0) {
+				t.Fatalf("%s mask=%b: root identity changed without a child rewrite, or rewrite was lost", tc.name, mask)
+			}
+			assertSimplificationTree(t, got, predicates.WithAtomicity(tc.build(leaves[:tc.arity]), true))
+			if !slices.Equal(input.Children(), originalChildren) {
+				t.Fatalf("%s mask=%b: changed the original children", tc.name, mask)
+			}
+			if mask != 0 {
+				// The replacement must own its child slice, even after a late rewrite.
+				got.Children()[0] = leaves[7]
+				if !slices.Equal(input.Children(), originalChildren) {
+					t.Fatalf("%s mask=%b: replacement aliases the original child slice", tc.name, mask)
+				}
+			}
+		}
+	}
+}
 
 type simplifierFieldSpec struct {
 	name string
@@ -78,9 +281,9 @@ func TestSimplify_DescendsIntoChildren(t *testing.T) {
 		predicates.NewNot(predicates.NewNot(leaf)),
 	)
 	got := mustSimplify(t, pred, DefaultSimplifyRules())
-	// After recursion: AND(TRUE, leaf) → leaf.
-	if got != predicates.QueryPredicate(leaf) {
-		t.Fatalf("expected the UNKNOWN leaf, got %T %s", got, got.Explain())
+	// Each child NOT folds before its parent; the resulting UNKNOWN may be new.
+	if cp, ok := got.(*predicates.ConstantPredicate); !ok || cp.Value != predicates.TriUnknown {
+		t.Fatalf("expected UNKNOWN, got %T %s", got, got.Explain())
 	}
 }
 
@@ -245,7 +448,8 @@ func TestSimplify_CompositeConstantOnEitherSide_Folds(t *testing.T) {
 			name: "0 < (1+2)",
 			pred: predicates.NewComparisonPredicate(
 				&values.ConstantValue{Value: int64(0), Typ: values.NullableLong},
-				predicates.Comparison{Type: predicates.ComparisonLessThan, Operand: add12}),
+				predicates.Comparison{Type: predicates.ComparisonLessThan, Operand: add12},
+			),
 		},
 	}
 	for _, tc := range cases {
@@ -269,7 +473,8 @@ func TestSimplify_CompositeConstantOnEitherSide_Folds(t *testing.T) {
 // declines correctly when RHS is a FieldValue.
 func TestSimplify_NonConstantRHS_Survives(t *testing.T) {
 	t.Parallel()
-	fields := simplifierFields(t,
+	fields := simplifierFields(
+		t,
 		simplifierFieldSpec{name: "age", typ: values.NullableLong},
 		simplifierFieldSpec{name: "cutoff", typ: values.NullableLong},
 	)
@@ -298,7 +503,8 @@ func TestSimplify_NonConstantRHS_Survives(t *testing.T) {
 // FieldValue.
 func TestSimplify_NotComparison_NonConstantRHS_Rewrites(t *testing.T) {
 	t.Parallel()
-	fields := simplifierFields(t,
+	fields := simplifierFields(
+		t,
 		simplifierFieldSpec{name: "a", typ: values.NullableLong},
 		simplifierFieldSpec{name: "b", typ: values.NullableLong},
 	)
@@ -353,7 +559,8 @@ func TestSimplify_TripleNotCollapses(t *testing.T) {
 	t.Parallel()
 	age := simplifierFields(t, simplifierFieldSpec{name: "age", typ: values.NullableLong})[0]
 	cp := predicates.NewComparisonPredicate(age, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(5))})
-	got := mustSimplify(t,
+	got := mustSimplify(
+		t,
 		predicates.NewNot(predicates.NewNot(predicates.NewNot(cp))),
 		DefaultSimplifyRules(),
 	)
@@ -373,7 +580,8 @@ func TestSimplify_TripleNotCollapses(t *testing.T) {
 func TestSimplify_Idempotent(t *testing.T) {
 	t.Parallel()
 	rules := DefaultSimplifyRules()
-	fields := simplifierFields(t,
+	fields := simplifierFields(
+		t,
 		simplifierFieldSpec{name: "age", typ: values.NullableLong},
 		simplifierFieldSpec{name: "flag", typ: values.TypeBool},
 	)
@@ -468,21 +676,12 @@ func TestSimplify_ComparisonPlusAnd(t *testing.T) {
 	}
 }
 
-// TestSimplify_NotOverOrDoesNotDistribute pins the documented
-// SEPARATION: De Morgan's NOT distribution is INTENTIONALLY left out
-// of DefaultSimplifyRules. Java's QueryPredicateTest.testQueryPredicate
-// NotPushDownOptimization rewrites `NOT(OR(p1, p2))` to `AND(NOT p1,
-// NOT p2)`; our seed leaves the NOT on top of the OR.
-//
-// Java does the De Morgan distribution in a separate normalisation
-// pass (BooleanNormalizer); the seed Simplify driver runs only the
-// constant-fold + identity-drop + absorbing-element + leaf-NOT-
-// rewrite rules. Callers wanting the De Morgan rewrite use the
-// `NormalizationRules()` rule set (which prepends `NewDeMorganRule`).
-// See `rule_demorgan.go` + `rule_demorgan_test.go`.
+// The null-substitution constant-evaluation set does not distribute NOT;
+// queryPredicateSimplificationRules and NormalizationRules do.
 func TestSimplify_NotOverOrDoesNotDistribute(t *testing.T) {
 	t.Parallel()
-	fields := simplifierFields(t,
+	fields := simplifierFields(
+		t,
 		simplifierFieldSpec{name: "a", typ: values.TypeString},
 		simplifierFieldSpec{name: "b", typ: values.TypeString},
 	)

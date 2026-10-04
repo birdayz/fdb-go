@@ -720,3 +720,35 @@ func TestParseView_EmptyInput(t *testing.T) {
 		}
 	}
 }
+
+// TestParse_Comments pins Java's comment lexing: comments are skipped, `--`
+// needs no following space and ends at CR, LF, CRLF or EOF, block comments
+// nest, an unterminated block comment is 42601, `#` is not a comment, and
+// `/*! … */` is an ordinary block comment.
+func TestParse_Comments(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		sql string
+		ok  bool
+	}{
+		{"SELECT 1--1", true},
+		{"SELECT 1 --x\r, 2", true},
+		{"SELECT 1 --x\r\n, 2", true},
+		{"SELECT 1 --x", true},
+		{"SELECT /* a /* b */ c */ 1", true},
+		{"SELECT /*! 1 */ 2", true},
+		{"SELECT '--x', '/*y'", true},
+		{"SELECT 1 /* open", false},
+		{"SELECT 1 /* a /* b */", false},
+		{"SELECT 1 # x", false},
+	} {
+		_, err := Parse(tc.sql)
+		var apiErr *api.Error
+		switch {
+		case tc.ok && err != nil:
+			t.Errorf("%q: %v", tc.sql, err)
+		case !tc.ok && (!errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeSyntaxError):
+			t.Errorf("%q: want 42601, got %v", tc.sql, err)
+		}
+	}
+}

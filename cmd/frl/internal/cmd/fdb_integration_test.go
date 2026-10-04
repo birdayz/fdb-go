@@ -48,7 +48,8 @@ func TestIntegration_FdbUp_StdoutChainsIntoClusterFileFlag(t *testing.T) {
 		_, _, _ = runCmdSplit(t, "fdb", "down", "--name", name)
 	})
 	if err != nil {
-		t.Fatalf("fdb up: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
+		logs, logErr := runDocker("logs", name)
+		t.Fatalf("fdb up: %v\nstdout: %s\nstderr: %s\ncontainer logs (error %v):\n%s", err, stdout, stderr, logErr, logs)
 	}
 
 	// The contract: stdout is exactly one line — the cluster-file path.
@@ -59,6 +60,16 @@ func TestIntegration_FdbUp_StdoutChainsIntoClusterFileFlag(t *testing.T) {
 	clusterFile := lines[0]
 	if _, statErr := os.Stat(clusterFile); statErr != nil {
 		t.Fatalf("stdout %q is not an existing cluster file: %v", clusterFile, statErr)
+	}
+	// Host networking must publish loopback, not the image's default
+	// hostname-derived address. The first hostname address can be IPv6,
+	// which the container-mode entrypoint writes without FDB's brackets.
+	cluster, err := os.ReadFile(clusterFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(string(cluster)), fmt.Sprintf("@127.0.0.1:%d", port)) {
+		t.Fatalf("host-network cluster must advertise loopback on port %d, got %q", port, cluster)
 	}
 	// Progress chatter went to stderr, not stdout.
 	if !strings.Contains(stderr, "ready") {

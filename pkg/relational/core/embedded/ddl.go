@@ -5,17 +5,23 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
+	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	apiddl "fdb.dev/pkg/relational/api/ddl"
 	"fdb.dev/pkg/relational/core/catalog"
 	"fdb.dev/pkg/relational/core/functions"
 	"fdb.dev/pkg/relational/core/metadata"
+	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	queryddl "fdb.dev/pkg/relational/core/query/ddl"
+	"fdb.dev/pkg/relational/core/query/expr"
+	"fdb.dev/pkg/relational/core/query/logical"
 	"github.com/antlr4-go/antlr/v4"
 )
 
@@ -56,8 +62,36 @@ func (c *EmbeddedConnection) execDrop(ctx context.Context, ds antlrgen.IDropStat
 	}
 }
 
+// databasePathOf is a DDL statement's database path as Java reads it: the
+// path's uid normalized as an identifier (DdlVisitor's visitUid(ctx.path()
+// .uid()), IdentifierVisitor.visitUid: normalizeString of the uid's text), so
+// an unquoted path folds to upper case whole and a quoted one is kept as
+// written (measured against the JVM: `create database /test/x` stores
+// /TEST/X; conformance "the DSN's schema option reaches the schema Java's
+// does"). Go stored the path verbatim, a database row Java cannot reach.
+//
+// Every statement that takes a path reads it this way in Java: CREATE/DROP
+// DATABASE, CREATE/DROP SCHEMA, SHOW DATABASES WITH PREFIX
+// (MetadataPlanVisitor.visitShowDatabasesStatement, whose prefix Java then
+// ignores), DESCRIBE SCHEMA and COPY. The first five go through here; DESCRIBE
+// SCHEMA (0A000 in Go, RFC-257 WS-E) and COPY (no Go route, WS-K) must when
+// they are ported.
+func databasePathOf(text string) string {
+	return functions.NormalizeIdentifier(text)
+}
+
+// templateNameOf is a schema template's name as Java reads it: the uid
+// normalized as an identifier, at every statement that names a template
+// (DdlVisitor.visitUid at :495 CREATE SCHEMA TEMPLATE, :573 CREATE SCHEMA …
+// WITH TEMPLATE, :607 DROP SCHEMA TEMPLATE). An unquoted name folds to upper
+// case and a quoted one keeps its case without its quotes, so `create schema
+// template t1` stores the row and the records file Java's DDL writes (T1).
+func templateNameOf(text string) string {
+	return functions.NormalizeIdentifier(text)
+}
+
 func (c *EmbeddedConnection) execCreateDatabase(ctx context.Context, s *antlrgen.CreateDatabaseStatementContext) (int64, error) {
-	dbPath := s.Path().GetText()
+	dbPath := databasePathOf(s.Path().GetText())
 	if err := validateDatabasePath(dbPath); err != nil {
 		return 0, err
 	}
@@ -69,7 +103,7 @@ func (c *EmbeddedConnection) execCreateDatabase(ctx context.Context, s *antlrgen
 }
 
 func (c *EmbeddedConnection) execDropDatabase(ctx context.Context, s *antlrgen.DropDatabaseStatementContext) (int64, error) {
-	dbPath := s.Path().GetText()
+	dbPath := databasePathOf(s.Path().GetText())
 	if err := validateDatabasePath(dbPath); err != nil {
 		return 0, err
 	}
@@ -82,20 +116,18 @@ func (c *EmbeddedConnection) execDropDatabase(ctx context.Context, s *antlrgen.D
 }
 
 func (c *EmbeddedConnection) execCreateSchema(ctx context.Context, s *antlrgen.CreateSchemaStatementContext) (int64, error) {
-	schemaText := s.SchemaId().GetText()
+	// Java normalizes the whole uid, a path or a bare name, then splits it
+	// (visitUid, then SemanticAnalyzer.parseSchemaIdentifier): `create schema
+	// /db/test` creates TEST in /DB, and a quoted path keeps both segments.
+	schemaText := databasePathOf(s.SchemaId().GetText())
 	dbPath, schemaName, err := parseSchemaIdentifier(schemaText, c.sess.DBPath)
 	if err != nil {
 		return 0, err
 	}
-	// The SCHEMA segment is an SQL identifier: unquoted names normalize to
-	// upper case (Java's visitUid normalization) — `create schema /db/test`
-	// creates TEST, which is how a `schema=TEST` connection then finds it.
-	// The database PATH is not an identifier and stays verbatim.
-	schemaName = functions.NormalizeIdentifier(schemaName)
 	if err := c.checkDDLDatabaseScope("CREATE SCHEMA", dbPath); err != nil {
 		return 0, err
 	}
-	templateID := s.SchemaTemplateId().GetText()
+	templateID := templateNameOf(s.SchemaTemplateId().GetText())
 	action := c.sess.Factory.CreateSchema(dbPath, schemaName, templateID, *api.NoOptions())
 	return 0, c.runDDL(ctx, action)
 }
@@ -109,17 +141,22 @@ func (c *EmbeddedConnection) execDropSchema(ctx context.Context, s *antlrgen.Dro
 	// TEMPLATE (visitDropSchemaTemplateStatement:483) thread throwIfDoesNotExist from
 	// ifExists(); DROP SCHEMA does not. Do NOT "fix" this to honor IF EXISTS — that would
 	// DIVERGE from Java. Pinned by drop_schema_ifexists_conformance_probe_test.go.
-	schemaText := s.Uid().GetText()
+	// Same normalization as execCreateSchema (DdlVisitor.visitDropSchemaStatement
+	// reads visitUid(ctx.uid())): DROP SCHEMA /db/test drops TEST in /DB.
+	//
+	// Unlike CREATE SCHEMA, DROP SCHEMA takes a path: a bare uid names no
+	// database, and Java refuses it whatever database the connection is on
+	// (DdlVisitor.java:598-600, the raw uid text in single quotes). Resolving
+	// it against the session's database dropped a schema Java keeps.
+	rawUid := s.Uid().GetText()
+	schemaText := databasePathOf(rawUid)
+	if !strings.HasPrefix(schemaText, "/") {
+		return 0, api.NewErrorf(api.ErrCodeUnknownDatabase,
+			"invalid database identifier in '%s'", rawUid)
+	}
 	dbPath, schemaName, err := parseSchemaIdentifier(schemaText, c.sess.DBPath)
 	if err != nil {
 		return 0, err
-	}
-	// Same identifier normalization as execCreateSchema: DROP SCHEMA
-	// /db/test drops TEST.
-	schemaName = functions.NormalizeIdentifier(schemaName)
-	if dbPath == "" {
-		return 0, api.NewErrorf(api.ErrCodeUnknownDatabase,
-			"invalid database identifier in %q", schemaText)
 	}
 	if err := c.checkDDLDatabaseScope("DROP SCHEMA", dbPath); err != nil {
 		return 0, err
@@ -136,7 +173,7 @@ func (c *EmbeddedConnection) execDropSchemaTemplate(ctx context.Context, s *antl
 	if err := c.checkSchemaTemplateDDLAllowed("DROP SCHEMA TEMPLATE"); err != nil {
 		return 0, err
 	}
-	templateID := s.Uid().GetText()
+	templateID := templateNameOf(s.Uid().GetText())
 	throwIfNotExist := s.IfExists() == nil
 	action := c.sess.Factory.DropSchemaTemplate(templateID, throwIfNotExist, *api.NoOptions())
 	return 0, c.runDDL(ctx, action)
@@ -146,14 +183,42 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 	if err := c.checkSchemaTemplateDDLAllowed("CREATE SCHEMA TEMPLATE"); err != nil {
 		return 0, err
 	}
-	templateID := trimIdentifierQuotes(s.SchemaTemplateId().GetText())
+	tmpl, err := buildSchemaTemplate(s)
+	if err != nil {
+		return 0, err
+	}
+	action := c.sess.Factory.SaveSchemaTemplate(tmpl, *api.NoOptions())
+	if err := c.runDDL(ctx, action); err != nil {
+		return 0, err
+	}
+	// Template change may affect any schema using it — flush the whole cache.
+	c.sess.ResetSchemaCache()
+	return 0, nil
+}
+
+// buildSchemaTemplate is Go's one DDL front end, Java's
+// DdlVisitor.visitCreateSchemaTemplateStatement (:493-566): it builds the
+// schema template a CREATE SCHEMA TEMPLATE statement declares, and nothing
+// else. The execution path (execCreateSchemaTemplate) saves what it returns;
+// the tooling path (buildSchemaTemplateFromDDL, the planner harness and the
+// conformance oracle) returns it, so both build the same metadata by
+// construction (RFC-257 WS-J section 3.4; they were two copies that had
+// already diverged once, over WITH OPTIONS).
+func buildSchemaTemplate(s *antlrgen.CreateSchemaTemplateStatementContext) (*metadata.RecordLayerSchemaTemplate, error) {
+	// Java's AstNormalizer walks the whole statement before DdlVisitor builds
+	// any of it, so its faults win over every clause of the template.
+	if err := rejectNormalizerFaults(s); err != nil {
+		return nil, err
+	}
+	templateID := templateNameOf(s.SchemaTemplateId().GetText())
 	b := metadata.NewSchemaTemplateBuilder().SetName(templateID)
 
 	// WITH OPTIONS(...) — ENABLE_LONG_ROWS / INTERMINGLE_TABLES / STORE_ROW_VERSIONS.
 	// Mirrors Java's DdlVisitor.visitCreateSchemaTemplateStatement: applied before
 	// the table/index passes below, since intermingleTbls changes how AddTable's
 	// primary keys are compiled at Build() time (buildPrimaryKeyExpression prepends
-	// RecordTypeKey() unless intermingled).
+	// RecordTypeKey() unless intermingled), and store_row_versions decides whether
+	// the __ROW_VERSION pseudo-column exists for index planning.
 	if oc := s.OptionsClause(); oc != nil {
 		for _, opt := range oc.AllOption() {
 			switch {
@@ -167,18 +232,15 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 				// Unreachable through the grammar (option's three alternatives are
 				// exhaustive) — defensive default matching Java's
 				// Assert.failUnchecked(ErrorCode.SYNTAX_ERROR, ...).
-				return 0, api.NewErrorf(api.ErrCodeSyntaxError,
+				return nil, api.NewErrorf(api.ErrCodeSyntaxError,
 					"unknown option in schema template creation: %s", opt.GetText())
 			}
 		}
 	}
 
-	if err := rejectUnsupportedTemplateClauses(s.AllTemplateClause()); err != nil {
-		return 0, err
-	}
-
+	registerEnumDefinitions(s.AllTemplateClause(), b)
 	if err := registerStructDefinitions(s.AllTemplateClause(), b); err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	// First pass: register tables (indexes reference them by name).
@@ -198,12 +260,48 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 			// non-structured parse error still wraps (it carries no SQLSTATE to surface).
 			var apiErr *api.Error
 			if errors.As(err, &apiErr) {
-				return 0, err
+				return nil, err
 			}
-			return 0, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			return nil, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 				"table %q: %v", tableName, err)
 		}
 		b.AddTablePrimaryKeyPaths(tableName, cols, pkCols)
+	}
+
+	// Stored queries, with their DECLAREd functions rewritten to standalone
+	// temporary functions (DdlVisitor.rewriteDeclaredFunctionToStandalone).
+	for _, clause := range s.AllTemplateClause() {
+		sq := clause.StoredQueryDefinition()
+		if sq == nil {
+			continue
+		}
+		var temps []string
+		if db := sq.DeclareBlock(); db != nil {
+			for _, df := range db.AllDeclaredFunction() {
+				temps = append(temps, "CREATE TEMPORARY FUNCTION "+ctxText(df.GetFunctionName())+
+					ctxText(df.SqlParameterDeclarationList())+" ON COMMIT DROP FUNCTION AS "+ctxText(df.GetFunctionBody()))
+			}
+		}
+		b.AddStoredQuery(functions.NormalizeIdentifier(sq.GetQueryName().GetText()), ctxText(sq.GetStoredQuery()), temps)
+	}
+
+	// SQL functions, then views, in clause order, each compiled against the
+	// template so far (DdlVisitor.java:551-558).
+	for _, clause := range s.AllTemplateClause() {
+		if fd := clause.SqlInvokedFunction(); fd != nil {
+			if err := registerFunction(fd, b); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	// Views, in clause order, each compiled against the template so far.
+	for _, clause := range s.AllTemplateClause() {
+		if vd := clause.ViewDefinition(); vd != nil {
+			if err := registerView(vd, b); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	// Second pass: register indexes.
@@ -218,36 +316,165 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 			// does not wrap in-template index errors either. A non-structured error wraps.
 			var apiErr *api.Error
 			if errors.As(err, &apiErr) {
-				return 0, err
+				return nil, err
 			}
-			return 0, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate, "index: %v", err)
+			return nil, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate, "index: %v", err)
 		}
 	}
+	// Java generates every index first and then moves each index's table to the
+	// end, in clause order (DdlVisitor.java:559-564), which decides the record
+	// type keys, union field numbers and index versions the template stores.
+	b.MoveIndexedTablesToEnd()
 
-	tmpl, err := b.Build()
-	if err != nil {
-		return 0, err
-	}
-	action := c.sess.Factory.SaveSchemaTemplate(tmpl, *api.NoOptions())
-	if err := c.runDDL(ctx, action); err != nil {
-		return 0, err
-	}
-	// Template change may affect any schema using it — flush the whole cache.
-	c.sess.ResetSchemaCache()
-	return 0, nil
+	return b.Build()
 }
 
-// trimIdentifierQuotes removes surrounding double/back quotes VERBATIM,
-// without the case fold NormalizeIdentifier applies to unquoted names.
-// Template names historically keep their raw unquoted spelling (a template
-// created as `create schema template foo` is stored "foo"); a QUOTED name
-// must not keep its quote characters — they would leak into the persisted
-// descriptor's FILE name, which is wire.
-func trimIdentifierQuotes(s string) string {
-	if len(s) >= 2 && ((s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '`' && s[len(s)-1] == '`')) {
-		return s[1 : len(s)-1]
+// registerView is Java's DdlVisitor.getViewMetadata: the query text as
+// written, no prepared parameters, compiled against the template so far.
+func registerView(vd antlrgen.IViewDefinitionContext, b *metadata.Builder) error {
+	name := functions.FullIdToName(vd.GetViewName())
+	q := vd.GetViewQuery()
+	if containsPreparedParameter(q) {
+		return api.NewError(api.ErrCodeSyntaxError, "found prepared parameter(s) in SQL statement")
 	}
-	return s
+	definition := q.GetStart().GetInputStream().GetText(q.GetStart().GetStart(), q.GetStop().GetStop())
+	tmpl, err := b.Build()
+	if err != nil {
+		return err
+	}
+	if md := tmpl.Underlying(); md != nil {
+		parsed, err := parseQueryWithFunctions(definition, metaDataFunctions(md))
+		if err != nil {
+			return err
+		}
+		// A sliding-window QUALIFY is kept by the vector index over the view
+		// (its RowNumberWindowPredicate), not evaluated; the rest compiles.
+		if _, rest, ok := slidingWindowQualify(parsed, definition); ok {
+			if parsed, err = parseQueryWithFunctions(rest, metaDataFunctions(md)); err != nil {
+				return err
+			}
+		}
+		if _, err := NewPlanVisitorWithTemplate(md, b.Name()).VisitQuery(parsed); err != nil {
+			return err
+		}
+	}
+	return b.AddView(name, definition)
+}
+
+// registerFunction is Java's DdlVisitor.getInvokedRoutineMetadata: a
+// table-valued function is stored as a RawSqlFunction, `CREATE ` plus the text
+// as written, after its body compiles against the template so far; a macro
+// (a RETURN or AS expression body) as its serialized body Value.
+func registerFunction(fd antlrgen.ISqlInvokedFunctionContext, b *metadata.Builder) error {
+	if containsPreparedParameter(fd) {
+		return api.NewError(api.ErrCodeSyntaxError, "found prepared parameter(s) in SQL statement")
+	}
+	if err := checkRoutineCharacteristics(fd.FunctionSpecification()); err != nil {
+		return err
+	}
+	tmpl, err := b.Build()
+	if err != nil {
+		return err
+	}
+	md := tmpl.Underlying()
+	if body, isMacro := fd.RoutineBody().(*antlrgen.UserDefinedMacroFunctionStatementBodyContext); isMacro {
+		macro, err := buildMacroFunction(fd.FunctionSpecification(), body, md, b.AuxiliaryStructDescriptor)
+		if err != nil {
+			return err
+		}
+		stored, err := macro.ToProto()
+		if err != nil {
+			return api.WrapErrorf(err, api.ErrCodeUnsupportedOperation, "function %s", macro.Name)
+		}
+		return b.AddFunction(macro.Name, stored)
+	}
+	if fd.FunctionSpecification().ReturnsClause() != nil {
+		return api.NewError(api.ErrCodeUnsupportedOperation, "unsupported explicit return type for SQL table function")
+	}
+	fn, err := sqlFunctionOf(fd.FunctionSpecification(), fd.RoutineBody())
+	if err != nil {
+		return err
+	}
+	if md != nil {
+		if err := compileSQLFunction(fn, md, b.Name()); err != nil {
+			return err
+		}
+	}
+	name, definition := fn.name, "CREATE "+ctxText(fd)
+	return b.AddFunction(name, &gen.PUserDefinedFunction{SpecificFunction: &gen.PUserDefinedFunction_SqlFunction{
+		SqlFunction: &gen.PRawSqlFunction{Name: &name, Definition: &definition},
+	}})
+}
+
+// checkRoutineCharacteristics is visitSqlInvokedFunction's validations.
+func checkRoutineCharacteristics(spec antlrgen.IFunctionSpecificationContext) error {
+	props := spec.RoutineCharacteristics()
+	if nc := props.NullCallClause(); nc != nil && nc.RETURNS() != nil {
+		return api.NewError(api.ErrCodeUnsupportedOperation, "only CALLED ON NULL INPUT clause is supported")
+	}
+	if ps := props.ParameterStyle(); ps != nil && ps.SQL() == nil {
+		return api.NewError(api.ErrCodeUnsupportedOperation, "only sql-style parameters are supported")
+	}
+	if lc := props.LanguageClause(); lc != nil && lc.LanguageName().JAVA() != nil {
+		return api.NewError(api.ErrCodeUnsupportedOperation, "only sql-language functions are supported")
+	}
+	return nil
+}
+
+// compileSQLFunction plans the body with every parameter bound to a NULL of
+// its declared type, as Java compiles it against a typed parameter row.
+func compileSQLFunction(fn *sqlFunction, md *recordlayer.RecordMetaData, templateName string) error {
+	cols := make([]string, len(fn.params))
+	for i, p := range fn.params {
+		cols[i] = p.column("NULL", true)
+	}
+	sql := "SELECT * FROM (" + fn.body + ") AS F"
+	if len(cols) > 0 {
+		sql = "SELECT F.* FROM (SELECT " + strings.Join(cols, ", ") + ") AS P, (" + fn.body + ") AS F"
+	}
+	q, err := parseQueryWithFunctions(sql, metaDataFunctions(md))
+	if err != nil {
+		return err
+	}
+	_, err = NewPlanVisitorWithTemplate(md, templateName).VisitQuery(q)
+	return err
+}
+
+func containsPreparedParameter(n antlr.Tree) bool {
+	if _, ok := n.(*antlrgen.PreparedStatementParameterContext); ok {
+		return true
+	}
+	for i := 0; i < n.GetChildCount(); i++ {
+		if containsPreparedParameter(n.GetChild(i)) {
+			return true
+		}
+	}
+	return false
+}
+
+// registerEnumDefinitions is the enum pass: CREATE TYPE AS ENUM registers an
+// auxiliary type as Java's DdlVisitor.visitEnumDefinition does (:480-490):
+// the name an identifier, the values the string literals as written
+// (normalizeStringLiteral), numbered 0..n-1 in declaration order, the type
+// not nullable (a column's nullability is the column's). Java registers it
+// inside the clause loop that partitions the other clauses (:519-521), so
+// before any struct or table is visited: it runs first here too, which is what
+// makes a later struct or table of the same name the one refused. The builder
+// emits the enum only where a table's closure reaches it
+// (fileEmitter.enums).
+func registerEnumDefinitions(clauses []antlrgen.ITemplateClauseContext, b *metadata.Builder) {
+	for _, clause := range clauses {
+		ed := clause.EnumDefinition()
+		if ed == nil {
+			continue
+		}
+		literals := ed.AllSTRING_LITERAL()
+		enumValues := make([]api.EnumValue, len(literals))
+		for i, l := range literals {
+			enumValues[i] = api.NewEnumValue(functions.StripStringLiteralQuotes(l.GetText()), i)
+		}
+		b.AddAuxiliaryType(api.NewEnumType(functions.NormalizeIdentifier(ed.Uid().GetText()), enumValues, false))
+	}
 }
 
 // registerStructDefinitions is the struct pass: CREATE TYPE AS STRUCT
@@ -281,32 +508,6 @@ func registerStructDefinitions(clauses []antlrgen.ITemplateClauseContext, b *met
 			fields[i] = api.NewStructField(c.Name(), c.DataType(), i)
 		}
 		b.AddAuxiliaryType(api.NewStructType(structName, fields, true))
-	}
-	return nil
-}
-
-// rejectUnsupportedTemplateClauses fails closed on schema-template clause
-// kinds the builder below does not read. Silently skipping one builds a
-// DIFFERENT template than the DDL declared — a view or SQL function would
-// simply vanish, and every later reference to it surfaces as a misleading
-// "table does not exist" — the accept-and-drop failure mode this file bans.
-// Java supports all of these (DdlVisitor visitEnumDefinition /
-// visitSqlInvokedFunction / visitViewDefinition), so each rejection is a
-// named parity gap, not a divergence: SQL functions are RFC-201 Phase 4.
-// Struct definitions are handled by the struct pass above (RFC-204).
-func rejectUnsupportedTemplateClauses(clauses []antlrgen.ITemplateClauseContext) error {
-	for _, clause := range clauses {
-		switch {
-		case clause.EnumDefinition() != nil:
-			return api.NewError(api.ErrCodeUnsupportedOperation,
-				"enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template")
-		case clause.SqlInvokedFunction() != nil:
-			return api.NewError(api.ErrCodeUnsupportedOperation,
-				"SQL functions (CREATE FUNCTION) are not yet supported in a schema template")
-		case clause.ViewDefinition() != nil:
-			return api.NewError(api.ErrCodeUnsupportedOperation,
-				"views (CREATE VIEW) are not yet supported in a schema template")
-		}
 	}
 	return nil
 }
@@ -402,84 +603,203 @@ func parseVectorIndexDefinition(def *antlrgen.VectorIndexDefinitionContext, b *m
 	}
 
 	method := "HNSW"
-	if def.GetMethod() != nil {
-		method = strings.ToUpper(def.GetMethod().GetText())
+	if def.GetEngine() != nil {
+		method = strings.ToUpper(def.GetEngine().GetText())
 	}
-	options, err := parseVectorIndexOptions(def.VectorIndexOptions(), indexName, method)
+	options, order, err := parseVectorIndexOptions(def.VectorIndexOptions(), indexName, method)
 	if err != nil {
 		return err
 	}
 
-	b.AddVectorIndexUsing(method, tableName, indexName, vecCols[0], partitionCols, options)
+	var predicate *gen.Predicate
+	if !b.HasTable(tableName) {
+		table, mapping, window, err := plainProjectionView(b, tableName)
+		if err != nil {
+			return err
+		}
+		predicate = window
+		if mapping != nil {
+			tableName = table
+			vecCols[0] = mapping[vecCols[0]]
+			for i, c := range partitionCols {
+				partitionCols[i] = mapping[c]
+			}
+			if vecCols[0] == "" || slices.Contains(partitionCols, "") {
+				return api.NewErrorf(api.ErrCodeUndefinedColumn, "vector index %q: column not in view", indexName)
+			}
+		}
+	}
+	b.AddVectorIndexOrdered(method, tableName, indexName, vecCols[0], partitionCols, options, order)
+	b.SetIndexPredicate(tableName, indexName, predicate)
 	return nil
 }
 
-// parseVectorIndexOptions parses the OPTIONS(...) clause of a vector index
-// into recordlayer HNSW option keys. Mirrors Java's
-// DdlVisitor.parseVectorOptions (CONNECTIVITY→HNSW_M, METRIC→enum name, ...).
-func parseVectorIndexOptions(ctx antlrgen.IVectorIndexOptionsContext, indexName, method string) (map[string]string, error) {
+// plainProjectionView maps a view that plainly projects columns of one table
+// (no filter, no computation) to that table and its view-to-column names; a
+// vector index over it indexes the same records. Any other view is refused.
+func plainProjectionView(b *metadata.Builder, name string) (string, map[string]string, *gen.Predicate, error) {
+	tmpl, err := b.Build()
+	if err != nil {
+		return "", nil, nil, err
+	}
+	md := tmpl.Underlying()
+	if md == nil {
+		return "", nil, nil, nil
+	}
+	view := findView(md, name)
+	if view == nil {
+		return "", nil, nil, nil
+	}
+	q, err := parser.ParseView(view.GetDefinition())
+	if err != nil {
+		return "", nil, nil, err
+	}
+	window, rest, isWindow := slidingWindowQualify(q, view.GetDefinition())
+	if isWindow {
+		if q, err = parser.ParseView(rest); err != nil {
+			return "", nil, nil, err
+		}
+	}
+	op, err := NewPlanVisitorWithTemplate(md, b.Name()).VisitQuery(q)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	proj, ok := op.(*logical.LogicalProject)
+	var scan *logical.LogicalScan
+	if ok {
+		scan, ok = proj.Input.(*logical.LogicalScan)
+	}
+	if !ok || scan.Source.Producer() != nil {
+		return "", nil, nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"a vector index over view %q is supported only when the view plainly projects one table", name)
+	}
+	mapping := make(map[string]string, len(proj.Projections))
+	for i, col := range proj.Projections {
+		if i < len(proj.IsComputed) && proj.IsComputed[i] {
+			continue
+		}
+		out := col
+		if i < len(proj.Aliases) && proj.Aliases[i] != "" {
+			out = proj.Aliases[i]
+		}
+		mapping[strings.ToUpper(out)] = parseColRef(strings.ToUpper(col)).bare()
+	}
+	return scan.Table, mapping, window, nil
+}
+
+type vectorOptionKind int
+
+const (
+	vectorOptInt vectorOptionKind = iota
+	vectorOptDouble
+	vectorOptBool
+	vectorOptMetric
+)
+
+type vectorSQLOption struct {
+	key     string // canonical index option; for SPFRESH the spfresh key, "" if unsupported
+	spfresh string
+	kind    vectorOptionKind
+	engines string // "*" both Java engines, "HNSW", "GUARDIANN"
+}
+
+// vectorSQLOptions is Java's DdlVisitor.SUPPORTED_VECTOR_OPTIONS; the spfresh
+// column is Go's SPFRESH engine.
+var vectorSQLOptions = map[string]vectorSQLOption{
+	"metric":                              {recordlayer.IndexOptionVectorMetric, recordlayer.IndexOptionSPFreshMetric, vectorOptMetric, "*"},
+	"use_rabitq":                          {recordlayer.IndexOptionHNSWUseRaBitQ, "", vectorOptBool, "*"},
+	"rabitq_num_ex_bits":                  {recordlayer.IndexOptionHNSWRaBitQNumExBits, recordlayer.IndexOptionSPFreshRaBitQNumExBits, vectorOptInt, "*"},
+	"maintain_stats_probability":          {recordlayer.IndexOptionHNSWMaintainStatsProbability, "", vectorOptDouble, "*"},
+	"sample_vector_stats_probability":     {recordlayer.IndexOptionHNSWSampleVectorStatsProbability, "", vectorOptDouble, "*"},
+	"stats_threshold":                     {recordlayer.IndexOptionHNSWStatsThreshold, "", vectorOptInt, "*"},
+	"connectivity":                        {recordlayer.IndexOptionHNSWM, "", vectorOptInt, "HNSW"},
+	"ef_construction":                     {recordlayer.IndexOptionHNSWEfConstruction, "", vectorOptInt, "HNSW"},
+	"m_max":                               {recordlayer.IndexOptionHNSWMMax, "", vectorOptInt, "HNSW"},
+	"m_max_0":                             {recordlayer.IndexOptionHNSWMMax0, "", vectorOptInt, "HNSW"},
+	"primary_cluster_min":                 {recordlayer.IndexOptionGuardiannPrimaryClusterMin, "", vectorOptInt, "GUARDIANN"},
+	"primary_cluster_hard_max":            {recordlayer.IndexOptionGuardiannPrimaryClusterHardMax, "", vectorOptInt, "GUARDIANN"},
+	"primary_cluster_max":                 {recordlayer.IndexOptionGuardiannPrimaryClusterMax, "", vectorOptInt, "GUARDIANN"},
+	"underreplicated_primary_cluster_max": {recordlayer.IndexOptionGuardiannUnderreplicatedPrimaryClusterMax, "", vectorOptInt, "GUARDIANN"},
+	"replicated_cluster_max_writes":       {recordlayer.IndexOptionGuardiannReplicatedClusterMaxWrites, "", vectorOptInt, "GUARDIANN"},
+	"replicated_cluster_target":           {recordlayer.IndexOptionGuardiannReplicatedClusterTarget, "", vectorOptInt, "GUARDIANN"},
+	"replication_priority_min":            {recordlayer.IndexOptionGuardiannReplicationPriorityMin, "", vectorOptDouble, "GUARDIANN"},
+	"insert_max_candidate_clusters":       {recordlayer.IndexOptionGuardiannInsertMaxCandidateClusters, "", vectorOptInt, "GUARDIANN"},
+	"delete_max_candidate_clusters":       {recordlayer.IndexOptionGuardiannDeleteMaxCandidateClusters, "", vectorOptInt, "GUARDIANN"},
+	"split_num_nearest_clusters":          {recordlayer.IndexOptionGuardiannSplitNumNearestClusters, "", vectorOptInt, "GUARDIANN"},
+	"merge_num_nearest_clusters":          {recordlayer.IndexOptionGuardiannMergeNumNearestClusters, "", vectorOptInt, "GUARDIANN"},
+	"reassign_num_neighboring_clusters":   {recordlayer.IndexOptionGuardiannReassignNumNeighboringClusters, "", vectorOptInt, "GUARDIANN"},
+	"collapse_min_duplicates":             {recordlayer.IndexOptionGuardiannCollapseMinDuplicates, "", vectorOptInt, "GUARDIANN"},
+}
+
+// parseVectorIndexOptions is Java's DdlVisitor.parseVectorOptions: an unknown
+// option or one for another engine is 0A000, a duplicate or unparsable value
+// 42601, and values are written as Java's String.valueOf writes them.
+// The keys come back in insertion order, which fixes Java's stored order.
+func parseVectorIndexOptions(ctx antlrgen.IVectorIndexOptionsContext, indexName, engine string) (map[string]string, []string, error) {
 	opts := map[string]string{}
-	if ctx == nil {
-		return opts, nil
+	var order []string
+	if engine == "GUARDIANN" {
+		opts[recordlayer.IndexOptionVectorEngine] = "GUARDIANN"
+		order = append(order, recordlayer.IndexOptionVectorEngine)
 	}
 	octx, ok := ctx.(*antlrgen.VectorIndexOptionsContext)
-	if !ok {
-		return opts, nil
+	if !ok || octx == nil {
+		return opts, order, nil
 	}
+	seen := map[string]bool{}
 	for _, o := range octx.AllVectorIndexOption() {
 		oc, ok := o.(*antlrgen.VectorIndexOptionContext)
 		if !ok {
 			continue
 		}
-		switch {
-		case oc.EF_CONSTRUCTION() != nil:
-			opts[recordlayer.IndexOptionHNSWEfConstruction] = oc.GetEfConstruction().GetText()
-		case oc.CONNECTIVITY() != nil:
-			opts[recordlayer.IndexOptionHNSWM] = oc.GetConnectivity().GetText()
-		case oc.M_MAX() != nil:
-			opts[recordlayer.IndexOptionHNSWMMax] = oc.GetMMax().GetText()
-		case oc.M_MAX_0() != nil:
-			opts[recordlayer.IndexOptionHNSWMMax0] = oc.GetMMaxZero().GetText()
-		case oc.MAINTAIN_STATS_PROBABILITY() != nil:
-			opts[recordlayer.IndexOptionHNSWMaintainStatsProbability] = oc.GetMaintainStatsProbability().GetText()
-		case oc.METRIC() != nil:
-			metric, err := vectorMetricName(oc.GetMetric())
+		name := strings.ToLower(oc.GetOptionName().GetText())
+		spec, ok := vectorSQLOptions[name]
+		key := spec.key
+		if engine == "SPFRESH" {
+			key = spec.spfresh
+		}
+		if !ok || key == "" {
+			return nil, nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported vector index option '%s'", name)
+		}
+		if engine != "SPFRESH" && spec.engines != "*" && spec.engines != engine {
+			return nil, nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"vector index option '%s' is not valid for the %s vector engine", name, engine)
+		}
+		if seen[name] {
+			return nil, nil, api.NewErrorf(api.ErrCodeSyntaxError, "duplicate vector index option '%s'", name)
+		}
+		seen[name] = true
+		order = append(order, key)
+		vc, _ := oc.GetOptionValue().(*antlrgen.VectorIndexOptionValueContext)
+		text := oc.GetOptionValue().GetText()
+		bad := api.NewErrorf(api.ErrCodeSyntaxError, "invalid value '%s' for vector index option '%s'", text, name)
+		switch spec.kind {
+		case vectorOptInt:
+			n, err := strconv.ParseInt(text, 10, 32)
 			if err != nil {
-				return nil, api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
-					"vector index %q", indexName)
+				return nil, nil, bad
 			}
-			if method == "SPFRESH" {
-				opts[recordlayer.IndexOptionSPFreshMetric] = metric
-			} else {
-				opts[recordlayer.IndexOptionVectorMetric] = metric
+			opts[key] = strconv.FormatInt(n, 10)
+		case vectorOptDouble:
+			f, err := strconv.ParseFloat(text, 64)
+			if err != nil {
+				return nil, nil, bad
 			}
-		case oc.RABITQ_NUM_EX_BITS() != nil:
-			// Both methods support it; each reads its own option namespace
-			// (the residual quantizer for SPFresh, the node codes for HNSW) —
-			// routing it to the hnsw key made the loud SPFRESH rejection
-			// below swallow a knob SPFresh actually has.
-			if method == "SPFRESH" {
-				opts[recordlayer.IndexOptionSPFreshRaBitQNumExBits] = oc.GetRabitQNumExBits().GetText()
-			} else {
-				opts[recordlayer.IndexOptionHNSWRaBitQNumExBits] = oc.GetRabitQNumExBits().GetText()
+			opts[key] = values.JavaDoubleToString(f)
+		case vectorOptBool:
+			opts[key] = strconv.FormatBool(strings.EqualFold(text, "true"))
+		case vectorOptMetric:
+			if vc == nil || vc.HnswMetric() == nil {
+				return nil, nil, bad
 			}
-		case oc.SAMPLE_VECTOR_STATS_PROBABILITY() != nil:
-			opts[recordlayer.IndexOptionHNSWSampleVectorStatsProbability] = oc.GetStatsProbability().GetText()
-		case oc.STATS_THRESHOLD() != nil:
-			opts[recordlayer.IndexOptionHNSWStatsThreshold] = oc.GetStatsThreshold().GetText()
-		case oc.USE_RABITQ() != nil:
-			opts[recordlayer.IndexOptionHNSWUseRaBitQ] = oc.GetUseRabitQ().GetText()
+			metric, err := vectorMetricName(vc.HnswMetric())
+			if err != nil {
+				return nil, nil, api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate, "vector index %q", indexName)
+			}
+			opts[key] = metric
 		}
 	}
-	if method == "SPFRESH" {
-		for k := range opts {
-			if strings.HasPrefix(k, "hnsw") {
-				return nil, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
-					"vector index %q: option %q is not supported with USING SPFRESH", indexName, k)
-			}
-		}
-	}
-	return opts, nil
+	return opts, order, nil
 }
 
 // vectorMetricName maps an hnswMetric parse node to the Java metric enum
@@ -562,7 +882,16 @@ func parseAsSelectIndexDefinition(def *antlrgen.IndexAsSelectDefinitionContext, 
 	if err := rejectWindowedAggregate(qt); err != nil {
 		return fmt.Errorf("index %q: %w", indexName, err)
 	}
-	op, err := NewPlanVisitor(md).VisitQueryTerm(qt)
+	// The query resolves against the template being created, so a table it
+	// names is qualified by that template's name, as Java's DdlVisitor plans
+	// it against the catalog it is building (measured in
+	// conformance/ws_f_table_qualifier_conformance_test.go: `FROM <tmpl>.w`
+	// is accepted, `FROM S.w` refused).
+	visitor := NewPlanVisitorWithTemplate(md, b.Name())
+	op, err := visitor.VisitQueryTerm(qt)
+	if err == nil {
+		err = rejectArrayAggOrderBy(qt)
+	}
 	if err != nil {
 		return fmt.Errorf("index %q: %w", indexName, err)
 	}
@@ -575,7 +904,7 @@ func parseAsSelectIndexDefinition(def *antlrgen.IndexAsSelectDefinitionContext, 
 	// cascades_generator.go) — column validation there is the source of
 	// UNDEFINED_COLUMN for `AS SELECT nonexistent_col` (Java pin:
 	// IndexTest.java:702-708). RFC-202 D4.
-	if err := runFromResolutionPostPasses(op, defaultEmbeddedSchema, md, md); err != nil {
+	if err := runFromResolutionPostPasses(op, visitor.templateName, md, md); err != nil {
 		return fmt.Errorf("index %q: %w", indexName, err)
 	}
 
@@ -603,9 +932,54 @@ func parseAsSelectIndexDefinition(def *antlrgen.IndexAsSelectDefinitionContext, 
 // drop the OVER and PERSIST a global SUM index whose semantics are unrelated to
 // the declaration.
 func rejectWindowedAggregate(node antlr.Tree) error {
+	if err := validateArrayAggCalls(node); err != nil {
+		return err
+	}
 	if windowedAggregateInTree(node) {
 		return api.NewError(api.ErrCodeUnsupportedQuery,
 			"windowed aggregate (aggregate function with an OVER clause) is not supported")
+	}
+	return nil
+}
+
+// validateArrayAggCalls applies Java's visitAggregateWindowedFunction checks
+// that precede argument resolution: aggregator, OVER, LIMIT.
+func validateArrayAggCalls(node antlr.Tree) error {
+	if node == nil {
+		return nil
+	}
+	if awf, ok := node.(*antlrgen.AggregateWindowedFunctionContext); ok && awf.ARRAY_AGG() != nil {
+		if awf.DISTINCT() != nil {
+			return api.NewError(api.ErrCodeUnsupportedQuery, "aggregator DISTINCT is not supported")
+		}
+		if awf.OverClause() != nil {
+			return api.NewError(api.ErrCodeUnsupportedQuery, "an OVER clause is not supported for ARRAY_AGG()")
+		}
+		if _, _, err := expr.ArrayAggOptions(awf); err != nil {
+			return err
+		}
+	}
+	for i := 0; i < node.GetChildCount(); i++ {
+		if err := validateArrayAggCalls(node.GetChild(i)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// rejectArrayAggOrderBy runs after the logical build, because Java resolves
+// the arguments before refusing an in-call ORDER BY.
+func rejectArrayAggOrderBy(node antlr.Tree) error {
+	if node == nil {
+		return nil
+	}
+	if awf, ok := node.(*antlrgen.AggregateWindowedFunctionContext); ok && awf.ARRAY_AGG() != nil && awf.OrderByClause() != nil {
+		return api.NewError(api.ErrCodeUnsupportedQuery, "an ORDER BY clause is not supported for ARRAY_AGG()")
+	}
+	for i := 0; i < node.GetChildCount(); i++ {
+		if err := rejectArrayAggOrderBy(node.GetChild(i)); err != nil {
+			return err
+		}
 	}
 	return nil
 }

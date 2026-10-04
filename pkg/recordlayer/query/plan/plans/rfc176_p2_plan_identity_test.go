@@ -50,11 +50,6 @@ func rfc176PlanBuilders(t testing.TB) []rfc176PlanBuilder {
 				return NewRecordQueryMultiIntersectionOnValuesPlan([]RecordQueryPlan{inner, inner}, vs, vs[0])
 			})
 		}},
-		{"Projection", func(vs []values.Value) RecordQueryPlan {
-			return mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
-				return NewRecordQueryProjectionPlan(vs, inner)
-			})
-		}},
 		// NOTE: the sort operator is intentionally absent here. The RFC-176 P2
 		// semantic-Value-identity plan was RecordQuerySortPlan, which is now
 		// removed as producer-less dead code. The live sort plan,
@@ -266,13 +261,6 @@ func TestPlanIdentity_SemanticHashAliasInvariant_RFC176(t *testing.T) {
 		}), mustChecked(t, func() (*RecordQueryMapPlan, error) {
 			return NewRecordQueryMapPlan(inner, q2)
 		})},
-		{
-			"Projection", mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
-				return NewRecordQueryProjectionPlan([]values.Value{q1}, inner)
-			}), mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
-				return NewRecordQueryProjectionPlan([]values.Value{q2}, inner)
-			}),
-		},
 	}
 	for _, p := range pairs {
 		if p.a.HashCodeWithoutChildren() != p.b.HashCodeWithoutChildren() {
@@ -382,9 +370,9 @@ func TestPlanIdentity_VectorLiteralConstant_RFC176(t *testing.T) {
 		default:
 			t.Fatalf("unsupported vector literal type %T", v)
 		}
-		return mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
-			return NewRecordQueryProjectionPlan(
-				[]values.Value{&values.ConstantValue{Value: v, Typ: typ}}, inner)
+		return mustChecked(t, func() (*RecordQueryMapPlan, error) {
+			return NewRecordQueryMapPlan(inner, values.NewRawRecordConstructorValue(
+				values.RecordConstructorField{Name: "_0", Value: &values.ConstantValue{Value: v, Typ: typ}}))
 		})
 	}
 

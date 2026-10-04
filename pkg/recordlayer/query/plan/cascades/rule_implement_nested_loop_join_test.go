@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"strings"
 	"testing"
 
 	"fdb.dev/gen"
@@ -1269,6 +1270,7 @@ func TestRetainedWindowExistentialPinsOuterAgainstOrderedAlternativeRecovery(t *
 	orderingResult := flatMapOrderingResultForChild(
 		existsFlatMap, existsFlatMap.GetOuterAlias(), true)
 	variants, err := collectJoinLegOrderingVariants(
+		call,
 		pinnedOuterRef,
 		properties.PreserveOrdering(),
 		orderingResult,
@@ -1538,6 +1540,159 @@ func TestTranslateExistentialWholeRowPredicatesPreservesSameAliasScalar(t *testi
 	}
 }
 
+func TestTranslateExistentialWholeRowAccessPrograms(t *testing.T) {
+	t.Parallel()
+	alias := values.NamedCorrelationIdentifier("X")
+	rowType := values.NewRecordType("", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+		{Name: "X", FieldType: values.NotNullInt},
+	})
+	declaration := mustNLJConstruct(values.NewQuantifiedObjectValue(alias, rowType))
+	replacement := mustNLJConstruct(values.NewQuantifiedObjectValue(
+		values.UniqueCorrelationIdentifier(), rowType))
+	field := mustNLJConstruct(values.ResolveFieldOrdinals(declaration, []int{0}))
+	scalar := mustNLJConstruct(values.NewQuantifiedObjectValue(alias, values.NotNullInt))
+	foreign := mustNLJConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("FOREIGN"), rowType))
+	wrong := mustNLJConstruct(values.NewQuantifiedObjectValue(alias, values.NotNullLong))
+	rangeOf := func(comparisons ...*predicates.Comparison) *predicates.ComparisonRange {
+		t.Helper()
+		rangeValue := predicates.EmptyComparisonRange()
+		for _, comparison := range comparisons {
+			merged := rangeValue.Merge(comparison)
+			if !merged.Complete() {
+				t.Fatal("construct comparison range")
+			}
+			rangeValue = merged.Range
+		}
+		return rangeValue
+	}
+	ranges := []*predicates.ComparisonRange{
+		rangeOf(&predicates.Comparison{Type: predicates.ComparisonEquals, Operand: field}),
+		rangeOf(&predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: field},
+			&predicates.Comparison{Type: predicates.ComparisonLessThan, Operand: field}),
+	}
+	for _, value := range []values.Value{scalar, foreign, wrong} {
+		ranges = append(ranges, rangeOf(&predicates.Comparison{Type: predicates.ComparisonEquals, Operand: value}))
+	}
+	scan := nljPhysicalScan("INNER").WithScanComparisons(ranges)
+	index := mustNLJConstruct(plans.NewRecordQueryIndexPlan(
+		"IDX", ranges, []string{"INNER"}, nljSimpleRowType("INNER"), true))
+	covering := mustNLJConstruct(plans.NewRecordQueryCoveringIndexPlan(index))
+	filterAlias := values.NamedCorrelationIdentifier("INNER_EDGE")
+	filter := mustNLJConstruct(plans.NewRecordQueryPredicatesFilterPlanWithAlias(
+		covering, []predicates.QueryPredicate{predicates.NewComparisonPredicate(
+			field, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: scalar})}, filterAlias))
+	fetch := mustNLJConstruct(plans.NewRecordQueryFetchFromPartialRecordPlan(
+		filter, nil, nljSimpleRowType("INNER"), plans.FetchIndexRecordsPrimaryKey))
+	legacy := mustNLJConstruct(plans.NewRecordQueryFilterPlan(filter.GetPredicates(), scan))
+	typeFilter := mustNLJConstruct(plans.NewRecordQueryTypeFilterPlan([]string{"INNER"}, legacy))
+	projection := mustNLJConstruct(newProjectionMapForTest(
+		[]values.Value{field, scalar}, []string{"OUTER_ID", "ELEMENT"}, typeFilter))
+	strict := mustNLJConstruct(plans.NewRecordQueryFirstOrDefaultPlanStrict(
+		scan, values.NewNullValue(values.WithNullability(scan.GetResultType(), true))))
+
+	for _, test := range []struct {
+		name string
+		plan plans.RecordQueryPlan
+	}{
+		{name: "scan", plan: scan},
+		{name: "index", plan: index},
+		{name: "fetch_filter_covering", plan: fetch},
+		{name: "type_filter_legacy_filter", plan: typeFilter},
+		{name: "projection", plan: projection},
+		{name: "strict_first_or_default", plan: strict},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			translated := mustNLJConstruct(translateExistentialWholeRowPlanPredicates(
+				test.plan, declaration, replacement))
+			if translated == test.plan {
+				t.Fatal("whole-row scan operand was not translated")
+			}
+			var check func(plans.RecordQueryPlan, plans.RecordQueryPlan)
+			leaves := 0
+			check = func(before, after plans.RecordQueryPlan) {
+				t.Helper()
+				oldQuants, newQuants := before.GetQuantifiers(), after.GetQuantifiers()
+				if len(oldQuants) != len(newQuants) {
+					t.Fatalf("quantifier arity changed for %T", before)
+				}
+				for i, quantifier := range oldQuants {
+					if quantifier.GetAlias() != newQuants[i].GetAlias() || quantifier.Kind() != newQuants[i].Kind() ||
+						quantifier.GetRangesOver().Stage() != newQuants[i].GetRangesOver().Stage() {
+						t.Fatalf("child identity changed for %T edge %d", before, i)
+					}
+				}
+				if probe, ok := after.(interface {
+					GetScanComparisons() []*predicates.ComparisonRange
+				}); ok {
+					leaves++
+					got := probe.GetScanComparisons()
+					for _, comparison := range append([]*predicates.Comparison{got[0].GetEqualityComparison()}, got[1].GetInequalityComparisons()...) {
+						operand, ok := values.AsFieldValue(comparison.Operand)
+						if !ok || operand.ChildValue() != replacement {
+							t.Fatalf("scan operand = %v, want exact replacement root", comparison.Operand)
+						}
+					}
+					for i := 2; i < len(ranges); i++ {
+						if got[i] != ranges[i] {
+							t.Fatalf("unrelated range %d was rebuilt", i)
+						}
+					}
+				}
+				if residual, ok := after.(interface {
+					GetPredicates() []predicates.QueryPredicate
+				}); ok {
+					comparison := residual.GetPredicates()[0].(*predicates.ComparisonPredicate)
+					operand, ok := values.AsFieldValue(comparison.Operand)
+					if !ok || operand.ChildValue() != replacement || comparison.Comparison.Operand != scalar {
+						t.Fatalf("residual lost whole-row/scalar distinction: %v", comparison)
+					}
+				}
+				if afterFilter, ok := after.(*plans.RecordQueryPredicatesFilterPlan); ok && afterFilter.GetInnerAlias() != filterAlias {
+					t.Fatal("filter binding alias changed")
+				}
+				if projected, ok := after.(*plans.RecordQueryMapPlan); ok {
+					fields := projected.GetResultValue().(*values.RecordConstructorValue).Fields
+					operand, isField := values.AsFieldValue(fields[0].Value)
+					if !isField || operand.ChildValue() != replacement || fields[1].Value != scalar {
+						t.Fatal("block Map lost whole-row/scalar distinction")
+					}
+				}
+				if first, ok := after.(*plans.RecordQueryFirstOrDefaultPlan); ok &&
+					(!first.IsStrict() || first.GetDefaultValue() != strict.GetDefaultValue()) {
+					t.Fatal("first-or-default lost its strict/default contract")
+				}
+				oldChildren, newChildren := before.GetChildren(), after.GetChildren()
+				if len(oldChildren) != len(newChildren) {
+					t.Fatalf("child arity changed for %T", before)
+				}
+				for i := range oldChildren {
+					check(oldChildren[i], newChildren[i])
+				}
+			}
+			check(test.plan, translated)
+			if leaves != 1 {
+				t.Fatalf("checked %d scan leaves, want 1", leaves)
+			}
+			originalField, ok := values.AsFieldValue(field)
+			if !ok || originalField.ChildValue() != declaration || scan.GetScanComparisons()[0] != ranges[0] ||
+				index.GetScanComparisons()[1] != ranges[1] || filter.GetInner() != covering || fetch.GetInner() != filter {
+				t.Fatal("translation mutated the source access path")
+			}
+			unchanged := mustNLJConstruct(translateExistentialWholeRowPlanPredicates(
+				test.plan, foreign, foreign))
+			if unchanged != test.plan {
+				t.Fatal("identity translation rebuilt an access path")
+			}
+			if result, err := translateExistentialWholeRowPlanPredicates(test.plan, declaration, wrong); result != nil || err == nil {
+				t.Fatalf("incompatible scan translation = (%v, %v), want nil,error", result, err)
+			}
+		})
+	}
+}
+
 func TestImplementNestedLoopJoin_Fires(t *testing.T) {
 	t.Parallel()
 
@@ -1608,7 +1763,7 @@ func TestImplementNestedLoopJoin_CurrentRootsAreNotSharedExternalSibling(t *test
 		logicalCurrent := logicalCurrentLayout.Carrier()
 		logicalCurrentField := mustNLJConstruct(values.ResolveFieldOrdinals(
 			logicalCurrent, []int{0}))
-		logicalProjection := mustNLJConstruct(expressions.NewLogicalProjectionExpression(
+		logicalProjection := mustNLJConstruct(newBlockSelectForTest(
 			[]values.Value{logicalCurrentField}, logicalScanQ))
 		legRef := expressions.InitialOf(logicalProjection)
 
@@ -1616,7 +1771,7 @@ func TestImplementNestedLoopJoin_CurrentRootsAreNotSharedExternalSibling(t *test
 		physicalLayout := mustNLJConstruct(physicalScan.ProvidedOutputLayout())
 		physicalField := mustNLJConstruct(values.ResolveFieldOrdinals(
 			physicalLayout.Carrier(), []int{0}))
-		physicalProjection := mustNLJConstruct(plans.NewRecordQueryProjectionPlan(
+		physicalProjection := mustNLJConstruct(newProjectionMapOverForTest(
 			[]values.Value{physicalField}, physicalScan))
 		if !legRef.InsertFinal(physicalProjection) {
 			t.Fatalf("insert %s physical projection final", recordName)
@@ -1660,7 +1815,11 @@ func TestImplementNestedLoopJoin_CurrentRootsAreNotSharedExternalSibling(t *test
 // mutation control for the exception above. Unlike `_current`, a named D root
 // referenced by both legs denotes a real excluded sibling. Materializing the
 // two-leg fragment alone would leave D unbound, so the incomplete-bipartition
-// guard must continue to decline it.
+// guard must continue to decline the MATERIALIZED join. What it yields instead
+// is Java's only binary implementation, a FlatMap, which is valid exactly
+// where D is bound and says so: it reports D upward, so it can never be
+// chosen where D is unbound (two lateral siblings correlated to one earlier
+// leg, `FROM w, (… w.f …) AS d, (… w.f …) AS e`, plan only through it).
 func TestImplementNestedLoopJoin_SharedNamedExternalSiblingStillDeclines(t *testing.T) {
 	t.Parallel()
 
@@ -1672,10 +1831,10 @@ func TestImplementNestedLoopJoin_SharedNamedExternalSiblingStillDeclines(t *test
 		logicalScanRef := expressions.InitialOf(nljLogicalScan(recordName))
 		logicalScanQ := expressions.NamedForEachQuantifier(
 			values.NamedCorrelationIdentifier(recordName), logicalScanRef)
-		logicalProjection := mustNLJConstruct(expressions.NewLogicalProjectionExpression(
+		logicalProjection := mustNLJConstruct(newBlockSelectForTest(
 			[]values.Value{externalField}, logicalScanQ))
 		legRef := expressions.InitialOf(logicalProjection)
-		physicalProjection := mustNLJConstruct(plans.NewRecordQueryProjectionPlan(
+		physicalProjection := mustNLJConstruct(newProjectionMapOverForTest(
 			[]values.Value{externalField}, nljPhysicalScan(recordName)))
 		if !legRef.InsertFinal(physicalProjection) {
 			t.Fatalf("insert %s external-correlated projection final", recordName)
@@ -1692,22 +1851,197 @@ func TestImplementNestedLoopJoin_SharedNamedExternalSiblingStillDeclines(t *test
 		values.NamedCorrelationIdentifier("L"), correlatedLeg(t, "LEFT"))
 	rightQ := expressions.NamedForEachQuantifier(
 		values.NamedCorrelationIdentifier("R"), correlatedLeg(t, "RIGHT"))
-	selectExpr := mustNLJConstruct(expressions.NewSelectExpressionWithJoinType(
+	sharedSelect := func(joinType expressions.JoinType) *expressions.SelectExpression {
+		return mustNLJConstruct(expressions.NewSelectExpressionWithJoinType(
+			values.NewRecordConstructorValue(
+				values.RecordConstructorField{Name: "LEFT_D", Value: nljField(leftQ, 0)},
+				values.RecordConstructorField{Name: "RIGHT_D", Value: nljField(rightQ, 0)},
+			),
+			[]expressions.Quantifier{leftQ, rightQ},
+			nil,
+			[]string{"L", "R"},
+			joinType,
+		))
+	}
+	selectExpr := sharedSelect(expressions.JoinCross)
+
+	// A LEFT OUTER select over the same legs keeps the left leg as the outer
+	// and null-extends the right: its FlatMap's inner is the DefaultOnEmpty.
+	// (It projects the preserved leg; a read of the null-supplying leg would be
+	// typed nullable, as the translator's seed types it.)
+	leftOuter := mustNLJConstruct(expressions.NewSelectExpressionWithJoinType(
 		values.NewRecordConstructorValue(
 			values.RecordConstructorField{Name: "LEFT_D", Value: nljField(leftQ, 0)},
-			values.RecordConstructorField{Name: "RIGHT_D", Value: nljField(rightQ, 0)},
 		),
 		[]expressions.Quantifier{leftQ, rightQ},
 		nil,
 		[]string{"L", "R"},
-		expressions.JoinCross,
+		expressions.JoinLeftOuter,
 	))
+	leftOuterResults := mustFireExpressionRule(t, NewImplementNestedLoopJoinRule(), expressions.InitialOf(leftOuter))
+	if len(leftOuterResults) == 0 {
+		t.Fatal("a LEFT OUTER over a shared named external sibling yielded nothing; the FlatMap is its only implementation")
+	}
+	for _, result := range leftOuterResults {
+		flatMap, isFlatMap := result.(*plans.RecordQueryFlatMapPlan)
+		if !isFlatMap {
+			t.Fatalf("a LEFT OUTER over a shared named external sibling yielded %T; only a FlatMap is safe", result)
+		}
+		if _, wrapped := flatMap.GetInner().(*plans.RecordQueryDefaultOnEmptyPlan); !wrapped || flatMap.GetOuterAlias().Name() != "L" {
+			t.Fatalf("a LEFT OUTER's FlatMap must keep L the outer and null-extend R: %s", flatMap.Explain())
+		}
+	}
+
+	// A null-on-empty leg of an INNER select over the same legs (a lower that
+	// separated a rewritten null-on-empty leg from its partner, on either side)
+	// is extended where it sits: the INNER select yields both orientations, and
+	// in each exactly the flagged leg is wrapped in DefaultOnEmpty, as outer or
+	// as inner.
+	for _, nullOnEmptyLeft := range []bool{true, false} {
+		left, right := leftQ, rightQ
+		if nullOnEmptyLeft {
+			left = expressions.NamedForEachNullOnEmptyQuantifier(leftQ.GetAlias(), leftQ.GetRangesOver())
+		} else {
+			right = expressions.NamedForEachNullOnEmptyQuantifier(rightQ.GetAlias(), rightQ.GetRangesOver())
+		}
+		sel := mustNLJConstruct(expressions.NewSelectExpressionWithJoinType(
+			values.NewRecordConstructorValue(
+				values.RecordConstructorField{Name: "LEFT_D", Value: nljField(left, 0)},
+				values.RecordConstructorField{Name: "RIGHT_D", Value: nljField(right, 0)},
+			),
+			[]expressions.Quantifier{left, right},
+			nil,
+			[]string{"L", "R"},
+			expressions.JoinInner,
+		))
+		nullOnEmptyResults := mustFireExpressionRule(t, NewImplementNestedLoopJoinRule(), expressions.InitialOf(sel))
+		if len(nullOnEmptyResults) == 0 {
+			t.Fatalf("null-on-empty left=%v over a shared named external sibling yielded nothing", nullOnEmptyLeft)
+		}
+		flagged := "R"
+		if nullOnEmptyLeft {
+			flagged = "L"
+		}
+		outers := map[string]bool{}
+		for _, result := range nullOnEmptyResults {
+			flatMap, isFlatMap := result.(*plans.RecordQueryFlatMapPlan)
+			if !isFlatMap {
+				t.Fatalf("null-on-empty %s yielded %T; only a FlatMap is safe", flagged, result)
+			}
+			outer := flatMap.GetOuterAlias().Name()
+			outers[outer] = true
+			_, outerWrapped := flatMap.GetOuter().(*plans.RecordQueryDefaultOnEmptyPlan)
+			_, innerWrapped := flatMap.GetInner().(*plans.RecordQueryDefaultOnEmptyPlan)
+			if outerWrapped != (outer == flagged) || innerWrapped == (outer == flagged) {
+				t.Fatalf("null-on-empty %s with %s the outer: outer wrapped %v, inner wrapped %v; want exactly "+
+					"the flagged leg wrapped, wherever it sits: %s", flagged, outer, outerWrapped, innerWrapped, flatMap.Explain())
+			}
+		}
+		if !outers["L"] || !outers["R"] {
+			t.Fatalf("null-on-empty %s: outers %v, want both orientations of the INNER select", flagged, outers)
+		}
+	}
 
 	results := mustFireExpressionRule(
 		t, NewImplementNestedLoopJoinRule(), expressions.InitialOf(selectExpr))
-	if len(results) != 0 {
-		t.Fatalf("shared named external sibling yielded %d unsafe implementation(s), first %T",
-			len(results), results[0])
+	if len(results) == 0 {
+		t.Fatal("shared named external sibling yielded nothing; the correlated FlatMap is its implementation")
+	}
+	for _, result := range results {
+		flatMap, isFlatMap := result.(*plans.RecordQueryFlatMapPlan)
+		if !isFlatMap {
+			t.Fatalf("shared named external sibling yielded %T; only a FlatMap is safe", result)
+		}
+		correlatedTo := expressions.InitialOf(flatMap).GetCorrelatedTo()
+		if _, reported := correlatedTo[externalRoot.Correlation()]; !reported {
+			t.Fatalf("the FlatMap does not report its correlation to D (%v), so it could be "+
+				"chosen where D is unbound", correlatedTo)
+		}
+	}
+}
+
+func TestImplementExistentialJoinHonorsDependencyDirection(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name                       string
+		outerDepends, innerDepends bool
+	}{
+		{"independent", false, false},
+		{"inner_depends_on_outer", false, true},
+		{"outer_depends_on_inner", true, false},
+		{"cycle", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			outerAlias, innerAlias := values.UniqueCorrelationIdentifier(), values.UniqueCorrelationIdentifier()
+			outerScan, innerScan := nljPhysicalScan("OUTER"), nljPhysicalScan("INNER")
+			var outer, inner plans.RecordQueryPlan = outerScan, innerScan
+			withDependency := func(plan, dependency plans.RecordQueryPlan, own, free values.CorrelationIdentifier) plans.RecordQueryPlan {
+				qov := mustNLJConstruct(values.NewQuantifiedObjectValue(free, dependency.GetResultType()))
+				return mustNLJConstruct(plans.NewRecordQueryPredicatesFilterPlanWithAlias(plan,
+					[]predicates.QueryPredicate{predicates.NewComparisonPredicate(qov, predicates.Comparison{Type: predicates.ComparisonIsNotNull})}, own))
+			}
+			if tc.outerDepends {
+				outer = withDependency(outer, innerScan, outerAlias, innerAlias)
+			}
+			if tc.innerDepends {
+				inner = withDependency(inner, outerScan, innerAlias, outerAlias)
+			}
+			outerQ := expressions.NamedForEachQuantifier(outerAlias, expressions.FinalOf(outer))
+			innerQ := expressions.NamedExistentialQuantifier(innerAlias, expressions.FinalOf(inner))
+			sel := mustNLJConstruct(expressions.NewSelectExpressionWithAliases(nljFlowed(outerQ),
+				[]expressions.Quantifier{outerQ, innerQ}, []predicates.QueryPredicate{mustExistentialAlias(t, innerAlias)},
+				[]string{outerAlias.Name(), innerAlias.Name()}))
+			results := mustFireExpressionRule(t, NewImplementNestedLoopJoinRule(), expressions.InitialOf(sel))
+			if tc.outerDepends && tc.innerDepends {
+				if len(results) != 0 {
+					t.Fatalf("yielded %d plans with a dependency cycle", len(results))
+				}
+			} else if len(results) == 0 {
+				t.Fatal("a valid existential dependency direction yielded no implementation")
+			}
+			if tc.outerDepends && !tc.innerDepends {
+				for _, result := range results {
+					flatMap, ok := result.(*plans.RecordQueryFlatMapPlan)
+					if !ok || flatMap.GetOuterAlias() != innerAlias || flatMap.GetInnerAlias() != outerAlias {
+						t.Fatalf("dependent ForEach must execute after the existential witness: %T", result)
+					}
+					if _, wrapped := flatMap.GetOuter().(*plans.RecordQueryFirstOrDefaultPlan); !wrapped {
+						t.Fatalf("existential outer lacks FirstOrDefault: %s", flatMap.Explain())
+					}
+					if flatMap.InheritOuterRecordProperties() {
+						t.Fatal("ordinary inner must not inherit existential cardinality")
+					}
+				}
+			}
+		})
+	}
+}
+
+// A source alias is display metadata. When the existential inner reads the
+// outer quantifier, binding the outer under a different source name would leave
+// the inner's correlation unbound at execution.
+func TestImplementExistentialJoinKeepsTheOuterBindingTheInnerReads(t *testing.T) {
+	t.Parallel()
+	outerAlias, innerAlias := values.UniqueCorrelationIdentifier(), values.UniqueCorrelationIdentifier()
+	outerScan, innerScan := nljPhysicalScan("OUTER"), nljPhysicalScan("INNER")
+	qov := mustNLJConstruct(values.NewQuantifiedObjectValue(outerAlias, outerScan.GetResultType()))
+	inner := mustNLJConstruct(plans.NewRecordQueryPredicatesFilterPlanWithAlias(innerScan,
+		[]predicates.QueryPredicate{predicates.NewComparisonPredicate(qov, predicates.Comparison{Type: predicates.ComparisonIsNotNull})}, innerAlias))
+	outerQ := expressions.NamedForEachQuantifier(outerAlias, expressions.FinalOf(outerScan))
+	innerQ := expressions.NamedExistentialQuantifier(innerAlias, expressions.FinalOf(inner))
+	sel := mustNLJConstruct(expressions.NewSelectExpressionWithAliases(nljFlowed(outerQ),
+		[]expressions.Quantifier{outerQ, innerQ}, []predicates.QueryPredicate{mustExistentialAlias(t, innerAlias)},
+		[]string{"DERIVED_NAME", innerAlias.Name()}))
+	results := mustFireExpressionRule(t, NewImplementNestedLoopJoinRule(), expressions.InitialOf(sel))
+	if len(results) == 0 {
+		t.Fatal("no implementation")
+	}
+	for _, result := range results {
+		flatMap, ok := result.(*plans.RecordQueryFlatMapPlan)
+		if !ok || flatMap.GetOuterAlias() != outerAlias {
+			t.Fatalf("outer bound as %v, but the inner reads %v: %T", flatMap.GetOuterAlias(), outerAlias, result)
+		}
 	}
 }
 
@@ -1808,8 +2142,11 @@ func TestImplementNestedLoopJoin_RecordExplodeOuterSupportsCorrelatedExplodeInne
 		[]string{"IN", "T"},
 		expressions.JoinCross,
 	))
-	if got := mustFireExpressionRule(t, NewImplementNestedLoopJoinRule(), expressions.InitialOf(scalarSelect)); len(got) != 0 {
-		t.Fatalf("scalar uncorrelated Explode yielded %d NLJ alternatives, want IN-rule ownership", len(got))
+	// Java's ImplementNestedLoopJoinRule implements any binary select; an
+	// uncorrelated scalar Explode (an IN list, a FROM-less singleton) is joined
+	// like any leg, and ImplementInJoinRule's InJoin competes on cost.
+	if got := mustFireExpressionRule(t, NewImplementNestedLoopJoinRule(), expressions.InitialOf(scalarSelect)); len(got) == 0 {
+		t.Fatal("scalar uncorrelated Explode yielded no NLJ alternative")
 	}
 }
 
@@ -1896,6 +2233,7 @@ func TestImplementNestedLoopJoin_StrictSingleForcesCompensatedFlatMap(t *testing
 
 	foundStrictFlatMap := false
 	for _, result := range results {
+		assertProducerPhysicalQuantifiers(t, result)
 		if _, ok := result.(*plans.RecordQueryNestedLoopJoinPlan); ok {
 			t.Fatalf("strict-single select yielded an unwrapped materialized NLJ: %T", result)
 		}
@@ -2948,52 +3286,202 @@ func TestImplementNestedLoopJoin_ExistsPKShortcutFiresOnBareTopLevelColumn(t *te
 	}
 }
 
-// TestBuriedLegOrdinalLayout_SkipsFusedNestedSameLeafName pins that a FUSED
-// nested reference (leg.address.id, leaf "ID") never claims the slot the leg's
-// GENUINE bare column owns. Under the retired leaf-name key both slots spelled
-// "LEG.ID" and "first occurrence wins" let the fused slot's ordinal answer for
-// the real column, misdirecting a buried-leg rebase to the wrong RC slot. The
-// identity key removes the collision at the root — a fused multi-accessor path
-// states no single-accessor identity, so it mints no key at all — and the bare
-// column is the one owner of its own.
-func TestBuriedLegOrdinalLayout_SkipsFusedNestedSameLeafName(t *testing.T) {
+// A partitioned value can carry several conjuncts, or several alternative
+// ranges. Only a conjunctive equality may become a probe, and consuming it
+// must leave every other constraint below FirstOrDefault.
+func TestImplementNestedLoopJoin_ExistsPartitionedRanges(t *testing.T) {
 	t.Parallel()
-
-	leg := values.NamedCorrelationIdentifier("LEG")
-	fused := fusedNestedFieldValue(leg, "ADDRESS", "ID")
-	legType := nljTestLayout("LEG", "ADDRESS", "ID")
-	legRoot := mustNLJConstruct(values.NewQuantifiedObjectValue(leg, legType))
-	bare := mustNLJField(mustNLJConstruct(values.ResolveFieldOrdinals(legRoot, []int{1})))
-
-	rc := values.NewRawRecordConstructorValue(
-		values.RecordConstructorField{Name: "F0", Value: fused},
-		values.RecordConstructorField{Name: "F1", Value: bare},
-	)
-
-	outer := nljPhysicalScan("OUTER")
-	inner := nljPhysicalScan("INNER")
-	fm := mustNLJConstruct(plans.NewRecordQueryFlatMapPlan(
-		outer, inner, leg, values.NamedCorrelationIdentifier("i"), rc, false))
-
-	layout := buriedLegOrdinalLayout(fm)
-	if layout == nil {
-		t.Fatal("setup: expected a non-nil layout")
+	for _, access := range []string{"primary", "secondary"} {
+		for _, shape := range []string{"conjunction", "disjunction"} {
+			for _, mode := range []string{"exists", "not_exists"} {
+				t.Run(access+"/"+shape+"/"+mode, func(t *testing.T) {
+					t.Parallel()
+					o, i := values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I")
+					outerType, innerType := nljTestLayouts["OUTER"], nljTestLayouts["INNER"]
+					outerRef := expressions.InitialOf(mustNLJConstruct(expressions.NewFullUnorderedScanExpression([]string{"OUTER"}, outerType)))
+					innerRef := expressions.InitialOf(mustNLJConstruct(expressions.NewFullUnorderedScanExpression([]string{"INNER"}, innerType)))
+					outerRef.InsertFinal(mustNLJConstruct(plans.NewRecordQueryScanPlan([]string{"OUTER"}, outerType, false)))
+					innerRef.InsertFinal(mustNLJConstruct(plans.NewRecordQueryScanPlan([]string{"INNER"}, innerType, false)))
+					oq, iq := expressions.NamedForEachQuantifier(o, outerRef), expressions.NamedExistentialQuantifier(i, innerRef)
+					innerID, outerID := nljBakedRef(t, "INNER", i, "ID"), nljBakedRef(t, "OUTER", o, "ID")
+					equality := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: outerID}
+					bound := predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(10))}
+					regular := []predicates.QueryPredicate{
+						predicates.NewComparisonPredicate(innerID, equality),
+						predicates.NewComparisonPredicate(innerID, bound),
+					}
+					if shape == "disjunction" {
+						regular = []predicates.QueryPredicate{predicates.NewPredicateWithValueAndRanges(innerID, []*predicates.RangeConstraints{
+							predicates.NewRangeConstraints(nil, []predicates.Comparison{equality}),
+							predicates.NewRangeConstraints([]predicates.Comparison{bound}, nil),
+						})}
+					}
+					var exists predicates.QueryPredicate = mustExistentialAlias(t, i)
+					wantPresence := predicates.ComparisonIsNotNull
+					if mode == "not_exists" {
+						exists = predicates.NewNot(exists)
+						wantPresence = predicates.ComparisonIsNull
+					}
+					outerBound := predicates.NewComparisonPredicate(nljBakedRef(t, "OUTER", o, "CATEGORY"),
+						predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(0))})
+					sel := mustNLJConstruct(expressions.NewSelectExpressionWithAliases(nljFlowed(oq),
+						[]expressions.Quantifier{oq, iq}, append(regular, exists, outerBound), []string{"O", "I"}))
+					partitionedInner := false
+					for _, predicate := range sel.GetPredicates() {
+						pvr, ok := predicate.(*predicates.PredicateWithValueAndRanges)
+						if !ok || !values.SemanticEqualsUnderAliasMap(pvr.GetValue(), innerID, nil) {
+							continue
+						}
+						partitionedInner = true
+						wantRanges := 1
+						if shape == "disjunction" {
+							wantRanges = 2
+						}
+						if len(pvr.GetRanges()) != wantRanges || len(pvr.GetComparisons()) != 2 {
+							t.Fatalf("fixture lost the partitioned range shape: %s", pvr.Explain())
+						}
+					}
+					if !partitionedInner {
+						t.Fatal("fixture did not partition the inner predicates into PVR")
+					}
+					ctx := nljPrimaryKeyPlanContext{PlanContext: NewPlanContextFromMatchCandidates(nil), primaryKey: []string{"ID"}}
+					if access == "secondary" {
+						scalar := false
+						candidate := NewValueIndexScanMatchCandidateWithFunctions("INNER$ID", []string{"INNER"}, []string{"ID"}, nil,
+							[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()}, innerType, false, nil, &scalar).
+							WithKeyComponentTypes([]values.Type{values.NullableLong})
+						ctx.PlanContext = NewPlanContextFromMatchCandidates([]MatchCandidate{candidate})
+						ctx.primaryKey = nil
+					}
+					results := mustFireExpressionRuleWithMemo(t, NewImplementNestedLoopJoinRule(), expressions.InitialOf(sel), ctx, nil)
+					if len(results) == 0 {
+						t.Fatal("partitioned existential yielded no plan")
+					}
+					for _, result := range results {
+						assertProducerPhysicalQuantifiers(t, result)
+						flatMap, ok := result.(*plans.RecordQueryFlatMapPlan)
+						if !ok {
+							t.Fatalf("existential implementation = %T, want FlatMap", result)
+						}
+						outerFilter, ok := flatMap.GetOuter().(*plans.RecordQueryPredicatesFilterPlan)
+						if !ok || len(outerFilter.GetPredicates()) != 1 {
+							t.Fatalf("outer constraint was lost or moved below FirstOrDefault: %s", flatMap.Explain())
+						}
+						presence, ok := flatMap.GetInner().(*plans.RecordQueryPredicatesFilterPlan)
+						if !ok || len(presence.GetPredicates()) != 1 {
+							t.Fatalf("missing existential residual: %s", flatMap.Explain())
+						}
+						presencePredicate, ok := presence.GetPredicates()[0].(*predicates.ComparisonPredicate)
+						if !ok || presencePredicate.Comparison.Type != wantPresence {
+							t.Fatalf("existential polarity changed: %s", presence.Explain())
+						}
+						fod, ok := presence.GetInner().(*plans.RecordQueryFirstOrDefaultPlan)
+						if !ok {
+							t.Fatalf("missing FirstOrDefault below presence test: %s", presence.Explain())
+						}
+						filter, ok := fod.GetInner().(*plans.RecordQueryPredicatesFilterPlan)
+						if !ok || len(filter.GetPredicates()) != 1 {
+							t.Fatalf("remaining range constraint must filter below FirstOrDefault: %s", fod.Explain())
+						}
+						residual := filter.GetPredicates()[0]
+						if shape == "conjunction" {
+							comparison, ok := residual.(*predicates.ComparisonPredicate)
+							if !ok || comparison.Comparison.Type != bound.Type || !values.SemanticEqualsUnderAliasMap(comparison.Comparison.Operand, bound.Operand, nil) {
+								t.Fatalf("probe consumed the additional range bound: %s", residual.Explain())
+							}
+						} else if disjunction, ok := residual.(*predicates.OrPredicate); !ok || len(disjunction.SubPredicates) != 2 {
+							t.Fatalf("alternative ranges were not preserved as OR: %s", residual.Explain())
+						}
+						var comparisons []*predicates.ComparisonRange
+						switch scan := filter.GetInner().(type) {
+						case *plans.RecordQueryScanPlan:
+							if shape == "conjunction" && access == "secondary" {
+								t.Fatal("secondary shortcut did not use the index")
+							}
+							comparisons = scan.GetScanComparisons()
+						case *plans.RecordQueryIndexPlan:
+							if shape != "conjunction" || access != "secondary" {
+								t.Fatal("unexpected secondary probe")
+							}
+							comparisons = scan.GetScanComparisons()
+						default:
+							t.Fatalf("unexpected filtered access plan: %T", filter.GetInner())
+						}
+						if shape == "conjunction" {
+							if len(comparisons) != 1 || !comparisons[0].IsEquality() {
+								t.Fatalf("partitioned equality did not become a point probe: %v", comparisons)
+							}
+						} else if len(comparisons) != 0 {
+							t.Fatalf("one disjunct incorrectly narrowed the entire inner: %v", comparisons)
+						}
+					}
+				})
+			}
+		}
 	}
-	id, stated := legSlotIdentity(bare)
-	if !stated {
-		t.Fatal("setup: the genuine bare column must state an identity")
-	}
-	ord, ok := layout[id]
-	if !ok {
-		t.Fatal("expected the genuine bare field's identity to be present, got missing")
-	}
-	if ord != 1 {
-		t.Fatalf("layout[bare LEG.ID] = %d, want 1 (the genuine bare field at slot 1) — "+
-			"the fused nested field at slot 0 must not have claimed this key first", ord)
-	}
-	if _, fusedStated := legSlotIdentity(fused); fusedStated {
-		t.Fatal("a FUSED multi-accessor path must state no single-column identity, so it can " +
-			"never mint a layout key")
+}
+
+func TestImplementNestedLoopJoin_MaterializedPartitionedPredicates(t *testing.T) {
+	t.Parallel()
+	for name, kind := range map[string]expressions.JoinType{"inner": expressions.JoinInner, "full_outer": expressions.JoinFullOuter} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			leftRef, rightRef := expressions.InitialOf(nljLogicalScan("L")), expressions.InitialOf(nljLogicalScan("R"))
+			leftRef.InsertFinal(nljPhysicalScan("L"))
+			rightRef.InsertFinal(nljPhysicalScan("R"))
+			leftQ := expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("L"), leftRef)
+			rightQ := expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("R"), rightRef)
+			leftID, rightID := nljField(leftQ, 0), nljField(rightQ, 0)
+			sel := mustNLJConstruct(expressions.NewSelectExpressionWithJoinType(nljFlowed(leftQ),
+				[]expressions.Quantifier{leftQ, rightQ}, []predicates.QueryPredicate{
+					predicates.NewComparisonPredicate(leftID, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: rightID}),
+					predicates.NewComparisonPredicate(leftID, predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(10))}),
+				}, []string{"L", "R"}, kind))
+			if len(sel.GetPredicates()) != 1 {
+				t.Fatalf("fixture did not combine the same-value constraints: %v", sel.GetPredicates())
+			}
+			if _, ok := sel.GetPredicates()[0].(*predicates.PredicateWithValueAndRanges); !ok {
+				t.Fatalf("fixture predicate = %T, want PVR", sel.GetPredicates()[0])
+			}
+			results := mustFireExpressionRule(t, NewImplementNestedLoopJoinRule(), expressions.InitialOf(sel))
+			if len(results) == 0 {
+				t.Fatal("materialized join yielded no plan")
+			}
+			for _, result := range results {
+				assertProducerPhysicalQuantifiers(t, result)
+				join, ok := result.(*plans.RecordQueryNestedLoopJoinPlan)
+				if !ok {
+					t.Fatalf("join implementation = %T, want materialized join", result)
+				}
+				for _, predicate := range join.GetPredicates() {
+					if bad, structural := predicates.FindStructuralPredicate(predicate); structural {
+						t.Fatalf("materialized join still carries structural %T: %s", bad, bad.Explain())
+					}
+				}
+				for _, row := range []struct {
+					left, right int64
+					want        predicates.TriBool
+				}{
+					{11, 11, predicates.TriTrue},
+					{5, 5, predicates.TriFalse},
+					{11, 12, predicates.TriFalse},
+				} {
+					program := predicates.ReplaceValues(predicates.NewAnd(join.GetPredicates()...), func(v values.Value) values.Value {
+						switch {
+						case values.SemanticEqualsUnderAliasMap(v, leftID, nil):
+							return values.LiteralValue(row.left)
+						case values.SemanticEqualsUnderAliasMap(v, rightID, nil):
+							return values.LiteralValue(row.right)
+						default:
+							return v
+						}
+					})
+					if got, err := program.Eval(nil); err != nil || got != row.want {
+						t.Fatalf("join predicates at (%d, %d) = (%v, %v), want %v", row.left, row.right, got, err, row.want)
+					}
+				}
+			}
+		})
 	}
 }
 
@@ -3101,5 +3589,414 @@ func TestExistsShortcutPreservesPriorScanBounds(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+// A join leg that FLOWS a scalar is never materialized: the materialized NLJ
+// binds each leg as a record and would read the scalar as its one-slot row, so
+// the rule yields only the FlatMap, which binds the quantifier to the flowed
+// value itself. Each arm of the choice is driven here, over an Explode of a
+// collection an enclosing row owns (a correlated array as a block's FROM
+// item; an uncorrelated constant list is the IN-join rule's and declines
+// earlier): the scalar leg on the right, on the left (swapped inside), under a
+// filter (the flowed type, not the Explode member, is the property), and as a
+// LEFT OUTER's preserved leg, which cannot move inside and stays the outer.
+func TestImplementNestedLoopJoin_ScalarFlowingLegIsNeverMaterialized(t *testing.T) {
+	t.Parallel()
+	enclosingType := &values.RecordType{Fields: []values.Field{
+		{Name: "ID", Ordinal: 0, FieldType: values.NotNullLong},
+		{Name: "ARR", Ordinal: 1, FieldType: values.NewArrayType(false, values.NotNullLong)},
+	}}
+	enclosing := mustNLJConstruct(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("OUTER"), enclosingType))
+	collection := mustNLJConstruct(values.ResolveFieldOrdinals(enclosing, []int{1}))
+	explodeRef := func(t *testing.T) *expressions.Reference {
+		t.Helper()
+		ref := expressions.InitialOf(mustNLJConstruct(expressions.NewExplodeExpression(collection)))
+		ref.InsertFinal(mustNLJConstruct(plans.NewRecordQueryExplodePlan(collection)))
+		return ref
+	}
+	filteredExplodeRef := func(t *testing.T) *expressions.Reference {
+		t.Helper()
+		inner := expressions.ForEachQuantifier(explodeRef(t))
+		pred := predicates.NewComparisonPredicate(nljFlowed(inner),
+			predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(1))})
+		ref := expressions.InitialOf(mustNLJConstruct(expressions.NewSelectExpression(
+			nljFlowed(inner), []expressions.Quantifier{inner}, []predicates.QueryPredicate{pred})))
+		ref.InsertFinal(mustNLJConstruct(plans.NewRecordQueryPredicatesFilterPlanFromQuantifier(inner, []predicates.QueryPredicate{pred})))
+		return ref
+	}
+	for _, tc := range []struct {
+		name        string
+		scalarFirst bool
+		scalar      func(*testing.T) *expressions.Reference
+		joinType    expressions.JoinType
+	}{
+		{"scalar right", false, explodeRef, expressions.JoinCross},
+		{"scalar left swaps inside", true, explodeRef, expressions.JoinCross},
+		{"filter over a scalar explode", false, filteredExplodeRef, expressions.JoinCross},
+		{"left outer preserved scalar stays outer", true, explodeRef, expressions.JoinLeftOuter},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			scanRef := expressions.InitialOf(nljLogicalScan("A"))
+			scanRef.InsertFinal(nljPhysicalScan("A"))
+			scanQ := expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("A"), scanRef)
+			scalarQ := expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("V"), tc.scalar(t))
+			quants, aliases := []expressions.Quantifier{scanQ, scalarQ}, []string{"A", "V"}
+			if tc.scalarFirst {
+				quants, aliases = []expressions.Quantifier{scalarQ, scanQ}, []string{"V", "A"}
+			}
+			// A LEFT OUTER's null-supplied leg flows a null-extended row, so
+			// the select projects its preserved leg.
+			result := nljFlowed(scanQ)
+			if tc.joinType == expressions.JoinLeftOuter {
+				result = nljFlowed(scalarQ)
+			}
+			sel := mustNLJConstruct(expressions.NewSelectExpressionWithJoinType(
+				result, quants, nil, aliases, tc.joinType))
+			results := mustFireExpressionRule(t, NewImplementNestedLoopJoinRule(), expressions.InitialOf(sel))
+			flatMaps := 0
+			for _, result := range results {
+				switch plan := result.(type) {
+				case *plans.RecordQueryNestedLoopJoinPlan:
+					t.Fatalf("a scalar-flowing leg was materialized: %T", plan)
+				case *plans.RecordQueryFlatMapPlan:
+					flatMaps++
+				}
+			}
+			if flatMaps == 0 {
+				t.Fatalf("no FlatMap implements the join; results=%d", len(results))
+			}
+		})
+	}
+}
+
+// TestImplementNestedLoopJoin_LeftOuterInputFiltersOnConjunctsBelowTheWrap
+// pins the lowering of a LEFT-OUTER-typed select — RewriteOuterJoinRule's
+// input, whose predicates are all ON conjuncts. A scalar preserved leg forces
+// the correlated FlatMap orientation (the preserved leg stays the outer), and
+// the lowering filtered an ON conjunct reading the inner ABOVE the
+// DefaultOnEmpty (a preserved row whose inner is non-empty but matches nothing
+// dropped) and one reading only the preserved leg on the preserved rows. Every
+// ON conjunct must filter the inner below the wrap, which then null-extends a
+// preserved row whose filtered inner is empty.
+func TestImplementNestedLoopJoin_LeftOuterInputFiltersOnConjunctsBelowTheWrap(t *testing.T) {
+	t.Parallel()
+	enclosingType := &values.RecordType{Fields: []values.Field{
+		{Name: "ID", Ordinal: 0, FieldType: values.NotNullLong},
+		{Name: "ARR", Ordinal: 1, FieldType: values.NewArrayType(false, values.NotNullLong)},
+	}}
+	enclosing := mustNLJConstruct(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("OUTER"), enclosingType))
+	collection := mustNLJConstruct(values.ResolveFieldOrdinals(enclosing, []int{1}))
+	explodeRef := expressions.InitialOf(mustNLJConstruct(expressions.NewExplodeExpression(collection)))
+	explodeRef.InsertFinal(mustNLJConstruct(plans.NewRecordQueryExplodePlan(collection)))
+	scalarQ := expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("V"), explodeRef)
+	scanRef := expressions.InitialOf(nljLogicalScan("A"))
+	scanRef.InsertFinal(nljPhysicalScan("A"))
+	scanQ := expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("A"), scanRef)
+	readsInner := predicates.NewComparisonPredicate(nljField(scanQ, 0),
+		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: nljFlowed(scalarQ)})
+	readsPreserved := predicates.NewComparisonPredicate(nljFlowed(scalarQ),
+		predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(1))})
+	for _, tc := range []struct {
+		name  string
+		preds []predicates.QueryPredicate
+	}{
+		{"an ON conjunct reading the inner", []predicates.QueryPredicate{readsInner}},
+		{"an ON conjunct reading only the preserved leg", []predicates.QueryPredicate{readsPreserved}},
+		{"both", []predicates.QueryPredicate{readsInner, readsPreserved}},
+		{"no ON conjunct", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sel := mustNLJConstruct(expressions.NewSelectExpressionWithJoinType(
+				nljFlowed(scalarQ), []expressions.Quantifier{scalarQ, scanQ}, tc.preds,
+				[]string{"V", "A"}, expressions.JoinLeftOuter))
+			flatMaps := 0
+			for _, result := range mustFireExpressionRule(t, NewImplementNestedLoopJoinRule(), expressions.InitialOf(sel)) {
+				assertProducerPhysicalQuantifiers(t, result)
+				flatMap, ok := result.(*plans.RecordQueryFlatMapPlan)
+				if !ok {
+					continue
+				}
+				flatMaps++
+				if _, filteredOuter := flatMap.GetOuter().(*plans.RecordQueryPredicatesFilterPlan); filteredOuter {
+					t.Fatalf("an ON conjunct filtered the preserved rows: %s", flatMap.Explain())
+				}
+				doe, wrapped := flatMap.GetInner().(*plans.RecordQueryDefaultOnEmptyPlan)
+				if !wrapped {
+					t.Fatalf("the inner is not null-extended (an ON conjunct above the wrap?): %s", flatMap.Explain())
+				}
+				filter, filtered := doe.GetInner().(*plans.RecordQueryPredicatesFilterPlan)
+				if filtered != (len(tc.preds) > 0) {
+					t.Fatalf("under the wrap filtered=%v, want %v: %s", filtered, len(tc.preds) > 0, flatMap.Explain())
+				}
+				if filtered && len(filter.GetPredicates()) != len(tc.preds) {
+					t.Fatalf("under the wrap %d predicate(s), want every ON conjunct (%d): %s",
+						len(filter.GetPredicates()), len(tc.preds), flatMap.Explain())
+				}
+			}
+			if flatMaps == 0 {
+				t.Fatal("the LEFT OUTER input yielded no FlatMap")
+			}
+		})
+	}
+}
+
+// TestImplementNestedLoopJoin_UncorrelatedNullOnEmptyLegIsExtended pins
+// RewriteOuterJoinRule's output for a leg correlated only to an enclosing
+// query: no leg reads the other, yet the null-on-empty leg still needs its
+// DefaultOnEmpty, which only the FlatMap lowering supplies (Java's single
+// implementation of a binary select).
+func TestImplementNestedLoopJoin_UncorrelatedNullOnEmptyLegIsExtended(t *testing.T) {
+	t.Parallel()
+	newScanRef := func(name string) *expressions.Reference {
+		ref := expressions.InitialOf(nljLogicalScan(name))
+		ref.InsertFinal(nljPhysicalScan(name))
+		return ref
+	}
+	leftQ := expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("L"), newScanRef("LEFT"))
+	rightQ := expressions.NamedForEachNullOnEmptyQuantifier(values.NamedCorrelationIdentifier("R"), newScanRef("RIGHT"))
+	sel := mustNLJConstruct(expressions.NewSelectExpressionWithJoinType(
+		values.NewRecordConstructorValue(
+			values.RecordConstructorField{Name: "L_ID", Value: nljField(leftQ, 0)},
+			values.RecordConstructorField{Name: "R_ID", Value: nljField(rightQ, 0)},
+		),
+		[]expressions.Quantifier{leftQ, rightQ}, nil, []string{"L", "R"}, expressions.JoinInner,
+	))
+	results := mustFireExpressionRule(t, NewImplementNestedLoopJoinRule(), expressions.InitialOf(sel))
+	if len(results) == 0 {
+		t.Fatal("an uncorrelated null-on-empty leg yielded no implementation")
+	}
+	for _, result := range results {
+		flatMap, isFlatMap := result.(*plans.RecordQueryFlatMapPlan)
+		if !isFlatMap {
+			t.Fatalf("yielded %T; a null-on-empty leg needs the FlatMap lowering", result)
+		}
+		extended := false
+		for _, leg := range []plans.RecordQueryPlan{flatMap.GetOuter(), flatMap.GetInner()} {
+			if _, ok := leg.(*plans.RecordQueryDefaultOnEmptyPlan); ok {
+				extended = true
+			}
+		}
+		if !extended {
+			t.Fatalf("the null-on-empty leg is not extended: %s", flatMap.Explain())
+		}
+	}
+}
+
+// TestImplementNestedLoopJoin_NullOnEmptyOuterIsExtended pins Java's
+// planPartitionToPhysical on the OUTER leg: a null-on-empty quantifier that
+// partitioning made the outer of a correlated pair (a LEFT OUTER's
+// null-supplying leg peeled into a lower with the leg that reads it) is wrapped
+// in DefaultOnEmpty, and the FlatMap states the outer's presence. Ignoring the
+// flag there dropped every null-extended row.
+func TestImplementNestedLoopJoin_NullOnEmptyOuterIsExtended(t *testing.T) {
+	t.Parallel()
+
+	newScanRef := func(name string) *expressions.Reference {
+		ref := expressions.InitialOf(nljLogicalScan(name))
+		ref.InsertFinal(nljPhysicalScan(name))
+		return ref
+	}
+	outerAlias := values.NamedCorrelationIdentifier("E")
+	outerQ := expressions.NamedForEachNullOnEmptyQuantifier(outerAlias, newScanRef("EMP"))
+	outerRoot := mustNLJConstruct(values.NewQuantifiedObjectValue(outerAlias, nljSimpleRowType("EMP")))
+	outerID := mustNLJConstruct(values.ResolveFieldOrdinals(outerRoot, []int{0}))
+
+	t.Run("correlated ForEach inner", func(t *testing.T) {
+		scanQ := expressions.NamedForEachQuantifier(
+			values.NamedCorrelationIdentifier("BADGE"), expressions.InitialOf(nljLogicalScan("BADGE")))
+		legRef := expressions.InitialOf(mustNLJConstruct(newBlockSelectForTest(
+			[]values.Value{outerID}, scanQ)))
+		if !legRef.InsertFinal(mustNLJConstruct(newProjectionMapOverForTest(
+			[]values.Value{outerID}, nljPhysicalScan("BADGE")))) {
+			t.Fatal("insert the correlated leg's physical projection")
+		}
+		innerQ := expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("F"), legRef)
+		sel := mustNLJConstruct(expressions.NewSelectExpressionWithJoinType(
+			values.NewRecordConstructorValue(
+				values.RecordConstructorField{Name: "E_ID", Value: nljField(outerQ, 0)},
+				values.RecordConstructorField{Name: "F_ID", Value: nljField(innerQ, 0)},
+			),
+			[]expressions.Quantifier{outerQ, innerQ}, nil, []string{"E", "F"}, expressions.JoinInner,
+		))
+		results := mustFireExpressionRule(t, NewImplementNestedLoopJoinRule(), expressions.InitialOf(sel))
+		if len(results) == 0 {
+			t.Fatal("a null-on-empty outer with a leg correlated to it yielded no implementation")
+		}
+		for _, result := range results {
+			assertProducerPhysicalQuantifiers(t, result)
+			flatMap, isFlatMap := result.(*plans.RecordQueryFlatMapPlan)
+			if !isFlatMap {
+				t.Fatalf("yielded %T; a correlated pair is a FlatMap", result)
+			}
+			if flatMap.GetOuterAlias() != outerAlias {
+				t.Fatalf("FlatMap outer = %v, want the null-on-empty E (the leg reading it is the inner)",
+					flatMap.GetOuterAlias())
+			}
+			if _, extended := flatMap.GetOuter().(*plans.RecordQueryDefaultOnEmptyPlan); !extended ||
+				!flatMap.NullSupplyingOuter() {
+				t.Fatalf("null-on-empty outer not extended: outer %T, NullSupplyingOuter=%t\n%s",
+					flatMap.GetOuter(), flatMap.NullSupplyingOuter(), flatMap.Explain())
+			}
+		}
+	})
+
+	// The wrap comes BEFORE the inner is normalized against the outer's
+	// physical row: the inner's correlated program must read the row the
+	// FlatMap binds, which is the DefaultOnEmpty's null-extended carrier, not
+	// the bare scan's. A correlated Explode's collection is one such program.
+	t.Run("correlated Explode inner reads the carrier", func(t *testing.T) {
+		arrRow := values.NewRecordType("EMPA", false, []values.Field{
+			{Name: "ID", Ordinal: 0, FieldType: values.NotNullLong},
+			{Name: "ARR", Ordinal: 1, FieldType: values.NewArrayType(false, values.NotNullLong)},
+		})
+		arrAlias := values.NamedCorrelationIdentifier("EA")
+		scanRef := expressions.InitialOf(mustNLJConstruct(expressions.NewFullUnorderedScanExpression([]string{"EMPA"}, arrRow)))
+		scanRef.InsertFinal(mustNLJConstruct(plans.NewRecordQueryScanPlan([]string{"EMPA"}, arrRow, false)))
+		arrOuterQ := expressions.NamedForEachNullOnEmptyQuantifier(arrAlias, scanRef)
+		// The read is typed as translation types it: through the quantifier's
+		// flowed row, which a null-on-empty edge widens to nullable.
+		logicalRead := nljFlowed(arrOuterQ)
+		collection := mustNLJConstruct(values.ResolveFieldOrdinals(logicalRead, []int{1}))
+		explodeRef := expressions.InitialOf(mustNLJConstruct(expressions.NewExplodeExpression(collection)))
+		explodeRef.InsertFinal(mustNLJConstruct(plans.NewRecordQueryExplodePlan(collection)))
+		innerQ := expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("V"), explodeRef)
+		sel := mustNLJConstruct(expressions.NewSelectExpressionWithJoinType(
+			values.NewRecordConstructorValue(
+				values.RecordConstructorField{Name: "E_ID", Value: nljField(arrOuterQ, 0)},
+				values.RecordConstructorField{Name: "V", Value: nljFlowed(innerQ)},
+			),
+			[]expressions.Quantifier{arrOuterQ, innerQ}, nil, []string{"EA", "V"}, expressions.JoinInner,
+		))
+		results := mustFireExpressionRule(t, NewImplementNestedLoopJoinRule(), expressions.InitialOf(sel))
+		if len(results) == 0 {
+			t.Fatal("a null-on-empty outer with an Explode of its array yielded no implementation")
+		}
+		for _, result := range results {
+			assertProducerPhysicalQuantifiers(t, result)
+			flatMap, isFlatMap := result.(*plans.RecordQueryFlatMapPlan)
+			if !isFlatMap {
+				t.Fatalf("yielded %T; a correlated pair is a FlatMap", result)
+			}
+			doe, extended := flatMap.GetOuter().(*plans.RecordQueryDefaultOnEmptyPlan)
+			if !extended {
+				t.Fatalf("null-on-empty outer not extended: %s", flatMap.Explain())
+			}
+			carrier, err := values.ExactRelationOf(doe.GetResultType())
+			if err != nil {
+				t.Fatal(err)
+			}
+			carrierRow, _ := carrier.RelationInner()
+			explode, isExplode := flatMap.GetInner().(*plans.RecordQueryExplodePlan)
+			if !isExplode {
+				t.Fatalf("inner %T, want the Explode: %s", flatMap.GetInner(), flatMap.Explain())
+			}
+			// The nullable read matches the null-extended carrier exactly, so
+			// the normalization re-roots it onto the row the FlatMap binds. Had
+			// the wrap come after, the carrier would be the bare scan's NOT
+			// NULL row, the read would not match it, and the inner would keep
+			// the logical read.
+			var reads []values.QuantifiedObjectValue
+			values.WalkValue(explode.GetCollectionValue(), func(n values.Value) bool {
+				if qov, ok := values.AsQuantifiedObjectValue(n); ok && qov.Correlation() == arrAlias {
+					reads = append(reads, qov)
+				}
+				return true
+			})
+			if len(reads) != 1 {
+				t.Fatalf("the Explode reads EA %d time(s), want 1: %s", len(reads), flatMap.Explain())
+			}
+			if !reads[0].FlowedType().Equals(carrierRow.Type()) {
+				t.Fatalf("the inner reads EA as %v, want the null-extended carrier %v", reads[0].FlowedType(), carrierRow.Type())
+			}
+			if values.Value(reads[0]) == logicalRead {
+				t.Fatalf("the inner still reads EA through the logical read, not the carrier the FlatMap binds: %s", flatMap.Explain())
+			}
+		}
+	})
+
+	// PartitionSelect leaves a LEFT JOIN's null-supplied leg and an EXISTS read
+	// through it as one binary select; without the wrap it has no plan at all.
+	for _, tc := range []struct {
+		name   string
+		result func(existQ expressions.Quantifier) values.Value
+		preds  func(existAlias values.CorrelationIdentifier) []predicates.QueryPredicate
+	}{
+		{
+			"existential inner", func(expressions.Quantifier) values.Value { return nljFlowed(outerQ) },
+			func(a values.CorrelationIdentifier) []predicates.QueryPredicate {
+				return []predicates.QueryPredicate{mustExistentialAlias(t, a)}
+			},
+		},
+		{
+			"existential inner read by the result", func(existQ expressions.Quantifier) values.Value { return nljFlowed(existQ) },
+			func(values.CorrelationIdentifier) []predicates.QueryPredicate { return nil },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			existAlias := values.NamedCorrelationIdentifier("X")
+			existQ := expressions.NamedExistentialQuantifier(existAlias, newScanRef("BADGE"))
+			sel := mustNLJConstruct(expressions.NewSelectExpressionWithAliases(
+				tc.result(existQ),
+				[]expressions.Quantifier{outerQ, existQ},
+				tc.preds(existAlias),
+				[]string{"E", "X"},
+			))
+			results := mustFireExpressionRule(t, NewImplementNestedLoopJoinRule(), expressions.InitialOf(sel))
+			if len(results) == 0 {
+				t.Fatal("a null-on-empty outer beside an existential yielded no implementation")
+			}
+			for _, result := range results {
+				flatMap, isFlatMap := result.(*plans.RecordQueryFlatMapPlan)
+				if !isFlatMap {
+					t.Fatalf("yielded %T, want a FlatMap", result)
+				}
+				if _, extended := flatMap.GetOuter().(*plans.RecordQueryDefaultOnEmptyPlan); !extended ||
+					!flatMap.NullSupplyingOuter() {
+					t.Fatalf("null-on-empty outer not extended: outer %T, NullSupplyingOuter=%t\n%s",
+						flatMap.GetOuter(), flatMap.NullSupplyingOuter(), flatMap.Explain())
+				}
+				if !strings.Contains(flatMap.GetInner().Explain(), "FirstOrDefault(") {
+					t.Fatalf("inner is %s, want the existential under a FirstOrDefault", flatMap.GetInner().Explain())
+				}
+			}
+		})
+	}
+}
+
+// The join's memo edges must declare its runtime bindings, so a dissolved
+// LEFT box provides D/E without leaking discarded edge aliases.
+func TestPhysicalProvidedAliasesIncludeAJoinsExecutableAliases(t *testing.T) {
+	t.Parallel()
+	d, e := values.NamedCorrelationIdentifier("D"), values.NamedCorrelationIdentifier("E")
+	leftQ := expressions.ForEachQuantifier(expressions.FinalOf(nljPhysicalScan("DEPT")))
+	rightQ := expressions.ForEachQuantifier(expressions.FinalOf(nljPhysicalScan("EMP")))
+	if leftQ.GetAlias() == d || rightQ.GetAlias() == e {
+		t.Fatal("setup: the memo quantifiers must not already be named D/E")
+	}
+	dRoot := mustNLJConstruct(values.NewQuantifiedObjectValue(d, nljSimpleRowType("DEPT")))
+	eRoot := mustNLJConstruct(values.NewQuantifiedObjectValue(e, nljSimpleRowType("EMP")))
+	join := mustNLJConstruct(plans.NewRecordQueryNestedLoopJoinPlanFromQuantifiers(
+		leftQ, rightQ, nil, plans.JoinLeftOuter, d, e,
+		values.NewRecordConstructorValue(
+			values.RecordConstructorField{Name: "D_ID", Value: mustNLJConstruct(values.ResolveFieldOrdinals(dRoot, []int{0}))},
+			values.RecordConstructorField{Name: "E_ID", Value: mustNLJConstruct(values.ResolveFieldOrdinals(eRoot, []int{0}))},
+		)))
+	box := values.NamedCorrelationIdentifier("E$BOX")
+	provided := physicalProvidedAliases(join, box)
+	if qs := join.GetQuantifiers(); qs[0].GetAlias() != d || qs[1].GetAlias() != e {
+		t.Fatal("join edges disagree with the runtime bindings")
+	}
+	for _, stale := range []values.CorrelationIdentifier{leftQ.GetAlias(), rightQ.GetAlias()} {
+		if _, ok := provided[stale]; ok {
+			t.Errorf("physicalProvidedAliases advertises discarded edge %v", stale)
+		}
+	}
+	for _, want := range []values.CorrelationIdentifier{box, d, e} {
+		if _, ok := provided[want]; !ok {
+			t.Errorf("physicalProvidedAliases lacks %v: %v", want, provided)
+		}
 	}
 }

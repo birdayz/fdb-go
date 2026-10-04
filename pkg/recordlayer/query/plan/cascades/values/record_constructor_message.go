@@ -145,6 +145,10 @@ func rowScalarToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect
 		if f, ok := asFloat64(v); ok {
 			return protoreflect.ValueOfFloat64(f), nil
 		}
+	case protoreflect.EnumKind:
+		if n, ok := asInt64(v); ok && n >= -1<<31 && n <= 1<<31-1 {
+			return protoreflect.ValueOfEnum(protoreflect.EnumNumber(n)), nil
+		}
 	case protoreflect.StringKind:
 		if s, ok := v.(string); ok {
 			return protoreflect.ValueOfString(s), nil

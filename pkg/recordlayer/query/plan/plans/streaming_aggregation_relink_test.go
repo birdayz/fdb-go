@@ -257,7 +257,18 @@ func TestStreamingAggregationPlan_RelinkPreservesSameAliasSourceWindowUntilMater
 	}
 }
 
-func TestStreamingAggregationPlan_RelinkRejectsForeignAndMismatchedRoots(t *testing.T) {
+// TestStreamingAggregationPlan_RelinkKeepsExternalRootsAndRejectsMismatchedOnes
+// pins which roots a relink moves, keeps and refuses. The declared input edge
+// moves onto the new input. A root under a correlation the input neither is nor
+// retains a window for is an enclosing block's row — Java's grouping keys and
+// aggregate operands may be correlated to any outer quantifier, and its
+// translateCorrelations leaves a root outside the translation map as it is — so
+// it is kept, untouched, and stays in the plan's correlations for the enclosing
+// FlatMap to bind; refusing it failed `MAX(a.x)` in a lateral derived table over
+// `a` at extraction (TestFDB_GroupedSubqueryProjectsAnOuterColumn). A root that
+// claims the input, or one of the windows the input retains, with another exact
+// type is refused: rebasing it would bind a different row shape.
+func TestStreamingAggregationPlan_RelinkKeepsExternalRootsAndRejectsMismatchedOnes(t *testing.T) {
 	t.Parallel()
 	rowType := exactTestRecordType()
 	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
@@ -270,15 +281,28 @@ func TestStreamingAggregationPlan_RelinkRejectsForeignAndMismatchedRoots(t *test
 	newQ := expressions.NamedPhysicalQuantifier(
 		newAlias, expressions.FinalOfAtStage(scan, expressions.StageCanonical))
 
-	t.Run("foreign alias", func(t *testing.T) {
-		foreignKey := testFieldIn(t, rowType, "stream_agg_foreign", "K")
+	t.Run("external alias", func(t *testing.T) {
+		externalAlias := values.NamedCorrelationIdentifier("stream_agg_external")
+		externalKey := testFieldIn(t, rowType, externalAlias.Name(), "K")
+		externalOperand := testFieldIn(t, rowType, externalAlias.Name(), "K")
 		plan := mustChecked(t, func() (*RecordQueryStreamingAggregationPlan, error) {
-			return NewRecordQueryStreamingAggregationPlanFromQuantifier(oldQ, []values.Value{foreignKey}, nil)
+			return NewRecordQueryStreamingAggregationPlanFromQuantifier(oldQ, []values.Value{externalKey},
+				[]expressions.AggregateSpec{{Function: expressions.AggMax, Operand: externalOperand}})
 		})
-		if _, err := plan.WithQuantifiers([]expressions.Quantifier{newQ}); err == nil {
-			t.Fatal("WithQuantifiers accepted a foreign input root")
-		} else if !strings.Contains(err.Error(), "foreign to input edge") {
-			t.Fatalf("WithQuantifiers error = %v, want foreign-root diagnostic", err)
+		relinkedExpr, err := plan.WithQuantifiers([]expressions.Quantifier{newQ})
+		if err != nil {
+			t.Fatalf("WithQuantifiers refused an external root: %v", err)
+		}
+		relinked := relinkedExpr.(*RecordQueryStreamingAggregationPlan)
+		if got := relinked.GetGroupingKeys()[0]; got != externalKey {
+			t.Errorf("the external key was rewritten to %v", got)
+		}
+		if got := relinked.GetAggregates()[0].Operand; got != externalOperand {
+			t.Errorf("the external operand was rewritten to %v", got)
+		}
+		if _, ok := relinked.GetCorrelatedToWithoutChildren()[externalAlias]; !ok {
+			t.Errorf("the relinked plan no longer reports %s among its correlations: %v",
+				externalAlias.Name(), relinked.GetCorrelatedToWithoutChildren())
 		}
 	})
 
@@ -294,6 +318,80 @@ func TestStreamingAggregationPlan_RelinkRejectsForeignAndMismatchedRoots(t *test
 			t.Fatal("WithQuantifiers accepted an input root with the wrong exact type")
 		} else if !strings.Contains(err.Error(), "disagrees with input edge type") {
 			t.Fatalf("WithQuantifiers error = %v, want exact-type diagnostic", err)
+		}
+	})
+
+	t.Run("retained window with another type", func(t *testing.T) {
+		outerAlias := values.NamedCorrelationIdentifier("A")
+		innerAlias := values.NamedCorrelationIdentifier("B")
+		sourceType := func(name string) *values.RecordType {
+			return values.NewRecordType(name, true, []values.Field{
+				{Name: "ID", Ordinal: 0, FieldType: values.NullableLong},
+				{Name: "K", Ordinal: 1, FieldType: values.NullableLong},
+			})
+		}
+		outerType, innerType := sourceType("A"), sourceType("B")
+		outerSource := mustOrdinalLayoutQOV(t, outerAlias, outerType)
+		innerSource := mustOrdinalLayoutQOV(t, innerAlias, innerType)
+		seedField := func(source values.QuantifiedObjectValue, ordinal int) values.Value {
+			t.Helper()
+			field, err := values.ResolveOrdinalSeedField(source, ordinal)
+			if err != nil {
+				t.Fatalf("ResolveOrdinalSeedField(%s, %d): %v", source.Correlation(), ordinal, err)
+			}
+			return field
+		}
+		joinResult := values.NewRawRecordConstructorValue(
+			values.RecordConstructorField{Name: "ID", Value: seedField(outerSource, 0)},
+			values.RecordConstructorField{Name: "K", Value: seedField(outerSource, 1)},
+			values.RecordConstructorField{Name: "ID", Value: seedField(innerSource, 0)},
+			values.RecordConstructorField{Name: "K", Value: seedField(innerSource, 1)},
+		)
+		outerScan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+			return NewRecordQueryScanPlan([]string{"A"}, outerType, false)
+		})
+		innerScan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+			return NewRecordQueryScanPlan([]string{"B"}, innerType, false)
+		})
+		join := mustChecked(t, func() (*RecordQueryNestedLoopJoinPlan, error) {
+			return NewRecordQueryNestedLoopJoinPlanFromQuantifiers(
+				expressions.NamedPhysicalQuantifier(outerAlias, expressions.FinalOfAtStage(outerScan, expressions.StageCanonical)),
+				expressions.NamedPhysicalQuantifier(innerAlias, expressions.FinalOfAtStage(innerScan, expressions.StageCanonical)),
+				nil, JoinLeftOuter, outerAlias, innerAlias, joinResult)
+		})
+		retained := false
+		for _, source := range requireProvidedLayout(t, join).WindowSources() {
+			retained = retained || source.Correlation() == outerAlias
+		}
+		if !retained {
+			t.Fatal("the join retains no A window; this arm would test the external one")
+		}
+		// The arm is driven directly: a constructor over a selected input
+		// re-anchors an A-rooted value onto the input's carrier by name, so a
+		// retained-window root reaches the relink only from a plan built over a
+		// live edge that has a selection by the time it is relinked.
+		selectedQ := expressions.NamedPhysicalQuantifier(
+			values.NamedCorrelationIdentifier("stream_agg_selected"),
+			expressions.FinalOfAtStage(join, expressions.StageCanonical))
+		edge, err := selectedQ.RequireFlowedObjectValue()
+		if err != nil {
+			t.Fatal(err)
+		}
+		rightA := testFieldIn(t, outerType, outerAlias.Name(), "K")
+		wrongA := testFieldIn(t, values.NewRecordType("A", true, []values.Field{
+			{Name: "K", Ordinal: 0, FieldType: values.NullableLong},
+		}), outerAlias.Name(), "K")
+		external := testFieldIn(t, outerType, "stream_agg_external", "K")
+		if err := validateStreamingAggregationOldInputRoots(rightA, edge, selectedQ); err != nil {
+			t.Errorf("the retained A window at its own type was refused: %v", err)
+		}
+		if err := validateStreamingAggregationOldInputRoots(external, edge, selectedQ); err != nil {
+			t.Errorf("an external root was refused: %v", err)
+		}
+		if err := validateStreamingAggregationOldInputRoots(wrongA, edge, selectedQ); err == nil {
+			t.Error("a root under the retained A window's correlation with another type was accepted")
+		} else if !strings.Contains(err.Error(), "foreign to input edge") {
+			t.Errorf("error = %v, want the retained-window diagnostic", err)
 		}
 	})
 }

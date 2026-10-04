@@ -269,10 +269,10 @@ func TestSimplifyPredicateValues_OrPointerStableWhenNoFold(t *testing.T) {
 	}
 }
 
-// TestSimplifyPredicateValues_ComparisonPreservesEscape pins the easy-
-// to-drop bug: Escape rune must survive the rebuild that happens when
-// a fold changes the operand. LIKE … ESCAPE '\\' must NOT lose the
-// escape rune.
+// TestSimplifyPredicateValues_ComparisonPreservesEscape: the LIKE pattern
+// (a PatternForLikeValue, escape included) survives the rebuild that happens
+// when a fold changes the operand, and is itself never folded — a bad escape
+// is found only when a row evaluates it, as in Java.
 func TestSimplifyPredicateValues_ComparisonPreservesEscape(t *testing.T) {
 	t.Parallel()
 	op := &values.ArithmeticValue{
@@ -284,8 +284,7 @@ func TestSimplifyPredicateValues_ComparisonPreservesEscape(t *testing.T) {
 		Operand: op,
 		Comparison: Comparison{
 			Type:    ComparisonLike,
-			Operand: values.LiteralValue("foo\\%"),
-			Escape:  '\\',
+			Operand: values.NewPatternForLikeValue(values.LiteralValue("foo\\%"), values.LiteralValue(`\`)),
 		},
 	}
 	out := SimplifyPredicateValues(pred)
@@ -293,8 +292,8 @@ func TestSimplifyPredicateValues_ComparisonPreservesEscape(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *ComparisonPredicate, got %T", out)
 	}
-	if got.Comparison.Escape != '\\' {
-		t.Fatalf("Escape rune dropped during fold: got %q, want '\\\\'", got.Comparison.Escape)
+	if pfl, ok := got.Comparison.Operand.(*values.PatternForLikeValue); !ok || pfl != pred.Comparison.Operand {
+		t.Fatalf("the LIKE pattern was rewritten to %v", got.Comparison.Operand)
 	}
 	if got.Comparison.Type != ComparisonLike {
 		t.Fatalf("ComparisonType dropped: got %v, want ComparisonLike", got.Comparison.Type)

@@ -71,6 +71,15 @@ func planWithImplRulesAndContext(
 	return p
 }
 
+func plannedSeedChild(t testing.TB, ref *expressions.Reference) *expressions.Reference {
+	t.Helper()
+	members := ref.Members()
+	if len(members) != 1 || len(members[0].GetQuantifiers()) != 1 {
+		t.Fatalf("want one unary planning seed, got %v", members)
+	}
+	return members[0].GetQuantifiers()[0].GetRangesOver()
+}
+
 type uniqueAbsorptionPlanContext struct {
 	recordType string
 }
@@ -347,8 +356,8 @@ func TestPlanner_PlanningPhase_PropertiesComputedOnReference(t *testing.T) {
 
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
 
-	// After the PLANNING phase, computeRefPlanProperties runs on every
-	// visited Reference. The inner scanRef must have PlanProperties set.
+	// Finalization detaches the child; inspect the child of the planning seed.
+	scanRef = plannedSeedChild(t, rootRef)
 	pm := GetRefPlanPropertiesMap(scanRef)
 	if pm == nil {
 		t.Fatal("inner scanRef has nil PlanProperties after PLANNING phase")
@@ -408,7 +417,8 @@ func TestPlanner_PlanningPhase_AlwaysRuns(t *testing.T) {
 		t.Fatalf("Plan: %v", err)
 	}
 
-	// PLANNING always computes plan properties on leaf References.
+	// PLANNING always computes plan properties on its detached leaf References.
+	scanRef = plannedSeedChild(t, rootRef)
 	pm := GetRefPlanPropertiesMap(scanRef)
 	if pm == nil {
 		t.Fatal("PlanProperties should be set — PLANNING always runs")
@@ -455,7 +465,8 @@ func TestPlanner_PlanningPhase_MembersPopulated(t *testing.T) {
 		t.Fatal("root Reference has no physical members after PLANNING phase")
 	}
 
-	// The inner scanRef should also have physical members (from PrimaryScanRule).
+	// The planning seed's detached child also gets a physical scan.
+	scanRef = plannedSeedChild(t, rootRef)
 	innerAll := scanRef.AllMembers()
 	foundInnerPhysical := false
 	for _, m := range innerAll {
@@ -508,7 +519,26 @@ func TestPlanner_PlanningPhase_ImplementsRequiredUniqueOverPinnedPlan(t *testing
 	))
 	rootRef := expressions.InitialOf(required)
 
-	planWithImplRules(t, rootRef, DefaultImplementationRules())
+	planner := NewPlanner(allRules(), nil).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules())
+	planner.WithTaskObserver(func(task Task) {
+		transform, ok := task.(*TransformImplTask)
+		if !ok {
+			return
+		}
+		if _, unique := transform.Rule.(*ImplementUniqueRule); !unique {
+			return
+		}
+		inner := transform.Expr.GetQuantifiers()[0].GetRangesOver()
+		if GetRefPlanPropertiesMap(inner) == nil {
+			t.Fatalf("Unique saw an unprepared child: stage=%v pinned=%v explored=%v members=%v finals=%v",
+				inner.Stage(), inner.IsPinnedFinal(), inner.ConstraintsMap().IsExplored(), inner.Members(), inner.FinalMembers())
+		}
+	})
+	if _, _, err := planner.Plan(rootRef); err != nil {
+		t.Fatal(err)
+	}
 
 	for _, member := range rootRef.AllMembers() {
 		if _, ok := member.(*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan); ok {

@@ -2,10 +2,12 @@ package query
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	recordlayer "fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/query/logical"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -72,6 +74,22 @@ func logicalResultTypeWithCTEs(
 type cteRows struct {
 	types    map[*logical.CTEProducer]values.Type
 	registry logical.CTERegistry
+	// forDDL types an index definition, whose COUNT is not adjusted.
+	forDDL bool
+}
+
+// exactLogicalResultTypeFor is ExactLogicalResultType for a translator that
+// may be translating an index definition.
+func exactLogicalResultTypeFor(op logical.LogicalOperator, md *recordlayer.RecordMetaData, forDDL bool) (values.Type, error) {
+	env := cteRows{types: make(map[*logical.CTEProducer]values.Type), registry: logical.CTERegistry{}, forDDL: forDDL}
+	typ, err := deriveLogicalResultType(op, md, env, strictLogicalUnionResultType)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := values.SnapshotExactType(typ); err != nil {
+		return nil, fmt.Errorf("logical result type is not exact: %w", err)
+	}
+	return typ, nil
 }
 
 func exactLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordMetaData, env cteRows) (values.Type, error) {
@@ -83,6 +101,8 @@ func deriveLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordM
 		return nil, fmt.Errorf("cannot type a nil logical operator")
 	}
 	switch typed := op.(type) {
+	case *logical.LogicalSingleton:
+		return &values.RecordType{Fields: []values.Field{}}, nil
 	case *logical.LogicalFilter:
 		return deriveLogicalResultType(typed.Input, md, env, unionType)
 	case *logical.LogicalSort:
@@ -121,10 +141,21 @@ func deriveLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordM
 				aggregateInput = positionalInput
 			}
 		}
+		// An ungrouped query's COUNT is COALESCE(count, 0), as the translator
+		// builds it (adjustCountOnEmpty).
+		var ungrouped *logical.LogicalAggregate
+		if aggregateInput != nil && !env.forDDL {
+			if agg := logicalAggregateUnder(typed.Input); agg != nil && len(agg.GroupKeys) == 0 {
+				ungrouped = agg
+			}
+		}
 		fields := make([]values.Field, len(typed.ProjectedValues))
 		for i, projected := range typed.ProjectedValues {
 			var fieldType values.Type
 			if projected != nil {
+				if ungrouped != nil {
+					projected = adjustCountOnEmpty(projected)
+				}
 				fieldType = projected.Type()
 			} else if aggregateInput != nil {
 				ordinal := typed.AggregateOutputOrdinals[i]
@@ -132,6 +163,9 @@ func deriveLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordM
 					return nil, fmt.Errorf("projection result slot %d has no resolved computed value", i)
 				}
 				fieldType = aggregateInput.Fields[ordinal].FieldType
+				if ungrouped != nil && ordinal < len(ungrouped.Calls) && strings.EqualFold(ungrouped.Calls[ordinal].Func, "COUNT") {
+					fieldType = countOnEmpty(&values.ConstantValue{Typ: fieldType}).Type()
+				}
 			} else if positionalInput != nil {
 				ordinal := typed.InputOrdinals[i]
 				if ordinal < 0 || ordinal >= len(positionalInput.Fields) {
@@ -207,10 +241,8 @@ func deriveLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordM
 		if typed.AtAlias == "" {
 			return array.ElementType, nil
 		}
-		return &values.RecordType{Fields: []values.Field{
-			{Name: strings.ToUpper(typed.Alias), Ordinal: 0, FieldType: array.ElementType},
-			{Name: strings.ToUpper(typed.AtAlias), Ordinal: 1, FieldType: values.NotNullInt},
-		}}, nil
+		names := logical.UnnestOrdinalityNames(typed.Alias, typed.AtAlias)
+		return values.ExplodeOrdinalityResultTypeNamed(array.ElementType, names[0], names[1]), nil
 	case *logical.LogicalJoin:
 		left, err := deriveLogicalResultType(typed.Left, md, env, unionType)
 		if err != nil {
@@ -237,6 +269,21 @@ func deriveLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordM
 	case *logical.LogicalCTE:
 		env.registry = env.registry.With(typed.CTEProducer)
 		return deriveLogicalResultType(typed.Main, md, env, unionType)
+	case *logical.LogicalDelete:
+		// DeleteExpression flows its input's row.
+		return deriveLogicalResultType(typed.Input, md, env, unionType)
+	case *logical.LogicalUpdate:
+		// UpdateExpression flows the pair of the row before and the target
+		// record after the update.
+		old, err := deriveLogicalResultType(typed.Input, md, env, unionType)
+		if err != nil {
+			return nil, err
+		}
+		target, err := exactScanResultType(logical.NewScan(typed.Target, ""), md)
+		if err != nil {
+			return nil, err
+		}
+		return UpdateResultType(old, &values.RecordType{Fields: target.(*values.RecordType).Fields}), nil
 	}
 	return nil, fmt.Errorf("no exact logical result type for %T", op)
 }
@@ -266,13 +313,56 @@ func ExactLogicalOutputLabels(
 	md *recordlayer.RecordMetaData,
 	enclosing *logical.CTERegistry,
 ) ([]string, error) {
+	labels, err := ExactLogicalOutputLabelsAuthored(op, md, enclosing)
+	return OutputLabelNames(labels), err
+}
+
+// OutputLabel is one SQL name a logical row publishes, with its provenance.
+// Authored reports that the statement's SQL text wrote the name — a
+// SELECT-list `AS`, a CTE column list, an unnest's AS or AT alias — rather
+// than that it passes a descriptor's column name through. The semantic scope
+// resolves an authored name exactly (semantic.Column.SQLAuthored); only a
+// descriptor spelling takes the relaxed pass's fold.
+type OutputLabel struct {
+	Name     string
+	Authored bool
+}
+
+// OutputLabelNames is the names of labels, in order; nil for nil.
+func OutputLabelNames(labels []OutputLabel) []string {
+	if labels == nil {
+		return nil
+	}
+	names := make([]string, len(labels))
+	for i, label := range labels {
+		names[i] = label.Name
+	}
+	return names
+}
+
+// authoredLabels labels each of names as written by the statement.
+func authoredLabels(names []string) []OutputLabel {
+	labels := make([]OutputLabel, len(names))
+	for i, name := range names {
+		labels[i] = OutputLabel{Name: name, Authored: true}
+	}
+	return labels
+}
+
+// ExactLogicalOutputLabelsAuthored is ExactLogicalOutputLabels with each
+// label's provenance: the same walk, the same width.
+func ExactLogicalOutputLabelsAuthored(
+	op logical.LogicalOperator,
+	md *recordlayer.RecordMetaData,
+	enclosing *logical.CTERegistry,
+) ([]OutputLabel, error) {
 	registry := logical.CTERegistry{}
 	if enclosing != nil {
 		registry = *enclosing
 	}
 	env := &logicalLabelScope{
 		rows:   cteRows{types: make(map[*logical.CTEProducer]values.Type), registry: registry},
-		labels: make(map[*logical.CTEProducer][]string),
+		labels: make(map[*logical.CTEProducer][]OutputLabel),
 	}
 	return exactLogicalOutputLabels(op, md, env)
 }
@@ -282,14 +372,14 @@ func ExactLogicalOutputLabels(
 // label-only bindings must never manufacture an executable record type.
 type logicalLabelScope struct {
 	rows   cteRows
-	labels map[*logical.CTEProducer][]string
+	labels map[*logical.CTEProducer][]OutputLabel
 }
 
 func exactLogicalOutputLabels(
 	op logical.LogicalOperator,
 	md *recordlayer.RecordMetaData,
 	env *logicalLabelScope,
-) ([]string, error) {
+) ([]OutputLabel, error) {
 	if op == nil {
 		return nil, fmt.Errorf("cannot label a nil logical operator")
 	}
@@ -301,7 +391,7 @@ func exactLogicalOutputLabels(
 	case *logical.LogicalScan:
 		if producer := logical.ResolveScan(typed, rows.registry); producer != nil {
 			if labels, ok := env.labels[producer]; ok {
-				return append([]string(nil), labels...), nil
+				return append([]OutputLabel(nil), labels...), nil
 			}
 			bodyScope := *env
 			bodyScope.rows.registry = rows.registry.BodyScope(producer)
@@ -320,13 +410,16 @@ func exactLogicalOutputLabels(
 			if err != nil {
 				return nil, err
 			}
+			if producer.Recursive() {
+				labels = quantifierLabels(labels)
+			}
 			if aliases := producer.ColumnAliases(); len(aliases) > 0 {
 				if len(aliases) != len(labels) {
 					return nil, fmt.Errorf("CTE %q column list has %d names but its body flows %d columns", producer.Name(), len(aliases), len(labels))
 				}
-				labels = aliases
+				labels = authoredLabels(aliases)
 			}
-			env.labels[producer] = append([]string(nil), labels...)
+			env.labels[producer] = append([]OutputLabel(nil), labels...)
 			return labels, nil
 		}
 	case *logical.LogicalProject:
@@ -339,14 +432,18 @@ func exactLogicalOutputLabels(
 			if len(typed.SQLNames) != len(typed.Projections) {
 				return nil, fmt.Errorf("projection has %d semantic names for %d slots", len(typed.SQLNames), len(typed.Projections))
 			}
-			return append([]string(nil), typed.SQLNames...), nil
+			labels := make([]OutputLabel, len(typed.SQLNames))
+			for i, name := range typed.SQLNames {
+				labels[i] = OutputLabel{Name: name, Authored: name != "" && projectionSlotAuthored(typed, i)}
+			}
+			return labels, nil
 		}
-		labels := make([]string, len(typed.Projections))
+		labels := make([]OutputLabel, len(typed.Projections))
 		for i := range typed.Projections {
 			if i < len(typed.IsComputed) && typed.IsComputed[i] && (i >= len(typed.Aliases) || typed.Aliases[i] == "") {
 				continue // an unnamed expression's physical key is not a SQL name
 			}
-			labels[i] = projectionSlotSQLName(typed, i)
+			labels[i] = OutputLabel{Name: projectionSlotSQLName(typed, i), Authored: projectionSlotAuthored(typed, i)}
 		}
 		return labels, nil
 	case *logical.LogicalFilter:
@@ -375,11 +472,15 @@ func exactLogicalOutputLabels(
 		if err != nil {
 			return nil, err
 		}
-		return append(append(make([]string, 0, len(left)+len(right)), left...), right...), nil
+		return append(append(make([]OutputLabel, 0, len(left)+len(right)), left...), right...), nil
 	case *logical.LogicalCTE:
 		nested := *env
 		nested.rows.registry = rows.registry.With(typed.CTEProducer)
 		return exactLogicalOutputLabels(typed.Main, md, &nested)
+	case *logical.LogicalDelete:
+		return exactLogicalOutputLabels(typed.Input, md, env)
+	case *logical.LogicalUpdate:
+		return []OutputLabel{{Name: "old", Authored: true}, {Name: "new", Authored: true}}, nil
 	}
 	// Every other node's exact row already carries its own labels: a
 	// projection's are its aliases, a scan's are its stored column names, an
@@ -397,7 +498,7 @@ func exactLogicalLegLabels(
 	op logical.LogicalOperator,
 	md *recordlayer.RecordMetaData,
 	env *logicalLabelScope,
-) ([]string, error) {
+) ([]OutputLabel, error) {
 	// An UNNEST publishes its AS/AT columns rather than its whole element row.
 	// Every other leg uses the same label walk, including pending CTE types
 	// behind transparent wrappers and duplicate names in derived projections.
@@ -410,30 +511,31 @@ func exactLogicalLegLabels(
 // legLabelsForType is logicalLegFields' naming rule with the qualifier left
 // off. A scalar leg still contributes exactly one column named for its source,
 // which is the label SQL gives it.
-func legLabelsForType(op logical.LogicalOperator, typ values.Type) ([]string, error) {
+func legLabelsForType(op logical.LogicalOperator, typ values.Type) ([]OutputLabel, error) {
 	if unnest, ok := op.(*logical.LogicalUnnest); ok {
 		fields := boundUnnestLegColumns(unnest)
 		if fields == nil {
 			return nil, fmt.Errorf("lateral source has no exact bound output labels")
 		}
 		// SQL labels may repeat even though the physical slots have unique keys.
-		labels := make([]string, 0, len(fields))
+		// Both are the statement's own aliases.
+		labels := make([]OutputLabel, 0, len(fields))
 		if unnest.Alias != "" {
-			labels = append(labels, unnest.Alias)
+			labels = append(labels, OutputLabel{Name: unnest.Alias, Authored: true})
 		}
 		if unnest.AtAlias != "" {
-			labels = append(labels, unnest.AtAlias)
+			labels = append(labels, OutputLabel{Name: unnest.AtAlias, Authored: true})
 		}
 		return labels, nil
 	}
 	if record, ok := typ.(*values.RecordType); ok {
-		labels := make([]string, len(record.Fields))
+		labels := make([]OutputLabel, len(record.Fields))
 		for i, field := range record.Fields {
 			// The row's own field names, VERBATIM. These labels are published
 			// as a derived source's columns, and a reference resolves against
 			// them; folding here registered a column under a name the row
 			// flowing beneath it does not carry.
-			labels[i] = field.Name
+			labels[i] = OutputLabel{Name: field.Name}
 		}
 		return labels, nil
 	}
@@ -441,22 +543,22 @@ func legLabelsForType(op logical.LogicalOperator, typ values.Type) ([]string, er
 	if alias == "" {
 		return nil, fmt.Errorf("scalar logical leg %T has no source alias", op)
 	}
-	return []string{alias}, nil
+	return []OutputLabel{{Name: alias}}, nil
 }
 
-func rowLabels(typ values.Type, op logical.LogicalOperator) ([]string, error) {
+func rowLabels(typ values.Type, op logical.LogicalOperator) ([]OutputLabel, error) {
 	record, ok := typ.(*values.RecordType)
 	if !ok {
 		alias := strings.ToUpper(sourceAlias(op))
 		if alias == "" {
 			return nil, fmt.Errorf("scalar logical row %T has no source alias", op)
 		}
-		return []string{alias}, nil
+		return []OutputLabel{{Name: alias}}, nil
 	}
-	labels := make([]string, len(record.Fields))
+	labels := make([]OutputLabel, len(record.Fields))
 	for i, field := range record.Fields {
 		// Verbatim, for the same reason as legLabelsForType above it.
-		labels[i] = field.Name
+		labels[i] = OutputLabel{Name: field.Name}
 	}
 	return labels, nil
 }
@@ -513,6 +615,11 @@ func exactLogicalAggregateCallType(aggregate *logical.LogicalAggregate, index in
 			return nil, fmt.Errorf("aggregate call %d has no exact operand type", index)
 		}
 		return values.WithNullability(aggregate.AggregateOperands[index].Type(), true), nil
+	case "ARRAY_AGG":
+		if index >= len(aggregate.AggregateOperands) || aggregate.AggregateOperands[index] == nil {
+			return nil, fmt.Errorf("aggregate call %d has no exact operand type", index)
+		}
+		return values.NewArrayAggValue(aggregate.AggregateOperands[index], call.IgnoreNulls, call.Limit).Type(), nil
 	default:
 		return nil, fmt.Errorf("aggregate call %d uses unsupported function %q", index, call.Func)
 	}
@@ -698,6 +805,12 @@ func projectionSlotSQLName(typed *logical.LogicalProject, i int) string {
 	return name
 }
 
+// projectionSlotAuthored reports slot i's recorded name provenance
+// (LogicalProject.SQLNameAuthored). An unrecorded slot is not authored.
+func projectionSlotAuthored(typed *logical.LogicalProject, i int) bool {
+	return i < len(typed.SQLNameAuthored) && typed.SQLNameAuthored[i]
+}
+
 // deriveCTEProducerType follows the same retained source as translation. The
 // temporary recursive row is scoped by producer identity, never by SQL name.
 func deriveCTEProducerType(producer *logical.CTEProducer, md *recordlayer.RecordMetaData, env cteRows, unionType logicalUnionTypeDeriver) (values.Type, error) {
@@ -723,12 +836,30 @@ func deriveCTEProducerType(producer *logical.CTEProducer, md *recordlayer.Record
 				if err != nil {
 					return nil, err
 				}
-				row, err := cteBoundRowType(seed, producer)
+				// Every iteration keeps the seed's row: a self-reference reads
+				// it under the seed's own names, and the column list renames
+				// only what consumers outside the body see (Java's
+				// handleRecursiveNamedQuery types the temporary table by the
+				// seed). Later legs are fitted to it when written, so their
+				// types only need the seed's width.
+				seed, err = quantifierNamedRow(branch, seed, md, env)
 				if err != nil {
 					return nil, err
 				}
-				env.types[producer] = row
-				break
+				env.types[producer] = seed
+				seedRecord, isRecord := seed.(*values.RecordType)
+				for _, leg := range union.Inputs {
+					legType, err := deriveLogicalResultType(leg, md, env, unionType)
+					if err != nil {
+						return nil, err
+					}
+					legRecord, legIsRecord := legType.(*values.RecordType)
+					if !isRecord || !legIsRecord || len(legRecord.Fields) != len(seedRecord.Fields) {
+						return nil, api.NewError(api.ErrCodeUnionIncorrectColumnCount,
+							"UNION legs do not have the same number of columns")
+					}
+				}
+				return cteBoundRowType(seed, producer)
 			}
 		}
 	}
@@ -737,4 +868,64 @@ func deriveCTEProducerType(producer *logical.CTEProducer, md *recordlayer.Record
 		return nil, err
 	}
 	return cteBoundRowType(body, producer)
+}
+
+// quantifierLabels renames labels as a quantifier's row names them
+// (QuantifierColumnNames); a renamed column's name is the statement's.
+func quantifierLabels(labels []OutputLabel) []OutputLabel {
+	names := QuantifierColumnNames(OutputLabelNames(labels))
+	var renamed []OutputLabel
+	for i, label := range labels {
+		if names[i] == label.Name {
+			continue
+		}
+		if renamed == nil {
+			renamed = append([]OutputLabel(nil), labels...)
+		}
+		renamed[i] = OutputLabel{Name: names[i], Authored: true}
+	}
+	if renamed == nil {
+		return labels
+	}
+	return renamed
+}
+
+// quantifierNamedRow is a recursive CTE's seed row as Java's union quantifier
+// flows it: its fields named by QuantifierColumnNames over the seed's labels.
+func quantifierNamedRow(seedBranch logical.LogicalOperator, seed values.Type, md *recordlayer.RecordMetaData, env cteRows) (values.Type, error) {
+	record, ok := seed.(*values.RecordType)
+	if !ok {
+		return seed, nil
+	}
+	labels, err := exactLogicalOutputLabels(seedBranch, md, &logicalLabelScope{
+		rows: env, labels: make(map[*logical.CTEProducer][]OutputLabel),
+	})
+	if err != nil || len(labels) != len(record.Fields) {
+		return seed, nil
+	}
+	names := QuantifierColumnNames(OutputLabelNames(labels))
+	if slices.Equal(names, OutputLabelNames(labels)) {
+		return seed, nil
+	}
+	fields := append([]values.Field(nil), record.Fields...)
+	for i := range fields {
+		fields[i].Name = names[i]
+		fields[i].Ordinal = i
+	}
+	return &values.RecordType{
+		RecordName: record.RecordName,
+		Nullable:   record.Nullable,
+		Fields:     fields,
+		Legs:       append([]values.RecordTypeLeg(nil), record.Legs...),
+	}, nil
+}
+
+// UpdateResultType is UpdateExpression's row: "old", the row before the
+// update, and "new", the target record after it, nullable as Java's
+// Type.Record.fromFields target type is.
+func UpdateResultType(old, target values.Type) *values.RecordType {
+	return &values.RecordType{Fields: []values.Field{
+		{Name: "old", Ordinal: 0, FieldType: old},
+		{Name: "new", Ordinal: 1, FieldType: values.WithNullability(target, true)},
+	}}
 }

@@ -47,7 +47,7 @@ GinkgoWriter.Printf("CORPUS[%s] = %s\n", c.Query.Name, string(bs))
 ```
 
 ```sh
-bazelisk test //conformance:conformance_test \
+bazelisk test //conformance:conformance_corpora_test \
   --test_arg="--ginkgo.focus=SeedRunCorpus" \
   --test_output=streamed --test_timeout=300 \
   --nocache_test_results \
@@ -80,14 +80,14 @@ If your shape DOES work but ordering is non-deterministic, add `ORDER BY
 ## Running the harness locally
 
 ```sh
-# All RunSql Harness specs:
-bazelisk test //conformance:conformance_test \
+# All RunSql Harness specs (their own target, conformance_corpora_test):
+bazelisk test //conformance:conformance_corpora_test \
   --test_arg="--ginkgo.focus=RunSql Harness" \
   --test_output=streamed --test_timeout=300 \
   --nocache_test_results
 
 # Just the corpus driver:
-bazelisk test //conformance:conformance_test \
+bazelisk test //conformance:conformance_corpora_test \
   --test_arg="--ginkgo.focus=SeedRunCorpus" \
   --test_output=streamed --test_timeout=300 \
   --nocache_test_results

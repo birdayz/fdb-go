@@ -47,7 +47,7 @@ func TestFDB_ArithmeticIndex_IsNotYetMatchable(t *testing.T) {
 		CREATE INDEX i_a1 AS SELECT a + 1 FROM t`)
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_arithmatch/s1 WITH TEMPLATE arithmatch_tpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_arithmatch?cluster_file=%s&schema=s1", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_ARITHMATCH?cluster_file=%s&schema=S1", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

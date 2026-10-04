@@ -39,11 +39,10 @@ import (
 // in this package exists to prevent, and it would silently exclude the next
 // fang-rendered binary someone adds.
 //
-// Scope matters in both directions. `cmd/test-budget` and
-// `cmd/verify-corpus-retirement-history` print errors straight to stderr with
-// no renderer, and their messages lead with a `flag`-package flag name
-// (`-timeouts`) — which is correct there, and would be a false positive under
-// a blanket `cmd/` scan.
+// Scope matters in both directions. `cmd/test-budget` prints errors straight to
+// stderr with no renderer, and its messages lead with a `flag`-package flag
+// name (`-timeouts`) — which is correct there, and would be a false positive
+// under a blanket `cmd/` scan.
 const fangModulePath = "charm.land/fang"
 
 // TestFangTitleCasesMangleALeadingFlag pins the upstream behaviour the gate

@@ -233,6 +233,12 @@ func (s *BaseRelationalParserListener) EnterVectorIndexDefinition(ctx *VectorInd
 // ExitVectorIndexDefinition is called when production vectorIndexDefinition is exited.
 func (s *BaseRelationalParserListener) ExitVectorIndexDefinition(ctx *VectorIndexDefinitionContext) {}
 
+// EnterVectorEngine is called when production vectorEngine is entered.
+func (s *BaseRelationalParserListener) EnterVectorEngine(ctx *VectorEngineContext) {}
+
+// ExitVectorEngine is called when production vectorEngine is exited.
+func (s *BaseRelationalParserListener) ExitVectorEngine(ctx *VectorEngineContext) {}
+
 // EnterIndexColumnList is called when production indexColumnList is entered.
 func (s *BaseRelationalParserListener) EnterIndexColumnList(ctx *IndexColumnListContext) {}
 
@@ -287,6 +293,14 @@ func (s *BaseRelationalParserListener) EnterVectorIndexOption(ctx *VectorIndexOp
 // ExitVectorIndexOption is called when production vectorIndexOption is exited.
 func (s *BaseRelationalParserListener) ExitVectorIndexOption(ctx *VectorIndexOptionContext) {}
 
+// EnterVectorIndexOptionValue is called when production vectorIndexOptionValue is entered.
+func (s *BaseRelationalParserListener) EnterVectorIndexOptionValue(ctx *VectorIndexOptionValueContext) {
+}
+
+// ExitVectorIndexOptionValue is called when production vectorIndexOptionValue is exited.
+func (s *BaseRelationalParserListener) ExitVectorIndexOptionValue(ctx *VectorIndexOptionValueContext) {
+}
+
 // EnterHnswMetric is called when production hnswMetric is entered.
 func (s *BaseRelationalParserListener) EnterHnswMetric(ctx *HnswMetricContext) {}
 
@@ -322,6 +336,25 @@ func (s *BaseRelationalParserListener) EnterViewDefinition(ctx *ViewDefinitionCo
 
 // ExitViewDefinition is called when production viewDefinition is exited.
 func (s *BaseRelationalParserListener) ExitViewDefinition(ctx *ViewDefinitionContext) {}
+
+// EnterStoredQueryDefinition is called when production storedQueryDefinition is entered.
+func (s *BaseRelationalParserListener) EnterStoredQueryDefinition(ctx *StoredQueryDefinitionContext) {
+}
+
+// ExitStoredQueryDefinition is called when production storedQueryDefinition is exited.
+func (s *BaseRelationalParserListener) ExitStoredQueryDefinition(ctx *StoredQueryDefinitionContext) {}
+
+// EnterDeclareBlock is called when production declareBlock is entered.
+func (s *BaseRelationalParserListener) EnterDeclareBlock(ctx *DeclareBlockContext) {}
+
+// ExitDeclareBlock is called when production declareBlock is exited.
+func (s *BaseRelationalParserListener) ExitDeclareBlock(ctx *DeclareBlockContext) {}
+
+// EnterDeclaredFunction is called when production declaredFunction is entered.
+func (s *BaseRelationalParserListener) EnterDeclaredFunction(ctx *DeclaredFunctionContext) {}
+
+// ExitDeclaredFunction is called when production declaredFunction is exited.
+func (s *BaseRelationalParserListener) ExitDeclaredFunction(ctx *DeclaredFunctionContext) {}
 
 // EnterTempSqlInvokedFunction is called when production tempSqlInvokedFunction is entered.
 func (s *BaseRelationalParserListener) EnterTempSqlInvokedFunction(ctx *TempSqlInvokedFunctionContext) {
@@ -460,31 +493,13 @@ func (s *BaseRelationalParserListener) EnterStatementBody(ctx *StatementBodyCont
 // ExitStatementBody is called when production statementBody is exited.
 func (s *BaseRelationalParserListener) ExitStatementBody(ctx *StatementBodyContext) {}
 
-// EnterUserDefinedScalarFunctionStatementBody is called when production userDefinedScalarFunctionStatementBody is entered.
-func (s *BaseRelationalParserListener) EnterUserDefinedScalarFunctionStatementBody(ctx *UserDefinedScalarFunctionStatementBodyContext) {
+// EnterUserDefinedMacroFunctionStatementBody is called when production userDefinedMacroFunctionStatementBody is entered.
+func (s *BaseRelationalParserListener) EnterUserDefinedMacroFunctionStatementBody(ctx *UserDefinedMacroFunctionStatementBodyContext) {
 }
 
-// ExitUserDefinedScalarFunctionStatementBody is called when production userDefinedScalarFunctionStatementBody is exited.
-func (s *BaseRelationalParserListener) ExitUserDefinedScalarFunctionStatementBody(ctx *UserDefinedScalarFunctionStatementBodyContext) {
+// ExitUserDefinedMacroFunctionStatementBody is called when production userDefinedMacroFunctionStatementBody is exited.
+func (s *BaseRelationalParserListener) ExitUserDefinedMacroFunctionStatementBody(ctx *UserDefinedMacroFunctionStatementBodyContext) {
 }
-
-// EnterExpressionBody is called when production expressionBody is entered.
-func (s *BaseRelationalParserListener) EnterExpressionBody(ctx *ExpressionBodyContext) {}
-
-// ExitExpressionBody is called when production expressionBody is exited.
-func (s *BaseRelationalParserListener) ExitExpressionBody(ctx *ExpressionBodyContext) {}
-
-// EnterSqlReturnStatement is called when production sqlReturnStatement is entered.
-func (s *BaseRelationalParserListener) EnterSqlReturnStatement(ctx *SqlReturnStatementContext) {}
-
-// ExitSqlReturnStatement is called when production sqlReturnStatement is exited.
-func (s *BaseRelationalParserListener) ExitSqlReturnStatement(ctx *SqlReturnStatementContext) {}
-
-// EnterReturnValue is called when production returnValue is entered.
-func (s *BaseRelationalParserListener) EnterReturnValue(ctx *ReturnValueContext) {}
-
-// ExitReturnValue is called when production returnValue is exited.
-func (s *BaseRelationalParserListener) ExitReturnValue(ctx *ReturnValueContext) {}
 
 // EnterCharSet is called when production charSet is entered.
 func (s *BaseRelationalParserListener) EnterCharSet(ctx *CharSetContext) {}
@@ -570,11 +585,13 @@ func (s *BaseRelationalParserListener) EnterTableFunction(ctx *TableFunctionCont
 // ExitTableFunction is called when production tableFunction is exited.
 func (s *BaseRelationalParserListener) ExitTableFunction(ctx *TableFunctionContext) {}
 
-// EnterTableFunctionArgs is called when production tableFunctionArgs is entered.
-func (s *BaseRelationalParserListener) EnterTableFunctionArgs(ctx *TableFunctionArgsContext) {}
+// EnterNamedOrUnnamedFunctionArgs is called when production namedOrUnnamedFunctionArgs is entered.
+func (s *BaseRelationalParserListener) EnterNamedOrUnnamedFunctionArgs(ctx *NamedOrUnnamedFunctionArgsContext) {
+}
 
-// ExitTableFunctionArgs is called when production tableFunctionArgs is exited.
-func (s *BaseRelationalParserListener) ExitTableFunctionArgs(ctx *TableFunctionArgsContext) {}
+// ExitNamedOrUnnamedFunctionArgs is called when production namedOrUnnamedFunctionArgs is exited.
+func (s *BaseRelationalParserListener) ExitNamedOrUnnamedFunctionArgs(ctx *NamedOrUnnamedFunctionArgsContext) {
+}
 
 // EnterTableFunctionName is called when production tableFunctionName is entered.
 func (s *BaseRelationalParserListener) EnterTableFunctionName(ctx *TableFunctionNameContext) {}
@@ -813,17 +830,17 @@ func (s *BaseRelationalParserListener) EnterLimitClauseAtom(ctx *LimitClauseAtom
 // ExitLimitClauseAtom is called when production limitClauseAtom is exited.
 func (s *BaseRelationalParserListener) ExitLimitClauseAtom(ctx *LimitClauseAtomContext) {}
 
-// EnterQueryOptions is called when production queryOptions is entered.
-func (s *BaseRelationalParserListener) EnterQueryOptions(ctx *QueryOptionsContext) {}
+// EnterStatementOptions is called when production statementOptions is entered.
+func (s *BaseRelationalParserListener) EnterStatementOptions(ctx *StatementOptionsContext) {}
 
-// ExitQueryOptions is called when production queryOptions is exited.
-func (s *BaseRelationalParserListener) ExitQueryOptions(ctx *QueryOptionsContext) {}
+// ExitStatementOptions is called when production statementOptions is exited.
+func (s *BaseRelationalParserListener) ExitStatementOptions(ctx *StatementOptionsContext) {}
 
-// EnterQueryOption is called when production queryOption is entered.
-func (s *BaseRelationalParserListener) EnterQueryOption(ctx *QueryOptionContext) {}
+// EnterStatementOption is called when production statementOption is entered.
+func (s *BaseRelationalParserListener) EnterStatementOption(ctx *StatementOptionContext) {}
 
-// ExitQueryOption is called when production queryOption is exited.
-func (s *BaseRelationalParserListener) ExitQueryOption(ctx *QueryOptionContext) {}
+// ExitStatementOption is called when production statementOption is exited.
+func (s *BaseRelationalParserListener) ExitStatementOption(ctx *StatementOptionContext) {}
 
 // EnterStartTransaction is called when production startTransaction is entered.
 func (s *BaseRelationalParserListener) EnterStartTransaction(ctx *StartTransactionContext) {}
@@ -1520,6 +1537,18 @@ func (s *BaseRelationalParserListener) EnterAggregateWindowedFunction(ctx *Aggre
 // ExitAggregateWindowedFunction is called when production aggregateWindowedFunction is exited.
 func (s *BaseRelationalParserListener) ExitAggregateWindowedFunction(ctx *AggregateWindowedFunctionContext) {
 }
+
+// EnterNullTreatmentClause is called when production nullTreatmentClause is entered.
+func (s *BaseRelationalParserListener) EnterNullTreatmentClause(ctx *NullTreatmentClauseContext) {}
+
+// ExitNullTreatmentClause is called when production nullTreatmentClause is exited.
+func (s *BaseRelationalParserListener) ExitNullTreatmentClause(ctx *NullTreatmentClauseContext) {}
+
+// EnterAggregateLimitClause is called when production aggregateLimitClause is entered.
+func (s *BaseRelationalParserListener) EnterAggregateLimitClause(ctx *AggregateLimitClauseContext) {}
+
+// ExitAggregateLimitClause is called when production aggregateLimitClause is exited.
+func (s *BaseRelationalParserListener) ExitAggregateLimitClause(ctx *AggregateLimitClauseContext) {}
 
 // EnterNonAggregateWindowedFunction is called when production nonAggregateWindowedFunction is entered.
 func (s *BaseRelationalParserListener) EnterNonAggregateWindowedFunction(ctx *NonAggregateWindowedFunctionContext) {

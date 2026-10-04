@@ -510,7 +510,7 @@ func distinctUnionProjectedLeg(constant int64) *expressions.Reference {
 	projectionQ := expressions.ForEachQuantifier(scanRef)
 	projectionRoot := mustDistinctUnionConstruct(projectionQ.RequireFlowedObjectValue())
 	id := mustDistinctUnionConstruct(values.ResolveFieldOrdinals(projectionRoot, []int{0}))
-	projection := mustDistinctUnionConstruct(plans.NewRecordQueryProjectionPlanFromQuantifier(
+	projection := mustDistinctUnionConstruct(newProjectionMapFromQuantifierForTest(
 		[]values.Value{id, &values.ConstantValue{Value: constant, Typ: values.NotNullLong}},
 		[]string{"ID", "V"},
 		projectionQ))
@@ -560,7 +560,7 @@ func TestImplementDistinctUnionRule_FetchDoesNotRestoreProjectedRows(t *testing.
 
 	fetchLeg := func(constant int64) *expressions.Reference {
 		projectionRef := distinctUnionProjectedLeg(constant)
-		projection := projectionRef.FinalMembers()[0].(*plans.RecordQueryProjectionPlan)
+		projection := projectionRef.FinalMembers()[0].(*plans.RecordQueryMapPlan)
 		resultType := projection.GetResultType()
 		fetch := mustDistinctUnionConstruct(plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
 			expressions.ForEachQuantifier(projectionRef),
@@ -603,7 +603,7 @@ func TestMergeDistinctStoredRecordIdentity_RejectsPlannerIdentityRowWrappers(t *
 
 	projectionQ := expressions.ForEachQuantifier(scanRef)
 	projectionRoot := mustDistinctUnionConstruct(projectionQ.RequireFlowedObjectValue())
-	if projection, err := plans.NewRecordQueryProjectionPlanFromQuantifier(
+	if projection, err := newProjectionMapFromQuantifierForTest(
 		[]values.Value{projectionRoot}, nil, projectionQ,
 	); !errors.Is(err, values.ErrWholeRowProjection) || projection != nil {
 		t.Fatalf("whole-row identity Projection = (%#v, %v), want constructor rejection", projection, err)

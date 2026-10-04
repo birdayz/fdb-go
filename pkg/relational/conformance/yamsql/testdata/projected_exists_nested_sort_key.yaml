@@ -129,7 +129,9 @@ tests:
       SELECT id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h
       FROM t1 ORDER BY id
     plan_contains: "FlatMap(outer=Scan(T1), inner=FirstOrDefault("
-    plan_not_contains: "Project("
+    # A cleanup projection renders its field list; the FlatMap returning the
+    # row renders none.
+    plan_not_contains: "{ID:"
     rows:
       - [1, true]
       - [2, false]

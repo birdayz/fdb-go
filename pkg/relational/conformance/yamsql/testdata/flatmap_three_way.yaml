@@ -12,13 +12,14 @@ setup:
   - INSERT INTO stores VALUES (10, 1, 'Store_A'), (20, 1, 'Store_B'), (30, 2, 'Store_C')
   - INSERT INTO products VALUES (100, 10, 'Widget', 5), (101, 10, 'Gadget', 10), (200, 20, 'Doohickey', 15), (300, 30, 'Thingamajig', 20)
 tests:
-  # Three-way join: regions → stores → products
+  # Three-way join: regions → stores → products. The chain nests to the right,
+  # each probe the inner of the FlatMap over the leg it reads.
   - query: >
       SELECT r.name, s.name, p.name
       FROM regions r, stores s, products p
       WHERE s.region_id = r.id AND p.store_id = s.id
       ORDER BY r.name, s.name, p.name
-    plan_contains: "FlatMap(outer=FlatMap("
+    plan_contains: "inner=FlatMap(outer=Scan(STORES, [=]), inner=Scan(REGIONS, [=]))"
     plan_not_contains: "NestedLoopJoin"
     rows:
       - ["North", "Store_A", "Gadget"]

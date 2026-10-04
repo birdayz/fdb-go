@@ -120,7 +120,7 @@ func TestFDB_CoveringFloatRowDomain(t *testing.T) {
 			"CREATE INDEX af_idx ON t (a, f)")
 
 	if _, err := db.ExecContext(ctx,
-		"INSERT INTO t (id, a, f) VALUES (1, 1, 10.5), (2, 1, 2.5), (3, 1, 3.5)"); err != nil {
+		"INSERT INTO t (id, a, f) VALUES (1, 1, CAST(10.5 AS FLOAT)), (2, 1, CAST(2.5 AS FLOAT)), (3, 1, CAST(3.5 AS FLOAT))"); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 

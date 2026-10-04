@@ -82,10 +82,10 @@ var _ = Describe("RecordCountRollup", func() {
 
 			// The per-group reads are the other direction: an empty count key must
 			// not start summing when the value names one group.
-			orders, err := store.GetSnapshotRecordCountForRecordType("Order")
+			orders, err := countKeyGroupForType(store, "Order")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(orders).To(Equal(int64(7)))
-			customers, err := store.GetSnapshotRecordCountForRecordType("Customer")
+			customers, err := countKeyGroupForType(store, "Customer")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(customers).To(Equal(int64(4)))
 
@@ -351,6 +351,7 @@ var _ = Describe("RecordCountRollup", func() {
 					TupleRangeAll, IsolationLevelSnapshot)
 				Expect(errors.As(err, new(*MetaDataError))).To(BeTrue(),
 					"an unknown record type is Java's getIndexableRecordType throw, not an empty candidate list: %v", err)
+				Expect(err).To(MatchError("Unknown record type NoSuchType"))
 
 				return nil, nil
 			})

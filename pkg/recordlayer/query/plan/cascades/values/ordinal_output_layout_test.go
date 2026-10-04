@@ -401,3 +401,72 @@ func TestRetainedWholeObjectPublishesTwoLevelExactWindows(t *testing.T) {
 		t.Fatalf("mismatched leaf LayoutProvides = (%t, %v), want (false, error)", provided, provideErr)
 	}
 }
+
+// A source buried in a retained box lies within the box's window; a sibling
+// retained source does not, and a window is not within itself.
+func TestLayoutWindowWithinRecognizesBuriedBoxLegs(t *testing.T) {
+	t.Parallel()
+
+	legA := NamedCorrelationIdentifier("A")
+	legD := NamedCorrelationIdentifier("D")
+	boxType := &RecordType{Fields: []Field{
+		{Name: "ID", Ordinal: 0, FieldType: NullableLong},
+		{Name: "BID", Ordinal: 1, FieldType: NullableLong},
+	}, Legs: []RecordTypeLeg{
+		NewRecordTypeLeg(LegKindFlatRun, legA, "A", 0, 1),
+		NewRecordTypeLeg(LegKindFlatRun, legD, "D", 1, 1),
+	}}
+	box, err := NewQuantifiedObjectValue(NamedCorrelationIdentifier("BOX"), boxType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := NewQuantifiedObjectValue(NamedCorrelationIdentifier("C"), &RecordType{Fields: []Field{
+		{Name: "ID", Ordinal: 0, FieldType: NullableLong},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields []RecordConstructorField
+	for _, root := range []QuantifiedObjectValue{box, other} {
+		for i, f := range root.FlowedType().(*RecordType).Fields {
+			field, resolveErr := ResolveFieldOrdinals(root, []int{i})
+			if resolveErr != nil {
+				t.Fatal(resolveErr)
+			}
+			fields = append(fields, RecordConstructorField{Name: f.Name, Value: field})
+		}
+	}
+	layout, err := NewFlatOrdinalLayoutForRetainedResult(NewRawRecordConstructorValue(fields...), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceOf := func(correlation CorrelationIdentifier) QuantifiedObjectValue {
+		t.Helper()
+		for _, source := range layout.WindowSources() {
+			if source.Correlation() == correlation {
+				return source
+			}
+		}
+		t.Fatalf("layout has no %s window", correlation.Name())
+		return nil
+	}
+	for _, tc := range []struct {
+		source, parent QuantifiedObjectValue
+		want           bool
+	}{
+		{sourceOf(legA), box, true},
+		{sourceOf(legD), box, true},
+		{other, box, false},
+		{sourceOf(legA), other, false},
+		{box, box, false},
+	} {
+		got, err := LayoutWindowWithin(layout, tc.source, tc.parent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != tc.want {
+			t.Errorf("LayoutWindowWithin(%s, %s) = %t, want %t",
+				tc.source.Correlation().Name(), tc.parent.Correlation().Name(), got, tc.want)
+		}
+	}
+}

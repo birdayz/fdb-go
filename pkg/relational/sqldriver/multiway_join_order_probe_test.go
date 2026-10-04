@@ -44,7 +44,7 @@ func TestFDB_MultiwayJoinOrder_Probe(t *testing.T) {
 			"CREATE INDEX t3_by_t2 ON t3 (t2_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_mwjo/s WITH TEMPLATE mwjo_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_mwjo?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_MWJO?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -67,29 +67,18 @@ func TestFDB_MultiwayJoinOrder_Probe(t *testing.T) {
 	planBig := planExplain(qBigFirst)
 	planSmall := planExplain(qSmallFirst)
 
-	// (a) Order-invariance OF THE ACCESS PATH — the part below the top
-	// projection. The projection cannot be order-invariant and must not be
-	// asked to: it addresses the merged row by ORDINAL, and the merged row is
-	// laid out in FROM order, so t1.id is slot 4 of
-	// [T3.ID, T3.T2_ID, T2.ID, T2.T1_ID, T1.ID] and slot 0 of
-	// [T1.ID, T2.ID, T2.T1_ID, T3.ID, T3.T2_ID]. Both read t1.id.
-	bigSlots, bigPath := splitTopProjection(planBig)
-	smallSlots, smallPath := splitTopProjection(planSmall)
-	if bigPath != smallPath {
+	// (a) Order-invariance: the query block is one select with the join, so
+	// the whole plan is the access path.
+	if planBig != planSmall {
 		t.Errorf("MULTI-WAY ORDERING: access path depends on FROM-order (not cost-based reordering):\n big-first:   %s\n small-first: %s", planBig, planSmall)
 	}
-	if bigSlots != "_current.ID#4" {
-		t.Errorf("FROM t3, t2, t1 projects %q, want _current.ID#4 — t1.id is the last "+
-			"slot of the merged row [T3.ID, T3.T2_ID, T2.ID, T2.T1_ID, T1.ID]\n  %s",
-			bigSlots, planBig)
-	}
-	if smallSlots != "_current.ID#0" {
-		t.Errorf("FROM t1, t2, t3 projects %q, want _current.ID#0 — t1.id is the first "+
-			"slot of the merged row [T1.ID, T2.ID, T2.T1_ID, T3.ID, T3.T2_ID]\n  %s",
-			smallSlots, planSmall)
+	// The query block is one select with the join, so the join's own result
+	// is the projection: no Map reads the merged row by ordinal. What the
+	// projection reads is checked on the rows below.
+	if strings.HasPrefix(planBig, "Map(") || strings.HasPrefix(planSmall, "Map(") {
+		t.Errorf("a projection sits over the merged row:\n big-first:   %s\n small-first: %s", planBig, planSmall)
 	}
 
-	// (b) Cost-optimal.
 	for _, p := range []string{planBig, planSmall} {
 		up := strings.ToUpper(p)
 		if strings.Contains(up, "SCAN(T3)") {
@@ -167,7 +156,7 @@ func TestFDB_NestedJoinUnqualifiedProjection(t *testing.T) {
 			"CREATE INDEX t3_by_t2 ON t3 (t2_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nestproj/s WITH TEMPLATE nestproj_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_nestproj?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_NESTPROJ?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

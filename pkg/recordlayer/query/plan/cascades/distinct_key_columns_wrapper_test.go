@@ -63,7 +63,7 @@ func TestDistinctKeyColumns_WrapperOverProjection(t *testing.T) {
 
 	// A projection narrowing 3 columns to 1, renamed. If any consumer reads the
 	// SCAN's row instead of the projection's, it sees 3 fields named ID/A/B.
-	proj, err := plans.NewRecordQueryProjectionPlanWithAliases(
+	proj, err := newProjectionMapForTest(
 		[]values.Value{projectedA},
 		[]string{"RENAMED"}, scan)
 	proj = mustConstruct(t, proj, err)
@@ -171,5 +171,32 @@ func TestTypeUnstated_CatchesTheNonNullableUnknown(t *testing.T) {
 				"leg's type. Both are wrong-row risks, which is why this is a predicate "+
 				"and not a pointer comparison.", tc.name, got, tc.want)
 		}
+	}
+}
+
+// A block's Map states its dedup key as its record constructor's columns, in
+// slot order, read from the scanned row: what lets a secondary unique index's
+// key columns be found among them.
+func TestDistinctKeyColumns_MapStatesItsColumns(t *testing.T) {
+	t.Parallel()
+	scanRow := values.NewRecordType("", true, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "EMAIL", FieldType: values.NullableString, Ordinal: 1},
+		{Name: "PAYLOAD", FieldType: values.NotNullString, Ordinal: 2},
+	})
+	scan, err := plans.NewRecordQueryScanPlan([]string{"T"}, scanRow, false)
+	scan = mustConstruct(t, scan, err)
+	payload, err := values.ResolveFieldOrdinals(scan.GetResultValue(), []int{2})
+	payload = mustConstruct(t, payload, err)
+	email, err := values.ResolveFieldOrdinals(scan.GetResultValue(), []int{1})
+	email = mustConstruct(t, email, err)
+	m, err := plans.NewRecordQueryMapPlan(scan, values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "PAYLOAD", Value: payload},
+		values.RecordConstructorField{Name: "EMAIL", Value: email},
+	))
+	m = mustConstruct(t, m, err)
+	cols := distinctKeyColumns(m)
+	if len(cols) != 2 || cols[0] != payload || cols[1] != email {
+		t.Fatalf("dedup key = %v, want the Map's columns [PAYLOAD EMAIL] in slot order", cols)
 	}
 }

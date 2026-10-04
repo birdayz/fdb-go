@@ -3,6 +3,7 @@ package chaos
 import (
 	"testing"
 
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
@@ -131,4 +132,55 @@ func TestRandomBitmapWithFaults(t *testing.T) {
 		MaxPKs: 30,
 		Faults: FaultsRetryHeavy,
 	})
+}
+
+// TestBitmapRefusedEntrySizeHoldsNoEntry drives both arms of the model's check
+// of an index whose entry size the maintainer refuses: such an index refuses
+// every write, so an empty index verifies clean and any entry in it is a
+// violation.
+func TestBitmapRefusedEntrySizeHoldsNoEntry(t *testing.T) {
+	t.Parallel()
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	idx := recordlayer.NewBitmapValueIndex("bitmap_price", recordlayer.GroupBy(recordlayer.Field("price")))
+	idx.SetOption(recordlayer.IndexOptionBitmapValueEntrySize, "0")
+	builder.AddIndex("Order", idx)
+	md, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := recordlayer.NewFDBDatabase(testRealDB)
+	sub := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
+	ctx, cancel := chaosRunContext(0)
+	defer cancel()
+	verify := func(write bool) []Violation {
+		var got []Violation
+		_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(sub).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(4)}); err == nil {
+				t.Fatal("a bitmap index of entry size 0 maintained a write")
+			}
+			if write {
+				rtx.Transaction().Set(store.IndexSubspace(md.GetIndex("bitmap_price")).Pack(tuple.Tuple{int64(0)}), []byte{1})
+			}
+			got = verifyBitmapValueIndexes(ctx, store, NewStoreModel(md))
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := verify(false); len(got) != 0 {
+		t.Fatalf("an empty index of a refused entry size: %v, want no violation", got)
+	}
+	got := verify(true)
+	if len(got) != 1 || got[0].Invariant != "bitmap_refused_size_written" {
+		t.Fatalf("an entry in an index of a refused entry size: %v, want bitmap_refused_size_written", got)
+	}
 }

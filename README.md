@@ -4,7 +4,7 @@
 [![Test Report](https://img.shields.io/badge/test_report-latest-2980b9)](https://fdb-record-layer-go-reports.fsn1.your-objectstorage.com/reports/master/latest.html)
 
 Go port of Apple's [FoundationDB Record Layer](https://github.com/FoundationDB/fdb-record-layer).
-Wire-compatible with Java Record Layer 4.12.11.0 — Go and Java applications can read
+Wire-compatible with Java Record Layer 4.14.2.0 — Go and Java applications can read
 and write the same data on a shared FDB cluster.
 
 ## Status
@@ -29,7 +29,7 @@ backup, and observability — see the [operator guide](docs/operations.md).
 | Component | Version | Notes |
 |-----------|---------|-------|
 | **FoundationDB** | **7.3.77** | Client library + headers. Go bindings pinned to `release-7.3` branch. |
-| **Java Record Layer** | **4.12.11.0** | Wire compatibility target. Conformance tests run against this version. |
+| **Java Record Layer** | **4.14.2.0** | Wire compatibility target. Conformance tests run against this version. |
 | **Go** | **1.26.4** | Minimum Go version (kept current with stdlib security patches; `govulncheck` CI gates this). |
 | **Bazel** | **9.0.1** | Build system. Pinned in `.bazelversion`. |
 
@@ -230,7 +230,7 @@ Full gap analysis in [TODO.md](TODO.md).
 ## Conformance
 
 Wire compatibility is verified by a conformance suite that runs both Go and Java
-(Record Layer 4.12.11.0) against the same FDB instance, cross-validating reads and
+(Record Layer 4.14.2.0) against the same FDB instance, cross-validating reads and
 writes bidirectionally.
 
 ### Wire format

@@ -231,11 +231,14 @@ func TestBuildSelectSubsumptionTranslationMap_MissingOrUnpullableFailsClosed(
 			maxMatchMap: nil,
 		},
 		{
+			// Nothing matched, and the query part reads a ranged-over alias.
 			name: "unpullable max-match map",
-			maxMatchMap: NewMaxMatchMap(
-				nil,
+			maxMatchMap: ComputeMaxMatchMap(
 				validQueryPart,
 				validCandidatePart,
+				map[values.CorrelationIdentifier]struct{}{
+					values.NamedCorrelationIdentifier("missing_query_part"): {},
+				},
 			),
 		},
 		{
@@ -1053,7 +1056,7 @@ func TestTranslateSelectSubsumptionInputs_ParameterComparisonIsValid(
 	translatedPredicates, translatedResult, translated := translateSelectSubsumptionInputs(querySelect, nil)
 	if !translated ||
 		len(translatedPredicates) != 1 ||
-		translatedPredicates[0] != queryPredicate ||
+		translatedPredicates[0] != querySelect.GetPredicates()[0] ||
 		translatedResult != queryValue {
 		t.Fatalf(
 			"parameter comparison translated predicates=%v result=%v ok=%v",

@@ -69,7 +69,7 @@ func newChaosSimConnection(t *testing.T, seed uint64) (*EmbeddedConnection, *cha
 	}
 	factory := ddl.NewRecordLayerMetadataOperationsFactoryWithKeyspace(cat, ks)
 
-	c := New("/simdb", fdbDB, cat, factory, ks)
+	c := New("/SIMDB", fdbDB, cat, factory, ks)
 	ctx := context.Background()
 	for _, stmt := range []string{
 		"CREATE DATABASE /simdb",
@@ -80,7 +80,7 @@ func newChaosSimConnection(t *testing.T, seed uint64) (*EmbeddedConnection, *cha
 			t.Fatalf("%s: %v", stmt, err)
 		}
 	}
-	c.SetDefaultSchema("s")
+	c.SetDefaultSchema("S")
 	return c, faults, transactor
 }
 

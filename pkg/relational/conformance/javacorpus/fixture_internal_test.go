@@ -51,9 +51,14 @@ func TestPrivateFixtureValidation(t *testing.T) {
 		{"closed_cast", func(f *javayamsql.File) {
 			f.Blocks[1].Setup.Steps[0].Query = "INSERT INTO t VALUES (1, CAST(-0.0 AS BIGINT))"
 		}, true},
+		// A table's qualifier is its schema template's name; the schema's own
+		// name qualifies nothing (functions.ResolveTargetTablePath).
 		{"qualified", func(f *javayamsql.File) {
-			f.Blocks[1].Setup.Steps[0].Query = "INSERT INTO YAML_PIN_1_SCHEMA.t VALUES (1, 100)"
+			f.Blocks[1].Setup.Steps[0].Query = "INSERT INTO YAML_PIN_1_TEMPLATE.t VALUES (1, 100)"
 		}, true},
+		{"qualified_by_the_schema", func(f *javayamsql.File) {
+			f.Blocks[1].Setup.Steps[0].Query = "INSERT INTO YAML_PIN_1_SCHEMA.t VALUES (1, 100)"
+		}, false},
 		{"quoted_dotted", func(f *javayamsql.File) {
 			f.Blocks[0].SchemaTemplate.Variants[0].Definition = `CREATE TABLE "a.b" (id BIGINT, PRIMARY KEY (id))`
 			f.Blocks[1].Setup.Steps[0].Query = `INSERT INTO "a.b" VALUES (1)`
@@ -146,12 +151,18 @@ func TestPrivateFixtureLoadCommitFaults(t *testing.T) {
 		duplicate                               bool
 		canceled                                bool
 		wantAttempts, wantAmbiguities, wantRows int
+		wantWindowLosses                        int
 		wantCode                                api.ErrorCode
 	}{
 		{name: "success", wantAttempts: 1, wantRows: 1},
 		{name: "applied", faults: []int{simfdb.CommitUnknownApplied}, wantAttempts: 2, wantAmbiguities: 1, wantRows: 1},
 		{name: "discarded", faults: []int{simfdb.CommitUnknownDiscarded}, wantAttempts: 2, wantAmbiguities: 1, wantRows: 1},
 		{name: "definite_conflict", faults: []int{1020}, wantAttempts: 1, wantCode: api.ErrCodeSerializationFailure},
+		// A transaction that outlived its MVCC window committed nothing: the
+		// whole reset/load replays, unlike a conflict sharing its SQLSTATE.
+		{name: "window_lost", faults: []int{1007}, wantAttempts: 2, wantWindowLosses: 1, wantRows: 1},
+		{name: "window_lost_then_applied", faults: []int{1007, simfdb.CommitUnknownApplied}, wantAttempts: 3, wantAmbiguities: 1, wantWindowLosses: 1, wantRows: 1},
+		{name: "exhausted_window", faults: []int{1007, 1007, 1007}, wantAttempts: 3, wantWindowLosses: 2, wantCode: api.ErrCodeSerializationFailure},
 		{name: "duplicate", duplicate: true, wantAttempts: 1, wantCode: api.ErrCodeUniqueConstraintViolation},
 		{name: "exhausted_applied", faults: []int{simfdb.CommitUnknownApplied, simfdb.CommitUnknownApplied, simfdb.CommitUnknownApplied}, wantAttempts: 3, wantAmbiguities: 3, wantRows: 1, wantCode: api.ErrCodeStatementCompletionUnknown},
 		{name: "exhausted_discarded", faults: []int{simfdb.CommitUnknownDiscarded, simfdb.CommitUnknownDiscarded, simfdb.CommitUnknownDiscarded}, wantAttempts: 3, wantAmbiguities: 3, wantCode: api.ErrCodeStatementCompletionUnknown},
@@ -206,8 +217,11 @@ func TestPrivateFixtureLoadCommitFaults(t *testing.T) {
 					t.Fatalf("load error=%v, want %s", err, tc.wantCode)
 				}
 			}
-			if res.FixtureLoadAttempts != tc.wantAttempts || len(res.FixtureCommitAmbiguities) != tc.wantAmbiguities || res.QueriesRun != 0 {
-				t.Fatalf("attempts=%d ambiguities=%d assertions=%d, want %d/%d/0", res.FixtureLoadAttempts, len(res.FixtureCommitAmbiguities), res.QueriesRun, tc.wantAttempts, tc.wantAmbiguities)
+			if res.FixtureLoadAttempts != tc.wantAttempts || len(res.FixtureCommitAmbiguities) != tc.wantAmbiguities ||
+				len(res.FixtureWindowLosses) != tc.wantWindowLosses || res.QueriesRun != 0 {
+				t.Fatalf("attempts=%d ambiguities=%d window losses=%d assertions=%d, want %d/%d/%d/0",
+					res.FixtureLoadAttempts, len(res.FixtureCommitAmbiguities), len(res.FixtureWindowLosses), res.QueriesRun,
+					tc.wantAttempts, tc.wantAmbiguities, tc.wantWindowLosses)
 			}
 			var n int
 			if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM t").Scan(&n); err != nil {

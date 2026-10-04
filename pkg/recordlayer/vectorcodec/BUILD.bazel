@@ -13,5 +13,6 @@ go_test(
         "vectorcodec_half_test.go",
         "vectorcodec_test.go",
     ],
+    data = glob(["testdata/**"]),
     embed = [":vectorcodec"],
 )

@@ -36,7 +36,7 @@ func capHitDB(t *testing.T, tag string) *sql.DB {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE "+tmpl); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -84,10 +84,10 @@ func assertPlannerCapHit(t *testing.T, err error) {
 	}
 }
 
-// sixWayJoinExists is a WHERE-existential over a six-way self-join. Join
-// enumeration over six legs, each with five access paths, exceeds the
-// 100,000-task budget long before the memo converges; four legs still plan
-// fine, so this is the cap tripping rather than an unplannable shape.
+// sevenWayJoinExists is a WHERE-existential over a seven-way self-join. Join
+// enumeration over seven legs, each with five access paths, exceeds the
+// planning budget before the memo converges; six legs still plan, so this is
+// the cap tripping rather than an unplannable shape.
 //
 // It is deliberately EXISTS rather than `id IN (SELECT ...)`: the IN form fails
 // DML translation before planning ever starts, which would test nothing here.
@@ -95,9 +95,9 @@ func assertPlannerCapHit(t *testing.T, err error) {
 // the DML path's CheckBuriedExistentialPredicate guard inspects — so the join is
 // enumerated by the DML planner itself, not by the separate scalar-subquery
 // pipeline, which is only reached after DML planning has already succeeded.
-const sixWayJoinExists = "EXISTS (SELECT 1 FROM " +
-	"ORDERS a, ORDERS b, ORDERS c, ORDERS d, ORDERS e, ORDERS f " +
-	"WHERE a.id = b.id AND b.id = c.id AND c.id = d.id AND d.id = e.id AND e.id = f.id)"
+const sevenWayJoinExists = "EXISTS (SELECT 1 FROM " +
+	"ORDERS a, ORDERS b, ORDERS c, ORDERS d, ORDERS e, ORDERS f, ORDERS g " +
+	"WHERE a.id = b.id AND b.id = c.id AND c.id = d.id AND d.id = e.id AND e.id = f.id AND f.id = g.id)"
 
 // TestFDB_PlannerCapHit_DMLPathSQLSTATE drives the DML planner callsite, which
 // needs a live connection to reach at all: planDML falls back to explain-only
@@ -116,8 +116,8 @@ func TestFDB_PlannerCapHit_DMLPathSQLSTATE(t *testing.T) {
 		name string
 		sql  string
 	}{
-		{"delete", "DELETE FROM ORDERS WHERE " + sixWayJoinExists},
-		{"update", "UPDATE ORDERS SET amount = 1 WHERE " + sixWayJoinExists},
+		{"delete", "DELETE FROM ORDERS WHERE " + sevenWayJoinExists},
+		{"update", "UPDATE ORDERS SET amount = 1 WHERE " + sevenWayJoinExists},
 	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
@@ -140,8 +140,8 @@ func TestFDB_PlannerCapHit_SelectPathSQLSTATE(t *testing.T) {
 	db := capHitDB(t, "select")
 
 	rows, err := db.QueryContext(ctx,
-		"SELECT a.id FROM ORDERS a, ORDERS b, ORDERS c, ORDERS d, ORDERS e, ORDERS f "+
-			"WHERE a.id = b.id AND b.id = c.id AND c.id = d.id AND d.id = e.id AND e.id = f.id")
+		"SELECT a.id FROM ORDERS a, ORDERS b, ORDERS c, ORDERS d, ORDERS e, ORDERS f, ORDERS g "+
+			"WHERE a.id = b.id AND b.id = c.id AND c.id = d.id AND d.id = e.id AND e.id = f.id AND f.id = g.id")
 	if rows != nil {
 		rows.Close()
 	}

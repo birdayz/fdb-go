@@ -3,6 +3,7 @@ package cascades
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -13,6 +14,11 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
+
+type matchConsumption struct {
+	requestedOrderings []*properties.RequestedOrdering
+	matches            map[PartialMatch]struct{}
+}
 
 type intersectionConsumption struct {
 	requestedOrderings []*properties.RequestedOrdering
@@ -46,6 +52,9 @@ type intersectionConsumption struct {
 // claim is atomic so two accidental concurrent callers cannot both enter the
 // stateful task driver.
 type Planner struct {
+	taskObserver func(Task)
+	trace        *PlannerTrace
+
 	// planStarted is a one-way lifecycle latch. It is deliberately never reset:
 	// every non-nil planning exit (success, cap, task error, cancellation, or
 	// extraction error, or a rejected nil context) leaves this Planner
@@ -62,6 +71,7 @@ type Planner struct {
 	stack                 []Task
 	pendingExploreGroups  map[exploreGroupTaskKey]int
 	pendingExploreExprs   map[exploreExprTaskKey]struct{}
+	pendingDataAccess     map[*expressions.Reference]struct{}
 	pendingOptimizeGroups map[exploreGroupTaskKey]struct{}
 	rules                 []ExpressionRule
 	ctx                   PlanContext
@@ -150,6 +160,10 @@ type Planner struct {
 	// compare per yield. See plan_reachability.go.
 	reach *ReachabilityCollector
 
+	// withoutPlanningMerges keeps equivalent PLANNING groups apart: the
+	// control that measures what merging them changes.
+	withoutPlanningMerges bool
+
 	tasksRun int
 
 	// costModel is the comparator for OptimizeGroupTask. Defaults
@@ -185,11 +199,10 @@ type Planner struct {
 	// PLANNING's preorder rules. Shared across all tasks.
 	constraintMap *ConstraintMap
 
-	// dataAccessConsumed tracks, per canonical reference, the partial-match
-	// count last consumed by pushDataAccessTasks's standalone (yieldUnknown)
-	// path — the RFC-148 §3c re-entry/termination guard. Re-consumption runs
-	// only when the match set grows. Reset per planning run.
-	dataAccessConsumed map[*expressions.Reference]int
+	// Reconsume only when match identities or ordering requirements change.
+	dataAccessConsumed map[*expressions.Reference][]matchConsumption
+	// Union alternatives depend on eligible OR identities, not ordering requests.
+	unionExploredOrs map[expressions.RelationalExpression]map[predicates.QueryPredicate]struct{}
 
 	// intersectionConsumed is the corresponding growth guard for the
 	// cross-candidate intersection path. It is keyed additionally by the
@@ -206,6 +219,9 @@ type Planner struct {
 	// reconfigured planner (DisabledRules, With*Rules) re-indexes.
 	exprRuleIdx map[PlannerPhase]*ruleIndex[ExpressionRule]
 	implRuleIdx map[PlannerPhase]*ruleIndex[ImplementationRule]
+
+	// Candidate traversals and PlanContext metadata are immutable during a run.
+	leafCandidateTypes map[reflect.Type]struct{}
 }
 
 type exploreGroupTaskKey struct {
@@ -366,6 +382,12 @@ func (p *Planner) WithStatistics(stats properties.StatisticsProvider) *Planner {
 	return p
 }
 
+// WithTaskObserver installs a synchronous diagnostic callback before each task.
+func (p *Planner) WithTaskObserver(observer func(Task)) *Planner {
+	p.taskObserver = observer
+	return p
+}
+
 // Statistics returns the planner's statistics provider, or nil if none set.
 func (p *Planner) Statistics() properties.StatisticsProvider { return p.stats }
 
@@ -431,6 +453,9 @@ func (p *Planner) plan(ctx context.Context, rootRef *expressions.Reference) (exp
 	if p.memo == nil {
 		p.memo = NewMemo(rootRef)
 	}
+	if p.trace != nil {
+		p.trace.attach(p.memo)
+	}
 	// Out-of-band member growth (Absorb, raw inserts into existing
 	// groups) must schedule the re-round its epoch re-arm requires —
 	// dirtiness without a task is silently never explored.
@@ -443,8 +468,10 @@ func (p *Planner) plan(ctx context.Context, rootRef *expressions.Reference) (exp
 	// orphaned work into a consumed Planner.
 	defer p.memo.SetReExploreScheduler(nil)
 	p.constraintMap = NewConstraintMap()
-	p.dataAccessConsumed = make(map[*expressions.Reference]int)
+	p.dataAccessConsumed = make(map[*expressions.Reference][]matchConsumption)
 	p.intersectionConsumed = make(map[*expressions.Reference][]intersectionConsumption)
+	p.unionExploredOrs = nil
+	p.pendingDataAccess = nil
 	p.exprRuleIdx = nil
 	p.implRuleIdx = nil
 	p.capErr = nil
@@ -476,7 +503,14 @@ func (p *Planner) plan(ctx context.Context, rootRef *expressions.Reference) (exp
 			return nil, p.tasksRun, newQueueCapError(p.MaxTaskQueueSize, len(p.stack))
 		}
 		task := p.pop()
-		task.Run(ctx, p)
+		if p.taskObserver != nil {
+			p.taskObserver(task)
+		}
+		if p.trace != nil {
+			p.runTraced(ctx, task)
+		} else {
+			task.Run(ctx, p)
+		}
 		p.tasksRun++
 		// A memo admission failure is an invariant violation, so it ends the run
 		// exactly as a rule failure does. It is drained here rather than reported
@@ -647,6 +681,8 @@ func newTaskCapError(limit, observed int) *PlannerBudgetExceededError {
 	}
 }
 
+func (*PlannerBudgetExceededError) JavaRecordCoreException() {}
+
 // newQueueCapError reports the MaxTaskQueueSize budget.
 func newQueueCapError(limit, observed int) *PlannerBudgetExceededError {
 	return &PlannerBudgetExceededError{
@@ -668,6 +704,15 @@ func newRuleMatchCapError(limit, observed int) *PlannerBudgetExceededError {
 // constraints.
 func (p *Planner) push(t Task) {
 	switch typed := t.(type) {
+	case *OptimizeInputsTask:
+		if !typed.hasWork() {
+			return
+		}
+		if n := len(p.stack); n > 0 {
+			if adjacent, ok := p.stack[n-1].(*OptimizeInputsTask); ok && adjacent.absorbLeafPrepass(typed) {
+				return
+			}
+		}
 	case *ExploreGroupTask:
 		key := exploreGroupTaskKey{
 			phase: typed.Phase,
@@ -689,12 +734,23 @@ func (p *Planner) push(t Task) {
 		typed.pendingKey = key
 		typed.pending = true
 	case *ExploreExprTask:
+		if !typed.hasWork(p) {
+			return
+		}
 		key := exploreExprTaskKey{phase: typed.Phase, ref: typed.Ref.Canonical(), expr: typed.Expr}
 		if p.pendingExploreExprs == nil {
 			p.pendingExploreExprs = make(map[exploreExprTaskKey]struct{})
 		}
 		for pendingKey := range p.pendingExploreExprs {
 			if pendingKey.phase == key.phase && pendingKey.expr == key.expr && pendingKey.ref.Canonical() == key.ref {
+				if !typed.ReExplore {
+					for _, task := range p.stack {
+						if pending, ok := task.(*ExploreExprTask); ok && pending.pendingKey == pendingKey {
+							pending.ReExplore = false
+							break
+						}
+					}
+				}
 				return
 			}
 		}
@@ -749,6 +805,27 @@ func (p *Planner) scheduleExploreGroupsBeforeBatch(
 			continue
 		}
 		seen[canonical] = struct{}{}
+		// A pending match partition can still add child access paths. Keep
+		// the entire unfinished child batch above its parent's pruning tasks.
+		for i := 0; i < batchFloor; i++ {
+			var pendingRef *expressions.Reference
+			switch pending := p.stack[i].(type) {
+			case *ConsumeMatchPartitionTask:
+				pendingRef = pending.Ref
+			case *ExploreGroupTask:
+				if pending.Phase == phase && !pending.superseded {
+					pendingRef = pending.Ref
+				}
+			}
+			if pendingRef == nil || pendingRef.Canonical() != canonical {
+				continue
+			}
+			childBatch := append([]Task(nil), p.stack[i:batchFloor]...)
+			copy(p.stack[i:], p.stack[batchFloor:])
+			copy(p.stack[len(p.stack)-len(childBatch):], childBatch)
+			batchFloor = i
+			break
+		}
 		stage := ref.Stage()
 		// Once a child is already in this phase's stage, an existing pending
 		// task may safely absorb the request: its current finals are visible to
@@ -757,13 +834,17 @@ func (p *Planner) scheduleExploreGroupsBeforeBatch(
 		// parent implementation must not run while the child is still canonical
 		// (the nested-UNION no-plan regression).
 		if !stage.Precedes(phase.TargetStage()) {
+			constraints := ref.ConstraintsMap()
+			if constraints.IsExplored() && !constraints.IsExploring() {
+				continue
+			}
 			p.push(&ExploreGroupTask{Phase: phase, Ref: ref})
 			continue
 		}
 		found := -1
 		for i := batchFloor - 1; i >= 0; i-- {
 			pending, ok := p.stack[i].(*ExploreGroupTask)
-			if !ok || pending.Phase != phase || pending.pendingKey.stage != stage {
+			if !ok || pending.superseded || pending.Phase != phase || pending.pendingKey.stage != stage {
 				continue
 			}
 			if pending.Ref.Canonical() == canonical {
@@ -906,23 +987,96 @@ func (p *Planner) costModelForPhase(phase PlannerPhase) func(a, b expressions.Re
 // SUBSEL scan cannot be stamped a standalone winner.
 // compensationSafeForYield's outer-correlation guard is
 // defense-in-depth for the same property (RFC-150 §8).
-func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.RelationalExpression) {
+func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, expr expressions.RelationalExpression) {
+	if ref == nil {
+		return
+	}
 	candidates := dataAccessCandidates(ref)
 	if len(candidates) == 0 {
 		return
 	}
+	start := len(p.stack)
+	defer p.moveMatchTasksAfterTransforms(ref, expr, start)
+	// Incomplete OR-term matches can trigger union exploration, but not scans.
+	p.pushPredicateUnionTasks(ref)
+	requestedOrderings := p.dataAccessOrderings(ref)
+	if !p.matchesNeedConsumption(ref, candidates, requestedOrderings, false) {
+		return
+	}
+	p.queueDataAccessTask(ref)
+}
 
-	var requestedOrderings []*properties.RequestedOrdering
-	if p.constraintMap != nil {
-		if orderings, ok := Get(p.constraintMap, ref, RequestedOrderingConstraintKey); ok {
-			requestedOrderings = orderings
+// Java runs match-partition rules after the expression's transformations.
+// A match discovered mid-batch must not move consumption ahead of those rules.
+func (p *Planner) moveMatchTasksAfterTransforms(ref *expressions.Reference, expr expressions.RelationalExpression, start int) {
+	if start == len(p.stack) {
+		return
+	}
+	floor := start
+	for i, task := range p.stack[:start] {
+		var pendingRef *expressions.Reference
+		var pendingExpr expressions.RelationalExpression
+		var phase PlannerPhase
+		switch task := task.(type) {
+		case *TransformExprTask:
+			pendingRef, pendingExpr, phase = task.Ref, task.Expr, task.Phase
+		case *TransformImplTask:
+			pendingRef, pendingExpr, phase = task.Ref, task.Expr, task.Phase
+		default:
+			continue
+		}
+		if phase == PhasePlanning && pendingRef != nil && pendingRef.Canonical() == ref.Canonical() && pendingExpr == expr {
+			floor = i
+			break
 		}
 	}
-
-	if p.shouldConsumeMatches(ref, candidates, requestedOrderings) {
-		p.consumeMatchPartitions(ref, candidates, requestedOrderings)
+	if floor == start {
+		return
 	}
-	p.pushCrossCandidateIntersection(ref, candidates, requestedOrderings)
+	queued := append([]Task(nil), p.stack[start:]...)
+	copy(p.stack[floor+len(queued):], p.stack[floor:start])
+	copy(p.stack[floor:], queued)
+}
+
+func (p *Planner) queueDataAccessTask(ref *expressions.Reference) {
+	if ref == nil {
+		return
+	}
+	for pending := range p.pendingDataAccess {
+		if pending.Canonical() == ref.Canonical() {
+			return
+		}
+	}
+	if p.pendingDataAccess == nil {
+		p.pendingDataAccess = make(map[*expressions.Reference]struct{})
+	}
+	key := ref.Canonical()
+	p.pendingDataAccess[key] = struct{}{}
+	p.push(&ConsumeMatchPartitionTask{Ref: key})
+}
+
+func (p *Planner) dataAccessOrderings(ref *expressions.Reference) []*properties.RequestedOrdering {
+	if p.constraintMap != nil {
+		if orderings, ok := Get(p.constraintMap, ref, RequestedOrderingConstraintKey); ok {
+			return orderings
+		}
+	}
+	return nil
+}
+
+func (p *Planner) consumeDataAccessPartitions(ref *expressions.Reference) {
+	candidates := dataAccessCandidates(ref)
+	if len(candidates) == 0 {
+		return
+	}
+	requestedOrderings := p.dataAccessOrderings(ref)
+	// Matches can grow while this deferred task waits beneath exploration.
+	if !p.shouldConsumeMatches(ref, candidates, requestedOrderings) {
+		return
+	}
+	realizations := make(accessRealizations)
+	p.consumeMatchPartitions(ref, candidates, requestedOrderings, realizations)
+	p.pushCrossCandidateIntersection(ref, candidates, requestedOrderings, realizations)
 }
 
 // dataAccessCandidates adjusts this ref's partial matches and returns
@@ -965,37 +1119,46 @@ func dataAccessCandidates(ref *expressions.Reference) []MatchCandidate {
 	return filtered
 }
 
-// shouldConsumeMatches is the re-entry / termination guard
-// (RFC-148 §3c): yieldUnknown routes a logical compensation into the
-// EXPLORATORY set, so the enclosing ExploreGroupTask re-explores it
-// and re-enters pushDataAccessTasks on this ref. Run the standalone
-// consumption ONLY when the partial-match set has GROWN since the last
-// consumption — a growth key, NOT a "consumed-ever" gate, which would
-// drop matches seeded mid-exploration (AdjustPartialMatchesForRef
-// seeds across rounds).
-//
-// The guard applies ONLY when there is NO requested ordering: an
-// ordering can be propagated into this ref AFTER a first consumption
-// at unchanged match count, and the sort-eliminating ordered scan it
-// unlocks must not be suppressed (a missed ordered scan degrades the
-// plan to the in-memory-sort fallback — an extra-Sort plan-shape
-// regression, with unbounded materialization on large inputs). With an
-// ordering present we re-consume every round; convergence is bounded
-// by Insert dedup + the 10-round cap (RFC-148 §3c addendum). The
-// cross-candidate intersection keeps its own hasIntersectionFinal
-// guard.
+// Match partitions depend on both exact matches and propagated orderings.
+// Replaying unchanged inputs remints compensations during their own exploration.
 func (p *Planner) shouldConsumeMatches(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*properties.RequestedOrdering) bool {
-	if len(requestedOrderings) > 0 {
-		return true
-	}
-	totalMatches := 0
+	return p.matchesNeedConsumption(ref, candidates, requestedOrderings, true)
+}
+
+func (p *Planner) matchesNeedConsumption(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*properties.RequestedOrdering, record bool) bool {
+	matches := make(map[PartialMatch]struct{})
 	for _, c := range candidates {
-		totalMatches += len(GetPartialMatchesForCandidate(ref, c))
+		for _, match := range completeMatchesForCandidate(ref, c) {
+			matches[match] = struct{}{}
+		}
+	}
+	if len(matches) == 0 {
+		return false
 	}
 	key := ref.Canonical()
-	last, seen := p.dataAccessConsumed[key]
-	p.dataAccessConsumed[key] = totalMatches
-	return !(seen && totalMatches <= last)
+	for _, previous := range p.dataAccessConsumed[key] {
+		if len(previous.matches) != len(matches) || !requestedOrderingSetsEqual(previous.requestedOrderings, requestedOrderings) {
+			continue
+		}
+		same := true
+		for match := range matches {
+			if _, ok := previous.matches[match]; !ok {
+				same = false
+				break
+			}
+		}
+		if same {
+			return false
+		}
+	}
+	if !record {
+		return true
+	}
+	if p.dataAccessConsumed == nil {
+		p.dataAccessConsumed = make(map[*expressions.Reference][]matchConsumption)
+	}
+	p.dataAccessConsumed[key] = append(p.dataAccessConsumed[key], matchConsumption{matches: matches, requestedOrderings: append([]*properties.RequestedOrdering(nil), requestedOrderings...)})
+	return true
 }
 
 // shouldConsumeIntersection admits each exact maximum-coverage input once for
@@ -1094,13 +1257,14 @@ func requestedOrderingSetsEqual(a, b []*properties.RequestedOrdering) bool {
 // into data-access expressions and routes every result by safety:
 // physical plans and SAFE logical compensations go through
 // yieldUnknown; UNSAFE logical compensations go to InsertFinal.
-func (p *Planner) consumeMatchPartitions(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*properties.RequestedOrdering) {
+func (p *Planner) consumeMatchPartitions(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*properties.RequestedOrdering, realizations accessRealizations) {
 	for _, candidate := range candidates {
-		matches := GetPartialMatchesForCandidate(ref, candidate)
+		matches := completeMatchesForCandidate(ref, candidate)
 		if len(matches) == 0 {
 			continue
 		}
-		exprs := DataAccessForMatchPartition(requestedOrderings, matches, p.ctx, nil)
+		memoizer := &ExpressionRuleCall{Reference: ref, memo: p.memo}
+		exprs := dataAccessForMatchPartition(memoizer, requestedOrderings, matches, p.ctx, nil, realizations)
 		for _, expr := range exprs {
 			// An UNSAFE logical compensation — one whose inner scan is a vector
 			// top-K / aggregate — is NOT narrowable by a post-filter (a residual
@@ -1118,7 +1282,9 @@ func (p *Planner) consumeMatchPartitions(ref *expressions.Reference, candidates 
 				// shape this arm exists to prevent (silent wrong rows;
 				// the finals loop's PLANNING gate skips it for the same
 				// reason).
-				ref.InsertFinal(expr)
+				if ref.InsertFinal(expr) && p.memo != nil {
+					p.memo.AddExpression(ref, expr)
+				}
 				continue
 			}
 			// Physical plan → final set (competes now). A SAFE logical compensation →
@@ -1146,7 +1312,7 @@ func (p *Planner) consumeMatchPartitions(ref *expressions.Reference, candidates 
 // full-scan match is filtered out. shouldConsumeIntersection prevents
 // re-creation at an unchanged match/ordering input while still allowing
 // incrementally discovered or adjusted matches to unlock larger intersections.
-func (p *Planner) pushCrossCandidateIntersection(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*properties.RequestedOrdering) {
+func (p *Planner) pushCrossCandidateIntersection(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*properties.RequestedOrdering, realizations accessRealizations) {
 	if len(candidates) < 2 {
 		return
 	}
@@ -1155,8 +1321,31 @@ func (p *Planner) pushCrossCandidateIntersection(ref *expressions.Reference, can
 	})
 	var allMatches []PartialMatch
 	for _, candidate := range candidates {
-		allMatches = append(allMatches, GetPartialMatchesForCandidate(ref, candidate)...)
+		allMatches = append(allMatches, completeMatchesForCandidate(ref, candidate)...)
 	}
+	// An intersection combines matches of ONE query expression (Java's
+	// MatchPartition is per expression): members of a group can carry different
+	// residuals, and intersecting their compensations would drop the ones they
+	// do not share.
+	byExpression := make(map[expressions.RelationalExpression][]PartialMatch)
+	for _, m := range allMatches {
+		byExpression[m.GetQueryExpression()] = append(byExpression[m.GetQueryExpression()], m)
+	}
+	for _, member := range ref.AllMembers() {
+		if matches := byExpression[member]; len(matches) >= 2 {
+			p.pushExpressionIntersection(ref, matches, requestedOrderings, realizations)
+		}
+	}
+}
+
+// pushExpressionIntersection builds the primary-key intersections over the
+// complete matches of one query expression.
+func (p *Planner) pushExpressionIntersection(
+	ref *expressions.Reference,
+	allMatches []PartialMatch,
+	requestedOrderings []*properties.RequestedOrdering,
+	realizations accessRealizations,
+) {
 	// Only include matches with non-empty bound parameter prefix
 	// (i.e., matches that actually restrict the scan). Zero-coverage
 	// matches produce full index scans that don't help with intersection.
@@ -1202,19 +1391,6 @@ func (p *Planner) pushCrossCandidateIntersection(ref *expressions.Reference, can
 	if len(restrictedMatches) < 2 {
 		return
 	}
-	// INTERSECTION-LOCAL duplicate resolution: a raw seeded match and
-	// its ADJUSTED twin (AdjustPartialMatchesForRef re-anchors it at the
-	// candidate's MatchableSort parent, ATTACHING the
-	// matchedOrderingParts) coexist by design under different candidate
-	// refs — the main data-access path builds scans from the raw one,
-	// but here the pair must collapse: keeping both feeds the intersector
-	// a self-intersection of the same index, and taking the raw one
-	// starves the PK-merge compatibility gate of its ordering parts.
-	// Keep, per (candidate, bound comparisons), only the match with the
-	// MOST matched ordering parts. This collapse is LOCAL to the
-	// intersection path — MaximumCoverageMatches stays untouched for the
-	// scan-building consumers.
-	restrictedMatches = collapseAdjustedTwins(restrictedMatches)
 	if len(restrictedMatches) < 2 || len(restrictedMatches) > 8 {
 		return
 	}
@@ -1225,53 +1401,22 @@ func (p *Planner) pushCrossCandidateIntersection(ref *expressions.Reference, can
 	if !p.shouldConsumeIntersection(ref, bestMatches, requestedOrderings) {
 		return
 	}
-	result := WithPrimaryKeyIntersector(p.ctx)(bestMatches, requestedOrderings)
+	memoizer := &ExpressionRuleCall{Reference: ref, memo: p.memo}
+	result := withPrimaryKeyIntersector(memoizer, p.ctx)(bestMatches, requestedOrderings, realizations)
 	if result == nil || !result.IsViable() {
 		return
 	}
 	for _, expr := range result.GetExpressions() {
 		if ref.InsertFinal(expr) {
+			if p.memo != nil {
+				p.memo.AddExpression(ref, expr)
+			}
 			if isPhysical(expr) {
 				p.push(&OptimizeInputsTask{Phase: PhasePlanning, Ref: ref, Expr: expr})
 			}
 			p.push(&ExploreExprTask{Phase: PhasePlanning, Ref: ref, Expr: expr})
 		}
 	}
-}
-
-// collapseAdjustedTwins keeps, per (candidate, bound-parameter
-// comparisons), only the partial match with the most matched ordering
-// parts (see the call site for why). Order-preserving for the kept
-// representatives.
-func collapseAdjustedTwins(matches []PartialMatch) []PartialMatch {
-	var out []PartialMatch
-	for _, m := range matches {
-		pmi, ok := m.(*PartialMatchImpl)
-		if !ok {
-			out = append(out, m)
-			continue
-		}
-		prefix := pmi.GetBoundParameterPrefixMap()
-		dup := -1
-		for i, e := range out {
-			epmi, eok := e.(*PartialMatchImpl)
-			if !eok || e.GetMatchCandidate() != m.GetMatchCandidate() {
-				continue
-			}
-			if equalParameterPrefixMaps(epmi.GetBoundParameterPrefixMap(), prefix) {
-				dup = i
-				break
-			}
-		}
-		if dup < 0 {
-			out = append(out, m)
-			continue
-		}
-		if len(m.GetMatchInfo().GetMatchedOrderingParts()) > len(out[dup].GetMatchInfo().GetMatchedOrderingParts()) {
-			out[dup] = m
-		}
-	}
-	return out
 }
 
 // yieldUnknown routes a data-access result by physicality, mirroring Java's
@@ -1284,6 +1429,9 @@ func collapseAdjustedTwins(matches []PartialMatch) []PartialMatch {
 func (p *Planner) yieldUnknown(ref *expressions.Reference, expr expressions.RelationalExpression) {
 	if isPhysical(expr) {
 		if ref.InsertFinal(expr) {
+			if p.memo != nil {
+				p.memo.AddExpression(ref, expr)
+			}
 			// Insert-driven exploration (Java executeRuleCall
 			// :1064-1070): under epoch convergence the group does NOT
 			// re-round on member growth, so every insert site owns its
@@ -1294,7 +1442,10 @@ func (p *Planner) yieldUnknown(ref *expressions.Reference, expr expressions.Rela
 		return
 	}
 	if ref.Insert(expr) {
-		p.push(&ExploreExprTask{Phase: PhasePlanning, Ref: ref, Expr: expr})
+		p.integratePlanningYield(ref, expr)
+		if ref.ContainsExactly(expr) {
+			p.push(&ExploreExprTask{Phase: PhasePlanning, Ref: ref, Expr: expr})
+		}
 	}
 }
 
@@ -1353,22 +1504,50 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 		return true
 	}
 
-	// Only a plain residual FILTER is a yield candidate. A non-filter compensation
-	// (a SelectExpression with result compensation / pulled-up quantifiers from
-	// ForMatchCompensation.ApplyAllNeeded, a projection over a vector scan, …)
-	// goes to InsertFinal. Without this top-level reject, such shapes would skip
-	// every guard below and fall through to "safe" → yieldUnknown, re-optimizing
-	// an unsafe residual.
-	f, ok := expr.(*expressions.LogicalFilterExpression)
-	if !ok {
-		return false
+	// Java yields every logical compensation (CascadesRuleCall
+	// yieldUnknownExpression): a residual filter, or a Select carrying the
+	// matched query's result value. The residual guards below are Go's own; a
+	// Select without residual predicates only reshapes rows and needs none.
+	// Anything else stays final.
+	switch f := expr.(type) {
+	case *expressions.LogicalFilterExpression:
+		// A residual filter with no predicates is not a yield candidate
+		// (ForMatchCompensation.ApplyAllNeeded never produces one; reject defensively).
+		if len(f.GetPredicates()) == 0 {
+			return false
+		}
+		return compensationInnerScanSafe(f) && compensationResidualCorrelationSafe(f)
+	case *expressions.SelectExpression:
+		if !f.ChildrenAsSet() || hasStrictSingleQuantifier(f.GetQuantifiers()) {
+			return false
+		}
+		if len(f.GetPredicates()) > 0 && !(compensationInnerScanSafe(f) && compensationResidualCorrelationSafe(f)) {
+			return false
+		}
+		// Reshaping rows is only as safe as what it ranges over: exploring this
+		// Select explores the residual compensation beneath it too.
+		for _, q := range f.GetQuantifiers() {
+			if ref := q.GetRangesOver(); ref != nil {
+				for _, member := range ref.AllMembers() {
+					if !isPhysical(member) && isCompensationShape(member) && !compensationSafeForYield(member) {
+						return false
+					}
+				}
+			}
+		}
+		return true
 	}
-	// A residual filter with no predicates is not a yield candidate
-	// (ForMatchCompensation.ApplyAllNeeded never produces one; reject defensively).
-	if len(f.GetPredicates()) == 0 {
-		return false
+	return false
+}
+
+// isCompensationShape reports whether expr is a compensation a block's Select
+// compensation nests: the residual filter or the required Unique over the scan.
+func isCompensationShape(expr expressions.RelationalExpression) bool {
+	switch expr.(type) {
+	case *expressions.LogicalFilterExpression, *expressions.LogicalUniqueExpression:
+		return true
 	}
-	return compensationInnerScanSafe(f) && compensationResidualCorrelationSafe(f)
+	return false
 }
 
 // compensationInnerScanSafe is the inner-scan half of
@@ -1398,7 +1577,7 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 // cursor delivers distance order, not pk order). Positions in the
 // partition prefix do not matter for the safety property — see
 // residualSelectsWholePartitions.
-func compensationInnerScanSafe(f *expressions.LogicalFilterExpression) bool {
+func compensationInnerScanSafe(f expressions.RelationalExpressionWithPredicates) bool {
 	for _, q := range f.GetQuantifiers() {
 		cref := q.GetRangesOver()
 		if cref == nil {
@@ -1431,8 +1610,7 @@ func compensationInnerScanSafe(f *expressions.LogicalFilterExpression) bool {
 // join's correlation feed → Fetch(<nil>) / 0 rows. Kept as
 // defense-in-depth even with the task-graph invariant in place
 // (RFC-150 §8). Query-parameter ConstantObjectValue aliases are
-// execution constants (not row correlations), so they are subtracted
-// first.
+// execution constants, not row correlations.
 //
 // No predicate-SHAPE restriction here: compound/OR and IN residuals
 // yield through yieldUnknown and re-optimize to an index plan
@@ -1441,7 +1619,7 @@ func compensationInnerScanSafe(f *expressions.LogicalFilterExpression) bool {
 // here — the !isIndexOnly() ImplementFilterRule gate is the single
 // structural authority for that property; a second guard here would be
 // a redundant second authority (RFC-151 §5).
-func compensationResidualCorrelationSafe(f *expressions.LogicalFilterExpression) bool {
+func compensationResidualCorrelationSafe(f expressions.RelationalExpressionWithPredicates) bool {
 	local := make(map[values.CorrelationIdentifier]struct{}, len(f.GetQuantifiers()))
 	for _, q := range f.GetQuantifiers() {
 		local[q.GetAlias()] = struct{}{}
@@ -1454,7 +1632,6 @@ func compensationResidualCorrelationSafe(f *expressions.LogicalFilterExpression)
 	probeCorr := compensationProbeCorrelations(f)
 	for _, pred := range f.GetPredicates() {
 		corr := predicates.GetCorrelatedToOfPredicate(pred)
-		deletePredicateConstantObjectAliases(pred, corr)
 		for alias := range corr {
 			if _, isLocal := local[alias]; isLocal {
 				continue
@@ -1504,7 +1681,7 @@ func compensationResidualCorrelationSafe(f *expressions.LogicalFilterExpression)
 // NON-partition column (it filters within partitions, so top-K-then-
 // filter would silently drop rows: the unsafe-residual pin's shape).
 func residualSelectsWholePartitions(
-	f *expressions.LogicalFilterExpression,
+	f expressions.RelationalExpressionWithPredicates,
 	plan *plans.RecordQueryVectorIndexPlan,
 ) bool {
 	partCols := plan.GetPartitionColumns()
@@ -1524,16 +1701,13 @@ func residualSelectsWholePartitions(
 	// misattributed as this scan's partition column, silently breaking the
 	// whole-partition guarantee. Reject any residual correlated to a non-local
 	// alias here so this function's safety is SELF-CONTAINED, not dependent on the
-	// separate OUTER-correlation guard later in compensationSafeForYield (query-
-	// parameter ConstantObjectValue aliases are execution constants, not row
-	// correlations — subtract them first, as that guard does).
+	// separate OUTER-correlation guard later in compensationSafeForYield.
 	local := make(map[values.CorrelationIdentifier]struct{}, len(f.GetQuantifiers()))
 	for _, q := range f.GetQuantifiers() {
 		local[q.GetAlias()] = struct{}{}
 	}
 	for _, pred := range f.GetPredicates() {
 		corr := predicates.GetCorrelatedToOfPredicate(pred)
-		deletePredicateConstantObjectAliases(pred, corr)
 		for alias := range corr {
 			if _, isLocal := local[alias]; !isLocal {
 				return false
@@ -1557,35 +1731,6 @@ func residualSelectsWholePartitions(
 	return true
 }
 
-// deletePredicateConstantObjectAliases removes ConstantObjectValue (query-parameter)
-// aliases from corr — they appear in a predicate's correlation set but are execution
-// constants bound at run time, not join/row correlations. Generalizes the old
-// deleteConstantObjectAliases (which handled only ComparisonPredicate) to any
-// predicate shape, since OR / compound residuals now reach compensationSafeForYield.
-func deletePredicateConstantObjectAliases(pred predicates.QueryPredicate, corr map[values.CorrelationIdentifier]struct{}) {
-	predicates.WalkPredicate(pred, func(node predicates.QueryPredicate) bool {
-		var vs []values.Value
-		switch p := node.(type) {
-		case *predicates.ComparisonPredicate:
-			vs = []values.Value{p.Operand, p.Comparison.Operand}
-		case *predicates.ValuePredicate:
-			vs = []values.Value{p.Value}
-		}
-		for _, v := range vs {
-			if v == nil {
-				continue
-			}
-			values.WalkValue(v, func(node values.Value) bool {
-				if cov, ok := node.(*values.ConstantObjectValue); ok {
-					delete(corr, cov.Alias)
-				}
-				return true
-			})
-		}
-		return true
-	})
-}
-
 // Task is the task-stack driver's unit of work. Tasks receive the run-scoped
 // context and may push more tasks. Implementations must stop at their bounded
 // cancellation seams; the driver also checks before and after every task.
@@ -1601,7 +1746,7 @@ type Task interface {
 // from the scan's comparison ranges (scanComparisonCorrelations). Used by
 // compensationSafeForYield to tell a probe-fed secondary residual (safe) from a
 // severed primary-join-key residual (RFC-150 §8).
-func compensationProbeCorrelations(f *expressions.LogicalFilterExpression) map[values.CorrelationIdentifier]struct{} {
+func compensationProbeCorrelations(f expressions.RelationalExpressionWithPredicates) map[values.CorrelationIdentifier]struct{} {
 	out := map[values.CorrelationIdentifier]struct{}{}
 	visited := map[expressions.RelationalExpression]struct{}{}
 	var walk func(m expressions.RelationalExpression)
@@ -1671,5 +1816,64 @@ func collectScanPlanCorrelations(p plans.RecordQueryPlan, out map[values.Correla
 	}
 	for _, c := range p.GetChildren() {
 		collectScanPlanCorrelations(c, out)
+	}
+}
+
+func (p *Planner) pushPredicateUnionTasks(ref *expressions.Reference) {
+	var changedExpressions []expressions.RelationalExpression
+	queued := make(map[expressions.RelationalExpression]struct{})
+	for _, raw := range ref.GetAllPartialMatches() {
+		match, ok := raw.(*PartialMatchImpl)
+		if !ok {
+			continue
+		}
+		expression := match.GetQueryExpression()
+		switch expression.(type) {
+		case *expressions.SelectExpression, *expressions.LogicalFilterExpression:
+		default:
+			continue
+		}
+		predicateMap := match.GetRegularMatchInfo().GetPredicateMap()
+		if predicateMap == nil {
+			continue
+		}
+		changed := false
+		for _, entry := range predicateMap.entries {
+			for _, mapping := range entry.mappings {
+				if mapping.GetMappingKind() != MappingOrTermImpliesCandidate {
+					continue
+				}
+				if p.unionExploredOrs == nil {
+					p.unionExploredOrs = make(map[expressions.RelationalExpression]map[predicates.QueryPredicate]struct{})
+				}
+				seen := p.unionExploredOrs[expression]
+				if seen == nil {
+					seen = make(map[predicates.QueryPredicate]struct{})
+					p.unionExploredOrs[expression] = seen
+				}
+				predicate := mapping.GetOriginalQueryPredicate()
+				if _, exists := seen[predicate]; !exists {
+					seen[predicate] = struct{}{}
+					changed = true
+				}
+			}
+		}
+		if changed {
+			if _, exists := queued[expression]; !exists {
+				queued[expression] = struct{}{}
+				changedExpressions = append(changedExpressions, expression)
+			}
+		}
+	}
+	if len(changedExpressions) == 0 {
+		return
+	}
+	index, _ := p.ruleIndexesForPhase(PhasePlanning)
+	for _, expression := range changedExpressions {
+		for _, rule := range index.rulesFor(expression) {
+			if isPredicateUnionRule(rule) {
+				p.push(&TransformMatchPartitionTask{TransformExprTask{Phase: PhasePlanning, Ref: ref, Expr: expression, Rule: rule}})
+			}
+		}
 	}
 }

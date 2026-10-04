@@ -46,8 +46,8 @@ func buildOnlineIndexerCountMetadata() *recordlayer.RecordMetaData {
 	return md
 }
 
-// populateRecords inserts numRecords Order records into the store using a clean DB.
-// Returns the records' PKs for verification.
+// populateRecords inserts numRecords Order records into the store using a clean DB
+// and leaves every index DISABLED for the build under test.
 func populateRecords(t testing.TB, db *recordlayer.FDBDatabase, md *recordlayer.RecordMetaData, sub subspace.Subspace, numRecords int) {
 	t.Helper()
 	ctx, cancelCtx := chaosRunContext(0)
@@ -69,6 +69,15 @@ func populateRecords(t testing.TB, db *recordlayer.FDBDatabase, md *recordlayer.
 				Price:   proto.Int32(int32(i * 10)),
 			})
 			if err != nil {
+				return nil, err
+			}
+		}
+		// Every index DISABLED, as Java's indexer tests leave it before a build: an
+		// index on a new store is READABLE, and a session over a READABLE index
+		// neither clears nor builds, so without this the faults below would be
+		// injected into a build that does nothing.
+		for _, index := range md.GetAllIndexes() {
+			if _, err := store.MarkIndexDisabled(index.Name); err != nil {
 				return nil, err
 			}
 		}

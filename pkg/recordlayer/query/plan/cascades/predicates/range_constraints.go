@@ -155,13 +155,61 @@ func (b *RangeConstraintsBuilder) AddComparisonMaybe(c Comparison) bool {
 	if !canBeUsedInScanPrefix(c.Type) {
 		return false
 	}
-	corr := c.GetCorrelatedTo()
-	if len(corr) > 0 {
-		b.deferred = append(b.deferred, c)
+	if comparisonIsCompileTime(c) {
+		b.compilable = appendComparisonSet(b.compilable, c)
 	} else {
-		b.compilable = append(b.compilable, c)
+		b.deferred = appendComparisonSet(b.deferred, c)
 	}
 	return true
+}
+
+func appendComparisonSet(comparisons []Comparison, added ...Comparison) []Comparison {
+	for _, comparison := range added {
+		found := false
+		for _, existing := range comparisons {
+			if SemanticEqualsUnderAliasMap(&ComparisonPredicate{Comparison: existing}, &ComparisonPredicate{Comparison: comparison}, nil) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			comparisons = append(comparisons, comparison)
+		}
+	}
+	return comparisons
+}
+
+// Java requires a supported comparison kind and an entirely range-matchable
+// operand tree; absence of row correlations alone does not prove compilability.
+func comparisonIsCompileTime(comparison Comparison) bool {
+	if comparison.ParameterName != "" {
+		return false
+	}
+	switch comparison.Type {
+	case ComparisonIsNull, ComparisonIsNotNull:
+		return true
+	case ComparisonEquals, ComparisonLessThan, ComparisonLessThanOrEq,
+		ComparisonGreaterThan, ComparisonGreaterThanEq, ComparisonNotDistinctFrom:
+		return rangeMatchableValue(comparison.Operand)
+	default:
+		return false
+	}
+}
+
+func rangeMatchableValue(value values.Value) bool {
+	switch value.(type) {
+	case *values.ConstantValue, *values.BooleanValue, *values.NullValue,
+		*values.ConstantObjectValue, *values.PromoteValue, *values.CastValue,
+		*values.EvaluatesToValue, *values.OfTypeValue, *values.IndexEntryObjectValue:
+		for _, child := range value.Children() {
+			if !rangeMatchableValue(child) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
 }
 
 // canBeUsedInScanPrefix ports RangeConstraints.Builder.canBeUsedInScanPrefix
@@ -182,6 +230,12 @@ func canBeUsedInScanPrefix(t ComparisonType) bool {
 	default:
 		return false
 	}
+}
+
+// Add intersects a range without reclassifying its compiled/deferred lanes.
+func (b *RangeConstraintsBuilder) Add(r *RangeConstraints) {
+	b.compilable = appendComparisonSet(b.compilable, r.compilableComparisons...)
+	b.deferred = appendComparisonSet(b.deferred, r.deferredRanges...)
 }
 
 // Build creates the RangeConstraints from accumulated comparisons.

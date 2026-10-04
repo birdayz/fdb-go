@@ -1,6 +1,7 @@
 package values
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -10,8 +11,8 @@ func TestFirstOrDefaultStreamingValue_TypeFromChild(t *testing.T) {
 	t.Parallel()
 	r := NewRangeValue(LiteralValue(int64(0)), LiteralValue(int64(10)), LiteralValue(int64(1)))
 	v := NewFirstOrDefaultStreamingValue(r, LiteralValue(int64(-1)))
-	if !v.Type().Equals(NotNullLong) {
-		t.Fatalf("Type = %v, want NotNullLong (from RangeValue child)", v.Type())
+	if !v.Type().Equals(NewRangeValue(nil, nil, nil).Type()) {
+		t.Fatalf("Type = %v, want the RangeValue row type", v.Type())
 	}
 }
 
@@ -49,8 +50,8 @@ func TestFirstOrDefaultStreamingValue_NonEmptyRange(t *testing.T) {
 	v := NewFirstOrDefaultStreamingValue(r, LiteralValue(int64(-1)))
 	got, errEv0 := v.Evaluate(nil)
 	require.NoError(t, errEv0)
-	if got != int64(5) {
-		t.Fatalf("Evaluate non-empty = %v, want 5", got)
+	if !reflect.DeepEqual(got, map[string]any{"ID": int64(5)}) {
+		t.Fatalf("Evaluate non-empty = %v, want {ID:5}", got)
 	}
 }
 
@@ -99,7 +100,7 @@ func TestFirstOrDefaultStreamingValue_WithChildren(t *testing.T) {
 	})
 	got, errEv0 := rebuilt.Evaluate(nil)
 	require.NoError(t, errEv0)
-	if got != int64(100) {
-		t.Fatalf("rebuilt.Evaluate = %v, want 100 (first of new range)", got)
+	if !reflect.DeepEqual(got, map[string]any{"ID": int64(100)}) {
+		t.Fatalf("rebuilt.Evaluate = %v, want {ID:100} (first of new range)", got)
 	}
 }

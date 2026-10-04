@@ -109,13 +109,13 @@ jobs:
           # drops out of the package and `go vet` exits 0 having checked
           # NOTHING — the exact rot this step exists to catch, wearing a green
           # check. Assert the file is actually in the realcluster build first.
-          FILES=$(GOWORK=off "$GO_BIN" list -tags 'stress realcluster' -f '{{.XTestGoFiles}}' ./pkg/relational/sqldriver/stress/)
+          FILES=$("$GO_BIN" list -tags 'stress realcluster' -f '{{.XTestGoFiles}}' ./pkg/relational/sqldriver/stress/)
           echo "realcluster build files: $FILES"
           case "$FILES" in
             *stress_10m_test.go*) ;;
             *) echo "::error::stress_10m_test.go is not in the 'stress realcluster' build — the type-check below would be a no-op"; exit 1 ;;
           esac
-          GOWORK=off "$GO_BIN" vet -tags 'stress realcluster' ./pkg/relational/sqldriver/stress/
+          "$GO_BIN" vet -tags 'stress realcluster' ./pkg/relational/sqldriver/stress/
 
       - name: Resolve stress targets (no-op guard)
         if: steps.window.outputs.ok == 'true'

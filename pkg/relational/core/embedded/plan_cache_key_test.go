@@ -8,7 +8,7 @@ import (
 
 // planCacheHitsSame reports whether two (scope, sql) pairs land on the same
 // cache entry — the ground truth for injectivity/scoping, exercised through
-// the REAL PlanCache key path (scope kept verbatim, sql normalized).
+// the REAL PlanCache key path (scope and key text kept verbatim).
 func planCacheHitsSame(t *testing.T, scopeA, sqlA, scopeB, sqlB string) bool {
 	t.Helper()
 	c := NewPlanCache(16)
@@ -18,43 +18,32 @@ func planCacheHitsSame(t *testing.T, scopeA, sqlA, scopeB, sqlB string) bool {
 	return ok && got == p
 }
 
-// TestPlanCacheKey_Injective pins the fix for the non-injective key (item 3c):
-// q.GetText() concatenated tokens with no separator, so structurally different
-// queries collapsed to the same string and shared a cache entry — a wrong-plan
-// bug. The canonical query text (normalized inside PlanCache) must keep them
-// distinct while still sharing equivalent spellings.
+// TestPlanCacheKey_Injective: the key text is rendered from tokens, so
+// structurally different queries never share an entry while spellings that
+// differ only in keyword/identifier case, whitespace or comments do.
 func TestPlanCacheKey_Injective(t *testing.T) {
 	t.Parallel()
 
-	sqlOf := func(sql string) string { return canonicalTextOf(parseQuery(t, sql)) }
-
-	// The canonical collision case: `SELECT AB FROM T` (one column AB) vs
-	// `SELECT A B FROM T` (column A aliased B). GetText() gives "SELECTABFROMT"
-	// for BOTH.
-	if parseQuery(t, "SELECT AB FROM T").GetText() != parseQuery(t, "SELECT A B FROM T").GetText() {
-		t.Fatal("precondition: GetText() must collide for these (test no longer exercises the bug)")
-	}
-	if planCacheHitsSame(t, "S", sqlOf("SELECT AB FROM T"), "S", sqlOf("SELECT A B FROM T")) {
-		t.Fatal("non-injective cache key: `SELECT AB` and `SELECT A B` share an entry")
-	}
-	// Delimited identifiers are case-sensitive: `"a"` vs `"A"` are distinct.
-	if planCacheHitsSame(t, "S", sqlOf(`SELECT "a" FROM T`), "S", sqlOf(`SELECT "A" FROM T`)) {
-		t.Fatal("quoted-identifier case collapsed")
-	}
-	// String-literal whitespace is significant.
-	if planCacheHitsSame(t, "S", sqlOf(`SELECT * FROM T WHERE x = 'a b'`), "S", sqlOf(`SELECT * FROM T WHERE x = 'ab'`)) {
-		t.Fatal("string-literal whitespace collapsed")
+	sqlOf := func(sql string) string { return planCacheText(parseQuery(t, sql)) }
+	for _, pair := range [][2]string{
+		{"SELECT AB FROM T", "SELECT A B FROM T"},
+		{`SELECT "a" FROM T`, `SELECT "A" FROM T`},
+		{`SELECT * FROM T WHERE x = 'a b'`, `SELECT * FROM T WHERE x = 'ab'`},
+		{`SELECT * FROM T WHERE x = 'a b'`, `SELECT * FROM T WHERE x = 'a' 'b'`},
+		{"SELECT * FROM T WHERE b = B64'YWJj'", "SELECT * FROM T WHERE b = B64'ywjj'"},
+		{"SELECT * FROM T WHERE b = X'0A'", "SELECT * FROM T WHERE b = X'0a'"},
+	} {
+		if planCacheHitsSame(t, "S", sqlOf(pair[0]), "S", sqlOf(pair[1])) {
+			t.Fatalf("%q and %q share a cache entry", pair[0], pair[1])
+		}
 	}
 
-	// Equivalent spellings (case, whitespace, comments — both -- and #) STILL
-	// share; the fix must not over-partition, and must not churn on trace
-	// comments (item 3c — trace-comment churn).
 	base := sqlOf("SELECT AB FROM T")
 	for _, v := range []string{
 		"select ab from t",
 		"SELECT   AB   FROM   T",
 		"SELECT AB FROM T -- trace",
-		"SELECT # trace\n AB FROM T",
+		"SELECT /* trace /* nested */ */ AB\nFROM T",
 	} {
 		if !planCacheHitsSame(t, "S", sqlOf(v), "S", base) {
 			t.Fatalf("equivalent spelling %q did not share the base entry (cache churn)", v)
@@ -66,11 +55,11 @@ func TestPlanCacheKey_Injective(t *testing.T) {
 // SetSchema mutates only the session schema, never the cache, so the same SQL
 // resolving against a different schema/version must key differently. Schema
 // names are CASE-SENSITIVE, so `s` and `S` must not collide (the
-// scope must bypass normalizeSQL).
+// scope is kept verbatim).
 func TestPlanCacheKey_SchemaScoped(t *testing.T) {
 	t.Parallel()
 
-	sql := canonicalTextOf(parseQuery(t, "SELECT id FROM orders"))
+	sql := planCacheText(parseQuery(t, "SELECT id FROM orders"))
 
 	if planCacheHitsSame(t, planCacheScope("", "SCHEMA_A", 0, ""), sql, planCacheScope("", "SCHEMA_B", 0, ""), sql) {
 		t.Fatal("same SQL under different schemas shares a cache entry — SET SCHEMA staleness")
@@ -107,7 +96,7 @@ func TestPlanCacheKey_SchemaScoped(t *testing.T) {
 func TestPlanCacheKey_DBPathScoped(t *testing.T) {
 	t.Parallel()
 
-	sql := canonicalTextOf(parseQuery(t, "SELECT id FROM orders"))
+	sql := planCacheText(parseQuery(t, "SELECT id FROM orders"))
 
 	if planCacheHitsSame(t,
 		planCacheScope("/tenant_a", "MAIN", 0, ""), sql,
@@ -152,7 +141,7 @@ func TestPlanCacheKey_DBPathScoped(t *testing.T) {
 func TestPlanCacheKey_PlannerOptionsScoped_Injective(t *testing.T) {
 	t.Parallel()
 
-	sql := canonicalTextOf(parseQuery(t, "SELECT id FROM orders"))
+	sql := planCacheText(parseQuery(t, "SELECT id FROM orders"))
 
 	twoRealRules := plannerOptionsFrom(api.NewOptionsBuilder().
 		Set(api.OptDisabledPlannerRules, []string{"PredicatePushDownRule", "SelectMergeRule"}).Build())
@@ -184,7 +173,7 @@ func TestPlanCacheKey_PlannerOptionsScoped_Injective(t *testing.T) {
 func TestPlanCacheKey_PlannerOptionsScoped_Injective_Colon(t *testing.T) {
 	t.Parallel()
 
-	sql := canonicalTextOf(parseQuery(t, "SELECT id FROM orders"))
+	sql := planCacheText(parseQuery(t, "SELECT id FROM orders"))
 
 	twoRealRules := plannerOptionsFrom(api.NewOptionsBuilder().
 		Set(api.OptDisabledPlannerRules, []string{"A", "B"}).Build())

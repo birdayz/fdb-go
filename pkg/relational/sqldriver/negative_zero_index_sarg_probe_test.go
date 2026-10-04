@@ -66,7 +66,7 @@ func TestFDB_NegativeZeroIndexSargProbe(t *testing.T) {
 		"CREATE TABLE f (id BIGINT, v FLOAT, PRIMARY KEY (id)) "+
 		"CREATE INDEX f_v ON f (v)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nzsarg/s WITH TEMPLATE nzsarg")
-	dsn := fmt.Sprintf("fdbsql:///testdb_nzsarg?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_NZSARG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -77,7 +77,7 @@ func TestFDB_NegativeZeroIndexSargProbe(t *testing.T) {
 	// non-zero-boundary query still returns something; id 3 is NULL so the
 	// SARG's null-boundary handling around a zero comparand is also exercised.
 	mwjoMustExec(t, db, ctx, "INSERT INTO d (id, v) VALUES (1, -0.0), (2, 5.0), (3, NULL)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO f (id, v) VALUES (1, -0.0), (2, 5.0), (3, NULL)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO f (id, v) VALUES (1, CAST(-0.0 AS FLOAT)), (2, CAST(5.0 AS FLOAT)), (3, NULL)")
 
 	idxConn := pinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})
 	fullConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {

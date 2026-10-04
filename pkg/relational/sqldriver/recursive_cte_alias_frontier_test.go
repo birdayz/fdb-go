@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/onsi/gomega"
@@ -13,7 +14,7 @@ import (
 // recursive-CTE leg normalization. A leg's normalization wrap
 // (normalizeLegToOutputColumns) re-reads the leg's output by its PHYSICAL
 // column names. On the positional frontier the physical slot names are the
-// OUTPUT names — ALIAS-preferring (executeProjection's posNames) — so a leg whose top projection carries an alias must be
+// OUTPUT names — ALIAS-preferring (the block Map's row names) — so a leg whose top projection carries an alias must be
 // re-read by that alias, not by values.ProjectionColumnName of the projected
 // value (the source column / computed rendering). Reading the source name
 // against an alias-named positional row is a GetByName miss, and the ordinal
@@ -45,7 +46,7 @@ func TestFDB_RecursiveCTEAliasedComputedColumn(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE rcte_alias_computed_tmpl", dbPath))).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -107,7 +108,7 @@ func TestFDB_RecursiveCTEColumnListRenamesAliasedSeed(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE rcte_alias_seed_tmpl", dbPath))).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -116,7 +117,7 @@ func TestFDB_RecursiveCTEColumnListRenamesAliasedSeed(t *testing.T) {
 
 	// Column list renames the aliased seed (X -> V); alias-free recursive branch.
 	rows, err := db.QueryContext(ctx,
-		"WITH RECURSIVE c(v) AS (SELECT id AS x FROM t UNION ALL SELECT v + 1 FROM c WHERE v < 5) SELECT v FROM c ORDER BY v")
+		"WITH RECURSIVE c(v) AS (SELECT id AS x FROM t UNION ALL SELECT x + 1 FROM c WHERE x < 5) SELECT v FROM c ORDER BY v")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
 	var got []int64
@@ -131,8 +132,7 @@ func TestFDB_RecursiveCTEColumnListRenamesAliasedSeed(t *testing.T) {
 }
 
 // TestFDB_RecursiveCTEColumnListAndAliasedBranches combines both axes —
-// a table-backed seed (FROM-less SELECT is unsupported, matching Java's
-// visitSimpleTable rejection): the column list renames an aliased seed AND
+// a table-backed seed: the column list renames an aliased seed AND
 // the recursive branch aliases its computed column. Both wraps fire; both
 // must read the alias-named frontier slots.
 func TestFDB_RecursiveCTEColumnListAndAliasedBranches(t *testing.T) {
@@ -152,7 +152,7 @@ func TestFDB_RecursiveCTEColumnListAndAliasedBranches(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE rcte_alias_both_tmpl", dbPath))).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -160,7 +160,7 @@ func TestFDB_RecursiveCTEColumnListAndAliasedBranches(t *testing.T) {
 	g.Expect(db.ExecContext(ctx, "INSERT INTO t VALUES (1)")).Error().NotTo(gomega.HaveOccurred())
 
 	rows, err := db.QueryContext(ctx,
-		"WITH RECURSIVE c(v) AS (SELECT id AS x FROM t UNION ALL SELECT v + 1 AS v FROM c WHERE v < 5) SELECT * FROM c ORDER BY v")
+		"WITH RECURSIVE c(v) AS (SELECT id AS x FROM t UNION ALL SELECT x + 1 AS v FROM c WHERE x < 5) SELECT * FROM c ORDER BY v")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
 	cols, err := rows.Columns()
@@ -202,7 +202,7 @@ func TestFDB_RecursiveCTEAliasedJoinBodyColumn(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE rcte_alias_join_tmpl", dbPath))).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -215,7 +215,7 @@ func TestFDB_RecursiveCTEAliasedJoinBodyColumn(t *testing.T) {
 	query := `WITH RECURSIVE walk(cur, orig) AS (
 		SELECT id, parent FROM t WHERE id = 1
 		UNION ALL
-		SELECT b.id AS cur, b.parent AS orig FROM walk AS a, t AS b WHERE b.parent = a.cur
+		SELECT b.id AS cur, b.parent AS orig FROM walk AS a, t AS b WHERE b.parent = a.id
 	)
 	SELECT cur FROM walk ORDER BY cur`
 
@@ -262,7 +262,7 @@ func TestFDB_RecursiveCTEDuplicateAliases(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE rcte_dup_alias_tmpl", dbPath))).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -274,7 +274,7 @@ func TestFDB_RecursiveCTEDuplicateAliases(t *testing.T) {
 
 	// Column-list form.
 	rows, err := db.QueryContext(ctx,
-		"WITH RECURSIVE c(a, b) AS (SELECT id, v FROM t UNION ALL SELECT a + 1 AS x, b + 1 AS x FROM c WHERE a < 3) SELECT a, b FROM c ORDER BY a")
+		"WITH RECURSIVE c(a, b) AS (SELECT id, v FROM t UNION ALL SELECT id + 1 AS x, v + 1 AS x FROM c WHERE id < 3) SELECT a, b FROM c ORDER BY a")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
 	var got []row

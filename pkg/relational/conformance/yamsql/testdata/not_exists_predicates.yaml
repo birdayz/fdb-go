@@ -51,6 +51,6 @@ tests:
 
   # NOT EXISTS where all outer rows have matches (empty result)
   - query: SELECT o.id FROM orders o WHERE o.id IN (2, 3) AND NOT EXISTS (SELECT 1 FROM shipments s WHERE s.order_id = o.id)
-    plan_contains: "FlatMap(outer=PredicatesFilter(Scan(ORDERS)"
+    plan_contains: "FlatMap(outer=Scan(ORDERS, [=])"
     plan_not_contains: "NestedLoopJoin"
     rows: []

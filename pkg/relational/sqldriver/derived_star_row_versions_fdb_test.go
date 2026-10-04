@@ -27,7 +27,7 @@ func TestFDB_DerivedStarRowVersionsWhere(t *testing.T) {
 		CREATE TABLE bb (id BIGINT, z BIGINT, PRIMARY KEY (id))
 		WITH OPTIONS(store_row_versions=true)`)
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dsrv/s1 WITH TEMPLATE dsrv_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_dsrv?cluster_file=%s&schema=s1", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_DSRV?cluster_file=%s&schema=S1", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestFDB_DerivedStarRowVersionsUnnestCTE(t *testing.T) {
 		CREATE TABLE things (id BIGINT, x BIGINT, arr BIGINT ARRAY, PRIMARY KEY (id))
 		WITH OPTIONS(store_row_versions=true)`)
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dsrvu/s1 WITH TEMPLATE dsrvu_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_dsrvu?cluster_file=%s&schema=s1", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_DSRVU?cluster_file=%s&schema=S1", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

@@ -77,11 +77,13 @@ var _ = Describe("FDBRecordContext", func() {
 			Expect(roundTripped.UserVersion).To(Equal(vs.UserVersion))
 		})
 
-		It("errors on incomplete ToVersionstamp", func() {
+		It("preserves incomplete ToVersionstamp placeholders", func() {
 			v, err := IncompleteVersion(5)
 			Expect(err).NotTo(HaveOccurred())
-			_, err = v.ToVersionstamp()
-			Expect(err).To(HaveOccurred())
+			stamp, err := v.ToVersionstamp()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(stamp).To(Equal(tuple.IncompleteVersionstamp(5)))
+			Expect(FromVersionstamp(stamp).IsComplete()).To(BeFalse())
 		})
 	})
 })

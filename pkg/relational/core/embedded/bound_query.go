@@ -34,23 +34,20 @@ func (p *existsSubqueryPlanner) bindQuery(q antlrgen.IQueryContext) (*boundQuery
 	if err != nil {
 		return nil, err
 	}
-	plan, primaryUnnest, err := p.tryBuildCorrelatedPrimaryUnnest(q)
+	plan, err := visitor.VisitQuery(q)
+	if err == nil {
+		err = rejectArrayAggOrderBy(q)
+	}
 	if err != nil {
 		return nil, err
-	}
-	if !primaryUnnest {
-		plan, err = visitor.VisitQuery(q)
-		if err != nil {
-			return nil, err
-		}
 	}
 	if plan == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "bound query has no logical plan")
 	}
-	if err := demoteSchemaQualifiedUnnest(plan, p.effectiveSchemaName(), p.md); err != nil {
+	if err := demoteQualifiedTableUnnest(plan, p.effectiveTemplateName(), p.md); err != nil {
 		return nil, err
 	}
-	if err := resolveQualifiedTableNames(plan, p.effectiveSchemaName()); err != nil {
+	if err := resolveQualifiedTableNames(plan, p.effectiveTemplateName()); err != nil {
 		return nil, err
 	}
 	logical.BindCTESources(plan, p.cteProducers)
@@ -71,6 +68,7 @@ func newBoundQuery(plan logical.LogicalOperator, enclosing *semantic.Scope) (*bo
 		for _, source := range frame.Sources() {
 			source.HiddenColumns = maps.Clone(source.HiddenColumns)
 			source.AdditionalQualifiers = append([]semantic.Identifier(nil), source.AdditionalQualifiers...)
+			source.NamePath = append([]semantic.Identifier(nil), source.NamePath...)
 			parent = append(parent, source)
 		}
 	}
@@ -177,7 +175,11 @@ func boundDependencies(op logical.LogicalOperator, ctes map[*logical.CTEProducer
 		}
 		r.local[values.NamedCorrelationIdentifier(strings.ToUpper(sourceBindingName(node)))] = struct{}{}
 	case *logical.LogicalInlineValues:
-		addValue(node.CollectionValue())
+		if node.StreamValue() != nil {
+			addValue(node.StreamValue())
+		} else {
+			addValue(node.CollectionValue())
+		}
 		r.local[values.NamedCorrelationIdentifier(strings.ToUpper(sourceBindingName(node)))] = struct{}{}
 	case *logical.LogicalUnnest:
 		addValue(node.CorrelatedCollection)
@@ -229,7 +231,7 @@ func boundDependencies(op logical.LogicalOperator, ctes map[*logical.CTEProducer
 			addPred(pred)
 		}
 		existential = node.OnExistsSubqueries
-	case *logical.LogicalValues:
+	case *logical.LogicalSingleton:
 	default:
 		return r, api.NewErrorf(api.ErrCodeUnsupportedQuery, "no bound dependency property for %T", op)
 	}
@@ -444,6 +446,14 @@ func lowerBoundExists(bound *boundQuery) (loweredExists, error) {
 				if alias == edge.Alias && edge.KnownTruth == nil {
 					out.join = edge.JoinPredicate
 					out.constraint = edge.Constraint
+					// P(m,n,o) ranges over M×N: the WHERE N's block folded into
+					// its plan is the product's predicate. Left on N it would
+					// make N a lateral leg of M, read below M's bindings
+					// once the product is re-associated.
+					if factor, where := productFactor(edge); where != nil {
+						out.join = where
+						return &logical.LogicalJoin{Left: filter.Input, Right: factor, Kind: logical.JoinInner}, nil
+					}
 					out.retained = append(out.retained, edge)
 					return &logical.LogicalJoin{Left: filter.Input, Right: edge.Plan, Kind: logical.JoinInner}, nil
 				}
@@ -488,4 +498,31 @@ func lowerBoundExists(bound *boundQuery) (loweredExists, error) {
 		out.free = make(bindingSet)
 	}
 	return out, nil
+}
+
+// productFactor splits an EXISTS edge whose block WHERE was folded into its
+// plan into the block's FROM and that WHERE. where is nil when the plan carries
+// no such filter, or one with subquery riders whose bindings it owns.
+func productFactor(edge logical.ExistsSubquery) (factor logical.LogicalOperator, where predicates.QueryPredicate) {
+	if edge.JoinPredicate != nil {
+		return edge.Plan, nil
+	}
+	factor = edge.Plan
+	var conjuncts []predicates.QueryPredicate
+	for {
+		filter, ok := factor.(*logical.LogicalFilter)
+		if !ok || filter.Predicate == nil || filter.HasQualify || len(filter.ExistsSubqueries) != 0 ||
+			len(filter.ScalarSubqueries) != 0 || len(filter.CorrelatedScalarSubqueries) != 0 {
+			break
+		}
+		conjuncts = append(conjuncts, filter.Predicate)
+		factor = filter.Input
+	}
+	switch len(conjuncts) {
+	case 0:
+		return edge.Plan, nil
+	case 1:
+		return factor, conjuncts[0]
+	}
+	return factor, predicates.NewAnd(conjuncts...)
 }

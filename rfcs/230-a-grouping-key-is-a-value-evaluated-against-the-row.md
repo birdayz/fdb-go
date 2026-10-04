@@ -1,8 +1,9 @@
 # RFC-230 — A grouping key is a value evaluated against the row, not a slot in it
 
 **Status:** IMPLEMENTED. **Post-RFC-232 current state (2026-08-16):** the
-sealed exact FieldValue/FieldPath views reduced the Accessors sweep to **47
-non-test lines = 8 generated + 7 comment + 32 code**, carrying **36 arity
+sealed exact FieldValue/FieldPath views reduced the Accessors sweep to **45
+non-test lines = 8 generated + 5 comment + 32 code** (two comment lines went
+with the per-operator result-column derivation), carrying **36 arity
 expressions across 28 symbols**. The classified symbols are **8 (a), 0 (b), 20
 (c), 0 (d), 0 (?)**. The +2 over the 2026-08-13 reading is
 `values.DisplayColumnName`, both expressions class (c): the projection label

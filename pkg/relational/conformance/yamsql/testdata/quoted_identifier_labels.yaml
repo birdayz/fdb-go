@@ -132,18 +132,18 @@ tests:
   # inverts when a neighbouring fold is removed.
   #
   # THE SEED IS A COLUMN READ, NOT AN INTEGER LITERAL, and that is deliberate:
-  # a literal-seeded recursive CTE has a separate NULLABILITY defect
-  # (`RECORD(N:INT)` vs `RECORD(N:INT?)`) that fails the same way and would be
-  # mistaken for this one in either direction. The unquoted control below is
-  # what separates them — it must stay green while the quoted arm is fixed.
-  - query: WITH RECURSIVE r("n") AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION ALL SELECT r."n" + 1 FROM r WHERE r."n" < 3) SELECT * FROM r
+  # a literal seed keeps its column NOT NULL and narrows the recursive leg's
+  # nullable `+ 1` on write, a second mechanism this row should not depend on.
+  # The unquoted control below is what separates the case arm from the rest —
+  # it must stay green while the quoted arm is fixed.
+  - query: WITH RECURSIVE r("n") AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION ALL SELECT r."id" + 1 FROM r WHERE r."id" < 3) SELECT * FROM r
     unordered: true
     columns: ["n"]
     rows:
       - [1]
       - [2]
       - [3]
-  - query: WITH RECURSIVE r(n) AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION ALL SELECT r.n + 1 FROM r WHERE r.n < 3) SELECT * FROM r
+  - query: WITH RECURSIVE r(n) AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION ALL SELECT r."id" + 1 FROM r WHERE r."id" < 3) SELECT * FROM r
     unordered: true
     columns: ["N"]
     rows:
@@ -162,14 +162,14 @@ tests:
   #
   # The unquoted control below is what makes it a CASE bug rather than a
   # recursion or dedup bug: same query, same dedup path, all three rows.
-  - query: WITH RECURSIVE r("n") AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION SELECT r."n" + 1 FROM r WHERE r."n" < 3) SELECT * FROM r
+  - query: WITH RECURSIVE r("n") AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION SELECT r."id" + 1 FROM r WHERE r."id" < 3) SELECT * FROM r
     unordered: true
     columns: ["n"]
     rows:
       - [1]
       - [2]
       - [3]
-  - query: WITH RECURSIVE r(n) AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION SELECT r.n + 1 FROM r WHERE r.n < 3) SELECT * FROM r
+  - query: WITH RECURSIVE r(n) AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION SELECT r."id" + 1 FROM r WHERE r."id" < 3) SELECT * FROM r
     unordered: true
     columns: ["N"]
     rows:
@@ -240,7 +240,7 @@ tests:
     rows:
       - [42, 7]
   # An explicit CTE column-alias list OVERRIDES the seed-derived output names
-  # entirely, so these two arms pin the ALIAS path and — measured, not assumed —
+  # the main query sees (the recursion reads the seed's), so these two arms pin the ALIAS path and — measured, not assumed —
   # they do NOT drive the seed-derived one: with the fold restored they both
   # still pass. TWO alias-free arms below drive it, one per site — the
   # explicitly-projecting one and the star-seed one — and this sentence said
@@ -248,7 +248,7 @@ tests:
   # reaches FIRST and so the one that misinforms hardest. They are kept because
   # the alias path is its own authority worth pinning, and each comment says
   # which path it covers so none is credited with coverage it does not have.
-  - query: WITH RECURSIVE d("Node") AS (SELECT * FROM q1 WHERE "id" = 1 UNION ALL SELECT d."Node" + 1 FROM d WHERE d."Node" < 3) SELECT * FROM d
+  - query: WITH RECURSIVE d("Node") AS (SELECT * FROM q1 WHERE "id" = 1 UNION ALL SELECT d."id" + 1 FROM d WHERE d."id" < 3) SELECT * FROM d
     unordered: true
     columns: ["Node"]
     rows:
@@ -256,7 +256,7 @@ tests:
       - [2]
       - [3]
   # The explicitly-projected twin of the same alias list.
-  - query: WITH RECURSIVE d("Node") AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION ALL SELECT d."Node" + 1 FROM d WHERE d."Node" < 3) SELECT * FROM d
+  - query: WITH RECURSIVE d("Node") AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION ALL SELECT d."id" + 1 FROM d WHERE d."id" < 3) SELECT * FROM d
     unordered: true
     columns: ["Node"]
     rows:
@@ -330,8 +330,8 @@ tests:
   # Deriving the labels as a PROPERTY (ExactLogicalOutputLabels, which simply
   # never adds the qualifier) removes the question. The rows are the point: four
   # bare labels arrive, the alias list length-matches them, and the recursion
-  # reads its own output columns.
-  - query: WITH RECURSIVE d(w, x, y, z) AS (SELECT * FROM q1, QCASE WHERE q1."id" = 1 UNION ALL SELECT d.w + 1, d.x, d.y, d.z FROM d WHERE d.w < 3) SELECT d.w FROM d ORDER BY d.w
+  # reads the seed's labels while the main query reads the list's.
+  - query: WITH RECURSIVE d(w, x, y, z) AS (SELECT * FROM q1, QCASE WHERE q1."id" = 1 UNION ALL SELECT d."id" + 1, d.id, d."KeepCase", d.plain FROM d WHERE d."id" < 3) SELECT d.w FROM d ORDER BY d.w
     columns: ["W"]
     rows:
       - [1]

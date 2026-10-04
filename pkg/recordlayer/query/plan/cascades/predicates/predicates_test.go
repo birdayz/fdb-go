@@ -780,7 +780,7 @@ func TestGetCorrelatedToOfPredicate_ExactCompoundSet(t *testing.T) {
 	}
 }
 
-// PredicateEquals must consider Comparison.Escape — two LIKE
+// PredicateEquals must consider the LIKE escape — two LIKE
 // predicates with the same LHS / pattern but different escape runes
 // are distinct. Pin both halves: same-escape → equal,
 // different-escape → unequal.
@@ -788,16 +788,16 @@ func TestPredicateEquals_ComparisonLikeEscape(t *testing.T) {
 	t.Parallel()
 	field := predicateTestField(t, "name", values.TypeString)
 	withBackslash := NewComparisonPredicate(field, Comparison{
-		Type: ComparisonLike, Operand: values.LiteralValue("a%b"), Escape: '\\',
+		Type: ComparisonLike, Operand: values.NewPatternForLikeValue(values.LiteralValue("a%b"), values.LiteralValue(`\`)),
 	})
 	withBackslash2 := NewComparisonPredicate(field, Comparison{
-		Type: ComparisonLike, Operand: values.LiteralValue("a%b"), Escape: '\\',
+		Type: ComparisonLike, Operand: values.NewPatternForLikeValue(values.LiteralValue("a%b"), values.LiteralValue(`\`)),
 	})
 	withBang := NewComparisonPredicate(field, Comparison{
-		Type: ComparisonLike, Operand: values.LiteralValue("a%b"), Escape: '!',
+		Type: ComparisonLike, Operand: values.NewPatternForLikeValue(values.LiteralValue("a%b"), values.LiteralValue("!")),
 	})
 	noEscape := NewComparisonPredicate(field, Comparison{
-		Type: ComparisonLike, Operand: values.LiteralValue("a%b"),
+		Type: ComparisonLike, Operand: values.NewPatternForLikeValue(values.LiteralValue("a%b"), values.LiteralValue(nil)),
 	})
 
 	if !PredicateEquals(withBackslash, withBackslash2) {

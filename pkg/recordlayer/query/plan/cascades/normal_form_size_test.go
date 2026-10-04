@@ -99,22 +99,7 @@ func normalFormTestLeaves(t *testing.T) (x, y, z predicates.QueryPredicate) {
 			predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(0)))
 }
 
-// TestNormalFormVariable_MatchesTheConcreteTypes pins the one claim
-// normalFormVariable's doc comment declines to argue: that Go's structural
-// "not a connective" test is the exact equivalent of Java's
-// `isAtomic() || instanceof LeafQueryPredicate` (BooleanPredicateNormalizer.java:490-492).
-//
-// Java can ask "is this a LeafQueryPredicate". Go asks "is this not an
-// And/Or/Not". Those agree only while those three are the ONLY predicates with
-// children, and nothing enforced that. A new connective-shaped predicate added
-// without an arm would be silently treated as an atom and never descended into,
-// so the normalizer would return a wrong normal form with every other test
-// green — and Java would have thrown "unknown boolean expression" (:292) where
-// Go fails open, which is the divergence normalFormVariable's doc records.
-//
-// The assertion that catches that is the one on Children(), not the type list:
-// it states the invariant BEHIND the structural test, so it fails for a type
-// nobody remembered to add here rather than only for the ones that were.
+// Unmarked connectives are not normal-form variables; leaf predicates are.
 func TestNormalFormVariable_MatchesTheConcreteTypes(t *testing.T) {
 	t.Parallel()
 	a, _, _ := normalFormTestLeaves(t)
@@ -191,5 +176,40 @@ func TestNormalFormVariable_MatchesTheConcreteTypes(t *testing.T) {
 		t.Fatalf("exercised %d distinct predicate types, expected %d — a type was "+
 			"added to or removed from the predicates package and this enumeration "+
 			"no longer covers it", len(seen), concretePredicateTypes)
+	}
+}
+
+func TestNormalFormAtomicConnectiveBarrier(t *testing.T) {
+	t.Parallel()
+	a, b, c := normalFormTestLeaves(t)
+	fixed := predicates.WithAtomicity(predicates.NewOr(a, b), true)
+	input := predicates.NewAnd(fixed, predicates.NewOr(c, predicates.NewNot(c)))
+	normalized, changed := NormalizeDNF(input, 2)
+	if !changed {
+		t.Fatal("unfixed OR was not distributed")
+	}
+	disjunction, ok := normalized.(*predicates.OrPredicate)
+	if !ok || len(disjunction.SubPredicates) != 2 {
+		t.Fatalf("want two legs, got %s", normalized.Explain())
+	}
+	for _, term := range disjunction.SubPredicates {
+		found := false
+		for _, factor := range term.Children() {
+			if factor == fixed {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("fixed atomic factor lost: %s", term.Explain())
+		}
+	}
+	if got := normalFormExpansionSize(input, false, normalFormDNF); got != 2 {
+		t.Fatalf("expansion size = %d, want 2", got)
+	}
+	if !normalFormVariable(fixed) {
+		t.Fatal("atomic connective must be a normal-form variable")
+	}
+	if got := normalFormSize(input, false, normalFormDNF); got != 4 {
+		t.Fatalf("full cost size = %d, want 4", got)
 	}
 }

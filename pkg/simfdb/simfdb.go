@@ -197,7 +197,7 @@ func (db *SimDB) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, e
 			// skips it re-applies a possibly-already-durable transaction instead of
 			// conflicting on it. The real backends' Transact loops call OnError too.
 			if oerr := tx.OnError(fe).Get(); oerr != nil {
-				return nil, oerr
+				return nil, declinedRetryError(err, fe, oerr)
 			}
 			continue
 		}
@@ -205,8 +205,27 @@ func (db *SimDB) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, e
 	}
 }
 
+// declinedRetryError is what a Transact loop returns when OnError declines a retry. OnError
+// takes the extracted fdb.Error and, declining (the retry_limit reached), hands that same code
+// back; returning it would drop every wrapper the body put around it. The Apple Go binding's
+// retryable keeps the body's error when OnError re-raises the same code and replaces it only
+// with a non-fdb.Error or a different code (bindings/go/src/fdb/database.go, retryable, at
+// 7.3.77), and the libfdb_c backend follows that rule (libfdbc/backend.go, runLoop). So a
+// decline of the same code returns the caller's error with its chain; any other error from
+// OnError is OnError's own and is returned as it is. The pure-Go fdb wrapper does not keep the
+// chain today (unconvertError/convertError); RFC-257 WS-D section 5, "The body's error chain",
+// makes it adopt the same rule before D-0 sets a retry limit.
+func declinedRetryError(err error, fe fdb.Error, oerr error) error {
+	var oe fdb.Error
+	if errors.As(oerr, &oe) && oe.Code == fe.Code {
+		return err
+	}
+	return oerr
+}
+
 // ReadTransact runs fn inside a read-only transaction. Reads retry on a retryable error for
-// symmetry with Transact, though the sim's synchronous reads rarely produce one.
+// symmetry with Transact, though the sim's synchronous reads rarely produce one; the retry goes
+// through OnError, as the real backends' ReadTransact loops do, so the retry_limit option bounds it.
 func (db *SimDB) ReadTransact(fn func(fdb.ReadTransaction) (any, error)) (any, error) {
 	tx := db.newTxn()
 	for attempt := 0; ; attempt++ {
@@ -216,7 +235,9 @@ func (db *SimDB) ReadTransact(fn func(fdb.ReadTransaction) (any, error)) (any, e
 		}
 		var fe fdb.Error
 		if attempt < maxRetries && errors.As(err, &fe) && fdb.IsOnErrorRetryable(fe.Code) {
-			tx.Reset()
+			if oerr := tx.OnError(fe).Get(); oerr != nil {
+				return nil, declinedRetryError(err, fe, oerr)
+			}
 			continue
 		}
 		return nil, err

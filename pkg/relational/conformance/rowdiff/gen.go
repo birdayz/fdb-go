@@ -1620,6 +1620,10 @@ func (c *Case) DDL() string {
 
 // InsertSQL renders one multi-row INSERT for the dataset.
 func (c *Case) InsertSQL() string {
+	colType := map[string]ColType{}
+	for _, col := range c.Table.Cols {
+		colType[col.Name] = col.Type
+	}
 	var b strings.Builder
 	b.WriteString("INSERT INTO ")
 	b.WriteString(c.Table.Name)
@@ -1636,7 +1640,7 @@ func (c *Case) InsertSQL() string {
 				b.WriteString(c.Table.structLiteral(r))
 				continue
 			}
-			b.WriteString(renderLiteral(r[name]))
+			b.WriteString(renderColumnLiteral(colType[name], r[name]))
 		}
 		b.WriteString(")")
 	}
@@ -2251,6 +2255,19 @@ func bitSQL(op string) string {
 		return "^"
 	}
 	panic(fmt.Sprintf("rowdiff: unrenderable bit op %q", op))
+}
+
+// renderColumnLiteral renders a value written into a column of type t. A
+// FLOAT column takes a FLOAT, and the only literal a float renders to is a
+// DOUBLE, which no promotion takes to FLOAT (PromoteValue has no
+// DOUBLE_TO_FLOAT; both engines refuse it with 22000), so a FLOAT value is
+// written through CAST(… AS FLOAT). The generated value is already a float32
+// widened (genRows), so the narrowing cast is exact.
+func renderColumnLiteral(t ColType, v any) string {
+	if t == ColFloat && v != nil {
+		return "CAST(" + renderLiteral(v) + " AS FLOAT)"
+	}
+	return renderLiteral(v)
 }
 
 func renderLiteral(v any) string {

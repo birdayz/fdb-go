@@ -11,12 +11,13 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
-	"fmt"
 	"log/slog"
 	"runtime/debug"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"fdb.dev/gen"
 
 	"fdb.dev/pkg/dst"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
@@ -25,7 +26,6 @@ import (
 
 	apiddl "fdb.dev/pkg/relational/api/ddl"
 	"fdb.dev/pkg/relational/core/catalog"
-	"fdb.dev/pkg/relational/core/functions"
 	"fdb.dev/pkg/relational/core/keyspace"
 	"fdb.dev/pkg/relational/core/metadata"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
@@ -33,6 +33,7 @@ import (
 	"fdb.dev/pkg/relational/core/session"
 
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -43,10 +44,15 @@ import (
 //
 // Transaction model:
 //
-//	Auto-commit: every statement runs in its own FDB transaction via fdbDB.Run().
+//	Auto-commit: every statement runs in its own FDB transaction. A DML
+//	statement's is opened by beginTransaction and committed once, never
+//	replayed; a DDL statement and each result page run through fdbDB.Run().
 //	Explicit transaction: BeginTx opens an FDB transaction; all statements in
 //	the transaction share it. Commit/Rollback close it.
 type EmbeddedConnection struct {
+	// releaseParams undoes the current statement's parameter bindings.
+	releaseParams []func()
+
 	// sess carries the durable resource handles + session identifiers
 	// (FDB database, catalog, keyspace, metadata factory, current /
 	// default schema + database path). Extracted to the core/session
@@ -260,6 +266,12 @@ type embeddedTx struct {
 	// released.
 	scanState *recordlayer.ScanLimiterState
 
+	// tempFunctions are this transaction's CREATE TEMPORARY FUNCTIONs,
+	// dropped with it; tempMD is the schema metadata with them added.
+	tempFunctions []*gen.PUserDefinedFunction
+	tempMD        *recordlayer.RecordMetaData
+	tempBase      *recordlayer.RecordMetaData
+
 	// schemaCache is the TRANSACTION-scoped catalog cache (RFC-198 Decision
 	// 8b). While this transaction is open, catalog resolution consults THIS
 	// map and never the session cache in either direction: a session-cache hit
@@ -324,7 +336,11 @@ func (c *EmbeddedConnection) storeIn(rctx *recordlayer.FDBRecordContext, tx *emb
 			return store, nil
 		}
 	}
-	store, err := c.newStoreBuilder().
+	builder, err := c.newStoreBuilder()
+	if err != nil {
+		return nil, err
+	}
+	store, err := builder.
 		SetContext(rctx).
 		SetSubspace(ss).
 		SetMetaDataProvider(c.cachedMetaData()).
@@ -342,6 +358,10 @@ func (c *EmbeddedConnection) storeIn(rctx *recordlayer.FDBRecordContext, tx *emb
 	if err != nil {
 		return nil, err
 	}
+	// No background merger runs for embedded relational, so a GUARDIANN
+	// vector index pays down its deferred maintenance in the writing
+	// transaction (Java BackingRecordStore.load).
+	store.GetIndexDeferredMaintenanceControl().SetAutoMergeDuringCommit(true)
 	if tx != nil {
 		if tx.stores == nil {
 			tx.stores = make(map[string]*recordlayer.FDBRecordStore)
@@ -444,7 +464,7 @@ func (c *EmbeddedConnection) cachedLoadSchema(txn api.Transaction, dbPath, schem
 		_, err := c.runInTx(context.Background(), func(rctx *recordlayer.FDBRecordContext) (any, error) {
 			readTxn := catalog.NewFDBTransaction(rctx)
 			var loadErr error
-			s, loadErr = c.sess.Catalog.LoadSchema(readTxn, dbPath, schemaName)
+			s, loadErr = c.loadSchemaOfDatabase(readTxn, dbPath, schemaName)
 			return nil, loadErr
 		})
 		if err != nil {
@@ -459,12 +479,30 @@ func (c *EmbeddedConnection) cachedLoadSchema(txn api.Transaction, dbPath, schem
 	if s, ok := c.sess.SchemaCache[key]; ok {
 		return s, nil
 	}
-	s, err := c.sess.Catalog.LoadSchema(txn, dbPath, schemaName)
+	s, err := c.loadSchemaOfDatabase(txn, dbPath, schemaName)
 	if err != nil {
 		return nil, err
 	}
 	c.sess.SchemaCache[key] = s
 	return s, nil
+}
+
+// loadSchemaOfDatabase is the catalog's LoadSchema, with Java's report of a
+// missing database: Java's connect loads the connection's schema as given and,
+// when it is missing and so is the database, refuses the connection with
+// UNDEFINED_DATABASE "Database <path> does not exist"
+// (RecordLayerStorageCluster.loadDatabase, EmbeddedRelationalDriver.connect).
+// Go connects before the first statement reads the catalog (a connection may
+// create its own database), so the same answer is given here.
+func (c *EmbeddedConnection) loadSchemaOfDatabase(txn api.Transaction, dbPath, schemaName string) (api.Schema, error) {
+	s, err := c.sess.Catalog.LoadSchema(txn, dbPath, schemaName)
+	var ae *api.Error
+	if errors.As(err, &ae) && ae.Code == api.ErrCodeUndefinedSchema {
+		if ok, dbErr := c.sess.Catalog.DoesDatabaseExist(txn, dbPath); dbErr == nil && !ok {
+			return nil, api.NewErrorf(api.ErrCodeUndefinedDatabase, "Database <%s> does not exist", dbPath)
+		}
+	}
+	return s, err
 }
 
 func (c *EmbeddedConnection) invalidateSchemaCache(dbPath, schemaName string) {
@@ -514,6 +552,22 @@ func (c *EmbeddedConnection) invalidatePlanCache() {
 // RecordLayerSchemaTemplate, or the underlying RecordMetaData is
 // itself nil. Callers fall back to the text builder on nil.
 func (c *EmbeddedConnection) cachedMetaData() *recordlayer.RecordMetaData {
+	tmpl := c.cachedSchemaTemplate()
+	if tmpl == nil {
+		return nil
+	}
+	if c.activeTx != nil {
+		return c.activeTx.withTempFunctions(tmpl.Underlying())
+	}
+	return tmpl.Underlying()
+}
+
+// cachedSchemaTemplate returns the schema template of the connection's current
+// (DBPath, Schema) from the cache cachedMetaData reads, under the same rules,
+// or nil. Its name is the qualifier a table name may carry (Java's
+// SemanticAnalyzer compares a table's qualifier with its metadata catalog's
+// name, the template's).
+func (c *EmbeddedConnection) cachedSchemaTemplate() *metadata.RecordLayerSchemaTemplate {
 	if c.sess == nil {
 		return nil
 	}
@@ -535,10 +589,10 @@ func (c *EmbeddedConnection) cachedMetaData() *recordlayer.RecordMetaData {
 		return nil
 	}
 	tmpl, ok := schema.SchemaTemplate().(*metadata.RecordLayerSchemaTemplate)
-	if !ok {
+	if !ok || tmpl.Underlying() == nil {
 		return nil
 	}
-	return tmpl.Underlying()
+	return tmpl
 }
 
 // ensureMetaData loads the schema into the cache if not already present,
@@ -633,19 +687,19 @@ func (c *EmbeddedConnection) ExecContext(ctx context.Context, sql string, args [
 	}
 	defer c.beginStatement()()
 
-	substituted, err := substituteParams(sql, args)
-	if err != nil {
-		return nil, err
-	}
-
+	defer c.releaseStatementParams()
 	gen := newCascadesGenerator(c)
-	plan, err := gen.Plan(ctx, substituted)
+	gen.args = args
+	plan, err := gen.Plan(ctx, sql)
 	if err != nil {
 		return nil, translateFDBError(err)
 	}
+	// A result set belongs on Query: Java's executeUpdate refuses it with
+	// EXECUTE_UPDATE_RETURNED_RESULT_SET (after running the statement; Go
+	// refuses before, see DIVERGENCES.md "DML statement-layer routing").
 	if !plan.IsUpdate() {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-			"unsupported statement type; supported: DDL, INSERT, UPDATE, DELETE")
+		return nil, api.NewErrorf(api.ErrCodeExecuteUpdateReturnedResultSet,
+			"query '%s' returns a result set, use JDBC executeQuery method instead", sql)
 	}
 	result, err := plan.Execute(ctx)
 	if err != nil {
@@ -668,15 +722,13 @@ func (c *EmbeddedConnection) QueryContext(ctx context.Context, sql string, args 
 		return nil, driver.ErrBadConn
 	}
 	defer c.beginStatement()()
-	substituted, err := substituteParams(sql, args)
-	if err != nil {
-		return nil, err
-	}
+	defer c.releaseStatementParams()
 	if cerr := c.ensureCatalogInit(ctx); cerr != nil {
 		return nil, cerr
 	}
 	gen := newCascadesGenerator(c)
-	plan, err := gen.Plan(ctx, substituted)
+	gen.args = args
+	plan, err := gen.Plan(ctx, sql)
 	if err != nil {
 		return nil, translateFDBError(err)
 	}
@@ -693,8 +745,8 @@ func (c *EmbeddedConnection) QueryContext(ctx context.Context, sql string, args 
 	// ExecContext. We reject before executing (no surprise mutation), a
 	// deliberate divergence from Java's execute-then-throw (see DIVERGENCES).
 	if plan.IsUpdate() {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-			"INSERT/UPDATE/DELETE return a row count, not rows — use Exec, not Query")
+		return nil, api.NewErrorf(api.ErrCodeNoResultSet,
+			"query '%s' does not return result set, use JDBC executeUpdate method instead", sql)
 	}
 	result, err := plan.Execute(ctx)
 	if err != nil {
@@ -711,8 +763,18 @@ func (c *EmbeddedConnection) Prepare(query string) (driver.Stmt, error) {
 	return &embeddedStmt{conn: c, query: query}, nil
 }
 
-func (c *EmbeddedConnection) newStoreBuilder() *recordlayer.StoreBuilder {
-	return recordlayer.NewStoreBuilder().SetDatabase(c.sess.DB)
+// newStoreBuilder is the SQL driver's one opener of a user store, so every
+// store a connection opens takes the serializer the connection's options give
+// at the moment it opens (Java's RecordLayerDatabase.loadStore ->
+// StoreConfig.create). The catalog store is opened elsewhere and stays plain,
+// as Java's is. Outside a connection, the fleet opens user stores with
+// fleet.Options.Serializer, and CREATE SCHEMA's store writes no record.
+func (c *EmbeddedConnection) newStoreBuilder() (*recordlayer.StoreBuilder, error) {
+	serializer, err := serializerFromOptions(c.Options())
+	if err != nil {
+		return nil, err
+	}
+	return recordlayer.NewStoreBuilder().SetDatabase(c.sess.DB).SetSerializer(serializer), nil
 }
 
 // Close marks the connection as closed and cancels any open FDB transaction.
@@ -811,16 +873,16 @@ func (c *EmbeddedConnection) beginTransaction() (*embeddedTx, error) {
 // SetDefaultSchema sets the initial schema that is restored by ResetSession.
 // Called by the driver when the DSN contains ?schema=.
 //
-// The value is an SQL identifier and normalizes like one: unquoted names
-// fold to upper case, quoted names stay verbatim — the same rule
-// execCreateSchema applies, so `?schema=test1` finds the schema
-// `create schema /db/test1` created (both sides normalize to TEST1,
-// Java's identifier model; the corpus pins both spellings:
-// setup-with-connection-options.yamsql connects lower-case to a lower-case
-// create, create-drop-create-template.yamsql upper-case to a lower-case
-// create).
+// The value is kept as given, as Java keeps it:
+// RecordLayerStorageCluster.parseConnectionQueryString upper-cases the
+// option's NAME and not its value, and loadSchema looks the value up
+// verbatim (RecordLayerStorageCluster.java:76-124). A schema created
+// unquoted is stored folded, in both engines, so ?schema=test1 does not
+// reach the schema `create schema /db/test1` stored as TEST1 (measured
+// against the JVM: conformance "the DSN's schema option reaches the schema
+// Java's does"). Go folded the value as an SQL identifier, which reached
+// schemas Java's connect refuses.
 func (c *EmbeddedConnection) SetDefaultSchema(s string) {
-	s = functions.NormalizeIdentifier(s)
 	c.sess.DefaultSchema = s
 	c.sess.Schema = s
 }
@@ -864,8 +926,42 @@ func (c *EmbeddedConnection) PrepareContext(_ context.Context, query string) (dr
 	return c.Prepare(query)
 }
 
-// SetSchema sets the current schema label used when no schema is specified in SQL.
-func (c *EmbeddedConnection) SetSchema(s string) { c.sess.Schema = s }
+// SetSchema switches the session's schema, as Java's
+// EmbeddedRelationalConnection.setSchema does (EmbeddedRelationalConnection
+// .java:245-268). The name is taken as given, like the DSN's schema option: a
+// schema created unquoted is named in upper case. A schema the connection's
+// database does not hold is refused with UNDEFINED_SCHEMA "Schema <s> does not
+// exist in <path>", leaving the session on the schema it had; the empty name
+// (Java's null) clears the schema without a check. The check reads the catalog
+// in the open transaction when there is one (Java's
+// runIsolatedInTransactionIfPossible), in its own otherwise.
+func (c *EmbeddedConnection) SetSchema(s string) error {
+	if c.closed.Load() {
+		// Java's checkOpen: "Connection is closed!", INTERNAL_ERROR.
+		return api.NewError(api.ErrCodeInternalError, "Connection is closed!")
+	}
+	if s == "" {
+		c.sess.Schema = ""
+		return nil
+	}
+	ctx := context.Background()
+	if err := c.ensureCatalogInit(ctx); err != nil {
+		return err
+	}
+	var exists bool
+	if _, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		var err error
+		exists, err = c.sess.Catalog.DoesSchemaExist(catalog.NewFDBTransaction(rctx), c.sess.DBPath, s)
+		return nil, err
+	}); err != nil {
+		return err
+	}
+	if !exists {
+		return api.NewErrorf(api.ErrCodeUndefinedSchema, "Schema %s does not exist in %s", s, c.sess.DBPath)
+	}
+	c.sess.Schema = s
+	return nil
+}
 
 // GetSchema returns the current schema label.
 func (c *EmbeddedConnection) GetSchema() string { return c.sess.Schema }
@@ -900,6 +996,10 @@ func (c *EmbeddedConnection) execStatement(ctx context.Context, stmt antlrgen.IS
 			n, err = c.execCreate(ctx, create)
 		case drop != nil:
 			n, err = c.execDrop(ctx, drop)
+		case ddl.CreateTempFunction() != nil:
+			n, err = c.execCreateTempFunction(ctx, ddl.CreateTempFunction().(*antlrgen.CreateTempFunctionContext))
+		case ddl.DropTempFunction() != nil:
+			n, err = c.execDropTempFunction(ctx, ddl.DropTempFunction().(*antlrgen.DropTempFunctionContext))
 		default:
 			return 0, api.NewError(api.ErrCodeUnsupportedOperation, "unsupported DDL statement")
 		}
@@ -950,25 +1050,19 @@ func (c *EmbeddedConnection) execTransactionStatement(txn antlrgen.ITransactionS
 	}
 }
 
-// CheckNamedValue implements driver.NamedValueChecker. Converts custom
-// Go types to driver-compatible values before they reach substituteParams.
-// Accepts: uuid.UUID → string (canonical 36-char form).
-// All standard types (int64, float64, string, bool, []byte, time.Time)
-// pass through unchanged.
-func (c *EmbeddedConnection) CheckNamedValue(nv *driver.NamedValue) error {
-	if nv.Value == nil {
-		return nil
+// CheckNamedValue implements driver.NamedValueChecker.
+func (c *EmbeddedConnection) CheckNamedValue(*driver.NamedValue) error {
+	// Every value reaches parameter binding as passed, so its Go type decides
+	// its SQL type (int32 is INT, int64 LONG, a slice an ARRAY, ...).
+	return nil
+}
+
+// releaseStatementParams drops the statement's parameter bindings.
+func (c *EmbeddedConnection) releaseStatementParams() {
+	for _, release := range c.releaseParams {
+		release()
 	}
-	switch v := nv.Value.(type) {
-	case int64, float64, string, bool, []byte, time.Time:
-		return nil
-	default:
-		if s, ok := v.(fmt.Stringer); ok {
-			nv.Value = s.String()
-			return nil
-		}
-		return driver.ErrSkip
-	}
+	c.releaseParams = nil
 }
 
 // translateFDBCode maps an FDB numeric error code to a SQLSTATE-wrapped error.
@@ -1013,9 +1107,31 @@ func translateFDBError(err error) error {
 	if errors.As(err, &apiErr) {
 		return err
 	}
-	var metaErr *recordlayer.MetaDataError
-	if errors.As(err, &metaErr) {
-		return api.WrapError(api.ErrCodeSyntaxOrAccessViolation, metaErr.Error(), err)
+	// Java's recordCoreToRelationalException (ExceptionUtil.java:58-80) in its
+	// order: a deserialization failure and a uniqueness violation before a
+	// MetaDataException, which it tests on the exception thrown and not on its
+	// causes (IsMetaDataException), so a MetaDataError that only caused
+	// another error is not a 42000.
+	//
+	// The deserialization and already-exists arms match anywhere in the chain,
+	// where Java tests the exception and its direct cause only (:68-70), so
+	// the two differ when such an exception sits two or more exception layers
+	// down (a RecordCoreError whose Cause wraps one, say). A chain depth
+	// cannot express Java's rule: fmt.Errorf("...: %w") context links are not
+	// exceptions, and a MetaDataError's first unwrap is its superclass
+	// (errors.go), not its cause. Porting it exactly needs each Java-shaped
+	// error's cause read as Java's getCause() reads it.
+	var deserErr *recordlayer.RecordDeserializationError
+	if errors.As(err, &deserErr) {
+		return api.WrapError(api.ErrCodeDeserializationFailure, deserErr.Error(), err)
+	}
+	// A NULL for a field that cannot hold it, found as a row is transformed:
+	// Java's SemanticException NULL_ASSIGNMENT (MessageHelpers.coerceObject),
+	// XX000 with its message (measured).
+	var nullAssignment *values.NullAssignmentError
+	if errors.As(err, &nullAssignment) {
+		return api.WrapError(api.ErrCodeInternalError,
+			"A null value cannot be assigned to a variable that is of a non-nullable type.", err)
 	}
 	var existsErr *recordlayer.RecordAlreadyExistsError
 	if errors.As(err, &existsErr) {
@@ -1029,6 +1145,9 @@ func translateFDBError(err error) error {
 		return api.WrapErrorf(err, api.ErrCodeUniqueConstraintViolation,
 			"unique index %q violated: value %v already exists", uniqErr.IndexName, uniqErr.IndexKey)
 	}
+	if recordlayer.IsMetaDataException(err) {
+		return api.WrapError(api.ErrCodeSyntaxOrAccessViolation, recordlayer.OutermostJavaError(err).Error(), err)
+	}
 	// Execution-time "no record at this key" — most commonly UPDATE of a PK
 	// column, whose save targets the new (nonexistent) key. This is Java's
 	// exact path and code: Java has no plan-time PK guard; the in-place save
@@ -1040,10 +1159,6 @@ func translateFDBError(err error) error {
 	if errors.As(err, &notExistErr) {
 		return api.WrapError(api.ErrCodeUnknown, "record does not exist", err)
 	}
-	var deserErr *recordlayer.RecordDeserializationError
-	if errors.As(err, &deserErr) {
-		return api.WrapError(api.ErrCodeDeserializationFailure, deserErr.Error(), err)
-	}
 	var fdbErr *wire.FDBError
 	if errors.As(err, &fdbErr) {
 		return translateFDBCode(fdbErr.Code, err)
@@ -1051,6 +1166,17 @@ func translateFDBError(err error) error {
 	var fdbValErr fdb.Error
 	if errors.As(err, &fdbValErr) {
 		return translateFDBCode(fdbValErr.Code, err)
+	}
+	// ExceptionUtil's default: a RecordCoreException no arm above claims is
+	// ErrorCode.UNKNOWN, and so is a non-RecordCore Java exception
+	// (Query.InvalidExpressionException is an IllegalStateException).
+	var recordCore recordlayer.RecordCoreException
+	if errors.As(err, &recordCore) {
+		return api.WrapError(api.ErrCodeUnknown, recordCore.Error(), err)
+	}
+	var invalidExpression *recordlayer.QueryInvalidExpressionError
+	if errors.As(err, &invalidExpression) {
+		return api.WrapError(api.ErrCodeUnknown, invalidExpression.Error(), err)
 	}
 	// No string fallback: every in-tree producer wraps FDB errors with %w,
 	// so the typed errors.As lanes above are exhaustive (RFC-180 F-4). A
@@ -1165,7 +1291,11 @@ func (c *EmbeddedConnection) CollectStatistics(
 			// metadata handed to it is newer than the store header. A job that
 			// exists to measure a store must not migrate it, and the tenant it
 			// would fire on is the one already mid-migration.
-			return c.newStoreBuilder().SetContext(rtx).
+			builder, err := c.newStoreBuilder()
+			if err != nil {
+				return nil, err
+			}
+			return builder.SetContext(rtx).
 				SetMetaDataProvider(md).SetSubspace(storeSubspace).
 				SetSkipPossiblyRebuild(true).Open()
 		},

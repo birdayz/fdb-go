@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"fmt"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -285,6 +286,86 @@ func TestImplementSimpleSelectRule_ExistentialQuantifier(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("Existential quantifier should produce FirstOrDefault plan")
+	}
+}
+
+func TestImplementSimpleSelectRetainsWrappedPartition(t *testing.T) {
+	t.Parallel()
+	for _, existential := range []bool{false, true} {
+		for _, filtered := range []bool{false, true} {
+			for _, projected := range []bool{false, true} {
+				for _, reverse := range []bool{false, true} {
+					t.Run(fmt.Sprintf("exists=%t/filter=%t/project=%t/reverse=%t", existential, filtered, projected, reverse), func(t *testing.T) {
+						t.Parallel()
+						scan := simpleSelectPlanScan("T")
+						identity := mustSimpleSelectConstruct(plans.NewRecordQueryPredicatesFilterPlan(scan,
+							[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)}))
+						members := []expressions.RelationalExpression{scan, identity}
+						if reverse {
+							members[0], members[1] = members[1], members[0]
+						}
+						inner := expressions.FinalOfAtStage(members[0], expressions.StagePlanned)
+						inner.InsertFinal(members[1])
+						inner.SetWinner(scan)
+						computeRefPlanProperties(inner)
+						if partitions := ToPlanPartitions(inner); len(partitions) != 1 || len(partitions[0].GetExpressions()) != 2 {
+							t.Fatal("fixture must expose both equivalent plans in one partition")
+						}
+						var q expressions.Quantifier = expressions.ForEachNullOnEmptyQuantifier(inner)
+						if existential {
+							q = expressions.ExistentialQuantifier(inner)
+						}
+						var preds []predicates.QueryPredicate
+						if filtered {
+							preds = []predicates.QueryPredicate{predicates.NewComparisonPredicate(simpleSelectField(q, 1),
+								predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(0)))}
+						}
+						var result values.Value = simpleSelectFlowedObject(q)
+						if projected {
+							result = simpleSelectField(q, 0)
+						}
+						selectExpr := simpleSelectExpression(result, []expressions.Quantifier{q}, preds)
+						yields := mustFireSimpleSelectRule(t, NewImplementSimpleSelectRule(), expressions.InitialOf(selectExpr))
+						if len(yields) != 1 {
+							t.Fatalf("got %d implementations, want one partition-preserving chain", len(yields))
+						}
+						if external := expressions.GetCorrelatedToOfExpression(yields[0]); len(external) != 0 {
+							t.Errorf("wrapped select leaked local bindings: %v", external)
+						}
+						node := yields[0]
+						depth := 0
+						if projected {
+							depth++
+						}
+						if filtered {
+							depth++
+						}
+						for range depth {
+							children := node.GetQuantifiers()
+							if len(children) != 1 || len(children[0].GetRangesOver().FinalMembers()) != 1 {
+								t.Fatalf("malformed filter/map chain at %T", node)
+							}
+							node = children[0].GetRangesOver().FinalMembers()[0]
+						}
+						if existential {
+							if _, ok := node.(*plans.RecordQueryFirstOrDefaultPlan); !ok {
+								t.Fatalf("expected FirstOrDefault, got %T", node)
+							}
+						} else if _, ok := node.(*plans.RecordQueryDefaultOnEmptyPlan); !ok {
+							t.Fatalf("expected DefaultOnEmpty, got %T", node)
+						}
+						edge := node.GetQuantifiers()[0]
+						if edge.GetAlias() != q.GetAlias() || edge.Kind() != expressions.QuantifierPhysical {
+							t.Fatal("wrapper must retain the logical binding on a physical edge")
+						}
+						retained := edge.GetRangesOver()
+						if retained == inner || len(retained.Members()) != 0 || len(retained.FinalMembers()) != 2 || !retained.ContainsExactly(scan) || !retained.ContainsExactly(identity) {
+							t.Fatalf("wrapper dropped partition alternatives: %d finals", len(retained.FinalMembers()))
+						}
+					})
+				}
+			}
+		}
 	}
 }
 

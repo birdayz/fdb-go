@@ -649,13 +649,6 @@ func localCostUnclamped(e expressions.RelationalExpression, child []Cost, stats 
 			CPU:         sumCPU + in*FilterCPU*float64(numPreds),
 		}
 
-	case *expressions.LogicalProjectionExpression:
-		if len(child) == 0 {
-			return Cost{}
-		}
-		in := child[0].Cardinality
-		return Cost{Cardinality: in, CPU: sumCPU + in*ProjectionCPU}
-
 	case *expressions.LogicalSortExpression:
 		if len(child) == 0 {
 			return Cost{}

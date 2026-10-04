@@ -377,7 +377,7 @@ func TestFDB_FleetBuildIndexesAcrossEveryTenant(t *testing.T) {
 		if err != nil {
 			t.Fatalf("subspace %s: %v", tg, err)
 		}
-		pending, err := fleet.PendingIndexes(ctx, h.db, md, ss)
+		pending, err := fleet.PendingIndexes(ctx, h.db, md, ss, nil)
 		if err != nil {
 			t.Fatalf("pending indexes %s: %v", tg, err)
 		}
@@ -694,7 +694,7 @@ func TestFDB_FleetMigrateToLatestResolvesVersionPerTemplate(t *testing.T) {
 	defer cancel()
 
 	// Only the AHEAD template gets a v2.
-	if err := fleet.SaveTemplate(ctx, h.db, h.cat, fleetTemplate(t, tmplAhead, 2, true)); err != nil {
+	if _, err := fleet.SaveTemplate(ctx, h.db, h.cat, fleetTemplate(t, tmplAhead, 2, true)); err != nil {
 		t.Fatalf("save %s@2: %v", tmplAhead, err)
 	}
 

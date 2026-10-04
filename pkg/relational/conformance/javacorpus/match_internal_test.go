@@ -1,8 +1,11 @@
 package javacorpus
 
 import (
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 
 	"fdb.dev/pkg/relational/conformance/javayamsql"
 )
@@ -322,15 +325,15 @@ func TestShuffleIsDeterministic(t *testing.T) {
 		return out
 	}
 	a, b := build(), build()
-	shuffle(a, 12345)
-	shuffle(b, 12345)
+	shuffle(a, newJavaRandom(12345))
+	shuffle(b, newJavaRandom(12345))
 	for i := range a {
 		if a[i].rep != b[i].rep {
 			t.Fatalf("same seed must give the same order: %v vs %v", a, b)
 		}
 	}
 	c := build()
-	shuffle(c, 999)
+	shuffle(c, newJavaRandom(999))
 	same := true
 	for i := range a {
 		if a[i].rep != c[i].rep {
@@ -507,8 +510,7 @@ func TestGapSignaturesAreSpecific(t *testing.T) {
 // statementExactGaps are the gap entries whose signature must quote the EXACT
 // failing statement rather than the class-level rejection text alone.
 //
-// These files are big — array-join-at.yamsql is thirty PartiQL AT shapes,
-// table-functions.yamsql contains several range() calls, and functions.yamsql
+// These files are big — array-join-at.yamsql is thirty PartiQL AT shapes and functions.yamsql
 // asserts 111 queries. A generic signature converts the entry from "this
 // measured divergence" into "any failure of this shape anywhere in the file",
 // which is precisely the mute allowlist the gap table exists not to be: a NEW
@@ -518,7 +520,100 @@ func TestGapSignaturesAreSpecific(t *testing.T) {
 // The values are prefixes of the runner's `%q`-formatted statement text, so the
 // embedded SQL quotes appear escaped.
 var statementExactGaps = map[string]string{
-	"array-join-at.yamsql":   `"SELECT T2.\"id\", \"at1\", \"val1\", \"at2\", \"val2\" FROM T2`,
-	"functions.yamsql":       `"update C set st = coalesce(st, null) where c1 = 4 returning \"new\".st"`,
-	"table-functions.yamsql": `"select * from range(1, 4)"`,
+	"array-join-at.yamsql": `"SELECT \"id\", \"val\", \"at\" FROM T1, T1.\"arr1_nn\" AS \"val\" AT \"at\" WHERE T1.\"id\" = 2 ORDER BY \"at\" DESC"`,
+}
+
+func TestMatchVectorPrecision(t *testing.T) {
+	t.Parallel()
+	cfg := configFrom(t, `result: [{V: !v16 [1.0009765625, -2]}]`)
+	for _, tc := range []struct {
+		name  string
+		data  []byte
+		match bool
+	}{
+		{"half", []byte{0, 0x3c, 1, 0xc0, 0}, true},
+		{"different-value", []byte{0, 0x3c, 0, 0xc0, 0}, false},
+		{"different-length", []byte{0, 0x3c, 1}, false},
+		{"different-precision", []byte{1, 0x3f, 0x80, 0x20, 0, 0xc0, 0, 0, 0}, false},
+		{"invalid", []byte{255}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := matchResultSet(cfg, rs([]string{"V"}, []string{"VECTOR"}, []any{tc.data}), true)
+			if (err == nil) != tc.match {
+				t.Fatalf("match=%v, want %v: %v", err == nil, tc.match, err)
+			}
+		})
+	}
+}
+
+func TestPreparedUUIDUsesJavaType(t *testing.T) {
+	t.Parallel()
+	v := &javayamsql.Value{Kind: javayamsql.KindTagged, Tag: javayamsql.TagUUID, Inner: &javayamsql.Value{Kind: javayamsql.KindString, Str: "1-2-3-4-5"}}
+	got, err := preparedValue(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, ok := got.(uuid.UUID)
+	if !ok || u.String() != "00000001-0002-0003-0004-000000000005" {
+		t.Fatalf("UUID binding = %T(%v)", got, got)
+	}
+	v.Inner.Str = "invalid"
+	if _, err := preparedValue(v); err == nil {
+		t.Fatal("invalid UUID accepted")
+	}
+}
+
+// TestPreparedMixAndShuffleJavaStream pins TestBlock's shared Random(12345)
+// stream, including the cache-pass draw. Goldens are from java.util.Random
+// and Collections.shuffle with repetitions 1, 5, and 2 in that order.
+func TestPreparedMixAndShuffleJavaStream(t *testing.T) {
+	t.Parallel()
+	random := newJavaRandom(12345)
+	for _, want := range [][]bool{{false}, {true, true, true, true, false}, {true, false}} {
+		got := preparedMix("both", int64(len(want)), random)
+		if !slices.Equal(got, want) {
+			t.Fatalf("prepared mix = %v, want %v", got, want)
+		}
+	}
+	list := make([]executable, 10)
+	for i := range list {
+		list[i].rep = int64(i)
+	}
+	shuffle(list, random)
+	for i, want := range []int64{5, 4, 6, 3, 0, 9, 8, 1, 7, 2} {
+		if list[i].rep != want {
+			t.Fatalf("shuffle[%d]=%d want %d", i, list[i].rep, want)
+		}
+	}
+	for _, kind := range []string{"simple", "prepared"} {
+		random := newJavaRandom(12345)
+		seed := random.seed
+		for _, prepared := range preparedMix(kind, 5, random) {
+			if prepared != (kind == "prepared") {
+				t.Fatalf("%s mix has %v", kind, prepared)
+			}
+		}
+		if random.seed != seed {
+			t.Fatalf("%s unexpectedly consumed random draws", kind)
+		}
+	}
+}
+
+func TestBitmapHexPadding(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		hex   string
+		bytes []byte
+		pass  bool
+	}{
+		{"xStartsWith_4'060000c'", []byte{6, 0, 0, 192}, true},
+		{"xStartsWith_4'06'", []byte{6, 0, 0, 1}, false},
+		{"xStartsWith_4'06'", []byte{6, 0, 0, 0}, true},
+	} {
+		err := matchResultSet(configFrom(t, `result: [{A: "`+tc.hex+`"}]`), rs([]string{"A"}, []string{"BYTES"}, []any{tc.bytes}), true)
+		if (err == nil) != tc.pass {
+			t.Errorf("%s against %x: %v", tc.hex, tc.bytes, err)
+		}
+	}
 }

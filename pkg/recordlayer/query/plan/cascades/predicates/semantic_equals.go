@@ -16,16 +16,19 @@ func SemanticEqualsUnderAliasMap(a, b QueryPredicate, aliases values.AliasMap) b
 	if a == nil || b == nil {
 		return a == nil && b == nil
 	}
+	if IsAtomic(a) != IsAtomic(b) {
+		return false
+	}
 	switch ap := a.(type) {
 	case *ConstantPredicate:
 		bp, ok := b.(*ConstantPredicate)
 		return ok && ap.Value == bp.Value
 	case *AndPredicate:
 		bp, ok := b.(*AndPredicate)
-		return ok && predicateListsSemanticEqual(ap.SubPredicates, bp.SubPredicates, aliases)
+		return ok && predicateSetsSemanticEqual(ap.SubPredicates, bp.SubPredicates, aliases)
 	case *OrPredicate:
 		bp, ok := b.(*OrPredicate)
-		return ok && predicateListsSemanticEqual(ap.SubPredicates, bp.SubPredicates, aliases)
+		return ok && predicateSetsSemanticEqual(ap.SubPredicates, bp.SubPredicates, aliases)
 	case *NotPredicate:
 		bp, ok := b.(*NotPredicate)
 		return ok && SemanticEqualsUnderAliasMap(ap.Child, bp.Child, aliases)
@@ -38,7 +41,6 @@ func SemanticEqualsUnderAliasMap(a, b QueryPredicate, aliases values.AliasMap) b
 			return false
 		}
 		if ap.Comparison.Type != bp.Comparison.Type ||
-			ap.Comparison.Escape != bp.Comparison.Escape ||
 			ap.Comparison.ParameterName != bp.Comparison.ParameterName ||
 			ap.Comparison.TextTokenizerName != bp.Comparison.TextTokenizerName ||
 			ap.Comparison.TextAnalyzerName != bp.Comparison.TextAnalyzerName ||
@@ -59,6 +61,19 @@ func SemanticEqualsUnderAliasMap(a, b QueryPredicate, aliases values.AliasMap) b
 			return true
 		}
 		return values.SemanticEqualsUnderAliasMap(ap.Comparison.Operand, bp.Comparison.Operand, aliases)
+	case *PredicateWithValueAndRanges:
+		bp, ok := b.(*PredicateWithValueAndRanges)
+		return ok && values.SemanticEqualsUnderAliasMap(ap.value, bp.value, aliases) &&
+			semanticSetsEqual(ap.ranges, bp.ranges, func(a, b *RangeConstraints) bool {
+				if a == nil || b == nil {
+					return a == nil && b == nil
+				}
+				equal := func(a, b Comparison) bool {
+					return SemanticEqualsUnderAliasMap(&ComparisonPredicate{Comparison: a}, &ComparisonPredicate{Comparison: b}, aliases)
+				}
+				return semanticSetsEqual(a.compilableComparisons, b.compilableComparisons, equal) &&
+					semanticSetsEqual(a.deferredRanges, b.deferredRanges, equal)
+			})
 	case *ExistentialValuePredicate:
 		bp, ok := b.(*ExistentialValuePredicate)
 		if !ok {
@@ -72,16 +87,33 @@ func SemanticEqualsUnderAliasMap(a, b QueryPredicate, aliases values.AliasMap) b
 	return false
 }
 
-func predicateListsSemanticEqual(a, b []QueryPredicate, aliases values.AliasMap) bool {
-	if len(a) != len(b) {
-		return false
+// Java compares AND/OR children and range constraints as sets.
+func semanticSetsEqual[T any](a, b []T, equal func(T, T) bool) bool {
+	matched := make([]bool, len(b))
+	for _, left := range a {
+		found := false
+		for j, right := range b {
+			if equal(left, right) {
+				found = true
+				matched[j] = true
+			}
+		}
+		if !found {
+			return false
+		}
 	}
-	for i := range a {
-		if !SemanticEqualsUnderAliasMap(a[i], b[i], aliases) {
+	for _, found := range matched {
+		if !found {
 			return false
 		}
 	}
 	return true
+}
+
+func predicateSetsSemanticEqual(a, b []QueryPredicate, aliases values.AliasMap) bool {
+	return semanticSetsEqual(a, b, func(a, b QueryPredicate) bool {
+		return SemanticEqualsUnderAliasMap(a, b, aliases)
+	})
 }
 
 // distanceRankKnobsEqual compares the optional HNSW knobs (EfSearch /

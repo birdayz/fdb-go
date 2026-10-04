@@ -35,7 +35,7 @@ func TestFDB_TautologyIndexPredicateExecutes(t *testing.T) {
 			"CREATE TABLE t1 (id BIGINT, col1 BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX i_true AS SELECT col1 FROM t1 WHERE TRUE")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_taut_idx/s WITH TEMPLATE taut_idx")
-	dsn := fmt.Sprintf("fdbsql:///testdb_taut_idx?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_TAUT_IDX?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

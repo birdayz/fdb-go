@@ -181,23 +181,8 @@ func TestMigratedPlans_StructuralKeyContract(t *testing.T) {
 	// map — resultValue.
 	assertPlanKeyEqual(t, mustChecked(t, func() (*RecordQueryMapPlan, error) {
 		return NewRecordQueryMapPlan(scan, nv)
-	}), mustChecked(t, func() (*RecordQueryMapPlan,
-
-		// projection — the projection Value list; length load-bearing.
-		error,
-	) {
+	}), mustChecked(t, func() (*RecordQueryMapPlan, error) {
 		return NewRecordQueryMapPlan(scan, nv)
-	}))
-
-	assertPlanKeyEqual(t, mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
-		return NewRecordQueryProjectionPlan([]values.Value{nv}, scan)
-	}), mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
-		return NewRecordQueryProjectionPlan([]values.Value{nv}, scan)
-	}))
-	assertPlanKeyUnequal(t, mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
-		return NewRecordQueryProjectionPlan([]values.Value{nv}, scan)
-	}), mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
-		return NewRecordQueryProjectionPlan([]values.Value{nv, nv}, scan)
 	}))
 
 	// first_or_default — the strict flag is load-bearing (strict vs non-strict

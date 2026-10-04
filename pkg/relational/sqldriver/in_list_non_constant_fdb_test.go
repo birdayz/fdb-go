@@ -65,7 +65,7 @@ func openUUIDInDB(t *testing.T) *sql.DB {
 		"CREATE TABLE u (id BIGINT, uu UUID, us STRING, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_in_uuid/s WITH TEMPLATE inuuid_t")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///testdb_in_uuid?cluster_file=%s&schema=s", clusterFilePath))
+		fmt.Sprintf("fdbsql:///TESTDB_IN_UUID?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -83,7 +83,7 @@ func openInJoinDB(t *testing.T, dbPath, template string) *sql.DB {
 		"CREATE TABLE r (id BIGINT, y BIGINT, lo BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE "+template)
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))
+		fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -103,9 +103,10 @@ func TestFDB_InListWithNonConstantItems(t *testing.T) {
 	//  id=1: a=10 b=10   a == b
 	//  id=2: a=7  b=20   a != b, b is in a constant list below
 	//  id=3: a=30 b=30   a == b
-	//  id=4: a=NULL b=40 a IS NULL — the 3VL row
+	//  id=4: a=41 b=40   a != b, and no list below holds 40 (a NULL item is
+	//                   0A000 when evaluated: TestFDB_InListNullItems)
 	w.Exec("INSERT INTO t (id, a, b, s) VALUES " +
-		"(1, 10, 10, 'x'), (2, 7, 20, 'y'), (3, 30, 30, 'z'), (4, NULL, 40, 'w')")
+		"(1, 10, 10, 'x'), (2, 7, 20, 'y'), (3, 30, 30, 'z'), (4, 41, 40, 'w')")
 
 	t.Run("rows", func(t *testing.T) {
 		w := w.Sub(t)
@@ -123,11 +124,8 @@ func TestFDB_InListWithNonConstantItems(t *testing.T) {
 			// plan time instead of per row, no row could match this.
 			{"arithmetic that shifts the match", "b IN (a + 13, 999)", []string{"2"}},
 			{"two column items", "b IN (a, id)", []string{"1", "3"}},
-			// NOT IN over a list holding a NULL-valued column: row 4 has a NULL
-			// item, so its membership is UNKNOWN and NOT IN must not return it.
-			// Rows 1 and 3 match so they are out; row 2 does not match and has
-			// no NULL, so it is the only answer.
-			{"negated", "b NOT IN (a, 999)", []string{"2"}},
+			// NOT IN: rows 1 and 3 match so they are out; rows 2 and 4 do not.
+			{"negated", "b NOT IN (a, 999)", []string{"2", "4"}},
 			// Composes with the one-field-record flatten: both the left operand
 			// and the items are parenthesized.
 			{"parenthesized operands", "(b) IN ((a), 999)", []string{"1", "3"}},
@@ -218,12 +216,9 @@ func TestFDB_InListWithNonConstantItems(t *testing.T) {
 	// the same thing as a ParameterValue, and this arm was originally written
 	// as though it were.
 	//
-	// The driver never plans a parameter at all. substituteParams "replaces
-	// positional '?' placeholders in a query with SQL literal representations
-	// of the supplied driver values" (embedded/utilities.go) BEFORE the parser
-	// runs, so `x IN (?, 999)` reaches the engine as the constant list
-	// `x IN (5, 999)`. It took the plan-time fold before the non-constant fork
-	// existed and it still does; nothing about this path changed.
+	// The driver binds each placeholder to a typed constant, so `x IN (?, 999)`
+	// reaches the planner as the constant list `x IN (5, 999)` and takes the
+	// plan-time fold.
 	//
 	// So what this arm actually pins is the interpolated round trip: a
 	// placeholder inside an IN list is substituted per EXECUTION, and two

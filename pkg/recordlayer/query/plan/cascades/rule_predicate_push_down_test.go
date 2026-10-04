@@ -156,9 +156,9 @@ func TestPredicatePushDown_MultiQuantifierPartial(t *testing.T) {
 	childBRef := expressions.InitialOf(childB)
 	qB := expressions.ForEachQuantifier(childBRef)
 
-	// Predicate on A only: qA.col = 'x'
+	// Predicate on A only: qA.NAME = 'x'
 	predA := &predicates.ComparisonPredicate{
-		Operand: ppdFlowed(qA),
+		Operand: ppdFieldValue(qA, "NAME"),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
 			Operand: &values.ConstantValue{Value: "x"},
@@ -166,10 +166,10 @@ func TestPredicatePushDown_MultiQuantifierPartial(t *testing.T) {
 	}
 	// Cross-predicate: qA.id = qB.id (references both)
 	predCross := &predicates.ComparisonPredicate{
-		Operand: ppdFlowed(qA),
+		Operand: ppdFieldValue(qA, "id"),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: ppdFlowed(qB),
+			Operand: ppdFieldValue(qB, "id"),
 		},
 	}
 
@@ -189,6 +189,21 @@ func TestPredicatePushDown_MultiQuantifierPartial(t *testing.T) {
 	// The cross-predicate stays on the outer.
 	if len(result.GetPredicates()) != 1 {
 		t.Fatalf("expected 1 remaining predicate on outer, got %d", len(result.GetPredicates()))
+	}
+	remaining, err := predicates.ToResidualPredicate(result.GetPredicates()[0])
+	if err != nil || !predicates.SemanticEqualsUnderAliasMap(remaining, predCross, nil) {
+		t.Fatalf("remaining predicate = %v, want join equality: %v", remaining, err)
+	}
+
+	// Bounds on the same value form one range: its cross-leg correlation
+	// prevents the rule from pushing only the constant bound.
+	sameValue := ppdFieldPred(qA, "id", predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(0)))
+	grouped := ppdSelect(ppdFlowed(qA), []expressions.Quantifier{qA, qB}, []predicates.QueryPredicate{sameValue, predCross})
+	if len(grouped.GetPredicates()) != 1 {
+		t.Fatal("same-value bounds were not coalesced")
+	}
+	if got := mustFireExpressionRule(t, NewPredicatePushDownRule(), expressions.InitialOf(grouped)); len(got) != 0 {
+		t.Fatalf("cross-correlated range was split during pushdown: %v", got)
 	}
 }
 
@@ -638,6 +653,34 @@ func TestPredicatePushDownRule_DoesNotPushIntoOuterJoinChild(t *testing.T) {
 		t.Fatalf("expected 0 yields — a FULL OUTER child must stay opaque to predicate "+
 			"absorption (fusing WHERE into its own predicate list turns it into an "+
 			"ON-condition the null-extension drain bypasses), got %d: %#v", len(yielded), yielded)
+	}
+}
+
+// An outer join select's predicates are its ON conditions. One that reads only
+// the preserved leg must stay above that leg: pushed into it, it would drop the
+// preserved row instead of null-extending it.
+func TestPredicatePushDownRule_DoesNotPushAnOnConditionIntoAnOuterJoinLeg(t *testing.T) {
+	t.Parallel()
+	preservedScanQ := expressions.ForEachQuantifier(expressions.InitialOf(ppdScan()))
+	preserved := ppdSelect(ppdFlowed(preservedScanQ), []expressions.Quantifier{preservedScanQ}, nil)
+	preservedQ := expressions.ForEachQuantifier(expressions.InitialOf(preserved))
+	nullSuppliedQ := expressions.ForEachQuantifier(expressions.InitialOf(ppdScan()))
+	on := &predicates.ComparisonPredicate{
+		Operand: ppdFieldValue(preservedQ, "id"),
+		Comparison: predicates.Comparison{
+			Type:    predicates.ComparisonGreaterThan,
+			Operand: &values.ConstantValue{Value: int64(1)},
+		},
+	}
+	join := mustPredicatePushDownConstruct(expressions.NewSelectExpressionWithJoinType(
+		ppdFlowed(preservedQ),
+		[]expressions.Quantifier{preservedQ, nullSuppliedQ},
+		[]predicates.QueryPredicate{on},
+		nil,
+		expressions.JoinLeftOuter,
+	))
+	if yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), expressions.InitialOf(join)); len(yielded) != 0 {
+		t.Fatalf("an ON condition was pushed into an outer join's leg: %d yields", len(yielded))
 	}
 }
 

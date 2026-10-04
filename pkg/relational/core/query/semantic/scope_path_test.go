@@ -198,7 +198,10 @@ func TestResolvePathNested_LeadingSegmentSelectsTheSource(t *testing.T) {
 	}
 }
 
-func TestResolveSourceQualifiedPath_SelectsSelfNamedSourceWithoutWeakeningExpressionAmbiguity(t *testing.T) {
+// The source-qualified reading of a self-named source (FROM t, t.records AS
+// sub, sub.sub AS leaf) beside the ordinary expression's readings of the same
+// spelling, which weigh a qualified column first and the doubled qualifier.
+func TestResolveSourceQualifiedPath_SelectsSelfNamedSource(t *testing.T) {
 	t.Parallel()
 	self := &StaticTable{
 		TableName: ParseQualifiedName("sub", false),
@@ -213,14 +216,21 @@ func TestResolveSourceQualifiedPath_SelectsSelfNamedSourceWithoutWeakeningExpres
 		t.Fatalf("AddSource: %v", err)
 	}
 
+	// An ordinary expression reads SUB.SUB as Java does: the source-qualified
+	// column first, the struct-relative descent (column SUB, field SUB) only
+	// when that finds nothing (SemanticAnalyzer.resolveIdentifierMaybe's two
+	// lookups; measured: `SELECT h.f FROM y, h` is table h's f).
 	path := segs("sub", "sub")
-	if _, _, _, err := scope.ResolvePathNested(path); err == nil {
-		t.Fatal("ordinary SUB.SUB expression resolved despite competing source-qualified and struct-relative matches")
-	} else {
-		var ambiguous *AmbiguousColumnError
-		if !errors.As(err, &ambiguous) {
-			t.Fatalf("ordinary SUB.SUB error = %v, want AmbiguousColumnError", err)
-		}
+	if col, _, accessors, err := scope.ResolvePathNested(path); err != nil || col.Id.Name() != "SUB" || col.Type != "RECORD" || len(accessors) != 0 {
+		t.Fatalf("ordinary SUB.SUB = %+v, %v, %v; want the source-qualified SUB record", col, accessors, err)
+	}
+	// Java's doubled qualifier: SUB.SUB.SUB is the top-level column SUB (the
+	// operator's name prepended to the column's qualified name), and it
+	// replaces the path through that same column, as Java tries an attribute's
+	// direct forms before its nested path (measured: `SELECT ss.ss.ss FROM ss`
+	// is the struct column).
+	if col, _, accessors, err := scope.ResolvePathNested(segs("sub", "sub", "sub")); err != nil || col.Type != "RECORD" || len(accessors) != 0 {
+		t.Fatalf("ordinary SUB.SUB.SUB = %+v, %v, %v; want the column SUB by the doubled qualifier", col, accessors, err)
 	}
 
 	col, src, accessors, err := scope.ResolveSourceQualifiedPath(path)

@@ -4,6 +4,7 @@ package conformance_test
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 
 	"fdb.dev/gen"
@@ -14,6 +15,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/dynamicpb"
 )
 
 var _ = Describe("Store Lifecycle Conformance", func() {
@@ -65,6 +68,161 @@ var _ = Describe("Store Lifecycle Conformance", func() {
 		}
 		return params
 	}
+
+	It("evolves Go-written union identities in Java and reads Java alias writes in Go", func() {
+		old, current := buildUnionInteropSchema(1, false, false), buildUnionInteropSchema(2, true, false)
+		_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(old).SetSubspace(keyspace).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+			desc := old.GetRecordType("Alpha").Descriptor
+			message := dynamicpb.NewMessage(desc)
+			message.Set(desc.Fields().ByName("id"), protoreflect.ValueOfInt64(10))
+			message.Set(desc.Fields().ByName("payload"), protoreflect.ValueOfString("retained"))
+			message.Set(desc.Fields().ByName("state"), protoreflect.ValueOfEnum(1))
+			_, err = store.SaveRecord(message)
+			return nil, err
+		})
+		Expect(err).NotTo(HaveOccurred())
+		p, err := current.ToProto()
+		Expect(err).NotTo(HaveOccurred())
+		data, err := proto.Marshal(p)
+		Expect(err).NotTo(HaveOccurred())
+		params := buildJavaParams()
+		params["protoBytes"] = bytesToInts(data)
+		var result struct {
+			RecordName string `json:"recordName"`
+			Payload    string `json:"payload"`
+			TypeKey    int64  `json:"typeKey"`
+			Tag        int    `json:"tag"`
+		}
+		Expect(java.InvokeAs(ctx, "evolveUnionRecord", params, &result)).To(Succeed())
+		Expect(result.RecordName).To(Equal("Beta"))
+		Expect(result.Payload).To(Equal("retained"))
+		Expect(result.TypeKey).To(Equal(int64(1)))
+		Expect(result.Tag).To(Equal(9))
+		_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(current).SetSubspace(keyspace).Open()
+			Expect(err).NotTo(HaveOccurred())
+			for _, id := range []int64{10, 11} {
+				loaded, err := store.LoadRecord(tuple.Tuple{id})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(loaded).NotTo(BeNil())
+				message := loaded.Record.ProtoReflect()
+				Expect(message.Descriptor().Name()).To(Equal(protoreflect.Name("Beta")))
+				Expect(message.Get(message.Descriptor().Fields().ByName("payload")).String()).To(Equal("retained"))
+				Expect(message.Get(message.Descriptor().Fields().ByName("state")).Enum()).To(Equal(protoreflect.EnumNumber(1)))
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(current).SetSubspace(keyspace).Open()
+			Expect(err).NotTo(HaveOccurred())
+			entries, err := recordlayer.AsList(ctx, store.ScanIndex(current.GetIndex("by_payload"), recordlayer.TupleRangeAll, nil, recordlayer.ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(2))
+			Expect(entries[0].Key).To(Equal(tuple.Tuple{"retained", int64(10)}))
+			Expect(entries[1].Key).To(Equal(tuple.Tuple{"retained", int64(11)}))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		fmt.Fprintf(GinkgoWriter, "UNION_FDB_INTEROP old-tag=1 Java-write-tag=%d type=%s key=%d enum=READY index-rows=2\n", result.Tag, result.RecordName, result.TypeKey)
+	})
+
+	for _, seedInJava := range []bool{false, true} {
+		label := "Go-written"
+		if seedInJava {
+			label = "Java-written"
+		}
+		It("resolves "+label+" overlapping-PK uniqueness violations in Java and Go", func() {
+			builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("order_id")))
+			builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+			index := recordlayer.NewIndex("price", recordlayer.Field("price")).SetUnique()
+			builder.AddIndex("Order", index)
+			metadata, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			if !seedInJava {
+				_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+					store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(metadata).SetSubspace(keyspace).CreateOrOpen()
+					Expect(err).NotTo(HaveOccurred())
+					_, err = store.MarkIndexWriteOnly(index.Name)
+					Expect(err).NotTo(HaveOccurred())
+					for id, price := range []int32{100, 100, 100, 200, 200} {
+						_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(id + 1)), Price: proto.Int32(price)})
+						Expect(err).NotTo(HaveOccurred())
+					}
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+			params := buildJavaParams()
+			params["seed"] = seedInJava
+			var result struct {
+				Keys   []string `json:"keys"`
+				Values []string `json:"values"`
+				Counts []int    `json:"counts"`
+			}
+			Expect(java.InvokeAs(ctx, "probeOverlappingUniqueViolations", params, &result)).To(Succeed())
+			var wantKeys []string
+			for id, price := range []int64{100, 100, 100, 200, 200} {
+				wantKeys = append(wantKeys, hex.EncodeToString(tuple.Tuple{price, price, int64(id + 1)}.Pack()))
+			}
+			Expect(result.Keys).To(Equal(wantKeys))
+			Expect(result.Values).To(HaveLen(5))
+			for i, encoded := range result.Values {
+				value, err := hex.DecodeString(encoded)
+				Expect(err).NotTo(HaveOccurred())
+				primaryKey, err := tuple.Unpack(value)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(primaryKey).To(HaveLen(2), "values contain the full conflicting PK too")
+				// Java's asynchronous check completion may choose a different
+				// conflicting record. Check the encoded PK, not completion order.
+				if i < 3 {
+					Expect(primaryKey[0]).To(Equal(int64(100)))
+					Expect(primaryKey[1]).To(BeElementOf(int64(1), int64(2), int64(3)))
+				} else {
+					Expect(primaryKey[0]).To(Equal(int64(200)))
+					Expect(primaryKey[1]).To(BeElementOf(int64(4), int64(5)))
+				}
+				Expect(primaryKey[1]).NotTo(Equal(int64(i + 1)))
+			}
+			Expect(result.Counts).To(Equal([]int{5, 4, 2}))
+			fmt.Fprintf(GinkgoWriter, "OVERLAPPING-PK-VIOLATIONS %s Java=%+v\n", label, result)
+			_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(metadata).SetSubspace(keyspace).Open()
+				Expect(err).NotTo(HaveOccurred())
+				violations, err := store.ScanUniquenessViolations(index)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(violations).To(HaveLen(2))
+				Expect(violations[0].PrimaryKey).To(Equal(tuple.Tuple{int64(200), int64(4)}))
+				Expect(violations[1].PrimaryKey).To(Equal(tuple.Tuple{int64(200), int64(5)}))
+				_, err = store.DeleteRecord(tuple.Tuple{int64(200), int64(5)})
+				Expect(err).NotTo(HaveOccurred())
+				violations, err = store.ScanUniquenessViolations(index)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(violations).To(BeEmpty())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	}
+
+	It("pins Java deletion with a pending replacement retirement callback", func() {
+		var result struct {
+			RemainingRows int  `json:"remainingRows"`
+			HeaderPresent bool `json:"headerPresent"`
+			OriginalState int  `json:"originalState"`
+		}
+		Expect(java.InvokeAs(ctx, "probeDeleteWithPendingReplacementRetirement", buildJavaParams(), &result)).To(Succeed())
+		fmt.Fprintf(GinkgoWriter, "PENDING-RETIREMENT-DELETE Java=%+v\n", result)
+		// The tagged callback retains the old store state and writes DISABLED
+		// after deletion. Keep the oracle defect visible, not a parity waiver.
+		Expect(result.HeaderPresent).To(BeFalse())
+		Expect(result.RemainingRows).To(Equal(1))
+		Expect(result.OriginalState).To(Equal(2))
+	})
 
 	Describe("DeleteAllRecords preserves store header", func() {
 		It("header fields survive DeleteAllRecords and are readable by Java", func() {

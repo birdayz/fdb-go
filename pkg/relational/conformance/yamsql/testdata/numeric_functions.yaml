@@ -16,9 +16,9 @@ schema_template: |
   CREATE TABLE t (id BIGINT, v DOUBLE, n BIGINT, f FLOAT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES
-      (1, 2.5, 10, 2.0),
-      (2, -3.7, -5, 2.0),
-      (3, 0.0, 0, 2.0),
+      (1, 2.5, 10, CAST(2.0 AS FLOAT)),
+      (2, -3.7, -5, CAST(2.0 AS FLOAT)),
+      (3, 0.0, 0, CAST(2.0 AS FLOAT)),
       (4, null, null, null)
 tests:
   # ---------------------------------------------------------------

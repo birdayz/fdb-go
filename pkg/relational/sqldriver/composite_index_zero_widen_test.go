@@ -54,7 +54,7 @@ func TestFDB_CompositeIndexZeroWidening(t *testing.T) {
 		"CREATE INDEX c_vw ON c (v, w) "+
 		"CREATE TABLE u (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_czw/s WITH TEMPLATE czw")
-	dsn := fmt.Sprintf("fdbsql:///testdb_czw?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_CZW?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -109,7 +109,7 @@ func TestFDB_CompositeIndexZeroWidening(t *testing.T) {
 	// two physical signed-zero ranges. Pin the exact plan as well as results for
 	// both element orders; the unindexed twin additionally guards against the
 	// rejected bit-identity-dedup fix, which duplicated every matching row.
-	const wantCompositeINPlan = "Project([_current.ID#0], IndexScan(C_VW, [=, *] COVERING))"
+	const wantCompositeINPlan = "Map(IndexScan(C_VW, [=, *] COVERING), {ID: _current.ID#0})"
 	for _, tc := range []struct {
 		name   string
 		inList string

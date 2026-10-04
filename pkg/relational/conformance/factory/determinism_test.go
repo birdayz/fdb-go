@@ -170,6 +170,31 @@ func checkSeed(t *testing.T, cands []factory.Candidate, group []*factorycorpus.S
 	}
 }
 
+func TestFixedFactorUnionCorpusPlans(t *testing.T) {
+	t.Parallel()
+	for _, family := range []string{"single__or_and__exists.yamsql", "single__or_and-cmp__exists.yamsql"} {
+		corpus, err := factorycorpus.Load(filepath.Join(corpusDir, family))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(corpus.Scenarios) == 0 {
+			t.Fatal("empty fixed-factor corpus")
+		}
+		for _, scenario := range corpus.Scenarios {
+			t.Run(scenario.Header.Name, func(t *testing.T) {
+				t.Parallel()
+				plan, err := embedded.PlanPhysicalForTest(scenario.Doc.Tests[1].Query, scenario.Doc.SchemaTemplate, nil)
+				if err != nil {
+					t.Fatalf("seed=%d query=%d projection=%d: %v\nSQL: %s", scenario.Header.Seed, scenario.Header.QueryIndex, scenario.Header.Projection, err, scenario.Doc.Tests[1].Query)
+				}
+				if plan == nil {
+					t.Fatal("empty plan")
+				}
+			})
+		}
+	}
+}
+
 // TestCommittedFilesAreCanonical pins that every committed file is exactly
 // what the writer emits. A file that differs — hand-edited, or written by an
 // older writer — produces a spurious diff on the next re-bless, and a

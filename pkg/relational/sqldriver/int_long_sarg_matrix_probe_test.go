@@ -55,7 +55,7 @@ func TestFDB_IntLongSargMatrix(t *testing.T) {
 			"CREATE TABLE drv (id BIGINT, ki INTEGER, kl BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX ti_v ON ti (v) CREATE INDEX tl_v ON tl (v)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ilsarg/s WITH TEMPLATE ilsarg")
-	dsn := fmt.Sprintf("fdbsql:///testdb_ilsarg?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_ILSARG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

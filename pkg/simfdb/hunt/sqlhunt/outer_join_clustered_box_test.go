@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/dst"
@@ -31,7 +32,7 @@ func threeTableHarness(t *testing.T, seed uint64) *sql.DB {
 	key := fmt.Sprintf("sim://outerjoinbox/%d/%d", seed, qcKeyCounter.Add(1))
 	t.Cleanup(sqldriver.RegisterBackend(key, simDB))
 
-	setup, err := sql.Open("fdbsql", "fdbsql://"+qcDBPath+"?cluster_file="+key)
+	setup, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(qcDBPath)+"?cluster_file="+key)
 	if err != nil {
 		t.Fatalf("open setup: %v", err)
 	}
@@ -52,7 +53,7 @@ func threeTableHarness(t *testing.T, seed uint64) *sql.DB {
 		}
 	}
 
-	db, err := sql.Open("fdbsql", "fdbsql://"+qcDBPath+"?cluster_file="+key+"&schema=s")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(qcDBPath)+"?cluster_file="+key+"&schema=S")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}

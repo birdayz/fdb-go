@@ -109,12 +109,6 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 	case *plans.RecordQueryMapPlan:
 		return derivationsForMap(w)
 
-	// --- Projection: translate through child results ---
-
-	// The projection is its own cascades expression now (RFC-184 W2).
-	case *plans.RecordQueryProjectionPlan:
-		return derivationsFromSingleChildExpr(w)
-
 	// --- TypeFilter: restrict QueriedValue record types ---
 
 	// A type filter is its own physical expression now (RFC-184 W2).

@@ -106,7 +106,7 @@ func FuzzPlanner_E2E_NoPanic(f *testing.F) {
 		case 5:
 			q := expressions.ForEachQuantifier(current)
 			root := e2eFuzzRoot(q)
-			proj := mustE2EFuzzConstruct(expressions.NewLogicalProjectionExpression(
+			proj := mustE2EFuzzConstruct(newBlockSelectForTest(
 				[]values.Value{e2eFuzzField(root, "proj")}, q))
 			current = expressions.InitialOf(proj)
 		}

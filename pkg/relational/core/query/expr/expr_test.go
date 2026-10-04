@@ -2,8 +2,11 @@ package expr_test
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
+
+	"fdb.dev/pkg/relational/api"
 
 	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -327,6 +330,33 @@ func TestResolver_ResolveArithmetic_NilOperand(t *testing.T) {
 	}
 }
 
+func TestResolver_ComparisonPromotesFloatColumnToDouble(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	column, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("FLOAT_COLUMN"), values.NullableFloat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, reverse := range []bool{false, true} {
+		t.Run(fmt.Sprint(reverse), func(t *testing.T) {
+			t.Parallel()
+			var left, right values.Value = column, &values.ConstantValue{Value: float64(3), Typ: values.NotNullDouble}
+			if reverse {
+				left, right = right, left
+			}
+			predicate, err := r.ResolveComparison(predicates.ComparisonGreaterThanEq, left, right)
+			if err != nil {
+				t.Fatal(err)
+			}
+			comparison, ok := predicate.(*predicates.ComparisonPredicate)
+			if !ok || comparison.Operand.Type().Code() != values.TypeCodeDouble || comparison.Comparison.Operand.Type().Code() != values.TypeCodeDouble {
+				t.Fatalf("comparison = %v, want both operands promoted to DOUBLE", predicate)
+			}
+		})
+	}
+}
+
 func TestResolver_ResolveComparison(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
@@ -559,7 +589,8 @@ func TestResolver_ResolveLike(t *testing.T) {
 
 	id, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("name"))
 	pat, _ := r.ResolveConstant("hel%")
-	pred, err := r.ResolveLike(id, pat)
+	noEscape, _ := r.ResolveConstant(nil)
+	pred, err := r.ResolveLike(id, pat, noEscape)
 	if err != nil {
 		t.Fatalf("LIKE: %v", err)
 	}
@@ -567,36 +598,25 @@ func TestResolver_ResolveLike(t *testing.T) {
 	if cp.Comparison.Type != predicates.ComparisonLike {
 		t.Fatal("Type mismatch")
 	}
-	patLit, ok := values.EvaluateConstant(cp.Comparison.Operand)
-	if !ok || patLit != "hel%" {
-		t.Fatalf("pattern: got %v", cp.Comparison.Operand)
+	pfl, ok := cp.Comparison.Operand.(*values.PatternForLikeValue)
+	if !ok {
+		t.Fatalf("the LIKE operand is %T, want a PatternForLikeValue", cp.Comparison.Operand)
+	}
+	if lit, ok := values.EvaluateConstant(pfl.PatternChild); !ok || lit != "hel%" {
+		t.Fatalf("pattern: got %v", pfl.PatternChild)
 	}
 
-	// Non-string pattern rejected.
+	// A non-string pattern or escape is Java's 22F00 at planning; a NULL
+	// pattern is admitted (it filters every row).
 	intPat, _ := r.ResolveConstant(int64(1))
-	if _, err := r.ResolveLike(id, intPat); err == nil {
-		t.Fatal("expected error for non-string pattern")
+	for _, args := range [][2]values.Value{{intPat, noEscape}, {pat, intPat}} {
+		var apiErr *api.Error
+		if _, err := r.ResolveLike(id, args[0], args[1]); !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidArgumentForFunction {
+			t.Fatalf("want 22F00 for a non-string pattern or escape, got %v", err)
+		}
 	}
-
-	// A NULL pattern is rejected by the same `lit.(string)` check, and it is
-	// named here rather than left to the int case because it is the one that
-	// keeps a Go/Java divergence UNREACHABLE.
-	//
-	// At runtime the two engines disagree about `x LIKE NULL`: Go's
-	// Comparison.EvalAgainst returns UNKNOWN (the SQL-standard answer) while
-	// Java's Comparisons.compareLike null-guards only the VALUE and then throws
-	// "Illegal pattern value type: null" on a non-String pattern
-	// (Comparisons.java:288-299). Nothing reaches that disagreement today
-	// because ResolveLike refuses the plan first — so THIS rejection is the
-	// thing holding it, and relaxing it re-arms the divergence rather than
-	// merely widening what SQL accepts.
-	nullPat, err := r.ResolveConstant(nil)
-	if err != nil {
-		t.Fatalf("resolve NULL constant: %v", err)
-	}
-	if _, err := r.ResolveLike(id, nullPat); err == nil {
-		t.Fatal("expected error for a NULL LIKE pattern — this rejection is what " +
-			"keeps Go's UNKNOWN and Java's throw from ever disagreeing on a live query")
+	if _, err := r.ResolveLike(id, noEscape, noEscape); err != nil {
+		t.Fatalf("a NULL pattern: %v", err)
 	}
 }
 
@@ -1151,4 +1171,41 @@ func TestResolverEnumStructuralCompatibility(t *testing.T) {
 	got, err := pred.Eval(paramRow{bound: map[int]any{1: "R"}})
 	require.NoError(t, err)
 	require.Equal(t, predicates.TriTrue, got)
+}
+
+func TestResolver_RecordInTypeValidation(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	record := func(types ...values.Type) values.Value {
+		fields := make([]values.RecordConstructorField, len(types))
+		for i, typ := range types {
+			fields[i] = values.RecordConstructorField{Value: &values.ConstantValue{Value: int64(1), Typ: typ}}
+		}
+		return values.NewRecordConstructorValue(fields...)
+	}
+	for _, tc := range []struct {
+		name        string
+		left, right values.Value
+		valid       bool
+	}{
+		{"same primitive fields", record(values.NotNullLong, values.TypeString), record(values.NullableLong, values.TypeString), true},
+		{"different widths", record(values.NotNullLong), record(values.NotNullInt), false},
+		{"different arity", record(values.NotNullLong), record(values.NotNullLong, values.NotNullLong), false},
+		{"scalar rhs", record(values.NotNullLong), values.LiteralValue(int64(1)), false},
+		{"nested records", record(values.NewRecordType("inner", false, nil)), record(values.NewRecordType("inner", false, nil)), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := r.ResolveIn(tc.left, []values.Value{tc.right})
+			if tc.valid {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				var apiErr *api.Error
+				require.ErrorAs(t, err, &apiErr)
+				require.Equal(t, api.ErrCodeDatatypeMismatch, apiErr.Code)
+			}
+		})
+	}
 }

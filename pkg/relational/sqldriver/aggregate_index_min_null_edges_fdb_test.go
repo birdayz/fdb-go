@@ -56,7 +56,7 @@ func TestFDB_AggregateIndexMin_NonNumericExtremaAreRejected(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE minnn "+
 		"CREATE TABLE t (id BIGINT, g BIGINT, s STRING, b BYTES, PRIMARY KEY (id)) ")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_min_nonnum/s WITH TEMPLATE minnn")
-	dsn := fmt.Sprintf("fdbsql:///testdb_min_nonnum?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_MIN_NONNUM?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)

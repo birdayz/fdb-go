@@ -14,12 +14,8 @@ import (
 // recorder that classifies first and files second is still CORRECT with the
 // census off. It is not FREE. The classification is the expensive half: a
 // parseColRef, a strings.ToUpper of a qualifier, a counterparty lookup — built
-// to make an argument the disabled sink drops on the floor. The worst of them,
-// recordDisplayLabelStrip, sits beside a production line that already calls
-// parseColRef and isPlainQualifiedColumnReference (which calls parseColRef a
-// SECOND time and adds a ContainsAny); a recorder classifying ahead of the gate
-// doubles all of it on every projected column of every query — 750 calls over
-// the real-FDB corpus.
+// to make an argument the disabled sink drops on the floor, on every projected
+// column of every query.
 //
 // WHY THIS IS A STRUCTURAL GATE AND NOT A MEASURED ONE, which is the same
 // reasoning TestPlanCacheScope_SizeEstimateExact records for the plan-cache
@@ -55,13 +51,6 @@ type censusGateFunc struct {
 }
 
 var censusGateRecorders = []censusGateFunc{
-	{
-		file: "pkg/relational/core/embedded/colref.go",
-		fn:   "recordDisplayLabelStrip",
-		why: "its production line already parses the label " +
-			"twice, and a recorder classifying first doubles that on every projected " +
-			"column of every query (750 calls over the real-FDB corpus)",
-	},
 	{
 		file: "pkg/relational/core/embedded/colref.go",
 		fn:   "recordProjQualVsScan",

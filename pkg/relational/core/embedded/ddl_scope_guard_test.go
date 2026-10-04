@@ -15,10 +15,12 @@ package embedded
 //     owning database to scope against.
 
 import (
+	"context"
 	"errors"
 	"testing"
 
 	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/parser"
 	"fdb.dev/pkg/relational/core/session"
 )
 
@@ -171,4 +173,26 @@ func TestCheckSchemaTemplateDDLAllowed(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestShowDatabasesWithNoScopeIsRefused pins the fail-closed arm of a bare
+// SHOW DATABASES: a session whose path scopes nothing (absent, or the bare root
+// "/") is refused with 08F01 rather than handed the cluster-wide listing.
+// Unreachable through the sql.Driver (ParseDSN refuses a DSN with no path), so
+// it is pinned on the connection.
+func TestShowDatabasesWithNoScopeIsRefused(t *testing.T) {
+	t.Parallel()
+	root, err := parser.Parse("SHOW DATABASES")
+	if err != nil {
+		t.Fatal(err)
+	}
+	show := root.Statements().AllStatement()[0].AdministrationStatement().ShowStatement()
+	for _, path := range []string{"", "/"} {
+		_, err := scopeTestConn(path, false).execShowStatement(context.Background(), show)
+		var ae *api.Error
+		if !errors.As(err, &ae) || ae.Code != api.ErrCodeInvalidPath ||
+			ae.Message != "connection has no usable database path; SHOW DATABASES cannot be scoped" {
+			t.Errorf("SHOW DATABASES on session path %q = %v, want 08F01", path, err)
+		}
+	}
 }

@@ -42,7 +42,7 @@ func TestFDB_ProjectedExists_OrderByLimit(t *testing.T) {
 		"CREATE TABLE t2(id BIGINT, t1_id BIGINT, PRIMARY KEY(id))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_projexists_ob/s WITH TEMPLATE projexists_ob_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_projexists_ob?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_PROJEXISTS_OB?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestFDB_ProjectedExists_ScalarSubquery(t *testing.T) {
 		"CREATE TABLE t2(id BIGINT, t1_id BIGINT, PRIMARY KEY(id))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_projexists_sc/s WITH TEMPLATE projexists_sc_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_projexists_sc?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_PROJEXISTS_SC?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

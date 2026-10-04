@@ -16,7 +16,6 @@ import (
 var planComparisonFieldMutators = map[string]func(*predicates.Comparison){
 	"Type":               func(c *predicates.Comparison) { c.Type = predicates.ComparisonTextContainsAny },
 	"Operand":            func(c *predicates.Comparison) { c.Operand = values.LiteralValue("goodbye") },
-	"Escape":             func(c *predicates.Comparison) { c.Escape = '#' },
 	"ParameterName":      func(c *predicates.Comparison) { c.ParameterName = "other" },
 	"TextTokenizerName":  func(c *predicates.Comparison) { c.TextTokenizerName = "ngram" },
 	"TextAnalyzerName":   func(c *predicates.Comparison) { c.TextAnalyzerName = "other" },
@@ -37,7 +36,6 @@ func planBaselineComparison() predicates.Comparison {
 	return predicates.Comparison{
 		Type:               predicates.ComparisonTextContainsAll,
 		Operand:            values.LiteralValue("hello"),
-		Escape:             '\\',
 		ParameterName:      "p",
 		TextTokenizerName:  "default",
 		TextAnalyzerName:   "std",

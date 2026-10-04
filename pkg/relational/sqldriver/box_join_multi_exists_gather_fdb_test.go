@@ -177,12 +177,10 @@ func TestFDB_BoxJoinMultiExistsGather(t *testing.T) {
 	})
 
 	// NO-PANIC regression guard: a broad set of multi-esq shapes that variously reach
-	// the peel / merge / gather / name-model paths. Each MUST be correct-or-LOUD —
+	// the peel / merge / gather / name-model paths. Each MUST plan and execute —
 	// never the "anchored re-enumeration must resolve an anchored parent's legs" panic
 	// the multi-way-join multi-esq peel used to hit. runQ does not recover panics, so a
-	// panic aborts this test; passing = no panic. (A few shapes strand loud — a
-	// LogicalProjectionExpression with no physical rule — which is correct-or-loud, a
-	// documented gap, not wrong rows: the retired name-map makes any miss loud.)
+	// panic aborts this test.
 	t.Run("multiesq_no_panic_sweep", func(t *testing.T) {
 		for _, q := range []string{
 			`SELECT A."K" FROM A, B WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = B."K")`,                                                              // 2-way join + 2 EXISTS
@@ -192,7 +190,9 @@ func TestFDB_BoxJoinMultiExistsGather(t *testing.T) {
 			`SELECT "X" FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`,            // FULL box + unnest + 2 EXISTS
 			`SELECT A."K" FROM A, B, EEV WHERE NOT EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = B."K")`,                                                     // 3-way join + NOT EXISTS + EXISTS
 		} {
-			_, _, _ = runQ(t, q) // a panic here (anchored re-enumeration) fails the test
+			if _, _, err := runQ(t, q); err != nil {
+				t.Errorf("%q: %v", q, err)
+			}
 		}
 	})
 
@@ -344,24 +344,9 @@ func TestFDB_BoxJoinMultiExistsGather(t *testing.T) {
 	// matches EE.CK=100 → {7,8}; a mis-baked buried ref would misresolve → RED.
 	pin("arith_on_buried_leg", `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K" + 0)`,
 		"7", "8")
-	// TWO-TABLE esq spanning BOTH a leg (A.K) and the ELEMENT (X) — a
-	// pre-existing LOUD 0AF00 guard (multi-table EXISTS referencing the element
-	// is unsupported). FLIP-SENTINEL: if a future admission/rebase makes this
-	// gather, this pin catches the regression to silent-wrong.
-	t.Run("twotable_leg_and_element_loud", func(t *testing.T) {
-		_, _, err := runQ(t, `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EE, EEV WHERE EE."CK" = A."K" AND EEV."VK" = "X")`)
-		// The decline is a stable, deliberate 0AF00 — pin the code, not just
-		// err != nil. A code pin is strictly stronger: it also catches the shape
-		// breaking for an UNRELATED reason (which would silently retire the
-		// silent-wrong→loud sentinel this exists to be), and it matches the
-		// loud0AF00 pattern the enclosed-CTE battery in this package uses.
-		if err == nil {
-			t.Fatal("two-table esq spanning a leg and the element must be LOUD (unsupported), got rows")
-		}
-		if !strings.Contains(err.Error(), "0AF00") {
-			t.Fatalf("expected a 0AF00 decline, got: %v", err)
-		}
-	})
+	// Both the box leg and element must stay bound inside the joined child.
+	pin("twotable_leg_and_element", `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EE, EEV WHERE EE."CK" = A."K" AND EEV."VK" = "X")`,
+		"7")
 
 	// MULTI-ESQ: a >1-EXISTS INNER-cluster unnest GATHERS and resolves
 	// positionally. Pin the risky dimensions a plan-only sweep can't — each

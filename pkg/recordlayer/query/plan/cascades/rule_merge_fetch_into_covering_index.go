@@ -29,7 +29,10 @@ type MergeFetchIntoCoveringIndexRule struct {
 
 func NewMergeFetchIntoCoveringIndexRule() *MergeFetchIntoCoveringIndexRule {
 	return &MergeFetchIntoCoveringIndexRule{
-		matcher: NewExpressionMatcher[*plans.RecordQueryFetchFromPartialRecordPlan]("phys_fetch_over_index"),
+		matcher: NewExpressionMatcher[*plans.RecordQueryFetchFromPartialRecordPlan]("phys_fetch_over_index").WithInputPredicate(
+			func(plan *plans.RecordQueryFetchFromPartialRecordPlan) bool {
+				return referenceHasMemberOfType[*plans.RecordQueryCoveringIndexPlan](plan.GetInnerQuantifier().GetRangesOver())
+			}),
 	}
 }
 
@@ -49,18 +52,11 @@ func (r *MergeFetchIntoCoveringIndexRule) OnMatch(call *ImplementationRuleCall) 
 	// by primary key, so Fetch(Covering(Index)) and Index are the same rows
 	// from one node instead of two. Go's executor agrees — executeIndexScan
 	// resolves records via indexFetchCursor.
-	var indexPlan *plans.RecordQueryIndexPlan
-	for _, m := range innerRef.AllMembers() {
-		if cov, ok := m.(*plans.RecordQueryCoveringIndexPlan); ok {
-			indexPlan = cov.GetIndexPlan()
-			break
+	for _, member := range innerRef.AllMembers() {
+		if covering, ok := member.(*plans.RecordQueryCoveringIndexPlan); ok {
+			call.Yield(covering.GetIndexPlan())
 		}
 	}
-	if indexPlan == nil {
-		return
-	}
-
-	call.Yield(indexPlan)
 }
 
 var _ ImplementationRule = (*MergeFetchIntoCoveringIndexRule)(nil)

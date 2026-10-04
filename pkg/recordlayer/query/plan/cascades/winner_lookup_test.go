@@ -316,38 +316,6 @@ func TestFindPhysicalPlanVsFindBestPhysicalExpr_InsertionOrderMatters(t *testing
 	}
 }
 
-func TestProjectionRule_WrapsWinnerNotFirst(t *testing.T) {
-	t.Parallel()
-
-	// Build: Projection(inner-ref)
-	// Inner-ref has two physical plans. Verify the Projection wraps
-	// the winner (cost-model best), not the first.
-	scan := winnerLookupFullScan(t, "Order", "ID")
-	innerRef := expressions.InitialOf(scan)
-
-	scanRule := NewPrimaryScanRule()
-	mustWinnerLookupFireRule(t, scanRule, innerRef)
-
-	projectionQ := expressions.ForEachQuantifier(innerRef)
-	projVals := []values.Value{winnerLookupQuantifiedField(t, projectionQ, 0)}
-	proj := mustWinnerLookupConstruct(expressions.NewLogicalProjectionExpression(
-		projVals,
-		projectionQ,
-	))
-	topRef := expressions.InitialOf(proj)
-
-	projRule := NewImplementProjectionRule()
-	yielded := mustWinnerLookupFireRule(t, projRule, topRef)
-	if len(yielded) == 0 {
-		t.Fatal("ImplementProjectionRule yielded nothing")
-	}
-
-	if _, ok := yielded[0].(*plans.RecordQueryProjectionPlan); !ok {
-		t.Fatalf("yielded[0] = %T, want *plans.RecordQueryProjectionPlan", yielded[0])
-	}
-	t.Logf("ProjectionRule yielded %d plans", len(yielded))
-}
-
 // TestGetWinnerForOrdering_PreserveOnRefWithMultiplePhysical pins that a
 // reference holding physical members answers all three lookups even with no
 // winners stamped: findPhysicalPlan, findPhysicalExpr, and
@@ -408,7 +376,7 @@ func TestGetWinnerForOrdering_PreserveOnRefWithMultiplePhysical(t *testing.T) {
 func TestFilterRule_UsesWinnerPerOrdering(t *testing.T) {
 	t.Parallel()
 
-	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	pred := predicates.NewConstantPredicate(predicates.TriFalse)
 	scan := winnerLookupFullScan(t, "Order", "ID")
 	innerRef := expressions.InitialOf(scan)
 
@@ -497,23 +465,20 @@ func TestPinOrderedSpine(t *testing.T) {
 	}
 }
 
-// TestPinOrderedSpine_DeclinesWhenRelinkRefused pins the executable-plan
-// verification: several WithChildren impls KEEP their original concrete
-// plan when the new child isn't leaf-replaceable (isLeafReplaceable) —
-// the quantifier then points at the pinned member while
-// GetRecordQueryPlan() still executes the old child. Such a "pin" must be
-// DECLINED (nil), never yielded: dropping a sort on its strength executes
-// the unpinned child in whatever order it has.
-func TestPinOrderedSpine_DeclinesWhenRelinkRefused(t *testing.T) {
+// TestPinOrderedSpine_ExecutesThePinnedChild pins the executable-plan
+// verification: a pin is yielded only when the relinked wrapper's
+// GetRecordQueryPlan() executes the pinned member. A pin whose quantifier
+// points at the pinned member while the plan still executes the old child
+// must be DECLINED (nil): dropping a sort on its strength executes the
+// unpinned child in whatever order it has.
+func TestPinOrderedSpine_ExecutesThePinnedChild(t *testing.T) {
 	t.Parallel()
 
-	// An ordered member whose plan is NOT leaf-replaceable: a projection
-	// wrapper (RecordQueryProjectionPlan is outside the isLeafReplaceable
-	// set) delegating over an in-memory sort on S.
+	// An ordered member: a block Map delegating over an in-memory sort on S.
 	sorted := sortedMemberOn(t, "S")
 	sortedRef := expressions.InitialOf(sorted)
 	projectionQ := expressions.ForEachQuantifier(sortedRef)
-	orderedProjection := mustWinnerLookupConstruct(plans.NewRecordQueryProjectionPlanFromQuantifier(
+	orderedProjection := mustWinnerLookupConstruct(newProjectionMapFromQuantifierForTest(
 		[]values.Value{winnerLookupQuantifiedField(t, projectionQ, 0)},
 		nil,
 		projectionQ,
@@ -532,18 +497,22 @@ func TestPinOrderedSpine_DeclinesWhenRelinkRefused(t *testing.T) {
 		[]properties.RequestedOrderingPart{{Value: winnerLookupSortValue(t, sorted), SortOrder: properties.RequestedSortOrderAscending}},
 		properties.DistinctnessPreserveDistinctness, false)
 
-	if got := pinOrderedSpine(wrapper, reqS, nil); got != nil {
+	got := pinOrderedSpine(wrapper, reqS, nil)
+	if got == nil {
+		t.Fatal("pin over an ordered Map declined; a Map relinks by quantifier swap, so the pin must be yielded")
+	}
+	{
 		gotPE, _ := got.(physicalPlanExpression)
 		var childIsProjection bool
 		if gotPE != nil {
 			for _, c := range gotPE.GetRecordQueryPlan().GetChildren() {
-				if _, ok := c.(*plans.RecordQueryProjectionPlan); ok {
+				if _, ok := c.(*plans.RecordQueryMapPlan); ok {
 					childIsProjection = true
 				}
 			}
 		}
 		if !childIsProjection {
-			t.Fatalf("pin returned a wrapper whose executable plan does NOT contain the pinned projection child — the relink was refused and the pin is a lie (%T)", got)
+			t.Fatalf("pin returned a wrapper whose executable plan does NOT contain the pinned Map child — the relink was refused and the pin is a lie (%T)", got)
 		}
 	}
 }

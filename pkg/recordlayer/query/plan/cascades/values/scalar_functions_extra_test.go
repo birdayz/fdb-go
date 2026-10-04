@@ -390,7 +390,7 @@ func TestSimplifyValue_FoldsExtendedScalars(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		out := SimplifyValue(tc.v)
+		out := SimplifyPredicateValue(tc.v)
 		cv, ok := out.(*ConstantValue)
 		if !ok {
 			t.Fatalf("%s: expected *ConstantValue, got %T", tc.name, out)
@@ -439,17 +439,20 @@ type testStatementClock struct{ now time.Time }
 
 func (c testStatementClock) StatementNow() time.Time { return c.now }
 
-// TestScalarFunction_ShortCircuit pins the lazy forms at the unit level:
-// COALESCE stops at the first non-NULL argument and IF evaluates only
-// the taken branch — the untaken 1/0 must never raise.
+// TestScalarFunction_ShortCircuit: COALESCE evaluates every argument (Java's
+// VariadicFunctionValue.eval), IFNULL stops at the first non-NULL argument,
+// and IF evaluates only the taken branch.
 func TestScalarFunction_ShortCircuit(t *testing.T) {
 	t.Parallel()
 	one := &ConstantValue{Value: int64(1), Typ: NullableInt}
 	boom := &ArithmeticValue{Op: OpDiv, Left: one, Right: &ConstantValue{Value: int64(0), Typ: NullableInt}}
 
-	got, err := NewScalarFunctionValue("COALESCE", NullableInt, one, boom).Evaluate(nil)
+	if _, err := NewScalarFunctionValue("COALESCE", NullableInt, one, boom).Evaluate(nil); err == nil {
+		t.Error("COALESCE(1, 1/0) must evaluate every argument and raise the division error")
+	}
+	got, err := NewScalarFunctionValue("IFNULL", NullableInt, one, boom).Evaluate(nil)
 	if err != nil || got != int64(1) {
-		t.Errorf("COALESCE(1, 1/0) = %v, %v — want 1, nil (short-circuit)", got, err)
+		t.Errorf("IFNULL(1, 1/0) = %v, %v — want 1, nil (short-circuit)", got, err)
 	}
 	got, err = NewScalarFunctionValue("IF", NullableInt, NewBooleanValue(true), one, boom).Evaluate(nil)
 	if err != nil || got != int64(1) {

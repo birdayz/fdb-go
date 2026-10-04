@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -45,7 +46,7 @@ func TestFDB_UnnestArrayInsideStruct(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -78,23 +79,22 @@ func TestFDB_UnnestArrayInsideStruct(t *testing.T) {
 				"nested arm below is only interpretable against this control",
 		},
 		{
-			// The array reached THROUGH a struct column. It never reaches the
-			// unnest machinery at all: a comma source is classified as a lateral
-			// unnest by resolving segment 0 against the in-scope source ALIASES,
-			// and `N` is a struct column, not an alias — so the FROM item is read
-			// as a database qualifier and dies here.
-			//
-			// This is the fact that makes unnestElementStructFields' nested arm
-			// unreachable from SQL. That arm is driven directly by
-			// TestUnnestElementStructFieldsTakesTheLeaf, so the two records sit
-			// together: what keeps it unreachable, and what it does when reached.
+			// The array reached THROUGH a struct column, by the column's bare
+			// name: Java reads a FROM item that names no table with its column
+			// lookup (resolveCorrelatedIdentifier), whose struct-relative reading
+			// reaches t's struct column n and its array field, and unnests it
+			// (measured rows in conformance/ws_f_table_qualifier_conformance_test.go,
+			// `SELECT x FROM t2, n.arr AS x`). Go's classifier takes any dotted
+			// non-table FROM item and binds it through the same scope lookup,
+			// so the element's struct fields are the leaf's, the arm
+			// TestUnnestElementStructFieldsTakesTheLeaf drives directly. The ORDER
+			// BY over the element is Go's sorting extension (the target cannot
+			// plan an ORDER BY over an unnested element).
 			name: "array_inside_struct",
 			sql:  "SELECT x.co FROM t, n.arr AS x ORDER BY x.co",
-			want: "ERROR: 42F00: Unknown database N",
-			rearms: "a two-segment FROM item whose first segment is a STRUCT COLUMN " +
-				"is now classified as a lateral unnest instead of a database " +
-				"qualifier; unnestElementStructFields' nested arm goes live and its " +
-				"rows want asserting here (expect CO|200;300)",
+			want: "CO|200;300",
+			rearms: "an array reached through a struct column's bare name is no " +
+				"longer a lateral unnest (Java unnests it)",
 		},
 	}
 

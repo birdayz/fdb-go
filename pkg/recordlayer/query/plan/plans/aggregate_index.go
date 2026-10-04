@@ -68,6 +68,7 @@ type RecordQueryAggregateIndexPlan struct {
 	recordTypeName    string
 	resultType        values.Type
 	aggregateFunction string
+	permuted          bool
 	groupCols         []string
 	aggColumn         string
 	// groupColLayout is the DECLARED layout the groupCols names resolve
@@ -166,6 +167,13 @@ func (p *RecordQueryAggregateIndexPlan) WithGroupColumns(groupCols []string, agg
 	return &cp
 }
 
+// WithPermutedOrdering makes the aggregate participate in the physical key order.
+func (p *RecordQueryAggregateIndexPlan) WithPermutedOrdering(permuted bool) *RecordQueryAggregateIndexPlan {
+	cp := *p
+	cp.permuted = permuted
+	return &cp
+}
+
 // WithGroupColumnLayout carries the declared layout the grouping-column names
 // resolve against — the base record type's descriptor-shaped positional type.
 // Only HintOrdering reads it, to decide whether a grouping column may extend
@@ -227,10 +235,10 @@ func (p *RecordQueryAggregateIndexPlan) GetPhysicalGroupingPrefixCount() int {
 	return len(p.groupCols)
 }
 
-// CanonicalAggColumnName returns the canonical column name the executor's
-// aggregateIndexCursor writes the aggregate value under: "FUNC(*)" for an
-// empty aggColumn (e.g. COUNT(*)), else "FUNC(col)". Single source of that
-// name so the cursor's row key and the plan's stated row agree.
+// CanonicalAggColumnName returns the index's own name for its aggregate
+// column: "FUNC(*)" for an empty aggColumn (e.g. COUNT(*)), else "FUNC(col)".
+// It is part of the scan's execution identity; the row the plan publishes is
+// named by its result type.
 func (p *RecordQueryAggregateIndexPlan) CanonicalAggColumnName() string {
 	if p.aggColumn == "" {
 		return p.aggregateFunction + "(*)"
@@ -301,16 +309,20 @@ func (p *RecordQueryAggregateIndexPlan) structuralKey() *structuralKey {
 	// type takes the layout branch and gets a deterministic carrier, so the
 	// hazard is branch-specific rather than universal); groupColLayout is derived
 	// from the index's record type (see its field comment — folding it would key
-	// the memo on a type token); resultType is computed by
+	// the memo on a type token); resultType's slot types are computed by
 	// aggregateIndexOutputType from groupCols, the aggregate function and the
 	// index's key component types, every one of which is already folded here.
+	// Its field NAMES are the GroupBy's the plan publishes, so they are folded:
+	// two scans of one index under different names state different rows.
 	return newStructuralKey().
+		Strs(resultFieldNames(p.resultType)).
 		Str(p.recordTypeName).
 		Str(p.aggregateFunction).
 		Str(p.aggColumn).
 		Strs(p.groupCols).
 		Int(p.GetPhysicalGroupingPrefixCount()).
 		Bool(p.liveGroupsOnly).
+		Bool(p.permuted).
 		Sub(p.indexPlan.structuralKey())
 }
 
@@ -371,3 +383,16 @@ func (p *RecordQueryAggregateIndexPlan) WithQuantifiers(qs []expressions.Quantif
 
 // GetRecordQueryPlan returns the plan itself.
 func (p *RecordQueryAggregateIndexPlan) GetRecordQueryPlan() RecordQueryPlan { return p }
+
+// resultFieldNames lists a record type's field names; nil for a non-record.
+func resultFieldNames(t values.Type) []string {
+	record, ok := t.(*values.RecordType)
+	if !ok || record == nil {
+		return nil
+	}
+	names := make([]string, len(record.Fields))
+	for i, f := range record.Fields {
+		names[i] = f.Name
+	}
+	return names
+}

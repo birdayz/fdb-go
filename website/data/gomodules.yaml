@@ -3,5 +3,4 @@
 # The root module (fdb.dev) needs no entry: the go-import meta on / covers
 # every package in it via Go's prefix walk. See the script for the details.
 modules:
-  - cmd/frl
   - tools/bazelscaleset

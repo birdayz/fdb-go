@@ -48,7 +48,7 @@ func TestFDB_ProjectedExistsOverLeftJoin(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE f2left_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -163,23 +163,31 @@ func TestFDB_ProjectedExistsOverLeftJoin(t *testing.T) {
 		}
 	})
 
-	// (4) + a non-EXISTS WHERE — DECLINES cleanly (0AF00). The WHERE would land in
-	// the JoinLeftOuter select's predicate list where the NLJ treats it as an ON
-	// condition, null-extending non-matching rows instead of FILTERING them:
-	// `WHERE p.v = 10` would keep p.v = 20 null-extended (wrong rows). Java places
-	// the WHERE ABOVE the outer join and answers [[10 false]]; the fold cannot
-	// express that in one select yet, so it declines. This pin guards the P1
-	// wrong-rows boundary: a re-enable without above-join placement flips it to rows.
-	t.Run("dim4_where_declines", func(t *testing.T) {
+	// (4) + a non-EXISTS WHERE — the WHERE filters ABOVE the outer join, as Java
+	// places it, and never acts as ON: p.v = 20 must not come back null-extended.
+	// Java: [[10 false]].
+	t.Run("dim4_where_filters_above_the_outer_join", func(t *testing.T) {
 		rows, err := db.QueryContext(ctx,
 			"SELECT p.v, EXISTS (SELECT 1 FROM r WHERE r.id = q.qid) "+
 				"FROM p LEFT JOIN q ON q.qid = p.id WHERE p.v = 10")
-		if err == nil {
-			rows.Close()
-			t.Fatal("WHERE over the LEFT fold must decline (0AF00) — folding it treats WHERE as ON and null-extends non-matching rows (P1 wrong rows)")
+		if err != nil {
+			t.Fatalf("WHERE over a projected EXISTS over LEFT JOIN errored (Java answers it): %v", err)
 		}
-		if !strings.Contains(err.Error(), "0AF00") {
-			t.Fatalf("want clean 0AF00 decline for WHERE over LEFT fold, got: %v", err)
+		defer rows.Close()
+		var got [][2]any
+		for rows.Next() {
+			var v int64
+			var ex bool
+			if err := rows.Scan(&v, &ex); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			got = append(got, [2]any{v, ex})
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows: %v", err)
+		}
+		if len(got) != 1 || got[0] != [2]any{int64(10), false} {
+			t.Fatalf("got %v, want [[10 false]] — a WHERE treated as ON null-extends p.v = 20 instead of dropping it", got)
 		}
 	})
 

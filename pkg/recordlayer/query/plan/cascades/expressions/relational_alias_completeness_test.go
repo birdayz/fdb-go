@@ -47,10 +47,6 @@ func TestRelationalAliasCompleteness(t *testing.T) {
 			return mustExpression(NewGroupByExpression([]values.Value{qov(a)},
 				[]AggregateSpec{{Function: AggCount, Operand: qov(a)}}, inner()))
 		}},
-		{"LogicalProjection", func(a values.CorrelationIdentifier) RelationalExpression {
-			return mustExpression(NewLogicalProjectionExpression(
-				[]values.Value{testCorrelatedField(a, "ID", values.NotNullLong)}, inner()))
-		}},
 		{"LogicalValues", func(a values.CorrelationIdentifier) RelationalExpression {
 			return mustExpression(NewLogicalValuesExpression(
 				[]values.Value{testCorrelatedField(a, "ID", values.NotNullLong)}))
@@ -59,7 +55,7 @@ func TestRelationalAliasCompleteness(t *testing.T) {
 			return mustExpression(NewLogicalIntersectionExpression([]Quantifier{inner(), inner()}, []values.Value{qov(a)}))
 		}},
 		{"Update", func(a values.CorrelationIdentifier) RelationalExpression {
-			return mustExpression(NewUpdateExpression(inner(), "T", testRecordType(), []UpdateTransform{{FieldPath: "f", NewValue: qov(a)}}))
+			return mustExpression(NewUpdateExpression(inner(), "T", testRecordType(), []UpdateTransform{{FieldNames: []string{"f"}, FieldOrdinals: []int{0}, NewValue: qov(a)}}))
 		}},
 	}
 

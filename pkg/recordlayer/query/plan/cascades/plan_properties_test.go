@@ -56,6 +56,50 @@ func planPropertiesValues() *plans.RecordQueryValuesPlan {
 	return mustPropertiesConstruct(plans.NewRecordQueryValuesPlan(nil))
 }
 
+func TestReferencePruningRestrictsPlanProperties(t *testing.T) {
+	t.Parallel()
+	for _, operation := range []string{"single", "subset", "clear"} {
+		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
+			first := planPropertiesScan("FIRST")
+			middle := planPropertiesScan("MIDDLE")
+			last := planPropertiesScan("LAST")
+			ref := expressions.InitialOf(first)
+			for _, member := range []expressions.RelationalExpression{first, middle, last} {
+				ref.InsertFinal(member)
+			}
+			computeRefPlanProperties(ref)
+			before := GetRefPlanPropertiesMap(ref)
+			if len(before.Expressions()) != 3 {
+				t.Fatal("fixture must populate three final property entries")
+			}
+			var want []expressions.RelationalExpression
+			switch operation {
+			case "single":
+				ref.PruneWith(middle)
+				want = []expressions.RelationalExpression{middle}
+			case "subset":
+				ref.PruneToSet(map[expressions.RelationalExpression]struct{}{first: {}, last: {}})
+				want = []expressions.RelationalExpression{first, last}
+			case "clear":
+				ref.ClearFinalMembers()
+			}
+			after := GetRefPlanPropertiesMap(ref)
+			if after == nil || len(after.Expressions()) != len(want) || len(after.All()) != len(want) {
+				t.Fatalf("properties must retain exactly the surviving finals: got %v, want %v", after, want)
+			}
+			for i, member := range want {
+				if after.Expressions()[i] != member || !after.GetProperties(member).GetBool(properties.PropDistinctRecords) {
+					t.Fatalf("survivor %d lost its order or stored properties", i)
+				}
+			}
+			if !ref.ContainsExactly(first) {
+				t.Fatal("pruning final properties must not remove exploratory members")
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // computeDistinctRecords
 // ---------------------------------------------------------------------------

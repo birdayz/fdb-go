@@ -32,7 +32,15 @@
 //
 // Everything else the determinism gate checks — the candidate name, the feature
 // vector, all four TLP renderings, the schema template, the setup INSERT — is
-// VERIFIED, never rewritten. Any drift there means the change was not a pure
+// VERIFIED, never rewritten, with one opt-in exception: -rederive-setup
+// re-derives the setup INSERT from the recipe (Case.InsertSQL) when the
+// generator changed how it SPELLS the same data — a FLOAT value written through
+// CAST(… AS FLOAT) once a bare DOUBLE literal stopped being admitted to a FLOAT
+// column. That is the same pure computation over the recipe as the two headers.
+// What this tool cannot see is whether the new spelling stores the same values,
+// and it does not claim to: full_test, which executes every scenario against a
+// real cluster, is the proof that the frozen rows still hold over the
+// re-spelled setup, and it is required green after such a run. Any drift there means the change was not a pure
 // plan flip and the run aborts, because the committed reproduction recipes
 // would be lying about something this tool cannot honestly repair.
 //
@@ -85,18 +93,22 @@ const (
 
 func main() {
 	var corpusDir, censusPath string
-	var dryRun bool
+	var dryRun, rederiveSetup bool
 	flag.StringVar(&corpusDir, "corpus", "pkg/relational/conformance/factorycorpus/testdata",
 		"directory holding the committed .yamsql family files")
 	flag.StringVar(&censusPath, "census", "pkg/relational/conformance/factorycorpus/census_baseline.json",
 		"path of the census baseline to rewrite")
 	flag.BoolVar(&dryRun, "dry-run", false, "report what would change and write nothing")
+	flag.BoolVar(&rederiveSetup, "rederive-setup", false,
+		"re-derive a drifted setup INSERT from the recipe instead of aborting; "+
+			"full_test must be green afterwards, as the proof the rows still hold")
 	flag.Parse()
-	os.Exit(run(corpusDir, censusPath, dryRun))
+	os.Exit(runWith(corpusDir, censusPath, options{dryRun: dryRun, rederiveSetup: rederiveSetup}, nil))
 }
 
-func run(corpusDir, censusPath string, dryRun bool) int {
-	return runWith(corpusDir, censusPath, dryRun, nil)
+type options struct {
+	dryRun        bool
+	rederiveSetup bool
 }
 
 // runWith is run with one seam: mangle, when non-nil, perturbs a family's
@@ -109,7 +121,8 @@ func run(corpusDir, censusPath string, dryRun bool) int {
 // the failure mode that matters is somebody deleting the call. So the test
 // drives the wire directly. It is a parameter rather than a package variable so
 // the tests that use it stay parallel-safe.
-func runWith(corpusDir, censusPath string, dryRun bool, mangle func([]byte) []byte) int {
+func runWith(corpusDir, censusPath string, opts options, mangle func([]byte) []byte) int {
+	dryRun := opts.dryRun
 	paths, err := filepath.Glob(filepath.Join(corpusDir, "*.yamsql"))
 	if err != nil || len(paths) == 0 {
 		fmt.Fprintf(os.Stderr, "INFRA: no .yamsql under %s (%v)\n", corpusDir, err)
@@ -117,21 +130,32 @@ func runWith(corpusDir, censusPath string, dryRun bool, mangle func([]byte) []by
 	}
 	sort.Strings(paths)
 
-	// Candidates() is expensive and one seed serves many scenarios, so it is
-	// derived once per seed — the same sharing TestFactoryDeterminism relies on
-	// to prove the per-seed derivation is stable across the candidates under it.
-	candCache := map[uint64][]factory.Candidate{}
-	candidatesFor := func(seed uint64) []factory.Candidate {
-		if c, ok := candCache[seed]; ok {
-			return c
+	// Candidate derivation is expensive and one seed serves many scenarios, so
+	// it is done once per (generator, seed) — the same sharing
+	// TestFactoryDeterminism relies on to prove the per-seed derivation is
+	// stable across the candidates under it. Keyed by the generator too: the
+	// flat and nested families share the seed NUMBER space, and each header
+	// names the generator that must reproduce it (factory.CandidatesForGenerator).
+	type genSeed struct {
+		gen  string
+		seed uint64
+	}
+	candCache := map[genSeed][]factory.Candidate{}
+	candidatesFor := func(gen string, seed uint64) ([]factory.Candidate, bool) {
+		k := genSeed{gen, seed}
+		if c, ok := candCache[k]; ok {
+			return c, true
 		}
-		c := factory.Candidates(seed)
-		candCache[seed] = c
-		return c
+		c, ok := factory.CandidatesForGenerator(gen, seed)
+		if !ok {
+			return nil, false
+		}
+		candCache[k] = c
+		return c, true
 	}
 
 	var all []*factorycorpus.Scenario
-	var changedScenarios int
+	var changedScenarios, rederivedSetups int
 	// pending holds pass one's computed replacements. Nothing is written until
 	// every file has cleared, so an abort leaves the tree untouched.
 	type rewrite struct {
@@ -156,16 +180,17 @@ func runWith(corpusDir, censusPath string, dryRun bool, mangle func([]byte) []by
 		fileChanged := false
 		for _, sc := range f.Scenarios {
 			h := &sc.Header
-			if h.Generator != factory.GeneratorVersion {
-				fmt.Fprintf(os.Stderr, "DRIFT: %s/%s: generator %q, this build is %q. A generator "+
-					"version bump needs a re-blessed batch through the oracle pipeline, not a "+
-					"header rewrite\n", path, h.Name, h.Generator, factory.GeneratorVersion)
+			cands, known := candidatesFor(h.Generator, h.Seed)
+			if !known {
+				fmt.Fprintf(os.Stderr, "DRIFT: %s/%s: generator %q is not one this build has (%q, %q). A "+
+					"generator version bump needs a re-blessed batch through the oracle pipeline, not a "+
+					"header rewrite\n", path, h.Name, h.Generator, factory.GeneratorVersion, factory.NestedGeneratorVersion)
 				return exitDrift
 			}
 			var cand *factory.Candidate
-			for i, c := range candidatesFor(h.Seed) {
+			for i, c := range cands {
 				if c.QueryIndex == h.QueryIndex && c.ProjIndex == h.Projection {
-					cand = &candidatesFor(h.Seed)[i]
+					cand = &cands[i]
 					break
 				}
 			}
@@ -174,6 +199,11 @@ func runWith(corpusDir, censusPath string, dryRun bool, mangle func([]byte) []by
 					"query %d / projection %d — the reproduction recipe is dead\n",
 					path, h.Name, h.Seed, h.QueryIndex, h.Projection)
 				return exitDrift
+			}
+			if opts.rederiveSetup && len(sc.Doc.Setup) == 1 && sc.Doc.Setup[0] != cand.Case.InsertSQL() {
+				sc.Doc.Setup[0] = cand.Case.InsertSQL()
+				rederivedSetups++
+				fileChanged = true
 			}
 			if msg := verifyRecipe(path, h, cand, sc); msg != "" {
 				fmt.Fprintln(os.Stderr, "DRIFT: "+msg)
@@ -224,6 +254,9 @@ func runWith(corpusDir, censusPath string, dryRun bool, mangle func([]byte) []by
 
 	fmt.Printf("re-blessed %d scenarios across %d files (%d scenarios inspected)\n",
 		changedScenarios, len(pending), len(all))
+	if opts.rederiveSetup {
+		fmt.Printf("re-derived %d setup INSERTs; run full_test before committing\n", rederivedSetups)
+	}
 	for _, c := range collisions {
 		fmt.Fprintln(os.Stderr, "COLLISION: "+c)
 	}

@@ -77,8 +77,8 @@ func TestDistinctProofStampSplitsIdentityButNotContinuation(t *testing.T) {
 		projections := []values.Value{
 			mustTestFieldOrdinal(t, inner.GetResultValue(), 0),
 		}
-		plain := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(projections, inner))
-		stamped, ok := plain.WithDistinctProofIndexName("BY_EMAIL").(*plans.RecordQueryProjectionPlan)
+		plain := mustExecutorConstruct(newProjectionMapOverForTest(projections, inner))
+		stamped, ok := plain.WithDistinctProofIndexName("BY_EMAIL").(*plans.RecordQueryMapPlan)
 		if !ok {
 			t.Fatal("WithDistinctProofIndexName did not return a projection plan")
 		}

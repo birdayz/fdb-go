@@ -31,7 +31,7 @@ func TestFDB_OuterProjectedScalarSubquery(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE opss CREATE TABLE p (id BIGINT, v BIGINT, PRIMARY KEY (id))"+
 			" CREATE TABLE q (qid BIGINT, PRIMARY KEY (qid))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_opss/s WITH TEMPLATE opss")
-	dsn := fmt.Sprintf("fdbsql:///testdb_opss?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_OPSS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

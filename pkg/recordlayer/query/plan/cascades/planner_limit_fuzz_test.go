@@ -81,7 +81,7 @@ func FuzzPlanner_Limit_NoPanic(f *testing.F) {
 			innerQ := expressions.ForEachQuantifier(innerRef)
 
 			if addProjection {
-				proj := mustPlannerLimitFuzzConstruct(expressions.NewLogicalProjectionExpression(
+				proj := mustPlannerLimitFuzzConstruct(newBlockSelectForTest(
 					[]values.Value{plannerLimitFuzzField(t, innerQ, 0)},
 					innerQ,
 				))
@@ -93,7 +93,7 @@ func FuzzPlanner_Limit_NoPanic(f *testing.F) {
 			}
 		} else {
 			if addProjection {
-				proj := mustPlannerLimitFuzzConstruct(expressions.NewLogicalProjectionExpression(
+				proj := mustPlannerLimitFuzzConstruct(newBlockSelectForTest(
 					[]values.Value{plannerLimitFuzzField(t, scanQ, 0)},
 					scanQ,
 				))
@@ -142,7 +142,7 @@ func FuzzPlanner_ProjectionPipeline_NoPanic(f *testing.F) {
 				scanQ,
 			))
 		} else {
-			current = mustPlannerLimitFuzzConstruct(expressions.NewLogicalProjectionExpression(
+			current = mustPlannerLimitFuzzConstruct(newBlockSelectForTest(
 				plannerLimitFuzzProjectionValues(t, scanQ, cols, 1), scanQ))
 		}
 
@@ -163,7 +163,7 @@ func FuzzPlanner_ProjectionPipeline_NoPanic(f *testing.F) {
 			ref = expressions.InitialOf(limExpr)
 		} else {
 			// Need a top-level ref
-			topProj := mustPlannerLimitFuzzConstruct(expressions.NewLogicalProjectionExpression(
+			topProj := mustPlannerLimitFuzzConstruct(newBlockSelectForTest(
 				plannerLimitFuzzProjectionValues(t, q, cols, currentFirstOrdinal), q))
 			ref = expressions.InitialOf(topProj)
 		}

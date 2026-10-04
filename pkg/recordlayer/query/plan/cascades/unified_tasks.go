@@ -59,10 +59,14 @@ type ExploreGroupTask struct {
 	// than recomputing it from Ref.
 	pendingKey exploreGroupTaskKey
 	pending    bool
+
+	// superseded marks a task queued for a group a PLANNING merge folded
+	// away; the merge scheduled the exploration the fold needs.
+	superseded bool
 }
 
 func (t *ExploreGroupTask) Run(ctx context.Context, p *Planner) {
-	if ctx.Err() != nil || t.Ref == nil {
+	if ctx.Err() != nil || t.Ref == nil || t.superseded {
 		return
 	}
 
@@ -110,35 +114,13 @@ func (t *ExploreGroupTask) Run(ctx context.Context, p *Planner) {
 		}
 	}
 
-	// PinnedFinalOf is the planner's pinned physical-spine shape: a StagePlanned
-	// reference with no exploratory members and exactly one physical final. It
-	// represents a parent that was deliberately constructed over that concrete
-	// child. Re-exploring the singleton would let physical transformation rules
-	// add competitors and a child-local winner would then mutate the parent onto
-	// a different plan — precisely undoing the restriction.
-	//
-	// Validate every exact ordinal requirement before accepting the pin. A pin
-	// is a choice, not a license to bypass layout compatibility.
-	if t.Ref.IsPinnedFinal() && targetStage == expressions.StagePlanned && len(t.Ref.Members()) == 0 {
-		finals := t.Ref.FinalMembers()
-		if len(finals) == 1 && isPhysical(finals[0]) {
-			pinned := finals[0]
-			if requirements, ok := Get(p.constraintMap, t.Ref, OrdinalLayoutConstraintKey); ok {
-				for _, requirement := range requirements {
-					compatible, err := memberSatisfiesOrdinalRequirement(pinned, requirement)
-					if err != nil {
-						p.capErr = fmt.Errorf("pinned child ordinal layout: %w", err)
-						return
-					}
-					if !compatible {
-						p.capErr = fmt.Errorf("pinned child ordinal layout: selected final is incompatible")
-						return
-					}
-				}
-			}
-			t.Ref.SetWinner(pinned)
-			computeRefPlanProperties(t.Ref)
-			t.Ref.ConstraintsMap().SetExplored()
+	if targetStage == expressions.StagePlanned {
+		completed, err := p.completePinnedFinal(t.Ref)
+		if err != nil {
+			p.capErr = err
+			return
+		}
+		if completed {
 			return
 		}
 	}
@@ -156,6 +138,12 @@ func (t *ExploreGroupTask) Run(ctx context.Context, p *Planner) {
 		return
 	}
 	if !t.Ref.NeedsExploration() {
+		// A task queued for a group since merged away does not own the
+		// survivor's round in flight; committing it here would close that
+		// round before its member tasks ran.
+		if t.Ref.IsForwarded() && t.Ref.ConstraintsMap().IsExploring() {
+			return
+		}
 		t.Ref.CommitExploration()
 		if t.Phase == PhasePlanning {
 			computeRefPlanProperties(t.Ref)
@@ -167,6 +155,16 @@ func (t *ExploreGroupTask) Run(ctx context.Context, p *Planner) {
 	// show how far below the divergence tripwire real workloads sit.
 	if r := t.Ref.ExplRounds() + 1; r > p.maxObservedExplRounds {
 		p.maxObservedExplRounds = r
+	}
+
+	if completed, err := t.completeRulelessGroup(ctx, p); err != nil {
+		p.capErr = err
+		return
+	} else if completed {
+		t.Ref.StartExploration()
+		t.Ref.CommitExploration()
+		computeRefPlanProperties(t.Ref)
+		return
 	}
 
 	p.push(&ExploreGroupTask{Phase: t.Phase, Ref: t.Ref})
@@ -213,7 +211,7 @@ func (t *ExploreGroupTask) Run(ctx context.Context, p *Planner) {
 		if t.Phase == PhasePlanning && !isPhysical(expr) {
 			continue
 		}
-		p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
+		p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: expr, ReExplore: true})
 	}
 
 	// Explore ALL members each round (Java ExploreGroup): rounds are
@@ -252,23 +250,168 @@ func (t *ExploreGroupTask) Run(ctx context.Context, p *Planner) {
 			(t.Phase == PhasePlanning && isPhysical(expr)) {
 			p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
 		}
-		p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
+		p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: expr, ReExplore: true})
 	}
 
 	t.Ref.StartExploration()
 }
 
+// With no possible leaf transformation or input validation, the exploration
+// epoch can finish immediately instead of scheduling an empty continuation.
+func (t *ExploreGroupTask) isRulelessLeafGroup(p *Planner) bool {
+	if t.Phase != PhasePlanning {
+		return false
+	}
+	members := t.Ref.AllMembers()
+	if len(members) == 0 {
+		return false
+	}
+	for _, member := range members {
+		if (&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: member}).hasWork(p) ||
+			(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: member}).hasWork() {
+			return false
+		}
+	}
+	return true
+}
+
+// No continuation is needed when neither the group nor its settled singleton
+// inputs have a transformation or cost choice. Input contracts still apply.
+func (t *ExploreGroupTask) completeRulelessGroup(ctx context.Context, p *Planner) (bool, error) {
+	if t.isRulelessLeafGroup(p) {
+		return true, nil
+	}
+	if t.Phase != PhasePlanning || len(t.Ref.GetAllPartialMatches()) != 0 {
+		return false, nil
+	}
+	members := t.Ref.AllMembers()
+	var inputs []*expressions.Reference
+	for _, member := range members {
+		if !isPhysical(member) {
+			return false, nil
+		}
+		for _, q := range member.GetQuantifiers() {
+			if ref := q.GetRangesOver(); ref != nil {
+				inputs = append(inputs, ref)
+			}
+		}
+	}
+	if _, settled := p.settledSingletonInputs(inputs); !settled {
+		return false, nil
+	}
+	exprIdx, implIdx := p.ruleIndexesForPhase(t.Phase)
+	for _, member := range members {
+		explore := &ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: member}
+		if explore.hasRulesWithSettledInputs(p, exprIdx, implIdx.rulesFor(member)) {
+			return false, nil
+		}
+	}
+	if err := pushOrdinalInputRequirementsForMembers(p.constraintMap, members); err != nil {
+		return false, err
+	}
+	return p.completeSingletonInputs(ctx, inputs)
+}
+
+// A pinned child is an exact selection, not a search space. Layout requirements
+// still apply, including those pushed after its exploration completed.
+func (p *Planner) completePinnedFinal(ref *expressions.Reference) (bool, error) {
+	if ref.Stage() != expressions.StagePlanned || !ref.IsPinnedFinal() || len(ref.Members()) != 0 {
+		return false, nil
+	}
+	finals := ref.FinalMembers()
+	if len(finals) != 1 || !isPhysical(finals[0]) {
+		return false, nil
+	}
+	pinned := finals[0]
+	if requirements, ok := Get(p.constraintMap, ref, OrdinalLayoutConstraintKey); ok {
+		for _, requirement := range requirements {
+			compatible, err := memberSatisfiesOrdinalRequirement(pinned, requirement)
+			if err != nil {
+				return false, fmt.Errorf("pinned child ordinal layout: %w", err)
+			}
+			if !compatible {
+				return false, fmt.Errorf("pinned child ordinal layout: selected final is incompatible")
+			}
+		}
+	}
+	ref.SetWinner(pinned)
+	computeRefPlanProperties(ref)
+	ref.ConstraintsMap().SetExplored()
+	return true, nil
+}
+
 // ExploreExprTask pushes rule-transform tasks and child-exploration tasks
 // for a single (group, expression) pair. Mirrors Java's AbstractExploreExpression.
 type ExploreExprTask struct {
-	Phase PlannerPhase
-	Ref   *expressions.Reference
-	Expr  expressions.RelationalExpression
+	ReExplore bool
+	Phase     PlannerPhase
+	Ref       *expressions.Reference
+	Expr      expressions.RelationalExpression
 
 	// See ExploreGroupTask.pendingKey. Expression tasks need the same captured
 	// identity because memo integration can forward Ref before this task pops.
 	pendingKey exploreExprTaskKey
 	pending    bool
+}
+
+func (t *ExploreExprTask) hasWork(p *Planner) bool {
+	if t.Phase != PhasePlanning || t.Ref == nil || t.Expr == nil {
+		return true
+	}
+	// Match-producing transforms schedule their own partition work. Pre-existing
+	// matches still need this visit, even when the leaf itself has no rules.
+	if len(t.Ref.GetAllPartialMatches()) != 0 {
+		return true
+	}
+	exprIdx, implIdx := p.ruleIndexesForPhase(t.Phase)
+	implRules := implIdx.rulesFor(t.Expr)
+	if len(t.Expr.GetQuantifiers()) != 0 {
+		// Only exact selected children are stable at enqueue time; ordinary
+		// singleton groups can still gain implementations before this task pops.
+		for _, q := range t.Expr.GetQuantifiers() {
+			child := q.GetRangesOver()
+			if child == nil || !child.IsPinnedFinal() || len(child.Members()) != 0 {
+				return true
+			}
+			if finals := child.FinalMembers(); len(finals) != 1 || !isPhysical(finals[0]) {
+				return true
+			}
+		}
+		if !t.childMatchesAreSettled(p, nil, implRules) {
+			return true
+		}
+	}
+	return t.hasRulesWithSettledInputs(p, exprIdx, implRules)
+}
+
+func (t *ExploreExprTask) hasRulesWithSettledInputs(p *Planner, exprIdx *ruleIndex[ExpressionRule], implRules []ImplementationRule) bool {
+	for _, rule := range exprIdx.rulesFor(t.Expr) {
+		if t.shouldPushExpressionRule(p, rule) {
+			if _, intermediate := rule.(*MatchIntermediateRule); intermediate && !hasIntermediateMatchCandidate(t.Expr) {
+				continue
+			}
+			return true
+		}
+	}
+	for _, rule := range implRules {
+		if t.shouldPushRule(rule) {
+			if matcher, ok := rule.Matcher().(matching.InputPredicateMatcher); ok && !matcher.MatchesInputs(t.Expr) {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
+func (t *ExploreExprTask) shouldPushExpressionRule(p *Planner, rule ExpressionRule) bool {
+	if isPredicateUnionRule(rule) || !t.shouldPushRule(rule) {
+		return false
+	}
+	if _, leaf := rule.(*MatchLeafRule); leaf {
+		return p.canMatchLeaf(t.Expr)
+	}
+	return true
 }
 
 func (t *ExploreExprTask) Run(ctx context.Context, p *Planner) {
@@ -282,6 +425,10 @@ func (t *ExploreExprTask) Run(ctx context.Context, p *Planner) {
 	exprIdx, implIdx := p.ruleIndexesForPhase(t.Phase)
 	exprRules := exprIdx.rulesFor(t.Expr)
 	implRules := implIdx.rulesFor(t.Expr)
+	if err := t.completeRulelessInput(ctx, p, implRules); err != nil {
+		p.capErr = err
+		return
+	}
 	// Everything pushed before child exploration is a dependent batch: it may
 	// only run after every child group has reached its pending exploration.
 	dependentFloor := len(p.stack)
@@ -299,13 +446,17 @@ func (t *ExploreExprTask) Run(ctx context.Context, p *Planner) {
 			return
 		}
 		rule := implRules[i]
-		if isPreOrderRule(rule) {
+		if isPreOrderRule(rule) || !t.shouldPushRule(rule) {
 			continue
 		}
 		if _, ok := rule.(*FinalizeExpressionsRule); ok {
 			if isFinalMember(t.Ref, t.Expr) {
 				continue
 			}
+		}
+		if matcher, ok := rule.Matcher().(matching.InputPredicateMatcher); ok &&
+			!matcher.MatchesInputs(t.Expr) && t.inputsAreSettled(p, exprRules, implRules[:i], implRules) {
+			continue
 		}
 		p.push(&TransformImplTask{Phase: t.Phase, Ref: t.Ref, Expr: t.Expr, Rule: rule})
 	}
@@ -314,6 +465,13 @@ func (t *ExploreExprTask) Run(ctx context.Context, p *Planner) {
 	for i := len(exprRules) - 1; i >= 0; i-- {
 		if ctx.Err() != nil {
 			return
+		}
+		if !t.shouldPushExpressionRule(p, exprRules[i]) {
+			continue
+		}
+		if _, intermediate := exprRules[i].(*MatchIntermediateRule); intermediate &&
+			t.childMatchesAreSettled(p, exprRules[:i], implRules) && !hasIntermediateMatchCandidate(t.Expr) {
+			continue
 		}
 		p.push(&TransformExprTask{Phase: t.Phase, Ref: t.Ref, Expr: t.Expr, Rule: exprRules[i]})
 	}
@@ -334,16 +492,191 @@ func (t *ExploreExprTask) Run(ctx context.Context, p *Planner) {
 	p.scheduleExploreGroupsBeforeBatch(t.Phase, childRefs, dependentFloor)
 
 	// 5. Push preorder implementation rules (fire FIRST — topmost on LIFO).
-	for i := len(implRules) - 1; i >= 0; i-- {
+	preorder := t.preOrderRules(p, implRules)
+	for i := len(preorder) - 1; i >= 0; i-- {
 		if ctx.Err() != nil {
 			return
 		}
-		rule := implRules[i]
-		if !isPreOrderRule(rule) {
+		p.push(&TransformImplTask{Phase: t.Phase, Ref: t.Ref, Expr: t.Expr, Rule: preorder[i]})
+	}
+}
+
+func (t *ExploreExprTask) preOrderRules(p *Planner, implRules []ImplementationRule) []ImplementationRule {
+	var result []ImplementationRule
+	for _, rule := range implRules {
+		if !isPreOrderRule(rule) || !t.shouldPushRule(rule) {
 			continue
 		}
-		p.push(&TransformImplTask{Phase: t.Phase, Ref: t.Ref, Expr: t.Expr, Rule: rule})
+		// Only an inert prefix is removable: an earlier rule can schedule
+		// child work that changes a later rule's source or destination.
+		if len(result) == 0 {
+			if propagation, ok := rule.(constraintPropagationRule); ok && !propagation.hasConstraintEffect(p.constraintMap, t.Ref, t.Expr) {
+				continue
+			}
+		}
+		result = append(result, rule)
 	}
+	return result
+}
+
+// Complete a physical input batch's ruleless closure before admitting parent
+// transforms. The proof is local to this visit; no ordinary group becomes pinned.
+func (t *ExploreExprTask) completeRulelessInput(ctx context.Context, p *Planner, implRules []ImplementationRule) error {
+	qs := t.Expr.GetQuantifiers()
+	if t.Phase != PhasePlanning || !isPhysical(t.Expr) || len(qs) == 0 {
+		return nil
+	}
+	if len(t.preOrderRules(p, implRules)) != 0 {
+		return nil
+	}
+	exprIdx, implIdx := p.ruleIndexesForPhase(t.Phase)
+	visiting := make(map[*expressions.Reference]bool)
+	var order []*expressions.Reference
+	var prove func(*expressions.Reference) bool
+	proveInputs := func(qs []expressions.Quantifier) bool {
+		seen := make(map[*expressions.Reference]bool, len(qs))
+		var refs []*expressions.Reference
+		for _, q := range qs {
+			ref := q.GetRangesOver().Canonical()
+			if !seen[ref] {
+				seen[ref] = true
+				refs = append(refs, ref)
+			}
+		}
+		// Match the dependency scheduler's reverse first-occurrence order.
+		for i := len(refs) - 1; i >= 0; i-- {
+			if !prove(refs[i]) {
+				return false
+			}
+		}
+		return true
+	}
+	prove = func(ref *expressions.Reference) bool {
+		if ref == nil || ctx.Err() != nil {
+			return false
+		}
+		ref = ref.Canonical()
+		if active, seen := visiting[ref]; seen {
+			return !active
+		}
+		visiting[ref] = true
+		finals := ref.FinalMembers()
+		constraints := ref.ConstraintsMap()
+		if ref.Stage() != expressions.StagePlanned || len(ref.Members()) != 0 || len(finals) != 1 ||
+			!isPhysical(finals[0]) || constraints.IsExploring() {
+			return false
+		}
+		if constraints.IsExplored() {
+			visiting[ref] = false
+			return true
+		}
+		if ref.IsPinnedFinal() || len(ref.GetAllPartialMatches()) != 0 {
+			return false
+		}
+		expr := finals[0]
+		if !proveInputs(expr.GetQuantifiers()) {
+			return false
+		}
+		explore := &ExploreExprTask{Phase: t.Phase, Ref: ref, Expr: expr}
+		if explore.hasRulesWithSettledInputs(p, exprIdx, implIdx.rulesFor(expr)) {
+			return false
+		}
+		if _, err := ordinalInputRequirementsOf(expr); err != nil {
+			return false
+		}
+		visiting[ref] = false
+		order = append(order, ref)
+		return true
+	}
+	if !proveInputs(qs) || p.hasPendingInputWork(visiting) {
+		return nil
+	}
+	for _, ref := range order {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		group := &ExploreGroupTask{Phase: t.Phase, Ref: ref}
+		completed, err := group.completeRulelessGroup(ctx, p)
+		if err != nil || !completed {
+			return err
+		}
+		ref.StartExploration()
+		ref.CommitExploration()
+		computeRefPlanProperties(ref)
+	}
+	return nil
+}
+
+// Only the first rule over already explored children can use their current
+// matches: neither a preorder rule nor a pending child batch may run first.
+func (t *ExploreExprTask) childMatchesAreSettled(p *Planner, earlier []ExpressionRule, implRules []ImplementationRule) bool {
+	for _, rule := range earlier {
+		if t.shouldPushExpressionRule(p, rule) {
+			return false
+		}
+	}
+	if len(t.preOrderRules(p, implRules)) != 0 {
+		return false
+	}
+	for _, q := range t.Expr.GetQuantifiers() {
+		ref := q.GetRangesOver()
+		if ref == nil {
+			continue
+		}
+		ref = ref.Canonical()
+		constraints := ref.ConstraintsMap()
+		if ref.Stage().Precedes(t.Phase.TargetStage()) || !constraints.IsExplored() || constraints.IsExploring() {
+			return false
+		}
+		for pending := range p.pendingExploreGroups {
+			if pending.phase == t.Phase && pending.ref.Canonical() == ref {
+				return false
+			}
+		}
+		for pending := range p.pendingDataAccess {
+			if pending.Canonical() == ref {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// Input patterns can be rejected before enqueueing only if every preceding
+// transformation is absent, including matching and preorder constraint pushes.
+func (t *ExploreExprTask) inputsAreSettled(p *Planner, exprRules []ExpressionRule, earlier, implRules []ImplementationRule) bool {
+	if t.Phase != PhasePlanning || !t.childMatchesAreSettled(p, nil, implRules) {
+		return false
+	}
+	for _, rule := range earlier {
+		if !isPreOrderRule(rule) && t.shouldPushRule(rule) {
+			return false
+		}
+	}
+	for _, rule := range exprRules {
+		if !t.shouldPushExpressionRule(p, rule) {
+			continue
+		}
+		if _, intermediate := rule.(*MatchIntermediateRule); intermediate && !hasIntermediateMatchCandidate(t.Expr) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func (t *ExploreExprTask) shouldPushRule(rule matcherHaver) bool {
+	if matcher, ok := rule.Matcher().(matching.RootPredicateMatcher); ok && !matcher.MatchesRoot(t.Expr) {
+		return false
+	}
+	if !t.ReExplore {
+		return true
+	}
+	dependent, ok := rule.(interface{ ConstraintDependencies() []any })
+	if !ok {
+		return true
+	}
+	return !t.Ref.ConstraintsMap().IsExploredForAttributes(dependent.ConstraintDependencies())
 }
 
 // TransformExprTask fires a single ExpressionRule on a (group, expression)
@@ -356,6 +689,25 @@ type TransformExprTask struct {
 	Rule  ExpressionRule
 }
 
+// ConsumeMatchPartitionTask runs after the expression's matching transforms,
+// so each candidate is consumed against the completed match partition.
+type ConsumeMatchPartitionTask struct{ Ref *expressions.Reference }
+
+func (t *ConsumeMatchPartitionTask) Run(ctx context.Context, p *Planner) {
+	delete(p.pendingDataAccess, t.Ref)
+	if ctx.Err() != nil || t.Ref == nil {
+		return
+	}
+	p.consumeDataAccessPartitions(t.Ref)
+}
+
+// TransformMatchPartitionTask reacts to new matches and publishes logical alternatives.
+type TransformMatchPartitionTask struct{ TransformExprTask }
+
+func (t *TransformMatchPartitionTask) Run(ctx context.Context, p *Planner) {
+	t.TransformExprTask.Run(ctx, p)
+}
+
 func (t *TransformExprTask) Run(ctx context.Context, p *Planner) {
 	if ctx.Err() != nil || t.Ref == nil || t.Expr == nil || t.Rule == nil {
 		return
@@ -364,12 +716,6 @@ func (t *TransformExprTask) Run(ctx context.Context, p *Planner) {
 		return
 	}
 
-	// During PLANNING, expression rules (BatchA) produce physical
-	// wrappers. They land in the FINAL set only (Java's shape — the
-	// dual insertion into the exploratory set was the member-count
-	// convergence crutch; rule matching on finals runs through the
-	// per-expression exploration tasks, and ContainsExactly admits
-	// finals).
 	// Java's per-rule-call match cap counts ONE stream per rule invocation
 	// (CascadesPlanner.execute: a single numMatches over bindMatches, which
 	// enumerates quantifier permutations inside the same stream). The swapped
@@ -447,12 +793,14 @@ func (t *TransformExprTask) Run(ctx context.Context, p *Planner) {
 			// first write.
 			var batch *preparedReferenceBatch
 			if len(yielded) > 0 {
-				set := expressions.ReferenceExploratoryMembers
-				if t.Phase == PhasePlanning {
-					set = expressions.ReferenceFinalMembers
-				}
 				intents := make([]referenceMemberIntent, len(yielded))
 				for i, newExpr := range yielded {
+					// Planning exploration stays visible to logical memo lookup;
+					// only physical implementations belong in the final lane.
+					set := expressions.ReferenceExploratoryMembers
+					if t.Phase == PhasePlanning && isPhysical(newExpr) {
+						set = expressions.ReferenceFinalMembers
+					}
 					intents[i] = referenceMemberIntent{set: set, expression: newExpr}
 				}
 				prepared, err := prepareReferenceMemberBatch(t.Ref, intents)
@@ -476,9 +824,22 @@ func (t *TransformExprTask) Run(ctx context.Context, p *Planner) {
 				}
 				copy(inserted, batch.inserted)
 			}
-			if t.Phase != PhasePlanning && p.memo != nil {
-				for _, newExpr := range yielded {
-					p.memo.Integrate(t.Ref, newExpr)
+			if p.memo != nil {
+				for i, newExpr := range yielded {
+					if !inserted[i] {
+						continue
+					}
+					switch {
+					case t.Phase != PhasePlanning:
+						p.memo.Integrate(t.Ref, newExpr)
+					case isPhysical(newExpr):
+						p.memo.AddExpression(t.Ref, newExpr)
+					default:
+						p.integratePlanningYield(t.Ref, newExpr)
+					}
+				}
+				if p.capErr != nil {
+					return
 				}
 			}
 			if t.Phase == PhasePlanning && len(t.Ref.GetAllPartialMatches()) > matchesBefore {
@@ -489,7 +850,9 @@ func (t *TransformExprTask) Run(ctx context.Context, p *Planner) {
 				if ctx.Err() != nil {
 					return
 				}
-				if !inserted[i] {
+				// A PLANNING yield found in another group merged the two; the
+				// group already holds that expression, explored there.
+				if !inserted[i] || t.Phase == PhasePlanning && !t.Ref.ContainsExactly(newExpr) {
 					continue
 				}
 				// OptimizeInputs only for PHYSICAL yields — the other half of the B1
@@ -619,13 +982,13 @@ func (t *TransformImplTask) Run(ctx context.Context, p *Planner) {
 		}
 		call.applyPendingConstraints()
 
-		// Handle yields: insert into FinalMembers and push explore+optimize
-		// for genuinely new expressions. Skip re-exploration for
-		// FinalizeExpressionsRule yields (they're already-explored
-		// exploratory members promoted to final).
-		for _, y := range call.yielded {
+		// New final expressions explore and optimize their detached inputs.
+		for i, y := range call.yielded {
 			if ctx.Err() != nil {
 				return
+			}
+			if !batch.inserted[i] {
+				continue
 			}
 			// InsertFinal only — deliberately NO re-prune of a stamped group
 			// on late final growth. A re-push-OptimizeGroup-on-growth hook
@@ -638,18 +1001,13 @@ func (t *TransformImplTask) Run(ctx context.Context, p *Planner) {
 			// RFC-186 designation re-computes on growth (the insert bumps
 			// the finals generation), so the virtual prune stays fresh while
 			// the member set keeps every alternative PLANNING needs.
-			if call.indexYieldedInMemo && p.memo != nil {
+			if p.memo != nil {
 				p.memo.AddExpression(t.Ref, y)
 			}
 			if !isExploratoryMember(t.Ref, y) {
-				// OptimizeInputs only for PHYSICAL yields — third of the three gated
-				// rule-yield sites (with ExploreGroupTask + the TransformExprTask yield).
-				// ImplementationRule yields are physical wrappers, so this is a no-op in
-				// practice, but it makes the "OptimizeInputs only for plan expressions"
-				// property explicit at this site rather than relying on the rule kind.
-				// The 4th site (the swapped-quantifier impl yield below) is
-				// intentionally NOT gated — it is load-bearing, not redundant.
-				if isPhysical(y) {
+				// Rewriting finals need child pruning too; planning logical
+				// compensations must not prune correlated inputs standalone.
+				if t.Phase == PhaseRewriting || isPhysical(y) {
 					p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: y})
 				}
 				p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: y})
@@ -739,11 +1097,14 @@ func (t *TransformImplTask) Run(ctx context.Context, p *Planner) {
 						}
 					}
 					call.applyPendingConstraints()
-					for _, y := range call.yielded {
+					for i, y := range call.yielded {
+						if !batch.inserted[i] {
+							continue
+						}
 						if ctx.Err() != nil {
 							return
 						}
-						if call.indexYieldedInMemo && p.memo != nil {
+						if p.memo != nil {
 							p.memo.AddExpression(t.Ref, y)
 						}
 						if !isExploratoryMember(t.Ref, y) {
@@ -950,6 +1311,45 @@ type OptimizeInputsTask struct {
 	Phase PlannerPhase
 	Ref   *expressions.Reference
 	Expr  expressions.RelationalExpression
+
+	// Adjacent leaf tasks share this prepass, but retain their identity guards.
+	prepassLeaves []expressions.RelationalExpression
+}
+
+func (t *OptimizeInputsTask) absorbLeafPrepass(leaf *OptimizeInputsTask) bool {
+	if t.Phase != PhasePlanning || leaf.Phase != t.Phase || t.Ref == nil || leaf.Ref == nil ||
+		t.Ref.Canonical() != leaf.Ref.Canonical() || t.Expr == nil || leaf.Expr == nil || len(leaf.Expr.GetQuantifiers()) != 0 {
+		return false
+	}
+	if requirements, err := ordinalInputRequirementsOf(leaf.Expr); err != nil || len(requirements) != 0 {
+		return false
+	}
+	t.prepassLeaves = append(t.prepassLeaves, leaf.Expr)
+	return true
+}
+
+func (t *OptimizeInputsTask) hasWork() bool {
+	if t.Expr == nil || len(t.Expr.GetQuantifiers()) != 0 {
+		return true
+	}
+	if _, err := ordinalInputRequirementsOf(t.Expr); err != nil {
+		return true
+	}
+	if t.Phase == PhasePlanning && t.Ref != nil {
+		// Even a leaf task must retain a sibling's input prepass or validation error.
+		for _, member := range t.Ref.AllMembers() {
+			if member == nil || member == t.Expr {
+				continue
+			}
+			if len(member.GetQuantifiers()) != 0 {
+				return true
+			}
+			if _, err := ordinalInputRequirementsOf(member); err != nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (t *OptimizeInputsTask) Run(ctx context.Context, p *Planner) {
@@ -963,7 +1363,17 @@ func (t *OptimizeInputsTask) Run(ctx context.Context, p *Planner) {
 	// With dual insertion retired (WS-P stage (b)) a physical yield's
 	// only home is the final set, so Java's containsExactly and the
 	// former finals-only check coincide — the compensation reverts.
-	if t.Ref != nil && !t.Ref.ContainsExactly(t.Expr) {
+	live := t.Ref == nil || t.Ref.ContainsExactly(t.Expr)
+	prepass := live
+	if !prepass && t.Ref != nil {
+		for _, leaf := range t.prepassLeaves {
+			if t.Ref.ContainsExactly(leaf) {
+				prepass = true
+				break
+			}
+		}
+	}
+	if !prepass {
 		return
 	}
 	if t.Phase == PhasePlanning && t.Ref != nil {
@@ -976,6 +1386,9 @@ func (t *OptimizeInputsTask) Run(ctx context.Context, p *Planner) {
 			p.capErr = err
 			return
 		}
+	}
+	if !live {
+		return
 	}
 	requirements, err := ordinalInputRequirementsOf(t.Expr)
 	if err != nil {
@@ -1001,10 +1414,118 @@ func (t *OptimizeInputsTask) Run(ctx context.Context, p *Planner) {
 			Set(p.constraintMap, childRef, OrdinalLayoutConstraintKey,
 				[]plans.OrdinalLayoutRequirement{requirements[i]})
 		}
-		p.push(&OptimizeGroupTask{Phase: t.Phase, Ref: childRef})
+		if t.Phase == PhasePlanning {
+			completed, err := p.completePinnedFinal(childRef)
+			if err != nil {
+				p.capErr = err
+				return
+			}
+			if completed {
+				continue
+			}
+		}
 		childRefs = append(childRefs, childRef)
 	}
+	if t.Phase == PhasePlanning {
+		completed, err := p.completeSingletonInputs(ctx, childRefs)
+		if err != nil {
+			p.capErr = err
+			return
+		}
+		if completed {
+			return
+		}
+	}
+	for _, childRef := range childRefs {
+		p.push(&OptimizeGroupTask{Phase: t.Phase, Ref: childRef})
+	}
 	p.scheduleExploreGroupsBeforeBatch(t.Phase, childRefs, dependentFloor)
+}
+
+// A settled singleton has no cost choice. Complete only whole input batches:
+// another child's scheduled work could otherwise change an omitted sibling.
+func (p *Planner) settledSingletonInputs(refs []*expressions.Reference) ([]*expressions.Reference, bool) {
+	if len(refs) == 0 {
+		return nil, false
+	}
+	members := make(map[*expressions.Reference]bool, len(refs))
+	ordered := make([]*expressions.Reference, 0, len(refs))
+	for _, ref := range refs {
+		ref = ref.Canonical()
+		constraints := ref.ConstraintsMap()
+		finals := ref.FinalMembers()
+		if ref.Stage() != expressions.StagePlanned || len(ref.Members()) != 0 || len(finals) != 1 ||
+			!isPhysical(finals[0]) || !constraints.IsExplored() || constraints.IsExploring() {
+			return nil, false
+		}
+		if _, duplicate := members[ref]; !duplicate {
+			ordered = append(ordered, ref)
+			members[ref] = true
+		}
+	}
+	if p.hasPendingInputWork(members) {
+		return nil, false
+	}
+	return ordered, true
+}
+
+func (p *Planner) hasPendingInputWork(refs map[*expressions.Reference]bool) bool {
+	for _, task := range p.stack {
+		var ref *expressions.Reference
+		switch task := task.(type) {
+		case *ExploreGroupTask:
+			ref = task.Ref
+		case *ExploreExprTask:
+			ref = task.Ref
+		case *OptimizeGroupTask:
+			ref = task.Ref
+		case *OptimizeInputsTask:
+			ref = task.Ref
+		case *TransformExprTask:
+			ref = task.Ref
+		case *TransformImplTask:
+			ref = task.Ref
+		case *ConsumeMatchPartitionTask:
+			ref = task.Ref
+		case *TransformMatchPartitionTask:
+			ref = task.Ref
+		default:
+			return true
+		}
+		if _, pending := refs[ref.Canonical()]; pending {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *Planner) completeSingletonInputs(ctx context.Context, refs []*expressions.Reference) (bool, error) {
+	ordered, settled := p.settledSingletonInputs(refs)
+	if !settled {
+		return false, nil
+	}
+	// Preserve the reverse input order of the LIFO optimizer batch.
+	for i := len(ordered) - 1; i >= 0; i-- {
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+		ref := ordered[i]
+		member := ref.FinalMembers()[0]
+		computeRefPlanProperties(ref)
+		if requirements, ok := Get(p.constraintMap, ref, OrdinalLayoutConstraintKey); ok {
+			for _, requirement := range requirements {
+				compatible, err := memberSatisfiesOrdinalRequirement(member, requirement)
+				if err != nil {
+					return false, fmt.Errorf("ordinal layout winner for child group: %w", err)
+				}
+				if !compatible {
+					return false, fmt.Errorf("ordinal layout winner for child group: no compatible final member remains")
+				}
+			}
+		}
+		ref.SetWinner(member)
+	}
+	return true, nil
 }
 
 // pushOrdinalInputRequirementsForMembers performs the group-local prepass used

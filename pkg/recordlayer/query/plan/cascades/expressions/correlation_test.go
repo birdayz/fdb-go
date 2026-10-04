@@ -13,6 +13,60 @@ import (
 // the wiring works — a Quantifier alias buried inside a predicate /
 // projection / sort key surfaces in the correlation set.
 
+func TestReference_CorrelationCacheTracksDescendantChanges(t *testing.T) {
+	t.Parallel()
+	outer := values.NamedCorrelationIdentifier("outer")
+	plain := mustExpression(NewSelectExpression(&values.ConstantValue{Value: int64(7), Typ: values.NotNullLong}, nil, nil))
+	dependent := mustExpression(NewSelectExpression(mustExpression(values.NewQuantifiedObjectValue(outer, values.NotNullLong)), nil, nil))
+	for _, change := range []string{"insert", "insert_final", "advance", "prune", "prune_set", "clear_final", "forward"} {
+		t.Run(change, func(t *testing.T) {
+			t.Parallel()
+			child := InitialOf(plain)
+			if change == "advance" {
+				child = InitialOf(dependent)
+				child.InsertFinal(plain)
+			} else if change == "prune" || change == "prune_set" || change == "clear_final" {
+				child.InsertFinal(dependent)
+				child.InsertFinal(plain)
+			}
+			middle := InitialOf(mustExpression(NewLogicalDistinctExpression(ForEachQuantifier(child))))
+			root := InitialOf(mustExpression(NewLogicalDistinctExpression(ForEachQuantifier(middle))))
+			before := root.GetCorrelatedTo()
+			_, initiallyDependent := before[outer]
+			wantInitially := change == "advance" || change == "prune" || change == "prune_set" || change == "clear_final"
+			if initiallyDependent != wantInitially {
+				t.Fatalf("initial correlations=%v, dependent=%t", before, wantInitially)
+			}
+			switch change {
+			case "insert":
+				child.Insert(dependent)
+			case "insert_final":
+				child.InsertFinal(dependent)
+			case "advance":
+				child.AdvancePlannerStage(StagePlanned)
+			case "prune":
+				child.PruneWith(plain)
+			case "prune_set":
+				child.PruneToSet(map[RelationalExpression]struct{}{plain: {}})
+			case "clear_final":
+				child.ClearFinalMembers()
+			case "forward":
+				InitialOf(dependent).Absorb(child)
+			}
+			for range 2 {
+				got := root.GetCorrelatedTo()
+				_, dependentNow := got[outer]
+				if dependentNow == initiallyDependent {
+					t.Fatalf("ancestor retained stale correlations after %s: %v", change, got)
+				}
+			}
+			if _, present := before[outer]; present != initiallyDependent {
+				t.Fatal("refresh mutated a previously borrowed correlation set")
+			}
+		})
+	}
+}
+
 func TestLogicalFilter_GetCorrelatedToWithoutChildren(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
@@ -39,18 +93,6 @@ func TestLogicalFilter_GetCorrelatedToWithoutChildren_NoCorrelation(t *testing.T
 	got := f.GetCorrelatedToWithoutChildren()
 	if len(got) != 0 {
 		t.Fatalf("filter over constant predicate has correlations: %v", got)
-	}
-}
-
-func TestLogicalProjection_GetCorrelatedToWithoutChildren(t *testing.T) {
-	t.Parallel()
-	leaf := &leafScan{name: "T"}
-	q := ForEachQuantifier(InitialOf(leaf))
-	p := mustExpression(NewLogicalProjectionExpression(
-		[]values.Value{testCorrelatedField(q.GetAlias(), "ID", values.NotNullLong)}, q))
-	got := p.GetCorrelatedToWithoutChildren()
-	if _, ok := got[q.GetAlias()]; !ok {
-		t.Fatalf("projection correlation set %v doesn't contain q's alias", got)
 	}
 }
 
@@ -86,7 +128,7 @@ func TestUpdate_GetCorrelatedToWithoutChildren(t *testing.T) {
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
 	upd := mustExpression(NewUpdateExpression(q, "Order", testRecordType(), []UpdateTransform{
-		{FieldPath: "name", NewValue: mustExpression(q.RequireFlowedObjectValue())},
+		{FieldNames: []string{"name"}, FieldOrdinals: []int{0}, NewValue: mustExpression(q.RequireFlowedObjectValue())},
 	}))
 
 	got := upd.GetCorrelatedToWithoutChildren()

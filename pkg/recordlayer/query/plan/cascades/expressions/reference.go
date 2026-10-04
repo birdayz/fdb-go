@@ -2,6 +2,7 @@ package expressions
 
 import (
 	"bytes"
+	"iter"
 	"sync/atomic"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -27,6 +28,11 @@ const (
 	explorationInProgress                         // exploration tasks pushed, not yet converged
 	explorationDone                               // exploration converged
 )
+
+// ReferencePlanProperties keeps cached properties synchronized with final-member pruning.
+type ReferencePlanProperties interface {
+	RetainMembers([]RelationalExpression)
+}
 
 // Reference is the planner's handle on an equivalence class of
 // RelationalExpressions — Cascades' "memo group".
@@ -79,13 +85,8 @@ type Reference struct {
 	// grows a mutable field that a shallow copy could carry across to a value
 	// whose hash inputs differ.
 	//
-	// This one stays a PLAIN MAP where flowedType below had to become an atomic,
-	// and the difference is reach, not risk appetite. MemberHashes is called from
-	// prepareReferenceMemberBatch only, which runs inside the planner's
-	// sequential task loop; flowedType's derivation sits under
-	// RequireFlowedObjectValue, which nearly every expression CONSTRUCTOR calls,
-	// so anything holding a Reference can reach it. If a second caller ever
-	// appears, this needs the same treatment.
+	// Admission and memo lookup use this map in the planner's sequential task
+	// loop; unlike flowedType, expression constructors do not access it.
 	memberHash map[RelationalExpression]uint64
 
 	// flowedType memoizes GetFlowedObjectType's SUCCESSFUL answer, keyed by
@@ -131,7 +132,7 @@ type Reference struct {
 	constraintsMap *ConstraintsMap
 	explRounds     int
 
-	planProperties  any           // set during PLANNING phase; typed as *cascades.PlanPropertiesMap via cascades package
+	planProperties  ReferencePlanProperties
 	partialMatchMap map[any][]any // MatchCandidate → []PartialMatch; typed via cascades helpers
 	// partialMatchOrder records candidates in first-insertion order so iteration
 	// is deterministic, mirroring Java's insertion-ordered LinkedHashMultimap.
@@ -153,7 +154,7 @@ type Reference struct {
 	// stable graph cannot race on lazy initialization. A non-nil pointer to an
 	// empty map caches the uncorrelated case. Member edits and invalidation
 	// remain sequential and must not overlap readers.
-	correlatedToCache atomic.Pointer[map[values.CorrelationIdentifier]struct{}]
+	correlatedToCache atomic.Pointer[correlationMemo]
 
 	// aliasAwareDedups counts how many times the ALIAS-AWARE interning tier
 	// (the MemoEqual branch in Insert/InsertFinal, gated to merge
@@ -181,7 +182,12 @@ type Reference struct {
 // only member. The Reference starts at StageCanonical so REWRITING-
 // phase exploration doesn't need to advance it.
 func InitialOf(e RelationalExpression) *Reference {
-	return &Reference{members: []RelationalExpression{e}, plannerStage: StageCanonical}
+	return ExploratoryOfAtStage(e, StageCanonical)
+}
+
+// ExploratoryOfAtStage creates a logical group at the memoizing phase's target.
+func ExploratoryOfAtStage(e RelationalExpression, stage PlannerStage) *Reference {
+	return &Reference{members: []RelationalExpression{e}, plannerStage: stage}
 }
 
 // FinalOf returns a Reference holding e as its only FINAL member, at
@@ -466,6 +472,45 @@ func (r *Reference) Absorb(loser *Reference) {
 	loser.forwardedTo = r
 }
 
+// AbsorbPlanningState completes a PLANNING merge whose caller already folded
+// the loser's members into the receiver through checked admission: the
+// loser's partial matches move over in its candidate order, its dedup shadow
+// is kept, and it forwards to the receiver. Exploration state is the
+// caller's, because only the planner knows which goals each side explored.
+// Returns how many partial matches were new to the receiver.
+func (r *Reference) AbsorbPlanningState(loser *Reference) int {
+	added := 0
+	for _, candidate := range loser.partialMatchOrder {
+		for _, match := range loser.partialMatchMap[candidate] {
+			if r.AddPartialMatch(candidate, match) {
+				added++
+			}
+		}
+	}
+	r.aliasAwareDedups += loser.aliasAwareDedups
+	r.correlatedToCache.Store(nil)
+	loser.forwardedTo = r
+	return added
+}
+
+// RemoveExploratoryMember drops e from the exploratory members — the memo
+// removing a duplicate that a merge made of two members of one group. Tasks
+// still holding e skip it through ContainsExactly.
+func (r *Reference) RemoveExploratoryMember(e RelationalExpression) bool {
+	r = r.Canonical()
+	for i, member := range r.members {
+		if member != e {
+			continue
+		}
+		r.members = append(r.members[:i:i], r.members[i+1:]...)
+		delete(r.memberHash, e)
+		r.memberVersion++
+		r.correlatedToCache.Store(nil)
+		return true
+	}
+	return false
+}
+
 // Get returns the (first) member — the convenience accessor for
 // single-member References (fresh InitialOf refs, matcher bindings);
 // explored multi-member refs are iterated via Members / AllMembers.
@@ -499,6 +544,23 @@ func (r *Reference) Members() []RelationalExpression {
 		return nil
 	}
 	return append([]RelationalExpression(nil), r.members...)
+}
+
+// MembersWithHash iterates exploratory members without copying their slice.
+// Like MemberHash, it requires the owning planner's sequential task loop;
+// membership must not change during iteration.
+func (r *Reference) MembersWithHash(hash uint64) iter.Seq[RelationalExpression] {
+	return func(yield func(RelationalExpression) bool) {
+		ref := canonicalReferenceReadOnly(r)
+		if ref == nil {
+			return
+		}
+		for _, member := range ref.members {
+			if ref.MemberHash(member) == hash && !yield(member) {
+				return
+			}
+		}
+	}
 }
 
 // AliasAwareDedups returns how many incoming members this Reference collapsed
@@ -570,6 +632,12 @@ func (r *Reference) GetBest(less func(a, b RelationalExpression) bool) Relationa
 	return best
 }
 
+// MemberVersion identifies the current exploratory/final population. A cached
+// dependency must also check canonical identity, since forwarding can change it.
+func (r *Reference) MemberVersion() uint64 {
+	return r.Canonical().memberVersion
+}
+
 // Winner returns the OPTIMIZE-chosen cheapest plan for this group, or
 // nil if none has been stored.
 func (r *Reference) Winner() RelationalExpression {
@@ -593,10 +661,9 @@ func (r *Reference) HasWinner() bool {
 }
 
 // HasWinnersOrMatches reports whether this Reference carries any
-// PLANNING-phase bookkeeping (winners or partial matches). Used by
-// Memo.merge as a scope tripwire: cross-group merging is REWRITING-only
-// (RFC-037 §0), and these structures hold/embed References that the
-// merge does not canonicalize.
+// PLANNING-phase bookkeeping (winners or partial matches). Used by the
+// REWRITING Memo.merge as a scope tripwire: it folds neither (PLANNING
+// merges go through AbsorbPlanningState).
 func (r *Reference) HasWinnersOrMatches() bool {
 	r = r.Canonical()
 	return r.winner != nil || len(r.partialMatchMap) > 0
@@ -606,7 +673,7 @@ func (r *Reference) HasWinnersOrMatches() bool {
 // matches. Returns true if the member was inserted, false if a duplicate
 // was found.
 //
-// Dedup contract — three-tier:
+// Dedup contract — four-tier:
 //
 //  1. Fast path: EqualsWithoutChildren on the local node + pointer-
 //     identity on every Quantifier's child Reference. Hits when a
@@ -628,6 +695,8 @@ func (r *Reference) HasWinnersOrMatches() bool {
 //     only in a fresh quantifier alias would slip past them; this tier
 //     interns it, matching memoizeNonLeaf's child interning and Java's
 //     containsInMemo. Strictly additive — never dedups less than 1–2.
+//  4. ExactReplica: any expression equal up to a renaming of planner merge
+//     aliases, which nothing outside the expression can name.
 //
 // Soundness of the fallback: SemanticEquals's recursion compares
 // child-Reference contents structurally with alias-aware AliasMap
@@ -650,6 +719,7 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 	// (hoisted out of the hot inner loop — avoids a type-switch + virtual call
 	// per member). See the alias-aware tier below.
 	aliasAware := InternsAliasAware(e)
+	mergeAliased := !aliasAware && bindsMergeAlias(e)
 	for _, m := range r.members {
 		// Fast path: pointer-identity on child References + local
 		// EqualsWithoutChildren. Hits when a rule yields output that
@@ -669,11 +739,11 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 		// inequality without the deep walk (HashCodeWithoutChildren
 		// must agree when SemanticEquals returns true at the top
 		// level, by HashConsistency invariant pinned in fuzz).
-		if m.HashCodeWithoutChildren() == eHash && SemanticEquals(m, e, EmptyAliasMap()) {
+		if r.MemberHash(m) == eHash && m.EqualsWithoutChildren(e, EmptyAliasMap()) && MemoEqualWithHashes(m, e, eHash, eHash) {
 			return false
 		}
 		// Alias-aware tier (RFC-077 7.5), GATED to expressions that opt in via
-		// InternsAliasAware (merge re-enumeration selects only — see
+		// InternsAliasAware (merge selects and local filter bindings — see
 		// SelectExpression.InternsAliasAware). Two such members equal up to a
 		// CONSISTENT quantifier-alias renaming are the same memo member: MemoEqual
 		// builds the node's own quantifier-alias map (RFC-039) and compares under
@@ -688,10 +758,14 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 		// dedup MORE, never less, than the alias-identity tiers — termination holds.
 		// Hash pre-filter mirrors tier 2: MemoEqual also hash-guards internally, but
 		// the explicit guard keeps the early-exit symmetric across tiers and cheap if
-		// a future opt-in type's hash is not alias-invariant (today's only opt-in,
-		// the merge select, has an alias-invariant hash per RFC-074).
-		if aliasAware && m.HashCodeWithoutChildren() == eHash && MemoEqual(m, e) {
+		// an opt-in type's hash is not alias-invariant.
+		if aliasAware && r.MemberHash(m) == eHash && MemoEqualWithHashes(m, e, eHash, eHash) {
 			r.aliasAwareDedups++
+			return false
+		}
+		// A planner merge alias has no consumer outside its expression, so a
+		// twin differing only in one is the same member (ExactReplica).
+		if mergeAliased && r.MemberHash(m) == eHash && ExactReplica(m, e) {
 			return false
 		}
 	}
@@ -755,15 +829,23 @@ func (r *Reference) MemberHashes(members []RelationalExpression) []uint64 {
 	}
 	hashes := make([]uint64, len(members))
 	for i, m := range members {
-		if cached, ok := r.memberHash[m]; ok {
-			hashes[i] = cached
-			continue
-		}
-		h := m.HashCodeWithoutChildren()
-		r.memberHash[m] = h
-		hashes[i] = h
+		hashes[i] = r.MemberHash(m)
 	}
 	return hashes
+}
+
+// MemberHash memoizes an immutable admitted member's hash. Like MemberHashes,
+// it must only be called from the owning planner's sequential task loop.
+func (r *Reference) MemberHash(member RelationalExpression) uint64 {
+	if cached, ok := r.memberHash[member]; ok {
+		return cached
+	}
+	if r.memberHash == nil {
+		r.memberHash = make(map[RelationalExpression]uint64)
+	}
+	hash := member.HashCodeWithoutChildren()
+	r.memberHash[member] = hash
+	return hash
 }
 
 // PreparedMemberDuplicate runs Reference's three memo-equality tiers without
@@ -796,8 +878,41 @@ func PreparedMemberDuplicate(members []RelationalExpression, e RelationalExpress
 func PreparedMemberDuplicateWithHashes(
 	members []RelationalExpression, hashes []uint64, e RelationalExpression,
 ) (duplicate bool, aliasAwareOnly bool) {
-	eHash := e.HashCodeWithoutChildren()
+	var preparation PreparedMemberEquality
+	return preparation.DuplicateWithHashes(members, hashes, e)
+}
+
+// PreparedMemberEquality shares read-only derivations across a single admission
+// batch. Its zero value is ready to use. After a successful commit, publish and
+// discard it: local derivations must not outlive mutations to the graph.
+type PreparedMemberEquality struct {
+	equality memoEquality
+	inputs   map[*Reference]preparedInputSignature
+}
+
+// PublishCorrelations retains completed derivations after successful admission.
+// The owning planner must call this sequentially; dependency changes are still
+// validated by every later reader, including changes made by the commit itself.
+func (p *PreparedMemberEquality) PublishCorrelations() {
+	for ref, snapshot := range p.equality.correlations.memo {
+		if ref.forwardedTo != nil || ref.memberVersion != snapshot.version {
+			continue
+		}
+		cached := ref.correlatedToCache.Load()
+		if cached != snapshot {
+			ref.correlatedToCache.CompareAndSwap(cached, snapshot)
+		}
+	}
+}
+
+// DuplicateWithHashes compares admitted members without publishing shared caches.
+func (p *PreparedMemberEquality) DuplicateWithHashes(
+	members []RelationalExpression, hashes []uint64, e RelationalExpression,
+) (duplicate bool, aliasAwareOnly bool) {
+	equality := &p.equality
+	eHash := equality.hash(e)
 	aliasAware := InternsAliasAware(e)
+	mergeAliased := !aliasAware && bindsMergeAlias(e)
 	for i, m := range members {
 		if m.EqualsWithoutChildren(e, EmptyAliasMap()) && preparedSameChildReferences(m, e) {
 			return true, false
@@ -805,14 +920,18 @@ func PreparedMemberDuplicateWithHashes(
 		mHash := uint64(0)
 		if i < len(hashes) {
 			mHash = hashes[i]
+			equality.hashes[m] = mHash
 		} else {
-			mHash = m.HashCodeWithoutChildren()
+			mHash = equality.hash(m)
 		}
-		if mHash == eHash && preparedSemanticEquals(m, e, EmptyAliasMap()) {
+		if mHash == eHash && m.EqualsWithoutChildren(e, EmptyAliasMap()) && equality.equal(m, e, EmptyAliasMap()) {
 			return true, false
 		}
-		if aliasAware && mHash == eHash && preparedMemoEqual(m, e) {
+		if aliasAware && mHash == eHash && equality.equal(m, e, EmptyAliasMap()) {
 			return true, true
+		}
+		if mergeAliased && mHash == eHash && ExactReplica(m, e) {
+			return true, false
 		}
 	}
 	return false, false
@@ -821,12 +940,12 @@ func PreparedMemberDuplicateWithHashes(
 // aliasAwareInterner is implemented by expressions whose quantifier aliases are
 // planner-internal (no external consumer resolves them by identity), so they
 // intern ALIAS-AWARE in Insert/InsertFinal. See SelectExpression.InternsAliasAware
-// (RFC-077 7.5). Only merge re-enumeration selects opt in today.
+// (RFC-077 7.5). Merge selects and filters with local bindings opt in.
 type aliasAwareInterner interface{ InternsAliasAware() bool }
 
 // InternsAliasAware reports whether e opts into the ALIAS-AWARE memo-interning
 // tier (RFC-077 7.5): true only for expressions whose quantifier aliases are
-// planner-internal (merge re-enumeration selects — see
+// planner-internal (merge selects and local filter bindings — see
 // SelectExpression.InternsAliasAware). Exported so every site that runs
 // MemoEqual across expressions NOT already known to be the same memo member —
 // not just Insert/InsertFinal — gates identically. Reference.Insert /
@@ -891,19 +1010,23 @@ func (r *Reference) InsertFinal(e RelationalExpression) bool {
 	eHash := e.HashCodeWithoutChildren()
 	// Resolve the alias-aware opt-in once (hoisted out of the loop) — see Insert.
 	aliasAware := InternsAliasAware(e)
+	mergeAliased := !aliasAware && bindsMergeAlias(e)
 	for _, m := range r.finalMembers {
 		if m.EqualsWithoutChildren(e, EmptyAliasMap()) && sameChildReferences(m, e) {
 			return false
 		}
-		if m.HashCodeWithoutChildren() == eHash && SemanticEquals(m, e, EmptyAliasMap()) {
+		if r.MemberHash(m) == eHash && m.EqualsWithoutChildren(e, EmptyAliasMap()) && MemoEqualWithHashes(m, e, eHash, eHash) {
 			return false
 		}
 		// Alias-aware tier (GATED) — see Insert. finalMembers intern the same way
 		// (RFC-077 7.5); the PLANNING yield path inserts into BOTH member sets, so
 		// both must dedup alias-aware or the merge re-enumeration's physical
 		// alternatives duplicate under fresh merge-quantifier aliases.
-		if aliasAware && m.HashCodeWithoutChildren() == eHash && MemoEqual(m, e) {
+		if aliasAware && r.MemberHash(m) == eHash && MemoEqualWithHashes(m, e, eHash, eHash) {
 			r.aliasAwareDedups++
+			return false
+		}
+		if mergeAliased && r.MemberHash(m) == eHash && ExactReplica(m, e) {
 			return false
 		}
 	}
@@ -1066,6 +1189,9 @@ func (r *Reference) ContainsExactly(expr RelationalExpression) bool {
 func (r *Reference) PruneWith(expr RelationalExpression) {
 	r = r.Canonical()
 	r.finalMembers = append(r.finalMembers[:0], expr)
+	if r.planProperties != nil {
+		r.planProperties.RetainMembers(r.finalMembers)
+	}
 	r.winner = nil
 	r.memberVersion++
 	finalsGeneration.Add(1)
@@ -1083,6 +1209,9 @@ func (r *Reference) PruneToSet(keep map[RelationalExpression]struct{}) {
 		}
 	}
 	r.finalMembers = kept
+	if r.planProperties != nil {
+		r.planProperties.RetainMembers(r.finalMembers)
+	}
 	r.winner = nil
 	r.memberVersion++
 	finalsGeneration.Add(1)
@@ -1092,16 +1221,25 @@ func (r *Reference) PruneToSet(keep map[RelationalExpression]struct{}) {
 func (r *Reference) ClearFinalMembers() {
 	r = r.Canonical()
 	r.finalMembers = r.finalMembers[:0]
+	if r.planProperties != nil {
+		r.planProperties.RetainMembers(nil)
+	}
 	r.winner = nil
 	r.memberVersion++
 	finalsGeneration.Add(1)
 }
 
 // GetPlanProperties returns the planner-phase property map stored on this Reference.
-func (r *Reference) GetPlanProperties() any { r = r.Canonical(); return r.planProperties }
+func (r *Reference) GetPlanProperties() ReferencePlanProperties {
+	r = r.Canonical()
+	return r.planProperties
+}
 
 // SetPlanProperties sets the planner-phase property map on this Reference.
-func (r *Reference) SetPlanProperties(m any) { r = r.Canonical(); r.planProperties = m }
+func (r *Reference) SetPlanProperties(m ReferencePlanProperties) {
+	r = r.Canonical()
+	r.planProperties = m
+}
 
 // AddPartialMatch stores a partial match for the given candidate.
 // Returns true if newly added. Uses any-typed parameters to avoid
@@ -1175,78 +1313,6 @@ func (r *Reference) InvalidateCorrelatedToCache() {
 	r.correlatedToCache.Store(nil)
 }
 
-// GetCorrelatedTo returns the full (transitive) set of correlation
-// identifiers this Reference depends on. Unions each member's own
-// correlations with its children's correlations, excluding aliases
-// bound by each member's own quantifiers. Result is cached after
-// first computation. The returned map is borrowed and must not be modified.
-// Concurrent reads are safe only while the entire reachable graph, including
-// its member sets and forwarding links, remains unchanged.
-func (r *Reference) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
-	return r.getCorrelatedToGuarded(nil)
-}
-
-// getCorrelatedToGuarded is GetCorrelatedTo with a bounded re-entrancy guard.
-// The memo DAG is kept acyclic by the cross-group merge cycle guard
-// (memo_merge.go), so in normal operation no Reference is ever re-entered and
-// this behaves exactly like an unguarded walk (the per-Reference cache
-// short-circuits every already-computed child before the guard is consulted).
-// The `visited` set is defense-in-depth: should a cycle ever reach here (a
-// merge-guard under-approximation, a future bug), a re-entered in-progress
-// Reference contributes the empty set instead of recursing forever — a hang is
-// worse than an incomplete correlation set. visited is nil on the top-level
-// call and lazily allocated only when we actually descend.
-func (r *Reference) getCorrelatedToGuarded(visited map[*Reference]struct{}) map[values.CorrelationIdentifier]struct{} {
-	r = canonicalReferenceReadOnly(r)
-	if cached := r.correlatedToCache.Load(); cached != nil {
-		return *cached
-	}
-	if _, seen := visited[r]; seen {
-		return map[values.CorrelationIdentifier]struct{}{}
-	}
-	if visited == nil {
-		visited = make(map[*Reference]struct{})
-	}
-	visited[r] = struct{}{}
-	result := make(map[values.CorrelationIdentifier]struct{})
-	for _, m := range r.AllMembers() {
-		ownAliases := make(map[values.CorrelationIdentifier]struct{})
-		for _, q := range m.GetQuantifiers() {
-			ownAliases[q.GetAlias()] = struct{}{}
-		}
-		// Java's AbstractRelationalExpressionWithChildren.computeCorrelatedTo:
-		// the expression's OWN predicates/result-value correlations are
-		// filtered by its own quantifier aliases — a select whose ON
-		// predicate references its own quantifier is NOT free on that alias.
-		// Go reuses human-readable aliases (Java mints globally unique ones),
-		// so without this filter a dissolved outer-join box — whose
-		// null-on-empty quantifier REUSES the null-supplying leg's alias —
-		// reports its inner select as "correlated to" the very alias it
-		// binds, and correlation-driven rewrites capture the inner binding.
-		for k := range m.GetCorrelatedToWithoutChildren() {
-			if _, bound := ownAliases[k]; !bound {
-				result[k] = struct{}{}
-			}
-		}
-		for _, q := range m.GetQuantifiers() {
-			childRef := q.GetRangesOver()
-			if childRef == nil {
-				continue
-			}
-			for k := range childRef.getCorrelatedToGuarded(visited) {
-				// Java keeps a child's correlation when the parent cannot
-				// correlate (a union's legs can't bind sibling aliases) OR
-				// the alias is not bound here.
-				if _, bound := ownAliases[k]; !m.CanCorrelate() || !bound {
-					result[k] = struct{}{}
-				}
-			}
-		}
-	}
-	r.correlatedToCache.Store(&result)
-	return result
-}
-
 // sameChildReferences returns true if a and b have the same
 // Quantifier count AND every Quantifier's Reference resolves to the
 // same canonical Reference on both sides. Used by Reference.Insert as
@@ -1254,27 +1320,5 @@ func (r *Reference) getCorrelatedToGuarded(visited map[*Reference]struct{}) map[
 // GetRangesOver (which resolves forwarding read-only), so a merged-away child
 // and its survivor compare equal without mutating topology during comparison.
 func sameChildReferences(a, b RelationalExpression) bool {
-	aQs := a.GetQuantifiers()
-	bQs := b.GetQuantifiers()
-	if len(aQs) != len(bQs) {
-		return false
-	}
-	for i := range aQs {
-		if aQs[i].GetRangesOver() != bQs[i].GetRangesOver() {
-			return false
-		}
-		// Edge attributes travel on the quantifier, not the child content
-		// — two selects over the SAME child references still differ in
-		// semantics when a paired quantifier differs in kind /
-		// null-on-empty / strict-single (a LEFT box vs an INNER join; a
-		// scalar-subquery cardinality gate vs none). Without this, the
-		// interning fast path in Insert/InsertFinal collapses them into
-		// one member and the first arrival's flags become authoritative
-		// for both (the wrong-rows class quantifierAttributesEqual closes
-		// for SemanticEquals).
-		if !quantifierAttributesEqual(aQs[i], bQs[i]) {
-			return false
-		}
-	}
-	return true
+	return preparedSameChildReferences(a, b)
 }

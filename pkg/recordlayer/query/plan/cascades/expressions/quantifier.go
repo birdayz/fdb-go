@@ -196,6 +196,13 @@ func RebuildQuantifier(q Quantifier, newRef *Reference) Quantifier {
 	}
 }
 
+// WithAlias changes the binding declaration without changing its edge or flags.
+// Callers must already have a value program using the replacement alias.
+func (q Quantifier) WithAlias(alias values.CorrelationIdentifier) Quantifier {
+	q.alias = alias
+	return q
+}
+
 // Kind returns the Quantifier's flavour.
 func (q Quantifier) Kind() QuantifierKind { return q.kind }
 
@@ -282,46 +289,40 @@ func (q Quantifier) GetFlowedObjectType() (values.Type, error) {
 	if ref == nil {
 		return nil, &FlowedObjectTypeUnavailableError{Alias: q.alias, Reason: "quantifier has no Reference"}
 	}
+	found, err := referenceFlowedRow(ref, q.alias)
+	if err != nil {
+		return nil, err
+	}
+	return q.widenFlowedType(found)
+}
+
+// referenceFlowedRow is the Reference half of GetFlowedObjectType: the row its
+// members agree on, memoized on the Reference and not yet widened for any edge.
+// alias names the quantifier in an error only.
+func referenceFlowedRow(ref *Reference, alias values.CorrelationIdentifier) (values.Type, error) {
 	// The answer depends only on the Reference's members, and deriving it
 	// snapshots every one of them through ExactRelationOf. Rule bodies call
 	// this per match, so without the memo the same unchanged member set is
 	// re-snapshotted continuously; see Reference.flowedType.
 	if cached, ok := ref.cachedFlowedType(); ok {
-		return q.widenFlowedType(cached)
+		return cached, nil
 	}
 	// Java's getAllMemberExpressions() — exploratory AND final. A final member is
 	// the one a physical plan is built from, so excluding it would verify the
 	// agreement over exactly the members that do not end up in the plan.
 	members := ref.AllMembers()
 	if len(members) == 0 {
-		return nil, &FlowedObjectTypeUnavailableError{Alias: q.alias, Reason: "Reference has no members"}
+		return nil, &FlowedObjectTypeUnavailableError{Alias: alias, Reason: "Reference has no members"}
 	}
 	var found values.Type
 	for _, member := range members {
 		if member == nil {
-			return nil, &FlowedObjectTypeUnavailableError{Alias: q.alias, Reason: "Reference contains a nil member"}
+			return nil, &FlowedObjectTypeUnavailableError{Alias: alias, Reason: "Reference contains a nil member"}
 		}
-		rv := member.GetResultValue()
-		if rv == nil {
-			return nil, &FlowedObjectTypeUnavailableError{Alias: q.alias, Reason: "member has no result Value"}
-		}
-		relation, err := values.ExactRelationOf(rv.Type())
+		rt, err := memberFlowedRow(alias, member.GetResultValue())
 		if err != nil {
-			return nil, fmt.Errorf("quantifier %s member result type: %w", q.alias.Name(), err)
+			return nil, err
 		}
-		inner, ok := relation.RelationInner()
-		if !ok {
-			return nil, &FlowedObjectTypeUnavailableError{Alias: q.alias, Reason: "member result is missing its relation wrapper"}
-		}
-		// The member's result VALUE states the leg boundaries; the row TYPE
-		// derived from it does not. Carry them, or the quantifier flows a row
-		// that has forgotten where each source's columns start — which does not
-		// read downstream as "no legs" but as ONE run spanning the whole concat
-		// keyed by the box's rightmost leaf, so a qualified column resolves into
-		// the first leg's slots. Legs are not part of exact-type identity, so
-		// this adds physical information without touching the agreement check
-		// below.
-		rt := values.WithSeedTilingLegs(inner.Type(), rv)
 		if found == nil {
 			found = rt
 			continue
@@ -362,31 +363,29 @@ func (q Quantifier) GetFlowedObjectType() (values.Type, error) {
 		// runOffset+ordinal, inside the FIRST leg. Empty is the shape that
 		// produces the wrong slot; adopting the stated boundaries removes it.
 		foundLegs, rtLegs := rowTypeLegsOf(found), rowTypeLegsOf(rt)
-		switch {
-		case len(foundLegs) == 0:
+		if !LegTablesCompatible(foundLegs, rtLegs) {
+			return nil, &MemberResultTypeDisagreementError{
+				Alias: alias, Left: found, Right: rt,
+			}
+		}
+		if len(foundLegs) == 0 {
 			// Adopt rt's boundaries (possibly also empty) — see above.
 			found = values.WithRecordTypeLegs(found, rtLegs)
-		case len(rtLegs) == 0:
-			// Keep what `found` already states.
-		case !legTablesAgree(foundLegs, rtLegs):
-			return nil, &MemberResultTypeDisagreementError{
-				Alias: q.alias, Left: found, Right: rt,
-			}
 		}
 		if !found.Equals(rt) {
 			return nil, &MemberResultTypeDisagreementError{
-				Alias: q.alias, Left: found, Right: rt,
+				Alias: alias, Left: found, Right: rt,
 			}
 		}
 	}
 	if found == nil {
-		return nil, &FlowedObjectTypeUnavailableError{Alias: q.alias, Reason: "Reference has no usable members"}
+		return nil, &FlowedObjectTypeUnavailableError{Alias: alias, Reason: "Reference has no usable members"}
 	}
 	// Cache BEFORE edge-local widening: existential and null-on-empty edges
 	// can share a Reference with ordinary for-each/physical quantifiers.
 	// Caching the widened row would leak one edge's nullability into another.
 	ref.setCachedFlowedType(found)
-	return q.widenFlowedType(found)
+	return found, nil
 }
 
 // widenFlowedType applies existential/NullOnEmpty nullability to a
@@ -517,6 +516,51 @@ func refineRecordNames(a, b string) (string, bool) {
 	return "", false
 }
 
+// memberFlowedRow is one member's row as GetFlowedObjectType sees it: the
+// member's result type with its single RELATION wrapper removed, carrying the
+// leg boundaries its result VALUE states. The value states them and the row
+// TYPE derived from it does not; without them the quantifier flows a row that
+// has forgotten where each source's columns start — which does not read
+// downstream as "no legs" but as ONE run spanning the whole concat keyed by the
+// box's rightmost leaf, so a qualified column resolves into the first leg's
+// slots. Legs are not part of exact-type identity, so this adds physical
+// information without touching the member-agreement check.
+func memberFlowedRow(alias values.CorrelationIdentifier, rv values.Value) (values.Type, error) {
+	if rv == nil {
+		return nil, &FlowedObjectTypeUnavailableError{Alias: alias, Reason: "member has no result Value"}
+	}
+	relation, err := values.ExactRelationOf(rv.Type())
+	if err != nil {
+		return nil, fmt.Errorf("quantifier %s member result type: %w", alias.Name(), err)
+	}
+	inner, ok := relation.RelationInner()
+	if !ok {
+		return nil, &FlowedObjectTypeUnavailableError{Alias: alias, Reason: "member result is missing its relation wrapper"}
+	}
+	return values.WithSeedTilingLegs(inner.Type(), rv), nil
+}
+
+// LegTableConflictsWith reports whether a new member of ref whose result value
+// is rv would make ref's members disagree on their leg table — the leg-table
+// half of GetFlowedObjectType's member-agreement scan, asked BEFORE the member
+// exists, so a rewrite can refuse to produce a member its reference would
+// reject (SelectMergeRule) instead of leaving the memo to fail the whole plan.
+// It compares against the table the scan accumulates over every current member
+// (the rule and the check are one derivation, memberFlowedRow), not against the
+// rewritten expression's own table. A reference whose scan already fails, and a
+// value with no row, report no conflict: this member is not the cause.
+func LegTableConflictsWith(ref *Reference, rv values.Value) bool {
+	stated, err := referenceFlowedRow(ref, values.CorrelationIdentifier{})
+	if err != nil {
+		return false
+	}
+	row, err := memberFlowedRow(values.CorrelationIdentifier{}, rv)
+	if err != nil {
+		return false
+	}
+	return !LegTablesCompatible(rowTypeLegsOf(stated), rowTypeLegsOf(row))
+}
+
 // rowTypeLegsOf returns the leg table a flowed row states, or nil for any type
 // that is not a record. A non-record row has no boundaries to disagree about,
 // so two of them agree trivially.
@@ -526,6 +570,14 @@ func rowTypeLegsOf(t values.Type) []values.RecordTypeLeg {
 		return nil
 	}
 	return rt.Legs
+}
+
+// LegTablesCompatible is the member-agreement rule for leg tables, the one
+// GetFlowedObjectType and LegTableConflictsWith apply: an empty table is an
+// unstated gap and agrees with anything; two populated tables must be the same
+// statement.
+func LegTablesCompatible(a, b []values.RecordTypeLeg) bool {
+	return len(a) == 0 || len(b) == 0 || legTablesAgree(a, b)
 }
 
 // legTablesAgree reports whether two members state the SAME buried-leg boundary

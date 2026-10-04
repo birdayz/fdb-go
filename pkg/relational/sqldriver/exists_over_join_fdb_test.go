@@ -10,6 +10,9 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
+	"slices"
+	"sort"
+	"strings"
 	"testing"
 )
 
@@ -31,7 +34,7 @@ func TestFDB_ExistsOverJoin(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE "+tmpl); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -122,6 +125,57 @@ func TestFDB_ExistsOverJoin(t *testing.T) {
 	for i := range wantCols {
 		if gotCols[i] != wantCols[i] {
 			t.Fatalf("RIGHT+EXISTS SELECT * columns = %v, want %v (declaration order — the post-swap divergence)", gotCols, wantCols)
+		}
+	}
+
+	// (f2) The same RIGHT JOIN + EXISTS answers rows, not only columns: the
+	// null-supplying leg merged with its partner below the EXISTS leg must
+	// null-pad dept 3, read through SELECT *, an explicit projection and the
+	// preserved side alone.
+	rowsOf := func(t *testing.T, q string) []string {
+		t.Helper()
+		r, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("query: %v\n  sql: %s", err, q)
+		}
+		defer r.Close()
+		cs, _ := r.Columns()
+		var out []string
+		for r.Next() {
+			vals := make([]sql.NullString, len(cs))
+			ptrs := make([]any, len(cs))
+			for i := range vals {
+				ptrs[i] = &vals[i]
+			}
+			if err := r.Scan(ptrs...); err != nil {
+				t.Fatalf("scan: %v\n  sql: %s", err, q)
+			}
+			row := make([]string, len(cs))
+			for i, v := range vals {
+				row[i] = "NULL"
+				if v.Valid {
+					row[i] = v.String
+				}
+			}
+			out = append(out, strings.Join(row, ","))
+		}
+		if err := r.Err(); err != nil {
+			t.Fatalf("rows: %v\n  sql: %s", err, q)
+		}
+		sort.Strings(out)
+		return out
+	}
+	const rightExists = " FROM emp e RIGHT JOIN dept d ON e.dept_id = d.id WHERE EXISTS (SELECT 1 FROM badge b)"
+	for _, c := range []struct {
+		sel  string
+		want []string
+	}{
+		{"SELECT *", []string{"1,1,alice,1,eng", "2,2,bob,2,ops", "NULL,NULL,NULL,3,empty"}},
+		{"SELECT e.id, e.fname, d.id, d.dname", []string{"1,alice,1,eng", "2,bob,2,ops", "NULL,NULL,3,empty"}},
+		{"SELECT d.id", []string{"1", "2", "3"}},
+	} {
+		if got := rowsOf(t, c.sel+rightExists); !slices.Equal(got, c.want) {
+			t.Errorf("%s%s = %v, want %v", c.sel, rightExists, got, c.want)
 		}
 	}
 

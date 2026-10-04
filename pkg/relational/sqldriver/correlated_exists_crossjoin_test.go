@@ -29,7 +29,7 @@ func TestFDB_CorrelatedExistsCrossJoin(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_correxcj/s WITH TEMPLATE correxcj_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_correxcj?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_CORREXCJ?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -87,7 +87,7 @@ func TestFDB_NestedCorrelatedExists(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_nestexists/s WITH TEMPLATE nestexists_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_nestexists?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_NESTEXISTS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()

@@ -36,21 +36,8 @@ func NewRecordQueryFirstOrDefaultPlanStrict(inner RecordQueryPlan, defaultValue 
 	return NewRecordQueryFirstOrDefaultPlanStrictFromQuantifier(QuantifierOverPlan(inner), defaultValue)
 }
 
-// NewRecordQueryFirstOrDefaultPlanFromQuantifier builds a first-or-default whose
-// child is a supplied memo quantifier instead of a snapshot over a single plan.
-// This makes the plan its own cascades expression carrying its child edge
-// directly — the memo holds it without a physicalFirstOrDefaultWrapper
-// (RFC-184 W2).
-//
-// Unlike DefaultOnEmpty/InJoin (which range over the LIVE shared exploratory
-// group and resolve via ref.Winner()), the FirstOrDefault emitter freezes a
-// DISENTANGLED FINAL reference holding the CONSTRAINT-SATISFYING correlated
-// inner (constraint-preserving disentangle). Its inner is the concrete
-// correlated/SARG member — never the shared-group bare winner — so
-// planFromQuantifier resolves the correlated inner and the correlation on the
-// DML DELETE/UPDATE-WHERE-EXISTS path is preserved. The wrapper's second live
-// edge (which floated to the bare winner and dropped the filter) is gone; the
-// single frozen edge does both jobs.
+// NewRecordQueryFirstOrDefaultPlanFromQuantifier retains the supplied memo edge;
+// its partition alternatives remain available until child optimization.
 func NewRecordQueryFirstOrDefaultPlanFromQuantifier(innerQ expressions.Quantifier, defaultValue values.Value) (*RecordQueryFirstOrDefaultPlan, error) {
 	return newRecordQueryFirstOrDefaultPlan(innerQ, defaultValue, false)
 }
@@ -80,11 +67,7 @@ func (p *RecordQueryFirstOrDefaultPlan) GetInner() RecordQueryPlan {
 	return planFromQuantifier(p.innerQ)
 }
 
-// GetInnerQuantifier returns the live child quantifier — the single frozen memo
-// edge the first-or-default ranges over. derivationsForFirstOrDefault reads its
-// alias to translate the default value's correlation; since RFC-184 W2 the memo
-// holds the bare plan (no physicalFirstOrDefaultWrapper whose innerQuant field it
-// used to read), this exposes the same edge.
+// GetInnerQuantifier exposes the child binding without selecting a plan.
 func (p *RecordQueryFirstOrDefaultPlan) GetInnerQuantifier() expressions.Quantifier {
 	return p.innerQ
 }
@@ -186,16 +169,8 @@ func (p *RecordQueryFirstOrDefaultPlan) WithQuantifiers(qs []expressions.Quantif
 	return &cp, nil
 }
 
-// WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
-// interface). The first-or-default carries its child as a single frozen memo
-// edge, so the relink is a quantifier swap: WithQuantifiers preserves the
-// default value AND the strict flag, and GetInner re-resolves through the new
-// singleton reference. This replaces physicalFirstOrDefaultWrapper.WithChildren
-// (RFC-184 W2), whose separate snapshot plan field forced a constructor rebuild
-// gated on isLeafReplaceable. Because the emitter already froze the
-// correlated/SARG inner into a private single-member reference, extraction
-// recurses through it faithfully — it never consults the shared exploratory
-// group, so the correlation cannot be dropped.
+// WithChildren relinks the extracted child while preserving the default and
+// scalar-cardinality check.
 func (p *RecordQueryFirstOrDefaultPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("RecordQueryFirstOrDefaultPlan.WithChildren: expected 1 child, got %d", len(qs))
@@ -206,7 +181,7 @@ func (p *RecordQueryFirstOrDefaultPlan) WithChildren(qs []expressions.Quantifier
 // reanchorInputValueToOutput preserves only proven child lineage across the
 // default-producing boundary, including the root-nullability widening.
 func (p *RecordQueryFirstOrDefaultPlan) reanchorInputValueToOutput(value values.Value) (values.Value, error) {
-	return reanchorDefaultInputValueToOutput(p, p.GetInner(), value)
+	return reanchorDefaultInputValueToOutput(p, selectedPlanFromQuantifier(p.innerQ), value)
 }
 
 // GetRecordQueryPlan returns the plan itself.

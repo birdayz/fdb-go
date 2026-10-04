@@ -86,7 +86,7 @@ func TestFDB_DuecMeasurementWindowLoss_IsSeenByDetectorA(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE duecwin "+
 			"CREATE TABLE rows1 (id BIGINT, v STRING, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_duecwin/s WITH TEMPLATE duecwin")
-	dsn := fmt.Sprintf("fdbsql:///testdb_duecwin?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_DUECWIN?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -270,7 +270,7 @@ func TestFDB_DuecScannedRowsLimitDoesNotSilentlyTruncate(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE duecpage "+
 			"CREATE TABLE rows2 (id BIGINT, v STRING, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_duecpage/s WITH TEMPLATE duecpage")
-	dsn := fmt.Sprintf("fdbsql:///testdb_duecpage?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_DUECPAGE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -279,16 +279,18 @@ func TestFDB_DuecScannedRowsLimitDoesNotSilentlyTruncate(t *testing.T) {
 
 	const total = 20000
 	for base := 0; base < total; base += 500 {
-		var sb strings.Builder
-		sb.WriteString("INSERT INTO rows2 (id, v) VALUES ")
-		for i := 0; i < 500; i++ {
-			if i > 0 {
-				sb.WriteString(",")
+		if err := duecInsertFixtureRange(t, ctx, db, base, base+500, func(lo, hi int) string {
+			var sb strings.Builder
+			sb.WriteString("INSERT INTO rows2 (id, v) VALUES ")
+			for id := lo; id < hi; id++ {
+				if id > lo {
+					sb.WriteString(",")
+				}
+				fmt.Fprintf(&sb, "(%d, 'v%07d')", id, id)
 			}
-			fmt.Fprintf(&sb, "(%d, 'v%07d')", base+i, base+i)
-		}
-		if _, e := db.ExecContext(ctx, sb.String()); e != nil {
-			t.Fatalf("insert at %d: %v", base, e)
+			return sb.String()
+		}); err != nil {
+			t.Fatalf("insert at %d: %v", base, err)
 		}
 	}
 
@@ -338,4 +340,40 @@ func TestFDB_DuecScannedRowsLimitDoesNotSilentlyTruncate(t *testing.T) {
 				perPage, qerr, qerr)
 		}
 	}
+}
+
+// duecInsertFixtureRange loads only fixture data, outside every measured query.
+// A SQL INSERT has one atomic commit boundary, just as Java does; neither engine
+// promises a fixed number of inserts fit inside FDB's MVCC window. Subdivide only
+// an unequivocally aborted time-limit attempt. Conflicts and ambiguous commits
+// remain failures. Every successful statement must account for its whole range.
+func duecInsertFixtureRange(t *testing.T, ctx context.Context, db *sql.DB, lo, hi int, render func(int, int) string) error {
+	t.Helper()
+	result, err := db.ExecContext(ctx, render(lo, hi))
+	if err == nil {
+		count, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if count != int64(hi-lo) {
+			return fmt.Errorf("fixture insert [%d,%d) affected %d rows", lo, hi, count)
+		}
+		return nil
+	}
+	mid, split := duecFixtureSplitPoint(lo, hi, err)
+	if !split {
+		return err
+	}
+	t.Logf("fixture insert [%d,%d) exceeded its MVCC window; split at %d: %v", lo, hi, mid, err)
+	if err := duecInsertFixtureRange(t, ctx, db, lo, mid, render); err != nil {
+		return err
+	}
+	return duecInsertFixtureRange(t, ctx, db, mid, hi, render)
+}
+
+func duecFixtureSplitPoint(lo, hi int, err error) (int, bool) {
+	if hi-lo < 2 || !duecMeasurementWindowLost(err) {
+		return 0, false
+	}
+	return lo + (hi-lo)/2, true
 }

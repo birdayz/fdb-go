@@ -24,7 +24,6 @@ import (
 var comparisonIdentityFields = map[string]string{
 	"Type":               "the operator itself",
 	"Operand":            "the right-hand comparand",
-	"Escape":             "LIKE's escape character changes which strings match",
 	"ParameterName":      "two bound parameters are different comparisons",
 	"TextTokenizerName":  "Java's TextComparison.equals folds tokenizerName; different tokenizers read different index data",
 	"TextAnalyzerName":   "as above, the analyzer half",
@@ -55,7 +54,6 @@ var comparisonIdentityExcludedFields = map[string]string{}
 // TestComparisonIdentityFoldsEveryField.
 func comparisonIdentityEqual(a, b Comparison) bool {
 	if a.Type != b.Type ||
-		a.Escape != b.Escape ||
 		a.ParameterName != b.ParameterName {
 		return false
 	}
@@ -100,8 +98,6 @@ func boolPtrEqual(a, b *bool) bool {
 func writeComparisonIdentity(h io.Writer, c Comparison) {
 	var buf [8]byte
 	binary.BigEndian.PutUint64(buf[:], uint64(c.Type))
-	_, _ = h.Write(buf[:])
-	binary.BigEndian.PutUint64(buf[:], uint64(c.Escape))
 	_, _ = h.Write(buf[:])
 	writeDelimited(h, c.ParameterName)
 	writeDelimited(h, c.TextTokenizerName)

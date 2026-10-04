@@ -173,4 +173,67 @@ class RankIndexSteps extends ConformanceBase {
             return result;
         });
     }
+    private static RecordMetaData rankMetadata(byte[] protoBytes) throws com.google.protobuf.InvalidProtocolBufferException {
+        if (protoBytes.length == 0) {
+            return createRankIndexedMetaData();
+        }
+        var registry = com.google.protobuf.ExtensionRegistry.newInstance();
+        com.apple.foundationdb.record.RecordMetaDataOptionsProto.registerAllExtensions(registry);
+        return RecordMetaData.build(com.apple.foundationdb.record.RecordMetaDataProto.MetaData.parseFrom(protoBytes, registry));
+    }
+
+    @ConformanceStep("saveOrderWithRankMetadata")
+    public void saveOrderWithRankMetadata(String clusterFile, byte[] subspace, String tenantName,
+            byte[] protoBytes, Order order) throws com.google.protobuf.InvalidProtocolBufferException {
+        var metadata = rankMetadata(protoBytes);
+        var record = com.google.protobuf.DynamicMessage.parseFrom(metadata.getRecordType("Order").getDescriptor(), order.toByteArray());
+        runInContext(clusterFile, tenantName, context -> {
+            var store = FDBRecordStore.newBuilder().setMetaDataProvider(metadata).setContext(context)
+                    .setSubspace(new Subspace(subspace)).setFormatVersion(14)
+                    .setUserVersionChecker(ALWAYS_READABLE_CHECKER).createOrOpen();
+            store.saveRecord(record);
+            return null;
+        });
+    }
+
+    @ConformanceStep("scanRankIndexValues")
+    public List<Map<String, Object>> scanRankIndexValues(String clusterFile, byte[] subspace,
+            boolean byRank, boolean includeRank, boolean reverse, String tenantName,
+            byte[] protoBytes, long group) throws com.google.protobuf.InvalidProtocolBufferException {
+        var metadata = rankMetadata(protoBytes);
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = FDBRecordStore.newBuilder().setMetaDataProvider(metadata).setContext(context)
+                    .setSubspace(new Subspace(subspace)).setFormatVersion(14).open();
+            Index index = store.getRecordMetaData().getIndex("rank_by_price");
+            TupleRange range = TupleRange.ALL;
+            if (group >= 0) {
+                range = byRank ? new TupleRange(Tuple.from(group, 0L), Tuple.from(group, 10L),
+                        com.apple.foundationdb.record.EndpointType.RANGE_INCLUSIVE,
+                        com.apple.foundationdb.record.EndpointType.RANGE_EXCLUSIVE)
+                        : TupleRange.allOf(Tuple.from(group));
+            }
+            var bounds = new com.apple.foundationdb.record.provider.foundationdb.RankScanBounds(
+                    byRank ? IndexScanType.BY_RANK : IndexScanType.BY_VALUE, range, includeRank);
+            List<IndexEntry> entries = store.scanIndex(index, bounds, null,
+                    reverse ? ScanProperties.REVERSE_SCAN : ScanProperties.FORWARD_SCAN).asList().join();
+            List<Map<String, Object>> result = new ArrayList<>();
+            for (IndexEntry entry : entries) {
+                Map<String, Object> row = new HashMap<>();
+                row.put("key", unsignedBytes(entry.getKey().pack()));
+                row.put("primaryKey", unsignedBytes(entry.getPrimaryKey().pack()));
+                row.put("value", unsignedBytes(entry.getValue().pack()));
+                result.add(row);
+            }
+            return result;
+        });
+    }
+
+    private static List<Integer> unsignedBytes(byte[] bytes) {
+        List<Integer> result = new ArrayList<>(bytes.length);
+        for (byte value : bytes) {
+            result.add(Byte.toUnsignedInt(value));
+        }
+        return result;
+    }
+
 }

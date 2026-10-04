@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/onsi/gomega"
@@ -11,8 +12,8 @@ import (
 
 // TestFDB_RecursiveCTERename reproduces recursive_cte.yaml test 6:
 // column-list rename on a recursive CTE. The CTE defines columns
-// (node, up) but the seed projects (id, parent). The recursive branch
-// references a.up — that must map to the second CTE column.
+// (node, up) but the seed projects (id, parent). The recursive branch reads
+// the seed's names (a.parent); only the main query sees the list's names.
 func TestFDB_RecursiveCTERename(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -30,7 +31,7 @@ func TestFDB_RecursiveCTERename(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE rcte_rename_tmpl", dbPath))).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -45,7 +46,7 @@ func TestFDB_RecursiveCTERename(t *testing.T) {
 		query := `WITH RECURSIVE ancestors(node, up) AS (
 			SELECT id, parent FROM t WHERE id = 250
 			UNION ALL
-			SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.up
+			SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.parent
 		)
 		SELECT node FROM ancestors ORDER BY node DESC`
 
@@ -71,7 +72,7 @@ func TestFDB_RecursiveCTERename(t *testing.T) {
 		query := `WITH RECURSIVE desc2(node) AS (
 			SELECT id FROM t WHERE parent = -1
 			UNION ALL
-			SELECT b.id FROM desc2 AS a, t AS b WHERE b.parent = a.node
+			SELECT b.id FROM desc2 AS a, t AS b WHERE b.parent = a.id
 		)
 		SELECT node FROM desc2 ORDER BY node`
 

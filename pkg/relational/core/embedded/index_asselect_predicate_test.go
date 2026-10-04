@@ -189,14 +189,17 @@ func TestAsSelectSparseIndex_PredicateGoldens(t *testing.T) {
 		{
 			"dnf_materialized",
 			"CREATE INDEX pidx AS SELECT price FROM tp WHERE price = 1 AND (price = 2 OR price = 3)",
+			// The select's predicates arrive partitioned, the OR ahead of the
+			// value predicate (SelectExpression.partitionPredicates), so the
+			// DNF distributes in that order.
 			predOr(
 				predAnd(
-					predVP([]string{"PRICE"}, cmpSimple(gen.ComparisonType_EQUALS, valLong(1))),
 					predVP([]string{"PRICE"}, cmpSimple(gen.ComparisonType_EQUALS, valLong(2))),
+					predVP([]string{"PRICE"}, cmpSimple(gen.ComparisonType_EQUALS, valLong(1))),
 				),
 				predAnd(
-					predVP([]string{"PRICE"}, cmpSimple(gen.ComparisonType_EQUALS, valLong(1))),
 					predVP([]string{"PRICE"}, cmpSimple(gen.ComparisonType_EQUALS, valLong(3))),
+					predVP([]string{"PRICE"}, cmpSimple(gen.ComparisonType_EQUALS, valLong(1))),
 				),
 			),
 		},
@@ -208,11 +211,11 @@ func TestAsSelectSparseIndex_PredicateGoldens(t *testing.T) {
 			"dnf_no_ranges_fallback",
 			"CREATE INDEX pidx AS SELECT price FROM tp WHERE price = 1 AND (stock = 2 OR stock = 3)",
 			predAnd(
-				predVP([]string{"PRICE"}, cmpSimple(gen.ComparisonType_EQUALS, valLong(1))),
 				predOr(
 					predVP([]string{"STOCK"}, cmpSimple(gen.ComparisonType_EQUALS, valLong(2))),
 					predVP([]string{"STOCK"}, cmpSimple(gen.ComparisonType_EQUALS, valLong(3))),
 				),
+				predVP([]string{"PRICE"}, cmpSimple(gen.ComparisonType_EQUALS, valLong(1))),
 			),
 		},
 		// Single-key DNF whose second group carries a NOT_EQUALS: the range
@@ -227,11 +230,11 @@ func TestAsSelectSparseIndex_PredicateGoldens(t *testing.T) {
 			"gate_fallback_not_equals",
 			"CREATE INDEX pidx AS SELECT price FROM tp WHERE price = 1 AND (price = 2 OR price <> 3)",
 			predAnd(
-				predVP([]string{"PRICE"}, cmpSimple(gen.ComparisonType_EQUALS, valLong(1))),
 				predOr(
 					predVP([]string{"PRICE"}, cmpSimple(gen.ComparisonType_EQUALS, valLong(2))),
 					predVP([]string{"PRICE"}, cmpSimple(gen.ComparisonType_NOT_EQUALS, valLong(3))),
 				),
+				predVP([]string{"PRICE"}, cmpSimple(gen.ComparisonType_EQUALS, valLong(1))),
 			),
 		},
 		// Boolean constants as the whole WHERE — corpus twin:

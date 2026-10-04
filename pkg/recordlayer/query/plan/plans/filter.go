@@ -45,6 +45,17 @@ func NewRecordQueryFilterPlanFromQuantifier(preds []predicates.QueryPredicate, i
 // GetPredicates returns the predicate list (read-only).
 func (p *RecordQueryFilterPlan) GetPredicates() []predicates.QueryPredicate { return p.predicates }
 
+func (p *RecordQueryFilterPlan) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{}
+	for _, pred := range p.predicates {
+		for alias := range predicates.GetCorrelatedToOfPredicate(pred) {
+			out[alias] = struct{}{}
+		}
+	}
+	delete(out, values.CurrentCorrelation())
+	return out
+}
+
 // GetInner returns the wrapped inner plan, dereferenced through the quantifier.
 func (p *RecordQueryFilterPlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
 

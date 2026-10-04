@@ -3,6 +3,7 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -46,7 +47,7 @@ func TestFDB_RecordConstructorInExpressionPosition(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_rcexpr/s WITH TEMPLATE rcexpr_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_rcexpr?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_RCEXPR?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -241,32 +242,22 @@ func TestFDB_RecordConstructorInExpressionPosition(t *testing.T) {
 		g.Expect([]any{a, b, c, d}).To(gomega.Equal([]any{int64(11), 3.5, "w", true}))
 	})
 
-	// The out-of-order named literal is REJECTED, and that is Java's answer
-	// too — measured, not assumed. Java binds a targeted record constructor by
-	// POSITION and overrides the element's own name with the target field's
-	// (ExpressionVisitor.java:1040-1075; the "reorderings" that would honour
-	// names come from an INSERT's explicit column list, never from `AS` inside
-	// the constructor), so `(11 AS a, 'w' AS c, 3.5 AS b, true AS d)` tries to
-	// put the STRING into the DOUBLE field and dies on the type.
-	//
-	// Live-JVM (conformance/record_constructor_java_probe_test.go, probe
-	// update_named_out_of_order): JAVA "A value cannot be assigned to a
-	// variable because the type of the value does not match the type of the
-	// variable and cannot be promoted to the type of the variable."; GO 22000
-	// "field \"C\" cannot be assigned to target field \"B\"". Same refusal,
-	// and Go names which field it was.
-	//
-	// This arm is what keeps the positional coercion HONEST: without it, a
-	// rule that bound every literal positionally regardless of names would
-	// pass every other test in this file while silently transposing a row.
+	// An UPDATE binds a record constructor by POSITION and ignores its
+	// elements' own names (Java builds it with no target type in state and
+	// copies it in by field number), so `(11 AS a, 'w' AS c, 3.5 AS b, true
+	// AS d)` puts the STRING into the DOUBLE field and dies on the type with
+	// Java's message (conformance/record_constructor_java_probe_test.go,
+	// probe update_named_out_of_order). Where the types agree the names do
+	// not reorder anything (conformance/record_names_conformance_test.go).
 	t.Run("named_literal_out_of_order_is_rejected", func(t *testing.T) {
 		g := gomega.NewWithT(t)
 		g.Expect(db.ExecContext(ctx, "INSERT INTO C VALUES (4, null)")).Error().NotTo(gomega.HaveOccurred())
 		_, err := db.ExecContext(ctx,
 			"UPDATE C SET s = (11 AS a, 'w' AS c, 3.5 AS b, true AS d) WHERE id = 4")
-		g.Expect(err).To(gomega.HaveOccurred(),
-			"a named literal whose names disagree with the target's positions must not silently transpose")
-		g.Expect(err.Error()).To(gomega.ContainSubstring(`field "C" cannot be assigned to target field "B"`))
+		var apiErr *api.Error
+		g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "error %v", err)
+		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeCannotConvertType))
+		g.Expect(apiErr.Message).To(gomega.Equal("A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable."))
 	})
 
 	// A parenthesised PREDICATE takes the same unwrap through the same

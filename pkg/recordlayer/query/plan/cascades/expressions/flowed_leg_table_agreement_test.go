@@ -205,3 +205,33 @@ func TestGetFlowedObjectTypeRefusesConflictingLegTables(t *testing.T) {
 			"want MemberResultTypeDisagreementError", got, err)
 	}
 }
+
+// TestLegTablesCompatibleArms drives the member-agreement rule the memo and
+// SelectMergeRule share: an empty table agrees with anything, two populated
+// tables must be the same statement (a leg differing in any field relocates the
+// reads filed against it).
+func TestLegTablesCompatibleArms(t *testing.T) {
+	t.Parallel()
+	leg := func(alias string, start, width int) values.RecordTypeLeg {
+		return values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier(alias), alias, start, width)
+	}
+	ad := []values.RecordTypeLeg{leg("A", 0, 4), leg("D", 4, 2)}
+	wgd := []values.RecordTypeLeg{leg("W", 0, 2), leg("G", 2, 2), leg("D", 4, 2)}
+	moved := []values.RecordTypeLeg{leg("A", 0, 3), leg("D", 3, 3)}
+	for _, tc := range []struct {
+		name string
+		a, b []values.RecordTypeLeg
+		want bool
+	}{
+		{"both empty", nil, nil, true},
+		{"empty beside populated", nil, ad, true},
+		{"populated beside empty", ad, nil, true},
+		{"the same table", ad, append([]values.RecordTypeLeg(nil), ad...), true},
+		{"a finer tiling of the same row", ad, wgd, false},
+		{"a relocated boundary", ad, moved, false},
+	} {
+		if got := LegTablesCompatible(tc.a, tc.b); got != tc.want {
+			t.Errorf("%s: LegTablesCompatible = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

@@ -78,7 +78,7 @@ func exploreRewriting(p *Planner, rootRef *expressions.Reference) (int, bool) {
 		p.constraintMap = NewConstraintMap()
 	}
 	if p.dataAccessConsumed == nil {
-		p.dataAccessConsumed = make(map[*expressions.Reference]int)
+		p.dataAccessConsumed = make(map[*expressions.Reference][]matchConsumption)
 	}
 	// Mirror InitiatePlannerPhaseTask{PhaseRewriting} minus the chain to
 	// PLANNING: OptimizeGroup deepest (fires last), ExploreGroup on top.
@@ -417,13 +417,22 @@ func TestPlanner_GenerateDataAccess_BottomUp(t *testing.T) {
 	))
 	rootRef := expressions.InitialOf(filter)
 
-	// Register a PartialMatch on the inner (scan) Reference only.
+	// Seed the detached child when planning starts, after rewriting finalized it.
 	childPlan := plannerTestDataAccessPlan()
 	pm := makeDataAccessTestPartialMatch("child_idx", 1, childPlan)
-	AddPartialMatchForCandidate(scanRef, pm.GetMatchCandidate(), pm)
-
 	p := plannerTestFullPlanner()
+	seeded := false
+	p.WithTaskObserver(func(task Task) {
+		if phase, ok := task.(*InitiatePlannerPhaseTask); ok && phase.Phase == PhasePlanning {
+			scanRef = rootRef.Winner().GetQuantifiers()[0].GetRangesOver()
+			AddPartialMatchForCandidate(scanRef, pm.GetMatchCandidate(), pm)
+			seeded = true
+		}
+	})
 	_, _, err := p.Plan(rootRef)
+	if !seeded {
+		t.Fatal("planning never reached the partial-match injection")
+	}
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -655,5 +664,165 @@ func TestExtractBestPlanWith_ChokePointErrorReturnsNilPlan(t *testing.T) {
 	}
 	if plan != nil {
 		t.Fatalf("plan=%T (%v), want nil on the extraction-error path", plan, plan)
+	}
+}
+
+func TestDataAccessConsumesOnlyCompleteMatches(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"incomplete", "complete", "raw_then_adjusted", "adjusted_then_raw"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			row := values.NewRecordType("T", false, []values.Field{
+				{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+				{Name: "A", FieldType: values.NotNullLong, Ordinal: 1},
+				{Name: "B", FieldType: values.NotNullLong, Ordinal: 2},
+			})
+			duplicates := false
+			candidate := NewValueIndexScanMatchCandidateWithFunctions("idx_a", []string{"T"}, []string{"A"},
+				nil, []values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()}, row,
+				false, []string{"ID"}, &duplicates).WithKeyComponentTypes([]values.Type{values.NotNullLong}).
+				WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong})
+			ctx := testPlanContextForMatching{candidates: []MatchCandidate{candidate}}
+			leaf := expressions.ExploratoryOfAtStage(mustMatchScan(t, []string{"T"}, row), expressions.StagePlanned)
+			q := expressions.ForEachQuantifier(leaf)
+			query := mustMatchSelect(t, mustMatchFlowed(t, q), []expressions.Quantifier{q}, []predicates.QueryPredicate{
+				predicates.NewComparisonPredicate(mustMatchField(t, mustMatchFlowed(t, q), "A"), predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1))),
+				predicates.NewComparisonPredicate(mustMatchField(t, mustMatchFlowed(t, q), "B"), predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(0))),
+			})
+			matched := expressions.ExploratoryOfAtStage(query, expressions.StagePlanned)
+			mustFireExpressionRuleWithMemo(t, NewMatchLeafRule(), leaf, ctx, nil)
+			mustFireExpressionRuleWithMemo(t, NewMatchIntermediateRule(), matched, ctx, nil)
+			rawMatches := GetPartialMatchesForCandidate(matched, candidate)
+			if len(rawMatches) != 1 || rawMatches[0].GetCandidateRef() == candidate.GetTraversal().GetRootReference() {
+				t.Fatalf("expected one incomplete Select match, got %v", rawMatches)
+			}
+			AdjustPartialMatchesForRef(matched)
+			matches := GetPartialMatchesForCandidate(matched, candidate)
+			if len(matches) != 2 || matches[1].GetCandidateRef() != candidate.GetTraversal().GetRootReference() {
+				t.Fatalf("adjustment must retain the raw match and add its complete twin, got %v", matches)
+			}
+			selected := matches
+			want := 1
+			switch mode {
+			case "incomplete":
+				selected, want = matches[:1], 0
+			case "complete":
+				selected = matches[1:]
+			case "adjusted_then_raw":
+				selected = []PartialMatch{matches[1], matches[0]}
+			}
+			ref := expressions.ExploratoryOfAtStage(query, expressions.StagePlanned)
+			for _, pm := range selected {
+				AddPartialMatchForCandidate(ref, candidate, pm)
+			}
+			p := NewPlanner(nil, ctx)
+			p.memo = NewMemo(ref)
+			orderings := []*properties.RequestedOrdering{properties.PreserveOrdering()}
+			p.consumeMatchPartitions(ref, []MatchCandidate{candidate}, orderings, make(accessRealizations))
+			if got := len(ref.AllMembers()) - 1; got != want {
+				t.Errorf("realized %d compensated alternatives, want %d (only candidate-root matches)", got, want)
+			}
+			if mode == "complete" {
+				if !p.shouldConsumeMatches(ref, []MatchCandidate{candidate}, orderings) {
+					t.Fatal("complete match was not eligible for first consumption")
+				}
+				AddPartialMatchForCandidate(ref, candidate, matches[0])
+				if p.shouldConsumeMatches(ref, []MatchCandidate{candidate}, orderings) {
+					t.Error("a late incomplete match rearmed unchanged complete-match consumption")
+				}
+			}
+		})
+	}
+}
+
+func TestShouldConsumeMatchesTracksInputs(t *testing.T) {
+	t.Parallel()
+	pm, candidate, ref := makeRefTestPartialMatch(t, "first")
+	AddPartialMatchForCandidate(ref, candidate, pm)
+	p := NewPlanner(nil, nil)
+	p.dataAccessConsumed = make(map[*expressions.Reference][]matchConsumption)
+	candidates := []MatchCandidate{candidate}
+	if !p.shouldConsumeMatches(ref, candidates, nil) {
+		t.Fatal("first match must be consumed")
+	}
+	if p.shouldConsumeMatches(ref, candidates, nil) {
+		t.Fatal("unchanged unordered input consumed twice")
+	}
+	ordered := []*properties.RequestedOrdering{properties.PreserveOrdering()}
+	if !p.shouldConsumeMatches(ref, candidates, ordered) {
+		t.Fatal("new ordering must be consumed")
+	}
+	if p.shouldConsumeMatches(ref, candidates, ordered) {
+		t.Error("unchanged ordered input consumed twice")
+	}
+	other, otherCandidate, _ := makeRefTestPartialMatch(t, "second")
+	AddPartialMatchForCandidate(ref, otherCandidate, other)
+	if !p.shouldConsumeMatches(ref, []MatchCandidate{otherCandidate}, nil) {
+		t.Error("different match at the same count must be consumed")
+	}
+	if !p.shouldConsumeMatches(ref, []MatchCandidate{candidate, otherCandidate}, ordered) {
+		t.Fatal("match growth must be consumed")
+	}
+	if p.shouldConsumeMatches(ref, []MatchCandidate{otherCandidate, candidate}, ordered) {
+		t.Error("candidate permutation must not reconsume matches")
+	}
+}
+
+func TestDataAccessConsumptionFollowsExpressionTransforms(t *testing.T) {
+	t.Parallel()
+	pm, candidate, ref := makeRefTestPartialMatch(t, "after_transforms")
+	AddPartialMatchForCandidate(ref, candidate, pm)
+	p := NewPlanner(nil, testPlanContextForMatching{candidates: []MatchCandidate{candidate}})
+	optimize := &OptimizeGroupTask{Phase: PhasePlanning, Ref: ref}
+	implement := &TransformImplTask{Phase: PhasePlanning, Ref: ref, Expr: ref.Get(), Rule: NewImplementSimpleSelectRule()}
+	match := &TransformExprTask{Phase: PhasePlanning, Ref: ref, Expr: ref.Get(), Rule: NewMatchIntermediateRule()}
+	p.push(optimize)
+	p.push(implement)
+	p.push(match)
+	p.pushDataAccessTasks(ref, ref.Get())
+	p.pushDataAccessTasks(ref, ref.Get())
+	if len(p.stack) != 4 {
+		t.Fatalf("tasks=%d, want the original batch and one consumption", len(p.stack))
+	}
+	for _, want := range []Task{match, implement} {
+		if got := p.pop(); got != want {
+			t.Fatalf("next task=%T, want %T before access consumption", got, want)
+		}
+	}
+	got := p.pop()
+	if consume, ok := got.(*ConsumeMatchPartitionTask); !ok || consume.Ref != ref {
+		t.Fatalf("next task=%T, want consumption of the matched reference", got)
+	}
+	if got := p.pop(); got != optimize {
+		t.Fatal("access consumption escaped the group's exploration boundary")
+	}
+}
+
+func TestDataAccessConsumptionIsDeferredAndCoalesced(t *testing.T) {
+	t.Parallel()
+	pm, candidate, ref := makeRefTestPartialMatch(t, "deferred")
+	AddPartialMatchForCandidate(ref, candidate, pm)
+	p := NewPlanner(nil, testPlanContextForMatching{candidates: []MatchCandidate{candidate}})
+	p.pushDataAccessTasks(ref, ref.Get())
+	p.pushDataAccessTasks(ref, ref.Get())
+	if len(p.stack) != 1 {
+		t.Fatalf("pending match-partition tasks=%d, want one deferred consumption", len(p.stack))
+	}
+	p.pop().Run(context.Background(), p)
+	if p.capErr != nil {
+		t.Fatal(p.capErr)
+	}
+	for len(p.stack) > 0 {
+		p.pop()
+	}
+	p.pushDataAccessTasks(ref, ref.Get())
+	if len(p.stack) != 0 {
+		t.Fatal("unchanged match partition was rearmed")
+	}
+	other, otherCandidate, _ := makeRefTestPartialMatch(t, "later")
+	AddPartialMatchForCandidate(ref, otherCandidate, other)
+	p.pushDataAccessTasks(ref, ref.Get())
+	if len(p.stack) != 1 {
+		t.Fatal("new match failed to rearm completed consumption")
 	}
 }

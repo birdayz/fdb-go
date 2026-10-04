@@ -3,11 +3,13 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "javacorpus",
     srcs = [
+        "connoptions.go",
         "fixture.go",
         "gaps.go",
         "javarandom.go",
         "ledger.go",
         "match.go",
+        "prepared.go",
         "resultmetadata.go",
         "runner.go",
         "runparsed.go",
@@ -17,13 +19,17 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/fdbgo/fdb",
+        "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/recordlayer/vectorcodec",
         "//pkg/relational/api",
         "//pkg/relational/conformance/javayamsql",
         "//pkg/relational/conformance/yamsql",
+        "//pkg/relational/core/embedded",
         "//pkg/relational/core/functions",
         "//pkg/relational/core/parser",
         "//pkg/relational/core/parser/gen",
         "@com_github_antlr4_go_antlr_v4//:antlr",
+        "@com_github_google_uuid//:uuid",
     ],
 )
 
@@ -45,6 +51,7 @@ go_test(
         "match_float_bits_internal_test.go",
         "match_internal_test.go",
         "pinned_ledger_test.go",
+        "prepared_fdb_test.go",
         "resultmetadata_internal_test.go",
         "typenames_internal_test.go",
     ],
@@ -58,10 +65,12 @@ go_test(
         "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/recordlayer",
+        "//pkg/recordlayer/keystoretest",
         "//pkg/relational/api",
         "//pkg/relational/conformance/javayamsql",
         "//pkg/relational/sqldriver",
         "//pkg/simfdb",
         "//pkg/testcontainers/foundationdb",
+        "@com_github_google_uuid//:uuid",
     ],
 )

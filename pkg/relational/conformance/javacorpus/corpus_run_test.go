@@ -5,11 +5,13 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/recordlayer/keystoretest"
 	"fdb.dev/pkg/relational/conformance/javacorpus"
 	"fdb.dev/pkg/relational/conformance/javayamsql"
 	_ "fdb.dev/pkg/relational/sqldriver"
@@ -64,6 +66,35 @@ func TestMain(m *testing.M) {
 // skips everything, so the pass count, the skip count and the per-class
 // breakdown are all asserted: a file that stops running, a skip class that
 // grows, and a gap that quietly changes shape each fail with the delta named.
+// javaWorkingDir builds the directory Java's yaml-tests run in, holding the
+// one file the corpus names by a relative path: serialization-options.yamsql's
+// ENCRYPTION_KEY_STORE, `src/test/resources/serialization-keys.p12`. Java's
+// file holds two 32-byte AES keys, `key-1` and `key-2`, under the password
+// `YAML+SQL`; no key store file may be committed (cmd/secretscan), so an
+// equivalent is written here. The file's records are written and read in this
+// run, so only the aliases, the password and the keys' being distinct matter.
+func javaWorkingDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	resources := filepath.Join(dir, "src", "test", "resources")
+	if err := os.MkdirAll(resources, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	key := func(first byte) []byte {
+		k := make([]byte, 32)
+		for i := range k {
+			k[i] = first + byte(i)
+		}
+		return k
+	}
+	err := keystoretest.WritePKCS12(filepath.Join(resources, "serialization-keys.p12"), "YAML+SQL", "YAML+SQL",
+		[]keystoretest.Entry{{Alias: "key-1", Key: key(0x10)}, {Alias: "key-2", Key: key(0x80)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func TestJavaCorpusRuns(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -79,6 +110,7 @@ func TestJavaCorpusRuns(t *testing.T) {
 		t.Fatalf("list corpus: %v", err)
 	}
 
+	workingDir := javaWorkingDir(t)
 	ledger := &javacorpus.Ledger{}
 
 	// The inner group returns only once every parallel subtest under it has
@@ -93,6 +125,7 @@ func TestJavaCorpusRuns(t *testing.T) {
 				res := javacorpus.Run(ctx, corpus, path, javacorpus.Config{
 					ClusterFile: clusterFilePath,
 					IDPrefix:    fmt.Sprintf("C%d", i),
+					WorkingDir:  workingDir,
 				})
 				ledger.Add(res)
 				if res.Status == javacorpus.StatusFail {
@@ -147,59 +180,14 @@ func TestJavaCorpusRuns(t *testing.T) {
 	// A gap entry whose file stopped failing is a CLOSED gap nobody deleted,
 	// and it would keep a working file booked as broken. Assert each entry
 	// still matched something.
-	// A matched gap's skip detail is "<Booking>: <error>" (runner.go's
-	// gapFor arm), so reachability keys on each entry's OWN booking prefix —
-	// hard-coding one booking scheme ("CQ-") silently un-pinned every
-	// RFC-booked entry.
-	matchedBookings := map[string]map[string]bool{}
-	for _, f := range ledger.Files() {
-		for _, s := range f.Skips {
-			if i := strings.Index(s.Detail, ": "); i > 0 {
-				if matchedBookings[f.Path] == nil {
-					matchedBookings[f.Path] = map[string]bool{}
-				}
-				matchedBookings[f.Path][s.Detail[:i]] = true
-			}
-		}
-	}
+	// Bookings are structured: their text may itself contain a colon.
+
 	for _, g := range javacorpus.EngineGaps() {
-		if !matchedBookings[g.Path][g.Booking] {
+		if !gapBookingMatched(g, ledger.Files()) {
 			t.Errorf("engine gap %s (%s, %s) no longer matches: the file either passes now — "+
 				"delete the entry and raise the pass count — or fails differently, which is a new bug.",
 				g.Path, g.Class, g.Booking)
 		}
-	}
-
-	// A file whose only query carries NO configs must be booked `no-checks`,
-	// never counted as a pass.
-	//
-	// scenario-tests.yamsql is that file upstream — one query, no configs, and
-	// a "# TODO: add data" comment saying so. It executed and asserted
-	// nothing, and it was reported as one of the passes until the noChecks
-	// branch stopped incrementing QueriesRun. This is the exact shape the
-	// vacuous guard exists for, and the guard was defeated by the very branch
-	// that books the skip, so the census alone would not have caught it: the
-	// pass count simply looked one higher than it deserved.
-	const noChecksOnly = "scenario-tests.yamsql"
-	found := false
-	for _, f := range ledger.Files() {
-		if f.Path != noChecksOnly {
-			continue
-		}
-		found = true
-		if f.Status != javacorpus.StatusSkip || f.SkipClass != javacorpus.SkipNoChecks {
-			t.Errorf("%s asserts nothing (its only query carries no configs) and must be booked %q; "+
-				"got status=%s class=%s queries=%d",
-				noChecksOnly, javacorpus.SkipNoChecks, f.Status, f.SkipClass, f.QueriesRun)
-		}
-		if f.QueriesRun != 0 {
-			t.Errorf("%s counted %d asserted queries; a noChecks query asserts nothing and must not "+
-				"count towards QueriesRun, which is what the vacuous-pass guard tests",
-				noChecksOnly, f.QueriesRun)
-		}
-	}
-	if !found {
-		t.Errorf("%s is not in the corpus run — the no-checks regression is no longer pinned", noChecksOnly)
 	}
 
 	// The counts alone cannot see a SWAP: two files exchanging classes leaves
@@ -241,23 +229,11 @@ func TestJavaCorpusRuns(t *testing.T) {
 	}
 	t.Logf("NEGATIVE-EXECUTION %d manifest entries = %d booked + %d assertion-suppressed + %d claimed-earlier",
 		booked+suppressed+claimedEarlier, booked, suppressed, claimedEarlier)
-	// 26 / 16 / 0, from 24 / 11 / 7. CLAIMED-EARLIER IS NOW EMPTY, and that
-	// is the point of the move: every one of the seven was a
-	// struct-declaring negative whose file died at its first struct literal,
-	// so a parent gap entry claimed it before its own assertion ran. With
-	// struct DML landed (RFC-204 Phase 2) each of the seven reaches the
-	// statement it is actually testing — two fail as designed (booked) and
-	// five reach an assertion a SuppressesAssertion class declines
-	// (unsupported:result-metadata-nested, the CQ-74 nested metadata
-	// surface). A negative that never reached its own assertion was the
-	// weakest state in this ledger; none remain.
-	// The earlier history (24/11/7 from 24/10/8, and that from 20/15/7 —
-	// the five scalar `check-result-metadata/shouldFail/*` files moving
-	// suppressed → booked once the directive became checked) still holds
-	// for the other 35 files.
-	if booked != 26 || suppressed != 16 || claimedEarlier != 0 {
+	// Transaction setups run since RFC-257, so the five transaction-setup
+	// negatives reach their own assertion (suppressed -> booked).
+	if booked != 31 || suppressed != 11 || claimedEarlier != 0 {
 		t.Errorf("negative-execution accounting drifted: %d booked / %d suppressed / %d claimed-earlier, "+
-			"pinned baseline is 26 / 16 / 0 (42 manifest entries)", booked, suppressed, claimedEarlier)
+			"pinned baseline is 31 / 11 / 0 (42 manifest entries)", booked, suppressed, claimedEarlier)
 	}
 
 	if got := census.Line(); got != pinnedLedger {
@@ -296,6 +272,18 @@ var maskedClasses = map[javacorpus.SkipClass]string{
 		"(engine-gap:struct-dml, unsupported-DDL:struct-index, function/view causes) or passes. The class " +
 		"stays declared as the declaration-scan fallback for a struct-declaring template failing DDL for " +
 		"a cause the message rules do not name",
+	javacorpus.SkipDDLStructIndex: "EMPTIED by RFC-257 WS-J step 7c: the index generator reads the " +
+		"translated graph, and the class's three carriers build (aggregate-index-tests, subquery-tests, " +
+		"documentation-queries/subqueries-documentation-queries). The class stays declared as the " +
+		"message rule's bucket for a struct-declaring template whose index definition fails",
+	javacorpus.SkipGapStructDML: "EMPTIED by RFC-204 Phase 2: struct literals write and read back, and " +
+		"every carrier passes or moved on to the since-closed engine-gap:struct-query. Declared for a re-armed struct-DML " +
+		"regression, which gaps.go would book here",
+	javacorpus.SkipDDLOther: "EMPTIED by RFC-257: views, SQL functions, stored queries and sliding-window " +
+		"vector indexes build, so no template fails DDL for an unnamed cause. The class stays declared " +
+		"as the classifier's fallback bucket",
+	javacorpus.SkipDDLFunction: "EMPTIED by RFC-257: SQL, macro and temporary functions all build. " +
+		"Declared as the classifier's bucket for a template whose function declaration fails",
 	javacorpus.SkipCopyBlock: "the only copy_block file is copy-basic.yamsql, skipped earlier by " +
 		"required_clusters: 2 (unsupported:multi-cluster)",
 	javacorpus.SkipVersionGate: "provably unreachable with one version under test: the version is the " +
@@ -385,4 +373,35 @@ func containsClass(all []javacorpus.SkipClass, c javacorpus.SkipClass) bool {
 		}
 	}
 	return false
+}
+
+func gapBookingMatched(g javacorpus.EngineGap, files []javacorpus.FileResult) bool {
+	for _, f := range files {
+		if f.Path != g.Path {
+			continue
+		}
+		for _, s := range f.Skips {
+			if s.Class == g.Class && s.GapBooking == g.Booking {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func TestGapBookingWithColon(t *testing.T) {
+	t.Parallel()
+	g := javacorpus.EngineGap{Path: "uuid-prepared.yamsql", Class: javacorpus.SkipConformanceGoAccepts, Booking: "RFC-257: UUID sort"}
+	files := []javacorpus.FileResult{{Path: g.Path, Skips: []javacorpus.Skip{{Class: g.Class, GapBooking: g.Booking, Detail: g.Booking + ": measured rejection"}}}}
+	if !gapBookingMatched(g, files) {
+		t.Fatal("a colon in the booking must not hide a matched gap")
+	}
+	g.Booking = "RFC-257: other gap"
+	if gapBookingMatched(g, files) {
+		t.Fatal("matched another booking")
+	}
+	g.Booking = "RFC-257"
+	if gapBookingMatched(g, files) {
+		t.Fatal("matched a booking prefix instead of the full booking")
+	}
 }

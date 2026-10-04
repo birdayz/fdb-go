@@ -43,7 +43,7 @@ func openArrayInDB(t *testing.T) *sql.DB {
 		"PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_in_arraycol/s WITH TEMPLATE inarr_t")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///testdb_in_arraycol?cluster_file=%s&schema=s", clusterFilePath))
+		fmt.Sprintf("fdbsql:///TESTDB_IN_ARRAYCOL?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -63,7 +63,7 @@ func openArrayUUIDDB(t *testing.T) *sql.DB {
 		"CREATE TABLE u (id BIGINT, uu UUID, s STRING, us STRING ARRAY, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_in_arruuid/s WITH TEMPLATE inarruuid_t")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///testdb_in_arruuid?cluster_file=%s&schema=s", clusterFilePath))
+		fmt.Sprintf("fdbsql:///TESTDB_IN_ARRUUID?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestFDB_InListIsAnArrayColumn(t *testing.T) {
 					"NOT return a row whose array holds a NULL, because non-membership there " +
 					"is UNKNOWN rather than TRUE")
 			}
-			if !strings.Contains(err.Error(), "NULL as elements of a collection") {
+			if !strings.Contains(err.Error(), "An ARRAY value cannot have NULL elements") {
 				t.Errorf("the array-literal NULL rejection changed shape: %v\n"+
 					"  (this arm reads that rejection as the reason 3VL membership is "+
 					"untestable here, so a different refusal needs re-reading)", err)

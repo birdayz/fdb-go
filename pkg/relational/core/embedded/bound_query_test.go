@@ -154,6 +154,57 @@ func TestBoundExistsResidualDependencies(t *testing.T) {
 	}
 }
 
+// An EXISTS that is a correlated block's whole WHERE is one product with the
+// block: ∃m∈M: ∃n∈N: P ≡ ∃(m,n)∈M×N: P. The child folds its WHERE into its
+// plan, and that WHERE is the product's predicate: left on N it makes N a
+// lateral leg of M, which a re-associated product places below M's bindings.
+func TestBoundExistsProductHoistsTheChildWhere(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, sql string
+		conjuncts int
+	}{
+		{"correlation", "SELECT 1 FROM t m WHERE EXISTS (SELECT 1 FROM t n WHERE n.id = m.id + o.id)", 1},
+		{"block_only_beside_local", "SELECT 1 FROM t m WHERE EXISTS (SELECT 1 FROM t n WHERE m.id > o.id AND n.id = 2)", 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			owner, _ := clauseTestOwner(t)
+			q, err := parseQueryFromSelect(t, test.sql)
+			if err != nil {
+				t.Fatal(err)
+			}
+			bound, err := owner.bindQuery(q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lowered, err := lowerBoundExists(bound)
+			if err != nil {
+				t.Fatal(err)
+			}
+			join, isJoin := lowered.plan.(*logical.LogicalJoin)
+			if !isJoin {
+				t.Fatalf("lowered plan = %s, want the product join", lowered.plan.Explain(""))
+			}
+			if _, isScan := join.Right.(*logical.LogicalScan); !isScan {
+				t.Fatalf("product factor N = %s, want the child's bare FROM", join.Right.Explain(""))
+			}
+			got := 0
+			switch where := lowered.join.(type) {
+			case nil:
+			case *predicates.AndPredicate:
+				got = len(where.SubPredicates)
+			default:
+				got = 1
+			}
+			if got != test.conjuncts || len(lowered.retained) != 0 {
+				t.Fatalf("product predicate = %v (%d conjuncts), retained = %d; want %d conjuncts, none retained",
+					lowered.join, got, len(lowered.retained), test.conjuncts)
+			}
+		})
+	}
+}
+
 func TestBoundDependenciesRejectMissingScalarOwner(t *testing.T) {
 	t.Parallel()
 	owner, _ := clauseTestOwner(t)
@@ -210,9 +261,16 @@ func TestBoundPrimaryUnnestIdentityPrecedesValues(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		filter, ok := bound.plan.(*logical.LogicalFilter)
+		// The primary is the general FROM-item unnest, so the block is
+		// Project(Filter(Unnest)); the property is the filter's and the
+		// unnest's, whatever projects them.
+		root := bound.plan
+		if project, isProject := root.(*logical.LogicalProject); isProject {
+			root = project.Input
+		}
+		filter, ok := root.(*logical.LogicalFilter)
 		if !ok {
-			t.Fatalf("primary array plan = %T", bound.plan)
+			t.Fatalf("primary array plan = %T (%s)", bound.plan, bound.plan.Explain(""))
 		}
 		unnest, ok := filter.Input.(*logical.LogicalUnnest)
 		if !ok {

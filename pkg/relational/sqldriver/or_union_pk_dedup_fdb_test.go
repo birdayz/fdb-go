@@ -262,3 +262,45 @@ func TestFDB_OrUnionPrimaryKeyDedup_ScaleAndMaintenance(t *testing.T) {
 	w.Exec("DELETE FROM u WHERE uid = 3")
 	w.Want("after one leg is emptied", q, []string{"1|1", "1|9999"})
 }
+
+func TestFDB_UnionWithExistentialPredicate(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	w := mmNewTwin(t, context.Background(), "/testdb_union_exists", "union_exists",
+		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY(id)) ",
+		"CREATE INDEX ix_a ON t(a) CREATE INDEX ix_b ON t(b) ")
+	w.Exec("INSERT INTO t VALUES (1,0,0),(2,5,0),(3,0,7),(4,5,7),(5,0,0)")
+	q := "SELECT id FROM t o WHERE (a=5 OR b=7) AND EXISTS (SELECT id FROM t i WHERE i.id=1) ORDER BY id"
+	w.Want("exists true and overlapping union legs", q, []string{"2", "3", "4"})
+	w.WantPlanContains("union below existential", q, "Union")
+	correlated := "SELECT id FROM t o WHERE (a=5 OR b=7) AND EXISTS (SELECT id FROM t i WHERE i.id=o.a) ORDER BY id"
+	w.Want("correlated existential", correlated, []string{"2", "4"})
+	w.WantPlanContains("union below correlated existential", correlated, "Union")
+	w.Exec("DELETE FROM t WHERE id=5")
+	w.Want("no correlated matches", correlated, []string{})
+	w.Exec("DELETE FROM t WHERE id=1")
+	w.Want("empty existential rejects every union leg", q, []string{})
+}
+
+func TestFDB_UnionWithUnmatchedFixedFactor(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	w := mmNewTwin(t, context.Background(), "/testdb_union_fixed", "union_fixed",
+		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, d BIGINT, PRIMARY KEY(id)) ",
+		"CREATE INDEX ix_a ON t(a,d) CREATE INDEX ix_b ON t(b,d) ")
+	w.Exec("INSERT INTO t VALUES (1,1,0,10,9),(2,0,2,20,9),(3,1,2,10,9),(4,1,0,30,9),(5,0,2,NULL,9),(6,0,0,10,9),(7,1,2,10,8)")
+	q := "SELECT id FROM t WHERE (a=1 OR b=2) AND (c=10 OR c=20) AND d=9 ORDER BY id"
+	w.Want("fixed residual and overlapping legs", q, []string{"1", "2", "3"})
+	plan := w.Explain(q)
+	if !strings.Contains(plan, "Union") || strings.Count(plan, "IndexScan(") != 2 {
+		t.Fatalf("want two indexed union legs with fixed c residual, got %s", plan)
+	}
+	w.Exec("UPDATE t SET c=30 WHERE id=3")
+	w.Want("overlap rejected by fixed factor", q, []string{"1", "2"})
+	w.Exec("UPDATE t SET c=20 WHERE id=5")
+	w.Want("NULL residual becomes true", q, []string{"1", "2", "5"})
+}

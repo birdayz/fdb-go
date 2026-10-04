@@ -15,7 +15,9 @@ import (
 // Used by RelationalExpression-shaped rules (FilterMergeRule,
 // PushFilterThroughDistinctRule, and the rest of the rule_*.go files).
 type ExpressionMatcher[T expressions.RelationalExpression] struct {
-	rootType string
+	rootType       string
+	rootPredicate  func(T) bool
+	inputPredicate func(T) bool
 }
 
 // RootType returns the rule's debug-friendly root identifier.
@@ -44,10 +46,53 @@ func (m *ExpressionMatcher[T]) RootOperator() reflect.Type {
 // outer bindings and returns one new binding set. On failure returns
 // nil.
 func (m *ExpressionMatcher[T]) BindMatches(outer *matching.PlannerBindings, in any) []*matching.PlannerBindings {
-	if _, ok := in.(T); !ok {
+	if !m.MatchesRoot(in) || !m.MatchesInputs(in) {
 		return nil
 	}
 	return []*matching.PlannerBindings{outer.Bind(m, in)}
+}
+
+// MatchesRoot checks type and immutable root predicates without binding children.
+func (m *ExpressionMatcher[T]) MatchesRoot(in any) bool {
+	expr, ok := in.(T)
+	return ok && (m.rootPredicate == nil || m.rootPredicate(expr))
+}
+
+// WithRootPredicate constructs a matcher restricted by immutable root fields.
+// The predicate must not inspect mutable child-reference contents or constraints.
+func (m *ExpressionMatcher[T]) WithRootPredicate(predicate func(T) bool) *ExpressionMatcher[T] {
+	cp := *m
+	cp.rootPredicate = func(expr T) bool {
+		return (m.rootPredicate == nil || m.rootPredicate(expr)) && (predicate == nil || predicate(expr))
+	}
+	return &cp
+}
+
+// MatchesInputs tests the current child members, without caching their state.
+func (m *ExpressionMatcher[T]) MatchesInputs(in any) bool {
+	expr, ok := in.(T)
+	return ok && (m.inputPredicate == nil || m.inputPredicate(expr))
+}
+
+// WithInputPredicate restricts matching by immediate child members. It must not
+// read descendants or planner constraints, which may change independently.
+func (m *ExpressionMatcher[T]) WithInputPredicate(predicate func(T) bool) *ExpressionMatcher[T] {
+	cp := *m
+	cp.inputPredicate = func(expr T) bool {
+		return (m.inputPredicate == nil || m.inputPredicate(expr)) && (predicate == nil || predicate(expr))
+	}
+	return &cp
+}
+
+func referenceHasMemberOfType[T expressions.RelationalExpression](ref *expressions.Reference) bool {
+	if ref != nil {
+		for _, member := range ref.AllMembers() {
+			if _, ok := member.(T); ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // NewExpressionMatcher constructs a typed matcher for the given

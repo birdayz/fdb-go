@@ -45,7 +45,7 @@ func timeBudgetCeilingDB(t *testing.T, dbPath string) *sql.DB {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE "+tmplName); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestFDB_TimeBudgetCeiling_RecursionErrorsNotPartial(t *testing.T) {
 	}
 
 	const q = "WITH RECURSIVE r(n) AS (" +
-		"SELECT id FROM edges WHERE parent = 0 " +
+		"SELECT id AS n FROM edges WHERE parent = 0 " +
 		"UNION " +
 		"SELECT e.id FROM edges AS e, r WHERE e.parent = r.n" +
 		") SELECT n FROM r"

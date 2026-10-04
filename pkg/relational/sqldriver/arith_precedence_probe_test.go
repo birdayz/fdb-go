@@ -30,7 +30,7 @@ func TestFDB_ArithPrecedenceProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE arithprec CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_arithprec/s WITH TEMPLATE arithprec")
-	dsn := "fdbsql:///testdb_arithprec?cluster_file=" + clusterFilePath + "&schema=s"
+	dsn := "fdbsql:///TESTDB_ARITHPREC?cluster_file=" + clusterFilePath + "&schema=S"
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

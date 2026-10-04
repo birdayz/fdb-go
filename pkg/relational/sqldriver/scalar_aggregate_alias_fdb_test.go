@@ -6,7 +6,7 @@ package sqldriver_test
 // A GROUPED aggregate keeps a projection above it that carries the output
 // aliases, so `SELECT b AS g, MAX(a) AS agg … GROUP BY b` reported [G AGG]
 // correctly. A SCALAR aggregate was described as planning to a bare
-// `StreamingAgg(keys=[], …)` with no projection, so buildAggColumns named the
+// `StreamingAgg(keys=[], …)` with no projection, so the former column derivation named the
 // column from the expression while ignoring AggregateSpec.Alias — `SELECT
 // MAX(a) AS agg FROM t` reported `MAX(A)`. Rows were always correct; only the
 // metadata was wrong, the same class as the LIMIT-through-projection alias
@@ -16,8 +16,8 @@ package sqldriver_test
 // A scalar aggregate is projection-wrapped too — `grep -c '^plan:  StreamingAgg'`
 // over the plan-shape golden is 0 of its 2769 planned lines, against 1115 StreamingAgg lines
 // overall — so the naming that keeps this test green comes from the projection
-// authority, not from buildAggColumns. Measured by mutation: corrupting
-// buildAggColumns' Name and Label leaves this test 5/5 green. What the test
+// authority, not from the former column derivation. Measured by mutation: corrupting
+// the former column derivation' Name and Label leaves this test 5/5 green. What the test
 // still pins is the OBSERVABLE — a scalar aggregate reports its alias — which
 // is the contract worth having; it just no longer identifies which authority
 // supplies it.
@@ -26,6 +26,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -41,7 +42,7 @@ func TestFDB_ScalarAggregate_KeepsAlias(t *testing.T) {
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE aggalias CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_b ON t (b)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE aggalias")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

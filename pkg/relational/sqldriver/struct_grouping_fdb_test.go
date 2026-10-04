@@ -44,7 +44,7 @@ func TestFDB_StructGrouping(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /structgroup/s WITH TEMPLATE sgr_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	dsn := fmt.Sprintf("fdbsql:///structgroup?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///STRUCTGROUP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)

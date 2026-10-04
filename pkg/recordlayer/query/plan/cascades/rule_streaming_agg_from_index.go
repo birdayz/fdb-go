@@ -145,7 +145,7 @@ func (r *StreamingAggFromIndexRule) OnMatch(call *ExpressionRuleCall) {
 		// a winner), so carry the LIVE shared-group edge over it (RFC-184 W2, no
 		// physicalStreamingAggWrapper).
 		innerQ := expressions.NamedPhysicalQuantifier(inputAlias, call.MemoizeExpression(coveringPlan))
-		aggPlan, err := plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(innerQ, groupingKeys, gb.GetAggregates())
+		aggPlan, err := plans.NewRecordQueryStreamingAggregationPlanForGroupBy(innerQ, groupingKeys, gb.GetAggregates(), gb.OutputColumnNames())
 		if err != nil {
 			call.Fail(err)
 			return

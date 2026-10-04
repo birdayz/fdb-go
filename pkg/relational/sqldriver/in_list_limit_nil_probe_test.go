@@ -26,7 +26,7 @@ func TestFDB_InListLimitReturnsRows(t *testing.T) {
 			"CREATE TABLE orders (id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_customer ON orders(customer_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_inlimit/s WITH TEMPLATE inlimit")
-	dsn := fmt.Sprintf("fdbsql:///testdb_inlimit?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_INLIMIT?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -24,10 +24,10 @@ func SimplifyPredicateValues(p QueryPredicate) QueryPredicate {
 	}
 	switch q := p.(type) {
 	case *ComparisonPredicate:
-		op := values.SimplifyValue(q.Operand)
+		op := values.SimplifyPredicateValue(q.Operand)
 		var rhs values.Value
 		if q.Comparison.Operand != nil {
-			rhs = values.SimplifyValue(q.Comparison.Operand)
+			rhs = values.SimplifyPredicateValue(q.Comparison.Operand)
 		}
 		if op == q.Operand && rhs == q.Comparison.Operand {
 			return q
@@ -44,7 +44,7 @@ func SimplifyPredicateValues(p QueryPredicate) QueryPredicate {
 			Comparison: cmp,
 		}
 	case *ValuePredicate:
-		v := values.SimplifyValue(q.Value)
+		v := values.SimplifyPredicateValue(q.Value)
 		if v == q.Value {
 			return q
 		}
@@ -61,7 +61,7 @@ func SimplifyPredicateValues(p QueryPredicate) QueryPredicate {
 		if !anyChanged {
 			return q
 		}
-		return &AndPredicate{SubPredicates: simpler}
+		return &AndPredicate{SubPredicates: simpler, atomic: q.atomic}
 	case *OrPredicate:
 		simpler := make([]QueryPredicate, len(q.SubPredicates))
 		anyChanged := false
@@ -74,18 +74,19 @@ func SimplifyPredicateValues(p QueryPredicate) QueryPredicate {
 		if !anyChanged {
 			return q
 		}
-		return &OrPredicate{SubPredicates: simpler}
+		return &OrPredicate{SubPredicates: simpler, atomic: q.atomic}
 	case *NotPredicate:
 		c := SimplifyPredicateValues(q.Child)
 		if c == q.Child {
 			return q
 		}
-		return &NotPredicate{Child: c}
+		return &NotPredicate{Child: c, atomic: q.atomic}
 	case *PredicateWithValueAndRanges:
-		if folded := foldPredicateWithRanges(q); folded != nil {
+		simplified := TransformEmbeddedValues(q, values.SimplifyPredicateValue).(*PredicateWithValueAndRanges)
+		if folded := foldPredicateWithRanges(simplified); folded != nil {
 			return folded
 		}
-		return q
+		return simplified
 	}
 	return p
 }
@@ -106,31 +107,28 @@ func foldPredicateWithRanges(p *PredicateWithValueAndRanges) QueryPredicate {
 	if len(comps) == 1 {
 		return foldSingleComparison(p.value, comps[0])
 	}
-	// Multi-constraint: fold each comparison, then AND the results.
-	var results []TriBool
+	combined := TriTrue
+	unknown := false
 	for _, c := range comps {
 		folded := foldSingleComparison(p.value, c)
-		if folded == nil {
-			return nil
-		}
 		cp, ok := folded.(*ConstantPredicate)
 		if !ok {
-			return nil
+			unknown = true
+			continue
 		}
-		results = append(results, cp.Value)
+		if cp.Value == TriFalse {
+			return cp
+		}
+		combined = triBoolAnd(combined, cp.Value)
 	}
-	combined := TriTrue
-	for _, r := range results {
-		combined = triBoolAnd(combined, r)
+	if unknown {
+		return nil
 	}
 	return &ConstantPredicate{Value: combined}
 }
 
 func foldSingleComparison(lhsValue values.Value, comp Comparison) QueryPredicate {
 	lhs := effectiveConstant(lhsValue)
-	if lhs == ecUnknown {
-		return nil
-	}
 
 	if comp.Type == ComparisonIsNull {
 		switch lhs {
@@ -153,24 +151,23 @@ func foldSingleComparison(lhsValue values.Value, comp Comparison) QueryPredicate
 		}
 	}
 
+	if comp.ParameterName != "" || comp.Operand == nil {
+		return nil
+	}
+	rhs := effectiveConstant(comp.Operand)
+	switch comp.Type {
+	case ComparisonEquals, ComparisonNotEquals, ComparisonLessThan, ComparisonLessThanOrEq,
+		ComparisonGreaterThan, ComparisonGreaterThanEq, ComparisonStartsWith:
+		if lhs == ecNull || rhs == ecNull {
+			return &ConstantPredicate{Value: TriUnknown}
+		}
+	default:
+		return nil
+	}
+	if lhs == ecUnknown || rhs == ecUnknown || lhs == ecNotNull || rhs == ecNotNull {
+		return nil
+	}
 	if comp.Type != ComparisonEquals && comp.Type != ComparisonNotEquals {
-		return nil
-	}
-
-	var rhs effectiveConstantKind
-	if comp.Operand != nil {
-		rhs = effectiveConstant(comp.Operand)
-	} else {
-		rhs = ecUnknown
-	}
-	if rhs == ecUnknown {
-		return nil
-	}
-
-	if lhs == ecNull || rhs == ecNull {
-		return &ConstantPredicate{Value: TriUnknown}
-	}
-	if lhs == ecNotNull || rhs == ecNotNull {
 		return nil
 	}
 
@@ -223,6 +220,9 @@ func effectiveConstant(v values.Value) effectiveConstantKind {
 			}
 			return ecFalse
 		}
+		return ecNotNull
+	}
+	if typ := v.Type(); typ != nil && !typ.IsNullable() {
 		return ecNotNull
 	}
 	return ecUnknown

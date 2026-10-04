@@ -765,10 +765,6 @@ func (m *MaxMatchMap) TranslateQueryValueMaybe(
 		return nil
 	}
 
-	if len(m.mapping) == 0 {
-		return nil
-	}
-
 	// Build substitution map: ExplainValue(query subtree) → pulled-up value.
 	substitutions := make(map[string]values.Value, len(m.mapping))
 	for key, entry := range m.mapping {

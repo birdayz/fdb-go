@@ -50,7 +50,10 @@ func newIndexBuildCmd() *cobra.Command {
 		Long: "Drives the online indexer over the store: scans records in " +
 			"batched transactions, writes index entries, tracks progress in " +
 			"the store's range-set, and marks the index READABLE when the " +
-			"whole range is built. Safe to interrupt — per-range progress " +
+			"whole range is built. An index that is already READABLE is left " +
+			"alone (use `frl index rebuild` to rebuild it), and a " +
+			"READABLE_UNIQUE_PENDING one is published without a build once its " +
+			"uniqueness violations are resolved. Safe to interrupt — per-range progress " +
 			"commits atomically, and a rerun resumes from the ranges already " +
 			"done. A build interrupted by --time-limit resumes the same way.\n\n" +
 			"--max-retries defaults to 100 (Java's default), bounding the " +
@@ -302,16 +305,40 @@ func runIndexBuild(cmd *cobra.Command, target *storeTarget, indexName string, op
 		}
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "built %s (%d records scanned)\n", indexName, n)
+	fmt.Fprintln(cmd.OutOrStdout(), indexBuildSummary(indexName, oi.LastBuildOutcome(), n))
 	return nil
 }
 
-// formatPartlyBuilt renders a PartlyBuiltError with its escape hatches
-// (FDB C++ dev C2): the raw stamps mean nothing to an operator without
-// the two ways out — take the build over with matching settings, or
-// start from scratch with rebuild.
+// indexBuildSummary is the stdout line for a finished build. The indexer leaves
+// a READABLE index alone and only publishes a READABLE_UNIQUE_PENDING one
+// (Java's session start), returning 0 records either way; the session's own
+// outcome tells the operator which, rather than a "built" line that reads like
+// an empty build.
+func indexBuildSummary(indexName string, outcome recordlayer.IndexBuildOutcome, scanned int64) string {
+	switch outcome {
+	case recordlayer.IndexBuildOutcomeLeftAlone:
+		return fmt.Sprintf("%s is already readable; nothing built (`frl index rebuild %s` rebuilds it)", indexName, indexName)
+	case recordlayer.IndexBuildOutcomePublished:
+		return fmt.Sprintf("published %s without a build", indexName)
+	case recordlayer.IndexBuildOutcomeCompletedByPeers:
+		return fmt.Sprintf("%s was built by other builders", indexName)
+	}
+	return fmt.Sprintf("built %s (%d records scanned)", indexName, scanned)
+}
+
+// formatPartlyBuilt renders a PartlyBuiltError with the ways out an operator
+// has: the raw stamps mean nothing without them. The indexer already continues
+// a partial build of another method where it can, so one that reaches here is
+// blocked, or was begun by a mutual or multi-target build, which frl (one
+// target, never mutual) cannot continue; `frl index rebuild` starts over.
 func formatPartlyBuilt(partly *recordlayer.PartlyBuiltError, indexName string) error {
-	return fmt.Errorf("index %q has a partial build with DIFFERENT settings — saved stamp %q, this invocation would stamp %q.\n"+
-		"Either rerun with the same settings to take the build over, or start from scratch with `frl index rebuild %s`",
-		partly.IndexName, partly.SavedStamp, partly.ExpectedStamp, indexName)
+	reason := ""
+	if partly.Message != "" {
+		reason = " (" + partly.Message + ")"
+	}
+	return fmt.Errorf("index %q has a partial build this invocation cannot continue%s — saved stamp %q, this invocation would stamp %q.\n"+
+		"A partial build of another method is continued automatically where it can be. This one is blocked "+
+		"(unblock it first), or was begun by a mutual or multi-target build, which frl cannot continue "+
+		"(finish it with the builder that began it). Or start from scratch with `frl index rebuild %s`",
+		partly.IndexName, reason, partly.SavedStamp, partly.ExpectedStamp, indexName)
 }

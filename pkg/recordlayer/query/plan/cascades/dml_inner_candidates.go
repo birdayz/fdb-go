@@ -134,16 +134,19 @@ func storedRecordDMLCandidates(ref *expressions.Reference) []dmlInnerCandidate {
 // plans — both come from one PlanPartition (ImplementDeleteRule.java:78-82) —
 // so the two cannot drift apart there.
 func dmlDedupedInnerQuantifier(
-	call *ExpressionRuleCall, candidate dmlInnerCandidate, alreadyDistinct bool,
+	call *ExpressionRuleCall, candidate dmlInnerCandidate, logical expressions.Quantifier, alreadyDistinct bool,
 ) (expressions.Quantifier, error) {
-	innerQ := expressions.ForEachQuantifier(call.MemoizeMemberPlansFromOther(
-		candidate.source, []expressions.RelationalExpression{candidate.expr}))
+	selected := call.MemoizeMemberPlansFromOther(
+		candidate.source, []expressions.RelationalExpression{candidate.expr})
+	// The DML edge keeps the logical edge's alias, which its values read
+	// (Java Quantifier.physicalBuilder().morphFrom(innerQuantifier)).
 	if alreadyDistinct {
-		return innerQ, nil
+		return expressions.NamedPhysicalQuantifier(logical.GetAlias(), selected), nil
 	}
-	dedup, err := plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlanFromQuantifier(innerQ)
+	dedup, err := plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlanFromQuantifier(
+		expressions.NewPhysicalQuantifier(selected))
 	if err != nil {
 		return expressions.Quantifier{}, err
 	}
-	return expressions.ForEachQuantifier(call.MemoizeFinalExpression(dedup)), nil
+	return expressions.NamedPhysicalQuantifier(logical.GetAlias(), call.MemoizeFinalExpression(dedup)), nil
 }

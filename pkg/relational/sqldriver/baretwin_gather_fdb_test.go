@@ -152,9 +152,10 @@ func TestFDB_BareTwinGather(t *testing.T) {
 	t.Run("qualified_bare_twin_resolves_by_quantifier", func(t *testing.T) {
 		explain := wantRows(t, `SELECT A."K", B."K", "X" FROM A, B, A."ARR" AS "X"`,
 			[]string{"A.K=100|B.K=200|X=7", "A.K=100|B.K=200|X=8"})
-		// RAW seed: one user projection, no nested positional wrap.
-		if strings.Count(explain, "Project(") != 1 {
-			t.Fatalf("bare-twin must gather via the raw seed (single Project, no wrap); plan=%s", explain)
+		// RAW seed: at most the user projection (the join may compute it
+		// itself), never a nested positional wrap.
+		if strings.Count(explain, "Project(")+strings.Count(explain, "Map(")-strings.Count(explain, "FlatMap(") > 1 {
+			t.Fatalf("bare-twin must gather via the raw seed (no wrap); plan=%s", explain)
 		}
 	})
 
@@ -259,8 +260,8 @@ func TestFDB_BareTwinGather(t *testing.T) {
 	t.Run("non_ambiguous_gather_is_byte_identical_raw_seed", func(t *testing.T) {
 		explain := wantRows(t, `SELECT A."K", C."M", "X" FROM A, C, A."ARR" AS "X"`,
 			[]string{"K=100|M=55|X=7", "K=100|M=55|X=8"})
-		if strings.Count(explain, "Project(") != 1 {
-			t.Fatalf("non-ambiguous gather must keep the raw seed (single Project, no wrap); plan=%s", explain)
+		if strings.Count(explain, "Project(")+strings.Count(explain, "Map(")-strings.Count(explain, "FlatMap(") > 1 {
+			t.Fatalf("non-ambiguous gather must keep the raw seed (no wrap); plan=%s", explain)
 		}
 	})
 

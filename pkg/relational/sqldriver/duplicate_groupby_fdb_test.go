@@ -41,7 +41,7 @@ func TestFDB_DuplicateGroupBy(t *testing.T) {
 			"CREATE TABLE t1 (id BIGINT, category STRING, amount BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE t2 (id BIGINT, category STRING, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dupgroupby/s WITH TEMPLATE dupgroupby")
-	dsn := fmt.Sprintf("fdbsql:///testdb_dupgroupby?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_DUPGROUPBY?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

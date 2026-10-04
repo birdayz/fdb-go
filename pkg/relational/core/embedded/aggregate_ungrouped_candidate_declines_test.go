@@ -35,6 +35,12 @@ import (
 // either (an ungrouped aggregate has exactly one group, which exists whether or
 // not the table has rows), so relaxing this guard would need the companion rule
 // extended to the ungrouped case FIRST.
+//
+// The guard is SUM's and COUNT(col)'s, not every ungrouped index's: an ungrouped
+// MIN_EVER / MAX_EVER index is a candidate (RFC-257 WS-J step 7d), because its
+// stored extremum is the index's own answer whatever rows remain — a delete
+// never lowers it — and a table that never had a row has no entry, which the
+// rule extends to the one NULL row (TestFDB_EverAggregatesAreServedFromTheirIndexes).
 func TestUngroupedAggregateIndexDeclinesCandidacy(t *testing.T) {
 	t.Parallel()
 
@@ -47,6 +53,7 @@ CREATE TABLE SALES (
 )
 CREATE INDEX sum_all AS SELECT SUM(amount) FROM SALES
 CREATE INDEX sum_by_cat AS SELECT SUM(amount) FROM SALES GROUP BY category
+CREATE INDEX min_ever_all AS SELECT min_ever(amount) FROM SALES
 `
 	tmpl, err := BuildSchemaTemplateFromDDL(schema)
 	if err != nil {
@@ -103,5 +110,10 @@ CREATE INDEX sum_by_cat AS SELECT SUM(amount) FROM SALES GROUP BY category
 			"Before allowing this, extend RFC-209's companion group-existence rule to the "+
 			"ungrouped case; RFC-209 5.3(a)'s zero-drop deliberately does NOT cover it, because "+
 			"an ungrouped aggregate's single group exists whether or not the table has rows.", got)
+	}
+
+	if got := tryAggregateIndexCandidate(find("min_ever_all"), md); got == nil {
+		t.Fatal("an ungrouped MIN_EVER index produced no candidate: `SELECT min_ever(amount) FROM sales` " +
+			"has no plan without it, since no streaming accumulator computes an _EVER aggregate")
 	}
 }

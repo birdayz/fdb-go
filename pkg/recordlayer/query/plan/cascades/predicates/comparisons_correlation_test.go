@@ -1,6 +1,7 @@
 package predicates
 
 import (
+	"maps"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -65,6 +66,180 @@ func TestComparisonPredicate_GetCorrelatedTo_IncludesQueryVector(t *testing.T) {
 	// The shared helper is what the planner calls; it must agree.
 	if _, ok := GetCorrelatedToOfPredicate(pred)[vecAlias]; !ok {
 		t.Fatal("GetCorrelatedToOfPredicate misses the query-vector correlation")
+	}
+}
+
+func BenchmarkCompoundPredicateCorrelations(b *testing.B) {
+	left := mustQOV(b, values.NamedCorrelationIdentifier("left"))
+	right := mustQOV(b, values.NamedCorrelationIdentifier("right"))
+	comparison := NewComparisonPredicate(left, Comparison{Type: ComparisonEquals, Operand: right})
+	var predicate QueryPredicate = comparison
+	for range 9 {
+		predicate = NewOr(NewNot(predicate), comparison)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if got := GetCorrelatedToOfPredicate(predicate); len(got) != 2 {
+			b.Fatalf("correlations=%v, want left and right", got)
+		}
+	}
+}
+
+func rangeCorrelationPredicate(t testing.TB) *PredicateWithValueAndRanges {
+	t.Helper()
+	return NewPredicateWithValueAndRanges(mustQOV(t, values.NamedCorrelationIdentifier("left")), []*RangeConstraints{
+		NewRangeConstraints([]Comparison{{Type: ComparisonGreaterThan, Operand: values.LiteralValue(int64(0))}},
+			[]Comparison{{
+				Type:        ComparisonDistanceRankLessThan,
+				Operand:     mustQOV(t, values.NamedCorrelationIdentifier("right")),
+				QueryVector: mustQOV(t, values.NamedCorrelationIdentifier("vector")),
+			}}),
+		EmptyRangeConstraints(),
+	})
+}
+
+func TestRangePredicateCorrelationsPreserveRangesAndFreshResults(t *testing.T) {
+	t.Parallel()
+	ranged := rangeCorrelationPredicate(t)
+	root := NewAnd(NewNot(ranged), ranged)
+	want := map[values.CorrelationIdentifier]struct{}{
+		values.NamedCorrelationIdentifier("left"): {}, values.NamedCorrelationIdentifier("right"): {},
+		values.NamedCorrelationIdentifier("vector"): {},
+	}
+	for _, read := range []func() map[values.CorrelationIdentifier]struct{}{
+		ranged.GetCorrelatedTo,
+		func() map[values.CorrelationIdentifier]struct{} { return GetCorrelatedToOfPredicate(root) },
+	} {
+		for range 2 {
+			got := read()
+			if !maps.Equal(got, want) {
+				t.Fatalf("correlations = %v, want %v", got, want)
+			}
+			clear(got)
+		}
+	}
+	ranged.value = values.NewBooleanValue(true)
+	delete(want, values.NamedCorrelationIdentifier("left"))
+	if got := GetCorrelatedToOfPredicate(root); !maps.Equal(got, want) {
+		t.Fatalf("correlations after value replacement = %v, want %v", got, want)
+	}
+}
+
+type overridingRangeCorrelationPredicate struct {
+	*PredicateWithValueAndRanges
+	correlations map[values.CorrelationIdentifier]struct{}
+}
+
+func (p *overridingRangeCorrelationPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
+	return p.correlations
+}
+
+func TestCollectCorrelatedToOfPredicate(t *testing.T) {
+	t.Parallel()
+	out := CollectCorrelatedToOfPredicate(nil, nil)
+	if out == nil || len(out) != 0 {
+		t.Fatalf("nil input = %v, want a writable empty set", out)
+	}
+	outer := values.NamedCorrelationIdentifier("outer")
+	overridden := values.NamedCorrelationIdentifier("overridden")
+	out[outer] = struct{}{}
+	ranged := rangeCorrelationPredicate(t)
+	borrowed := map[values.CorrelationIdentifier]struct{}{overridden: {}}
+	custom := &overridingRangeCorrelationPredicate{PredicateWithValueAndRanges: ranged, correlations: borrowed}
+	want := map[values.CorrelationIdentifier]struct{}{outer: {}, overridden: {}}
+	if got := CollectCorrelatedToOfPredicate(NewNot(custom), out); !maps.Equal(got, want) {
+		t.Fatalf("custom range override = %v, want %v", got, want)
+	}
+	for _, alias := range []string{"left", "right", "vector"} {
+		want[values.NamedCorrelationIdentifier(alias)] = struct{}{}
+	}
+	CollectCorrelatedToOfPredicate(ranged, out)
+	CollectCorrelatedToOfPredicate(nil, out)
+	if !maps.Equal(out, want) {
+		t.Fatalf("shared result = %v, want %v", out, want)
+	}
+	if !maps.Equal(borrowed, map[values.CorrelationIdentifier]struct{}{overridden: {}}) {
+		t.Fatal("collection changed an unknown predicate's borrowed correlations")
+	}
+}
+
+func BenchmarkRangePredicateCorrelations(b *testing.B) {
+	ranged := rangeCorrelationPredicate(b)
+	var root QueryPredicate = ranged
+	for range 9 {
+		root = NewOr(NewNot(root), ranged)
+	}
+	GetCorrelatedToOfPredicate(root)
+	b.ReportAllocs()
+	for b.Loop() {
+		if got := GetCorrelatedToOfPredicate(root); len(got) != 3 {
+			b.Fatalf("correlations = %v, want left, right and vector", got)
+		}
+	}
+}
+
+func predicateCorrelationLookup(p QueryPredicate, alias values.CorrelationIdentifier) bool {
+	_, found := GetCorrelatedToOfPredicate(p)[alias]
+	return found
+}
+
+func BenchmarkRangePredicateCorrelationLookup(b *testing.B) {
+	ranged := rangeCorrelationPredicate(b)
+	root := NewAnd(NewNot(ranged), ranged)
+	alias := values.NamedCorrelationIdentifier("vector")
+	predicateCorrelationLookup(root, alias)
+	b.ReportAllocs()
+	for b.Loop() {
+		if !predicateCorrelationLookup(root, alias) {
+			b.Fatal("missing query-vector correlation")
+		}
+	}
+}
+
+type overridingCorrelationPredicate struct {
+	*ComparisonPredicate
+	correlations map[values.CorrelationIdentifier]struct{}
+}
+
+func (p *overridingCorrelationPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
+	return p.correlations
+}
+
+func TestCompoundPredicateCorrelationsRespectOverridesAndMutation(t *testing.T) {
+	t.Parallel()
+	left := values.NamedCorrelationIdentifier("left")
+	right := values.NamedCorrelationIdentifier("right")
+	vector := values.NamedCorrelationIdentifier("vector")
+	overridden := values.NamedCorrelationIdentifier("overridden")
+	borrowed := map[values.CorrelationIdentifier]struct{}{overridden: {}}
+	comparison := NewComparisonPredicate(mustQOV(t, left), Comparison{
+		Type: ComparisonDistanceRankLessThan, Operand: mustQOV(t, right), QueryVector: mustQOV(t, vector),
+	})
+	custom := &overridingCorrelationPredicate{ComparisonPredicate: comparison, correlations: borrowed}
+	root := NewAnd(NewNot(NewOr(nil, custom)), comparison)
+	want := map[values.CorrelationIdentifier]struct{}{left: {}, right: {}, vector: {}, overridden: {}}
+	for _, read := range []func() map[values.CorrelationIdentifier]struct{}{
+		root.GetCorrelatedTo,
+		func() map[values.CorrelationIdentifier]struct{} { return GetCorrelatedToOfPredicate(root) },
+	} {
+		for range 2 {
+			got := read()
+			if !maps.Equal(got, want) {
+				t.Fatalf("correlations=%v, want %v", got, want)
+			}
+			clear(got)
+		}
+	}
+	if !maps.Equal(borrowed, map[values.CorrelationIdentifier]struct{}{overridden: {}}) {
+		t.Fatal("collecting correlations mutated an unfamiliar predicate's borrowed map")
+	}
+	comparison.Operand = values.NewBooleanValue(true)
+	comparison.Comparison.QueryVector = nil
+	delete(want, left)
+	delete(want, vector)
+	if got := GetCorrelatedToOfPredicate(root); !maps.Equal(got, want) {
+		t.Fatalf("correlations after mutation=%v, want %v", got, want)
 	}
 }
 

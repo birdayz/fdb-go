@@ -66,14 +66,14 @@ CREATE SCHEMA /frlnames/main WITH TEMPLATE frlnames_tpl;
 		errOut:      &buf,
 		ctx:         context.Background(),
 		clusterFile: fixture.clusterFilePath,
-		database:    "/frlnames",
-		schema:      "MAIN", // the engine uppercases unquoted identifiers at DDL time
+		database:    "/FRLNAMES", // CREATE DATABASE folds the unquoted path whole
+		schema:      "MAIN",      // the engine uppercases unquoted identifiers at DDL time
 		st:          plainSQLStyles(),
 		format:      sqlFormatTable,
 	}
 
 	// \d — the table listing.
-	tables, err := r.loadSchemaTables("/frlnames", "MAIN")
+	tables, err := r.loadSchemaTables("/FRLNAMES", "MAIN")
 	if err != nil {
 		t.Fatalf("loadSchemaTables: %v", err)
 	}

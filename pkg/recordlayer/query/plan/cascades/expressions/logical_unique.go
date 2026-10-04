@@ -27,7 +27,7 @@ import (
 // already PK-distinct, while required Unique must materialize a physical
 // PK-distinct operator. It therefore participates in memo identity.
 type LogicalUniqueExpression struct {
-	inner       Quantifier
+	quantifiers [1]Quantifier
 	required    bool
 	resultValue values.QuantifiedObjectValue
 }
@@ -38,7 +38,7 @@ func NewLogicalUniqueExpression(inner Quantifier) (*LogicalUniqueExpression, err
 	if err != nil {
 		return nil, err
 	}
-	return &LogicalUniqueExpression{inner: inner, resultValue: resultValue}, nil
+	return &LogicalUniqueExpression{quantifiers: [1]Quantifier{inner}, resultValue: resultValue}, nil
 }
 
 // NewRequiredLogicalUniqueExpression builds a Unique whose physical
@@ -54,14 +54,14 @@ func NewRequiredLogicalUniqueExpression(inner Quantifier) (*LogicalUniqueExpress
 		return nil, err
 	}
 	return &LogicalUniqueExpression{
-		inner:       inner,
+		quantifiers: [1]Quantifier{inner},
 		required:    true,
 		resultValue: resultValue,
 	}, nil
 }
 
 // GetInner returns the inner Quantifier.
-func (e *LogicalUniqueExpression) GetInner() Quantifier { return e.inner }
+func (e *LogicalUniqueExpression) GetInner() Quantifier { return e.quantifiers[0] }
 
 // IsRequired reports whether implementation must retain a physical
 // PK-distinct operator instead of absorbing this logical Unique.
@@ -75,7 +75,7 @@ func (e *LogicalUniqueExpression) GetResultValue() values.Value {
 
 // GetQuantifiers returns the single inner Quantifier.
 func (e *LogicalUniqueExpression) GetQuantifiers() []Quantifier {
-	return []Quantifier{e.inner}
+	return e.quantifiers[:]
 }
 
 // CanCorrelate is false — single child.
@@ -87,7 +87,7 @@ func (e *LogicalUniqueExpression) ChildrenAsSet() bool { return false }
 // GetCorrelatedToWithoutChildren returns the empty set (Java
 // behaviour: Unique has no correlations of its own).
 func (e *LogicalUniqueExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return map[values.CorrelationIdentifier]struct{}{}
+	return nil
 }
 
 // EqualsWithoutChildren is true iff other is a LogicalUnique in the same

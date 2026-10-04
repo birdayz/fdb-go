@@ -64,7 +64,7 @@ func TestVectorPlan_ExplicitLimitEqualToRankStillFolds(t *testing.T) {
 	// then the Projection, then a scan that is nonetheless self-limiting. A
 	// substring pin on the scan alone could not tell that apart from a plan
 	// where the projection had been elided or the Limit had moved.
-	const want = "Limit(3, Project([_current.DOC_ID#0], VectorIndexScan(DOC_IDX, BY_DISTANCE, prefix=[], rank<=3)))"
+	const want = "Limit(3, Map(VectorIndexScan(DOC_IDX, BY_DISTANCE, prefix=[], rank<=3), {DOC_ID: _current.DOC_ID#0}))"
 	if got != want {
 		t.Fatalf("plan = %q,\nwant %q", got, want)
 	}
@@ -87,7 +87,7 @@ func TestVectorPlan_ExplicitLimitEqualToRankStillFolds(t *testing.T) {
 	// project a subset. A `SELECT *` rewrite upstream would delete the very
 	// operator whose presence is the point, and both checks above would then
 	// pass while probing nothing.
-	if !strings.Contains(got, "Project(") {
+	if !strings.Contains(got, "Map(") {
 		t.Fatalf("no Projection in the plan, so the between-the-Limit-and-the-scan case this "+
 			"test exists for is not present:\n%s", got)
 	}

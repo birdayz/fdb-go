@@ -1,6 +1,10 @@
 package cascades
 
-import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+import (
+	"iter"
+
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+)
 
 // AliasMap is an immutable bidirectional mapping between
 // CorrelationIdentifiers. Used during graph traversal to track
@@ -19,6 +23,7 @@ import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 type AliasMap struct {
 	forward  map[values.CorrelationIdentifier]values.CorrelationIdentifier
 	inverse  map[values.CorrelationIdentifier]values.CorrelationIdentifier
+	single   *values.AliasPair
 	identity bool
 }
 
@@ -33,11 +38,14 @@ func EmptyAliasMap() *AliasMap { return emptyAliasMap }
 
 // AliasMapOfAliases creates a single-entry alias map.
 func AliasMapOfAliases(source, target values.CorrelationIdentifier) *AliasMap {
-	return &AliasMap{
-		forward:  map[values.CorrelationIdentifier]values.CorrelationIdentifier{source: target},
-		inverse:  map[values.CorrelationIdentifier]values.CorrelationIdentifier{target: source},
-		identity: source == target,
-	}
+	// Guava's SingletonImmutableBiMap stores the pair without hash tables.
+	singleton := &struct {
+		aliases AliasMap
+		pair    values.AliasPair
+	}{pair: values.AliasPair{Source: source, Target: target}}
+	singleton.aliases.single = &singleton.pair
+	singleton.aliases.identity = source == target
+	return &singleton.aliases
 }
 
 // AliasMapBuilder constructs an AliasMap incrementally.
@@ -75,7 +83,7 @@ func (b *AliasMapBuilder) Put(source, target values.CorrelationIdentifier) bool 
 //
 // Ports Java's AliasMap.Builder.putAll.
 func (b *AliasMapBuilder) PutAll(other *AliasMap) {
-	for source, target := range other.forward {
+	for source, target := range other.entries() {
 		b.Put(source, target)
 	}
 }
@@ -113,7 +121,7 @@ func (b *AliasMapBuilder) PutAllChecked(other *AliasMap) bool {
 	// Phase 1: verify every entry is compatible with the CURRENT builder state
 	// (other is itself a bijection, so its entries never conflict among
 	// themselves).
-	for source, target := range other.forward {
+	for source, target := range other.entries() {
 		if existing, ok := b.forward[source]; ok {
 			if existing != target {
 				return false
@@ -125,7 +133,7 @@ func (b *AliasMapBuilder) PutAllChecked(other *AliasMap) bool {
 		}
 	}
 	// Phase 2: all compatible — apply.
-	for source, target := range other.forward {
+	for source, target := range other.entries() {
 		b.forward[source] = target
 		b.inverse[target] = source
 	}
@@ -134,6 +142,14 @@ func (b *AliasMapBuilder) PutAllChecked(other *AliasMap) bool {
 
 // Build creates an immutable AliasMap from the builder's state.
 func (b *AliasMapBuilder) Build() *AliasMap {
+	switch len(b.forward) {
+	case 0:
+		return EmptyAliasMap()
+	case 1:
+		for source, target := range b.forward {
+			return AliasMapOfAliases(source, target)
+		}
+	}
 	fwd := make(map[values.CorrelationIdentifier]values.CorrelationIdentifier, len(b.forward))
 	inv := make(map[values.CorrelationIdentifier]values.CorrelationIdentifier, len(b.inverse))
 	identity := true
@@ -151,19 +167,22 @@ func (b *AliasMapBuilder) Build() *AliasMap {
 
 // ContainsSource reports whether source is mapped.
 func (m *AliasMap) ContainsSource(source values.CorrelationIdentifier) bool {
-	_, ok := m.forward[source]
+	_, ok := m.GetTargetOrEmpty(source)
 	return ok
 }
 
 // ContainsTarget reports whether target is mapped.
 func (m *AliasMap) ContainsTarget(target values.CorrelationIdentifier) bool {
+	if m.single != nil {
+		return m.single.Target == target
+	}
 	_, ok := m.inverse[target]
 	return ok
 }
 
 // ContainsMapping reports whether source maps to target.
 func (m *AliasMap) ContainsMapping(source, target values.CorrelationIdentifier) bool {
-	if t, ok := m.forward[source]; ok {
+	if t, ok := m.GetTargetOrEmpty(source); ok {
 		return t == target
 	}
 	return false
@@ -172,7 +191,7 @@ func (m *AliasMap) ContainsMapping(source, target values.CorrelationIdentifier) 
 // GetTarget returns the target for the given source, or the source
 // itself if not mapped (identity fallback).
 func (m *AliasMap) GetTarget(source values.CorrelationIdentifier) values.CorrelationIdentifier {
-	if target, ok := m.forward[source]; ok {
+	if target, ok := m.GetTargetOrEmpty(source); ok {
 		return target
 	}
 	return source
@@ -181,6 +200,12 @@ func (m *AliasMap) GetTarget(source values.CorrelationIdentifier) values.Correla
 // GetTargetOrEmpty returns the target for the given source, or empty
 // if not mapped. Unlike GetTarget, does NOT fall back to identity.
 func (m *AliasMap) GetTargetOrEmpty(source values.CorrelationIdentifier) (values.CorrelationIdentifier, bool) {
+	if m.single != nil {
+		if m.single.Source == source {
+			return m.single.Target, true
+		}
+		return values.CorrelationIdentifier{}, false
+	}
 	target, ok := m.forward[source]
 	return target, ok
 }
@@ -188,6 +213,12 @@ func (m *AliasMap) GetTargetOrEmpty(source values.CorrelationIdentifier) (values
 // GetSource returns the source for the given target, or the target
 // itself if not mapped (identity fallback).
 func (m *AliasMap) GetSource(target values.CorrelationIdentifier) values.CorrelationIdentifier {
+	if m.single != nil {
+		if m.single.Target == target {
+			return m.single.Source
+		}
+		return target
+	}
 	if source, ok := m.inverse[target]; ok {
 		return source
 	}
@@ -199,10 +230,29 @@ func (m *AliasMap) GetSource(target values.CorrelationIdentifier) values.Correla
 func (m *AliasMap) IsIdentity() bool { return m.identity }
 
 // IsEmpty reports whether the map contains no mappings.
-func (m *AliasMap) IsEmpty() bool { return len(m.forward) == 0 }
+func (m *AliasMap) IsEmpty() bool { return m.single == nil && len(m.forward) == 0 }
 
 // Size returns the number of mappings.
-func (m *AliasMap) Size() int { return len(m.forward) }
+func (m *AliasMap) Size() int {
+	if m.single != nil {
+		return 1
+	}
+	return len(m.forward)
+}
+
+func (m *AliasMap) entries() iter.Seq2[values.CorrelationIdentifier, values.CorrelationIdentifier] {
+	return func(yield func(values.CorrelationIdentifier, values.CorrelationIdentifier) bool) {
+		if m.single != nil {
+			yield(m.single.Source, m.single.Target)
+			return
+		}
+		for source, target := range m.forward {
+			if !yield(source, target) {
+				return
+			}
+		}
+	}
+}
 
 // ForwardMap returns a validated immutable values-level alias map suitable for
 // passing to values.RebaseValue. This is the checked bridge between the
@@ -210,8 +260,8 @@ func (m *AliasMap) Size() int { return len(m.forward) }
 // particular, it rejects an attempted mapping between the reserved current
 // correlation and an ordinary correlation.
 func (m *AliasMap) ForwardMap() (values.AliasMap, error) {
-	pairs := make([]values.AliasPair, 0, len(m.forward))
-	for source, target := range m.forward {
+	pairs := make([]values.AliasPair, 0, m.Size())
+	for source, target := range m.entries() {
 		pairs = append(pairs, values.AliasPair{Source: source, Target: target})
 	}
 	return values.NewAliasMap(pairs)
@@ -219,8 +269,8 @@ func (m *AliasMap) ForwardMap() (values.AliasMap, error) {
 
 // Sources returns all source aliases.
 func (m *AliasMap) Sources() []values.CorrelationIdentifier {
-	result := make([]values.CorrelationIdentifier, 0, len(m.forward))
-	for k := range m.forward {
+	result := make([]values.CorrelationIdentifier, 0, m.Size())
+	for k := range m.entries() {
 		result = append(result, k)
 	}
 	return result
@@ -231,10 +281,10 @@ func (m *AliasMap) Sources() []values.CorrelationIdentifier {
 // that conflict with existing ones are skipped.
 func (m *AliasMap) Derived(additions *AliasMap) *AliasMap {
 	b := NewAliasMapBuilder()
-	for k, v := range m.forward {
+	for k, v := range m.entries() {
 		b.Put(k, v)
 	}
-	for k, v := range additions.forward {
+	for k, v := range additions.entries() {
 		b.Put(k, v)
 	}
 	return b.Build()
@@ -269,7 +319,7 @@ func (m *AliasMap) Derived(additions *AliasMap) *AliasMap {
 // associative.
 func (m *AliasMap) Compose(other *AliasMap) *AliasMap {
 	b := NewAliasMapBuilder()
-	for source, intermediate := range m.forward {
+	for source, intermediate := range m.entries() {
 		target := other.GetTarget(intermediate)
 		b.Put(source, target)
 	}

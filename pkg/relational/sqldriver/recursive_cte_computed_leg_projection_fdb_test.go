@@ -3,6 +3,7 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 )
 
@@ -24,7 +25,7 @@ func TestFDB_RecursiveCTEComputedLegProjection(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE rcte_comp_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -47,7 +48,7 @@ func TestFDB_RecursiveCTEComputedLegProjection(t *testing.T) {
 			") SELECT * FROM r"},
 		{"cte_column_list", "WITH RECURSIVE r(n) AS (" +
 			"SELECT id FROM t WHERE id = 1" +
-			" UNION ALL SELECT b.id + 1 FROM r, t b WHERE b.id = r.n AND b.id < 4" +
+			" UNION ALL SELECT b.id + 1 FROM r, t b WHERE b.id = r.id AND b.id < 4" +
 			") SELECT * FROM r"},
 	} {
 		rows, err := db.QueryContext(ctx, tc.sql)

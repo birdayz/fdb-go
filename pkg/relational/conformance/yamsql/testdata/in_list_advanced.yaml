@@ -24,11 +24,13 @@ tests:
     plan_not_contains: "InUnion"
     rows:
       - [3, 6]
-  # IN list with no matches, over a column no index binds: one filtered scan.
-  # An IN-join here would scan the table once per IN element (criterion #6 of
-  # the cost model penalises an unSARGed IN-plan anywhere in the tree).
+  # IN list with no matches, over a column no index binds: one scan of the
+  # table, the list exploded per row and filtered on equality — Java's plan
+  # (in-predicate.yamsql: `SCAN | FLATMAP q0 -> { EXPLODE ... | FILTER
+  # q0.B EQUALS _ }`). An IN-join here would scan the table once per IN
+  # element (criterion #6 of the cost model penalises an unSARGed IN-plan).
   - query: SELECT a, b FROM ta WHERE b IN (10, 33, 66)
-    plan_contains: "PredicatesFilter(Scan(TA), [1 preds])"
+    plan_contains: "FlatMap(outer=Scan(TA), inner=PredicatesFilter(Explode(constant), [1 preds]))"
     plan_not_contains: "InJoin("
     rows: []
   # Repeated values in IN list — equivalent to single occurrence.

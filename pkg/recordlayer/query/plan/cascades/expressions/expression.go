@@ -22,8 +22,7 @@
 // EqualsWithoutChildren-and-children-aware dedup), AliasMap
 // (CorrelationIdentifier bijection).
 //
-// Walk infrastructure: SemanticEquals (positional + permutation-aware
-// for ChildrenAsSet operators with cap at MaxPermutationChildren=8).
+// Walk infrastructure: SemanticEquals and dependency-aware memo containment.
 //
 // Optional interface: RelationalExpressionWithPredicates — implemented
 // by LogicalFilterExpression and SelectExpression for generic predicate-
@@ -139,18 +138,8 @@ type RelationalExpression interface {
 	WithQuantifiers(quantifiers []Quantifier) (RelationalExpression, error)
 }
 
-// SemanticEquals walks two expression trees and reports whether they
-// are semantically equal under `aliases`. The walk:
-//   - early-outs on identity, type mismatch, or
-//     EqualsWithoutChildren disagreement;
-//   - if both sides report ChildrenAsSet, enumerates permutations of
-//     `b`'s children against `a`'s; otherwise pairs positionally;
-//   - for each candidate pairing, extends `aliases` by binding the
-//     two Quantifiers' aliases and recurses into each pair.
-//
-// Permutation enumeration is O(N!), which is fine for N up to ~6
-// (queries don't typically have more set-shaped children than that).
-// The first matching permutation wins; if none match, returns false.
+// SemanticEquals preserves the incoming node bindings and checks complete
+// child populations. MemoEqual also allows renaming the root's local bindings.
 func SemanticEquals(a, b RelationalExpression, aliases *AliasMap) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
@@ -158,73 +147,13 @@ func SemanticEquals(a, b RelationalExpression, aliases *AliasMap) bool {
 	if !a.EqualsWithoutChildren(b, aliases) {
 		return false
 	}
-	aQs := a.GetQuantifiers()
-	bQs := b.GetQuantifiers()
-	if len(aQs) != len(bQs) {
-		return false
-	}
-	if len(aQs) == 0 {
-		return true
-	}
-	// ChildrenAsSet must agree on both sides (marker is per-class, so
-	// they must match if EqualsWithoutChildren passed — but explicit
-	// guard keeps the contract local).
-	//
-	// Permutation enumeration is O(N!). Beyond MaxPermutationChildren
-	// the cost gets prohibitive (8! = 40320, 12! = 479M); fall back to
-	// positional pairing in that case. The planner is free to
-	// canonicalise large commutative children before semantic-equals
-	// to recover dedup precision; we prefer cheap-and-imprecise
-	// to slow-and-correct on this rare case.
-	if a.ChildrenAsSet() && b.ChildrenAsSet() && len(aQs) <= MaxPermutationChildren {
-		return matchChildrenPermuted(aQs, bQs, aliases)
-	}
-	return matchChildrenPositional(aQs, bQs, aliases)
+	return newMemoEquality().equal(a, b, aliases)
 }
 
-// MaxPermutationChildren caps the number of commutative children
-// SemanticEquals will permutation-enumerate. Tuning rationale:
-// 8! = 40,320 is the practical ceiling on per-call CPU cost
-// (assuming ~1µs per inner-recursion). Real query shapes very rarely
-// exceed 4-5 set-shaped children; the cap exists as a safeguard, not
-// a bottleneck in normal usage.
+// MaxPermutationChildren is the former positional-fallback threshold.
+// Deprecated: dependency-aware matching has no arity cutoff.
 const MaxPermutationChildren = 8
 
-// composeChildAliasPairs layers the (aAlias→bAlias) child bijection onto
-// `aliases`, returning ok=false if any binding conflicts (a source or
-// target is already bound to a different partner). A conflict means no
-// consistent alias correspondence aligns the two expressions under the
-// current context — i.e. they are NOT semantically equal — so callers
-// return false rather than panic.
-//
-// This non-panicking compose is the shared spine of both child-matching
-// paths and mirrors Java, whose `AliasMap.combineMaybe` returns
-// Optional.empty() on conflict (semanticEquals enumerates alias maps and
-// simply skips inconsistent ones — it never composes a conflicting map).
-// It replaces the bare AliasMap.Compose (the panicking `combine` variant)
-// and the recover-based guard matchChildrenPermuted previously used.
-// Conflicts arise legitimately once
-// References are shared (e.g. after RFC-037 cross-group merging, where two
-// child Quantifiers can resolve to the same canonical Reference): the
-// positional pairing then maps one alias to two partners, which is simply
-// "not equal", not a crash.
-func composeChildAliasPairs(aliases *AliasMap, aQs, bQs []Quantifier) (*AliasMap, bool) {
-	out := aliases
-	if out == nil {
-		out = EmptyAliasMap()
-	}
-	for i := range aQs {
-		s, t := aQs[i].GetAlias(), bQs[i].GetAlias()
-		var ok bool
-		out, ok = out.With(s, t)
-		if !ok {
-			return nil, false
-		}
-	}
-	return out, true
-}
-
-// matchChildrenPositional pairs children index-by-index and recurses.
 // quantifierAttributesEqual reports whether two paired quantifiers agree on
 // the semantics they carry THEMSELVES: kind, null-on-empty, strict-single.
 // Java compares these in the quantifier's own equality (ForEach's
@@ -239,79 +168,4 @@ func quantifierAttributesEqual(a, b Quantifier) bool {
 	return a.Kind() == b.Kind() &&
 		a.IsNullOnEmpty() == b.IsNullOnEmpty() &&
 		a.IsStrictSingle() == b.IsStrictSingle()
-}
-
-// matchChildrenPositional pairs aQs[i] with bQs[i]: edge attributes first,
-// then a single composed alias extension, then child recursion.
-func matchChildrenPositional(aQs, bQs []Quantifier, aliases *AliasMap) bool {
-	for i := range aQs {
-		if !quantifierAttributesEqual(aQs[i], bQs[i]) {
-			return false
-		}
-	}
-	composed, ok := composeChildAliasPairs(aliases, aQs, bQs)
-	if !ok {
-		return false
-	}
-	for i := range aQs {
-		if !SemanticEquals(aQs[i].GetRangesOver().Get(), bQs[i].GetRangesOver().Get(), composed) {
-			return false
-		}
-	}
-	return true
-}
-
-// matchChildrenPermuted enumerates permutations of bQs against aQs;
-// returns true if any permutation yields a successful match. O(N!).
-func matchChildrenPermuted(aQs, bQs []Quantifier, aliases *AliasMap) bool {
-	n := len(aQs)
-	indices := make([]int, n)
-	for i := range indices {
-		indices[i] = i
-	}
-	permutedB := make([]Quantifier, n)
-	return permute(indices, 0, func(perm []int) bool {
-		// Try this perm: aQs[i] pairs with bQs[perm[i]].
-		for i := 0; i < n; i++ {
-			permutedB[i] = bQs[perm[i]]
-		}
-		// Edge attributes (kind / null-on-empty / strict-single) must agree
-		// pairwise under this permutation — see quantifierAttributesEqual.
-		for i := 0; i < n; i++ {
-			if !quantifierAttributesEqual(aQs[i], permutedB[i]) {
-				return false
-			}
-		}
-		// A conflict (duplicate/inconsistent alias binding) means this
-		// permutation doesn't align the trees — skip it. composeChildAliasPairs
-		// returns ok=false instead of panicking.
-		composed, ok := composeChildAliasPairs(aliases, aQs, permutedB)
-		if !ok {
-			return false
-		}
-		for i := 0; i < n; i++ {
-			if !SemanticEquals(aQs[i].GetRangesOver().Get(), bQs[perm[i]].GetRangesOver().Get(), composed) {
-				return false
-			}
-		}
-		return true
-	})
-}
-
-// permute enumerates permutations of `arr` in place, calling `accept`
-// on each. Stops at the first true return. Returns true iff any call
-// returned true. Standard recursive Heap-style enumeration.
-func permute(arr []int, k int, accept func(perm []int) bool) bool {
-	if k == len(arr) {
-		return accept(arr)
-	}
-	for i := k; i < len(arr); i++ {
-		arr[k], arr[i] = arr[i], arr[k]
-		if permute(arr, k+1, accept) {
-			arr[k], arr[i] = arr[i], arr[k]
-			return true
-		}
-		arr[k], arr[i] = arr[i], arr[k]
-	}
-	return false
 }

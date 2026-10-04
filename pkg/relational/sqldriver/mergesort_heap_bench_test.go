@@ -44,7 +44,7 @@ func benchInUnionMergeSort(b *testing.B, numLegs, rowsPerLeg int) {
 	execOrFail(b, setup, ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl))
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		b.Fatalf("sql.Open: %v", err)

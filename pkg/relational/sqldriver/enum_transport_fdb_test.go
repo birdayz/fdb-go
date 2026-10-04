@@ -72,7 +72,7 @@ func TestFDB_EnumTransport(t *testing.T) {
 				{Name: proto.String("COLOR"), Number: proto.Int32(5), Label: opt, Type: str},
 				{Name: proto.String("ALIAS"), Number: proto.Int32(6), Label: opt, Type: enum, TypeName: typeName("AliasState")},
 			}},
-			{Name: proto.String("UnionDescriptor"), Field: []*descriptorpb.FieldDescriptorProto{
+			{Name: proto.String("RecordTypeUnion"), Field: []*descriptorpb.FieldDescriptorProto{
 				{Name: proto.String("_TASK"), Number: proto.Int32(1), Label: opt, Type: msg, TypeName: typeName("TASK")},
 			}},
 		},
@@ -258,7 +258,7 @@ func TestFDB_EnumTransport(t *testing.T) {
 		if err != nil {
 			t.Fatalf("metadata %s plan: %v", tc.name, err)
 		}
-		defs := embedded.ResultColumnDefsForPlan(plan, md)
+		defs := embedded.ResultColumnDefsForPlan(plan)
 		if len(defs) != 1 || defs[0].TypeName != "OTHER" || defs[0].Nullable != api.ColumnNullable {
 			t.Fatalf("metadata %s ColumnDef = %+v, want one nullable OTHER (Java's JDBC enum type name)", tc.name, defs)
 		}
@@ -280,7 +280,7 @@ func TestFDB_EnumTransport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("nested homonym metadata plan: %v", err)
 	}
-	defs := embedded.ResultColumnDefsForPlan(plan, md)
+	defs := embedded.ResultColumnDefsForPlan(plan)
 	if len(defs) != 1 || defs[0].TypeName != "STRING" {
 		t.Fatalf("nested STATE metadata = %+v, want STRING rather than the top-level ENUM homonym", defs)
 	}

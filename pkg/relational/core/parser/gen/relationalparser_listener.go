@@ -106,6 +106,9 @@ type RelationalParserListener interface {
 	// EnterVectorIndexDefinition is called when entering the vectorIndexDefinition production.
 	EnterVectorIndexDefinition(c *VectorIndexDefinitionContext)
 
+	// EnterVectorEngine is called when entering the vectorEngine production.
+	EnterVectorEngine(c *VectorEngineContext)
+
 	// EnterIndexColumnList is called when entering the indexColumnList production.
 	EnterIndexColumnList(c *IndexColumnListContext)
 
@@ -133,6 +136,9 @@ type RelationalParserListener interface {
 	// EnterVectorIndexOption is called when entering the vectorIndexOption production.
 	EnterVectorIndexOption(c *VectorIndexOptionContext)
 
+	// EnterVectorIndexOptionValue is called when entering the vectorIndexOptionValue production.
+	EnterVectorIndexOptionValue(c *VectorIndexOptionValueContext)
+
 	// EnterHnswMetric is called when entering the hnswMetric production.
 	EnterHnswMetric(c *HnswMetricContext)
 
@@ -150,6 +156,15 @@ type RelationalParserListener interface {
 
 	// EnterViewDefinition is called when entering the viewDefinition production.
 	EnterViewDefinition(c *ViewDefinitionContext)
+
+	// EnterStoredQueryDefinition is called when entering the storedQueryDefinition production.
+	EnterStoredQueryDefinition(c *StoredQueryDefinitionContext)
+
+	// EnterDeclareBlock is called when entering the declareBlock production.
+	EnterDeclareBlock(c *DeclareBlockContext)
+
+	// EnterDeclaredFunction is called when entering the declaredFunction production.
+	EnterDeclaredFunction(c *DeclaredFunctionContext)
 
 	// EnterTempSqlInvokedFunction is called when entering the tempSqlInvokedFunction production.
 	EnterTempSqlInvokedFunction(c *TempSqlInvokedFunctionContext)
@@ -211,17 +226,8 @@ type RelationalParserListener interface {
 	// EnterStatementBody is called when entering the statementBody production.
 	EnterStatementBody(c *StatementBodyContext)
 
-	// EnterUserDefinedScalarFunctionStatementBody is called when entering the userDefinedScalarFunctionStatementBody production.
-	EnterUserDefinedScalarFunctionStatementBody(c *UserDefinedScalarFunctionStatementBodyContext)
-
-	// EnterExpressionBody is called when entering the expressionBody production.
-	EnterExpressionBody(c *ExpressionBodyContext)
-
-	// EnterSqlReturnStatement is called when entering the sqlReturnStatement production.
-	EnterSqlReturnStatement(c *SqlReturnStatementContext)
-
-	// EnterReturnValue is called when entering the returnValue production.
-	EnterReturnValue(c *ReturnValueContext)
+	// EnterUserDefinedMacroFunctionStatementBody is called when entering the userDefinedMacroFunctionStatementBody production.
+	EnterUserDefinedMacroFunctionStatementBody(c *UserDefinedMacroFunctionStatementBodyContext)
 
 	// EnterCharSet is called when entering the charSet production.
 	EnterCharSet(c *CharSetContext)
@@ -265,8 +271,8 @@ type RelationalParserListener interface {
 	// EnterTableFunction is called when entering the tableFunction production.
 	EnterTableFunction(c *TableFunctionContext)
 
-	// EnterTableFunctionArgs is called when entering the tableFunctionArgs production.
-	EnterTableFunctionArgs(c *TableFunctionArgsContext)
+	// EnterNamedOrUnnamedFunctionArgs is called when entering the namedOrUnnamedFunctionArgs production.
+	EnterNamedOrUnnamedFunctionArgs(c *NamedOrUnnamedFunctionArgsContext)
 
 	// EnterTableFunctionName is called when entering the tableFunctionName production.
 	EnterTableFunctionName(c *TableFunctionNameContext)
@@ -382,11 +388,11 @@ type RelationalParserListener interface {
 	// EnterLimitClauseAtom is called when entering the limitClauseAtom production.
 	EnterLimitClauseAtom(c *LimitClauseAtomContext)
 
-	// EnterQueryOptions is called when entering the queryOptions production.
-	EnterQueryOptions(c *QueryOptionsContext)
+	// EnterStatementOptions is called when entering the statementOptions production.
+	EnterStatementOptions(c *StatementOptionsContext)
 
-	// EnterQueryOption is called when entering the queryOption production.
-	EnterQueryOption(c *QueryOptionContext)
+	// EnterStatementOption is called when entering the statementOption production.
+	EnterStatementOption(c *StatementOptionContext)
 
 	// EnterStartTransaction is called when entering the startTransaction production.
 	EnterStartTransaction(c *StartTransactionContext)
@@ -712,6 +718,12 @@ type RelationalParserListener interface {
 	// EnterAggregateWindowedFunction is called when entering the aggregateWindowedFunction production.
 	EnterAggregateWindowedFunction(c *AggregateWindowedFunctionContext)
 
+	// EnterNullTreatmentClause is called when entering the nullTreatmentClause production.
+	EnterNullTreatmentClause(c *NullTreatmentClauseContext)
+
+	// EnterAggregateLimitClause is called when entering the aggregateLimitClause production.
+	EnterAggregateLimitClause(c *AggregateLimitClauseContext)
+
 	// EnterNonAggregateWindowedFunction is called when entering the nonAggregateWindowedFunction production.
 	EnterNonAggregateWindowedFunction(c *NonAggregateWindowedFunctionContext)
 
@@ -943,6 +955,9 @@ type RelationalParserListener interface {
 	// ExitVectorIndexDefinition is called when exiting the vectorIndexDefinition production.
 	ExitVectorIndexDefinition(c *VectorIndexDefinitionContext)
 
+	// ExitVectorEngine is called when exiting the vectorEngine production.
+	ExitVectorEngine(c *VectorEngineContext)
+
 	// ExitIndexColumnList is called when exiting the indexColumnList production.
 	ExitIndexColumnList(c *IndexColumnListContext)
 
@@ -970,6 +985,9 @@ type RelationalParserListener interface {
 	// ExitVectorIndexOption is called when exiting the vectorIndexOption production.
 	ExitVectorIndexOption(c *VectorIndexOptionContext)
 
+	// ExitVectorIndexOptionValue is called when exiting the vectorIndexOptionValue production.
+	ExitVectorIndexOptionValue(c *VectorIndexOptionValueContext)
+
 	// ExitHnswMetric is called when exiting the hnswMetric production.
 	ExitHnswMetric(c *HnswMetricContext)
 
@@ -987,6 +1005,15 @@ type RelationalParserListener interface {
 
 	// ExitViewDefinition is called when exiting the viewDefinition production.
 	ExitViewDefinition(c *ViewDefinitionContext)
+
+	// ExitStoredQueryDefinition is called when exiting the storedQueryDefinition production.
+	ExitStoredQueryDefinition(c *StoredQueryDefinitionContext)
+
+	// ExitDeclareBlock is called when exiting the declareBlock production.
+	ExitDeclareBlock(c *DeclareBlockContext)
+
+	// ExitDeclaredFunction is called when exiting the declaredFunction production.
+	ExitDeclaredFunction(c *DeclaredFunctionContext)
 
 	// ExitTempSqlInvokedFunction is called when exiting the tempSqlInvokedFunction production.
 	ExitTempSqlInvokedFunction(c *TempSqlInvokedFunctionContext)
@@ -1048,17 +1075,8 @@ type RelationalParserListener interface {
 	// ExitStatementBody is called when exiting the statementBody production.
 	ExitStatementBody(c *StatementBodyContext)
 
-	// ExitUserDefinedScalarFunctionStatementBody is called when exiting the userDefinedScalarFunctionStatementBody production.
-	ExitUserDefinedScalarFunctionStatementBody(c *UserDefinedScalarFunctionStatementBodyContext)
-
-	// ExitExpressionBody is called when exiting the expressionBody production.
-	ExitExpressionBody(c *ExpressionBodyContext)
-
-	// ExitSqlReturnStatement is called when exiting the sqlReturnStatement production.
-	ExitSqlReturnStatement(c *SqlReturnStatementContext)
-
-	// ExitReturnValue is called when exiting the returnValue production.
-	ExitReturnValue(c *ReturnValueContext)
+	// ExitUserDefinedMacroFunctionStatementBody is called when exiting the userDefinedMacroFunctionStatementBody production.
+	ExitUserDefinedMacroFunctionStatementBody(c *UserDefinedMacroFunctionStatementBodyContext)
 
 	// ExitCharSet is called when exiting the charSet production.
 	ExitCharSet(c *CharSetContext)
@@ -1102,8 +1120,8 @@ type RelationalParserListener interface {
 	// ExitTableFunction is called when exiting the tableFunction production.
 	ExitTableFunction(c *TableFunctionContext)
 
-	// ExitTableFunctionArgs is called when exiting the tableFunctionArgs production.
-	ExitTableFunctionArgs(c *TableFunctionArgsContext)
+	// ExitNamedOrUnnamedFunctionArgs is called when exiting the namedOrUnnamedFunctionArgs production.
+	ExitNamedOrUnnamedFunctionArgs(c *NamedOrUnnamedFunctionArgsContext)
 
 	// ExitTableFunctionName is called when exiting the tableFunctionName production.
 	ExitTableFunctionName(c *TableFunctionNameContext)
@@ -1219,11 +1237,11 @@ type RelationalParserListener interface {
 	// ExitLimitClauseAtom is called when exiting the limitClauseAtom production.
 	ExitLimitClauseAtom(c *LimitClauseAtomContext)
 
-	// ExitQueryOptions is called when exiting the queryOptions production.
-	ExitQueryOptions(c *QueryOptionsContext)
+	// ExitStatementOptions is called when exiting the statementOptions production.
+	ExitStatementOptions(c *StatementOptionsContext)
 
-	// ExitQueryOption is called when exiting the queryOption production.
-	ExitQueryOption(c *QueryOptionContext)
+	// ExitStatementOption is called when exiting the statementOption production.
+	ExitStatementOption(c *StatementOptionContext)
 
 	// ExitStartTransaction is called when exiting the startTransaction production.
 	ExitStartTransaction(c *StartTransactionContext)
@@ -1548,6 +1566,12 @@ type RelationalParserListener interface {
 
 	// ExitAggregateWindowedFunction is called when exiting the aggregateWindowedFunction production.
 	ExitAggregateWindowedFunction(c *AggregateWindowedFunctionContext)
+
+	// ExitNullTreatmentClause is called when exiting the nullTreatmentClause production.
+	ExitNullTreatmentClause(c *NullTreatmentClauseContext)
+
+	// ExitAggregateLimitClause is called when exiting the aggregateLimitClause production.
+	ExitAggregateLimitClause(c *AggregateLimitClauseContext)
 
 	// ExitNonAggregateWindowedFunction is called when exiting the nonAggregateWindowedFunction production.
 	ExitNonAggregateWindowedFunction(c *NonAggregateWindowedFunctionContext)

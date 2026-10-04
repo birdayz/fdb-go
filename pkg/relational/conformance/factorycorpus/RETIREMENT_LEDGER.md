@@ -396,3 +396,93 @@ reason above. The tool re-derived the two header lines from each scenario's
 committed reproduction recipe, verified the feature vector, the four renderings,
 the schema and the setup unchanged, regenerated `census_baseline.json`, and
 emitted the machine ledger. No digest was hand-edited.
+
+---
+
+## The bit operators are ArithmeticValues — REPRESENTATION CHANGE, a tie broken the other way
+
+**Moved: 3 scenarios — 1 candidate × 3 projections (`fc_0000001100_q5_p0..p2`) — in 1 family file,
+`join3_comma__and_bit-cmp__none.yamsql`. Result rows: UNCHANGED.**
+
+RFC-257 WS-J section 6 makes `&`, `|` and `^` (and the bitmap functions) ArithmeticValues, as Java's
+are, with the lane resolved at construction from the operand types; they were `BITAND`/`BITOR`/
+`BITXOR` scalar functions. The query's predicate `(r.b | r.c) <> 13` is the same computation either
+way, but the value's semantic hash moves with its representation (`scalarfn:BITOR` becomes an
+ArithmeticValue's), and in the negated TLP rendering (`tests[1]`, whose plan the header digests) that
+hash decides a tie between two equal-cost association orders of the three-way comma join:
+
+```
+old: NestedLoopJoin(INNER, FlatMap(PredicatesFilter(Scan(l)), PredicatesFilter(Scan(m, [=]))), Scan(r))
+new: NestedLoopJoin(INNER, Scan(l), FlatMap(PredicatesFilter(Scan(m)), PredicatesFilter(Scan(r, [=]))))
+```
+
+Measured by planning the candidate's four renderings on the base commit and on the change: only
+`tests[1]` moves; the base, IS NULL and positive renderings plan identically. Every other bit-operator
+scenario of the corpus keeps its shape.
+
+### How the re-bless was done
+
+`go run ./cmd/factory-rebless-plan-shapes -corpus … -census …` with `-ledger`, `-before` (the corpus at
+`f9c916f5d`, exported with `git archive`), `-base-commit`, `-rfc RFC-257`, `-date 2026-09-26` and the
+reason. The tool re-derived the two header lines from each scenario's reproduction recipe, verified the
+feature vector, the four renderings, the schema, the setup and the frozen rows unchanged, regenerated
+`census_baseline.json`, and emitted the machine ledger. No digest was hand-edited; the ledger's reason
+field was rewritten afterwards to name the tie, which the tool's run had not yet been measured to be.
+
+---
+
+## FLOAT columns are written through CAST — SETUP RE-SPELLED, NOTHING RETIRED
+
+**Retired: 0 scenarios. Re-spelled: the setup INSERT of 8000 scenarios across
+402 family files (every flat `rowdiff-gen/2` scenario; the 150 nested ones
+write no FLOAT). Result rows: UNCHANGED. Plan-shape and dedup-key headers:
+UNCHANGED.**
+
+The generator wrote column `E FLOAT` with a bare decimal literal. A decimal
+literal is a DOUBLE, and PromoteValue has no DOUBLE_TO_FLOAT edge, so the target
+refuses that INSERT while planning (INCOMPATIBLE_TYPE, 22000;
+RecordQueryInsertPlan.insertPlan / ExpressionVisitor.coerceValueIfNecessary).
+Go accepted it and narrowed silently until RFC-257 WS-J v22 ported the
+admission. Every committed scenario was blessed `metamorphic` (Go only), so no
+JVM had ever run these setups, and the header's "the Java runner can execute
+it verbatim" was false for all of them.
+
+`rowdiff.renderColumnLiteral` now writes a FLOAT value as
+`CAST(<literal> AS FLOAT)`. The generated value is already a float32 widened to
+float64 (`genRows`), so the cast is exact and the stored bits are the ones the
+frozen rows were computed over. The setups were re-derived from each recipe by
+`go run ./cmd/factory-rebless -rederive-setup`, the same pure computation the
+determinism gate checks; `factorycorpus/full:full_test`, which re-executes every
+scenario against a real cluster, is the proof that the frozen rows still hold.
+
+---
+
+## Join planning follows Java 4.14.2.0 — PLAN CHANGE, with a FLOAT probe loss Java shares
+
+**Retired: 3 scenarios (`fc_0000000346_q0_p0..p2`). Re-blessed plan-shape and
+dedup-key headers: 2696 of 8150 scenarios. Result rows: UNCHANGED.**
+Machine ledger: `retirements/2026-10-01-rfc257-java-aligned-join-planning.json`.
+
+Measured with `cmd/factory-plan-census` against the base commit's corpus over
+8060 comparable scenarios: 3136 plans moved, 147 counted as losing an equality
+index probe, 0 newly unplannable. The causes:
+
+- PartitionSelectRule places a predicate spanning a bipartition in the lower,
+  as Java's does, so a join chain plans as a right-deep chain of correlated
+  FlatMaps instead of a left-deep one. The probes are the same, nested the
+  other way.
+- SelectExpression merges comparisons on one value into one range, as Java's
+  `partitionPredicates` does. Java then partitions that range whole and loses
+  the selective part of `o.k = 42 AND o.k = c.id` to the join side; Go splits
+  it back per quantifier while partitioning, so the selective part still binds
+  at its own leg (`TestPlanHarness_MergedJoinRangeKeepsSelectiveProbe`). On
+  this corpus the split took the probe losses from 162 to 147 and the new
+  unbounded full scans from 165 to 108.
+- 60 of the remaining losses are an equality on the FLOAT column `e` against a
+  DOUBLE literal. The comparison reads `promote(e AS DOUBLE)`, which select
+  subsumption does not sarg, and Java plans exactly the same filter (`ISCAN(IDX_D
+  <,>) | FILTER promote(_.E AS DOUBLE) EQUALS …` for `e = 3.0`). The rest move
+  an equality probe between equivalent forms (`IDX_AB [=, =]` for
+  `IDX_AB [=, *]` plus a key probe).
+- The retired candidate became the same (feature vector, plan shape) point as
+  `fc_0000000204_q2_p0..p2`, which stays.

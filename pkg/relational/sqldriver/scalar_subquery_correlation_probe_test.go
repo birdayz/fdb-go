@@ -35,7 +35,7 @@ func TestFDB_ScalarSubqueryCorrelationProbe(t *testing.T) {
 		"CREATE TABLE emp (id BIGINT, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX emp_dept ON emp (dept_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ssqcorr/s WITH TEMPLATE ssqcorr")
-	dsn := fmt.Sprintf("fdbsql:///testdb_ssqcorr?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_SSQCORR?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

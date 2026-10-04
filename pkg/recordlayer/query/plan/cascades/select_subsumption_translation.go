@@ -432,7 +432,10 @@ func selectSubsumptionValueTreeWellFormed(root values.Value) bool {
 		value values.Value
 		exit  bool
 	}
-	stack := []valueVisit{{value: root}}
+	// Most value trees fit in stack-local scratch; append still handles deep or wide trees.
+	var inline [16]valueVisit
+	inline[0].value = root
+	stack := inline[:1]
 	state := make(map[uintptr]uint8)
 	for len(stack) > 0 {
 		visit := stack[len(stack)-1]

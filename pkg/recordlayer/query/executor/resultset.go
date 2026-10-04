@@ -197,8 +197,8 @@ func (rs *RecordLayerResultSet) positionalAligned(row *PositionalRow) bool {
 			// A column whose display name is NOT a plain (dotted) identifier has no
 			// canonical user-facing spelling to match — it is a synthesized rendering
 			// of a computed expression or an aggregate:
-			//   - the ANONYMOUS `_i` placeholder deriveProjectionColumnDef assigns an
-			//     unaliased non-field projection (`SELECT UPPER(x)`), while the emitted
+			//   - the ANONYMOUS `_i` name the result row type gives an unaliased
+			//     non-field projection (`SELECT UPPER(x)`), while the emitted
 			//     slot is named by ProjectionColumnName ("UPPER(X)");
 			//   - an AGGREGATE column ("SUM(QTY*UNIT_PRICE)", "MAX(X.COL2)", a `... AS
 			//     revenue` alias) whose ColumnDef name and positional slot name are
@@ -262,8 +262,8 @@ func isPlainColumnRef(s string) bool {
 }
 
 // isAnonymousColumnName reports whether s is the positional placeholder `_i`
-// (an underscore followed by one-or-more digits) that deriveProjectionColumnDef
-// assigns to an unaliased non-field projection. Such a column has no user-facing
+// (an underscore followed by one-or-more digits) the result row type gives an
+// unaliased non-field projection. Such a column has no user-facing
 // name, so a positional slot at the same ordinal aligns by position alone.
 func isAnonymousColumnName(s string) bool {
 	if len(s) < 2 || s[0] != '_' {
@@ -358,6 +358,18 @@ func (rs *RecordLayerResultSet) Boolean(columnIndex int) (bool, error) {
 
 func (rs *RecordLayerResultSet) Object(columnIndex int) (any, error) {
 	return rs.columnValue(columnIndex)
+}
+
+// ColumnType is the exact type of the current row's column (1-based), as its
+// positional output row carries it, or nil when the row carries none. It is
+// what tells a caller that an int64 is an enum's declared number (the carrier
+// an enum-typed value holds) rather than a BIGINT.
+func (rs *RecordLayerResultSet) ColumnType(columnIndex int) values.Type {
+	row := rs.current.Positional
+	if !rs.hasRow || row == nil || row.Type == nil || columnIndex < 1 || columnIndex > len(row.Type.Fields) {
+		return nil
+	}
+	return row.Type.Fields[columnIndex-1].FieldType
 }
 
 func (rs *RecordLayerResultSet) LongByName(name string) (int64, error) {

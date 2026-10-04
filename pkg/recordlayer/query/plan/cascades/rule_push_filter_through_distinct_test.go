@@ -207,7 +207,7 @@ func explorePushFilterRewriting(
 		planner.constraintMap = NewConstraintMap()
 	}
 	if planner.dataAccessConsumed == nil {
-		planner.dataAccessConsumed = make(map[*expressions.Reference]int)
+		planner.dataAccessConsumed = make(map[*expressions.Reference][]matchConsumption)
 	}
 	planner.push(&OptimizeGroupTask{Phase: PhaseRewriting, Ref: root})
 	planner.push(&ExploreGroupTask{Phase: PhaseRewriting, Ref: root})

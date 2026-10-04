@@ -12,9 +12,9 @@ import (
 
 const rfc238Path = "rfcs/238-a-qualifier-is-structure-not-punctuation.md"
 
-// Numeric cites remaining after §7d replaced drifting lines with symbol names.
-// Both resolution and weak-cite classification must see this population.
-const rfc238NumericCiteFloor = 31
+// Numeric cites remaining after §7d replaced drifting lines with symbol names,
+// including tryExistsFlatMap. Both resolution and classification need this floor.
+const rfc238NumericCiteFloor = 28
 
 // A CITE NAMING A BASENAME THE TREE HOLDS THREE OF IS NOT A CITE, and this is
 // the half of a cite gate that is worth building. RFC-238 §7d measures the

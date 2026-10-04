@@ -33,7 +33,7 @@ func TestFDB_ProjectedExists(t *testing.T) {
 		"CREATE TABLE t3(id BIGINT, t2_id BIGINT, label STRING, PRIMARY KEY(id))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_projexists/s WITH TEMPLATE projexists_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_projexists?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_PROJEXISTS?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

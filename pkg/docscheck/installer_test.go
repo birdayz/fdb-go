@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -34,6 +35,10 @@ const installerScript = "website/static/install.sh"
 type fakeGitHub struct {
 	// releasesJSON is the body served for the release-list query.
 	releasesJSON string
+	// assetTag is the tag of the one release that holds the assets: an asset or
+	// checksums.txt is served only under /releases/download/<assetTag>/, as
+	// GitHub serves it, so a script asking under the wrong tag gets a 404.
+	assetTag string
 	// tarball is the release archive; nil means "no asset is served".
 	tarball []byte
 	// corruptChecksum publishes a checksum that does not match tarball.
@@ -44,10 +49,31 @@ type fakeGitHub struct {
 	// script derived from uname, which is how this stays host-agnostic instead
 	// of hardcoding linux/amd64.
 	assetName string
+
+	// mu guards downloads, the asset paths requested in order, so a test can
+	// see which tag forms the script tried.
+	mu        sync.Mutex
+	downloads []string
+}
+
+func (f *fakeGitHub) requested() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.downloads...)
 }
 
 func (f *fakeGitHub) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		isAsset := strings.HasSuffix(r.URL.Path, ".tar.gz") || strings.HasSuffix(r.URL.Path, "checksums.txt")
+		if isAsset {
+			f.mu.Lock()
+			f.downloads = append(f.downloads, r.URL.Path)
+			f.mu.Unlock()
+			if !strings.HasPrefix(r.URL.Path, "/releases/download/"+f.assetTag+"/") {
+				http.NotFound(w, r)
+				return
+			}
+		}
 		switch {
 		case strings.HasSuffix(r.URL.Path, ".tar.gz"):
 			if f.tarball == nil {
@@ -204,50 +230,104 @@ func TestInstallerTellsAnEmptyReleaseListFromAnUnreachableAPI(t *testing.T) {
 // the newest release, download, verify sha256, extract, install, run — against
 // a stand-in GitHub. Without it, "the installer works" rests on the release
 // workflow, which is tag-triggered and so ran zero times before v0.1.0.
+//
+// frl is a package of the root module, so a release is the project's tag
+// vX.Y.Z; v0.1.0 shipped from a nested module under cmd/frl/v0.1.0 and must
+// stay installable. Each case serves the assets under ONE tag only, so a
+// script asking under the other form fails rather than passing by accident.
 func TestInstallerVerifiesAndInstalls(t *testing.T) {
 	t.Parallel()
 
-	gh := &fakeGitHub{
-		// Newest-first, with a prerelease and a foreign tag ahead of the real
-		// one: the script must skip both. A bare `v9.9.9` belongs to the library,
-		// not the CLI, and installing it would fetch an asset that is not there.
-		releasesJSON: `[
-			{"tag_name": "v9.9.9"},
-			{"tag_name": "cmd/frl/v0.2.0-rc1"},
-			{"tag_name": "cmd/frl/v0.1.0"},
-			{"tag_name": "cmd/frl/v0.0.9"}
-		]`,
-		tarball: frlTarball(t, "v0.1.0"),
-	}
-	srv := httptest.NewServer(gh.handler())
-	defer srv.Close()
+	for _, tc := range []struct {
+		name     string
+		releases string
+		assetTag string
+		args     []string
+		want     string
+	}{
+		{
+			// Newest-first, with prereleases and a foreign tag ahead of the real
+			// one: the script must skip all three.
+			name: "latest is a root tag",
+			releases: `[
+				{"tag_name": "v0.3.0-rc1"},
+				{"tag_name": "cmd/frl/v0.2.1-rc1"},
+				{"tag_name": "tools/bazelscaleset/v9.9.9"},
+				{"tag_name": "v0.2.0"},
+				{"tag_name": "cmd/frl/v0.1.0"}
+			]`,
+			assetTag: "v0.2.0",
+			want:     "v0.2.0",
+		},
+		{
+			name:     "latest is the legacy nested tag",
+			releases: `[{"tag_name": "cmd/frl/v0.2.0-rc1"}, {"tag_name": "cmd/frl/v0.1.0"}, {"tag_name": "cmd/frl/v0.0.9"}]`,
+			assetTag: "cmd/frl/v0.1.0",
+			want:     "v0.1.0",
+		},
+		{
+			// The release list is never read for an explicit version, so the
+			// script cannot know v0.1.0 was published as cmd/frl/v0.1.0: the root
+			// tag 404s and the legacy form serves it.
+			name:     "explicit version published under the legacy tag",
+			releases: `[]`,
+			assetTag: "cmd/frl/v0.1.0",
+			args:     []string{"--version", "v0.1.0"},
+			want:     "v0.1.0",
+		},
+		{
+			name:     "explicit legacy full tag",
+			releases: `[]`,
+			assetTag: "cmd/frl/v0.1.0",
+			args:     []string{"--version", "cmd/frl/v0.1.0"},
+			want:     "v0.1.0",
+		},
+		{
+			name:     "explicit version without the v",
+			releases: `[]`,
+			assetTag: "v0.2.0",
+			args:     []string{"--version", "0.2.0"},
+			want:     "v0.2.0",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			gh := &fakeGitHub{releasesJSON: tc.releases, assetTag: tc.assetTag, tarball: frlTarball(t, tc.want)}
+			srv := httptest.NewServer(gh.handler())
+			defer srv.Close()
 
-	out, ok, installDir := runInstaller(t, srv.URL, srv.URL)
-	if !ok {
-		t.Fatalf("installer failed on the happy path:\n%s", out)
-	}
-	if !strings.Contains(out, "v0.1.0") {
-		t.Errorf("installer never reported the version it resolved; a prerelease or the library's own\n"+
-			"v9.9.9 tag may have been selected. Output:\n%s", out)
-	}
-	if strings.Contains(out, "rc1") {
-		t.Errorf("installer selected a prerelease. Output:\n%s", out)
-	}
+			out, ok, installDir := runInstaller(t, srv.URL, srv.URL, tc.args...)
+			if !ok {
+				t.Fatalf("installer failed:\n%s\nasset requests: %q", out, gh.requested())
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("installer never reported %s. Output:\n%s", tc.want, out)
+			}
+			if strings.Contains(out, "rc1") || strings.Contains(out, "9.9.9") {
+				t.Errorf("installer selected a prerelease or a foreign tag. Output:\n%s", out)
+			}
+			for _, path := range gh.requested() {
+				if strings.HasSuffix(path, "checksums.txt") && !strings.HasPrefix(path, "/releases/download/"+tc.assetTag+"/") {
+					t.Errorf("checksums.txt fetched from %s, not from the release that served the asset (%s)", path, tc.assetTag)
+				}
+			}
 
-	installed := filepath.Join(installDir, "frl")
-	info, err := os.Stat(installed)
-	if err != nil {
-		t.Fatalf("installer reported success but installed nothing at %s: %v\noutput:\n%s", installed, err, out)
-	}
-	if info.Mode().Perm()&0o111 == 0 {
-		t.Errorf("installed frl is not executable (mode %v)", info.Mode().Perm())
-	}
-	got, err := exec.Command(installed, "version", "--short").Output()
-	if err != nil {
-		t.Fatalf("installed frl does not run: %v", err)
-	}
-	if strings.TrimSpace(string(got)) != "v0.1.0" {
-		t.Errorf("installed frl reports %q, want v0.1.0", strings.TrimSpace(string(got)))
+			installed := filepath.Join(installDir, "frl")
+			info, err := os.Stat(installed)
+			if err != nil {
+				t.Fatalf("installer reported success but installed nothing at %s: %v\noutput:\n%s", installed, err, out)
+			}
+			if info.Mode().Perm()&0o111 == 0 {
+				t.Errorf("installed frl is not executable (mode %v)", info.Mode().Perm())
+			}
+			got, err := exec.Command(installed, "version", "--short").Output()
+			if err != nil {
+				t.Fatalf("installed frl does not run: %v", err)
+			}
+			if strings.TrimSpace(string(got)) != tc.want {
+				t.Errorf("installed frl reports %q, want %s", strings.TrimSpace(string(got)), tc.want)
+			}
+		})
 	}
 }
 
@@ -260,8 +340,9 @@ func TestInstallerRefusesACorruptedDownload(t *testing.T) {
 	t.Parallel()
 
 	gh := &fakeGitHub{
-		releasesJSON:    `[{"tag_name": "cmd/frl/v0.1.0"}]`,
-		tarball:         frlTarball(t, "v0.1.0"),
+		releasesJSON:    `[{"tag_name": "v0.2.0"}]`,
+		assetTag:        "v0.2.0",
+		tarball:         frlTarball(t, "v0.2.0"),
 		corruptChecksum: true,
 	}
 	srv := httptest.NewServer(gh.handler())

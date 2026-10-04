@@ -171,12 +171,12 @@ func collect(dir string, reach *cascades.ReachabilityCollector) ([]Entry, Stats,
 			// counted (not planned) so the corpus total reconciles.
 			var plan planFn
 			switch {
-			case yamsql.IsQuery(t.Query):
-				st.Queries++
-				plan = planSelect
 			case isDML(t.Query):
 				st.DML++
 				plan = planDML
+			case yamsql.IsQuery(t.Query):
+				st.Queries++
+				plan = planSelect
 			default:
 				st.NonQuery++
 				continue

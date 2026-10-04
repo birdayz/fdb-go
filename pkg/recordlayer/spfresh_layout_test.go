@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -169,6 +170,9 @@ func TestValidateSPFreshConfig(t *testing.T) {
 	bad(func(c *SPFreshConfig) { c.Alpha = 1.0 }, "alpha")
 	bad(func(c *SPFreshConfig) { c.Kn = 0 }, "kn")
 	bad(func(c *SPFreshConfig) { c.NumExBits = 9 }, "exBits")
+	// 0 extra bits is not a count the RaBitQ encoder takes; it used to pass
+	// here and be replaced by 4 in the quantizer.
+	bad(func(c *SPFreshConfig) { c.NumExBits = 0 }, "exBits")
 	// Sidecar=false bricks maintenance (split/merge/GC hard-require the fp16
 	// sidecar; no source-record fallback exists) — must be a config error,
 	// never a silently degraded index.
@@ -199,7 +203,10 @@ func TestParseSPFreshConfig(t *testing.T) {
 			IndexOptionSPFreshSidecar:       "false",
 		},
 	}
-	c := parseSPFreshConfig(idx)
+	c, err := parseSPFreshConfig(idx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if c.NumDimensions != 768 || c.Metric != VectorMetricCosine || c.Lmax != 128 ||
 		c.Alpha != 1.5 || c.Sidecar {
 		t.Fatalf("parse mismatch: %+v", c)
@@ -208,7 +215,7 @@ func TestParseSPFreshConfig(t *testing.T) {
 	// SPFRESH; a silent Euclidean fallback made the planner candidate
 	// advertise squared distances while re-rank returned true L2).
 	idx.Options[IndexOptionSPFreshMetric] = "EUCLIDEAN_SQUARE_METRIC"
-	if c := parseSPFreshConfig(idx); c.Metric != VectorMetricEuclideanSquare {
+	if c, err := parseSPFreshConfig(idx); err != nil || c.Metric != VectorMetricEuclideanSquare {
 		t.Fatalf("EUCLIDEAN_SQUARE_METRIC parsed to %v, want VectorMetricEuclideanSquare", c.Metric)
 	}
 	// Absent options take RFC defaults.
@@ -259,4 +266,81 @@ func FuzzSPFreshPostingPKSpan(f *testing.F) {
 			t.Fatalf("span decodes to %d elements, postingPK gave %d", len(got), len(pk))
 		}
 	})
+}
+
+// An SPFresh option that does not parse, and a metric that is not one of the
+// four Metric names, is refused rather than read as its default: "cosine" was
+// maintained as Euclidean while the planner read it as cosine.
+func TestParseSPFreshConfigRefusesWhatDoesNotParse(t *testing.T) {
+	t.Parallel()
+	for key, v := range map[string]string{
+		IndexOptionSPFreshMetric:          "cosine",
+		IndexOptionSPFreshLmax:            "sixteen",
+		IndexOptionSPFreshAlpha:           "1,5",
+		IndexOptionSPFreshSidecar:         "maybe",
+		IndexOptionSPFreshNumDimensions:   "",
+		IndexOptionSPFreshRaBitQNumExBits: "1.0",
+	} {
+		idx := &Index{Name: "v", Type: IndexTypeVectorSPFresh, Options: map[string]string{
+			IndexOptionSPFreshNumDimensions: "8", key: v,
+		}}
+		if _, err := parseSPFreshConfig(idx); err == nil {
+			t.Errorf("%s=%q parsed", key, v)
+		}
+	}
+	idx := &Index{Name: "v", Type: IndexTypeVectorSPFresh, Options: map[string]string{
+		IndexOptionSPFreshNumDimensions: "8", IndexOptionSPFreshMetric: "cosine",
+	}}
+	var iae *IllegalArgumentError
+	if _, err := parseSPFreshConfig(idx); !errors.As(err, &iae) || iae.Message != "No enum constant com.apple.foundationdb.linear.Metric.cosine" {
+		t.Errorf("metric cosine: %v", err)
+	}
+	// A configuration the maintainer refuses is a MetaDataError, whether an
+	// option does not parse or a parsed value is out of range.
+	var mde *MetaDataError
+	if _, err := readSPFreshConfig(&Index{Name: "v", Type: IndexTypeVectorSPFresh, Options: map[string]string{
+		IndexOptionSPFreshNumDimensions: "8", IndexOptionSPFreshRaBitQNumExBits: "0",
+	}}); !errors.As(err, &mde) || mde.Message != "spfresh: raBitQNumExBits must be in [1, 8], got 0" {
+		t.Errorf("readSPFreshConfig of 0 extra bits: %v, want the MetaDataError", err)
+	}
+	if _, err := readSPFreshConfig(&Index{Name: "v", Type: IndexTypeVectorSPFresh, Options: map[string]string{
+		IndexOptionSPFreshNumDimensions: "8", IndexOptionSPFreshLmax: "sixteen",
+	}}); !errors.As(err, &mde) {
+		t.Errorf("an option that does not parse: %v, want a MetaDataError", err)
+	}
+	// The planner's metric is the maintainer's: VectorIndexMetric agrees with
+	// the metric of the configuration the maintainer parses
+	// (parseSPFreshConfig), and the default is Euclidean. A metric the
+	// maintainer refuses is refused by the planner's read too, with the
+	// maintainer's class.
+	for _, c := range []struct {
+		metric string // "" leaves the option unset
+		want   VectorMetric
+	}{
+		{"", VectorMetricEuclidean},
+		{"EUCLIDEAN_METRIC", VectorMetricEuclidean},
+		{"COSINE_METRIC", VectorMetricCosine},
+		{"EUCLIDEAN_SQUARE_METRIC", VectorMetricEuclideanSquare},
+		{"DOT_PRODUCT_METRIC", VectorMetricInnerProduct},
+	} {
+		opts := map[string]string{IndexOptionSPFreshNumDimensions: "8"}
+		if c.metric != "" {
+			opts[IndexOptionSPFreshMetric] = c.metric
+		}
+		idx := &Index{Name: "v", Type: IndexTypeVectorSPFresh, Options: opts}
+		got, err := VectorIndexMetric(idx)
+		cfg, perr := parseSPFreshConfig(idx)
+		if err != nil || perr != nil || got != c.want || cfg.Metric != got {
+			t.Errorf("%q: VectorIndexMetric %v %v, parseSPFreshConfig's %v %v, want %v", c.metric, got, err, cfg.Metric, perr, c.want)
+		}
+	}
+	if _, err := VectorIndexMetric(idx); !errors.As(err, &iae) {
+		t.Errorf("the planner's read of metric cosine: %v, want the maintainer's IllegalArgumentError", err)
+	}
+	// A non-vector index has no vector metric: the Go-only refusal is a
+	// MetaDataError (the planner filters on the index type first).
+	if _, err := VectorIndexMetric(&Index{Name: "v", Type: IndexTypeValue}); !errors.As(err, &mde) ||
+		mde.Message != `index "v" of type "value" is not a vector index` {
+		t.Errorf("a non-vector index: %v", err)
+	}
 }

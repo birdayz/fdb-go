@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"fmt"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -20,9 +22,9 @@ type selectSubsumptionPredicateAlternativeBuilder func() (
 // selectSubsumptionPredicateCandidateGroup holds every query-predicate mapping
 // that can cover one candidate predicate. Candidate identity, rather than
 // semantic equality, defines a group. Each alternative is the list of
-// mappings the product selects for the candidate together: one mapping for a
-// non-placeholder candidate, and for a placeholder the members of ONE fold
-// (see selectSubsumptionFoldPlaceholderGroup).
+// mappings the product selects for the candidate together: one mapping, or
+// the members of a simple placeholder comparison fold
+// (see selectSubsumptionGroupAlternatives).
 type selectSubsumptionPredicateCandidateGroup struct {
 	candidate    predicates.QueryPredicate
 	alternatives [][]*PredicateMapping
@@ -34,12 +36,12 @@ type selectSubsumptionPredicateCandidateGroup struct {
 // Like Java SelectExpression.subsumedBy, the product is grouped by candidate
 // predicate identity: each filtering candidate must choose exactly one query
 // predicate that implies it, while one query predicate may cover several
-// distinct candidates. A placeholder candidate is the one exception, and it
-// is Java's own: Java folds every comparison on one column into a single
-// sargable before matching, so a placeholder sees one query predicate; Go
-// keeps one comparison per query predicate and folds the placeholder's
-// mappings into ONE alternative here (foldPlaceholderBindings), the members
-// sharing the merged range. Go additionally completes every product with a
+// distinct candidates. The Select constructor groups same-value comparisons
+// into PredicateWithValueAndRanges, as Java does. For callers still supplying
+// individual ComparisonPredicates, a placeholder's simple comparison mappings
+// fold into ONE alternative (foldPlaceholderBindings), the members sharing
+// the merged range. Range predicates retain their own mappings, including
+// residual-only mappings with no scan range. Go completes every product with a
 // fresh TRUE residual mapping for each original query predicate that the
 // selected candidate mappings did not use — the fold's non-members among
 // them. PartialMatch compensation ignores a query predicate with no mapping,
@@ -109,6 +111,7 @@ func enumerateSelectSubsumptionPredicateAlternatives(
 	groupMappings := make([][]*PredicateMapping, 0)
 	groupIndexes := make(map[string]int, len(candidatePredicates))
 	for queryIndex, translatedQueryPredicate := range translatedQueryPredicates {
+		var impliedMappings []*PredicateMapping
 		seenCandidates := make(map[string]struct{}, len(candidatePredicates))
 		for _, candidatePredicate := range candidatePredicates {
 			candidateKey := predicateKey(candidatePredicate)
@@ -127,7 +130,22 @@ func enumerateSelectSubsumptionPredicateAlternatives(
 			if !implied {
 				continue
 			}
+			// Java findImpliedMappings deduplicates semantic MappingKeys for
+			// this original predicate before grouping by candidate identity.
+			duplicate := false
+			for _, previous := range impliedMappings {
+				if previous.GetMappingKind() == mapping.GetMappingKind() &&
+					predicates.SemanticEqualsUnderAliasMap(previous.GetCandidatePredicate(), mapping.GetCandidatePredicate(), nil) {
+					duplicate = true
+					break
+				}
+			}
+			if duplicate {
+				continue
+			}
+			impliedMappings = append(impliedMappings, mapping)
 
+			candidateKey = predicateKey(mapping.GetCandidatePredicate())
 			groupIndex, grouped := groupIndexes[candidateKey]
 			if !grouped {
 				groupIndex = len(groups)
@@ -135,7 +153,7 @@ func enumerateSelectSubsumptionPredicateAlternatives(
 				groups = append(
 					groups,
 					selectSubsumptionPredicateCandidateGroup{
-						candidate: candidatePredicate,
+						candidate: mapping.GetCandidatePredicate(),
 					},
 				)
 				groupMappings = append(groupMappings, nil)
@@ -186,11 +204,12 @@ func enumerateSelectSubsumptionPredicateAlternatives(
 
 // selectSubsumptionGroupAlternatives turns one candidate's mappings into the
 // alternatives the product enumerates. A non-placeholder candidate offers
-// each mapping on its own, as Java's cross product does. A placeholder's
-// mappings are all sargable bindings of one column; they fold into ONE
-// alternative holding the members of the fold, each rebuilt over the merged
-// range — Java's single sargable per column. The non-members carry no
-// mapping and are completed as residuals by
+// each mapping on its own, as Java's cross product does. A placeholder group
+// consisting solely of single-comparison bindings folds into ONE alternative
+// holding the members of the fold, each rebuilt over the merged range.
+// Range predicates and residual-only mappings use the cross product unchanged;
+// rebuilding them as simple bindings would lose their compensation. The
+// non-members carry no mapping and are completed as residuals by
 // buildSelectSubsumptionPredicateAlternative.
 func selectSubsumptionGroupAlternatives(
 	candidate predicates.QueryPredicate,
@@ -214,14 +233,8 @@ func selectSubsumptionGroupAlternatives(
 		comparisonRange := mapping.GetComparisonRange()
 		if !isComparison || cp == nil || comparisonRange == nil ||
 			len(comparisonRange.GetComparisons()) != 1 {
-			// Every placeholder mapping is built by
-			// selectSubsumptionPredicateImpliedMappingMaybe over exactly one
-			// bound comparison; a mapping shaped otherwise cannot be folded
-			// without dropping what the fold does not read, so the group
-			// enumerates one mapping per alternative as the cross product
-			// always did. Unreachable from the builder; pinned as a fallback
-			// (not a drop) by
-			// TestSelectSubsumptionGroupAlternatives_FoldsOnlyWellFormedPlaceholderMappings.
+			// A normalized range predicate can have its own partial residual
+			// or no scan range at all. Keep its mapping and compensation intact.
 			return oneEach()
 		}
 		bound = append(bound, placeholderBinding{
@@ -319,14 +332,24 @@ func buildSelectSubsumptionPredicateAlternative(
 
 		parameterAlias := mapping.GetParameterAlias()
 		comparisonRange := mapping.GetComparisonRange()
-		if (parameterAlias == nil) != (comparisonRange == nil) {
-			return nil, nil, false
-		}
 		if parameterAlias == nil {
+			if comparisonRange != nil {
+				return nil, nil, false
+			}
 			continue
 		}
-		if parameterAlias.IsZero() || comparisonRange == nil {
+		if parameterAlias.IsZero() {
 			return nil, nil, false
+		}
+		if comparisonRange == nil {
+			// Java retains the placeholder alias for a multi-range predicate
+			// even though its entire predicate must be compensated.
+			placeholder, ok := mapping.GetCandidatePredicate().(*predicates.Placeholder)
+			if !ok || !selectSubsumptionCandidatePredicateIsNonFiltering(placeholder) ||
+				placeholder.GetParameterAlias() != *parameterAlias {
+				return nil, nil, false
+			}
+			continue
 		}
 
 		var merged bool
@@ -398,7 +421,9 @@ func buildSelectSubsumptionPredicateAlternative(
 
 // selectSubsumptionPredicateImpliedMappingMaybe implements the bounded
 // predicate shapes currently supported by Go's matcher:
-//   - ComparisonPredicate to an unconstraining Placeholder;
+//   - ComparisonPredicate or PredicateWithValueAndRanges to an unconstraining
+//     Placeholder, retaining any comparisons the scan cannot consume;
+//   - OR leaf value to a Placeholder, as a residual-only exploration hint;
 //   - any query predicate to a non-placeholder TRUE predicate, with residual;
 //   - semantic equality for all other non-placeholder predicates supported by
 //     predicates.SemanticEqualsUnderAliasMap.
@@ -428,6 +453,19 @@ func selectSubsumptionPredicateImpliedMappingMaybe(
 			placeholder.IsConstraining() ||
 			placeholder.GetParameterAlias().IsZero() {
 			return nil, false
+		}
+		if disjunction, isOr := translatedQueryPredicate.(*predicates.OrPredicate); isOr {
+			aliases, err := bindingAliasMap.ForwardMap()
+			if err != nil || !selectSubsumptionOrHasMatchingLeaf(disjunction, placeholder.GetValue(), aliases) {
+				return nil, false
+			}
+			// Java's OR-term hint licenses exploration, never a scan bound.
+			return OrTermMappingBuilder(originalQueryPredicate, translatedQueryPredicate,
+				predicates.NewConstantPredicate(predicates.TriTrue)).
+				setKnownPredicateCompensation(reapplyResidualCompensation(originalQueryPredicate), "residual").Build(), true
+		}
+		if ranges, ok := translatedQueryPredicate.(*predicates.PredicateWithValueAndRanges); ok {
+			return selectSubsumptionRangeMapping(originalQueryPredicate, ranges, placeholder, candidateQuantifiers)
 		}
 		comparisonPredicate, isComparison := translatedQueryPredicate.(*predicates.ComparisonPredicate)
 		if !isComparison || comparisonPredicate == nil {
@@ -470,6 +508,25 @@ func selectSubsumptionPredicateImpliedMappingMaybe(
 	if err != nil {
 		return nil, false
 	}
+	// Literal bounds are immutable, so their containment needs no runtime
+	// parameter constraint. Retain the query predicate as compensation when
+	// the candidate's range is strictly wider (Java range implication).
+	queryValue, queryRanges := selectSubsumptionValueRanges(translatedQueryPredicate)
+	candidateValue, candidateRanges := selectSubsumptionValueRanges(candidatePredicate)
+	if len(queryRanges) > 0 && len(candidateRanges) > 0 && values.SemanticEqualsUnderAliasMap(queryValue, candidateValue, valuesAliasMap) {
+		if selectSubsumptionRangesEnclose(candidateRanges, queryRanges) {
+			compensation := DefaultPredicateCompensation()
+			identity := "default"
+			if !selectSubsumptionRangesEnclose(queryRanges, candidateRanges) {
+				compensation = reapplyResidualCompensation(originalQueryPredicate)
+				identity = "residual"
+			}
+			return selectSubsumptionMappingBuilderWithCompensation(
+				RegularMappingBuilder(originalQueryPredicate, translatedQueryPredicate, candidatePredicate),
+				originalQueryPredicate, compensation, identity,
+			).Build(), true
+		}
+	}
 	if !predicates.SemanticEqualsUnderAliasMap(
 		translatedQueryPredicate,
 		candidatePredicate,
@@ -488,6 +545,163 @@ func selectSubsumptionPredicateImpliedMappingMaybe(
 		DefaultPredicateCompensation(),
 		"default",
 	).Build(), true
+}
+
+func selectSubsumptionValueRanges(predicate predicates.QueryPredicate) (values.Value, []*predicates.RangeConstraints) {
+	switch p := predicate.(type) {
+	case *predicates.ComparisonPredicate:
+		return p.Operand, []*predicates.RangeConstraints{predicates.NewRangeConstraints([]predicates.Comparison{p.Comparison}, nil)}
+	case *predicates.PredicateWithValueAndRanges:
+		return p.GetValue(), p.GetRanges()
+	default:
+		return nil, nil
+	}
+}
+
+func selectSubsumptionRangesEnclose(outer, inner []*predicates.RangeConstraints) bool {
+	for _, rangeToCover := range inner {
+		covered := false
+		for _, covering := range outer {
+			if covering.Encloses(rangeToCover) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			return false
+		}
+	}
+	return true
+}
+
+func selectSubsumptionRangeMapping(original predicates.QueryPredicate, translated *predicates.PredicateWithValueAndRanges, placeholder *predicates.Placeholder, quantifiers []expressions.Quantifier) (*PredicateMapping, bool) {
+	if len(translated.GetRanges()) == 0 {
+		return nil, false
+	}
+	builder := RegularMappingBuilder(original, translated, placeholder).
+		SetParameterAlias(placeholder.GetParameterAlias())
+	if len(translated.GetRanges()) > 1 {
+		if _, ok := selectSubsumptionValueMatchesPlaceholder(translated.GetValue(), placeholder, quantifiers); !ok {
+			return nil, false
+		}
+		return builder.setKnownPredicateCompensation(
+			selectSubsumptionRangePredicateCompensation(translated, translated, placeholder.GetParameterAlias()),
+			"select-range-prefix",
+		).Build(), true
+	}
+
+	var comparisons []*predicates.Comparison
+	var residuals []predicates.Comparison
+	// MergeAll returns the very comparisons it was handed, including bounds
+	// displaced by a later equality. Preserve their pre-orientation forms so
+	// a residual of `5 > x` never becomes `5 < 5` after binding `x < 5`.
+	unoriented := make(map[*predicates.Comparison]predicates.Comparison)
+	for _, comparison := range translated.GetRanges()[0].GetComparisons() {
+		bound, ok := bindSelectSubsumptionComparisonToPlaceholder(
+			predicates.NewComparisonPredicate(translated.GetValue(), comparison), placeholder, quantifiers,
+		)
+		if !ok {
+			residuals = append(residuals, comparison)
+			continue
+		}
+		for _, boundComparison := range bound.GetComparisons() {
+			comparisons = append(comparisons, boundComparison)
+			unoriented[boundComparison] = comparison
+		}
+	}
+	if len(comparisons) == 0 {
+		return nil, false
+	}
+	merged := predicates.MergeAll(comparisons)
+	for _, comparison := range merged.Residuals {
+		residuals = append(residuals, unoriented[comparison])
+	}
+	var residual predicates.QueryPredicate
+	if len(residuals) > 0 {
+		residual = predicates.NewPredicateWithValueAndRanges(translated.GetValue(), []*predicates.RangeConstraints{
+			predicates.NewRangeConstraints(residuals, nil),
+		})
+	}
+	return builder.SetComparisonRange(merged.Range).setKnownPredicateCompensation(
+		selectSubsumptionRangePredicateCompensation(translated, residual, placeholder.GetParameterAlias()),
+		"select-range-prefix",
+	).Build(), true
+}
+
+// selectSubsumptionRangePredicateCompensation follows Java's
+// mapPredicateToPlaceholder and LeafQueryPredicate.computeCompensationFunctionForLeaf:
+// a bound prefix leaves only the unconsumed comparisons; an unbound prefix
+// leaves the whole query predicate. Both are already translated into candidate
+// scope and must be pulled through the candidate before apply-time rebasing.
+// Reversing the binding alias map cannot undo general Value translations.
+func selectSubsumptionRangePredicateCompensation(
+	translated predicates.QueryPredicate,
+	residual predicates.QueryPredicate,
+	parameterAlias values.CorrelationIdentifier,
+) PredicateCompensation {
+	return func(_ PartialMatch, prefix map[values.CorrelationIdentifier]*predicates.ComparisonRange, pullUp *PullUp) PredicateCompensationFunc {
+		predicate := translated
+		if _, bound := prefix[parameterAlias]; bound {
+			predicate = residual
+		}
+		if predicate == nil {
+			return NoPredicateCompensationNeeded()
+		}
+		if pullUp == nil {
+			return ImpossiblePredicateCompensation()
+		}
+		predicate, err := predicates.ToResidualPredicate(predicate)
+		if err != nil {
+			return ImpossiblePredicateCompensation()
+		}
+		pulledUp, err := predicates.TransformEmbeddedValuesChecked(predicate, func(value values.Value) (values.Value, error) {
+			// Literals and external correlations need no candidate output.
+			// Go's MaxMatchMap refuses an empty mapping even for these values;
+			// establish independence from the entire pull-up chain explicitly.
+			correlatedTo := values.GetCorrelatedToOfValue(value)
+			independent := true
+			for level := pullUp; level != nil; level = level.GetParent() {
+				for alias := range level.GetRangedOverAliases() {
+					if _, correlated := correlatedTo[alias]; correlated {
+						independent = false
+					}
+				}
+			}
+			if independent {
+				return value, nil
+			}
+			result := pullUp.PullUpValueMaybe(value)
+			if result == nil {
+				return nil, fmt.Errorf("select range residual value cannot be pulled through the candidate")
+			}
+			return result, nil
+		})
+		if err != nil {
+			return ImpossiblePredicateCompensation()
+		}
+		return OfPredicateCompensation(pulledUp, true)
+	}
+}
+
+func selectSubsumptionOrHasMatchingLeaf(predicate predicates.QueryPredicate, candidate values.Value, aliases values.AliasMap) bool {
+	if len(predicate.Children()) == 0 {
+		var operand values.Value
+		switch leaf := predicate.(type) {
+		case *predicates.ComparisonPredicate:
+			operand = leaf.Operand
+		case *predicates.ValuePredicate:
+			operand = leaf.Value
+		case *predicates.PredicateWithValueAndRanges:
+			operand = leaf.GetValue()
+		}
+		return operand != nil && values.SemanticEqualsUnderAliasMap(operand, candidate, aliases)
+	}
+	for _, child := range predicate.Children() {
+		if selectSubsumptionOrHasMatchingLeaf(child, candidate, aliases) {
+			return true
+		}
+	}
+	return false
 }
 
 // selectSubsumptionMappingBuilderWithCompensation installs Java's
@@ -640,37 +854,9 @@ func bindSelectSubsumptionComparisonToPlaceholder(
 	placeholder *predicates.Placeholder,
 	candidateQuantifiers []expressions.Quantifier,
 ) (*predicates.ComparisonRange, bool) {
-	if comparisonPredicate == nil || placeholder == nil ||
-		selectSubsumptionIsTypedNil(comparisonPredicate.Operand) ||
-		placeholder.GetValue() == nil ||
-		selectSubsumptionIsTypedNil(placeholder.GetValue()) {
+	if comparisonPredicate == nil || selectSubsumptionIsTypedNil(comparisonPredicate.Operand) {
 		return nil, false
 	}
-
-	candidateKinds := make(
-		map[values.CorrelationIdentifier]expressions.QuantifierKind,
-		len(candidateQuantifiers),
-	)
-	for _, candidateQuantifier := range candidateQuantifiers {
-		candidateAlias := candidateQuantifier.GetAlias()
-		if candidateAlias.IsZero() {
-			return nil, false
-		}
-		if _, duplicate := candidateKinds[candidateAlias]; duplicate {
-			return nil, false
-		}
-		candidateKinds[candidateAlias] = candidateQuantifier.Kind()
-	}
-
-	sourceAlias, hasSource := selectSubsumptionSingleLocalValueSource(
-		placeholder.GetValue(),
-		candidateKinds,
-	)
-	if !hasSource ||
-		candidateKinds[sourceAlias] != expressions.QuantifierForEach {
-		return nil, false
-	}
-
 	for _, orientation := range comparisonOrientations(
 		comparisonPredicate,
 	) {
@@ -679,19 +865,15 @@ func bindSelectSubsumptionComparisonToPlaceholder(
 		) {
 			continue
 		}
-		columnSource, hasColumnSource := selectSubsumptionSingleLocalValueSource(
-			orientation.column,
-			candidateKinds,
+		sourceAlias, matches := selectSubsumptionValueMatchesPlaceholder(
+			orientation.column, placeholder, candidateQuantifiers,
 		)
-		if !hasColumnSource || columnSource != sourceAlias {
+		if !matches {
 			continue
 		}
 		if !comparandIndependentOfSource(
 			orientation.comparison.Operand,
 			sourceAlias,
-		) || !valuesMatchColumn(
-			orientation.column,
-			placeholder.GetValue(),
 		) {
 			continue
 		}
@@ -712,6 +894,38 @@ func bindSelectSubsumptionComparisonToPlaceholder(
 	return nil, false
 }
 
+func selectSubsumptionValueMatchesPlaceholder(
+	value values.Value,
+	placeholder *predicates.Placeholder,
+	candidateQuantifiers []expressions.Quantifier,
+) (values.CorrelationIdentifier, bool) {
+	var zero values.CorrelationIdentifier
+	if value == nil || selectSubsumptionIsTypedNil(value) || placeholder == nil ||
+		placeholder.GetValue() == nil || selectSubsumptionIsTypedNil(placeholder.GetValue()) {
+		return zero, false
+	}
+	candidateKinds := make(map[values.CorrelationIdentifier]expressions.QuantifierKind, len(candidateQuantifiers))
+	for _, quantifier := range candidateQuantifiers {
+		alias := quantifier.GetAlias()
+		if alias.IsZero() {
+			return zero, false
+		}
+		if _, duplicate := candidateKinds[alias]; duplicate {
+			return zero, false
+		}
+		candidateKinds[alias] = quantifier.Kind()
+	}
+	source, hasSource := selectSubsumptionSingleLocalValueSource(placeholder.GetValue(), candidateKinds)
+	if !hasSource || candidateKinds[source] != expressions.QuantifierForEach {
+		return zero, false
+	}
+	columnSource, hasColumnSource := selectSubsumptionSingleLocalValueSource(value, candidateKinds)
+	if !hasColumnSource || columnSource != source || !valuesMatchColumn(value, placeholder.GetValue()) {
+		return zero, false
+	}
+	return source, true
+}
+
 // selectSubsumptionSingleLocalValueSource returns the value's sole correlation
 // when it names a candidate-owned alias. A placeholder column and a comparison
 // LHS must be wholly owned by one candidate leg; a value that also reads an
@@ -725,7 +939,8 @@ func selectSubsumptionSingleLocalValueSource(
 		var zero values.CorrelationIdentifier
 		return zero, false
 	}
-	correlatedTo := values.GetCorrelatedToOfValue(value)
+	correlatedTo := make(map[values.CorrelationIdentifier]struct{})
+	values.CollectCorrelatedToOfValue(value, correlatedTo)
 	if len(correlatedTo) != 1 {
 		var zero values.CorrelationIdentifier
 		return zero, false

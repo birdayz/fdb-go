@@ -242,7 +242,7 @@ func TestGrvFlags(t *testing.T) {
 }
 
 // TestGetCommittedVersion_BeforeCommit verifies that GetCommittedVersion
-// returns an error before the transaction has committed.
+// returns C++ invalidVersion (-1), without an error, before any commit.
 func TestGetCommittedVersion_BeforeCommit(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -252,9 +252,9 @@ func TestGetCommittedVersion_BeforeCommit(t *testing.T) {
 	defer db.Close()
 
 	tx := db.CreateTransaction()
-	_, err := tx.GetCommittedVersion()
-	if err == nil {
-		t.Fatal("expected error before commit")
+	version, err := tx.GetCommittedVersion()
+	if err != nil || version != -1 {
+		t.Fatalf("fresh committed version = %d, %v; want -1, nil", version, err)
 	}
 }
 

@@ -90,7 +90,7 @@ func buildChainedUnnestMetadata(t *testing.T) *recordlayer.RecordMetaData {
 		},
 	}
 	union := &descriptorpb.DescriptorProto{
-		Name: proto.String("UnionDescriptor"),
+		Name: proto.String("RecordTypeUnion"),
 		Field: []*descriptorpb.FieldDescriptorProto{
 			{
 				Name: proto.String("_T4"), Number: proto.Int32(1), Label: opt, Type: msg,
@@ -259,7 +259,7 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		if perr != nil {
 			t.Fatalf("plan %q: %v", sql, perr)
 		}
-		got := embedded.ResultColumnLabelsForPlan(plan, md)
+		got := queryLabels(t, sql, md)
 		if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
 			t.Fatalf("columns %q\n got=%v\nwant=%v\nplan=%s", sql, got, want, plan.Explain())
 		}

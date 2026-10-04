@@ -1,6 +1,7 @@
 package expressions
 
 import (
+	"maps"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -26,6 +27,27 @@ func TestSelect_Construction(t *testing.T) {
 	}
 	if !s.CanCorrelate() {
 		t.Fatal("Select MUST anchor a correlation — distinguishing property")
+	}
+}
+
+func TestSelect_CorrelationsCombineResultAndPredicates(t *testing.T) {
+	t.Parallel()
+	resultAlias := values.NamedCorrelationIdentifier("result")
+	valueAlias := values.NamedCorrelationIdentifier("value")
+	rangeAlias := values.NamedCorrelationIdentifier("range")
+	ranged := predicates.NewPredicateWithValueAndRanges(mustQOV(valueAlias), []*predicates.RangeConstraints{
+		predicates.NewRangeConstraints(nil, []predicates.Comparison{{
+			Type: predicates.ComparisonEquals, Operand: mustQOV(rangeAlias),
+		}}),
+	})
+	selectExpr := mustExpression(NewSelectExpression(mustQOV(resultAlias), nil, []predicates.QueryPredicate{ranged, ranged}))
+	want := map[values.CorrelationIdentifier]struct{}{resultAlias: {}, valueAlias: {}, rangeAlias: {}}
+	for range 2 {
+		got := selectExpr.GetCorrelatedToWithoutChildren()
+		if !maps.Equal(got, want) {
+			t.Fatalf("correlations = %v, want %v", got, want)
+		}
+		clear(got)
 	}
 }
 

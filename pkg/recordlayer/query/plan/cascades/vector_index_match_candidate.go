@@ -52,6 +52,9 @@ type VectorIndexScanMatchCandidate struct {
 
 	flowedType values.Type
 	unique     bool
+	// indexEngine is the engine backing the index ("HNSW" or "GUARDIANN"),
+	// Java's getIndexEngineKind.
+	indexEngine string
 
 	// createsDuplicates mirrors Java's
 	// index.getRootExpression().createsDuplicates().
@@ -133,6 +136,12 @@ func NewVectorIndexScanMatchCandidate(
 // types to a freshly constructed vector candidate.
 func (c *VectorIndexScanMatchCandidate) WithPartitionKeyComponentTypes(types []values.Type) *VectorIndexScanMatchCandidate {
 	c.partitionKeyComponentTypes = normalizePhysicalKeyTypes(types, c.partitionCount)
+	return c
+}
+
+// WithIndexEngine records the engine backing the index.
+func (c *VectorIndexScanMatchCandidate) WithIndexEngine(engine string) *VectorIndexScanMatchCandidate {
+	c.indexEngine = engine
 	return c
 }
 
@@ -326,7 +335,8 @@ func (c *VectorIndexScanMatchCandidate) ToScanPlan(
 	if err != nil {
 		return nil
 	}
-	plan = plan.WithPartitionKeyComponentTypes(c.partitionKeyComponentTypes)
+	plan = plan.WithPartitionKeyComponentTypes(c.partitionKeyComponentTypes).WithIndexEngine(c.indexEngine).
+		WithRecordProperties(c.GetPrimaryKeyValues(), !c.createsDuplicates)
 
 	// Carry the partition-key column names so the planner can certify a
 	// partition-column residual (an unconsumed partition INEQUALITY, e.g.

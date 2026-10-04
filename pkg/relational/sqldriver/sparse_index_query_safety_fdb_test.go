@@ -23,21 +23,9 @@ package sqldriver_test
 // The unindexed twin is the oracle. It has no sparse index, so it always reads
 // every record, and any row the indexed side is missing is a row it returns.
 //
-// MEASURED, AND IT CHANGES WHAT THIS FILE IS WORTH TODAY: on this fixture the
-// planner does not choose a sparse index for ANY of these queries — not even
-// `WHERE a = 5 AND keep > 0`, whose predicate is the index's filter verbatim.
-// Every one plans as `PredicatesFilter(Scan(T))` at 900 rows. The candidate
-// machinery exists (ValueIndexScanMatchCandidate carries the predicate proto and
-// an opaque-filter flag, and such a candidate is documented as never COMPLETE),
-// so what declines is the choice rather than the capability — the same shape as
-// the OR-to-union costing observation recorded in TODO.md.
-//
-// So these cases are not currently exercising the implication check; they are
-// pinning the ANSWERS, which is what must not move when sparse matching does
-// start being chosen. That is the moment the check becomes load-bearing, and
-// the cases most likely to catch it getting the implication wrong are already
-// written: `keep >= 0` and `keep IS NOT NULL` both look implied and are not,
-// each by exactly one value.
+// TestFDB_SparseIndexRangeContainment asserts indexed access for an implied
+// literal range and checks that the stricter query residual still filters rows.
+// The twin cases also guard non-implied NULL, boundary, and disjunctive queries.
 
 import (
 	"context"
@@ -216,4 +204,32 @@ func TestFDB_SparseIndexUnderMutation(t *testing.T) {
 	w.Exec("DELETE FROM t WHERE id = 2")
 	w.Want("after deleting a non-indexed row", filtered, []string{"3"})
 	w.Want("unfiltered loses exactly that row too", unfiltered, []string{"1", "3", "4"})
+}
+
+func TestFDB_SparseIndexRangeContainment(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	w := mmNewTwin(t, context.Background(), "/testdb_sparse_ranges", "sparse_ranges",
+		"CREATE TABLE t (id BIGINT, a BIGINT, keep BIGINT, PRIMARY KEY(id)) ",
+		"CREATE INDEX sparse_a AS SELECT a FROM t WHERE keep > 0 ORDER BY a ")
+	w.Exec("INSERT INTO t VALUES (1,5,1),(2,5,10),(3,5,11),(4,5,20),(5,5,0),(6,5,NULL)")
+	query := "SELECT id FROM t WHERE a = 5 AND keep > 10 ORDER BY id"
+	w.Want("stricter range retains its residual", query, []string{"3", "4"})
+	w.WantPlanContains("literal range implication", query, "IndexScan(SPARSE_A")
+	for _, tc := range []struct {
+		where string
+		rows  []string
+	}{
+		{"keep >= 0", []string{"1", "2", "3", "4", "5"}},
+		{"keep IS NULL", []string{"6"}},
+		{"keep IS NOT NULL", []string{"1", "2", "3", "4", "5"}},
+	} {
+		q := "SELECT id FROM t WHERE a = 5 AND " + tc.where + " ORDER BY id"
+		w.Want(tc.where, q, tc.rows)
+		if p := w.Explain(q); strings.Contains(p, "IndexScan(SPARSE_A") {
+			t.Fatalf("unimplied filter used sparse index: %s", p)
+		}
+	}
 }

@@ -12,7 +12,7 @@ package semantic
 // later.
 //
 // All lookups take QualifiedName so the analyzer can handle
-// schema-qualified references uniformly; concrete impls decide how
+// template-qualified references uniformly; concrete impls decide how
 // to resolve un-qualified names (walk the search path, default
 // schema, etc.).
 type Catalog interface {
@@ -79,6 +79,10 @@ type Column struct {
 	// `DataType` once the Type hierarchy is ported.
 	Type string
 
+	// Vector shape accompanies the VECTOR scalar or array element kind.
+	VectorPrecision  int
+	VectorDimensions int
+
 	// Nullable reports whether the column allows NULL values.
 	// Matters for NOT-NULL-gated simplifications (x = x → TRUE).
 	Nullable bool
@@ -90,6 +94,10 @@ type Column struct {
 	// When true, Type is the ELEMENT type string.
 	IsArray bool
 
+	// ElementNullable is an ARRAY whose element may be NULL (ARRAY_AGG under
+	// RESPECT NULLS); a DDL array column's element never is.
+	ElementNullable bool
+
 	// Ephemeral marks a column that is resolvable BY NAME but invisible to
 	// star expansion — Java's Expression.asEphemeral() attribute, applied to
 	// the __ROW_VERSION pseudo-field appended by generateTableAccess
@@ -98,6 +106,20 @@ type Column struct {
 	// column still occupies its trailing slot in the flowed row layout, so
 	// ordinal binding (sourceRowType) keeps it.
 	Ephemeral bool
+
+	// UnqualifiedOutput preserves an attribute introduced without an SQL
+	// qualifier even inside a named operator, such as a whole-struct unnest
+	// alias. Visibility (Ephemeral) and qualification are independent.
+	UnqualifiedOutput bool
+
+	// SQLAuthored marks a column whose NAME the statement's own SQL text wrote
+	// — an unnest's AS or AT alias, a SELECT-list `AS` a derived table or CTE
+	// publishes, a CTE column list — rather than one read from a descriptor.
+	// Resolution compares such a name exactly in both passes: the relaxed
+	// pass repairs descriptor spellings (see relaxedPass), and an authored
+	// name is already the normalized SQL spelling, so folding it only answers
+	// what Java refuses (`FROM t, t.arr AS "e" WHERE E = 1` is 42703 there).
+	SQLAuthored bool
 
 	// StructFields is the DECLARED field list of a STRUCT column or an ARRAY's
 	// STRUCT element (Type "RECORD"), in declared order. IsArray distinguishes

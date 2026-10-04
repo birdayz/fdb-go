@@ -57,6 +57,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/pkg/recordlayer/protoname"
+	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 // Canonical ISO 8601 layouts for temporal value formatting/parsing.
@@ -1010,8 +1011,8 @@ func (f *fieldValue) descendResolvedPath(rootVal any) (any, error) {
 			// is what must be updated when the producers become ordinal-true —
 			// that edit is the signal these two debt entries are retirable.
 			//
-			// Unset singular field = NULL (proto3 presence rules ride
-			// protoreflect.Has).
+			// An unset singular field is NULL (ProtoFieldReadsValue), a
+			// declared default included.
 			v, found := protoFieldByName(rec.ProtoReflect(), acc.Field)
 			if !found {
 				if f.Resolved.FrontierPinned {
@@ -1036,17 +1037,30 @@ func (f *fieldValue) descendResolvedPath(rootVal any) (any, error) {
 // name (query_result.go); a mismatch is a lockstep break.
 const uuidProtoMessageName = "com.apple.foundationdb.record.UUID"
 
+// ProtoFieldReadsValue is the presence rule by which a query reads a record's
+// field: a repeated field is always read (as its list), a singular one only
+// when it is set, and is otherwise NULL. Set is protobuf-java's hasField for
+// either kind of presence, so an implicit-presence (proto3) field at its
+// default is NULL.
+//
+// An unset proto2 field that declares a default is NULL too, though Java's
+// field reader, MessageHelpers.getFieldOnMessage (MessageHelpers.java:124-142),
+// reads the default: a query never hands it the stored record.
+// QueryResult.fromQueriedRecord (QueryResult.java:256-281) first copies the
+// record into a message of the plan's type (MessageHelpers.deepCopyMessage,
+// which copies getAllFields, the set fields), whose descriptor, generated from
+// the type, declares no default. Measured through SQL on both engines
+// (conformance "WS-J an unset field with a declared default reads as the
+// target reads it"): SELECT *, a projection and a predicate all read NULL.
+func ProtoFieldReadsValue(m protoreflect.Message, fd protoreflect.FieldDescriptor) bool {
+	return fd.IsList() || fd.IsMap() || m.Has(fd)
+}
+
 // protoFieldByName reads one field of a proto message by SQL identifier,
 // converting to the engine's row-value domain exactly as the executor's
 // record→row layer (protoFieldToGo) does. found=false when the descriptor
-// has no such field; an unset field with proto2 presence returns (nil, true)
-// — SQL NULL.
-//
-// DIVERGENCE from Java (MessageHelpers.getFieldOnMessage): for a field UNSET
-// but carrying an explicit proto2 default, Java returns the declared default;
-// Go returns NULL (unset → nil). Unreachable through Go's own metadata
-// builder — it never emits explicit field defaults — but a Java-authored
-// descriptor read on the Go side would differ here.
+// has no such field; a field ProtoFieldReadsValue does not read returns
+// (nil, true), SQL NULL.
 func protoFieldByName(m protoreflect.Message, name string) (any, bool) {
 	fields := m.Descriptor().Fields()
 	// Builder-emitted descriptors carry UPPER field names, Java's stored
@@ -1091,7 +1105,7 @@ func protoFieldByName(m protoreflect.Message, name string) (any, bool) {
 	if fd == nil {
 		return nil, false
 	}
-	if !m.Has(fd) && fd.HasPresence() {
+	if !ProtoFieldReadsValue(m, fd) {
 		return nil, true
 	}
 	return ProtoFieldToRowValue(fd, m.Get(fd)), true
@@ -1162,7 +1176,13 @@ func ProtoScalarKindToRowValue(kind protoreflect.Kind, v protoreflect.Value) any
 	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
 		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
 		return v.Int()
-	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind, protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		// protobuf-java hands Java a SIGNED Integer for a 32-bit unsigned field,
+		// so a value >= 2^31 is negative in the target; the key evaluator reads it
+		// the same way (recordlayer key_expression.go), and so does every row.
+		return int64(int32(uint32(v.Uint()))) //nolint:gosec
+	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		// A signed Long in the target: the same 64 bits.
 		return int64(v.Uint()) //nolint:gosec
 	case protoreflect.FloatKind, protoreflect.DoubleKind:
 		return v.Float()
@@ -1620,11 +1640,9 @@ func ContainsAggregate(v Value) bool {
 // level up: over `FROM t1, t2` where both declare an `n`, `T1.N.SK` and
 // `T2.N.SK` are different columns and a bare `N.SK` collapses them in exactly
 // the name-keyed maps this predicate exists to protect. It is also what the two
-// neighbouring authorities already do for a childful reference — `sortKeyFieldRef`
-// renders `LEG.COL` (cascades_translator.go) and `deriveProjectionColumnDef`'s
-// non-nested arm calls `ColumnNameValue` when `Child != nil`
-// (cascades_generator.go) — so qualifying here makes the nested arm agree with
-// its siblings rather than inventing a third rule. The remaining asymmetry is
+// neighbouring authority already does for a childful reference — `sortKeyFieldRef`
+// renders `LEG.COL` (cascades_translator.go) — so qualifying here makes the
+// nested arm agree with it rather than inventing another rule. The remaining asymmetry is
 // ProjectionColumnName's own non-nested arm, which returns a bare `Field`; that
 // arm is deliberately untouched, because changing it moves emitted names for
 // every flat qualified projection and is a separate change.
@@ -1655,7 +1673,7 @@ func NestedResolvedPath(v Value) (string, bool) {
 
 // ProjectionColumnName is the projection output-column NAMING CONTRACT: the
 // name a projected Value's result is keyed under, alias-absent, in the
-// emitted positional row's type (executeProjection's posNames). A NESTED
+// emitted positional row's type. A NESTED
 // FieldValue projects under its resolved PATH ("N.SK"); any other FieldValue
 // under its (possibly dotted)
 // Field; any other Value under its upper-cased ORDINAL-FREE rendering (a
@@ -1699,8 +1717,7 @@ func ProjectionColumnName(v Value) string {
 }
 
 // OutputColumnName is the projection OUTPUT-name authority: the name that keys
-// the emitted positional row's slot for a projected column (executeProjection's
-// posNames) and therefore the name any downstream re-reader must use on the
+// the emitted positional row's slot for a projected column, and therefore the name any downstream re-reader must use on the
 // ordinal frontier — the upper-cased ALIAS when the column carries one, else
 // the ProjectionColumnName rendering. It lives here so every site derives the
 // name from ONE rule instead of a hand-synchronized copy — two copies of this
@@ -1725,7 +1742,7 @@ func OutputColumnName(v Value, alias string) string {
 // rendering for everything else. It is the rule exactProjectionForLogicalProject
 // freezes with, and the rule a consumer must re-derive the natural schema by
 // when it asks whether a frozen name is that schema's own deduplication
-// suffix or an external rename (deriveColumnsFromProjection). Two copies of
+// suffix or an external rename. Two copies of
 // the rule have disagreed before: the natural schema was once re-derived by
 // OutputColumnName alone, which names a nested reference by its dotted path
 // (`N.SK`) where the freeze names it `SK`, so `SELECT sk, n.sk` read the
@@ -1857,11 +1874,29 @@ func ExplainValue(v Value) string { return explainValueOrdinals(v, true) }
 // q$1, ... by first structural occurrence. Named correlations — including a
 // quoted user alias whose text looks like q$7 — are never rewritten.
 func ExplainPlanValues(vs []Value) []string {
+	unique, hasBareUniqueQOV := uniqueExplainRoots(vs, CorrelationIdentifier{})
+	aliases := make(map[CorrelationIdentifier]string, len(unique))
+	if len(unique) == 1 && !hasBareUniqueQOV {
+		aliases[unique[0]] = ""
+	} else {
+		numberExplainRoots(aliases, unique)
+	}
+	result := make([]string, len(vs))
+	for i, v := range vs {
+		result[i] = explainValueOrdinalsWithAliases(v, true, aliases)
+	}
+	return result
+}
+
+// uniqueExplainRoots lists the unique correlations vs read, other than skip,
+// in first structural occurrence, and reports whether one is read as a bare
+// QOV.
+func uniqueExplainRoots(vs []Value, skip CorrelationIdentifier) ([]CorrelationIdentifier, bool) {
 	unique := make([]CorrelationIdentifier, 0, 2)
 	seen := make(map[CorrelationIdentifier]struct{})
 	hasBareUniqueQOV := false
 	add := func(correlation CorrelationIdentifier) {
-		if correlation.kind != correlationKindUnique {
+		if correlation.kind != correlationKindUnique || correlation == skip {
 			return
 		}
 		if _, ok := seen[correlation]; ok {
@@ -1871,7 +1906,8 @@ func ExplainPlanValues(vs []Value) []string {
 		unique = append(unique, correlation)
 	}
 	for _, v := range vs {
-		if qov, ok := v.(*quantifiedObjectValue); ok && qov != nil && qov.correlation.kind == correlationKindUnique {
+		if qov, ok := v.(*quantifiedObjectValue); ok && qov != nil &&
+			qov.correlation.kind == correlationKindUnique && qov.correlation != skip {
 			hasBareUniqueQOV = true
 		}
 		WalkValue(v, func(node Value) bool {
@@ -1892,19 +1928,26 @@ func ExplainPlanValues(vs []Value) []string {
 			return true
 		})
 	}
-	aliases := make(map[CorrelationIdentifier]string, len(unique))
-	if len(unique) == 1 && !hasBareUniqueQOV {
-		aliases[unique[0]] = ""
-	} else {
-		for i, correlation := range unique {
-			aliases[correlation] = "q$" + intToDec(int64(i))
-		}
+	return unique, hasBareUniqueQOV
+}
+
+func numberExplainRoots(aliases map[CorrelationIdentifier]string, unique []CorrelationIdentifier) {
+	for i, correlation := range unique {
+		aliases[correlation] = "q$" + intToDec(int64(i))
 	}
-	result := make([]string, len(vs))
-	for i, v := range vs {
-		result[i] = explainValueOrdinalsWithAliases(v, true, aliases)
-	}
-	return result
+}
+
+// ExplainValueOverInput renders v like ExplainValue with the input correlation
+// spelled as the current row, as Java prints a plan's own input as `_`. The
+// input alias is minted per planning run; printing it would make the plan text
+// depend on allocation order, and so would any other unique root v reads (an
+// outer row the plan is correlated to), which is numbered as ExplainPlanValues
+// numbers its roots.
+func ExplainValueOverInput(v Value, input CorrelationIdentifier) string {
+	aliases := map[CorrelationIdentifier]string{input: currentCorrelation.Name()}
+	unique, _ := uniqueExplainRoots([]Value{v}, input)
+	numberExplainRoots(aliases, unique)
+	return explainValueOrdinalsWithAliases(v, true, aliases)
 }
 
 // ColumnNameValue renders v exactly like ExplainValue but WITHOUT the baked
@@ -2081,8 +2124,21 @@ func explainValueOrdinalsWithAliases(v Value, withOrdinals bool, aliases map[Cor
 		return "FALSE"
 	case *CastValue:
 		return "CAST(" + explainValueOrdinalsWithAliases(cv.Child, withOrdinals, aliases) + " AS " + explainTypeName(cv.Target) + ")"
+	case *PatternForLikeValue:
+		// Java's `pattern ESCAPE escape` (PatternForLikeValue.java:182-188);
+		// an absent ESCAPE, a NULL escape child, is not shown.
+		out := explainValueOrdinalsWithAliases(cv.PatternChild, withOrdinals, aliases)
+		if _, absent := cv.EscapeChild.(*NullValue); cv.EscapeChild != nil && !absent {
+			out += " ESCAPE " + explainValueOrdinalsWithAliases(cv.EscapeChild, withOrdinals, aliases)
+		}
+		return out
+	case *LikeOperatorValue:
+		return explainValueOrdinalsWithAliases(cv.Probe, withOrdinals, aliases) + " LIKE " +
+			explainValueOrdinalsWithAliases(cv.Pattern, withOrdinals, aliases)
 	case *PromoteValue:
 		return "PROMOTE(" + explainValueOrdinalsWithAliases(cv.Child, withOrdinals, aliases) + " TO " + explainTypeName(cv.Target) + ")"
+	case *NarrowValue:
+		return "NARROW(" + explainValueOrdinalsWithAliases(cv.Child, withOrdinals, aliases) + " TO " + explainTypeName(cv.Target) + ")"
 	case *RecordConstructorValue:
 		parts := make([]string, 0, len(cv.Fields))
 		for _, f := range cv.Fields {
@@ -2095,7 +2151,16 @@ func explainValueOrdinalsWithAliases(v Value, withOrdinals bool, aliases map[Cor
 		if cv.Op == AggCountStar {
 			return "COUNT(*)"
 		}
-		return cv.Op.Symbol() + "(" + explainValueOrdinalsWithAliases(cv.Operand, withOrdinals, aliases) + ")"
+		arg := explainValueOrdinalsWithAliases(cv.Operand, withOrdinals, aliases)
+		if cv.Op == AggArrayAgg {
+			if cv.IgnoreNulls {
+				arg += " IGNORE NULLS"
+			}
+			if cv.Limit != ArrayAggNoLimit {
+				arg += fmt.Sprintf(" LIMIT %d", cv.Limit)
+			}
+		}
+		return cv.Op.Symbol() + "(" + arg + ")"
 	case *quantifiedObjectValue:
 		if alias, ok := aliases[cv.correlation]; ok {
 			return alias
@@ -2135,6 +2200,9 @@ func explainValueOrdinalsWithAliases(v Value, withOrdinals bool, aliases map[Cor
 			conds[i] = explainValueOrdinalsWithAliases(c, withOrdinals, aliases)
 		}
 		return "WHEN(" + strings.Join(conds, ", ") + ")"
+	case *SubscriptValue:
+		return explainValueOrdinalsWithAliases(cv.Source, withOrdinals, aliases) + "[" +
+			explainValueOrdinalsWithAliases(cv.Index, withOrdinals, aliases) + "]"
 	case *CardinalityValue:
 		// Java: ExplainTokens.addFunctionCall(FunctionNames.CARDINALITY, ...).
 		// Renders `cardinality(<child>)`, e.g. `cardinality(_.int_arr)`.
@@ -2246,6 +2314,16 @@ func (o ArithmeticOp) symbol() string {
 		return "/"
 	case OpMod:
 		return "%"
+	case OpBitOr:
+		return "|"
+	case OpBitAnd:
+		return "&"
+	case OpBitXor:
+		return "^"
+	case OpBitmapBucketNumber, OpBitmapBucketOffset, OpBitmapBitPosition:
+		// Java's LogicalOperator infix notation is the function's name
+		// (ArithmeticValue.java:375-377).
+		return o.LogicalOperatorName()
 	}
 	return "?"
 }
@@ -2510,12 +2588,29 @@ func (s *ScalarFunctionValue) Children() []Value {
 }
 func (*ScalarFunctionValue) Name() string { return "scalarfn" }
 
-// Type returns the scalar function's rich result Type. Most scalar
-// functions can return NULL on NULL input — the result is forced to
-// nullable regardless of how the caller stored Typ.
+// Type returns the scalar function's result Type. Nullability follows Java's
+// VariadicFunctionValue for the three functions Java has (:339-376): COALESCE
+// is nullable only when every argument is, GREATEST and LEAST when any is.
+// Every Go-only function is nullable, since several return NULL on non-NULL
+// input.
 func (s *ScalarFunctionValue) Type() Type {
 	if s.Typ == nil {
 		return UnknownType
+	}
+	switch s.FuncName {
+	case "COALESCE":
+		for _, a := range s.Args {
+			if a != nil && a.Type() != nil && !a.Type().IsNullable() {
+				return WithNullability(s.Typ, false)
+			}
+		}
+	case "GREATEST", "LEAST":
+		for _, a := range s.Args {
+			if a == nil || a.Type() == nil || a.Type().IsNullable() {
+				return WithNullability(s.Typ, true)
+			}
+		}
+		return WithNullability(s.Typ, false)
 	}
 	return WithNullability(s.Typ, true)
 }
@@ -2532,20 +2627,16 @@ func (s *ScalarFunctionValue) Evaluate(evalCtx any) (any, error) {
 // its result with the declared-type carrier conversion so a statically DOUBLE
 // scalar cannot feed an int64 into downstream arithmetic.
 func (s *ScalarFunctionValue) evaluateUncoerced(evalCtx any) (any, error) {
-	// SHORT-CIRCUITING forms evaluate arguments lazily — SQL requires
-	// that COALESCE stop at the first non-NULL argument and that IF
-	// evaluate only the taken branch, so `COALESCE(1, 1/0)` is 1 and
-	// `IF(true, x, 1/0)` is x, never a 22012. The eager loop below
-	// evaluated every argument first and turned these legal
-	// expressions into runtime errors.
+	// COALESCE evaluates EVERY argument, as Java's VariadicFunctionValue.eval
+	// does (:115-118): `COALESCE(1, 1/0)` raises the division. The Go-only
+	// IFNULL and IF short-circuit: IFNULL stops at its first non-NULL argument
+	// and IF evaluates only the taken branch.
 	definition, knownFunction := scalarFunctionDefinitionFor(s.FuncName)
 	if knownFunction {
 		switch definition.operator {
-		case scalarFunctionCoalesce, scalarFunctionIfNull:
-			// IFNULL is the strictly 2-arg COALESCE spelling — the lazy arm
-			// must keep the strict arm's arity decline (nil, nil), not
-			// degrade IFNULL(1) / IFNULL(a,b,c) into variadic COALESCE.
-			if definition.operator == scalarFunctionIfNull && len(s.Args) != 2 {
+		case scalarFunctionIfNull:
+			// IFNULL is strictly two arguments; any other arity declines.
+			if len(s.Args) != 2 {
 				return nil, nil
 			}
 			for _, a := range s.Args {
@@ -3254,79 +3345,6 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			return s, nil
 		}
 		return string(runes[len(runes)-int(n):]), nil
-	case scalarFunctionBitAnd:
-		if len(args) != 2 || args[0] == nil || args[1] == nil {
-			return nil, nil
-		}
-		a, aok := args[0].(int64)
-		b, bok := args[1].(int64)
-		if !aok || !bok {
-			return nil, nil
-		}
-		return a & b, nil
-	case scalarFunctionBitOr:
-		if len(args) != 2 || args[0] == nil || args[1] == nil {
-			return nil, nil
-		}
-		a, aok := args[0].(int64)
-		b, bok := args[1].(int64)
-		if !aok || !bok {
-			return nil, nil
-		}
-		return a | b, nil
-	case scalarFunctionBitXor:
-		if len(args) != 2 || args[0] == nil || args[1] == nil {
-			return nil, nil
-		}
-		a, aok := args[0].(int64)
-		b, bok := args[1].(int64)
-		if !aok || !bok {
-			return nil, nil
-		}
-		return a ^ b, nil
-	case scalarFunctionBitmapBucketOffset:
-		// Java ArithmeticValue BITMAP_BUCKET_OFFSET_* (:513-514):
-		// floorDiv(l, r) * r.
-		if len(args) != 2 || args[0] == nil || args[1] == nil {
-			return nil, nil
-		}
-		a, aok := scalarFnInt64Arg(args[0])
-		b, bok := scalarFnInt64Arg(args[1])
-		if !aok || !bok || b == 0 {
-			return nil, nil
-		}
-		// Math.multiplyExact, not `*`: for the minimum BIGINT with the default
-		// entry size 10000 the floor-divided quotient times 10000 falls below
-		// MinInt64, and an unchecked multiply wraps it to a bogus POSITIVE
-		// bucket offset. Java raises ArithmeticException here.
-		prod, ok := mulInt64Checked(floorDivInt64(a, b), b)
-		if !ok {
-			return nil, &ArithmeticOverflowError{}
-		}
-		return prod, nil
-	case scalarFunctionBitmapBitPosition:
-		// Java ArithmeticValue BITMAP_BIT_POSITION_* (:519-520):
-		// l - floorDiv(l, r) * r (a floor-mod).
-		if len(args) != 2 || args[0] == nil || args[1] == nil {
-			return nil, nil
-		}
-		a, aok := scalarFnInt64Arg(args[0])
-		b, bok := scalarFnInt64Arg(args[1])
-		if !aok || !bok || b == 0 {
-			return nil, nil
-		}
-		// Java composes subtractExact over multiplyExact
-		// (ArithmeticValue.java:519-520); the INTERMEDIATE product overflows
-		// first, so both steps are checked.
-		prod, ok := mulInt64Checked(floorDivInt64(a, b), b)
-		if !ok {
-			return nil, &ArithmeticOverflowError{}
-		}
-		diff, ok := subInt64Checked(a, prod)
-		if !ok {
-			return nil, &ArithmeticOverflowError{}
-		}
-		return diff, nil
 	case scalarFunctionDatePart:
 		if len(args) != 1 || args[0] == nil {
 			return nil, nil
@@ -3614,7 +3632,87 @@ const (
 	OpMul
 	OpDiv
 	OpMod
+	// The bit and bitmap operators are ArithmeticValue's logical operators
+	// too (Java's LogicalOperator, ArithmeticValue.java:366-378), resolved
+	// through the same lane table.
+	OpBitOr
+	OpBitAnd
+	OpBitXor
+	OpBitmapBucketNumber
+	OpBitmapBucketOffset
+	OpBitmapBitPosition
 )
+
+// LogicalOperatorName is Java's LogicalOperator name in lower case: the name
+// the lane table (arithmetic_lanes.go) and a key expression's function carry
+// (getLogicalOperator().name().toLowerCase()).
+func (o ArithmeticOp) LogicalOperatorName() string {
+	switch o {
+	case OpAdd:
+		return "add"
+	case OpSub:
+		return "sub"
+	case OpMul:
+		return "mul"
+	case OpDiv:
+		return "div"
+	case OpMod:
+		return "mod"
+	case OpBitOr:
+		return "bitor"
+	case OpBitAnd:
+		return "bitand"
+	case OpBitXor:
+		return "bitxor"
+	case OpBitmapBucketNumber:
+		return "bitmap_bucket_number"
+	case OpBitmapBucketOffset:
+		return "bitmap_bucket_offset"
+	case OpBitmapBitPosition:
+		return "bitmap_bit_position"
+	}
+	return ""
+}
+
+// isBitOrBitmap reports whether o is one of the integer-only operators, the
+// bit operators and the bitmap functions.
+func (o ArithmeticOp) isBitOrBitmap() bool {
+	return o >= OpBitOr && o <= OpBitmapBitPosition
+}
+
+// ArithmeticComplexOperandError is Java's SemanticException
+// ARGUMENT_TO_ARITHMETIC_OPERATOR_IS_OF_COMPLEX_TYPE, raised by
+// ArithmeticValue.encapsulate (ArithmeticValue.java:215-220) for an operand
+// whose type is not primitive (ENUM, RECORD, UUID, ARRAY).
+type ArithmeticComplexOperandError struct{}
+
+func (*ArithmeticComplexOperandError) Error() string {
+	return "The argument to an arithmetic operator expecting an argument of a primitive type, is invoked with an argument of a complex type, e.g. an array or a record."
+}
+
+// ArithmeticLaneMismatchError is Java's VerifyException from
+// ArithmeticValue.encapsulate (ArithmeticValue.java:226-229): no physical
+// operator takes the two operand types.
+type ArithmeticLaneMismatchError struct{}
+
+func (*ArithmeticLaneMismatchError) Error() string {
+	return "unable to encapsulate arithmetic operation due to type mismatch(es)"
+}
+
+// EncapsulateArithmeticLane is ArithmeticValue.encapsulate's decision over two
+// operand type codes, in Java's order: each operand's type must be primitive
+// (ArithmeticComplexOperandError, the left checked first), then the operator
+// must have a lane over the pair (ArithmeticLaneMismatchError).
+func EncapsulateArithmeticLane(function string, left, right TypeCode) (ArithmeticLane, error) {
+	if !ArithmeticOperandIsPrimitive(left) || !ArithmeticOperandIsPrimitive(right) {
+		return ArithmeticLane{}, &ArithmeticComplexOperandError{}
+	}
+	lane, ok := LookupArithmeticLane(function, left, right)
+	if !ok {
+		return ArithmeticLane{}, &ArithmeticLaneMismatchError{}
+	}
+	return lane, nil
+}
 
 // ArithmeticValue is a binary arithmetic over two child Values.
 // Evaluate recurses left + right and applies the op with numeric
@@ -3626,6 +3724,55 @@ type ArithmeticValue struct {
 	Op    ArithmeticOp
 	Left  Value
 	Right Value
+	// lane is the physical operator NewArithmeticValue resolved from the
+	// operand types, as Java's ArithmeticValue holds its PhysicalOperator; it
+	// fixes the result type, and a rebuild keeps it (WithOperands, Java's
+	// withChildren). Of the arithmetic, it decides only the bit and bitmap
+	// operators' (evalBitLane); ADD through MOD still pick their arithmetic
+	// from the operands' types when evaluated, which agree with the lane while
+	// no rebuild changes a child's type. Nil when an operand's type was
+	// unknown at construction (Go's type derivation does not reach every
+	// Value yet): the value then types by promotion and picks its arithmetic
+	// from the runtime operands.
+	lane *ArithmeticLane
+}
+
+// NewArithmeticValue is Java's ArithmeticValue.encapsulate (ArithmeticValue.
+// java:213-231): the lane is resolved once, here, from the operand types, and
+// an operand pair Java refuses is refused (EncapsulateArithmeticLane). An
+// operand of unknown type defers the lane to the runtime operands, since Go
+// cannot know what Java would have typed it; a known complex operand is
+// refused even then, as Java checks each operand before the lane.
+func NewArithmeticValue(op ArithmeticOp, left, right Value) (*ArithmeticValue, error) {
+	lc, rc := arithOperandCode(left), arithOperandCode(right)
+	if !ArithmeticOperandIsPrimitive(lc) || !ArithmeticOperandIsPrimitive(rc) {
+		return nil, &ArithmeticComplexOperandError{}
+	}
+	if lc == TypeCodeUnknown || rc == TypeCodeUnknown {
+		return &ArithmeticValue{Op: op, Left: left, Right: right}, nil
+	}
+	lane, err := EncapsulateArithmeticLane(op.LogicalOperatorName(), lc, rc)
+	if err != nil {
+		return nil, err
+	}
+	return &ArithmeticValue{Op: op, Left: left, Right: right, lane: &lane}, nil
+}
+
+// WithOperands is a with the operands replaced and its lane kept, as Java's
+// withChildren keeps the physical operator (ArithmeticValue.java:138-143).
+func (a *ArithmeticValue) WithOperands(left, right Value) *ArithmeticValue {
+	cp := *a
+	cp.Left, cp.Right = left, right
+	return &cp
+}
+
+// Lane is the physical operator the value was constructed with, and false
+// when its operands' types were unknown then.
+func (a *ArithmeticValue) Lane() (ArithmeticLane, bool) {
+	if a.lane == nil {
+		return ArithmeticLane{}, false
+	}
+	return *a.lane, true
 }
 
 func (a *ArithmeticValue) Children() []Value { return []Value{a.Left, a.Right} }
@@ -3640,7 +3787,18 @@ func (a *ArithmeticValue) Name() string      { return "arith" }
 // also used when an operand type is unknown). NULL propagates through
 // Evaluate, so the result is nullable.
 func (a *ArithmeticValue) Type() Type {
+	if a.lane != nil {
+		return arithmeticLaneResultType(a.lane.Result)
+	}
 	lc, rc := arithOperandCode(a.Left), arithOperandCode(a.Right)
+	if a.Op.isBitOrBitmap() {
+		// No lane (an operand's type unknown): the bit and bitmap lanes are
+		// integer-only, INT over two INTs and LONG otherwise.
+		if lc == TypeCodeInt && rc == TypeCodeInt {
+			return NullableInt
+		}
+		return NullableLong
+	}
 	if a.Op == OpAdd && (lc == TypeCodeString || rc == TypeCodeString) {
 		// Java's ADD_*S/S* operators CONCATENATE: any + with a STRING
 		// operand (against INT/LONG/FLOAT/DOUBLE/STRING) yields STRING
@@ -3656,6 +3814,24 @@ func (a *ArithmeticValue) Type() Type {
 	}
 	if lc == TypeCodeInt && rc == TypeCodeInt {
 		return NullableInt
+	}
+	return NullableLong
+}
+
+// arithmeticLaneResultType is the nullable Type of a lane's result code: an
+// arithmetic value is NULL when an operand is.
+func arithmeticLaneResultType(code TypeCode) Type {
+	switch code {
+	case TypeCodeInt:
+		return NullableInt
+	case TypeCodeLong:
+		return NullableLong
+	case TypeCodeFloat:
+		return NullableFloat
+	case TypeCodeDouble:
+		return NullableDouble
+	case TypeCodeString:
+		return NullableString
 	}
 	return NullableLong
 }
@@ -3688,6 +3864,9 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) (any, error) {
 func (a *ArithmeticValue) evaluateOperands(l, r any) (any, error) {
 	if l == nil || r == nil {
 		return nil, nil
+	}
+	if a.Op.isBitOrBitmap() {
+		return a.evalBitLane(l, r)
 	}
 	// STATIC-TYPE lane dispatch (Java ArithmeticValue's per-TypeCode
 	// physical operators, keyed on the operands' STATIC types like
@@ -3760,19 +3939,19 @@ func (a *ArithmeticValue) evaluateOperands(l, r any) (any, error) {
 	case OpAdd:
 		out, ok := addInt64Checked(li, ri)
 		if !ok {
-			return nil, &ArithmeticOverflowError{}
+			return nil, &ArithmeticOverflowError{Long: true}
 		}
 		return out, nil
 	case OpSub:
 		out, ok := subInt64Checked(li, ri)
 		if !ok {
-			return nil, &ArithmeticOverflowError{}
+			return nil, &ArithmeticOverflowError{Long: true}
 		}
 		return out, nil
 	case OpMul:
 		out, ok := mulInt64Checked(li, ri)
 		if !ok {
-			return nil, &ArithmeticOverflowError{}
+			return nil, &ArithmeticOverflowError{Long: true}
 		}
 		return out, nil
 	case OpDiv:
@@ -3959,6 +4138,73 @@ func toFloat32Operand(v any) (float32, bool) {
 	return float32(f64), true
 }
 
+// evalBitLane is the bit and bitmap physical operators (ArithmeticValue.java:
+// 500-522): the II lane in int32 (Java's (int) operands, multiplyExact and
+// subtractExact over int), the others in int64. An INT lane whose runtime
+// operands lie outside int32 (a static type the value did not honour) runs
+// in int64, as evalInt32 does, rather than emulate a truncation no valid
+// execution produces. Without a lane (an operand's type unknown) the int32
+// lane is taken when the operands' static types are both INT.
+func (a *ArithmeticValue) evalBitLane(l, r any) (any, error) {
+	li, lok := toInt64ForArith(l)
+	ri, rok := toInt64ForArith(r)
+	if !lok || !rok {
+		return nil, &ScalarTypeMismatchError{
+			Message: fmt.Sprintf("arithmetic type mismatch: %T %s %T", l, a.Op.Symbol(), r),
+		}
+	}
+	intLane := arithOperandCode(a.Left) == TypeCodeInt && arithOperandCode(a.Right) == TypeCodeInt
+	if a.lane != nil {
+		intLane = a.lane.Left == TypeCodeInt && a.lane.Right == TypeCodeInt
+	}
+	if intLane && (li > math.MaxInt32 || li < math.MinInt32 || ri > math.MaxInt32 || ri < math.MinInt32) {
+		intLane = false
+	}
+	// fits reports whether v is in the lane's width: int32 on the II lane.
+	fits := func(v int64) bool { return !intLane || (v >= math.MinInt32 && v <= math.MaxInt32) }
+	floorDiv := func() (int64, error) {
+		if ri == 0 {
+			return 0, &ArithmeticDivisionByZeroError{}
+		}
+		return floorDivInt64(li, ri), nil
+	}
+	// multiplyExact(floorDiv(l, r), r) in the lane's width.
+	bucketOffset := func() (int64, error) {
+		q, err := floorDiv()
+		if err != nil {
+			return 0, err
+		}
+		prod, ok := mulInt64Checked(q, ri)
+		if !ok || !fits(prod) {
+			return 0, &ArithmeticOverflowError{Long: !intLane}
+		}
+		return prod, nil
+	}
+	switch a.Op {
+	case OpBitOr:
+		return li | ri, nil
+	case OpBitAnd:
+		return li & ri, nil
+	case OpBitXor:
+		return li ^ ri, nil
+	case OpBitmapBucketNumber:
+		return floorDiv()
+	case OpBitmapBucketOffset:
+		return bucketOffset()
+	case OpBitmapBitPosition:
+		prod, err := bucketOffset()
+		if err != nil {
+			return nil, err
+		}
+		diff, ok := subInt64Checked(li, prod)
+		if !ok || !fits(diff) {
+			return nil, &ArithmeticOverflowError{Long: !intLane}
+		}
+		return diff, nil
+	}
+	return nil, fmt.Errorf("arithmetic operator %d is not a bit or bitmap operator", a.Op)
+}
+
 // evalInt32 is the INT lane (Java ADD_II/SUB_II/MUL_II via
 // Math.*Exact(int,int)): both operands statically INT, arithmetic bounds
 // checked at the int32 boundary — `int_col + int_col` crossing 2^31 errors
@@ -4053,10 +4299,17 @@ func (*ArithmeticDivisionByZeroError) Error() string {
 
 // ArithmeticOverflowError is returned by ArithmeticValue.Evaluate
 // when integer arithmetic overflows. Callers (the executor) convert
-// this to SQLSTATE 22003 NUMERIC_VALUE_OUT_OF_RANGE.
-type ArithmeticOverflowError struct{}
+// this to SQLSTATE 22003 NUMERIC_VALUE_OUT_OF_RANGE. Long marks an
+// overflow in a LONG lane, whose message is Java's Math.*Exact(long)
+// "long overflow"; an INT lane's is "integer overflow".
+type ArithmeticOverflowError struct {
+	Long bool
+}
 
-func (*ArithmeticOverflowError) Error() string {
+func (e *ArithmeticOverflowError) Error() string {
+	if e.Long {
+		return "long overflow"
+	}
 	return "integer overflow"
 }
 
@@ -4078,8 +4331,24 @@ type InvalidCastError struct {
 	Message string
 }
 
+// Error is Java's SemanticException text for INVALID_CAST: the code's own
+// message, "Invalid cast operation", then the detail
+// (SemanticException.java:89), which is the message the target reports.
 func (e *InvalidCastError) Error() string {
-	return e.Message
+	return "Invalid cast operation " + e.Message
+}
+
+// InvalidUUIDValueError mirrors SemanticException.INVALID_UUID_VALUE: a string
+// read as a UUID (STRING_TO_UUID, by CAST or by promotion into a UUID slot) is
+// not one. Java's relational layer leaves the code in INTERNAL_ERROR (XX000,
+// ExceptionUtil.translateErrorCode's default arm) with this message; it is not
+// an INVALID_CAST, even from a CAST.
+type InvalidUUIDValueError struct {
+	Value string
+}
+
+func (e *InvalidUUIDValueError) Error() string {
+	return "Invalid UUID value for the UUID type " + e.Value
 }
 
 // InvalidEnumValueError mirrors SemanticException.INVALID_ENUM_VALUE: the
@@ -4223,14 +4492,15 @@ func NewCastValue(child Value, target Type) *CastValue {
 func (c *CastValue) Children() []Value { return []Value{c.Child} }
 func (c *CastValue) Name() string      { return "cast" }
 
-// Type returns the cast's target Type. CAST may produce NULL on
-// out-of-range / unsupported source (Evaluate returns nil), so cast
-// results are always nullable in Go.
+// Type is the target, NULL only when the operand can be (Java's CastValue);
+// an untyped operand can reach the silent-NULL tail of castEvaluated.
 func (c *CastValue) Type() Type {
 	if c.Target == nil {
 		return UnknownType
 	}
-	return WithNullability(c.Target, true)
+	st := c.Child.Type()
+	nullable := st == nil || st.Code() == TypeCodeUnknown || st.Code() == TypeCodeNull || st.IsNullable()
+	return WithNullability(c.Target, nullable)
 }
 
 // trimJavaWhitespace strips leading/trailing characters the way Java's
@@ -4328,6 +4598,9 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 // node nor an eval context, but its Go carrier alone cannot distinguish
 // FLOAT/DOUBLE or INT/LONG.
 func (c *CastValue) castEvaluated(v any, source Type) (any, error) {
+	if source != nil && source.Code() != TypeCodeUnknown && c.Target != nil && !CastTypesDefined(source, c.Target) {
+		return nil, &InvalidCastError{Message: fmt.Sprintf("No cast defined from %v to %v", source.Code(), c.Target.Code())}
+	}
 	if v == nil {
 		return nil, nil
 	}
@@ -4339,6 +4612,52 @@ func (c *CastValue) castEvaluated(v any, source Type) (any, error) {
 		sourceCode = source.Code()
 	}
 	switch c.Target.Code() {
+	case TypeCodeVector:
+		target, ok := c.Target.(*VectorType)
+		if !ok {
+			return nil, &InvalidCastError{Message: "Invalid vector target type"}
+		}
+		if sourceCode == TypeCodeVector {
+			return v, nil
+		}
+		array, ok := source.(*ArrayType)
+		if !ok || array.ElementType == nil {
+			return nil, &InvalidCastError{Message: "Source array element type cannot be null"}
+		}
+		list, ok := v.([]any)
+		if !ok {
+			return nil, &InvalidCastError{Message: "Source value is not an array"}
+		}
+		if len(list) != target.Dimensions {
+			return nil, &InvalidCastError{Message: "Source array is not the same size of the vector"}
+		}
+		elem := array.ElementType.Code()
+		if !elem.IsNumeric() || (target.Precision == 64 && elem == TypeCodeFloat) {
+			return nil, &InvalidCastError{Message: fmt.Sprintf("can not cast array of %v to vector", array.ElementType)}
+		}
+		coords := make([]float64, len(list))
+		for i, value := range list {
+			f, _, numeric := ToFloat64(value)
+			if !numeric {
+				return nil, &InvalidCastError{Message: "Vector element is not numeric"}
+			}
+			if elem == TypeCodeFloat {
+				f = float64(float32(f))
+			}
+			coords[i] = f
+		}
+		var ordinal byte
+		switch target.Precision {
+		case 16:
+			ordinal = vectorcodec.TypeHalf
+		case 32:
+			ordinal = vectorcodec.TypeSingle
+		case 64:
+			ordinal = vectorcodec.TypeDouble
+		default:
+			return nil, &InvalidCastError{Message: "Unexpected vector precision"}
+		}
+		return vectorcodec.SerializeAs(ordinal, coords), nil
 	case TypeCodeEnum:
 		if enum, ok := c.Target.(*EnumType); ok {
 			if name, isString := v.(string); isString {
@@ -4652,11 +4971,11 @@ func (c *CastValue) castEvaluated(v any, source Type) (any, error) {
 		// silently NULLing every row was a silent-wrong.
 		switch val := v.(type) {
 		case string:
-			u, perr := uuid.Parse(val)
-			if perr != nil {
-				return nil, &InvalidCastError{Message: fmt.Sprintf("Invalid UUID value for the UUID type %s", val)}
+			u, ok := ParseJavaUUID(val)
+			if !ok {
+				return nil, &InvalidUUIDValueError{Value: val}
 			}
-			return [16]byte(u), nil
+			return u, nil
 		case [16]byte:
 			// Already the neutral UUID representation (RFC-162).
 			return val, nil
@@ -4848,13 +5167,8 @@ func NewRawRecordConstructorValue(fields ...RecordConstructorField) *RecordConst
 // the error, because earlier text in three files claimed the opposite and this
 // is where a reader looks first.
 //
-// What actually holds: every LogicalProjectionExpression constructor is a plain
-// struct fill that validates nothing, so the one-slot whole-row projection can
-// be built and IS built (expressions/flowed_value_typing_test.go's
-// TestLogicalProjectionFallsBackToUntypedQOV). What this error does is stop the
-// projection CLAIMING a row it cannot name; GetResultValue then falls back to an
-// untyped QOV, which is the pre-RFC-226 decline kept deliberately for the one
-// shape that cannot answer. The fallback is a LIVE arm, not dead code.
+// A query block's result and the physical projection plan both derive their row
+// here, so this refusal is what stops either claiming a row it cannot name.
 //
 // WHY THE SHAPE CANNOT ANSWER. The executor emits one positional slot PER
 // PROJECTION, so this projection produces a 1-slot row WRAPPING its inner's row,
@@ -5091,13 +5405,13 @@ func (*RecordConstructorValue) Name() string { return "record" }
 // three fails the query.
 //
 // An unstamped constructor does not imply this branch runs for it. The plan
-// paths that emit a row — executeProjection, the record-constructor arm of the
+// paths that emit a row — executeMap, the record-constructor arm of the
 // flat-map cursor, evaluateOrdinalJoinRow — build a dense PositionalRow field
 // by field, and the result set reads those slots by ORDINAL, so an unstamped
-// row still delivers every field. Measured on the FULL OUTER JOIN of TODO.md's
-// "A join row that names one field twice leaves its plan's rows unstamped":
-// three of that plan's four constructors have no descriptor, and
-// `SELECT a.id, c.id, d.foo` still returns both `ID` values.
+// row still delivers every field. The duplicate-name join regression in
+// queryfixtures.DuplicateNameJoinQuery pins both ID slots under FDB. Failed
+// registration now rolls back, so unrelated computed constructors keep their
+// descriptors while the invalid ordinal row remains raw.
 func (r *RecordConstructorValue) Evaluate(evalCtx any) (any, error) {
 	if r.desc != nil {
 		return buildRecordMessage(r.desc, r.Fields, evalCtx)
@@ -5128,8 +5442,10 @@ func (r *RecordConstructorValue) Evaluate(evalCtx any) (any, error) {
 // STRING→UUID representation change. Other promotion families remain
 // representation-preserving.
 type PromoteValue struct {
-	Child  Value
-	Target Type
+	Child      Value
+	Target     Type
+	prepared   *preparedPromotion
+	prepareErr error
 }
 
 // NewPromoteValue constructs a PromoteValue. Rejects nil child and
@@ -5141,74 +5457,26 @@ func NewPromoteValue(child Value, target Type) *PromoteValue {
 	if target == nil || target.Code() == TypeCodeUnknown {
 		panic("NewPromoteValue: target is UnknownType; use CastValue if target is genuinely unknown")
 	}
-	return &PromoteValue{Child: child, Target: target}
+	p, err := NewPromoteValueChecked(child, target)
+	if err != nil {
+		return &PromoteValue{Child: child, Target: target, prepareErr: err}
+	}
+	return p
 }
 
 // Children returns the single child as a one-element slice.
 func (p *PromoteValue) Children() []Value { return []Value{p.Child} }
 
-// Type returns the promotion target. Nullability is inherited from
-// the child — promoting a NOT NULL value preserves NOT NULL.
+// Type returns the declared target including its nullability, as Java's
+// PromoteValue.getResultType does. Source nullability is not substituted.
 func (p *PromoteValue) Type() Type {
 	if p.Target == nil {
 		return UnknownType
 	}
-	childNullable := true
-	if p.Child != nil {
-		if ct := p.Child.Type(); ct != nil {
-			childNullable = ct.IsNullable()
-		}
-	}
-	return WithNullability(p.Target, childNullable)
+	return p.Target
 }
 
-// Name returns the debug-print kind.
 func (*PromoteValue) Name() string { return "promote" }
-
-// Evaluate applies numeric width conversion, STRING → ENUM, and STRING → UUID (Java's
-// PromoteValue.STRING_TO_UUID, `UUID.fromString`): a UUID column has
-// no native proto/SQL primitive, so `uuid_col = '<uuid>'` arrives as
-// a STRING comparand. Promoting it to UUID here parses the canonical
-// string into a neutral 16-byte value ([16]byte, matching Java's
-// java.util.UUID — no `tuple` import so `values` stays wire-agnostic).
-// The scan-range packer turns that [16]byte into a `tuple.UUID` at the
-// FDB wire boundary, so the equality probe hits the 0x30 index entry
-// instead of packing a 0x02 string that never matches.
-func (p *PromoteValue) Evaluate(evalCtx any) (any, error) {
-	childResult, err := p.Child.Evaluate(evalCtx)
-	if err != nil {
-		return nil, err
-	}
-	if enum, ok := p.Target.(*EnumType); ok {
-		if name, isString := childResult.(string); isString {
-			return stringToEnumValue(enum, name)
-		}
-		return childResult, nil
-	}
-	if !IsUuid(p.Target) {
-		// Apply the primitive promotion operators (including INT_TO_LONG),
-		// then normalize FLOAT's representation to the row-domain carrier.
-		return coerceNumericResult(promoteConstant(childResult, p.Target), p.Target), nil
-	}
-	switch v := childResult.(type) {
-	case nil:
-		// NULL promotes to NULL (SQL NULL propagation).
-		return nil, nil
-	case string:
-		u, perr := uuid.Parse(v)
-		if perr != nil {
-			// Java verbatim wording (SemanticException INVALID_UUID_VALUE).
-			return nil, fmt.Errorf("Invalid UUID value for the UUID type %s", v)
-		}
-		return [16]byte(u), nil
-	case [16]byte:
-		// Already a neutral UUID (e.g. an index-sourced INL join key);
-		// pass through unchanged — nothing to parse.
-		return v, nil
-	default:
-		return childResult, nil
-	}
-}
 
 // stringToEnumValue is shared by CastValue and PromoteValue, as in Java.
 func stringToEnumValue(enum *EnumType, name string) (any, error) {
@@ -5219,6 +5487,21 @@ func stringToEnumValue(enum *EnumType, name string) (any, error) {
 	// ProtoScalarKindToRowValue and the index tuple both carry an enum's
 	// declared number as int64, not its name or position in the declaration.
 	return int64(member.Number), nil
+}
+
+// StringToEnumNumber is Java's PromoteValue.stringToEnumValue over a stored
+// enum descriptor (PromoteValue.java:151-161): the first declared value whose
+// user identifier (ProtoUtils.toUserIdentifier of its name) equals name, else
+// INVALID_ENUM_VALUE. It is what writes a string into an enum column, where
+// Java's STRING_TO_ENUM promotion runs; no other type promotes to an enum.
+func StringToEnumNumber(ed protoreflect.EnumDescriptor, name string) (int64, error) {
+	vals := ed.Values()
+	for i := 0; i < vals.Len(); i++ {
+		if v := vals.Get(i); protoname.ToUserIdentifier(string(v.Name())) == name {
+			return int64(v.Number()), nil
+		}
+	}
+	return 0, &InvalidEnumValueError{Value: name}
 }
 
 // --- QuantifiedObjectValue -----------------------------------------
@@ -5625,7 +5908,17 @@ const (
 	AggMin                          // MIN(expr)
 	AggMax                          // MAX(expr)
 	AggAvg                          // AVG(expr) — rejects at Evaluate, no streaming impl
+	// AggBitmapConstructAgg is BITMAP_CONSTRUCT_AGG(expr): Java's
+	// NumericAggregationValue.BitmapConstructAgg, over an INT or LONG operand,
+	// a BYTES bitmap. Go has no streaming accumulator for it; it reaches the
+	// graph so an index definition can be built from it.
+	AggBitmapConstructAgg
+	// AggArrayAgg is ARRAY_AGG(expr [IGNORE|RESPECT NULLS] [LIMIT n]): Java's ArrayAggValue.
+	AggArrayAgg
 )
+
+// ArrayAggNoLimit is Java's ArrayAggValue.NO_LIMIT.
+const ArrayAggNoLimit = -1
 
 // Symbol returns the canonical SQL function name.
 func (op AggregateOp) Symbol() string {
@@ -5642,6 +5935,10 @@ func (op AggregateOp) Symbol() string {
 		return "MAX"
 	case AggAvg:
 		return "AVG"
+	case AggBitmapConstructAgg:
+		return "BITMAP_CONSTRUCT_AGG"
+	case AggArrayAgg:
+		return "ARRAY_AGG"
 	default:
 		return "?AGG?"
 	}
@@ -5660,6 +5957,22 @@ func (op AggregateOp) Symbol() string {
 type AggregateValue struct {
 	Op      AggregateOp
 	Operand Value // nil iff Op == AggCountStar
+	// IgnoreNulls and Limit are ARRAY_AGG's null treatment and in-call LIMIT
+	// (ArrayAggNoLimit when absent); zero for every other op.
+	IgnoreNulls bool
+	Limit       int
+}
+
+// NewArrayAggValue is ARRAY_AGG(operand) with its null treatment and limit.
+func NewArrayAggValue(operand Value, ignoreNulls bool, limit int) *AggregateValue {
+	return &AggregateValue{Op: AggArrayAgg, Operand: operand, IgnoreNulls: ignoreNulls, Limit: limit}
+}
+
+// WithOperand copies a with a new operand, keeping every option.
+func (a *AggregateValue) WithOperand(operand Value) *AggregateValue {
+	cp := *a
+	cp.Operand = operand
+	return &cp
 }
 
 // NewAggregateValue constructs an AggregateValue. Panics on
@@ -5702,6 +6015,18 @@ func (a *AggregateValue) Type() Type {
 		return NullableLong
 	case AggAvg:
 		return NullableDouble
+	case AggBitmapConstructAgg:
+		return NullableBytes
+	case AggArrayAgg:
+		// Always nullable: an empty ungrouped input yields NULL.
+		elem := Type(UnknownType)
+		if a.Operand != nil && a.Operand.Type() != nil {
+			elem = a.Operand.Type()
+		}
+		if a.IgnoreNulls {
+			elem = WithNullability(elem, false)
+		}
+		return NewArrayType(true, elem)
 	case AggSum, AggMin, AggMax:
 		if a.Operand != nil {
 			ot := a.Operand.Type()
@@ -5769,6 +6094,9 @@ func (a *AggregateValue) GetIndexTypeName() string {
 		return "permuted_min"
 	case AggMax:
 		return "permuted_max"
+	case AggBitmapConstructAgg:
+		// Java BitmapConstructAgg.getIndexTypeName() = IndexTypes.BITMAP_VALUE.
+		return "bitmap_value"
 	case AggAvg, AggInvalid:
 		return ""
 	}

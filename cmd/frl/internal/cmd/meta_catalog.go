@@ -9,6 +9,8 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"fdb.dev/pkg/relational/core/functions"
+
 	"buf.build/go/protoyaml"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -134,7 +136,8 @@ func newMetaCatalogSchemasCmd() *cobra.Command {
 						listErr error
 					)
 					if databaseID != "" {
-						rs, listErr = cat.ListSchemasInDatabase(txn, databaseID, nil)
+						// The path as DDL reads it: unquoted folds, whole.
+						rs, listErr = cat.ListSchemasInDatabase(txn, functions.NormalizeIdentifier(databaseID), nil)
 					} else {
 						rs, listErr = cat.ListSchemas(txn, nil)
 					}
@@ -248,14 +251,18 @@ func newMetaCatalogGetCmd() *cobra.Command {
 			md, err := runCatalogQuery(cmd.Context(), cf,
 				func(ctx context.Context, cat *catalog.RecordLayerStoreCatalog, txn relapi.Transaction) (*recordlayer.RecordMetaData, error) {
 					tc := cat.SchemaTemplateCatalog()
+					// The name as DDL reads it: an unquoted name folds, a
+					// quoted one keeps its case, as `CREATE SCHEMA TEMPLATE`
+					// stored it.
+					name := functions.NormalizeIdentifier(args[0])
 					var (
 						tpl     relapi.SchemaTemplate
 						loadErr error
 					)
 					if version > 0 {
-						tpl, loadErr = tc.LoadSchemaTemplateAtVersion(txn, args[0], version)
+						tpl, loadErr = tc.LoadSchemaTemplateAtVersion(txn, name, version)
 					} else {
-						tpl, loadErr = tc.LoadSchemaTemplate(txn, args[0])
+						tpl, loadErr = tc.LoadSchemaTemplate(txn, name)
 					}
 					if loadErr != nil {
 						return nil, loadErr
@@ -267,7 +274,7 @@ func newMetaCatalogGetCmd() *cobra.Command {
 					}
 					up, ok := tpl.(underlyingProvider)
 					if !ok {
-						return nil, fmt.Errorf("template %q is not backed by a record-layer MetaData — catalog entry type %T", args[0], tpl)
+						return nil, fmt.Errorf("template %q is not backed by a record-layer MetaData — catalog entry type %T", name, tpl)
 					}
 					return up.Underlying(), nil
 				})

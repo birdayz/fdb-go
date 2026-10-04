@@ -156,10 +156,10 @@ func expandFlatValueIndex(candidate MatchCandidate) *Traversal {
 	// never treat the filtered index as full — the wrong-results direction.
 	// Java's ranges arm (:146-158) additionally re-expresses a DNF-of-ranges
 	// predicate as extra placeholder ranges so IMPLIED queries still match;
-	// Go's Placeholder carries no candidate-side ranges yet, so every
-	// non-tautological sparse candidate is conservatively unmatchable —
-	// correct results, narrower plan reach than Java (sparse-index-tests
-	// .yamsql's COVERING expectations are the re-arm witness).
+	// Go also proves literal comparison implication against the stored
+	// predicate directly, retaining stricter query bounds as compensation.
+	// Runtime-bound and composite range proofs still require the full
+	// placeholder-range representation.
 	if vc, isValue := candidate.(*ValueIndexScanMatchCandidate); isValue && vc.predicateProto != nil {
 		converted, convErr := indexPredicateToQueryPredicate(
 			vc.predicateProto, baseObject)

@@ -188,3 +188,38 @@ var _ = Describe("Conformance server FDB retry (RFC-090)", func() {
 		Expect(je.ExceptionClass).To(Equal("FDBException"))
 	})
 })
+
+// The ephemeral schema every SqlPlanSteps step runs in must be torn down: the
+// teardown used to drop through a /__SYS connection without the CATALOG schema,
+// which cannot run DDL, and swallowed the error, so every ephemeral database and
+// template of every run stayed behind (measured: 44 of them listed mid-way through
+// one oracle Describe). The step reports whether its own database is still listed
+// after the harness returned.
+var _ = Describe("Conformance server ephemeral schema teardown", func() {
+	It("drops the ephemeral database a step created", func() {
+		ctx := context.Background()
+		env, err := SetupTenantEnvironment(ctx, sharedContainer, fmt.Sprintf("teardown_%s", uuid.New().String()))
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = env.Cleanup(ctx) }()
+		var out struct {
+			Path                string `json:"path"`
+			StillListed         bool   `json:"stillListed"`
+			DatabasesListed     int    `json:"databasesListed"`
+			Template            string `json:"template"`
+			TemplateStillListed bool   `json:"templateStillListed"`
+			TemplatesListed     int    `json:"templatesListed"`
+		}
+		Expect(NewJavaInvoker().InvokeAs(ctx, "ephemeralTeardownProbe", map[string]any{
+			"clusterFile": env.ClusterFile, "schemaTemplate": fiSchema,
+		}, &out)).To(Succeed())
+		Expect(out.Path).To(HavePrefix("/TEST/PLAN_DIFF_"))
+		Expect(out.Template).To(HavePrefix("PLAN_DIFF_T_"))
+		// The catalog listings are not empty (the /__SYS database and its CATALOG
+		// template are always there), so "not listed" is a statement about a
+		// listing that ran, not about one that returned nothing.
+		Expect(out.DatabasesListed).To(BeNumerically(">", 0), "SHOW DATABASES listed nothing")
+		Expect(out.TemplatesListed).To(BeNumerically(">", 0), "SHOW SCHEMA TEMPLATES listed nothing")
+		Expect(out.StillListed).To(BeFalse(), "the harness left %s behind", out.Path)
+		Expect(out.TemplateStillListed).To(BeFalse(), "the harness left template %s behind", out.Template)
+	})
+})

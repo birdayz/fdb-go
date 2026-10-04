@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/fnv"
+	"reflect"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -79,12 +80,11 @@ func newSelectExpression(resultValue values.Value, quantifiers []Quantifier, que
 	}
 	copiedQ := make([]Quantifier, len(quantifiers))
 	copy(copiedQ, quantifiers)
-	// The predicate list is the conjunction: top-level ANDs are lifted into
-	// it, as Java's SelectExpression constructor does
-	// (SelectExpression.partitionPredicates). See NewLogicalFilterExpression.
-	flat := predicates.FlattenConjunction(queryPredicates)
-	copiedP := make([]predicates.QueryPredicate, len(flat))
-	copy(copiedP, flat)
+	narrowed, err := narrowLocalNullableReads(queryPredicates, copiedQ)
+	if err != nil {
+		return nil, err
+	}
+	copiedP := predicates.PartitionPredicates(narrowed)
 	copiedA := make([]string, len(sourceAliases))
 	copy(copiedA, sourceAliases)
 	return &SelectExpression{
@@ -172,14 +172,9 @@ func (e *SelectExpression) ChildrenAsSet() bool {
 // GetCorrelatedToWithoutChildren returns the union of correlation
 // sets across predicates + the resultValue. Java's behaviour matches.
 func (e *SelectExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	out := values.GetCorrelatedToOfValue(e.resultValue)
-	if out == nil {
-		out = map[values.CorrelationIdentifier]struct{}{}
-	}
+	out := values.CollectCorrelatedToOfValue(e.resultValue, nil)
 	for _, p := range e.queryPredicates {
-		for k := range predicates.GetCorrelatedToOfPredicate(p) {
-			out[k] = struct{}{}
-		}
+		predicates.CollectCorrelatedToOfPredicate(p, out)
 	}
 	return out
 }
@@ -221,7 +216,7 @@ func (e *SelectExpression) EqualsWithoutChildren(other RelationalExpression, ali
 // member and must intern (otherwise the join re-enumeration's shared
 // sub-products re-explode per path).
 //
-// All OTHER expressions return false. The reason is NOT alias-namespace naming
+// Other SELECT shapes return false. The reason is NOT alias-namespace naming
 // (item 7.1 already unified quantifier and table alias naming) — it is the column
 // RESOLUTION model: Go's column derivation (cascades_generator) resolves some
 // references by quantifier-alias IDENTITY, whereas Java resolves by group/ordinal
@@ -231,7 +226,9 @@ func (e *SelectExpression) EqualsWithoutChildren(other RelationalExpression, ali
 // then mis-resolves — empirically, a CTE column-rename select collapsed this way
 // reads its renamed column as NULL. So non-merge selects keep the alias-IDENTITY
 // dedup, exactly as before this change. Widening this gate is gated on migrating
-// Go's column resolution to Java's ordinal/group model, not on 7.1.
+// Go's column resolution to Java's ordinal/group model, not on 7.1. A planner
+// merge alias is renamable in every select (ExactReplica): nothing outside the
+// select binding it can name it.
 func (e *SelectExpression) InternsAliasAware() bool {
 	// The POSITIONAL merge row (unnamed `_i` columns over bare
 	// QOVs — the exact PartitionSelectRule.java:284-291 shape, structurally
@@ -298,6 +295,123 @@ func (e *SelectExpression) WithSwappedQuantifiers() *SelectExpression {
 	cp.sourceAliases = swappedAliases
 	cp.quantifiersSwapped = !e.quantifiersSwapped // toggle: swap of swap = original
 	return &cp
+}
+
+// WithTranslatedValues preserves non-value node information during graph rebasing.
+func (e *SelectExpression) WithTranslatedValues(result values.Value, quantifiers []Quantifier, queryPredicates []predicates.QueryPredicate) (*SelectExpression, error) {
+	if err := requireQuantifierArity("SelectExpression", len(quantifiers), len(e.quantifiers)); err != nil {
+		return nil, err
+	}
+	translated, err := newSelectExpression(result, quantifiers, queryPredicates, e.sourceAliases, e.joinType)
+	if err != nil {
+		return nil, err
+	}
+	translated.quantifiersSwapped = e.quantifiersSwapped
+	return translated, nil
+}
+
+// WithPredicates preserves the join's binding and output metadata.
+func (e *SelectExpression) WithPredicates(queryPredicates []predicates.QueryPredicate) *SelectExpression {
+	cp := *e
+	if narrowed, err := narrowLocalNullableReads(queryPredicates, e.quantifiers); err == nil {
+		queryPredicates = narrowed
+	}
+	cp.queryPredicates = predicates.PartitionPredicates(queryPredicates)
+	return &cp
+}
+
+// narrowLocalNullableReads re-roots predicate reads of this select's plain
+// ForEach quantifiers that still declare the row nullable. A predicate built
+// where the alias was null-supplied keeps that declaration when it moves into
+// a select that ranges over the plain row (after the null-on-empty flag was
+// eliminated); the rows are the same, and a select names each of its own
+// aliases with one exact type. Java's untyped correlations never need this.
+func narrowLocalNullableReads(
+	preds []predicates.QueryPredicate,
+	quantifiers []Quantifier,
+) ([]predicates.QueryPredicate, error) {
+	targets := map[values.CorrelationIdentifier]values.QuantifiedObjectValue{}
+	nullable := map[values.CorrelationIdentifier]values.Type{}
+	for _, q := range quantifiers {
+		if q.Kind() != QuantifierForEach || q.IsNullOnEmpty() {
+			continue
+		}
+		flowed, err := q.RequireFlowedObjectValue()
+		if err != nil || flowed.FlowedType() == nil || flowed.FlowedType().IsNullable() {
+			continue
+		}
+		targets[q.GetAlias()] = flowed
+		nullable[q.GetAlias()] = values.WithNullability(flowed.FlowedType(), true)
+	}
+	if len(targets) == 0 {
+		return preds, nil
+	}
+	widened := func(node values.Value) (values.QuantifiedObjectValue, bool) {
+		root, ok := values.AsQuantifiedObjectValue(node)
+		if !ok {
+			return nil, false
+		}
+		target, local := targets[root.Correlation()]
+		if !local || !values.FlowedTypeEquals(root, nullable[root.Correlation()]) {
+			return nil, false
+		}
+		return target, true
+	}
+	var narrow func(values.Value) (values.Value, error)
+	narrow = func(node values.Value) (values.Value, error) {
+		if target, ok := widened(node); ok {
+			return target, nil
+		}
+		if field, ok := values.AsFieldValue(node); ok {
+			if target, rooted := widened(field.ChildValue()); rooted {
+				return values.ResolveFieldOrdinals(target, field.Path().Ordinals())
+			}
+			return node, nil
+		}
+		children := node.Children()
+		var rebuilt []values.Value
+		for i, child := range children {
+			mapped, err := narrow(child)
+			if err != nil {
+				return nil, err
+			}
+			if mapped != child && rebuilt == nil {
+				rebuilt = make([]values.Value, len(children))
+				copy(rebuilt, children[:i])
+			}
+			if rebuilt != nil {
+				rebuilt[i] = mapped
+			}
+		}
+		if rebuilt == nil {
+			return node, nil
+		}
+		return values.WithChildrenChecked(node, rebuilt)
+	}
+	var out []predicates.QueryPredicate
+	for i, p := range preds {
+		if p == nil || reflect.ValueOf(p).IsNil() {
+			if out != nil {
+				out[i] = p
+			}
+			continue
+		}
+		rewritten, err := predicates.TransformEmbeddedValuesChecked(p, narrow)
+		if err != nil {
+			return nil, fmt.Errorf("SelectExpression predicate %d: %w", i, err)
+		}
+		if rewritten != p && out == nil {
+			out = make([]predicates.QueryPredicate, len(preds))
+			copy(out, preds[:i])
+		}
+		if out != nil {
+			out[i] = rewritten
+		}
+	}
+	if out == nil {
+		return preds, nil
+	}
+	return out, nil
 }
 
 // WithQuantifiers rewires the child edges and changes nothing else, so it

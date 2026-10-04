@@ -24,7 +24,7 @@ func TestFDB_BoolValueFuncsProbe(t *testing.T) {
 			"CREATE TABLE a (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, y BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_boolvf/s WITH TEMPLATE boolvf")
-	dsn := fmt.Sprintf("fdbsql:///testdb_boolvf?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_BOOLVF?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

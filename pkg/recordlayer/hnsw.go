@@ -30,6 +30,8 @@ import (
 	"math/bits"
 	"sort"
 
+	"fdb.dev/pkg/rabitq"
+
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -89,40 +91,6 @@ type HNSWConfig struct {
 	MaxNumConcurrentNodeFetches         int // (0, 64], default 16 — node fetch parallelism in Java
 	MaxNumConcurrentNeighborhoodFetches int // (0, 20], default 10 — neighborhood fetch parallelism in Java
 	MaxNumConcurrentDeleteFromLayer     int // (0, 10], default 2  — layer deletion parallelism in Java
-}
-
-// ValidateHNSWConfig validates the HNSW configuration.
-// Matches Java's Config validation.
-func ValidateHNSWConfig(c HNSWConfig) error {
-	if c.NumDimensions < 1 {
-		return fmt.Errorf("hnsw: numDimensions must be >= 1, got %d", c.NumDimensions)
-	}
-	if c.M < 4 || c.M > 200 {
-		return fmt.Errorf("hnsw: m must be in [4, 200], got %d", c.M)
-	}
-	if c.MMax < 4 || c.MMax > 200 {
-		return fmt.Errorf("hnsw: mMax must be in [4, 200], got %d", c.MMax)
-	}
-	if c.MMax0 < 4 || c.MMax0 > 300 {
-		return fmt.Errorf("hnsw: mMax0 must be in [4, 300], got %d", c.MMax0)
-	}
-	if c.EfConstruction < 100 || c.EfConstruction > 400 {
-		return fmt.Errorf("hnsw: efConstruction must be in [100, 400], got %d", c.EfConstruction)
-	}
-	// Cross-field invariants — Java Config constructor (Config.java:88-92):
-	//   Preconditions.checkArgument(m <= mMax, ...)
-	//   Preconditions.checkArgument(mMax <= mMax0, ...)
-	//   Preconditions.checkArgument(efRepair >= m && efRepair <= 400, ...)
-	if c.M > c.MMax {
-		return fmt.Errorf("hnsw: m (%d) must be <= mMax (%d)", c.M, c.MMax)
-	}
-	if c.MMax > c.MMax0 {
-		return fmt.Errorf("hnsw: mMax (%d) must be <= mMax0 (%d)", c.MMax, c.MMax0)
-	}
-	if c.EfRepair < c.M || c.EfRepair > 400 {
-		return fmt.Errorf("hnsw: efRepair must be in [m, 400] = [%d, 400], got %d", c.M, c.EfRepair)
-	}
-	return nil
 }
 
 // DefaultHNSWConfig returns a default HNSW configuration.
@@ -195,6 +163,26 @@ func (g *hnswGraph) SetStats(stats *HNSWStats) {
 	g.storage.stats = stats
 }
 
+// raBitQuantizerAdmits refuses an operation where Java constructs its
+// RaBitQuantizer for it and the constructor refuses the configured extra-bit
+// count: Primitives.quantizer (Primitives.java:174-182), which every insert
+// into a non-empty graph, every delete of a present node and every search of a
+// non-empty graph calls, constructs one once the access info can use RaBitQ
+// (a centroid is established, or at once for a metric that is not
+// translation-preserving), and Insert.firstInsert (Insert.java:274-285) for such
+// a metric. Java's Config admits 1 to 15 extra bits and the quantizer 1 to 8
+// (RaBitQuantizer.java:76), so 9 to 15 is refused exactly there: a Euclidean
+// index serves inserts until its centroid is established, and a search of an
+// empty graph or a delete of an absent node is served. Guava's
+// checkArgument carries no message; Go's error names the range.
+func (g *hnswGraph) raBitQuantizerAdmits(info *hnswAccessInfo) error {
+	q, ok := g.config.Quantizer.(*rabitq.Quantizer)
+	if !ok || q == nil || info == nil || !info.hasTransform() || rabitq.ValidNumExBits(q.NumExBits()) {
+		return nil
+	}
+	return &IllegalArgumentError{Message: fmt.Sprintf("RaBitQ encodes 1 to 8 extra bits, not %d", q.NumExBits())}
+}
+
 // buildTransform creates a transform from access info and the current config.
 // Returns nil if no transform is needed (either no quantizer, or no centroid yet for Euclidean).
 func (g *hnswGraph) buildTransform(info *hnswAccessInfo) *hnswTransform {
@@ -205,28 +193,24 @@ func (g *hnswGraph) buildTransform(info *hnswAccessInfo) *hnswTransform {
 	return newHNSWTransform(info.rotatorSeed, info.centroid, g.config.NumDimensions, normalize)
 }
 
-// encodeVectorBytes returns the bytes to store for a vector. transformActive reports
-// whether the vector was stored under an active storage transform (an established
-// centroid, or the immediate rotation used for translation-non-preserving metrics).
-//
-// This mirrors Java's quantizer selection (Insert.java:196-198, 262-278): with RaBitQ
-// the quantizer is the noOp quantizer until a centroid exists — so pre-centroid vectors
-// are stored *plain* (recoverable, lifted by the storage transform at read) — and only
-// the real RaBitQuantizer once the transform is active. The caller must already have
-// applied the transform to `vector`. Returns quantized bytes only when both a quantizer
-// is configured and the transform is active; otherwise raw DOUBLE-serialized bytes.
-func (g *hnswGraph) encodeVectorBytes(vector []float64, transformActive bool) []byte {
-	if g.config.Quantizer != nil && transformActive {
-		return g.config.Quantizer.Encode(vector)
-	}
-	return serializeVector(vector)
+// hnswVector carries the coordinate provenance that the encoding tag cannot
+// express: access-info DOUBLE vectors are already transformed, whereas plain
+// node/edge bytes are raw. Encoded vectors are always in current coordinates.
+type hnswVector struct {
+	data        []byte
+	transformed bool
 }
 
-// computeDistance computes the distance between a raw query vector and stored
+// computeDistance computes the distance between a query in current coordinates and stored
 // vector bytes. When a quantizer is configured and the stored bytes match its
 // type byte, uses the quantizer for fast approximate distance. Otherwise
 // deserializes and computes exact distance.
 func (g *hnswGraph) computeDistance(query []float64, storedVecBytes []byte) float64 {
+	return g.vectorDistance(query, hnswVector{data: storedVecBytes})
+}
+
+func (g *hnswGraph) vectorDistance(query []float64, vector hnswVector) float64 {
+	storedVecBytes := vector.data
 	if g.config.Quantizer != nil && len(storedVecBytes) > 0 && storedVecBytes[0] == g.config.Quantizer.GetTypeByte() {
 		dist, err := g.config.Quantizer.Distance(query, storedVecBytes, g.config.NumDimensions)
 		if err != nil {
@@ -247,20 +231,18 @@ func (g *hnswGraph) computeDistance(query []float64, storedVecBytes []byte) floa
 		}
 		return dist
 	}
-	// Plain (non-quantized) stored vector. When a storage transform is active (a
-	// centroid has been established), this vector was stored *before* the centroid
-	// under the noOp quantizer, so it is still in raw coordinates — lift it into the
-	// current coordinate system before comparing, exactly as Java applies the current
-	// StorageTransform to a fetched plain vector (CompactStorageAdapter.java:199).
-	// query is already in that system (Search/Insert transformed it up front).
-	if g.opXform != nil {
+	// Plain node/edge bytes retain raw coordinates and need the current storage
+	// transform (CompactStorageAdapter.java:199). Access-info and new candidates
+	// already carry transformed coordinates; their DOUBLE tag alone cannot tell
+	// these representations apart. The query is in current coordinates.
+	if g.opXform != nil && !vector.transformed {
 		vec, err := deserializeVector(storedVecBytes)
 		if err != nil {
 			return math.Inf(1)
 		}
 		return vectorDistance(query, g.opXform.apply(vec), g.config.Metric)
 	}
-	// No active transform: query and stored vector share raw coordinates already.
+	// The query and vector already share coordinates.
 	// Fast path: read components straight from the stored bytes, no []float64.
 	if dist, ok := vectorDistanceFromBytes(query, storedVecBytes, g.config.Metric); ok {
 		return dist
@@ -278,6 +260,11 @@ func (g *hnswGraph) computeDistance(query []float64, storedVecBytes []byte) floa
 // to reconstruct an approximate vector for pairwise distance computations
 // in the neighbor selection heuristic.
 func (g *hnswGraph) decodeStoredVector(storedVecBytes []byte) ([]float64, error) {
+	return g.decodeVector(hnswVector{data: storedVecBytes})
+}
+
+func (g *hnswGraph) decodeVector(vector hnswVector) ([]float64, error) {
+	storedVecBytes := vector.data
 	if len(storedVecBytes) == 0 {
 		return nil, fmt.Errorf("hnsw: empty vector bytes")
 	}
@@ -290,20 +277,89 @@ func (g *hnswGraph) decodeStoredVector(storedVecBytes []byte) ([]float64, error)
 	if err != nil {
 		return nil, err
 	}
-	// Plain vector stored before the centroid (noOp quantizer) — lift it into the
-	// current coordinate system so pairwise distances against quantized neighbors are
-	// consistent (Java applies the current StorageTransform to every fetched vector).
-	if g.opXform != nil {
+	// Lift raw plain node/edge bytes, but never transform an access-info or new
+	// candidate vector twice. Pairwise distances require current coordinates.
+	if g.opXform != nil && !vector.transformed {
 		vec = g.opXform.apply(vec)
 	}
 	return vec, nil
+}
+
+// accessVectorBytes preserves encoded candidates and lifts only raw plain
+// vectors. Access-info is not a node write: Java does not quantize this copy.
+func (g *hnswGraph) accessVectorBytes(vector hnswVector) ([]byte, error) {
+	if vector.transformed || g.opXform == nil ||
+		(g.config.Quantizer != nil && len(vector.data) > 0 && vector.data[0] == g.config.Quantizer.GetTypeByte()) {
+		return vector.data, nil
+	}
+	decoded, err := g.decodeVector(vector)
+	if err != nil {
+		return nil, err
+	}
+	return serializeVector(decoded), nil
+}
+
+// nodeVectorBytes matches the compact/inline adapters' quantizer.encode call.
+// Already encoded bytes must survive unchanged; reconstructing and requantizing
+// them changes both their calibration and their integer codes.
+func (g *hnswGraph) nodeVectorBytes(vector hnswVector) ([]byte, error) {
+	if g.config.Quantizer == nil || g.opXform == nil ||
+		(len(vector.data) > 0 && vector.data[0] == g.config.Quantizer.GetTypeByte()) {
+		return vector.data, nil
+	}
+	decoded, err := g.decodeVector(vector)
+	if err != nil {
+		return nil, err
+	}
+	return g.config.Quantizer.Encode(decoded), nil
+}
+
+// saveNodeLayer converts candidate representations at the write boundary. The
+// storage cache sees only bytes actually written, never access-info bytes labeled
+// as an ordinary plain node vector.
+func (g *hnswGraph) saveNodeLayer(tx fdb.WritableTransaction, layer int, pk tuple.Tuple, vector hnswVector, neighbors []tuple.Tuple, neighborVectors []hnswVector) error {
+	if !g.storage.isInliningLayer(layer) {
+		data, err := g.nodeVectorBytes(vector)
+		if err != nil {
+			return err
+		}
+		g.storage.saveNodeLayer(tx, layer, pk, data, neighbors)
+		return nil
+	}
+	encoded := make([][]byte, len(neighbors))
+	for i, neighbor := range neighbors {
+		var v hnswVector
+		if i < len(neighborVectors) {
+			v = neighborVectors[i]
+		}
+		if v.data == nil {
+			v.data = g.storage.resolveVectorBytes(layer, neighbor, nil)
+		}
+		if v.data == nil {
+			return fmt.Errorf("hnsw: no vector for neighbor %v at layer %d", neighbor, layer)
+		}
+		var err error
+		encoded[i], err = g.nodeVectorBytes(v)
+		if err != nil {
+			return err
+		}
+	}
+	return g.storage.saveNodeLayerInlining(tx, layer, pk, neighbors, encoded)
 }
 
 // Insert adds a vector to the HNSW graph.
 // primaryKey identifies the record. vector is the float64 vector to index.
 // Wire-compatible with Java's HNSW insert (compact + inlining node formats,
 // deterministic layer assignment, FHT-KAC rotation for RaBitQ).
+// Insert adds a DOUBLE vector; see insertTyped.
 func (g *hnswGraph) Insert(tx fdb.WritableTransaction, primaryKey tuple.Tuple, vector []float64) error {
+	return g.insertTyped(tx, primaryKey, vector, vectorcodec.TypeDouble)
+}
+
+// insertTyped adds primaryKey's vector. vectorType is the VectorType ordinal
+// the vector was encoded with: without a storage transform Java's no-op
+// quantizer stores the vector at that precision (a HALF column stays HALF).
+func (g *hnswGraph) insertTyped(tx fdb.WritableTransaction, primaryKey tuple.Tuple, vector []float64, vectorType byte) error {
 	// Fire both existence check and access info read as parallel futures.
 	// Existence check uses layer 0 (always compact format).
 	existKey := g.storage.dataSubspace.Pack(tuple.Tuple{int64(0), primaryKey})
@@ -311,36 +367,37 @@ func (g *hnswGraph) Insert(tx fdb.WritableTransaction, primaryKey tuple.Tuple, v
 	accessKey := g.storage.accessSubspace.Pack(tuple.Tuple{})
 	accessFuture := tx.Get(fdb.Key(accessKey))
 
-	// Resolve existence check.
+	// Resolve both reads before acting on either, as Java combines them
+	// (Insert.java:184-194); an unresolved future must not outlive the call.
 	existData, existErr := existFuture.Get()
+	accessData, accessErr := accessFuture.Get()
 	if existErr != nil {
 		return fmt.Errorf("hnsw insert: existence check: %w", existErr)
 	}
+	if accessErr != nil {
+		return fmt.Errorf("hnsw insert: access info read: %w", accessErr)
+	}
 	if existData != nil {
-		// Node exists — populate cache with parsed data, delete and re-insert.
-		if vb, nb, parseErr := parseNodeValue(existData); parseErr == nil {
-			g.storage.cache[string(existKey)] = &parsedNode{vecBytes: vb, neighbors: nb}
-		}
-		if delErr := g.Delete(tx, primaryKey); delErr != nil {
-			return delErr
-		}
-		// Re-read access info after delete (may have changed entry point).
-		accessFuture = tx.Get(fdb.Key(accessKey))
+		// A node already in the graph is left as it is (Insert.java:195-197):
+		// the maintainer removes a record's old entry before inserting its new
+		// one, so an insert finds its key present only when the entry is
+		// already indexed, as when an index build reaches a record a
+		// concurrent save indexed. Deleting and re-inserting it rewired the
+		// graph Java leaves untouched.
+		return nil
 	}
 
 	// Determine insertion layer (deterministic per PK).
 	insertLayer := topLayer(primaryKey, g.config.M)
 
-	// Resolve access info.
-	accessData, accessErr := accessFuture.Get()
-	if accessErr != nil {
-		return fmt.Errorf("hnsw insert: access info read: %w", accessErr)
-	}
 	accessInfo, epErr := g.storage.parseAccessInfo(accessData)
 
 	if epErr != nil {
 		// No entry point — first node in the graph.
-		return g.firstInsert(tx, primaryKey, vector, insertLayer)
+		return g.firstInsert(tx, primaryKey, vector, vectorType, insertLayer)
+	}
+	if err := g.raBitQuantizerAdmits(accessInfo); err != nil {
+		return err
 	}
 
 	// Build transform from access info (nil if no rotation configured).
@@ -353,14 +410,15 @@ func (g *hnswGraph) Insert(tx fdb.WritableTransaction, primaryKey tuple.Tuple, v
 	// is stored plain (and lifted at read once a centroid exists), matching Java's
 	// noOp-until-centroid quantizer choice.
 	queryVec := vector
+	vectorForWrite := hnswVector{data: vectorcodec.SerializeAs(vectorType, vector), transformed: true}
 	if transform != nil {
 		queryVec = transform.apply(vector)
+		vectorForWrite.data = serializeVector(queryVec)
 	}
-	vecBytes := g.encodeVectorBytes(queryVec, transform != nil)
 
 	epLayer := accessInfo.layer
 	epPK := accessInfo.pk
-	epVecBytes := accessInfo.vectorBytes
+	epVector := hnswVector{data: accessInfo.vectorBytes, transformed: true}
 
 	// Preload upper layers used in greedy descent (few nodes each).
 	for layer := epLayer; layer > insertLayer && layer > 0; layer-- {
@@ -373,9 +431,9 @@ func (g *hnswGraph) Insert(tx fdb.WritableTransaction, primaryKey tuple.Tuple, v
 	// Search uses the transformed query vector.
 	var err error
 	currentPK := epPK
-	currentVecBytes := epVecBytes
+	currentVector := epVector
 	for layer := epLayer; layer > insertLayer; layer-- {
-		currentPK, currentVecBytes, err = g.searchLayerGreedy(tx, queryVec, currentPK, currentVecBytes, layer)
+		currentPK, currentVector, err = g.searchLayerGreedy(tx, queryVec, currentPK, currentVector, layer)
 		if err != nil {
 			return err
 		}
@@ -384,7 +442,7 @@ func (g *hnswGraph) Insert(tx fdb.WritableTransaction, primaryKey tuple.Tuple, v
 	// Insert at each layer from min(insertLayer, epLayer) down to 0.
 	for layer := min(insertLayer, epLayer); layer >= 0; layer-- {
 		// Find ef_construction nearest neighbors at this layer.
-		neighbors, err := g.searchLayerMulti(tx, queryVec, currentPK, currentVecBytes, g.config.EfConstruction, layer)
+		neighbors, err := g.searchLayerMulti(tx, queryVec, currentPK, currentVector, g.config.EfConstruction, layer)
 		if err != nil {
 			return err
 		}
@@ -425,13 +483,13 @@ func (g *hnswGraph) Insert(tx fdb.WritableTransaction, primaryKey tuple.Tuple, v
 		// values need the neighbor's vector, and on a cold tx the cache may not have it.
 		newNodeNeighbors := make([]tuple.Tuple, len(selectedPKs))
 		copy(newNodeNeighbors, selectedPKs)
-		newNodeNeighborVecs := make([][]byte, len(selected))
+		newNodeNeighborVecs := make([]hnswVector, len(selected))
 		for i, nb := range selected {
-			newNodeNeighborVecs[i] = nb.vecBytes
+			newNodeNeighborVecs[i] = nb.vector
 		}
 
 		// Save new node at this layer.
-		if saveErr := g.storage.saveNodeLayerDispatch(tx, layer, primaryKey, vecBytes, newNodeNeighbors, newNodeNeighborVecs); saveErr != nil {
+		if saveErr := g.saveNodeLayer(tx, layer, primaryKey, vectorForWrite, newNodeNeighbors, newNodeNeighborVecs); saveErr != nil {
 			return fmt.Errorf("hnsw insert: save new node at layer %d: %w", layer, saveErr)
 		}
 
@@ -472,13 +530,13 @@ func (g *hnswGraph) Insert(tx fdb.WritableTransaction, primaryKey tuple.Tuple, v
 			// in the cold cache yet — its layer-0 record is saved after the upper
 			// layers); existing neighbors resolve from the cache (their vectors were
 			// cached by the edge read that surfaced them).
-			nbNeighborVecs := make([][]byte, len(nbNeighbors))
+			nbNeighborVecs := make([]hnswVector, len(nbNeighbors))
 			for i, pk := range nbNeighbors {
 				if tupleEqual(pk, primaryKey) {
-					nbNeighborVecs[i] = vecBytes
+					nbNeighborVecs[i] = vectorForWrite
 				}
 			}
-			if saveErr := g.storage.saveNodeLayerDispatch(tx, layer, nbPK, nbVecBytes, nbNeighbors, nbNeighborVecs); saveErr != nil {
+			if saveErr := g.saveNodeLayer(tx, layer, nbPK, hnswVector{data: nbVecBytes}, nbNeighbors, nbNeighborVecs); saveErr != nil {
 				return fmt.Errorf("hnsw insert: save reverse connection for %v at layer %d: %w", nbPK, layer, saveErr)
 			}
 		}
@@ -489,7 +547,7 @@ func (g *hnswGraph) Insert(tx fdb.WritableTransaction, primaryKey tuple.Tuple, v
 			if err != nil {
 				return fmt.Errorf("hnsw insert: decode next-layer entry point: %w", err)
 			}
-			currentVecBytes = neighbors[0].vecBytes
+			currentVector = neighbors[0].vector
 		}
 	}
 
@@ -497,13 +555,13 @@ func (g *hnswGraph) Insert(tx fdb.WritableTransaction, primaryKey tuple.Tuple, v
 	// and update the entry point.
 	if insertLayer > epLayer {
 		for layer := epLayer + 1; layer <= insertLayer; layer++ {
-			if saveErr := g.storage.saveNodeLayerDispatch(tx, layer, primaryKey, vecBytes, nil, nil); saveErr != nil {
+			if saveErr := g.saveNodeLayer(tx, layer, primaryKey, vectorForWrite, nil, nil); saveErr != nil {
 				return fmt.Errorf("hnsw insert: save lonely node at layer %d: %w", layer, saveErr)
 			}
 		}
 		accessInfo.layer = insertLayer
 		accessInfo.pk = primaryKey
-		accessInfo.vectorBytes = vecBytes
+		accessInfo.vectorBytes = vectorForWrite.data
 		g.storage.saveAccessInfo(tx, accessInfo)
 	}
 
@@ -522,7 +580,7 @@ func (g *hnswGraph) Insert(tx fdb.WritableTransaction, primaryKey tuple.Tuple, v
 // When a quantizer is enabled and the metric doesn't preserve translation (Cosine/DotProduct),
 // initializes the FHT-KAC rotator immediately with a zero centroid.
 // Matches Java's Insert.firstInsert().
-func (g *hnswGraph) firstInsert(tx fdb.WritableTransaction, primaryKey tuple.Tuple, vector []float64, insertLayer int) error {
+func (g *hnswGraph) firstInsert(tx fdb.WritableTransaction, primaryKey tuple.Tuple, vector []float64, vectorType byte, insertLayer int) error {
 	info := &hnswAccessInfo{
 		layer:       insertLayer,
 		pk:          primaryKey,
@@ -532,18 +590,15 @@ func (g *hnswGraph) firstInsert(tx fdb.WritableTransaction, primaryKey tuple.Tup
 	queryVec := vector
 
 	if g.config.Quantizer != nil && !g.config.Metric.satisfiesPreservedUnderTranslation() {
-		// Cosine/DotProduct: activate rotation immediately.
-		// Generate deterministic seed from primary key, matching Java's:
-		//   SplittableRandom random = new SplittableRandom(splitMixLong(pk.hashCode()));
-		//   rotatorSeed = random.nextLong();
-		// SplittableRandom.nextLong() for the first call = splitMixLong(initialSeed)
-		packed := primaryKey.Pack()
-		h := javaHashCode(packed)
-		initialSeed := splitMixLong(int64(h))
-		info.rotatorSeed = splitMixLong(initialSeed)
+		// Cosine/DotProduct: activate rotation immediately, seeded by the
+		// insert's RandomHelpers.random(pk) (Insert.firstInsert).
+		info.rotatorSeed = newSplittableRandomForKey(primaryKey).nextLong()
 
 		// Zero centroid = no translation, rotation only.
 		info.centroid = make([]float64, g.config.NumDimensions)
+		if err := g.raBitQuantizerAdmits(info); err != nil {
+			return err
+		}
 
 		// Apply transform before encoding.
 		transform := g.buildTransform(info)
@@ -555,11 +610,15 @@ func (g *hnswGraph) firstInsert(tx fdb.WritableTransaction, primaryKey tuple.Tup
 	// Quantize only when a transform is active (Cosine/DotProduct: immediate rotation).
 	// For a translation-preserving metric (Euclidean) the first node is pre-centroid, so
 	// it is stored plain — matching Java's noOp quantizer until a centroid is sampled.
-	vecBytes := g.encodeVectorBytes(queryVec, info.hasTransform())
-	info.vectorBytes = vecBytes
+	g.opXform = g.buildTransform(info)
+	vectorForWrite := hnswVector{data: vectorcodec.SerializeAs(vectorType, queryVec), transformed: true}
+	if g.opXform != nil {
+		vectorForWrite.data = serializeVector(queryVec)
+	}
+	info.vectorBytes = vectorForWrite.data
 
 	for layer := 0; layer <= insertLayer; layer++ {
-		if saveErr := g.storage.saveNodeLayerDispatch(tx, layer, primaryKey, vecBytes, nil, nil); saveErr != nil {
+		if saveErr := g.saveNodeLayer(tx, layer, primaryKey, vectorForWrite, nil, nil); saveErr != nil {
 			return fmt.Errorf("hnsw first insert: save layer %d: %w", layer, saveErr)
 		}
 	}
@@ -623,18 +682,15 @@ func (g *hnswGraph) addToStatsIfNecessary(tx fdb.WritableTransaction, info *hnsw
 	// entry node is always in the internal system while data vectors may be a mix (Java comment).
 	normalize := g.config.Metric == VectorMetricCosine
 	transform := newHNSWTransform(rotatorSeed, rotatedCentroid, g.config.NumDimensions, normalize)
-	entryVec, derr := g.decodeStoredVector(info.vectorBytes)
+	entryVec, derr := g.decodeVector(hnswVector{data: info.vectorBytes, transformed: true})
 	if derr != nil {
 		return fmt.Errorf("hnsw stats: decode entry vector: %w", derr)
 	}
 	info.rotatorSeed = rotatorSeed
 	info.centroid = rotatedCentroid
-	// The entry node's AccessInfo copy is now expressed in the freshly-established
-	// coordinate system, so it is quantized (transform active). entryVec was decoded
-	// with opXform still nil (this insert is pre-centroid), i.e. as the raw vector, so
-	// applying the new transform lifts it correctly. The entry node's data-subspace
-	// bytes stay plain and are lifted at read like any other pre-centroid vector.
-	info.vectorBytes = g.encodeVectorBytes(transform.apply(entryVec), true)
+	// Access-info keeps the transformed, unquantized vector. Existing plain
+	// data nodes remain raw and are lifted independently when fetched.
+	info.vectorBytes = serializeVector(transform.apply(entryVec))
 	g.storage.saveAccessInfo(tx, info)
 	return g.storage.deleteAllSampledVectors(tx)
 }
@@ -817,11 +873,11 @@ func (g *hnswGraph) Delete(tx fdb.WritableTransaction, primaryKey tuple.Tuple) e
 			g.storage.cache[f.key] = nil // negative cache
 			continue
 		}
-		vecBytes, neighbors, parseErr := parseNodeValue(data)
+		vecBytes, neighbors, additional, parseErr := parseNodeValue(data)
 		if parseErr != nil {
 			continue
 		}
-		g.storage.cache[f.key] = &parsedNode{vecBytes: vecBytes, neighbors: neighbors}
+		g.storage.cache[f.key] = &parsedNode{vecBytes: vecBytes, neighbors: neighbors, additional: additional}
 	}
 	if futureErr != nil {
 		return futureErr
@@ -834,6 +890,9 @@ func (g *hnswGraph) Delete(tx fdb.WritableTransaction, primaryKey tuple.Tuple) e
 			return e // transient read — abort/retry, don't treat as already-deleted
 		}
 		return nil // already deleted or doesn't exist
+	}
+	if err := g.raBitQuantizerAdmits(accessInfo); err != nil {
+		return err
 	}
 
 	// Delete from each layer (0..topLayer(pk)), repairing the deleted node's neighbors
@@ -1055,7 +1114,7 @@ func (g *hnswGraph) deleteFromLayerRepair(tx fdb.WritableTransaction, layer int,
 			if bytes.Equal(c.span, pSpan) {
 				continue // not P itself
 			}
-			cands = append(cands, hnswCandidate{pkSpan: c.span, vecBytes: c.vecBytes, vec: c.vec, dist: vectorDistance(p.vec, c.vec, g.config.Metric)})
+			cands = append(cands, hnswCandidate{pkSpan: c.span, vector: hnswVector{data: c.vecBytes}, vec: c.vec, dist: vectorDistance(p.vec, c.vec, g.config.Metric)})
 		}
 		selected := g.selectNeighbors(cands, g.config.M)
 		for _, sc := range selected {
@@ -1107,7 +1166,7 @@ func (g *hnswGraph) deleteFromLayerRepair(tx fdb.WritableTransaction, layer int,
 		}
 		c := candByKey[key]
 		nbPKs := make([]tuple.Tuple, 0, len(changeSet[key]))
-		nbVecs := make([][]byte, 0, len(changeSet[key]))
+		nbVecs := make([]hnswVector, 0, len(changeSet[key]))
 		for _, sp := range changeSet[key] {
 			pk, derr := decodeNestedPK(sp)
 			if derr != nil {
@@ -1115,12 +1174,12 @@ func (g *hnswGraph) deleteFromLayerRepair(tx fdb.WritableTransaction, layer int,
 			}
 			nbPKs = append(nbPKs, pk)
 			if nb, ok := candByKey[string(sp)]; ok {
-				nbVecs = append(nbVecs, nb.vecBytes)
+				nbVecs = append(nbVecs, hnswVector{data: nb.vecBytes})
 			} else {
-				nbVecs = append(nbVecs, nil)
+				nbVecs = append(nbVecs, hnswVector{})
 			}
 		}
-		if saveErr := g.storage.saveNodeLayerDispatch(tx, layer, c.pk, c.vecBytes, nbPKs, nbVecs); saveErr != nil {
+		if saveErr := g.saveNodeLayer(tx, layer, c.pk, hnswVector{data: c.vecBytes}, nbPKs, nbVecs); saveErr != nil {
 			return nil, nil, fmt.Errorf("hnsw delete: save repaired candidate at layer %d: %w", layer, saveErr)
 		}
 	}
@@ -1129,7 +1188,8 @@ func (g *hnswGraph) deleteFromLayerRepair(tx fdb.WritableTransaction, layer int,
 	// which preserves the candidate insertion order; guaranteed to exist).
 	if len(order) > 0 {
 		first := candByKey[order[0]]
-		return first.pk, first.vecBytes, nil
+		data, err := g.accessVectorBytes(hnswVector{data: first.vecBytes})
+		return first.pk, data, err
 	}
 	return nil, nil, nil
 }
@@ -1147,12 +1207,19 @@ func containsSpan(spans [][]byte, span []byte) bool {
 // Search finds the k nearest neighbors to the query vector.
 // Returns results sorted by distance (closest first).
 func (g *hnswGraph) Search(tx fdb.ReadTransaction, query []float64, k, efSearch int) ([]hnswSearchResult, error) {
+	return g.searchWithVectors(tx, query, k, efSearch, false)
+}
+
+func (g *hnswGraph) searchWithVectors(tx fdb.ReadTransaction, query []float64, k, efSearch int, includeVectors bool) ([]hnswSearchResult, error) {
 	accessInfo, err := g.storage.loadAccessInfo(tx)
 	if err != nil {
 		if e := hnswFatal(err); e != nil {
 			return nil, e // transient read — propagate so the caller retries
 		}
 		return nil, nil // genuinely empty graph
+	}
+	if err := g.raBitQuantizerAdmits(accessInfo); err != nil {
+		return nil, err
 	}
 
 	// Apply transform to query vector so it's in the same coordinate system
@@ -1175,16 +1242,17 @@ func (g *hnswGraph) Search(tx fdb.ReadTransaction, query []float64, k, efSearch 
 
 	// Greedy descent from top layer to layer 1.
 	currentPK := accessInfo.pk
-	currentVecBytes := accessInfo.vectorBytes
+	currentVector := hnswVector{data: accessInfo.vectorBytes, transformed: true}
 	for layer := accessInfo.layer; layer > 0; layer-- {
-		currentPK, currentVecBytes, err = g.searchLayerGreedy(tx, searchQuery, currentPK, currentVecBytes, layer)
+		currentPK, currentVector, err = g.searchLayerGreedy(tx, searchQuery, currentPK, currentVector, layer)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	// Search at layer 0 with efSearch.
-	candidates, err := g.searchLayerMulti(tx, searchQuery, currentPK, currentVecBytes, max(efSearch, k), 0)
+	// Search at layer 0 with efSearch as given: like Java's beam search, an
+	// efSearch below k returns fewer than k results.
+	candidates, err := g.searchLayerMulti(tx, searchQuery, currentPK, currentVector, efSearch, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -1200,9 +1268,21 @@ func (g *hnswGraph) Search(tx fdb.ReadTransaction, query []float64, k, efSearch 
 		if derr != nil {
 			return nil, derr
 		}
+		var vector []byte
+		if includeVectors {
+			vector = c.vector.data
+			if transform != nil {
+				decoded, err := g.decodeVector(c.vector)
+				if err != nil {
+					return nil, err
+				}
+				vector = serializeVector(transform.invertedApply(decoded))
+			}
+		}
 		results[i] = hnswSearchResult{
 			PrimaryKey: pk,
 			Distance:   c.dist,
+			Vector:     vector,
 		}
 	}
 	return results, nil
@@ -1210,10 +1290,10 @@ func (g *hnswGraph) Search(tx fdb.ReadTransaction, query []float64, k, efSearch 
 
 // searchLayerGreedy finds the single nearest neighbor at a given layer (greedy descent).
 // Returns the best PK, its stored vector bytes, and error.
-func (g *hnswGraph) searchLayerGreedy(tx fdb.ReadTransaction, query []float64, epPK tuple.Tuple, epVecBytes []byte, layer int) (tuple.Tuple, []byte, error) {
+func (g *hnswGraph) searchLayerGreedy(tx fdb.ReadTransaction, query []float64, epPK tuple.Tuple, epVector hnswVector, layer int) (tuple.Tuple, hnswVector, error) {
 	bestPK := epPK
-	bestVecBytes := epVecBytes
-	bestDist := g.computeDistance(query, epVecBytes)
+	bestVector := epVector
+	bestDist := g.vectorDistance(query, epVector)
 	changed := true
 
 	for changed {
@@ -1221,7 +1301,7 @@ func (g *hnswGraph) searchLayerGreedy(tx fdb.ReadTransaction, query []float64, e
 		_, neighbors, err := g.storage.loadNodeLayerDispatch(tx, layer, bestPK)
 		if err != nil {
 			if e := hnswFatal(err); e != nil {
-				return nil, nil, e
+				return nil, hnswVector{}, e
 			}
 			break // no data at this layer
 		}
@@ -1232,7 +1312,7 @@ func (g *hnswGraph) searchLayerGreedy(tx fdb.ReadTransaction, query []float64, e
 		for _, r := range batchResults {
 			if r.err != nil {
 				if e := hnswFatal(r.err); e != nil {
-					return nil, nil, e
+					return nil, hnswVector{}, e
 				}
 				continue
 			}
@@ -1241,23 +1321,23 @@ func (g *hnswGraph) searchLayerGreedy(tx fdb.ReadTransaction, query []float64, e
 				bestDist = dist
 				bestPK, err = decodeNestedPK(r.span)
 				if err != nil {
-					return nil, nil, err
+					return nil, hnswVector{}, err
 				}
-				bestVecBytes = r.vecBytes
+				bestVector = hnswVector{data: r.vecBytes}
 				changed = true
 			}
 		}
 	}
 
-	return bestPK, bestVecBytes, nil
+	return bestPK, bestVector, nil
 }
 
 // hnswCandidate represents a search candidate with its primary key, vector bytes, and distance.
 type hnswCandidate struct {
-	pkSpan   []byte    // neighbor PK as a nested-encoded span (decode to tuple.Tuple only at boundaries)
-	vecBytes []byte    // stored vector bytes (raw or RaBitQ-encoded)
-	vec      []float64 // decoded vector (lazy, for heuristic pairwise distances)
-	dist     float64
+	pkSpan []byte     // neighbor PK as a nested-encoded span (decode to tuple.Tuple only at boundaries)
+	vector hnswVector // vector bytes with coordinate provenance
+	vec    []float64  // decoded vector (lazy, for heuristic pairwise distances)
+	dist   float64
 }
 
 // hnswPrefetchCandidates is the number of candidates to pop from the heap
@@ -1266,32 +1346,40 @@ type hnswCandidate struct {
 // over-fetching (popping candidates that would have been pruned).
 const hnswPrefetchCandidates = 4
 
+// hnswSearchCapacityHint bounds the up-front allocation of a layer search.
+const hnswSearchCapacityHint = 1024
+
 // searchLayerMulti finds the ef nearest neighbors at a given layer.
 // Uses parallel candidate prefetching: pops up to hnswPrefetchCandidates
 // from the heap per iteration, issues all edge-list reads as pipelined FDB
 // futures, then batch-fetches all unvisited neighbor vectors.
-func (g *hnswGraph) searchLayerMulti(tx fdb.ReadTransaction, query []float64, epPK tuple.Tuple, epVecBytes []byte, ef, layer int) ([]hnswCandidate, error) {
+func (g *hnswGraph) searchLayerMulti(tx fdb.ReadTransaction, query []float64, epPK tuple.Tuple, epVector hnswVector, ef, layer int) ([]hnswCandidate, error) {
 	if epPK == nil {
 		return nil, nil
 	}
 
-	epDist := g.computeDistance(query, epVecBytes)
+	epDist := g.vectorDistance(query, epVector)
 	// Entry point in span form (nested-encoded PK) so it dedups consistently with
 	// neighbor spans pulled from node values.
 	epSpan := nestPK(epPK)
 	epSpanStr := string(epSpan)
 
+	// ef is a query option, not a capacity: Java's PriorityQueue(efSearch + 1)
+	// fails for a huge one, so preallocation here is bounded.
+	capHint := min(max(ef, 1), hnswSearchCapacityHint)
+	// Java's beam polls only after an add, so it never drops below the entry.
+	keep := max(ef, 1)
+
 	// Candidates (min-heap by distance) and visited set.
-	backing := make(distHeap, 0, ef)
+	backing := make(distHeap, 0, capHint)
 	candidates := &backing
 	heap.Push(candidates, distItem{pkSpan: epSpan, dist: epDist, spanStr: epSpanStr})
 
-	visited := make(map[string]bool, ef*2)
+	visited := make(map[string]bool, capHint*2)
 	visited[epSpanStr] = true
 
-	// Pre-allocate results to expected capacity (ef).
-	results := make([]hnswCandidate, 1, ef)
-	results[0] = hnswCandidate{pkSpan: epSpan, vecBytes: epVecBytes, dist: epDist}
+	results := make([]hnswCandidate, 1, capHint)
+	results[0] = hnswCandidate{pkSpan: epSpan, vector: epVector, dist: epDist}
 
 	// Pre-allocate buffers reused across iterations. Spans are carried raw — no
 	// per-neighbor tuple decode / re-pack in this loop (the allocation win).
@@ -1356,15 +1444,15 @@ func (g *hnswGraph) searchLayerMulti(tx fdb.ReadTransaction, query []float64, ep
 				// r.spanStr is already computed by loadNodeLayerBatch — no double Pack().
 				heap.Push(candidates, distItem{pkSpan: r.span, dist: dist, spanStr: r.spanStr})
 				// Binary-search insertion into sorted results (O(log n) find + O(n) shift).
-				c := hnswCandidate{pkSpan: r.span, vecBytes: r.vecBytes, dist: dist}
+				c := hnswCandidate{pkSpan: r.span, vector: hnswVector{data: r.vecBytes}, dist: dist}
 				pos := sort.Search(len(results), func(i int) bool {
 					return results[i].dist > dist
 				})
 				results = append(results, hnswCandidate{})
 				copy(results[pos+1:], results[pos:])
 				results[pos] = c
-				if len(results) > ef {
-					results = results[:ef]
+				if len(results) > keep {
+					results = results[:keep]
 				}
 			}
 		}
@@ -1404,9 +1492,9 @@ func (g *hnswGraph) selectNeighbors(candidates []hnswCandidate, maxConn int) []h
 		}
 
 		// Lazily decode vector for heuristic pairwise distance.
-		if candidates[i].vec == nil && candidates[i].vecBytes != nil {
+		if candidates[i].vec == nil && candidates[i].vector.data != nil {
 			var decErr error
-			candidates[i].vec, decErr = g.decodeStoredVector(candidates[i].vecBytes)
+			candidates[i].vec, decErr = g.decodeVector(candidates[i].vector)
 			if decErr != nil {
 				continue
 			}
@@ -1415,9 +1503,9 @@ func (g *hnswGraph) selectNeighbors(candidates []hnswCandidate, maxConn int) []h
 		// Check if candidate is closer to query than to any already-selected neighbor.
 		shouldSelect := true
 		for j := range result {
-			if result[j].vec == nil && result[j].vecBytes != nil {
+			if result[j].vec == nil && result[j].vector.data != nil {
 				var decErr error
-				result[j].vec, decErr = g.decodeStoredVector(result[j].vecBytes)
+				result[j].vec, decErr = g.decodeVector(result[j].vector)
 				if decErr != nil {
 					continue
 				}
@@ -1497,7 +1585,7 @@ func (g *hnswGraph) selectNeighborsHeuristic(tx fdb.ReadTransaction, query []flo
 			continue
 		}
 		dist := g.computeDistance(query, r.vecBytes)
-		working = append(working, hnswCandidate{pkSpan: r.span, vecBytes: r.vecBytes, dist: dist})
+		working = append(working, hnswCandidate{pkSpan: r.span, vector: hnswVector{data: r.vecBytes}, dist: dist})
 	}
 
 	return g.selectNeighbors(working, maxConn), nil
@@ -1521,7 +1609,7 @@ func (g *hnswGraph) pruneNeighbors(tx fdb.ReadTransaction, nodeVec []float64, ne
 			continue
 		}
 		dist := g.computeDistance(nodeVec, r.vecBytes)
-		candidates = append(candidates, hnswCandidate{pkSpan: r.span, vecBytes: r.vecBytes, dist: dist})
+		candidates = append(candidates, hnswCandidate{pkSpan: r.span, vector: hnswVector{data: r.vecBytes}, dist: dist})
 	}
 
 	var selected []hnswCandidate
@@ -1550,12 +1638,16 @@ func (g *hnswGraph) pruneNeighbors(tx fdb.ReadTransaction, nodeVec []float64, ne
 type hnswSearchResult struct {
 	PrimaryKey tuple.Tuple
 	Distance   float64
+	Vector     []byte
 }
 
 // parsedNode holds pre-parsed node data to avoid repeated tuple.Unpack on cache hits.
 type parsedNode struct {
 	vecBytes  []byte
 	neighbors [][]byte // neighbor PKs as nested-encoded spans (Tuple{pk}.Pack())
+	// additional is the encoded fourth element of a Java 4.14 compact node
+	// (its covering values), carried verbatim so a rewrite never drops it.
+	additional []byte
 }
 
 // hnswStorage handles FDB storage of HNSW graph nodes.
@@ -1680,7 +1772,11 @@ func (s *hnswStorage) saveNodeLayer(tx fdb.WritableTransaction, layer int, prima
 		tuple.Tuple{vectorBytes}, // vector bytes wrapped in tuple
 		neighborList,             // neighbor PKs as nested tuples
 	}
-	tx.Set(fdb.Key(key), value.Pack())
+	var additional []byte
+	if existing := s.cache[string(key)]; existing != nil {
+		additional = existing.additional
+	}
+	tx.Set(fdb.Key(key), append(value.Pack(), additional...))
 
 	// Update cache with parsed data so subsequent reads skip tuple.Unpack.
 	// The cache holds neighbors as nested-encoded spans (Tuple{pk}.Pack()).
@@ -1688,7 +1784,7 @@ func (s *hnswStorage) saveNodeLayer(tx fdb.WritableTransaction, layer int, prima
 	for i, pk := range neighbors {
 		cacheNeighbors[i] = nestPK(pk)
 	}
-	s.cache[string(key)] = &parsedNode{vecBytes: vectorBytes, neighbors: cacheNeighbors}
+	s.cache[string(key)] = &parsedNode{vecBytes: vectorBytes, neighbors: cacheNeighbors, additional: additional}
 }
 
 // parseNodeValue parses the raw FDB value bytes for a node into vector bytes
@@ -1704,12 +1800,12 @@ func (s *hnswStorage) saveNodeLayer(tx fdb.WritableTransaction, layer int, prima
 // boundaries. Avoiding the per-PK tuple decode + element boxing here is the bulk
 // of the search-path allocation savings — Java pays the equivalent Object[] cost,
 // but Go's GC is far more sensitive to the interface-boxing churn.
-func parseNodeValue(data []byte) (vectorBytes []byte, neighbors [][]byte, err error) {
+func parseNodeValue(data []byte) (vectorBytes []byte, neighbors [][]byte, additional []byte, err error) {
 	// elem 0: nodeKind (skip).
 	p := 0
 	n0 := tupleSkip(data[p:])
 	if n0 < 0 {
-		return nil, nil, fmt.Errorf("hnsw: truncated node value (nodeKind)")
+		return nil, nil, nil, fmt.Errorf("hnsw: truncated node value (nodeKind)")
 	}
 	p += n0
 
@@ -1718,11 +1814,11 @@ func parseNodeValue(data []byte) (vectorBytes []byte, neighbors [][]byte, err er
 	// the single bytes element's standalone encoding (which fastDecodeBytes
 	// unescapes on its own). No extra un-nesting pass is needed.
 	if p >= len(data) || data[p] != tcNested {
-		return nil, nil, fmt.Errorf("hnsw: node value missing vector tuple")
+		return nil, nil, nil, fmt.Errorf("hnsw: node value missing vector tuple")
 	}
 	n1 := tupleSkip(data[p:])
 	if n1 < 0 || p+n1 > len(data) {
-		return nil, nil, fmt.Errorf("hnsw: truncated vector tuple")
+		return nil, nil, nil, fmt.Errorf("hnsw: truncated vector tuple")
 	}
 	vecInner := data[p+1 : p+n1-1]
 	if len(vecInner) > 0 {
@@ -1731,7 +1827,7 @@ func parseNodeValue(data []byte) (vectorBytes []byte, neighbors [][]byte, err er
 		// fastDecodeBytes copies, which is required for correctness here.
 		vb, _, berr := fastDecodeBytes(vecInner)
 		if berr != nil {
-			return nil, nil, fmt.Errorf("hnsw: decode vector bytes: %w", berr)
+			return nil, nil, nil, fmt.Errorf("hnsw: decode vector bytes: %w", berr)
 		}
 		vectorBytes = vb
 	}
@@ -1741,20 +1837,30 @@ func parseNodeValue(data []byte) (vectorBytes []byte, neighbors [][]byte, err er
 	// content is the concatenation of each neighbor's verbatim nested encoding
 	// (== Tuple{pk}.Pack()), so each per-element span IS the fetch-key suffix.
 	if p >= len(data) {
-		return vectorBytes, nil, nil
+		return vectorBytes, nil, nil, nil
 	}
 	if data[p] != tcNested {
-		return nil, nil, fmt.Errorf("hnsw: node value neighbor list is not a tuple")
+		return nil, nil, nil, fmt.Errorf("hnsw: node value neighbor list is not a tuple")
 	}
 	n2 := tupleSkip(data[p:])
 	if n2 < 0 || p+n2 > len(data) {
-		return nil, nil, fmt.Errorf("hnsw: truncated neighbor list")
+		return nil, nil, nil, fmt.Errorf("hnsw: truncated neighbor list")
 	}
 	neighbors, err = nestedPKSpans(data[p+1 : p+n2-1])
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return vectorBytes, neighbors, nil
+	p += n2
+
+	// elem 3 (optional): the additional (covering) values tuple.
+	if p < len(data) {
+		n3 := tupleSkip(data[p:])
+		if n3 < 0 || p+n3 > len(data) {
+			return nil, nil, nil, fmt.Errorf("hnsw: truncated additional values")
+		}
+		additional = append([]byte(nil), data[p:p+n3]...)
+	}
+	return vectorBytes, neighbors, additional, nil
 }
 
 // decodeNestedPK turns a neighbor span (nested-encoded PK == Tuple{pk}.Pack())
@@ -1810,11 +1916,12 @@ func (s *hnswStorage) loadNodeLayer(tx fdb.ReadTransaction, layer int, primaryKe
 	}
 
 	// Parse and cache the result.
-	vectorBytes, neighbors, err = parseNodeValue(data)
+	var additional []byte
+	vectorBytes, neighbors, additional, err = parseNodeValue(data)
 	if err != nil {
 		return nil, nil, err
 	}
-	s.cacheStore(cacheKey, &parsedNode{vecBytes: vectorBytes, neighbors: neighbors})
+	s.cacheStore(cacheKey, &parsedNode{vecBytes: vectorBytes, neighbors: neighbors, additional: additional})
 	return vectorBytes, neighbors, nil
 }
 
@@ -1885,12 +1992,12 @@ func (s *hnswStorage) loadNodeLayerBatch(tx fdb.ReadTransaction, layer int, pks 
 			results[p.idx].err = fmt.Errorf("hnsw: node not found at layer %d: %w", layer, errHNSWNotPresent)
 			continue
 		}
-		vecBytes, neighbors, parseErr := parseNodeValue(data)
+		vecBytes, neighbors, additional, parseErr := parseNodeValue(data)
 		if parseErr != nil {
 			results[p.idx].err = parseErr
 			continue
 		}
-		s.cacheStore(p.key, &parsedNode{vecBytes: vecBytes, neighbors: neighbors})
+		s.cacheStore(p.key, &parsedNode{vecBytes: vecBytes, neighbors: neighbors, additional: additional})
 		results[p.idx].vecBytes = vecBytes
 		results[p.idx].neighbors = neighbors
 	}
@@ -1972,12 +2079,12 @@ func (s *hnswStorage) loadEdgeListsBatch(tx fdb.ReadTransaction, layer int, pks 
 			results[p.idx].err = fmt.Errorf("hnsw: node not found at layer %d: %w", layer, errHNSWNotPresent)
 			continue
 		}
-		vecBytes, neighbors, parseErr := parseNodeValue(data)
+		vecBytes, neighbors, additional, parseErr := parseNodeValue(data)
 		if parseErr != nil {
 			results[p.idx].err = parseErr
 			continue
 		}
-		s.cacheStore(p.cacheKey, &parsedNode{vecBytes: vecBytes, neighbors: neighbors})
+		s.cacheStore(p.cacheKey, &parsedNode{vecBytes: vecBytes, neighbors: neighbors, additional: additional})
 		results[p.idx].neighbors = neighbors
 	}
 
@@ -2005,11 +2112,11 @@ func (s *hnswStorage) preloadLayer(tx fdb.ReadTransaction, layer int) error {
 		if _, ok := s.cache[cacheKey]; ok {
 			continue // already cached (e.g. from a save earlier in this tx)
 		}
-		vecBytes, neighbors, parseErr := parseNodeValue(kv.Value)
+		vecBytes, neighbors, additional, parseErr := parseNodeValue(kv.Value)
 		if parseErr != nil {
 			continue // skip unparseable entries
 		}
-		s.cache[cacheKey] = &parsedNode{vecBytes: vecBytes, neighbors: neighbors}
+		s.cache[cacheKey] = &parsedNode{vecBytes: vecBytes, neighbors: neighbors, additional: additional}
 	}
 	// Advance()==false ends the loop on exhaustion OR a transient FDB error; check
 	// Get() for the stored error so a mid-scan 1007/timeout surfaces instead of
@@ -2239,6 +2346,10 @@ func (s *hnswStorage) saveNodeLayerInlining(tx fdb.WritableTransaction, layer in
 		// Record the vector so later same-tx saves can resolve it (merges into a
 		// vector-less source entry — see cacheNeighborVector).
 		s.cacheNeighborVector(layer, nbPK, nbVecBytes)
+		cachedKey := s.dataSubspace.Pack(tuple.Tuple{int64(layer), nbPK})
+		if cached := s.cache[string(cachedKey)]; cached != nil {
+			cached.vecBytes = nbVecBytes
+		}
 	}
 
 	// Update the cache for this node so loadNodeLayerDispatch returns
@@ -2256,11 +2367,11 @@ func (s *hnswStorage) saveNodeLayerInlining(tx fdb.WritableTransaction, layer in
 	// it (like the load path does). Writing vecBytes nil here clobbered the entry
 	// point's just-merged vector between two reverse-edge saves of the same insert,
 	// making the second save fail with "no vector for neighbor".
-	var existingVec []byte
+	var existingVec, additional []byte
 	if existing, ok := s.cache[string(compactKey)]; ok && existing != nil {
-		existingVec = existing.vecBytes
+		existingVec, additional = existing.vecBytes, existing.additional
 	}
-	s.cache[string(compactKey)] = &parsedNode{vecBytes: existingVec, neighbors: cachedNeighbors}
+	s.cache[string(compactKey)] = &parsedNode{vecBytes: existingVec, neighbors: cachedNeighbors, additional: additional}
 	return nil
 }
 
@@ -2685,11 +2796,20 @@ type splittableRandom struct {
 	gamma int64
 }
 
-// newSplittableRandomForKey seeds the RNG from a primary key, matching Java's
-// Primitives.random(pk): new SplittableRandom(splitMixLong(pk.hashCode())) — the
-// single-argument constructor uses GOLDEN_GAMMA.
+// newSplittableRandomForKey is Java's RandomHelpers.random(primaryKey): a
+// SplittableRandom (GOLDEN_GAMMA) seeded by folding the packed key through
+// splitMixLong byte by byte.
 func newSplittableRandomForKey(primaryKey tuple.Tuple) *splittableRandom {
-	return &splittableRandom{seed: splitMixLong(int64(javaHashCode(primaryKey.Pack()))), gamma: goldenGamma}
+	return &splittableRandom{seed: seedFromBytes(primaryKey.Pack()), gamma: goldenGamma}
+}
+
+// seedFromBytes is RandomHelpers.seedFromBytes.
+func seedFromBytes(b []byte) int64 {
+	var seed int64
+	for _, c := range b {
+		seed = splitMixLong(seed ^ int64(c))
+	}
+	return seed
 }
 
 // nextSeed advances and returns the seed (Java SplittableRandom.nextSeed).

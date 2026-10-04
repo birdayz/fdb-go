@@ -682,18 +682,33 @@ func TestTranslateQueryValueMaybe_IdentityMapping(t *testing.T) {
 	}
 }
 
+// TestTranslateQueryValueMaybe_EmptyMapping pins Java's translateQueryValueMaybe
+// on an empty mapping: the query value is untranslated, so it fails exactly when
+// it still reads a ranged-over alias, and a value reading none (a constant
+// result, `SELECT 42 ... WHERE id = 1`) translates to itself.
 func TestTranslateQueryValueMaybe_EmptyMapping(t *testing.T) {
 	t.Parallel()
 
 	alias := values.NamedCorrelationIdentifier("candidate")
 	qv := maxMatchTestField(t, "col1")
 	cv := maxMatchTestField(t, "col2")
+	rangedOver := map[values.CorrelationIdentifier]struct{}{
+		values.NamedCorrelationIdentifier("max_match_col1"): {},
+	}
+	if result := ComputeMaxMatchMap(qv, cv, rangedOver).TranslateQueryValueMaybe(alias); result != nil {
+		t.Fatalf("a read of a ranged-over alias translated to %v, want no translation", result)
+	}
 
-	mmm := ComputeMaxMatchMap(qv, cv, nil)
-
-	result := mmm.TranslateQueryValueMaybe(alias)
-	if result != nil {
-		t.Fatalf("TranslateQueryValueMaybe should return nil for empty mapping, got %T", result)
+	constant := values.NewRecordConstructorValue(values.RecordConstructorField{
+		Name:  "C",
+		Value: &values.ConstantValue{Value: int64(42), Typ: values.NotNullLong},
+	})
+	mmm := ComputeMaxMatchMap(constant, cv, rangedOver)
+	if mmm.Size() != 0 {
+		t.Fatalf("constant matched %d candidate parts, want none", mmm.Size())
+	}
+	if result := mmm.TranslateQueryValueMaybe(alias); result != constant {
+		t.Fatalf("constant translated to %v, want itself", result)
 	}
 }
 
@@ -739,14 +754,17 @@ func TestPullUpMaybe_EmptyMapping(t *testing.T) {
 
 	qv := maxMatchTestField(t, "col1")
 	cv := maxMatchTestField(t, "col2")
-	mmm := ComputeMaxMatchMap(qv, cv, nil)
+	// The untranslated query value still reads the ranged-over alias.
+	mmm := ComputeMaxMatchMap(qv, cv, map[values.CorrelationIdentifier]struct{}{
+		values.NamedCorrelationIdentifier("max_match_col1"): {},
+	})
 
 	tm, ok := mmm.PullUpMaybe(queryAlias, candidateAlias)
 	if ok {
-		t.Fatal("PullUpMaybe should return false for empty mapping")
+		t.Fatal("PullUpMaybe should return false when the query value cannot be translated")
 	}
 	if tm != nil {
-		t.Fatal("PullUpMaybe should return nil for empty mapping")
+		t.Fatal("PullUpMaybe should return nil when the query value cannot be translated")
 	}
 }
 
@@ -780,14 +798,17 @@ func TestAdjustMaybe_EmptyMapping(t *testing.T) {
 	cv := maxMatchTestField(t, "col2")
 	upperResult := maxMatchTestField(t, "col1")
 
-	mmm := ComputeMaxMatchMap(qv, cv, nil)
+	// The untranslated query value still reads the ranged-over alias.
+	mmm := ComputeMaxMatchMap(qv, cv, map[values.CorrelationIdentifier]struct{}{
+		values.NamedCorrelationIdentifier("max_match_col1"): {},
+	})
 
 	adjusted, ok := mmm.AdjustMaybe(upperAlias, upperResult, nil)
 	if ok {
-		t.Fatal("AdjustMaybe should return false for empty mapping")
+		t.Fatal("AdjustMaybe should return false when the query value cannot be translated")
 	}
 	if adjusted != nil {
-		t.Fatal("AdjustMaybe should return nil for empty mapping")
+		t.Fatal("AdjustMaybe should return nil when the query value cannot be translated")
 	}
 }
 

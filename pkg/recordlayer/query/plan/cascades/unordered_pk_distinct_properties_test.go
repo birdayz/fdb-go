@@ -156,3 +156,30 @@ func TestUnorderedPrimaryKeyDistinctCardinalities(t *testing.T) {
 		})
 	}
 }
+
+// Java DistinctRecordsProperty.visitFlatMapPlan is conservative even when
+// the inner is bounded by one. Do not infer that Unique can absorb this leg
+// merely from the stored-record inheritance flag.
+func TestFlatMapDistinctRecordsRemainConservative(t *testing.T) {
+	t.Parallel()
+	outer, _ := unorderedPKScan("OUTER")
+	inner, _ := unorderedPKScan("INNER")
+	oa, ia := values.NamedCorrelationIdentifier("OUTER"), values.NamedCorrelationIdentifier("INNER")
+	rv := mustUnorderedPKConstruct(values.NewQuantifiedObjectValue(oa, outer.GetResultType()))
+	one := mustUnorderedPKConstruct(plans.NewRecordQueryFirstOrDefaultPlan(inner, &values.ConstantValue{Value: nil, Typ: inner.GetResultType()}))
+	for _, tc := range []struct {
+		name          string
+		inner         plans.RecordQueryPlan
+		inherit, want bool
+	}{
+		{"single", one, true, false}, {"multiplying", inner, true, false}, {"not inherited", one, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			p := mustUnorderedPKConstruct(plans.NewRecordQueryFlatMapPlan(outer, tc.inner, oa, ia, rv, tc.inherit))
+			if got := computeDistinctRecords(p, p); got != tc.want {
+				t.Fatalf("distinct=%v want %v", got, tc.want)
+			}
+		})
+	}
+}

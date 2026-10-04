@@ -5,7 +5,7 @@ package sqldriver_test
 // operand is a QUALIFIED leg reference (D.DNAME, E.SALARY); the aggregate reads
 // its keys / operands off the merged PositionalRow through legWindowRowContext
 // — the SAME spanAwareRow leg-window resolver that projection / filter over the
-// same join merge already use (executeProjection / executeFilter). There is no
+// same join merge already use (executeMap / executeFilter). There is no
 // name-keyed row reader for this path any more, so resolution is structurally
 // ordinal, not a name-model fallback.
 //
@@ -34,7 +34,7 @@ func TestFDB_AggregateOverJoinOrdinal(t *testing.T) {
 			"CREATE TABLE dept (did BIGINT, dname STRING, PRIMARY KEY (did)) "+
 			"CREATE TABLE emp (eid BIGINT, did BIGINT, salary BIGINT, PRIMARY KEY (eid))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggjoin_ord/s WITH TEMPLATE aggjoin_ord")
-	dsn := fmt.Sprintf("fdbsql:///testdb_aggjoin_ord?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGJOIN_ORD?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

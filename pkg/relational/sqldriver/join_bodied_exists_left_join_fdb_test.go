@@ -1,24 +1,7 @@
 package sqldriver_test
 
-// A JOIN-BODIED EXISTS beside a LEFT JOIN — the shape whose hoisted correlation
-// predicate does NOT name the existential's own alias.
-//
-// existsInnerCorrelation rebases a hoisted EXISTS correlation onto the
-// existential's alias only when existsInnerSafeToRename allows it, and that
-// refuses a JOIN- or CTE-bodied subquery. For those the predicate keeps the
-// subquery-INTERNAL alias — `R.id = q.qid`, naming R and the null-supplying leg,
-// but never the existential.
-//
-// RewriteOuterJoinRule splits predicates by side of the null-extension: ON goes
-// below, WHERE-EXISTS stays above. Splitting on "names an existential alias"
-// alone therefore read this predicate as an ON-predicate and folded it BELOW the
-// null-extension, where R is bound by nothing — an unbindable correlation, or a
-// NULL evaluation that empties the inner and null-extends every row.
-//
-// PartitionSelectRule already compensated for exactly this with a
-// buried-alias map; the rewrite rule did not. These are the row-level pins for
-// the fix, in both spellings, because the defect is invisible to a plan-shape
-// assertion: the plan is well-formed either way and only the ROWS differ.
+// A join-bodied EXISTS beside a LEFT JOIN must keep its child WHERE inside
+// the existential input, while the existence test stays above null-extension.
 
 import (
 	"context"
@@ -47,7 +30,7 @@ func TestFDB_JoinBodiedExistsOverLeftJoin(t *testing.T) {
 			"CREATE TABLE r (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE s (k BIGINT, PRIMARY KEY (k))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /jbexists/s WITH TEMPLATE jbexists")
-	dsn := fmt.Sprintf("fdbsql:///jbexists?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///JBEXISTS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -201,9 +184,8 @@ func TestFDB_JoinBodiedExistsOverLeftJoin(t *testing.T) {
 // scalar one especially, since it is incidental rather than a considered
 // outer-join guard — the name-collision path becomes reachable and silent. What
 // re-arms it is this test going green in the OTHER direction: an accepted query
-// instead of a refusal. The durable fix at that point is to carry predicate
-// ownership from `existsInnerCorrelation`, which knows it at translation, rather
-// than re-deriving it by alias intersection in two rules.
+// instead of a refusal. Predicate ownership must remain attached to the child
+// query rather than be re-derived by alias intersection in planner rules.
 func TestFDB_BuriedAliasShadowingIsRejectedUpstream(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -218,7 +200,7 @@ func TestFDB_BuriedAliasShadowingIsRejectedUpstream(t *testing.T) {
 			"CREATE TABLE a (k BIGINT, id BIGINT, PRIMARY KEY (k)) "+
 			"CREATE TABLE b (k BIGINT, z BIGINT, PRIMARY KEY (k))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /shadowreject/s WITH TEMPLATE shadowreject")
-	dsn := fmt.Sprintf("fdbsql:///shadowreject?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///SHADOWREJECT?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)

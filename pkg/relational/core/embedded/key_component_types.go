@@ -172,7 +172,13 @@ func physicalRecordTypeKeyType(recordType *recordlayer.RecordType) values.Type {
 }
 
 func physicalTypeForField(field protoreflect.FieldDescriptor) values.Type {
-	nullable := field.HasPresence() && field.Cardinality() != protoreflect.Required
+	// A FAN_OUT field's key component is one ELEMENT of the repeated field,
+	// never NULL: Java's FieldKeyExpression fans the elements out and answers
+	// an empty list, not a NULL, for no elements (getNullResult, FanOut), as
+	// values.FieldTypeForProtoField types an array's elements NOT NULL. A
+	// field that is not a list takes Java's field nullability, !isRequired():
+	// a proto3 field without explicit presence reads its default as absent.
+	nullable := !field.IsList() && field.Cardinality() != protoreflect.Required
 	code := values.TypeCodeUnknown
 	switch field.Kind() {
 	case protoreflect.BoolKind:

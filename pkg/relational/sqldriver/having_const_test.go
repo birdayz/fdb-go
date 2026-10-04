@@ -27,7 +27,7 @@ func TestFDB_HavingConstantScalarAggregate(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE havingconst "+
 			"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_havingconst/s WITH TEMPLATE havingconst")
-	dsn := fmt.Sprintf("fdbsql:///testdb_havingconst?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_HAVINGCONST?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -26,7 +26,7 @@ func TestFDB_UpdateUniqueViolationProbe(t *testing.T) {
 			"CREATE TABLE t (id BIGINT, email STRING, PRIMARY KEY (id)) "+
 			"CREATE UNIQUE INDEX t_email ON t (email)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_upduniq/s WITH TEMPLATE upduniq")
-	dsn := fmt.Sprintf("fdbsql:///testdb_upduniq?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_UPDUNIQ?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -75,7 +75,7 @@ func TestFDB_PlanLogging_DML(t *testing.T) {
 	rows, err := conn.QueryContext(ctx, "DELETE FROM Item WHERE item_id = 2")
 	if err == nil {
 		rows.Close()
-	} else if !strings.Contains(err.Error(), "use Exec, not Query") {
+	} else if !strings.Contains(err.Error(), "does not return result set") {
 		t.Fatalf("DELETE: unexpected error: %v", err)
 	}
 

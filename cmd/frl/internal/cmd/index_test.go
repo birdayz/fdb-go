@@ -341,19 +341,51 @@ func TestWriteIndexListJSON_EmptyMetadata(t *testing.T) {
 	}
 }
 
-// formatPartlyBuilt must render both stamps and both escape hatches —
-// the raw PartlyBuiltError means nothing to an operator without them
-// (FDB C++ dev C2 on RFC-174).
+// formatPartlyBuilt must render both stamps and every way out an operator has
+// (unblock, finish with the builder that began it, rebuild) — the raw
+// PartlyBuiltError means nothing without them — and must not offer a
+// continuation frl cannot run.
 func TestFormatPartlyBuilt_RendersStampsAndRemediation(t *testing.T) {
 	t.Parallel()
 	err := formatPartlyBuilt(&recordlayer.PartlyBuiltError{
 		IndexName:     "Order$price",
 		SavedStamp:    "by-records",
 		ExpectedStamp: "mutual",
+		Message:       "This index was partly built, and blocked",
 	}, "Order$price")
-	for _, want := range []string{"by-records", "mutual", "rebuild", "same settings"} {
+	for _, want := range []string{
+		"by-records", "mutual", "(This index was partly built, and blocked)",
+		"unblock it first", "finish it with the builder that began it", "`frl index rebuild Order$price`",
+	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("PartlyBuiltError rendering missing %q:\n%s", want, err)
+		}
+	}
+	for _, unwanted := range []string{"same settings", "same targets", "continue it with"} {
+		if strings.Contains(err.Error(), unwanted) {
+			t.Errorf("PartlyBuiltError rendering offers %q, which frl cannot run:\n%s", unwanted, err)
+		}
+	}
+	// No message, no empty parentheses.
+	bare := formatPartlyBuilt(&recordlayer.PartlyBuiltError{IndexName: "Order$price"}, "Order$price")
+	if strings.Contains(bare.Error(), "()") {
+		t.Errorf("an empty message renders as ():\n%s", bare)
+	}
+}
+
+// indexBuildSummary renders each session outcome distinctly: a session that
+// left a READABLE index alone or only published it scanned 0 records, like an
+// empty build, and must not say "built".
+func TestIndexBuildSummary_OneLinePerOutcome(t *testing.T) {
+	t.Parallel()
+	for outcome, want := range map[recordlayer.IndexBuildOutcome]string{
+		recordlayer.IndexBuildOutcomeBuilt:            "built IDX (7 records scanned)",
+		recordlayer.IndexBuildOutcomeLeftAlone:        "IDX is already readable; nothing built (`frl index rebuild IDX` rebuilds it)",
+		recordlayer.IndexBuildOutcomePublished:        "published IDX without a build",
+		recordlayer.IndexBuildOutcomeCompletedByPeers: "IDX was built by other builders",
+	} {
+		if got := indexBuildSummary("IDX", outcome, 7); got != want {
+			t.Errorf("indexBuildSummary(%d) = %q, want %q", outcome, got, want)
 		}
 	}
 }

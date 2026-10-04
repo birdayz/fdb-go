@@ -37,7 +37,7 @@ func TestFDB_AggregateInputOrdinal(t *testing.T) {
 			"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, price BIGINT, active BOOLEAN, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_g ON t (g)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggin_ord/s WITH TEMPLATE aggin_ord")
-	dsn := fmt.Sprintf("fdbsql:///testdb_aggin_ord?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGIN_ORD?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -127,6 +128,14 @@ func TestFDB_ModFloatZero(t *testing.T) {
 	}
 }
 
+// TestFDB_ModFunctionIndexRemainsRejected: MOD() is a Go-only scalar function
+// (Java's catalog has no "mod" name, only the `%` operator), so an index over it
+// would persist an expression Java cannot read. It stays refused, now by the
+// index spec's value check — the result of the definition's select is checked
+// against the six value classes Java's IndexSpec admits before any key
+// expression is built (IndexSpec.java:418-442), and MOD()'s value is none of
+// them — rather than by the key-expression builder. `n % 3` is Java's
+// ArithmeticValue and builds.
 func TestFDB_ModFunctionIndexRemainsRejected(t *testing.T) {
 	t.Parallel()
 	name := fmt.Sprintf("modindexboundary_%d", modFixtureID.Add(1))
@@ -139,7 +148,8 @@ func TestFDB_ModFunctionIndexRemainsRejected(t *testing.T) {
 		CREATE INDEX i_mod AS SELECT MOD(n, 3) FROM t`)
 	var sqlErr *api.Error
 	if !errors.As(err, &sqlErr) || sqlErr.Code != api.ErrCodeUnsupportedOperation ||
-		sqlErr.Message != "unable to construct expression" {
+		!strings.Contains(sqlErr.Message,
+			"Unsupported index definition, not all fields can be mapped to key expression in SelectExpression") {
 		t.Fatalf("MOD() index: %v; want unsupported operation, not new persisted index-expression admission", err)
 	}
 	mwjoMustExec(t, db, ctx, `CREATE SCHEMA TEMPLATE `+name+`_operator

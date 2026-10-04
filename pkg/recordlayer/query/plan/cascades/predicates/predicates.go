@@ -113,16 +113,19 @@ func PredicateEquals(a, b QueryPredicate) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
 	}
+	if IsAtomic(a) != IsAtomic(b) {
+		return false
+	}
 	switch ap := a.(type) {
 	case *ConstantPredicate:
 		bp, ok := b.(*ConstantPredicate)
 		return ok && ap.Value == bp.Value
 	case *AndPredicate:
 		bp, ok := b.(*AndPredicate)
-		return ok && predicateListsEqual(ap.SubPredicates, bp.SubPredicates)
+		return ok && semanticSetsEqual(ap.SubPredicates, bp.SubPredicates, PredicateEquals)
 	case *OrPredicate:
 		bp, ok := b.(*OrPredicate)
-		return ok && predicateListsEqual(ap.SubPredicates, bp.SubPredicates)
+		return ok && semanticSetsEqual(ap.SubPredicates, bp.SubPredicates, PredicateEquals)
 	case *NotPredicate:
 		bp, ok := b.(*NotPredicate)
 		return ok && PredicateEquals(ap.Child, bp.Child)
@@ -132,6 +135,8 @@ func PredicateEquals(a, b QueryPredicate) bool {
 			return false
 		}
 		return valueNamesEqual(ap.Value, bp.Value)
+	case *PredicateWithValueAndRanges:
+		return SemanticEqualsUnderAliasMap(a, b, nil)
 	case *ExistentialValuePredicate:
 		bp, ok := b.(*ExistentialValuePredicate)
 		if !ok {
@@ -155,8 +160,8 @@ func PredicateEquals(a, b QueryPredicate) bool {
 		// literal content, so equal literals render equal; FieldValue
 		// renders its name; IN-lists (ConstantValue over []any)
 		// render element-wise. Same surface as the LHS Operand
-		// comparison below. Escape rune is part of the
-		// Comparison's identity for LIKE — `LIKE 'x' ESCAPE '\'` and
+		// comparison below. A LIKE's escape is a child of its
+		// PatternForLikeValue operand, so `LIKE 'x' ESCAPE '\'` and
 		// `LIKE 'x' ESCAPE '!'` are distinct predicates.
 		//
 		// Unary types (IS [NOT] NULL) ignore Operand at Eval time, so
@@ -171,7 +176,6 @@ func PredicateEquals(a, b QueryPredicate) bool {
 		// (the comparisonEqual rationale in plans/semantic_identity.go,
 		// applied at the predicate layer).
 		if ap.Comparison.Type != bp.Comparison.Type ||
-			ap.Comparison.Escape != bp.Comparison.Escape ||
 			ap.Comparison.ParameterName != bp.Comparison.ParameterName ||
 			ap.Comparison.TextTokenizerName != bp.Comparison.TextTokenizerName ||
 			ap.Comparison.TextAnalyzerName != bp.Comparison.TextAnalyzerName ||
@@ -195,18 +199,6 @@ func PredicateEquals(a, b QueryPredicate) bool {
 		return valueNamesEqual(ap.Comparison.Operand, bp.Comparison.Operand)
 	}
 	return false
-}
-
-func predicateListsEqual(a, b []QueryPredicate) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if !PredicateEquals(a[i], b[i]) {
-			return false
-		}
-	}
-	return true
 }
 
 func valueNamesEqual(a, b values.Value) bool {
@@ -299,6 +291,52 @@ func (p *ConstantPredicate) Explain() string {
 	}
 }
 
+// IsAtomic reports whether boolean normalization must treat this subtree as a leaf.
+func IsAtomic(p QueryPredicate) bool {
+	switch p := p.(type) {
+	case *AndPredicate:
+		return p != nil && p.atomic
+	case *OrPredicate:
+		return p != nil && p.atomic
+	case *NotPredicate:
+		return p != nil && p.atomic
+	default:
+		return false
+	}
+}
+
+// WithAtomicity copies a connective's optimization barrier; leaves are unchanged.
+func WithAtomicity(p QueryPredicate, atomic bool) QueryPredicate {
+	if IsAtomic(p) == atomic {
+		return p
+	}
+	switch p := p.(type) {
+	case *AndPredicate:
+		if p == nil {
+			return p
+		}
+		clone := *p
+		clone.atomic = atomic
+		return &clone
+	case *OrPredicate:
+		if p == nil {
+			return p
+		}
+		clone := *p
+		clone.atomic = atomic
+		return &clone
+	case *NotPredicate:
+		if p == nil {
+			return p
+		}
+		clone := *p
+		clone.atomic = atomic
+		return &clone
+	default:
+		return p
+	}
+}
+
 // --- AndPredicate --------------------------------------------------
 
 // AndPredicate is the Kleene AND of children. Empty children yields
@@ -306,6 +344,7 @@ func (p *ConstantPredicate) Explain() string {
 // An UNKNOWN + no-FALSE yields UNKNOWN.
 type AndPredicate struct {
 	SubPredicates []QueryPredicate
+	atomic        bool
 }
 
 // NewAnd constructs an AndPredicate.
@@ -329,7 +368,7 @@ func FlattenConjunction(preds []QueryPredicate) []QueryPredicate {
 	// list for the consumers that fail closed on it.
 	needsLift := false
 	for _, p := range preds {
-		if and, isAnd := p.(*AndPredicate); isAnd && and != nil {
+		if and, isAnd := p.(*AndPredicate); isAnd && and != nil && !and.atomic {
 			needsLift = true
 			break
 		}
@@ -339,7 +378,7 @@ func FlattenConjunction(preds []QueryPredicate) []QueryPredicate {
 	}
 	out := make([]QueryPredicate, 0, len(preds))
 	for _, p := range preds {
-		if and, isAnd := p.(*AndPredicate); isAnd && and != nil {
+		if and, isAnd := p.(*AndPredicate); isAnd && and != nil && !and.atomic {
 			out = append(out, FlattenConjunction(and.SubPredicates)...)
 			continue
 		}
@@ -394,16 +433,7 @@ func countConjunctsOne(p QueryPredicate) int {
 
 // GetCorrelatedTo returns the union of all children's correlations.
 func (p *AndPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
-	out := map[values.CorrelationIdentifier]struct{}{}
-	for _, child := range p.SubPredicates {
-		if child == nil {
-			continue
-		}
-		for k := range child.GetCorrelatedTo() {
-			out[k] = struct{}{}
-		}
-	}
-	return out
+	return GetCorrelatedToOfPredicate(p)
 }
 
 func (p *AndPredicate) Eval(evalCtx any) (TriBool, error) {
@@ -453,6 +483,7 @@ func (p *AndPredicate) Explain() string {
 // FALSE (identity). A single TRUE child short-circuits to TRUE.
 type OrPredicate struct {
 	SubPredicates []QueryPredicate
+	atomic        bool
 }
 
 // NewOr constructs an OrPredicate.
@@ -464,16 +495,7 @@ func (p *OrPredicate) Children() []QueryPredicate { return p.SubPredicates }
 
 // GetCorrelatedTo returns the union of all children's correlations.
 func (p *OrPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
-	out := map[values.CorrelationIdentifier]struct{}{}
-	for _, child := range p.SubPredicates {
-		if child == nil {
-			continue
-		}
-		for k := range child.GetCorrelatedTo() {
-			out[k] = struct{}{}
-		}
-	}
-	return out
+	return GetCorrelatedToOfPredicate(p)
 }
 
 func (p *OrPredicate) Eval(evalCtx any) (TriBool, error) {
@@ -586,7 +608,8 @@ func (p *ValuePredicate) Explain() string {
 // NotPredicate is the Kleene NOT of a single child. NOT UNKNOWN =
 // UNKNOWN.
 type NotPredicate struct {
-	Child QueryPredicate
+	Child  QueryPredicate
+	atomic bool
 }
 
 // NewNot constructs a NotPredicate.
@@ -598,10 +621,7 @@ func (p *NotPredicate) Children() []QueryPredicate { return []QueryPredicate{p.C
 
 // GetCorrelatedTo returns the child's correlations.
 func (p *NotPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
-	if p.Child == nil {
-		return map[values.CorrelationIdentifier]struct{}{}
-	}
-	return p.Child.GetCorrelatedTo()
+	return GetCorrelatedToOfPredicate(p)
 }
 
 func (p *NotPredicate) Eval(evalCtx any) (TriBool, error) {

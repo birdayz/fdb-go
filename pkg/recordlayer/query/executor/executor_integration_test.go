@@ -36,6 +36,22 @@ func integrationOrderType() *values.RecordType {
 	return PositionalTypeForRecordLayout((&gen.Order{}).ProtoReflect().Descriptor(), false)
 }
 
+// orderUpdate is the transform assigning an Order column, resolved as the SQL
+// builder resolves a SET column (values.ResolveAssignmentColumn over the
+// descriptor's user identifiers).
+func orderUpdate(column string, v values.Value) expressions.UpdateTransform {
+	fields := (&gen.Order{}).ProtoReflect().Descriptor().Fields()
+	names := make([]string, fields.Len())
+	for i := range names {
+		names[i] = values.FieldNameForProtoField(fields.Get(i))
+	}
+	idx, hits := values.ResolveAssignmentColumn(names, column)
+	if hits != 1 {
+		panic(fmt.Sprintf("orderUpdate: column %q resolves %d times", column, hits))
+	}
+	return expressions.UpdateTransform{FieldNames: []string{names[idx]}, FieldOrdinals: []int{idx}, NewValue: v}
+}
+
 func integrationCustomerType() *values.RecordType {
 	return PositionalTypeForRecordLayout((&gen.Customer{}).ProtoReflect().Descriptor(), false)
 }
@@ -880,7 +896,7 @@ func TestIntegration_UpdatePlan(t *testing.T) {
 			scan,
 		))
 		update := mustExecutorConstruct(plans.NewRecordQueryUpdatePlan(filter, "Order", []expressions.UpdateTransform{
-			{FieldPath: "price", NewValue: values.LiteralValue(int64(999))},
+			orderUpdate("price", values.LiteralValue(int64(999))),
 		}))
 
 		cursor, err := ExecutePlan(ctx, update, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
@@ -958,17 +974,17 @@ func TestIntegration_UpdatePlan_ExactTargetOwnerBinding(t *testing.T) {
 		target := mustTestQOV(t, values.NamedCorrelationIdentifier("Order"), rowType)
 		update := mustExecutorConstruct(plans.NewRecordQueryUpdatePlan(scan, "Order", []expressions.UpdateTransform{
 			{
-				FieldPath: "price",
+				FieldNames:    []string{"price"},
+				FieldOrdinals: orderUpdate("price", nil).FieldOrdinals,
 				NewValue: &values.ArithmeticValue{
-					Op:    values.OpAdd,
-					Left:  mustTestFieldOrdinal(t, target, 2),
-					Right: values.LiteralValue(int64(7)),
+					Op:   values.OpAdd,
+					Left: mustTestFieldOrdinal(t, target, 2),
+					// An INT, as SQL types the literal 7: INT + LONG is a LONG,
+					// which no promotion takes to the INT column.
+					Right: &values.ConstantValue{Value: int64(7), Typ: values.NotNullInt},
 				},
 			},
-			{
-				FieldPath: "flower",
-				NewValue:  mustTestFieldOrdinal(t, target, 1),
-			},
+			orderUpdate("flower", mustTestFieldOrdinal(t, target, 1)),
 		}))
 
 		cursor, err := ExecutePlan(ctx, update, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
@@ -1017,7 +1033,9 @@ func TestIntegration_UpdatePlan_ExactTargetOwnerRejectsForeignViews(t *testing.T
 		{
 			name: "same spelling wrong exact type",
 			value: func(t testing.TB, _ *values.RecordType) values.Value {
-				wrongType := exactTestRowType(values.Field{Name: "price", FieldType: values.NullableLong})
+				// The column's own type, so the plan admits the value and the
+				// owner's other exact row is what the executor refuses.
+				wrongType := exactTestRowType(values.Field{Name: "price", FieldType: values.NullableInt})
 				wrongOwner := mustTestQOV(t, values.NamedCorrelationIdentifier("Order"), wrongType)
 				return mustTestFieldOrdinal(t, wrongOwner, 0)
 			},
@@ -1051,7 +1069,7 @@ func TestIntegration_UpdatePlan_ExactTargetOwnerRejectsForeignViews(t *testing.T
 				rowType := integrationOrderType()
 				scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, rowType, false))
 				update := mustExecutorConstruct(plans.NewRecordQueryUpdatePlan(scan, "Order", []expressions.UpdateTransform{
-					{FieldPath: "price", NewValue: test.value(t, rowType)},
+					orderUpdate("price", test.value(t, rowType)),
 				}))
 
 				cursor, execErr := ExecutePlan(ctx, update, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
@@ -1364,7 +1382,7 @@ func TestIntegration_ResultSet_TypedAccess(t *testing.T) {
 		// Project ORDER_ID, PRICE so the executor emits an ordinal output row aligned
 		// to the result-set columns — the name-keyed Datum no longer backs the read.
 		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
-		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+		proj := mustExecutorConstruct(newProjectionMapOverForTest(
 			[]values.Value{integrationField(t, scan, 0), integrationField(t, scan, 2)},
 			scan,
 		))
@@ -1442,7 +1460,7 @@ func TestIntegration_ResultSet_StringCoercion(t *testing.T) {
 		}
 
 		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
-		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+		proj := mustExecutorConstruct(newProjectionMapOverForTest(
 			[]values.Value{integrationField(t, scan, 2)},
 			scan,
 		))
@@ -1523,8 +1541,8 @@ func TestIntegration_ResultSet_FilterPipeline(t *testing.T) {
 			[]plans.SortKey{{Field: "price", ValueExpr: integrationField(t, scan, 2), Desc: false}},
 		))
 		// Project PRICE, ORDER_ID so the output row is ordinal-aligned to the columns.
-		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
-			[]values.Value{integrationField(t, scan, 2), integrationField(t, scan, 0)},
+		proj := mustExecutorConstruct(newProjectionMapOverForTest(
+			[]values.Value{integrationField(t, sorted, 2), integrationField(t, sorted, 0)},
 			sorted,
 		))
 
@@ -1587,7 +1605,7 @@ func TestIntegration_ResultSet_ByName(t *testing.T) {
 		}
 
 		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
-		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+		proj := mustExecutorConstruct(newProjectionMapOverForTest(
 			[]values.Value{integrationField(t, scan, 0), integrationField(t, scan, 2)},
 			scan,
 		))
@@ -1676,7 +1694,7 @@ func TestIntegration_ProjectionPlan(t *testing.T) {
 		}
 
 		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
-		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+		proj := mustExecutorConstruct(newProjectionMapOverForTest(
 			[]values.Value{
 				integrationField(t, scan, 2),
 			},
@@ -1732,7 +1750,7 @@ func TestIntegration_ProjectionPlan_MultiColumn(t *testing.T) {
 		}
 
 		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
-		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+		proj := mustExecutorConstruct(newProjectionMapOverForTest(
 			[]values.Value{
 				integrationField(t, scan, 0),
 				integrationField(t, scan, 2),
@@ -2209,7 +2227,7 @@ func TestIntegration_UpdatePlan_WithParameter(t *testing.T) {
 			scan,
 		))
 		update := mustExecutorConstruct(plans.NewRecordQueryUpdatePlan(filter, "Order", []expressions.UpdateTransform{
-			{FieldPath: "price", NewValue: values.NewParameterValue(1)},
+			orderUpdate("price", values.NewParameterValue(1)),
 		}))
 
 		evalCtx := EmptyEvaluationContext().WithParams([]any{int64(777)})
@@ -2934,10 +2952,10 @@ func TestIntegration_FilterSortProjection_Pipeline(t *testing.T) {
 			filter,
 			[]plans.SortKey{{Field: "price", ValueExpr: integrationField(t, scan, 2), Desc: false}},
 		))
-		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+		proj := mustExecutorConstruct(newProjectionMapOverForTest(
 			[]values.Value{
-				integrationField(t, scan, 2),
-				integrationField(t, scan, 4),
+				integrationField(t, sorted, 2),
+				integrationField(t, sorted, 4),
 			},
 			sorted,
 		))
@@ -3024,13 +3042,25 @@ func TestIntegration_InsertPlan_ValuesExplode(t *testing.T) {
 	ctx := context.Background()
 	store := setupStore(t)
 
-	// VALUES (7001, 42), (7002, 43) — order_id is int64, price is int32.
-	// The int32 column is fed an int64 literal; goToProtoValue narrows it.
+	// VALUES (7001, 42), (7002, 43) — order_id is a BIGINT, price an INTEGER
+	// (its value carried as int64), every other column a typed NULL: the row
+	// has the table's type, as the insert plan admits only a row whose every
+	// column promotes to the table's (RecordQueryInsertPlan.insertPlan).
 	mkRow := func(id, price int64) *values.RecordConstructorValue {
-		return values.NewRecordConstructorValue(
-			values.RecordConstructorField{Name: "order_id", Value: &values.ConstantValue{Value: id, Typ: values.NullableLong}},
-			values.RecordConstructorField{Name: "price", Value: &values.ConstantValue{Value: price, Typ: values.NullableLong}},
-		)
+		var fields []values.RecordConstructorField
+		for _, f := range integrationOrderType().Fields {
+			var v values.Value
+			switch f.Name {
+			case "order_id":
+				v = &values.ConstantValue{Value: id, Typ: values.NotNullLong}
+			case "price":
+				v = &values.ConstantValue{Value: price, Typ: values.NotNullInt}
+			default:
+				v = values.NewNullValue(f.FieldType)
+			}
+			fields = append(fields, values.RecordConstructorField{Name: f.Name, Value: v})
+		}
+		return values.NewRecordConstructorValue(fields...)
 	}
 	firstRow := mkRow(7001, 42)
 	arr := values.NewArrayConstructorValue(firstRow.Type(), []values.Value{firstRow, mkRow(7002, 43)})
@@ -3208,8 +3238,8 @@ func TestIntegration_UpdatePlan_MultipleFields(t *testing.T) {
 			scan,
 		))
 		update := mustExecutorConstruct(plans.NewRecordQueryUpdatePlan(filter, "Order", []expressions.UpdateTransform{
-			{FieldPath: "price", NewValue: values.LiteralValue(int64(999))},
-			{FieldPath: "quantity", NewValue: values.LiteralValue(int64(42))},
+			orderUpdate("price", values.LiteralValue(int64(999))),
+			orderUpdate("quantity", values.LiteralValue(int64(42))),
 		}))
 
 		cursor, err := ExecutePlan(ctx, update, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
@@ -3921,7 +3951,7 @@ func TestIntegration_ProjectionOverJoin(t *testing.T) {
 			outerAlias, innerAlias,
 			integrationJoinResult(t, scan1, scan2, outerAlias, innerAlias, plans.JoinInner),
 		))
-		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+		proj := mustExecutorConstruct(newProjectionMapOverForTest(
 			[]values.Value{
 				integrationField(t, nlj, 0),
 				integrationField(t, nlj, 2),
@@ -4143,7 +4173,7 @@ func TestIntegration_UpdatePlan_ClearField(t *testing.T) {
 
 		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
 		update := mustExecutorConstruct(plans.NewRecordQueryUpdatePlan(scan, "Order", []expressions.UpdateTransform{
-			{FieldPath: "quantity", NewValue: values.LiteralValue(nil)},
+			orderUpdate("quantity", values.LiteralValue(nil)),
 		}))
 
 		cursor, err := ExecutePlan(ctx, update, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
@@ -4374,5 +4404,82 @@ func TestIntegration_LoadByKeys_Resume(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// An ARRAY_AGG group straddling scan-limited pages resumes with its collected
+// elements.
+func TestIntegration_ArrayAggStraddle(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(50)},
+		&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(50)},
+		&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(50)},
+		&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(150)},
+		&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(150)},
+	)
+	var got []string
+	var continuation []byte
+	pages := 0
+	for {
+		pages++
+		if pages > 50 {
+			t.Fatal("resume loop did not converge")
+		}
+		exhausted, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			s, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+				SetSubspace(testSubspace(t)).Open()
+			if err != nil {
+				return nil, err
+			}
+			scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+			plan := mustExecutorConstruct(plans.NewRecordQueryStreamingAggregationPlan(scan,
+				[]values.Value{integrationField(t, scan, 2)},
+				[]expressions.AggregateSpec{{
+					Function: expressions.AggArrayAgg, Operand: integrationField(t, scan, 0), Limit: values.ArrayAggNoLimit,
+				}}))
+			props := recordlayer.DefaultExecuteProperties().WithScannedRecordsLimit(2)
+			cursor, err := ExecutePlan(ctx, plan, s, EmptyEvaluationContext(), continuation, props)
+			if err != nil {
+				return nil, err
+			}
+			defer cursor.Close()
+			for {
+				res, oerr := cursor.OnNext(ctx)
+				if oerr != nil {
+					return nil, oerr
+				}
+				if res.HasNext() {
+					k, _ := res.GetValue().Positional.Get(0)
+					v, _ := res.GetValue().Positional.Get(1)
+					got = append(got, fmt.Sprint(k, "=", v))
+					continue
+				}
+				if res.GetNoNextReason().IsSourceExhausted() {
+					return true, nil
+				}
+				cb, cerr := res.GetContinuation().ToBytes()
+				if cerr != nil {
+					return nil, cerr
+				}
+				continuation = cb
+				return false, nil
+			}
+		})
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		if exhausted.(bool) {
+			break
+		}
+	}
+	if pages < 3 {
+		t.Fatalf("finished in %d pages; the scan limit did not force a straddle", pages)
+	}
+	if fmt.Sprint(got) != "[50=[1 2 3] 150=[4 5]]" {
+		t.Fatalf("ARRAY_AGG across pages = %v", got)
 	}
 }

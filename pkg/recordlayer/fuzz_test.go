@@ -564,7 +564,7 @@ func FuzzDeserializeAndDiscover(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		// Must not panic. Error is fine.
-		_, _, _ = store.deserializeAndDiscover(data)
+		_, _, _, _ = store.deserializeAndDiscover(data)
 	})
 }
 
@@ -995,7 +995,7 @@ func FuzzParseNodeValue(f *testing.F) {
 		}
 		value := tuple.Tuple{int64(0), tuple.Tuple{vec}, neighborList}.Pack()
 
-		gotVec, gotSpans, err := parseNodeValue(value)
+		gotVec, gotSpans, _, err := parseNodeValue(value)
 		if err != nil {
 			t.Fatalf("parseNodeValue: %v (vec=%x n=%d)", err, vec, n)
 		}

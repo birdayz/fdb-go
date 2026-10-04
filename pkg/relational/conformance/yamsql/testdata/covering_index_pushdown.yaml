@@ -30,12 +30,12 @@ schema_template: |
   CREATE TABLE t2 (
     id BIGINT,
     region STRING,
-    plan STRING,
+    plan_name STRING,
     amount BIGINT,
     extra STRING,
     PRIMARY KEY (id)
   )
-  CREATE INDEX idx_region_plan ON t2 (region, plan)
+  CREATE INDEX idx_region_plan ON t2 (region, plan_name)
   CREATE TABLE tb (
     id BIGINT,
     payload BYTES,
@@ -134,14 +134,14 @@ tests:
 
   # Composite index on (region, plan) with equality on both → covered
   # SELECT of id, region, plan.
-  - query: SELECT id, region, plan FROM t2 WHERE region = 'us' AND plan = 'pro' ORDER BY id
+  - query: SELECT id, region, plan_name FROM t2 WHERE region = 'us' AND plan_name = 'pro' ORDER BY id
     rows:
       - [10, 'us', 'pro']
       - [12, 'us', 'pro']
 
   # Composite index with leading-eq + trailing-range → covered SELECT
   # of indexed cols only.
-  - query: SELECT region, plan FROM t2 WHERE region = 'us' AND plan > 'f' ORDER BY plan
+  - query: SELECT region, plan_name FROM t2 WHERE region = 'us' AND plan_name > 'f' ORDER BY plan_name
     rows:
       - ['us', 'free']
       - ['us', 'pro']

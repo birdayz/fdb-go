@@ -60,7 +60,7 @@ func TestFDB_DistinctUniqueElisionPagingRepro(t *testing.T) {
 			"CREATE UNIQUE INDEX by_email3 ON t3 (email)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_duepr/s WITH TEMPLATE duepr")
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_duepr?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_DUEPR?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

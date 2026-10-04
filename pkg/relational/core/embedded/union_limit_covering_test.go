@@ -9,10 +9,10 @@ import (
 // entry already carries the projected column, so each branch is independently
 // coverable. Two tables rather than one so a single index cannot satisfy both
 // and accidentally make the second branch's outcome a copy of the first's.
-const unionLimitCoveringDDL = `CREATE TABLE rp (id BIGINT, region STRING, plan BIGINT, PRIMARY KEY (id))
-CREATE INDEX idx_region_plan ON rp(region, plan)
-CREATE TABLE rq (id BIGINT, region STRING, plan BIGINT, PRIMARY KEY (id))
-CREATE INDEX idx_region_plan_q ON rq(region, plan)`
+const unionLimitCoveringDDL = `CREATE TABLE rp (id BIGINT, region STRING, plan_name BIGINT, PRIMARY KEY (id))
+CREATE INDEX idx_region_plan ON rp(region, plan_name)
+CREATE TABLE rq (id BIGINT, region STRING, plan_name BIGINT, PRIMARY KEY (id))
+CREATE INDEX idx_region_plan_q ON rq(region, plan_name)`
 
 // TestUnionUnderLimitKeepsCoveringInEveryBranch is the sibling check for the
 // rule that survived when PushLimitThroughProjectionRule was deleted.

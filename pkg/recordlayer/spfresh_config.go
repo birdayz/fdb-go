@@ -3,6 +3,8 @@ package recordlayer
 import (
 	"fmt"
 	"strconv"
+
+	"fdb.dev/pkg/rabitq"
 )
 
 // SPFresh index options (RFC-094 §10). All structural options are immutable for
@@ -174,34 +176,36 @@ func DefaultSPFreshConfig(numDimensions int) SPFreshConfig {
 
 // ValidateSPFreshConfig enforces the invariants the RFC-094 lifecycle and
 // sizing arguments depend on. Called by the maintainer at construction; a
-// violation is a config error, never a silently degraded index.
+// violation is a config error (a MetaDataError, as an HNSW index's refused
+// configuration is Java's MetaDataException or IllegalArgumentException),
+// never a silently degraded index.
 func ValidateSPFreshConfig(c SPFreshConfig) error {
 	if c.NumDimensions < 1 || c.NumDimensions > 4096 {
-		return fmt.Errorf("spfresh: numDimensions must be in [1, 4096], got %d", c.NumDimensions)
+		return &MetaDataError{Message: fmt.Sprintf("spfresh: numDimensions must be in [1, 4096], got %d", c.NumDimensions)}
 	}
 	if c.Lmax < 16 || c.Lmax > 4096 {
-		return fmt.Errorf("spfresh: lmax must be in [16, 4096], got %d", c.Lmax)
+		return &MetaDataError{Message: fmt.Sprintf("spfresh: lmax must be in [16, 4096], got %d", c.Lmax)}
 	}
 	if c.LminRatio < 2 {
-		return fmt.Errorf("spfresh: lminRatio must be >= 2 (split/merge hysteresis), got %d", c.LminRatio)
+		return &MetaDataError{Message: fmt.Sprintf("spfresh: lminRatio must be >= 2 (split/merge hysteresis), got %d", c.LminRatio)}
 	}
 	if c.CellTarget < 4 {
-		return fmt.Errorf("spfresh: cellTarget must be >= 4, got %d", c.CellTarget)
+		return &MetaDataError{Message: fmt.Sprintf("spfresh: cellTarget must be >= 4, got %d", c.CellTarget)}
 	}
 	if c.CellMax < 2*c.CellTarget {
-		return fmt.Errorf("spfresh: cellMax (%d) must be >= 2*cellTarget (%d) for split hysteresis", c.CellMax, 2*c.CellTarget)
+		return &MetaDataError{Message: fmt.Sprintf("spfresh: cellMax (%d) must be >= 2*cellTarget (%d) for split hysteresis", c.CellMax, 2*c.CellTarget)}
 	}
 	if c.Replication < 1 || c.Replication > 4 {
-		return fmt.Errorf("spfresh: replication must be in [1, 4], got %d", c.Replication)
+		return &MetaDataError{Message: fmt.Sprintf("spfresh: replication must be in [1, 4], got %d", c.Replication)}
 	}
 	// alpha == 1.0 with the <= rule admits only the nearest centroid when all
 	// distances are distinct — silently making r = 1 and invalidating the
 	// closure sizing and recall math (RFC-094 §5; the rev-3 alpha bug).
 	if c.Replication > 1 && c.Alpha <= 1.0 {
-		return fmt.Errorf("spfresh: alpha must be > 1.0 when replication > 1 (got %g — closure would never admit a second centroid)", c.Alpha)
+		return &MetaDataError{Message: fmt.Sprintf("spfresh: alpha must be > 1.0 when replication > 1 (got %g — closure would never admit a second centroid)", c.Alpha)}
 	}
 	if c.Kn < 1 || c.Kn > 64 {
-		return fmt.Errorf("spfresh: kn must be in [1, 64], got %d", c.Kn)
+		return &MetaDataError{Message: fmt.Sprintf("spfresh: kn must be in [1, 64], got %d", c.Kn)}
 	}
 	// w_b (RFC-099 build assignment width) just needs to be positive: the
 	// default ties it to the query probe width (build mirrors query), and
@@ -217,13 +221,16 @@ func ValidateSPFreshConfig(c SPFreshConfig) error {
 	// w_b below Replication should expect reduced recall; the default (= w_q ≫
 	// Replication) is the safe value.
 	if c.BuildAssignCells < 1 {
-		return fmt.Errorf("spfresh: buildAssignCells must be >= 1, got %d", c.BuildAssignCells)
+		return &MetaDataError{Message: fmt.Sprintf("spfresh: buildAssignCells must be >= 1, got %d", c.BuildAssignCells)}
 	}
 	if c.CooldownSec < 0 {
-		return fmt.Errorf("spfresh: cooldownSec must be >= 0, got %d", c.CooldownSec)
+		return &MetaDataError{Message: fmt.Sprintf("spfresh: cooldownSec must be >= 0, got %d", c.CooldownSec)}
 	}
-	if c.NumExBits < 0 || c.NumExBits > 8 {
-		return fmt.Errorf("spfresh: raBitQNumExBits must be in [0, 8], got %d", c.NumExBits)
+	// The residual codes are RaBitQ's, whose encoder takes 1 to 8 extra bits.
+	// 0 used to pass here and then be replaced by 4 in the quantizer, so the
+	// index stored 4-bit codes while postingEntryBytes sized entries for 0.
+	if !rabitq.ValidNumExBits(c.NumExBits) {
+		return &MetaDataError{Message: fmt.Sprintf("spfresh: raBitQNumExBits must be in [1, 8], got %d", c.NumExBits)}
 	}
 	// The sidecar is load-bearing for MAINTENANCE, not just re-rank: split
 	// 2-means, the chunked drain, merge drains, and GC re-homes all read the
@@ -233,66 +240,77 @@ func ValidateSPFreshConfig(c SPFreshConfig) error {
 	// bricked index, not a degraded one. Reject until a source-record
 	// fallback exists for every lifecycle reader.
 	if !c.Sidecar {
-		return fmt.Errorf("spfresh: sidecar=false is not supported — split/merge/GC lifecycles require the fp16 sidecar (no source-record fallback is implemented)")
+		return &MetaDataError{Message: "spfresh: sidecar=false is not supported — split/merge/GC lifecycles require the fp16 sidecar (no source-record fallback is implemented)"}
 	}
 	// One posting = one range reply (RFC-094 §3): Lmax entries must fit the
 	// reply byte budget, or the constant-round-trip query claim is false.
 	if got := c.Lmax * c.postingEntryBytes(); got > spfreshReplyByteBudget {
-		return fmt.Errorf("spfresh: lmax (%d) * entry bytes (%d) = %d exceeds the %d-byte range-reply budget — one posting must fit one reply",
-			c.Lmax, c.postingEntryBytes(), got, spfreshReplyByteBudget)
+		return &MetaDataError{Message: fmt.Sprintf("spfresh: lmax (%d) * entry bytes (%d) = %d exceeds the %d-byte range-reply budget — one posting must fit one reply",
+			c.Lmax, c.postingEntryBytes(), got, spfreshReplyByteBudget)}
 	}
 	// One L2 cell load = one range reply at target fill (RFC-094 §3).
 	if got := c.CellTarget * c.centroidRowBytes(); got > spfreshReplyByteBudget {
-		return fmt.Errorf("spfresh: cellTarget (%d) * centroid row bytes (%d) = %d exceeds the %d-byte range-reply budget — one L2 cell must fit one reply",
-			c.CellTarget, c.centroidRowBytes(), got, spfreshReplyByteBudget)
+		return &MetaDataError{Message: fmt.Sprintf("spfresh: cellTarget (%d) * centroid row bytes (%d) = %d exceeds the %d-byte range-reply budget — one L2 cell must fit one reply",
+			c.CellTarget, c.centroidRowBytes(), got, spfreshReplyByteBudget)}
 	}
 	// The in-envelope split is single-transaction (RFC-094 §6): the 4×Lmax
 	// worst case must fit the tx byte budget. Postings found PAST the
 	// envelope take the chunked multi-tx drain — this bound is what makes
 	// the single-tx path safe, not a ban on chunking.
 	if got := 4 * c.Lmax * c.postingEntryBytes() * 3; got > spfreshTxByteBudget {
-		return fmt.Errorf("spfresh: worst-case split (4*lmax entries, read+rewrite) = %d bytes exceeds the %d-byte single-transaction budget",
-			got, spfreshTxByteBudget)
+		return &MetaDataError{Message: fmt.Sprintf("spfresh: worst-case split (4*lmax entries, read+rewrite) = %d bytes exceeds the %d-byte single-transaction budget",
+			got, spfreshTxByteBudget)}
 	}
 	return nil
 }
 
-// parseSPFreshConfig builds an SPFreshConfig from index options, applying
-// RFC-094 defaults for absent options. Invalid values fall back to defaults
-// (matching parseHNSWConfig's tolerance); ValidateSPFreshConfig is the
-// hard gate and runs at maintainer construction.
-func parseSPFreshConfig(index *Index) SPFreshConfig {
-	config := DefaultSPFreshConfig(0)
+// readSPFreshConfig is the configuration every SPFresh entry point runs with:
+// parseSPFreshConfig, then ValidateSPFreshConfig. The maintainer, the build,
+// the rebalancer, refine, recall, the integrity check, the search wrapper and
+// the topology dump all read through it, so no path runs over a configuration the maintainer
+// would refuse (a 0-bit RaBitQ count reached the encoder's panic through the
+// rebalancer, which parsed without validating).
+func readSPFreshConfig(index *Index) (SPFreshConfig, error) {
+	config, err := parseSPFreshConfig(index)
+	if err != nil {
+		return SPFreshConfig{}, err
+	}
+	if err := ValidateSPFreshConfig(config); err != nil {
+		return SPFreshConfig{}, fmt.Errorf("spfresh index %q: %w", index.Name, err)
+	}
+	return config, nil
+}
 
-	if v, ok := index.Options[IndexOptionSPFreshNumDimensions]; ok {
-		if n, err := strconv.Atoi(v); err == nil {
-			config.NumDimensions = n
+// parseSPFreshConfig builds an SPFreshConfig from index options, applying
+// RFC-094 defaults for absent options. A present option that does not parse,
+// and a metric that is not one of the four Metric names, is refused: a value
+// read as its default would build the index with a configuration the options
+// do not name (a "cosine" metric was maintained as Euclidean while the planner
+// read it as cosine), as the HNSW reader refuses it (readHNSWOptions).
+func parseSPFreshConfig(index *Index) (SPFreshConfig, error) {
+	config := DefaultSPFreshConfig(0)
+	var err error
+	fail := func(key, v string) {
+		if err == nil {
+			err = &MetaDataError{Message: fmt.Sprintf("spfresh index %q: option %s=%q does not parse", index.Name, key, v)}
 		}
 	}
-	if v, ok := index.Options[IndexOptionSPFreshMetric]; ok {
-		switch v {
-		case "EUCLIDEAN_METRIC":
-			config.Metric = VectorMetricEuclidean
-		case "COSINE_METRIC":
-			config.Metric = VectorMetricCosine
-		case "DOT_PRODUCT_METRIC":
-			config.Metric = VectorMetricInnerProduct
-		case "EUCLIDEAN_SQUARE_METRIC":
-			// The DDL accepts it for USING SPFRESH (same metric grammar as
-			// HNSW), so the maintainer must honor it — a silent fall-through
-			// to Euclidean made the candidate advertise squared distances
-			// while re-rank returned true L2. Same kNN ordering; only the
-			// reported distance differs.
-			config.Metric = VectorMetricEuclideanSquare
-		}
+	m, merr := spfreshMetric(index)
+	if merr != nil {
+		return SPFreshConfig{}, merr
 	}
+	config.Metric = m
 	parseInt := func(key string, dst *int) {
 		if v, ok := index.Options[key]; ok {
-			if n, err := strconv.Atoi(v); err == nil {
-				*dst = n
+			n, perr := strconv.Atoi(v)
+			if perr != nil {
+				fail(key, v)
+				return
 			}
+			*dst = n
 		}
 	}
+	parseInt(IndexOptionSPFreshNumDimensions, &config.NumDimensions)
 	parseInt(IndexOptionSPFreshLmax, &config.Lmax)
 	parseInt(IndexOptionSPFreshLminRatio, &config.LminRatio)
 	parseInt(IndexOptionSPFreshCellTarget, &config.CellTarget)
@@ -303,16 +321,46 @@ func parseSPFreshConfig(index *Index) SPFreshConfig {
 	parseInt(IndexOptionSPFreshCooldownSec, &config.CooldownSec)
 	parseInt(IndexOptionSPFreshRaBitQNumExBits, &config.NumExBits)
 	if v, ok := index.Options[IndexOptionSPFreshAlpha]; ok {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
+		if f, perr := strconv.ParseFloat(v, 64); perr == nil {
 			config.Alpha = f
+		} else {
+			fail(IndexOptionSPFreshAlpha, v)
 		}
 	}
 	if v, ok := index.Options[IndexOptionSPFreshSidecar]; ok {
-		if b, err := strconv.ParseBool(v); err == nil {
+		if b, perr := strconv.ParseBool(v); perr == nil {
 			config.Sidecar = b
+		} else {
+			fail(IndexOptionSPFreshSidecar, v)
 		}
 	}
-	return config
+	if err != nil {
+		return SPFreshConfig{}, err
+	}
+	return config, nil
+}
+
+// spfreshMetric is an SPFresh index's metric: its spfreshMetric option read by
+// spfreshMetricNamed, Euclidean when it is not set. The one metric reader of
+// the maintainer (parseSPFreshConfig) and the planner (VectorIndexMetric).
+func spfreshMetric(index *Index) (VectorMetric, error) {
+	v, ok := index.Options[IndexOptionSPFreshMetric]
+	if !ok {
+		return VectorMetricEuclidean, nil
+	}
+	return spfreshMetricNamed(v)
+}
+
+// spfreshMetricNamed is an SPFresh index's metric option: one of Java's four
+// Metric names (the DDL writes EUCLIDEAN_SQUARE_METRIC too; a fall-through to
+// Euclidean made the candidate advertise squared distances while re-rank
+// returned true L2), refused otherwise with Metric.valueOf's text.
+func spfreshMetricNamed(v string) (VectorMetric, error) {
+	switch v {
+	case "EUCLIDEAN_METRIC", "EUCLIDEAN_SQUARE_METRIC", "COSINE_METRIC", "DOT_PRODUCT_METRIC":
+		return vectorMetricNamed(v), nil
+	}
+	return VectorMetricEuclidean, &IllegalArgumentError{Message: "No enum constant com.apple.foundationdb.linear.Metric." + v}
 }
 
 // spfreshCoarseSampleCap bounds the coarse-k-means training sample in

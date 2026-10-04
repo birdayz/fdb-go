@@ -41,7 +41,7 @@ func TestFDB_CrossTypeJoinProbe(t *testing.T) {
 			"CREATE TABLE bf (id BIGINT, yflt FLOAT, PRIMARY KEY (id)) "+
 			"CREATE INDEX bi_y ON bi (yint) CREATE INDEX bd_y ON bd (ydbl) CREATE INDEX bf_y ON bf (yflt)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_xtype/s WITH TEMPLATE xtype")
-	dsn := fmt.Sprintf("fdbsql:///testdb_xtype?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_XTYPE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -51,7 +51,7 @@ func TestFDB_CrossTypeJoinProbe(t *testing.T) {
 	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, xbig) VALUES (1, 5), (2, 10), (3, 7)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO bi (id, yint) VALUES (50, 5), (51, 10), (52, 99)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO bd (id, ydbl) VALUES (60, 5.0), (61, 7.0), (62, 99.0)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO bf (id, yflt) VALUES (70, 5.0), (71, 7.0), (72, 99.0)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO bf (id, yflt) VALUES (70, CAST(5.0 AS FLOAT)), (71, CAST(7.0 AS FLOAT)), (72, CAST(99.0 AS FLOAT))")
 
 	pairs := func(q string) []string {
 		rows, err := db.QueryContext(ctx, q)

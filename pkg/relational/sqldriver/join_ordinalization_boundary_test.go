@@ -87,10 +87,9 @@ func pinRows(t *testing.T, db *sql.DB, ctx context.Context, q string) []string {
 // consumed inside a 3-way inner cluster must remain name-model — the cluster
 // gate declines it (pinned at translation in TestWedgeGate_Translation), and
 // at runtime the 3-way cluster must return the correct rows through that
-// name-model plan. The nested FlatMap(outer=FlatMap(...)) chain checked
-// below IS the name-model anchored 2-way re-enumeration machinery
-// (rule_partition_select bipartitions the 3-way select; a gated ordinal seed
-// never produces a 3-quantifier select for it to partition).
+// plan. The nested FlatMap chain checked below is rule_partition_select
+// bipartitioning the 3-way select (a gated ordinal seed never produces a
+// 3-quantifier select for it to partition).
 func TestFDB_TwoWayJoinUnderThreeWayClusterStaysNameModel(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -105,7 +104,7 @@ func TestFDB_TwoWayJoinUnderThreeWayClusterStaysNameModel(t *testing.T) {
 			"CREATE TABLE b (id BIGINT, a_id BIGINT, bv BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, b_id BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_gpa/s WITH TEMPLATE gpa_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///testdb_gpa?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_GPA?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -128,21 +127,20 @@ func TestFDB_TwoWayJoinUnderThreeWayClusterStaysNameModel(t *testing.T) {
 			t.Errorf("rows = %v, want %v", got, want)
 		}
 		plan := pinExplain(t, db, ctx, q)
-		// The distinguishing NAME-MODEL fragment: a 3-way inner cluster plans
-		// as the anchored 2-way merge CHAIN — FlatMap over FlatMap. A single
-		// gated 2-way plans as ONE FlatMap (see the GroupBy pin below); the
-		// nested shape only exists where the name-model re-enumeration
-		// machinery partitioned a ≥3-way select.
-		if !strings.Contains(plan, "FlatMap(outer=FlatMap(") {
-			t.Errorf("plan lost the nested name-model FlatMap merge chain:\n%s", plan)
+		// A 3-way inner cluster plans as a CHAIN of 2-way FlatMaps — one nested
+		// in the other. A single gated 2-way plans as ONE FlatMap (see the
+		// GroupBy pin below); the nested shape only exists where partitioning
+		// split a ≥3-way select. Java nests the chain in the inner, driving from
+		// c and probing b and then a by key:
+		// `SCAN(C) | FLATMAP { SCAN(B, [= q0.B_ID]) | FLATMAP { SCAN(A, [= q1.A_ID]) } }`.
+		if !strings.Contains(plan, "FlatMap(outer=Scan(C), inner=FlatMap(outer=Scan(B, [=]), inner=Scan(A, [=])))") {
+			t.Errorf("plan lost the nested FlatMap chain:\n%s", plan)
 		}
-		// The three output columns read the MERGED row by ordinal:
-		// [A.ID, A.AV, B.ID, B.A_ID, B.BV, C.ID, C.B_ID] puts a.id at 0,
-		// b.id at 2 and c.id at 5. Pinning the ordinals (not the leg names)
-		// is what makes this an answer about WHICH SLOT each column reads —
-		// three same-named ID columns are told apart by nothing else.
-		if !strings.Contains(plan, "Project([_current.ID#0, _current.ID#2, _current.ID#5]") {
-			t.Errorf("plan lost the 3-column merged-row projection:\n%s", plan)
+		// The outer FlatMap computes the three output columns from the leg rows
+		// it binds (Java's FLATMAP ... RETURN), so no merged-row projection is
+		// left to pin; the rows above tell the three same-named ID columns apart.
+		if strings.Contains(plan, "Project(") || strings.Count(plan, "Map(") != strings.Count(plan, "FlatMap(") {
+			t.Errorf("plan re-projects the joined row instead of returning it from the FlatMap:\n%s", plan)
 		}
 		return plan
 	}
@@ -228,7 +226,7 @@ func TestFDB_FourWayFlatteningEvasionStaysNameModel(t *testing.T) {
 			"CREATE TABLE c (id BIGINT, cv BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE d (id BIGINT, c_id BIGINT, dw BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_gpb/s WITH TEMPLATE gpb_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///testdb_gpb?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_GPB?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -259,8 +257,10 @@ func TestFDB_FourWayFlatteningEvasionStaysNameModel(t *testing.T) {
 	t.Run("explain_form_describes_the_plan_it_runs", func(t *testing.T) {
 		// EXPLAIN must agree with the statement: both plan, or neither does.
 		plan := pinExplain(t, db, ctx, evasion)
-		if !strings.Contains(plan, "NestedLoopJoin") {
-			t.Errorf("EXPLAIN lost the cross-derived join:\n%s", plan)
+		for _, source := range []string{"Scan(A", "Scan(B", "Scan(C", "Scan(D"} {
+			if !strings.Contains(plan, source) {
+				t.Errorf("EXPLAIN lost the cross-derived join's %s):\n%s", source, plan)
+			}
 		}
 	})
 	t.Run("cte_form_answers_like_its_derived_twin", func(t *testing.T) {
@@ -335,7 +335,7 @@ func TestFDB_GroupByHavingOverOrdinalJoin(t *testing.T) {
 			"CREATE TABLE a (id BIGINT, av BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, cw BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_gbhj/s WITH TEMPLATE gbhj_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///testdb_gbhj?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_GBHJ?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -443,7 +443,7 @@ func TestFDB_DupNameStarOverOrdinalJoin(t *testing.T) {
 			"CREATE TABLE pdup (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE qdup (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dupstar/s WITH TEMPLATE dupstar_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///testdb_dupstar?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_DUPSTAR?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -521,7 +521,7 @@ func TestFDB_CoveringIndexLegOverOrdinalJoin(t *testing.T) {
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX c_a_id ON c (a_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_covleg/s WITH TEMPLATE covleg_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///testdb_covleg?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_COVLEG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -540,8 +540,8 @@ func TestFDB_CoveringIndexLegOverOrdinalJoin(t *testing.T) {
 
 	plan := pinExplain(t, db, ctx, q)
 	// CANARY: the covering-leg-into-gated-join shape is UNREACHABLE today —
-	// fetch elimination lives in MergeProjectionAndFetchRule, which needs a
-	// projection DIRECTLY over the fetch, and join legs never have one. The
+	// fetch elimination pushes a Map through the fetch, which needs a Map
+	// DIRECTLY over the fetch, and join legs never have one. The
 	// adapter's alignment guard + a unit pin
 	// (TestAdaptLegPositional_IndexShapedFallsBack) carry the protection. If
 	// this canary goes RED — a COVERING probe appeared in a gated join's plan
@@ -616,7 +616,7 @@ func TestFDB_PureCrossProduct(t *testing.T) {
 			"CREATE TABLE b (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_cross/s WITH TEMPLATE cross_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///testdb_cross?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_CROSS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -674,7 +674,7 @@ func TestFDB_FullJoinOverBuriedRef(t *testing.T) {
 			"CREATE TABLE b (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_fullburied/s WITH TEMPLATE fullburied_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///testdb_fullburied?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_FULLBURIED?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -722,7 +722,7 @@ func TestFDB_SecondaryIndexThroughJoinMerge(t *testing.T) {
 			"CREATE TABLE c (id BIGINT, b_z BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX c_b_z ON c (b_z)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_idxmerge/s WITH TEMPLATE idxmerge_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///testdb_idxmerge?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_IDXMERGE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -793,7 +793,7 @@ func TestFDB_TopLevelLeftJoinOrdinalizes(t *testing.T) {
 			// actually executed (not just a memo alternative).
 			"CREATE INDEX c_a_id ON c (a_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_w4left/s WITH TEMPLATE w4left_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///testdb_w4left?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_W4LEFT?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

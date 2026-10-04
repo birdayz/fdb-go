@@ -16,23 +16,19 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/api"
 )
 
-// TestFDB_ExplainUnplannableQueryFailsLoudly is the red→green pin for the
-// silent-degrade fix: a shape Cascades attempts and declines must raise the
-// SAME 0AF00 under EXPLAIN as it does when run, never a logical plan tree.
-//
-// The specimen is the CTE spelling of the flattening-evasion shape. The two
-// FROM-derived spellings that used to sit beside it now PLAN — a join-bodied
-// derived table's output row is derived from its own legs, so the gap that
-// made them unplannable is gone — and they moved to the agreement arm below.
-// The loud-degrade direction needs SOME query Cascades declines: if the CTE
-// leg's derivation closes too, this arm needs a new specimen, not a deletion.
+// TestFDB_ExplainUnplannableQueryFailsLoudly pins agreement between query
+// execution and EXPLAIN rejection. Window expressions in WHERE are rejected
+// during semantic analysis with Java's WINDOWING_ERROR, before planning.
 func TestFDB_ExplainUnplannableQueryFailsLoudly(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -48,7 +44,7 @@ func TestFDB_ExplainUnplannableQueryFailsLoudly(t *testing.T) {
 			"CREATE TABLE c (id BIGINT, cv BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE d (id BIGINT, c_id BIGINT, dw BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_explainloud/s WITH TEMPLATE explainloud_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///testdb_explainloud?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_EXPLAINLOUD?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -65,26 +61,7 @@ func TestFDB_ExplainUnplannableQueryFailsLoudly(t *testing.T) {
 		sql  string
 	}{
 		{
-			// A WINDOW FUNCTION IN A WHERE CLAUSE. Cascades attempts it and
-			// declines — the predicate is index-only and no index serves it —
-			// which is all this test needs of a specimen.
-			//
-			// It replaces the non-constant IN-list that sat here, and the
-			// replacement was forced by exactly the erosion this test's own
-			// header warns about: "if the CTE leg's derivation closes too, this
-			// arm needs a new specimen, not a deletion." The IN-list specimen
-			// closed the same way — a non-constant list is now an
-			// ArrayConstructorValue compared per row — so it moved to the
-			// agreement arm below, and this took its place.
-			//
-			// This one is chosen to be erosion-PROOF rather than merely
-			// unclosed today: a window function in WHERE is not a gap waiting
-			// to be filled, it is illegal SQL. A window is evaluated after
-			// WHERE, so a predicate cannot refer to one, and Java rejects it
-			// outright with "window functions are not allowed in WHERE"
-			// (ExpressionVisitor.java:662-667, measured in
-			// conformance/window_in_where_java_probe_test.go). Nothing will
-			// legitimately make it plannable.
+			// ExpressionVisitor.visitWhereExpr rejects window functions before planning.
 			name: "window_function_in_where",
 			sql:  "SELECT a.id FROM a WHERE ROW_NUMBER() OVER (PARTITION BY a.av ORDER BY a.id) > 1",
 		},
@@ -92,14 +69,16 @@ func TestFDB_ExplainUnplannableQueryFailsLoudly(t *testing.T) {
 
 	for _, tc := range unplannable {
 		t.Run(tc.name, func(t *testing.T) {
-			// The statement itself is 0AF00 — establishes that Cascades was
-			// attempted and declined, so this is case (1), not a shape that
-			// legitimately has no physical plan.
-			assertUnsupported(t, db, ctx, tc.sql)
-			// EXPLAIN of it must be the SAME 0AF00. A rendered plan tree here
-			// is the defect: EXPLAIN describing something the engine refuses
-			// to run.
-			assertUnsupported(t, db, ctx, "EXPLAIN "+tc.sql)
+			for _, query := range []string{tc.sql, "EXPLAIN " + tc.sql} {
+				rows, err := db.QueryContext(ctx, query)
+				if rows != nil {
+					rows.Close()
+				}
+				var apiErr *api.Error
+				if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeWindowingError {
+					t.Fatalf("%s: got %v, want WINDOWING_ERROR (42F21)", query, err)
+				}
+			}
 		})
 	}
 
@@ -112,7 +91,7 @@ func TestFDB_ExplainUnplannableQueryFailsLoudly(t *testing.T) {
 		//
 		// The rows are CONSUMED and rows.Err() checked, not just requested: the
 		// driver defers a planning failure to the first Next — which is why the
-		// arm above reaches for assertUnsupported, whose whole first half exists
+		// arm above asserts the error code before accepting a rejected query; this exists
 		// to drive Next and rows.Err() before believing a nil QueryContext error.
 		// A QueryContext that returns nil proves only that a *sql.Rows came
 		// back. The
@@ -209,7 +188,7 @@ func TestFDB_ExplainInformationSchemaStillRenders(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE explaininfo_tmpl "+
 			"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_explaininfo/s WITH TEMPLATE explaininfo_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///testdb_explaininfo?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_EXPLAININFO?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

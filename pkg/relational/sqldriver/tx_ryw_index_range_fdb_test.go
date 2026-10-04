@@ -42,7 +42,7 @@ func rfc198IndexedDB(t *testing.T, dbPath, tmpl string) *sql.DB {
 func rfc198IndexedDBOn(t *testing.T, key, dbPath, tmpl string) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", dbPath, key))
+	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), key))
 	if err != nil {
 		t.Fatalf("sql.Open setup: %v", err)
 	}
@@ -53,7 +53,7 @@ func rfc198IndexedDBOn(t *testing.T, key, dbPath, tmpl string) *sql.DB {
 			" CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))"+
 			" CREATE INDEX idx_v ON t (v)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE "+tmpl)
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, key))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), key))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

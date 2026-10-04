@@ -7,7 +7,7 @@ package sqldriver_test
 // The gate keeps first-match when every candidate descriptor agrees on the SQL
 // type name and the cardinality, on the argument that the choice among agreeing
 // candidates is unobservable. That argument covers only the consumers that read
-// type+cardinality; the null-born upgrade in deriveColumnsFromProjection reads
+// type+cardinality; the null-born upgrade in the former column derivation reads
 // the returned descriptor's IDENTITY — nullBorn[d.FullName()], membership of
 // the leaf in an outer join's null-supplying legs — and two legs can agree on
 // type+cardinality while differing on that membership. First-match then answers
@@ -50,6 +50,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/onsi/gomega"
@@ -73,7 +74,7 @@ func setupCrossLegNullBornDB(t *testing.T, g *gomega.WithT) *sql.DB {
 	_, err = setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA %s/main WITH TEMPLATE xleg_nullborn_tmpl", dbPath))
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=main", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=MAIN", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	t.Cleanup(func() { db.Close() })

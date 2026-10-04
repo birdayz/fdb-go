@@ -262,7 +262,7 @@ func (t TableDef) structLiteral(r Row) string {
 				emit(f.Nested, path+"."+f.Name)
 				continue
 			}
-			b.WriteString(renderLiteral(r[path+"."+f.Name]))
+			b.WriteString(renderColumnLiteral(f.Type, r[path+"."+f.Name]))
 		}
 		b.WriteString(")")
 	}

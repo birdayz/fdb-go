@@ -32,7 +32,7 @@ func TestFDB_ScalarSubqueryCTE(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_ssq_cte/s WITH TEMPLATE ssq_cte_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_ssq_cte?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_SSQ_CTE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -105,7 +105,7 @@ func TestFDB_CorrelatedScalarSubqueryNoIndex(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_corrssq_noidx/s WITH TEMPLATE corrssq_noidx_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_corrssq_noidx?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_CORRSSQ_NOIDX?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -165,7 +165,7 @@ func TestFDB_CorrelatedScalarSubqueryError(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_corrssq/s WITH TEMPLATE corrssq_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_corrssq?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_CORRSSQ?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()

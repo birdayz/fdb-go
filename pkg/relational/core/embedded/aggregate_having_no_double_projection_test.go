@@ -51,7 +51,7 @@ func TestAggregateIndexHavingHasOneProjection(t *testing.T) {
 			"gone: %s", plan)
 	}
 
-	if got := strings.Count(plan, "Project("); got != 1 {
+	if got := strings.Count(plan, "Map("); got != 1 {
 		t.Errorf("plan has %d projections, want 1 — an aggregate-index match that "+
 			"wraps its leaf in a projection it does not need makes the HAVING filter "+
 			"read the projection's row, which materialises that projection below the "+
@@ -59,7 +59,7 @@ func TestAggregateIndexHavingHasOneProjection(t *testing.T) {
 	}
 	// And the projection that remains is the one carrying the select list, above
 	// the filter — not below it.
-	if strings.Contains(plan, "PredicatesFilter(Project(") {
+	if strings.Contains(plan, "PredicatesFilter(Map(") {
 		t.Errorf("the surviving projection sits BELOW the HAVING filter:\n  %s", plan)
 	}
 }
@@ -89,7 +89,7 @@ CREATE INDEX idx_count_amount AS SELECT COUNT(amount) FROM ORDERS GROUP BY custo
 	if !strings.Contains(plan, "AggregateIndex(") {
 		t.Fatalf("the query no longer plans against the aggregate indexes: %s", plan)
 	}
-	if got := strings.Count(plan, "Project("); got != 1 {
+	if got := strings.Count(plan, "Map("); got != 1 {
 		t.Errorf("plan has %d projections, want 1 (the arithmetic one):\n  %s", got, plan)
 	}
 }

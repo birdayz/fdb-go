@@ -72,6 +72,139 @@ func typedPartitionScanQuantifier(name string, rowType values.Type) expressions.
 	)
 }
 
+func TestPartitionSelectSpanningRangePushesIntoIndependentLower(t *testing.T) {
+	t.Parallel()
+	for _, dependentUpper := range []bool{false, true} {
+		t.Run(map[bool]string{false: "independent_upper", true: "upper_depends_on_lower"}[dependentUpper], func(t *testing.T) {
+			t.Parallel()
+			sel := buildOrdinalStar(t, 2)
+			if len(sel.GetPredicates()) != 1 {
+				t.Fatal("hub bounds must be one normalized range")
+			}
+			qs := append([]expressions.Quantifier(nil), sel.GetQuantifiers()...)
+			if dependentUpper {
+				bounds := sel.GetPredicates()[0].(*predicates.PredicateWithValueAndRanges)
+				correlatedHub := mustPartitionConstruct(expressions.NewSelectExpression(
+					mustPartitionConstruct(qs[0].RequireFlowedObjectValue()), []expressions.Quantifier{qs[0]},
+					[]predicates.QueryPredicate{predicates.NewComparisonPredicate(bounds.GetValue(), bounds.GetComparisons()[0])}))
+				qs[0] = expressions.NamedForEachQuantifier(qs[0].GetAlias(), expressions.InitialOf(correlatedHub))
+				sel = mustPartitionConstruct(expressions.NewSelectExpressionWithAliases(sel.GetResultValue(), qs, sel.GetPredicates(), sel.GetSourceAliases()))
+			}
+			rule := NewPartitionSelectRule()
+			yields, err := fireExprRuleOnMember(rule, rule.Matcher(), expressions.InitialOf(sel), sel, EmptyPlanContext(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := make(map[*expressions.SelectExpression]struct{})
+			for _, yielded := range yields {
+				upper := yielded.(*expressions.SelectExpression)
+				for _, q := range upper.GetQuantifiers() {
+					for _, member := range q.GetRangesOver().AllMembers() {
+						lower, ok := member.(*expressions.SelectExpression)
+						if !ok || len(lower.GetQuantifiers()) != 1 || lower.GetQuantifiers()[0].GetAlias().Name() != "S1" {
+							continue
+						}
+						found[lower] = struct{}{}
+						if dependentUpper {
+							t.Fatal("spanning range introduced a dependency cycle")
+						}
+						// The merged hub range splits by quantifier: S1's part moves
+						// into the lower, S2's part stays with S2 in the upper.
+						hub := sel.GetPredicates()[0].(*predicates.PredicateWithValueAndRanges).GetValue()
+						onlyPart := func(where string, preds []predicates.QueryPredicate, spoke string) {
+							if len(preds) != 1 {
+								t.Fatalf("%s holds %d predicates, want the %s part of the hub range", where, len(preds), spoke)
+							}
+							part, ok := preds[0].(*predicates.PredicateWithValueAndRanges)
+							if !ok || !values.SemanticEqualsUnderAliasMap(part.GetValue(), hub, nil) || len(part.GetComparisons()) != 1 {
+								t.Fatalf("%s predicate %s is not the %s part of the hub range", where, preds[0].Explain(), spoke)
+							}
+							correlated := part.GetComparisons()[0].GetCorrelatedTo()
+							if _, ok := correlated[values.NamedCorrelationIdentifier(spoke)]; !ok || len(correlated) != 1 {
+								t.Fatalf("%s part %s does not compare against %s alone", where, part.Explain(), spoke)
+							}
+						}
+						onlyPart("lower", lower.GetPredicates(), "S1")
+						onlyPart("upper", upper.GetPredicates(), "S2")
+						correlations := q.GetCorrelatedTo()
+						if _, ok := correlations[values.NamedCorrelationIdentifier("H")]; !ok || len(correlations) != 1 {
+							t.Fatalf("lower correlations = %v, want H alone", correlations)
+						}
+					}
+				}
+			}
+			if !dependentUpper && len(found) != 1 {
+				t.Fatalf("spanning range yielded %d distinct S1 lower expressions, want 1", len(found))
+			}
+		})
+	}
+}
+
+// A range merged over one value splits into one part per set of the select's
+// quantifiers its comparisons name; a range naming one set, a disjunction of
+// ranges, and any other predicate pass through untouched.
+func TestSplitRangesByLocalCorrelation(t *testing.T) {
+	t.Parallel()
+	aliasToQ := map[values.CorrelationIdentifier]expressions.Quantifier{}
+	for _, name := range []string{"O", "C", "X"} {
+		aliasToQ[values.NamedCorrelationIdentifier(name)] = scanQuantifier(name)
+	}
+	value := partitionField("O", "col")
+	equals := func(operand values.Value) predicates.Comparison {
+		return predicates.Comparison{Type: predicates.ComparisonEquals, Operand: operand}
+	}
+	literal := equals(&values.ConstantValue{Value: int64(42), Typ: values.NotNullLong})
+	join := equals(partitionField("C", "col"))
+	outer := equals(partitionField("OUTSIDE", "col"))
+	merged := predicates.NewPredicateWithValueAndRanges(value, []*predicates.RangeConstraints{
+		predicates.NewRangeConstraints([]predicates.Comparison{literal}, []predicates.Comparison{join, outer}),
+	})
+	other := joinPred("O", "X")
+
+	got := splitRangesByLocalCorrelation([]predicates.QueryPredicate{other, merged}, aliasToQ, nil)
+	if len(got) != 3 || got[0] != other {
+		t.Fatalf("split = %d predicates %v, want the untouched predicate and two parts", len(got), got)
+	}
+	local, ok := got[1].(*predicates.PredicateWithValueAndRanges)
+	if !ok || len(local.GetRanges()) != 1 ||
+		len(local.GetRanges()[0].GetCompilableComparisons()) != 1 || len(local.GetRanges()[0].GetDeferredRanges()) != 1 {
+		t.Fatalf("the part naming no other quantifier must keep the literal and the enclosing-query comparison: %s", got[1].Explain())
+	}
+	joined, ok := got[2].(*predicates.PredicateWithValueAndRanges)
+	if !ok || len(joined.GetComparisons()) != 1 || !values.SemanticEqualsUnderAliasMap(joined.GetValue(), value, nil) {
+		t.Fatalf("the join part must be one comparison on the same value: %s", got[2].Explain())
+	}
+	if _, namesC := predicates.GetCorrelatedToOfPredicate(joined)[values.NamedCorrelationIdentifier("C")]; !namesC {
+		t.Fatalf("the join part lost its correlation to C: %s", joined.Explain())
+	}
+	if _, namesC := predicates.GetCorrelatedToOfPredicate(local)[values.NamedCorrelationIdentifier("C")]; namesC {
+		t.Fatalf("the local part still names C: %s", local.Explain())
+	}
+
+	single := predicates.NewPredicateWithValueAndRanges(value, []*predicates.RangeConstraints{
+		predicates.NewRangeConstraints([]predicates.Comparison{literal}, []predicates.Comparison{outer}),
+	})
+	disjunction := predicates.NewPredicateWithValueAndRanges(value, []*predicates.RangeConstraints{
+		predicates.NewRangeConstraints([]predicates.Comparison{literal}, nil),
+		predicates.NewRangeConstraints(nil, []predicates.Comparison{join}),
+	})
+	unchanged := []predicates.QueryPredicate{single, disjunction, other}
+	if got := splitRangesByLocalCorrelation(unchanged, aliasToQ, nil); len(got) != 3 || got[0] != single || got[1] != disjunction {
+		t.Fatalf("one-set ranges and disjunctions must pass through untouched, got %v", got)
+	}
+
+	// A reference buried inside an existential belongs to that existential.
+	buried := map[values.CorrelationIdentifier]values.CorrelationIdentifier{
+		values.NamedCorrelationIdentifier("B"): values.NamedCorrelationIdentifier("X"),
+	}
+	viaBuried := predicates.NewPredicateWithValueAndRanges(value, []*predicates.RangeConstraints{
+		predicates.NewRangeConstraints(nil, []predicates.Comparison{equals(partitionField("B", "col")), equals(partitionField("X", "col"))}),
+	})
+	if got := splitRangesByLocalCorrelation([]predicates.QueryPredicate{viaBuried}, aliasToQ, buried); len(got) != 1 {
+		t.Fatalf("comparisons on an existential and its buried source are one part, got %d", len(got))
+	}
+}
+
 func TestPartitionSelect_StrictSingleFailsClosed(t *testing.T) {
 	t.Parallel()
 
@@ -209,6 +342,47 @@ func TestAliasesConnectedByPredicates(t *testing.T) {
 	}
 }
 
+// TestAliasesConnectedByCorrelation pins the correlation-edge reading of the
+// same check, one arm per spelling it admits and per one it does not. The
+// shared-outside arm is what admits {d, e} under {w} for two lateral legs that
+// both read w — the only bipartition that block has — while a star whose legs
+// are joined to a hub only by PREDICATES stays disconnected (the predicate
+// arms above), so plain joins keep their pruning.
+func TestAliasesConnectedByCorrelation(t *testing.T) {
+	t.Parallel()
+	deps := func(pairs ...string) map[values.CorrelationIdentifier]map[values.CorrelationIdentifier]struct{} {
+		out := map[values.CorrelationIdentifier]map[values.CorrelationIdentifier]struct{}{}
+		for i := 0; i+1 < len(pairs); i += 2 {
+			from := values.NamedCorrelationIdentifier(pairs[i])
+			if out[from] == nil {
+				out[from] = map[values.CorrelationIdentifier]struct{}{}
+			}
+			out[from][values.NamedCorrelationIdentifier(pairs[i+1])] = struct{}{}
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name    string
+		aliases map[values.CorrelationIdentifier]struct{}
+		order   map[values.CorrelationIdentifier]map[values.CorrelationIdentifier]struct{}
+		want    bool
+	}{
+		{"one depends on the other", aliasSet("S", "X"), deps("X", "S"), true},
+		{"both depend on one alias outside", aliasSet("D", "E"), deps("D", "W", "E", "W"), true},
+		{"three all depend on one alias outside", aliasSet("D", "E", "F"), deps("D", "W", "E", "W", "F", "W"), true},
+		{"each depends on a different alias outside", aliasSet("D", "E"), deps("D", "W", "E", "H"), false},
+		{"only one depends on anything", aliasSet("D", "E"), deps("D", "W"), false},
+		{"no correlation at all", aliasSet("D", "E"), nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := aliasesConnectedByPredicatesOrCorrelation(tc.aliases, nil, tc.order); got != tc.want {
+				t.Errorf("aliasesConnectedByPredicatesOrCorrelation = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestTransitiveCorrelationOrder_RangesOverEdges pins the recovered
 // quantifier→sibling correlation edges: Go's Quantifier.GetCorrelatedTo is
 // empty (registered divergence), so computeTransitiveCorrelationOrder must
@@ -273,5 +447,39 @@ func TestBoundAliasesOfReference(t *testing.T) {
 		if _, ok := got[values.NamedCorrelationIdentifier(want)]; !ok {
 			t.Fatalf("bound aliases missing %s (got %v)", want, got)
 		}
+	}
+}
+
+// TestPartitionSelect_NullOnEmptyMergesWithItsPartner: a null-on-empty leg B,
+// correlated to its preserved partner A, may be collapsed into a positional
+// lower together with A — the lower is then exactly the binary outer-join
+// shape the NLJ rule implements with DefaultOnEmpty. `SELECT * FROM b RIGHT
+// JOIN a ON … WHERE EXISTS (…)` reaches the {A,B} shape once SelectMergeRule
+// folds the rewritten outer join into its parent, and has no other plan.
+// It may equally collapse WITHOUT its partner ({B,C} under A), as Java's
+// PartitionSelectRule allows: B extends per combination of the other legs,
+// so per (a, c) either way.
+func TestPartitionSelect_NullOnEmptyMergesWithItsPartner(t *testing.T) {
+	t.Parallel()
+	a, bBase, c := scanQuantifier("A"), scanQuantifier("B"), scanQuantifier("C")
+	correlated := mustPartitionConstruct(expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{joinPred("A", "B")}, bBase))
+	b := expressions.NamedForEachNullOnEmptyQuantifier(bBase.GetAlias(), expressions.InitialOf(correlated))
+	rv := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "a", Value: partitionField("A", "col")},
+		values.RecordConstructorField{Name: "b", Value: partitionField("B", "col")},
+		values.RecordConstructorField{Name: "c", Value: partitionField("C", "col")},
+	)
+	sel := mustPartitionConstruct(expressions.NewSelectExpression(rv, []expressions.Quantifier{a, b, c}, []predicates.QueryPredicate{joinPred("B", "C")}))
+	lowers := map[string]bool{}
+	for _, y := range mustFirePartitionExpressionRule(t, NewPartitionSelectRule(), expressions.InitialOf(sel)) {
+		for _, lower := range nestedLowerAliasSets(y) {
+			lowers[sortedAliasNames(lower)] = true
+		}
+	}
+	if !lowers["{A,B}"] {
+		t.Fatalf("no lower {A,B}: the null-on-empty leg must merge with its partner; lowers=%v", lowers)
+	}
+	if !lowers["{B,C}"] {
+		t.Fatalf("no lower {B,C}: the null-on-empty leg must also collapse without its partner; lowers=%v", lowers)
 	}
 }

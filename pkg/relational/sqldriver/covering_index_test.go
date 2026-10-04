@@ -13,11 +13,10 @@ import (
 //
 // Regression sentinel for review PR-#256 finding P2: the data-access path emits
 // Fetch(IndexScan) for every value-index candidate (wrapScanPlanWithCoverage),
-// deferring the covering decision to MergeProjectionAndFetchRule — which does
-// the precise projection-columns-vs-index-columns check (more precise than the
-// coarse no-final-compensation `isCovering` signal at scan-wrap time). This test
-// proves that deferral actually eliminates the fetch for covering projections,
-// so the always-Fetch shape is not a covering regression.
+// and the block's Map is pushed through the fetch when it reads only covered
+// columns (PushMapThroughFetchRule). This test proves the fetch is eliminated
+// for covering projections, so the always-Fetch shape is not a covering
+// regression.
 func TestFDB_CoveringIndexScan(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

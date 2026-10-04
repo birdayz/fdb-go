@@ -1,6 +1,6 @@
 # TODOs
 
-FoundationDB Record Layer — Go Port. Java version: **4.12.11.0**. FDB wire protocol: **7.3.77**.
+FoundationDB Record Layer — Go Port. Java version: **4.14.2.0**. FDB wire protocol: **7.3.77**.
 
 Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 508 cross-engine
 specs, 105 fuzz targets, ~65 Cascades rules, 41 plan types (36 executor-wired), 48 value types,
@@ -306,7 +306,7 @@ INSERT…SELECTs.
   this route is not a divergence at all. That inference is wrong, and only the
   live JVM could settle it. `conformance/duplicate_groupby_java_probe_test.go`
   (`paren_twin_aggonly`, `paren_twin_proj`, `paren_twin_having`, `cmp_twin`)
-  measures Java at tag 4.12.11.0 refusing all four:
+  measures Java at tag 4.12.11 refusing all four:
 
       GROUP BY (amount+1), amount+1  ->  java: Ambiguous columns for
                                            q...._0.AMOUNT + @c12   | go: PLANS
@@ -546,7 +546,7 @@ producer, which deletes both the table and its validator.
 ## 2. Wire compatibility and the pure-Go FDB client
 
 The hard line: key encoding, record/index format, continuations, metadata, and everything
-`pkg/fdbgo` puts on the wire. C++ (libfdb_c 7.3.77) is the spec for the client; Java 4.12.11.0 is
+`pkg/fdbgo` puts on the wire. C++ (libfdb_c 7.3.77) is the spec for the client; Java 4.12.11 is
 the spec for the record layer. Client gate applies to every entry here.
 
 ### [ ] Replay DB transaction defaults as an ordered option list, with TIMEOUT applied last
@@ -1524,7 +1524,7 @@ full window); GRV `batchTime` floors at 100µs where C++ has no floor.
 ### The metadata builder diverges from Java in three places, found while closing RFC-238 §7f
 
 These are one subsystem and should land as one PR. All three were surfaced by
-review during PR #761 and verified against the Java source at tag 4.12.11.0;
+review during PR #761 and verified against the Java source at tag 4.12.11;
 none is caused by that PR, and none is blocked on anything.
 
 **1. `updateRecords()` is not ported, so a descriptor cannot be evolved at all.**
@@ -1671,15 +1671,13 @@ RFC → Graefe + Torvalds ACK → implement → one review lap per milestone.
   derives one (`OrderingProperty.visitInJoinPlan`, `OrderingProperty.java:392`):
   when the inner's binding map holds the IN-bound value as a FIXED binding and
   the source is sorted, that binding becomes directional in the source's
-  direction and the rest of the inner ordering is inherited. (b) The whole
-  requested-ordering arm of `ImplementInJoinRule` is DEAD: it looks the
-  requested part up in `richOrdering.GetBindingMap()` by Value IDENTITY, and the
-  request carries the translator's baked `ID#0` while the ordering advertises
-  the lazy `ID`, so it finds nothing and returns nil for every request. Every
-  IN-source therefore comes from `buildSourcesFromProvided`, which hardcodes
-  `sorted: true` with `reverse` left false — no descending IN-join is ever
-  built. The fix for (b) is the bridge that already exists for exactly this
-  (`RichOrdering.orderingKeyFor` / `CanBridgeOrderingValueRoots`).
+  direction and the rest of the inner ordering is inherited. (b) CLOSED in the RFC-257 migration: the requested-ordering arm of
+  `ImplementInJoinRule` looked the requested part up by Value IDENTITY and so
+  never matched; the enumeration is now a port of Java's
+  `enumerateInSourcesForRequestedOrdering` resolving parts through
+  `RichOrdering.BindingsFor` (`orderingKeyFor`), and the Go-only
+  `buildSourcesFromProvided` arm (sorted claim on a preserve request) is gone.
+  Descending IN-joins are now built; without (a) they still sit under a sort.
   **Prototyped and REVERTED, with the measurement that says why it is its own
   workstream:** fixing (a)+(b) makes the descending IN-join real and eliminates
   the sort on `ORDER BY id DESC, k` — but it moves 16 further corpus plans, 15
@@ -2564,7 +2562,7 @@ was not re-checked, so it is neither confirmed nor closed here.
       NARROWED admission to the direct shape (declined wrapped → name-model); superseded — see below, the
       wrapped case now ORDINALIZES. Multi-EXISTS-under-aggregate stays name-model + LOUD (pre-existing
       planner gap, confirmed at parent — agg_multiexists_loud sentinel).
-      🔬 **JAVA CONFORMANCE (6-reader workflow, HIGH confidence):** Java 4.12.11.0 FULLY supports GROUP
+      🔬 **JAVA CONFORMANCE (6-reader workflow, HIGH confidence):** Java 4.12.11 FULLY supports GROUP
       BY (grouped+global COUNT/SUM/AVG/MIN/MAX via streaming aggregator, no index required — AstNormalizer
       rejects only OFFSET/LIMIT). The old translateAggregate comment claiming Java lacks GROUP BY was
       STALE/FALSE — corrected. Java ALSO plans GROUP BY over a multi-source-FROM derived table
@@ -2656,9 +2654,9 @@ and to convert the 0AF00 into a fold where Java answers, but it is NOT a silent-
 
 
 ### RFC-070 / RFC-083 follow-ups (lifted out of completed entries)
-  - [ ] **Follow-up (RFC-070): `pushValue`-into-covering-result-value modeling gap.** Java's `MergeProjectionAndFetchRule` yields a bare `fetchPlan.getChild()` because `RecordQueryFetchFromPartialRecordPlan.pushValue` rewrites the projected value into the covering plan's own result value. Go's `WithCovering` only sets a flag (the scan still flows the full partial record), so Go compensates with a thin outer `Project`. Pushing the value into the covering result value would let both rule branches collapse to a bare child yield, matching Java. Cosmetic/architectural — current behaviour is correct.
+  - [x] **Follow-up (RFC-070): `pushValue`-into-covering-result-value modeling gap.** Closed: a query block is a Select, and `PushMapThroughFetchRule` pushes the block's Map through the fetch and keeps it over the covering plan, as Java's rule does; the projection-and-fetch rules are deleted.
 
-  - [ ] **Follow-up (RFC-070): other transparent unary wrappers over joins.** `Map`, `Distinct`, `Limit`, `TypeFilter`, `FirstOrDefault`, `DefaultOnEmpty` still gate `WithChildren` on `isLeafReplaceable` and could exhibit the same nil-inner-over-join bug if a rule ever builds them with a placeholder inner over a join. Not currently reachable via SQL (projections route through `LogicalProjectionExpression`, not `Map`); the **blanket** gate removal is unsafe — it regressed `TestFDB_AggregateIndexUsage` by dropping the eq-filter on aggregation/DML wrappers (which embed filter semantics in their own plan). Each wrapper needs individual analysis if/when reachable.
+  - [x] **Follow-up (RFC-070): other transparent unary wrappers over joins.** Obsolete: RFC-184 W2 gave `Map`, `Distinct`, `Limit`, `TypeFilter`, `FirstOrDefault` and `DefaultOnEmpty` a single live child edge, so `WithChildren` is a quantifier swap and the `isLeafReplaceable` gate no longer exists.
 
   - [ ] **Follow-up (RFC-083): replace the guard + `AggregateSlots` marker with Java's `PromoteValue` projection nodes** — the single mechanism that both rejects-at-plan and widens-at-runtime, dissolving the dual lattice-encoding (guard + converters) and the load-bearing "aggregate-slot ⇒ guard" coupling (Graefe's end-state). Subsumes reliably typing `FieldValue`/`ArithmeticValue` projections, which then closes the **residual deferred cases**: bare-column `SELECT double_col → BIGINT` over an empty source, and `UPDATE … SET int_col = <double-expr>` — both currently rely on the runtime converter (correct for non-empty rows, miss the 0-row case).
 
@@ -3425,10 +3423,10 @@ hashes/reproducers. All experiments reverted; tree clean.
   (`scan_match_helpers.go:37`), and `ResolveStartsWith` (`expr.go:1437`), which
   builds the comparison the scan machinery does accept, has no production caller.
 
-  *Every Java claim in this item is against **Java 4.12.11.0** — the tree at
+  *Every Java claim in this item is against **Java 4.12.11** — the tree at
   `fdb-record-layer/` in the REPO ROOT (gitignored, so it is absent from
   `git ls-files` and from any worktree; the version is pinned in `MODULE.bazel:117`
-  as `org.foundationdb:fdb-record-layer-core:4.12.11.0`). That names exactly what
+  as `org.foundationdb:fdb-record-layer-core:4.14.2.0`). That names exactly what
   to check out to re-verify. The two backing `file:line` citations, both
   re-verified at that tag: `PatternForLikeValue.java:111-112` (the escape table's
   only two entries, `<esc>_` and `<esc>%`, layered over `REPLACE_MAP` at `:62-79`
@@ -3436,7 +3434,7 @@ hashes/reproducers. All experiments reverted; tree clean.
   `LikeOperatorValue.likeOperation` (`LikeOperatorValue.java:93-99`:
   `Pattern.compile(rhs)` with NO flags, then `.find()`).*
 
-  **Tightness — MEASURED; it constrains every possible design.** Java (4.12.11.0)
+  **Tightness — MEASURED; it constrains every possible design.** Java (4.12.11)
   compiles `%` to `.*` inside a `^…$` wrap with no DOTALL, so a wildcard cannot
   cross a line terminator: a subject that starts with the literal prefix but
   then carries a terminator lies in the byte-prefix range and does NOT match the
@@ -3526,7 +3524,7 @@ hashes/reproducers. All experiments reverted; tree clean.
   zero rows and the code is gone" is exactly the lead the next attempt needs — so
   the material is kept here, explicitly labelled NOT REPRODUCIBLE (blockers (1)
   and (4)). Its Java citations are likewise kept: Java is this port's spec, the
-  tree is `fdb-record-layer/` at tag 4.12.11.0 pinned in `MODULE.bazel`, and
+  tree is `fdb-record-layer/` at tag 4.14.2.0 pinned in `MODULE.bazel`, and
   citing it is the repo's established practice (`DIVERGENCES.md` rests entirely
   on such citations). Gitignored is not uncheckable when the pin says what to
   check out.
@@ -3566,43 +3564,16 @@ hashes/reproducers. All experiments reverted; tree clean.
   single source `Merge` consults.
 
 
-- [ ] **CQ-39 (MED) — a residual filter over a fetch-free index scan is never
-  marked COVERING.** *(Renumbered from a duplicate CQ-38. Two distinct items
-  carried that number — the NaN-total-order semantics item earlier in this phase
-  and this covering-label item; the later one was renumbered. Any external
-  reference to "CQ-38 covering" means this item.)*
-  **TWO rules stamp covering for this shape, and BOTH miss the same way — a fix
-  has two sites, not one.** `MergeProjectionAndFetchRule` marks the inner scan
-  covering only in its direct `fetchInnerExpr.(*RecordQueryIndexPlan)` arm
-  (`rule_merge_projection_and_fetch.go:91`); with a residual `PredicatesFilter`
-  between projection and fetch it takes the `:103-126` fallback, which yields
-  the projection over the fetch's inner group and leaves the scan unmarked.
-  `ImplementProjectionRule` stamps the same shape redundantly and independently,
-  via `findIndexScanPlan` (`rule_implement_projection.go:73`), and fails on the
-  identical structural condition: neither descends through a
-  `RecordQueryPredicatesFilterPlan`. Both are PLANNING-phase rules (the first an
-  implementation rule, the second an expression rule from
-  `BatchAExpressionRules`). Measured and pinned by
+- [x] **CQ-39 (MED) — a residual filter over a fetch-free index scan is never
+  marked COVERING.** *(Renumbered from a duplicate CQ-38; any external reference
+  to "CQ-38 covering" means this item.)* Closed by RFC-220: coveringness is a plan
+  TYPE built at the access path, as Java's `RecordQueryCoveringIndexPlan`, so no
+  downstream rule decides it and a residual pushed below the fetch cannot drop it.
+  The two stamping rules (`MergeProjectionAndFetchRule`, `ImplementProjectionRule`)
+  are deleted with `LogicalProjectionExpression`. Pinned by
   `TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost`'s
-  `two_rules_stamp_covering_redundantly` subtest: on the no-residual covering
-  control, disabling either rule alone leaves the stamp and disabling both drops
-  it. Rows are CORRECT (pinned: `covering_index_pushdown.yaml#25`, 26/26 on real
-  FDB, with `plan_not_contains: Fetch` as the sharp pin) — this is a
-  labeling/costing gap, not wrong results: the plan renders and is costed
-  without the covering marker it earned. CQ-33's covering-stamp blocker is the
-  writeup; why it becomes load-bearing for CQ-33 on secondary indexes is the
-  INFERRED criterion-#7 chain recorded under CQ-33 above. Found during
-  the RFC-197 step-0 review fold; deferred from that fold because marking the
-  scan moves plan shapes corpus-wide and is a query-engine change needing its own
-  RFC-gated lap. Read Java's MergeProjectionAndFetchRule counterpart first — if
-  Java marks covering through a residual, this is a divergence; if not, it is a
-  shared gap and the fix is an extension. (INSPECTION, not re-checkable from this
-  tree — the Java checkout is a gitignored sibling absent from `git ls-files`:
-  Java 4.12.11.0 appears to have no such failure mode, because coveringness is a
-  separate class there, `RecordQueryCoveringIndexPlan`, which HOLDS the index plan
-  as a field rather than flagging it, and its `MergeProjectionAndFetchRule` yields
-  the fetch plan's child with no shape check. Re-derive against the checkout
-  before relying on it.)
+  `residual_below_the_fetch_keeps_the_covering_stamp` and
+  `no_downstream_rule_can_remove_coveringness`.
 
 
 - [ ] **Two producers mint primary-key comparison Values from the same
@@ -4597,18 +4568,20 @@ MEASURED, not inferred:
 - It is NOT the Go-only statistics rung. Inverting that comparison changes none
   of these plans — mutation-checked, with the mutation's presence confirmed in
   the same invocation.
-- It IS identifier-sensitive. `T_DUP_EIP/EIQ` agrees with Java on the shadowing
-  spelling; the identical query over `T_DUP_SHP/SHQ` diverges.
+- It IS hash-sensitive: which shapes agree moves whenever anything the tie-break
+  hash folds changes. At 4.14.2.0 (after the LIKE escape left the comparison
+  hash) Go agrees with Java on one of the six probe shapes, the one whose
+  subquery is structurally identical to the first leg's scan.
 
 PINNED BY `conformance/dup_alias_exists_order_probe_test.go`, which asserts both
-engines' orders over six shapes and carries the renamed-table pair as its
-demonstration. Java's column is the reference and must not move; Go's column
+engines' orders over six shapes plus the renamed-table spelling of the corpus
+entry. Java's column is the reference and must not move; Go's column
 pins today's behaviour so that closing the gap turns the probe RED rather than
 silently changing what conformance means.
 
-WHAT IT BLOCKS: `dup_from_alias_leg_independent_exists` and
-`dup_from_alias_shadowing_exists` report "row data diverges". Both return the
-correct multiset; only the order differs. They conformed before RFC-235 because
+WHAT IT BLOCKS: `dup_from_alias_shadowing_exists` reports "row data diverges"
+(`dup_from_alias_leg_independent_exists` agrees since the hash change). It
+returns the correct multiset; only the order differs. Both conformed before RFC-235 because
 the retired three-quantifier NLJ arm forced one nesting for `WHERE EXISTS` over
 a comma join, and that nesting happened to be Java's. The arm masked this tie
 rather than preventing it.
@@ -6519,7 +6492,7 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 0AF00s ("Cascades planner could not plan query") with NO aggregate involved, and WHERE-position
 `… WHERE p.id IN (SELECT COUNT(*) FROM e)` 0AF00s too. So IN-subquery is a general unsupported feature,
 NOT a scope-leak residual — the scope leak is closed (the IN case went from a misleading 42803
-to this honest 0AF00). **Correction (measured against Java 4.12.11.0 source):** the earlier
+to this honest 0AF00). **Correction (measured against Java 4.12.11 source):** the earlier
 "(Java supports it)" parenthetical here was WRONG — Java rejects the same grammar alternative.
 `ExpressionVisitor.visitInPredicate` asserts `inList().queryExpressionBody() == null` with
 `UNSUPPORTED_QUERY` ("IN predicate does not support nested SELECT"), and the earlier
@@ -6562,7 +6535,11 @@ discarded (not committed) since it fails `codex_nested_scope`.
 </details>
 
 
-### [ ] dml: DELETE/UPDATE ... RETURNING silently ignored — Java supports it (divergence, found 2026-06-28)
+### [x] dml: DELETE/UPDATE ... RETURNING silently ignored — Java supports it (divergence, found 2026-06-28)
+
+Done: RETURNING builds Java's select over the modification's rows
+(`embedded/dml_returning.go`), pinned by `conformance/returning_conformance_test.go`
+and `sqldriver/dml_returning_fdb_test.go`.
 
 The shared grammar carries `(RETURNING selectElements)?` on `deleteStatement` and
 `updateStatement`, and **Java supports it** — `QueryVisitor.visitDeleteStatement:848` /
@@ -6633,7 +6610,7 @@ is tagged — never by hand-editing the doc.
 
 **RFC-165 follow-ups (tracked, non-blocking):**
 
-- [ ] **Verify the `Java?` roster facts against the live 4.12.11.0 server.** The `Java?` column in
+- [ ] **Verify the `Java?` roster facts against the live 4.12.11 server.** The `Java?` column in
       `ansi_roster.go` is currently a hand-authored frozen-version *assertion* (sourced from
       SQL_CONFORMANCE.md), structurally contained (it can't inflate the Go headline — see RFC-165 §4.6)
       but unverified. As A3 cross-engine coverage grows, diff each tagged feature's `Java?` against the
@@ -6845,7 +6822,7 @@ is tagged — never by hand-editing the doc.
   Java's column list, pinned against the live-JVM probe.
 
 
-- [ ] **CQ-87 (SMALL, needs confirmation first): Java may wrap a
+- [x] **CQ-87 (inherent field names done: `SELECT (val)` is `{VAL}`; writes bind records by position): Java may wrap a
   PARENTHESISED SCALAR into a one-field record where Go unwraps it.** Go's
   `walkRecordConstructorInner` unwraps a one-element unnamed constructor
   because that is the parser's shape for `(expr)`; Java's
@@ -7726,7 +7703,7 @@ work; unrelated to any wire/query change.
   - [x] **69.0 — Phase 0: vendor + parse.** No execution. **MERGED.** What it
     carries, read off commits `f20c884a4` + `a076ba66c`: 238 `.yamsql`
     files vendored byte-for-byte under `third_party/` mirroring the upstream
-    path, `VERSION` pinned to 4.12.11.0, `.metrics.*` excluded (and with them
+    path, `VERSION` pinned to 4.12.11, `.metrics.*` excluded (and with them
     `metrics-diff/` entirely); the `javayamsql` parser plus `TestCorpusParses`
     over all 238, each file either parsing clean or refused for the exact reason
     upstream refuses it; block/command/config key and YAML tag as CLOSED
@@ -7942,7 +7919,7 @@ work; unrelated to any wire/query change.
     `TestOptContinuation_RejectsLoudly`
     (`pkg/relational/core/embedded/continuation_option_test.go:18`) against the
     0A000 at `cascades_generator.go:1215-1218`. Four pieces are absent, measured
-    against Java 4.12.11.0:
+    against Java 4.12.11:
 
     - **(A) a page terminated by a caller-chosen row count that MINTS a token.**
       Java sets MAX_ROWS as `ExecuteProperties.setReturnedRowLimit` per
@@ -8811,7 +8788,7 @@ The reconcile job also lists four OPEN pull requests without their required chec
 ## 9. Java upstream — bugs to report, fixes to send, releases to wait for
 
 Defects in `fdb-record-layer` / `fdb-relational` itself, measured against the pinned Java
-**4.12.11.0** by the cross-engine probes. They live here because the repair belongs upstream, not
+**4.12.11** by the cross-engine probes. They live here because the repair belongs upstream, not
 because they are excused: CLAUDE.md's rule is that "it's an upstream bug" is never a deferral —
 fix it at the boundary, work around it deliberately with the divergence documented at the call
 site, AND report it upstream.
@@ -9407,12 +9384,9 @@ covered by the correctness suite and the golden plan diff, not by this table.
   `Project(IndexScan(GA_G, [*]))`; `… ORDER BY u.h DESC` over `id AS h` sorts in memory while
   `SELECT id FROM ga ORDER BY id DESC` takes `Scan(GA) REVERSE` (measured on the explain-differ
   dump at RFC-242 r9, `ordering_through_a_projection.yaml` pins both halves). Two mechanisms,
-  one now fixed: `PushRequestedOrderingThroughProjectionRule` pushed the constraint through the
-  projection's result value with the INNER quantifier's alias as the upper alias and without the
-  rebase into the child's current-row space, so a constraint rooted at the projection's current
-  — how every constraint arrives — failed the push-down's root check and nothing was pushed;
-  RFC-242 r9 routes it through `requestedOrderingBelow`, and the constraint now reaches the scan
-  group as `_current.G#1` (`TestPushRequestedOrderingThroughProjection_*`). What remains is on
+  one now fixed: the constraint crosses a block's result value through
+  `requestedOrderingBelow` and reaches the scan group as `_current.G#1` (the block is a Select,
+  so `PushRequestedOrderingThroughSelectRule` carries it, as in Java). What remains is on
   the receiving side: a zero-prefix index match carries NO matched ordering parts
   (`MatchInfo.GetMatchedOrderingParts()` is empty for a match over a `FullUnorderedScan`, so
   `SatisfiesRequestedOrdering` in `abstract_data_access_rule.go` returns nil for every candidate
@@ -9425,8 +9399,11 @@ covered by the correctness suite and the golden plan diff, not by this table.
   crosses. Closing it is a port of that: matched ordering parts for the zero-prefix match, so the
   data-access rule keeps the ordered full index scan (the zero-prefix skip already exempts a
   scan that satisfies a requested ordering) and the reverse direction, and the Go-only
-  `OrderedIndexScanRule` retires. Until then a sort over a derived table's or CTE's column is
-  never answered by an index, and a DESC over its primary key never by a reverse scan.
+  `OrderedIndexScanRule` retires. The observable half is closed by RFC-257's block select: a
+  derived table's select list is a block of the enclosing query, so the sort reaches the scan
+  and `IndexScan(GA_G, [*])` / `Scan(GA) REVERSE` answer it (`ordering_through_a_projection.yaml`
+  pins them positively). The mechanism below is still open: the Go-only ordered-scan rules are
+  what answer it.
   **That closure was misdiagnosed** (Graefe, r9 delta, measured): the ordering-parts machinery
   IS ported — `adjustMatchForMatchableSort` and `ValueIndexScanMatchCandidate.ComputeMatchedOrderingParts`
   emit unbound columns — and the zero-prefix match carries none because the scan group's ONE
@@ -9463,26 +9440,10 @@ covered by the correctness suite and the golden plan diff, not by this table.
   delta lap on PR #770 while probing derived-table group-bys; out of that RFC's scope (the
   union-leg alignment and the CTE/derived row) and booked here with the shapes.
 
-- [ ] **An array literal with a NULL element cannot be read through a CTE or derived table.**
-  `WITH c2 AS (SELECT [x.id, NULL] AS s, x.id AS a FROM ts AS x, t AS y WHERE x.id = y.id)
-  SELECT a + 1 AS b FROM c2 ORDER BY a` fails `0AF00: projection slot 0 has no resolved Value`,
-  and the plain read `SELECT a FROM c2` with it; identical at RFC-242's merge-base `36b97f1e9`
-  (schema `t(id, v)`, `ts(id, n nst)`). Java types the literal's element as
-  `maximumType(LONG, NULL)` = LONG NULLABLE (`AbstractArrayConstructorValue.resolveElementType`,
-  `Type.maximumType`'s NULL case), and Go's exact derivation agrees — but `semantic.Column`
-  carries the array CONTAINER's nullability only (`IsArray` + `Nullable`), its forward bridge
-  `expr.columnCascadesType` forces every element NOT NULL (Java's DDL rule for column arrays),
-  and so `semanticColumnFromExactType` declines a nullable element as unrepresentable and the
-  whole row with it — the join body then has no publisher, and every read of the CTE hits the
-  loud floor. That decline is what `TestOrderByExactMetadata_UnderivableCTEComputedKeyStaysLoud`
-  and `…ProjectionStaysLoud` use as their specimen (their fourth, after nominal records began
-  publishing under RFC-242 r14), so closing this moves the specimen again and those pins say
-  so. Two closures: an `ElementNullable` bit on `semantic.Column` set by the reverse bridge and
-  honoured by the forward one (small, one more field on a string-typed carrier), or carrying
-  the exact `values.Type` on the column so every round trip is lossless at once (nominal
-  records, nullable elements, nested arrays, enums) and the string kinds stay for the semantic
-  layer's own checks; the second is the long-term shape and is RFC-232's residual to close, not
-  RFC-242's. Booked from RFC-242 r14 with the reproducer.
+- [x] **An array literal with a NULL element cannot be read through a CTE or derived table.**
+  Moot at 4.14.2.0: an ARRAY element is never NULL (Java refuses `[x.id, NULL]` with 0A000 and
+  types every constructed array's element NOT NULL), so no constructed array has a nullable
+  element to publish. The two "StaysLoud" pins that used it as a specimen were removed.
 
 - [ ] **Exact enum transport — implemented in RFC-256; campaign integration/review open.**
   The enum-as-STRING defect discovered at RFC-242 r15 is repaired: semantic columns carry
@@ -11618,7 +11579,7 @@ remains single-shot. No timestamp assertions, execution floors, paging options,
 row population or expected results are weakened.
 
 This is fixture reliability for a Go extension, not Java row parity. The pinned
-Java 4.12.11.0 BaseVisitor::visitCurrentTimestamp delegates to visitChildren
+Java 4.12.11 BaseVisitor::visitCurrentTimestamp delegates to visitChildren
 (lines1376–1380); QueryExecutionContext:28–65 has no statement-clock contract.
 The unchanged Go tests require one timestamp within each statement, advancing
 instants across statements, stable predicate counts and stable paginated results.
@@ -11676,7 +11637,7 @@ body reads O.ID; (2) two distinct outer IDs7/9 through nested CTE/scalar SQL;
 (3) an enclosing CTE read by a scalar inside a derived body; (4) nested derived
 passthrough growth at depths1–4; (5) preserved exact types and duplicate output
 names through at least three levels. Existing embedded builder tests and real-
-FDB SQL-driver tests own the regressions. Java4.12.11.0 QueryVisitor:170–181 and
+FDB SQL-driver tests own the regressions. Java4.12.11 QueryVisitor:170–181 and
 688–691 retains the built operator then renames it; its relational expression
 correlation property derives free references from values/quantifiers
 (AbstractRelationalExpressionWithChildren:57–77). Nested scalar/CTE SQL is tested
@@ -12770,7 +12731,7 @@ unchanged (one Go RUN/PASS; plain-loop SQL cases). Its table explicitly requires
 leaves an INT message under DOUBLE target metadata. Completing the Go conversion
 would remove that failure; the three approved shape snapshots do not authorize
 changing these expectations. The subsequent live-Java verification below
-corrects the premise of the initial request: Java 4.12.11.0 also fails these
+corrects the premise of the initial request: Java 4.12.11 also fails these
 exact queries, so successful rows would be a deliberate upstream-bug workaround,
 not measured Java SQL parity. Other admission/error/representation expectations
 remain unchanged.
@@ -12787,7 +12748,7 @@ authorizes finishing/publishing the parent, not merging it.
 
 ### RFC-256 live Java numeric record-array correction
 
-**Correction to the preceding owner-decision premise:** Java 4.12.11.0 also
+**Correction to the preceding owner-decision premise:** Java 4.12.11 also
 fails BOTH exact mixed-width array-of-record queries with
 `IllegalArgumentException: ... field java type: DOUBLE, value type: java.lang.Integer`.
 Changing Go to return rows would therefore be an upstream-bug workaround, not
@@ -12817,7 +12778,7 @@ split recorded below; it does not authorize a changed SQL outcome in the parent.
 
 ### RFC-256 owner-ordered parent and Java-upgrade successor
 
-The owner resolved the preceding stop: finish/publish PR785 on Java **4.12.11.0**,
+The owner resolved the preceding stop: finish/publish PR785 on Java **4.12.11**,
 accept the known broken promotion behavior here, then make the immediate stacked
 Java-upgrade PR including the required parity work. No upstream Java PR: #4171
 already fixed the SQL construction path; RFC-256 records its release history.
@@ -13015,7 +12976,7 @@ Published `6b833ba3c28b8266c00670e778f7497d07a188b7` has seven successful CI
 checks and four exact-published-SHA virtual reviewer confirmations. The published
 Claude review is **not LGTM** and discloses unread test/testdata/docs scope.
 
-- Fresh retained `NumericCastBoundaryConformance` against Java 4.12.11.0 confirms
+- Fresh retained `NumericCastBoundaryConformance` against Java 4.12.11 confirms
   legal unused AS==AT, 42702 when referenced, separate element/ordinal values
   behind duplicate labels, and ordinary ambiguity for competing UNNEST columns.
   RFC-142/source prose was stale; the behavior already follows RFC-256's reviewed
@@ -13025,8 +12986,8 @@ Claude review is **not LGTM** and discloses unread test/testdata/docs scope.
   SQL names but `bound_exists_on.go` upper-folds lexical admission comparisons.
   Both orientations and later-source ON fail in Go, succeed in Java; the
   distinct-letter control succeeds in both. The UNNEST-frame collision also
-  needs lexical equality without removing the separately retained correlated
-  multi-source UNNEST restriction. Design and exact regression scope are in
+  needed lexical equality; the subsequent RFC-257 migration also removed the stale
+  correlated multi-source UNNEST restriction, pinned by `TestFDB_MultiSourceExistsReadsUnnestElement`. Design and exact regression scope are in
   RFC-256, **Published-review follow-up: quoted lexical aliases in EXISTS
   admission**. Production is unchanged pending design ACKs.
 - Remaining review work: locate/check the reported CTE rewrite-cache concern,
@@ -13080,7 +13041,7 @@ pending. No merge or upgrade-pin change is authorized by these results.
 The owner explicitly requested merging PR #785 on 2026-09-18. That supersedes the
 publication-only/no-merge authorization statements in earlier checkpoints here
 and in RFC-256; it does not turn unrun coverage into passes or select an upgrade
-version. The accepted Java 4.12.11.0 structured-promotion/mixed-numeric-record-array
+version. The accepted Java 4.12.11 structured-promotion/mixed-numeric-record-array
 split and mandatory immediate Java-upgrade/parity successor remain unchanged.
 The verified common-release candidate is recorded in RFC-256 and still awaits
 explicit version confirmation. No pin, Java checkout, golden, new hunt or upstream
@@ -13158,3 +13119,296 @@ and no performance repair was made. The five restricted factory hunts remain
 unapproved/unrun, not Docker skips or passing coverage. Prior paging140/eternal3600
 and transaction/watch/retry obligations are not newly executed by this follow-up.
 Companion: RFC-256 **Final follow-up verification and owner merge authorization**.
+
+### Open items found during the Java 4.14.2.0 upgrade (RFC-257)
+
+- [x] SQL page retries reduce the time budget by 10% and retain it across pages, including
+  retries after commit failures. TestSimPageBudgetAdaptsToShortMVCCWindow returns all 600 rows
+  under a deterministic 1.5 s window; explicit transactions keep their non-retrying behavior.
+- [x] Permuted aggregate index query reach: physical grouping-prefix and aggregate ordering are
+  carried into forward/reverse scans; aggregate-index-tests.yamsql passes.
+- [x] BITMAP_VALUE query reach: candidate matching, BY_GROUP execution, and the streaming accumulator
+  are implemented; bitmap-aggregate-index.yamsql and TestFDB_BitmapAggregateIndex pass.
+
+### Stress test 1M baseline — Java migration working tree
+Baseline `e48f5b4965543cd4d99b5578356059e12d969c7c` (merge-base on 2026-09-29), versus
+`6bb230510ce76a1b6ad1590476a041e7afafb166` plus uncommitted migration tree
+`f27ba39f8f291def6fe68c83dd605dcd88dfa983`. Two sequential runs per side (`--runs_per_test=2 --local_test_jobs=1`),
+Bazel caching enabled: both sides executed both runs. Each side reported 48 RUN/PASS
+outcomes; all 22 timed row counts match, and COUNT(*) asserts 1,000,000. Same `/home`
+filesystem, 95% occupied throughout. One-minute load start/end: baseline 16.26/7.66,
+current 6.78/5.54. These timings do not establish causal performance parity.
+
+| Query | Rows | Baseline ms (n=2) | Current ms (n=2) | Mean current/base |
+|---|---:|---:|---:|---:|
+| PK lookup id=0 | 1 | 10.951 / 8.514 | 16.886 / 11.106 | 1.438x |
+| PK lookup id=N/2 | 1 | 11.722 / 8.472 | 25.588 / 9.425 | 1.734x |
+| PK lookup id=N-1 | 1 | 10.071 / 5.300 | 11.326 / 6.898 | 1.186x |
+| idx_customer eq | 8 | 10.602 / 6.568 | 33.868 / 8.711 | 2.480x |
+| idx_amount range >9000 | 100017 | 269.788 / 248.439 | 305.767 / 249.227 | 1.071x |
+| idx_status count pending | 1 | 517.557 / 360.654 | 326.618 / 396.840 | 0.824x |
+| full scan filter amount>5000 | 1 | 973.714 / 831.426 | 869.458 / 892.410 | 0.976x |
+| GROUP BY status | 4 | 6.768 / 14.134 | 7.272 / 6.437 | 0.656x |
+| GROUP BY status COUNT only | 4 | 6.975 / 20.855 | 5.980 / 6.180 | 0.437x |
+| SUM by status (aggregate index) | 4 | 10.809 / 6.618 | 6.371 / 6.198 | 0.721x |
+| GROUP BY customer HAVING | 47271 | 842.049 / 572.817 | 643.601 / 621.046 | 0.894x |
+| JOIN 10 orders x customers | 10 | 24.595 / 20.209 | 21.206 / 22.313 | 0.971x |
+| ORDER BY PK (full) | 1000000 | 4926.857 / 3862.279 | 4300.836 / 7879.534 | 1.386x |
+| ORDER BY PK + index filter | 8 | 10.775 / 9.054 | 10.640 / 10.911 | 1.087x |
+| scan all rows ordered | 1000000 | 4783.678 / 3702.436 | 7429.314 / 4121.309 | 1.361x |
+| scan all rows wide | 1000000 | 5156.386 / 3977.030 | 4486.717 / 4320.880 | 0.964x |
+| IN-list 5 values | 46 | 24.866 / 19.432 | 31.016 / 29.414 | 1.364x |
+| PK needle id=999999 | 1 | 7.550 / 5.917 | 8.209 / 7.639 | 1.177x |
+| PK+filter needle id=500000 | 1 | 9.275 / 7.733 | 10.591 / 11.088 | 1.275x |
+| full scan sparse filter | 97 | 4536.104 / 3341.825 | 3822.377 / 3898.220 | 0.980x |
+| UPDATE by index | 8 | 13.442 / 9.235 | 13.228 / 12.311 | 1.126x |
+| DELETE single row | 1 | 9.061 / 7.141 | 9.345 / 9.058 | 1.136x |
+
+### Java migration audit findings (2026-09-29, implementation in progress)
+
+- [x] Record-valued IN deduplication uses protobuf value equality; unit and real-FDB indexed SQL regressions observed red→green (duplicate tuple returned `[1,1,2]`, now `[1,2]`).
+- [x] Prevent permuted aggregate wrong matches: field-only candidates decline computed/nested/fan-out keys instead of flattening them. Planner regression observed red→green; real-FDB SQL checks computed operand/group keys and plain-field indexed control. This does not add computed-key aggregate-index optimization.
+- [x] Resume computed-record ARRAY_AGG using finalized constructor/promotion descriptors as well as metadata; real-FDB partial-group SQL regression observed red→green. Sort resumes use the same resolver. Unknown and conflicting named descriptors fail explicitly; constructor/promotion descriptor identity is unit-pinned.
+- [x] Reject incompatible vector CAST precision/dimensions at SQL resolution and direct Value evaluation, including NULL/empty array inputs; identity casts remain valid. Shared admission also closes direct BOOLEAN→LONG/FLOAT/DOUBLE evaluation that SQL already rejected; tests now pin Java's explicit BOOLEAN→INT→DOUBLE chain.
+- [x] Prove literal comparison range containment in Select subsumption and the existing Filter-to-Select bridge; real-FDB SQL uses the sparse index and retains stricter residuals. Non-implied NULL/boundary queries remain full scans. Mixed numeric domains decline rather than round large integer bounds (unit red→green). Runtime-bound/composite range proofs are not covered by this literal-only implementation.
+- [x] Validate VECTOR payloads in sort continuation decoding: precision/dimensions checked against selected plan; HALF/FLOAT/DOUBLE codec tests and real-FDB paginated sorted SQL observed red→green.
+- [x] Preserve Java INT/FLOAT carriers and nested VECTOR type tags in literal serialization. Live JVM deserialization verifies Integer/Float/Long/Double and HALF/FLOAT/DOUBLE RealVector classes; unit tests pin values and reject INT overflow.
+- [x] Add VECTOR to promotion serialization type codes (NULL_TO_VECTOR); unit regression observed missing `NULL_TO_` coercion, and live JVM now deserializes/evaluates the Go-produced NULL promotion.
+
+The three read-only audits returned NAK with incomplete full-migration coverage; no full-review
+ACK is claimed. Removing the redundant filter-to-select memo population recovered most of
+the measured planning overhead. The exposed grouped-sort bounded-scan regressions were fixed
+by enumerating admissible inputs and freezing their executable plans; reviewed plan goldens
+were refreshed and all 100 test targets passed (51 executed, 49 cached). Residual planning
+overhead and the SUM timing outlier in the table below are not claims of performance parity.
+
+### Stress test 1M baseline — after filter and grouped-sort repair
+
+Same baseline SHA and baseline samples as above; current HEAD remains `6bb230510ce76a1b6ad1590476a041e7afafb166`,
+with uncommitted tree `2d2172318ece13a7e07434bb451df9b6f61d99d8`. Two current runs,
+48 RUN/PASS outcomes and all 22 timed row counts match baseline. Caching enabled; both
+current samples executed. Disk remains 95% occupied. Load start/end: 13.74/2.57.
+
+| Query | Rows | Baseline ms (n=2) | Repaired ms (n=2) | Mean repaired/base |
+|---|---:|---:|---:|---:|
+| PK lookup id=0 | 1 | 10.951 / 8.514 | 8.821 / 9.008 | 0.916x |
+| PK lookup id=N/2 | 1 | 11.722 / 8.472 | 9.083 / 8.948 | 0.893x |
+| PK lookup id=N-1 | 1 | 10.071 / 5.300 | 5.717 / 5.476 | 0.728x |
+| idx_customer eq | 8 | 10.602 / 6.568 | 7.541 / 6.990 | 0.846x |
+| idx_amount range >9000 | 100017 | 269.788 / 248.439 | 248.604 / 191.804 | 0.850x |
+| idx_status count pending | 1 | 517.557 / 360.654 | 352.505 / 427.220 | 0.888x |
+| full scan filter amount>5000 | 1 | 973.714 / 831.426 | 554.362 / 721.742 | 0.707x |
+| GROUP BY status | 4 | 6.768 / 14.134 | 13.676 / 13.561 | 1.303x |
+| GROUP BY status COUNT only | 4 | 6.975 / 20.855 | 22.485 / 11.098 | 1.207x |
+| SUM by status (aggregate index) | 4 | 10.809 / 6.618 | 21.511 / 23.730 | 2.596x |
+| GROUP BY customer HAVING | 47271 | 842.049 / 572.817 | 788.164 / 708.914 | 1.058x |
+| JOIN 10 orders x customers | 10 | 24.595 / 20.209 | 20.567 / 20.558 | 0.918x |
+| ORDER BY PK (full) | 1000000 | 4926.857 / 3862.279 | 4003.692 / 4060.669 | 0.918x |
+| ORDER BY PK + index filter | 8 | 10.775 / 9.054 | 9.354 / 9.668 | 0.959x |
+| scan all rows ordered | 1000000 | 4783.678 / 3702.436 | 3915.377 / 3870.843 | 0.918x |
+| scan all rows wide | 1000000 | 5156.386 / 3977.030 | 4152.099 / 4196.605 | 0.914x |
+| IN-list 5 values | 46 | 24.866 / 19.432 | 24.186 / 19.800 | 0.993x |
+| PK needle id=999999 | 1 | 7.550 / 5.917 | 6.911 / 6.543 | 0.999x |
+| PK+filter needle id=500000 | 1 | 9.275 / 7.733 | 8.286 / 7.908 | 0.952x |
+| full scan sparse filter | 97 | 4536.104 / 3341.825 | 3533.887 / 3562.379 | 0.901x |
+| UPDATE by index | 8 | 13.442 / 9.235 | 11.417 / 10.550 | 0.969x |
+| DELETE single row | 1 | 9.061 / 7.141 | 7.816 / 7.536 | 0.948x |
+
+### Java migration — existential union exploration (2026-09-29)
+
+- [x] Subset existential edges per DNF leg and expose ForEach-only predicates beside EXISTS to index matching. Unit red→green and real-FDB SQL pin indexed unions, overlapping legs, correlated/uncorrelated EXISTS, and empty subqueries. Hoisted correlation predicates and projected existential values retain their original scope; FlatMap distinctness remains Java-conservative.
+- [x] Java's OR-term partial-match gate and fixed-factor subset enumeration are implemented and scheduled from new match-partition hints. `TestMatchIntermediateFilterOrTermHint`, the predicate-union rule tests, and `TestFDB_UnionWithUnmatchedFixedFactor` pin scheduling, atomic fixed factors, and indexed union execution. Boolean EXISTS consumers now run above FirstOrDefault, including existential-outer dependency orientation; `TestFDB_DisjunctiveExists`, its DML companion, and `DisjunctiveExistsConformance` pin the SQL behavior.
+
+### Fixed-factor union planning cost — seed 1884206 (2026-10-01)
+
+- [x] Union legs are canonical: a fixed factor the leg's term implies is dropped (the absorption Java's DNF simplification already applies to expanded factors), so a leg is one memo group however many fixed subsets yield it. Seed query: 2,910 union inputs over 78 leg groups (was 2,906 distinct legs); 147,123→15,155 tasks, 30,141→4,698 groups, ~7.2s→~1.7s; `fc_0000000960_q4` and `TestPlanHarness_FixedFactorUnionJavaComparable` no longer hit the task cap. Overflow-sensitive leg population 2,595→72 (`TestPredicateUnionNineFactorSemanticPopulation`): legs no longer evaluate implied factors.
+- [x] Planner trace: `cascades.PlannerTrace` (tasks, time and memo groups per phase/task/rule; memo census incl. equivalent groups), `embedded.PlanPhysicalForTestTraced`, `cmd/plan-trace`.
+- [x] The memo removes exact replicas (Graefe 1995 §2/§3.5: duplicate key = operator + input groups, `expressions.ExactReplica`). PLANNING merges groups found to hold the same expression (`Planner.integratePlanningYield`: checked admission, re-homed constraints, folded matches and consumed partitions, retired loser tasks, only unexplored goals explored), and a member differing from another only in a planner merge alias (`values.MergeCorrelationIdentifier`) is that member. Seed 1884206: 15,155→13,588 tasks, the 511-subset enumeration runs once. Ordinal chain 3/4: 905→559 / 8,915→2,381 tasks, chain 5 now converges (14,163); star hub+3/hub+4: 6,488→2,093 / 77,983→12,860; SQL 4-table chain 8,594→2,550. Plan-shape dump (2,828 queries + 175 DML) byte-identical; cap and PLAN_RIGHT_DEEP tests widened to 7 legs / hub+6.
+- [ ] Remaining seed cost per `plan-trace`: PredicateToLogicalUnionRule 460ms of 0.98s in tasks (after the PLANNING merge) — per-subset DNF through the rule engine (~46k raw cross-product terms over 511 subsets) and O(n²) member dedup of 511 payload-free LogicalUnique/LogicalUnion alternatives (memo hash ignores children); ImplementUniqueRule 115ms.
+
+### Lateral unnest spines — open reach gaps (2026-10-01)
+
+- [x] A lateral unnest behind a later leg inside a derived leg, and a later leg reading a chain's element: lateral legs stay above the links as quantifiers of the tip's select (`translateLateralLegsOverSpine`, unnests of their array columns included), and `hoistInterleavedSpineLinks` restores link adjacency and moves a second table's source into the bottom box; agreements in `conformance/ws_f_join_unnest_conformance_test.go`, rows in `TestFDB_LateralLegReadsASpineLinksElement`.
+- [x] Removed the stale rejection of multi-table EXISTS reading an unnest element: the owned child already retains its correlated WHERE below FirstOrDefault. `TestFDB_MultiSourceExistsReadsUnnestElement` pins scalar/record elements, ordinals, chains, nested/negated EXISTS and duplicate rows; `conformance/bound_exists_source_conformance_test.go` verifies Java agreement.
+
+### RFC-257 completion ledger (audit of 65e2e376f, 2026-10-02)
+
+Open obligations from read-only audits of each workstream against its RFC-257 section and
+design (the RFC and designs are at `13d5a3d1e:rfcs/257-java-4.14.2.0-upgrade.md` and
+`13d5a3d1e:rfcs/257-java-upgrade-audit/ws-*-design.md`). Audit claims are leads: verify each
+against Java 4.14.2.0 before fixing, then tick with the commit.
+
+- [ ] WS-J (carry registration order done, b1a130126): value-index expansion of nested leaves and function keys (design 3.5, step 8; `keyExpressionContainsNonFanOutNestedLeaf` still gates); nested-leaf groupings on aggregate indexes (3.3b, step 9); legacy bare MIN_EVER/MAX_EVER aggregate candidates (Java builds none); carry matrix (ignored-option rebuild, sparse equivalence, populated bitmap rebuild); acceptance pins in `ws_j_index_fidelity_conformance_test.go` that still encode pre-step-8 Go plans.
+- [ ] WS-D GuardiANN safety (done: checked decoding 9bfafd1f5, task poisoning 47fb3c204, KMeans preconditions 28013bf15, cap before identity dfaa8e4fa, every merge/drain target 4ddaa2d68/4529ea9c1): zero-candidate admission, n<k/peel/unsplittable split fallbacks and empty-core repair, primary-preferred cleanup, underreplication deltas, committed negative-count disable.
+- [ ] WS-D HNSW/engine (Java efSearch default done, 538633e7c; efSearch used as given with a bounded beam, 308eada7b): general fetch/cardinality/layer scans and ordered retrieval, covering/rank results, search-free continuation replay, operation-local caches, partition locks, cosine zero/clamp and sample-UUID closure, option catalog/identity, distinguishing pins for codecs, evaluator, collapse, bounce, reassign, task counts and merge lock.
+- [ ] WS-D runner: unified bounded attempt route, per-owner retry policies, commit ownership/deactivation, client proxy wait/body-chain cause preservation, SPFresh stall bound, instrumentation.
+- [ ] WS-E write path (array backstop 0A000 done, 7d448b7cd): immutable/bit-exact parameter bindings, invalid UTF-8 rejection on SQL/bindings/save, Java floating CAST/NaN bits and MIN/MAX operand bits, driver typing gaps ([N]byte, empty arrays, Valuer), temporal binding/promotion.
+- [ ] WS-E isolation/IN (executor DML snapshot guard 4f61e07b5, statement-class snapshot admission 7287666da done): conflict-free index-state reads, DSN/SetOption options, IN rewrite/partition/cost/covering-union/multi-binding product limit, constant IN evaluation timing.
+- [ ] WS-E semantics/pins (decimal constants parsed as AstNormalizer/parseDecimal, 308eada7b; record constructor inherent names and structured variadic promotion done): variadic promoted-child types for scalar common types, Value nullability census, target simplification regime, adjacent-token/decorated-literal/lexer pins, FROM-less metadata, LOG_QUERY.
+- [ ] WS-F scheduling: conditional rule chains (decorrelate→simplify, merge→pushdown) with progress-driven fallback; partition-based select merge; multi-leg pushdown; physical REWRITING prune; full configuration in comparators; per-partition implementation yields.
+- [ ] WS-F readers/plans: raw index KEY/VALUE reader Values, nested reader trie, extraction rules, aggregate readers, covering-Value plan, aggregate cardinality/distinctness, reader/plan wire mapping.
+- [ ] WS-F misc (RecordCore XXXXX mapping 61b586444, verbatim primary/vector candidate names 1e45290a2/b1b043898 done): IN-union product limit and size, null-safe singleton scan candidates, zero-based EXPLODE ordinality and its distinctness, subscript typing/errors, display-only EXPLAIN decoding, ordered Value folding, vector-preference applicability pins.
+- [ ] WS-G (ungrouped COUNT adjustment done, 03bf9462e): Java typed-accumulator and group-key continuation codecs with legacy reads and byte/resume cross-engine tests; grouping-output simplification; post-cap evaluation and repeated-resume pins; plan/Value/config codecs, TupleSource mapping, reserved-tag pins; ARRAY_AGG absent-LIMIT decision.
+- [ ] WS-H (window OPTIONS parse/repeat/int-range errors done, 308eada7b; named macro calls b442b9422): native call-site arguments (named/options/window, option normalization and errors, rebase), retire the row-number high-order helper, stored-query getter/startup warming/metrics/NoOp getter, function/view metadata getters, macro pins.
+- [ ] WS-I: lock-registry cleanup, serializer retry diagnostics, typed client knobs (needs C++ research), typed session/index-update sets and the write-only key collision boundary, timer instrumentation for client ranges/HNSW/GuardiANN/vector tasks/queue, online-indexer config limits, ICU byte baseline.
+- [ ] WS-K: direct-API Struct insert (UUID scalar/nested/array, nested unique index), JSON descriptor FieldOptions import, recursive result metadata in the corpus runner, setup version gating, typed INDEX_FETCH_METHOD, relational queued-state plumbing, SQL vector-option and preference-cache pins.
+- [ ] Owner decision: Lucene queue/heartbeat/quota/spell-check/state contracts (WS-I) presuppose a Lucene backend Go does not have.
+
+### Recursive CTE column list
+
+- [x] A recursive CTE's recursive leg reads the SEED's own column names; its
+  column list names the CTE only for consumers (Java: `WITH RECURSIVE r (a, b, c)
+  AS (SELECT me, par, 0 AS lvl … UNION ALL … FROM r …)` reads `r.lvl`, refuses
+  `r.c` 42703 "Attempting to query non existing column R.C"). Go scopes the self
+  reference by the list (`plan_visitor.go` seed scope `applyCTEColumnAliases`),
+  and the CTE scan row type everywhere carries the aliases
+  (`cascades_translator.go` ColumnAliases sites, `logical_result_type.go`), so
+  scoping alone fails at execution layout. Done: the body scope, the logical
+  self-reference row and the temp table carry the seed's names; a renaming
+  projection over the recursive union publishes the list to the main query.
+  Pinned by `conformance/recursive_column_list_conformance_test.go`.
+
+### Quoted identifiers holding dots
+
+- [ ] Two shapes Java's valid-identifiers.yamsql answers stay pinned as gaps in
+  `embedded/dotted_identifier_gap_test.go`: an aliased dotted GROUP BY
+  (`SELECT t."foo.tableA.A2", SUM(…) FROM "foo.tableA" AS t GROUP BY t."foo.tableA.A2"`,
+  42703) and ORDER BY a dotted primary key, which sorts in memory instead of
+  reading the scan. The unaliased GROUP BY plans; Java answers it from the
+  aggregate index (`AISCAN(foo.tableA.idx2 …)`), Go from a sorted scan.
+
+### Table function duplicate column names
+
+- [x] `select * from "__$func3"(10, 1, 1)` (valid-identifiers.yamsql) whose body
+  projects `f1.__A, f1.__B, f2.__A, f2.__B`: Java names the function's row
+  `_0 … _3` (`Expressions.underlyingAsColumns` names a repeated or unnamed
+  column by position), Go answers `__A __B __A __B`. Done: a function body and
+  a recursive CTE are named by `query.QuantifierColumnNames`; pinned by
+  `conformance/function_columns_conformance_test.go`. valid-identifiers now
+  stops at UPDATE … RETURNING (`engine-gap:dml-returning-result-set`).
+
+### Recursive CTE row type
+
+- [x] Java types a recursive CTE's temporary table and result by the SEED's row
+  (`SemanticAnalyzer.getRecursiveCteType`; `RecursiveUnionExpression` result is
+  `RecordQuerySetPlan.mergeValues`, the first leg's type): `SELECT me, par, 0 AS
+  lvl … UNION ALL … lvl + 1` reports column 3 NOT NULL; a recursive NULL into a
+  NOT NULL seed column fails XXXXX "Cannot set a non-nullable field to the NULL
+  value"; a BIGINT into an INTEGER seed column fails XXXXX. Go widens the
+  fixed point to the common row (`recursiveCTECommonResultRow`). Done: the
+  fixed point is the seed's row and each recursive value is promoted or
+  narrowed when written (DIVERGENCES.md, "Recursive CTE rows that do not fit
+  the seed").
+
+### Prepared ARRAY parameters
+
+- [x] prepared.yamsql (type-with-arrays-roundtrip, line 201): an INSERT binding
+  ARRAY parameters (`!! [!l 10, !l 20] !!`) is refused 0A000 "An ARRAY value
+  cannot have NULL elements"; Java inserts the row. Booked as
+  `engine-gap:prepared-array-parameters` (`javacorpus/gaps.go`). Done: a bool
+  element bound as a BooleanValue and was taken for NULL (`arrayParameter`).
+
+### Version comparison scan
+
+- [x] versions-tests.yamsql (line 714): `select (t2.*), (t3.*) from t2, t3 where
+  … t2."__ROW_VERSION" > t3."__ROW_VERSION"` fails at execution, "building scan
+  ranges for T3_VERSION_WITH_COL1: scan comparison 0 (2, physical VERSION)
+  projects to incompatible tuple carrier []uint8"; Java answers it (its plan
+  filters the version comparison after `ISCAN(T3_VERSION_WITH_COL1 <,>)`).
+  Booked as `engine-gap:version-comparison-scan` (`javacorpus/gaps.go`). Done:
+  the key coercion turns a row version's bytes into the versionstamp the index
+  stores (`coerceTupleElementForKey`).
+
+### SQL function calls plan as nested derived tables
+
+- [x] Done: a call's arguments are a `range(1)` values box (Java
+  `CompiledSqlFunction.encapsulate`), `DecorrelateValuesRule` inlines them, and
+  versions-tests.yamsql line 619 answers in Java's order.
+  versions-tests.yamsql (line 619) joins two table functions,
+  `t3_by_col1('b') a, t4_by_col1('b') b`. Java inlines both bodies and plans
+  T3's version index outermost, answering in version order; Go's text expansion
+  keeps each call a derived table over a one-row parameter source
+  (`sqlFunction.invocation`) and runs T4 outermost, so the unordered rows come
+  back in another order. Booked as `conformance:scan-choice-order`.
+
+
+### A SQL query block is one SelectExpression
+
+- [ ] Java builds every SQL query block as ONE `SelectExpression`: FROM sources
+  are its quantifiers, WHERE its predicates, the SELECT list its result value
+  (`LogicalOperator.generateSimpleSelect`); fdb-relational never constructs a
+  `LogicalProjectionExpression`. A derived table, CTE or table-function call is
+  a quantifier over another block Select, `SelectMergeRule` merges it into the
+  parent in REWRITING, and a function's argument row is a `range(1)` values box
+  (`CompiledSqlFunction.encapsulate`) that `DecorrelateValuesRule` pushes into
+  the body. Go builds a block as `LogicalProjection` over a filter or join Select
+  (`cascades_translator.go`, five projection sites), whose consumers read the
+  join row's legs by source alias, and binds function arguments through a
+  FROM-less `Explode` source. So nested blocks are never merged, predicates
+  never reach a derived block's access paths, and the join order of
+  table-function calls differs from Java (the item above). Do: translate each
+  block as `generateSimpleSelect` does, build the invocation as `encapsulate`
+  does, and leave merging to `SelectMergeRule`/`DecorrelateValuesRule`.
+  (A stopgap that pushed predicates into projection blocks with Go-only rules,
+  428668460, was reverted: it patched symptoms of this representation.) Closes
+  the DIVERGENCES.md
+  entry "Go decomposes SelectExpression into separate logical operators" for
+  query blocks. Building a block as a Select (measured by swapping the
+  projection for one, index DDL excluded) left the 319 plan errors as they were
+  and failed 50 embedded tests, which split into the steps below.
+  - [x] Data access over a block Select: its compensation (a Select carrying
+    the result value) is explored like a residual filter, as Java yields every
+    compensation; a result reading an unmatched quantifier is impossible
+    (`block_select_access_test.go`).
+  - [x] Result-set columns from the result row type (Java
+    `QueryPlan.getResultType`), labels from the logical output row (Java's
+    semantic struct type; `ExactLogicalOutputLabels`, which production already
+    applied). The per-operator derivation (`deriveColumnsFromPlan`, about 2,300
+    lines) agreed with the result row type on width, type and nullability over
+    all 2,539 explaindiff SELECTs and is deleted; label tests read the
+    production labels (`ResultColumnLabelsForQuery`); the display-label-strip
+    census site retired with it.
+  - [ ] Translator: one Select per block, and the top-level query a
+    `LogicalSortExpression` over it (Java `generateSelect`: `Sort(Select)`, an
+    unsorted sort without ORDER BY, `Select(Sort(Select))` when an ORDER BY key
+    is not projected); function invocation as `encapsulate` (`range(1)` values
+    box). Index DDL moves with it: Java asserts the definition's top is that
+    Sort (`DdlVisitor.visitIndexAsSelectDefinition`), where `ddl/generator.go`
+    looks for a projection root (`topSort`, `checkTop`). Then remove the
+    projection-specific rules and the leg-by-alias reads left without producers.
+    Status: the translator emits one block Select (`query/block_rows.go`,
+    read-through of the input row as Java's `rewireQov`); derived and CTE bodies
+    hide their sources from the blocks above them (`scopeBodies`); a computed
+    item without an alias is named by position (`_0`); a SQL function call binds
+    its arguments through a `range(1)` values box that `DecorrelateValuesRule`
+    pushes into the body. ProjectionMergeRule is deleted (no translator projection
+    survives to merge). Every Go suite, the JVM conformance suites and the
+    javacorpus are green on it; the plan-shape golden holds the same 319 plan
+    errors (4 unpinned) as before. The translator builds each block as a Select
+    directly, and `LogicalProjectionExpression` is deleted with its five rules
+    (implement, implement-final, remove, merge-with-fetch, push-ordering); the
+    plan-shape dump is unchanged. `RecordQueryProjectionPlan` is deleted too:
+    an aggregate-index plan (single scan, group-existence merge, intersection)
+    publishes the GroupBy's row itself, as Java's
+    `AggregateIndexMatchCandidate.toEquivalentPlan` publishes its result Value,
+    so no projection renames `COUNT(*)` to `COUNT(1)`
+    (`TestAggregateIndexPublishesTheGroupByRow`). Still to do in this step: the
+    top-level query a `LogicalSortExpression` over the block (Java
+    `generateSelect`) and index DDL reading that Sort (`ddl/generator.go`
+    `topSort`/`checkTop`).
+  - [ ] REWRITING cost of nested SQL functions: four nested calls plan in about
+    4.6s, most of it in `Memo.Integrate`. Java runs SelectMerge and
+    PredicatePushDown as implementation rules over final expressions and
+    Decorrelate/Simplification conditionally; Go explores all of them in
+    REWRITING.
+
+### An EXISTS over a repeated field does not match a multi-valued index
+
+- [ ] versions-tests.yamsql (line 454): `SELECT "__ROW_VERSION", id, col1 FROM t4
+  WHERE EXISTS (SELECT 1 FROM t4.col4 WHERE col4 = 3)`. Java matches the
+  existential over the exploded `col4` against the multi-valued index
+  `T4_COL4_VERSION` (`ISCAN(T4_COL4_VERSION [EQUALS …])`) and answers in version
+  order; Go plans `FlatMap(Scan(T4), FirstOrDefault(Explode))` and answers in
+  primary-key order. Port Java's matching of an existential Explode against a
+  value index over the repeated field. Booked in `javacorpus/gaps.go` as
+  `conformance:scan-choice-order`.

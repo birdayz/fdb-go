@@ -11,8 +11,11 @@ package values
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+
+	"google.golang.org/protobuf/proto"
 
 	"google.golang.org/protobuf/types/descriptorpb"
 
@@ -450,56 +453,176 @@ func TestSyntheticTypeNamesAreUnreachableFromAnyIdentifier(t *testing.T) {
 	}
 }
 
-// TestDuplicateFieldNameRowPoisonsTheWholeRepository pins the MECHANISM behind
-// the join row that loses its descriptor, and its blast radius, which is wider
-// than that row.
-//
-// A record whose row names one field twice has a message form — every field
-// type resolves — so defineRecordLocked emits a DescriptorProto with the name
-// repeated, and the failure surfaces only when the FILE is compiled. Compilation
-// is per-REPOSITORY and the bad message stays in it, so from that point on
-// EVERY type the repository is asked for fails with the same error, whether or
-// not it names a field twice. A type resolved BEFORE the bad message was
-// appended keeps its cached descriptor, so the damage is order-dependent: it is
-// the constructors resolved after it, in walk order, that end up with none.
-//
-// TODO.md's "A join row that names one field twice leaves its plan's rows
-// unstamped" carries the closure; this is what makes its blast radius the whole
-// plan rather than the one row. What it costs is descriptor identity, not data.
-func TestDuplicateFieldNameRowPoisonsTheWholeRepository(t *testing.T) {
+// A failed root must not publish partial names or invalidate already-bound
+// descriptors; later valid roots must still be admissible.
+func TestDuplicateFieldNameRowRollsBackRegistration(t *testing.T) {
 	t.Parallel()
 	repo := NewTypeProtoRepository()
-
-	// Resolved BEFORE the bad message: keeps its descriptor for good.
-	early := NewRecordType("", false, []Field{{Name: "A", FieldType: NullableLong, Ordinal: 0}})
+	early := NewRecordType("", false, []Field{{Name: "A", FieldType: NullableLong}})
 	earlyDesc, err := repo.MessageDescriptorFor(early)
-	if err != nil || earlyDesc == nil {
-		t.Fatalf("a well-formed record before the clash: %v", err)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	// The row that names one field twice. NewRecordType would panic on it, so
-	// build it directly — which is what a raw ordinal-join constructor's Type()
-	// produces (NewRawRecordConstructorValue keeps duplicate names verbatim).
-	twice := &RecordType{Fields: []Field{
-		{Name: "ID", FieldType: NullableLong, Ordinal: 0},
-		{Name: "ID", FieldType: NullableLong, Ordinal: 1},
+	before := repo.FileDescriptorProtoForTest()
+	twice := &RecordType{RecordName: "FailedRoot", Fields: []Field{
+		{Name: "ID", FieldType: NullableLong}, {Name: "ID", FieldType: NullableLong, Ordinal: 1},
 	}}
-	if _, err := repo.MessageDescriptorFor(twice); err == nil {
-		t.Fatal("a row naming one field twice was given a descriptor; its file cannot validate")
+	if err := repo.RegisterType(twice); err == nil {
+		t.Fatal("duplicate field names must fail validation")
 	}
-
-	// AFTER it: an unrelated, well-formed record fails with the same error.
-	late := NewRecordType("", false, []Field{{Name: "B", FieldType: NullableString, Ordinal: 0}})
-	if _, err := repo.MessageDescriptorFor(late); err == nil {
-		t.Fatal("an unrelated record after the bad message was stamped; the failure is " +
-			"per-repository, so everything asked for after it must fail too — if this now " +
-			"passes, the bad message is isolated and TODO.md's blast radius has narrowed")
+	if got := repo.FileDescriptorProtoForTest(); !proto.Equal(before, got) {
+		t.Fatal("failed closure changed repository definitions")
 	}
+	again, err := repo.MessageDescriptorFor(early)
+	if err != nil || again != earlyDesc {
+		t.Fatalf("failed registration invalidated bound descriptor: %v", err)
+	}
+	valid := NewRecordType("FailedRoot", false, []Field{{Name: "B", FieldType: NullableString}})
+	if err := repo.RegisterType(valid); err != nil {
+		t.Fatalf("partial name survived rollback: %v", err)
+	}
+	if err := repo.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.MessageDescriptorFor(valid); err != nil {
+		t.Fatalf("valid root after failed root: %v", err)
+	}
+}
 
-	// The early one keeps what it already had: the damage is order-dependent.
-	againDesc, err := repo.MessageDescriptorFor(early)
-	if err != nil || againDesc != earlyDesc {
-		t.Fatalf("the record resolved before the clash lost its descriptor (%v, err %v); "+
-			"the damage must fall only on types resolved after it", againDesc, err)
+func TestProtoTypeSealedGraphIdentity(t *testing.T) {
+	t.Parallel()
+	for _, childFirst := range []bool{true, false} {
+		t.Run(fmt.Sprint(childFirst), func(t *testing.T) {
+			t.Parallel()
+			child := NewRecordType("Child", false, []Field{{Name: "N", FieldType: NotNullLong}})
+			enum := NewEnumType("Color", true, []EnumValue{{Name: "RED", Number: 7}, {Name: "BLUE", Number: 12}})
+			parent := NewRecordType("Parent", false, []Field{
+				{Name: "C", FieldType: child},
+				{Name: "A", FieldType: &ArrayType{Nullable: true, ElementType: child}},
+				{Name: "E", FieldType: enum},
+			})
+			other := NewRecordType("Other", false, []Field{{Name: "S", FieldType: NotNullString}})
+			repo := NewTypeProtoRepository()
+			order := []Type{parent, other, child}
+			if childFirst {
+				order = []Type{child, other, parent}
+			}
+			for _, typ := range order {
+				if err := repo.RegisterType(typ); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := repo.Seal(); err != nil {
+				t.Fatal(err)
+			}
+			pd, err := repo.MessageDescriptorFor(parent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cd, err := repo.MessageDescriptorFor(child)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pd.Fields().Get(0).Message() != cd {
+				t.Fatal("child and parent's field use different descriptors")
+			}
+			wrapper := pd.Fields().Get(1).Message()
+			if wrapper.Fields().Get(0).Message() != cd {
+				t.Fatal("nullable wrapper lost child descriptor identity")
+			}
+			ad, err := repo.MessageDescriptorFor(&ArrayType{Nullable: true, ElementType: child})
+			if err != nil || ad != wrapper {
+				t.Fatalf("array lookup differs from parent wrapper: %v", err)
+			}
+			ed := pd.Fields().Get(2).Enum()
+			if ed == nil || ed.Values().ByNumber(7).Name() != "RED" {
+				t.Fatal("enum definition lost declared numbers")
+			}
+			value, err := rowScalarToProtoValue(pd.Fields().Get(2), int64(12))
+			if err != nil || value.Enum() != 12 {
+				t.Fatalf("enum row rebinding: %v", err)
+			}
+			late := NewRecordType("Late", false, []Field{{Name: "L", FieldType: NotNullDouble}})
+			var sealed *SealedTypeRepositoryError
+			if err := repo.RegisterType(late); !errors.As(err, &sealed) {
+				t.Fatalf("late registration = %v", err)
+			}
+			for i := 0; i < 4; i++ {
+				t.Run(fmt.Sprint(i), func(t *testing.T) {
+					t.Parallel()
+					again, err := repo.MessageDescriptorFor(parent)
+					if err != nil || again != pd {
+						t.Fatalf("sealed lookup changed descriptor: %v", err)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestProtoTypeIncrementalInvalidation(t *testing.T) {
+	t.Parallel()
+	child := NewRecordType("Child", false, []Field{{Name: "N", FieldType: NotNullLong}})
+	parent := NewRecordType("Parent", false, []Field{{Name: "C", FieldType: child}})
+	repo := NewTypeProtoRepository()
+	old, err := repo.MessageDescriptorFor(child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pd, err := repo.MessageDescriptorFor(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cd, err := repo.MessageDescriptorFor(child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pd.Fields().Get(0).Message() != cd || old == cd {
+		t.Fatal("incremental registration retained a stale child descriptor")
+	}
+}
+
+func TestProtoTypeFailedLookupPreservesGraph(t *testing.T) {
+	t.Parallel()
+	for _, sealed := range []bool{false, true} {
+		t.Run(fmt.Sprint(sealed), func(t *testing.T) {
+			t.Parallel()
+			repo := NewTypeProtoRepository()
+			valid := NewRecordType("Valid", false, []Field{{Name: "N", FieldType: NotNullLong}})
+			if err := repo.RegisterType(valid); err != nil {
+				t.Fatal(err)
+			}
+			unknownArray := NewArrayType(true, UnknownType)
+			// A successful registration promises that every descriptor needed
+			// by lookup is already representable. Continue after a violation to
+			// exercise the failed lookup on precisely that incomplete closure.
+			var invalid *ProtoTypeError
+			if err := repo.RegisterType(unknownArray); !errors.As(err, &invalid) {
+				t.Errorf("register ARRAY<UNKNOWN> = %v, want ProtoTypeError", err)
+			}
+			if sealed {
+				if err := repo.Seal(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			desc, err := repo.MessageDescriptorFor(valid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := proto.Clone(repo.FileDescriptorProtoForTest())
+			counter, entries, compiled := repo.counter, len(repo.entries), repo.compiled
+			for _, bad := range []Type{unknownArray, NewArrayType(false, UnknownType), UnknownType, NotNullLong, (*RecordType)(nil), nil} {
+				if got, err := repo.MessageDescriptorFor(bad); got != nil || err == nil {
+					t.Errorf("lookup %T = %v, %v; want no descriptor and an error", bad, got, err)
+				}
+				if repo.counter != counter || len(repo.entries) != entries || repo.compiled != compiled || !proto.Equal(before, repo.FileDescriptorProtoForTest()) {
+					t.Fatalf("failed lookup of %T changed repository state (sealed=%v)", bad, sealed)
+				}
+				again, err := repo.MessageDescriptorFor(valid)
+				if err != nil || again != desc {
+					t.Fatalf("failed lookup of %T changed descriptor identity: %v", bad, err)
+				}
+			}
+		})
 	}
 }

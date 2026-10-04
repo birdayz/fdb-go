@@ -928,10 +928,11 @@ func evalLeaf(p *Pred, r Row) (predicates.TriBool, error) {
 		if !lok || !rok {
 			return predicates.TriUnknown, nil
 		}
-		av := &values.ArithmeticValue{
-			Op:    p.ArithOp,
-			Left:  &values.ConstantValue{Value: li, Typ: values.NullableLong},
-			Right: &values.ConstantValue{Value: ri, Typ: values.NullableLong},
+		av, err := values.NewArithmeticValue(p.ArithOp,
+			&values.ConstantValue{Value: li, Typ: values.NullableLong},
+			&values.ConstantValue{Value: ri, Typ: values.NullableLong})
+		if err != nil {
+			return predicates.TriUnknown, err
 		}
 		res, err := av.Evaluate(nil)
 		if err != nil {
@@ -942,10 +943,10 @@ func evalLeaf(p *Pred, r Row) (predicates.TriBool, error) {
 		return predicates.NewLiteralComparison(p.Op, p.Lit).Eval(res)
 	case p.Bitwise:
 		// `(Col <bitop> BitCol2) <Op> Lit`. Folded through the engine's own
-		// ScalarFunctionValue (BITAND/BITOR/BITXOR), so the bitwise + NULL
+		// ArithmeticValue (the BITAND/BITOR/BITXOR lanes), so the bitwise + NULL
 		// semantics are shared, not restated. A NULL in either operand makes the
-		// LHS NULL → the comparison is UNKNOWN (the engine's function returns nil
-		// for a nil arg, matched here).
+		// LHS NULL → the comparison is UNKNOWN (the engine's value is NULL for a
+		// NULL operand, matched here).
 		lv := r[predKey(p.Qual, p.Col)]
 		rv := r[predKey(p.Qual, p.BitCol2)]
 		li, lok := lv.(int64)
@@ -953,12 +954,17 @@ func evalLeaf(p *Pred, r Row) (predicates.TriBool, error) {
 		if !lok || !rok {
 			return predicates.TriUnknown, nil
 		}
-		fn := &values.ScalarFunctionValue{
-			FuncName: p.BitOp,
-			Args: []values.Value{
-				&values.ConstantValue{Value: li, Typ: values.NullableLong},
-				&values.ConstantValue{Value: ri, Typ: values.NullableLong},
-			},
+		op, ok := map[string]values.ArithmeticOp{
+			"BITAND": values.OpBitAnd, "BITOR": values.OpBitOr, "BITXOR": values.OpBitXor,
+		}[p.BitOp]
+		if !ok {
+			return predicates.TriUnknown, fmt.Errorf("rowdiff: bit operator %q", p.BitOp)
+		}
+		fn, err := values.NewArithmeticValue(op,
+			&values.ConstantValue{Value: li, Typ: values.NullableLong},
+			&values.ConstantValue{Value: ri, Typ: values.NullableLong})
+		if err != nil {
+			return predicates.TriUnknown, err
 		}
 		res, err := fn.Evaluate(nil)
 		if err != nil {

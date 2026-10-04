@@ -40,7 +40,7 @@ func TestFDB_AggregateIndexOracle(t *testing.T) {
 			"CREATE INDEX min_v_by_ab AS SELECT MIN(v) FROM t GROUP BY a, b "+
 			"CREATE INDEX sum_v_by_s AS SELECT SUM(v) FROM t GROUP BY s")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggoracle/s WITH TEMPLATE aggoracle")
-	dsn := fmt.Sprintf("fdbsql:///testdb_aggoracle?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGORACLE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -140,3 +140,59 @@ func TestAggregateFunction_String(t *testing.T) {
 		}
 	}
 }
+
+// TestGroupByExpression_IndexOnlyAndBitmapAggregates pins the values the three
+// index aggregates stand for in a group by's row, Java's: MIN_EVER / MAX_EVER an
+// IndexOnlyAggregateValue of the operand's type (nullable), BITMAP_CONSTRUCT_AGG
+// an aggregate value of type BYTES over an INT or LONG operand only (Java's
+// operator map), refused over anything else.
+func TestGroupByExpression_IndexOnlyAndBitmapAggregates(t *testing.T) {
+	t.Parallel()
+	scanQ := ForEachQuantifier(InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, values.NotNullLong))))
+	operand := func(i int) values.Value {
+		if i == 2 {
+			return testField("s", values.NullableString)
+		}
+		return testField("x", values.NotNullLong)
+	}
+	for _, tc := range []struct {
+		fn      AggregateFunction
+		operand int
+		check   func(values.Value) bool
+		typ     values.TypeCode
+	}{
+		{AggMinEver, 1, func(v values.Value) bool {
+			io, ok := v.(*values.IndexOnlyAggregateValue)
+			return ok && io.Op == values.IndexOnlyMinEverLong
+		}, values.TypeCodeLong},
+		{AggMaxEver, 1, func(v values.Value) bool {
+			io, ok := v.(*values.IndexOnlyAggregateValue)
+			return ok && io.Op == values.IndexOnlyMaxEverLong
+		}, values.TypeCodeLong},
+		{AggMaxEver, 2, func(v values.Value) bool { _, ok := v.(*values.IndexOnlyAggregateValue); return ok }, values.TypeCodeString},
+		{AggBitmapConstructAgg, 1, func(v values.Value) bool {
+			av, ok := v.(*values.AggregateValue)
+			return ok && av.Op == values.AggBitmapConstructAgg && av.GetIndexTypeName() == "bitmap_value"
+		}, values.TypeCodeBytes},
+	} {
+		gb, err := NewGroupByExpression(nil, []AggregateSpec{{Function: tc.fn, Operand: operand(tc.operand)}}, scanQ)
+		if err != nil {
+			t.Fatalf("%v over column %d: %v", tc.fn, tc.operand, err)
+		}
+		rcv, ok := gb.GetResultValue().(*values.RecordConstructorValue)
+		if !ok || len(rcv.Fields) != 1 {
+			t.Fatalf("%v: row %v", tc.fn, gb.GetResultValue())
+		}
+		field := rcv.Fields[0].Value
+		children := field.Children()
+		if len(children) != 1 || !tc.check(children[0]) {
+			t.Fatalf("%v: the row holds %T %v, not the aggregate Java builds", tc.fn, field, children)
+		}
+		if typ := field.Type(); typ.Code() != tc.typ || !typ.IsNullable() {
+			t.Fatalf("%v: result type %v, want a nullable %v", tc.fn, typ, tc.typ)
+		}
+	}
+	if _, err := NewGroupByExpression(nil, []AggregateSpec{{Function: AggBitmapConstructAgg, Operand: operand(2)}}, scanQ); err == nil {
+		t.Fatal("BITMAP_CONSTRUCT_AGG over a STRING built; Java has no operator for it")
+	}
+}

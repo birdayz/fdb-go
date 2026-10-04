@@ -22,9 +22,9 @@ func TestGetCorrelatedToWithoutChildrenOfValue(t *testing.T) {
 	assertOnlyAlias(t, GetCorrelatedToWithoutChildrenOfValue(
 		NewQuantifiedRecordValue(alias, UnknownType),
 	))
-	assertOnlyAlias(t, GetCorrelatedToWithoutChildrenOfValue(
-		NewConstantObjectValue(alias, "constant", UnknownType),
-	))
+	if got := GetCorrelatedToWithoutChildrenOfValue(NewConstantObjectValue(alias, "constant", UnknownType)); len(got) != 0 {
+		t.Fatalf("constant-pool alias is not a row correlation: %v", got)
+	}
 
 	field := newFieldValue(
 		mustQOV(t, alias),

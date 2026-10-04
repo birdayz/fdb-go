@@ -111,7 +111,16 @@ type PushUnorderedUnionThroughFetchRule struct {
 
 func NewPushUnorderedUnionThroughFetchRule() *PushUnorderedUnionThroughFetchRule {
 	return &PushUnorderedUnionThroughFetchRule{
-		matcher: NewExpressionMatcher[*plans.RecordQueryUnorderedUnionPlan]("phys_unordered_union_over_fetches"),
+		matcher: NewExpressionMatcher[*plans.RecordQueryUnorderedUnionPlan]("phys_unordered_union_over_fetches").WithInputPredicate(
+			func(plan *plans.RecordQueryUnorderedUnionPlan) bool {
+				fetchLegs := 0
+				for _, q := range plan.GetQuantifiers() {
+					if referenceHasMemberOfType[*plans.RecordQueryFetchFromPartialRecordPlan](q.GetRangesOver()) {
+						fetchLegs++
+					}
+				}
+				return fetchLegs > 1
+			}),
 	}
 }
 
@@ -471,7 +480,7 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 	newQuants := make([]expressions.Quantifier, len(pushable))
 	for i, leg := range pushable {
 		innerPlans[i] = leg.innerPlan
-		newQuants[i] = expressions.ForEachQuantifier(expressions.FinalOf(leg.innerExpr))
+		newQuants[i] = expressions.NewPhysicalQuantifier(expressions.FinalOf(leg.innerExpr))
 	}
 	newSetOpPlan, err := p.rebuildPlan(innerPlans)
 	if err != nil {
@@ -516,7 +525,7 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 	// The merged fetch is its own cascades expression carrying the live setOpRef
 	// edge (RFC-184 W2).
 	newFetchPlan, err := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
-		expressions.ForEachQuantifier(setOpRef), combined, resultType, fetchIndexRecords,
+		expressions.NewPhysicalQuantifier(setOpRef), combined, resultType, fetchIndexRecords,
 	)
 	if err != nil {
 		call.Fail(err)
@@ -545,7 +554,7 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 	}
 	outerPlans := []plans.RecordQueryPlan{newFetchPlan}
 	outerQuants := []expressions.Quantifier{
-		expressions.ForEachQuantifier(call.MemoizeFinalExpression(newFetchPlan)),
+		expressions.NewPhysicalQuantifier(call.MemoizeFinalExpression(newFetchPlan)),
 	}
 	for i, q := range p.quants {
 		if isPushed[i] {
@@ -560,7 +569,7 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 			return
 		}
 		outerPlans = append(outerPlans, ph.GetRecordQueryPlan())
-		outerQuants = append(outerQuants, expressions.ForEachQuantifier(expressions.FinalOf(resExpr)))
+		outerQuants = append(outerQuants, expressions.NewPhysicalQuantifier(expressions.FinalOf(resExpr)))
 	}
 	outerPlan, err := p.rebuildPlan(outerPlans)
 	if err != nil {

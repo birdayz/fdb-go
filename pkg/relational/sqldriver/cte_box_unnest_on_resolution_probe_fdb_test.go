@@ -276,16 +276,20 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe(t *testing.T) {
 		t.Parallel()
 		want(t, `SELECT p.AID FROM s.LA p WHERE EXISTS (SELECT x FROM p.ARR x WHERE x = 7)`, "1")
 	})
-	t.Run("CTE_reader_ownership/scalar_array_outside_envelope", func(t *testing.T) {
+	t.Run("CTE_reader_ownership/scalar_array_in_an_aggregate_subquery", func(t *testing.T) {
 		t.Parallel()
-		// Primary correlated arrays are admitted in EXISTS, not scalar
-		// aggregate subqueries. Scope repair must not broaden that envelope.
+		// A block's first FROM item over an enclosing query's array is that
+		// array's unnest in any block Go builds, so the aggregate subquery
+		// unnests p.ARR, and the aggregate reads the element as its input
+		// itself. The target's grammar has no scalar subquery in a select list
+		// (42601, measured and declared in
+		// conformance/ws_f_join_unnest_conformance_test.go): this is Go's
+		// read-side scalar-subquery extension, pinned on Go's rows; the derived
+		// form of the same aggregate answers Java's rows there. LA holds aid=1 [7,8] and aid=2 [9]. The CTE
+		// named "S.LA" (one segment holding a dot) must not capture the
+		// two-segment reader s.LA: both prefixes read the physical LA.
 		for _, prefix := range []string{"", `WITH "S.LA" AS (SELECT CID AS OWN_ID FROM CC) `} {
-			_, err := run(t, prefix+`SELECT p.AID, (SELECT SUM(x) FROM p.ARR x) FROM s.LA p`)
-			var sqlErr *api.Error
-			if !errors.As(err, &sqlErr) || sqlErr.Code != api.ErrCodeUndefinedDatabase {
-				t.Fatalf("scalar correlated array changed admission: %v", err)
-			}
+			want(t, prefix+`SELECT p.AID, (SELECT SUM(x) FROM p.ARR x) FROM s.LA p`, "1|15", "2|9")
 		}
 	})
 	for _, tc := range []struct{ name, query string }{
@@ -551,7 +555,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	})
 	// Q5: STAR body — no Project wrapper at all (the CTE leg IS the unnest
 	// FlatMap's RC row). Its schema-complete authority is the RC arm
-	// (flat_map_cursor computedComplete), not executeProjection — this pin
+	// (flat_map_cursor computedComplete), not executeMap — this pin
 	// covers the class a projection-only fix would have missed (it was
 	// all-NULL too, a distinct unpinned instance found in the design consult).
 	t.Run("Q5_star_body_enclosed_qualified_reads", func(t *testing.T) {
@@ -777,7 +781,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 			"2|<nil>")
 	})
 	// Q23: ANTI-OVER-DECLINE — a COMPUTED aliased item whose reads resolve in
-	// the inner's bare set stays derivable (harvestColumnRefs validates the
+	// the inner's bare set stays derivable (the derivation validates the
 	// expression's refs, it does not blanket-decline computed items).
 	t.Run("Q23_computed_over_derived_bare_resolves", func(t *testing.T) {
 		check(t, `WITH "U" AS (SELECT "D"."AID" + 0 AS "Z" FROM (SELECT "AID" FROM LA) "D") SELECT "U"."Z", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."Z" = "C2"."CID"`,
@@ -874,7 +878,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 			"1|900", "2|<nil>")
 	})
 	// Q34: a scalar subquery inside a computed item reads ITS OWN scope, not
-	// the derived source — harvestColumnRefsOutsideSubqueries stops at the
+	// the derived source — harvestBareColumnRefsOutsideSubqueries stops at the
 	// nested-query boundary (an over-decline this pins against: LB.K was
 	// checked against D's emitted set {AID} and spuriously declined).
 	t.Run("Q34_scalar_subquery_item_over_derived_resolves", func(t *testing.T) {
@@ -921,9 +925,11 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 		loudCode(t, `WITH `+shadowLA+`, "U" AS (SELECT "AID" FROM "LA", CC "C9") SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
 			"42703", "shadowed CTE as a multi-leg body leg")
 	})
-	// Q37: SCHEMA-QUALIFIED legs. Three stacked
+	// Q37: QUALIFIED legs (the harness's template, S; a table's qualifier is its
+	// schema template's name, and an unaliased qualified leg is named by the
+	// whole identifier, "S"."LA"."K"). Three stacked
 	// fixes pin here: (1) the ON-only derivation ran BEFORE
-	// normalizeSchemaQualifiedSelectSources, so "s"."LA" classified opaque —
+	// normalizeQualifiedSelectSources, so "S"."LA" classified opaque —
 	// spurious 0AF00 (prepared bodies now retain normalized source ownership);
 	// writing this pin then EXPOSED two pre-existing bugs independent of
 	// CTEs: (2) upgradeJoinOnPredicates' scope build silently declined the
@@ -937,7 +943,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// BK=5 on the matched row discriminates all three failure modes: a
 	// cross-product doubles rows, an ON-drop or alias-desync pads BK.
 	t.Run("Q37_schema_qualified_legs_resolve", func(t *testing.T) {
-		check(t, `WITH "V" AS (SELECT LA."K" AS "AK", LB."K" AS "BK" FROM "s"."LA" LEFT JOIN "s"."LB" ON LA."AID" = LB."BID") SELECT "V"."AK", "V"."BK", "C2"."CV" FROM "V" LEFT JOIN CC AS "C2" ON "V"."AK" = "C2"."CID"`,
+		check(t, `WITH "V" AS (SELECT "S"."LA"."K" AS "AK", "S"."LB"."K" AS "BK" FROM "S"."LA" LEFT JOIN "S"."LB" ON "S"."LA"."AID" = "S"."LB"."BID") SELECT "V"."AK", "V"."BK", "C2"."CV" FROM "V" LEFT JOIN CC AS "C2" ON "V"."AK" = "C2"."CID"`,
 			"100|5|<nil>", "110|<nil>|<nil>")
 	})
 	// Q38: the standalone (no CTE) schema-qualified explicit-join pins — the
@@ -947,26 +953,32 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	t.Run("Q38_schema_qualified_join_on_live", func(t *testing.T) {
 		// (top-level datums key each output twice — rendered + positional —
 		// hence the doubled columns, same as Q10)
-		check(t, `SELECT LA."K" AS "AK", LB."K" AS "BK" FROM "s"."LA" LEFT JOIN "s"."LB" ON LA."AID" = LB."BID"`,
+		check(t, `SELECT "S"."LA"."K" AS "AK", "S"."LB"."K" AS "BK" FROM "S"."LA" LEFT JOIN "S"."LB" ON "S"."LA"."AID" = "S"."LB"."BID"`,
 			"100|5", "110|<nil>")
-		check(t, `SELECT LA."K" AS "AK", LB."K" AS "BK" FROM "s"."LA" JOIN "s"."LB" ON LA."AID" = LB."BID"`,
+		check(t, `SELECT "S"."LA"."K" AS "AK", "S"."LB"."K" AS "BK" FROM "S"."LA" JOIN "S"."LB" ON "S"."LA"."AID" = "S"."LB"."BID"`,
 			"100|5")
-		check(t, `SELECT "X"."K" AS "AK", "Y"."K" AS "BK" FROM "s"."LA" AS "X" LEFT JOIN "s"."LB" AS "Y" ON "X"."AID" = "Y"."BID"`,
+		check(t, `SELECT "X"."K" AS "AK", "Y"."K" AS "BK" FROM "S"."LA" AS "X" LEFT JOIN "S"."LB" AS "Y" ON "X"."AID" = "Y"."BID"`,
 			"100|5", "110|<nil>")
-		check(t, `SELECT LA."K" AS "AK", LB."K" AS "BK" FROM "s"."LA" LEFT JOIN LB ON LA."AID" = LB."BID"`,
+		check(t, `SELECT "S"."LA"."K" AS "AK", LB."K" AS "BK" FROM "S"."LA" LEFT JOIN LB ON "S"."LA"."AID" = LB."BID"`,
 			"100|5", "110|<nil>")
+		// An unaliased qualified leg is named by its whole identifier, as Java
+		// names the table operator: the table's name alone qualifies nothing
+		// (measured: conformance/ws_f_table_qualifier_conformance_test.go).
+		if _, err := run(t, `SELECT LA."K" AS "AK" FROM "S"."LA" LEFT JOIN "S"."LB" ON "S"."LA"."AID" = "S"."LB"."BID"`); err == nil || !strings.Contains(err.Error(), "42703") {
+			t.Fatalf("a qualified leg's bare table name must 42703, got %v", err)
+		}
 	})
 	// Q39: the 42702 backstop LIVES over schema-qualified legs. The Q37/Q38
-	// classifier strip said "s"."LA" was enumerable,
+	// classifier strip said "S"."LA" was enumerable,
 	// but buildSelectScope — the mechanism the bare-ref admission's
 	// ambiguity backstop actually runs through — did NOT strip, so its
-	// resolver went nil and an ambiguous bare K over ("s"."LA", LB) executed
+	// resolver went nil and an ambiguous bare K over ("S"."LA", LB) executed
 	// silently. buildSelectScope's addSource now applies the same
 	// normalizer-mirror strip, making the classifier's enumerability claim
 	// TRUE rather than narrowing it (the alternative — declining the leg —
 	// would have regressed Q37).
 	t.Run("Q39_ambiguity_fires_over_schema_qualified_leg", func(t *testing.T) {
-		_, err := run(t, `WITH "V" AS (SELECT "K" FROM "s"."LA", LB) SELECT "V"."K", "C2"."CV" FROM "V" LEFT JOIN CC AS "C2" ON "V"."K" = "C2"."CID"`)
+		_, err := run(t, `WITH "V" AS (SELECT "K" FROM "S"."LA", LB) SELECT "V"."K", "C2"."CV" FROM "V" LEFT JOIN CC AS "C2" ON "V"."K" = "C2"."CID"`)
 		if err == nil || !strings.Contains(err.Error(), "42702") {
 			t.Fatalf("ambiguous bare ref over a schema-qualified leg must 42702, got %v", err)
 		}
@@ -975,7 +987,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// nil-resolver disease as Q39, one consumer over (a loud 0AF00 reach
 	// gap before the Q39 backstop fix, which fixed this consumer too).
 	t.Run("Q40_where_over_schema_qualified_join_answers", func(t *testing.T) {
-		check(t, `SELECT LA."K" AS "AK" FROM "s"."LA" LEFT JOIN "s"."LB" ON LA."AID" = LB."BID" WHERE LA."K" = 100`,
+		check(t, `SELECT "S"."LA"."K" AS "AK" FROM "S"."LA" LEFT JOIN "S"."LB" ON "S"."LA"."AID" = "S"."LB"."BID" WHERE "S"."LA"."K" = 100`,
 			"100")
 	})
 	// Q41: the scope builder resolves a CTE-shadowed name through the CTE's
@@ -987,7 +999,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// execution's shadowing. X = BID values
 	// {1,3} × 2 B-rows.
 	t.Run("Q41_cte_shadow_scope_reads_cte_schema", func(t *testing.T) {
-		check(t, `WITH "LA" AS (SELECT "BID" AS "X" FROM LB) SELECT "LA"."X" FROM "LA", "s"."LB" AS "B"`,
+		check(t, `WITH "LA" AS (SELECT "BID" AS "X" FROM LB) SELECT "LA"."X" FROM "LA", "S"."LB" AS "B"`,
 			"1", "1", "3", "3")
 		check(t, `WITH "LA" AS (SELECT "BID" AS "X" FROM LB) SELECT "LA"."X" FROM "LA", LB AS "B"`,
 			"1", "1", "3", "3")
@@ -1011,7 +1023,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// the memo correctly began admitting the mirror orientation as a cost
 	// alternative, which is not an ordering regression.
 	t.Run("Q42_orderby_alias_precedes_scope_ambiguity", func(t *testing.T) {
-		checkOrderedSlot(t, `SELECT LA."AID" AS "K", LB."BID" FROM "s"."LA", LB ORDER BY "K" DESC`,
+		checkOrderedSlot(t, `SELECT "S"."LA"."AID" AS "K", LB."BID" FROM "S"."LA", LB ORDER BY "K" DESC`,
 			0, []string{"2", "2", "1", "1"},
 			"2|1", "2|3", "1|1", "1|3")
 	})
@@ -1020,7 +1032,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// is 42703 — before the Q39 resolver fix, a nil resolver let it through
 	// leniently.
 	t.Run("Q43_aliased_away_name_is_42703", func(t *testing.T) {
-		_, err := run(t, `SELECT LA."K" FROM "s"."LA" AS "X" LEFT JOIN "s"."LB" AS "Y" ON "X"."AID" = "Y"."BID"`)
+		_, err := run(t, `SELECT LA."K" FROM "S"."LA" AS "X" LEFT JOIN "S"."LB" AS "Y" ON "X"."AID" = "Y"."BID"`)
 		if err == nil || !strings.Contains(err.Error(), "42703") {
 			t.Fatalf("aliased-away table-name reference must 42703, got %v", err)
 		}
@@ -1068,7 +1080,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// separate from Q42's top-level one — the same query answered top-level
 	// but 42702'd inside a scalar subquery.
 	t.Run("Q46_orderby_alias_in_subquery_path", func(t *testing.T) {
-		check(t, `SELECT (SELECT LA."AID" AS "KK" FROM "s"."LA", LB ORDER BY "KK" DESC LIMIT 1), LA."K" FROM LA WHERE LA."K" = 100`,
+		check(t, `SELECT (SELECT "S"."LA"."AID" AS "KK" FROM "S"."LA", LB ORDER BY "KK" DESC LIMIT 1), LA."K" FROM LA WHERE LA."K" = 100`,
 			"2|100")
 	})
 	// Q47+Q48: the two over-suppressions the Q42 alias
@@ -1078,13 +1090,13 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// alias must NOT suppress genuine ambiguity inside its argument (only a
 	// bare identifier key takes the alias route).
 	t.Run("Q47_orderby_duplicate_alias_stays_ambiguous", func(t *testing.T) {
-		_, err := run(t, `SELECT LA."AID" AS "K", LB."BID" AS "K" FROM "s"."LA", LB ORDER BY "K"`)
+		_, err := run(t, `SELECT "S"."LA"."AID" AS "K", LB."BID" AS "K" FROM "S"."LA", LB ORDER BY "K"`)
 		if err == nil || !strings.Contains(err.Error(), "42702") {
 			t.Fatalf("duplicate output aliases must keep 42702, got %v", err)
 		}
 	})
 	t.Run("Q48_orderby_agg_canonical_text_stays_ambiguous", func(t *testing.T) {
-		_, err := run(t, `SELECT SUM(LA."K") AS "SUM(K)" FROM "s"."LA", LB ORDER BY SUM("K")`)
+		_, err := run(t, `SELECT SUM("S"."LA"."K") AS "SUM(K)" FROM "S"."LA", LB ORDER BY SUM("K")`)
 		if err == nil || !strings.Contains(err.Error(), "42702") {
 			t.Fatalf("aggregate canonical-text key must keep 42702, got %v", err)
 		}
@@ -1173,14 +1185,21 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 		// (outer X ∈ {1,3} LEFT JOIN CC ON X = CID) → {1, NULL}, while the outer
 		// X is BID ∈ {1,3}. `= 1` counts one either way, so the `= 3` companion
 		// is the arm that separates them — inner 0, stale-outer 1.
-		if rows, err := run(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CID" AS "x" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT COUNT(*) FROM "V" WHERE "X" = 1) FROM LB LIMIT 1`); err != nil ||
+		// The read spells the inner alias as it was written, "x": a name the
+		// statement authored is compared exactly (Java compares every name
+		// exactly), so the folded "X" reaches neither generation's column —
+		// the inner x is not X, and the outer V is not a source of the
+		// subquery — and is 42703, pinned last.
+		if rows, err := run(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CID" AS "x" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT COUNT(*) FROM "V" WHERE "x" = 1) FROM LB LIMIT 1`); err != nil ||
 			strings.Join(rows, ",") != "1" {
 			t.Fatalf("quoted-alias shadow read: rows=%v err=%v, want [1]", rows, err)
 		}
-		if rows, err := run(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CID" AS "x" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT COUNT(*) FROM "V" WHERE "X" = 3) FROM LB LIMIT 1`); err != nil ||
+		if rows, err := run(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CID" AS "x" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT COUNT(*) FROM "V" WHERE "x" = 3) FROM LB LIMIT 1`); err != nil ||
 			strings.Join(rows, ",") != "0" {
-			t.Fatalf("quoted-alias shadow read at X=3 must see the INNER x ({1,NULL}), not the outer BID: rows=%v err=%v, want [0]", rows, err)
+			t.Fatalf("quoted-alias shadow read at x=3 must see the INNER x ({1,NULL}), not the outer BID: rows=%v err=%v, want [0]", rows, err)
 		}
+		loudCode(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CID" AS "x" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT COUNT(*) FROM "V" WHERE "X" = 1) FROM LB LIMIT 1`,
+			"42703", "the folded spelling of an authored alias")
 		// duplicate output name X; WHERE X=1 must not pick one column. The
 		// body is published as stated, repeated name included, and the read of
 		// X meets the scope's own ambiguity check: 42702, Java's
@@ -1278,26 +1297,20 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 		// The regression each case guards against is a future schema change
 		// that silently RESOLVES an ambiguous reference and returns wrong
 		// joined rows instead of reporting the ambiguity, so
-		// (a) quoted-lowercase alias `AS "x"`. The engine no longer folds an
+		// (a) quoted-lowercase alias `AS "x"`. The engine does not fold an
 		//     output name, so `AS "x"` publishes a column called x and the
-		//     AUTHORED spelling is the one that resolves exactly. THE
-		//     DIRECTION OF THIS ARM INVERTED: it used to require `C."x"` to
-		//     42703 (because execution keyed the slot "X" and no reference
-		//     could name it) and `C."X"` to answer. Now `C."x"` answers by
-		//     exact match, and `C."X"` answers too — through the scope's
-		//     case-insensitive second pass, which is a documented read-side
-		//     extension over Java rather than a fold in the naming.
-		//
-		//     What is still forbidden is a spelling that matches NEITHER, and
-		//     that is what the third arm holds.
+		//     AUTHORED spelling is the one that resolves. `C."X"` does not: the
+		//     scope's case-insensitive second pass repairs a DESCRIPTOR's
+		//     spelling only, and a name the statement wrote is compared exactly,
+		//     as Java compares every name (measured: `WITH c AS (SELECT id AS
+		//     "x" FROM w) SELECT c."X" FROM c` is 42703 in both engines,
+		//     conformance/ws_f_join_unnest_conformance_test.go).
 		if rows, err := run(t, `WITH "C" AS (SELECT LA."AID" AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."x" = "C2"."CID"`); err != nil ||
 			strings.Join(rows, ",") != "900" {
 			t.Fatalf("the AUTHORED quoted spelling must resolve exactly: rows=%v err=%v", rows, err)
 		}
-		if rows, err := run(t, `WITH "C" AS (SELECT LA."AID" AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."X" = "C2"."CID"`); err != nil ||
-			strings.Join(rows, ",") != "900" {
-			t.Fatalf("the folded spelling must reach it through the relaxed pass: rows=%v err=%v", rows, err)
-		}
+		loudCode(t, `WITH "C" AS (SELECT LA."AID" AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."X" = "C2"."CID"`,
+			"42703", "the folded spelling of an authored alias")
 		if _, err := run(t, `WITH "C" AS (SELECT LA."AID" AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."xx" = "C2"."CID"`); err == nil ||
 			!strings.Contains(err.Error(), "42703") {
 			t.Fatalf("a spelling that matches neither exactly nor case-insensitively must 42703, got %v", err)
@@ -1317,9 +1330,12 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 		//      answer at all. It is pinned as "must be LOUD" rather than on a
 		//      specific SQLSTATE because this ON runs through the CTE's
 		//      ON-resolution schema, which declines a source it cannot describe
-		//      before the scope ever counts candidates; the 42702 form of the
-		//      same rule is pinned on the scope itself in
-		//      `quoted_identifier_columns.yaml`, over a derived table.
+		//      before the scope ever counts candidates. Both columns here are
+		//      authored, so the scope compares them exactly and neither
+		//      matches; the collision form of the rule (two DESCRIPTOR columns
+		//      one folded reference reaches, 42702) is pinned on the scope in
+		//      TestRelaxedPassSkipsSQLAuthoredColumns (the DDL refuses
+		//      case-colliding columns, so no SQL fixture can declare one).
 		if rows, err := run(t, `WITH "C" AS (SELECT LA."AID" AS "x", LA."K" AS "X" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."xX" = "C2"."CID"`); err == nil {
 			t.Fatalf("a folded reference matching BOTH case-variants must be loud, got rows=%v", rows)
 		}
@@ -1384,20 +1400,19 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	})
 	t.Run("Q56_agg_on_only_schema_complete_or_decline", func(t *testing.T) {
 		// The quoted-lowercase alias obstruction is retired here for the same
-		// reason as its projection twin (Q55 (a)), and the arms invert the same
-		// way: nothing folds an output name, so the AUTHORED spelling is the
-		// column and resolves exactly, while the folded spelling reaches it
-		// through the scope's case-insensitive second pass. MIN over
+		// reason as its projection twin (Q55 (a)): nothing folds an output
+		// name, so the AUTHORED spelling is the column and resolves exactly,
+		// and the folded spelling does not reach it — an authored name is
+		// compared exactly (measured 42703 in both engines for `WITH c AS
+		// (SELECT MIN(id) AS "x" FROM w) SELECT c."X" FROM c`). MIN over
 		// AID ∈ {1,2} is 1, which is the CID that matches — so the value, not
 		// merely the absence of an error, is what this pins.
 		if rows, err := run(t, `WITH "C" AS (SELECT MIN(LA."AID") AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."x" = "C2"."CID"`); err != nil ||
 			strings.Join(rows, ",") != "900" {
 			t.Fatalf("authored aggregate alias must join on MIN(AID)=1: rows=%v err=%v", rows, err)
 		}
-		if rows, err := run(t, `WITH "C" AS (SELECT MIN(LA."AID") AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."X" = "C2"."CID"`); err != nil ||
-			strings.Join(rows, ",") != "900" {
-			t.Fatalf("folded aggregate alias must reach it through the relaxed pass: rows=%v err=%v", rows, err)
-		}
+		loudCode(t, `WITH "C" AS (SELECT MIN(LA."AID") AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."X" = "C2"."CID"`,
+			"42703", "the folded spelling of an authored aggregate alias")
 		if _, err := run(t, `WITH "C" AS (SELECT MIN(LA."AID") AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."xx" = "C2"."CID"`); err == nil {
 			t.Fatal("a spelling that matches the published aggregate row neither exactly nor case-insensitively must not resolve")
 		}

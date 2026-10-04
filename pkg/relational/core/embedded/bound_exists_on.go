@@ -76,7 +76,7 @@ func boundScopeAmbiguous(pred predicates.QueryPredicate, from logical.LogicalOpe
 			// Lexical names are already SQL-normalized; quoted case remains
 			// significant. The same parent must also supply the runtime-name
 			// collision, so private bindings keep their existing exemption.
-			if outer.Alias.Name() != source.lexical {
+			if !outer.NamedBy(semantic.FromNormalized(source.lexical)) {
 				continue
 			}
 			binding := outer.CorrelationName

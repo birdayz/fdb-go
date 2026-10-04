@@ -162,10 +162,14 @@ func retagInlineValuesRecordType(
 // positional record type before the array is published; Unknown and erased
 // types never reach a semantic source or later QOV.
 func buildInlineValuesLogical(
-	item *antlrgen.InlineTableItemContext,
+	sourceItem antlrgen.ITableSourceItemContext,
 	alias, binding string,
 	md *recordlayer.RecordMetaData,
 ) (*logical.LogicalInlineValues, error) {
+	if tf, ok := sourceItem.(*antlrgen.TableValuedFunctionContext); ok {
+		return buildTableFunctionLogical(tf, alias, binding, nil)
+	}
+	item, _ := sourceItem.(*antlrgen.InlineTableItemContext)
 	if item == nil || alias == "" {
 		return nil, api.NewError(api.ErrCodeInvalidParameter,
 			"inline VALUES source requires a parsed table and correlation alias")
@@ -382,7 +386,7 @@ func inlineValuesScopeSource(source *logical.LogicalInlineValues) (semantic.Scop
 }
 
 func parsedInlineValuesScopeSource(
-	item *antlrgen.InlineTableItemContext,
+	item antlrgen.ITableSourceItemContext,
 	alias, binding string,
 	md *recordlayer.RecordMetaData,
 ) (semantic.ScopeSource, bool) {
@@ -390,7 +394,14 @@ func parsedInlineValuesScopeSource(
 	if err != nil {
 		return semantic.ScopeSource{}, false
 	}
-	return inlineValuesScopeSource(source)
+	scopeSource, ok := inlineValuesScopeSource(source)
+	switch item := item.(type) {
+	case *antlrgen.InlineTableItemContext:
+		scopeSource.UnqualifiedOutput = item.InlineTableDefinition() == nil
+	case *antlrgen.TableValuedFunctionContext:
+		scopeSource.UnqualifiedOutput = item.GetAlias() == nil
+	}
+	return scopeSource, ok
 }
 
 func selectHasInlineValuesSource(sq *selectQuery) bool {

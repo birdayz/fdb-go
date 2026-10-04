@@ -106,21 +106,26 @@ func TestFoldKnownExists(t *testing.T) {
 		}
 	})
 
-	t.Run("nested_or_is_untouched", func(t *testing.T) {
-		input := filter(predicates.NewOr(
-			exists(trueAlias),
-			predicates.NewConstantPredicate(predicates.TriFalse),
-		), trueSubquery)
-		translator := &cascadesTranslator{}
-		got := translator.foldKnownExists(input)
-		if got != input {
-			t.Fatal("known alias below OR should be returned unchanged")
-		}
-		if translated := translator.translateFilter(input); translated != nil {
-			t.Fatalf("translateFilter returned %T, want typed decline", translated)
-		}
-		if translator.translateErr == nil {
-			t.Fatal("translateFilter did not record the typed decline")
-		}
-	})
+	for _, tc := range []struct {
+		name string
+		pred predicates.QueryPredicate
+		want predicates.TriBool
+	}{
+		{"true_or_unknown", predicates.NewOr(exists(trueAlias), predicates.NewConstantPredicate(predicates.TriUnknown)), predicates.TriTrue},
+		{"false_or_unknown", predicates.NewOr(exists(falseAlias), predicates.NewConstantPredicate(predicates.TriUnknown)), predicates.TriUnknown},
+		{"not_or", predicates.NewNot(predicates.NewOr(exists(falseAlias), notExists(trueAlias))), predicates.TriTrue},
+		{"double_not", predicates.NewNot(notExists(falseAlias)), predicates.TriFalse},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			input := filter(tc.pred, trueSubquery, falseSubquery)
+			got := (&cascadesTranslator{}).foldKnownExists(input)
+			assertConstant(t, got, tc.want)
+			for _, edge := range got.ExistsSubqueries {
+				if _, used := predicates.GetCorrelatedToOfPredicate(tc.pred)[edge.Alias]; used {
+					t.Fatalf("folded alias %s retained its producer", edge.Alias)
+				}
+			}
+		})
+	}
 }

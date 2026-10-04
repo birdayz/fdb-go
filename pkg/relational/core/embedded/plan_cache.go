@@ -36,10 +36,8 @@ type PlanCache struct {
 }
 
 // cacheKey is the map key: a COMPARABLE struct of the verbatim scope and the
-// normalized query text. Using a struct (not scope+delim+sql concatenated into
-// one string) avoids allocating and copying the normalized SQL a second time
-// on every warm hit — a measurable regression on the benchmarked hot path —
-// while still keeping the scope out of normalizeSQL (case-sensitive schema).
+// key text. Using a struct (not scope+delim+sql concatenated into one string)
+// avoids copying the text a second time on every warm hit.
 type cacheKey struct {
 	scope string
 	sql   string
@@ -76,8 +74,7 @@ func NewPlanCache(maxSize int) *PlanCache {
 // is used VERBATIM — it must NOT be normalized, because schema names are
 // case-sensitive and folding them would collide case-distinct schemas
 // (`s` vs `S`) into one key, returning a plan built for the wrong schema.
-// Only the `sql` is normalized (case-folded outside quotes,
-// whitespace-collapsed, comments stripped). Returns the plan, scalar subquery
+// `sql` is the caller's key text (planCacheText of the statement). Returns the plan, scalar subquery
 // bindings, and true on a cache hit; nil, nil, false on miss.
 func (c *PlanCache) Get(scope, sql string) (plans.RecordQueryPlan, []PlannedScalarSubquery, bool) {
 	plan, subs, _, ok := c.GetWithOutputLabels(scope, sql)
@@ -88,7 +85,7 @@ func (c *PlanCache) Get(scope, sql string) (plans.RecordQueryPlan, []PlannedScal
 // Labels are cached beside the physical plan because they deliberately differ
 // from its deduplicated protobuf field names and must survive a warm cache hit.
 func (c *PlanCache) GetWithOutputLabels(scope, sql string) (plans.RecordQueryPlan, []PlannedScalarSubquery, []string, bool) {
-	key := cacheKey{scope: scope, sql: normalizeSQL(sql)}
+	key := cacheKey{scope: scope, sql: sql}
 
 	c.mu.Lock()
 	el, ok := c.items[key]
@@ -105,7 +102,7 @@ func (c *PlanCache) GetWithOutputLabels(scope, sql string) (plans.RecordQueryPla
 	return entry.plan, entry.scalarSubs, slices.Clone(entry.outputLabels), true
 }
 
-// Put stores a plan keyed by (verbatim scope, normalized sql) — see Get for
+// Put stores a plan keyed by (verbatim scope, key text) — see Get for
 // why the scope must not be normalized. If the cache is at capacity, the
 // least recently used entry is evicted.
 func (c *PlanCache) Put(scope, sql string, plan plans.RecordQueryPlan, subs []PlannedScalarSubquery) {
@@ -114,7 +111,7 @@ func (c *PlanCache) Put(scope, sql string, plan plans.RecordQueryPlan, subs []Pl
 
 // PutWithOutputLabels is Put plus the top-level SQL output-label contract.
 func (c *PlanCache) PutWithOutputLabels(scope, sql string, plan plans.RecordQueryPlan, subs []PlannedScalarSubquery, outputLabels []string) {
-	key := cacheKey{scope: scope, sql: normalizeSQL(sql)}
+	key := cacheKey{scope: scope, sql: sql}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()

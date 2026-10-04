@@ -1,0 +1,24 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "plan-trace_lib",
+    srcs = ["main.go"],
+    importpath = "fdb.dev/cmd/plan-trace",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//pkg/recordlayer/query/plan/cascades",
+        "//pkg/relational/core/embedded",
+    ],
+)
+
+go_binary(
+    name = "plan-trace",
+    embed = [":plan-trace_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "plan-trace_test",
+    srcs = ["main_test.go"],
+    embed = [":plan-trace_lib"],
+)

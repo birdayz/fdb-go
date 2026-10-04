@@ -24,13 +24,11 @@ tests:
   - query: SELECT LEAST(1, NULL, 3) FROM t
     rows:
       - [~]
-  # Single NULL arg.
+  # One argument is Java's VerifyException (XX000); all NULL is 22F00.
   - query: SELECT GREATEST(NULL) FROM t
-    rows:
-      - [~]
-  - query: SELECT LEAST(NULL) FROM t
-    rows:
-      - [~]
+    error_code: "XX000"
+  - query: SELECT LEAST(NULL, NULL) FROM t
+    error_code: "22F00"
   # Java alignment: int + double promotes to DOUBLE result type.
   # Java's functions.yamsql: greatest(1, 2, 3.0, 4, 5) → 5.0.
   - query: SELECT GREATEST(1, 2, 3.0, 4, 5) FROM t

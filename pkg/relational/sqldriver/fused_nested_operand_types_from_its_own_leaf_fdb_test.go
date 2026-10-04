@@ -53,7 +53,7 @@ func TestFDB_NestedOperandTypeComesFromItsOwnLeafNotAFlatNamesake(t *testing.T) 
 			"CREATE TYPE AS STRUCT nn (sk BIGINT, co STRING) "+
 			"CREATE TABLE t (id BIGINT, n nn, sk DOUBLE, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nlopnd/s WITH TEMPLATE nlopnd")
-	dsn := fmt.Sprintf("fdbsql:///testdb_nlopnd?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_NLOPND?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

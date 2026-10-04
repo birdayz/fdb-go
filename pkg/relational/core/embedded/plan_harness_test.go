@@ -1,12 +1,23 @@
 package embedded
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
+
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+
+	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
+	"fdb.dev/pkg/relational/core/parser"
+	"fdb.dev/pkg/relational/core/query"
 
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/metadata"
@@ -670,18 +681,9 @@ CREATE INDEX max_price_by_cat AS SELECT MAX(price) FROM ORDERS GROUP BY category
 	}
 }
 
-// TestAggregateIndexCandidate_DeclinesNonzeroPermutedSize pins F52: a permuted
-// MIN/MAX index with permutedSize > 0 stores its BY_GROUP keys as
-// [prefix-groups, extremum, permuted-suffix-groups] — not logical group order.
-// The SQL aggregate candidate models neither the bounds translation (a
-// group-column scan range built in logical order would bind the extremum slot →
-// missing rows) nor the true stream ordering (the groupCols ordering hint is
-// false → ORDER BY elimination / multi-aggregate intersection mis-merge). Go's
-// own DDL always writes permutedSize=0; a nonzero permutation arrives only via
-// record-layer API / Java-written shared-cluster metadata. Candidacy must
-// DECLINE it (fall back to a base-record StreamingAgg — correct rows), while
-// permutedSize=0 (control) stays matched.
-func TestAggregateIndexCandidate_DeclinesNonzeroPermutedSize(t *testing.T) {
+// A nonzero permutation moves grouping columns behind the extremum. The
+// candidate must retain that physical-prefix boundary for safe scan bindings.
+func TestAggregateIndexCandidate_NonzeroPermutedSize(t *testing.T) {
 	t.Parallel()
 	schema := `
 CREATE TABLE ORDERS (
@@ -723,12 +725,17 @@ CREATE INDEX max_price_by_cat AS SELECT MAX(price) FROM ORDERS GROUP BY category
 		t.Fatal("permutedSize=0 (DDL-built) must produce an aggregate candidate — the guard over-rejects")
 	}
 
-	// Java-written shared-cluster shape: permutedSize=1 → the physical key is
-	// [category-prefix?, extremum, permuted-suffix]; candidacy must decline.
 	idx.Options[recordlayer.IndexOptionPermutedSize] = "1"
-	if got := tryAggregateIndexCandidate(idx, md); got != nil {
-		t.Fatalf("permutedSize=1 must DECLINE aggregate candidacy (bounds/ordering are not "+
-			"modeled for a nonzero permutation — missing/misordered rows), got candidate %v", got)
+	if got := tryAggregateIndexCandidate(idx, md); got == nil || got.GetPhysicalGroupingPrefixCount() != 0 {
+		t.Fatalf("permutedSize=1 must have a zero-length grouping prefix, got %v", got)
+	}
+
+	// The size is read with Integer.parseInt, as Java's
+	// AggregateIndexMatchCandidate reads it: an Arabic-Indic zero is size 0, so
+	// the index is a candidate (strconv.Atoi refused it and declined).
+	idx.Options[recordlayer.IndexOptionPermutedSize] = "\u0660"
+	if got := tryAggregateIndexCandidate(idx, md); got == nil {
+		t.Fatal("permutedSize \"\\u0660\" is 0 to Integer.parseInt and must produce a candidate")
 	}
 
 	// A malformed permutedSize (unparseable) must also decline, not default open.
@@ -827,7 +834,7 @@ CREATE INDEX total_count AS SELECT COUNT(*) FROM ORDERS
 	t.Logf("no-group-by plan: %s", plan)
 }
 
-func TestPlanHarness_AggregateIndexDDL_ParseError_NoAggregate(t *testing.T) {
+func TestPlanHarness_GroupingOnlyIndexDDL(t *testing.T) {
 	t.Parallel()
 	schema := `
 CREATE TABLE ORDERS (
@@ -837,11 +844,16 @@ CREATE TABLE ORDERS (
 )
 CREATE INDEX bad_idx AS SELECT status FROM ORDERS GROUP BY status
 `
-	_, err := PlanQueryForTest("SELECT 1", schema, nil)
-	if err == nil {
-		t.Fatal("expected error for index DDL without aggregate function")
+	plan, err := PlanQueryForTest("SELECT 1", schema, nil)
+	if err != nil || !strings.Contains(plan, "Explode") {
+		t.Fatalf("singleton over grouping-only index schema: plan=%s error=%v", plan, err)
 	}
-	t.Logf("got expected error: %v", err)
+	// With no aggregate call Java emits a VALUE index over the grouping key.
+	// Exercise that index, not merely the unrelated SELECT's admission.
+	indexed, err := PlanQueryForTest("SELECT status FROM orders WHERE status = 'pending'", schema, nil)
+	if err != nil || !strings.Contains(indexed, "IndexScan(BAD_IDX") {
+		t.Fatalf("grouping-only index is not usable: plan=%s error=%v", indexed, err)
+	}
 }
 
 func TestPlanHarness_AggregateIndexDDL_ParseError_NoFrom(t *testing.T) {
@@ -876,10 +888,13 @@ CREATE INDEX avg_idx AS SELECT AVG(amount) FROM ORDERS GROUP BY status
 	if err == nil {
 		t.Fatal("expected error: AVG is not an indexable aggregate function")
 	}
-	// Java: MaterializedViewIndexGenerator.java:176-178 — AVG is streamable
-	// but not IndexableAggregateValue.
-	if !strings.Contains(err.Error(), "non-indexable aggregation") {
-		t.Fatalf("expected 'non-indexable aggregation' error, got: %v", err)
+	// The Java 4.14.2.0 target: ProjectionResolver skips only an INDEXABLE
+	// aggregate when it aligns the projection with the grouping, so a lone AVG
+	// is compared with the grouping column and refused there, before
+	// checkValidity's non-indexable message (measured: the WS-J oracle shape
+	// avg_grouped).
+	if !strings.Contains(err.Error(), "Aggregate result value does not align with grouping value") {
+		t.Fatalf("expected the target's alignment refusal, got: %v", err)
 	}
 	t.Logf("got expected error: %v", err)
 }
@@ -1674,6 +1689,40 @@ CREATE INDEX idx_status ON ORDERS(status)
 	assertPlanNotContains(t, plan, "COVERING")
 }
 
+// TestPlanHarness_MergedJoinRangeKeepsSelectiveProbe pins the partition split
+// of a range merged over one value: the selective part binds at its own
+// quantifier while the join part probes the other. Java partitions the merged
+// range whole and plans the first two as full scans of the driving table.
+func TestPlanHarness_MergedJoinRangeKeepsSelectiveProbe(t *testing.T) {
+	t.Parallel()
+	const schema = `CREATE TABLE orders (id BIGINT, cust_id BIGINT, PRIMARY KEY (id))
+CREATE TABLE customers (id BIGINT, name STRING, PRIMARY KEY (id))
+CREATE TABLE a (id BIGINT, k BIGINT, PRIMARY KEY (id))
+CREATE TABLE b (id BIGINT, k BIGINT, PRIMARY KEY (id))
+CREATE TABLE c (id BIGINT, k BIGINT, PRIMARY KEY (id))
+CREATE INDEX o_cust ON orders (cust_id)`
+	for _, tc := range []struct{ sql, want string }{
+		{
+			"SELECT o.id FROM orders o JOIN customers c ON o.cust_id = c.id WHERE o.cust_id = 42",
+			"FlatMap(outer=IndexScan(O_CUST, [=]), inner=Scan(CUSTOMERS, [=]))",
+		},
+		{
+			"SELECT x.id FROM a AS x INNER JOIN a AS y ON x.id = y.id WHERE x.id = 1",
+			"FlatMap(outer=Scan(A, [=]), inner=Scan(A, [=]))",
+		},
+		{
+			"SELECT a.id FROM a JOIN b USING (id, k) JOIN c USING (id, k) ORDER BY a.id",
+			"FlatMap(outer=Scan(A), inner=FlatMap(outer=PredicatesFilter(Scan(C, [=]), [1 preds]), inner=PredicatesFilter(Scan(B, [=]), [1 preds])))",
+		},
+	} {
+		plan, err := PlanQueryForTest(tc.sql, schema, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.sql, err)
+		}
+		assertPlanContains(t, plan, tc.want)
+	}
+}
+
 func assertPlanContains(t *testing.T, plan, substr string) {
 	t.Helper()
 	if !strings.Contains(plan, substr) {
@@ -2253,6 +2302,8 @@ func TestPlanHarness_RotFix_CompoundResidualUsesIndex(t *testing.T) {
 // Keep the type correction and the equal-cost premise separate from the exact
 // orientation sentinel in explaindiff's plan_shape.golden. Neither assertion is
 // a latency claim or permission to erase result types from semantic hashes.
+// The derived and CTE shapes now plan as correlated FlatMap chains (Java's
+// shape), so no materialized join and no orientation tie remains for them.
 func TestPlanHarness_ExistsDefaultTypesAndSymmetricJoinCosts(t *testing.T) {
 	t.Parallel()
 	const derivedSchema = `
@@ -2267,6 +2318,7 @@ CREATE TABLE b (id BIGINT, v BIGINT, PRIMARY KEY (id))`
 		schema      string
 		sql         string
 		defaults    int
+		joins       int
 		cardinality float64
 	}{
 		{
@@ -2274,14 +2326,14 @@ CREATE TABLE b (id BIGINT, v BIGINT, PRIMARY KEY (id))`
 			sql: `WITH c AS (SELECT id, v FROM t1)
 SELECT c.id, t1_id FROM c, t3 WHERE t3.t1_id = c.id
 AND EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = c.id) ORDER BY c.id`,
-			defaults: 1, cardinality: 2.5e11,
+			defaults: 1,
 		},
 		{
 			name: "derived_exists", schema: derivedSchema,
 			sql: `SELECT d.id, t1_id FROM (SELECT id, v FROM t1) AS d, t3
 WHERE t3.t1_id = d.id AND EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = d.id)
 ORDER BY d.id`,
-			defaults: 1, cardinality: 2.5e11,
+			defaults: 1,
 		},
 		{
 			name: "correlated_and_uncorrelated_not_exists", schema: antiSchema,
@@ -2289,7 +2341,7 @@ ORDER BY d.id`,
 AND NOT EXISTS (SELECT 1 FROM b AS sub WHERE sub.id = 101 AND sub.v = a.v)
 AND NOT EXISTS (SELECT 1 FROM b AS sub WHERE sub.id = 101 AND sub.v IS NULL)
 ORDER BY id`,
-			defaults: 2, cardinality: 62500,
+			defaults: 2, joins: 1, cardinality: 62500,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2320,9 +2372,12 @@ ORDER BY id`,
 				}
 			}
 			walk(plan)
-			if defaults != tc.defaults || len(joins) != 1 {
-				t.Fatalf("type/cost probe lost its population: defaults=%d want=%d joins=%d want=1; %s",
-					defaults, tc.defaults, len(joins), plan.Explain())
+			if defaults != tc.defaults || len(joins) != tc.joins {
+				t.Fatalf("type/cost probe lost its population: defaults=%d want=%d joins=%d want=%d; %s",
+					defaults, tc.defaults, len(joins), tc.joins, plan.Explain())
+			}
+			if tc.joins == 0 {
+				return
 			}
 			join := joins[0]
 			if join.GetJoinType() != plans.JoinInner {
@@ -2343,4 +2398,820 @@ ORDER BY id`,
 			}
 		})
 	}
+}
+
+// TestPlanHarness_ConstantExpressionComparandIsSargable pins that a comparand
+// written as a constant expression (`id = 1 + 2`) binds a scan range like the
+// literal it denotes. The target keeps such a comparand UNFOLDED and still
+// sargable (EXPLAIN `SCAN([IS T, EQUALS promote(@c7 + @c9 AS LONG)])`, RFC-257
+// WS-E oracle rows constant_expression_comparand_explain and
+// constant_expression_range_explain), so deleting the translator's eager
+// predicate folds (ws-e-design.md section 5.4a) must not cost the index. Go's
+// sargability does not depend on the fold: with predicates.SimplifyPredicateValues
+// made the identity, every row below planned exactly as it does here.
+func TestPlanHarness_ConstantExpressionComparandIsSargable(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ sql, want string }{
+		{"SELECT id, amount FROM orders WHERE id = 1 + 2", "Scan(ORDERS, [=])"},
+		{"SELECT id, amount FROM orders WHERE customer_id = 40 + 2", "IndexScan(IDX_CUSTOMER, [=])"},
+		{"SELECT id, amount FROM orders WHERE amount > 3 - 2", "IndexScan(IDX_AMOUNT, [<>] COVERING)"},
+	} {
+		plan, err := PlanQueryForTest(tc.sql, ordersSchema, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.sql, err)
+		}
+		assertPlanContains(t, plan, tc.want)
+	}
+}
+
+func TestPlanHarness_RecordIn(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest("SELECT id FROM t WHERE f IN ((90L, 9L), (81L, 18L))", "CREATE TYPE AS STRUCT pair(x bigint, y bigint) CREATE TABLE t(id bigint, a bigint, b bigint, f pair, PRIMARY KEY(id)) CREATE INDEX f1 AS SELECT f.x, f.y FROM t ORDER BY f.x, f.y", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Log(plan)
+	assertPlanContains(t, plan, "Filter")
+}
+
+func TestPlanHarness_PermutedAggregateDerivedOrder(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest("select t.* from (select col3, max(col2) as m from t2 where col1 = 1 group by col1, col3) as t where m < 2 order by m desc", "create table t2(id bigint, col1 bigint, col2 bigint, col3 bigint, primary key(id)) create index mv9 as select col1, max(col2), col3 from t2 group by col1, col3 order by col1, max(col2), col3", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Log(plan)
+	assertPlanContains(t, plan, "AggregateIndex")
+	assertPlanNotContains(t, plan, "InMemorySort")
+}
+
+func TestPlanHarness_PermutedFanoutAggregate(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanPhysicalForTest("select a, ek.k, b, max(d) from t6, (select k from t6.c where k = 'q') as ek group by a, ek.k, b having a = 1 and max(d) > 100", "create type as struct item(k string) create table t6(id bigint, a bigint, b bigint, c item array, d bigint, primary key(id)) create index mv20 as select a, ek.k, b, max(d) from t6, (select k from t6.c) as ek group by a, ek.k, b order by a, ek.k, max(d), b", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Log(plan.Explain())
+	found := false
+	var visit func(plans.RecordQueryPlan)
+	visit = func(p plans.RecordQueryPlan) {
+		if agg, ok := p.(*plans.RecordQueryStreamingAggregationPlan); ok {
+			found = true
+			keys := agg.GetGroupingKeys()
+			want := []int{1, 5, 2}
+			if len(keys) != len(want) {
+				t.Fatalf("group key count = %d, want 3", len(keys))
+			}
+			for i, key := range keys {
+				fv, ok := values.AsFieldValue(key)
+				if !ok || len(fv.Path().Ordinals()) != 1 || fv.Path().Ordinals()[0] != want[i] {
+					t.Fatalf("group key %d = %v; want combined-row ordinal %d", i, key, want[i])
+				}
+			}
+		}
+		for _, child := range p.GetChildren() {
+			visit(child)
+		}
+	}
+	visit(plan)
+	if !found {
+		t.Fatal("missing streaming aggregate")
+	}
+}
+
+func TestPlanHarness_BitmapAggregateIndex(t *testing.T) {
+	t.Parallel()
+	ddl := `CREATE TABLE t1(id bigint, category string, PRIMARY KEY(id)) CREATE INDEX bitmapIndex AS SELECT bitmap_construct_agg(bitmap_bit_position(id)), bitmap_bucket_offset(id) FROM t1 GROUP BY bitmap_bucket_offset(id)`
+	p, err := PlanPhysicalForTest(`SELECT bitmap_construct_agg(bitmap_bit_position(id)) as bitmap, bitmap_bucket_offset(id) as offset FROM t1 GROUP BY bitmap_bucket_offset(id)`, ddl, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(p.Explain(), "AggregateIndex") || strings.Contains(p.Explain(), "StreamingAgg") {
+		t.Fatalf("bitmap must read precomputed index: %s", p.Explain())
+	}
+}
+
+func TestPlanHarness_BitmapIndexRequiresMatchingArithmetic(t *testing.T) {
+	t.Parallel()
+	const ddl = `CREATE TABLE t1(id bigint, other bigint, PRIMARY KEY(id)) CREATE INDEX bm AS SELECT bitmap_construct_agg(bitmap_bit_position(id)), bitmap_bucket_offset(id) FROM t1 GROUP BY bitmap_bucket_offset(id)`
+	for _, tc := range []struct {
+		name, argument, group string
+		rejected              bool
+	}{
+		{"position size", "bitmap_bit_position(id, 100)", "bitmap_bucket_offset(id)", true},
+		{"bucket size", "bitmap_bit_position(id)", "bitmap_bucket_offset(id, 100)", true},
+		{"position field", "bitmap_bit_position(other)", "bitmap_bucket_offset(id)", false},
+		{"bucket field", "bitmap_bit_position(id)", "bitmap_bucket_offset(other)", false},
+		{"raw operand", "id", "bitmap_bucket_offset(id)", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			q := "SELECT bitmap_construct_agg(" + tc.argument + "), " + tc.group + " FROM t1 GROUP BY " + tc.group
+			p, err := PlanPhysicalForTest(q, ddl, nil)
+			if tc.rejected {
+				if err == nil {
+					t.Fatal("SQL bitmap functions must reject an explicit size argument")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(p.Explain(), "AggregateIndex") || !strings.Contains(p.Explain(), "StreamingAgg") {
+				t.Fatalf("mismatched bitmap arithmetic used index: %s", p.Explain())
+			}
+		})
+	}
+}
+
+func TestPlanHarness_GroupSortRetainsSelectiveInput(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ query, bound string }{
+		{"SELECT val, COUNT(*) FROM t WHERE id > 100 GROUP BY val", "Scan(T, [<>])"},
+		{"SELECT val, COUNT(*) FROM t WHERE id = 999 GROUP BY val", "Scan(T, [=])"},
+	} {
+		t.Run(tc.bound, func(t *testing.T) {
+			t.Parallel()
+			plan, err := PlanQueryForTest(tc.query, "CREATE TABLE t (id BIGINT, val BIGINT, PRIMARY KEY (id))", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertPlanContains(t, plan, tc.bound)
+			assertPlanContains(t, plan, "StreamingAgg")
+		})
+	}
+}
+
+func TestAggregateIndexCandidatePreservesKeyExpressionIdentity(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		root recordlayer.KeyExpression
+	}{
+		{"computed_operand", recordlayer.GroupBy(recordlayer.FunctionExpr("add", recordlayer.Concat(recordlayer.Field("V"), recordlayer.Literal(int64(1)))), recordlayer.Field("G"))},
+		{"computed_group", recordlayer.GroupBy(recordlayer.Field("V"), recordlayer.FunctionExpr("add", recordlayer.Concat(recordlayer.Field("G"), recordlayer.Literal(int64(1)))))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			b := metadata.NewSchemaTemplateBuilder().SetName("expr_identity")
+			b.AddTable("T", []metadata.ColumnSpec{
+				metadata.NewColumnSpec("ID", api.NewLongType(false), 1),
+				metadata.NewColumnSpec("G", api.NewLongType(false), 2),
+				metadata.NewColumnSpec("V", api.NewLongType(false), 3),
+			}, []string{"ID"})
+			b.AddGeneratedIndex("T", "MX", tc.root, recordlayer.IndexTypePermutedMax, false, map[string]string{recordlayer.IndexOptionPermutedSize: "0"}, nil)
+			tmpl, err := b.Build()
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, err := PlanRecordQueryWithMetadata("SELECT g, MAX(v) FROM t GROUP BY g", tmpl.Underlying(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(plan.Explain(), "AggregateIndex") {
+				t.Fatalf("computed index must not answer a different grouping or operand: %s", plan.Explain())
+			}
+		})
+	}
+}
+
+// An indexed OR beside EXISTS still reaches predicate-union exploration.
+func TestPlanHarness_UnionWithExistentialPredicate(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest("SELECT id FROM orders o WHERE (status = 'pending' OR amount = 42) AND EXISTS (SELECT id FROM orders i WHERE i.id = 1)", ordersSchema, properties.MapStatistics{PerType: map[string]float64{"ORDERS": 1_000_000}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Log(plan)
+	assertPlanContains(t, plan, "Union")
+}
+
+func TestPlanHarness_DisjunctiveExistsAdmission(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest("SELECT id FROM orders o WHERE status = 'pending' OR EXISTS (SELECT id FROM orders i WHERE i.id = o.customer_id)", ordersSchema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Log(plan)
+	assertPlanContains(t, plan, "PredicatesFilter(FirstOrDefault(")
+}
+
+func TestPlanHarness_UnionWithFixedUnindexedFactor(t *testing.T) {
+	t.Parallel()
+	schema := "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY(id)) CREATE INDEX ix_a ON t(a) CREATE INDEX ix_b ON t(b)"
+	tmpl, err := buildSchemaTemplateFromDDL(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := parser.Parse("SELECT id FROM t WHERE (a=1 OR b=2) AND (c=10 OR c=20)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	logical, err := NewPlanVisitor(tmpl.Underlying()).VisitQuery(parsed.Statements().AllStatement()[0].SelectStatement().Query())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resolveQualifiedTableNames(logical, defaultEmbeddedTemplate); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateTablesAndColumns(logical, tmpl.Underlying()); err != nil {
+		t.Fatal(err)
+	}
+	ref, _, err := query.TranslateToCascadesWithError(logical, tmpl.Underlying())
+	if err != nil {
+		t.Fatal(err)
+	}
+	planner := newCascadesPlanner(tmpl.Underlying(), plannerOptionsFrom(nil), cascades.BatchAExpressionRules(), properties.MapStatistics{PerType: map[string]float64{"T": 1_000_000}})
+	implemented := make(map[expressions.RelationalExpression]bool)
+	consumedAfterImplementation := 0
+	planner.WithTaskObserver(func(task cascades.Task) {
+		switch task := task.(type) {
+		case *cascades.TransformExprTask:
+			if _, ok := task.Rule.(*cascades.ImplementFilterRule); ok {
+				implemented[task.Expr] = true
+			}
+		case *cascades.TransformImplTask:
+			if _, ok := task.Rule.(*cascades.ImplementSimpleSelectRule); ok {
+				implemented[task.Expr] = true
+			}
+		case *cascades.ConsumeMatchPartitionTask:
+			for _, raw := range task.Ref.GetAllPartialMatches() {
+				match := raw.(cascades.PartialMatch)
+				switch expr := match.GetQueryExpression(); expr.(type) {
+				case *expressions.SelectExpression, *expressions.LogicalFilterExpression:
+					if !implemented[expr] {
+						t.Fatalf("access consumption preceded %T implementation", expr)
+					}
+					consumedAfterImplementation++
+				}
+			}
+		}
+	})
+	best, _, err := planner.PlanWithContext(context.Background(), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if consumedAfterImplementation == 0 {
+		t.Fatal("no matched filter/select reached access consumption")
+	}
+	plan := best.(interface{ GetRecordQueryPlan() plans.RecordQueryPlan }).GetRecordQueryPlan().Explain()
+	hints, unions := 0, 0
+	memoTypes := make(map[string]int)
+	staleHints := 0
+	for reference := range planner.Memo().References() {
+		for _, raw := range reference.GetAllPartialMatches() {
+			match := raw.(cascades.PartialMatch)
+			if carrier, ok := match.GetQueryExpression().(expressions.RelationalExpressionWithPredicates); ok {
+				for _, predicate := range carrier.GetPredicates() {
+					t.Logf("match %T %s bindings=%d predicate=%s", match.GetQueryExpression(), match.GetMatchCandidate().CandidateName(), len(match.GetMatchInfo().GetRegularMatchInfo().GetParameterBindingMap()), predicate.Explain())
+				}
+			}
+			for _, entry := range match.GetMatchInfo().GetRegularMatchInfo().GetPredicateMap().Entries() {
+				if entry.Mapping.GetMappingKind() == cascades.MappingOrTermImpliesCandidate {
+					hints++
+					if !reference.ContainsExactly(match.GetQueryExpression()) {
+						staleHints++
+					}
+				}
+			}
+		}
+		for _, expression := range reference.AllMembers() {
+			memoTypes[fmt.Sprintf("%T", expression)]++
+			if holder, ok := expression.(interface{ GetRecordQueryPlan() plans.RecordQueryPlan }); ok {
+				explain := holder.GetRecordQueryPlan().Explain()
+				if strings.Contains(explain, "Union") && strings.Count(explain, "IndexScan(") == 2 {
+					unions++
+				}
+			}
+		}
+	}
+	if hints == 0 || unions == 0 {
+		t.Fatalf("match-partition scheduling produced hints=%d stale=%d indexed unions=%d types=%v", hints, staleHints, unions, memoTypes)
+	}
+	// Java breaks the two-residual tie by preferring one data access over two.
+	assertPlanContains(t, plan, "PredicatesFilter(Scan(T)")
+	assertPlanNotContains(t, plan, "Union")
+}
+
+func TestPlanHarness_FixedFactorUnionConsumesCompositeBounds(t *testing.T) {
+	t.Parallel()
+	schema := "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, d BIGINT, PRIMARY KEY(id)) CREATE INDEX ix_a ON t(a,d) CREATE INDEX ix_b ON t(b,d)"
+	plan, err := PlanQueryForTest("SELECT id FROM t WHERE (a=1 OR b=2) AND (c=10 OR c=20) AND d=9", schema, properties.MapStatistics{PerType: map[string]float64{"T": 1_000_000}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Log(plan)
+	assertPlanContains(t, plan, "Union")
+	if strings.Count(plan, "IndexScan(") != 2 {
+		t.Fatalf("want two index scans: %s", plan)
+	}
+}
+
+func TestPlanHarness_FixedFactorUnionExistsConverges(t *testing.T) {
+	t.Parallel()
+	schema := "CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY(id)) CREATE INDEX idx_d ON T_RD(d) CREATE INDEX idx_a ON T_RD(a) CREATE INDEX idx_b ON T_RD(b) CREATE INDEX idx_ab ON T_RD(a,b)"
+	sql := "SELECT * FROM t_rd WHERE (((a=9) AND (d=0.1)) OR ((b=5) AND (s='beta') AND (CAST(b AS STRING)='1'))) AND EXISTS (SELECT 1 FROM t_rd AS r WHERE r.b=t_rd.b AND r.a>=8) ORDER BY id DESC"
+	assertFixedFactorUnionConverges(t, schema, sql)
+}
+
+func TestPlanHarness_FixedFactorUnionExistsRangeConverges(t *testing.T) {
+	t.Parallel()
+	schema := "CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY(id)) CREATE INDEX idx_a ON T_RD(a) CREATE INDEX idx_e ON T_RD(e) CREATE INDEX idx_s ON T_RD(s)"
+	sql := "SELECT * FROM t_rd WHERE (((s IS NOT NULL) AND (a=8) AND (e BETWEEN 3.0 AND 4.0)) OR ((d IN (2,5)) AND (COALESCE(a,8)<5))) AND EXISTS (SELECT 1 FROM t_rd AS r WHERE r.c<t_rd.c) ORDER BY c DESC NULLS FIRST,id"
+	assertFixedFactorUnionConverges(t, schema, sql)
+}
+
+func TestPlanHarness_IndexAccessRealizedOnce(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, indexes, predicate string
+		accesses, arity          int
+	}{
+		{"redundant", "CREATE INDEX ia ON t(a) CREATE INDEX iab ON t(a,b)", "a=1 AND c=2", 2, 0},
+		{"pair", "CREATE INDEX ia ON t(a) CREATE INDEX ib ON t(b)", "a=1 AND b=2 AND d=3", 2, 2},
+		{"triple", "CREATE INDEX ia ON t(a) CREATE INDEX ib ON t(b) CREATE INDEX ic ON t(c)", "a=1 AND b=2 AND c=3 AND d=4", 3, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assertIndexAccessRealizedOnce(t, tc.indexes, tc.predicate, tc.accesses, tc.arity)
+		})
+	}
+}
+
+func assertIndexAccessRealizedOnce(t *testing.T, indexes, predicate string, accesses, arity int) {
+	t.Helper()
+	schema := "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, d BIGINT, PRIMARY KEY(id)) " + indexes
+	tmpl, err := buildSchemaTemplateFromDDL(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := parser.Parse("SELECT * FROM t WHERE " + predicate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logical, err := NewPlanVisitor(tmpl.Underlying()).VisitQuery(parsed.Statements().AllStatement()[0].SelectStatement().Query())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resolveQualifiedTableNames(logical, defaultEmbeddedTemplate); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateTablesAndColumns(logical, tmpl.Underlying()); err != nil {
+		t.Fatal(err)
+	}
+	ref, _, err := query.TranslateToCascadesWithError(logical, tmpl.Underlying())
+	if err != nil {
+		t.Fatal(err)
+	}
+	planner := newCascadesPlanner(tmpl.Underlying(), plannerOptionsFrom(nil), cascades.BatchAExpressionRules(), nil)
+	best, _, err := planner.PlanWithContext(context.Background(), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if best == nil {
+		t.Fatal("empty plan")
+	}
+	coverings := make(map[*plans.RecordQueryCoveringIndexPlan]bool)
+	fetches := make(map[*plans.RecordQueryFetchFromPartialRecordPlan]bool)
+	largestIntersection := 0
+	for group := range planner.Memo().References() {
+		for _, expr := range group.AllMembers() {
+			switch plan := expr.(type) {
+			case *plans.RecordQueryCoveringIndexPlan:
+				coverings[plan] = true
+			case *plans.RecordQueryFetchFromPartialRecordPlan:
+				fetches[plan] = true
+			case *plans.RecordQueryIntersectionPlan:
+				largestIntersection = max(largestIntersection, len(plan.GetQuantifiers()))
+			}
+		}
+	}
+	accessFetches := 0
+	for fetch := range fetches {
+		t.Logf("fetch alternative: %s", fetch.Explain())
+		if _, isAccess := fetch.GetInner().(*plans.RecordQueryCoveringIndexPlan); isAccess {
+			accessFetches++
+		} else if intersection, ok := fetch.GetInner().(*plans.RecordQueryIntersectionPlan); !ok || len(intersection.GetQuantifiers()) != arity {
+			t.Fatalf("unexpected non-access fetch: %s", fetch.Explain())
+		}
+	}
+	if len(coverings) != accesses || accessFetches != accesses {
+		t.Fatalf("%d index matches must be realized once each, including intersection bookkeeping: covering=%d access fetch=%d", accesses, len(coverings), accessFetches)
+	}
+	if largestIntersection != arity {
+		t.Fatalf("largest intersection arity=%d, want %d", largestIntersection, arity)
+	}
+	for plan := range coverings {
+		t.Logf("retained access: %s", plan.Explain())
+	}
+}
+
+func TestPlanHarness_FixedFactorUnionAccessConverges(t *testing.T) {
+	t.Parallel()
+	const schema = "CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_c ON T_RD (c) CREATE INDEX idx_a ON T_RD (a) CREATE INDEX idx_d ON T_RD (d) CREATE INDEX idx_ab ON T_RD (a, b)"
+	const sql = "SELECT * FROM t_rd WHERE (((NOT (c = 7)) AND (d = 4.0) AND (b = 2)) OR ((NOT (a BETWEEN 1 AND 4)) AND (NOT (e > 0.1)) AND (ABS(c) = 4)))"
+	for _, tc := range []struct{ name, suffix string }{
+		{"unordered", ""},
+		{"ordered", " ORDER BY b, id"},
+		{"exists", " AND NOT EXISTS (SELECT 1 FROM t_rd AS r WHERE r.a < t_rd.a AND r.a > 9)"},
+		{"scalar", " AND c <= (SELECT MIN(a) FROM t_rd)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assertFixedFactorUnionConverges(t, schema, sql+tc.suffix)
+		})
+	}
+}
+
+func TestPlanHarness_FixedFactorUnionScalarSubqueryConverges(t *testing.T) {
+	t.Parallel()
+	schema := "CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_c ON T_RD (c) CREATE INDEX idx_a ON T_RD (a) CREATE INDEX idx_d ON T_RD (d) CREATE INDEX idx_ab ON T_RD (a, b)"
+	sql := "SELECT * FROM t_rd WHERE (((NOT (c = 7)) AND (d = 4.0) AND (b = 2)) OR ((NOT (a BETWEEN 1 AND 4)) AND (NOT (e > 0.1)) AND (ABS(c) = 4))) AND NOT EXISTS (SELECT 1 FROM t_rd AS r WHERE r.a < t_rd.a AND r.a > 9) AND c <= (SELECT MIN(a) FROM t_rd) ORDER BY b, id"
+	planner := assertFixedFactorUnionConverges(t, schema, sql)
+	unions := make(map[*plans.RecordQueryUnorderedUnionPlan]bool)
+	legs := 0
+	for ref := range planner.Memo().References() {
+		for _, member := range ref.AllMembers() {
+			if union, ok := member.(*plans.RecordQueryUnorderedUnionPlan); ok && !unions[union] {
+				unions[union] = true
+				legs += len(union.GetQuantifiers())
+			}
+		}
+	}
+	if len(unions) != 511 || legs != 2898 {
+		t.Fatalf("convergence must retain every physical union alternative: unions=%d legs=%d, want 511/2898", len(unions), legs)
+	}
+	// Over all 513 logical unions this query explores (2,910 union inputs): a
+	// leg is its term plus the fixed factors the term does not imply, so each
+	// distinct leg is one group, planned once.
+	legGroups := make(map[*expressions.Reference]bool)
+	for ref := range planner.Memo().References() {
+		for _, member := range ref.AllMembers() {
+			if union, ok := member.(*expressions.LogicalUnionExpression); ok {
+				for _, quantifier := range union.GetQuantifiers() {
+					legGroups[quantifier.GetRangesOver().Canonical()] = true
+				}
+			}
+		}
+	}
+	if len(legGroups) != 78 {
+		t.Fatalf("logical union legs span %d groups, want 78 distinct legs", len(legGroups))
+	}
+	// The original select's split normalizes into the CNF select's split;
+	// merging the two groups enumerates the 511 subsets once.
+	enumerations := 0
+	for ref := range planner.Memo().References() {
+		uniques := 0
+		for _, member := range ref.Canonical().Members() {
+			if _, ok := member.(*expressions.LogicalUniqueExpression); ok {
+				uniques++
+			}
+		}
+		if ref.Canonical() == ref && uniques >= 511 {
+			enumerations++
+		}
+	}
+	if planner.Memo().MergeCount() == 0 || enumerations != 1 {
+		t.Fatalf("merges=%d, groups holding the 511 union alternatives=%d, want one", planner.Memo().MergeCount(), enumerations)
+	}
+}
+
+// Java needs the scalar aggregate lifted into FROM and ABS(c)=4 expressed
+// as c=4 OR c=-4; the conformance probe runs this same SQL and schema.
+func TestPlanHarness_FixedFactorUnionJavaComparable(t *testing.T) {
+	t.Parallel()
+	const schema = "CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_c ON T_RD (c) CREATE INDEX idx_a ON T_RD (a) CREATE INDEX idx_d ON T_RD (d) CREATE INDEX idx_ab ON T_RD (a, b)"
+	const sql = "SELECT t_rd.* FROM t_rd, (SELECT MIN(a) AS min_a FROM t_rd) AS m WHERE (((NOT (c = 7)) AND (d = 4.0) AND (b = 2)) OR ((NOT (a BETWEEN 1 AND 4)) AND (NOT (e > 0.1)) AND (c = 4 OR c = -4))) AND NOT EXISTS (SELECT 1 FROM t_rd AS r WHERE r.a < t_rd.a AND r.a > 9) AND c <= m.min_a"
+	for _, order := range []string{" ORDER BY b, id", ""} {
+		t.Run(order, func(t *testing.T) {
+			assertFixedFactorUnionConverges(t, schema, sql+order)
+		})
+	}
+}
+
+func TestPlanHarness_FixedFactorUnionCompleteSearch(t *testing.T) {
+	t.Parallel()
+	const schema = "CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_c ON T_RD (c) CREATE INDEX idx_a ON T_RD (a) CREATE INDEX idx_d ON T_RD (d) CREATE INDEX idx_ab ON T_RD (a, b)"
+	const sql = "SELECT * FROM t_rd WHERE (((NOT (c = 7)) AND (d = 4.0) AND (b = 2)) OR ((NOT (a BETWEEN 1 AND 4)) AND (NOT (e > 0.1)) AND (ABS(c) = 4))) AND NOT EXISTS (SELECT 1 FROM t_rd AS r WHERE r.a < t_rd.a AND r.a > 9)"
+	// Diagnostic ceiling only; the production-budget regressions above remain separate.
+	assertFixedFactorUnionConvergesWithBudget(t, schema, sql, 500_000)
+}
+
+func TestPlanHarness_FixedFactorUnionScalarSubqueryCompleteSearch(t *testing.T) {
+	t.Parallel()
+	const schema = "CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_c ON T_RD (c) CREATE INDEX idx_a ON T_RD (a) CREATE INDEX idx_d ON T_RD (d) CREATE INDEX idx_ab ON T_RD (a, b)"
+	const sql = "SELECT * FROM t_rd WHERE (((NOT (c = 7)) AND (d = 4.0) AND (b = 2)) OR ((NOT (a BETWEEN 1 AND 4)) AND (NOT (e > 0.1)) AND (ABS(c) = 4))) AND NOT EXISTS (SELECT 1 FROM t_rd AS r WHERE r.a < t_rd.a AND r.a > 9) AND c <= (SELECT MIN(a) FROM t_rd) ORDER BY b, id"
+	// Keep the exact seed's complete census separate from its production-budget regression.
+	assertFixedFactorUnionConvergesWithBudget(t, schema, sql, 500_000)
+}
+
+func assertFixedFactorUnionConverges(t *testing.T, schema, sql string) *cascades.Planner {
+	t.Helper()
+	return assertFixedFactorUnionConvergesWithBudget(t, schema, sql, 0)
+}
+
+func assertFixedFactorUnionConvergesWithBudget(t *testing.T, schema, sql string, taskBudget int) *cascades.Planner {
+	t.Helper()
+	tmpl, err := buildSchemaTemplateFromDDL(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := parser.Parse(sql)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logical, err := NewPlanVisitor(tmpl.Underlying()).VisitQuery(parsed.Statements().AllStatement()[0].SelectStatement().Query())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resolveQualifiedTableNames(logical, defaultEmbeddedTemplate); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateTablesAndColumns(logical, tmpl.Underlying()); err != nil {
+		t.Fatal(err)
+	}
+	ref, _, err := query.TranslateToCascadesWithError(logical, tmpl.Underlying())
+	if err != nil {
+		t.Fatal(err)
+	}
+	planner := newCascadesPlanner(tmpl.Underlying(), plannerOptionsFrom(nil), cascades.BatchAExpressionRules(), nil)
+	if taskBudget > 0 {
+		planner.WithMaxTasks(taskBudget)
+	}
+	taskCounts := make(map[string]int)
+	groupTasks := make(map[*expressions.Reference]int)
+	groupWork := make(map[string]map[*expressions.Reference]int)
+	groupStates := make(map[string]int)
+	consumeCounts := make(map[*expressions.Reference]int)
+	accessOrderings := make(map[string]int)
+	accessesWithoutOrdering := make(map[string]int)
+	preparedAccesses := 0
+	exploredObjects := make(map[expressions.RelationalExpression]int)
+	explorationTypes := make(map[string]int)
+	type transformKey struct {
+		rule string
+		ref  *expressions.Reference
+		expr expressions.RelationalExpression
+	}
+	transformCounts := make(map[transformKey]int)
+	inputCounts := make(map[transformKey]int)
+	inputShapes := make(map[string]int)
+	optimizerShapes := make(map[string]int)
+	planner.WithTaskObserver(func(task cascades.Task) {
+		key := fmt.Sprintf("%T", task)
+		var group *expressions.Reference
+		switch task := task.(type) {
+		case *cascades.ExploreGroupTask:
+			group = task.Ref
+		case *cascades.OptimizeGroupTask:
+			group = task.Ref
+			optimizerShapes[fmt.Sprintf("members=%d/finals=%d/explored=%t/exploring=%t", len(group.Members()), len(group.FinalMembers()),
+				group.ConstraintsMap().IsExplored(), group.ConstraintsMap().IsExploring())]++
+		case *cascades.OptimizeInputsTask:
+			group = task.Ref
+			inputCounts[transformKey{key, group.Canonical(), task.Expr}]++
+			inputShapes[fmt.Sprintf("%T/inputs=%d/live=%t", task.Expr, len(task.Expr.GetQuantifiers()), group.ContainsExactly(task.Expr))]++
+		}
+		if group != nil {
+			if groupWork[key] == nil {
+				groupWork[key] = make(map[*expressions.Reference]int)
+			}
+			groupWork[key][group.Canonical()]++
+			groupStates[fmt.Sprintf("%s/stage=%d/explore=%t/winner=%t", key, group.Stage(), group.NeedsExploration(), group.HasWinner())]++
+		}
+		switch transform := task.(type) {
+		case *cascades.ExploreExprTask:
+			exploredObjects[transform.Expr]++
+			explorationTypes[fmt.Sprintf("%v/%T", transform.Phase, transform.Expr)]++
+		case *cascades.ConsumeMatchPartitionTask:
+			consumeCounts[transform.Ref]++
+			var orderings []*properties.RequestedOrdering
+			if constraint, ok := transform.Ref.ConstraintsMap().GetConstraint(cascades.RequestedOrderingConstraintKey); ok {
+				orderings = constraint.([]*properties.RequestedOrdering)
+			}
+			for _, ordering := range orderings {
+				accessOrderings[fmt.Sprint(ordering)]++
+			}
+			for _, candidate := range cascades.GetPartialMatchCandidatesTyped(transform.Ref) {
+				if _, aggregate := candidate.(*cascades.AggregateIndexMatchCandidate); aggregate {
+					continue
+				}
+				traversal := candidate.GetTraversal()
+				if traversal == nil {
+					continue
+				}
+				var complete []cascades.PartialMatch
+				for _, match := range cascades.GetPartialMatchesForCandidate(transform.Ref, candidate) {
+					if match.GetCandidateRef() == traversal.GetRootReference() {
+						complete = append(complete, match)
+					}
+				}
+				for _, access := range cascades.PrepareMatchesAndCompensations(complete, orderings, nil) {
+					preparedAccesses++
+					if len(access.GetSatisfyingRequestedOrderings()) == 0 {
+						accessesWithoutOrdering[candidate.CandidateName()]++
+					}
+				}
+			}
+		case *cascades.TransformExprTask:
+			key += fmt.Sprintf("/%T", transform.Rule)
+			groupTasks[transform.Ref]++
+			transformCounts[transformKey{key, transform.Ref, transform.Expr}]++
+		case *cascades.TransformImplTask:
+			key += fmt.Sprintf("/%T", transform.Rule)
+			groupTasks[transform.Ref]++
+			transformCounts[transformKey{key, transform.Ref, transform.Expr}]++
+		}
+		taskCounts[key]++
+	})
+	started := time.Now()
+	best, tasks, err := planner.PlanWithContext(context.Background(), ref)
+	t.Logf("planning elapsed=%s tasks=%d error=%v", time.Since(started), tasks, err)
+	t.Logf("task counts: %v", taskCounts)
+	for kind, groups := range groupWork {
+		repeated, maximum := 0, 0
+		for _, count := range groups {
+			repeated += count - 1
+			maximum = max(maximum, count)
+		}
+		t.Logf("%s: groups=%d repeats=%d maximum=%d", kind, len(groups), repeated, maximum)
+	}
+	t.Logf("group task states: %v", groupStates)
+	repeatedInputs := make(map[string]int)
+	for key, count := range inputCounts {
+		if count > 1 {
+			repeatedInputs[fmt.Sprintf("%T", key.expr)] += count - 1
+		}
+	}
+	t.Logf("repeated (group,expression) input tasks=%v; optimizer shapes=%v", repeatedInputs, optimizerShapes)
+	t.Logf("input optimization shapes=%v", inputShapes)
+	repeatedExplorations := make(map[string]int)
+	for expr, count := range exploredObjects {
+		if count > 1 {
+			repeatedExplorations[fmt.Sprintf("%T", expr)] += count - 1
+		}
+	}
+	t.Logf("expression exploration tasks by phase/type=%v; repeated object explorations=%v", explorationTypes, repeatedExplorations)
+	t.Logf("consumption ordering requests=%v; prepared accesses=%d; accesses without satisfied ordering by candidate=%v", accessOrderings, preparedAccesses, accessesWithoutOrdering)
+	if err != nil {
+		reachable := make(map[*expressions.Reference]bool)
+		var visit func(*expressions.Reference)
+		visit = func(group *expressions.Reference) {
+			group = group.Canonical()
+			if reachable[group] {
+				return
+			}
+			reachable[group] = true
+			for _, member := range group.AllMembers() {
+				for _, q := range member.GetQuantifiers() {
+					visit(q.GetRangesOver())
+				}
+			}
+		}
+		visit(ref)
+		orphanTasks := 0
+		for group, count := range groupTasks {
+			if !reachable[group.Canonical()] {
+				orphanTasks += count
+			}
+		}
+		t.Logf("reachable groups=%d; transform tasks in now-unreachable groups=%d", len(reachable), orphanTasks)
+		repeatedTransforms := make(map[string]int)
+		maxRepeats := 0
+		for key, count := range transformCounts {
+			if count > 1 {
+				repeatedTransforms[key.rule] += count - 1
+			}
+			if count > maxRepeats {
+				maxRepeats = count
+			}
+		}
+		t.Logf("repeated (rule,ref,expression) tasks=%v; maximum repetition=%d", repeatedTransforms, maxRepeats)
+		repeatedConsumptions, maxConsumptions := 0, 0
+		for _, count := range consumeCounts {
+			if count > 1 {
+				repeatedConsumptions += count - 1
+			}
+			maxConsumptions = max(maxConsumptions, count)
+		}
+		t.Logf("data access: groups=%d repeated consumption tasks=%d maximum per group=%d", len(consumeCounts), repeatedConsumptions, maxConsumptions)
+		type selectKey struct {
+			hash uint64
+		}
+		type selectEntry struct {
+			ref  *expressions.Reference
+			expr *expressions.SelectExpression
+		}
+		seen := make(map[selectKey][]selectEntry)
+		selectsByChild := make(map[*expressions.Reference][]selectEntry)
+		duplicates := 0
+		hashComparisons := 0
+		for group := range planner.Memo().References() {
+			for _, member := range group.AllMembers() {
+				sel, ok := member.(*expressions.SelectExpression)
+				if !ok {
+					continue
+				}
+				key := selectKey{sel.HashCodeWithoutChildren()}
+				if qs := sel.GetQuantifiers(); len(qs) == 1 {
+					child := qs[0].GetRangesOver().Canonical()
+					for _, previous := range selectsByChild[child] {
+						aliases := expressions.AliasMapOf(previous.expr.GetQuantifiers()[0].GetAlias(), qs[0].GetAlias())
+						hashComparisons++
+						if previous.expr.EqualsWithoutChildren(sel, aliases) && previous.expr.HashCodeWithoutChildren() != key.hash {
+							t.Fatalf("memo-equal Select payloads have different hashes: groups %d and %d", previous.ref.ID(), group.ID())
+						}
+					}
+					selectsByChild[child] = append(selectsByChild[child], selectEntry{group, sel})
+				}
+				for _, previous := range seen[key] {
+					if previous.ref != group && previous.ref.Stage() == group.Stage() && expressions.MemoEqual(previous.expr, sel) {
+						duplicates++
+						if duplicates <= 5 {
+							t.Logf("duplicate Select across lanes/children: groups %d and %d", previous.ref.ID(), group.ID())
+						}
+					}
+				}
+				seen[key] = append(seen[key], selectEntry{group, sel})
+			}
+		}
+		t.Logf("same-stage Select duplicate pairs across all lanes/children=%d over %d hash buckets; independent payload hash comparisons=%d", duplicates, len(seen), hashComparisons)
+		finalPairs := make(map[string]int)
+		for group := range planner.Memo().References() {
+			finals := group.FinalMembers()
+			for i, a := range finals {
+				for _, b := range finals[i+1:] {
+					if a.HashCodeWithoutChildren() == b.HashCodeWithoutChildren() && expressions.MemoEqual(a, b) && expressions.MemoEqual(b, a) {
+						finalPairs[fmt.Sprintf("%T", a)]++
+					}
+				}
+			}
+		}
+		t.Logf("memo-equivalent final pairs within a group=%v", finalPairs)
+	}
+	observed := 0
+	for _, count := range taskCounts {
+		observed += count
+	}
+	if observed != tasks {
+		t.Fatalf("observed %d tasks, planner reported %d", observed, tasks)
+	}
+	types := make(map[string]int)
+	uniqueTypes := make(map[string]int)
+	seenExpressions := make(map[expressions.RelationalExpression]bool)
+	atomicCount := 0
+	largestGroup := 0
+	var largestMembers []expressions.RelationalExpression
+	for reference := range planner.Memo().References() {
+		if seeds := reference.Members(); len(seeds) != 0 {
+			required := expressions.GetCorrelatedToOfExpression(seeds[0])
+			for _, alternative := range reference.AllMembers() {
+				for alias := range expressions.GetCorrelatedToOfExpression(alternative) {
+					if _, expected := required[alias]; !expected {
+						t.Fatalf("group %d seed %T needs %v; alternative %T adds alias %#v (own=%v)", reference.ID(), seeds[0], required, alternative, alias, alternative.GetCorrelatedToWithoutChildren())
+					}
+				}
+			}
+		}
+		if members := reference.AllMembers(); len(members) > largestGroup {
+			largestGroup = len(members)
+			largestMembers = members
+		}
+		for _, expression := range reference.AllMembers() {
+			types[fmt.Sprintf("%T", expression)]++
+			if !seenExpressions[expression] {
+				seenExpressions[expression] = true
+				uniqueTypes[fmt.Sprintf("%T", expression)]++
+			}
+			if carrier, ok := expression.(expressions.RelationalExpressionWithPredicates); ok {
+				for _, predicate := range carrier.GetPredicates() {
+					if predicates.IsAtomic(predicate) {
+						atomicCount++
+					}
+				}
+			}
+		}
+	}
+	t.Logf("tasks=%d groups=%d atomic=%d types=%v", tasks, len(planner.Memo().References()), atomicCount, types)
+	t.Logf("unique expression objects by type=%v", uniqueTypes)
+	largestTypes := make(map[string]int)
+	for _, expression := range largestMembers {
+		largestTypes[fmt.Sprintf("%T", expression)]++
+		if carrier, ok := expression.(expressions.RelationalExpressionWithPredicates); ok && largestTypes[fmt.Sprintf("%T", expression)] <= 2 {
+			for _, predicate := range carrier.GetPredicates() {
+				t.Logf("largest group %T predicate: %s", expression, predicate.Explain())
+			}
+		}
+	}
+	t.Logf("largest group: %d members, types=%v", largestGroup, largestTypes)
+	if types["*expressions.LogicalUnionExpression"] == 0 {
+		t.Fatal("convergence test did not explore a union")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if best == nil {
+		t.Fatal("empty plan")
+	}
+	return planner
 }

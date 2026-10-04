@@ -25,7 +25,7 @@ func TestFDB_IdentifierCaseProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE identcase CREATE TABLE MyTable (id BIGINT, MyCol BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_identcase/s WITH TEMPLATE identcase")
-	dsn := fmt.Sprintf("fdbsql:///testdb_identcase?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_IDENTCASE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

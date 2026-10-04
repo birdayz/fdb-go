@@ -3,7 +3,7 @@ package expressions
 // ConstraintsMap is the 1:1 port of Java's ConstraintsMap
 // (ConstraintsMap.java, tag 4.12.11.0): a Reference-attached map of
 // planner constraints with TICK/WATERMARK exploration bookkeeping —
-// Java's convergence model. Every constraint push bumps currentTick;
+// Java's convergence model. Exploration constraint pushes bump currentTick;
 // StartExploration records the tick as the goal watermark;
 // CommitExploration promotes the goal to the committed watermark. A
 // Reference is EXPLORED when no push has arrived since exploration
@@ -17,6 +17,7 @@ package expressions
 // package cannot see the typed constraint lattice (Java dispatches
 // through PlannerConstraint.combine the same way).
 type ConstraintsMap struct {
+	lastRearmTick          int64
 	currentTick            int64
 	watermarkGoalTick      int64
 	watermarkCommittedTick int64
@@ -66,6 +67,7 @@ func (m *ConstraintsMap) GetConstraint(key any) (any, bool) {
 // ok=true to store it (tick bumps), or ok=false when the push is
 // subsumed (no change, no tick — Java's empty Optional). Returns the
 // stored (possibly combined) constraint and whether the map changed.
+// Go-only optimizer retention requirements do not invalidate expression rules.
 func (m *ConstraintsMap) PushProperty(key, constraint any, combine func(existing, pushed any) (any, bool)) (any, bool) {
 	if e, ok := m.entries[key]; ok {
 		if combine == nil {
@@ -75,12 +77,12 @@ func (m *ConstraintsMap) PushProperty(key, constraint any, combine func(existing
 		if !changed {
 			return e.property, false
 		}
-		m.bumpTick()
+		m.bumpPropertyTick(key)
 		e.property = combined
 		e.lastUpdatedTick = m.currentTick
 		return combined, true
 	}
-	m.bumpTick()
+	m.bumpPropertyTick(key)
 	m.entries[key] = &constraintsMapEntry{lastUpdatedTick: m.currentTick, property: constraint}
 	m.order = append(m.order, key)
 	return constraint, true
@@ -112,7 +114,7 @@ func (m *ConstraintsMap) IsFullyExploring() bool {
 // IsExploredForAttributes: explored at least once, and none of the given
 // keys has been pushed past the committed watermark.
 func (m *ConstraintsMap) IsExploredForAttributes(keys []any) bool {
-	if m.HasNeverBeenExplored() {
+	if m.HasNeverBeenExplored() || m.lastRearmTick > m.watermarkCommittedTick {
 		return false
 	}
 	for _, k := range keys {
@@ -169,6 +171,7 @@ func (m *ConstraintsMap) InheritFromOther(other *ConstraintsMap) {
 	if other == nil {
 		return
 	}
+	m.lastRearmTick = other.lastRearmTick
 	m.currentTick = other.currentTick
 	m.watermarkGoalTick = other.watermarkGoalTick
 	m.watermarkCommittedTick = other.watermarkCommittedTick
@@ -178,6 +181,13 @@ func (m *ConstraintsMap) InheritFromOther(other *ConstraintsMap) {
 		copied := *e
 		m.entries[k] = &copied
 	}
+}
+
+func (m *ConstraintsMap) bumpPropertyTick(key any) {
+	if constraint, ok := key.(interface{ AffectsExploration() bool }); ok && !constraint.AffectsExploration() {
+		return
+	}
+	m.bumpTick()
 }
 
 func (m *ConstraintsMap) bumpTick() int64 {
@@ -214,5 +224,5 @@ func combineFor(key any) func(existing, pushed any) (any, bool) {
 // (rule bindings and partial matches are (group, expression)-scoped),
 // so the survivor must re-explore them under its own.
 func (m *ConstraintsMap) ReArm() {
-	m.bumpTick()
+	m.lastRearmTick = m.bumpTick()
 }

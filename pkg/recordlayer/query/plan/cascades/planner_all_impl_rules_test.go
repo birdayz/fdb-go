@@ -43,14 +43,14 @@ func allImplScanWithPK(recordType string) (*plans.RecordQueryScanPlan, *expressi
 func TestAllImplRules_DefaultListHas7Rules(t *testing.T) {
 	t.Parallel()
 	rules := DefaultImplementationRules()
-	// 15 ordering-push + 4 referenced-fields-push + 9 Java-ported + 13 fetch-push-through
+	// 14 ordering-push + 4 referenced-fields-push + 8 Java-ported + 11 fetch-push-through
 	// (the ordered merge-sort union joined the set-op-through-fetch
 	// family — Java PlanningRuleSet.java:158's UnionOnValues arm)
 	// + 1 vector limit-fold (SinkLimitIntoVectorScanRule, RFC-156 Phase B)
-	// + 1 Go extension (ImplementInMemorySortRule) = 43
-	// Rules yield into Members.
-	if len(rules) != 43 {
-		t.Fatalf("expected 43 implementation rules, got %d", len(rules))
+	// + 1 Go extension (ImplementInMemorySortRule) = 39. The projection rules
+	// left with the projection expression: a query block is a Select.
+	if len(rules) != 39 {
+		t.Fatalf("expected 39 implementation rules, got %d", len(rules))
 	}
 }
 

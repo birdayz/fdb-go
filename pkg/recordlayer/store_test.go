@@ -131,7 +131,7 @@ func BenchmarkDeserializeAndDiscover_Small(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_, _, err := store.deserializeAndDiscover(testUnionData)
+		_, _, _, err := store.deserializeAndDiscover(testUnionData)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -146,7 +146,7 @@ func BenchmarkDeserializeAndDiscover_Large(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_, _, err := store.deserializeAndDiscover(testUnionDataLarge)
+		_, _, _, err := store.deserializeAndDiscover(testUnionDataLarge)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -275,34 +275,25 @@ func TestDeserializeWithUnknownFields(t *testing.T) {
 	metaData := testMetaData(t)
 	store := &FDBRecordStore{metaData: metaData}
 
-	// Build valid union data, then prepend an unknown field.
-	// Unknown field: field number 999, wire type 2 (bytes), value "junk".
+	// Valid union data with an unknown field (999, bytes "junk") before it.
 	unknownField := protowire.AppendTag(nil, 999, protowire.BytesType)
 	unknownField = protowire.AppendBytes(unknownField, []byte("junk"))
 	dataWithUnknown := append(unknownField, testUnionData...)
 
-	// deserializeAndDiscover must skip the unknown field and find the Order
-	rt, msg, err := store.deserializeAndDiscover(dataWithUnknown)
-	if err != nil {
-		t.Fatalf("deserializeAndDiscover with unknown field: %v", err)
+	// Java's DynamicMessageRecordSerializer.deserializeUnion refuses a union
+	// holding an unknown field beside its record; neither engine writes one.
+	// (TestDiscoverUnionIsJavasDeserializeUnion drives every arm.)
+	const want = "Could not deserialize union message because there are unknown fields"
+	if _, _, _, err := store.deserializeAndDiscover(dataWithUnknown); err == nil || err.Error() != want {
+		t.Fatalf("deserializeAndDiscover with an unknown field: %v, want %q", err, want)
 	}
-	if rt.Name != "Order" {
-		t.Errorf("expected Order, got %s", rt.Name)
+	if _, err := store.deserializeRecord(dataWithUnknown, metaData.GetRecordType("Order")); err == nil || err.Error() != want {
+		t.Fatalf("deserializeRecord with an unknown field: %v, want %q", err, want)
 	}
-	order := msg.(*gen.Order)
-	if order.GetOrderId() != 1001 {
-		t.Errorf("expected OrderId 1001, got %d", order.GetOrderId())
-	}
-
-	// deserializeRecord with known type must also skip unknown fields
-	recordType := metaData.GetRecordType("Order")
-	msg2, err := store.deserializeRecord(dataWithUnknown, recordType)
-	if err != nil {
-		t.Fatalf("deserializeRecord with unknown field: %v", err)
-	}
-	order2 := msg2.(*gen.Order)
-	if order2.GetOrderId() != 1001 {
-		t.Errorf("expected OrderId 1001, got %d", order2.GetOrderId())
+	// Without it the record reads.
+	msg, err := store.deserializeRecord(testUnionData, metaData.GetRecordType("Order"))
+	if err != nil || msg.(*gen.Order).GetOrderId() != 1001 {
+		t.Fatalf("deserializeRecord: %v, %v", msg, err)
 	}
 }
 

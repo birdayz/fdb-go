@@ -31,7 +31,7 @@ func dmlCascadesDB(t *testing.T, tag string) *sql.DB {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE "+tmpl); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestFDB_DMLCascades_ExplicitTxRollback(t *testing.T) {
 // TestFDB_DMLCascades_Update pins UPDATE through Cascades: arithmetic SET
 // (RHS resolved to a Value, not text), WHERE-scoped vs all-rows, correct
 // RowsAffected, SET to NULL on a nullable column clears it, and the two
-// plan-time rejections (NOT NULL violation, unsupported function in SET).
+// rejections (a NULL primary key, an unsupported function in SET).
 func TestFDB_DMLCascades_Update(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -222,9 +222,13 @@ func TestFDB_DMLCascades_Update(t *testing.T) {
 		t.Fatalf("price after SET NULL = %v, want NULL", price)
 	}
 
-	// SET NULL on a NOT NULL column (id) → NOT NULL violation at plan time.
-	if _, err := db.ExecContext(ctx, "UPDATE Item SET id = NULL WHERE id = 2"); err == nil {
-		t.Fatal("UPDATE SET id=NULL on NOT NULL column did not error")
+	// SET NULL on the primary key column (id): the updated record's key is no
+	// longer the one it was read at, and the update's save, which requires the
+	// record to exist, finds none there (Java's RecordDoesNotExistException for
+	// an UPDATE of a key column).
+	if _, err := db.ExecContext(ctx, "UPDATE Item SET id = NULL WHERE id = 2"); err == nil ||
+		!strings.Contains(err.Error(), "record does not exist") {
+		t.Fatalf("UPDATE SET id=NULL on the primary key: %v, want \"record does not exist\"", err)
 	}
 
 	// Go-only scalar function in SET (RFC-087): UPPER(name) computes
@@ -267,7 +271,7 @@ func TestFDB_DMLCascades_InsertSelect(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE dmlc_inssel_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -353,7 +357,7 @@ func TestFDB_DMLCascades_UniqueIndexViolation(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE dmlc_uniq_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

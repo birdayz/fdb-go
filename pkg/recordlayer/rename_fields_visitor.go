@@ -37,7 +37,7 @@ func renameFields(expr KeyExpression, sourceDesc, targetDesc protoreflect.Messag
 		if newName == e.fieldName {
 			return e, nil
 		}
-		return &FieldKeyExpression{fieldName: newName, fanType: e.fanType}, nil
+		return &FieldKeyExpression{fieldName: newName, fanType: e.fanType, nullStandin: e.nullStandin}, nil
 
 	case *NestingKeyExpression:
 		newParent, err := renameFieldByNumber(e.parentField, sourceDesc, targetDesc)
@@ -70,7 +70,7 @@ func renameFields(expr KeyExpression, sourceDesc, targetDesc protoreflect.Messag
 		if newParent == e.parentField && newChild == e.child {
 			return e, nil
 		}
-		return &NestingKeyExpression{parentField: newParent, fanType: e.fanType, child: newChild}, nil
+		return &NestingKeyExpression{parentField: newParent, fanType: e.fanType, child: newChild, parentNullStandin: e.parentNullStandin}, nil
 
 	case *CompositeKeyExpression:
 		newChildren, changed, err := renameChildren(e.expressions, sourceDesc, targetDesc)
@@ -80,7 +80,7 @@ func renameFields(expr KeyExpression, sourceDesc, targetDesc protoreflect.Messag
 		if !changed {
 			return e, nil
 		}
-		return &CompositeKeyExpression{expressions: newChildren}, nil
+		return Concat(newChildren...), nil
 
 	case *ListKeyExpression:
 		newChildren, changed, err := renameChildren(e.children, sourceDesc, targetDesc)
@@ -143,20 +143,8 @@ func renameFields(expr KeyExpression, sourceDesc, targetDesc protoreflect.Messag
 		return &KeyWithValueExpression{innerKey: newInner, splitPoint: e.splitPoint}, nil
 
 	case *RecordTypeKeyExpression:
-		// The record-type prefix itself is rename-invariant. Go (unlike Java) allows an
-		// optional nested expression after the prefix; it applies to the same record
-		// descriptor, so recurse into it with the same source/target.
-		if e.nested == nil {
-			return e, nil
-		}
-		newNested, err := renameFields(e.nested, sourceDesc, targetDesc)
-		if err != nil {
-			return nil, err
-		}
-		if newNested == e.nested {
-			return e, nil
-		}
-		return &RecordTypeKeyExpression{nested: newNested}, nil
+		// The record-type key reads no field, so it is rename-invariant.
+		return e, nil
 
 	case *VersionKeyExpression, *LiteralKeyExpression, *EmptyKeyExpression:
 		// Invariant to field renamings (Java treats these as KeyExpressionWithValue /
@@ -164,8 +152,9 @@ func renameFields(expr KeyExpression, sourceDesc, targetDesc protoreflect.Messag
 		return expr, nil
 
 	default:
-		return nil, &MetaDataEvolutionError{
-			Message: fmt.Sprintf("field renaming not supported for expression of type %T", expr),
+		// Java's RecordCoreArgumentException (RenameFieldsVisitor.java:149, :214).
+		return nil, &RecordCoreArgumentError{
+			Message: fmt.Sprintf("field renaming not supported for expression (type=%T)", expr),
 		}
 	}
 }
@@ -194,13 +183,13 @@ func renameFieldByNumber(sourceFieldName string, sourceDesc, targetDesc protoref
 	sourceField := sourceDesc.Fields().ByName(protoreflect.Name(sourceFieldName))
 	if sourceField == nil {
 		return "", &MetaDataEvolutionError{
-			Message: fmt.Sprintf("field %q not found in source descriptor %q", sourceFieldName, sourceDesc.FullName()),
+			Message: fmt.Sprintf("field not found in source descriptor (field=%q, message=%q)", sourceFieldName, sourceDesc.FullName()),
 		}
 	}
 	targetField := targetDesc.Fields().ByNumber(sourceField.Number())
 	if targetField == nil {
 		return "", &MetaDataEvolutionError{
-			Message: fmt.Sprintf("field %q (number %d) not found in target descriptor %q",
+			Message: fmt.Sprintf("field not found in target descriptor (old_field=%q, number=%d, message=%q)",
 				sourceFieldName, sourceField.Number(), targetDesc.FullName()),
 		}
 	}
@@ -214,12 +203,12 @@ func messageTypeForField(desc protoreflect.MessageDescriptor, fieldName string) 
 	fd := desc.Fields().ByName(protoreflect.Name(fieldName))
 	if fd == nil {
 		return nil, &MetaDataEvolutionError{
-			Message: fmt.Sprintf("nesting parent field %q not found in %q", fieldName, desc.FullName()),
+			Message: fmt.Sprintf("parent field not found (field=%q, message=%q)", fieldName, desc.FullName()),
 		}
 	}
 	if fd.Kind() != protoreflect.MessageKind && fd.Kind() != protoreflect.GroupKind {
 		return nil, &MetaDataEvolutionError{
-			Message: fmt.Sprintf("nesting parent field %q in %q is not of message type", fieldName, desc.FullName()),
+			Message: fmt.Sprintf("parent field is not of message type (field=%q, message=%q)", fieldName, desc.FullName()),
 		}
 	}
 	return fd.Message(), nil

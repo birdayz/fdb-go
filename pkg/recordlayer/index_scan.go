@@ -263,9 +263,13 @@ func (store *FDBRecordStore) ScanIndex(
 	continuation []byte,
 	scanProperties ScanProperties,
 ) RecordCursor[*IndexEntry] {
-	if !store.IsIndexScannable(index.Name) {
+	state, err := store.readIndexState(index.Name)
+	if err != nil {
+		return &errorCursor[*IndexEntry]{err: err}
+	}
+	if !state.IsScannable() {
 		return &errorCursor[*IndexEntry]{
-			err: &IndexNotReadableError{IndexName: index.Name, CurrentState: store.GetIndexState(index.Name)},
+			err: &IndexNotReadableError{IndexName: index.Name, CurrentState: state},
 		}
 	}
 	// BITMAP_VALUE indexes must be scanned with BY_GROUP via ScanIndexByType.
@@ -332,9 +336,13 @@ func (store *FDBRecordStore) scanIndexByType(
 	continuation []byte,
 	scanProperties ScanProperties,
 ) RecordCursor[*IndexEntry] {
-	if !store.IsIndexScannable(index.Name) {
+	state, err := store.readIndexState(index.Name)
+	if err != nil {
+		return &errorCursor[*IndexEntry]{err: err}
+	}
+	if !state.IsScannable() {
 		return &errorCursor[*IndexEntry]{
-			err: &IndexNotReadableError{IndexName: index.Name, CurrentState: store.GetIndexState(index.Name)},
+			err: &IndexNotReadableError{IndexName: index.Name, CurrentState: state},
 		}
 	}
 	maintainer, err := store.getIndexMaintainer(index)
@@ -435,9 +443,13 @@ func (store *FDBRecordStore) scanTimeWindowLeaderboard(
 	continuation []byte,
 	scanProperties ScanProperties,
 ) RecordCursor[*IndexEntry] {
-	if !store.IsIndexScannable(index.Name) {
+	state, err := store.readIndexState(index.Name)
+	if err != nil {
+		return &errorCursor[*IndexEntry]{err: err}
+	}
+	if !state.IsScannable() {
 		return &errorCursor[*IndexEntry]{
-			err: &IndexNotReadableError{IndexName: index.Name, CurrentState: store.GetIndexState(index.Name)},
+			err: &IndexNotReadableError{IndexName: index.Name, CurrentState: state},
 		}
 	}
 	maintainer, err := store.getIndexMaintainer(index)
@@ -479,6 +491,8 @@ type indexCursor struct {
 	recordsRead  int // also this cursor's own free-initial-pass gate (Java's usedInitialPass)
 	prefixLength int
 	lastCont     []byte
+	lastNoNext   RecordCursorResult[*IndexEntry]
+	hasNoNext    bool
 
 	// scanState is the (possibly shared) scanned-records/scanned-bytes/time
 	// counter set — see ScanLimiterState's doc comment. Never nil.
@@ -507,6 +521,21 @@ func newIndexCursor(
 
 // OnNext returns the next IndexEntry or indicates why iteration stopped.
 func (c *indexCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntry], error) {
+	if c.hasNoNext && !c.closed {
+		return c.lastNoNext, nil
+	}
+	result, err := c.advance(ctx)
+	if err == nil && !result.HasNext() {
+		// Like Java's KeyValueCursorBase, preserve the first terminal result.
+		// Repeating the row-limit lookahead would otherwise consume entries
+		// and eventually replace a resumable limit with source exhaustion.
+		c.lastNoNext = result
+		c.hasNoNext = true
+	}
+	return result, err
+}
+
+func (c *indexCursor) advance(ctx context.Context) (RecordCursorResult[*IndexEntry], error) {
 	if c.closed {
 		return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("cursor is closed")
 	}

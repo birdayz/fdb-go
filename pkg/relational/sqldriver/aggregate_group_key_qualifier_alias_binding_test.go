@@ -46,7 +46,7 @@ func TestFDB_AggregateGroupKeyQualifierAndAliasBinding(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE aggkname "+
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggkname/s WITH TEMPLATE aggkname")
-	dsn := fmt.Sprintf("fdbsql:///testdb_aggkname?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGKNAME?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

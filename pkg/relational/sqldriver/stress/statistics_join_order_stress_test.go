@@ -305,7 +305,7 @@ func buildStatsJoinArrangement(t *testing.T, ctx context.Context, arr *statsJoin
 
 func openStatsJoinDB(t *testing.T, dbPath string, useStats bool) *sql.DB {
 	t.Helper()
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=main", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=MAIN", strings.ToUpper(dbPath), clusterFilePath)
 	if useStats {
 		dsn += "&planner_statistics=true"
 	}

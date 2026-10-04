@@ -547,6 +547,33 @@ func TestGetCommittedVersion(t *testing.T) {
 	}
 }
 
+func TestResetPreservesCommittedVersion(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	tr, err := db.CreateTransaction()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr.Set(fdb.Key(t.Name()), []byte("value"))
+	if err := tr.Commit().Get(); err != nil {
+		t.Fatal(err)
+	}
+	committed, err := tr.GetCommittedVersion()
+	if err != nil || committed <= 0 {
+		t.Fatalf("write commit: %d, %v", committed, err)
+	}
+	tr.Reset()
+	if got, err := tr.GetCommittedVersion(); err != nil || got != committed {
+		t.Fatalf("after Reset: %d, %v; want %d, nil", got, err, committed)
+	}
+	if err := tr.Commit().Get(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := tr.GetCommittedVersion(); err != nil || got != -1 {
+		t.Fatalf("after read-only commit: %d, %v; want -1, nil", got, err)
+	}
+}
+
 func TestTransactorInterface(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)

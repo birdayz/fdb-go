@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // Static interface assertions.
@@ -60,6 +62,48 @@ func TestExplainValue(t *testing.T) {
 	cast := NewCastValue(&ConstantValue{Value: int64(1), Typ: NullableLong}, TypeString)
 	if got := ExplainValue(cast); got != "CAST(1 AS STRING)" {
 		t.Fatalf("cast: got %q", got)
+	}
+}
+
+// A map's result program reads its own input as the current row and may also
+// read an outer row the plan is correlated to. That outer alias is minted per
+// planning run, so it must render in the stable local namespace, never with its
+// process-global suffix: two plannings of one query must explain identically.
+func TestExplainValueOverInputNumbersOtherUniqueRoots(t *testing.T) {
+	t.Parallel()
+	rowType := NewRecordType("", false, []Field{
+		{Name: "ID", Ordinal: 0, FieldType: NotNullLong},
+		{Name: "V", Ordinal: 1, FieldType: NotNullLong},
+	})
+	render := func() string {
+		input, err := NewQuantifiedObjectValue(UniqueCorrelationIdentifier(), rowType)
+		if err != nil {
+			t.Fatalf("input: %v", err)
+		}
+		outer, err := NewQuantifiedObjectValue(UniqueCorrelationIdentifier(), rowType)
+		if err != nil {
+			t.Fatalf("outer: %v", err)
+		}
+		own, err := ResolveFieldOrdinals(input, []int{0})
+		if err != nil {
+			t.Fatalf("own: %v", err)
+		}
+		correlated, err := ResolveFieldOrdinals(outer, []int{1})
+		if err != nil {
+			t.Fatalf("correlated: %v", err)
+		}
+		rc := NewRecordConstructorValue(
+			RecordConstructorField{Name: "ID", Value: own},
+			RecordConstructorField{Name: "V", Value: correlated},
+		)
+		return ExplainValueOverInput(rc, input.Correlation())
+	}
+	first, second := render(), render()
+	if first != "{ID: _current.ID#0, V: q$0.V#1}" {
+		t.Fatalf("explain = %q, want the outer root numbered q$0", first)
+	}
+	if first != second {
+		t.Fatalf("two plannings explain differently:\n%s\n%s", first, second)
 	}
 }
 
@@ -342,17 +386,23 @@ func TestCastValue(t *testing.T) {
 	}
 
 	// bool → int: true=1, false=0.
-	boolToInt := NewCastValue(NewBooleanValue(true), NullableLong)
+	boolToInt := NewCastValue(NewBooleanValue(true), NullableInt)
 	got, errEv4 := boolToInt.Evaluate(nil)
 	require.NoError(t, errEv4)
 	if got != int64(1) {
 		t.Fatalf("true→int: got %v", got)
 	}
-	boolToInt = NewCastValue(NewBooleanValue(false), NullableLong)
+	boolToInt = NewCastValue(NewBooleanValue(false), NullableInt)
 	got, errEv5 := boolToInt.Evaluate(nil)
 	require.NoError(t, errEv5)
 	if got != int64(0) {
 		t.Fatalf("false→int: got %v", got)
+	}
+
+	// Java defines BOOLEAN_TO_INT, not BOOLEAN_TO_LONG. SQL already rejects
+	// the latter at resolution; direct Value evaluation must reject it too.
+	if _, err := NewCastValue(NewBooleanValue(true), NullableLong).Evaluate(nil); err == nil {
+		t.Fatal("BOOLEAN→LONG must reject (no Java cast pair)")
 	}
 
 	// INT → bool: 0=false, non-zero=true (Java INT_TO_BOOLEAN — the
@@ -499,15 +549,19 @@ func TestCastValue(t *testing.T) {
 	if got != "false" {
 		t.Fatalf("FALSE→string: got %v, want \"false\"", got)
 	}
-	// bool → float. Mirrors runtime's CAST(b AS INT) AS FLOAT chain
-	// in one step (TRUE→1.0, FALSE→0.0).
-	boolToFloatT := NewCastValue(NewBooleanValue(true), NullableDouble)
+	// Java needs an explicit BOOLEAN→INT→DOUBLE chain, not a direct cast.
+	for _, target := range []Type{NullableFloat, NullableDouble} {
+		if _, err := NewCastValue(NewBooleanValue(true), target).Evaluate(nil); err == nil {
+			t.Fatalf("BOOLEAN→%s must reject (no Java cast pair)", target)
+		}
+	}
+	boolToFloatT := NewCastValue(NewCastValue(NewBooleanValue(true), NullableInt), NullableDouble)
 	got, errEv20 := boolToFloatT.Evaluate(nil)
 	require.NoError(t, errEv20)
 	if got != float64(1) {
 		t.Fatalf("TRUE→float: got %v, want 1", got)
 	}
-	boolToFloatF := NewCastValue(NewBooleanValue(false), NullableDouble)
+	boolToFloatF := NewCastValue(NewCastValue(NewBooleanValue(false), NullableInt), NullableDouble)
 	got, errEv21 := boolToFloatF.Evaluate(nil)
 	require.NoError(t, errEv21)
 	if got != float64(0) {
@@ -788,17 +842,13 @@ func TestPromoteValue_Shape(t *testing.T) {
 	}
 }
 
-func TestPromoteValue_EvaluateRepresentationPreserving(t *testing.T) {
+func TestPromoteValue_RejectsUndeclaredPrimitiveConversion(t *testing.T) {
 	t.Parallel()
 	child := &ConstantValue{Value: int64(42), Typ: NullableLong}
 	p := NewPromoteValue(child, TypeString)
-	tmpEv0,
-		// Non-numeric, non-UUID promotion remains representation-preserving.
-		errEv0 := p.Evaluate(nil)
-	require.NoError(t, errEv0)
-	if got, want := tmpEv0, int64(42); got != want {
-		t.Fatalf("Evaluate: got %v, want %v", got, want)
-	}
+	_, err := p.Evaluate(nil)
+	var incompatible *PromotionError
+	require.ErrorAs(t, err, &incompatible)
 }
 
 func TestPromoteValue_EvaluateNumericCarrier(t *testing.T) {
@@ -866,6 +916,51 @@ func TestPromoteValue_EvaluateNumericCarrier(t *testing.T) {
 			got, err := promoted.Evaluate(nil)
 			require.NoError(t, err)
 			require.Equal(t, test.want, got)
+		})
+	}
+}
+
+func TestPromoteValue_EvaluateRecordNumericCarriers(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name           string
+		source, target Type
+		value, want    any
+		kind           protoreflect.Kind
+	}{
+		{name: "int_to_long", source: NotNullInt, target: NotNullLong, value: int32(3), want: int64(3), kind: protoreflect.Int64Kind},
+		{name: "long_to_double", source: NotNullLong, target: NotNullDouble, value: int64(3), want: float64(3), kind: protoreflect.DoubleKind},
+		{name: "null_field", source: NullableInt, target: NullableLong, kind: protoreflect.Int64Kind},
+		{name: "array_field", source: NewArrayType(false, NotNullLong), target: NewArrayType(false, NotNullDouble), value: []any{int64(3)}, want: []any{float64(3)}, kind: protoreflect.DoubleKind},
+		{name: "empty_array_field", source: NewArrayType(false, NotNullInt), target: NewArrayType(false, NotNullLong), value: []any{}, want: []any{}, kind: protoreflect.Int64Kind},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			constructor := NewRecordConstructorValue(RecordConstructorField{
+				Name: "A", Value: &ConstantValue{Value: tc.value, Typ: tc.source},
+			})
+			stampRecordConstructorForMessageTest(t, constructor)
+			input, err := constructor.Evaluate(nil)
+			require.NoError(t, err)
+			sourceMessage, ok := input.(proto.Message)
+			require.True(t, ok)
+			before := proto.Clone(sourceMessage)
+			target := NewRecordType("", false, []Field{{Name: "A", FieldType: tc.target}})
+			promoted := NewPromoteValue(&ConstantValue{Value: input, Typ: constructor.Type()}, target)
+			require.True(t, promoted.Type().Equals(target))
+			result, err := promoted.Evaluate(nil)
+			require.NoError(t, err)
+			message, ok := result.(proto.Message)
+			require.True(t, ok, "a promoted protobuf record must remain a protobuf record")
+			field := message.ProtoReflect().Descriptor().Fields().Get(0)
+			require.Equal(t, tc.kind, field.Kind(), "the record's descriptor must agree with its promoted field type")
+			if tc.value == nil {
+				require.False(t, message.ProtoReflect().Has(field), "NULL fields must remain absent")
+			} else {
+				require.Equal(t, tc.want, ProtoFieldToRowValue(field, message.ProtoReflect().Get(field)))
+			}
+			require.True(t, proto.Equal(before, sourceMessage), "promotion mutated the source message")
+			require.Same(t, before.ProtoReflect().Descriptor(), sourceMessage.ProtoReflect().Descriptor())
 		})
 	}
 }

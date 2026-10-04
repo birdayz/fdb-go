@@ -1,9 +1,9 @@
 package sqldriver_test
 
 // Pins the ResultSet column-type metadata of a NESTED struct-member projection
-// whose leaf type deriveProjectionColumnDef cannot state from the value alone.
+// whose leaf type the former column derivation cannot state from the value alone.
 //
-// That is the one shape which reaches deriveColumnsFromProjection's
+// That is the one shape which reaches the former column derivation's
 // `TypeName == "" || == "UNKNOWN"` fall-through with a MULTI-accessor reference,
 // and the fall-through is `innerByName[fv.Field]` — a lookup keyed by the
 // reference's display NAME. Every leaf whose type the value can state types
@@ -63,7 +63,7 @@ func TestFDB_NestedArrayLeafDoesNotInheritTheStructRootsMetadata(t *testing.T) {
 			"CREATE TABLE t (id BIGINT, s sarr, top BIGINT ARRAY, topbin BYTES, "+
 			"topstructs elt ARRAY, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nlmeta/s WITH TEMPLATE nlmeta")
-	dsn := fmt.Sprintf("fdbsql:///testdb_nlmeta?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_NLMETA?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

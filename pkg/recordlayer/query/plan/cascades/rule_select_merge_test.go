@@ -140,6 +140,15 @@ func selectMergeExistentialAlias(
 	return mustConstruct(t, predicate, err)
 }
 
+func selectMergeResidualConjuncts(t testing.TB, preds []predicates.QueryPredicate) []predicates.QueryPredicate {
+	t.Helper()
+	residuals, err := predicates.ToResidualPredicates(preds)
+	if err != nil {
+		t.Fatalf("ToResidualPredicates: %v", err)
+	}
+	return predicates.FlattenConjunction(residuals)
+}
+
 func TestSelectMergeRule_FilterChild(t *testing.T) {
 	t.Parallel()
 
@@ -399,9 +408,20 @@ func TestSelectMergeRule_TwoQuantifiersOneFilter(t *testing.T) {
 	if merged.GetQuantifiers()[1].GetRangesOver() != explodeRef {
 		t.Error("second quantifier should range over explode")
 	}
-	// Predicates: outer eq pred (rebased) + inner filter pred
-	if len(merged.GetPredicates()) != 2 {
-		t.Fatalf("expected 2 predicates, got %d", len(merged.GetPredicates()))
+	// Both comparisons constrain COL and share one value group after rebasing.
+	if len(merged.GetPredicates()) != 1 {
+		t.Fatalf("expected 1 value group, got %d", len(merged.GetPredicates()))
+	}
+	comparisons := selectMergeResidualConjuncts(t, merged.GetPredicates())
+	if len(comparisons) != 2 {
+		t.Fatalf("expected 2 comparisons, got %d", len(comparisons))
+	}
+	want := predicates.NewAnd(
+		predicates.NewComparisonPredicate(qFieldValue(t, scanQ, "COL"), eqPred.Comparison),
+		filterPred,
+	)
+	if !predicates.PredicateEquals(predicates.NewAnd(comparisons...), want) {
+		t.Fatalf("merged comparisons = %v, want %v", comparisons, want)
 	}
 }
 
@@ -557,6 +577,81 @@ func TestSelectMergeRule_WithSourceAliases(t *testing.T) {
 	}
 }
 
+// A parent's source alias for a select child names the row the child
+// projects, so the sources pulled up from it do not inherit it; a filter
+// child's row is its source's, so its source keeps the parent's name.
+func TestSelectMergeRule_SelectChildSourcesDoNotInheritTheDerivedName(t *testing.T) {
+	t.Parallel()
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(selectMergeScan(t)))
+	derived := selectMergeSelect(t, selectMergeFlowed(t, scanQ), []expressions.Quantifier{scanQ}, nil)
+	derivedQ := expressions.ForEachQuantifier(expressions.InitialOf(derived))
+	filterScanQ := expressions.ForEachQuantifier(expressions.InitialOf(selectMergeScan(t)))
+	filteredQ := expressions.ForEachQuantifier(expressions.InitialOf(selectMergeFilter(t, nil, filterScanQ)))
+	sel := selectMergeSelectWithAliases(t,
+		selectMergeFlowed(t, derivedQ),
+		[]expressions.Quantifier{derivedQ, filteredQ},
+		nil,
+		[]string{"DERIVED", "FILTERED"},
+	)
+	yielded := selectMergeFire(t, NewSelectMergeRule(), expressions.InitialOf(sel))
+	if len(yielded) < 1 {
+		t.Fatal("nothing merged")
+	}
+	merged := yielded[0].(*expressions.SelectExpression)
+	aliases := map[values.CorrelationIdentifier]string{}
+	for i, q := range merged.GetQuantifiers() {
+		aliases[q.GetAlias()] = merged.GetSourceAliases()[i]
+	}
+	if got := aliases[scanQ.GetAlias()]; got != "" {
+		t.Errorf("the derived select's source took the derived name %q", got)
+	}
+	if got := aliases[filterScanQ.GetAlias()]; got != "FILTERED" {
+		t.Errorf("the filter's source is named %q, want FILTERED", got)
+	}
+}
+
+func TestSelectMergeTranslationDescendsThroughAggregate(t *testing.T) {
+	t.Parallel()
+	pType := values.NewRecordType("", false, []values.Field{{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0}, {Name: "V", FieldType: values.NotNullLong, Ordinal: 1}})
+	qType := values.NewRecordType("", false, []values.Field{{Name: "QID", FieldType: values.NotNullLong, Ordinal: 0}})
+	p := expressions.ForEachQuantifier(expressions.InitialOf(selectMergeTypedScan(t, "P", pType)))
+	q := expressions.ForEachQuantifier(expressions.InitialOf(selectMergeTypedScan(t, "Q", qType)))
+	row := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "ID", Value: selectMergeOrdinalSeedField(t, selectMergeFlowed(t, p), 0)},
+		values.RecordConstructorField{Name: "V", Value: selectMergeOrdinalSeedField(t, selectMergeFlowed(t, p), 1)},
+		values.RecordConstructorField{Name: "QID", Value: selectMergeOrdinalSeedField(t, selectMergeFlowed(t, q), 0)},
+	)
+	box := expressions.ForEachQuantifier(expressions.InitialOf(selectMergeSelect(t, row, []expressions.Quantifier{p, q}, nil)))
+	inner := expressions.ForEachQuantifier(q.GetRangesOver())
+	filter := selectMergeFilter(t, []predicates.QueryPredicate{predicates.NewComparisonPredicate(selectMergeFieldOrdinals(t, selectMergeFlowed(t, box), 0), literalCmp(predicates.ComparisonEquals, int64(1)))}, inner)
+	filtered := expressions.ForEachQuantifier(expressions.InitialOf(filter))
+	aggregate, err := expressions.NewGroupByExpression(nil, []expressions.AggregateSpec{{Function: expressions.AggMax, Operand: selectMergeFieldOrdinals(t, selectMergeFlowed(t, filtered), 0)}}, filtered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := newSelectMergeTranslation(NewExpressionRuleCall(expressions.InitialOf(aggregate), nil, nil))
+	tr.add(box.GetAlias(), row, true)
+	translatedPredicates, err := tr.predicates(filter.GetPredicates())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, predicate := range translatedPredicates {
+		if _, dangling := predicate.GetCorrelatedTo()[box.GetAlias()]; dangling {
+			t.Fatalf("predicate translation retained box: %s; row=%s", predicate.Explain(), values.ExplainValue(row))
+		}
+	}
+	translated, err := tr.reference(expressions.InitialOf(aggregate))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, dangling := translated.GetCorrelatedTo()[box.GetAlias()]; dangling {
+		t.Fatalf("aggregate still reads dissolved alias %#v: %#v", box.GetAlias(), translated.GetCorrelatedTo())
+	}
+	if _, readsP := translated.GetCorrelatedTo()[p.GetAlias()]; !readsP {
+		t.Fatalf("translated aggregate does not read P: %#v", translated.GetCorrelatedTo())
+	}
+}
+
 func TestSelectMergeRule_MultiQuantifierWithPredicates(t *testing.T) {
 	t.Parallel()
 
@@ -611,16 +706,11 @@ func TestSelectMergeRule_MultiQuantifierWithPredicates(t *testing.T) {
 	if len(merged.GetPredicates()) != 2 {
 		t.Fatalf("expected 2 predicates, got %d", len(merged.GetPredicates()))
 	}
-	// Outer predicate's operand should be translated from childQ alias
-	// to the child's result value (scan1Q's QOV).
-	outerTranslated := merged.GetPredicates()[0].(*predicates.ComparisonPredicate)
-	rv, ok := values.AsQuantifiedObjectValue(outerTranslated.Operand)
-	if !ok {
-		t.Fatalf("expected QOV in translated predicate, got %T", outerTranslated.Operand)
-	}
-	if rv.Correlation() != scan1Q.GetAlias() {
-		t.Errorf("predicate operand alias = %s, want %s",
-			rv.Correlation().Name(), scan1Q.GetAlias().Name())
+	// Predicate order is immaterial; both child and translated parent must survive.
+	comparisons := selectMergeResidualConjuncts(t, merged.GetPredicates())
+	want := predicates.NewAnd(childPred, predicates.NewComparisonPredicate(selectMergeFlowed(t, scan1Q), outerPred.Comparison))
+	if !predicates.PredicateEquals(predicates.NewAnd(comparisons...), want) {
+		t.Fatalf("merged predicates = %v, want %v", comparisons, want)
 	}
 }
 
@@ -1220,6 +1310,10 @@ func TestSelectMergeRule_MergeWithCorrelationsBetweenSiblings(t *testing.T) {
 		t.Fatalf("expected 2 quantifiers after merge, got %d", len(mergedQs))
 	}
 
+	if free := expressions.GetCorrelatedToOfExpression(merged); len(free) != 0 {
+		t.Fatalf("merged siblings have unbound correlations: %#v", free)
+	}
+
 	// Predicates: a = 42 (from left) + beta > t.b (from right, rebased)
 	mergedPreds := merged.GetPredicates()
 	if len(mergedPreds) != 2 {
@@ -1351,15 +1445,28 @@ func TestSelectMergeRule_MergeUpAvoidingDuplicates(t *testing.T) {
 	// point to the same Reference, the merged select should have 2
 	// quantifiers (both referring to the same scan ref, but with different
 	// aliases created by the child selects' forEach wrapping). The critical
-	// test is that the merged predicate list has 4 predicates total.
+	// test is that the merged predicate list retains all 4 comparisons.
 	if len(mergedQs) < 1 {
 		t.Fatalf("expected at least 1 quantifier, got %d", len(mergedQs))
 	}
 
 	mergedPreds := merged.GetPredicates()
-	// Expect 4 predicates: a=42, b=?param, a=R.a, b=L.b
-	if len(mergedPreds) != 4 {
-		t.Fatalf("expected 4 predicates, got %d", len(mergedPreds))
+	// Two value groups retain 4 comparisons: a=42, b=?param, a=R.a, b=L.b.
+	if len(mergedPreds) != 2 {
+		t.Fatalf("expected 2 value groups, got %d", len(mergedPreds))
+	}
+	comparisons := selectMergeResidualConjuncts(t, mergedPreds)
+	if len(comparisons) != 4 {
+		t.Fatalf("expected 4 comparisons, got %d", len(comparisons))
+	}
+	want := predicates.NewAnd(
+		qFieldPred(t, leftBaseQun, "a", literalCmp(predicates.ComparisonEquals, int64(42))),
+		qFieldPred(t, rightBaseQun, "b", paramCmp(predicates.ComparisonEquals, "p")),
+		qFieldPred(t, leftBaseQun, "a", valueCmp(predicates.ComparisonEquals, qFieldValue(t, rightBaseQun, "a"))),
+		qFieldPred(t, rightBaseQun, "b", valueCmp(predicates.ComparisonEquals, qFieldValue(t, leftBaseQun, "b"))),
+	)
+	if !predicates.PredicateEquals(predicates.NewAnd(comparisons...), want) {
+		t.Fatalf("merged comparisons = %v, want %v", comparisons, want)
 	}
 }
 
@@ -1423,15 +1530,7 @@ func TestSelectMergeRule_MergeUpWithRenamedCorrelations(t *testing.T) {
 
 	yielded := selectMergeFire(t, NewSelectMergeRule(), upperRef)
 
-	// The rule should merge both children. Each child has 2 quantifiers
-	// (valuesBox + lowerLeft/Right). Since valuesBox is shared, the
-	// merged result needs to disambiguate. Regardless of how the Go
-	// rule handles this (it may or may not create new aliases like Java),
-	// we verify that:
-	// 1. At least 1 yield is produced
-	// 2. The merged expression has the right number of quantifiers
-	//    (4: valuesBox1, lowerLeft, valuesBox2, lowerRight)
-	// 3. The predicates are preserved
+	// Both copies of the shared values box must retain independent bindings.
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1439,12 +1538,27 @@ func TestSelectMergeRule_MergeUpWithRenamedCorrelations(t *testing.T) {
 	merged := yielded[0].(*expressions.SelectExpression)
 	mergedQs := merged.GetQuantifiers()
 
-	// After merging both children (each has 2 quantifiers), and noting
-	// that valuesBox is shared, the Go rule naively pulls up quantifiers
-	// from both children. The resulting count depends on whether the rule
-	// deduplicates or not. At minimum, we expect >= 3 quantifiers.
-	if len(mergedQs) < 3 {
-		t.Fatalf("expected at least 3 quantifiers after merge, got %d", len(mergedQs))
+	if len(mergedQs) != 4 {
+		t.Fatalf("expected 4 quantifiers after merge, got %d", len(mergedQs))
+	}
+	aliases := make(map[values.CorrelationIdentifier]struct{}, len(mergedQs))
+	for _, q := range mergedQs {
+		if _, duplicate := aliases[q.GetAlias()]; duplicate {
+			t.Fatalf("pulled-up siblings share alias %#v", q.GetAlias())
+		}
+		aliases[q.GetAlias()] = struct{}{}
+	}
+	if free := expressions.GetCorrelatedToOfExpression(merged); len(free) != 0 {
+		t.Fatalf("merged diamond has unbound correlations: %#v", free)
+	}
+	for _, pair := range [][2]int{{0, 1}, {2, 3}} {
+		deps := mergedQs[pair[1]].GetCorrelatedTo()
+		if len(deps) != 1 {
+			t.Fatalf("dependent leg %d correlations = %#v", pair[1], deps)
+		}
+		if _, bound := deps[mergedQs[pair[0]].GetAlias()]; !bound {
+			t.Fatalf("dependent leg %d reads another child's binding: %#v", pair[1], deps)
+		}
 	}
 
 	mergedPreds := merged.GetPredicates()
@@ -1514,6 +1628,29 @@ func TestSelectMerge_BakedBoxRefCallback_MultiAccessor(t *testing.T) {
 	}
 }
 
+// TestSelectMerge_BakedBoxRefCallback_ScalarLegReadIsNotTheBox pins that a box
+// named after its rightmost leaf leaves a bare read of that leaf alone when the
+// leaf is a scalar unnest element: the box row is a record, so a LONG-typed
+// read of the shared alias can only be the leaf, which the pulled-up leg
+// quantifier re-binds.
+func TestSelectMerge_BakedBoxRefCallback_ScalarLegReadIsNotTheBox(t *testing.T) {
+	t.Parallel()
+	u := values.NamedCorrelationIdentifier("U")
+	leaf := selectMergeQOV(t, u, values.NotNullLong)
+	rc := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "U", Value: leaf},
+	)
+	read := selectMergeQOV(t, u, values.NotNullLong)
+	cb := bakedBoxRefCallback(map[values.CorrelationIdentifier]values.Value{u: rc})
+	if out := values.Replace(read, cb); out != read {
+		t.Fatalf("scalar leaf read became %v, want the read of leaf U itself", out)
+	}
+	box := values.NewRecordType("", false, []values.Field{{Name: "U", FieldType: values.NotNullLong, Ordinal: 0}})
+	if out := values.Replace(selectMergeQOV(t, u, box), cb); out != rc {
+		t.Fatalf("box-typed read became %v, want the box row %v", out, rc)
+	}
+}
+
 // TestSelectMergeRule_TranslatesExplodeSiblingCollection is the red sentinel
 // for the SelectMerge/Explode arm: when a
 // dissolved box leg (a multi-quantifier ordinal-seed child) MERGES into the
@@ -1521,7 +1658,7 @@ func TestSelectMerge_BakedBoxRefCallback_MultiAccessor(t *testing.T) {
 // Explode — whose collection is a baked reference to the box's alias — must
 // have that collection TRANSLATED so it no longer dangles on the merged-away
 // box alias (it collapses to the spliced leg reference). Without the
-// ExplodeExpression arm in translateQuantifierCorrelations the rebuilt merged
+// ExplodeExpression arm in selectMergeTranslation.expression the rebuilt merged
 // member carries a dangling collection: correct plans still win today, but the
 // moment the cost model prefers the merged member the Explode reads a
 // non-existent quantifier — silent wrong rows. This pins the arm directly.
@@ -1678,6 +1815,117 @@ func TestSelectMergeRule_ChainedUnnestBarrier(t *testing.T) {
 					t.Fatalf("yield[%d]: chained-unnest Explode collection dangles on merged-away target alias %s (%v) — the SelectMerge barrier failed to decline the non-seed chained merge (latent wrong rows)", yi, targetAlias, cv)
 				}
 			}
+		}
+	}
+}
+
+// TestSelectMergeRule_KeepsTheReferenceLegTable pins the decline that closes
+// `FROM (SELECT * FROM w, g) AS a, h AS d` (XX000 "reference members disagree
+// on result type" before). The parent's row is tiled by its own sources,
+// [A, D]; dissolving the positional-seed child A re-tiles it [W, G, D], a
+// different populated leg table, which GetFlowedObjectType refuses for the
+// whole reference. The merge must not produce that member. A single-source
+// child re-tiles too, by renaming its alias ([A, D] → [W, D]). The control
+// arms: a parent that reads the child as a whole row states no table (the
+// merge proceeds), and expressions.LegTableConflictsWith's arms.
+func TestSelectMergeRule_KeepsTheReferenceLegTable(t *testing.T) {
+	t.Parallel()
+	row := func(name string, cols ...string) values.Type {
+		fields := make([]values.Field, len(cols))
+		for i, c := range cols {
+			fields[i] = values.Field{Name: c, Ordinal: i, FieldType: values.NotNullLong}
+		}
+		return values.NewRecordType(name, false, fields)
+	}
+	named := func(alias string, e expressions.RelationalExpression) expressions.Quantifier {
+		return expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier(alias), expressions.InitialOf(e))
+	}
+	wQ := named("W", selectMergeTypedScan(t, "W", row("W", "ID", "F")))
+	gQ := named("G", selectMergeTypedScan(t, "G", row("G", "K", "V")))
+	// The translator reads a source through a QOV typed by the row alone (no
+	// leg table): the parent's row is tiled by its own sources.
+	seed := func(q expressions.Quantifier, ords ...int) []values.RecordConstructorField {
+		qov := selectMergeQOV(t, q.GetAlias(), selectMergeFlowed(t, q).FlowedType())
+		var out []values.RecordConstructorField
+		for _, o := range ords {
+			rt := qov.FlowedType().(*values.RecordType)
+			out = append(out, values.RecordConstructorField{Name: rt.Fields[o].Name, Value: selectMergeOrdinalSeedField(t, qov, o)})
+		}
+		return out
+	}
+	childRC := values.NewRawRecordConstructorValue(append(seed(wQ, 0, 1), seed(gQ, 0, 1)...)...)
+	child := selectMergeSelect(t, childRC, []expressions.Quantifier{wQ, gQ}, nil)
+	aQ := named("A", child)
+	dQ := named("D", selectMergeTypedScan(t, "H", row("H", "ID", "F")))
+
+	parentRC := values.NewRawRecordConstructorValue(append(seed(aQ, 0, 1, 2, 3), seed(dQ, 0, 1)...)...)
+	if legs := values.SeedTilingLegs(parentRC, 6); len(legs) != 2 || legs[0].Name != "A" || legs[1].Name != "D" {
+		t.Fatalf("fixture: the parent row must tile as [A, D], got %+v", legs)
+	}
+	parent := selectMergeSelect(t, parentRC, []expressions.Quantifier{aQ, dQ}, nil)
+	if yielded := selectMergeFire(t, NewSelectMergeRule(), expressions.InitialOf(parent)); len(yielded) != 0 {
+		t.Fatalf("the merge re-tiled the parent's row [A, D] as the child's legs; yielded %d member(s): %v",
+			len(yielded), yielded[0].GetResultValue())
+	}
+
+	// Control: the same child read as a whole row states no parent leg table,
+	// so there is nothing to disagree with and the merge proceeds.
+	whole := selectMergeSelect(t, selectMergeFlowed(t, aQ), []expressions.Quantifier{aQ, dQ}, nil)
+	if yielded := selectMergeFire(t, NewSelectMergeRule(), expressions.InitialOf(whole)); len(yielded) == 0 {
+		t.Fatal("a parent stating no leg table must still merge its child")
+	}
+
+	// A single-source child dissolves by renaming its alias to the child's
+	// leg (`FROM (SELECT * FROM w WHERE …) AS a, h AS d` as the lower of a
+	// wider join): the parent's [A, D] would come back as [W, D]. At the
+	// merge-base this merge happened and the reference refused its members.
+	single := selectMergeSelect(t, values.NewRawRecordConstructorValue(seed(wQ, 0, 1)...), []expressions.Quantifier{wQ}, nil)
+	a1Q := named("A", single)
+	renamedRC := values.NewRawRecordConstructorValue(append(seed(a1Q, 0, 1), seed(dQ, 0, 1)...)...)
+	if legs := values.SeedTilingLegs(renamedRC, 4); len(legs) != 2 || legs[0].Name != "A" || legs[1].Name != "D" {
+		t.Fatalf("fixture: the single-source parent row must tile as [A, D], got %+v", legs)
+	}
+	renamed := selectMergeSelect(t, renamedRC, []expressions.Quantifier{a1Q, dQ}, nil)
+	if yielded := selectMergeFire(t, NewSelectMergeRule(), expressions.InitialOf(renamed)); len(yielded) != 0 {
+		t.Fatalf("the merge renamed the parent's leg A to the child's W; yielded %d member(s): %v",
+			len(yielded), yielded[0].GetResultValue())
+	}
+	wholeSingle := selectMergeSelect(t, selectMergeFlowed(t, a1Q), []expressions.Quantifier{a1Q, dQ}, nil)
+	if yielded := selectMergeFire(t, NewSelectMergeRule(), expressions.InitialOf(wholeSingle)); len(yielded) == 0 {
+		t.Fatal("a parent stating no leg table must still merge its single-source child")
+	}
+
+	merged := values.NewRawRecordConstructorValue(append(append(seed(wQ, 0, 1), seed(gQ, 0, 1)...), seed(dQ, 0, 1)...)...)
+	// The check asks the REFERENCE, whose table GetFlowedObjectType accumulates
+	// over every member, not the rewritten select's own value. (A member whose
+	// VALUE states no table while another member's does cannot be built from
+	// values here: a QOV's result type carries no legs, and semantically equal
+	// members are deduplicated — so that arm is not claimed.)
+	withMember := func(ref *expressions.Reference, member expressions.RelationalExpression) *expressions.Reference {
+		if !ref.Insert(member) {
+			t.Fatal("fixture: the second member was not inserted")
+		}
+		return ref
+	}
+	threeLegs := selectMergeSelect(t, merged, []expressions.Quantifier{wQ, gQ, dQ}, nil)
+	oneLeg := values.NewRawRecordConstructorValue(seed(wQ, 0, 1)...)
+	for _, tc := range []struct {
+		name     string
+		ref      *expressions.Reference
+		after    values.Value
+		conflict bool
+	}{
+		{"re-tiled by the child's legs", expressions.InitialOf(parent), merged, true},
+		{"the same table", expressions.InitialOf(threeLegs), merged, false},
+		{"renamed leg", expressions.InitialOf(renamed), values.NewRawRecordConstructorValue(append(seed(wQ, 0, 1), seed(dQ, 0, 1)...)...), true},
+		{"after states none (one leg)", expressions.InitialOf(parent), oneLeg, false},
+		// A reference none of whose members states a table has nothing to
+		// disagree with, whatever the new member states.
+		{"no member states a table", expressions.InitialOf(selectMergeSelect(t, oneLeg, []expressions.Quantifier{wQ}, nil)), merged, false},
+		{"a reference whose members already disagree", withMember(expressions.InitialOf(parent), threeLegs), merged, false},
+	} {
+		if got := expressions.LegTableConflictsWith(tc.ref, tc.after); got != tc.conflict {
+			t.Errorf("%s: LegTableConflictsWith = %v, want %v", tc.name, got, tc.conflict)
 		}
 	}
 }

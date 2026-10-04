@@ -549,7 +549,7 @@ func rebuildOrderedSpine(
 			if inner == nil {
 				return nil, nil
 			}
-			freshChildren = append(freshChildren, expressions.ForEachQuantifier(freshExtractedReference(inner)))
+			freshChildren = append(freshChildren, expressions.RebuildQuantifier(q, freshExtractedReference(inner)))
 			continue
 		}
 		inner, err := extractBestPlanFromSelectorVisitedForRequirement(
@@ -563,7 +563,7 @@ func rebuildOrderedSpine(
 		} else {
 			freshRef = freshExtractedReference(inner)
 		}
-		freshChildren = append(freshChildren, expressions.ForEachQuantifier(freshRef))
+		freshChildren = append(freshChildren, expressions.RebuildQuantifier(q, freshRef))
 	}
 	rebuilt, err := rebuildWithFreshChildren(e, freshChildren)
 	if cancelErr := plannerContextErr(ctx); cancelErr != nil {
@@ -665,7 +665,7 @@ func rebuildExpressionFromSelectorVisited(
 		} else {
 			freshRef = freshExtractedReference(inner)
 		}
-		freshChildren = append(freshChildren, expressions.ForEachQuantifier(freshRef))
+		freshChildren = append(freshChildren, expressions.RebuildQuantifier(q, freshRef))
 	}
 	rebuilt, err := rebuildWithFreshChildren(e, freshChildren)
 	if cancelErr := plannerContextErr(ctx); cancelErr != nil {
@@ -710,7 +710,7 @@ func rebuildExpressionVisited(e expressions.RelationalExpression, stats properti
 		} else {
 			freshRef = freshExtractedReference(inner)
 		}
-		freshChildren = append(freshChildren, expressions.ForEachQuantifier(freshRef))
+		freshChildren = append(freshChildren, expressions.RebuildQuantifier(q, freshRef))
 	}
 	return rebuildWithFreshChildren(e, freshChildren)
 }
@@ -758,28 +758,6 @@ func rebuildWithFreshChildren(e expressions.RelationalExpression, freshChildren 
 		return expressions.NewLogicalFilterExpression(
 			ex.GetPredicates(), freshChildren[0],
 		)
-
-	case *expressions.LogicalProjectionExpression:
-		if len(freshChildren) != 1 {
-			return nil, fmt.Errorf("LogicalProjectionExpression: expected 1 child, got %d", len(freshChildren))
-		}
-		// The alias vector AND its provenance: this is the extraction rebuild,
-		// so dropping the names here loses the output column names of every
-		// rebuilt projection — `SELECT l.id AS l_id, r.id AS r_id …` reports two
-		// columns both named ID, rows unchanged — and dropping the provenance
-		// re-labels every machinery datum key as a user alias, which is the same
-		// defect one layer up.
-		rebuilt, err := expressions.NewLogicalProjectionExpressionWithOutputSchema(
-			ex.GetProjectedValues(), ex.GetAliases(), ex.GetAliasMinted(), ex.GetOutputNames(), freshChildren[0],
-		)
-		if err != nil {
-			return nil, err
-		}
-		rebuilt, err = rebuilt.WithAliasSources(ex.GetAliasSources())
-		if err != nil {
-			return nil, err
-		}
-		return rebuilt.WithInheritedOutputIdentity(ex), nil
 
 	case *expressions.LogicalSortExpression:
 		if len(freshChildren) != 1 {

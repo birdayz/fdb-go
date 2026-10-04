@@ -15,6 +15,16 @@ type AliasMap interface {
 	isAliasMapView()
 }
 
+type ownedAliasMap interface {
+	AliasMap
+	size() int
+	appendPairs([]AliasPair) []AliasPair
+}
+
+type singletonAliasMap struct {
+	pair AliasPair
+}
+
 type aliasMap struct {
 	forward map[CorrelationIdentifier]CorrelationIdentifier
 	reverse map[CorrelationIdentifier]CorrelationIdentifier
@@ -29,7 +39,37 @@ var emptyAliasMap AliasMap = &aliasMap{
 // callers handle the impossible NewAliasMap(nil) error path.
 func EmptyAliasMap() AliasMap { return emptyAliasMap }
 
-func (*aliasMap) isAliasMapView() {}
+func (*aliasMap) isAliasMapView()          {}
+func (*singletonAliasMap) isAliasMapView() {}
+
+func (m *aliasMap) size() int { return len(m.forward) }
+
+func (*singletonAliasMap) size() int { return 1 }
+
+func (m *aliasMap) appendPairs(pairs []AliasPair) []AliasPair {
+	for source, target := range m.forward {
+		pairs = append(pairs, AliasPair{Source: source, Target: target})
+	}
+	return pairs
+}
+
+func (m *singletonAliasMap) appendPairs(pairs []AliasPair) []AliasPair {
+	return append(pairs, m.pair)
+}
+
+func (m *singletonAliasMap) Target(source CorrelationIdentifier) (CorrelationIdentifier, bool) {
+	if m != nil && source == m.pair.Source {
+		return m.pair.Target, true
+	}
+	return CorrelationIdentifier{}, false
+}
+
+func (m *singletonAliasMap) Source(target CorrelationIdentifier) (CorrelationIdentifier, bool) {
+	if m != nil && target == m.pair.Target {
+		return m.pair.Source, true
+	}
+	return CorrelationIdentifier{}, false
+}
 
 func (m *aliasMap) Target(source CorrelationIdentifier) (CorrelationIdentifier, bool) {
 	if m == nil {
@@ -53,14 +93,18 @@ func NewAliasMap(pairs []AliasPair) (AliasMap, error) {
 	if len(pairs) == 0 {
 		return EmptyAliasMap(), nil
 	}
+	// Java's ImmutableBiMap.of(source, target) also stores a singleton inline.
+	if len(pairs) == 1 {
+		if err := validateAliasPair(pairs[0]); err != nil {
+			return nil, err
+		}
+		return &singletonAliasMap{pair: pairs[0]}, nil
+	}
 	forward := make(map[CorrelationIdentifier]CorrelationIdentifier, len(pairs))
 	reverse := make(map[CorrelationIdentifier]CorrelationIdentifier, len(pairs))
 	for i, pair := range pairs {
-		if pair.Source.IsZero() || pair.Target.IsZero() {
-			return nil, resolutionError(CorrelationZero, "alias-map", "pair contains a zero correlation")
-		}
-		if pair.Source.isCurrent() != pair.Target.isCurrent() {
-			return nil, resolutionError(CorrelationKindMismatch, "alias-map", "current may map only to current")
+		if err := validateAliasPair(pair); err != nil {
+			return nil, err
 		}
 		if _, duplicate := forward[pair.Source]; duplicate {
 			return nil, resolutionError(CorrelationTypeConflict, "alias-map", "duplicate source at pair "+uitoa(uint64(i)))
@@ -74,6 +118,16 @@ func NewAliasMap(pairs []AliasPair) (AliasMap, error) {
 	return &aliasMap{forward: forward, reverse: reverse}, nil
 }
 
+func validateAliasPair(pair AliasPair) error {
+	if pair.Source.IsZero() || pair.Target.IsZero() {
+		return resolutionError(CorrelationZero, "alias-map", "pair contains a zero correlation")
+	}
+	if pair.Source.isCurrent() != pair.Target.isCurrent() {
+		return resolutionError(CorrelationKindMismatch, "alias-map", "current may map only to current")
+	}
+	return nil
+}
+
 // ExtendAliasMap returns an immutable extension. A legitimate pairing conflict
 // reports compatible=false; malformed or foreign input is an error.
 func ExtendAliasMap(base AliasMap, pairs []AliasPair) (AliasMap, bool, error) {
@@ -81,18 +135,15 @@ func ExtendAliasMap(base AliasMap, pairs []AliasPair) (AliasMap, bool, error) {
 	if !ok {
 		return nil, false, resolutionError(CorrelationForeignValue, "alias-map", "base is not a values-owned AliasMap")
 	}
-	all := make([]AliasPair, 0, len(baseMap.forward)+len(pairs))
-	for source, target := range baseMap.forward {
-		all = append(all, AliasPair{Source: source, Target: target})
-	}
+	all := baseMap.appendPairs(make([]AliasPair, 0, baseMap.size()+len(pairs)))
 	for _, pair := range pairs {
-		if target, exists := baseMap.forward[pair.Source]; exists && target != pair.Target {
+		if target, exists := baseMap.Target(pair.Source); exists && target != pair.Target {
 			return base, false, nil
 		}
-		if source, exists := baseMap.reverse[pair.Target]; exists && source != pair.Source {
+		if source, exists := baseMap.Source(pair.Target); exists && source != pair.Source {
 			return base, false, nil
 		}
-		if target, exists := baseMap.forward[pair.Source]; exists && target == pair.Target {
+		if target, exists := baseMap.Target(pair.Source); exists && target == pair.Target {
 			continue
 		}
 		all = append(all, pair)
@@ -104,15 +155,20 @@ func ExtendAliasMap(base AliasMap, pairs []AliasPair) (AliasMap, bool, error) {
 	return extended, true, nil
 }
 
-func asAliasMap(view AliasMap) (*aliasMap, bool) {
-	if view == nil {
+func asAliasMap(view AliasMap) (ownedAliasMap, bool) {
+	switch concrete := view.(type) {
+	case nil:
 		return emptyAliasMap.(*aliasMap), true
+	case *aliasMap:
+		return concrete, concrete != nil
+	case *singletonAliasMap:
+		return concrete, concrete != nil
+	default:
+		return nil, false
 	}
-	concrete, ok := view.(*aliasMap)
-	return concrete, ok && concrete != nil
 }
 
 func aliasMapEmpty(view AliasMap) bool {
 	concrete, ok := asAliasMap(view)
-	return ok && len(concrete.forward) == 0
+	return ok && concrete.size() == 0
 }

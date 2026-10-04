@@ -99,6 +99,8 @@ func (r *PushInJoinThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	}
 	if inValues := inJoinPlan.GetInValues(); inValues != nil {
 		pushedInJoinPlan = pushedInJoinPlan.WithInValues(inValues)
+	} else if comparand := inJoinPlan.GetInComparand(); comparand != nil {
+		pushedInJoinPlan = pushedInJoinPlan.WithInComparand(comparand)
 	}
 	pushedInJoinPlan = pushedInJoinPlan.WithSourceKind(inJoinPlan.GetSourceKind())
 
@@ -107,7 +109,7 @@ func (r *PushInJoinThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 
 	// Build: Fetch(InJoin(fetchInner)) as its own cascades expression carrying
 	// the live pushedInJoinRef edge (RFC-184 W2).
-	newFetchQ := expressions.ForEachQuantifier(pushedInJoinRef)
+	newFetchQ := expressions.NewPhysicalQuantifier(pushedInJoinRef)
 	newFetchPlan, err := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
 		newFetchQ,
 		fetchPlan.GetTranslateValueFunction(),

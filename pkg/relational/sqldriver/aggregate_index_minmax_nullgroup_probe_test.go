@@ -34,7 +34,7 @@ func TestFDB_AggregateIndexMinMax_NullGroupAndCurrentExtremum(t *testing.T) {
 			"CREATE INDEX min_by_g AS SELECT MIN(v) FROM t GROUP BY g "+
 			"CREATE INDEX max_by_g AS SELECT MAX(v) FROM t GROUP BY g")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggidx_ng/s WITH TEMPLATE aggidxng")
-	dsn := fmt.Sprintf("fdbsql:///testdb_aggidx_ng?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGIDX_NG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

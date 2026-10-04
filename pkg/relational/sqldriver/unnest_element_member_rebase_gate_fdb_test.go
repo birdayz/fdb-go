@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -70,8 +71,8 @@ func TestFDB_UnnestElementMemberRebaseGate(t *testing.T) {
 	if _, err := setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE uerg_tmpl "+
 			"CREATE TYPE AS STRUCT souter (k BIGINT) "+
-			"CREATE TYPE AS STRUCT deep (dk BIGINT) "+
-			"CREATE TYPE AS STRUCT elem (ek BIGINT, d deep) "+
+			"CREATE TYPE AS STRUCT deeper (dk BIGINT) "+
+			"CREATE TYPE AS STRUCT elem (ek BIGINT, d deeper) "+
 			"CREATE TABLE t (s souter, id BIGINT, arr elem ARRAY, PRIMARY KEY (id))"); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
@@ -80,7 +81,7 @@ func TestFDB_UnnestElementMemberRebaseGate(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

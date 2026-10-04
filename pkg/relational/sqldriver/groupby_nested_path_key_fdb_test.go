@@ -61,7 +61,7 @@ func TestFDB_GroupByNestedPathKey(t *testing.T) {
 		"CREATE INDEX i2 AS SELECT r.v.z FROM nested ORDER BY r.v.z")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /gbnpk/s WITH TEMPLATE gbnpk_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///gbnpk?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///GBNPK?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -191,8 +191,8 @@ func TestFDB_GroupByNestedPathKey(t *testing.T) {
 			Scan(&plan); err != nil {
 			t.Fatalf("EXPLAIN: %v", err)
 		}
-		want := "Project([_current.MAX(Q.S)#1], StreamingAgg(keys=[_current.R#2.V#1.Z#1], " +
-			"InMemorySort([_current.R#2.V#1.Z#1 ASC], Scan(NESTED))))"
+		want := "Map(StreamingAgg(keys=[_current.R#2.V#1.Z#1], " +
+			"InMemorySort([_current.R#2.V#1.Z#1 ASC], Scan(NESTED))), {_0: _current.MAX(Q.S)#1})"
 		if plan != want {
 			t.Fatalf("plan shape moved.\n  got:  %s\n  want: %s\n"+
 				"  A SECOND sort above the aggregation means the ordering the "+

@@ -24,7 +24,7 @@ func TestFDB_OrderByAggregateExpression(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_obaggexpr/s WITH TEMPLATE obaggexpr_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_obaggexpr?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_OBAGGEXPR?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()

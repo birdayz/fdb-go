@@ -29,7 +29,7 @@ func TestFDB_MaterializedNLJNullKey(t *testing.T) {
 			"CREATE TABLE a (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, k BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_matnull/s WITH TEMPLATE matnull")
-	dsn := fmt.Sprintf("fdbsql:///testdb_matnull?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_MATNULL?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

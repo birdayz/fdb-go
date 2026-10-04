@@ -29,7 +29,7 @@ func TestFDB_AmbiguousColumnStar(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_ambcol_star/s WITH TEMPLATE ambcol_star_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_ambcol_star?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_AMBCOL_STAR?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()

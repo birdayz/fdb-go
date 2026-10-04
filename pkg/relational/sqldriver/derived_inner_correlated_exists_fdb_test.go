@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/relational/api"
@@ -44,7 +45,7 @@ func TestFDB_CorrelatedExistsDerivedInner(t *testing.T) {
 		"CREATE TABLE ord (order_id BIGINT, cust_id BIGINT, PRIMARY KEY (order_id))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cedi_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

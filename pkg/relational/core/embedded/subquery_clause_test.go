@@ -68,7 +68,7 @@ func TestSubqueryClauseAdmissionUsesOneRetainedGraph(t *testing.T) {
 		t.Fatal(err)
 	}
 	positive := predicates.ExistsValueToQueryPredicate(exists)
-	for _, name := range []string{"where_positive", "on_positive", "where_negative", "on_negative", "projection_positive", "projection_negative", "mixed_uses", "unknown_use"} {
+	for _, name := range []string{"where_positive", "on_positive", "where_negative", "on_negative", "projection_positive", "projection_negative", "mixed_uses", "unknown_use", "boolean_use"} {
 		t.Run(name, func(t *testing.T) {
 			// Sequential subtests intentionally consume the SAME immutable input;
 			// no child construction or memo-property mutation occurs here.
@@ -97,6 +97,8 @@ func TestSubqueryClauseAdmissionUsesOneRetainedGraph(t *testing.T) {
 				admission = clause.admitPredicate(predicates.NewAnd(positive, predicates.NewNot(positive)))
 			case "unknown_use":
 				admission = clause.admitValues([]values.Value{exists.Value})
+			case "boolean_use":
+				admission = clause.admitPredicate(predicates.NewOr(positive, predicates.NewConstantPredicate(predicates.TriUnknown)))
 			}
 			wantSuccess := name == "where_positive" || name == "on_positive"
 			if wantSuccess {

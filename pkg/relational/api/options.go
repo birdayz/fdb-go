@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"math"
 	"reflect"
 	"sync"
@@ -99,6 +100,14 @@ const (
 	// join that would otherwise exhaust the planner's task budget converges,
 	// at the cost of possibly missing the cheapest shape.
 	OptPlanRightDeep OptionName = "PLAN_RIGHT_DEEP"
+	// OptVectorIndexEnginePreference is Java's VECTOR_INDEX_ENGINE_PREFERENCE:
+	// which engine the planner favors when an HNSW and a GuardiANN index can
+	// both answer a nearest-neighbor query.
+	OptVectorIndexEnginePreference OptionName = "VECTOR_INDEX_ENGINE_PREFERENCE"
+	// OptIsolationLevelSnapshot executes SELECT reads at snapshot isolation
+	// (no read-conflict ranges); a DML statement under it is refused (0A000).
+	// The statement option ISOLATION LEVEL SNAPSHOT sets it for one statement.
+	OptIsolationLevelSnapshot OptionName = "ISOLATION_LEVEL_SNAPSHOT"
 	// OptPlannerStatistics lets the cost model use per-record-type row counts
 	// gathered by the offline collector (RFC-236, `frl stats collect`). Boolean,
 	// default FALSE, and Go-only — Java has no planner statistics at all, so
@@ -204,6 +213,36 @@ func (m IndexFetchMethod) String() string {
 	}
 }
 
+// VectorIndexEnginePreference mirrors Java's Options.VectorIndexEnginePreference.
+type VectorIndexEnginePreference int
+
+const (
+	VectorIndexNoPreference VectorIndexEnginePreference = iota
+	VectorIndexPreferHNSW
+	VectorIndexPreferGuardiann
+)
+
+// String returns the enum name matching Java.
+func (p VectorIndexEnginePreference) String() string {
+	switch p {
+	case VectorIndexPreferHNSW:
+		return "PREFER_HNSW"
+	case VectorIndexPreferGuardiann:
+		return "PREFER_GUARDIANN"
+	}
+	return "NO_PREFERENCE"
+}
+
+// ParseVectorIndexEnginePreference is the enum's valueOf.
+func ParseVectorIndexEnginePreference(s string) (VectorIndexEnginePreference, error) {
+	for _, p := range []VectorIndexEnginePreference{VectorIndexNoPreference, VectorIndexPreferHNSW, VectorIndexPreferGuardiann} {
+		if p.String() == s {
+			return p, nil
+		}
+	}
+	return 0, fmt.Errorf("no enum constant VectorIndexEnginePreference.%s", s)
+}
+
 // nullSentinel is a non-nil marker stored in the values map to encode
 // an explicitly-unset value. Matches Java's NULL_STANDIN. It MUST NOT
 // be exposed to callers.
@@ -246,6 +285,8 @@ var defaultOptionValues = map[OptionName]any{
 	OptExecutionScannedRowsLimit:          math.MaxInt32,
 	OptDryRun:                             false,
 	OptPlanRightDeep:                      false,
+	OptVectorIndexEnginePreference:        VectorIndexNoPreference,
+	OptIsolationLevelSnapshot:             false,
 	OptCaseSensitiveIdentifiers:           false,
 	OptAsyncOperationsTimeoutMillis:       int64(10_000),
 	OptEncryptWhenSerializing:             false,

@@ -28,7 +28,7 @@ func TestFDB_CorrelatedExistsProbe(t *testing.T) {
 			"CREATE TABLE c (id BIGINT, b_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX b_a_id ON b (a_id) CREATE INDEX c_b_id ON c (b_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_corr_exists/s WITH TEMPLATE corr_exists")
-	dsn := fmt.Sprintf("fdbsql:///testdb_corr_exists?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_CORR_EXISTS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

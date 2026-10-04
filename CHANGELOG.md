@@ -5,26 +5,66 @@ All notable changes to `fdb-record-layer-go` are recorded here. Format:
 (pre-1.0 `v0.MINOR.PATCH`).
 
 **This project is pre-1.0.** The **Go API may change across minor versions**; the **FDB wire
-format stays compatible with Java `fdb-record-layer-core` 4.12.11.0 across every release** (the
+format must stay compatible with each release's declared Java `fdb-record-layer-core` target** (the
 shared-cluster hard line — see `RELEASE.md`). Every entry's **Compatibility** block answers the four
 questions a user upgrading between two refs needs: wire format, SQL behaviour, FDB client option
 semantics, and required dependency versions.
 
 This changelog starts **2026-06-20**; earlier history is in `git log`. The first tagged release is
-**v0.1.0** (2026-08-26). The `frl` CLI ships from a parallel nested-module tag, `cmd/frl/v0.1.0` —
-that form is what makes `go install fdb.dev/cmd/frl@vX.Y.Z` resolve the same build the release
-assets carry (`RELEASE.md` §Versioning).
+**v0.1.0** (2026-08-26). v0.1.0 shipped the `frl` CLI from a parallel nested-module tag,
+`cmd/frl/v0.1.0`; from the next release `frl` is a package of the root module and ships under the
+project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (`RELEASE.md`).
 
 ## [Unreleased]
 
 ### Compatibility
-- **Wire format:** unchanged since v0.1.0 — records, indexes, versions, continuations, and split
-  records remain byte-identical to Java `fdb-record-layer-core` 4.12.11.0.
-- **SQL behaviour:** unchanged since v0.1.0.
+- **Wire format:** the Java target is upgraded to `fdb-record-layer-core` 4.14.2.0 (RFC-257, in
+  progress). Records Java writes through `TransformedRecordSerializer` (compressed, encrypted) are
+  read and written. Stores written only by an earlier pre-release Go build are not supported:
+  recreate them.
+- **SQL behaviour:** follows Java 4.14.2.0 where both engines run a query; see the PR for the
+  per-change list.
 - **FDB client option semantics:** unchanged since v0.1.0; the honored / `UnsupportedOptionError` /
   safe-no-op classification in `pkg/fdbgo/fdb/OPTIONS.md` still holds against `libfdb_c` 7.3.77.
-- **Required versions:** Java `fdb-record-layer-core` **4.12.11.0**, FDB C++ client **7.3.77**, Go
+- **Required versions:** Java `fdb-record-layer-core` **4.14.2.0**, FDB C++ client **7.3.77**, Go
   **1.26.x** (the `MODULE.bazel` / `go.mod` pins; the CI doc-guard enforces docs match them).
+
+### Changed
+- A SQL query block is one Select, as in Java 4.14.2.0: predicates reach a derived table's or CTE's access paths, a computed column without an alias is named by its position (`_0`), and EXPLAIN shows `Map(…, {…})` where it showed `Project(…)`.
+- A SQL function call binds its arguments as Java does (a one-row values source pushed into the body), so its body's predicates reach index scans and joins of calls plan in Java's order.
+- A WHERE over a LEFT JOIN with a projected EXISTS reading the null-supplied side, and an EXISTS over a correlated array of scalars under a join, answer instead of failing.
+- Fixed-factor union planning uses fewer temporary allocations in boolean normalization and memo matching.
+- A recursive CTE's column list names its columns only for the query that reads the CTE; the recursive branch reads the seed's own names, as in Java 4.14.2.0.
+- A recursive CTE keeps the seed's column types and nullability for every iteration, as in Java 4.14.2.0; a recursive row that does not fit (a NULL into a NOT NULL column, another type) is refused with XXXXX.
+- A SQL function call and a recursive CTE name a repeated or unnamed column by its position (`_0`, `_1`, …), as in Java 4.14.2.0; a SQL function whose name is not ASCII can be called.
+- `UPDATE … RETURNING` and `DELETE … RETURNING` answer the modified rows through `Query`, as in Java 4.14.2.0 (an UPDATE's `"old"` and `"new"` records); on `Exec` such a statement is refused with 42F61, and a statement without a result set on `Query` with 02F01, before it runs.
+- A boolean ARRAY parameter binds; a join comparing two rows' `__ROW_VERSION` through a version index runs.
+- SQL accepts EXISTS inside AND/OR/NOT boolean expressions in WHERE and INNER JOIN ON, matching Java's one-row existential witness semantics.
+- `frl` is a package of the root module and releases under the project's `vX.Y.Z` tag.
+- SQL `LIKE` follows Java 4.14.2.0: wildcards cross newlines, `LIKE NULL` is allowed, and invalid escapes raise 22019/2200B/22025 per row.
+- SQL comments follow Java 4.14.2.0: block comments nest, an unterminated one is 42601, and `#` is no longer a comment.
+- `OPTIONS (...)` is statement-level only and adds `PLAN RIGHT DEEP` and `ISOLATION LEVEL SNAPSHOT`; `PLAN` and `DEEP` are reserved words.
+- A typed, parenthesised or column NULL IN-list item is 0A000 when the list is evaluated, as in Java 4.14.2.0 (a bare NULL stays 42809).
+- An ARRAY element is never NULL: a NULL array element is refused with 0A000 as in Java 4.14.2.0 (literal-array `=`/`<>`/`IS DISTINCT FROM` comparisons still accept one).
+- Driver parameters are bound as typed constants (int32 INT, int64 LONG, slices ARRAY, uuid.UUID UUID), not spliced into SQL text; named `?x`/`$x` and `IN ?` are supported, extra arguments are ignored and a missing one is 42F02.
+- `COALESCE`/`GREATEST`/`LEAST` follow Java 4.14.2.0: at least two arguments, all-NULL and BYTES arguments are 22F00, `COALESCE` evaluates every argument, and results are NOT NULL when Java's are.
+- The planner removes duplicate expressions from its memo (Cascades duplicate detection): multi-way joins plan with far fewer tasks, and a six-table join chain or a hub joined to five spokes now plans within the default budget.
+- A join of two EXISTS subqueries no longer repeats rows: each existential contributes at most one witness row.
+- A lateral-unnest chain answers a WHERE reading any link's element, a WHERE [NOT] EXISTS over the chain and a nested EXISTS reading its last element; an EXISTS beside an unnest of a STRUCT array may read the unnested table (all previously 0AF00).
+- A FROM item reading a lateral-unnest chain's element, a chain link separated from its owner by another FROM item, unnests of several tables in one FROM, and an unnest of a lateral derived table's array column now plan (previously 0AF00); source reordering preserves indirect lateral dependencies, including inside correlated subqueries.
+- An `AT` unnest's element or ordinal read beside another FROM item no longer fails at execution.
+- Multi-table `[NOT] EXISTS` subqueries can read an outer unnest's element and ordinal (previously 0AF00).
+- Join planning costs a right-deep foreign-key chain as its left-deep re-association, and splits a range predicate spanning several joined tables per table so each keeps its selective probe.
+- A record-layer failure no SQL mapping claims is SQLSTATE XXXXX, as Java's `ExceptionUtil` maps an unclaimed `RecordCoreException` (previously no SQLSTATE).
+- `ISOLATION LEVEL SNAPSHOT` admits only SELECT and EXPLAIN/DESCRIBE of a SELECT; DDL, SHOW and DML are 0A000, and a DML plan is refused at SNAPSHOT before it reads, as in Java 4.14.2.0.
+- An ungrouped query's COUNT is 0 over no rows and NOT NULL (Java's `adjustCountOnEmpty`), in the select list and HAVING; a HAVING-only aggregate query may project constants (was 42703).
+- A table whose quoted lowercase primary-key or vector column names differ from their upper-case spelling gets primary-key scans and vector index plans (previously a full scan, or 0AF00).
+- A vector query without `OPTIONS EF_SEARCH` searches with Java's default, min(max(4k, 64), max(k, 400)), instead of 200.
+- GuardiANN vector indexes refuse malformed stored values instead of panicking, check the deferred insert cap before writing anything, poison the transaction when a task fails after its removal, and merge or drain every requested index even when an earlier one fails.
+- Decimal literals parse as Java's `ParseHelpers.parseDecimal` wherever they stand: a dotless exponent (`1e5`) or an out-of-width integer is XXXXX `For input string: "…"`, and an overflowing `1.0e400` is an infinity (previously 22003 or 0AF00).
+- A record constructor's field takes its element's own name (`SELECT (x, y)` is `{X, Y}`, `(x + 1)` is `{_0}`, a repeated name falls back to the position), so a derived record's fields can be read by name; INSERT … SELECT, UPDATE and COALESCE bind a record to its struct type by position, ignoring element names, and an INSERT VALUES element naming another field is XX000, as in Java 4.14.2.0.
+- Scalar macro calls take named arguments (`f(b => 1, a => 2)`), bound by name with the declared defaults; a repeated name is 42601, and an unknown name, a missing argument without a default or too many arguments is 42883 `could not find function '…'` (also for table functions), as in Java 4.14.2.0. A macro may take or return a struct type no table stores.
+- A window's `OPTIONS EF_SEARCH` accepts `L`/`I` suffixes, refuses a repeat (22F00) and a value beyond int (22000), and an HNSW search uses it as given: below k it returns fewer rows, as in Java 4.14.2.0.
 
 ## [v0.1.0] - 2026-08-26
 

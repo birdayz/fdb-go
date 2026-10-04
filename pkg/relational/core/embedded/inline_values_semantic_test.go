@@ -92,7 +92,7 @@ func TestInlineValuesScopeCarriesExactPrimaryAndLateralArrayShape(t *testing.T) 
 		`SELECT "values"."id", "val", "at" `+
 			`FROM VALUES (1, [101]), (2, [201, 202, 203]) AS "values" ("id", "arr"), `+
 			`"values"."arr" AS "val" AT "at"`)
-	resolver := buildSelectScope(sq, buildTestMetaData(t), defaultEmbeddedSchema, nil)
+	resolver := buildSelectScope(sq, buildTestMetaData(t), defaultEmbeddedTemplate, nil)
 	if resolver == nil {
 		t.Fatal("inline VALUES FROM scope declined")
 	}

@@ -244,6 +244,18 @@ func matchField(exp *javayamsql.Value, actual any, sqlType string, rowNum int, c
 	}
 
 	switch exp.TagName() {
+	case javayamsql.TagVector16, javayamsql.TagVector32, javayamsql.TagVector64:
+		want, err := preparedValue(exp)
+		if err != nil {
+			return fail("%v", err)
+		}
+		got, ok := actual.([]byte)
+		// AbstractRealVector.equals compares the complete serialized bytes,
+		// including the precision ordinal, rather than approximate coordinates.
+		if !ok || string(got) != string(want.(api.Vector)) {
+			return fail("expected vector %v, got %v", want, actual)
+		}
+		return nil
 	case javayamsql.TagLong:
 		n, err := expectedLong(exp)
 		if err != nil {
@@ -270,15 +282,11 @@ func matchField(exp *javayamsql.Value, actual any, sqlType string, rowNum int, c
 
 	// Java has one more arm here, between the tags and the scalar comparisons:
 	// a String expectation against a protobuf EnumValueDescriptor actual
-	// succeeds when the string equals the descriptor's NAME. It is not ported,
-	// because whether it is needed depends on what the Go driver hands back for
-	// an enum column — if that is already the name as a string, matchString
-	// below covers it and the arm is dead weight; if it is an ordinal or a
-	// typed value, the arm is required and its absence is a silent mismatch.
-	// That question is unanswerable today: every corpus file with an enum
-	// column is skipped before a row is compared, so nothing exercises it
-	// either way. Booked under CQ-72 rather than guessed at — an untested arm
-	// written on a hunch is worse than a stated omission.
+	// succeeds when the string equals the descriptor's NAME. It is not ported
+	// because the Go driver hands back an enum cell as its name, a string, so
+	// matchString below is that arm. Measured: `insert-enum.yamsql` compares
+	// `[{'OWNING', 42}]` against an enum column and passes (pinned_ledger_test.go
+	// counts it among the passes); an ordinal or typed value there would fail it.
 
 	u := exp.Untag()
 	switch u.Kind {
@@ -437,7 +445,16 @@ func matchString(want string, actual any, fail func(string, ...any) error) error
 			prefix, length, err := parseStartsWith(want)
 			if err == nil && len(got) == length && len(prefix) <= len(got) &&
 				string(got[:len(prefix)]) == string(prefix) {
-				return nil
+				zeroTail := true
+				for _, b := range got[len(prefix):] {
+					if b != 0 {
+						zeroTail = false
+						break
+					}
+				}
+				if zeroTail {
+					return nil
+				}
 			}
 		}
 		if strings.HasPrefix(lower, "x'") && strings.HasSuffix(want, "'") {
@@ -451,7 +468,7 @@ func matchString(want string, actual any, fail func(string, ...any) error) error
 }
 
 // parseStartsWith decodes `xstartswith_<len>'<hex>'`, the corpus's way of
-// asserting a byte-array prefix plus an exact total length.
+// asserting a zero-padded byte array with an exact total length.
 func parseStartsWith(s string) ([]byte, int, error) {
 	us := strings.Index(s, "_")
 	q := strings.Index(s, "'")
@@ -462,7 +479,12 @@ func parseStartsWith(s string) ([]byte, int, error) {
 	if err != nil {
 		return nil, 0, fmt.Errorf("malformed xstartswith_ length in %q", s)
 	}
-	b, err := hex.DecodeString(s[q+1 : len(s)-1])
+	digits := s[q+1 : len(s)-1]
+	// Java ParseHelpers.parseBytes pads an odd final nibble on the right.
+	if len(digits)%2 != 0 {
+		digits += "0"
+	}
+	b, err := hex.DecodeString(digits)
 	if err != nil {
 		return nil, 0, fmt.Errorf("malformed xstartswith_ hex in %q", s)
 	}

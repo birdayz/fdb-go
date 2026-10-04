@@ -24,16 +24,6 @@ package cascades
 // predicates without a TranslationMap rebase (translation_map.go)
 // first.
 //
-// **ProjectionMergeRule's soundness contract**: the merge
-// `Projection(P1) over Projection(P2) over X → Projection(P1) over X`
-// is sound only because LogicalProjectionExpression's GetResultValue()
-// passes the inner row through (projection is a pure side channel).
-// If projection ever narrows the row shape (materialized projections),
-// P1's Values may reference computed columns that only exist in P2's
-// output — at that point the rule needs a column-substitution rewrite
-// path or it must leave the default set. See ProjectionMergeRule's
-// own doc for the per-rule discussion.
-//
 // Each call returns a fresh slice — callers may mutate freely. Each
 // element is a fresh rule instance — see NewXxxRule constructors for
 // the per-call allocation contract.
@@ -68,7 +58,6 @@ func DefaultExpressionRules() []ExpressionRule {
 		// design first (guarding the transitive intern-to-ancestor makes the
 		// inverse-pair fixpoint non-terminate — proven, see RFC-185).
 		NewNoOpFilterRule(),
-		NewProjectionMergeRule(),
 		// PushProjectionBelowJoinRule REMOVED (Go-only, no Java equivalent).
 		// It wrapped a join's children in LogicalProjectionExpressions, which
 		// blocked SelectMergeRule from flattening the nested binary join into
@@ -95,8 +84,6 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewUnsortedSortElimRule(),
 		// PushOrderingThroughGroupByRule REMOVED (D-2): moved to PLANNING
 		// phase as PushRequestedOrderingThroughGroupByRule (DefaultImplementationRules).
-		// PushOrderingThroughProjectionRule REMOVED: moved to PLANNING
-		// phase as PushRequestedOrderingThroughProjectionRule (DefaultImplementationRules).
 		// PushOrderingThroughFilterRule REMOVED (D-3): moved to PLANNING
 		// phase as PushRequestedOrderingThroughFilterRule (DefaultImplementationRules).
 		// PushOrderingThroughDistinctRule REMOVED (D-2): moved to PLANNING
@@ -115,7 +102,6 @@ func DefaultExpressionRules() []ExpressionRule {
 		// phase as PushRequestedOrderingThroughTempTableInsertRule (DefaultImplementationRules).
 		NewUnionSingletonElimRule(),
 		NewIntersectionSingletonElimRule(),
-		NewInComparisonToExplodeRule(),
 		NewLimitMergeRule(),
 		// PushLimitThroughProjectionRule REMOVED (Go-only, no Java equivalent).
 		// Java expresses a row limit as ExecuteProperties.setReturnedRowLimit()
@@ -144,9 +130,6 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewPushLimitThroughUnionRule(),
 		NewNoOpLimitElimRule(),
 		NewSelectMergeRule(),
-		NewSplitSelectExtractIndependentQuantifiersRule(),
-		NewNormalizePredicatesRule(),
-		NewPredicateToLogicalUnionRule(),
 		// Join-order enumeration (PartitionSelectRule / PartitionBinarySelectRule)
 		// is PLANNING-only — see PlanningExplorationRules, matching Java's
 		// PlanningRuleSet (the RewritingRuleSet is normalization only). REWRITING
@@ -175,6 +158,10 @@ func DefaultExpressionRules() []ExpressionRule {
 // canonical seed. Mirrors Java's PlanningRuleSet.EXPLORATION_RULES.
 func PlanningExplorationRules() []ExpressionRule {
 	return []ExpressionRule{
+		NewFilterToLogicalUnionRule(),
+		// Union access paths must survive alongside the unsplit select until
+		// candidate matching and costing, as in Java PlanningRuleSet.
+		NewPredicateToLogicalUnionRule(),
 		NewNormalizePredicatesRule(),
 		NewInComparisonToExplodeRule(),
 		NewSplitSelectExtractIndependentQuantifiersRule(),
@@ -243,7 +230,6 @@ func BatchAExpressionRules() []ExpressionRule {
 	return []ExpressionRule{
 		NewPrimaryScanRule(),
 		NewImplementValuesRule(),
-		NewImplementProjectionRule(),
 		NewImplementFilterRule(),
 		NewOrderedIndexScanRule(),
 		NewOrderedPrimaryScanRule(),
@@ -298,7 +284,6 @@ func DefaultImplementationRules() []ImplementationRule {
 		NewPushRequestedOrderingThroughInsertRule(),
 		NewPushRequestedOrderingThroughUpdateRule(),
 		NewPushRequestedOrderingThroughTempTableInsertRule(),
-		NewPushRequestedOrderingThroughProjectionRule(),
 		NewPushRequestedOrderingThroughGroupByRule(),
 		NewPushRequestedOrderingThroughUnionRule(),
 		NewPushRequestedOrderingThroughRecursiveUnionRule(),
@@ -318,7 +303,6 @@ func DefaultImplementationRules() []ImplementationRule {
 		NewImplementInJoinRule(),
 		NewImplementInUnionRule(),
 		NewImplementSortRule(),
-		NewImplementProjectionFinalRule(),
 		NewImplementDistinctFinalRule(),
 		NewImplementUniqueRule(),
 		NewImplementUnorderedUnionRule(),
@@ -365,8 +349,6 @@ func DefaultImplementationRules() []ImplementationRule {
 		NewPushUnorderedUnionThroughFetchRule(),
 		NewPushMergeSortUnionThroughFetchRule(),
 		NewPushInUnionThroughFetchRule(),
-		NewRemoveProjectionRule(),
-		NewMergeProjectionAndFetchRule(),
 	}
 
 	rules = append(rules, GoExtensionImplementationRules()...)
@@ -480,7 +462,7 @@ func registerRewritingRules() {
 }
 
 func registerDefaultRules() {
-	for _, r := range DefaultExpressionRules() {
+	for _, r := range append(DefaultExpressionRules(), PlanningExplorationRules()...) {
 		// Use the concrete type name (without leading * and package
 		// prefix) as the registry key. Skip if already registered —
 		// init can be called twice in tests; idempotency keeps the

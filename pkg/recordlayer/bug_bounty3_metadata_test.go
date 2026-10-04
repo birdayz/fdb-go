@@ -1,6 +1,7 @@
 package recordlayer
 
 import (
+	"bytes"
 	"fmt"
 	"testing"
 
@@ -436,14 +437,15 @@ func TestBug5_FormerIndexSubspaceKeyTypeChangesOnRoundTrip(t *testing.T) {
 		t.Fatalf("Build() failed: %v", err)
 	}
 
-	// The FormerIndex has SubspaceKey = int(42)
+	// SetSubspaceKey normalizes the key as Java's setter does, so the int is
+	// stored, and handed to the FormerIndex, as an int64.
 	formerIndexes := md.GetFormerIndexes()
 	if len(formerIndexes) != 1 {
 		t.Fatalf("Expected 1 former index, got %d", len(formerIndexes))
 	}
 	originalKey := formerIndexes[0].SubspaceKey
-	if _, ok := originalKey.(int); !ok {
-		t.Fatalf("Expected SubspaceKey to be int, got %T", originalKey)
+	if _, ok := originalKey.(int64); !ok {
+		t.Fatalf("Expected SubspaceKey to be int64, got %T", originalKey)
 	}
 
 	// Round-trip through proto
@@ -500,66 +502,72 @@ func TestBug5_FormerIndexSubspaceKeyTypeChangesOnRoundTrip(t *testing.T) {
 }
 
 // =============================================================================
-// BUG #6: RecordTypeKeyExpression.ToKeyExpression with .Nest() loses the
-//         nesting structure on proto round-trip
+// BUG #6: RecordTypeKey().Nest(x) was a second shape of Java's
+//         concat(recordType(), x): a record type key holding a child, which
+//         wrote a Then only when serialized, compared equal to a bare record
+//         type key, and did not flatten a nested Then.
 //
-// File:line: key_expression_proto.go:88-103
-// Severity: incorrect behavior ($100) — expression type changes after round-trip,
-//           breaking type assertions that depend on the concrete type
-//
-// Description: RecordTypeKeyExpression{nested: Field("x")}.ToKeyExpression()
-// serializes to Then{RecordTypeKey, Field("x")}, which deserializes to
-// CompositeKeyExpression{[RecordTypeKey(), Field("x")]}. The original Go type
-// is lost.
-//
-// This means code that does type assertions on the primary key (e.g.,
-// primaryKeyStartsWithRecordType, IsRecordTypeExpression) may behave differently
-// before and after proto round-trip.
-//
-// Specifically: IsRecordTypeExpression checks if expr.(*RecordTypeKeyExpression),
-// which returns true before round-trip and false after (because the round-trip
-// converts it to a CompositeKeyExpression). This could affect code that relies
-// on IsRecordTypeExpression to detect record-type-prefixed keys.
-//
-// Fix: The from-proto path should detect Then{RecordTypeKey, ...} and reconstruct
-// it as RecordTypeKeyExpression{nested: ...} instead of CompositeKeyExpression.
+// Nest now builds the Then itself (Concat(RecordTypeKey(), x)), so the value a
+// program holds is the one a load returns, byte for byte and type for type.
 // =============================================================================
 
-func TestBug6_RecordTypeKeyExpressionNestLostOnRoundTrip(t *testing.T) {
+func TestBug6_RecordTypeKeyNestIsTheThenJavaWrites(t *testing.T) {
 	t.Parallel()
 
-	original := RecordTypeKey().Nest(Field("order_id"))
-
-	// Before round-trip: should be *RecordTypeKeyExpression
-	if !IsRecordTypeExpression(original) {
-		t.Fatal("Before round-trip: IsRecordTypeExpression should be true")
-	}
-
-	// Serialize
-	protoExpr := original.ToKeyExpression()
-
-	// Deserialize
-	restored, err := KeyExpressionFromProto(protoExpr)
-	if err != nil {
-		t.Fatalf("KeyExpressionFromProto failed: %v", err)
-	}
-
-	// KNOWN LIMITATION (matches Java): After round-trip, RecordTypeKeyExpression.Nest(X)
-	// serializes as Then{RecordTypeKey, X}, which deserializes as CompositeKeyExpression.
-	// Java has the same behavior: concat(recordTypeKey(), X) → ThenKeyExpression on deser.
-	// This is by design — the proto schema doesn't have a "RecordTypeKeyWithNested" message.
-	// primaryKeyStartsWithRecordType() handles this by checking both:
-	//   1. Direct *RecordTypeKeyExpression
-	//   2. CompositeKeyExpression where first child is *RecordTypeKeyExpression
-	if !IsRecordTypeExpression(restored) {
-		t.Logf("Known limitation (matches Java): After proto round-trip, "+
-			"RecordTypeKeyExpression.Nest() becomes %T. This is expected — "+
-			"the proto format doesn't distinguish RecordTypeKey+nested from Then{RecordTypeKey, X}.", restored)
-
-		// Verify primaryKeyStartsWithRecordType still works (the important invariant)
-		if !primaryKeyStartsWithRecordType(restored) {
-			t.Fatal("primaryKeyStartsWithRecordType ALSO fails after round-trip — this would be a real bug")
+	for _, c := range []struct {
+		name string
+		expr KeyExpression
+		want KeyExpression
+	}{
+		{"one field", RecordTypeKey().Nest(Field("order_id")), Concat(RecordTypeKey(), Field("order_id"))},
+		{"a Then is flattened", RecordTypeKey().Nest(Concat(Field("a"), Field("b"))), Concat(RecordTypeKey(), Field("a"), Field("b"))},
+		{"inside a Then", Concat(RecordTypeKey().Nest(Field("order_id")), Field("price")), Concat(RecordTypeKey(), Field("order_id"), Field("price"))},
+	} {
+		then, ok := c.expr.(*CompositeKeyExpression)
+		if !ok {
+			t.Fatalf("%s: Nest built %T, want the Then", c.name, c.expr)
 		}
+		for i, child := range then.SubKeyExpressions() {
+			if _, nested := child.(*CompositeKeyExpression); nested {
+				t.Fatalf("%s: child %d is a Then; Java's Then is flat", c.name, i)
+			}
+		}
+		if !keyExpressionEquals(c.expr, c.want) {
+			t.Fatalf("%s: %v, want %v", c.name, c.expr, c.want)
+		}
+		wantBytes, err := proto.Marshal(c.want.ToKeyExpression())
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotBytes, err := proto.Marshal(c.expr.ToKeyExpression())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(gotBytes, wantBytes) {
+			t.Fatalf("%s: writes %x, Java's concat writes %x", c.name, gotBytes, wantBytes)
+		}
+		restored, err := KeyExpressionFromProto(c.expr.ToKeyExpression())
+		if err != nil {
+			t.Fatalf("%s: KeyExpressionFromProto: %v", c.name, err)
+		}
+		if !keyExpressionEquals(restored, c.expr) {
+			t.Fatalf("%s: a load reads %v back, the program held %v", c.name, restored, c.expr)
+		}
+		if !primaryKeyStartsWithRecordType(c.expr) {
+			t.Fatalf("%s: does not start with the record type", c.name)
+		}
+	}
+
+	// Two record type keys nested with different fields are different keys,
+	// which a comparison of the keys (the evolution validator's) must see.
+	if keyExpressionEquals(RecordTypeKey().Nest(Field("a")), RecordTypeKey().Nest(Field("b"))) {
+		t.Fatal("RecordTypeKey().Nest(a) equals RecordTypeKey().Nest(b)")
+	}
+	// Nest leaves the receiver the bare record type key.
+	rtk := RecordTypeKey()
+	rtk.Nest(Field("a"))
+	if rtk.ColumnSize() != 1 {
+		t.Fatalf("Nest changed its receiver: column size %d", rtk.ColumnSize())
 	}
 }
 
@@ -791,32 +799,18 @@ func TestBug10_ListKeyExpressionEmptyChildrenRoundTrip(t *testing.T) {
 func TestBug11_EvolutionValidatorSprintComparison(t *testing.T) {
 	t.Parallel()
 
-	// Verify the fix: normalizeSubspaceKey + type-safe comparison.
-	// int(5) and string("5") must NOT be considered equal.
-	if normalizeSubspaceKey(int(5)) == normalizeSubspaceKey("5") {
-		t.Fatal("BUG: normalizeSubspaceKey(int(5)) == normalizeSubspaceKey(\"5\"), " +
-			"type-safe comparison broken")
+	// Verify the fix: subspace keys are compared by subspaceKeyIdentity, which
+	// is type-safe. int(5) and string("5") must NOT be considered equal.
+	if subspaceKeysEqual(int(5), "5") {
+		t.Fatal("BUG: subspaceKeysEqual(int(5), \"5\"), type-safe comparison broken")
 	}
 
 	// int(5), int32(5), and int64(5) MUST be considered equal after normalization.
-	if normalizeSubspaceKey(int(5)) != normalizeSubspaceKey(int64(5)) {
-		t.Fatal("BUG: normalizeSubspaceKey(int(5)) != normalizeSubspaceKey(int64(5))")
+	if !subspaceKeysEqual(int(5), int64(5)) {
+		t.Fatal("BUG: !subspaceKeysEqual(int(5), int64(5))")
 	}
-	if normalizeSubspaceKey(int32(5)) != normalizeSubspaceKey(int64(5)) {
-		t.Fatal("BUG: normalizeSubspaceKey(int32(5)) != normalizeSubspaceKey(int64(5))")
-	}
-
-	// subspaceKeyString must also distinguish int from string.
-	if subspaceKeyString(int(5)) == subspaceKeyString("5") {
-		t.Fatal("BUG: subspaceKeyString(int(5)) == subspaceKeyString(\"5\")")
-	}
-
-	// subspaceKeyString must equate all integer types.
-	if subspaceKeyString(int(5)) != subspaceKeyString(int64(5)) {
-		t.Fatal("BUG: subspaceKeyString(int(5)) != subspaceKeyString(int64(5))")
-	}
-	if subspaceKeyString(int32(5)) != subspaceKeyString(int64(5)) {
-		t.Fatal("BUG: subspaceKeyString(int32(5)) != subspaceKeyString(int64(5))")
+	if !subspaceKeysEqual(int32(5), int64(5)) {
+		t.Fatal("BUG: !subspaceKeysEqual(int32(5), int64(5))")
 	}
 }
 

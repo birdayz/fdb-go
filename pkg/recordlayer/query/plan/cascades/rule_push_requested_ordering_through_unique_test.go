@@ -18,6 +18,42 @@ func requestedOrderingUniqueFixture() (
 	return q, unique, expressions.InitialOf(unique)
 }
 
+func TestOrderingPassThroughPreservesPresentEmptyConstraint(t *testing.T) {
+	t.Parallel()
+	for _, operator := range []string{"unique", "distinct"} {
+		t.Run(operator, func(t *testing.T) {
+			t.Parallel()
+			q := requestedOrderingQuantifier("T", "empty_ordering_input")
+			var parent expressions.RelationalExpression
+			var rule ImplementationRule
+			if operator == "unique" {
+				parent = mustRequestedOrderingConstruct(expressions.NewLogicalUniqueExpression(q))
+				rule = NewPushRequestedOrderingThroughUniqueRule()
+			} else {
+				parent = mustRequestedOrderingConstruct(expressions.NewLogicalDistinctExpression(q))
+				rule = NewPushRequestedOrderingThroughDistinctRule()
+			}
+			ref := expressions.InitialOf(parent)
+			cm := NewConstraintMap()
+			Set(cm, ref, RequestedOrderingConstraintKey, nil)
+			child := q.GetRangesOver()
+			child.ConstraintsMap().SetExplored()
+			fireConstraintRule(t, rule, ref, cm)
+			if got, ok := Get(cm, child, RequestedOrderingConstraintKey); !ok || len(got) != 0 {
+				t.Fatalf("present empty ordering was not propagated: present=%v orderings=%v", ok, got)
+			}
+			if !child.NeedsExploration() {
+				t.Fatal("first empty constraint push did not advance the child epoch")
+			}
+			child.ConstraintsMap().SetExplored()
+			fireConstraintRule(t, rule, ref, cm)
+			if child.NeedsExploration() {
+				t.Fatal("repeated empty constraint push rearmed the child")
+			}
+		})
+	}
+}
+
 func TestPushRequestedOrderingThroughUnique_PropagatesConstraint(t *testing.T) {
 	t.Parallel()
 

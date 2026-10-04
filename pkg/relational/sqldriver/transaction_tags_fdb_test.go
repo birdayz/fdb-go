@@ -29,7 +29,7 @@ func TestFDB_TransactionTags_TaggedConnectionReadsAndWrites(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE txtags CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_txtags/s WITH TEMPLATE txtags")
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_txtags?cluster_file=%s&schema=s&transaction_tags=tenant-a,bulk",
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_TXTAGS?cluster_file=%s&schema=S&transaction_tags=tenant-a,bulk",
 		clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
@@ -81,7 +81,7 @@ func TestFDB_TransactionTags_TagsReachTheTransaction(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE txtags2 CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_txtags2/s WITH TEMPLATE txtags2")
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_txtags2?cluster_file=%s&schema=s&transaction_tags=gamma,alpha",
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_TXTAGS2?cluster_file=%s&schema=S&transaction_tags=gamma,alpha",
 		clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
@@ -128,7 +128,7 @@ func TestFDB_TransactionTags_InvalidTagFailsAtOpen(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dsn := fmt.Sprintf("fdbsql:///testdb_txtags_bad?cluster_file=%s&transaction_tags=%s",
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_TXTAGS_BAD?cluster_file=%s&transaction_tags=%s",
 		clusterFilePath, strings.Repeat("x", 17))
 	// sql.Open defers driver work, so the error may surface here or on first
 	// use — but it MUST surface, and it must carry the record layer's wording.

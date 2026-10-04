@@ -6,6 +6,8 @@ package plandiff
 
 import (
 	"context"
+	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"os"
@@ -14,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/relational/api"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 )
 
@@ -51,6 +54,41 @@ func TestMain(m *testing.M) {
 	goSQLClusterFilePath = tmp.Name()
 
 	os.Exit(m.Run())
+}
+
+// TestWithTeardown drives every arm of the teardown reporting: a teardown that
+// failed is never dropped, it is the error of a run that succeeded, and it rides
+// behind the error of a run that failed without changing that error's text or
+// what errors.As finds first.
+func TestWithTeardown(t *testing.T) {
+	t.Parallel()
+	dropDB := fixtureErrf(errors.New("db busy"), "DROP DATABASE")
+	dropTpl := fixtureErrf(errors.New("template busy"), "DROP SCHEMA TEMPLATE")
+	runErr := &FixtureError{Phase: "query", Err: errors.New("boom")}
+
+	if got := withTeardown(nil, nil); got != nil {
+		t.Fatalf("clean run, clean teardown: got %v, want nil", got)
+	}
+	if got := withTeardown(runErr, nil); got != runErr {
+		t.Fatalf("failed run, clean teardown: got %v, want the run's error unchanged", got)
+	}
+
+	got := withTeardown(nil, []error{dropDB, dropTpl})
+	if got == nil || !errors.Is(got, dropDB) || !errors.Is(got, dropTpl) {
+		t.Fatalf("clean run, failed teardown: got %v, want both drop failures", got)
+	}
+
+	got = withTeardown(runErr, []error{dropTpl})
+	if got.Error() != runErr.Error() {
+		t.Fatalf("failed run, failed teardown: text %q, want the run's %q", got.Error(), runErr.Error())
+	}
+	var first *FixtureError
+	if !errors.As(got, &first) || first != runErr {
+		t.Fatalf("failed run, failed teardown: errors.As found %v first, want the run's error", first)
+	}
+	if !errors.Is(got, dropTpl) {
+		t.Fatalf("failed run, failed teardown: the drop failure is not reachable from %v", got)
+	}
 }
 
 // TestGoSQLRunner_NoClusterFileFallback pins the no-FDB contract:
@@ -278,5 +316,147 @@ func TestGoSQLRunner_BytesINList(t *testing.T) {
 	}
 	if got.Rows.Rows[1][0] != float64(2) {
 		t.Fatalf("Row[1]: got %v (%T), want 2", got.Rows.Rows[1][0], got.Rows.Rows[1][0])
+	}
+}
+
+// cancelingArg cancels the run's context when database/sql converts it, so the
+// statement fails with the context's error mid-run.
+type cancelingArg struct{ cancel context.CancelFunc }
+
+func (a cancelingArg) Value() (driver.Value, error) {
+	a.cancel()
+	return int64(1), nil
+}
+
+// fixturePhases lists the Phase of every FixtureError in err's tree.
+func fixturePhases(err error) map[string]bool {
+	found := map[string]bool{}
+	var walk func(error)
+	walk = func(e error) {
+		if e == nil {
+			return
+		}
+		if fx, ok := e.(*FixtureError); ok {
+			found[fx.Phase] = true
+		}
+		switch u := e.(type) {
+		case interface{ Unwrap() []error }:
+			for _, c := range u.Unwrap() {
+				walk(c)
+			}
+		case interface{ Unwrap() error }:
+			walk(u.Unwrap())
+		}
+	}
+	walk(err)
+	return found
+}
+
+// TestGoSQLRunner_TeardownFailureIsReported pins the WIRING of the teardown
+// report, which TestWithTeardown cannot see: the deferred drops' failures reach
+// the error runEphemeralFollowUp returns (through withEphemeralSchema's named
+// results), on a run that itself succeeded. The drops are made to fail through
+// the runner's teardownExec seam; a cleanup registered before the run passes the recorded
+// drops through the real exec, so the test leaks nothing even when an
+// assertion stops it.
+func TestGoSQLRunner_TeardownFailureIsReported(t *testing.T) {
+	t.Parallel()
+	if goSQLClusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	r, ok := NewGoSQLSetupRunner(goSQLClusterFilePath).(*goSQLRunner)
+	if !ok {
+		t.Fatalf("NewGoSQLSetupRunner returned %T, want *goSQLRunner", NewGoSQLSetupRunner(goSQLClusterFilePath))
+	}
+	var dropped []string
+	t.Cleanup(func() { dropThroughRealExec(t, dropped) })
+	failing := *r
+	failing.teardownExec = func(ctx context.Context, db *sql.DB, stmt string) error {
+		dropped = append(dropped, stmt)
+		return errors.New("injected drop failure")
+	}
+	_, err := failing.runEphemeralFollowUp(context.Background(), "CREATE TABLE T (id BIGINT, PRIMARY KEY (id))", nil,
+		"SELECT id FROM T", "", false)
+	found := fixturePhases(err)
+	if !found["DROP DATABASE"] || !found["DROP SCHEMA TEMPLATE"] {
+		t.Fatalf("the teardown's failed drops are not in the returned error: phases %v in %v", found, err)
+	}
+}
+
+// dropThroughRealExec runs the teardown's recorded drops (each IF EXISTS, so a
+// second run finds nothing to do) through the system database. It is a
+// t.Cleanup, so it runs whether the test body finished or stopped at a Fatalf.
+func dropThroughRealExec(t *testing.T, drops []string) {
+	t.Helper()
+	if len(drops) == 0 {
+		return
+	}
+	sysDB, err := sql.Open("fdbsql", "fdbsql:///__SYS?cluster_file="+goSQLClusterFilePath)
+	if err != nil {
+		t.Errorf("cleanup: opening the system database: %v", err)
+		return
+	}
+	defer sysDB.Close()
+	for _, stmt := range drops {
+		if _, derr := sysDB.ExecContext(context.Background(), stmt); derr != nil {
+			t.Errorf("cleanup %q: %v", stmt, derr)
+		}
+	}
+}
+
+// TestGoSQLRunner_CanceledRunStillTearsDown pins that the teardown does not
+// inherit the run's cancellation: a run whose context is canceled mid-statement
+// reports the run's failure and no teardown failure, and leaves neither its
+// database nor its template behind.
+func TestGoSQLRunner_CanceledRunStillTearsDown(t *testing.T) {
+	t.Parallel()
+	if goSQLClusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	r, ok := NewGoSQLSetupRunner(goSQLClusterFilePath).(*goSQLRunner)
+	if !ok {
+		t.Fatalf("NewGoSQLSetupRunner returned %T, want *goSQLRunner", NewGoSQLSetupRunner(goSQLClusterFilePath))
+	}
+	var executed []string
+	t.Cleanup(func() { dropThroughRealExec(t, executed) })
+	observing := *r
+	observing.teardownExec = func(ctx context.Context, db *sql.DB, stmt string) error {
+		executed = append(executed, stmt)
+		_, err := db.ExecContext(ctx, stmt)
+		return err
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, err := observing.runEphemeralFollowUp(ctx, "CREATE TABLE T (id BIGINT, PRIMARY KEY (id))", nil,
+		"SELECT id FROM T WHERE id = ?", "", false, cancelingArg{cancel: cancel})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("a run whose context was canceled mid-run reported %v, want context.Canceled in its chain", err)
+	}
+	if found := fixturePhases(err); found["DROP DATABASE"] || found["DROP SCHEMA TEMPLATE"] {
+		t.Fatalf("the teardown failed under the canceled run's context: phases %v in %v", found, err)
+	}
+	if len(executed) != 2 {
+		t.Fatalf("teardown ran %d drops (%v), want the database and the template", len(executed), executed)
+	}
+	sysDB, oerr := sql.Open("fdbsql", "fdbsql:///__SYS?cluster_file="+goSQLClusterFilePath)
+	if oerr != nil {
+		t.Fatal(oerr)
+	}
+	defer sysDB.Close()
+	for _, stmt := range executed {
+		// Each drop is IF EXISTS; re-running it without IF EXISTS must find
+		// nothing, and must say so with the not-found code of what it drops:
+		// any other failure (a connection error, a syntax error) says nothing
+		// about whether the teardown ran.
+		strict := strings.Replace(stmt, " IF EXISTS", "", 1)
+		want := api.ErrCodeUnknownDatabase
+		if strings.HasPrefix(strict, "DROP SCHEMA TEMPLATE") {
+			want = api.ErrCodeUnknownSchemaTemplate
+		}
+		_, derr := sysDB.ExecContext(context.Background(), strict)
+		var apiErr *api.Error
+		if !errors.As(derr, &apiErr) || apiErr.Code != want {
+			t.Errorf("%q = %v, want %s: the canceled run's teardown should have dropped it", strict, derr, want)
+		}
 	}
 }

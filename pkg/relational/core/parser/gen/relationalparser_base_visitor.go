@@ -139,6 +139,10 @@ func (v *BaseRelationalParserVisitor) VisitVectorIndexDefinition(ctx *VectorInde
 	return v.VisitChildren(ctx)
 }
 
+func (v *BaseRelationalParserVisitor) VisitVectorEngine(ctx *VectorEngineContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
 func (v *BaseRelationalParserVisitor) VisitIndexColumnList(ctx *IndexColumnListContext) interface{} {
 	return v.VisitChildren(ctx)
 }
@@ -175,6 +179,10 @@ func (v *BaseRelationalParserVisitor) VisitVectorIndexOption(ctx *VectorIndexOpt
 	return v.VisitChildren(ctx)
 }
 
+func (v *BaseRelationalParserVisitor) VisitVectorIndexOptionValue(ctx *VectorIndexOptionValueContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
 func (v *BaseRelationalParserVisitor) VisitHnswMetric(ctx *HnswMetricContext) interface{} {
 	return v.VisitChildren(ctx)
 }
@@ -196,6 +204,18 @@ func (v *BaseRelationalParserVisitor) VisitDropTempFunction(ctx *DropTempFunctio
 }
 
 func (v *BaseRelationalParserVisitor) VisitViewDefinition(ctx *ViewDefinitionContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
+func (v *BaseRelationalParserVisitor) VisitStoredQueryDefinition(ctx *StoredQueryDefinitionContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
+func (v *BaseRelationalParserVisitor) VisitDeclareBlock(ctx *DeclareBlockContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
+func (v *BaseRelationalParserVisitor) VisitDeclaredFunction(ctx *DeclaredFunctionContext) interface{} {
 	return v.VisitChildren(ctx)
 }
 
@@ -279,19 +299,7 @@ func (v *BaseRelationalParserVisitor) VisitStatementBody(ctx *StatementBodyConte
 	return v.VisitChildren(ctx)
 }
 
-func (v *BaseRelationalParserVisitor) VisitUserDefinedScalarFunctionStatementBody(ctx *UserDefinedScalarFunctionStatementBodyContext) interface{} {
-	return v.VisitChildren(ctx)
-}
-
-func (v *BaseRelationalParserVisitor) VisitExpressionBody(ctx *ExpressionBodyContext) interface{} {
-	return v.VisitChildren(ctx)
-}
-
-func (v *BaseRelationalParserVisitor) VisitSqlReturnStatement(ctx *SqlReturnStatementContext) interface{} {
-	return v.VisitChildren(ctx)
-}
-
-func (v *BaseRelationalParserVisitor) VisitReturnValue(ctx *ReturnValueContext) interface{} {
+func (v *BaseRelationalParserVisitor) VisitUserDefinedMacroFunctionStatementBody(ctx *UserDefinedMacroFunctionStatementBodyContext) interface{} {
 	return v.VisitChildren(ctx)
 }
 
@@ -351,7 +359,7 @@ func (v *BaseRelationalParserVisitor) VisitTableFunction(ctx *TableFunctionConte
 	return v.VisitChildren(ctx)
 }
 
-func (v *BaseRelationalParserVisitor) VisitTableFunctionArgs(ctx *TableFunctionArgsContext) interface{} {
+func (v *BaseRelationalParserVisitor) VisitNamedOrUnnamedFunctionArgs(ctx *NamedOrUnnamedFunctionArgsContext) interface{} {
 	return v.VisitChildren(ctx)
 }
 
@@ -507,11 +515,11 @@ func (v *BaseRelationalParserVisitor) VisitLimitClauseAtom(ctx *LimitClauseAtomC
 	return v.VisitChildren(ctx)
 }
 
-func (v *BaseRelationalParserVisitor) VisitQueryOptions(ctx *QueryOptionsContext) interface{} {
+func (v *BaseRelationalParserVisitor) VisitStatementOptions(ctx *StatementOptionsContext) interface{} {
 	return v.VisitChildren(ctx)
 }
 
-func (v *BaseRelationalParserVisitor) VisitQueryOption(ctx *QueryOptionContext) interface{} {
+func (v *BaseRelationalParserVisitor) VisitStatementOption(ctx *StatementOptionContext) interface{} {
 	return v.VisitChildren(ctx)
 }
 
@@ -944,6 +952,14 @@ func (v *BaseRelationalParserVisitor) VisitLevelInWeightListElement(ctx *LevelIn
 }
 
 func (v *BaseRelationalParserVisitor) VisitAggregateWindowedFunction(ctx *AggregateWindowedFunctionContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
+func (v *BaseRelationalParserVisitor) VisitNullTreatmentClause(ctx *NullTreatmentClauseContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
+func (v *BaseRelationalParserVisitor) VisitAggregateLimitClause(ctx *AggregateLimitClauseContext) interface{} {
 	return v.VisitChildren(ctx)
 }
 

@@ -46,27 +46,29 @@ var seamAllowlist = map[string]string{
 	// ---- (A) Latency and duration measurement. These values feed a StoreTimer or a log line
 	// and are never written to FDB. Seaming them would make a simulation report zero elapsed
 	// time for every operation, which is worse than useless for the metrics.
-	"pkg/recordlayer/database.go:CommitWithVersionstamp: time.Now": "commit-latency metric",
-	"pkg/recordlayer/database.go:Commit: time.Now":                 "commit-latency metric; the sibling of CommitWithVersionstamp, and every commit path has to record or the metric becomes a function of which API the caller picked",
-	"pkg/recordlayer/database.go:CommitWithHooks: time.Now":        "commit-latency metric; same span as Java's commitAsync, which starts before the pre-commit checks",
+	"pkg/recordlayer/database.go:CommitWithVersionstamp: time.Now": "commit-latency metric shared by all explicit commit APIs; starts before pre-commit checks and excludes post-commit hooks",
 	"pkg/recordlayer/database.go:Run: time.Now":                    "commit-latency metric for the transactor's retry loop, where nothing calls Commit and the commit would otherwise go uncounted",
 	"pkg/recordlayer/database.go:RunWithWeakReads: time.Now":       "commit-latency metric; the Run case, weak-read variant",
 	"pkg/recordlayer/database.go:RunWithVersionstamp: time.Now":    "commit-latency metric; the Run case, versionstamp variant",
 	"pkg/recordlayer/instrumented_cursor.go:OnNext: time.Now": "per-record scan-latency metric. This is the one that MUST stay wall-clock: it is the port of Java's " +
 		"StoreTimer.instrument(Event, RecordCursor), whose whole value is the real elapsed time of each onNext — a seamed clock would report a zero-cost scan",
-	"pkg/recordlayer/database.go:GetReadVersion: time.Now":                "GRV-latency metric",
-	"pkg/recordlayer/online_indexer.go:shouldLogBuildProgress: time.Now":  "progress-log throttle",
-	"pkg/recordlayer/spfresh_write.go:spfreshInsert: time.Now":            "insert-latency metric",
-	"pkg/recordlayer/store.go:saveRecordInternal: time.Now":               "save-latency metric",
-	"pkg/recordlayer/store_builder.go:Create: time.Now":                   "store-create-latency metric",
-	"pkg/recordlayer/store_builder.go:Open: time.Now":                     "store-open-latency metric",
-	"pkg/recordlayer/store_builder.go:RebuildIndex: time.Now":             "rebuild-latency metric",
-	"pkg/relational/core/embedded/plan_logging.go:beginPlanLog: time.Now": "plan-log timestamp; log output, not persisted rows",
+	"pkg/recordlayer/database.go:GetReadVersion: time.Now":                        "GRV-latency metric",
+	"pkg/recordlayer/online_indexer.go:shouldLogBuildProgress: time.Now":          "progress-log throttle",
+	"pkg/recordlayer/online_indexer_queue.go:cleanupHeartbeatAttempt: time.Until": "remaining wall-clock context deadline for best-effort cleanup's FDB transaction timeout; not a persisted timestamp, and a simulated clock cannot be compared to context.WithTimeout's wall-clock deadline",
+	"pkg/recordlayer/spfresh_write.go:spfreshInsert: time.Now":                    "insert-latency metric",
+	"pkg/recordlayer/store.go:saveRecordInternal: time.Now":                       "save-latency metric",
+	"pkg/recordlayer/store_builder.go:Create: time.Now":                           "store-create-latency metric",
+	"pkg/recordlayer/store_builder.go:openWithPreflight: time.Now":                "store-open-latency metric",
+	"pkg/recordlayer/store_builder.go:RebuildIndex: time.Now":                     "rebuild-latency metric",
+	"pkg/relational/core/embedded/plan_logging.go:beginPlanLog: time.Now":         "plan-log timestamp; log output, not persisted rows",
 	"pkg/relational/core/embedded/execution_logging.go:beginExecLog: time.Now": "execution-stats timestamp; the same log-output-not-persisted-rows case as beginPlanLog one layer over. " +
 		"Deliberately NOT the seamed clock ScanLimiterState uses: that one DECIDES where a page ends and which continuation the caller gets, so a wall-clock anchor changes what a seeded run produces. This one is read once at the start of Execute and once at the end, and the only thing derived from the difference is ExecutionDuration and the SlowQuery boolean beside it on a log line — no byte written, no page boundary, no plan choice",
 	"pkg/recordlayer/spfresh_query.go:search: time.Now":               "search-latency metric",
 	"pkg/recordlayer/store_timer.go:RecordSince: time.Since":          "the StoreTimer's own latency accounting; the whole point of the type is real elapsed time",
 	"pkg/relational/core/embedded/plan_logging.go:finish: time.Since": "planning duration on a log line; the log is not a persisted row",
+	"pkg/recordlayer/query/plan/cascades/planner_trace.go:runTraced: time.Now": "per-task planner-trace duration, only for a diagnostics report; " +
+		"no planning decision reads it and nothing is persisted, and an untraced run never calls it",
+	"pkg/recordlayer/query/plan/cascades/planner_trace.go:runTraced: time.Since": "pairs with the runTraced time.Now entry above",
 	"pkg/relational/core/embedded/execution_logging.go:finish: time.Since": "execution duration on a log line; the log is not a persisted row. " +
 		"Pairs with the beginExecLog entry above — same clock, same reasoning",
 	"pkg/recordlayer/store.go:DeleteRecord: time.Now": "delete-latency metric",
@@ -102,8 +104,10 @@ var seamAllowlist = map[string]string{
 	"pkg/relational/core/embedded/scalar_functions.go:statementNow: time.Now":      "nil-session arm; Session.StatementNow supplies the value when a session is in flight",
 
 	// ---- (D) Test and development harnesses. Not on any persisted-byte path.
-	"pkg/recordlayer/chaos/concurrent.go:RunConcurrent: time.Now":                   "chaos driver's own scheduling",
-	"pkg/relational/conformance/plandiff/go_runner.go:runEphemeral: uuid.NewString": "ephemeral database name for a cross-engine plan-diff run",
+	"pkg/recordlayer/chaos/concurrent.go:RunConcurrent: time.Now":                          "chaos driver's own scheduling",
+	"pkg/relational/conformance/plandiff/go_runner.go:withEphemeralSchema: uuid.NewString": "ephemeral database name for a cross-engine plan-diff run",
+	"pkg/relational/conformance/factorycorpus/run.go:RunScenario: rand.Text":               "namespace token of a factory-corpus replay's private database name, so concurrent replays cannot share a target",
+	"pkg/recordlayer/keystoretest/keystoretest.go:randomBytes: rand.Read":                  "salts and IVs of a test key store written to a temporary file, never to FDB",
 
 	// ---- (E) KNOWN-UNSEAMED PERSISTED SITE. This one does reach persisted rows and is the
 	// standing exception to the bit-exact-replay claim; it is named as such in the RFC-199
@@ -114,8 +118,21 @@ var seamAllowlist = map[string]string{
 // seamScannedTrees are the packages whose non-test sources produce persisted bytes.
 var seamScannedTrees = []string{"pkg/recordlayer/", "pkg/relational/"}
 
-// seamBannedCalls are the raw nondeterminism sources. Selector-expression spellings only: a
-// bare `Now()` or `Read()` on some other receiver is not one of these.
+// seamBanned names the raw nondeterminism sources by IMPORT PATH, then name. A site is any
+// selector naming one of them, called or not, so each of these is caught:
+//
+//	time.Now()             the call
+//	t0 := time.Now         a function value, called later
+//	io.ReadFull(rand.Reader, iv)   a source handed to something else
+//	mrand.Float64()        an import under any alias (`mrand "math/rand/v2"`)
+//
+// The package is resolved through the file's own imports, so the match is by what the
+// identifier IS, never by how it is spelled: a local variable named `rand`, or another
+// package imported under the name `time`, is not a site. What is NOT covered, all by
+// construction of a syntactic gate: a dot-import (`import . "time"`, a bare Now()), a source
+// reached through another package's wrapper, and a source passed in by a caller. The
+// allowlist keys keep the spelling the file uses (`rand.Float64`), which is what a reader
+// finds at the site.
 //
 // time.Since and time.Until are on this list for the reason that made them easy to miss: they
 // read the wall clock without ever spelling `Now`. A gate that watched only time.Now was blind
@@ -123,25 +140,31 @@ var seamScannedTrees = []string{"pkg/recordlayer/", "pkg/relational/"}
 // a budget comparison decides how much work gets done, and therefore how many bytes get
 // durably recorded. Adding them surfaced a site whose allowlist entry read "build-duration
 // metric" and was in fact the online indexer's time limit.
-var seamBannedCalls = map[string]bool{
-	"time.Now":        true,
-	"time.Since":      true,
-	"time.Until":      true,
-	"rand.Read":       true,
-	"rand.Int":        true,
-	"rand.Intn":       true,
-	"rand.Int63":      true,
-	"rand.Uint64":     true,
-	"rand.Uint32":     true,
-	"rand.Float64":    true,
-	"cryptorand.Read": true,
-	"crand.Read":      true,
-	"uuid.New":        true,
-	"uuid.NewRandom":  true,
-	"uuid.NewString":  true,
+//
+// Matching references and not only calls, and resolving aliases, surfaced the record
+// serializer's IV source (`rand.Reader`, persisted bytes) and its validation coin
+// (`mathrand.Float64`), which the spelling-and-call gate could not see; both now draw from
+// the store's env.
+var seamBanned = map[string]map[string]bool{
+	"time":                   {"Now": true, "Since": true, "Until": true},
+	"crypto/rand":            {"Read": true, "Reader": true, "Int": true, "Prime": true, "Text": true},
+	"math/rand":              mathRandGlobals,
+	"math/rand/v2":           mathRandGlobals,
+	"github.com/google/uuid": {"New": true, "NewRandom": true, "NewString": true, "NewUUID": true, "NewV7": true},
 }
 
-// TestDSTSeamGate fails on any raw nondeterminism call in the scanned trees that is not on
+// mathRandGlobals are the functions of math/rand and math/rand/v2 that draw from the
+// package's global source. Constructors (New, NewSource, NewPCG, NewChaCha8, NewZipf) are
+// not: a generator seeded from a seam is deterministic, and one seeded from the clock is
+// caught at the clock.
+var mathRandGlobals = map[string]bool{
+	"Int": true, "Intn": true, "IntN": true, "Int31": true, "Int31n": true, "Int32": true, "Int32N": true,
+	"Int63": true, "Int63n": true, "Int64": true, "Int64N": true, "Uint": true, "UintN": true,
+	"Uint32": true, "Uint32N": true, "Uint64": true, "Uint64N": true, "Float32": true, "Float64": true,
+	"NormFloat64": true, "ExpFloat64": true, "Perm": true, "Shuffle": true, "Read": true, "N": true,
+}
+
+// TestDSTSeamGate fails on any raw nondeterminism reference in the scanned trees that is not on
 // seamAllowlist, and on any allowlist entry that no longer matches a real site.
 func TestDSTSeamGate(t *testing.T) {
 	t.Parallel()
@@ -336,8 +359,23 @@ func inSeamTrees(rel string) bool {
 	return false
 }
 
-// seamSitesIn walks f and reports every banned call, attributed to its enclosing function.
+// seamSitesIn walks f and reports every reference to a banned source (seamBanned), attributed
+// to its enclosing function.
 func seamSitesIn(rel string, f *ast.File) []seamSite {
+	// The file's import names: the alias when there is one, else the path's last element
+	// (math/rand/v2's package is rand, so its default name is "rand", not "v2").
+	imports := map[string]string{}
+	for _, imp := range f.Imports {
+		path := strings.Trim(imp.Path.Value, `"`)
+		name := path[strings.LastIndex(path, "/")+1:]
+		if path == "math/rand/v2" {
+			name = "rand"
+		}
+		if imp.Name != nil {
+			name = imp.Name.Name
+		}
+		imports[name] = path
+	}
 	var out []seamSite
 	var fnStack []string
 	enclosing := func() string {
@@ -350,17 +388,19 @@ func seamSitesIn(rel string, f *ast.File) []seamSite {
 	visit = func(n ast.Node) bool {
 		switch node := n.(type) {
 		case *ast.FuncDecl:
+			if node.Body == nil {
+				return false
+			}
 			fnStack = append(fnStack, node.Name.Name)
 			ast.Inspect(node.Body, visit)
 			fnStack = fnStack[:len(fnStack)-1]
 			return false
-		case *ast.CallExpr:
-			if sel, ok := node.Fun.(*ast.SelectorExpr); ok {
-				if pkg, ok := sel.X.(*ast.Ident); ok {
-					name := pkg.Name + "." + sel.Sel.Name
-					if seamBannedCalls[name] {
-						out = append(out, seamSite{file: rel, fn: enclosing(), call: name})
-					}
+		case *ast.SelectorExpr:
+			// A package qualifier is an identifier the parser did not resolve to a local
+			// declaration (Obj == nil) and that names one of the file's imports.
+			if pkg, ok := node.X.(*ast.Ident); ok && pkg.Obj == nil {
+				if path, imported := imports[pkg.Name]; imported && seamBanned[path][node.Sel.Name] {
+					out = append(out, seamSite{file: rel, fn: enclosing(), call: pkg.Name + "." + node.Sel.Name})
 				}
 			}
 		}
@@ -391,4 +431,56 @@ func calleeName(fun ast.Expr) string {
 		return f.Name
 	}
 	return ""
+}
+
+// TestSeamSitesInDrivesEveryArm drives each arm of seamSitesIn over one synthetic file: what
+// must be a site, and what must not.
+func TestSeamSitesInDrivesEveryArm(t *testing.T) {
+	t.Parallel()
+	const src = `package p
+
+import (
+	"crypto/rand"
+	"io"
+	mrand "math/rand/v2"
+	"time"
+
+	faketime "example.com/time"
+	uuid "github.com/google/uuid"
+)
+
+func call() { _ = time.Now() }
+func since(t0 time.Time) { _ = time.Since(t0) }
+func value() { f := time.Now; _ = f }
+func reader(iv []byte) { _, _ = io.ReadFull(rand.Reader, iv) }
+func aliased() { _ = mrand.Float64() }
+func constructor() { _ = mrand.New(mrand.NewPCG(1, 2)) }
+func ids() { _ = uuid.NewString() }
+func otherTime() { _ = faketime.Now() }
+func shadowed() { rand := struct{ Reader int }{}; _ = rand.Reader }
+func duration() { _ = time.Second }
+var pkgLevel = time.Now
+`
+	f, err := parser.ParseFile(token.NewFileSet(), "p.go", src, parser.ParseComments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, s := range seamSitesIn("p.go", f) {
+		got = append(got, s.fn+": "+s.call)
+	}
+	sort.Strings(got)
+	want := []string{
+		"aliased: mrand.Float64",
+		"call: time.Now",
+		"ids: uuid.NewString",
+		"init: time.Now",
+		"reader: rand.Reader",
+		"since: time.Since",
+		"value: time.Now",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("sites:\n%s\nwant:\n%s\n(not sites: the constructor, another package named time, a local named rand, a duration)",
+			strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
 }

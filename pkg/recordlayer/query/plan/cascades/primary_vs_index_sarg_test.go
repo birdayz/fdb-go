@@ -70,10 +70,10 @@ func TestSargComparisonEqual_StructuralIdentity(t *testing.T) {
 	if sargComparisonEqual(eqComp(sargLiteral(int64(5))), gt5) {
 		t.Fatal("different comparison type must NOT be equal")
 	}
-	// Different Escape — a Comparison identity field that a type+comparand key omits.
-	esc := &predicates.Comparison{Type: predicates.ComparisonEquals, Operand: sargLiteral(int64(5)), Escape: '\\'}
-	if sargComparisonEqual(eqComp(sargLiteral(int64(5))), esc) {
-		t.Fatal("different Escape must NOT be equal")
+	// Different ParameterName — a Comparison identity field that a type+comparand key omits.
+	param := &predicates.Comparison{Type: predicates.ComparisonEquals, Operand: sargLiteral(int64(5)), ParameterName: "p"}
+	if sargComparisonEqual(eqComp(sargLiteral(int64(5))), param) {
+		t.Fatal("different ParameterName must NOT be equal")
 	}
 	// Correlated operands over DIFFERENT quantifier aliases must NOT be equal
 	// (ValuesStructurallyEqual is alias-sensitive).

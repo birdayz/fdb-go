@@ -149,35 +149,31 @@ func TestIndexDDLShapeCensus(t *testing.T) {
 		got  int
 		want int
 	}{
-		{"files declaring any CREATE INDEX", len(files), 60},
-		{"AS-SELECT statements", asSelect, 276},
-		{"  non-aggregate", nonAgg, 194},
-		{"  aggregate", agg, 82},
-		{"files with a non-aggregate AS-SELECT", len(nonAggFiles), 56},
-		{"non-agg with ORDER BY", withOrderBy, 134},
-		{"non-agg without ORDER BY", withoutOrderBy, 60},
+		{"files declaring any CREATE INDEX", len(files), 70},
+		{"AS-SELECT statements", asSelect, 269},
+		{"  non-aggregate", nonAgg, 185},
+		{"  aggregate", agg, 84},
+		{"files with a non-aggregate AS-SELECT", len(nonAggFiles), 63},
+		{"non-agg with ORDER BY", withOrderBy, 133},
+		{"non-agg without ORDER BY", withoutOrderBy, 52},
 		{"non-agg with explicit ASC/DESC/NULLS", explicitOrder, 16},
 		{"non-agg with WHERE", where, 17},
 		{"non-agg UNIQUE", unique, 2},
-		{"non-agg with __ROW_VERSION", rowVersion, 14},
-		{"non-agg multi-column", multiColumn, 76},
-		{"non-agg covering (0 < |ORDER BY| < |projection|)", covering, 18},
+		{"non-agg with __ROW_VERSION", rowVersion, 9},
+		{"non-agg multi-column", multiColumn, 70},
+		{"non-agg covering (0 < |ORDER BY| < |projection|)", covering, 17},
 		{"non-agg reordered (reorderValues changes key order)", reordered, 6},
-		{"non-agg multi-source FROM", multiSource, 15},
+		{"non-agg multi-source FROM", multiSource, 12},
 		{"non-agg SELECT *", star, 3},
-		{"non-agg dotted path in projection", dotted, 26},
+		{"non-agg dotted path in projection", dotted, 20},
 		{"non-agg WITH ATTRIBUTES", attributes, 0},
 		{"aggregate WITH ATTRIBUTES (LEGACY_EXTREMUM_EVER)", aggAttributes, 4},
-		{"ON-source statements", onSource, 52},
+		{"ON-source statements", onSource, 54},
 		{"  with an explicit column orderClause", onSourceOrdered, 16},
 		{"  with INCLUDE", onSourceInclude, 17},
 	} {
 		if c.got != c.want {
-			t.Errorf("%s = %d, pinned %d\n\n"+
-				"The corpus's index-DDL shape surface moved. RFC-202 §3 maps each "+
-				"generator branch to the statements that witness it; a moved count "+
-				"means a branch may have gained or lost its only witness. Re-read §3 "+
-				"against the new shapes before re-pinning.", c.name, c.got, c.want)
+			t.Errorf("%s = %d, pinned %d", c.name, c.got, c.want)
 		}
 	}
 

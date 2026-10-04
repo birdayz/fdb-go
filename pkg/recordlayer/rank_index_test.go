@@ -156,7 +156,7 @@ var _ = Describe("RankedSet", func() {
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			sub := ks.Sub("rs")
 			config := rankedSetConfig{
-				HashFunction:    jdkArrayHash,
+				HashFunction:    pureHash(jdkArrayHash),
 				NLevels:         rankedSetDefaultLevels,
 				CountDuplicates: true,
 			}
@@ -298,7 +298,7 @@ var _ = Describe("RankedSet", func() {
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			sub := ks.Sub("rs")
 			config := rankedSetConfig{
-				HashFunction: crcHash,
+				HashFunction: pureHash(crcHash),
 				NLevels:      rankedSetDefaultLevels,
 			}
 			rs := newRankedSet(sub, config)
@@ -745,7 +745,7 @@ var _ = Describe("RankIndex", func() {
 		// the default one leaves an evolution-added index for a background
 		// build on any non-empty store (Java's getRecordCountForRebuildIndexes
 		// reports an unbounded count without a record-count key,
-		// FDBRecordStore.java:4862-4884); this spec is about the rank index's
+		// FDBRecordStore.java:5088-5110); this spec is about the rank index's
 		// rebuild, not about that policy.
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().

@@ -146,8 +146,7 @@ func TestGuardDistinction(t *testing.T) {
 // TestSeedExplainRendersOrdinal pins the identity gap this unification
 // closed: before it, only the wrap mechanism rendered "#ordinal" in
 // ExplainValue, so two seed-baked reads of DUPLICATE-named leg columns
-// differing only by ordinal rendered identically — and
-// RecordQueryProjectionPlan identity is ExplainValue-string-keyed. Now every
+// differing only by ordinal rendered identically. Now every
 // baked node renders its ordinal; FrontierPinned does NOT render (an
 // evaluation contract, not identity).
 func TestSeedExplainRendersOrdinal(t *testing.T) {

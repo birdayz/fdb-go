@@ -24,7 +24,7 @@ func TestFDB_OverflowProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE ovf CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ovf/s WITH TEMPLATE ovf")
-	dsn := fmt.Sprintf("fdbsql:///testdb_ovf?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_OVF?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

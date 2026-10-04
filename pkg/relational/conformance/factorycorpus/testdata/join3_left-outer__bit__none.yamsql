@@ -26,8 +26,8 @@
 # blessing: metamorphic
 # oracles: tlp,second-plan
 # feature-vector: shape=join3.left-outer;idx=D,E;proj=n24;where=bit.lt;order=none
-# plan-shape: be4e7cd92b43233f
-# dedup-key: cf1ab97d60d25ba9
+# plan-shape: 7de4cacd1291ad9e
+# dedup-key: 2d37abd96625ffc6
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 1062 -seeds 1 -date 2026-08-01 -out <dir>
 ---
 schema_template: |-
@@ -37,7 +37,7 @@ setup:
   connect: 1
   steps:
     - query: |-
-        INSERT INTO T_RD VALUES (1, 8, 5, 4611686018427387904, 'gamma', FALSE, 7.0, -0.0), (2, 6, 0, 1, 'delta', FALSE, -0.0, NULL), (3, 5, 7, 1, '', FALSE, 2.0, 7.0), (4, 0, 2, 8, NULL, TRUE, 1.0, 0.10000000149011612), (5, 5, 4611686018427387904, 1, 'beta', TRUE, 8.0, 6.0), (6, NULL, 3, 6, NULL, FALSE, -9007199254740992.0, 5.0), (7, NULL, 1, -1, ' a', FALSE, 9.0, NULL), (8, 6, 1, 8, ' c ', TRUE, 6.0, 7.0), (9, 8, 0, 8, 'delta', TRUE, 0.0, 5.0), (10, 2, 5, 6, 'b ', FALSE, 4.0, -16777216.0), (11, 0, 1, 6, 'gamma', FALSE, 8.0, 6.0), (12, 3, 9, 7, 'beta', NULL, 6.0, 8.0), (13, 0, 7, 3, ' a', FALSE, 9007199254740992.0, 4.0), (14, 6, 2, NULL, 'delta', FALSE, 7.0, NULL), (15, 4, 4611686018427387904, 4, 'b ', TRUE, 3.0, -0.0), (16, NULL, 8, -1, NULL, TRUE, 5.0, 7.0), (17, 3, 0, 5, 'gamma', TRUE, 8.0, 9.0), (18, 4611686018427387904, 6, 6, 'gamma', NULL, 0.1, 3.0), (19, 1, 2, 9, 'beta', NULL, 5.0, 5.0), (20, 3, 5, 7, '', NULL, NULL, 5.0), (21, 8, 8, 9, 'beta', NULL, 5.0, 0.10000000149011612), (22, NULL, 4, 1, 'gamma', TRUE, 2.0, 9.0), (23, 4, 9, 4, ' a', FALSE, 0.0, 1.0), (24, 4, 4, 3, 'epsilon', NULL, NULL, -16777216.0)
+        INSERT INTO T_RD VALUES (1, 8, 5, 4611686018427387904, 'gamma', FALSE, 7.0, CAST(-0.0 AS FLOAT)), (2, 6, 0, 1, 'delta', FALSE, -0.0, NULL), (3, 5, 7, 1, '', FALSE, 2.0, CAST(7.0 AS FLOAT)), (4, 0, 2, 8, NULL, TRUE, 1.0, CAST(0.10000000149011612 AS FLOAT)), (5, 5, 4611686018427387904, 1, 'beta', TRUE, 8.0, CAST(6.0 AS FLOAT)), (6, NULL, 3, 6, NULL, FALSE, -9007199254740992.0, CAST(5.0 AS FLOAT)), (7, NULL, 1, -1, ' a', FALSE, 9.0, NULL), (8, 6, 1, 8, ' c ', TRUE, 6.0, CAST(7.0 AS FLOAT)), (9, 8, 0, 8, 'delta', TRUE, 0.0, CAST(5.0 AS FLOAT)), (10, 2, 5, 6, 'b ', FALSE, 4.0, CAST(-16777216.0 AS FLOAT)), (11, 0, 1, 6, 'gamma', FALSE, 8.0, CAST(6.0 AS FLOAT)), (12, 3, 9, 7, 'beta', NULL, 6.0, CAST(8.0 AS FLOAT)), (13, 0, 7, 3, ' a', FALSE, 9007199254740992.0, CAST(4.0 AS FLOAT)), (14, 6, 2, NULL, 'delta', FALSE, 7.0, NULL), (15, 4, 4611686018427387904, 4, 'b ', TRUE, 3.0, CAST(-0.0 AS FLOAT)), (16, NULL, 8, -1, NULL, TRUE, 5.0, CAST(7.0 AS FLOAT)), (17, 3, 0, 5, 'gamma', TRUE, 8.0, CAST(9.0 AS FLOAT)), (18, 4611686018427387904, 6, 6, 'gamma', NULL, 0.1, CAST(3.0 AS FLOAT)), (19, 1, 2, 9, 'beta', NULL, 5.0, CAST(5.0 AS FLOAT)), (20, 3, 5, 7, '', NULL, NULL, CAST(5.0 AS FLOAT)), (21, 8, 8, 9, 'beta', NULL, 5.0, CAST(0.10000000149011612 AS FLOAT)), (22, NULL, 4, 1, 'gamma', TRUE, 2.0, CAST(9.0 AS FLOAT)), (23, 4, 9, 4, ' a', FALSE, 0.0, CAST(1.0 AS FLOAT)), (24, 4, 4, 3, 'epsilon', NULL, NULL, CAST(-16777216.0 AS FLOAT))
 ---
 test_block:
   name: "fc_0000001062_q5_p0"
@@ -114,8 +114,8 @@ test_block:
 # blessing: metamorphic
 # oracles: tlp,second-plan
 # feature-vector: shape=join3.left-outer;idx=D,E;proj=n3;where=bit.lt;order=none
-# plan-shape: be4e7cd92b43233f
-# dedup-key: 4ea1eb9e0ab73ea1
+# plan-shape: 7de4cacd1291ad9e
+# dedup-key: b3e3eedd40f09a99
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 1062 -seeds 1 -date 2026-08-01 -out <dir>
 ---
 schema_template: |-
@@ -125,7 +125,7 @@ setup:
   connect: 2
   steps:
     - query: |-
-        INSERT INTO T_RD VALUES (1, 8, 5, 4611686018427387904, 'gamma', FALSE, 7.0, -0.0), (2, 6, 0, 1, 'delta', FALSE, -0.0, NULL), (3, 5, 7, 1, '', FALSE, 2.0, 7.0), (4, 0, 2, 8, NULL, TRUE, 1.0, 0.10000000149011612), (5, 5, 4611686018427387904, 1, 'beta', TRUE, 8.0, 6.0), (6, NULL, 3, 6, NULL, FALSE, -9007199254740992.0, 5.0), (7, NULL, 1, -1, ' a', FALSE, 9.0, NULL), (8, 6, 1, 8, ' c ', TRUE, 6.0, 7.0), (9, 8, 0, 8, 'delta', TRUE, 0.0, 5.0), (10, 2, 5, 6, 'b ', FALSE, 4.0, -16777216.0), (11, 0, 1, 6, 'gamma', FALSE, 8.0, 6.0), (12, 3, 9, 7, 'beta', NULL, 6.0, 8.0), (13, 0, 7, 3, ' a', FALSE, 9007199254740992.0, 4.0), (14, 6, 2, NULL, 'delta', FALSE, 7.0, NULL), (15, 4, 4611686018427387904, 4, 'b ', TRUE, 3.0, -0.0), (16, NULL, 8, -1, NULL, TRUE, 5.0, 7.0), (17, 3, 0, 5, 'gamma', TRUE, 8.0, 9.0), (18, 4611686018427387904, 6, 6, 'gamma', NULL, 0.1, 3.0), (19, 1, 2, 9, 'beta', NULL, 5.0, 5.0), (20, 3, 5, 7, '', NULL, NULL, 5.0), (21, 8, 8, 9, 'beta', NULL, 5.0, 0.10000000149011612), (22, NULL, 4, 1, 'gamma', TRUE, 2.0, 9.0), (23, 4, 9, 4, ' a', FALSE, 0.0, 1.0), (24, 4, 4, 3, 'epsilon', NULL, NULL, -16777216.0)
+        INSERT INTO T_RD VALUES (1, 8, 5, 4611686018427387904, 'gamma', FALSE, 7.0, CAST(-0.0 AS FLOAT)), (2, 6, 0, 1, 'delta', FALSE, -0.0, NULL), (3, 5, 7, 1, '', FALSE, 2.0, CAST(7.0 AS FLOAT)), (4, 0, 2, 8, NULL, TRUE, 1.0, CAST(0.10000000149011612 AS FLOAT)), (5, 5, 4611686018427387904, 1, 'beta', TRUE, 8.0, CAST(6.0 AS FLOAT)), (6, NULL, 3, 6, NULL, FALSE, -9007199254740992.0, CAST(5.0 AS FLOAT)), (7, NULL, 1, -1, ' a', FALSE, 9.0, NULL), (8, 6, 1, 8, ' c ', TRUE, 6.0, CAST(7.0 AS FLOAT)), (9, 8, 0, 8, 'delta', TRUE, 0.0, CAST(5.0 AS FLOAT)), (10, 2, 5, 6, 'b ', FALSE, 4.0, CAST(-16777216.0 AS FLOAT)), (11, 0, 1, 6, 'gamma', FALSE, 8.0, CAST(6.0 AS FLOAT)), (12, 3, 9, 7, 'beta', NULL, 6.0, CAST(8.0 AS FLOAT)), (13, 0, 7, 3, ' a', FALSE, 9007199254740992.0, CAST(4.0 AS FLOAT)), (14, 6, 2, NULL, 'delta', FALSE, 7.0, NULL), (15, 4, 4611686018427387904, 4, 'b ', TRUE, 3.0, CAST(-0.0 AS FLOAT)), (16, NULL, 8, -1, NULL, TRUE, 5.0, CAST(7.0 AS FLOAT)), (17, 3, 0, 5, 'gamma', TRUE, 8.0, CAST(9.0 AS FLOAT)), (18, 4611686018427387904, 6, 6, 'gamma', NULL, 0.1, CAST(3.0 AS FLOAT)), (19, 1, 2, 9, 'beta', NULL, 5.0, CAST(5.0 AS FLOAT)), (20, 3, 5, 7, '', NULL, NULL, CAST(5.0 AS FLOAT)), (21, 8, 8, 9, 'beta', NULL, 5.0, CAST(0.10000000149011612 AS FLOAT)), (22, NULL, 4, 1, 'gamma', TRUE, 2.0, CAST(9.0 AS FLOAT)), (23, 4, 9, 4, ' a', FALSE, 0.0, CAST(1.0 AS FLOAT)), (24, 4, 4, 3, 'epsilon', NULL, NULL, CAST(-16777216.0 AS FLOAT))
 ---
 test_block:
   name: "fc_0000001062_q5_p1"
@@ -202,8 +202,8 @@ test_block:
 # blessing: metamorphic
 # oracles: tlp,second-plan
 # feature-vector: shape=join3.left-outer;idx=D,E;proj=n4;where=bit.lt;order=none
-# plan-shape: be4e7cd92b43233f
-# dedup-key: 21673740436fd196
+# plan-shape: 7de4cacd1291ad9e
+# dedup-key: 00f3d37ce3832117
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 1062 -seeds 1 -date 2026-08-01 -out <dir>
 ---
 schema_template: |-
@@ -213,7 +213,7 @@ setup:
   connect: 3
   steps:
     - query: |-
-        INSERT INTO T_RD VALUES (1, 8, 5, 4611686018427387904, 'gamma', FALSE, 7.0, -0.0), (2, 6, 0, 1, 'delta', FALSE, -0.0, NULL), (3, 5, 7, 1, '', FALSE, 2.0, 7.0), (4, 0, 2, 8, NULL, TRUE, 1.0, 0.10000000149011612), (5, 5, 4611686018427387904, 1, 'beta', TRUE, 8.0, 6.0), (6, NULL, 3, 6, NULL, FALSE, -9007199254740992.0, 5.0), (7, NULL, 1, -1, ' a', FALSE, 9.0, NULL), (8, 6, 1, 8, ' c ', TRUE, 6.0, 7.0), (9, 8, 0, 8, 'delta', TRUE, 0.0, 5.0), (10, 2, 5, 6, 'b ', FALSE, 4.0, -16777216.0), (11, 0, 1, 6, 'gamma', FALSE, 8.0, 6.0), (12, 3, 9, 7, 'beta', NULL, 6.0, 8.0), (13, 0, 7, 3, ' a', FALSE, 9007199254740992.0, 4.0), (14, 6, 2, NULL, 'delta', FALSE, 7.0, NULL), (15, 4, 4611686018427387904, 4, 'b ', TRUE, 3.0, -0.0), (16, NULL, 8, -1, NULL, TRUE, 5.0, 7.0), (17, 3, 0, 5, 'gamma', TRUE, 8.0, 9.0), (18, 4611686018427387904, 6, 6, 'gamma', NULL, 0.1, 3.0), (19, 1, 2, 9, 'beta', NULL, 5.0, 5.0), (20, 3, 5, 7, '', NULL, NULL, 5.0), (21, 8, 8, 9, 'beta', NULL, 5.0, 0.10000000149011612), (22, NULL, 4, 1, 'gamma', TRUE, 2.0, 9.0), (23, 4, 9, 4, ' a', FALSE, 0.0, 1.0), (24, 4, 4, 3, 'epsilon', NULL, NULL, -16777216.0)
+        INSERT INTO T_RD VALUES (1, 8, 5, 4611686018427387904, 'gamma', FALSE, 7.0, CAST(-0.0 AS FLOAT)), (2, 6, 0, 1, 'delta', FALSE, -0.0, NULL), (3, 5, 7, 1, '', FALSE, 2.0, CAST(7.0 AS FLOAT)), (4, 0, 2, 8, NULL, TRUE, 1.0, CAST(0.10000000149011612 AS FLOAT)), (5, 5, 4611686018427387904, 1, 'beta', TRUE, 8.0, CAST(6.0 AS FLOAT)), (6, NULL, 3, 6, NULL, FALSE, -9007199254740992.0, CAST(5.0 AS FLOAT)), (7, NULL, 1, -1, ' a', FALSE, 9.0, NULL), (8, 6, 1, 8, ' c ', TRUE, 6.0, CAST(7.0 AS FLOAT)), (9, 8, 0, 8, 'delta', TRUE, 0.0, CAST(5.0 AS FLOAT)), (10, 2, 5, 6, 'b ', FALSE, 4.0, CAST(-16777216.0 AS FLOAT)), (11, 0, 1, 6, 'gamma', FALSE, 8.0, CAST(6.0 AS FLOAT)), (12, 3, 9, 7, 'beta', NULL, 6.0, CAST(8.0 AS FLOAT)), (13, 0, 7, 3, ' a', FALSE, 9007199254740992.0, CAST(4.0 AS FLOAT)), (14, 6, 2, NULL, 'delta', FALSE, 7.0, NULL), (15, 4, 4611686018427387904, 4, 'b ', TRUE, 3.0, CAST(-0.0 AS FLOAT)), (16, NULL, 8, -1, NULL, TRUE, 5.0, CAST(7.0 AS FLOAT)), (17, 3, 0, 5, 'gamma', TRUE, 8.0, CAST(9.0 AS FLOAT)), (18, 4611686018427387904, 6, 6, 'gamma', NULL, 0.1, CAST(3.0 AS FLOAT)), (19, 1, 2, 9, 'beta', NULL, 5.0, CAST(5.0 AS FLOAT)), (20, 3, 5, 7, '', NULL, NULL, CAST(5.0 AS FLOAT)), (21, 8, 8, 9, 'beta', NULL, 5.0, CAST(0.10000000149011612 AS FLOAT)), (22, NULL, 4, 1, 'gamma', TRUE, 2.0, CAST(9.0 AS FLOAT)), (23, 4, 9, 4, ' a', FALSE, 0.0, CAST(1.0 AS FLOAT)), (24, 4, 4, 3, 'epsilon', NULL, NULL, CAST(-16777216.0 AS FLOAT))
 ---
 test_block:
   name: "fc_0000001062_q5_p2"

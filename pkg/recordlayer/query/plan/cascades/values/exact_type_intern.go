@@ -1,6 +1,10 @@
 package values
 
-import "sync"
+import (
+	"sync"
+
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/internal/fnv64"
+)
 
 // An exact type is content-addressed and immutable by construction, so two
 // snapshots of the same type were always the same VALUE. They were two objects,
@@ -70,6 +74,8 @@ var exactInterned [exactInternShards]exactInternShard
 // children is parallel to it and holds the already-interned field types.
 type exactProbe struct {
 	code       TypeCode
+	precision  int
+	dimensions int
 	nullable   bool
 	anyRecord  bool
 	name       string
@@ -80,7 +86,7 @@ type exactProbe struct {
 }
 
 func (p *exactProbe) internHash() uint64 {
-	h := newSemanticHasher()
+	h := fnv64.New()
 	var scratch [8]byte
 	writeUint64 := func(v uint64) {
 		for i := 0; i < 8; i++ {
@@ -89,6 +95,10 @@ func (p *exactProbe) internHash() uint64 {
 		_, _ = h.Write(scratch[:])
 	}
 	writeUint64(uint64(p.code))
+	if p.code == TypeCodeVector {
+		writeUint64(uint64(p.precision))
+		writeUint64(uint64(p.dimensions))
+	}
 	if p.nullable {
 		writeUint64(1)
 	}
@@ -116,7 +126,7 @@ func (p *exactProbe) internHash() uint64 {
 func (p *exactProbe) matches(existing *exactType) bool {
 	if existing.code != p.code || existing.nullable != p.nullable ||
 		existing.anyRecord != p.anyRecord || existing.name != p.name ||
-		existing.element != p.element ||
+		existing.element != p.element || existing.precision != p.precision || existing.dimensions != p.dimensions ||
 		len(existing.fields) != len(p.srcFields) ||
 		len(existing.enumValues) != len(p.enumValues) {
 		return false

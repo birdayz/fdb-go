@@ -1,10 +1,38 @@
 package matching
 
 import (
+	"fmt"
+	"slices"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
+
+func TestEmptyBindingsSharedAndImmutable(t *testing.T) {
+	t.Parallel()
+	empty := NewBindings()
+	if empty != NewBindings() {
+		t.Fatal("empty matcher bindings must reuse the immutable singleton")
+	}
+	matcher := NewConstantMatcher()
+	for value := range 16 {
+		t.Run(fmt.Sprint(value), func(t *testing.T) {
+			t.Parallel()
+			left := empty.Bind(matcher, value)
+			right := empty.Bind(matcher, value+1)
+			merged := left.MergedWith(right)
+			if got := merged.GetAll(matcher); !slices.Equal(got, []any{value, value + 1}) {
+				t.Fatalf("merged bindings=%v", got)
+			}
+			if left.Get(matcher) != value || right.Get(matcher) != value+1 {
+				t.Fatal("merging changed an input binding")
+			}
+			if len(empty.entries) != 0 || len(NewBindings().GetAll(matcher)) != 0 {
+				t.Fatal("binding or merging mutated the shared empty bindings")
+			}
+		})
+	}
+}
 
 // The 10-line predicate matcher pattern RFC-023 commits to:
 //

@@ -67,12 +67,9 @@ type TokenIterator interface {
 // Matches Java's TextTokenizer.validateVersion().
 func ValidateTokenizerVersion(t TextTokenizer, version int) error {
 	if version < t.MinVersion() || version > t.MaxVersion() {
-		return &MetaDataError{
-			Message: fmt.Sprintf(
-				"unknown tokenizer version: tokenizer=%s version=%d min=%d max=%d",
-				t.Name(), version, t.MinVersion(), t.MaxVersion(),
-			),
-		}
+		// Java's text (TextTokenizer.java:210); the tokenizer, version and
+		// bounds are its log info, not part of its message.
+		return &MetaDataError{Message: "unknown tokenizer version"}
 	}
 	return nil
 }
@@ -321,9 +318,9 @@ func (r *TextTokenizerRegistry) GetTokenizer(name string) (TextTokenizer, error)
 	factory, ok := r.registry[name]
 	r.mu.RUnlock()
 	if !ok {
-		return nil, &MetaDataError{
-			Message: fmt.Sprintf("unrecognized text tokenizer: %s", name),
-		}
+		// Java's text (TextTokenizerRegistryImpl.java:100); the name is its
+		// log info.
+		return nil, &MetaDataError{Message: "unrecognized text tokenizer"}
 	}
 	return factory.GetTokenizer(), nil
 }

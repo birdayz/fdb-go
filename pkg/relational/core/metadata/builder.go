@@ -1,7 +1,10 @@
 package metadata
 
 import (
+	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,6 +19,7 @@ import (
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/protoscope"
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -26,15 +30,30 @@ import (
 // for CREATE SCHEMA TEMPLATE DDL: name, version, tables with typed
 // columns and primary keys, and store-level flags.
 type Builder struct {
-	name             string
-	version          int
-	tables           []tableSpec
-	auxTypes         []api.Named // CREATE TYPE AS STRUCT registrations (aux_types.go)
-	errs             []error     // deferred errors from AddIndex
+	name     string
+	version  int
+	tables   []tableSpec
+	auxTypes []api.Named // CREATE TYPE AS STRUCT registrations (aux_types.go)
+	errs     []error     // deferred errors from AddIndex
+	// indexedTables is the table of each index added, in the order added: the
+	// order of a DDL statement's index clauses, which MoveIndexedTablesToEnd
+	// replays as Java's DdlVisitor does.
+	indexedTables    []string
 	intermingleTbls  bool
 	enableLongRows   bool
 	storeRowVersions bool
+	views            []viewSpec
+	functions        []functionSpec
+	storedQueries    map[string]*gen.PStoredQuery
+	storedQueryOrder []string
 }
+
+type functionSpec struct {
+	name string
+	fn   *gen.PUserDefinedFunction
+}
+
+type viewSpec struct{ name, definition string }
 
 type tableSpec struct {
 	name    string
@@ -73,6 +92,7 @@ type indexSpec struct {
 	partitionColumns []string          // HNSW partition prefix (independent graph per partition)
 	numDimensions    int               // derived from the column's VECTOR type
 	options          map[string]string // HNSW tuning options (metric, ef_construction, m, ...)
+	optionOrder      []string          // vector options in DDL order
 
 	// rootExpression, when non-nil, makes this an EXPLICIT index: the key
 	// expression, type, options and predicate were produced by an index
@@ -119,6 +139,9 @@ func (b *Builder) SetName(name string) *Builder {
 	return b
 }
 
+// Name is the name of the template being built.
+func (b *Builder) Name() string { return b.name }
+
 func (b *Builder) SetVersion(v int) *Builder {
 	b.version = v
 	return b
@@ -151,6 +174,60 @@ func (b *Builder) SetStoreRowVersions(v bool) *Builder {
 // already-registered struct type is rejected whichever side is seen first.
 // Without it a `CREATE TYPE AS STRUCT s ... CREATE TABLE s ...` template
 // builds two descriptors named s, one silently shadowing the other.
+// HasTable reports whether a table of that name was added.
+func (b *Builder) HasTable(name string) bool {
+	for _, t := range b.tables {
+		if t.name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// AddStoredQuery records a stored query; a repeated name replaces the query in
+// place, as Java's HashMap put does.
+func (b *Builder) AddStoredQuery(name, query string, tempFunctions []string) {
+	if b.storedQueries == nil {
+		b.storedQueries = map[string]*gen.PStoredQuery{}
+	}
+	if _, ok := b.storedQueries[name]; !ok {
+		b.storedQueryOrder = append(b.storedQueryOrder, name)
+	}
+	b.storedQueries[name] = &gen.PStoredQuery{Name: &name, Query: &query, TempFunctions: tempFunctions}
+}
+
+// SetIndexPredicate sets the stored predicate of a table's index.
+func (b *Builder) SetIndexPredicate(tableName, indexName string, p *gen.Predicate) {
+	for i := range b.tables {
+		if b.tables[i].name != tableName {
+			continue
+		}
+		for j := range b.tables[i].indexes {
+			if b.tables[i].indexes[j].name == indexName {
+				b.tables[i].indexes[j].predicate = p
+			}
+		}
+	}
+}
+
+// AddFunction records a SQL function as the template stores it.
+func (b *Builder) AddFunction(name string, fn *gen.PUserDefinedFunction) error {
+	if err := b.verifyNameIsNotUsed(name); err != nil {
+		return err
+	}
+	b.functions = append(b.functions, functionSpec{name: name, fn: fn})
+	return nil
+}
+
+// AddView records a view: its name and its query text as written.
+func (b *Builder) AddView(name, definition string) error {
+	if err := b.verifyNameIsNotUsed(name); err != nil {
+		return err
+	}
+	b.views = append(b.views, viewSpec{name: name, definition: definition})
+	return nil
+}
+
 func (b *Builder) AddTable(name string, columns []ColumnSpec, primaryKey []string) *Builder {
 	paths := make([][]string, len(primaryKey))
 	for i, col := range primaryKey {
@@ -198,6 +275,7 @@ func (b *Builder) AddIndex(tableName, indexName string, columns []string, unique
 				return b
 			}
 		}
+		b.indexedTables = append(b.indexedTables, tableName)
 		b.tables[i].indexes = append(b.tables[i].indexes, indexSpec{
 			name:    indexName,
 			columns: columns,
@@ -230,6 +308,7 @@ func (b *Builder) AddGeneratedIndex(tableName, indexName string, rootExpression 
 		if b.tables[i].name != tableName {
 			continue
 		}
+		b.indexedTables = append(b.indexedTables, tableName)
 		b.tables[i].indexes = append(b.tables[i].indexes, indexSpec{
 			name:           indexName,
 			unique:         unique,
@@ -272,6 +351,7 @@ func (b *Builder) AddAggregateIndex(tableName, indexName string, groupColumns []
 				indexName, tableName, aggColumn))
 			return b
 		}
+		b.indexedTables = append(b.indexedTables, tableName)
 		b.tables[i].indexes = append(b.tables[i].indexes, indexSpec{
 			name:      indexName,
 			columns:   groupColumns,
@@ -316,6 +396,7 @@ func (b *Builder) AddCardinalityIndex(tableName, indexName, cardColumn string) *
 				indexName, tableName, head))
 			return b
 		}
+		b.indexedTables = append(b.indexedTables, tableName)
 		b.tables[i].indexes = append(b.tables[i].indexes, indexSpec{
 			name:              indexName,
 			cardinalityColumn: cardColumn,
@@ -357,6 +438,7 @@ func (b *Builder) AddFanOutIndex(tableName, indexName, column string) *Builder {
 				indexName, tableName, column))
 			return b
 		}
+		b.indexedTables = append(b.indexedTables, tableName)
 		b.tables[i].indexes = append(b.tables[i].indexes, indexSpec{
 			name:         indexName,
 			fanOutColumn: column,
@@ -387,14 +469,22 @@ func (b *Builder) AddVectorIndex(tableName, indexName, vectorColumn string, part
 // "HNSW" (graph, Java-compatible wire format) or "SPFRESH" (RFC-094
 // centroid+posting-list, Go-native). SPFresh does not support PARTITION BY.
 func (b *Builder) AddVectorIndexUsing(method, tableName, indexName, vectorColumn string, partitionColumns []string, options map[string]string) *Builder {
+	order := slices.Sorted(maps.Keys(options))
+	return b.AddVectorIndexOrdered(method, tableName, indexName, vectorColumn, partitionColumns, options, order)
+}
+
+// AddVectorIndexOrdered is AddVectorIndexUsing with the options' DDL order,
+// which decides the stored option order as Java's HashMap does.
+func (b *Builder) AddVectorIndexOrdered(method, tableName, indexName, vectorColumn string, partitionColumns []string, options map[string]string, order []string) *Builder {
 	// The method is case-sensitive everywhere downstream (buildVectorIndex
 	// treats anything that is not "SPFRESH" as HNSW), so an unknown or
 	// mis-cased method must fail loudly here — AddVectorIndexUsing("SPFresh",
 	// …) silently building an HNSW index is exactly the kind of quiet
 	// misroute a schema author cannot debug.
-	if method != "HNSW" && method != "SPFRESH" {
+	// GUARDIANN is a VECTOR index like HNSW, told apart by its vectorEngine option.
+	if method != "HNSW" && method != "GUARDIANN" && method != "SPFRESH" {
 		b.errs = append(b.errs, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
-			"vector index %q: unknown method %q (want HNSW or SPFRESH)", indexName, method))
+			"vector index %q: unknown method %q (want HNSW, GUARDIANN or SPFRESH)", indexName, method))
 		return b
 	}
 	if method == "SPFRESH" && len(partitionColumns) > 0 {
@@ -432,6 +522,7 @@ func (b *Builder) AddVectorIndexUsing(method, tableName, indexName, vectorColumn
 				return b
 			}
 		}
+		b.indexedTables = append(b.indexedTables, tableName)
 		b.tables[i].indexes = append(b.tables[i].indexes, indexSpec{
 			name:             indexName,
 			vector:           true,
@@ -440,6 +531,7 @@ func (b *Builder) AddVectorIndexUsing(method, tableName, indexName, vectorColumn
 			partitionColumns: partitionColumns,
 			numDimensions:    vt.Dimensions(),
 			options:          options,
+			optionOrder:      order,
 		})
 		return b
 	}
@@ -448,11 +540,56 @@ func (b *Builder) AddVectorIndexUsing(method, tableName, indexName, vectorColumn
 	return b
 }
 
+// MoveIndexedTablesToEnd is Java's DdlVisitor.visitCreateSchemaTemplateStatement
+// after it has generated every index (:559-564): for each index clause, in
+// clause order, the index's table is extracted and added back
+// (RecordLayerSchemaTemplate.Builder.extractTable then addTable), which MOVES it
+// to the end of the builder's table order. Build numbers union fields, record
+// type keys and descriptor messages in table order and registers each table's
+// indexes in insertion order, so their versions follow: a table no index names
+// keeps its declaration slot ahead of the indexed ones, which end in the order of
+// each one's last index clause. Only the DDL front end calls it; a template
+// built in code keeps the order its caller gave (RFC-257 WS-J section 4, F3).
+func (b *Builder) MoveIndexedTablesToEnd() *Builder {
+	for _, name := range b.indexedTables {
+		for i := range b.tables {
+			if b.tables[i].name != name {
+				continue
+			}
+			tbl := b.tables[i]
+			b.tables = append(append(b.tables[:i:i], b.tables[i+1:]...), tbl)
+			break
+		}
+	}
+	b.indexedTables = nil
+	return b
+}
+
 // Build materialises the schema template. Returns an error when no
 // tables are registered or types cannot be mapped to proto field types.
+//
+// A name no escape makes a protobuf identifier (ProtoUtils.InvalidNameException,
+// from a table, column, type, enum or enum value) is refused as Java's
+// PlanGenerator refuses it for every statement it generates, DDL included:
+// 42602 INVALID_NAME with the exception's own message (PlanGenerator.java:270).
 func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
+	tmpl, err := b.build()
+	var invalidName *recordlayer.InvalidNameError
+	if err != nil && errors.As(err, &invalidName) {
+		return nil, api.WrapError(api.ErrCodeInvalidName, invalidName.Message, err)
+	}
+	return tmpl, err
+}
+
+func (b *Builder) build() (*RecordLayerSchemaTemplate, error) {
 	if len(b.errs) > 0 {
-		return nil, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate, "%v", b.errs[0])
+		// The first deferred error is the one Java throws, as it is: its code
+		// and message, not its rendering folded into another's.
+		var first *api.Error
+		if errors.As(b.errs[0], &first) {
+			return nil, first
+		}
+		return nil, api.WrapError(api.ErrCodeInvalidSchemaTemplate, b.errs[0].Error(), b.errs[0])
 	}
 	if len(b.tables) == 0 {
 		return nil, api.NewError(api.ErrCodeInvalidSchemaTemplate, "schema template contains no tables")
@@ -485,6 +622,28 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 	mdBuilder.SetSplitLongRecords(b.enableLongRows)
 	mdBuilder.SetStoreRecordVersions(b.storeRowVersions)
 	mdBuilder.SetVersion(b.version)
+	// Java keeps views in a HashMap keyed by name and stores its iteration order.
+	viewDef := make(map[string]string, len(b.views))
+	viewNames := make([]string, len(b.views))
+	for i, v := range b.views {
+		viewDef[v.name] = v.definition
+		viewNames[i] = v.name
+	}
+	for _, name := range javaHashMapOrder(nil, viewNames) {
+		mdBuilder.AddView(name, viewDef[name])
+	}
+	fnDef := make(map[string]*gen.PUserDefinedFunction, len(b.functions))
+	fnNames := make([]string, len(b.functions))
+	for i, f := range b.functions {
+		fnDef[f.name] = f.fn
+		fnNames[i] = f.name
+	}
+	for _, name := range javaHashMapOrder(nil, fnNames) {
+		mdBuilder.AddUserDefinedFunction(fnDef[name])
+	}
+	for _, name := range javaHashMapOrder(nil, b.storedQueryOrder) {
+		mdBuilder.AddStoredQuery(b.storedQueries[name])
+	}
 	// NO record count key: the stored template bytes must match Java's, and
 	// Java's RecordMetadataSerializer never sets one — Java core marks
 	// getRecordCountKey @API(DEPRECATED), superseded by COUNT-type indexes.
@@ -493,6 +652,7 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 	// it; the COUNT-index + CardinalitiesProperty replacement is booked in
 	// TODO.md.
 
+	var laterCompanions []func() error
 	for tableIdx, tbl := range b.tables {
 		// Record type names are STORAGE names (Java: the Type.Record storage
 		// name, ProtoUtils.toProtoBufCompliantName of the user name — they
@@ -514,11 +674,12 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 				"record type %q not found after SetRecords", storageName)
 		}
 		rt := mdBuilder.GetRecordType(storageName)
-		// Explicit record type key = 0-based declaration index, exactly
-		// Java's RecordMetadataSerializer visit(Table):
-		// setRecordTypeKey(recordTypeCounter++). Stored metadata (and the
-		// record-store key prefix for non-intermingled tables), so it must
-		// match byte-for-byte.
+		// Explicit record type key = the table's 0-based position in the
+		// builder's table order, exactly Java's RecordMetadataSerializer
+		// visit(Table): setRecordTypeKey(recordTypeCounter++). For DDL that
+		// order is Java's (MoveIndexedTablesToEnd), not declaration order.
+		// Stored metadata (and the record-store key prefix for
+		// non-intermingled tables), so it must match byte-for-byte.
 		rt.SetRecordTypeKey(int64(tableIdx))
 		// Index key expressions must match the stored descriptor shape: with
 		// the NullableArrayWrapper emitted, any field path through a nullable
@@ -562,18 +723,19 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 				if idx.indexType != "" {
 					rl.Type = idx.indexType
 				}
-				for k, v := range idx.options {
-					rl.Options[k] = v
-				}
 				// Java's generator builder ALWAYS writes the unique option —
 				// setUnique(isUnique) stores "true"/"false" alike
 				// (RecordLayerIndex.java:216-218, called unconditionally by
-				// both generators, MaterializedViewIndexGenerator.java:157 /
-				// OnSourceIndexGenerator's builder). An omitted-when-false
-				// option is a stored-metadata divergence the D11 cross-engine
-				// comparison catches: Java's index carries unique=false where
-				// Go's carried nothing.
-				rl.Options[recordlayer.IndexOptionUnique] = strconv.FormatBool(idx.unique)
+				// both generators through MaterializedViewIndexGenerator.java:107).
+				// An omitted-when-false option is a stored-metadata divergence
+				// the D11 cross-engine comparison catches: Java's index carries
+				// unique=false where Go's carried nothing. It is written FIRST:
+				// the options are stored in insertion order, and the generator
+				// calls setUnique before the type-specific options (the permuted
+				// size, :174), so a permuted min/max index stores
+				// [unique, permutedSize].
+				rl.SetOption(recordlayer.IndexOptionUnique, strconv.FormatBool(idx.unique))
+				setOptionsSorted(rl, idx.options)
 				if idx.predicate != nil {
 					if perr := rl.SetPredicateProto(idx.predicate); perr != nil {
 						return nil, api.WrapErrorf(perr, api.ErrCodeInvalidSchemaTemplate,
@@ -685,10 +847,22 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 				companions = append(companions, companion)
 			}
 		}
-		for _, rl := range append(tableIndexes, companions...) {
+		for _, rl := range tableIndexes {
 			if rerr := registerIndex(rl); rerr != nil {
 				return nil, rerr
 			}
+		}
+		for _, rl := range companions {
+			laterCompanions = append(laterCompanions, func() error { return registerIndex(rl) })
+		}
+	}
+	// The companions are registered after every declared index of every table,
+	// so each declared index takes the version Java gives it; they take the top
+	// slots and raise only the metadata version, by their count
+	// (DIVERGENCES.md, "RFC-209 group-existence companions").
+	for _, register := range laterCompanions {
+		if rerr := register(); rerr != nil {
+			return nil, rerr
 		}
 	}
 
@@ -788,12 +962,7 @@ const relationalUnionName = "RecordTypeUnion"
 // NOT NULL repeated field called `values`) therefore cannot separate the two
 // engines on the index path, and no schema needs to be built to find that out.
 func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, *descriptorpb.FileDescriptorProto, bool, error) {
-	fdp := &descriptorpb.FileDescriptorProto{}
-	fdp.Name = proto.String(b.name)
-	fdp.Dependency = []string{
-		gen.File_tuple_fields_proto.Path(),
-		gen.File_record_metadata_options_proto.Path(),
-	}
+	fdp := b.templateFileProto()
 
 	unionOpts := &descriptorpb.MessageOptions{}
 	proto.SetExtension(unionOpts, gen.E_Record, &gen.RecordTypeOptions{
@@ -806,6 +975,7 @@ func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, *descripto
 
 	em := &fileEmitter{
 		seen:        map[string]bool{},
+		seenEnums:   map[string]bool{},
 		structTypes: map[string]*api.StructType{},
 	}
 	for i, tbl := range b.tables {
@@ -827,7 +997,59 @@ func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, *descripto
 		})
 	}
 	fdp.MessageType = append(em.messages, unionMsg)
+	fdp.EnumType = em.enums
+	fd, err := newTemplateFile(fdp)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	return fd, fdp, em.containsNullableArray, nil
+}
 
+// templateFileProto is a template file holding no messages yet.
+func (b *Builder) templateFileProto() *descriptorpb.FileDescriptorProto {
+	return &descriptorpb.FileDescriptorProto{
+		Name: proto.String(b.name),
+		Dependency: []string{
+			gen.File_tuple_fields_proto.Path(),
+			gen.File_record_metadata_options_proto.Path(),
+		},
+	}
+}
+
+// AuxiliaryStructDescriptor is the message the template's struct type name is
+// stored as when a table uses it, or nil when name is no struct type. Java's
+// DdlVisitor resolves a function's types through Builder.findType, which also
+// sees an auxiliary type no table stores and the stored file therefore lacks.
+func (b *Builder) AuxiliaryStructDescriptor(name string) (protoreflect.MessageDescriptor, error) {
+	dt, ok := b.FindType(name)
+	st, isStruct := dt.(*api.StructType)
+	if !ok || !isStruct || !st.IsResolved() {
+		return nil, nil
+	}
+	carrier := "AuxiliaryTypeCarrier"
+	for _, taken := b.FindType(carrier); taken; _, taken = b.FindType(carrier) {
+		carrier += "_"
+	}
+	em := &fileEmitter{seen: map[string]bool{}, seenEnums: map[string]bool{}, structTypes: map[string]*api.StructType{}}
+	if _, err := em.emitTableClosure(tableSpec{name: carrier, columns: []ColumnSpec{NewColumnSpec("value", st, 1)}}); err != nil {
+		return nil, err
+	}
+	fdp := b.templateFileProto()
+	fdp.MessageType = em.messages
+	fdp.EnumType = em.enums
+	fd, err := newTemplateFile(fdp)
+	if err != nil {
+		return nil, err
+	}
+	storage, err := recordlayer.ToProtoBufCompliantName(name)
+	if err != nil {
+		return nil, err
+	}
+	return fd.Messages().ByName(protoreflect.Name(storage)), nil
+}
+
+// newTemplateFile builds the in-memory descriptor of a template file proto.
+func newTemplateFile(fdp *descriptorpb.FileDescriptorProto) (protoreflect.FileDescriptor, error) {
 	// Build a resolver that includes the two dependency files.
 	// RegisterFile returns an error on duplicate registration; ignore it since
 	// the global registry already has these files and we just want them
@@ -843,11 +1065,15 @@ func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, *descripto
 	// Java-authored files (recordlayer.AbsolutizeFieldTypeNames).
 	buildable := proto.Clone(fdp).(*descriptorpb.FileDescriptorProto)
 	recordlayer.AbsolutizeFieldTypeNames(buildable)
+	// Two enums of the template may share a value name, as Java's DDL
+	// allows (protobuf-java scopes a value under its enum); the in-memory
+	// descriptor scopes them, the stored proto (fdp) does not change.
+	protoscope.ScopeEnumValuesAsJava(buildable)
 	fd, err := protodesc.NewFile(buildable, resolver)
 	if err != nil {
-		return nil, nil, false, api.WrapErrorf(err, api.ErrCodeInternalError, "protodesc.NewFile")
+		return nil, api.WrapErrorf(err, api.ErrCodeInternalError, "protodesc.NewFile")
 	}
-	return fd, fdp, em.containsNullableArray, nil
+	return fd, nil
 }
 
 // fileEmitter accumulates the template's top-level messages with
@@ -856,6 +1082,12 @@ func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, *descripto
 type fileEmitter struct {
 	messages []*descriptorpb.DescriptorProto
 	seen     map[string]bool
+	// enums and seenEnums are the enum half of the same rule
+	// (registerTypeDescriptors' enumNames set): per table, the enums its
+	// closure reaches, in name order, each emitted once, under the FIRST
+	// table that reaches it. An enum no table reaches is never stored.
+	enums     []*descriptorpb.EnumDescriptorProto
+	seenEnums map[string]bool
 	// structTypes enforces one-storage-name-one-shape template-wide. The
 	// comparison normalizes the struct's OWN nullability away: a struct
 	// column's nullability lives on the referencing column, not the shared
@@ -889,7 +1121,9 @@ func (em *fileEmitter) emitTableClosure(tbl tableSpec) (string, error) {
 		em:        em,
 		tableName: storageName,
 		msgs:      map[string]*descriptorpb.DescriptorProto{},
+		enums:     map[string]*descriptorpb.EnumDescriptorProto{},
 		wrappers:  map[string]string{},
+		byShape:   map[string]string{},
 	}
 	msg := &descriptorpb.DescriptorProto{Name: proto.String(storageName)}
 	// Register before walking fields: a column typed as its own table (legal
@@ -915,6 +1149,20 @@ func (em *fileEmitter) emitTableClosure(tbl tableSpec) (string, error) {
 		em.seen[n] = true
 		em.messages = append(em.messages, r.msgs[n])
 	}
+	// The table's enums, the same way (TypeRepository.getEnumTypes is a
+	// TreeSet too).
+	enumNames := make([]string, 0, len(r.enums))
+	for n := range r.enums {
+		enumNames = append(enumNames, n)
+	}
+	sort.Strings(enumNames)
+	for _, n := range enumNames {
+		if em.seenEnums[n] {
+			continue
+		}
+		em.seenEnums[n] = true
+		em.enums = append(em.enums, r.enums[n])
+	}
 	return storageName, nil
 }
 
@@ -926,7 +1174,66 @@ type tableTypeRepo struct {
 	em        *fileEmitter
 	tableName string // wrapper-name derivation input (per-table wrapper identity)
 	msgs      map[string]*descriptorpb.DescriptorProto
-	wrappers  map[string]string // element-type signature -> wrapper message name
+	enums     map[string]*descriptorpb.EnumDescriptorProto
+	wrappers  map[string]string // element type's javaTypeKey -> wrapper message name
+	// byShape is TypeRepository.Builder's typeToNameMap: a struct or enum
+	// type's javaTypeKey to the name of the first type of that shape this
+	// table's closure registered. A later type of the same shape is not
+	// defined; its fields reference the first's name (addTypeIfNeeded,
+	// TypeRepository.java:497-510).
+	byShape map[string]string
+}
+
+// javaTypeKey is the identity Java's TypeRepository keys a table's types by:
+// Type.equals over the type with its own nullability canonicalized
+// (TypeRepository.canonicalizeNullability). That equality is structural and
+// name-blind: an enum is its values, name and number (Type.java:1895-1910,
+// :2071-2080), a record its fields, each by name, index and type
+// (:2395-2411, :2824-2838), an array its element, all recursively, and a
+// nested type's own nullability counts. So two enums declared with the same
+// values are ONE type to Java, and so are two structs with the same fields.
+func javaTypeKey(dt api.DataType) string {
+	var b strings.Builder
+	writeJavaTypeKey(&b, dt, true, map[*api.StructType]bool{})
+	return b.String()
+}
+
+func writeJavaTypeKey(b *strings.Builder, dt api.DataType, top bool, visiting map[*api.StructType]bool) {
+	fmt.Fprintf(b, "%d", dt.Code())
+	if top || dt.IsNullable() {
+		b.WriteString("?")
+	}
+	switch t := dt.(type) {
+	case *api.EnumType:
+		b.WriteString("[")
+		for _, v := range t.Values() {
+			fmt.Fprintf(b, "%q=%d,", v.Name(), v.Number())
+		}
+		b.WriteString("]")
+	case *api.StructType:
+		if visiting[t] {
+			// A struct reaching itself: the cycle is keyed by name, which is
+			// all a recursive reference can compare by here.
+			fmt.Fprintf(b, "<%q>", t.Name())
+			return
+		}
+		visiting[t] = true
+		defer delete(visiting, t)
+		b.WriteString("{")
+		for i := 0; i < t.NumFields(); i++ {
+			f := t.Field(i)
+			fmt.Fprintf(b, "%q#%d:", f.Name(), f.Index())
+			writeJavaTypeKey(b, f.Type(), false, visiting)
+			b.WriteString(";")
+		}
+		b.WriteString("}")
+	case *api.ArrayType:
+		b.WriteString("(")
+		writeJavaTypeKey(b, t.ElementType(), false, visiting)
+		b.WriteString(")")
+	case *api.VectorType:
+		fmt.Fprintf(b, "<%d,%d>", t.Dimensions(), t.Precision())
+	}
 }
 
 // addField appends one field to msg following Java's addProtoField
@@ -1017,6 +1324,15 @@ func (r *tableTypeRepo) setFieldType(f *descriptorpb.FieldDescriptorProto, dt ap
 			return err
 		}
 		f.TypeName = proto.String(name)
+	case api.CodeEnum:
+		// Type.Enum.addProtoField sets the proto type AND the type name
+		// (unlike a message field, which carries only the type name).
+		name, err := r.defineEnum(dt.(*api.EnumType))
+		if err != nil {
+			return err
+		}
+		setScalar(descriptorpb.FieldDescriptorProto_TYPE_ENUM)
+		f.TypeName = proto.String(name)
 	case api.CodeArray:
 		// An array element that is itself an array — inexpressible in the
 		// SQL grammar (columnDefinition has a single ARRAY suffix).
@@ -1057,6 +1373,13 @@ func (r *tableTypeRepo) defineStruct(st *api.StructType) (string, error) {
 	if _, ok := r.msgs[storage]; ok {
 		return storage, nil
 	}
+	// A struct of a shape this table already defined under another name is
+	// that type to Java: the field references the first name.
+	key := javaTypeKey(st)
+	if first, ok := r.byShape[key]; ok {
+		return first, nil
+	}
+	r.byShape[key] = storage
 	msg := &descriptorpb.DescriptorProto{Name: proto.String(storage)}
 	r.msgs[storage] = msg // register BEFORE recursing (self-reference guard)
 	for i := 0; i < st.NumFields(); i++ {
@@ -1066,6 +1389,42 @@ func (r *tableTypeRepo) defineStruct(st *api.StructType) (string, error) {
 				"struct %q field %q", st.Name(), fld.Name())
 		}
 	}
+	return storage, nil
+}
+
+// defineEnum registers the enum's descriptor in the per-table namespace,
+// returning its storage name: Type.Enum.defineProtoType over
+// DataTypeUtils.toRecordLayerType's Type.Enum.fromValuesWithName, so the
+// enum's name and each value's go through toProtoBufCompliantName, and the
+// numbers are the declared ones (0..n-1 from DDL).
+func (r *tableTypeRepo) defineEnum(et *api.EnumType) (string, error) {
+	storage, err := recordlayer.ToProtoBufCompliantName(et.Name())
+	if err != nil {
+		return "", api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate, "enum name %q", et.Name())
+	}
+	if _, ok := r.enums[storage]; ok {
+		return storage, nil
+	}
+	// An enum with the values of one this table already defined is that
+	// type to Java: the field references the first name, and this one is
+	// not stored unless another table reaches it first.
+	key := javaTypeKey(et)
+	if first, ok := r.byShape[key]; ok {
+		return first, nil
+	}
+	r.byShape[key] = storage
+	ed := &descriptorpb.EnumDescriptorProto{Name: proto.String(storage)}
+	for _, v := range et.Values() {
+		valueName, verr := recordlayer.ToProtoBufCompliantName(v.Name())
+		if verr != nil {
+			return "", api.WrapErrorf(verr, api.ErrCodeInvalidSchemaTemplate, "enum %q value %q", et.Name(), v.Name())
+		}
+		ed.Value = append(ed.Value, &descriptorpb.EnumValueDescriptorProto{
+			Name:   proto.String(valueName),
+			Number: proto.Int32(int32(v.Number())), //nolint:gosec
+		})
+	}
+	r.enums[storage] = ed
 	return storage, nil
 }
 
@@ -1085,12 +1444,16 @@ func (r *tableTypeRepo) defineStruct(st *api.StructType) (string, error) {
 func (r *tableTypeRepo) wrapperFor(elem api.DataType) (string, error) {
 	sig := elem.String()
 	r.em.containsNullableArray = true
-	if name, ok := r.wrappers[sig]; ok {
+	// One wrapper per element type as Java's repository sees it (javaTypeKey:
+	// arrays of two same-valued enums share one); the name still derives from
+	// the first element type's rendering.
+	key := javaTypeKey(elem)
+	if name, ok := r.wrappers[key]; ok {
 		return name, nil
 	}
 	name := "__type__" + strings.ReplaceAll(
 		uuid.NewSHA1(uuid.NameSpaceOID, []byte(r.tableName+"\x00"+sig)).String(), "-", "_")
-	r.wrappers[sig] = name
+	r.wrappers[key] = name
 	msg := &descriptorpb.DescriptorProto{Name: proto.String(name)}
 	vf := &descriptorpb.FieldDescriptorProto{
 		Name:   proto.String(wrappedArrayFieldName),
@@ -1149,19 +1512,42 @@ func buildVectorIndex(idx indexSpec) (*recordlayer.Index, error) {
 	if idx.vectorMethod == "SPFRESH" {
 		rl := recordlayer.NewIndex(idx.name, root)
 		rl.Type = recordlayer.IndexTypeVectorSPFresh
-		rl.Options = map[string]string{
-			recordlayer.IndexOptionSPFreshNumDimensions: fmt.Sprintf("%d", idx.numDimensions),
-		}
-		for k, v := range idx.options {
-			rl.Options[k] = v
-		}
+		rl.SetOption(recordlayer.IndexOptionSPFreshNumDimensions, fmt.Sprintf("%d", idx.numDimensions))
+		setOptionsSorted(rl, idx.options)
 		return rl, nil
 	}
-	rl := recordlayer.NewVectorIndex(idx.name, root, idx.numDimensions)
-	for k, v := range idx.options {
-		rl.Options[k] = v
+	// Java's generator writes unique first, then its option HashMap: the
+	// clause options put in order, then the dimension count.
+	rl := recordlayer.NewIndex(idx.name, root)
+	rl.Type = recordlayer.IndexTypeVector
+	rl.SetOption(recordlayer.IndexOptionUnique, "false")
+	dims := fmt.Sprintf("%d", idx.numDimensions)
+	for _, k := range javaHashMapOrder(idx.optionOrder, []string{recordlayer.IndexOptionVectorNumDimensions}) {
+		if k == recordlayer.IndexOptionVectorNumDimensions {
+			rl.SetOption(k, dims)
+		} else {
+			rl.SetOption(k, idx.options[k])
+		}
+	}
+	if idx.predicate != nil {
+		if err := rl.SetPredicateProto(idx.predicate); err != nil {
+			return nil, err
+		}
 	}
 	return rl, nil
+}
+
+// setOptionsSorted sets a DDL option map on an index in key order, so the stored
+// option list is a function of the DDL.
+func setOptionsSorted(rl *recordlayer.Index, options map[string]string) {
+	keys := make([]string, 0, len(options))
+	for k := range options {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		rl.SetOption(k, options[k])
+	}
 }
 
 func buildAggregateIndex(idx indexSpec) (*recordlayer.Index, error) {

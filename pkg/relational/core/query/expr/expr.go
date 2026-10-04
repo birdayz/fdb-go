@@ -69,8 +69,6 @@ import (
 	"math"
 	"sync"
 
-	"github.com/google/uuid"
-
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
@@ -137,11 +135,36 @@ type Resolver struct {
 	// NamedValue.Ordinal (1-based). Named parameters (`?foo` / `$bar`)
 	// keep their declared name and consume no ordinal slot.
 	nextOrdinal int
+	// allowNullArrayElements admits NULL array elements while the operands of
+	// a literal-array comparison are walked (the nullable-array read
+	// extension); see walkBinaryComparison.
+	allowNullArrayElements bool
 	// subqueryPlanner is the callback for building EXISTS subquery
 	// plans. Set via SetSubqueryPlanner by the catalog-aware builder
 	// before walking WHERE predicates. nil means EXISTS subqueries
 	// decline with UnsupportedExpressionShapeError.
 	subqueryPlanner SubqueryPlanner
+	// macroParams binds a macro body's parameter names while it is resolved.
+	macroParams []macroParam
+}
+
+type macroParam struct {
+	name  semantic.Identifier
+	value values.Value
+}
+
+// MacroLookup is a catalog that knows the schema's SQL macro functions.
+type MacroLookup interface {
+	LookupMacro(name string) (*values.MacroFunction, error)
+}
+
+// SetMacroParameters makes names resolve to values: a macro body's parameters,
+// as Java's parameter quantifier (DdlVisitor.visitSqlInvokedFunction).
+func (r *Resolver) SetMacroParameters(names []semantic.Identifier, vals []values.Value) {
+	r.macroParams = nil
+	for i := range names {
+		r.macroParams = append(r.macroParams, macroParam{names[i], vals[i]})
+	}
 }
 
 // SetSubqueryPlanner installs a callback that builds logical plans for
@@ -271,10 +294,184 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 // neither a source nor a column, which is how `SELECT a.n.sk` came to be
 // refused as an undefined column.
 func (r *Resolver) ResolveIdentifierPath(segs []semantic.Identifier) (values.Value, error) {
+	for _, p := range r.macroParams {
+		if len(segs) == 0 || !p.name.EqualsIgnoreQuoting(segs[0]) {
+			continue
+		}
+		if len(segs) == 1 {
+			return p.value, nil
+		}
+		path := make([]values.FieldRequest, len(segs)-1)
+		for i, seg := range segs[1:] {
+			req, err := values.FieldByName(seg.Name())
+			if err != nil {
+				return nil, err
+			}
+			path[i] = req
+		}
+		v, err := values.ResolveFieldAccess(p.value, path)
+		if err != nil {
+			return nil, &semantic.ColumnNotFoundError{Path: append([]semantic.Identifier(nil), segs...)}
+		}
+		return v, nil
+	}
 	col, src, accessors, err := r.analyzer.ResolveColumnRefPath(r.scope, segs)
+	if err != nil {
+		var notFound *semantic.ColumnNotFoundError
+		if len(segs) == 1 && errors.As(err, &notFound) {
+			if row, ok, rowErr := r.resolveWholeRow(segs[0]); ok || rowErr != nil {
+				return row, rowErr
+			}
+		}
+		return nil, err
+	}
+	return r.resolvedPathValue(segs, col, src, accessors)
+}
+
+// resolveWholeRow resolves a bare identifier that names no column but a FROM
+// source to that source's row as a struct, as Java's resolveIdentifier falls
+// back to the quantifier (`SELECT t FROM t`).
+func (r *Resolver) resolveWholeRow(id semantic.Identifier) (values.Value, bool, error) {
+	if r.scope == nil {
+		return nil, false, nil
+	}
+	for _, src := range r.scope.Sources() {
+		if src.Table == nil || !src.Alias.EqualsIgnoreQuoting(id) {
+			continue
+		}
+		var fields []values.RecordConstructorField
+		for _, col := range src.Table.Columns() {
+			if col.Ephemeral {
+				continue
+			}
+			v, err := r.ResolveSourceQualifiedIdentifierPath([]semantic.Identifier{src.Alias, col.Id})
+			if err != nil {
+				return nil, true, err
+			}
+			fields = append(fields, values.RecordConstructorField{Name: col.Id.Name(), Value: v})
+		}
+		if len(fields) == 0 {
+			return nil, false, nil
+		}
+		return values.NewRecordConstructorValue(fields...), true, nil
+	}
+	return nil, false, nil
+}
+
+// expandStarRecord is Java's expandStar packed into one record: the columns of
+// the qualified source, or of every source in scope, or the fields of a struct
+// column the qualifier names when no source does (expandStar's case 3).
+func (r *Resolver) expandStarRecord(qualifier *semantic.Identifier) (values.Value, error) {
+	var fields []values.RecordConstructorField
+	if r.scope != nil {
+		if qualifier != nil && !r.scopeNamesSource(*qualifier) {
+			return r.expandStructRecord(*qualifier)
+		}
+		for _, src := range r.scope.Sources() {
+			if src.Table == nil || (qualifier != nil && !src.Alias.EqualsIgnoreQuoting(*qualifier)) {
+				continue
+			}
+			for i, col := range src.Table.Columns() {
+				if col.Ephemeral {
+					continue
+				}
+				// By position: a derived source may repeat a column name.
+				v, err := resolvedSourceColumnAt(col, src, i, nil)
+				if err != nil {
+					return nil, err
+				}
+				fields = append(fields, values.RecordConstructorField{Name: col.Id.Name(), Value: v})
+			}
+		}
+	}
+	if len(fields) == 0 {
+		return nil, &UnsupportedExpressionShapeError{Shape: "RecordConstructor over STAR with no columns"}
+	}
+	return values.NewRecordConstructorValue(fields...), nil
+}
+
+// scopeNamesSource reports whether a source in scope is named qualifier.
+func (r *Resolver) scopeNamesSource(qualifier semantic.Identifier) bool {
+	for _, src := range r.scope.Sources() {
+		if src.Alias.EqualsIgnoreQuoting(qualifier) {
+			return true
+		}
+	}
+	return false
+}
+
+// expandStructRecord packs the fields of the struct column qualifier names
+// into one record.
+func (r *Resolver) expandStructRecord(qualifier semantic.Identifier) (values.Value, error) {
+	value, err := r.ResolveIdentifierPath([]semantic.Identifier{qualifier})
 	if err != nil {
 		return nil, err
 	}
+	record, ok := value.Type().(*values.RecordType)
+	if !ok {
+		return nil, &NonStructStarError{Qualifier: qualifier.Name()}
+	}
+	fields := make([]values.RecordConstructorField, 0, len(record.Fields))
+	for i, field := range record.Fields {
+		// A pseudo-field is invisible to a star, as it is on a table.
+		if values.IsRowVersionPseudoField(field.Name, field.FieldType) {
+			continue
+		}
+		request, err := values.FieldByNameAndOrdinal(field.Name, i)
+		if err != nil {
+			return nil, err
+		}
+		bound, err := values.ResolveFieldAccess(value, []values.FieldRequest{request})
+		if err != nil {
+			return nil, err
+		}
+		fields = append(fields, values.RecordConstructorField{Name: field.Name, Value: bound})
+	}
+	if len(fields) == 0 {
+		return nil, &UnsupportedExpressionShapeError{Shape: "RecordConstructor over STAR with no columns"}
+	}
+	return values.NewRecordConstructorValue(fields...), nil
+}
+
+// NonStructStarError is Java's INVALID_COLUMN_REFERENCE for a star over a
+// column that is not a struct.
+type NonStructStarError struct{ Qualifier string }
+
+func (e *NonStructStarError) Error() string {
+	return "attempt to expand non-struct column " + e.Qualifier
+}
+
+// ResolveCorrelatedIdentifierPath is ResolveIdentifierPath for a FROM item's
+// correlated path, Java's resolveCorrelatedIdentifier: one lookup over this
+// scope and every enclosing one (semantic.Scope.ResolvePathAcrossLevels).
+func (r *Resolver) ResolveCorrelatedIdentifierPath(segs []semantic.Identifier) (values.Value, error) {
+	if r.scope == nil {
+		return nil, &semantic.ColumnNotFoundError{Path: append([]semantic.Identifier(nil), segs...)}
+	}
+	col, src, accessors, err := r.scope.ResolvePathAcrossLevels(segs)
+	if err != nil {
+		return nil, err
+	}
+	return r.resolvedPathValue(segs, col, src, accessors)
+}
+
+// ResolveSourceQualifiedIdentifierPath is ResolveIdentifierPath for a path the
+// caller has already established begins with a source's name
+// (semantic.Scope.ResolveSourceQualifiedPath): the source-qualified reading
+// only, never the struct-relative or doubled one.
+func (r *Resolver) ResolveSourceQualifiedIdentifierPath(segs []semantic.Identifier) (values.Value, error) {
+	if r.scope == nil {
+		return nil, &semantic.ColumnNotFoundError{Path: append([]semantic.Identifier(nil), segs...)}
+	}
+	col, src, accessors, err := r.scope.ResolveSourceQualifiedPath(segs)
+	if err != nil {
+		return nil, err
+	}
+	return r.resolvedPathValue(segs, col, src, accessors)
+}
+
+// resolvedPathValue is the Value a resolved path denotes.
+func (r *Resolver) resolvedPathValue(segs []semantic.Identifier, col semantic.Column, src semantic.ScopeSource, accessors []semantic.NestedAccessor) (values.Value, error) {
 	var qualifier, id semantic.Identifier
 	if len(segs) > 0 {
 		id = segs[len(segs)-1]
@@ -356,7 +553,7 @@ func (r *Resolver) resolveScopedColumn(col semantic.Column, src semantic.ScopeSo
 			// Private source IDs do not expand the existing multi-source
 			// qualified-fallthrough contract. Local per-attribute matches remain
 			// legal, and single-source fallthrough remains supported.
-			lexicalShadow := !isLocal && len(r.scope.Sources()) > 1 && qualifier.Name() != "" && localSrc.Alias.EqualsIgnoreQuoting(qualifier)
+			lexicalShadow := !isLocal && len(r.scope.Sources()) > 1 && qualifier.Name() != "" && localSrc.NamedBy(qualifier)
 			if localSrc.CorrelationName != src.CorrelationName && !lexicalShadow {
 				continue
 			}
@@ -429,8 +626,8 @@ func (e *UnresolvableOrdinalError) Error() string {
 // duplicate field name, and a catalog is not this function's to validate — a
 // degenerate source should decline downstream, not abort resolution.
 //
-// nil when the source declares no column order, which is exactly the condition
-// sourceColumnOrdinal declines on, so the two answers cannot disagree.
+// A declared zero-column table has an exact empty row. nil means there is no
+// table declaration, or the source's flowed whole object is not a record.
 // SourceRowType is the exported view of sourceRowType, for callers outside this
 // package that hold a resolved ScopeSource and need the row it flows — the
 // enclosing-WITH bindings a derived body must be typed against, in particular.
@@ -447,11 +644,8 @@ func sourceRowType(src semantic.ScopeSource) *values.RecordType {
 		return nil
 	}
 	cols := src.Table.Columns()
-	if len(src.FlowedColumns) > 0 {
+	if src.FlowedColumns != nil {
 		cols = src.FlowedColumns
-	}
-	if len(cols) == 0 {
-		return nil
 	}
 	fields := make([]values.Field, len(cols))
 	for i, c := range cols {
@@ -716,7 +910,7 @@ func (r *Resolver) QualifierIsDuplicated(qualifier semantic.Identifier) bool {
 	}
 	n := 0
 	for _, s := range r.scope.Sources() {
-		if s.Alias.EqualsIgnoreQuoting(qualifier) {
+		if s.NamedBy(qualifier) {
 			n++
 		}
 	}
@@ -762,19 +956,54 @@ func (r *Resolver) ResolveColumnShadowingQualified(qualifier, id semantic.Identi
 	return v, true, nil
 }
 
-// ResolveArithmetic wraps left/right Values in a cascades
-// ArithmeticValue with the given operator. Used when the parser
-// produces an arithmetic expression node — the analyzer resolves
-// each operand recursively, then pairs them here.
-//
-// Operand types aren't cross-checked in the seed (both assumed
-// int); real type inference replaces this when the Type hierarchy
-// port lands.
+// ResolveArithmetic builds the ArithmeticValue for an arithmetic, bit or
+// bitmap operator as Java's ArithmeticValue.encapsulate does
+// (values.NewArithmeticValue): the lane is resolved from the operand types,
+// and a pair Java refuses is refused with its XX000 and message (a complex
+// operand's SemanticException, then the lane's VerifyException).
 func (r *Resolver) ResolveArithmetic(op values.ArithmeticOp, left, right values.Value) (values.Value, error) {
 	if left == nil || right == nil {
 		return nil, fmt.Errorf("expr.ResolveArithmetic: operand is nil")
 	}
-	return &values.ArithmeticValue{Op: op, Left: left, Right: right}, nil
+	v, err := values.NewArithmeticValue(op, left, right)
+	if err != nil {
+		return nil, arithmeticEncapsulationError(err)
+	}
+	// Java simplifies arithmetic over a typed NULL constant to NULL without
+	// evaluating the other operand.
+	if isTypedNullConstant(left) || isTypedNullConstant(right) {
+		return values.NewNullValue(values.WithNullability(v.Type(), true)), nil
+	}
+	return v, nil
+}
+
+func isTypedNullConstant(v values.Value) bool {
+	t := v.Type()
+	if t == nil || t.Code() == values.TypeCodeUnknown || t.Code() == values.TypeCodeNull {
+		return false
+	}
+	lit, ok := values.EvaluateConstant(v)
+	return ok && lit == nil
+}
+
+// notNullConstant is a row-independent operand whose type rules out NULL, so
+// IS [NOT] NULL over it folds without evaluating it, as in Java.
+func notNullConstant(v values.Value) bool {
+	t := v.Type()
+	return t != nil && t.Code() != values.TypeCodeUnknown && !t.IsNullable() && values.IsConstantValue(v)
+}
+
+// arithmeticEncapsulationError is Java's answer to a refused encapsulation:
+// both of ArithmeticValue.encapsulate's exceptions reach the client as XX000
+// with their message (SemanticException and VerifyException are unmapped
+// internal errors there).
+func arithmeticEncapsulationError(err error) error {
+	var complexOperand *values.ArithmeticComplexOperandError
+	var mismatch *values.ArithmeticLaneMismatchError
+	if errors.As(err, &complexOperand) || errors.As(err, &mismatch) {
+		return api.NewError(api.ErrCodeInternalError, err.Error())
+	}
+	return err
 }
 
 // ResolveComparison wraps left/right Values in a cascades
@@ -867,8 +1096,8 @@ func (r *Resolver) ResolveComparison(op predicates.ComparisonType, left, right v
 	}
 	left, right = widenConstAgainstDoubleColumn(op, left, right)
 	op, left, right = narrowFloatConstAgainstInt(op, left, right)
-	op, left, right = narrowConstAgainstFloatColumn(op, left, right)
 	left, right = promoteColumnColumnNumeric(left, right)
+	op, left, right = narrowConstAgainstFloatColumn(op, left, right)
 	left, right = promoteStringComparandToUuid(op, left, right)
 	// The exported planner's parameters are unresolved until execution (the
 	// driver text-substitution route does not take this path). An enum
@@ -901,6 +1130,16 @@ func (r *Resolver) ResolveComparison(op predicates.ComparisonType, left, right v
 	// parameters, internal untyped expressions) keep the runtime path.
 	if lt, rt := left.Type(), right.Type(); lt != nil && rt != nil &&
 		lt.Code() != values.TypeCodeUnknown && rt.Code() != values.TypeCodeUnknown {
+		// NULL and NONE have no common promotion type. Java nevertheless
+		// defines their equality/null-safe operator pairs directly
+		// (RelOpValue.BinaryPhysicalOperator), without promotion.
+		if isNullOrNone(lt) && isNullOrNone(rt) {
+			switch op {
+			case predicates.ComparisonEquals, predicates.ComparisonNotEquals,
+				predicates.ComparisonIsDistinctFrom, predicates.ComparisonNotDistinctFrom:
+				return predicates.NewComparisonPredicate(left, predicates.Comparison{Type: op, Operand: right}), nil
+			}
+		}
 		maximum := values.MaximumType(lt, rt)
 		if maximum == nil {
 			return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
@@ -1442,46 +1681,9 @@ func sharesIntegerWireEncoding(a, b values.TypeCode) bool {
 	return isIntFamily(a) && isIntFamily(b)
 }
 
-// promoteColumnColumnNumeric wraps the narrower-typed operand of a
-// numeric comparison in a values.PromoteValue toward the pair's
-// MaximumType, when NEITHER operand is a compile-time constant. Mirrors
-// Java's RelOpValue.encapsulate (PromoteValue.java call sites in
-// RelOpValue.java: `lhs = PromoteValue.inject(lhs, maximumType); rhs =
-// PromoteValue.inject(rhs, maximumType);`) for the one shape the
-// constant-specific helpers above cannot handle: a correlated equi-join
-// comparand — `a.xbig (BIGINT) = bd.ydbl (DOUBLE)` lowered to an
-// index-nested-loop probe against bd's DOUBLE index — whose concrete
-// value isn't known until each outer row is read, so there is no
-// compile-time literal to retype in place.
-//
-// The widen/narrow helpers above retype a bare ConstantValue directly
-// (Java's PromoteValue.inject "value.with(promoteToType)" fast path,
-// taken because a literal's concrete value IS known at plan time); this
-// helper takes Java's OTHER branch — wrap in an actual PromoteValue node
-// — because a FieldValue/CorrelatedFieldValue cannot declare a different
-// result type without a real per-row coercion. values.PromoteValue.Evaluate
-// (coerceNumericResult) performs that coercion at row-eval time, and the
-// executor's tuple-packing boundary (coerceTupleElementForKey) narrows a
-// FLOAT-targeted result to a genuine Go float32 so the wire encoding
-// matches the indexed column's tuple type code — the same division of
-// labor as the bare-constant path, just split across plan time (retype)
-// vs. row time (wrap + coerce) depending on whether a value is known yet.
-//
-// An INT-vs-LONG pair is deliberately left UNWRAPPED (sharesIntegerWireEncoding):
-// the two codes pack to identical wire bytes, so a PromoteValue here buys
-// nothing at the encoding boundary and only costs a match — AccessorNamePath
-// (values/accessor_name_path.go) walks *FieldValue chains and stops at any
-// other node type, so a wrapped column no longer matches an index
-// placeholder's raw FieldValue in the SARG matcher (valuesMatchColumn),
-// degrading a point lookup to a residual full scan. cmpAny already compares
-// mixed-width ints correctly (values.CompareExactInts) with no promotion
-// needed. FLOAT-vs-DOUBLE still needs the wrapper: different wire type
-// codes, and the exact-representable-bound narrowing the comparison-
-// resolution callers above perform depends on it.
+// promoteColumnColumnNumeric follows Java RelOpValue's common numeric type,
+// including constant comparisons. INT/LONG share the same tuple encoding.
 func promoteColumnColumnNumeric(left, right values.Value) (values.Value, values.Value) {
-	if values.IsConstantValue(left) || values.IsConstantValue(right) {
-		return left, right
-	}
 	lt, rt := left.Type(), right.Type()
 	if lt == nil || rt == nil || lt.Code() == rt.Code() {
 		return left, right
@@ -1521,7 +1723,7 @@ func (r *Resolver) ResolveCast(v values.Value, target values.Type) (values.Value
 	// empty-table shape silently succeeding. Unknown-typed children keep
 	// the runtime dispatch.
 	if st := v.Type(); st != nil && st.Code() != values.TypeCodeUnknown {
-		if !values.CastPairDefined(st.Code(), target.Code()) {
+		if !values.CastTypesDefined(st, target) {
 			return nil, api.NewErrorf(api.ErrCodeInvalidCast,
 				"No cast defined from %v to %v", st.Code(), target.Code())
 		}
@@ -1535,6 +1737,9 @@ func (r *Resolver) ResolveIsNull(v values.Value) (predicates.QueryPredicate, err
 	if v == nil {
 		return nil, fmt.Errorf("expr.ResolveIsNull: operand is nil")
 	}
+	if notNullConstant(v) {
+		return predicates.NewConstantPredicate(predicates.TriFalse), nil
+	}
 	return predicates.NewComparisonPredicate(v, predicates.Comparison{Type: predicates.ComparisonIsNull}), nil
 }
 
@@ -1543,49 +1748,41 @@ func (r *Resolver) ResolveIsNotNull(v values.Value) (predicates.QueryPredicate, 
 	if v == nil {
 		return nil, fmt.Errorf("expr.ResolveIsNotNull: operand is nil")
 	}
+	if notNullConstant(v) {
+		return predicates.NewConstantPredicate(predicates.TriTrue), nil
+	}
 	return predicates.NewComparisonPredicate(v, predicates.Comparison{Type: predicates.ComparisonIsNotNull}), nil
 }
 
-// ResolveLike builds `lhs LIKE pattern`. Pattern must be a plan-time
-// constant string (parameter-bound patterns land with the
-// parameter-Comparison design).
-func (r *Resolver) ResolveLike(lhs values.Value, pattern values.Value) (predicates.QueryPredicate, error) {
-	return r.ResolveLikeWithEscape(lhs, pattern, 0)
-}
-
-// ResolveLikeWithEscape is the LIKE … ESCAPE form. escape == 0 is
-// equivalent to ResolveLike. Pattern must be a plan-time constant
-// string. The escape rune is carried verbatim on the resulting
-// Comparison.
-func (r *Resolver) ResolveLikeWithEscape(lhs values.Value, pattern values.Value, escape rune) (predicates.QueryPredicate, error) {
-	if lhs == nil || pattern == nil {
+// ResolveLike builds `lhs LIKE pattern ESCAPE escape` as Java does: the
+// pattern and escape wrap in a PatternForLikeValue, and the operand compares
+// against it (LikeOperatorValue.toQueryPredicate, LikeOperatorValue.java:
+// 245-248). Typing is Java's encapsulate: the operand, pattern and escape are
+// each NULL-typed or STRING, else 22F00. A bad escape or escape sequence is
+// found only when a row evaluates the pattern, as in Java.
+//
+// A DATE or TIMESTAMP operand is admitted too: Java has neither type, so this
+// is a Go-only read-side extension.
+func (r *Resolver) ResolveLike(lhs, pattern, escape values.Value) (predicates.QueryPredicate, error) {
+	if lhs == nil || pattern == nil || escape == nil {
 		return nil, fmt.Errorf("expr.ResolveLike: operand is nil")
 	}
-	lit, ok := values.EvaluateConstant(pattern)
-	if !ok {
-		return nil, fmt.Errorf("expr.ResolveLike: pattern must be a constant in the seed; got %T", pattern)
+	patternValue, err := values.NewPatternForLikeValueChecked(pattern, escape)
+	if err != nil {
+		return nil, api.NewError(api.ErrCodeInvalidArgumentForFunction, err.Error())
 	}
-	s, ok := lit.(string)
-	if !ok {
-		return nil, fmt.Errorf("expr.ResolveLike: pattern must be a string; got %T", lit)
-	}
-	// PLAN-TIME LHS gate: LIKE is a string predicate — a numeric or
-	// boolean LHS rejects 42804 like Java's SemanticAnalyzer, never a
-	// silent per-row UNKNOWN. STRING and the string-promotable temporal
-	// extension types pass; Unknown keeps the runtime path.
 	if lt := lhs.Type(); lt != nil {
 		switch lt.Code() {
 		case values.TypeCodeString, values.TypeCodeUnknown, values.TypeCodeNull,
-			values.TypeCodeEnum, values.TypeCodeDate, values.TypeCodeTimestamp:
+			values.TypeCodeDate, values.TypeCodeTimestamp:
 		default:
-			return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
-				"The operands of a comparison operator are not compatible.")
+			return nil, api.NewError(api.ErrCodeInvalidArgumentForFunction,
+				(&values.LikeError{Kind: values.LikeOperandNotString}).Error())
 		}
 	}
 	return predicates.NewComparisonPredicate(lhs, predicates.Comparison{
 		Type:    predicates.ComparisonLike,
-		Operand: values.LiteralValue(s),
-		Escape:  escape,
+		Operand: patternValue,
 	}), nil
 }
 
@@ -1619,24 +1816,32 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 	if left == nil {
 		return nil, fmt.Errorf("expr.ResolveIn: LHS is nil")
 	}
-	// IN is a comparison, so its operands answer to the same whitelist the
-	// binary form does (Java RelOpValue.isSupportedOperandType,
-	// RelOpValue.java:320-322). The ROW-VALUE spelling `(a, b) IN ((1,2),
-	// (3,4))` is what reaches here with a record operand, and it must reject
-	// rather than plan: the list membership test compares a record against
-	// each element with no record comparator behind it, so it answered NO ROWS
-	// for a matching row and ALL ROWS for the negated form. That is the same
-	// silent-wrong the binary gate closes, arriving through the other door —
-	// and it only became reachable once record constructors could be built in
-	// expression position at all, which is why the gate has to be on both.
-	if !comparisonOperandSupported(left.Type()) {
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
-			"a comparison operand of complex type (record) is not supported")
-	}
-	for _, e := range rhs {
-		if e != nil && !comparisonOperandSupported(e.Type()) {
-			return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
-				"a comparison operand of complex type (record) is not supported")
+	// InOpValue.InFn accepts records, unlike RelOpValue: fields must be
+	// primitive and have identical positional type codes (no field promotion).
+	if probe, ok := left.Type().(*values.RecordType); ok {
+		for _, item := range rhs {
+			if item == nil {
+				continue
+			}
+			element, ok := item.Type().(*values.RecordType)
+			if !ok || len(probe.Fields) != len(element.Fields) {
+				return nil, api.NewError(api.ErrCodeDatatypeMismatch, "The operands of a comparison operator are not compatible.")
+			}
+			for i, field := range probe.Fields {
+				other := element.Fields[i].FieldType
+				if field.FieldType == nil || other == nil || !field.FieldType.Code().IsPrimitive() || field.FieldType.Code() != other.Code() {
+					return nil, api.NewError(api.ErrCodeDatatypeMismatch, "The operands of a comparison operator are not compatible.")
+				}
+			}
+		}
+	} else {
+		if !comparisonOperandSupported(left.Type()) {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery, "a comparison operand of complex type (record) is not supported")
+		}
+		for _, item := range rhs {
+			if item != nil && !comparisonOperandSupported(item.Type()) {
+				return nil, api.NewError(api.ErrCodeDatatypeMismatch, "The operands of a comparison operator are not compatible.")
+			}
 		}
 	}
 	// Same cross-type index-SARG fix as widenConstAgainstDoubleColumn, for IN: when
@@ -1693,7 +1898,7 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 			if et == nil || et.Code() == values.TypeCodeUnknown {
 				continue
 			}
-			if values.MaximumType(lt, et) == nil {
+			if !values.IsRecord(lt) && values.MaximumType(lt, et) == nil {
 				return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
 					"The operands of a comparison operator are not compatible.")
 			}
@@ -1724,11 +1929,18 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 	// operand gate and the LHS-vs-element compatibility gate are type-based, so
 	// `b IN (a, 'x')` is still 42804 and a NULL item is still rejected by the
 	// caller before it reaches here.
-	if !allInListItemsConstant(rhs) {
+	//
+	// A constant item that folds to NULL (`CAST(NULL AS BIGINT)`) is not a
+	// literal either: Java sends it through __internal_array too, whose
+	// elements are never NULL, so the list fails with 0A000 when it is
+	// EVALUATED — at plan open for an exploded IN, per row for a residual one.
+	// Record constructors need their finalized descriptors before evaluation;
+	// folding here would turn positional records into name-keyed maps.
+	if values.IsRecord(left.Type()) || !allInListItemsConstant(rhs) || anyInListItemFoldsToNull(rhs) {
 		items := promoteInListItemsToDeclaredType(left, rhs)
 		return predicates.NewComparisonPredicate(left, predicates.Comparison{
 			Type:    predicates.ComparisonIn,
-			Operand: values.NewArrayConstructorValue(inListItemType(items), items),
+			Operand: values.NewArrayConstructorValue(values.WithNullability(inListItemType(items), false), items),
 		}), nil
 	}
 	seenClass := ""
@@ -1765,12 +1977,11 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 		}
 		if parseStringToUUID {
 			if s, sok := lit.(string); sok {
-				u, perr := uuid.Parse(s)
-				if perr != nil {
-					// Java verbatim wording (SemanticException INVALID_UUID_VALUE).
-					return nil, fmt.Errorf("Invalid UUID value for the UUID type %s", s)
+				u, ok := values.ParseJavaUUID(s)
+				if !ok {
+					return nil, &values.InvalidUUIDValueError{Value: s}
 				}
-				lit = [16]byte(u)
+				lit = u
 			}
 		}
 		if values.IsEnum(left.Type()) && v.Type() != nil && v.Type().Code() == values.TypeCodeString {
@@ -1858,6 +2069,20 @@ func allInListItemsConstant(rhs []values.Value) bool {
 		}
 	}
 	return true
+}
+
+// anyInListItemFoldsToNull reports whether a constant IN-list item folds to
+// NULL at plan time.
+func anyInListItemFoldsToNull(rhs []values.Value) bool {
+	for _, v := range rhs {
+		if v == nil {
+			continue
+		}
+		if lit, ok := values.EvaluateConstant(v); ok && lit == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // inListItemType is the element type for the runtime array: the maximum type
@@ -2130,13 +2355,15 @@ func columnCascadesType(col semantic.Column) values.Type {
 		elem = structColumnType(col)
 	} else if col.Type == "ENUM" {
 		elem = enumColumnType(col)
+	} else if col.Type == "VECTOR" {
+		elem = values.NewVectorType(col.Nullable, col.VectorPrecision, col.VectorDimensions)
 	}
 	if !col.IsArray {
 		// Honor the catalog's declared nullability (Java's
 		// Type.primitiveType(typeCode, isNullable)): a NOT NULL column's
 		// flowed type is non-nullable. Without this every resolver-produced
 		// reference reads as nullable and the column-def derivation
-		// (deriveProjectionColumnDef's flowed-type upgrade) wrongly reports
+		// (the former column derivation's flowed-type upgrade) wrongly reports
 		// NOT NULL columns as nullable.
 		if elem != nil && elem.Code() != values.TypeCodeUnknown && elem.IsNullable() != col.Nullable {
 			elem = values.WithNullability(elem, col.Nullable)
@@ -2151,8 +2378,8 @@ func columnCascadesType(col semantic.Column) values.Type {
 	// comparison gate requires the array types to match modulo OUTER
 	// nullability only — a nullable element type here made Go reject
 	// `arr = [1]` 42804 where live Java (4.12.11.0) returns rows.
-	if elem != nil && elem.Code() != values.TypeCodeUnknown && elem.IsNullable() {
-		elem = values.WithNullability(elem, false)
+	if elem != nil && elem.Code() != values.TypeCodeUnknown && elem.IsNullable() != col.ElementNullable {
+		elem = values.WithNullability(elem, col.ElementNullable)
 	}
 	return values.NewArrayType(col.Nullable, elem)
 }
@@ -2192,7 +2419,7 @@ func enumColumnType(col semantic.Column) values.Type {
 func (r *Resolver) ResolveConstant(lit any) (values.Value, error) {
 	switch v := lit.(type) {
 	case nil:
-		return values.NewNullValue(values.TypeUnknown), nil
+		return values.NewNullValue(values.NullType), nil
 	case bool:
 		return values.NewBooleanValue(v), nil
 	case int:

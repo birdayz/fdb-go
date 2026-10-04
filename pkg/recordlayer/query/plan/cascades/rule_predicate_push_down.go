@@ -51,7 +51,11 @@ func (r *PredicatePushDownRule) OnMatch(call *ExpressionRuleCall) {
 	sel := matching.Get[*expressions.SelectExpression](call.Bindings, r.matcher)
 	quantifiers := sel.GetQuantifiers()
 
-	// Guard: don't push predicates into SelectExpressions containing
+	// An outer join's predicates are its ON conditions; RewriteOuterJoinRule
+	// moves them below the null extension. Java's rule never sees one.
+	if !sel.ChildrenAsSet() {
+		return
+	}
 	allPredicates := sel.GetPredicates()
 	if len(allPredicates) == 0 {
 		return
@@ -130,16 +134,7 @@ func (r *PredicatePushDownRule) OnMatch(call *ExpressionRuleCall) {
 			continue
 		}
 
-		// Memoize the new below expressions into a new Reference.
-		var newChildRef *expressions.Reference
-		if len(newBelowExpressions) == 1 {
-			newChildRef = call.MemoizeExpression(newBelowExpressions[0])
-		} else {
-			newChildRef = expressions.InitialOf(newBelowExpressions[0])
-			for i := 1; i < len(newBelowExpressions); i++ {
-				newChildRef.Insert(newBelowExpressions[i])
-			}
-		}
+		newChildRef := call.MemoizeExpressions(newBelowExpressions)
 
 		// Build new quantifier with the same alias but ranging over
 		// the new child Reference.

@@ -26,6 +26,41 @@ func TestLogicalUnique_Construction(t *testing.T) {
 	}
 }
 
+func TestLogicalUnique_QuantifiersReuseOwnedStorage(t *testing.T) {
+	t.Parallel()
+	scan := mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType()))
+	firstQ := ForEachQuantifier(InitialOf(scan))
+	secondQ := ForEachQuantifier(InitialOf(scan))
+	for _, required := range []bool{false, true} {
+		unique := mustExpression(NewLogicalUniqueExpression(firstQ))
+		if required {
+			unique = mustExpression(NewRequiredLogicalUniqueExpression(firstQ))
+		}
+		before, again := unique.GetQuantifiers(), unique.GetQuantifiers()
+		if len(before) != 1 || before[0] != firstQ || &before[0] != &again[0] {
+			t.Fatal("unique rebuilt its read-only quantifier slice")
+		}
+		rebuilt := mustExpression(unique.WithQuantifiers([]Quantifier{secondQ}))
+		after := rebuilt.GetQuantifiers()
+		if len(after) != 1 || after[0] != secondQ || &after[0] == &before[0] || before[0] != firstQ {
+			t.Fatal("relinked unique did not own independent quantifier storage")
+		}
+	}
+}
+
+func BenchmarkLogicalUniqueQuantifiers(b *testing.B) {
+	scan := mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType()))
+	unique := mustExpression(NewLogicalUniqueExpression(ForEachQuantifier(InitialOf(scan))))
+	b.ReportAllocs()
+	var quantifiers []Quantifier
+	for b.Loop() {
+		quantifiers = unique.GetQuantifiers()
+	}
+	if len(quantifiers) != 1 {
+		b.Fatal("lost inner quantifier")
+	}
+}
+
 func TestLogicalUnique_GetResultValue(t *testing.T) {
 	t.Parallel()
 	scan := mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType()))
@@ -40,8 +75,8 @@ func TestLogicalUnique_GetCorrelatedToWithoutChildren(t *testing.T) {
 	t.Parallel()
 	scan := mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType()))
 	u := mustExpression(NewLogicalUniqueExpression(ForEachQuantifier(InitialOf(scan))))
-	if got := u.GetCorrelatedToWithoutChildren(); len(got) != 0 {
-		t.Fatalf("GetCorrelatedToWithoutChildren = %v, want empty", got)
+	if got := u.GetCorrelatedToWithoutChildren(); got != nil {
+		t.Fatalf("GetCorrelatedToWithoutChildren = %v, want nil without allocating an empty read-only set", got)
 	}
 }
 

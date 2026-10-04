@@ -28,7 +28,7 @@ func TestFDB_NullIndexProbeVariants(t *testing.T) {
 			"CREATE TABLE t2 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t2_ab ON t2 (a, b) CREATE INDEX t1_a ON t1 (a)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nullidxv/s WITH TEMPLATE nullidxv")
-	dsn := fmt.Sprintf("fdbsql:///testdb_nullidxv?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_NULLIDXV?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

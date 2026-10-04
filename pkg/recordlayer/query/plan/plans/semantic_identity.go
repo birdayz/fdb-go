@@ -111,7 +111,6 @@ func comparisonRangeEqual(a, b *predicates.ComparisonRange) bool {
 var planComparisonIdentityFields = map[string]string{
 	"Type":              "the operator itself — which key range the scan reads",
 	"Operand":           "the comparand; IndexScan([= 5]) and IndexScan([= 7]) read different keys",
-	"Escape":            "LIKE's escape character changes which strings match",
 	"ParameterName":     "Java's ParameterComparison carries the binding here rather than in Operand",
 	"TextTokenizerName": "different tokenizers read different index data",
 	"TextAnalyzerName":  "as above, the analyzer half",
@@ -164,7 +163,7 @@ func comparisonEqual(a, b *predicates.Comparison) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
-	if a.Type != b.Type || a.Escape != b.Escape || a.ParameterName != b.ParameterName {
+	if a.Type != b.Type || a.ParameterName != b.ParameterName {
 		return false
 	}
 	if a.TextTokenizerName != b.TextTokenizerName ||
@@ -212,8 +211,6 @@ func writeComparisonHash(w io.Writer, c *predicates.Comparison) {
 	var buf [8]byte
 	_, _ = w.Write([]byte{1})
 	binary.BigEndian.PutUint64(buf[:], uint64(c.Type))
-	_, _ = w.Write(buf[:])
-	binary.BigEndian.PutUint64(buf[:], uint64(c.Escape))
 	_, _ = w.Write(buf[:])
 	_, _ = io.WriteString(w, c.ParameterName)
 	_, _ = w.Write([]byte{0})

@@ -401,7 +401,7 @@ frl stats clear --database /myapp --schema MAIN --yes
 connection asks for them:
 
 ```
-fdbsql:///myapp?schema=MAIN&planner_statistics=true
+fdbsql:///MYAPP?schema=MAIN&planner_statistics=true
 ```
 
 Two connections differing only in this flag do not share cached plans.

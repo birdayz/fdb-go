@@ -879,7 +879,10 @@ func TestOrdinalJoinBuildSelectedLayoutFlattensNestedChildRows(t *testing.T) {
 	}
 }
 
-func TestOrdinalJoinBuildSelectedLayoutDoesNotForceFlatOneLevelRC(t *testing.T) {
+// A plan-selected layout makes the join evaluate its result value whatever its
+// shape, as Java's RecordQueryFlatMapPlan does; only the layout-less path keeps
+// plain leg concatenation.
+func TestOrdinalJoinBuildSelectedLayoutEvaluatesAFlatOneLevelRC(t *testing.T) {
 	t.Parallel()
 
 	leftType := exactTestRowType(
@@ -890,34 +893,56 @@ func TestOrdinalJoinBuildSelectedLayoutDoesNotForceFlatOneLevelRC(t *testing.T) 
 		values.Field{Name: "K", FieldType: values.NotNullLong},
 		values.Field{Name: "W", FieldType: values.NotNullInt},
 	)
-	leftSource := mustTestQOV(t, values.NamedCorrelationIdentifier("LEFT"), leftType)
-	rightSource := mustTestQOV(t, values.NamedCorrelationIdentifier("RIGHT"), rightType)
+	leftAlias := values.NamedCorrelationIdentifier("LEFT")
+	rightAlias := values.NamedCorrelationIdentifier("RIGHT")
+	leftSource := mustTestQOV(t, leftAlias, leftType)
+	rightSource := mustTestQOV(t, rightAlias, rightType)
 	field := func(source values.Value, ordinal int) values.Value {
 		t.Helper()
 		return mustExecutorConstruct(values.ResolveFieldOrdinals(source, []int{ordinal}))
 	}
+	// W before K: a reordering a plain concatenation cannot produce.
 	result := values.NewRawRecordConstructorValue(
 		values.RecordConstructorField{Name: "ID", Value: field(leftSource, 0)},
 		values.RecordConstructorField{Name: "V", Value: field(leftSource, 1)},
-		values.RecordConstructorField{Name: "K", Value: field(rightSource, 0)},
 		values.RecordConstructorField{Name: "W", Value: field(rightSource, 1)},
+		values.RecordConstructorField{Name: "K", Value: field(rightSource, 0)},
 	)
-	if values.ContainsBakedOrdinal(result) || values.IsPositionalMergeRC(result) ||
-		recordConstructorReadsNestedLegPath(result) {
-		t.Fatal("fixture accidentally satisfies an ordinal-build trigger")
+	if legacy, err := newOrdinalJoinBuild(result, nil); err != nil || legacy != nil {
+		t.Fatalf("layout-less flat RC build = (%v, %v), want (nil, nil)", legacy, err)
 	}
 	provided, err := values.NewFlatOrdinalLayoutForRetainedResult(result, nil)
 	if err != nil {
 		t.Fatalf("provided layout: %v", err)
 	}
 	build, err := newOrdinalJoinBuildWithOutputLayout(result, nil, provided, nil, nil)
-	if err != nil || build != nil {
-		t.Fatalf("flat one-level selected RC build = (%v, %v), want (nil, nil)", build, err)
+	if err != nil {
+		t.Fatalf("selected-layout build: %v", err)
+	}
+	if !build.enabled() || build.RC != result || build.OutputLayout != provided || !build.OutputLayoutFromPlan {
+		t.Fatal("a selected layout over a flat RC did not become an authoritative output build")
+	}
+
+	leftRow := NewPositionalRow(leftType)
+	leftRow.Slots[0], leftRow.Slots[1] = int64(1), int32(10)
+	rightRow := NewPositionalRow(rightType)
+	rightRow.Slots[0], rightRow.Slots[1] = int64(2), int32(20)
+	row, err := build.evaluateLegs(map[values.CorrelationIdentifier]values.OrdinalRow{
+		leftAlias:  leftRow,
+		rightAlias: rightRow,
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("evaluate selected flat RC: %v", err)
+	}
+	if row.Layout != provided || len(row.Slots) != 4 ||
+		row.Slots[0] != int64(1) || row.Slots[1] != int32(10) ||
+		row.Slots[2] != int32(20) || row.Slots[3] != int64(2) {
+		t.Fatalf("built row slots = %v layout %p, want the result program's order [1 10 20 2]", row.Slots, row.Layout)
 	}
 
 	leftField, ok := values.AsFieldValue(result.Fields[0].Value)
 	if !ok || leftField.ChildValue() != leftSource || leftField.Path().Len() != 1 {
-		t.Fatal("declining selected-layout probe mutated its source result program")
+		t.Fatal("the selected-layout build mutated its source result program")
 	}
 }
 
@@ -945,11 +970,6 @@ func TestOrdinalJoinBuildSelectedLayoutRetainsWholeRecordSlot(t *testing.T) {
 		values.RecordConstructorField{Name: "HID", Value: outerField(1)},
 		values.RecordConstructorField{Name: "INNER", Value: innerSource},
 	)
-	if values.ContainsBakedOrdinal(result) || values.IsPositionalMergeRC(result) ||
-		recordConstructorReadsNestedLegPath(result) ||
-		!recordConstructorRetainsWholeRecordSlot(result) {
-		t.Fatal("fixture does not isolate the selected whole-record-slot trigger")
-	}
 	legacy, err := newOrdinalJoinBuild(result, nil)
 	if err != nil || legacy != nil {
 		t.Fatalf("legacy whole-record RC build = (%v, %v), want (nil, nil)", legacy, err)
@@ -1027,8 +1047,19 @@ func TestOrdinalJoinBuildSelectedLayoutRetainsWholeRecordSlot(t *testing.T) {
 		t.Fatal(err)
 	}
 	scalarBuild, scalarErr := newOrdinalJoinBuildWithOutputLayout(scalarResult, nil, scalarLayout, nil, nil)
-	if scalarErr != nil || scalarBuild != nil {
-		t.Fatalf("scalar bare-QOV selected build = (%v, %v), want (nil, nil)", scalarBuild, scalarErr)
+	if scalarErr != nil || !scalarBuild.enabled() || !scalarBuild.OutputLayoutFromPlan {
+		t.Fatalf("scalar bare-QOV selected build = (%v, %v), want an authoritative output build", scalarBuild, scalarErr)
+	}
+	scalarRow, err := scalarBuild.evaluateLegs(map[values.CorrelationIdentifier]values.OrdinalRow{
+		outerAlias: outerRow,
+	}, map[values.CorrelationIdentifier]any{
+		values.NamedCorrelationIdentifier("SCALAR_INNER"): int64(42),
+	}, nil)
+	if err != nil {
+		t.Fatalf("evaluate scalar selected build: %v", err)
+	}
+	if len(scalarRow.Slots) != 2 || scalarRow.Slots[0] != int64(7) || scalarRow.Slots[1] != int64(42) {
+		t.Fatalf("scalar selected row = %v, want [7 42]", scalarRow.Slots)
 	}
 }
 
@@ -1169,6 +1200,104 @@ func TestOrdinalJoinBuildBareQOVTriggerKeysOnLegAliases(t *testing.T) {
 		t.Fatal("a bare QOV enabled the build with NO leg aliases supplied. The trigger keys " +
 			"on the correlation matching a known leg; with nothing to match it must decline, " +
 			"or every semantic-RC caller of the legacy constructor starts building ordinally.")
+	}
+}
+
+func TestNLJComputedResultPreservesWitnessPresence(t *testing.T) {
+	t.Parallel()
+	for _, scalar := range []bool{false, true} {
+		for _, witnessOuter := range []bool{false, true} {
+			for _, matched := range []bool{false, true} {
+				t.Run(fmt.Sprintf("scalar=%t/outer=%t/matched=%t", scalar, witnessOuter, matched), func(t *testing.T) {
+					t.Parallel()
+					outerAlias := values.UniqueCorrelationIdentifier()
+					innerAlias := values.UniqueCorrelationIdentifier()
+					regularAlias, witnessAlias := outerAlias, innerAlias
+					if witnessOuter {
+						regularAlias, witnessAlias = innerAlias, outerAlias
+					}
+					regularType := values.NewRecordType("", false, []values.Field{
+						{Name: "ID", FieldType: values.NotNullLong},
+						{Name: "V", FieldType: values.NotNullLong},
+					})
+					regular := &PositionalRow{Type: regularType, Slots: []any{int64(7), int64(41)}}
+					var witnessType values.Type = values.NewRecordType("", true, []values.Field{
+						{Name: "ID", FieldType: values.NullableLong},
+					})
+					var witness *PositionalRow
+					if scalar {
+						witnessType = values.NullableLong
+						var datum any
+						if matched {
+							datum = int64(1)
+						}
+						witness = scalarPositionalRowOfType(datum, witnessType)
+					} else {
+						scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"WITNESS"}, witnessType, false))
+						layout := mustExecutorConstruct(scan.ProvidedOutputLayout())
+						presence := mustExecutorConstruct(values.NewOrdinalCarrierMatchPresence(layout, matched))
+						witness = &PositionalRow{Type: witnessType.(*values.RecordType), Slots: []any{nil}, Layout: layout, LayoutPresence: presence}
+					}
+					regularSource := mustTestQOV(t, regularAlias, regularType)
+					witnessSource := mustTestQOV(t, witnessAlias, witnessType)
+					column := mustExecutorConstruct(values.ResolveFieldOrdinals(regularSource, []int{1}))
+					result := values.NewRawRecordConstructorValue(
+						values.RecordConstructorField{Name: "ANSWER", Value: mustExecutorConstruct(values.NewArithmeticValue(values.OpAdd, column, &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}))},
+						values.RecordConstructorField{Name: "PRESENT", Value: values.NewExistsValueWithChild(witnessSource)},
+						values.RecordConstructorField{Name: "CONSTANT", Value: &values.ConstantValue{Value: int64(99), Typ: values.NotNullLong}},
+					)
+					if values.ContainsBakedOrdinal(result) || values.IsPositionalMergeRC(result) {
+						t.Fatal("fixture must reach computed-result admission, not an existing ordinal-build trigger")
+					}
+					layout := mustExecutorConstruct(values.NewFlatOrdinalLayoutForRetainedResult(result, nil))
+					outerRow, innerRow := regular, witness
+					if witnessOuter {
+						outerRow, innerRow = witness, regular
+					}
+					cursor, err := newNLJCursor(recordlayer.FromList([]QueryResult{{Positional: outerRow}}),
+						[]QueryResult{{Positional: innerRow}}, plans.JoinInner, outerAlias, innerAlias,
+						nil, result, layout, nil, EmptyEvaluationContext(), recordlayer.NewExecuteState(0))
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer cursor.Close()
+					rows := ojCollectCursor(t, cursor)
+					if len(rows) != 1 {
+						t.Fatalf("got %d rows, want one", len(rows))
+					}
+					ojAssertSlots(t, rows[0].Positional, int64(42), matched, int64(99))
+					if rows[0].Positional.Layout != layout {
+						t.Fatal("computed result lost its selected output layout")
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestFlatMapIdentityQualificationPreservesWitnessPresence(t *testing.T) {
+	t.Parallel()
+	rowType := values.NewRecordType("", true, []values.Field{{Name: "ID", FieldType: values.NullableLong}})
+	scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"INNER"}, rowType, false))
+	layout := mustExecutorConstruct(scan.ProvidedOutputLayout())
+	alias := values.UniqueCorrelationIdentifier()
+	for _, matched := range []bool{false, true} {
+		t.Run(fmt.Sprintf("matched=%t", matched), func(t *testing.T) {
+			t.Parallel()
+			presence := mustExecutorConstruct(values.NewOrdinalCarrierMatchPresence(layout, matched))
+			original := &PositionalRow{Type: rowType, Slots: []any{nil}, Layout: layout, LayoutPresence: presence}
+			qualified := qualifyOuterPositional(original, alias)
+			if qualified == original || qualified.Layout != layout || qualified.LayoutPresence != presence {
+				t.Fatal("identity qualification dropped the witness layout or presence")
+			}
+			binding, absent, err := qualified.wholeObjectBinding()
+			if err != nil || absent != !matched || (binding == nil) != !matched {
+				t.Fatalf("qualified witness = (%v, absent=%t, %v), want matched=%t", binding, absent, err, matched)
+			}
+			if len(qualified.Type.Legs) != 1 || qualified.Type.Legs[0].Alias != alias || len(original.Type.Legs) != 0 {
+				t.Fatal("qualification did not preserve the source while adding the output alias")
+			}
+		})
 	}
 }
 

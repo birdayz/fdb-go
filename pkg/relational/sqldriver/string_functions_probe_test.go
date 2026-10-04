@@ -27,7 +27,7 @@ func TestFDB_StringFunctionsProbe(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE strfns "+
 			"CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_strfns/s WITH TEMPLATE strfns")
-	dsn := fmt.Sprintf("fdbsql:///testdb_strfns?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_STRFNS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

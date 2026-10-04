@@ -26,7 +26,7 @@ func TestFDB_MultiColOrderByProbe(t *testing.T) {
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_ab ON t (a, b)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_mcorder/s WITH TEMPLATE mcorder")
-	dsn := fmt.Sprintf("fdbsql:///testdb_mcorder?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_MCORDER?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -110,7 +110,7 @@ func TestFDB_OrderByNullPlacement(t *testing.T) {
 			"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_a ON t (a)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nullorder/s WITH TEMPLATE nullorder")
-	dsn := fmt.Sprintf("fdbsql:///testdb_nullorder?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_NULLORDER?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

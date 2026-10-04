@@ -48,7 +48,7 @@ func TestSelectScanTablePaths(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if err = demoteSchemaQualifiedUnnest(op, defaultEmbeddedSchema, md); err != nil {
+					if err = demoteQualifiedTableUnnest(op, defaultEmbeddedTemplate, md); err != nil {
 						t.Fatal(err)
 					}
 					var scans []*logical.LogicalScan
@@ -86,7 +86,7 @@ func TestSelectScanTablePaths(t *testing.T) {
 					if tc.literalOwner != "" && !literalFound {
 						t.Fatalf("no literal owner %q", tc.literalOwner)
 					}
-					if err := resolveQualifiedTableNames(op, defaultEmbeddedSchema); err != nil {
+					if err := resolveQualifiedTableNames(op, defaultEmbeddedTemplate); err != nil {
 						t.Fatal(err)
 					}
 				})
@@ -103,9 +103,12 @@ func TestTablePathQualificationIsNotCTEMembership(t *testing.T) {
 		code api.ErrorCode
 	}{
 		{"literal", []string{"q.q"}, ""},
-		{"qualified_same_spelling", []string{"q", "q"}, api.ErrCodeUndefinedDatabase},
+		// A FROM source qualified by anything but the template's name is no
+		// table: Java goes on to the correlated reading, which refuses it
+		// (42703 "Unknown reference q.q").
+		{"qualified_same_spelling", []string{"q", "q"}, api.ErrCodeUndefinedColumn},
 		{"malformed_not_legacy", []string{}, api.ErrCodeInternalError},
-		{"legacy", nil, api.ErrCodeUndefinedDatabase},
+		{"legacy", nil, api.ErrCodeUndefinedColumn},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -223,6 +226,30 @@ func TestCTESourceIdentifierSegments(t *testing.T) {
 						}
 					}
 					walk(op)
+					if frontend == "metadata_free" && test.name == "joined" {
+						// Without a catalog neither Java's table-first check
+						// nor the correlated lookup can run, and a dotted comma
+						// source is classified as a lateral unnest; the demotion
+						// pass turns a template-qualified table back into a
+						// scan once metadata is in scope (the catalog and
+						// visitor frontends above), and the metadata-free
+						// builder never executes.
+						unnests := 0
+						var find func(logical.LogicalOperator)
+						find = func(node logical.LogicalOperator) {
+							if u, ok := node.(*logical.LogicalUnnest); ok && reflect.DeepEqual(u.Segments, test.path) {
+								unnests++
+							}
+							for _, child := range node.Children() {
+								find(child)
+							}
+						}
+						find(op)
+						if matched != 0 || unnests != 1 {
+							t.Fatalf("metadata-free joined: %d scans and %d unnests for path %q, want 0 and 1", matched, unnests, test.path)
+						}
+						return
+					}
 					if matched != 1 {
 						t.Fatalf("found %d scans for path %q, want 1", matched, test.path)
 					}
@@ -297,7 +324,7 @@ func TestNormalizeSelectSourcesUsesIdentifierSegments(t *testing.T) {
 				tableName: "S.T1", tableAlias: "S.T1", sourceSegments: test.path,
 				joins: []joinClause{{tableName: "S.T1", alias: "P", segments: test.path}},
 			}
-			normalizeSchemaQualifiedSelectSources(sq, "s", md)
+			normalizeQualifiedSelectSources(sq, "S", md)
 			if sq.tableName != test.want || sq.tableAlias != test.want || sq.joins[0].tableName != test.want || sq.joins[0].alias != "P" {
 				t.Fatalf("normalized sources = (%q, %q) / (%q, %q), want %q and explicit P alias", sq.tableName, sq.tableAlias, sq.joins[0].tableName, sq.joins[0].alias, test.want)
 			}

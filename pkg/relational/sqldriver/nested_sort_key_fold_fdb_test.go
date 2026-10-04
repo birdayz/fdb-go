@@ -60,7 +60,7 @@ func TestFDB_NestedSortKeyThroughTheProjectedExistsFold(t *testing.T) {
 		"CREATE TABLE t3(id BIGINT, t1_id BIGINT, PRIMARY KEY(id))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nsk_fold/s WITH TEMPLATE nsk_fold_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_nsk_fold?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_NSK_FOLD?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -166,8 +166,8 @@ func TestFDB_NestedSortKeyThroughTheProjectedExistsFold(t *testing.T) {
 	// Measured, holding the sort constant so the wrapper is the only thing that
 	// varies:
 	//
-	//	ORDER BY n.sk (hidden column appended) -> Project([...], InMemorySort([N ASC], FlatMap(...)))
-	//	ORDER BY id   (key already projected)  -> FlatMap(...)                       [no Project]
+	//	ORDER BY n.sk (hidden column appended) -> Map(InMemorySort([N ASC], FlatMap(...)), {...})
+	//	ORDER BY id   (key already projected)  -> FlatMap(...)                       [no projection]
 	//
 	// So if sortKeyInOutput is taught derivability, extraSortCols goes empty, the
 	// cleanup Project disappears, and this test REDDENS — which is what the booking
@@ -184,7 +184,7 @@ func TestFDB_NestedSortKeyThroughTheProjectedExistsFold(t *testing.T) {
 			t.Fatalf("expected the nested key to still require a sort, got: %s — the "+
 				"control below is only meaningful with the sort held constant", plan)
 		}
-		if !strings.HasPrefix(plan, "Project(") {
+		if !strings.HasPrefix(plan, "Project(") && !strings.HasPrefix(plan, "Map(") {
 			t.Fatalf("no cleanup projection in %s — Go no longer appends a hidden sort "+
 				"column for a projected struct root, i.e. sortKeyInOutput now matches "+
 				"Java's derivability. That is the DESIRED end state: delete this test, "+
@@ -204,7 +204,7 @@ func TestFDB_NestedSortKeyThroughTheProjectedExistsFold(t *testing.T) {
 		if err := db.QueryRowContext(ctx, "EXPLAIN "+q).Scan(&plan); err != nil {
 			t.Fatalf("EXPLAIN %q: %v", q, err)
 		}
-		if strings.HasPrefix(plan, "Project(") {
+		if strings.HasPrefix(plan, "Project(") || strings.HasPrefix(plan, "Map(") {
 			t.Fatalf("a cleanup projection appeared for a query needing NO hidden sort "+
 				"column: %s — the shape assertion above no longer discriminates", plan)
 		}
@@ -483,7 +483,7 @@ func TestFDB_NestedCorrelationThroughAJoinsMergedRow(t *testing.T) {
 		"CREATE TABLE t3(id BIGINT, t1_id BIGINT, PRIMARY KEY(id))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nested_corr/s WITH TEMPLATE nested_corr_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_nested_corr?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_NESTED_CORR?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

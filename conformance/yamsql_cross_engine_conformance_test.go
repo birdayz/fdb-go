@@ -404,22 +404,17 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		// a tracked Go bug, not an RFC-082 column/conformance issue, and a
 		// non-deterministic spec must not gate. Tracked under RFC-042; the
 		// builder stays for the Go-only determinism follow-up.
-		// recursiveCteAdvancedScenario is NOT cross-engine: BOTH its tests hit
-		// genuine fdb-relational 4.12.11.0 limitations, each confirmed
-		// deterministic when the scenario runs in isolation (no prior query to
-		// prime shared engine-state):
-		//   (1) column-RENAMING recursive CTE referenced through an alias
-		//       (`anc(node, up) ... anc AS a ... a.up`) → SemanticAnalyzer
-		//       rejects "Attempting to query non existing column A.UP".
-		//   (2) recursive CTE + outer ORDER BY (`... SELECT label FROM desc_tree
-		//       ORDER BY id`) → "order by is not supported in subquery" (the CTE
-		//       is treated as a subquery). This is the SAME limitation
-		//       SeedRunCorpus pins as JavaErrorsGoCorrect for recursive_cte_basic
-		//       / cte_basic_with_aggregate.
-		// Both are Go-only read-side extensions; a query Java can't plan has no
-		// cross-engine equivalence to assert. Covered Go-only via the
-		// recursive_cte_advanced yamsql corpus + SeedRunCorpus's annotated
-		// CTE-ORDER-BY entries. (Builder kept for that Go-only coverage.)
+		// recursiveCteAdvancedScenario is NOT cross-engine: its tests order a
+		// recursive CTE's result (`... SELECT label FROM desc_tree ORDER BY
+		// id`), which fdb-relational 4.12.11.0 rejected with "order by is not
+		// supported in subquery" — the SAME limitation SeedRunCorpus pins as
+		// JavaErrorsGoCorrect for recursive_cte_basic / cte_basic_with_aggregate.
+		// A query Java can't plan has no cross-engine equivalence to assert.
+		// Covered Go-only via the recursive_cte_advanced yamsql corpus +
+		// SeedRunCorpus's annotated CTE-ORDER-BY entries. (Builder kept for
+		// that Go-only coverage.) A recursive CTE's column list is scoped as
+		// Java scopes it (the recursive branch reads the seed's names), pinned
+		// by recursive_column_list_conformance_test.go.
 		orderByNullsScenario(),
 		orderByDupeColScenario(),
 		compositePKCrossScenario(),
@@ -456,7 +451,6 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		//     "order by is not supported in subquery" (the WITH body is treated
 		//     as a subquery), the same limitation noted on
 		//     recursiveCteAdvancedScenario;
-		//   - column-list renaming on a recursive CTE referenced via alias.
 		// The cross-engine-valid recursive-CTE basics (anchor + recursive UNION,
 		// COUNT, empty seed) are asserted by recursiveCteCountScenario. The full
 		// Go-only surface is covered by the recursive_cte yamsql corpus. (Builder
@@ -668,10 +662,9 @@ func overflowScenario() *yamsql.Scenario {
 			{Query: "SELECT a + -1 FROM t WHERE id = 1", Rows: [][]any{{9223372036854775806}}},
 			// MinInt64 % -1 is 0.
 			{Query: "SELECT a % b FROM t WHERE id = 4", Rows: [][]any{{0}}},
-			// Decimal literal that overflows float64 → +Inf.
-			{Query: "SELECT 1e400 FROM t WHERE id = 1", ErrorCode: "22003"},
-			// Negative counterpart — -1e400 overflows to -Inf.
-			{Query: "SELECT -1e400 FROM t WHERE id = 1", ErrorCode: "22003"},
+			// A REAL literal without '.' is Long.parseLong's NumberFormatException.
+			{Query: "SELECT 1e400 FROM t WHERE id = 1", ErrorCode: "XXXXX"},
+			{Query: "SELECT -1e400 FROM t WHERE id = 1", ErrorCode: "XXXXX"},
 		},
 	}
 }
@@ -1407,7 +1400,7 @@ func likePrefixPushdownScenario() *yamsql.Scenario {
 			{Query: "SELECT id, region, name FROM ci WHERE region = 'us' AND name LIKE 'a%' ORDER BY id", Rows: [][]any{{1, "us", "apple"}, {2, "us", "apricot"}}},
 			{Query: "SELECT id FROM ci WHERE region = 'eu' AND name LIKE 'b%'", Rows: [][]any{{5}}},
 			{Query: "SELECT id FROM ci WHERE region = 'asia' AND name LIKE 'a%'", Rows: [][]any{}},
-			// Interior-wildcard prefix narrowing (post-filter via likeMatch).
+			// Interior wildcards (the LIKE is applied per row).
 			{Query: "SELECT name FROM t WHERE name LIKE 'a%le' ORDER BY name", Rows: [][]any{{"apple"}}},
 			{Query: "SELECT name FROM t WHERE name LIKE 'a_ple' ORDER BY name", Rows: [][]any{{"apple"}}},
 			{Query: "SELECT name FROM t WHERE name LIKE 'bana%'", Rows: [][]any{{"banana"}}},
@@ -1610,16 +1603,11 @@ func whereLiteralOnLeftScenario() *yamsql.Scenario {
 	}
 }
 
-// arithmeticScenario mirrors testdata/arithmetic.yaml. Two cross-engine
-// adaptations: drops NOT NULL on the PK column, and drops the bare-NULL
-// arithmetic + FROM-less SELECT cases. fdb-relational's planner rejects
-// `<op> NULL` literal arithmetic with "unable to encapsulate arithmetic
-// operation due to type mismatch(es)" — bare NULL has no inferred type,
-// so the planner can't pick an operator overload. Wrapping with
-// CAST(NULL AS BIGINT) would satisfy Java but the Go-side YAML uses bare
-// NULL for cleanliness. FROM-less SELECTs (`SELECT -10 / 3`) hit a
-// separate planner restriction. Both are tracked as Java gaps in
-// CLAUDE.md (cross-engine yamsql gotchas).
+// arithmeticScenario selects the table-backed, non-NULL operations from
+// testdata/arithmetic.yaml and drops scalar NOT NULL on the PK. It does not
+// exercise the YAML's bare-NULL or FROM-less arithmetic cases. Java 4.14.2.0
+// admits a singleton source; FromlessSelectJavaProbe separately pins its
+// arithmetic and bare-NULL result contracts.
 func arithmeticScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "arithmetic",
@@ -1922,8 +1910,8 @@ func aggregateEmptyTableScenario() *yamsql.Scenario {
 // bitwiseScenario mirrors testdata/bitwise.yaml. Drops NOT NULL on PK.
 // Drops the bit-shift tests (`<< / >>`) — fdb-relational tokenizes the
 // operators but the function registry has no evaluator (CLAUDE.md
-// gotcha). Drops the FROM-less SELECT and error_code shift-out-of-range
-// tests for the same reason.
+// gotcha). The FROM-less bit-shift and shift-out-of-range cases are also
+// outside this bitwise-AND/OR/XOR sample; absence of FROM is not their gate.
 func bitwiseScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "bitwise",
@@ -2464,9 +2452,8 @@ func indexedInListWithOrderByScenario() *yamsql.Scenario {
 
 // constantProjectionScenario probes pure-constant projections in
 // SELECT — `SELECT 1 FROM t`, `SELECT 'literal' FROM t`, mixed
-// constant + column. fdb-relational rejects FROM-less SELECT (existing
-// CLAUDE.md gotcha) so all queries here have a FROM. Drops NOT NULL
-// on PK. Net-new.
+// constant + column over real table rows. Singleton sources are exercised
+// separately by FromlessSelectJavaProbe. Drops scalar NOT NULL on the PK.
 func constantProjectionScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "constant_projection",
@@ -3924,10 +3911,9 @@ func joinOptimizationProbesScenario() *yamsql.Scenario {
 // Drops NOT NULL on PK (fdb-relational restriction). Tests column alias
 // rename resolution and descendant traversal patterns in WITH RECURSIVE.
 //
-// NOT in crossEngineScenarios() — see the exclusion note at the call site:
-// both queries hit genuine fdb-relational 4.12.11.0 limitations (renamed-
-// column recursion + recursive-CTE-with-outer-ORDER-BY). Builder retained as
-// faithful documentation of the Go-only yamsql twin.
+// NOT in crossEngineScenarios() — see the exclusion note at the call site
+// (recursive-CTE-with-outer-ORDER-BY). Builder retained as faithful
+// documentation of the Go-only yamsql twin.
 func recursiveCteAdvancedScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "recursive_cte_advanced",
@@ -3937,7 +3923,7 @@ func recursiveCteAdvancedScenario() *yamsql.Scenario {
 		},
 		Tests: []yamsql.Test{
 			// Recursive CTE with column alias rename (anc(node, up)).
-			{Query: "WITH RECURSIVE anc(node, up) AS (SELECT id, parent FROM tree WHERE id = 5 UNION ALL SELECT t.id, t.parent FROM anc AS a, tree AS t WHERE t.id = a.up) SELECT node FROM anc ORDER BY node", Rows: [][]any{{1}, {3}, {5}}},
+			{Query: "WITH RECURSIVE anc(node, up) AS (SELECT id, parent FROM tree WHERE id = 5 UNION ALL SELECT t.id, t.parent FROM anc AS a, tree AS t WHERE t.id = a.parent) SELECT node FROM anc ORDER BY node", Rows: [][]any{{1}, {3}, {5}}},
 			// Descendant traversal from root.
 			{Query: "WITH RECURSIVE desc_tree AS (SELECT id, parent, label FROM tree WHERE id = 1 UNION ALL SELECT t.id, t.parent, t.label FROM desc_tree AS d, tree AS t WHERE t.parent = d.id) SELECT label FROM desc_tree ORDER BY id", Rows: [][]any{{"root"}, {"child1"}, {"child2"}, {"grandchild1"}, {"grandchild2"}}},
 		},
@@ -4153,10 +4139,12 @@ func uniqueViolationScenario() *yamsql.Scenario {
 	}
 }
 
-// notNullViolationScenario mirrors testdata/not_null_violation.yaml.
-// INSERT/UPDATE NULL into a NOT NULL column raises SQLSTATE 23502.
-// Drops NOT NULL on PK column (fdb-relational restriction). Keeps NOT
-// NULL on non-PK column 'name' where the YAML has it.
+// notNullViolationScenario mirrors testdata/not_null_violation.yaml, with
+// its scalar NOT NULL dropped (fdb-relational allows NOT NULL only on ARRAY
+// columns), so its two error_code arms are skipped cross-engine and their
+// SQLSTATEs are the yamsql twin's Go-only claim. For a NOT NULL ARRAY, UPDATE
+// to NULL is Java's run-time NULL_ASSIGNMENT, XX000, not 23502
+// (ws_j_update_column_conformance_test.go measures it).
 func notNullViolationScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "not_null_violation",
@@ -4172,7 +4160,8 @@ func notNullViolationScenario() *yamsql.Scenario {
 		Tests: []yamsql.Test{
 			// INSERT NULL into NOT NULL column raises 23502.
 			{Query: "INSERT INTO t VALUES (2, NULL)", ErrorCode: "23502"},
-			// UPDATE to NULL on NOT NULL column raises 23502.
+			// The yamsql twin's UPDATE-to-NULL arm; skipped cross-engine (its
+			// column is nullable here).
 			{Query: "UPDATE t SET name = NULL WHERE id = 1", ErrorCode: "23502"},
 			// Baseline: the valid row is still intact.
 			{Query: "SELECT id, name FROM t", Rows: [][]any{{1, "alice"}}},
@@ -4452,12 +4441,10 @@ func insertValuesExprScenario() *yamsql.Scenario {
 	}
 }
 
-// dmlReturningProbesScenario mirrors testdata/dml_returning_probes.yaml.
-// Probes for DML RETURNING clause (Postgres / Java fdb-relational
-// syntax). DELETE/UPDATE RETURNING silently succeed (RETURNING
-// ignored); INSERT RETURNING is a parse error (42601). DML tests
-// are auto-skipped; error_code tests included as-is. Drops NOT NULL
-// on PK.
+// dmlReturningProbesScenario follows testdata/dml_returning_probes.yaml:
+// DELETE/UPDATE RETURNING answer the modified rows; INSERT RETURNING is a
+// parse error (42601). The setup stands in for the file's earlier steps,
+// since each test runs against the setup alone.
 func dmlReturningProbesScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "dml_returning_probes",
@@ -4468,16 +4455,14 @@ func dmlReturningProbesScenario() *yamsql.Scenario {
 			"UPDATE t SET n = 99 WHERE id = 2",
 		},
 		Tests: []yamsql.Test{
-			// DML tests (auto-skipped until harness extension).
-			// DELETE ... RETURNING — silently does the DELETE, no result set.
-			{Query: "DELETE FROM t WHERE id = 1 RETURNING id, n"},
-			// Verify row is gone.
+			// Each test runs against the setup alone: the deleted row is gone.
+			{Query: "DELETE FROM t WHERE id = 3 RETURNING id, n", Rows: [][]any{{3, 30}}},
 			{Query: "SELECT id FROM t WHERE id = 1", Rows: [][]any{}},
-			// UPDATE ... RETURNING — silently does the UPDATE, no result set.
-			{Query: "UPDATE t SET n = 99 WHERE id = 2 RETURNING id, n"},
-			// Verify update took effect.
+			// An UPDATE's list reads only "old" and "new".
+			{Query: "UPDATE t SET n = 99 WHERE id = 2 RETURNING id, n", ErrorCode: "42703"},
+			{Query: `UPDATE t SET n = 98 WHERE id = 2 RETURNING "old".n, "new".n`, Rows: [][]any{{99, 98}}},
 			{Query: "SELECT n FROM t WHERE id = 2", Rows: [][]any{{99}}},
-			// INSERT ... RETURNING — parser rejects → 42601.
+			// INSERT has no RETURNING in the grammar.
 			{Query: "INSERT INTO t VALUES (4, 40) RETURNING id, n", ErrorCode: "42601"},
 		},
 	}
@@ -4661,8 +4646,9 @@ func recursiveCteBaseScenario() *yamsql.Scenario {
 			{Query: "WITH RECURSIVE ancestors AS (SELECT id, parent FROM t WHERE id = 250 UNION ALL SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.parent) TRAVERSAL ORDER level_order SELECT id FROM ancestors ORDER BY id DESC", Rows: [][]any{
 				{250}, {50}, {10}, {1},
 			}},
-			// Counter via FROM-less SELECT literal → 0AF00.
-			{Query: "WITH RECURSIVE counter(n) AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM counter WHERE n < 5) SELECT n FROM counter ORDER BY n", ErrorCode: "0AF00"},
+			// Go's recursive sort extension over the singleton seed. Java's
+			// sorted-recursion refusal is pinned in FromlessSelectJavaProbe.
+			{Query: "WITH RECURSIVE counter(n) AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM counter WHERE n < 5) SELECT n FROM counter ORDER BY n", Rows: [][]any{{1}, {2}, {3}, {4}, {5}}},
 			// Cycle + UNION DISTINCT: reachable set terminates via seen-row filter.
 			{Query: "WITH RECURSIVE reach(n) AS (SELECT src FROM edge WHERE src = 1 UNION SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.n) SELECT n FROM reach ORDER BY n", Rows: [][]any{
 				{1}, {2}, {3},

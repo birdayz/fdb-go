@@ -52,9 +52,6 @@ func (a *expressionRuleAdapter) OnMatch(implCall *ImplementationRuleCall) {
 	for _, y := range call.Yielded() {
 		implCall.Yield(y)
 	}
-	// The implementation driver publishes this topology effect together
-	// with the staged final-member insertions, after full-batch validation.
-	implCall.indexYieldedInMemo = true
 }
 
 var _ ImplementationRule = (*expressionRuleAdapter)(nil)

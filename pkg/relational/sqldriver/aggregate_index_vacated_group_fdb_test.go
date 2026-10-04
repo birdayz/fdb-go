@@ -43,7 +43,7 @@ func TestFDB_AggregateIndexVacatedGroup(t *testing.T) {
 			"CREATE INDEX ai_min_g AS SELECT MIN(v) FROM ai GROUP BY g "+
 			"CREATE INDEX ai_max_g AS SELECT MAX(v) FROM ai GROUP BY g")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggvac/s WITH TEMPLATE aggvac")
-	dsn := fmt.Sprintf("fdbsql:///testdb_aggvac?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGVAC?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -258,7 +258,7 @@ func TestFDB_AggregateIndexVacatedGroup(t *testing.T) {
 				"CREATE TABLE e (pk BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
 				"CREATE INDEX e_cnt AS SELECT COUNT(*) FROM e")
 		mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggvac/su WITH TEMPLATE aggvacu")
-		udsn := fmt.Sprintf("fdbsql:///testdb_aggvac?cluster_file=%s&schema=su", clusterFilePath)
+		udsn := fmt.Sprintf("fdbsql:///TESTDB_AGGVAC?cluster_file=%s&schema=SU", clusterFilePath)
 		udb, err := sql.Open("fdbsql", udsn)
 		if err != nil {
 			t.Fatalf("sql.Open: %v", err)
@@ -381,7 +381,7 @@ func TestFDB_AggregateIndexVacatedGroup_SumAndCountColOracle(t *testing.T) {
 			"CREATE INDEX ai_cnt_g AS SELECT COUNT(*) FROM ai GROUP BY g "+
 			"CREATE INDEX ai_cntv_g AS SELECT COUNT(v) FROM ai GROUP BY g")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggvacpin/s WITH TEMPLATE aggvacpin")
-	dsn := fmt.Sprintf("fdbsql:///testdb_aggvacpin?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGVACPIN?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -558,7 +558,7 @@ func TestFDB_AggregateIndexVacatedGroup_UngroupedSumEmptyTable(t *testing.T) {
 			"CREATE TABLE so (pk BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
 			"CREATE INDEX si_sum AS SELECT SUM(v) FROM si")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggvacsum/s WITH TEMPLATE aggvacsum")
-	dsn := fmt.Sprintf("fdbsql:///testdb_aggvacsum?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGVACSUM?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -632,7 +632,7 @@ func TestFDB_AggregateIndexVacatedGroup_UngroupedSumEmptyTable(t *testing.T) {
 				"CREATE TABLE so (pk BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
 				"CREATE INDEX si_sum AS SELECT SUM(v) FROM si")
 		mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggvacsum/s2 WITH TEMPLATE aggvacsum2")
-		dsn2 := fmt.Sprintf("fdbsql:///testdb_aggvacsum?cluster_file=%s&schema=s2", clusterFilePath)
+		dsn2 := fmt.Sprintf("fdbsql:///TESTDB_AGGVACSUM?cluster_file=%s&schema=S2", clusterFilePath)
 		db2, err := sql.Open("fdbsql", dsn2)
 		if err != nil {
 			t.Fatalf("sql.Open: %v", err)
@@ -721,7 +721,7 @@ func TestFDB_AggregateIndexGroupExistence_FailsClosedWithoutCompanion(t *testing
 			"CREATE INDEX ai_cntv_g AS SELECT COUNT(v) FROM ai GROUP BY g "+
 			"CREATE INDEX ai_cnt_h AS SELECT COUNT(*) FROM ai GROUP BY h")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggnocomp/s WITH TEMPLATE aggnocomp")
-	dsn := fmt.Sprintf("fdbsql:///testdb_aggnocomp?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGNOCOMP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

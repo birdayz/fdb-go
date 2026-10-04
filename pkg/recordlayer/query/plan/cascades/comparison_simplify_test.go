@@ -156,7 +156,7 @@ func TestSimplify_StringPredicates_FoldEndToEnd(t *testing.T) {
 			name: "LIKE matches",
 			pred: predicates.NewComparisonPredicate(
 				&values.ConstantValue{Value: "hello", Typ: values.TypeString},
-				predicates.Comparison{Type: predicates.ComparisonLike, Operand: values.LiteralValue("hel%")},
+				predicates.Comparison{Type: predicates.ComparisonLike, Operand: values.NewPatternForLikeValue(values.LiteralValue("hel%"), values.LiteralValue(nil))},
 			),
 			want: predicates.TriTrue,
 		},
@@ -164,7 +164,7 @@ func TestSimplify_StringPredicates_FoldEndToEnd(t *testing.T) {
 			name: "LIKE doesn't match",
 			pred: predicates.NewComparisonPredicate(
 				&values.ConstantValue{Value: "foo", Typ: values.TypeString},
-				predicates.Comparison{Type: predicates.ComparisonLike, Operand: values.LiteralValue("bar")},
+				predicates.Comparison{Type: predicates.ComparisonLike, Operand: values.NewPatternForLikeValue(values.LiteralValue("bar"), values.LiteralValue(nil))},
 			),
 			want: predicates.TriFalse,
 		},
@@ -172,7 +172,7 @@ func TestSimplify_StringPredicates_FoldEndToEnd(t *testing.T) {
 			name: "LIKE+ESCAPE",
 			pred: predicates.NewComparisonPredicate(
 				&values.ConstantValue{Value: "a%b", Typ: values.TypeString},
-				predicates.Comparison{Type: predicates.ComparisonLike, Operand: values.LiteralValue(`a\%b`), Escape: '\\'},
+				predicates.Comparison{Type: predicates.ComparisonLike, Operand: values.NewPatternForLikeValue(values.LiteralValue(`a\%b`), values.LiteralValue(`\`))},
 			),
 			want: predicates.TriTrue,
 		},

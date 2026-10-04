@@ -64,7 +64,7 @@ tests:
   # THE REGRESSION THIS FILE EXISTS FOR. Both members of one struct root: before
   # RFC-229 §2.3 both slots were named `N` and both labels read N.
   - query: SELECT n.sk, n.co FROM t1 ORDER BY id
-    plan_contains: "Project([_current.N#2.SK#0, _current.N#2.CO#1], Scan(T1))"
+    plan_contains: "Map(Scan(T1), {SK: _current.N#2.SK#0, CO: _current.N#2.CO#1})"
     columns: [SK, CO]
     rows:
       - [10, 21]
@@ -74,7 +74,7 @@ tests:
   # catches a fix that only engages when two nested columns are present — the
   # name was wrong for `SELECT n.sk` alone too.
   - query: SELECT n.sk FROM t1 ORDER BY id
-    plan_contains: "Project([_current.N#2.SK#0], Scan(T1))"
+    plan_contains: "Map(Scan(T1), {SK: _current.N#2.SK#0})"
     columns: [SK]
     rows:
       - [10]
@@ -85,7 +85,7 @@ tests:
   # so this is the only entry point, and a test written the obvious way would
   # have pinned nothing.)
   - query: SELECT n.sk, n.co FROM t1, t2 ORDER BY id
-    plan_contains: "Project([_current.N#2.SK#0, _current.N#2.CO#1],"
+    plan_contains: "{SK: _current.N#2.SK#0, CO: _current.N#2.CO#1})"
     columns: [SK, CO]
     rows:
       - [10, 21]
@@ -96,7 +96,7 @@ tests:
   # that actually declares `n`, and the flat column from the OTHER leg must keep
   # its own bare name and its own value.
   - query: SELECT n.sk, v FROM t1 JOIN t2 ON t2.v > 0 ORDER BY id
-    plan_contains: "Project([_current.N#2.SK#0, _current.V#4],"
+    plan_contains: "{SK: _current.N#2.SK#0, V: _current.V#4})"
     columns: [SK, V]
     rows:
       - [10, 7]
@@ -127,7 +127,7 @@ tests:
   # EVERY reference through the path renderer would still satisfy every case
   # above and would change this one.
   - query: SELECT id, n.co FROM t1 ORDER BY id
-    plan_contains: "Project([_current.ID#0, _current.N#2.CO#1], Scan(T1))"
+    plan_contains: "Map(Scan(T1), {ID: _current.ID#0, CO: _current.N#2.CO#1})"
     columns: [ID, CO]
     rows:
       - [1, 21]

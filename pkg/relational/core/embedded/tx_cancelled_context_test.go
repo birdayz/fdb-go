@@ -50,7 +50,7 @@ func newSimConnection(t *testing.T, seed uint64) *EmbeddedConnection {
 	}
 	factory := ddl.NewRecordLayerMetadataOperationsFactoryWithKeyspace(cat, ks)
 
-	c := New("/simdb", fdbDB, cat, factory, ks)
+	c := New("/SIMDB", fdbDB, cat, factory, ks)
 	ctx := context.Background()
 	for _, stmt := range []string{
 		"CREATE DATABASE /simdb",
@@ -61,7 +61,7 @@ func newSimConnection(t *testing.T, seed uint64) *EmbeddedConnection {
 			t.Fatalf("%s: %v", stmt, err)
 		}
 	}
-	c.SetDefaultSchema("s")
+	c.SetDefaultSchema("S")
 	return c
 }
 

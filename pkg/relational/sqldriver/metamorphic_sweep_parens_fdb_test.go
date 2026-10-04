@@ -63,7 +63,7 @@ func TestFDB_MetamorphicParenthesization(t *testing.T) {
 		"CREATE INDEX t_a ON t (a) CREATE INDEX t_ab ON t (a, b) CREATE INDEX t_s ON t (s)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_mhparen/si WITH TEMPLATE mhparen_idx")
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_mhparen?cluster_file=%s&schema=si", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_MHPAREN?cluster_file=%s&schema=SI", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)

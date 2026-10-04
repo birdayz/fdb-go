@@ -1,6 +1,6 @@
 package sqldriver_test
 
-// Probes string param escaping in substituteParams (the `'`→`''` path, sibling of
+// Probes string parameters carrying quotes (bound, never spliced into SQL; sibling of
 // the []byte render path). Embedded single quotes, injection-looking text,
 // backslashes, newlines, and unicode must round-trip EXACTLY (no SQL injection,
 // no corruption) and match via a string param in WHERE.
@@ -25,7 +25,7 @@ func TestFDB_StringParamEscapingProbe(t *testing.T) {
 			"CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_s ON t (s)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_stresc/s WITH TEMPLATE stresc")
-	dsn := fmt.Sprintf("fdbsql:///testdb_stresc?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_STRESC?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

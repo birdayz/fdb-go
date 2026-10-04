@@ -41,7 +41,7 @@ func TestFDB_NegativeZeroCompositeIndexSargProbe(t *testing.T) {
 		"CREATE TABLE t (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_vw ON t (v, w)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nzcsarg/s WITH TEMPLATE nzcsarg")
-	dsn := fmt.Sprintf("fdbsql:///testdb_nzcsarg?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_NZCSARG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

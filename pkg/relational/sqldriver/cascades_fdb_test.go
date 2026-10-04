@@ -34,7 +34,7 @@ func setupCascadesTestDB(t *testing.T) (*sql.DB, *sql.DB) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	naiveDSN := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	naiveDSN := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
 	naiveDB, err := sql.Open("fdbsql", naiveDSN)
 	if err != nil {
 		t.Fatalf("sql.Open naive: %v", err)
@@ -51,7 +51,7 @@ func setupCascadesTestDB(t *testing.T) (*sql.DB, *sql.DB) {
 		t.Fatalf("INSERT 3: %v", err)
 	}
 
-	cascadesDSN := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	cascadesDSN := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
 	cascadesDB, err := sql.Open("fdbsql", cascadesDSN)
 	if err != nil {
 		t.Fatalf("sql.Open cascades: %v", err)
@@ -196,7 +196,7 @@ func TestFDB_CascadesIndexScan(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=shop", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=SHOP", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -381,7 +381,7 @@ func TestFDB_CascadesJoin(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -440,7 +440,7 @@ func TestFDB_CascadesAggregateWithGroupBy(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -508,7 +508,7 @@ func TestFDB_CascadesDistinctWithFilter(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -604,7 +604,7 @@ func TestFDB_CascadesOrderByWithIndex(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=shop", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=SHOP", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -1010,7 +1010,7 @@ func TestFDB_CascadesCTEJoin(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -1123,7 +1123,7 @@ func TestFDB_CascadesExplicitJoinOn(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -1301,7 +1301,7 @@ func TestFDB_CascadesThreeWayJoin(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -1486,7 +1486,7 @@ func TestFDB_CascadesJoinOrderByNoIndex(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -1548,7 +1548,7 @@ func TestFDB_CascadesRecursiveCTE(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -1647,7 +1647,7 @@ func TestFDB_CascadesRecursiveCTEPostOrder(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -1721,7 +1721,7 @@ func TestFDB_CascadesScalarSubqueryInProjection(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -1777,7 +1777,7 @@ func TestFDB_CascadesScalarSubqueryInWhere(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -1912,7 +1912,7 @@ func TestFDB_CascadesMinMaxNonNumericEmptyRejected(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -1991,7 +1991,7 @@ func TestFDB_CascadesSumIntOverflow(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -2071,8 +2071,8 @@ func TestFDB_CascadesSortPKTiebreaker(t *testing.T) {
 	tmpl := fmt.Sprintf("sorttie_tmpl_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE rp (id BIGINT, region STRING, plan STRING, PRIMARY KEY (id)) "+
-			"CREATE INDEX idx_region_plan ON rp (region, plan)", tmpl)); err != nil {
+			"CREATE TABLE rp (id BIGINT, region STRING, plan_name STRING, PRIMARY KEY (id)) "+
+			"CREATE INDEX idx_region_plan ON rp (region, plan_name)", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -2080,7 +2080,7 @@ func TestFDB_CascadesSortPKTiebreaker(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -2100,7 +2100,7 @@ func TestFDB_CascadesSortPKTiebreaker(t *testing.T) {
 
 	// DESC sort: tied plan='pro' should have id=3 before id=1 (PK DESC tiebreaker).
 	rows, err := db.QueryContext(ctx,
-		"SELECT id, region, plan FROM rp WHERE region = 'us' ORDER BY plan DESC")
+		"SELECT id, region, plan_name FROM rp WHERE region = 'us' ORDER BY plan_name DESC")
 	if err != nil {
 		t.Fatalf("ORDER BY plan DESC: %v", err)
 	}
@@ -2142,7 +2142,7 @@ func TestFDB_CascadesSortPKTiebreaker(t *testing.T) {
 	// ASC sort: tied plan='free' has only id=2, tied plan='pro' should
 	// have id=1 before id=3 (PK ASC tiebreaker).
 	rows2, err := db.QueryContext(ctx,
-		"SELECT id, region, plan FROM rp WHERE region = 'us' ORDER BY plan ASC")
+		"SELECT id, region, plan_name FROM rp WHERE region = 'us' ORDER BY plan_name ASC")
 	if err != nil {
 		t.Fatalf("ORDER BY plan ASC: %v", err)
 	}
@@ -2217,7 +2217,7 @@ func TestFDB_CascadesSortEliminationViaIndex(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=shop", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=SHOP", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -2419,7 +2419,7 @@ func TestFDB_CascadesStreamingAggFromIndex(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=shop", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=SHOP", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -2596,7 +2596,7 @@ func TestFDB_PlanCacheCorrectness(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -2815,7 +2815,7 @@ func TestFDB_CascadesFlatMapCorrelatedJoin(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -3002,7 +3002,7 @@ func TestFDB_JoinAggregateNull(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -3159,7 +3159,7 @@ func TestFDB_NestedNotExists(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -3264,7 +3264,7 @@ func TestFDB_ExistsWithJoinInside(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -3331,7 +3331,7 @@ func TestFDB_NotExistsWithOR(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -3392,7 +3392,7 @@ func TestFDB_NotExistsNonPKWithWhere(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -3461,7 +3461,7 @@ func TestFDB_NotExistsWithAdditionalPredicate(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -3526,7 +3526,7 @@ func TestFDB_NestedAggregateRejection(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -3597,7 +3597,7 @@ func TestFDB_InListMultiValue(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s/shop WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=shop", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=SHOP", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

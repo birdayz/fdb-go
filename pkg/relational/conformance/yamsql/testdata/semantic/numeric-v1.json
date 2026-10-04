@@ -2,11 +2,6 @@
   "version": 1,
   "catalog": [
     "ABS",
-    "BITAND",
-    "BITMAP_BIT_POSITION",
-    "BITMAP_BUCKET_OFFSET",
-    "BITOR",
-    "BITXOR",
     "CEIL",
     "CEILING",
     "CHARACTER_LENGTH",

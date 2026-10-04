@@ -228,7 +228,7 @@ func TestForMatchCompensation_AChildsResultCompensationIsUnreachable(t *testing.
 			"builds the shape this test is about")
 	}
 	scan := mustCompensationScan(t)
-	appliedChild, ok := child.ApplyFinal(scan, nil)
+	appliedChild, ok := child.ApplyFinal(compensationTestMemoizer(), scan, nil)
 	if !ok || appliedChild == scan {
 		t.Fatalf("the child's own ApplyFinal must rewrite the expression (ok=%v, changed=%v); "+
 			"if it cannot, the parent applying nothing says nothing about reachability",
@@ -237,7 +237,7 @@ func TestForMatchCompensation_AChildsResultCompensationIsUnreachable(t *testing.
 
 	// The fact. The parent owes nothing of its own, and the child's result
 	// compensation is out of reach from here.
-	appliedParent, ok := parent.ApplyAllNeeded(scan, nil)
+	appliedParent, ok := parent.ApplyAllNeeded(compensationTestMemoizer(), scan, nil)
 	if !ok {
 		t.Fatal("applying a parent that needs nothing must succeed")
 	}

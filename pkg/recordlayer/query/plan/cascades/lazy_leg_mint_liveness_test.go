@@ -62,9 +62,8 @@ func buildTwoLegExistentialSelect(t testing.TB) ([]expressions.RelationalExpress
 	qB := expressions.NamedForEachQuantifier(legB, newLeg("SHADOW", bType))
 	qE := expressions.NamedExistentialQuantifier(existAlias, newLeg("INNER", eType))
 
-	// E.OUTER_ID = L.ID — an inner↔outer correlation predicate, the only kind
-	// existsInnerCorrelation lifts, and the one whose outer half must be
-	// rebased onto the merged row.
+	// This programmatic inner↔outer predicate retains a source inside E;
+	// its outer half must be rebased onto the merged row.
 	//
 	// The OUTER half is built BAKED — a single accessor at the column's ordinal
 	// in the leg's own row layout — because that is the shape production

@@ -467,7 +467,7 @@ var _ = Describe("VersionIndex", func() {
 			_, err := builder.Build()
 			var mdErr *MetaDataError
 			Expect(errors.As(err, &mdErr)).To(BeTrue())
-			Expect(mdErr.Message).To(ContainSubstring("does not support unique"))
+			Expect(mdErr.Message).To(Equal("index type does not allow unique indexes"))
 		})
 
 		It("multiple records get separate version index entries", func() {
@@ -1113,7 +1113,7 @@ var _ = Describe("VersionIndex", func() {
 			_, err := builder.Build()
 			var mdErr *MetaDataError
 			Expect(errors.As(err, &mdErr)).To(BeTrue())
-			Expect(mdErr.Message).To(ContainSubstring("requires SetStoreRecordVersions"))
+			Expect(mdErr.Message).To(Equal("index type requires metadata store record version"))
 		})
 
 		It("VERSION index with grouping expression fails at Build", func() {
@@ -1126,9 +1126,9 @@ var _ = Describe("VersionIndex", func() {
 			groupedExpr := Ungrouped(VersionKey())
 			builder.AddIndex("Order", NewVersionIndex("Order$version_grouped", groupedExpr))
 			_, err := builder.Build()
-			var mdErr *MetaDataError
-			Expect(errors.As(err, &mdErr)).To(BeTrue())
-			Expect(mdErr.Message).To(ContainSubstring("does not support grouping"))
+			var keyErr *KeyExpressionError
+			Expect(errors.As(err, &keyErr)).To(BeTrue(), "%T: %v", err, err)
+			Expect(keyErr.Message).To(Equal("grouping not possible in index type"))
 		})
 
 		It("VERSION index with no version column fails at Build", func() {
@@ -1140,9 +1140,9 @@ var _ = Describe("VersionIndex", func() {
 			// Use Field("order_id") as root — no VersionKeyExpression
 			builder.AddIndex("Order", NewVersionIndex("Order$no_version", Field("order_id")))
 			_, err := builder.Build()
-			var mdErr *MetaDataError
-			Expect(errors.As(err, &mdErr)).To(BeTrue())
-			Expect(mdErr.Message).To(ContainSubstring("exactly 1 version entry"))
+			var keyErr *KeyExpressionError
+			Expect(errors.As(err, &keyErr)).To(BeTrue(), "%T: %v", err, err)
+			Expect(keyErr.Message).To(Equal("there must be exactly 1 version entry in index"))
 		})
 
 		It("VERSION index with composite expression including version passes validation", func() {

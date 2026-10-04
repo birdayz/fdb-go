@@ -44,8 +44,8 @@ func (r *AndConstantSimplifyRule) Matcher() matching.BindingMatcher { return r.m
 func (r *AndConstantSimplifyRule) OnMatch(call *RuleCall) {
 	and := call.Bindings.Get(r.matcher).(*predicates.AndPredicate)
 	// Collect non-TRUE children; short-circuit on FALSE.
-	kept := make([]predicates.QueryPredicate, 0, len(and.SubPredicates))
-	for _, sp := range and.SubPredicates {
+	var kept []predicates.QueryPredicate
+	for i, sp := range and.SubPredicates {
 		if cp, ok := sp.(*predicates.ConstantPredicate); ok {
 			if cp.Value == predicates.TriFalse {
 				// Whole AND collapses to FALSE regardless of siblings.
@@ -53,16 +53,22 @@ func (r *AndConstantSimplifyRule) OnMatch(call *RuleCall) {
 				return
 			}
 			if cp.Value == predicates.TriTrue {
-				// TRUE is AND-identity; drop.
+				// Copy only when an identity is actually removed.
+				if kept == nil {
+					kept = make([]predicates.QueryPredicate, i, len(and.SubPredicates)-1)
+					copy(kept, and.SubPredicates[:i])
+				}
 				continue
 			}
 			// UNKNOWN: keep as-is — the AND rule fires again on a
 			// rewrite that canonicalises UNKNOWN before the AND.
 		}
-		kept = append(kept, sp)
+		if kept != nil {
+			kept = append(kept, sp)
+		}
 	}
 	// Only yield when we actually changed something.
-	if len(kept) == len(and.SubPredicates) {
+	if kept == nil {
 		return
 	}
 	switch len(kept) {
@@ -92,21 +98,26 @@ func (r *OrConstantSimplifyRule) Matcher() matching.BindingMatcher { return r.ma
 
 func (r *OrConstantSimplifyRule) OnMatch(call *RuleCall) {
 	or := call.Bindings.Get(r.matcher).(*predicates.OrPredicate)
-	kept := make([]predicates.QueryPredicate, 0, len(or.SubPredicates))
-	for _, sp := range or.SubPredicates {
+	var kept []predicates.QueryPredicate
+	for i, sp := range or.SubPredicates {
 		if cp, ok := sp.(*predicates.ConstantPredicate); ok {
 			if cp.Value == predicates.TriTrue {
 				call.Yield(predicates.NewConstantPredicate(predicates.TriTrue))
 				return
 			}
 			if cp.Value == predicates.TriFalse {
-				// FALSE is OR-identity; drop.
+				if kept == nil {
+					kept = make([]predicates.QueryPredicate, i, len(or.SubPredicates)-1)
+					copy(kept, or.SubPredicates[:i])
+				}
 				continue
 			}
 		}
-		kept = append(kept, sp)
+		if kept != nil {
+			kept = append(kept, sp)
+		}
 	}
-	if len(kept) == len(or.SubPredicates) {
+	if kept == nil {
 		return
 	}
 	switch len(kept) {
@@ -143,7 +154,7 @@ func (r *AndFlattenRule) OnMatch(call *RuleCall) {
 	// Check for any child that is itself an AndPredicate.
 	hasNested := false
 	for _, sp := range and.SubPredicates {
-		if _, ok := sp.(*predicates.AndPredicate); ok {
+		if _, ok := sp.(*predicates.AndPredicate); ok && !predicates.IsAtomic(sp) {
 			hasNested = true
 			break
 		}
@@ -153,7 +164,7 @@ func (r *AndFlattenRule) OnMatch(call *RuleCall) {
 	}
 	flat := make([]predicates.QueryPredicate, 0, len(and.SubPredicates))
 	for _, sp := range and.SubPredicates {
-		if inner, ok := sp.(*predicates.AndPredicate); ok {
+		if inner, ok := sp.(*predicates.AndPredicate); ok && !predicates.IsAtomic(inner) {
 			flat = append(flat, inner.SubPredicates...)
 		} else {
 			flat = append(flat, sp)
@@ -180,7 +191,7 @@ func (r *OrFlattenRule) OnMatch(call *RuleCall) {
 	or := call.Bindings.Get(r.matcher).(*predicates.OrPredicate)
 	hasNested := false
 	for _, sp := range or.SubPredicates {
-		if _, ok := sp.(*predicates.OrPredicate); ok {
+		if _, ok := sp.(*predicates.OrPredicate); ok && !predicates.IsAtomic(sp) {
 			hasNested = true
 			break
 		}
@@ -190,7 +201,7 @@ func (r *OrFlattenRule) OnMatch(call *RuleCall) {
 	}
 	flat := make([]predicates.QueryPredicate, 0, len(or.SubPredicates))
 	for _, sp := range or.SubPredicates {
-		if inner, ok := sp.(*predicates.OrPredicate); ok {
+		if inner, ok := sp.(*predicates.OrPredicate); ok && !predicates.IsAtomic(inner) {
 			flat = append(flat, inner.SubPredicates...)
 		} else {
 			flat = append(flat, sp)
@@ -480,14 +491,9 @@ func (r *NotComparisonRewriteRule) OnMatch(call *RuleCall) {
 	if !ok {
 		return
 	}
-	// Preserve Escape across the negation. Today no Negate()-supporting
-	// type carries a non-zero Escape (only ComparisonLike does, and
-	// Negate declines on it), so this is defensive: if a future
-	// ComparisonType grows both Negate-support and Escape-meaning, the
-	// rewrite stays correct without an explicit fix.
 	call.Yield(&predicates.ComparisonPredicate{
 		Operand:    cp.Operand,
-		Comparison: predicates.Comparison{Type: negated, Operand: cp.Comparison.Operand, Escape: cp.Comparison.Escape},
+		Comparison: predicates.Comparison{Type: negated, Operand: cp.Comparison.Operand},
 	})
 }
 
@@ -521,32 +527,9 @@ func (r *AndAbsorbOrRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *AndAbsorbOrRule) OnMatch(call *RuleCall) {
 	and := call.Bindings.Get(r.matcher).(*predicates.AndPredicate)
-	kept := make([]predicates.QueryPredicate, 0, len(and.SubPredicates))
-	changed := false
-	for _, sp := range and.SubPredicates {
-		or, ok := sp.(*predicates.OrPredicate)
-		if !ok {
-			kept = append(kept, sp)
-			continue
-		}
-		// Drop the OR if any of its operands matches a sibling.
-		if anyMatchesAnother(or.SubPredicates, and.SubPredicates, sp) {
-			changed = true
-			continue
-		}
-		kept = append(kept, sp)
-	}
-	if !changed {
-		return
-	}
-	switch len(kept) {
-	case 0:
-		// Shouldn't happen — the matching OR still leaves its sibling.
-		call.Yield(predicates.NewConstantPredicate(predicates.TriTrue))
-	case 1:
-		call.Yield(kept[0])
-	default:
-		call.Yield(&predicates.AndPredicate{SubPredicates: kept})
+	kept := absorbMinorTerms(and.SubPredicates, normalFormCNF)
+	if len(kept) < len(and.SubPredicates) {
+		call.Yield(buildAnd(kept))
 	}
 }
 
@@ -567,47 +550,37 @@ func (r *OrAbsorbAndRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *OrAbsorbAndRule) OnMatch(call *RuleCall) {
 	or := call.Bindings.Get(r.matcher).(*predicates.OrPredicate)
-	kept := make([]predicates.QueryPredicate, 0, len(or.SubPredicates))
-	changed := false
-	for _, sp := range or.SubPredicates {
-		and, ok := sp.(*predicates.AndPredicate)
-		if !ok {
-			kept = append(kept, sp)
-			continue
-		}
-		if anyMatchesAnother(and.SubPredicates, or.SubPredicates, sp) {
-			changed = true
-			continue
-		}
-		kept = append(kept, sp)
-	}
-	if !changed {
-		return
-	}
-	switch len(kept) {
-	case 0:
-		call.Yield(predicates.NewConstantPredicate(predicates.TriFalse))
-	case 1:
-		call.Yield(kept[0])
-	default:
-		call.Yield(&predicates.OrPredicate{SubPredicates: kept})
+	kept := absorbMinorTerms(or.SubPredicates, normalFormDNF)
+	if len(kept) < len(or.SubPredicates) {
+		call.Yield(buildOr(kept))
 	}
 }
 
-// anyMatchesAnother reports whether any element of `candidates`
-// structurally equals any element of `siblings` other than `self`.
-// Used by the absorption rules to decide whether a child is made
-// redundant by a sibling.
-func anyMatchesAnother(candidates, siblings []predicates.QueryPredicate, self predicates.QueryPredicate) bool {
-	for _, c := range candidates {
-		for _, s := range siblings {
-			if s == self {
-				continue
-			}
-			if predicates.PredicateEquals(c, s) {
-				return true
-			}
+// Java rebuilds surviving minor sets only when absorption removes a major term.
+// Rebuilding intentionally drops minor atomicity, permitting later normalization.
+func absorbMinorTerms(terms []predicates.QueryPredicate, mode normalFormMode) []predicates.QueryPredicate {
+	var clauseBuffer [16][]predicates.QueryPredicate
+	clauses := clauseBuffer[:]
+	if len(terms) > len(clauseBuffer) {
+		clauses = make([][]predicates.QueryPredicate, len(terms))
+	} else {
+		clauses = clauses[:len(terms)]
+	}
+	for i, term := range terms {
+		if mode.isMinor(term) {
+			clauses[i] = dedupPredicateSlice(term.Children())
+		} else {
+			clauses[i] = terms[i : i+1]
 		}
 	}
-	return false
+	var survivorBuffer [16]int
+	survivors := absorptionSurvivors(clauses, survivorBuffer[:0])
+	if len(survivors) == len(terms) {
+		return terms
+	}
+	kept := make([]predicates.QueryPredicate, 0, len(survivors))
+	for _, i := range survivors {
+		kept = append(kept, mode.minorWithChildren(clauses[i]))
+	}
+	return kept
 }

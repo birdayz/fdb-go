@@ -24,13 +24,13 @@ func TestFDB_DoublePrecisionProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dpp CREATE TABLE t (id BIGINT, d DOUBLE, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dpp/s WITH TEMPLATE dpp")
-	dsn := fmt.Sprintf("fdbsql:///testdb_dpp?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_DPP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, d) VALUES (1, 0.1), (2, 1.5), (3, 1e308)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, d) VALUES (1, 0.1), (2, 1.5), (3, 1.0e308)")
 
 	dval := func(expr string, id int) float64 {
 		var v float64

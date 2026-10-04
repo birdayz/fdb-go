@@ -56,14 +56,19 @@ func TestEvaluateExpressionCount_WithFilter(t *testing.T) {
 
 func TestEvaluateExpressionCount_DeepTree(t *testing.T) {
 	t.Parallel()
-	// scan -> filter -> projection -> sort = 4 nodes
+	// scan -> filter -> select -> sort = 4 nodes
 	scan := mustFullUnorderedScanExpression(t, []string{"T"}, propertyTestFlowedType())
 	ref1 := expressions.InitialOf(scan)
 	inner1 := expressions.ForEachQuantifier(ref1)
 	filter := mustLogicalFilterExpression(t, nil, inner1)
 	ref2 := expressions.InitialOf(filter)
 	inner2 := expressions.ForEachQuantifier(ref2)
-	proj := mustLogicalProjectionExpression(t, []values.Value{propertyField(t, "x", values.NullableLong)}, inner2)
+	proj, err := expressions.NewSelectExpression(
+		values.NewRecordConstructorValue(values.RecordConstructorField{Name: "X", Value: propertyField(t, "x", values.NullableLong)}),
+		[]expressions.Quantifier{inner2}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ref3 := expressions.InitialOf(proj)
 	inner3 := expressions.ForEachQuantifier(ref3)
 	sort := mustLogicalSortExpression(t, []expressions.SortKey{{Value: propertyField(t, "x", values.NullableLong)}}, inner3)

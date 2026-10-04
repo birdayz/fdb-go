@@ -23,18 +23,18 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**377 scenarios · 3104 query/assertion cases** across 18 feature areas — 2716 supported, 114 unsupported-feature pins, 274 error-path pins.
+**377 scenarios · 3119 query/assertion cases** across 18 feature areas — 2727 supported, 102 unsupported-feature pins, 290 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
 | Aggregates & GROUP BY | 55 | 349 | 314 | 19 | 16 |
 | Joins | 66 | 313 | 296 | 2 | 15 |
-| Subqueries (EXISTS / IN / scalar) | 46 | 321 | 260 | 38 | 23 |
-| CTEs | 15 | 199 | 159 | 5 | 35 |
+| Subqueries (EXISTS / IN / scalar) | 46 | 322 | 266 | 33 | 23 |
+| CTEs | 15 | 202 | 161 | 4 | 37 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 12 | 68 | 59 | 5 | 4 |
-| DML (INSERT / UPDATE / DELETE) | 26 | 238 | 202 | 3 | 33 |
+| DML (INSERT / UPDATE / DELETE) | 26 | 241 | 201 | 3 | 37 |
 | Ordering & pagination | 18 | 138 | 133 | 0 | 5 |
-| Scalar functions & expressions | 34 | 381 | 330 | 21 | 30 |
+| Scalar functions & expressions | 34 | 386 | 328 | 21 | 37 |
 | Predicates & WHERE | 12 | 104 | 102 | 0 | 2 |
 | Column resolution & aliasing | 7 | 59 | 30 | 0 | 29 |
 | NULL handling | 5 | 27 | 24 | 3 | 0 |
@@ -44,8 +44,8 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Keys & primary keys | 5 | 133 | 128 | 0 | 5 |
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
-| Other | 40 | 337 | 295 | 11 | 31 |
-| **Total** | **377** | **3104** | **2716** | **114** | **274** |
+| Other | 40 | 340 | 301 | 5 | 34 |
+| **Total** | **377** | **3119** | **2727** | **102** | **290** |
 
 ## Aggregates & GROUP BY
 
@@ -198,27 +198,27 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `exists_multi_table_inner` | 2 | 2 | 0 | 0 | EXISTS with multi-table inner query |
 | `exists_subquery_java` | 8 | 8 | 0 | 0 | EXISTS and NOT EXISTS subquery patterns. |
 | `exists_with_aggregate` | 12 | 8 | 4 | 0 | EXISTS subquery with aggregate |
-| `exists_with_or` | 3 | 1 | 2 | 0 | EXISTS subqueries combined with OR predicates. |
+| `exists_with_or` | 3 | 3 | 0 | 0 | EXISTS subqueries combined with OR predicates. |
 | `having_not_exists` | 1 | 1 | 0 | 0 | HAVING with NOT EXISTS subquery |
 | `in_list_advanced` | 10 | 8 | 0 | 2 | Advanced IN-list scenarios from Java's in-predicate.yamsql: |
 | `in_list_comprehensive` | 8 | 8 | 0 | 0 | Comprehensive IN-list tests |
 | `in_list_index_plan` | 6 | 6 | 0 | 0 | IN-list queries must probe the index per value |
 | `in_list_null` | 4 | 1 | 0 | 3 | Java rejects NULL anywhere in the IN list with verbatim "NULL values |
-| `in_list_pushdown` | 45 | 38 | 3 | 4 | IN-list pushdown: `WHERE pk_col IN (v1, v2, ...)` on a single-column |
+| `in_list_pushdown` | 46 | 39 | 3 | 4 | IN-list pushdown: `WHERE pk_col IN (v1, v2, ...)` on a single-column |
 | `in_list_with_order_by` | 3 | 3 | 0 | 0 | IN-list combined with ORDER BY |
 | `in_subquery_decomposition` | 11 | 2 | 9 | 0 | `col IN (SELECT ...)` is REJECTED (0AF00) in every shape — this file |
 | `insert_select_exists` | 5 | 5 | 0 | 0 | INSERT SELECT with EXISTS filter |
 | `limit_exists` | 2 | 2 | 0 | 0 | LIMIT with EXISTS subquery |
 | `nested_derived_table` | 18 | 15 | 0 | 3 | Nested derived tables (Java's null-operator-tests.yamsql): |
-| `normalized_exists_predicates` | 3 | 2 | 1 | 0 | OR predicates combined with EXISTS subqueries that benefit from CNF |
-| `not_exists_or` | 2 | 1 | 1 | 0 | NOT EXISTS combined with OR predicates |
+| `normalized_exists_predicates` | 3 | 3 | 0 | 0 | OR predicates combined with EXISTS subqueries that benefit from CNF |
+| `not_exists_or` | 2 | 2 | 0 | 0 | NOT EXISTS combined with OR predicates |
 | `not_exists_predicates` | 5 | 5 | 0 | 0 | NOT EXISTS with various predicate shapes |
 | `projected_exists_nested_sort_key` | 6 | 6 | 0 | 0 | The projected-EXISTS fold crossed with a NESTED `ORDER BY` key (RFC-218). |
 | `projected_exists_over_a_derived_source` | 6 | 6 | 0 | 0 | A correlated EXISTS over a DERIVED SOURCE — a CTE or a derived table — joined |
 | `scalar_subquery` | 8 | 6 | 0 | 2 | Scalar subquery: `(SELECT ...)` used as a value-returning expression. |
 | `scalar_subquery_advanced` | 10 | 9 | 1 | 0 | Edge-case probes for the scalar-subquery feature added in nightshift-39. |
 | `scalar_subquery_dml` | 8 | 6 | 2 | 0 | Scalar subquery on the right-hand side of UPDATE SET, in DELETE WHERE |
-| `scalar_subquery_java` | 5 | 4 | 1 | 0 | Scalar subqueries in SELECT and WHERE. |
+| `scalar_subquery_java` | 5 | 5 | 0 | 0 | Scalar subqueries in SELECT and WHERE. |
 | `scalar_subquery_projection` | 3 | 3 | 0 | 0 | Scalar subquery in SELECT projection |
 | `scalar_subquery_typed_gates` | 9 | 3 | 1 | 5 | — |
 | `scalar_subquery_types` | 9 | 8 | 1 | 0 | Type-coverage probes for scalar subqueries: the cached value flows |
@@ -243,7 +243,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `cte_recursive_tree` | 3 | 3 | 0 | 0 | Recursive CTE tree traversal |
 | `cte_star_column_aliases` | 3 | 2 | 0 | 1 | a CTE column-alias list over a STAR body. |
 | `cte_with_insert` | 2 | 1 | 0 | 1 | CTE used in INSERT ... |
-| `recursive_cte` | 26 | 18 | 5 | 3 | WITH RECURSIVE CTEs — semi-naive (level-order) evaluation. |
+| `recursive_cte` | 29 | 20 | 4 | 5 | WITH RECURSIVE CTEs — semi-naive (level-order) evaluation. |
 | `recursive_cte_advanced` | 2 | 2 | 0 | 0 | Advanced recursive CTE edge cases — regression guards for column alias |
 | `recursive_cte_aggregate` | 3 | 3 | 0 | 0 | Recursive CTE combined with aggregation — exercises the interaction |
 | `recursive_cte_tree_java` | 4 | 4 | 0 | 0 | Recursive CTE for tree traversal. |
@@ -275,7 +275,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `delete_complex_where` | 7 | 7 | 0 | 0 | DELETE with complex WHERE predicates |
 | `dml_conditional` | 6 | 6 | 0 | 0 | Conditional DML operations |
 | `dml_error_codes` | 9 | 5 | 0 | 4 | Error codes for DML operations aligned with Java behavior. |
-| `dml_returning_probes` | 5 | 4 | 0 | 1 | Probes for DML RETURNING clause (Postgres / Java fdb-relational |
+| `dml_returning_probes` | 6 | 4 | 0 | 2 | DML RETURNING (Java's QueryVisitor.visitUpdateStatement / |
 | `dml_with_null_safe` | 7 | 7 | 0 | 0 | DML (UPDATE / DELETE) with IS NOT DISTINCT FROM in WHERE — the |
 | `insert_arity` | 7 | 4 | 0 | 3 | INSERT column count mismatches (Java's inserts-updates-deletes.yamsql): |
 | `insert_default_values` | 4 | 4 | 0 | 0 | INSERT with NULL for optional columns |
@@ -286,9 +286,9 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `insert_select_complex` | 2 | 2 | 0 | 0 | INSERT ... |
 | `insert_select_java` | 10 | 10 | 0 | 0 | INSERT...SELECT patterns. |
 | `insert_select_transform` | 2 | 2 | 0 | 0 | INSERT ... |
-| `insert_values_expr` | 27 | 22 | 1 | 4 | INSERT INTO t VALUES with expressions (arithmetic, CASE, CAST, etc). |
+| `insert_values_expr` | 28 | 21 | 1 | 6 | INSERT INTO t VALUES with expressions (arithmetic, CASE, CAST, etc). |
 | `multi_insert_delete` | 6 | 6 | 0 | 0 | Multiple INSERT/DELETE/UPDATE operations |
-| `unquoted_dml_against_a_quoted_table` | 28 | 10 | 2 | 16 | AN UNQUOTED DML TARGET MUST NOT REACH A TABLE THAT ONLY QUOTES CAN NAME. |
+| `unquoted_dml_against_a_quoted_table` | 29 | 10 | 2 | 17 | AN UNQUOTED DML TARGET MUST NOT REACH A TABLE THAT ONLY QUOTES CAN NAME. |
 | `update_case_when` | 10 | 9 | 0 | 1 | UPDATE SET col = CASE ... |
 | `update_comprehensive` | 8 | 8 | 0 | 0 | Comprehensive UPDATE patterns |
 | `update_computed_multi` | 5 | 5 | 0 | 0 | Verifies multi-column UPDATE with self-referencing SET expressions. |
@@ -317,14 +317,14 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `order_by_nulls` | 4 | 4 | 0 | 0 | Java-conformant NULL ordering (swingshift-35, 3b87574d): |
 | `order_by_nulls_java` | 8 | 8 | 0 | 0 | ORDER BY with NULL values and multiple |
 | `ordering_same_leaf_cross_quantifier` | 4 | 4 | 0 | 0 | The ordering property's key identity must carry the CORRELATION, not just the |
-| `ordering_through_a_projection` | 11 | 11 | 0 | 0 | A requested ordering crosses a projection by the projection's result value, |
+| `ordering_through_a_projection` | 11 | 11 | 0 | 0 | A requested ordering crosses a derived table or CTE by the projection's |
 | `rfc202_version_index_ordered` | 1 | 1 | 0 | 0 | — |
 
 ## Scalar functions & expressions
 
 | Scenario | Cases | Supported | Unsupported | Error-path | What it pins |
 |---|--:|--:|--:|--:|---|
-| `arithmetic` | 22 | 15 | 0 | 7 | swingshift-35 commit ad249d55: applyMathOp and applyArithmeticOp |
+| `arithmetic` | 25 | 14 | 0 | 11 | swingshift-35 commit ad249d55: applyMathOp and applyArithmeticOp |
 | `bitwise` | 7 | 5 | 2 | 0 | Bitwise operators: &, \|, ^, <<, >>. |
 | `case_insensitive_keywords` | 9 | 8 | 0 | 1 | SQL standard says keywords are case-insensitive. |
 | `case_when` | 11 | 11 | 0 | 0 | CASE WHEN ... |
@@ -335,9 +335,9 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `coalesce_nullif` | 3 | 2 | 1 | 0 | COALESCE(v1, v2, ...) returns the first non-NULL argument, or NULL |
 | `datetime_functions` | 27 | 19 | 8 | 0 | Two groups: |
 | `function_in_predicate` | 5 | 5 | 0 | 0 | Functions used in WHERE predicates |
-| `greatest_least` | 11 | 10 | 0 | 1 | swingshift-35 commit 97e0c731: GREATEST / LEAST propagate NULL |
+| `greatest_least` | 11 | 8 | 0 | 3 | swingshift-35 commit 97e0c731: GREATEST / LEAST propagate NULL |
 | `in_expression_types` | 6 | 6 | 0 | 0 | IN predicate with various expression types |
-| `like` | 16 | 16 | 0 | 0 | LIKE pattern matching with SQL wildcards (% and _). |
+| `like` | 18 | 18 | 0 | 0 | LIKE pattern matching with SQL wildcards (% and _). |
 | `like_patterns` | 5 | 5 | 0 | 0 | LIKE pattern matching |
 | `like_patterns_java` | 10 | 10 | 0 | 0 | LIKE/NOT LIKE pattern matching. |
 | `like_prefix_pushdown` | 41 | 41 | 0 | 0 | No LIKE prefix pushdown exists — every LIKE query here is a full scan. |
@@ -349,7 +349,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `numeric_overflow_detection` | 5 | 3 | 0 | 2 | Numeric overflow detection |
 | `overflow` | 10 | 4 | 0 | 6 | nightshift-36: integer overflow is now checked. |
 | `overflow_mixed` | 3 | 2 | 0 | 1 | Follow-up probe for `feedback_next_shift_arithmetic_overflow` (which |
-| `scalar_functions_java` | 17 | 15 | 2 | 0 | Scalar function patterns from Java's |
+| `scalar_functions_java` | 17 | 14 | 2 | 1 | Scalar function patterns from Java's |
 | `select_constant_expression` | 3 | 3 | 0 | 0 | Constant expressions in SELECT |
 | `select_expression_projection` | 4 | 4 | 0 | 0 | Computed columns in SELECT |
 | `select_expressions_java` | 9 | 7 | 0 | 2 | SELECT with various expression types. |
@@ -485,7 +485,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `derived_star_visibility` | 13 | 10 | 0 | 3 | A derived table or CTE whose body is a projection-less star over a join |
 | `empty_result_edge_cases_java` | 11 | 11 | 0 | 0 | Empty result handling in various |
 | `empty_table_operations` | 9 | 9 | 0 | 0 | Operations on empty tables |
-| `float_column` | 10 | 10 | 0 | 0 | FLOAT (32-bit) column type. |
+| `float_column` | 13 | 10 | 0 | 3 | FLOAT (32-bit) column type. |
 | `in_over_primary_scan_sarg` | 17 | 17 | 0 | 0 | An IN over a PRIMARY-KEY prefix, ordered by that key: `WHERE pk IN (...) |
 | `in_plan_winner_stability` | 10 | 10 | 0 | 0 | Exercises the cost model's IN-plan rung (criterion #6) at the SQL level, on |
 | `information_schema` | 5 | 4 | 0 | 1 | INFORMATION_SCHEMA.* system-table queries. |
@@ -508,7 +508,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `quoted_identifier_pins` | 4 | 4 | 0 | 0 | quoted-identifier shapes that must keep |
 | `repeated_output_names` | 14 | 14 | 0 | 0 | A repeated output name is reported as the user spelled it, once per column, |
 | `scalar_signed_zero` | 5 | 5 | 0 | 0 | Reciprocal strings distinguish -0 from +0 without relying on numeric equality. |
-| `select_no_from` | 6 | 0 | 6 | 0 | FROM-less SELECT — fdb-relational 4.11.1.0's QueryVisitor.visitSimpleTable |
+| `select_no_from` | 6 | 6 | 0 | 0 | FROM-less SELECT uses Java 4.14.2.0's one-row source. |
 | `select_star_single_table` | 4 | 4 | 0 | 0 | SELECT * from single table |
 | `set_op_fetch_pushdown` | 2 | 2 | 0 | 0 | set operations push below the fetch |
 | `star_body_columns_are_named` | 7 | 7 | 0 | 0 | A star-projected CTE or derived-table body carries its source columns' NAMES, |

@@ -4,6 +4,10 @@ import (
 	"errors"
 	"strconv"
 
+	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoregistry"
+	"google.golang.org/protobuf/types/descriptorpb"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -107,6 +111,42 @@ func buildWithTextIndex(idx *Index) error {
 }
 
 var _ = Describe("TEXT index meta-data validation", func() {
+	It("validates the text body descriptor rather than only the tokenizer", func() {
+		for _, tc := range []struct {
+			expr    KeyExpression
+			message string
+		}{
+			{Field("price"), "non-string type"},
+			{FanOut("tags"), "repeated field"},
+			{EmptyKey(), "does not have text field"},
+			{GroupBy(Field("price"), Field("order_id")), "non-string type"},
+		} {
+			b := baseBuilder()
+			idx := NewIndex("body", tc.expr)
+			idx.Type = IndexTypeText
+			b.AddIndex("Order", idx)
+			_, err := b.Build()
+			Expect(err).To(MatchError(ContainSubstring(tc.message)))
+		}
+		for _, expr := range []KeyExpression{
+			Nest("flower", Field("type")),
+			GroupBy(Nest("flower", Field("type")), Field("order_id")),
+		} {
+			b := baseBuilder()
+			idx := NewIndex("body", expr)
+			idx.Type = IndexTypeText
+			b.AddIndex("Order", idx)
+			_, err := b.Build()
+			Expect(err).NotTo(HaveOccurred())
+		}
+		b := baseBuilder()
+		idx := NewIndex("universal_body", Field("price"))
+		idx.Type = IndexTypeText
+		b.AddUniversalIndex(idx)
+		_, err := b.Build()
+		Expect(err).To(MatchError(ContainSubstring("non-string type")))
+	})
+
 	It("accepts the default tokenizer with no explicit version", func() {
 		// The control. If this ever fails, the arms below stop proving anything:
 		// a validator that rejects everything would pass all the negative specs.
@@ -130,9 +170,11 @@ var _ = Describe("TEXT index meta-data validation", func() {
 		}))
 		Expect(err).To(HaveOccurred(), "an index naming a tokenizer that is not in the "+
 			"registry is unusable; accepting it here defers the failure to the first record save")
-		Expect(err.Error()).To(ContainSubstring("Customer$text"),
-			"the error must name the offending index — Java's MetaDataException carries "+
-				"the index name via addLogInfo")
+		// Java's MetaDataException text (TextTokenizerRegistryImpl.getTokenizer); its
+		// log info (the tokenizer name) is not part of Java's message.
+		var mde *MetaDataError
+		Expect(errors.As(err, &mde)).To(BeTrue(), "%T: %v", err, err)
+		Expect(mde.Message).To(Equal("unrecognized text tokenizer"))
 	})
 
 	It("rejects a tokenizer version above the tokenizer's maximum", func() {
@@ -147,7 +189,7 @@ var _ = Describe("TEXT index meta-data validation", func() {
 		var mde *MetaDataError
 		Expect(errors.As(err, &mde)).To(BeTrue(),
 			"Java throws MetaDataException here, so Go must surface *MetaDataError")
-		Expect(err.Error()).To(ContainSubstring("Customer$text"))
+		Expect(mde.Message).To(Equal("unknown tokenizer version"))
 	})
 
 	It("rejects a negative tokenizer version", func() {
@@ -161,9 +203,52 @@ var _ = Describe("TEXT index meta-data validation", func() {
 		err := buildWithTextIndex(textIndexWithOptions(map[string]string{
 			IndexOptionTextTokenizerVersion: "not-a-number",
 		}))
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("could not be parsed as int"),
-			"matches Java's MetaDataException message in "+
-				"TextIndexMaintainer.getIndexTokenizerVersion")
+		var mde *MetaDataError
+		Expect(errors.As(err, &mde)).To(BeTrue(), "%T: %v", err, err)
+		Expect(mde.Message).To(Equal("tokenizer version could not be parsed as int"),
+			"Java's MetaDataException text in TextIndexMaintainer.getIndexTokenizerVersion")
 	})
+})
+
+var _ = Describe("Multi-type TEXT body validation", func() {
+	for _, shape := range []string{"valid", "numeric", "repeated", "missing"} {
+		It("validates every covered descriptor: "+shape, func() {
+			md := unionEvolutionSchema(GinkgoT(), 1, false, false, false)
+			file := protodesc.ToFileDescriptorProto(md.GetRecordType("Alpha").Descriptor.ParentFile())
+			file.MessageType[1].Field[1].Type = descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum()
+			expression := KeyExpression(Field("payload"))
+			message := ""
+			switch shape {
+			case "numeric":
+				file.MessageType[1].Field[1].Type = descriptorpb.FieldDescriptorProto_TYPE_INT64.Enum()
+				message = "non-string type"
+			case "repeated":
+				for _, record := range file.MessageType[:2] {
+					record.Field[1].Label = descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum()
+				}
+				expression = FanOut("payload")
+				message = "repeated field"
+			case "missing":
+				file.MessageType[1].Field = file.MessageType[1].Field[:1]
+				message = "does not have field: payload"
+			}
+			fd, err := protodesc.NewFile(file, protoregistry.GlobalFiles)
+			Expect(err).NotTo(HaveOccurred())
+			b := NewRecordMetaDataBuilder().SetRecordsWithUnionName(fd, "Envelope")
+			for _, name := range []string{"Alpha", "Beta"} {
+				b.GetRecordType(name).SetPrimaryKey(Field("id"))
+			}
+			index := NewIndex("text", expression)
+			index.Type = IndexTypeText
+			b.AddMultiTypeIndex([]string{"Alpha", "Beta"}, index)
+			result, err := b.Build()
+			if shape == "valid" {
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.GetIndexesForRecordType("Alpha")).To(ContainElement(index))
+				Expect(result.GetIndexesForRecordType("Beta")).To(ContainElement(index))
+			} else {
+				Expect(err).To(MatchError(ContainSubstring(message)))
+			}
+		})
+	}
 })

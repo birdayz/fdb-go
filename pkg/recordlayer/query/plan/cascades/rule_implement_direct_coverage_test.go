@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -77,6 +78,7 @@ func TestImplementLimitRule_DirectFire(t *testing.T) {
 	if physical.GetInner() != plans.RecordQueryPlan(scan) {
 		t.Fatalf("physical LIMIT inner = %T, want the seeded scan", physical.GetInner())
 	}
+	assertProducerPhysicalQuantifiers(t, physical)
 }
 
 func TestImplementInMemorySortRule_DirectFire(t *testing.T) {
@@ -119,4 +121,157 @@ func TestImplementInMemorySortRule_DirectFire(t *testing.T) {
 	if !ok || len(pushed) != 1 || len(pushed[0].GetParts()) != 1 {
 		t.Fatalf("requested ordering was not pushed to the inner scan: %#v", pushed)
 	}
+	assertProducerPhysicalQuantifiers(t, physical)
+}
+
+func assertProducerPhysicalQuantifiers(t testing.TB, expression expressions.RelationalExpression) {
+	t.Helper()
+	physical, ok := expression.(physicalPlanExpression)
+	if !ok {
+		t.Fatalf("producer yielded %T, want physical plan", expression)
+	}
+	plans.Walk(physical.GetRecordQueryPlan(), func(plan plans.RecordQueryPlan) bool {
+		for i, q := range plan.GetQuantifiers() {
+			if q.Kind() != expressions.QuantifierPhysical {
+				t.Errorf("%T edge %d kind = %v, want Physical", plan, i, q.Kind())
+			}
+		}
+		return true
+	})
+}
+
+func TestPhysicalProducerQuantifiers_Implementations(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"insert", "type_filter", "temp_insert", "recursive_level", "recursive_dfs"} {
+		t.Run(name, func(t *testing.T) {
+			scan := directCoverageScan()
+			q := expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("producer_input"), expressions.FinalOf(scan))
+			var logical expressions.RelationalExpression
+			var rule ExpressionRule
+			switch name {
+			case "insert":
+				logical = mustDirectCoverageConstruct(expressions.NewInsertExpression(q, "T", directCoverageRowType()))
+				rule = NewImplementInsertRule()
+			case "type_filter":
+				logical = mustDirectCoverageConstruct(expressions.NewLogicalTypeFilterExpression([]string{"T"}, q))
+				rule = NewImplementTypeFilterRule()
+			case "temp_insert":
+				logical = mustDirectCoverageConstruct(expressions.NewTempTableInsertExpression(q, values.NamedCorrelationIdentifier("producer_temp"), false))
+				rule = NewImplementTempTableInsertRule()
+			case "recursive_level", "recursive_dfs":
+				other := expressions.ForEachQuantifier(expressions.FinalOf(directCoverageScan()))
+				logical = mustDirectCoverageConstruct(expressions.NewRecursiveUnionExpressionDistinct(q, other,
+					values.NamedCorrelationIdentifier("producer_scan"), values.NamedCorrelationIdentifier("producer_insert"), expressions.TraversalAny))
+				if name == "recursive_level" {
+					rule = NewImplementRecursiveLevelUnionRule()
+				} else {
+					rule = NewImplementRecursiveDfsJoinRule()
+				}
+			}
+			yielded := fireDirectExpressionRule(t, rule, expressions.InitialOf(logical))
+			if len(yielded) != 1 {
+				t.Fatalf("yielded %d plans, want 1", len(yielded))
+			}
+			assertProducerPhysicalQuantifiers(t, yielded[0])
+			if logical.GetQuantifiers()[0].Kind() != expressions.QuantifierForEach {
+				t.Fatal("implementation changed the logical input quantifier")
+			}
+		})
+	}
+}
+
+func TestPhysicalProducerQuantifiers_FetchRewrites(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"distinct", "map", "in_join", "union_all", "union_residual"} {
+		t.Run(name, func(t *testing.T) {
+			scan := directCoverageScan()
+			translate := func(v values.Value, _, _ values.CorrelationIdentifier) (values.Value, bool) {
+				_, literal := v.(*values.ConstantValue)
+				return v, literal
+			}
+			fetch := mustDirectCoverageConstruct(plans.NewRecordQueryFetchFromPartialRecordPlan(scan, translate, directCoverageRowType(), plans.FetchIndexRecordsPrimaryKey))
+			var input expressions.RelationalExpression
+			var rule ImplementationRule
+			switch name {
+			case "distinct":
+				input = mustDirectCoverageConstruct(plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(fetch))
+				rule = NewPushDistinctThroughFetchRule()
+			case "map":
+				input = mustDirectCoverageConstruct(plans.NewRecordQueryMapPlan(fetch, &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}))
+				rule = NewPushMapThroughFetchRule()
+			case "in_join":
+				input = mustDirectCoverageConstruct(plans.NewRecordQueryInJoinPlanWithBindingAlias(fetch, values.NamedCorrelationIdentifier("producer_in"), true, true)).WithInValues([]any{int64(1), int64(2)})
+				rule = NewPushInJoinThroughFetchRule()
+			case "union_all", "union_residual":
+				other := mustDirectCoverageConstruct(plans.NewRecordQueryFetchFromPartialRecordPlan(directCoverageScan(), nil, directCoverageRowType(), plans.FetchIndexRecordsPrimaryKey))
+				inners := []plans.RecordQueryPlan{fetch, other}
+				if name == "union_residual" {
+					inners = append(inners, directCoverageScan())
+				}
+				input = mustDirectCoverageConstruct(plans.NewRecordQueryUnionPlan(inners))
+				rule = NewPushUnionThroughFetchRule()
+			}
+			yielded := fireDirectImplementationRule(t, rule, expressions.InitialOf(input))
+			if len(yielded) == 0 {
+				t.Fatal("rewrite yielded no plans")
+			}
+			for _, result := range yielded {
+				assertProducerPhysicalQuantifiers(t, result)
+			}
+		})
+	}
+}
+
+func TestPhysicalProducerQuantifiers_DistinctModes(t *testing.T) {
+	t.Parallel()
+	for _, streaming := range []bool{false, true} {
+		name := "hash"
+		if streaming {
+			name = "streaming"
+		}
+		t.Run(name, func(t *testing.T) {
+			scan, field := pushDistinctScanAndField()
+			var inner plans.RecordQueryPlan = scan
+			if streaming {
+				inner = mustDirectCoverageConstruct(plans.NewRecordQueryInMemorySortPlan(scan, []plans.SortKey{{ValueExpr: field}}))
+			}
+			call := &ImplementationRuleCall{}
+			expr, err := newPhysicalDistinctFor(call, inner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			distinct := expr.(*plans.RecordQueryDistinctPlan)
+			if distinct.IsStreaming() != streaming || distinct.GetInner() != inner {
+				t.Fatal("distinct changed its mode or selected input")
+			}
+			assertProducerPhysicalQuantifiers(t, distinct)
+		})
+	}
+}
+
+func TestPhysicalProducerQuantifiers_MemoEquality(t *testing.T) {
+	t.Parallel()
+	scan := directCoverageScan()
+	logical := mustDirectCoverageConstruct(expressions.NewLogicalLimitExpression(7, 3, expressions.ForEachQuantifier(expressions.FinalOf(scan))))
+	yielded := fireDirectExpressionRule(t, NewImplementLimitRule(), expressions.InitialOf(logical))
+	if len(yielded) != 1 {
+		t.Fatalf("yielded %d plans, want 1", len(yielded))
+	}
+	q := yielded[0].GetQuantifiers()[0]
+	expected := mustDirectCoverageConstruct(plans.NewRecordQueryLimitPlanFromQuantifier(expressions.NamedPhysicalQuantifier(q.GetAlias(), q.GetRangesOver()), 7, 3, nil))
+	if !expressions.MemoEqual(yielded[0], expected) {
+		t.Fatal("rule-produced limit is not memo-equal to the same plan with a physical edge")
+	}
+}
+
+func TestPhysicalProducerQuantifiers_DistinctBelowFilter(t *testing.T) {
+	t.Parallel()
+	scan := directCoverageScan()
+	filter := mustDirectCoverageConstruct(plans.NewRecordQueryPredicatesFilterPlan(scan, []predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)}))
+	distinct := mustDirectCoverageConstruct(plans.NewRecordQueryDistinctPlan(filter))
+	yielded := fireDirectImplementationRule(t, NewPushDistinctBelowFilterRule(), expressions.InitialOf(distinct))
+	if len(yielded) != 1 {
+		t.Fatalf("yielded %d plans, want 1", len(yielded))
+	}
+	assertProducerPhysicalQuantifiers(t, yielded[0])
 }

@@ -52,14 +52,18 @@ import (
 // it would otherwise re-open silently, since the arm is unreachable today only
 // because the decline is loud.
 //
-// SCOPE OF THE NEGATIVE READING, so it can be seen to go stale: at the 40
+// SCOPE OF THE NEGATIVE READING, so it can be seen to go stale: at the 45
 // queries below, over the two schemas they use, and against the whole
-// `./pkg/relational/...` corpus (20435 `=== RUN` subtests, measured with
-// unconditional panics wired at all three name arms AND at the two seed
-// conditions themselves — zero hits). This is a FAILURE TO CONSTRUCT plus a
+// `./pkg/relational/...` corpus (29 test packages, measured with unconditional
+// panics wired at all three name arms — zero hits). The reading had gone stale
+// once already: a record-element unnest seed states no window, so an EXISTS
+// beside it reached both `!seedWindowed` arms (TestFDB_UnnestElementMemberInExists
+// and siblings). Such a seed's table refs now bake over its own row, and the
+// re-measurement above was taken after that change and after EXISTS over a
+// chained spine started planning. This is a FAILURE TO CONSTRUCT plus a
 // mechanism, NOT a proof of unreachability: no enumeration shows that every
-// non-nil return of the unnest lowering carries a windowed ordinal seed. The
-// arms therefore stay.
+// non-nil return of the unnest lowering carries an ordinal seed. The arms
+// therefore stay.
 //
 // MUTATION TEETH, per arm, stated because an arm nothing can redden is not
 // coverage. Three of the four arms redden under a SINGLE source mutation, and
@@ -71,7 +75,7 @@ import (
 //   - `plans`      — making admitExistentialGather always decline reddens 14 of
 //     its entries; `declines` stays green.
 //   - `chainPlans` — making chainedUnnestOrdinalGate always decline reddens all
-//     12; nothing else moves.
+//     13; nothing else moves.
 //   - `chainDeclines` — NO single source mutation was found that reddens it.
 //     Its levers are walled off by at least FIVE independent loud declines
 //     stacked in series (the hoisted box-leg-straddle reject, the impure-bottom
@@ -176,6 +180,9 @@ func TestUnnestLegMintNameArmSearchSpace(t *testing.T) {
 		{"chain_agg", `SELECT COUNT(*) FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE T4."ID" > "Y"`},
 		{"chain_group", `SELECT "Y", COUNT(*) FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE T4."ID" > "Y" GROUP BY "Y"`},
 		{"chain_fork", `SELECT "Y", "Z" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y", "X"."SUBSTRUCT" AS "Z" WHERE T4."ID" > "Y"`},
+		// An EXISTS over the spine takes the chained seed too; its correlation
+		// bakes over the merged row (link elements, then table legs).
+		{"chain_under_exists", `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE EXISTS (SELECT 1 FROM T4 AS "E" WHERE "E"."ID" = T4."ID")`},
 	}
 	for _, tc := range chainPlans {
 		if _, err := embedded.PlanRecordQueryWithMetadata(tc.sql, cmd, nil); err != nil {
@@ -186,7 +193,6 @@ func TestUnnestLegMintNameArmSearchSpace(t *testing.T) {
 		{"chain_leftbox_bottom", `SELECT "Y" FROM T4 AS "A" LEFT JOIN T4 AS "B" ON "A"."ID" = "B"."ID", "A"."SARR" AS "X", "X"."SUB" AS "Y" WHERE "A"."ID" > "Y"`},
 		{"chain_fullbox_bottom", `SELECT "Y" FROM T4 AS "A" FULL OUTER JOIN T4 AS "B" ON "A"."ID" = "B"."ID", "A"."SARR" AS "X", "X"."SUB" AS "Y" WHERE "A"."ID" > "Y"`},
 		{"chain_rightbox_bottom", `SELECT "Y" FROM T4 AS "A" RIGHT JOIN T4 AS "B" ON "A"."ID" = "B"."ID", "A"."SARR" AS "X", "X"."SUB" AS "Y" WHERE "A"."ID" > "Y"`},
-		{"chain_under_exists", `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE EXISTS (SELECT 1 FROM T4 AS "E" WHERE "E"."ID" = T4."ID")`},
 	}
 	for _, tc := range chainDeclines {
 		_, err := embedded.PlanRecordQueryWithMetadata(tc.sql, cmd, nil)

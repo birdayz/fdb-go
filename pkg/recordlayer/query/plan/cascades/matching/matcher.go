@@ -17,26 +17,49 @@ import (
 // operand" matches. A pointer key (or the matcher's own identity)
 // preserves that.
 type PlannerBindings struct {
-	// A slice-per-matcher is the minimal impl; a production cache
-	// would use a Multimap with stable iteration.
-	entries map[BindingMatcher][]any
+	// The common one-binding map needs no separately allocated map or slice.
+	single      bool
+	singleKey   BindingMatcher
+	singleValue [1]any
+	entries     map[BindingMatcher][]any
 }
 
-// NewBindings returns an empty PlannerBindings.
-func NewBindings() *PlannerBindings {
-	return &PlannerBindings{entries: map[BindingMatcher][]any{}}
-}
+var emptyBindings = &PlannerBindings{}
+
+// NewBindings returns Java's shared immutable empty bindings. Bind and MergedWith
+// build new bindings, so speculative matches never write to this singleton.
+func NewBindings() *PlannerBindings { return emptyBindings }
 
 // Bind appends in under matcher's identity. Returns a new Bindings
 // (immutable-style) so matchers don't mutate caller state
 // across speculative matches.
 func (b *PlannerBindings) Bind(matcher BindingMatcher, in any) *PlannerBindings {
-	out := &PlannerBindings{entries: make(map[BindingMatcher][]any, len(b.entries)+1)}
+	if b.size() == 0 {
+		return &PlannerBindings{single: true, singleKey: matcher, singleValue: [1]any{in}}
+	}
+	out := &PlannerBindings{entries: make(map[BindingMatcher][]any, b.size()+1)}
+	if b.single {
+		out.entries[b.singleKey] = b.singleValue[:]
+	}
 	for k, v := range b.entries {
 		out.entries[k] = v
 	}
-	out.entries[matcher] = append(append([]any{}, out.entries[matcher]...), in)
+	previous := out.entries[matcher]
+	vs := make([]any, len(previous)+1)
+	copy(vs, previous)
+	vs[len(previous)] = in
+	out.entries[matcher] = vs
 	return out
+}
+
+func (b *PlannerBindings) size() int {
+	if b == nil {
+		return 0
+	}
+	if b.single {
+		return 1
+	}
+	return len(b.entries)
 }
 
 // Get returns the single value bound to matcher, panicking if 0 or
@@ -45,15 +68,22 @@ func (b *PlannerBindings) Bind(matcher BindingMatcher, in any) *PlannerBindings 
 // feedback. Note: the return type is `any` — rule bodies must
 // downcast. That's the whole point of shape (a).
 func (b *PlannerBindings) Get(matcher BindingMatcher) any {
-	vs := b.entries[matcher]
+	vs := b.GetAll(matcher)
 	if len(vs) != 1 {
 		panic("expected exactly one binding for matcher")
 	}
 	return vs[0]
 }
 
-// GetAll returns all values bound to matcher (possibly empty).
+// GetAll returns all values bound to matcher (possibly empty). The returned
+// slice is borrowed and must not be modified.
 func (b *PlannerBindings) GetAll(matcher BindingMatcher) []any {
+	if b.single {
+		if b.singleKey == matcher {
+			return b.singleValue[:]
+		}
+		return nil
+	}
 	return b.entries[matcher]
 }
 
@@ -64,15 +94,21 @@ func (b *PlannerBindings) GetAll(matcher BindingMatcher) []any {
 //
 // Mirrors Java's `PlannerBindings.mergedWith`. b is unchanged.
 func (b *PlannerBindings) MergedWith(other *PlannerBindings) *PlannerBindings {
-	if other == nil || len(other.entries) == 0 {
+	if other.size() == 0 {
 		return b
 	}
-	if b == nil || len(b.entries) == 0 {
+	if b.size() == 0 {
 		return other
 	}
-	out := &PlannerBindings{entries: make(map[BindingMatcher][]any, len(b.entries)+len(other.entries))}
+	out := &PlannerBindings{entries: make(map[BindingMatcher][]any, b.size()+other.size())}
+	if b.single {
+		out.entries[b.singleKey] = append([]any(nil), b.singleValue[:]...)
+	}
 	for k, v := range b.entries {
 		out.entries[k] = append([]any{}, v...)
+	}
+	if other.single {
+		out.entries[other.singleKey] = append(out.entries[other.singleKey], other.singleValue[:]...)
 	}
 	for k, v := range other.entries {
 		out.entries[k] = append(out.entries[k], v...)
@@ -88,7 +124,7 @@ func (b *PlannerBindings) MergedWith(other *PlannerBindings) *PlannerBindings {
 //
 // Usage: `cv := Get[*ConstantValue](bindings, lhs)`.
 func Get[T any](b *PlannerBindings, matcher BindingMatcher) T {
-	vs := b.entries[matcher]
+	vs := b.GetAll(matcher)
 	if len(vs) != 1 {
 		panic("Get: matcher has 0 or multiple bindings; use GetAll for multi")
 	}
@@ -137,6 +173,22 @@ type BindingMatcher interface {
 type RootOperatorMatcher interface {
 	BindingMatcher
 	RootOperator() reflect.Type
+}
+
+// RootPredicateMatcher can reject an input using only immutable root fields.
+// It must not inspect child-reference members or mutable planner constraints:
+// scheduling consults it before the children are explored.
+type RootPredicateMatcher interface {
+	BindingMatcher
+	MatchesRoot(in any) bool
+}
+
+// InputPredicateMatcher tests immediate child-reference members. Unlike a
+// root predicate, its result is usable for scheduling only after child work
+// has settled and no earlier rule can change those inputs.
+type InputPredicateMatcher interface {
+	BindingMatcher
+	MatchesInputs(in any) bool
 }
 
 // --- AnyValue -------------------------------------------------------

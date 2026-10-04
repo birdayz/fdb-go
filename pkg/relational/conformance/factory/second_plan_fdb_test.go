@@ -52,30 +52,23 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// TestFDB_SecondPlanKeepsCorrelatedIndexProbe is the counterexample that
-// retired the second-plan oracle's index-free precondition.
+// TestFDB_SecondPlanIndexFreePreconditionStaysRetired pins why the second-plan
+// oracle does not demand an index-free MatchLeafRule-disabled plan.
 //
-// The oracle used to demand that the MatchLeafRule-disabled plan contain no
-// index scan, on the reasoning that MatchLeafRule is the sole seed of
-// PartialMatch objects — which it is (rule_match_leaf.go:76 is the only
-// unconditional NewPartialMatch call) — so disabling it starves the whole
-// match/data-access pipeline. The step that does not follow is that the match
-// pipeline is the only thing that builds an index scan. It is not:
-// ImplementNestedLoopJoinRule.tryExistsFlatMap reads GetMatchCandidates()
-// directly and constructs a RecordQueryIndexPlan from a single
-// ComparisonEquals range (rule_implement_nested_loop_join.go:4328), which is
-// exactly the `[=]`-bound probe below. It never touches a PartialMatch, so
-// MatchLeafRule cannot take it away.
+// MatchLeafRule is the sole seed of PartialMatch objects, so disabling it
+// starves the match/data-access pipeline, but that pipeline is not the only
+// builder of index scans: OrderedIndexScanRule reads the match candidates
+// directly and still plans a full-range ordered index scan, so the precondition
+// would report a correct engine as a broken planner option.
 //
-// The precondition would therefore have reported a CORRECT engine as a broken
-// planner option on every correlated-EXISTS query. This test exists so that
-// claim stops being prose: it plans the shape on a live engine, through the
-// same PinConn the oracle uses, and fails if the probe ever stops surviving.
+// The correlated EXISTS probe is no longer such a counterexample. The EXISTS
+// body keeps its WHERE below FirstOrDefault, so its `[=]` probe is the match
+// pipeline's and goes away with MatchLeafRule, while the two plans still
+// differ — which is all the oracle requires.
 //
-// If it goes RED, the reasoning behind dropping the precondition has changed
-// and the precondition is worth reconsidering — that is a real finding, not a
-// test to relax.
-func TestFDB_SecondPlanKeepsCorrelatedIndexProbe(t *testing.T) {
+// If the ordered scan stops surviving, the precondition is worth reconsidering
+// — that is a real finding, not a test to relax.
+func TestFDB_SecondPlanIndexFreePreconditionStaysRetired(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -128,42 +121,27 @@ func TestFDB_SecondPlanKeepsCorrelatedIndexProbe(t *testing.T) {
 	altPlan := explainVia(t, ctx, altConn, query)
 	t.Logf("baseline plan: %s", basePlan)
 	t.Logf("second  plan:  %s", altPlan)
-
-	// The counterexample itself: an equality-bound index scan survives.
-	if !strings.Contains(altPlan, "IndexScan") {
-		t.Fatalf("the MatchLeafRule-disabled plan has NO index scan:\n  %s\nThe oracle's retired index-free "+
-			"precondition would now hold for this shape, so the reasoning that retired it needs re-deriving "+
-			"before anyone relies on it again.", altPlan)
+	if !strings.Contains(basePlan, "FirstOrDefault(IndexScan(IDX_B, [=]))") {
+		t.Fatalf("the default plan does not probe the EXISTS body by its index:\n  %s", basePlan)
 	}
-	if !strings.Contains(altPlan, "IndexScan(IDX_B, [=])") {
-		t.Fatalf("the MatchLeafRule-disabled plan keeps an index scan but NOT the equality-bound correlated "+
-			"probe:\n  %s\nOnly tryExistsFlatMap can produce a `[=]` bound without a PartialMatch; the other "+
-			"ungated rules pass an empty comparison prefix and emit full-range scans.", altPlan)
+	if strings.Contains(altPlan, "IDX_B") || basePlan == altPlan {
+		t.Fatalf("with MatchLeafRule disabled the EXISTS probe should be gone and the plan different:\n"+
+			"  default = %s\n  second  = %s", basePlan, altPlan)
+	}
+
+	// The counterexample itself: an ordered index scan built without a
+	// PartialMatch survives.
+	const ordered = "SELECT id, a FROM t ORDER BY a"
+	if orderedPlan := explainVia(t, ctx, altConn, ordered); !strings.Contains(orderedPlan, "IndexScan(IDX_A, [*])") {
+		t.Fatalf("the MatchLeafRule-disabled plan for %q has no ordered index scan:\n  %s\nThe oracle's retired "+
+			"index-free precondition would now hold for this shape, so the reasoning that retired it needs "+
+			"re-deriving before anyone relies on it again.", ordered, orderedPlan)
 	}
 }
 
-// TestFDB_SecondPlanIsBlindToCorrelatedExists records a MEASURED hole in the
-// oracle, so nobody reads the corpus as covering a shape it does not.
-//
-// The probe leg is not the only part of a correlated-EXISTS plan that
-// MatchLeafRule cannot touch: the OUTER leg comes out as a plain filtered scan
-// in the baseline too, even with the filtered column indexed. So the two plans
-// are byte-identical, the oracle's plan-inequality precondition never holds,
-// and every correlated-EXISTS candidate is counted as a second-plan SKIP.
-//
-// That has a consequence the skip counter alone does not show. Metamorphic
-// blessing requires BOTH oracles, so an EXISTS candidate can never be blessed
-// without a Java leg — and the committed corpus contains, at the time of
-// writing, zero scenarios whose feature vector carries `exists=`. The
-// generator's "rich wrong-rows surface" for semi-joins, decorrelation and
-// correlation binding reaches the factory and is dropped at the last gate.
-//
-// This is pinned rather than fixed because the fix is a ruling about what
-// blessing MEANS (a third metamorphic oracle, or a perturbation the EXISTS plan
-// responds to), not a bug in this file. If it goes GREEN-to-RED — the two plans
-// start differing — the hole has closed and the blessing rule should be
-// revisited to let these candidates through.
-func TestFDB_SecondPlanIsBlindToCorrelatedExists(t *testing.T) {
+// Outer index matching gives the second-plan oracle a genuinely different
+// access path for correlated EXISTS; compare non-empty answers under both.
+func TestFDB_SecondPlanReachesCorrelatedExists(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -186,16 +164,27 @@ func TestFDB_SecondPlanIsBlindToCorrelatedExists(t *testing.T) {
 	}
 	defer altConn.Close() //nolint:errcheck
 
-	for _, q := range []string{
-		"SELECT id, a FROM t WHERE a = 5 AND NOT EXISTS (SELECT 1 FROM t AS r WHERE r.b = t.b)",
-		"SELECT id, a FROM t WHERE a = 5 AND EXISTS (SELECT 1 FROM t AS r WHERE r.b = t.b)",
-		"SELECT id, a FROM t WHERE a > 2 AND NOT EXISTS (SELECT 1 FROM t AS r WHERE r.b = t.b AND r.a > 1)",
+	if _, err := defaultConn.ExecContext(ctx, "INSERT INTO t VALUES (1,5,NULL),(2,5,10),(3,3,NULL),(4,1,10),(5,9,20)"); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		query string
+		want  [][]any
+	}{
+		{"SELECT id, a FROM t WHERE a = 5 AND NOT EXISTS (SELECT 1 FROM t AS r WHERE r.b = t.b)", [][]any{{int64(1), int64(5)}}},
+		{"SELECT id, a FROM t WHERE a = 5 AND EXISTS (SELECT 1 FROM t AS r WHERE r.b = t.b)", [][]any{{int64(2), int64(5)}}},
+		{"SELECT id, a FROM t WHERE a > 2 AND NOT EXISTS (SELECT 1 FROM t AS r WHERE r.b = t.b AND r.a > 1)", [][]any{{int64(1), int64(5)}, {int64(3), int64(3)}}},
 	} {
-		base, alt := explainVia(t, ctx, defaultConn, q), explainVia(t, ctx, altConn, q)
-		if base != alt {
-			t.Errorf("the two plans now DIFFER for %s\n  base: %s\n  alt:  %s\nThe second-plan oracle can now "+
-				"bite on correlated EXISTS, which is a strengthening: revisit the metamorphic blessing rule, "+
-				"which currently drops every one of these candidates.", q, base, alt)
+		base, alt := explainVia(t, ctx, defaultConn, tc.query), explainVia(t, ctx, altConn, tc.query)
+		if base == alt {
+			t.Fatalf("second-plan oracle cannot compare identical plans: %s", base)
+		}
+		baseRows, altRows := selectRows(t, ctx, defaultConn, tc.query), selectRows(t, ctx, altConn, tc.query)
+		if d := factory.RowsDiffForTest(false, tc.want, baseRows); d != "" {
+			t.Fatalf("baseline rows: %s", d)
+		}
+		if d := factory.RowsDiffForTest(false, tc.want, altRows); d != "" {
+			t.Fatalf("alternate rows: %s", d)
 		}
 	}
 }
@@ -262,7 +251,7 @@ func TestFDB_SecondPlanOracleComparesRowsUnderBothPlans(t *testing.T) {
 func openFactorySchema(t *testing.T, ctx context.Context, name, ddl string) *sql.DB {
 	t.Helper()
 	dbPath := "/" + name
-	setupDB, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", dbPath, clusterFilePath))
+	setupDB, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), clusterFilePath))
 	if err != nil {
 		t.Fatalf("open setup db: %v", err)
 	}
@@ -277,7 +266,7 @@ func openFactorySchema(t *testing.T, ctx context.Context, name, ddl string) *sql
 			t.Fatalf("setup %q: %v", stmt, err)
 		}
 	}
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, clusterFilePath, name))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", strings.ToUpper(dbPath), clusterFilePath, strings.ToUpper(name)))
 	if err != nil {
 		t.Fatalf("open schema db: %v", err)
 	}

@@ -154,22 +154,23 @@ var _ = Describe("Coverage Unit Tests", func() {
 	// long_arithmetic_function.go: uncovered error paths.
 	Describe("arithmetic edge cases", func() {
 		It("bitnot with zero args errors", func() {
-			fn := globalFunctionRegistry["bitnot"]
+			fn := globalFunctionRegistry["bitnot"].Evaluator
 			Expect(fn).NotTo(BeNil())
 			_, err := fn(nil, nil, [][]any{{}})
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("requires exactly 1 argument"))
 		})
 
-		It("bitnot with non-int64 errors", func() {
-			fn := globalFunctionRegistry["bitnot"]
+		It("bitnot with a non-Number argument is Java's InvalidResultException", func() {
+			fn := globalFunctionRegistry["bitnot"].Evaluator
 			_, err := fn(nil, nil, [][]any{{"not_an_int"}})
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("must be int64"))
+			var ire *KeyExpressionInvalidResultError
+			Expect(errors.As(err, &ire)).To(BeTrue(), "got %v", err)
+			Expect(ire.ExpectedType).To(Equal("java.lang.Number"))
 		})
 
 		It("bitmap_bit_position with zero divisor errors", func() {
-			fn := globalFunctionRegistry["bitmap_bit_position"]
+			fn := globalFunctionRegistry["bitmap_bit_position"].Evaluator
 			_, err := fn(nil, nil, [][]any{{int64(10), int64(0)}})
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("division by zero"))
@@ -179,21 +180,21 @@ var _ = Describe("Coverage Unit Tests", func() {
 			// floorDiv(MinInt64, -1) = MinInt64/-1 which overflows in multiply step.
 			// floorDiv(-MinInt64, -1) actually: floorDiv computes a/b = MinInt64/-1.
 			// In Go, MinInt64 / -1 = MinInt64 (wraps). Then multiply: MinInt64 * -1 overflows.
-			fn := globalFunctionRegistry["bitmap_bit_position"]
+			fn := globalFunctionRegistry["bitmap_bit_position"].Evaluator
 			_, err := fn(nil, nil, [][]any{{int64(math.MinInt64), int64(-1)}})
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("overflow"))
 		})
 
 		It("bitmap_bucket_offset with zero divisor errors", func() {
-			fn := globalFunctionRegistry["bitmap_bucket_offset"]
+			fn := globalFunctionRegistry["bitmap_bucket_offset"].Evaluator
 			_, err := fn(nil, nil, [][]any{{int64(10), int64(0)}})
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("division by zero"))
 		})
 
 		It("bitmap_bucket_offset with overflow errors", func() {
-			fn := globalFunctionRegistry["bitmap_bucket_offset"]
+			fn := globalFunctionRegistry["bitmap_bucket_offset"].Evaluator
 			_, err := fn(nil, nil, [][]any{{int64(math.MinInt64), int64(-1)}})
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("overflow"))

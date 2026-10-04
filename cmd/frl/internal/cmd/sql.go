@@ -38,11 +38,54 @@ import (
 	"fdb.dev/pkg/recordlayer"
 	relapi "fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/catalog"
+	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/relational/core/functions"
 
 	// Register the "fdbsql" driver via blank import.
 	_ "fdb.dev/pkg/relational/sqldriver"
 )
+
+// openSQLRunner opens the fdbsql connection pool for one `frl sql`
+// invocation and the runner over it, from the flags as the user spelled them.
+//
+// The database path and the schema are SQL identifiers, read as DDL reads
+// them: unquoted folds to upper case, a path whole (CREATE DATABASE /myapp
+// creates /MYAPP, CREATE SCHEMA /myapp/main creates MAIN). The driver takes
+// the DSN's names as given, and so do the catalog lookups behind the
+// meta-commands (`\d`), so both are fed the one folded pair; deriving them
+// separately is how `\d` came to look up a path the connection never used.
+func openSQLRunner(
+	ctx context.Context,
+	out, errOut io.Writer,
+	clusterFile, databaseURI, schema, outputFmt string,
+) (*sqlRunner, *sql.DB, error) {
+	databaseURI = functions.NormalizeIdentifier(databaseURI)
+	schema = functions.NormalizeIdentifier(schema)
+	dsn := buildFDBSQLDSN(clusterFile, databaseURI, schema)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open fdbsql %q: %w", dsn, err)
+	}
+	// Pick the style profile per-writer: real terminal → colors +
+	// box-drawing; pipe/redirect/test buffer → plain ASCII. Scripts
+	// consuming `frl sql -c … | jq` must never see ANSI escapes.
+	st := plainSQLStyles()
+	if isTerminalWriter(out) {
+		st = ttySQLStyles()
+	}
+	return &sqlRunner{
+		db:          db,
+		out:         out,
+		errOut:      errOut,
+		ctx:         ctx,
+		clusterFile: clusterFile,
+		database:    databaseURI,
+		schema:      schema,
+		st:          st,
+		format:      outputFmt,
+		timing:      true,
+	}, db, nil
+}
 
 // newSQLCmd is the top-level `sql` noun — opens an interactive REPL
 // against a relational cluster. Non-interactive modes (-c, -f) are
@@ -106,36 +149,12 @@ func newSQLCmd() *cobra.Command {
 				// name into "--Database".
 				return fmt.Errorf("missing required flag --database (e.g. --database /myapp)")
 			}
-			// The schema is an SQL identifier: unquoted folds to upper case
-			// (matching CREATE SCHEMA and ?schema= normalization), so the
-			// meta-command catalog lookups (`\d`) and the connection agree.
-			initSchema = functions.NormalizeIdentifier(initSchema)
-			dsn := buildFDBSQLDSN(cf, databaseURI, initSchema)
-			db, err := sql.Open("fdbsql", dsn)
+			runner, db, err := openSQLRunner(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(),
+				cf, databaseURI, initSchema, outputFmt)
 			if err != nil {
-				return fmt.Errorf("open fdbsql %q: %w", dsn, err)
+				return err
 			}
 			defer db.Close()
-
-			// Pick the style profile per-writer: real terminal → colors +
-			// box-drawing; pipe/redirect/test buffer → plain ASCII. Scripts
-			// consuming `frl sql -c … | jq` must never see ANSI escapes.
-			st := plainSQLStyles()
-			if isTerminalWriter(cmd.OutOrStdout()) {
-				st = ttySQLStyles()
-			}
-			runner := &sqlRunner{
-				db:          db,
-				out:         cmd.OutOrStdout(),
-				errOut:      cmd.ErrOrStderr(),
-				ctx:         cmd.Context(),
-				clusterFile: cf,
-				database:    databaseURI,
-				schema:      initSchema,
-				st:          st,
-				format:      outputFmt,
-				timing:      true,
-			}
 			defer runner.close()
 			switch {
 			case cmdline != "":
@@ -429,6 +448,29 @@ func (r *sqlRunner) ensureConn() error {
 	return nil
 }
 
+// switchSchema is `\c <name>`: the name is an SQL identifier, folded as
+// --schema is, and the switch is the CONNECTION's, so the statements that
+// follow run in the new schema and not only the meta-commands' lookups (which
+// read r.schema). A schema the database does not hold is refused by the
+// connection and leaves both on the old one.
+func (r *sqlRunner) switchSchema(name string) error {
+	name = functions.NormalizeIdentifier(name)
+	if err := r.ensureConn(); err != nil {
+		return err
+	}
+	if err := r.conn.Raw(func(dc any) error {
+		ec, ok := dc.(*embedded.EmbeddedConnection)
+		if !ok {
+			return fmt.Errorf("driver connection is %T, not *embedded.EmbeddedConnection", dc)
+		}
+		return ec.SetSchema(name)
+	}); err != nil {
+		return err
+	}
+	r.schema = name
+	return nil
+}
+
 // close releases the pinned connection. If the REPL is mid-tx, issue
 // a best-effort ROLLBACK first — psql does the same on EOF, and
 // leaking an open tx to a pool would pin the connection forever.
@@ -604,7 +646,10 @@ func (r *sqlRunner) runMeta(line string) (stop bool) {
 				"cannot switch schema inside a transaction — COMMIT or ROLLBACK first"))
 			return false
 		}
-		r.schema = fields[1]
+		if err := r.switchSchema(fields[1]); err != nil {
+			fmt.Fprintln(r.errOut, r.st.errS.Render("ERROR: ")+err.Error())
+			return false
+		}
 		fmt.Fprintln(r.out, r.st.muted.Render("schema → "+r.schema))
 	case `\i`:
 		if len(fields) < 2 {

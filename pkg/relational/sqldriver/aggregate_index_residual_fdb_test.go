@@ -152,3 +152,37 @@ func residualFilterIn(plan plans.RecordQueryPlan) bool {
 	walk(plan)
 	return found
 }
+
+func TestFDB_BitmapAggregateIndex(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	const table = `CREATE TABLE t (id BIGINT, category STRING, PRIMARY KEY(id)) `
+	const indexes = `CREATE INDEX bm AS SELECT bitmap_construct_agg(bitmap_bit_position(id)), category, bitmap_bucket_offset(id) FROM t GROUP BY category, bitmap_bucket_offset(id)`
+	w := mmNewTwin(t, ctx, "/testdb_bitmapagg", "bitmapagg", table, indexes)
+	w.Exec("INSERT INTO t VALUES (1, 'a'), (2, 'a'), (10001, 'a'), (3, 'b')")
+	queries := []string{
+		`SELECT category, bitmap_bucket_offset(id), bitmap_construct_agg(bitmap_bit_position(id)) FROM t GROUP BY category, bitmap_bucket_offset(id) ORDER BY category, bitmap_bucket_offset(id)`,
+		`SELECT category, bitmap_bucket_offset(id), bitmap_construct_agg(bitmap_bit_position(id)) FROM t WHERE category = 'a' GROUP BY category, bitmap_bucket_offset(id) ORDER BY category, bitmap_bucket_offset(id)`,
+	}
+	sweep := func() {
+		t.Helper()
+		for _, q := range queries {
+			if plan := w.Explain(q); !strings.Contains(plan, "AggregateIndex") || strings.Contains(plan, "StreamingAgg") {
+				t.Fatalf("not index-backed: %s", plan)
+			}
+			gi, ei := mmRows(t, ctx, w.idx, q)
+			gn, en := mmRows(t, ctx, w.plain, q)
+			if ei != nil || en != nil || !mmEqRows(gi, gn) {
+				t.Fatalf("bitmap index differs from streaming: %v/%v, errors %v/%v", gi, gn, ei, en)
+			}
+		}
+	}
+	sweep()
+	for _, stmt := range []string{"DELETE FROM t WHERE id = 10001", "UPDATE t SET category = 'b' WHERE id = 2", "DELETE FROM t WHERE category = 'a'", "INSERT INTO t VALUES (1, 'a')"} {
+		w.Exec(stmt)
+		sweep()
+	}
+}

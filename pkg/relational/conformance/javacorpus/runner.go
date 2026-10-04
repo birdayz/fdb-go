@@ -23,6 +23,10 @@ type Config struct {
 	// FactoryResetLoad enables the validated, private generated-fixture setup
 	// contract in RunParsed. Vendored Java corpus runs never use this mode.
 	FactoryResetLoad bool
+	// WorkingDir stands for the directory Java's yaml-tests run in (the
+	// module directory): a relative ENCRYPTION_KEY_STORE resolves against it.
+	// The caller puts there the files the corpus names by such a path.
+	WorkingDir string
 }
 
 // catalogPath is the system database every DDL statement is issued against.
@@ -57,6 +61,9 @@ type runner struct {
 	// counter makes the generated identifiers unique within one file.
 	counter int
 	fixture *privateFixture
+	// fileConnOptions is the preamble's connection_options, which every
+	// connection gets (connoptions.go).
+	fileConnOptions []javayamsql.Entry
 }
 
 // Run executes one corpus file and returns its ledger entry.
@@ -111,6 +118,14 @@ func Run(ctx context.Context, corpus *javayamsql.Corpus, path string, cfg Config
 		res.Skips = append(res.Skips, Skip{Class: skipErr.class, Where: path, Detail: skipErr.detail})
 		return res
 	}
+	// A failure this run has already measured, booked, and pinned to its exact
+	// rejection (a DDL one included). Any OTHER failure in the same file stays a hard failure.
+	if gap, ok := gapFor(path, runErr); ok {
+		res.Status = StatusSkip
+		res.SkipClass = gap.Class
+		res.Skips = append(res.Skips, Skip{Class: gap.Class, Where: path, GapBooking: gap.Booking, Detail: gap.Booking + ": " + runErr.Error()})
+		return res
+	}
 	// A schema_template the engine will not create is an engine gap with a
 	// name, not a corpus regression — that is what the DDL skip classes are.
 	var ddl *ddlError
@@ -119,14 +134,6 @@ func Run(ctx context.Context, corpus *javayamsql.Corpus, path string, cfg Config
 		res.Status = StatusSkip
 		res.SkipClass = class
 		res.Skips = append(res.Skips, Skip{Class: class, Where: path, Detail: ddl.Error()})
-		return res
-	}
-	// A failure this run has already measured, booked, and pinned to its exact
-	// rejection. Any OTHER failure in the same file stays a hard failure.
-	if gap, ok := gapFor(path, runErr); ok {
-		res.Status = StatusSkip
-		res.SkipClass = gap.Class
-		res.Skips = append(res.Skips, Skip{Class: gap.Class, Where: path, Detail: gap.Booking + ": " + runErr.Error()})
 		return res
 	}
 
@@ -170,7 +177,7 @@ func Run(ctx context.Context, corpus *javayamsql.Corpus, path string, cfg Config
 			if gap, ok := gapFor(path, runErr); ok {
 				res.Status = StatusSkip
 				res.SkipClass = gap.Class
-				res.Skips = append(res.Skips, Skip{Class: gap.Class, Where: path, Detail: gap.Booking + ": " + runErr.Error()})
+				res.Skips = append(res.Skips, Skip{Class: gap.Class, Where: path, GapBooking: gap.Booking, Detail: gap.Booking + ": " + runErr.Error()})
 				return res
 			}
 			res.Status = StatusFail
@@ -240,7 +247,7 @@ func (c SkipClass) SuppressesAssertion() bool {
 	// declining it would let them run clean and be reported as negatives that
 	// wrongly passed — crediting a driver gap as a finding.
 	case SkipPlanAssertion, SkipResultMetadataNested, SkipContinuation,
-		SkipTemporaryFunction, SkipRandomInjection, SkipVersionGate,
+		SkipRandomInjection, SkipVersionGate,
 		SkipSchemaCommand, SkipNoChecks:
 		return true
 	default:
@@ -334,7 +341,19 @@ func (r *runner) executeOptions(blk *javayamsql.Block) error {
 	if o.RequiredClusters != nil && *o.RequiredClusters > 1 {
 		return &skipFileError{SkipMultiCluster, fmt.Sprintf("required_clusters=%d, one available", *o.RequiredClusters)}
 	}
+	// PreambleBlock.java:75-80 sets them on the execution context.
+	r.fileConnOptions = o.ConnectionOptions
 	return nil
+}
+
+// generatedID is the stem of the names the runner generates for a
+// schema_template block: its database, template and schema. Upper case, as
+// the unquoted DDL that creates them stores them, so a connection to them
+// names what is stored; the corpus's own connect URIs are taken verbatim, as
+// Java's driver takes them. The private fixture derives its target from the
+// same stem.
+func generatedID(idPrefix string, counter int) string {
+	return strings.ToUpper(fmt.Sprintf("YAML_%s_%d", idPrefix, counter))
 }
 
 // executeSchemaTemplate runs Java's five-statement lifecycle against the
@@ -346,7 +365,7 @@ func (r *runner) executeSchemaTemplate(ctx context.Context, resource string, blk
 	}
 
 	r.counter++
-	id := fmt.Sprintf("YAML_%s_%d", r.cfg.IDPrefix, r.counter)
+	id := generatedID(r.cfg.IDPrefix, r.counter)
 	tmpl := id + "_TEMPLATE"
 	// Java's DOMAIN is "/FRL", giving a two-segment database path. The Go SQL
 	// layer's DDL parser accepts only a single-segment path, so the domain is
@@ -358,34 +377,47 @@ func (r *runner) executeSchemaTemplate(ctx context.Context, resource string, blk
 	if err != nil {
 		return err
 	}
+	fileOpts, err := r.connectionOptions()
+	if err != nil {
+		return err
+	}
+	// The lifecycle runs on a catalog connection from the options-carrying
+	// factory, as Java's SchemaTemplateBlock connects; the cleanups below run
+	// after this connection is released, each on a connection pinned to the
+	// same options.
+	catConn, err := pin(ctx, cat, fileOpts)
+	if err != nil {
+		return fmt.Errorf("catalog conn: %w", err)
+	}
+	defer catConn.Close()
 
 	if r.fixture == nil {
 		for _, stmt := range []string{
 			fmt.Sprintf("DROP SCHEMA TEMPLATE IF EXISTS %s", tmpl),
 			fmt.Sprintf("DROP DATABASE IF EXISTS %s", dbPath),
 		} {
-			if _, err := cat.ExecContext(ctx, stmt); err != nil {
+			if _, err := catConn.ExecContext(ctx, stmt); err != nil {
 				return fmt.Errorf("%s: %w", stmt, err)
 			}
 		}
 	}
 
 	create := fmt.Sprintf("CREATE SCHEMA TEMPLATE %s %s", tmpl, variant.Definition)
-	if _, err := cat.ExecContext(ctx, create); err != nil {
+	if _, err := catConn.ExecContext(ctx, create); err != nil {
 		return &ddlError{stmt: "CREATE SCHEMA TEMPLATE", err: err}
 	}
 	r.cleanups = append(r.cleanups, func() {
-		_, _ = cat.Exec(fmt.Sprintf("DROP SCHEMA TEMPLATE IF EXISTS %s", tmpl))
+		execPinned(cat, fileOpts, fmt.Sprintf("DROP SCHEMA TEMPLATE IF EXISTS %s", tmpl))
 	})
 
-	if _, err := cat.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+	if _, err := catConn.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		return &ddlError{stmt: "CREATE DATABASE", err: err}
 	}
 	r.cleanups = append(r.cleanups, func() {
-		_, _ = cat.Exec(fmt.Sprintf("DROP DATABASE IF EXISTS %s", dbPath))
+		execPinned(cat, fileOpts, fmt.Sprintf("DROP DATABASE IF EXISTS %s", dbPath))
 	})
 
-	if _, err := cat.ExecContext(ctx,
+	if _, err := catConn.ExecContext(ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/%s WITH TEMPLATE %s", dbPath, schema, tmpl)); err != nil {
 		return &ddlError{stmt: "CREATE SCHEMA", err: err}
 	}
@@ -471,7 +503,7 @@ func classifyDDLByDeclaration(f *javayamsql.File, ddl *ddlError) SkipClass {
 	if ddl != nil {
 		msg := ddl.Error()
 		switch {
-		case strings.Contains(msg, "SQL functions (CREATE FUNCTION)"):
+		case strings.Contains(msg, "SQL functions (CREATE FUNCTION)"), strings.Contains(msg, "only query bodies are supported"):
 			return SkipDDLFunction
 		case strings.Contains(msg, "views (CREATE VIEW)"):
 			return SkipDDLOther
@@ -613,6 +645,10 @@ func (r *runner) open(t connTarget) (*sql.DB, error) {
 }
 
 func (r *runner) executeSetup(ctx context.Context, resource string, blk *javayamsql.Block) error {
+	if !javayamsql.SupportedAtCurrentVersion(blk.Setup.SupportedVersion) {
+		r.skip(SkipVersionGate, resource+" setup", "block supported_version")
+		return nil
+	}
 	target, err := r.resolveConnect(resource, blk.Setup.Connect)
 	if err != nil {
 		return fmt.Errorf("setup connect: %w", err)
@@ -621,11 +657,23 @@ func (r *runner) executeSetup(ctx context.Context, resource string, blk *javayam
 	if err != nil {
 		return err
 	}
+	opts, err := r.connectionOptions(blk.Setup.ConnectionOptions)
+	if err != nil {
+		return fmt.Errorf("setup: %w", err)
+	}
+	conn, err := pin(ctx, db, opts)
+	if err != nil {
+		return fmt.Errorf("setup conn: %w", err)
+	}
+	defer conn.Close()
 	if r.fixture != nil {
 		if target != r.fixture.target {
 			return fmt.Errorf("factory fixture setup resolved outside its private schema")
 		}
-		return r.fixture.load(ctx, db, blk.Setup.Steps, r.result)
+		// On a pinned connection like every other block: a fixture file has
+		// no connection_options (validatePrivateFixture), so this is the
+		// empty set, installed rather than whatever the pool last held.
+		return r.fixture.load(ctx, conn, blk.Setup.Steps, r.result)
 	}
 	for _, step := range blk.Setup.Steps {
 		if step.Kind != javayamsql.CommandQuery {
@@ -638,7 +686,7 @@ func (r *runner) executeSetup(ctx context.Context, resource string, blk *javayam
 			// changed shape.
 			return fmt.Errorf("setup step at line %d carries a parameter injection", step.Line)
 		}
-		if _, err := execAny(ctx, db, step.Query); err != nil {
+		if _, err := execAny(ctx, conn, step.Query); err != nil {
 			return &setupError{line: step.Line, query: truncate(step.Query), err: err}
 		}
 	}

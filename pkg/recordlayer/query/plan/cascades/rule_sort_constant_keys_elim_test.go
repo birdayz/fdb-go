@@ -59,7 +59,7 @@ func exploreSortRewriting(p *Planner, rootRef *expressions.Reference) (int, bool
 		p.constraintMap = NewConstraintMap()
 	}
 	if p.dataAccessConsumed == nil {
-		p.dataAccessConsumed = make(map[*expressions.Reference]int)
+		p.dataAccessConsumed = make(map[*expressions.Reference][]matchConsumption)
 	}
 	p.push(&OptimizeGroupTask{Phase: PhaseRewriting, Ref: rootRef})
 	p.push(&ExploreGroupTask{Phase: PhaseRewriting, Ref: rootRef})

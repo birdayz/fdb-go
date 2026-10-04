@@ -92,6 +92,8 @@ type SetupBlock struct {
 	Connect           *Value
 	Steps             []*Command
 	ConnectionOptions []Entry
+	// SupportedVersion skips the block below it (SetupBlock.java:93-98).
+	SupportedVersion *Version
 }
 
 // TestBlock is a named group of tests plus the knobs controlling how they run.

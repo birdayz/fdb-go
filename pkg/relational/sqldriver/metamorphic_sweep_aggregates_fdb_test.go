@@ -78,7 +78,7 @@ func TestFDB_MetamorphicOrderingAggregatesDML(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_mh2/sn WITH TEMPLATE mh2_noidx")
 
 	open := func(schema string) *sql.DB {
-		dsn := fmt.Sprintf("fdbsql:///testdb_mh2?cluster_file=%s&schema=%s", clusterFilePath, schema)
+		dsn := fmt.Sprintf("fdbsql:///TESTDB_MH2?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema))
 		db, err := sql.Open("fdbsql", dsn)
 		if err != nil {
 			t.Fatalf("open %s: %v", schema, err)

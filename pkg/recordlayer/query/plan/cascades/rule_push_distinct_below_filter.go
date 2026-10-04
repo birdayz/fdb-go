@@ -88,10 +88,10 @@ func (r *PushDistinctBelowFilterRule) OnMatch(call *ImplementationRuleCall) {
 	// push_filter_through_fetch case-2 uses, NOT the live filterInnerExpr memo
 	// edge (whose children may still be holes). The alias is carried from the
 	// disentangled member ref so the flowed value stays stable.
-	baseQ := expressions.ForEachQuantifier(
+	baseQ := expressions.NewPhysicalQuantifier(
 		call.MemoizeFinalExpressionsFromOther(filterInnerRef, []expressions.RelationalExpression{filterInnerExpr}),
 	)
-	newDistinctInnerQ := expressions.NamedForEachQuantifier(baseQ.GetAlias(),
+	newDistinctInnerQ := expressions.NamedPhysicalQuantifier(baseQ.GetAlias(),
 		call.MemoizeFinalExpression(filterInnerPlan))
 	newDistinctPlan, err := plans.NewRecordQueryDistinctPlanFromQuantifier(newDistinctInnerQ, streaming)
 	if err != nil {
@@ -103,7 +103,7 @@ func (r *PushDistinctBelowFilterRule) OnMatch(call *ImplementationRuleCall) {
 	distinctRef := call.MemoizeFinalExpression(newDistinctPlan)
 
 	// Create new quantifier over the distinct plan.
-	newQOverDistinct := expressions.ForEachQuantifier(distinctRef)
+	newQOverDistinct := expressions.NewPhysicalQuantifier(distinctRef)
 
 	// Rebase predicates: translate from old filter's inner alias to new quantifier alias.
 	oldAlias := filterW.GetInnerQuantifier().GetAlias()
@@ -120,7 +120,7 @@ func (r *PushDistinctBelowFilterRule) OnMatch(call *ImplementationRuleCall) {
 	// newQOverDistinct's alias so GetResultValue/derivations are unchanged, but
 	// ranges over a private single-member reference — planFromQuantifier resolves
 	// newDistinctPlan, not the shared-group winner.
-	newFilterInnerQ := expressions.NamedForEachQuantifier(newQOverDistinct.GetAlias(),
+	newFilterInnerQ := expressions.NamedPhysicalQuantifier(newQOverDistinct.GetAlias(),
 		call.MemoizeFinalExpression(newDistinctPlan))
 	newFilterPlan, err := plans.NewRecordQueryPredicatesFilterPlanFromQuantifier(newFilterInnerQ, rebasedPreds)
 	if err != nil {

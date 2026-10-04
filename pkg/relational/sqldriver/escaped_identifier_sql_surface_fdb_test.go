@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 	"testing"
 )
 
@@ -50,7 +49,7 @@ func TestFDB_EscapedIdentifierSQLSurface(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /escapedident/s WITH TEMPLATE esc_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///escapedident?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///ESCAPEDIDENT?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -73,23 +72,36 @@ no longer resolves it through the ProtoUtils escape.`, err)
 		}
 	})
 
-	// A table whose name contains a QUOTED DOT is a separate, deeper gap and
-	// is deliberately NOT claimed fixed here: the reference is split into
-	// (qualifier, name) before any escape translation happens, so
-	// `"dot.table"` is read as database `dot`, table `table` and dies 42F00
-	// — the same last-dot-split representation limit RFC-204 §4.4 replaces
-	// with Java's Identifier model (pinned by TestFDB_NestedPathDepthGate).
-	// Asserted as the CURRENT behaviour so it cannot drift unnoticed and so
-	// the escape fix above is not mistaken for covering it.
-	t.Run("dotted_table_name_still_splits_KNOWN_GAP", func(t *testing.T) {
-		_, err := db.ExecContext(ctx, `INSERT INTO "dot.table" VALUES (1, 5)`)
-		if err == nil {
-			t.Fatal(`a quoted-dot table name now RESOLVES — the Identifier model (RFC-204 §4.4)
-must have landed; replace this arm with a value assertion.`)
+	// A table whose name contains a QUOTED DOT is one name. It was split into
+	// (qualifier, name) before any escape translation, so `"dot.table"` read as
+	// database `dot`, table `table` and died 42F00; DML targets now resolve
+	// from their parse-time segments, as a scan does, and the DML scopes that
+	// resolve SET values and the WHERE take the one resolved segment
+	// (TestFDB_DMLOnDottedNames runs Java's dotted-table DML sequence).
+	t.Run("dotted_table_name_is_one_name", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, `INSERT INTO "dot.table" VALUES (1, 5)`); err != nil {
+			t.Fatalf("INSERT into a quoted-dot table: %v", err)
 		}
-		if !strings.Contains(err.Error(), "42F00") && !strings.Contains(err.Error(), "42F01") {
-			t.Fatalf("quoted-dot table failed with %v; want the qualified-name split's "+
-				"unknown-database/table rejection, not something else", err)
+		var v int64
+		if err := db.QueryRowContext(ctx, `SELECT v FROM "dot.table" WHERE id = 1`).Scan(&v); err != nil || v != 5 {
+			t.Fatalf("read back %d, %v; want 5", v, err)
+		}
+		if _, err := db.ExecContext(ctx, `UPDATE "dot.table" SET v = 6 WHERE id = 1`); err != nil {
+			t.Fatalf("UPDATE a quoted-dot table: %v", err)
+		}
+		if err := db.QueryRowContext(ctx, `SELECT v FROM "dot.table" WHERE id = 1`).Scan(&v); err != nil || v != 6 {
+			t.Fatalf("after the update %d, %v; want 6", v, err)
+		}
+		res, err := db.ExecContext(ctx, `DELETE FROM "dot.table" WHERE id = 1`)
+		if err != nil {
+			t.Fatalf("DELETE from a quoted-dot table: %v", err)
+		}
+		if n, err := res.RowsAffected(); err != nil || n != 1 {
+			t.Fatalf("DELETE from a quoted-dot table affected %d, %v; want 1", n, err)
+		}
+		var left int64
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM "dot.table" WHERE id = 1`).Scan(&left); err != nil || left != 0 {
+			t.Fatalf("after the delete %d rows, %v; want 0", left, err)
 		}
 	})
 

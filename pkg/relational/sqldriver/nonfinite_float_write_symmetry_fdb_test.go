@@ -35,12 +35,14 @@ package sqldriver_test
 // keeping the magnitude half while dropping the finiteness half is parity, not
 // a compromise between correctness and compatibility.
 //
-// (Java cannot even express that narrowing implicitly: PromoteValue's numeric
-// promotions run INT/LONG/FLOAT upward only — FLOAT_TO_DOUBLE at :81, no
-// DOUBLE_TO_FLOAT anywhere in PromoteValue.java:77-85 — so a DOUBLE
-// literal into a FLOAT column needs an explicit CAST there. Go accepting the
-// narrowing is a pre-existing extension; this file only requires that the
-// extension answer the same way through every syntax.)
+// A FLOAT column is a different question, and Java answers it before any value
+// is seen: PromoteValue's numeric promotions run INT/LONG/FLOAT upward only —
+// FLOAT_TO_DOUBLE at :81, no DOUBLE_TO_FLOAT anywhere in PromoteValue.java:77-85
+// — so a DOUBLE of ANY value, finite or not, is refused into a FLOAT column
+// while planning (INCOMPATIBLE_TYPE, 22000), and a FLOAT of any value, NaN and
+// ±Infinity included, is stored. Go once narrowed a DOUBLE silently, with a
+// range check; that narrowing is gone, and both verdicts are asserted here
+// through every syntax.
 
 import (
 	"context"
@@ -48,6 +50,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/relational/api"
@@ -126,11 +129,12 @@ func TestFDB_NonFiniteFloatWrite_IsSyntaxIndependent(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE nffw "+
 		"CREATE TABLE td (id BIGINT, d DOUBLE, PRIMARY KEY (id)) "+
 		"CREATE TABLE tg (id BIGINT, g FLOAT, PRIMARY KEY (id)) "+
-		// src feeds the INSERT … SELECT path, so that path carries a value read
-		// out of a column rather than a re-parsed literal.
-		"CREATE TABLE src (id BIGINT, d DOUBLE, PRIMARY KEY (id))")
+		// src and srcg feed the INSERT … SELECT path, so that path carries a
+		// value read out of a column rather than a re-parsed literal.
+		"CREATE TABLE src (id BIGINT, d DOUBLE, PRIMARY KEY (id)) "+
+		"CREATE TABLE srcg (id BIGINT, g FLOAT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nffw/s WITH TEMPLATE nffw")
-	dsn := fmt.Sprintf("fdbsql:///testdb_nffw?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_NFFW?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -158,8 +162,12 @@ func TestFDB_NonFiniteFloatWrite_IsSyntaxIndependent(t *testing.T) {
 		return nonFiniteOutcome{got: v, hadValue: ok}
 	}
 	update := func(tbl, col string, id int64, expr string) nonFiniteOutcome {
+		seedValue := "1.0"
+		if col == "g" {
+			seedValue = "CAST(1.0 AS FLOAT)"
+		}
 		if _, e := db.ExecContext(ctx,
-			fmt.Sprintf("INSERT INTO %s (id, %s) VALUES (%d, 1.0)", tbl, col, id)); e != nil {
+			fmt.Sprintf("INSERT INTO %s (id, %s) VALUES (%d, %s)", tbl, col, id, seedValue)); e != nil {
 			return nonFiniteOutcome{err: fmt.Errorf("seed row: %w", e)}
 		}
 		_, e := db.ExecContext(ctx,
@@ -190,7 +198,25 @@ func TestFDB_NonFiniteFloatWrite_IsSyntaxIndependent(t *testing.T) {
 		v, ok := readBack(tbl, col, id)
 		return nonFiniteOutcome{got: v, hadValue: ok}
 	}
-	boundParam := func(tbl, col string, id int64, v float64) nonFiniteOutcome {
+	// insertSelectFloat is insertSelect over a FLOAT source column.
+	insertSelectFloat := func(tbl, col string, id int64, expr string) nonFiniteOutcome {
+		if _, e := db.ExecContext(ctx,
+			fmt.Sprintf("INSERT INTO srcg (id, g) VALUES (%d, CAST(1.0 AS FLOAT))", id)); e != nil {
+			return nonFiniteOutcome{err: fmt.Errorf("seed srcg: %w", e)}
+		}
+		if _, e := db.ExecContext(ctx,
+			fmt.Sprintf("UPDATE srcg SET g = %s WHERE id = %d", expr, id)); e != nil {
+			return nonFiniteOutcome{err: fmt.Errorf("seed srcg value: %w", e)}
+		}
+		_, e := db.ExecContext(ctx,
+			fmt.Sprintf("INSERT INTO %s SELECT id, g FROM srcg WHERE id = %d", tbl, id))
+		if e != nil {
+			return nonFiniteOutcome{err: e}
+		}
+		v, ok := readBack(tbl, col, id)
+		return nonFiniteOutcome{got: v, hadValue: ok}
+	}
+	boundParam := func(tbl, col string, id int64, v any) nonFiniteOutcome {
 		_, e := db.ExecContext(ctx,
 			fmt.Sprintf("INSERT INTO %s (id, %s) VALUES (%d, ?)", tbl, col, id), v)
 		if e != nil {
@@ -232,61 +258,67 @@ func TestFDB_NonFiniteFloatWrite_IsSyntaxIndependent(t *testing.T) {
 		}
 	})
 
-	// A FLOAT column narrows. NaN and +/-Infinity narrow EXACTLY, so the only
-	// thing the narrowing check may reject is a FINITE double it would change —
-	// and it must reject that identically through every syntax, with the
-	// out-of-range code rather than an invalid-parameter one.
-	t.Run("float_column_narrows_exactly", func(t *testing.T) {
-		t.Run("nan_is_stored", func(t *testing.T) {
+	// A FLOAT column takes a FLOAT and only a FLOAT, whatever the syntax. A
+	// DOUBLE is refused while planning with 22000 whatever its value — NaN, a
+	// finite double past MaxFloat32, a plain 1.5 — and whether the value is a
+	// literal, a DOUBLE column's (INSERT … SELECT) or a bound float64 (JDBC
+	// setDouble). A FLOAT of every value class is stored, through every
+	// syntax: a FLOAT expression, a FLOAT column's, a bound float32 (setFloat).
+	t.Run("float_column_takes_only_a_float", func(t *testing.T) {
+		t.Run("a_double_is_refused_everywhere", func(t *testing.T) {
 			id := int64(2000)
-			paths := map[string]nonFiniteOutcome{}
-			id++
-			paths["insert_values"] = insertValues("tg", "g", id, nonFiniteExprs["nan"])
-			id++
-			paths["update"] = update("tg", "g", id, nonFiniteExprs["nan"])
-			id++
-			paths["insert_select"] = insertSelect("tg", "g", id, nonFiniteExprs["nan"])
-			id++
-			paths["bound_param"] = boundParam("tg", "g", id, math.NaN())
-			for path, out := range paths {
-				if out.err != nil {
-					t.Errorf("FLOAT column, %s of NaN: rejected with %s (%v) — float64→float32 "+
-						"narrowing of a NaN is exact, so there is nothing for a range check to "+
-						"protect", path, out.code(), out.err)
-					continue
-				}
-				if !out.hadValue || !math.IsNaN(out.got) {
-					t.Errorf("FLOAT column, %s of NaN: stored %v (present=%v)", path, out.got, out.hadValue)
+			for name, c := range map[string]struct {
+				expr  string
+				value float64
+			}{
+				"nan":        {nonFiniteExprs["nan"], math.NaN()},
+				"pos_inf":    {nonFiniteExprs["pos_inf"], math.Inf(1)},
+				"past_float": {"1.0e308", 1.0e308},
+				"finite":     {"1.5", 1.5},
+			} {
+				paths := map[string]nonFiniteOutcome{}
+				id++
+				paths["insert_values"] = insertValues("tg", "g", id, c.expr)
+				id++
+				paths["update"] = update("tg", "g", id, c.expr)
+				id++
+				paths["insert_select"] = insertSelect("tg", "g", id, c.expr)
+				id++
+				paths["bound_param"] = boundParam("tg", "g", id, c.value)
+				for path, out := range paths {
+					if out.code() != string(api.ErrCodeCannotConvertType) {
+						t.Errorf("FLOAT column, %s of the DOUBLE %s: got %s (%v, stored %v), want %s — no "+
+							"promotion takes a DOUBLE to a FLOAT", path, name, out.code(), out.err, out.got,
+							api.ErrCodeCannotConvertType)
+					}
 				}
 			}
 		})
-
-		// A finite double past ±MaxFloat32 WOULD change under narrowing (it
-		// becomes Infinity), so every path must refuse it — and refuse it the
-		// same way. This is the half of the old guard that survives, and
-		// without it the removal above would be a value-corruption hole.
-		t.Run("finite_overflow_is_rejected_everywhere", func(t *testing.T) {
+		t.Run("a_float_is_stored_everywhere", func(t *testing.T) {
 			id := int64(3000)
-			paths := map[string]nonFiniteOutcome{}
-			id++
-			paths["insert_values"] = insertValues("tg", "g", id, "1.0e308")
-			id++
-			paths["update"] = update("tg", "g", id, "1.0e308")
-			id++
-			paths["insert_select"] = insertSelect("tg", "g", id, "1.0e308")
-			id++
-			paths["bound_param"] = boundParam("tg", "g", id, 1.0e308)
-			for path, out := range paths {
-				if out.err == nil {
-					t.Errorf("FLOAT column, %s of 1.0e308: ACCEPTED, storing %v — a finite "+
-						"double past MaxFloat32 becomes Infinity when narrowed, which is "+
-						"silent value corruption", path, out.got)
-					continue
-				}
-				if out.code() != string(api.ErrCodeNumericValueOutOfRange) {
-					t.Errorf("FLOAT column, %s of 1.0e308: rejected with %s, want %s — an "+
-						"overflowing narrowing is a range error, not an invalid parameter",
-						path, out.code(), api.ErrCodeNumericValueOutOfRange)
+			floatValues := map[string]float32{
+				"nan": float32(math.NaN()), "pos_inf": float32(math.Inf(1)), "neg_inf": float32(math.Inf(-1)),
+			}
+			for name, expr := range nonFiniteExprs {
+				floatExpr := strings.Replace(expr, "AS DOUBLE", "AS FLOAT", 1)
+				paths := map[string]nonFiniteOutcome{}
+				id++
+				paths["insert_values"] = insertValues("tg", "g", id, floatExpr)
+				id++
+				paths["update"] = update("tg", "g", id, floatExpr)
+				id++
+				paths["insert_select"] = insertSelectFloat("tg", "g", id, floatExpr)
+				id++
+				paths["bound_param"] = boundParam("tg", "g", id, floatValues[name])
+				for path, out := range paths {
+					if out.err != nil {
+						t.Errorf("FLOAT column, %s of the FLOAT %s: rejected with %s (%v) — Java stores "+
+							"NaN and +/-Infinity in a FLOAT column", path, name, out.code(), out.err)
+						continue
+					}
+					if !out.hadValue || !nonFiniteMatches(name, out.got) {
+						t.Errorf("FLOAT column, %s of the FLOAT %s: stored %v (present=%v)", path, name, out.got, out.hadValue)
+					}
 				}
 			}
 		})

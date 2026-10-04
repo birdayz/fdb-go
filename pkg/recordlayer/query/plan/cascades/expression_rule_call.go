@@ -239,13 +239,40 @@ func (c *ExpressionRuleCall) MemoizeExpression(expr expressions.RelationalExpres
 		// member no exploration ever implements ("best expression is not a
 		// physical plan"; the LEFT-box + unnest + EXISTS no-plan).
 		if ref.Canonical() == c.Reference.Canonical() {
-			fresh := expressions.InitialOf(expr)
+			fresh := expressions.ExploratoryOfAtStage(expr, c.memo.targetStage())
 			c.memo.ScheduleFreshReference(fresh)
 			return fresh
 		}
 		return ref
 	}
 	return expressions.InitialOf(expr)
+}
+
+// MemoizeExpressions is Java's memoizeExploratoryExpressions: a reference
+// holding exactly these alternatives, found in the memo or registered fresh. A
+// group minted per firing would make every parent built over it a new member,
+// and rules that rebuild each other's children would never converge.
+func (c *ExpressionRuleCall) MemoizeExpressions(exprs []expressions.RelationalExpression) *expressions.Reference {
+	if len(exprs) == 1 || c.memo == nil {
+		if len(exprs) == 1 {
+			return c.MemoizeExpression(exprs[0])
+		}
+		ref := expressions.InitialOf(exprs[0])
+		for _, e := range exprs[1:] {
+			ref.Insert(e)
+		}
+		return ref
+	}
+	ref := c.memo.MemoizeExpressions(exprs)
+	if ref.Canonical() == c.Reference.Canonical() {
+		fresh := expressions.ExploratoryOfAtStage(exprs[0], c.memo.targetStage())
+		for _, e := range exprs[1:] {
+			fresh.Insert(e)
+		}
+		c.memo.ScheduleFreshReference(fresh)
+		return fresh
+	}
+	return ref
 }
 
 // GetRequestedOrderings returns the requested orderings for this
@@ -280,7 +307,22 @@ func (c *ExpressionRuleCall) Yielded() []expressions.RelationalExpression {
 // equivalent to anything already in the memo and must not be deduped against
 // it.
 func (c *ExpressionRuleCall) MemoizeFinalExpression(expr expressions.RelationalExpression) *expressions.Reference {
+	if isPhysical(expr) {
+		return expressions.FinalOfAtStage(expr, expressions.StagePlanned)
+	}
 	return expressions.FinalOfAtStage(expr, expressions.StageCanonical)
+}
+
+// MemoizeUnknownExpression mirrors Java's planning-phase logical/physical dispatch.
+func (c *ExpressionRuleCall) MemoizeUnknownExpression(expr expressions.RelationalExpression) *expressions.Reference {
+	if !isPhysical(expr) {
+		return c.MemoizeExpression(expr)
+	}
+	ref := c.MemoizeFinalExpression(expr)
+	if c.memo != nil {
+		c.memo.indexReference(ref)
+	}
+	return ref
 }
 
 // MemoizeMemberPlansFromOther mints a NEW reference holding only `members` —
@@ -394,7 +436,14 @@ func newRestrictedFinalReference(
 			restricted.Set(m, props)
 		}
 		ref.SetPlanProperties(restricted)
+	} else if stage == expressions.StagePlanned {
+		// Java initializes properties from final members at construction, even
+		// when a pre-planned input never passed through child exploration.
+		computeRefPlanProperties(ref)
 	}
+	// These are retained physical alternatives, not new expressions to explore.
+	// New constraints still rearm the copy, as in Java's newReferenceFromFinalMembers.
+	ref.ConstraintsMap().SetExplored()
 	return ref
 }
 

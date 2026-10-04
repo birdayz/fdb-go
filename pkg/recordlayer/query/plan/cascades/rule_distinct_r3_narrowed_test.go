@@ -43,7 +43,7 @@ func fireFilteredDistinctForR3(
 	for i, column := range projected {
 		cols[i] = distinctRead("T", column)
 	}
-	projection := mustDistinctConstruct(expressions.NewLogicalProjectionExpression(cols, filterQ))
+	projection := mustDistinctConstruct(newBlockSelectForTest(cols, filterQ))
 	projectionRef := expressions.InitialOf(projection)
 	projectionRef.Insert(makeFakePlanWrapperForType(
 		"T", projection.GetResultValue().Type(), false))

@@ -27,7 +27,9 @@ import (
 // HNSW subspace; a fetch step loads the base records.
 type RecordQueryVectorIndexPlan struct {
 	PlanExprBase
-	indexName string
+	indexName              string
+	commonPrimaryKeyValues []values.Value
+	distinctRecords        bool
 	// prefixComparisons are the partition-key equality ranges that select the
 	// HNSW partition (one per partition column, left-to-right).
 	prefixComparisons []*predicates.ComparisonRange
@@ -45,7 +47,7 @@ type RecordQueryVectorIndexPlan struct {
 	rankType predicates.ComparisonType
 	// efSearch is the HNSW search-quality knob (nil = index/engine default).
 	efSearch *int
-	// isReturningVectors requests the scan return vector payloads (nil = no).
+	// isReturningVectors overrides the engine's return-vector default (nil = unset).
 	isReturningVectors *bool
 	recordTypes        []string
 	flowedType         values.Type
@@ -58,6 +60,9 @@ type RecordQueryVectorIndexPlan struct {
 	// distinguishing plan property (fully determined by indexName) — excluded
 	// from Equals/HashCode.
 	partitionColumns []string
+	// indexEngine names the engine backing the index; determined by indexName,
+	// so excluded from Equals/HashCode like partitionColumns.
+	indexEngine string
 	// partitionKeyComponentTypes is aligned with prefixComparisons and records
 	// the physical partition-key widths used to encode the HNSW graph prefix.
 	partitionKeyComponentTypes []values.Type
@@ -189,6 +194,16 @@ func (p *RecordQueryVectorIndexPlan) WithPartitionColumns(cols []string) *Record
 	return &c
 }
 
+// WithIndexEngine returns a copy carrying the index's engine name.
+func (p *RecordQueryVectorIndexPlan) WithIndexEngine(engine string) *RecordQueryVectorIndexPlan {
+	c := *p
+	c.indexEngine = engine
+	return &c
+}
+
+// GetIndexEngine is the engine backing the scanned index ("" when unknown).
+func (p *RecordQueryVectorIndexPlan) GetIndexEngine() string { return p.indexEngine }
+
 // WithPartitionKeyComponentTypes returns a copy carrying authoritative
 // physical partition-key types aligned with GetPrefixComparisons.
 func (p *RecordQueryVectorIndexPlan) WithPartitionKeyComponentTypes(types []values.Type) *RecordQueryVectorIndexPlan {
@@ -212,7 +227,10 @@ func (p *RecordQueryVectorIndexPlan) GetK() values.Value { return p.k }
 // GetEfSearch returns the HNSW ef_search knob (nil = default).
 func (p *RecordQueryVectorIndexPlan) GetEfSearch() *int { return p.efSearch }
 
-// IsReturningVectors reports whether the scan returns vector payloads.
+// GetReturnVectors returns the return-vector override (nil = engine default).
+func (p *RecordQueryVectorIndexPlan) GetReturnVectors() *bool { return p.isReturningVectors }
+
+// IsReturningVectors reports whether vector payloads were explicitly requested.
 func (p *RecordQueryVectorIndexPlan) IsReturningVectors() bool {
 	return p.isReturningVectors != nil && *p.isReturningVectors
 }
@@ -243,6 +261,7 @@ func (p *RecordQueryVectorIndexPlan) structuralKey() *structuralKey {
 		Bool(p.orderedStream).
 		Type(p.flowedType).
 		IntPtr(p.efSearch).
+		Bool(p.isReturningVectors != nil).
 		Bool(p.IsReturningVectors()).
 		Strs(p.recordTypes).
 		ScanComps(p.prefixComparisons).
@@ -337,3 +356,17 @@ func (p *RecordQueryVectorIndexPlan) WithQuantifiers(qs []expressions.Quantifier
 
 // GetRecordQueryPlan returns the plan itself.
 func (p *RecordQueryVectorIndexPlan) GetRecordQueryPlan() RecordQueryPlan { return p }
+
+// WithRecordProperties carries the match candidate's primary-key and fan-out
+// facts, as Java RecordQueryIndexPlan does for a vector scan.
+func (p *RecordQueryVectorIndexPlan) WithRecordProperties(pk []values.Value, distinct bool) *RecordQueryVectorIndexPlan {
+	cp := *p
+	cp.commonPrimaryKeyValues = append([]values.Value(nil), pk...)
+	cp.distinctRecords = distinct
+	return &cp
+}
+
+func (p *RecordQueryVectorIndexPlan) GetCommonPrimaryKeyValues() []values.Value {
+	return p.commonPrimaryKeyValues
+}
+func (p *RecordQueryVectorIndexPlan) ProducesDistinctRecords() bool { return p.distinctRecords }

@@ -293,3 +293,96 @@ func TestAggregateIndexPlan_HintRichOrdering_DistinctFollowsInnerScan(t *testing
 		t.Fatalf("keys = %v, want [B, A] unchanged by the distinctness flag", orderingKeyNames(t, rich.GetKeys()))
 	}
 }
+
+func TestAggregateIndexPlan_PermutedOrdering(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, function, column string
+		prefix                 int
+		reverse                bool
+		want                   []string
+	}{
+		{"max", "MAX", "ID", 1, false, []string{"B", "MAX(ID)", "A"}},
+		{"reverse", "MAX", "ID", 1, true, []string{"B", "MAX(ID)", "A"}},
+		{"zero_permutation", "MAX", "ID", 2, false, []string{"B", "A", "MAX(ID)"}},
+		{"all_permuted", "MAX", "ID", 0, false, []string{"MAX(ID)", "B", "A"}},
+		{"nonnull_min", "MIN", "ID", 1, false, []string{"B", "MIN(ID)", "A"}},
+		{"nullable_min", "MIN", "B", 1, false, []string{"B"}},
+		{"nullable_min_no_prefix", "MIN", "B", 0, false, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			row := values.NewRecordType("", false, []values.Field{
+				{Name: "B", FieldType: values.NullableLong},
+				{Name: "A", FieldType: values.NullableLong},
+				{Name: tc.function + "(" + tc.column + ")", FieldType: values.NullableLong},
+			})
+			idx := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+				return NewRecordQueryIndexPlan("I", nil, []string{"T"}, aggregateOrderingBase(), tc.reverse)
+			}).WithKeyComponentTypes(twoLongs).WithPhysicalGroupingPrefixCount(tc.prefix)
+			plan, err := NewRecordQueryAggregateIndexPlan(idx, "T", row, tc.function)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan = plan.WithGroupColumns([]string{"B", "A"}, tc.column).WithGroupColumnLayout(aggregateOrderingBase()).WithPermutedOrdering(true)
+			ordering := plan.HintOrdering()
+			if !sameNames(orderingKeyNames(t, ordering.Keys), tc.want) {
+				t.Fatalf("keys = %v, want %v", orderingKeyNames(t, ordering.Keys), tc.want)
+			}
+			if len(tc.want) == 0 && ordering.IsKnown {
+				t.Fatal("an empty physical prefix must not claim arbitrary ordering")
+			}
+			for _, desc := range ordering.Descending {
+				if desc != tc.reverse {
+					t.Fatalf("direction = %v, want %v", desc, tc.reverse)
+				}
+			}
+			if plan.EqualsWithoutChildren(plan.WithPermutedOrdering(false), nil) {
+				t.Fatal("permutation must participate in plan identity")
+			}
+		})
+	}
+}
+
+func TestPermutedAggregateCopiesPreserveOrdering(t *testing.T) {
+	t.Parallel()
+	row := values.NewRecordType("", false, []values.Field{
+		{Name: "B", FieldType: values.NullableLong},
+		{Name: "A", FieldType: values.NullableLong},
+		{Name: "MAX(ID)", FieldType: values.NullableLong},
+	})
+	idx := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("I", nil, []string{"T"}, aggregateOrderingBase(), true)
+	}).WithPhysicalGroupingPrefixCount(1).WithMatchedIndexPredicate([]byte{1, 2, 3})
+	original := mustChecked(t, func() (*RecordQueryAggregateIndexPlan, error) {
+		return NewRecordQueryAggregateIndexPlan(idx, "T", row, "MAX")
+	}).WithGroupColumns([]string{"B", "A"}, "ID").WithGroupColumnLayout(aggregateOrderingBase()).WithPermutedOrdering(true)
+	copies := map[string]*RecordQueryAggregateIndexPlan{
+		"group columns": original.WithGroupColumns(original.GetGroupCols(), "ID"),
+		"group layout":  original.WithGroupColumnLayout(aggregateOrderingBase()),
+		"live groups":   original.WithLiveGroupsOnly(false),
+	}
+	for name, cp := range copies {
+		if cp == original || !cp.permuted {
+			t.Fatalf("%s lost permutation or mutated the original", name)
+		}
+		if !sameNames(orderingKeyNames(t, cp.HintOrdering().Keys), []string{"B", "MAX(ID)", "A"}) {
+			t.Fatalf("%s lost physical ordering", name)
+		}
+		for _, desc := range cp.HintOrdering().Descending {
+			if !desc {
+				t.Fatalf("%s lost reverse ordering", name)
+			}
+		}
+		if string(cp.GetIndexPlan().GetMatchedIndexPredicate()) != string([]byte{1, 2, 3}) {
+			t.Fatalf("%s lost wrapped scan proof", name)
+		}
+		if !cp.EqualsPlanWithoutChildren(original) || cp.HashCodeWithoutChildren() != original.HashCodeWithoutChildren() {
+			t.Fatalf("%s changed identity", name)
+		}
+	}
+	rebound, err := original.WithQuantifiers(nil)
+	if err != nil || rebound != original {
+		t.Fatalf("leaf quantifier replacement: %v, %v", rebound, err)
+	}
+}

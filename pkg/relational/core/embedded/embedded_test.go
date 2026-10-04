@@ -7,146 +7,18 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"strconv"
 	"testing"
-	"time"
 
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"
 	"fdb.dev/pkg/relational/core/session"
 )
-
-func TestSubstituteParams(t *testing.T) {
-	t.Parallel()
-	nv := func(ordinal int, v driver.Value) driver.NamedValue {
-		return driver.NamedValue{Ordinal: ordinal, Value: v}
-	}
-	cases := []struct {
-		name    string
-		query   string
-		args    []driver.NamedValue
-		want    string
-		wantErr bool
-	}{
-		{
-			name:  "no params",
-			query: "SELECT * FROM t",
-			args:  nil,
-			want:  "SELECT * FROM t",
-		},
-		{
-			name:  "int64",
-			query: "SELECT * FROM t WHERE id = ?",
-			args:  []driver.NamedValue{nv(1, int64(42))},
-			want:  "SELECT * FROM t WHERE id = 42",
-		},
-		{
-			name:  "float64",
-			query: "INSERT INTO t VALUES (?)",
-			args:  []driver.NamedValue{nv(1, float64(3.14))},
-			want:  "INSERT INTO t VALUES (3.14e+00)",
-		},
-		{
-			name:  "string escaping",
-			query: "INSERT INTO t VALUES (?)",
-			args:  []driver.NamedValue{nv(1, "it's fine")},
-			want:  "INSERT INTO t VALUES ('it''s fine')",
-		},
-		{
-			name:  "null",
-			query: "INSERT INTO t VALUES (?)",
-			args:  []driver.NamedValue{nv(1, nil)},
-			want:  "INSERT INTO t VALUES (NULL)",
-		},
-		{
-			name:  "bool true",
-			query: "INSERT INTO t VALUES (?)",
-			args:  []driver.NamedValue{nv(1, true)},
-			want:  "INSERT INTO t VALUES (TRUE)",
-		},
-		{
-			name:  "bool false",
-			query: "INSERT INTO t VALUES (?)",
-			args:  []driver.NamedValue{nv(1, false)},
-			want:  "INSERT INTO t VALUES (FALSE)",
-		},
-		{
-			name:  "multiple params",
-			query: "INSERT INTO t VALUES (?, ?, ?)",
-			args:  []driver.NamedValue{nv(1, int64(1)), nv(2, "hello"), nv(3, nil)},
-			want:  "INSERT INTO t VALUES (1, 'hello', NULL)",
-		},
-		{
-			name:    "too few args",
-			query:   "SELECT * FROM t WHERE id = ? AND name = ?",
-			args:    []driver.NamedValue{nv(1, int64(1))},
-			wantErr: true,
-		},
-		{
-			name:    "too many args",
-			query:   "SELECT * FROM t WHERE id = ?",
-			args:    []driver.NamedValue{nv(1, int64(1)), nv(2, int64(2))},
-			wantErr: true,
-		},
-		{
-			name:  "question mark inside string literal not substituted",
-			query: "SELECT * FROM t WHERE name = '?' AND id = ?",
-			args:  []driver.NamedValue{nv(1, int64(5))},
-			want:  "SELECT * FROM t WHERE name = '?' AND id = 5",
-		},
-		{
-			// Line comments must not consume ? placeholders.
-			// Previously: `id = ? -- why?` would eat two args (the first for
-			// the real placeholder, the second trying to satisfy the ? in
-			// the comment) and either over-consume or error on arg count.
-			name:  "question mark inside line comment not substituted",
-			query: "SELECT * FROM t WHERE id = ? -- why?\nAND name = ?",
-			args:  []driver.NamedValue{nv(1, int64(5)), nv(2, "x")},
-			want:  "SELECT * FROM t WHERE id = 5 -- why?\nAND name = 'x'",
-		},
-		{
-			name:  "question mark inside block comment not substituted",
-			query: "SELECT /* hmm? */ id FROM t WHERE id = ?",
-			args:  []driver.NamedValue{nv(1, int64(5))},
-			want:  "SELECT /* hmm? */ id FROM t WHERE id = 5",
-		},
-		{
-			name:  "time.Time parameter with time",
-			query: "INSERT INTO t VALUES (?, ?)",
-			args:  []driver.NamedValue{nv(1, int64(1)), nv(2, time.Date(2024, 7, 4, 15, 30, 45, 0, time.UTC))},
-			want:  "INSERT INTO t VALUES (1, '2024-07-04 15:30:45')",
-		},
-		{
-			name:  "time.Time parameter midnight (DATE format)",
-			query: "INSERT INTO t VALUES (?, ?)",
-			args:  []driver.NamedValue{nv(1, int64(1)), nv(2, time.Date(2024, 7, 4, 0, 0, 0, 0, time.UTC))},
-			want:  "INSERT INTO t VALUES (1, '2024-07-04')",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got, err := substituteParams(tc.query, tc.args)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("substituteParams(%q): want error, got %q", tc.query, got)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("substituteParams(%q): unexpected error: %v", tc.query, err)
-			}
-			if got != tc.want {
-				t.Errorf("substituteParams(%q) = %q, want %q", tc.query, got, tc.want)
-			}
-		})
-	}
-}
 
 func TestParseSchemaIdentifier_AbsolutePath(t *testing.T) {
 	t.Parallel()
@@ -256,6 +128,15 @@ func TestTranslateFDBError(t *testing.T) {
 		{"metadata error", &recordlayer.MetaDataError{Message: "bad schema"}, api.ErrCodeSyntaxOrAccessViolation, false},
 		{"record exists", &recordlayer.RecordAlreadyExistsError{PrimaryKey: tuple.Tuple{int64(1)}}, api.ErrCodeUniqueConstraintViolation, false},
 		{"deserialization", &recordlayer.RecordDeserializationError{PrimaryKey: tuple.Tuple{int64(1)}, Cause: fmt.Errorf("bad proto")}, api.ErrCodeDeserializationFailure, false},
+		// Java's order (ExceptionUtil.recordCoreToRelationalException): a
+		// MetaDataException is tested on the exception thrown, not its causes,
+		// and after a deserialization failure, which is tested on the thrown
+		// exception and its cause.
+		{"metadata error under a wrapper", fmt.Errorf("ctx: %w", &recordlayer.MetaDataError{Message: "bad schema"}), api.ErrCodeSyntaxOrAccessViolation, false},
+		{"metadata error only as a cause", &recordlayer.RecordCoreError{Message: "outer", Cause: &recordlayer.MetaDataError{Message: "bad schema"}}, api.ErrCodeUnknown, false},
+		{"deserialization as a metadata error's cause", &recordlayer.MetaDataError{Message: "m", Cause: &recordlayer.RecordDeserializationError{PrimaryKey: tuple.Tuple{int64(1)}, Cause: fmt.Errorf("bad proto")}}, api.ErrCodeDeserializationFailure, false},
+		// ProtoUtils.InvalidNameException extends MetaDataException.
+		{"invalid name", &recordlayer.InvalidNameError{Message: "name cannot be empty string"}, api.ErrCodeSyntaxOrAccessViolation, false},
 		{"unknown error", fmt.Errorf("something else"), "", true},
 	}
 	for _, tt := range tests {
@@ -279,50 +160,16 @@ func TestTranslateFDBError(t *testing.T) {
 	}
 }
 
-type testStringer struct{ s string }
-
-func (ts testStringer) String() string { return ts.s }
-
-type testNoStringer struct{ n int }
-
+// TestCheckNamedValue: every value passes through untouched, so its Go type
+// reaches parameter binding.
 func TestCheckNamedValue(t *testing.T) {
 	t.Parallel()
 	conn := &EmbeddedConnection{}
-
-	tests := []struct {
-		name    string
-		val     driver.Value
-		wantVal driver.Value
-		wantErr bool
-	}{
-		{"nil", nil, nil, false},
-		{"int64", int64(42), int64(42), false},
-		{"float64", float64(3.14), float64(3.14), false},
-		{"string", "hello", "hello", false},
-		{"bool", true, true, false},
-		{"bytes", []byte{1, 2, 3}, []byte{1, 2, 3}, false},
-		{"time", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), false},
-		{"stringer", testStringer{"uuid-value"}, "uuid-value", false},
-		{"no_stringer_skip", testNoStringer{42}, nil, true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			nv := &driver.NamedValue{Ordinal: 1, Value: tt.val}
-			err := conn.CheckNamedValue(nv)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatal("want error, got nil")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if fmt.Sprintf("%v", nv.Value) != fmt.Sprintf("%v", tt.wantVal) {
-				t.Errorf("value = %v (%T), want %v (%T)", nv.Value, nv.Value, tt.wantVal, tt.wantVal)
-			}
-		})
+	for _, v := range []any{nil, int32(1), int64(1), float32(1), []int64{1}, struct{}{}} {
+		nv := &driver.NamedValue{Ordinal: 1, Value: v}
+		if err := conn.CheckNamedValue(nv); err != nil || !reflect.DeepEqual(nv.Value, v) {
+			t.Fatalf("CheckNamedValue(%#v) = %v, value %#v", v, err, nv.Value)
+		}
 	}
 }
 
@@ -403,96 +250,6 @@ func TestEmbeddedConnection_IsValid(t *testing.T) {
 	conn3.closed.Store(true)
 	if conn3.IsValid() {
 		t.Error("IsValid: want false for closed, got true")
-	}
-}
-
-func TestLikeMatch(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		pattern, s string
-		want       bool
-	}{
-		{"", "", true},
-		{"", "x", false},
-		{"abc", "abc", true},
-		{"abc", "abcd", false},
-		{"abc", "ab", false},
-		{"%", "", true},
-		{"%", "anything", true},
-		{"a%", "a", true},
-		{"a%", "abc", true},
-		{"a%", "bc", false},
-		{"%c", "abc", true},
-		{"%c", "abx", false},
-		{"a%c", "abc", true},
-		{"a%c", "axyzc", true},
-		{"a%c", "axyz", false},
-		{"_", "a", true},
-		{"_", "ab", false},
-		{"_", "", false},
-		{"a_c", "abc", true},
-		{"a_c", "ac", false},
-		{"a_c", "abbc", false},
-		{"%%", "anything", true},
-		{"a%b%c", "aXbYc", true},
-		{"a%b%c", "aXbY", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.pattern+"/"+tc.s, func(t *testing.T) {
-			t.Parallel()
-			got := values.LikeMatch(tc.pattern, tc.s, 0) // 0 = no escape
-			if got != tc.want {
-				t.Errorf("values.LikeMatch(%q, %q) = %v, want %v", tc.pattern, tc.s, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestLikeMatchWithEscape pins the ESCAPE truth table the map-path
-// WHERE evaluator inherits. It calls the matcher directly, so it can
-// only pin SEMANTICS — that the map path actually reaches this
-// matcher rather than a copy of it is pinned end-to-end by
-// TestFDB_LikeTrailingEscape_MapPath in pkg/relational/sqldriver.
-//
-// Java's PatternForLikeValue installs exactly two escape entries
-// (`<esc>_` and `<esc>%`), so an escape rune escapes nothing else —
-// see values/like_match.go for the full contract.
-func TestLikeMatchWithEscape(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		pattern string
-		s       string
-		escape  rune
-		want    bool
-	}{
-		// Literal underscore via escape.
-		{`a\_b`, "a_b", '\\', true},
-		{`a\_b`, "axb", '\\', false}, // escaped _ doesn't match arbitrary char
-		// Literal percent via escape.
-		{`a\%b`, "a%b", '\\', true},
-		{`a\%b`, "abb", '\\', false},
-		// There is no escaped-escape: `\\` is two literal runes.
-		{`a\\b`, `a\\b`, '\\', true},
-		{`a\\b`, `a\b`, '\\', false},
-		// A dangling escape is an ordinary literal, not a no-match —
-		// Java's like.yamsql:92 answer.
-		{"Z", "Z", 'Z', true},
-		// Alt escape char.
-		{`a!_b`, "a_b", '!', true},
-		{`a!_b`, "axb", '!', false},
-		// Without escape the same char is literal (escape=0).
-		{`a\_b`, "a_b", 0, false}, // `\` is literal, `_` still wildcard → "a\Xb"
-		{`a\_b`, `a\xb`, 0, true}, // matches `a\` + any char + `b`
-	}
-	for _, tc := range cases {
-		t.Run(tc.pattern+"/"+tc.s, func(t *testing.T) {
-			t.Parallel()
-			got := values.LikeMatch(tc.pattern, tc.s, tc.escape)
-			if got != tc.want {
-				t.Errorf("values.LikeMatch(%q, %q, %q) = %v, want %v",
-					tc.pattern, tc.s, string(tc.escape), got, tc.want)
-			}
-		})
 	}
 }
 

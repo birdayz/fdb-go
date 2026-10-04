@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/onsi/gomega"
@@ -11,14 +12,9 @@ import (
 
 // TestFDB_RecursiveCTEStarMetadata pins result-set COLUMN METADATA for
 // `SELECT *` directly over a recursive CTE (no projection above the recursive
-// plan). Without a deriveColumnsFromPlan arm for the recursive plan nodes
-// (RecursiveDfsJoin / RecursiveLevelUnion), the walk falls through to the leaf
-// handler, finds no scan, and returns NO columns — rows flow with the right
-// values, but Rows.Columns() is empty and every database/sql Scan fails with
-// "expected 0 destination arguments in Scan". This affects alias-free shapes
-// too, so it is pinned here on its own axis. The fix recurses into the SEED
-// leg — whose (possibly normalization-wrapped) projection carries the CTE's
-// output columns — mirroring the plain-UNION arm.
+// plan): the recursive plan's result row carries the CTE's columns. An empty
+// column set makes every database/sql Scan fail with "expected 0 destination
+// arguments in Scan".
 func TestFDB_RecursiveCTEStarMetadata(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -36,7 +32,7 @@ func TestFDB_RecursiveCTEStarMetadata(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE rcte_star_meta_tmpl", dbPath))).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -57,7 +53,7 @@ func TestFDB_RecursiveCTEStarMetadata(t *testing.T) {
 		{
 			// Column list renames the seed: output column is V.
 			name:  "column_list",
-			query: "WITH RECURSIVE c(v) AS (SELECT id FROM t UNION ALL SELECT v + 1 FROM c WHERE v < 5) SELECT * FROM c ORDER BY v",
+			query: "WITH RECURSIVE c(v) AS (SELECT id FROM t UNION ALL SELECT id + 1 FROM c WHERE id < 5) SELECT * FROM c ORDER BY v",
 			col:   "V",
 		},
 	} {

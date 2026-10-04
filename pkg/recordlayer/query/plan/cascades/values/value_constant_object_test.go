@@ -91,16 +91,13 @@ func TestConstantObjectValue_EvaluateMissingBinding(t *testing.T) {
 	}
 }
 
-func TestConstantObjectValue_CorrelatedToAlias(t *testing.T) {
+func TestConstantObjectValue_NotRowCorrelated(t *testing.T) {
 	t.Parallel()
 	alias := NamedCorrelationIdentifier("a")
 	v := NewConstantObjectValue(alias, "c1", NotNullLong)
 	cs := v.GetCorrelatedTo()
-	if len(cs) != 1 {
-		t.Fatalf("CorrelatedTo size = %d, want 1", len(cs))
-	}
-	if _, ok := cs[alias]; !ok {
-		t.Fatalf("CorrelatedTo missing alias %v", alias)
+	if len(cs) != 0 {
+		t.Fatalf("CorrelatedTo = %v, want no row correlations", cs)
 	}
 }
 

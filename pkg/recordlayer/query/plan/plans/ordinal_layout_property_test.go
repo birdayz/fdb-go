@@ -126,9 +126,9 @@ func TestJoinPlansPublishRetainedSourceLayouts(t *testing.T) {
 				fixture.result, false)
 		})
 		nullSupplying := mustChecked(t, func() (*RecordQueryFlatMapPlan, error) {
-			return NewRecordQueryFlatMapPlanFromQuantifiersWithNullSupplyingInner(
+			return NewRecordQueryFlatMapPlanFromQuantifiersWithNullSupplying(
 				fixture.outerQ, fixture.innerQ, fixture.outerAlias, fixture.innerAlias,
-				fixture.result, false)
+				fixture.result, false, false, true)
 		})
 
 		wantOrdinary, err := values.NewFlatOrdinalLayoutForRetainedResult(fixture.result, nil)
@@ -162,6 +162,53 @@ func TestJoinPlansPublishRetainedSourceLayouts(t *testing.T) {
 				rebuiltLayout == nullLayout, rebuiltLayout.RawEqual(nullLayout),
 				nullLayout.Carrier().FlowedType(), rebuiltLayout.Carrier().FlowedType(),
 				nullLayout.AliasFreeHash(), rebuiltLayout.AliasFreeHash())
+		}
+	})
+
+	// A null-on-empty OUTER is lowered as a DefaultOnEmpty outer edge (Java's
+	// planPartitionToPhysical wraps either leg), and the FlatMap states that
+	// leg's presence exactly as it states a null-supplying inner's — through
+	// the same retained-result build, with the reconstruction carrying it.
+	t.Run("flat map lowering states null-supplying outer", func(t *testing.T) {
+		ordinary := mustChecked(t, func() (*RecordQueryFlatMapPlan, error) {
+			return NewRecordQueryFlatMapPlanFromQuantifiers(
+				fixture.outerQ, fixture.innerQ, fixture.outerAlias, fixture.innerAlias,
+				fixture.result, false)
+		})
+		nullOuter := mustChecked(t, func() (*RecordQueryFlatMapPlan, error) {
+			return NewRecordQueryFlatMapPlanFromQuantifiersWithNullSupplying(
+				fixture.outerQ, fixture.innerQ, fixture.outerAlias, fixture.innerAlias,
+				fixture.result, false, true, false)
+		})
+		if !nullOuter.NullSupplyingOuter() || ordinary.NullSupplyingOuter() {
+			t.Fatalf("NullSupplyingOuter = (%t, %t), want (true, false)",
+				nullOuter.NullSupplyingOuter(), ordinary.NullSupplyingOuter())
+		}
+		// The outer row can BE null, so the plan pulls its source up nullable
+		// and rewrites the program onto it (the fixture's outer is NOT NULL).
+		pulledUp, err := exactQOVForResultSource(fixture.outerAlias, nullOuter.GetResultValue())
+		if err != nil || pulledUp == nil || !values.FlowedExactType(pulledUp).IsNullable() {
+			t.Fatalf("null-supplying outer source = (%v, %v), want a nullable pull-up", pulledUp, err)
+		}
+		wantNull, err := values.NewFlatOrdinalLayoutForRetainedResult(
+			nullOuter.GetResultValue(), []values.QuantifiedObjectValue{pulledUp})
+		if err != nil {
+			t.Fatalf("null-supplying outer retained-result layout: %v", err)
+		}
+		nullLayout := requireProvidedLayout(t, nullOuter)
+		if !nullLayout.RawEqual(wantNull) {
+			t.Fatal("FlatMap null-supplying outer layout disagrees with its explicit retained-result build")
+		}
+		if requireProvidedLayout(t, ordinary).RawEqual(nullLayout) || expressions.MemoEqual(ordinary, nullOuter) {
+			t.Fatal("FlatMaps with different null-supplying outer layouts deduplicated")
+		}
+		rebuilt, err := nullOuter.WithQuantifiers([]expressions.Quantifier{fixture.outerQ, fixture.innerQ})
+		if err != nil {
+			t.Fatalf("WithQuantifiers: %v", err)
+		}
+		rebuiltPlan := rebuilt.(*RecordQueryFlatMapPlan)
+		if !rebuiltPlan.NullSupplyingOuter() || !requireProvidedLayout(t, rebuiltPlan).RawEqual(nullLayout) {
+			t.Fatal("FlatMap reconstruction dropped the null-supplying outer")
 		}
 	})
 
@@ -242,8 +289,8 @@ func TestFlatMapRelinkRetypesLogicalBindingsAndRebuildsNullLayout(t *testing.T) 
 	oldInnerQ := expressions.NamedPhysicalQuantifier(
 		values.UniqueCorrelationIdentifier(), expressions.FinalOfAtStage(innerPlan, expressions.StageCanonical))
 	original := mustChecked(t, func() (*RecordQueryFlatMapPlan, error) {
-		return NewRecordQueryFlatMapPlanFromQuantifiersWithNullSupplyingInner(
-			oldOuterQ, oldInnerQ, outerAlias, innerAlias, logicalResult, false)
+		return NewRecordQueryFlatMapPlanFromQuantifiersWithNullSupplying(
+			oldOuterQ, oldInnerQ, outerAlias, innerAlias, logicalResult, false, false, true)
 	})
 	originalLayout := requireProvidedLayout(t, original)
 
@@ -409,14 +456,14 @@ func TestJoinPlanLayoutIdentityIsAlphaAware(t *testing.T) {
 
 	t.Run("flat map", func(t *testing.T) {
 		leftPlan := mustChecked(t, func() (*RecordQueryFlatMapPlan, error) {
-			return NewRecordQueryFlatMapPlanFromQuantifiersWithNullSupplyingInner(
+			return NewRecordQueryFlatMapPlanFromQuantifiersWithNullSupplying(
 				left.outerQ, left.innerQ, left.outerAlias, left.innerAlias,
-				left.result, false)
+				left.result, false, false, true)
 		})
 		rightPlan := mustChecked(t, func() (*RecordQueryFlatMapPlan, error) {
-			return NewRecordQueryFlatMapPlanFromQuantifiersWithNullSupplyingInner(
+			return NewRecordQueryFlatMapPlanFromQuantifiersWithNullSupplying(
 				right.outerQ, right.innerQ, right.outerAlias, right.innerAlias,
-				right.result, false)
+				right.result, false, false, true)
 		})
 		assertAlphaEquivalentJoinPlans(t, leftPlan, rightPlan)
 	})
@@ -430,9 +477,9 @@ func TestJoinPlanLayoutPathParticipatesInMemoIdentity(t *testing.T) {
 		t, "path", values.NamedCorrelationIdentifier("OUTER"),
 		values.NamedCorrelationIdentifier("INNER"), outerType, innerType)
 	plan := mustChecked(t, func() (*RecordQueryFlatMapPlan, error) {
-		return NewRecordQueryFlatMapPlanFromQuantifiersWithNullSupplyingInner(
+		return NewRecordQueryFlatMapPlanFromQuantifiersWithNullSupplying(
 			fixture.outerQ, fixture.innerQ, fixture.outerAlias, fixture.innerAlias,
-			fixture.result, false)
+			fixture.result, false, false, true)
 	})
 	original := requireProvidedLayout(t, plan)
 	changedLayout, err := values.NewOrdinalLayout(

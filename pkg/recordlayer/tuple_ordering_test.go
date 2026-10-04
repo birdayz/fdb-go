@@ -1014,19 +1014,22 @@ func TestOrderFunctionProtoRoundTrip(t *testing.T) {
 }
 
 // Test proto round-trip with composite arguments (Concat).
-func TestOrderFunctionProtoRoundTripComposite(t *testing.T) {
+// TestOrderFunctionOverACompositeIsRefused pins the target's bounds: an order
+// function takes one argument column (OrderFunctionKeyExpression.java:64-72),
+// so one over a two-column Then is refused in code and at load with the
+// target's text (measured on the JVM, conformance "RFC-257 key functions").
+func TestOrderFunctionOverACompositeIsRefused(t *testing.T) {
 	t.Parallel()
 
 	original := FunctionExpr(OrderFuncDescNullsLast, Concat(Field("a"), Field("b")))
-	proto := original.ToKeyExpression()
-
-	restored, err := KeyExpressionFromProto(proto)
-	if err != nil {
-		t.Fatalf("KeyExpressionFromProto error: %v", err)
+	var keyErr *KeyExpressionError
+	if !errors.As(original.fault, &keyErr) || keyErr.Message != "Invalid number of arguments provided to function" {
+		t.Fatalf("FunctionExpr fault = %v, want the target's arity refusal", original.fault)
 	}
-	funcExpr := restored.(*FunctionKeyExpression)
-	if funcExpr.Name() != OrderFuncDescNullsLast {
-		t.Fatalf("expected name %q, got %q", OrderFuncDescNullsLast, funcExpr.Name())
+	_, err := KeyExpressionFromProto(original.ToKeyExpression())
+	var de *KeyExpressionDeserializationError
+	if !errors.As(err, &de) || de.Message != "Invalid number of arguments provided to function" {
+		t.Fatalf("KeyExpressionFromProto = %v, want the target's arity refusal", err)
 	}
 }
 

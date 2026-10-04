@@ -368,7 +368,7 @@ func TestCTEProjectionSourceKeepsExactRow(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			source, ok, err := buildCTEColumnSource(md, "Q", body, nil)
+			source, ok, err := buildCTEColumnSource(md, defaultEmbeddedTemplate, "Q", body, nil)
 			if err != nil || !ok {
 				t.Fatalf("source: ok=%t err=%v", ok, err)
 			}
@@ -408,7 +408,7 @@ func TestCTESimplePublicationPreservesBodyErrors(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, ok, err := buildCTEColumnSource(md, "Q", body, nil)
+			_, ok, err := buildCTEColumnSource(md, defaultEmbeddedTemplate, "Q", body, nil)
 			var sqlErr *api.Error
 			if ok || !errors.As(err, &sqlErr) || sqlErr.Code != tc.code {
 				t.Fatalf("body error lost: ok=%t err=%v, want %s", ok, err, tc.code)
@@ -441,7 +441,9 @@ func TestStarSourceProjectionIdentity(t *testing.T) {
 		{name: "whole_object", columns: []semantic.Column{column("K")}, object: new(column("K")), want: true},
 		{name: "shadowing", columns: []semantic.Column{column("K")}, shadowing: true, want: true},
 		{name: "no_table", missingTable: true, wantError: true},
-		{name: "no_row", wantError: true},
+		{name: "empty_row"},
+		{name: "declared_empty_row", flowed: []semantic.Column{}},
+		{name: "column_outside_declared_empty_row", columns: []semantic.Column{column("K")}, flowed: []semantic.Column{}, wantError: true},
 		{name: "short_mapping", columns: []semantic.Column{column("K")}, ordinals: []int{}, wantError: true},
 		{name: "outside_row", columns: []semantic.Column{column("K")}, ordinals: []int{1}, wantError: true},
 		{name: "negative_ordinal", columns: []semantic.Column{column("K")}, ordinals: []int{-1}, wantError: true},
@@ -467,7 +469,7 @@ func TestCTEScopeCarriesStoredEnum(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, ok, err := buildCTEColumnSource(md, "C", body, nil)
+	source, ok, err := buildCTEColumnSource(md, defaultEmbeddedTemplate, "C", body, nil)
 	if err != nil || !ok {
 		t.Fatalf("stored enum source: ok=%t err=%v", ok, err)
 	}

@@ -227,15 +227,13 @@ tests:
   #
   # This is NOT yet Java parity: Java plans the IN-join with its bindings
   # sorted descending and needs no sort at all
-  # (`INJOIN q0 -> { SCAN([IS TBL, EQUALS q0]) }, SORTED DESC`). Go still
-  # wraps the InJoin in an InMemorySort because `RecordQueryInJoinPlan`
-  # itself does not yet derive an ordering from its Fixed-bound inner
-  # scan (Java's `OrderingProperty.visitInJoinPlan`) and the requested-
-  # ordering enumeration cannot look a baked-vs-lazy Value up in the rich
-  # binding map — those are RFC-191 defects (a) and (b), deliberately NOT
-  # implemented here (a separate, milestone-sized change per the RFC). The
-  # regression (full scan on a billion-row table) is gone; the remaining gap
-  # is "one avoidable sort", tracked as the rest of CQ-10f.
+  # (`INJOIN q0 -> { SCAN([IS TBL, EQUALS q0]) }, SORTED DESC`). Go now builds
+  # that descending IN-join too, but still wraps it in an InMemorySort because
+  # `RecordQueryInJoinPlan` does not yet derive an ordering from its
+  # Fixed-bound inner scan (Java's `OrderingProperty.visitInJoinPlan`) —
+  # RFC-191 defect (a), tracked as the rest of CQ-10f. The regression (full
+  # scan on a billion-row table) is gone; the remaining gap is "one avoidable
+  # sort".
   #
   # `unordered` because ORDER BY id alone leaves the two id=1 rows mutually
   # unordered, and this file does not pin an order SQL does not promise. The
@@ -244,7 +242,7 @@ tests:
     # RFC-232 renders the exact source-owned ordinal carried by the enforced
     # sort key; it is the same intentional remaining RFC-191 sort described
     # above, not a different access path.
-    plan_contains: "InMemorySort([_current.ID#0 DESC], InJoin(Scan(TBL, [=]), binding ASC))"
+    plan_contains: "InMemorySort([_current.ID#0 DESC], InJoin(Scan(TBL, [=]), binding DESC))"
     unordered: true
     rows:
       - [1, 1, 10, 100]

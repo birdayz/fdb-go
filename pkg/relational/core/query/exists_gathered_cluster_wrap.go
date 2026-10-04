@@ -449,6 +449,13 @@ func (t *cascadesTranslator) translateExistsOverGatheredCluster(
 		} else {
 			return nil
 		}
+		if esq.JoinPredicate != nil {
+			rebased, ok := rebaseLegRefsToBoxPred(esq.JoinPredicate, windows, mergedType, boxQOV)
+			if !ok {
+				return nil
+			}
+			esq.JoinPredicate = rebased
+		}
 		subRef := t.existsInputRef(esq)
 		if subRef == nil {
 			return nil
@@ -467,15 +474,7 @@ func (t *cascadesTranslator) translateExistsOverGatheredCluster(
 			}
 		}
 		quantifiers = append(quantifiers, expressions.NamedExistentialQuantifier(esq.Alias, subRef))
-		innerCorrName, joinPred := t.existsInnerCorrelation(esq)
-		if joinPred != nil {
-			rebased, jpOK := rebaseLegRefsToBoxPred(joinPred, windows, mergedType, boxQOV)
-			if !jpOK {
-				return nil
-			}
-			preds = append(preds, rebased)
-		}
-		sourceAliases = append(sourceAliases, innerCorrName)
+		sourceAliases = append(sourceAliases, esq.Alias.Name())
 	}
 
 	// Record the gate decision (mirroring translateJoin's gather dispatch) so

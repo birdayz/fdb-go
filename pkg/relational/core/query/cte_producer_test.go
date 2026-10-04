@@ -121,17 +121,21 @@ func TestRetainedRecursiveCTEConsumerCommonRow(t *testing.T) {
 			if ref == nil {
 				t.Fatalf("recursive consumer failed: %v", tr.translateErr)
 			}
-			projection, ok := ref.Get().(*expressions.LogicalProjectionExpression)
-			if !ok || !projection.GetProjectedValues()[0].Type().Equals(values.NullableInt) {
-				t.Fatalf("recursive consumer did not adopt the common nullable row: %T", ref.Get())
+			block, ok := ref.Get().(*expressions.SelectExpression)
+			if !ok {
+				t.Fatalf("recursive consumer = %T, want its block select", ref.Get())
+			}
+			columns, isRecord := block.GetResultValue().(*values.RecordConstructorValue)
+			if !isRecord || !columns.Fields[0].Value.Type().Equals(values.NotNullInt) {
+				t.Fatalf("recursive consumer did not adopt the seed row: %v", block.GetResultValue())
 			}
 			other := logical.NewScan("R", "OTHER")
 			other.Source = logical.CTEScanSource(declaration.CTEProducer)
 			otherRef := tr.translateRef(other)
-			if otherRef == nil || projection.GetInner().GetRangesOver() != otherRef {
+			if otherRef == nil || block.GetQuantifiers()[0].GetRangesOver() != otherRef {
 				t.Fatal("recursive consumers do not share one lowered producer reference")
 			}
-			if len(tr.recursiveCTEConsumerRows) != 0 || len(tr.cteExprScope) != 0 || len(tr.cteColumnsScope) != 0 {
+			if len(tr.cteExprScope) != 0 || len(tr.cteColumnsScope) != 0 {
 				t.Fatal("recursive temporary or consumer scope leaked after translation")
 			}
 		})

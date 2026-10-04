@@ -23,7 +23,16 @@ type PushRequestedOrderingThroughSelectExistentialRule struct {
 
 func NewPushRequestedOrderingThroughSelectExistentialRule() *PushRequestedOrderingThroughSelectExistentialRule {
 	return &PushRequestedOrderingThroughSelectExistentialRule{
-		matcher: NewExpressionMatcher[*expressions.SelectExpression]("push_req_ord_select_existential"),
+		matcher: NewExpressionMatcher[*expressions.SelectExpression]("push_req_ord_select_existential").WithRootPredicate(
+			func(sel *expressions.SelectExpression) bool {
+				for _, q := range sel.GetQuantifiers() {
+					if q.Kind() == expressions.QuantifierExistential {
+						return true
+					}
+				}
+				return false
+			},
+		),
 	}
 }
 

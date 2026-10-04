@@ -1,4 +1,4 @@
-# Divergences from Java fdb-record-layer-core 4.12.11.0
+# Divergences from Java fdb-record-layer-core 4.14.2.0
 
 Comprehensive list of Go vs Java differences. All Cascades planner subsystems
 fully ported: ~65 PlanningRuleSet rule instances, 5/5 RewritingRuleSet rules,
@@ -6,7 +6,7 @@ fully ported: ~65 PlanningRuleSet rule instances, 5/5 RewritingRuleSet rules,
 candidate types, 24/24 comparison operators, 9/9 predicates. Remaining items
 are execution-layer, wire-format, or intentional architectural choices.
 
-Validated against a live Java **4.12.11.0** conformance run (the cross-engine corpus runs against
+Validated against a live Java **4.12.11** conformance run (the cross-engine corpus runs against
 live 4.12 in `just test` with a stale-annotation guard, and the suite is green).
 
 ## Intentional Architectural Decisions (no functional difference)
@@ -27,7 +27,7 @@ question was carried to the Java source and the answer settles it.
 **What Java actually does, read rather than assumed.** `validateFormatVersion`
 (`FormatVersion.java:224-231`) throws `UnsupportedFormatVersionException` only when the
 candidate is `< getMinimumVersion()` **or** `> getMaximumSupportedVersion()`. At
-4.12.11.0 `MAX_SUPPORTED_VERSION` is computed as the maximum enum value (`:182`) and
+4.12.11 `MAX_SUPPORTED_VERSION` is computed as the maximum enum value (`:182`) and
 that value **is** `FULL_STORE_LOCK(14)`. So 14 ≤ 14 and the check passes. Then
 `checkPossiblyRebuild` (`FDBRecordStore.java:4627-4630`):
 
@@ -74,7 +74,7 @@ validation consults the ceiling and never the target.
 default 14 opening an existing **Java** store at 7 upgrades it to 14 and writes that,
 permanently narrowing the set of readers that store can be opened by. Java at its
 conservative default never does this to someone else's store. It is harmless at the
-pinned spec — Java 4.12.11.0 reads 14 — and it is the strongest argument that exists
+pinned spec — Java 4.12.11 reads 14 — and it is the strongest argument that exists
 for lowering the default.
 
 It flips the decision if any of these becomes true:
@@ -158,9 +158,7 @@ alternative — never rows. Revisit when a second realizable form exists.
 ### Go decomposes SelectExpression into separate logical operators
 
 **Java:** `SelectExpression` is a unified node for filters, projections, and joins.
-**Go:** Decomposes into `LogicalFilterExpression`, `LogicalProjectionExpression`, `LogicalSortExpression`, etc.
-
-Go needs ~25 extra rewrite rules (Push/Pull/Merge per operator). Same functional behavior. Go's decomposition makes each operator's semantics explicit and simplifies rule correctness verification.
+**Go:** A SQL query block is now one `SelectExpression`, as in Java (TODO.md, "A SQL query block is one SelectExpression"), and Go has no projection expression or projection plan. Still open there: the top-level `Sort(Select)`.
 
 ### NormalizePredicatesRule — RESOLVED
 
@@ -268,7 +266,7 @@ was a bipartition wrongly admitted by a live-existential guard that now requires
 result-live existential to be ALONE in its lower.
 
 `conformance/projected_exists_left_join_java_probe_test.go` keeps the parity claim
-measured against the live 4.12.11.0 JVM rather than inherited from prose.
+measured against the live 4.12.11 JVM rather than inherited from prose.
 ### Reference: finalMembers partially aligned
 
 **Java:** `Reference` has `exploratoryMembers` (logical EXPLORE-phase) and `finalMembers` (physical PLANNING-phase). `advancePlannerStage` clears exploratory, promotes REWRITING winner, clears finals. `OptimizeGroup` prunes `finalMembers` to 1 winner. `ToPlanPartitions` reads only `finalMembers` via `propertiesMap`.
@@ -458,7 +456,7 @@ arm to re-check if a production caller ever appears or if criterion 1 ever looks
 arrived in rather than on what they are. Go ranks both sides instead. Read-side plan choice only —
 nothing here touches the wire, so Java and Go still read and write byte-identical records.**
 
-Java (`PlanningCostModel.java`, tag 4.12.11.0):
+Java (`PlanningCostModel.java`, tag 4.12.11):
 
 - `compareInOperator(leftExpression, rightExpression)` (`:433`) declares its second parameter
   `@SuppressWarnings("unused")` (`:434`) and never reads it. It returns `OptionalInt.empty()` when the
@@ -558,7 +556,7 @@ verdicts on the pairs it DOES adjudicate already contain a cycle. Go ranks both 
 instead. Read-side plan choice only — nothing here touches the wire, so Java and Go still read and
 write byte-identical records.**
 
-Java (`PlanningCostModel.java`, tag 4.12.11.0):
+Java (`PlanningCostModel.java`, tag 4.12.11):
 
 - `comparePrimaryScanToIndexScan(primaryScan, indexScan, …)` (`:370`) is guarded by an applicability
   test (`:376-379`): the first side must be exactly one `RecordQueryScanPlan` with no
@@ -718,7 +716,7 @@ counts and a byte-identical EXPLAIN set (see TODO.md's stress table).
 
 ### Cost Model: RewritingCostModelLess
 
-Java 4.12.11.0's `RewritingCostModel.compare()` has **six** ordered criteria: (0) `outerJoinCount`, (1) `selectCount`, (2) `tableFunctionCount`, (3) normalized CNF conjuncts, (4) predicate-count-by-level, (5) `semanticHashCode` tie-break. Go ports criteria **1–5** (`selectCount`, `tableFunctionCount`, CNF conjuncts, predicate-count-by-level, deep hash tie-break). `Planner.WithCostModel()` wires the cost model per phase.
+Java 4.12.11's `RewritingCostModel.compare()` has **six** ordered criteria: (0) `outerJoinCount`, (1) `selectCount`, (2) `tableFunctionCount`, (3) normalized CNF conjuncts, (4) predicate-count-by-level, (5) `semanticHashCode` tie-break. Go ports criteria **1–5** (`selectCount`, `tableFunctionCount`, CNF conjuncts, predicate-count-by-level, deep hash tie-break). `Planner.WithCostModel()` wires the cost model per phase.
 
 **Criterion 0 — `outerJoinCount` — is DELIBERATELY NOT ported. This is an intentional, justified divergence, not a gap.**
 
@@ -852,11 +850,9 @@ These affect runtime behavior and wire compatibility, NOT plan selection.
 
 A partition *inequality* is the one deliberate residual divergence: Go's executor encodes only an equality prefix tuple (`VectorDistanceScanRangeWithPrefix`), so `ComputeBoundParameterPrefixMap` stops at the first non-equality and leaves the inequality unconsumed — enforced as a residual filter above the fanned-out scan (the same mechanism as a filter on a non-indexed column). Java instead threads the inequality endpoint into `getPrefixRange` to narrow the skip-scan; doing that in Go is a perf follow-up, not a correctness gap. Pinned by `TestVectorPlan_PartialPrefixPlansMultiPartition`, `TestVectorPlan_PartitionInequalityNotConsumedIntoPrefix`, and FDB E2E `TestFDB_VectorSearch_MultiPartition_{Fanout,InequalityResidual,Pagination}`.
 
-### Covering Index Scan — RESOLVED via ImplementProjectionRule
+### Covering Index Scan — RESOLVED
 
-**Status:** Covering index works end-to-end for SQL via `ImplementProjectionRule` (EXPLORE phase). When all projected FieldValues can push through the Fetch's TranslateValueFunction, the Fetch is eliminated. PK columns + all index key columns are coverable. Verified with planner harness tests: `CoveringCompositeIndex`, `CoveringCompositeIndexPKAndIndexCols`, `NonCoveringNeedsExtraColumn`. The FDB stress test shows 63x speedup for PK-only projections over index scans.
-
-**The compensation-based path** (`IsFinalNeeded`, `wrapScanPlanWithCoverage`) is bypassed — SQL projections always set `IsFinalNeeded() = true`. The ImplementProjectionRule path is the active mechanism. Java's `IndexKeyValueToPartialRecord` (826 LOC) approach remains unported but is not needed for SQL coverage.
+**Status:** Covering index works end-to-end for SQL. The data-access rule builds the covering plan (`wrapScanPlanWithCoverage`, Java `ValueIndexScanMatchCandidate`), and `PushMapThroughFetchRule` eliminates the fetch when the block's Map reads only covered columns, as Java's push-through-fetch rules do. Verified with planner harness tests: `CoveringCompositeIndex`, `CoveringCompositeIndexPKAndIndexCols`, `NonCoveringNeedsExtraColumn`.
 
 ## Optimization-Quality Gaps (correctness unaffected)
 
@@ -865,7 +861,7 @@ A partition *inequality* is the one deliberate residual divergence: Go's executo
 | CollapseRecordConstructorOverFieldsToStar | Blocked: needs field-level type metadata (ordinal positions) |
 | ExtractFromIndexKeyValueRuleSet (3 rules) | Blocked: execution layer (partial record construction) |
 
-## Go-Only Extensions (features Java 4.12.11.0 rejects)
+## Go-Only Extensions (features Java 4.12.11 rejects)
 
 Go supports these SQL features that Java rejects. Removing them would be a user-visible regression; they stay as Go extensions.
 
@@ -884,7 +880,7 @@ Go supports these SQL features that Java rejects. Removing them would be a user-
 | `XOR` operator | Not registered in `SqlFunctionCatalogImpl`; throws UNSUPPORTED_QUERY | SQL-standard XOR with NULL propagation |
 | Scalar subqueries in expressions | Grammar has no `subqueryExpressionAtom` (parse error) | Translated via `ScalarSubqueryValue` (`DecorrelateValuesRule` covers the other values-box patterns) |
 
-Go-only plan types: `RecordQueryHashAggregationPlan`, `RecordQueryInMemorySortPlan`, `RecordQueryLimitPlan`, `RecordQueryProjectionPlan`, `RecordQueryValuesPlan`, `RecordQueryNestedLoopJoinPlan`. `RecordQueryMergeSortUnionPlan` is Go's collapsed ordered-union counterpart, not a semantic extension; its `removeDuplicates=false` mode is an extension. Go also has a keyless concat shape named `RecordQueryUnionPlan`; Java's same-named class is keyed and ordered, so the Go shape—not the class name—is the extension.
+Go-only plan types: `RecordQueryInMemorySortPlan`, `RecordQueryLimitPlan`, `RecordQueryValuesPlan`, `RecordQueryNestedLoopJoinPlan`. `RecordQueryMergeSortUnionPlan` is Go's collapsed ordered-union counterpart, not a semantic extension; its `removeDuplicates=false` mode is an extension. Go also has a keyless concat shape named `RecordQueryUnionPlan`; Java's same-named class is keyed and ordered, so the Go shape—not the class name—is the extension.
 
 Go-only logical expressions: `LogicalLimitExpression`, `LogicalValuesExpression`.
 
@@ -903,7 +899,7 @@ The first three predate this list; it was written when a claim that there was on
 
 #### `54F02` in detail
 
-Java's Cascades planner defines three complexity caps — `maxTotalTaskCount`, `maxTaskQueueSize`, `maxNumMatchesPerRuleCall` — and throws `RecordQueryPlanComplexityException` from `CascadesPlanner.java:448`, `:493`, and `:1026` when one trips. **Java's SQL layer never enables any of them.** `PlannerConfiguration.buildRecordQueryPlannerConfiguration` (`fdb-relational-core/.../query/PlannerConfiguration.java:150-161`) sets index scan preference, in-join union size, index fetch method, disabled rules and `setJoinRightDeep`, and none of the three cap setters. All three guards are gated on a positive bound (`CascadesPlanner.java:325-335`) and the default is `0`, documented as "unbound" (`RecordQueryPlannerConfiguration.java:236,244`). So no JDBC user of stock 4.12.11.0 can observe that exception.
+Java's Cascades planner defines three complexity caps — `maxTotalTaskCount`, `maxTaskQueueSize`, `maxNumMatchesPerRuleCall` — and throws `RecordQueryPlanComplexityException` from `CascadesPlanner.java:448`, `:493`, and `:1026` when one trips. **Java's SQL layer never enables any of them.** `PlannerConfiguration.buildRecordQueryPlannerConfiguration` (`fdb-relational-core/.../query/PlannerConfiguration.java:150-161`) sets index scan preference, in-join union size, index fetch method, disabled rules and `setJoinRightDeep`, and none of the three cap setters. All three guards are gated on a positive bound (`CascadesPlanner.java:325-335`) and the default is `0`, documented as "unbound" (`RecordQueryPlannerConfiguration.java:236,244`). So no JDBC user of stock 4.12.11 can observe that exception.
 
 Go bounds planning at 100,000 tasks at every production callsite, because unbounded search on a pathological query is a liveness hazard. That makes budget exhaustion a **Go-only condition with no shared surface to conform to** — the cross-engine conformance principle governs inputs Java also attempts, and Java does not attempt this one.
 
@@ -928,7 +924,7 @@ Confirmed via cross-engine probes. Go's correct behavior is pinned in Go-only po
 | `WHERE pk_col = nonpk_col` | SQL-correct | `Missing binding` planner error |
 | PK-intersection whose legs fix DIFFERENT primary-key components (`PRIMARY KEY (pk1, pk2)`, indexes `(b, pk1)` and `(pk2)`, `WHERE b = 1 AND pk2 = 3`) | Intersects on `(pk1, pk2)`, the order both legs deliver; correct rows (RFC-245 declined the merge, RFC-247 widened the key) | Intersects on `COMPARE BY (_.PK1)` and returns every `pk2 = 3` record regardless of `b` (`COUNT(*)` 4 for a 1-row answer) — see below |
 
-4.12.11.0 fixed three former entries, now removed from this table — they run as plain cross-engine
+4.12.11 fixed three former entries, now removed from this table — they run as plain cross-engine
 equivalence in the corpus: PK literal-eq AND join predicate (`pk_literal_eq_in_join`) and 3-way join
 shared driver key (`three_way_join_shared_driver`), both fixed by 4.12's "planner no longer drops
 ANDed predicates" change; and `WHERE TRUE AND val > 5`, now planned by 4.12 (boolean literals in
@@ -938,7 +934,7 @@ WHERE, added in the 4.12 line — see `join-tests.yamsql` `WHERE TRUE`/`WHERE FA
 predicates), verified 2026-06-28 and pinned by `bare_bool_where_probe_test.go` (literal forms) plus the
 corpus `bare_bool_where` (`WHERE flag`). The remaining `WHERE pk_col = nonpk_col` "Missing binding" entry stays as not-yet-
 fixed in 4.12: the corpus keeps that probe deliberately omitted (column-self-equality), so the live
-4.12.11.0 run neither confirms a fix nor pins the divergence — it is retained on the not-yet-fixed
+4.12.11 run neither confirms a fix nor pins the divergence — it is retained on the not-yet-fixed
 side per the corpus's omit comment.
 
 ### PK-intersection comparison key: the soundness proof is per leg, not over the union of legs
@@ -951,7 +947,7 @@ from the requirement for ALL legs. Over `PRIMARY KEY (pk1, pk2)` with indexes `(
 `(pk2)`, `WHERE b = 1 AND pk2 = 3` merges the two covering scans on `(pk1)`: the `(pk2)` leg is a
 single record per pk1, but the `(b, pk1)` leg carries several records per pk1 differing only in
 pk2, so "equal comparison keys" no longer means "the same record" and the merge emits records the
-other leg never matched. Measured on 4.12.11.0
+other leg never matched. Measured on 4.12.11
 (`conformance/pk_intersection_leg_bound_key_java_probe_test.go`): plan
 `COVERING(TI_PK2 [EQUALS …]) ∩ COVERING(TI_B_PK1 [EQUALS …]) COMPARE BY (_.PK1)`, four rows and
 `COUNT(*) = 4` where the answer is the single record `(3, 3)`. With an `ORDER BY` Java picks the
@@ -987,34 +983,14 @@ found it). Booked in TODO.md section 9 for the upstream report.
 | VariadicFunctionValue | `ScalarFunctionValue` | Aligned (COALESCE folding matches Java) |
 | 12 Comparison subclasses | Single `Comparison` struct with optional fields | Aligned |
 
-## RFC-220 — the projection is RETAINED over a covering scan where Java drops it
+## RFC-220 — the result over a covering scan — RESOLVED
 
-Java's `MergeProjectionAndFetchRule.onMatch`
-(`MergeProjectionAndFetchRule.java:62-78`) does exactly one thing when every
-projected value pushes through the fetch: `call.yieldPlan(fetchPlan.getChild())`.
-The projection is DROPPED. Go yields the fetch's child with the projection
-RETAINED above it (`rule_merge_projection_and_fetch.go`,
-`rule_implement_projection.go`).
-
-This is deliberate and permanent, and it is not a shortfall — Go is stricter
-than Java here.
-
-Java can drop the projection because
-`RecordQueryCoveringIndexPlan.getResultValue()` returns
-`IndexedValue(indexPlan.getResultType().getInnerType())` — the base record type,
-not the projected shape — and it carries a standing TODO in the Java source
-admitting exactly that. `pushValue` translates the projection's Values only for
-the FEASIBILITY test; Java then discards both and tolerates a wider output type
-than the query asked for.
-
-Go's covering plan reports the same full partial-record shape, but Go's callers
-do NOT tolerate a wider row: dropping the projection leaks the whole record and
-the wrong output schema. So the projection stays.
-
-There is therefore no "result-value rewrite" in Java to port. An earlier draft of
-RFC-220 described this as a fallback pending such a port; that was wrong about
-Java and is corrected here. The divergence is not effort-gated and should not be
-"closed" by making Go match Java — matching Java would be a regression.
+Java's `MergeProjectionAndFetchRule` drops a `LogicalProjectionExpression` over a
+covering fetch, but fdb-relational never builds that expression: a SQL query block
+is a `SelectExpression`, and `PushMapThroughFetchRule` keeps the block's Map over
+the covering plan (`RecordQueryMapPlan` over the fetch's child). Go builds blocks
+the same way and has no projection expression, so the covering plan reads
+`Map(IndexScan(… COVERING))` in both engines.
 
 ## DML statement-layer routing (RFC-035)
 
@@ -1024,7 +1000,8 @@ intentional divergence at the statement layer:
 
 | Aspect | Java | Go |
 |---|---|---|
-| DML via the rows-returning method (`executeQuery` / `Query`) | Executes the DML, counts rows, then throws "use executeUpdate" — the mutation still happens | Rejects **before** executing ("use Exec, not Query"); no mutation |
+| DML via the rows-returning method (`executeQuery` / `Query`) | Executes the DML, counts rows, then throws 02F01 "does not return result set" — the mutation still happens | Rejects with the same 02F01 **before** executing; no mutation |
+| A row-returning statement (SELECT, UPDATE/DELETE … RETURNING) via `executeUpdate` / `Exec` | Executes it, then throws 42F61 "returns a result set" — a RETURNING mutation still happens | Rejects with the same 42F61 **before** executing; no mutation |
 
 Go rejects up front to avoid a surprise write on a misused method; the plan
 path is identical to Java, only the execute-then-throw side effect differs.
@@ -1083,7 +1060,7 @@ the class un-shippable or file a tracked TODO — never leave it as a silent res
 ## RFC-183 P5 residue — tracked, out of scope for the fully-linked-plans branch
 
 Four pre-existing items surfaced by the P5 review. None is caused by P5; all are filed here
-rather than fixed in-branch. Verified against Java 4.12.11.0.
+rather than fixed in-branch. Verified against Java 4.12.11.
 
 ### `canCorrelate` — three divergences from Java, one of them in the UNSAFE direction
 
@@ -1202,7 +1179,7 @@ query ANSWERS with Java's live-verified semantics. Both variants are pinned by
 When a lateral unnest's element/AT alias DUPLICATES an outer column name (`SELECT SUB FROM t,
 t.scarr AS "SUB"`, or the CTE-boxed `WITH S AS (SELECT * FROM t, t.scarr AS "SUB") …`), Go's
 deployed RFC-142 semantics resolves the reference to the UNNEST ELEMENT (element-shadows-outer,
-last-write-wins). Java 4.12.11.0's `SemanticAnalyzer.resolveIdentifier` (SemanticAnalyzer.java
+last-write-wins). Java 4.12.11's `SemanticAnalyzer.resolveIdentifier` (SemanticAnalyzer.java
 ~:417/:422) resolves a duplicate column reference as `AMBIGUOUS_COLUMN` — an ERROR. So on this
 shared surface Go RETURNS ROWS (the element) where Java REJECTS.
 
@@ -1218,7 +1195,7 @@ resolution loud `AMBIGUOUS_COLUMN` UNIFORMLY (direct + CTE forms), never just th
 
 ## UNION ALL trailing ORDER BY: combined-result vs Java's right-leg-only (RFC-180, live-probed)
 
-Java 4.12.11.0 attaches a trailing `ORDER BY` after `… UNION ALL SELECT …` to
+Java 4.12.11 attaches a trailing `ORDER BY` after `… UNION ALL SELECT …` to
 the RIGHT LEG ONLY (QueryVisitor.visitSetQuery visits legs independently; each
 leg keeps its own ORDER BY) — live-probed: `SELECT id FROM a UNION ALL SELECT
 id FROM b ORDER BY id DESC` returns the interleave of left-natural with
@@ -1541,7 +1518,7 @@ test file states rather than leaving as accidental green.
 
 **Evidence class — read this before acting on the comparison.** The Go
 half is MEASURED (live FDB, `--nocache_test_results`, red-green
-mutation both ways). The JAVA half is INFERRED from 4.12.11.0 sources
+mutation both ways). The JAVA half is INFERRED from 4.12.11 sources
 plus the checked-in plan golden above. That golden is Java's own
 recorded planner output, which makes it strong, but **the Java planner
 was not run**. What would upgrade it: reproducing
@@ -1552,26 +1529,13 @@ guard must not be "fixed" back toward Java.
 
 ## Bound parameters stay Unknown-typed at the plan gates
 
-The plan-time promotion and cast-pair gates exempt UNKNOWN-typed
-operands, which includes bound parameters on the exported
-PlanRecordQueryWithMetadata path (the SQL driver substitutes `?` as
-text, so driver-reachable string binds arrive STRING-typed and take the
-STRING arms; other binds take their rendered literal's type). Java types
-parameters by inference and gates them too; Go's parameter-inference arc
-would close this — until then a LONG-bound parameter through the exported
-path evaluates leniently where Java rejects at plan time.
-
-RFC-254 (`rfcs/254-scalar-floating-results-preserve-type-and-sign.md`) repairs
-the SQL driver's finite DOUBLE transport: exponent literals preserve both
-type and bits instead of `%g` turning whole doubles into integers. The
-executor has WithParams/BindParameter, but the driver does not use them;
-switching channels also changes statement-global ordinals, cache typing,
-literal-dependent plans and DDL/view parameter admission. Remaining concrete
-text-channel limits: only the documented renderable NaN bit patterns are
-admitted (other payloads are rejected); midnight time.Time is rendered as a
-date-only string, whereas other times include the time; integer parameters
-retain integer-literal interpretation, including ORDER BY positions. The
-RFC's SQL tests pin floating parameters as constants rather than positions.
+The plan-time promotion and cast-pair gates exempt UNKNOWN-typed operands,
+which includes parameters on the exported PlanRecordQueryWithMetadata path.
+The SQL driver does not reach this: it binds each `?`/`?x`/`$x` to a constant
+typed from its Go value (Java's Type.fromObject), so a driver parameter takes
+the same gates as a literal of that type. A bound constant is planned in, so
+the plan-cache key carries the bindings; Java instead caches one plan per
+parameter types.
 
 ## REWRITING prune: virtual (designation) vs Java's physical prune (RFC-186)
 
@@ -2140,7 +2104,7 @@ SECOND PASS at each scope level: exact first, then an unambiguous
 case-insensitive match, then the parent. It counts candidates, so a folded
 reference matching two case-variants is 42702.
 
-**Measured against a live fdb-relational 4.12.11.0**, over
+**Measured against a live fdb-relational 4.12.11**, over
 `CREATE TABLE QCASE (id BIGINT, "KeepCase" BIGINT, plain BIGINT, …)`:
 
 | query | Java | Go |
@@ -2648,3 +2612,50 @@ The retained `DerivedSourceReference` JVM test proves same-alias, star/empty-bod
 and both-live-outer-row EXISTS queries; direct rule tests drive both deferral
 settings and verify the exact canonical lower block. See RFC-256's final sections
 for the rejected broader exemptions, reference outcomes and verification scope.
+
+## GuardiANN: a refused deferred insert writes no vector identity
+
+Java writes the vector's identity row (`VectorMetadata`, subspace tag 5) before the
+deferred-mode hard-cap check (`Insert.java:293`, `:330-338`), so a caller that catches
+`ClusterCapacityExceededException` and commits keeps an identity with no reference, and a
+later insert of that key is a no-op until the record is deleted. Go checks the cap first
+(`insertIntoClusters`, `guardiann_ops.go`); nothing between the two positions reads identity
+rows and the identity UUID is not drawn from the operation RNG, so every successful insert
+writes Java's bytes. Pinned by "GuardiANN deferred hard cap".
+
+## HAVING without GROUP BY over a select list without an aggregate (upstream bug)
+
+SQL treats a query with HAVING and no GROUP BY as one group: `SELECT 7 FROM t HAVING COUNT(*) > 0`
+returns one row when the predicate holds. Java 4.14.2.0 returns one row per input row (three over a
+three-row table) and no row over an empty one, where `COUNT(*) = 0` holds. A query whose select list
+has an aggregate (`SELECT COUNT(*) FROM e HAVING COUNT(*) = 0`) agrees in both engines. Go answers the
+SQL result. Both engines' answers are pinned in `conformance/count_on_empty_conformance_test.go`.
+
+## HNSW efSearch beyond memory
+
+Java's `Search.beamSearchLayer` sizes its result queue `new PriorityQueue<>(efSearch + 1)`, so a
+window option `EF_SEARCH = 2147483646` fails with `OutOfMemoryError` and `2147483647` with an
+`IllegalArgumentException` (the capacity overflows). Go bounds the up-front allocation
+(`hnswSearchCapacityHint`, `hnsw.go`) and searches the whole layer, answering the k nearest rows.
+Every value either engine accepts searches the same beam; both answers are pinned in
+`conformance/window_options_conformance_test.go`.
+
+## Named macro arguments (upstream bug)
+
+Java 4.14.2.0 validates a named macro call by name (`UserDefinedFunctionCatalog.lookup`) but
+`SemanticAnalyzer.resolveFunction` then re-wraps the values with `CallSiteArguments.withArguments`,
+which turns `NamedArguments` into `PositionalArguments` in call order: `st1_d(z => 5, y => 4)`
+binds `y = 5, z = 4`. Go binds each value to the parameter it names. A built-in ignores names in
+both engines. Both answers are pinned in `conformance/named_call_conformance_test.go`.
+
+## Recursive CTE rows that do not fit the seed
+
+Java types a recursive CTE's temporary table by the seed's row (`SemanticAnalyzer.getRecursiveCteType`)
+and writes later iterations into it unconverted, so a mismatch surfaces only where something reads
+it: an INT written into a BIGINT or DOUBLE column fails with an internal `IllegalArgumentException`
+when read, and a NULL in a NOT NULL column survives until a record is built from it (a `COUNT(*)`
+over it answers, and `IS NULL` on it is folded to false). Go keeps the same seed-typed row but fits
+each recursive value when it is written (`recursiveSlotValue`, `values.NarrowValue`): it promotes
+what promotes, and refuses a NULL into NOT NULL or a value of another type with XXXXX at once. Both
+answers are pinned in `conformance/recursive_column_list_conformance_test.go`.
+

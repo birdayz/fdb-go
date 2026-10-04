@@ -63,6 +63,11 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 
 	var queryPredicates []predicates.QueryPredicate
 	for _, p := range selectExpr.GetPredicates() {
+		// Java's matcher requires anyCompensatablePredicate: index-only
+		// predicates must be consumed by an access path, never a residual.
+		if predicateContainsUncompensatableValues(p) {
+			return
+		}
 		if !predicates.IsTautology(p) {
 			queryPredicates = append(queryPredicates, p)
 		}
@@ -91,26 +96,14 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 
 		currentRef := call.MemoizeFinalExpressionsFromOther(innerRef, innerExprs)
 		currentQuant := expressions.NamedPhysicalQuantifier(innerQuantifier.GetAlias(), currentRef)
-		currentPlan := innerPlans[0]
 
 		if innerQuantifier.Kind() == expressions.QuantifierExistential {
-			// FirstOrDefault collapses onto a DISENTANGLED FINAL edge holding the
-			// concrete SARG-pushed member currentPlan (constraint-preserving
-			// disentangle, RFC-184 W2). The correlated EXISTS/scalar-subquery FOD
-			// wraps a SARG-pushed snapshot that deliberately diverges from the shared
-			// group's winner; freezing currentPlan into a PRIVATE single-member
-			// reference makes planFromQuantifier resolve the SARG member — never the
-			// non-SARG base the shared multi-member group currentRef would float to.
-			// The frozen edge keeps innerQuantifier's alias so GetResultValue is
-			// unchanged.
-			fodInnerQ := expressions.NamedPhysicalQuantifier(innerQuantifier.GetAlias(),
-				call.MemoizeFinalExpression(currentPlan))
-			flowedType, err := fodInnerQ.GetFlowedObjectType()
+			flowedType, err := currentQuant.GetFlowedObjectType()
 			if err != nil {
 				call.Fail(err)
 				return
 			}
-			fodPlan, err := plans.NewRecordQueryFirstOrDefaultPlanFromQuantifier(fodInnerQ, values.NewNullValue(flowedType))
+			fodPlan, err := plans.NewRecordQueryFirstOrDefaultPlanFromQuantifier(currentQuant, values.NewNullValue(flowedType))
 			if err != nil {
 				call.Fail(err)
 				return
@@ -120,8 +113,7 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 				continue
 			}
 			fodRef := call.MemoizeFinalExpression(fodPlan)
-			currentQuant = expressions.NewPhysicalQuantifier(fodRef)
-			currentPlan = fodPlan
+			currentQuant = expressions.NamedPhysicalQuantifier(innerQuantifier.GetAlias(), fodRef)
 		} else if innerQuantifier.Kind() == expressions.QuantifierForEach && innerQuantifier.IsNullOnEmpty() {
 			// The DefaultOnEmpty is its own cascades expression carrying the live
 			// currentQuant edge (RFC-184 W2) — no physicalDefaultOnEmptyWrapper.
@@ -140,8 +132,7 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 				continue
 			}
 			doeRef := call.MemoizeFinalExpression(doePlan)
-			currentQuant = expressions.NewPhysicalQuantifier(doeRef)
-			currentPlan = doePlan
+			currentQuant = expressions.NamedPhysicalQuantifier(innerQuantifier.GetAlias(), doeRef)
 		}
 
 		if len(queryPredicates) > 0 {
@@ -171,7 +162,6 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 			}
 			filterRef := call.MemoizeFinalExpression(filterPlan)
 			currentQuant = expressions.NewPhysicalQuantifier(filterRef)
-			currentPlan = filterPlan
 			if isSimpleResult {
 				call.YieldFinalExpression(filterPlan)
 				continue

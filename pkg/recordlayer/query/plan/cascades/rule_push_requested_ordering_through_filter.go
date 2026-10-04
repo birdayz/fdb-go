@@ -35,6 +35,11 @@ func (r *PushRequestedOrderingThroughFilterRule) Matcher() matching.BindingMatch
 	return r.matcher
 }
 
+func (r *PushRequestedOrderingThroughFilterRule) hasConstraintEffect(cm *ConstraintMap, ref *expressions.Reference, expr expressions.RelationalExpression) bool {
+	orderings, _ := Get(cm, ref, RequestedOrderingConstraintKey)
+	return len(orderings) != 0 && passThroughConstraintHasEffect(cm, ref, expr, RequestedOrderingConstraintKey)
+}
+
 func (r *PushRequestedOrderingThroughFilterRule) OnMatch(call *ImplementationRuleCall) {
 	if !call.IsConstraintOnly() {
 		return

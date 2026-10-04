@@ -33,12 +33,7 @@ func producerOwnedCorrelations(producer values.Value) map[values.CorrelationIden
 	owned := map[values.CorrelationIdentifier]struct{}{
 		values.CurrentCorrelation(): {},
 	}
-	if producer != nil {
-		for correlation := range values.GetCorrelatedToOfValue(producer) {
-			if !correlation.IsZero() {
-				owned[correlation] = struct{}{}
-			}
-		}
-	}
+	values.CollectCorrelatedToOfValue(producer, owned)
+	delete(owned, values.CorrelationIdentifier{})
 	return owned
 }

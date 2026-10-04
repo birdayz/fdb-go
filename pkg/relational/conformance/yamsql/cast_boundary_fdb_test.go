@@ -2,14 +2,13 @@ package yamsql_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/conformance/plandiff"
 	"fdb.dev/pkg/relational/conformance/yamsql"
 )
@@ -104,10 +103,9 @@ func TestNumericCastArrayFDB(t *testing.T) {
 		Name:           "cast-array-boundaries",
 		SchemaTemplate: "CREATE TABLE t (id BIGINT, d DOUBLE ARRAY, f FLOAT ARRAY, PRIMARY KEY(id))",
 		Setup:          []string{"INSERT INTO t VALUES (1, [1.0E20, -1.0E20], CAST([1.0E20, -1.0E20] AS FLOAT ARRAY))"},
-		// Java MessageHelpers.coerceArray rejects null elements at the protobuf
-		// write boundary. Keep the original rejected fixture as a negative pin;
-		// SQL ARRAY targets also declare their elements non-nullable.
-		Tests: []yamsql.Test{{Exec: "INSERT INTO t VALUES (1, [1.0E20, NULL, -1.0E20], CAST([1.0E20, NULL, -1.0E20] AS FLOAT ARRAY))", ErrorCode: "XX000", ErrorMessage: "NULL as elements of a collection are currently not supported"}},
+		// An ARRAY element is never NULL: Java's array constructor refuses a
+		// NULL element with 0A000 before any write boundary is reached.
+		Tests: []yamsql.Test{{Exec: "INSERT INTO t VALUES (1, [1.0E20, NULL, -1.0E20], CAST([1.0E20, NULL, -1.0E20] AS FLOAT ARRAY))", ErrorCode: "0A000", ErrorMessage: "An ARRAY value cannot have NULL elements"}},
 	}
 	var nullElementQueries []string
 	for _, tc := range []struct{ source, target, positive, negative string }{
@@ -143,9 +141,8 @@ func TestNumericCastArrayFDB(t *testing.T) {
 		t.Fatalf("ARRAY CAST: %+v", r)
 	}
 	// These original NULL-element candidates are negative, not positive rows:
-	// SQL ARRAY targets have non-nullable elements (SemanticAnalyzer.lookupType).
-	// Live Java throws NPE on the DOUBLE-to-LONG shape; Go reports its checked
-	// layout violation instead. Nullable containers above remain valid empties.
+	// the array constructor refuses a NULL element with 0A000, as in Java.
+	// Nullable containers above remain valid empties.
 	if len(nullElementQueries) != 4 {
 		t.Fatalf("required four NULL-element rejection cases, got %d", len(nullElementQueries))
 	}
@@ -154,11 +151,9 @@ func TestNumericCastArrayFDB(t *testing.T) {
 	runner := plandiff.NewGoSQLSetupRunner(clusterFilePath)
 	for _, query := range nullElementQueries {
 		result := runner.RunWithSetup(ctx, s.SchemaTemplate, s.Setup, query)
-		var coded interface {
-			Code() values.ResolutionErrorCode
-		}
-		if !errors.As(result.Err, &coded) || coded.Code() != values.LayoutNullabilityMismatch {
-			t.Errorf("NULL-element query %s: wanted layout nullability error, got %v / %v", query, result.Rows.Rows, result.Err)
+		if result.Err == nil || !strings.Contains(result.Err.Error(), "0A000") ||
+			!strings.Contains(result.Err.Error(), "An ARRAY value cannot have NULL elements") {
+			t.Errorf("NULL-element query %s: wanted 0A000 NULL-element refusal, got %v / %v", query, result.Rows.Rows, result.Err)
 		}
 	}
 }
@@ -183,7 +178,9 @@ CREATE TABLE q (id BIGINT, a DOUBLE ARRAY, PRIMARY KEY(id))`,
 		{"quoted_owner_rebuild", `SELECT x FROM (SELECT "q.q".*, x FROM (SELECT CAST(a AS BIGINT ARRAY) AS "a.b" FROM t) AS "q.q", "q.q"."a.b" x) d`},
 		{"quoted_cte", `WITH "q.q" AS (SELECT CAST(a AS BIGINT ARRAY) AS "a.b" FROM t) SELECT x FROM "q.q", "q.q"."a.b" x`},
 		{"quoted_solo_star", `SELECT id FROM (SELECT "q.q".* FROM (SELECT CAST(x AS BIGINT) AS id FROM t, t.a x) AS "q.q", q) e`},
-		{"session_schema", `SELECT x FROM (SELECT CAST(a AS BIGINT ARRAY) AS a FROM conf.t) d, d.a x`},
+		// A table qualified by its schema template's name ({T}, substituted
+		// below: runSemanticScenario's template), not by the schema's.
+		{"template_qualified", `SELECT x FROM (SELECT CAST(a AS BIGINT ARRAY) AS a FROM {T}.t) d, d.a x`},
 		{"cte_labels", `WITH c("a.b") AS (SELECT CAST(a AS BIGINT ARRAY) FROM t) SELECT x FROM c, c."a.b" x`},
 		{"chained_cte", `WITH c AS (SELECT CAST(a AS BIGINT ARRAY) AS a FROM t), d AS (SELECT a FROM c) SELECT x FROM d, d.a x`},
 		{"cte_shadows_table", `WITH q AS (SELECT CAST(a AS BIGINT ARRAY) AS a FROM t) SELECT x FROM q, q.a x`},
@@ -210,7 +207,8 @@ CREATE TABLE q (id BIGINT, a DOUBLE ARRAY, PRIMARY KEY(id))`,
 			t.Parallel()
 			scenario := *s
 			scenario.Name = tc.name
-			scenario.Tests = []yamsql.Test{{Query: tc.query, ExactRows: &want, Unordered: true, ColumnTypes: []string{"BIGINT"}, PlanContains: "Explode("}}
+			query := strings.ReplaceAll(tc.query, "{T}", "TMPL_"+sanitize(t.Name()))
+			scenario.Tests = []yamsql.Test{{Query: query, ExactRows: &want, Unordered: true, ColumnTypes: []string{"BIGINT"}, PlanContains: "Explode("}}
 			r := runSemanticScenario(t, &scenario)
 			if r.TestsRun != 1 || r.TestsPass != 1 || r.TestsFail != 0 {
 				t.Fatalf("bound array route: %+v", r)

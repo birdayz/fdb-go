@@ -2,6 +2,9 @@ package recordlayer
 
 import (
 	"fmt"
+	"reflect"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -178,9 +181,23 @@ type Index struct {
 	// "deliberately set to the name" are the same value and only a separate
 	// bit tells them apart.
 	useExplicitSubspaceKey bool
-	Options                map[string]string
-	AddedVersion           int
-	LastModifiedVersion    int
+	// subspaceKeyErr is SetSubspaceKey's refusal of a nil key, which Java
+	// throws from the setter; every RecordMetaDataBuilder.Build the index was
+	// handed to returns it unless a fault recorded earlier in program order
+	// (subspaceKeyErrSeq) comes first.
+	subspaceKeyErr    error
+	subspaceKeyErrSeq uint64
+	Options           map[string]string
+	// optionOrder is the order keys were first set through SetOption. Java
+	// holds an index's options in an ImmutableMap, whose iteration order is
+	// insertion order, and Index.toProto writes them in that order
+	// (Index.java:131, 661-663), so the stored option list is a function of
+	// the call order. OptionKeys emits this order, then any key written into
+	// Options directly, sorted, so the stored bytes never depend on Go's map
+	// iteration.
+	optionOrder         []string
+	AddedVersion        int
+	LastModifiedVersion int
 
 	// Predicate filters which records are included in this index.
 	// If nil, all records are indexed. If set, only records where
@@ -373,15 +390,14 @@ func NewMaxEverVersionIndex(name string, rootExpression KeyExpression) *Index {
 // permuted to after the value in the secondary subspace, enabling value-ordered scans.
 // Matches Java's new Index(name, rootExpression, IndexTypes.PERMUTED_MAX) with PERMUTED_SIZE_OPTION.
 func NewPermutedMaxIndex(name string, rootExpression KeyExpression, permutedSize int) *Index {
-	return &Index{
+	idx := &Index{
 		Name:           name,
 		Type:           IndexTypePermutedMax,
 		RootExpression: rootExpression,
 		subspaceKey:    name,
-		Options: map[string]string{
-			IndexOptionPermutedSize: strconv.Itoa(permutedSize),
-		},
+		Options:        make(map[string]string),
 	}
+	return idx.SetOption(IndexOptionPermutedSize, strconv.Itoa(permutedSize))
 }
 
 // NewPermutedMinIndex creates a PERMUTED_MIN index with the given name, root key expression,
@@ -389,15 +405,14 @@ func NewPermutedMaxIndex(name string, rootExpression KeyExpression, permutedSize
 // permuted to after the value in the secondary subspace, enabling value-ordered scans.
 // Matches Java's new Index(name, rootExpression, IndexTypes.PERMUTED_MIN) with PERMUTED_SIZE_OPTION.
 func NewPermutedMinIndex(name string, rootExpression KeyExpression, permutedSize int) *Index {
-	return &Index{
+	idx := &Index{
 		Name:           name,
 		Type:           IndexTypePermutedMin,
 		RootExpression: rootExpression,
 		subspaceKey:    name,
-		Options: map[string]string{
-			IndexOptionPermutedSize: strconv.Itoa(permutedSize),
-		},
+		Options:        make(map[string]string),
 	}
+	return idx.SetOption(IndexOptionPermutedSize, strconv.Itoa(permutedSize))
 }
 
 // NewBitmapValueIndex creates a BITMAP_VALUE index with the given name and root key expression.
@@ -446,15 +461,14 @@ func NewTimeWindowLeaderboardIndex(name string, rootExpression KeyExpression) *I
 // the vector dimensionality. Supports EUCLIDEAN, COSINE, and INNER_PRODUCT metrics.
 // Matches Java's new Index(name, rootExpression, IndexTypes.VECTOR).
 func NewVectorIndex(name string, rootExpression KeyExpression, numDimensions int) *Index {
-	return &Index{
+	idx := &Index{
 		Name:           name,
 		Type:           IndexTypeVector,
 		RootExpression: rootExpression,
 		subspaceKey:    name,
-		Options: map[string]string{
-			IndexOptionVectorNumDimensions: fmt.Sprintf("%d", numDimensions),
-		},
+		Options:        make(map[string]string),
 	}
+	return idx.SetOption(IndexOptionVectorNumDimensions, fmt.Sprintf("%d", numDimensions))
 }
 
 // NewMultidimensionalIndex creates a MULTIDIMENSIONAL index backed by a Hilbert R-tree.
@@ -478,12 +492,47 @@ func (idx *Index) SubspaceTupleKey() any {
 }
 
 // SetSubspaceKey overrides the default subspace key (index name).
-// Matches Java's Index.setSubspaceKey(), including its side effect of MARKING
-// the key explicit — see useExplicitSubspaceKey.
+// Matches Java's Index.setSubspaceKey() (Index.java:413-416), including its
+// side effect of MARKING the key explicit — see useExplicitSubspaceKey — and
+// its normalization of the key (tupleEquivalentValue), so an int32 key is
+// stored, and packed, as an int64. Java refuses a nil key with
+// RecordCoreArgumentException "Index subspace key cannot be null" and keeps
+// the key it had; a typed nil (a nil *big.Int or *FDBRecordVersion) is that
+// null too. A Go setter returns the Index for chaining, so the refusal is kept
+// on the Index and returned by every RecordMetaDataBuilder.Build that includes
+// the index, whether the set came before or after AddIndex. It is STICKY: Java
+// throws at the refused call, so no later call of that program runs, and a
+// later valid set here does not clear it, and a refused set leaves the index
+// as it was (Java normalizes before it assigns or marks anything,
+// Index.java:413-416), explicit mark included. Build returns the refusal in
+// program order among the builder's own faults, also for an index removed or
+// refused as a duplicate after the set.
+//
+// Divergence, Go-only: an index already inside a built RecordMetaData has no
+// Build left to return the refusal. There the refused set records the error
+// (SubspaceKeyError reports it) and changes nothing, where Java throws.
 func (idx *Index) SetSubspaceKey(key any) *Index {
+	normalized := tupleEquivalentValue(key)
+	if normalized == nil {
+		if idx.subspaceKeyErr == nil {
+			idx.subspaceKeyErr = &RecordCoreArgumentError{Message: "Index subspace key cannot be null", IndexName: idx.Name, SubspaceKey: key, HasSubspaceKey: true}
+			idx.subspaceKeyErrSeq = nextBuildFaultSeq()
+		}
+		return idx
+	}
+	if idx.subspaceKeyErr != nil {
+		return idx
+	}
+	idx.subspaceKey = normalized
 	idx.useExplicitSubspaceKey = true
-	idx.subspaceKey = key
 	return idx
+}
+
+// SubspaceKeyError returns the refusal a SetSubspaceKey of a nil key recorded
+// on this index, or nil. Build returns it for an index it builds; this is
+// where the refusal of a set on an index of a built RecordMetaData is read.
+func (idx *Index) SubspaceKeyError() error {
+	return idx.subspaceKeyErr
 }
 
 // HasExplicitSubspaceKey reports whether the subspace key was chosen rather
@@ -496,8 +545,7 @@ func (idx *Index) HasExplicitSubspaceKey() bool {
 // IsUnique returns whether this index enforces a uniqueness constraint.
 // Matches Java's Index.isUnique() which checks IndexOptions.UNIQUE_OPTION.
 func (idx *Index) IsUnique() bool {
-	v, ok := idx.Options[IndexOptionUnique]
-	return ok && v == "true"
+	return idx.GetBooleanOption(IndexOptionUnique, false)
 }
 
 // IsClearWhenZero returns whether this index should clear entries when values reach zero.
@@ -505,8 +553,7 @@ func (idx *Index) IsUnique() bool {
 // stale zero-value entries. Applies to COUNT, COUNT_NOT_NULL, and SUM indexes.
 // Matches Java's IndexOptions.CLEAR_WHEN_ZERO.
 func (idx *Index) IsClearWhenZero() bool {
-	v, ok := idx.Options[IndexOptionClearWhenZero]
-	return ok && v == "true"
+	return idx.GetBooleanOption(IndexOptionClearWhenZero, false)
 }
 
 // IsAtomicMutationIndex reports whether this index is maintained via FDB atomic
@@ -541,7 +588,7 @@ func (idx *Index) IsAtomicMutationIndex() bool {
 // Matches Java's IndexOptions.CLEAR_WHEN_ZERO.
 func (idx *Index) SetClearWhenZero(clear bool) *Index {
 	if clear {
-		idx.Options[IndexOptionClearWhenZero] = "true"
+		idx.SetOption(IndexOptionClearWhenZero, "true")
 	} else {
 		delete(idx.Options, IndexOptionClearWhenZero)
 	}
@@ -549,14 +596,15 @@ func (idx *Index) SetClearWhenZero(clear bool) *Index {
 }
 
 // GetBooleanOption returns the boolean value of an index option.
-// Returns the default value if the option is not set.
+// Returns the default value if the option is not set, and otherwise
+// Boolean.valueOf's reading: "true" in any case is true, anything else false.
 // Matches Java's Index.getBooleanOption(String, boolean).
 func (idx *Index) GetBooleanOption(key string, defaultVal bool) bool {
 	v, ok := idx.Options[key]
 	if !ok {
 		return defaultVal
 	}
-	return v == "true"
+	return javaParseBoolean(v)
 }
 
 // SetPredicate sets a filter predicate for sparse/filtered indexes.
@@ -634,6 +682,115 @@ func (idx *Index) HasFilteringPredicate() bool {
 	return idx.HasPredicate() && !predicateProtoIsTautology(idx.predicateProto)
 }
 
+// equalsJava is Java's Index.equals (Index.java:695-711): name, type, root
+// expression, subspace key, added and last-modified versions, primary-key
+// component positions, options and predicate. OnlineIndexer's builder removes
+// duplicate targets with it (a HashSet, OnlineIndexer.java:871-874), so two
+// objects that differ in any of these are both kept, and the one that is not
+// the metadata's own is then refused.
+//
+// The type is compared as spelled, as Java's type.equals does: the deprecated
+// min_ever is not min_ever_long here, although both maintain the same index.
+// Java compares subspace keys after normalizing them on assignment, so an
+// Integer key equals a Long one and a byte[] key equals another with the same
+// content; subspaceKeysEqual is that comparison. The root expressions are
+// compared with keyExpressionEquals, Java's KeyExpression.equals.
+//
+// Java compares predicates with Objects.equals, and of the IndexPredicate
+// classes only RowNumberWindowPredicate overrides equals
+// (IndexPredicate.java:790-801); And, Or, Not, Constant and Value predicates
+// are equal only to themselves. Index's copy constructor shares the predicate
+// object, and Index(proto) builds a new one (Index.java:238). Go keeps the
+// stored proto per Index and a shallow copy shares it, so a predicate is equal
+// when both Indexes hold the same proto, or when both are row-number windows
+// with the same ordering field, size, direction and partition fields. A Go
+// predicate set with SetPredicate is a closure with no stored proto; Go cannot
+// compare closures, not even for identity, so an Index carrying one equals
+// only itself.
+func (idx *Index) equalsJava(o *Index) bool {
+	if idx == o {
+		return true
+	}
+	if idx == nil || o == nil {
+		return false
+	}
+	if idx.Name != o.Name || idx.Type != o.Type ||
+		!keyExpressionsEqualNilSafe(idx.RootExpression, o.RootExpression) ||
+		!subspaceKeysEqual(idx.subspaceKey, o.subspaceKey) ||
+		idx.AddedVersion != o.AddedVersion || idx.LastModifiedVersion != o.LastModifiedVersion {
+		return false
+	}
+	if (idx.primaryKeyComponentPositions == nil) != (o.primaryKeyComponentPositions == nil) ||
+		!slices.Equal(idx.primaryKeyComponentPositions, o.primaryKeyComponentPositions) {
+		return false
+	}
+	if len(idx.Options) != len(o.Options) {
+		return false
+	}
+	for k, v := range idx.Options {
+		if w, ok := o.Options[k]; !ok || w != v {
+			return false
+		}
+	}
+	switch {
+	case idx.predicateProto != nil || o.predicateProto != nil:
+		if idx.predicateProto == o.predicateProto {
+			return true
+		}
+		return rowNumberWindowPredicatesEqual(rowNumberWindowOf(idx.predicateProto), rowNumberWindowOf(o.predicateProto))
+	default:
+		return idx.Predicate == nil && o.Predicate == nil
+	}
+}
+
+// rowNumberWindowOf returns p's row-number window when Java's
+// IndexPredicate.fromProto would build a RowNumberWindowPredicate from p: it
+// takes the first of the and, or, constant, not, value and row-number fields
+// that is set (IndexPredicate.java:105-121).
+func rowNumberWindowOf(p *gen.Predicate) *gen.RowNumberWindowPredicate {
+	if p == nil || p.AndPredicate != nil || p.OrPredicate != nil || p.ConstantPredicate != nil ||
+		p.NotPredicate != nil || p.ValuePredicate != nil {
+		return nil
+	}
+	return p.RowNumberWindowPredicate
+}
+
+// rowNumberWindowPredicatesEqual is RowNumberWindowPredicate.equals over the
+// fields Java builds from the proto (IndexPredicate.java:657-673, :790-801).
+// Either being nil means that side is not a row-number window.
+func rowNumberWindowPredicatesEqual(a, b *gen.RowNumberWindowPredicate) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	if !slices.Equal(a.GetOrderingField(), b.GetOrderingField()) || a.GetSize() != b.GetSize() ||
+		a.GetDirection() != b.GetDirection() || len(a.GetPartitionFields()) != len(b.GetPartitionFields()) {
+		return false
+	}
+	for i, path := range a.GetPartitionFields() {
+		if !slices.Equal(path.GetField(), b.GetPartitionFields()[i].GetField()) {
+			return false
+		}
+	}
+	return true
+}
+
+// javaObjectsEqual is Objects.equals over two Go values that stand for Java
+// objects: nil equals only nil, and otherwise the values must have the same
+// dynamic type, a comparable one, and be ==.
+func javaObjectsEqual(a, b any) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	// Value.Comparable checks the dynamic contents too (a comparable struct type
+	// holding an interface field that holds a slice is not), so the == below
+	// cannot panic.
+	va := reflect.ValueOf(a)
+	if va.Type() != reflect.TypeOf(b) || !va.Comparable() || !reflect.ValueOf(b).Comparable() {
+		return false
+	}
+	return a == b
+}
+
 // PrimaryKeyComponentPositions returns the overlap mapping between index key and primary key.
 // nil means no overlap was computed. Matches Java's Index.getPrimaryKeyComponentPositions().
 func (idx *Index) PrimaryKeyComponentPositions() []int {
@@ -655,15 +812,49 @@ func (idx *Index) HasPrimaryKeyComponentPositions() bool {
 	return idx.primaryKeyComponentPositions != nil
 }
 
+// SetOption sets an index option. A key set for the first time takes the next
+// position in the stored option order, as Java's RecordLayerIndex.Builder.setOption
+// and Index's ImmutableMap do; setting it again changes only its value.
+func (idx *Index) SetOption(key, value string) *Index {
+	if idx.Options == nil {
+		idx.Options = make(map[string]string)
+	}
+	if !slices.Contains(idx.optionOrder, key) {
+		idx.optionOrder = append(idx.optionOrder, key)
+	}
+	idx.Options[key] = value
+	return idx
+}
+
+// OptionKeys returns the option keys in stored order: the keys set through
+// SetOption in the order they were first set (skipping any since deleted), then
+// any key written into Options directly, sorted.
+func (idx *Index) OptionKeys() []string {
+	keys := make([]string, 0, len(idx.Options))
+	for _, k := range idx.optionOrder {
+		if _, ok := idx.Options[k]; ok {
+			keys = append(keys, k)
+		}
+	}
+	var rest []string
+	for k := range idx.Options {
+		if !slices.Contains(keys, k) {
+			rest = append(rest, k)
+		}
+	}
+	sort.Strings(rest)
+	return append(keys, rest...)
+}
+
 // GetReplacedByIndexNames returns the names of indexes that replace this one.
 // Options with keys starting with "replacedBy" (e.g. "replacedBy", "replacedBy_0")
-// have their values as replacement index names.
+// have their values as replacement index names, in option order.
 // Matches Java's Index.getReplacedByIndexNames().
 func (idx *Index) GetReplacedByIndexNames() []string {
 	var names []string
-	for k, v := range idx.Options {
+	for _, k := range idx.OptionKeys() {
 		if strings.HasPrefix(k, IndexOptionReplacedByPrefix) {
-			names = append(names, v)
+			names = append(names, idx.Options[k])
 		}
 	}
 	return names
@@ -671,8 +862,7 @@ func (idx *Index) GetReplacedByIndexNames() []string {
 
 // SetUnique marks this index as enforcing uniqueness.
 func (idx *Index) SetUnique() *Index {
-	idx.Options[IndexOptionUnique] = "true"
-	return idx
+	return idx.SetOption(IndexOptionUnique, "true")
 }
 
 // indexEntryKey builds the FDB tuple for an index entry.

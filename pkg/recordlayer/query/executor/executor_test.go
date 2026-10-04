@@ -454,7 +454,7 @@ func TestExecuteProjection_FieldExtraction(t *testing.T) {
 	inner := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
 		&values.ConstantValue{Value: int64(100), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
 	}))
-	projPlan := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+	projPlan := mustExecutorConstruct(newProjectionMapOverForTest(
 		[]values.Value{
 			&values.ConstantValue{Value: "projected", Typ: values.NewPrimitiveType(values.TypeCodeString, false)},
 		},
@@ -586,7 +586,7 @@ func TestExecuteIntersection_NoCommonRows(t *testing.T) {
 			Typ:   values.NewPrimitiveType(values.TypeCodeInt, false),
 		}
 		input := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{literal}))
-		return mustExecutorConstruct(plans.NewRecordQueryProjectionPlanWithAliases(
+		return mustExecutorConstruct(newProjectionMapForTest(
 			[]values.Value{literal}, []string{"V"}, input,
 		))
 	}
@@ -824,7 +824,7 @@ func TestExecute_CompositeFilterSortLimitProject(t *testing.T) {
 
 	limited := mustExecutorConstruct(plans.NewRecordQueryLimitPlan(sorted, 10, 0))
 
-	projected := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+	projected := mustExecutorConstruct(newProjectionMapOverForTest(
 		[]values.Value{
 			&values.ConstantValue{Value: "result", Typ: values.NewPrimitiveType(values.TypeCodeString, false)},
 		},
@@ -868,7 +868,7 @@ func TestProjection_MultiColumnFieldValue(t *testing.T) {
 	}))
 	root := inner.GetResultValue()
 
-	projected := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+	projected := mustExecutorConstruct(newProjectionMapOverForTest(
 		[]values.Value{
 			mustTestFieldOrdinal(t, root, 0),
 			mustTestFieldOrdinal(t, root, 1),
@@ -3836,9 +3836,16 @@ func TestScalarProtoToGo_Uint32Kinds(t *testing.T) {
 	} {
 		t.Run(kind.String(), func(t *testing.T) {
 			t.Parallel()
+			// protobuf-java's signed Integer: all 32 bits set is -1.
 			got := values.ProtoScalarKindToRowValue(kind, protoreflect.ValueOfUint32(math.MaxUint32))
-			if got != int64(math.MaxUint32) {
-				t.Errorf("got %v (%T), want int64(%d)", got, got, uint32(math.MaxUint32))
+			if got != int64(-1) {
+				t.Errorf("got %v (%T), want int64(-1)", got, got)
+			}
+			if got := values.ProtoScalarKindToRowValue(kind, protoreflect.ValueOfUint32(3000000000)); got != int64(-1294967296) {
+				t.Errorf("3000000000: got %v (%T), want int64(-1294967296)", got, got)
+			}
+			if got := values.ProtoScalarKindToRowValue(kind, protoreflect.ValueOfUint32(42)); got != int64(42) {
+				t.Errorf("42: got %v (%T), want int64(42)", got, got)
 			}
 		})
 	}
@@ -5053,7 +5060,7 @@ func TestAggregateContinuation_RoundTrip_SumCount(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 
-	gotInner, gotGroupKey, gotGS, err := decodeAggregateContinuation(encoded, len(aggs))
+	gotInner, gotGroupKey, gotGS, err := decodeAggregateContinuation(encoded, aggs, nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -5110,7 +5117,7 @@ func TestAggregateContinuation_NilGroupState(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 
-	gotInner, gotGroupKey, gotGS, err := decodeAggregateContinuation(encoded, 0)
+	gotInner, gotGroupKey, gotGS, err := decodeAggregateContinuation(encoded, make([]expressions.AggregateSpec, 0), nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -5147,7 +5154,7 @@ func TestAggregateContinuation_FloatMinMax(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 
-	_, _, gotGS, err := decodeAggregateContinuation(encoded, 1)
+	_, _, gotGS, err := decodeAggregateContinuation(encoded, make([]expressions.AggregateSpec, 1), nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -5198,7 +5205,7 @@ func TestAggregateContinuation_GroupKeyBytesSurvive_F4(t *testing.T) {
 		if err != nil {
 			t.Fatalf("encode %v: %v", tup, err)
 		}
-		_, gotKey, _, err := decodeAggregateContinuation(encoded, len(aggs))
+		_, gotKey, _, err := decodeAggregateContinuation(encoded, aggs, nil)
 		if err != nil {
 			t.Fatalf("decode %v: %v", tup, err)
 		}
@@ -5237,7 +5244,7 @@ func TestAggregateContinuation_TypesPreserved_F5(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	_, _, gotGS, err := decodeAggregateContinuation(encoded, len(aggs))
+	_, _, gotGS, err := decodeAggregateContinuation(encoded, aggs, nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -6335,7 +6342,7 @@ func TestExecuteUnorderedUnion_ResumeContract(t *testing.T) {
 			Typ:   values.NewPrimitiveType(values.TypeCodeInt, false),
 		}
 		input := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{literal}))
-		return mustExecutorConstruct(plans.NewRecordQueryProjectionPlanWithAliases(
+		return mustExecutorConstruct(newProjectionMapForTest(
 			[]values.Value{literal}, []string{"V"}, input,
 		))
 	}
@@ -6597,5 +6604,173 @@ func TestExecuteExplode_ProtoDeclaredShape(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestAggregateContinuation_ArrayAgg(t *testing.T) {
+	t.Parallel()
+	aggs := []expressions.AggregateSpec{
+		{Function: expressions.AggArrayAgg, Operand: mustNamedTestField(t, "s", values.NullableString), Limit: values.ArrayAggNoLimit},
+		{Function: expressions.AggSum, Operand: mustNamedTestField(t, "amount", values.NullableLong)},
+		{Function: expressions.AggArrayAgg, Operand: mustNamedTestField(t, "n", values.NullableLong), IgnoreNulls: true, Limit: 3},
+	}
+	gs := &groupState{
+		count: 2, counts: []int64{0, 2, 0}, sums: []float64{0, 3, 0}, sumsI: []int64{0, 3, 0},
+		allInt: []bool{true, true, true}, mins: []any{nil, nil, nil}, maxs: []any{nil, nil, nil},
+		arrays: [][]any{{"a", "b"}, nil, nil},
+	}
+	encoded, err := encodeAggregateContinuation(nil, "k", nil, gs, aggs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, got, err := decodeAggregateContinuation(encoded, aggs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A group that saw rows but kept no element restores an empty, not absent, array.
+	if fmt.Sprint(got.arrays[0]) != "[a b]" || got.arrays[2] == nil || len(got.arrays[2]) != 0 {
+		t.Fatalf("arrays = %#v", got.arrays)
+	}
+	if got.sumsI[1] != 3 {
+		t.Fatalf("sumsI = %v", got.sumsI)
+	}
+	// A continuation written without ARRAY_AGG slots is not one for this plan.
+	legacy, err := encodeAggregateContinuation(nil, "k", nil, gs, aggs[1:2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := decodeAggregateContinuation(legacy, aggs, nil); err == nil {
+		t.Fatal("decoded a continuation missing its ARRAY_AGG slots")
+	}
+}
+
+func TestBitmapAggregateStreaming(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		positions []any
+		length    int
+		first     byte
+		last      byte
+		fail      bool
+	}{
+		{"bits", []any{int64(1), int64(2), int64(2), nil}, 1250, 6, 0, false},
+		{"long narrows", []any{int64(1<<32) + 1}, 1250, 2, 0, false},
+		{"extended", []any{int64(10000)}, 1251, 0, 1, false},
+		{"maximum", []any{int64(249999)}, 31250, 0, 128, false},
+		{"null", []any{nil}, 0, 0, 0, false},
+		{"negative", []any{int64(-1)}, 0, 0, 0, true},
+		{"too large", []any{int64(250000)}, 0, 0, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			operand := &values.ConstantValue{Typ: values.NullableLong}
+			c := &aggregateCursor{aggregates: []expressions.AggregateSpec{{Function: expressions.AggBitmapConstructAgg, Operand: operand}}}
+			c.current = c.newGroupState()
+			var err error
+			for _, v := range tc.positions {
+				operand.Value = v
+				if err = c.accumulateRow(QueryResult{}); err != nil {
+					break
+				}
+			}
+			if tc.fail {
+				if err == nil {
+					t.Fatal("expected invalid bitmap position error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Resume a partially accumulated group before producing its result.
+			encoded, err := encodeAggregateContinuation(nil, "", nil, c.current, c.aggregates)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _, c.current, err = decodeAggregateContinuation(encoded, c.aggregates, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := c.finalizeGroup().Positional.Slots[0]
+			if tc.length == 0 {
+				if got != nil {
+					t.Fatalf("all-null aggregate = %v", got)
+				}
+				return
+			}
+			b, ok := got.([]byte)
+			if !ok || len(b) != tc.length {
+				t.Fatalf("bitmap type/length = %T/%v, want %d bytes", got, got, tc.length)
+			}
+			if b[0] != tc.first || b[len(b)-1] != tc.last {
+				t.Fatalf("bitmap endpoints %d/%d", b[0], b[len(b)-1])
+			}
+		})
+	}
+}
+
+func TestBitmapAggregateContinuationValidation(t *testing.T) {
+	t.Parallel()
+	operand := &values.ConstantValue{Typ: values.NullableLong, Value: int64(1)}
+	aggs := []expressions.AggregateSpec{{Function: expressions.AggBitmapConstructAgg, Operand: operand}, {Function: expressions.AggArrayAgg, Operand: operand, Limit: values.ArrayAggNoLimit}}
+	c := &aggregateCursor{aggregates: aggs}
+	c.current = c.newGroupState()
+	if err := c.accumulateRow(QueryResult{}); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := encodeAggregateContinuation(nil, "", nil, c.current, aggs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, c.current, err = decodeAggregateContinuation(encoded, aggs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operand.Value = int64(9)
+	if err := c.accumulateRow(QueryResult{}); err != nil {
+		t.Fatal(err)
+	}
+	row := c.finalizeGroup().Positional.Slots
+	bitmap := row[0].([]byte)
+	if bitmap[0] != 2 || bitmap[1] != 2 || fmt.Sprint(row[1]) != "[1 9]" {
+		t.Fatalf("resumed bitmap/array: %v", row)
+	}
+	for _, tc := range []struct {
+		name  string
+		state *gen.OneOfTypedState
+	}{
+		{"short", &gen.OneOfTypedState{State: &gen.OneOfTypedState_BytesState{BytesState: []byte{2}}}},
+		{"oversize", &gen.OneOfTypedState{State: &gen.OneOfTypedState_BytesState{BytesState: make([]byte, 31251)}}},
+		{"wrong type", &gen.OneOfTypedState{State: &gen.OneOfTypedState_Int64State{Int64State: 2}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var msg gen.AggregateCursorContinuation
+			if err := proto.Unmarshal(encoded, &msg); err != nil {
+				t.Fatal(err)
+			}
+			states := msg.PartialAggregationResults.AccumulatorStates[0].State
+			states[len(states)-1] = tc.state
+			bad, err := proto.Marshal(&msg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, _, err := decodeAggregateContinuation(bad, aggs, nil); err == nil {
+				t.Fatal("accepted malformed bitmap state")
+			}
+		})
+	}
+}
+
+// The executor's array write backstop raises the same 0A000 error as array
+// construction.
+func TestGoToProtoValue_NullArrayElementIsJavas(t *testing.T) {
+	t.Parallel()
+	fd := (&gen.Index{}).ProtoReflect().Descriptor().Fields().ByName("record_type")
+	_, err := goToProtoValue(fd, []any{"a", nil})
+	var nullElem *values.NullArrayElementError
+	if !errors.As(err, &nullElem) {
+		t.Fatalf("err = %v (%T), want NullArrayElementError", err, err)
 	}
 }

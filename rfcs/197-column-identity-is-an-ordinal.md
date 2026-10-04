@@ -1037,18 +1037,19 @@ the same fact.
 | --- | --- | --- |
 | boundary | 1 | 2 |
 | contract | 2 | 4 |
-| dotted | 2 | 2 |
+| dotted | 1 | 1 |
 | harness | 0 | 0 |
 | name-keyed | 4 | 4 |
-| translator | 3 | 4 |
-| TOTAL | 11 | 16 |
+| translator | 1 | 1 |
+| TOTAL | 9 | 12 |
 
-The per-bucket authority column sums to MORE than the distinct total, because one
-declaration owes debt in more than a single bucket — `deriveColumnsFromProjection`
-(dotted + translator). That is legal
-and `TestFieldDebtBucketsArePartition` reports the difference rather than
-absorbing it, so it is never mistaken for an arithmetic slip. The magnitudes are
-in the table and in that test's output, not here.
+When a declaration owes debt in more than a single bucket, the per-bucket
+authority column sums to MORE than the distinct total. That is legal and
+`TestFieldDebtBucketsArePartition` reports the difference rather than absorbing
+it, so it is never mistaken for an arithmetic slip. (`deriveColumnsFromProjection`
+was the dotted + translator case; result columns now come from the plan's
+result row type and it is gone.) The magnitudes are in the table and in that
+test's output, not here.
 
 - An **escape** is a single site where a name can leave typed context. It must stay
   per-site: fix five of six return arms in one switch and the sixth is a live
@@ -1065,7 +1066,6 @@ left. Which authorities, and how many each, is the table below.
 
 | authority | escapes |
 | --- | --- |
-| `deriveColumnsFromProjection` | 3 |
 | `explainValueOrdinalsWithAliases` | 3 |
 
 `AggregateResultColumnName` used to head this table and is GONE: its
@@ -1193,7 +1193,6 @@ so the table below states one per edge:
 | --- | --- | --- | --- | --- | --- |
 | `rebaseUnnestOuterLegPredicate` | pkg/relational/core/query/cascades_translator.go | `rowSlotForLegColumn` | pkg/recordlayer/query/executor/ordinal_join.go | co-occurring | no |
 | `rebaseUnnestOuterLegPredicate` | pkg/relational/core/query/cascades_translator.go | `rebaseOuterLegValueOrdinal` | pkg/recordlayer/query/plan/cascades/left_outer_existential.go | decliner | no |
-| `rebaseUnnestOuterLegPredicate` | pkg/relational/core/query/cascades_translator.go | `rebaseOuterLegValue` | pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go | decliner | no |
 | `rebaseUnnestOuterLegPredicate` | pkg/relational/core/query/cascades_translator.go | `legRef` | pkg/relational/core/query/ordinal_seed.go | decliner | no |
 | `explainValueOrdinals` | pkg/recordlayer/query/plan/cascades/values/values.go | `AccessorNamePath` | pkg/recordlayer/query/plan/cascades/values/accessor_name_path.go | decliner | no |
 | `projCol` | pkg/relational/core/embedded/select_parser.go | `clusterFieldResolvable` | pkg/relational/core/query/clustered_outer_scalar.go | consumer | no |

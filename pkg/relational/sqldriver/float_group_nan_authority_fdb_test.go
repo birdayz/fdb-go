@@ -157,7 +157,7 @@ func TestFDB_FloatGroupByNaNAuthority(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE fgna "+
 		"CREATE TABLE t (id BIGINT, d DOUBLE, a BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_fgna/s WITH TEMPLATE fgna")
-	dsn := fmt.Sprintf("fdbsql:///testdb_fgna?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_FGNA?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -285,7 +285,7 @@ func TestFDB_FloatAggregateIndexSplitsNaNPayloads(t *testing.T) {
 		"CREATE TABLE t (id BIGINT, d DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX cnt_by_d AS SELECT COUNT(*) FROM t GROUP BY d")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_fgnaidx/s WITH TEMPLATE fgnaidx")
-	dsn := fmt.Sprintf("fdbsql:///testdb_fgnaidx?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_FGNAIDX?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -349,22 +349,23 @@ func TestFDB_FloatGroupByNaNAuthority_Float32(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE fgna32 "+
 		"CREATE TABLE t (id BIGINT, g FLOAT, h DOUBLE, a BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_fgna32/s WITH TEMPLATE fgna32")
-	dsn := fmt.Sprintf("fdbsql:///testdb_fgna32?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_FGNA32?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	// A FLOAT column holds no ±Inf (the narrowing range check rejects it), so
-	// the NEGATIVE NaN is computed in DOUBLE arithmetic in helper column h and
-	// narrowed on assignment, which preserves the sign bit. Narrowing also maps
-	// the two payloads to the 32-bit quiet NaNs 0x7fc00000 / 0xffc00000 — two
-	// DISTINCT float32 bit patterns, which is what this test needs.
+	// A FLOAT column takes only a FLOAT (no DOUBLE_TO_FLOAT promotion, and CAST
+	// of a DOUBLE NaN to FLOAT is refused), so the NEGATIVE NaN is computed in
+	// the FLOAT lane: 3e38*10 saturates to +Inf in float32, 3e38*-10 to -Inf,
+	// and their sum is the default quiet NaN 0xffc00000; CAST('NaN' AS FLOAT)
+	// is 0x7fc00000 — two DISTINCT float32 bit patterns, which is what this
+	// test needs.
 	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, g, h, a) VALUES "+
-		"(20, -1.5, 1.0e308, 1), (30, -0.0, 1.0e308, 1), (40, 0.0, 1.0e308, 1), "+
-		"(70, 1.0, 1.0e308, 1), (5, CAST('NaN' AS DOUBLE), 1.0e308, 1)")
-	mwjoMustExec(t, db, ctx, "UPDATE t SET g = (h * 10.0) + (h * -10.0) WHERE id = 70")
+		"(20, CAST(-1.5 AS FLOAT), 1.0e308, 1), (30, CAST(-0.0 AS FLOAT), 1.0e308, 1), (40, CAST(0.0 AS FLOAT), 1.0e308, 1), "+
+		"(70, CAST(1.0 AS FLOAT), 1.0e308, 1), (5, CAST('NaN' AS FLOAT), 1.0e308, 1)")
+	mwjoMustExec(t, db, ctx, "UPDATE t SET g = (CAST(3.0E38 AS FLOAT) * CAST(10.0 AS FLOAT)) + (CAST(3.0E38 AS FLOAT) * CAST(-10.0 AS FLOAT)) WHERE id = 70")
 
 	// Vacuity guard: two NaNs with the SAME payload would make the merge
 	// trivially true and the test would pass with the canonicalization gone.

@@ -265,6 +265,12 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		return cmp
 	}
 
+	if ctx != nil {
+		if cmp := compareVectorIndexEnginePreference(a, b, ctx.GetPlannerConfiguration().VectorIndexEnginePreference); cmp != 0 {
+			return cmp
+		}
+	}
+
 	if cmp := comparePrimaryScanVsIndexScan(a, b, opsA, opsB, indexScanPreferenceOf(ctx)); cmp != 0 {
 		return cmp
 	}
@@ -920,6 +926,54 @@ func inPlanPenaltyRankOfPlan(p plans.RecordQueryPlan) int {
 	return 0
 }
 
+// compareVectorIndexEnginePreference is Java's PlanningCostModel method of the
+// same name: it abstains unless an engine is preferred and each plan makes
+// exactly one vector index access, on different engines; the one on the
+// preferred engine wins.
+func compareVectorIndexEnginePreference(a, b expressions.RelationalExpression, preferred string) int {
+	if preferred == "" {
+		return 0
+	}
+	ea, eb := singleVectorIndexEngine(a), singleVectorIndexEngine(b)
+	if ea == "" || eb == "" || ea == eb {
+		return 0
+	}
+	switch preferred {
+	case ea:
+		return -1
+	case eb:
+		return 1
+	}
+	return 0
+}
+
+// singleVectorIndexEngine is the engine of the one vector index scan in e's
+// plan tree, or "" when there is none or more than one.
+func singleVectorIndexEngine(e expressions.RelationalExpression) string {
+	ph, ok := e.(physicalPlanExpression)
+	if !ok {
+		return ""
+	}
+	engine, n := "", 0
+	var walk func(p plans.RecordQueryPlan)
+	walk = func(p plans.RecordQueryPlan) {
+		if p == nil || n > 1 {
+			return
+		}
+		if v, ok := p.(*plans.RecordQueryVectorIndexPlan); ok && v.GetIndexEngine() != "" {
+			engine, n = v.GetIndexEngine(), n+1
+		}
+		for _, c := range p.GetChildren() {
+			walk(c)
+		}
+	}
+	walk(ph.GetRecordQueryPlan())
+	if n != 1 {
+		return ""
+	}
+	return engine
+}
+
 // compareInOperator returns (penalty, applicable). applicable=false means the
 // expression is not an IN-plan. Matches Java's OptionalInt return:
 // empty → (0, false), present(0) → (0, true), present(1) → (1, true).
@@ -1398,7 +1452,6 @@ func sargComparisonEqual(a, b *predicates.Comparison) bool {
 		return a == b
 	}
 	if a.Type != b.Type ||
-		a.Escape != b.Escape ||
 		a.ParameterName != b.ParameterName ||
 		a.TextTokenizerName != b.TextTokenizerName ||
 		a.TextAnalyzerName != b.TextAnalyzerName ||
@@ -1700,6 +1753,9 @@ func combineConcreteCostUnclamped(p plans.RecordQueryPlan, child []properties.Co
 		// derivation) instead of only overwriting Cardinality — a hop cannot
 		// be credited with producing at most `cap` rows while still being
 		// charged CPU for scanning the larger, disproven row count.
+		if reassociated, ok := rightDeepFKChainCost(pl, child[0], stats, ctx); ok {
+			return reassociated
+		}
 		innerCost := child[1]
 		if cap, ok := fkChainCardinalityCap(pl, stats); ok {
 			fixedCPU, derived := fkChainInnerFixedCPU(pl.GetInner(), ctx)
@@ -1753,7 +1809,7 @@ func combineConcreteCostUnclamped(p plans.RecordQueryPlan, child []properties.Co
 			return properties.Cost{}
 		}
 		return properties.FetchCost(c0())
-	case *plans.RecordQueryMapPlan, *plans.RecordQueryProjectionPlan:
+	case *plans.RecordQueryMapPlan:
 		if len(child) == 0 {
 			return properties.Cost{}
 		}
@@ -2344,7 +2400,6 @@ func classifyConcretePlan(p plans.RecordQueryPlan) (classification concretePlanC
 		*plans.RecordQueryLimitPlan,
 		*plans.RecordQueryLoadByKeysPlan,
 		*plans.RecordQueryMergeSortUnionPlan,
-		*plans.RecordQueryProjectionPlan,
 		*plans.RecordQueryRecursiveDfsJoinPlan,
 		*plans.RecordQueryRecursiveLevelUnionPlan,
 		*plans.RecordQueryScoreForRankPlan,
@@ -2515,14 +2570,7 @@ func countClassifiedConcreteNode(
 			return true // already accounted for the scan; do not recurse (would mark unbounded)
 		}
 	case concreteCountMap:
-		// Map only — NOT RecordQueryProjectionPlan. The map-count criterion (#14)
-		// is a structural tiebreak; a near-ubiquitous top-of-query projection is
-		// not a discriminating operator, and counting it makes #14 fire on almost
-		// every plan pair. (concretePlanCost charges a projection via mapCost for
-		// magnitude, a different purpose — the two walks need not count the same
-		// nodes.) Counting projections here re-ranks ties broadly and selected a
-		// latent-buggy CTE plan that mis-projects an aliased column to NULL —
-		// caught by TestFDB_{CTEChainedColumnAliases,CascadesCTEColumnAliases}.
+		// A Map is one of Java's simple per-tuple operations (countSimpleOps).
 		counts.mapCount++
 	case concreteCountInJoin:
 		counts.inJoinCount++
@@ -3203,11 +3251,6 @@ func stablePlanNodeHash(p plans.RecordQueryPlan) uint64 {
 		if rv := t.GetResultValue(); rv != nil {
 			stableHashU64(h, values.SemanticHashCode(rv))
 		}
-	case *plans.RecordQueryProjectionPlan:
-		// Deliberately type-only. Projection Values and output names belong to
-		// memo identity; the #17 cost tie-break historically treated two
-		// projections over the same child as equal work. Folding the new
-		// schema discriminator here would flip established plan shapes.
 	case *plans.RecordQueryInMemorySortPlan:
 		for _, k := range t.GetSortKeys() {
 			_, _ = io.WriteString(h, k.Field)

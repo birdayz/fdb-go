@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"fdb.dev/pkg/relational/conformance/factory"
@@ -145,7 +146,7 @@ func run(cfg config) int {
 	clusterFile := tmp.Name()
 
 	const dbPath = "/factoryrun"
-	setupDB, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", dbPath, clusterFile))
+	setupDB, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), clusterFile))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "INFRA: open: %v\n", err)
 		return exitInfra
@@ -329,8 +330,7 @@ func persist(cfg config, batch *factory.Batch, findings []*factory.Finding, bles
 	// — which is the only place authority movement is visible at all. A shrink
 	// or exact-byte replacement additionally needs a reviewed ledger that binds
 	// both corpus endpoints. This producer has only the logical census baseline,
-	// so the companion Git-history gate compares raw trusted/HEAD trees and
-	// rejects a no-ledger same-census replacement that cannot be inferred here.
+	// so a no-ledger same-census replacement cannot be inferred here.
 	committed, err := factorycorpus.LoadCensus(censusPath(cfg.out))
 	switch {
 	case err != nil && !cfg.updateCensus:

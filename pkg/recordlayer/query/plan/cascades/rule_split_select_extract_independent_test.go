@@ -182,8 +182,12 @@ func TestSplitSelectExtractIndependentQuantifiersRule_Fires(t *testing.T) {
 		t.Fatalf("lower SELECT quantifiers = %#v, want only the scan leg", lowerQuantifiers)
 	}
 	lowerPredicates := lower.GetPredicates()
-	if len(lowerPredicates) != 1 || lowerPredicates[0] != predicate {
-		t.Fatalf("lower SELECT predicates = %v, want the original predicate instance", lowerPredicates)
+	if len(lowerPredicates) != 1 {
+		t.Fatalf("lower SELECT predicates = %v, want one predicate", lowerPredicates)
+	}
+	residual, err := predicates.ToResidualPredicate(lowerPredicates[0])
+	if err != nil || !predicates.SemanticEqualsUnderAliasMap(residual, predicate, nil) {
+		t.Fatalf("lower SELECT predicates = %v, want the original comparison: %v", lowerPredicates, err)
 	}
 	correlated := predicates.GetCorrelatedToOfPredicate(lowerPredicates[0])
 	if len(correlated) != 1 {

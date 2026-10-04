@@ -227,6 +227,82 @@ func TestUnnestExistsOrdinalRebasePinsTheFullPath(t *testing.T) {
 	})
 }
 
+func TestUnnestExistsRangePredicateRebase(t *testing.T) {
+	t.Parallel()
+	outerType := &values.RecordType{Fields: []values.Field{{Name: "ID", Ordinal: 0, FieldType: values.NotNullLong}}}
+	mergedType := &values.RecordType{Fields: []values.Field{
+		{Name: "ID", Ordinal: 0, FieldType: values.NotNullLong},
+		{Name: "EL", Ordinal: 1, FieldType: values.NotNullLong},
+	}}
+	mergedCorr := values.NamedCorrelationIdentifier("BOX")
+	outerLegs := map[string]struct{}{"OUTER": {}}
+	for _, owner := range []string{"OUTER", "BOX", "INNER"} {
+		for _, position := range []string{"anchor", "operand"} {
+			t.Run(owner+"/"+position, func(t *testing.T) {
+				t.Parallel()
+				field := exactTestField(t, exactTestQOV(t, owner, outerType), 0)
+				var expectedField values.Value = field
+				if owner != "INNER" {
+					slot := 0
+					if owner == "BOX" {
+						slot = 1
+						field = exactTestField(t, exactTestQOV(t, owner, mergedType), slot)
+					}
+					var err error
+					expectedField, err = values.ResolveOrdinalSeedAccess(exactTestQOV(t, "BOX", mergedType), slot, nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				foreign := exactTestField(t, exactTestQOV(t, "INNER", outerType), 0)
+				makePredicate := func(referenced values.Value) predicates.QueryPredicate {
+					anchor, operand := referenced, values.LiteralValue(int64(7))
+					if position == "operand" {
+						anchor, operand = foreign, referenced
+					}
+					first := predicates.NewRangeConstraintsBuilder()
+					for _, comparison := range []predicates.Comparison{
+						{Type: predicates.ComparisonEquals, Operand: operand},
+						{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(-1))},
+						{Type: predicates.ComparisonLessThan, ParameterName: "upper_bound"},
+					} {
+						if !first.AddComparisonMaybe(comparison) {
+							t.Fatal("comparison cannot form a range")
+						}
+					}
+					second := predicates.NewRangeConstraintsBuilder()
+					if !second.AddComparisonMaybe(predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(99))}) {
+						t.Fatal("equality cannot form a range")
+					}
+					ranged := predicates.NewPredicateWithValueAndRanges(anchor, []*predicates.RangeConstraints{first.Build(), second.Build()})
+					return predicates.WithAtomicity(predicates.NewNot(ranged), true)
+				}
+				before := makePredicate(field)
+				if got := unnestExistsRefSurvivesUnbaked(before, outerLegs, mergedCorr); got != (owner != "INNER") {
+					t.Errorf("unbaked range detection=%v, owner=%s", got, owner)
+				}
+				out, ok := rebaseUnnestOuterLegPredicateOrdinal(before, outerType, mergedType, outerLegs, mergedCorr)
+				if !ok {
+					t.Fatal("valid range rebase declined")
+				}
+				out = bakeUnnestElementRefOrdinal(out, map[string]int{"EL": 1}, mergedCorr, mergedType)
+				if !predicates.PredicateEquals(out, makePredicate(expectedField)) || !predicates.IsAtomic(out) {
+					t.Fatalf("range rewrite changed structure or retained a stale binding: %v", out)
+				}
+				if unnestExistsRefSurvivesUnbaked(out, outerLegs, mergedCorr) {
+					t.Fatal("rewritten range retained an unbaked reference")
+				}
+				if owner == "INNER" && out != before {
+					t.Fatal("foreign-only range lost pointer stability")
+				}
+				if !predicates.PredicateEquals(before, makePredicate(field)) || exactTestFieldView(t, field).Path().IsFrontierPinned() {
+					t.Fatal("range rewrite mutated its input")
+				}
+			})
+		}
+	}
+}
+
 // TestMultiAliasOuterGatesOrdinal pins the coupled fix that lets a
 // multi-alias OUTER box gate under EXISTS. A merge-opaque FULL OUTER box has
 // clusterArity 1 but binds TWO aliases; naively rebasing such an outer under
@@ -1008,7 +1084,7 @@ func TestBoxBoxBindingDeclinesAndStillFilesTheLeaf(t *testing.T) {
 
 	// And now the consequence: build the pristine seed this producer actually emits
 	// and check the leaf window survives the decline.
-	fields, _ := tr.ordinalJoinSeedFields(legs)
+	fields, _, _ := tr.ordinalJoinSeedFields(legs)
 	if fields == nil {
 		t.Fatalf("ordinalJoinSeedFields declined the box+plain cluster (translateErr=%v) "+
 			"— without a seed this arm measures nothing", tr.translateErr)

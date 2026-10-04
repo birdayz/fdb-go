@@ -4,7 +4,6 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/combinatorics"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -50,9 +49,12 @@ type SplitSelectExtractIndependentQuantifiersRule struct {
 
 func NewSplitSelectExtractIndependentQuantifiersRule() *SplitSelectExtractIndependentQuantifiersRule {
 	return &SplitSelectExtractIndependentQuantifiersRule{
-		matcher: NewExpressionMatcher[*expressions.SelectExpression]("split_select_extract_independent"),
+		matcher: NewExpressionMatcher[*expressions.SelectExpression]("split_select_extract_independent").WithRootPredicate(
+			func(sel *expressions.SelectExpression) bool { return len(sel.GetQuantifiers()) >= 2 }),
 	}
 }
+
+func (r *SplitSelectExtractIndependentQuantifiersRule) ConstraintDependencies() []any { return nil }
 
 func (r *SplitSelectExtractIndependentQuantifiersRule) Matcher() matching.BindingMatcher {
 	return r.matcher
@@ -162,28 +164,6 @@ func (r *SplitSelectExtractIndependentQuantifiersRule) OnMatch(call *ExpressionR
 	}
 	if !hasForEach {
 		return
-	}
-
-	// Convergence guard: if any predicate references an alias from the
-	// upper partition, the split would create a lower SelectExpression
-	// that's correlated to an upper quantifier. In Go (where this rule
-	// and SelectMergeRule run in the same phase), that triggers a
-	// split-merge cycle. Java avoids this via explore/implement phase
-	// separation. The guard is also semantically correct: predicates
-	// referencing the explode alias mean the quantifiers interact
-	// through the WHERE clause, not just the FROM-list correlation
-	// order, so they shouldn't be separated.
-	upperAliases := map[values.CorrelationIdentifier]struct{}{}
-	for _, q := range upperQuantifiers {
-		upperAliases[q.GetAlias()] = struct{}{}
-	}
-	for _, pred := range sel.GetPredicates() {
-		predCorr := predicates.GetCorrelatedToOfPredicate(pred)
-		for alias := range predCorr {
-			if _, ok := upperAliases[alias]; ok {
-				return
-			}
-		}
 	}
 
 	// Step 6: Build the new expressions.

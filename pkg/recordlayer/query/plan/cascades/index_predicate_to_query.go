@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/internal/protovalue"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -167,34 +168,15 @@ func indexComparisonToQuery(c *gen.Comparison) (predicates.Comparison, error) {
 	default:
 		return predicates.Comparison{}, fmt.Errorf("unsupported comparison type %v", sc.GetType())
 	}
+	// The meta-data loader refused a Value it cannot read in an index
+	// predicate first (extractValueOperand), so this reads what it admitted,
+	// through the loader's own reader.
+	operand, err := protovalue.FromProto(sc.GetOperand())
+	if err != nil {
+		return predicates.Comparison{}, err
+	}
 	return predicates.Comparison{
 		Type:    typ,
-		Operand: values.LiteralValue(literalFromProtoValue(sc.GetOperand())),
+		Operand: values.LiteralValue(operand),
 	}, nil
-}
-
-// literalFromProtoValue mirrors LiteralKeyExpression.fromProtoValue
-// (LiteralKeyExpression.java:141-171): the first set field wins, in Java's
-// probe order.
-func literalFromProtoValue(v *gen.Value) any {
-	switch {
-	case v == nil:
-		return nil
-	case v.LongValue != nil:
-		return v.GetLongValue()
-	case v.IntValue != nil:
-		return v.GetIntValue()
-	case v.DoubleValue != nil:
-		return v.GetDoubleValue()
-	case v.FloatValue != nil:
-		return v.GetFloatValue()
-	case v.BoolValue != nil:
-		return v.GetBoolValue()
-	case v.StringValue != nil:
-		return v.GetStringValue()
-	case v.BytesValue != nil:
-		return v.GetBytesValue()
-	default:
-		return nil
-	}
 }

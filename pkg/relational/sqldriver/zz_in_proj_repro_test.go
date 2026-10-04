@@ -14,12 +14,9 @@ import (
 //
 // The regression: the indexed plan was `InJoin(IndexScan(IDX_A,[=]))` with
 // NO outer `Project([ID])`, so it returned columns [ID, A] (and `rows.Scan(&id)`
-// failed with "expected 2 destination arguments"). Root cause:
-// MergeProjectionAndFetchRule's fallback dropped the projection when the
-// fetch's child was an InJoin (not a directly-coverable index scan), leaking
-// a bare InJoin into the projection group; and the projection's extraction did
-// not relink a compound-join inner. Fixed in RFC-070 so the plan is
-// `Project([ID], InJoin(IndexScan(IDX_A,[=])))`.
+// failed with "expected 2 destination arguments"): a projection-and-fetch merge
+// dropped the projection when the fetch's child was an InJoin. The block's
+// result now keeps the column list over the InJoin.
 //
 // Compares the indexed table (InJoin path) against an unindexed copy
 // (PredicatesFilter scan path): both must return exactly one column [ID]
@@ -39,7 +36,7 @@ func TestFDB_INProj_OuterProjectionOverInJoin(t *testing.T) {
 			"CREATE TABLE tu (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_a ON ti (a)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_inproj/s WITH TEMPLATE inproj_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///testdb_inproj?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_INPROJ?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -59,10 +56,11 @@ func TestFDB_INProj_OuterProjectionOverInJoin(t *testing.T) {
 	if !strings.Contains(up, "INJOIN") {
 		t.Errorf("expected the indexed plan to use an InJoin (optimization must fire), got: %s", idxPlan)
 	}
-	// The outer projection must cap the plan — a bare InJoin (the regression)
-	// would have no Project and emit [ID, A].
-	if !strings.HasPrefix(up, "PROJECT(") {
-		t.Errorf("expected the plan to be capped by Project(...) (not a bare InJoin), got: %s", idxPlan)
+	// The block's projection must survive — a bare InJoin (the regression)
+	// would project nothing and emit [ID, A]. The block over its one source
+	// carries the projection inside the InJoin, per IN binding.
+	if !strings.Contains(idxPlan, "{ID: _current.ID#0}") {
+		t.Errorf("expected the plan to carry the {ID} projection (not a bare InJoin), got: %s", idxPlan)
 	}
 	assertSingleIDColumn(t, db, ctx, "ti")
 

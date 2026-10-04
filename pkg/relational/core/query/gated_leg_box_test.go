@@ -147,8 +147,8 @@ func TestGatedLegBox_ConsumersSeeThroughTheFilter(t *testing.T) {
 			t.Fatalf("labels differ:\n  bare:     %v\n  filtered: %v", bare, viaFilter)
 		}
 		for _, l := range viaFilter {
-			if strings.Contains(l, ".") {
-				t.Fatalf("a buried column must be labelled unqualified, got %q in %v", l, viaFilter)
+			if strings.Contains(l.Name, ".") {
+				t.Fatalf("a buried column must be labelled unqualified, got %q in %v", l.Name, viaFilter)
 			}
 		}
 	})

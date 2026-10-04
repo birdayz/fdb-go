@@ -35,7 +35,7 @@ func TestFDB_JoinSelPred_Repro(t *testing.T) {
 			"CREATE INDEX idx_customer ON orders (customer_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_jsp/s WITH TEMPLATE jsp_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_jsp?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_JSP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

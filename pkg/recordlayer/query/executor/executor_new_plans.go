@@ -4,7 +4,6 @@ import (
 	"container/heap"
 	"context"
 	"fmt"
-	"strconv"
 
 	"google.golang.org/protobuf/proto"
 
@@ -50,6 +49,9 @@ func executeAggregateIndexScan(
 	physicalGroupingCount := len(groupCols)
 	isPermuted := idx.Type == recordlayer.IndexTypePermutedMin || idx.Type == recordlayer.IndexTypePermutedMax
 	scanType := recordlayer.IndexScanByValue
+	if idx.Type == recordlayer.IndexTypeBitmapValue {
+		scanType = recordlayer.IndexScanByGroup
+	}
 	if isPermuted {
 		groupingCount, actualPhysicalPrefix, layoutErr := permutedAggregateGroupingLayout(idx)
 		if layoutErr != nil {
@@ -114,14 +116,11 @@ func executeAggregateIndexScan(
 
 	scanProps := recordlayer.NewScanProperties(props).WithReverse(idxPlan.IsReverse())
 
-	canonicalName := p.CanonicalAggColumnName()
 	// The aggregate-index row's authoritative ordinal
 	// schema is the GROUP columns in scan order followed by the aggregate column
 	// — the exact order the row's slots are filled below (entry.Key then
 	// entry.Value). Row-invariant, so it is built once here and shared across
-	// rows. Named by the canonical output names (uppercase group
-	// cols, canonical agg name) — the exact schema plan-time bakes bind
-	// against.
+	// rows. Its names are the plan's: the GroupBy row the planner published.
 	posType, ok := p.GetResultType().(*values.RecordType)
 	if !ok || posType == nil || len(posType.Fields) != len(groupCols)+1 {
 		actualWidth := -1
@@ -132,11 +131,11 @@ func executeAggregateIndexScan(
 			"executor: aggregate index %q has result type %T with %d columns, want exact record width %d",
 			idxPlan.GetIndexName(), p.GetResultType(), actualWidth, len(groupCols)+1)
 	}
-	for i, name := range append(append([]string(nil), groupCols...), canonicalName) {
-		if posType.Fields[i].Name != name || posType.Fields[i].Ordinal != i {
+	for i := range posType.Fields {
+		if posType.Fields[i].Ordinal != i {
 			return nil, fmt.Errorf(
-				"executor: aggregate index %q result field %d is %q#%d, want %q#%d",
-				idxPlan.GetIndexName(), i, posType.Fields[i].Name, posType.Fields[i].Ordinal, name, i)
+				"executor: aggregate index %q result field %d is %q#%d, want ordinal %d",
+				idxPlan.GetIndexName(), i, posType.Fields[i].Name, posType.Fields[i].Ordinal, i)
 		}
 		if _, exactErr := values.SnapshotExactType(posType.Fields[i].FieldType); exactErr != nil {
 			return nil, fmt.Errorf(
@@ -188,6 +187,9 @@ func executeAggregateIndexScan(
 			innerContinuation []byte,
 			childProperties recordlayer.ScanProperties,
 		) (recordlayer.RecordCursor[*recordlayer.IndexEntry], error) {
+			if idx.Type == recordlayer.IndexTypeBitmapValue {
+				return store.ScanIndexByType(idx, recordlayer.IndexScanByGroup, scanRange, innerContinuation, childProperties), nil
+			}
 			// Instrumented here because this path never touches FDBRecordStore.ScanIndex:
 			// the per-range factory needs the maintainer directly, so the store method
 			// that would otherwise count the scan is bypassed entirely.
@@ -202,11 +204,7 @@ func executeAggregateIndexScan(
 	result := &aggregateIndexCursor{
 		inner:     indexCursor,
 		groupCols: groupCols,
-		// Single source for the aggregate column key: the plan's
-		// CanonicalAggColumnName names the slot the cursor writes, so the row
-		// key and the plan's stated name can't drift (RFC-081).
-		canonicalName: canonicalName,
-		posType:       posType,
+		posType:   posType,
 		// RFC-209 §5.3(a): the plan decides, the cursor obeys.
 		liveGroupsOnly: p.IsLiveGroupsOnly(),
 		// Stamped at mint time so the output boundary checks the row instead of
@@ -255,9 +253,14 @@ func permutedAggregateGroupingLayout(idx *recordlayer.Index) (groupingCount, phy
 		)
 	}
 	groupingCount = gke.GetGroupingCount()
+	// Read as Java's query side reads it (AggregateIndexMatchCandidate.
+	// getPermutedCount: absent is 0, present is Integer.parseInt), so the
+	// scan splits the key where the maintainer, which parses the same way,
+	// wrote the entries. The range is Build's check, repeated for an index
+	// changed after Build.
 	permutedSize := 0
 	if raw, exists := idx.Options[recordlayer.IndexOptionPermutedSize]; exists {
-		parsed, parseErr := strconv.Atoi(raw)
+		parsed, parseErr := recordlayer.PermutedSizeOption(idx)
 		if parseErr != nil || parsed < 0 || parsed > groupingCount {
 			return 0, 0, fmt.Errorf(
 				"executor: permuted index %q has invalid %s=%q for grouping count %d",
@@ -423,10 +426,9 @@ func (c *permutedAggregateIndexCursor) IsClosed() bool { return c.closed }
 var _ recordlayer.RecordCursor[QueryResult] = (*permutedAggregateIndexCursor)(nil)
 
 type aggregateIndexCursor struct {
-	inner         recordlayer.RecordCursor[*recordlayer.IndexEntry]
-	groupCols     []string
-	canonicalName string
-	posType       *values.RecordType
+	inner     recordlayer.RecordCursor[*recordlayer.IndexEntry]
+	groupCols []string
+	posType   *values.RecordType
 	// liveGroupsOnly drops entries whose stored aggregate is zero. Set only for
 	// a grouped COUNT(*) scan, where the stored value is the group's row count
 	// and a zero can therefore only be the residue of a vacated group (the
@@ -748,8 +750,8 @@ func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.
 	qr := QueryResult{}
 	// Emit the authoritative ordinal OUTPUT row. The resultValue is a
 	// RecordConstructorValue whose Fields ARE the output columns in output order
-	// (the same rc.Fields deriveColumnsFromMultiIntersection names the ColumnDefs
-	// from), so evaluating each field against the concatenated child positional row
+	// (the plan's result row type, which names the result-set columns), so
+	// evaluating each field against the concatenated child positional row
 	// produces a per-slot output row whose names/order match the result-set columns.
 	if rc, ok := c.resultValue.(*values.RecordConstructorValue); ok {
 		if c.outputType == nil || len(c.outputType.Fields) != len(rc.Fields) {
@@ -1284,7 +1286,7 @@ func executeMap(
 	// positional row's OUTPUT names once from the result value's record type. When
 	// the result is a RecordConstructorValue, evaluate its Fields INDIVIDUALLY into
 	// dense slots (never through the collapsing name map — a duplicate output name
-	// keeps both slots by ordinal), mirroring executeProjection.
+	// keeps both slots by ordinal).
 	var mapPosType *values.RecordType
 	mapRC, _ := resultValue.(*values.RecordConstructorValue)
 	if rt, ok := resultValue.Type().(*values.RecordType); ok {
@@ -1782,6 +1784,17 @@ func executeInJoin(
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
 	inValues := p.GetInValues()
+	if comparand := p.GetInComparand(); inValues == nil && comparand != nil {
+		v, err := comparand.Evaluate(evalCtx)
+		if err != nil {
+			return nil, err
+		}
+		list, _ := v.([]any)
+		if len(list) == 0 {
+			return recordlayer.Empty[QueryResult](), nil
+		}
+		inValues = list
+	}
 	if len(inValues) == 0 {
 		return ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
 	}
@@ -2161,7 +2174,7 @@ func decodeUnionContinuation(data []byte, n int) ([]unionChildResume, error) {
 		return out, nil // all children fresh (START)
 	}
 	msg := &gen.UnionContinuation{}
-	if err := msg.UnmarshalVT(data); err != nil {
+	if err := recordlayer.UnmarshalVTAsJava(msg, data); err != nil {
 		return nil, &recordlayer.ContinuationParseError{Message: "invalid continuation", RawBytes: data, Cause: err}
 	}
 	// Java UnionCursorContinuation.from(parsed, n) always reads first + second

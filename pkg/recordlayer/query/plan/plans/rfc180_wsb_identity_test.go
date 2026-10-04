@@ -40,9 +40,19 @@ func wsbPlanBuilders(t testing.TB) []rfc176PlanBuilder {
 			})
 		}},
 		{"Update", func(vs []values.Value) RecordQueryPlan {
+			// One field per value: a field assigned twice is refused (Java's
+			// duplicate FieldPath). V, K, M, then V again past three would be
+			// refused too, so the pool's rows must not exceed three values.
+			fields := []struct {
+				name    string
+				ordinal int
+			}{{"V", 3}, {"K", 1}, {"M", 2}}
+			if len(vs) > len(fields) {
+				t.Fatalf("Update builder: %d values, at most %d distinct fields", len(vs), len(fields))
+			}
 			trs := make([]expressions.UpdateTransform, len(vs))
 			for i, v := range vs {
-				trs[i] = expressions.UpdateTransform{FieldPath: "F", NewValue: v}
+				trs[i] = expressions.UpdateTransform{FieldNames: []string{fields[i].name}, FieldOrdinals: []int{fields[i].ordinal}, NewValue: v}
 			}
 			return mustChecked(t, func() (*RecordQueryUpdatePlan, error) {
 				return NewRecordQueryUpdatePlan(updateInner, "T", trs)
@@ -177,17 +187,17 @@ func TestIntersectionPlan_KeysJoinIdentity(t *testing.T) {
 	}
 }
 
-// TestUpdatePlan_TransformsJoinIdentity pins RFC-180 B3: `SET a=1` and
-// `SET a=2` compared EQUAL under count-only transform identity — a memo
+// TestUpdatePlan_TransformsJoinIdentity pins RFC-180 B3: `SET k=1` and
+// `SET k=2` compared EQUAL under count-only transform identity — a memo
 // collapse on the WRITE path executes the wrong update. RED before the fix.
 func TestUpdatePlan_TransformsJoinIdentity(t *testing.T) {
 	t.Parallel()
 	inner := mustChecked(t, func() (*RecordQueryScanPlan, error) {
 		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
 	})
-	set1 := []expressions.UpdateTransform{{FieldPath: "a", NewValue: &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}}}
-	set2 := []expressions.UpdateTransform{{FieldPath: "a", NewValue: &values.ConstantValue{Value: int64(2), Typ: values.NotNullLong}}}
-	setB := []expressions.UpdateTransform{{FieldPath: "b", NewValue: &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}}}
+	set1 := []expressions.UpdateTransform{{FieldNames: []string{"K"}, FieldOrdinals: []int{1}, NewValue: &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}}}
+	set2 := []expressions.UpdateTransform{{FieldNames: []string{"K"}, FieldOrdinals: []int{1}, NewValue: &values.ConstantValue{Value: int64(2), Typ: values.NotNullLong}}}
+	setB := []expressions.UpdateTransform{{FieldNames: []string{"M"}, FieldOrdinals: []int{2}, NewValue: &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}}}
 
 	a := mustChecked(t, func() (*RecordQueryUpdatePlan, error) {
 		return NewRecordQueryUpdatePlan(inner, "T", set1)
@@ -195,12 +205,12 @@ func TestUpdatePlan_TransformsJoinIdentity(t *testing.T) {
 	if a.EqualsPlanWithoutChildren(mustChecked(t, func() (*RecordQueryUpdatePlan, error) {
 		return NewRecordQueryUpdatePlan(inner, "T", set2)
 	})) {
-		t.Fatal("SET a=1 and SET a=2 must NOT compare equal")
+		t.Fatal("SET k=1 and SET k=2 must NOT compare equal")
 	}
 	if a.EqualsPlanWithoutChildren(mustChecked(t, func() (*RecordQueryUpdatePlan, error) {
 		return NewRecordQueryUpdatePlan(inner, "T", setB)
 	})) {
-		t.Fatal("SET a=1 and SET b=1 must NOT compare equal")
+		t.Fatal("SET k=1 and SET m=1 must NOT compare equal")
 	}
 	c := mustChecked(t, func() (*RecordQueryUpdatePlan, error) {
 		return NewRecordQueryUpdatePlan(inner, "T", set1)

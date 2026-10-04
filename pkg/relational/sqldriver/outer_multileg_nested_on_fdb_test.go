@@ -82,7 +82,7 @@ func TestFDB_OuterMultilegNestedOnPredicate(t *testing.T) {
 		"CREATE TABLE nt(id BIGINT, sk BIGINT, n gst, PRIMARY KEY(id))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_omlnon/s WITH TEMPLATE omlnon_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_omlnon?cluster_file=%s&schema=s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_OMLNON?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -170,19 +170,22 @@ func TestFDB_OuterMultilegNestedOnPredicate(t *testing.T) {
 			name:   "A_two-way-inner-nested",
 			query:  "SELECT l.id FROM nt AS l JOIN nt AS r ON l.n.sk = r.n.sk ORDER BY l.id",
 			want:   []string{"1", "1", "2", "2", "3"},
-			planIs: "Project([_current.ID#0], FlatMap(outer=Scan(NT), inner=PredicatesFilter(Scan(NT), [1 preds])))",
+			planIs: "Map(FlatMap(outer=Scan(NT), inner=PredicatesFilter(Scan(NT), [1 preds])), {ID: _current.ID#0})",
 		},
 		{
 			name:   "B_two-way-outer-nested",
 			query:  "SELECT l.id FROM nt AS l LEFT JOIN nt AS r ON l.n.sk = r.n.sk ORDER BY l.id",
 			want:   []string{"1", "1", "2", "2", "3"},
-			planIs: "Project([_current.ID#0], FlatMap(outer=Scan(NT), inner=DefaultOnEmpty(PredicatesFilter(Scan(NT), [1 preds]))))",
+			planIs: "Map(FlatMap(outer=Scan(NT), inner=DefaultOnEmpty(PredicatesFilter(Scan(NT), [1 preds]))), {ID: _current.ID#0})",
 		},
 		{
-			name:   "C_three-way-inner-nested",
-			query:  "SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id JOIN nt AS r ON m.n.sk = r.n.sk ORDER BY l.id",
-			want:   []string{"1", "1", "2", "2", "3"},
-			planIs: "Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, [1 preds], Scan(NT), FlatMap(outer=Scan(NT), inner=Scan(NT, [=])))))",
+			name:  "C_three-way-inner-nested",
+			query: "SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id JOIN nt AS r ON m.n.sk = r.n.sk ORDER BY l.id",
+			want:  []string{"1", "1", "2", "2", "3"},
+			// Java plans the same correlated FlatMap chain with no sort (L's
+			// primary scan supplies the order); Go probes m by key where Java
+			// filters a scan of m.
+			planIs: "Map(FlatMap(outer=Scan(NT), inner=FlatMap(outer=Scan(NT, [=]), inner=PredicatesFilter(Scan(NT), [1 preds]))), {ID: _current.ID#0})",
 		},
 		{
 			// The flat twin of F. Same three legs, same outer third leg, ONE
@@ -193,12 +196,13 @@ func TestFDB_OuterMultilegNestedOnPredicate(t *testing.T) {
 			query: "SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id LEFT JOIN nt AS r ON m.sk = r.sk ORDER BY l.id",
 			want:  []string{"1", "2", "3"},
 			// The PLAN CONTROL for arm I. `m.sk` is not a comparand any scan of
-			// NT can be keyed on, so this shape keeps its residual-predicate
-			// nested loop with the fix as without it. Measured identical on both
-			// sides of the mutation — which is what makes arm I's move
-			// attributable to the nested reference rather than to the fix
-			// re-planning every three-leg outer join.
-			planHas: []string{"NestedLoopJoin(LEFT OUTER"},
+			// NT can be keyed on, so this shape keeps a residual predicate over a
+			// full inner scan under the null extension (Java: `SCAN | FILTER |
+			// ON EMPTY NULL`), with the fix as without it — which is what makes
+			// arm I's key probe attributable to the nested reference rather than
+			// to the fix re-planning every three-leg outer join.
+			planHas:   []string{"DefaultOnEmpty(PredicatesFilter(Scan(NT), [1 preds]))"},
+			planLacks: []string{"DefaultOnEmpty(Scan(NT, [=]))"},
 		},
 		{
 			// Nested on the NULL-supplied side only: no reference reads the
@@ -206,7 +210,7 @@ func TestFDB_OuterMultilegNestedOnPredicate(t *testing.T) {
 			name:   "E_three-way-outer-nested-preserved-only",
 			query:  "SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id LEFT JOIN nt AS r ON m.sk = r.n.sk ORDER BY l.id",
 			want:   []string{"1", "2", "3"},
-			planIs: "Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], NestedLoopJoin(LEFT OUTER, [1 preds], FlatMap(outer=Scan(NT), inner=Scan(NT, [=])), Scan(NT))))",
+			planIs: "Map(FlatMap(outer=Scan(NT), inner=FlatMap(outer=Scan(NT, [=]), inner=DefaultOnEmpty(PredicatesFilter(Scan(NT), [1 preds])))), {ID: _current.ID#0})",
 		},
 
 		// ---- F–H: the three arms that failed loud. m.n.sk is 1,1,2 over
@@ -313,8 +317,7 @@ func TestFDB_OuterMultilegNestedOnPredicate(t *testing.T) {
 				}
 				for _, absent := range tc.planLacks {
 					if strings.Contains(plan, absent) {
-						t.Errorf("%s: plan still contains %q — the conjunct did not bake into "+
-							"the join, so it stayed a residual predicate over a full inner scan"+
+						t.Errorf("%s: plan contains %q, which this arm must not"+
 							"\n\tplan: %s", tc.name, absent, plan)
 					}
 				}

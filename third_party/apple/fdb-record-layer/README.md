@@ -5,8 +5,7 @@ Apple's [fdb-record-layer](https://github.com/FoundationDB/fdb-record-layer),
 Copyright Apple Inc. and the FoundationDB project authors, licensed under the
 Apache License, Version 2.0.
 
-The pinned upstream tag is recorded in [`VERSION`](VERSION) and matches the tag
-the Go port is written against (see `CLAUDE.md`).
+The pinned upstream tag is recorded in [`VERSION`](VERSION).
 
 ## Provenance
 

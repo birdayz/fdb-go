@@ -27,7 +27,7 @@ func recursiveCteContDB(t *testing.T) *sql.DB {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE rec_cte_cont_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestFDB_RecursiveCTE_Continuation_ResumeAcrossPages(t *testing.T) {
 	// for an unconstrained recursion (its legs match Java's insert-free
 	// shape).
 	const q = "WITH RECURSIVE r(n) AS (" +
-		"SELECT id FROM edges WHERE parent = 0 " +
+		"SELECT id AS n FROM edges WHERE parent = 0 " +
 		"UNION ALL " +
 		"SELECT e.id FROM edges AS e, r WHERE e.parent = r.n" +
 		") TRAVERSAL ORDER level_order SELECT n FROM r"
@@ -144,7 +144,7 @@ func TestFDB_RecursiveDFS_Continuation_ResumeAcrossPages(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE rec_dfs_cont_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestFDB_RecursiveDFS_Continuation_ResumeAcrossPages(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			q := "WITH RECURSIVE r(n) AS (" +
-				"SELECT id FROM edges WHERE parent = 0 " +
+				"SELECT id AS n FROM edges WHERE parent = 0 " +
 				"UNION ALL " +
 				"SELECT e.id FROM edges AS e, r WHERE e.parent = r.n" +
 				") TRAVERSAL ORDER " + tc.order + " SELECT n FROM r"
@@ -234,7 +234,7 @@ func TestFDB_RecursiveDFS_BelowFloorBudgetIsLoud(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE rec_dfs_floor_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -252,7 +252,7 @@ func TestFDB_RecursiveDFS_BelowFloorBudgetIsLoud(t *testing.T) {
 	})
 	rows, qerr := conn.QueryContext(ctx,
 		"WITH RECURSIVE r(n) AS ("+
-			"SELECT id FROM edges WHERE parent = 0 "+
+			"SELECT id AS n FROM edges WHERE parent = 0 "+
 			"UNION ALL "+
 			"SELECT e.id FROM edges AS e, r WHERE e.parent = r.n"+
 			") TRAVERSAL ORDER pre_order SELECT n FROM r")
@@ -301,7 +301,7 @@ func TestFDB_RecursiveDistinct_CycleTerminates(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE rec_dist_cont_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -323,7 +323,7 @@ func TestFDB_RecursiveDistinct_CycleTerminates(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			q := "WITH RECURSIVE r(n) AS (" +
-				"SELECT dst FROM edge2 WHERE src = 1 " +
+				"SELECT dst AS n FROM edge2 WHERE src = 1 " +
 				"UNION " +
 				"SELECT e.dst FROM edge2 AS e, r WHERE e.src = r.n" +
 				")" + tc.traversal + " SELECT n FROM r"
@@ -374,7 +374,7 @@ func TestFDB_RecursiveCTE_CyclicPaged_HitsDepthCap(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE rec_cte_cyclic_paged_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -397,7 +397,7 @@ func TestFDB_RecursiveCTE_CyclicPaged_HitsDepthCap(t *testing.T) {
 	// never a seen-set, can stop the cycle.
 	rows, qerr := conn.QueryContext(ctx,
 		"WITH RECURSIVE r(n) AS ("+
-			"SELECT dst FROM edge2 WHERE src = 1 "+
+			"SELECT dst AS n FROM edge2 WHERE src = 1 "+
 			"UNION ALL "+
 			"SELECT e.dst FROM edge2 AS e, r WHERE e.src = r.n"+
 			") TRAVERSAL ORDER level_order SELECT n FROM r")
@@ -468,7 +468,7 @@ func TestFDB_RecursiveDistinct_DeepChain(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE rec_dist_deep_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -484,7 +484,7 @@ func TestFDB_RecursiveDistinct_DeepChain(t *testing.T) {
 	}
 	rows, err := db.QueryContext(ctx,
 		"WITH RECURSIVE r(n) AS ("+
-			"SELECT id FROM edges WHERE parent = 0 "+
+			"SELECT id AS n FROM edges WHERE parent = 0 "+
 			"UNION "+
 			"SELECT e.id FROM edges AS e, r WHERE e.parent = r.n"+
 			") SELECT n FROM r")
@@ -532,7 +532,7 @@ func TestFDB_RecursiveDistinct_DeepChain_Unindexed(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE rec_dist_deep_noidx_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -548,7 +548,7 @@ func TestFDB_RecursiveDistinct_DeepChain_Unindexed(t *testing.T) {
 	}
 	rows, err := db.QueryContext(ctx,
 		"WITH RECURSIVE r(n) AS ("+
-			"SELECT id FROM edges WHERE parent = 0 "+
+			"SELECT id AS n FROM edges WHERE parent = 0 "+
 			"UNION "+
 			"SELECT e.id FROM edges AS e, r WHERE e.parent = r.n"+
 			") SELECT n FROM r")

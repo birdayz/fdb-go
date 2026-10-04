@@ -5,8 +5,8 @@ package sqldriver_test
 // merge, but a reshaping producer that emits a flat single-source positional
 // row:
 //
-//   - a projection / derived table / CTE            (RecordQueryProjectionPlan)
-//   - a projecting CTE with a RENAME (aliased key)  (RecordQueryProjectionPlan)
+//   - a projection / derived table / CTE            (RecordQueryMapPlan)
+//   - a projecting CTE with a RENAME (aliased key)  (RecordQueryMapPlan)
 //   - a DISTINCT over a projection                  (RecordQueryDistinctPlan)
 //   - a WHERE-EXISTS semi-join (identity-over-outer) (RecordQueryFlatMapPlan)
 //   - a nested StreamingAgg (GROUP BY over an aggregate subquery)
@@ -15,7 +15,7 @@ package sqldriver_test
 // single-child wrappers, so dispatching on it alone would send every
 // reshaping input above through a name-keyed row reader that resolves the
 // group key / operand by NAME off a map. aggregateEvalArg instead mirrors
-// executeProjection's frontier dispatch exactly: baked-ordinal → join-window
+// executeMap's frontier dispatch exactly: baked-ordinal → join-window
 // → any flat positional frontier → name fallback. Because every reshaping
 // producer above emits a flat single-source positional row whose GetByName is
 // unambiguous, the group key / operand resolves against the inner

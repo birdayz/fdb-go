@@ -9,7 +9,7 @@
 > its prose is left as the record of what was decided when.
 >
 > Target versions: Java
-> `fdb-record-layer-core` **4.12.11.0**, FDB C++ client **7.3.77**, Go **1.26.x** (the pins in
+> `fdb-record-layer-core` **4.14.2.0**, FDB C++ client **7.3.77**, Go **1.26.x** (the pins in
 > `MODULE.bazel` are the source of truth). The executable truth is the test suites
 > (`//conformance:conformance_test`, the cross-engine differential, binding-stress); `README.md` and
 > `DIVERGENCES.md` are the other living docs. Point-in-time audit snapshots live under
@@ -55,7 +55,7 @@ first.
 
 Earlier drift between README, TODO, and the `reports/` audits — some docs called outer
 joins / subqueries unsupported while they were implemented; older reports referenced an
-earlier Java target than the README's current 4.12.11.0 — is fixed by **RFC-131**:
+earlier Java target than the README's current 4.14.2.0 — is fixed by **RFC-131**:
 
 - the six 2026-03-09 `reports/*.md` were archived under `docs/archive/reports-2026-03-09/`,
   headered as superseded point-in-time snapshots;

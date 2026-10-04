@@ -2,141 +2,46 @@ package functions
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/relational/api"
 )
 
-func TestResolveQualifiedTableName_Unqualified(t *testing.T) {
-	t.Parallel()
-	got, err := ResolveQualifiedTableName("ORDERS", "MYSCHEMA")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != "ORDERS" {
-		t.Fatalf("got %q, want %q", got, "ORDERS")
-	}
-}
-
-func TestResolveQualifiedTableName_MatchingQualifier(t *testing.T) {
-	t.Parallel()
-	got, err := ResolveQualifiedTableName("MYSCHEMA.ORDERS", "MYSCHEMA")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != "ORDERS" {
-		t.Fatalf("got %q, want %q", got, "ORDERS")
-	}
-}
-
-func TestResolveQualifiedTableName_CaseInsensitiveQualifier(t *testing.T) {
-	t.Parallel()
-	got, err := ResolveQualifiedTableName("myschema.ORDERS", "MYSCHEMA")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != "ORDERS" {
-		t.Fatalf("got %q, want %q", got, "ORDERS")
-	}
-}
-
-func TestResolveQualifiedTableName_CaseInsensitiveSchemaLower(t *testing.T) {
-	t.Parallel()
-	got, err := ResolveQualifiedTableName("MYSCHEMA.ORDERS", "myschema")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != "ORDERS" {
-		t.Fatalf("got %q, want %q", got, "ORDERS")
-	}
-}
-
-func TestResolveQualifiedTableName_WrongQualifier(t *testing.T) {
-	t.Parallel()
-	_, err := ResolveQualifiedTableName("OTHERSCHEMA.ORDERS", "MYSCHEMA")
-	if err == nil {
-		t.Fatal("expected error for wrong qualifier")
-	}
-	var apiErr *api.Error
-	if !errors.As(err, &apiErr) {
-		t.Fatalf("expected *api.Error, got %T: %v", err, err)
-	}
-	if apiErr.Code != api.ErrCodeUndefinedDatabase {
-		t.Fatalf("expected SQLSTATE %s, got %s", api.ErrCodeUndefinedDatabase, apiErr.Code)
-	}
-}
-
-func TestResolveQualifiedTableName_MultiPartQualifier(t *testing.T) {
-	t.Parallel()
-	_, err := ResolveQualifiedTableName("A.B.C", "MYSCHEMA")
-	if err == nil {
-		t.Fatal("expected error for multi-part qualifier")
-	}
-	var apiErr *api.Error
-	if !errors.As(err, &apiErr) {
-		t.Fatalf("expected *api.Error, got %T: %v", err, err)
-	}
-	if apiErr.Code != api.ErrCodeInternalError {
-		t.Fatalf("expected SQLSTATE %s, got %s", api.ErrCodeInternalError, apiErr.Code)
-	}
-}
-
-func TestResolveQualifiedTableName_EmptyString(t *testing.T) {
-	t.Parallel()
-	got, err := ResolveQualifiedTableName("", "MYSCHEMA")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != "" {
-		t.Fatalf("got %q, want empty", got)
-	}
-}
-
-func TestResolveQualifiedTableName_EmptySchema(t *testing.T) {
-	t.Parallel()
-	// Qualifier present, schema empty → mismatch.
-	_, err := ResolveQualifiedTableName("FOO.BAR", "")
-	if err == nil {
-		t.Fatal("expected error for qualifier with empty schema")
-	}
-}
-
-func TestResolveQualifiedTableName_PreservesTableCase(t *testing.T) {
-	t.Parallel()
-	got, err := ResolveQualifiedTableName("MYSCHEMA.MyTable", "myschema")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != "MyTable" {
-		t.Fatalf("got %q, want %q (table case preserved)", got, "MyTable")
-	}
-}
-
-func TestResolveQualifiedTablePath(t *testing.T) {
+// TestResolveTargetTablePath pins Java's SemanticAnalyzer.getTable qualifier
+// rules for a statement's target: the qualifier is the schema TEMPLATE's name,
+// compared exactly (both sides arrive normalized), and the refusals carry
+// Java's SQLSTATE and wording.
+func TestResolveTargetTablePath(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		path []string
 		want string
 		code api.ErrorCode
+		msg  string
 	}{
-		{"literal", []string{"q.q"}, "q.q", ""},
-		{"qualified", []string{"S", "q.q"}, "q.q", ""},
-		{"wrong_schema_same_spelling", []string{"q", "q"}, "", api.ErrCodeUndefinedDatabase},
-		{"nil", nil, "", api.ErrCodeInternalError},
-		{"empty", []string{}, "", api.ErrCodeInternalError},
-		{"empty_name", []string{""}, "", api.ErrCodeInternalError},
-		{"empty_qualifier", []string{"", "q"}, "", api.ErrCodeInternalError},
-		{"empty_qualified_name", []string{"s", ""}, "", api.ErrCodeInternalError},
-		{"multipart", []string{"s", "q", "q"}, "", api.ErrCodeInternalError},
+		{"unqualified", []string{"ORDERS"}, "ORDERS", "", ""},
+		{"a quoted dot is one name", []string{"q.q"}, "q.q", "", ""},
+		{"the template qualifies", []string{"T", "q.q"}, "q.q", "", ""},
+		{"the table keeps its case", []string{"T", "MyTable"}, "MyTable", "", ""},
+		{"exact, not folded", []string{"t", "ORDERS"}, "", api.ErrCodeUndefinedDatabase, "Unknown schema template t"},
+		{"another qualifier", []string{"S", "ORDERS"}, "", api.ErrCodeUndefinedDatabase, "Unknown schema template S"},
+		{"the table's own name", []string{"q", "q"}, "", api.ErrCodeUndefinedDatabase, "Unknown schema template q"},
+		{"two qualifiers", []string{"T", "q", "q"}, "", api.ErrCodeInternalError, "Unknown table T.q.q"},
+		{"nil", nil, "", api.ErrCodeInternalError, "empty"},
+		{"empty", []string{}, "", api.ErrCodeInternalError, "empty"},
+		{"empty name", []string{""}, "", api.ErrCodeInternalError, "empty segment"},
+		{"empty qualifier", []string{"", "q"}, "", api.ErrCodeInternalError, "empty segment"},
+		{"empty qualified name", []string{"T", ""}, "", api.ErrCodeInternalError, "empty segment"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := ResolveQualifiedTablePath(tc.path, "s")
+			got, err := ResolveTargetTablePath(tc.path, "T")
 			if tc.code != "" {
 				var coded *api.Error
-				if !errors.As(err, &coded) || coded.Code != tc.code {
-					t.Fatalf("path %q: got %q / %v, want %s", tc.path, got, err, tc.code)
+				if !errors.As(err, &coded) || coded.Code != tc.code || !strings.Contains(coded.Message, tc.msg) {
+					t.Fatalf("path %q: got %q / %v, want %s %q", tc.path, got, err, tc.code, tc.msg)
 				}
 				return
 			}
@@ -144,5 +49,53 @@ func TestResolveQualifiedTablePath(t *testing.T) {
 				t.Fatalf("path %q: got %q / %v, want %q", tc.path, got, err, tc.want)
 			}
 		})
+	}
+}
+
+// TestResolveSourceTablePath pins the qualifier half of Java's
+// SemanticAnalyzer.tableExists for a FROM source: it names a table only when
+// unqualified or qualified by the template's exact name, and otherwise
+// reports false (the caller's refusal is Java's "Unknown reference <path>").
+func TestResolveSourceTablePath(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		path      []string
+		want      string
+		ok        bool
+		malformed bool
+	}{
+		{"unqualified", []string{"ORDERS"}, "ORDERS", true, false},
+		{"the template qualifies", []string{"T", "ORDERS"}, "ORDERS", true, false},
+		{"exact, not folded", []string{"t", "ORDERS"}, "", false, false},
+		{"another qualifier", []string{"S", "ORDERS"}, "", false, false},
+		{"two qualifiers", []string{"T", "A", "ORDERS"}, "", false, false},
+		{"nil", nil, "", false, true},
+		{"empty segment", []string{"T", ""}, "", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok, err := ResolveSourceTablePath(tc.path, "T")
+			var coded *api.Error
+			if malformed := errors.As(err, &coded) && coded.Code == api.ErrCodeInternalError; malformed != tc.malformed || (err != nil && !malformed) {
+				t.Fatalf("path %q: error %v, want malformed=%v", tc.path, err, tc.malformed)
+			}
+			if got != tc.want || ok != tc.ok {
+				t.Fatalf("path %q: got %q, %v, want %q, %v", tc.path, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+	// The dotted form splits every dot: it cannot hold a quoted dot, which is
+	// why parse-derived callers pass segments.
+	if got, ok := ResolveQualifiedTableName("T.ORDERS", "T"); got != "ORDERS" || !ok {
+		t.Errorf("dotted template-qualified: %q, %v", got, ok)
+	}
+	if got, ok := ResolveQualifiedTableName("", "T"); got != "" || ok {
+		t.Errorf("empty dotted name: %q, %v", got, ok)
+	}
+	err := UnknownSourceReferenceError([]string{"S", "w"})
+	var coded *api.Error
+	if !errors.As(err, &coded) || coded.Code != api.ErrCodeUndefinedColumn || coded.Message != "Unknown reference S.w" {
+		t.Errorf("UnknownSourceReferenceError: %v", err)
 	}
 }

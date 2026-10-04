@@ -147,3 +147,38 @@ func TestAggregateKeyColumnName_NestedKeyTakesTheResolvedPath(t *testing.T) {
 			"they are stored under", a)
 	}
 }
+
+// A correlation rewrite changes what the grouped row is computed from, not the
+// row: rebuilt over the same key read through another binder, the aggregate
+// keeps its output columns' names and so its row type, which everything above
+// it is typed against.
+func TestGroupByKeepsItsOutputNamesAcrossTranslatedValues(t *testing.T) {
+	t.Parallel()
+
+	elem := values.NewRecordType("ELEM", false, []values.Field{{Name: "EK", Ordinal: 0, FieldType: values.NullableLong}})
+	scan := func() Quantifier {
+		return ForEachQuantifier(InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, elem))))
+	}
+	leaf := mustExpression(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("X"), elem))
+	direct := mustExpression(values.ResolveFieldOrdinals(leaf, []int{0}))
+	gb, err := NewGroupByExpression([]values.Value{direct}, []AggregateSpec{{Function: AggCount}}, scan())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	row := values.NewRecordType("", false, []values.Field{{Name: "X", Ordinal: 0, FieldType: elem}})
+	input := scan()
+	through := mustExpression(values.ResolveFieldOrdinals(
+		mustExpression(values.NewQuantifiedObjectValue(input.GetAlias(), row)), []int{0, 0}))
+	if AggregateKeyColumnName(through) == AggregateKeyColumnName(direct) {
+		t.Fatal("fixture: the rewritten key must render a different derived name, or nothing is tested")
+	}
+	rebuilt, err := gb.WithTranslatedValues([]values.Value{through}, gb.GetAggregates(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rebuilt.GetResultValue().Type().Equals(gb.GetResultValue().Type()) {
+		t.Fatalf("row type changed across the rewrite: %v -> %v",
+			gb.GetResultValue().Type(), rebuilt.GetResultValue().Type())
+	}
+}

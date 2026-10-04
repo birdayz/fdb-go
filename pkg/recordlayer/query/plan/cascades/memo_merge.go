@@ -11,10 +11,12 @@ import (
 // be equivalent). Wire compatibility is untouched: this only changes how
 // the planner shares/optimizes logically-equivalent sub-expressions.
 //
-// Scope: REWRITING phase only. PLANNING-phase bookkeeping (winners,
-// partial matches) holds/embeds References that the merge does not
-// canonicalize, so merge panics if asked to touch a Reference carrying
-// them — a deliberate tripwire (see Reference.HasWinnersOrMatches).
+// Integrate/merge are the REWRITING path. They do not carry PLANNING
+// bookkeeping (winners, partial matches, constraints, consumed partitions),
+// so merge panics if asked to touch it — a deliberate tripwire (see
+// Reference.HasWinnersOrMatches). PLANNING merges exact replicas through
+// Planner.integratePlanningYield (planner_memo_merge.go), which folds that
+// bookkeeping.
 
 // Integrate is the cross-group merge entry point, called when a rule
 // yields an expression into ref during REWRITING. It either:
@@ -82,12 +84,9 @@ func (m *Memo) mergeable(a, b *expressions.Reference) bool {
 	if a == b {
 		return false
 	}
-	// REWRITING-only (RFC-037 §0): expression rules still fire during
-	// PLANNING (integrateOne → merge is reachable from a PLANNING-phase
-	// yield), and a PLANNING-time equivalence discovery must DECLINE —
-	// keeping the groups separate is always sound — rather than reach the
-	// phase tripwire's panic in merge. The panic stays as the backstop for
-	// a direct merge call that bypasses this gate.
+	// This path cannot carry PLANNING bookkeeping, so once PLANNING is
+	// active it declines rather than reach merge's tripwire; PLANNING merges
+	// go through Planner.integratePlanningYield.
 	if m.planningActive {
 		return false
 	}
@@ -190,7 +189,7 @@ func (m *Memo) findEquivalentRef(expr expressions.RelationalExpression, exclude 
 	// Resolve the alias-aware opt-in once per call (expr is invariant across
 	// the candidate/member loop below) — mirrors Reference.Insert's hoist.
 	aliasAware := expressions.InternsAliasAware(expr)
-	for _, cand := range m.findCandidateParents(qs) {
+	for cand := range m.findCandidateParents(qs, nil) {
 		cand = cand.Canonical()
 		if cand == exclude {
 			continue
@@ -214,6 +213,49 @@ func (m *Memo) findEquivalentRef(expr expressions.RelationalExpression, exclude 
 		}
 	}
 	return nil
+}
+
+// findExactReplicaRef returns a group accept admits whose exploratory members
+// include an exact replica of expr (expressions.ExactReplica), or nil. This is
+// the paper's duplicate lookup: the topology index narrows the candidates to
+// groups with a member over the same inputs.
+func (m *Memo) findExactReplicaRef(expr expressions.RelationalExpression, accept func(*expressions.Reference) bool) *expressions.Reference {
+	hash := expr.HashCodeWithoutChildren()
+	holdsReplica := func(ref *expressions.Reference) bool {
+		for member := range ref.MembersWithHash(hash) {
+			if expressions.ExactReplica(member, expr) {
+				return true
+			}
+		}
+		return false
+	}
+	if quantifiers := expr.GetQuantifiers(); len(quantifiers) > 0 {
+		for ref := range m.findCandidateParents(quantifiers, nil) {
+			if ref = ref.Canonical(); holdsReplica(ref) && accept(ref) {
+				return ref
+			}
+		}
+		return nil
+	}
+	for _, ref := range m.leafRefs {
+		if ref = ref.Canonical(); holdsReplica(ref) && accept(ref) {
+			return ref
+		}
+	}
+	return nil
+}
+
+// mergeablePlanning reports whether two PLANNING groups found to hold the
+// same expression may merge. Both must be PLANNING search spaces — a pinned
+// final is an exact selection, not a group — and neither may be the other's
+// ancestor: the merged group would range over itself.
+func (m *Memo) mergeablePlanning(a, b *expressions.Reference) bool {
+	a, b = a.Canonical(), b.Canonical()
+	if a == b || a.Stage() != expressions.StagePlanned || b.Stage() != expressions.StagePlanned ||
+		a.IsPinnedFinal() || b.IsPinnedFinal() {
+		return false
+	}
+	return !m.reachable(a, b) && !m.reachable(b, a)
 }
 
 // indexExpr records ref as a parent of every child Reference of expr in
@@ -261,19 +303,15 @@ func (m *Memo) merge(a, b *expressions.Reference) {
 	if a == b {
 		return
 	}
-	// Scope tripwire: cross-group merging is REWRITING-only (RFC-037 §0).
-	// Partial matches / winners are PLANNING artifacts that embed
-	// un-canonicalized References; merging in their presence would be
-	// unsound. The phase flag closes the per-ref check's blind spot: a ref
-	// carrying ONLY pushed constraints (no winners/matches yet) would slip
-	// the artifact check, and a merge would orphan its ConstraintMap
-	// entries — the map keys canonical refs at access time, which cannot
-	// re-home entries written BEFORE the union-find repoint.
+	// Scope tripwire: this merge folds no PLANNING bookkeeping. Partial
+	// matches / winners would be dropped, and a ref carrying only pushed
+	// constraints would slip the artifact check and orphan its ConstraintMap
+	// entries, which this path does not re-home.
 	if m.planningActive {
-		panic("cascades: cross-group merge during PLANNING (RFC-037 is REWRITING-only)")
+		panic("cascades: REWRITING merge during PLANNING (PLANNING merges go through Planner.integratePlanningYield)")
 	}
 	if a.HasWinnersOrMatches() || b.HasWinnersOrMatches() {
-		panic("cascades: cross-group merge on a Reference carrying PLANNING-phase winners/partial matches (RFC-037 is REWRITING-only)")
+		panic("cascades: REWRITING merge on a Reference carrying PLANNING-phase winners/partial matches")
 	}
 
 	m.track(a)

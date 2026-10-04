@@ -122,9 +122,10 @@ type flatMapCursor struct {
 	pendingCheckValue      []byte
 }
 
-// newFlatMapCursorWithOuterProperties is the production constructor for a
-// RecordQueryFlatMapPlan.
-func newFlatMapCursorWithOuterProperties(
+// newFlatMapCursorForPlan is the production constructor for a
+// RecordQueryFlatMapPlan; nullSupplyingOuter is the plan's
+// NullSupplyingOuter.
+func newFlatMapCursorForPlan(
 	outerCursor recordlayer.RecordCursor[QueryResult],
 	outerPlan plans.RecordQueryPlan,
 	innerPlan plans.RecordQueryPlan,
@@ -134,6 +135,7 @@ func newFlatMapCursorWithOuterProperties(
 	resultValue values.Value,
 	props recordlayer.ExecuteProperties,
 	inheritOuterRecordProperties bool,
+	nullSupplyingOuter bool,
 ) (*flatMapCursor, error) {
 	build, err := newOrdinalJoinBuild(resultValue, nil)
 	if err != nil {
@@ -142,8 +144,18 @@ func newFlatMapCursorWithOuterProperties(
 	if build != nil {
 		build.Clock = evalCtx
 	}
-	if build.enabled() && planContainsDefaultOnEmpty(innerPlan) {
-		if err := build.configureNullSupplying(innerAlias); err != nil {
+	if build.enabled() {
+		// The outer's presence is the plan's own fact (a DefaultOnEmpty the
+		// lowering put on a null-on-empty outer); the inner's is still read
+		// off its wrapper spine. One layout carries both.
+		var nullLegs []values.CorrelationIdentifier
+		if nullSupplyingOuter {
+			nullLegs = append(nullLegs, outerAlias)
+		}
+		if planContainsDefaultOnEmpty(innerPlan) {
+			nullLegs = append(nullLegs, innerAlias)
+		}
+		if err := build.configureNullSupplying(nullLegs...); err != nil {
 			return nil, err
 		}
 	}
@@ -169,19 +181,6 @@ func newFlatMapCursorWithOuterProperties(
 	// drop a leg those references still need (see widenLegTypesFromPlan).
 	if err := build.widenLegTypesFromPlan(innerPlan); err != nil {
 		return nil, err
-	}
-	// Producer context (RFC-142): a WITH-ORDINALITY unnest's inner IS an
-	// ordinality Explode, flowing a row keyed by the internal `_0`/`_1`
-	// positions. Mark the inner leg so it binds STRICTLY POSITIONALLY (see
-	// ordinalJoinBuild.OrdinalityLegs) — a user AS/AT alias spelling `_0`/`_1`
-	// then cannot route the wrong internal key, and a leg whose own
-	// columns are aliased `_0`/`_1` (shape-identical, but NOT an ordinality
-	// Explode) still binds correctly through the normal leg adapter.
-	if build.enabled() && innerIsOrdinalityExplode(innerPlan) {
-		if build.OrdinalityLegs == nil {
-			build.OrdinalityLegs = map[values.CorrelationIdentifier]struct{}{}
-		}
-		build.OrdinalityLegs[innerAlias] = struct{}{}
 	}
 	// A DISABLED-build FlatMap (identity RV — the
 	// WHERE-EXISTS pass-through) probes its inner plan for baked references
@@ -630,7 +629,10 @@ func qualifyOuterPositional(row *PositionalRow, alias values.CorrelationIdentifi
 			values.NewRecordTypeLeg(values.LegKindFlatRun, alias, alias.Name(), 0, len(row.Type.Fields)),
 		},
 	}
-	return &PositionalRow{Type: qualified, Slots: row.Slots, transportKind: row.transportKind}
+	// Qualification changes no value: retain whole-object absence and layout.
+	copyOfRow := *row
+	copyOfRow.Type = qualified
+	return &copyOfRow
 }
 
 // computeResultLegs is computeResult with the inner leg as a pointer: nil is
@@ -829,7 +831,10 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 			if aerr != nil {
 				return QueryResult{}, aerr
 			}
-			if pos, isPos := adapted.(*PositionalRow); isPos {
+			if adapted == nil {
+				// An absent (null-extended) outer record flows on as itself.
+				out.Positional = outerRow.Positional
+			} else if pos, isPos := adapted.(*PositionalRow); isPos {
 				out.Positional = pos
 			}
 		} else if c.outerIdentityPassthrough && outerRow.Positional != nil {

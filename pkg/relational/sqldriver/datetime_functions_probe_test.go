@@ -26,7 +26,7 @@ func TestFDB_DateTimeFunctionsProbe(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE dtfns "+
 			"CREATE TABLE t (id BIGINT, ts TIMESTAMP, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dtfns/s WITH TEMPLATE dtfns")
-	dsn := fmt.Sprintf("fdbsql:///testdb_dtfns?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_DTFNS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

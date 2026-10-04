@@ -15,10 +15,18 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"fdb.dev/pkg/relational/api"
 )
+
+// errorTestTemplates is every schema-template name setupErrorTestDB has
+// created in this test binary. The template is named after the schema alone
+// and lives in the one catalog every parallel test shares, so two tests
+// passing the same schema name race to create it and the loser fails
+// "Schema template already exists" (42F62), whichever runs second.
+var errorTestTemplates sync.Map
 
 // setupErrorTestDB creates a fresh database + schema template + schema
 // and returns a *sql.DB wired into that schema. Same shape as the
@@ -29,6 +37,10 @@ func setupErrorTestDB(t *testing.T, dbPath, schemaName, ddl string) *sql.DB {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
+	template := strings.ToUpper(schemaName) + "_TMPL"
+	if other, taken := errorTestTemplates.LoadOrStore(template, t.Name()); taken {
+		t.Fatalf("setupErrorTestDB: schema name %q is also %s's; its template %s is catalog-global, so pick another", schemaName, other, template)
+	}
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -40,7 +52,7 @@ func setupErrorTestDB(t *testing.T, dbPath, schemaName, ddl string) *sql.DB {
 		fmt.Sprintf("CREATE SCHEMA %s/%s WITH TEMPLATE %s_tmpl", dbPath, schemaName, schemaName)); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, clusterFilePath, schemaName)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", strings.ToUpper(dbPath), clusterFilePath, strings.ToUpper(schemaName))
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

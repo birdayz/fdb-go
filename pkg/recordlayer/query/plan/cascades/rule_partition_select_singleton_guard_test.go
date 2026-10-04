@@ -247,6 +247,74 @@ func TestPartitionSelect_ProjectedExistentialKeepsOuterCrossProduct(t *testing.T
 	}
 }
 
+func TestPartitionSelect_ProjectedExistentialFlowsOwnedWitness(t *testing.T) {
+	t.Parallel()
+	a, b, inner := scanQuantifier("A"), scanQuantifier("B"), scanQuantifier("E")
+	body := mustPartitionConstruct(expressions.NewSelectExpression(
+		mustPartitionConstruct(inner.RequireFlowedObjectValue()), []expressions.Quantifier{inner},
+		[]predicates.QueryPredicate{joinPred("A", "E")}))
+	e := expressions.NamedExistentialQuantifier(values.NamedCorrelationIdentifier("EX"), expressions.InitialOf(body))
+	witness := mustPartitionConstruct(e.RequireFlowedObjectValue())
+	result := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "A", Value: partitionField("A", "col")},
+		values.RecordConstructorField{Name: "B", Value: partitionField("B", "col")},
+		values.RecordConstructorField{Name: "H", Value: values.NewExistsValueWithChild(witness)})
+	selectExpr := mustPartitionConstruct(expressions.NewSelectExpression(result,
+		[]expressions.Quantifier{a, b, e}, []predicates.QueryPredicate{joinPred("A", "B")}))
+	if _, depends := e.GetCorrelatedTo()[a.GetAlias()]; !depends {
+		t.Fatal("existential input has no owned outer dependency")
+	}
+	yields := mustFirePartitionExpressionRule(t, NewPartitionSelectRule(), expressions.InitialOf(selectExpr))
+	found := false
+	for _, expression := range yields {
+		upper := expression.(*expressions.SelectExpression)
+		for _, quantifier := range upper.GetQuantifiers() {
+			for _, member := range quantifier.GetRangesOver().Members() {
+				lower, ok := member.(*expressions.SelectExpression)
+				if !ok || len(lower.GetQuantifiers()) != 2 {
+					continue
+				}
+				aliases := map[values.CorrelationIdentifier]struct{}{}
+				for _, q := range lower.GetQuantifiers() {
+					aliases[q.GetAlias()] = struct{}{}
+				}
+				if !isSupersetOf(aliases, aliasSet("A", "EX")) {
+					continue
+				}
+				found = true
+				constructor, ok := lower.GetResultValue().(*values.RecordConstructorValue)
+				if !ok || len(constructor.Fields) != 2 {
+					t.Fatalf("lower did not retain both objects: %v", lower.GetResultValue())
+				}
+				witnessSlot := -1
+				for i, field := range constructor.Fields {
+					root, ok := values.AsQuantifiedObjectValue(field.Value)
+					if ok && root.Correlation() == e.GetAlias() {
+						witnessSlot = i
+						if !root.FlowedType().IsNullable() {
+							t.Fatal("existential witness lost its empty-subquery nullability")
+						}
+					}
+				}
+				projected := upper.GetResultValue().(*values.RecordConstructorValue).Fields[2].Value.(*values.ExistsValue)
+				child, ok := values.AsFieldValue(projected.GetChild())
+				if !ok || witnessSlot < 0 || len(child.Path().Ordinals()) != 1 || child.Path().Ordinals()[0] != witnessSlot {
+					t.Fatalf("projected EXISTS does not read witness slot %d: %v", witnessSlot, projected)
+				}
+				if free := expressions.InitialOf(upper).GetCorrelatedTo(); len(free) != 0 {
+					t.Fatalf("partition stranded bindings: %v", free)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no lower {A,EX} flowing the owned witness; %d alternatives", len(yields))
+	}
+	if e.GetRangesOver().Get() != body || len(body.GetPredicates()) != 1 {
+		t.Fatal("partition mutated the original existential input")
+	}
+}
+
 func TestProjectedExistentialBlockQualification(t *testing.T) {
 	t.Parallel()
 	a, b, eBase, fBase := scanQuantifier("A"), scanQuantifier("B"), scanQuantifier("E"), scanQuantifier("F")
@@ -259,24 +327,33 @@ func TestProjectedExistentialBlockQualification(t *testing.T) {
 	physicalB := expressions.NamedPhysicalQuantifier(b.GetAlias(), b.GetRangesOver())
 	correlated := mustPartitionConstruct(expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{joinPred("A", "B")}, b))
 	dependentB := expressions.NamedForEachQuantifier(b.GetAlias(), expressions.InitialOf(correlated))
+	// want is the projected qualification; filtering is its predicate-only
+	// twin (independentForEachBlockBelowFilteringExistential), which shares
+	// every decline and differs only on whether the result value reads E.
 	for _, tc := range []struct {
-		name   string
-		qs     []expressions.Quantifier
-		result values.Value
-		want   bool
+		name      string
+		qs        []expressions.Quantifier
+		result    values.Value
+		want      bool
+		filtering bool
 	}{
-		{"admitted", []expressions.Quantifier{a, b, e}, rv, true},
-		{"existential_first", []expressions.Quantifier{e, b, a}, rv, true},
-		{"ordinary_join", []expressions.Quantifier{a, b, eBase}, ordinaryRV, false},
-		{"predicate_only", []expressions.Quantifier{a, b, e}, ordinaryRV, false},
-		{"no_lower", []expressions.Quantifier{e}, rv, false},
-		{"one_lower", []expressions.Quantifier{a, e}, rv, false},
-		{"empty", nil, &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}, false},
-		{"two_existentials", []expressions.Quantifier{a, b, e, f}, rv, false},
-		{"null_on_empty", []expressions.Quantifier{a, nullB, e}, rv, false},
-		{"strict_single", []expressions.Quantifier{a, strictB, e}, rv, false},
-		{"hard_dependency", []expressions.Quantifier{a, dependentB, e}, rv, false},
-		{"physical", []expressions.Quantifier{a, physicalB, e}, rv, false},
+		{"admitted", []expressions.Quantifier{a, b, e}, rv, true, false},
+		{"existential_first", []expressions.Quantifier{e, b, a}, rv, true, false},
+		{"ordinary_join", []expressions.Quantifier{a, b, eBase}, ordinaryRV, false, false},
+		{"predicate_only", []expressions.Quantifier{a, b, e}, ordinaryRV, false, true},
+		{"predicate_only_existential_first", []expressions.Quantifier{e, b, a}, ordinaryRV, false, true},
+		{"no_lower", []expressions.Quantifier{e}, rv, false, false},
+		{"one_lower", []expressions.Quantifier{a, e}, rv, false, false},
+		{"one_lower_predicate_only", []expressions.Quantifier{a, e}, ordinaryRV, false, false},
+		{"empty", nil, &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}, false, false},
+		{"two_existentials", []expressions.Quantifier{a, b, e, f}, rv, false, false},
+		{"two_existentials_predicate_only", []expressions.Quantifier{a, b, e, f}, ordinaryRV, false, false},
+		{"null_on_empty", []expressions.Quantifier{a, nullB, e}, rv, false, false},
+		{"null_on_empty_predicate_only", []expressions.Quantifier{a, nullB, e}, ordinaryRV, false, false},
+		{"strict_single", []expressions.Quantifier{a, strictB, e}, rv, false, false},
+		{"hard_dependency", []expressions.Quantifier{a, dependentB, e}, rv, false, false},
+		{"hard_dependency_predicate_only", []expressions.Quantifier{a, dependentB, e}, ordinaryRV, false, false},
+		{"physical", []expressions.Quantifier{a, physicalB, e}, rv, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -288,6 +365,77 @@ func TestProjectedExistentialBlockQualification(t *testing.T) {
 			got, ok := independentForEachBlockBelowProjectedExistential(sel, order)
 			if ok != tc.want || ok && got != e.GetAlias() {
 				t.Fatalf("qualification=(%#v,%v), want E,%v", got, ok, tc.want)
+			}
+			got, ok = independentForEachBlockBelowFilteringExistential(sel, order)
+			if ok != tc.filtering || ok && got != e.GetAlias() {
+				t.Fatalf("filtering qualification=(%#v,%v), want E,%v", got, ok, tc.filtering)
+			}
+		})
+	}
+}
+
+// TestPartitionSelect_FilteringExistentialKeepsCrossProductBelow pins the
+// FILTERING twin of the projected-existential exemption from the
+// disconnected-lower guard: `FROM A, B WHERE EXISTS (… E.col = A.col AND
+// E.ID > B.ID)` — the flat select Select(A, B, ∃E) whose legs are connected
+// only through E's predicates. Every split that separates A from B tears one
+// of E's predicates from E (the live-existential checks), so lower {A,B} under
+// E is the one bipartition that plans; the guard judged {A,B} disconnected and
+// pruned it, leaving the select with no plan. The negative arm is a semi-join
+// reading only A: counting E's predicates does not connect {A,B}, and the
+// guard keeps pruning that lower (the other bipartitions plan it).
+func TestPartitionSelect_FilteringExistentialKeepsCrossProductBelow(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		readsB   bool
+		wantKept bool
+	}{
+		{"exists_connects_both_legs", true, true},
+		{"exists_reads_one_leg", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, b, eBase := scanQuantifier("A"), scanQuantifier("B"), scanQuantifier("E")
+			e := expressions.NamedExistentialQuantifier(eBase.GetAlias(), eBase.GetRangesOver())
+			existential := mustPartitionConstruct(predicates.NewExistentialAlias(e.GetAlias(), partitionSelectRowType("E")))
+			preds := []predicates.QueryPredicate{existential, joinPred("E", "A")}
+			if tc.readsB {
+				preds = append(preds, predicates.NewComparisonPredicate(
+					partitionField("E", "ID"),
+					predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: partitionField("B", "ID")},
+				))
+			}
+			result := values.NewRawRecordConstructorValue(
+				values.RecordConstructorField{Name: "A", Value: partitionField("A", "col")},
+				values.RecordConstructorField{Name: "B", Value: partitionField("B", "col")},
+			)
+			sel := mustPartitionConstruct(expressions.NewSelectExpression(result, []expressions.Quantifier{a, b, e}, preds))
+			for _, deferProducts := range []bool{false, true} {
+				mode := "enumerate_products"
+				if deferProducts {
+					mode = "defer_products"
+				}
+				t.Run(mode, func(t *testing.T) {
+					t.Parallel()
+					cfg := DefaultPlannerConfiguration()
+					cfg.ShouldDeferCrossProducts = deferProducts
+					yields := mustFireExpressionRuleWithMemo(t, NewPartitionSelectRule(), expressions.InitialOf(sel), rightDeepPlanContext{cfg: cfg}, nil)
+					kept := false
+					for _, y := range yields {
+						for _, lower := range nestedLowerAliasSets(y) {
+							if len(lower) == 2 && isSupersetOf(lower, aliasSet("A", "B")) {
+								kept = true
+							}
+						}
+					}
+					if kept != tc.wantKept {
+						t.Fatalf("lower {A,B} under the filtering E kept=%v, want %v; %d alternatives", kept, tc.wantKept, len(yields))
+					}
+					if !tc.wantKept && len(yields) == 0 {
+						t.Fatal("no alternatives at all; the prune assertion would be vacuous")
+					}
+				})
 			}
 		})
 	}

@@ -38,6 +38,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -211,9 +212,9 @@ func spikedClusterKey(t *testing.T, lateBy time.Duration) (string, *lateClock) {
 // the ONLY difference from the handle they opened before conversion.
 func spikedDSN(key, dbPath, schema string) string {
 	if schema == "" {
-		return fmt.Sprintf("fdbsql://%s?cluster_file=%s", dbPath, key)
+		return fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), key)
 	}
-	return fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, key, schema)
+	return fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", strings.ToUpper(dbPath), key, strings.ToUpper(schema))
 }
 
 // openSpiked opens a handle on a spiked backend and closes it with the test.

@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "fnv64",
+    srcs = ["fnv64.go"],
+    importpath = "fdb.dev/pkg/recordlayer/query/plan/cascades/internal/fnv64",
+    visibility = ["//pkg/recordlayer/query/plan/cascades:__subpackages__"],
+)
+
+go_test(
+    name = "fnv64_test",
+    srcs = ["fnv64_test.go"],
+    embed = [":fnv64"],
+)

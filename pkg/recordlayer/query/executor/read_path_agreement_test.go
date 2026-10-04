@@ -28,6 +28,13 @@ import (
 //	                                                     over a message context
 //	3. rowstruct.MessageStruct      (rowstruct.go)     — the driver-visible STRUCT
 //
+// The third is Java's MessageTuple.getObject (MessageTuple.java:57-77), the
+// driver's struct read. All three give Java's query read, which is
+// MessageTuple's, not getFieldOnMessage's: the two differ only on an unset
+// proto2 field that declares a default, which getFieldOnMessage reads as the
+// default and MessageTuple (hasField false) as null, and a query reads a copy
+// of the record that declares no default (TestReadPathsMatchJavasQueryRead).
+//
 // They agree today, but nothing forced them to: path 1 was wrong until
 // recently, which made the answer depend on which path a plan happened to
 // take. This test is that gate — it reads the SAME message through all three
@@ -306,6 +313,121 @@ func TestReadPathAgreement_EmptyArrayAndAbsence(t *testing.T) {
 				if !p.got.equal(tc.want) {
 					t.Fatalf("read path %s on field %q = %s, want %s — %s",
 						p.name, tc.field, p.got, tc.want, tc.why)
+				}
+			}
+		})
+	}
+}
+
+// TestReadPathsMatchJavasQueryRead runs Go's three field readers over the cases
+// the JVM spec "RFC-257 a query reads a field as Java's query reads it"
+// measures (conformance/null_standin_conformance_test.go), and asserts each
+// reader gives Java's query read: that spec pins the shared helper
+// (values.ProtoFieldReadsValue) against the JVM, and this pins every reader to
+// the same measured table, so a reader that stops going through the helper
+// cannot agree with the other two and still differ from Java. An unset field
+// with a declared default is null in all three: Java's query reads a copy of
+// the record in the plan's type (QueryResult.fromQueriedRecord), and the
+// driver's struct reader, MessageTuple, reads hasField (MessageTuple.java:73-77);
+// only Java's raw MessageHelpers.getFieldOnMessage, which no query applies to
+// a stored record, reads the default.
+func TestReadPathsMatchJavasQueryRead(t *testing.T) {
+	t.Parallel()
+	file := func(syntax string) protoreflect.MessageDescriptor {
+		label := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
+		field := func(name string, number int32) *descriptorpb.FieldDescriptorProto {
+			return &descriptorpb.FieldDescriptorProto{Name: proto.String(name), Number: proto.Int32(number), Label: label, Type: descriptorpb.FieldDescriptorProto_TYPE_INT64.Enum()}
+		}
+		repeated := field("r", 3)
+		repeated.Label = descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum()
+		sub := field("s", 4)
+		sub.Type = descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum()
+		sub.TypeName = proto.String(".reads.Sub")
+		fields := []*descriptorpb.FieldDescriptorProto{field("a", 1), repeated, sub}
+		if syntax == "proto2" {
+			withDefault := field("d", 2)
+			withDefault.DefaultValue = proto.String("7")
+			fields = append(fields, withDefault)
+		}
+		fd, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
+			Name: proto.String("reads_" + syntax + ".proto"), Package: proto.String("reads"), Syntax: proto.String(syntax),
+			MessageType: []*descriptorpb.DescriptorProto{
+				{Name: proto.String("Sub"), Field: []*descriptorpb.FieldDescriptorProto{field("x", 1)}},
+				{Name: proto.String("Rec"), Field: fields},
+			},
+		}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fd.Messages().ByName("Rec")
+	}
+	// Java's measured reads, the JVM spec's table.
+	for _, c := range []struct {
+		syntax string
+		set    map[string]int64
+		field  string
+		java   readPathValue
+		// tuple is MessageTuple's read where it differs from java.
+		tuple *readPathValue
+	}{
+		{"proto2", nil, "a", readPathValue{null: true}, nil},
+		{"proto2", map[string]int64{"a": 0}, "a", readPathValue{scalar: "0"}, nil},
+		{"proto2", nil, "d", readPathValue{null: true}, nil},
+		{"proto2", map[string]int64{"d": 0}, "d", readPathValue{scalar: "0"}, nil},
+		{"proto2", nil, "r", readPathValue{isArr: true}, nil},
+		{"proto2", nil, "s", readPathValue{null: true}, nil},
+		{"proto3", nil, "a", readPathValue{null: true}, nil},
+		{"proto3", map[string]int64{"a": 0}, "a", readPathValue{null: true}, nil},
+		{"proto3", map[string]int64{"a": 5}, "a", readPathValue{scalar: "5"}, nil},
+		{"proto3", nil, "r", readPathValue{isArr: true}, nil},
+		{"proto3", nil, "s", readPathValue{null: true}, nil},
+	} {
+		t.Run(fmt.Sprintf("%s %v %s", c.syntax, c.set, c.field), func(t *testing.T) {
+			t.Parallel()
+			desc := file(c.syntax)
+			built := dynamicpb.NewMessage(desc)
+			for name, v := range c.set {
+				built.Set(desc.Fields().ByName(protoreflect.Name(name)), protoreflect.ValueOfInt64(v))
+			}
+			b, err := proto.Marshal(built)
+			if err != nil {
+				t.Fatal(err)
+			}
+			msg := dynamicpb.NewMessage(desc)
+			if err := proto.Unmarshal(b, msg); err != nil {
+				t.Fatal(err)
+			}
+			fd := desc.Fields().ByName(protoreflect.Name(c.field))
+
+			got1 := normalizeReadPathValue(protoToPositional(msg.Interface()).Slots[fd.Index()])
+			corr := values.NamedCorrelationIdentifier("java_reads")
+			qov := mustTestQOV(t, corr, PositionalTypeForDescriptor(desc))
+			raw2, err := mustTestFieldOrdinal(t, qov, fd.Index()).Evaluate(&values.RowEvalContext{
+				Correlations: stubBinder{corr: msg.Interface()},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got2 := normalizeReadPathValue(raw2)
+			rs, err := rowstruct.New(msg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw3, err := rs.AttributeByName(c.field)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got3 := normalizeReadPathValue(raw3)
+			tuple := c.java
+			if c.tuple != nil {
+				tuple = *c.tuple
+			}
+			for _, p := range []struct {
+				name      string
+				got, java readPathValue
+			}{{"protoToPositional", got1, c.java}, {"FieldValue", got2, c.java}, {"rowstruct (MessageTuple)", got3, tuple}} {
+				if !p.got.equal(p.java) {
+					t.Errorf("%s reads %s, Java's %s", p.name, p.got, p.java)
 				}
 			}
 		})

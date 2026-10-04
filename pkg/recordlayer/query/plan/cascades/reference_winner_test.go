@@ -111,7 +111,7 @@ func referenceWinnerExploreRewriting(p *Planner, rootRef *expressions.Reference)
 		p.constraintMap = NewConstraintMap()
 	}
 	if p.dataAccessConsumed == nil {
-		p.dataAccessConsumed = make(map[*expressions.Reference]int)
+		p.dataAccessConsumed = make(map[*expressions.Reference][]matchConsumption)
 	}
 	p.push(&OptimizeGroupTask{Phase: PhaseRewriting, Ref: rootRef})
 	p.push(&ExploreGroupTask{Phase: PhaseRewriting, Ref: rootRef})
@@ -272,6 +272,7 @@ func TestSortElimination_ViaChildOrderedMember(t *testing.T) {
 	p := NewPlanner(rules, ctx).
 		WithPlanningExpressionRules(BatchAExpressionRules())
 	referenceWinnerExploreRewriting(p, sortRef)
+	scanRef = sortRef.Winner().GetQuantifiers()[0].GetRangesOver()
 
 	emptyPrefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
 	scanPlan := cand.ToScanPlan(emptyPrefix, false)
@@ -326,6 +327,7 @@ func TestSortElimination_CounterflowNullsNotElidedAtExtraction(t *testing.T) {
 	p := NewPlanner(rules, ctx).
 		WithPlanningExpressionRules(BatchAExpressionRules())
 	referenceWinnerExploreRewriting(p, sortRef)
+	scanRef = sortRef.Winner().GetQuantifiers()[0].GetRangesOver()
 
 	emptyPrefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
 	scanPlan := cand.ToScanPlan(emptyPrefix, false)
@@ -617,24 +619,19 @@ func TestFinalOfChildrenVisibleToSemanticEquality(t *testing.T) {
 // TestSortElimination_FiresThroughCollapsedDistinct pins the extraction
 // twin of the rule-time executable-plan verification, from the OTHER side:
 // the elision only fires when rebuildOrderedSpine's WithChildren relink
-// REACHES the executable plan. Before RFC-184 W2 the distinct kept a physical
-// wrapper whose WithChildren gated on isLeafReplaceable and so DECLINED to
-// relink onto a non-leaf-replaceable (projection) pinned inner — keeping a
-// redundant sort Java's RemoveSortRule elides. The collapsed bare distinct
-// plan's WithChildren is an unconditional quantifier swap that re-resolves
-// through GetInner, so the pin reaches the ordered projection and the sort is
-// correctly dropped — a parity gain, matching the predicates-filter collapse.
-// The pin still BAKES the ordered projection as the distinct's concrete inner,
-// so dropping the sort is order-correct.
+// REACHES the executable plan. The bare distinct plan's WithChildren is a
+// quantifier swap that re-resolves through GetInner, so the pin reaches the
+// ordered block Map and the redundant sort is dropped, as Java's RemoveSortRule
+// elides it. The pin BAKES the ordered Map as the distinct's concrete inner, so
+// dropping the sort is order-correct.
 func TestSortElimination_FiresThroughCollapsedDistinct(t *testing.T) {
 	t.Parallel()
 
-	// Ordered member that is NOT leaf-replaceable: a projection wrapper
-	// delegating over an in-memory sort on STATUS.
+	// Ordered member: a block Map delegating over an in-memory sort on STATUS.
 	sorted := referenceWinnerSortedMemberOn(t, "STATUS")
 	sortedRef := expressions.InitialOf(sorted)
 	projectionQ := expressions.ForEachQuantifier(sortedRef)
-	orderedProjection := mustReferenceWinnerConstruct(plans.NewRecordQueryProjectionPlanFromQuantifier(
+	orderedProjection := mustReferenceWinnerConstruct(newProjectionMapFromQuantifierForTest(
 		[]values.Value{referenceWinnerQuantifiedField(t, projectionQ, 0)},
 		nil,
 		projectionQ,
@@ -696,7 +693,7 @@ func TestSortElimination_FiresThroughCollapsedDistinct(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected the elided root to be *plans.RecordQueryDistinctPlan, got %T", plan)
 	}
-	if _, ok := dp.GetInner().(*plans.RecordQueryProjectionPlan); !ok {
+	if _, ok := dp.GetInner().(*plans.RecordQueryMapPlan); !ok {
 		t.Fatalf("the pin must relink the distinct's inner to the ORDERED projection (proving the relink reached the executable plan, not the unordered winner); got inner %T", dp.GetInner())
 	}
 }

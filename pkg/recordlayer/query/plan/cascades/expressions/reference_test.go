@@ -2,6 +2,7 @@ package expressions
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -379,6 +380,38 @@ func TestPreparedMemberDuplicatePreservesSemanticFallback(t *testing.T) {
 	duplicate, aliasAwareOnly := PreparedMemberDuplicate([]RelationalExpression{left}, right)
 	if !duplicate || aliasAwareOnly {
 		t.Fatalf("PreparedMemberDuplicate semantic fallback = (%v, %v), want (true, false)", duplicate, aliasAwareOnly)
+	}
+}
+
+func TestPreparedMemberDuplicateIndependentUnionChildren(t *testing.T) {
+	t.Parallel()
+	for _, missing := range []bool{false, true} {
+		t.Run(fmt.Sprint(missing), func(t *testing.T) {
+			t.Parallel()
+			leftQs := make([]Quantifier, MaxPermutationChildren)
+			rightQs := make([]Quantifier, MaxPermutationChildren)
+			for i := range leftQs {
+				leftQs[i] = ForEachQuantifier(InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{fmt.Sprint(i)}, testRecordType()))))
+				j := len(leftQs) - 1 - i
+				if missing && j == 0 {
+					j = 1
+				}
+				rightQs[i] = ForEachQuantifier(InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{fmt.Sprint(j)}, testRecordType()))))
+			}
+			left := mustExpression(NewLogicalUnionExpression(leftQs))
+			right := mustExpression(NewLogicalUnionExpression(rightQs))
+			duplicate, aliasAwareOnly := PreparedMemberDuplicate([]RelationalExpression{left}, right)
+			if duplicate != !missing || aliasAwareOnly {
+				t.Fatalf("duplicate=(%v,%v), missing=%v", duplicate, aliasAwareOnly, missing)
+			}
+			conflict, ok := EmptyAliasMap().With(leftQs[0].GetAlias(), rightQs[0].GetAlias())
+			if !ok {
+				t.Fatal("cannot construct alias constraint")
+			}
+			if SemanticEquals(left, right, conflict) {
+				t.Fatal("union matching ignored the external alias constraint")
+			}
+		})
 	}
 }
 

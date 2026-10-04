@@ -5041,12 +5041,11 @@ quoted aliases, identical unquoted aliases, lexical aliases equal after SQL
 normalization, and the existing private-parent/no-predicate/single-source guards.
 
 The UNNEST frame check also conflates the lexical names. Its independent inner
-query should be accepted for `"a"` versus `A`. A correlated multi-source child
-reading the outer element still reaches the separate translator restriction
-(`EXISTS with a multi-table FROM referencing the unnest element is not supported`),
-just like the distinct-letter control. Retain both original correlated probes
-with that exact existing error; add independent inner controls that test the
-lexical fix without claiming broader correlated-UNNEST support.
+query should be accepted for `"a"` versus `A`. The correlated probes originally
+retained a separate multi-source UNNEST translator restriction. RFC-257 removed
+that stale restriction once the owned existential child preserved its correlated
+WHERE below FirstOrDefault. Both correlated probes now require Java's rows;
+`TestFDB_MultiSourceExistsReadsUnnestElement` covers the broader binding cases.
 
 Executable scope: retained dual-engine SQL probes plus unit coverage of the
 source-name shapes, quoted/unquoted pairs, minted parents and later-ON visibility.

@@ -38,9 +38,20 @@ type EliminateNullOnEmptyRule struct {
 // NewEliminateNullOnEmptyRule constructs the rule.
 func NewEliminateNullOnEmptyRule() *EliminateNullOnEmptyRule {
 	return &EliminateNullOnEmptyRule{
-		matcher: NewExpressionMatcher[*expressions.SelectExpression]("eliminate_null_on_empty"),
+		matcher: NewExpressionMatcher[*expressions.SelectExpression]("eliminate_null_on_empty").WithRootPredicate(
+			func(sel *expressions.SelectExpression) bool {
+				for _, q := range sel.GetQuantifiers() {
+					if q.Kind() == expressions.QuantifierForEach && q.IsNullOnEmpty() {
+						return true
+					}
+				}
+				return false
+			},
+		),
 	}
 }
+
+func (r *EliminateNullOnEmptyRule) ConstraintDependencies() []any { return nil }
 
 func (r *EliminateNullOnEmptyRule) Matcher() matching.BindingMatcher { return r.matcher }
 
@@ -236,6 +247,8 @@ func mapPredicateValues(p predicates.QueryPredicate, fn func(values.Value) value
 		cmp := q.Comparison
 		cmp.Operand = fn(q.Comparison.Operand)
 		return &predicates.ComparisonPredicate{Operand: fn(q.Operand), Comparison: cmp}
+	case *predicates.PredicateWithValueAndRanges:
+		return predicates.ReplaceValues(q, fn)
 	case *predicates.ValuePredicate:
 		return predicates.NewValuePredicate(fn(q.Value))
 	case *predicates.ExistentialValuePredicate:
@@ -245,15 +258,15 @@ func mapPredicateValues(p predicates.QueryPredicate, fn func(values.Value) value
 		for i, sp := range q.SubPredicates {
 			subs[i] = mapPredicateValues(sp, fn)
 		}
-		return &predicates.AndPredicate{SubPredicates: subs}
+		return predicates.WithAtomicity(&predicates.AndPredicate{SubPredicates: subs}, predicates.IsAtomic(q))
 	case *predicates.OrPredicate:
 		subs := make([]predicates.QueryPredicate, len(q.SubPredicates))
 		for i, sp := range q.SubPredicates {
 			subs[i] = mapPredicateValues(sp, fn)
 		}
-		return &predicates.OrPredicate{SubPredicates: subs}
+		return predicates.WithAtomicity(&predicates.OrPredicate{SubPredicates: subs}, predicates.IsAtomic(q))
 	case *predicates.NotPredicate:
-		return &predicates.NotPredicate{Child: mapPredicateValues(q.Child, fn)}
+		return predicates.WithAtomicity(&predicates.NotPredicate{Child: mapPredicateValues(q.Child, fn)}, predicates.IsAtomic(q))
 	default:
 		// Conservative passthrough: a predicate type not enumerated above is
 		// returned unmapped. This is correct for the leaf/atom predicates that

@@ -286,7 +286,7 @@ func TestFDB_ArrayCardinality(t *testing.T) {
 		if strings.Contains(ex, "ISCAN") {
 			t.Fatalf("Phase 1 must full-scan, got index scan: %s", ex)
 		}
-		types := embedded.ResultColumnTypesForPlan(plan, md)
+		types := embedded.ResultColumnTypesForPlan(plan)
 		if len(types) != 1 || types[0] != "INTEGER" {
 			t.Fatalf("column types = %v, want [INTEGER]", types)
 		}

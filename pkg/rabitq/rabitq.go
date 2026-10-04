@@ -43,13 +43,23 @@ type Quantizer struct {
 }
 
 // NewQuantizer creates a new RaBitQ quantizer implementing VectorQuantizer.
-// numExBits is clamped to [1, 8]; out-of-range values default to 4.
+// numExBits is kept as given: a count outside what the encoder supports
+// (ValidNumExBits) is refused by the caller where it first quantizes, as Java
+// refuses it where it constructs its RaBitQuantizer, never replaced by another
+// count, which would store codes of a width the configuration does not name.
 func NewQuantizer(metric Metric, numExBits int) *Quantizer {
-	if numExBits < 1 || numExBits > 8 {
-		numExBits = 4
-	}
 	return &Quantizer{metric: metric, numExBits: numExBits}
 }
+
+// ValidNumExBits reports whether the encoder supports numExBits extra bits:
+// 1 to 8, the range Java's RaBitQuantizer constructor checks
+// (RaBitQuantizer.java:76, TIGHT_START's length).
+func ValidNumExBits(numExBits int) bool {
+	return numExBits >= 1 && numExBits < len(tightStart)
+}
+
+// NumExBits is the quantizer's count of extra bits.
+func (q *Quantizer) NumExBits() int { return q.numExBits }
 
 // Encode quantizes a float64 vector into compact bytes for storage.
 func (q *Quantizer) Encode(vector []float64) []byte {
@@ -86,14 +96,16 @@ func (q *Quantizer) Decode(storedBytes []byte, numDimensions int) ([]float64, er
 		xucNormSqr += xuc[i] * xuc[i]
 	}
 
-	// Scale to approximate original norm (sqrt(fAddEx) = ||original||).
-	origNorm := math.Sqrt(encoded.FAddEx)
-	xucNorm := math.Sqrt(xucNormSqr)
-	if xucNorm > 0 && origNorm > 0 {
-		scale := origNorm / xucNorm
-		for i := range xuc {
-			xuc[i] *= scale
-		}
+	// Match EncodedRealVector.computeData: degenerate original norms have
+	// no direction to reconstruct. The negated comparison includes NaN.
+	if !(encoded.FAddEx > 0) || xucNormSqr == 0 {
+		clear(xuc)
+		return xuc, nil
+	}
+	// Divide before taking the square root, preserving Java's rounding.
+	scale := math.Sqrt(encoded.FAddEx / xucNormSqr)
+	for i := range xuc {
+		xuc[i] *= scale
 	}
 
 	return xuc, nil
@@ -326,7 +338,7 @@ type RaBitQuantizer struct {
 // NewRaBitQuantizer creates a new quantizer with the given metric and bit precision.
 // numExBits must be in [1, 8].
 func NewRaBitQuantizer(metric Metric, numExBits int) *RaBitQuantizer {
-	if numExBits < 1 || numExBits > 8 {
+	if !ValidNumExBits(numExBits) {
 		panic(fmt.Sprintf("rabitq: numExBits must be in [1, 8], got %d", numExBits))
 	}
 	return &RaBitQuantizer{
@@ -383,19 +395,26 @@ func (q *RaBitQuantizer) encodeInternal(data []float64) *rabitqResult {
 	residualL2Norm := math.Sqrt(residualL2Sqr)
 	ipResidualXuCb := dot(data, xuCb)
 
-	xuCbNormSqr := dot(xuCb, xuCb)
+	// The norm-then-square operation order is part of the serialized
+	// calibration, not interchangeable with the dot product itself.
+	xuCbNorm := l2Norm(xuCb)
+	xuCbNormSqr := xuCbNorm * xuCbNorm
 
 	ipResidualXuCbSafe := ipResidualXuCb
 	if ipResidualXuCb == 0.0 {
 		ipResidualXuCbSafe = math.Inf(1)
 	}
 
-	// Clamp to 0 to handle floating-point rounding where Cauchy-Schwarz
-	// ratio is slightly < 1.0, making the expression negative.
+	// Java retains NaN when rounding makes this argument negative (including
+	// zero residuals). The error factor is serialized verbatim, including
+	// Java's host-dependent NaN sign (AMD64 and ARM64 differ), so clamping
+	// or canonicalizing it would change persisted vector bytes.
 	sqrtArg := ((residualL2Sqr*xuCbNormSqr)/
 		(ipResidualXuCbSafe*ipResidualXuCbSafe) - 1.0) /
 		float64(max(1, dims-1))
-	tmpError := residualL2Norm * eps0 * math.Sqrt(math.Max(0.0, sqrtArg))
+	// Round before doubling: a compiler may lower 2*x to x+x and fuse
+	// the multiplication producing x into that addition.
+	tmpError := float64(residualL2Norm * eps0 * math.Sqrt(sqrtArg))
 
 	// All supported metrics use the same formula (matching Java switch).
 	fAddEx := residualL2Sqr
@@ -450,12 +469,12 @@ func (q *RaBitQuantizer) quantizeEx(oAbs []float64) *quantizeExResult {
 	var ipNorm float64
 	code := make([]int, dim)
 	for i := 0; i < dim; i++ {
-		k := int(math.Floor(t*oAbs[i] + eps))
+		k := int(math.Floor(float64(t*oAbs[i]) + eps))
 		if k > maxLevel {
 			k = maxLevel
 		}
 		code[i] = k
-		ipNorm += (float64(k) + 0.5) * oAbs[i]
+		ipNorm += float64((float64(k) + 0.5) * oAbs[i])
 	}
 
 	var ipNormInv float64
@@ -517,10 +536,10 @@ func (q *RaBitQuantizer) bestRescaleFactor(oAbs []float64) float64 {
 	var numer float64
 
 	for i := 0; i < numDimensions; i++ {
-		cur := int(tStart*oAbs[i] + eps)
+		cur := int(float64(tStart*oAbs[i]) + eps)
 		curOB[i] = cur
-		sqrDen += float64(cur)*float64(cur) + float64(cur)
-		numer += (float64(cur) + 0.5) * oAbs[i]
+		sqrDen += float64(float64(cur)*float64(cur)) + float64(cur)
+		numer += float64((float64(cur) + 0.5) * oAbs[i])
 	}
 
 	pq := &rescaleHeap{}
@@ -543,7 +562,7 @@ func (q *RaBitQuantizer) bestRescaleFactor(oAbs []float64) float64 {
 		curOB[i]++
 		u := curOB[i]
 
-		sqrDen += 2.0 * float64(u)
+		sqrDen += float64(2.0 * float64(u))
 		numer += oAbs[i]
 
 		curIp := numer / math.Sqrt(sqrDen)
@@ -583,7 +602,10 @@ func l2Norm(x []float64) float64 {
 	return math.Sqrt(dot(x, x))
 }
 
-// dot computes the dot product of two vectors.
+// dot computes Java's scalar, separately rounded dot product. Explicit float64
+// conversions at multiplication boundaries forbid Go's permitted FMA fusion;
+// assignments alone do not. Quantization uses the same barriers because both
+// its sweep decisions and these reductions feed the persisted encoding.
 func dot(a, b []float64) float64 {
 	n := len(a)
 	if len(b) < n {
@@ -591,7 +613,7 @@ func dot(a, b []float64) float64 {
 	}
 	var sum float64
 	for i := 0; i < n; i++ {
-		sum += a[i] * b[i]
+		sum += float64(a[i] * b[i])
 	}
 	return sum
 }

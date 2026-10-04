@@ -26,6 +26,25 @@ import (
 // derivable (the catalog-free nil-md path — same untranslatable rule as the
 // anchored seed).
 func (t *cascadesTranslator) ordinalLegType(op logical.LogicalOperator) *values.RecordType {
+	if body := t.derivedGatedJoinBody(op); body != nil {
+		// A derived table whose body is a projection-less join (inner or
+		// outer) flows that join's own row, its legs' columns under their own
+		// names — what the physical leg emits. The name model's qualified keys (`W.ID`,
+		// legColumns' join arm) are a row no plan produces, so a leg typed by
+		// them reached the leg adapter's retired by-name gather instead of
+		// passing through. The body's buried-leg table is NOT carried: the
+		// derived table is ONE leg of the join above, named by its own alias,
+		// and a buried table would re-window it by the body's leaves (the box
+		// convention, a box named by its rightmost leaf), unbinding the alias.
+		bodyType := t.ordinalLegType(body)
+		if bodyType == nil {
+			return nil
+		}
+		flat := *bodyType
+		flat.Legs = nil
+		flat.RecordName = t.legScanTableName(op)
+		return &flat
+	}
 	cols := t.ordinalLegColumns(op)
 	if cols == nil {
 		return nil
@@ -55,6 +74,41 @@ func (t *cascadesTranslator) ordinalLegType(op logical.LogicalOperator) *values.
 		rt.Legs = t.buriedLegBounds(bj, 0)
 	}
 	return rt
+}
+
+// derivedGatedJoinBody returns the join a derived-table leg's body is — a
+// non-recursive carrier with no column-alias list whose body, through
+// filters, is a projection-less join the ordinal gate gates — or nil. Every
+// join kind the gate admits qualifies: an INNER cluster, and a LEFT, RIGHT or
+// FULL box, whose own row is its legs' columns under their own names in FROM
+// order, the null-supplying side's nullable (ordinalLegColumns' join arm) —
+// the row the dissolved box's FlatMap or the FULL box's join emits. Typed by
+// the name model's qualified keys instead, half the measured reads of the leg
+// failed at execution against that row (five of the ten arms of
+// TestFDB_DerivedOuterJoinBesideAnotherSource at 00a3e35e0; the others were
+// planned so that no reader bound the mis-typed row). A star-admitted unnest
+// body is excluded: its normalization projects its boundary labels, which
+// derivedBodyStarOrdinalLeg types.
+func (t *cascadesTranslator) derivedGatedJoinBody(op logical.LogicalOperator) *logical.LogicalJoin {
+	carrier, ok := op.(*logical.LogicalCTE)
+	if !ok || carrier.Recursive() || len(carrier.ColumnAliases()) > 0 {
+		return nil
+	}
+	if _, star := t.derivedBodyStarOrdinalLeg(carrier.Body()); star {
+		return nil
+	}
+	body := gatedLegBox(carrier.Body())
+	if body == nil {
+		return nil
+	}
+	prev := t.inInnerCluster
+	t.inInnerCluster = false
+	d := t.ordinalWedgeGateDecide(body)
+	t.inInnerCluster = prev
+	if !d.Gated {
+		return nil
+	}
+	return body
 }
 
 // gatedLegBox is the join a gated leg IS, seen through the filters the
@@ -185,17 +239,18 @@ func (t *cascadesTranslator) ordinalLegColumns(op logical.LogicalOperator) []val
 			//
 			// ARBITRARY DEPTH AND TOPOLOGY: the chained ordinal seed gate
 			// (translateChainedUnnestOrdinal → chainedSpineWalk) admits any
-			// unnest-right spine whose BOTTOM is a single lateral source
-			// (clusterArity==1) and whose links each own exactly one deeper
-			// link's element — linear chains and forks alike. This arm's
+			// unnest-right spine whose BOTTOM composes an ordinal row (the
+			// admission laws at chainedSpineWalk: a single source, a bound
+			// standalone unnest, a gated INNER box, a gated LEFT/RIGHT box)
+			// and whose links each have exactly one owner — a deeper element,
+			// a bottom source (a sibling), or an enclosing row. This arm's
 			// recursion on o.Left therefore descends one level per admitted
-			// link until it bottoms out at that single source; the merged type
-			// it accumulates is the same for a fork as for a linear chain
-			// (columns append in spine order — ownership only changes WHERE
-			// the collection roots, via chainedOwnerElementSlot, never the row
-			// layout). A MULTI-source BOX bottom still declines at the gate,
-			// so this recursion only ever walks the unnest-right spine, never
-			// a box.
+			// link until it reaches the bottom, which the arms above type (the
+			// join arm composes a box's per-leg windows); the merged type it
+			// accumulates is the same for a fork or a sibling as for a linear
+			// chain (columns append in spine order — ownership only changes
+			// WHERE the collection roots, via chainedOwnerElementSlot and
+			// chainedBottomSourceCollection, never the row layout).
 			//
 			// LOAD-BEARING INVARIANT: exactUnnestLegColumns here must stay
 			// layout-identical
@@ -206,6 +261,15 @@ func (t *cascadesTranslator) ordinalLegColumns(op logical.LogicalOperator) []val
 			// slot. Pinned by the chained-unnest ordinal FDB test's actual-value +
 			// AT-both-links assertions.
 			outerCols := t.ordinalLegColumns(o.Left)
+			if bottom := standaloneUnnestLeg(o.Left); bottom != nil {
+				// A first FROM item's standalone unnest under the link leads
+				// the merged row with its own element (and ordinal), exactly
+				// typed — the run unnestOrdinalSeed's standalone arm builds.
+				// Only here: as a leg anywhere else its Explode flows the bare
+				// element, which no positional row describes, so
+				// ordinalLegColumns of the unnest itself keeps declining.
+				outerCols = boundUnnestLegColumns(bottom)
+			}
 			if outerCols == nil {
 				return nil
 			}
@@ -621,16 +685,20 @@ func (t *cascadesTranslator) translateGatheredInnerCluster(j *logical.LogicalJoi
 // executor binds legs by ALIAS, so RC leg order is independent of cursor
 // outer/inner roles). Returns nil when a leg is untranslatable (same rule as
 // the anchored seed). The seed shape is asserted loud
-// (values.AssertOrdinalJoinSeed — every seed must pass this invariant check).
+// (values.ValidateOrdinalJoinSeedForLegs checks every declared input, including
+// zero-width legs).
 // The returned legTypes map (UPPER alias → bakeLegType) feeds
 // bakeGatedJoinPredicates at the seed and the WHERE-merge site.
 func (t *cascadesTranslator) buildOrdinalJoinResultValue(legs []clusterLeg) (values.Value, map[string]bakeLegType) {
-	fields, legTypes := t.ordinalJoinSeedFields(legs)
+	fields, legTypes, owners := t.ordinalJoinSeedFields(legs)
 	if fields == nil {
 		return nil, nil
 	}
 	rc := values.NewRawRecordConstructorValue(fields...)
-	values.AssertOrdinalJoinSeed(rc)
+	if err := values.ValidateOrdinalJoinSeedForLegs(rc, owners); err != nil {
+		t.setTranslateErr(err)
+		return nil, nil
+	}
 	return rc, legTypes
 }
 
@@ -640,13 +708,14 @@ func (t *cascadesTranslator) buildOrdinalJoinResultValue(legs []clusterLeg) (val
 // mixed/partial shapes legitimately skip AssertOrdinalJoinSeed) before
 // deciding on the assert. nil fields = a leg is untranslatable (same decline
 // rule as the seed).
-func (t *cascadesTranslator) ordinalJoinSeedFields(legs []clusterLeg) ([]values.RecordConstructorField, map[string]bakeLegType) {
-	var fields []values.RecordConstructorField
+func (t *cascadesTranslator) ordinalJoinSeedFields(legs []clusterLeg) ([]values.RecordConstructorField, map[string]bakeLegType, []values.QuantifiedObjectValue) {
+	fields := make([]values.RecordConstructorField, 0)
+	owners := make([]values.QuantifiedObjectValue, 0, len(legs))
 	legTypes := make(map[string]bakeLegType, len(legs))
 	for _, leg := range legs {
 		entry, ok := t.legBakeEntry(leg)
 		if !ok {
-			return nil, nil
+			return nil, nil, nil
 		}
 		typ := entry.typ
 		// BINDING-keyed: == UPPER alias for every non-duplicate leg; the
@@ -680,8 +749,9 @@ func (t *cascadesTranslator) ordinalJoinSeedFields(legs []clusterLeg) ([]values.
 		}
 		qov, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(leg.binding), typ)
 		if err != nil {
-			return nil, nil
+			return nil, nil, nil
 		}
+		owners = append(owners, qov)
 		for i := range typ.Fields {
 			// This is the one purpose boundary that mints the physical seed's
 			// top-level positional references. Ordinary resolved FieldValues are
@@ -690,16 +760,16 @@ func (t *cascadesTranslator) ordinalJoinSeedFields(legs []clusterLeg) ([]values.
 			// loud seed invariant below.
 			resolved, err := values.ResolveOrdinalSeedField(qov, i)
 			if err != nil {
-				return nil, nil
+				return nil, nil, nil
 			}
 			fv, ok := values.AsFieldValue(resolved)
 			if !ok {
-				return nil, nil
+				return nil, nil, nil
 			}
 			fields = append(fields, values.RecordConstructorField{Name: fv.DisplayName(), Value: fv})
 		}
 	}
-	return fields, legTypes
+	return fields, legTypes, owners
 }
 
 // bakeGatedJoinPredicates rewrites a gated join's CROSS-LEG predicates so

@@ -37,7 +37,7 @@ func TestFDB_ScalarSubqCorrelatedCardinality(t *testing.T) {
 		"CREATE TABLE dept (id BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE emp (id BIGINT, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_sscc/s WITH TEMPLATE sscc")
-	dsn := fmt.Sprintf("fdbsql:///testdb_sscc?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_SSCC?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -143,7 +143,7 @@ func TestFDB_ScalarSubqCorrelatedCardinality_SurvivesPushdown(t *testing.T) {
 		"CREATE TABLE emp (id BIGINT, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX emp_dept ON emp (dept_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_sscp/s WITH TEMPLATE sscp")
-	dsn := fmt.Sprintf("fdbsql:///testdb_sscp?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///TESTDB_SSCP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

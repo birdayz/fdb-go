@@ -238,3 +238,30 @@ func TestPageBudgetAnchorsOnTheDatabaseEnvClock(t *testing.T) {
 		t.Fatal("env-less connection anchored at the sim Epoch — a nil env must be the wall clock")
 	}
 }
+
+func TestAdaptivePageTimeLimitClampsUserBudget(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		retry time.Duration
+		user  int64
+		want  time.Duration
+	}{
+		{"default", 0, 0, 4 * time.Second},
+		{"retained retry", 2 * time.Second, 0, 2 * time.Second},
+		{"user narrows retry", 2 * time.Second, 100, 100 * time.Millisecond},
+		{"user cannot widen retry", 2 * time.Second, 3000, 2 * time.Second},
+		{"fractional millisecond retry", 1500 * time.Microsecond, 1, time.Millisecond},
+		{"huge user limit cannot overflow", 0, math.MaxInt64, 4 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			conn := &EmbeddedConnection{}
+			conn.SetOptions(api.NewOptionsBuilder().Set(api.OptExecutionTimeLimit, tc.user).Build())
+			rows := &paginatingRows{conn: conn, retryTimeLimit: tc.retry}
+			if got := rows.executeProps().TimeLimit; got != tc.want {
+				t.Fatalf("page budget = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

@@ -64,10 +64,12 @@ tests:
       - [9]
       - [10]
 
-  # Duplicate OR: col1 = 20 OR col1 = 20 → deduplicated to single equality
+  # Duplicate OR: the ORDER BY id is the primary-key scan's order, which the
+  # residual OR filters — Java plans `SCAN([IS T1]) | FILTER _.COL1 EQUALS …
+  # OR _.COL1 EQUALS …` here too.
   - query: SELECT id FROM t1 WHERE col1 = 20 OR col1 = 20 ORDER BY id
-    plan_contains: "PredicatesFilter(Scan(T1)"
-    plan_not_contains: "IndexScan"
+    plan_contains: "PredicatesFilter(Scan(T1), [1 preds])"
+    plan_not_contains: "InMemorySort"
     rows:
       - [6]
       - [7]
@@ -77,7 +79,7 @@ tests:
 
   # Duplicate AND: col1 = 20 AND col1 = 20 → single equality, the duplicate re-applies nothing
   - query: SELECT id FROM t1 WHERE col1 = 20 AND col1 = 20 ORDER BY id
-    plan_contains: "Project([_current.ID#0], IndexScan(I1, [=] COVERING))"
+    plan_contains: "Map(IndexScan(I1, [=] COVERING), {ID: _current.ID#0})"
     plan_not_contains: "PredicatesFilter"
     rows:
       - [6]
@@ -88,8 +90,8 @@ tests:
 
   # OR with different values: col1 = 10 OR col1 = 30
   - query: SELECT id FROM t1 WHERE col1 = 10 OR col1 = 30 ORDER BY id
-    plan_contains: "PredicatesFilter(Scan(T1)"
-    plan_not_contains: "IndexScan"
+    plan_contains: "UnorderedPrimaryKeyDistinct(UnorderedUnion(IndexScan(I1, [=] COVERING), IndexScan(I1, [=] COVERING)))"
+    plan_not_contains: "PredicatesFilter"
     rows:
       - [1]
       - [2]
@@ -100,10 +102,10 @@ tests:
       - [12]
       - [13]
 
-  # Complex: (OR) AND (OR) → the two identical conjuncts dedup to one residual
+  # Complex: identical OR conjuncts share the two covering index union legs
   - query: SELECT id FROM t1 WHERE (col1 = 20 OR col1 = 10) AND (col1 = 20 OR col1 = 10) ORDER BY id
-    plan_contains: "PredicatesFilter(Scan(T1), [1 preds])"
-    plan_not_contains: "IndexScan"
+    plan_contains: "UnorderedPrimaryKeyDistinct(UnorderedUnion(IndexScan(I1, [=] COVERING), IndexScan(I1, [=] COVERING)))"
+    plan_not_contains: "PredicatesFilter"
     rows:
       - [1]
       - [2]

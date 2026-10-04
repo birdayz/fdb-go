@@ -196,3 +196,60 @@ func TestEliminateNullOnEmpty_NoPredicatesNoElim(t *testing.T) {
 		t.Fatalf("no-predicate select must not eliminate the null-on-empty flag, got %d yields", len(yielded))
 	}
 }
+
+// TestEliminateNullOnEmpty_RetypesPredicatesOntoPlainQuantifier pins that the
+// surviving predicates read the alias as the plain quantifier now flows it. A
+// predicate left on the null-on-empty (nullable) row type names the same alias
+// with a second exact type once pushdown merges it beside the leg's own ON
+// predicate, and the join implementation then refuses the select outright.
+func TestEliminateNullOnEmpty_RetypesPredicatesOntoPlainQuantifier(t *testing.T) {
+	t.Parallel()
+
+	scanRef := expressions.InitialOf(nullOnEmptyScan("T"))
+	q := expressions.ForEachNullOnEmptyQuantifier(scanRef)
+	pred := &predicates.ComparisonPredicate{
+		Operand: fieldOverAlias(q, "name"),
+		Comparison: predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: "x", Typ: values.NotNullString},
+		},
+	}
+	sel := mustNullOnEmptyConstruct(expressions.NewSelectExpression(
+		mustNullOnEmptyConstruct(q.RequireFlowedObjectValue()),
+		[]expressions.Quantifier{q},
+		[]predicates.QueryPredicate{pred},
+	))
+	yielded := mustFireExpressionRule(t, NewEliminateNullOnEmptyRule(), expressions.InitialOf(sel))
+	if len(yielded) != 1 {
+		t.Fatalf("yielded %d expressions, want 1", len(yielded))
+	}
+	out := yielded[0].(*expressions.SelectExpression)
+	plain := mustNullOnEmptyConstruct(out.GetQuantifiers()[0].RequireFlowedObjectValue())
+	if plain.FlowedType().IsNullable() {
+		t.Fatalf("eliminated quantifier still flows a nullable row %s", plain.FlowedType())
+	}
+	roots := 0
+	for _, p := range out.GetPredicates() {
+		_, err := predicates.TransformEmbeddedValuesChecked(p, func(v values.Value) (values.Value, error) {
+			values.WalkValue(v, func(node values.Value) bool {
+				root, ok := values.AsQuantifiedObjectValue(node)
+				if !ok || root.Correlation() != plain.Correlation() {
+					return true
+				}
+				roots++
+				if !values.FlowedTypesEqual(root, plain) {
+					t.Errorf("predicate reads %s as %s, want the plain quantifier's %s",
+						root.Correlation().Name(), root.FlowedType(), plain.FlowedType())
+				}
+				return true
+			})
+			return v, nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if roots == 0 {
+		t.Fatal("no predicate root over the eliminated alias was inspected")
+	}
+}

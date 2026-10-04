@@ -547,8 +547,8 @@ func TestTranslateProject(t *testing.T) {
 	if ref == nil {
 		t.Fatal("expected non-nil reference")
 	}
-	if _, ok := ref.Members()[0].(*expressions.LogicalProjectionExpression); !ok {
-		t.Fatalf("expected LogicalProjectionExpression, got %T", ref.Members()[0])
+	if _, ok := ref.Members()[0].(*expressions.SelectExpression); !ok {
+		t.Fatalf("expected the block SelectExpression, got %T", ref.Members()[0])
 	}
 }
 
@@ -603,15 +603,13 @@ func TestExactProjectionForLogicalProjectDoesNotLeakActiveCTEQualifier(t *testin
 		"S": logical.NewScan("T", ""),
 	})}
 	expr := translator.exactProjectionForLogicalProject([]values.Value{id}, project, inner)
-	proj, ok := expr.(*expressions.LogicalProjectionExpression)
+	block, ok := expr.(*expressions.SelectExpression)
 	if !ok {
-		t.Fatalf("projection = %T, want LogicalProjectionExpression", expr)
+		t.Fatalf("projection = %T, want the block SelectExpression", expr)
 	}
-	if got := proj.GetOutputNames(); len(got) != 1 || got[0] != "ID" {
-		t.Fatalf("SQL-boundary output names = %v, want [ID]", got)
-	}
-	if got := proj.GetAliases(); len(got) != 0 {
-		t.Fatalf("projection aliases = %v, want none", got)
+	output, ok := block.GetResultValue().Type().(*values.RecordType)
+	if !ok || len(output.Fields) != 1 || output.Fields[0].Name != "ID" {
+		t.Fatalf("SQL-boundary output row = %v, want [ID]", block.GetResultValue().Type())
 	}
 	// cteScope controls resolution of the child source, not the result label.
 	// Re-introducing a source-qualified output override here leaks the internal
@@ -958,16 +956,16 @@ func TestTranslateCTEShadowsTableName(t *testing.T) {
 	if ref == nil {
 		t.Fatal("expected non-nil reference when CTE name shadows table name")
 	}
-	proj, ok := ref.Members()[0].(*expressions.LogicalProjectionExpression)
+	block, ok := ref.Members()[0].(*expressions.SelectExpression)
 	if !ok {
-		t.Fatalf("expected LogicalProjectionExpression, got %T", ref.Members()[0])
+		t.Fatalf("expected the main block SelectExpression, got %T", ref.Members()[0])
 	}
-	innerRef := proj.GetQuantifiers()[0].GetRangesOver()
-	innerProj, ok := innerRef.Members()[0].(*expressions.LogicalProjectionExpression)
+	innerRef := block.GetQuantifiers()[0].GetRangesOver()
+	innerBlock, ok := innerRef.Members()[0].(*expressions.SelectExpression)
 	if !ok {
-		t.Fatalf("expected inlined projection from CTE body, got %T", innerRef.Members()[0])
+		t.Fatalf("expected the inlined CTE body block, got %T", innerRef.Members()[0])
 	}
-	innerScan := innerProj.GetQuantifiers()[0].GetRangesOver().Members()[0]
+	innerScan := innerBlock.GetQuantifiers()[0].GetRangesOver().Members()[0]
 	if _, ok := innerScan.(*expressions.FullUnorderedScanExpression); !ok {
 		t.Fatalf("expected FullUnorderedScanExpression at leaf, got %T", innerScan)
 	}
@@ -1138,6 +1136,19 @@ func TestBindPostAggregateValueRejectsForeignExactField(t *testing.T) {
 
 	if _, err := bindPostAggregateValue(foreign, agg, output); err == nil {
 		t.Fatal("foreign exact field bypassed the aggregate output contract")
+	}
+	// An enclosing block's field pulls up unchanged (Expressions.pullUp's
+	// constantAliases); without the recorded outer correlation it is foreign.
+	outer := exactTestField(t, exactTestQOV(t, "OUTER", sourceType), 1)
+	if _, err := bindPostAggregateValue(outer, agg, output); err == nil {
+		t.Fatal("an outer field bound with no OuterCorrelations recorded")
+	}
+	agg.OuterCorrelations = map[values.CorrelationIdentifier]struct{}{values.NamedCorrelationIdentifier("OUTER"): {}}
+	if bound, err := bindPostAggregateValue(outer, agg, output); err != nil || bound != outer {
+		t.Fatalf("an outer field must pull up unchanged, got %v, %v", bound, err)
+	}
+	if _, err := bindPostAggregateValue(foreign, agg, output); err == nil {
+		t.Fatal("a local non-grouping field bound once OuterCorrelations was set")
 	}
 	wrongOutput := exactTestQOV(t, "AGG_OUT_BAD", &values.RecordType{Fields: []values.Field{
 		{Name: "ID", Ordinal: 0, FieldType: values.NullableString},
@@ -1697,5 +1708,29 @@ func TestAggregateOutputColumns_DupNameConflictingTypes(t *testing.T) {
 	fields = tr.aggregateOutputColumns(mkAgg(values.UnknownType, values.NullableInt))
 	if fields[0].FieldType == nil || fields[0].FieldType.Code() != values.TypeCodeUnknown {
 		t.Errorf("unknown-then-typed dup-name key typed %v, want Unknown", fields[0].FieldType)
+	}
+}
+
+// The translated graph is also consumed by index DDL and aggregate/vector
+// candidate expansion. Those consumers require the shape-preserving filter;
+// union exploration must adapt it without minting a second memo population.
+func TestTranslateWherePreservesFilterForGraphConsumers(t *testing.T) {
+	t.Parallel()
+	scan := logical.NewScan("Order", "O")
+	pred := predicates.NewComparisonPredicate(exactTestNamedField(t, "O", "price", values.NullableInt), predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: &values.ConstantValue{Value: int32(10)}})
+	filter := logical.NewFilterWithPredicate(scan, pred, "")
+	ref, _ := TranslateToCascadesWithSubqueries(filter, demoMetaData(t))
+	if ref == nil {
+		t.Fatal("typed WHERE did not translate")
+	}
+	sel, ok := ref.Get().(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("WHERE starts as %T, want the filter consumed by index DDL and candidate expansion", ref.Get())
+	}
+	if len(sel.GetPredicates()) != 1 || len(sel.GetQuantifiers()) != 1 {
+		t.Fatalf("lost WHERE shape: %v", sel)
+	}
+	if _, ok := sel.GetResultValue().(values.QuantifiedObjectValue); !ok {
+		t.Fatalf("WHERE must preserve its input row, got %T", sel.GetResultValue())
 	}
 }

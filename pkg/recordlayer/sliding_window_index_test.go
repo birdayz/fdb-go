@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 
 	"fdb.dev/gen"
@@ -1231,12 +1232,141 @@ var _ = Describe("SlidingWindowIndex", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	for _, direction := range []gen.RowNumberWindowPredicate_Direction{gen.RowNumberWindowPredicate_ASC, gen.RowNumberWindowPredicate_DESC} {
+		for _, writeOnly := range []bool{false, true} {
+			for _, size := range []int32{1, 2, 3, 4} {
+				for _, partitioned := range []bool{false, true} {
+					It(fmt.Sprintf("replays tracked inserts without bookkeeping direction=%s writeOnly=%v size=%d partitioned=%v", direction, writeOnly, size, partitioned), func() {
+						ks := specSubspace()
+						var fields []string
+						var partition tuple.Tuple
+						if partitioned {
+							fields = []string{"quantity"}
+							partition = tuple.Tuple{int64(7)}
+						}
+						idx := newWindowedVectorIndex("sw_replay", size, direction, fields...)
+						builder := baseMetaData()
+						builder.AddIndex("Order", idx)
+						md, err := builder.Build()
+						Expect(err).NotTo(HaveOccurred())
+						_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+							timer := NewStoreTimer()
+							rtx.SetTimer(timer)
+							store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+							Expect(err).NotTo(HaveOccurred())
+							var saved []*FDBStoredRecord[proto.Message]
+							for id := int64(1); id <= 3; id++ {
+								record, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(id * 10)), Quantity: proto.Int32(7), CoordX: proto.Int64(id), CoordY: proto.Int64(0)})
+								Expect(err).NotTo(HaveOccurred())
+								saved = append(saved, record)
+							}
+							maintainer, err := store.getIndexMaintainer(idx)
+							Expect(err).NotTo(HaveOccurred())
+							sw := slidingWindowSubspaceFor(store.subspace, idx)
+							count, boundary := readSlidingWindowMeta(rtx.Transaction(), sw, partition)
+							wantCount := int64(size)
+							if wantCount > 3 {
+								wantCount = 3
+							}
+							Expect(count).To(Equal(wantCount))
+							keys, vals := readSlidingWindowEntries(rtx.Transaction(), sw, partition)
+							pks := searchPKs(store, idx, nil)
+							for _, record := range saved {
+								// A changed payload makes the delegate's handling observable
+								// while the tracked entry key and membership stay identical:
+								// the window calls the delegate's insert for an entry in the
+								// window (SW_DELEGATE_INSERT), and the graph, holding the
+								// node already, leaves it at its stored vector, as Java's
+								// HNSW Insert does (Insert.java:195-197).
+								stored := record.Record.(*gen.Order)
+								storedX, storedY := stored.GetCoordX(), stored.GetCoordY()
+								refreshed := *record
+								refreshed.Record = proto.Clone(record.Record)
+								order := refreshed.Record.(*gen.Order)
+								order.CoordX = proto.Int64(100 + order.GetOrderId())
+								order.CoordY = proto.Int64(99)
+								record = &refreshed
+								timer.Reset()
+								if writeOnly {
+									Expect(maintainer.UpdateWhileWriteOnly(nil, record)).To(Succeed())
+								} else {
+									Expect(maintainer.Update(nil, record)).To(Succeed())
+								}
+								gotCount, gotBoundary := readSlidingWindowMeta(rtx.Transaction(), sw, partition)
+								gotKeys, gotVals := readSlidingWindowEntries(rtx.Transaction(), sw, partition)
+								Expect(gotCount).To(Equal(count))
+								Expect(gotBoundary).To(Equal(boundary))
+								Expect(gotKeys).To(Equal(keys))
+								Expect(gotVals).To(Equal(vals))
+								Expect(searchPKs(store, idx, nil)).To(Equal(pks))
+								Expect(timer.GetCount(CountSWReinsertAlreadyTracked)).To(Equal(int64(1)))
+								inWindow := false
+								for _, pk := range pks {
+									if pk == record.Record.(*gen.Order).GetOrderId() {
+										inWindow = true
+									}
+								}
+								inserts := int64(0)
+								if inWindow {
+									inserts = 1
+									vm, ok := unwrapVectorMaintainer(maintainer)
+									Expect(ok).To(BeTrue())
+									results, err := vm.SearchKNN(nil, []float64{float64(storedX), float64(storedY)}, 10, 100)
+									Expect(err).NotTo(HaveOccurred())
+									found := false
+									for _, result := range results {
+										if tuplesEqual(result.PrimaryKey, record.PrimaryKey) {
+											found = true
+											Expect(result.Distance).To(BeNumerically("~", 0, 1e-9))
+										}
+									}
+									Expect(found).To(BeTrue())
+								}
+								Expect(timer.GetCount(EventSWDelegateInsert)).To(Equal(inserts))
+								for _, event := range []Event{EventSWDelegateDelete, EventSWEvictAndReplace, CountSWItemPromotedFromOverflow, CountSWWindowShrunkNoOverflow, CountSWItemAddedToWindowFilling} {
+									Expect(timer.GetCount(event)).To(BeZero(), event.Name)
+								}
+							}
+							return nil, nil
+						})
+						Expect(err).NotTo(HaveOccurred())
+					})
+				}
+			}
+		}
+	}
+
+	It("refuses replay of a tracked insert without its boundary", func() {
+		ks := specSubspace()
+		idx := newWindowedVectorIndex("sw_replay_corrupt", 3, gen.RowNumberWindowPredicate_ASC)
+		builder := baseMetaData()
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+			saved, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), CoordX: proto.Int64(0), CoordY: proto.Int64(0)})
+			Expect(err).NotTo(HaveOccurred())
+			sw := slidingWindowSubspaceFor(store.subspace, idx)
+			meta := swPartitionSub(sw, nil).Sub(slidingWindowMetaSubspaceKey)
+			rtx.Transaction().Clear(meta.Pack(tuple.Tuple{slidingWindowBoundaryKey}))
+			maintainer, err := store.getIndexMaintainer(idx)
+			Expect(err).NotTo(HaveOccurred())
+			for _, update := range []func(*FDBStoredRecord[proto.Message], *FDBStoredRecord[proto.Message]) error{maintainer.Update, maintainer.UpdateWhileWriteOnly} {
+				var corruption *SlidingWindowCorruptionError
+				Expect(errors.As(update(nil, saved), &corruption)).To(BeTrue())
+				Expect(corruption.IndexName).To(Equal(idx.Name))
+				Expect(corruption.Message).To(Equal("sliding window boundary is missing but entry exists, possible corruption"))
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	// =====================================================================
-	// WRITE_ONLY (online index build). A sliding window is NOT idempotent —
-	// it keeps a COUNT — so re-applying an insert the indexer already
-	// processed would inflate the count and then evict a record that should
-	// have stayed. This is the axis no other spec here probes: every one of
-	// them goes through Update(), where each record arrives exactly once.
+	// WRITE_ONLY replay preserves bookkeeping regardless of whether the
+	// online builder or the user write reaches the tracked entry first.
 	// =====================================================================
 	It("does not double-count a record the indexer already processed", func() {
 		ks := specSubspace()
@@ -1266,14 +1396,8 @@ var _ = Describe("SlidingWindowIndex", func() {
 			count, _ := readSlidingWindowMeta(tx, sw, nil)
 			Expect(count).To(Equal(int64(1)))
 
-			// Re-apply the SAME record as a fresh insert. That is the situation
-			// Java's updateWhileWriteOnly exists for and states in its own
-			// comment: "if newRecord WAS previously indexed, the delete removes
-			// it from the window and decrements the counter, so the subsequent
-			// insert does not double-count". It is driven at the maintainer
-			// because SaveRecord cannot express it — the store always supplies
-			// the existing record as `old`, which is the very hand-off the
-			// indexer's own earlier pass does not make.
+			// Re-apply the same tracked insert without SaveRecord supplying an
+			// old record: the builder/write hand-off must not change the count.
 			maintainer, err := store.getIndexMaintainer(idx)
 			Expect(err).NotTo(HaveOccurred())
 			swm, ok := maintainer.(*slidingWindowIndexMaintainer)
@@ -1548,22 +1672,42 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 		_, err := builder.Build()
 		Expect(err).To(HaveOccurred(),
 			"a windowed vector index must be validated as a vector index too")
-		Expect(err.Error()).To(ContainSubstring("incorrect index options"))
-		Expect(err.Error()).To(ContainSubstring("hnswM"))
+		Expect(err).To(MatchError("incorrect index options"), "Java's MetaDataException message, whole")
+		var mdErr *MetaDataError
+		Expect(errors.As(err, &mdErr)).To(BeTrue())
+		var nfe *NumberFormatError
+		Expect(errors.As(err, &nfe)).To(BeTrue(), "the cause is Integer.parseInt's NumberFormatException")
+		Expect(nfe.Error()).To(Equal(`For input string: "not-a-number"`))
+	})
+
+	It("refuses a wrapped vector index without its dimension count, with Java's text", func() {
+		idx := newWindowedVectorIndex("sw_no_dims", 2, gen.RowNumberWindowPredicate_ASC)
+		delete(idx.Options, IndexOptionVectorNumDimensions)
+		builder := baseMetaData()
+		builder.AddIndex("Order", idx)
+		_, err := builder.Build()
+		var mdErr *MetaDataError
+		Expect(errors.As(err, &mdErr)).To(BeTrue(), "%T %v", err, err)
+		Expect(mdErr.Message).To(Equal("need to specify the number of dimensions"))
 	})
 
 	It("runs the wrapped vector index's metric validation", func() {
 		// The metric arm is separate from the numeric ones: parseHNSWConfig's
 		// default branch maps ANY unrecognised name to Euclidean, so a typo
 		// silently redefines what "nearest" means for every query the index
-		// serves. Java uses Metric.valueOf, which throws.
-		idx := newWindowedVectorIndex("sw_bad_metric", 2, gen.RowNumberWindowPredicate_ASC)
-		idx.Options[IndexOptionVectorMetric] = "COSIGN_METRIC"
-		builder := baseMetaData()
-		builder.AddIndex("Order", idx)
-		_, err := builder.Build()
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("incorrect index options"))
+		// serves. Java uses Metric.valueOf, which throws, and knows only the four
+		// constants' names: parseHNSWConfig's lower-case aliases are refused too.
+		for _, metric := range []string{"COSIGN_METRIC", "cosine", "inner_product", "euclidean"} {
+			idx := newWindowedVectorIndex("sw_bad_metric", 2, gen.RowNumberWindowPredicate_ASC)
+			idx.Options[IndexOptionVectorMetric] = metric
+			builder := baseMetaData()
+			builder.AddIndex("Order", idx)
+			_, err := builder.Build()
+			Expect(err).To(MatchError("incorrect index options"), "Java's MetaDataException message, whole")
+			var iae *IllegalArgumentError
+			Expect(errors.As(err, &iae)).To(BeTrue(), "the cause is Enum.valueOf's refusal")
+			Expect(iae.Message).To(Equal("No enum constant com.apple.foundationdb.linear.Metric."+metric), "Enum.valueOf's text, whole")
+		}
 	})
 
 	It("accepts a windowed vector index whose options are all well-formed", func() {
@@ -1585,7 +1729,9 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 		builder.AddIndex("Order", idx)
 		_, err := builder.Build()
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("sliding window index does not support unique indexes"))
+		var mdErr *MetaDataError
+		Expect(errors.As(err, &mdErr)).To(BeTrue(), "%T %v", err, err)
+		Expect(mdErr.Message).To(Equal("sliding window index does not support unique indexes"), "Java's text, whole")
 	})
 
 	It("refuses a sliding window index spanning multiple record types", func() {
@@ -1605,7 +1751,9 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 		builder.AddUniversalIndex(idx)
 		_, err := builder.Build()
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("sliding window index delegate has multiple types"))
+		var mdErr *MetaDataError
+		Expect(errors.As(err, &mdErr)).To(BeTrue(), "%T %v", err, err)
+		Expect(mdErr.Message).To(Equal("sliding window index delegate has multiple types"), "Java's text, whole")
 	})
 
 	It("refuses a row-number window nested under a disjunction", func() {
@@ -1635,8 +1783,11 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		_, err := builder.Build()
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("must not appear under a disjunction"))
+		// IndexPredicate's RecordCoreException, not the validator's
+		// MetaDataException (IndexPredicate.java:243).
+		var rcErr *RecordCoreError
+		Expect(errors.As(err, &rcErr)).To(BeTrue(), "%T %v", err, err)
+		Expect(rcErr.Message).To(Equal("RowNumberWindowPredicate must not appear under a disjunction (OR)"))
 	})
 
 	It("does not decorate an index whose window is reachable only under an OR", func() {
@@ -1719,7 +1870,9 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 				VectorData: SerializeVector([]float64{1, 2, 3}),
 			})
 			Expect(saveErr).To(HaveOccurred())
-			Expect(saveErr.Error()).To(ContainSubstring("requires a RowNumberWindowPredicate"))
+			var mdErr *MetaDataError
+			Expect(errors.As(saveErr, &mdErr)).To(BeTrue(), "%T %v", saveErr, saveErr)
+			Expect(mdErr.Message).To(Equal("sliding window index requires a RowNumberWindowPredicate"), "Java's text, whole")
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())

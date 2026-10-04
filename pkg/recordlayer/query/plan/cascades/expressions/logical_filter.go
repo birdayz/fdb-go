@@ -148,3 +148,7 @@ func (e *LogicalFilterExpression) WithQuantifiers(quantifiers []Quantifier) (Rel
 // Compile-time check that LogicalFilterExpression implements
 // RelationalExpression.
 var _ RelationalExpression = (*LogicalFilterExpression)(nil)
+
+// Filter-local row aliases may be renamed; MemoEqual keeps outer correlations
+// fixed and checks the child references under the same alias mapping.
+func (e *LogicalFilterExpression) InternsAliasAware() bool { return true }

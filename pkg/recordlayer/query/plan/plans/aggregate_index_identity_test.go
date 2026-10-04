@@ -159,10 +159,11 @@ func TestAggregateIndexPlan_IdentityStillDedups(t *testing.T) {
 //     index cannot disagree — and all three production callers do pass
 //     <candidate>.GetBaseRowType(). Folding it keys the memo on a type token
 //     for no discrimination.
-//   - resultType is computed by aggregateIndexOutputType from groupCols, the
-//     aggregate function and the index's key component types. Every one of
-//     those is folded, so it is a function of the key rather than an addition
-//     to it.
+//   - resultType's slot types are computed by aggregateIndexOutputType from
+//     groupCols, the aggregate function and the index's key component types,
+//     every one of them folded. Its field NAMES are not derived — they are the
+//     GroupBy's the plan publishes — so the names are folded and the types are
+//     not.
 //
 // The probe showed both "collapsing" only because it constructed states the
 // planner cannot produce. A census locates candidates; it does not establish
@@ -187,18 +188,32 @@ func TestAggregateIndexPlan_IdentityExclusionsAreDeliberate(t *testing.T) {
 		}
 	})
 
-	t.Run("resultType stays out", func(t *testing.T) {
+	t.Run("resultType names fold, its slot types stay out", func(t *testing.T) {
 		t.Parallel()
 		base := aggregateIdentityFixture(t)
-		other, err := NewRecordQueryAggregateIndexPlan(base.GetIndexPlan(), "T", otherType, "COUNT")
+		renamed := exactTestRecordType().(*values.RecordType)
+		renamedFields := append([]values.Field(nil), renamed.Fields...)
+		renamedFields[4].Name = "COUNT(1)"
+		other, err := NewRecordQueryAggregateIndexPlan(base.GetIndexPlan(), "T",
+			values.NewRecordType("test_row", false, renamedFields), "COUNT")
 		if err != nil {
-			t.Fatalf("other-resulttype plan: %v", err)
+			t.Fatalf("renamed plan: %v", err)
 		}
-		if !base.EqualsPlanWithoutChildren(other) {
-			t.Error("resultType is now folded into identity. It is derived by " +
-				"aggregateIndexOutputType from groupCols, the aggregate function and the " +
-				"index key types — all already folded — so folding it adds nothing; if it " +
-				"stopped being derived, say so at structuralKey.")
+		if base.EqualsPlanWithoutChildren(other) || base.HashCodeWithoutChildren() == other.HashCodeWithoutChildren() {
+			t.Error("two scans publishing differently named rows share one identity, so the " +
+				"memo would serve one GroupBy's row under the other's names")
+		}
+		retyped := append([]values.Field(nil), renamed.Fields...)
+		retyped[4].FieldType = values.NotNullString
+		sameNames, err := NewRecordQueryAggregateIndexPlan(base.GetIndexPlan(), "T",
+			values.NewRecordType("test_row", false, retyped), "COUNT")
+		if err != nil {
+			t.Fatalf("retyped plan: %v", err)
+		}
+		if !base.EqualsPlanWithoutChildren(sameNames) {
+			t.Error("resultType's slot types are now folded into identity. They are derived by " +
+				"aggregateIndexOutputType from fields already folded; if that stopped being " +
+				"true, say so at structuralKey.")
 		}
 	})
 }

@@ -28,7 +28,7 @@ import (
 // (datatypeToProtoFieldType has no message/struct case). The proto is built
 // dynamically exactly as metadata.Builder.buildFileDescriptor does (descriptorpb
 // + protodesc.NewFile), so the record type, its nested struct element, and the
-// UnionDescriptor are all real proto descriptors; records are written as genuine
+// RecordTypeUnion are all real proto descriptors; records are written as genuine
 // dynamicpb messages and the unnest SQL runs the full Cascades path.
 func buildStructArrayMetadata(t *testing.T) *recordlayer.RecordMetaData {
 	t.Helper()
@@ -76,7 +76,7 @@ func buildStructArrayMetadata(t *testing.T) *recordlayer.RecordMetaData {
 		},
 	}
 	union := &descriptorpb.DescriptorProto{
-		Name: proto.String("UnionDescriptor"),
+		Name: proto.String("RecordTypeUnion"),
 		Field: []*descriptorpb.FieldDescriptorProto{
 			{
 				Name: proto.String("_TS"), Number: proto.Int32(1),
@@ -271,15 +271,14 @@ func TestFDB_ArrayUnnestStruct(t *testing.T) {
 	}
 
 	// assertColumns pins the user-visible RESULT-SET COLUMN labels (the metadata
-	// the driver returns via rows.Columns(), from the same production
-	// ResultColumnLabelsForPlan the live path uses).
+	// the driver returns via rows.Columns(), the query's logical output labels).
 	assertColumns := func(t *testing.T, sql string, want []string) {
 		t.Helper()
 		plan, perr := embedded.PlanRecordQueryWithMetadata(sql, md, nil)
 		if perr != nil {
 			t.Fatalf("plan %q: %v", sql, perr)
 		}
-		got := embedded.ResultColumnLabelsForPlan(plan, md)
+		got := queryLabels(t, sql, md)
 		if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
 			t.Fatalf("columns %q\n got=%v\nwant=%v\nplan=%s", sql, got, want, plan.Explain())
 		}

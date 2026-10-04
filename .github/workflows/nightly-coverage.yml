@@ -154,6 +154,7 @@ jobs:
             //pkg/recordlayer:recordlayer_test \
             //pkg/recordlayer/chaos:chaos_test \
             //conformance:conformance_test \
+            //conformance:conformance_corpora_test \
             --@rules_go//go/config:race \
             --build_event_json_file=.bazel-bep.race.jsonl \
             --local_resources=memory=HOST_RAM*0.6 \

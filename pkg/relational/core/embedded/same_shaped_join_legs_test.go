@@ -36,11 +36,12 @@ const sameShapedLegsDDL = `CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id)
 // That is a hard planning failure, not a decline, so the query returned an
 // error instead of an answer.
 //
-// Each arm asserts the plan, not merely that planning succeeded: the ordinals
-// are what prove the two legs stayed distinct through the crossing. `y.id` must
-// read #1 (or #2 where the legs are two columns wide), never #0 — collapsing
-// both onto one leg's slot is the wrong-column failure the declining bridge was
-// protecting against, and it would still "plan".
+// Each arm asserts the plan, not merely that planning succeeded: the result's
+// reads are what prove the two legs stayed distinct through the crossing. The
+// derived legs are one block with the query, so `x.id` and `y.id` read the two
+// scans of t through two different correlations — reading one of them twice is
+// the wrong-column failure the declining bridge was protecting against, and it
+// would still "plan".
 func TestJoinOfTwoSameShapedMaterializingLegsPlans(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -51,14 +52,34 @@ func TestJoinOfTwoSameShapedMaterializingLegsPlans(t *testing.T) {
 		{
 			name: "derived legs, one column each",
 			sql:  `SELECT x.id, y.id FROM (SELECT id FROM t) x JOIN (SELECT id FROM t) y ON x.id = y.id`,
-			want: "Project([_current.ID#0, _current.ID#1], NestedLoopJoin(INNER, [1 preds], " +
-				"Project([_current.ID#0], Scan(T)), Project([_current.ID#0], Scan(T))))",
+			want: "FlatMap(outer=Scan(T), inner=Scan(T, [=])) => {X.ID: T.ID#0, Y.ID: Q$BOUND1.ID#0}",
 		},
 		{
 			name: "derived legs, two columns each",
 			sql:  `SELECT x.id, y.id FROM (SELECT id, v FROM t) x JOIN (SELECT id, v FROM t) y ON x.id = y.id`,
-			want: "Project([_current.ID#0, _current.ID#2], NestedLoopJoin(INNER, [1 preds], " +
-				"Project([_current.ID#0, _current.V#1], Scan(T)), Project([_current.ID#0, _current.V#1], Scan(T))))",
+			want: "FlatMap(outer=Scan(T), inner=Scan(T, [=])) => {X.ID: T.ID#0, Y.ID: Q$BOUND1.ID#0}",
+		},
+		{
+			// DISTINCT keeps each leg its own block, so the join reads two
+			// materialized same-typed rows through their own quantifiers.
+			name: "materializing legs, one column each",
+			sql:  `SELECT x.v, y.v FROM (SELECT DISTINCT v FROM t) x JOIN (SELECT DISTINCT v FROM t) y ON x.v = y.v`,
+			want: "NestedLoopJoin(INNER, [1 preds], Distinct(Map(Scan(T), {V: _current.V#1})), " +
+				"Distinct(Map(Scan(T), {V: _current.V#1}))) => {X.V: X.V#0, Y.V: Y.V#0}",
+		},
+		{
+			// The legs project the primary key, so their DISTINCT is elided at
+			// implementation; each leg stays its own block all the same.
+			name: "pk-distinct legs, one column each",
+			sql:  `SELECT x.id, y.id FROM (SELECT DISTINCT id FROM t) x JOIN (SELECT DISTINCT id FROM t) y ON x.id = y.id`,
+			want: "NestedLoopJoin(INNER, [1 preds], Map(Scan(T), {ID: _current.ID#0}), " +
+				"Map(Scan(T), {ID: _current.ID#0})) => {X.ID: X.ID#0, Y.ID: Y.ID#0}",
+		},
+		{
+			name: "pk-distinct legs, two columns each",
+			sql:  `SELECT x.id, y.id FROM (SELECT DISTINCT id, v FROM t) x JOIN (SELECT DISTINCT id, v FROM t) y ON x.id = y.id`,
+			want: "NestedLoopJoin(INNER, [1 preds], Map(Scan(T), {ID: _current.ID#0, V: _current.V#1}), " +
+				"Map(Scan(T), {ID: _current.ID#0, V: _current.V#1})) => {X.ID: X.ID#0, Y.ID: Y.ID#0}",
 		},
 		{
 			// The same shape reached through the WITH scope rather than the FROM
@@ -67,14 +88,13 @@ func TestJoinOfTwoSameShapedMaterializingLegsPlans(t *testing.T) {
 			name: "CTE legs",
 			sql: `WITH a AS (SELECT id FROM t WHERE v > 20), b AS (SELECT id FROM t WHERE v < 30) ` +
 				`SELECT a.id, b.id FROM a JOIN b ON a.id = b.id`,
-			want: "Project([_current.ID#0, _current.ID#1], NestedLoopJoin(INNER, [1 preds], " +
-				"Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds])), " +
-				"Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))))",
+			want: "FlatMap(outer=PredicatesFilter(Scan(T), [1 preds]), " +
+				"inner=PredicatesFilter(Scan(T, [=]), [1 preds])) => {A.ID: T.ID#0, B.ID: ID#0}",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := explainWithOptions(t, tc.sql, sameShapedLegsDDL, nil)
+			got := explainWithResult(t, tc.sql, sameShapedLegsDDL)
 			if got != tc.want {
 				t.Errorf("plan = %q,\nwant %q", got, tc.want)
 			}
@@ -92,13 +112,13 @@ func TestSameShapedLegsKeepTheirOwnOrdinals(t *testing.T) {
 	t.Parallel()
 	const sql = `SELECT x.id, y.id FROM (SELECT id FROM t WHERE v > 20) x ` +
 		`JOIN (SELECT id FROM t WHERE v < 30) y ON x.id = y.id`
-	got := explainWithOptions(t, sql, sameShapedLegsDDL, nil)
+	got := explainWithResult(t, sql, sameShapedLegsDDL)
 	if strings.Count(got, "PredicatesFilter") != 2 {
 		t.Errorf("plan has %d PredicatesFilter, want 2 — one per leg; a collapsed leg would "+
 			"drop one of the two independent WHERE clauses:\n%s",
 			strings.Count(got, "PredicatesFilter"), got)
 	}
-	if !strings.Contains(got, "Project([_current.ID#0, _current.ID#1]") {
-		t.Errorf("plan does not read the two legs at ordinals 0 and 1:\n%s", got)
+	if !strings.HasSuffix(got, "=> {X.ID: T.ID#0, Y.ID: Q$BOUND1.ID#0}") {
+		t.Errorf("plan does not read the two legs through their own correlations:\n%s", got)
 	}
 }
