@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=385 queries=2871 dml=176 non_query=111 plan_errors=319 unexpected_errors=4
+# files=386 queries=2874 dml=176 non_query=111 plan_errors=319 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -650,6 +650,24 @@ shape:       RecordQueryAggregateIndexPlan
 === aggregate_index_multi_group.yaml#0
 sql:   SELECT category, severity, COUNT(*) FROM events GROUP BY category, severity ORDER BY category, severity
 plan:  Map(AggregateIndex(COUNT, COUNT_BY_CAT_SEV, [CATEGORY SEVERITY], EVENTS, live_groups_only), {CATEGORY: _current.CATEGORY#0, SEVERITY: _current.SEVERITY#1, _2: _current.COUNT(*)#2})
+shape: RecordQueryMapPlan
+shape:   RecordQueryAggregateIndexPlan
+=== aggregate_index_reverse_scan.yaml#0
+sql:   select col1, sum(col2) from T1 group by col1 order by col1 desc
+plan:  Map(GroupExistenceMerge(AggregateIndex(COUNT, MV_CNT, [COL1], T1, live_groups_only, reverse), AggregateIndex(SUM, MV1, [COL1], T1, reverse), AggregateIndex(COUNT, MV_CNT2, [COL1], T1, reverse); keys=[COL1#0], driving=0, reverse), {COL1: _current.COL1#0, _1: _current.SUM(COL2)#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryMultiIntersectionOnValuesPlan
+shape:     RecordQueryAggregateIndexPlan
+shape:     RecordQueryAggregateIndexPlan
+shape:     RecordQueryAggregateIndexPlan
+=== aggregate_index_reverse_scan.yaml#1
+sql:   select col1, count(*) from T1 group by col1 order by col1 desc
+plan:  Map(AggregateIndex(COUNT, MV_CNT, [COL1], T1, live_groups_only, reverse), {COL1: _current.COL1#0, _1: _current.COUNT(*)#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryAggregateIndexPlan
+=== aggregate_index_reverse_scan.yaml#2
+sql:   select col1, count(*) from T1 group by col1 order by col1
+plan:  Map(AggregateIndex(COUNT, MV_CNT, [COL1], T1, live_groups_only), {COL1: _current.COL1#0, _1: _current.COUNT(*)#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryAggregateIndexPlan
 === aggregate_index_sum.yaml#0

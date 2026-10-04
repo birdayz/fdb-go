@@ -1257,11 +1257,11 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) HintOrdering() properties.Ord
 	// nothing can name would be a claim rather than a proof.
 	names := p.outputColumnNames()
 	if len(names) == 0 {
-		return properties.Ordering{IsKnown: true, Keys: compKey}
+		return mergeComparisonKeyOrdering(compKey, p.IsReverse())
 	}
 	outputLayout, err := p.ProvidedOutputLayout()
 	if err != nil || outputLayout == nil || outputLayout.Carrier() == nil {
-		return properties.Ordering{IsKnown: true, Keys: compKey}
+		return mergeComparisonKeyOrdering(compKey, p.IsReverse())
 	}
 	keys := make([]values.Value, len(compKey))
 	for i, k := range compKey {
@@ -1274,23 +1274,23 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) HintOrdering() properties.Ord
 			path.Len() != 1 || i >= len(names) {
 			// Anything but "grouping column i, read at slot i" is not the
 			// shape this restatement is proven for.
-			return properties.Ordering{IsKnown: true, Keys: compKey}
+			return mergeComparisonKeyOrdering(compKey, p.IsReverse())
 		}
 		accessor, ok := path.Accessor(0)
 		if !ok || accessor.Ordinal() != i {
-			return properties.Ordering{IsKnown: true, Keys: compKey}
+			return mergeComparisonKeyOrdering(compKey, p.IsReverse())
 		}
 		request, err := values.FieldByNameAndOrdinal(names[i], i)
 		if err != nil {
-			return properties.Ordering{IsKnown: true, Keys: compKey}
+			return mergeComparisonKeyOrdering(compKey, p.IsReverse())
 		}
 		resolved, err := values.ResolveFieldAccess(outputLayout.Carrier(), []values.FieldRequest{request})
 		if err != nil {
-			return properties.Ordering{IsKnown: true, Keys: compKey}
+			return mergeComparisonKeyOrdering(compKey, p.IsReverse())
 		}
 		keys[i] = resolved
 	}
-	return properties.Ordering{IsKnown: true, Keys: keys}
+	return mergeComparisonKeyOrdering(keys, p.IsReverse())
 }
 
 // outputColumnNames returns the column names of the row this plan emits, taken

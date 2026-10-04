@@ -23,11 +23,11 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**385 scenarios · 3158 query/assertion cases** across 18 feature areas — 2766 supported, 102 unsupported-feature pins, 290 error-path pins.
+**386 scenarios · 3161 query/assertion cases** across 18 feature areas — 2769 supported, 102 unsupported-feature pins, 290 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
-| Aggregates & GROUP BY | 57 | 361 | 326 | 19 | 16 |
+| Aggregates & GROUP BY | 58 | 364 | 329 | 19 | 16 |
 | Joins | 66 | 313 | 296 | 2 | 15 |
 | Subqueries (EXISTS / IN / scalar) | 47 | 323 | 267 | 33 | 23 |
 | CTEs | 15 | 202 | 161 | 4 | 37 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 40 | 340 | 301 | 5 | 34 |
-| **Total** | **385** | **3158** | **2766** | **102** | **290** |
+| **Total** | **386** | **3161** | **2769** | **102** | **290** |
 
 ## Aggregates & GROUP BY
 
@@ -67,6 +67,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `aggregate_index_delete` | 5 | 5 | 0 | 0 | Aggregate index correctness after DELETE |
 | `aggregate_index_having` | 2 | 2 | 0 | 0 | Aggregate index with HAVING filter |
 | `aggregate_index_multi_group` | 1 | 1 | 0 | 0 | Aggregate index with multi-column GROUP BY |
+| `aggregate_index_reverse_scan` | 3 | 3 | 0 | 0 | A descending request over an aggregate index's groups is served by the reverse |
 | `aggregate_index_sum` | 2 | 2 | 0 | 0 | SUM aggregate index via DDL |
 | `aggregate_index_sum_null_residue` | 4 | 4 | 0 | 0 | A live group whose last non-NULL value is deleted (or NULLed) keeps its SUM |
 | `aggregate_index_update` | 6 | 6 | 0 | 0 | Aggregate index correctness after UPDATE |

@@ -396,6 +396,9 @@ func (p *RecordQueryAggregateIndexPlan) Explain() string {
 	if p.liveGroupsOnly {
 		suffix = ", live_groups_only"
 	}
+	if p.IsReverse() {
+		suffix += ", reverse"
+	}
 	if len(p.groupCols) > 0 {
 		return fmt.Sprintf("AggregateIndex(%s, %s, %v, %s%s)",
 			p.aggregateFunction, p.indexPlan.GetIndexName(), p.groupCols, p.recordTypeName, suffix)

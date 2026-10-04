@@ -583,14 +583,14 @@ func executeMultiIntersection(
 		// absent child must occupy exactly that many, or the result value's baked
 		// ordinals address the wrong slots in every later child.
 		width := len(keyVals) + 1
-		innerCursor = recordlayer.OuterMergeMultiResume(cursors, compKeyFunc, false, resume,
+		innerCursor = recordlayer.OuterMergeMultiResume(cursors, compKeyFunc, p.IsReverse(), resume,
 			driving, func(int) QueryResult { return absentAggregateRow(width) })
 	} else {
 		// IntersectionMulti returns, per matching comparison key, the list of
 		// matching rows (one per child). Mirrors Java's IntersectionMultiCursor;
 		// the regular intersection keeps only the first child, which would drop
 		// every aggregate but the first.
-		innerCursor = recordlayer.IntersectionMultiResume(cursors, compKeyFunc, false, resume)
+		innerCursor = recordlayer.IntersectionMultiResume(cursors, compKeyFunc, p.IsReverse(), resume)
 	}
 
 	merged := &multiIntersectionMergeCursor{

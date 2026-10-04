@@ -119,6 +119,7 @@ go_test(
         "aggregate_index_equality_prefix_ordering_test.go",
         "aggregate_index_group_row_test.go",
         "aggregate_index_residual_test.go",
+        "aggregate_index_reverse_scan_test.go",
         "aggregate_native_slot_root_test.go",
         "aggregate_output_slot_domain_test.go",
         "aggregate_output_slot_recorded_test.go",
@@ -505,6 +506,7 @@ go_test(
         "aggregate_index_group_row_test.go",
         "version_index_covering_test.go",
         "in_join_ordering_plan_test.go",
+        "aggregate_index_reverse_scan_test.go",
     ],
     deps = [
         "//gen",

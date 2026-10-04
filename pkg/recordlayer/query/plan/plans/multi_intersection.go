@@ -50,7 +50,21 @@ type RecordQueryMultiIntersectionOnValuesPlan struct {
 	// stream after a reorder — turning a correct plan into a wrong-rows one with
 	// no structural change to notice.
 	drivingAlias values.CorrelationIdentifier
+
+	// reverse merges streams that run in descending key order (every child
+	// scans in reverse), as Java's plan carries it.
+	reverse bool
 }
+
+// WithReverse returns a copy of this plan merging descending streams.
+func (p *RecordQueryMultiIntersectionOnValuesPlan) WithReverse(reverse bool) *RecordQueryMultiIntersectionOnValuesPlan {
+	cp := *p
+	cp.reverse = reverse
+	return &cp
+}
+
+// IsReverse reports whether the merge compares descending keys.
+func (p *RecordQueryMultiIntersectionOnValuesPlan) IsReverse() bool { return p != nil && p.reverse }
 
 // WithDrivingStream returns a copy of this plan whose merge is OUTER, driven by
 // the stream carried by the given quantifier alias (RFC-209 §5.3(b)).
@@ -192,7 +206,7 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) structuralKey() *structuralKe
 	// single expression and serves whichever arrived first — and the two differ
 	// on exactly the groups this operator exists to get right.
 	return newStructuralKey().Values(p.comparisonKey).Value(p.resultValue).
-		Str(p.drivingAlias.Name())
+		Str(p.drivingAlias.Name()).Bool(p.reverse)
 }
 
 func (p *RecordQueryMultiIntersectionOnValuesPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
@@ -223,15 +237,19 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) Explain() string {
 		}
 	}
 	keys := values.ExplainPlanValues(p.comparisonKey)
+	direction := ""
+	if p.reverse {
+		direction = ", reverse"
+	}
 	if idx := p.DrivingStreamIndex(); idx >= 0 {
 		// Plan-visible because it changes the answer: a reader of EXPLAIN must be
 		// able to tell the group-existence merge from an intersection, and which
 		// stream supplies the group set.
-		return fmt.Sprintf("GroupExistenceMerge(%s; keys=[%s], driving=%d)",
-			strings.Join(parts, ", "), strings.Join(keys, ", "), idx)
+		return fmt.Sprintf("GroupExistenceMerge(%s; keys=[%s], driving=%d%s)",
+			strings.Join(parts, ", "), strings.Join(keys, ", "), idx, direction)
 	}
-	return fmt.Sprintf("MultiIntersection(%s; keys=[%s])",
-		strings.Join(parts, ", "), strings.Join(keys, ", "))
+	return fmt.Sprintf("MultiIntersection(%s; keys=[%s]%s)",
+		strings.Join(parts, ", "), strings.Join(keys, ", "), direction)
 }
 
 var (
@@ -307,6 +325,7 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) WithQuantifiers(qs []expressi
 		return nil, err
 	}
 	rebuilt.drivingAlias = p.drivingAlias
+	rebuilt.reverse = p.reverse
 	// Carry the group-existence designation across the relink. WithQuantifiers
 	// replaces the streams with fresh quantifiers over the finalized references,
 	// and those carry NEW aliases — so an alias stored verbatim stops resolving

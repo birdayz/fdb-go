@@ -58,6 +58,24 @@ func (s RequestedSortOrder) IsCounterflowNulls() bool {
 	return s == RequestedSortOrderAscendingNullsLast || s == RequestedSortOrderDescendingNullsFirst
 }
 
+// Mirrored is the order a reversed scan provides for this one: each direction
+// flips together with its NULL placement, so the natural placements stay
+// natural and the counterflow ones counterflow.
+func (s RequestedSortOrder) Mirrored() RequestedSortOrder {
+	switch s {
+	case RequestedSortOrderAscending:
+		return RequestedSortOrderDescending
+	case RequestedSortOrderDescending:
+		return RequestedSortOrderAscending
+	case RequestedSortOrderAscendingNullsLast:
+		return RequestedSortOrderDescendingNullsFirst
+	case RequestedSortOrderDescendingNullsFirst:
+		return RequestedSortOrderAscendingNullsLast
+	default:
+		return s
+	}
+}
+
 // ToProvidedSortOrder ports Java RequestedSortOrder.toProvidedSortOrder. Only a
 // directional order has a provided counterpart.
 func (s RequestedSortOrder) ToProvidedSortOrder() (ProvidedSortOrder, bool) {
@@ -110,6 +128,16 @@ func NewRequestedOrdering(parts []RequestedOrderingPart, d Distinctness, exhaust
 		distinctness: d,
 		exhaustive:   exhaustive,
 	}
+}
+
+// Mirrored is this request with every part's direction mirrored: what a plan
+// must provide for its reverse to satisfy this request.
+func (o *RequestedOrdering) Mirrored() *RequestedOrdering {
+	parts := make([]RequestedOrderingPart, len(o.parts))
+	for i, part := range o.parts {
+		parts[i] = RequestedOrderingPart{Value: part.Value, SortOrder: part.SortOrder.Mirrored()}
+	}
+	return &RequestedOrdering{parts: parts, distinctness: o.distinctness, exhaustive: o.exhaustive}
 }
 
 // Preserve returns a RequestedOrdering that preserves the incoming order.

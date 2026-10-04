@@ -582,3 +582,97 @@ func TestIntersectionMultiCursor_MatchDeliveredBeforeReadAheadError(t *testing.T
 		t.Fatalf("want the deferred read-ahead error on the second call, got: %v", err)
 	}
 }
+
+// pageOuterMerge drives the RFC-209 outer merge one row per page through the
+// per-child continuation, as executeMultiIntersection does, in either key
+// direction. A non-driving stream with no row for a driving key contributes -1.
+func pageOuterMerge(t *testing.T, srcs [][]int64, driving int, reverse bool) [][]int64 {
+	t.Helper()
+	var cont []byte
+	var got [][]int64
+	for iter := 0; iter < 10000; iter++ {
+		resume, err := DecodeIntersectionContinuation(cont, len(srcs))
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		cursors := make([]RecordCursor[int64], len(srcs))
+		for i, src := range srcs {
+			if resume[i].Started && len(resume[i].Continuation) == 0 {
+				cursors[i] = Empty[int64]()
+			} else {
+				cursors[i] = newSliceResumeCursor(src, resume[i].Continuation)
+			}
+		}
+		cur := OuterMergeMultiResume(cursors, intResumeKey, reverse, resume, driving,
+			func(int) int64 { return -1 })
+		res, err := cur.OnNext(context.Background())
+		if err != nil {
+			t.Fatalf("OnNext: %v", err)
+		}
+		cur.Close()
+		if !res.HasNext() {
+			if res.GetContinuation().IsEnd() {
+				return got
+			}
+			cont, _ = res.GetContinuation().ToBytes()
+			continue
+		}
+		got = append(got, res.GetValue())
+		cont, _ = res.GetContinuation().ToBytes()
+	}
+	t.Fatal("pageOuterMerge did not terminate")
+	return nil
+}
+
+// TestOuterMergeMultiResume_PagedBothDirections pins the group-existence merge
+// in each scan direction: every driving key once, in the streams' order, a
+// non-driving stream's row where it has the key and the filler where it does
+// not, its keys outside the driving set (phantoms) dropped, across a page break
+// after every row.
+func TestOuterMergeMultiResume_PagedBothDirections(t *testing.T) {
+	t.Parallel()
+	driver := []int64{1, 3, 4, 7}
+	other := []int64{0, 3, 5, 7, 9} // 0, 5, 9 are phantoms; 1 and 4 are absent
+	reversed := func(s []int64) []int64 {
+		r := make([]int64, len(s))
+		for i, v := range s {
+			r[len(s)-1-i] = v
+		}
+		return r
+	}
+	forwardWant := [][]int64{{1, -1}, {3, 3}, {4, -1}, {7, 7}}
+	for _, tc := range []struct {
+		name    string
+		srcs    [][]int64
+		driving int
+		reverse bool
+		want    [][]int64
+	}{
+		{"forward_driving_first", [][]int64{driver, other}, 0, false, forwardWant},
+		{
+			"reverse_driving_first",
+			[][]int64{reversed(driver), reversed(other)},
+			0, true,
+			[][]int64{{7, 7}, {4, -1}, {3, 3}, {1, -1}},
+		},
+		{
+			"forward_driving_second",
+			[][]int64{other, driver},
+			1, false,
+			[][]int64{{-1, 1}, {3, 3}, {-1, 4}, {7, 7}},
+		},
+		{
+			"reverse_driving_second",
+			[][]int64{reversed(other), reversed(driver)},
+			1, true,
+			[][]int64{{7, 7}, {-1, 4}, {3, 3}, {-1, 1}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := pageOuterMerge(t, tc.srcs, tc.driving, tc.reverse); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("paged outer merge = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
