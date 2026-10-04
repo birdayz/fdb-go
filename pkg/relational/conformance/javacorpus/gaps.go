@@ -259,9 +259,8 @@ var engineGaps = []EngineGap{
 	// per-query override: the block's last query is the ONLY one exercising
 	// `tab2_index`, the nested quoted struct index this change unblocked, and
 	// it sits two arms after this one — so it does not run. That shape is
-	// covered Go-side instead by `nested_struct_index_never_matches_gap.yaml`,
-	// which asserts on the PLAN — and asserts the WRONG one, because that index
-	// is built and never matched. Its file name says so.
+	// covered Go-side instead by `nested_struct_cardinality_index.yaml`, which
+	// asserts the index scan Java plans.
 	{"documentation-queries/array-agg-documentation-queries.yamsql", SkipConformanceScanChoiceOrder, `line 55: "SELECT ARRAY_AGG(amount IGNORE NULLS) AS amounts FROM sales": cell mismatch`, "abstract_data_access_rule.go"},
 	{"arrays-cardinality.yamsql", SkipConformanceJavaPlannerBug, `line 187: "SELECT \"id\" FROM \"tab1_indexed\" WHERE CARDINALITY(\"int_arr\") = NULL": result does not contain all expected rows, expected 1 row(s), got 0 row(s)`, "Issue #4170"},
 

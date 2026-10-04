@@ -625,3 +625,44 @@ func TestMetadataIndexDefPrimaryKeyTypesStayAlignedThroughMiddleTrim(t *testing.
 		t, types, values.TypeCodeLong, values.TypeCodeFloat, values.TypeCodeDouble,
 	)
 }
+
+// The primary-key trim cross-check names only top-level field columns: Java's
+// Index.trimPrimaryKey compares key expressions, so a nested ADDR.ID, a
+// CARDINALITY(ID) or a version never trims the record's ID, and a covering
+// split keeps the key columns before it positionally.
+func TestIndexTrimmableKeyColumnNamesAreTopLevelFields(t *testing.T) {
+	t.Parallel()
+	key := func(expression recordlayer.KeyExpression) *gen.KeyExpression {
+		return expression.ToKeyExpression()
+	}
+	for _, test := range []struct {
+		name string
+		root *gen.KeyExpression
+		want []string
+	}{
+		{"nested leaf named like the pk", key(recordlayer.Concat(
+			recordlayer.Nest("addr", recordlayer.Field("id")), recordlayer.Field("city"))), []string{"city"}},
+		{"cardinality and version", key(recordlayer.Concat(
+			recordlayer.CardinalityExpr(recordlayer.FieldConcatenate("id")), recordlayer.VersionKey(),
+			recordlayer.Field("a"))), []string{"a"}},
+		{
+			"covering split counts every key column", key(recordlayer.KeyWithValue(recordlayer.Concat(
+				recordlayer.Nest("s", recordlayer.Field("x")), recordlayer.Field("a"), recordlayer.Field("b")), 2)),
+			[]string{"a"},
+		},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got := indexTrimmableKeyColumnNames(test.root)
+			if len(got) != len(test.want) {
+				t.Fatalf("trimmable = %v, want %v", got, test.want)
+			}
+			for i := range got {
+				if got[i] != test.want[i] {
+					t.Fatalf("trimmable = %v, want %v", got, test.want)
+				}
+			}
+		})
+	}
+}

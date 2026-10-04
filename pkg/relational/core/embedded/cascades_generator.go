@@ -3419,7 +3419,7 @@ func (d *metadataIndexDef) IndexPrimaryKeyComponentTypes() []values.Type {
 	// change does is route one more shape into that trade. Narrowing it means
 	// teaching this function that the trim is name-based for these indexes,
 	// which is a separate change with its own plan-shape review.
-	nameTrimmed := plans.TrimmedPKSuffix(d.IndexColumnNames(), pkCols)
+	nameTrimmed := plans.TrimmedPKSuffix(indexTrimmableKeyColumnNames(d.idx.RootExpression.ToKeyExpression()), pkCols)
 	if len(actualSuffix) != len(nameTrimmed) {
 		return unknown
 	}
@@ -3525,6 +3525,48 @@ func indexColumnFunctionTags(expr recordlayer.KeyExpression) []string {
 			return []string{""}
 		}
 		return make([]string, columnSize)
+	}
+}
+
+// indexTrimmableKeyColumnNames are the key columns that are top-level fields:
+// the only ones a primary-key field equals, as Index.TrimPrimaryKey compares
+// key expressions (a nested S.X, CARDINALITY(X) or a version is not field X).
+func indexTrimmableKeyColumnNames(expression *gen.KeyExpression) []string {
+	var names []string
+	for _, name := range indexKeyColumnFields(expression) {
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// indexKeyColumnFields is one entry per key column: the top-level field it is,
+// or "" for any other column.
+func indexKeyColumnFields(expression *gen.KeyExpression) []string {
+	switch {
+	case expression == nil:
+		return nil
+	case expression.Field != nil:
+		return []string{expression.Field.GetFieldName()}
+	case expression.Then != nil:
+		var names []string
+		for _, child := range expression.Then.GetChild() {
+			names = append(names, indexKeyColumnFields(child)...)
+		}
+		return names
+	case expression.KeyWithValue != nil:
+		names := indexKeyColumnFields(expression.KeyWithValue.GetInnerKey())
+		if split := int(expression.KeyWithValue.GetSplitPoint()); split >= 0 && split < len(names) {
+			return names[:split]
+		}
+		return names
+	default:
+		key, err := recordlayer.KeyExpressionFromProto(expression)
+		if err != nil || key == nil {
+			return []string{""}
+		}
+		return make([]string, key.ColumnSize())
 	}
 }
 

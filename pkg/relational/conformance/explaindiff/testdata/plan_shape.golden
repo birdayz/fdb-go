@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=379 queries=2838 dml=176 non_query=111 plan_errors=319 unexpected_errors=4
+# files=382 queries=2855 dml=176 non_query=111 plan_errors=319 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -12112,6 +12112,75 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryStreamingAggregationPlan
 shape:       RecordQueryScanPlan
+=== nested_leaf_index_disambiguation.yaml#0
+sql:   SELECT id FROM P WHERE addr.city = 'rome'
+plan:  Map(IndexScan(P_ADDR_CITY, [=] COVERING), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== nested_leaf_index_disambiguation.yaml#1
+sql:   SELECT id FROM P WHERE city = 'rome'
+plan:  Map(IndexScan(P_CITY, [=] COVERING), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== nested_leaf_index_disambiguation.yaml#2
+sql:   SELECT id, city, addr.city FROM P WHERE addr.city = 'oslo'
+plan:  Map(IndexScan(P_ADDR_CITY, [=]), {ID: _current.ID#0, CITY: _current.CITY#1, CITY_2: _current.ADDR#2.CITY#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryIndexPlan
+=== nested_leaf_index_disambiguation.yaml#3
+sql:   SELECT addr.city, id FROM P ORDER BY addr.city, id
+plan:  Map(IndexScan(P_ADDR_CITY, [*] COVERING), {CITY: _current.ADDR#2.CITY#0, ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== nested_leaf_index_disambiguation.yaml#4
+sql:   SELECT id, addr.id FROM P ORDER BY addr.id
+plan:  Map(IndexScan(P_ADDR_ID, [*] COVERING), {ID: _current.ID#0, ID_2: _current.ADDR#2.ID#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== nested_leaf_index_disambiguation.yaml#5
+sql:   SELECT id FROM P WHERE addr.id = 20
+plan:  Map(IndexScan(P_ADDR_ID, [=] COVERING), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== nested_leaf_value_index.yaml#0
+sql:   SELECT s.x, ts FROM T ORDER BY s.x, ts
+plan:  Map(IndexScan(NESTED_THEN_TOP, [*, *] COVERING), {X: _current.S#1.X#0, TS: _current.TS#2})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== nested_leaf_value_index.yaml#1
+sql:   SELECT id FROM T WHERE s.x = 5
+plan:  Map(IndexScan(NESTED_THEN_TOP, [=, *] COVERING), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== nested_leaf_value_index.yaml#2
+sql:   SELECT id, ts FROM T WHERE s.x = 5 AND ts > 3
+plan:  Map(IndexScan(NESTED_THEN_TOP, [=, <>] COVERING), {ID: _current.ID#0, TS: _current.TS#2})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== nested_leaf_value_index.yaml#3
+sql:   SELECT s.y FROM T ORDER BY s.y
+plan:  Map(IndexScan(NESTED_Y, [*] COVERING), {Y: _current.S#1.Y#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== nested_leaf_value_index.yaml#4
+sql:   SELECT id FROM T WHERE s.y > 15
+plan:  Map(IndexScan(NESTED_Y, [<>] COVERING), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== nested_leaf_value_index.yaml#5
+sql:   SELECT * FROM T WHERE s.x = 5
+plan:  IndexScan(NESTED_THEN_TOP, [=, *])
+shape: RecordQueryIndexPlan
+=== nested_leaf_value_index.yaml#6
+sql:   SELECT s FROM T WHERE s.x = 5 AND ts = 7
+plan:  Map(IndexScan(NESTED_THEN_TOP, [=, =]), {S: _current.S#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryIndexPlan
+=== nested_leaf_value_index.yaml#7
+sql:   SELECT s.x, s.y FROM T WHERE s.x = 8
+plan:  Map(IndexScan(NESTED_THEN_TOP, [=, *]), {X: _current.S#1.X#0, Y: _current.S#1.Y#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryIndexPlan
 === nested_projection_column_name.yaml#0
 sql:   SELECT n.sk, n.co FROM t1 ORDER BY id
 plan:  Map(Map(Scan(T1), {SK: _current.N#2.SK#0, CO: _current.N#2.CO#1, _2: _current.ID#0}), {SK: _current.SK#0, CO: _current.CO#1})
@@ -12164,12 +12233,17 @@ plan:  Map(Map(Scan(T1), {FIRST: _current.N#2.SK#0, SECOND: _current.N#2.CO#1, _
 shape: RecordQueryMapPlan
 shape:   RecordQueryMapPlan
 shape:     RecordQueryScanPlan
-=== nested_struct_index_never_matches_gap.yaml#0
+=== nested_struct_cardinality_index.yaml#0
 sql:   SELECT "id" FROM qnest WHERE CARDINALITY("struct"."int_arr") = 1
-plan:  Map(PredicatesFilter(Scan(QNEST), [1 preds]), {id: _current.id#0})
+plan:  Map(IndexScan(QNEST_CARD, [=] COVERING), {id: _current.id#0})
 shape: RecordQueryMapPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryCoveringIndexPlan
+=== nested_struct_cardinality_index.yaml#1
+sql:   SELECT "id" FROM qnest ORDER BY CARDINALITY("struct"."int_arr"), "id"
+plan:  Map(Map(IndexScan(QNEST_CARD, [*]), {id: _current.id#0, _1: cardinality(_current.struct#1.int_arr#0)}), {id: _current.id#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryMapPlan
+shape:     RecordQueryIndexPlan
 === nlj_column_ambiguity.yaml#0
 sql:   SELECT e.name, d.name FROM emp e, dept d WHERE e.dept_id = d.id ORDER BY e.id
 plan:  Map(FlatMap(outer=Scan(EMP), inner=Scan(DEPT, [=])), {E.NAME: _current.E.NAME#0, D.NAME: _current.D.NAME#1})
@@ -15291,6 +15365,18 @@ plan:  Map(Map(Scan(T), {x: _current.x#1, _1: _current.ID#0}), {x: _current.x#0}
 shape: RecordQueryMapPlan
 shape:   RecordQueryMapPlan
 shape:     RecordQueryScanPlan
+=== record_in_nested_leaf_index.yaml#0
+sql:   SELECT a, b FROM ta WHERE f IN ((90L, 9L), (81L, 18L))
+plan:  FlatMap(outer=Explode(array_distinct), inner=IndexScan(F1, [=, =]))
+shape: RecordQueryFlatMapPlan
+shape:   RecordQueryExplodePlan
+shape:   RecordQueryIndexPlan
+=== record_in_nested_leaf_index.yaml#1
+sql:   SELECT a, b FROM ta WHERE f IN ((90L, 9L), (81L, 18L), (81L, 18L), (90L, 9L))
+plan:  FlatMap(outer=Explode(array_distinct), inner=IndexScan(F1, [=, =]))
+shape: RecordQueryFlatMapPlan
+shape:   RecordQueryExplodePlan
+shape:   RecordQueryIndexPlan
 === recursive_cte.yaml#0
 sql:   WITH RECURSIVE ancestors AS ( SELECT id, parent FROM t WHERE id = 250 UNION ALL SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.parent ) SELECT id FROM ancestors ORDER BY id DESC
 plan:  InMemorySort([_current.ID#0 DESC], Map(RecursiveDfsJoin(PREORDER, Map(Scan(T, [=]), {ID: _current.ID#0, PARENT: _current.PARENT#1}), FlatMap(outer=TempTableScan(ANCESTORSforScan), inner=Scan(T, [=]))), {ID: _current.ID#0}))

@@ -190,16 +190,114 @@ func (c *ValueIndexScanMatchCandidate) orderingKeyLayout() *values.RecordType {
 // longer Values, and an unaddressable ordering key must decline the claim.
 //
 // Resolution is UNIQUE-match, matching the runtime authority this key is
-// verified against (bakedIntersectionKeys). It must not be first-match: the
-// candidate's column list drops nesting parents (metadataIndexDef
-// .IndexColumnNames), so the name reaching here is a bare leaf, and
-// first-matching a leaf against a duplicate-named layout would silently bake
-// some other column's slot. A nested leaf whose name collides with a top-level
-// field is a stronger version of the same hazard and is fenced one level up:
-// NewPlanContextFromIndexDefs refuses a root key expression containing a
-// non-fan-out nested leaf outright, so no such column ever reaches a candidate.
+// verified against (bakedIntersectionKeys): first-matching a name against a
+// duplicate-named layout would silently bake some other column's slot. A key
+// column is baked by its whole field path (bakeOrderingPath), so a nested leaf
+// never stands for a top-level field of the same name.
 func (c *ValueIndexScanMatchCandidate) bakeOrderingColumn(name string) values.Value {
 	return bakeOrderingColumnIn(c.orderingKeyLayout(), name)
+}
+
+// bakeOrderingPath is bakeOrderingColumn over a key column's field path, each
+// step resolved by its unique name in the record it descends.
+func (c *ValueIndexScanMatchCandidate) bakeOrderingPath(path []string) values.Value {
+	layout := c.orderingKeyLayout()
+	if len(path) == 1 {
+		return bakeOrderingColumnIn(layout, path[0])
+	}
+	if layout == nil || len(path) == 0 {
+		return nil
+	}
+	root, ok := orderingKeyCarrier(layout)
+	if !ok {
+		return nil
+	}
+	return resolveUpperFieldPath(root, path)
+}
+
+// keyColumnPath is key column i's field path (nil for a column that reads no
+// field path, such as an exploded element).
+func (c *ValueIndexScanMatchCandidate) keyColumnPath(i int) []string {
+	described := c.indexColumns()
+	if described == nil || i < 0 || i >= len(described.keyColumns) {
+		return nil
+	}
+	return described.keyColumns[i].path
+}
+
+// nestedKeyColumnPath is keyColumnPath for a nested leaf only.
+func (c *ValueIndexScanMatchCandidate) nestedKeyColumnPath(i int) []string {
+	if path := c.keyColumnPath(i); len(path) > 1 {
+		return path
+	}
+	return nil
+}
+
+// columnPaths returns the nested field path of every key and value column,
+// nil for a top-level one, for the plan's column metadata.
+func (c *ValueIndexScanMatchCandidate) columnPaths() (keyPaths, valuePaths [][]string) {
+	described := c.indexColumns()
+	if described == nil {
+		return nil, nil
+	}
+	nested := func(columns []keyExpansionColumn) [][]string {
+		var out [][]string
+		for i, column := range columns {
+			if len(column.path) > 1 {
+				if out == nil {
+					out = make([][]string, len(columns))
+				}
+				out[i] = column.path
+			}
+		}
+		return out
+	}
+	return nested(described.keyColumns), nested(described.valueColumns)
+}
+
+// trimmableKeyColumnNames are the key columns a primary-key column of the same
+// name is trimmed against: top-level fields only, as Java's trimPrimaryKey
+// compares key expressions, and CARDINALITY(x) or S.X is not field X.
+func (c *ValueIndexScanMatchCandidate) trimmableKeyColumnNames() []string {
+	names := make([]string, 0, len(c.columnNames))
+	for i, name := range c.columnNames {
+		if i < len(c.columnFunctions) && c.columnFunctions[i] == FunctionKindCardinality {
+			continue
+		}
+		if c.nestedKeyColumnPath(i) != nil {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+// keyColumnCanExtendOrderingClaim is values.ColumnCanExtendOrderingClaim for
+// key column i, answered for a nested leaf by the type its path reads.
+func (c *ValueIndexScanMatchCandidate) keyColumnCanExtendOrderingClaim(i int) bool {
+	path := c.nestedKeyColumnPath(i)
+	if path == nil {
+		return values.ColumnCanExtendOrderingClaim(c.orderingKeyLayout(), c.columnNames[i])
+	}
+	if i < len(c.keyComponentTypes) && c.keyComponentTypes[i] != nil &&
+		c.keyComponentTypes[i].Code() != values.TypeCodeUnknown {
+		return !values.TypeTerminatesOrderingClaim(c.keyComponentTypes[i])
+	}
+	leaf := c.bakeOrderingPath(path)
+	return leaf != nil && !values.TypeTerminatesOrderingClaim(leaf.Type())
+}
+
+// floatQuestionColumnNames is columnNames with a nested leaf's name blanked:
+// it is no top-level column, so a name-keyed float question must not find one
+// (a blank name could be a float).
+func (c *ValueIndexScanMatchCandidate) floatQuestionColumnNames() []string {
+	names := append([]string(nil), c.columnNames...)
+	for i := range names {
+		if c.nestedKeyColumnPath(i) != nil {
+			names[i] = ""
+		}
+	}
+	return names
 }
 
 // bakeOrderingColumnIn is bakeOrderingColumn's body, shared with the
@@ -286,24 +384,33 @@ func orderingKeyCarrier(record *values.RecordType) (values.QuantifiedObjectValue
 // orderingColumnValue is ColumnValue for the ordering-key mint: the same Value
 // shape, with the plain-field case carrying its resolved identity.
 //
-// A function-keyed column is deliberately left alone. CARDINALITY(x) is not a
-// column of the row layout, so it is matched as a whole Value rather than by
-// column identity, and baking the wrapped child would make an otherwise
-// structurally equal pair unequal.
+// A CARDINALITY column is no column of the row layout: it is the function over
+// its argument baked like any key column, so it is minted on the same carrier
+// root and compares as a whole Value against the request's.
 func (c *ValueIndexScanMatchCandidate) orderingColumnValue(i int) values.Value {
 	if i < len(c.columnFunctions) && c.columnFunctions[i] != "" {
-		if _, isOrder := OrderFunctionDirection(c.columnFunctions[i]); isOrder {
-			// An order-wrapped column ORDERS BY its underlying field — the
-			// wrapper only changes the physical encoding and the direction,
-			// which columnMatchedSortOrder carries separately. Java derives the
-			// same split by simplifying ToOrderedBytesValue(fv) to (fv,
-			// direction) when minting ordering parts
-			// (OrderingValueComputationRuleSet's ToOrderedBytes rule).
-			return c.bakeOrderingColumn(c.columnNames[i])
+		if _, isOrder := OrderFunctionDirection(c.columnFunctions[i]); !isOrder {
+			if c.columnFunctions[i] != FunctionKindCardinality {
+				return nil
+			}
+			argument := c.bakeOrderingPath(c.keyColumnPath(i))
+			if argument == nil {
+				return nil
+			}
+			return values.NewCardinalityValue(argument)
 		}
-		return c.ColumnValue(i, nil)
+		// An order-wrapped column ORDERS BY its underlying field — the
+		// wrapper only changes the physical encoding and the direction,
+		// which columnMatchedSortOrder carries separately. Java derives the
+		// same split by simplifying ToOrderedBytesValue(fv) to (fv,
+		// direction) when minting ordering parts
+		// (OrderingValueComputationRuleSet's ToOrderedBytes rule).
 	}
-	return c.bakeOrderingColumn(c.columnNames[i])
+	path := c.keyColumnPath(i)
+	if len(path) == 0 {
+		return nil
+	}
+	return c.bakeOrderingPath(path)
 }
 
 // coveredOrdinalSets resolves the covered-column names against every row
@@ -726,16 +833,12 @@ func (c *ValueIndexScanMatchCandidate) effectiveRootKeyExpression() *gen.KeyExpr
 // Without FAN_OUT structure only an affirmative createsDuplicates=false signal
 // admits the candidate: UNKNOWN metadata may hide a fan-out index, and a known
 // duplicate-producing index without a FAN_OUT AST has no Explode with which to
-// repair cardinality. Scalar nested leaves are rejected: their full accessor
-// path is not yet represented by the name-keyed ordering and covering surfaces.
+// repair cardinality.
 func (c *ValueIndexScanMatchCandidate) indexColumns() *valueIndexExpansion {
 	if c == nil {
 		return nil
 	}
 	c.columnsOnce.Do(func() {
-		if keyExpressionContainsNonFanOutNestedLeaf(c.rootKeyExpression) {
-			return
-		}
 		fanOut := keyExpressionContainsFanOut(c.rootKeyExpression)
 		if !fanOut && (!c.createsDuplicatesKnown || c.createsDuplicates) {
 			return
@@ -855,7 +958,7 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 	// the physical key type first and the layout second — the plan side's
 	// splitKeyOrder asks the same function, which is what keeps the two
 	// derivations classifying every coordinate alike.
-	columnCouldBeFloat := plans.IndexColumnCouldBeFloat(c.keyComponentTypes, c.orderingKeyLayout(), c.columnNames)
+	columnCouldBeFloat := plans.IndexColumnCouldBeFloat(c.keyComponentTypes, c.orderingKeyLayout(), c.floatQuestionColumnNames())
 	for _, paramID := range sortParameterIDs {
 		idx := -1
 		for i, alias := range c.sargableAliases {
@@ -926,9 +1029,7 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 		// the predicate comparator and the sort comparator disagree on signed
 		// zeros by design (see plans.EqualityBoundCoordinateClaimsOwnOrder), so
 		// the claim is directional and a DESC request is not free.
-		canExtend := values.ColumnCanExtendOrderingClaim(
-			c.orderingKeyLayout(), c.columnNames[idx],
-		)
+		canExtend := c.keyColumnCanExtendOrderingClaim(idx)
 		claimsOwnOrder := plans.EqualityBoundCoordinateClaimsOwnOrder(cr) || canExtend
 		// canExtend ("this column is not a float") still short-circuits: a
 		// non-float coordinate has no signed zero, so it carries the suffix
@@ -1025,7 +1126,7 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 	// not sufficient, since a coordinate that claims only its OWN order can sit
 	// at the end of the key.
 	if !c.CreatesDuplicates() && len(parts) == len(c.columnNames) && suffixCarried {
-		for _, col := range plans.TrimmedPKSuffix(c.columnNames, c.pkColumnNames) {
+		for _, col := range plans.TrimmedPKSuffix(c.trimmableKeyColumnNames(), c.pkColumnNames) {
 			// The suffix terminates on the same rule as the key columns: a
 			// FLOAT/DOUBLE PK column cannot extend the claim.
 			if !values.ColumnCanExtendOrderingClaim(c.orderingKeyLayout(), col) {
@@ -1255,7 +1356,7 @@ func (c *ValueIndexScanMatchCandidate) orderingColumns() ([]plans.IndexOrderingC
 	described := c.indexColumns()
 	columns := make([]plans.IndexOrderingColumn, len(described.keyColumns))
 	for i, column := range described.keyColumns {
-		if described.keyDuplicates[i] || len(column.path) != 1 {
+		if described.keyDuplicates[i] || len(column.path) == 0 {
 			return nil, false
 		}
 		switch column.function {
@@ -1336,6 +1437,9 @@ func (c *ValueIndexScanMatchCandidate) buildTranslateValueFunction() plans.Trans
 	described := c.indexColumns()
 	blockedColumns := make(map[string]struct{})
 	for i, col := range c.columnNames {
+		if c.nestedKeyColumnPath(i) != nil {
+			continue // names no top-level field
+		}
 		functionKey := i < len(c.columnFunctions) &&
 			c.columnFunctions[i] != ""
 		// A CONCATENATE column stores the repeated field as a nested tuple,
@@ -1354,9 +1458,17 @@ func (c *ValueIndexScanMatchCandidate) buildTranslateValueFunction() plans.Trans
 	// suffix remains independently safe and index-resident (the real FDB
 	// CARDINALITY test pins SELECT ID as covering); function-name collisions
 	// are blocked below.
+	// A nested leaf is covered by its whole path: the covering row rebuilds
+	// the partial nested record (Java's IndexKeyValueToPartialRecord nested
+	// field builders), never a top-level field of the same name.
+	var coveredPaths [][]string
 	if !hasFunctionKey {
 		for i, col := range c.columnNames {
 			if duplicateProducingColumns[i] || described.keyColumns[i].concatenate {
+				continue
+			}
+			if path := c.nestedKeyColumnPath(i); path != nil {
+				coveredPaths = append(coveredPaths, path)
 				continue
 			}
 			coveredColumns[strings.ToUpper(col)] = struct{}{}
@@ -1369,7 +1481,11 @@ func (c *ValueIndexScanMatchCandidate) buildTranslateValueFunction() plans.Trans
 	// function-wrapped. This is the whole point of the covering split
 	// (KeyWithValueExpression: "additional query-relevant columns can be read
 	// without fetching the record").
-	for _, col := range c.valueColumnNames {
+	for i, col := range c.valueColumnNames {
+		if path := described.valueColumns[i].path; len(path) > 1 {
+			coveredPaths = append(coveredPaths, path)
+			continue
+		}
 		coveredColumns[strings.ToUpper(col)] = struct{}{}
 	}
 	for _, col := range c.pkColumnNames {
@@ -1379,15 +1495,31 @@ func (c *ValueIndexScanMatchCandidate) buildTranslateValueFunction() plans.Trans
 		}
 	}
 	coveredSets := c.coveredOrdinalSets(coveredColumns)
+	coveredPathSets := buildCoveredPathSets(c.rowLayouts(), coveredPaths)
 
 	return func(value values.Value, sourceAlias, targetAlias values.CorrelationIdentifier) (values.Value, bool) {
 		if field, isField := values.AsFieldValue(value); isField {
-			// A covering translation is valid only for one top-level field of
-			// this exact source object. Fused paths and foreign correlations
-			// decline instead of falling back to the display name.
+			// A covering translation is valid only for a covered field path of
+			// this exact source object. Foreign correlations decline instead of
+			// falling back to the display name.
 			root, isSource := values.AsQuantifiedObjectValue(field.ChildValue())
-			if !isSource || root.Correlation() != sourceAlias || field.Path().Len() != 1 {
+			if !isSource || root.Correlation() != sourceAlias || field.Path().Len() < 1 {
 				return nil, false
+			}
+			if field.Path().Len() > 1 {
+				rowType, covered := pushCoveredPathWithType(coveredPathSets, field)
+				if !covered {
+					return nil, false
+				}
+				target, err := values.NewQuantifiedObjectValue(targetAlias, rowType)
+				if err != nil {
+					return nil, false
+				}
+				translated, err := values.ResolveFieldOrdinals(target, field.Path().Ordinals())
+				if err != nil {
+					return nil, false
+				}
+				return translated, true
 			}
 			ordinal, _, rowType, covered := pushCoveredOrdinalWithType(coveredSets, field)
 			if !covered {

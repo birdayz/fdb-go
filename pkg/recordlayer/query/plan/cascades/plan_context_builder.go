@@ -168,15 +168,6 @@ func NewPlanContextFromIndexDefs(defs []IndexDef) PlanContext {
 		if withRoot, ok := def.(IndexDefWithRootKeyExpression); ok {
 			rootKeyExpression = withRoot.IndexRootKeyExpression()
 		}
-		if keyExpressionContainsNonFanOutNestedLeaf(rootKeyExpression) {
-			// The candidate's column/coverage bridge cannot yet preserve the
-			// path identity of a scalar nested leaf: ADDR.CITY could bind a
-			// top-level CITY. Reject the whole root even when another branch
-			// fans out. Leaves below a fan-out parent, and nested leaves that
-			// fan out themselves, are structurally represented by the
-			// Explode-based expansion and remain supported.
-			continue
-		}
 		cols := def.IndexColumnNames()
 		if len(cols) == 0 {
 			continue

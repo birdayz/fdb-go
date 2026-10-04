@@ -1639,11 +1639,8 @@ var _ = Describe("WS-J nested-grouping aggregate index plan oracle", func() {
 })
 
 // Whether each engine SERVES a query from a VALUE index whose key holds a nested
-// scalar leaf. F1 made Go store such an index as the target does; Go's candidate
-// construction then drops every index whose root reaches a nested leaf
-// (plan_context_builder.go, index_expansion.go, match_candidate_index.go), so it
-// plans a scan where the target uses the index. Both engines' trees are pinned:
-// the Go pins are the gap WS-J section 3.5 closes, and move with it.
+// scalar leaf. Both serve every read from the index, covering where the target
+// covers: the expansion visitor reads the leaf by its full path (WS-J 3.5).
 var _ = Describe("WS-J nested-leaf value index plan oracle", func() {
 	It("records both engines' plans over value indexes on nested leaf fields", func() {
 		ctx := context.Background()
@@ -1681,7 +1678,7 @@ var _ = Describe("WS-J nested-leaf value index plan oracle", func() {
 			"SELECT * FROM T WHERE s.x = 5",
 		}
 		// Measured (4.14.2.0): the target serves every read from the nested-leaf
-		// index, covering where the projection allows; Go scans and sorts.
+		// index, covering where the projection allows.
 		wantJava := map[string]string{
 			"SELECT s.x, ts FROM T ORDER BY s.x, ts":        "COVERING(NESTED_THEN_TOP <,> -> [ID: KEY:[3], TS: KEY:[1], S: [X: KEY:[0]]]) | MAP (_.S.X AS X, _.TS AS TS)",
 			"SELECT id FROM T WHERE s.x = 5":                "COVERING(NESTED_THEN_TOP [EQUALS promote(@c9 AS LONG)] -> [ID: KEY:[3], TS: KEY:[1], S: [X: KEY:[0]]]) | MAP (_.ID AS ID)",
@@ -1691,12 +1688,12 @@ var _ = Describe("WS-J nested-leaf value index plan oracle", func() {
 			"SELECT * FROM T WHERE s.x = 5":                 "ISCAN(NESTED_THEN_TOP [EQUALS promote(@c9 AS LONG)])",
 		}
 		wantGo := map[string]string{
-			"SELECT s.x, ts FROM T ORDER BY s.x, ts":        "InMemorySort([_current.X#0 ASC, _current.TS#1 ASC], Map(Scan(T), {X: _current.S#1.X#0, TS: _current.TS#2}))",
-			"SELECT id FROM T WHERE s.x = 5":                "Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})",
-			"SELECT id, ts FROM T WHERE s.x = 5 AND ts > 3": "Map(PredicatesFilter(Scan(T), [2 preds]), {ID: _current.ID#0, TS: _current.TS#2})",
-			"SELECT s.y FROM T ORDER BY s.y":                "InMemorySort([_current.Y#0 ASC], Map(Scan(T), {Y: _current.S#1.Y#1}))",
-			"SELECT id FROM T WHERE s.y > 2":                "Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})",
-			"SELECT * FROM T WHERE s.x = 5":                 "PredicatesFilter(Scan(T), [1 preds])",
+			"SELECT s.x, ts FROM T ORDER BY s.x, ts":        "Map(IndexScan(NESTED_THEN_TOP, [*, *] COVERING), {X: _current.S#1.X#0, TS: _current.TS#2})",
+			"SELECT id FROM T WHERE s.x = 5":                "Map(IndexScan(NESTED_THEN_TOP, [=, *] COVERING), {ID: _current.ID#0})",
+			"SELECT id, ts FROM T WHERE s.x = 5 AND ts > 3": "Map(IndexScan(NESTED_THEN_TOP, [=, <>] COVERING), {ID: _current.ID#0, TS: _current.TS#2})",
+			"SELECT s.y FROM T ORDER BY s.y":                "Map(IndexScan(NESTED_Y, [*] COVERING), {Y: _current.S#1.Y#1})",
+			"SELECT id FROM T WHERE s.y > 2":                "Map(IndexScan(NESTED_Y, [<>] COVERING), {ID: _current.ID#0})",
+			"SELECT * FROM T WHERE s.x = 5":                 "IndexScan(NESTED_THEN_TOP, [=, *])",
 		}
 		render := func(r plandiff.PlanResult) string {
 			if r.Err != nil {

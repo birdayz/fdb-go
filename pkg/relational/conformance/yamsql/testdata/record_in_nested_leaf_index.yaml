@@ -1,0 +1,26 @@
+# record_in_nested_leaf_index.yaml
+#
+# A struct column IN a list of records, over an index on the struct's leaves:
+# Java explodes the distinct list and probes the index with both leaves
+# (in-predicate.yamsql: EXPLODE arrayDistinct(...) | FLATMAP q0 -> {
+# ISCAN(F1 [EQUALS q0._0, EQUALS q0._1]) }). Duplicates in the list do not
+# duplicate rows.
+name: record_in_nested_leaf_index
+schema_template: |
+  CREATE TYPE AS STRUCT ts (sa BIGINT, sb BIGINT)
+  CREATE TABLE ta (a BIGINT, b BIGINT, f ts, PRIMARY KEY (a))
+  CREATE INDEX f1 AS SELECT f.sa, f.sb FROM ta ORDER BY f.sa, f.sb
+setup:
+  - INSERT INTO ta VALUES (0, 9, (90, 9)), (1, 8, (81, 18)), (2, 7, (72, 27)), (3, 6, (90, 18)), (4, 5, NULL)
+tests:
+  - query: SELECT a, b FROM ta WHERE f IN ((90L, 9L), (81L, 18L))
+    plan_contains: "FlatMap(outer=Explode(array_distinct), inner=IndexScan(F1, [=, =]"
+    unordered: true
+    rows:
+      - [0, 9]
+      - [1, 8]
+  - query: SELECT a, b FROM ta WHERE f IN ((90L, 9L), (81L, 18L), (81L, 18L), (90L, 9L))
+    unordered: true
+    rows:
+      - [0, 9]
+      - [1, 8]

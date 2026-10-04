@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**379 scenarios · 3125 query/assertion cases** across 18 feature areas — 2733 supported, 102 unsupported-feature pins, 290 error-path pins.
+**382 scenarios · 3142 query/assertion cases** across 18 feature areas — 2750 supported, 102 unsupported-feature pins, 290 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -39,13 +39,13 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Column resolution & aliasing | 7 | 59 | 30 | 0 | 29 |
 | NULL handling | 5 | 27 | 24 | 3 | 0 |
 | NULL handling & boolean logic | 2 | 48 | 48 | 0 | 0 |
-| Index usage | 15 | 185 | 182 | 0 | 3 |
+| Index usage | 18 | 202 | 199 | 0 | 3 |
 | Types | 13 | 148 | 127 | 4 | 17 |
 | Keys & primary keys | 5 | 133 | 128 | 0 | 5 |
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 40 | 340 | 301 | 5 | 34 |
-| **Total** | **379** | **3125** | **2733** | **102** | **290** |
+| **Total** | **382** | **3142** | **2750** | **102** | **290** |
 
 ## Aggregates & GROUP BY
 
@@ -419,8 +419,11 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `index_range_predicates_java` | 10 | 10 | 0 | 0 | Index scan with range predicates |
 | `index_scan_direction` | 8 | 8 | 0 | 0 | Index scan direction tests |
 | `multi_column_index_java` | 7 | 7 | 0 | 0 | Multi-column (composite) index patterns. |
-| `nested_struct_index_never_matches_gap` | 1 | 1 | 0 | 0 | THIS FILE IS A GAP MARKER, NOT COVERAGE. |
+| `nested_leaf_index_disambiguation` | 6 | 6 | 0 | 0 | A nested leaf and a top-level column with the same name are different |
+| `nested_leaf_value_index` | 8 | 8 | 0 | 0 | A value index over a nested scalar leaf serves reads the way Java's does |
+| `nested_struct_cardinality_index` | 2 | 2 | 0 | 0 | A CARDINALITY index over a NESTED quoted struct path is matched: the function |
 | `quoted_identifier_index_bridge` | 3 | 3 | 0 | 0 | THE INDEX MUST STILL MATCH WHEN THE COLUMN NAME IS NOT UPPER. |
+| `record_in_nested_leaf_index` | 2 | 2 | 0 | 0 | A struct column IN a list of records, over an index on the struct's leaves: |
 | `rfc202_generated_index_plans` | 7 | 7 | 0 | 0 | RFC-202 gate (d): the generator's index |
 | `secondary_index_pushdown` | 80 | 80 | 0 | 0 | Secondary-index pushdown: `SELECT ... |
 | `unique_index_violation` | 5 | 3 | 0 | 2 | Tests that unique index constraints are enforced. |

@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"slices"
 	"testing"
 
 	"fdb.dev/gen"
@@ -154,7 +155,9 @@ func (d rootTestIndexDef) IndexRootKeyExpression() *gen.KeyExpression {
 	return d.root
 }
 
-func TestNewPlanContextFromIndexDefs_ScalarNestingFailsClosed(t *testing.T) {
+// Every nested root is a candidate: the expansion visitor reads a scalar
+// nested leaf by its full path, so ADDR.CITY is never the top-level CITY.
+func TestNewPlanContextFromIndexDefs_ScalarNestingIsACandidate(t *testing.T) {
 	t.Parallel()
 
 	scalar := gen.Field_SCALAR
@@ -224,13 +227,12 @@ func TestNewPlanContextFromIndexDefs_ScalarNestingFailsClosed(t *testing.T) {
 			root: mixedScalarNestingAndFanOut,
 		},
 	})
-	candidates := ctx.GetMatchCandidates()
-	if len(candidates) != 2 ||
-		candidates[0].CandidateName() != "nested_fanout_city" ||
-		candidates[1].CandidateName() != "nested_child_fanout_city" {
-		t.Fatalf(
-			"nested candidates = %#v, want only structurally expanded fanout; scalar ADDR.CITY must never bind top-level CITY, even beside fanout TAGS",
-			candidates,
-		)
+	var names []string
+	for _, candidate := range ctx.GetMatchCandidates() {
+		names = append(names, candidate.CandidateName())
+	}
+	want := []string{"nested_scalar_city", "nested_fanout_city", "nested_child_fanout_city", "mixed_scalar_nesting_and_fanout"}
+	if !slices.Equal(names, want) {
+		t.Fatalf("candidates = %v, want %v", names, want)
 	}
 }

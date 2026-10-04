@@ -976,7 +976,7 @@ func innerLeafUniqueKeyOrdinals(plan RecordQueryPlan, layout values.Type) (map[v
 		// names for a different purpose. Consult it here too: a plain leaf
 		// name off such an index is not proof of a bind on a flat top-level
 		// key column.
-		if !p.orderingKeyNamesKnown || !p.orderingKeyNamesSafe {
+		if !p.orderingKeyNamesKnown || !p.orderingKeyNamesSafe || p.HasNestedKeyColumn() {
 			return nil, false
 		}
 		cols := p.GetColumnNames()

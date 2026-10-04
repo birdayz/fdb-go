@@ -448,12 +448,7 @@ func expandKeyFunction(function *gen.Function, s keyExpansionState) (*GraphExpan
 		if err := functionKeyHasValue(function.GetName(), argumentSize); err != nil {
 			return nil, err
 		}
-		column := keyExpansionColumn{function: function.GetName()}
-		if argument := keyFunctionArgumentField(function.Arguments); argument != "" {
-			column.name = argument
-			column.path = appendPath(s.prefix, argument)
-		}
-		s.registerValue(nil, column)
+		s.registerValue(nil, keyFunctionColumn(function, s.prefix))
 		if s.isKey() && !s.internal {
 			if _, err := s.reg.takeAlias(); err != nil {
 				return nil, err
@@ -473,12 +468,7 @@ func expandKeyFunction(function *gen.Function, s keyExpansionState) (*GraphExpan
 	if err != nil {
 		return nil, err
 	}
-	column := keyExpansionColumn{function: function.GetName()}
-	if argument := keyFunctionArgumentField(function.Arguments); argument != "" {
-		column.name = argument
-		column.path = appendPath(s.prefix, argument)
-	}
-	s.registerValue(value, column)
+	s.registerValue(value, keyFunctionColumn(function, s.prefix))
 	columns := []GraphExpansionColumn{{Value: value}}
 	var preds []predicates.QueryPredicate
 	var placeholders []*predicates.Placeholder
@@ -495,18 +485,33 @@ func expandKeyFunction(function *gen.Function, s keyExpansionState) (*GraphExpan
 	return NewGraphExpansion(columns, preds, quantifiers, placeholders), nil
 }
 
-// keyFunctionArgumentField names the field a single-field function argument
-// reads: a direct field, or the parent of a collapsed array wrapper.
-func keyFunctionArgumentField(arguments *gen.KeyExpression) string {
+// keyFunctionColumn describes a function key column by the field its single
+// argument reads (keyFunctionArgumentPath); a function of anything else has no
+// field and so no name.
+func keyFunctionColumn(function *gen.Function, prefix []string) keyExpansionColumn {
+	column := keyExpansionColumn{function: function.GetName()}
+	if path := keyFunctionArgumentPath(function.Arguments, prefix); len(path) > 0 {
+		column.name = path[len(path)-1]
+		column.path = path
+	}
+	return column
+}
+
+// keyFunctionArgumentPath is the field path a single-field function argument
+// reads: a direct field, a scalar nesting's child, or the parent of a
+// collapsed array wrapper.
+func keyFunctionArgumentPath(arguments *gen.KeyExpression, prefix []string) []string {
 	if field := arguments.GetField(); field != nil {
-		return field.GetFieldName()
+		return appendPath(prefix, field.GetFieldName())
 	}
-	if nesting := arguments.GetNesting(); nesting != nil {
-		if _, wrapped := matchArrayWrapper(nesting); wrapped {
-			return nesting.GetParent().GetFieldName()
-		}
+	nesting := arguments.GetNesting()
+	if nesting == nil || nesting.GetParent().GetFanType() != gen.Field_SCALAR {
+		return nil
 	}
-	return ""
+	if _, wrapped := matchArrayWrapper(nesting); wrapped {
+		return appendPath(prefix, nesting.GetParent().GetFieldName())
+	}
+	return keyFunctionArgumentPath(nesting.GetChild(), appendPath(prefix, nesting.GetParent().GetFieldName()))
 }
 
 // functionKeyHasValue reports whether functionKeyToValue models the function
@@ -761,17 +766,9 @@ func flatColumnField(name string, fanType gen.Field_FanType) *gen.KeyExpression 
 // does not resolve.
 func resolveUpperFieldPath(base values.QuantifiedObjectValue, path []string) values.Value {
 	record, _ := base.FlowedType().(*values.RecordType)
-	ordinals := make([]int, len(path))
-	for i, name := range path {
-		if record == nil {
-			return nil
-		}
-		ordinal, unique := uniqueUpperFieldIndex(record, name)
-		if !unique {
-			return nil
-		}
-		ordinals[i] = ordinal
-		record, _ = record.Fields[ordinal].FieldType.(*values.RecordType)
+	ordinals, ok := resolveUpperOrdinalPath(record, path)
+	if !ok {
+		return nil
 	}
 	resolved, err := values.ResolveFieldOrdinals(base, ordinals)
 	if err != nil {

@@ -1,0 +1,66 @@
+# nested_leaf_value_index.yaml
+#
+# A value index over a nested scalar leaf serves reads the way Java's does
+# (conformance "WS-J nested-leaf value index plan oracle"): the expansion visitor
+# reads S.X by its full path, the scan is ordered by it, and a covering scan
+# rebuilds S as a partial record holding only the indexed leaves.
+name: nested_leaf_value_index
+schema_template: |
+  CREATE TYPE AS STRUCT SC (x BIGINT, y BIGINT)
+  CREATE TABLE T (id BIGINT, s SC, ts BIGINT, PRIMARY KEY (id))
+  CREATE INDEX nested_then_top AS SELECT s.x, ts FROM T ORDER BY s.x, ts
+  CREATE INDEX nested_y AS SELECT s.y FROM T ORDER BY s.y
+setup:
+  - INSERT INTO T VALUES (1, (5, 30), 7), (2, (5, 10), 2), (3, (1, 20), 9), (4, (8, 40), 4), (5, NULL, 6), (6, (5, NULL), 4)
+tests:
+  - query: SELECT s.x, ts FROM T ORDER BY s.x, ts
+    plan_contains: "IndexScan(NESTED_THEN_TOP, [*, *] COVERING)"
+    plan_not_contains: "Sort"
+    rows:
+      - [null, 6]
+      - [1, 9]
+      - [5, 2]
+      - [5, 4]
+      - [5, 7]
+      - [8, 4]
+  - query: SELECT id FROM T WHERE s.x = 5
+    plan_contains: "IndexScan(NESTED_THEN_TOP, [=, *] COVERING)"
+    rows:
+      - [2]
+      - [6]
+      - [1]
+  - query: SELECT id, ts FROM T WHERE s.x = 5 AND ts > 3
+    plan_contains: "IndexScan(NESTED_THEN_TOP, [=, <>] COVERING)"
+    rows:
+      - [6, 4]
+      - [1, 7]
+  - query: SELECT s.y FROM T ORDER BY s.y
+    plan_contains: "IndexScan(NESTED_Y, [*] COVERING)"
+    plan_not_contains: "Sort"
+    rows:
+      - [null]
+      - [null]
+      - [10]
+      - [20]
+      - [30]
+      - [40]
+  - query: SELECT id FROM T WHERE s.y > 15
+    plan_contains: "IndexScan(NESTED_Y, [<>] COVERING)"
+    rows:
+      - [3]
+      - [1]
+      - [4]
+  # SELECT * fetches the record: the partial S of a covering row is never read
+  # as the whole struct.
+  - query: SELECT * FROM T WHERE s.x = 5
+    plan_contains: "IndexScan(NESTED_THEN_TOP, [=, *])"
+    rows:
+      - [2, [5, 10], 2]
+      - [6, [5, null], 4]
+      - [1, [5, 30], 7]
+  - query: SELECT s FROM T WHERE s.x = 5 AND ts = 7
+    rows:
+      - [[5, 30]]
+  - query: SELECT s.x, s.y FROM T WHERE s.x = 8
+    rows:
+      - [8, 40]

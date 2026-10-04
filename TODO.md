@@ -4873,6 +4873,11 @@ RFC-236.
 
 ### A nested-struct CARDINALITY index is BUILT but never MATCHED
 
+- [x] Done: the key-expression expansion reads a function key's argument by its
+  full path, so the candidate's column is CARDINALITY("struct"."int_arr") and
+  the query binds it (`nested_struct_cardinality_index.yaml`; the gap marker
+  file is deleted).
+
 `CREATE INDEX … AS SELECT CARDINALITY("struct"."int_arr")` now builds — that is
 what RFC-237 unblocked, and it is what took `arrays-cardinality.yamsql` from 0
 to 29 executed corpus queries. The index is created and maintained. The planner

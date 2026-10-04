@@ -303,64 +303,72 @@ func TestValueIndexScanMatchCandidate_UnknownMetadataFailsClosed(t *testing.T) {
 	}
 }
 
-func TestExpandValueIndex_PreBuiltScalarNestingFailsClosed(t *testing.T) {
+// A scalar nested leaf is read by its full path (KeyExpressionExpansionVisitor
+// pushes the parent onto the field-name prefix), so an index on ADDR.CITY over
+// a row that also has a top-level CITY binds, orders and covers ADDR.CITY and
+// never CITY.
+func TestExpandValueIndex_ScalarNestingReadsTheFullPath(t *testing.T) {
 	t.Parallel()
-	addressType := values.NewRecordType("Address", false, []values.Field{
+	addressType := values.NewRecordType("Address", true, []values.Field{
 		{Name: "CITY", FieldType: values.NullableString, Ordinal: 0},
 	})
 	itemType := values.NewRecordType("Item", false, []values.Field{
-		{Name: "ADDR", FieldType: addressType, Ordinal: 0},
-		{Name: "TAGS", FieldType: values.NewArrayType(true, values.NotNullString), Ordinal: 1},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "CITY", FieldType: values.NullableString, Ordinal: 1},
+		{Name: "ADDR", FieldType: addressType, Ordinal: 2},
 	})
-
-	scalar := gen.Field_SCALAR
-	nestedScalar := &gen.KeyExpression{Nesting: &gen.Nesting{
-		Parent: &gen.Field{
-			FieldName: proto.String("ADDR"),
-			FanType:   &scalar,
-		},
-		Child: keyExpressionField("CITY", gen.Field_SCALAR),
+	nestedCity := &gen.KeyExpression{Nesting: &gen.Nesting{
+		Parent: &gen.Field{FieldName: proto.String("ADDR"), FanType: gen.Field_SCALAR.Enum()},
+		Child:  keyExpressionField("CITY", gen.Field_SCALAR),
 	}}
-	mixed := &gen.KeyExpression{Then: &gen.Then{Child: []*gen.KeyExpression{
-		nestedScalar,
-		keyExpressionField("TAGS", gen.Field_FAN_OUT),
-	}}}
+	alias := values.UniqueCorrelationIdentifier()
+	distinct := false
+	candidate := NewValueIndexScanMatchCandidateWithFunctions(
+		"idx_addr_city", []string{"Item"}, []string{"CITY"}, nil,
+		[]values.CorrelationIdentifier{alias}, itemType, false, []string{"ID"}, &distinct,
+	).WithRootKeyExpression(nestedCity)
 
-	for _, tc := range []struct {
-		name    string
-		columns []string
-		root    *gen.KeyExpression
-	}{
-		{name: "scalar_nesting", columns: []string{"CITY"}, root: nestedScalar},
-		{
-			name:    "mixed_scalar_nesting_and_fanout",
-			columns: []string{"CITY", "TAGS"},
-			root:    mixed,
-		},
-	} {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			aliases := make([]values.CorrelationIdentifier, len(tc.columns))
-			for i := range aliases {
-				aliases[i] = values.UniqueCorrelationIdentifier()
-			}
-			createsDuplicates := false
-			candidate := NewValueIndexScanMatchCandidateWithFunctions(
-				"idx_"+tc.name,
-				[]string{"Item"},
-				tc.columns,
-				nil,
-				aliases,
-				itemType,
-				false,
-				nil,
-				&createsDuplicates,
-			).WithRootKeyExpression(tc.root)
-			if traversal := candidate.GetTraversal(); traversal != nil {
-				t.Fatal("prebuilt candidate flattened a scalar nested leaf")
-			}
-		})
+	top := fanoutExpansionTopSelect(t, candidate.GetTraversal())
+	preds := top.GetPredicates()
+	if len(preds) != 1 {
+		t.Fatalf("predicates = %d, want the one placeholder", len(preds))
+	}
+	placeholder := preds[0].(*predicates.Placeholder)
+	field, ok := values.AsFieldValue(placeholder.Value)
+	if !ok || !slices.Equal(field.Path().Ordinals(), []int{2, 0}) {
+		t.Fatalf("placeholder value = %#v, want ADDR.CITY (ordinals [2 0])", placeholder.Value)
+	}
+	column, ok := values.AsFieldValue(candidate.ColumnValue(0, nil))
+	if !ok || !slices.Equal(column.Path().Ordinals(), []int{2, 0}) {
+		t.Fatalf("column value = %#v, want ADDR.CITY", candidate.ColumnValue(0, nil))
+	}
+	if got := candidate.trimmableKeyColumnNames(); len(got) != 0 {
+		t.Fatalf("a nested leaf trims primary-key columns %v; it is no top-level field", got)
+	}
+
+	source, target := values.UniqueCorrelationIdentifier(), values.UniqueCorrelationIdentifier()
+	if _, ok := candidate.PushValueThroughFetch(indexExpansionField(t, source, itemType, 1), source, target); ok {
+		t.Fatal("the top-level CITY was covered by an index on ADDR.CITY")
+	}
+	translated, ok := candidate.PushValueThroughFetch(indexExpansionField(t, source, itemType, 2, 0), source, target)
+	if !ok {
+		t.Fatal("ADDR.CITY is in the entry and must be covered")
+	}
+	if field, _ := values.AsFieldValue(translated); field == nil || !slices.Equal(field.Path().Ordinals(), []int{2, 0}) {
+		t.Fatalf("translated = %#v, want ADDR.CITY over the target", translated)
+	}
+	if _, ok := candidate.PushValueThroughFetch(indexExpansionField(t, source, itemType, 2), source, target); ok {
+		t.Fatal("the whole ADDR struct was covered by one of its leaves")
+	}
+
+	parts := candidate.ComputeMatchedOrderingParts(
+		NewRegularMatchInfo(nil, nil, nil, nil, nil, nil, nil, nil),
+		[]values.CorrelationIdentifier{alias}, false)
+	if len(parts) == 0 {
+		t.Fatal("no ordering parts for the nested key column")
+	}
+	if field, _ := values.AsFieldValue(parts[0].GetValue()); field == nil || !slices.Equal(field.Path().Ordinals(), []int{2, 0}) {
+		t.Fatalf("ordering part 0 = %#v, want ADDR.CITY", parts[0].GetValue())
 	}
 }
 

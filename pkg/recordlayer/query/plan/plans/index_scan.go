@@ -88,6 +88,13 @@ type RecordQueryIndexPlan struct {
 	// surface (the executor reads them from the entry VALUE tuple) but are not
 	// key columns: they never order the scan and never bound its range.
 	valueColumnNames []string
+	// keyColumnPaths and valueColumnPaths are parallel to columnNames and
+	// valueColumnNames: the field path an entry column reads from the record
+	// when it is a NESTED leaf (S.X), nil for a top-level field. A nested
+	// leaf's name is its last step only, so it never stands for a top-level
+	// column of the same name.
+	keyColumnPaths   [][]string
+	valueColumnPaths [][]string
 	// orderingKeyNamesKnown/orderingKeyNamesSafe state whether columnNames are
 	// semantic bare-field ordering keys. Function indexes retain leaf names for
 	// row layout, but CARDINALITY(TAGS) must not advertise ordering on TAGS.
@@ -270,6 +277,67 @@ func (p *RecordQueryIndexPlan) WithValueColumnNames(names []string) *RecordQuery
 	cp.valueColumnNames = make([]string, len(names))
 	copy(cp.valueColumnNames, names)
 	return &cp
+}
+
+// WithColumnPaths returns a copy carrying the nested field path of each key
+// and value column (nil for a top-level field). Like the names, a function of
+// the index the plan names, outside the structural key.
+func (p *RecordQueryIndexPlan) WithColumnPaths(keyPaths, valuePaths [][]string) *RecordQueryIndexPlan {
+	cp := *p
+	cp.keyColumnPaths = clonePaths(keyPaths)
+	cp.valueColumnPaths = clonePaths(valuePaths)
+	return &cp
+}
+
+func clonePaths(paths [][]string) [][]string {
+	if len(paths) == 0 {
+		return nil
+	}
+	out := make([][]string, len(paths))
+	for i, path := range paths {
+		out[i] = slices.Clone(path)
+	}
+	return out
+}
+
+// NestedKeyColumnPath returns key column i's nested field path, or nil for a
+// top-level field.
+func (p *RecordQueryIndexPlan) NestedKeyColumnPath(i int) []string {
+	if i < 0 || i >= len(p.keyColumnPaths) || len(p.keyColumnPaths[i]) < 2 {
+		return nil
+	}
+	return p.keyColumnPaths[i]
+}
+
+// HasNestedKeyColumn reports whether any key column is a nested leaf.
+func (p *RecordQueryIndexPlan) HasNestedKeyColumn() bool {
+	for i := range p.keyColumnPaths {
+		if p.NestedKeyColumnPath(i) != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// AllCoveredEntryColumnPaths is parallel to AllCoveredEntryColumns: each
+// entry column's nested field path, nil for a top-level field.
+func (p *RecordQueryIndexPlan) AllCoveredEntryColumnPaths() [][]string {
+	out := make([][]string, 0, len(p.columnNames)+len(p.valueColumnNames))
+	for i := range p.columnNames {
+		var path []string
+		if i < len(p.keyColumnPaths) && len(p.keyColumnPaths[i]) > 1 {
+			path = p.keyColumnPaths[i]
+		}
+		out = append(out, path)
+	}
+	for i := range p.valueColumnNames {
+		var path []string
+		if i < len(p.valueColumnPaths) && len(p.valueColumnPaths[i]) > 1 {
+			path = p.valueColumnPaths[i]
+		}
+		out = append(out, path)
+	}
+	return out
 }
 
 // AllCoveredEntryColumns returns the entry's column names in ENTRY layout

@@ -2426,6 +2426,10 @@ func TestPlanHarness_ConstantExpressionComparandIsSargable(t *testing.T) {
 	}
 }
 
+// A struct column IN a list of records over an index on its leaves: Java
+// explodes the distinct list and probes the index with both leaves
+// (in-predicate.yamsql, `EXPLODE arrayDistinct(...) | FLATMAP q0 -> {
+// ISCAN(F1 [EQUALS q0._0, EQUALS q0._1]) }`).
 func TestPlanHarness_RecordIn(t *testing.T) {
 	t.Parallel()
 	plan, err := PlanQueryForTest("SELECT id FROM t WHERE f IN ((90L, 9L), (81L, 18L))", "CREATE TYPE AS STRUCT pair(x bigint, y bigint) CREATE TABLE t(id bigint, a bigint, b bigint, f pair, PRIMARY KEY(id)) CREATE INDEX f1 AS SELECT f.x, f.y FROM t ORDER BY f.x, f.y", nil)
@@ -2433,7 +2437,8 @@ func TestPlanHarness_RecordIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Log(plan)
-	assertPlanContains(t, plan, "Filter")
+	assertPlanContains(t, plan, "FlatMap(outer=Explode(array_distinct), inner=IndexScan(F1, [=, =]))")
+	assertPlanNotContains(t, plan, "Filter")
 }
 
 func TestPlanHarness_PermutedAggregateDerivedOrder(t *testing.T) {

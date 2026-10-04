@@ -1,6 +1,9 @@
 package plans
 
 import (
+	"slices"
+	"strings"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
@@ -791,9 +794,21 @@ func splitKeyOrder(
 	comps []*predicates.ComparisonRange,
 	keyColumns, suffix []string,
 	keyTypes []values.Type, layout values.Type,
+	nestedPath func(int) []string,
 ) keyOrderSplit {
 	split := keyOrderSplit{fixedLen: ownOrderPrefixLen(comps, len(keyColumns))}
-	couldBeFloat := IndexColumnCouldBeFloat(keyTypes, layout, keyColumns)
+	// A nested leaf's name is not a top-level column of the layout, so it is
+	// never asked by name: unresolvable, it could be a float.
+	floatNames := keyColumns
+	if nestedPath != nil {
+		floatNames = slices.Clone(keyColumns)
+		for i := range floatNames {
+			if nestedPath(i) != nil {
+				floatNames[i] = ""
+			}
+		}
+	}
+	couldBeFloat := IndexColumnCouldBeFloat(keyTypes, layout, floatNames)
 	split.pins = make([]bool, split.fixedLen)
 	for i := range split.pins {
 		split.pins[i] = EqualityPinsSinglePhysicalKeyOnColumn(comps[i], couldBeFloat(i))
@@ -808,8 +823,55 @@ func splitKeyOrder(
 	tail = append(tail, keyColumns[split.fixedLen:]...)
 	tail = append(tail, suffix...)
 	split.untruncated = len(tail)
-	split.tail = tail[:claimableNameLimit(layout, tail)]
+	limit := len(tail)
+	for j, name := range tail {
+		column := split.fixedLen + j
+		var path []string
+		if nestedPath != nil && column < len(keyColumns) {
+			path = nestedPath(column)
+		}
+		claims := values.ColumnCanExtendOrderingClaim(layout, name)
+		if path != nil {
+			claims = nestedColumnCanExtendOrderingClaim(keyTypes, column, layout, path)
+		}
+		if !claims {
+			limit = j
+			break
+		}
+	}
+	split.tail = tail[:limit]
 	return split
+}
+
+// nestedColumnCanExtendOrderingClaim answers the claim question for a nested
+// leaf from its physical key type, else from the type its path resolves to in
+// the layout; a path that does not resolve cannot claim.
+func nestedColumnCanExtendOrderingClaim(keyTypes []values.Type, i int, layout values.Type, path []string) bool {
+	if i < len(keyTypes) && keyTypes[i] != nil && keyTypes[i].Code() != values.TypeCodeUnknown {
+		return !values.TypeTerminatesOrderingClaim(keyTypes[i])
+	}
+	record, _ := layout.(*values.RecordType)
+	var leaf values.Type
+	for _, name := range path {
+		if record == nil {
+			return false
+		}
+		ordinal := -1
+		for j, field := range record.Fields {
+			if strings.EqualFold(field.Name, name) {
+				if ordinal >= 0 {
+					return false
+				}
+				ordinal = j
+			}
+		}
+		if ordinal < 0 {
+			return false
+		}
+		leaf = record.Fields[ordinal].FieldType
+		record, _ = leaf.(*values.RecordType)
+	}
+	return leaf != nil && !values.TypeTerminatesOrderingClaim(leaf)
 }
 
 // HintOrdering: an index scan produces rows in index-key order for the
@@ -837,7 +899,8 @@ func (p *RecordQueryIndexPlan) HintOrdering() properties.Ordering {
 	columnNames, pkColumnNames := p.GetColumnNames(), p.GetPKColumnNames()
 	rev := p.IsReverse()
 	split := splitKeyOrder(p.GetScanComparisons(), columnNames,
-		TrimmedPKSuffix(p.injectiveKeyColumnNames(), pkColumnNames), p.GetKeyComponentTypes(), p.GetFlowedType())
+		TrimmedPKSuffix(p.injectiveKeyColumnNames(), pkColumnNames), p.GetKeyComponentTypes(), p.GetFlowedType(),
+		p.NestedKeyColumnPath)
 	sorted := split.tail
 	if len(sorted) == 0 {
 		return properties.Ordering{}
@@ -915,11 +978,6 @@ func claimableKeyLimit(layout values.Type, keys []values.Value) int {
 	return len(keys)
 }
 
-// claimableNameLimit is claimableKeyLimit over metadata column names.
-func claimableNameLimit(layout values.Type, names []string) int {
-	return values.ClaimableOrderingPrefix(layout, names)
-}
-
 // claimableTypedKeyLimit is claimableKeyLimit for keys that carry their OWN
 // declared type, with no flowed layout to resolve against.
 //
@@ -966,6 +1024,41 @@ func orderingColumnOfName(root values.Value, layout values.Type, name string) va
 		return resolved
 	}
 	return nil
+}
+
+// orderingColumnOfPath is orderingColumnOfName for a nested leaf: each step
+// resolved by its unique case-insensitive name in the record it descends.
+func orderingColumnOfPath(root values.Value, layout values.Type, path []string) values.Value {
+	record, _ := layout.(*values.RecordType)
+	requests := make([]values.FieldRequest, len(path))
+	for i, name := range path {
+		if record == nil {
+			return nil
+		}
+		ordinal := -1
+		for j, field := range record.Fields {
+			if strings.EqualFold(field.Name, name) {
+				if ordinal >= 0 {
+					return nil
+				}
+				ordinal = j
+			}
+		}
+		if ordinal < 0 {
+			return nil
+		}
+		request, err := values.FieldByNameAndOrdinal(name, ordinal)
+		if err != nil {
+			return nil
+		}
+		requests[i] = request
+		record, _ = record.Fields[ordinal].FieldType.(*values.RecordType)
+	}
+	resolved, err := values.ResolveFieldAccess(root, requests)
+	if err != nil {
+		return nil
+	}
+	return resolved
 }
 
 // resolveOrderingColumns re-mints an already-Value-shaped key list against the
@@ -1386,7 +1479,7 @@ func (p *RecordQueryAggregateIndexPlan) aggregateOrderSplit(cols []string, types
 	if p.permuted {
 		layout = p.GetResultType()
 	}
-	return splitKeyOrder(p.groupingScanComparisons(), cols, nil, types, layout)
+	return splitKeyOrder(p.groupingScanComparisons(), cols, nil, types, layout, nil)
 }
 
 // aggregateOrderingColumns maps physical key coordinates to logical output
@@ -1735,7 +1828,7 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 	// accordingly; do not restate the vacuity argument here, it is refuted at
 	// EqualityBoundCoordinateClaimsOwnOrder.
 	split := splitKeyOrder(comps, columnNames, TrimmedPKSuffix(p.injectiveKeyColumnNames(), pkColumnNames),
-		p.GetKeyComponentTypes(), p.GetFlowedType())
+		p.GetKeyComponentTypes(), p.GetFlowedType(), p.NestedKeyColumnPath)
 	tail := split.tail
 	// The coordinates below are the whole storage key exactly when the tail was
 	// neither dropped wholesale (a signed-zero equality that restarts the order
@@ -1914,14 +2007,17 @@ func (p *RecordQueryFetchFromPartialRecordPlan) HintRichOrdering() *properties.R
 	return richOrderingOf(p.OrderingSourceRef())
 }
 
-// injectiveKeyColumnNames are the key columns whose entry determines their
-// field, so a primary-key column of the same name is not stored again: all but
-// a CARDINALITY column, as Java trims the primary key by key-expression
-// equality.
+// injectiveKeyColumnNames are the key columns whose entry determines a
+// top-level field, so a primary-key column of the same name is not stored
+// again: all but a CARDINALITY column and a nested leaf, as Java trims the
+// primary key by key-expression equality.
 func (p *RecordQueryIndexPlan) injectiveKeyColumnNames() []string {
 	names := make([]string, 0, len(p.GetColumnNames()))
 	for i, name := range p.GetColumnNames() {
 		if i < len(p.orderingColumns) && p.orderingColumns[i].Cardinality {
+			continue
+		}
+		if p.NestedKeyColumnPath(i) != nil {
 			continue
 		}
 		names = append(names, name)
@@ -1932,7 +2028,12 @@ func (p *RecordQueryIndexPlan) injectiveKeyColumnNames() []string {
 // orderingKeyOf is the value key column i (or, past the key, the primary-key
 // column name) orders the scan by.
 func (p *RecordQueryIndexPlan) orderingKeyOf(i int, name string) values.Value {
-	key := orderingColumnOfName(p.GetResultValue(), p.GetFlowedType(), name)
+	var key values.Value
+	if path := p.NestedKeyColumnPath(i); path != nil && i < len(p.GetColumnNames()) {
+		key = orderingColumnOfPath(p.GetResultValue(), p.GetFlowedType(), path)
+	} else {
+		key = orderingColumnOfName(p.GetResultValue(), p.GetFlowedType(), name)
+	}
 	if key != nil && i < len(p.GetColumnNames()) && i < len(p.orderingColumns) && p.orderingColumns[i].Cardinality {
 		return values.NewCardinalityValue(key)
 	}
