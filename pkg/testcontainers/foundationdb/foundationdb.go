@@ -30,7 +30,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -513,14 +515,13 @@ func (c *Container) startAdditionalProcesses(ctx context.Context) error {
 // countProcesses returns the number of fdbserver processes running in the container.
 // Uses pgrep for precise matching (avoids counting bash wrappers or fdbcli).
 func (c *Container) countProcesses(ctx context.Context) (int, error) {
-	_, reader, err := c.Exec(ctx, []string{"pgrep", "-c", "fdbserver"}, tcexec.Multiplexed())
+	out, err := c.execOutput(ctx, "pgrep", "pgrep", "-c", "fdbserver")
 	if err != nil {
 		// pgrep returns exit 1 if no matches.
 		return 0, nil
 	}
-	out, _ := io.ReadAll(reader)
 	var count int
-	fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &count)
+	fmt.Sscanf(strings.TrimSpace(out), "%d", &count)
 	return count, nil
 }
 
@@ -530,21 +531,45 @@ func (c *Container) countProcesses(ctx context.Context) (int, error) {
 //
 //	output, err := container.FDBCLIExec(ctx, "status details")
 func (c *Container) FDBCLIExec(ctx context.Context, command string) (string, error) {
-	exitCode, reader, err := c.Exec(ctx, []string{
-		"/usr/bin/fdbcli", "--exec", command,
-	}, tcexec.Multiplexed())
-	if err != nil {
-		return "", fmt.Errorf("exec fdbcli: %w", err)
+	return c.execOutput(ctx, "fdbcli", "/usr/bin/fdbcli", "--exec", command)
+}
+
+// execOutput runs argv in the container and returns its output. testcontainers
+// reads a multiplexed exec stream to its end without watching ctx, so the
+// command is killed in the container at ctx's deadline, and the call returns
+// when ctx ends even if the stream does not.
+func (c *Container) execOutput(ctx context.Context, name string, argv ...string) (string, error) {
+	if deadline, ok := ctx.Deadline(); ok {
+		secs := int(math.Ceil(time.Until(deadline).Seconds()))
+		argv = append([]string{"timeout", "-s", "KILL", strconv.Itoa(max(secs, 1))}, argv...)
 	}
-
-	outputBytes, _ := io.ReadAll(reader)
-	output := string(outputBytes)
-
-	if exitCode != 0 {
-		return output, fmt.Errorf("fdbcli exited with code %d", exitCode)
+	type result struct {
+		output   string
+		exitCode int
+		err      error
 	}
-
-	return output, nil
+	done := make(chan result, 1)
+	go func() {
+		exitCode, reader, err := c.Exec(ctx, argv, tcexec.Multiplexed())
+		if err != nil {
+			done <- result{err: err}
+			return
+		}
+		outputBytes, _ := io.ReadAll(reader)
+		done <- result{output: string(outputBytes), exitCode: exitCode}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			return "", fmt.Errorf("exec %s: %w", name, r.err)
+		}
+		if r.exitCode != 0 {
+			return r.output, fmt.Errorf("%s exited with code %d", name, r.exitCode)
+		}
+		return r.output, nil
+	case <-ctx.Done():
+		return "", fmt.Errorf("exec %s: %w", name, ctx.Err())
+	}
 }
 
 // Status returns the FDB cluster status output.
