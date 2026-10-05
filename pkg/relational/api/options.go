@@ -120,11 +120,10 @@ const (
 	// outer. Anything missing, stale or unreadable degrades to the constant, so
 	// the worst case is today's plan.
 	OptPlannerStatistics OptionName = "PLANNER_STATISTICS"
-	// OptLogQuery gates the SLF4J log level in Java. Go has no ambient
-	// log-level concept: the planning-metrics hook (RFC-034) always emits a
-	// record and the handler owns level + sampling, so this option is
-	// intentionally not consumed by the embedded engine pending the
-	// options-plumbing work for the gRPC/REPL frontends.
+	// OptLogQuery raises a statement's planning log record to INFO in Java
+	// (RelationalLoggingUtil.publishPlanGenerationLogs), as OPTIONS (LOG QUERY)
+	// does. Go's planning-metrics hook (RFC-034) always emits a record and the
+	// handler owns the level, so the option sets PlanGenerationInfo.LogQuery.
 	OptLogQuery OptionName = "LOG_QUERY"
 	// OptLogSlowQueryThresholdMicros is the canonical default source for the
 	// connection's slow-query threshold (RFC-034); see

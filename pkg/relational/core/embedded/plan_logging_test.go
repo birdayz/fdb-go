@@ -227,6 +227,43 @@ func TestPlanLogging_SlowQueryFlag(t *testing.T) {
 	}
 }
 
+// OPTIONS (LOG QUERY) and the connection's LOG_QUERY option mark the planning
+// record for logging (Java: RelationalLoggingUtil.publishPlanGenerationLogs
+// logs it at INFO); neither present, the record is not marked.
+func TestPlanLogging_LogQueryFlag(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		sql      string
+		connOpts *api.Options
+		want     bool
+	}{
+		{name: "no option", sql: "SELECT id FROM orders WHERE id = 1", connOpts: api.NoOptions()},
+		{name: "statement option", sql: "SELECT id FROM orders WHERE id = 1 OPTIONS (LOG QUERY)", connOpts: api.NoOptions(), want: true},
+		{name: "beside another option", sql: "SELECT id FROM orders WHERE id = 1 OPTIONS (NOCACHE, LOG QUERY)", connOpts: api.NoOptions(), want: true},
+		{name: "connection option", sql: "SELECT id FROM orders WHERE id = 1", connOpts: api.NoOptions().With(api.OptLogQuery, true), want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			cap := &captureLogger{}
+			g, md := newLoggingGenerator(t, ordersSchema, cap)
+			root, err := parser.Parse(test.sql)
+			if err != nil {
+				t.Fatalf("parse %q: %v", test.sql, err)
+			}
+			sel := root.Statements().AllStatement()[0].SelectStatement()
+			so := statementOptionsFor(sel, test.connOpts)
+			if _, err := g.planSelectCascades(context.Background(), sel.Query(), md, true, so); err != nil {
+				t.Fatalf("plan: %v", err)
+			}
+			if len(cap.events) != 1 || cap.events[0].LogQuery != test.want {
+				t.Fatalf("events = %+v, want one with LogQuery=%t", cap.events, test.want)
+			}
+		})
+	}
+}
+
 func TestPlanLogging_NilLogger(t *testing.T) {
 	t.Parallel()
 	// No logger: planning must work and the nil-scope path must be safe.

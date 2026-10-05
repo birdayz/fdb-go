@@ -95,10 +95,26 @@ Never mark a whole workstream complete because one of its subitems passed.
 - [ ] IN semantics: rewrite/partition/cost behavior, covering unions, multi-binding
   product limit, and constant-IN evaluation timing; coordinate shared machinery
   with WS-F without losing either acceptance obligation.
+  Product limit is implemented but parked in `git stash` ("WS-E/F-7b IN-union
+  product limit"). It contains the executor check (Java
+  RecordQueryInUnionPlan.java:151-153, saturating product), relational max 24,
+  both rule arms carrying it, unit tests, and `in_union_max_size.yaml`. It cannot
+  land before F-7b: Go plans `col1 IN (25) ORDER BY id` as InUnion where Java
+  scans (`w8_in25_order_by_id_*`), so the check alone refuses a query that both
+  engines answer today.
 - [ ] Semantics/pins: scalar variadic promoted-child types, Value nullability
   census, target simplification regime, adjacent/decorated literals and lexer
   boundaries, FROM-less metadata, LOG_QUERY. Decimal normalization and structured
   variadic promotion have prior implementations; check current coverage first.
+  Done: LOG_QUERY (statement and connection) sets `PlanGenerationInfo.LogQuery`
+  (`TestPlanLogging_LogQueryFlag`). Literal decoding and the decorated-literal
+  refusals were already implemented and now have a fast-lane pin
+  (`string_literal_tokens.yaml`); lexer comment boundaries are pinned in
+  `parser/parser_test.go` `TestParse_Comments`. COALESCE/GREATEST/LEAST and CAST
+  nullability already follow Java (`ScalarFunctionValue.Type`, `CastValue.Type`).
+  Open: the per-class Value nullability table and its enumerating test (design
+  5.3), the simplification regime (design 5.4, gated on WS-F step 7), and
+  FROM-less metadata.
 
 **Done:** every remaining WS-E design obligation is reconciled to implementation
 and an executable pin; temporal compatibility/repair documentation is shipped;

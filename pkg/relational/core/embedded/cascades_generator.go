@@ -344,6 +344,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	var ls *planLogScope
 	if logMetrics {
 		ls = g.beginPlanLog(ctx, canonicalTextOf(q))
+		ls.setLogQuery(so.logQuery)
 	}
 	defer func() { ls.finish(err) }()
 
@@ -903,6 +904,9 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// DML is never cached; the cache event is always Skip on success.
 	// Log the original whitespace-preserved SQL (see planSelectCascades).
 	ls := g.beginPlanLog(ctx, canonicalTextOf(dml))
+	if ls != nil {
+		ls.setLogQuery(statementOptionsFor(dml, c.Options()).logQuery)
+	}
 	defer func() { ls.finish(err) }()
 
 	if err := c.ensureMetaData(ctx); err != nil {

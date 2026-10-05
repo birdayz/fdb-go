@@ -7,10 +7,10 @@ import (
 )
 
 // statementOptions is a statement's `OPTIONS (...)` clause (Java's
-// statementOptions). LOG QUERY is parsed and, like the LOG_QUERY connection
-// option, not consumed: Go's planning-metrics hook always emits a record.
+// statementOptions).
 type statementOptions struct {
 	noCache   bool // bypass the plan cache: neither read nor populate it
+	logQuery  bool // the planning record is one to log (PlanGenerationInfo.LogQuery)
 	dryRun    bool // DML previews its mutation instead of committing it
 	rightDeep bool // plan with join enumeration restricted to right-deep trees
 	snapshot  bool // execute the statement's reads at snapshot isolation
@@ -30,6 +30,8 @@ func parseStatementOptions(tree antlr.Tree) statementOptions {
 			switch {
 			case opt.NOCACHE() != nil:
 				so.noCache = true
+			case opt.LOG() != nil:
+				so.logQuery = true
 			case opt.DRY() != nil:
 				so.dryRun = true
 			case opt.PLAN() != nil:
@@ -48,14 +50,16 @@ func parseStatementOptions(tree antlr.Tree) statementOptions {
 }
 
 // statementOptionsFor merges a statement's OPTIONS clause with the
-// connection's options, as Java's PlanGenerator merges them (:170): DRY_RUN
-// and ISOLATION_LEVEL_SNAPSHOT set on the connection apply to every statement.
+// connection's options, as Java's PlanGenerator merges them (:170): DRY_RUN,
+// ISOLATION_LEVEL_SNAPSHOT and LOG_QUERY set on the connection apply to every
+// statement.
 // (PLAN_RIGHT_DEEP on the connection reaches the planner through
 // plannerOptionsFrom.)
 func statementOptionsFor(tree antlr.Tree, opts *api.Options) statementOptions {
 	so := parseStatementOptions(tree)
 	so.dryRun = so.dryRun || optBool(opts, api.OptDryRun, false)
 	so.snapshot = so.snapshot || optBool(opts, api.OptIsolationLevelSnapshot, false)
+	so.logQuery = so.logQuery || optBool(opts, api.OptLogQuery, false)
 	return so
 }
 

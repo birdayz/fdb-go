@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**391 scenarios · 3258 query/assertion cases** across 18 feature areas — 2861 supported, 103 unsupported-feature pins, 294 error-path pins.
+**392 scenarios · 3272 query/assertion cases** across 18 feature areas — 2872 supported, 106 unsupported-feature pins, 294 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -44,8 +44,8 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Keys & primary keys | 5 | 133 | 128 | 0 | 5 |
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
-| Other | 42 | 409 | 365 | 6 | 38 |
-| **Total** | **391** | **3258** | **2861** | **103** | **294** |
+| Other | 43 | 423 | 376 | 9 | 38 |
+| **Total** | **392** | **3272** | **2872** | **106** | **294** |
 
 ## Aggregates & GROUP BY
 
@@ -526,5 +526,6 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `set_op_fetch_pushdown` | 2 | 2 | 0 | 0 | set operations push below the fetch |
 | `star_body_columns_are_named` | 7 | 7 | 0 | 0 | A star-projected CTE or derived-table body carries its source columns' NAMES, |
 | `string_comparison` | 5 | 5 | 0 | 0 | String comparison edge cases |
+| `string_literal_tokens` | 14 | 11 | 3 | 0 | string literals are decoded token by token |
 | `temporal_promotion` | 55 | 50 | 1 | 4 | Go extension: DATE and TIMESTAMP values |
 
