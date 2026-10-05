@@ -203,6 +203,28 @@ func TestComputeDistinctRecords_AggregateIndexIsTrue(t *testing.T) {
 	}
 }
 
+// TestCoveringIndexValuePlan_PropertiesLookThroughToTheIndexPlan ports
+// propertiesLookThroughToTheIndexPlan: distinctness and the primary key are
+// the index plan's, and the record is a stored record.
+func TestCoveringIndexValuePlan_PropertiesLookThroughToTheIndexPlan(t *testing.T) {
+	t.Parallel()
+	pk := []values.Value{planPropertiesField("id", 0)}
+	idx := mustPropertiesConstruct(plans.NewRecordQueryIndexPlan("IDX", nil, []string{"T"}, planPropertiesRowType(), false)).
+		WithDistinctRecordsSignal(false).WithCommonPrimaryKey(pk)
+	leaf := mustPropertiesConstruct(values.NewIndexEntryObjectValue(values.CurrentCorrelation(), values.TupleSourceKey, []int{0}, values.NullableLong))
+	plan := mustPropertiesConstruct(plans.NewRecordQueryCoveringIndexValuePlan(idx, "T",
+		values.NewRecordConstructorValue(values.RecordConstructorField{Name: "A", Value: leaf})))
+	if got, want := computeDistinctRecords(plan, plan), computeDistinctRecords(idx, idx); !got || got != want {
+		t.Fatalf("distinct records = %v, the index plan's %v", got, want)
+	}
+	if !computeStoredRecord(plan) {
+		t.Fatal("a covering-value scan yields stored records")
+	}
+	if got, ok := computePrimaryKey(plan).([]values.Value); !ok || len(got) != 1 || got[0] != pk[0] {
+		t.Fatalf("primary key = %v, want the index plan's", got)
+	}
+}
+
 func TestComputeDistinctRecords_DistinctPlanIsTrue(t *testing.T) {
 	t.Parallel()
 	scan := planPropertiesScan("T")

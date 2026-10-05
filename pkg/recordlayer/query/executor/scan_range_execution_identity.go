@@ -400,6 +400,31 @@ func coveringIndexScanRangeFingerprintSalt(
 		plan.GetIndexPlan(), scanType, true, plan.GetCoveringColumns())
 }
 
+// coveringIndexValueScanRangeFingerprintSalt is the covering-Value plan's own
+// kind of salt. It leaves the reader out, as Java's continuation hash does
+// (a pure function of the index plan and record type), and keeps the flowed
+// type, as every scan salt does.
+func coveringIndexValueScanRangeFingerprintSalt(
+	plan *plans.RecordQueryCoveringIndexValuePlan,
+	scanType recordlayer.IndexScanType,
+) (string, error) {
+	index := plan.GetIndexPlan()
+	b := newScanRangeExecutionIdentityBuilder("covering-index-value")
+	b.stringField("index-name", index.GetIndexName())
+	b.stringField("scan-type", string(scanType))
+	b.boolField("reverse", index.IsReverse())
+	b.stringField("record-type", plan.GetRecordTypeName())
+	b.stringsField("primary-key-columns", index.GetPKColumnNames())
+	b.stringsField("record-types", index.GetRecordTypes())
+	if err := b.typesField("physical-key-types", index.GetKeyComponentTypes()); err != nil {
+		return "", err
+	}
+	if err := b.typeField("flowed-type", index.GetFlowedType()); err != nil {
+		return "", err
+	}
+	return b.sum(), nil
+}
+
 // indexScanRangeFingerprintSaltFields is the ONE field list both index-scan
 // salts emit. Sharing it is what makes "byte-identical for an unchanged plan" a
 // property of the code rather than of two copies staying in step.

@@ -141,6 +141,9 @@ func computeDistinctRecords(w physicalPlanExpression, plan plans.RecordQueryPlan
 			return cp.ProducesDistinctRecords()
 		}
 		return false
+	case *plans.RecordQueryCoveringIndexValuePlan:
+		// DistinctRecordsProperty.visitCoveringIndexValuePlan: the index plan's.
+		return plan.(*plans.RecordQueryCoveringIndexValuePlan).ProducesDistinctRecords()
 	case *plans.RecordQueryMapPlan:
 		return computeDistinctRecordsForMap(w)
 	case *plans.RecordQueryFilterPlan,
@@ -268,6 +271,7 @@ func computeStoredRecord(plan plans.RecordQueryPlan) bool {
 		// a field, so the covering type needs its own arm rather than inheriting
 		// one through child traversal.
 		*plans.RecordQueryCoveringIndexPlan,
+		*plans.RecordQueryCoveringIndexValuePlan,
 		// A fetch turns a partial index entry into the stored record. Java's
 		// StoredRecordProperty therefore returns true directly for this node;
 		// delegating to its covering child would describe the input carrier, not
@@ -366,6 +370,12 @@ func computePrimaryKey(plan plans.RecordQueryPlan) any {
 		// that made M5 unsafe (ImplementDistinctUnionRule dropping rows). nil when
 		// the candidate/def supplied no structural PK → the property abstains
 		// (no dedup), the safe under-report.
+		if pk := p.GetCommonPrimaryKeyValues(); pk != nil {
+			return pk
+		}
+		return nil
+	case *plans.RecordQueryCoveringIndexValuePlan:
+		// PrimaryKeyProperty.visitCoveringIndexValuePlan: the index plan's.
 		if pk := p.GetCommonPrimaryKeyValues(); pk != nil {
 			return pk
 		}

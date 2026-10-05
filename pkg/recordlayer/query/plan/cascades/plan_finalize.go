@@ -193,6 +193,12 @@ func forEachNodeLocalValue(plan plans.RecordQueryPlan, emit func(values.Value)) 
 		if idx := p.GetIndexPlan(); idx != nil {
 			forEachNodeLocalValue(idx, emit)
 		}
+	case *plans.RecordQueryCoveringIndexValuePlan:
+		// Same shape; its reader is read leaf by leaf by the covering cursor,
+		// never evaluated as a record constructor.
+		if idx := p.GetIndexPlan(); idx != nil {
+			forEachNodeLocalValue(idx, emit)
+		}
 	case *plans.RecordQueryVectorIndexPlan:
 		forEachValue(p.GetCommonPrimaryKeyValues(), emit)
 		forEachScanComparisonValue(p.GetPrefixComparisons(), emit)

@@ -242,6 +242,9 @@ func executePlanUnwrapped(
 	case *plans.RecordQueryCoveringIndexPlan:
 		return executeCoveringIndexScan(ctx, p, store, evalCtx, continuation, props)
 
+	case *plans.RecordQueryCoveringIndexValuePlan:
+		return executeCoveringIndexValueScan(ctx, p, store, evalCtx, continuation, props)
+
 	case *plans.RecordQueryFetchFromPartialRecordPlan:
 		return executeFetchFromPartialRecord(ctx, p, store, evalCtx, continuation, props)
 

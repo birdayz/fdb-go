@@ -892,6 +892,7 @@ func TestRFC195_LogicalPhysicalArmsArePaired(t *testing.T) {
 		"*plans.RecordQueryMapPlan":                         "physical form of a one-quantifier SelectExpression's row reshape; covered by the filter-shaped SELECT pair",
 		"*plans.RecordQueryIndexPlan":                       "no logical counterpart: index selection is an implementation choice, not a logical operator",
 		"*plans.RecordQueryCoveringIndexPlan":               "no logical counterpart: answering from the index entry instead of the base record is an implementation choice over the same logical access as RecordQueryIndexPlan",
+		"*plans.RecordQueryCoveringIndexValuePlan":          "no logical counterpart: as RecordQueryCoveringIndexPlan, reading the entry through a reader Value",
 		"*plans.RecordQueryVectorIndexPlan":                 "no logical counterpart: a K-NN probe is an access path, not a logical operator",
 		"*plans.RecordQueryAggregateIndexPlan":              "no logical counterpart: an aggregate index is an access path for GroupByExpression, not a logical operator",
 		"*plans.RecordQueryFetchFromPartialRecordPlan":      "no logical counterpart: a fetch is an enforcer the planner inserts, never named in SQL",

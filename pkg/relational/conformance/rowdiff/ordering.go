@@ -182,7 +182,7 @@ func providedOrdering(p plans.RecordQueryPlan) []ordCol {
 		rev := n.IsReverse()
 		return []ordCol{{col: "ID", desc: rev, nullsFirst: !rev}}
 
-	case *plans.RecordQueryIndexPlan, *plans.RecordQueryCoveringIndexPlan:
+	case *plans.RecordQueryIndexPlan, *plans.RecordQueryCoveringIndexPlan, *plans.RecordQueryCoveringIndexValuePlan:
 		// BOTH index shapes, because the access path emits
 		// Fetch(Covering(IndexScan)) for every index-backed access (RFC-220) —
 		// a bare index plan reaches here only from an ordered-scan rule. Matching

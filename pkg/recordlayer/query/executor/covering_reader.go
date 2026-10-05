@@ -6,6 +6,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 )
@@ -137,6 +138,41 @@ func fillCoveredMessage(
 		msg.Set(fd, pv)
 	}
 	return msg, nil
+}
+
+// executeCoveringIndexValueScan runs a covering-Value plan: its index plan's
+// entries read into the plan's record type with the plan's reader
+// (RecordQueryCoveringIndexValuePlan.executePlan).
+func executeCoveringIndexValueScan(
+	_ context.Context,
+	p *plans.RecordQueryCoveringIndexValuePlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	rt := store.GetMetaData().GetRecordType(p.GetRecordTypeName())
+	if rt == nil || rt.Descriptor == nil {
+		return nil, fmt.Errorf("executor: covering-value scan of %q reads unknown record type %q", p.GetIndexName(), p.GetRecordTypeName())
+	}
+	logicalType := PositionalTypeForRecordLayout(rt.Descriptor, store.GetMetaData().IsStoreRecordVersions())
+	reader, err := newCoveringEntryReader(p.GetIndexEntryToRecordValue(), rt.Descriptor, logicalType, mintedRowLayout(p))
+	if err != nil {
+		return nil, fmt.Errorf("executor: covering-value scan of %q: %w", p.GetIndexName(), err)
+	}
+	salt, err := coveringIndexValueScanRangeFingerprintSalt(p, recordlayer.IndexScanByValue)
+	if err != nil {
+		return nil, fmt.Errorf("executor: building scan execution identity for %q: %w", p.GetIndexName(), err)
+	}
+	indexCursor, err := openIndexEntryCursor(p.GetIndexPlan(), salt, nil, store, evalCtx, continuation, props)
+	if err != nil {
+		return nil, err
+	}
+	return applySkipLimit(&coveringIndexCursor{
+		inner:  indexCursor,
+		reader: reader,
+		binder: entryBinder{outer: evalCtx},
+	}, props.Skip, props.ReturnedRowLimit), nil
 }
 
 // coveringIndexCursor maps each scanned entry through the covering plan's

@@ -314,6 +314,22 @@ var specimens = map[string]specimen{
 		allow: map[string]string{"resultValue": resultValueIsMinted},
 	},
 
+	"RecordQueryCoveringIndexValuePlan": {
+		build: func(t *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
+			s := sentinel()
+			idx := mustFinalizeConstruct(plans.NewRecordQueryIndexPlan(
+				"IDX", []*predicates.ComparisonRange{sentinelRange(t, s)},
+				[]string{"T"}, finalizeRowType("T"), false,
+			))
+			return mustFinalizeConstruct(plans.NewRecordQueryCoveringIndexValuePlan(idx, "T", sentinel())),
+				map[string]*values.RecordConstructorValue{"indexPlan": s}
+		},
+		allow: map[string]string{
+			"resultValue": resultValueIsMinted,
+			"reader":      "its entry leaves are read by the covering cursor against the scanned entry, never evaluated as a record constructor, so nothing in it is stamped",
+		},
+	},
+
 	"RecordQueryComparatorPlan": {
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()

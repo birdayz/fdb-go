@@ -69,6 +69,7 @@ var CostedPlanPrototypes = []CostedPlan{
 	(*RecordQueryScanPlan)(nil),
 	(*RecordQueryIndexPlan)(nil),
 	(*RecordQueryCoveringIndexPlan)(nil),
+	(*RecordQueryCoveringIndexValuePlan)(nil),
 	(*RecordQueryVectorIndexPlan)(nil),
 	(*RecordQueryAggregateIndexPlan)(nil),
 	(*RecordQueryValuesPlan)(nil),
@@ -117,6 +118,7 @@ var (
 	_ properties.OrderingHinter = (*RecordQueryScanPlan)(nil)
 	_ properties.OrderingHinter = (*RecordQueryIndexPlan)(nil)
 	_ properties.OrderingHinter = (*RecordQueryCoveringIndexPlan)(nil)
+	_ properties.OrderingHinter = (*RecordQueryCoveringIndexValuePlan)(nil)
 	_ properties.OrderingHinter = (*RecordQueryInMemorySortPlan)(nil)
 	_ properties.OrderingHinter = (*RecordQueryMergeSortUnionPlan)(nil)
 	_ properties.OrderingHinter = (*RecordQueryIntersectionPlan)(nil)
@@ -145,6 +147,7 @@ var (
 	_ properties.RichOrderingHinter = (*RecordQueryScanPlan)(nil)
 	_ properties.RichOrderingHinter = (*RecordQueryIndexPlan)(nil)
 	_ properties.RichOrderingHinter = (*RecordQueryCoveringIndexPlan)(nil)
+	_ properties.RichOrderingHinter = (*RecordQueryCoveringIndexValuePlan)(nil)
 	_ properties.RichOrderingHinter = (*RecordQueryVectorIndexPlan)(nil)
 	_ properties.RichOrderingHinter = (*RecordQueryFetchFromPartialRecordPlan)(nil)
 )

@@ -3207,6 +3207,19 @@ func stablePlanNodeHash(p plans.RecordQueryPlan) uint64 {
 			_, _ = io.WriteString(h, col)
 			_, _ = h.Write([]byte{0})
 		}
+	case *plans.RecordQueryCoveringIndexValuePlan:
+		// Explicit for the same reason as the covering plan's arm; the reader
+		// stands where that arm folds its covered columns.
+		_, _ = io.WriteString(h, t.GetIndexName())
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte{boolByte(t.IsReverse())})
+		stableHashComparisonRanges(h, t.GetScanComparisons())
+		_, _ = io.WriteString(h, t.GetRecordTypeName())
+		_, _ = h.Write([]byte{0})
+		for _, field := range t.GetIndexEntryToRecordValue().Fields {
+			_, _ = io.WriteString(h, field.Name+"="+values.ExplainValue(field.Value))
+			_, _ = h.Write([]byte{0})
+		}
 	case *plans.RecordQueryPredicatesFilterPlan:
 		for _, pr := range t.GetPredicates() {
 			stableHashU64(h, predicates.SemanticHashCode(pr))

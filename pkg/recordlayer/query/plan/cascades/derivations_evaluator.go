@@ -57,6 +57,8 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 	// empty legs yield a zero-column result.
 	case *plans.RecordQueryCoveringIndexPlan:
 		return derivationsForIndexScan(w.GetIndexPlan())
+	case *plans.RecordQueryCoveringIndexValuePlan:
+		return derivationsForIndexScan(w.GetIndexPlan())
 
 	case *scanPlanExpression:
 		if sp, ok := w.plan.(*plans.RecordQueryScanPlan); ok {
