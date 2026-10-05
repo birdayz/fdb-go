@@ -101,6 +101,16 @@ Never mark a whole workstream complete because one of its subitems passed.
   24, and both rule arms carry it. Pins: `TestInUnionValuesSize`,
   `TestExecuteInUnion_MaxSizeBoundsProduct` and `in_union_max_size.yaml`
   (24 runs, 25 and 5 x 5 fail, 4 x 6 runs).
+  The single-element collapse deletion of step (5) was measured on F-7b's tree
+  and reverted. Fifteen corpus plans move. Two of them,
+  `category IN ('food') ORDER BY id` and `status IN ('active') ORDER BY id`,
+  go from a streaming index scan to `InMemorySort(InJoin(...))`. The design
+  measured these as IN-unions, but F-7b item 2 now builds no in-union ordered
+  by an id past the record-type coordinate. Java plans a scan with a filter.
+  A one-value `IN (?)` ordered by the primary key would buffer its whole
+  result. Before the collapse goes, either F-7c's cost model has to choose
+  the streaming plan, or a one-literal in-join has to bind its value FIXED, a
+  Go extension that needs an owner decision.
 - [ ] Semantics/pins: scalar variadic promoted-child types, Value nullability
   census, target simplification regime, adjacent/decorated literals and lexer
   boundaries, FROM-less metadata, LOG_QUERY. Decimal normalization and structured
@@ -212,7 +222,10 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
     are full lane and have not run.
   - The oracle's `w8_in_union`, `w8_in25_order_by_id` and `w8_tie_in_order_by_id`
     explain rows have new Go pins and move to F-7c, whose cost model decides
-    between Go's sorted InJoin and Java's `SCAN | FILTER`.
+    between Go's sorted InJoin and Java's `SCAN | FILTER`. The sorted InJoin
+    buffers the whole result where the in-union streamed, so F-7c and the
+    stress re-measure must check large results (the stress IN-list query
+    returns 46 rows).
   Item 5, the size check, is done (see WS-E "IN semantics"). The record-layer
   oracle row `w8_rl_default_in2_order_by_pk` now fails at size 0 as Java's
   does, but it stays open on item 3's fetch placement. The SQL in-union
