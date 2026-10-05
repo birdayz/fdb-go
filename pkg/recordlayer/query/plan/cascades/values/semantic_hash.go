@@ -145,7 +145,7 @@ func writeSemanticHash(h io.Writer, v Value) {
 	// Windowed/vector family (RFC-176 P1): fold the same discriminator set the
 	// EqualsWithoutChildren arms compare — Metric + EfSearch +
 	// IsReturningVectors for DistanceRowNumberValue, EfSearch +
-	// IsReturningVectors for RowNumberValue / RowNumberHighOrderValue — so
+	// IsReturningVectors for RowNumberValue — so
 	// hash and equality resolve identity at the same granularity.
 	case *DistanceRowNumberValue:
 		// Before this arm existed, the generic "v:"+Name() bucket was FINER
@@ -159,9 +159,6 @@ func writeSemanticHash(h io.Writer, v Value) {
 			t.Metric, ptrHashToken(t.EfSearch), ptrHashToken(t.IsReturningVectors))
 	case *RowNumberValue:
 		_, _ = fmt.Fprintf(h, "rownum:ef=%s:rv=%s",
-			ptrHashToken(t.EfSearch), ptrHashToken(t.IsReturningVectors))
-	case *RowNumberHighOrderValue:
-		_, _ = fmt.Fprintf(h, "rownumho:ef=%s:rv=%s",
 			ptrHashToken(t.EfSearch), ptrHashToken(t.IsReturningVectors))
 	// Value-bearing leaves: the literal MUST be in the hash (their
 	// EqualsWithoutChildren distinguishes different literals).

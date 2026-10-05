@@ -588,12 +588,6 @@ func EqualsWithoutChildren(a, b Value) bool {
 		bv, ok := b.(*RowNumberValue)
 		return ok && ptrEqual(av.EfSearch, bv.EfSearch) &&
 			ptrEqual(av.IsReturningVectors, bv.IsReturningVectors)
-	case *RowNumberHighOrderValue:
-		// RFC-176 §3: same discriminators as RowNumberValue — the curried form
-		// must not unify across configs it bakes into the applied RowNumberValue.
-		bv, ok := b.(*RowNumberHighOrderValue)
-		return ok && ptrEqual(av.EfSearch, bv.EfSearch) &&
-			ptrEqual(av.IsReturningVectors, bv.IsReturningVectors)
 	case *RankValue:
 		// Type-only (RFC-176 §2): no non-child attributes; WindowedValue
 		// class+name identity.
