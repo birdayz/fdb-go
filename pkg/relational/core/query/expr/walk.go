@@ -1575,7 +1575,7 @@ func (r *Resolver) walkNonAggregateWindowedFunction(fc *antlrgen.NonAggregateFun
 
 	// ORDER BY expressions → the row-number argument values (the distance
 	// expression for K-NN). Java requires ascending (or unspecified) sort.
-	var args []values.Value
+	var ordering []values.WindowOrderingPart
 	unsupportedSort := false
 	if obc, ok := specc.OrderByClause().(*antlrgen.OrderByClauseContext); ok && obc != nil {
 		for _, obe := range obc.AllOrderByExpression() {
@@ -1583,14 +1583,17 @@ func (r *Resolver) walkNonAggregateWindowedFunction(fc *antlrgen.NonAggregateFun
 			if !ok {
 				return nil, &UnsupportedExpressionShapeError{Shape: "malformed ORDER BY expression in OVER clause"}
 			}
+			part := values.WindowOrderingPart{}
 			if occ, ok := obec.OrderClause().(*antlrgen.OrderClauseContext); ok && occ != nil && (occ.DESC() != nil || occ.LAST() != nil) {
 				unsupportedSort = true
+				part.Descending, part.NullsLast = occ.DESC() != nil, occ.LAST() != nil
 			}
 			av, err := r.WalkExpression(obec.Expression())
 			if err != nil {
 				return nil, err
 			}
-			args = append(args, av)
+			part.Value = av
+			ordering = append(ordering, part)
 		}
 	}
 
@@ -1619,44 +1622,36 @@ func (r *Resolver) walkNonAggregateWindowedFunction(fc *antlrgen.NonAggregateFun
 	if unsupportedSort {
 		return nil, api.NewError(api.ErrCodeUnsupportedSort, "provided sort specification not supported with window function")
 	}
-	seen := map[string]bool{}
+	builder := values.NewCallSiteOptionsBuilder()
 	for _, o := range options {
-		if seen[o.name] {
-			return nil, api.NewError(api.ErrCodeInvalidArgumentForFunction,
-				"The function is not defined for the given argument types option specified more than once")
+		if err := builder.PutRaw(o.name, o.raw); err != nil {
+			return nil, callSiteOptionError(err)
 		}
-		seen[o.name] = true
 	}
-	var efSearch *int
-	for _, o := range options {
-		n, err := coerceIntegerOption(o.raw)
-		if err != nil {
-			return nil, err
-		}
-		efSearch = &n
+	rowNumber, err := values.EncapsulateRowNumber(values.PositionalCallSite().
+		WithWindow(values.WindowSpecification{Partitioning: partitions, Ordering: ordering}).
+		WithOptions(builder.Build()))
+	if err != nil {
+		return nil, callSiteOptionError(err)
 	}
-
-	return values.NewRowNumberValue(partitions, args, efSearch, nil), nil
+	return rowNumber, nil
 }
 
-// coerceIntegerOption is CallSiteArguments.Option.coerceInteger over a window
-// option's parsed literal.
-func coerceIntegerOption(raw any) (int, error) {
-	var v int64
-	switch n := raw.(type) {
-	case int32:
-		v = int64(n)
-	case int64:
-		v = n
-	default:
-		return 0, api.NewError(api.ErrCodeCannotConvertType,
-			"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable. option value is of an unexpected type")
+// callSiteOptionError renders a call-site option failure as the SQL layer
+// renders its SemanticException: the error code's text, then the detail.
+func callSiteOptionError(err error) error {
+	var option *values.CallSiteOptionError
+	if !errors.As(err, &option) {
+		return err
 	}
-	if v < math.MinInt32 || v > math.MaxInt32 {
-		return 0, api.NewError(api.ErrCodeCannotConvertType,
-			"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable. option value is out of range for the option's type")
+	switch option.Code {
+	case values.CallSiteIncompatibleType:
+		return api.NewError(api.ErrCodeCannotConvertType, incompatibleTypeMessage+" "+option.Detail)
+	case values.CallSiteFunctionUndefined:
+		return api.NewError(api.ErrCodeInvalidArgumentForFunction,
+			"The function is not defined for the given argument types "+option.Detail)
 	}
-	return int(v), nil
+	return err
 }
 
 // primitiveTypeToValueType maps the PrimitiveType terminal to a
