@@ -374,11 +374,14 @@ func TestSimplifyValue_FoldsExtendedScalars(t *testing.T) {
 			float64(3),
 		},
 		{
+			// Only a NULL or BOOLEAN-literal head folds (Java's
+			// EvaluateConstantCoalesceRule after the dereference; a STRING head
+			// keeps the COALESCE).
 			"COALESCE picks first non-null",
-			NewScalarFunctionValue("COALESCE", TypeUnknown,
-				&NullValue{Typ: TypeUnknown},
-				&ConstantValue{Value: "x", Typ: TypeString}),
-			"x",
+			NewScalarFunctionValue("COALESCE", NotNullBoolean,
+				&NullValue{Typ: NullableBoolean},
+				&ConstantValue{Value: true, Typ: NotNullBoolean}),
+			true,
 		},
 		{
 			"CONCAT NULL skip",

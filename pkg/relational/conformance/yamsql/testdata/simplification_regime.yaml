@@ -1,0 +1,94 @@
+# simplification_regime.yaml — constant folding as Java 4.14.2.0 folds
+#
+# RFC-257 WS-E 5.4. Java has no generic constant fold: a predicate folds only
+# through its planner's simplification sets, a COALESCE folds only in a
+# predicate and only over a NULL or BOOLEAN-literal head, IS [NOT] NULL over a
+# NOT NULL value is decided without evaluating it, and a result value never
+# folds a COALESCE. Each row is the WS-E oracle's measured Java answer; Java's
+# XXXXX ArithmeticException is Go's 22012 (the declared unmapped-exception
+# class).
+name: simplification_regime
+schema_template: |
+  CREATE TABLE T (id BIGINT, s STRING, n BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO T VALUES (1, 'abc', NULL), (2, 'a%b', 5), (3, 'xyz', 7)
+tests:
+  # null_strict_div0_cast_null_is_null_where: the null-strict collapse folds
+  # the conjunct to TRUE before the division is evaluated.
+  - query: SELECT id FROM T WHERE (1 / 0) + CAST(NULL AS INTEGER) IS NULL ORDER BY id
+    rows: [[1], [2], [3]]
+  # conj_true_where: the folded TRUE drops by identity beside n > 0.
+  - query: SELECT id FROM T WHERE n > 0 AND (1 / 0) + CAST(NULL AS INTEGER) IS NULL ORDER BY id
+    rows: [[2], [3]]
+  # conj_false_where: IS NULL over a NOT NULL COALESCE annuls the conjunction.
+  - query: SELECT id FROM T WHERE n > 0 AND COALESCE(1 / 0, 5) IS NULL ORDER BY id
+    rows: []
+  # is_not_null_coalesce_div0_where: decided by the NOT NULL type, unevaluated.
+  - query: SELECT id FROM T WHERE COALESCE(1 / 0, 5) IS NOT NULL ORDER BY id
+    rows: [[1], [2], [3]]
+  # is_null_cast_string_to_bigint_where: a NOT NULL CAST is never NULL.
+  - query: SELECT id FROM T WHERE CAST('x' AS BIGINT) IS NULL ORDER BY id
+    rows: []
+  # is_null_cast_div0_where: a nullable value under IS NULL is evaluated.
+  - query: SELECT id FROM T WHERE CAST(1 / 0 AS BIGINT) IS NULL ORDER BY id
+    error_code: "22012"
+  # is_null_case_div0_condition_where, is_null_greatest_div0_where.
+  - query: SELECT id FROM T WHERE CASE WHEN 1 / 0 = 1 THEN 1 ELSE 2 END IS NULL ORDER BY id
+    error_code: "22012"
+  - query: SELECT id FROM T WHERE GREATEST(1, 1 / 0) IS NULL ORDER BY id
+    error_code: "22012"
+  # is_null_case_literals_where, is_null_case_both_arithmetic_where.
+  - query: SELECT id FROM T WHERE CASE WHEN id > 0 THEN 1 ELSE 2 END IS NULL ORDER BY id
+    rows: []
+  - query: SELECT id FROM T WHERE CASE WHEN id > 0 THEN 1 + 0 ELSE 1 / 0 END IS NULL ORDER BY id
+    rows: []
+  # COALESCE heads in a WHERE: a TRUE, NULL or CAST(NULL) head folds.
+  - query: SELECT id FROM T WHERE COALESCE(TRUE, 1 / 0 = 1) ORDER BY id
+    rows: [[1], [2], [3]]
+  - query: SELECT id FROM T WHERE COALESCE(NULL, TRUE) ORDER BY id
+    rows: [[1], [2], [3]]
+  - query: SELECT id FROM T WHERE COALESCE(CAST(NULL AS BOOLEAN), TRUE) ORDER BY id
+    rows: [[1], [2], [3]]
+  - query: SELECT id FROM T WHERE COALESCE(NULL, TRUE, 1 / 0 = 1) ORDER BY id
+    rows: [[1], [2], [3]]
+  - query: SELECT id FROM T WHERE COALESCE(CAST(NULL AS BOOLEAN), TRUE, 1 / 0 = 1) ORDER BY id
+    rows: [[1], [2], [3]]
+  # coalesce_not_cast_null_head_where (Java: rows 1, 2, 3, NOT over a typed NULL
+  # collapsing to NULL) is not here: Go walks a NOT over a boolean value as a
+  # predicate value the simplifier does not enter, so it still raises 22012
+  # (TODO.md, WS-E 5.4(e)).
+  # A NOT, AND, OR, arithmetic or INT-literal head is not foldable.
+  - query: SELECT id FROM T WHERE COALESCE(NOT FALSE, 1 / 0 = 1) ORDER BY id
+    error_code: "22012"
+  - query: SELECT id FROM T WHERE COALESCE(TRUE AND TRUE, 1 / 0 = 1) ORDER BY id
+    error_code: "22012"
+  - query: SELECT id FROM T WHERE COALESCE(FALSE OR TRUE, 1 / 0 = 1) ORDER BY id
+    error_code: "22012"
+  - query: SELECT id FROM T WHERE COALESCE(1 + 1, 1 / 0) = 2 ORDER BY id
+    error_code: "22012"
+  - query: SELECT id FROM T WHERE COALESCE(1, 1 / 0) = 1 ORDER BY id
+    error_code: "22012"
+  # fold_div0_or_not_false_where: nothing evaluated folds.
+  - query: SELECT id FROM T WHERE (1 / 0 = 1) OR ((NOT FALSE) = TRUE) ORDER BY id
+    error_code: "22012"
+  # In a SELECT nothing folds a COALESCE: every argument is evaluated.
+  - query: SELECT COALESCE(TRUE, 1 / 0 = 1) FROM T WHERE id = 1
+    error_code: "22012"
+  - query: SELECT COALESCE(NOT FALSE, 1 / 0 = 1) FROM T WHERE id = 1
+    error_code: "22012"
+  - query: SELECT COALESCE(1, 1 / 0) FROM T WHERE id = 1
+    error_code: "22012"
+  # The null-strict collapse in a projection.
+  - query: SELECT (1 / 0) + CAST(NULL AS INTEGER) FROM T WHERE id = 1
+    rows: [[null]]
+  - query: SELECT CASE WHEN id > 0 THEN 1 ELSE 1 / 0 END FROM T WHERE id = 1
+    rows: [[1]]
+  - query: SELECT NOT FALSE FROM T WHERE id = 1
+    rows: [[true]]
+  - query: SELECT TRUE AND TRUE FROM T WHERE id = 1
+    rows: [[true]]
+  - query: SELECT NOT (n > 1) FROM T WHERE id = 2
+    rows: [[false]]
+  # constant_expression_comparand_where: a constant expression comparand.
+  - query: SELECT id FROM T WHERE id = 1 + 2
+    rows: [[3]]

@@ -362,7 +362,7 @@ func simplifyCoalesce(v Value) Value {
 			onlyNulls = false
 			removeRedundantNulls = true
 			seenOnlyConstantsSoFar = false
-		} else if _, isNull := child.(*NullValue); isNull {
+		} else if isCoalesceNullHead(child) {
 			if removeRedundantNulls {
 				yieldsNew = true
 				continue
@@ -501,21 +501,42 @@ func carrierConvertingType(t Type) bool {
 	}
 }
 
-// cannotFoldCoalesce mirrors Java's EvaluateConstantCoalesceRule.cannotFold:
-// a value CAN be folded if it's NullValue, or a non-nullable constant
-// (LiteralValue with isNotNullable). In Go terms: NullValue, ConstantValue
-// with non-nil payload, or BooleanValue with non-nil *bool.
+// cannotFoldCoalesce mirrors Java's EvaluateConstantCoalesceRule.cannotFold
+// after the PREDICATE set's DereferenceConstantObjectValueRule: a head CAN be
+// folded if it is a NULL or a NOT NULL literal, and Java's SQL literals are
+// constant objects that the dereference turns into a literal only when they
+// are BOOLEAN (a NULL one into a NullValue). So an INT, STRING or any other
+// non-BOOLEAN constant head, and every composite head, is not foldable:
+// `COALESCE(1, 1 / 0) = 1` evaluates the division, as Java's does (RFC-257
+// WS-E 5.4(d)). Go's SQL literals and bound values are constants already, so
+// the dereference is the identity for them.
 func cannotFoldCoalesce(v Value) bool {
-	if _, isNull := v.(*NullValue); isNull {
+	if isCoalesceNullHead(v) {
 		return false
 	}
-	if c, isConst := v.(*ConstantValue); isConst && c.Value != nil {
-		return false
-	}
-	if bv, isBool := v.(*BooleanValue); isBool && bv.Value != nil {
+	switch c := v.(type) {
+	case *ConstantValue:
+		_, isBoolean := c.Value.(bool)
+		return !isBoolean
+	case *BooleanValue:
 		return false
 	}
 	return true
+}
+
+// isCoalesceNullHead reports a NULL head, which the COALESCE rule skips: a
+// NullValue, or a constant whose value is NULL (Java's NULL constant object,
+// which the dereference turns into a NullValue).
+func isCoalesceNullHead(v Value) bool {
+	switch c := v.(type) {
+	case *NullValue:
+		return true
+	case *ConstantValue:
+		return c.Value == nil
+	case *BooleanValue:
+		return c.Value == nil
+	}
+	return false
 }
 
 // ValueSimplifyContext carries context for context-aware value simplification.

@@ -124,11 +124,23 @@ Never mark a whole workstream complete because one of its subitems passed.
     - The sparse-index DDL path now folds its stored predicate itself, which
       keeps the enum and UUID refusal messages.
     - The EXISTS bound-query site keeps its fold. Without it
-      `foldable_colliding_answers` (`COALESCE(1, ST."C") = 1` over a
+      `foldable_colliding_answers` (`COALESCE(TRUE, ST."C" = 1)` over a
       shadowing inner ST) would decline as scope-ambiguous where Java
       answers. It goes with the mint-per-leg inner-shadow fix.
+  - (d): Java's COALESCE rule. Only a NULL head (NullValue, a nil constant)
+    or a BOOLEAN literal head folds; an INT/STRING literal head stays, so
+    `COALESCE(1, 1/0) = 1` in a WHERE raises 22012 as in Java.
+    `simplification_regime.yaml` holds the 30 Java-measured rows. With an INT
+    head a colliding EXISTS reference no longer folds away, so
+    `case1_notexists_colliding_foldable` and `int_head_colliding_declines`
+    (sqldriver, full lane, not run) now decline as scope-ambiguous until the
+    mint-per-leg fix.
+    - Known gap, part of (e): `NOT CAST(NULL AS BOOLEAN)` inside a predicate
+      value is not folded. Go keeps `NOT x` as a predicate value, which the
+      simplifier does not enter (`coalesce_not_cast_null_head_where` is
+      excluded from the yaml with that note).
   - Still open: (c) ConstantFoldingRuleSet over the whole conjunction and
-    `rejectsNull` as `foldPredicateAtNull`; (d) Java's COALESCE rule; (e) the
+    `rejectsNull` as `foldPredicateAtNull`; (e) the
     NULL mapping; (f) `EffectiveConstant`; the deletion of the Go-only
     driver and the `EvaluateConstant` arms of `SimplifyValue`; (g) the
     REWRITING cost model rungs; the constant-evaluation census; and (j) the
@@ -231,7 +243,8 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   scan Java picks under PREFER_INDEX, so it is reassigned to F-7c, like
   `w9_distinct_explain`. `w13_display_scan_explain` (a dotted escaped table gets
   no PK scan) needs RFC-238 §7c: storage names in the scan leaf and DML targets,
-  a cascades matching change awaiting its ACK. Reassigned to that.
+  a cascades matching change. The owner ACKed §7c on 2026-10-05, so it is
+  ready to implement. Reassigned to that.
   F-7b (design 4.3), the IN-list plans. Item 2 is done.
   - An index plan's rich ordering marks the primary-key keys it reaches only past
     the record-type coordinate (`WithPastRecordTypeHorizon`).
@@ -391,19 +404,37 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 - [x] WS-G implementation: Java aggregate continuation state, legacy reads,
   grouping-output simplification/ARRAY_AGG cap/resume and plan-schema tags have
   committed pins. Whole-upgrade acceptance remains open.
-- [ ] **SUM-index decision:** whether Go-created metadata may add a
-  COUNT(col) companion (`__NONNULL_COUNT`) for nullable SUM indexes. Current
-  fail-closed scan fallback is correct but expensive. No silent metadata change.
-- [ ] **Lucene decision:** queue/heartbeat/quota/spell-check/state contracts
-  presuppose a backend Go does not implement. Obtain a scope ruling, not a fake
-  completed checkbox.
-- [ ] **Catalog/keyspace migration decision:** Go's SQL driver still uses the
-  string-key catalog/schema layout rather than Java's typed/directory-layer
-  layout. Decide compatibility rollout and migrate existing data safely. Copy
-  stored MetaData bytes verbatim; do not rebuild old templates from DDL. Preserve
-  record-type keys, union numbers and index versions; literal-carrier changes
-  require the versioned carry/rebind path. This predates the version upgrade but
-  must remain visible (`TODO_OLD.md`, “Go SQL driver stores the relational catalog…”).
+- [ ] **SUM index: DECIDED 2026-10-05, exactly as in Java.** No companion
+  index. A SUM index answers alone, as Java's does: a group whose last non-NULL
+  value is deleted or NULLed reads the residue 0, and a group that was all-NULL
+  from the start has no SUM key and is dropped (Java 4.12.11.0, measured by
+  `conformance/probe_zerokey_allnull_java_test.go`: `[[10 0] [11 0] [13 7]]`;
+  re-measure on 4.14.2.0). Delete the `NeedsNonNullCompanion` decline from
+  5459c90a2, the DIVERGENCES.md "SUM residue" entry and the CHANGELOG line, and
+  move `aggregate_index_sum_null_residue.yaml` and the companion tests to Java's
+  answers. This also restores index reach for the 1M stress SUM queries
+  (8–21 s against 6 ms–0.7 s, `TODO_OLD.md` section 10).
+- [ ] **Lucene: DECIDED 2026-10-05, in scope, in process.** Java runs Apache
+  Lucene 8.11.1 inside the JVM (`fdb-record-layer-lucene`, 28.7k lines of main
+  Java, 7 protos). It stores the segment files in FDB through `FDBDirectory`,
+  with `LuceneOptimizedCodec` over Lucene87 parts (Lucene84 postings, Lucene80
+  doc values, Lucene86 points and segment info, Lucene50 compound). Java's
+  relational layer does not reach it. The engine is not chosen yet:
+  - Zinc (now `vcaesar/riot` + `ice` segments), bluge and bleve write their
+    own segment formats. Java could not read a Go-written Lucene index, and Go
+    could not maintain a Java-written one, which breaks the wire hard line.
+  - `geange/lucene-go` (Apache-2.0, Lucene 8.11.2 base, experimental) has
+    ports of the same Lucene87 codec parts plus BlockTree and FST. It is a
+    candidate reference or vendored start for a format-compatible port.
+  Deferred by the owner on 2026-10-05; the engine choice waits with it.
+- [ ] **Catalog/keyspace: DECIDED 2026-10-05, exactly Java's layout, no
+  compatibility with the old Go layout.** Go's SQL driver uses the string-key
+  catalog/schema layout `(__SYS, __SYS, CATALOG)` / `(dbPath, schemaName)`.
+  Replace it with Java's `RelationalKeyspaceProvider` layout: the typed system
+  path `(NULL, NULL, int64(0))` and directory-layer domain -> database ->
+  schema levels. No migration from the Go layout: data written by an earlier Go
+  build is recreated. A template created through Go must load in Java and the
+  reverse (`TODO_OLD.md`, “Go SQL driver stores the relational catalog…”).
 - [ ] Reconcile living compatibility claims/CHANGELOG, run `just test-full` and
   required interop/performance checks, then final migration review and PR CI.
   Fix all Medium-or-higher findings before declaring completion.

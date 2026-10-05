@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=397 queries=3004 dml=177 non_query=127 plan_errors=324 unexpected_errors=4
+# files=398 queries=3034 dml=177 non_query=127 plan_errors=324 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -17602,6 +17602,170 @@ shape:   RecordQueryMapPlan
 shape:     RecordQueryCoveringIndexPlan
 shape:   RecordQueryMapPlan
 shape:     RecordQueryCoveringIndexPlan
+=== simplification_regime.yaml#0
+sql:   SELECT id FROM T WHERE (1 / 0) + CAST(NULL AS INTEGER) IS NULL ORDER BY id
+plan:  Map(Scan(T), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== simplification_regime.yaml#1
+sql:   SELECT id FROM T WHERE n > 0 AND (1 / 0) + CAST(NULL AS INTEGER) IS NULL ORDER BY id
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== simplification_regime.yaml#2
+sql:   SELECT id FROM T WHERE n > 0 AND COALESCE(1 / 0, 5) IS NULL ORDER BY id
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== simplification_regime.yaml#3
+sql:   SELECT id FROM T WHERE COALESCE(1 / 0, 5) IS NOT NULL ORDER BY id
+plan:  Map(Scan(T), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== simplification_regime.yaml#4
+sql:   SELECT id FROM T WHERE CAST('x' AS BIGINT) IS NULL ORDER BY id
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== simplification_regime.yaml#5 expect-error=22012
+sql:   SELECT id FROM T WHERE CAST(1 / 0 AS BIGINT) IS NULL ORDER BY id
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== simplification_regime.yaml#6 expect-error=22012
+sql:   SELECT id FROM T WHERE CASE WHEN 1 / 0 = 1 THEN 1 ELSE 2 END IS NULL ORDER BY id
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== simplification_regime.yaml#7 expect-error=22012
+sql:   SELECT id FROM T WHERE GREATEST(1, 1 / 0) IS NULL ORDER BY id
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== simplification_regime.yaml#8
+sql:   SELECT id FROM T WHERE CASE WHEN id > 0 THEN 1 ELSE 2 END IS NULL ORDER BY id
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== simplification_regime.yaml#9
+sql:   SELECT id FROM T WHERE CASE WHEN id > 0 THEN 1 + 0 ELSE 1 / 0 END IS NULL ORDER BY id
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== simplification_regime.yaml#10
+sql:   SELECT id FROM T WHERE COALESCE(TRUE, 1 / 0 = 1) ORDER BY id
+plan:  Map(Scan(T), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== simplification_regime.yaml#11
+sql:   SELECT id FROM T WHERE COALESCE(NULL, TRUE) ORDER BY id
+plan:  Map(Scan(T), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== simplification_regime.yaml#12
+sql:   SELECT id FROM T WHERE COALESCE(CAST(NULL AS BOOLEAN), TRUE) ORDER BY id
+plan:  Map(Scan(T), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== simplification_regime.yaml#13
+sql:   SELECT id FROM T WHERE COALESCE(NULL, TRUE, 1 / 0 = 1) ORDER BY id
+plan:  Map(Scan(T), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== simplification_regime.yaml#14
+sql:   SELECT id FROM T WHERE COALESCE(CAST(NULL AS BOOLEAN), TRUE, 1 / 0 = 1) ORDER BY id
+plan:  Map(Scan(T), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== simplification_regime.yaml#15 expect-error=22012
+sql:   SELECT id FROM T WHERE COALESCE(NOT FALSE, 1 / 0 = 1) ORDER BY id
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== simplification_regime.yaml#16 expect-error=22012
+sql:   SELECT id FROM T WHERE COALESCE(TRUE AND TRUE, 1 / 0 = 1) ORDER BY id
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== simplification_regime.yaml#17 expect-error=22012
+sql:   SELECT id FROM T WHERE COALESCE(FALSE OR TRUE, 1 / 0 = 1) ORDER BY id
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== simplification_regime.yaml#18 expect-error=22012
+sql:   SELECT id FROM T WHERE COALESCE(1 + 1, 1 / 0) = 2 ORDER BY id
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== simplification_regime.yaml#19 expect-error=22012
+sql:   SELECT id FROM T WHERE COALESCE(1, 1 / 0) = 1 ORDER BY id
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== simplification_regime.yaml#20 expect-error=22012
+sql:   SELECT id FROM T WHERE (1 / 0 = 1) OR ((NOT FALSE) = TRUE) ORDER BY id
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== simplification_regime.yaml#21 expect-error=22012
+sql:   SELECT COALESCE(TRUE, 1 / 0 = 1) FROM T WHERE id = 1
+plan:  Map(Scan(T, [=]), {_0: COALESCE(TRUE, predicate)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== simplification_regime.yaml#22 expect-error=22012
+sql:   SELECT COALESCE(NOT FALSE, 1 / 0 = 1) FROM T WHERE id = 1
+plan:  Map(Scan(T, [=]), {_0: COALESCE(predicate, predicate)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== simplification_regime.yaml#23 expect-error=22012
+sql:   SELECT COALESCE(1, 1 / 0) FROM T WHERE id = 1
+plan:  Map(Scan(T, [=]), {_0: COALESCE(1, (1 / 0))})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== simplification_regime.yaml#24
+sql:   SELECT (1 / 0) + CAST(NULL AS INTEGER) FROM T WHERE id = 1
+plan:  Map(Scan(T, [=]), {_0: NULL})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== simplification_regime.yaml#25
+sql:   SELECT CASE WHEN id > 0 THEN 1 ELSE 1 / 0 END FROM T WHERE id = 1
+plan:  Map(Scan(T, [=]), {_0: CASE(WHEN(predicate, TRUE), [1, (1 / 0)])})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== simplification_regime.yaml#26
+sql:   SELECT NOT FALSE FROM T WHERE id = 1
+plan:  Map(Scan(T, [=]), {_0: predicate})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== simplification_regime.yaml#27
+sql:   SELECT TRUE AND TRUE FROM T WHERE id = 1
+plan:  Map(Scan(T, [=]), {_0: predicate})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== simplification_regime.yaml#28
+sql:   SELECT NOT (n > 1) FROM T WHERE id = 2
+plan:  Map(Scan(T, [=]), {_0: predicate})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== simplification_regime.yaml#29
+sql:   SELECT id FROM T WHERE id = 1 + 2
+plan:  Map(Scan(T, [=]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
 === star_body_columns_are_named.yaml#0
 sql:   WITH c AS (SELECT * FROM sb) SELECT id, amt FROM c WHERE grp = 10 ORDER BY id
 plan:  Map(PredicatesFilter(Scan(SB), [1 preds]), {ID: _current.ID#0, AMT: _current.AMT#2})

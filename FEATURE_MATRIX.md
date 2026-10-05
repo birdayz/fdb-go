@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**397 scenarios · 3308 query/assertion cases** across 18 feature areas — 2906 supported, 106 unsupported-feature pins, 296 error-path pins.
+**398 scenarios · 3338 query/assertion cases** across 18 feature areas — 2924 supported, 106 unsupported-feature pins, 308 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -44,8 +44,8 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Keys & primary keys | 5 | 133 | 128 | 0 | 5 |
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
-| Other | 44 | 429 | 382 | 9 | 38 |
-| **Total** | **397** | **3308** | **2906** | **106** | **296** |
+| Other | 45 | 459 | 400 | 9 | 50 |
+| **Total** | **398** | **3338** | **2924** | **106** | **308** |
 
 ## Aggregates & GROUP BY
 
@@ -528,6 +528,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `select_no_from` | 6 | 6 | 0 | 0 | FROM-less SELECT uses Java 4.14.2.0's one-row source. |
 | `select_star_single_table` | 4 | 4 | 0 | 0 | SELECT * from single table |
 | `set_op_fetch_pushdown` | 2 | 2 | 0 | 0 | set operations push below the fetch |
+| `simplification_regime` | 30 | 18 | 0 | 12 | constant folding as Java 4.14.2.0 folds |
 | `star_body_columns_are_named` | 7 | 7 | 0 | 0 | A star-projected CTE or derived-table body carries its source columns' NAMES, |
 | `string_comparison` | 5 | 5 | 0 | 0 | String comparison edge cases |
 | `string_literal_tokens` | 14 | 11 | 3 | 0 | string literals are decoded token by token |

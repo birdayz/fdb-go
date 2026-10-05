@@ -257,20 +257,33 @@ func TestSimplifyValue_CoalesceAllNulls(t *testing.T) {
 	}
 }
 
+// TestSimplifyValue_CoalesceFirstNonNullConstant pins Java's
+// EvaluateConstantCoalesceRule in the predicate set: leading NULL heads are
+// skipped and the first BOOLEAN literal replaces the COALESCE; an INT literal
+// head is a constant object Java does not dereference, so the COALESCE stays
+// and evaluates every argument (RFC-257 WS-E 5.4(d)).
 func TestSimplifyValue_CoalesceFirstNonNullConstant(t *testing.T) {
 	t.Parallel()
-	v := NewScalarFunctionValue("COALESCE", NullableLong,
-		NewNullValue(NullableLong),
-		&ConstantValue{Value: int64(42), Typ: NullableLong},
-		&fieldValue{Field: "x", Typ: NullableLong},
+	v := NewScalarFunctionValue("COALESCE", NullableBoolean,
+		NewNullValue(NullableBoolean),
+		&ConstantValue{Value: true, Typ: NotNullBoolean},
+		&fieldValue{Field: "x", Typ: NullableBoolean},
 	)
 	got := SimplifyPredicateValue(v)
 	c, ok := got.(*ConstantValue)
 	if !ok {
-		t.Fatalf("COALESCE(NULL, 42, x) = %T, want ConstantValue", got)
+		t.Fatalf("COALESCE(NULL, TRUE, x) = %T, want ConstantValue", got)
 	}
-	if c.Value != int64(42) {
-		t.Fatalf("COALESCE(NULL, 42, x) = %v, want 42", c.Value)
+	if c.Value != true {
+		t.Fatalf("COALESCE(NULL, TRUE, x) = %v, want true", c.Value)
+	}
+	intHead := NewScalarFunctionValue("COALESCE", NullableLong,
+		NewNullValue(NullableLong),
+		&ConstantValue{Value: int64(42), Typ: NullableLong},
+		&fieldValue{Field: "x", Typ: NullableLong},
+	)
+	if got := SimplifyPredicateValue(intHead); got != Value(intHead) {
+		t.Fatalf("COALESCE(NULL, 42, x) = %v, want it unchanged (an INT head does not fold)", got)
 	}
 }
 
@@ -301,21 +314,18 @@ func TestSimplifyValue_CoalesceNoChangeNeeded(t *testing.T) {
 	}
 }
 
-// TestCannotFoldCoalesce_BooleanNil verifies that cannotFoldCoalesce
-// correctly classifies BooleanValue(nil) as non-foldable.
-// BooleanValue{nil} represents SQL UNKNOWN — nullable, not the same
-// as a non-null boolean literal. This is the cannotFoldCoalesce fix:
-// without it, BooleanValue{nil} would be treated as a foldable
-// constant and COALESCE(NULL_bool, x) would incorrectly skip the
-// NULL_bool.
+// TestCannotFoldCoalesce_BooleanNil classifies COALESCE heads as Java's rule
+// does after the dereference. A NULL constant, BOOLEAN or not, is a NULL head
+// (Java dereferences a NULL constant object to a NullValue): it is skipped,
+// never returned as the COALESCE's value. A BOOLEAN literal folds; a constant
+// of any other type does not (RFC-257 WS-E 5.4(d)).
 func TestCannotFoldCoalesce_BooleanNil(t *testing.T) {
 	t.Parallel()
 
-	// BooleanValue(nil) = SQL UNKNOWN: cannotFoldCoalesce must return
-	// true (cannot fold — it's nullable/unknown).
+	// BooleanValue(nil) = SQL UNKNOWN: a NULL head, skipped, never the result.
 	boolNil := &BooleanValue{Value: nil}
-	if !cannotFoldCoalesce(boolNil) {
-		t.Error("cannotFoldCoalesce(BooleanValue{nil}) = false, want true")
+	if cannotFoldCoalesce(boolNil) || !isCoalesceNullHead(boolNil) {
+		t.Error("BooleanValue{nil} must be a NULL head")
 	}
 
 	// BooleanValue with non-nil *bool = concrete TRUE/FALSE: can fold.
@@ -335,18 +345,19 @@ func TestCannotFoldCoalesce_BooleanNil(t *testing.T) {
 		t.Error("cannotFoldCoalesce(NullValue) = true, want false")
 	}
 
-	// ConstantValue with non-nil payload is foldable.
+	// A non-BOOLEAN constant does not fold; a BOOLEAN one does.
 	cv := &ConstantValue{Value: int64(42), Typ: NullableLong}
-	if cannotFoldCoalesce(cv) {
-		t.Error("cannotFoldCoalesce(ConstantValue{42}) = true, want false")
+	if !cannotFoldCoalesce(cv) {
+		t.Error("cannotFoldCoalesce(ConstantValue{42}) = false, want true")
+	}
+	if cannotFoldCoalesce(&ConstantValue{Value: true, Typ: NotNullBoolean}) {
+		t.Error("cannotFoldCoalesce(ConstantValue{true}) = true, want false")
 	}
 
-	// ConstantValue with nil payload is NOT foldable (typed NULL is
-	// represented as ConstantValue{Value: nil}, which is not guaranteed
-	// non-null).
+	// A NULL constant is a NULL head.
 	cvNil := &ConstantValue{Value: nil, Typ: NullableLong}
-	if !cannotFoldCoalesce(cvNil) {
-		t.Error("cannotFoldCoalesce(ConstantValue{nil}) = false, want true")
+	if cannotFoldCoalesce(cvNil) || !isCoalesceNullHead(cvNil) {
+		t.Error("ConstantValue{nil} must be a NULL head")
 	}
 
 	// FieldValue is non-constant — cannot fold.
@@ -532,14 +543,14 @@ func TestSimplifyValue_FieldOverRecordConstructor_NotFound(t *testing.T) {
 // there, so COALESCE(42, x) must keep x (which may raise).
 func TestSimplifyValue_CoalesceNotFoldedOutsidePredicates(t *testing.T) {
 	t.Parallel()
-	v := NewScalarFunctionValue("COALESCE", NullableLong,
-		&ConstantValue{Value: int64(42), Typ: NotNullLong},
-		&fieldValue{Field: "x", Typ: NullableLong},
+	v := NewScalarFunctionValue("COALESCE", NullableBoolean,
+		&ConstantValue{Value: true, Typ: NotNullBoolean},
+		&fieldValue{Field: "x", Typ: NullableBoolean},
 	)
 	if got := SimplifyValue(v); got != Value(v) {
-		t.Fatalf("SimplifyValue(COALESCE(42, x)) = %v, want it unchanged", got)
+		t.Fatalf("SimplifyValue(COALESCE(TRUE, x)) = %v, want it unchanged", got)
 	}
 	if _, ok := SimplifyPredicateValue(v).(*ConstantValue); !ok {
-		t.Fatal("SimplifyPredicateValue(COALESCE(42, x)) did not fold")
+		t.Fatal("SimplifyPredicateValue(COALESCE(TRUE, x)) did not fold")
 	}
 }

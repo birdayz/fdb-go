@@ -96,6 +96,7 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
 - `col IN (…) ORDER BY col` runs as Java's sorted IN-join with no sort, ascending, descending or followed by the rows' own order in either direction; over a non-covering index the IN-join runs under the fetch where Java merges an IN-union (DIVERGENCES.md).
 - A WHERE conjunct on a LEFT JOIN's preserved side narrows that side's scan (a key equality is a point lookup), a conjunct rejecting the null-extended row turns the join inner, and an EXISTS over the null-supplied side runs inside its join, as in Java 4.14.2.0.
 - A version index is never a covering scan, as in Java 4.14.2.0: `ORDER BY` a column with ties returns them in primary-key order through the plain index.
+- A `COALESCE` folds while planning only when its first argument is NULL or a BOOLEAN literal, as in Java 4.14.2.0, so its other arguments are evaluated as written: `WHERE COALESCE(1, 1/0) = 1` raises 22012 (it answered every row).
 
 ## [v0.1.0] - 2026-08-26
 

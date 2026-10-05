@@ -137,15 +137,16 @@ func TestBoundScopeAmbiguous(t *testing.T) {
 	t.Run("foldable_ref_eliminated_before_check", func(t *testing.T) {
 		t.Parallel()
 		// The call-site composition: a colliding ref that constant folding
-		// eliminates must not decline — COALESCE(1, ST.C) never reads ST.
+		// eliminates must not decline — COALESCE(TRUE, ST.C) never reads ST.
 		// The decline site checks SimplifyPredicateValues(pred); this pins
-		// that composition.
+		// that composition. Only a NULL or BOOLEAN-literal head folds, as in
+		// Java: COALESCE(1, ST.C) keeps its reference (RFC-257 WS-E 5.4(d)).
 		foldable := predicates.NewComparisonPredicate(
-			values.NewScalarFunctionValue("COALESCE", values.UnknownType,
-				values.LiteralValue(int64(1)),
+			values.NewScalarFunctionValue("COALESCE", values.NullableBoolean,
+				values.LiteralValue(true),
 				qualRecTestField(t, "ST", "C"),
 			),
-			predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(1))},
+			predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(true)},
 		)
 		outer := []semantic.ScopeSource{src("ST", "ST")}
 		if got := boundScopeAmbiguous(predicates.SimplifyPredicateValues(foldable), inner("ST", "OTHER"), outer); got != "" {

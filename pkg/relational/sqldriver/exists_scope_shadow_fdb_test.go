@@ -401,21 +401,30 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 		`SELECT MA."ID" FROM MA, OT WHERE NOT EXISTS (SELECT 1 FROM ST, MA AS "M2" WHERE OT."K" < 0 AND EXISTS (SELECT 1 FROM OT AS "OX" WHERE OX."K" > 0))`,
 		"outer-only conjunct")
 
-	// The colliding + foldable variant — the door the guard's fold
-	// admission opened: COALESCE(1, MA.C) folds constant (never reads the
-	// colliding MA), the shape passes the ambiguity arm, and Case 1 must
-	// then place the outer-only conjunct correctly. Java live: {11,12}.
+	// The colliding variant with an INT head. COALESCE(1, MA.C) used to fold
+	// and erase the colliding MA, and the shape reached the guard. Java folds
+	// no INT head (RFC-257 WS-E 5.4(d)), and Go no longer does either, so the
+	// shape declines on the ambiguity arm. Java live: {11,12}, through the
+	// inner shadow, recorded for the mint-per-leg flip.
 	wantDecline("case1_notexists_colliding_foldable",
 		`SELECT MA."ID" FROM MA, OT WHERE NOT EXISTS (SELECT 1 FROM ST, MA WHERE COALESCE(1, MA."C") = 1 AND OT."K" < 0 AND EXISTS (SELECT 1 FROM OT AS "OX" WHERE OX."K" > 0))`,
-		"outer-only conjunct")
+		"scope-ambiguous")
 
-	// The fold seam, e2e (the unit twin lives in TestScopeAmbiguousName):
-	// a FOLDABLE colliding ref never survives into the join predicate —
-	// the shape answers (Java live: constant-true ∃ → 3 rows)…
+	// The fold seam, e2e (the unit twin is TestBoundScopeAmbiguous): in a
+	// correlated EXISTS, a colliding ref that FOLDS away never survives into
+	// the join predicate, and the shape answers (OI.K = OT.K holds for the
+	// one OT row, so ∃ is true → 3 rows). Only a NULL or BOOLEAN-literal
+	// COALESCE head folds…
 	want("foldable_colliding_answers",
-		`SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM OT AS "OI", ST WHERE COALESCE(1, ST."C") = 1)`,
+		`SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM OT AS "OI", ST WHERE COALESCE(TRUE, ST."C" = 1) AND OI."K" = OT."K")`,
 		[]string{"K=50", "K=50", "K=50"},
 		"")
+
+	// …so an INT head keeps the colliding ref and declines (Java answers 3
+	// rows through the inner shadow; that is the mint-per-leg flip).
+	wantDecline("int_head_colliding_declines",
+		`SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM OT AS "OI", ST WHERE COALESCE(1, ST."C") = 1 AND OI."K" = OT."K")`,
+		"scope-ambiguous")
 
 	// …while a GENUINELY-READ colliding ref still declines (Java live
 	// answers 3 rows via inner-shadow — recorded for the mint-per-leg
