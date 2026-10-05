@@ -387,6 +387,21 @@ func PhysicalEqualityShapeForComponent(
 			return unknown
 		}
 		if math.IsNaN(floating) {
+			// Every NaN sign and payload is its own tuple key, in two blocks
+			// at the ends of the coordinate. A terminal NaN equality reads both
+			// blocks (the executor's NaN-block binder): two seeks, never
+			// physically fixed, and no row-count proof, since even a UNIQUE
+			// index holds one entry per NaN payload. A NaN followed by a
+			// constrained component would need a key filter across the blocks,
+			// which the binder refuses, so it stays unsupported here.
+			if terminalWidening {
+				return PhysicalEqualityComponentShape{
+					LogicalEquality:          true,
+					MayFanOut:                true,
+					SuccessfulSeekUpperBound: 2,
+					ProvenRowMultiplicity:    UnknownCardinality(),
+				}
+			}
 			unknown.UnsupportedKnownNaN = true
 			unknown.MayFanOut = true
 			return unknown

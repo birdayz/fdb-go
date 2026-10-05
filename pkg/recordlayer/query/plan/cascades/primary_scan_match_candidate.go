@@ -356,9 +356,14 @@ func (c *PrimaryScanMatchCandidate) ComputeBoundParameterPrefixMap(
 			return prefix
 		}
 		if candidateRangeHasKnownConstantNaN(cr, c.keyComponentTypes, i) {
-			// Leave every visible NaN comparison as residual compensation. A
-			// single FDB tuple payload is neither exact equality nor an exact
-			// ordered endpoint for the comparator's canonical NaN value.
+			// A single FDB tuple payload is not an exact ordered endpoint for
+			// the comparator's canonical NaN, so an ordered NaN comparison stays
+			// residual. A NaN EQUALITY binds as the terminal component: the
+			// executor reads both NaN key blocks (RFC-257 WS-E 5.3), and the
+			// components after it stay residual.
+			if cr.GetRangeType() == predicates.ComparisonRangeEquality {
+				prefix[alias] = cr
+			}
 			return prefix
 		}
 		switch cr.GetRangeType() {

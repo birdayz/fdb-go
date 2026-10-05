@@ -1287,10 +1287,16 @@ func (c *ValueIndexScanMatchCandidate) ComputeBoundParameterPrefixMap(
 			// comparison as a residual filter.
 			return prefix
 		}
-		// A raw NaN endpoint is incomplete for equality and ordered predicates:
-		// logical comparison canonicalizes every payload, while FDB tuple order
-		// preserves distinct NaN regions. Keep the predicate as compensation.
+		// A raw NaN endpoint is incomplete for ordered predicates: logical
+		// comparison canonicalizes every payload, while FDB tuple order
+		// preserves distinct NaN regions. Keep those as compensation. A NaN
+		// EQUALITY binds as the terminal component: the executor reads both
+		// NaN key blocks, every NaN the per-row `=` matches, and the
+		// components after it stay residual (RFC-257 WS-E 5.3).
 		if candidateRangeHasKnownConstantNaN(cr, c.keyComponentTypes, i) {
+			if cr.GetRangeType() == predicates.ComparisonRangeEquality {
+				prefix[alias] = cr
+			}
 			return prefix
 		}
 		switch cr.GetRangeType() {

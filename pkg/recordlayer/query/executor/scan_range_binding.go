@@ -264,7 +264,27 @@ func bindScanComparisonsToRangeSet(
 ) (scanRangeSetSpec, error) {
 	return bindScanComparisonsToRangeSetWithTerminalWideningAndCompatibility(
 		comparisons, keyTypes, binder, reverse, fingerprintSalt,
-		compatibleFingerprintSalts, true,
+		compatibleFingerprintSalts, true, false,
+	)
+}
+
+// bindScanComparisonsToRangeSetWithNaNBlocks is bindScanComparisonsToRangeSet
+// for a scan whose key entries are rows: a value-index or primary-key scan. A
+// NaN equality there selects both NaN key blocks, every NaN the per-row `=`
+// matches (RFC-257 WS-E 5.3). An aggregate-index scan keeps the refusal: each
+// NaN payload is its own stored group, which a range would return as one
+// group per payload.
+func bindScanComparisonsToRangeSetWithNaNBlocks(
+	comparisons []*predicates.ComparisonRange,
+	keyTypes []values.Type,
+	binder values.ParameterBinder,
+	reverse bool,
+	fingerprintSalt string,
+	compatibleFingerprintSalts ...string,
+) (scanRangeSetSpec, error) {
+	return bindScanComparisonsToRangeSetWithTerminalWideningAndCompatibility(
+		comparisons, keyTypes, binder, reverse, fingerprintSalt,
+		compatibleFingerprintSalts, true, true,
 	)
 }
 
@@ -283,7 +303,7 @@ func bindScanComparisonsToRangeSetWithTerminalWidening(
 ) (scanRangeSetSpec, error) {
 	return bindScanComparisonsToRangeSetWithTerminalWideningAndCompatibility(
 		comparisons, keyTypes, binder, reverse, fingerprintSalt, nil,
-		allowTerminalZeroWidening,
+		allowTerminalZeroWidening, false,
 	)
 }
 
@@ -295,6 +315,7 @@ func bindScanComparisonsToRangeSetWithTerminalWideningAndCompatibility(
 	fingerprintSalt string,
 	compatibleFingerprintSalts []string,
 	allowTerminalZeroWidening bool,
+	allowNaNBlocks bool,
 ) (scanRangeSetSpec, error) {
 	if err := validateScanComparisonShape(comparisons); err != nil {
 		return scanRangeSetSpec{}, err
@@ -390,9 +411,19 @@ func bindScanComparisonsToRangeSetWithTerminalWideningAndCompatibility(
 		}
 		if scanBoundUsesFloatWire(physicalType) &&
 			isNaNFloatBound(value) {
-			return scanRangeSetSpec{}, &UnsupportedPhysicalFloatEquivalenceError{
-				Component: i, Comparison: comparison.Type, PhysicalType: physicalType,
+			// Every NaN is one logical value, but each sign and payload is its
+			// own tuple key, in two blocks at the ends of the coordinate. With
+			// no later component constrained, the two blocks over this prefix
+			// are exactly the rows the per-row `=` matches, whatever payload
+			// the comparand has. A later constrained component needs a key
+			// filter across the blocks, which this binder does not build yet.
+			if !allowNaNBlocks || anyLaterComparisonConstrains(comparisons, i) {
+				return scanRangeSetSpec{}, &UnsupportedPhysicalFloatEquivalenceError{
+					Component: i, Comparison: comparison.Type, PhysicalType: physicalType,
+				}
 			}
+			bound.tails = nanBlockTails(physicalType, reverse)
+			return bound.spec(), nil
 		}
 
 		// A FLOAT key contains only float32 values. If the evaluated predicate
@@ -854,6 +885,35 @@ func floatWireLowestNaN(physicalType values.Type) any {
 		return math.Float32frombits(0xFFFFFFFF)
 	}
 	return math.Float64frombits(0xFFFFFFFFFFFFFFFF)
+}
+
+// nanBlockTails are the two key ranges that hold every NaN of a float
+// coordinate: the negative NaNs, [lowest, -Inf), and the positive NaNs,
+// (+Inf, end]. Neither bound depends on the probing NaN's payload, so a
+// resume under another payload is the same scan. Reverse scans read the
+// positive block first, in physical order.
+func nanBlockTails(physicalType values.Type, reverse bool) []boundRangeTail {
+	negative := boundRangeTail{
+		kind:         boundRangeTailInequality,
+		floatOrdered: true,
+		hasLow:       true,
+		lowItem:      floatWireLowestNaN(physicalType),
+		lowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
+		hasHigh:      true,
+		highItem:     floatWireInfinity(physicalType, -1),
+		highEndpoint: recordlayer.EndpointTypeRangeExclusive,
+	}
+	positive := boundRangeTail{
+		kind:         boundRangeTailInequality,
+		floatOrdered: true,
+		hasLow:       true,
+		lowItem:      floatWireInfinity(physicalType, 1),
+		lowEndpoint:  recordlayer.EndpointTypeRangeExclusive,
+	}
+	if reverse {
+		return []boundRangeTail{positive, negative}
+	}
+	return []boundRangeTail{negative, positive}
 }
 
 func floatWireInfinity(physicalType values.Type, sign int) any {

@@ -128,6 +128,7 @@ go_test(
         "merge_union_continuation_integration_test.go",
         "merge_union_continuation_test.go",
         "name_oracle_test.go",
+        "nan_block_binding_test.go",
         "narrowed_dedup_test.go",
         "nlj_continuation_test.go",
         "nlj_hash_key_test.go",
@@ -319,6 +320,7 @@ go_test(
         "aggregate_legacy_encoder_test.go",
         "aggregate_state_codec.go",
         "aggregate_state_codec_test.go",
+        "nan_block_binding_test.go",
     ],
     tags = ["resources:memory:400"],
     deps = [

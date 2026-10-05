@@ -1704,6 +1704,26 @@ Java. `=` and dedup therefore disagree with each other in Go — an accepted,
 documented asymmetry, forced by the aggregate-index wire format. See
 `packedDedupKey`'s doc comment and TODO CQ-28 for the full argument.
 
+## A NaN equality over an index returns every stored NaN
+
+Java probes an index or primary key with its NaN's packed bits, one key, so it
+answers the stored NaNs of that payload only, and claims the probe fixes the
+coordinate for ordering. Go reads both NaN key blocks (negative NaNs below
+-Inf, positive above +Inf) and answers every stored NaN, as its per-row `=`
+and Java's per-row `=` do; it does not claim order through the coordinate, so
+`WHERE d = NaN ORDER BY g` sorts in Go where Java's plan does not (equal rows).
+Since RFC-257 WS-E both engines write the same bits for a NaN made by CAST, so
+the answers differ only for NaNs of other payloads (arithmetic, bound values,
+the record-layer API). Pinned by `yamsql/testdata/nan_index_equality.yaml` and
+`executor/nan_block_binding_test.go`.
+
+Still refused, loudly, before storage: a NaN equality followed by another
+constrained index component (the scan would need a key filter across the two
+blocks; TODO.md WS-E), an aggregate-index read bound to a NaN group key (each
+NaN payload is its own stored group, while Go's GROUP BY puts every NaN in one
+group), and a NaN vector-partition prefix (each partition is its own graph).
+Java answers each from its probe's one key.
+
 ## NaN comparison follows Java's total order, NOT IEEE (open question)
 
 MEASURED, not inferred. Rows with `v/z` evaluating to NaN:

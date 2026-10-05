@@ -322,7 +322,7 @@ func executeScanWithRowLayout(
 		if err != nil {
 			return nil, fmt.Errorf("executor: building PK scan execution identity: %w", err)
 		}
-		spec, err := bindScanComparisonsToRangeSet(
+		spec, err := bindScanComparisonsToRangeSetWithNaNBlocks(
 			comps,
 			p.GetKeyComponentTypes(),
 			scanBindContext(evalCtx),
@@ -446,7 +446,7 @@ func openIndexEntryCursor(
 		return nil, fmt.Errorf("executor: getting index maintainer for %q: %w", p.GetIndexName(), err)
 	}
 
-	rangeSet, err := bindScanComparisonsToRangeSet(
+	rangeSet, err := bindScanComparisonsToRangeSetWithNaNBlocks(
 		p.GetScanComparisons(),
 		p.GetKeyComponentTypes(),
 		scanBindContext(evalCtx),

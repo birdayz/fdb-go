@@ -57,12 +57,21 @@ Never mark a whole workstream complete because one of its subitems passed.
   `param_cache_key_test.go` (red with the old key), `bound_parameter_bits.yaml`.
   The Java-oracle pins (`ws_e_probe_conformance_test.go` v11/v12/cross) are
   flipped to the target's outcomes but not yet run (full lane).
-- [ ] NaN equality over an index (design 5.3 "THE PORT"): the binder refuses a
-  NaN comparand (`scan_range_binding.go:35`, "exact indexed NaN equivalence is
-  unsupported") where Java probes. Port: the two NaN key ranges plus a key
-  filter for later components, below the continuation, for value-index and
-  primary-key scans; aggregate-index and vector-partition keep the refusal,
-  declared. Pins per caller and a resumed primary-key NaN scan.
+- [x] Terminal NaN equality over a value index or primary key: the binder reads
+  both NaN key blocks (`nanBlockTails`), the planner binds a NaN equality as the
+  terminal component and prices two seeks, and a NaN never pins ordering.
+  Aggregate-index and vector-partition keep the refusal; DIVERGENCES.md "A NaN
+  equality over an index returns every stored NaN". Pins:
+  `nan_block_binding_test.go`, `nan_index_equality.yaml` (ORDER BY row
+  mutation-checked).
+- [ ] Non-terminal NaN equality (design 5.3): a NaN followed by a constrained
+  component still refuses. Port the key filter: the two NaN blocks over the
+  prefix plus a per-entry predicate on later components, applied below the
+  continuation (resume never re-reads a rejected entry nor skips an unread one,
+  every read counts toward limits), for value-index and primary-key (decoded
+  from the record group's first key) scans. Pins: range tail after NaN, a
+  second NaN component, resume inside each block forward/reverse, a limit
+  expiring on a filtered entry.
 - [ ] Isolation: conflict-free index-state reads and DSN/SetOption options. The
   executor DML snapshot guard (`4f61e07b5`) and statement-class admission
   (`7287666da`) are already implemented.

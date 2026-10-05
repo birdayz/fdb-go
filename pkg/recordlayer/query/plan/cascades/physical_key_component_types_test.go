@@ -161,19 +161,29 @@ func TestVisibleConstantNaNEligibility(t *testing.T) {
 				"nan_idx", []string{"T"}, []string{"A", "B", "C"}, nil, aliases,
 				physicalKeyRowType(), false, nil, &knownDistinct,
 			).WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableDouble, values.NullableLong})
-			valuePrefix := valueCandidate.ComputeBoundParameterPrefixMap(bindings)
-			if len(valuePrefix) != 1 {
-				t.Fatalf("value NaN prefix size = %d, want preceding equality only", len(valuePrefix))
+			// A NaN EQUALITY binds as the terminal component (the executor
+			// reads both NaN key blocks); an ordered NaN stays residual; the
+			// component after a NaN never binds (RFC-257 WS-E 5.3).
+			wantPrefix := 1
+			if test.name == "equality" {
+				wantPrefix = 2
 			}
-			if _, sarged := valuePrefix[aliases[1]]; sarged {
-				t.Fatal("visible constant NaN must remain residual on an ordinary value scan")
+			valuePrefix := valueCandidate.ComputeBoundParameterPrefixMap(bindings)
+			if len(valuePrefix) != wantPrefix {
+				t.Fatalf("value NaN prefix size = %d, want %d", len(valuePrefix), wantPrefix)
+			}
+			if _, sarged := valuePrefix[aliases[1]]; sarged != (wantPrefix == 2) {
+				t.Fatalf("value scan NaN %s: sarged=%t", test.name, sarged)
+			}
+			if _, sarged := valuePrefix[aliases[2]]; sarged {
+				t.Fatal("a component after a NaN must remain residual on a value scan")
 			}
 
 			primaryCandidate := NewPrimaryScanMatchCandidate(
 				nil, aliases, []string{"T"}, []string{"T"}, []string{"A", "B", "C"}, true, physicalKeyRowType(),
 			).WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableDouble, values.NullableLong})
-			if prefix := primaryCandidate.ComputeBoundParameterPrefixMap(bindings); len(prefix) != 1 {
-				t.Fatalf("primary NaN prefix size = %d, want preceding equality only", len(prefix))
+			if prefix := primaryCandidate.ComputeBoundParameterPrefixMap(bindings); len(prefix) != wantPrefix {
+				t.Fatalf("primary NaN prefix size = %d, want %d", len(prefix), wantPrefix)
 			}
 
 			aggregate := NewAggregateIndexMatchCandidate(

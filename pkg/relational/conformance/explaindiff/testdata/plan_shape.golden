@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=390 queries=2944 dml=176 non_query=124 plan_errors=321 unexpected_errors=4
+# files=391 queries=2953 dml=176 non_query=126 plan_errors=321 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -12072,6 +12072,55 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryExplodePlan
+=== nan_index_equality.yaml#2
+sql:   SELECT id FROM f WHERE d = CAST('NaN' AS DOUBLE)
+plan:  Map(IndexScan(F_D, [=] COVERING), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== nan_index_equality.yaml#3
+sql:   SELECT id FROM f WHERE d = ?
+plan:  Map(IndexScan(F_D, [=] COVERING), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== nan_index_equality.yaml#4
+sql:   SELECT id FROM f WHERE d = CAST('Infinity' AS DOUBLE)
+plan:  Map(IndexScan(F_D, [=] COVERING), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== nan_index_equality.yaml#5
+sql:   SELECT id FROM f WHERE d IN (CAST('NaN' AS DOUBLE), CAST('NaN' AS DOUBLE))
+plan:  Map(PredicatesFilter(Scan(F), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== nan_index_equality.yaml#6
+sql:   SELECT id, g FROM f WHERE d = CAST('NaN' AS DOUBLE) ORDER BY g
+plan:  InMemorySort([_current.G#1 ASC], Map(IndexScan(F_DG, [=, *] COVERING), {ID: _current.ID#0, G: _current.G#2}))
+shape: RecordQueryInMemorySortPlan
+shape:   RecordQueryMapPlan
+shape:     RecordQueryCoveringIndexPlan
+=== nan_index_equality.yaml#7
+sql:   SELECT id, g FROM f WHERE d = CAST('NaN' AS DOUBLE) ORDER BY g DESC
+plan:  InMemorySort([_current.G#1 DESC], Map(IndexScan(F_DG, [=, *] COVERING), {ID: _current.ID#0, G: _current.G#2}))
+shape: RecordQueryInMemorySortPlan
+shape:   RecordQueryMapPlan
+shape:     RecordQueryCoveringIndexPlan
+=== nan_index_equality.yaml#8
+sql:   SELECT id FROM p WHERE d = CAST('NaN' AS DOUBLE)
+plan:  Map(Scan(P, [=]), {ID: _current.ID#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== nan_index_equality.yaml#9
+sql:   SELECT id FROM p WHERE d = ?
+plan:  Map(Scan(P, [=]), {ID: _current.ID#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== nan_index_equality.yaml#10
+sql:   SELECT id FROM f WHERE d + 0.0 = CAST('NaN' AS DOUBLE)
+plan:  Map(PredicatesFilter(Scan(F), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
 === negative_values.yaml#0
 sql:   SELECT id FROM accounts WHERE balance < 0 ORDER BY balance
 plan:  Map(InMemorySort([_current._1#1 ASC], Map(PredicatesFilter(Scan(ACCOUNTS), [1 preds]), {ID: _current.ID#0, _1: _current.BALANCE#1})), {ID: _current.ID#0})

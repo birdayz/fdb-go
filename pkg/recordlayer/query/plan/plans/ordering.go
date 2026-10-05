@@ -1,6 +1,7 @@
 package plans
 
 import (
+	"math"
 	"slices"
 	"strings"
 
@@ -528,11 +529,16 @@ func EqualityPinsSinglePhysicalKeyOnColumn(cr *predicates.ComparisonRange, colum
 	// `e = 0.0` does. Judging on the VALUE rather than the declared type is the
 	// same discipline isZeroFloatEqualityRange applies, and for the same
 	// reason: the executor decides to widen from the runtime value.
+	//
+	// A NaN does not pin either: every NaN is one logical value, but the
+	// executor probes the two NaN key blocks (negative NaNs below -Inf,
+	// positive above +Inf), so the suffix after the coordinate is ordered
+	// within each block and not across them (RFC-257 WS-E 5.3).
 	switch n := v.(type) {
 	case float64:
-		return n != 0
+		return n != 0 && !math.IsNaN(n)
 	case float32:
-		return n != 0
+		return n != 0 && !math.IsNaN(float64(n))
 	case int64:
 		return n != 0
 	case int32:
