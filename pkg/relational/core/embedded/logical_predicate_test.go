@@ -647,12 +647,12 @@ func TestBuildLogicalPlanWithCatalog_UnsupportedShape(t *testing.T) {
 	}
 }
 
-// TestBuildLogicalPlanWithCatalog_RHSArithmeticFolded pins the
-// SimplifyPredicateValues wire-in: a constant arithmetic RHS
-// (`PRICE = 1+2`) folds at plan time so EXPLAIN renders `PRICE = 3`
-// rather than `PRICE = 1 + 2`. Same applies to nested arithmetic and
-// scalar-function RHS (`name = UPPER('hi')` → `NAME = "HI"`).
-func TestBuildLogicalPlanWithCatalog_RHSArithmeticFolded(t *testing.T) {
+// TestBuildLogicalPlanWithCatalog_RHSArithmeticUnfolded pins that a constant
+// arithmetic RHS (`PRICE = 1+2`) reaches Cascades as it was walked: the SQL
+// translator folds no predicate, as Java's has no such pass, and constants
+// fold only in the planner (RFC-257 WS-E 5.4(a)). It used to pin the
+// translator's fold to `PRICE = 3`.
+func TestBuildLogicalPlanWithCatalog_RHSArithmeticUnfolded(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
 	sq := parseSelect(t, "SELECT * FROM Order WHERE price = 1+2")
@@ -664,15 +664,15 @@ func TestBuildLogicalPlanWithCatalog_RHSArithmeticFolded(t *testing.T) {
 	if filter.Predicate == nil {
 		t.Fatal("expected Predicate non-nil")
 	}
-	if got := filter.Predicate.Explain(); got != "ORDER.price#2 = 3" {
-		t.Fatalf("Predicate.Explain: got %q, want ORDER.price#2 = 3", got)
+	if got := filter.Predicate.Explain(); got != "ORDER.price#2 = (1 + 2)" {
+		t.Fatalf("Predicate.Explain: got %q, want ORDER.price#2 = (1 + 2)", got)
 	}
 }
 
-// TestBuildLogicalPlanWithCatalog_RHSScalarFunctionFolded pins the
-// scalar-function arm: `name = UPPER('hi')` reaches EXPLAIN as
-// `NAME = "HI"`.
-func TestBuildLogicalPlanWithCatalog_RHSScalarFunctionFolded(t *testing.T) {
+// TestBuildLogicalPlanWithCatalog_RHSScalarFunctionUnfolded pins the
+// scalar-function arm of the same rule: `name = UPPER('hi')` reaches Cascades
+// with its UPPER call.
+func TestBuildLogicalPlanWithCatalog_RHSScalarFunctionUnfolded(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
 	sq := parseSelect(t, "SELECT * FROM Customer WHERE name = UPPER('hi')")
@@ -684,9 +684,8 @@ func TestBuildLogicalPlanWithCatalog_RHSScalarFunctionFolded(t *testing.T) {
 	if filter.Predicate == nil {
 		t.Fatal("expected Predicate non-nil")
 	}
-	got := filter.Predicate.Explain()
-	if !strings.Contains(got, "HI") || strings.Contains(got, "UPPER") {
-		t.Fatalf("Predicate.Explain: got %q, want folded HI without UPPER", got)
+	if got := filter.Predicate.Explain(); got != "CUSTOMER.name#1 = UPPER('hi')" {
+		t.Fatalf("Predicate.Explain: got %q, want the unfolded CUSTOMER.name#1 = UPPER('hi')", got)
 	}
 }
 

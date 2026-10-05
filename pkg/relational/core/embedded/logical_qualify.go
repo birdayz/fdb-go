@@ -47,7 +47,6 @@ func buildQualifyPredicate(
 			"unsupported QUALIFY clause: %v", err)
 	}
 	pred = applyDistanceRankTransform(pred)
-	pred = predicates.SimplifyPredicateValues(pred)
 	// A ROW_NUMBER() that survives the transform un-lowered is an unsupported
 	// window shape (only the vector K-NN ROW_NUMBER() {<,<=} K form lowers to a
 	// DistanceRank). Java has no other window-function surface — fail loud rather

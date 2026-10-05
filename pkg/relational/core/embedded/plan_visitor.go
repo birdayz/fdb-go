@@ -1173,7 +1173,7 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 		len(existsPlanner.scalarSubqueries) > 0 ||
 		len(existsPlanner.correlatedScalarSubqueries) > 0
 	if hasSubqueries && preWalkPred != nil {
-		pred := predicates.SimplifyPredicateValues(preWalkPred)
+		pred := preWalkPred
 		combined, qErr := combineQualifyPred(v.md, v.templateName, sq, queryCTEScopes, pred)
 		if qErr != nil {
 			return nil, qErr
@@ -1204,7 +1204,7 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 	}
 
 	if preWalkPred != nil {
-		pred := predicates.SimplifyPredicateValues(preWalkPred)
+		pred := preWalkPred
 		combined, qErr := combineQualifyPred(v.md, v.templateName, sq, queryCTEScopes, pred)
 		if qErr != nil {
 			return nil, qErr

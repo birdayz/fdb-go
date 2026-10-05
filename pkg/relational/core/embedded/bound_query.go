@@ -418,6 +418,12 @@ func lowerBoundExists(bound *boundQuery) (loweredExists, error) {
 			return nil, &CorrelatedExistsError{Message: "correlated EXISTS: a correlated scalar subquery inside an EXISTS WHERE clause is not supported"}
 		}
 		out.scalars = append(out.scalars, filter.ScalarSubqueries...)
+		// The one predicate the translator still folds (RFC-257 WS-E 5.4(a)
+		// deletes the rest). A colliding inner reference that folds away, as
+		// in `COALESCE(1, ST."C") = 1` over an inner ST that shadows an outer
+		// one, must not reach the scope-ambiguity decline below: Java resolves
+		// it to the inner ST and answers, and Go has no per-leg binding for it
+		// yet (TODO.md, the mint-per-leg entry). The fold goes with that fix.
 		pred := predicates.SimplifyPredicateValues(andOfConjuncts(append(on, conjunctsOf(filter.Predicate)...)))
 		if name := boundScopeAmbiguous(pred, filter.Input, bound.parent); name != "" {
 			return nil, &CorrelatedExistsError{Message: "correlated EXISTS: inner FROM source " + name + " reuses an outer FROM name referenced by the subquery predicate (scope-ambiguous)", Unsupported: true}

@@ -37,7 +37,6 @@ func walkSubqueryPredicate(resolver *expr.Resolver, owner *existsSubqueryPlanner
 	if err != nil {
 		return nil, err
 	}
-	pred = predicates.SimplifyPredicateValues(pred)
 	if err := clause.admitPredicate(pred); err != nil {
 		return nil, err
 	}

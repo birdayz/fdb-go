@@ -115,6 +115,24 @@ Never mark a whole workstream complete because one of its subitems passed.
   census, target simplification regime, adjacent/decorated literals and lexer
   boundaries, FROM-less metadata, LOG_QUERY. Decimal normalization and structured
   variadic promotion have prior implementations; check current coverage first.
+  Simplification regime (design 5.4), in progress.
+  - (b): the generic fold (`DefaultFolder`, `ExpressionFolder`,
+    `SimplifyAll`) is deleted; it had no non-test caller.
+  - (a): 17 of the 18 translator `SimplifyPredicateValues` sites are gone, so
+    a SQL predicate reaches Cascades unfolded. No corpus plan moved: the
+    planner's simplification rule folds the same constants.
+    - The sparse-index DDL path now folds its stored predicate itself, which
+      keeps the enum and UUID refusal messages.
+    - The EXISTS bound-query site keeps its fold. Without it
+      `foldable_colliding_answers` (`COALESCE(1, ST."C") = 1` over a
+      shadowing inner ST) would decline as scope-ambiguous where Java
+      answers. It goes with the mint-per-leg inner-shadow fix.
+  - Still open: (c) ConstantFoldingRuleSet over the whole conjunction and
+    `rejectsNull` as `foldPredicateAtNull`; (d) Java's COALESCE rule; (e) the
+    NULL mapping; (f) `EffectiveConstant`; the deletion of the Go-only
+    driver and the `EvaluateConstant` arms of `SimplifyValue`; (g) the
+    REWRITING cost model rungs; the constant-evaluation census; and (j) the
+    oracle rows as Go assertions.
   Done: LOG_QUERY (statement and connection) sets `PlanGenerationInfo.LogQuery`
   (`TestPlanLogging_LogQueryFlag`). Literal decoding and the decorated-literal
   refusals were already implemented and now have a fast-lane pin

@@ -164,10 +164,8 @@ func buildWherePredicateForTableE(
 		}
 		return nil, false, nil
 	}
-	// Plan-time fold of constant Value sub-trees inside the predicate
-	// (`name = 1+2` → `name = 3`). Best-effort — SimplifyPredicateValues
-	// is pointer-stable when nothing folds.
-	pred = predicates.SimplifyPredicateValues(pred)
+	// The predicate reaches Cascades as walked; constants fold only in the
+	// planner, as in Java (RFC-257 WS-E 5.4(a)).
 	return pred, true, nil
 }
 
@@ -196,7 +194,7 @@ func buildWherePredicate(
 		if err != nil {
 			return nil, false
 		}
-		return predicates.SimplifyPredicateValues(pred), true
+		return pred, true
 	}
 	if sq.derivedQuery != nil {
 		return buildWherePredicateForDerived(md, sq, whereExpr)
@@ -242,7 +240,6 @@ func buildWherePredicateForDerived(
 	if err != nil {
 		return nil, false
 	}
-	pred = predicates.SimplifyPredicateValues(pred)
 	return pred, true
 }
 
@@ -1486,7 +1483,7 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 				// foldInnerOnExistsIntoWhere, which moves the markers and the
 				// subqueries into the WHERE (on_exists_fold.go): several EXISTS in
 				// one ON are several WHERE-EXISTS, exactly as Java has them.
-				j.OnPredicate = predicates.SimplifyPredicateValues(pred)
+				j.OnPredicate = pred
 				j.OnExistsSubqueries = onPlanner.subqueries
 				continue
 			}
@@ -1522,7 +1519,7 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 				return api.NewErrorf(api.ErrCodeUnsupportedQuery,
 					"unsupported expression in JOIN ON clause: %v", walkErr)
 			}
-			j.OnPredicate = predicates.SimplifyPredicateValues(pred)
+			j.OnPredicate = pred
 		}
 	}
 	for i, join := range joins {
@@ -1568,7 +1565,6 @@ func buildWherePredicateFromCTEScope(
 	if err != nil {
 		return nil, false
 	}
-	pred = predicates.SimplifyPredicateValues(pred)
 	return pred, true
 }
 
@@ -1839,7 +1835,7 @@ func buildWherePredicateForJoinsWithCTEScopes(
 		if err != nil {
 			return nil, false
 		}
-		return predicates.SimplifyPredicateValues(pred), true
+		return pred, true
 	}
 	cat := rlcatalog.Wrap(md)
 	analyzer := semantic.NewAnalyzer(cat, false)
@@ -1900,7 +1896,6 @@ func buildWherePredicateForJoinsWithCTEScopes(
 	if err != nil {
 		return nil, false
 	}
-	pred = predicates.SimplifyPredicateValues(pred)
 	return pred, true
 }
 
@@ -1969,7 +1964,6 @@ func buildWherePredicateForJoins(
 	if err != nil {
 		return nil, false
 	}
-	pred = predicates.SimplifyPredicateValues(pred)
 	return pred, true
 }
 
@@ -2929,7 +2923,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 			len(existsPlanner.scalarSubqueries) > 0 ||
 			len(existsPlanner.correlatedScalarSubqueries) > 0)
 	if hasSubqueries && preWalkPred != nil {
-		pred := predicates.SimplifyPredicateValues(preWalkPred)
+		pred := preWalkPred
 
 		combined, qErr := combineQualifyPred(md, templateName, sq, queryCTEScopes, pred)
 		if qErr != nil {
@@ -2963,7 +2957,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 	if preWalkPred != nil {
 		// The resolved predicate owns the query-local source identities even
 		// without subqueries. Rebuilding it from SQL aliases loses those IDs.
-		pred := predicates.SimplifyPredicateValues(preWalkPred)
+		pred := preWalkPred
 		combined, qErr := combineQualifyPred(md, templateName, sq, queryCTEScopes, pred)
 		if qErr != nil {
 			return nil, qErr
@@ -4828,7 +4822,7 @@ func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *rec
 		if len(clause.correlatedScalarSubqueries) > 0 {
 			return api.NewError(api.ErrCodeUnsupportedQuery, "correlated scalar subquery in a HAVING predicate is not supported")
 		}
-		if err := clause.admitPredicate(predicates.SimplifyPredicateValues(pred)); err != nil {
+		if err := clause.admitPredicate(pred); err != nil {
 			return err
 		}
 	}
@@ -5798,7 +5792,7 @@ func upgradeDMLWhereWithCatalog(
 		return false, api.NewError(api.ErrCodeUnsupportedQuery,
 			"correlated scalar subquery in a DML WHERE predicate is not supported")
 	}
-	if installErr := installFirstWherePredicate(op, predicates.SimplifyPredicateValues(walked)); installErr != nil {
+	if installErr := installFirstWherePredicate(op, walked); installErr != nil {
 		return false, installErr
 	}
 	if len(existsPlanner.subqueries) > 0 {
