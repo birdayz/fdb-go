@@ -9,8 +9,8 @@ import (
 func TestConditionSelectorValue_Type(t *testing.T) {
 	t.Parallel()
 	v := NewConditionSelectorValue(nil)
-	if !v.Type().Equals(NotNullInt) {
-		t.Fatalf("Type = %v, want NotNullInt", v.Type())
+	if !v.Type().Equals(NullableInt) {
+		t.Fatalf("Type = %v, want NullableInt", v.Type())
 	}
 }
 

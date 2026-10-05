@@ -67,8 +67,8 @@ func (v *CollateValue) Children() []Value {
 // Name returns the SQL function name.
 func (*CollateValue) Name() string { return "collate" }
 
-// Type returns NotNullBytes.
-func (*CollateValue) Type() Type { return NotNullBytes }
+// Type is nullable BYTES, Java's primitiveType(BYTES).
+func (*CollateValue) Type() Type { return NullableBytes }
 
 // Evaluate is a placeholder — real eval needs golang.org/x/text/collate
 // wiring. Returns nil per the existing placeholder pattern.

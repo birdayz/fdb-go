@@ -118,14 +118,14 @@ Never mark a whole workstream complete because one of its subitems passed.
   The per-class nullability table is `valueNullabilityCensus`
   (`values/value_nullability_census_test.go`). It enumerates every Type()
   class from the embedded sources and checks each fixed type against its entry.
-  Open: loosen the 15 `censusGoStricter` classes, which Go types NOT NULL where
-  Java types them nullable: AndOr, Not, Exists, EvaluatesTo, Rank, RowNumber,
-  RecordType, Incarnation, ConditionSelector, Collate, Distance, the four
-  *DistanceRowNumber, Empty and ToOrderedBytes. Several of them evaluate to
-  NULL. Each loosening needs its readers checked (uniqueness, promotion into NOT
-  NULL fields, AND/OR, IN-to-explode) and result-metadata pins. Also open: the
-  simplification regime (design 5.4, gated on WS-F step 7) and FROM-less
-  metadata.
+  Loosened to Java's nullable types: Rank, RowNumber, RecordType, Incarnation,
+  ConditionSelector, Collate, Distance, the *DistanceRowNumber values and Empty.
+  Each of these could evaluate to NULL while typed NOT NULL.
+  Open: the 5 remaining `censusGoStricter` classes, which are sound but stricter
+  than Java: AndOr, Not, Exists, EvaluatesTo and ToOrderedBytes. Each needs
+  its readers checked (uniqueness, promotion into NOT NULL fields, AND/OR,
+  IN-to-explode) and result-metadata pins. Also open: the simplification regime
+  (design 5.4, gated on WS-F step 7) and FROM-less metadata.
 
 **Done:** every remaining WS-E design obligation is reconciled to implementation
 and an executable pin; temporal compatibility/repair documentation is shipped;

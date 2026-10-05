@@ -91,9 +91,9 @@ func (v *DistanceValue) Children() []Value {
 // Name returns the SQL function name for this distance metric.
 func (v *DistanceValue) Name() string { return v.Operator.String() }
 
-// Type returns NotNullDouble — distance metrics produce non-NULL
-// real numbers given non-NULL vector operands.
-func (*DistanceValue) Type() Type { return NotNullDouble }
+// Type is nullable DOUBLE, Java's primitiveType(DOUBLE): a NULL operand or a
+// dimension mismatch evaluates to NULL.
+func (*DistanceValue) Type() Type { return NullableDouble }
 
 // Evaluate computes the distance metric. Returns nil when either
 // operand is NULL or when the operands aren't compatible vectors.

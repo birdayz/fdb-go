@@ -30,9 +30,10 @@ func (*EmptyValue) Children() []Value { return []Value{} }
 // Name returns the debug-print kind.
 func (*EmptyValue) Name() string { return "empty" }
 
-// Type returns an empty non-null RecordType.
+// Type returns an empty nullable RecordType: Evaluate returns NULL, and Java's
+// EmptyValue keeps Value's default, a nullable UNKNOWN.
 func (*EmptyValue) Type() Type {
-	return NewRecordType("", false, nil)
+	return NewRecordType("", true, nil)
 }
 
 // Evaluate returns nil — empty record has no value to extract.

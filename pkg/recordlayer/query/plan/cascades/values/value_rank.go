@@ -44,8 +44,9 @@ func NewRankValue(partitioningValues []Value) *RankValue {
 // Name returns the SQL function name.
 func (*RankValue) Name() string { return "RANK" }
 
-// Type returns NotNullLong — RANK is always populated, 1-based.
-func (*RankValue) Type() Type { return NotNullLong }
+// Type is nullable LONG, Java's primitiveType(LONG): Evaluate returns NULL
+// without a rank in its context.
+func (*RankValue) Type() Type { return NullableLong }
 
 // Evaluate returns the current rank from the row-shape harness
 // pattern. The harness supplies the window-accumulator's current

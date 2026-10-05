@@ -55,13 +55,9 @@ func (*ConditionSelectorValue) Name() string { return "ConditionSelector" }
 
 // Type returns NotNullInt — the selector returns an integer index.
 //
-// Note: Java's getResultType() returns Type.primitiveType(INT) which
-// is the *Java-level* type signature; the eval may return null at
-// runtime when no implication matches. The Type accessor is the
-// declared type, not the dynamic type. SQL's nullable wrapping
-// happens at the consumer (PickValue) when interpreting the
-// selector's nil-runtime-result.
-func (*ConditionSelectorValue) Type() Type { return NotNullInt }
+// Type is nullable INT, Java's primitiveType(INT): Evaluate returns NULL
+// when no implication holds.
+func (*ConditionSelectorValue) Type() Type { return NullableInt }
 
 // Evaluate walks implications in order. Returns the 0-based int64
 // index of the first TRUE implication, nil if none match.

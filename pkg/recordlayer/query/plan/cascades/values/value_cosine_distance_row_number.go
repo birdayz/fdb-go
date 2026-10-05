@@ -37,8 +37,8 @@ func NewCosineDistanceRowNumberValue(partitioningValues, argumentValues []Value)
 // Name returns the value name matching Java's NAME constant.
 func (*CosineDistanceRowNumberValue) Name() string { return "CosineDistanceRowNumber" }
 
-// Type returns NotNullLong — ROW_NUMBER is always populated, 1-based.
-func (*CosineDistanceRowNumberValue) Type() Type { return NotNullLong }
+// Type is nullable LONG, Java's primitiveType(LONG).
+func (*CosineDistanceRowNumberValue) Type() Type { return NullableLong }
 
 // IsIndexOnly returns true — K-NN row numbers are computed during
 // HNSW index traversal and cannot be reproduced from base records.
