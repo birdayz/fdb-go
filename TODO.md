@@ -277,8 +277,14 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   which is the pruning's stated planning cost. The design orders F-6, the
   covering emission gate, before F-7c, and requires the 1M stress comparison
   with F-7c.
-- [ ] Reconcile F-6/F-7b with RFC-191's existing `Fetch(InJoin)` ruling; see
+- [x] Reconcile F-6/F-7b with RFC-191's existing `Fetch(InJoin)` ruling; see
   `DIVERGENCES.md` “Plan choice: an ordered IN over a non-covering index”.
+  Go's covering emission is already Java's gate: `ToScanPlan` is
+  `toEquivalentPlan`. The `w8_in_*` rows differ only by RFC-191's push of a
+  comparand in-join through its fetch, so they are declared `DIFF-PATH rfc-191`.
+  The 25-value and 5 x 5 rows are declared `DIFF`, because Java's IN-union
+  fails and Go's in-join answers. They leave `wsfOpenUntil` (full lane, not
+  run).
 - [ ] RANK-index match-candidate gap and quoted dotted identifier GROUP BY/order
   gaps (`embedded/dotted_identifier_gap_test.go`); verify target reach first.
 - [ ] Close the large-join memo planning-cost regression introduced by
