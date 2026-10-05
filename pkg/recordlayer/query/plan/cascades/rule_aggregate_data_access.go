@@ -178,6 +178,7 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 				return
 			}
 			aggPlan = aggPlan.WithGroupColumns(aggCand.groupCols, aggCand.aggColumn).
+				WithCandidateGroupingCount(len(aggCand.groupCols)).
 				WithColumnPaths(aggCand.groupPaths, aggCand.aggPath).
 				WithGroupColumnLayout(aggCand.GetBaseRowType()).
 				WithPermutedOrdering(aggCand.permuted).
@@ -480,6 +481,7 @@ func buildGroupExistenceMerge(
 			return nil
 		}
 		childPlans[i] = aggPlan.WithGroupColumns(cand.groupCols, cand.aggColumn).
+			WithCandidateGroupingCount(len(cand.groupCols)).
 			WithColumnPaths(cand.groupPaths, cand.aggPath).
 			WithGroupColumnLayout(cand.GetBaseRowType()).
 			// The COMPANION carries the vacated-group drop, and it is load-bearing
@@ -1430,6 +1432,7 @@ func tryMultiAggregateIntersection(
 				return nil
 			}
 			childPlans[i] = aggPlan.WithGroupColumns(mc.groupCols, mc.aggColumn).
+				WithCandidateGroupingCount(len(mc.groupCols)).
 				WithColumnPaths(mc.groupPaths, mc.aggPath).
 				WithGroupColumnLayout(mc.GetBaseRowType()).
 				WithLiveGroupsOnly(dropsVacatedGroups(mc))

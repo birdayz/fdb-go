@@ -94,6 +94,12 @@ type RecordQueryAggregateIndexPlan struct {
 	// subsumes the other.
 	physicalGroupingPrefixCount int
 	physicalGroupingPrefixKnown bool
+
+	// candidateGroupingCount is the grouping-column count of the candidate a
+	// rule built this plan from, the evidence Java's cardinality reads off the
+	// plan's match candidate; known is false for a plan built without one.
+	candidateGroupingCount int
+	candidateGroupingKnown bool
 	// resultValue is the stable per-instance QuantifiedObjectValue standing for
 	// the rows this leaf emits — minted once at construction, returned by
 	// GetResultValue, EXCLUDED from Equals/Hash (its correlation id is unique per
@@ -239,6 +245,15 @@ func (p *RecordQueryAggregateIndexPlan) GetGroupColumnLayout() values.Type { ret
 func (p *RecordQueryAggregateIndexPlan) WithLiveGroupsOnly(v bool) *RecordQueryAggregateIndexPlan {
 	cp := *p
 	cp.liveGroupsOnly = v
+	return &cp
+}
+
+// WithCandidateGroupingCount records the grouping-column count of the
+// candidate the plan was built from.
+func (p *RecordQueryAggregateIndexPlan) WithCandidateGroupingCount(n int) *RecordQueryAggregateIndexPlan {
+	cp := *p
+	cp.candidateGroupingCount = n
+	cp.candidateGroupingKnown = true
 	return &cp
 }
 

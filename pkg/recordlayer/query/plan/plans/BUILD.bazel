@@ -77,6 +77,7 @@ go_test(
     name = "plans_test",
     srcs = [
         "aggregate_index_builder_copies_test.go",
+        "aggregate_index_cardinality_test.go",
         "aggregate_index_cost_test.go",
         "aggregate_index_identity_test.go",
         "aggregate_index_ordering_test.go",
@@ -273,6 +274,7 @@ go_test(
         "physical_correlation_bindings_test.go",
         "flat_map_mixed_lineage_test.go",
         "directional_index_ordering_test.go",
+        "aggregate_index_cardinality_test.go",
     ],
     deps = [
         "//pkg/fdbgo/fdb/tuple",
