@@ -180,6 +180,7 @@ go_test(
         "having_pushdown_decider_test.go",
         "in_join_ordering_plan_test.go",
         "in_over_intersection_relink_test.go",
+        "in_union_partition_test.go",
         "index_aggregates_in_graph_test.go",
         "index_asselect_aggregate_test.go",
         "index_asselect_generator_test.go",
@@ -519,6 +520,7 @@ go_test(
         "param_cache_key_test.go",
         "connection_option_scope_test.go",
         "fromless_metadata_test.go",
+        "in_union_partition_test.go",
     ],
     deps = [
         "//gen",

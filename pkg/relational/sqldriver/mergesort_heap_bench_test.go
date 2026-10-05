@@ -13,9 +13,9 @@ package sqldriver_test
 // `SELECT * ... WHERE g IN (...) ORDER BY g` over a non-covering index:
 // Fetch(InJoin(Covering)), which Go elects, and the IN-union Java elects
 // because it does not push a comparand InJoin through a fetch (DIVERGENCES.md,
-// RFC-191); Go plans that union as InUnion(IndexScan), the same reads as
-// Java's Fetch(InUnion(Covering)). Go's choice holds only while the InJoin is
-// at least as fast at every N.
+// RFC-191); with the in-join disabled Go plans that union as Java does,
+// Fetch(InUnion(Covering)). Go's choice holds only while the InJoin is at least
+// as fast at every N.
 
 import (
 	"context"
@@ -174,7 +174,7 @@ func benchInFetch(b *testing.B, numLegs int, inJoin bool) {
 		wantPlan: "Fetch(InJoin(IndexScan(T_G, [=] COVERING)",
 	}
 	if !inJoin {
-		ib.wantPlan = "InUnion(IndexScan(T_G, [=])"
+		ib.wantPlan = "Fetch(InUnion(IndexScan(T_G, [=] COVERING)"
 		ib.disabled = []string{"ImplementInJoinRule"}
 	}
 	runInBench(b, ib)

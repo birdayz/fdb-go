@@ -282,6 +282,7 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 		innerExprs := partition.GetExpressions()
 
 		richOrdering, _ := partition.GetPartitionPropertyValue(properties.PropRichOrdering).(*properties.RichOrdering)
+		var partitionRef *expressions.Reference
 
 		for _, requestedOrdering := range requestedOrderings {
 			if requestedOrdering.IsPreserve() {
@@ -350,53 +351,28 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 					continue
 				}
 
-				// The comparison keys are the inner's ORDERING CONTRACT for
-				// the InUnion merge-dedup — the partition-level first-member
-				// ESTIMATE (a delegator's group hint) is not tethered to the
-				// baked plan. Pick the cheapest member that STRUCTURALLY
-				// satisfies the contract (delegators resolve through their
-				// source groups), spine-PIN it (executable-plan verified),
-				// and bake THAT plan over a FinalOf singleton; an unpinnable
-				// partition skips this candidate — the sort-based
-				// alternative still plans.
-				legReqParts := make([]properties.RequestedOrderingPart, len(comparisonParts))
-				for i, p := range comparisonParts {
-					so := properties.RequestedSortOrderAny
-					if p.SortOrder != properties.ProvidedSortOrderFixed {
-						so = p.SortOrder.ToRequestedSortOrder()
-					}
-					legReqParts[i] = properties.RequestedOrderingPart{Value: p.Value, SortOrder: so}
-				}
-				legReq := properties.NewRequestedOrdering(legReqParts, properties.DistinctnessPreserveDistinctness, false)
-				tieBrokenLess := lessWithHashTieBreak(call.CostModel())
-				var best expressions.RelationalExpression
-				for _, pe := range innerExprs {
-					if !memberSatisfiesOrdering(pe, legReq) {
-						continue
-					}
-					if best == nil || tieBrokenLess(pe, best) {
-						best = pe
-					}
-				}
-				if best == nil {
-					continue
-				}
-				pinned := pinOrderedSpine(best, legReq, call.CostModel())
-				if pinned == nil {
-					continue
-				}
-				pinnedPlan, isPhys := pinned.(physicalPlanExpression)
-				if !isPhys {
-					continue
-				}
-				if !inUnionMergeKeyIdentifiesRows(pinnedPlan, comparisonParts) {
+				// Go's own soundness gate (Java checks nothing): the merge's
+				// dedup on the key must never collapse two rows of the join,
+				// whichever member of the partition runs.
+				if !partitionMergeKeyIdentifiesRows(innerExprs, comparisonParts) {
 					continue
 				}
 
-				// The InUnion is its own cascades expression over the live pinned
-				// inner edge (RFC-184 W2); no plan snapshot.
+				// The partition is memoized WHOLE, as Java's
+				// memoizeMemberPlansFromOther(innerReference,
+				// planPartition.getPlans()) does (WS-F 4.3 item 3): every
+				// member provides the partition's ordering, so costing chooses
+				// among them, and push-through rules see every member (a
+				// covering member under its fetch included). The memoizer
+				// carries the inner reference's requested orderings, so the
+				// copy's optimization keeps the members that satisfy them;
+				// extraction verifies the chosen child provides the comparison
+				// keys' order (checkInUnionChildOrdering).
+				if partitionRef == nil {
+					partitionRef = call.MemoizeFinalExpressionsFromOther(innerRef, innerExprs)
+				}
 				inUnionPlan, err := plans.NewRecordQueryInUnionPlanFromQuantifierWithBindingAliases(
-					expressions.NewPhysicalQuantifier(expressions.FinalOf(pinned)),
+					expressions.NewPhysicalQuantifier(partitionRef),
 					bindingAliases, comparisonKeys, isReverse, maxSize)
 				if err != nil {
 					call.Fail(err)
@@ -422,6 +398,22 @@ func inUnionMergeKeyIdentifiesRows(inner physicalPlanExpression, parts []propert
 		keys[i] = part.Value
 	}
 	return computeWrapperRichOrdering(inner).RowsIdentifiedBy(keys)
+}
+
+// partitionMergeKeyIdentifiesRows is inUnionMergeKeyIdentifiesRows for every
+// member of a partition: the merge ranges over the whole partition, and
+// extraction may choose any member, so each must prove its rows identified.
+func partitionMergeKeyIdentifiesRows(members []expressions.RelationalExpression, parts []properties.ProvidedOrderingPart) bool {
+	if len(members) == 0 {
+		return false
+	}
+	for _, member := range members {
+		plan, ok := member.(physicalPlanExpression)
+		if !ok || !inUnionMergeKeyIdentifiesRows(plan, parts) {
+			return false
+		}
+	}
+	return true
 }
 
 // adjustBindingsForInUnion adjusts the inner ordering's bindings:

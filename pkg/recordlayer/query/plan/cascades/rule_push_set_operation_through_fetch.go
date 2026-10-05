@@ -354,9 +354,16 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 	// is a broken derivation path — decline everything, exactly when Java
 	// does. Splitting this into filter-then-agree would let a
 	// disagreeing leg exit via a later failure before the disagreement
-	// is seen. The Go translation functions match by covered-column
-	// name, so the aliases are placeholders.
-	sourceAlias := values.UniqueCorrelationIdentifier()
+	// is seen.
+	//
+	// The source alias is the one the required values are stated over: a
+	// set operation's comparison keys read each leg's current row
+	// (`_current`), where Java rebases them onto its fresh source alias
+	// (getRequiredValues(sourceAlias, ...)). A value-index fetch's
+	// translation pushes only a field of exactly that root, so a fresh
+	// placeholder here made every comparison key untranslatable and no keyed
+	// set operation ever pushed below its fetch (WS-F 4.3 item 3).
+	sourceAlias := values.CurrentCorrelation()
 	targetAlias := values.UniqueCorrelationIdentifier()
 	alive := make(map[int]bool, len(legs))
 	for _, leg := range legs {

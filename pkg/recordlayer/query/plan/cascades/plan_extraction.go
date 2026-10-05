@@ -671,7 +671,13 @@ func rebuildExpressionFromSelectorVisited(
 	if cancelErr := plannerContextErr(ctx); cancelErr != nil {
 		return nil, cancelErr
 	}
-	return rebuilt, err
+	if err != nil {
+		return nil, err
+	}
+	if err := checkInUnionChildOrdering(rebuilt); err != nil {
+		return nil, err
+	}
+	return rebuilt, nil
 }
 
 // rebuildExpressionVisited returns a fresh RelationalExpression of the
@@ -712,7 +718,14 @@ func rebuildExpressionVisited(e expressions.RelationalExpression, stats properti
 		}
 		freshChildren = append(freshChildren, expressions.RebuildQuantifier(q, freshRef))
 	}
-	return rebuildWithFreshChildren(e, freshChildren)
+	rebuilt, err := rebuildWithFreshChildren(e, freshChildren)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkInUnionChildOrdering(rebuilt); err != nil {
+		return nil, err
+	}
+	return rebuilt, nil
 }
 
 // PlanRebuildError marks a failure to rebuild an expression with fresh child

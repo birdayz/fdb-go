@@ -219,8 +219,25 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   benchmarks stop at N=24. Items 4 and 6 are done. The unordered in-union
   arm is deleted (one corpus plan, an unordered IN, became Java's in-join).
   The size-less constructors are gone: `NewRecordQueryInUnionPlan` takes the
-  size, and the rule fails a call without a planner context. Still open:
-  items 3, 9 and 10.
+  size, and the rule fails a call without a planner context.
+  Item 3 is done.
+  - The rule memoizes each ordering partition whole
+    (`MemoizeFinalExpressionsFromOther`, which carries the inner reference's
+    requested orderings). The single-member pin is gone.
+  - Extraction checks every in-union's child against its comparison keys
+    (`InUnionChildOrderingError` as a planner invariant violation;
+    `TestCheckInUnionChildOrdering`).
+  - The set-operation push through a fetch translated comparison keys over a
+    fresh placeholder alias, so a keyed set operation never pushed. It now
+    uses the keys' own `_current` root, as Java rebases them.
+  - Result: `w8_explicit_id_in_order_by_id_explain` is Java's
+    `Fetch(InUnion(COVERING))` and leaves `wsfOpenUntil`. With the in-join
+    disabled, `ORDER BY col1` is the same shape
+    (`TestInUnion_MemoizesThePartitionWhole`). No corpus plan moved.
+  - The record-layer `w8_rl_default_in2_order_by_pk` still runs its in-union
+    over the fetching scan; the cause is not located.
+  Still open: items 9 and 10, the `w8_rl` fetch placement, and the DESC tie
+  row's cause.
 - [ ] Reconcile F-6/F-7b with RFC-191's existing `Fetch(InJoin)` ruling; see
   `DIVERGENCES.md` “Plan choice: an ordered IN over a non-covering index”.
 - [ ] RANK-index match-candidate gap and quoted dotted identifier GROUP BY/order

@@ -204,17 +204,16 @@ func (p *PlanPartition) GetExpressionPropertyValue(
 // getPartitionPropertyValue without also porting its rollUpTo silently drops
 // the guarantee the read depends on.
 //
-// ImplementInUnionRule now rolls the raw partitions up by PropRichOrdering
-// before deriving merge keys, so an equality-bound access cannot share a
-// representative with an unbounded directional scan. It also pins a single
-// member (pinOrderedSpine), and that pin compensates for a SEPARATE defect one
-// layer down:
-// MemoizeFinalExpressionsFromOther (implementation_rule.go:124-151) mints a
-// fresh Reference without a constraint entry, so OptimizeGroupTask's
-// per-ordering retention (unified_tasks.go:663-666) looks up the new reference,
-// finds nothing, and resolves by cost alone. Roll-up alone therefore does not
-// make dropping the pin safe — measured: it yields an InUnion claiming ASC over
-// a filtered full scan.
+// ImplementInUnionRule rolls the raw partitions up by PropRichOrdering before
+// deriving merge keys, so an equality-bound access cannot share a
+// representative with an unbounded directional scan, and it memoizes the
+// partition whole, as Java does (RFC-257 WS-F 4.3 item 3). It used to pin one
+// member (pinOrderedSpine) because MemoizeFinalExpressionsFromOther minted the
+// restricted reference without a constraint entry, so its optimization chose
+// by cost alone (measured then: an InUnion claiming ASC over a filtered full
+// scan). The memoizer now copies the source's requested orderings, and plan
+// extraction verifies every in-union's child provides its comparison keys
+// (checkInUnionChildOrdering).
 func ToPlanPartitions(ref *expressions.Reference) []*PlanPartition {
 	pm := GetRefPlanPropertiesMap(ref)
 	if pm == nil {
