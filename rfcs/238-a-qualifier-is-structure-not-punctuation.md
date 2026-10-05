@@ -921,17 +921,18 @@ which is exactly what makes the raw `recordTypes.equals` at
 objections described Java's shipped behaviour rather than a cost.**
 
   - It said storage names in the plan would make EXPLAIN print
-    `Scan(MY__1TABLE)`. Java's EXPLAIN prints exactly that:
+    `Scan(MY__1TABLE)`. Java 4.12 printed exactly that:
     `SCAN([IS foo__2table__1nested, ...])` and
-    `SCAN([IS my__1adjacency__1list, ...])`, at
-    `valid-identifiers.yamsql:237` and `:422`. The RECORD-TYPE name is mangled;
-    :237 goes on to project `level2$field.1` in the same line, so the columns
-    beside it are NOT. Index names are mangled nowhere -- the covering scan at
-    `:222` prints `foo.table$nested.repeated.idx.field.1.3` verbatim, and
-    `:227`/`:232` print sibling index names the same way. Table names mangled,
-    column and index names not. So Go printing
-    `Scan(MY$TABLE)` is itself a divergence on the shared surface, not a
-    feature to protect.
+    `SCAN([IS my__1adjacency__1list, ...])`, at 4.12.11.0's
+    `valid-identifiers.yamsql:237` and `:422`. Java 4.14 (#4437, 545efe8f0)
+    keeps the storage name IN THE PLAN and decodes it only at the render:
+    `RecordTypeComparison.explain`, the type filter and the three DML plans
+    and expressions print `ProtoUtils.toUserIdentifier(...)`, so 4.14.2.0's
+    `valid-identifiers.yamsql:171` reads `SCAN([IS foo.table$nested, ...])`.
+    Go ports that render (`explainRecordTypeName`, `plans/scan.go`, used by
+    the scan, type-filter, INSERT, UPDATE and DELETE explains). Either way the
+    objection fails: what EXPLAIN prints is a render choice, and the memo
+    identity is the storage name in both versions.
   - It said the render boundary would then have to decode through a
     non-injective map. Java DOES decode -- `Record.fromDescriptorPreservingName`
     is `new Record(ProtoUtils.toUserIdentifier(descriptor.getName()),
@@ -1094,6 +1095,20 @@ puts on query-engine work. What IS here is the measurement, the pinned
 divergence in two scenarios, and the four boundary fixes — which stay correct
 independently of the fifth, because they make a caller holding either spelling
 correct, the contract `GetRecordType` already offers.
+
+**IMPLEMENTED (owner ACK 2026-10-05, Java 4.14.2.0 migration).**
+`cascadesTranslator.storageName` resolves the table to its record type's stored
+name at the scan leaf and the INSERT, UPDATE and DELETE targets. UPDATE carries
+its correlation separately (`WithTargetAlias`, read by `executeUpdate`), as
+above. `AddGeneratedIndex` matches the table by storage name, Java's
+`findTableByStorageName`. EXPLAIN renders the user identifier (§7c's first
+rebuttal). The sentinels moved as predicted: the escaped table plans
+`TypeFilter([MY$TABLE], Scan(MY$TABLE, [<>]))`, `IndexScan(IDX_NAME, [=]
+COVERING)` and `StreamingAgg(keys=[_current.G#1], IndexScan(AGG_G, [*]
+COVERING))`, the three golden stanzas re-blessed with them, and the WS-F
+`w13_display_scan_explain` probe reached SAME-PATH
+(`Scan(foo.table$nested, [=])` against Java's `SCAN([IS foo.table$nested,
+EQUALS ...])`).
 
 ### 7d. Half a line-cite gate is worth building, and the other half is discipline
 

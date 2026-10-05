@@ -1,20 +1,15 @@
 # escaped_table_grouped_aggregate.yaml
 #
-# RFC-238 §7c PREDICTS FIVE MATCHING GATES TURN ON when the escaped-name
-# divergence is fixed, and licenses the resulting plan movement as "CORRECT
-# rather than drift". That sentence is the one that would wave a wide golden
-# diff through unexamined at fix time, so the shape it predicts about is
-# measured here rather than only argued about.
+# RFC-238 §7c predicted five matching gates turn on when the escaped-name
+# divergence is fixed. This file measured the streaming-aggregate gate before
+# the fix (the escaped table sorted in memory where the index supplied the
+# order) and pins it after: both tables get the covering index scan.
 #
 # The shape is the one the streaming-aggregate and aggregate-data-access gates
 # need: an escaped table, a covering index over the grouping column, and a
 # grouped query. `u` is the same query over an UNESCAPED table, and the pair is
 # the whole point — a difference between them is the divergence, and a plan
 # that is poor for BOTH is something else entirely.
-#
-# Recorded at the values they HAVE. If the escaped arm ever gains the access
-# path the unescaped one has, that is §7c landing, and this file is one of the
-# places that must move with it.
 name: escaped_table_grouped_aggregate
 schema_template: |
   CREATE TABLE "AGG$T" (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))
@@ -33,10 +28,9 @@ tests:
       - [10, 2]
       - [20, 1]
 
-  # The escaped table, same query. Rows must match the control — the divergence
-  # §7c is about costs an access path, never an answer.
+  # The escaped table, same query, same access path.
   - query: SELECT g, COUNT(*) FROM "AGG$T" GROUP BY g ORDER BY g
-    plan_contains: "StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(AGG$T)))"
+    plan_contains: "StreamingAgg(keys=[_current.G#1], IndexScan(AGG_G, [*] COVERING))"
     rows:
       - [10, 2]
       - [20, 1]

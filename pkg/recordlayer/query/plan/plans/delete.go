@@ -108,7 +108,7 @@ func (p *RecordQueryDeletePlan) Explain() string {
 	if inner := p.GetInner(); inner != nil {
 		innerLabel = inner.Explain()
 	}
-	return fmt.Sprintf("Delete(%s, %s)", p.targetRecordType, innerLabel)
+	return fmt.Sprintf("Delete(%s, %s)", explainRecordTypeName(p.targetRecordType), innerLabel)
 }
 
 var (

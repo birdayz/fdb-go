@@ -384,7 +384,11 @@ func (tr *selectMergeTranslation) expressionBinding(member expressions.Relationa
 				return nil, err
 			}
 		}
-		return expressions.NewUpdateExpression(translatedQs[0], e.GetTargetRecordType(), e.GetTargetType(), transforms)
+		rebuilt, err := expressions.NewUpdateExpression(translatedQs[0], e.GetTargetRecordType(), e.GetTargetType(), transforms)
+		if err != nil {
+			return nil, err
+		}
+		return rebuilt.WithTargetAlias(e.GetTargetAlias()), nil
 	case *expressions.TableFunctionExpression:
 		value, err := scoped.value(e.GetValue())
 		if err != nil {

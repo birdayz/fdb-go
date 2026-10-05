@@ -3,6 +3,7 @@ package plans
 import (
 	"strings"
 
+	"fdb.dev/pkg/recordlayer/protoname"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -244,6 +245,15 @@ func scanComparisonGlyph(cr *predicates.ComparisonRange) string {
 	return "*"
 }
 
+// explainRecordTypeName is the spelling EXPLAIN shows for a stored record-type
+// name: its user identifier, as Java's RecordTypeComparison.explain renders
+// ProtoUtils.toUserIdentifier (`SCAN([IS foo.table$nested])` over the stored
+// `foo__2table__1nested`). The plan itself carries the stored name (RFC-238
+// §7c).
+func explainRecordTypeName(name string) string {
+	return protoname.ToUserIdentifier(name)
+}
+
 // Explain renders a one-line label.
 func (p *RecordQueryScanPlan) Explain() string {
 	var b strings.Builder
@@ -252,7 +262,7 @@ func (p *RecordQueryScanPlan) Explain() string {
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		b.WriteString(name)
+		b.WriteString(explainRecordTypeName(name))
 	}
 	if len(p.scanComparisons) > 0 {
 		b.WriteString(", [")

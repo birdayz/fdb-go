@@ -4063,10 +4063,7 @@ func executeUpdate(
 	if err != nil {
 		return nil, fmt.Errorf("update input owner: %w", err)
 	}
-	targetQOV, err := values.NewQuantifiedObjectValue(
-		values.NamedCorrelationIdentifier(p.GetTargetRecordType()),
-		p.GetTargetType(),
-	)
+	targetQOV, err := values.NewQuantifiedObjectValue(p.GetTargetAlias(), p.GetTargetType())
 	if err != nil {
 		return nil, fmt.Errorf("update target owner: %w", err)
 	}

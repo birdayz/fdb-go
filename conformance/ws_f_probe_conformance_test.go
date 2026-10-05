@@ -989,6 +989,7 @@ var wsfDeclaredPathReasons = map[string]string{
 	"rfc152-materialized-outer-join": "2.3: the preserved RFC-152 materialized outer join",
 	"sparse-param-plan-constraint":   "5, item 3: a real (not substituted) ? parameter implies no sparse index until WS-H ports the plan-constraint identity; WS-E section 4 moves the prepared row here",
 	"covering-rank":                  "4.2 item 3: Go's primary-versus-index rank against the target's cyclic relation, final plan",
+	"rfc-191":                        "DIVERGENCES.md, ordered IN over a non-covering index: Go pushes a comparand in-join through its fetch, Fetch(InJoin) where Java plans Fetch(InUnion)",
 }
 
 // wsfAtAcceptance reports whether a probe is at its acceptance entry. The entry's first
@@ -1354,7 +1355,6 @@ var wsfAcceptance = map[string]string{
 // dependency that moves it there (ws-f-design.md section 12).
 var wsfOpenUntil = map[string]string{
 	"w10_enum_distinct_explain":        "F-7c",
-	"w13_display_scan_explain":         "RFC-238 section 7c",
 	"w6_left_join_indexed_explain":     "F-7c",
 	"w8_covering_all_explain":          "F-7c",
 	"w8_covering_id_neq_explain":       "F-7c",
@@ -1544,7 +1544,7 @@ var wsfGoPins = map[string]string{
 	"w13_display_insert":                         "OK [id:BIGINT x$y:BIGINT] [[5 6]]",
 	"w13_display_insert_explain":                 "OK EXPLAIN \"Insert(foo.table$nested)\"",
 	"w13_display_rows":                           "OK [id:BIGINT x$y:BIGINT] [[1 2]]",
-	"w13_display_scan_explain":                   "OK EXPLAIN \"PredicatesFilter(Scan(foo.table$nested), [1 preds])\"",
+	"w13_display_scan_explain":                   "OK EXPLAIN \"Scan(foo.table$nested, [=])\"",
 	"w13_display_select_empty":                   "OK [id:BIGINT x$y:BIGINT] []",
 	"w13_quoted_pk_eq_explain":                   "OK EXPLAIN \"Scan(footab, [=])\"",
 	"w13_quoted_pk_eq_rows":                      "OK [id:BIGINT x:BIGINT] [[1 2]]",

@@ -23,8 +23,13 @@ type RecordQueryUpdatePlan struct {
 	PlanExprBase
 	innerQ           expressions.Quantifier
 	targetRecordType string
-	targetType       values.ExactTypeHandle
-	transforms       []expressions.UpdateTransform
+	// targetAlias is the correlation the SET values read the target row
+	// through, apart from the stored record-type name (RFC-238 §7c,
+	// expressions.UpdateExpression.targetAlias). Zero reads it through
+	// NamedCorrelationIdentifier(targetRecordType).
+	targetAlias values.CorrelationIdentifier
+	targetType  values.ExactTypeHandle
+	transforms  []expressions.UpdateTransform
 }
 
 // NewRecordQueryUpdatePlan constructs the UPDATE plan.
@@ -176,6 +181,22 @@ func (p *RecordQueryUpdatePlan) GetQuantifiers() []expressions.Quantifier {
 // GetTargetRecordType returns the destination record-type name.
 func (p *RecordQueryUpdatePlan) GetTargetRecordType() string { return p.targetRecordType }
 
+// WithTargetAlias returns a copy whose SET values read the target row through
+// alias.
+func (p *RecordQueryUpdatePlan) WithTargetAlias(alias values.CorrelationIdentifier) *RecordQueryUpdatePlan {
+	cp := *p
+	cp.targetAlias = alias
+	return &cp
+}
+
+// GetTargetAlias is the correlation the SET values read the target row through.
+func (p *RecordQueryUpdatePlan) GetTargetAlias() values.CorrelationIdentifier {
+	if p.targetAlias.IsZero() {
+		return values.NamedCorrelationIdentifier(p.targetRecordType)
+	}
+	return p.targetAlias
+}
+
 // GetTargetType returns a defensive exact target type.
 func (p *RecordQueryUpdatePlan) GetTargetType() values.Type {
 	if p.targetType == nil {
@@ -242,7 +263,7 @@ func (p *RecordQueryUpdatePlan) Explain() string {
 	if inner := p.GetInner(); inner != nil {
 		innerLabel = inner.Explain()
 	}
-	return fmt.Sprintf("Update(%s, [%d transforms], %s)", p.targetRecordType, len(p.transforms), innerLabel)
+	return fmt.Sprintf("Update(%s, [%d transforms], %s)", explainRecordTypeName(p.targetRecordType), len(p.transforms), innerLabel)
 }
 
 var (

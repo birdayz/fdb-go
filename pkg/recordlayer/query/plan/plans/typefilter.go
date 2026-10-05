@@ -107,7 +107,11 @@ func (p *RecordQueryTypeFilterPlan) Explain() string {
 	if inner := p.GetInner(); inner != nil {
 		innerLabel = inner.Explain()
 	}
-	return fmt.Sprintf("TypeFilter(%v, %s)", p.recordTypes, innerLabel)
+	names := make([]string, len(p.recordTypes))
+	for i, name := range p.recordTypes {
+		names[i] = explainRecordTypeName(name)
+	}
+	return fmt.Sprintf("TypeFilter(%v, %s)", names, innerLabel)
 }
 
 var (

@@ -152,7 +152,7 @@ func (p *RecordQueryInsertPlan) Explain() string {
 	if inner := p.GetInner(); inner != nil {
 		innerLabel = inner.Explain()
 	}
-	return fmt.Sprintf("Insert(%s, %s)", p.targetRecordType, innerLabel)
+	return fmt.Sprintf("Insert(%s, %s)", explainRecordTypeName(p.targetRecordType), innerLabel)
 }
 
 var (

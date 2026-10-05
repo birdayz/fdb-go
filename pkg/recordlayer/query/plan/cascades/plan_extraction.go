@@ -820,9 +820,13 @@ func rebuildWithFreshChildren(e expressions.RelationalExpression, freshChildren 
 		if len(freshChildren) != 1 {
 			return nil, fmt.Errorf("UpdateExpression: expected 1 child, got %d", len(freshChildren))
 		}
-		return expressions.NewUpdateExpression(
+		rebuilt, err := expressions.NewUpdateExpression(
 			freshChildren[0], ex.GetTargetRecordType(), ex.GetTargetType(), ex.GetTransforms(),
 		)
+		if err != nil {
+			return nil, err
+		}
+		return rebuilt.WithTargetAlias(ex.GetTargetAlias()), nil
 
 	case *expressions.DeleteExpression:
 		if len(freshChildren) != 1 {

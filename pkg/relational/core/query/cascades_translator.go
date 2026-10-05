@@ -727,6 +727,20 @@ func (t *cascadesTranslator) tableColumns(table string) []values.Field {
 // result is DETERMINISTIC even in the (metadata-invalid) case of two record types
 // that differ only by case — map iteration order is not stable. In well-formed
 // metadata proto names are unique, so at most one name matches and the order is moot.
+// storageName is the stored protobuf record-type name of a SQL table, Java's
+// Type.Record.getStorageName (RFC-238 §7c): the plan tree names record types
+// by it at the scan leaf and the DML targets. A table the metadata does not
+// hold keeps its SQL name, and the caller's own resolution reports it.
+func (t *cascadesTranslator) storageName(table string) string {
+	if t.md == nil {
+		return table
+	}
+	if rt := t.resolveRecordType(table); rt != nil {
+		return rt.Name
+	}
+	return table
+}
+
 func (t *cascadesTranslator) resolveRecordType(table string) *recordlayer.RecordType {
 	if rt := t.md.GetRecordType(table); rt != nil {
 		return rt
@@ -2570,17 +2584,15 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 			"scan %q has no exact catalog row type", s.Table))
 		return nil
 	}
-	// s.Table is the SQL identifier, and passing it here is the OPEN HALF of
-	// RFC-238 §7c. buildMatchCandidates registers every match candidate under
-	// the STORED protobuf name, and FullUnorderedScanExpression.
-	// EqualsWithoutChildren compares the two record-type lists as strings, so a
-	// table whose name escapes (`MY$TABLE` stored as `MY__1TABLE`) matches no
-	// candidate: no primary-key pushdown, no index access path, ever. Java
-	// translates HERE -- LogicalOperator.generateTableAccess builds its scan
-	// from getAllTableStorageNames -- and that is the decided fix. Pinned, at
-	// the wrong value on purpose, by the two escaped-name yamsql scenarios.
+	// The scan carries the table's STORED protobuf name, as Java's
+	// LogicalOperator.generateTableAccess builds its scan from
+	// getAllTableStorageNames (RFC-238 §7c). buildMatchCandidates registers every
+	// match candidate under the stored name and FullUnorderedScanExpression.
+	// EqualsWithoutChildren compares the record-type lists as strings, so a table
+	// whose name escapes (`MY$TABLE` stored as `MY__1TABLE`) matches its
+	// candidates only through the stored spelling.
 	scan, err := expressions.NewFullUnorderedScanExpression(
-		[]string{s.Table}, values.NewRecordType("", false, cols))
+		[]string{t.storageName(s.Table)}, values.NewRecordType("", false, cols))
 	if err != nil {
 		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
 			"scan %q has no exact result row: %v", s.Table, err))
@@ -9859,7 +9871,7 @@ func (t *cascadesTranslator) translateInsert(ins *logical.LogicalInsert) express
 			"INSERT target %q has no exact catalog row type", ins.Table))
 		return nil
 	}
-	insert, err := expressions.NewInsertExpression(q, ins.Table, &values.RecordType{Fields: targetFields})
+	insert, err := expressions.NewInsertExpression(q, t.storageName(ins.Table), &values.RecordType{Fields: targetFields})
 	if err != nil {
 		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
 			"INSERT has no exact result row: %v", err))
@@ -9915,13 +9927,16 @@ func (t *cascadesTranslator) translateUpdate(upd *logical.LogicalUpdate) express
 			NewValue:      newVal,
 		}
 	}
-	update, err := expressions.NewUpdateExpression(q, upd.Target, &values.RecordType{Fields: targetFields}, transforms)
+	// The target is the stored record-type name (Java's QueryVisitor sets
+	// targetRecordType from getStorageName()); the SET values read the target
+	// row through the SQL name their scope was built under (RFC-238 §7c).
+	update, err := expressions.NewUpdateExpression(q, t.storageName(upd.Target), &values.RecordType{Fields: targetFields}, transforms)
 	if err != nil {
 		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
 			"UPDATE has no exact result row: %v", err))
 		return nil
 	}
-	return update
+	return update.WithTargetAlias(values.NamedCorrelationIdentifier(upd.Target))
 }
 
 func (t *cascadesTranslator) translateDelete(del *logical.LogicalDelete) expressions.RelationalExpression {
@@ -9937,7 +9952,7 @@ func (t *cascadesTranslator) translateDelete(del *logical.LogicalDelete) express
 			"DELETE has no exact input row"))
 		return nil
 	}
-	deleteExpr, err := expressions.NewDeleteExpression(expressions.ForEachQuantifier(innerRef), del.Target)
+	deleteExpr, err := expressions.NewDeleteExpression(expressions.ForEachQuantifier(innerRef), t.storageName(del.Target))
 	if err != nil {
 		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
 			"DELETE has no exact result row: %v", err))

@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=400 queries=3083 dml=179 non_query=129 plan_errors=324 unexpected_errors=4
+# files=400 queries=3085 dml=179 non_query=129 plan_errors=324 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -6946,11 +6946,10 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryCoveringIndexPlan
 === escaped_table_grouped_aggregate.yaml#1
 sql:   SELECT g, COUNT(*) FROM "AGG$T" GROUP BY g ORDER BY g
-plan:  Map(StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(AGG$T))), {G: _current.G#0, _1: _current.COUNT(*)#1})
+plan:  Map(StreamingAgg(keys=[_current.G#1], IndexScan(AGG_G, [*] COVERING)), {G: _current.G#0, _1: _current.COUNT(*)#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryInMemorySortPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === escaped_table_grouped_aggregate.yaml#2
 sql:   SELECT g, MAX(v) FROM u GROUP BY g ORDER BY g
 plan:  Map(StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(U))), {G: _current.G#0, _1: _current.MAX(V)#1})
@@ -6967,13 +6966,22 @@ shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryScanPlan
 === escaped_table_secondary_index.yaml#0
 sql:   SELECT id FROM "MY$TABLE" WHERE name = 'beta'
-plan:  Map(PredicatesFilter(Scan(MY$TABLE), [1 preds]), {ID: _current.ID#0})
+plan:  Map(IndexScan(IDX_NAME, [=] COVERING), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryCoveringIndexPlan
 === escaped_table_secondary_index.yaml#1
 sql:   SELECT id FROM u WHERE tag = 'x'
 plan:  Map(IndexScan(IDX_TAG, [=] COVERING), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== escaped_table_secondary_index.yaml#2
+sql:   SELECT id FROM "MY$TABLE" WHERE "c$1" = 200
+plan:  Map(IndexScan(IDX_AS_SELECT, [=, *] COVERING), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== escaped_table_secondary_index.yaml#3
+sql:   SELECT id FROM "MY$TABLE" WHERE "c$1" > 150
+plan:  Map(IndexScan(IDX_AS_SELECT, [<>, *] COVERING), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryCoveringIndexPlan
 === exists.yaml#0
@@ -10020,9 +10028,9 @@ shape:   RecordQueryTypeFilterPlan
 shape:     RecordQueryScanPlan
 === intermingle_escaped_table_name.yaml#2
 sql:   SELECT id, name FROM "MY$TABLE" WHERE id > 1 ORDER BY id
-plan:  Map(PredicatesFilter(Scan(MY$TABLE), [1 preds]), {ID: _current.ID#0, NAME: _current.NAME#1})
+plan:  Map(TypeFilter([MY$TABLE], Scan(MY$TABLE, [<>])), {ID: _current.ID#0, NAME: _current.NAME#1})
 shape: RecordQueryMapPlan
-shape:   RecordQueryPredicatesFilterPlan
+shape:   RecordQueryTypeFilterPlan
 shape:     RecordQueryScanPlan
 === intermingle_type_filter.yaml#0
 sql:   SELECT id, name FROM t WHERE id > 2 ORDER BY id
@@ -15941,12 +15949,11 @@ sql:   WITH RECURSIVE d AS (SELECT * FROM q1, QCASE WHERE q1."id" = 1 UNION ALL 
 plan:  <PLAN-ERROR: 0AF00: recursive CTE "D" has no exact common result row: 42F64: UNION legs do not have the same number of columns>
 === quoted_identifier_labels.yaml#31
 sql:   WITH RECURSIVE d AS (SELECT * FROM dott WHERE "a.b" = 1 UNION ALL SELECT d."a.b" + 1, d.plain FROM d WHERE d."a.b" < 3) SELECT d."a.b" FROM d ORDER BY d."a.b"
-plan:  InMemorySort([_current.a.b#0 ASC], Map(RecursiveDfsJoin(PREORDER, PredicatesFilter(Scan(DOTT), [1 preds]), Map(PredicatesFilter(TempTableScan(DforScan), [1 preds]), {a.b: (_current.a.b#0 + 1), PLAIN: _current.PLAIN#1})), {a.b: _current.a.b#0}))
+plan:  InMemorySort([_current.a.b#0 ASC], Map(RecursiveDfsJoin(PREORDER, Scan(DOTT, [=]), Map(PredicatesFilter(TempTableScan(DforScan), [1 preds]), {a.b: (_current.a.b#0 + 1), PLAIN: _current.PLAIN#1})), {a.b: _current.a.b#0}))
 shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryMapPlan
 shape:     RecordQueryRecursiveDfsJoinPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
+shape:       RecordQueryScanPlan
 shape:       RecordQueryMapPlan
 shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryTempTableScanPlan

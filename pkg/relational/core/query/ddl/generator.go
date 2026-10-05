@@ -118,10 +118,9 @@ func Generate(op logical.LogicalOperator, md *recordlayer.RecordMetaData, opts O
 
 	// Every rendered field name comes from the scanned record type's
 	// DESCRIPTOR, by accessor ordinal — the storage name Java's
-	// ResolvedAccessor carries. GetRecordType: spec.recordType is the SQL
-	// identifier the translator's scan carries, the map is keyed by the STORED
-	// protobuf name, and an escaped name misses; a miss leaves res.root nil and
-	// the index would be built from folded display names.
+	// ResolvedAccessor carries. spec.recordType is the stored record-type name
+	// the translator's scan carries (RFC-238 §7c); a miss leaves res.root nil
+	// and the index would be built from folded display names.
 	res := storageNames{}
 	if rt := md.GetRecordType(spec.recordType); rt != nil {
 		res.root = rt.Descriptor

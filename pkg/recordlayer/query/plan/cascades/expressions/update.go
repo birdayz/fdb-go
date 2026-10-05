@@ -89,9 +89,16 @@ func (e *UpdateTransformAmbiguousError) Error() string {
 type UpdateExpression struct {
 	inner            Quantifier
 	targetRecordType string
-	targetType       values.ExactTypeHandle
-	transforms       []UpdateTransform // canonicalised: sorted by FieldOrdinals
-	resultValue      values.Value
+	// targetAlias is the correlation the SET values read the target row through,
+	// carried apart from targetRecordType (the stored record-type name, the
+	// structural identity), RFC-238 §7c. The SQL translator scopes the SET list
+	// under the table's SQL name, which differs from the stored name for an
+	// escaped table (`MY$TABLE` stored as `MY__1TABLE`). The zero value reads the
+	// target through NamedCorrelationIdentifier(targetRecordType).
+	targetAlias values.CorrelationIdentifier
+	targetType  values.ExactTypeHandle
+	transforms  []UpdateTransform // canonicalised: sorted by FieldOrdinals
+	resultValue values.Value
 }
 
 // NewUpdateExpression builds an UPDATE. The transforms slice is
@@ -136,6 +143,22 @@ func (e *UpdateExpression) GetInner() Quantifier { return e.inner }
 
 // GetTargetRecordType returns the target record-type name.
 func (e *UpdateExpression) GetTargetRecordType() string { return e.targetRecordType }
+
+// WithTargetAlias returns a copy whose SET values read the target row through
+// alias (see the targetAlias field).
+func (e *UpdateExpression) WithTargetAlias(alias values.CorrelationIdentifier) *UpdateExpression {
+	cp := *e
+	cp.targetAlias = alias
+	return &cp
+}
+
+// GetTargetAlias is the correlation the SET values read the target row through.
+func (e *UpdateExpression) GetTargetAlias() values.CorrelationIdentifier {
+	if e.targetAlias.IsZero() {
+		return values.NamedCorrelationIdentifier(e.targetRecordType)
+	}
+	return e.targetAlias
+}
 
 // GetTargetType returns a defensive copy of the exact target record type.
 func (e *UpdateExpression) GetTargetType() values.Type { return e.targetType.Type() }
@@ -249,7 +272,11 @@ func (e *UpdateExpression) WithQuantifiers(quantifiers []Quantifier) (Relational
 	if err := requireQuantifierArity("UpdateExpression", len(quantifiers), 1); err != nil {
 		return nil, err
 	}
-	return NewUpdateExpression(quantifiers[0], e.targetRecordType, e.targetType.Type(), e.transforms)
+	rebuilt, err := NewUpdateExpression(quantifiers[0], e.targetRecordType, e.targetType.Type(), e.transforms)
+	if err != nil {
+		return nil, err
+	}
+	return rebuilt.WithTargetAlias(e.targetAlias), nil
 }
 
 var _ RelationalExpression = (*UpdateExpression)(nil)

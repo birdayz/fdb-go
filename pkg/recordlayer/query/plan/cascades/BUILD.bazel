@@ -213,6 +213,7 @@ go_library(
     deps = [
         "//gen",
         "//pkg/recordlayer/internal/protovalue",
+        "//pkg/recordlayer/protoname",
         "//pkg/recordlayer/query/plan/cascades/combinatorics",
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/matching",

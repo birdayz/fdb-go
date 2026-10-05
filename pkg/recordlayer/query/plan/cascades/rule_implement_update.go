@@ -63,7 +63,7 @@ func (r *ImplementUpdateRule) OnMatch(call *ExpressionRuleCall) {
 			call.Fail(err)
 			return
 		}
-		call.Yield(updPlan)
+		call.Yield(updPlan.WithTargetAlias(upd.GetTargetAlias()))
 	}
 }
 

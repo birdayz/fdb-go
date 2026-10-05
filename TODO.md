@@ -241,10 +241,18 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   F-1 leftovers. `w10_enum_not_distinct_explain` reaches its target with W9; its
   Go pin is updated. `w10_enum_distinct_explain` is the IS DISTINCT FROM covering
   scan Java picks under PREFER_INDEX, so it is reassigned to F-7c, like
-  `w9_distinct_explain`. `w13_display_scan_explain` (a dotted escaped table gets
-  no PK scan) needs RFC-238 §7c: storage names in the scan leaf and DML targets,
-  a cascades matching change. The owner ACKed §7c on 2026-10-05, so it is
-  ready to implement. Reassigned to that.
+  `w9_distinct_explain`. `w13_display_scan_explain` (a dotted escaped table got
+  no PK scan) is at SAME-PATH with RFC-238 §7c, ACKed on 2026-10-05 and done:
+  the scan leaf and the INSERT, UPDATE and DELETE targets carry the storage
+  name, UPDATE carries its correlation separately (`WithTargetAlias`),
+  `AddGeneratedIndex` matches by storage name, and EXPLAIN decodes the
+  record-type name as Java 4.14 does (#4437). Escaped tables now get PK ranges,
+  secondary indexes and aggregate indexes. The same pass fixed a regression
+  from WS-E 5.4(a): with the translator no longer folding `CAST(3 AS BIGINT)`,
+  range enclosure saw a CastValue and refused the sparse index
+  (`w9_sparse_not_distinct_cast_value_explain`). `compileTimeComparand` now
+  evaluates a row-free, binding-free comparand, as Java's
+  `CompilableRange.compile` does.
   F-7b (design 4.3), the IN-list plans. Item 2 is done.
   - An index plan's rich ordering marks the primary-key keys it reaches only past
     the record-type coordinate (`WithPastRecordTypeHorizon`).
@@ -346,6 +354,23 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   run).
 - [ ] RANK-index match-candidate gap and quoted dotted identifier GROUP BY/order
   gaps (`embedded/dotted_identifier_gap_test.go`); verify target reach first.
+- [ ] Escaped COLUMN names (`"c$1"`, stored `c__1`) in index metadata. The key
+  expansion now decodes stored paths as Java's KeyExpressionExpansionVisitor
+  does (`resolveKeyFieldPath`), so a value index over an escaped column is
+  chosen and an escaped PK column gets PK ranges. Still open, all measured with
+  `PlanQueryForTest`, each matching Java's plan only for the unescaped twin:
+  - The candidates' name-keyed surfaces carry STORED names and resolve them
+    against user-named Types: `columnNames`, `pkColumnNames`, `primaryKeyColumns`,
+    key-column paths (`bakeOrderingColumn`/`bakeOrderingPath`/`ColumnValue`,
+    `ColumnCanExtendOrderingClaim`, `resolvedColumnsInRow`, `plans/ordering.go`,
+    `cost.go`). So ORDER BY over an escaped index or PK column adds an
+    InMemorySort (`ORDER BY "c$1"`, `ORDER BY "i.d"`). Decode once at the
+    metadata source, not inside the shared lookup helpers: those also take
+    user names, and decoding a user name like `a__1b` misresolves.
+  - An aggregate index grouped by, or aggregating, an escaped column is never
+    matched (`DescribeAggregateIndexKey` paths are stored and must stay stored
+    for `pathColumnsRootKeyExpression`; decode where they are compared).
+  - `CREATE INDEX i ON t ("c$1")` fails with 42703 `could not find c$1`.
 - [ ] Close the large-join memo planning-cost regression introduced by
   `54fcf78f0`. Preserve Java's block-Select architecture. Investigate a cheap
   negative filter or fewer sibling alternatives using Java's PartitionSelectRule
@@ -458,6 +483,26 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   schema levels. No migration from the Go layout: data written by an earlier Go
   build is recreated. A template created through Go must load in Java and the
   reverse (`TODO_OLD.md`, “Go SQL driver stores the relational catalog…”).
+  Measured scope (4.14.2.0 source):
+  - Catalog store at `KeySpaceDirectory(__SYS, NULL) / (__SYS, NULL) /
+    (CATALOG, LONG, 0)`, so the tuple `(nil, nil, 0)`.
+  - A database path is `/DOMAIN/DB`. A domain must be registered
+    (`registerDomainIfNotExists`; Java's server registers `FRL`, its tests
+    `TEST`); the domain is a `DirectoryLayerDirectory` resolved by the GLOBAL
+    `ScopedDirectoryLayer` (FDB directory layer `createOrOpen([domain])`, the
+    prefix's tuple long, plus an `FDBReverseDirectoryCache` entry). `dbName`
+    and `schema` are `DirectoryLayerDirectory`s resolved by a
+    `ScopedInterningLayer` at `domain/__internedStrings` ("IL");
+    `defaultSchema` is a NULL directory. A one-segment path is INVALID_PATH.
+  - Go has the FDB directory layer (`pkg/fdbgo/fdb/directory`) but no
+    `ScopedDirectoryLayer`, `FDBReverseDirectoryCache`, `StringInterningLayer`,
+    record-layer `HighContentionAllocator` or `ScopedInterningLayer`; its
+    `keyspace.FDBResolver` is a Go-only format. These are byte-exact ports
+    (about 2,800 lines of Java with `LocatableResolver`), then the keyspace tree,
+    `sqldriver`, `catalog`, `ddl`, `fleet`, the `frl` CLI.
+  - About 820 single-segment database paths in 558 test files must gain a
+    domain. Waiting on the owner: the domain Go's driver registers (proposed
+    `FRL`, as Java's server) and leave to rename the test paths with a script.
 - [ ] Reconcile living compatibility claims/CHANGELOG, run `just test-full` and
   required interop/performance checks, then final migration review and PR CI.
   Fix all Medium-or-higher findings before declaring completion.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/protoname"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -140,10 +141,19 @@ func expandKeyExpression(expression *gen.KeyExpression, s keyExpansionState) (*G
 	}
 }
 
+// resolveKeyFieldPath resolves a key expression's STORED field path against a
+// base type whose fields carry user identifiers (values.FieldNameForProtoField
+// decodes every descriptor name). Each segment is decoded by the same rule, as
+// Java's KeyExpressionExpansionVisitor reads
+// ProtoUtils.toUserIdentifier(fieldKeyExpression.getFieldName())
+// (KeyExpressionExpansionVisitor.java:130, :301), so an index over the column
+// "c$1" (stored c__1) resolves the field the query names. The registered column
+// paths stay stored: DescribeAggregateIndexKey spells them back into a key
+// expression.
 func resolveKeyFieldPath(base values.Value, path []string) (values.Value, error) {
 	requests := make([]values.FieldRequest, len(path))
 	for i, segment := range path {
-		request, err := values.FieldByName(segment)
+		request, err := values.FieldByName(protoname.ToUserIdentifier(segment))
 		if err != nil {
 			return nil, err
 		}

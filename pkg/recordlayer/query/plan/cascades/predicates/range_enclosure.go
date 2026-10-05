@@ -66,6 +66,27 @@ type (
 
 func (r literalRange) empty() bool { return !r.null && !r.nonNull }
 
+// compileTimeComparand is CompilableRange.compile's
+// comparison.getComparand(null, evaluationContext): Java evaluates the comparand
+// VALUE, so `col2 IS NOT DISTINCT FROM CAST(3 AS BIGINT)` bounds the range as
+// `= 3` does and implies a sparse index's `col2 IS NOT NULL`
+// (ISCAN(I4 [NOT_DISTINCT_FROM CAST(@c12 AS LONG)])). Only a tree with no row
+// and no binding evaluates; ConstantObjectValue and parameters stay declined,
+// for the plan-cache reason Encloses gives.
+func compileTimeComparand(v values.Value) (any, bool) {
+	if constant, ok := v.(*values.ConstantValue); ok {
+		return constant.Value, true
+	}
+	if !values.IsConstantValue(v) {
+		return nil, false
+	}
+	out, err := v.Evaluate(nil)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
+}
+
 func compileLiteralRange(comparisons []Comparison) (literalRange, bool) {
 	r := literalRange{null: true, nonNull: true}
 	for _, c := range comparisons {
@@ -80,18 +101,18 @@ func compileLiteralRange(comparisons []Comparison) (literalRange, bool) {
 			r.null = false
 			continue
 		}
-		constant, ok := c.Operand.(*values.ConstantValue)
-		if !ok || constant.Value == nil {
+		comparand, ok := compileTimeComparand(c.Operand)
+		if !ok || comparand == nil {
 			return literalRange{}, false
 		}
 		// Prove that this domain has an ordering before accepting even a
 		// one-sided interval. cmpAny preserves SQL's signed-zero equality and
 		// exact integer comparison, also used when the residual is evaluated.
-		if _, ok := compareLiteralBounds(constant.Value, constant.Value); !ok {
+		if _, ok := compareLiteralBounds(comparand, comparand); !ok {
 			return literalRange{}, false
 		}
 		r.null = false // SQL ordered comparisons never accept NULL rows.
-		bound := &literalRangeBound{value: constant.Value}
+		bound := &literalRangeBound{value: comparand}
 		var lower, upper *literalRangeBound
 		switch c.Type {
 		case ComparisonEquals, ComparisonNotDistinctFrom:

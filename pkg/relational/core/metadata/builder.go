@@ -294,6 +294,10 @@ func (b *Builder) AddIndex(tableName, indexName string, columns []string, unique
 // name-based re-derivation — mirroring Java, where the DdlVisitor hands the
 // generator's RecordLayerIndex straight to the schema-template builder.
 //
+// tableName is the generator's record-type name, the table's STORAGE name
+// (the scan it read carries it, RFC-238 §7c), and the table is found by it,
+// Java's findTableByStorageName (MaterializedViewIndexGenerator.java:102).
+//
 // rootExpression must be non-nil. indexType "" means VALUE. options may be
 // nil. predicate may be nil (a full, non-sparse index).
 func (b *Builder) AddGeneratedIndex(tableName, indexName string, rootExpression recordlayer.KeyExpression,
@@ -305,10 +309,12 @@ func (b *Builder) AddGeneratedIndex(tableName, indexName string, rootExpression 
 		return b
 	}
 	for i := range b.tables {
-		if b.tables[i].name != tableName {
+		if storage, err := recordlayer.ToProtoBufCompliantName(b.tables[i].name); err != nil || storage != tableName {
 			continue
 		}
-		b.indexedTables = append(b.indexedTables, tableName)
+		// MoveIndexedTablesToEnd matches the table's own name, not the storage
+		// name it was found by.
+		b.indexedTables = append(b.indexedTables, b.tables[i].name)
 		b.tables[i].indexes = append(b.tables[i].indexes, indexSpec{
 			name:           indexName,
 			unique:         unique,
