@@ -107,6 +107,7 @@ go_test(
         "identity_passthrough_outer_kind_test.go",
         "in_memory_sort_over_ordered_scan_rowsread_test.go",
         "in_union_empty_test.go",
+        "in_union_max_size_test.go",
         "intersection_compkey_error_test.go",
         "intersection_compkey_test.go",
         "leg_column_dotted_containment_test.go",
@@ -323,6 +324,7 @@ go_test(
         "aggregate_state_codec_test.go",
         "nan_block_binding_test.go",
         "explode_zero_based_test.go",
+        "in_union_max_size_test.go",
     ],
     tags = ["resources:memory:400"],
     deps = [

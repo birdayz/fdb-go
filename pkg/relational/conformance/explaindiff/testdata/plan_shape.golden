@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=396 queries=2999 dml=177 non_query=127 plan_errors=324 unexpected_errors=4
+# files=397 queries=3004 dml=177 non_query=127 plan_errors=324 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -9077,6 +9077,39 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryFirstOrDefaultPlan
 shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
+=== in_union_max_size.yaml#0
+sql:   SELECT id FROM t WHERE col1 IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24) ORDER BY col2
+plan:  Map(InUnion(Map(IndexScan(T_C1_C2, [=, *, *] COVERING), {ID: _current.ID#0, _1: _current.COL2#2}), bindings=1, ASC), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryInUnionPlan
+shape:     RecordQueryMapPlan
+shape:       RecordQueryCoveringIndexPlan
+=== in_union_max_size.yaml#1 expect-error=XXXXX
+sql:   SELECT id FROM t WHERE col1 IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25) ORDER BY col2
+plan:  Map(InUnion(Map(IndexScan(T_C1_C2, [=, *, *] COVERING), {ID: _current.ID#0, _1: _current.COL2#2}), bindings=1, ASC), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryInUnionPlan
+shape:     RecordQueryMapPlan
+shape:       RecordQueryCoveringIndexPlan
+=== in_union_max_size.yaml#2
+sql:   SELECT id FROM t WHERE col1 IN (1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24) ORDER BY col2
+plan:  Map(InUnion(Map(IndexScan(T_C1_C2, [=, *, *] COVERING), {ID: _current.ID#0, _1: _current.COL2#2}), bindings=1, ASC), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryInUnionPlan
+shape:     RecordQueryMapPlan
+shape:       RecordQueryCoveringIndexPlan
+=== in_union_max_size.yaml#3
+sql:   SELECT id FROM t WHERE col1 IN (1, 2, 3, 4) AND col2 IN (10, 20, 30, 40, 50, 60) ORDER BY id
+plan:  InUnion(Map(IndexScan(T_C1_C2, [=, =, *] COVERING), {ID: _current.ID#0}), bindings=2, ASC)
+shape: RecordQueryInUnionPlan
+shape:   RecordQueryMapPlan
+shape:     RecordQueryCoveringIndexPlan
+=== in_union_max_size.yaml#4 expect-error=XXXXX
+sql:   SELECT id FROM t WHERE col1 IN (1, 2, 3, 4, 5) AND col2 IN (10, 20, 30, 40, 50) ORDER BY id
+plan:  InUnion(Map(IndexScan(T_C1_C2, [=, =, *] COVERING), {ID: _current.ID#0}), bindings=2, ASC)
+shape: RecordQueryInUnionPlan
+shape:   RecordQueryMapPlan
+shape:     RecordQueryCoveringIndexPlan
 === in_union_record_type_horizon.yaml#0
 sql:   SELECT id FROM T1 WHERE col1 IN (10, 20) ORDER BY id
 plan:  InMemorySort([_current.ID#0 ASC], InJoin(Map(IndexScan(I1, [=] COVERING), {ID: _current.ID#0}), binding))

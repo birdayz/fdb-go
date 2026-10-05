@@ -95,14 +95,12 @@ Never mark a whole workstream complete because one of its subitems passed.
 - [ ] IN semantics: rewrite/partition/cost behavior, covering unions, multi-binding
   product limit, and constant-IN evaluation timing; coordinate shared machinery
   with WS-F without losing either acceptance obligation.
-  Product limit is implemented but parked in `git stash` ("WS-E/F-7b IN-union
-  product limit"). It contains the executor check (Java
-  RecordQueryInUnionPlan.java:151-153, saturating product), relational max 24,
-  both rule arms carrying it, unit tests, and `in_union_max_size.yaml`. It cannot
-  land before F-7b: Go plans `col1 IN (25) ORDER BY id` as InUnion where Java
-  scans (`w8_in25_order_by_id_*`), so the check alone refuses a query that both
-  engines answer today. F-7b item 2 removed that blocker: Go builds no in-union
-  ordered by a primary key reached past the record-type coordinate.
+  The product limit is done (F-7b item 5, after item 2 removed its blocker).
+  The executor checks first (Java RecordQueryInUnionPlan.java:151-153, with a
+  saturating product declared in DIVERGENCES.md), the relational maximum is
+  24, and both rule arms carry it. Pins: `TestInUnionValuesSize`,
+  `TestExecuteInUnion_MaxSizeBoundsProduct` and `in_union_max_size.yaml`
+  (24 runs, 25 and 5 x 5 fail, 4 x 6 runs).
 - [ ] Semantics/pins: scalar variadic promoted-child types, Value nullability
   census, target simplification regime, adjacent/decorated literals and lexer
   boundaries, FROM-less metadata, LOG_QUERY. Decimal normalization and structured
@@ -215,7 +213,10 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   - The oracle's `w8_in_union`, `w8_in25_order_by_id` and `w8_tie_in_order_by_id`
     explain rows have new Go pins and move to F-7c, whose cost model decides
     between Go's sorted InJoin and Java's `SCAN | FILTER`.
-  Still open: item 5 (the stashed size check), 4, 6, 3, 9 and 10.
+  Item 5, the size check, is done (see WS-E "IN semantics"). The record-layer
+  oracle row `w8_rl_default_in2_order_by_pk` now fails at size 0 as Java's
+  does, but it stays open on item 3's fetch placement. The SQL in-union
+  benchmarks stop at N=24. Still open: items 4, 6, 3, 9 and 10.
 - [ ] Reconcile F-6/F-7b with RFC-191's existing `Fetch(InJoin)` ruling; see
   `DIVERGENCES.md` “Plan choice: an ordered IN over a non-covering index”.
 - [ ] RANK-index match-candidate gap and quoted dotted identifier GROUP BY/order

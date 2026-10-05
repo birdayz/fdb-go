@@ -64,8 +64,10 @@ func NewRecordQueryInUnionPlanWithBindingAliases(
 	comparisonKeys []values.Value,
 	reverse bool,
 ) (*RecordQueryInUnionPlan, error) {
+	// A hand-built plan states no maximum, so it is unbounded; execution
+	// refuses a product of IN-source sizes above maxSize.
 	return NewRecordQueryInUnionPlanFromQuantifierWithBindingAliases(
-		QuantifierOverPlan(inner), bindingAliases, comparisonKeys, reverse, 0)
+		QuantifierOverPlan(inner), bindingAliases, comparisonKeys, reverse, math.MaxInt32)
 }
 
 func newRecordQueryInUnionPlanFromQuantifier(

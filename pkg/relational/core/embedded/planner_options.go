@@ -87,6 +87,10 @@ func plannerOptionsFrom(o *api.Options) plannerOptions {
 	// Java's buildRecordQueryPlannerConfiguration plans every SQL query with
 	// PREFER_INDEX.
 	po.config.IndexScanPreference = cascades.PreferIndex
+	// PlannerConfiguration.java:161 sets attemptFailedInJoinAsUnionMaxSize(24):
+	// an IN-union whose IN-source sizes multiply past 24 fails at execution
+	// with "too many IN values". The core default stays Java's 0.
+	po.config.AttemptFailedInJoinAsUnionMaxSize = 24
 	if o == nil {
 		return po
 	}

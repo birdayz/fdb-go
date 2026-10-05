@@ -159,12 +159,13 @@ func benchInUnionMergeSort(b *testing.B, numLegs, rowsPerLeg int) {
 	})
 }
 
-// BenchmarkFDB_InUnionMergeSort_N3 through _N1000 measure the InUnion merge
-// at 3, 10, 100 and 1000 IN-list values, 5 rows per leg.
-func BenchmarkFDB_InUnionMergeSort_N3(b *testing.B)    { benchInUnionMergeSort(b, 3, 5) }
-func BenchmarkFDB_InUnionMergeSort_N10(b *testing.B)   { benchInUnionMergeSort(b, 10, 5) }
-func BenchmarkFDB_InUnionMergeSort_N100(b *testing.B)  { benchInUnionMergeSort(b, 100, 5) }
-func BenchmarkFDB_InUnionMergeSort_N1000(b *testing.B) { benchInUnionMergeSort(b, 1000, 5) }
+// BenchmarkFDB_InUnionMergeSort_N3 through _N24 measure the InUnion merge at
+// 3, 10 and 24 IN-list values, 5 rows per leg. 24 is the most child executions
+// the relational configuration lets an IN-union run ("too many IN values"
+// above it, as in Java); the executor benchmark measures larger merges.
+func BenchmarkFDB_InUnionMergeSort_N3(b *testing.B)  { benchInUnionMergeSort(b, 3, 5) }
+func BenchmarkFDB_InUnionMergeSort_N10(b *testing.B) { benchInUnionMergeSort(b, 10, 5) }
+func BenchmarkFDB_InUnionMergeSort_N24(b *testing.B) { benchInUnionMergeSort(b, 24, 5) }
 
 func benchInFetch(b *testing.B, numLegs int, inJoin bool) {
 	ib := inBench{
@@ -179,9 +180,9 @@ func benchInFetch(b *testing.B, numLegs int, inJoin bool) {
 	runInBench(b, ib)
 }
 
-func BenchmarkFDB_InFetch_InJoin_N3(b *testing.B)    { benchInFetch(b, 3, true) }
-func BenchmarkFDB_InFetch_InUnion_N3(b *testing.B)   { benchInFetch(b, 3, false) }
-func BenchmarkFDB_InFetch_InJoin_N10(b *testing.B)   { benchInFetch(b, 10, true) }
-func BenchmarkFDB_InFetch_InUnion_N10(b *testing.B)  { benchInFetch(b, 10, false) }
-func BenchmarkFDB_InFetch_InJoin_N100(b *testing.B)  { benchInFetch(b, 100, true) }
-func BenchmarkFDB_InFetch_InUnion_N100(b *testing.B) { benchInFetch(b, 100, false) }
+func BenchmarkFDB_InFetch_InJoin_N3(b *testing.B)   { benchInFetch(b, 3, true) }
+func BenchmarkFDB_InFetch_InUnion_N3(b *testing.B)  { benchInFetch(b, 3, false) }
+func BenchmarkFDB_InFetch_InJoin_N10(b *testing.B)  { benchInFetch(b, 10, true) }
+func BenchmarkFDB_InFetch_InUnion_N10(b *testing.B) { benchInFetch(b, 10, false) }
+func BenchmarkFDB_InFetch_InJoin_N24(b *testing.B)  { benchInFetch(b, 24, true) }
+func BenchmarkFDB_InFetch_InUnion_N24(b *testing.B) { benchInFetch(b, 24, false) }

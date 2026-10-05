@@ -263,6 +263,14 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 		requestedOrderings = []*properties.RequestedOrdering{properties.PreserveOrdering()}
 	}
 
+	// Every plan this rule yields carries the configured maximum product of
+	// IN-source sizes; execution refuses a larger one (Java's
+	// ImplementInUnionRule reads it once, as here).
+	maxSize := 0
+	if call.Context != nil {
+		maxSize = call.Context.GetPlannerConfiguration().AttemptFailedInJoinAsUnionMaxSize
+	}
+
 	for _, partition := range partitions {
 		innerPlans := partition.GetPlans()
 		if len(innerPlans) == 0 {
@@ -382,10 +390,6 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 					continue
 				}
 
-				maxSize := 0
-				if call.Context != nil {
-					maxSize = call.Context.GetPlannerConfiguration().AttemptFailedInJoinAsUnionMaxSize
-				}
 				// The InUnion is its own cascades expression over the live pinned
 				// inner edge (RFC-184 W2); no plan snapshot.
 				inUnionPlan, err := plans.NewRecordQueryInUnionPlanFromQuantifierWithBindingAliases(
@@ -408,7 +412,7 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 			// case.
 			inUnionPlan, err := plans.NewRecordQueryInUnionPlanFromQuantifierWithBindingAliases(
 				expressions.NewPhysicalQuantifier(newRef),
-				bindingAliases, nil, false, 0)
+				bindingAliases, nil, false, maxSize)
 			if err != nil {
 				call.Fail(err)
 				return

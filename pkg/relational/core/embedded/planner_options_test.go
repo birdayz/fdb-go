@@ -370,6 +370,7 @@ func TestPlannerOptions_Defaults(t *testing.T) {
 		}
 		want := cascades.DefaultPlannerConfiguration()
 		want.IndexScanPreference = cascades.PreferIndex // Java's SQL configuration
+		want.AttemptFailedInJoinAsUnionMaxSize = 24     // PlannerConfiguration.java:161
 		if !reflect.DeepEqual(po.config, want) {
 			t.Errorf("%s: config = %+v, want %+v", name, po.config, want)
 		}

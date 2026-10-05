@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"context"
 	"fmt"
+	"math"
 
 	"google.golang.org/protobuf/proto"
 
@@ -1911,6 +1912,29 @@ func inValueCheckBytes(val any) []byte {
 	return nil
 }
 
+// inUnionValuesSize is the number of child executions an IN-union makes: the
+// product of its sources' sizes, saturating at MaxInt64. known is false when
+// a source's values were unavailable at planning (the caller refuses that
+// source on its own).
+func inUnionValuesSize(sources [][]any) (size int64, known bool) {
+	size = 1
+	for _, source := range sources {
+		if source == nil {
+			return 0, false
+		}
+		n := int64(len(source))
+		switch {
+		case n == 0:
+			return 0, true
+		case size > math.MaxInt64/n:
+			size = math.MaxInt64
+		default:
+			size *= n
+		}
+	}
+	return size, true
+}
+
 func executeInUnion(
 	ctx context.Context,
 	p *plans.RecordQueryInUnionPlan,
@@ -1930,6 +1954,17 @@ func executeInUnion(
 			len(bindingAliases),
 			len(inSources),
 		)
+	}
+	// Java checks the number of child executions FIRST, before any leg opens
+	// (RecordQueryInUnionPlan.java:151-153): the PRODUCT of the sources'
+	// sizes against the plan's maximum (the planner configuration's
+	// attemptFailedInJoinAsUnionMaxSize, 24 in the relational layer), a
+	// RecordCoreException "too many IN values" above it. Java's product is an
+	// int that wraps (65536 x 65536 is 0, answered as empty); Go's saturates
+	// and refuses (declared in DIVERGENCES.md).
+	if size, known := inUnionValuesSize(inSources); known && size > int64(p.GetMaxSize()) {
+		// The size is Java's log info, not part of its message.
+		return nil, &recordlayer.RecordCoreError{Message: "too many IN values"}
 	}
 	for _, source := range inSources {
 		if source != nil && len(source) == 0 {

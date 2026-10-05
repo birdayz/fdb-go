@@ -1617,7 +1617,7 @@ var wsfGoPins = map[string]string{
 	"w8_prefer_index_neq_explain":                "OK EXPLAIN \"PredicatesFilter(Scan(T1), [1 preds])\"",
 	"w8_rl_default_in1_order_by_price":           "RL EXPLAIN \"IndexScan(wsf_price, [=])\" size=0 ids=[1 2 5]",
 	"w8_rl_default_in2_no_sort":                  "RL EXPLAIN \"Fetch(InJoin(IndexScan(wsf_price, [=] COVERING), binding))\" size=0 ids=[1 2 5 3]",
-	"w8_rl_default_in2_order_by_pk":              "RL EXPLAIN \"InUnion(IndexScan(wsf_price, [=]), bindings=1, ASC)\" size=0 ids=[1 2 3 5]",
+	"w8_rl_default_in2_order_by_pk":              "RL EXPLAIN \"InUnion(IndexScan(wsf_price, [=]), bindings=1, ASC)\" size=0 EXECUTE-ERROR too many IN values",
 	"w8_rl_default_in2_order_by_price":           "RL EXPLAIN \"Fetch(InJoin(IndexScan(wsf_price, [=] COVERING), binding ASC))\" size=0 ids=[1 2 5 3]",
 	"w8_rl_relational_in2_order_by_price":        "RL EXPLAIN \"Fetch(InJoin(IndexScan(wsf_price, [=] COVERING), binding ASC))\" size=24 ids=[1 2 5 3]",
 	"w8_root_covering_all_summary":               "NO-GO-INSTRUMENT",
