@@ -1020,7 +1020,7 @@ func TestExpandValueIndex_ConcatenateColumnIsTheWholeField(t *testing.T) {
 	cand := NewValueIndexScanMatchCandidateWithFunctions(
 		"idx_tags", []string{"Item"}, []string{"TAGS"}, nil,
 		[]values.CorrelationIdentifier{alias}, itemType, false, []string{"ID"}, &distinct,
-	).WithRootKeyExpression(keyExpressionField("TAGS", gen.Field_CONCATENATE))
+	).WithRootKeyExpression(keyExpressionField("TAGS", gen.Field_CONCATENATE)).WithPrimaryKeyEntryOrdinals([]int{1})
 
 	top := fanoutExpansionTopSelect(t, cand.GetTraversal())
 	preds := top.GetPredicates()

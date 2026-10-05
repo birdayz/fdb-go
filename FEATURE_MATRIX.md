@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**386 scenarios · 3161 query/assertion cases** across 18 feature areas — 2769 supported, 102 unsupported-feature pins, 290 error-path pins.
+**387 scenarios · 3168 query/assertion cases** across 18 feature areas — 2776 supported, 102 unsupported-feature pins, 290 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -33,7 +33,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | CTEs | 15 | 202 | 161 | 4 | 37 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 12 | 68 | 59 | 5 | 4 |
 | DML (INSERT / UPDATE / DELETE) | 26 | 241 | 201 | 3 | 37 |
-| Ordering & pagination | 18 | 138 | 133 | 0 | 5 |
+| Ordering & pagination | 19 | 145 | 140 | 0 | 5 |
 | Scalar functions & expressions | 35 | 392 | 334 | 21 | 37 |
 | Predicates & WHERE | 12 | 104 | 102 | 0 | 2 |
 | Column resolution & aliasing | 7 | 59 | 30 | 0 | 29 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 40 | 340 | 301 | 5 | 34 |
-| **Total** | **386** | **3161** | **2769** | **102** | **290** |
+| **Total** | **387** | **3168** | **2776** | **102** | **290** |
 
 ## Aggregates & GROUP BY
 
@@ -320,6 +320,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `order_by_limit` | 13 | 12 | 0 | 1 | ORDER BY with LIMIT — common query pattern. |
 | `order_by_nulls` | 4 | 4 | 0 | 0 | Java-conformant NULL ordering (swingshift-35, 3b87574d): |
 | `order_by_nulls_java` | 8 | 8 | 0 | 0 | ORDER BY with NULL values and multiple |
+| `order_function_covering` | 7 | 7 | 0 | 0 | An index column under an order function (DESC / NULLS FIRST\|LAST) stores the |
 | `ordering_same_leaf_cross_quantifier` | 4 | 4 | 0 | 0 | The ordering property's key identity must carry the CORRELATION, not just the |
 | `ordering_through_a_projection` | 11 | 11 | 0 | 0 | A requested ordering crosses a derived table or CTE by the projection's |
 | `rfc202_version_index_ordered` | 1 | 1 | 0 | 0 | — |

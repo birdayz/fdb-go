@@ -3752,6 +3752,44 @@ func (d *metadataIndexDef) IndexPrimaryKeyColumns() []string {
 	return pkCols
 }
 
+// IndexPrimaryKeyEntryOrdinals is, per IndexPrimaryKeyColumns column, its KEY
+// tuple position in an entry of this single-type index: past the index's own
+// columns, counting only the primary-key components the index key does not
+// already hold (Index.trimPrimaryKey), or -1 for one it does. Java's value
+// expansion visitor reads the trimmed primary key from exactly these positions.
+func (d *metadataIndexDef) IndexPrimaryKeyEntryOrdinals() []int {
+	rts := d.recordTypes()
+	if len(rts) != 1 || d.idx.RootExpression == nil {
+		return nil
+	}
+	columns, leadingRecordTypeKey, ok := coveredPrimaryKeyColumns(rts[0])
+	if !ok {
+		return nil
+	}
+	components := len(columns)
+	if leadingRecordTypeKey {
+		components++
+	}
+	positions := d.idx.PrimaryKeyComponentPositions()
+	if positions != nil && len(positions) != components {
+		return nil
+	}
+	ordinals := make([]int, 0, len(columns))
+	next := d.idx.RootExpression.ColumnSize()
+	for j := 0; j < components; j++ {
+		ordinal := -1
+		if positions == nil || positions[j] < 0 {
+			ordinal = next
+			next++
+		}
+		if j == 0 && leadingRecordTypeKey {
+			continue
+		}
+		ordinals = append(ordinals, ordinal)
+	}
+	return ordinals
+}
+
 // commonCoveredPrimaryKeyColumns proves that every supplied record type has
 // the same coordinate-safe visible primary-key tail and the same leading
 // RecordTypeKey topology. Value and vector candidates share this authority;

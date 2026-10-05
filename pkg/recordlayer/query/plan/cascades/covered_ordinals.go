@@ -90,64 +90,6 @@ func pushCoveredOrdinalWithType(
 	return 0, values.OrdinalDomain{}, nil, false
 }
 
-// coveredPathSet is coveredOrdinalSet for nested leaves: the ordinal paths, in
-// one record type's layout, of the nested fields the index entry holds.
-type coveredPathSet struct {
-	domain  values.OrdinalDomain
-	paths   map[string]struct{}
-	rowType values.ExactTypeHandle
-}
-
-// buildCoveredPathSets resolves each covered field path (names, one per step)
-// against each row layout, every step by its unique case-insensitive name. A
-// path that does not resolve in a layout is absent from that layout's set.
-func buildCoveredPathSets(rowTypes []values.Type, coveredPaths [][]string) []coveredPathSet {
-	if len(coveredPaths) == 0 {
-		return nil
-	}
-	sets := make([]coveredPathSet, 0, len(rowTypes))
-	for _, rowType := range rowTypes {
-		domain := values.OrdinalDomainOfType(rowType)
-		rt, ok := rowType.(*values.RecordType)
-		if !domain.IsKnown() || !ok {
-			continue
-		}
-		exactRowType, err := values.SnapshotExactType(rt)
-		if err != nil {
-			continue
-		}
-		paths := make(map[string]struct{}, len(coveredPaths))
-		for _, path := range coveredPaths {
-			if ordinals, ok := resolveUpperOrdinalPath(rt, path); ok {
-				paths[ordinalPathKey(ordinals)] = struct{}{}
-			}
-		}
-		if len(paths) > 0 {
-			sets = append(sets, coveredPathSet{domain: domain, paths: paths, rowType: exactRowType})
-		}
-	}
-	return sets
-}
-
-// pushCoveredPathWithType reports whether fv reads a covered nested path of
-// the layout its root indexes, and that layout's row type.
-func pushCoveredPathWithType(sets []coveredPathSet, fv values.FieldValue) (values.Type, bool) {
-	path := fv.Path()
-	if path == nil {
-		return nil, false
-	}
-	for _, set := range sets {
-		if path.RootDomain() != set.domain {
-			continue
-		}
-		if _, covered := set.paths[ordinalPathKey(path.Ordinals())]; covered {
-			return set.rowType.Type(), true
-		}
-		return nil, false
-	}
-	return nil, false
-}
-
 func resolveUpperOrdinalPath(record *values.RecordType, path []string) ([]int, bool) {
 	ordinals := make([]int, len(path))
 	for i, name := range path {

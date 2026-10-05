@@ -52,7 +52,7 @@ func TestDMLDedupUsesPhysicalEdges(t *testing.T) {
 
 func TestAccessCoverageUsesPhysicalFinalEdge(t *testing.T) {
 	t.Parallel()
-	index := pushFetchIndex("idx_x")
+	index := pushFetchIndex("idx_x").WithEntryReader((&values.IndexEntryRecordReader{}).ToRecordValue(pushFetchRowType()))
 	fetch := pushFetchFetch(index, nil)
 	wrapped, err := wrapScanPlanWithCoverage(fetch, false, []string{"x"}, []string{"PK"}, nil)
 	if err != nil {

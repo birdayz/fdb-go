@@ -42,12 +42,10 @@ func matchIndexEntryField(v Value, baseAlias CorrelationIdentifier) (FieldValue,
 	}
 	// MatchSimpleFieldValueRule. An admitted Go FieldValue is always one path
 	// on its quantifier (ResolveFieldAccess fuses), so the target's
-	// MatchFieldValueOverFieldValueRule has nothing left to fuse. Java also
-	// refuses a ROW_VERSION field, because its partial record has no place for a
-	// version; Go reads __ROW_VERSION from a VERSION index entry into the row's
-	// version slot.
+	// MatchFieldValueOverFieldValueRule has nothing left to fuse. A ROW_VERSION
+	// field is refused: the queried record has no field for the version.
 	fv, ok := AsFieldValue(v)
-	if !ok {
+	if !ok || fv.Type() == nil || fv.Type().Code() == TypeCodeVersion {
 		return nil, nil, false
 	}
 	qov, ok := AsQuantifiedObjectValue(fv.ChildValue())

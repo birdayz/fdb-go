@@ -45,12 +45,18 @@ func TestExtractFromIndexEntry_SimpleField(t *testing.T) {
 }
 
 // TestExtractFromIndexEntry_Declines: only fields of the base are extracted,
-// and only into a type an entry leaf carries.
+// only into a type an entry leaf carries, and never the row version
+// (MatchSimpleFieldValueRule: the record has no field for it).
 func TestExtractFromIndexEntry_Declines(t *testing.T) {
 	t.Parallel()
 	base := s3NestedQOV(t)
 	other := mustQOV(t, NamedCorrelationIdentifier("other"), base.Type())
+	versioned := mustQOV(t, base.Correlation(), NewRecordType("", false, []Field{
+		{Name: "W", FieldType: NotNullLong, Ordinal: 0},
+		{Name: PseudoFieldRowVersion, FieldType: NullableVersion, Ordinal: 1},
+	}))
 	for name, v := range map[string]Value{
+		"row_version":       extractionField(t, versioned, PseudoFieldRowVersion),
 		"other_quantifier":  extractionField(t, other, "W"),
 		"constant":          LiteralValue(int64(3)),
 		"ordered_constant":  NewToOrderedBytesValue(LiteralValue(int64(3)), OrderedBytesDescNullsLast),

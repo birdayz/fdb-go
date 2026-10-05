@@ -45,6 +45,11 @@ type RecordQueryIndexPlan struct {
 	// matchedIndexPredicate is the deterministic encoding of the normalized
 	// metadata predicate proved by a complete candidate match. Empty means no proof.
 	matchedIndexPredicate string
+	// entryReader builds the queried record from an entry (the candidate's
+	// IndexEntryToLogicalRecord), read by a covering scan over this plan. A pure
+	// function of the index and its record type, so it stays out of identity,
+	// explain and execution salt.
+	entryReader *values.RecordConstructorValue
 	// keyComponentTypes is aligned with scanComparisons. It carries the
 	// physical index-key width (not the RHS type), which is load-bearing for
 	// FLOAT versus DOUBLE tuple encoding.
@@ -616,6 +621,22 @@ func (p *RecordQueryIndexPlan) WithMatchedIndexPredicate(encoded []byte) *Record
 	cp := *p
 	cp.matchedIndexPredicate = string(encoded)
 	return &cp
+}
+
+// WithEntryReader attaches the reader a covering scan builds its record with.
+func (p *RecordQueryIndexPlan) WithEntryReader(reader *values.RecordConstructorValue) *RecordQueryIndexPlan {
+	cp := *p
+	cp.entryReader = reader
+	return &cp
+}
+
+// GetEntryReader is the reader that builds the queried record from an entry,
+// or nil when an entry cannot be read into one.
+func (p *RecordQueryIndexPlan) GetEntryReader() *values.RecordConstructorValue {
+	if p == nil {
+		return nil
+	}
+	return p.entryReader
 }
 
 // GetMatchedIndexPredicate returns an owned copy of the matched predicate bytes.

@@ -1598,6 +1598,9 @@ func createScanForAccess(access *SingleMatchedAccess) plans.RecordQueryPlan {
 	if err != nil {
 		return nil
 	}
+	if bare, ok := scan.(*plans.RecordQueryIndexPlan); ok {
+		return bare.WithMatchedIndexPredicate(encoded)
+	}
 	fetch, ok := scan.(*plans.RecordQueryFetchFromPartialRecordPlan)
 	if !ok {
 		return nil

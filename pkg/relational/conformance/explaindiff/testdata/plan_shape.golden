@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=386 queries=2874 dml=176 non_query=111 plan_errors=319 unexpected_errors=4
+# files=387 queries=2881 dml=176 non_query=111 plan_errors=319 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -13952,6 +13952,42 @@ shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryMapPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
+=== order_function_covering.yaml#0
+sql:   SELECT a, id FROM T ORDER BY a DESC
+plan:  Map(IndexScan(A_DESC, [*] COVERING), {A: _current.A#1, ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== order_function_covering.yaml#1
+sql:   SELECT a, id FROM T WHERE a = 5 ORDER BY a DESC
+plan:  Map(PredicatesFilter(IndexScan(A_DESC, [*] COVERING), [1 preds]), {A: _current.A#1, ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryCoveringIndexPlan
+=== order_function_covering.yaml#2
+sql:   SELECT b, id FROM T ORDER BY b ASC NULLS FIRST
+plan:  Map(IndexScan(B_NULLS_FIRST, [*] COVERING), {B: _current.B#2, ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== order_function_covering.yaml#3
+sql:   SELECT b FROM T ORDER BY b DESC NULLS LAST
+plan:  Map(IndexScan(B_DESC_NULLS_LAST, [*] COVERING), {B: _current.B#2})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== order_function_covering.yaml#4
+sql:   SELECT a, b, id FROM T ORDER BY a ASC NULLS LAST, b DESC
+plan:  Map(IndexScan(A_ASC_NULLS_LAST_B_DESC, [*, *] COVERING), {A: _current.A#1, B: _current.B#2, ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== order_function_covering.yaml#5
+sql:   SELECT s.x, id FROM T ORDER BY s.x DESC
+plan:  Map(IndexScan(SX_DESC, [*] COVERING), {X: _current.S#3.X#0, ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== order_function_covering.yaml#6
+sql:   SELECT a, b FROM T ORDER BY a DESC
+plan:  Map(IndexScan(A_DESC, [*]), {A: _current.A#1, B: _current.B#2})
+shape: RecordQueryMapPlan
+shape:   RecordQueryIndexPlan
 === ordering_same_leaf_cross_quantifier.yaml#0
 sql:   SELECT o.id AS oid, i.id AS iid FROM t AS o, t AS i WHERE o.v = i.w ORDER BY i.id
 plan:  FlatMap(outer=Scan(T), inner=PredicatesFilter(Scan(T), [1 preds]))
@@ -16012,16 +16048,16 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryIndexPlan
 === rfc202_generated_index_plans.yaml#3
 sql:   SELECT id FROM t_desc ORDER BY a DESC
-plan:  Map(Map(IndexScan(DESC_IDX, [*]), {ID: _current.ID#0, _1: _current.A#1}), {ID: _current.ID#0})
+plan:  Map(Map(IndexScan(DESC_IDX, [*] COVERING), {ID: _current.ID#0, _1: _current.A#1}), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryMapPlan
-shape:     RecordQueryIndexPlan
+shape:     RecordQueryCoveringIndexPlan
 === rfc202_generated_index_plans.yaml#4
 sql:   SELECT id FROM t_desc ORDER BY a ASC
-plan:  Map(Map(IndexScan(DESC_IDX, [*]) REVERSE, {ID: _current.ID#0, _1: _current.A#1}), {ID: _current.ID#0})
+plan:  Map(Map(IndexScan(DESC_IDX, [*] COVERING) REVERSE, {ID: _current.ID#0, _1: _current.A#1}), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryMapPlan
-shape:     RecordQueryIndexPlan
+shape:     RecordQueryCoveringIndexPlan
 === rfc202_generated_index_plans.yaml#5
 sql:   SELECT id FROM t_desc WHERE a = 5
 plan:  Map(PredicatesFilter(Scan(T_DESC), [1 preds]), {ID: _current.ID#0})

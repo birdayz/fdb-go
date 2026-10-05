@@ -537,90 +537,26 @@ func executeCoveringIndexScan(
 		return nil, err
 	}
 
-	// The plan's PK names were validated against tuple-coordinate topology by
-	// the metadata adapter. Re-reading KeyExpression.FieldNames here would
-	// discard that proof: e.g. PK (ID, literal(7)) reports only ID, and the
-	// tail mapper below would place literal 7 in ID's logical slot.
-	pkCols := p.GetPKColumnNames()
+	// The entry reader is built for the plan's single queried record type
+	// (ScanWithFetchMatchCandidate.computeIndexEntryToLogicalRecord), whose
+	// metadata-aware row shape it fills.
+	var desc protoreflect.MessageDescriptor
 	var logicalType *values.RecordType
-	// The record's LOGICAL row shape — only authoritative when the scan serves
-	// a single record type (a multi-type covering scan has no single logical
-	// shape). Metadata-aware: a version-storing store's rows carry the trailing
-	// __ROW_VERSION pseudo-slot.
 	if rts := p.GetRecordTypes(); len(rts) == 1 {
 		if rt := store.GetMetaData().GetRecordType(rts[0]); rt != nil && rt.Descriptor != nil {
-			logicalType = PositionalTypeForRecordLayout(rt.Descriptor,
-				store.GetMetaData().IsStoreRecordVersions())
+			desc = rt.Descriptor
+			logicalType = PositionalTypeForRecordLayout(rt.Descriptor, store.GetMetaData().IsStoreRecordVersions())
 		}
 	}
-	cov := p.GetCoveringColumns()
-	posNames := make([]string, 0, len(cov)+len(pkCols))
-	for _, col := range cov {
-		posNames = append(posNames, strings.ToUpper(col))
-	}
-	for _, col := range pkCols {
-		posNames = append(posNames, strings.ToUpper(col))
-	}
-	// A nested leaf (S.X) is no top-level column: it is placed into a partial
-	// record of its top-level struct field instead, as Java's
-	// IndexKeyValueToPartialRecord nests a field builder per path step.
-	var nested []coveringNestedColumn
-	if logicalType != nil {
-		var ok bool
-		nested, ok = coveringNestedColumns(p.GetIndexPlan().AllCoveredEntryColumnPaths(),
-			store.GetMetaData().GetRecordType(p.GetRecordTypes()[0]).Descriptor, logicalType)
-		if !ok {
-			logicalType = nil
-		}
-		for _, column := range nested {
-			posNames[column.entry] = ""
-		}
-	}
-	// A covering-index row must conform to the record's LOGICAL slot order —
-	// Java's IndexKeyValueToPartialRecord builds a descriptor-shaped partial
-	// record, so a FieldValue ordinal baked against the record type reads the
-	// same slot on the base-scan and covering paths. Non-covered fields stay nil
-	// (Java: unset partial fields — the planner's covering gate guarantees they
-	// are never referenced).
-	logicalOrds := coveringLogicalOrdinals(posNames, logicalType)
-	for _, column := range nested {
-		if logicalOrds != nil {
-			logicalOrds[column.entry] = -1
-		}
-	}
-	if logicalOrds == nil {
-		// This covering scan cannot present a row in the record's LOGICAL slot
-		// order: a nested/expression index column (e.g. `ADDR.CITY`) has no
-		// top-level logical slot, and a multi-type scan has no single logical
-		// shape. Flat column references are BAKED to their logical ordinal, so an
-		// INDEX-layout covering row would read a baked ordinal at the wrong slot
-		// whenever index-order != logical-order (descriptor [ID,A,ADDR] + index
-		// row [A,ADDR.CITY,ID]: `A#1` would read ADDR.CITY — a wrong slot). Rather
-		// than serve a misread-able covering row (or fail the query loud), resolve
-		// the full record by PK — the base record layout, which a baked ordinal
-		// reads correctly.
-		//
-		// The fallback lives HERE rather than being delegated upward to the Fetch
-		// because the Fetch above may have been eliminated (the projection pushed
-		// through), in which case nothing else would make these rows whole. When a
-		// Fetch IS above, it sees a row that already carries its stored record and
-		// passes it through rather than reading it a second time — see
-		// fetchFullRecordCursor.
-		//
-		// (Java serves these shapes from the covering index via
-		// IndexKeyValueToPartialRecord's descriptor-shaped partial record;
-		// porting that would restore covering here.)
-		return applySkipLimit(&indexFetchCursor{inner: indexCursor, store: store},
-			props.Skip, props.ReturnedRowLimit), nil
+	reader, err := newCoveringEntryReader(p.GetIndexPlan().GetEntryReader(), desc, logicalType, mintedRowLayout(p))
+	if err != nil {
+		_ = indexCursor.Close()
+		return nil, fmt.Errorf("executor: covering scan of %q: %w", p.GetIndexName(), err)
 	}
 	return applySkipLimit(&coveringIndexCursor{
-		inner:       indexCursor,
-		columns:     cov,
-		pkColumns:   pkCols,
-		logicalType: logicalType,
-		logicalOrds: logicalOrds,
-		nested:      nested,
-		layout:      mintedRowLayout(p),
+		inner:  indexCursor,
+		reader: reader,
+		binder: entryBinder{outer: evalCtx},
 	}, props.Skip, props.ReturnedRowLimit), nil
 }
 
@@ -1485,217 +1421,6 @@ func (c *indexFetchCursor) Close() error {
 }
 
 func (c *indexFetchCursor) IsClosed() bool { return c.closed }
-
-type coveringIndexCursor struct {
-	inner     recordlayer.RecordCursor[*recordlayer.IndexEntry]
-	columns   []string
-	pkColumns []string
-	// logicalType/logicalOrds shape the cursor's LOGICAL-ordinal rows:
-	// logicalType is the record's descriptor-shaped RecordType and
-	// logicalOrds[i] the logical slot of the i-th [columns..., pkColumns...]
-	// value. A covering scan whose columns cannot ALL map to a logical slot
-	// (nested/expression index, or a multi-type scan) is refused LOUD at
-	// construction, so logicalOrds is always non-nil here.
-	logicalType *values.RecordType
-	logicalOrds []int
-	// nested places each nested-leaf entry column (logicalOrds -1) into a
-	// partial record of its top-level struct field.
-	nested []coveringNestedColumn
-	// layout is the plan's provided output layout, stamped on every row this
-	// cursor mints so the output boundary checks it instead of copying the row
-	// to attach it — see mintedRowLayout.
-	layout values.OrdinalLayout
-	closed bool
-	// lastNoNext replays the terminal result on a contract-violating re-call
-	// (Java's cached no-next result) — never re-pulls the inner entry scan.
-	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
-}
-
-func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
-	if c.lastNoNext != nil {
-		return *c.lastNoNext, nil
-	}
-	result, err := c.inner.OnNext(ctx)
-	if err != nil {
-		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
-	}
-	if !result.HasNext() {
-		res := recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation())
-		c.lastNoNext = &res
-		return res, nil
-	}
-
-	entry := result.GetValue()
-	// logicalOrds is guaranteed non-nil (executeIndexScan refuses a non-conforming
-	// covering scan LOUD at construction), so the row is always LOGICAL-shaped.
-	primaryKey := entry.PrimaryKey()
-	// The entry's covered values in ENTRY layout order: the key part
-	// (IndexValues ends at the KeyWithValue split point — ColumnSize), then
-	// the VALUE-part columns from the entry's FDB value tuple. For a
-	// non-covering-split index entry.Value is empty and this is IndexValues
-	// alone. Positionally parallel to the plan's AllCoveredEntryColumns.
-	vals := entry.IndexValues()
-	if len(entry.Value) > 0 {
-		vals = append(append(tuple.Tuple{}, vals...), entry.Value...)
-	}
-	pos := buildCoveringLogicalRow(
-		c.columns, c.pkColumns, vals, primaryKey, c.logicalType, c.logicalOrds, c.layout)
-	if err := placeNestedCoveringColumns(pos, vals, c.nested); err != nil {
-		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
-	}
-	return recordlayer.NewResultWithValue(
-		QueryResult{
-			Positional: pos,
-			PrimaryKey: primaryKey,
-		},
-		result.GetContinuation(),
-	), nil
-}
-
-// coveringLogicalOrdinals maps each covering-row column name to its slot in
-// the record's LOGICAL row type. Returns nil (keep the index layout) when the
-// logical type is unknown or ANY column has no logical slot — never a partial
-// mapping, so a row is either fully logical-shaped or fully index-shaped.
-func coveringLogicalOrdinals(posNames []string, logicalType *values.RecordType) []int {
-	if logicalType == nil {
-		return nil
-	}
-	ords := make([]int, len(posNames))
-	for i, name := range posNames {
-		ord, ok := logicalType.FieldIndexUnique(name)
-		if !ok {
-			return nil
-		}
-		ords[i] = ord
-	}
-	return ords
-}
-
-// buildCoveringLogicalRow constructs a covering-index row in the record's
-// LOGICAL shape: one slot per record field in descriptor order, covered
-// columns placed at their logical ordinals, non-covered fields nil (Java's
-// unset partial-record fields; the planner's covering gate guarantees they
-// are never referenced). A value-column/PK-column name collision lands on the
-// SAME logical slot with the same value — the logical row has one column.
-func buildCoveringLogicalRow(
-	columns, pkColumns []string,
-	vals, pk tuple.Tuple,
-	logicalType *values.RecordType,
-	logicalOrds []int,
-	layout values.OrdinalLayout,
-) *PositionalRow {
-	slots := make([]any, len(logicalType.Fields))
-	for i := range columns {
-		if i < len(vals) && logicalOrds[i] >= 0 {
-			slots[logicalOrds[i]] = tupleElementToRowValue(vals[i])
-		}
-	}
-	// PrimaryKey() may include a record type key prefix (e.g., (recTypeKey, id));
-	// the user-level PK columns are at the tail. Skip the prefix.
-	pkOffset := 0
-	if len(pk) > len(pkColumns) {
-		pkOffset = len(pk) - len(pkColumns)
-	}
-	for i := range pkColumns {
-		idx := i + pkOffset
-		if idx < len(pk) {
-			slots[logicalOrds[len(columns)+i]] = tupleElementToRowValue(pk[idx])
-		}
-	}
-	// The row is minted here and has one owner, so it carries the layout its
-	// output boundary will hold it to rather than being copied to acquire it —
-	// see mintedRowLayout. A nil layout means the boundary publishes none.
-	return &PositionalRow{Type: logicalType, Slots: slots, Layout: layout}
-}
-
-// coveringNestedColumn is one nested-leaf entry column of a covering scan: its
-// entry position, the logical slot of its top-level struct field, and the
-// field descriptors from that struct down to the leaf.
-type coveringNestedColumn struct {
-	entry  int
-	slot   int
-	fields []protoreflect.FieldDescriptor
-}
-
-// coveringNestedColumns resolves each nested entry path (verbatim proto field
-// names, one per step) against the record descriptor. ok=false when a path
-// does not resolve to singular message fields ending in a scalar.
-func coveringNestedColumns(
-	paths [][]string, desc protoreflect.MessageDescriptor, logicalType *values.RecordType,
-) ([]coveringNestedColumn, bool) {
-	var out []coveringNestedColumn
-	for entry, path := range paths {
-		if len(path) < 2 {
-			continue
-		}
-		if desc == nil {
-			return nil, false
-		}
-		slot, ok := logicalType.FieldIndexUnique(strings.ToUpper(path[0]))
-		if !ok {
-			return nil, false
-		}
-		fields := make([]protoreflect.FieldDescriptor, len(path))
-		current := desc
-		for i, name := range path {
-			if current == nil {
-				return nil, false
-			}
-			fd := current.Fields().ByName(protoreflect.Name(name))
-			if fd == nil || fd.IsList() || fd.IsMap() {
-				return nil, false
-			}
-			last := i == len(path)-1
-			if last == (fd.Kind() == protoreflect.MessageKind || fd.Kind() == protoreflect.GroupKind) {
-				return nil, false
-			}
-			fields[i] = fd
-			current = fd.Message()
-		}
-		out = append(out, coveringNestedColumn{entry: entry, slot: slot, fields: fields})
-	}
-	return out, true
-}
-
-// placeNestedCoveringColumns writes each nested entry value into a partial
-// message of its struct slot; a NULL leaf leaves the field unset.
-func placeNestedCoveringColumns(pos *PositionalRow, vals tuple.Tuple, nested []coveringNestedColumn) error {
-	if len(nested) == 0 {
-		return nil
-	}
-	built := make(map[int]protoreflect.Message, len(nested))
-	for _, column := range nested {
-		root, ok := built[column.slot]
-		if !ok {
-			root = dynamicpb.NewMessage(column.fields[0].Message())
-			built[column.slot] = root
-			pos.Slots[column.slot] = root.Interface()
-		}
-		if column.entry >= len(vals) || vals[column.entry] == nil {
-			continue
-		}
-		parent := root
-		for _, fd := range column.fields[1 : len(column.fields)-1] {
-			parent = parent.Mutable(fd).Message()
-		}
-		leaf := column.fields[len(column.fields)-1]
-		value, err := goToProtoScalarValue(leaf, tupleElementToRowValue(vals[column.entry]))
-		if err != nil {
-			return fmt.Errorf("executor: covering nested field %s: %w", leaf.FullName(), err)
-		}
-		parent.Set(leaf, value)
-	}
-	return nil
-}
-
-func (c *coveringIndexCursor) Close() error {
-	c.closed = true
-	return c.inner.Close()
-}
-
-func (c *coveringIndexCursor) IsClosed() bool { return c.closed }
-
-var _ recordlayer.RecordCursor[QueryResult] = (*coveringIndexCursor)(nil)
 
 func executeTypeFilter(
 	ctx context.Context,

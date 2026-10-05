@@ -9,7 +9,6 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // ValueIndexScanMatchCandidate represents a secondary index as a
@@ -111,6 +110,21 @@ type ValueIndexScanMatchCandidate struct {
 	columnsOnce sync.Once
 	columns     *valueIndexExpansion
 	expansion   *valueIndexExpansion
+
+	// pkEntryOrdinals is IndexDefWithPrimaryKeyEntryOrdinals, aligned with
+	// pkColumnNames; nil when the def does not state it.
+	pkEntryOrdinals []int
+
+	logicalRecordOnce sync.Once
+	logicalRecord     *indexEntryToLogicalRecord
+}
+
+// indexEntryToLogicalRecord is ScanWithFetchMatchCandidate's
+// IndexEntryToLogicalRecord: the reader that builds the queried record from an
+// entry, and the record's fields it covers.
+type indexEntryToLogicalRecord struct {
+	reader        *values.RecordConstructorValue
+	logicalFields []values.FieldValue
 }
 
 // WithRecordTypeRowTypes attaches the per-record-type row layouts to a freshly
@@ -139,6 +153,75 @@ func (c *ValueIndexScanMatchCandidate) GetKeyComponentTypes() []values.Type {
 func (c *ValueIndexScanMatchCandidate) WithPrimaryKeyComponentTypes(types []values.Type) *ValueIndexScanMatchCandidate {
 	c.primaryKeyComponentTypes = normalizePhysicalKeyTypes(types, len(c.pkColumnNames))
 	return c
+}
+
+// WithPrimaryKeyEntryOrdinals attaches the entry KEY positions of the primary
+// key columns to a freshly constructed candidate.
+func (c *ValueIndexScanMatchCandidate) WithPrimaryKeyEntryOrdinals(ordinals []int) *ValueIndexScanMatchCandidate {
+	if len(ordinals) == len(c.pkColumnNames) {
+		c.pkEntryOrdinals = append([]int(nil), ordinals...)
+	}
+	return c
+}
+
+// indexEntryToLogicalRecord is the candidate's logical record, or nil when an
+// entry cannot be read into one.
+func (c *ValueIndexScanMatchCandidate) indexEntryToLogicalRecord() *indexEntryToLogicalRecord {
+	c.logicalRecordOnce.Do(func() { c.logicalRecord = c.computeIndexEntryToLogicalRecord() })
+	return c.logicalRecord
+}
+
+// computeIndexEntryToLogicalRecord is
+// ScanWithFetchMatchCandidate.computeIndexEntryToLogicalRecord over the entry's
+// KEY (index columns, then the trimmed primary key) and VALUE columns. Java
+// also refuses a builder missing a proto-required field or covering a repeated
+// one; Go rows carry no required-ness, and no array is ever extracted.
+func (c *ValueIndexScanMatchCandidate) computeIndexEntryToLogicalRecord() *indexEntryToLogicalRecord {
+	expansion := c.indexExpansion()
+	if expansion == nil || len(c.recordTypes) != 1 {
+		return nil
+	}
+	baseType, ok := c.flowedType.(*values.RecordType)
+	if !ok {
+		return nil
+	}
+	alias := expansion.base.Correlation()
+	covered := &values.IndexEntryRecordReader{}
+	var logical []values.FieldValue
+	add := func(v values.Value, source values.TupleSource, ordinal int) bool {
+		field, reader, ok := values.ExtractFromIndexEntry(v, alias, source, []int{ordinal})
+		if !ok {
+			return true
+		}
+		if !covered.CoverField(field, reader) {
+			return false
+		}
+		logical = append(logical, field)
+		return true
+	}
+	for i, keyValue := range expansion.keyValues {
+		if !add(keyValue, values.TupleSourceKey, i) {
+			return nil
+		}
+	}
+	for j, column := range c.pkColumnNames {
+		if j >= len(c.pkEntryOrdinals) || c.pkEntryOrdinals[j] < 0 {
+			continue
+		}
+		field, err := resolveKeyFieldPath(expansion.base, []string{column})
+		if err != nil {
+			return nil
+		}
+		if !add(field, values.TupleSourceKey, c.pkEntryOrdinals[j]) {
+			return nil
+		}
+	}
+	for i, valueValue := range expansion.valueValues {
+		if !add(valueValue, values.TupleSourceValue, i) {
+			return nil
+		}
+	}
+	return &indexEntryToLogicalRecord{reader: covered.ToRecordValue(baseType), logicalFields: logical}
 }
 
 // GetPrimaryKeyComponentTypes returns types aligned with pkColumnNames.
@@ -435,12 +518,6 @@ func (c *ValueIndexScanMatchCandidate) keyValueOverOrderingCarrier(i int) values
 		return nil
 	}
 	return translated
-}
-
-// coveredOrdinalSets resolves the covered-column names against every row
-// layout the index serves — see buildCoveredOrdinalSets.
-func (c *ValueIndexScanMatchCandidate) coveredOrdinalSets(coveredColumns map[string]struct{}) []coveredOrdinalSet {
-	return buildCoveredOrdinalSets(c.rowLayouts(), coveredColumns)
 }
 
 // WithValueColumns attaches the covering-only (FDB VALUE part) column names of
@@ -1266,13 +1343,15 @@ func (c *ValueIndexScanMatchCandidate) ToScanPlan(
 	}
 	indexPlan = stampIndexMetadata(c, indexPlan)
 
-	// Build the TranslateValueFunction for this index: translates
-	// FieldValues whose field name matches a covered index column.
-	translateFn := c.buildTranslateValueFunction()
-
+	// ValueIndexScanMatchCandidate.toEquivalentPlan: a fetch over an entry read
+	// into the logical record, or the bare index plan when it cannot be.
+	logicalRecord := c.indexEntryToLogicalRecord()
+	if logicalRecord == nil {
+		return indexPlan
+	}
 	fetch, err := plans.NewRecordQueryFetchFromPartialRecordPlan(
-		indexPlan,
-		translateFn,
+		indexPlan.WithEntryReader(logicalRecord.reader),
+		c.buildTranslateValueFunction(),
 		c.flowedType,
 		plans.FetchIndexRecordsPrimaryKey,
 	)
@@ -1436,132 +1515,43 @@ func (c *ValueIndexScanMatchCandidate) PushValueThroughFetch(
 	return fn(value, sourceAlias, targetAlias)
 }
 
-// buildTranslateValueFunction creates a TranslateValueFunction that
-// can translate values from the full-record domain to the index-entry
-// domain. A FieldValue is translatable if its field name matches one
-// of the non-fan-out index columns or primary-key columns (case-insensitive).
-// An exploded element cannot cover the original repeated field.
-//
-// Ports the conceptual equivalent of Java's
-// ScanWithFetchMatchCandidate.createTranslateValueFunction.
+// buildTranslateValueFunction is the Fetch's pushValueThroughFetch
+// (ScanWithFetchMatchCandidate.pushValueThroughFetch over the logical record's
+// fields): a field of the source is pushed when the logical record covers its
+// exact path, a value not of the source passes unchanged, anything else stays
+// above the fetch.
 func (c *ValueIndexScanMatchCandidate) buildTranslateValueFunction() plans.TranslateValueFunction {
-	// Java's covering mapping copies every key column into a field of the
-	// queried record and has none when one cannot be copied
-	// (ScanWithFetchMatchCandidate.computeIndexEntryToLogicalRecord); a version
-	// key's __ROW_VERSION is no field of the record.
-	if !c.canProduceScanPlan() || keyExpressionHasVersion(c.rootKeyExpression) {
-		return func(
-			values.Value,
-			values.CorrelationIdentifier,
-			values.CorrelationIdentifier,
-		) (values.Value, bool) {
+	logicalRecord := c.indexEntryToLogicalRecord()
+	if !c.canProduceScanPlan() || logicalRecord == nil {
+		return func(values.Value, values.CorrelationIdentifier, values.CorrelationIdentifier) (values.Value, bool) {
 			return nil, false
 		}
 	}
-	hasFunctionKey := false
-	for _, function := range c.columnFunctions {
-		if function != "" {
-			hasFunctionKey = true
-			break
-		}
+	covered := make(map[string]struct{}, len(logicalRecord.logicalFields))
+	for _, field := range logicalRecord.logicalFields {
+		covered[ordinalPathKey(field.Path().Ordinals())] = struct{}{}
 	}
-	duplicateProducingColumns := c.duplicateProducingColumns()
-	described := c.indexColumns()
-	blockedColumns := make(map[string]struct{})
-	for i, col := range c.columnNames {
-		if c.nestedKeyColumnPath(i) != nil {
-			continue // names no top-level field
-		}
-		functionKey := i < len(c.columnFunctions) &&
-			c.columnFunctions[i] != ""
-		// A CONCATENATE column stores the repeated field as a nested tuple,
-		// which the covering row does not decode into the field's list.
-		concatenated := described.keyColumns[i].concatenate
-		if duplicateProducingColumns[i] || functionKey || concatenated {
-			blockedColumns[strings.ToUpper(col)] = struct{}{}
-		}
-	}
-
-	coveredColumns := make(map[string]struct{}, len(c.columnNames)+len(c.pkColumnNames))
-	// A function-key covering row retains every key position for tuple/logical
-	// row alignment, but those positions are semantic expressions rather than
-	// their raw leaf fields. Until physical plans carry semantic key Values,
-	// expose none of the index-key fields through Fetch translation. The PK
-	// suffix remains independently safe and index-resident (the real FDB
-	// CARDINALITY test pins SELECT ID as covering); function-name collisions
-	// are blocked below.
-	// A nested leaf is covered by its whole path: the covering row rebuilds
-	// the partial nested record (Java's IndexKeyValueToPartialRecord nested
-	// field builders), never a top-level field of the same name.
-	var coveredPaths [][]string
-	if !hasFunctionKey {
-		for i, col := range c.columnNames {
-			if duplicateProducingColumns[i] || described.keyColumns[i].concatenate {
-				continue
-			}
-			if path := c.nestedKeyColumnPath(i); path != nil {
-				coveredPaths = append(coveredPaths, path)
-				continue
-			}
-			coveredColumns[strings.ToUpper(col)] = struct{}{}
-		}
-	}
-	// The VALUE part of a KeyWithValue root is stored RAW in the FDB value
-	// (only key columns can carry an order-function encoding, and the
-	// admission check declines a function-valued value column), so covering
-	// translation of these columns is safe even when a key column is
-	// function-wrapped. This is the whole point of the covering split
-	// (KeyWithValueExpression: "additional query-relevant columns can be read
-	// without fetching the record").
-	for i, col := range c.valueColumnNames {
-		if path := described.valueColumns[i].path; len(path) > 1 {
-			coveredPaths = append(coveredPaths, path)
-			continue
-		}
-		coveredColumns[strings.ToUpper(col)] = struct{}{}
-	}
-	for _, col := range c.pkColumnNames {
-		upperColumn := strings.ToUpper(col)
-		if _, blocked := blockedColumns[upperColumn]; !blocked {
-			coveredColumns[upperColumn] = struct{}{}
-		}
-	}
-	coveredSets := c.coveredOrdinalSets(coveredColumns)
-	coveredPathSets := buildCoveredPathSets(c.rowLayouts(), coveredPaths)
-
+	rowType := c.flowedType
+	domain := values.OrdinalDomainOfType(rowType)
 	return func(value values.Value, sourceAlias, targetAlias values.CorrelationIdentifier) (values.Value, bool) {
 		if field, isField := values.AsFieldValue(value); isField {
-			// A covering translation is valid only for a covered field path of
-			// this exact source object. Foreign correlations decline instead of
-			// falling back to the display name.
 			root, isSource := values.AsQuantifiedObjectValue(field.ChildValue())
-			if !isSource || root.Correlation() != sourceAlias || field.Path().Len() < 1 {
+			if !isSource || root.Correlation() != sourceAlias {
 				return nil, false
 			}
-			if field.Path().Len() > 1 {
-				rowType, covered := pushCoveredPathWithType(coveredPathSets, field)
-				if !covered {
-					return nil, false
-				}
-				target, err := values.NewQuantifiedObjectValue(targetAlias, rowType)
-				if err != nil {
-					return nil, false
-				}
-				translated, err := values.ResolveFieldOrdinals(target, field.Path().Ordinals())
-				if err != nil {
-					return nil, false
-				}
-				return translated, true
+			// The path's ordinals must index the candidate's own layout.
+			if field.Path().RootDomain() != domain {
+				return nil, false
 			}
-			ordinal, _, rowType, covered := pushCoveredOrdinalWithType(coveredSets, field)
-			if !covered {
+			ordinals := field.Path().Ordinals()
+			if _, ok := covered[ordinalPathKey(ordinals)]; !ok {
 				return nil, false
 			}
 			target, err := values.NewQuantifiedObjectValue(targetAlias, rowType)
 			if err != nil {
 				return nil, false
 			}
-			translated, err := values.ResolveFieldOrdinals(target, []int{ordinal})
+			translated, err := values.ResolveFieldOrdinals(target, ordinals)
 			if err != nil {
 				return nil, false
 			}
@@ -1589,33 +1579,3 @@ var (
 )
 
 // Interface compliance also checked in match_candidate_interfaces.go.
-
-// keyExpressionHasVersion reports whether root keys any column on the record
-// version (a VersionKeyExpression), as opposed to a real field that happens to
-// be named __ROW_VERSION.
-func keyExpressionHasVersion(root *gen.KeyExpression) bool {
-	found := false
-	var walk func(m protoreflect.Message)
-	walk = func(m protoreflect.Message) {
-		if key, ok := m.Interface().(*gen.KeyExpression); ok && key.GetVersion() != nil {
-			found = true
-			return
-		}
-		m.Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
-			switch {
-			case fd.IsMap() || fd.Kind() != protoreflect.MessageKind:
-			case fd.IsList():
-				for i, list := 0, v.List(); i < list.Len() && !found; i++ {
-					walk(list.Get(i).Message())
-				}
-			default:
-				walk(v.Message())
-			}
-			return !found
-		})
-	}
-	if root != nil {
-		walk(root.ProtoReflect())
-	}
-	return found
-}

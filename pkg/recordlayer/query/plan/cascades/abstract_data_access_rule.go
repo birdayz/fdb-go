@@ -608,12 +608,14 @@ func wrapAccessScan(access *SingleMatchedAccess, plan plans.RecordQueryPlan) (ex
 // wrapScanPlanWithCoverage wraps a scan plan as the properly-typed physical
 // RelationalExpression.
 //
-// For a Fetch(IndexScan) — what a value/windowed candidate's ToScanPlan always
-// returns — this emits Fetch(Covering(IndexScan)) UNCONDITIONALLY, mirroring
+// For a Fetch(IndexScan) whose scan carries an entry reader — what a value
+// candidate's ToScanPlan returns when an entry reads into its logical record —
+// this emits Fetch(Covering(IndexScan)), mirroring
 // ValueIndexScanMatchCandidate.tryFetchCoveringIndexScan
 // (ValueIndexScanMatchCandidate.java:250-282), which builds exactly that shape
 // whenever the index entry can be turned into a partial record and never
-// consults the projection.
+// consults the projection. Without a reader the bare index scan is the plan, as
+// Java's toEquivalentPlan falls back to it.
 //
 // It used to emit a bare Fetch(IndexScan) and leave coveringness to a
 // downstream projection-and-fetch merge, on the argument that a rule comparing
@@ -631,7 +633,9 @@ func wrapAccessScan(access *SingleMatchedAccess, plan plans.RecordQueryPlan) (ex
 // the index scan.
 func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, unique bool, columnNames []string, pkColumnNames []string, distinctSignal *bool) (expressions.RelationalExpression, error) {
 	if fetchPlan, ok := plan.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
-		if innerIdx, ok := fetchPlan.GetInner().(*plans.RecordQueryIndexPlan); ok {
+		if innerIdx, ok := fetchPlan.GetInner().(*plans.RecordQueryIndexPlan); ok && innerIdx.GetEntryReader() == nil {
+			plan = innerIdx
+		} else if ok {
 			// The index scan carries its index metadata (columns/pk/unique) on
 			// the plan, which is what the covering wrapper derives its covered
 			// entry columns from — so the metadata must be stamped BEFORE the

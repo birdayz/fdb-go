@@ -286,7 +286,8 @@ func TestValueIndexScanMatchCandidate_FanOutElementIsNotCoveredAsArray(t *testin
 			candidateTestKeyField("TAGS", gen.Field_FAN_OUT),
 			candidateTestKeyField("SCORE", gen.Field_SCALAR),
 		}},
-	}).WithKeyComponentTypes([]values.Type{values.NullableString, values.NullableLong})
+	}).WithKeyComponentTypes([]values.Type{values.NullableString, values.NullableLong}).
+		WithPrimaryKeyEntryOrdinals([]int{2})
 	if !fanOutCandidate.CreatesDuplicates() {
 		t.Fatal("structured FAN_OUT must override a stale false duplicate signal")
 	}
@@ -483,7 +484,10 @@ func TestValueIndexScanMatchCandidate_WholeRecordIsNotCovered(t *testing.T) {
 	}
 }
 
-func TestValueIndexScanMatchCandidate_FunctionKeyCoversOnlyPKAndOrdersByTheFunction(
+// TestValueIndexScanMatchCandidate_FunctionKeyCoversItsFieldsAndOrdersByTheFunction:
+// a CARDINALITY key column reads no field back, while its plain sibling and
+// the primary key are read from the entry, as Java's extraction reads them.
+func TestValueIndexScanMatchCandidate_FunctionKeyCoversItsFieldsAndOrdersByTheFunction(
 	t *testing.T,
 ) {
 	t.Parallel()
@@ -519,7 +523,7 @@ func TestValueIndexScanMatchCandidate_FunctionKeyCoversOnlyPKAndOrdersByTheFunct
 			}},
 			candidateTestKeyField("B", gen.Field_SCALAR),
 		},
-	}})
+	}}).WithPrimaryKeyEntryOrdinals([]int{2, 3})
 
 	source := values.UniqueCorrelationIdentifier()
 	target := values.UniqueCorrelationIdentifier()
@@ -540,9 +544,9 @@ func TestValueIndexScanMatchCandidate_FunctionKeyCoversOnlyPKAndOrdersByTheFunct
 		source,
 		target,
 	)
-	if ok || translated != nil {
+	if !ok || translated == nil {
 		t.Fatalf(
-			"mixed function-key candidate translated sibling index field through Fetch: %v, %t",
+			"mixed function-key candidate did not translate its plain sibling field through Fetch: %v, %t",
 			translated,
 			ok,
 		)

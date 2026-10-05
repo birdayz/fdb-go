@@ -3404,54 +3404,6 @@ func TestTupleElementToRowValue(t *testing.T) {
 	}
 }
 
-// buildCoveringLogicalRow must emit FLOAT slots as float64 — the covering row
-// and the base-record row must be interchangeable for compareValues,
-// distinctKey and join keys (a covering leg previously carried raw float32 and
-// never deduped/merged against a base-scan leg).
-func TestBuildCoveringLogicalRow_WidensFloat32(t *testing.T) {
-	t.Parallel()
-	logicalType := &values.RecordType{Fields: []values.Field{
-		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
-		{Name: "F", FieldType: values.NotNullFloat, Ordinal: 1},
-	}}
-	// Index on F, PK ID: entry key (f), primary key (id).
-	pos := buildCoveringLogicalRow(
-		[]string{"F"}, []string{"ID"},
-		tuple.Tuple{float32(2.5)}, tuple.Tuple{int64(1)},
-		logicalType, []int{1, 0}, nil)
-	if got := pos.Slots[1]; got != float64(2.5) {
-		t.Fatalf("covering FLOAT slot = %T:%v, want float64:2.5 (base-record domain)", got, got)
-	}
-	if got := pos.Slots[0]; got != int64(1) {
-		t.Fatalf("covering PK slot = %T:%v, want int64:1", got, got)
-	}
-}
-
-// A covering float32 and a base float64 of the same number carry different
-// tuple type codes, so they would key differently — DISTINCT/UNION across a
-// covering leg and a base leg would never dedup. The boundary normalization
-// widens the covering FLOAT to float64, so both produce the same packed key.
-func TestDistinctKey_CoveringAndBaseFloatRowsDedup(t *testing.T) {
-	t.Parallel()
-	logicalType := &values.RecordType{Fields: []values.Field{
-		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
-		{Name: "F", FieldType: values.NotNullFloat, Ordinal: 1},
-	}}
-	covering := QueryResult{Positional: buildCoveringLogicalRow(
-		[]string{"F"}, []string{"ID"},
-		tuple.Tuple{float32(2.5)}, tuple.Tuple{int64(1)},
-		logicalType, []int{1, 0}, nil)}
-	// The base-record path widens FLOAT to float64 (ProtoScalarKindToRowValue).
-	base := QueryResult{Positional: &PositionalRow{
-		Type:  logicalType,
-		Slots: []any{int64(1), float64(2.5)},
-	}}
-	if mustDistinctKey(t, covering) != mustDistinctKey(t, base) {
-		t.Fatalf("covering row key %q != base row key %q — dedup split across access paths",
-			mustDistinctKey(t, covering), mustDistinctKey(t, base))
-	}
-}
-
 // --- passesJoinPredicatesLegs unit tests ---
 
 func TestPassesJoinPredicates_Empty(t *testing.T) {
