@@ -46,6 +46,9 @@ func simplifyValue(v Value, inPredicate bool) Value {
 		return nil
 	}
 	rebuilt := simplifyChildrenWith(v, inPredicate)
+	if collapsed := collapseNullStrict(rebuilt); collapsed != nil {
+		return collapsed
+	}
 	if s := composeFieldOverConstructor(rebuilt); s != nil {
 		return simplifyValue(s, inPredicate)
 	}
@@ -87,6 +90,51 @@ func simplifyValue(v Value, inPredicate bool) Value {
 	return rebuilt
 }
 
+// collapseNullStrict is Java's CollapseNullStrictValueOverNullValueRule
+// (CollapseNullStrictValueOverNullValueRule.java:40-80), which BOTH of Java's
+// value rule sets carry (DefaultValueSimplificationRuleSet.java:50-54,
+// DereferenceConstantObjectValueRuleSet.java:50-56): a null-strict value with a
+// NullValue child is the NullValue of its type, whatever its other children
+// are -- `n + NULL` is NULL, `NOT CAST(NULL AS BOOLEAN)` is NULL. Nil when it
+// does not apply.
+func collapseNullStrict(v Value) Value {
+	if !IsNullStrictValue(v) {
+		return nil
+	}
+	for _, child := range v.Children() {
+		if isNullLiteral(child) {
+			return NewNullValue(v.Type())
+		}
+	}
+	return nil
+}
+
+// isNullLiteral reports a NULL literal: a NullValue, or Go's boolean NULL
+// literal BooleanValue{nil}, which is the same NULL Java models as a
+// NullValue.
+func isNullLiteral(v Value) bool {
+	switch x := v.(type) {
+	case *NullValue:
+		return true
+	case *BooleanValue:
+		return x.Value == nil
+	}
+	return false
+}
+
+// IsNullStrictValue reports whether v is one of the classes Java's
+// CollapseNullStrictValueOverNullValueRule.VALUE_CLASSES lists: ArithmeticValue,
+// CastValue, FieldValue, NotValue, PromoteValue and SubscriptValue. KEEP IN
+// SYNC with that list.
+func IsNullStrictValue(v Value) bool {
+	switch v.(type) {
+	case *ArithmeticValue, *CastValue, *NotValue, *PromoteValue, *SubscriptValue:
+		return true
+	}
+	_, isField := AsFieldValue(v)
+	return isField
+}
+
 // isFoldableComposite is the whitelist of Value shapes SimplifyValue
 // will attempt to collapse to a literal. Limited to composites whose
 // Evaluate produces a Go-native scalar that LiteralValue can faithfully
@@ -109,8 +157,11 @@ func isFoldableComposite(v Value) bool {
 			target = array.ElementType
 		}
 		return !IsRecord(target)
-	case *ArithmeticValue, *CastValue, *ScalarFunctionValue, *NotValue,
+	case *ArithmeticValue, *CastValue, *ScalarFunctionValue,
 		*AndOrValue, *ConditionSelectorValue, *PickValue, *EvaluatesToValue:
+		// NotValue is absent: Java folds no NOT over a literal (`NOT 'false'`
+		// stays, fold_div0_or_not_false_where), only NOT over a NULL, which
+		// collapseNullStrict does.
 		return true
 	}
 	return false

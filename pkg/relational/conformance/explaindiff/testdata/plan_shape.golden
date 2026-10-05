@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=401 queries=3093 dml=179 non_query=129 plan_errors=324 unexpected_errors=4
+# files=401 queries=3094 dml=179 non_query=129 plan_errors=324 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -2078,7 +2078,7 @@ shape:   RecordQueryMapPlan
 shape:     RecordQueryScanPlan
 === boolean.yaml#24
 sql:   SELECT NOT b FROM lb ORDER BY a
-plan:  Map(Map(Scan(LB), {_0: predicate, _1: _current.A#0}), {_0: _current._0#0})
+plan:  Map(Map(Scan(LB), {_0: NOT _current.B#1, _1: _current.A#0}), {_0: _current._0#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryMapPlan
 shape:     RecordQueryScanPlan
@@ -2108,7 +2108,7 @@ shape:   RecordQueryMapPlan
 shape:     RecordQueryScanPlan
 === boolean.yaml#29
 sql:   WITH x AS (SELECT * FROM lb) SELECT NOT b FROM x ORDER BY a
-plan:  Map(Map(Scan(LB), {_0: predicate, _1: _current.A#0}), {_0: _current._0#0})
+plan:  Map(Map(Scan(LB), {_0: NOT _current.B#1, _1: _current.A#0}), {_0: _current._0#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryMapPlan
 shape:     RecordQueryScanPlan
@@ -2216,7 +2216,7 @@ shape:   RecordQueryMapPlan
 shape:     RecordQueryScanPlan
 === boolean_3vl_java.yaml#17
 sql:   SELECT NOT b FROM lb ORDER BY a
-plan:  Map(Map(Scan(LB), {_0: predicate, _1: _current.A#0}), {_0: _current._0#0})
+plan:  Map(Map(Scan(LB), {_0: NOT _current.B#1, _1: _current.A#0}), {_0: _current._0#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryMapPlan
 shape:     RecordQueryScanPlan
@@ -2675,7 +2675,7 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === cast.yaml#5
 sql:   SELECT CAST(NULL AS BIGINT) FROM t
-plan:  Map(Scan(T), {_0: CAST(NULL AS BIGINT)})
+plan:  Map(Scan(T), {_0: NULL})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === cast.yaml#6
@@ -11975,7 +11975,7 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === mod_float_zero.yaml#1
 sql:   SELECT MOD(n, 3), MOD(d, 2.5), MOD(CAST(NULL AS DOUBLE), 0.0) FROM t
-plan:  Map(Scan(T), {_0: MOD(_current.N#1, 3), _1: MOD(_current.D#3, 2.5), _2: MOD(CAST(NULL AS DOUBLE), 0)})
+plan:  Map(Scan(T), {_0: MOD(_current.N#1, 3), _1: MOD(_current.D#3, 2.5), _2: MOD(NULL, 0)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === mod_float_zero.yaml#2 expect-error=22012
@@ -16720,7 +16720,7 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === scalar_signed_zero.yaml#2
 sql:   SELECT FLOOR(d), CEIL(0.25), ROUND(-0.5), POWER(-2.0, 3), CAST(FLOOR(z) AS BIGINT), ROUND(CAST(NULL AS DOUBLE)) FROM t WHERE id = 1
-plan:  Map(Scan(T, [=]), {_0: FLOOR(_current.D#3), _1: CEIL(0.25), _2: ROUND(-0.5), _3: POWER(-2, 3), _4: CAST(FLOOR(_current.Z#1) AS BIGINT), _5: ROUND(CAST(NULL AS DOUBLE))})
+plan:  Map(Scan(T, [=]), {_0: FLOOR(_current.D#3), _1: CEIL(0.25), _2: ROUND(-0.5), _3: POWER(-2, 3), _4: CAST(FLOOR(_current.Z#1) AS BIGINT), _5: ROUND(NULL)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === scalar_signed_zero.yaml#3
@@ -17655,7 +17655,7 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryExplodePlan
 === select_no_from.yaml#4
 sql:   SELECT NOT TRUE
-plan:  Map(Explode(array), {_0: predicate})
+plan:  Map(Explode(array), {_0: NOT TRUE})
 shape: RecordQueryMapPlan
 shape:   RecordQueryExplodePlan
 === select_no_from.yaml#5
@@ -17917,83 +17917,88 @@ sql:   SELECT id FROM T WHERE COALESCE(CAST(NULL AS BOOLEAN), TRUE, 1 / 0 = 1) O
 plan:  Map(Scan(T), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
-=== simplification_regime.yaml#15 expect-error=22012
+=== simplification_regime.yaml#15
+sql:   SELECT id FROM T WHERE COALESCE(NOT CAST(NULL AS BOOLEAN), TRUE, 1 / 0 = 1) ORDER BY id
+plan:  Map(Scan(T), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== simplification_regime.yaml#16 expect-error=22012
 sql:   SELECT id FROM T WHERE COALESCE(NOT FALSE, 1 / 0 = 1) ORDER BY id
 plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
-=== simplification_regime.yaml#16 expect-error=22012
+=== simplification_regime.yaml#17 expect-error=22012
 sql:   SELECT id FROM T WHERE COALESCE(TRUE AND TRUE, 1 / 0 = 1) ORDER BY id
 plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
-=== simplification_regime.yaml#17 expect-error=22012
+=== simplification_regime.yaml#18 expect-error=22012
 sql:   SELECT id FROM T WHERE COALESCE(FALSE OR TRUE, 1 / 0 = 1) ORDER BY id
 plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
-=== simplification_regime.yaml#18 expect-error=22012
+=== simplification_regime.yaml#19 expect-error=22012
 sql:   SELECT id FROM T WHERE COALESCE(1 + 1, 1 / 0) = 2 ORDER BY id
 plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
-=== simplification_regime.yaml#19 expect-error=22012
+=== simplification_regime.yaml#20 expect-error=22012
 sql:   SELECT id FROM T WHERE COALESCE(1, 1 / 0) = 1 ORDER BY id
 plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
-=== simplification_regime.yaml#20 expect-error=22012
+=== simplification_regime.yaml#21 expect-error=22012
 sql:   SELECT id FROM T WHERE (1 / 0 = 1) OR ((NOT FALSE) = TRUE) ORDER BY id
 plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
-=== simplification_regime.yaml#21 expect-error=22012
+=== simplification_regime.yaml#22 expect-error=22012
 sql:   SELECT COALESCE(TRUE, 1 / 0 = 1) FROM T WHERE id = 1
 plan:  Map(Scan(T, [=]), {_0: COALESCE(TRUE, predicate)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
-=== simplification_regime.yaml#22 expect-error=22012
+=== simplification_regime.yaml#23 expect-error=22012
 sql:   SELECT COALESCE(NOT FALSE, 1 / 0 = 1) FROM T WHERE id = 1
-plan:  Map(Scan(T, [=]), {_0: COALESCE(predicate, predicate)})
+plan:  Map(Scan(T, [=]), {_0: COALESCE(NOT FALSE, predicate)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
-=== simplification_regime.yaml#23 expect-error=22012
+=== simplification_regime.yaml#24 expect-error=22012
 sql:   SELECT COALESCE(1, 1 / 0) FROM T WHERE id = 1
 plan:  Map(Scan(T, [=]), {_0: COALESCE(1, (1 / 0))})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
-=== simplification_regime.yaml#24
+=== simplification_regime.yaml#25
 sql:   SELECT (1 / 0) + CAST(NULL AS INTEGER) FROM T WHERE id = 1
 plan:  Map(Scan(T, [=]), {_0: NULL})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
-=== simplification_regime.yaml#25
+=== simplification_regime.yaml#26
 sql:   SELECT CASE WHEN id > 0 THEN 1 ELSE 1 / 0 END FROM T WHERE id = 1
 plan:  Map(Scan(T, [=]), {_0: CASE(WHEN(predicate, TRUE), [1, (1 / 0)])})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
-=== simplification_regime.yaml#26
+=== simplification_regime.yaml#27
 sql:   SELECT NOT FALSE FROM T WHERE id = 1
-plan:  Map(Scan(T, [=]), {_0: predicate})
+plan:  Map(Scan(T, [=]), {_0: NOT FALSE})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
-=== simplification_regime.yaml#27
+=== simplification_regime.yaml#28
 sql:   SELECT TRUE AND TRUE FROM T WHERE id = 1
 plan:  Map(Scan(T, [=]), {_0: predicate})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
-=== simplification_regime.yaml#28
+=== simplification_regime.yaml#29
 sql:   SELECT NOT (n > 1) FROM T WHERE id = 2
 plan:  Map(Scan(T, [=]), {_0: predicate})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
-=== simplification_regime.yaml#29
+=== simplification_regime.yaml#30
 sql:   SELECT id FROM T WHERE id = 1 + 2
 plan:  Map(Scan(T, [=]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan

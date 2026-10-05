@@ -2122,6 +2122,9 @@ func explainValueOrdinalsWithAliases(v Value, withOrdinals bool, aliases map[Cor
 		return "FALSE"
 	case *CastValue:
 		return "CAST(" + explainValueOrdinalsWithAliases(cv.Child, withOrdinals, aliases) + " AS " + explainTypeName(cv.Target) + ")"
+	case *NotValue:
+		// Java's NotValue.explain: `NOT <child>`.
+		return "NOT " + explainValueOrdinalsWithAliases(cv.Child, withOrdinals, aliases)
 	case *PatternForLikeValue:
 		// Java's `pattern ESCAPE escape` (PatternForLikeValue.java:182-188);
 		// an absent ESCAPE, a NULL escape child, is not shown.

@@ -169,55 +169,29 @@ func TestNotValue_Name(t *testing.T) {
 	}
 }
 
-// TestNotValue_DoubleNegation_FoldsToLeaf pins that SimplifyValue
-// collapses NOT(NOT(TRUE)) to a leaf BooleanValue(true). NotValue
-// is in isFoldableComposite (alongside ArithmeticValue / CastValue /
-// PromoteValue / ScalarFunctionValue) — Evaluate produces a Go-
-// native bool that LiteralValue can faithfully rewrap.
-func TestNotValue_DoubleNegation_FoldsToLeaf(t *testing.T) {
+// TestNotValue_DoubleNegation_DoesNotFold pins that SimplifyValue keeps
+// NOT(NOT(TRUE)): Java's value sets fold no NOT over a literal (`NOT 'false'`
+// stays in its EXPLAIN, fold_div0_or_not_false_where).
+func TestNotValue_DoubleNegation_DoesNotFold(t *testing.T) {
 	t.Parallel()
 	tree := NewNotValue(NewNotValue(NewBooleanValue(true)))
-	out := SimplifyValue(tree)
-	bv, ok := out.(*BooleanValue)
-	if !ok {
-		t.Fatalf("expected BooleanValue after fold, got %T", out)
-	}
-	if bv.Value == nil || *bv.Value != true {
-		t.Fatalf("expected NOT(NOT(TRUE)) → TRUE, got %v", bv.Value)
+	if out := SimplifyValue(tree); out != Value(tree) {
+		t.Fatalf("NOT(NOT(TRUE)) simplified to %s", ExplainValue(out))
 	}
 }
 
-// TestNotValue_FoldsConstantToLeaf pins single-NOT folding:
-// NOT(TRUE) → BooleanValue(false), NOT(FALSE) → BooleanValue(true),
-// NOT(NULL) → NullValue. Each case uses an inline t.Fatalf-based
-// asserter (no error-return ceremony); they're parallel-safe via
-// the t.Run closure capturing t.
+// TestNotValue_FoldsConstantToLeaf pins single-NOT simplification: NOT over a
+// boolean literal stays, as in Java; NOT over a NULL collapses to NULL
+// (CollapseNullStrictValueOverNullValueRule).
 func TestNotValue_FoldsConstantToLeaf(t *testing.T) {
 	t.Parallel()
 
-	t.Run("NOT TRUE → FALSE", func(t *testing.T) {
-		t.Parallel()
-		out := SimplifyValue(NewNotValue(NewBooleanValue(true)))
-		bv, ok := out.(*BooleanValue)
-		if !ok {
-			t.Fatalf("expected BooleanValue, got %T", out)
+	for _, lit := range []bool{true, false} {
+		in := NewNotValue(NewBooleanValue(lit))
+		if out := SimplifyValue(in); out != Value(in) {
+			t.Fatalf("NOT %v simplified to %s", lit, ExplainValue(out))
 		}
-		if bv.Value == nil || *bv.Value != false {
-			t.Fatalf("expected false, got %v", bv.Value)
-		}
-	})
-
-	t.Run("NOT FALSE → TRUE", func(t *testing.T) {
-		t.Parallel()
-		out := SimplifyValue(NewNotValue(NewBooleanValue(false)))
-		bv, ok := out.(*BooleanValue)
-		if !ok {
-			t.Fatalf("expected BooleanValue, got %T", out)
-		}
-		if bv.Value == nil || *bv.Value != true {
-			t.Fatalf("expected true, got %v", bv.Value)
-		}
-	})
+	}
 
 	t.Run("NOT NULL(Bool) → NULL", func(t *testing.T) {
 		t.Parallel()

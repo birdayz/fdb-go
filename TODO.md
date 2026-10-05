@@ -160,9 +160,20 @@ Never mark a whole workstream complete because one of its subitems passed.
     and `(1 + 2) > 0` stay, NOT over a constant stays, NOT over OR
     distributes. `NotConstantSimplifyRule` stays, in
     `TranslatorConstantPredicateRules`, for the translator's EXISTS fold.
-  - Still open: (e) the
-    NULL mapping and the null-strict collapse in both value sets (then
-    `substituteAndCollapse` reduces to the substitution); (f) `effectiveConstant`
+  - (e): Java's CollapseNullStrictValueOverNullValueRule is in both value sets
+    (`values.collapseNullStrict`, the six classes of `IsNullStrictValue`, which
+    the null-on-empty substitution shares; Go's boolean NULL literal
+    `BooleanValue{nil}` counts as a NULL). `CAST(NULL AS T)` is the typed
+    NullValue (`ResolveCast`, Java's `CastValue.inject`), and an IN item is
+    refused at plan time only when NULL-TYPED, a typed NULL when the list is
+    evaluated, as before. NOT over a bare boolean value is Java's `NotValue`
+    (EXPLAIN `NOT _.B`), so `COALESCE(NOT CAST(NULL AS BOOLEAN), TRUE, 1 / 0 = 1)`
+    answers every row as Java does (`coalesce_not_cast_null_head_where`, now in
+    `simplification_regime.yaml`). NOT over a literal no longer folds
+    (`NotValue` left `isFoldableComposite`): Java keeps `NOT 'false'`. The WS-E
+    oracle: one row fixed, none moved the other way. The substitution keeps
+    its collapse because Go cannot rebuild a FieldValue over a NullValue.
+  - Still open: (f) `effectiveConstant`
     is already Java's three shapes, the Object overload has no Go caller (Go
     comparands are Values); the `EvaluateConstant` arms of `SimplifyValue`;
     (g) the REWRITING cost model rungs; the constant-evaluation census; and (j)

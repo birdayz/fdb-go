@@ -1724,6 +1724,12 @@ func (r *Resolver) ResolveCast(v values.Value, target values.Type) (values.Value
 	if target == nil || target.Code() == values.TypeCodeUnknown {
 		return nil, fmt.Errorf("expr.ResolveCast: target UnknownType")
 	}
+	// Java's CastValue.inject (CastValue.java:441-460): a NULL can result in
+	// any type, so `CAST(NULL AS T)` is the typed NullValue, not a CastValue
+	// over it -- a COALESCE head or a null-strict parent then sees a NULL.
+	if _, isNull := v.(*values.NullValue); isNull {
+		return values.NewNullValue(target), nil
+	}
 	// PLAN-TIME pair check (Java resolves the cast operator at
 	// construction and fails "No cast defined from X to Y",
 	// CastValue.java:480-489) — a per-row rejection alone leaves the

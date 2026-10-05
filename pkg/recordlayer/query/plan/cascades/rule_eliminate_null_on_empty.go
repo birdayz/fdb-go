@@ -278,23 +278,10 @@ func mapPredicateValues(p predicates.QueryPredicate, fn func(values.Value) value
 	}
 }
 
-// isNullStrictValue reports whether v is one of the strictly-null-propagating
-// Value classes (yields NULL if any child is NULL). Mirrors Java's
-// CollapseNullStrictValueOverNullValueRule.VALUE_CLASSES — KEEP IN SYNC: when a
-// new null-strict Value type is ported (Java adds one to that allowlist), add it
-// here too, else this rule's null-folding silently under-approximates. As of
-// Java 4.12 the set is ArithmeticValue, CastValue, FieldValue, NotValue,
-// PromoteValue, SubscriptValue (enumerated below).
-func isNullStrictValue(v values.Value) bool {
-	switch v.(type) {
-	case *values.ArithmeticValue, *values.CastValue,
-		*values.NotValue, *values.PromoteValue, *values.SubscriptValue:
-		return true
-	default:
-		_, isField := values.AsFieldValue(v)
-		return isField
-	}
-}
+// isNullStrictValue is values.IsNullStrictValue, the class list of Java's
+// CollapseNullStrictValueOverNullValueRule, whose collapse the value sets now
+// carry (values.collapseNullStrict).
+func isNullStrictValue(v values.Value) bool { return values.IsNullStrictValue(v) }
 
 // hasNullValueChild reports whether any immediate child of v is a NullValue.
 func hasNullValueChild(v values.Value) bool {

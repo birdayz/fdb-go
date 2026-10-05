@@ -164,6 +164,26 @@ func (r *Resolver) walkExpressionInner(ctx antlrgen.IExpressionContext, pos walk
 				return values.NewNotValue(childVal), nil
 			}
 		}
+		// NOT over a bare boolean VALUE is Java's NotValue (the value-context
+		// NOT of its ExpressionVisitor), so a value set reaches through it:
+		// `NOT CAST(NULL AS BOOLEAN)` collapses to NULL (CollapseNullStrict-
+		// ValueOverNullValueRule) and a COALESCE head skips it. The atom is
+		// walked once, as the predicate path would walk it; an operand that is
+		// itself a predicate keeps the predicate form.
+		if atom := bareValueAtom(c.Expression()); atom != nil {
+			v, err := r.walkAtom(atom)
+			if err != nil {
+				return nil, err
+			}
+			lifted, err := r.liftValueToPredicate(v)
+			if err != nil {
+				return nil, err
+			}
+			if _, isPredicate := v.(*predicateValue); !isPredicate {
+				return values.NewNotValue(v), nil
+			}
+			return &predicateValue{pred: r.ResolveNot(lifted)}, nil
+		}
 		child, err := r.WalkPredicate(c.Expression())
 		if err != nil {
 			return nil, err
@@ -2157,6 +2177,29 @@ func (r *Resolver) walkPredicatedExpression(pred *antlrgen.PredicatedExpressionC
 	if err != nil {
 		return nil, err
 	}
+	return r.liftValueToPredicate(v)
+}
+
+// bareValueAtom returns the atom of an expression that is a bare value -- no
+// grammar predicate, not a comparison, not a parenthesised expression -- and
+// nil for any other shape. walkPredicatedExpression walks such an atom with
+// walkAtom and lifts it (liftValueToPredicate), so a caller holding one can walk
+// it once and decide between the value and the predicate.
+func bareValueAtom(expr antlrgen.IExpressionContext) antlrgen.IExpressionAtomContext {
+	pe, ok := expr.(*antlrgen.PredicatedExpressionContext)
+	if !ok || pe.Predicate() != nil {
+		return nil
+	}
+	switch atom := pe.ExpressionAtom().(type) {
+	case *antlrgen.BinaryComparisonPredicateContext, *antlrgen.RecordConstructorExpressionAtomContext:
+		return nil
+	default:
+		return atom
+	}
+}
+
+// liftValueToPredicate is the predicate a bare value used as one is.
+func (r *Resolver) liftValueToPredicate(v values.Value) (predicates.QueryPredicate, error) {
 	// Lift a bare value used as a predicate, mirroring Java's
 	// Expression.Utils.toUnderlyingPredicate (Expression.java:384-399)
 	// branch order. Shared by WHERE and ON (both reach here).
@@ -2786,9 +2829,15 @@ func IsBareNullLiteral(tree antlr.Tree) bool {
 	}
 }
 
+// isNullConstant reports an IN item refused while the list is built: a
+// NULL-TYPED item (a parenthesised NULL) or a bound NULL. A NULL of a declared
+// type -- `CAST(NULL AS BIGINT)`, which CastValue.inject makes a typed
+// NullValue -- is a nullable element, refused only when the list is evaluated,
+// as Java's handleArray does (ExpressionVisitor.java:1186-1203), so an empty
+// table answers.
 func isNullConstant(v values.Value) bool {
-	if _, isNull := v.(*values.NullValue); isNull {
-		return true
+	if nv, isNull := v.(*values.NullValue); isNull {
+		return nv.Typ == nil || nv.Typ.Code() == values.TypeCodeNull || nv.Typ.Code() == values.TypeCodeUnknown
 	}
 	cv, isCon := v.(*values.ConstantValue)
 	return isCon && cv.Value == nil

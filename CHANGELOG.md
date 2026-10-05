@@ -47,6 +47,7 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
 - A typed, parenthesised or column NULL IN-list item is 0A000 when the list is evaluated, as in Java 4.14.2.0 (a bare NULL stays 42809).
 - An ARRAY element is never NULL: a NULL array element is refused with 0A000 as in Java 4.14.2.0 (literal-array `=`/`<>`/`IS DISTINCT FROM` comparisons still accept one).
 - Driver parameters are bound as typed constants (int32 INT, int64 LONG, slices ARRAY, uuid.UUID UUID), not spliced into SQL text; named `?x`/`$x` and `IN ?` are supported, extra arguments are ignored and a missing one is 42F02.
+- A NULL-strict expression over NULL is NULL when a predicate is simplified, as in Java 4.14.2.0: `WHERE COALESCE(NOT CAST(NULL AS BOOLEAN), TRUE, 1 / 0 = 1)` answers every row (was 22012), and EXPLAIN shows `CAST(NULL AS T)` as `NULL` and a value `NOT x` as `NOT x`.
 - `COALESCE`/`GREATEST`/`LEAST` follow Java 4.14.2.0: at least two arguments, all-NULL and BYTES arguments are 22F00, `COALESCE` evaluates every argument, and results are NOT NULL when Java's are.
 - The planner removes duplicate expressions from its memo (Cascades duplicate detection): multi-way joins plan with far fewer tasks, and a six-table join chain or a hub joined to five spokes now plans within the default budget.
 - A join of two EXISTS subqueries no longer repeats rows: each existential contributes at most one witness row.

@@ -53,10 +53,12 @@ tests:
     rows: [[1], [2], [3]]
   - query: SELECT id FROM T WHERE COALESCE(CAST(NULL AS BOOLEAN), TRUE, 1 / 0 = 1) ORDER BY id
     rows: [[1], [2], [3]]
-  # coalesce_not_cast_null_head_where (Java: rows 1, 2, 3, NOT over a typed NULL
-  # collapsing to NULL) is not here: Go walks a NOT over a boolean value as a
-  # predicate value the simplifier does not enter, so it still raises 22012
-  # (TODO.md, WS-E 5.4(e)).
+  # coalesce_not_cast_null_head_where: CAST(NULL AS BOOLEAN) is the typed NULL
+  # (CastValue.inject), the NOT over it is Java's NotValue, which collapses to
+  # NULL (CollapseNullStrictValueOverNullValueRule), the head is skipped and
+  # TRUE folds.
+  - query: SELECT id FROM T WHERE COALESCE(NOT CAST(NULL AS BOOLEAN), TRUE, 1 / 0 = 1) ORDER BY id
+    rows: [[1], [2], [3]]
   # A NOT, AND, OR, arithmetic or INT-literal head is not foldable.
   - query: SELECT id FROM T WHERE COALESCE(NOT FALSE, 1 / 0 = 1) ORDER BY id
     error_code: "22012"
