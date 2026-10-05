@@ -31,6 +31,7 @@ class ConformanceServer {
         new MultiTypeIndexSteps(),
         new ScanSteps(),
         new ContinuationSteps(),
+        new AggregateStateSteps(),
         new CountSteps(),
         new VersionSteps(),
         new CustomerSteps(),

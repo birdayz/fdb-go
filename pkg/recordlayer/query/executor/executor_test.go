@@ -5007,12 +5007,12 @@ func TestAggregateContinuation_RoundTrip_SumCount(t *testing.T) {
 	innerCont := recordlayer.NewBytesContinuation([]byte{0xDE, 0xAD})
 	groupKey := "test-group-key"
 
-	encoded, err := encodeAggregateContinuation(innerCont, groupKey, gs.keyVals, gs, aggs)
+	encoded, err := encodeLegacyAggregateContinuation(innerCont, groupKey, gs.keyVals, gs, aggs)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
 
-	gotInner, gotGroupKey, gotGS, err := decodeAggregateContinuation(encoded, aggs, nil)
+	gotInner, gotGroupKey, gotGS, err := decodeAggregateContinuation(encoded, nil, aggs, nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -5064,12 +5064,12 @@ func TestAggregateContinuation_NilGroupState(t *testing.T) {
 	t.Parallel()
 
 	innerCont := recordlayer.NewBytesContinuation([]byte{0x01})
-	encoded, err := encodeAggregateContinuation(innerCont, "", nil, nil, nil)
+	encoded, err := encodeAggregateContinuation(innerCont, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
 
-	gotInner, gotGroupKey, gotGS, err := decodeAggregateContinuation(encoded, make([]expressions.AggregateSpec, 0), nil)
+	gotInner, gotGroupKey, gotGS, err := decodeAggregateContinuation(encoded, nil, make([]expressions.AggregateSpec, 0), nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -5101,12 +5101,12 @@ func TestAggregateContinuation_FloatMinMax(t *testing.T) {
 		maxs:    []any{float64(5.0)},
 	}
 
-	encoded, err := encodeAggregateContinuation(nil, "k", gs.keyVals, gs, aggs)
+	encoded, err := encodeLegacyAggregateContinuation(nil, "k", gs.keyVals, gs, aggs)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
 
-	_, _, gotGS, err := decodeAggregateContinuation(encoded, make([]expressions.AggregateSpec, 1), nil)
+	_, _, gotGS, err := decodeAggregateContinuation(encoded, nil, make([]expressions.AggregateSpec, 1), nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -5153,11 +5153,11 @@ func TestAggregateContinuation_GroupKeyBytesSurvive_F4(t *testing.T) {
 			mins:    []any{nil},
 			maxs:    []any{nil},
 		}
-		encoded, err := encodeAggregateContinuation(nil, key, gs.keyVals, gs, aggs)
+		encoded, err := encodeLegacyAggregateContinuation(nil, key, gs.keyVals, gs, aggs)
 		if err != nil {
 			t.Fatalf("encode %v: %v", tup, err)
 		}
-		_, gotKey, _, err := decodeAggregateContinuation(encoded, aggs, nil)
+		_, gotKey, _, err := decodeAggregateContinuation(encoded, nil, aggs, nil)
 		if err != nil {
 			t.Fatalf("decode %v: %v", tup, err)
 		}
@@ -5192,11 +5192,11 @@ func TestAggregateContinuation_TypesPreserved_F5(t *testing.T) {
 		maxs:    []any{nil, float64(2.0)},
 	}
 
-	encoded, err := encodeAggregateContinuation(nil, "k", gs.keyVals, gs, aggs)
+	encoded, err := encodeLegacyAggregateContinuation(nil, "k", gs.keyVals, gs, aggs)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	_, _, gotGS, err := decodeAggregateContinuation(encoded, aggs, nil)
+	_, _, gotGS, err := decodeAggregateContinuation(encoded, nil, aggs, nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -6571,11 +6571,11 @@ func TestAggregateContinuation_ArrayAgg(t *testing.T) {
 		allInt: []bool{true, true, true}, mins: []any{nil, nil, nil}, maxs: []any{nil, nil, nil},
 		arrays: [][]any{{"a", "b"}, nil, nil},
 	}
-	encoded, err := encodeAggregateContinuation(nil, "k", nil, gs, aggs)
+	encoded, err := encodeLegacyAggregateContinuation(nil, "k", nil, gs, aggs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, got, err := decodeAggregateContinuation(encoded, aggs, nil)
+	_, _, got, err := decodeAggregateContinuation(encoded, nil, aggs, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -6587,11 +6587,11 @@ func TestAggregateContinuation_ArrayAgg(t *testing.T) {
 		t.Fatalf("sumsI = %v", got.sumsI)
 	}
 	// A continuation written without ARRAY_AGG slots is not one for this plan.
-	legacy, err := encodeAggregateContinuation(nil, "k", nil, gs, aggs[1:2])
+	legacy, err := encodeLegacyAggregateContinuation(nil, "k", nil, gs, aggs[1:2])
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := decodeAggregateContinuation(legacy, aggs, nil); err == nil {
+	if _, _, _, err := decodeAggregateContinuation(legacy, nil, aggs, nil); err == nil {
 		t.Fatal("decoded a continuation missing its ARRAY_AGG slots")
 	}
 }
@@ -6636,11 +6636,11 @@ func TestBitmapAggregateStreaming(t *testing.T) {
 				t.Fatal(err)
 			}
 			// Resume a partially accumulated group before producing its result.
-			encoded, err := encodeAggregateContinuation(nil, "", nil, c.current, c.aggregates)
+			encoded, err := encodeAggregateContinuation(nil, nil, nil, c.current, c.aggregates)
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, _, c.current, err = decodeAggregateContinuation(encoded, c.aggregates, nil)
+			_, _, c.current, err = decodeAggregateContinuation(encoded, nil, c.aggregates, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -6671,11 +6671,19 @@ func TestBitmapAggregateContinuationValidation(t *testing.T) {
 	if err := c.accumulateRow(QueryResult{}); err != nil {
 		t.Fatal(err)
 	}
-	encoded, err := encodeAggregateContinuation(nil, "", nil, c.current, aggs)
+	encoded, err := encodeAggregateContinuation(nil, nil, nil, c.current, aggs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, c.current, err = decodeAggregateContinuation(encoded, aggs, nil)
+	var sent gen.AggregateCursorContinuation
+	if err := proto.Unmarshal(encoded, &sent); err != nil {
+		t.Fatal(err)
+	}
+	// Java writes BitSet.toByteArray(), which trims trailing zero bytes.
+	if got := sent.GetPartialAggregationResults().GetAccumulatorStates()[0].GetState()[0].GetBytesState(); !bytes.Equal(got, []byte{2}) {
+		t.Fatalf("bitmap state = %x, want Java's trimmed 02", got)
+	}
+	_, _, c.current, err = decodeAggregateContinuation(encoded, nil, aggs, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -6692,7 +6700,6 @@ func TestBitmapAggregateContinuationValidation(t *testing.T) {
 		name  string
 		state *gen.OneOfTypedState
 	}{
-		{"short", &gen.OneOfTypedState{State: &gen.OneOfTypedState_BytesState{BytesState: []byte{2}}}},
 		{"oversize", &gen.OneOfTypedState{State: &gen.OneOfTypedState_BytesState{BytesState: make([]byte, 31251)}}},
 		{"wrong type", &gen.OneOfTypedState{State: &gen.OneOfTypedState_Int64State{Int64State: 2}}},
 	} {
@@ -6702,13 +6709,12 @@ func TestBitmapAggregateContinuationValidation(t *testing.T) {
 			if err := proto.Unmarshal(encoded, &msg); err != nil {
 				t.Fatal(err)
 			}
-			states := msg.PartialAggregationResults.AccumulatorStates[0].State
-			states[len(states)-1] = tc.state
+			msg.PartialAggregationResults.AccumulatorStates[0].State[0] = tc.state
 			bad, err := proto.Marshal(&msg)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, _, _, err := decodeAggregateContinuation(bad, aggs, nil); err == nil {
+			if _, _, _, err := decodeAggregateContinuation(bad, nil, aggs, nil); err == nil {
 				t.Fatal("accepted malformed bitmap state")
 			}
 		})

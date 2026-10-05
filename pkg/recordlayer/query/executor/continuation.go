@@ -712,19 +712,8 @@ func readContSlice(b []byte) ([]any, []byte, error) {
 	return out, b, nil
 }
 
-// encodeAggGroupKey packs the in-progress group's identity into the
-// PartialAggregationResult.group_key bytes: the packed group-key bytes VERBATIM
-// (raw, not a JSON string — arbitrary tuple bytes must survive to match the
-// recomputed key on resume) followed by the typed keyVals (carried unchanged into
-// finalizeGroup's output row, so their Go type and precision are preserved). An
-// unencodable keyVal errors (correct-or-loud) rather than silently lose type.
-func encodeAggGroupKey(groupKey string, keyVals []any) ([]byte, error) {
-	buf := binary.AppendUvarint(nil, uint64(len(groupKey)))
-	buf = append(buf, groupKey...)
-	return appendContSlice(buf, keyVals)
-}
-
-// decodeAggGroupKey is the inverse of encodeAggGroupKey.
+// decodeAggGroupKey reads the legacy group key: the packed key bytes, then
+// the typed key values.
 func decodeAggGroupKey(b []byte) (groupKey string, keyVals []any, err error) {
 	n, m := binary.Uvarint(b)
 	if m <= 0 {
@@ -743,13 +732,12 @@ func decodeAggGroupKey(b []byte) (groupKey string, keyVals []any, err error) {
 	return groupKey, keyVals, nil
 }
 
-// encodeAggregateContinuation serializes the streaming aggregate
-// cursor's partial state using Java's AggregateCursorContinuation proto.
-// Carries the inner cursor position + the single in-progress group's
-// partial accumulator state.
+// encodeAggregateContinuation is AggregateCursor.AggregateCursorContinuation:
+// the inner cursor position and, for a group in progress, its partial state in
+// Java's payload (see aggregate_state_codec.go).
 func encodeAggregateContinuation(
 	innerCont recordlayer.RecordCursorContinuation,
-	groupKey string,
+	groupingKeys []values.Value,
 	keyVals []any,
 	gs *groupState,
 	aggregates []expressions.AggregateSpec,
@@ -762,98 +750,26 @@ func encodeAggregateContinuation(
 			return nil, err
 		}
 	}
-
-	msg := &gen.AggregateCursorContinuation{
-		Continuation: innerBytes,
-	}
-
+	msg := &gen.AggregateCursorContinuation{Continuation: innerBytes}
 	if gs != nil {
-		var states []*gen.AccumulatorState
-		as := &gen.AccumulatorState{}
-
-		// Pack: count, then per-aggregate (count_i, sum_i, sumsI_i, allInt_i, min_i, max_i)
-		as.State = append(as.State, &gen.OneOfTypedState{
-			State: &gen.OneOfTypedState_Int64State{Int64State: gs.count},
-		})
-		for i := range aggregates {
-			as.State = append(as.State, &gen.OneOfTypedState{
-				State: &gen.OneOfTypedState_Int64State{Int64State: gs.counts[i]},
-			})
-			as.State = append(as.State, &gen.OneOfTypedState{
-				State: &gen.OneOfTypedState_DoubleState{DoubleState: gs.sums[i]},
-			})
-			as.State = append(as.State, &gen.OneOfTypedState{
-				State: &gen.OneOfTypedState_Int64State{Int64State: gs.sumsI[i]},
-			})
-			allIntVal := int64(0)
-			if gs.allInt[i] {
-				allIntVal = 1
-			}
-			as.State = append(as.State, &gen.OneOfTypedState{
-				State: &gen.OneOfTypedState_Int64State{Int64State: allIntVal},
-			})
-			// min_i / max_i: one typed value each (nil → a lone nil tag). The
-			// typed codec preserves int64/float64 exactly — JSON collapsed both to
-			// float64 and then re-narrowed integral doubles to int64, flipping a
-			// DOUBLE MIN/MAX's type on resume. An unencodable partial errors
-			// (correct-or-loud) rather than silently lose its type on resume.
-			minBytes, err := appendContValue(nil, gs.mins[i])
-			if err != nil {
-				return nil, fmt.Errorf("failed to encode MIN state for aggregate continuation: %w", err)
-			}
-			maxBytes, err := appendContValue(nil, gs.maxs[i])
-			if err != nil {
-				return nil, fmt.Errorf("failed to encode MAX state for aggregate continuation: %w", err)
-			}
-			as.State = append(as.State, &gen.OneOfTypedState{
-				State: &gen.OneOfTypedState_BytesState{BytesState: minBytes},
-			})
-			as.State = append(as.State, &gen.OneOfTypedState{
-				State: &gen.OneOfTypedState_BytesState{BytesState: maxBytes},
-			})
-		}
-		// ARRAY_AGG elements ride one trailing slot per ARRAY_AGG, after the
-		// fixed layout, so a continuation without one is unchanged.
-		for i, agg := range aggregates {
-			if agg.Function != expressions.AggArrayAgg {
-				continue
-			}
-			elems := gs.arrays[i]
-			if elems == nil {
-				elems = []any{}
-			}
-			b, err := appendContValue(nil, elems)
-			if err != nil {
-				return nil, fmt.Errorf("failed to encode ARRAY_AGG state for aggregate continuation: %w", err)
-			}
-			as.State = append(as.State, &gen.OneOfTypedState{
-				State: &gen.OneOfTypedState_BytesState{BytesState: b},
-			})
-		}
-		// Bitmap partials use separate trailing slots; existing aggregate layouts stay unchanged.
-		for i, agg := range aggregates {
-			if agg.Function == expressions.AggBitmapConstructAgg {
-				as.State = append(as.State, &gen.OneOfTypedState{State: &gen.OneOfTypedState_BytesState{BytesState: gs.bitmaps[i]}})
-			}
-		}
-		states = append(states, as)
-
-		gkBytes, err := encodeAggGroupKey(groupKey, keyVals)
+		types, err := newAggregateStateTypes(groupingKeys, aggregates)
 		if err != nil {
-			return nil, fmt.Errorf("failed to encode group key for aggregate continuation: %w", err)
+			return nil, fmt.Errorf("aggregate continuation: %w", err)
 		}
-		msg.PartialAggregationResults = &gen.PartialAggregationResult{
-			GroupKey:          gkBytes,
-			AccumulatorStates: states,
+		par, err := types.encodeJavaPartial(keyVals, gs, aggregates)
+		if err != nil {
+			return nil, fmt.Errorf("aggregate continuation: %w", err)
 		}
+		msg.PartialAggregationResults = par
 	}
-
 	return proto.Marshal(msg)
 }
 
-// decodeAggregateContinuation deserializes the AggregateCursorContinuation
-// proto. Returns the inner continuation and the partial group state.
-func decodeAggregateContinuation(data []byte, aggregates []expressions.AggregateSpec, resolve protoDescriptorResolver) (
+// decodeAggregateContinuation reads an AggregateCursorContinuation: the inner
+// continuation and the partial group, in Java's payload or in the layout Go
+// wrote before it (one AccumulatorState of 1+6n slots, which Java's one state
+// per aggregate never matches).
+func decodeAggregateContinuation(data []byte, groupingKeys []values.Value, aggregates []expressions.AggregateSpec, resolve protoDescriptorResolver) (
 	innerContinuation []byte,
 	groupKey string,
 	gs *groupState,
@@ -863,15 +779,59 @@ func decodeAggregateContinuation(data []byte, aggregates []expressions.Aggregate
 	if err := recordlayer.UnmarshalAsJava(data, msg); err != nil {
 		return nil, "", nil, fmt.Errorf("failed to unmarshal aggregate continuation: %w", err)
 	}
-
 	innerContinuation = msg.Continuation
-
-	if msg.PartialAggregationResults == nil {
+	par := msg.PartialAggregationResults
+	if par == nil {
 		return innerContinuation, "", nil, nil
 	}
+	if isLegacyAggregatePartial(par, aggregates) {
+		groupKey, gs, err = decodeLegacyAggregatePartial(par, aggregates, resolve)
+		if err != nil {
+			return nil, "", nil, err
+		}
+		return innerContinuation, groupKey, gs, nil
+	}
+	types, err := newAggregateStateTypes(groupingKeys, aggregates)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("aggregate continuation: %w", err)
+	}
+	keyVals, gs, err := types.decodeJavaPartial(par, aggregates)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("aggregate continuation: %w", err)
+	}
+	if len(groupingKeys) > 0 {
+		if groupKey, err = packGroupKey(keyVals); err != nil {
+			return nil, "", nil, fmt.Errorf("aggregate continuation: %w", err)
+		}
+	}
+	return innerContinuation, groupKey, gs, nil
+}
 
-	par := msg.PartialAggregationResults
+// legacyAggregateSlots is the slot count of the pre-Java Go layout.
+func legacyAggregateSlots(aggregates []expressions.AggregateSpec) int {
+	want := 1 + 6*len(aggregates)
+	for _, agg := range aggregates {
+		if agg.Function == expressions.AggArrayAgg || agg.Function == expressions.AggBitmapConstructAgg {
+			want++
+		}
+	}
+	return want
+}
 
+func isLegacyAggregatePartial(par *gen.PartialAggregationResult, aggregates []expressions.AggregateSpec) bool {
+	states := par.GetAccumulatorStates()
+	return len(states) == 1 && len(states[0].GetState()) == legacyAggregateSlots(aggregates)
+}
+
+// decodeLegacyAggregatePartial reads the partial group in the layout Go wrote
+// before it wrote Java's: [count] ++ per aggregate [count, sum, sumI, allInt,
+// min, max] ++ one slot per ARRAY_AGG ++ one per BITMAP_CONSTRUCT_AGG, and a
+// group key of the packed key bytes followed by its typed values.
+func decodeLegacyAggregatePartial(par *gen.PartialAggregationResult, aggregates []expressions.AggregateSpec, resolve protoDescriptorResolver) (
+	groupKey string,
+	gs *groupState,
+	err error,
+) {
 	// Decode groupKey + keyVals from the typed payload. Unparseable bytes are a
 	// corrupt continuation and must error: silently coercing them to a raw group
 	// key would resume aggregation under a key that never matches the recomputed
@@ -881,7 +841,7 @@ func decodeAggregateContinuation(data []byte, aggregates []expressions.Aggregate
 		var gkErr error
 		groupKey, keyVals, gkErr = decodeAggGroupKey(par.GroupKey)
 		if gkErr != nil {
-			return nil, "", nil, fmt.Errorf("failed to decode group key in aggregate continuation: %w", gkErr)
+			return "", nil, fmt.Errorf("failed to decode group key in aggregate continuation: %w", gkErr)
 		}
 		// Group keys are SCALARS — the aggregate encoder never writes a
 		// contValProtoMsg key, so a pendingProtoRowValue here is a crafted or
@@ -891,13 +851,13 @@ func decodeAggregateContinuation(data []byte, aggregates []expressions.Aggregate
 		// leak a placeholder into the resumed group's output row.
 		for ki := range keyVals {
 			if gErr := rejectPendingProtoValues(keyVals[ki]); gErr != nil {
-				return nil, "", nil, fmt.Errorf("invalid group-key value %d in aggregate continuation: %w", ki, gErr)
+				return "", nil, fmt.Errorf("invalid group-key value %d in aggregate continuation: %w", ki, gErr)
 			}
 		}
 	}
 
 	if len(par.AccumulatorStates) == 0 {
-		return innerContinuation, groupKey, nil, nil
+		return groupKey, nil, nil
 	}
 
 	as := par.AccumulatorStates[0]
@@ -927,7 +887,7 @@ func decodeAggregateContinuation(data []byte, aggregates []expressions.Aggregate
 		}
 	}
 	if want := 1 + 6*numAggs + numArrays + numBitmaps; len(as.State) != want {
-		return nil, "", nil, fmt.Errorf(
+		return "", nil, fmt.Errorf(
 			"aggregate continuation: accumulator has %d typed states, expected %d (1 + 6*%d aggregates + %d ARRAY_AGG + %d BITMAP_CONSTRUCT_AGG) — not a Go-format continuation",
 			len(as.State), want, numAggs, numArrays, numBitmaps)
 	}
@@ -966,21 +926,21 @@ func decodeAggregateContinuation(data []byte, aggregates []expressions.Aggregate
 		return v.DoubleState, nil
 	}
 	if gs.count, err = int64At("count"); err != nil {
-		return nil, "", nil, err
+		return "", nil, err
 	}
 	for i := 0; i < numAggs; i++ {
 		if gs.counts[i], err = int64At("agg-count"); err != nil {
-			return nil, "", nil, err
+			return "", nil, err
 		}
 		if gs.sums[i], err = doubleAt("agg-sum"); err != nil {
-			return nil, "", nil, err
+			return "", nil, err
 		}
 		if gs.sumsI[i], err = int64At("agg-sumI"); err != nil {
-			return nil, "", nil, err
+			return "", nil, err
 		}
 		allIntVal, aiErr := int64At("agg-allInt")
 		if aiErr != nil {
-			return nil, "", nil, aiErr
+			return "", nil, aiErr
 		}
 		gs.allInt[i] = allIntVal != 0
 		// min_i / max_i: one BYTES slot each (the encoder always writes
@@ -1009,10 +969,10 @@ func decodeAggregateContinuation(data []byte, aggregates []expressions.Aggregate
 			return val, nil
 		}
 		if gs.mins[i], err = extremum("MIN"); err != nil {
-			return nil, "", nil, err
+			return "", nil, err
 		}
 		if gs.maxs[i], err = extremum("MAX"); err != nil {
-			return nil, "", nil, err
+			return "", nil, err
 		}
 	}
 	for i, agg := range aggregates {
@@ -1021,20 +981,20 @@ func decodeAggregateContinuation(data []byte, aggregates []expressions.Aggregate
 		}
 		v, ok := as.State[idx].State.(*gen.OneOfTypedState_BytesState)
 		if !ok {
-			return nil, "", nil, fmt.Errorf("aggregate continuation: ARRAY_AGG slot %d is not bytes — not a Go-format continuation", idx)
+			return "", nil, fmt.Errorf("aggregate continuation: ARRAY_AGG slot %d is not bytes — not a Go-format continuation", idx)
 		}
 		idx++
 		val, _, dErr := readContValue(v.BytesState)
 		if dErr != nil {
-			return nil, "", nil, fmt.Errorf("failed to decode ARRAY_AGG state in aggregate continuation: %w", dErr)
+			return "", nil, fmt.Errorf("failed to decode ARRAY_AGG state in aggregate continuation: %w", dErr)
 		}
 		elems, ok := val.([]any)
 		if !ok {
-			return nil, "", nil, fmt.Errorf("aggregate continuation: ARRAY_AGG state is %T, want a list", val)
+			return "", nil, fmt.Errorf("aggregate continuation: ARRAY_AGG state is %T, want a list", val)
 		}
 		resolved, rErr := resolvePendingProtoValues(elems, resolve)
 		if rErr != nil {
-			return nil, "", nil, fmt.Errorf("failed to rebuild ARRAY_AGG state in aggregate continuation: %w", rErr)
+			return "", nil, fmt.Errorf("failed to rebuild ARRAY_AGG state in aggregate continuation: %w", rErr)
 		}
 		gs.arrays[i] = resolved.([]any)
 	}
@@ -1045,17 +1005,17 @@ func decodeAggregateContinuation(data []byte, aggregates []expressions.Aggregate
 		}
 		v, ok := as.State[idx].State.(*gen.OneOfTypedState_BytesState)
 		if !ok {
-			return nil, "", nil, fmt.Errorf("aggregate continuation: bitmap slot %d is not bytes", idx)
+			return "", nil, fmt.Errorf("aggregate continuation: bitmap slot %d is not bytes", idx)
 		}
 		idx++
 		size := len(v.BytesState)
 		if (gs.counts[i] == 0 && size != 0) || (gs.counts[i] != 0 && (size < 1250 || size > 31250)) {
-			return nil, "", nil, fmt.Errorf("aggregate continuation: invalid bitmap size %d for count %d", size, gs.counts[i])
+			return "", nil, fmt.Errorf("aggregate continuation: invalid bitmap size %d for count %d", size, gs.counts[i])
 		}
 		gs.bitmaps[i] = append([]byte(nil), v.BytesState...)
 	}
 
-	return innerContinuation, groupKey, gs, nil
+	return groupKey, gs, nil
 }
 
 // sortInnerExhaustedMarker rides the proto's minimum_key field as the Go-owned

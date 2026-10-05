@@ -392,3 +392,44 @@ func asFloat64(v any) (float64, bool) {
 	}
 	return 0, false
 }
+
+// MessageFromRowValues builds a message of md from row values by field
+// position, leaving the field of a nil value unset: a RecordConstructorValue's
+// message over values already evaluated.
+func MessageFromRowValues(md protoreflect.MessageDescriptor, vals []any) (protoreflect.Message, error) {
+	fds := md.Fields()
+	if fds.Len() != len(vals) {
+		return nil, &ProtoTypeError{
+			TypeName: string(md.FullName()),
+			Reason:   fmt.Sprintf("descriptor has %d fields for %d values", fds.Len(), len(vals)),
+		}
+	}
+	msg := dynamicpb.NewMessage(md)
+	for i, v := range vals {
+		if v == nil {
+			continue
+		}
+		fd := fds.Get(i)
+		pv, err := rowValueToProtoField(msg, fd, v)
+		if err != nil {
+			return nil, err
+		}
+		msg.Set(fd, pv)
+	}
+	return msg, nil
+}
+
+// RowValuesFromMessage is MessageFromRowValues' inverse: each field of msg in
+// the row domain, nil where unset.
+func RowValuesFromMessage(msg protoreflect.Message) []any {
+	fds := msg.Descriptor().Fields()
+	out := make([]any, fds.Len())
+	for i := 0; i < fds.Len(); i++ {
+		fd := fds.Get(i)
+		if !msg.Has(fd) {
+			continue
+		}
+		out[i] = ProtoFieldToRowValue(fd, msg.Get(fd))
+	}
+	return out
+}

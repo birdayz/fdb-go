@@ -3561,7 +3561,7 @@ func executeAggregation(
 				md = store.GetRecordMetaData()
 			}
 			resolve := continuationMessageResolver(md, plan)
-			ic, gk, gs, decErr := decodeAggregateContinuation(aggCont, aggregates, resolve)
+			ic, gk, gs, decErr := decodeAggregateContinuation(aggCont, groupingKeys, aggregates, resolve)
 			if decErr != nil {
 				return nil, fmt.Errorf("invalid aggregate continuation: %w", decErr)
 			}

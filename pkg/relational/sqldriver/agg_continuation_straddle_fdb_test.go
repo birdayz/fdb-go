@@ -42,7 +42,9 @@ func TestFDB_StreamingAggregate_MidGroupContinuation(t *testing.T) {
 			// index scan (no in-memory sort) and a mid-scan break lands in the
 			// AGGREGATE continuation — the SUM/MIN/MAX partial-state path.
 			"CREATE TABLE ta (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
-			"CREATE INDEX ta_gv ON ta (g, v)")
+			"CREATE INDEX ta_gv ON ta (g, v) "+
+			"CREATE TABLE tn (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX tn_gv ON tn (g, v)")
 	ctx := context.Background()
 
 	const scanLimit = 3
@@ -187,6 +189,40 @@ func TestFDB_StreamingAggregate_MidGroupContinuation(t *testing.T) {
 		if len(got) != 2 || got[200] != want[200] || got[300] != want[300] {
 			t.Fatalf("SUM/MIN/MAX/COUNT across a mid-group continuation = %+v, want %+v "+
 				"(a lost partial SUM/MIN/MAX splits or mis-aggregates the straddling g=200 group)", got, want)
+		}
+	})
+
+	// ---- every value accumulator still empty at the break ----
+	// The index puts the group's NULL operands first, so the first page holds
+	// only NULLs: COUNT has a state, SUM/MIN/MAX/AVG have none. Java omits those
+	// states and then reads the wrong slot on resume (upstream #4573); Go keeps
+	// an empty state in each slot and resumes.
+	t.Run("absent_states_partial", func(t *testing.T) {
+		const q = "SELECT g, SUM(v), MIN(v), MAX(v), AVG(v), COUNT(v), COUNT(*) FROM tn GROUP BY g"
+		for _, r := range []string{"1, 200, NULL", "2, 200, NULL", "3, 200, NULL", "4, 200, 40", "5, 200, 20", "6, 300, 50"} {
+			exec("INSERT INTO tn (id, g, v) VALUES (" + r + ")")
+		}
+		requireStreaming(q)
+		rows, err := conn.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		defer rows.Close()
+		var got []string
+		for rows.Next() {
+			var g, sum, mn, mx, cntV, cnt int64
+			var avg float64
+			if err := rows.Scan(&g, &sum, &mn, &mx, &avg, &cntV, &cnt); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			got = append(got, fmt.Sprintf("%d:%d/%d/%d/%g/%d/%d", g, sum, mn, mx, avg, cntV, cnt))
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err: %v", err)
+		}
+		const want = "200:60/20/40/30/2/5 300:50/50/50/50/1/1"
+		if strings.Join(got, " ") != want {
+			t.Fatalf("aggregates resumed from all-empty value states = %q, want %q", strings.Join(got, " "), want)
 		}
 	})
 

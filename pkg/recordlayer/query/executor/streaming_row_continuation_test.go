@@ -81,7 +81,7 @@ func decodeAggRowContinuation(t *testing.T, cont recordlayer.RecordCursorContinu
 	if err != nil {
 		t.Fatalf("row continuation ToBytes: %v", err)
 	}
-	inner, groupKey, gs, err := decodeAggregateContinuation(b, make([]expressions.AggregateSpec, numAggs), nil)
+	inner, groupKey, gs, err := decodeAggregateContinuation(b, nil, make([]expressions.AggregateSpec, numAggs), nil)
 	if err != nil {
 		t.Fatalf("emitted aggregate row's continuation does not decode (the retired fake?): %v", err)
 	}
