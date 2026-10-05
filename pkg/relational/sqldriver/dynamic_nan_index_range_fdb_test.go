@@ -200,7 +200,9 @@ func TestFDB_DynamicNaNCompositeIndexKeyFilter(t *testing.T) {
 								continuation, done = c, r.GetContinuation().IsEnd()
 								return nil, nil
 							}
-							ids = append(ids, r.GetValue().PrimaryKey[0].(int64))
+							// The relational primary key is (record type key, ID).
+							pk := r.GetValue().PrimaryKey
+							ids = append(ids, pk[len(pk)-1].(int64))
 						}
 					})
 					if err != nil {

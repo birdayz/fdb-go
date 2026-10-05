@@ -418,6 +418,14 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   The 43 WSJ `both-accept-companion` runs are now `both-accept-equal` (their Go
   digests equal Java's, recomputed offline). The metamorphic sweeps no longer
   declare SUM / COUNT aggregate indexes.
+- [x] Full-lane failures found running the sqldriver and factory suites locally
+  (2026-10-05). `TestFDB_InListSignedZeroKeepsPrimaryKeyOrder`'s twins index
+  `(e, id)` (F-7b item 2 builds no IN-union past the record-type coordinate);
+  `TestFDB_DynamicNaNCompositeIndexKeyFilter` reads the id after the record-type
+  key. The factory corpus drift (53 scenarios) was censused against `d5a5132a1`
+  before re-blessing: the 12 lost equality probes are 6 IN-unions F-7b item 2
+  removes (Java builds none) and 6 join outers F-7a moved from `IDX_AB [=,*]` to
+  a fully matched range index, Java's `unmatchedFieldsCount` rung.
 - [ ] **Aggregate roll-up port (next).** Java serves an ungrouped or coarser
   aggregate from a grouped index: `select sum(col1) from T2 where col2 = 0` is
   `AISCAN(T2_I6 [EQUALS ...]) | ON EMPTY NULL` and a range is `AISCAN(...) | AGG

@@ -26,8 +26,8 @@
 # blessing: metamorphic
 # oracles: tlp,second-plan
 # feature-vector: shape=single;idx=B,C,D,E;proj=star;where=and(!between.ge,in.in);order=asc
-# plan-shape: 54ca0002eb66f9d4
-# dedup-key: 2f65c9084bad0d27
+# plan-shape: 5397369b15053aa5
+# dedup-key: 1ab96a717643aa86
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 743 -seeds 1 -date 2026-08-01 -out <dir>
 ---
 schema_template: |-

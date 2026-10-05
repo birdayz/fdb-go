@@ -55,16 +55,18 @@ func TestFDB_InListSignedZeroKeepsPrimaryKeyOrder(t *testing.T) {
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE inlistzero "+
 			// idx_e is what makes the per-binding leg — and so the merge —
-			// available at all.
+			// available at all. Both indexes name id in their key: an ORDER BY
+			// id that lies past the record-type coordinate of the primary-key
+			// suffix gets no IN-union in Java or Go (F-7b item 2).
 			"CREATE TABLE ti (id BIGINT, e DOUBLE, g BIGINT, PRIMARY KEY (id)) "+
-			"CREATE INDEX idx_e ON ti (e) "+
+			"CREATE INDEX idx_e ON ti (e, id) "+
 			// Same rows, same query, NO index: forced to sort, so it is the oracle.
 			"CREATE TABLE tb (id BIGINT, e DOUBLE, g BIGINT, PRIMARY KEY (id)) "+
 			// An INT column with the identical shape. It has no signed zero, so its
 			// leg genuinely delivers primary-key order and must KEEP the merge —
 			// the direction a blanket "never trust a leg" fix would break.
 			"CREATE TABLE tn (id BIGINT, e BIGINT, g BIGINT, PRIMARY KEY (id)) "+
-			"CREATE INDEX idx_n ON tn (e)")
+			"CREATE INDEX idx_n ON tn (e, id)")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE inlistzero")
 	db, err := sql.Open("fdbsql",
