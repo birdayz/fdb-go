@@ -352,25 +352,23 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   The 25-value and 5 x 5 rows are declared `DIFF`, because Java's IN-union
   fails and Go's in-join answers. They leave `wsfOpenUntil` (full lane, not
   run).
-- [ ] RANK-index match-candidate gap and quoted dotted identifier GROUP BY/order
-  gaps (`embedded/dotted_identifier_gap_test.go`); verify target reach first.
-- [ ] Escaped COLUMN names (`"c$1"`, stored `c__1`) in index metadata. The key
-  expansion now decodes stored paths as Java's KeyExpressionExpansionVisitor
-  does (`resolveKeyFieldPath`), so a value index over an escaped column is
-  chosen and an escaped PK column gets PK ranges. Still open, all measured with
-  `PlanQueryForTest`, each matching Java's plan only for the unescaped twin:
-  - The candidates' name-keyed surfaces carry STORED names and resolve them
-    against user-named Types: `columnNames`, `pkColumnNames`, `primaryKeyColumns`,
-    key-column paths (`bakeOrderingColumn`/`bakeOrderingPath`/`ColumnValue`,
-    `ColumnCanExtendOrderingClaim`, `resolvedColumnsInRow`, `plans/ordering.go`,
-    `cost.go`). So ORDER BY over an escaped index or PK column adds an
-    InMemorySort (`ORDER BY "c$1"`, `ORDER BY "i.d"`). Decode once at the
-    metadata source, not inside the shared lookup helpers: those also take
-    user names, and decoding a user name like `a__1b` misresolves.
-  - An aggregate index grouped by, or aggregating, an escaped column is never
-    matched (`DescribeAggregateIndexKey` paths are stored and must stay stored
-    for `pathColumnsRootKeyExpression`; decode where they are compared).
-  - `CREATE INDEX i ON t ("c$1")` fails with 42703 `could not find c$1`.
+- [ ] RANK-index match-candidate gap and the aliased dotted GROUP BY gap
+  (`t."foo.tableA.A2"` is 42703, `embedded/dotted_identifier_gap_test.go`);
+  verify target reach first. The dotted primary-key ORDER BY gap is closed (the
+  escaped-column item below).
+- [x] Escaped COLUMN names (`"c$1"`, stored `c__1`) plan as their unescaped
+  twins. Key expressions carry stored names and the planner's row layouts
+  decoded ones (`FieldNameForProtoField`), so names are decoded once where
+  metadata enters the planner, as Java's KeyExpressionExpansionVisitor and
+  ScalarTranslationVisitor read `toUserIdentifier`: `embedded.layoutNames`
+  (index columns, value columns, vector and aggregate names and paths),
+  `coveredPrimaryKeyColumns`, `TranslatePrimaryKeyToValues` (was
+  `strings.ToUpper`), and in cascades `resolveKeyFieldPath`/`layoutFieldPath`
+  and the key-expression name comparisons. `storedFieldName` re-encodes where a
+  root is spelled back from names. ON-source DDL resolves the SQL name against
+  the decoded layout. Thirteen shapes measured against their twins (index and
+  PK ordering, IN, DISTINCT, SUM index, intersection, ON-source) now match;
+  `escaped_column_index.yaml` pins them with rows.
 - [ ] Close the large-join memo planning-cost regression introduced by
   `54fcf78f0`. Preserve Java's block-Select architecture. Investigate a cheap
   negative filter or fewer sibling alternatives using Java's PartitionSelectRule

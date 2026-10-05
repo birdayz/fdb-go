@@ -152,8 +152,8 @@ func expandKeyExpression(expression *gen.KeyExpression, s keyExpansionState) (*G
 // expression.
 func resolveKeyFieldPath(base values.Value, path []string) (values.Value, error) {
 	requests := make([]values.FieldRequest, len(path))
-	for i, segment := range path {
-		request, err := values.FieldByName(protoname.ToUserIdentifier(segment))
+	for i, segment := range layoutFieldPath(path) {
+		request, err := values.FieldByName(segment)
 		if err != nil {
 			return nil, err
 		}
@@ -873,7 +873,7 @@ func pathColumnsRootKeyExpression(paths [][]string) *gen.KeyExpression {
 	for i, path := range paths {
 		key := flatColumnField(path[len(path)-1], gen.Field_SCALAR)
 		for j := len(path) - 2; j >= 0; j-- {
-			parent := path[j]
+			parent := storedFieldName(path[j])
 			key = &gen.KeyExpression{Nesting: &gen.Nesting{
 				Parent: &gen.Field{FieldName: &parent, FanType: gen.Field_SCALAR.Enum()},
 				Child:  key,
@@ -913,7 +913,36 @@ func flatColumnsRootKeyExpression(columns, functions []string) *gen.KeyExpressio
 }
 
 func flatColumnField(name string, fanType gen.Field_FanType) *gen.KeyExpression {
-	return &gen.KeyExpression{Field: &gen.Field{FieldName: &name, FanType: fanType.Enum()}}
+	stored := storedFieldName(name)
+	return &gen.KeyExpression{Field: &gen.Field{FieldName: &stored, FanType: fanType.Enum()}}
+}
+
+// layoutFieldPath is a key expression's STORED field path in the names the row
+// layouts carry: values.FieldNameForProtoField decodes every descriptor name,
+// and Java's KeyExpressionExpansionVisitor reads
+// ProtoUtils.toUserIdentifier(getFieldName()) (KeyExpressionExpansionVisitor.java:130,
+// :301). Candidates hold layout names; key expressions hold stored ones.
+func layoutFieldPath(path []string) []string {
+	if path == nil {
+		return nil
+	}
+	out := make([]string, len(path))
+	for i, segment := range path {
+		out[i] = protoname.ToUserIdentifier(segment)
+	}
+	return out
+}
+
+// storedFieldName re-encodes a candidate's layout name for a key expression
+// spelled from it (flatColumnsRootKeyExpression, pathColumnsRootKeyExpression),
+// whose expansion decodes it again (resolveKeyFieldPath). A name the encoding
+// rejects (one starting with "$" or "__1") is left as it is; its decode then
+// misses and the candidate declines.
+func storedFieldName(name string) string {
+	if stored, err := protoname.ToProtoBufCompliantName(name); err == nil {
+		return stored
+	}
+	return name
 }
 
 // resolveUpperFieldPath resolves a metadata field path against the record the

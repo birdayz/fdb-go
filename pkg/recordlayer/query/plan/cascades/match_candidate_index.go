@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/protoname"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -304,7 +305,7 @@ func (c *ValueIndexScanMatchCandidate) keyColumnPath(i int) []string {
 	if described == nil || i < 0 || i >= len(described.keyColumns) {
 		return nil
 	}
-	return described.keyColumns[i].path
+	return layoutFieldPath(described.keyColumns[i].path)
 }
 
 // nestedKeyColumnPath is keyColumnPath for a nested leaf only.
@@ -329,7 +330,7 @@ func (c *ValueIndexScanMatchCandidate) columnPaths() (keyPaths, valuePaths [][]s
 				if out == nil {
 					out = make([][]string, len(columns))
 				}
-				out[i] = column.path
+				out[i] = layoutFieldPath(column.path)
 			}
 		}
 		return out
@@ -858,7 +859,7 @@ func (c *ValueIndexScanMatchCandidate) ColumnValue(i int, base values.Value) val
 	if !ok {
 		return nil
 	}
-	fv := resolveUpperFieldPath(qov, column.path)
+	fv := resolveUpperFieldPath(qov, layoutFieldPath(column.path))
 	if fv == nil {
 		return nil
 	}
@@ -991,12 +992,14 @@ func (c *ValueIndexScanMatchCandidate) columnsDescribe(expansion *valueIndexExpa
 		if i < len(c.columnFunctions) {
 			function = c.columnFunctions[i]
 		}
-		if !strings.EqualFold(column.name, c.columnNames[i]) || column.function != function {
+		// The expansion registers the key expression's stored names; the
+		// candidate holds layout names (layoutFieldPath).
+		if !strings.EqualFold(protoname.ToUserIdentifier(column.name), c.columnNames[i]) || column.function != function {
 			return false
 		}
 	}
 	for i, column := range expansion.valueColumns {
-		if column.function != "" || !strings.EqualFold(column.name, c.valueColumnNames[i]) {
+		if column.function != "" || !strings.EqualFold(protoname.ToUserIdentifier(column.name), c.valueColumnNames[i]) {
 			return false
 		}
 	}
@@ -1458,7 +1461,7 @@ func (c *ValueIndexScanMatchCandidate) plainFieldColumnsForShortcut() ([]string,
 			return nil, false
 		}
 		for i, rootName := range rootNames {
-			if !strings.EqualFold(rootName, c.columnNames[i]) {
+			if !strings.EqualFold(protoname.ToUserIdentifier(rootName), c.columnNames[i]) {
 				return nil, false
 			}
 		}

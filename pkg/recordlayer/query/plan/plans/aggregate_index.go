@@ -385,10 +385,10 @@ func (p *RecordQueryAggregateIndexPlan) Explain() string {
 	}
 	if len(p.groupCols) > 0 {
 		return fmt.Sprintf("AggregateIndex(%s, %s, %v, %s%s)",
-			p.aggregateFunction, p.indexPlan.GetIndexName(), p.groupCols, p.recordTypeName, suffix)
+			p.aggregateFunction, p.indexPlan.GetIndexName(), p.groupCols, explainRecordTypeName(p.recordTypeName), suffix)
 	}
 	return fmt.Sprintf("AggregateIndex(%s, %s, %s%s)",
-		p.aggregateFunction, p.indexPlan.GetIndexName(), p.recordTypeName, suffix)
+		p.aggregateFunction, p.indexPlan.GetIndexName(), explainRecordTypeName(p.recordTypeName), suffix)
 }
 
 var (

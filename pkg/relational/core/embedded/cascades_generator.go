@@ -3039,8 +3039,9 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 		if len(pkCols) == 0 {
 			continue
 		}
-		// Physical names verbatim, as the index candidates take them: a quoted
-		// lowercase key column is named "id", and folding it matches no field.
+		// Layout names, as the index candidates take them (layoutNames): decoded,
+		// never folded -- a quoted lowercase key column is named "id", and folding
+		// it matches no field.
 		aliases := make([]values.CorrelationIdentifier, len(pkCols))
 		for i := range pkCols {
 			aliases[i] = values.UniqueCorrelationIdentifier()
@@ -3059,12 +3060,10 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 		// rt.Name is the STORED protobuf name, and that is correct here: it is
 		// what Java's PrimaryScanMatchCandidate carries, it is injective by
 		// construction, and it flows into physical plans and the continuation
-		// salt. The DEFECT is on the other side -- cascades_translator.go builds
-		// the query's FullUnorderedScanExpression from the SQL table name, and
+		// salt. The query's FullUnorderedScanExpression carries the same stored
+		// name (cascadesTranslator.storageName, RFC-238 §7c), and
 		// FullUnorderedScanExpression.EqualsWithoutChildren compares the two
-		// lists as strings, so a table whose name escapes matches NO candidate
-		// and gets no access path at all. RFC-238 §7c decides the fix: the scan
-		// leaf translates once, here nothing changes.
+		// lists as strings.
 		primaryCandidate := cascades.NewPrimaryScanMatchCandidate(
 			nil,
 			aliases,
@@ -3076,7 +3075,7 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 		)
 		primaryCandidate.WithKeyComponentTypes(keyTypes)
 		if rt.PrimaryKey != nil && rt.Descriptor != nil {
-			primaryCandidate.WithCommonPrimaryKey(recordlayer.TranslatePrimaryKeyToValues(rt.PrimaryKey, strings.ToUpper, flowed))
+			primaryCandidate.WithCommonPrimaryKey(recordlayer.TranslatePrimaryKeyToValues(rt.PrimaryKey, recordlayer.ToUserIdentifier, flowed))
 		}
 		candidates = append(candidates, primaryCandidate)
 	}
@@ -3277,7 +3276,7 @@ func (d *metadataIndexDef) IndexColumnNames() []string {
 	if root := d.idx.RootExpression.ToKeyExpression(); root != nil {
 		if names, ok := indexKeyColumnNames(root); ok &&
 			len(names) == d.idx.RootExpression.ColumnSize() {
-			return names
+			return layoutNames(names)
 		}
 	}
 	// The fallback must respect the covering split too: FieldNames delegates
@@ -3289,7 +3288,7 @@ func (d *metadataIndexDef) IndexColumnNames() []string {
 	// guess — return the untruncated list and let the candidate's
 	// column check decline it (NewPlanContextFromIndexDefs refuses
 	// nested-leaf roots outright before that).
-	names := d.idx.RootExpression.FieldNames()
+	names := layoutNames(d.idx.RootExpression.FieldNames())
 	if kwv, ok := d.idx.RootExpression.(*recordlayer.KeyWithValueExpression); ok {
 		inner := kwv.InnerKey()
 		if len(names) == inner.ColumnSize() && kwv.SplitPoint() <= len(names) {
@@ -3297,6 +3296,26 @@ func (d *metadataIndexDef) IndexColumnNames() []string {
 		}
 	}
 	return names
+}
+
+// layoutNames maps metadata field names -- a key expression's, which carry the
+// DESCRIPTOR's stored spelling (`c__1` for the column "c$1") -- to the names the
+// planner's row layouts carry. values.FieldNameForProtoField decodes every
+// descriptor name, and every name a candidate offers is resolved against such a
+// layout, so it must be decoded by the same rule: Java's ScalarTranslationVisitor
+// and KeyExpressionExpansionVisitor read ProtoUtils.toUserIdentifier(getFieldName())
+// for the same reason. A spelling that is not escaped passes unchanged, and no
+// case is folded. Key expressions stay stored; cascades re-encodes a name it
+// spells back into one.
+func layoutNames(stored []string) []string {
+	if stored == nil {
+		return nil
+	}
+	out := make([]string, len(stored))
+	for i, name := range stored {
+		out[i] = recordlayer.ToUserIdentifier(name)
+	}
+	return out
 }
 
 // IndexValueColumnNames returns the covering-only (FDB VALUE part) column
@@ -3319,7 +3338,7 @@ func (d *metadataIndexDef) IndexValueColumnNames() []string {
 	if !okNames || kwv.SplitPoint() > len(names) {
 		return nil
 	}
-	return names[kwv.SplitPoint():]
+	return layoutNames(names[kwv.SplitPoint():])
 }
 
 func (d *metadataIndexDef) IndexIsUnique() bool { return d.idx.IsUnique() }
@@ -3899,7 +3918,7 @@ func coveredPrimaryKeyColumns(rt *recordlayer.RecordType) ([]string, bool, bool)
 			component.Field.GetFanType() != gen.Field_SCALAR {
 			return nil, false, false
 		}
-		columns = append(columns, component.Field.GetFieldName())
+		columns = append(columns, recordlayer.ToUserIdentifier(component.Field.GetFieldName()))
 	}
 	return columns, leadingRecordTypeKey, true
 }
@@ -3923,7 +3942,7 @@ func (d *metadataIndexDef) IndexCommonPrimaryKeyValues() []values.Value {
 	}
 	return recordlayer.TranslatePrimaryKeyToValues(
 		rts[0].PrimaryKey,
-		strings.ToUpper,
+		recordlayer.ToUserIdentifier,
 		d.IndexRowType(),
 	)
 }
@@ -3939,7 +3958,7 @@ func (c *metadataPlanContext) GetCommonPrimaryKeyValues(recordType string) []val
 	if rt == nil || rt.PrimaryKey == nil || rt.Descriptor == nil {
 		return nil
 	}
-	return recordlayer.TranslatePrimaryKeyToValues(rt.PrimaryKey, strings.ToUpper,
+	return recordlayer.TranslatePrimaryKeyToValues(rt.PrimaryKey, recordlayer.ToUserIdentifier,
 		executor.PositionalTypeForRecordLayout(rt.Descriptor, c.md.IsStoreRecordVersions()))
 }
 
@@ -4010,6 +4029,14 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 		gke.ToKeyExpression().GetGrouping().GetWholeKey(), groupingCount)
 	if err != nil || len(groupPaths) != groupingCount || len(groupedPaths) != groupedCount || groupedCount > 1 {
 		return nil
+	}
+	// The described paths are stored; the candidate resolves them against the
+	// row layout, so they are decoded segment by segment (layoutNames).
+	for i, path := range groupPaths {
+		groupPaths[i] = layoutNames(path)
+	}
+	for i, path := range groupedPaths {
+		groupedPaths[i] = layoutNames(path)
 	}
 
 	// An ungrouped index is one group, the whole table, and serves the
@@ -4118,7 +4145,7 @@ func tryVectorIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaD
 	if (idx.Type != recordlayer.IndexTypeVector && idx.Type != recordlayer.IndexTypeVectorSPFresh) || idx.RootExpression == nil {
 		return nil
 	}
-	cols := idx.RootExpression.FieldNames()
+	cols := layoutNames(idx.RootExpression.FieldNames())
 	if len(cols) == 0 {
 		return nil
 	}
@@ -4149,7 +4176,7 @@ func tryVectorIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaD
 	for i, rt := range rts {
 		rtNames[i] = rt.Name
 	}
-	// Physical names verbatim, as for the primary-scan candidate.
+	// Layout names, as for the primary-scan candidate (layoutNames).
 	var pkCols []string
 	if pk, _, safe := commonCoveredPrimaryKeyColumns(rts); safe {
 		pkCols = pk

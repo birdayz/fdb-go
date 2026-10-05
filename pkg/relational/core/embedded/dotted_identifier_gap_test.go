@@ -24,40 +24,52 @@ func TestDottedIdentifierGapsArePinned(t *testing.T) {
 		name, schema, q string
 		plan            []string // substrings the plan holds, when it plans
 		code            api.ErrorCode
+		sortFree        bool // the plan must not sort in memory
 	}{
 		{
 			"an aggregate grouped by a dotted column plans", dotted,
 			`SELECT SUM("foo.tableA.A1") FROM "foo.tableA" GROUP BY "foo.tableA.A2"`,
 			[]string{"StreamingAgg"},
 			"",
+			false,
 		},
 		{
 			"the grouped dotted column projected", dotted,
 			`SELECT "foo.tableA.A2", COUNT(*) FROM "foo.tableA" GROUP BY "foo.tableA.A2"`,
 			[]string{"StreamingAgg"},
 			"",
+			false,
 		},
 		{
 			"GAP: the aliased form", dotted,
-			`SELECT t."foo.tableA.A2", SUM(t."foo.tableA.A1") FROM "foo.tableA" AS t GROUP BY t."foo.tableA.A2"`, nil, api.ErrCodeUndefinedColumn,
+			`SELECT t."foo.tableA.A2", SUM(t."foo.tableA.A1") FROM "foo.tableA" AS t GROUP BY t."foo.tableA.A2"`, nil, api.ErrCodeUndefinedColumn, false,
 		},
 		{
 			"a HAVING over the dotted aggregate", dotted,
 			`SELECT "foo.tableA.A2" AS k, MAX("foo.tableA.A3") FROM "foo.tableA" GROUP BY "foo.tableA.A2" HAVING MAX("foo.tableA.A3") > 1`,
 			[]string{"StreamingAgg"},
 			"",
+			false,
 		},
+		// Was a GAP: the primary-key column names the planner resolved against
+		// the row layout were the STORED spelling x__2a1, the layout names the
+		// field x.a1, and the scan's ordering never resolved. The names are
+		// decoded where metadata enters the planner (layoutNames,
+		// coveredPrimaryKeyColumns), as Java's ScalarTranslationVisitor reads
+		// toUserIdentifier.
 		{
-			"GAP: ORDER BY a dotted primary key sorts in memory", dottedColumn,
+			"ORDER BY a dotted primary key is served by the scan", dottedColumn,
 			`SELECT "x.a1" FROM ta ORDER BY "x.a1"`,
-			[]string{"InMemorySort"},
+			[]string{"Scan(TA)"},
 			"",
+			true,
 		},
 		{
 			"control: ORDER BY an undotted primary key is served by the scan", plain,
 			`SELECT a1 FROM ta ORDER BY a1`,
 			[]string{"Scan(TA)"},
 			"",
+			true,
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -78,8 +90,8 @@ func TestDottedIdentifierGapsArePinned(t *testing.T) {
 					t.Fatalf("%s: plan %s, pinned to hold %q", c.q, p, want)
 				}
 			}
-			if strings.HasPrefix(c.name, "control") && strings.Contains(p, "InMemorySort") {
-				t.Fatalf("control plan sorts: %s", p)
+			if c.sortFree && strings.Contains(p, "InMemorySort") {
+				t.Fatalf("%s: plan sorts in memory: %s", c.q, p)
 			}
 		})
 	}

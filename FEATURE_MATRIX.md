@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**400 scenarios · 3393 query/assertion cases** across 18 feature areas — 2979 supported, 106 unsupported-feature pins, 308 error-path pins.
+**401 scenarios · 3401 query/assertion cases** across 18 feature areas — 2987 supported, 106 unsupported-feature pins, 308 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -39,13 +39,13 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Column resolution & aliasing | 7 | 59 | 30 | 0 | 29 |
 | NULL handling | 6 | 44 | 41 | 3 | 0 |
 | NULL handling & boolean logic | 2 | 48 | 48 | 0 | 0 |
-| Index usage | 19 | 218 | 215 | 0 | 3 |
+| Index usage | 20 | 226 | 223 | 0 | 3 |
 | Types | 13 | 148 | 127 | 4 | 17 |
 | Keys & primary keys | 5 | 133 | 128 | 0 | 5 |
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 45 | 459 | 400 | 9 | 50 |
-| **Total** | **400** | **3393** | **2979** | **106** | **308** |
+| **Total** | **401** | **3401** | **2987** | **106** | **308** |
 
 ## Aggregates & GROUP BY
 
@@ -425,6 +425,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `composite_secondary_index_prefix_pushdown` | 11 | 11 | 0 | 0 | Pure-prefix pushdown on composite secondary indexes: when WHERE |
 | `covering_index_java` | 7 | 7 | 0 | 0 | Covering index optimization. |
 | `covering_index_pushdown` | 26 | 26 | 0 | 0 | Covering-index pushdown: when every column the SELECT reads from each |
+| `escaped_column_index` | 8 | 8 | 0 | 0 | AN ESCAPED COLUMN PLANS AS ITS UNESCAPED TWIN DOES. |
 | `escaped_table_secondary_index` | 4 | 4 | 0 | 0 | A TABLE WHOSE NAME ESCAPES COULD NOT BE GIVEN A SECONDARY INDEX AT ALL. |
 | `fanout_index_child_binding_prefix` | 3 | 3 | 0 | 0 | A fan-out index whose exploded element follows a scalar column: the element's |
 | `index_range_and_or` | 10 | 10 | 0 | 0 | Port of Java standard-tests.yamsql — AND/OR range predicates with index. |

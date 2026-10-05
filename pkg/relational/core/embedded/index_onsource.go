@@ -209,17 +209,27 @@ func parseOnSourceIndexDefinition(def *antlrgen.IndexOnSourceDefinitionContext, 
 		if fv, ok := resolvedByName[name]; ok {
 			return fv, nil
 		}
+		// The identifier is a SQL name, so it is looked up among the layout's
+		// names -- the descriptor names DECODED (FieldNameForProtoField), as
+		// Java's semantic analyzer resolves the column: "c$1" is the stored
+		// field c__1. The layout appends the __ROW_VERSION pseudo-field one past
+		// the descriptor's fields when the template stores row versions and no
+		// REAL column shadows it (real-column-wins; Java:
+		// RecordMetaData.getPlannerType → Type.Record.addPseudoFields,
+		// RecordMetaData.java:732-739). Two stored names that decode alike are
+		// ambiguous and resolve to neither.
 		ordinal := -1
-		if fd := fields.ByName(protoreflect.Name(name)); fd != nil {
-			ordinal = fd.Index()
-		} else if name == values.PseudoFieldRowVersion && md.IsStoreRecordVersions() {
-			// The planner-facing layout appends the __ROW_VERSION pseudo-field
-			// one past the descriptor's fields when the template stores row
-			// versions and no REAL column shadows it (real-column-wins — the
-			// ByName branch above; Java: RecordMetaData.getPlannerType →
-			// Type.Record.addPseudoFields, RecordMetaData.java:732-739).
-			ordinal = fields.Len()
-		} else {
+		for i := range rowFields {
+			if rowFields[i].Name != name {
+				continue
+			}
+			if ordinal >= 0 {
+				ordinal = -1
+				break
+			}
+			ordinal = i
+		}
+		if ordinal < 0 {
 			// Java: Assert.notNullUnchecked(column, ErrorCode.UNDEFINED_COLUMN,
 			// "could not find " + identifier) — OnSourceIndexGenerator.java:203,209.
 			return nil, api.NewErrorf(api.ErrCodeUndefinedColumn, "could not find %s", name)

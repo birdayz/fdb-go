@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=400 queries=3085 dml=179 non_query=129 plan_errors=324 unexpected_errors=4
+# files=401 queries=3093 dml=179 non_query=129 plan_errors=324 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -6938,6 +6938,49 @@ plan:  <PLAN-ERROR: 42F10: cte query has 1 column(s), however 3 aliases defined>
 === error_codes_java.yaml#9 expect-error=0A000
 sql:   SELECT SUM(MAX(val)) FROM t
 plan:  <PLAN-ERROR: 0A000: unsupported nested aggregate(s)>
+=== escaped_column_index.yaml#0
+sql:   SELECT "i.d" FROM "MY$TABLE" WHERE "c$1" >= 100 ORDER BY "c$1", "i.d"
+plan:  Map(Map(IndexScan(IDX_C, [<>, *] COVERING), {i.d: _current.i.d#0, _1: _current.c$0#2}), {i.d: _current.i.d#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryMapPlan
+shape:     RecordQueryCoveringIndexPlan
+=== escaped_column_index.yaml#1
+sql:   SELECT "i.d" FROM "MY$TABLE" ORDER BY "i.d"
+plan:  Map(Scan(MY$TABLE), {i.d: _current.i.d#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== escaped_column_index.yaml#2
+sql:   SELECT "i.d" FROM "MY$TABLE" WHERE "i.d" > 1 ORDER BY "i.d" DESC
+plan:  Map(Scan(MY$TABLE, [<>]) REVERSE, {i.d: _current.i.d#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== escaped_column_index.yaml#3
+sql:   SELECT "i.d" FROM "MY$TABLE" WHERE "c$1" = 100 ORDER BY "i.d"
+plan:  Map(IndexScan(IDX_C, [=, *] COVERING), {i.d: _current.i.d#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== escaped_column_index.yaml#4
+sql:   SELECT "i.d" FROM "MY$TABLE" WHERE "b$1" = 7
+plan:  Map(IndexScan(IDX_ON, [=] COVERING), {i.d: _current.i.d#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== escaped_column_index.yaml#5
+sql:   SELECT "i.d" FROM "MY$TABLE" WHERE "b$1" = 7 AND "c$1" = 200
+plan:  Map(Intersection(IndexScan(IDX_C, [=, *] COVERING), IndexScan(IDX_ON, [=] COVERING)), {i.d: _current.i.d#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryIntersectionPlan
+shape:     RecordQueryCoveringIndexPlan
+shape:     RecordQueryCoveringIndexPlan
+=== escaped_column_index.yaml#6
+sql:   SELECT "g$1", SUM("v.1") FROM "MY$TABLE" GROUP BY "g$1"
+plan:  Map(AggregateIndex(SUM, AGG, [g$0], MY$TABLE), {g$0: _current.g$0#0, _1: _current.SUM(v.1)#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryAggregateIndexPlan
+=== escaped_column_index.yaml#7
+sql:   SELECT SUM("v.1") FROM "MY$TABLE" WHERE "g$1" = 2 GROUP BY "g$1"
+plan:  Map(AggregateIndex(SUM, AGG, [g$0], MY$TABLE), {_0: _current.SUM(v.1)#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryAggregateIndexPlan
 === escaped_table_grouped_aggregate.yaml#0
 sql:   SELECT g, COUNT(*) FROM u GROUP BY g ORDER BY g
 plan:  Map(StreamingAgg(keys=[_current.G#1], IndexScan(U_G, [*] COVERING)), {G: _current.G#0, _1: _current.COUNT(*)#1})
