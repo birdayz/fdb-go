@@ -1417,6 +1417,15 @@ func (c *ValueIndexScanMatchCandidate) canProduceScanPlan() bool {
 	if !c.metadataSufficientForPlanning() {
 		return false
 	}
+	// An index filtered by a Go closure holds entries only for the records the
+	// closure admits, and no query can be proved to imply an opaque filter, so
+	// a scan of it never answers for the base table: not as a full scan, a
+	// range, an equality probe or an ordered read. A stored (proto) predicate
+	// is different: the candidate graph carries it and the matcher compensates
+	// for it.
+	if c.opaqueFilter {
+		return false
+	}
 	if keyExpressionContainsFanOut(c.rootKeyExpression) {
 		return c.GetTraversal() != nil
 	}

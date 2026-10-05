@@ -279,12 +279,14 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   with F-7c. F-6 needs no change: `ToScanPlan` is Java's `toEquivalentPlan`.
   The fast lane with the pruning off failed 22 tests and exposed two defects
   the pruning had masked, both of which block F-7c:
-  - Wrong rows. A unique index filtered by a Go closure (opaque filter) is
-    served as a full index scan, as if it held every record:
-    `TestClosureSparseUniqueIndex_IsNeverAnEliminationProof` plans
-    `Distinct(Map(IndexScan(CS_EMAIL, [*] COVERING)))` and drops the
-    records the closure excludes. A full scan of an opaque-filter index must
-    not match as complete.
+  - Wrong rows, FIXED. A unique index filtered by a Go closure (opaque
+    filter) was served as a full index scan, as if it held every record:
+    `TestClosureSparseUniqueIndex_IsNeverAnEliminationProof` planned
+    `Distinct(Map(IndexScan(CS_EMAIL, [*] COVERING)))`. The defect was live
+    without F-7c: an ORDER BY, a range or an equality probe read the index.
+    The candidate now refuses to produce any scan when it has an opaque
+    filter (`canProduceScanPlan`). Pin:
+    `TestClosureSparseIndex_ServesNoQuery`, with a full-index control.
   - The task budget. `TestPlanHarness_UnionWithFixedUnindexedFactor` hits
     MaxTasks: one group grows to 2998 members, 1980 of them
     MergeSortUnion plans. This is the OR-union budget the pruning comment
