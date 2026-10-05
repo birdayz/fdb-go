@@ -21,8 +21,6 @@
 //     surface used by Values to declare which upstream Quantifier
 //     they depend on; rewrite rules consult this when checking
 //     correlation-shape preservation.
-//   - ExpressionFolder + DefaultFolder — testable seam for plan-time
-//     constant folding (RFC-025 §"Closing the leaks").
 //   - The Type hierarchy (`type.go`) — the rich `Type`
 //     interface + `TypeCode` enum + concrete impls (`PrimitiveType`,
 //     `RecordType`, `ArrayType`, `EnumType`, `RelationType`),
