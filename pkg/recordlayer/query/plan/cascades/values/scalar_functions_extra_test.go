@@ -393,7 +393,7 @@ func TestSimplifyValue_FoldsExtendedScalars(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		out := SimplifyPredicateValue(tc.v)
+		out := EvaluateConstantComparand(tc.v)
 		cv, ok := out.(*ConstantValue)
 		if !ok {
 			t.Fatalf("%s: expected *ConstantValue, got %T", tc.name, out)

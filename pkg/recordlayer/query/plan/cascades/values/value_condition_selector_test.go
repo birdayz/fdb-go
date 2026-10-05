@@ -173,8 +173,9 @@ func TestConditionSelectorValue_WithChildren(t *testing.T) {
 }
 
 // TestConditionSelectorValue_SimplifyConstantFold verifies that
-// SimplifyValue folds an all-constant ConditionSelector into a
-// literal int64 (the index of the first TRUE implication).
+// EvaluateConstantComparand folds an all-constant ConditionSelector into a
+// literal int64 (the index of the first TRUE implication); SimplifyValue
+// evaluates nothing (TestSimplifyValue_EvaluatesNothing).
 func TestConditionSelectorValue_SimplifyConstantFold(t *testing.T) {
 	t.Parallel()
 	v := NewConditionSelectorValue([]Value{
@@ -182,9 +183,9 @@ func TestConditionSelectorValue_SimplifyConstantFold(t *testing.T) {
 		NewBooleanValue(true), // first TRUE — index 1
 		NewBooleanValue(false),
 	})
-	folded := SimplifyValue(v)
+	folded := EvaluateConstantComparand(v)
 	if folded == v {
-		t.Fatalf("SimplifyValue did NOT fold all-constant ConditionSelector")
+		t.Fatalf("EvaluateConstantComparand did NOT fold all-constant ConditionSelector")
 	}
 	got, errEv0 := folded.Evaluate(nil)
 	require.NoError(t, errEv0)
@@ -207,9 +208,9 @@ func TestPickValue_SimplifyConstantFold(t *testing.T) {
 	pick := NewPickValue(selector,
 		[]Value{LiteralValue("a"), LiteralValue("b"), LiteralValue("c")},
 		NotNullString)
-	folded := SimplifyValue(pick)
+	folded := EvaluateConstantComparand(pick)
 	if folded == pick {
-		t.Fatalf("SimplifyValue did NOT fold all-constant CASE")
+		t.Fatalf("EvaluateConstantComparand did NOT fold all-constant CASE")
 	}
 	got, errEv0 := folded.Evaluate(nil)
 	require.NoError(t, errEv0)

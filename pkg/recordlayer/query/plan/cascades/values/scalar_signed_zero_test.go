@@ -63,7 +63,7 @@ func TestScalarMathSignedZero(t *testing.T) {
 					t.Fatal("function missing from scalar catalog")
 				}
 				function := NewScalarFunctionValue(tc.function, resultType, args...)
-				folded := SimplifyValue(function)
+				folded := EvaluateConstantComparand(function)
 				if _, ok := folded.(*ConstantValue); !ok {
 					t.Fatalf("%s did not constant-fold: %T", tc.function, folded)
 				}
@@ -94,7 +94,7 @@ func TestScalarMathFloatingSpecialValues(t *testing.T) {
 					args = append(args, &ConstantValue{Value: int64(3), Typ: NotNullLong})
 				}
 				value := NewScalarFunctionValue(name, NullableDouble, args...)
-				for _, expr := range []Value{value, SimplifyValue(value)} {
+				for _, expr := range []Value{value, EvaluateConstantComparand(value)} {
 					got, err := expr.Evaluate(nil)
 					if err != nil {
 						t.Fatal(err)
@@ -165,7 +165,7 @@ func FuzzScalarFloatingMath(f *testing.F) {
 			args = append(args, &ConstantValue{Value: int64(exponent), Typ: NotNullLong})
 		}
 		value := NewScalarFunctionValue(name, NotNullDouble, args...)
-		folded := SimplifyValue(value)
+		folded := EvaluateConstantComparand(value)
 		switch folded.(type) {
 		case *ConstantValue, *NullValue:
 		default:

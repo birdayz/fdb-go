@@ -212,10 +212,10 @@ func TestQueryPredicateSimplification_PromotedAtomicChild(t *testing.T) {
 	}
 }
 
-// TestQueryPredicateSimplification_FoldsArithmetic verifies that a
-// ComparisonPredicate with an ArithmeticValue operand (e.g., name = 1+2)
-// is simplified to name = 3.
-func TestQueryPredicateSimplification_FoldsArithmetic(t *testing.T) {
+// TestQueryPredicateSimplification_DoesNotEvaluateArithmetic verifies that a
+// comparison against constant arithmetic (name = 1+2) is left as it is: Java's
+// ConstantFoldingRuleSet evaluates no constant, so the rule yields nothing.
+func TestQueryPredicateSimplification_DoesNotEvaluateArithmetic(t *testing.T) {
 	t.Parallel()
 
 	scanQ, scanRoot := queryPredicateFixture()
@@ -236,23 +236,8 @@ func TestQueryPredicateSimplification_FoldsArithmetic(t *testing.T) {
 	sel := queryPredicateSelect(scanQ, scanRoot, []predicates.QueryPredicate{pred})
 	selRef := expressions.InitialOf(sel)
 
-	yielded := fireQueryPredicateRule(t, NewQueryPredicateSimplificationRule(), selRef)
-	if len(yielded) < 1 {
-		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
-	}
-
-	result := yielded[0].(*expressions.SelectExpression)
-	if len(result.GetPredicates()) != 1 {
-		t.Fatalf("expected 1 predicate, got %d", len(result.GetPredicates()))
-	}
-
-	cp := queryPredicateComparison(t, result.GetPredicates()[0])
-	cv, ok := cp.Comparison.Operand.(*values.ConstantValue)
-	if !ok {
-		t.Fatalf("expected ConstantValue after simplification, got %T", cp.Comparison.Operand)
-	}
-	if cv.Value != int64(3) {
-		t.Errorf("expected 3, got %v", cv.Value)
+	if yielded := fireQueryPredicateRule(t, NewQueryPredicateSimplificationRule(), selRef); len(yielded) != 0 {
+		t.Fatalf("expected no yield, got %d", len(yielded))
 	}
 }
 
@@ -298,8 +283,8 @@ func TestQueryPredicateSimplification_NoPredicates(t *testing.T) {
 }
 
 // TestQueryPredicateSimplification_MultiplePredicates verifies that
-// when multiple predicates exist, only the ones that change are
-// replaced — and the rule yields if any changed.
+// when multiple predicates exist and none is changed by Java's set (constant
+// arithmetic is not evaluated), the rule does not yield.
 func TestQueryPredicateSimplification_MultiplePredicates(t *testing.T) {
 	t.Parallel()
 
@@ -329,34 +314,8 @@ func TestQueryPredicateSimplification_MultiplePredicates(t *testing.T) {
 	sel := queryPredicateSelect(scanQ, scanRoot, []predicates.QueryPredicate{pred1, pred2})
 	selRef := expressions.InitialOf(sel)
 
-	yielded := fireQueryPredicateRule(t, NewQueryPredicateSimplificationRule(), selRef)
-	if len(yielded) < 1 {
-		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
-	}
-
-	result := yielded[0].(*expressions.SelectExpression)
-	if len(result.GetPredicates()) != 2 {
-		t.Fatalf("expected 2 predicates, got %d", len(result.GetPredicates()))
-	}
-
-	// First predicate should be simplified.
-	cp1 := queryPredicateComparison(t, result.GetPredicates()[0])
-	cv1, ok := cp1.Comparison.Operand.(*values.ConstantValue)
-	if !ok {
-		t.Fatalf("expected ConstantValue after simplification, got %T", cp1.Comparison.Operand)
-	}
-	if cv1.Value != int64(5) {
-		t.Errorf("expected 5, got %v", cv1.Value)
-	}
-
-	// Second predicate should be unchanged.
-	cp2 := queryPredicateComparison(t, result.GetPredicates()[1])
-	cv2, ok := cp2.Comparison.Operand.(*values.ConstantValue)
-	if !ok {
-		t.Fatalf("expected ConstantValue, got %T", cp2.Comparison.Operand)
-	}
-	if cv2.Value != "hello" {
-		t.Errorf("expected 'hello', got %v", cv2.Value)
+	if yielded := fireQueryPredicateRule(t, NewQueryPredicateSimplificationRule(), selRef); len(yielded) != 0 {
+		t.Fatalf("expected no yield, got %d", len(yielded))
 	}
 }
 
@@ -391,17 +350,14 @@ func TestQueryPredicateSimplification_AndPredicate(t *testing.T) {
 	}
 
 	result := yielded[0].(*expressions.SelectExpression)
-	// Java's identity-AND rule removes TRUE after folding the comparison.
+	// Java's identity-AND rule removes TRUE; the comparison keeps its
+	// arithmetic, which Java's set does not evaluate.
 	if got := len(result.GetPredicates()); got != 1 {
-		t.Fatalf("expected only the simplified comparison, got %d: %v", got, result.GetPredicates())
+		t.Fatalf("expected only the comparison, got %d: %v", got, result.GetPredicates())
 	}
 	cp := queryPredicateComparison(t, result.GetPredicates()[0])
-	cv, ok := cp.Comparison.Operand.(*values.ConstantValue)
-	if !ok {
-		t.Fatalf("expected ConstantValue, got %T", cp.Comparison.Operand)
-	}
-	if cv.Value != int64(30) {
-		t.Errorf("expected 30, got %v", cv.Value)
+	if _, ok := cp.Comparison.Operand.(*values.ArithmeticValue); !ok {
+		t.Fatalf("expected the arithmetic kept, got %T", cp.Comparison.Operand)
 	}
 }
 

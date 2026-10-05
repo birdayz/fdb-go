@@ -6,11 +6,30 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+// TestSimplifyPredicateValues_EvaluatesNothing pins that the planner's leaf
+// simplification evaluates no constant (Java's PREDICATE value set):
+// `field = (1+2)` keeps its arithmetic. The tests below drive the shared walk
+// through EvaluatePredicateComparands, the stored-predicate evaluation.
+func TestSimplifyPredicateValues_EvaluatesNothing(t *testing.T) {
+	t.Parallel()
+	pred := &ComparisonPredicate{
+		Operand: predicateTestField(t, "NAME", values.NullableLong),
+		Comparison: Comparison{Type: ComparisonEquals, Operand: &values.ArithmeticValue{
+			Op:    values.OpAdd,
+			Left:  &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+			Right: &values.ConstantValue{Value: int64(2), Typ: values.NullableLong},
+		}},
+	}
+	if out := SimplifyPredicateValues(pred); out != QueryPredicate(pred) {
+		t.Fatalf("SimplifyPredicateValues evaluated a constant: %s", out.Explain())
+	}
+}
+
 // TestSimplifyPredicateValues_NilSafe pins the nil short-circuit:
-// `SimplifyPredicateValues(nil)` returns nil rather than panicking.
+// `EvaluatePredicateComparands(nil)` returns nil rather than panicking.
 func TestSimplifyPredicateValues_NilSafe(t *testing.T) {
 	t.Parallel()
-	if SimplifyPredicateValues(nil) != nil {
+	if EvaluatePredicateComparands(nil) != nil {
 		t.Fatal("expected nil")
 	}
 }
@@ -28,7 +47,7 @@ func TestSimplifyPredicateValues_ComparisonOperandFold(t *testing.T) {
 		Operand:    op,
 		Comparison: NewLiteralComparison(ComparisonEquals, int64(5)),
 	}
-	out := SimplifyPredicateValues(pred)
+	out := EvaluatePredicateComparands(pred)
 	got, ok := out.(*ComparisonPredicate)
 	if !ok {
 		t.Fatalf("expected *ComparisonPredicate, got %T", out)
@@ -58,7 +77,7 @@ func TestSimplifyPredicateValues_ComparisonRHSFold(t *testing.T) {
 			Operand: rhs,
 		},
 	}
-	out := SimplifyPredicateValues(pred)
+	out := EvaluatePredicateComparands(pred)
 	got, ok := out.(*ComparisonPredicate)
 	if !ok {
 		t.Fatalf("expected *ComparisonPredicate, got %T", out)
@@ -104,7 +123,7 @@ func TestSimplifyPredicateValues_AndRecurses(t *testing.T) {
 			},
 		},
 	}}
-	out := SimplifyPredicateValues(pred)
+	out := EvaluatePredicateComparands(pred)
 	and, ok := out.(*AndPredicate)
 	if !ok {
 		t.Fatalf("expected *AndPredicate, got %T", out)
@@ -139,7 +158,7 @@ func TestSimplifyPredicateValues_NotRecurses(t *testing.T) {
 			},
 		},
 	}
-	out := SimplifyPredicateValues(&NotPredicate{Child: inner})
+	out := EvaluatePredicateComparands(&NotPredicate{Child: inner})
 	notPred, ok := out.(*NotPredicate)
 	if !ok {
 		t.Fatalf("expected *NotPredicate, got %T", out)
@@ -161,11 +180,11 @@ func TestSimplifyPredicateValues_PointerStableWhenNoFold(t *testing.T) {
 		Operand:    predicateTestField(t, "ID", values.NullableLong),
 		Comparison: NewLiteralComparison(ComparisonEquals, int64(5)),
 	}
-	if SimplifyPredicateValues(pred) != pred {
+	if EvaluatePredicateComparands(pred) != pred {
 		t.Fatal("expected same pointer when no fold")
 	}
 	and := &AndPredicate{SubPredicates: []QueryPredicate{pred, pred}}
-	if SimplifyPredicateValues(and) != and {
+	if EvaluatePredicateComparands(and) != and {
 		t.Fatal("expected same pointer when no fold")
 	}
 }
@@ -183,7 +202,7 @@ func TestSimplifyPredicateValues_ValuePredicateFolds(t *testing.T) {
 			Typ:      values.TypeString,
 		},
 	}
-	out := SimplifyPredicateValues(pred)
+	out := EvaluatePredicateComparands(pred)
 	vp, ok := out.(*ValuePredicate)
 	if !ok {
 		t.Fatalf("expected *ValuePredicate, got %T", out)
@@ -202,7 +221,7 @@ func TestSimplifyPredicateValues_ValuePredicateFolds(t *testing.T) {
 func TestSimplifyPredicateValues_ConstantPredicateUnchanged(t *testing.T) {
 	t.Parallel()
 	cp := &ConstantPredicate{Value: TriTrue}
-	if SimplifyPredicateValues(cp) != cp {
+	if EvaluatePredicateComparands(cp) != cp {
 		t.Fatal("expected same pointer for ConstantPredicate")
 	}
 }
@@ -225,7 +244,7 @@ func TestSimplifyPredicateValues_OrRecurses(t *testing.T) {
 	right := &ValuePredicate{Value: predicateTestField(t, "x", values.TypeBool)}
 
 	or := &OrPredicate{SubPredicates: []QueryPredicate{left, right}}
-	out := SimplifyPredicateValues(or)
+	out := EvaluatePredicateComparands(or)
 
 	got, ok := out.(*OrPredicate)
 	if !ok {
@@ -264,7 +283,7 @@ func TestSimplifyPredicateValues_OrPointerStableWhenNoFold(t *testing.T) {
 		Comparison: NewLiteralComparison(ComparisonGreaterThan, int64(0)),
 	}
 	or := &OrPredicate{SubPredicates: []QueryPredicate{leaf1, leaf2}}
-	if got := SimplifyPredicateValues(or); got != or {
+	if got := EvaluatePredicateComparands(or); got != or {
 		t.Fatalf("expected receiver pointer when nothing folds, got fresh alloc")
 	}
 }
@@ -287,7 +306,7 @@ func TestSimplifyPredicateValues_ComparisonPreservesEscape(t *testing.T) {
 			Operand: values.NewPatternForLikeValue(values.LiteralValue("foo\\%"), values.LiteralValue(`\`)),
 		},
 	}
-	out := SimplifyPredicateValues(pred)
+	out := EvaluatePredicateComparands(pred)
 	got, ok := out.(*ComparisonPredicate)
 	if !ok {
 		t.Fatalf("expected *ComparisonPredicate, got %T", out)
@@ -308,7 +327,7 @@ func TestSimplifyPredicateValues_UnknownPredicateShape(t *testing.T) {
 	t.Parallel()
 	// A test-local predicate type the simplifier has never seen.
 	p := &fakePred{}
-	if got := SimplifyPredicateValues(p); got != p {
+	if got := EvaluatePredicateComparands(p); got != p {
 		t.Fatalf("unknown predicate type should pass through unchanged, got %T", got)
 	}
 }
@@ -333,7 +352,7 @@ func TestSimplifyPredicateValues_DeeplyNested(t *testing.T) {
 			&NotPredicate{Child: leaf},
 		}},
 	}}
-	out := SimplifyPredicateValues(tree).(*AndPredicate)
+	out := EvaluatePredicateComparands(tree).(*AndPredicate)
 	or := out.SubPredicates[0].(*OrPredicate)
 	not := or.SubPredicates[0].(*NotPredicate)
 	cp := not.Child.(*ComparisonPredicate)

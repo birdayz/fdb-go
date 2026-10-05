@@ -17,15 +17,28 @@ import (
 // cascades.ConstantFoldingRules applies to each leaf inside the
 // QueryPredicate-level fixpoint: `name = 1+2` becomes `name = 3`.
 func SimplifyPredicateValues(p QueryPredicate) QueryPredicate {
+	return mapPredicateLeafValues(p, values.SimplifyPredicateValue)
+}
+
+// EvaluatePredicateComparands is SimplifyPredicateValues with
+// values.EvaluateConstantComparand at the leaves: every constant composite
+// becomes a literal. It is for a predicate STORED with literal comparands --
+// the sparse-index predicate, Java's IndexComparison taking
+// `comparison.getComparand(null, null)` -- never for a query plan.
+func EvaluatePredicateComparands(p QueryPredicate) QueryPredicate {
+	return mapPredicateLeafValues(p, values.EvaluateConstantComparand)
+}
+
+func mapPredicateLeafValues(p QueryPredicate, leaf func(values.Value) values.Value) QueryPredicate {
 	if p == nil {
 		return nil
 	}
 	switch q := p.(type) {
 	case *ComparisonPredicate:
-		op := values.SimplifyPredicateValue(q.Operand)
+		op := leaf(q.Operand)
 		var rhs values.Value
 		if q.Comparison.Operand != nil {
-			rhs = values.SimplifyPredicateValue(q.Comparison.Operand)
+			rhs = leaf(q.Comparison.Operand)
 		}
 		if op == q.Operand && rhs == q.Comparison.Operand {
 			return q
@@ -42,7 +55,7 @@ func SimplifyPredicateValues(p QueryPredicate) QueryPredicate {
 			Comparison: cmp,
 		}
 	case *ValuePredicate:
-		v := values.SimplifyPredicateValue(q.Value)
+		v := leaf(q.Value)
 		if v == q.Value {
 			return q
 		}
@@ -51,7 +64,7 @@ func SimplifyPredicateValues(p QueryPredicate) QueryPredicate {
 		simpler := make([]QueryPredicate, len(q.SubPredicates))
 		anyChanged := false
 		for i, sp := range q.SubPredicates {
-			simpler[i] = SimplifyPredicateValues(sp)
+			simpler[i] = mapPredicateLeafValues(sp, leaf)
 			if simpler[i] != sp {
 				anyChanged = true
 			}
@@ -64,7 +77,7 @@ func SimplifyPredicateValues(p QueryPredicate) QueryPredicate {
 		simpler := make([]QueryPredicate, len(q.SubPredicates))
 		anyChanged := false
 		for i, sp := range q.SubPredicates {
-			simpler[i] = SimplifyPredicateValues(sp)
+			simpler[i] = mapPredicateLeafValues(sp, leaf)
 			if simpler[i] != sp {
 				anyChanged = true
 			}
@@ -74,13 +87,13 @@ func SimplifyPredicateValues(p QueryPredicate) QueryPredicate {
 		}
 		return &OrPredicate{SubPredicates: simpler, atomic: q.atomic}
 	case *NotPredicate:
-		c := SimplifyPredicateValues(q.Child)
+		c := mapPredicateLeafValues(q.Child, leaf)
 		if c == q.Child {
 			return q
 		}
 		return &NotPredicate{Child: c, atomic: q.atomic}
 	case *PredicateWithValueAndRanges:
-		simplified := TransformEmbeddedValues(q, values.SimplifyPredicateValue).(*PredicateWithValueAndRanges)
+		simplified := TransformEmbeddedValues(q, leaf).(*PredicateWithValueAndRanges)
 		if folded := foldPredicateWithRanges(simplified); folded != nil {
 			return folded
 		}

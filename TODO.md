@@ -183,6 +183,17 @@ Never mark a whole workstream complete because one of its subitems passed.
     was checked to redden it (full lane). Go's EXPLAIN shows `[n preds]`, so the
     surviving member's predicate (`[FALSE]` against `n > 0`) is not asserted
     there; that needs a predicate-showing EXPLAIN.
+  - The `EvaluateConstant` arms of `SimplifyValue` are gone: neither value
+    set evaluates a constant composite (`1 + 2`, `CAST(3 AS STRING)`,
+    `UPPER('x')`, a CASE or a promotion stays for the plan to compute), and
+    NOT over a literal no longer folds. The one evaluation left is
+    `values.EvaluateConstantComparand` / `predicates.EvaluatePredicateComparands`,
+    for the sparse-index predicate, which Java stores with
+    `comparison.getComparand(null, null)` (IndexComparison.java:166); it keeps
+    the enum and UUID refusal messages. Measured: no corpus plan or EXPLAIN
+    moved with the arms removed. The remaining `EvaluateConstant` callers read
+    comparands for plan properties (equality shapes, ordering, intermediate
+    matching) or translator checks and rewrite nothing.
   - Still open: (f) `effectiveConstant`
     is already Java's three shapes, the Object overload has no Go caller (Go
     comparands are Values); the `EvaluateConstant` arms of `SimplifyValue`;

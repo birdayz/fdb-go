@@ -31,6 +31,27 @@ func TestSimplifyValue_LeafConstantsUnchanged(t *testing.T) {
 	}
 }
 
+// TestSimplifyValue_EvaluatesNothing pins Java's value sets: no constant
+// composite is evaluated by a simplification; `1 + 2` stays for the plan to
+// compute (RFC-257 WS-E 5.4(b)). The *Fold tests below exercise
+// EvaluateConstantComparand, the stored-comparand evaluation.
+func TestSimplifyValue_EvaluatesNothing(t *testing.T) {
+	t.Parallel()
+	for _, v := range []Value{
+		&ArithmeticValue{Op: OpAdd, Left: &ConstantValue{Value: int64(1), Typ: NullableLong}, Right: &ConstantValue{Value: int64(2), Typ: NullableLong}},
+		NewCastValue(&ConstantValue{Value: int64(3), Typ: NullableLong}, TypeString),
+		NewScalarFunctionValue("UPPER", TypeString, &ConstantValue{Value: "Hi", Typ: TypeString}),
+		NewPromoteValue(&ConstantValue{Value: int64(3), Typ: NullableLong}, NullableDouble),
+	} {
+		if got := SimplifyValue(v); got != v {
+			t.Errorf("SimplifyValue(%s) = %s, want it unchanged", ExplainValue(v), ExplainValue(got))
+		}
+		if got := SimplifyPredicateValue(v); got != v {
+			t.Errorf("SimplifyPredicateValue(%s) = %s, want it unchanged", ExplainValue(v), ExplainValue(got))
+		}
+	}
+}
+
 func TestSimplifyValue_ArithmeticFold(t *testing.T) {
 	t.Parallel()
 	// 1 + 2 → 3
@@ -39,7 +60,7 @@ func TestSimplifyValue_ArithmeticFold(t *testing.T) {
 		Left:  &ConstantValue{Value: int64(1), Typ: NullableLong},
 		Right: &ConstantValue{Value: int64(2), Typ: NullableLong},
 	}
-	got := SimplifyValue(a)
+	got := EvaluateConstantComparand(a)
 	cv, ok := got.(*ConstantValue)
 	if !ok {
 		t.Fatalf("expected *ConstantValue, got %T", got)
@@ -64,7 +85,7 @@ func TestSimplifyValue_NestedArithmeticFold(t *testing.T) {
 		},
 		Right: &ConstantValue{Value: int64(3), Typ: NullableLong},
 	}
-	got := SimplifyValue(v)
+	got := EvaluateConstantComparand(v)
 	cv := got.(*ConstantValue)
 	if cv.Value != int64(9) {
 		t.Fatalf("(1+2)*3: got %v, want 9", cv.Value)
@@ -85,7 +106,7 @@ func TestSimplifyValue_PartialFold(t *testing.T) {
 			Right: &ConstantValue{Value: int64(2), Typ: NullableLong},
 		},
 	}
-	got := SimplifyValue(v).(*ArithmeticValue)
+	got := EvaluateConstantComparand(v).(*ArithmeticValue)
 	if got.Op != OpAdd {
 		t.Fatalf("outer Op: got %v, want OpAdd", got.Op)
 	}
@@ -126,7 +147,7 @@ func TestSimplifyValue_CastFold(t *testing.T) {
 		},
 		TypeString,
 	)
-	got := SimplifyValue(v)
+	got := EvaluateConstantComparand(v)
 	cv, ok := got.(*ConstantValue)
 	if !ok {
 		t.Fatalf("expected *ConstantValue, got %T", got)
@@ -145,7 +166,7 @@ func TestSimplifyValue_ScalarFunctionFold(t *testing.T) {
 	v := NewScalarFunctionValue("UPPER", TypeString,
 		NewScalarFunctionValue("LOWER", TypeString,
 			&ConstantValue{Value: "Hi", Typ: TypeString}))
-	got := SimplifyValue(v)
+	got := EvaluateConstantComparand(v)
 	cv, ok := got.(*ConstantValue)
 	if !ok {
 		t.Fatalf("expected *ConstantValue, got %T", got)
@@ -167,7 +188,7 @@ func TestSimplifyValue_ScalarFunctionPartialFold(t *testing.T) {
 	w := NewScalarFunctionValue("LENGTH", NullableLong,
 		NewScalarFunctionValue("LOWER", TypeString,
 			&ConstantValue{Value: "Hello", Typ: TypeString}))
-	if got, ok := SimplifyValue(w).(*ConstantValue); !ok || got.Value != int64(5) {
+	if got, ok := EvaluateConstantComparand(w).(*ConstantValue); !ok || got.Value != int64(5) {
 		t.Fatalf("LENGTH(LOWER('Hello')): got %v %T, want ConstantValue 5", got, got)
 	}
 }
@@ -208,7 +229,7 @@ func TestSimplifyValue_PromoteFold(t *testing.T) {
 		},
 		NullableDouble,
 	)
-	got := SimplifyValue(v)
+	got := EvaluateConstantComparand(v)
 	cv, ok := got.(*ConstantValue)
 	if !ok {
 		t.Fatalf("expected *ConstantValue, got %T", got)

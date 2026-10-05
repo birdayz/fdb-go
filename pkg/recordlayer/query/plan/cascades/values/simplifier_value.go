@@ -2,34 +2,17 @@ package values
 
 import "fmt"
 
-// SimplifyValue is the standalone-Value counterpart to Simplify.
-// Folds constant sub-trees in a Value (e.g. SELECT-list expressions
-// or projection arguments that never reach a comparison).
+// SimplifyValue is Java's DefaultValueSimplificationRuleSet
+// (DefaultValueSimplificationRuleSet.java:40-80), bottom-up: the null-strict
+// collapse and the field-over-constructor and field-over-field compositions.
+// Like Java's, it EVALUATES nothing: `1 + 2` stays `1 + 2` and is computed when
+// the plan runs (RFC-257 WS-E 5.4(b)); EvaluateConstantComparand is the one
+// evaluation, for a comparand that must be stored as a literal.
 //
-// Two-phase per node, post-order:
-//
-//  1. Recurse into children — fold them first so partial folds work
-//     (e.g. `name + (1+2)` becomes `name + 3` in one pass).
-//  2. If the rebuilt node is fully constant per IsConstantValue, fold
-//     to a literal Value via LiteralValue (preserves the original
-//     Type so downstream type checks stay consistent).
-//
-// Returns the input unchanged when nothing folds — pointer-equality
+// Returns the input unchanged when nothing applies — pointer-equality
 // stable so callers can cheaply check for "did anything happen?".
-//
-// Why a free function rather than a CascadesRule: the rule framework
-// targets QueryPredicate matchers; standalone Values have no
-// surrounding predicate to match against. (Java models this as its
-// ValueSimplificationRuleSet; Go's equivalent is this fold.)
-//
-// Coverage: ArithmeticValue, CastValue, PromoteValue,
-// ScalarFunctionValue, NotValue. Other composites
-// (RecordConstructorValue, AggregateValue) are not folded —
-// Aggregate inherently needs row context, RecordConstructor seldom
-// appears in a fold-able position. Adding more shapes is mechanical
-// when need arises (extend isFoldableComposite + simplifyChildren).
 func SimplifyValue(v Value) Value {
-	return simplifyValue(v, false)
+	return simplifyValue(v, simplifyMode{})
 }
 
 // SimplifyPredicateValue is SimplifyValue for a value inside a predicate: it
@@ -38,24 +21,43 @@ func SimplifyValue(v Value) Value {
 // (DereferenceConstantObjectValueRuleSet.java:50-56). A COALESCE in a result
 // value is never folded, so it evaluates every argument.
 func SimplifyPredicateValue(v Value) Value {
-	return simplifyValue(v, true)
+	return simplifyValue(v, simplifyMode{inPredicate: true})
 }
 
-func simplifyValue(v Value, inPredicate bool) Value {
+// EvaluateConstantComparand is SimplifyPredicateValue that also EVALUATES
+// every composite whose children are constant (arithmetic, CAST, PROMOTE,
+// scalar functions, CASE) into a literal of its type. It is Java's
+// `comparison.getComparand(null, null)` where a comparison is converted to a
+// stored form -- the sparse-index predicate's IndexComparison
+// (IndexComparison.java:166) -- and is NOT a simplification: no query plan
+// evaluates a constant at plan time.
+func EvaluateConstantComparand(v Value) Value {
+	return simplifyValue(v, simplifyMode{inPredicate: true, evaluate: true})
+}
+
+// simplifyMode selects the rule set a simplification runs: the predicate
+// set's COALESCE rule, and the comparand evaluation of
+// EvaluateConstantComparand.
+type simplifyMode struct {
+	inPredicate bool
+	evaluate    bool
+}
+
+func simplifyValue(v Value, mode simplifyMode) Value {
 	if v == nil {
 		return nil
 	}
-	rebuilt := simplifyChildrenWith(v, inPredicate)
+	rebuilt := simplifyChildrenWith(v, mode)
 	if collapsed := collapseNullStrict(rebuilt); collapsed != nil {
 		return collapsed
 	}
 	if s := composeFieldOverConstructor(rebuilt); s != nil {
-		return simplifyValue(s, inPredicate)
+		return simplifyValue(s, mode)
 	}
 	if s := composeFieldOverField(rebuilt); s != nil {
-		return simplifyValue(s, inPredicate)
+		return simplifyValue(s, mode)
 	}
-	if inPredicate {
+	if mode.inPredicate {
 		if s := simplifyCoalesce(rebuilt); s != rebuilt {
 			return s
 		}
@@ -63,7 +65,7 @@ func simplifyValue(v Value, inPredicate bool) Value {
 	if isCoalesceValue(rebuilt) {
 		return rebuilt
 	}
-	if !isFoldableComposite(rebuilt) {
+	if !mode.evaluate || !isFoldableComposite(rebuilt) {
 		return rebuilt
 	}
 	if lit, ok := EvaluateConstant(rebuilt); ok {
@@ -170,19 +172,19 @@ func isFoldableComposite(v Value) bool {
 // simplifyChildren rebuilds v with each child recursively simplified.
 // Returns v unchanged (same pointer) when no child changed — keeps
 // the SimplifyValue caller's pointer-equality short-circuit usable.
-func simplifyChildrenWith(v Value, inPredicate bool) Value {
+func simplifyChildrenWith(v Value, mode simplifyMode) Value {
 	switch x := v.(type) {
 	case *ArithmeticValue:
-		l := simplifyValue(x.Left, inPredicate)
-		r := simplifyValue(x.Right, inPredicate)
+		l := simplifyValue(x.Left, mode)
+		r := simplifyValue(x.Right, mode)
 		if l == x.Left && r == x.Right {
 			return v
 		}
 		return x.WithOperands(l, r)
 	case *CastValue:
-		c := simplifyValue(x.Child, inPredicate)
+		c := simplifyValue(x.Child, mode)
 		if cv, ok := c.(*ConstantValue); ok {
-			if folded := tryCastConstant(cv, x.Target); folded != nil {
+			if folded := tryCastConstant(cv, x.Target); folded != nil && mode.evaluate {
 				return folded
 			}
 		}
@@ -191,8 +193,8 @@ func simplifyChildrenWith(v Value, inPredicate bool) Value {
 		}
 		return NewCastValue(c, x.Target)
 	case *PromoteValue:
-		c := simplifyValue(x.Child, inPredicate)
-		if cv, ok := c.(*ConstantValue); ok && isFoldableComposite(x) {
+		c := simplifyValue(x.Child, mode)
+		if cv, ok := c.(*ConstantValue); ok && mode.evaluate && isFoldableComposite(x) {
 			// Apply the promotion through Evaluate before re-tagging. Numeric
 			// promotions align the carrier width (including direct LONG→FLOAT
 			// rounding), while STRING→UUID reshapes the canonical string into a
@@ -211,7 +213,7 @@ func simplifyChildrenWith(v Value, inPredicate bool) Value {
 		anyChanged := false
 		newArgs := make([]Value, len(x.Args))
 		for i, a := range x.Args {
-			n := simplifyValue(a, inPredicate)
+			n := simplifyValue(a, mode)
 			if n != a {
 				anyChanged = true
 			}
@@ -222,14 +224,14 @@ func simplifyChildrenWith(v Value, inPredicate bool) Value {
 		}
 		return &ScalarFunctionValue{FuncName: x.FuncName, Args: newArgs, Typ: x.Typ}
 	case *NotValue:
-		c := simplifyValue(x.Child, inPredicate)
+		c := simplifyValue(x.Child, mode)
 		if c == x.Child {
 			return v
 		}
 		return &NotValue{Child: c}
 	case *AndOrValue:
-		l := simplifyValue(x.Left, inPredicate)
-		r := simplifyValue(x.Right, inPredicate)
+		l := simplifyValue(x.Left, mode)
+		r := simplifyValue(x.Right, mode)
 		if l == x.Left && r == x.Right {
 			return v
 		}
@@ -238,7 +240,7 @@ func simplifyChildrenWith(v Value, inPredicate bool) Value {
 		anyChanged := false
 		newImpl := make([]Value, len(x.Implications))
 		for i, impl := range x.Implications {
-			n := simplifyValue(impl, inPredicate)
+			n := simplifyValue(impl, mode)
 			if n != impl {
 				anyChanged = true
 			}
@@ -249,14 +251,14 @@ func simplifyChildrenWith(v Value, inPredicate bool) Value {
 		}
 		return NewConditionSelectorValue(newImpl)
 	case *EvaluatesToValue:
-		c := simplifyValue(x.Child, inPredicate)
+		c := simplifyValue(x.Child, mode)
 		if c == x.Child {
 			return v
 		}
 		return NewEvaluatesToValue(c, x.Eval)
 	case *PickValue:
 		anyChanged := false
-		newSel := simplifyValue(x.Selector, inPredicate)
+		newSel := simplifyValue(x.Selector, mode)
 		if newSel != x.Selector {
 			anyChanged = true
 		}
@@ -266,7 +268,7 @@ func simplifyChildrenWith(v Value, inPredicate bool) Value {
 				newAlts[i] = nil
 				continue
 			}
-			n := simplifyValue(a, inPredicate)
+			n := simplifyValue(a, mode)
 			if n != a {
 				anyChanged = true
 			}

@@ -31,10 +31,11 @@ func generatePredicate(spec *indexSpec, res storageNames) (*gen.Predicate, error
 	residuals := make([]predicates.QueryPredicate, len(spec.predicate))
 	for i, p := range spec.predicate {
 		// A stored predicate needs literal comparands, so its constant
-		// promotions are evaluated here. The SQL translator no longer folds
-		// predicates (queries fold only in the planner, RFC-257 WS-E 5.4(a));
-		// this is the one consumer that stores the walked form.
-		p = predicates.SimplifyPredicateValues(p)
+		// comparands are evaluated here, as Java's IndexComparison takes
+		// `comparison.getComparand(null, null)` (IndexComparison.java:166).
+		// No query plan evaluates a constant (RFC-257 WS-E 5.4(b)); this is
+		// the one consumer that stores the walked form.
+		p = predicates.EvaluatePredicateComparands(p)
 		r, err := predicates.ToResidualPredicate(p)
 		if err != nil {
 			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "Unsupported predicate '%s'", p.Explain())
