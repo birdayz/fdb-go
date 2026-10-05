@@ -1353,9 +1353,8 @@ var wsfAcceptance = map[string]string{
 // wsfOpenUntil names, for each probe not yet at its acceptance verdict, the phase or
 // dependency that moves it there (ws-f-design.md section 12).
 var wsfOpenUntil = map[string]string{
-	"w10_enum_distinct_explain":             "F-1",
-	"w10_enum_not_distinct_explain":         "F-1",
-	"w13_display_scan_explain":              "F-1",
+	"w10_enum_distinct_explain":             "F-7c",
+	"w13_display_scan_explain":              "RFC-238 section 7c",
 	"w6_left_join_indexed_explain":          "F-7c",
 	"w8_covering_all_explain":               "F-7c",
 	"w8_covering_id_neq_explain":            "F-7c",
@@ -1545,7 +1544,7 @@ var wsfGoPins = map[string]string{
 	"w10_enum_eq_explain":                        "OK EXPLAIN \"IndexScan(T_M_IDX, [=, *])\"",
 	"w10_enum_eq_rows":                           "OK [ID:BIGINT] [[2] [4]]",
 	"w10_enum_neq_rows":                          "OK [ID:BIGINT] [[1] [3]]",
-	"w10_enum_not_distinct_explain":              "OK EXPLAIN \"PredicatesFilter(Scan(T), [1 preds])\"",
+	"w10_enum_not_distinct_explain":              "OK EXPLAIN \"IndexScan(T_M_IDX, [≡, *])\"",
 	"w10_enum_not_distinct_null_rows":            "OK [ID:BIGINT] [[5]]",
 	"w10_enum_not_distinct_rows":                 "OK [ID:BIGINT] [[2] [4]]",
 	"w10_enum_or_rows":                           "OK [ID:BIGINT] [[1] [3] [5]]",

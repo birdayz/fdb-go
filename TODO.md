@@ -172,6 +172,12 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   and `unnest_at_distinct.yaml`. No corpus plan moved, since Go's FlatMap claims
   no distinctness, so a DISTINCT above an `AT` unnest stays. Subscript
   typing/errors were already ported, and the oracle pins them (`w13_subscript_*`).
+  F-1 leftovers. `w10_enum_not_distinct_explain` reaches its target with W9; its
+  Go pin is updated. `w10_enum_distinct_explain` is the IS DISTINCT FROM covering
+  scan Java picks under PREFER_INDEX, so it is reassigned to F-7c, like
+  `w9_distinct_explain`. `w13_display_scan_explain` (a dotted escaped table gets
+  no PK scan) needs RFC-238 §7c: storage names in the scan leaf and DML targets,
+  a cascades matching change awaiting its ACK. Reassigned to that.
 - [ ] Reconcile F-6/F-7b with RFC-191's existing `Fetch(InJoin)` ruling; see
   `DIVERGENCES.md` “Plan choice: an ordered IN over a non-covering index”.
 - [ ] RANK-index match-candidate gap and quoted dotted identifier GROUP BY/order
