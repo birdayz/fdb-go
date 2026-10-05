@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=392 queries=2968 dml=177 non_query=127 plan_errors=324 unexpected_errors=4
+# files=393 queries=2974 dml=177 non_query=127 plan_errors=324 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -369,13 +369,13 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === aggregate_expression_select.yaml#2
 sql:   SELECT COALESCE(SUM(a), 0) FROM t WHERE id > 99
-plan:  Map(StreamingAgg(keys=[], Scan(T, [<>])), {_0: COALESCE(_current.SUM(A)#0, 0)})
+plan:  Map(StreamingAgg(keys=[], Scan(T, [<>])), {_0: COALESCE(_current.SUM(A)#0, PROMOTE(0 TO BIGINT))})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === aggregate_expression_select.yaml#3
 sql:   SELECT COALESCE(SUM(a), 0) FROM t
-plan:  Map(StreamingAgg(keys=[], Scan(T)), {_0: COALESCE(_current.SUM(A)#0, 0)})
+plan:  Map(StreamingAgg(keys=[], Scan(T)), {_0: COALESCE(_current.SUM(A)#0, PROMOTE(0 TO BIGINT))})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
@@ -388,7 +388,7 @@ shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryScanPlan
 === aggregate_expression_select.yaml#5
 sql:   SELECT grp, COALESCE(SUM(a), 0) FROM t GROUP BY grp ORDER BY grp
-plan:  Map(StreamingAgg(keys=[_current.GRP#1], InMemorySort([_current.GRP#1 ASC], Scan(T))), {GRP: _current.GRP#0, _1: COALESCE(_current.SUM(A)#1, 0)})
+plan:  Map(StreamingAgg(keys=[_current.GRP#1], InMemorySort([_current.GRP#1 ASC], Scan(T))), {GRP: _current.GRP#0, _1: COALESCE(_current.SUM(A)#1, PROMOTE(0 TO BIGINT))})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
@@ -7572,12 +7572,12 @@ sql:   SELECT LEAST(NULL, NULL) FROM t
 plan:  <PLAN-ERROR: 22F00: The function is not defined for the given argument types>
 === greatest_least.yaml#6
 sql:   SELECT GREATEST(1, 2, 3.0, 4, 5) FROM t
-plan:  Map(Scan(T), {_0: GREATEST(1, 2, 3, 4, 5)})
+plan:  Map(Scan(T), {_0: GREATEST(PROMOTE(1 TO DOUBLE), PROMOTE(2 TO DOUBLE), 3, PROMOTE(4 TO DOUBLE), PROMOTE(5 TO DOUBLE))})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === greatest_least.yaml#7
 sql:   SELECT LEAST(1, 2, 3.0, 4, 5) FROM t
-plan:  Map(Scan(T), {_0: LEAST(1, 2, 3, 4, 5)})
+plan:  Map(Scan(T), {_0: LEAST(PROMOTE(1 TO DOUBLE), PROMOTE(2 TO DOUBLE), 3, PROMOTE(4 TO DOUBLE), PROMOTE(5 TO DOUBLE))})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === greatest_least.yaml#8
@@ -8227,7 +8227,7 @@ shape:         RecordQueryInMemorySortPlan
 shape:           RecordQueryScanPlan
 === having.yaml#13
 sql:   SELECT grp FROM t GROUP BY grp ORDER BY COALESCE(SUM(v), 0)
-plan:  Map(InMemorySort([_current._1#1 ASC], Map(StreamingAgg(keys=[_current.GRP#1], InMemorySort([_current.GRP#1 ASC], Scan(T))), {GRP: _current.GRP#0, _1: COALESCE(_current.SUM(V)#1, 0)})), {GRP: _current.GRP#0})
+plan:  Map(InMemorySort([_current._1#1 ASC], Map(StreamingAgg(keys=[_current.GRP#1], InMemorySort([_current.GRP#1 ASC], Scan(T))), {GRP: _current.GRP#0, _1: COALESCE(_current.SUM(V)#1, PROMOTE(0 TO BIGINT))})), {GRP: _current.GRP#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryMapPlan
@@ -13117,7 +13117,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === null_arithmetic.yaml#4
 sql:   SELECT id, COALESCE(a + b, -1) FROM t ORDER BY id
-plan:  Map(Scan(T), {ID: _current.ID#0, _1: COALESCE((_current.A#1 + _current.B#2), -1)})
+plan:  Map(Scan(T), {ID: _current.ID#0, _1: COALESCE((_current.A#1 + _current.B#2), PROMOTE(-1 TO BIGINT))})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === null_arithmetic_java.yaml#0
@@ -13167,7 +13167,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === null_arithmetic_java.yaml#8
 sql:   SELECT id, COALESCE(a, 0) + COALESCE(b, 0) FROM nums ORDER BY id
-plan:  Map(Scan(NUMS), {ID: _current.ID#0, _1: (COALESCE(_current.A#1, 0) + COALESCE(_current.B#2, 0))})
+plan:  Map(Scan(NUMS), {ID: _current.ID#0, _1: (COALESCE(_current.A#1, PROMOTE(0 TO BIGINT)) + COALESCE(_current.B#2, PROMOTE(0 TO BIGINT)))})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === null_in_expressions.yaml#0
@@ -13177,7 +13177,7 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === null_in_expressions.yaml#1
 sql:   SELECT id, COALESCE(a, -1) FROM t ORDER BY id
-plan:  Map(Scan(T), {ID: _current.ID#0, _1: COALESCE(_current.A#1, -1)})
+plan:  Map(Scan(T), {ID: _current.ID#0, _1: COALESCE(_current.A#1, PROMOTE(-1 TO BIGINT))})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === null_in_expressions.yaml#2 expect-error=0AF00
@@ -13226,7 +13226,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === null_operator_alignment.yaml#4
 sql:   SELECT id, COALESCE(col1, -1) FROM t1 ORDER BY id
-plan:  Map(Scan(T1), {ID: _current.ID#0, _1: COALESCE(_current.COL1#1, -1)})
+plan:  Map(Scan(T1), {ID: _current.ID#0, _1: COALESCE(_current.COL1#1, PROMOTE(-1 TO BIGINT))})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === null_operator_alignment.yaml#5
@@ -13405,12 +13405,12 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === numeric_functions.yaml#28
 sql:   SELECT COALESCE(3, 1.5) / 2 FROM t WHERE id = 1
-plan:  Map(Scan(T, [=]), {_0: (COALESCE(3, 1.5) / 2)})
+plan:  Map(Scan(T, [=]), {_0: (COALESCE(PROMOTE(3 TO DOUBLE), 1.5) / 2)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === numeric_functions.yaml#29
 sql:   SELECT GREATEST(3, 1.5) / 2 FROM t WHERE id = 1
-plan:  Map(Scan(T, [=]), {_0: (GREATEST(3, 1.5) / 2)})
+plan:  Map(Scan(T, [=]), {_0: (GREATEST(PROMOTE(3 TO DOUBLE), 1.5) / 2)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === numeric_functions.yaml#30
@@ -13425,17 +13425,17 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === numeric_functions.yaml#32
 sql:   SELECT COALESCE(n, v) / 4 FROM t WHERE id = 1
-plan:  Map(Scan(T, [=]), {_0: (COALESCE(_current.N#2, _current.V#1) / 4)})
+plan:  Map(Scan(T, [=]), {_0: (COALESCE(PROMOTE(_current.N#2 TO DOUBLE), _current.V#1) / 4)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === numeric_functions.yaml#33
 sql:   SELECT GREATEST(n, v) / 4 FROM t WHERE id = 1
-plan:  Map(Scan(T, [=]), {_0: (GREATEST(_current.N#2, _current.V#1) / 4)})
+plan:  Map(Scan(T, [=]), {_0: (GREATEST(PROMOTE(_current.N#2 TO DOUBLE), _current.V#1) / 4)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === numeric_functions.yaml#34
 sql:   SELECT LEAST(n, v) / 2 FROM t WHERE id = 2
-plan:  Map(Scan(T, [=]), {_0: (LEAST(_current.N#2, _current.V#1) / 2)})
+plan:  Map(Scan(T, [=]), {_0: (LEAST(PROMOTE(_current.N#2 TO DOUBLE), _current.V#1) / 2)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === numeric_functions.yaml#35
@@ -16234,12 +16234,12 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === scalar_functions_java.yaml#1
 sql:   SELECT COALESCE(null, int_col, 99) FROM vals WHERE id = 1
-plan:  Map(Scan(VALS, [=]), {_0: COALESCE(NULL, _current.INT_COL#1, 99)})
+plan:  Map(Scan(VALS, [=]), {_0: COALESCE(NULL, _current.INT_COL#1, PROMOTE(99 TO BIGINT))})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === scalar_functions_java.yaml#2
 sql:   SELECT COALESCE(int_col, 99) FROM vals WHERE id = 3
-plan:  Map(Scan(VALS, [=]), {_0: COALESCE(_current.INT_COL#1, 99)})
+plan:  Map(Scan(VALS, [=]), {_0: COALESCE(_current.INT_COL#1, PROMOTE(99 TO BIGINT))})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === scalar_functions_java.yaml#3 expect-error=22F00
@@ -16247,7 +16247,7 @@ sql:   SELECT COALESCE(null, null) FROM vals WHERE id = 1
 plan:  <PLAN-ERROR: 22F00: The function is not defined for the given argument types>
 === scalar_functions_java.yaml#4
 sql:   SELECT id, COALESCE(int_col, 0) FROM vals ORDER BY id
-plan:  Map(Scan(VALS), {ID: _current.ID#0, _1: COALESCE(_current.INT_COL#1, 0)})
+plan:  Map(Scan(VALS), {ID: _current.ID#0, _1: COALESCE(_current.INT_COL#1, PROMOTE(0 TO BIGINT))})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === scalar_functions_java.yaml#5
@@ -16303,7 +16303,7 @@ sql:   SELECT NULLIF(int_col, 99) FROM vals WHERE id = 1
 plan:  <PLAN-ERROR: 0AF00: Unsupported operator NULLIF>
 === scalar_functions_java.yaml#16
 sql:   SELECT COALESCE(int_col, 0), COUNT(*) FROM vals GROUP BY COALESCE(int_col, 0) ORDER BY COALESCE(int_col, 0)
-plan:  Map(StreamingAgg(keys=[COALESCE(_current.INT_COL#1, 0)], InMemorySort([COALESCE(_current.INT_COL#1, 0) ASC], Scan(VALS))), {_0: _current.COALESCE(VALS.INT_COL, 0)#0, _1: _current.COUNT(*)#1})
+plan:  Map(StreamingAgg(keys=[COALESCE(_current.INT_COL#1, PROMOTE(0 TO BIGINT))], InMemorySort([COALESCE(_current.INT_COL#1, PROMOTE(0 TO BIGINT)) ASC], Scan(VALS))), {_0: _current.COALESCE(VALS.INT_COL, PROMOTE(0 TO BIGINT))#0, _1: _current.COUNT(*)#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
@@ -16422,7 +16422,7 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === scalar_subquery_advanced.yaml#8
 sql:   SELECT COALESCE((SELECT v FROM t WHERE id = 999), 0) FROM t WHERE id = 1
-plan:  Map(Scan(T, [=]), {_0: COALESCE((SCALAR_SUBQUERY q$0), 0)})
+plan:  Map(Scan(T, [=]), {_0: COALESCE((SCALAR_SUBQUERY q$0), PROMOTE(0 TO BIGINT))})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === scalar_subquery_advanced.yaml#9
@@ -19472,6 +19472,36 @@ sql:   SELECT name, price FROM items WHERE price > 15 ORDER BY price
 plan:  Map(IndexScan(PRICE_REORDER_IDX, [<>, *] COVERING), {NAME: _current.NAME#3, PRICE: _current.PRICE#2})
 shape: RecordQueryMapPlan
 shape:   RecordQueryCoveringIndexPlan
+=== variadic_promotion.yaml#0
+sql:   SELECT COALESCE(i, d) FROM t WHERE id = 1
+plan:  Map(Scan(T, [=]), {_0: COALESCE(PROMOTE(_current.I#1 TO DOUBLE), _current.D#2)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== variadic_promotion.yaml#1
+sql:   SELECT COALESCE(d, i) FROM t WHERE id = 1
+plan:  Map(Scan(T, [=]), {_0: COALESCE(_current.D#2, PROMOTE(_current.I#1 TO DOUBLE))})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== variadic_promotion.yaml#2
+sql:   SELECT COALESCE(i, d) FROM t WHERE id = 2
+plan:  Map(Scan(T, [=]), {_0: COALESCE(PROMOTE(_current.I#1 TO DOUBLE), _current.D#2)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== variadic_promotion.yaml#3
+sql:   SELECT GREATEST(i, 1.5) FROM t WHERE id = 1
+plan:  Map(Scan(T, [=]), {_0: GREATEST(PROMOTE(_current.I#1 TO DOUBLE), 1.5)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== variadic_promotion.yaml#4
+sql:   SELECT LEAST(i, 7.5) FROM t WHERE id = 1
+plan:  Map(Scan(T, [=]), {_0: LEAST(PROMOTE(_current.I#1 TO DOUBLE), 7.5)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== variadic_promotion.yaml#5
+sql:   SELECT COALESCE(i, 7) FROM t WHERE id = 2
+plan:  Map(Scan(T, [=]), {_0: COALESCE(_current.I#1, 7)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
 === where_complex_predicates.yaml#0
 sql:   SELECT id FROM t WHERE a > 20 AND b = 'x' OR c = 200 ORDER BY id
 plan:  Map(PredicatesFilter(Scan(T), [2 preds]), {ID: _current.ID#0})

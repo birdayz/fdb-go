@@ -239,6 +239,11 @@ var _ = Describe("FromlessSelectJavaProbe", func() {
 				wantGo = wantJava[p.name]
 			}
 			Expect(render(gr)).To(Equal(wantGo), p.sql)
+			// Result nullability, which the rendered pins predate, is compared
+			// between the engines wherever Go answers as Java does.
+			if !distinct {
+				Expect(gr.Rows.Nullability).To(Equal(jr.Rows.Nullability), "nullability of %s", p.sql)
+			}
 			completed++
 		}
 		Expect(completed).To(Equal(len(probes)))

@@ -172,6 +172,7 @@ go_test(
         "float_order_by_sort_retention_test.go",
         "float_ordering_claim_plan_test.go",
         "from_item_classification_test.go",
+        "fromless_metadata_test.go",
         "group_count_companion_ddl_test.go",
         "group_existence_cost_decision_test.go",
         "group_key_pull_up_guard_test.go",
@@ -517,6 +518,7 @@ go_test(
         "scan_type_test.go",
         "param_cache_key_test.go",
         "connection_option_scope_test.go",
+        "fromless_metadata_test.go",
     ],
     deps = [
         "//gen",

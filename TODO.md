@@ -123,8 +123,15 @@ Never mark a whole workstream complete because one of its subitems passed.
   EvaluatesTo, ToOrderedBytes, Rank, RowNumber, RecordType, Incarnation,
   ConditionSelector, Collate, Distance, the *DistanceRowNumber values and Empty.
   Java's oracle measured `not_false_select` and `true_and_true_select` as
-  nullable. Still open: the simplification regime (design 5.4, gated on WS-F
-  step 7) and FROM-less metadata.
+  nullable.
+  FROM-less metadata: `TestFromlessSelect_ResultMetadata` (fast lane) pins
+  result types and nullability to the oracle's measured Java values for the
+  same expressions. `FromlessSelectJavaProbe` (full lane, not run) now compares
+  nullability between the engines.
+  Variadic promoted-child types: COALESCE/GREATEST/LEAST promote every argument
+  to the common type with its own nullability, scalars included
+  (`variadic_promotion.yaml`).
+  Still open: the simplification regime (design 5.4, gated on WS-F step 7).
 
 **Done:** every remaining WS-E design obligation is reconciled to implementation
 and an executable pin; temporal compatibility/repair documentation is shipped;

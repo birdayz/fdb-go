@@ -1238,7 +1238,7 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (va
 	}
 	switch name {
 	case "COALESCE", "GREATEST", "LEAST":
-		args = promoteStructuredVariadicArguments(args, typ)
+		args = promoteVariadicArguments(args, typ)
 	}
 	switch name {
 	case "COALESCE", "GREATEST", "LEAST", "IFNULL":
@@ -1247,22 +1247,22 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (va
 	return values.NewScalarFunctionValue(name, typ, args...), nil
 }
 
-// promoteStructuredVariadicArguments is VariadicFunctionValue.encapsulate's
-// promotion of each argument to the common type with its own nullability,
-// for a record or record-array common type: fields bind by position, so the
-// result carries the common type's names whichever argument it came from.
-func promoteStructuredVariadicArguments(args []values.Value, common values.Type) []values.Value {
-	structural := common.Code() == values.TypeCodeRecord
-	if at, ok := common.(*values.ArrayType); ok && at.ElementType != nil {
-		structural = at.ElementType.Code() == values.TypeCodeRecord
-	}
-	if !structural {
-		return args
-	}
+// promoteVariadicArguments is VariadicFunctionValue.encapsulate's promotion of
+// each argument to the common type with its own nullability
+// (VariadicFunctionValue.java:263-268, PromoteValue.inject): an INT beside a
+// DOUBLE evaluates as a DOUBLE, and for a record or record-array common type
+// fields bind by position, so the result carries the common type's names
+// whichever argument it came from. A NULL-typed argument is left as it is:
+// Java retypes it in place (canResultInType), and it is NULL either way.
+func promoteVariadicArguments(args []values.Value, common values.Type) []values.Value {
 	out := make([]values.Value, len(args))
 	for i, arg := range args {
 		out[i] = arg
-		target := values.WithNullability(common, arg.Type().IsNullable())
+		argType := arg.Type()
+		if argType == nil || values.IsNull(argType) || argType.Code() == values.TypeCodeUnknown {
+			continue
+		}
+		target := values.WithNullability(common, argType.IsNullable())
 		if needed, ok := values.IsPromotionNeeded(arg.Type(), target); !ok || !needed {
 			continue
 		}

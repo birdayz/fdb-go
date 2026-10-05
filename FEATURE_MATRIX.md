@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**392 scenarios · 3272 query/assertion cases** across 18 feature areas — 2872 supported, 106 unsupported-feature pins, 294 error-path pins.
+**393 scenarios · 3278 query/assertion cases** across 18 feature areas — 2878 supported, 106 unsupported-feature pins, 294 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -44,8 +44,8 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Keys & primary keys | 5 | 133 | 128 | 0 | 5 |
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
-| Other | 43 | 423 | 376 | 9 | 38 |
-| **Total** | **392** | **3272** | **2872** | **106** | **294** |
+| Other | 44 | 429 | 382 | 9 | 38 |
+| **Total** | **393** | **3278** | **2878** | **106** | **294** |
 
 ## Aggregates & GROUP BY
 
@@ -528,4 +528,5 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `string_comparison` | 5 | 5 | 0 | 0 | String comparison edge cases |
 | `string_literal_tokens` | 14 | 11 | 3 | 0 | string literals are decoded token by token |
 | `temporal_promotion` | 55 | 50 | 1 | 4 | Go extension: DATE and TIMESTAMP values |
+| `variadic_promotion` | 6 | 6 | 0 | 0 | COALESCE/GREATEST/LEAST promote each argument |
 
