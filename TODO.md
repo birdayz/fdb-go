@@ -173,6 +173,16 @@ Never mark a whole workstream complete because one of its subitems passed.
     (`NotValue` left `isFoldableComposite`): Java keeps `NOT 'false'`. The WS-E
     oracle: one row fixed, none moved the other way. The substitution keeps
     its collapse because Go cannot rebuild a FieldValue over a NullValue.
+  - (j), the oracle half: the WS-E oracle asserts Go's side of the 89
+    simplification rows of its v4, v5, v6 and v8 rounds (`wsE5GoPins` to
+    `wsE8GoPins`, `checkGo`): every pin probed and answered exactly, and every
+    row answering as the target does (`wseOutcome`: outcome class, SQLSTATE,
+    rows) unless `wseGoDivergences` declares it. Eight are declared: the
+    target's VerifyException and CASE-branch defects (5.4(h)) and two
+    REWRITING hash ties Go's prune decides for the fold (5.4(g)). A moved pin
+    was checked to redden it (full lane). Go's EXPLAIN shows `[n preds]`, so the
+    surviving member's predicate (`[FALSE]` against `n > 0`) is not asserted
+    there; that needs a predicate-showing EXPLAIN.
   - Still open: (f) `effectiveConstant`
     is already Java's three shapes, the Object overload has no Go caller (Go
     comparands are Values); the `EvaluateConstant` arms of `SimplifyValue`;

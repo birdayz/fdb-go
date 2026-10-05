@@ -373,6 +373,75 @@ func (o *wseOracle) check(want map[string]string) {
 	Expect(strings.Join(mismatches, "\n")).To(BeEmpty())
 }
 
+// checkGo asserts Go's side of the simplification rows, the WS-E design's
+// 5.4(j): every Go pin is probed and Go answers it exactly, and each pinned
+// row answers as the target does -- same outcome class, SQLSTATE and rows
+// (wseOutcome) -- unless wseGoDivergences declares why not. A declared row that
+// stops differing is reported too, so the list cannot go stale. The GO lines
+// are printed in pin form for a deliberate re-pin.
+func (o *wseOracle) checkGo(javaPins, goPins map[string]string) {
+	for _, name := range sortedStringKeys(o.goGot) {
+		if _, pinned := goPins[name]; pinned {
+			fmt.Fprintf(GinkgoWriter, "%s-GO %q: %q,\n", o.tag, name, o.goGot[name])
+		}
+	}
+	var problems []string
+	for _, name := range sortedStringKeys(goPins) {
+		got, probed := o.goGot[name]
+		if !probed {
+			problems = append(problems, fmt.Sprintf("%s: Go pin is not probed", name))
+			continue
+		}
+		if got != goPins[name] {
+			problems = append(problems, fmt.Sprintf("%s: Go answer moved: want %s got %s", name, goPins[name], got))
+		}
+		differs := wseOutcome(javaPins[name]) != wseOutcome(got)
+		reason, declared := wseGoDivergences[name]
+		if differs && !declared {
+			problems = append(problems, fmt.Sprintf("%s: Go answers %s where the target answers %s, undeclared", name, got, javaPins[name]))
+		}
+		if !differs && declared {
+			problems = append(problems, fmt.Sprintf("%s: declared divergent (%s) but answers as the target does", name, reason))
+		}
+	}
+	Expect(strings.Join(problems, "\n")).To(BeEmpty())
+}
+
+// wseOutcome is the part of a rendered answer the engines must share: the
+// outcome class and SQLSTATE of an error (the target's harness renders an
+// ArithmeticException, which carries no SQLSTATE, as XXXXX; Go's is 22012),
+// that an EXPLAIN answered (the plan text is each engine's own), and otherwise
+// the whole row answer.
+func wseOutcome(line string) string {
+	fields := strings.Fields(line)
+	switch {
+	case len(fields) >= 2 && fields[0] == "ERROR":
+		if fields[1] == "XXXXX" && strings.Contains(line, "ArithmeticException \"/ by zero\"") {
+			return "ERROR 22012"
+		}
+		return "ERROR " + fields[1]
+	case strings.HasPrefix(line, "OK EXPLAIN"):
+		return "OK EXPLAIN"
+	}
+	return line
+}
+
+// wseGoDivergences declares each pinned simplification row whose Go outcome
+// differs from the target's, with the design paragraph that rules on it.
+var wseGoDivergences = map[string]string{
+	// 5.4(h): target defects, an internal failure on a well-typed predicate.
+	"coalesce_true_div0_and_column_where":         "5.4(h) target VerifyException, COALESCE under AND",
+	"coalesce_true_div0_and_column_where_explain": "5.4(h) target VerifyException, COALESCE under AND",
+	"not_coalesce_false_div0_where":               "5.4(h) target VerifyException, COALESCE under NOT",
+	"not_coalesce_false_div0_where_explain":       "5.4(h) target VerifyException, COALESCE under NOT",
+	"pk_in_annulling_fold_where":                  "5.4(c)/section 8 target VerifyException beside an IN list; Go raises the division",
+	"is_null_case_div0_branch_where":              "5.4(h) target INCOMPATIBLE_TYPE on a CASE branch; Go evaluates per row",
+	// 5.4(g): a fold to NULL ties the unfolded predicate on every rung but the
+	// semantic hash, which the target decides and Go's prune does not share.
+	"null_strict_cast_null_beside_div0_where": "5.4(g) REWRITING tie: Go keeps the fold `FILTER null`",
+	"v4_schema_div0_cast_null_eq_one_where":   "5.4(g) REWRITING tie: Go keeps the fold `FILTER null`",
+}
+
 var _ = Describe("WS-E target oracle", func() {
 	It("records LIKE, comment, literal, variadic, IN-NULL and statement-option outcomes", func() {
 		o, done := newWSEOracle("ws_e_", "WS-E")
@@ -1062,6 +1131,7 @@ var _ = Describe("WS-E target oracle v4", func() {
 		o.plain(rsSchema, rsSetup, "read_scope_fetch_explain", "EXPLAIN "+fetchRead)
 		o.plain(rsSchema, rsSetup, "read_scope_scan_explain", "EXPLAIN "+scanRead)
 		o.check(wsE5Pins)
+		o.checkGo(wsE5Pins, wsE5GoPins)
 	})
 })
 
@@ -1338,6 +1408,7 @@ var _ = Describe("WS-E target oracle v5", func() {
 			o.readScope(rsSchema, rsSetup, c.name, c.read, c.concurrent, "INSERT INTO WR VALUES (1)")
 		}
 		o.check(wsE6Pins)
+		o.checkGo(wsE6Pins, wsE6GoPins)
 	})
 })
 
@@ -1448,6 +1519,7 @@ var _ = Describe("WS-E target oracle v6", func() {
 			o.prepared(enumSchema, nil, c)
 		}
 		o.check(wsE7Pins)
+		o.checkGo(wsE7Pins, wsE7GoPins)
 	})
 })
 
@@ -1644,10 +1716,107 @@ var _ = Describe("WS-E target oracle v8", func() {
 			o.plain(schema, setup, p.name, p.sql)
 		}
 		o.check(wsE8Pins)
+		o.checkGo(wsE8Pins, wsE8GoPins)
 	})
 })
 
 // wsE8Pins is the measured target outcome of every round-8 probe (4.14.2.0).
+// wsE5GoPins to wsE8GoPins pin Go's answer to the simplification rows (WS-E
+// design 5.4(j)); checkGo asserts them and their declared divergences.
+var wsE5GoPins = map[string]string{
+	"coalesce_and_head_where":                             "ERROR 22012 \"/ by zero\"",
+	"coalesce_arith_head_where":                           "ERROR 22012 \"/ by zero\"",
+	"coalesce_bound_null_head_where":                      "OK [BIGINT] [NULL] [[1] [2] [3]]",
+	"coalesce_bound_true_head_select":                     "ERROR 22012 \"/ by zero\"",
+	"coalesce_bound_true_head_where":                      "OK [BIGINT] [NULL] [[1] [2] [3]]",
+	"coalesce_cast_null_head_erroring_tail_where":         "OK [BIGINT] [NULL] [[1] [2] [3]]",
+	"coalesce_cast_null_head_where":                       "OK [BIGINT] [NULL] [[1] [2] [3]]",
+	"coalesce_int_literal_head_where":                     "ERROR 22012 \"/ by zero\"",
+	"coalesce_not_head_select":                            "ERROR 22012 \"/ by zero\"",
+	"coalesce_not_head_where":                             "ERROR 22012 \"/ by zero\"",
+	"coalesce_not_head_where_explain":                     "OK EXPLAIN \"Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})\"",
+	"coalesce_null_head_erroring_tail_where":              "OK [BIGINT] [NULL] [[1] [2] [3]]",
+	"coalesce_null_head_where":                            "OK [BIGINT] [NULL] [[1] [2] [3]]",
+	"coalesce_or_head_where":                              "ERROR 22012 \"/ by zero\"",
+	"coalesce_true_head_where_explain":                    "OK EXPLAIN \"Map(Scan(T), {ID: _current.ID#0})\"",
+	"null_strict_cast_null_beside_div0_select":            "OK [INTEGER] [NULL] [[NULL]]",
+	"null_strict_cast_null_beside_div0_select_explain":    "OK EXPLAIN \"Map(Scan(T, [=]), {_0: NULL})\"",
+	"null_strict_cast_null_beside_div0_where":             "OK [BIGINT] [NULL] []",
+	"null_strict_cast_null_beside_div0_where_empty_table": "OK [BIGINT] [NULL] []",
+	"null_strict_cast_null_beside_div0_where_explain":     "OK EXPLAIN \"Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})\"",
+	"null_strict_column_beside_cast_null_where_explain":   "OK EXPLAIN \"Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})\"",
+	"null_strict_null_beside_div0_select":                 "ERROR XX000 \"unable to encapsulate arithmetic operation due to type mismatch(es)\"",
+}
+
+var wsE6GoPins = map[string]string{
+	"coalesce_div0_five_is_null_where":                 "OK [BIGINT] [NULL] []",
+	"coalesce_div0_five_is_null_where_explain":         "OK EXPLAIN \"Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})\"",
+	"coalesce_not_cast_null_head_where":                "OK [BIGINT] [NULL] [[1] [2] [3]]",
+	"coalesce_not_cast_null_head_where_explain":        "OK EXPLAIN \"Map(Scan(T), {ID: _current.ID#0})\"",
+	"coalesce_true_div0_and_column_where":              "OK [BIGINT] [NULL] [[2] [3]]",
+	"coalesce_true_div0_and_column_where_explain":      "OK EXPLAIN \"Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})\"",
+	"fold_div0_or_not_false_where":                     "ERROR 22012 \"/ by zero\"",
+	"fold_div0_or_not_false_where_explain":             "OK EXPLAIN \"Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})\"",
+	"not_coalesce_false_div0_where":                    "ERROR 22012 \"/ by zero\"",
+	"not_coalesce_false_div0_where_explain":            "OK EXPLAIN \"Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})\"",
+	"null_strict_div0_cast_null_eq_one_explain":        "OK EXPLAIN \"Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})\"",
+	"null_strict_div0_cast_null_eq_one_where":          "OK [BIGINT] [NULL] []",
+	"null_strict_div0_cast_null_is_null_where":         "OK [BIGINT] [NULL] [[1] [2] [3]]",
+	"null_strict_div0_cast_null_is_null_where_explain": "OK EXPLAIN \"Map(Scan(T), {ID: _current.ID#0})\"",
+	"v4_schema_div0_cast_null_eq_one_explain":          "OK EXPLAIN \"Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})\"",
+	"v4_schema_div0_cast_null_eq_one_where":            "OK [BIGINT] [NULL] []",
+	"v5_schema_div0_cast_null_eq_one_where_first":      "OK [BIGINT] [NULL] []",
+}
+
+var wsE7GoPins = map[string]string{
+	"conj_false_explain":                  "OK EXPLAIN \"Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})\"",
+	"conj_false_where":                    "OK [BIGINT] [NULL] []",
+	"conj_true_explain":                   "OK EXPLAIN \"Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})\"",
+	"conj_true_where":                     "OK [BIGINT] [NULL] [[2] [3]]",
+	"is_not_null_coalesce_div0_where":     "OK [BIGINT] [NULL] [[1] [2] [3]]",
+	"is_null_case_both_arithmetic_where":  "OK [BIGINT] [NULL] []",
+	"is_null_case_div0_branch_where":      "OK [BIGINT] [NULL] []",
+	"is_null_case_div0_condition_where":   "ERROR 22012 \"/ by zero\"",
+	"is_null_case_literals_where":         "OK [BIGINT] [NULL] []",
+	"is_null_cast_div0_where":             "ERROR 22012 \"/ by zero\"",
+	"is_null_cast_string_to_bigint_where": "OK [BIGINT] [NULL] []",
+	"is_null_greatest_div0_where":         "ERROR 22012 \"/ by zero\"",
+}
+
+var wsE8GoPins = map[string]string{
+	"index_beside_tie_fold_explain":           "OK EXPLAIN \"Map(PredicatesFilter(IndexScan(T_N, [=] COVERING), [1 preds]), {ID: _current.ID#0})\"",
+	"index_beside_tie_fold_where":             "OK [BIGINT] [NULL] [[2]]",
+	"index_eq_annulling_fold_explain":         "OK EXPLAIN \"Map(PredicatesFilter(IndexScan(T_N, [=] COVERING), [2 preds]), {ID: _current.ID#0})\"",
+	"index_eq_annulling_fold_where":           "ERROR 22012 \"/ by zero\"",
+	"index_eq_type_annulling_fold_explain":    "OK EXPLAIN \"Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})\"",
+	"index_eq_type_annulling_fold_where":      "OK [BIGINT] [NULL] []",
+	"index_eq_type_reducing_fold_explain":     "OK EXPLAIN \"Map(IndexScan(T_N, [=] COVERING), {ID: _current.ID#0})\"",
+	"index_eq_type_reducing_fold_where":       "OK [BIGINT] [NULL] [[2]]",
+	"index_range_annulling_fold_explain":      "OK EXPLAIN \"Map(PredicatesFilter(IndexScan(T_N, [<>] COVERING), [2 preds]), {ID: _current.ID#0})\"",
+	"index_range_annulling_fold_where":        "ERROR 22012 \"/ by zero\"",
+	"index_range_type_annulling_fold_explain": "OK EXPLAIN \"Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})\"",
+	"index_range_type_annulling_fold_where":   "OK [BIGINT] [NULL] []",
+	"index_tie_duplicate_or_explain":          "OK EXPLAIN \"Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})\"",
+	"index_tie_duplicate_or_where":            "OK [BIGINT] [NULL] [[2]]",
+	"index_tie_not_over_comparison_explain":   "OK EXPLAIN \"Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})\"",
+	"index_tie_not_over_comparison_where":     "OK [BIGINT] [NULL] [[5]]",
+	"or_annulling_fold_where":                 "ERROR 22012 \"/ by zero\"",
+	"pk_annulling_fold_explain":               "OK EXPLAIN \"Map(PredicatesFilter(Scan(T, [=]), [2 preds]), {ID: _current.ID#0})\"",
+	"pk_annulling_fold_where":                 "ERROR 22012 \"/ by zero\"",
+	"pk_beside_tie_fold_explain":              "OK EXPLAIN \"Map(PredicatesFilter(Scan(T, [=]), [1 preds]), {ID: _current.ID#0})\"",
+	"pk_beside_tie_fold_where":                "OK [BIGINT] [NULL] [[5]]",
+	"pk_in_annulling_fold_explain":            "OK EXPLAIN \"InJoin(Map(PredicatesFilter(Scan(T, [=]), [2 preds]), {ID: _current.ID#0}), binding)\"",
+	"pk_in_annulling_fold_where":              "ERROR 22012 \"/ by zero\"",
+	"pk_in_type_annulling_fold_explain":       "OK EXPLAIN \"Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})\"",
+	"pk_in_type_annulling_fold_where":         "OK [BIGINT] [NULL] []",
+	"pk_reducing_fold_explain":                "OK EXPLAIN \"Map(PredicatesFilter(Scan(T, [=]), [1 preds]), {ID: _current.ID#0})\"",
+	"pk_reducing_fold_where":                  "OK [BIGINT] [NULL] [[5]]",
+	"pk_type_annulling_fold_explain":          "OK EXPLAIN \"Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})\"",
+	"pk_type_annulling_fold_where":            "OK [BIGINT] [NULL] []",
+	"pk_type_reducing_fold_explain":           "OK EXPLAIN \"Map(Scan(T, [=]), {ID: _current.ID#0})\"",
+	"pk_type_reducing_fold_where":             "OK [BIGINT] [NULL] [[5]]",
+}
+
 var wsE8Pins = map[string]string{
 	"index_beside_tie_fold_explain":           "OK EXPLAIN \"SCAN([IS T, [LESS_THAN_OR_EQUALS promote(@c13 AS LONG)]]) | FILTER _.N EQUALS promote(@c7 AS LONG) | MAP (_.ID AS ID)\"",
 	"index_beside_tie_fold_where":             "OK [BIGINT] [NULL] [[2]]",
