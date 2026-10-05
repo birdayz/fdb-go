@@ -276,7 +276,22 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   `w8_no_predicate` class. The explain-differ corpus took 14 s instead of 6 s,
   which is the pruning's stated planning cost. The design orders F-6, the
   covering emission gate, before F-7c, and requires the 1M stress comparison
-  with F-7c.
+  with F-7c. F-6 needs no change: `ToScanPlan` is Java's `toEquivalentPlan`.
+  The fast lane with the pruning off failed 22 tests and exposed two defects
+  the pruning had masked, both of which block F-7c:
+  - Wrong rows. A unique index filtered by a Go closure (opaque filter) is
+    served as a full index scan, as if it held every record:
+    `TestClosureSparseUniqueIndex_IsNeverAnEliminationProof` plans
+    `Distinct(Map(IndexScan(CS_EMAIL, [*] COVERING)))` and drops the
+    records the closure excludes. A full scan of an opaque-filter index must
+    not match as complete.
+  - The task budget. `TestPlanHarness_UnionWithFixedUnindexedFactor` hits
+    MaxTasks: one group grows to 2998 members, 1980 of them
+    MergeSortUnion plans. This is the OR-union budget the pruning comment
+    named.
+  The rest are plan pins encoding the pruning: like-prefix and unindexed-IN
+  full scans, ORDER BY elimination, the rfc202 generated index plans,
+  order_by_nulls, the self-join probe, and the javacorpus run.
 - [x] Reconcile F-6/F-7b with RFC-191's existing `Fetch(InJoin)` ruling; see
   `DIVERGENCES.md` “Plan choice: an ordered IN over a non-covering index”.
   Go's covering emission is already Java's gate: `ToScanPlan` is
