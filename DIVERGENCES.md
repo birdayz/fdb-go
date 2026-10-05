@@ -1717,9 +1717,11 @@ the answers differ only for NaNs of other payloads (arithmetic, bound values,
 the record-layer API). Pinned by `yamsql/testdata/nan_index_equality.yaml` and
 `executor/nan_block_binding_test.go`.
 
-Still refused, loudly, before storage: a NaN equality followed by another
-constrained index component (the scan would need a key filter across the two
-blocks; TODO.md WS-E), an aggregate-index read bound to a NaN group key (each
+A NaN equality followed by other constrained index components reads the same
+two blocks and filters each entry's later components below the continuation
+(Java's plan keeps `[EQUALS, EQUALS]` and probes one key).
+
+Still refused, loudly, before storage: an aggregate-index read bound to a NaN group key (each
 NaN payload is its own stored group, while Go's GROUP BY puts every NaN in one
 group), and a NaN vector-partition prefix (each partition is its own graph).
 Java answers each from its probe's one key.

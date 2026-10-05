@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -28,7 +29,64 @@ type scanRangeSetSpec struct {
 	alternativeCounts      []uint32
 	empty                  bool
 	materialize            scanRangeMaterializer
+	// keyFilter, when set, must admit each entry's key before the scan
+	// returns it; see filterScanKeys.
+	keyFilter *scanKeyFilter
 }
+
+// filterScanKeys applies a spec's key filter to the scan's entries. It returns
+// the inner cursor's own results, continuations included, so a rejected entry
+// is read and counted but never returned or re-read, and a scan limit that
+// expires on a rejected entry resumes after it.
+func filterScanKeys[T any](
+	spec scanRangeSetSpec,
+	inner recordlayer.RecordCursor[T],
+	key func(T) tuple.Tuple,
+	offset int,
+) recordlayer.RecordCursor[T] {
+	if spec.keyFilter == nil {
+		return inner
+	}
+	return &keyFilterCursor[T]{inner: inner, filter: spec.keyFilter, key: key, offset: offset}
+}
+
+type keyFilterCursor[T any] struct {
+	inner      recordlayer.RecordCursor[T]
+	filter     *scanKeyFilter
+	key        func(T) tuple.Tuple
+	offset     int
+	lastNoNext *recordlayer.RecordCursorResult[T]
+}
+
+func (c *keyFilterCursor[T]) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[T], error) {
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return recordlayer.RecordCursorResult[T]{}, err
+		}
+		result, err := c.inner.OnNext(ctx)
+		if err != nil {
+			return result, err
+		}
+		if !result.HasNext() {
+			c.lastNoNext = &result
+			return result, nil
+		}
+		ok, err := c.filter.admits(c.key(result.GetValue()), c.offset)
+		if err != nil {
+			return recordlayer.RecordCursorResult[T]{}, err
+		}
+		if ok {
+			return result, nil
+		}
+	}
+}
+
+func (c *keyFilterCursor[T]) Close() error { return c.inner.Close() }
+
+func (c *keyFilterCursor[T]) IsClosed() bool { return c.inner.IsClosed() }
 
 // scanRangeLeafFactory opens one physical leaf at its optional inner
 // continuation. The properties have the logical scan's shared ScanState but

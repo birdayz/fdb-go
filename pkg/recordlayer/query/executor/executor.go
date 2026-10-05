@@ -398,6 +398,11 @@ func executeScanWithRowLayout(
 		if err != nil {
 			return nil, err
 		}
+		// A record's primary key carries the record-type prefix, if any,
+		// before the components the comparisons constrain.
+		stored = filterScanKeys(spec, stored,
+			func(r *recordlayer.FDBStoredRecord[proto.Message]) tuple.Tuple { return r.PrimaryKey },
+			len(recordTypePrefix))
 		mapped := recordlayer.MapCursor(stored, storedRecordToQueryResult(rowLayout))
 		return applySkipLimit(mapped, props.Skip, props.ReturnedRowLimit), nil
 	}
@@ -479,7 +484,10 @@ func openIndexEntryCursor(
 	if err != nil {
 		return nil, fmt.Errorf("executor: opening scan ranges for %q: %w", p.GetIndexName(), err)
 	}
-	return indexCursor, nil
+	// An index entry's key begins with the indexed values, aligned with the
+	// scan comparisons.
+	return filterScanKeys(rangeSet, indexCursor,
+		func(e *recordlayer.IndexEntry) tuple.Tuple { return e.Key }, 0), nil
 }
 
 // executeIndexScan runs a NON-covering index scan: every entry is resolved to

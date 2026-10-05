@@ -246,6 +246,91 @@ type boundScanRangeSet struct {
 	empty                      bool
 	fingerprintSalt            string
 	compatibleFingerprintSalts []string
+	// keyFilter is set when a NaN equality is followed by constrained
+	// components: the ranges are the NaN blocks over the prefix, and each
+	// entry's later key components must satisfy their comparisons.
+	keyFilter *scanKeyFilter
+}
+
+// scanKeyFilter is the per-entry predicate a NaN equality's later scan
+// components become (RFC-257 WS-E 5.3). The two NaN key blocks hold every NaN
+// payload, and a component after them is ordered within each payload only, so
+// it cannot be a range: each entry read is tested on its decoded key component
+// with the comparison's own semantics (NaN-equal and zero-widened, as every
+// predicate). It runs below the continuation: a rejected entry is read,
+// counted toward the scan's limits, and never re-read on resume.
+type scanKeyFilter struct {
+	components []scanKeyFilterComponent
+}
+
+type scanKeyFilterComponent struct {
+	// position is the key component's index among the scan comparisons.
+	position    int
+	comparisons []predicates.Comparison
+}
+
+// admits reports whether the entry key passes every filtered component.
+// offset is where the comparisons' components start in key (a primary key
+// with a record-type prefix carries that prefix first).
+func (f *scanKeyFilter) admits(key tuple.Tuple, offset int) (bool, error) {
+	for _, component := range f.components {
+		at := offset + component.position
+		if at >= len(key) {
+			return false, fmt.Errorf("scan key filter: key %v has no component %d", key, at)
+		}
+		value := values.TupleElementToRowValue(key[at])
+		for _, comparison := range component.comparisons {
+			result, err := comparison.Eval(value)
+			if err != nil {
+				return false, err
+			}
+			if result != predicates.TriTrue {
+				return false, nil
+			}
+		}
+	}
+	return true, nil
+}
+
+// bindScanKeyFilter evaluates the comparisons after a NaN equality once, at
+// binding, as the scan's other comparands are. A NULL comparand of an ordinary
+// comparison admits no entry, so the scan is empty.
+func bindScanKeyFilter(
+	comparisons []*predicates.ComparisonRange,
+	first int,
+	binder values.ParameterBinder,
+) (filter *scanKeyFilter, empty bool, err error) {
+	filter = &scanKeyFilter{}
+	for j := first; j < len(comparisons); j++ {
+		cr := comparisons[j]
+		if cr == nil || cr.IsEmpty() {
+			continue
+		}
+		component := scanKeyFilterComponent{position: j}
+		for _, comparison := range cr.GetComparisons() {
+			if comparison == nil {
+				return nil, false, fmt.Errorf("scan component %d has a nil comparison", j)
+			}
+			bound := *comparison
+			if !comparison.Type.IsUnary() {
+				if comparison.Operand == nil {
+					return nil, false, fmt.Errorf("scan component %d (%v) has no operand", j, comparison.Type)
+				}
+				value, err := comparison.Operand.Evaluate(binder)
+				if err != nil {
+					return nil, false, err
+				}
+				if value == nil && comparison.Type != predicates.ComparisonNotDistinctFrom &&
+					comparison.Type != predicates.ComparisonIsDistinctFrom {
+					return nil, true, nil
+				}
+				bound.Operand = &values.ConstantValue{Value: value, Typ: comparison.Operand.Type()}
+			}
+			component.comparisons = append(component.comparisons, bound)
+		}
+		filter.components = append(filter.components, component)
+	}
+	return filter, false, nil
 }
 
 // bindScanComparisonsToRangeSet evaluates a comparison prefix once and returns
@@ -415,12 +500,23 @@ func bindScanComparisonsToRangeSetWithTerminalWideningAndCompatibility(
 			// own tuple key, in two blocks at the ends of the coordinate. With
 			// no later component constrained, the two blocks over this prefix
 			// are exactly the rows the per-row `=` matches, whatever payload
-			// the comparand has. A later constrained component needs a key
-			// filter across the blocks, which this binder does not build yet.
-			if !allowNaNBlocks || anyLaterComparisonConstrains(comparisons, i) {
+			// the comparand has. A later constrained component becomes a key
+			// filter over the entries of both blocks.
+			if !allowNaNBlocks {
 				return scanRangeSetSpec{}, &UnsupportedPhysicalFloatEquivalenceError{
 					Component: i, Comparison: comparison.Type, PhysicalType: physicalType,
 				}
+			}
+			if anyLaterComparisonConstrains(comparisons, i) {
+				filter, empty, err := bindScanKeyFilter(comparisons, i+1, binder)
+				if err != nil {
+					return scanRangeSetSpec{}, err
+				}
+				if empty {
+					bound.empty = true
+					return bound.spec(), nil
+				}
+				bound.keyFilter = filter
 			}
 			bound.tails = nanBlockTails(physicalType, reverse)
 			return bound.spec(), nil
@@ -1401,6 +1497,7 @@ func (b *boundScanRangeSet) spec() scanRangeSetSpec {
 		compatibleFingerprints: b.compatibleFingerprints(),
 		alternativeCounts:      counts,
 		materialize:            b.materialize,
+		keyFilter:              b.keyFilter,
 	}
 }
 
@@ -1574,6 +1671,21 @@ func (b *boundScanRangeSet) fingerprintWithSalt(salt string) []byte {
 		writeFingerprintUint32(h, uint32(t.kind))
 		writeFingerprintTailBounds(h, t)
 	}
+	// Only a filtered scan folds its filter, so every unfiltered scan keeps
+	// the fingerprint its continuations already carry.
+	if b.keyFilter != nil {
+		writeFingerprintBytes(h, []byte("key-filter-v1"))
+		writeFingerprintUint32(h, uint32(len(b.keyFilter.components)))
+		for _, component := range b.keyFilter.components {
+			writeFingerprintUint32(h, uint32(component.position))
+			writeFingerprintUint32(h, uint32(len(component.comparisons)))
+			for _, comparison := range component.comparisons {
+				writeFingerprintUint32(h, uint32(comparison.Type))
+				writeFingerprintBytes(h, []byte(fmt.Sprintf("%T", keyFilterOperandIdentity(comparison))))
+				writeFingerprintBytes(h, []byte(fmt.Sprintf("%#v", keyFilterOperandIdentity(comparison))))
+			}
+		}
+	}
 	if !b.empty {
 		choices := make([]uint32, len(b.components))
 		if len(b.tails) > 1 {
@@ -1587,6 +1699,33 @@ func (b *boundScanRangeSet) fingerprintWithSalt(salt string) []byte {
 		}
 	}
 	return h.Sum(nil)
+}
+
+// keyFilterOperandIdentity is a filter comparand as the comparison sees it:
+// every NaN is one value and both zeros are one, so a resume under an
+// equivalent comparand is the same scan.
+func keyFilterOperandIdentity(comparison predicates.Comparison) any {
+	c, ok := comparison.Operand.(*values.ConstantValue)
+	if !ok || c == nil {
+		return nil
+	}
+	switch v := c.Value.(type) {
+	case float64:
+		if math.IsNaN(v) {
+			return "NaN"
+		}
+		if v == 0 {
+			return float64(0)
+		}
+	case float32:
+		if math.IsNaN(float64(v)) {
+			return "NaN"
+		}
+		if v == 0 {
+			return float32(0)
+		}
+	}
+	return c.Value
 }
 
 // writeFingerprintTailBounds folds one tail's endpoints into the continuation

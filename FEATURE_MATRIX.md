@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**391 scenarios · 3255 query/assertion cases** across 18 feature areas — 2858 supported, 103 unsupported-feature pins, 294 error-path pins.
+**391 scenarios · 3258 query/assertion cases** across 18 feature areas — 2861 supported, 103 unsupported-feature pins, 294 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -39,13 +39,13 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Column resolution & aliasing | 7 | 59 | 30 | 0 | 29 |
 | NULL handling | 5 | 27 | 24 | 3 | 0 |
 | NULL handling & boolean logic | 2 | 48 | 48 | 0 | 0 |
-| Index usage | 19 | 213 | 210 | 0 | 3 |
+| Index usage | 19 | 216 | 213 | 0 | 3 |
 | Types | 13 | 148 | 127 | 4 | 17 |
 | Keys & primary keys | 5 | 133 | 128 | 0 | 5 |
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 42 | 409 | 365 | 6 | 38 |
-| **Total** | **391** | **3255** | **2858** | **103** | **294** |
+| **Total** | **391** | **3258** | **2861** | **103** | **294** |
 
 ## Aggregates & GROUP BY
 
@@ -425,7 +425,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `index_range_predicates_java` | 10 | 10 | 0 | 0 | Index scan with range predicates |
 | `index_scan_direction` | 8 | 8 | 0 | 0 | Index scan direction tests |
 | `multi_column_index_java` | 7 | 7 | 0 | 0 | Multi-column (composite) index patterns. |
-| `nan_index_equality` | 11 | 11 | 0 | 0 | a NaN equality over an index (RFC-257 WS-E, |
+| `nan_index_equality` | 14 | 14 | 0 | 0 | a NaN equality over an index (RFC-257 WS-E, |
 | `nested_leaf_index_disambiguation` | 6 | 6 | 0 | 0 | A nested leaf and a top-level column with the same name are different |
 | `nested_leaf_value_index` | 8 | 8 | 0 | 0 | A value index over a nested scalar leaf serves reads the way Java's does |
 | `nested_struct_cardinality_index` | 2 | 2 | 0 | 0 | A CARDINALITY index over a NESTED quoted struct path is matched: the function |

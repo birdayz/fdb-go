@@ -1,12 +1,12 @@
 package sqldriver_test
 
-// A dynamic NaN cannot be represented by a finite exact composite tuple range.
-// The runtime binder must return its typed correct-or-loud error while building
-// the plan cursor, before any child index range is opened.
+// A dynamic NaN followed by a bound component over a composite index (RFC-257
+// WS-E 5.3): the scan reads both NaN key blocks and filters each entry's later
+// component below the continuation. It used to refuse with
+// UnsupportedPhysicalFloatEquivalenceError.
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -30,7 +30,7 @@ import (
 	"fdb.dev/pkg/relational/core/metadata"
 )
 
-func TestFDB_DynamicNaNCompositeIndexCorrectOrLoud(t *testing.T) {
+func TestFDB_DynamicNaNCompositeIndexKeyFilter(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -104,35 +104,122 @@ func TestFDB_DynamicNaNCompositeIndexCorrectOrLoud(t *testing.T) {
 			}
 			plan = plan.WithKeyComponentTypes([]values.Type{physicalType, values.NotNullLong})
 
-			var executeErr error
-			_, runErr := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			// NaNs of both signs and several payloads, beside the
+			// infinities, a number, and a NaN of the wrong suffix.
+			type row struct {
+				id   int64
+				bits uint64
+				w    int64
+			}
+			rows := []row{
+				{1, 0x7ff8000000000000, 5},
+				{2, 0xfff8000000000000, 5},
+				{3, 0x7ff8000000000000, 6},
+				{4, math.Float64bits(1.5), 5},
+				{5, math.Float64bits(math.Inf(1)), 5},
+				{6, 0x7ff800000000abcd, 5},
+				{7, math.Float64bits(math.Inf(-1)), 5},
+				{8, 0xfff800000000abcd, 4},
+			}
+			_, saveErr := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				store, openErr := recordlayer.NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
 				if openErr != nil {
 					return nil, openErr
 				}
-				cursor, err := executor.ExecutePlan(
-					ctx,
-					plan,
-					store,
-					executor.EmptyEvaluationContext().WithParams([]any{math.NaN()}),
-					nil,
-					recordlayer.DefaultExecuteProperties(),
-				)
-				executeErr = err
-				if cursor != nil {
-					_ = cursor.Close()
-					return nil, errors.New("dynamic NaN unexpectedly constructed a storage cursor")
+				descriptor := md.GetRecordType("T").Descriptor
+				for _, r := range rows {
+					message := dynamicpb.NewMessage(descriptor)
+					message.Set(descriptor.Fields().ByName("ID"), protoreflect.ValueOfInt64(r.id))
+					if width == "FLOAT" {
+						message.Set(descriptor.Fields().ByName("V"),
+							protoreflect.ValueOfFloat32(float32(math.Float64frombits(r.bits))))
+					} else {
+						message.Set(descriptor.Fields().ByName("V"),
+							protoreflect.ValueOfFloat64(math.Float64frombits(r.bits)))
+					}
+					message.Set(descriptor.Fields().ByName("W"), protoreflect.ValueOfInt64(r.w))
+					if _, err := store.SaveRecord(message); err != nil {
+						return nil, err
+					}
 				}
 				return nil, nil
 			})
-			if runErr != nil {
-				t.Fatalf("run: %v", runErr)
+			if saveErr != nil {
+				t.Fatalf("save: %v", saveErr)
 			}
-			var unsupported *executor.UnsupportedPhysicalFloatEquivalenceError
-			if !errors.As(executeErr, &unsupported) {
-				t.Fatalf("%s dynamic NaN error = %T %v, want *UnsupportedPhysicalFloatEquivalenceError",
-					width, executeErr, executeErr)
+
+			// run executes the plan for the NaN probe, resuming from each
+			// page's continuation; scanLimit 1 makes most pages end on an
+			// entry the key filter rejected.
+			run := func(t *testing.T, reverse bool, scanLimit int) []int64 {
+				t.Helper()
+				p := plan
+				if reverse {
+					var err error
+					p, err = plans.NewRecordQueryIndexPlan(
+						"V_W", []*predicates.ComparisonRange{parameterRange, suffixRange}, []string{"T"},
+						executor.PositionalTypeForDescriptor(md.GetRecordType("T").Descriptor), true)
+					if err != nil {
+						t.Fatal(err)
+					}
+					p = p.WithKeyComponentTypes([]values.Type{physicalType, values.NotNullLong})
+				}
+				var ids []int64
+				var continuation []byte
+				for page := 0; ; page++ {
+					if page > 100 {
+						t.Fatal("the scan does not terminate")
+					}
+					props := recordlayer.DefaultExecuteProperties()
+					props.ScannedRecordsLimit = scanLimit
+					var done bool
+					_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+						store, err := recordlayer.NewStoreBuilder().
+							SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+						if err != nil {
+							return nil, err
+						}
+						cursor, err := executor.ExecutePlan(ctx, p, store,
+							executor.EmptyEvaluationContext().WithParams([]any{math.Float64frombits(0x7ff8000000000001)}),
+							continuation, props)
+						if err != nil {
+							return nil, err
+						}
+						defer cursor.Close()
+						for {
+							r, err := cursor.OnNext(ctx)
+							if err != nil {
+								return nil, err
+							}
+							if !r.HasNext() {
+								c, err := r.GetContinuation().ToBytes()
+								if err != nil {
+									return nil, err
+								}
+								continuation, done = c, r.GetContinuation().IsEnd()
+								return nil, nil
+							}
+							ids = append(ids, r.GetValue().PrimaryKey[0].(int64))
+						}
+					})
+					if err != nil {
+						t.Fatalf("page %d: %v", page, err)
+					}
+					if done {
+						return ids
+					}
+				}
+			}
+			for _, reverse := range []bool{false, true} {
+				for _, limit := range []int{0, 1, 2} {
+					ids := run(t, reverse, limit)
+					sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+					if !slices.Equal(ids, []int64{1, 2, 6}) {
+						t.Fatalf("%s reverse=%t scan limit %d: ids %v, want [1 2 6] (every NaN with W = 5, once)",
+							width, reverse, limit, ids)
+					}
+				}
 			}
 		})
 	}

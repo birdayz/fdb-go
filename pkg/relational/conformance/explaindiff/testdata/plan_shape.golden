@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=391 queries=2953 dml=176 non_query=126 plan_errors=321 unexpected_errors=4
+# files=391 queries=2956 dml=176 non_query=126 plan_errors=321 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -12116,6 +12116,24 @@ plan:  Map(Scan(P, [=]), {ID: _current.ID#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === nan_index_equality.yaml#10
+sql:   SELECT id FROM f WHERE d IN (CAST('NaN' AS DOUBLE)) AND g IN (1, 2)
+plan:  Map(PredicatesFilter(Scan(F), [2 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== nan_index_equality.yaml#11
+sql:   SELECT id FROM f WHERE d IN (CAST('NaN' AS DOUBLE), 1.5) AND g = 1
+plan:  Map(PredicatesFilter(Scan(F), [2 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== nan_index_equality.yaml#12
+sql:   SELECT id FROM f WHERE d IN (CAST('NaN' AS DOUBLE)) AND g > 1
+plan:  Map(PredicatesFilter(Scan(F), [2 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== nan_index_equality.yaml#13
 sql:   SELECT id FROM f WHERE d + 0.0 = CAST('NaN' AS DOUBLE)
 plan:  Map(PredicatesFilter(Scan(F), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan

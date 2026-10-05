@@ -64,14 +64,17 @@ Never mark a whole workstream complete because one of its subitems passed.
   equality over an index returns every stored NaN". Pins:
   `nan_block_binding_test.go`, `nan_index_equality.yaml` (ORDER BY row
   mutation-checked).
-- [ ] Non-terminal NaN equality (design 5.3): a NaN followed by a constrained
-  component still refuses. Port the key filter: the two NaN blocks over the
-  prefix plus a per-entry predicate on later components, applied below the
-  continuation (resume never re-reads a rejected entry nor skips an unread one,
-  every read counts toward limits), for value-index and primary-key (decoded
-  from the record group's first key) scans. Pins: range tail after NaN, a
-  second NaN component, resume inside each block forward/reverse, a limit
-  expiring on a filtered entry.
+- [x] Non-terminal NaN equality: the two NaN blocks plus a key filter on later
+  components (`scanKeyFilter`, `filterScanKeys`), below the continuation, for
+  value-index and primary-key scans; filter comparands in the fingerprint (NaN
+  and ±0 as classes). Pins: `TestNaNEqualityKeyFilterSelectsExactly` (equality,
+  zero, range tail, second NaN, reverse, NULL), `TestKeyFilterCursorForwardsContinuations`
+  (limit expiring on a rejected entry), and the FDB test
+  `TestFDB_DynamicNaNCompositeIndexKeyFilter` (was the refusal pin; DOUBLE and
+  FLOAT, forward/reverse, scan limits 0/1/2) — the last is in `sqldriver_test`
+  (full lane) and has NOT run yet. The primary-key filter's record-type-prefix
+  offset has no end-to-end pin: SQL plans for a dynamic NaN PK prefix with a
+  bound suffix pick a scan on the corpus tables.
 - [ ] Isolation: conflict-free index-state reads and DSN/SetOption options. The
   executor DML snapshot guard (`4f61e07b5`) and statement-class admission
   (`7287666da`) are already implemented.
