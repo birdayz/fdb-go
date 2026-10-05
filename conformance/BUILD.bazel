@@ -98,6 +98,7 @@ java_test(
 # gazelle:exclude ws_f_record_layer_go_test.go
 # gazelle:exclude ws_j_index_fidelity_conformance_test.go
 # gazelle:exclude ws_g_aggregate_state_conformance_test.go
+# gazelle:exclude ws_g_grouping_output_conformance_test.go
 # gazelle:exclude count_per_type_conformance_test.go
 # gazelle:exclude extension_options_conformance_test.go
 # gazelle:exclude fromless_select_java_probe_test.go
@@ -132,6 +133,7 @@ go_test(
         "ws_f_record_layer_go_test.go",
         "ws_f_table_qualifier_conformance_test.go",
         "ws_g_aggregate_state_conformance_test.go",
+        "ws_g_grouping_output_conformance_test.go",
         "ws_j_enum_conformance_test.go",
         "ws_j_existence_policies_conformance_test.go",
         "ws_j_index_fidelity_conformance_test.go",

@@ -125,6 +125,7 @@ go_test(
         "arithmetic_index_matched_fdb_test.go",
         "arithmetic_index_operand_fdb_test.go",
         "array_agg_fdb_test.go",
+        "array_agg_resume_fdb_test.go",
         "array_cardinality_fdb_test.go",
         "array_cardinality_index_fdb_test.go",
         "array_cardinality_unique_fdb_test.go",

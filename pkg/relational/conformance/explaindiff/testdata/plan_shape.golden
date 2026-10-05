@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=387 queries=2881 dml=176 non_query=111 plan_errors=319 unexpected_errors=4
+# files=388 queries=2888 dml=176 non_query=111 plan_errors=319 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -1008,6 +1008,54 @@ shape:   RecordQueryLimitPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryMapPlan
 shape:         RecordQueryStreamingAggregationPlan
+shape:           RecordQueryScanPlan
+=== aggregate_over_record.yaml#0
+sql:   SELECT COUNT((T1.*)) FROM T1
+plan:  Map(StreamingAgg(keys=[], Scan(T1)), {_0: COALESCE(_current.COUNT((T1.*))#0, 0)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryScanPlan
+=== aggregate_over_record.yaml#1
+sql:   SELECT COUNT((T1.id, T1.col1, T1.col2)) FROM T1
+plan:  Map(StreamingAgg(keys=[], Scan(T1)), {_0: COALESCE(_current.COUNT((T1.ID,T1.COL1,T1.COL2))#0, 0)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryScanPlan
+=== aggregate_over_record.yaml#2
+sql:   SELECT COUNT((T1.col2, T1.col1, T1.id)) FROM T1
+plan:  Map(StreamingAgg(keys=[], Scan(T1)), {_0: COALESCE(_current.COUNT((T1.COL2,T1.COL1,T1.ID))#0, 0)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryScanPlan
+=== aggregate_over_record.yaml#3
+sql:   SELECT COUNT((T1.id, T1.col2)) FROM T1
+plan:  Map(StreamingAgg(keys=[], Scan(T1)), {_0: COALESCE(_current.COUNT((T1.ID,T1.COL2))#0, 0)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryScanPlan
+=== aggregate_over_record.yaml#4
+sql:   SELECT col1, COUNT((T1.*)) FROM T1 GROUP BY col1
+plan:  Map(StreamingAgg(keys=[_current.COL1#1], InMemorySort([_current.COL1#1 ASC], Scan(T1))), {COL1: _current.COL1#0, _1: _current.COUNT((T1.*))#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryScanPlan
+=== aggregate_over_record.yaml#5
+sql:   SELECT col1 FROM T1 GROUP BY col1 HAVING COUNT((T1.*)) > 5
+plan:  Map(PredicatesFilter(StreamingAgg(keys=[_current.COL1#1], InMemorySort([_current.COL1#1 ASC], Scan(T1))), [1 preds]), {COL1: _current.COL1#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryStreamingAggregationPlan
+shape:       RecordQueryInMemorySortPlan
+shape:         RecordQueryScanPlan
+=== aggregate_over_record.yaml#6
+sql:   SELECT col1 FROM T1 GROUP BY col1 ORDER BY COUNT((T1.*))
+plan:  Map(InMemorySort([_current._1#1 ASC], Map(StreamingAgg(keys=[_current.COL1#1], InMemorySort([_current.COL1#1 ASC], Scan(T1))), {COL1: _current.COL1#0, _1: _current.COUNT((T1.*))#1})), {COL1: _current.COL1#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryMapPlan
+shape:       RecordQueryStreamingAggregationPlan
+shape:         RecordQueryInMemorySortPlan
 shape:           RecordQueryScanPlan
 === aggregate_sum_large.yaml#0
 sql:   SELECT SUM(val) FROM t

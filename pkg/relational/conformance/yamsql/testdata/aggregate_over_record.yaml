@@ -1,0 +1,46 @@
+# aggregate_over_record.yaml
+#
+# Aggregates over a record constructor (Java groupby-tests.yamsql
+# "aggregate-over-record", upstream #4481/#4501). Simplification collapses a
+# star-derived or fully enumerated in-order constructor to the record itself,
+# so the projection and HAVING must be simplified before they are matched
+# against the grouping output, or the aggregate never binds.
+name: aggregate_over_record
+schema_template: |
+  CREATE TABLE t1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))
+  CREATE INDEX i1 AS SELECT col1 FROM t1
+setup:
+  - INSERT INTO t1 VALUES (1, 10, 1), (2, 10, 2), (3, 10, 3), (4, 10, 4), (5, 10, 5), (6, 20, 6), (7, 20, 7), (8, 20, 8), (9, 20, 9), (10, 20, 10), (11, 20, 11), (12, 20, 12), (13, 20, 13)
+tests:
+  # A star-derived record constructor.
+  - query: SELECT COUNT((T1.*)) FROM T1
+    rows:
+      - [13]
+  # Every column enumerated in declaration order collapses like the star form.
+  - query: SELECT COUNT((T1.id, T1.col1, T1.col2)) FROM T1
+    rows:
+      - [13]
+  # Out of order: not collapsed.
+  - query: SELECT COUNT((T1.col2, T1.col1, T1.id)) FROM T1
+    rows:
+      - [13]
+  # A strict subset: not collapsed.
+  - query: SELECT COUNT((T1.id, T1.col2)) FROM T1
+    rows:
+      - [13]
+  # Grouped: the pull-up rewrites the grouping column alongside the aggregate.
+  - query: SELECT col1, COUNT((T1.*)) FROM T1 GROUP BY col1
+    unordered: true
+    rows:
+      - [10, 5]
+      - [20, 8]
+  # HAVING is normalized as well.
+  - query: SELECT col1 FROM T1 GROUP BY col1 HAVING COUNT((T1.*)) > 5
+    rows:
+      - [20]
+  # Java cannot plan an ORDER BY no index supplies (0AF00); Go sorts in
+  # memory (the sanctioned read-side extension).
+  - query: SELECT col1 FROM T1 GROUP BY col1 ORDER BY COUNT((T1.*))
+    rows:
+      - [10]
+      - [20]
