@@ -4704,11 +4704,12 @@ func executeExplode(
 	}
 	list, ok := result.([]any)
 	if !ok {
-		// A non-list scalar yields a single row. With ordinality it gets
-		// ordinal 1 (the SQL standard's 1-based position of the sole element).
+		// A non-list scalar yields a single row. With ordinality it gets the
+		// first ordinal (1, the SQL standard's position of the sole element, or
+		// 0 for a zero-based explode).
 		if p.IsWithOrdinality() {
 			return applySkipLimit(
-				recordlayer.FromListWithContinuation([]QueryResult{explodeOrdinalityResult(ordType, result, 1)}, continuation),
+				recordlayer.FromListWithContinuation([]QueryResult{explodeOrdinalityResult(ordType, result, p.FirstOrdinal())}, continuation),
 				props.Skip, props.ReturnedRowLimit,
 			), nil
 		}
@@ -4721,12 +4722,13 @@ func executeExplode(
 	for i, elem := range list {
 		if p.IsWithOrdinality() {
 			// WITH ORDINALITY: each element becomes a 2-field anonymous record
-			// {_0: element, _1: i+1}. The ordinal is the element's 1-based
-			// position in THIS array (the cursor re-runs per outer row, so the
-			// counter naturally resets per outer binding — Java's
-			// IntStream.rangeClosed(1, list.size())). Mirrors
-			// RecordQueryExplodePlan.executePlan's DynamicMessage(field0,field1).
-			items[i] = explodeOrdinalityResult(ordType, elem, i+1)
+			// {_0: element, _1: first+i}. The ordinal is the element's position in
+			// THIS array, from 1 (or 0 when zero-based), assigned over the whole
+			// list before the continuation and skip/limit apply, so a resume never
+			// renumbers (the cursor re-runs per outer row, so the counter resets
+			// per outer binding). Mirrors RecordQueryExplodePlan.executePlan's
+			// `firstOrdinal + i`.
+			items[i] = explodeOrdinalityResult(ordType, elem, p.FirstOrdinal()+i)
 			continue
 		}
 		row, rowErr := explodePlanElementRow(p, elementHandle, elem, i)

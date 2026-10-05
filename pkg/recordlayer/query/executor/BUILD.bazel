@@ -89,6 +89,7 @@ go_test(
         "executor_test.go",
         "existential_datum_binding_test.go",
         "explode_element_row_test.go",
+        "explode_zero_based_test.go",
         "filter_drops_unknown_rows_test.go",
         "filtered_index_execution_guard_test.go",
         "first_or_default_continuation_test.go",
@@ -321,6 +322,7 @@ go_test(
         "aggregate_state_codec.go",
         "aggregate_state_codec_test.go",
         "nan_block_binding_test.go",
+        "explode_zero_based_test.go",
     ],
     tags = ["resources:memory:400"],
     deps = [

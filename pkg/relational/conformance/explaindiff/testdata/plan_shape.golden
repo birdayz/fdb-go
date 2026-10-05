@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=394 queries=2991 dml=177 non_query=127 plan_errors=324 unexpected_errors=4
+# files=395 queries=2994 dml=177 non_query=127 plan_errors=324 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -18968,6 +18968,26 @@ sql:   SELECT a.id FROM t AS a ORDER BY a.id
 plan:  Map(Scan(T), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
+=== unnest_at_distinct.yaml#0
+sql:   SELECT x, i FROM t, t.arr AS x AT i
+plan:  FlatMap(outer=Scan(T), inner=Explode(field WITH ORDINALITY))
+shape: RecordQueryFlatMapPlan
+shape:   RecordQueryScanPlan
+shape:   RecordQueryExplodePlan
+=== unnest_at_distinct.yaml#1
+sql:   SELECT DISTINCT x, i FROM t, t.arr AS x AT i
+plan:  Distinct(FlatMap(outer=Scan(T), inner=Explode(field WITH ORDINALITY)))
+shape: RecordQueryDistinctPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryExplodePlan
+=== unnest_at_distinct.yaml#2
+sql:   SELECT DISTINCT x FROM t, t.arr AS x AT i
+plan:  Distinct(FlatMap(outer=Scan(T), inner=Explode(field WITH ORDINALITY)))
+shape: RecordQueryDistinctPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryExplodePlan
 === unquoted_dml_against_a_quoted_table.yaml#0
 sql:   SELECT id, name FROM "Customer" ORDER BY id
 plan:  Map(Scan(Customer), {ID: _current.ID#0, NAME: _current.NAME#1})

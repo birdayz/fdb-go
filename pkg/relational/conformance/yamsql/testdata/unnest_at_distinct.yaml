@@ -1,0 +1,29 @@
+# unnest_at_distinct.yaml — DISTINCT over an AT unnest with repeated elements
+#
+# An ordinality explode's rows are distinct (Java DistinctRecordsProperty.
+# visitExplodePlan), because each carries its own 1-based ordinal. A DISTINCT
+# that keeps the ordinal therefore keeps every element, repeats included; one
+# that projects the ordinal away collapses the repeats.
+name: unnest_at_distinct
+schema_template: |
+  CREATE TABLE t (id BIGINT, arr BIGINT ARRAY, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, [5, 5, 7])
+tests:
+  - query: SELECT x, i FROM t, t.arr AS x AT i
+    unordered: true
+    rows:
+      - [5, 1]
+      - [5, 2]
+      - [7, 3]
+  - query: SELECT DISTINCT x, i FROM t, t.arr AS x AT i
+    unordered: true
+    rows:
+      - [5, 1]
+      - [5, 2]
+      - [7, 3]
+  - query: SELECT DISTINCT x FROM t, t.arr AS x AT i
+    unordered: true
+    rows:
+      - [5]
+      - [7]

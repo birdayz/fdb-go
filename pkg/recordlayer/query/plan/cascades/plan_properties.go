@@ -166,6 +166,10 @@ func computeDistinctRecords(w physicalPlanExpression, plan plans.RecordQueryPlan
 		return distinctRecordsFromChildRef(w)
 	case *plans.RecordQueryFirstOrDefaultPlan:
 		return true
+	case *plans.RecordQueryExplodePlan:
+		// DistinctRecordsProperty.visitExplodePlan: every row of an ordinality
+		// explode carries its own ordinal, one-based (SQL `AT`) or zero-based.
+		return plan.(*plans.RecordQueryExplodePlan).IsWithOrdinality()
 	case *plans.RecordQueryDefaultOnEmptyPlan,
 		*plans.RecordQueryInJoinPlan:
 		return distinctRecordsFromChildRef(w)

@@ -277,6 +277,7 @@ go_test(
         "dup_named_leg_window_declines_test.go",
         "edge_case_test.go",
         "eval_must_test.go",
+        "explode_distinct_records_test.go",
         "expression_matcher_test.go",
         "expression_partition_column_identity_test.go",
         "expression_partition_test.go",
@@ -1182,6 +1183,7 @@ go_test(
         "aggregate_sum_non_null_companion_test.go",
         "aggregate_index_entry_reader.go",
         "aggregate_index_entry_reader_test.go",
+        "explode_distinct_records_test.go",
     ],
     deps = [
         "//gen",

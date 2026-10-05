@@ -32,6 +32,10 @@ type ExplodeExpression struct {
 	// the bare element. Mirrors Java's `ExplodeExpression.withOrdinality`
 	// (the `WITH ORDINALITY` / `AT atAlias` companion, Java #4112).
 	withOrdinality bool
+	// zeroBasedOrdinality starts the ordinals at 0 instead of 1. Valid only
+	// with ordinality; no SQL form builds it (`AT` is 1-based). Mirrors Java's
+	// `ExplodeExpression.zeroBasedOrdinality`.
+	zeroBasedOrdinality bool
 	// ordinalityNames name the two ordinality slots (`_0`/`_1` unless a SQL
 	// unnest's AS/AT aliases name them; see NewExplodeExpressionWithOrdinalityNames).
 	ordinalityNames [2]string
@@ -45,17 +49,25 @@ type ExplodeExpression struct {
 // Verify.verify; Go defers the check to caller — invalid
 // construction surfaces as a degenerate result type).
 func NewExplodeExpression(collection values.Value) (*ExplodeExpression, error) {
-	return newExplodeExpression(collection, false, [2]string{})
+	return newExplodeExpression(collection, false, false, [2]string{})
+}
+
+// NewExplodeExpressionWithOrdinalityBase is Java's three-argument
+// `new ExplodeExpression(collectionValue, withOrdinality, zeroBasedOrdinality)`:
+// a zero-based Explode numbers its elements from 0. Zero-based ordinals without
+// ordinality are refused ("cannot base ordinals that are not produced").
+func NewExplodeExpressionWithOrdinalityBase(collection values.Value, withOrdinality, zeroBasedOrdinality bool) (*ExplodeExpression, error) {
+	if !withOrdinality {
+		return newExplodeExpression(collection, false, zeroBasedOrdinality, [2]string{})
+	}
+	return newExplodeExpression(collection, true, zeroBasedOrdinality, [2]string{values.OrdinalFieldName(0), values.OrdinalFieldName(1)})
 }
 
 // NewExplodeExpressionWithOrdinality builds an Explode that also emits a
 // 1-based ordinal alongside each element (the `WITH ORDINALITY` variant).
 // Mirrors Java's `new ExplodeExpression(collectionValue, withOrdinality)`.
 func NewExplodeExpressionWithOrdinality(collection values.Value, withOrdinality bool) (*ExplodeExpression, error) {
-	if !withOrdinality {
-		return newExplodeExpression(collection, false, [2]string{})
-	}
-	return newExplodeExpression(collection, true, [2]string{values.OrdinalFieldName(0), values.OrdinalFieldName(1)})
+	return NewExplodeExpressionWithOrdinalityBase(collection, withOrdinality, false)
 }
 
 // NewExplodeExpressionWithOrdinalityNames builds a WITH ORDINALITY Explode
@@ -66,12 +78,15 @@ func NewExplodeExpressionWithOrdinalityNames(collection values.Value, elementNam
 	if elementName == "" || ordinalName == "" || elementName == ordinalName {
 		return nil, fmt.Errorf("ExplodeExpression ordinality names must be two distinct names, got %q and %q", elementName, ordinalName)
 	}
-	return newExplodeExpression(collection, true, [2]string{elementName, ordinalName})
+	return newExplodeExpression(collection, true, false, [2]string{elementName, ordinalName})
 }
 
-func newExplodeExpression(collection values.Value, withOrdinality bool, names [2]string) (*ExplodeExpression, error) {
+func newExplodeExpression(collection values.Value, withOrdinality, zeroBasedOrdinality bool, names [2]string) (*ExplodeExpression, error) {
 	if collection == nil {
 		return nil, fmt.Errorf("ExplodeExpression collection: value is nil")
+	}
+	if zeroBasedOrdinality && !withOrdinality {
+		return nil, fmt.Errorf("ExplodeExpression: cannot base ordinals that are not produced")
 	}
 	arrayType, ok := collection.Type().(*values.ArrayType)
 	if !ok || arrayType == nil || arrayType.ElementType == nil {
@@ -90,11 +105,12 @@ func newExplodeExpression(collection values.Value, withOrdinality bool, names [2
 		return nil, err
 	}
 	return &ExplodeExpression{
-		collectionValue: collection,
-		withOrdinality:  withOrdinality,
-		ordinalityNames: names,
-		elementType:     elementType,
-		resultType:      resultType,
+		collectionValue:     collection,
+		withOrdinality:      withOrdinality,
+		zeroBasedOrdinality: zeroBasedOrdinality,
+		ordinalityNames:     names,
+		elementType:         elementType,
+		resultType:          resultType,
 	}, nil
 }
 
@@ -107,7 +123,7 @@ func (e *ExplodeExpression) GetOrdinalityNames() (string, string) {
 // WithCollection rebuilds this Explode over another collection, keeping its
 // ordinality and slot names.
 func (e *ExplodeExpression) WithCollection(collection values.Value) (*ExplodeExpression, error) {
-	return newExplodeExpression(collection, e.withOrdinality, e.ordinalityNames)
+	return newExplodeExpression(collection, e.withOrdinality, e.zeroBasedOrdinality, e.ordinalityNames)
 }
 
 // GetCollectionValue returns the underlying collection Value (the
@@ -119,6 +135,9 @@ func (e *ExplodeExpression) GetCollectionValue() values.Value {
 // GetWithOrdinality reports whether this Explode produces 1-based
 // ordinals alongside the elements.
 func (e *ExplodeExpression) GetWithOrdinality() bool { return e.withOrdinality }
+
+// GetZeroBasedOrdinality reports whether the ordinals start at 0.
+func (e *ExplodeExpression) GetZeroBasedOrdinality() bool { return e.zeroBasedOrdinality }
 
 // GetElementType returns the element type of the collection value, or
 // UnknownType when the collection is not array-typed.
@@ -190,7 +209,8 @@ func (e *ExplodeExpression) EqualsWithoutChildren(other RelationalExpression, al
 		e.collectionValue,
 		o.collectionValue,
 		aliases.ToValuesAliasMap(),
-	) && e.withOrdinality == o.withOrdinality && e.ordinalityNames == o.ordinalityNames
+	) && e.withOrdinality == o.withOrdinality && e.zeroBasedOrdinality == o.zeroBasedOrdinality &&
+		e.ordinalityNames == o.ordinalityNames
 }
 
 // HashCodeWithoutChildren mixes the class discriminator + the collection
@@ -208,6 +228,11 @@ func (e *ExplodeExpression) HashCodeWithoutChildren() uint64 {
 		h = h*0x100000001b3 ^ values.SemanticHashCode(e.collectionValue)
 	}
 	if e.withOrdinality {
+		h = h*31 + 1
+	}
+	// Only a zero-based Explode mixes the flag, so every existing hash is
+	// unchanged (Java ExplodeExpression.hashCodeWithoutChildren).
+	if e.zeroBasedOrdinality {
 		h = h*31 + 1
 	}
 	return h

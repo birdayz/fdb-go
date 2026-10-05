@@ -162,6 +162,16 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   open in W9 is item 4, the range builder's `isCompileTime` port, which is
   latent because it has no consumer. The table-function form of the keyset
   query needs WS-E's simplification regime.
+  Zero-based EXPLODE ordinality and distinctness (W12, F-2) are done. Both
+  Explode classes take Java's zero-based flag through checked constructors and
+  every rebuild; it is in equality, and in the hash only when set. The executor
+  numbers the whole list from 0 or 1 before resume and skip/limit, and an
+  ordinality explode reports distinct records (one- or zero-based). Pins:
+  `TestExecuteExplode_ZeroBasedOrdinality`, `TestExplodePlan_ZeroBasedOrdinality`,
+  `TestExplode_ZeroBasedOrdinality`, `TestExplodePlan_DistinctRecordsIffWithOrdinality`
+  and `unnest_at_distinct.yaml`. No corpus plan moved, since Go's FlatMap claims
+  no distinctness, so a DISTINCT above an `AT` unnest stays. Subscript
+  typing/errors were already ported, and the oracle pins them (`w13_subscript_*`).
 - [ ] Reconcile F-6/F-7b with RFC-191's existing `Fetch(InJoin)` ruling; see
   `DIVERGENCES.md` “Plan choice: an ordered IN over a non-covering index”.
 - [ ] RANK-index match-candidate gap and quoted dotted identifier GROUP BY/order
