@@ -213,14 +213,18 @@ func TestResolver_ResolveConstant(t *testing.T) {
 	}{
 		// In-range integer literals narrow to INT, out-of-range stay
 		// LONG (Java ParseHelpers.parseDecimal / Math.toIntExact).
-		{"int64", int64(42), values.NullableInt},
-		{"int64_wide", int64(3_000_000_000), values.NullableLong},
-		{"int64_negwide", int64(-3_000_000_000), values.NullableLong},
-		{"int", 42, values.NullableInt},
-		{"int32", int32(42), values.NullableInt},
-		{"string", "hello", values.TypeString},
-		{"true", true, values.TypeBool},
-		{"false", false, values.TypeBool},
+		// A literal is NOT NULL (LiteralValue.ofScalar: Type.fromObject).
+		{"int64", int64(42), values.NotNullInt},
+		{"int64_wide", int64(3_000_000_000), values.NotNullLong},
+		{"int64_negwide", int64(-3_000_000_000), values.NotNullLong},
+		{"int", 42, values.NotNullInt},
+		{"int32", int32(42), values.NotNullInt},
+		{"string", "hello", values.NotNullString},
+		{"true", true, values.NotNullBoolean},
+		{"false", false, values.NotNullBoolean},
+		{"float32", float32(1.5), values.NotNullFloat},
+		{"float64", 1.5, values.NotNullDouble},
+		{"bytes", []byte{1}, values.NotNullBytes},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -229,13 +233,8 @@ func TestResolver_ResolveConstant(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%v: %v", tc.lit, err)
 			}
-			// Compare by code only — BooleanValue's Type() is
-			// NotNullBoolean (literals are NOT NULL); the table's
-			// `want` carries the nullable singleton (TypeBool ≡
-			// NullableBoolean). Same code, different nullability —
-			// the .Code() check is the right migration shape.
-			if v.Type().Code() != tc.want.Code() {
-				t.Fatalf("Type code: got %v, want %v", v.Type().Code(), tc.want.Code())
+			if !v.Type().Equals(tc.want) {
+				t.Fatalf("Type: got %v, want %v", v.Type(), tc.want)
 			}
 		})
 	}

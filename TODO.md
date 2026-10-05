@@ -8447,6 +8447,53 @@ same machine). The cause is 5459c90a2, which introduced the decline.
 
 ---
 
+### Go SQL driver stores the relational catalog and user schemas on a Go-only keyspace (found 2026-09-23, measured)
+
+`pkg/relational/sqldriver/driver.go` opens the catalog at
+`keyspace.RelationalKeyspace.CatalogSubspace()`, which is the three strings `(__SYS,
+__SYS, CATALOG)`. User schemas sit at `SchemaSubspace(dbPath, schemaName)`, the raw
+strings `(dbPath, schemaName)`. Java's `RelationalKeyspaceProvider` uses a typed
+system path for the catalog, `(NULL, NULL, int64(0))`
+(`getSystemDirectory`, :183-188), and puts user data under DirectoryLayerDirectory
+levels (domain -> dbName -> schema, directory-layer-interned, :203-210). A Go SQL
+application and a Java relational application on the same cluster therefore share
+no catalog, database, schema or row. MEASURED by the spec "WS-J Go-stored template
+planned by the target": a template created through the Go `fdbsql` driver is
+42F55 "SchemaTemplate '...' is not in catalog" to the target. The comment on
+`catalog.DefaultCatalogSubspace` said the driver's migration "is tracked in
+TODO.md". Before this entry it was not: grep over TODO.md for catalog/keyspace/Java
+wire terms, positive control 45 `catalog` lines, found none. That comment now points
+here. The core record layer (explicit subspaces) is not affected; the Go catalog
+LIBRARY at `DefaultCatalogSubspace` does read and write the Java layout. Work: port
+the relational keyspace (typed system path, DirectoryLayerDirectory domains,
+databases and schemas, the interning layer) into `keyspace.RelationalKeyspace`,
+switch the driver to it, and decide the migration of data Go drivers already wrote
+under the string layout. This is a wire-compat hard-line item that predates the
+RFC-257 upgrade delta; scope and priority have been put to the owner.
+
+The migration must COPY each template's stored MetaData bytes verbatim, never rebuild
+a template from its DDL: a rebuild on a post-RFC-257 node gives Java's record-type
+numbering and union field numbers (ws-j-design.md section 4, F3) and Java's literal
+widths (section 3.2, F2), so a rebuilt template no longer matches the rows its schemas
+already hold, and nothing on the read path notices (a rebuild of the same DDL keeps
+the metadata version, so the store's version check does nothing). Driver-stored templates written before
+RFC-257 carry `long_value` literals; the target cannot plan a bitmap query over them
+and serves arithmetic equalities by full index scan (measured, spec "WS-J Go-stored
+template planned by the target", long_value variant), so a migrated tenant is rebound
+to a NEW template version CARRIED from its migrated bytes (ws-j-design.md section 4:
+the carry rule keeps the stored record-type keys, union numbers and index versions, and
+only an index whose definition changed gets a new last-modified version), the literal
+carrier's move from `long_value` to `int_value` being admitted by the rebind
+validator's one-way literal-carrier arm (section 3.2). That path depends on section
+4's carry rule; without it a rebuild shifts every index's versions and the rebind is
+refused. Nothing is rewritten in place.
+
+Re-booked 2026-10-05: the entry was lost when the branch history was rewritten,
+while `catalog.DefaultCatalogSubspace` and the spec "WS-J Go-stored template planned
+by the target" still cited it. Until the driver moves, cross-engine catalog specs
+store Go templates through the catalog library (`WSHMacroCatalogConformance`).
+
+
 ## 11. Reference — stress baselines
 
 Recorded stress results, kept so a ratio can be checked against the tree it was taken on. Read the
@@ -8827,7 +8874,7 @@ against Java 4.14.2.0 before fixing, then tick with the commit.
 - [x] WS-F readers/plans (done: raw KEY/VALUE reader Value c1ad5a87d, ordered-bytes evaluation ed5463624, extraction rules and reader trie 05b5c0100, covering scans built from the candidate's logical record and read through its reader 95ef3c286, aggregate cardinality evidence c68ee9a61, aggregate distinct records 673190c87, aggregate entry reader 1502a521b, covering-Value plan d819eb25e; the reader/plan wire mapping belongs to CQ-78's plan codec).
 - [ ] WS-F misc (RecordCore XXXXX mapping 61b586444, verbatim primary/vector candidate names 1e45290a2/b1b043898 done): reconcile the F-6/F-7b acceptance rows with RFC-191's ruled `Fetch(InJoin)` plan choice (DIVERGENCES.md "Plan choice: an ordered IN over a non-covering index", "Open against the RFC-257 acceptance"); IN-union product limit and size, null-safe singleton scan candidates, zero-based EXPLODE ordinality and its distinctness, subscript typing/errors, display-only EXPLAIN decoding, ordered Value folding, vector-preference applicability pins.
 - [x] WS-G (ungrouped COUNT adjustment 03bf9462e; Java typed-accumulator and group-key continuation codec with legacy reads, `executor/aggregate_state_codec.go`, byte/resume oracle `WSGAggregateStateConformance`; grouping-output simplification and ARRAY_AGG post-cap evaluation already matched the target, pinned by `WSGGroupingOutputConformance` and `aggregate_over_record.yaml`; repeated-resume pin `TestFDB_ArrayAggRepeatedResume`; reserved and new plan tags pinned by `TestPlanSchemaTags`, `TupleSource` numbered as its proto. Go writes no plan, Value or planner-configuration message beyond macro bodies: plan transport, with the absent-LIMIT decision and the tag map, is CQ-78. Java persists no `PlannerConfiguration`.)
-- [ ] WS-H (window OPTIONS parse/repeat/int-range errors done, 308eada7b; named macro calls b442b9422): native call-site arguments (named/options/window, option normalization and errors, rebase), retire the row-number high-order helper, stored-query getter/startup warming/metrics/NoOp getter, function/view metadata getters, macro pins.
+- [ ] WS-H (window OPTIONS parse/repeat/int-range errors done, 308eada7b; named macro calls b442b9422; macro pins: stored definitions byte-identical to the target's and callable by it, `WSHMacroCatalogConformance`, literal types serialized NOT NULL): native call-site arguments (named/options/window, option normalization and errors, rebase), retire the row-number high-order helper, stored-query getter/startup warming/metrics/NoOp getter, function/view metadata getters.
 - [ ] WS-I: lock-registry cleanup, serializer retry diagnostics, typed client knobs (needs C++ research), typed session/index-update sets and the write-only key collision boundary, timer instrumentation for client ranges/HNSW/GuardiANN/vector tasks/queue, online-indexer config limits, ICU byte baseline.
 - [ ] WS-K: direct-API Struct insert (UUID scalar/nested/array, nested unique index), JSON descriptor FieldOptions import, recursive result metadata in the corpus runner, setup version gating, typed INDEX_FETCH_METHOD, relational queued-state plumbing, SQL vector-option and preference-cache pins.
 - [ ] Owner decision: Lucene queue/heartbeat/quota/spell-check/state contracts (WS-I) presuppose a Lucene backend Go does not have.

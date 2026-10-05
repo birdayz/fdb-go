@@ -250,7 +250,8 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 		if err != nil {
 			return nil, err
 		}
-		t, err := c.TypeToProto(vv.Typ)
+		// The literal's type, NOT NULL unless it is NULL (Type.fromObject).
+		t, err := c.TypeToProto(vv.Type())
 		if err != nil {
 			return nil, err
 		}

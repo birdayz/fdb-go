@@ -154,3 +154,26 @@ func TestVectorLiteralAndNullPromotionSerialization(t *testing.T) {
 		t.Fatalf("operator=%s", op)
 	}
 }
+
+// A literal's type is NOT NULL, as Java's LiteralValue.ofScalar types it,
+// whatever nullability the carrier's declared type has.
+func TestLiteralSerializationNullability(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		v        *ConstantValue
+		nullable bool
+	}{
+		{&ConstantValue{Value: int64(0), Typ: NullableLong}, false},
+		{&ConstantValue{Value: int64(2), Typ: NullableInt}, false},
+		{&ConstantValue{Value: "a", Typ: NullableString}, false},
+		{&ConstantValue{Value: int64(0), Typ: NotNullLong}, false},
+	} {
+		p, err := NewSerializationContext().ValueToProto(tc.v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := p.GetLiteralValue().GetResultType().GetPrimitiveType().GetIsNullable(); got != tc.nullable {
+			t.Errorf("literal %v of %v serializes is_nullable=%v, want %v", tc.v.Value, tc.v.Typ, got, tc.nullable)
+		}
+	}
+}
