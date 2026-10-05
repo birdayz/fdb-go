@@ -735,7 +735,7 @@ counts and a byte-identical EXPLAIN set (see TODO.md's stress table).
 
 ### Cost Model: RewritingCostModelLess
 
-Java's `RewritingCostModel.compare()` has six ordered criteria: (0) `outerJoinCount`, (1) `selectCount`, (2) `tableFunctionCount`, (3) normalized CNF conjuncts, (4) predicate-count-by-level, (5) `semanticHashCode` tie-break. Go ports all six; its outer join count counts LEFT OUTER selects, Go's `OuterJoinExpression` (`isLeftOuterJoinSelect`, designated_final.go). The canonical form `RewriteOuterJoinRule` yields therefore survives the REWRITING prune as in Java, so `SelectMergeRule` dissolves it into its block and `PredicatePushDownRule` pushes a preserved-side conjunct into the preserved leg (`WHERE t.id = 2` over `t LEFT JOIN u` probes `t` by primary key, as Java plans it).
+Java's `RewritingCostModel.compare()` has six ordered criteria: (0) `outerJoinCount`, (1) `selectCount`, (2) `tableFunctionCount`, (3) normalized CNF conjuncts, (4) predicate-count-by-level, (5) `semanticHashCode` tie-break. Go ports all six; its outer join count counts LEFT OUTER selects, Go's `OuterJoinExpression` (`isLeftOuterJoinSelect`, rewriting_cost_model.go). The canonical form `RewriteOuterJoinRule` yields therefore survives the REWRITING prune as in Java, so `SelectMergeRule` dissolves it into its block and `PredicatePushDownRule` pushes a preserved-side conjunct into the preserved leg (`WHERE t.id = 2` over `t LEFT JOIN u` probes `t` by primary key, as Java plans it).
 
 **Go-only: the materialized outer join.** Go plans a LEFT OUTER select as a materialized `RecordQueryNestedLoopJoinPlan` (RFC-152), which scans the null-supplying leg once where the correlated FlatMap re-scans it per preserved row; Java has only the FlatMap. `OuterJoinMaterializationRule` (PLANNING only) re-forms the LEFT OUTER select from the canonical form so both compete on cost, keeping the canonical select's own predicates (WHERE conjuncts) above it over a box quantifier. `RewriteOuterJoinRule` runs in REWRITING only, as in Java. A LEFT select survives REWRITING only where `RewriteOuterJoinRule` declines (a scalar subquery's strict edge); `PredicatePushDownRule` turns that one into an inner join under a predicate rejecting its null-extended row, which Java does through `EliminateNullOnEmptyRule` after dissolving the outer join. Pinned by `TestRewritingCostModel_PrefersCanonicalOuterJoin`, `TestRewritingBoundary_KeepsCanonicalOuterJoin` and the `TestOuterJoinMaterializationRule_*` tests.
 
@@ -1111,7 +1111,7 @@ written down with **"what invariant does Java carry that this drops?"** and each
 | Go-only reservoir | Java invariant it drops | Risk class | Coverage |
 |---|---|---|---|
 | **Simplified `RequestedSortOrder`** (NULLS axis was elided) | Full sort order incl. NULL placement (ASC→NULLS FIRST etc.) | wrong rows on ORDER BY | **COVERED** — NULLS axis restored (RFC-165) + `rfc165_nulls_ordering_test.go`; the NULLS-ORDER hunt bug is fixed + pinned. |
-| **Scalar cost fallback + Go-only tiebreakers** (15b `compareFlatMapVsNLJ`, 15c `EstimateCostWith`) — no `advancePlannerStage`, so Go's flat member list has ties Java's prune-to-1-winner avoids | Structural single-winner selection; total-order tie resolution | nondeterministic / wrong index pick | **PARTIAL** — cost ORDERING pinned by WS-4 `TestBoundSelectivity_CostMonotonicity` (#405 class); equality-tie determinism pinned by `TestPlanDeterminism_*` (#409). **TRACKED:** the InJoin inner correlated-equality tie (WS-4 #2, OPEN — RFC-167 Phase 1b). |
+| **Scalar cost fallback + Go-only tiebreakers** (15b `compareFlatMapVsNLJ`, 15c `EstimateCostWith`) — Go's PLANNING member list has ties Java's prune-to-1-winner avoids | Structural single-winner selection; total-order tie resolution | nondeterministic / wrong index pick | **PARTIAL** — cost ORDERING pinned by WS-4 `TestBoundSelectivity_CostMonotonicity` (#405 class); equality-tie determinism pinned by `TestPlanDeterminism_*` (#409). **TRACKED:** the InJoin inner correlated-equality tie (WS-4 #2, OPEN — RFC-167 Phase 1b). |
 | **Hand-rolled `AggregateDataAccessRule`** (aggregate-index matching, not Java's generic data-access) | Guard(match)==consumer(build/execute) — one classifier | wrong agg result / wrong index match (COUNT-COL class) | **COVERED for the known drift** — WS-3 `expressions.IsCountStar` is the single source of truth for the planner candidate + the executor group cursors (#413); group-key matcher deduped via `groupColEqualityIndex` (RFC-163). **RESOLVED (RFC-242):** the translator's own count-star normalization (`aggregateNamesStableForUnion`) was deleted with the union join-leg gate it served, so `IsCountStar` is the one classifier; the `COUNT(NULL)` fold fidelity question stays with it. |
 | **`WithPrimaryKeyIntersector` was forward-PK-only and discarded `requestedOrderings`** (vs Java's rich common-ordering gate) | Every intersection leg shares the directional comparison ordering consumed by the sorted merge | wrong rows if reverse were widened piecemeal; safe misses for unsupported key encodings | **RESOLVED (RFC-190.5b):** rich common-order derivation, translated requests, fixed-binding dependency normalization, free-PK compatibility, redundancy proof, directional parts, reverse plan identity/execution/ordering/rewrites, and fan-out-leg PK distinct are one atomic path. Natural flat all-ASC/all-DESC keys execute; mixed/counterflow, ordered-bytes, non-flat, ambiguous-layout, stale-ordinal, and mixed structural/name-only PK-provider shapes decline safely. Multi-type layout remains separately tracked below. |
 | **Merge UNIONs (`InUnion`, `MergeSortUnion`) decline a MIXED-direction comparison key** | Java encodes direction and NULL placement into the physical key with `ToOrderedBytesValue` (`ProvidedOrderingPart.comparisonKeyValue`), so it can merge on `(a DESC, b ASC)` | plan-space narrowing only — never wrong rows; the request falls back to an in-memory sort | **TRACKED, fail-closed.** Go's `ToOrderedBytesValue` has no evaluator, so the executable comparison key is the raw Value and a merge runs in exactly one direction. Both merge-union rules now gate on `properties.NaturalComparisonKeyValues(parts, isReverse)` — the same gate the intersection plans already used — and decline any candidate whose parts disagree with the resolved direction, instead of building a plan whose merge front compares one key the wrong way round. Newly REACHABLE rather than newly introduced: until descending merges were enumerated at all, every comparison key was ascending. **Measured** over the 2834-query corpus: the IN-union gate declines 6 of 424 candidate evaluations, each a two-part key mixing ASC and DESC; the merge-sort-union gate declines none of the 15 candidate evaluations that reach it. Both gates are reachable — the union merge keeps an ID the legs bind to different constants as a key the request gives a direction to, as Java's union merge or-s those bindings — and both are pinned at RULE level, by `TestInUnionRuleRefusesMixedDirectionMerge` and `TestDistinctUnionRuleRefusesMixedDirectionMerge`, each verified red with its gate removed — the corpus scenarios do NOT pin it, since the mixed-direction shapes plan an in-memory sort with or without the gate. Closing it means porting the `ToOrderedBytesValue` evaluator, which also closes the counterflow-NULLS decline in `EnumerateSatisfyingComparisonKeyValues`. |
@@ -1611,30 +1611,6 @@ typed from its Go value (Java's Type.fromObject), so a driver parameter takes
 the same gates as a literal of that type. A bound constant is planned in, so
 the plan-cache key carries the bindings; Java instead caches one plan per
 parameter types.
-
-## REWRITING prune: virtual (designation) vs Java's physical prune (RFC-186)
-
-Java's REWRITING prunes every child reference to ONE final expression before parents
-compare, and every cost property derives through that single final
-(`ExpressionCountProperty.forReference`: `Verify(size()==1)` + `getOnlyElement`). Java can
-afford the physical prune because its PLANNING re-derives discarded canonical forms via its
-rule set. Go CANNOT: the universal boundary prune was tried and reverted (the RFC-153
-buried-leg and cross-join-EXISTS shapes lost their only implementable form — see
-`unified_tasks.go` ExploreGroupTask's stage-boundary comment), and the OptimizeInputs child
-pruning is timing-dependent (finals promoted in a group's last exploration round get no
-pass), so groups legitimately cross the stage boundary with their full canonical final set.
-
-Go's equivalent is the DESIGNATED final (`designated_final.go`): every REWRITING cost
-property derives through one deterministically-chosen final per child reference — chosen
-with the same comparator OptimizeGroup uses, memoized keyed on a global finals generation
-(any final-set mutation invalidates), cycle-guarded. Costing sees Java's post-prune world;
-the memo keeps every alternative PLANNING needs. The coherence instrument
-(`SetVerifyRewritingCoherence`, permanently on in the embedded plan harness) asserts the
-stamped winner IS the designation wherever a REWRITING winner exists.
-
-END-STATE: when PLANNING re-derivation parity lands, the physical prune becomes affordable,
-the designation degenerates to the single final, and Java's `Verify(==1)` becomes
-enforceable — at which point this divergence closes.
 
 ## Java's float `=` is bit identity, and contradicts itself (upstream bug)
 

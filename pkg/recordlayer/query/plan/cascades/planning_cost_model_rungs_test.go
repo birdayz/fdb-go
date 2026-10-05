@@ -935,7 +935,7 @@ func TestRewritingCostModel_ResidualConjunctRung(t *testing.T) {
 		[]predicates.QueryPredicate{rungPredicate("A"), rungPredicate("B")},
 	)
 
-	scope := newDesignationScope()
+	scope := &rewritingComparator{clientTrees: true}
 	if got := scope.exprCount(oneConjunct, isSelectExpression, map[*expressions.Reference]bool{}); got != 1 {
 		t.Fatalf("one-conjunct Select count = %d, want 1", got)
 	}
@@ -973,7 +973,7 @@ func TestRewritingCostModel_PredicateDepthRung(t *testing.T) {
 		[]predicates.QueryPredicate{predicate},
 	)
 
-	scope := newDesignationScope()
+	scope := &rewritingComparator{clientTrees: true}
 	if pushedSelects, pulledSelects := scope.exprCount(pushed, isSelectExpression, map[*expressions.Reference]bool{}), scope.exprCount(pulled, isSelectExpression, map[*expressions.Reference]bool{}); pushedSelects != 2 || pulledSelects != 2 {
 		t.Fatalf("Select-count precondition = (%d, %d), want (2, 2)", pushedSelects, pulledSelects)
 	}

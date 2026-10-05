@@ -10,19 +10,20 @@ import (
 )
 
 // A union whose two legs implement to physical plans via DIFFERENT rewrite
-// paths ("asymmetric" legs) once regressed to a no-plan result: the leg
-// reached through a merged/unfinalized group crossed the REWRITING→PLANNING
-// boundary via the no-finals path, which changed the stage but did NOT reset
-// the per-stage exploration state. The leg kept its REWRITING "explorationDone"
-// stamp, never re-explored in PLANNING, never fired its implement rules, and
-// so had no physical member — leaving the union with fewer than two physical
-// children and no winner, even though Plan() reported success (RFC-182,
-// FuzzPlanner_PlanFullPipeline "root has no BestMember" seed).
+// paths ("asymmetric" legs) once regressed to a no-plan result (RFC-182,
+// FuzzPlanner_PlanFullPipeline "root has no BestMember" seed). Eliminating the
+// right leg's constant-true filter merges the right leg's group into the left
+// leg's inner group, which is older and never explored. The survivor used to
+// inherit the right leg's exploration progress, so no rule (Finalize included)
+// ever ran on its own member, and the union above it reached PLANNING with no
+// final.
 //
-// The fix (AdvanceStagePreservingMembers) resets exploration bookkeeping on
-// that boundary path so the surviving logical members implement in PLANNING.
-// These tests pin that every reachable union leg acquires a physical plan
-// and the root wins.
+// Reference.Absorb now gives a never-explored survivor the loser's constraints
+// but not its progress, so its first exploration runs every rule; and the
+// planner refuses a group that crosses into PLANNING with other than one final
+// (Java's advancePlannerStage Verify), which this shape used to reach. These
+// tests pin that every reachable union leg acquires a physical plan and the
+// root wins.
 
 func scanExpr(t testing.TB) expressions.RelationalExpression {
 	t.Helper()

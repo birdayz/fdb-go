@@ -142,6 +142,27 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 - [ ] Conditional decorrelate→simplify and merge→pushdown rule chains with
   progress-driven fallback; partition-based select merge; multi-leg pushdown;
   physical REWRITING prune; full comparator configuration; per-partition yields.
+  The physical REWRITING prune (F-5) is done.
+  - Measured on the whole plan corpus before the change: every group crossed into
+    PLANNING with exactly one final, and every child the REWRITING comparator
+    descended had exactly one. The designated final was degenerate.
+  - The crossing now requires exactly one final (`RewritingCrossingError`, Java's
+    advancePlannerStage Verify) and no longer carries members.
+  - The comparator reads each child's one final (`rewritingComparator`,
+    `RewritingPruneError`).
+  - `designated_final.go`, its coherence instrument, the finals generation and
+    the DIVERGENCES entry are deleted.
+  - Two gaps the invariant exposed are fixed. First, `ImplementDistinctFinalRule`
+    and `ImplementSortRule` minted plans as exploratory members of
+    canonical-stage groups; they now use Java's memoizePlan. Second, a memo
+    merge into a never-explored group inherited the loser's exploration
+    progress, so no rule ran on the survivor's members (the asymmetric-union
+    no-plan shape). `Reference.Absorb` now keeps constraints but not progress.
+  - No corpus plan moved. The full lane (sqldriver and conformance) has not run
+    against the invariant.
+  The conditional chains, finalization partitions and pruned-input rules were
+  already in place (`d5a5132a1`). Still open: the design's D1/D2/D5 progress
+  and staleness model, the `outerJoinCount` placement review, and F-7a/F-8.
 - [ ] Reconcile query-block acceptance with the current translator: top-level
   Sort(Select), ORDER BY resolution against projected Values, DISTINCT ordering,
   index-DDL root handling and ordered IN. Old blocker prose in `TODO_OLD.md`

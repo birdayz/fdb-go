@@ -842,13 +842,11 @@ func uniqueKeysCovered(uniqueKeyCols []string, layout values.Type, projectedOrds
 //     floated to a cost-tied but differently-ordered sibling would run the
 //     streaming dedup over unordered input and LEAK a duplicate. The frozen edge
 //     makes planFromQuantifier resolve that exact member, never a group winner.
-//   - PLAIN (hash) → carry the LIVE edge the wrapper's innerQuant presented
-//     (NewPhysicalQuantifier over InitialOf(member)). A hash distinct dedups over
-//     ANY inner, so freezing buys nothing and instead strands a pre-push
-//     snapshot once a push rule (push_distinct_below_filter / _through_fetch)
-//     re-explores the leg — the parent would then cost an unreachable edge.
-//     The live exploratory edge resolves the member's plan (== the concrete
-//     inner) exactly as the wrapper did, byte-identically.
+//   - PLAIN (hash) → memoize the member as a plan (MemoizeFinalExpression,
+//     Java's memoizePlan: a final reference at the planned stage). A hash
+//     distinct dedups over ANY inner, so the reference stays an ordinary
+//     explorable group (not pinned): a push rule (push_distinct_below_filter /
+//     _through_fetch) and the physical rewrites still explore the leg.
 //
 // A follow-up will REQUEST the dedup-key ordering (inserting an InMemorySort
 // when no index provides it) so the unordered `SELECT DISTINCT col` — the
@@ -869,9 +867,9 @@ func newPhysicalDistinctFor(call *ImplementationRuleCall, member expressions.Rel
 		innerQ := expressions.NewPhysicalQuantifier(call.MemoizeFinalExpression(concreteInner))
 		return plans.NewRecordQueryDistinctPlanFromQuantifier(innerQ, true)
 	}
-	// Plain hash distinct: carry the live exploratory edge (what the wrapper's
-	// innerQuant presented) so a later push-rule canonicalization stays reachable.
-	innerQ := expressions.NewPhysicalQuantifier(expressions.InitialOf(member))
+	// Plain hash distinct: the member memoized as a plan (Java's memoizePlan, a
+	// final reference at the planned stage), which push rules still explore.
+	innerQ := expressions.NewPhysicalQuantifier(call.MemoizeFinalExpression(member))
 	return plans.NewRecordQueryDistinctPlanFromQuantifier(innerQ, false)
 }
 

@@ -320,7 +320,11 @@ func TestPreorderAdmissionStopsAfterFirstActiveRule(t *testing.T) {
 	for _, mode := range []string{"both_absent", "fields_only", "ordering_only", "child_populates_parent"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
-			child, q := referencedFieldsScanQ()
+			// The child as REWRITING leaves it: one final at the canonical stage,
+			// which PLANNING crosses (Java's advancePlannerStage needs exactly one).
+			child := expressions.FinalOfAtStage(mustReferencedFieldsConstruct(expressions.NewFullUnorderedScanExpression(
+				[]string{"T"}, referencedFieldsRowType())), expressions.StageCanonical)
+			q := expressions.ForEachQuantifier(child)
 			parent := mustReferencedFieldsConstruct(expressions.NewLogicalUniqueExpression(q))
 			ref := expressions.InitialOf(parent)
 			p := NewPlanner(nil, EmptyPlanContext())

@@ -753,7 +753,7 @@ func (s *scanPlanExpression) HashCodeWithoutChildren() uint64 {
 // scanplanexpr framing while delegating its wrapped node to the schema-neutral
 // tie-break hash. A recursive-DFS leg can wrap a top-level physical Projection;
 // forwarding HashCodeWithoutChildren there would leak that projection's
-// schema-aware memo identity back into designation/extraction ranking.
+// schema-aware memo identity back into REWRITING/extraction ranking.
 func (s *scanPlanExpression) TieBreakHashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("scanplanexpr|"))

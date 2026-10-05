@@ -83,26 +83,19 @@ func NewPlanningCostModelLessWithContext(stats properties.StatisticsProvider, ct
 //  4. More predicates at deeper levels (push predicates down)
 //  5. Semantic hash tiebreak
 //
-// RFC-186: every tier derives through DESIGNATED child finals (the virtual
-// prune, designated_final.go) — a function of a deterministically-chosen
-// candidate tree, never of memo-population history. The pre-RFC-186 tiers
-// summed over ALL memo members (exploratory included), so two equivalent
-// candidates scored differently by how many rewrites their child groups
-// happened to accumulate — and tier 3's physical-only descent counted
-// nothing at all on the all-logical REWRITING memo. This package-level
-// function mints a fresh designation scope per call (identical semantics to
-// the planner-owned scope, merely uncached); the planner's REWRITING cost
-// model uses its own scope so OptimizeGroup winners and designations come
-// from the SAME comparator (coherence, RFC-186 instrument).
+// Every tier derives through each child group's one final, as Java's do
+// (rewriting_cost_model.go). This package-level form compares trees outside a
+// planning run, so it also reads a client-built InitialOf child (no final, one
+// member); the planner's comparator does not.
 func RewritingCostModelLess(a, b expressions.RelationalExpression) bool {
-	return newDesignationScope().compare(a, b, nil) < 0
+	return (&rewritingComparator{clientTrees: true}).compare(a, b) < 0
 }
 
 // comparePredicateCountByLevel ports Java's PredicateCountByLevelProperty.compare.
 // Java iterates the FIRST map's SortedMap entries reading getOrDefault(level, 0)
 // on the second, but Java's producer is DENSE — every level 0..highest has an
 // entry (0 for a non-predicate node) — so iterating a's entries covers all
-// levels. Go's producer (designationScope.predCountByLevel) is SPARSE, so the
+// levels. Go's producer (rewritingComparator.predCountByLevel) is SPARSE, so the
 // faithful and ANTISYMMETRIC form is a single ascending pass over the UNION of
 // levels (0..max): absent==0==getOrDefault makes the per-level counts equal
 // Java's, and the union stays antisymmetric on the sparse maps Go passes — a

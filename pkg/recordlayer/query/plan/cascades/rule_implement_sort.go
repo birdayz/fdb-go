@@ -679,7 +679,8 @@ func makeStrictlySorted(expr expressions.RelationalExpression) (expressions.Rela
 		inner := fw.GetInner()
 		if cov, ok := inner.(*plans.RecordQueryCoveringIndexPlan); ok {
 			newCov := cov.WithIndexPlan(cov.GetIndexPlan().WithStrictlySorted())
-			newCovRef := expressions.InitialOf(newCov)
+			// A plan is memoized as a final at the planned stage (Java's memoizePlan).
+			newCovRef := expressions.FinalOfAtStage(newCov, expressions.StagePlanned)
 			return plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
 				expressions.NewPhysicalQuantifier(newCovRef),
 				fw.GetTranslateValueFunction(),
@@ -693,7 +694,7 @@ func makeStrictlySorted(expr expressions.RelationalExpression) (expressions.Rela
 			// strictly-sorted path is only reached for a unique index (see
 			// strictlyOrderedIfUnique), so the plan's unique flag is already true.
 			newIdxPlan := idxPlan.WithStrictlySorted()
-			newIdxRef := expressions.InitialOf(newIdxPlan)
+			newIdxRef := expressions.FinalOfAtStage(newIdxPlan, expressions.StagePlanned)
 			newFetchQ := expressions.NewPhysicalQuantifier(newIdxRef)
 			// The fetch is its own cascades expression carrying the live newIdxRef
 			// edge (RFC-184 W2).

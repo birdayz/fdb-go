@@ -134,19 +134,6 @@ type Planner struct {
 	// and Java surfaces them the same way.
 	capErr error
 
-	// dscope is the planner-owned RFC-186 designation scope (virtual
-	// prune): one cache per planning run, shared by the REWRITING cost
-	// model and the coherence instrument. Lazily created, reset per run.
-	dscope *designationScope
-
-	// verifyRewritingCoherence turns on RFC-186's REWRITING coherence
-	// check at the OptimizeGroup winner-stamp site (stamped winner ==
-	// designated final — both from the same comparator);
-	// rewritingCoherenceViolations holds what it found. The embedded plan
-	// harness enables it permanently.
-	verifyRewritingCoherence     bool
-	rewritingCoherenceViolations []string
-
 	// verifyExtractionUnambiguous turns on RFC-224's post-drain check of
 	// the exact Reference path extraction selects. The report records reach,
 	// dead ends, and retained-property coherence. Off by default because it
@@ -475,8 +462,6 @@ func (p *Planner) plan(ctx context.Context, rootRef *expressions.Reference) (exp
 	p.exprRuleIdx = nil
 	p.implRuleIdx = nil
 	p.capErr = nil
-	p.dscope = newDesignationScope()
-	p.rewritingCoherenceViolations = nil
 	p.extractionVerification = ExtractionVerificationReport{}
 
 	// One task-stack drives both REWRITING and PLANNING phases.
@@ -636,6 +621,21 @@ var ErrPlannerQueueCapHit = plannerErr("planner: MaxTaskQueueSize cap hit — ta
 // members after the round cap — a rule-cycle divergence the memo dedup should
 // have collapsed (RFC-180 I2). A planner bug indicator, never load.
 var ErrPlannerRoundCapHit = plannerErr("planner: exploration round cap hit — a Reference kept producing new members after 100 rounds (rule-cycle divergence)")
+
+// RewritingCrossingError is Java's Verify(finalMembers.size() == 1) in
+// Reference.advancePlannerStage: a group reached the next planner stage with
+// other than exactly one final member, so REWRITING did not prune it to its
+// winner. A planner defect, never a property of the query.
+type RewritingCrossingError struct {
+	Finals int
+	// Members names the group's exploratory members, for diagnosis.
+	Members []string
+}
+
+func (e *RewritingCrossingError) Error() string {
+	return fmt.Sprintf("planner: a group crossed into the next planner stage with %d final members, want exactly 1 (exploratory members: %v)",
+		e.Finals, e.Members)
+}
 
 // ErrPlannerRuleMatchCapHit mirrors Java's "Maximum number of matches per rule
 // call has been exceeded" (CascadesPlanner.isMaxNumMatchesPerRuleCallExceeded).
@@ -938,25 +938,20 @@ func (p *Planner) ruleIndexesForPhase(phase PlannerPhase) (*ruleIndex[Expression
 	return ei, ii
 }
 
-// costModelForPhase returns the cost model comparator for the given phase.
-// REWRITING uses the planner-owned designation scope (RFC-186 virtual
-// prune) so OptimizeGroup winners and property designations come from the
-// SAME comparator — the coherence the instrument asserts.
-func (p *Planner) costModelForPhase(phase PlannerPhase) func(a, b expressions.RelationalExpression) bool {
-	switch phase {
-	case PhaseRewriting:
-		if p.dscope == nil {
-			p.dscope = newDesignationScope()
-		}
-		scope := p.dscope
+// costModelForPhase returns the cost model comparator for the given phase and
+// the invariant violation it found, if any. REWRITING compares over each child
+// group's one final (rewritingComparator); a child with other than one is a
+// RewritingPruneError.
+func (p *Planner) costModelForPhase(phase PlannerPhase) (func(a, b expressions.RelationalExpression) bool, func() error) {
+	if phase == PhaseRewriting {
+		comparator := &rewritingComparator{}
 		return func(a, b expressions.RelationalExpression) bool {
-			return scope.compare(a, b, nil) < 0
-		}
-	case PhasePlanning:
-		return p.costModel
-	default:
-		return p.costModel
+				return comparator.compare(a, b) < 0
+			}, func() error {
+				return comparator.err
+			}
 	}
+	return p.costModel, func() error { return nil }
 }
 
 // pushDataAccessTasks generates data access expressions (index scans)

@@ -920,13 +920,18 @@ func TestNewPhysicalDistinctFor_FreezesStreamingInner(t *testing.T) {
 		t.Fatal("non-streaming-eligible member must yield Streaming=false")
 	}
 	plainInnerRef := dpPlain.GetInnerQuantifier().GetRangesOver()
-	// LIVE: the plain inner is the exploratory edge (no final members), so a
-	// later push-rule canonicalization of the leg stays reachable.
-	if len(plainInnerRef.FinalMembers()) != 0 {
-		t.Fatalf("a plain distinct must carry the LIVE exploratory edge (no frozen final members), got %d", len(plainInnerRef.FinalMembers()))
+	// A PLAN, memoized as Java's memoizePlan does: the member as the one final
+	// of a planned-stage reference, an ordinary group (not pinned), so a later
+	// push-rule canonicalization of the leg still explores it. Never a plan in
+	// the exploratory lane of a canonical-stage group, which would cross into
+	// PLANNING with no final.
+	if finals := plainInnerRef.FinalMembers(); len(finals) != 1 || finals[0] != plainMember || len(plainInnerRef.Members()) != 0 {
+		t.Fatalf("a plain distinct must memoize its member as the one final (got %d finals, %d members)",
+			len(plainInnerRef.FinalMembers()), len(plainInnerRef.Members()))
 	}
-	if len(plainInnerRef.Members()) == 0 {
-		t.Fatal("the plain distinct's live edge must hold the member as an exploratory member")
+	if plainInnerRef.Stage() != expressions.StagePlanned || plainInnerRef.IsPinnedFinal() {
+		t.Fatalf("the plain inner must be an unpinned planned-stage group, got stage %v pinned=%t",
+			plainInnerRef.Stage(), plainInnerRef.IsPinnedFinal())
 	}
 	if dpPlain.GetInner() != plainMember {
 		t.Fatalf("the plain inner must resolve to the member's plan; got %T", dpPlain.GetInner())

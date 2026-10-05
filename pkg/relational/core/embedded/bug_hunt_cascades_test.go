@@ -273,7 +273,7 @@ func TestBugHunt_DistinctOverUnionAllKeepsDedup(t *testing.T) {
 	// uniqueness), or (c) NO union at all: the two UNION ALL branches are
 	// IDENTICAL, so under the enclosing DISTINCT the rewriting phase may
 	// collapse to a single branch whose pk-scan is provably distinct and
-	// elide the dedup entirely (the RFC-186 designated comparator picks this
+	// elide the dedup entirely (the REWRITING comparator picks this
 	// deterministically; the old member-summing tier-4 picked the two-legged
 	// form by accident of inflated counts). What must never happen is the
 	// historical bug: a MULTI-LEG union — which produces duplicates — with

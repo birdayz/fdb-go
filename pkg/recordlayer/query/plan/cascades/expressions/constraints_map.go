@@ -183,6 +183,13 @@ func (m *ConstraintsMap) InheritFromOther(other *ConstraintsMap) {
 	}
 }
 
+// ForgetExploration keeps the constraints and resets the watermarks to
+// never-explored, so the owner's next exploration is a first one.
+func (m *ConstraintsMap) ForgetExploration() {
+	m.watermarkGoalTick = -1
+	m.watermarkCommittedTick = -1
+}
+
 func (m *ConstraintsMap) bumpPropertyTick(key any) {
 	if constraint, ok := key.(interface{ AffectsExploration() bool }); ok && !constraint.AffectsExploration() {
 		return

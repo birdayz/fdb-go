@@ -376,9 +376,6 @@ func (r *Reference) ApplyPreparedMemberBatch(
 		canonical.winner = nil
 		canonical.correlatedToCache.Store(nil)
 	}
-	if len(final) > 0 {
-		finalsGeneration.Add(uint64(len(final)))
-	}
 	return nil
 }
 
@@ -459,8 +456,14 @@ func (r *Reference) Absorb(loser *Reference) {
 	r.aliasAwareDedups += loser.aliasAwareDedups
 	if loser.constraintsMap != nil {
 		if r.constraintsMap == nil {
+			// The survivor never explored, so no rule ever ran on ITS members
+			// under its identity, however far the loser got with its own (the
+			// loser's queued rule tasks then fail ContainsExactly on the
+			// survivor). Take the loser's constraints but not its progress:
+			// the survivor's first exploration runs every rule.
 			r.constraintsMap = NewConstraintsMap()
 			r.constraintsMap.InheritFromOther(loser.constraintsMap)
+			r.constraintsMap.ForgetExploration()
 		} else {
 			// Both sides carry epoch state: fold the loser's constraints
 			// in through the REAL per-key lattice combine (registered by
@@ -1070,22 +1073,8 @@ func (r *Reference) InsertFinal(e RelationalExpression) bool {
 	r.memberVersion++
 	bumpCorrelationEpoch()
 	r.correlatedToCache.Store(nil)
-	finalsGeneration.Add(1)
 	return true
 }
-
-// finalsGeneration is a process-global generation counter bumped on every
-// final-member insertion. The REWRITING designated-final cache (RFC-186:
-// the virtual prune) keys on it: a designation computed against ANY final
-// set is invalidated by ANY later growth — a conservative over-approximation
-// of the reachable-subtree generation vector (invalidates more often, never
-// less), so a stale designation is unrepresentable. Single-threaded planners
-// only bump it during their own inserts; the atomic keeps concurrent
-// planners in tests safe.
-var finalsGeneration atomic.Uint64
-
-// FinalsGeneration returns the process-global final-member generation.
-func FinalsGeneration() uint64 { return finalsGeneration.Load() }
 
 // ConstraintsMap returns the Reference's tick/watermark constraint map
 // (lazily allocated). Canonical-forwarding like every other accessor.
@@ -1109,7 +1098,6 @@ func (r *Reference) AdvancePlannerStage(newStage PlannerStage) {
 	r.finalMembers = r.finalMembers[:0]
 	r.memberVersion++
 	bumpCorrelationEpoch()
-	finalsGeneration.Add(1)
 	r.planProperties = nil
 	r.explState = explorationNever
 	r.explRounds = 0
@@ -1129,22 +1117,16 @@ func (r *Reference) IsPinnedFinal() bool {
 	return r != nil && r.pinnedFinal
 }
 
-// AdvanceStagePreservingMembers is the stage-boundary transition for a
-// group that has NO finals to promote as the next stage's seed — its
-// exploratory members carry over unchanged. It resets the per-stage
-// exploration bookkeeping, because exploration progress is PER STAGE: a
-// group whose logical members survived from REWRITING must re-explore in
-// PLANNING so its implement rules fire and it acquires a physical member.
-// Without that reset a merged/unfinalized group crossing this path would
-// keep its REWRITING "explorationDone" state, NeedsExploration would stay
-// false, and it would never implement — its parent (e.g. a union leg)
-// then has no physical child and fails to plan.
+// AdvanceStagePreservingMembers sets a reference's stage at CONSTRUCTION,
+// keeping both member lanes as they are and resetting the per-stage
+// exploration bookkeeping: a reference built directly at a stage (the memo's
+// referenceOfAt, test fixtures). It is never a planner crossing: the planner
+// crosses a group only through AdvancePlannerStage, which requires exactly
+// one final (Java's Reference.advancePlannerStage), so no unfinalized or
+// unpruned group carries its members into the next stage.
 //
-// Mirrors AdvancePlannerStage's reset EXCEPT the finals→members promotion
-// (there are no finals here) and the member wipe that would empty the
-// group. Members, partial matches, and forwarding are untouched. A group
-// created fresh during a phase (rule yield, already at explorationNever)
-// takes this path too; the reset is a no-op for it.
+// Mirrors AdvancePlannerStage's reset EXCEPT the finals→members promotion and
+// the member wipe. Members, partial matches, and forwarding are untouched.
 func (r *Reference) AdvanceStagePreservingMembers(newStage PlannerStage) {
 	r = r.Canonical()
 	r.plannerStage = newStage
@@ -1230,7 +1212,6 @@ func (r *Reference) PruneWith(expr RelationalExpression) {
 	r.winner = nil
 	r.memberVersion++
 	bumpCorrelationEpoch()
-	finalsGeneration.Add(1)
 }
 
 // PruneToSet keeps exactly the final members present in `keep` (by
@@ -1251,7 +1232,6 @@ func (r *Reference) PruneToSet(keep map[RelationalExpression]struct{}) {
 	r.winner = nil
 	r.memberVersion++
 	bumpCorrelationEpoch()
-	finalsGeneration.Add(1)
 }
 
 // ClearFinalMembers removes all final members.
@@ -1264,7 +1244,6 @@ func (r *Reference) ClearFinalMembers() {
 	r.winner = nil
 	r.memberVersion++
 	bumpCorrelationEpoch()
-	finalsGeneration.Add(1)
 }
 
 // GetPlanProperties returns the planner-phase property map stored on this Reference.
