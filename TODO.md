@@ -265,6 +265,18 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   collapse, which WS-E section 4 step (5) deletes, so it is reassigned there.
   Still open: item 10 (the two-source in-union, WS-E section 4) and the DESC
   tie row's cause (needs the W6 step 1 observer).
+  F-7c, measured and not landed. The SQL configuration already plans with
+  PREFER_INDEX and in-union size 24. What keeps Go from Java's predicate-free
+  index reads is the Go-only pruning in `abstract_data_access_rule.go`: a full
+  index scan with no search argument and no requested ordering is dropped.
+  With the pruning off, 53 corpus plans move, most of them from a filtered
+  primary scan to a covering full index scan. Four oracle rows reach Java's
+  path: `w8_covering_all`, `w8_covering_neq`, `w8_covering_id_neq` and
+  `w8_prefer_index_neq`. `SELECT * FROM T1` stays `Scan(T1)`, the declared
+  `w8_no_predicate` class. The explain-differ corpus took 14 s instead of 6 s,
+  which is the pruning's stated planning cost. The design orders F-6, the
+  covering emission gate, before F-7c, and requires the 1M stress comparison
+  with F-7c.
 - [ ] Reconcile F-6/F-7b with RFC-191's existing `Fetch(InJoin)` ruling; see
   `DIVERGENCES.md` “Plan choice: an ordered IN over a non-covering index”.
 - [ ] RANK-index match-candidate gap and quoted dotted identifier GROUP BY/order
