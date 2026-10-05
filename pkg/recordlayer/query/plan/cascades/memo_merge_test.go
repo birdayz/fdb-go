@@ -440,3 +440,45 @@ func TestMemoMergeable_DeclinesDuringPlanning(t *testing.T) {
 		t.Fatal("mergeable must decline once PLANNING is active")
 	}
 }
+
+// The parent-edge sets candidate lookup tests membership in stay equal to the
+// edge lists through merges, which move, rewrite and deduplicate edges.
+func TestMemoMerge_ParentEdgeSetsFollowEdges(t *testing.T) {
+	t.Parallel()
+	scanRef := expressions.InitialOf(fixtureScan("T"))
+	l := filterOver(t, scanRef)
+	r := filterOver(t, scanRef)
+	p1 := filterOver(t, l)
+	p2 := filterOver(t, r)
+	m := NewMemo(nil)
+	m.RegisterReference(p1)
+	m.RegisterReference(p2)
+	for child := range m.childToParents {
+		m.parentEdgeSet(child)
+	}
+	built := len(m.parentEdgeSets)
+
+	m.Integrate(r, freshFilterMember(t, scanRef))
+	if m.MergeCount() != 2 {
+		t.Fatalf("expected 2 merges, got %d", m.MergeCount())
+	}
+	if built == 0 {
+		t.Fatal("no edge set was built before the merges")
+	}
+	for child := range m.childToParents {
+		set, edges := m.parentEdgeSet(child), m.childToParents[child]
+		if len(set) != len(edges) {
+			t.Errorf("child %p: %d edges, %d in its set", child, len(edges), len(set))
+		}
+		for _, e := range edges {
+			if _, ok := set[e]; !ok {
+				t.Errorf("child %p: edge %v missing from its set", child, e)
+			}
+		}
+	}
+	for child := range m.parentEdgeSets {
+		if _, ok := m.childToParents[child]; !ok && len(m.parentEdgeSets[child]) > 0 {
+			t.Errorf("child %p keeps a set after losing its edges", child)
+		}
+	}
+}

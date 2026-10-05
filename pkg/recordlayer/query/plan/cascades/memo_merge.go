@@ -283,13 +283,11 @@ func (m *Memo) indexExpr(ref *expressions.Reference, expr expressions.Relational
 // addParentEdge appends a (parent, expr) edge under child in
 // childToParents unless an identical edge is already present.
 func (m *Memo) addParentEdge(child, parent *expressions.Reference, expr expressions.RelationalExpression) {
-	edges := m.childToParents[child]
-	for _, e := range edges {
-		if e.parent == parent && e.expr == expr {
-			return
-		}
+	edge := parentEdge{parent: parent, expr: expr}
+	if _, present := m.parentEdgeSet(child)[edge]; present {
+		return
 	}
-	m.childToParents[child] = append(edges, parentEdge{parent: parent, expr: expr})
+	m.appendParentEdge(child, edge)
 }
 
 // merge collapses two equivalent groups into one (RFC-037 §3). The
@@ -347,6 +345,7 @@ func (m *Memo) repointIndices(loser, winner *expressions.Reference) {
 			m.addParentEdge(winner, e.parent, e.expr)
 		}
 		delete(m.childToParents, loser)
+		delete(m.parentEdgeSets, loser)
 	}
 	// 2. loser as a parent (edge value): redirect to winner, dedup.
 	for child, edges := range m.childToParents {
@@ -359,6 +358,7 @@ func (m *Memo) repointIndices(loser, winner *expressions.Reference) {
 		}
 		if changed {
 			m.childToParents[child] = dedupEdges(edges)
+			delete(m.parentEdgeSets, child)
 		}
 	}
 	// 3. ref/leaf sets and root. winner is canonical here (merge

@@ -68,6 +68,10 @@ type Memo struct {
 	// have a member expression with a Quantifier ranging over it.
 	// Used for topological lookup during memoization.
 	childToParents map[*expressions.Reference][]parentEdge
+	// parentEdgeSets holds each child's edges as a set, kept in step with
+	// childToParents, so intersecting the parents of a join's children costs
+	// no map per memoization.
+	parentEdgeSets map[*expressions.Reference]map[parentEdge]struct{}
 
 	// leafRefs tracks References holding leaf expressions (no
 	// quantifiers). Stored as a SLICE for deterministic iteration
@@ -134,6 +138,7 @@ func NewMemo(root *expressions.Reference) *Memo {
 		root:           root,
 		refs:           make(map[*expressions.Reference]struct{}),
 		childToParents: make(map[*expressions.Reference][]parentEdge),
+		parentEdgeSets: make(map[*expressions.Reference]map[parentEdge]struct{}),
 		leafRefsSet:    make(map[*expressions.Reference]struct{}),
 		nextID:         1,
 	}
@@ -550,10 +555,7 @@ func (m *Memo) memoizeNonLeaf(expr expressions.RelationalExpression, qs []expres
 		if child == nil {
 			continue
 		}
-		m.childToParents[child] = append(m.childToParents[child], parentEdge{
-			parent: ref,
-			expr:   expr,
-		})
+		m.appendParentEdge(child, parentEdge{parent: ref, expr: expr})
 	}
 	return ref
 }
@@ -585,13 +587,9 @@ func (m *Memo) findCandidateParents(qs []expressions.Quantifier, eligible func(*
 			if child == first {
 				continue
 			}
-			childEdges := m.childToParents[child]
-			if len(childEdges) == 0 {
+			childParents := m.parentEdgeSet(child)
+			if len(childParents) == 0 {
 				return
-			}
-			childParents := make(map[parentEdge]struct{}, len(childEdges))
-			for _, e := range childEdges {
-				childParents[e] = struct{}{}
 			}
 			if !copied {
 				candidateOrder = append([]parentEdge(nil), candidateOrder...)
@@ -624,6 +622,29 @@ func (m *Memo) findCandidateParents(qs []expressions.Quantifier, eligible func(*
 			}
 		}
 	}
+}
+
+// appendParentEdge records edge under child in both indices.
+func (m *Memo) appendParentEdge(child *expressions.Reference, edge parentEdge) {
+	m.childToParents[child] = append(m.childToParents[child], edge)
+	m.parentEdgeSet(child)[edge] = struct{}{}
+}
+
+// parentEdgeSet is child's edge set, built from its edge list when absent.
+func (m *Memo) parentEdgeSet(child *expressions.Reference) map[parentEdge]struct{} {
+	if set, ok := m.parentEdgeSets[child]; ok {
+		return set
+	}
+	edges := m.childToParents[child]
+	set := make(map[parentEdge]struct{}, len(edges))
+	for _, e := range edges {
+		set[e] = struct{}{}
+	}
+	if m.parentEdgeSets == nil {
+		m.parentEdgeSets = make(map[*expressions.Reference]map[parentEdge]struct{})
+	}
+	m.parentEdgeSets[child] = set
+	return set
 }
 
 // refContainsAll checks whether ref contains a structural equivalent

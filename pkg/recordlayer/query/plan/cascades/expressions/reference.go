@@ -940,10 +940,8 @@ func (p *PreparedMemberEquality) DuplicateWithHashes(
 	eHash := equality.hash(e)
 	aliasAware := InternsAliasAware(e)
 	mergeAliased := !aliasAware && bindsMergeAlias(e)
+	eArity := len(e.GetQuantifiers())
 	for i, m := range members {
-		if m.EqualsWithoutChildren(e, EmptyAliasMap()) && preparedSameChildReferences(m, e) {
-			return true, false
-		}
 		mHash := uint64(0)
 		if i < len(hashes) {
 			mHash = hashes[i]
@@ -951,13 +949,20 @@ func (p *PreparedMemberEquality) DuplicateWithHashes(
 		} else {
 			mHash = equality.hash(m)
 		}
-		if mHash == eHash && m.EqualsWithoutChildren(e, EmptyAliasMap()) && equality.equal(m, e, EmptyAliasMap()) {
+		// Every test below needs equal node hashes (node equality implies them)
+		// and equal quantifier counts, and both are cheaper than node equality,
+		// which ignores a select's quantifier list.
+		if mHash != eHash || len(m.GetQuantifiers()) != eArity {
+			continue
+		}
+		nodeEqual := m.EqualsWithoutChildren(e, EmptyAliasMap())
+		if nodeEqual && (preparedSameChildReferences(m, e) || equality.equal(m, e, EmptyAliasMap())) {
 			return true, false
 		}
-		if aliasAware && mHash == eHash && equality.equal(m, e, EmptyAliasMap()) {
+		if aliasAware && equality.equal(m, e, EmptyAliasMap()) {
 			return true, true
 		}
-		if mergeAliased && mHash == eHash && ExactReplica(m, e) {
+		if mergeAliased && ExactReplica(m, e) {
 			return true, false
 		}
 	}
