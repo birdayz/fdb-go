@@ -546,14 +546,7 @@ func (p *RecordQueryIndexPlan) explainScan(covering bool) string {
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		switch cr.GetRangeType() {
-		case predicates.ComparisonRangeEmpty:
-			b.WriteString("*")
-		case predicates.ComparisonRangeEquality:
-			b.WriteString("=")
-		case predicates.ComparisonRangeInequality:
-			b.WriteString("<>")
-		}
+		b.WriteString(scanComparisonGlyph(cr))
 	}
 	b.WriteString("]")
 	if covering {

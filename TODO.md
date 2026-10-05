@@ -152,6 +152,16 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 - [ ] IN-union product limit/size, null-safe singleton candidates, zero-based
   EXPLODE ordinality/distinctness, subscript typing/errors, display-only EXPLAIN
   decoding, ordered Value folding, vector-preference applicability pins.
+  Null-safe singleton candidates (W9, design section 5) are done.
+  NOT_DISTINCT_FROM binds index and PK scans: a NULL operand reads the null
+  key, and the literal may be on either side. IS DISTINCT FROM stays residual,
+  and a sparse IS NOT NULL index serves only a non-NULL literal. EXPLAIN shows
+  the bound as `≡`. Pins: `null_safe_equality_scan.yaml`, which includes the
+  #4598 keyset shape with bound parameters. The seven w9 oracle rows' Go pins
+  are predicted and moved out of `wsfOpenUntil` (full lane, not run). Still
+  open in W9 is item 4, the range builder's `isCompileTime` port, which is
+  latent because it has no consumer. The table-function form of the keyset
+  query needs WS-E's simplification regime.
 - [ ] Reconcile F-6/F-7b with RFC-191's existing `Fetch(InJoin)` ruling; see
   `DIVERGENCES.md` “Plan choice: an ordered IN over a non-covering index”.
 - [ ] RANK-index match-candidate gap and quoted dotted identifier GROUP BY/order

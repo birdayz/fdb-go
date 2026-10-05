@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**393 scenarios · 3278 query/assertion cases** across 18 feature areas — 2878 supported, 106 unsupported-feature pins, 294 error-path pins.
+**394 scenarios · 3295 query/assertion cases** across 18 feature areas — 2895 supported, 106 unsupported-feature pins, 294 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -37,7 +37,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Scalar functions & expressions | 35 | 392 | 334 | 21 | 37 |
 | Predicates & WHERE | 12 | 104 | 102 | 0 | 2 |
 | Column resolution & aliasing | 7 | 59 | 30 | 0 | 29 |
-| NULL handling | 5 | 27 | 24 | 3 | 0 |
+| NULL handling | 6 | 44 | 41 | 3 | 0 |
 | NULL handling & boolean logic | 2 | 48 | 48 | 0 | 0 |
 | Index usage | 19 | 216 | 213 | 0 | 3 |
 | Types | 13 | 148 | 127 | 4 | 17 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 44 | 429 | 382 | 9 | 38 |
-| **Total** | **393** | **3278** | **2878** | **106** | **294** |
+| **Total** | **394** | **3295** | **2895** | **106** | **294** |
 
 ## Aggregates & GROUP BY
 
@@ -403,6 +403,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `not_null_constraint_java` | 6 | 5 | 1 | 0 | NOT NULL constraint surface, Java parity. |
 | `not_null_violation` | 5 | 3 | 2 | 0 | NOT NULL on a NON-ARRAY column is rejected at CREATE — Java parity, |
 | `null_operator_alignment` | 7 | 7 | 0 | 0 | NULL operator tests aligned with Java's null-operator-tests.yamsql. |
+| `null_safe_equality_scan` | 17 | 17 | 0 | 0 | IS NOT DISTINCT FROM binds an index scan |
 | `where_is_null_is_not_null` | 7 | 7 | 0 | 0 | IS NULL / IS NOT NULL predicates |
 
 ## NULL handling & boolean logic

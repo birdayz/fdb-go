@@ -63,23 +63,30 @@ func buildMatchMaxMatchMap(
 // =, <, <=, >, >=, STARTS_WITH) PLUS the NULL comparisons (IS NULL is a
 // [null] EQUALITY range, IS NOT NULL is the (null, +inf) INEQUALITY range —
 // Java's ScanComparisons.getComparisonType maps them to EQUALITY/INEQUALITY)
+// PLUS the null-safe equality NOT_DISTINCT_FROM, one exact key (the value's,
+// or the null key for a NULL operand; Java 4.14 ScanComparisons, #4598)
 // PLUS the vector DISTANCE_RANK bounds (for a vector candidate's distance
-// placeholder). Everything else (IN, NOT EQUALS, LIKE, full-text, …) is
-// non-sargable and stays a residual filter.
+// placeholder). Everything else (IN, NOT EQUALS, IS DISTINCT FROM, LIKE,
+// full-text, …) is non-sargable and stays a residual filter: Java admits IS
+// DISTINCT FROM only as a deferred comparison that never bounds a scan
+// (w9_multi_distinct_explain).
 //
 // Only this index-match gate admits the NULL comparisons (not the base
 // isScanRangeCompatible, which the NLJ path also consults): the index-match
-// path runs them through ComparisonRange.Merge (which classifies IS NULL as
-// equality, IS NOT NULL as inequality) and the executor's
-// bindScanComparisonsToRangeSet (which builds the [null]/(null,+inf) ranges),
-// both of which handle the null cases correctly.
+// path runs them through ComparisonRange.Merge (which classifies IS NULL and
+// NOT_DISTINCT_FROM as equality, IS NOT NULL as inequality) and the executor's
+// bindScanComparisonsToRangeSet (which builds the [null]/(null,+inf) ranges and
+// the null key of a NOT_DISTINCT_FROM NULL), both of which handle the null
+// cases correctly. A sparse candidate's IS NOT NULL predicate is implied by a
+// NOT_DISTINCT_FROM only over a non-null literal (RangeConstraints.Encloses).
 func isSargableComparisonForMatch(t predicates.ComparisonType) bool {
 	if isScanRangeCompatible(t) {
 		return true
 	}
 	switch t {
 	case predicates.ComparisonIsNull,
-		predicates.ComparisonIsNotNull:
+		predicates.ComparisonIsNotNull,
+		predicates.ComparisonNotDistinctFrom:
 		return true
 	case predicates.ComparisonDistanceRankEquals,
 		predicates.ComparisonDistanceRankLessThan,

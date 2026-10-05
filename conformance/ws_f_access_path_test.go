@@ -239,6 +239,8 @@ func wsfGoCmpKinds(s string) []string {
 		case "", "*":
 		case "=":
 			out = append(out, "=")
+		case "≡": // a null-safe equality, the target's NOT_DISTINCT_FROM
+			out = append(out, "≡")
 		case "<>", "<", ">", "<=", ">=", "[]":
 			out = append(out, "<>")
 		default:

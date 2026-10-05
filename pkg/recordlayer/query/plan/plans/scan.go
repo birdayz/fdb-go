@@ -228,6 +228,22 @@ func (p *RecordQueryScanPlan) HashCodeWithoutChildren() uint64 {
 	return hash
 }
 
+// scanComparisonGlyph renders one scan component of an Explain label: `=` an
+// equality, `≡` a null-safe equality (Java's [NOT_DISTINCT_FROM …] bound, which
+// also selects the null key), `<>` an inequality range and `*` no bound.
+func scanComparisonGlyph(cr *predicates.ComparisonRange) string {
+	switch cr.GetRangeType() {
+	case predicates.ComparisonRangeEquality:
+		if c := cr.GetEqualityComparison(); c != nil && c.Type == predicates.ComparisonNotDistinctFrom {
+			return "≡"
+		}
+		return "="
+	case predicates.ComparisonRangeInequality:
+		return "<>"
+	}
+	return "*"
+}
+
 // Explain renders a one-line label.
 func (p *RecordQueryScanPlan) Explain() string {
 	var b strings.Builder
@@ -244,14 +260,7 @@ func (p *RecordQueryScanPlan) Explain() string {
 			if i > 0 {
 				b.WriteString(", ")
 			}
-			switch cr.GetRangeType() {
-			case predicates.ComparisonRangeEmpty:
-				b.WriteString("*")
-			case predicates.ComparisonRangeEquality:
-				b.WriteString("=")
-			case predicates.ComparisonRangeInequality:
-				b.WriteString("<>")
-			}
+			b.WriteString(scanComparisonGlyph(cr))
 		}
 		b.WriteString("]")
 	}

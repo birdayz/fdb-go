@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=393 queries=2974 dml=177 non_query=127 plan_errors=324 unexpected_errors=4
+# files=394 queries=2991 dml=177 non_query=127 plan_errors=324 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -2172,10 +2172,9 @@ shape:   RecordQueryMapPlan
 shape:     RecordQueryCoveringIndexPlan
 === bytes.yaml#10
 sql:   SELECT a FROM lb WHERE b IS NOT DISTINCT FROM null
-plan:  Map(PredicatesFilter(Scan(LB), [1 preds]), {A: _current.A#0})
+plan:  Map(IndexScan(IDX_LB_B, [≡] COVERING), {A: _current.A#0})
 shape: RecordQueryMapPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryCoveringIndexPlan
 === bytes.yaml#11
 sql:   SELECT a FROM lb WHERE b IS DISTINCT FROM null ORDER BY a
 plan:  Map(PredicatesFilter(Scan(LB), [1 preds]), {A: _current.A#0})
@@ -13240,6 +13239,102 @@ plan:  Map(PredicatesFilter(Scan(T1), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
+=== null_safe_equality_scan.yaml#0
+sql:   SELECT id FROM T1 WHERE col2 IS NOT DISTINCT FROM NULL ORDER BY id
+plan:  Map(IndexScan(I2, [≡] COVERING), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== null_safe_equality_scan.yaml#1
+sql:   SELECT id FROM T1 WHERE col1 IS NOT DISTINCT FROM 20 ORDER BY id
+plan:  Map(IndexScan(I1, [≡] COVERING), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== null_safe_equality_scan.yaml#2
+sql:   SELECT id FROM T1 WHERE 20 IS NOT DISTINCT FROM col1 ORDER BY id
+plan:  Map(IndexScan(I1, [≡] COVERING), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== null_safe_equality_scan.yaml#3
+sql:   SELECT id FROM T1 WHERE col1 IS NOT DISTINCT FROM 10 AND col1 > 5 ORDER BY id
+plan:  Map(PredicatesFilter(IndexScan(I1, [≡] COVERING), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryCoveringIndexPlan
+=== null_safe_equality_scan.yaml#4
+sql:   SELECT id FROM T1 WHERE col1 IS DISTINCT FROM 10 ORDER BY id
+plan:  Map(PredicatesFilter(Scan(T1), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== null_safe_equality_scan.yaml#5
+sql:   SELECT id FROM T1 WHERE col2 IS NOT DISTINCT FROM ? ORDER BY id
+plan:  Map(IndexScan(I2, [≡] COVERING), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== null_safe_equality_scan.yaml#6
+sql:   SELECT id FROM T1 WHERE col2 IS NOT DISTINCT FROM ? ORDER BY id
+plan:  Map(IndexScan(I2, [≡] COVERING), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== null_safe_equality_scan.yaml#7
+sql:   SELECT id FROM T2 WHERE col1 = 10 AND col2 IS NOT DISTINCT FROM NULL ORDER BY id
+plan:  Map(IndexScan(I3, [=, ≡] COVERING), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== null_safe_equality_scan.yaml#8
+sql:   SELECT id FROM T2 WHERE col1 = 10 AND col2 IS DISTINCT FROM 1 ORDER BY id
+plan:  InMemorySort([_current.ID#0 ASC], Map(PredicatesFilter(IndexScan(I3, [=, *] COVERING), [1 preds]), {ID: _current.ID#0}))
+shape: RecordQueryInMemorySortPlan
+shape:   RecordQueryMapPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryCoveringIndexPlan
+=== null_safe_equality_scan.yaml#9
+sql:   SELECT id FROM T3 WHERE col2 IS NOT DISTINCT FROM NULL ORDER BY id
+plan:  Map(PredicatesFilter(Scan(T3), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== null_safe_equality_scan.yaml#10
+sql:   SELECT id FROM T3 WHERE col2 IS NOT DISTINCT FROM 3 ORDER BY id
+plan:  Map(IndexScan(I4, [≡, *] COVERING), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== null_safe_equality_scan.yaml#11
+sql:   SELECT id FROM T3 WHERE col2 IS NOT DISTINCT FROM CAST(NULL AS BIGINT) ORDER BY id
+plan:  Map(PredicatesFilter(Scan(T3), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== null_safe_equality_scan.yaml#12
+sql:   SELECT id FROM T3 WHERE col2 IS NOT DISTINCT FROM CAST(3 AS BIGINT) ORDER BY id
+plan:  Map(IndexScan(I4, [≡, *] COVERING), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== null_safe_equality_scan.yaml#13
+sql:   SELECT id FROM T3 WHERE col2 IS NOT DISTINCT FROM ? ORDER BY id
+plan:  Map(IndexScan(I4, [≡, *] COVERING), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== null_safe_equality_scan.yaml#14
+sql:   SELECT id FROM T3 WHERE col2 IS NOT DISTINCT FROM ? ORDER BY id
+plan:  Map(PredicatesFilter(Scan(T3), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== null_safe_equality_scan.yaml#15
+sql:   SELECT id, ts FROM scoped_item WHERE scope.scope_id IS NOT DISTINCT FROM ? AND ((ts = ? AND id > ?) OR (ts > ?)) ORDER BY ts DESC, id DESC
+plan:  Map(MergeSortUnion(IndexScan(SCOPED_ITEM_SCOPE_TS_IDX, [≡, =, <>]) REVERSE, IndexScan(SCOPED_ITEM_SCOPE_TS_IDX, [≡, <>, *]) REVERSE, keys=[3], DESC DISTINCT), {ID: _current.ID#0, TS: _current.TS#2})
+shape: RecordQueryMapPlan
+shape:   RecordQueryMergeSortUnionPlan
+shape:     RecordQueryIndexPlan
+shape:     RecordQueryIndexPlan
+=== null_safe_equality_scan.yaml#16
+sql:   SELECT id, ts FROM scoped_item WHERE scope.scope_id IS NOT DISTINCT FROM ? AND ((ts = ? AND id > ?) OR (ts > ?)) ORDER BY ts DESC, id DESC
+plan:  Map(MergeSortUnion(IndexScan(SCOPED_ITEM_SCOPE_TS_IDX, [≡, =, <>]) REVERSE, IndexScan(SCOPED_ITEM_SCOPE_TS_IDX, [≡, <>, *]) REVERSE, keys=[3], DESC DISTINCT), {ID: _current.ID#0, TS: _current.TS#2})
+shape: RecordQueryMapPlan
+shape:   RecordQueryMergeSortUnionPlan
+shape:     RecordQueryIndexPlan
+shape:     RecordQueryIndexPlan
 === nullif_coalesce_combined_java.yaml#0 expect-error=0AF00
 sql:   SELECT id, val / NULLIF(divisor, 0) FROM data WHERE val IS NOT NULL ORDER BY id
 plan:  <PLAN-ERROR: 0AF00: Unsupported operator NULLIF>

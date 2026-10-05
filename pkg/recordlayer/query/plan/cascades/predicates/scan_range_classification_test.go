@@ -32,10 +32,9 @@ func TestScanRangeEqualityIsADeliberateDivergenceFromJava(t *testing.T) {
 	// Keyed by type so a missing entry is a hole the exhaustiveness loop names
 	// rather than a silently short list.
 	want := map[ComparisonType]bool{
-		// Shared with Java's EQUALITY arm.
-		ComparisonEquals: true,
-		ComparisonIsNull: true,
-		// Go-only addition; Java has no NOT_DISTINCT_FROM arm at all.
+		// Shared with Java's EQUALITY arm (ScanComparisons.java:152-156).
+		ComparisonEquals:          true,
+		ComparisonIsNull:          true,
 		ComparisonNotDistinctFrom: true,
 		// Java EQUALITY, deliberately NOT equality here — see the function's
 		// comment and TestScanRangeClassification_DistanceRankEqualsStaysATail.
@@ -158,7 +157,7 @@ func TestScanRangeComparisonType_NoneArmMatchesJava(t *testing.T) {
 	want := map[ComparisonType]scanRangeComparisonKind{
 		ComparisonEquals:                   scanRangeEquality,
 		ComparisonIsNull:                   scanRangeEquality,
-		ComparisonNotDistinctFrom:          scanRangeEquality, // Go-only exact key
+		ComparisonNotDistinctFrom:          scanRangeEquality,
 		ComparisonLessThan:                 scanRangeInequality,
 		ComparisonLessThanOrEq:             scanRangeInequality,
 		ComparisonGreaterThan:              scanRangeInequality,
