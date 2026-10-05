@@ -9,8 +9,6 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"fdb.dev/pkg/relational/core/functions"
-
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -616,17 +614,6 @@ func cmpAny(a, b any) (int, bool) {
 				return 0, true
 			}
 		}
-		if bt, ok2 := b.(time.Time); ok2 {
-			if at, pOK := functions.ParseTimestamp(av); pOK {
-				switch {
-				case at.Before(bt):
-					return -1, true
-				case at.After(bt):
-					return 1, true
-				}
-				return 0, true
-			}
-		}
 		return 0, false
 	}
 	// Bool equality: FALSE < TRUE (following SQL's TRUE > FALSE
@@ -645,45 +632,6 @@ func cmpAny(a, b any) (int, bool) {
 		default: // av && !bv: true > false
 			return 1, true
 		}
-	}
-	// time.Time comparison (DATE/TIMESTAMP values from CAST or CURRENT_TIMESTAMP).
-	// Also handles time.Time vs string cross-type (stored dates are strings).
-	if at, ok := a.(time.Time); ok {
-		switch bv := b.(type) {
-		case time.Time:
-			switch {
-			case at.Before(bv):
-				return -1, true
-			case at.After(bv):
-				return 1, true
-			}
-			return 0, true
-		case string:
-			if bt, pOK := functions.ParseTimestamp(bv); pOK {
-				switch {
-				case at.Before(bt):
-					return -1, true
-				case at.After(bt):
-					return 1, true
-				}
-				return 0, true
-			}
-		}
-		return 0, false
-	}
-	if at, ok := b.(time.Time); ok {
-		if as, ok2 := a.(string); ok2 {
-			if parsed, pOK := functions.ParseTimestamp(as); pOK {
-				switch {
-				case parsed.Before(at):
-					return -1, true
-				case parsed.After(at):
-					return 1, true
-				}
-				return 0, true
-			}
-		}
-		return 0, false
 	}
 	// Bytes comparison is lexicographic — matches SQL's BINARY / VARBINARY
 	// collation and proto `bytes` semantics. Mixed bytes/string degrades
@@ -940,7 +888,25 @@ func (p *ComparisonPredicate) Eval(evalCtx any) (TriBool, error) {
 		}
 		right = r
 	}
+	if t, isTime := left.(time.Time); isTime {
+		return TriUnknown, &TemporalCarrierError{Operand: values.ExplainValue(p.Operand), Value: t}
+	}
+	if t, isTime := right.(time.Time); isTime {
+		return TriUnknown, &TemporalCarrierError{Operand: values.ExplainValue(p.Comparison.Operand), Value: t}
+	}
 	return p.Comparison.EvalAgainst(left, right)
+}
+
+// TemporalCarrierError is a comparison operand that evaluated to a time.Time.
+// DATE and TIMESTAMP values are canonical text, so this is an internal error:
+// a time.Time compared as text or skipped would answer silently wrong.
+type TemporalCarrierError struct {
+	Operand string
+	Value   time.Time
+}
+
+func (e *TemporalCarrierError) Error() string {
+	return fmt.Sprintf("internal error: comparison operand %s evaluated to the time.Time %v, not DATE/TIMESTAMP text", e.Operand, e.Value)
 }
 
 func (p *ComparisonPredicate) Explain() string {

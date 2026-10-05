@@ -533,10 +533,7 @@ func TestCastValue(t *testing.T) {
 		t.Fatalf("string(ws)→int: got %v, want 42", got)
 	}
 
-	// bool → string. Match runtime functions.CastValue: lowercase.
-	// Pre-this-shift the fold path returned nil while the runtime
-	// returned "true"/"false" — fold-vs-runtime divergence on a
-	// constant input.
+	// bool → string: lowercase, Java's BOOLEAN_TO_STRING.
 	boolToStrTrue := NewCastValue(NewBooleanValue(true), TypeString)
 	got, errEv18 := boolToStrTrue.Evaluate(nil)
 	require.NoError(t, errEv18)

@@ -1491,7 +1491,7 @@ func (c *nljCursor) tryBuildHashIndex(innerAlias values.CorrelationIdentifier) {
 		if !ok {
 			// An operand that cannot resolve against the leg row — or whose
 			// key has no hashable promotion-stable canonical form ([]byte,
-			// message shapes, time.Time, NaN) — declines the fast path
+			// message shapes, NaN) — declines the fast path
 			// entirely: the linear path evaluates (and loud-errors) the same
 			// predicate per pair via cmpAny, which handles all of them.
 			return
@@ -1614,10 +1614,8 @@ func evalLegHashKey(val values.Value, corr values.CorrelationIdentifier, leg val
 //     would nuke the fast path for any leg with one NULL key.
 //   - Everything else declines. []byte and message/list shapes are
 //     unhashable map keys (a []byte key PANICKED the build at exactly 100
-//     inner rows: "hash of unhashable type: []uint8"). time.Time is hashable
-//     but its map == is wall+monotonic+location identity, not the instant
-//     equality cmpAny uses — and strings cross-match time.Time via
-//     ParseTimestamp, which no string-keyed bucket can represent.
+//     inner rows: "hash of unhashable type: []uint8"). DATE and TIMESTAMP
+//     values are text, so a probe key is never a time.Time.
 func normalizeNLJHashKey(v any) (any, bool) {
 	if v == nil {
 		return nil, true
@@ -1831,13 +1829,11 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 					c.innerCandidateCount = len(c.innerCandidateIndices)
 				} else {
 					// A probe that cannot resolve — or whose key has no
-					// hashable promotion-stable canonical form (time.Time,
-					// NaN, a cross-typed []byte) — degrades this outer row to
-					// an identity view over every inner row: the per-pair
+					// hashable promotion-stable canonical form (NaN, a
+					// cross-typed []byte) — degrades this outer row to an
+					// identity view over every inner row: the per-pair
 					// predicate evaluation is the semantics of record and
-					// will surface any real failure (or match, e.g.
-					// string-typed inner keys against a time.Time probe via
-					// ParseTimestamp).
+					// will surface any real failure.
 					c.innerCandidateCount = len(c.innerRows)
 				}
 			}

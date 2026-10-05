@@ -6,6 +6,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -1321,5 +1322,24 @@ func TestComparison_Eval_DistanceRankReachesRowEval_Errors(t *testing.T) {
 				t.Fatalf("error = %v, want the un-lowered K-NN diagnosis", err)
 			}
 		})
+	}
+}
+
+// DATE and TIMESTAMP values are text, so a time.Time operand has no producer;
+// one that arrives anyway is an internal error naming its Value, never a
+// silent comparison.
+func TestComparisonPredicate_TimeOperandRefused(t *testing.T) {
+	t.Parallel()
+	when := &values.ConstantValue{Value: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), Typ: values.NotNullTimestamp}
+	text := &values.ConstantValue{Value: "2024-01-01 00:00:00", Typ: values.NotNullTimestamp}
+	for _, p := range []*ComparisonPredicate{
+		{Operand: when, Comparison: Comparison{Type: ComparisonEquals, Operand: text}},
+		{Operand: text, Comparison: Comparison{Type: ComparisonEquals, Operand: when}},
+	} {
+		_, err := p.Eval(nil)
+		var carrier *TemporalCarrierError
+		if !errors.As(err, &carrier) || !strings.Contains(carrier.Error(), "2024-01-01") {
+			t.Errorf("%s: want a TemporalCarrierError naming the operand, got %v", p.Explain(), err)
+		}
 	}
 }

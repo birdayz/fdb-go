@@ -18,20 +18,3 @@ func FormatTimestamp(t time.Time) string {
 func FormatDate(t time.Time) string {
 	return t.UTC().Format(DateLayout)
 }
-
-// ParseTimestamp attempts to parse a string as a TIMESTAMP using
-// multiple common layouts. Returns the parsed time in UTC or false.
-func ParseTimestamp(s string) (time.Time, bool) {
-	for _, layout := range []string{
-		TimestampLayout,
-		"2006-01-02T15:04:05Z07:00",
-		"2006-01-02T15:04:05",
-		"2006-01-02 15:04:05.999999999",
-		DateLayout,
-	} {
-		if t, err := time.Parse(layout, s); err == nil {
-			return t.UTC(), true
-		}
-	}
-	return time.Time{}, false
-}

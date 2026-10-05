@@ -2811,13 +2811,6 @@ func scalarArgString(a any) string {
 	return fmt.Sprintf("%v", a)
 }
 
-// timestampParseLayouts is the SINGLE authority for the string forms the
-// engine accepts as timestamps — the TIMESTAMP cast and the date-part
-// functions parse the SAME set, so a string castable to TIMESTAMP can
-// never be "not a date/time value" to YEAR() (the date-part arm appends
-// the bare time-only layout for HOUR/MINUTE/SECOND over "15:04:05").
-var timestampParseLayouts = []string{timestampLayout, "2006-01-02T15:04:05Z07:00", "2006-01-02T15:04:05", dateLayout}
-
 // evalScalarFunctionCtx is evalScalarFunction with the evalCtx threaded
 // for the statement-clock arms (CURRENT_TIMESTAMP family); every other
 // function ignores the context.
@@ -3353,20 +3346,13 @@ func evalScalarFunction(name string, args []any) (any, error) {
 		}
 		s, ok := args[0].(string)
 		if !ok {
-			// Also handle time.Time if the argument was already parsed —
-			// normalized to UTC like the string path, so the parts never
-			// depend on the carrier's zone representation.
-			if t, tok := args[0].(time.Time); tok {
-				return datePartFromTime(name, t.UTC()), nil
-			}
 			return nil, nil
 		}
-		var t time.Time
-		var err error
-		for _, layout := range append(timestampParseLayouts[:len(timestampParseLayouts):len(timestampParseLayouts)], "15:04:05") {
-			t, err = time.Parse(layout, s)
-			if err == nil {
-				break
+		// The texts a CAST reads, and a time of day for HOUR/MINUTE/SECOND.
+		t, err := ParseTemporalText(s)
+		if err != nil {
+			if tod, todErr := time.Parse("15:04:05", strings.TrimSpace(s)); todErr == nil {
+				t, err = tod, nil
 			}
 		}
 		if err != nil {
@@ -3378,9 +3364,6 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			// corrupts an INSERT.
 			return nil, &InvalidArgumentError{Message: fmt.Sprintf("cannot extract %s from %q: not a date/time value", name, s)}
 		}
-		// Normalize to UTC before extraction — the TIMESTAMP cast
-		// canonicalizes zoned forms to UTC, and the date parts must
-		// agree with it (HOUR('…T03:04:05+02:00') is 1, not 3).
 		return datePartFromTime(name, t.UTC()), nil
 		// CURRENT_TIMESTAMP / CURRENT_DATE / CURRENT_TIME / LOCALTIME
 		// live in evalScalarFunctionCtx — they need the evalCtx's
@@ -4829,11 +4812,7 @@ func (c *CastValue) castEvaluated(v any, source Type) (any, error) {
 			return javaFloatString(float64(f32), 32), nil
 		}
 		if b, ok := v.(bool); ok {
-			// Match runtime functions.CastValue: lowercase
-			// "true"/"false" (Java's CastValue.BOOLEAN_TO_STRING).
-			// Without this arm, fold-time `CAST(TRUE AS STRING)`
-			// returned nil while the runtime returned "true" — fold
-			// vs runtime mismatch on a constant input.
+			// Lowercase "true"/"false", Java's CastValue.BOOLEAN_TO_STRING.
 			if b {
 				return "true", nil
 			}
@@ -4847,34 +4826,27 @@ func (c *CastValue) castEvaluated(v any, source Type) (any, error) {
 			return uuid.UUID(b).String(), nil
 		}
 	case TypeCodeDate:
-		switch val := v.(type) {
-		case time.Time:
-			return val.UTC().Format(dateLayout), nil
-		case string:
-			s := strings.TrimSpace(val)
-			t, err := time.Parse(dateLayout, s)
+		if val, ok := v.(string); ok {
+			t, err := ParseTemporalText(val)
 			if err != nil {
-				if t2, err2 := time.Parse(timestampLayout, s); err2 == nil {
-					return t2.UTC().Format(dateLayout), nil
-				}
 				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to DATE: %s", val, err)}
 			}
-			return t.UTC().Format(dateLayout), nil
+			return t.Format(dateLayout), nil
 		}
 	case TypeCodeTimestamp:
 		switch val := v.(type) {
-		case time.Time:
-			return val.UTC().Format(timestampLayout), nil
 		case string:
-			s := strings.TrimSpace(val)
-			for _, layout := range timestampParseLayouts {
-				if t, err := time.Parse(layout, s); err == nil {
-					return t.UTC().Format(timestampLayout), nil
-				}
+			t, err := ParseTemporalText(val)
+			if err != nil {
+				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to TIMESTAMP: %s", val, err)}
 			}
-			return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to TIMESTAMP", val)}
+			return t.Format(timestampLayout), nil
 		case int64:
-			return time.UnixMilli(val).UTC().Format(timestampLayout), nil
+			text, err := epochMillisTimestamp(val)
+			if err != nil {
+				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast %d to TIMESTAMP: %s", val, err)}
+			}
+			return text, nil
 		}
 	case TypeCodeFloat:
 		// FLOAT is genuinely binary32 here — a FLOAT column's index entries

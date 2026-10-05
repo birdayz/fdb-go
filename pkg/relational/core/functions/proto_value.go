@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"math"
-	"time"
 
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -318,9 +317,6 @@ func convertScalarProtoValue(fd protoreflect.FieldDescriptor, val any) (protoref
 	case protoreflect.StringKind:
 		if v, ok := val.(string); ok {
 			return protoreflect.ValueOfString(v), nil
-		}
-		if v, ok := val.(time.Time); ok {
-			return protoreflect.ValueOfString(FormatTimestamp(v)), nil
 		}
 	case protoreflect.BytesKind:
 		if v, ok := val.([]byte); ok {

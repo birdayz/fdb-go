@@ -58,9 +58,9 @@ import (
 //   - *big.Int / big.Int — an integer beyond the uint64 range a tuple key can
 //     carry. Not producible from a proto scalar field today (those cap at uint64),
 //     but encoded losslessly (sign + magnitude) so it can never silently round;
-//   - time.Time — DATE/TIMESTAMP values flow through the row domain as STRINGS
-//     today (so a time.Time key is not currently reachable), but a time.Time is
-//     encoded losslessly (MarshalBinary) rather than left to round-trip wrong.
+//   - tag 12 — a time.Time an earlier Go build encoded (MarshalBinary). DATE
+//     and TIMESTAMP values are text now, so nothing encodes it; it decodes to
+//     the instant's canonical TIMESTAMP text, the value that key now has.
 //   - []any — an ARRAY column slot (values.ProtoFieldToRowValue turns a repeated
 //     field into []any): uvarint element count + each element recursively, so a
 //     nested array (struct arrays' element lists) round-trips too;
@@ -104,7 +104,7 @@ const (
 	contValInt      byte = 9  // platform int, restored as int
 	contValUint64   byte = 10 // index-sourced integer in (2^63, 2^64)
 	contValBigInt   byte = 11 // *big.Int / big.Int, sign byte + big-endian magnitude
-	contValTime     byte = 12 // time.Time via MarshalBinary
+	contValTime     byte = 12 // decode only: an earlier build's time.Time
 	contValList     byte = 13 // []any: uvarint count + each element recursively
 	contValProtoMsg byte = 14 // proto.Message: full type name + proto.Marshal bytes
 	// Tag 15 was contValJSON — the deleted lossy JSON fallback — and is
@@ -154,14 +154,6 @@ func appendContValue(buf []byte, v any) ([]byte, error) {
 		return appendContBigInt(buf, t), nil
 	case big.Int:
 		return appendContBigInt(buf, &t), nil
-	case time.Time:
-		mb, err := t.MarshalBinary()
-		if err != nil {
-			return nil, fmt.Errorf("continuation: cannot encode time.Time value: %w", err)
-		}
-		buf = append(buf, contValTime)
-		buf = binary.AppendUvarint(buf, uint64(len(mb)))
-		return append(buf, mb...), nil
 	case []any:
 		// An ARRAY column slot. Elements recurse through appendContValue, so
 		// nested lists and struct elements work; an unencodable element
@@ -332,7 +324,7 @@ func readContValueDepth(b []byte, depth int) (any, []byte, error) {
 		if uErr := tm.UnmarshalBinary(run); uErr != nil {
 			return nil, nil, fmt.Errorf("continuation: bad time.Time value (tag %d): %w", tag, uErr)
 		}
-		return tm, rest, nil
+		return values.CanonicalTimestampText(tm), rest, nil
 	case contValFloat64:
 		if err := need(8); err != nil {
 			return nil, nil, err

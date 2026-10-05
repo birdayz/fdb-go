@@ -406,8 +406,6 @@ func TestContValue_Uint64BigIntTime_F34(t *testing.T) {
 	bigOverUint64 := new(big.Int).Lsh(big.NewInt(1), 80) // 2^80, far beyond uint64
 	bigOverUint64.Add(bigOverUint64, big.NewInt(7))
 	negBig := new(big.Int).Neg(bigOverUint64)
-	// A location-bearing, sub-second timestamp to catch any lossy encoding.
-	tm := time.Date(2026, 7, 16, 3, 4, 5, 123456789, time.FixedZone("X", 5*3600))
 
 	cases := []struct {
 		name string
@@ -419,7 +417,6 @@ func TestContValue_Uint64BigIntTime_F34(t *testing.T) {
 		{"bigint_over_uint64", bigOverUint64, func(g any) bool { v, ok := g.(*big.Int); return ok && v.Cmp(bigOverUint64) == 0 }},
 		{"bigint_negative", negBig, func(g any) bool { v, ok := g.(*big.Int); return ok && v.Cmp(negBig) == 0 }},
 		{"bigint_zero", big.NewInt(0), func(g any) bool { v, ok := g.(*big.Int); return ok && v.Sign() == 0 }},
-		{"time", tm, func(g any) bool { v, ok := g.(time.Time); return ok && v.Equal(tm) }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -439,6 +436,27 @@ func TestContValue_Uint64BigIntTime_F34(t *testing.T) {
 				t.Errorf("round-trip of %#v = %#v (%T), want exact type + value", tc.in, got, got)
 			}
 		})
+	}
+}
+
+// DATE and TIMESTAMP values are text, so a time.Time is not encoded; a tag-12
+// value an earlier build wrote decodes to its instant's canonical TIMESTAMP
+// text, the value that key has now.
+func TestContValue_LegacyTimeDecodesToTimestampText(t *testing.T) {
+	t.Parallel()
+	tm := time.Date(2026, 7, 16, 3, 4, 5, 123456789, time.FixedZone("X", 5*3600))
+	if _, err := appendContValue(nil, tm); err == nil {
+		t.Fatal("a time.Time must not be encoded")
+	}
+	mb, err := tm.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := binary.AppendUvarint([]byte{contValTime}, uint64(len(mb)))
+	legacy = append(legacy, mb...)
+	got, rest, err := readContValue(legacy)
+	if err != nil || len(rest) != 0 || got != "2026-07-15 22:04:05" {
+		t.Fatalf("legacy tag 12 = %#v, %d trailing, %v; want the UTC TIMESTAMP text", got, len(rest), err)
 	}
 }
 

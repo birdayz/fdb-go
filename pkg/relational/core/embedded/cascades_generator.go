@@ -1760,14 +1760,13 @@ func (r *paginatingRows) ColumnTypeScanType(index int) reflect.Type {
 		return reflect.TypeOf((*float64)(nil)).Elem()
 	case "FLOAT":
 		return reflect.TypeOf((*float32)(nil)).Elem()
-	case "STRING":
+	case "STRING", "DATE", "TIMESTAMP":
+		// A DATE or TIMESTAMP value is its canonical text.
 		return reflect.TypeOf((*string)(nil)).Elem()
 	case "BOOLEAN":
 		return reflect.TypeOf((*bool)(nil)).Elem()
 	case "BYTES", "BINARY":
 		return reflect.TypeOf((*[]byte)(nil)).Elem()
-	case "DATE", "TIMESTAMP":
-		return reflect.TypeOf((*time.Time)(nil)).Elem()
 	default:
 		return reflect.TypeOf((*any)(nil)).Elem()
 	}

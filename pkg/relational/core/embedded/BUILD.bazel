@@ -249,6 +249,7 @@ go_test(
         "rfc220_probe_test.go",
         "rfc232_planning_gaps_test.go",
         "same_shaped_join_legs_test.go",
+        "scan_type_test.go",
         "scope_ambiguous_test.go",
         "secondary_unique_proof_reachability_test.go",
         "select_helpers_test.go",
@@ -511,6 +512,7 @@ go_test(
         "aggregate_index_reverse_scan_test.go",
         "aggregate_merge_fixed_prefix_ordering_test.go",
         "template_routine_getters_test.go",
+        "scan_type_test.go",
     ],
     deps = [
         "//gen",
