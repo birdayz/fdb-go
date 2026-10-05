@@ -264,6 +264,7 @@ go_test(
         "system_filter_test.go",
         "system_rows_test.go",
         "table_path_reference_test.go",
+        "template_routine_getters_test.go",
         "tx_cancelled_context_test.go",
         "tx_catalog_binding_test.go",
         "tx_exec_error_fdb_tail_test.go",
@@ -509,6 +510,7 @@ go_test(
         "in_join_ordering_plan_test.go",
         "aggregate_index_reverse_scan_test.go",
         "aggregate_merge_fixed_prefix_ordering_test.go",
+        "template_routine_getters_test.go",
     ],
     deps = [
         "//gen",

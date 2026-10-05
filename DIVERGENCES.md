@@ -2781,3 +2781,12 @@ that count is 0 or absent (`AggregateIndexMatchCandidate.NeedsNonNullCompanion`)
 without one it declines the index and aggregates the records. Relational scalar
 columns are always nullable and the DDL emits no COUNT(col) companion (TODO.md
 section 10), so a SQL SUM index is read only beside a declared COUNT(col).
+
+## Macro routine description
+
+Java's `SchemaTemplate.getInvokedRoutines()` describes a stored macro function by
+`UserDefinedMacroFunction.toString()`, which the class does not override, so the
+description is the object's class name and identity hash, different on every load
+(`RecordMetadataDeserializer.generateInvokedRoutineBuilder`). Go describes a macro by
+its function name. A SQL-bodied function and a view are described by their stored
+definition in both engines.

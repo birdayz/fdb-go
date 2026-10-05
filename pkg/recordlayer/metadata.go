@@ -120,6 +120,11 @@ func (m *RecordMetaData) UserDefinedFunctions() []*gen.PUserDefinedFunction {
 	return m.preserved.userDefinedFunctions
 }
 
+// StoredQueries returns the stored queries (MetaData field 16).
+func (m *RecordMetaData) StoredQueries() []*gen.PStoredQuery {
+	return m.preserved.storedQueries
+}
+
 // Views returns the schema's SQL views (MetaData field 15), in stored order.
 func (m *RecordMetaData) Views() []*gen.PView {
 	return m.preserved.views

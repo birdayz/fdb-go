@@ -42,7 +42,10 @@ var _ = Describe("WSHMacroCatalogConformance", func() {
 			`CREATE FUNCTION add2(IN a BIGINT, IN b BIGINT DEFAULT 1 + 1) RETURNS BIGINT RETURN a + b ` +
 			`CREATE FUNCTION zero() RETURNS BIGINT RETURN 0L ` +
 			`CREATE FUNCTION st1_z(IN s TYPE st1) RETURNS BIGINT RETURN s.z ` +
-			`CREATE FUNCTION tf(IN lo BIGINT, IN hi BIGINT DEFAULT 10) AS SELECT id, a FROM t WHERE id BETWEEN lo AND hi`
+			`CREATE FUNCTION tf(IN lo BIGINT, IN hi BIGINT DEFAULT 10) AS SELECT id, a FROM t WHERE id BETWEEN lo AND hi` +
+			` CREATE VIEW v AS SELECT id, a FROM t WHERE a > 10 ` +
+			`CREATE STORED QUERY q1 AS SELECT id FROM t ` +
+			`CREATE STORED QUERY q2 DECLARE FUNCTION f(IN x BIGINT) AS (SELECT id FROM t WHERE id = x) AS SELECT * FROM f(1)`
 		suffix := strings.ToUpper(strings.ReplaceAll(uuid.New().String()[:8], "-", ""))
 		javaName, goName := "WSH_MACRO_J_"+suffix, "WSH_MACRO_G_"+suffix
 		drop := func(name string) {
@@ -62,7 +65,8 @@ var _ = Describe("WSHMacroCatalogConformance", func() {
 		}, &created)).To(Succeed())
 		Expect(created.Created).To(BeTrue())
 		defer drop(javaName)
-		javaFns := loadStoredJavaTemplateMetaData(ctx, db, javaName).GetUserDefinedFunctions()
+		javaMD := loadStoredJavaTemplateMetaData(ctx, db, javaName)
+		javaFns := javaMD.GetUserDefinedFunctions()
 
 		goTmpl, err := embedded.BuildSchemaTemplateFromDDLNamed(body, goName)
 		Expect(err).NotTo(HaveOccurred())
@@ -99,6 +103,20 @@ var _ = Describe("WSHMacroCatalogConformance", func() {
 			}
 		}
 		Expect(defDiffs).To(BeEmpty(), "stored definitions differ")
+		marshal := func(m proto.Message) string {
+			b, err := proto.MarshalOptions{Deterministic: true}.Marshal(m)
+			Expect(err).NotTo(HaveOccurred())
+			return fmt.Sprintf("%x", b)
+		}
+		Expect(javaMD.GetViews()).To(HaveLen(1))
+		Expect(goProto.GetViews()).To(HaveLen(1))
+		Expect(marshal(goProto.GetViews()[0])).To(Equal(marshal(javaMD.GetViews()[0])), "stored view")
+		Expect(javaMD.GetStoredQueries()).To(HaveLen(2))
+		Expect(goProto.GetStoredQueries()).To(HaveLen(2))
+		for i, q := range javaMD.GetStoredQueries() {
+			fmt.Fprintf(GinkgoWriter, "WSH-STORED-QUERY java=%v go=%v\n", q, goProto.GetStoredQueries()[i])
+			Expect(marshal(goProto.GetStoredQueries()[i])).To(Equal(marshal(q)), "stored query %s", q.GetName())
+		}
 
 		cat, err := catalog.OpenRecordLayerStoreCatalog()
 		Expect(err).NotTo(HaveOccurred())
@@ -128,6 +146,7 @@ var _ = Describe("WSHMacroCatalogConformance", func() {
 			`SELECT st1_z(st1_d(7)) FROM t WHERE id = 1`,
 			`SELECT * FROM tf(1) ORDER BY id`,
 			`SELECT * FROM tf(lo => 2, hi => 20) ORDER BY id`,
+			`SELECT * FROM v ORDER BY id`,
 		} {
 			own, overGo := run(javaName, q), run(goName, q)
 			fmt.Fprintf(GinkgoWriter, "WSH-MACRO %s\n  own=%s\n  over-go=%s\n", q, own, overGo)
