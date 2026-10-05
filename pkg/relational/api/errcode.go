@@ -52,6 +52,7 @@ const (
 	// Class 22 — Data Exception
 	ErrCodeCannotConvertType            ErrorCode = "22000"
 	ErrCodeNumericValueOutOfRange       ErrorCode = "22003"
+	ErrCodeDatetimeFieldOverflow        ErrorCode = "22008"
 	ErrCodeDivisionByZero               ErrorCode = "22012"
 	ErrCodeInvalidRowCountInLimitClause ErrorCode = "2201W"
 	ErrCodeEscapeCharacterConflict      ErrorCode = "2200B"
@@ -208,6 +209,11 @@ var goOnlyErrorCodes = map[ErrorCode]string{
 		"is raised. Java's enum has no member for the integral case; it raises " +
 		"java.lang.ArithmeticException, which ExceptionUtil maps to UNKNOWN via " +
 		"its final fallthrough.",
+	ErrCodeDatetimeFieldOverflow: "SQL-standard 22008 (datetime field overflow) for a bound " +
+		"time.Time whose UTC year is outside 0000-9999, which has no canonical " +
+		"TIMESTAMP text that parses back or sorts by instant. DATE and TIMESTAMP " +
+		"values are a Go extension; Java has no temporal type, so the condition " +
+		"cannot arise there.",
 	ErrCodeCharacterNotInRepertoire: "SQL-standard 22021 for SQL text or a string parameter that is " +
 		"not valid UTF-8. A Java String is UTF-16 and cannot hold such text, so " +
 		"the condition cannot arise there; Go refuses it rather than store bytes " +
@@ -234,7 +240,7 @@ func init() {
 		ErrCodeUnableToEstablishSQLConnection, ErrCodeConnectionDoesNotExist, ErrCodeInvalidPath, ErrCodeCannotCommitRollbackWithAutocommit,
 		ErrCodeUnsupportedOperation, ErrCodeUnsupportedQuery, ErrCodeUnsupportedSort,
 		ErrCodeCardinalityViolation,
-		ErrCodeCannotConvertType, ErrCodeNumericValueOutOfRange, ErrCodeDivisionByZero, ErrCodeInvalidRowCountInLimitClause, ErrCodeInvalidParameter, ErrCodeArrayElementError,
+		ErrCodeCannotConvertType, ErrCodeNumericValueOutOfRange, ErrCodeDatetimeFieldOverflow, ErrCodeDivisionByZero, ErrCodeInvalidRowCountInLimitClause, ErrCodeInvalidParameter, ErrCodeArrayElementError,
 		ErrCodeEscapeCharacterConflict, ErrCodeInvalidEscapeCharacter, ErrCodeInvalidEscapeSequence, ErrCodeCharacterNotInRepertoire,
 		ErrCodeInvalidBinaryRepresentation, ErrCodeInvalidArgumentForFunction, ErrCodeInvalidCast,
 		ErrCodeCopySerializationError, ErrCodeCopyImportValidationError,

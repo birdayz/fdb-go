@@ -40,7 +40,12 @@ genrule(
                     -DWITH_PYTHON=OFF -DUSE_WERROR=OFF -DBUILD_TESTING=OFF \
                     2>&1 | tail -3
 
-                ninja -C /tmp/build -j$$(nproc) fdb_c 2>&1 | tail -3
+                # One compile of FDB C++ peaks near 1.5 GB: one job per 2 GB
+                # available, at most one per core. -j$(nproc) on a 24-thread
+                # host took 36 GB and pushed it into swap.
+                MEM_KB=$$(grep MemAvailable /proc/meminfo | tr -s " " | cut -d" " -f2)
+                JOBS=$$(( MEM_KB / 2097152 )); [ "$$JOBS" -ge 1 ] || JOBS=1; [ "$$JOBS" -le "$$(nproc)" ] || JOBS=$$(nproc)
+                ninja -C /tmp/build -j$$JOBS fdb_c 2>&1 | tail -3
                 tar cf /out/fdb_build.tar -C /tmp build fdb
                 chmod 666 /out/fdb_build.tar
             '
@@ -97,7 +102,9 @@ EOF
                 grep -q schema_extract.cmake /tmp/fdb/CMakeLists.txt || \
                     echo "include(schema_extract.cmake)" >> /tmp/fdb/CMakeLists.txt
 
-                ninja -C /tmp/build -j$$(nproc) schema_extract 2>&1 | tail -3
+                MEM_KB=$$(grep MemAvailable /proc/meminfo | tr -s " " | cut -d" " -f2)
+                JOBS=$$(( MEM_KB / 2097152 )); [ "$$JOBS" -ge 1 ] || JOBS=1; [ "$$JOBS" -le "$$(nproc)" ] || JOBS=$$(nproc)
+                ninja -C /tmp/build -j$$JOBS schema_extract 2>&1 | tail -3
                 mkdir -p /out/types
                 /tmp/build/bin/schema_extract /out/types
                 cd /out && tar cf /out/wire_types.tar types/

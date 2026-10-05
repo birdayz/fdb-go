@@ -9,7 +9,6 @@ go_library(
         "flatten.go",
         "proto_value.go",
         "text.go",
-        "time.go",
     ],
     importpath = "fdb.dev/pkg/relational/core/functions",
     visibility = ["//visibility:public"],
@@ -30,7 +29,6 @@ go_test(
         "ast_util_test.go",
         "functions_test.go",
         "proto_value_test.go",
-        "time_test.go",
     ],
     embed = [":functions"],
     deps = [

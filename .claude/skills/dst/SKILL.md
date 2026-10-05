@@ -430,7 +430,7 @@ commit-abort / identical reads. **libfdb_c is the spec.** This is exactly the 2-
 (Tier 1) plugs into as a 3rd oracle.
 
 ```sh
-# Bench differentials (part of `just test`; links libfdb_c, spins a container in TestMain)
+# Bench differentials (part of `just test-full` and PR CI, not the fast `just test`; links libfdb_c, spins a container in TestMain)
 bazelisk test //pkg/fdbgo/bench:bench_test --test_output=errors
 # Conflict-outcome oracle as an active fuzz (RFC-121: go-vs-cgo commit/abort agreement)
 mkdir -p /tmp/fuzz-cache && bazelisk test //pkg/fdbgo/bench:bench_test \

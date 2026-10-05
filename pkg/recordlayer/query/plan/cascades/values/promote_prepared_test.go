@@ -392,3 +392,60 @@ func TestPromotePreparedChildErrorAndNull(t *testing.T) {
 		t.Fatalf("root NULL = %#v, %v, calls=%d", got, err, child.calls)
 	}
 }
+
+// The temporal extension's promotions: DATE becomes the TIMESTAMP text of its
+// UTC midnight, DATE and TIMESTAMP become STRING as their text, and NULL
+// promotes to either. promotionMap's rows have runtime arms; no edge leads
+// from STRING into a temporal type or from TIMESTAMP to DATE (CASTs only),
+// and a STRING promotes to nothing but an ENUM or a UUID.
+func TestPromotePreparedTemporal(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name           string
+		source, target Type
+		input, want    any
+	}{
+		{"date_to_timestamp", NotNullDate, NotNullTimestamp, "2024-01-01", "2024-01-01 00:00:00"},
+		{"date_to_timestamp_floor", NotNullDate, NotNullTimestamp, "0000-01-01", "0000-01-01 00:00:00"},
+		{"date_to_timestamp_ceiling", NotNullDate, NotNullTimestamp, "9999-12-31", "9999-12-31 00:00:00"},
+		{"date_to_timestamp_null", NullableDate, NullableTimestamp, nil, nil},
+		{"date_to_string", NotNullDate, NotNullString, "2024-01-01", "2024-01-01"},
+		{"timestamp_to_string", NotNullTimestamp, NotNullString, "2024-01-01 10:00:00", "2024-01-01 10:00:00"},
+		{"null_to_date", NullType, NullableDate, nil, nil},
+		{"null_to_timestamp", NullType, NullableTimestamp, nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			p, err := NewPromoteValueChecked(&promotionCountedChild{typ: tc.source, value: tc.input}, tc.target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, err := p.Evaluate(nil); err != nil || got != tc.want {
+				t.Fatalf("%s -> %s of %#v = %#v, %v; want %#v", tc.source, tc.target, tc.input, got, err, tc.want)
+			}
+			if !IsPromotable(tc.source, tc.target) {
+				t.Fatalf("promotionMap has no %s -> %s row for this runtime arm", tc.source, tc.target)
+			}
+		})
+	}
+	for _, edge := range [][2]Type{
+		{NotNullString, NotNullDate},
+		{NotNullString, NotNullTimestamp},
+		{NotNullTimestamp, NotNullDate},
+		{NotNullDate, NotNullLong},
+		{NotNullTimestamp, NotNullLong},
+		{NotNullString, NotNullBytes},
+	} {
+		if _, err := NewPromoteValueChecked(&promotionCountedChild{typ: edge[0], value: "2024-01-01"}, edge[1]); err == nil {
+			t.Errorf("%s -> %s admitted; it is not an implicit promotion", edge[0], edge[1])
+		}
+	}
+	// A DATE carrier that is not a date text is a carrier error, not a silent pass.
+	p, err := NewPromoteValueChecked(&promotionCountedChild{typ: NotNullDate, value: int64(7)}, NotNullTimestamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Evaluate(nil); err == nil {
+		t.Error("a non-text DATE carrier promoted to TIMESTAMP without error")
+	}
+}

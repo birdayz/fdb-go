@@ -1,9 +1,9 @@
 package sqldriver_test
 
 // Probes parameter binding for every supported param type (the path
-// where a []byte param was mis-rendered as a string). time.Time→DATE/TIMESTAMP,
-// nil→NULL, bool, MaxInt64, and special float64 values must each render to a SQL
-// literal that round-trips to the same value.
+// where a []byte param was mis-rendered as a string). time.Time→TIMESTAMP text,
+// nil→NULL, bool, MaxInt64, and special float64 values must each bind to a
+// constant that round-trips to the same value.
 
 import (
 	"context"
@@ -75,13 +75,20 @@ func TestFDB_ParamRenderingProbe(t *testing.T) {
 	})
 
 	t.Run("date_param_value", func(t *testing.T) {
-		exec("INSERT INTO t (id, dt) VALUES (4, ?)", time.Date(2026, 6, 28, 0, 0, 0, 0, time.UTC))
-		var got string
-		if err := db.QueryRowContext(ctx, "SELECT dt FROM t WHERE id = 4").Scan(&got); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
-		if got != "2026-06-28" {
-			t.Errorf("date param round-trip = %q, want 2026-06-28", got)
+		// A time.Time is a TIMESTAMP value, at midnight too: a DATE-spelled
+		// column (stored as STRING) receives its timestamp text. CAST(? AS
+		// DATE) is how a caller stores a day.
+		midnight := time.Date(2026, 6, 28, 0, 0, 0, 0, time.UTC)
+		exec("INSERT INTO t (id, dt) VALUES (4, ?)", midnight)
+		exec("INSERT INTO t (id, dt) VALUES (6, CAST(? AS DATE))", midnight)
+		for id, want := range map[int]string{4: "2026-06-28 00:00:00", 6: "2026-06-28"} {
+			var got string
+			if err := db.QueryRowContext(ctx, "SELECT dt FROM t WHERE id = ?", id).Scan(&got); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			if got != want {
+				t.Errorf("row %d: date param round-trip = %q, want %q", id, got, want)
+			}
 		}
 	})
 

@@ -17,6 +17,7 @@ go_test(
         "infra_test.go",
         "render_test.go",
         "template_model_test.go",
+        "test_lanes_test.go",
     ],
     data = [
         "README.md",
@@ -32,6 +33,7 @@ go_test(
         "migrate_ci_volume_test.sh",
         "orphan_fdb_sweep_test.sh",
         "//:go.mod",
+        "//:justfile",
     ],
     deps = ["@in_gopkg_yaml_v3//:yaml_v3"],
 )

@@ -9,7 +9,6 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
-	"fdb.dev/pkg/relational/core/embedded"
 )
 
 // eqRange builds a single-column equality ComparisonRange `= lit`.
@@ -344,41 +343,59 @@ func TestOrderingInvariant_PurePlannerSweep(t *testing.T) {
 	// shape.
 	leafTypes := map[string]int{}
 	var samples []string
-	for seed := uint64(1); seed <= seeds; seed++ {
-		c := Generate(seed)
-		ddl := c.DDL()
-		for _, q := range c.Queries {
-			for _, proj := range c.ProjectionsFor(q) {
-				sqlText := c.SQL(q, proj)
-				plan, err := embedded.PlanPhysicalForTest(sqlText, ddl, nil)
-				if err != nil {
-					continue // plan errors are the row harness's concern, not this check's
-				}
-				checked++
-				// Observe-only reach telemetry: count in-memory sorts and how
-				// many sat over an input whose order the harness could not prove.
-				if singleTablePlain(q) && len(q.OrderBy) > 0 {
-					forEachInMemorySort(plan, func(s *plans.RecordQueryInMemorySortPlan) {
-						sorts++
-						if sortKeysMatchOrderBy(s.GetSortKeys(), q.OrderBy) {
-							sortsGuardMatched++
-						}
-						if providedOrdering(s.GetInner()) == nil {
-							sortsUnprovable++
-						}
-						leafArms[orderingLeafArm(s.GetInner())]++
-						leafTypes[fmt.Sprintf("%T", orderingLeaf(s.GetInner()))]++
-					})
-				}
-				for _, v := range checkPlanOrdering(plan, q) {
-					violations++
-					if len(samples) < 10 {
-						samples = append(samples, fmt.Sprintf("seed %d: %s [%s]", seed, sqlText, v))
+	type seedResult struct {
+		checked, sorts, sortsUnprovable, sortsGuardMatched int
+		leafArms, leafTypes                                map[string]int
+		violations                                         []string
+	}
+	swept, release := defaultSweep(seeds)
+	defer release()
+	sweepSeeds(seeds, func(seed uint64) seedResult {
+		r := seedResult{leafArms: map[string]int{}, leafTypes: map[string]int{}}
+		for _, sp := range swept[seed-1].plans {
+			q, sqlText, plan := sp.q, sp.sql, sp.plan
+			if sp.err != nil {
+				continue // plan errors are the row harness's concern, not this check's
+			}
+			r.checked++
+			// Observe-only reach telemetry: count in-memory sorts and how
+			// many sat over an input whose order the harness could not prove.
+			if singleTablePlain(q) && len(q.OrderBy) > 0 {
+				forEachInMemorySort(plan, func(s *plans.RecordQueryInMemorySortPlan) {
+					r.sorts++
+					if sortKeysMatchOrderBy(s.GetSortKeys(), q.OrderBy) {
+						r.sortsGuardMatched++
 					}
-				}
+					if providedOrdering(s.GetInner()) == nil {
+						r.sortsUnprovable++
+					}
+					r.leafArms[orderingLeafArm(s.GetInner())]++
+					r.leafTypes[fmt.Sprintf("%T", orderingLeaf(s.GetInner()))]++
+				})
+			}
+			for _, v := range checkPlanOrdering(plan, q) {
+				r.violations = append(r.violations, fmt.Sprintf("%s [%s]", sqlText, v))
 			}
 		}
-	}
+		return r
+	}, func(seed uint64, r seedResult) {
+		checked += r.checked
+		sorts += r.sorts
+		sortsUnprovable += r.sortsUnprovable
+		sortsGuardMatched += r.sortsGuardMatched
+		for k, n := range r.leafArms {
+			leafArms[k] += n
+		}
+		for k, n := range r.leafTypes {
+			leafTypes[k] += n
+		}
+		for _, v := range r.violations {
+			violations++
+			if len(samples) < 10 {
+				samples = append(samples, fmt.Sprintf("seed %d: %s", seed, v))
+			}
+		}
+	})
 	t.Logf("ordering-invariant sweep: %d plans checked across %d seeds; in-memory sorts observed=%d (guard-matched=%d, input order unprovable=%d); leaf arms=%v; leaf types=%v",
 		checked, seeds, sorts, sortsGuardMatched, sortsUnprovable, leafArms, leafTypes)
 	if checked == 0 {

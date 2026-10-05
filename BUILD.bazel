@@ -1,7 +1,10 @@
 load("@gazelle//:def.bzl", "gazelle")
 load("@rules_go//go:def.bzl", "nogo")
 
-exports_files(["buf.yaml"])
+exports_files([
+    "buf.yaml",
+    "justfile",
+])
 
 # The workflow definitions, staged as data for //infra:infra_test's
 # TestPushFanOutVersusTheRunnerPool — the instrument that reports one push's

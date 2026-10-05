@@ -2,6 +2,7 @@ package embedded
 
 import (
 	"context"
+	"database/sql/driver"
 	"fmt"
 	"strings"
 
@@ -15,6 +16,7 @@ import (
 	"fdb.dev/pkg/relational/core/parser"
 	"fdb.dev/pkg/relational/core/query"
 	"fdb.dev/pkg/relational/core/query/logical"
+	"github.com/antlr4-go/antlr/v4"
 )
 
 // PlanQueryForTest runs the full Cascades pipeline on a SQL query against
@@ -99,6 +101,32 @@ func PlanPhysicalForTestWithReachability(
 	return plan, err
 }
 
+// PlanPhysicalForTestWithArgs is PlanPhysicalForTestWithReachability with the
+// statement's parameters bound as the connection binds them, so a `?` plans
+// with its driver value's type, as it executes.
+func PlanPhysicalForTestWithArgs(
+	sql, schemaDDL string,
+	args []driver.NamedValue,
+	stats properties.StatisticsProvider,
+	reach *cascades.ReachabilityCollector,
+) (plans.RecordQueryPlan, error) {
+	popts := plannerOptionsFrom(nil)
+	popts.params = args
+	plan, _, err := planPhysicalForTest(sql, schemaDDL, stats, false, reach, popts)
+	return plan, err
+}
+
+// bindHarnessParameters binds a harness statement's parameters on its parse
+// tree; the release removes them. No parameters bind nothing, leaving every
+// `?` an untyped placeholder.
+func bindHarnessParameters(root antlr.Tree, params []driver.NamedValue) (func(), error) {
+	if len(params) == 0 {
+		return func() {}, nil
+	}
+	_, release, err := bindStatementParameters(root, params)
+	return release, err
+}
+
 // PlanPhysicalDMLForTest is PlanPhysicalForTest for a DELETE or UPDATE
 // statement: it routes the DML through the SAME logical-build → translate →
 // Cascades-plan → extract → ValidatePlanInvariants pipeline the production DML
@@ -117,7 +145,7 @@ func PlanPhysicalForTestWithReachability(
 // sql passed here MUST be a single DELETE or UPDATE statement; anything else is
 // a caller error (ErrCodeUnsupportedQuery).
 func PlanPhysicalDMLForTest(sql, schemaDDL string, stats properties.StatisticsProvider) (plans.RecordQueryPlan, error) {
-	return planPhysicalDMLForTest(sql, schemaDDL, stats, nil)
+	return planPhysicalDMLForTest(sql, schemaDDL, nil, stats, nil)
 }
 
 // PlanPhysicalDMLForTestWithReachability is PlanPhysicalDMLForTest with
@@ -128,7 +156,18 @@ func PlanPhysicalDMLForTestWithReachability(
 	stats properties.StatisticsProvider,
 	reach *cascades.ReachabilityCollector,
 ) (plans.RecordQueryPlan, error) {
-	return planPhysicalDMLForTest(sql, schemaDDL, stats, reach)
+	return planPhysicalDMLForTest(sql, schemaDDL, nil, stats, reach)
+}
+
+// PlanPhysicalDMLForTestWithArgs is PlanPhysicalDMLForTestWithReachability
+// with the statement's parameters bound as the connection binds them.
+func PlanPhysicalDMLForTestWithArgs(
+	sql, schemaDDL string,
+	args []driver.NamedValue,
+	stats properties.StatisticsProvider,
+	reach *cascades.ReachabilityCollector,
+) (plans.RecordQueryPlan, error) {
+	return planPhysicalDMLForTest(sql, schemaDDL, args, stats, reach)
 }
 
 // planPhysicalForTest is PlanPhysicalForTest plus the optional RFC-224
@@ -210,6 +249,11 @@ func planPhysicalForMetaData(
 			return nil, nil, err
 		}
 	}
+	release, err := bindHarnessParameters(root, popts.params)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer release()
 	stmts := root.Statements()
 	if stmts == nil || len(stmts.AllStatement()) == 0 {
 		return nil, nil, fmt.Errorf("no statements in SQL")
@@ -394,6 +438,7 @@ func planReferenceToPhysical(
 // drops the production SELECT generator's connection-bound steps.
 func planPhysicalDMLForTest(
 	sql, schemaDDL string,
+	args []driver.NamedValue,
 	stats properties.StatisticsProvider,
 	reach *cascades.ReachabilityCollector,
 ) (plans.RecordQueryPlan, error) {
@@ -401,7 +446,7 @@ func planPhysicalDMLForTest(
 	if err != nil {
 		return nil, fmt.Errorf("schema DDL: %w", err)
 	}
-	return planPhysicalDMLWithMetadata(sql, tmpl.Underlying(), stats, reach)
+	return planPhysicalDMLWithMetadata(sql, tmpl.Underlying(), args, stats, reach)
 }
 
 // PlanPhysicalDMLWithMetadata is PlanPhysicalDMLForTest against PRE-BUILT
@@ -415,12 +460,13 @@ func PlanPhysicalDMLWithMetadata(
 	md *recordlayer.RecordMetaData,
 	stats properties.StatisticsProvider,
 ) (plans.RecordQueryPlan, error) {
-	return planPhysicalDMLWithMetadata(sql, md, stats, nil)
+	return planPhysicalDMLWithMetadata(sql, md, nil, stats, nil)
 }
 
 func planPhysicalDMLWithMetadata(
 	sql string,
 	md *recordlayer.RecordMetaData,
+	args []driver.NamedValue,
 	stats properties.StatisticsProvider,
 	reach *cascades.ReachabilityCollector,
 ) (plans.RecordQueryPlan, error) {
@@ -428,6 +474,11 @@ func planPhysicalDMLWithMetadata(
 	if err != nil {
 		return nil, fmt.Errorf("parse SQL: %w", err)
 	}
+	release, err := bindHarnessParameters(root, args)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	stmts := root.Statements()
 	if stmts == nil || len(stmts.AllStatement()) == 0 {
 		return nil, fmt.Errorf("no statements in SQL")

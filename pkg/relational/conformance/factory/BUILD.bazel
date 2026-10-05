@@ -94,6 +94,7 @@ go_test(
     tags = [
         "exclusive",
         "resources:memory:3300",
+        "test-full",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades",

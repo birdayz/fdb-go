@@ -500,7 +500,7 @@ func (c *Container) startAdditionalProcesses(ctx context.Context) error {
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		output, err := c.FDBCLIExec(ctx, "status minimal")
-		if err == nil && (strings.Contains(output, "Healthy") || strings.Contains(output, "available")) {
+		if err == nil && DatabaseAvailable(output) {
 			// Count processes via ps aux (more reliable than parsing status details).
 			procCount, _ := c.countProcesses(ctx)
 			if procCount >= c.config.processCount {
@@ -523,6 +523,29 @@ func (c *Container) countProcesses(ctx context.Context) (int, error) {
 	var count int
 	fmt.Sscanf(strings.TrimSpace(out), "%d", &count)
 	return count, nil
+}
+
+// DatabaseAvailable reports whether fdbcli `status minimal` output says the
+// database is available. The phrase is matched whole: "unavailable" contains
+// "available", and FDB 7.3 never prints "Healthy" there.
+func DatabaseAvailable(statusMinimal string) bool {
+	return strings.Contains(statusMinimal, "The database is available")
+}
+
+// WaitAvailable polls `status minimal` until the database is available or ctx
+// ends; the caller's ctx is its only deadline.
+func (c *Container) WaitAvailable(ctx context.Context) error {
+	for {
+		output, err := c.FDBCLIExec(ctx, "status minimal")
+		if err == nil && DatabaseAvailable(output) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("database not available: %w (last status %q, error %v)", ctx.Err(), output, err)
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 // FDBCLIExec runs an fdbcli command inside the container and returns the output.

@@ -8,6 +8,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/vectorcodec"
@@ -281,6 +282,95 @@ func TestBindStatementParameters_UnsupportedTypeNamesParameter(t *testing.T) {
 		var apiErr *api.Error
 		if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidParameter || apiErr.Message != c.want {
 			t.Errorf("want 22023 %q, got %v", c.want, err)
+		}
+	}
+}
+
+// A time binds as the TIMESTAMP value of its instant: canonical UTC text to
+// the second, never classified by its own zone's midnight (which once bound
+// 2024-01-01T00:00+02:00 as the day '2023-12-31', 22 hours away).
+func TestParameterConstant_Time(t *testing.T) {
+	t.Parallel()
+	plus2 := time.FixedZone("UTC+2", 2*3600)
+	minus5 := time.FixedZone("UTC-5", -5*3600)
+	at := time.Date(2024, 7, 4, 15, 30, 45, 0, time.UTC)
+	for _, c := range []struct {
+		name string
+		in   any
+		want string
+	}{
+		{"utc", at, "2024-07-04 15:30:45"},
+		{"utc midnight", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), "2024-01-01 00:00:00"},
+		{"midnight east of utc", time.Date(2024, 1, 1, 0, 0, 0, 0, plus2), "2023-12-31 22:00:00"},
+		{"midnight west of utc", time.Date(2024, 1, 1, 0, 0, 0, 0, minus5), "2024-01-01 05:00:00"},
+		{"evening west of utc", time.Date(2024, 1, 1, 20, 0, 0, 0, minus5), "2024-01-02 01:00:00"},
+		{"subsecond dropped", time.Date(2024, 7, 4, 15, 30, 45, 999999999, time.UTC), "2024-07-04 15:30:45"},
+		{"domain floor", time.Date(0, 1, 1, 0, 0, 0, 0, time.UTC), "0000-01-01 00:00:00"},
+		{"domain ceiling", time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC), "9999-12-31 23:59:59"},
+		{"pointer", &at, "2024-07-04 15:30:45"},
+		{"sql.NullTime", sql.NullTime{Time: at, Valid: true}, "2024-07-04 15:30:45"},
+		{"sql.Null[time.Time]", sql.Null[time.Time]{V: at, Valid: true}, "2024-07-04 15:30:45"},
+	} {
+		v, err := parameterConstant(c.in)
+		if err != nil {
+			t.Errorf("%s: %v", c.name, err)
+			continue
+		}
+		cv, ok := v.(*values.ConstantValue)
+		if !ok || !cv.Typ.Equals(values.NotNullTimestamp) || cv.Value != c.want {
+			t.Errorf("%s: bound %#v, want NOT NULL TIMESTAMP %q", c.name, v, c.want)
+		}
+	}
+	for _, in := range []any{(*time.Time)(nil), sql.NullTime{}} {
+		if v, err := parameterConstant(in); err != nil || v.Type().Code() != values.TypeCodeNull {
+			t.Errorf("%#v: bound %v, %v; want an untyped NULL", in, v, err)
+		}
+	}
+	// An array of times is ARRAY<TIMESTAMP> from its static element type, an
+	// empty one included, each element taking the canonical rule.
+	for _, in := range []any{[]time.Time{at, time.Date(2024, 1, 1, 0, 0, 0, 0, plus2)}, []time.Time{}, []*time.Time{&at}} {
+		v, err := parameterConstant(in)
+		if err != nil {
+			t.Fatalf("%#v: %v", in, err)
+		}
+		arr, ok := v.Type().(*values.ArrayType)
+		if !ok || !arr.ElementType.Equals(values.NotNullTimestamp) {
+			t.Errorf("%#v: type %v, want ARRAY<TIMESTAMP>", in, v.Type())
+		}
+	}
+	v, _ := parameterConstant([]time.Time{at, time.Date(2024, 1, 1, 0, 0, 0, 0, plus2)})
+	if got := v.(*values.ConstantValue).Value.([]any); got[0] != "2024-07-04 15:30:45" || got[1] != "2023-12-31 22:00:00" {
+		t.Errorf("[]time.Time payload: %v", got)
+	}
+}
+
+// A time whose UTC year is outside 0000-9999 is refused at bind with 22008
+// naming the parameter, as an array element too: its text would neither
+// parse back nor sort by instant.
+func TestBindStatementParameters_TimeOutOfDomain(t *testing.T) {
+	t.Parallel()
+	root, err := parser.Parse("SELECT id FROM t WHERE ts = ? OR ts IN ?when")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	year10000 := time.Date(9999, 12, 31, 23, 0, 0, 0, time.FixedZone("UTC-5", -5*3600))
+	yearMinus1 := time.Date(0, 1, 1, 0, 30, 0, 0, time.FixedZone("UTC+1", 3600))
+	for _, c := range []struct {
+		name string
+		args []driver.NamedValue
+		want string
+	}{
+		{"year 10000 in utc", []driver.NamedValue{{Ordinal: 1, Value: year10000}, {Name: "when", Value: []time.Time{ok}}}, "parameter 1"},
+		{"year -1 in utc", []driver.NamedValue{{Ordinal: 1, Value: yearMinus1}, {Name: "when", Value: []time.Time{ok}}}, "parameter 1"},
+		{"pointer", []driver.NamedValue{{Ordinal: 1, Value: &year10000}, {Name: "when", Value: []time.Time{ok}}}, "parameter 1"},
+		{"array element", []driver.NamedValue{{Ordinal: 1, Value: ok}, {Name: "when", Value: []time.Time{ok, year10000}}}, "parameter when"},
+	} {
+		_, release, err := bindStatementParameters(root, c.args)
+		release()
+		var apiErr *api.Error
+		if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeDatetimeFieldOverflow || !strings.Contains(apiErr.Message, c.want) {
+			t.Errorf("%s: want 22008 naming %q, got %v", c.name, c.want, err)
 		}
 	}
 }

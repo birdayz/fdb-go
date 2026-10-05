@@ -197,6 +197,7 @@ go_test(
     tags = [
         "exclusive",
         "resources:memory:2500",
+        "test-full",
     ],
     deps = [
         "//pkg/fdbgo/transport",

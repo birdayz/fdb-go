@@ -202,6 +202,11 @@ func (s *Scenario) validate() error {
 				if _, err := decodeScalars(row); err != nil {
 					return fmt.Errorf("tests[%d]: exact_rows[%d]: %w", i, j, err)
 				}
+				for _, v := range row {
+					if v.Kind == "time" {
+						return fmt.Errorf("tests[%d]: exact_rows[%d]: time is a parameter kind; results are text", i, j)
+					}
+				}
 			}
 		}
 		if t.EffectiveErrorCode() != "" && (t.Rows != nil || t.ExactRows != nil || t.Columns != nil || t.ColumnTypes != nil || t.PlanContains != "" || t.PlanNotContains != "" || t.Unordered) {

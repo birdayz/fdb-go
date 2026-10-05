@@ -241,7 +241,7 @@ func newParser(
 			releasePredictionState()
 		}
 	}()
-	lexerState = relationalLexerPredictionStates.acquire(lexer.Interpreter.ATN())
+	lexerState = relationalLexerPredictionStates.acquire()
 	useLexerPredictionState(lexer, lexerState)
 
 	listener := &collectingErrorListener{sql: sql}
@@ -254,7 +254,7 @@ func newParser(
 	}
 
 	p = antlrgen.NewRelationalParser(tokens)
-	parserState = relationalParserPredictionStates.acquire(p.Interpreter.ATN())
+	parserState = relationalParserPredictionStates.acquire()
 	useParserPredictionState(p, parserState)
 	p.RemoveErrorListeners()
 	p.AddErrorListener(listener)
@@ -274,7 +274,11 @@ type predictionState struct {
 	sharedContextCache *antlr.PredictionContextCache
 }
 
+// predictionStatePool leases prediction state, each with its own ATN: the
+// runtime locks the ATN on every DFA edge it adds, so leases sharing one ATN
+// would serialize every concurrent parse.
 type predictionStatePool struct {
+	newATN    func() *antlr.ATN
 	mu        sync.Mutex
 	available []*predictionState
 }
@@ -285,23 +289,20 @@ type predictionStatePool struct {
 var maxRetainedPredictionStates = min(runtime.GOMAXPROCS(0), 8)
 
 var (
-	relationalLexerPredictionStates  predictionStatePool
-	relationalParserPredictionStates predictionStatePool
+	relationalLexerPredictionStates  = predictionStatePool{newATN: antlrgen.NewRelationalLexerATN}
+	relationalParserPredictionStates = predictionStatePool{newATN: antlrgen.NewRelationalParserATN}
 )
 
-func (pool *predictionStatePool) acquire(atn *antlr.ATN) *predictionState {
+func (pool *predictionStatePool) acquire() *predictionState {
 	pool.mu.Lock()
-	for len(pool.available) > 0 {
-		last := len(pool.available) - 1
+	if last := len(pool.available) - 1; last >= 0 {
 		state := pool.available[last]
 		pool.available = pool.available[:last]
-		if state.atn == atn {
-			pool.mu.Unlock()
-			return state
-		}
+		pool.mu.Unlock()
+		return state
 	}
 	pool.mu.Unlock()
-	return newPredictionState(atn)
+	return newPredictionState(pool.newATN())
 }
 
 func newPredictionState(atn *antlr.ATN) *predictionState {

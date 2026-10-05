@@ -135,7 +135,8 @@ func compilePromotion(source, target Type) (*promotionNode, error) {
 	}
 	if source.Code() == TypeCodeNull {
 		switch target.Code() {
-		case TypeCodeInt, TypeCodeLong, TypeCodeFloat, TypeCodeDouble, TypeCodeBoolean, TypeCodeString, TypeCodeArray, TypeCodeRecord, TypeCodeEnum, TypeCodeBytes, TypeCodeVersion, TypeCodeVector:
+		case TypeCodeInt, TypeCodeLong, TypeCodeFloat, TypeCodeDouble, TypeCodeBoolean, TypeCodeString, TypeCodeArray, TypeCodeRecord, TypeCodeEnum, TypeCodeBytes, TypeCodeVersion, TypeCodeVector,
+			TypeCodeDate, TypeCodeTimestamp:
 			return n, nil
 		}
 		return bad()
@@ -196,6 +197,18 @@ func compilePromotion(source, target Type) (*promotionNode, error) {
 		}
 	case TypeCodeString:
 		if target.Code() == TypeCodeEnum || target.Code() == TypeCodeUuid {
+			return n, nil
+		}
+	// Go's temporal extension (promotionMap's DATE and TIMESTAMP rows): a DATE
+	// becomes the TIMESTAMP of its midnight, and either becomes its text as a
+	// STRING. No edge leads INTO a temporal type from STRING, and none from
+	// TIMESTAMP to DATE: those are CASTs.
+	case TypeCodeDate:
+		if target.Code() == TypeCodeTimestamp || target.Code() == TypeCodeString {
+			return n, nil
+		}
+	case TypeCodeTimestamp:
+		if target.Code() == TypeCodeString {
 			return n, nil
 		}
 	}
@@ -387,11 +400,17 @@ func (n *promotionNode) coerce(v any) (any, error) {
 		if target, ok := n.target.(*EnumType); ok {
 			return stringToEnumValue(target, text)
 		}
+		if !IsUuid(n.target) {
+			return nil, &PromotionError{Reason: fmt.Sprintf("no STRING promotion to %s", n.target)}
+		}
 		u, ok := ParseJavaUUID(text)
 		if !ok {
 			return nil, &InvalidUUIDValueError{Value: text}
 		}
 		return u, nil
+	}
+	if n.source.Code() == TypeCodeDate || n.source.Code() == TypeCodeTimestamp {
+		return n.coerceTemporal(v)
 	}
 	// The operator was selected from declared types during preparation. These
 	// carrier conversions implement that operator, not runtime type inference.
@@ -416,6 +435,27 @@ func (n *promotionNode) coerce(v any) (any, error) {
 		}
 	}
 	return nil, &PromotionError{Reason: fmt.Sprintf("invalid carrier %T for %s", v, n.source)}
+}
+
+// coerceTemporal carries out a DATE or TIMESTAMP promotion. The carrier is
+// the value's canonical text: a DATE becomes the TIMESTAMP text of its UTC
+// midnight, and either becomes a STRING as it is.
+func (n *promotionNode) coerceTemporal(v any) (any, error) {
+	text, ok := v.(string)
+	if !ok {
+		return nil, &PromotionError{Reason: fmt.Sprintf("%s carrier is %T", n.source, v)}
+	}
+	switch {
+	case n.target.Code() == TypeCodeString:
+		return text, nil
+	case n.source.Code() == TypeCodeDate && n.target.Code() == TypeCodeTimestamp:
+		t, err := ParseTemporalText(text)
+		if err != nil {
+			return nil, &PromotionError{Reason: fmt.Sprintf("DATE carrier: %v", err)}
+		}
+		return t.Format(timestampLayout), nil
+	}
+	return nil, &PromotionError{Reason: fmt.Sprintf("no promotion %s -> %s", n.source, n.target)}
 }
 
 func (n *promotionNode) coerceRecord(v any) (any, error) {

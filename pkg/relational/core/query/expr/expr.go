@@ -1156,6 +1156,14 @@ func (r *Resolver) ResolveComparison(op predicates.ComparisonType, left, right v
 				right = values.NewPromoteValue(right, maximum)
 			}
 		}
+		// Go's temporal extension injects its promotion the same way: a DATE
+		// compared with a TIMESTAMP compares as the TIMESTAMP of its midnight.
+		// Both carry canonical text, whose order within 0000-9999 is the
+		// instant order, but a date text and its midnight's timestamp text
+		// differ, so without the promotion a day neither equals nor sorts
+		// with its own midnight.
+		promoted := promoteTemporalBranches([]values.Value{left, right}, maximum)
+		left, right = promoted[0], promoted[1]
 		// BOOLEAN HAS NO ORDER. Java's RelOpValue declares typed binaries per
 		// operator, and there is no LT/LTE/GT/GTE binary for BOOLEAN — only
 		// equality, inequality and the null-safe forms — so `f > FALSE`
@@ -1936,6 +1944,7 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 	// EVALUATED — at plan open for an exploded IN, per row for a residual one.
 	// Record constructors need their finalized descriptors before evaluation;
 	// folding here would turn positional records into name-keyed maps.
+	left, rhs = promoteTemporalInOperands(left, rhs)
 	if values.IsRecord(left.Type()) || !allInListItemsConstant(rhs) || anyInListItemFoldsToNull(rhs) {
 		items := promoteInListItemsToDeclaredType(left, rhs)
 		return predicates.NewComparisonPredicate(left, predicates.Comparison{
@@ -1997,6 +2006,74 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 		Type:    predicates.ComparisonIn,
 		Operand: &values.ConstantValue{Value: list, Typ: values.TypeUnknown},
 	}), nil
+}
+
+// promoteTemporalInOperands is the DATE-to-TIMESTAMP promotion of Go's
+// temporal extension for IN, applied before the constant and runtime forks
+// so both see it (and the explode's equalities inherit it). The items take
+// their common type, so a DATE item among TIMESTAMP items becomes its
+// midnight's TIMESTAMP text; a DATE probe against such a list is promoted the
+// same way, and against a TIMESTAMP probe every DATE item is. A STRING probe
+// is never promoted to a temporal type: it compares text.
+func promoteTemporalInOperands(left values.Value, rhs []values.Value) (values.Value, []values.Value) {
+	var itemTypes []values.Type
+	for _, v := range rhs {
+		if v == nil || v.Type() == nil {
+			continue
+		}
+		switch v.Type().Code() {
+		case values.TypeCodeNull, values.TypeCodeUnknown:
+			continue
+		}
+		itemTypes = append(itemTypes, v.Type())
+	}
+	if len(itemTypes) == 0 {
+		return left, rhs
+	}
+	items := values.MaximumTypeOfMany(itemTypes...)
+	if items == nil {
+		return left, rhs
+	}
+	lt := left.Type()
+	switch {
+	case items.Code() == values.TypeCodeTimestamp:
+		if lt != nil && lt.Code() == values.TypeCodeDate {
+			left = promoteTemporalBranches([]values.Value{left}, items)[0]
+		}
+	case items.Code() == values.TypeCodeDate && lt != nil && lt.Code() == values.TypeCodeTimestamp:
+		items = lt
+	default:
+		return left, rhs
+	}
+	return left, promoteTemporalBranches(rhs, items)
+}
+
+// promoteTemporalBranches promotes every DATE-typed value among vs to
+// TIMESTAMP, keeping its nullability, when the type they merge to is
+// TIMESTAMP; otherwise vs is returned as is. It is the injection site of Go's
+// one temporal promotion (compilePromotion's DATE-to-TIMESTAMP arm: the
+// TIMESTAMP text of the day's midnight) for comparisons, IN lists and the
+// type-merging operators, as Java's RelOpValue.promoteOperands, InOpValue and
+// PickValue/VariadicFunctionValue inject their promotions: after it the
+// values agree on one type, so their texts compare in instant order.
+func promoteTemporalBranches(vs []values.Value, merged values.Type) []values.Value {
+	if merged == nil || merged.Code() != values.TypeCodeTimestamp {
+		return vs
+	}
+	var out []values.Value
+	for i, v := range vs {
+		if v == nil || v.Type() == nil || v.Type().Code() != values.TypeCodeDate {
+			continue
+		}
+		if out == nil {
+			out = append([]values.Value(nil), vs...)
+		}
+		out[i] = values.NewPromoteValue(v, values.WithNullability(merged, v.Type().IsNullable()))
+	}
+	if out == nil {
+		return vs
+	}
+	return out
 }
 
 // promoteInListItemsToDeclaredType wraps each item of a RUNTIME IN list in

@@ -704,7 +704,8 @@ func (r *Resolver) walkCaseFunctionCall(ctx *antlrgen.CaseFunctionCallContext) (
 	}
 
 	selector := values.NewConditionSelectorValue(implications)
-	return values.NewPickValue(selector, alternatives, caseResultType(alternatives)), nil
+	typ := caseResultType(alternatives)
+	return values.NewPickValue(selector, promoteTemporalBranches(alternatives, typ), typ), nil
 }
 
 // caseResultType computes a CASE expression's result type as the common
@@ -802,7 +803,8 @@ func (r *Resolver) walkSimpleCaseFunctionCall(ctx *antlrgen.CaseExpressionFuncti
 	}
 
 	selector := values.NewConditionSelectorValue(implications)
-	return values.NewPickValue(selector, alternatives, caseResultType(alternatives)), nil
+	typ := caseResultType(alternatives)
+	return values.NewPickValue(selector, promoteTemporalBranches(alternatives, typ), typ), nil
 }
 
 // walkCaseCondition resolves a CASE WHEN condition expression. The
@@ -1237,6 +1239,10 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (va
 	switch name {
 	case "COALESCE", "GREATEST", "LEAST":
 		args = promoteStructuredVariadicArguments(args, typ)
+	}
+	switch name {
+	case "COALESCE", "GREATEST", "LEAST", "IFNULL":
+		args = promoteTemporalBranches(args, typ)
 	}
 	return values.NewScalarFunctionValue(name, typ, args...), nil
 }

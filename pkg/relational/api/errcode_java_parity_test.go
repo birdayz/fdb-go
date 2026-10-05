@@ -50,7 +50,8 @@ var javaErrorCodes = []string{
 // surfaces in TestGoOnlyErrorCodesAreRegistered). What slips through is a
 // constant that is neither in Java's enum nor documented as Go-only AND is
 // unregistered — which is also a code ErrorCodeFromString can never return, so
-// nothing can produce it. Registry and const block both hold 81 entries today.
+// nothing can produce it. Registry and const block both hold 84 entries (77 Java
+// codes and 7 Go-only) as of the 22008 addition.
 func TestErrorCodesMatchJava(t *testing.T) {
 	t.Parallel()
 

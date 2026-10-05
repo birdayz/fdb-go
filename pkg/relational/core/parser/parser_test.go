@@ -86,11 +86,10 @@ func TestNewParser_ReleaseDetachesPredictionState(t *testing.T) {
 func TestPredictionStatePool_BoundsRetainedStates(t *testing.T) {
 	t.Parallel()
 
-	lexer := antlrgen.NewRelationalLexer(newCaseInsensitiveCharStream("SELECT 1"))
-	var pool predictionStatePool
+	pool := predictionStatePool{newATN: antlrgen.NewRelationalLexerATN}
 	states := make([]*predictionState, maxRetainedPredictionStates+1)
 	for i := range states {
-		states[i] = pool.acquire(lexer.Interpreter.ATN())
+		states[i] = pool.acquire()
 	}
 	for _, state := range states {
 		pool.release(state)
@@ -101,6 +100,26 @@ func TestPredictionStatePool_BoundsRetainedStates(t *testing.T) {
 	pool.mu.Unlock()
 	if retained != maxRetainedPredictionStates {
 		t.Fatalf("retained prediction states = %d, want cap %d", retained, maxRetainedPredictionStates)
+	}
+}
+
+// The runtime locks a parser's ATN for every DFA edge it adds, so two leases
+// sharing an ATN serialize concurrent parses on it.
+func TestPredictionStatePool_LeasesDoNotShareAnATN(t *testing.T) {
+	t.Parallel()
+	for name, pool := range map[string]*predictionStatePool{
+		"lexer":  &relationalLexerPredictionStates,
+		"parser": &relationalParserPredictionStates,
+	} {
+		a, b := pool.acquire(), pool.acquire()
+		if a.atn == b.atn {
+			t.Errorf("%s leases share one ATN", name)
+		}
+		if a.atn == antlrgen.NewRelationalLexer(nil).Interpreter.ATN() || a.atn == antlrgen.NewRelationalParser(nil).Interpreter.ATN() {
+			t.Errorf("%s lease uses the generated parser's global ATN", name)
+		}
+		pool.release(a)
+		pool.release(b)
 	}
 }
 

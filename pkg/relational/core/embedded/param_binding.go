@@ -15,7 +15,6 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/vectorcodec"
 	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/functions"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query/expr"
 	"github.com/antlr4-go/antlr/v4"
@@ -81,6 +80,11 @@ func bindStatementParameters(tree antlr.Tree, args []driver.NamedValue) (string,
 			var unsupported *unsupportedParameterError
 			if errors.As(err, &unsupported) {
 				return api.NewErrorf(api.ErrCodeInvalidParameter, "parameter %s has unsupported type %T", param, raw)
+			}
+			var overflow *timeOutOfDomainParameterError
+			if errors.As(err, &overflow) {
+				return api.NewErrorf(api.ErrCodeDatetimeFieldOverflow,
+					"parameter %s is the instant %s, outside the TIMESTAMP years 0000-9999 in UTC", param, overflow.instant)
 			}
 			if err != nil {
 				return err
@@ -201,13 +205,8 @@ func knownParameter(raw any) (values.Value, bool, error) {
 	case uuid.UUID:
 		return &values.ConstantValue{Value: [16]byte(v), Typ: values.NotNullUuid}, true, nil
 	case time.Time:
-		// DATE and TIMESTAMP are Go-only; a time binds as its canonical text,
-		// which the column assignment converts.
-		text := functions.FormatTimestamp(v)
-		if v.Hour() == 0 && v.Minute() == 0 && v.Second() == 0 && v.Nanosecond() == 0 {
-			text = functions.FormatDate(v)
-		}
-		return &values.ConstantValue{Value: text, Typ: values.NotNullString}, true, nil
+		c, err := timeParameter(v)
+		return c, true, err
 	case api.Vector:
 		_, payload, stride, ok := vectorcodec.Payload(v)
 		if !ok || len(payload)%stride != 0 {
@@ -223,6 +222,19 @@ func knownParameter(raw any) (values.Value, bool, error) {
 		return v, true, err
 	}
 	return nil, false, nil
+}
+
+// timeParameter binds a time as the TIMESTAMP value of its instant: the
+// canonical UTC text, to the second, the carrier every TIMESTAMP value has.
+// It is typed by the instant, never by its wall clock (a time at midnight in
+// its own zone is not a DATE). Sub-second precision is dropped. An instant
+// whose UTC year is outside 0000-9999 has no canonical text that parses back
+// or sorts by instant, and is refused (22008).
+func timeParameter(t time.Time) (values.Value, error) {
+	if year := t.UTC().Year(); year < 0 || year > 9999 {
+		return nil, &timeOutOfDomainParameterError{instant: t.UTC().Format(time.RFC3339)}
+	}
+	return &values.ConstantValue{Value: values.CanonicalTimestampText(t), Typ: values.NotNullTimestamp}, nil
 }
 
 func isKnownParameterType(t reflect.Type) bool {
@@ -255,6 +267,14 @@ func sqlNullPayload(rv reflect.Value) (payload any, valid, ok bool) {
 type unsupportedParameterError struct{}
 
 func (*unsupportedParameterError) Error() string { return "unsupported parameter type" }
+
+// timeOutOfDomainParameterError marks a time whose UTC year is outside
+// 0000-9999; the binder reports it as 22008 naming the parameter.
+type timeOutOfDomainParameterError struct{ instant string }
+
+func (e *timeOutOfDomainParameterError) Error() string {
+	return "time parameter " + e.instant + " is outside the years 0000-9999"
+}
 
 // invalidUTF8ParameterError marks a string parameter that is not valid UTF-8;
 // the binder reports it as 22021 naming the parameter.
@@ -325,8 +345,11 @@ func staticElementType(t reflect.Type) (values.Type, error) {
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
-	if t == reflect.TypeFor[uuid.UUID]() {
+	switch t {
+	case reflect.TypeFor[uuid.UUID]():
 		return values.NotNullUuid, nil
+	case reflect.TypeFor[time.Time]():
+		return values.NotNullTimestamp, nil
 	}
 	if isKnownParameterType(t) || t.Implements(valuerType) || reflect.PointerTo(t).Implements(valuerType) {
 		return nil, nil

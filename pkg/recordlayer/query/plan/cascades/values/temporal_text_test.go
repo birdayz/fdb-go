@@ -120,3 +120,24 @@ func FuzzParseTemporalTextRoundTrip(f *testing.F) {
 		}
 	})
 }
+
+// The canonical TIMESTAMP text of an instant is its UTC wall clock, whatever
+// zone the instant is expressed in, truncated to the second.
+func TestCanonicalTimestampText(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		in   time.Time
+		want string
+	}{
+		{time.Date(2024, 7, 4, 15, 30, 45, 0, time.UTC), "2024-07-04 15:30:45"},
+		{time.Date(2024, 7, 4, 20, 0, 0, 0, time.FixedZone("EST", -5*3600)), "2024-07-05 01:00:00"},
+		{time.Date(2024, 1, 1, 0, 0, 0, 0, time.FixedZone("CEST", 2*3600)), "2023-12-31 22:00:00"},
+		{time.Date(2024, 7, 4, 15, 30, 45, 999999999, time.UTC), "2024-07-04 15:30:45"},
+		{time.Date(0, 1, 1, 0, 0, 0, 0, time.UTC), "0000-01-01 00:00:00"},
+		{time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC), "9999-12-31 23:59:59"},
+	} {
+		if got := CanonicalTimestampText(c.in); got != c.want {
+			t.Errorf("CanonicalTimestampText(%v) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

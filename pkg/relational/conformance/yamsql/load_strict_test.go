@@ -121,3 +121,13 @@ func TestLoad_ExecNormalizesIntoQuery(t *testing.T) {
 		t.Errorf("rowcount not preserved: %v", tt.Rowcount)
 	}
 }
+
+// A time is a parameter kind: the engine returns DATE and TIMESTAMP values
+// as text, so an expected time could never match and would fail opaquely.
+func TestLoad_TimeExactRowRejected(t *testing.T) {
+	t.Parallel()
+	loadExpectingError(t, `  - query: SELECT id FROM t
+    exact_rows:
+      - [{kind: time, value: "2024-01-01T00:00:00Z"}]
+`, "time is a parameter kind")
+}

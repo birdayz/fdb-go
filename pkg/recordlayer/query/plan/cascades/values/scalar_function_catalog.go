@@ -87,14 +87,17 @@ type scalarFunctionDefinition struct {
 }
 
 // comparisonPhysicalOperatorTypes is Java's PhysicalOperator enum for
-// GREATEST/LEAST, which registers exactly these six result type codes
+// GREATEST/LEAST, which registers exactly six result type codes
 // (VariadicFunctionValue.java, GREATEST_INT/LONG/BOOLEAN/STRING/FLOAT/DOUBLE
-// and the LEAST mirror). Notably absent: RECORD, ARRAY, BYTES, UUID and the
-// temporal codes — `least(struct_col, struct_col)` has no operator and is a
-// 22F00, not a runtime type error.
+// and the LEAST mirror), plus the Go-only DATE and TIMESTAMP values, whose
+// canonical texts compare in instant order once a DATE argument under a
+// TIMESTAMP result is promoted to its midnight. Absent: RECORD, ARRAY, BYTES
+// and UUID — `least(struct_col, struct_col)` has no operator and is a 22F00,
+// not a runtime type error.
 var comparisonPhysicalOperatorTypes = []TypeCode{
 	TypeCodeInt, TypeCodeLong, TypeCodeBoolean,
 	TypeCodeString, TypeCodeFloat, TypeCodeDouble,
+	TypeCodeDate, TypeCodeTimestamp,
 }
 
 // coalescePhysicalOperatorTypes is Java's COALESCE operator map
@@ -257,13 +260,17 @@ func numericPromotionRank(code TypeCode) int {
 }
 
 // maximumTypeCode is Type.maximumType reduced to type CODES: identical codes
-// fold to themselves, two numeric codes fold to the wider, and every other
-// pairing has no maximum (Java returns null, which encapsulate turns into
-// INCOMPATIBLE_TYPE). That last clause is the one that matters here — it is
-// why `greatest(bytes_col, 'a')` is an error rather than a BYTES comparison.
+// fold to themselves, two numeric codes fold to the wider, DATE and TIMESTAMP
+// (Go's temporal extension; Java has neither) fold to TIMESTAMP, and every
+// other pairing has no maximum (Java returns null, which encapsulate turns
+// into INCOMPATIBLE_TYPE). That last clause is the one that matters here — it
+// is why `greatest(bytes_col, 'a')` is an error rather than a BYTES comparison.
 func maximumTypeCode(a, b TypeCode) (TypeCode, bool) {
 	if a == b {
 		return a, true
+	}
+	if (a == TypeCodeDate && b == TypeCodeTimestamp) || (a == TypeCodeTimestamp && b == TypeCodeDate) {
+		return TypeCodeTimestamp, true
 	}
 	ra, rb := numericPromotionRank(a), numericPromotionRank(b)
 	if ra > 0 && rb > 0 {

@@ -7,7 +7,7 @@ candidate types, 24/24 comparison operators, 9/9 predicates. Remaining items
 are execution-layer, wire-format, or intentional architectural choices.
 
 Validated against a live Java **4.12.11** conformance run (the cross-engine corpus runs against
-live 4.12 in `just test` with a stale-annotation guard, and the suite is green).
+live 4.12 in `just test-full` and PR CI with a stale-annotation guard, and the suite is green).
 
 ## Intentional Architectural Decisions (no functional difference)
 
@@ -901,6 +901,7 @@ Go supports these SQL features that Java rejects. Removing them would be a user-
 | `INFORMATION_SCHEMA` | Rejects (`Unknown reference INFORMATION_SCHEMA.TABLES`) | Working system tables |
 | `NOT NULL` on scalar columns | Rejects (`NOT NULL is only allowed for ARRAY column type`) | SQL-standard behavior |
 | Date-part functions | No temporal types | YEAR/MONTH/DAY/HOUR/MINUTE/SECOND/etc. |
+| DATE and TIMESTAMP values | No temporal types: a `DATE`/`TIMESTAMP` column is 42F18, `CAST(… AS DATE/TIMESTAMP)` is 42601 | Types of VALUES only (CAST, `CURRENT_DATE`/`CURRENT_TIMESTAMP`, a bound `time.Time`), carried as canonical UTC text in 0000-9999 whose order is the instant order. A DATE meeting a TIMESTAMP (comparison, IN, CASE, COALESCE, IFNULL, GREATEST, LEAST) is promoted to its midnight. A column spelled DATE/TIMESTAMP is STRING (the type is not persisted, so catalog bytes stay Java's), and a value against it compares text. Pinned by `temporal_promotion.yaml` and `expr/temporal_promotion_property_test.go` |
 | Simple CASE (`CASE expr WHEN val`) | `visitChildren` no-op (always falls through to ELSE) | Correct evaluation |
 | Symbolic logical operators (`&&`, `\|\|`) | `SqlFunctionCatalogImpl` only registers `and`/`or`; symbolic forms throw UNSUPPORTED_QUERY | Evaluated as AND/OR |
 | `XOR` operator | Not registered in `SqlFunctionCatalogImpl`; throws UNSUPPORTED_QUERY | SQL-standard XOR with NULL propagation |
@@ -912,17 +913,19 @@ Go-only logical expressions: `LogicalLimitExpression`, `LogicalValuesExpression`
 
 ### Go-only SQLSTATEs
 
-`pkg/relational/api/errcode.go` tracks Java's `ErrorCode` enum: **every one of Java's 74 codes exists in Go** — that direction has no gap. Go defines five codes Java has no member for:
+`pkg/relational/api/errcode.go` tracks Java's `ErrorCode` enum: **every one of Java's 77 codes (4.14.2.0) exists in Go** — that direction has no gap. Go defines seven codes Java has no member for:
 
 | Code | Go constant | Why it exists |
 |---|---|---|
 | `21000` | `ErrCodeCardinalityViolation` | SQL-standard class 21. Java's enum has no class-21 member at all, and its relational layer has no scalar-subquery cardinality check, so nothing there reports "subquery returned more than one row". Go enforces the cardinality and needed a code to name the violation. |
 | `22003` | `ErrCodeNumericValueOutOfRange` | SQL-standard code for arithmetic overflow. Java's enum has no member for it; overflow there escapes as a raw Java exception and reaches `ExceptionUtil`'s final fallthrough, reported as `UNKNOWN`. |
+| `22008` | `ErrCodeDatetimeFieldOverflow` | A bound `time.Time` whose UTC year is outside 0000-9999 (an array element included). Its canonical TIMESTAMP text would neither parse back nor sort by instant. DATE and TIMESTAMP values are a Go extension; Java has no temporal type, so the condition cannot arise there. |
 | `22012` | `ErrCodeDivisionByZero` | SQL-standard code for division by zero. Java's enum has no member for it; the operation raises `java.lang.ArithmeticException`, which is not a `RecordCoreException`, so `ExceptionUtil.toRelationalException` reports `UNKNOWN`. |
 | `22021` | `ErrCodeCharacterNotInRepertoire` | SQL text or a string parameter that is not valid UTF-8. A Java `String` is UTF-16 and cannot hold such text, so the condition cannot arise there; Go refuses it before lexing or binding instead of replacing the bytes with U+FFFD, and the record layer refuses to save such a string (`InvalidUTF8StringError`). |
+| `40003` | `ErrCodeStatementCompletionUnknown` | FDB `commit_unknown_result` (1021) on a non-retrying explicit transaction (RFC-198 Decision 7). Java has no member: 1021 falls to `isRetryable`'s default and `ExceptionUtil` reports `UNKNOWN`. |
 | `54F02` | `ErrCodePlanComplexityLimitReached` | Go bounds Cascades planning; Java's SQL layer never enables its planner caps, so the condition cannot arise there. Detailed below. |
 
-The first three predate this list; it was written when a claim that there was only one Go-only code turned out to be false. The list is not maintained by prose: `goOnlyErrorCodes` in `errcode.go` carries the same five with their reasons, and `TestErrorCodesMatchJava` diffs the Go enum against a captured snapshot of Java's, failing if the difference and the list disagree in either direction — a new unlisted Go-only code, a stale entry, or a Java code missing from Go. Regenerate the snapshot on a Java version bump using the command in its doc comment.
+The first three predate this list; it was written when a claim that there was only one Go-only code turned out to be false. The list is not maintained by prose: `goOnlyErrorCodes` in `errcode.go` carries the same seven with their reasons, and `TestErrorCodesMatchJava` diffs the Go enum against a captured snapshot of Java's, failing if the difference and the list disagree in either direction — a new unlisted Go-only code, a stale entry, or a Java code missing from Go. Regenerate the snapshot on a Java version bump using the command in its doc comment.
 
 #### `54F02` in detail
 

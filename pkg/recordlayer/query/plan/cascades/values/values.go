@@ -60,10 +60,9 @@ import (
 	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
-// Canonical ISO 8601 layouts for temporal value formatting/parsing.
-// Mirrors functions.TimestampLayout / functions.DateLayout — duplicated
-// here because values/ must not import functions/ (layering: values is
-// the leaf package that predicates/ and cascades/ depend on).
+// Canonical ISO 8601 layouts of the text every DATE and TIMESTAMP value
+// carries: UTC, to the second, fixed width, most significant field first, so
+// within the years 0000-9999 text order is instant order.
 const (
 	timestampLayout = "2006-01-02 15:04:05"
 	dateLayout      = "2006-01-02"

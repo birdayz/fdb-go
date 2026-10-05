@@ -370,6 +370,11 @@ is 1–3 hours on one box and parallelizes by seed range.
 
 ## 7. CI topology
 
+**2026-10-05 supersedes the local-loop portion below:** the complete corpus runs
+in `just test-full`, not the fast `just test`. Non-race PR CI and the nightly
+heartbeat still run it in full. See `AGENTS.md` → Efficient validation.
+The older timing and ruling below are historical.
+
 > **Owner ruling 2026-08-01 — the committed corpus is ordinary suite content.**
 > The per-PR/nightly split this section originally drew for the committed
 > corpus (a stratified sample per PR, the full corpus nightly) is overridden:

@@ -763,7 +763,10 @@ go_test(
     ],
     data = glob(["testdata/**"]),
     embed = [":sqldriver"],
-    tags = ["resources:memory:700"],
+    tags = [
+        "resources:memory:700",
+        "test-full",
+    ],
     deps = [
         "//gen",
         "//pkg/dst",

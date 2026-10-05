@@ -105,7 +105,7 @@ If you can't write the e2e test, the feature isn't done. Period.
 
 **Code comments: short, and only what the code cannot say.** A comment states a non-obvious WHY (a Java quirk being matched, a wire constraint, a trap) in one or two lines. No restating what the code does, no history of earlier attempts, no measurement narratives, no enumerations of tested shapes — those belong in the test or the commit message.
 
-**Verification per commit:** the pre-commit hook (`just test`) plus the tests you touched, run under Bazel. A regression test is written before its fix, so its red is observed while fixing; do not re-run tests at historical commits to manufacture reds. CI runs on the PR.
+**Verification per commit:** the pre-commit hook (`just test`, the fast lane; see `AGENTS.md` → Efficient validation). A touched test in a `test-full`-tagged target runs under `just test-full`. A regression test is written before its fix, so its red is observed while fixing; do not re-run tests at historical commits to manufacture reds. CI runs on the PR.
 
 ---
 
@@ -195,7 +195,7 @@ Vollkonti continuous 24/7 shifts via `/vollkonti`. Handovers in `shifts/`. One b
 - **Read Java first, write Go second.** Read the Java source file completely before porting. Understand the algorithm, then translate idiomatically — don't transliterate line-by-line.
 - **Tests find bugs.** Write the test BEFORE assuming the implementation is correct. swingshift-70 found 3 real bugs via tests (InJoin chain flat, UnorderedUnion early return, DistinctUnion ascending-only). Tests are not padding — they're debugging tools.
 - **Fuzz is non-negotiable.** Run fuzz targets (`bazelisk test ... --test_arg="-test.fuzz=FuzzXxx" --test_arg="-test.fuzztime=15s" --test_arg="-test.fuzzcachedir=/tmp/fuzz-cache" --sandbox_writable_path=/tmp/fuzz-cache`) on new infrastructure. 200k+ execs should produce 0 panics.
-- **Prove with FDB.** Integration tests against real FoundationDB (testcontainers) are the gold standard. A unit test proves the code compiles; an FDB test proves it works. `bazelisk test //pkg/relational/sqldriver:sqldriver_test --test_arg="--test.run=TestFDB_Xxx"` runs specific FDB tests.
+- **Prove with FDB.** Integration tests against real FoundationDB (testcontainers) are the gold standard. A unit test proves the code compiles; an FDB test proves it works. The fast lane's FDB-backed targets (yamsql scenarios, embedded, recordlayer) run in `just test`; `sqldriver_test` and the other `test-full` targets run in `just test-full`.
 - **Subagents for boilerplate.** Delegate test writing, wrapper creation, and mechanical porting to subagents. Keep the critical path (algorithms, rule logic, architectural decisions) in the main context.
 - **Don't pad tests, do find gaps.** Use `bazelisk coverage //path:target --combined_report=lcov` to find actual coverage gaps. Only write tests that exercise uncovered code paths or prove new behavior.
 - **100% Java alignment unless there's a good reason.** Never simplify "for now" — the simplified version rots and the next shift inherits technical debt. Port the full algorithm, handle all edge cases, match the error messages.
@@ -213,7 +213,7 @@ Never rationalize a divergence as "intentional" without first reading the Java c
 
 **Delegation:** principal-engineer mindset. Delegate mechanical/boilerplate work to subagents with full context (file paths, snippets, patterns). Critical/tricky pieces: do yourself. Never run two big implementation subagents in parallel.
 
-**Build & verify:** always `just test`. Bazel cache makes incremental runs fast. After Go file/dep changes: `just gazelle` then `bazel mod tidy`. Proto codegen: `buf generate` (not in Bazel). **Always `bazelisk`, never `bazel`** when invoking directly. Never `--no-verify` — investigate hook failures.
+**Build & verify:** always `just test` (fast lane), `just test-full` at workstream/PR boundaries; never a hand-picked target list (`AGENTS.md`). Bazel cache makes incremental runs fast. After Go file/dep changes: `just gazelle` then `bazel mod tidy`. Proto codegen: `buf generate` (not in Bazel). **Always `bazelisk`, never `bazel`** when invoking directly. Never `--no-verify` — investigate hook failures.
 
 Update TODO.md as work completes (`- [x]` with a short note).
 

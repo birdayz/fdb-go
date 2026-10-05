@@ -1,6 +1,7 @@
 package embedded
 
 import (
+	"database/sql/driver"
 	"sort"
 	"strconv"
 	"strings"
@@ -59,6 +60,12 @@ type plannerOptions struct {
 	// trace attributes the run's work for the no-FDB diagnostics harness; the
 	// connection path never sets it.
 	trace *cascades.PlannerTrace
+
+	// params are statement parameters the no-FDB harness binds as the
+	// connection does (bindStatementParameters), so it plans the statement a
+	// caller executes rather than one with untyped placeholders. The
+	// connection path binds its own and never sets it.
+	params []driver.NamedValue
 }
 
 // plannerOptionsFrom resolves the connection's api.Options into the planner's

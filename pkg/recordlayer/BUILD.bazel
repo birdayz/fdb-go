@@ -550,12 +550,16 @@ go_test(
     ],
 )
 
-# Million record tests are excluded from //... — too slow for normal CI.
-# Run explicitly: bazelisk test //pkg/recordlayer:million_record_test
+# Million record tests are manual, so `just test` omits them; `just test-full`
+# runs them. The specs are Ginkgo specs: the suite file supplies the FDB
+# container, sharedDB, specSubspace and the RunSpecs entry point.
 go_test(
     name = "million_record_test",
     timeout = "eternal",
-    srcs = ["million_record_test.go"],
+    srcs = [
+        "million_record_test.go",
+        "recordlayer_suite_test.go",
+    ],
     embed = [":recordlayer"],
     tags = [
         "exclusive",
@@ -564,9 +568,13 @@ go_test(
     ],
     deps = [
         "//gen",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
         "//pkg/testcontainers/foundationdb",
-        "@com_github_apple_foundationdb_bindings_go//src/fdb/subspace",
-        "@com_github_stretchr_testify//assert",
+        "@com_github_onsi_ginkgo_v2//:ginkgo",
+        "@com_github_onsi_ginkgo_v2//types",
+        "@com_github_onsi_gomega//:gomega",
         "@org_golang_google_protobuf//proto",
     ],
 )

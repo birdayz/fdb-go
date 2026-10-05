@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"time"
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
@@ -14,6 +15,9 @@ import (
 // Scalar is a driver value with an explicit carrier and representation. Value
 // is textual even for numbers: float64 carries exactly 16 IEEE hexadecimal digits.
 // Null has no payload; an empty string or byte string has a present empty payload.
+// A time is an RFC 3339 instant (its offset and fraction kept) bound as a Go
+// time.Time; it is a parameter kind only, since the engine returns DATE and
+// TIMESTAMP values as text.
 type Scalar struct {
 	Kind  string  `yaml:"kind"`
 	Value *string `yaml:"value,omitempty"`
@@ -96,10 +100,19 @@ func (s Scalar) decode() (any, error) {
 			return nil, fmt.Errorf("bytes scalar: %w", err)
 		}
 		return b, nil
+	case "time":
+		tm, err := time.Parse(time.RFC3339Nano, v)
+		if err != nil {
+			return nil, fmt.Errorf("time scalar: %w", err)
+		}
+		return tm, nil
 	default:
 		return nil, fmt.Errorf("unknown scalar kind %q", s.Kind)
 	}
 }
+
+// ArgValues are the test's driver arguments, as the runner passes them.
+func (t *Test) ArgValues() ([]any, error) { return decodeScalars(t.Args) }
 
 func decodeScalars(values []Scalar) ([]any, error) {
 	out := make([]any, len(values))
