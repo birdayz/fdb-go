@@ -181,7 +181,9 @@ func computeDistinctRecords(w physicalPlanExpression, plan plans.RecordQueryPlan
 		*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan,
 		*plans.RecordQueryIntersectionPlan,
 		*plans.RecordQueryMultiIntersectionOnValuesPlan,
-		*plans.RecordQueryInUnionPlan:
+		*plans.RecordQueryInUnionPlan,
+		// DistinctRecordsProperty.visitAggregateIndexPlan: an entry is a group.
+		*plans.RecordQueryAggregateIndexPlan:
 		return true
 	case *plans.RecordQueryUnorderedUnionPlan,
 		// RecordQueryUnionPlan is Go's NO-DEDUP UNION ALL variant (union.go:

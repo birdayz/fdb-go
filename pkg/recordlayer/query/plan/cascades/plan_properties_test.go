@@ -187,6 +187,22 @@ func TestComputeDistinctRecords_StreamingAggIsFalse(t *testing.T) {
 	}
 }
 
+// TestComputeDistinctRecords_AggregateIndexIsTrue: an aggregate index entry is
+// one group, so its rows are distinct (DistinctRecordsProperty
+// .visitAggregateIndexPlan).
+func TestComputeDistinctRecords_AggregateIndexIsTrue(t *testing.T) {
+	t.Parallel()
+	idx := mustPropertiesConstruct(plans.NewRecordQueryIndexPlan("AGG_IDX", nil, []string{"T"}, planPropertiesRowType(), false))
+	resultType := values.NewRecordType("AGG_RESULT", false, []values.Field{
+		{Name: "G", FieldType: values.NullableLong},
+		{Name: "COUNT", FieldType: values.NullableLong},
+	})
+	agg := mustPropertiesConstruct(plans.NewRecordQueryAggregateIndexPlan(idx, "T", resultType, "COUNT"))
+	if !computeDistinctRecords(agg, agg) {
+		t.Fatal("an aggregate index scan yields one row per group")
+	}
+}
+
 func TestComputeDistinctRecords_DistinctPlanIsTrue(t *testing.T) {
 	t.Parallel()
 	scan := planPropertiesScan("T")
