@@ -112,6 +112,9 @@ Never mark a whole workstream complete because one of its subitems passed.
   (`string_literal_tokens.yaml`); lexer comment boundaries are pinned in
   `parser/parser_test.go` `TestParse_Comments`. COALESCE/GREATEST/LEAST and CAST
   nullability already follow Java (`ScalarFunctionValue.Type`, `CastValue.Type`).
+  A CAST never yields NULL from a non-NULL operand: an operand no arm converts
+  is a cast error, and a RECORD cast passes an equal type through
+  (`TestCastValue_NonNullOperandNeverCastsToNull`, every admitted pair).
   Open: the per-class Value nullability table and its enumerating test (design
   5.3), the simplification regime (design 5.4, gated on WS-F step 7), and
   FROM-less metadata.

@@ -4478,7 +4478,7 @@ func (c *CastValue) Children() []Value { return []Value{c.Child} }
 func (c *CastValue) Name() string      { return "cast" }
 
 // Type is the target, NULL only when the operand can be (Java's CastValue);
-// an untyped operand can reach the silent-NULL tail of castEvaluated.
+// an untyped operand's type says nothing, so its cast stays nullable.
 func (c *CastValue) Type() Type {
 	if c.Target == nil {
 		return UnknownType
@@ -4664,10 +4664,11 @@ func (c *CastValue) castEvaluated(v any, source Type) (any, error) {
 		}
 		list, ok := v.([]any)
 		if !ok {
-			// A non-list carrier under an ARRAY target — degrade to
-			// UNKNOWN rather than corrupt (the plan-time pair gate rejects
-			// non-array sources; this arm only sees array-typed children).
-			return nil, nil
+			// A non-list carrier under an ARRAY target (the plan-time pair
+			// gate rejects non-array sources, so only an untyped child gets
+			// here). Never NULL: the cast is typed by its operand's
+			// nullability.
+			return nil, &InvalidCastError{Message: "Source value is not an array"}
 		}
 		// An EMPTY array casts to an empty array of the target type without
 		// consulting the source element type at all — Java returns here
@@ -4967,8 +4968,21 @@ func (c *CastValue) castEvaluated(v any, source Type) (any, error) {
 		default:
 			return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast %T to BYTES", v)}
 		}
+	case TypeCodeRecord:
+		// Java's CastValue.inject returns an operand of the target's own type
+		// unchanged and has no RECORD operator for any other.
+		if source != nil && source.Equals(c.Target) {
+			return v, nil
+		}
 	}
-	return nil, nil
+	// Every arm above converts or raises, as each of Java's cast operators
+	// does. An operand none of them converts is a cast error, never a NULL: a
+	// CAST takes its operand's nullability (Type), so a NULL from a non-NULL
+	// operand would break its NOT NULL type.
+	if sourceCode != TypeCodeUnknown {
+		return nil, &InvalidCastError{Message: fmt.Sprintf("No cast defined from %v to %v", sourceCode, c.Target.Code())}
+	}
+	return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast %T to %v", v, c.Target.Code())}
 }
 
 // --- RecordConstructorValue ----------------------------------------

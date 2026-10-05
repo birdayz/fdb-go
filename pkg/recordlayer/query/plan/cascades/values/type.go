@@ -1486,7 +1486,7 @@ var castPairs = map[promotionEdge]struct{}{
 	// form ([16]byte arm of the STRING target); ENUM→STRING renders the
 	// stored numeric carrier in decimal. STRING↔BYTES is NOT
 	// admitted in EITHER direction — no runtime arm (an admitted pair
-	// with no arm evaluates to a SILENT NULL), and Java has no row.
+	// with no arm is a runtime cast error), and Java has no row.
 	{TypeCodeUuid, TypeCodeString}: {},
 	{TypeCodeEnum, TypeCodeString}: {},
 }
