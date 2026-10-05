@@ -1542,9 +1542,10 @@ func TestComputedVirtualScopesUseExactProjectedValues(t *testing.T) {
 		if !found || doubled.Type != "BIGINT" || !doubled.Nullable {
 			t.Fatalf("DOUBLED = %+v, found=%v; want nullable BIGINT", doubled, found)
 		}
+		// EXISTS is a nullable BOOLEAN, as Java's ExistsValue (a BooleanValue).
 		present, found := columnNamed(src.Table.Columns(), "PRESENT")
-		if !found || present.Type != "BOOL" || present.Nullable {
-			t.Fatalf("PRESENT = %+v, found=%v; want non-null BOOL", present, found)
+		if !found || present.Type != "BOOL" || !present.Nullable {
+			t.Fatalf("PRESENT = %+v, found=%v; want nullable BOOL", present, found)
 		}
 	})
 

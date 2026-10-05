@@ -340,9 +340,10 @@ FROM p AS a, q AS a ORDER BY a.qid DESC`)
 	if !computedJoin {
 		t.Fatal("fixture did not select a nested-loop join with a computed EXISTS result")
 	}
+	// EXISTS is a nullable BOOLEAN, as Java's ExistsValue (a BooleanValue).
 	columns := resultColumns(plan.physicalPlan)
-	if len(columns) != 2 || columns[0].TypeName != "BIGINT" || columns[1].TypeName != "BOOLEAN" || columns[1].Nullable != api.ColumnNoNulls {
-		t.Fatalf("computed result metadata = %+v, want BIGINT and NOT NULL BOOLEAN", columns)
+	if len(columns) != 2 || columns[0].TypeName != "BIGINT" || columns[1].TypeName != "BOOLEAN" || columns[1].Nullable != api.ColumnNullable {
+		t.Fatalf("computed result metadata = %+v, want BIGINT and nullable BOOLEAN", columns)
 	}
 }
 
@@ -565,17 +566,17 @@ func TestLeftJoinDerived_InheritanceNeverUnNullExtends(t *testing.T) {
 	t.Fatalf("no FOO column in derived metadata: %+v", cols)
 }
 
-// TestCrossJoinDerivedExists_KeepsNoNulls pins exact nullability through
-// leg-direct inheritance: a synthesized NOT NULL inner (projected EXISTS)
-// read through a QOV over a CROSS join must stay NoNulls — the earlier
-// upgrade-only rule blanket-discarded the only NoNulls source even where
-// no null extension exists.
-func TestCrossJoinDerivedExists_KeepsNoNulls(t *testing.T) {
+// TestCrossJoinDerivedNotNull_KeepsNoNulls pins exact nullability through
+// leg-direct inheritance: a synthesized NOT NULL inner (a projected COALESCE
+// with a NOT NULL argument) read through a QOV over a CROSS join must stay
+// NoNulls — the earlier upgrade-only rule blanket-discarded the only NoNulls
+// source even where no null extension exists.
+func TestCrossJoinDerivedNotNull_KeepsNoNulls(t *testing.T) {
 	t.Parallel()
 	g, md := newLoggingGenerator(t,
 		"CREATE TABLE a_md (id BIGINT, s STRING, PRIMARY KEY (id)) CREATE TABLE b_md (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 		&captureLogger{})
-	q := parseQuery(t, "WITH d AS (SELECT EXISTS (SELECT 1 FROM b_md AS c WHERE c.id = b_md.id) AS foo FROM b_md) SELECT d.foo FROM a_md AS a, d")
+	q := parseQuery(t, "WITH d AS (SELECT COALESCE(b_md.v, 0) AS foo FROM b_md) SELECT d.foo FROM a_md AS a, d")
 	p, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{})
 	if err != nil {
 		t.Fatalf("plan: %v", err)
@@ -587,7 +588,7 @@ func TestCrossJoinDerivedExists_KeepsNoNulls(t *testing.T) {
 	for _, c := range resultColumns(cp.physicalPlan) {
 		if strings.EqualFold(c.Label, "FOO") || strings.EqualFold(parseColRef(c.Name).bare(), "FOO") {
 			if c.Nullable != api.ColumnNoNulls {
-				t.Fatalf("EXISTS flag over a CROSS join must stay NoNulls (no null extension exists); got %v", c.Nullable)
+				t.Fatalf("NOT NULL COALESCE over a CROSS join must stay NoNulls (no null extension exists); got %v", c.Nullable)
 			}
 			return
 		}

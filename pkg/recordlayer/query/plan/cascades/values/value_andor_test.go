@@ -22,10 +22,10 @@ func TestAndOrOp_String(t *testing.T) {
 
 func TestAndOrValue_TypeBothNotNull(t *testing.T) {
 	t.Parallel()
-	// Both operands are NotNull booleans → result is NotNullBoolean.
+	// Java's AndOrValue is a nullable BOOLEAN whatever its operands.
 	v := NewAndOrValue(AndOrAnd, NewBooleanValue(true), NewBooleanValue(false))
-	if !v.Type().Equals(NotNullBoolean) {
-		t.Fatalf("Type = %v, want NotNullBoolean (both NOT NULL operands)", v.Type())
+	if !v.Type().Equals(NullableBoolean) {
+		t.Fatalf("Type = %v, want NullableBoolean (Java's BooleanValue type)", v.Type())
 	}
 }
 

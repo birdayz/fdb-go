@@ -1760,7 +1760,7 @@ func TestValue_Type_Composites(t *testing.T) {
 		{
 			"NotValue(BooleanValue)",
 			NewNotValue(NewBooleanValue(true)),
-			"BOOLEAN NOT NULL",
+			"BOOLEAN NULL",
 		},
 		{
 			"ScalarFunctionValue(UPPER)",

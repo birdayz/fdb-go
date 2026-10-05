@@ -32,9 +32,7 @@ func (op AndOrOp) String() string {
 // `SELECT a AND b FROM t` where the connector itself is the row's
 // emitted Value, not a filter.
 //
-// Result type: NotNullBoolean when both operands are NOT NULL, else
-// NullableBoolean (per SQL Kleene rules — TRUE OR NULL = TRUE,
-// FALSE AND NULL = FALSE, but TRUE AND NULL = NULL).
+// Result type: NullableBoolean, as Java's AndOrValue (a BooleanValue).
 //
 // Eval semantics (Kleene 3VL):
 //
@@ -76,33 +74,10 @@ func (v *AndOrValue) Children() []Value {
 // Name returns the SQL keyword.
 func (v *AndOrValue) Name() string { return v.Op.String() }
 
-// Type returns NotNullBoolean iff BOTH operands have NOT NULL
-// boolean types, else NullableBoolean. Mirrors Java's
-// AndOrValue.getResultType which OR-reduces operand nullabilities.
-//
-// Rationale: when both operands are non-nullable booleans, the
-// result is always TRUE or FALSE — never NULL. (NULL only enters
-// the eval through a NULL operand, which can't happen with NOT NULL
-// operand types.) The dispatch matches the conventional SQL
-// type-inference for boolean connectors.
-//
-// Falls back to NullableBoolean if either operand is missing /
-// non-boolean / nullable.
-func (v *AndOrValue) Type() Type {
-	if v.Left == nil || v.Right == nil {
-		return NullableBoolean
-	}
-	lt := v.Left.Type()
-	rt := v.Right.Type()
-	if lt == nil || rt == nil {
-		return NullableBoolean
-	}
-	if lt.Code() == TypeCodeBoolean && rt.Code() == TypeCodeBoolean &&
-		!lt.IsNullable() && !rt.IsNullable() {
-		return NotNullBoolean
-	}
-	return NullableBoolean
-}
+// Type is NullableBoolean whatever the operands: Java's AndOrValue does not
+// override BooleanValue.getResultType, primitiveType(BOOLEAN), which is
+// nullable (BooleanValue.java:40-42).
+func (*AndOrValue) Type() Type { return NullableBoolean }
 
 // Evaluate computes the Kleene 3VL result with short-circuit.
 func (v *AndOrValue) Evaluate(evalCtx any) (any, error) {

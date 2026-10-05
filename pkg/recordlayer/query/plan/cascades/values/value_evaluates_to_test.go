@@ -85,11 +85,11 @@ func TestEvaluatesToValue_NilChildIsNullPredicate(t *testing.T) {
 	}
 }
 
-func TestEvaluatesToValue_TypeIsNotNullBoolean(t *testing.T) {
+func TestEvaluatesToValue_TypeIsNullableBoolean(t *testing.T) {
 	t.Parallel()
 	v := NewEvaluatesToValue(LiteralValue(true), EvaluatesToTrue)
-	if !v.Type().Equals(NotNullBoolean) {
-		t.Fatalf("Type=%v, want NotNullBoolean", v.Type())
+	if !v.Type().Equals(NullableBoolean) {
+		t.Fatalf("Type=%v, want NullableBoolean", v.Type())
 	}
 }
 

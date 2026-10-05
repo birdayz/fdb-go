@@ -99,9 +99,9 @@ func (v *ToOrderedBytesValue) Children() []Value {
 // Name returns the SQL function name.
 func (*ToOrderedBytesValue) Name() string { return "to_ordered_bytes" }
 
-// Type returns NotNullBytes — the encoder produces bytes regardless
-// of input.
-func (*ToOrderedBytesValue) Type() Type { return NotNullBytes }
+// Type is nullable BYTES, Java's primitiveType(BYTES), though the encoder
+// produces bytes for every input.
+func (*ToOrderedBytesValue) Type() Type { return NullableBytes }
 
 // Evaluate packs the child as a one-element tuple in the direction
 // (TupleOrdering.pack(Key.Evaluated.scalar(child).toTuple(), direction)).

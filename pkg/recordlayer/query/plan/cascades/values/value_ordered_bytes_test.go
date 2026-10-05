@@ -43,8 +43,8 @@ func TestOrderedBytesDirection_IsAscending(t *testing.T) {
 func TestToOrderedBytesValue_Type(t *testing.T) {
 	t.Parallel()
 	v := NewToOrderedBytesValue(LiteralValue(int64(7)), OrderedBytesAscNullsFirst)
-	if !v.Type().Equals(NotNullBytes) {
-		t.Fatalf("Type = %v, want NotNullBytes", v.Type())
+	if !v.Type().Equals(NullableBytes) {
+		t.Fatalf("Type = %v, want NullableBytes", v.Type())
 	}
 }
 

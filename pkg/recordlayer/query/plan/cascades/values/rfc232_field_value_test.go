@@ -341,8 +341,8 @@ func TestRFC232FieldValueCollapsesExactExistsRecordConstructorSlot(t *testing.T)
 	if resolved != exists {
 		t.Fatalf("record-constructor collapse returned %T, want the exact *ExistsValue slot", resolved)
 	}
-	if !resolved.Type().Equals(values.NotNullBoolean) {
-		t.Fatalf("collapsed EXISTS type = %v, want %v", resolved.Type(), values.NotNullBoolean)
+	if !resolved.Type().Equals(values.NullableBoolean) {
+		t.Fatalf("collapsed EXISTS type = %v, want %v", resolved.Type(), values.NullableBoolean)
 	}
 }
 

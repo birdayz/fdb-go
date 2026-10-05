@@ -24,11 +24,11 @@ func TestExistsValue_CompositeShape(t *testing.T) {
 	}
 }
 
-func TestExistsValue_TypeIsNotNullBoolean(t *testing.T) {
+func TestExistsValue_TypeIsNullableBoolean(t *testing.T) {
 	t.Parallel()
 	v := mustExistsValue(t, NamedCorrelationIdentifier("x"))
-	if !v.Type().Equals(NotNullBoolean) {
-		t.Fatalf("Type=%v, want NotNullBoolean", v.Type())
+	if !v.Type().Equals(NullableBoolean) {
+		t.Fatalf("Type=%v, want NullableBoolean", v.Type())
 	}
 }
 
