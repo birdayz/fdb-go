@@ -5,11 +5,12 @@ package sqldriver_test
 // ExecuteProperties.setDryRun → the DML plans branch to dryRunSave/DeleteRecord). RFC-158.
 //
 // This replaces the former fail-closed reject (the data-loss stopgap, RFC-158 §Problem):
-// the option is now honored, not rejected. The flag is STATEMENT-scoped — parsed from the
-// typed OPTIONS clause and carried on the cascadesPlan → paginatingRows.dryRun →
-// ExecuteProperties.DryRun — so a DRY RUN statement can NEVER leak to a later plain
-// statement on the same (pooled) connection. The no-sticky subtest is the data-loss
-// regression sentinel.
+// the option is now honored, not rejected. The flag is the statement's OPTIONS clause
+// merged with the connection's DRY_RUN, carried on the cascadesPlan →
+// paginatingRows.dryRun → ExecuteProperties.DryRun, so a DRY RUN statement can NEVER leak
+// to a later plain statement, and a connection DRY_RUN set through Conn.Raw lasts one
+// pool borrow (ResetSession restores the connector's options). The no-sticky subtests are
+// the data-loss regression sentinels.
 //
 // Each subtest runs with t.Parallel() against its OWN isolated schema (own table instance)
 // so mutating subtests cannot interfere; the per-subtest schema is created sequentially
@@ -21,6 +22,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/api"
 )
 
 func TestFDB_DmlDryRun(t *testing.T) {
@@ -176,6 +179,76 @@ func TestFDB_DmlDryRun(t *testing.T) {
 
 	// EXPLAIN <DML> OPTIONS (DRY RUN) renders a plan with a live DB —
 	// no reject, no mutation (EXPLAIN never invokes the executor).
+	// The CONNECTION scope (RFC-257 WS-E 6.2): DRY_RUN set through Conn.Raw
+	// previews that borrow's DML, and ResetSession restores the connector's
+	// options when the connection returns to the pool, so the next borrower
+	// of the SAME physical connection (one open connection) stores its INSERT.
+	t.Run("connection_dry_run_lasts_one_borrow", func(t *testing.T) {
+		db := newDB(t, "s_conn")
+		t.Parallel()
+		db.SetMaxOpenConns(1)
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := conn.Raw(func(dc any) error {
+			return dc.(interface {
+				SetOption(api.OptionName, any) error
+			}).SetOption(api.OptDryRun, true)
+		}); err != nil {
+			t.Fatalf("SetOption: %v", err)
+		}
+		res, err := conn.ExecContext(ctx, "INSERT INTO t (id, a) VALUES (4, 40)")
+		if err != nil {
+			t.Fatalf("INSERT on a DRY_RUN connection: %v", err)
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			t.Errorf("DRY_RUN INSERT RowsAffected = %d, want 1", n)
+		}
+		// DDL ignores DRY_RUN, as Java's (only QueryPlan.applyOptions reads it).
+		if _, err := conn.ExecContext(ctx, "CREATE SCHEMA TEMPLATE dryrun_conn_ddl CREATE TABLE u (id BIGINT, PRIMARY KEY (id))"); err != nil {
+			t.Fatalf("DDL on a DRY_RUN connection: %v", err)
+		}
+		if err := conn.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if c := countOf(db); c != 3 {
+			t.Fatalf("after the DRY_RUN INSERT, count = %d, want 3 (nothing stored)", c)
+		}
+		mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a) VALUES (5, 50)")
+		if c := countOf(db); c != 4 {
+			t.Fatalf("the next borrower's INSERT stored nothing (count %d, want 4): DRY_RUN outlived the borrow", c)
+		}
+		// A DROP without IF EXISTS fails on a missing template.
+		if _, err := setup.ExecContext(ctx, "DROP SCHEMA TEMPLATE dryrun_conn_ddl"); err != nil {
+			t.Fatalf("the DRY_RUN connection's CREATE SCHEMA TEMPLATE did not create it: %v", err)
+		}
+	})
+
+	// DRY_RUN from the DSN is the connector's option: every borrow previews.
+	t.Run("dsn_dry_run_persists_across_borrows", func(t *testing.T) {
+		mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dryrun/s_dsn WITH TEMPLATE dryrun")
+		t.Parallel()
+		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_DRYRUN?cluster_file=%s&schema=S_DSN&dry_run=true", clusterFilePath))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { db.Close() })
+		db.SetMaxOpenConns(1)
+		for i := 1; i <= 2; i++ {
+			res, err := db.ExecContext(ctx, fmt.Sprintf("INSERT INTO t (id, a) VALUES (%d, 1)", i))
+			if err != nil {
+				t.Fatalf("borrow %d: %v", i, err)
+			}
+			if n, _ := res.RowsAffected(); n != 1 {
+				t.Errorf("borrow %d RowsAffected = %d, want 1", i, n)
+			}
+		}
+		if c := countOf(db); c != 0 {
+			t.Fatalf("a dry_run=true DSN stored %d rows, want 0", c)
+		}
+	})
+
 	t.Run("explain_renders_plan_no_mutation", func(t *testing.T) {
 		db := newDB(t, "s_explain")
 		t.Parallel()

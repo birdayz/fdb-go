@@ -82,13 +82,16 @@ Never mark a whole workstream complete because one of its subitems passed.
   `index-state read conflicts` (fast lane) and `TestFDB_IndexStateReadScope`
   (sqldriver, full lane, not run: scanned index conflicts; unused index and
   record scan commit).
-- [ ] Connection options (design 6.2): `SetOption` merging one option,
-  type-checked; DSN `dry_run` and `isolation_level_snapshot`; an unknown DSN
-  parameter is an error listing the accepted names; `ResetSession` restores
-  the connector's option set; DRY_RUN read by the DML executor (RowsAffected
-  = would-affect count, nothing stored; DDL ignores it); options captured once
-  per statement execution. The executor DML snapshot guard (`4f61e07b5`) and
-  statement-class admission (`7287666da`) are already implemented.
+- [x] Connection options (design 6.2): `EmbeddedConnection.SetOption` merges
+  one option checked by Java's contracts (`api.ValidateOption`, 22023);
+  `SetOptions` replaces and is what `ResetSession` restores; DSN `dry_run` and
+  `isolation_level_snapshot`; an unknown DSN parameter is 22023 listing the
+  accepted names; a result set reads the options captured at execution on
+  every page. Connection DRY_RUN/SNAPSHOT were already merged per statement.
+  Pins (fast lane): `option_contracts_test.go`, `connection_option_scope_test.go`,
+  `dsn_test` (new fast-lane target). FDB pins in `dml_dry_run_fdb_test.go`
+  (Raw DRY_RUN lasts one borrow, DSN dry_run persists, DDL ignores DRY_RUN) —
+  full lane, not run.
 - [ ] IN semantics: rewrite/partition/cost behavior, covering unions, multi-binding
   product limit, and constant-IN evaluation timing; coordinate shared machinery
   with WS-F without losing either acceptance obligation.

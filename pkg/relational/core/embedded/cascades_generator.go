@@ -916,11 +916,13 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// DML … OPTIONS (DRY RUN): preview the would-be-affected rows without committing.
 	// Java honors it — AstNormalizer.visitQueryOptions → Options.DRY_RUN →
 	// ExecuteProperties.setDryRun (QueryPlan.java:435) → the DML plans branch to
-	// dryRunSave/DeleteRecordAsync. The flag is STATEMENT-scoped: parsed from the typed
-	// OPTIONS clause here, carried on the cascadesPlan → paginatingRows.dryRun →
-	// ExecuteProperties.DryRun, where executeInsert/Update/Delete branch onto the store
-	// DryRun* primitives. It must NEVER ride a connection option — that would go sticky
-	// across pooled statements (the next plain DML would silently no-op). NOCACHE/LOG
+	// dryRunSave/DeleteRecordAsync. The flag is the statement's typed OPTIONS clause
+	// merged with the connection's DRY_RUN (Java's PlanGenerator merge, :170), decided
+	// here per statement (DML plans are never cached) and carried on the cascadesPlan →
+	// paginatingRows.dryRun → ExecuteProperties.DryRun, where executeInsert/Update/Delete
+	// branch onto the store DryRun* primitives. A connection DRY_RUN set through SetOption
+	// lasts one pool borrow: ResetSession restores the connector's options, so the next
+	// borrower's plain DML never silently no-ops. NOCACHE/LOG
 	// QUERY remain accepted-and-ignored hints. Detection walks the whole DML subtree so the
 	// INSERT…SELECT spelling — whose OPTIONS the grammar attaches to the inner SELECT, not
 	// insertStatement.queryOptions — cannot silently bypass DRY RUN and commit.
@@ -1302,10 +1304,10 @@ type cascadesPlan struct {
 	// separators.
 	sql string
 
-	// dryRun carries the SQL OPTIONS (DRY RUN) flag from planDML to execution.
-	// Statement-scoped (one cascadesPlan per statement) → paginatingRows.dryRun
-	// → ExecuteProperties.DryRun, so the DML executor previews via the store
-	// DryRun* primitives instead of mutating. Never a connection option.
+	// dryRun carries the statement's merged DRY RUN (its OPTIONS clause or the
+	// connection's DRY_RUN) from planDML to execution: one cascadesPlan per
+	// statement → paginatingRows.dryRun → ExecuteProperties.DryRun, so the DML
+	// executor previews via the store DryRun* primitives instead of mutating.
 	dryRun bool
 	// snapshot is the statement-scoped OPTIONS (ISOLATION LEVEL SNAPSHOT) flag:
 	// the statement's reads take no read-conflict ranges.
@@ -1416,6 +1418,7 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		ctx:              ctx,
 		cancel:           cancel,
 		conn:             c,
+		opts:             c.Options(),
 		execLog:          execLog,
 		ss:               ss,
 		plan:             p.physicalPlan,
@@ -1569,9 +1572,13 @@ func (r *paginatingRows) countAll() (int64, error) {
 // (aggregate accumulators, sort buffers) serialized as protobuf. No
 // cursor persists across transactions — this matches Java's architecture.
 type paginatingRows struct {
-	ctx              context.Context
-	cancel           context.CancelFunc // statement-timeout cancel; nil when no timeout
-	conn             *EmbeddedConnection
+	ctx    context.Context
+	cancel context.CancelFunc // statement-timeout cancel; nil when no timeout
+	conn   *EmbeddedConnection
+	// opts is the connection's option set captured when the statement
+	// executed; every page reads it, so a SetOption between two pages of one
+	// result does not change the rest of it (RFC-257 WS-E 6.2).
+	opts             *api.Options
 	ss               subspace.Subspace
 	plan             plans.RecordQueryPlan
 	md               *recordlayer.RecordMetaData
@@ -1618,10 +1625,9 @@ type paginatingRows struct {
 	maxResultBytes int64
 	resultBytes    int64
 
-	// dryRun is the statement-scoped SQL OPTIONS (DRY RUN) flag, propagated from
-	// the cascadesPlan at construction and read in executeProps() into
-	// ExecuteProperties.DryRun. A fresh paginatingRows per statement means it can
-	// never leak to a subsequent plain DML on the same (pooled) connection.
+	// dryRun is the statement's merged DRY RUN, propagated from the cascadesPlan
+	// at construction and read in executeProps() into ExecuteProperties.DryRun.
+	// A fresh paginatingRows per statement keeps it to that statement.
 	dryRun bool
 	// snapshot is the statement-scoped OPTIONS (ISOLATION LEVEL SNAPSHOT) flag:
 	// the statement's reads take no read-conflict ranges.
@@ -1977,12 +1983,21 @@ func (r *paginatingRows) pageRowBudget() int {
 	return int(remainingEmit)
 }
 
+// options is the option set captured when the statement executed (the
+// connection's, for a result set built without one).
+func (r *paginatingRows) options() *api.Options {
+	if r.opts != nil {
+		return r.opts
+	}
+	return r.conn.Options()
+}
+
 func (r *paginatingRows) pageTimeLimit() time.Duration {
 	limit := txPageTimeLimit
 	if r.retryTimeLimit > 0 && r.retryTimeLimit < limit {
 		limit = r.retryTimeLimit
 	}
-	if millis := optInt64(r.conn.Options(), api.OptExecutionTimeLimit, 0); millis > 0 && millis <= txPageTimeLimit.Milliseconds() {
+	if millis := optInt64(r.options(), api.OptExecutionTimeLimit, 0); millis > 0 && millis <= txPageTimeLimit.Milliseconds() {
 		limit = min(limit, time.Duration(millis)*time.Millisecond)
 	}
 	return limit
@@ -1996,15 +2011,15 @@ func (r *paginatingRows) executeProps() recordlayer.ExecuteProperties {
 	// wall clock, unchanged.
 	props := recordlayer.DefaultExecutePropertiesIn(r.env())
 
-	// DRY RUN is statement-scoped (carried on paginatingRows from the
-	// cascadesPlan), NOT a connection option — read the field, never
-	// r.conn.Options(), so it can't leak to a later plain statement.
+	// DRY RUN is the statement's merged flag (carried on paginatingRows from
+	// the cascadesPlan), read from the field so a later change of the
+	// connection's DRY_RUN cannot change a statement already executing.
 	props = props.WithDryRun(r.dryRun)
 	if r.snapshot {
 		props.IsolationLevel = recordlayer.SnapshotIsolation
 	}
 
-	opts := r.conn.Options()
+	opts := r.options()
 
 	// Per-page time limit. The connection option (if set) is intersected
 	// with the per-transaction CAP (txPageTimeLimit, 4s) so the FDB 5s hard

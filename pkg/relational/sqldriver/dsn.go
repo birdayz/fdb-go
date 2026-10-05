@@ -90,14 +90,70 @@ const RestrictDDLToSessionDatabaseParam = "restrict_ddl_to_session_database"
 // otherwise share cache entries with one that did not.
 const PlannerStatisticsParam = "planner_statistics"
 
-// ConnectionOptions converts the DSN's recognised query parameters into the
-// api.Options installed on each connection.
+// DryRunParam and IsolationLevelSnapshotParam set api.OptDryRun and
+// api.OptIsolationLevelSnapshot on every connection the DSN opens, parsed like
+// the other booleans: a connection whose DML previews and stores nothing, and
+// one whose SELECTs read at snapshot isolation (and which refuses everything
+// else), as Java's connection options DRY_RUN and ISOLATION_LEVEL_SNAPSHOT.
+const (
+	DryRunParam                 = "dry_run"
+	IsolationLevelSnapshotParam = "isolation_level_snapshot"
+)
+
+// acceptedDSNParams is every query parameter the driver reads. cluster_file
+// and schema are read from the same map as the options.
+var acceptedDSNParams = []string{
+	"cluster_file",
+	DryRunParam,
+	IsolationLevelSnapshotParam,
+	PlannerStatisticsParam,
+	RestrictDDLToSessionDatabaseParam,
+	"schema",
+	TransactionTagsParam,
+}
+
+// ConnectionOptions converts the DSN's query parameters into the api.Options
+// installed on each connection.
 //
-// Only options that must be decided before the first statement belong here.
-// Unrecognised parameters stay in the raw Options map and are ignored, matching
-// how cluster_file and schema are handled.
+// An UNKNOWN parameter is an error naming it and listing the accepted ones,
+// where it used to be ignored: a misspelled `dry_run` or
+// `restrict_ddl_to_session_database` must not silently leave a connection
+// writable or unrestricted. ParseDSN stays a parser and keeps every key.
 func (d *DSN) ConnectionOptions() (*api.Options, error) {
+	accepted := make(map[string]bool, len(acceptedDSNParams))
+	for _, name := range acceptedDSNParams {
+		accepted[name] = true
+	}
+	var unknown []string
+	for key := range d.Options {
+		if !accepted[key] {
+			unknown = append(unknown, key)
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		names := append([]string(nil), acceptedDSNParams...)
+		sort.Strings(names)
+		return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+			"unknown DSN parameter %s; accepted parameters are %s",
+			strings.Join(unknown, ", "), strings.Join(names, ", "))
+	}
 	opts := api.NoOptions()
+	for _, b := range []struct {
+		param  string
+		option api.OptionName
+	}{
+		{DryRunParam, api.OptDryRun},
+		{IsolationLevelSnapshotParam, api.OptIsolationLevelSnapshot},
+	} {
+		if raw, present := d.Options[b.param]; present {
+			v, err := parseDSNBool(b.param, raw)
+			if err != nil {
+				return nil, err
+			}
+			opts = opts.With(b.option, v)
+		}
+	}
 	if raw, present := d.Options[RestrictDDLToSessionDatabaseParam]; present {
 		v, err := parseDSNBool(RestrictDDLToSessionDatabaseParam, raw)
 		if err != nil {

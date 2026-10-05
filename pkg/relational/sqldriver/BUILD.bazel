@@ -273,6 +273,7 @@ go_test(
         "driver_test.go",
         "drop_schema_ifexists_conformance_probe_test.go",
         "dsn_ddl_scope_option_test.go",
+        "dsn_options_test.go",
         "dsn_tags_test.go",
         "duec_held_window_test.go",
         "duec_race_off_test.go",
@@ -813,6 +814,15 @@ go_test(
         "@org_golang_google_protobuf//types/descriptorpb",
         "@org_golang_google_protobuf//types/dynamicpb",
     ],
+)
+
+# DSN unit tests: no FDB, so they run in the fast lane (`just test`), unlike
+# sqldriver_test, which is tagged test-full as a whole.
+go_test(
+    name = "dsn_test",
+    srcs = ["dsn_options_test.go"],
+    embed = [":sqldriver"],
+    deps = ["//pkg/relational/api"],
 )
 
 # The corpus the transaction-budget census reads as DATA rather than as code.

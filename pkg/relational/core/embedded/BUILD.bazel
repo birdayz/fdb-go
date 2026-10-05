@@ -136,6 +136,7 @@ go_test(
         "closure_sparse_unique_candidate_test.go",
         "colref_split_test.go",
         "conjunction_binding_test.go",
+        "connection_option_scope_test.go",
         "connection_recover_test.go",
         "continuation_option_test.go",
         "correlated_exists_classifier_test.go",
@@ -515,6 +516,7 @@ go_test(
         "template_routine_getters_test.go",
         "scan_type_test.go",
         "param_cache_key_test.go",
+        "connection_option_scope_test.go",
     ],
     deps = [
         "//gen",

@@ -101,6 +101,9 @@ type EmbeddedConnection struct {
 	// unlimited — see api.DefaultOptionValues). Mirrors Java's
 	// EmbeddedRelationalConnection.getOptions().
 	options *api.Options
+	// baseOptions is the set SetOptions installed (the connector's, from the
+	// DSN); ResetSession restores it, discarding SetOption changes.
+	baseOptions *api.Options
 
 	// failOnScanLimitReached, when true, makes a leaf cursor that hits its
 	// scanned-records / scanned-bytes limit return a ScanLimitReachedError
@@ -156,12 +159,33 @@ func (c *EmbeddedConnection) ActiveTransactionTags() []string {
 	return tagged.Tags()
 }
 
-// SetOptions installs the per-connection api.Options (RFC-106a scan-limit
-// + MAX_ROWS wiring). Passing nil resets to defaults. Not safe to call
+// SetOptions REPLACES the connection's whole option set, and makes it the set
+// ResetSession restores when a pooled connection is returned (the driver's
+// connector installs the DSN's options this way). Passing nil resets to
+// defaults. To change one option, use SetOption, which keeps the rest (the
+// DSN's restrict_ddl_to_session_database among them). Not safe to call
 // concurrently with query execution on the same connection (matches
 // database/sql's per-Conn threading contract).
 func (c *EmbeddedConnection) SetOptions(o *api.Options) {
 	c.options = o
+	c.baseOptions = o
+}
+
+// SetOption sets one connection option, keeping the others, after checking
+// it against the option's contract (22023 otherwise), as Java's
+// EmbeddedRelationalConnection.setOption merges into its Options
+// (Options.java:378-379, 424-436). It lasts until ResetSession: a database/sql
+// caller reaching it through Conn.Raw changes only its own borrow, so the
+// next borrower of the pooled connection never inherits, say, DRY_RUN and
+// silently writes nothing. A statement captures the options once, when it
+// executes, so a change between two pages of one result does not change the
+// rest of it.
+func (c *EmbeddedConnection) SetOption(name api.OptionName, value any) error {
+	if err := api.ValidateOption(name, value); err != nil {
+		return err
+	}
+	c.options = c.Options().With(name, value)
+	return nil
 }
 
 // SetFailOnScanLimitReached toggles the Java setFailOnScanLimitReached(true)
@@ -894,6 +918,8 @@ func (c *EmbeddedConnection) SetDefaultSchema(s string) {
 //     the next checkout)
 //   - schemaCache → cleared (schema evolution between checkouts would
 //     otherwise serve a stale descriptor)
+//   - options → the set the connection was opened with (SetOptions); a
+//     SetOption through Conn.Raw must not reach the next borrower
 func (c *EmbeddedConnection) ResetSession(_ context.Context) error {
 	if c.closed.Load() {
 		return driver.ErrBadConn
@@ -911,6 +937,8 @@ func (c *EmbeddedConnection) ResetSession(_ context.Context) error {
 	}
 	c.sess.ResetSchemaCache()
 	c.invalidatePlanCache()
+	// A SetOption made through Conn.Raw lasts for that borrow only.
+	c.options = c.baseOptions
 	return nil
 }
 
