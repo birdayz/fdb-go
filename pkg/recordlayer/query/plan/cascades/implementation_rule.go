@@ -105,15 +105,10 @@ func (c *ImplementationRuleCall) CancellationErr() error {
 
 // CostModel returns the comparator a rule should use for internal best-plan
 // selection: stats-aware when the planner threaded statistics, else the
-// default-stats comparator. Mirrors ExpressionRuleCall.CostModel.
+// default-stats comparator, over the call's whole planner context. Mirrors
+// ExpressionRuleCall.CostModel.
 func (c *ImplementationRuleCall) CostModel() func(a, b expressions.RelationalExpression) bool {
-	ctx := c.Context
-	if c.Stats == nil {
-		// Preserve the historical nil-context comparison while retaining only
-		// an injected diagnostic sink.
-		ctx = costModelDiagnosticsOnlyContext(ctx)
-	}
-	return NewPlanningCostModelLessWithContext(c.Stats, ctx)
+	return NewPlanningCostModelLessWithContext(c.Stats, c.Context)
 }
 
 // Yield records a final expression to be inserted into the

@@ -98,15 +98,11 @@ func (c *ExpressionRuleCall) CancellationErr() error {
 
 // CostModel returns the comparator a rule should use for internal best-plan
 // selection: stats-aware when the planner threaded statistics, else the
-// default-stats comparator.
+// default-stats comparator. It ranks with the call's whole planner context,
+// configuration and metadata included, as Java's rule calls read
+// call.getContext() whatever the statistics (RFC-257 WS-F F-7a).
 func (c *ExpressionRuleCall) CostModel() func(a, b expressions.RelationalExpression) bool {
-	ctx := c.Context
-	if c.Stats == nil {
-		// Preserve the historical nil-context comparison while retaining only
-		// an injected diagnostic sink.
-		ctx = costModelDiagnosticsOnlyContext(ctx)
-	}
-	return NewPlanningCostModelLessWithContext(c.Stats, ctx)
+	return NewPlanningCostModelLessWithContext(c.Stats, c.Context)
 }
 
 // NewExpressionRuleCall builds a rule-call against a Reference + an

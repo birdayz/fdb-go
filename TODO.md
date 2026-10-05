@@ -170,8 +170,14 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   - No corpus plan moved. The full lane (sqldriver and conformance) has not run
     against the invariant.
   The conditional chains, finalization partitions and pruned-input rules were
-  already in place (`d5a5132a1`). Still open: the design's D1/D2/D5 progress
-  and staleness model, the `outerJoinCount` placement review, and F-7a/F-8.
+  already in place (`d5a5132a1`). F-7a is done: the planner's and the rule
+  calls' comparators rank with the whole planner context (configuration and
+  metadata) without statistics too; `costModelDiagnosticsOnlyContext` is
+  deleted. Two corpus plans moved, both a self-join's inner leg, from a primary
+  key range with a filter to the index equality probe, as PREFER_INDEX ranks
+  them (`join_optimization_probes.yaml#4`, `multi_feature_integer.yaml#3`).
+  Still open: the design's D1/D2/D5 progress and staleness model, the
+  `outerJoinCount` placement review, and F-8.
 - [ ] Reconcile query-block acceptance with the current translator: top-level
   Sort(Select), ORDER BY resolution against projected Values, DISTINCT ordering,
   index-DDL root handling and ordered IN. Old blocker prose in `TODO_OLD.md`

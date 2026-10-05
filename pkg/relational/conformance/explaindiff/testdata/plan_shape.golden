@@ -10596,13 +10596,13 @@ shape:         RecordQueryScanPlan
 shape:       RecordQueryIndexPlan
 === join_optimization_probes.yaml#4
 sql:   SELECT a.ename, b.ename FROM emp AS a INNER JOIN emp AS b ON a.did = b.did WHERE a.eid < b.eid ORDER BY a.eid, b.eid
-plan:  Map(InMemorySort([_current._2#2 ASC, _current._3#3 ASC], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(Scan(EMP, [<>]), [1 preds]))), {A.ENAME: _current.A.ENAME#0, B.ENAME: _current.B.ENAME#1})
+plan:  Map(InMemorySort([_current._2#2 ASC, _current._3#3 ASC], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(IndexScan(IDX_EMP_DID, [=]), [1 preds]))), {A.ENAME: _current.A.ENAME#0, B.ENAME: _current.B.ENAME#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
 shape:       RecordQueryScanPlan
 shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
+shape:         RecordQueryIndexPlan
 === join_optimization_probes.yaml#5
 sql:   SELECT d.dname, COUNT(*), MAX(e.salary) FROM emp AS e INNER JOIN dept AS d ON e.did = d.did GROUP BY d.dname ORDER BY d.dname
 plan:  Map(StreamingAgg(keys=[_current.DNAME#5], InMemorySort([_current.DNAME#5 ASC], FlatMap(outer=Scan(DEPT), inner=IndexScan(IDX_EMP_DID, [=])))), {DNAME: _current.DNAME#0, _1: _current.COUNT(*)#1, _2: _current.MAX(E.SALARY)#2})
@@ -11872,12 +11872,12 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryIndexPlan
 === multi_feature_integer.yaml#3
 sql:   SELECT a.name, b.name FROM products a JOIN products b ON a.category = b.category AND a.id < b.id ORDER BY a.name, b.name
-plan:  InMemorySort([_current.A.NAME#0 ASC, _current.B.NAME#1 ASC], FlatMap(outer=Scan(PRODUCTS), inner=PredicatesFilter(Scan(PRODUCTS, [<>]), [1 preds])))
+plan:  InMemorySort([_current.A.NAME#0 ASC, _current.B.NAME#1 ASC], FlatMap(outer=Scan(PRODUCTS), inner=PredicatesFilter(IndexScan(IDX_CAT, [=]), [1 preds])))
 shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryFlatMapPlan
 shape:     RecordQueryScanPlan
 shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:       RecordQueryIndexPlan
 === multi_feature_integer.yaml#4
 sql:   SELECT name, CASE WHEN price <= 100 THEN 'budget' WHEN price <= 200 THEN 'mid' ELSE 'premium' END FROM products WHERE category IS NOT NULL ORDER BY price
 plan:  Map(InMemorySort([_current._2#2 ASC], Map(IndexScan(IDX_CAT, [<>]), {NAME: _current.NAME#3, _1: CASE(WHEN(predicate, predicate, TRUE), ['budget', 'mid', 'premium']), _2: _current.PRICE#2})), {NAME: _current.NAME#0, _1: _current._1#1})

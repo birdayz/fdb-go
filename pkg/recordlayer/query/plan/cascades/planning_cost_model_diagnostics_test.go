@@ -488,7 +488,9 @@ func TestCostModelDiagnosticPlumbingPreservesComparatorContextSemantics(t *testi
 	index := mustDiagnosticConstruct(plans.NewRecordQueryIndexPlan(
 		"idx", nil, []string{"T"}, diagnosticRowType(), false))
 
-	noStatsBaseline := NewPlanningCostModelLess(nil)
+	// RFC-257 WS-F F-7a: without statistics the comparators rank with the
+	// whole context too, its configuration included, as Java's rule calls
+	// read call.getContext(); they used to strip it to the diagnostic sink.
 	noStatsComparators := []struct {
 		name string
 		less func(expressions.RelationalExpression, expressions.RelationalExpression) bool
@@ -498,11 +500,8 @@ func TestCostModelDiagnosticPlumbingPreservesComparatorContextSemantics(t *testi
 		{name: "implementation rule", less: (&ImplementationRuleCall{Context: wrapped}).CostModel()},
 	}
 	for _, tc := range noStatsComparators {
-		if got, want := tc.less(primary, index), noStatsBaseline(primary, index); got != want {
-			t.Fatalf("%s no-stats primary<index = %t, want historical nil-context %t", tc.name, got, want)
-		}
-		if got, want := tc.less(index, primary), noStatsBaseline(index, primary); got != want {
-			t.Fatalf("%s no-stats index<primary = %t, want historical nil-context %t", tc.name, got, want)
+		if !tc.less(index, primary) || tc.less(primary, index) {
+			t.Fatalf("%s no-stats comparator did not rank with the wrapped PreferIndex context", tc.name)
 		}
 	}
 

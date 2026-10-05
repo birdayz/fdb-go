@@ -1908,21 +1908,6 @@ func costModelDiagnosticsFrom(ctx PlanContext) *costModelDiagnostics {
 	return provider.costModelDiagnostics()
 }
 
-// costModelDiagnosticsOnlyContext strips metadata and configuration from ctx
-// while retaining its diagnostic sink. Nil-statistics planner/rule comparators
-// historically ran with no PlanContext; logging must not activate new winner
-// criteria as a side effect.
-func costModelDiagnosticsOnlyContext(ctx PlanContext) PlanContext {
-	diagnostics := costModelDiagnosticsFrom(ctx)
-	if diagnostics == nil {
-		return nil
-	}
-	return &costModelDiagnosticContext{
-		PlanContext: EmptyPlanContext(),
-		diagnostics: diagnostics,
-	}
-}
-
 func warnUnclassifiedPlanType(
 	ctx PlanContext,
 	walk costModelDiagnosticWalk,

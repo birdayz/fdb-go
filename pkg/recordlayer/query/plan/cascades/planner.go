@@ -250,10 +250,10 @@ func NewPlanner(rules []ExpressionRule, ctx PlanContext) *Planner {
 		memo:               nil,
 		MaxTasks:           100_000,
 	}
-	// Preserve the historical nil-context cost semantics until
-	// WithStatistics is called, while still carrying an injected RFC-190.14
-	// diagnostic sink. Merely adding a logger must never change a winner.
-	p.costModel = NewPlanningCostModelLessWithContext(nil, costModelDiagnosticsOnlyContext(ctx))
+	// The comparator ranks with the planner's configuration and metadata
+	// whatever the statistics, as Java's PlanningCostModel does (RFC-257 WS-F
+	// F-7a); WithStatistics replaces it with the statistics-aware one.
+	p.costModel = NewPlanningCostModelLessWithContext(nil, ctx)
 	return p
 }
 
