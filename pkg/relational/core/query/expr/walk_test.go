@@ -514,10 +514,11 @@ func TestWalkPredicate_AndChainFlattens(t *testing.T) {
 	}
 }
 
-// End-to-end: full expression walks through Simplify. `id = 1 AND
-// TRUE` → `id = 1` after the AndConstantSimplify rule drops TRUE.
-// Tests that the walker output is a first-class citizen of the
-// simplifier.
+// End-to-end: full expression walks through Simplify. `5 = 5` compares two
+// literals, which are not effective constants under Java's
+// ConstantFoldingRuleSet, so it stays beside `id = 1` (Java keeps
+// `@c EQUALS @c` in the filter). Tests that the walker output is a
+// first-class citizen of the simplifier.
 func TestWalkPredicate_FeedsSimplifier(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
@@ -528,11 +529,11 @@ func TestWalkPredicate_FeedsSimplifier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	simplified, err := cascades.Simplify(pred, cascades.DefaultSimplifyRules())
+	simplified, err := cascades.Simplify(pred, cascades.ConstantFoldingRules())
 	if err != nil {
 		t.Fatalf("simplify: %v", err)
 	}
-	if got, want := simplified.Explain(), "U.ID#0 = 1"; got != want {
+	if got, want := simplified.Explain(), "(U.ID#0 = 1 AND 5 = 5)"; got != want {
 		t.Fatalf("simplified: got %q, want %q", got, want)
 	}
 }
@@ -583,7 +584,7 @@ func TestWalkPredicate_NotParenComparison(t *testing.T) {
 	}
 	// Through the simplifier: NOT(id = 1) → id <> 1 via
 	// NotComparisonRewriteRule.
-	simplified, err := cascades.Simplify(pred, cascades.DefaultSimplifyRules())
+	simplified, err := cascades.Simplify(pred, cascades.ConstantFoldingRules())
 	if err != nil {
 		t.Fatalf("simplify: %v", err)
 	}
@@ -1208,22 +1209,22 @@ func TestWalker_E2E_SimplifyRichTree(t *testing.T) {
 	r := expr.New(a, s)
 
 	// `WHERE (5 = 5 OR name IS NULL) AND id > 0 AND TRUE`
-	// Simplifier should:
-	//   - Fold `5 = 5` → TRUE → OR(TRUE, ...) → TRUE → drop from AND.
+	// Under Java's ConstantFoldingRuleSet:
+	//   - `5 = 5` is not folded (two literals are not effective constants).
 	//   - Keep `id > 0` (opaque).
-	//   - Fold `TRUE` → drop from AND.
-	// Final: `id > 0`.
+	//   - `TRUE` is the AND identity and drops.
+	// Final: `(5 = 5 OR name IS NULL) AND id > 0`.
 	ctx := parseFirstWhereExpr(t,
 		"SELECT * FROM users WHERE (5 = 5 OR name IS NULL) AND id > 0 AND TRUE")
 	pred, err := r.WalkPredicate(ctx)
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	simplified, err := cascades.Simplify(pred, cascades.DefaultSimplifyRules())
+	simplified, err := cascades.Simplify(pred, cascades.ConstantFoldingRules())
 	if err != nil {
 		t.Fatalf("simplify: %v", err)
 	}
-	if got, want := simplified.Explain(), "U.ID#0 > 0"; got != want {
+	if got, want := simplified.Explain(), "((5 = 5 OR U.NAME#1 IS NULL) AND U.ID#0 > 0)"; got != want {
 		t.Fatalf("simplified: got %q, want %q", got, want)
 	}
 }

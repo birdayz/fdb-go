@@ -2,8 +2,8 @@ package cascades
 
 // Predicate-tree fuzz target for the QueryPredicate-level rule
 // simplifier driver. Lives in root cascades/ because Simplify +
-// DefaultSimplifyRules + NormalizationRules are the rule
-// infrastructure and depend on cascades/predicates + cascades/values.
+// ConstantFoldingRules are the rule infrastructure and depend on
+// cascades/predicates + cascades/values.
 
 import (
 	"testing"
@@ -70,26 +70,15 @@ func FuzzSimplify_PredicateTree(f *testing.F) {
 			pred = predicates.NewAnd(predicates.NewNot(left), right)
 		}
 
-		// Default-rules pass.
-		out := mustSimplify(t, pred, DefaultSimplifyRules())
+		// Java's ConstantFoldingRuleSet, De Morgan included.
+		out := mustSimplify(t, pred, ConstantFoldingRules())
 		if out == nil {
 			t.Fatalf("Simplify returned nil — should always produce a QueryPredicate (a=%d b=%d op1=%v op2=%v shape=%d)", a, b, op1, op2, shaperaw%5)
 		}
 		// Idempotency.
-		again := mustSimplify(t, out, DefaultSimplifyRules())
+		again := mustSimplify(t, out, ConstantFoldingRules())
 		if again == nil {
 			t.Fatalf("mustSimplify(t, simplified) returned nil")
-		}
-
-		// NormalizationRules pass — adds De Morgan; same no-panic +
-		// idempotency contract under the bigger rule set.
-		outN := mustSimplify(t, pred, NormalizationRules())
-		if outN == nil {
-			t.Fatalf("mustSimplify(t, NormalizationRules) returned nil")
-		}
-		againN := mustSimplify(t, outN, NormalizationRules())
-		if againN == nil {
-			t.Fatalf("mustSimplify(t, NormalizationRules)(simplified) returned nil")
 		}
 	})
 }

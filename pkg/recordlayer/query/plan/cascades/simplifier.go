@@ -136,21 +136,15 @@ func queryPredicateSimplificationRules() []CascadesRule {
 	}
 }
 
-// DefaultSimplifyRules includes constant evaluation for null-substitution proofs.
-// Planner predicate rewrites use queryPredicateSimplificationRules instead.
-func DefaultSimplifyRules() []CascadesRule {
+// TranslatorConstantPredicateRules is the set the SQL translator runs after
+// it replaces an EXISTS it has decided with its constant: AND and OR identity
+// and annulment, and NOT over a constant predicate. The last is Go's own, for
+// that translator fold only; Java's ConstantFoldingRuleSet (ConstantFolding-
+// Rules) has no fold of NOT over a constant.
+func TranslatorConstantPredicateRules() []CascadesRule {
 	return []CascadesRule{
-		NewAndFlattenRule(),
-		NewOrFlattenRule(),
-		NewComparisonConstantSimplifyRule(),
-		NewNotConstantSimplifyRule(),
 		NewAndConstantSimplifyRule(),
 		NewOrConstantSimplifyRule(),
-		NewAndDedupRule(),
-		NewOrDedupRule(),
-		NewAndAbsorbOrRule(),
-		NewOrAbsorbAndRule(),
-		NewNotComparisonRewriteRule(),
-		NewValuePredicateConstantFoldRule(),
+		NewNotConstantSimplifyRule(),
 	}
 }

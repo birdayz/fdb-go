@@ -13,11 +13,9 @@ import (
 // can rely on the pointer-equality short-circuit (`if out != p { ... }`)
 // to detect "did anything change?".
 //
-// Why a separate pass from Simplify: Simplify drives the QueryPredicate-
-// level rule fixpoint (ComparisonConstantSimplifyRule, AndFlatten, …);
-// it doesn't fold expression-level constants inside ComparisonPredicate
-// operands. `name = 1+2` survives Simplify with the `1+2` ArithmeticValue
-// intact; SimplifyPredicateValues collapses it to `name = 3`.
+// It is the value half of Java's ValuePredicateSimplificationRule, which
+// cascades.ConstantFoldingRules applies to each leaf inside the
+// QueryPredicate-level fixpoint: `name = 1+2` becomes `name = 3`.
 func SimplifyPredicateValues(p QueryPredicate) QueryPredicate {
 	if p == nil {
 		return nil

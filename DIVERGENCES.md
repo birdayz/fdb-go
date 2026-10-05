@@ -817,7 +817,7 @@ import cycle. It lives beside the other plan-level properties in `plans/`.
 | NotOverComparisonRule | NotComparisonRewriteRule (5 invertible operators) | Aligned |
 | NormalFormRule (CNF) | `normalizeCNF` | Aligned |
 | NormalFormRule (DNF) | `NormalizeDNF()` | Aligned |
-| ConstantFoldingValuePredicateRule | ValuePredicateConstantFoldRule | Aligned |
+| ConstantFoldingValuePredicateRule | ConstantFoldingValuePredicateRule (`predicates.FoldComparisonMaybe`), and ConstantFoldingBooleanValuePredicateRule for Go's boolean ValuePredicate as `value = TRUE` | Aligned |
 | ConstantFoldingPredicateWithRangesRule | `foldPredicateWithRanges()` | Aligned |
 | ConstantFoldingMultiConstraintPredicateRule | `foldPredicateWithRanges()` multi-constraint | Aligned |
 

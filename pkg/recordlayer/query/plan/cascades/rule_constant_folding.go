@@ -6,7 +6,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// constantFoldingRules is Java's ConstantFoldingRuleSet
+// ConstantFoldingRules is Java's ConstantFoldingRuleSet
 // (ConstantFoldingRuleSet.java:36-79): the default predicate rules
 // (queryPredicateSimplificationRules: identity and annulment for AND and OR,
 // absorption, NOT over a comparison, De Morgan), ValuePredicateSimplification-
@@ -21,7 +21,7 @@ import (
 // decides whether a predicate rejects a null-on-empty quantifier's NULL row.
 // Nothing here evaluates a composite at plan time, and NOT over a constant
 // predicate does not fold: Java has neither.
-func constantFoldingRules() []CascadesRule {
+func ConstantFoldingRules() []CascadesRule {
 	return append(queryPredicateSimplificationRules(),
 		NewValuePredicateSimplificationRule(),
 		NewConstantFoldingValuePredicateRule(),
@@ -73,9 +73,7 @@ type ConstantFoldingValuePredicateRule struct {
 
 // NewConstantFoldingValuePredicateRule constructs the rule.
 func NewConstantFoldingValuePredicateRule() *ConstantFoldingValuePredicateRule {
-	return &ConstantFoldingValuePredicateRule{
-		matcher: &predicateMatcher[*predicates.ComparisonPredicate]{rootType: "ComparisonPredicate"},
-	}
+	return &ConstantFoldingValuePredicateRule{matcher: newComparisonPredicateMatcher()}
 }
 
 func (r *ConstantFoldingValuePredicateRule) Matcher() matching.BindingMatcher { return r.matcher }
@@ -98,9 +96,7 @@ type ConstantFoldingBooleanValuePredicateRule struct {
 
 // NewConstantFoldingBooleanValuePredicateRule constructs the rule.
 func NewConstantFoldingBooleanValuePredicateRule() *ConstantFoldingBooleanValuePredicateRule {
-	return &ConstantFoldingBooleanValuePredicateRule{
-		matcher: &predicateMatcher[*predicates.ValuePredicate]{rootType: "ValuePredicate"},
-	}
+	return &ConstantFoldingBooleanValuePredicateRule{matcher: newValuePredicateMatcher()}
 }
 
 func (r *ConstantFoldingBooleanValuePredicateRule) Matcher() matching.BindingMatcher {
@@ -116,6 +112,14 @@ func (r *ConstantFoldingBooleanValuePredicateRule) OnMatch(call *RuleCall) {
 	if folded := predicates.FoldComparisonMaybe(vp.Value, isTrue); folded != nil {
 		call.Yield(folded)
 	}
+}
+
+func newComparisonPredicateMatcher() *predicateMatcher[*predicates.ComparisonPredicate] {
+	return &predicateMatcher[*predicates.ComparisonPredicate]{rootType: "ComparisonPredicate"}
+}
+
+func newValuePredicateMatcher() *predicateMatcher[*predicates.ValuePredicate] {
+	return &predicateMatcher[*predicates.ValuePredicate]{rootType: "ValuePredicate"}
 }
 
 var (

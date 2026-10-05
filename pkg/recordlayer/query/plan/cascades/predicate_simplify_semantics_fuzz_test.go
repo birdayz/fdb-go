@@ -60,8 +60,7 @@ func FuzzSimplifyPredicate_PreservesSemantics(f *testing.F) {
 		rules    []CascadesRule
 		boundDNF bool
 	}{
-		{name: "default", rules: DefaultSimplifyRules()},
-		{name: "normalization", rules: NormalizationRules()},
+		{name: "constant-folding", rules: ConstantFoldingRules()},
 		{name: "query-predicate", rules: queryPredicateSimplificationRules()},
 		{name: "dnf", rules: append([]CascadesRule{newPredicateDNFRule()}, queryPredicateSimplificationRules()...), boundDNF: true},
 	}

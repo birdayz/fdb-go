@@ -34,24 +34,23 @@ func TestDefaultRules_NotEmpty(t *testing.T) {
 // updated the constant.
 //
 // DefaultImplementationRules already appends
-// GoExtensionImplementationRules, and NormalizationRules already
-// prepends DeMorgan onto DefaultSimplifyRules — listing the composites
+// GoExtensionImplementationRules, and ConstantFoldingRules already
+// carries queryPredicateSimplificationRules — listing the composites
 // covers the parts. FinalizeExpressionsRule is listed explicitly: it is
 // instantiated directly by NewPlanner (the REWRITING-phase
 // rewritingImplRules), not by a set constructor.
 func productionRuleSets() map[string][]any {
 	return map[string][]any{
-		"DefaultExpressionRules":       anySlice(DefaultExpressionRules()),
-		"PlanningExplorationRules":     anySlice(PlanningExplorationRules()),
-		"BatchAExpressionRules":        anySlice(BatchAExpressionRules()),
-		"DMLImplementationRules":       anySlice(DMLImplementationRules()),
-		"RewritingRules":               anySlice(RewritingRules()),
-		"MatchingRules":                anySlice(MatchingRules()),
-		"DefaultImplementationRules":   anySlice(DefaultImplementationRules()),
-		"DefaultSimplifyRules":         anySlice(DefaultSimplifyRules()),
-		"NormalizationRules":           anySlice(NormalizationRules()),
-		"ConstantFoldingRules":         anySlice(constantFoldingRules()),
-		"RewritingImplementationRules": anySlice(RewritingImplementationRules()),
+		"DefaultExpressionRules":           anySlice(DefaultExpressionRules()),
+		"PlanningExplorationRules":         anySlice(PlanningExplorationRules()),
+		"BatchAExpressionRules":            anySlice(BatchAExpressionRules()),
+		"DMLImplementationRules":           anySlice(DMLImplementationRules()),
+		"RewritingRules":                   anySlice(RewritingRules()),
+		"MatchingRules":                    anySlice(MatchingRules()),
+		"DefaultImplementationRules":       anySlice(DefaultImplementationRules()),
+		"ConstantFoldingRules":             anySlice(ConstantFoldingRules()),
+		"TranslatorConstantPredicateRules": anySlice(TranslatorConstantPredicateRules()),
+		"RewritingImplementationRules":     anySlice(RewritingImplementationRules()),
 	}
 }
 

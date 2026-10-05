@@ -105,9 +105,8 @@ func PredicateSize(p QueryPredicate) int {
 // compares by operand Name + Comparison (Type + Operand literal);
 // ValuePredicate compares by wrapped Value Name.
 //
-// Used by the dedup / normalization rules (AndDedupRule /
-// OrDedupRule / the absorption rules in rule_simplify.go,
-// NormalizePredicatesRule); the equality helper belongs with the
+// Used by the normalization rules (the absorption rules in
+// rule_simplify.go, NormalizePredicatesRule); the equality helper belongs with the
 // predicate types themselves so rule authors don't roll their own.
 func PredicateEquals(a, b QueryPredicate) bool {
 	if a == nil || b == nil {

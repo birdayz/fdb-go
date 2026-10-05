@@ -48,14 +48,7 @@ func (r *DeMorganRule) OnMatch(call *RuleCall) {
 		}
 		call.YieldAndReExplore(&predicates.AndPredicate{SubPredicates: negated})
 	default:
-		// NOT over a non-And/Or child — out of scope; let
-		// NotConstantSimplifyRule / NotComparisonRewriteRule handle
-		// leaves and double-negation.
+		// NOT over a non-And/Or child — out of scope; NotComparisonRewriteRule
+		// handles a comparison leaf.
 	}
-}
-
-// NormalizationRules combines NOT distribution with constant evaluation.
-func NormalizationRules() []CascadesRule {
-	out := []CascadesRule{NewDeMorganRule()}
-	return append(out, DefaultSimplifyRules()...)
 }

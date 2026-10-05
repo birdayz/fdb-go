@@ -2172,9 +2172,8 @@ func (r *Resolver) walkPredicatedExpression(pred *antlrgen.PredicatedExpressionC
 	}
 	// 2. NULL → constant (Java :384, `value instanceof NullValue`).
 	//    Match the Value rather than its annotation: typed NULLs can carry a
-	//    non-NULL type code too. Must be folded HERE: the
-	//    comparison-form lift below bypasses ValuePredicateConstantFoldRule
-	//    (which matches only *ValuePredicate) that `WHERE NULL` relied on.
+	//    non-NULL type code too. Folded HERE, as Java's
+	//    toUnderlyingPredicate returns ConstantPredicate.NULL for it.
 	if _, isNull := v.(*values.NullValue); isNull {
 		return predicates.NewConstantPredicate(predicates.TriUnknown), nil
 	}
@@ -2282,8 +2281,8 @@ func (r *Resolver) walkLogicalExpression(le *antlrgen.LogicalExpressionContext) 
 // flattenAnd/flattenOr collapse left-deep chains built by the
 // parser. `a AND b AND c` parses as (and (and a b) c) — here we
 // return [a b c] so ResolveAnd produces a single 3-child And
-// rather than nested pairs. AndFlattenRule in cascades would fix
-// it later anyway, but seeding the flat shape avoids fixpoint work.
+// rather than nested pairs, the flat conjunction Java's AndPredicate.and
+// builds; no simplification rule flattens it later.
 func flattenAnd(preds ...predicates.QueryPredicate) []predicates.QueryPredicate {
 	var out []predicates.QueryPredicate
 	for _, p := range preds {

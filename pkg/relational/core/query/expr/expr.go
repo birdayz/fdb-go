@@ -1012,16 +1012,15 @@ func arithmeticEncapsulationError(err error) error {
 //
 // Both LHS and RHS are carried as Values — non-constant RHS
 // (`a = b`, `a < b + 1`, `a = CAST(col AS INT)`) composes uniformly
-// with constant RHS. Plan-time folding (`5 = 5` → TRUE) happens in
-// ComparisonConstantSimplifyRule when both sides are constant;
+// with constant RHS. Plan-time folding happens only over EFFECTIVE
+// constants (cascades.ConstantFoldingRules, Java's ConstantFoldingRuleSet:
+// `x IS NULL` over a NOT NULL x, a NULL side, two boolean literals);
 // row-context evaluation (FieldValue RHS) runs through
 // ComparisonPredicate.Eval.
 //
 // Does NOT pre-fold even when both operands are constant. `5 = 5`
-// produces a real ComparisonPredicate; the fixpoint simplifier
-// folds it to TRUE via ComparisonConstantSimplifyRule. Eager
-// folding here would hide foldable shapes from rule matchers that
-// expect to see them.
+// produces a real ComparisonPredicate, and it stays one: two non-boolean
+// literals are not effective constants, as Java keeps `@c EQUALS @c`.
 // isOrderingComparison reports whether op needs its operands to be ORDERED, as
 // opposed to merely comparable for equality. The distinction is what separates
 // the operators BOOLEAN supports from the ones it does not.

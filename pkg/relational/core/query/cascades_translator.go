@@ -8721,9 +8721,7 @@ func (t *cascadesTranslator) foldKnownExists(f *logical.LogicalFilter) *logical.
 	if len(foldedAliases) == 0 {
 		return f
 	}
-	rewritten, err := cascades.Simplify(rewritten, []cascades.CascadesRule{
-		cascades.NewAndConstantSimplifyRule(), cascades.NewOrConstantSimplifyRule(), cascades.NewNotConstantSimplifyRule(),
-	})
+	rewritten, err := cascades.Simplify(rewritten, cascades.TranslatorConstantPredicateRules())
 	if err != nil {
 		t.setTranslateErr(err)
 		return f

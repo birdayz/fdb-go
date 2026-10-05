@@ -22,8 +22,7 @@ import (
 // Quantifier. Pointer-identity dedup absorbs second fire.
 //
 // Composes with FilterMergeRule (which can leave duplicates after
-// flattening nested Filters) and AndDedupRule (which dedupes inside
-// an AND predicate at the predicate-tree level — different layer).
+// flattening nested Filters).
 type FilterDedupPredicatesRule struct {
 	matcher matching.BindingMatcher
 }

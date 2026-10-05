@@ -116,7 +116,7 @@ func BenchmarkFullStack(b *testing.B) {
 	// Parse once (parsing is amortised across query planning in
 	// practice); just measure walk + simplify.
 	ctx := parseWhereForBench(b, "SELECT * FROM users WHERE id = 1 AND name = 'bob'")
-	rules := cascades.DefaultSimplifyRules()
+	rules := cascades.ConstantFoldingRules()
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {

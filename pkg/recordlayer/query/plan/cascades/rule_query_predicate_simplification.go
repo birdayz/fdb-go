@@ -30,10 +30,10 @@ func (r *QueryPredicateSimplificationRule) OnMatch(call *ExpressionRuleCall) {
 
 	// Java simplifies the conjunction, not isolated value operands: a sibling
 	// can absorb an OR or supply the identity that eliminates another factor.
-	// The set is Java's ConstantFoldingRuleSet (constantFoldingRules), whose
+	// The set is Java's ConstantFoldingRuleSet (ConstantFoldingRules), whose
 	// value rule simplifies the leaves inside the fixpoint.
 	conjunction := buildAnd(originalPredicates)
-	simplifiedConjunction, err := Simplify(conjunction, constantFoldingRules())
+	simplifiedConjunction, err := Simplify(conjunction, ConstantFoldingRules())
 	if err != nil {
 		call.Fail(err)
 		return

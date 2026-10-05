@@ -7,6 +7,25 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+// valueFoldField is a column of a two-field row: ordinal 0 a NOT NULL
+// BOOLEAN, ordinal 1 a nullable BIGINT.
+func valueFoldField(ordinal int) values.Value {
+	row := values.NewRecordType("ValueFoldRow", false, []values.Field{
+		{Name: "active", FieldType: values.NotNullBoolean},
+		{Name: "x", FieldType: values.NullableLong},
+	})
+	root, err := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("VALUE_FOLD"), row)
+	if err != nil {
+		panic("value-fold QOV: " + err.Error())
+	}
+	field, err := values.ResolveFieldOrdinals(root, []int{ordinal})
+	if err != nil {
+		panic("value-fold field: " + err.Error())
+	}
+	return field
+}
+
 func constantFoldingYield(t *testing.T, rule CascadesRule, input predicates.QueryPredicate) predicates.QueryPredicate {
 	t.Helper()
 	got, err := FireRule(rule, input)
@@ -125,20 +144,20 @@ func TestConstantFoldingRules_Conjunction(t *testing.T) {
 	isTrue := &predicates.ComparisonPredicate{Operand: valueFoldField(0), Comparison: predicates.Comparison{Type: predicates.ComparisonIsNotNull}}
 	isFalse := &predicates.ComparisonPredicate{Operand: valueFoldField(0), Comparison: predicates.Comparison{Type: predicates.ComparisonIsNull}}
 
-	got, err := Simplify(predicates.NewAnd(keep, isTrue), constantFoldingRules())
+	got, err := Simplify(predicates.NewAnd(keep, isTrue), ConstantFoldingRules())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !predicates.PredicateEquals(got, keep) {
 		t.Fatalf("[n > 0, TRUE] simplified to %s, want n > 0", got.Explain())
 	}
-	got, err = Simplify(predicates.NewAnd(keep, isFalse), constantFoldingRules())
+	got, err = Simplify(predicates.NewAnd(keep, isFalse), ConstantFoldingRules())
 	if err != nil {
 		t.Fatal(err)
 	}
 	wantConstant(t, "[n > 0, FALSE]", got, predicates.TriFalse)
 	notNull := predicates.NewNot(predicates.NewConstantPredicate(predicates.TriUnknown))
-	got, err = Simplify(notNull, constantFoldingRules())
+	got, err = Simplify(notNull, ConstantFoldingRules())
 	if err != nil {
 		t.Fatal(err)
 	}

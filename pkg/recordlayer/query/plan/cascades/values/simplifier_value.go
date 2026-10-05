@@ -4,8 +4,7 @@ import "fmt"
 
 // SimplifyValue is the standalone-Value counterpart to Simplify.
 // Folds constant sub-trees in a Value (e.g. SELECT-list expressions
-// or projection arguments that never reach a comparison and so never
-// hit ComparisonConstantSimplifyRule).
+// or projection arguments that never reach a comparison).
 //
 // Two-phase per node, post-order:
 //

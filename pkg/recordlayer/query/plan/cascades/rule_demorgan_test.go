@@ -168,7 +168,7 @@ func TestNormalizationRules_AppliesDeMorganThenSimplify(t *testing.T) {
 	cp := predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: demorganLiteral(int64(5))})
 
 	pred := predicates.NewNot(predicates.NewOr(cp, predicates.NewConstantPredicate(predicates.TriFalse)))
-	got := mustSimplify(t, pred, NormalizationRules())
+	got := mustSimplify(t, pred, ConstantFoldingRules())
 
 	out, ok := got.(*predicates.ComparisonPredicate)
 	if !ok {
@@ -200,7 +200,7 @@ func TestNormalizationRules_NestedNotDistributesRecursively(t *testing.T) {
 	r := predicates.NewComparisonPredicate(c, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: demorganLiteral("z")})
 
 	pred := predicates.NewNot(predicates.NewAnd(p, predicates.NewOr(q, r)))
-	got := mustSimplify(t, pred, NormalizationRules())
+	got := mustSimplify(t, pred, ConstantFoldingRules())
 
 	// After full distribution + NotComparisonRewrite:
 	// OR(p<>, AND(q<>, r<>))
@@ -232,84 +232,57 @@ func TestNormalizationRules_NestedNotDistributesRecursively(t *testing.T) {
 	}
 }
 
-// TestNormalizationRules_VPConstantFoldChain pins the rule
-// composition: NOT(VP(constant)) folds via the chain
-// ValuePredicateConstantFoldRule + NotConstantSimplifyRule.
-//
-// Specifically: NOT(VP(BooleanValue(true))) → NOT(TRUE) →
-// ConstantPredicate(TriFalse). Both rules need to fire in sequence.
-func TestNormalizationRules_VPConstantFoldChain(t *testing.T) {
-	t.Parallel()
-	pred := predicates.NewNot(predicates.NewValuePredicate(values.NewBooleanValue(true)))
-	got := mustSimplify(t, pred, NormalizationRules())
-	cp, ok := got.(*predicates.ConstantPredicate)
+// wantNotOverConstant asserts got is NOT over the constant v: Java's
+// ConstantFoldingRuleSet folds the leaf but has no rule for NOT over a
+// constant predicate (NotPredicate.not is a plain constructor, and
+// NotOverComparisonRule matches only a comparison child).
+func wantNotOverConstant(t *testing.T, got predicates.QueryPredicate, v predicates.TriBool) {
+	t.Helper()
+	not, ok := got.(*predicates.NotPredicate)
 	if !ok {
-		t.Fatalf("expected ConstantPredicate after NOT(VP(true)) fold, got %T %s", got, got.Explain())
+		t.Fatalf("expected NOT over a constant, got %T %s", got, got.Explain())
 	}
-	if cp.Value != predicates.TriFalse {
-		t.Fatalf("expected TriFalse, got %v", cp.Value)
+	if cp, ok := not.Child.(*predicates.ConstantPredicate); !ok || cp.Value != v {
+		t.Fatalf("expected NOT (%v), got %s", v, got.Explain())
 	}
 }
 
-// TestNormalizationRules_DeMorganIntoVPFold pins the longer chain:
-// NOT(AND(VP(true), VP(false))) — DeMorgan distributes to
-// OR(NOT(VP(true)), NOT(VP(false))), then VP folds + NOT
-// folds + Or-identity-drop collapse to ConstantPredicate(TriTrue).
-//
-// Trace:
-//
-//	NOT(AND(VP(true), VP(false)))
-//	→ OR(NOT(VP(true)), NOT(VP(false)))   [DeMorgan]
-//	→ OR(NOT(TRUE), NOT(FALSE))           [VPConstantFold ×2]
-//	→ OR(FALSE, TRUE)                      [NotConstantSimplify ×2]
-//	→ ConstantPredicate(TriTrue)           [OrConstantSimplify, TRUE child]
+// TestNormalizationRules_VPConstantFoldChain pins the leaf fold under a NOT:
+// NOT(VP(TRUE)) → NOT(TRUE), the boolean value predicate folded as Java's
+// ValuePredicate(value, EQUALS TRUE), and the NOT kept.
+func TestNormalizationRules_VPConstantFoldChain(t *testing.T) {
+	t.Parallel()
+	pred := predicates.NewNot(predicates.NewValuePredicate(values.NewBooleanValue(true)))
+	wantNotOverConstant(t, mustSimplify(t, pred, ConstantFoldingRules()), predicates.TriTrue)
+}
+
+// TestNormalizationRules_DeMorganIntoVPFold pins the order the driver folds
+// in: children first, so NOT(AND(VP(true), VP(false))) folds its AND to FALSE
+// (the leaves fold, FALSE annuls) before De Morgan could distribute, and the
+// NOT over that constant stays.
 func TestNormalizationRules_DeMorganIntoVPFold(t *testing.T) {
 	t.Parallel()
 	pred := predicates.NewNot(predicates.NewAnd(
 		predicates.NewValuePredicate(values.NewBooleanValue(true)),
 		predicates.NewValuePredicate(values.NewBooleanValue(false)),
 	))
-	got := mustSimplify(t, pred, NormalizationRules())
-	cp, ok := got.(*predicates.ConstantPredicate)
-	if !ok {
-		t.Fatalf("expected ConstantPredicate, got %T %s", got, got.Explain())
-	}
-	if cp.Value != predicates.TriTrue {
-		t.Fatalf("expected TriTrue (NOT(true AND false) = NOT(false) = TRUE), got %v", cp.Value)
-	}
+	wantNotOverConstant(t, mustSimplify(t, pred, ConstantFoldingRules()), predicates.TriFalse)
 }
 
-// TestNormalizationRules_DeMorganMixed pins the cross-shape: an AND
-// containing a comparison + a constant under NOT exercises DeMorgan
-// distributing into both shapes simultaneously.
-//
-//	NOT(AND(a = 5, VP(false)))
-//	→ OR(NOT(a = 5), NOT(VP(false)))     [DeMorgan]
-//	→ OR(a <> 5, NOT(FALSE))              [NotComparisonRewrite + VP fold]
-//	→ OR(a <> 5, TRUE)                    [NotConstantSimplify]
-//	→ ConstantPredicate(TriTrue)          [OrConstantSimplify, TRUE absorbs]
-//
-// Pins the rule pipeline doesn't fall through any of the 4 transforms.
+// TestNormalizationRules_DeMorganMixed pins the same order over a mixed AND:
+// NOT(AND(a = 5, VP(false))) annuls its AND to FALSE first, so the result is
+// NOT(FALSE), not De Morgan's OR(a <> 5, TRUE).
 func TestNormalizationRules_DeMorganMixed(t *testing.T) {
 	t.Parallel()
 	a := demorganField("a", values.NullableLong)
 	cp := predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: demorganLiteral(int64(5))})
 	pred := predicates.NewNot(predicates.NewAnd(cp, predicates.NewValuePredicate(values.NewBooleanValue(false))))
-	got := mustSimplify(t, pred, NormalizationRules())
-	out, ok := got.(*predicates.ConstantPredicate)
-	if !ok {
-		t.Fatalf("expected ConstantPredicate (TRUE absorbs), got %T %s", got, got.Explain())
-	}
-	if out.Value != predicates.TriTrue {
-		t.Fatalf("expected TriTrue, got %v", out.Value)
-	}
+	wantNotOverConstant(t, mustSimplify(t, pred, ConstantFoldingRules()), predicates.TriFalse)
 }
 
 // TestNormalizationRules_NotOverAndProducesOr pins that NOT(AND(...))
-// distributes to OR(NOT...) under the normalisation rule set, while
-// the same input under DefaultSimplifyRules survives as NOT(AND(...)).
-// The two rule sets producing different shapes is the documented
-// behaviour we want.
+// distributes to OR(NOT...) under Java's ConstantFoldingRuleSet, whose
+// default predicate rules include De Morgan.
 func TestNormalizationRules_NotOverAndProducesOr(t *testing.T) {
 	t.Parallel()
 	a := demorganField("a", values.TypeString)
@@ -318,16 +291,10 @@ func TestNormalizationRules_NotOverAndProducesOr(t *testing.T) {
 	p2 := predicates.NewComparisonPredicate(b, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: demorganLiteral("y")})
 	pred := predicates.NewNot(predicates.NewAnd(p1, p2))
 
-	// Under default rules: NOT(AND(...)) survives.
-	defaultGot := mustSimplify(t, pred, DefaultSimplifyRules())
-	if _, ok := defaultGot.(*predicates.NotPredicate); !ok {
-		t.Fatalf("default rules: expected NotPredicate (no De Morgan), got %T", defaultGot)
-	}
-
-	// Under normalisation rules: distributes into OR(NOT, NOT) ->
+	// Distributes into OR(NOT, NOT) ->
 	// NotComparisonRewriteRule then turns each NOT(=) into <>, so
 	// final shape is OR(<>, <>).
-	normGot := mustSimplify(t, pred, NormalizationRules())
+	normGot := mustSimplify(t, pred, ConstantFoldingRules())
 	or, ok := normGot.(*predicates.OrPredicate)
 	if !ok {
 		t.Fatalf("normalisation rules: expected OrPredicate, got %T: %s", normGot, normGot.Explain())
@@ -344,14 +311,14 @@ func TestNormalizationRules_NotOverAndProducesOr(t *testing.T) {
 }
 
 // TestNormalizationRules_Idempotent mirrors TestSimplify_Idempotent but
-// for the larger NormalizationRules() set (DeMorgan + NOT-rewrite + the
+// for the larger ConstantFoldingRules() set (DeMorgan + NOT-rewrite + the
 // default reductions). Re-running Simplify on its own output must be a
 // no-op on the same pointer — anything else means a rule loops on its
 // own stable input or the driver's pointer-equality break-out is broken
 // for this rule set.
 func TestNormalizationRules_Idempotent(t *testing.T) {
 	t.Parallel()
-	rules := NormalizationRules()
+	rules := ConstantFoldingRules()
 	a := demorganField("a", values.TypeString)
 	b := demorganField("b", values.TypeString)
 	age := demorganField("age", values.NullableLong)

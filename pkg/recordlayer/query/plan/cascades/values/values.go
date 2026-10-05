@@ -1533,8 +1533,8 @@ func ValueSize(v Value) int {
 // for FieldValue / QuantifiedObjectValue / AggregateValue and any
 // composite containing them.
 //
-// Used by rule matchers that only fire on fully-foldable operands
-// (e.g. ComparisonConstantSimplifyRule's whitelist).
+// Used by code that only acts on fully-foldable operands (e.g. range
+// enclosure's compile-time comparand).
 func IsConstantValue(v Value) bool {
 	if v == nil {
 		return false

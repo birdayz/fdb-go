@@ -151,13 +151,16 @@ Never mark a whole workstream complete because one of its subitems passed.
     `DefaultSimplifyRules` (EvaluateConstant comparison folds, NOT over a
     constant). No corpus plan moved; sqldriver, factorycorpus and javacorpus
     pass.
-  - Still open: (c), second half, the deletion of `DefaultSimplifyRules`,
-    `NormalizationRules` and the rules only they register (AndFlatten,
-    OrFlatten, AndDedup, OrDedup, ComparisonConstantSimplify,
-    ValuePredicateConstantFold), now without a production caller; about 55
-    test references re-pinned to Java's set, where `5 = 5` does not fold
-    (`expr` walk/fullstack tests, the simplify fuzzers, `simplifier_test.go`).
-    `NotConstantSimplifyRule` stays for the translator's EXISTS fold. (e) the
+  - (c), second half: the Go-only driver set is deleted: `DefaultSimplifyRules`,
+    `NormalizationRules`, AndFlatten, OrFlatten, AndDedup, OrDedup,
+    ComparisonConstantSimplify and ValuePredicateConstantFold, with their
+    tests. The tests that used the set as an oracle (`expr` walk, resolver
+    and fullstack tests, the simplify fuzzers, `simplifier_test.go`, the De
+    Morgan tests) run Java's set and are re-pinned to its answers: `5 = 5`
+    and `(1 + 2) > 0` stay, NOT over a constant stays, NOT over OR
+    distributes. `NotConstantSimplifyRule` stays, in
+    `TranslatorConstantPredicateRules`, for the translator's EXISTS fold.
+  - Still open: (e) the
     NULL mapping and the null-strict collapse in both value sets (then
     `substituteAndCollapse` reduces to the substitution); (f) `effectiveConstant`
     is already Java's three shapes, the Object overload has no Go caller (Go

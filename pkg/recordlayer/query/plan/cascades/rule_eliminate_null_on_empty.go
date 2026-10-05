@@ -152,7 +152,7 @@ func rejectsNull(p predicates.QueryPredicate, alias values.CorrelationIdentifier
 // ConstantPredicateFoldingUtil.foldPredicateAtNull. After substitution, a
 // null-strict Value over a NullValue child is collapsed to NullValue (the
 // CollapseNullStrictValueOverNullValueRule port) so the comparison's operand
-// becomes a NullValue, and Java's ConstantFoldingRuleSet (constantFoldingRules,
+// becomes a NullValue, and Java's ConstantFoldingRuleSet (ConstantFoldingRules,
 // the set QueryPredicateSimplificationRule runs) folds it over effective
 // constants (`NULL = x` → NULL, `NULL IS NULL` → TRUE, …).
 //
@@ -161,7 +161,7 @@ func rejectsNull(p predicates.QueryPredicate, alias values.CorrelationIdentifier
 // NOT over a constant predicate or a comparison of non-boolean literals. Such a
 // predicate stays non-constant → UNKNOWN → does not reject (conservative).
 func foldPredicateAtNull(p predicates.QueryPredicate, alias values.CorrelationIdentifier) (predicates.QueryPredicate, error) {
-	return Simplify(substituteNullAtAlias(p, alias), constantFoldingRules())
+	return Simplify(substituteNullAtAlias(p, alias), ConstantFoldingRules())
 }
 
 // substituteNullAtAlias replaces every leaf QuantifiedObjectValue correlated to

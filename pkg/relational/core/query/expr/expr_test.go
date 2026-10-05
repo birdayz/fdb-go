@@ -788,13 +788,14 @@ func TestResolver_FeedsCascadesSimplify(t *testing.T) {
 	combined := r.ResolveAnd(tautology, nonFold)
 
 	// Run through the simplifier.
-	simplified, err := cascades.Simplify(combined, cascades.DefaultSimplifyRules())
+	simplified, err := cascades.Simplify(combined, cascades.ConstantFoldingRules())
 	if err != nil {
 		t.Fatalf("Simplify: %v", err)
 	}
 
-	// Tautology should fold; `id > 0` survives alone.
-	if got, want := simplified.Explain(), "U.ID#0 > 0"; got != want {
+	// `5 = 5` compares two literals, which are not effective constants
+	// under Java's ConstantFoldingRuleSet, so nothing folds.
+	if got, want := simplified.Explain(), "(5 = 5 AND U.ID#0 > 0)"; got != want {
 		t.Fatalf("Simplify: got %q, want %q", got, want)
 	}
 }
