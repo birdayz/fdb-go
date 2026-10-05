@@ -1,11 +1,11 @@
 # aggregate_index_sum_null_residue.yaml
 #
 # A live group whose last non-NULL value is deleted (or NULLed) keeps its SUM
-# index entry at the atomic-add residue 0, while SQL's SUM over its remaining
-# NULLs is NULL. The COUNT(*) companion proves the group live but not that it
-# holds a value, so a SUM over a nullable operand is served from its index only
-# with a COUNT(col) companion over the same grouping and operand, which reads 0
-# or nothing exactly when the SUM is NULL.
+# index entry at the atomic-add residue 0. The SUM index answers alone, as
+# Java's does, so it reads 0 where SQL's SUM over the remaining NULLs is NULL
+# (Java 4.12.11.0 measured `[[10 0] [11 0] [13 7]]` for the same shape,
+# conformance/probe_zerokey_allnull_java_test.go; Java's own corpus marks it as
+# an open bug, aggregate-empty-table.yamsql).
 name: aggregate_index_sum_null_residue
 schema_template: |
   CREATE TABLE T (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))
@@ -20,31 +20,28 @@ setup:
   - DELETE FROM T2 WHERE id = 1
   - UPDATE T2 SET v = NULL WHERE id = 6
 tests:
-  # No COUNT(v) companion: the index cannot tell group 3's residue 0 from a
-  # sum, so the SUM is computed from the records.
   - query: SELECT g, SUM(v) FROM T GROUP BY g
-    plan_not_contains: "AggregateIndex(SUM"
+    plan_contains: "AggregateIndex(SUM, T_SUM_V"
     unordered: true
     rows:
-      - [3, null]
+      - [3, 0]
       - [4, 7]
       - [5, 0]
   - query: SELECT g, SUM(v) FROM T2 GROUP BY g
-    plan_contains: "AggregateIndex(COUNT, T2_CNT_V"
+    plan_contains: "AggregateIndex(SUM, T2_SUM_V"
+    plan_not_contains: "T2_CNT_V"
     rows:
-      - [3, null]
+      - [3, 0]
       - [4, 7]
       - [5, 0]
-      - [6, null]
+      - [6, 0]
   - query: SELECT g, SUM(v), COUNT(v) FROM T2 GROUP BY g
-    plan_contains: "AggregateIndex(SUM, T2_SUM_V"
+    plan_contains: "MultiIntersection(AggregateIndex(SUM, T2_SUM_V"
     rows:
-      - [3, null, 0]
+      - [3, 0, 0]
       - [4, 7, 1]
       - [5, 0, 2]
-      - [6, null, 0]
+      - [6, 0, 0]
   - query: SELECT g FROM T2 GROUP BY g HAVING SUM(v) IS NULL
     plan_contains: "AggregateIndex(SUM, T2_SUM_V"
-    rows:
-      - [3]
-      - [6]
+    rows: []

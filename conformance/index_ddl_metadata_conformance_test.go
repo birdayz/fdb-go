@@ -92,13 +92,8 @@ var rfc202MetadataShapes = []rfc202MetadataShape{
 		indexes: []string{"I_SUM", "I_CNT", "I_MIN"},
 	},
 	{
-		// The companion-emission dimension, isolated. In the shape above,
-		// I_CNT is already a dense COUNT(*) over the same grouping key, so
-		// create-if-absent (RFC-209 §5.2) finds a serving companion and emits
-		// nothing — the set-equality there would never see an auto-emitted
-		// index. With the SUM alone, Go MUST persist I_SUM__GROUP_COUNT while
-		// Java persists only I_SUM, which is precisely the superset the
-		// allowlist below exists to bound.
+		// A grouped SUM alone: Go persists only I_SUM, as Java does (Go once
+		// added an I_SUM__GROUP_COUNT companion here).
 		name: "as_select_grouped_sum_only",
 		body: `CREATE TABLE T (id BIGINT, a BIGINT, b STRING, PRIMARY KEY(id)) ` +
 			`CREATE INDEX i_sum AS SELECT SUM(a) FROM T GROUP BY b`,
@@ -199,7 +194,7 @@ var _ = Describe("RFC-202 D11 index-DDL metadata cross-engine (stored bytes)", f
 				goIdx[idx.GetName()] = idx
 			}
 
-			assertIndexSetEquality(shape.name, shape.indexes, javaIdx, goIdx, goProto.GetVersion())
+			assertIndexSetEquality(shape.name, shape.indexes, javaIdx, goIdx)
 
 			for _, name := range shape.indexes {
 				j, jOK := javaIdx[name]

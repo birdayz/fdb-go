@@ -51,16 +51,10 @@ func TestFDB_CompKeyOrdinal(t *testing.T) {
 	// group key g). Pin the realization so the test proves the comparison-key
 	// extractor actually fires.
 	//
-	// Two spellings of the SAME operator are accepted. A SUM leg cannot decide
-	// group existence, so RFC-209 §5.3 gives the merge a driving companion and
-	// it EXPLAINs as GroupExistenceMerge; without such a leg it stays an inner
-	// MultiIntersection. Either way it is a
-	// RecordQueryMultiIntersectionOnValuesPlan and the comparison key is what
-	// aligns the streams — which is what this test is about. What must NOT
-	// appear is a streaming-aggregation fallback.
+	// The comparison key is what aligns the streams — which is what this test
+	// is about. What must NOT appear is a streaming-aggregation fallback.
 	twoAgg := "SELECT g, SUM(v), MAX(v) FROM ga GROUP BY g"
-	if plan := planExplainVia(t, ctx, db, twoAgg); !strings.Contains(plan, "MultiIntersection(") &&
-		!strings.Contains(plan, "GroupExistenceMerge(") {
+	if plan := planExplainVia(t, ctx, db, twoAgg); !strings.Contains(plan, "MultiIntersection(") {
 		t.Fatalf("two-aggregate grouped query must plan as the multi-aggregate merge (exercises the comp-key extractor), got: %s", plan)
 	}
 
@@ -101,13 +95,10 @@ func TestFDB_CompKeyOrdinal(t *testing.T) {
 	})
 
 	// (2) Three-aggregate merge: SUM + MIN + MAX aligned on g — three child scans
-	// on the same comparison key (four once the SUM leg's group-existence
-	// companion joins them, which is why both spellings are accepted; see the
-	// two-aggregate case above).
+	// on the same comparison key.
 	t.Run("three_aggregate_sum_min_max", func(t *testing.T) {
 		threeAgg := "SELECT g, SUM(v), MIN(v), MAX(v) FROM ga GROUP BY g"
-		if plan := planExplainVia(t, ctx, db, threeAgg); !strings.Contains(plan, "MultiIntersection(") &&
-			!strings.Contains(plan, "GroupExistenceMerge(") {
+		if plan := planExplainVia(t, ctx, db, threeAgg); !strings.Contains(plan, "MultiIntersection(") {
 			t.Fatalf("three-aggregate grouped query must plan as the multi-aggregate merge, got: %s", plan)
 		}
 		if got := rowsGMM(t, threeAgg, 4); got != "1|60|10|30 2|70|25|45" {

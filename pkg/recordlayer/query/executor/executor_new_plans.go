@@ -213,8 +213,6 @@ func executeAggregateIndexScan(
 		groupCols: groupCols,
 		posType:   posType,
 		reader:    readerLeaves,
-		// RFC-209 §5.3(a): the plan decides, the cursor obeys.
-		liveGroupsOnly: p.IsLiveGroupsOnly(),
 		// Stamped at mint time so the output boundary checks the row instead of
 		// copying it to attach the layout — see mintedRowLayout.
 		layout: mintedRowLayout(p),
@@ -484,46 +482,21 @@ type aggregateIndexCursor struct {
 	posType   *values.RecordType
 	// reader is the plan's entry reader, when it carries one.
 	reader []*values.IndexEntryObjectValue
-	// liveGroupsOnly drops entries whose stored aggregate is zero. Set only for
-	// a grouped COUNT(*) scan, where the stored value is the group's row count
-	// and a zero can therefore only be the residue of a vacated group (the
-	// atomic ADD that emptied it left the key behind). See
-	// plans.RecordQueryAggregateIndexPlan.liveGroupsOnly — the plan carries the
-	// property, EXPLAIN renders it, and this cursor merely obeys it. Deciding
-	// existence here rather than at plan time would make the plan a lie.
-	liveGroupsOnly bool
-	closed         bool
+	closed bool
 	// layout is the plan's provided output layout, carried by every row this
 	// cursor mints.
 	layout values.OrdinalLayout
 }
 
 func (c *aggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
-	// A vacated group's entry is dropped before it becomes a row, and the scan
-	// keeps advancing rather than returning a "no value" result: a dropped entry
-	// is not an end-of-stream condition, the next live group may be one key
-	// away. The loop (rather than a recursive re-entry) matters because the run
-	// of consecutive vacated groups is unbounded — a table emptied wholesale
-	// leaves one zero entry per group that ever existed. The emitted row carries
-	// the continuation of the entry it came from, so a resume never re-reads a
-	// group already returned and the zero entries in between are simply
-	// re-skipped.
-	var result recordlayer.RecordCursorResult[*recordlayer.IndexEntry]
-	var entry *recordlayer.IndexEntry
-	for {
-		var err error
-		result, err = c.inner.OnNext(ctx)
-		if err != nil {
-			return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
-		}
-		if !result.HasNext() {
-			return recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation()), nil
-		}
-		entry = result.GetValue()
-		if !c.liveGroupsOnly || !isVacatedGroupEntry(entry) {
-			break
-		}
+	result, err := c.inner.OnNext(ctx)
+	if err != nil {
+		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
 	}
+	if !result.HasNext() {
+		return recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation()), nil
+	}
+	entry := result.GetValue()
 
 	// Emit the authoritative ordinal row (real slots read
 	// from the index entry). Slot order matches c.posType: group cols then the
@@ -562,29 +535,6 @@ func (c *aggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCu
 	return recordlayer.NewResultWithValue(qr, result.GetContinuation()), nil
 }
 
-// isVacatedGroupEntry reports whether a COUNT(*) index entry denotes a group
-// that no longer has any rows. The maintainer decrements the accumulator with
-// an atomic ADD and never removes the key, so an emptied group leaves an entry
-// holding zero. Because the stored value counts ROWS, and a live group has at
-// least one, zero is decidable: it can only be residue.
-//
-// Anything that is not an explicit integer zero keeps the row. Dropping a live
-// group is a brand-new wrong answer and strictly worse than the phantom this
-// filter removes, so an unrecognised value shape errs toward emitting.
-func isVacatedGroupEntry(entry *recordlayer.IndexEntry) bool {
-	if entry == nil || len(entry.Value) == 0 {
-		return false
-	}
-	switch v := entry.Value[0].(type) {
-	case int64:
-		return v == 0
-	case int:
-		return v == 0
-	default:
-		return false
-	}
-}
-
 func (c *aggregateIndexCursor) Close() error {
 	c.closed = true
 	return c.inner.Close()
@@ -617,89 +567,34 @@ func executeMultiIntersection(
 
 	keyVals := p.GetComparisonKey()
 	compKeyFunc := multiIntersectionCompKeyFunc(keyVals)
+	if len(keyVals) == 0 {
+		// The comparison key is the grouping values, Java's
+		// ComparisonKeyFunction.OnValues. An ungrouped merge has none, and the
+		// one row each aggregate stream yields matches on the empty key, as
+		// Java's empty value list does.
+		compKeyFunc = func(QueryResult) (tuple.Tuple, error) { return tuple.Tuple{}, nil }
+	}
 	outputType, ok := p.GetResultType().(*values.RecordType)
 	if !ok || outputType == nil {
 		return nil, fmt.Errorf("multi-intersection result type is %T, want exact record", p.GetResultType())
 	}
 
-	var innerCursor recordlayer.RecordCursor[[]QueryResult]
-	if p.HasDrivingAlias() {
-		// RFC-209 §5.3(b): the group-existence merge. Its correctness rests
-		// entirely on the driving stream being the one the planner designated, so
-		// a designation that no longer resolves must fail the query rather than
-		// quietly run as an intersection — an intersection here silently drops
-		// every all-NULL group, which is one of the two defects this plan exists
-		// to fix.
-		driving := p.DrivingStreamIndex()
-		if driving < 0 {
-			return nil, fmt.Errorf("group-existence merge: driving stream %q resolves to "+
-				"no child; the plan's quantifiers were relinked without carrying the "+
-				"designation", p.GetDrivingAlias().Name())
-		}
-		if len(keyVals) == 0 {
-			return nil, fmt.Errorf("group-existence merge: no comparison key; the merge " +
-				"has no grouping key to align the streams on")
-		}
-		// Every child of this plan is an aggregate-index scan whose row is
-		// [groupCols..., aggregate], so a child spans len(keyVals)+1 slots. An
-		// absent child must occupy exactly that many, or the result value's baked
-		// ordinals address the wrong slots in every later child.
-		width := len(keyVals) + 1
-		innerCursor = recordlayer.OuterMergeMultiResume(cursors, compKeyFunc, p.IsReverse(), resume,
-			driving, func(int) QueryResult { return absentAggregateRow(width) })
-	} else {
-		// IntersectionMulti returns, per matching comparison key, the list of
-		// matching rows (one per child). Mirrors Java's IntersectionMultiCursor;
-		// the regular intersection keeps only the first child, which would drop
-		// every aggregate but the first.
-		innerCursor = recordlayer.IntersectionMultiResume(cursors, compKeyFunc, p.IsReverse(), resume)
-	}
+	// IntersectionMulti returns, per matching comparison key, the list of
+	// matching rows (one per child). Mirrors Java's IntersectionMultiCursor;
+	// the regular intersection keeps only the first child, which would drop
+	// every aggregate but the first.
+	innerCursor := recordlayer.IntersectionMultiResume(cursors, compKeyFunc, p.IsReverse(), resume)
 
 	merged := &multiIntersectionMergeCursor{
 		inner:       innerCursor,
 		resultValue: p.GetResultValue(),
 		outputType:  outputType,
-		// The same len(keyVals)+1 the absent-child filler is sized to, carried to
-		// the concatenation so the PRESENT children are held to it as well. The
-		// filler being right is worth nothing if a real child disagrees.
+		// Every child is an aggregate-index scan whose row is
+		// [groupCols..., aggregate]; the result value's ordinals are baked
+		// against that width.
 		childWidth: len(keyVals) + 1,
 	}
 	return applySkipLimit(merged, props.Skip, props.ReturnedRowLimit), nil
-}
-
-// absentAggregateRow is the row a non-driving aggregate-index stream
-// contributes for a group it holds no entry for (RFC-209 §5.3(b)).
-//
-// All slots are NULL, including the grouping columns: the merged row takes its
-// grouping values from the DRIVING stream, so the absent child's copies are
-// never read. What matters is the WIDTH — the result value's field ordinals are
-// baked at plan time against the flat concatenation of the child rows, so a
-// short row would shift every later child's aggregate by however many slots
-// were missing and hand each group another group's value.
-//
-// NULL, not the aggregate's identity: the identity is the result value's job.
-// SUM's empty group is NULL and COUNT(col)'s is 0, and only the plan knows
-// which aggregate a stream carries. Keeping the cursor's filler uniform is the
-// same split Java uses for the ungrouped case, where the plan supplies NULL on
-// an empty stream and a coalesce above it turns that into 0 for COUNT.
-// The field types are UnknownType, and here that is not discarded knowledge:
-// there is no type to state. This row stands in for a group the child index
-// holds NO entry for, so no stored value exists whose type could be read, and
-// the child plan it substitutes for carries UnknownType as its own result type
-// — deriving from it would launder Unknown through one more hop rather than
-// answer. Nothing downstream reads these types either: the merged row takes its
-// grouping values from the driving stream and its aggregate through the plan's
-// result value, so only the WIDTH is load-bearing.
-func absentAggregateRow(width int) QueryResult {
-	fields := make([]values.Field, width)
-	slots := make([]any, width)
-	for i := range fields {
-		fields[i] = values.Field{Ordinal: i, FieldType: values.UnknownType}
-	}
-	return QueryResult{Positional: &PositionalRow{
-		Type:  &values.RecordType{Fields: fields},
-		Slots: slots,
-	}}
 }
 
 func multiIntersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFunc[QueryResult] {

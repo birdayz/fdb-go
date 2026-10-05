@@ -2775,33 +2775,6 @@ keys Java expands:
   produces, declines too: Go builds candidates over every table, so failing
   would refuse queries of tables that do not hold the key.
 
-## RFC-209 group-existence companions
-
-An aggregate index's key set is not the set of groups: an atomic ADD leaves a
-vacated group's key behind at 0, and a NULL writes no entry, so an all-NULL
-group has none. Java reads a grouped SUM or COUNT(col) index alone and reports
-both. Go's DDL emits a companion COUNT(*) (`<owner>__GROUP_COUNT`,
-create-if-absent, matched structurally) for every grouped SUM or COUNT(col)
-index without a filtering predicate (`recordlayer.NewGroupCountCompanion`,
-`metadata.Builder`), and the planner reads such an index only through the merge
-the companion drives; without one it declines the index. The companion is a
-plain grouped COUNT index Java writes, maintains and reads. It is registered
-after every declared index of every table, so each declared index keeps the
-version Java gives it; the companions take the top slots and raise the metadata
-version by their count.
-
-### SUM residue
-
-A live group whose last non-NULL value is deleted or NULLed keeps its SUM key at
-the residue 0, where SQL's SUM over its remaining NULLs is NULL; COUNT(*) proves
-the group live, not valued. Java reads 0 (`conformance/probe_zerokey_allnull_java_test.go`).
-Go reads a SUM over a possibly-NULL operand from its index only beside a
-COUNT(col) over the same operand, grouping and predicate, and answers NULL where
-that count is 0 or absent (`AggregateIndexMatchCandidate.NeedsNonNullCompanion`);
-without one it declines the index and aggregates the records. Relational scalar
-columns are always nullable and the DDL emits no COUNT(col) companion (TODO.md
-section 10), so a SQL SUM index is read only beside a declared COUNT(col).
-
 ## Macro routine description
 
 Java's `SchemaTemplate.getInvokedRoutines()` describes a stored macro function by

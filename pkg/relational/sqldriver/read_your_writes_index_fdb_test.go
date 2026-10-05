@@ -134,6 +134,23 @@ func (p *mmTxPair) want(name, q string, expect []string) {
 	}
 }
 
+// wantIndexed asserts the INDEXED schema's answer where an aggregate index
+// answers differently from the records, as Java's does (an emptied group's
+// residue), and the records' answer on the unindexed schema.
+func (p *mmTxPair) wantIndexed(name, q string, expectIndexed, expectRecords []string) {
+	p.t.Helper()
+	gi := p.rows(p.itx, q)
+	gn := p.rows(p.ntx, q)
+	if !mmEqRows(gn, expectRecords) {
+		p.t.Errorf("%s: UNINDEXED (oracle) answer is wrong mid-transaction\n  q: %s\n  got  %v\n  want %v",
+			name, q, gn, expectRecords)
+	}
+	if !mmEqRows(gi, expectIndexed) {
+		p.t.Errorf("%s: the INDEXED schema does not see its own transaction's writes\n"+
+			"  q: %s\n  got  %v\n  want %v", name, q, gi, expectIndexed)
+	}
+}
+
 // mmInTxPair runs body inside a fresh transaction pair, restarting the WHOLE
 // body if the driver pre-empts a transaction with 40001.
 //
@@ -334,10 +351,12 @@ func TestFDB_ReadYourWritesThroughAggregateIndex(t *testing.T) {
 		p.want("sum after an uncommitted delete", sumQ, []string{"1|7", "2|99"})
 		p.want("min after an uncommitted delete", minQ, []string{"1|7", "2|99"})
 
-		// Emptying a group inside the transaction removes it from the result.
+		// Emptying a group inside the transaction decrements its counters to the
+		// atomic-add residue 0, which the indexes read back, as Java's do.
 		p.exec("DELETE FROM t WHERE g = 1")
-		p.want("an emptied group disappears mid-transaction", countQ, []string{"2|2"})
-		p.want("and from the sum", sumQ, []string{"2|99"})
+		p.wantIndexed("an emptied group reads its residue mid-transaction", countQ,
+			[]string{"1|0", "2|2"}, []string{"2|2"})
+		p.wantIndexed("and so does the sum", sumQ, []string{"1|0", "2|99"}, []string{"2|99"})
 	})
 }
 

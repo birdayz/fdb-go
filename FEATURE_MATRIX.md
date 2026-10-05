@@ -23,11 +23,11 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**398 scenarios · 3338 query/assertion cases** across 18 feature areas — 2924 supported, 106 unsupported-feature pins, 308 error-path pins.
+**399 scenarios · 3350 query/assertion cases** across 18 feature areas — 2936 supported, 106 unsupported-feature pins, 308 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
-| Aggregates & GROUP BY | 60 | 374 | 339 | 19 | 16 |
+| Aggregates & GROUP BY | 61 | 386 | 351 | 19 | 16 |
 | Joins | 66 | 313 | 296 | 2 | 15 |
 | Subqueries (EXISTS / IN / scalar) | 47 | 323 | 267 | 33 | 23 |
 | CTEs | 15 | 202 | 161 | 4 | 37 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 45 | 459 | 400 | 9 | 50 |
-| **Total** | **398** | **3338** | **2924** | **106** | **308** |
+| **Total** | **399** | **3350** | **2936** | **106** | **308** |
 
 ## Aggregates & GROUP BY
 
@@ -109,6 +109,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `select_count_where` | 5 | 5 | 0 | 0 | COUNT with various WHERE predicates |
 | `select_distinct` | 9 | 9 | 0 | 0 | SELECT DISTINCT pins the dedup semantics. |
 | `select_distinct_null` | 1 | 1 | 0 | 0 | SELECT DISTINCT with NULL values |
+| `ungrouped_aggregate_index` | 12 | 12 | 0 | 0 | An ungrouped SUM / COUNT index serves the ungrouped aggregate, as Java's does |
 | `unnest_at_distinct` | 3 | 3 | 0 | 0 | DISTINCT over an AT unnest with repeated elements |
 | `upstream_bug_distinct_compound` | 3 | 3 | 0 | 0 | Compound DISTINCT (Java upstream bug) |
 

@@ -100,9 +100,34 @@ func TestFDB_AggregateIndexEqualityPrefixOrdering(t *testing.T) {
 			// SEQUENCE equality: the ORDER BY key is the only free grouping
 			// column, so the order is total over the groups and the indexed
 			// side has no sort of its own to fall back on.
-			if !mmEqRows(gi, gn) {
+			// A LIMIT windows Java's rows, residue groups included, so the
+			// unlimited read is compared and the window checked against it.
+			full, window := q, [2]int{-1, 0}
+			if i := strings.Index(q, " LIMIT "); i >= 0 {
+				full = q[:i]
+				if _, err := fmt.Sscanf(q[i:], " LIMIT %d OFFSET %d", &window[0], &window[1]); err != nil {
+					if _, err := fmt.Sscanf(q[i:], " LIMIT %d", &window[0]); err != nil {
+						t.Fatalf("unparsed LIMIT in %s", q)
+					}
+				}
+				fi, fe := mmRows(t, ctx, w.idx, full)
+				if fe != nil {
+					t.Errorf("%s: query failed\n  q: %s\n  indexed: %v", stage, full, fe)
+					continue
+				}
+				want := fi[min(window[1], len(fi)):min(window[1]+window[0], len(fi))]
+				if !mmEqRows(gi, want) {
+					t.Errorf("%s: the LIMIT window is not the unlimited read's\n  q: %s\n  got:  %v\n  want: %v", stage, q, gi, want)
+				}
+				gi = fi
+				if gn, en = mmRows(t, ctx, w.plain, full); en != nil {
+					t.Errorf("%s: query failed\n  q: %s\n  unindexed: %v", stage, full, en)
+					continue
+				}
+			}
+			if !mmAggregateIndexRowsAgree(gi, gn, mmTrailingAggregates(q)) {
 				t.Errorf("%s: the aggregate index's group order disagrees with the sorted oracle\n  q: %s\n  indexed  : %v\n  unindexed: %v\n  plan: %s",
-					stage, q, gi, gn, w.Explain(q))
+					stage, full, gi, gn, w.Explain(q))
 			}
 		}
 	}

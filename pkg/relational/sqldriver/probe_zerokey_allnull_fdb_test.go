@@ -1,14 +1,13 @@
 package sqldriver_test
 
-// The PRESENT-zero all-NULL group.
+// The PRESENT-zero all-NULL group, the Go twin of
+// conformance/probe_zerokey_allnull_java_test.go.
 //
-// The existing vacated-group test covers the ABSENT case (a group whose values
-// were ALWAYS NULL has no SUM key at all, so the merge takes its absent branch
-// and answers NULL). This covers the sibling the merge's MATCHED branch owns: a
-// group that once held non-NULL values, so the SUM index has a key, whose last
-// non-NULL value is then removed while a NULL-valued row remains. With
-// clearWhenZero=false the SUM key survives holding 0 and COUNT(*) stays
-// positive, so only the COUNT(v) leg (0) tells the merge SQL's answer is NULL.
+// A group whose values were ALWAYS NULL has no SUM key at all. A group that once
+// held non-NULL values has a key, and when its last non-NULL value is removed
+// while a NULL-valued row remains, the key survives holding 0 (clearWhenZero is
+// false). The index answers alone, as Java's does: 0 for the second, and no row
+// for the first, where SQL over the records answers NULL for both.
 //
 // Two removal routes are probed separately because they take different
 // maintainer paths: UPDATE (old value subtracted, new NULL contributes nothing)
@@ -122,28 +121,23 @@ func TestFDB_ProbeZeroKeyAllNullGroup(t *testing.T) {
 			t.Logf("PROBE %s\n  query : %s\n  plan  : %s\n  INDEX : %s\n  ORACLE: %s",
 				name, indexedQ, plan, got, oracle)
 			if got != wantIndexed {
-				t.Errorf("%s: index-backed rows changed.\n  got : %s\n  want: %s\n"+
-					"The merge's matched branch changed what it passes through.", name, got, wantIndexed)
+				t.Errorf("%s: index-backed rows changed.\n  got : %s\n  want: %s", name, got, wantIndexed)
 			}
 			if (got == oracle) != agreesWithOracle {
 				t.Errorf("%s: index-vs-scan agreement flipped (agree=%v, expected %v).\n"+
-					"  index : %s\n  oracle: %s\nA group whose SUM key was decremented to "+
-					"zero while only NULL-valued rows remain must read NULL from the index, "+
-					"through its COUNT(v) leg, as it does from the scan.",
-					name, got == oracle, agreesWithOracle, got, oracle)
+					"  index : %s\n  oracle: %s", name, got == oracle, agreesWithOracle, got, oracle)
 			}
 		})
 	}
 
-	// SUM: g=10 (update-to-NULL) and g=11 (delete-leaving-NULL) keep a 0 key
-	// and read NULL through the COUNT(v) leg; g=12 (no key ever written) reads
-	// NULL through the merge's ABSENT branch. Java reads 0, 0 and drops g=12.
+	// SUM: g=10 (update-to-NULL) and g=11 (delete-leaving-NULL) keep a 0 key;
+	// g=12 (no key ever written) has no row. Java's measured answer.
 	pin("sum", "SELECT g, SUM(v) FROM ai GROUP BY g", "SELECT g, SUM(v) FROM ao GROUP BY g",
-		"[10 NULL],[11 NULL],[12 NULL],[13 7]", true)
-	// COUNT(col) is NOT exposed: its SQL answer for an all-NULL group is 0, which
-	// is exactly what both a present-zero key and an absent key yield.
+		"[10 0],[11 0],[13 7]", false)
+	// COUNT(col): the present-zero keys read 0, as SQL does, but g=12 has no
+	// entry, so it has no row.
 	pin("count-col", "SELECT g, COUNT(v) FROM ai GROUP BY g", "SELECT g, COUNT(v) FROM ao GROUP BY g",
-		"[10 0],[11 0],[12 0],[13 2]", true)
+		"[10 0],[11 0],[13 2]", false)
 	pin("count-star", "SELECT g, COUNT(*) FROM ai GROUP BY g", "SELECT g, COUNT(*) FROM ao GROUP BY g",
 		"[10 2],[11 1],[12 2],[13 2]", true)
 	// MIN/MAX have no analogue: SQL MIN/MAX map to PERMUTED_MIN/PERMUTED_MAX,
@@ -156,5 +150,5 @@ func TestFDB_ProbeZeroKeyAllNullGroup(t *testing.T) {
 		"[10 NULL],[11 NULL],[12 NULL],[13 4]", true)
 	pin("multi", "SELECT g, SUM(v), COUNT(v) FROM ai GROUP BY g",
 		"SELECT g, SUM(v), COUNT(v) FROM ao GROUP BY g",
-		"[10 NULL 0],[11 NULL 0],[12 NULL 0],[13 7 2]", true)
+		"[10 0 0],[11 0 0],[13 7 2]", false)
 }

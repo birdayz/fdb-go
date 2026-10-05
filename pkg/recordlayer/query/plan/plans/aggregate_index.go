@@ -115,23 +115,6 @@ type RecordQueryAggregateIndexPlan struct {
 	// (RFC-184 W2). nil for struct-literal test plans that bypass the constructor —
 	// GetResultValue falls back to PlanExprBase's fresh QOV there.
 	resultValue values.Value
-
-	// liveGroupsOnly makes the scan drop entries whose stored aggregate is zero
-	// (RFC-209 §5.3(a)). It is set ONLY for a GROUPED COUNT(*) index, where the
-	// stored value is the group's row count and a zero can therefore only be the
-	// residue of a group emptied by DELETE or by an UPDATE that moved its last
-	// row away: an atomic ADD decrements the accumulator to zero and never
-	// removes the key. A live group's COUNT(*) is never zero, so the drop is
-	// exact rather than a heuristic.
-	//
-	// It must NOT be set for SUM or COUNT(col), where zero is a legitimate
-	// answer for a live group (values cancelling, or every value NULL), nor for
-	// the ungrouped spelling, whose single group exists whether or not the table
-	// has rows and whose empty scan legitimately coalesces to 0.
-	//
-	// The flag is rendered by Explain because it changes which rows the scan
-	// emits: a plan property that alters the answer must be visible in the plan.
-	liveGroupsOnly bool
 }
 
 // NewRecordQueryAggregateIndexPlan constructs an aggregate index plan.
@@ -236,24 +219,6 @@ func (p *RecordQueryAggregateIndexPlan) WithGroupColumnLayout(layout values.Type
 // resolve against, or nil when none was carried.
 func (p *RecordQueryAggregateIndexPlan) GetGroupColumnLayout() values.Type { return p.groupColLayout }
 
-// WithLiveGroupsOnly marks this scan as dropping zero-valued entries — see the
-// liveGroupsOnly field. Only a grouped COUNT(*) index may carry it.
-// It COPIES, like every other WithXxx on a plan. Mutating in place would be
-// mutating plan IDENTITY: liveGroupsOnly is folded into structuralKey precisely
-// because a scan that drops vacated groups is a different plan from one that does
-// not (see structuralKey below). An in-place write therefore changes the identity of
-// an object the memo may already hold, and the memo would keep serving it under its
-// former key.
-//
-// That was latent rather than live only because every caller happens to invoke a
-// COPYING builder first (WithGroupColumns), so the in-place write landed on a fresh
-// copy. Reordering one chain would have armed it.
-func (p *RecordQueryAggregateIndexPlan) WithLiveGroupsOnly(v bool) *RecordQueryAggregateIndexPlan {
-	cp := *p
-	cp.liveGroupsOnly = v
-	return &cp
-}
-
 // WithCandidateGroupingCount records the grouping-column count of the
 // candidate the plan was built from.
 func (p *RecordQueryAggregateIndexPlan) WithCandidateGroupingCount(n int) *RecordQueryAggregateIndexPlan {
@@ -277,9 +242,6 @@ func (p *RecordQueryAggregateIndexPlan) GetEntryReader() *values.RecordConstruct
 	}
 	return p.entryReader
 }
-
-// IsLiveGroupsOnly reports whether the scan drops zero-valued entries.
-func (p *RecordQueryAggregateIndexPlan) IsLiveGroupsOnly() bool { return p.liveGroupsOnly }
 
 // GetGroupCols returns the grouping column names.
 func (p *RecordQueryAggregateIndexPlan) GetGroupCols() []string {
@@ -354,14 +316,7 @@ func (p *RecordQueryAggregateIndexPlan) GetChildren() []RecordQueryPlan { return
 // full nested index key (the hand-rolled hash folded only the index NAME),
 // strengthening it while preserving equal⟹same-hash.
 func (p *RecordQueryAggregateIndexPlan) structuralKey() *structuralKey {
-	// liveGroupsOnly is folded in because it changes which rows the scan emits
-	// (RFC-209 §5.3(a)). Two otherwise-identical scans that differ in it are
-	// different plans; leaving it out would let the memo intern the filtering
-	// scan and the unfiltered one into a single expression and serve whichever
-	// arrived first.
-	//
-	// groupCols and aggColumn are folded for the same reason, and were not.
-	// They are what the executor's aggregateIndexCursor uses to map index entries
+	// groupCols and aggColumn are folded because they are what the executor's aggregateIndexCursor uses to map index entries
 	// onto result rows, so plans differing only in them emit DIFFERENT ROWS from
 	// one identity. GetPhysicalGroupingPrefixCount() covers only their ARITY — it
 	// returns len(groupCols) when the count is not independently known — which is
@@ -400,7 +355,6 @@ func (p *RecordQueryAggregateIndexPlan) structuralKey() *structuralKey {
 	}
 	return key.
 		Int(p.GetPhysicalGroupingPrefixCount()).
-		Bool(p.liveGroupsOnly).
 		Bool(p.permuted).
 		Sub(p.indexPlan.structuralKey())
 }
@@ -423,17 +377,11 @@ func (p *RecordQueryAggregateIndexPlan) HashCodeWithoutChildren() uint64 {
 	return hash
 }
 
-// Explain renders AggregateIndex(function, indexName, [groupCols], recordType),
-// with a trailing ", live_groups_only" when the scan drops zero-valued entries
-// (RFC-209 §5.3(a)) — a property that changes the answer, so it is not allowed
-// to be invisible in the plan.
+// Explain renders AggregateIndex(function, indexName, [groupCols], recordType).
 func (p *RecordQueryAggregateIndexPlan) Explain() string {
 	suffix := ""
-	if p.liveGroupsOnly {
-		suffix = ", live_groups_only"
-	}
 	if p.IsReverse() {
-		suffix += ", reverse"
+		suffix = ", reverse"
 	}
 	if len(p.groupCols) > 0 {
 		return fmt.Sprintf("AggregateIndex(%s, %s, %v, %s%s)",

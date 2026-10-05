@@ -713,11 +713,10 @@ func TestFDB_MetamorphicCompositePrimaryKeyDML(t *testing.T) {
 			"CREATE INDEX t_b_pk1 ON t (b, pk1) "+
 			"CREATE INDEX t_d ON t (d) "+
 			"CREATE INDEX t_pk2 ON t (pk2) "+
-			"CREATE INDEX t_cnt_a AS SELECT COUNT(*) FROM t GROUP BY a "+
-			// b is nullable: its SUM index is served beside the COUNT(b) that
-			// tells a group's residue from its sum.
-			"CREATE INDEX t_sum_b_by_s AS SELECT SUM(b) FROM t GROUP BY s "+
-			"CREATE INDEX t_cntb_by_s AS SELECT COUNT(b) FROM t GROUP BY s "+
+			// No SUM or COUNT aggregate index: it answers as Java's does, which
+			// after a DML that vacates a group is not the records' answer
+			// (aggregate_index_vacated_group_fdb_test.go). MAX keeps a
+			// per-record entry and stays exact.
 			"CREATE INDEX t_max_d_by_a AS SELECT MAX(d) FROM t GROUP BY a ")
 
 	rng := rand.New(rand.NewPCG(3, 5))

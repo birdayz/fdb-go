@@ -6,16 +6,13 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 )
 
-// A plan's WithXxx builders must COPY, and for these two the reason is plan
-// IDENTITY rather than style. liveGroupsOnly is folded into structuralKey because a
-// scan that drops vacated groups is a different plan from one that does not, so an
+// A plan's WithXxx builders must COPY, and for the identity-bearing ones the reason
+// is plan IDENTITY rather than style. permuted is folded into structuralKey, so an
 // in-place write changes the identity of an object the memo may already hold — and
-// the memo goes on serving it under the key it was interned with. The key's own doc
-// spells out the consequence: the filtering scan and the unfiltered one collapse into
-// one expression and whichever arrived first wins.
+// the memo goes on serving it under the key it was interned with.
 //
-// WithGroupColumnLayout and WithLiveGroupsOnly wrote to the receiver and returned it,
-// alone among 57 sibling builders that do `cp := *p`. That was LATENT, not live, and
+// WithGroupColumnLayout once wrote to the receiver and returned it, alone among its
+// sibling builders that do `cp := *p`. That was LATENT, not live, and
 // only because every caller invokes the copying WithGroupColumns first, so the
 // in-place write landed on a fresh copy. Reordering one chain arms it. Nothing pinned
 // the ordering, which is why this test pins the copy instead.
@@ -41,21 +38,21 @@ func TestAggregateIndexBuildersCopyRatherThanMutateIdentity(t *testing.T) {
 	t.Parallel()
 
 	original := aggregateIndexPlanForBuilderTest(t)
-	if original.IsLiveGroupsOnly() {
-		t.Fatal("fixture already drops vacated groups, so flipping it proves nothing")
+	if original.permuted {
+		t.Fatal("fixture is already permuted, so flipping it proves nothing")
 	}
 	beforeKey := original.structuralKey()
 
 	// The identity-bearing one. A returned variant must differ; the RECEIVER must not.
-	variant := original.WithLiveGroupsOnly(true)
+	variant := original.WithPermutedOrdering(true)
 	if variant == original {
-		t.Error("WithLiveGroupsOnly returned the receiver, so it mutated in place")
+		t.Error("WithPermutedOrdering returned the receiver, so it mutated in place")
 	}
-	if !variant.IsLiveGroupsOnly() {
+	if !variant.permuted {
 		t.Error("the variant did not take the new value")
 	}
-	if original.IsLiveGroupsOnly() {
-		t.Fatal("WithLiveGroupsOnly mutated the RECEIVER's liveGroupsOnly. That field is " +
+	if original.permuted {
+		t.Fatal("WithPermutedOrdering mutated the RECEIVER's permuted flag. That field is " +
 			"folded into structuralKey, so this rewrites the identity of a plan the memo " +
 			"may already hold under the old key")
 	}
@@ -64,8 +61,7 @@ func TestAggregateIndexBuildersCopyRatherThanMutateIdentity(t *testing.T) {
 	}
 	if variant.structuralKey().Equal(beforeKey) {
 		t.Error("the variant has the same structural key as the original despite " +
-			"differing in liveGroupsOnly; the memo would intern the filtering scan and " +
-			"the unfiltered one as one expression")
+			"differing in permuted; the memo would intern the two scans as one expression")
 	}
 
 	// And the layout builder, which is not identity-bearing but must still not

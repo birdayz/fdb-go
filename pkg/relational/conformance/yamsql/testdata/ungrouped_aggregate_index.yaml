@@ -1,0 +1,42 @@
+# ungrouped_aggregate_index.yaml
+#
+# An ungrouped SUM / COUNT index serves the ungrouped aggregate, as Java's does
+# (aggregate-empty-table.yamsql plans `select sum(col1) from T2` as
+# `AISCAN(T2_I5 <,> BY_GROUP ...)`). A table that never had a row has no entry,
+# so the answer is the one empty row (ON EMPTY NULL, COUNT coalesced to 0); a
+# table whose rows were all deleted reads the stored 0, where SQL over the
+# records says NULL for SUM. Two aggregates intersect their one-row streams on
+# the empty grouping key.
+name: ungrouped_aggregate_index
+schema_template: |
+  CREATE TABLE T (id BIGINT, v BIGINT, PRIMARY KEY (id))
+  CREATE INDEX t_sum AS SELECT SUM(v) FROM T
+  CREATE INDEX t_cnt AS SELECT COUNT(*) FROM T
+  CREATE INDEX t_cntv AS SELECT COUNT(v) FROM T
+tests:
+  - query: SELECT SUM(v) FROM T
+    plan_contains: "AggregateIndex(SUM, T_SUM, T)"
+    rows: [[null]]
+  - query: SELECT COUNT(*) FROM T
+    plan_contains: "AggregateIndex(COUNT, T_CNT, T)"
+    rows: [[0]]
+  - query: SELECT SUM(v), COUNT(*) FROM T
+    plan_contains: "MultiIntersection(AggregateIndex(SUM, T_SUM, T), AggregateIndex(COUNT, T_CNT, T); keys=[])"
+    rows: [[null, 0]]
+  - exec: INSERT INTO T VALUES (1, 5), (2, 7), (3, NULL)
+  - query: SELECT SUM(v) FROM T
+    rows: [[12]]
+  - query: SELECT COUNT(*) FROM T
+    rows: [[3]]
+  - query: SELECT COUNT(v) FROM T
+    plan_contains: "AggregateIndex(COUNT, T_CNTV, T)"
+    rows: [[2]]
+  - query: SELECT SUM(v), COUNT(*), COUNT(v) FROM T
+    rows: [[12, 3, 2]]
+  - exec: DELETE FROM T
+  - query: SELECT SUM(v) FROM T
+    rows: [[0]]
+  - query: SELECT COUNT(*) FROM T
+    rows: [[0]]
+  - query: SELECT SUM(v), COUNT(*) FROM T
+    rows: [[0, 0]]

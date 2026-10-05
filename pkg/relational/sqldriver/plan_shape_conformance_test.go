@@ -2623,11 +2623,8 @@ func TestFDB_AggregateIndex_CountNotNull(t *testing.T) {
 	t.Run("count_col_skips_nulls", func(t *testing.T) {
 		plan := planExplainVia(t, ctx, db, "SELECT sensor, COUNT(reading) FROM sensors GROUP BY sensor ORDER BY sensor")
 		t.Logf("plan: %s", plan)
-		if !strings.Contains(plan, "GroupExistenceMerge") {
-			t.Errorf("expected the companion-joined GroupExistenceMerge in plan, got: %s\n"+
-				"A COUNT(col) index cannot decide group existence on its own, so it is either "+
-				"companion-joined or not used at all (RFC-209 §5.3). A bare AggregateIndex "+
-				"here would mean the all-NULL group is being dropped again.", plan)
+		if !strings.Contains(plan, "AggregateIndex(COUNT, COUNT_READINGS") {
+			t.Errorf("expected the COUNT(reading) index in plan, got: %s", plan)
 		}
 
 		rows, err := db.QueryContext(ctx, "SELECT sensor, COUNT(reading) FROM sensors GROUP BY sensor ORDER BY sensor")
@@ -2650,16 +2647,11 @@ func TestFDB_AggregateIndex_CountNotNull(t *testing.T) {
 		if err := rows.Err(); err != nil {
 			t.Fatalf("rows.Err: %v", err)
 		}
-		// temp: 2 non-null (72,68), humidity: 1 non-null (45), pressure: 0.
-		//
-		// pressure used to be MISSING here -- not because of clearWhenZero, which
-		// SQL never sets, but because COUNT_NOT_NULL writes no entry at all for a
-		// NULL value (AtomicMutation.java:165-171), so an all-NULL group had no
-		// key to scan. RFC-209 §5.3(b) supplies it: the group set comes from a
-		// companion COUNT(*) over the same grouping key, and a group present
-		// there but absent from the COUNT(reading) index contributes that
-		// aggregate's empty-group identity, 0.
-		want := []row{{"humidity", 1}, {"pressure", 0}, {"temp", 2}}
+		// temp: 2 non-null (72,68), humidity: 1 non-null (45). pressure is
+		// missing, as in Java: COUNT_NOT_NULL writes no entry for a NULL value
+		// (AtomicMutation.java:165-171), so an all-NULL group has no key, and the
+		// index answers alone (aggregate-empty-table.yamsql marks it a bug).
+		want := []row{{"humidity", 1}, {"temp", 2}}
 		if len(got) != len(want) {
 			t.Fatalf("row count: got %d (%+v), want %d (%+v)", len(got), got, len(want), want)
 		}
@@ -10021,9 +10013,7 @@ func TestFDB_MultiAggregateIntersection_Filtered(t *testing.T) {
 	// Prove the multi-aggregate intersection plan actually fires — otherwise
 	// the correct counts below could be coming from a streaming-agg fallback.
 	plan := planExplainVia(t, ctx, db, q)
-	// GroupExistenceMerge is the same operator with a driving group-existence
-	// stream (RFC-209 §5.3): the SUM leg cannot decide group existence alone.
-	if !strings.Contains(plan, "Intersection(") && !strings.Contains(plan, "GroupExistenceMerge(") {
+	if !strings.Contains(plan, "Intersection(") {
 		t.Fatalf("expected the multi-aggregate merge plan, got: %s", plan)
 	}
 

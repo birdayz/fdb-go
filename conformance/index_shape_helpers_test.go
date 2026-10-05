@@ -11,7 +11,6 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strings"
 
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
@@ -105,102 +104,12 @@ func indexShapeKey(idx *gen.Index) string {
 		idx.GetName(), idx.GetType(), normalizedIndexOptions(idx), root, pred)
 }
 
-// groupingKeyOfProto reconstructs the grouping key expression an index proto
-// declares, or nil when the index is not a grouping index at all.
-func groupingKeyOfProto(idx *gen.Index) *recordlayer.GroupingKeyExpression {
-	expr, err := recordlayer.KeyExpressionFromProto(idx.GetRootExpression())
-	if err != nil {
-		return nil
-	}
-	gke, ok := expr.(*recordlayer.GroupingKeyExpression)
-	if !ok {
-		return nil
-	}
-	return gke
-}
-
-// isGroupExistenceCompanionOf reports whether companion is the RFC-209 §5.2
-// group-existence companion of the JAVA-stored owner index: a COUNT(*) index
-// (record-layer type "count", zero grouped columns) whose grouping key is
-// byte-identical to the grouping half of the owner's, over the same row
-// population (same stored predicate).
-//
-// Anchoring the check on Java's stored owner rather than on Go's own owner is
-// deliberate: the interop claim is that a Java app opening the STORED metadata
-// sees a plain grouped COUNT index over a grouping key it already understands.
-// Deriving the expectation from Go's side would make the assertion agree with
-// whatever Go emitted.
-//
-// The version and option checks are not decoration: a Java app can only see
-// this index by opening the STORED metadata (FDBMetaDataStore.loadAndSetCurrent
-// builds every index in the proto with no whitelist), and every validating path
-// on that side requires 0 < added_version <= last_modified_version <=
-// metadata.version. clearWhenZero is the option that decides whether a zeroed
-// group leaves a key behind — which IS the group-existence semantics — so Go
-// leaving it unset is a claim about Java's behaviour, and it gets pinned.
-func isGroupExistenceCompanionOf(companion, javaOwner *gen.Index, metaDataVersion int32) (bool, string) {
-	if companion.GetType() != recordlayer.IndexTypeCount {
-		return false, fmt.Sprintf("type is %q, want %q — only a COUNT(*) index counts rows "+
-			"independently of the aggregated value, and only \"count\" resolves to Java's "+
-			"AtomicMutationIndexMaintainer", companion.GetType(), recordlayer.IndexTypeCount)
-	}
-	cgke := groupingKeyOfProto(companion)
-	if cgke == nil {
-		return false, "root expression is not a grouping key expression"
-	}
-	if cgke.GetGroupedCount() != 0 {
-		return false, fmt.Sprintf("grouped_count is %d, want 0 — Java's "+
-			"AtomicMutationIndexMaintainerFactory rejects a COUNT index with grouped columns",
-			cgke.GetGroupedCount())
-	}
-	ogke := groupingKeyOfProto(javaOwner)
-	if ogke == nil {
-		return false, fmt.Sprintf("owner %s stores no grouping key expression", javaOwner.GetName())
-	}
-	want := recordlayer.GroupingSignature(ogke)
-	got := recordlayer.GroupingSignature(cgke)
-	if len(want) == 0 || len(got) == 0 || string(want) != string(got) {
-		return false, fmt.Sprintf("grouping key differs from owner %s's grouping half",
-			javaOwner.GetName())
-	}
-	if !proto.Equal(normalizedProto(companion.GetPredicate()), normalizedProto(javaOwner.GetPredicate())) {
-		return false, fmt.Sprintf("predicate differs from owner %s's — a companion over a "+
-			"different row population reports groups the owner never indexed",
-			javaOwner.GetName())
-	}
-	added, lastModified := companion.GetAddedVersion(), companion.GetLastModifiedVersion()
-	if !(added > 0 && added <= lastModified && lastModified <= metaDataVersion) {
-		return false, fmt.Sprintf("version fields are added=%d last_modified=%d against "+
-			"metadata version %d, but every validating path on Java's side requires "+
-			"0 < added <= last_modified <= metadata.version; an auto-emitted index that "+
-			"violates it makes the whole stored template unopenable from Java",
-			added, lastModified, metaDataVersion)
-	}
-	for _, o := range companion.GetOptions() {
-		if o.GetKey() == recordlayer.IndexOptionClearWhenZero {
-			return false, fmt.Sprintf("carries clearWhenZero=%q. The companion's whole job is "+
-				"to distinguish a live group from a vacated one, and clearWhenZero decides "+
-				"whether a zeroed group leaves a key behind. Go leaves the option unset and "+
-				"drops zero-valued entries at READ time, which is what makes both engines' "+
-				"maintainers agree; storing the option changes the write path and this "+
-				"assertion must be revisited together with that change.", o.GetValue())
-		}
-	}
-	return true, ""
-}
-
-// assertIndexSetEquality is the RFC-209 half of this check: the set of indexes
-// GO persists must equal the set JAVA persists, index for index, EXCEPT for
-// group-existence companions of indexes that are themselves in the expected
-// set. Both directions are asserted — a missing index and an unexpected extra
-// one each fail.
-//
-// A membership check over a list of expected names cannot do this. RFC-209 made
-// Go auto-emit an index Java does not persist, and the interop claim rests
-// entirely on that surplus being EXACTLY the allowlisted companions: any other
-// surplus index is metadata a Java app opening the stored template would have
-// to maintain without ever having declared it.
-func assertIndexSetEquality(shapeName string, expected []string, javaIdx, goIdx map[string]*gen.Index, goMetaDataVersion int32) {
+// assertIndexSetEquality checks that the set of indexes GO persists equals the
+// set JAVA persists, index for index. Both directions are asserted — a missing
+// index and an unexpected extra one each fail. A surplus index is metadata a
+// Java app opening the stored template would have to maintain without ever
+// having declared it.
+func assertIndexSetEquality(shapeName string, expected []string, javaIdx, goIdx map[string]*gen.Index) {
 	expectedSet := make(map[string]struct{}, len(expected))
 	for _, n := range expected {
 		expectedSet[n] = struct{}{}
@@ -227,32 +136,13 @@ func assertIndexSetEquality(shapeName string, expected []string, javaIdx, goIdx 
 			"%s: index %s shape diverges from Java's stored shape", shapeName, name)
 	}
 
-	// ...and NOTHING else, other than allowlisted group-existence companions.
-	for name, g := range goIdx {
-		if _, ok := expectedSet[name]; ok {
-			continue
-		}
-		owner, isCompanionName := strings.CutSuffix(name, recordlayer.GroupCountCompanionSuffix)
-		Expect(isCompanionName).To(BeTrue(),
-			"%s: Go persisted an UNEXPECTED index %q that Java does not persist and that is "+
-				"not a group-existence companion (Java has %v, Go has %v). Go's stored metadata "+
-				"may only be a superset of Java's by exactly the RFC-209 §5.2 companions; an "+
-				"intentional new auto-emitted index must be added to this allowlist "+
-				"DELIBERATELY, with the interop argument for it, never absorbed silently.",
-			shapeName, name, sortedKeys(javaIdx), sortedKeys(goIdx))
-		javaOwner, ownerOK := javaIdx[owner]
-		Expect(ownerOK).To(BeTrue(),
-			"%s: Go persisted %q, whose name claims to be the group-existence companion of "+
-				"%q — but %q is not in the expected set. A companion is allowlisted only as a "+
-				"companion OF an expected index; add it to this allowlist deliberately.",
-			shapeName, name, owner, owner)
-		ok, why := isGroupExistenceCompanionOf(g, javaOwner, goMetaDataVersion)
+	// ...and NOTHING else.
+	for name := range goIdx {
+		_, ok := expectedSet[name]
 		Expect(ok).To(BeTrue(),
-			"%s: Go persisted %q, which carries the companion suffix but is not a "+
-				"group-existence companion of %q: %s. A name is not a licence — the allowlist "+
-				"tolerates the STRUCTURE, and an index that merely borrows the name is an "+
-				"unexpected index.",
-			shapeName, name, owner, why)
+			"%s: Go persisted an UNEXPECTED index %q that Java does not persist "+
+				"(Java has %v, Go has %v)",
+			shapeName, name, sortedKeys(javaIdx), sortedKeys(goIdx))
 	}
 }
 

@@ -200,7 +200,7 @@ func (c *hashMemoCell) commit(prev *hashMemoState, owner any, hash uint64) bool 
 //
 // The cell starts EMPTY. It must never be populated during construction: several plans
 // finish initialising themselves after their constructor returns — the
-// WithQuantifiers rebuild paths write drivingAlias / outputNameOverrides /
+// WithQuantifiers rebuild paths write reverse / outputNameOverrides /
 // distinctProofIndexName onto a freshly built plan, and those fields are in the key —
 // so a hash computed inside the constructor would describe a plan that does not exist
 // yet. Laziness is a correctness requirement here, not an optimisation.

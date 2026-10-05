@@ -88,8 +88,7 @@ func (h *evolHarness) mustRun(t *testing.T, what string, fn func(txn api.Transac
 }
 
 // evolTemplate builds template `name` at `version` over one table T(PK,C,V),
-// optionally carrying a value index on C and/or a grouped SUM index. The SUM
-// index drags in the RFC-209 __GROUP_COUNT companion, emitted by Builder.Build.
+// optionally carrying a value index on C and/or a grouped SUM index.
 func evolTemplate(t *testing.T, name string, version int, withValueIndex, withAggIndex bool) *metadata.RecordLayerSchemaTemplate {
 	t.Helper()
 	b := metadata.NewSchemaTemplateBuilder().SetName(name).SetVersion(version)
@@ -333,12 +332,10 @@ func evolRequireState(t *testing.T, dbPath, schemaName, index string, want recor
 	}
 }
 
-// TestFDB_EvolutionAddedAggregateIndexAnsweredBeforeReconciliation is the
-// RFC-209 shape: the DDL adds a grouped SUM index to an EXISTING populated
-// store, so Builder.Build auto-emits the __GROUP_COUNT companion alongside it.
-// BOTH are evolution-added and both are unbuilt in the pre-reconciliation
-// window, and the companion is the one that decides which groups exist — a
-// group-existence merge driven from an empty companion drops every live group.
+// TestFDB_EvolutionAddedAggregateIndexAnsweredBeforeReconciliation: the DDL
+// adds a grouped SUM index to an EXISTING populated store. The index is
+// evolution-added and unbuilt in the pre-reconciliation window, and an aggregate
+// scan over it would read no groups at all.
 //
 // Separate from the value-index test above and not duplication: the aggregate
 // family takes a different candidate builder, and a gate applied to one list
@@ -388,43 +385,34 @@ func TestFDB_EvolutionAddedAggregateIndexAnsweredBeforeReconciliation(t *testing
 
 	got, err = evolQueryPairs(t, db2, ctx, q)
 	if err != nil {
-		t.Fatalf("the RFC-209 shape FAILED on an existing populated store: %v\n  plan: %s\n"+
-			"Adding a grouped SUM index to a live schema emits the __GROUP_COUNT companion "+
-			"as a second evolution-added index. Neither has a stored state until the store "+
-			"header is reconciled, so both read as READABLE to the planner while holding "+
-			"no entries.", err, plan)
+		t.Fatalf("the evolved aggregate query FAILED on an existing populated store: %v\n  plan: %s\n"+
+			"The evolution-added index has no stored state until the store header is "+
+			"reconciled, so it reads as READABLE to the planner while holding no entries.",
+			err, plan)
 	}
 	if got != wantRows {
-		t.Fatalf("the RFC-209 shape returned WRONG ROWS on an existing populated store: "+
+		t.Fatalf("the evolved aggregate query returned WRONG ROWS on an existing populated store: "+
 			"got %s, want %s\n  plan: %s\n"+
-			"An unbuilt companion has a PARTIAL key set; driving the group-existence merge "+
-			"from it drops live groups — a wrong answer, strictly worse than an error.",
+			"An unbuilt aggregate index has a PARTIAL key set; reading it drops live groups.",
 			got, wantRows, plan)
 	}
 	t.Logf("plan on the evolved metadata: %s", plan)
 
-	// AXIS 1 — both the owner AND its auto-emitted companion are
-	// evolution-added, and on a store this size both must be left for a
-	// background build. Checking only the owner would miss the companion,
-	// which is the index that decides which groups EXIST: a merge driven from
-	// an unbuilt companion drops live groups silently.
+	// AXIS 1 — the evolution-added index must be left for a background build on
+	// a store this size.
 	const owner = "T_SUM_V_BY_C"
-	companion := recordlayer.GroupCountCompanionName(owner)
 	const why = "a 250-record store is above Java's MAX_RECORDS_FOR_REBUILD (200, " +
-		"FDBRecordStore.java:194,2471), so neither the grouped SUM index nor its " +
-		"__GROUP_COUNT companion may be rebuilt inline in the store-open transaction."
+		"FDBRecordStore.java:194,2471), so the grouped SUM index may not be rebuilt " +
+		"inline in the store-open transaction."
 	evolRequireState(t, dbPath, schemaName, owner, recordlayer.IndexStateDisabled, why)
-	evolRequireState(t, dbPath, schemaName, companion, recordlayer.IndexStateDisabled, why)
 
-	// AXIS 2 — neither may appear in the plan; the answer above must come from
+	// AXIS 2 — it may not appear in the plan; the answer above must come from
 	// streaming aggregation over the base table.
-	for _, name := range []string{owner, companion} {
-		if strings.Contains(plan, name) {
-			t.Fatalf("the plan names the DISABLED evolution-added index %s: %s\n"+
-				"Falling back to streaming aggregation until the background build "+
-				"completes is the CORRECT behaviour here; planning the unbuilt index is not.",
-				name, plan)
-		}
+	if strings.Contains(plan, owner) {
+		t.Fatalf("the plan names the DISABLED evolution-added index %s: %s\n"+
+			"Falling back to streaming aggregation until the background build "+
+			"completes is the CORRECT behaviour here; planning the unbuilt index is not.",
+			owner, plan)
 	}
 }
 
@@ -444,9 +432,8 @@ func TestFDB_EvolutionAddedAggregateIndexAnsweredBeforeReconciliation(t *testing
 // therefore left for a background build exactly as a store with 250 is; that
 // is Java's behaviour, not a Go conservatism.
 //
-// So: evolve an EMPTY store, and the RFC-209 companion must be built at open
-// and the group-existence merge must fire on the rows loaded afterwards — the
-// index is used, not fallen back from.
+// So: evolve an EMPTY store, and the aggregate index must be built at open and
+// answer the rows loaded afterwards — the index is used, not fallen back from.
 func TestFDB_EvolutionAddedAggregateIndexOnEmptyStoreStillBuildsInline(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -509,19 +496,17 @@ func TestFDB_EvolutionAddedAggregateIndexOnEmptyStoreStillBuildsInline(t *testin
 	// unbounded one and now refuses every inline build — correct answers, but
 	// Java's inline path silently gone.
 	const owner = "T_SUM_V_BY_C"
-	companion := recordlayer.GroupCountCompanionName(owner)
 	const why = "an EMPTY store reports a record count of 0 in Java too " +
 		"(FDBRecordStore.java:4884), which is <= MAX_RECORDS_FOR_REBUILD, so Java " +
 		"builds the index inline at store open (FDBRecordStore.java:2471)."
 	evolRequireState(t, dbPath, schemaName, owner, recordlayer.IndexStateReadable, why)
-	evolRequireState(t, dbPath, schemaName, companion, recordlayer.IndexStateReadable, why)
 
-	// And, the built index being readable, the group-existence merge must be
-	// what answers the query — otherwise "built inline" is true but inert.
+	// And, the built index being readable, it must be what answers the query —
+	// otherwise "built inline" is true but inert.
 	if !strings.Contains(plan, owner) {
 		t.Fatalf("the inline-built aggregate index is not in the plan: %s\n"+
-			"Both indexes are READABLE, so the RFC-209 merge should be driving this "+
-			"query rather than streaming aggregation over the base table.", plan)
+			"The index is READABLE, so it should answer this query rather than "+
+			"streaming aggregation over the base table.", plan)
 	}
 	t.Logf("plan on the empty-at-evolution store: %s", plan)
 }

@@ -4012,15 +4012,11 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 		return nil
 	}
 
-	// An ungrouped index is one group, the whole table. It serves an _EVER
-	// aggregate, which the rule extends to a NULL row when the index holds no
-	// entry (Java's ON EMPTY NULL). An ungrouped SUM or COUNT(col) keeps
-	// base-row aggregation: its stored zero cannot tell a table whose rows were
-	// all deleted (SUM over no rows is NULL) from one that sums to zero, and the
-	// group-existence companion (RFC-209) is keyed by a grouping.
-	if groupingCount == 0 && aggFunc != expressions.AggMinEver && aggFunc != expressions.AggMaxEver && aggFunc != expressions.AggBitmapConstructAgg {
-		return nil
-	}
+	// An ungrouped index is one group, the whole table, and serves the
+	// ungrouped aggregate as Java's does (aggregate-empty-table.yamsql plans
+	// `select sum(col1) from T2` as `AISCAN(T2_I5 <,> BY_GROUP ...)`). The rule
+	// extends it to a NULL row when the index holds no entry (Java's ON EMPTY
+	// NULL); a table whose rows were all deleted reads the stored 0, as in Java.
 	permutedSize := 0
 	if idx.Type == recordlayer.IndexTypePermutedMax || idx.Type == recordlayer.IndexTypePermutedMin {
 		// Absent is 0 and present is Integer.parseInt, as Java's
@@ -4096,11 +4092,6 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 			row, groupTypes, len(groupCols)).WithColumnPaths(groupPaths, aggPath).WithBitmapEntrySize(size)
 	}
 
-	// RFC-209: carry the two structural facts the group-existence machinery
-	// needs. countsRows distinguishes a COUNT(*) index (record-layer type
-	// `count`, whose stored value is the group's row count) from a COUNT(col)
-	// one (`count_not_null`) — both arrive here as AggCount with the same
-	// grouping, and only the former makes a stored zero mean "vacated group".
 	return cascades.NewAggregateIndexMatchCandidate(
 		idx.Name,
 		rtNames,
@@ -4114,11 +4105,7 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 		groupTypes,
 		groupingCount-permutedSize,
 	).WithColumnPaths(groupPaths, aggPath).
-		WithPermutedOrdering(idx.Type == recordlayer.IndexTypePermutedMax || idx.Type == recordlayer.IndexTypePermutedMin).WithGroupExistence(idx.Type == recordlayer.IndexTypeCount, recordlayer.GroupingSignature(gke)).
-		WithGroupExistenceCompanionNeed(
-			recordlayer.PredicateSignature(idx),
-			recordlayer.NeedsGroupCountCompanion(idx),
-		)
+		WithPermutedOrdering(idx.Type == recordlayer.IndexTypePermutedMax || idx.Type == recordlayer.IndexTypePermutedMin)
 }
 
 // tryVectorIndexCandidate builds a VectorIndexScanMatchCandidate for a vector

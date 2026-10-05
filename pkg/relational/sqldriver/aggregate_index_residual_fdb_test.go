@@ -114,7 +114,7 @@ func TestFDB_AggregateIndexResidual(t *testing.T) {
 				t.Errorf("%s: query failed\n  q: %s\n  indexed:   %v\n  unindexed: %v", stage, q, ei, en)
 				continue
 			}
-			if !mmEqRows(gi, gn) {
+			if !mmAggregateIndexRowsAgree(gi, gn, mmTrailingAggregates(q)) {
 				t.Errorf("%s: the residual-filtered aggregate index disagrees with the unindexed twin\n  q: %s\n  indexed  : %v\n  unindexed: %v\n  plan: %s",
 					stage, q, gi, gn, w.Explain(q))
 			}
@@ -268,7 +268,7 @@ func TestFDB_AggregateIndexNestedLeafGrouping(t *testing.T) {
 			if len(gn) == 0 {
 				t.Errorf("%s: the unindexed twin answers no rows, so agreement proves nothing\n  q: %s", stage, q)
 			}
-			if !mmEqRows(gi, gn) {
+			if !mmAggregateIndexRowsAgree(gi, gn, mmTrailingAggregates(q)) {
 				t.Errorf("%s: the nested-leaf aggregate index disagrees with the unindexed twin\n  q: %s\n  indexed  : %v\n  unindexed: %v\n  plan: %s",
 					stage, q, gi, gn, w.Explain(q))
 			}

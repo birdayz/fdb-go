@@ -52,14 +52,14 @@ func TestFDB_AggregateIndexReverseScan(t *testing.T) {
 		reverse int // reverse aggregate scans and merges in the plan
 	}{
 		{"SELECT col1, COUNT(*) FROM t1 GROUP BY col1 ORDER BY col1 DESC", 1},
-		{"SELECT col1, SUM(col2) FROM t1 GROUP BY col1 ORDER BY col1 DESC", 4},
-		{"SELECT col1, SUM(col2), COUNT(*) FROM t1 GROUP BY col1 ORDER BY col1 DESC", 4},
+		{"SELECT col1, SUM(col2) FROM t1 GROUP BY col1 ORDER BY col1 DESC", 1},
+		{"SELECT col1, SUM(col2), COUNT(*) FROM t1 GROUP BY col1 ORDER BY col1 DESC", 3},
 		{"SELECT col1, col3, COUNT(*) FROM t1 WHERE col1 = 2 GROUP BY col1, col3 ORDER BY col3 DESC", 1},
 		{"SELECT col1, col3, COUNT(*) FROM t1 GROUP BY col1, col3 ORDER BY col1 DESC, col3 DESC", 1},
 		// The merge keeps its legs' fixed col1 (TestAggregateMergeKeepsFixedPrefixOrdering).
 		{"SELECT col1, col3, SUM(col2) FROM t1 WHERE col1 = 2 GROUP BY col1, col3 ORDER BY col3", 0},
-		{"SELECT col1, col3, SUM(col2) FROM t1 WHERE col1 = 2 GROUP BY col1, col3 ORDER BY col3 DESC", 4},
-		{"SELECT col1, col3, SUM(col2), COUNT(*) FROM t1 WHERE col1 = 3 GROUP BY col1, col3 ORDER BY col3 DESC", 4},
+		{"SELECT col1, col3, SUM(col2) FROM t1 WHERE col1 = 2 GROUP BY col1, col3 ORDER BY col3 DESC", 1},
+		{"SELECT col1, col3, SUM(col2), COUNT(*) FROM t1 WHERE col1 = 3 GROUP BY col1, col3 ORDER BY col3 DESC", 3},
 	}
 	for _, r := range reads {
 		plan, err := embedded.PlanPhysicalForTest(r.sql, table+indexes, nil)
@@ -100,7 +100,7 @@ func TestFDB_AggregateIndexReverseScan(t *testing.T) {
 			if len(gn) < 2 {
 				t.Errorf("%s: the unindexed twin answers %d rows, too few to show an order\n  q: %s", stage, len(gn), r.sql)
 			}
-			if !mmEqRows(gi, gn) {
+			if !mmAggregateIndexRowsAgree(gi, gn, mmTrailingAggregates(r.sql)) {
 				t.Errorf("%s: the reverse aggregate scan disagrees with the unindexed twin\n  q: %s\n  indexed  : %v\n  unindexed: %v\n  plan: %s",
 					stage, r.sql, gi, gn, w.Explain(r.sql))
 			}
@@ -108,8 +108,8 @@ func TestFDB_AggregateIndexReverseScan(t *testing.T) {
 	}
 	sweep("initial")
 	for i, stmt := range []string{
-		"DELETE FROM t1 WHERE col1 = 5",                               // vacates a group: the COUNT(*) companion drops it
-		"UPDATE t1 SET col2 = NULL WHERE col1 = 3",                    // an all-NULL SUM group stays live
+		"DELETE FROM t1 WHERE col1 = 5",                               // vacates a group: its residue stays
+		"UPDATE t1 SET col2 = NULL WHERE col1 = 3",                    // an all-NULL SUM group reads the residue
 		"INSERT INTO t1 (id, col1, col2, col3) VALUES (100, 5, 7, 2)", // revives the vacated group
 		"UPDATE t1 SET col1 = 9 WHERE id < 6",                         // a new largest group
 		"DELETE FROM t1 WHERE col1 IS NULL",                           // drops the NULL group

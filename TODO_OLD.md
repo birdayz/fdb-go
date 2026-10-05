@@ -8423,7 +8423,10 @@ unrelated to the bug that prompted the measurement.
 
 - [ ] **No *general-purpose* window functions — and Java has none either.** Investigation (RFC-045): Java's relational layer has **no** general streaming window operator. The general `windowClause` is commented out in Java's grammar ("don't want to deal with them now"); `LAG`/`LEAD` are grammar tokens with **no** value class; `RankValue implements Value.IndexOnlyValue` (computable only from a rank/leaderboard index, never over a result set). The **only** working window function in Java is `ROW_NUMBER() OVER (... ORDER BY <distance>) <= K` via `QUALIFY`, used exclusively for **vector/HNSW K-NN search**. So "match Java's window functions" ≡ "finish the vector/HNSW relational parity" — tracked as **Phase 9** below. General windowing over plain tables would be a *Go-only extension Java lacks entirely* (allowed if wire-compat holds + deep tests), not parity — deferred, not in Phase 9.
 
-### [ ] OWNER DECISION — should the DDL emit a COUNT(col) companion for every SUM index?
+### [x] OWNER DECISION — should the DDL emit a COUNT(col) companion for every SUM index?
+
+Resolved 2026-10-05: no. SUM and COUNT aggregate indexes answer exactly as Java's
+do, alone, and RFC-209's companions are withdrawn (TODO.md section 7).
 
 A SUM index over a nullable operand is read only beside a COUNT(col) over the same operand,
 grouping and predicate: a live group whose last non-NULL value is deleted or NULLed keeps the

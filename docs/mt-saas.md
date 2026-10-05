@@ -834,14 +834,10 @@ that path.** They do *by default* — the relational metadata builder deliberate
 record-count key, because the stored template bytes must match Java's
 (`pkg/relational/core/metadata/builder.go:489`), and that default is pinned by
 `pkg/relational/sqldriver/evolution_added_index_gate_fdb_test.go:8`. But SQL *can* create a COUNT
-index, two ways:
-
-- explicitly — `CREATE INDEX <n> AS SELECT COUNT(*) FROM t GROUP BY g`
-  (`pkg/relational/core/parser/grammar/RelationalParser.g4:172` →
-  `pkg/relational/core/metadata/builder.go:1177`), pinned e2e by
-  `pkg/relational/conformance/yamsql/testdata/aggregate_index_count_star.yaml:13`;
-- implicitly — any grouped aggregate index drags in an auto-emitted `__GROUP_COUNT` companion
-  (`builder.go:660`).
+index, explicitly — `CREATE INDEX <n> AS SELECT COUNT(*) FROM t GROUP BY g`
+(`pkg/relational/core/parser/grammar/RelationalParser.g4:172` →
+`pkg/relational/core/metadata/builder.go:1177`), pinned e2e by
+`pkg/relational/conformance/yamsql/testdata/aggregate_index_count_star.yaml:13`.
 
 Relational primary keys are record-type-prefixed unless the template declares `INTERMINGLE TABLES`
 (`builder.go:1232`, conditional at `:1239-1240`, mode threaded from `:128` into `buildPrimaryKeyExpression` at `:552`), which satisfies

@@ -259,12 +259,11 @@ func TestFDB_FloatOrderingClaim_Aggregate_Differential(t *testing.T) {
 	// order is free.
 	//
 	// The NaN GROUP COUNT is a different matter, and it is where the producers
-	// would part company — except that after RFC-209 neither case below reaches
-	// the one that behaves differently:
+	// part company:
 	//
 	//   - A streaming aggregation groups by java.lang.Double.equals, which
 	//     collapses every NaN payload. It reports ONE NaN group, matching the
-	//     oracle exactly. BOTH cases below now plan this way.
+	//     oracle exactly.
 	//   - An aggregate index stores each group as its own FDB entry keyed by the
 	//     packed grouping prefix, and tuple encoding preserves the payload, so
 	//     two payloads are two entries — in Go and in Java alike
@@ -273,13 +272,12 @@ func TestFDB_FloatOrderingClaim_Aggregate_Differential(t *testing.T) {
 	//     anywhere in that path). Java is itself plan-dependent here. Merging
 	//     them in Go would mean writing key bytes Java does not.
 	//
-	// That second behaviour is pinned in
-	// TestFDB_FloatAggregateIndexSplitsNaNPayloads rather than here, on a shape
-	// the aggregate-index producer still serves. It asserts the plan FIRST and
-	// fails — never skips — if the planner stops choosing that producer, so the
-	// coverage cannot evaporate the way it just did in this file.
+	// TestFDB_FloatAggregateIndexSplitsNaNPayloads pins the second behaviour on
+	// its own as well.
 	for _, tc := range []struct {
 		name, table, wantPlan string
+		// splitsNaN: the producer reports one group per NaN payload.
+		splitsNaN bool
 	}{
 		{
 			name:  "streaming_aggregation_over_an_ordinary_index",
@@ -291,26 +289,12 @@ func TestFDB_FloatOrderingClaim_Aggregate_Differential(t *testing.T) {
 		{
 			name:  "aggregate_index",
 			table: "ag",
-			// This case USED to read the aggregate index directly
-			// (wantPlan: "AGGREGATEINDEX"). It no longer can, and the reason is
-			// worth stating rather than relaxing away.
-			//
-			// A grouped SUM index cannot decide group existence on its own, so
-			// RFC-209 §5.3 either companion-joins it or declines it. The
-			// companion join is a MERGE, and a merge needs both streams to be
-			// physically ordered congruently with the comparison. An UNBOUND raw
-			// DOUBLE grouping coordinate is exactly the case where that fails:
-			// its FDB tuple key order is not its value order, because a
-			// negative-NaN payload packs before -Inf. So the merge declines and
-			// planning falls back to streaming aggregation over base rows.
-			//
-			// The rows below are still asserted against the oracle, so this case
-			// keeps testing what it always tested — that a DOUBLE grouping
-			// column's KEY order is never advertised as its VALUE order. What it
-			// no longer covers is the aggregate-index PRODUCER for this shape.
-			// Re-arming that requires the group-existence merge to become safe on
-			// a raw DOUBLE coordinate, not weakening this expectation.
-			wantPlan: "STREAMINGAGG",
+			// The producer under test: the aggregate index, read alone as Java
+			// reads it. Its DOUBLE grouping key's tuple order is not its value
+			// order (a negative-NaN payload packs before -Inf), so the ORDER BY
+			// is a sort above it rather than an elided claim.
+			wantPlan:  "AGGREGATEINDEX",
+			splitsNaN: true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -338,20 +322,22 @@ func TestFDB_FloatOrderingClaim_Aggregate_Differential(t *testing.T) {
 					firstNaN, lastNonNaN, got, q, plan)
 			}
 			// The differential: same groups, same sums, same position of the NaN
-			// block — only the free tie order inside it may differ.
-			// Both cases now plan streaming aggregation (RFC-209's
-			// group-existence merge declines an unbound raw DOUBLE grouping
-			// coordinate), and a streaming aggregation groups by Double.equals,
-			// which collapses every NaN payload. So both sides report ONE NaN
-			// group and the plain differential applies to each.
-			//
-			// The aggregate-index producer's OPPOSITE behaviour — it splits the
-			// payloads, because its grouping prefix is the packed index key —
-			// is not covered here now that no case reaches it. It is pinned on
-			// its own in TestFDB_FloatAggregateIndexSplitsNaNPayloads, which
-			// fails loudly rather than skipping if the planner stops choosing
-			// that producer.
-			if !sameAggFloatGroups(sortedAggFloatGroups(nans), sortedAggFloatGroups(refNaNs)) {
+			// block — only the free tie order inside it may differ. The
+			// aggregate index splits the NaN class by payload: its groups' sums
+			// add up to the oracle's one NaN group.
+			if tc.splitsNaN {
+				var total, refTotal int64
+				for _, g := range nans {
+					total += g.sum
+				}
+				for _, g := range refNaNs {
+					refTotal += g.sum
+				}
+				if len(nans) != 2 || len(refNaNs) != 1 || total != refTotal {
+					t.Errorf("the aggregate index's NaN groups are %v, want the two payloads of the "+
+						"oracle's one NaN group %v\n  query: %s\n  plan:  %s", nans, refNaNs, q, plan)
+				}
+			} else if !sameAggFloatGroups(sortedAggFloatGroups(nans), sortedAggFloatGroups(refNaNs)) {
 				t.Errorf("DIFFERENTIAL MISMATCH on the NaN tie class: indexed=%v oracle=%v\n"+
 					"  query: %s\n  plan:  %s\n  ref:   %s", nans, refNaNs, q, plan, refQ)
 			}

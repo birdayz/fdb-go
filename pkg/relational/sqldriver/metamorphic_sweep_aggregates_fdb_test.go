@@ -64,12 +64,11 @@ func TestFDB_MetamorphicOrderingAggregatesDML(t *testing.T) {
 		"CREATE INDEX t_c ON t (c) "+
 		"CREATE INDEX t_s ON t (s) "+
 		"CREATE INDEX t_ba ON t (b, a) "+
-		// b is nullable: its SUM index is served beside the COUNT(b) that tells a
-		// group's residue from its sum.
-		"CREATE INDEX t_cnt_a AS SELECT COUNT(*) FROM t GROUP BY a "+
-		"CREATE INDEX t_sum_b_a AS SELECT SUM(b) FROM t GROUP BY a "+
-		"CREATE INDEX t_cntb_a AS SELECT COUNT(b) FROM t GROUP BY a "+
-		"CREATE INDEX t_cnt_b AS SELECT COUNT(*) FROM t GROUP BY b "+
+		// No SUM or COUNT aggregate index: it answers as Java's does, which after
+		// a DML that vacates a group (residue 0) or NULLs every value (no entry)
+		// is not the records' answer, so it has no place in an exactness sweep.
+		// aggregate_index_vacated_group_fdb_test.go pins those answers. MIN/MAX
+		// keep a per-record entry and stay exact.
 		"CREATE INDEX t_min_b_a AS SELECT MIN(b) FROM t GROUP BY a "+
 		"CREATE INDEX t_max_b_a AS SELECT MAX(b) FROM t GROUP BY a")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE mh2_noidx "+table)

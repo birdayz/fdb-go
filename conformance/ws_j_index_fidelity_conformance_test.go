@@ -380,49 +380,6 @@ func wsjCanonical(md *gen.MetaData) *gen.MetaData {
 	return c
 }
 
-// wsjRemoveCompanions returns a copy of md without the named RFC-209 companion
-// indexes and with the metadata versions they took given back. Go adds a
-// companion together with its owner, and the metadata builder gives every added
-// index its own version, so each companion occupies one version slot: every
-// index version above a slot, and the metadata version, move down by one per
-// slot below them. A companion whose added and last-modified versions differ
-// does not occupy one slot, so it is not removed and the run stays an index
-// divergence.
-func wsjRemoveCompanions(md *gen.MetaData, companions map[string]bool) *gen.MetaData {
-	c := proto.Clone(md).(*gen.MetaData)
-	var slots []int32
-	kept := c.Indexes[:0]
-	for _, i := range c.Indexes {
-		if companions[i.GetName()] && i.GetAddedVersion() == i.GetLastModifiedVersion() {
-			slots = append(slots, i.GetAddedVersion())
-			continue
-		}
-		kept = append(kept, i)
-	}
-	c.Indexes = kept
-	below := func(v int32, inclusive bool) int32 {
-		n := int32(0)
-		for _, s := range slots {
-			if s < v || (inclusive && s == v) {
-				n++
-			}
-		}
-		return n
-	}
-	for _, i := range c.Indexes {
-		if i.AddedVersion != nil {
-			i.AddedVersion = proto.Int32(i.GetAddedVersion() - below(i.GetAddedVersion(), false))
-		}
-		if i.LastModifiedVersion != nil {
-			i.LastModifiedVersion = proto.Int32(i.GetLastModifiedVersion() - below(i.GetLastModifiedVersion(), false))
-		}
-	}
-	if c.Version != nil {
-		c.Version = proto.Int32(c.GetVersion() - below(c.GetVersion(), true))
-	}
-	return c
-}
-
 // wsjMetaDataFieldDiff names the top-level MetaData fields that differ,
 // marking a field "~" when the difference vanishes under clearProto2Defaults.
 func wsjMetaDataFieldDiff(g, j *gen.MetaData) []string {
@@ -1174,46 +1131,17 @@ var _ = Describe("WS-J index-definition fidelity oracle", func() {
 			for _, i := range goMD.GetIndexes() {
 				goIdx[i.GetName()] = i
 			}
-			// Go-only indexes: a verified RFC-209 group-existence companion of an
-			// index the target also stores is a declared Go extension; anything
-			// else is an index divergence.
+			// Go-only indexes are an index divergence.
 			var extra []string
-			companions := map[string]bool{}
-			nonCompanionExtra := 0
 			for _, name := range sortedKeys(goIdx) {
-				if _, ok := javaIdx[name]; ok {
-					continue
-				}
-				owner, isCompanion := strings.CutSuffix(name, recordlayer.GroupCountCompanionSuffix)
-				if jo, ok := javaIdx[owner]; isCompanion && ok {
-					ok2, why := isGroupExistenceCompanionOf(goIdx[name], jo, goMD.GetVersion())
-					if ok2 {
-						extra = append(extra, name+"(companion)")
-						companions[name] = true
-						continue
-					}
-					extra = append(extra, name+"(NOT-companion: "+why+")")
-				} else {
+				if _, ok := javaIdx[name]; !ok {
 					extra = append(extra, name)
 				}
-				nonCompanionExtra++
-			}
-			// Everything below compares the target's metadata with Go's as it
-			// would be without the companions: each companion takes one metadata
-			// version when its owner is added, so removing it gives back that
-			// version (wsjRemoveCompanions). The raw bytes are still reported.
-			goCmp := goMD
-			if len(companions) > 0 {
-				goCmp = wsjRemoveCompanions(goMD, companions)
-			}
-			goCmpIdx := map[string]*gen.Index{}
-			for _, i := range goCmp.GetIndexes() {
-				goCmpIdx[i.GetName()] = i
 			}
 			var equal int
 			var diffs, missing []string
 			for _, name := range sortedKeys(javaIdx) {
-				g, ok := goCmpIdx[name]
+				g, ok := goIdx[name]
 				if !ok {
 					missing = append(missing, name)
 					continue
@@ -1232,28 +1160,25 @@ var _ = Describe("WS-J index-definition fidelity oracle", func() {
 			if string(jb) != string(gb) {
 				mdBytes = "md-bytes-differ(" + strings.Join(wsjMetaDataFieldDiff(goMD, javaMD), ",") + ")"
 			}
-			mdCanonicalEqual := proto.Equal(wsjCanonical(goCmp), wsjCanonical(javaMD))
+			mdCanonicalEqual := proto.Equal(wsjCanonical(goMD), wsjCanonical(javaMD))
 			switch {
 			case mdBytes == "md-bytes-equal":
 			case mdCanonicalEqual:
 				mdBytes += " md-canonical-equal"
 			default:
-				mdBytes += " md-canonical-differ(" + strings.Join(wsjMetaDataFieldDiff(wsjCanonical(goCmp), wsjCanonical(javaMD)), ",") + ")"
+				mdBytes += " md-canonical-differ(" + strings.Join(wsjMetaDataFieldDiff(wsjCanonical(goMD), wsjCanonical(javaMD)), ",") + ")"
 			}
 			// The class is decided by the WHOLE stored metadata, not the index
 			// comparison alone: a run whose indexes all agree while its record-type
 			// keys, union numbers, versions or descriptor order differ after
-			// canonicalisation is a wire divergence, and is classed as one. A run
-			// that is equal once its verified companions are removed has its own
-			// class, so the equal class means byte-for-byte what the target stores
-			// (up to wsjCanonical).
+			// canonicalisation is a wire divergence, and is classed as one, so the
+			// equal class means byte-for-byte what the target stores (up to
+			// wsjCanonical).
 			switch {
-			case len(diffs) > 0 || len(missing) > 0 || nonCompanionExtra > 0:
+			case len(diffs) > 0 || len(missing) > 0 || len(extra) > 0:
 				r.class = "both-accept-index-diverge"
 			case !mdCanonicalEqual:
 				r.class = "both-accept-metadata-diverge"
-			case len(companions) > 0:
-				r.class = "both-accept-companion"
 			default:
 				r.class = "both-accept-equal"
 			}
@@ -1599,8 +1524,8 @@ var _ = Describe("WS-J nested-grouping aggregate index plan oracle", func() {
 			"CREATE TABLE T_S (id BIGINT, home ADDR, cat STRING, v BIGINT, PRIMARY KEY (id)) " +
 			"CREATE INDEX cnt_home_cat AS SELECT COUNT(*) FROM T_S GROUP BY home.city, home.zip, cat " +
 			"CREATE INDEX sum_home_cat AS SELECT SUM(v) FROM T_S GROUP BY home.city, home.zip, cat " +
-			// Go reads a SUM over a nullable operand only beside its COUNT(col)
-			// (DIVERGENCES.md "SUM residue").
+			// Neither engine reads it for the SUM; the Java plans were measured
+			// with it declared.
 			"CREATE INDEX cntv_home_cat AS SELECT COUNT(v) FROM T_S GROUP BY home.city, home.zip, cat " +
 			"CREATE INDEX cnt_cat AS SELECT COUNT(*) FROM T_S GROUP BY cat"
 		reads := []string{
@@ -1621,14 +1546,13 @@ var _ = Describe("WS-J nested-grouping aggregate index plan oracle", func() {
 			"SELECT home.city, home.zip, cat, SUM(v) FROM T_S WHERE home.city = 'a' GROUP BY home.city, home.zip, cat": "AISCAN(SUM_HOME_CAT [EQUALS promote(@c22 AS STRING)] BY_GROUP -> [_0: KEY:[0], _1: KEY:[1], _2: KEY:[2], _3: VALUE:[0]]) | MAP (_._0 AS CITY, _._1 AS ZIP, _._2 AS CAT, _._3 AS _3)",
 			"SELECT home, cat, COUNT(*) FROM T_S GROUP BY home, cat":                                                   "ERROR plandiff: java UnableToPlanException: Cascades planner could not plan query",
 		}
-		// Go's physical plans, through EXPLAIN on the SQL runner. The SUM read
-		// merges its COUNT(*) and COUNT(v) companions (RFC-209, "SUM residue"),
-		// where the target reads SUM alone.
+		// Go's physical plans, through EXPLAIN on the SQL runner. Each reads one
+		// aggregate index, as the target does.
 		wantGo := map[string]string{
-			"SELECT cat, COUNT(*) FROM T_S GROUP BY cat":                                                               "Map(AggregateIndex(COUNT, CNT_CAT, [CAT], T_S, live_groups_only), {CAT: _current.CAT#0, _1: _current.COUNT(*)#1})",
-			"SELECT home.city, home.zip, cat, COUNT(*) FROM T_S GROUP BY home.city, home.zip, cat":                     "Map(AggregateIndex(COUNT, CNT_HOME_CAT, [CITY ZIP CAT], T_S, live_groups_only), {CITY: _current.T_S.HOME.CITY#0, ZIP: _current.T_S.HOME.ZIP#1, CAT: _current.CAT#2, _3: _current.COUNT(*)#3})",
-			"SELECT home.city, home.zip, cat, COUNT(*) FROM T_S WHERE cat = 'x' GROUP BY home.city, home.zip, cat":     "Map(PredicatesFilter(AggregateIndex(COUNT, CNT_HOME_CAT, [CITY ZIP CAT], T_S, live_groups_only), [1 preds]), {CITY: _current.T_S.HOME.CITY#0, ZIP: _current.T_S.HOME.ZIP#1, CAT: _current.CAT#2, _3: _current.COUNT(*)#3})",
-			"SELECT home.city, home.zip, cat, SUM(v) FROM T_S WHERE home.city = 'a' GROUP BY home.city, home.zip, cat": "Map(GroupExistenceMerge(AggregateIndex(COUNT, CNT_HOME_CAT, [CITY ZIP CAT], T_S, live_groups_only), AggregateIndex(SUM, SUM_HOME_CAT, [CITY ZIP CAT], T_S), AggregateIndex(COUNT, CNTV_HOME_CAT, [CITY ZIP CAT], T_S); keys=[CITY#0, ZIP#1, CAT#2], driving=0), {CITY: _current.T_S.HOME.CITY#0, ZIP: _current.T_S.HOME.ZIP#1, CAT: _current.CAT#2, _3: _current.SUM(V)#3})",
+			"SELECT cat, COUNT(*) FROM T_S GROUP BY cat":                                                               "Map(AggregateIndex(COUNT, CNT_CAT, [CAT], T_S), {CAT: _current.CAT#0, _1: _current.COUNT(*)#1})",
+			"SELECT home.city, home.zip, cat, COUNT(*) FROM T_S GROUP BY home.city, home.zip, cat":                     "Map(AggregateIndex(COUNT, CNT_HOME_CAT, [CITY ZIP CAT], T_S), {CITY: _current.T_S.HOME.CITY#0, ZIP: _current.T_S.HOME.ZIP#1, CAT: _current.CAT#2, _3: _current.COUNT(*)#3})",
+			"SELECT home.city, home.zip, cat, COUNT(*) FROM T_S WHERE cat = 'x' GROUP BY home.city, home.zip, cat":     "Map(PredicatesFilter(AggregateIndex(COUNT, CNT_HOME_CAT, [CITY ZIP CAT], T_S), [1 preds]), {CITY: _current.T_S.HOME.CITY#0, ZIP: _current.T_S.HOME.ZIP#1, CAT: _current.CAT#2, _3: _current.COUNT(*)#3})",
+			"SELECT home.city, home.zip, cat, SUM(v) FROM T_S WHERE home.city = 'a' GROUP BY home.city, home.zip, cat": "Map(AggregateIndex(SUM, SUM_HOME_CAT, [CITY ZIP CAT], T_S), {CITY: _current.T_S.HOME.CITY#0, ZIP: _current.T_S.HOME.ZIP#1, CAT: _current.CAT#2, _3: _current.SUM(V)#3})",
 			"SELECT home, cat, COUNT(*) FROM T_S GROUP BY home, cat":                                                   "Map(StreamingAgg(keys=[_current.HOME#1, _current.CAT#2], InMemorySort([_current.HOME#1.CITY#0 ASC, _current.HOME#1.ZIP#1 ASC, _current.CAT#2 ASC], Scan(T_S))), {HOME: _current.HOME#0, CAT: _current.CAT#1, _2: _current.COUNT(*)#2})",
 		}
 		render := func(r plandiff.PlanResult) string {

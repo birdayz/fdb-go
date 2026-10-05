@@ -222,11 +222,8 @@ func TestFDB_NonReadableIndexIsNotAMatchCandidate(t *testing.T) {
 }
 
 // TestFDB_NonReadableAggregateIndexFallsBackToStreamingAggregation is the same
-// gate on an AGGREGATE index, which is the shape RFC-209 §6 depends on: "a
-// companion that is not readable must not be used", because an index in
-// WRITE_ONLY or mid-backfill has a PARTIAL key set, and driving a group-existence
-// merge from a partial key set would drop LIVE groups — a brand-new wrong answer,
-// strictly worse than the phantom the RFC removes.
+// gate on an AGGREGATE index: an index in WRITE_ONLY or mid-backfill has a
+// PARTIAL key set, and reading it would drop LIVE groups.
 //
 // Pinning it on the aggregate family separately from the value family is not
 // duplication: they take different candidate builders

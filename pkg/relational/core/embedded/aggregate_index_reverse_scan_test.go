@@ -4,8 +4,8 @@ package embedded
 // groups descending, as Java's data-access rule does for every aggregate
 // candidate (aggregate-index-tests.yamsql:146, `select col1, sum(col2) from T1
 // group by col1 order by col1 desc` is `AISCAN(MV1 <,> BY_GROUP REVERSE ...)`).
-// The group-existence merge and the multi-aggregate intersection run their
-// legs and their merge in the same direction. With no descending request the
+// The multi-aggregate intersection runs its legs and its merge in the same
+// direction. With no descending request the
 // scan stays forward. Rows ride on TestFDB_AggregateIndexReverseScan.
 
 import (
@@ -58,11 +58,11 @@ CREATE INDEX mv_cnt13 AS SELECT COUNT(*) FROM T1 GROUP BY col1, col3`
 		{"count_desc", "SELECT col1, COUNT(*) FROM T1 GROUP BY col1 ORDER BY col1 DESC", 0, 1, false},
 		{"count_asc_stays_forward", "SELECT col1, COUNT(*) FROM T1 GROUP BY col1 ORDER BY col1", 1, 0, false},
 		{"count_unordered_stays_forward", "SELECT col1, COUNT(*) FROM T1 GROUP BY col1", 1, 0, false},
-		// The group-existence merge: its COUNT(*), SUM and COUNT(col2) legs and
-		// the merge reversed.
-		{"sum_desc", "SELECT col1, SUM(col2) FROM T1 GROUP BY col1 ORDER BY col1 DESC", 0, 4, false},
-		{"sum_unordered_stays_forward", "SELECT col1, SUM(col2) FROM T1 GROUP BY col1", 4, 0, false},
-		{"sum_and_count_desc", "SELECT col1, SUM(col2), COUNT(*) FROM T1 GROUP BY col1 ORDER BY col1 DESC", 0, 4, false},
+		{"sum_desc", "SELECT col1, SUM(col2) FROM T1 GROUP BY col1 ORDER BY col1 DESC", 0, 1, false},
+		{"sum_unordered_stays_forward", "SELECT col1, SUM(col2) FROM T1 GROUP BY col1", 1, 0, false},
+		// The multi-aggregate intersection: its SUM and COUNT(*) legs and the
+		// merge reversed.
+		{"sum_and_count_desc", "SELECT col1, SUM(col2), COUNT(*) FROM T1 GROUP BY col1 ORDER BY col1 DESC", 0, 3, false},
 		// The bound prefix is fixed; the tail is served descending.
 		{"bound_prefix_tail_desc", "SELECT col1, col3, COUNT(*) FROM T1 WHERE col1 = 2 GROUP BY col1, col3 ORDER BY col3 DESC", 0, 1, false},
 		{"full_key_desc", "SELECT col1, col3, COUNT(*) FROM T1 GROUP BY col1, col3 ORDER BY col1 DESC, col3 DESC", 0, 1, false},

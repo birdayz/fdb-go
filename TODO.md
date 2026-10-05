@@ -404,16 +404,29 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 - [x] WS-G implementation: Java aggregate continuation state, legacy reads,
   grouping-output simplification/ARRAY_AGG cap/resume and plan-schema tags have
   committed pins. Whole-upgrade acceptance remains open.
-- [ ] **SUM index: DECIDED 2026-10-05, exactly as in Java.** No companion
-  index. A SUM index answers alone, as Java's does: a group whose last non-NULL
-  value is deleted or NULLed reads the residue 0, and a group that was all-NULL
-  from the start has no SUM key and is dropped (Java 4.12.11.0, measured by
-  `conformance/probe_zerokey_allnull_java_test.go`: `[[10 0] [11 0] [13 7]]`;
-  re-measure on 4.14.2.0). Delete the `NeedsNonNullCompanion` decline from
-  5459c90a2, the DIVERGENCES.md "SUM residue" entry and the CHANGELOG line, and
-  move `aggregate_index_sum_null_residue.yaml` and the companion tests to Java's
-  answers. This also restores index reach for the 1M stress SUM queries
-  (8–21 s against 6 ms–0.7 s, `TODO_OLD.md` section 10).
+- [x] **SUM index: DECIDED 2026-10-05, exactly as in Java; done.** A SUM or
+  COUNT aggregate index answers alone: a vacated group reads 0, an all-NULL
+  group has no SUM / COUNT(col) row, a SUM residue reads 0 (Java 4.12.11.0
+  measured `[[10 0] [11 0] [13 7]]`, `conformance/probe_zerokey_allnull_java_test.go`;
+  4.14.2.0's `AggregateIndexMatchCandidate` and maintainer have no change here,
+  checked by source diff). RFC-209 is withdrawn: the `__GROUP_COUNT` companions,
+  the `GroupExistenceMerge` outer merge, the COUNT(*) zero drop, the
+  `NeedsNonNullCompanion` gate (5459c90a2) and the reserved-name guard are
+  deleted, and an ungrouped SUM / COUNT index is a candidate. The tests pin both
+  answers through `mmAggregateIndexRowsAgree` / `WantAggregateIndex`
+  (sqldriver), which admits exactly Java's three differences from the records.
+  The 43 WSJ `both-accept-companion` runs are now `both-accept-equal` (their Go
+  digests equal Java's, recomputed offline). The metamorphic sweeps no longer
+  declare SUM / COUNT aggregate indexes.
+- [ ] **Aggregate roll-up port (next).** Java serves an ungrouped or coarser
+  aggregate from a grouped index: `select sum(col1) from T2 where col2 = 0` is
+  `AISCAN(T2_I6 [EQUALS ...]) | ON EMPTY NULL` and a range is `AISCAN(...) | AGG
+  sum_l(...) GROUP BY ()` (aggregate-empty-table.yamsql :269-285;
+  `AggregateIndexMatchCandidate` `rollUpToGroupingValues`). Go's
+  `AggregateDataAccessRule` matches only an exact grouping, so these plan
+  `StreamingAgg(Scan)`. Pinned at Go's answer in
+  `TestFDB_AggregateIndexSum_NullWithOtherAggregates` ("SUM of one
+  residual-zero group").
 - [ ] **Lucene: DECIDED 2026-10-05, in scope, in process.** Java runs Apache
   Lucene 8.11.1 inside the JVM (`fdb-record-layer-lucene`, 28.7k lines of main
   Java, 7 protos). It stores the segment files in FDB through `FDBDirectory`,

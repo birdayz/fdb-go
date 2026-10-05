@@ -59,7 +59,7 @@ func TestMultiIntersectionPlan_CopiesSlices(t *testing.T) {
 	}
 }
 
-func TestMultiIntersectionPlan_RelinkRebasesRetainedProgramsAndDrivingAlias(t *testing.T) {
+func TestMultiIntersectionPlan_RelinkRebasesRetainedPrograms(t *testing.T) {
 	t.Parallel()
 	rowType := exactTestRecordType()
 	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
@@ -93,16 +93,15 @@ func TestMultiIntersectionPlan_RelinkRebasesRetainedProgramsAndDrivingAlias(t *t
 	original := mustChecked(t, func() (*RecordQueryMultiIntersectionOnValuesPlan, error) {
 		return NewRecordQueryMultiIntersectionOnValuesPlanFromQuantifiers(
 			oldQs, []values.Value{key}, result)
-	}).WithDrivingStream(oldAliases[1])
+	}).WithReverse(true)
 
 	relinkedExpr, err := original.WithQuantifiers(newQs)
 	if err != nil {
 		t.Fatalf("WithQuantifiers: %v", err)
 	}
 	relinked := relinkedExpr.(*RecordQueryMultiIntersectionOnValuesPlan)
-	if relinked.GetDrivingAlias() != newAliases[1] || relinked.DrivingStreamIndex() != 1 {
-		t.Fatalf("driving stream = (%s,%d), want (%s,1)",
-			relinked.GetDrivingAlias(), relinked.DrivingStreamIndex(), newAliases[1])
+	if !relinked.IsReverse() {
+		t.Fatal("relink dropped the merge direction")
 	}
 	requireValueCorrelations(t, relinked.GetComparisonKey()[0], newAliases[0])
 	requireValueCorrelations(t, relinked.GetResultValue(), newAliases...)

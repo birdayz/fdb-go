@@ -360,7 +360,6 @@ func TestPermutedAggregateCopiesPreserveOrdering(t *testing.T) {
 	copies := map[string]*RecordQueryAggregateIndexPlan{
 		"group columns": original.WithGroupColumns(original.GetGroupCols(), "ID"),
 		"group layout":  original.WithGroupColumnLayout(aggregateOrderingBase()),
-		"live groups":   original.WithLiveGroupsOnly(false),
 	}
 	for name, cp := range copies {
 		if cp == original || !cp.permuted {

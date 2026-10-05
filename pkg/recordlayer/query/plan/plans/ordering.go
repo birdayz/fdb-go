@@ -1303,20 +1303,14 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) HintOrdering() properties.Ord
 // stream fixes carried as that stream's FixedBinding, as Java derives the
 // intersection's ordering from its children's (Ordering.merge with INTERSECTION:
 // a binding fixed in one stream is fixed in the rows every stream agrees on).
-// The outer merge's rows are the driving stream's keys, so its fixed bindings
-// are that stream's. Grouping column i is slot i of every stream and of the
-// output.
+// Grouping column i is slot i of every stream and of the output.
 func (p *RecordQueryMultiIntersectionOnValuesPlan) HintRichOrdering() *properties.RichOrdering {
 	plain := p.HintOrdering()
 	if !plain.IsKnown || len(plain.Keys) == 0 {
 		return properties.EmptyOrdering()
 	}
-	streams := p.GetChildren()
-	if driving := p.DrivingStreamIndex(); driving >= 0 {
-		streams = streams[driving : driving+1]
-	}
 	fixed := make(map[int]any)
-	for _, stream := range streams {
+	for _, stream := range p.GetChildren() {
 		hinter, ok := stream.(properties.RichOrderingHinter)
 		if !ok {
 			continue

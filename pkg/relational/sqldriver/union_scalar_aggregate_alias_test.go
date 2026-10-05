@@ -11,9 +11,8 @@ import (
 // regression for scalar aggregate UNION branches with mismatched public
 // aliases. CQ-5 now gives every SQL aggregate an exact SELECT-order Project,
 // so the union consumes a stable positional public schema rather than private
-// StreamingAgg/AggregateIndex names. The no-AggregateIndex assertion below
-// remains a useful scalar-planning invariant; grouped and divergent-spelling
-// positive coverage lives later in this file.
+// StreamingAgg/AggregateIndex names. Grouped and divergent-spelling positive
+// coverage lives later in this file.
 func TestFDB_UnionScalarAggregateAlias(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -21,8 +20,8 @@ func TestFDB_UnionScalarAggregateAlias(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	// `withidx` even HAS an ungrouped COUNT(*) index — used to prove the index is NOT
-	// engaged for a scalar aggregate (the load-bearing fact behind the gate relax).
+	// `withidx` has an ungrouped COUNT(*) index, which serves its scalar COUNT(*)
+	// as Java's does.
 	db := setupPlanShapeDB(t, "usaa",
 		"CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
@@ -33,13 +32,17 @@ func TestFDB_UnionScalarAggregateAlias(t *testing.T) {
 	mwjoMustExec(t, db, ctx, "INSERT INTO b VALUES (3, 30)")              // count=1, sum=30
 	mwjoMustExec(t, db, ctx, "INSERT INTO withidx VALUES (1, 1), (2, 2)") // count=2
 
-	// The load-bearing fact: even WITH an ungrouped COUNT(*) index, a scalar COUNT(*)
-	// plans as StreamingAgg, NOT AggregateIndex — so the AggregateIndex realization
-	// (whose cursor drops the alias) cannot arise as a bare union branch. If this ever
-	// flips, the gate relax must be re-examined.
-	if plan := planExplainVia(t, ctx, db, "SELECT COUNT(*) AS x FROM withidx"); strings.Contains(plan, "AggregateIndex") {
-		t.Fatalf("ungrouped scalar COUNT(*) must NOT plan as AggregateIndex (gate-relax invariant), got: %s", plan)
+	// The scalar COUNT(*) over withidx reads its ungrouped index, and as a bare
+	// union branch it resolves by the first branch's name like a streaming one.
+	if plan := planExplainVia(t, ctx, db, "SELECT COUNT(*) AS x FROM withidx"); !strings.Contains(plan, "AggregateIndex(COUNT, CNT_WITHIDX") {
+		t.Fatalf("ungrouped scalar COUNT(*) must read its ungrouped COUNT(*) index, got: %s", plan)
 	}
+	assertInt64Set(t, db, ctx,
+		"SELECT u.x FROM (SELECT COUNT(*) AS x FROM withidx UNION ALL SELECT COUNT(*) AS y FROM b) u",
+		[]int64{2, 1})
+	assertInt64Set(t, db, ctx,
+		"SELECT u.x FROM (SELECT COUNT(*) AS x FROM b UNION ALL SELECT COUNT(*) AS y FROM withidx) u",
+		[]int64{1, 2})
 
 	// (1) SINGLE-aggregate bare-scalar branches, mismatched aliases, read by the first
 	// branch's name → both counts. count(a)=2, count(b)=1.
@@ -126,13 +129,7 @@ func TestFDB_UnionGroupedAggregate(t *testing.T) {
 	miQuery := "WITH u AS (SELECT g, COUNT(*), SUM(v) FROM ga WHERE g = 100 GROUP BY g " +
 		"UNION ALL SELECT h, COUNT(*), SUM(v) FROM gb WHERE h = 100 GROUP BY h) " +
 		"SELECT c.w FROM u, c WHERE u.g = c.id"
-	// Both spellings of the same operator are accepted: the SUM leg cannot
-	// decide group existence, so RFC-209 §5.3 gives the merge a driving
-	// companion and it EXPLAINs as GroupExistenceMerge rather than
-	// MultiIntersection. It is still a
-	// RecordQueryMultiIntersectionOnValuesPlan, which is the arm this exercises.
-	if plan := planExplainVia(t, ctx, db, miQuery); !strings.Contains(plan, "MultiIntersection(") &&
-		!strings.Contains(plan, "GroupExistenceMerge(") {
+	if plan := planExplainVia(t, ctx, db, miQuery); !strings.Contains(plan, "MultiIntersection(") {
 		t.Fatalf("filtered grouped multi-aggregate branch must plan as the multi-aggregate merge (exercises the MI arm), got: %s", plan)
 	}
 	assertInt64Set(t, db, ctx, miQuery, []int64{1, 1})

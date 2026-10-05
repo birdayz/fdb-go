@@ -677,9 +677,8 @@ COUNT-index sources, without the `excluded` set, so it keeps working for the ver
 rebuilt. That exception is load-bearing in the migration recipe in `DIVERGENCES.md`, which cites this
 page as authority. *Narrowed 2026-08-05:* "every relational SQL schema" overstated it. SQL can create a COUNT
 index explicitly (`CREATE INDEX … AS SELECT COUNT(*) … GROUP BY …`, `RelationalParser.g4:172` →
-`core/metadata/builder.go:1176`, pinned by `yamsql/testdata/aggregate_index_count_star.yaml:13`) and
-implicitly (the auto-emitted `__GROUP_COUNT` companion beside any grouped aggregate index,
-`builder.go:660`), relational primary keys ARE record-type-prefixed (`builder.go:1232`,
+`core/metadata/builder.go:1176`, pinned by `yamsql/testdata/aggregate_index_count_star.yaml:13`),
+relational primary keys ARE record-type-prefixed (`builder.go:1232`,
 `:1239-1240`), and a grouped COUNT index still qualifies as a count source
 (`store_builder.go:900`). So a schema carrying one flips to the INLINE arm — which is not
 automatically better, since that rebuild runs inside the store-open transaction. Which arm a store

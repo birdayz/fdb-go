@@ -110,7 +110,7 @@ CREATE INDEX orders_total_by_cust_nn AS SELECT COUNT(total) FROM orders GROUP BY
 			"is vacuous", leaves, planned)
 	}
 	// AND THE EXACT COUNT, because the floor above is not a guard against plan
-	// RESHAPING. It tolerates 15 of these 27, so a master merge that changes which
+	// RESHAPING. It tolerates losing every leaf past one per query, so a master merge that changes which
 	// physical leaves the corpus produces -- a new distinct-over-union dedup, a
 	// push-distinct-through-fetch, an in-to-explode rewrite -- would be absorbed
 	// silently, and the census would keep reporting a clean bill over a population
@@ -121,7 +121,7 @@ CREATE INDEX orders_total_by_cust_nn AS SELECT COUNT(total) FROM orders GROUP BY
 	// differently than when this was written. Re-read the plans, satisfy yourself
 	// the new shapes are still typed, and update the number in the same commit
 	// that reshaped them.
-	const wantLeaves = 27
+	const wantLeaves = 19
 	if leaves != wantLeaves {
 		t.Errorf("the corpus now produces %d scan/index leaves, not %d. The plans have "+
 			"RESHAPED -- which may be correct, and is not asserted against here. What "+
