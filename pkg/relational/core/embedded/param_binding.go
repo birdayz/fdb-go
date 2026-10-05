@@ -1,12 +1,16 @@
 package embedded
 
 import (
+	"bytes"
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/vectorcodec"
@@ -51,9 +55,11 @@ func bindStatementParameters(tree antlr.Tree, args []driver.NamedValue) (string,
 		}
 		if pp, ok := n.(*antlrgen.PreparedStatementParameterContext); ok {
 			var raw any
+			var param string
 			switch {
 			case pp.NAMED_PARAMETER() != nil:
 				name := pp.NAMED_PARAMETER().GetText()[1:]
+				param = name
 				v, ok := named[strings.ToUpper(name)]
 				if !ok {
 					return api.NewErrorf(api.ErrCodeUndefinedParameter, "No value found for parameter %s", name)
@@ -65,8 +71,13 @@ func bindStatementParameters(tree antlr.Tree, args []driver.NamedValue) (string,
 				}
 				raw = positional[next]
 				next++
+				param = strconv.Itoa(next)
 			}
 			v, err := parameterConstant(raw)
+			var badText *invalidUTF8ParameterError
+			if errors.As(err, &badText) {
+				return api.NewErrorf(api.ErrCodeCharacterNotInRepertoire, "parameter %s is not valid UTF-8", param)
+			}
 			if err != nil {
 				return err
 			}
@@ -120,9 +131,11 @@ func parameterConstant(raw any) (values.Value, error) {
 		if !ok || len(payload)%stride != 0 {
 			return nil, api.NewError(api.ErrCodeInvalidParameter, "invalid serialized VECTOR parameter")
 		}
-		return &values.ConstantValue{Value: []byte(v), Typ: values.NewVectorType(false, stride*8, len(payload)/stride)}, nil
+		return &values.ConstantValue{Value: bytes.Clone(v), Typ: values.NewVectorType(false, stride*8, len(payload)/stride)}, nil
 	case []byte:
-		return &values.ConstantValue{Value: v, Typ: values.NotNullBytes}, nil
+		// Copied: the caller may reuse the buffer while the constant lives on in
+		// lazily fetched pages.
+		return &values.ConstantValue{Value: bytes.Clone(v), Typ: values.NotNullBytes}, nil
 	case driver.Valuer:
 		dv, err := v.Value()
 		if err != nil {
@@ -158,6 +171,9 @@ func parameterConstant(raw any) (values.Value, error) {
 	case reflect.Float64:
 		return &values.ConstantValue{Value: rv.Float(), Typ: values.NotNullDouble}, nil
 	case reflect.String:
+		if !utf8.ValidString(rv.String()) {
+			return nil, &invalidUTF8ParameterError{}
+		}
 		return &values.ConstantValue{Value: rv.String(), Typ: values.NotNullString}, nil
 	case reflect.Bool:
 		return values.NewBooleanValue(rv.Bool()), nil
@@ -166,6 +182,12 @@ func parameterConstant(raw any) (values.Value, error) {
 	}
 	return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "unsupported parameter type %T", raw)
 }
+
+// invalidUTF8ParameterError marks a string parameter that is not valid UTF-8;
+// the binder reports it as 22021 naming the parameter.
+type invalidUTF8ParameterError struct{}
+
+func (*invalidUTF8ParameterError) Error() string { return "parameter is not valid UTF-8" }
 
 func intParameter(i int64) values.Value {
 	if i >= math.MinInt32 && i <= math.MaxInt32 {

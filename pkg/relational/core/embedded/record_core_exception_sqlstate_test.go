@@ -76,6 +76,9 @@ func TestRecordCoreExceptionsMapAsJavasExceptionUtil(t *testing.T) {
 		{&recordlayer.MetaDataVersionMustIncreaseError{}, api.ErrCodeSyntaxOrAccessViolation},
 		{&recordlayer.RecordTypeKeyTypeError{}, api.ErrCodeSyntaxOrAccessViolation},
 		{&recordlayer.InvalidNameError{Message: "n"}, api.ErrCodeSyntaxOrAccessViolation},
+		// Go-only: a save refusing a string that is not valid UTF-8, as every
+		// save path reports it (inside RecordSerializationError).
+		{&recordlayer.RecordSerializationError{Cause: &recordlayer.InvalidUTF8StringError{Field: "name"}}, api.ErrCodeCharacterNotInRepertoire},
 	} {
 		name := fmt.Sprintf("%T", c.err)
 		t.Run(name, func(t *testing.T) {

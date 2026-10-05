@@ -4,13 +4,14 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"fdb.dev/pkg/relational/api"
 )
 
 // FuzzParse ensures that the public Parse function never panics on any
 // byte sequence. Every failure must be a clean *api.Error with
-// ErrCodeSyntaxError; anything else — a panic, a wrapped non-api error, or
+// ErrCodeSyntaxError (22021 for text that is not valid UTF-8); anything else — a panic, a wrapped non-api error, or
 // a nil-error-but-nil-result combination — is a bug.
 //
 // Seed corpus mixes well-formed SQL (to exercise the full grammar) with
@@ -68,11 +69,21 @@ func FuzzParse(f *testing.F) {
 		if !errors.As(err, &apiErr) {
 			t.Fatalf("Parse(%q) returned non-api error %T: %v", sql, err, err)
 		}
-		if apiErr.Code != api.ErrCodeSyntaxError {
+		if want := wantParseErrorCode(sql); apiErr.Code != want {
 			t.Fatalf("Parse(%q) returned api error with unexpected code %s (want %s): %v",
-				sql, apiErr.Code, api.ErrCodeSyntaxError, err)
+				sql, apiErr.Code, want, err)
 		}
 	})
+}
+
+// wantParseErrorCode is the only code a failed parse of sql may carry: text
+// that is not valid UTF-8 is refused before lexing, anything else is a syntax
+// error.
+func wantParseErrorCode(sql string) api.ErrorCode {
+	if !utf8.ValidString(sql) {
+		return api.ErrCodeCharacterNotInRepertoire
+	}
+	return api.ErrCodeSyntaxError
 }
 
 // FuzzParseFunction and FuzzParseView mirror the FuzzParse invariant
@@ -104,8 +115,8 @@ func FuzzParseFunction(f *testing.F) {
 		if !errors.As(err, &apiErr) {
 			t.Fatalf("ParseFunction(%q) returned non-api error %T: %v", sql, err, err)
 		}
-		if apiErr.Code != api.ErrCodeSyntaxError {
-			t.Fatalf("ParseFunction(%q) unexpected code %s: %v", sql, apiErr.Code, err)
+		if want := wantParseErrorCode(sql); apiErr.Code != want {
+			t.Fatalf("ParseFunction(%q) unexpected code %s (want %s): %v", sql, apiErr.Code, want, err)
 		}
 	})
 }
@@ -133,8 +144,8 @@ func FuzzParseView(f *testing.F) {
 		if !errors.As(err, &apiErr) {
 			t.Fatalf("ParseView(%q) returned non-api error %T: %v", sql, err, err)
 		}
-		if apiErr.Code != api.ErrCodeSyntaxError {
-			t.Fatalf("ParseView(%q) unexpected code %s: %v", sql, apiErr.Code, err)
+		if want := wantParseErrorCode(sql); apiErr.Code != want {
+			t.Fatalf("ParseView(%q) unexpected code %s (want %s): %v", sql, apiErr.Code, want, err)
 		}
 	})
 }

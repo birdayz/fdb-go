@@ -38,6 +38,18 @@ func (store *FDBRecordStore) SaveRecordBatch(
 	if err := store.ensureStoreStateLoadedErr(); err != nil {
 		return nil, fmt.Errorf("load store state: %w", err)
 	}
+	// Every record is checked before the first is written, so a bad one late
+	// in the batch leaves none of it in the transaction.
+	for i, record := range records {
+		if record == nil {
+			continue
+		}
+		if rt := store.metaData.GetRecordType(string(record.ProtoReflect().Descriptor().Name())); rt != nil {
+			if err := rt.checkUTF8Strings(record); err != nil {
+				return nil, fmt.Errorf("record %d: %w", i, &RecordSerializationError{Cause: err})
+			}
+		}
+	}
 	if store.omitUnsplitRecordSuffix() {
 		results := make([]*FDBStoredRecord[proto.Message], len(records))
 		for i, rec := range records {

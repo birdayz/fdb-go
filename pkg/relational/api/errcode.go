@@ -56,6 +56,7 @@ const (
 	ErrCodeInvalidRowCountInLimitClause ErrorCode = "2201W"
 	ErrCodeEscapeCharacterConflict      ErrorCode = "2200B"
 	ErrCodeInvalidEscapeCharacter       ErrorCode = "22019"
+	ErrCodeCharacterNotInRepertoire     ErrorCode = "22021"
 	ErrCodeInvalidParameter             ErrorCode = "22023"
 	ErrCodeInvalidEscapeSequence        ErrorCode = "22025"
 	ErrCodeArrayElementError            ErrorCode = "2202E"
@@ -207,6 +208,10 @@ var goOnlyErrorCodes = map[ErrorCode]string{
 		"is raised. Java's enum has no member for the integral case; it raises " +
 		"java.lang.ArithmeticException, which ExceptionUtil maps to UNKNOWN via " +
 		"its final fallthrough.",
+	ErrCodeCharacterNotInRepertoire: "SQL-standard 22021 for SQL text or a string parameter that is " +
+		"not valid UTF-8. A Java String is UTF-16 and cannot hold such text, so " +
+		"the condition cannot arise there; Go refuses it rather than store bytes " +
+		"Java would read back as U+FFFD.",
 	ErrCodePlanComplexityLimitReached: "Go bounds Cascades planning at 100,000 tasks; Java's SQL layer " +
 		"never enables its three planner caps, so the condition cannot arise " +
 		"there and no Java code names it. See DIVERGENCES.md.",
@@ -230,7 +235,7 @@ func init() {
 		ErrCodeUnsupportedOperation, ErrCodeUnsupportedQuery, ErrCodeUnsupportedSort,
 		ErrCodeCardinalityViolation,
 		ErrCodeCannotConvertType, ErrCodeNumericValueOutOfRange, ErrCodeDivisionByZero, ErrCodeInvalidRowCountInLimitClause, ErrCodeInvalidParameter, ErrCodeArrayElementError,
-		ErrCodeEscapeCharacterConflict, ErrCodeInvalidEscapeCharacter, ErrCodeInvalidEscapeSequence,
+		ErrCodeEscapeCharacterConflict, ErrCodeInvalidEscapeCharacter, ErrCodeInvalidEscapeSequence, ErrCodeCharacterNotInRepertoire,
 		ErrCodeInvalidBinaryRepresentation, ErrCodeInvalidArgumentForFunction, ErrCodeInvalidCast,
 		ErrCodeCopySerializationError, ErrCodeCopyImportValidationError,
 		ErrCodeNotNullViolation, ErrCodeUniqueConstraintViolation,

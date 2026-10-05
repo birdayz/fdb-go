@@ -1,12 +1,15 @@
 package embedded
 
 import (
+	"bytes"
 	"database/sql/driver"
 	"errors"
 	"math"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/vectorcodec"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/parser"
 	"github.com/google/uuid"
@@ -96,5 +99,99 @@ func TestBindStatementParameters(t *testing.T) {
 	var apiErr *api.Error
 	if _, _, err := bindStatementParameters(root, args[:1]); !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUndefinedParameter {
 		t.Fatalf("missing parameter: want 42F02, got %v", err)
+	}
+}
+
+// A string parameter must be valid UTF-8 wherever it sits — directly, behind
+// a pointer or Valuer, or inside an array — and the error names the parameter.
+func TestBindStatementParameters_InvalidUTF8(t *testing.T) {
+	t.Parallel()
+	root, err := parser.Parse("SELECT id FROM t WHERE name = ? OR name = ?label")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := "ab\xffcd"
+	for _, tc := range []struct {
+		name string
+		args []driver.NamedValue
+		want string
+	}{
+		{"positional", []driver.NamedValue{{Ordinal: 1, Value: bad}, {Name: "label", Value: "ok"}}, "parameter 1"},
+		{"named", []driver.NamedValue{{Ordinal: 1, Value: "ok"}, {Name: "label", Value: bad}}, "parameter label"},
+		{"pointer", []driver.NamedValue{{Ordinal: 1, Value: &bad}, {Name: "label", Value: "ok"}}, "parameter 1"},
+		{"valuer", []driver.NamedValue{{Ordinal: 1, Value: textValuer(bad)}, {Name: "label", Value: "ok"}}, "parameter 1"},
+		{"array element", []driver.NamedValue{{Ordinal: 1, Value: "ok"}, {Name: "label", Value: []string{"x", bad}}}, "parameter label"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, release, err := bindStatementParameters(root, tc.args)
+			release()
+			var apiErr *api.Error
+			if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeCharacterNotInRepertoire {
+				t.Fatalf("want 22021, got %v", err)
+			}
+			if !strings.Contains(apiErr.Message, tc.want) {
+				t.Fatalf("error %q does not name %q", apiErr.Message, tc.want)
+			}
+		})
+	}
+	_, release, err := bindStatementParameters(root, []driver.NamedValue{{Ordinal: 1, Value: "naïve"}, {Name: "label", Value: []string{"日本"}}})
+	release()
+	if err != nil {
+		t.Fatalf("valid UTF-8 refused: %v", err)
+	}
+}
+
+// A bound byte value is copied at bind time: database/sql callers may reuse
+// their buffers once the call returns, while the bound constant lives on in
+// lazily fetched pages.
+func TestParameterConstant_CopiesBuffers(t *testing.T) {
+	t.Parallel()
+	payload := func(v values.Value) []byte {
+		switch p := v.(*values.ConstantValue).Value.(type) {
+		case []byte:
+			return p
+		case []any:
+			return p[0].([]byte)
+		}
+		t.Fatalf("unexpected payload %T", v.(*values.ConstantValue).Value)
+		return nil
+	}
+	for name, mk := range map[string]func() (any, []byte){
+		"bytes":         func() (any, []byte) { b := []byte{1, 2, 3}; return b, b },
+		"array element": func() (any, []byte) { b := []byte{1, 2, 3}; return [][]byte{b}, b },
+		"vector": func() (any, []byte) {
+			v := api.Vector(vectorcodec.Serialize([]float64{1, 2}))
+			return v, v
+		},
+	} {
+		in, buf := mk()
+		v, err := parameterConstant(in)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		want := bytes.Clone(payload(v))
+		for i := range buf {
+			buf[i] ^= 0xff
+		}
+		if !bytes.Equal(payload(v), want) {
+			t.Errorf("%s: the bound constant follows the caller's reused buffer", name)
+		}
+	}
+}
+
+// Every statement of a batch is bound before any is planned, so a binding
+// error in a later statement leaves the earlier ones unapplied.
+func TestBindStatementParameters_BatchBindsAllFirst(t *testing.T) {
+	t.Parallel()
+	root, err := parser.Parse("INSERT INTO t VALUES (?); INSERT INTO t VALUES (?)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, release, err := bindStatementParameters(root, []driver.NamedValue{{Ordinal: 1, Value: "ok"}, {Ordinal: 2, Value: "\xff"}})
+	release()
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeCharacterNotInRepertoire || !strings.Contains(apiErr.Message, "parameter 2") {
+		t.Fatalf("want 22021 naming parameter 2, got %v", err)
 	}
 }

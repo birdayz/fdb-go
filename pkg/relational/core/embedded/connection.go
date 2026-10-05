@@ -1133,6 +1133,12 @@ func translateFDBError(err error) error {
 		return api.WrapError(api.ErrCodeInternalError,
 			"A null value cannot be assigned to a variable that is of a non-nullable type.", err)
 	}
+	// Go-only: a save refusing a string that is not valid UTF-8, such as an
+	// UPDATE of a row an older Go writer stored with one.
+	var invalidUTF8 *recordlayer.InvalidUTF8StringError
+	if errors.As(err, &invalidUTF8) {
+		return api.WrapError(api.ErrCodeCharacterNotInRepertoire, invalidUTF8.Error(), err)
+	}
 	var existsErr *recordlayer.RecordAlreadyExistsError
 	if errors.As(err, &existsErr) {
 		return api.WrapError(api.ErrCodeUniqueConstraintViolation, existsErr.Error(), err)

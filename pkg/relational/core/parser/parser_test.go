@@ -752,3 +752,29 @@ func TestParse_Comments(t *testing.T) {
 		}
 	}
 }
+
+// SQL text that is not valid UTF-8 is refused before lexing, never lexed with
+// the bad bytes replaced by U+FFFD (which would change the caller's literal).
+func TestParse_InvalidUTF8TextRefused(t *testing.T) {
+	t.Parallel()
+	for name, parse := range map[string]func(string) error{
+		"Parse":           func(s string) error { _, err := Parse("INSERT INTO t VALUES (1, " + s + ")"); return err },
+		"ParseView":       func(s string) error { _, err := ParseView("SELECT " + s + " FROM t"); return err },
+		"ParseExpression": func(s string) error { _, err := ParseExpression(s + " || 'x'"); return err },
+		"ParseFunction": func(s string) error {
+			_, err := ParseFunction("CREATE FUNCTION f(IN x STRING) AS SELECT " + s + " FROM t")
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var apiErr *api.Error
+			if err := parse("'ab\xffcd'"); !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeCharacterNotInRepertoire {
+				t.Fatalf("invalid UTF-8 literal: want 22021, got %v", err)
+			}
+			if err := parse("'naïve 日本'"); err != nil {
+				t.Fatalf("valid UTF-8 literal refused: %v", err)
+			}
+		})
+	}
+}

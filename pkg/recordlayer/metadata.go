@@ -213,6 +213,11 @@ type RecordType struct {
 	reachesMap bool
 	mapReach   mapReach
 
+	// reachesString is whether the record can hold a string at any depth,
+	// which the save checks is valid UTF-8 (utf8_strings.go).
+	reachesString bool
+	stringReach   stringReach
+
 	// closedEnumReach is, like mapReach, the meta-data's answer for every type
 	// its record types reach: whether a closed enum field can occur, which a
 	// decoded record must then read as Java reads it (proto_closed_enums.go).
@@ -1297,10 +1302,12 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		}
 	}
 	reach := newMapReach(roots...)
+	stringTypes := newStringReach(roots...)
 	enumReach := newClosedEnumReach(false, roots...)
 	for _, rt := range types {
 		if rt.Descriptor != nil {
 			rt.reachesMap, rt.mapReach = reach.reaches(rt.Descriptor), reach
+			rt.reachesString, rt.stringReach = stringTypes.reaches(rt.Descriptor), stringTypes
 			rt.reachesClosedEnum, rt.closedEnumReach = enumReach.reaches(rt.Descriptor), enumReach
 			rt.closedEnumRoot, _, _ = enumReach.planFor(rt.Descriptor)
 		}

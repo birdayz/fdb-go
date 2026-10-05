@@ -2189,6 +2189,9 @@ func serializeUnionOver(record proto.Message, recordType *RecordType, priorInner
 	if recordType.unionFieldNumber == 0 {
 		return nil, fmt.Errorf("no union field number for record type: %s", recordType.Name)
 	}
+	if err := recordType.checkUTF8Strings(record); err != nil {
+		return nil, err
+	}
 
 	if recordType.reachesMap {
 		if priorInner == nil && recordType.reachesClosedEnum && holdsUndeclared(record.ProtoReflect(), recordType.closedEnumReach) {
