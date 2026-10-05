@@ -981,3 +981,36 @@ func TestMemoEqual_QuantifierAttributeVariantsDoNotIntern(t *testing.T) {
 		t.Fatal("attribute-identical twin must dedup against the existing member")
 	}
 }
+
+// One equality compares the same reference pair under several bindings; a
+// remembered result must not answer for different bindings of the pair's free
+// aliases, while bindings of other aliases reuse it.
+func TestMemoEqual_ReferenceResultsKeyedByFreeBindings(t *testing.T) {
+	t.Parallel()
+	alias := values.NamedCorrelationIdentifier
+	scan := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, values.NotNullLong)))
+	build := func(local, outer string) *Reference {
+		q := NamedForEachQuantifier(alias(local), scan)
+		return InitialOf(mustExpression(NewSelectExpression(mustQOV(alias(outer)), []Quantifier{q}, nil)))
+	}
+	left, right := build("a", "x"), build("b", "y")
+	e := newMemoEquality()
+	for i, tc := range []struct {
+		aliases *AliasMap
+		want    bool
+	}{
+		{AliasMapOf(alias("x"), alias("y")), true},
+		{AliasMapOf(alias("x"), alias("z")), false},
+		{EmptyAliasMap(), false},
+		{AliasMapOf(alias("x"), alias("y"), alias("q"), alias("r")), true},
+		{AliasMapOf(alias("x"), alias("z"), alias("q"), alias("r")), false},
+		{AliasMapOf(alias("x"), alias("y")), true},
+	} {
+		if got := e.references(left, right, tc.aliases); got != tc.want {
+			t.Errorf("comparison %d under %v = %t, want %t", i, tc.aliases, got, tc.want)
+		}
+	}
+	if n := len(e.matched[refPair{left, right}]); n != 3 {
+		t.Errorf("%d remembered binding sets, want 3 (x->y, x->z, none)", n)
+	}
+}

@@ -1,6 +1,11 @@
 package expressions
 
-import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+import (
+	"slices"
+	"strings"
+
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+)
 
 // MemoEqual implements Java Reference.isMemoizedExpression: external bindings
 // stay fixed, while child bindings are matched before comparing node information.
@@ -25,6 +30,33 @@ type memoEquality struct {
 	correlations referenceCorrelationReader
 	hashes       map[RelationalExpression]uint64
 	active       map[refPair]struct{}
+	// matched remembers reference comparisons on a stable graph. A comparison
+	// depends on the bindings only through the left reference's free aliases:
+	// the bindings it is given are its ancestors', which no descendant
+	// quantifier shares in an acyclic memo.
+	matched map[refPair][]refMatch
+	// cycles counts comparisons cut short by the cycle guard; a result that
+	// relied on one is not remembered.
+	cycles int
+	// quantifierOrder caches each expression's quantifier dependencies.
+	quantifierOrder map[RelationalExpression][][]int
+}
+
+func (e *memoEquality) dependencies(expression RelationalExpression) [][]int {
+	if deps, ok := e.quantifierOrder[expression]; ok {
+		return deps
+	}
+	deps := quantifierDependencies(expression.GetQuantifiers(), expression.CanCorrelate(), e.correlations.correlatedTo)
+	if e.quantifierOrder == nil {
+		e.quantifierOrder = make(map[RelationalExpression][][]int)
+	}
+	e.quantifierOrder[expression] = deps
+	return deps
+}
+
+type refMatch struct {
+	bindings []values.AliasPair
+	result   bool
 }
 
 func newMemoEquality() *memoEquality {
@@ -75,7 +107,7 @@ func (e *memoEquality) equal(member, expression RelationalExpression, aliases *A
 			return false
 		}
 	}
-	return matchQuantifierBindings(member, expression, bound, e.correlations.correlatedTo, e.references, nil)
+	return matchQuantifierBindings(member, expression, bound, e.dependencies, e.references, nil)
 }
 
 // References compare complete exploratory and final populations separately.
@@ -90,14 +122,51 @@ func (e *memoEquality) references(a, b *Reference, aliases *AliasMap) bool {
 	}
 	pair := refPair{a, b}
 	if _, cycle := e.active[pair]; cycle {
+		e.cycles++
 		return false
+	}
+	bindings := e.boundFreeAliases(a, aliases)
+	for _, m := range e.matched[pair] {
+		if slices.Equal(m.bindings, bindings) {
+			return m.result
+		}
 	}
 	if e.active == nil {
 		e.active = make(map[refPair]struct{})
 	}
 	e.active[pair] = struct{}{}
-	defer delete(e.active, pair)
-	return e.members(a.members, b.members, aliases) && e.members(a.finalMembers, b.finalMembers, aliases)
+	cycles := e.cycles
+	result := e.members(a.members, b.members, aliases) && e.members(a.finalMembers, b.finalMembers, aliases)
+	delete(e.active, pair)
+	if e.cycles == cycles {
+		if e.matched == nil {
+			e.matched = make(map[refPair][]refMatch)
+		}
+		e.matched[pair] = append(e.matched[pair], refMatch{bindings, result})
+	}
+	return result
+}
+
+// boundFreeAliases is aliases restricted to ref's free aliases, ordered by
+// name; an order tie only costs a cache miss.
+func (e *memoEquality) boundFreeAliases(ref *Reference, aliases *AliasMap) []values.AliasPair {
+	free := e.correlations.correlatedTo(ref)
+	if len(free) == 0 || aliases.IsEmpty() {
+		return nil
+	}
+	var pairs []values.AliasPair
+	for source := range free {
+		if target, ok := aliases.GetTarget(source); ok {
+			pairs = append(pairs, values.AliasPair{Source: source, Target: target})
+		}
+	}
+	slices.SortFunc(pairs, func(x, y values.AliasPair) int {
+		if c := strings.Compare(x.Source.Name(), y.Source.Name()); c != 0 {
+			return c
+		}
+		return strings.Compare(x.Target.Name(), y.Target.Name())
+	})
+	return pairs
 }
 
 func (e *memoEquality) members(have, want []RelationalExpression, aliases *AliasMap) bool {

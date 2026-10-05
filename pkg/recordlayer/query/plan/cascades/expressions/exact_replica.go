@@ -32,7 +32,9 @@ func ExactReplica(a, b RelationalExpression) bool {
 			left.GetAlias().IsMergeAlias() && right.GetAlias().IsMergeAlias()
 	}
 	return maps.Equal(outerReads(a), outerReads(b)) &&
-		matchQuantifierBindings(a, b, EmptyAliasMap(), referenceCorrelations, sameInputGroup, pairable)
+		matchQuantifierBindings(a, b, EmptyAliasMap(), func(e RelationalExpression) [][]int {
+			return quantifierDependencies(e.GetQuantifiers(), e.CanCorrelate(), referenceCorrelations)
+		}, sameInputGroup, pairable)
 }
 
 // bindsMergeAlias reports whether e binds a planner merge alias, the one

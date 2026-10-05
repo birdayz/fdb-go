@@ -155,6 +155,10 @@ type Reference struct {
 	// empty map caches the uncorrelated case. Member edits and invalidation
 	// remain sequential and must not overlap readers.
 	correlatedToCache atomic.Pointer[correlationMemo]
+	// memberCorrelations keeps each member's snapshot across membership
+	// changes; a snapshot is reused only while every child it read still has
+	// the snapshot it read, so adding one member does not recompute the rest.
+	memberCorrelations atomic.Pointer[map[RelationalExpression]*correlationMemo]
 
 	// aliasAwareDedups counts how many times the ALIAS-AWARE interning tier
 	// (the MemoEqual branch in Insert/InsertFinal, gated to merge
@@ -893,6 +897,24 @@ func PreparedMemberDuplicateWithHashes(
 type PreparedMemberEquality struct {
 	equality memoEquality
 	inputs   map[*Reference]preparedInputSignature
+}
+
+// SeedMemberCorrelations lets the batch reuse ref's member snapshots from
+// earlier batches, each revalidated before use.
+func (p *PreparedMemberEquality) SeedMemberCorrelations(ref *Reference) {
+	if ref = canonicalReferenceReadOnly(ref); ref != nil {
+		if prior := ref.memberCorrelations.Load(); prior != nil {
+			p.equality.correlations.priors = *prior
+		}
+	}
+}
+
+// PublishMemberCorrelations records the batch's member snapshots on ref after
+// a successful commit, for the next batch to seed from.
+func (p *PreparedMemberEquality) PublishMemberCorrelations(ref *Reference) {
+	if ref = canonicalReferenceReadOnly(ref); ref != nil {
+		p.equality.correlations.publishMembers(ref)
+	}
 }
 
 // PublishCorrelations retains completed derivations after successful admission.

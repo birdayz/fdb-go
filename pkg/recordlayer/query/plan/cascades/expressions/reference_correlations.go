@@ -40,7 +40,10 @@ type referenceCorrelationReader struct {
 	memo        map[*Reference]*correlationMemo
 	expressions map[RelationalExpression]*correlationMemo
 	active      map[*Reference]struct{}
-	publish     bool
+	// priors are member snapshots from earlier passes, borrowed read-only and
+	// reused only after revalidation.
+	priors  map[RelationalExpression]*correlationMemo
+	publish bool
 	// epoch is read before the reader validates anything, so a stamp never
 	// claims a later graph than the one it saw.
 	epoch uint64
@@ -61,6 +64,7 @@ func (reader *referenceCorrelationReader) reset() {
 	clear(reader.memo)
 	clear(reader.expressions)
 	clear(reader.active)
+	reader.priors = nil
 	reader.publish = false
 	reader.epoch = 0
 }
@@ -93,9 +97,10 @@ func (reader *referenceCorrelationReader) expression(expression RelationalExpres
 }
 
 func (reader *referenceCorrelationReader) expressionSnapshot(expression RelationalExpression) *correlationMemo {
-	if cached, ok := reader.expressions[expression]; ok {
-		return cached
-	}
+	return reader.memberSnapshot(expression, reader.priors[expression])
+}
+
+func (reader *referenceCorrelationReader) computeExpressionSnapshot(expression RelationalExpression) *correlationMemo {
 	if reader.expressions == nil {
 		reader.expressions = make(map[RelationalExpression]*correlationMemo)
 	}
@@ -110,6 +115,46 @@ func (reader *referenceCorrelationReader) expressionSnapshot(expression Relation
 	})
 	reader.expressions[expression] = computed
 	return computed
+}
+
+// memberSnapshot is the member's snapshot: the one from an earlier pass while
+// every child it read still has the snapshot it read, else a fresh one.
+func (reader *referenceCorrelationReader) memberSnapshot(member RelationalExpression, prior *correlationMemo) *correlationMemo {
+	if cached, ok := reader.expressions[member]; ok {
+		return cached
+	}
+	if prior != nil {
+		for _, dependency := range prior.dependencies {
+			if reader.reference(dependency.reference) != dependency.snapshot {
+				return reader.computeExpressionSnapshot(member)
+			}
+		}
+		if reader.expressions == nil {
+			reader.expressions = make(map[RelationalExpression]*correlationMemo)
+		}
+		reader.expressions[member] = prior
+		return prior
+	}
+	return reader.computeExpressionSnapshot(member)
+}
+
+// publishMembers records the snapshots this reader holds for ref's members.
+func (reader *referenceCorrelationReader) publishMembers(ref *Reference) {
+	var prior map[RelationalExpression]*correlationMemo
+	if p := ref.memberCorrelations.Load(); p != nil {
+		prior = *p
+	}
+	current := make(map[RelationalExpression]*correlationMemo, len(ref.members)+len(ref.finalMembers))
+	for _, members := range [][]RelationalExpression{ref.members, ref.finalMembers} {
+		for _, member := range members {
+			if snapshot, ok := reader.expressions[member]; ok {
+				current[member] = snapshot
+			} else if snapshot := prior[member]; snapshot != nil {
+				current[member] = snapshot
+			}
+		}
+	}
+	ref.memberCorrelations.Store(&current)
 }
 
 func (reader *referenceCorrelationReader) correlatedTo(ref *Reference) map[values.CorrelationIdentifier]struct{} {
@@ -165,9 +210,15 @@ func (reader *referenceCorrelationReader) reference(ref *Reference) *correlation
 	// pass a reference has one snapshot, so each child is recorded once: a
 	// cache hit then revalidates distinct children, not every member's.
 	seen := make(map[*Reference]struct{})
+	var prior map[RelationalExpression]*correlationMemo
+	if p := ref.memberCorrelations.Load(); p != nil {
+		prior = *p
+	}
+	current := make(map[RelationalExpression]*correlationMemo, len(ref.members)+len(ref.finalMembers))
 	for _, members := range [][]RelationalExpression{ref.members, ref.finalMembers} {
 		for _, member := range members {
-			snapshot := reader.expressionSnapshot(member)
+			snapshot := reader.memberSnapshot(member, prior[member])
+			current[member] = snapshot
 			for _, dependency := range snapshot.dependencies {
 				if _, dup := seen[dependency.reference]; dup {
 					continue
@@ -181,6 +232,9 @@ func (reader *referenceCorrelationReader) reference(ref *Reference) *correlation
 		}
 	}
 	computed.validated.Store(epoch)
+	if reader.publish {
+		ref.memberCorrelations.Store(&current)
+	}
 	// Concurrent readers must return the same published snapshot, otherwise
 	// a parent's dependency would appear stale on an unchanged graph.
 	if reader.publish && !ref.correlatedToCache.CompareAndSwap(cached, computed) {

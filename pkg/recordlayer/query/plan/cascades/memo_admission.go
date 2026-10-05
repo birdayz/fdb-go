@@ -117,6 +117,7 @@ func prepareReferenceMemberBatch(
 		relationType: relationType,
 		inserted:     make([]bool, len(intents)),
 	}
+	prepared.equality.SeedMemberCorrelations(reference)
 	exploratoryIndex := prepared.equality.NewMemberIndex(existingExploratory, reference.MemberHashes(existingExploratory))
 	finalIndex := prepared.equality.NewMemberIndex(existingFinal, reference.MemberHashes(existingFinal))
 	for i, intent := range intents {
@@ -156,6 +157,7 @@ func (p *preparedReferenceBatch) commit() error {
 		return err
 	}
 	p.equality.PublishCorrelations()
+	p.equality.PublishMemberCorrelations(p.reference)
 	return nil
 }
 

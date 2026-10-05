@@ -8,7 +8,7 @@ import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 func matchQuantifierBindings(
 	member, other RelationalExpression,
 	aliases *AliasMap,
-	correlations func(*Reference) map[values.CorrelationIdentifier]struct{},
+	dependencies func(RelationalExpression) [][]int,
 	match func(*Reference, *Reference, *AliasMap) bool,
 	pairable func(left, right Quantifier) bool,
 ) bool {
@@ -21,8 +21,7 @@ func matchQuantifierBindings(
 	}
 	canCorrelate := member.CanCorrelate()
 	asSet := member.ChildrenAsSet() && other.ChildrenAsSet()
-	leftDependencies := quantifierDependencies(left, canCorrelate, correlations)
-	rightDependencies := quantifierDependencies(right, canCorrelate, correlations)
+	leftDependencies, rightDependencies := dependencies(member), dependencies(other)
 	leftDone, rightDone := make([]bool, len(left)), make([]bool, len(right))
 	var search func(int, *AliasMap) bool
 	search = func(depth int, bound *AliasMap) bool {
