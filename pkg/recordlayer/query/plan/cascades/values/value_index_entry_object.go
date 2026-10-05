@@ -115,15 +115,21 @@ func (v *IndexEntryObjectValue) Evaluate(evalCtx any) (any, error) {
 	if rv := reflect.ValueOf(entry); !ok || entry == nil || (rv.Kind() == reflect.Pointer && rv.IsNil()) {
 		return nil, fmt.Errorf("index entry object value: %s is bound to %T, not an index entry", v.IndexEntryAlias.Name(), bound)
 	}
-	t := entry.IndexEntryValue()
+	return v.ReadTuples(entry.IndexEntryKey(), entry.IndexEntryValue())
+}
+
+// ReadTuples is Evaluate over an entry's KEY and VALUE tuples already in hand,
+// for a cursor that reads every entry of a scan.
+func (v *IndexEntryObjectValue) ReadTuples(key, value tuple.Tuple) (any, error) {
+	t := value
 	if v.Source == TupleSourceKey {
-		t = entry.IndexEntryKey()
+		t = key
 	}
-	value, err := walkOrdinalPath(t, v.OrdinalPath)
-	if err != nil || value == nil {
+	element, err := walkOrdinalPath(t, v.OrdinalPath)
+	if err != nil || element == nil {
 		return nil, err
 	}
-	return TupleElementToRowValue(value), nil
+	return TupleElementToRowValue(element), nil
 }
 
 // walkOrdinalPath descends `t` along `path`. Mirrors Java's

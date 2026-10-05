@@ -59,6 +59,19 @@ func newCoveringEntryReader(
 func (r *coveringEntryReader) row(binder *entryBinder) (*PositionalRow, error) {
 	slots := make([]any, len(r.reader.Fields))
 	for i, field := range r.reader.Fields {
+		// The reader's leaves read the entry directly; anything else evaluates
+		// with the entry bound.
+		switch leaf := field.Value.(type) {
+		case *values.NullValue:
+			continue
+		case *values.IndexEntryObjectValue:
+			value, err := leaf.ReadTuples(binder.entry.Key, binder.entry.Value)
+			if err != nil {
+				return nil, fmt.Errorf("executor: covering field %s: %w", field.Name, err)
+			}
+			slots[i] = value
+			continue
+		}
 		if nested, ok := field.Value.(*values.RecordConstructorValue); ok {
 			if i >= r.desc.Fields().Len() || r.desc.Fields().Get(i).Message() == nil {
 				return nil, fmt.Errorf("executor: covering field %s is no message field", field.Name)

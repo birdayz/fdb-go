@@ -879,14 +879,13 @@ A partition *inequality* is the one deliberate residual divergence: Go's executo
 
 ### Covering Index Scan — RESOLVED
 
-**Status:** Covering index works end-to-end for SQL. The data-access rule builds the covering plan (`wrapScanPlanWithCoverage`, Java `ValueIndexScanMatchCandidate`), and `PushMapThroughFetchRule` eliminates the fetch when the block's Map reads only covered columns, as Java's push-through-fetch rules do. Verified with planner harness tests: `CoveringCompositeIndex`, `CoveringCompositeIndexPKAndIndexCols`, `NonCoveringNeedsExtraColumn`.
+**Status:** Covering index works end-to-end for SQL. The value candidate builds its logical record from the entry (`computeIndexEntryToLogicalRecord`, the three `ExtractFromIndexKeyValueRuleSet` rules, `IndexEntryToRecordValueHelper`); the data-access rule builds the covering plan only when it does (`wrapScanPlanWithCoverage`, Java `ValueIndexScanMatchCandidate.tryFetchCoveringIndexScan`), the covering cursor fills rows from that reader, and `PushMapThroughFetchRule` eliminates the fetch when the block's Map reads only fields the record covers, as Java's push-through-fetch rules do. Verified with planner harness tests: `CoveringCompositeIndex`, `CoveringCompositeIndexPKAndIndexCols`, `NonCoveringNeedsExtraColumn`.
 
 ## Optimization-Quality Gaps (correctness unaffected)
 
 | Gap | Status |
 |---|---|
 | CollapseRecordConstructorOverFieldsToStar | Blocked: needs field-level type metadata (ordinal positions) |
-| ExtractFromIndexKeyValueRuleSet (3 rules) | Blocked: execution layer (partial record construction) |
 
 ## Go-Only Extensions (features Java 4.12.11 rejects)
 
