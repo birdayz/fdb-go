@@ -23,11 +23,11 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**399 scenarios · 3350 query/assertion cases** across 18 feature areas — 2936 supported, 106 unsupported-feature pins, 308 error-path pins.
+**400 scenarios · 3391 query/assertion cases** across 18 feature areas — 2977 supported, 106 unsupported-feature pins, 308 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
-| Aggregates & GROUP BY | 61 | 386 | 351 | 19 | 16 |
+| Aggregates & GROUP BY | 62 | 427 | 392 | 19 | 16 |
 | Joins | 66 | 313 | 296 | 2 | 15 |
 | Subqueries (EXISTS / IN / scalar) | 47 | 323 | 267 | 33 | 23 |
 | CTEs | 15 | 202 | 161 | 4 | 37 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 45 | 459 | 400 | 9 | 50 |
-| **Total** | **399** | **3350** | **2936** | **106** | **308** |
+| **Total** | **400** | **3391** | **2977** | **106** | **308** |
 
 ## Aggregates & GROUP BY
 
@@ -68,6 +68,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `aggregate_index_having` | 2 | 2 | 0 | 0 | Aggregate index with HAVING filter |
 | `aggregate_index_multi_group` | 1 | 1 | 0 | 0 | Aggregate index with multi-column GROUP BY |
 | `aggregate_index_reverse_scan` | 3 | 3 | 0 | 0 | A descending request over an aggregate index's groups is served by the reverse |
+| `aggregate_index_roll_up` | 41 | 41 | 0 | 0 | Java's aggregate-empty-table.yamsql, the T2 blocks, with Java's plans and |
 | `aggregate_index_sum` | 2 | 2 | 0 | 0 | SUM aggregate index via DDL |
 | `aggregate_index_sum_null_residue` | 4 | 4 | 0 | 0 | A live group whose last non-NULL value is deleted (or NULLed) keeps its SUM |
 | `aggregate_index_update` | 6 | 6 | 0 | 0 | Aggregate index correctness after UPDATE |

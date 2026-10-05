@@ -88,6 +88,9 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 			continue
 		}
 		if !aggCand.MatchesGroupBy(gb) {
+			if yieldAggregateGroupingSubsumption(call, gb, aggCand, innerFilterPreds) {
+				singleMatched = true
+			}
 			continue
 		}
 		// An aggregate index stores aggregates precomputed over ALL rows of the

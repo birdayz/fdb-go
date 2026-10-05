@@ -426,15 +426,17 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   before re-blessing: the 12 lost equality probes are 6 IN-unions F-7b item 2
   removes (Java builds none) and 6 join outers F-7a moved from `IDX_AB [=,*]` to
   a fully matched range index, Java's `unmatchedFieldsCount` rung.
-- [ ] **Aggregate roll-up port (next).** Java serves an ungrouped or coarser
-  aggregate from a grouped index: `select sum(col1) from T2 where col2 = 0` is
-  `AISCAN(T2_I6 [EQUALS ...]) | ON EMPTY NULL` and a range is `AISCAN(...) | AGG
-  sum_l(...) GROUP BY ()` (aggregate-empty-table.yamsql :269-285;
-  `AggregateIndexMatchCandidate` `rollUpToGroupingValues`). Go's
-  `AggregateDataAccessRule` matches only an exact grouping, so these plan
-  `StreamingAgg(Scan)`. Pinned at Go's answer in
-  `TestFDB_AggregateIndexSum_NullWithOtherAggregates` ("SUM of one
-  residual-zero group").
+- [x] **Aggregate roll-up port.** `yieldAggregateGroupingSubsumption`
+  (`rule_aggregate_roll_up.go`) ports the rest of Java's
+  `GroupByExpression.groupingSubsumedBy`: query grouping keys match the
+  candidate's columns as a set, an equality on a grouping column matches it
+  implicitly, an exact match is the index scan with a projecting Map, and
+  otherwise the candidate rolls up to its longest matched prefix (explicit keys
+  inside it, a rollable index type, no residual) as a streaming SUM / MAX / MIN
+  over the scan. `aggregate_index_roll_up.yaml` is Java's
+  aggregate-empty-table.yamsql T2 blocks: every plan shape and answer, the
+  commented-out residue reads included. Not ported: roll-up inside the
+  multi-aggregate intersection.
 - [ ] **Lucene: DECIDED 2026-10-05, in scope, in process.** Java runs Apache
   Lucene 8.11.1 inside the JVM (`fdb-record-layer-lucene`, 28.7k lines of main
   Java, 7 protos). It stores the segment files in FDB through `FDBDirectory`,

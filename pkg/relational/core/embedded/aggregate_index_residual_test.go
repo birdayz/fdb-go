@@ -243,7 +243,9 @@ CREATE INDEX cnt_cat AS SELECT COUNT(*) FROM T_S GROUP BY cat`
 		{"same_leaf_name_two_parents", "SELECT home.city, office.city, COUNT(*) FROM T_S WHERE office.city = 'b' GROUP BY home.city, office.city", true, 0, 1, false},
 		// The top-level CITY is not HOME.CITY: no index groups by it.
 		{"top_level_same_leaf_declines", "SELECT city, home.zip, cat, COUNT(*) FROM T_S GROUP BY city, home.zip, cat", false, 0, -1, true},
-		{"swapped_parents_decline", "SELECT office.city, home.city, COUNT(*) FROM T_S GROUP BY office.city, home.city", false, 0, -1, true},
+		// Java matches the grouping as a set (GroupByExpression.groupingSubsumedBy),
+		// so the keys in the other order are the index's groups, projected.
+		{"swapped_parents_match_as_a_set", "SELECT office.city, home.city, COUNT(*) FROM T_S GROUP BY office.city, home.city", true, 0, -1, false},
 		// A residual reading a nested field that is not a grouping column reads
 		// the aggregation input and declines.
 		{"input_leaf_declines", "SELECT home.city, home.zip, cat, COUNT(*) FROM T_S WHERE office.zip = 1 GROUP BY home.city, home.zip, cat", false, 0, -1, true},

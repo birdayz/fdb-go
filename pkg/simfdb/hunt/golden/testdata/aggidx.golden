@@ -20,7 +20,7 @@ ROWS(4) cols=[G, _1]:
   [4, 2]
 
 === SELECT SUM(v) FROM t
-PLAN: Map(StreamingAgg(keys=[], Scan(T)), {_0: _current.SUM(V)#0})
+PLAN: Map(DefaultOnEmpty(Map(StreamingAgg(keys=[], AggregateIndex(SUM, SUM_BY_G, [G], T)), {SUM(V): _current.SUM(SUM(V))#0})), {_0: _current.SUM(V)#0})
 ROWS(1) cols=[_0]:
   [210]
 

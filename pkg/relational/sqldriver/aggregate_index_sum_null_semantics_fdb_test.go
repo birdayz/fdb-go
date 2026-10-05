@@ -146,12 +146,11 @@ func TestFDB_AggregateIndexSum_NullWithOtherAggregates(t *testing.T) {
 	w.Want("COUNT(*) alone", "SELECT g, COUNT(*) FROM t GROUP BY g ORDER BY g",
 		[]string{"1|2", "2|2", "3|1"})
 
-	// Single-group spellings. Java reads these from the grouped index as a point
-	// scan (`AISCAN(... [EQUALS ...]) | ON EMPTY NULL`, aggregate-empty-table.yamsql)
-	// and would answer the residual-zero group 0. Go does not route an ungrouped
-	// aggregate through a grouped index yet (TODO.md, the aggregate roll-up
-	// port), so these are aggregated from the records.
-	w.Want("SUM of one residual-zero group", "SELECT SUM(v) FROM t WHERE g = 1", []string{"NULL"})
+	// Single-group spellings, read from the grouped index as a point scan
+	// (`AISCAN(... [EQUALS ...]) | ON EMPTY NULL`, aggregate-empty-table.yamsql);
+	// a group with no entry is the ungrouped empty answer, NULL.
+	w.WantAggregateIndex("SUM of one residual-zero group", "SELECT SUM(v) FROM t WHERE g = 1",
+		[]string{"0"}, []string{"NULL"})
 	w.Want("SUM of one cancelling group", "SELECT SUM(v) FROM t WHERE g = 2", []string{"0"})
 	w.Want("SUM of one all-NULL group", "SELECT SUM(v) FROM t WHERE g = 3", []string{"NULL"})
 	w.Want("SUM of an absent group", "SELECT SUM(v) FROM t WHERE g = 99", []string{"NULL"})

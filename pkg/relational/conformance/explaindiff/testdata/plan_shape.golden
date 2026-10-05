@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=399 queries=3044 dml=178 non_query=128 plan_errors=324 unexpected_errors=4
+# files=400 queries=3083 dml=179 non_query=129 plan_errors=324 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -567,10 +567,12 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryAggregateIndexPlan
 === aggregate_index_count_star.yaml#1
 sql:   SELECT COUNT(*) FROM logs
-plan:  Map(StreamingAgg(keys=[], Scan(LOGS)), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+plan:  Map(DefaultOnEmpty(Map(StreamingAgg(keys=[], AggregateIndex(COUNT, COUNT_BY_LEVEL, [LEVEL], LOGS)), {COUNT(*): _current.SUM(COUNT(*))#0})), {_0: COALESCE(_current.COUNT(*)#0, 0)})
 shape: RecordQueryMapPlan
-shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryDefaultOnEmptyPlan
+shape:     RecordQueryMapPlan
+shape:       RecordQueryStreamingAggregationPlan
+shape:         RecordQueryAggregateIndexPlan
 === aggregate_index_ddl.yaml#0
 sql:   SELECT status, COUNT(*) FROM orders GROUP BY status ORDER BY status
 plan:  Map(AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS), {STATUS: _current.STATUS#0, _1: _current.COUNT(*)#1})
@@ -635,6 +637,260 @@ shape:   RecordQueryAggregateIndexPlan
 === aggregate_index_reverse_scan.yaml#2
 sql:   select col1, count(*) from T1 group by col1 order by col1
 plan:  Map(AggregateIndex(COUNT, MV_CNT, [COL1], T1), {COL1: _current.COL1#0, _1: _current.COUNT(*)#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#0
+sql:   SELECT COUNT(*) FROM T2
+plan:  Map(DefaultOnEmpty(AggregateIndex(COUNT, T2_I1, T2)), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryDefaultOnEmptyPlan
+shape:     RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#1
+sql:   SELECT COUNT(*) FROM T2 HAVING COUNT(*) > 0
+plan:  Map(PredicatesFilter(DefaultOnEmpty(AggregateIndex(COUNT, T2_I1, T2)), [1 preds]), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryDefaultOnEmptyPlan
+shape:       RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#2
+sql:   SELECT COUNT(*) FROM T2 WHERE col1 = 0
+plan:  Map(DefaultOnEmpty(Map(AggregateIndex(COUNT, T2_I2, [COL1], T2), {COUNT(*): _current.COUNT(*)#1})), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryDefaultOnEmptyPlan
+shape:     RecordQueryMapPlan
+shape:       RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#3
+sql:   SELECT COUNT(*) FROM T2 WHERE col1 > 0
+plan:  Map(DefaultOnEmpty(Map(StreamingAgg(keys=[], AggregateIndex(COUNT, T2_I2, [COL1], T2)), {COUNT(*): _current.SUM(COUNT(*))#0})), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryDefaultOnEmptyPlan
+shape:     RecordQueryMapPlan
+shape:       RecordQueryStreamingAggregationPlan
+shape:         RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#4
+sql:   SELECT COUNT(*) FROM T2 GROUP BY col1
+plan:  Map(AggregateIndex(COUNT, T2_I2, [COL1], T2), {_0: _current.COUNT(*)#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#5
+sql:   SELECT COUNT(*) FROM T2 WHERE col1 = 0 GROUP BY col1
+plan:  Map(AggregateIndex(COUNT, T2_I2, [COL1], T2), {_0: _current.COUNT(*)#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#6
+sql:   SELECT COUNT(*) FROM T2 WHERE col1 > 0 GROUP BY col1
+plan:  Map(AggregateIndex(COUNT, T2_I2, [COL1], T2), {_0: _current.COUNT(*)#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#7
+sql:   SELECT COUNT(col2) FROM T2
+plan:  Map(DefaultOnEmpty(AggregateIndex(COUNT, T2_I3, T2)), {_0: COALESCE(_current.COUNT(COL2)#0, 0)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryDefaultOnEmptyPlan
+shape:     RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#8
+sql:   SELECT COUNT(col2) FROM T2 WHERE col1 = 0
+plan:  Map(DefaultOnEmpty(Map(AggregateIndex(COUNT, T2_I4, [COL1], T2), {COUNT(COL2): _current.COUNT(COL2)#1})), {_0: COALESCE(_current.COUNT(COL2)#0, 0)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryDefaultOnEmptyPlan
+shape:     RecordQueryMapPlan
+shape:       RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#9
+sql:   SELECT COUNT(col2) FROM T2 WHERE col1 > 0
+plan:  Map(DefaultOnEmpty(Map(StreamingAgg(keys=[], AggregateIndex(COUNT, T2_I4, [COL1], T2)), {COUNT(COL2): _current.SUM(COUNT(COL2))#0})), {_0: COALESCE(_current.COUNT(COL2)#0, 0)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryDefaultOnEmptyPlan
+shape:     RecordQueryMapPlan
+shape:       RecordQueryStreamingAggregationPlan
+shape:         RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#10
+sql:   SELECT COUNT(col2) FROM T2 GROUP BY col1
+plan:  Map(AggregateIndex(COUNT, T2_I4, [COL1], T2), {_0: _current.COUNT(COL2)#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#11
+sql:   SELECT SUM(col1) FROM T2
+plan:  Map(DefaultOnEmpty(AggregateIndex(SUM, T2_I5, T2)), {_0: _current.SUM(COL1)#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryDefaultOnEmptyPlan
+shape:     RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#12
+sql:   SELECT SUM(col1) FROM T2 WHERE col1 = 0
+plan:  Map(StreamingAgg(keys=[], PredicatesFilter(Scan(T2), [1 preds])), {_0: _current.SUM(COL1)#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
+=== aggregate_index_roll_up.yaml#13
+sql:   SELECT SUM(col1) FROM T2 WHERE col2 = 0
+plan:  Map(DefaultOnEmpty(Map(AggregateIndex(SUM, T2_I6, [COL2], T2), {SUM(COL1): _current.SUM(COL1)#1})), {_0: _current.SUM(COL1)#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryDefaultOnEmptyPlan
+shape:     RecordQueryMapPlan
+shape:       RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#14
+sql:   SELECT SUM(col1) FROM T2 WHERE col1 > 0
+plan:  Map(StreamingAgg(keys=[], PredicatesFilter(Scan(T2), [1 preds])), {_0: _current.SUM(COL1)#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
+=== aggregate_index_roll_up.yaml#15
+sql:   SELECT SUM(col1) FROM T2 WHERE col2 > 0
+plan:  Map(DefaultOnEmpty(Map(StreamingAgg(keys=[], AggregateIndex(SUM, T2_I6, [COL2], T2)), {SUM(COL1): _current.SUM(SUM(COL1))#0})), {_0: _current.SUM(COL1)#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryDefaultOnEmptyPlan
+shape:     RecordQueryMapPlan
+shape:       RecordQueryStreamingAggregationPlan
+shape:         RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#16
+sql:   SELECT SUM(col1) FROM T2 WHERE col2 = 0 GROUP BY col2
+plan:  Map(AggregateIndex(SUM, T2_I6, [COL2], T2), {_0: _current.SUM(COL1)#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#17
+sql:   SELECT SUM(col1) FROM T2 WHERE col2 > 0 GROUP BY col2
+plan:  Map(AggregateIndex(SUM, T2_I6, [COL2], T2), {_0: _current.SUM(COL1)#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#19
+sql:   SELECT COUNT(*) FROM T2 WHERE col1 > 0
+plan:  Map(DefaultOnEmpty(Map(StreamingAgg(keys=[], AggregateIndex(COUNT, T2_I2, [COL1], T2)), {COUNT(*): _current.SUM(COUNT(*))#0})), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryDefaultOnEmptyPlan
+shape:     RecordQueryMapPlan
+shape:       RecordQueryStreamingAggregationPlan
+shape:         RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#20
+sql:   SELECT SUM(col1) FROM T2 WHERE col2 > 0
+plan:  Map(DefaultOnEmpty(Map(StreamingAgg(keys=[], AggregateIndex(SUM, T2_I6, [COL2], T2)), {SUM(COL1): _current.SUM(SUM(COL1))#0})), {_0: _current.SUM(COL1)#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryDefaultOnEmptyPlan
+shape:     RecordQueryMapPlan
+shape:       RecordQueryStreamingAggregationPlan
+shape:         RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#21
+sql:   SELECT col1, COUNT(*) FROM T2 GROUP BY col1
+plan:  Map(AggregateIndex(COUNT, T2_I2, [COL1], T2), {COL1: _current.COL1#0, _1: _current.COUNT(*)#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#22
+sql:   DELETE FROM T2
+plan:  Delete(T2, Scan(T2))
+shape: RecordQueryDeletePlan
+shape:   RecordQueryScanPlan
+=== aggregate_index_roll_up.yaml#23
+sql:   SELECT COUNT(*) FROM T2
+plan:  Map(DefaultOnEmpty(AggregateIndex(COUNT, T2_I1, T2)), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryDefaultOnEmptyPlan
+shape:     RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#24
+sql:   SELECT COUNT(*) FROM T2 HAVING COUNT(*) > 0
+plan:  Map(PredicatesFilter(DefaultOnEmpty(AggregateIndex(COUNT, T2_I1, T2)), [1 preds]), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryDefaultOnEmptyPlan
+shape:       RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#25
+sql:   SELECT COUNT(*) FROM T2 WHERE col1 = 0
+plan:  Map(DefaultOnEmpty(Map(AggregateIndex(COUNT, T2_I2, [COL1], T2), {COUNT(*): _current.COUNT(*)#1})), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryDefaultOnEmptyPlan
+shape:     RecordQueryMapPlan
+shape:       RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#26
+sql:   SELECT COUNT(*) FROM T2 WHERE col1 > 0
+plan:  Map(DefaultOnEmpty(Map(StreamingAgg(keys=[], AggregateIndex(COUNT, T2_I2, [COL1], T2)), {COUNT(*): _current.SUM(COUNT(*))#0})), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryDefaultOnEmptyPlan
+shape:     RecordQueryMapPlan
+shape:       RecordQueryStreamingAggregationPlan
+shape:         RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#27
+sql:   SELECT COUNT(*) FROM T2 WHERE col1 = 0 GROUP BY col1
+plan:  Map(AggregateIndex(COUNT, T2_I2, [COL1], T2), {_0: _current.COUNT(*)#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#28
+sql:   SELECT COUNT(col2) FROM T2
+plan:  Map(DefaultOnEmpty(AggregateIndex(COUNT, T2_I3, T2)), {_0: COALESCE(_current.COUNT(COL2)#0, 0)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryDefaultOnEmptyPlan
+shape:     RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#29
+sql:   SELECT COUNT(col2) FROM T2 WHERE col1 = 0
+plan:  Map(DefaultOnEmpty(Map(AggregateIndex(COUNT, T2_I4, [COL1], T2), {COUNT(COL2): _current.COUNT(COL2)#1})), {_0: COALESCE(_current.COUNT(COL2)#0, 0)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryDefaultOnEmptyPlan
+shape:     RecordQueryMapPlan
+shape:       RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#30
+sql:   SELECT COUNT(col2) FROM T2 WHERE col1 > 0
+plan:  Map(DefaultOnEmpty(Map(StreamingAgg(keys=[], AggregateIndex(COUNT, T2_I4, [COL1], T2)), {COUNT(COL2): _current.SUM(COUNT(COL2))#0})), {_0: COALESCE(_current.COUNT(COL2)#0, 0)})
+shape: RecordQueryMapPlan
+shape:   RecordQueryDefaultOnEmptyPlan
+shape:     RecordQueryMapPlan
+shape:       RecordQueryStreamingAggregationPlan
+shape:         RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#31
+sql:   SELECT COUNT(col2) FROM T2 WHERE col1 = 0 GROUP BY col1
+plan:  Map(AggregateIndex(COUNT, T2_I4, [COL1], T2), {_0: _current.COUNT(COL2)#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#32
+sql:   SELECT SUM(col1) FROM T2
+plan:  Map(DefaultOnEmpty(AggregateIndex(SUM, T2_I5, T2)), {_0: _current.SUM(COL1)#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryDefaultOnEmptyPlan
+shape:     RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#33
+sql:   SELECT SUM(col1) FROM T2 WHERE col1 = 0
+plan:  Map(StreamingAgg(keys=[], PredicatesFilter(Scan(T2), [1 preds])), {_0: _current.SUM(COL1)#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
+=== aggregate_index_roll_up.yaml#34
+sql:   SELECT SUM(col1) FROM T2 WHERE col2 = 0
+plan:  Map(DefaultOnEmpty(Map(AggregateIndex(SUM, T2_I6, [COL2], T2), {SUM(COL1): _current.SUM(COL1)#1})), {_0: _current.SUM(COL1)#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryDefaultOnEmptyPlan
+shape:     RecordQueryMapPlan
+shape:       RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#35
+sql:   SELECT SUM(col1) FROM T2 WHERE col1 > 0
+plan:  Map(StreamingAgg(keys=[], PredicatesFilter(Scan(T2), [1 preds])), {_0: _current.SUM(COL1)#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
+=== aggregate_index_roll_up.yaml#36
+sql:   SELECT SUM(col1) FROM T2 WHERE col2 > 0
+plan:  Map(DefaultOnEmpty(Map(StreamingAgg(keys=[], AggregateIndex(SUM, T2_I6, [COL2], T2)), {SUM(COL1): _current.SUM(SUM(COL1))#0})), {_0: _current.SUM(COL1)#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryDefaultOnEmptyPlan
+shape:     RecordQueryMapPlan
+shape:       RecordQueryStreamingAggregationPlan
+shape:         RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#37
+sql:   SELECT SUM(col1) FROM T2 WHERE col2 = 0 GROUP BY col2
+plan:  Map(AggregateIndex(SUM, T2_I6, [COL2], T2), {_0: _current.SUM(COL1)#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#38
+sql:   SELECT COUNT(*) FROM T2 GROUP BY col1
+plan:  Map(AggregateIndex(COUNT, T2_I2, [COL1], T2), {_0: _current.COUNT(*)#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#39
+sql:   SELECT COUNT(col2) FROM T2 GROUP BY col1
+plan:  Map(AggregateIndex(COUNT, T2_I4, [COL1], T2), {_0: _current.COUNT(COL2)#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryAggregateIndexPlan
+=== aggregate_index_roll_up.yaml#40
+sql:   SELECT SUM(col1) FROM T2 WHERE col2 > 0 GROUP BY col2
+plan:  Map(AggregateIndex(SUM, T2_I6, [COL2], T2), {_0: _current.SUM(COL1)#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryAggregateIndexPlan
 === aggregate_index_sum.yaml#0
@@ -15322,10 +15578,12 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryAggregateIndexPlan
 === quoted_identifier_aggregate_labels.yaml#1
 sql:   SELECT SUM("Amount") FROM sales
-plan:  Map(StreamingAgg(keys=[], Scan(SALES)), {_0: _current.SUM(Amount)#0})
+plan:  Map(DefaultOnEmpty(Map(StreamingAgg(keys=[], AggregateIndex(SUM, SUM_BY_REGION, [Region], SALES)), {SUM(Amount): _current.SUM(SUM(Amount))#0})), {_0: _current.SUM(Amount)#0})
 shape: RecordQueryMapPlan
-shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryDefaultOnEmptyPlan
+shape:     RecordQueryMapPlan
+shape:       RecordQueryStreamingAggregationPlan
+shape:         RecordQueryAggregateIndexPlan
 === quoted_identifier_aggregate_labels.yaml#2
 sql:   SELECT SUM(plain) FROM sales
 plan:  Map(StreamingAgg(keys=[], Scan(SALES)), {_0: _current.SUM(PLAIN)#0})
@@ -15334,10 +15592,12 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === quoted_identifier_aggregate_labels.yaml#3
 sql:   SELECT SUM("Amount") AS "total" FROM sales
-plan:  Map(StreamingAgg(keys=[], Scan(SALES)), {total: _current.SUM(Amount)#0})
+plan:  Map(DefaultOnEmpty(Map(StreamingAgg(keys=[], AggregateIndex(SUM, SUM_BY_REGION, [Region], SALES)), {SUM(Amount): _current.SUM(SUM(Amount))#0})), {total: _current.SUM(Amount)#0})
 shape: RecordQueryMapPlan
-shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryDefaultOnEmptyPlan
+shape:     RecordQueryMapPlan
+shape:       RecordQueryStreamingAggregationPlan
+shape:         RecordQueryAggregateIndexPlan
 === quoted_identifier_aggregate_labels.yaml#4
 sql:   SELECT "Region", MAX("Amount") FROM sales GROUP BY "Region" ORDER BY "Region"
 plan:  Map(StreamingAgg(keys=[_current.Region#1], InMemorySort([_current.Region#1 ASC], Scan(SALES))), {Region: _current.Region#0, _1: _current.MAX(Amount)#1})

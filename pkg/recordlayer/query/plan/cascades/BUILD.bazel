@@ -85,6 +85,7 @@ go_library(
         "rule.go",
         "rule_adjust_match.go",
         "rule_aggregate_data_access.go",
+        "rule_aggregate_roll_up.go",
         "rule_decorrelate_values.go",
         "rule_demorgan.go",
         "rule_distinct_merge.go",
@@ -1182,6 +1183,7 @@ go_test(
         "rewriting_prune_test.go",
         "in_union_child_ordering.go",
         "in_union_child_ordering_test.go",
+        "rule_aggregate_roll_up.go",
     ],
     deps = [
         "//gen",
