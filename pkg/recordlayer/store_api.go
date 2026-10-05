@@ -98,12 +98,39 @@ func (store *FDBRecordStore) IndexStateSubspace() subspace.Subspace {
 }
 
 // GetAllIndexStates returns a map of all index names to their current states.
-// Indexes without an explicit state entry default to READABLE.
-// Matches Java's FDBRecordStore.getAllIndexStates().
+// Indexes without an explicit state entry default to READABLE. Like Java's
+// FDBRecordStore.getAllIndexStates (addStoreStateReadConflict,
+// FDBRecordStore.java:4205-4213, 4610-4617), it adds ONE read-conflict range
+// over the whole index-state subspace: any state change in the store
+// conflicts with the caller's transaction.
 func (store *FDBRecordStore) GetAllIndexStates() map[string]IndexState {
+	if store.context != nil {
+		// The signature returns no error, as before, when a per-index read
+		// dropped its conflict error; a dead transaction fails its commit.
+		_ = store.context.AddReadConflictRange(store.IndexStateSubspace())
+	}
+	return store.PeekIndexStates()
+}
+
+// PeekIndexStates returns the state of every index the metadata names, an
+// index with no stored state defaulted to READABLE, WITHOUT any read conflict:
+// the states the store loaded at open, Java's getRecordStoreState().getState
+// (PlanContext.java:237-260 plans from them and adds no conflict). It serves
+// SQL planning and the per-page plan revalidation only; a scan takes its own
+// per-index conflict key (ReadIndexState), so a state change of an index a
+// statement never scans does not abort its transaction.
+func (store *FDBRecordStore) PeekIndexStates() map[string]IndexState {
+	store.ensureStoreStateLoaded()
+	store.stateMu.RLock()
+	defer store.stateMu.RUnlock()
+	loaded := store.snapshotIndexStatesLocked()
 	result := make(map[string]IndexState)
 	for name := range store.metaData.GetAllIndexes() {
-		result[name] = store.GetIndexState(name)
+		state, ok := loaded[name]
+		if !ok {
+			state = IndexStateReadable
+		}
+		result[name] = state
 	}
 	return result
 }

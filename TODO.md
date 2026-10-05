@@ -75,9 +75,20 @@ Never mark a whole workstream complete because one of its subitems passed.
   (full lane) and has NOT run yet. The primary-key filter's record-type-prefix
   offset has no end-to-end pin: SQL plans for a dynamic NaN PK prefix with a
   bound suffix pick a scan on the corpus tables.
-- [ ] Isolation: conflict-free index-state reads and DSN/SetOption options. The
-  executor DML snapshot guard (`4f61e07b5`) and statement-class admission
-  (`7287666da`) are already implemented.
+- [x] Conflict-free index-state reads (design 6.4): planning and per-page
+  revalidation read `PeekIndexStates` (no conflict; Java's PlanContext), scans
+  keep their per-index key, `GetAllIndexStates` takes one range over the
+  index-state subspace (Java's getAllIndexStates). Pins: Ginkgo
+  `index-state read conflicts` (fast lane) and `TestFDB_IndexStateReadScope`
+  (sqldriver, full lane, not run: scanned index conflicts; unused index and
+  record scan commit).
+- [ ] Connection options (design 6.2): `SetOption` merging one option,
+  type-checked; DSN `dry_run` and `isolation_level_snapshot`; an unknown DSN
+  parameter is an error listing the accepted names; `ResetSession` restores
+  the connector's option set; DRY_RUN read by the DML executor (RowsAffected
+  = would-affect count, nothing stored; DDL ignores it); options captured once
+  per statement execution. The executor DML snapshot guard (`4f61e07b5`) and
+  statement-class admission (`7287666da`) are already implemented.
 - [ ] IN semantics: rewrite/partition/cost behavior, covering unions, multi-binding
   product limit, and constant-IN evaluation timing; coordinate shared machinery
   with WS-F without losing either acceptance obligation.

@@ -376,7 +376,7 @@ func secondaryUniqueEliminationProof(
 	// reading the branch as untested. The DECLINE below cannot be reached
 	// through the live SQL/FDB path, and that is a fact about the generator
 	// rather than a gap in coverage: cascadesGenerator.fetchIndexStateSnapshot
-	// reads states through FDBRecordStore.GetAllIndexStates, which iterates the
+	// reads states through FDBRecordStore.PeekIndexStates, which iterates the
 	// METADATA's indexes and defaults an absent entry to READABLE. The snapshot
 	// is therefore DENSE — exactly one entry per metadata index — so a schema
 	// that has a unique index to prove anything from can never produce the empty

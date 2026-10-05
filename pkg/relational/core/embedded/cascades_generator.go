@@ -2285,8 +2285,14 @@ func (r *paginatingRows) fetchPage() error {
 		// Validated against the STORE's metadata, not the plan's: execution
 		// opens the store with the connection's current metadata, so this is
 		// where an index dropped or redefined since planning is observable.
+		//
+		// PeekIndexStates, the conflict-free read planning used: like Java's
+		// plan-constraint check (DatabaseObjectDependenciesPredicate.java:98),
+		// it adds no conflict. The scans this plan opens take a conflict key
+		// for each index they scan; an index the statement never touches can
+		// change state without aborting its transaction.
 		if stateErr := validatePlanIndexDependencies(
-			r.indexDependencies, store.GetRecordMetaData(), store.GetAllIndexStates(),
+			r.indexDependencies, store.GetRecordMetaData(), store.PeekIndexStates(),
 		); stateErr != nil {
 			return nil, stateErr
 		}
@@ -2839,11 +2845,18 @@ func (g *cascadesGenerator) fetchIndexStateSnapshot(
 		if storeErr != nil {
 			return nil, storeErr
 		}
-		// GetAllIndexStates, NOT GetAllIndexStatesMap. The two answer in
+		// PeekIndexStates, NOT GetAllIndexStatesMap. The two answer in
 		// different DOMAINS: this one iterates the METADATA's indexes and
 		// defaults an absent entry to READABLE; the raw map returns whatever
 		// keys the index-state subspace happens to hold, including a key for a
 		// name the metadata no longer has.
+		//
+		// And PeekIndexStates, NOT GetAllIndexStates: planning reads the states
+		// the store loaded at open and adds NO conflict, as Java's PlanContext
+		// does (PlanContext.java:237-260). Each scan takes its own index's
+		// conflict key; a key for every index made a reader abort (1020) on a
+		// state change of an index it never scanned, where Java commits
+		// (RFC-257 WS-E 6.4, measured by indexStateReadScopeProbe).
 		//
 		// THE INVARIANT: the signature comparison is ONE function evaluated
 		// TWICE — here and again at execution — never two functions that
@@ -2859,7 +2872,7 @@ func (g *cascadesGenerator) fetchIndexStateSnapshot(
 		// indexes and asks recordMetaData.hasIndex first
 		// (DatabaseObjectDependenciesPredicate.java:90-101). Storage that
 		// metadata does not name is not part of the dependency.
-		return store.GetAllIndexStates(), nil
+		return store.PeekIndexStates(), nil
 	})
 	if runErr != nil {
 		return nil, runErr
